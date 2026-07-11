@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "spec-docs": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/dist/index.js"]
+    }
+  }
+}

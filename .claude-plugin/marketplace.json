@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "dev-toolkit",
+  "description": "AI仕様駆動開発（AI-SDD）の公式実装プラグイン dev-toolkit を配布する Claude Code マーケットプレイス",
+  "owner": {
+    "name": "FeelFlow Inc.",
+    "email": "futoshi@feelflow.co.jp"
+  },
+  "plugins": [
+    {
+      "name": "dev-toolkit",
+      "description": "開発実務を駆動するツールキット。仕様駆動開発のゲート管理（spec-driven）・エージェントハーネス設計レビュー（harness-review）の2スキルに加え、AI仕様駆動開発の運用コマンド12個（/init-docs によるコア7文書初期化、/validate-docs 検証、/assess-impact 影響度評価、/create-issue・/refine-issue の仕様バリデーション、/pre-commit-check、/ace-setup・/ace-curate のナレッジ蓄積、/setup-ai-config、/multi-explore・/multi-implement・/multi-review のマルチAI CLI オーケストレーション）、docs/ 検索 MCP サーバー（spec-docs、6ツール）、docs テンプレート・スクリプト一式を収録。",
+      "author": {
+        "name": "FeelFlow Inc."
+      },
+      "category": "development",
+      "source": "./plugins/dev-toolkit"
+    }
+  ]
+}

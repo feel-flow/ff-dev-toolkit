@@ -1,0 +1,29 @@
+{
+  "name": "dev-toolkit-spec-docs-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server exposing the target project's AI spec-driven docs/ tree as search and lookup tools (bundled with the dev-toolkit plugin)",
+  "main": "dist/index.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node18 --outfile=dist/index.js --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
+    "check": "node dist/index.js --check",
+    "test": "npm run build && vitest run",
+    "verify:dist": "npm run build && git diff --exit-code -- dist"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.12",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.3",
+    "vitest": "^4.0.18"
+  }
+}
