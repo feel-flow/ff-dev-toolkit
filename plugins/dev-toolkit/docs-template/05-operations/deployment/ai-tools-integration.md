@@ -22,7 +22,7 @@
 | 特徴                      | Claude Code                     | Codex CLI                  | GitHub Copilot               | Gemini CLI                 | Cursor                 |
 | ------------------------- | ------------------------------- | -------------------------- | ---------------------------- | -------------------------- | ---------------------- |
 | **Git統合度**             | ⭐⭐⭐⭐⭐                      | ⭐⭐⭐⭐                   | ⭐⭐⭐                       | ⭐⭐⭐                     | ⭐⭐⭐⭐               |
-| **カスタム設定**          | CLAUDE.md, .claude/             | codex.md, AGENTS.md        | .vscode/settings.json        | settings.json              | .cursorrules           |
+| **カスタム設定**          | CLAUDE.md, .claude/             | codex.md, AGENTS.md        | .vscode/settings.json        | settings.json              | .cursor/rules/*.mdc    |
 | **CLI非インタラクティブ** | `claude -p`                     | `codex exec`               | `copilot -p`                 | `gemini -p`                | `cursor-agent --print` |
 | **安全性制御**            | `--allowed-tools`（ツール制限） | `--sandbox read-only`      | `--allow-tool`/`--deny-tool` | `--sandbox`                | N/A                    |
 | **PR自動化**              | ネイティブサポート              | ネイティブサポート         | VS Code Tasks必要            | 手動スクリプト実行         | 手動スクリプト実行     |
@@ -172,13 +172,18 @@ GitHub Copilotは直接的なGitワークフロー自動化機能は限定的で
 
 ### Cursor
 
-Cursorは `.cursorrules` ファイルでプロジェクト固有のルールを設定できます。
+Cursor は現行の Project Rules 形式（`.cursor/rules/*.mdc`, フロントマター `alwaysApply: true`）でプロジェクト固有のルールを設定します。Legacy の `.cursorrules`（ルート単一ファイル）は後方互換のための互換オプションです。`/setup-ai-config` は既定で `.cursor/rules/spec-driven.mdc` を生成します。
 
-#### 基本設定
+#### 基本設定（既定: `.cursor/rules/spec-driven.mdc`）
 
-**.cursorrulesファイル**
+**`.cursor/rules/spec-driven.mdc` ファイル**（先頭に `---` から始まる YAML フロントマターが必要）
 
 ```
+---
+description: AI仕様駆動開発の標準ルール
+alwaysApply: true
+---
+
 # AI仕様駆動Git Workflow
 
 ## プロジェクト概要

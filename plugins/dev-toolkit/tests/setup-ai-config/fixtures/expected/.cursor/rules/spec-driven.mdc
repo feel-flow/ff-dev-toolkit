@@ -1,0 +1,47 @@
+---
+description: AI仕様駆動開発の標準ルール（MASTER 先行参照・索引からの到達・確認プロトコル）
+alwaysApply: true
+---
+
+# Project Rules (Spec-Driven Development) — TaskFlow
+
+## 🚨 MANDATORY: Read MASTER.md First
+
+コード生成の前に必ず `docs/MASTER.md` を最初に読む（境界1）。
+関連仕様には MASTER.md の索引から到達する
+（Use the MASTER.md index to reach the relevant specification）（境界2）。
+
+## Coding Standards
+
+- TypeScript strict、`any` 型禁止
+- Never use magic numbers — extract to named constants
+- エラーハンドリングは Result パターン
+- 関数は 30 行以内
+- 詳細は `docs/03-implementation/PATTERNS.md`
+
+## Architecture
+
+- Clean Architecture / Repository パターン
+- 詳細は `docs/02-design/ARCHITECTURE.md`
+
+## Git Workflow (Mandatory)
+
+- Issue 起票から着手し、ブランチ → 実装 → セルフレビュー → PR → マージの順で進める
+- ブランチ命名規約とコミットメッセージ形式（`<type>: #<issue> <subject>`）を守る
+- PR にはセルフレビュー結果・テスト結果・Issue リンク（例: `Closes #123`）を含める
+
+## Out-of-Scope Issues
+
+- スコープ外の問題は即座に Issue を起票し、現行タスクは継続する（スコープ拡大はしない）
+
+## 🚨 Information Verification Protocol
+
+情報が不足している場合は推測せず、必ず確認を求める（境界3）。
+
+必須確認事項:
+
+- プロジェクト名、対象ユーザー、主要機能
+- 技術スタック（DB 種別、認証方式、API 形式 等）
+- パフォーマンス・セキュリティ要件
+
+詳細は `docs/MASTER.md` の「情報不足時の必須確認プロトコル」を参照。

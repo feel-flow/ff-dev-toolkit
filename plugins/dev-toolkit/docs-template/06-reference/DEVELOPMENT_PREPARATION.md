@@ -575,7 +575,8 @@ MASTER.mdは全ドキュメントの**中央ハブ**として機能:
 │           AIツール（Claude Code等）との連携                      │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  1. CLAUDE.md / .cursorrules に以下を記載:                       │
+│  1. AI設定ファイル（CLAUDE.md / AGENTS.md /                     │
+│     .cursor/rules/*.mdc / copilot-instructions.md）に記載:       │
 │     「作業開始前に docs/MASTER.md を読むこと」                    │
 │                                                                 │
 │  2. AIツールは MASTER.md から:                                   │

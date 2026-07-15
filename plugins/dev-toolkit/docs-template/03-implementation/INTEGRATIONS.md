@@ -132,9 +132,14 @@ GitHub Copilotを使用する場合は、MASTER.mdをワークスペースルー
 
 ### 1.3 Cursor統合
 
-Cursorを使用する場合は、`.cursorrules` ファイルを作成し、以下を追加します：
+Cursor を使用する場合は、現行の Project Rules 形式 `.cursor/rules/spec-driven.mdc`（先頭に YAML フロントマター、`alwaysApply: true`）を作成し、以下を追加します。Legacy の `.cursorrules`（ルート単一ファイル）は後方互換のための互換オプションです：
 
 ```
+---
+description: AI仕様駆動開発の標準ルール
+alwaysApply: true
+---
+
 # AI仕様駆動開発ルール
 
 このプロジェクトはAI仕様駆動開発方法論に従っています。

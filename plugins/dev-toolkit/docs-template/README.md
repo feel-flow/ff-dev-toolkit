@@ -75,7 +75,7 @@ docs-template/
 - `README.md` — Markdown プロジェクトの標準的慣習
 - `CLAUDE.md`, `AGENTS.md`, `GEMINI.md` — AI ツール向けの特殊ファイル（ファイル名がツール側で固定されている）
 - `.github/copilot-instructions.md` — GitHub Copilot が固定ファイル名を要求
-- `.cursorrules` — Cursor が固定ファイル名を要求
+- `.cursor/rules/*.mdc` — Cursor の現行 Project Rules 形式（`.cursor/rules/` 配下、拡張子 `.mdc`）。Legacy の `.cursorrules`（ルート固定ファイル名）は後方互換で残る
 
 ### 命名規則を逸脱したい場合
 
