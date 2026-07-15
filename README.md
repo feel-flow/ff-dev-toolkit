@@ -52,7 +52,7 @@ claude plugin install dev-toolkit@dev-toolkit
 ## 前提
 
 - [Claude Code](https://docs.claude.com/en/docs/claude-code)
-- Node.js >= 18（MCP サーバー spec-docs の実行に必要）
+- Node.js >= 22（MCP サーバー spec-docs の実行に必要。18/20 は EOL のためサポート外）
 - マルチAI CLI オーケストレーション（`/multi-*`）を使う場合のみ: Codex CLI / Gemini CLI / Copilot CLI / Cursor CLI のいずれか（オプション。Copilot CLI は `/multi-review` では従量課金のためオプトイン）
 
 ## バージョンと書籍からの参照
