@@ -28,7 +28,7 @@ claude plugin install dev-toolkit@dev-toolkit
 | コマンド | 用途 |
 |---|---|
 | `/init-docs` | AI仕様駆動開発のコア7文書 + 拡張フォルダ構造を初期化 |
-| `/validate-docs` | ドキュメント構造の検証・自動補修 |
+| `/validate-docs` | ドキュメント構造の検証（必須3文書、残る4文書は未作成なら N/A） |
 | `/assess-impact` | 変更の影響度評価 |
 | `/create-issue` | 仕様バリデーション付き Issue 作成 |
 | `/refine-issue` | 既存 Issue の仕様精緻化 |

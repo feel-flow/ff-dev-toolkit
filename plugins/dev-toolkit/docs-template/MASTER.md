@@ -1,11 +1,11 @@
 ---
 title: "MASTER"
-version: "1.1.1"
+version: "1.2.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-07-07"
-changeImpact: "LOW"
+updated: "2026-07-15"
+changeImpact: "MEDIUM"
 ---
 
 # AI駆動開発マスタードキュメント
@@ -225,6 +225,28 @@ AIが生成したドキュメント・コードは、以下のタイミングで
 - [ ] Microservices
 - [ ] Monolithic
 - [ ] その他:
+
+## ディレクトリ構造
+
+リポジトリのトップレベル構造と各ディレクトリの責務。AIツールはコードの配置判断・探索の起点としてここを参照する。
+
+```text
+[プロジェクトルート]/
+├── docs/                 # AI仕様駆動開発ドキュメント（詳細は「ドキュメント構造ガイド（AIツール向け）」を参照）
+├── src/                  # [アプリケーションコード]
+│   ├── [domain/]         # [ドメイン層: エンティティ・値オブジェクト・ドメインサービス]
+│   ├── [application/]    # [アプリケーション層: ユースケース]
+│   ├── [infrastructure/] # [インフラストラクチャ層: DB・外部API・永続化]
+│   └── [presentation/]   # [プレゼンテーション層: UI・コントローラー]
+├── tests/                # [テストコード]
+├── scripts/              # [開発・運用スクリプト]
+└── [その他]              # [プロジェクト固有のディレクトリと責務]
+```
+
+- 実際の構成に合わせて書き換えること（上記の `src/` 配下はClean Architectureの例）
+- 層構成の詳細は [ARCHITECTURE.md](./02-design/ARCHITECTURE.md)、テスト戦略は [TESTING.md](./04-quality/TESTING.md) を参照
+- 新規コードの配置判断は決定木で行う（詳細: [DECISION_TREE.md](./03-implementation/DECISION_TREE.md)）
+- `docs/` 配下の詳細構造は本書の「ドキュメント構造ガイド（AIツール向け）」を参照（重複記載しない）
 
 ## コード生成ルール
 
@@ -668,6 +690,12 @@ Changelog エントリには以下のカテゴリを使用する（[Keep a Chang
 - [ ] 定数の配置が層責務に沿っている（Domain/Application/Infrastructure）
 
 ## Changelog
+
+### [1.2.0] - 2026-07-15
+
+#### 追加
+
+- 「ディレクトリ構造」セクションを追加（標準の必須セクション適合。Issue #82）
 
 ### [1.1.1] - 2026-07-07
 
