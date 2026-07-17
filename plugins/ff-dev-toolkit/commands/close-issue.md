@@ -12,9 +12,9 @@ argument-hint: [PR番号]
 ## 前提
 
 - git リポジトリで作業中であること
-- 対象 PR が open であること（ready / draft は問わないが、マージ直前の実行を想定）
+- 対象 PR が open であること（Draft のままでも実行はエラーにせず警告のみとするが、レビュー対応完了後・マージ直前の実行を想定）
 - 実装変更がコミット済み + push 済みであること（AC 照合は push 済みの diff を対象とする）
-- **実行タイミング**: `gh pr ready` の後・`gh pr merge --squash` の前
+- **実行タイミング**: レビュー対応完了後（Draft PR 運用時は `gh pr ready` の後）・`gh pr merge --squash` の前
 
 ## 引数
 
@@ -27,13 +27,13 @@ argument-hint: [PR番号]
 PR の `Closes #N` 参照から、クローズ対象の Issue を取得します:
 
 ```bash
-# PR番号指定時
-gh pr view $ARGUMENTS --json number,closingIssuesReferences
-
-# 省略時は現在のブランチの PR を対象にする
-gh pr view --json number,closingIssuesReferences
+# PR番号指定時（省略時は番号なしで実行し、現在のブランチの PR を対象にする）
+gh pr view $ARGUMENTS --json number,state,isDraft,headRefName,headRefOid,closingIssuesReferences
 ```
 
+- 以降、検出した PR 番号を `$PR_NUMBER`、各 Issue の URL を `$ISSUE_URL` と表記する
+- **ブランチガード（必須）**: `git branch --show-current` が `headRefName` と一致しない場合は、未達 AC の修正ループで**誤ったブランチに commit する事故を防ぐため**、`gh pr checkout $PR_NUMBER` で PR のブランチに切り替えてから続行する（切り替えできない場合は停止して報告）
+- `closingIssuesReferences` の各要素からは **Issue の URL を保持**し、以降の `gh issue view / edit / comment` には番号ではなく `$ISSUE_URL` を渡す（`Fixes owner/repo#100` 形式のクロスリポジトリ参照で、同番号の別 Issue を誤更新しないため）
 - `closingIssuesReferences` が**空**の場合: 「この PR は Issue を閉じません」と報告して終了する（エラーにしない）
 - **複数 Issue** が含まれる場合: 各 Issue に対して手順 2〜5 を独立して繰り返す
 
@@ -42,9 +42,14 @@ gh pr view --json number,closingIssuesReferences
 Issue 本文と PR の変更内容を突き合わせます:
 
 ```bash
-gh issue view $ISSUE_NUMBER --json title,body
+gh issue view $ISSUE_URL --json title,body
 gh pr diff $PR_NUMBER
+# 判定根拠の補強: PR body の検証記録・CI/レビュー状態も取得する
+gh pr view $PR_NUMBER --json body,statusCheckRollup,reviewDecision
 ```
+
+- 「テストがパスすること」系の DoD は diff だけで達成と判定せず、`statusCheckRollup` またはプロジェクトのテストコマンド（例: `npm run quality:local`）の**実行結果**を根拠にする
+- **根拠が取得できない項目は「未達」扱い**にする（証拠なしで達成と判定しない）
 
 Issue 本文の「受け入れ条件（AC）」（振る舞い Given-When-Then + Definition of Done）の各項目について、PR の diff・テスト結果・PR body の検証記録を根拠に判定します:
 
@@ -72,13 +77,22 @@ Issue 本文の「受け入れ条件（AC）」（振る舞い Given-When-Then +
 
 ### 4. Issue 本文のチェックボックス更新
 
-達成した AC のチェックボックスをチェック済みに更新します。**必ず Markdown タスクリスト記法の checked state（`- [ ]` → `- [x]`）で書き換えること**（`☑` などの文字を挿入すると GitHub 上ではタスクとして認識されない）。また**編集衝突を避けるため、編集の直前に最新 body を取得すること**:
+達成した AC のチェックボックスをチェック済みに更新します。**必ず Markdown タスクリスト記法の checked state（`- [ ]` → `- [x]`）で書き換えること**（`☑` などの文字を挿入すると GitHub 上ではタスクとして認識されない）:
 
 ```bash
-# 最新 body を取得（この直後に edit する）
-gh issue view $ISSUE_NUMBER --json body --jq .body > /tmp/issue-body.md
-# 達成項目の "- [ ]" を "- [x]" に更新した body で上書き
-gh issue edit $ISSUE_NUMBER --body-file /tmp/issue-body.md
+# 1) 最新 body と updatedAt を取得（Issue 番号を含む一時ファイル名にする）
+gh issue view $ISSUE_URL --json body,updatedAt
+#    body を /tmp/issue-body-<Issue番号>.md に保存し、updatedAt を控えておく
+
+# 2) 達成と判定した AC の行だけを "- [ ]" → "- [x]" に書き換える
+#    （Edit ツール等で該当行を個別に置換する。sed 等での一括置換は
+#      未達・対象外の項目まで完了扱いにしてしまうため禁止）
+
+# 3) 書き換え結果を diff し、「チェックボックス以外の変更がない」ことを確認
+
+# 4) 送信直前に updatedAt を再取得し、1) から変化していないことを確認してから送信
+#    （変化していたら 1) からやり直す。他者の編集を上書きしないため）
+gh issue edit $ISSUE_URL --body-file /tmp/issue-body-<Issue番号>.md
 ```
 
 - 更新するのは**チェックボックスのみ**。Issue 本文の要件テキスト自体は書き換えない（履歴の追跡性維持）
@@ -86,11 +100,14 @@ gh issue edit $ISSUE_NUMBER --body-file /tmp/issue-body.md
 
 ### 5. 完了報告コメントの投稿
 
-Issue に完了報告コメントを投稿します（**日本語**）:
+Issue に完了報告コメントを投稿します（**日本語**）。Markdown 表やバッククォートを含むため、`--body` の直接指定ではなく **`--body-file`** を使います:
 
 ```bash
-gh issue comment $ISSUE_NUMBER --body "..."
+# 再実行時の重複投稿を防ぐ: 既存コメントにマーカーがあれば新規投稿せず、そのコメントを更新する
+gh issue comment $ISSUE_URL --body-file /tmp/close-issue-report-<Issue番号>.md
 ```
+
+- コメント冒頭に識別マーカー `<!-- close-issue-report:PR-<PR番号> -->` を含める。再実行時はこのマーカーを持つ既存コメントを検索し、あれば `gh api` で該当コメントを更新（または投稿をスキップ）して重複を防ぐ
 
 コメントに含める内容:
 
@@ -127,12 +144,16 @@ gh issue comment $ISSUE_NUMBER --body "..."
 - 対象 Issue: #46（達成 6 / 未達 0 / 対象外 0）
 - チェックボックス更新: ✅
 - 完了報告コメント: ✅
+- 照合時の head SHA: <headRefOid>
 
-→ マージに進めます: gh pr merge <PR番号> --squash
+→ マージに進めます: gh pr merge <PR番号> --squash --match-head-commit <headRefOid>
 ```
+
+- **照合時点の `headRefOid` を報告に含め、マージには `--match-head-commit <SHA>` を推奨する**。照合後に PR へ追加 push があった場合、照合済みでない内容がマージされることを防げる（SHA 不一致ならマージが拒否されるので、再度 `/close-issue` を実行する）
 
 ## 注意事項
 
 - このコマンドは **Issue をクローズしない**。クローズは従来どおりマージ時の `Closes #N` に任せる（クローズ経路を変えないことで、既存ワークフローとの互換性を保つ）
+- `Closes #N` の自動クローズは **PR がリポジトリのデフォルトブランチにマージされたときのみ**発動する。develop がデフォルトブランチでないリポジトリでは、squash merge の時点では Issue は閉じず、デフォルトブランチへの昇格時に閉じる（本コマンドの照合・記録はどちらの構成でも有効）
 - 未達 AC を「あとで直す」ためにマージを先行させない。マージゲートとして機能させることがこのコマンドの目的
-- 複数 Issue を閉じる PR では、Issue ごとに照合・☑・コメントを独立して行う（1 つの Issue の未達が他の Issue の報告を止めない）
+- 複数 Issue を閉じる PR では、Issue ごとに照合・チェックボックス更新・コメントを独立して行う（1 つの Issue の未達が他の Issue の報告を止めない）
