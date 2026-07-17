@@ -120,6 +120,10 @@ git checkout -b "feature/${ISSUE_NUM}-user-auth"
 
 **原則**: MASTER.md、PATTERNS.md、TESTING.mdの仕様に従いAIツールで実装
 
+#### 着手前の Playbook 参照（ACE Reuse）
+
+実装に入る前に [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) の索引（エントリ一覧）を変更対象領域のキーワードで検索し、関連する ACE エントリを読む。Issue 本文に「関連 ACE エントリ」が添付されている場合（`/create-issue` が生成）はそれを起点にする。参照して役立ったエントリは ACE ID で記録する。記録先ごとに届く仕組みが異なる: **コミット件名・本文**への記録は再利用計測 `ace-reuse-report` の入力になり（計測対象は git log の件名・本文のみ。squash merge 後は squash コミットの件名・本文に ACE ID が残るようにする）、**`implementation-notes.md`** への記録（[ACE-034](../../08-knowledge/playbook/process.md#ace-034) により PR description へ転記される）は `/ace-curate` での `Helpful` カウンター更新の入力になる。ACE サイクルは「書く」（ステップ10）だけでは完結せず、この「読む」導線があって初めて知見が循環する。
+
 #### 作業中の判断ログ: `implementation-notes.md` を並走させる
 
 実装着手と同時に **作業ブランチ直下** に `implementation-notes.md` を作成し、コミットと一緒に追記する。コミット diff には残らない「なぜこの選択をしたか / spec から変えた点 / 捨てた選択肢」を保持することで、ステップ5（Self-Review）の精度とステップ10（ACE Generate）の入力品質が上がる。詳細根拠は [ACE-034](../../08-knowledge/playbook/process.md#ace-034)。

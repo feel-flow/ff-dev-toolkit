@@ -6,7 +6,7 @@
  * resolves PROJECT_ROOT once (cwd or env override) and passes it in.
  *
  * Indexing target is the *target project's* `docs/` tree only — this server
- * ships inside the dev-toolkit plugin and must not assume the framework
+ * ships inside the ff-dev-toolkit plugin and must not assume the framework
  * repository layout (no docs-template/, no repo-root markdown files).
  */
 import fs from 'fs';

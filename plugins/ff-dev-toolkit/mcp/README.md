@@ -1,6 +1,6 @@
-# spec-docs MCP server（dev-toolkit 同梱）
+# spec-docs MCP server（ff-dev-toolkit 同梱）
 
-ターゲットプロジェクトの `docs/` ツリー（`/init-docs` が展開する AI仕様駆動開発のドキュメント構造）を、標準 MCP プロトコルの検索・参照ツールとして公開するサーバー。dev-toolkit プラグインの `.mcp.json` から自動起動される。
+ターゲットプロジェクトの `docs/` ツリー（`/init-docs` が展開する AI仕様駆動開発のドキュメント構造）を、標準 MCP プロトコルの検索・参照ツールとして公開するサーバー。ff-dev-toolkit プラグインの `.mcp.json` から自動起動される。
 
 ## ツール
 

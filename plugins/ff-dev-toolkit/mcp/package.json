@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "MCP server exposing the target project's AI spec-driven docs/ tree as search and lookup tools (bundled with the dev-toolkit plugin)",
+  "description": "MCP server exposing the target project's AI spec-driven docs/ tree as search and lookup tools (bundled with the ff-dev-toolkit plugin)",
   "main": "dist/index.js",
   "scripts": {
     "typecheck": "tsc --noEmit --project tsconfig.json",

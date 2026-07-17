@@ -1,6 +1,6 @@
 # setup-ai-config 生成物パリティ fixture
 
-`/setup-ai-config`（`plugins/dev-toolkit/commands/setup-ai-config.md`）が生成する4ファイルが、
+`/setup-ai-config`（`plugins/ff-dev-toolkit/commands/setup-ai-config.md`）が生成する4ファイルが、
 ツールを問わず**同じ意味の「標準への入口」3境界**を等価に含むことを検証するための fixture / スナップショットです（Issue #84）。
 
 ## 検証する3境界
@@ -59,7 +59,7 @@ tests/setup-ai-config/
 ## 実行方法
 
 ```bash
-bash plugins/dev-toolkit/tests/setup-ai-config/verify.sh
+bash plugins/ff-dev-toolkit/tests/setup-ai-config/verify.sh
 ```
 
 コマンド定義（`setup-ai-config.md`）のテンプレート、または生成手順の**節番号**を変更したら、

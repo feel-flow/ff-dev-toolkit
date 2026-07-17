@@ -19,7 +19,7 @@ ACE 知見コミットのマージ方針は **[git-workflow.md ステップ10 §
 - **任意エスカレーション**: 大人数チーム / 知見レビューを残したい場合のみ `chore/ace-from-pr-<PR番号>` の小 PR。
 - ここでの develop 直 push は `knowledge:` 付き PLAYBOOK 単独コミットに限った意図的フローであり、[ACE-012](../../08-knowledge/playbook/process.md#ace-012)（うっかり develop 直 push の事故防止）とは別物。
 
-**autonomous（任意）**: subagent と専用 worktree で ACE キャプチャを非同期化するパターン。導入は [ace-autonomous.md](./ace-autonomous.md) と dev-toolkit プラグイン同梱の `docs-template/scripts/ace/` テンプレートを参照（Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)）。
+**autonomous（任意）**: subagent と専用 worktree で ACE キャプチャを非同期化するパターン。導入は [ace-autonomous.md](./ace-autonomous.md) と ff-dev-toolkit プラグイン同梱の `docs-template/scripts/ace/` テンプレートを参照（Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)）。
 
 **所要時間**: 5〜15分（AIツール支援あり）
 
@@ -142,6 +142,8 @@ ID は **PRスコープ式**（`ACE-<PR番号>-<連番>`）。採番ルールの
 # 例: PR #438 で初回 → ACE-438-1、2 件目 → ACE-438-2
 # 非PR由来は ACE-i<Issue番号>-<連番>（例: ACE-i425-1）
 ```
+
+**採番前ガード（自己修復）**: 採番の前に、対象 PLAYBOOK.md に「エントリID規則」セクションが存在するか確認する。存在しない場合（旧形式 PLAYBOOK、または plugin 非経由でセットアップされたプロジェクト）は、利用中 plugin 同梱の `docs-template/08-knowledge/PLAYBOOK.md`、または上流の [ai-spec-driven-development リポジトリの同ファイル](https://github.com/feel-flow/ai-spec-driven-development/blob/develop/docs-template/08-knowledge/PLAYBOOK.md#エントリid規則) から「エントリID規則」セクションをコピーして追加してから採番する（この状況では自プロジェクトの PLAYBOOK にセクション自体が無いため、自分自身はコピー元にできない。挿入位置は「運用ルール」セクションの直後、無ければ先頭見出し直後）。既存の ID なしエントリ・旧 3 桁エントリは改名・書き換えせず共存させる。旧形式のローカル ACE コマンド（ID なし採番の `.claude/commands/ace.md` 等）を検出した場合は、PRスコープ式コマンドへの一本化をユーザーに提案する。
 
 #### 2. PLAYBOOK.md への追記
 
@@ -322,6 +324,12 @@ ACE_REUSE_STALE_DAYS=120 npm run ace:reuse-report
 ---
 
 ## Changelog
+
+### [1.2.0] - 2026-07-17
+
+#### 追加
+
+- 採番前ガード（自己修復）を追加: 「エントリID規則」セクション欠落時に plugin 同梱テンプレ / 上流リポジトリからコピーして復元し、旧形式ローカル ACE コマンド検出時は移行を提案する
 
 ### [1.1.0] - 2026-05-20
 

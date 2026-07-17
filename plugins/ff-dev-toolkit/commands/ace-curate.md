@@ -41,7 +41,7 @@ gh pr view $ARGUMENTS --json number,title,body,url,comments,reviews
 対象PRの以下の情報を収集します:
 
 - `gh pr diff $PR_NUMBER` でコード変更を確認
-- `gh pr view $PR_NUMBER --json comments,reviews` でレビューコメントを確認
+- `gh pr view $PR_NUMBER --json body,comments,reviews` で PR body（implementation-notes.md の転記を含む）とレビューコメントを確認
 - 関連 Issue の内容を確認
 
 収集した情報から、以下の観点で知見候補を抽出:
@@ -73,11 +73,19 @@ gh pr view $ARGUMENTS --json number,title,body,url,comments,reviews
 - **新規**: Phase 3 へ進む
 - **低価値**: 記録しない
 
+**Reuse 記録の反映（照合とは独立に実施）**: PR body（implementation-notes の転記）とコミット件名・本文に「参照して役立った」と記録された既存 ACE ID（git-workflow ステップ3 の着手前参照ゲートで記録されたもの）があれば、該当エントリの `Helpful` を +1 する。記録が無ければ何もしない。これを行わないと、実装者が残した Reuse 記録が Helpful カウンターに届かず静かに捨てられる。
+
 ### 4. Phase 3: Curate（増分更新）
 
 #### 4-a. エントリIDの採番
 
 ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（例 `ACE-438-1`、非PR由来は `ACE-i<Issue番号>-<連番>`）。対象 PR の既存 `ACE-<PR番号>-*` を確認し最大連番 +1（既存が無ければ連番 `1`、すなわち `ACE-<PR番号>-1`）。全体の最新 ID は読まない。採番ルールの SSOT は [PLAYBOOK.md §エントリID規則](docs/08-knowledge/PLAYBOOK.md#エントリid規則)。
+
+**採番前ガード（自己修復）** — 採番の前に以下を確認する:
+
+1. 対象 PLAYBOOK.md に「エントリID規則」セクションが存在するか確認する。存在しない場合（旧形式 PLAYBOOK、または plugin 非経由でセットアップされたプロジェクト）は、本プラグイン同梱の `${CLAUDE_PLUGIN_ROOT}/docs-template/08-knowledge/PLAYBOOK.md` の「エントリID規則」をセクションごとコピーして PLAYBOOK.md に追加してから、PRスコープ式で採番する。挿入位置は「運用ルール」セクションの直後（テンプレートと同じ位置）、該当セクションが無い場合は先頭見出し直後とする
+2. 既存の ID なしエントリ（`## [Pattern] ...` 形式等）や旧 3 桁エントリは **改名・書き換えしない**（エントリID規則「既存 ID の扱い」に従い共存させる）
+3. プロジェクトに旧形式のローカル ACE コマンド（`.claude/commands/ace.md` 等、ID なし採番のもの）が存在する場合は、本コマンド（PRスコープ式）への一本化・旧コマンド撤去をユーザーに提案する（勝手に削除しない）
 
 #### 4-b. playbook/<category>.md への追記 + PLAYBOOK.md 索引の更新
 

@@ -281,7 +281,7 @@ AIが生成したドキュメント・コードは、以下のタイミングで
   - メインドキュメント: `UPPER_SNAKE_CASE.md`（AI識別性優先・複数語はアンダースコア `_` 区切り）
   - 例: `MASTER.md`, `ARCHITECTURE.md`, `LESSONS_LEARNED.md`, `DEVELOPMENT_PREPARATION.md`
   - サブフォルダ内ファイル: `lowercase-with-hyphens.md`（例: `git-workflow.md`, `phased-rollout.md`）
-  - 詳細・適用条件・逸脱判断は README.md（dev-toolkit プラグイン同梱、`${CLAUDE_PLUGIN_ROOT}/docs-template/README.md` の「ファイル名命名規則」章、初期セット外）を SSOT とする
+  - 詳細・適用条件・逸脱判断は README.md（ff-dev-toolkit プラグイン同梱、`${CLAUDE_PLUGIN_ROOT}/docs-template/README.md` の「ファイル名命名規則」章、初期セット外）を SSOT とする
 - **禁止事項**:
   - ❌ 日本語ファイル名
   - ❌ スペースを含むファイル名
@@ -565,7 +565,7 @@ AI: DEPLOYMENT.md（索引）→ deployment/self-review.md を読み込み
 
 ### ファイル名命名規則
 
-ファイル名命名規則の SSOT は dev-toolkit プラグイン同梱の README.md（`${CLAUDE_PLUGIN_ROOT}/docs-template/README.md` の「ファイル名命名規則」章、初期セット外）です。短縮版:
+ファイル名命名規則の SSOT は ff-dev-toolkit プラグイン同梱の README.md（`${CLAUDE_PLUGIN_ROOT}/docs-template/README.md` の「ファイル名命名規則」章、初期セット外）です。短縮版:
 
 - ルート直下 / 番号付きフォルダ直下の MD: `UPPER_SNAKE_CASE.md`（例: `MASTER.md`, `DEPLOYMENT.md`）
 - サブフォルダ名・サブフォルダ内 MD: `lowercase-with-hyphens(.md)`（例: `deployment/git-workflow.md`）

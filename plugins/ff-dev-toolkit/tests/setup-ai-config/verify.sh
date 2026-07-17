@@ -21,7 +21,7 @@
 # 実装メモ: here-string(<<<) / heredoc は一時ファイルを要求し read-only 環境で失敗するため、
 # 標準入力へは `printf ... | cmd` を用いる（CI / レビューサンドボックスでも実行可能）。
 #
-# 使い方: bash plugins/dev-toolkit/tests/setup-ai-config/verify.sh
+# 使い方: bash plugins/ff-dev-toolkit/tests/setup-ai-config/verify.sh
 
 set -euo pipefail
 

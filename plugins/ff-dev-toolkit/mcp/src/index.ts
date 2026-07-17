@@ -1,5 +1,5 @@
 /**
- * spec-docs MCP server (dev-toolkit plugin)
+ * spec-docs MCP server (ff-dev-toolkit plugin)
  * --------------------------------------------------------------
  * Standard MCP protocol server (tools/list, tools/call via the SDK's
  * high-level McpServer API) exposing the *target project's* `docs/`
