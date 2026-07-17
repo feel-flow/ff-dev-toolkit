@@ -34,7 +34,7 @@ claude plugin install ff-dev-toolkit@ff-dev-toolkit
 | `spec-driven` | 仕様駆動開発のゲート管理。5ゲート（G0〜G4: 要件→仕様→計画→実装→検証）の通過条件を管理し、ドキュメント先・コード後の開発順序を統制する |
 | `harness-review` | エージェントハーネス設計のレビュー。アンチパターンカタログと観点チェックリストに基づく設計評価 |
 
-### Commands（12）
+### Commands（13）
 
 | コマンド | 用途 |
 |---|---|
@@ -44,6 +44,7 @@ claude plugin install ff-dev-toolkit@ff-dev-toolkit
 | `/create-issue` | 仕様バリデーション付き Issue 作成 |
 | `/refine-issue` | 既存 Issue の仕様精緻化 |
 | `/pre-commit-check` | コミット前チェック |
+| `/close-issue` | マージ直前の AC 照合ゲート（チェックボックス更新 + 完了報告コメント） |
 | `/ace-setup` | ACE（Agentic Context Engineering）フレームワークのセットアップ |
 | `/ace-curate` | マージ済み PR からの知見抽出・プレイブック追記 |
 | `/setup-ai-config` | AI 開発ツール設定の初期化 |
