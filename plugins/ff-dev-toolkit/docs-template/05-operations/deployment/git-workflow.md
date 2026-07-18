@@ -595,13 +595,25 @@ mutation($body: String!) {
 
 ### ステップ8: マージ（Merge）
 
-**原則**: Squash mergeでコミット履歴を整理
+**原則**: マージ前に AC 照合ゲートを通し、Squash merge でコミット履歴を整理
+
+マージの前に、AI エージェントへのスラッシュコマンド **`/close-issue <PR番号>`**（本プラグイン同梱。シェルコマンドではない点に注意。PR 番号省略時は現在のブランチの PR を自動検出）で AC 照合ゲートを実施する:
+
+- PR の `Closes` 参照から対象 Issue を自動検出し、受け入れ条件（GWT + DoD）を照合
+- 達成項目のチェックボックスを `- [x]` に更新 + 完了報告コメントを投稿してからマージへ進む
+- 未達 AC は fix commit → 再照合の自動修正ループで解消。実装で解消できない場合（仕様変更の判断が必要など）は停止してユーザーに確認する
+- 完了報告に照合時の head SHA（`headRefOid`）が含まれるので、マージ時に `--match-head-commit` へ渡す
+- プラグイン未導入の環境では同等の手順を `gh` コマンドで手動実施する
+
+ゲート通過後にマージする:
 
 ```bash
 # レビュー承認後、Squash mergeでマージ
+# --match-head-commit で「AC 照合後に追加 push された未照合内容」の混入を防ぐ
 gh pr merge ${PR_NUMBER} \
   --squash \
   --delete-branch \
+  --match-head-commit "${VERIFIED_HEAD_SHA}" \
   --body "All checks passed. Merging to develop."
 ```
 
@@ -827,6 +839,8 @@ GitHub Discussions への記録に加え、ACE Playbook への構造化記録を
 6. [ ] セルフレビュー: Codex CLI クロスモデルレビュー
 7. [ ] レビュー指摘修正・コミット
 8. [ ] Push + PR 作成
+9. [ ] /close-issue（AC 照合ゲート: チェックボックス - [x] 更新 + 完了報告コメント）
+10. [ ] マージ（Squash merge、--match-head-commit 付き）
 ```
 
 ## ワークフロー全体のベストプラクティス
