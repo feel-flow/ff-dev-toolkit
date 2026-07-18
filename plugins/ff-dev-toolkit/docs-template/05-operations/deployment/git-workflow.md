@@ -608,6 +608,9 @@ mutation($body: String!) {
 ゲート通過後にマージする:
 
 ```bash
+# /close-issue 完了報告の「照合時の head SHA」を転記する
+VERIFIED_HEAD_SHA="<照合時のheadSHA>"
+
 # レビュー承認後、Squash mergeでマージ
 # --match-head-commit で「AC 照合後に追加 push された未照合内容」の混入を防ぐ
 gh pr merge ${PR_NUMBER} \
