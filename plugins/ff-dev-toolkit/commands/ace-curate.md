@@ -73,7 +73,7 @@ gh pr view $ARGUMENTS --json number,title,body,url,comments,reviews
 - **新規**: Phase 3 へ進む
 - **低価値**: 記録しない
 
-**Reuse 記録の反映（照合とは独立に実施）**: PR body（implementation-notes の転記）とコミット件名・本文に「参照して役立った」と記録された既存 ACE ID（git-workflow ステップ3 の着手前参照ゲートで記録されたもの）があれば、該当エントリの `Helpful` を +1 する。記録が無ければ何もしない。これを行わないと、実装者が残した Reuse 記録が Helpful カウンターに届かず静かに捨てられる。
+**Reuse 記録の反映（照合とは独立に実施）**: PR body（implementation-notes の転記）に「参照して役立った」と記録された既存 ACE ID（git-workflow ステップ3 の「着手前の Playbook 参照（ACE Reuse）」で記録されたもの）があれば、該当エントリの `Helpful` を +1 する。同一 ACE ID が複数回現れても 1 PR につき +1（重複出現は加算しない）。コミット件名・本文への記録は再利用計測 `ace-reuse-report` の入力であり、ここでは扱わない（git-workflow ステップ3 の経路分離に従う）。記録が無ければ何もしない。これを行わないと、実装者が残した Reuse 記録が Helpful カウンターに届かず静かに捨てられる。
 
 ### 4. Phase 3: Curate（増分更新）
 

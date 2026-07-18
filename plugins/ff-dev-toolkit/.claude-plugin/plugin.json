@@ -1,6 +1,6 @@
 {
   "name": "ff-dev-toolkit",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "開発実務を駆動するツールキット。仕様駆動開発のゲート管理（spec-driven）、AI仕様駆動開発の運用コマンド群（init-docs / validate-docs / assess-impact / create-issue / refine-issue / pre-commit-check / close-issue / ace-setup / ace-curate / setup-ai-config）、マルチAI CLI オーケストレーション（multi-explore / multi-implement / multi-review）、エージェントハーネスの設計レビュー（harness-review）、docs/ を検索・参照する MCP サーバー（spec-docs: search / extract_section / glossary_lookup / list_docs / spec_lookup / spec_search）で、ドキュメント初期化から開発進行・クロスモデルレビュー・ナレッジ蓄積までを統制する。FeelFlow の書籍群から蒸留した方法論ベース。",
   "author": {
     "name": "FeelFlow Inc.",
