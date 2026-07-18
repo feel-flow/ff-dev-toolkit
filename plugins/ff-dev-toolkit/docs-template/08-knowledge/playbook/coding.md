@@ -17,7 +17,7 @@
 | Category   | coding     |
 | Origin     | PR #2      |
 | Date       | 2026-07-03 |
-| Helpful    | 0          |
+| Helpful    | 1          |
 | Harmful    | 0          |
 | Status     | active     |
 
@@ -91,3 +91,89 @@
 **Action**: 単一ファイルをパースする CLI スクリプトの入力を分割構成に変える際は、(1) 「該当データが 0 件」を集計全体でエラーとして検知できるか（個別ファイルの 0 件は許容しつつ合算 0 件はエラーにする等）、(2) 新たに追加した読み込み処理が既存 try/catch のエラー分類ロジックに巻き込まれて誤診断を出さないか、の 2 点を明示的に確認する。既存のエラー分類が特定ドメイン（git 等）専用になっている場合、新しい失敗要因は専用メッセージでタグ付けしてから既存分岐に渡す。
 
 ---
+
+<a id="ace-24-1"></a>
+
+### ACE-24-1: 副作用（監査ログ等）の記録処理は書き込み成否を検証してから成否を報告する — 「記録しました」の無条件出力は監査証跡を黙って欠落させる
+
+| フィールド | 値                 |
+| ---------- | ------------------ |
+| Category   | coding             |
+| Origin     | PR #24 / Issue #18 |
+| Related    | ACE-16-2           |
+| Date       | 2026-07-07         |
+| Helpful    | 0                  |
+| Harmful    | 0                  |
+| Status     | active             |
+
+**Insight**: ログ追記のような副作用を伴う処理で、書き込みの成否を確認せずに「記録しました」と無条件でユーザーに報告すると、書き込みが失敗しても成功と偽って伝わる silent failure になる。特に**監査証跡（audit trail）**を目的とした記録では、後から「誰がゲートを迂回したか」を確認する時点で記録が存在せず、しかも異常が起きた形跡もない、という機能目的そのものを裏切る壊れ方をする。加えてシェルの `cmd >> file 2>/dev/null` は **`cmd` の stderr は消すがリダイレクト失敗（ファイルが開けない）時のシェル自身のエラーは消さない**ため、失敗時に生のシェルエラーが漏れる。`{ cmd >> file; } 2>/dev/null` とグループ化すればリダイレクト失敗のエラーも抑制でき、終了ステータスで成否を分岐できる。
+
+**Context**: PR #24 で `.husky/pre-push` に `SKIP_QUALITY_GATE=1` スキップ時の監査ログ追記を追加したが、`echo ... >> "$log_file"` の成否を見ずに直後で無条件に「記録しました」と表示していた。Toolkit silent-failure-hunter と Codex の両方が「書き込み失敗時も成功メッセージが出る＝監査証跡が黙って欠落」と独立に指摘。read-only fs・disk full・ディレクトリ不在などで再現する。`if { echo ... >> "$log_file"; } 2>/dev/null; then 記録OK; else 記録失敗を明示; fi` に修正し、成功・失敗の両ケースを実地検証した（緊急 push 自体はログ失敗では止めない設計は維持）。
+
+**Action**: 副作用（ログ・記録・通知）の完了を人に報告する処理は、必ず副作用の戻り値/終了ステータスを検証してからメッセージを出す。成功と失敗で別メッセージを出し、「〜しました」を無条件に出力しない。シェルでリダイレクト失敗を握りつぶしたい場合は `{ cmd > file; } 2>/dev/null` とグループ化する（`cmd 2>/dev/null` ではリダイレクト失敗のシェルエラーは消えない）。監査目的の記録が失敗しても本処理（緊急 push 等）は止めないが、失敗した事実は必ず可視化する。
+
+---
+
+<a id="ace-27-2"></a>
+
+### ACE-27-2: warn-only の検査スクリプトは「検出結果」と「検査自体のクラッシュ」を区別せよ — `|| true` と `xargs` の exit code 丸めが checker 破損を黙って隠す
+
+| フィールド | 値                 |
+| ---------- | ------------------ |
+| Category   | coding             |
+| Origin     | PR #27 / Issue #21 |
+| Related    | ACE-24-1           |
+| Date       | 2026-07-10         |
+| Helpful    | 1                  |
+| Harmful    | 0                  |
+| Status     | active             |
+
+**Insight**: pre-commit 等で warn-only（コミットを止めない）検査を回すとき、フック側で `checker || true` とすると、検査が「問題なし」で正常終了したのか、構文エラー・依存欠落でクラッシュしたのかを区別できず、検査が壊れて no-op 化しても誰も気づかない。さらに `xargs -0 node script` はコマンドの exit 1〜125 を 123 に丸めるため、フック側で本来の exit code を厳密判定できない。対策は 2 層: (1) スクリプト側で内部エラーを try/catch し、warn は可視化して exit 0 / block は exit 1 と決め、「検証エラー」と「運用エラー(EACCES 等)」の両方を同じ warn/block 契約に従わせる。(2) フック側は `|| true` で握り潰さず `|| echo '⚠️ 検査の実行に失敗（継続）'` で最低限可視化する。
+
+**Context**: PR #27 の pre-commit 検査で、Codex・Toolkit の silent-failure レビューが「`|| true` が検出結果でなく実行失敗まで飲み込む」「readFileSync の EACCES が uncaught throw になり warn モードでも exit 1 でコミットをブロックし warn-only 契約を破る」と指摘。per-file try/catch + main の try/catch + フックの `|| echo` で解消した。
+
+**Action**: warn-only 検査は「検出ゼロ」と「検査不能」を必ず別扱いにする。スクリプトは内部エラーを catch して mode に応じた exit code を返し失敗を stderr に出す。フックは実行失敗を `|| true` で消さず可視化する。`xargs` を通すと exit code が丸まるため、厳密判定が要るなら node を直接呼ぶか、スクリプトの exit code を「非ゼロ = block すべき時のみ」に寄せる。
+
+---
+
+<a id="ace-29-4"></a>
+
+### ACE-29-4: fail-closed ゲートを単一ツール呼び出しに畳んだら exit code 伝播を明示し、偽バイナリで伝播をテストする
+
+| フィールド | 値                 |
+| ---------- | ------------------ |
+| Category   | coding             |
+| Origin     | PR #29 / Issue #28 |
+| Date       | 2026-07-10         |
+| Helpful    | 0                  |
+| Harmful    | 0                  |
+| Status     | active             |
+| Related    | ACE-27-2           |
+
+**Insight**: fail-closed な hook（失敗でコミットを止めるゲート）を `npx lint-staged` のような単一ツール呼び出しに簡約すると、fail-closed 保証が「その行が最後の文である」という暗黙の前提に依存する。後日 hook 末尾に `echo done` 等を 1 行足すと、その exit 0 がツールの非ゼロを上書きし、症状ゼロで block を黙って無効化する。配線を grep するだけのテストは `|| true` / 末尾 `exit 0` / 追記行を検出できない。
+
+**Context**: PR #29 で pre-commit を `npx lint-staged --verbose` に簡約した際、Toolkit silent-failure-hunter が「伝播が暗黙的で末尾行追加の罠がある」「wiring テストが substring grep のみ」と指摘。
+
+**Action**: 単一ツールに畳んだ fail-closed hook は末尾に `exit "$?"`（または `exec`）を明示し、意図を後続編集に耐える形で残す。テストは「hook を実行し、ツールの exit code がそのまま hook に伝播する」ことを検証する — PATH 先頭に指定コードで終了するだけの偽バイナリ（例: 偽 `npx`）を置いて実 hook を `sh` 実行すれば、実ツールや git を触らず伝播契約を確認でき、`|| true` / 末尾 `exit 0` / 追記行の回帰を捕捉できる。
+
+---
+
+<a id="ace-53-2"></a>
+
+### ACE-53-2: 検証ゲートの除外リストはスキップ範囲を最小の軸（内容のみ）に限定する — 全部スキップは配布物欠損と stale エントリを握りつぶす
+
+| フィールド | 値                 |
+| ---------- | ------------------ |
+| Category   | coding             |
+| Origin     | PR #53 / Issue #44 |
+| Related    | ACE-27-2           |
+| Date       | 2026-07-18         |
+| Helpful    | 0                  |
+| Harmful    | 0                  |
+| Status     | active             |
+
+**Insight**: 差分検証ゲートに除外リスト（allowlist）を入れるとき、除外パスを検査ループの入口で `continue` させると「内容の意図的差分を許す」つもりが存在チェックまで丸ごとスキップされる。すると (a) 除外ファイルが配布側から欠損しても exit 0（パッケージング事故が silent）、(b) 上流で除外ファイルを削除・リネームしても除外リストの stale エントリが永久に無害を装って残る。除外は「何の軸をスキップするか」（内容 / 存在 / 権限…）を選んで最小にし、他の軸は検証を残す。同様に「比較対象がゼロ件の OK」「ファイル比較の I/O エラー（cmp exit >1）を差分（exit 1）と同一視」も『検出ゼロ』と『検査不能』の混同であり、検査不能は独立した exit code で fail させる。
+
+**Context**: PR #53 の check-docs-template-sync.sh 初稿が除外判定を presence チェックより前に置いており、silent-failure-hunter が「MASTER.md が配布側から消えても OK」「上流リスト空 + 配布側リスト空なら 1 ファイルも比較せず OK」「cmp の I/O エラーが『内容差分』と誤誘導される」を検出。除外は cmp のみスキップ・存在は両側検証、空リストと I/O エラーは exit 2（検査不能）に修正し、それぞれ回帰テストで pin した。
+
+**Action**: 除外リスト付きの検証スクリプトでは (1) 除外判定は存在チェックの後・内容比較の前に置く、(2) 比較対象ゼロを「検査不能」として usage 系 exit code で fail する、(3) 比較コマンドの exit code は「差分」と「トラブル」（cmp なら 1 と >1）を case で分岐する、(4) 「除外ファイルの欠損 → fail」「空入力 → 検査不能」「ローカル削除 → 比較不能」をテストで固定する。

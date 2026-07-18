@@ -273,3 +273,88 @@
 3. テストは正常系だけでなく「欠落・空・不正フィールド」の入力でゲートが**実行される**ことを1本以上固定する。
 
 ---
+
+<a id="ace-24-2"></a>
+
+### ACE-24-2: ビルド成果物（gitignore 対象の dist/）を直接起動する開発タスクは clean checkout で壊れる — build を含む npm script 経由にする
+
+| フィールド | 値                 |
+| ---------- | ------------------ |
+| Category   | tooling            |
+| Origin     | PR #24 / Issue #18 |
+| Date       | 2026-07-07         |
+| Helpful    | 0                  |
+| Harmful    | 0                  |
+| Status     | active             |
+
+**Insight**: VSCode task・Makefile ターゲット・npm script などの開発者向けエントリポイントが、コミットされないビルド成果物（`dist/index.js` 等）を `node dist/index.js` のように直接参照すると、(1) clean checkout / 依存インストール直後の環境では成果物が未生成で起動失敗し、(2) ソース更新後もビルドを挟まないため古い成果物を起動する。特に、それまで存在したコミット済みのランタイムファイル（例: `index.mjs`）を削除して成果物参照へ切り替えるリファクタでは、削除前は動いていたぶん見落としやすい。
+
+**Context**: PR #24 で orphan だった `mcp/index.mjs` を削除し、`.vscode/tasks.json` の `MCP: Start (stdio)` を `node index.mjs` から `node dist/index.js` へ書き換えたが、`dist/` は gitignore 対象のため clean 環境で起動失敗する状態だった。Codex code-reviewer が「build 依存がない／stale build 起動の恐れ」と指摘。同ファイルの `MCP: Check` が既に `npm run check`（= `npm run build && node dist/index.js --check`）へ移行済みだったため、`MCP: Start` も `npm run start`（= `npm run build && node dist/index.js`）に揃えて解消した。
+
+**Action**: 開発タスクからビルド成果物を起動する場合は、成果物を直接指すのではなく build を内包した npm script（`start` / `check` 等、`"start": "npm run build && node dist/..."`）を経由させる。同一設定ファイル内に既にその方式のタスクがあれば命名・呼び出し方を揃える。コミット済みランタイムファイルを削除して成果物参照へ切り替える際は、その成果物が gitignore 対象かどうかと clean checkout での存在を必ず確認する。
+
+---
+
+<a id="ace-27-1"></a>
+
+### ACE-27-1: pre-commit の変更ファイル列挙は `git diff --name-only | grep | xargs` ではスペース・非ASCII名を黙って取りこぼし、block を無効化する
+
+| フィールド | 値                 |
+| ---------- | ------------------ |
+| Category   | tooling            |
+| Origin     | PR #27 / Issue #21 |
+| Date       | 2026-07-10         |
+| Helpful    | 0                  |
+| Harmful    | 0                  |
+| Status     | active             |
+
+**Insight**: pre-commit で変更ファイルを `git diff --cached --name-only | grep -E '\.md$' | xargs cmd` の素朴なパイプで列挙すると、2 経路でファイルを黙って落とす。(1) `xargs` は空白で単語分割するため `my doc.md` が 2 トークンに割れ「存在しないファイル」として skip される。(2) git 既定の `core.quotepath=true` は非ASCII（日本語・アクセント）パスを `"caf\303\251.md"` と C-quote するため行末が `.md"` になり `grep '\.md$'` に一致せず脱落する。結果、block を強制する検査でも該当ファイルだけ「問題なし」で通過し、保証が黙って成り立たない最悪の壊れ方をする。日本語ファイル名を扱うリポジトリでは実害が大きい。
+
+**Context**: PR #27 で pre-commit に frontmatter/マジックナンバー検査を追加した際、Toolkit silent-failure-hunter が「café.md / スペース入り名は block モードを回避する」と再現付きで指摘（既存の markdownlint 行も同じ素朴パイプだった）。
+
+**Action**: pre-commit の変更ファイル列挙は NUL 区切りで統一する: `git -c core.quotepath=false diff --cached -z --name-only --diff-filter=ACM -- '*.md' | xargs -0 cmd`。`core.quotepath=false`（非ASCII の C-quote 抑止）+ `-z`/`xargs -0`（NUL 区切りでスペース・改行に耐性）+ git pathspec `-- '*.md'`（grep 不要の拡張子フィルタ）の 3 点セット。空入力時は `xargs -0` がコマンドを引数なしで 1 回実行する（macOS/GNU 共通）ため、スクリプト側で「引数 0 件は何もせず exit 0」を保証しておく。
+
+---
+
+<a id="ace-29-1"></a>
+
+### ACE-29-1: lint-staged で warn-only 検査を回すなら `--verbose` は必須 — 既定は成功タスクの stdout を隠し、警告が丸ごと消える
+
+| フィールド | 値                 |
+| ---------- | ------------------ |
+| Category   | tooling            |
+| Origin     | PR #29 / Issue #28 |
+| Date       | 2026-07-10         |
+| Helpful    | 0                  |
+| Harmful    | 0                  |
+| Status     | active             |
+| Related    | ACE-27-2           |
+
+**Insight**: lint-staged は exit 0 で終わったタスクの stdout を既定で隠す（失敗タスクのみ出力を表示）。warn-only の検査（検出があっても exit 0 で警告だけ出すマジックナンバー検出や frontmatter warn モード）を lint-staged に載せると、`--verbose` を付けない限り警告が一切表示されず、検査は「動いているが誰にも見えない」= 実質無意味になる。block する検査（markdownlint 等）は失敗時に出力されるため気づけるが、warn-only は成功扱いなので沈黙する。
+
+**Context**: PR #29 で pre-commit の手書き列挙（[ACE-27-1](./tooling.md#ace-27-1)）を lint-staged に統一した際、旧フックは `xargs ... || echo warn` で warn-only 出力を明示的にエコーしていた。lint-staged 化で同じ可視性を保つには `npx lint-staged --verbose` が必要と判明。Toolkit silent-failure-hunter も「--verbose が load-bearing」と指摘。
+
+**Action**: lint-staged に warn-only 検査を 1 つでも載せるなら `.husky/pre-commit` を `npx lint-staged --verbose` にする。`--verbose` は全成功タスクの出力を表示するため通常コミットは少し冗長になるが、warn-only の警告を surface する唯一の方法。テストでは「warn 出力に既知の文字列が含まれる」ことを assert して、`--verbose` 欠落の回帰を固定する。
+
+---
+
+<a id="ace-29-2"></a>
+
+### ACE-29-2: devDep を足すときは `engines.node` を満たす major を選ぶ — 「latest」が宣言サポート下限を割ることがある
+
+| フィールド | 値                 |
+| ---------- | ------------------ |
+| Category   | tooling            |
+| Origin     | PR #29 / Issue #28 |
+| Date       | 2026-07-10         |
+| Helpful    | 0                  |
+| Harmful    | 0                  |
+| Status     | active             |
+
+**Insight**: 新しい devDependency を `npm install <pkg>` で足すと latest が入るが、latest が project の `engines.node` 下限を割ることがある。lint-staged は 17 が node `>=22.22.1`、16 が `>=20.17`、15 が `>=18.12` を要求する。project が `engines.node: >=20.0.0` を宣言しているなら、15 でないと node 20.0〜20.16 を除外してしまい宣言と矛盾する（16 は `>=20.17` で下限を割る）。ローカルの node が新しいと気づきにくい。
+
+**Context**: PR #29 で lint-staged 導入時、`npm view lint-staged@<major> engines.node` で各 major の node 要件を確認し、`engines.node: >=20.0.0` と完全整合する 15 系（`^15.5.2`）を選定した。
+
+**Action**: devDep 追加前に `npm view <pkg>@<major> engines.node` を major ごとに引き、project の `engines.node` 下限を**完全に包含する**最大の major を選ぶ（「latest」を無条件に採らない）。宣言を引き上げてよい（例 `>=20.17`）なら別判断として明示する。lockfile とローカル node が新しいと CI/他環境で初めて壊れるため、宣言値ベースで選ぶ。
+
+---

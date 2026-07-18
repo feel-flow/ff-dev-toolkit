@@ -1,11 +1,11 @@
 ---
 title: "PLAYBOOK"
-version: "1.39.0"
+version: "1.57.0"
 status: "approved"
 created: "2026-03-10"
-updated: "2026-07-06"
+updated: "2026-07-18"
 owner: "@fffokazaki"
-ace_entry_count: 76
+ace_entry_count: 118
 tags: [ace, playbook, knowledge-management]
 references:
   - docs/ACE_FRAMEWORK.md
@@ -268,8 +268,171 @@ Playbook が 800 行を超えた場合、以下のように分割する：
 | ACE-16-1   | ドキュメント分割は、それを参照するスクリプト・手順書のファイルスコープ前提を静かに陳腐化させる                                                                              | documentation-quality | [playbook/documentation-quality.md#ace-16-1](./playbook/documentation-quality.md#ace-16-1)   |
 | ACE-16-2   | 単一ファイルの構造化パースを前提にした CLI ツールは、そのファイルが複数ファイルに分割されると誤診断や無警告の空集計に陥る                                                   | coding                | [playbook/coding.md#ace-16-2](./playbook/coding.md#ace-16-2)                                 |
 | ACE-16-3   | 大規模 diff の PR 自己レビューでレビュー agent が stall / API 切断した場合、resume を繰り返すより新規 agent へのスコープ限定リランが速い                                    | process               | [playbook/process.md#ace-16-3](./playbook/process.md#ace-16-3)                               |
+| ACE-24-1   | 副作用（監査ログ等）の記録処理は書き込み成否を検証してから成否を報告する — 「記録しました」の無条件出力は監査証跡を黙って欠落させる                                         | coding                | [playbook/coding.md#ace-24-1](./playbook/coding.md#ace-24-1)                                 |
+| ACE-24-2   | ビルド成果物（gitignore 対象の dist/）を直接起動する開発タスクは clean checkout で壊れる — build を含む npm script 経由にする                                               | tooling               | [playbook/tooling.md#ace-24-2](./playbook/tooling.md#ace-24-2)                               |
+| ACE-27-1   | pre-commit の変更ファイル列挙は `git diff --name-only \| grep \| xargs` ではスペース・非ASCII名を黙って取りこぼし block を無効化する                                        | tooling               | [playbook/tooling.md#ace-27-1](./playbook/tooling.md#ace-27-1)                               |
+| ACE-27-2   | warn-only の検査スクリプトは「検出結果」と「検査自体のクラッシュ」を区別せよ — `\|\| true` と xargs の exit code 丸めが checker 破損を隠す                                  | coding                | [playbook/coding.md#ace-27-2](./playbook/coding.md#ace-27-2)                                 |
+| ACE-27-3   | コードの関数/定数の抽出リファクタは、それを行番号でハードコード参照するドキュメントを無警告で陳腐化させる                                                                   | documentation-quality | [playbook/documentation-quality.md#ace-27-3](./playbook/documentation-quality.md#ace-27-3)   |
+| ACE-27-4   | cross-model セルフレビューの指摘は一次証拠で検証してから対応する — 誤検知は根拠を添えて据え置く                                                                             | process               | [playbook/process.md#ace-27-4](./playbook/process.md#ace-27-4)                               |
+| ACE-29-1   | lint-staged で warn-only 検査を回すなら `--verbose` は必須 — 既定は成功タスクの stdout を隠し警告が消える                                                                   | tooling               | [playbook/tooling.md#ace-29-1](./playbook/tooling.md#ace-29-1)                               |
+| ACE-29-2   | devDep を足すときは `engines.node` を満たす major を選ぶ — 「latest」が宣言サポート下限を割ることがある                                                                     | tooling               | [playbook/tooling.md#ace-29-2](./playbook/tooling.md#ace-29-2)                               |
+| ACE-29-3   | pre-commit 検査を staged 基準にするなら lint-staged の stash に委ねる — checker を `git show :path` 読みに書き換えない                                                      | architecture          | [playbook/architecture.md#ace-29-3](./playbook/architecture.md#ace-29-3)                     |
+| ACE-29-4   | fail-closed ゲートを単一ツール呼び出しに畳んだら exit code 伝播を明示し偽バイナリで伝播をテストする                                                                         | coding                | [playbook/coding.md#ace-29-4](./playbook/coding.md#ace-29-4)                                 |
+| ACE-30-1   | 「既知の負債 / stale」と明記した注記は、その負債を解消した瞬間に真偽が反転する — 別ファイルの注記ほど自己矛盾のまま出荷されやすい                                           | documentation-quality | [playbook/documentation-quality.md#ace-30-1](./playbook/documentation-quality.md#ace-30-1)   |
+| ACE-30-2   | frontmatter の「不正値 → 正典値」への機械的ラベル移行は content edit ではない — 全ファイル version bump / updated 更新をしない（運用実績を根拠に）                          | documentation-quality | [playbook/documentation-quality.md#ace-30-2](./playbook/documentation-quality.md#ace-30-2)   |
+| ACE-32-1   | ライフサイクル enum に終端状態を「追加 vs 移動・削除」で迷ったら in-place で撤退するアーティファクト（移動しない ADR 等）の有無が決め手                                     | architecture          | [playbook/architecture.md#ace-32-1](./playbook/architecture.md#ace-32-1)                     |
+| ACE-32-2   | stale な数え上げ記述の掃引は語彙バリアント（値/ステータス/statuses）で false-negative になる — enum 値そのものを grep する                                                  | documentation-quality | [playbook/documentation-quality.md#ace-32-2](./playbook/documentation-quality.md#ace-32-2)   |
+| ACE-33-1   | vitest + ESM では node 組み込みの named export を spyOn できない — 「実際に失敗する入力」で mock を回避する                                                                 | testing               | [playbook/testing.md#ace-33-1](./playbook/testing.md#ace-33-1)                               |
+| ACE-33-2   | `execFileSync` は成功時に子プロセスの stderr を捕捉しない — 成功パスの stderr を assert するなら `spawnSync`                                                                | testing               | [playbook/testing.md#ace-33-2](./playbook/testing.md#ace-33-2)                               |
+| ACE-33-3   | shell フック/スクリプトの E2E は「PATH 前方の fake バイナリ + stdin 注入 + ハーメティック git env」で外部依存を断つ                                                         | testing               | [playbook/testing.md#ace-33-3](./playbook/testing.md#ace-33-3)                               |
+| ACE-33-4   | パスを起動位置から固定解決する CLI は env-var seam でテスト可能化し、「seam が効いた」ことを discriminator で一意に証明する                                                 | testing               | [playbook/testing.md#ace-33-4](./playbook/testing.md#ace-33-4)                               |
+| ACE-34-1   | Git フルオートは push/ready/merge/cleanup/ACE まで含む — 「外向き操作だから」は停止理由にしない                                                                             | process               | [playbook/process.md#ace-34-1](./playbook/process.md#ace-34-1)                               |
+| ACE-34-2   | 運用原則の終端表記が部分的だと、上位のフルフロー記述と矛盾して途中停止が再発する                                                                                            | documentation-quality | [playbook/documentation-quality.md#ace-34-2](./playbook/documentation-quality.md#ace-34-2)   |
+| ACE-35-1   | オフライン自己完結デッキの行数超過は CSS/JS 外出しを先に切る — スライド HTML の分割は単一入口 UX を壊すなら後回し                                                           | architecture          | [playbook/architecture.md#ace-35-1](./playbook/architecture.md#ace-35-1)                     |
+| ACE-35-2   | オフライン資産の CSS/JS 分割には「構造回帰テスト」を足す — 相対参照・ロード順・非 module を固定する                                                                         | testing               | [playbook/testing.md#ace-35-2](./playbook/testing.md#ace-35-2)                               |
+| ACE-35-3   | 挙動不変の外出しリファクタでは「分割前からある console フォールバック」を Critical として直さない — 分割で増えた問題だけを 1 fix に束ねる                                   | process               | [playbook/process.md#ace-35-3](./playbook/process.md#ace-35-3)                               |
+| ACE-36-1   | 複数スキルが共有する判定基準は「A が正規ソース」注記だけでは足りない — 物理的な共有ファイルを SSOT にする                                                                   | process               | [playbook/process.md#ace-36-1](./playbook/process.md#ace-36-1)                               |
+| ACE-36-2   | 同数・同語の短いラベル（例: 「6 観点」）を別フレームワークに再利用しない — 衝突確認は ACE-024 の技能適用                                                                    | documentation-quality | [playbook/documentation-quality.md#ace-36-2](./playbook/documentation-quality.md#ace-36-2)   |
+| ACE-36-3   | 多段スキルの skip 条件は「最後のステップが 0 件」だけでは足りない — 上流ゲートの違反も AND で見る                                                                           | process               | [playbook/process.md#ace-36-3](./playbook/process.md#ace-36-3)                               |
+| ACE-38-1   | 配布物のローカルコピーは SSOT 修正では直らない — 消費側コマンドに実行時自己修復ガードを置く                                                                                 | architecture          | [playbook/architecture.md#ace-38-1](./playbook/architecture.md#ace-38-1)                     |
+| ACE-38-2   | 知見ループは Curate（書く）だけでは回らない — Reuse（読む）導線を Issue 作成時と着手前の二段で明文化する                                                                    | process               | [playbook/process.md#ace-38-2](./playbook/process.md#ace-38-2)                               |
+| ACE-38-3   | 「X に書けば Y の入力になる」は計測ツールの実際の読み取り対象と突き合わせてから書く                                                                                         | documentation-quality | [playbook/documentation-quality.md#ace-38-3](./playbook/documentation-quality.md#ace-38-3)   |
+| ACE-42-1   | AI の EOL バージョン選定は「最新LTSと書く」だけでは防げない — 選定時のライブ検証義務をセットで定義する                                                                      | process               | [playbook/process.md#ace-42-1](./playbook/process.md#ace-42-1)                               |
+| ACE-42-2   | AI 向け汎用ルールに特定エコシステムの語彙を使わない — 「Active LTS」は Node.js 専用、カテゴリでの分岐は misroute する                                                       | documentation-quality | [playbook/documentation-quality.md#ace-42-2](./playbook/documentation-quality.md#ace-42-2)   |
+| ACE-42-3   | 記録義務を課すルールは受け皿（表の列・記載欄）を同時に用意する — 置き場の無い義務は silent rot する                                                                         | documentation-quality | [playbook/documentation-quality.md#ace-42-3](./playbook/documentation-quality.md#ace-42-3)   |
+| ACE-45-1   | 条件選択型ルールは「該当ゼロの時期」を実在サイクルで反証テストする — フォールバック無しは AI を未定義動作に落とす                                                           | documentation-quality | [playbook/documentation-quality.md#ace-45-1](./playbook/documentation-quality.md#ace-45-1)   |
+| ACE-45-2   | 下流への port レビューは上流 SSOT の欠陥検出器 — 指摘は即 Issue 還元し、還元 PR の AC を「本文 diff 0」にする                                                               | process               | [playbook/process.md#ace-45-2](./playbook/process.md#ace-45-2)                               |
+| ACE-47-1   | Issue クローズは検証イベントにする — マージ直前の AC 照合ゲートで GWT+DoD を照合してから閉じる                                                                              | process               | [playbook/process.md#ace-47-1](./playbook/process.md#ace-47-1)                               |
+| ACE-47-2   | 機械が実行する手順書に UI 比喩（☑ 等）を書かない — 永続化フォーマットの具体記法で書く                                                                                       | documentation-quality | [playbook/documentation-quality.md#ace-47-2](./playbook/documentation-quality.md#ace-47-2)   |
+| ACE-47-3   | 手順書のコード例は verbatim 実行で成立させる — 変換ステップをコメントで済ませると no-op になる                                                                              | documentation-quality | [playbook/documentation-quality.md#ace-47-3](./playbook/documentation-quality.md#ace-47-3)   |
+| ACE-49-1   | 複数リポジトリを跨ぐリレー手順は Playbook 知見止まりにせず、起点リポジトリのスキルへ昇格する                                                                                | process               | [playbook/process.md#ace-49-1](./playbook/process.md#ace-49-1)                               |
+| ACE-52-1   | 文書間の導線契約は送り手と受け手を対で検証する — 受け口の無い「届く」は記録を静かに捨てる                                                                                   | documentation-quality | [playbook/documentation-quality.md#ace-52-1](./playbook/documentation-quality.md#ace-52-1)   |
+| ACE-53-1   | 配布コピーのフォーク運用は「上流還元ファースト + 最小除外リスト + byte 一致検証」で機械検証可能な同期に転換する                                                             | architecture          | [playbook/architecture.md#ace-53-1](./playbook/architecture.md#ace-53-1)                     |
+| ACE-53-2   | 検証ゲートの除外リストはスキップ範囲を最小の軸（内容のみ）に限定する — 全部スキップは配布物欠損と stale エントリを握りつぶす                                                | coding                | [playbook/coding.md#ace-53-2](./playbook/coding.md#ace-53-2)                                 |
+| ACE-55-1   | 丸ごとコピー同期は上流を公開領域にする — 公開側の禁止パターン制約は SSOT に遡及する                                                                                         | architecture          | [playbook/architecture.md#ace-55-1](./playbook/architecture.md#ace-55-1)                     |
 
 ## Changelog
+
+### [1.57.0] - 2026-07-18
+
+#### 追加
+
+- ACE-55-1: 丸ごとコピー同期は上流を公開領域にする — ADR-001 初適用の port レビューが禁止パターン抵触 11 件を検出し、上流で識別子を一般化した経験（Issue #54 / PR #55）から抽出
+
+#### 更新
+
+- ACE-45-2: Helpful +1（プラグイン配布側#113 の Codex port レビューが上流由来の禁止パターン抵触を逆流検出 → Issue #54 として即還元 — パターンの再々実証）
+
+### [1.56.0] - 2026-07-18
+
+#### 追加
+
+- ACE-53-1: 配布コピーのフォーク運用は「上流還元ファースト + 最小除外リスト + byte 一致検証」で機械検証可能な同期に転換する — docs-template の 40 ファイル乖離を ADR-001 + check-docs-template-sync.sh で解消した経験（Issue #44 / PR #53）から抽出
+- ACE-53-2: 検証ゲートの除外リストはスキップ範囲を最小の軸（内容のみ）に限定する — silent-failure レビューが「除外の全部スキップが配布物欠損と stale エントリを握りつぶす」を検出した経験から抽出
+
+#### 更新
+
+- ACE-42-1: Helpful +1（Codex が Node 22 例示の陳腐化を検出 → 公式リリーススケジュールをライブ確認して 24（最新 Active LTS）へ更新 — 選定時ライブ検証義務の再実証）
+- ACE-27-2: Helpful +1（「検出ゼロ」と「検査不能」の区別を新規 bash ゲートの exit code 契約（0/1/2）として再適用 — cmp の I/O エラー・空入力を差分と分離）
+
+### [1.55.0] - 2026-07-18
+
+#### 追加
+
+- ACE-52-1: 文書間の導線契約は送り手と受け手を対で検証する — git-workflow が約束する Helpful 更新の受け口が ace-curate に無く Reuse 記録が黙殺されていた断線（Issue #40 / PR #52）から抽出
+
+#### 更新
+
+- ACE-45-2: Helpful +1（プラグイン配布側#101 fix commit の文言欠陥（Helpful 入力経路の矛盾・dedup 未定義）を PR #52 の逆輸入時クロスモデルレビューが検出 — パターンの再々実証）
+
+### [1.54.0] - 2026-07-18
+
+#### 更新
+
+- ACE-45-2: Helpful +1（プラグイン配布側#107 の port レビューが上流欠陥 3 件（--match-head-commit 欠落・スラッシュコマンドの bash 混在・停止条件文言）を逆流検出し、Issue #50 → PR #51 で還元 — パターンの再実証）
+
+### [1.53.0] - 2026-07-18
+
+#### 追加
+
+- ACE-49-1: 複数リポジトリを跨ぐリレー手順は起点リポジトリのスキルへ昇格する — /close-issue の誤起点実装事故を受けて /port-to-plugins スキル（PR #49）へ固定化した経験から抽出
+
+#### 更新
+
+- ACE-47-3: Helpful +1（スキル初稿の AC 照合ゲートがコメントのみの no-op になっており、Codex が同型欠陥を再検出 — 教訓の再確認）
+
+### [1.52.0] - 2026-07-18
+
+#### 追加
+
+- ACE-47-1: Issue クローズは検証イベントにする — PR #47 / Issue #46 の AC 照合ゲート（/close-issue）設計と PR #47・ff-dev-toolkit#5 での dogfood から抽出
+- ACE-47-2: 機械が実行する手順書に UI 比喩（☑ 等）を書かない — Codex が「☑ 更新」を Critical 検出（GitHub タスクリストとして認識されない）した経験から抽出
+- ACE-47-3: 手順書のコード例は verbatim 実行で成立させる — Toolkit / Codex が独立に「取得→即送信の no-op」を検出した経験から抽出
+
+#### 更新
+
+- ACE-018: Helpful +1（ワークフロー変更で docs-template 側 SSOT 2 ファイルの取り残しをレビューが検出 — 着手前 grep 列挙の教訓が再確認された）
+
+### [1.51.0] - 2026-07-17
+
+#### 追加
+
+- ACE-45-1: 条件選択型ルールは「該当ゼロの時期」を実在サイクルで反証テストする — Django（5.2 LTS=extended・6.0=非LTS）でルール1が空集合になる Critical を プラグイン配布側#103 の Codex 再レビューが検出した経験から抽出
+- ACE-45-2: 下流への port レビューは上流 SSOT の欠陥検出器 — プラグイン配布側#103 の指摘 3 件を Issue #43 として即還元し、PR #45 の AC を「ポリシー本文 diff 0」で機械検証した経験から抽出
+
+#### 更新
+
+- ACE-42-2: Helpful +1（例示技術の実在リリースサイクルで検証する Action が Django 空集合の検出につながった）
+
+### [1.50.0] - 2026-07-17
+
+#### 追加
+
+- ACE-42-1: AI の EOL バージョン選定は「最新LTSと書く」だけでは防げない — 選定時のライブ検証義務をセットで定義する — PR #42 / Issue #41 の「バージョン選定ポリシー（LTSデフォルト）」設計から抽出
+- ACE-42-2: AI 向け汎用ルールに特定エコシステムの語彙を使わない — comment-analyzer が「Active LTS」の誤汎化と Python の LTS 誤分類を Critical 検出した経験から抽出
+- ACE-42-3: 記録義務を課すルールは受け皿（表の列・記載欄）を同時に用意する — code-reviewer / comment-analyzer が独立に「記録先の列が無い」を検出した経験から抽出
+
+### [1.49.0] - 2026-07-17
+
+#### 追加
+
+- ACE-38-1: 配布物のローカルコピーは SSOT 修正では直らない — 消費側コマンドに実行時自己修復ガードを置く — 旧ローカル ace.md のコピーが plugin 更新後も ID なし PLAYBOOK を再生産していた調査（Issue #37 / PR #38）から抽出
+- ACE-38-2: 知見ループは Curate（書く）だけでは回らない — Reuse（読む）導線を Issue 作成時と着手前の二段で明文化する — ワークフローに「読む」ステップが無かったギャップの明文化（PR #38）から抽出
+- ACE-38-3: 「X に書けば Y の入力になる」は計測ツールの実際の読み取り対象と突き合わせてから書く — comment-analyzer が ace-reuse-report / Helpful 更新の供給経路の交差不整合を Critical 検出した経験から抽出
+
+### [1.48.0] - 2026-07-11
+
+#### 追加
+
+- ACE-36-1: 複数スキルが共有する判定基準は「A が正規ソース」注記だけでは足りない — 物理的な共有ファイルを SSOT にする — PR #36 / Issue #22 で create-issue / refine-issue のチェックリストを `_shared` に一本化した経験から抽出
+- ACE-36-2: 同数・同語の短いラベル（例: 「6 観点」）を別フレームワークに再利用しない — 品質チェック 6 項目と feature の 6 観点フレームワークを用語分離した経験から抽出
+- ACE-36-3: 多段スキルの skip 条件は「最後のステップが 0 件」だけでは足りない — 上流ゲートの違反も AND で見る — refine-issue の SubAgent 0 件 skip が品質違反を落とす欠陥をセルフレビューで検出した経験から抽出
+
+#### 更新
+
+- ACE-014: Helpful +1（PR #36 で品質チェック本体を `_shared` SSOT に集約しスキルは参照のみにした事例）
+- ACE-024: Helpful +1（「6 観点」の用語衝突を grep 相当のレビューで検出）
+- ACE-040: Helpful +1（品質チェック項目 vs 6 観点フレームワークの語彙統一）
+- ACE-447-2: Helpful +1（docs-template から `.claude/` への相対リンクを plain text 化した事例）
+
+### [1.47.0] - 2026-07-10
+
+#### 追加
+
+- ACE-35-1: オフライン自己完結デッキの行数超過は CSS/JS 外出しを先に切る — スライド HTML の分割は単一入口 UX を壊すなら後回し — PR #35 / Issue #5 で 1541 行を CSS/JS 外出しに留めた経験から抽出
+- ACE-35-2: オフライン資産の CSS/JS 分割には「構造回帰テスト」を足す — 相対参照・ロード順・非 module を固定する — deck-assets.test.js 追加の経験から抽出
+- ACE-35-3: 挙動不変の外出しリファクタでは分割前の console フォールバックを Critical として直さない — Codex silent-failure と Toolkit の判定差を仕分けた経験から抽出
+
+#### 更新
+
+- ACE-2-1: Helpful +1（PR #35 で CSS/JS 外出し時も classic 相対参照・非 module 方針を再確認）
+
+### [1.46.0] - 2026-07-10
+
+#### 追加
+
+- ACE-34-1: Git フルオートは push/ready/merge/cleanup/ACE まで含む — 「外向き操作だから」は停止理由にしない — PR #34 / Issue #4 でノンストップが PR 作成で止まり外向きごとに確認していた経験から抽出
+- ACE-34-2: 運用原則の終端表記が部分的だと、上位のフルフロー記述と矛盾して途中停止が再発する — workflow-principles「PR作成まで」と CLAUDE フルフローの不一致を揃えた経験から抽出
 
 ### [1.39.0] - 2026-07-06
 

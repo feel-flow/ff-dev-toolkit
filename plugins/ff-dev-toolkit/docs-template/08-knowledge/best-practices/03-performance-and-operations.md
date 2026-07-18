@@ -424,13 +424,13 @@ fi
 
 ```bash
 # 機能開発
-feature/#123-add-user-authentication
+feature/123-add-user-authentication
 
 # バグ修正
-fix/#124-correct-login-validation
+fix/124-correct-login-validation
 
 # その他のタスク
-chore/#125-update-dependencies
+chore/125-update-dependencies
 ```
 
 **命名規則の利点**:

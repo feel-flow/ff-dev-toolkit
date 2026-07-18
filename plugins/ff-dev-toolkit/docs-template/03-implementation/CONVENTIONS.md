@@ -636,7 +636,7 @@ async function getUserById(id: string): Promise<User> {
 
 ## 必要要件
 
-- Node.js >= 22.0.0
+- Node.js >= 24.0.0
 - PostgreSQL >= 14
 
 ## セットアップ

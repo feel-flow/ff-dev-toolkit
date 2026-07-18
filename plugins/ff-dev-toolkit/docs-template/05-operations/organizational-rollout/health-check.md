@@ -181,7 +181,7 @@ comm -23 \
 
 ### Action Items
 
-- [ ] ○○.md を分割（feature/#NNN-split-OO で対応）
+- [ ] ○○.md を分割（feature/NNN-split-OO で対応）
 - [ ] △△.md をアーカイブ
 ```
 

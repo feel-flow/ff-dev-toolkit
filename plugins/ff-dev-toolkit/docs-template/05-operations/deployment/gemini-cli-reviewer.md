@@ -12,7 +12,7 @@ Google Gemini CLIをコードレビューエージェントとして利用する
 
 ## 前提条件
 
-- Node.js 22以上
+- Node.js 24以上
 - Google アカウント（Gemini API キー取得用）
 
 ---

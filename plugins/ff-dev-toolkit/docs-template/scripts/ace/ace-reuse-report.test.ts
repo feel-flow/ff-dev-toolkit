@@ -313,13 +313,19 @@ describe("main（CLI エントリポイント）", () => {
     });
 
     it("サブファイルが読み込み不能な場合、git エラーと誤分類せず専用メッセージで exit 1", () => {
-      const { tmp, indexPath } = writeSplitPlaybook("# 索引\n", {
-        "process.md": PLAYBOOK_FIXTURE,
-      });
-      const brokenPath = path.join(tmp, "playbook", "process.md");
+      // 読み込み不能の再現に chmod 0o000 は使わない（root は 0o000 でも読めてしまい
+      // テストが skip になるため）。代わりに playbook/ サブファイルの位置を「ディレクトリ」
+      // にして readFileSync を EISDIR で失敗させる。discoverPlaybookSubfiles は .md 末尾で
+      // 拾い isFile 検査をしないので process.md（ディレクトリ）もサブファイルとして拾われ、
+      // readSubfileOrThrow が throw する。root/非root いずれでも常に実行される（Issue #25）。
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ace-reuse-eisdir-"));
+      const indexPath = path.join(tmp, "PLAYBOOK.md");
+      fs.writeFileSync(indexPath, "# 索引\n");
+      const subDir = path.join(tmp, "playbook");
+      fs.mkdirSync(subDir);
+      const unreadable = path.join(subDir, "process.md");
+      fs.mkdirSync(unreadable); // ファイルではなくディレクトリ → 読み込み時に EISDIR
       try {
-        // discoverPlaybookSubfiles には見つかるが読み込み時に失敗するケース（権限拒否）を再現する
-        fs.chmodSync(brokenPath, 0o000);
         const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
         const code = main([indexPath], {
           readLog: () => parseGitLog(gitLogFixture()),
@@ -328,10 +334,9 @@ describe("main（CLI エントリポイント）", () => {
         expect(code).toBe(1);
         const errOut = errSpy.mock.calls.flat().join("\n");
         expect(errOut).toContain("サブファイル読み込み失敗");
-        expect(errOut).toContain(brokenPath);
+        expect(errOut).toContain(unreadable);
         expect(errOut).not.toContain("git コマンドが見つかりません");
       } finally {
-        fs.chmodSync(brokenPath, 0o644);
         fs.rmSync(tmp, { recursive: true, force: true });
       }
     });

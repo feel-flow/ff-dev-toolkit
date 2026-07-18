@@ -76,7 +76,7 @@
 ### 前提条件
 
 - **Git**: 任意のバージョン
-- **Node.js**: >= 22.0.0（npm使用時）
+- **Node.js**: >= 24.0.0（npm使用時）
 - **AI CLI**: Claude Code、Codex、Gemini、Cursor のうち1つ以上がインストール済み
 
 ### 自動セットアップ（推奨）

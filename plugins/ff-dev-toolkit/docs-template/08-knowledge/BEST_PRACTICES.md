@@ -135,7 +135,7 @@
 
 - SessionStart Hookによるブランチ状態チェック
 - Issue駆動開発フロー
-- ブランチ命名規則（feature/#123-description）
+- ブランチ命名規則（feature/123-description）
 - PRマージ後の自動クリーンアップ
 
 **適用場面**: 開発開始時、PRマージ後

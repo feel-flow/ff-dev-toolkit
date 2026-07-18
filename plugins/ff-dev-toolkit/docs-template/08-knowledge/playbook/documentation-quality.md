@@ -73,7 +73,7 @@
 | Origin     | PR #397 / Issue #396  |
 | Related    | ACE-014 / ACE-015     |
 | Date       | 2026-05-06            |
-| Helpful    | 4                     |
+| Helpful    | 5                     |
 | Harmful    | 0                     |
 | Status     | active                |
 
@@ -132,7 +132,7 @@
 | Origin     | PR #409 / Issue #408  |
 | Related    | ACE-014 / ACE-018     |
 | Date       | 2026-05-07            |
-| Helpful    | 0                     |
+| Helpful    | 1                     |
 | Harmful    | 0                     |
 | Status     | active                |
 
@@ -552,7 +552,7 @@ Toolkit comment-analyzer が Critical C1/C2 として独立検出、Copilot revi
 | Origin     | PR #447 / Issue #446  |
 | Related    | ACE-046, ACE-443-1    |
 | Date       | 2026-06-23            |
-| Helpful    | 0                     |
+| Helpful    | 1                     |
 | Harmful    | 0                     |
 | Status     | active                |
 
@@ -613,3 +613,265 @@ Toolkit comment-analyzer が Critical C1/C2 として独立検出、Copilot revi
 **Action**: 単一ファイルを複数ファイルに分割する PR では、分割対象そのものの移行検証（エントリ数・内容の完全性）に加えて、`grep -rn "<旧ファイルパス>"` でそのファイルを参照するスクリプト・コマンド定義・手順書を全て列挙し、(a) 固定パスを glob や複数ファイル対応に広げる必要があるか、(b) 「〇〇のテンプレートに従う」等の参照が指す先が実在するか、(c) 一覧・列挙系の記述（カテゴリ表、フィールド列挙）が分割後の実態と一致しているかを個別に確認する。クロスモデルレビュー（Codex）はこの種の「移行はできているが周辺記述が古い」パターンの検出に強い。
 
 ---
+
+<a id="ace-27-3"></a>
+
+### ACE-27-3: コードの関数/定数の抽出リファクタは、それを行番号でハードコード参照するドキュメントを無警告で陳腐化させる
+
+| フィールド | 値                    |
+| ---------- | --------------------- |
+| Category   | documentation-quality |
+| Origin     | PR #27 / Issue #21    |
+| Related    | ACE-16-1              |
+| Date       | 2026-07-10            |
+| Helpful    | 1                     |
+| Harmful    | 0                     |
+| Status     | active                |
+
+**Insight**: 関数や定数を別ファイルへ抽出する（共通化）リファクタは、その定義位置を `file.mjs:62-63` のように行番号でハードコード参照しているドキュメントを、diff に現れないまま静かに壊す。抽出でファイルが短くなり参照先の行に無関係なコードが来る（または行自体が消える）。特に「正本(SSOT)はここ」というポインタが別コードを指すと読者を誤誘導する。テスト・lint は行番号参照の妥当性を検査しないため CI も通る。ACE-16-1（ドキュメント分割がスクリプトを陳腐化）の逆方向で、根は同じ「アーティファクト境界を跨いだ位置ハードコード参照はリファクタで腐る」。
+
+**Context**: PR #27 で `validate-docs.mjs` からパーサー/バリデータを `lib/frontmatter.mjs` に抽出したところ、`FRONTMATTER_GUIDE.md` の `validate-docs.mjs:62-63 / 108-135 / 243/257 / 275 / 77` の 5 箇所（正本ポインタ含む）が全て別コードを指す状態に。Toolkit comment-analyzer が「この PR が壊した」と検出。バージョンだけ上げて参照は放置されていた。
+
+**Action**: 関数・定数の抽出/移動リファクタをしたら、その識別子・ファイルを行番号参照しているドキュメントを grep で洗い出し同 PR で更新する（例 `grep -rn 'file.mjs:[0-9]' docs/`）。可能なら行番号でなく識別子名・見出しアンカーで参照し位置ハードコードを避ける。SSOT ポインタは特に優先して直す。
+
+---
+
+<a id="ace-30-1"></a>
+
+### ACE-30-1: 「既知の負債 / stale」と明記した注記は、その負債を解消した瞬間に真偽が反転する — 別ファイルの注記ほど自己矛盾のまま出荷されやすい
+
+| フィールド | 値                            |
+| ---------- | ----------------------------- |
+| Category   | documentation-quality         |
+| Origin     | PR #30 / Issue #26            |
+| Related    | ACE-16-1 / ACE-27-3 / ACE-044 |
+| Date       | 2026-07-10                    |
+| Helpful    | 1                             |
+| Harmful    | 0                             |
+| Status     | active                        |
+
+**Insight**: 「X は stale / 既知の負債（→ Y 参照）」と書いた注記は、X を正典化・解消した瞬間に主張が真→偽へ反転する。ACE-16-1 / ACE-27-3 は「参照先の位置・パスがリファクタで腐る」系だが、本件は位置ではなく**真偽値そのものが反転**する別トリガー: 解消した defect を「まだ壊れている」と説明し続ける注記が残り、しかもその注記が根拠として指すドキュメント（Y）は同 PR で「解消済み」に書き換わっているため、参照が自分の主張を否定する自己矛盾になる。特に注記が編集本体と別ファイルにあると diff に現れず、レビュアーを「これは既知負債だから無視してよい」と誤誘導する（実際には修正すべき本物のエラー）。
+
+**Context**: PR #30 で frontmatter の stale enum `active` を正典 `approved` へ移行し、`FRONTMATTER_GUIDE §3` の「§7 は stale」注記を「§7 も正典化済み」へ書き換えた。これにより `.claude/commands/pre-commit-check.md:43` の「`status "active"` 警告は既知の負債（→ FRONTMATTER_GUIDE §3）」が二重に破綻: (1) `active` は解消済みで、以後出たら本物のエラー、(2) 根拠に挙げた §3 が「解消済み」と読めるようになり参照が自己否定。Toolkit code-reviewer が別ファイル横断で検出（Codex は APPROVED）。
+
+**Action**: defect / stale / 既知の負債を解消する PR では、その状態を「まだ壊れている」前提で語る注記を全文検索で洗い出し同 PR で更新する（例 `grep -rniE "stale|既知の負債|deprecated|TODO" -- <対象語>`）。特に「A は壊れている（→ B 参照）」型の相互参照は、A を直したら B の記述と食い違わないか両方向で確認する。触ったのが別ファイルでも、本 PR が新たに生んだ自己矛盾は pre-existing stale（[ACE-044](./process.md#ace-044) の別 issue 送り）とは異なり、同 PR で潰す（放置すると回帰を出荷する）。
+
+---
+
+<a id="ace-30-2"></a>
+
+### ACE-30-2: frontmatter の「不正値 → 正典値」への機械的ラベル移行は content edit ではない — 全ファイル version bump / updated 更新をしない（運用実績を根拠に）
+
+| フィールド | 値                    |
+| ---------- | --------------------- |
+| Category   | documentation-quality |
+| Origin     | PR #30 / Issue #26    |
+| Related    | ACE-27-3              |
+| Date       | 2026-07-10            |
+| Helpful    | 0                     |
+| Harmful    | 0                     |
+| Status     | active                |
+
+**Insight**: stale / 不正な enum 値（`status: active`）を正典値（`approved`）へ直すのは、文書の意味的状態を変える content edit ではなく、既に真だった状態の**符号化を正す lossless なラベル移行**。§5.3 更新チェックリスト（changeImpact 判定 → version bump → updated 更新）を額面通り適用して 12 ファイルを一律 bump すると、実際の内容更新日を誤表示し version churn を生む。判断は「チェックリストの文面」ではなく**リポジトリの運用実績**を根拠にすると強い: 過去の機械的 frontmatter 変更（#279 markdownlint 701 件修正、#467 visibility フィールド追加）はいずれも version / updated を bump していない。
+
+**Context**: PR #30 で 12 文書の `status: active` を正典へ移行。comment-analyzer が「§5.3 の de-facto 運用（軽微変更も changelog 記録）と bump なしが緊張する」と改善提案（Critical ではなく author 判断事項と明記）。bump 無しを維持し、traceability は commit message / PR / `Closes #26` で担保。散文（§7 テンプレ・説明表）を実際に書き換えたガイド本体も、#467 が同ファイルにフィールド追加時に bump しなかった前例に倣い bump せず。
+
+**Action**: frontmatter 変更が「値の意味を変える content edit」か「不正 / stale ラベルの機械的訂正」かを切り分ける。後者なら per-file version bump / updated 更新はしない（churn 回避）。判断根拠は §5.3 の文面より過去の同種 PR（機械的変更で bump したか）を優先し、PR 本文に「bump しない方針と根拠」を明記してレビューでの再議論を防ぐ。
+
+---
+
+<a id="ace-32-2"></a>
+
+### ACE-32-2: stale な数え上げ記述の掃引は語彙バリアントで false-negative になる — enum 値そのものを grep する
+
+| フィールド | 値                            |
+| ---------- | ----------------------------- |
+| Category   | documentation-quality         |
+| Origin     | PR #32 / Issue #31            |
+| Related    | ACE-018 / ACE-27-3 / ACE-30-1 |
+| Date       | 2026-07-10                    |
+| Helpful    | 0                             |
+| Harmful    | 0                             |
+| Status     | active                        |
+
+**Insight**: enum やカウントを 3→4 のように更新する際、同じ事実がドキュメント内で**複数の語彙**で表現されている（「3値」「3 ステータス」「3 statuses」「`draft|review|approved`」）。1 つの grep パターン（例 `3値` だけ）で掃引すると、別表現の箇所（「3 ステータス」）を取りこぼしたまま "clean" と誤判定し、同一文書内に 4 値と 3 値が混在した自己矛盾を出荷する。掃引したのに漏れる — sweep の false-negative は「やらなかった」のではなく「パターンが事実の別名を拾えなかった」ことで起きる。
+
+**Context**: Issue #31 でコア status enum を 3→4 値化した際、`FRONTMATTER_GUIDE §6.3` の「6 ステータスは過剰」は直したが、同じ節群の `§6.2` にある「独自スキーマ。3 ステータス・…」を初回掃引で見落とした。掃引 grep が `3 値|3値` パターンで、`3 ステータス`（単位語が「値」でなく「ステータス」）にマッチしなかったのが根因。Toolkit の code-reviewer / comment-analyzer 両方が「§6.2 が整合漏れ」と検出（Codex 初回も別軸で REJECTED）。
+
+**Action**: 数え上げ/enum の stale 掃引は、1 表現ではなく (a) enum 値トークンそのもの（`grep -rn 'draft|review|approved'`）か、(b) 数字 + 全単位語（`値|ステータス|status|values?`）で拾う。ヒット件数と自分が編集した箇所数を突き合わせ、差があれば取りこぼしを疑う。ACE-018（着手前に全 SSOT を grep 列挙）を「1 パターンで十分」と過信しない — 同じ事実の別名を明示的に列挙する。
+
+<a id="ace-34-2"></a>
+
+### ACE-34-2: 運用原則の終端表記が部分的だと、上位のフルフロー記述と矛盾して途中停止が再発する
+
+| フィールド | 値                    |
+| ---------- | --------------------- |
+| Category   | documentation-quality |
+| Origin     | PR #34 / Issue #4     |
+| Date       | 2026-07-10            |
+| Helpful    | 0                     |
+| Harmful    | 0                     |
+| Status     | active                |
+
+**Insight**: ハブ文書（CLAUDE.md / AI_GIT_WORKFLOW）がフルフローを示していても、SSOT の運用原則が「PR作成まで」など部分終端のままだと、エージェントは短い原則側を採用して途中で止まる。方針強化はエージェント向けガイドだけでなく、終端を定義している SSOT（workflow-principles 等）と索引表の1行要約まで同時に揃える。
+
+**Context**: PR #34 で CLAUDE.md / AGENTS.md にフルオート節を足すだけでなく、`workflow-principles.md` の原則1・適用タイミング表・Todo チェックリストと `AI_GIT_WORKFLOW.md` の原則表を「ACE まで」に拡張した。セルフレビューでは CLAUDE だけ Suggestions 未明示だった点も AGENTS / review-response-policy との整合として修正した — 同一方針を複数ファイルに書くときは表現粒度の差が誤解釈を生む。
+
+**Action**: ワークフロー方針を変えるときは (1) エージェント向けガイド、(2) 運用原則 SSOT、(3) ハブ文書の1行要約の終端語を同じに揃える。複数ファイルに同じポリシーを書く場合、Critical/Warning/Suggestions など対応粒度まで揃える（片方だけ省略しない）。
+
+<a id="ace-36-2"></a>
+
+### ACE-36-2: 同数・同語の短いラベル（例: 「6 観点」）を別フレームワークに再利用しない — 衝突確認は ACE-024 の技能適用
+
+| フィールド | 値                            |
+| ---------- | ----------------------------- |
+| Category   | documentation-quality         |
+| Origin     | PR #36 / Issue #22            |
+| Related    | ACE-024 / ACE-040 / ACE-445-1 |
+| Date       | 2026-07-11                    |
+| Helpful    | 0                             |
+| Harmful    | 0                             |
+| Status     | active                        |
+
+**Insight**: feature テンプレの「6 観点フレームワーク」（What/How/Where/Constraint/Format/Test）と、refine の品質チェック 6 項目（具体性〜AC 明示）が同じ「6 観点」と呼ぶと、エージェントと人間の両方が数え違い・対応表の誤読を起こす。ACE-024（用語衝突確認）と ACE-040（同概念の語彙統一）の具体適用: 短い数詞付きラベルはリポジトリ内で一意にし、別物なら修飾語で区別する（「品質チェック 6 項目」vs「6 観点フレームワーク」）。
+
+**Context**: PR #36 で issue-quality-checklist SSOT を導入した際、Toolkit comment-analyzer が「6 観点」の二重定義を Warning として検出（ACE-445-1 系の数え違い再発リスク）。refine-issue 見出し・完了報告を「品質チェック違反」に寄せ、feature 側だけ「6 観点フレームワーク」を残した。併せて docs-template から `.claude/` への相対リンクは ACE-447-2 に抵触するため plain text パスに変更した。
+
+**Action**: 新しい N 観点 / N 項目チェックを名付ける前に、既存の「N 観点」「N 項目」を grep する。別フレームワークなら修飾語を必須にする。対応表を書くときは両方の正式名称を表頭に出し、省略形を共有しない。
+
+---
+
+<a id="ace-38-3"></a>
+
+### ACE-38-3: 「X に書けば Y の入力になる」は計測ツールの実際の読み取り対象と突き合わせてから書く
+
+| フィールド | 値                    |
+| ---------- | --------------------- |
+| Category   | documentation-quality |
+| Origin     | PR #38                |
+| Date       | 2026-07-17            |
+| Helpful    | 0                     |
+| Harmful    | 0                     |
+| Status     | active                |
+
+**Insight**: 運用ドキュメントで「記録先 → 計測・集計」の対応を書くとき、ツールが実際に読む範囲（git log の件名・本文のみ、PR body 経由のみ等）と突き合わせないと、「記録したのに計測されない」運用ズレが定着する。複数の記録先と複数の仕組みを一文に併記すると、全組み合わせが有効であるかのように読めてしまう。
+
+**Context**: PR #38 で comment-analyzer が Critical 検出。「コミット本文または implementation-notes に記録（Helpful 更新と ace-reuse-report の入力になる）」という追記は、ace-reuse-report が git log の件名・本文のみを走査し、Helpful 更新は PR 情報（description へ転記された implementation-notes）経由という実装と交差不整合だった。squash merge で中間コミット本文が develop に残らない点も同時に指摘された。
+
+**Action**: 「〜の入力になる」と書く前に対象ツールの読み取り実装（コマンド・フォーマット指定子）を確認し、記録先→届く仕組みを 1 対 1 で書き分ける。squash merge 等で記録が途中で消える経路（中間コミット本文）があれば残る場所も明記する。
+
+<a id="ace-42-2"></a>
+
+### ACE-42-2: AI 向け汎用ルールに特定エコシステムの語彙を使わない — 「Active LTS」は Node.js 専用、カテゴリでの分岐は misroute する
+
+| フィールド | 値                    |
+| ---------- | --------------------- |
+| Category   | documentation-quality |
+| Origin     | PR #42                |
+| Date       | 2026-07-17            |
+| Helpful    | 1                     |
+| Harmful    | 0                     |
+| Status     | active                |
+
+**Insight**: 複数エコシステムに適用する AI 向けルールを特定エコシステムの語彙で書くと、他エコシステムでは undefined instruction になり、AI が独自解釈で埋める（＝防ぎたい失敗を誘発する）。「最新 Active LTS を選べ」は Node.js 語彙で、Python には LTS 制度自体が無く、Java/.NET に Active/Maintenance 区分は無い。また「フレームワーク / DB = LTS 無し」のようなカテゴリでの分岐も Django LTS・PostgreSQL の 5 年サポート等を misroute する。
+
+**Context**: PR #42 の初稿が「LTS制度があるランタイム（Node.js / Python / Java / .NET 等）は最新 Active LTS」と記述。comment-analyzer が Critical 2 件（Python の誤分類、Active LTS の誤汎化）を検出し、「フルサポート中の最新LTS（Node.js でいう Active LTS）」+「LTS 制度の有無は技術ごとに公式スケジュールで確認」へ書き直した。
+
+**Action**: 汎用ルールを書くときは (1) 固有名詞的な制度語彙は「〜でいう X」と出典エコシステムを添えて中立表現に置き換える、(2) 分岐条件は技術カテゴリでなく「制度の有無を公式情報で確認」のような検証可能な述語にする。例示リストは定義でなく illustrative であることが読み取れる形にする。
+
+<a id="ace-42-3"></a>
+
+### ACE-42-3: 記録義務を課すルールは受け皿（表の列・記載欄）を同時に用意する — 置き場の無い義務は silent rot する
+
+| フィールド | 値                    |
+| ---------- | --------------------- |
+| Category   | documentation-quality |
+| Origin     | PR #42                |
+| Date       | 2026-07-17            |
+| Helpful    | 0                     |
+| Harmful    | 0                     |
+| Status     | active                |
+
+**Insight**: 「X を Y に記録せよ」というルールは、Y に記録欄が実在しなければ従いようがなく、義務だけが残って静かに形骸化する。ルール本文と記録先テンプレートは同一 PR で対にして変更する必要がある。独立した複数レビュアーが同じ欠落を指摘した場合、それは表現の好みでなく構造欠陥のシグナル。
+
+**Context**: PR #42 の初稿ルール 3 が「確認日と情報源 URL を技術スタック表の決定根拠として記録する」と規定したが、直下の「概要（バージョン付き）」表にはカテゴリ/技術/バージョン/AIへの注意点の列しか無かった。Toolkit code-reviewer と comment-analyzer が独立に同一の Warning を検出し、表へ「確認日・情報源」列を追加して解消した（[ACE-38-3](./documentation-quality.md#ace-38-3) の「記録先→届く仕組みの突き合わせ」と同系）。
+
+**Action**: 記録・記載を義務付ける文を書いたら、その記録先（表の列・テンプレートのプレースホルダ・ファイル）が同じ差分内に実在するかを grep で確認する。無ければ列/欄を追加するか、既存の実在する記録先（DECISIONS.md 等）へ義務をルーティングし直す。
+
+<a id="ace-45-1"></a>
+
+### ACE-45-1: 条件選択型ルールは「該当ゼロの時期」を実在サイクルで反証テストする — フォールバック無しは AI を未定義動作に落とす
+
+| フィールド | 値                    |
+| ---------- | --------------------- |
+| Category   | documentation-quality |
+| Origin     | PR #45                |
+| Date       | 2026-07-17            |
+| Helpful    | 0                     |
+| Harmful    | 0                     |
+| Status     | active                |
+
+**Insight**: 「フルサポート中の最新LTS（Maintenanceフェーズ除く）」のように条件で選択集合を定義するルールは、リリースサイクルの巡り合わせで該当バージョンがゼロになる時期が生じ得る。実例: 2026-07 時点の Django は 5.2 LTS が extended support、mainstream の 6.0 が非 LTS で条件を満たす版が存在しない。ルールに従う AI は未定義動作（独自解釈）に陥り、ポリシーが防ぎたい失敗を誘発する。
+
+**Context**: PR #42 で定義したバージョン選定ポリシーのルール1に対し、プラグイン配布側への反映 PR（プラグイン配布側#103）の Codex 再レビューが Django の公式サポート表を根拠に Critical 検出。「フルサポート中のLTSが存在しない時期はフルサポート中の最新安定版で代替する」フォールバックを追加し、PR #45 で上流へ還元した（[ACE-42-2](./documentation-quality.md#ace-42-2) の系）。
+
+**Action**: 条件選択型のルールを書いたら「条件を満たす要素がゼロになるケースはあるか」を、例示に挙げた実在技術のリリースサイクル（現在の状態）で反証テストする。あり得るならフォールバック分岐を明文化し、要約行（推論許容リスト等）にも同じ分岐を同期する。なお、フォールバック分岐の追加は「文言調整（LOW）」ではなく「既存概念の拡張（MEDIUM・minor bump）」として扱う。
+
+<a id="ace-47-2"></a>
+
+### ACE-47-2: 機械が実行する手順書に UI 比喩（☑ 等）を書かない — 永続化フォーマットの具体記法で書く
+
+| フィールド | 値                    |
+| ---------- | --------------------- |
+| Category   | documentation-quality |
+| Origin     | PR #47                |
+| Date       | 2026-07-18            |
+| Helpful    | 0                     |
+| Harmful    | 0                     |
+| Status     | active                |
+
+**Insight**: 「チェックボックスを ☑ に更新」のような**表示上の比喩**で操作を記述すると、実行主体がエージェントの場合に文字 `☑` をそのまま挿入し、GitHub のタスクリスト機能（`- [ ]` / `- [x]`）が壊れる。人間向けには自然な省略でも、機械が実行する手順書では**永続化フォーマットの具体記法**（`- [ ]` → `- [x]`）を明示しないと中核ロジックが成立しない。
+
+**Context**: PR #47 のワークフロー文書で「達成項目のチェックボックスを ☑ に更新」と書いたところ、Codex クロスモデルレビューが「このまま実装すると GitHub 上では単なる文字列になる」と Critical 検出。文書 3 ファイルとコマンド本体（ff-dev-toolkit）の全該当箇所を「Markdown タスクリスト記法の checked state（`- [ ]` → `- [x]`）で書き換える。`☑` 等の文字挿入は認識されない」に修正した。
+
+**Action**: エージェントが実行する手順書で状態変更を記述するときは、見た目の結果（☑・取り消し線・色）ではなく、対象システムが解釈する記法・API 上の値（`- [x]`、`state: closed` 等）を書く。比喩を使う場合も直後に具体記法を括弧で併記する。
+
+<a id="ace-47-3"></a>
+
+### ACE-47-3: 手順書のコード例は verbatim 実行で成立させる — 変換ステップをコメントで済ませると no-op になる
+
+| フィールド | 値                    |
+| ---------- | --------------------- |
+| Category   | documentation-quality |
+| Origin     | PR #47                |
+| Related    | ACE-47-2              |
+| Date       | 2026-07-18            |
+| Helpful    | 1                     |
+| Harmful    | 0                     |
+| Status     | active                |
+
+**Insight**: コマンド手順書のコード例が「取得 → （コメント: ここで変換）→ 送信」の形だと、肝心の変換処理が実体を持たず、**verbatim に実行すると同じ内容を書き戻すだけの no-op** になる。さらに変換を自力で補うエージェントが安易な一括置換（`sed 's/- \[ \]/- [x]/g'`）を選ぶと、未達・対象外の項目まで完了扱いになる二次事故が起きる。
+
+**Context**: PR #47 / ff-dev-toolkit#5 の close-issue コマンド初稿で、チェックボックス更新のコード例が body 取得 → 即 `--body-file` 送信になっており、変換はコメント 1 行だけだった。Toolkit と Codex のクロスモデルレビューが独立に同じ欠陥を検出。「達成と判定した行のみ個別置換（一括置換禁止）→ diff でチェックボックス以外の変更がないことを確認 → updatedAt 再確認 → 送信」の実体ステップに書き直した。
+
+**Action**: エージェント向け手順書のコード例は「この通り実行したら意図した状態変更が起きるか」を書きながらセルフトレースする。変換・判定などの中核処理をコメントで代用しない。破壊的になり得る一括処理には禁止と代替（個別置換 + diff 検証）を明記する。
+
+<a id="ace-52-1"></a>
+
+### ACE-52-1: 文書間の導線契約は送り手と受け手を対で検証する — 受け口の無い「届く」は記録を静かに捨てる
+
+| フィールド | 値                    |
+| ---------- | --------------------- |
+| Category   | documentation-quality |
+| Origin     | PR #52                |
+| Related    | ACE-38-2              |
+| Date       | 2026-07-18            |
+| Helpful    | 0                     |
+| Harmful    | 0                     |
+| Status     | active                |
+
+**Insight**: ワークフロー文書 A が「ここに記録すれば B が反映する」と約束しても、B 側の手順書に対応する受け口（読み取り・反映ステップ）が無ければ、記録は実行時に黙って捨てられる。さらにカウンター等の集計入力は「どの経路が届くか（経路分離）」と「同一 ID が複数回現れた場合の加算規則（dedup）」まで明記しないと、no-op か二重加算のどちらかに倒れる。
+
+**Context**: Issue #40 / PR #52。git-workflow.md ステップ3 は「implementation-notes → PR body 転記 → /ace-curate で Helpful 更新」と約束していたが、ace-curate.md の Helpful +1 条件は Phase 2 の重複検出時のみで、Reuse 記録の受け口が存在しなかった（プラグイン配布側#101 の Codex レビューが検出した断線）。さらに port した修正文言自体が「コミット件名・本文」も Helpful 入力に含めており、経路分離（コミット → ace-reuse-report 計測）との矛盾・収集手順欠落による no-op・PR body との二重加算の余地を Toolkit + Codex クロスモデルレビューが再検出。入力を PR body のみに限定し「1 PR につき +1」の dedup を明記して解消した。
+
+**Action**: 「A に書けば B に届く」と文書に書いたら、B の手順書に対応する読み取り・反映ステップが実在するかを対で確認する（導線の両端検証）。集計カウンターの入力仕様には、入力経路の限定（他経路は扱わない旨）と重複出現時の加算規則を必ず明記する。

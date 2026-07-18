@@ -156,7 +156,7 @@ version-resolver:
 自動的に：
 
 1. `enhancement` ラベル付きのIssueを作成
-2. `feature/#123-user-auth` ブランチを作成
+2. `feature/123-user-auth` ブランチを作成
 3. 開発を開始できる状態に
 
 ### PR作成

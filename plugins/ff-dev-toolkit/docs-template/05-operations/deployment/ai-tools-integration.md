@@ -22,7 +22,7 @@
 | 特徴                      | Claude Code                     | Codex CLI                  | GitHub Copilot               | Gemini CLI                 | Cursor                 |
 | ------------------------- | ------------------------------- | -------------------------- | ---------------------------- | -------------------------- | ---------------------- |
 | **Git統合度**             | ⭐⭐⭐⭐⭐                      | ⭐⭐⭐⭐                   | ⭐⭐⭐                       | ⭐⭐⭐                     | ⭐⭐⭐⭐               |
-| **カスタム設定**          | CLAUDE.md, .claude/             | codex.md, AGENTS.md        | .vscode/settings.json        | settings.json              | .cursor/rules/*.mdc    |
+| **カスタム設定**          | CLAUDE.md, .claude/             | codex.md, AGENTS.md        | .vscode/settings.json        | settings.json              | .cursor/rules/\*.mdc   |
 | **CLI非インタラクティブ** | `claude -p`                     | `codex exec`               | `copilot -p`                 | `gemini -p`                | `cursor-agent --print` |
 | **安全性制御**            | `--allowed-tools`（ツール制限） | `--sandbox read-only`      | `--allow-tool`/`--deny-tool` | `--sandbox`                | N/A                    |
 | **PR自動化**              | ネイティブサポート              | ネイティブサポート         | VS Code Tasks必要            | 手動スクリプト実行         | 手動スクリプト実行     |
@@ -270,13 +270,13 @@ export BEHIND_THRESHOLD="20"
 Claude Codeセッション開始時に以下のような警告が表示されます：
 
 ```
-⚠️  WARNING: 現在のブランチ 'feature/#123-add-feature' はリモートに存在しません。
+⚠️  WARNING: 現在のブランチ 'feature/123-add-feature' はリモートに存在しません。
    PRがマージ済みの可能性があります。
    以下のコマンドで develop ブランチに戻ることを推奨します：
 
    git checkout develop
    git pull origin develop
-   git branch -d feature/#123-add-feature
+   git branch -d feature/123-add-feature
 ```
 
 ### スクリプト詳細

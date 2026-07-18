@@ -1,10 +1,10 @@
 ---
 title: "MASTER"
-version: "1.3.0"
+version: "1.4.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-07-17"
+updated: "2026-07-18"
 changeImpact: "MEDIUM"
 ---
 
@@ -641,7 +641,7 @@ AI: DEPLOYMENT.md（索引）→ deployment/self-review.md を読み込み
 | ---------- | --------------------------------------------------- | ------------ |
 | title      | 文書タイトル                                        | ARCHITECTURE |
 | version    | セマンティックバージョン                            | 1.2.0        |
-| status     | 文書の状態（有効値: `draft`, `review`, `approved`） | draft        |
+| status     | 文書の状態（有効値: `draft`, `review`, `approved`, `deprecated`） | draft        |
 | owner      | 責任者                                              | @username    |
 | created    | 作成日                                              | 2026-01-01   |
 | updated    | 最終更新日                                          | 2026-01-15   |
@@ -661,13 +661,18 @@ AI: DEPLOYMENT.md（索引）→ deployment/self-review.md を読み込み
 draft → review → approved
   ↑__________________|
      （修正が必要な場合）
+
+任意の状態 → deprecated（終端: 廃止準備・アーカイブ。復活時は draft/approved へ戻す）
 ```
 
-| status   | 意味           | AIへの扱い                   |
-| -------- | -------------- | ---------------------------- |
-| draft    | 作成中・未確定 | 参考情報として扱う           |
-| review   | レビュー中     | ほぼ確定だが変更の可能性あり |
-| approved | 承認済み       | 正式な仕様として遵守         |
+| status     | 意味                     | AIへの扱い                   |
+| ---------- | ------------------------ | ---------------------------- |
+| draft      | 作成中・未確定           | 参考情報として扱う           |
+| review     | レビュー中               | ほぼ確定だが変更の可能性あり |
+| approved   | 承認済み                 | 正式な仕様として遵守         |
+| deprecated | 廃止準備・アーカイブ済み | 新規実装の参照元に使用しない |
+
+> `deprecated` はコア/拡張文書の終端状態。役目を終えた文書のアーカイブ（organizational-rollout/archive-strategy.md — 初期セット外・必要時に `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/organizational-rollout/archive-strategy.md` からコピー）や、移動しない ADR の in-place 陳腐化に用いる。`docs/specs/` の 6 ステータス（中間 `implementing`/`done` を含む）とは異なり、コアは終端 1 つのみを持つ。
 
 `review` ステータスの文書に対し1週間レビューコメントがなければ、ドキュメントオーナーが `approved` に昇格する。
 
@@ -702,6 +707,12 @@ Changelog エントリには以下のカテゴリを使用する（[Keep a Chang
 - [ ] 定数の配置が層責務に沿っている（Domain/Application/Infrastructure）
 
 ## Changelog
+
+### [1.4.0] - 2026-07-18
+
+#### 変更
+
+- コア7文書・拡張文書の status enum に終端状態 `deprecated` を追加（上流 AI-SDD リポジトリの同項目のハンク反映）。必須フィールド表・ステータスワークフロー図・ステータス表を 4 値へ更新。アーカイブ運用（archive-strategy.md）および移動しない ADR の in-place 陳腐化と整合。中間ライフサイクル（`implementing`/`done`）は追加せず終端 1 つのみ
 
 ### [1.3.0] - 2026-07-17
 

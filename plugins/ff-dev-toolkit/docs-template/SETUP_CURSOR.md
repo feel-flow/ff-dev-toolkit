@@ -206,7 +206,7 @@ This is an AI-driven development project starting with a core 7-document structu
 Always start from an Issue and follow the full flow:
 
 1. **Create Issue** - `gh issue create --title "..." --body "..."`
-2. **Create Branch** - `git checkout -b feature/#{issue-number}-{description}` (from `develop`)
+2. **Create Branch** - `git checkout -b feature/{issue-number}-{description}` (from `develop`)
 3. **Implement** - Follow `docs-template/MASTER.md` constraints
 4. **Self-Review** - Run checklist before PR
 5. **Run Tests** - lint / type-check / test must pass
@@ -215,9 +215,9 @@ Always start from an Issue and follow the full flow:
 8. **Merge & Cleanup** - Squash merge, return to `develop`, delete feature branch
 
 ### Branch Naming
-- `feature/#{issue}-{description}` for features
-- `fix/#{issue}-{description}` for bug fixes
-- `chore/#{issue}-{description}` for maintenance
+- `feature/{issue}-{description}` for features
+- `fix/{issue}-{description}` for bug fixes
+- `chore/{issue}-{description}` for maintenance
 
 ### Commit Message Format
 `<type>: #<issue> <subject>`
@@ -724,7 +724,7 @@ git push origin main
 
 1. Cursor をインストール: https://cursor.sh
 2. このリポジトリをクローン
-3. .cursor/rules/*.mdc が自動的に読み込まれます（Legacy `.cursorrules` も後方互換で読まれる）
+3. .cursor/rules/\*.mdc が自動的に読み込まれます（Legacy `.cursorrules` も後方互換で読まれる）
 4. docs-template/MASTER.md を確認
 5. 開発開始！
 

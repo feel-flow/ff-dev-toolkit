@@ -607,14 +607,14 @@ MASTER.mdは全ドキュメントの**中央ハブ**として機能:
 │    ↑ マージ（リリース時のみ）                                     │
 │  develop (開発ベース)                                            │
 │    ↑ PRマージ                                                    │
-│  feature/#123-add-auth (機能開発)                                │
+│  feature/123-add-auth (機能開発)                                │
 │                                                                 │
 │  ブランチ命名規則:                                                │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │ feature/#{issue-number}-{description}  # 新機能          │   │
-│  │ fix/#{issue-number}-{description}      # バグ修正        │   │
-│  │ chore/#{issue-number}-{description}    # 雑務            │   │
-│  │ docs/#{issue-number}-{description}     # ドキュメント     │   │
+│  │ feature/{issue-number}-{description}  # 新機能          │   │
+│  │ fix/{issue-number}-{description}      # バグ修正        │   │
+│  │ chore/{issue-number}-{description}    # 雑務            │   │
+│  │ docs/{issue-number}-{description}     # ドキュメント    │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
