@@ -7,6 +7,8 @@ argument-hint: [ファイル | diff | Issue番号]
 
 変更対象の文書・コードを分析し、影響度を LOW / MEDIUM / HIGH で評価します。HIGH の場合は ADR・移行計画の要否判定を促します。
 
+> 本コマンドの判定規則（3分類・境界・複合変更の集約・HIGH 時の必須手順）が drift しないことは、`plugins/ff-dev-toolkit/tests/assess-impact/` の fixture と `verify.sh` で検証する。規則の文言・節番号を変えたら同ディレクトリの `verify.sh` を追随させること。
+
 ## 前提
 
 - 変更対象のファイルまたは変更内容が明確であること

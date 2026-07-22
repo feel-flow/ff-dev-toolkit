@@ -5,7 +5,7 @@ status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
 updated: "2026-07-07"
-changeImpact: "LOW"
+changeImpact: "low"
 ---
 
 # DEPLOYMENT.md - デプロイメント・運用ガイド

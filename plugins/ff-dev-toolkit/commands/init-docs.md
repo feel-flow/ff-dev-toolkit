@@ -72,6 +72,7 @@ docs/
 - ステップ1の情報で埋まるプレースホルダー**だけ**を置換する。それ以外（`[金額]`・`[SLA値]`・ライブラリの `[x.x.x]` 等）は**推測で埋めずプレースホルダーのまま残す**（MASTER.md の「情報不足時の必須確認プロトコル」と同じ原則。残存は `/validate-docs` が検出し、実装が進む中で埋めていく）
 - frontmatter の `updated` がテンプレートの具体日付（テンプレート自身の改訂日）になっている場合も**本日日付に更新**する（`created` ≤ `updated` を保つ）
 - frontmatter の `version` は `"1.0.0"` にリセットし、Changelog セクションはテンプレートの改訂履歴を削除して `[1.0.0] - <本日日付> 初版作成` の1行にする
+- frontmatter に `changeImpact` が存在する場合は、小文字の `low` / `medium` / `high` に正規化する（`/validate-docs` の Frontmatter スキーマチェックと整合させるため、`LOW` / `MEDIUM` / `HIGH` のままコピーしない）
 - テンプレートには**初期セット外のファイルへの参照**（`GETTING_STARTED*.md`、`05-operations/deployment/` 配下 等）が含まれる。`PATTERNS.md`・`TESTING.md` 内のこれらへのリンクはリンク切れのまま残ってよい — 必要になった時点で `${CLAUDE_PLUGIN_ROOT}/docs-template/` の同一相対パスから追加コピーする
 - `MASTER.md`・`DEPLOYMENT.md` 内の初期セット外参照は角括弧リンクではなく案内テキストとして記述済みのため、そのままコピーしてよい（追加の置換作業は不要）
 

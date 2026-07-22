@@ -1,10 +1,11 @@
 ---
 title: "ARCHITECTURE"
-version: "1.0.0"
+version: "1.1.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "YYYY-MM-DD"
+updated: "2026-07-22"
+changeImpact: "medium"
 ---
 
 # ARCHITECTURE.md - システムアーキテクチャ設計書
@@ -196,6 +197,8 @@ graph LR
 > ADR（Architecture Decision Record）は、技術選定や設計判断の理由を記録するものです。
 > AIが技術選定の背景を理解し、一貫した設計提案ができるようになります。
 
+> **ADR の必須 4 点**: 各 ADR には【コンテキスト・決定・却下した代替案・影響】の 4 点を含めます。本テンプレートの見出し「代替技術との比較」は、この「却下した代替案」の同義見出しです（採用・却下と却下理由を表形式で記録）。詳細なナラティブ形式の例は [DECISIONS.md](../06-reference/DECISIONS.md) を参照してください。
+
 ### ADR一覧
 
 | ADR     | タイトル           | ステータス | 決定日     |
@@ -331,6 +334,12 @@ PostgreSQL 17.xを採用する。
 | Phase 2  | [時期] | [内容]        |
 
 ## Changelog
+
+### [1.1.0] - 2026-07-22
+
+#### 追加
+
+- §9 ADR 節に「ADR の必須 4 点（コンテキスト・決定・却下した代替案・影響）」を明記し、見出し「代替技術との比較」が標準の「却下した代替案」の同義見出しであることを DECISIONS.md への参照とともに追記（Issue #92）
 
 ### [1.0.0] - YYYY-MM-DD
 

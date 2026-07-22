@@ -5,7 +5,7 @@ status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
 updated: "2026-07-18"
-changeImpact: "MEDIUM"
+changeImpact: "medium"
 ---
 
 # AI駆動開発マスタードキュメント
@@ -653,7 +653,7 @@ AI: DEPLOYMENT.md（索引）→ deployment/self-review.md を読み込み
 | reviewers    | レビュワー一覧   | 承認フロー管理      |
 | tags         | タグ             | 検索・分類          |
 | related      | 関連文書         | 相互参照            |
-| changeImpact | 最新変更の影響度 | LOW / MEDIUM / HIGH |
+| changeImpact | 最新変更の影響度 | low / medium / high |
 
 ### ステータスワークフロー
 
@@ -682,11 +682,11 @@ draft → review → approved
 
 | 影響度 | 基準                         | バージョン更新    |
 | ------ | ---------------------------- | ----------------- |
-| LOW    | 誤字修正、文言調整           | パッチ（0.0.x）   |
-| MEDIUM | 項目追加、既存概念の拡張     | マイナー（0.x.0） |
-| HIGH   | 構造変更、概念の再定義・削除 | メジャー（x.0.0） |
+| low    | 誤字修正、文言調整           | パッチ（0.0.x）   |
+| medium | 項目追加、既存概念の拡張     | マイナー（0.x.0） |
+| high   | 構造変更、概念の再定義・削除 | メジャー（x.0.0） |
 
-変更時は Frontmatter の `version`、`updated`、`changeImpact` を同時に更新し、末尾の Changelog セクションにエントリを追加すること。`changeImpact` は初版では省略可。初回変更時に Frontmatter へ追加する。
+変更時は Frontmatter の `version`、`updated`、`changeImpact` を同時に更新し、末尾の Changelog セクションにエントリを追加すること。`changeImpact` は小文字（`low` / `medium` / `high`）で記録する。`changeImpact` は初版では省略可。初回変更時に Frontmatter へ追加する。
 
 ### Changelog カテゴリ
 
