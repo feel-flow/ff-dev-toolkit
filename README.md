@@ -25,6 +25,13 @@ claude plugin install ff-dev-toolkit@ff-dev-toolkit
 >
 > Codex CLI / Cowork で利用している場合も同様に、旧プラグインの削除と marketplace の再登録が必要です（手順は各プラットフォームのプラグイン管理 UI / CLI に読み替え）。
 
+### 組織のプラグインディレクトリ（GitHubから同期）で配布する場合
+
+Claude（Web / デスクトップ）の管理画面にある「GitHubから同期」は、**Private / Internal リポジトリのみ**が同期対象です（2026年7月時点。最新の挙動は同ダイアログの注意書きを確認してください）。本リポジトリは Public のため、組織のプラグインディレクトリの同期元として登録できません。
+
+- **個人利用**: 上記の CLI インストールをそのまま使ってください（Public リポジトリでも問題ありません）
+- **組織配布**: 本リポジトリを組織の Private リポジトリとして複製（ミラー）し、そのリポジトリを「GitHubから同期」に指定してください。GitHub では Public リポジトリを Private にフォークできないため、フォークではなく [Import repository](https://github.com/new/import) や `git clone --bare` + `git push --mirror` で複製します。複製後は、本リポジトリの更新を随時ミラーへ反映してください
+
 ## 収録内容
 
 ### Skills（2）
