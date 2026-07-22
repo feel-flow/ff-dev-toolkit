@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "ff-dev-toolkit",
-      "description": "開発実務を駆動するツールキット。仕様駆動開発のゲート管理（spec-driven）・エージェントハーネス設計レビュー（harness-review）の2スキルに加え、AI仕様駆動開発の運用コマンド13個（/init-docs によるコア7文書初期化、/validate-docs 検証、/assess-impact 影響度評価、/create-issue・/refine-issue の仕様バリデーション、/pre-commit-check、/close-issue のマージ前 AC 照合ゲート、/ace-setup・/ace-curate のナレッジ蓄積、/setup-ai-config、/multi-explore・/multi-implement・/multi-review のマルチAI CLI オーケストレーション）、docs/ 検索 MCP サーバー（spec-docs、6ツール）、docs テンプレート・スクリプト一式を収録。",
+      "description": "AI仕様駆動開発（AI-SDD）の公式実装。仕様のゲート管理からドキュメント運用・レビュー・ナレッジ蓄積までを統制する。収録: スキル2（spec-driven / harness-review）、運用コマンド13、docs 検索 MCP（spec-docs・6ツール）、docs-template と multi-agent スクリプト。FeelFlow の書籍群から蒸留した方法論ベース。",
       "author": {
         "name": "FeelFlow Inc."
       },
