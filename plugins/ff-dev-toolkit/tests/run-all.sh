@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 SCRIPTS=(
+  "$SCRIPT_DIR/changelog-version/verify.sh"
   "$SCRIPT_DIR/setup-ai-config/verify.sh"
   "$SCRIPT_DIR/assess-impact/verify.sh"
   "$SCRIPT_DIR/validate-docs/verify.sh"

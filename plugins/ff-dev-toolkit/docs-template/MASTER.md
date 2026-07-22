@@ -1,11 +1,11 @@
 ---
 title: "MASTER"
-version: "1.4.0"
+version: "1.4.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-07-18"
-changeImpact: "medium"
+updated: "2026-07-22"
+changeImpact: "low"
 ---
 
 # AI駆動開発マスタードキュメント
@@ -303,7 +303,7 @@ AIツールがランタイム・依存のバージョンを選定する際は、
 - **例外**:
   - `README.md`（標準的な慣習）
   - `CLAUDE.md`, `AGENTS.md`（AIツール向け特殊ファイル）
-  - `.github/copilot-instructions.md`, `.cursorrules`（ツール固有の命名）
+  - `.github/copilot-instructions.md`, `.cursor/rules/*.mdc`（ツール固有の命名・配置。Legacy `.cursorrules` は後方互換）
 
 ### 禁止事項
 
@@ -707,6 +707,12 @@ Changelog エントリには以下のカテゴリを使用する（[Keep a Chang
 - [ ] 定数の配置が層責務に沿っている（Domain/Application/Infrastructure）
 
 ## Changelog
+
+### [1.4.1] - 2026-07-22
+
+#### 変更
+
+- ファイル名例外の Cursor 表記を現行 Project Rules（`.cursor/rules/*.mdc`）へ更新。Legacy `.cursorrules` は後方互換として併記
 
 ### [1.4.0] - 2026-07-18
 

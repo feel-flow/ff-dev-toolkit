@@ -71,6 +71,8 @@ claude plugin install ff-dev-toolkit@ff-dev-toolkit
 
 書籍からの参照はリリースタグで固定されます。最新の安定版は [Releases](https://github.com/feel-flow/ff-dev-toolkit/releases) を参照してください。
 
+バージョンごとの変更内容は [CHANGELOG.md](./CHANGELOG.md) を参照してください。
+
 ## 開発とフィードバック
 
 本リポジトリは FeelFlow 内部リポジトリ（SSOT）からの一方向同期で更新されます。バグ報告・改善要望は本リポジトリの Issue で受け付けます。
