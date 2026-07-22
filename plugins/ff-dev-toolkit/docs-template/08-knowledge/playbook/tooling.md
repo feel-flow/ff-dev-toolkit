@@ -358,3 +358,48 @@
 **Action**: devDep 追加前に `npm view <pkg>@<major> engines.node` を major ごとに引き、project の `engines.node` 下限を**完全に包含する**最大の major を選ぶ（「latest」を無条件に採らない）。宣言を引き上げてよい（例 `>=20.17`）なら別判断として明示する。lockfile とローカル node が新しいと CI/他環境で初めて壊れるため、宣言値ベースで選ぶ。
 
 ---
+
+<a id="ace-66-1"></a>
+
+### ACE-66-1: インストーラの exit 0 は導入完了ではない — post-install で実バイナリの存在・flavor を再検証し、失敗分岐もテストする
+
+| フィールド | 値                 |
+| ---------- | ------------------ |
+| Category   | tooling            |
+| Origin     | PR #66 / Issue #23 |
+| Date       | 2026-07-21         |
+| Helpful    | 0                  |
+| Harmful    | 0                  |
+| Status     | active             |
+
+**Insight**: `install_yq` や `brew install` のような導入ステップが exit 0 を返しても、「期待した実行可能ファイルが PATH 上にあり、期待した実装・バージョンで動く」ことは保証されない。既存の別実装が PATH 前方に残る、インストール先が PATH に無い、パッケージマネージャが別 flavor を入れる、という post-install 失敗は終了コードだけでは検出できないため、導入直後に `command -v` と `--version` 等の実体検証を fail-loud に行う。
+
+**Context**: PR #66 で `setup-multi-agent.sh` に mikefarah 版 `yq` の自動導入と fail-loud 検証を追加した。Codex pr-test-analyzer は「`install_yq` が返っても wrong `yq` が PATH に残る / `yq` が無い」post-install 分岐のテスト不足を指摘。`install_yq` を 0 にスタブした上で、PATH に別実装 yq が残るケース、yq が存在しないケース、install 後に別実装が現れるケースを追加し、終了コードだけを信用して続行する回帰を防いだ。
+
+**Action**: ツール導入処理では、導入関数の成功直後に必ず「(1) `command -v <tool>` が通る、(2) `<tool> --version` 等で期待 flavor / version を満たす、(3) 満たさなければ設定読み取りや後続処理へ進まず return 1」の3点を実装する。テストは install 関数を成功スタブにして、実体不在・wrong flavor・PATH 前方の stale binary の各分岐が fail-loud になることを固定する。
+
+---
+
+<a id="ace-70-2"></a>
+
+### ACE-70-2: CLI ラッパーがモデル・バージョン等の既定値を持つと SSOT が二重化して必ず腐る — 設定機構がある CLI には既定値ごと委譲する
+
+| フィールド | 値                 |
+| ---------- | ------------------ |
+| Category   | tooling            |
+| Origin     | PR #70 / Issue #69 |
+| Related    | ACE-014, ACE-36-1  |
+| Date       | 2026-07-22         |
+| Helpful    | 0                  |
+| Harmful    | 0                  |
+| Status     | active             |
+
+**Insight**: CLI をラップするスクリプトが「モデル slug」「ランタイムバージョン」のような**世代交代する値**の既定値を持つと、その値の SSOT がユーザーの CLI 設定とラッパーの 2 箇所に分裂し、ラッパー側が必ず古くなる。しかもラッパーがフラグを**無条件に渡す**実装だと、ユーザー設定を黙って上書きするうえ、同じ設定ファイル内の関連項目（例: reasoning effort）は上書きされないため「古いモデル + 新しい付随設定」という誰も意図していない組み合わせで動く。正しい形は「env が設定されている時だけフラグを組み立て、未設定ならフラグ自体を渡さない」。これで最新追従は CLI 設定が担い、明示指定は env で効き、ラッパーのメンテはゼロになる。
+
+**Context**: `scripts/codex-review.sh` は `CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"` と既定値を持ち `codex exec -m "$CODEX_MODEL"` と常に渡していた。ユーザーの `~/.codex/config.toml` は `model = "gpt-5.6-sol"` / `model_reasoning_effort = "xhigh"` だったため、普段より 2 世代古いモデルに xhigh の reasoning だけが乗った状態でレビューが走っていた。過去に `gpt-5.3` → `gpt-5.4` の手動更新コミットが実在し、腐敗が反復していたことが確認できた。同ディレクトリの `gemini-review.sh` は既に条件付き配列パターンで正しく実装されており、5 本のラッパーのうち 3 本が委譲済み・2 本が固定という不統一だった。
+
+**Action**:
+
+1. ラッパーで外部 CLI を呼ぶとき、その CLI に設定ファイル / プロファイル機構があるなら**既定値を持たない**。`ARGS=(); [ -n "${ENV_VAR:-}" ] && ARGS=("--flag" "$ENV_VAR")` の形にし、未設定時はフラグを渡さない。配列を使うのは値に空白が含まれても 1 引数に保つため。
+2. 同種のラッパーが複数あるなら、着手前に全部を横断確認してパターンの不統一を洗い出す（片方だけ直すと次の腐敗が別ファイルで再発する）。
+3. 委譲には代償がある — ラッパーの表示が「実際に何を使ったか」を保証できなくなる。表示は「config 由来」と正直に書き、実使用値の記録が要る場合は CLI の出力（多くは stderr の起動バナー）から**観測値**を拾う。仮定を事実として表示しない。

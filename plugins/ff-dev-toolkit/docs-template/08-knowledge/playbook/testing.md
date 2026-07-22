@@ -68,7 +68,7 @@
 | Category   | testing            |
 | Origin     | PR #33 / Issue #25 |
 | Date       | 2026-07-10         |
-| Helpful    | 0                  |
+| Helpful    | 1                  |
 | Harmful    | 0                  |
 | Status     | active             |
 
@@ -155,3 +155,54 @@
 **Action**: 自己完結 HTML の資産分割 PR では、金額/ビジネスロジックテストに加えて「読み込み契約」の構造テストを 1 ファイルで追加する。ブラウザ全枚ウォークスルーは手動または別 Issue の E2E とし、分割 PR の必須ゲートは構造 + 既存純関数テストに置く。
 
 ---
+
+<a id="ace-56-1"></a>
+
+### ACE-56-1: classic script の DOM 統合テストは helper API と自動初期化を分離し、副作用は 1 ファイル 1 import に閉じ込める
+
+| フィールド | 値                 |
+| ---------- | ------------------ |
+| Category   | testing            |
+| Origin     | PR #56 / Issue #6  |
+| Related    | ACE-2-1 / ACE-35-2 |
+| Date       | 2026-07-18         |
+| Helpful    | 0                  |
+| Harmful    | 0                  |
+| Status     | active             |
+
+**Insight**: `file://` 対応の classic script は ES module 化できないが、vitest から `import` すると top-level 関数は module scope に閉じて直接参照できない。DOM グルーをテスト可能にするには、production と同じ classic script を維持したまま `globalThis.Deck` のような helper API を additive に公開し、テストは helper 直接呼び出しと import 時自動初期化を分離する。自動初期化を何度も dynamic import すると keydown listener や observer が蓄積してテスト同士が干渉するため、auto-init 検証は専用ファイルで 1 回だけ再評価し、通常の DOM テストは既に import 済み helper を直接呼ぶ。
+
+**Context**: PR #56 でスライドデッキの CartSim/KPI/キーボード/話者ノート/IntersectionObserver を `happy-dom` でテスト化した。最初は `deck.js` の helper を `globalThis` 公開して `deck-dom.test.js` から直接検証したが、auto-init を同じファイル内で query 付き dynamic import すると副作用 listener が重複した。また IntersectionObserver 検証を `observers[0]` / `observers[1]` の生成順で assert すると、挙動不変の初期化順リファクタで壊れる不安定テストになった。最終的に `deck-auto-init.test.js` を分け、observer は監視対象要素（funnel/reoccur）から対応 observer を探す挙動ベース検証に変えた。
+
+**Action**:
+
+1. `file://` 前提の classic script を DOM テスト可能化するときは、ES module 化せず `globalThis.<Namespace>` へ additive に helper API を公開する。`import`/`export` 禁止は構造回帰テストで固定する。
+2. helper の純粋な DOM 反映テストと import 時 auto-init の副作用テストをファイル分離する。auto-init は query 付き dynamic import を 1 ファイル 1 回に限定し、listener/observer 重複を避ける。
+3. observer や event listener の検証は生成順・登録順ではなく、監視対象要素・発火イベント・DOM 状態変化で assert する。順序依存の `observers[0]` 型テストは避ける。
+
+---
+
+<a id="ace-70-3"></a>
+
+### ACE-70-3: argv 検証スタブは引数を空白連結すると境界を失う — 区切り記号 + 空白入りの値で「クォート安全性」まで固定する
+
+| フィールド | 値                 |
+| ---------- | ------------------ |
+| Category   | testing            |
+| Origin     | PR #70 / Issue #69 |
+| Related    | ACE-464-2          |
+| Date       | 2026-07-22         |
+| Helpful    | 0                  |
+| Harmful    | 0                  |
+| Status     | active             |
+
+**Insight**: シェルスクリプトが外部 CLI に渡す引数をスタブで記録して検証する時、`flags="$flags $1"` のように**空白で連結**すると引数の境界情報が消える。その結果 `-m "gpt 5x"`（正しい配列展開）と `-m gpt 5x`（語分割した非クォート文字列展開）が同一の記録になり、配列を使う唯一の理由であるクォート安全性が検証されない。さらに `shellcheck` の SC2086（未クォート変数展開）は **info 深度**なので、`severity=warning` 運用のリンタゲートでも拾えない。つまりテストとリンタの穴が同じ場所に開き、退化が無検出で通る。各引数を `<>` 等で囲んで境界を保存し、**空白を含む値**を 1 件テストに混ぜることで初めて固定できる。
+
+**Context**: PR #70 で `codex exec` へのモデル引数を配列化し、argv 記録スタブで回帰テストを書いた。初版スタブは空白連結だったため、実装を `CODEX_MODEL_ARGS="-m $CODEX_MODEL"` + 非クォート展開に退化させても**新規テスト 4 件すべてが通過**した。同条件で `shellcheck -S warning` も exit 0 だった。スタブを `flags="${flags}<$1>"` に変更し `CODEX_MODEL="gpt 5x"` のテストを追加したところ、記録が `<exec><-m><gpt><5x>`（期待 `<exec><-m><gpt 5x>`）となり退化を検出できるようになった。
+
+**Action**:
+
+1. argv を記録するスタブでは引数を区切り記号で囲んで境界を保存する（`printf` で `<$1>` 形式に追記する等）。空白連結は使わない。
+2. クォート安全性を検証する意図があるなら、**空白を含む値**のケースを必ず 1 件入れる。実在しない形式で構わない（語分割検出用の probe と分かるようコメントを添える）。
+3. 回帰テストを書いたら**旧実装に巻き戻して FAIL することを確認**するまで完成としない。「新実装で通る」だけでは、テストが差分を見ているのか何を書いても通るのかが区別できない（[ACE-464-2](./process.md#ace-464-2) の mutation 検証を argv レベルに適用したもの）。
+4. リンタの severity 設定が指摘深度を下回っていないか確認する。ゲートが拾わない欠陥はテストが唯一の防御線になる。

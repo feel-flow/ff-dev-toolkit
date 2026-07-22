@@ -788,7 +788,7 @@ Toolkit comment-analyzer が Critical C1/C2 として独立検出、Copilot revi
 | Category   | documentation-quality |
 | Origin     | PR #42                |
 | Date       | 2026-07-17            |
-| Helpful    | 0                     |
+| Helpful    | 1                     |
 | Harmful    | 0                     |
 | Status     | active                |
 
@@ -875,3 +875,23 @@ Toolkit comment-analyzer が Critical C1/C2 として独立検出、Copilot revi
 **Context**: Issue #40 / PR #52。git-workflow.md ステップ3 は「implementation-notes → PR body 転記 → /ace-curate で Helpful 更新」と約束していたが、ace-curate.md の Helpful +1 条件は Phase 2 の重複検出時のみで、Reuse 記録の受け口が存在しなかった（プラグイン配布側#101 の Codex レビューが検出した断線）。さらに port した修正文言自体が「コミット件名・本文」も Helpful 入力に含めており、経路分離（コミット → ace-reuse-report 計測）との矛盾・収集手順欠落による no-op・PR body との二重加算の余地を Toolkit + Codex クロスモデルレビューが再検出。入力を PR body のみに限定し「1 PR につき +1」の dedup を明記して解消した。
 
 **Action**: 「A に書けば B に届く」と文書に書いたら、B の手順書に対応する読み取り・反映ステップが実在するかを対で確認する（導線の両端検証）。集計カウンターの入力仕様には、入力経路の限定（他経路は扱わない旨）と重複出現時の加算規則を必ず明記する。
+
+<a id="ace-63-2"></a>
+
+### ACE-63-2: ミラー並走する文書ペアへのセクション追加は、対側への反映可否を追記時に判定する — 非対称は暗黙に生まれる
+
+| フィールド | 値                    |
+| ---------- | --------------------- |
+| Category   | documentation-quality |
+| Origin     | PR #63                |
+| Related    | ACE-044               |
+| Date       | 2026-07-20            |
+| Helpful    | 0                     |
+| Harmful    | 0                     |
+| Status     | active                |
+
+**Insight**: internal 文書と配布テンプレートのように、セクション単位でミラー並走する文書ペアの片側だけへセクションを追加すると、もう片側の読者には対概念の半分だけが見える非対称が暗黙に生じる。追記時に「対側にも反映するか、意図的非対称として明記するか」を判定しないと、port レビューや利用者側で初めて発覚する。
+
+**Context**: PR #63 で docs/AI_GIT_WORKFLOW.md ステップ3 に「決定事項コメント」を新設した際、ステップ3 をほぼ逐語ミラーする docs-template/05-operations/deployment/git-workflow.md には追加されず、テンプレート利用者には住み分けの片側（implementation-notes）だけが見える状態になった。Toolkit comment-analyzer が Warning として検出し、ACE-044 のスコープ判定（別ファイルは別 Issue）に従い #64 に分離した。
+
+**Action**: ミラー関係にある文書の片側へセクションを追加したら、同 PR 内で対側の扱いを決める（同梱・別 Issue 化・意図的非対称の明記のいずれか）。セルフレビューの確認観点に「この文書にミラーはあるか」を含める。
