@@ -15,6 +15,13 @@
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-07-22
+
+### 追加
+
+- 公開ガイド `USING_WITH_VSCODE_COPILOT.md`（VS Code + GitHub Copilot で AI-SDD を効かせる手順）
+- README に「他のツールで使う」節を追加し、上記ガイドへリンク
+
 ## [0.10.4] - 2026-07-22
 
 ### 変更
