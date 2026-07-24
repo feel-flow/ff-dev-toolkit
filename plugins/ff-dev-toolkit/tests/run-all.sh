@@ -12,6 +12,7 @@ SCRIPTS=(
   "$SCRIPT_DIR/setup-ai-config/verify.sh"
   "$SCRIPT_DIR/assess-impact/verify.sh"
   "$SCRIPT_DIR/validate-docs/verify.sh"
+  "$SCRIPT_DIR/merge-cleanup/verify.sh"
 )
 
 for script in "${SCRIPTS[@]}"; do

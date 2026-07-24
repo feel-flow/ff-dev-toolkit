@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "ff-dev-toolkit",
-      "description": "AI仕様駆動開発（AI-SDD）の公式実装。仕様のゲート管理からドキュメント運用・レビュー・ナレッジ蓄積までを統制する。収録: スキル2（spec-driven / harness-review）、運用コマンド13、docs 検索 MCP（spec-docs・6ツール）、docs-template と multi-agent スクリプト。FeelFlow の書籍群から蒸留した方法論ベース。",
+      "description": "AI仕様駆動開発（AI-SDD）の公式実装。仕様のゲート管理からドキュメント運用・レビュー・ナレッジ蓄積までを統制する。収録: スキル3（spec-driven / harness-review / out-of-scope-issue）、運用コマンド14、docs 検索 MCP（spec-docs・6ツール）、docs-template と multi-agent スクリプト。FeelFlow の書籍群から蒸留した方法論ベース。",
       "author": {
         "name": "FeelFlow Inc."
       },

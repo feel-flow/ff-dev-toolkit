@@ -15,6 +15,20 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-24
+
+### 追加
+
+- `out-of-scope-issue` スキルを新設（個人スキルからの移植）。スコープ外の発見を「同 PR でインライン修正」か「Issue 化して後送り」に判定チェックリストでルーティングし、Issue 化と決めたらその場で `gh issue create` を実行する。「別 Issue にする」の宣言倒れを防ぎ、`/create-issue`（詳細起票ゲート）・`/close-issue`（AC 照合ゲート）と接続する
+
+## [0.11.0] - 2026-07-24
+
+### 追加
+
+- `/merge-cleanup` コマンドを新設。PR マージ後のクリーンアップを単一スクリプト（`scripts/merge-cleanup.sh`、`set -Eeuo pipefail`）で一括実行: base ブランチ復帰 / `fetch --prune` / 対象 PR のリモートブランチ削除（OID 一致時のみ）/ `[gone]` ブランチ + worktree 削除（dirty worktree は保護）/ 最終検証。部分失敗は終了コード 2（PARTIAL）で報告
+- リモート取り残しブランチ（過去のマージ漏れで累積したマージ済みリモートブランチ）の**ガード付き自動削除**。(名前, OID) が MERGED PR の head と完全一致・fork PR 由来でない・保護ブランチでない・open PR で再利用されていない、の全ガードを通過したもののみ `git push origin --delete` する。ガード情報の取得に失敗した場合は削除せずスキップ（fail-closed）
+- 破壊的経路の回帰テスト `tests/merge-cleanup/verify.sh`（一時 git リポジトリ + mock `gh` で OID 不一致・保護ブランチ・open PR 再利用・dirty worktree の各ガードを検証）
+
 ## [0.10.5] - 2026-07-22
 
 ### 追加

@@ -1,7 +1,7 @@
 {
   "name": "ff-dev-toolkit",
-  "version": "0.10.5",
-  "description": "AI仕様駆動開発（AI-SDD）の公式実装。ドキュメント初期化から開発進行・クロスモデルレビュー・ナレッジ蓄積までを Skills / Commands / MCP で統制する。収録: スキル2（spec-driven＝5ゲート管理、harness-review＝ハーネス設計レビュー）／ドキュメント運用（init-docs・validate-docs・assess-impact・create-issue・refine-issue・pre-commit-check・close-issue）／ナレッジ・設定（ace-setup・ace-curate・setup-ai-config）／マルチAI CLI（multi-explore・multi-implement・multi-review）／MCP（spec-docs、docs 検索6ツール）と docs-template・スクリプト一式。FeelFlow の書籍群から蒸留した方法論ベース。",
+  "version": "0.12.0",
+  "description": "AI仕様駆動開発（AI-SDD）の公式実装。ドキュメント初期化から開発進行・クロスモデルレビュー・ナレッジ蓄積までを Skills / Commands / MCP で統制する。収録: スキル3（spec-driven＝5ゲート管理、harness-review＝ハーネス設計レビュー、out-of-scope-issue＝スコープ外発見のルーティング）／ドキュメント運用（init-docs・validate-docs・assess-impact・create-issue・refine-issue・pre-commit-check・close-issue）／ナレッジ・設定（ace-setup・ace-curate・setup-ai-config）／Git 運用（merge-cleanup）／マルチAI CLI（multi-explore・multi-implement・multi-review）／MCP（spec-docs、docs 検索6ツール）と docs-template・スクリプト一式。FeelFlow の書籍群から蒸留した方法論ベース。",
   "author": {
     "name": "FeelFlow Inc.",
     "email": "futoshi@feelflow.co.jp"
