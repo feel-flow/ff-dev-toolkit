@@ -403,3 +403,26 @@
 1. ラッパーで外部 CLI を呼ぶとき、その CLI に設定ファイル / プロファイル機構があるなら**既定値を持たない**。`ARGS=(); [ -n "${ENV_VAR:-}" ] && ARGS=("--flag" "$ENV_VAR")` の形にし、未設定時はフラグを渡さない。配列を使うのは値に空白が含まれても 1 引数に保つため。
 2. 同種のラッパーが複数あるなら、着手前に全部を横断確認してパターンの不統一を洗い出す（片方だけ直すと次の腐敗が別ファイルで再発する）。
 3. 委譲には代償がある — ラッパーの表示が「実際に何を使ったか」を保証できなくなる。表示は「config 由来」と正直に書き、実使用値の記録が要る場合は CLI の出力（多くは stderr の起動バナー）から**観測値**を拾う。仮定を事実として表示しない。
+
+<a id="ace-79-2"></a>
+
+### ACE-79-2: write モードの「すべて最新」は check と同じ不変条件を見てから言え
+
+| フィールド | 値                 |
+| ---------- | ------------------ |
+| Category   | tooling            |
+| Origin     | PR #79 / Issue #76 |
+| Date       | 2026-07-24         |
+| Helpful    | 0                  |
+| Harmful    | 0                  |
+| Status     | active             |
+
+**Insight**: 同期スクリプトの write が frontmatter の一部フィールドだけを直し、「更新不要＝すべて最新」と宣言すると、write 対象外の不変条件（例: Changelog 本文）のドリフトを成功と誤認させる。check がゲートする条件は write でも報告し、必要なら非ゼロで止める。
+
+**Context**: `sync-playbook-frontmatter.ts` の check は version↔Changelog を見るが、初期実装の write は `changes.length === 0` だけで「すべて最新」と出していた。count が一致していても Changelog が古ければ Issue #76 と同じ状態を「完了」と誤認し得た。
+
+**Action**:
+
+1. write の成功メッセージ条件に、check と同じ不変条件（`versionChangelogInSync` 等）を含める。
+2. write が意図的に中間状態を作る操作（例: `--bump-version` は Changelog を自動追記しない）なら、成功時に次ステップのリマインダを出し、desync のままなら exit 1 にする。
+3. ユニットテストで「count 一致 + 他不変条件 desync → すべて最新と言わない / 非ゼロ」を固定する。

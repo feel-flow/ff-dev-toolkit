@@ -124,9 +124,57 @@ ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（例 `ACE-438-1`、非PR
 
 #### 4-c. Frontmatter の更新
 
-- `version` のマイナーバージョンをインクリメント
+`version` の上げ方（semver）:
+
+| 変更内容 | `version` の操作 | 例 |
+| -------- | ---------------- | --- |
+| **新規エントリ追加**（1 件以上） | **minor +1**し、patch は **0 にリセット** | `1.59.1` → `1.60.0`、`1.60.0` → `1.61.0` |
+| **カウンター更新のみ**（Helpful/Harmful、Status 変更のみ） | **変更しない** | `1.60.0` のまま |
+| **パッチ上げは使わない** | ACE curate では patch を上げない（過去に `1.59.1` 等が出たのは手順と `--bump-version` の齟齬。本手順が正） | — |
+
+その他:
+
 - `updated` を今日の日付に更新
 - `ace_entry_count` をインクリメント（新規エントリ追加時のみ。カウンター更新のみの場合は変更しない）
+- 機械同期する場合はプロジェクトの `ace:bump-playbook-frontmatter`（`--write --bump-version`。**minor +1**）。count のみ直すなら `ace:sync-playbook-frontmatter`
+
+#### 4-d. Changelog の更新
+
+`docs/08-knowledge/PLAYBOOK.md` の `## Changelog` セクション**先頭**（最新版の直前）へ、当該版の項目を追記する。**version を上げたのに Changelog が空のまま、を禁止する**（frontmatter の `version` と最新 `### [x.y.z]` は一致必須。`ace:check-playbook-frontmatter` が検証する）。
+
+**新規エントリ追加時**（4-c で minor を上げた版）:
+
+```markdown
+### [x.y.0] - YYYY-MM-DD
+
+#### 追加
+
+- ACE-XXX: [タイトル要約]（Issue #N / PR #N）
+
+#### カウンター更新
+
+- ACE-YYY: Helpful +1（[参照した理由の一行]）
+```
+
+- `#### カウンター更新` は当該 curate で Helpful/Harmful を動かした場合のみ書く（無ければ見出しごと省略）
+- 1 回の curate で追加した全エントリを同じ版ブロックに列挙する
+
+**カウンター更新のみ**（version 不変）:
+
+- 最新版ブロックへ `#### カウンター更新`（無ければ追加）の下に行を追記する。新しい `### [x.y.z]` は作らない
+
+#### 4-e. 同期検証（必須）
+
+4-c / 4-d のあと、コミット前に必ず検証する:
+
+```bash
+npm run ace:check-playbook-frontmatter
+# プロジェクトに npm script が無い場合:
+# npx --yes tsx path/to/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
+```
+
+- exit 0 になるまで 4-c / 4-d を直す（`ace_entry_count` 不一致・version↔Changelog 不一致の両方をゲートする）
+- 通ってから手順 5 のコミットへ進む
 
 ### 5. コミット
 

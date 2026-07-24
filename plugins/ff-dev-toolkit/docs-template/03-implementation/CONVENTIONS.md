@@ -73,7 +73,7 @@ docs-template/
   - `CLAUDE.md`（Claude Code用）
   - `AGENTS.md`（全AIエージェント共通）
   - `.github/copilot-instructions.md`（GitHub Copilot用）
-  - `.cursor/rules/*.mdc`（Cursor 用・現行 Project Rules。拡張子 `.mdc` 必須。ファイル名自体は固定ではない。Legacy `.cursorrules` は後方互換）
+  - `.cursorrules`（Cursor用）
 
 ### 禁止事項
 
@@ -129,9 +129,7 @@ docs-template/
 my-project/
 ├── .github/
 │   └── copilot-instructions.md  # ツール固有の命名
-├── .cursor/
-│   └── rules/
-│       └── spec-driven.mdc      # ツール固有の配置・拡張子（.mdc）。ファイル名はプロジェクトで決める
+├── .cursorrules                  # ツール固有の命名
 ├── docs-template/                # ドキュメントテンプレート
 │   ├── 00-planning/
 │   │   └── PLANNING_TEMPLATE.md

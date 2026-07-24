@@ -19,7 +19,9 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 2
 fi
 
-readonly REPO_ROOT=$(git rev-parse --show-toplevel)
+# SC2155 回避: declare と assign を分け、$(...) の戻り値をマスクしない。
+REPO_ROOT=$(git rev-parse --show-toplevel)
+readonly REPO_ROOT
 cd "$REPO_ROOT"
 
 if [[ -z "${ACE_GARDEN_WALL_PATHS:-}" ]]; then
@@ -43,7 +45,9 @@ trap release_lock EXIT
 
 readonly WT_PARENT="${REPO_ROOT}/${ACE_WORKTREE_PARENT_RELATIVE}"
 mkdir -p "$WT_PARENT"
-readonly WT_NAME="${ACE_WORKTREE_DIR_PREFIX}$(date +%s)"
+# SC2155 回避: declare と assign を分け、$(date ...) の戻り値をマスクしない。
+WT_NAME="${ACE_WORKTREE_DIR_PREFIX}$(date +%s)"
+readonly WT_NAME
 readonly WT_PATH="${WT_PARENT}/${WT_NAME}"
 readonly BRANCH_BASE="${ACE_CAPTURE_BASE_BRANCH:-develop}"
 

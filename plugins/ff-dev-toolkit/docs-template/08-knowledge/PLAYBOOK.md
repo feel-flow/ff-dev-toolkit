@@ -1,11 +1,11 @@
 ---
 title: "PLAYBOOK"
-version: "1.60.0"
+version: "1.61.0"
 status: "approved"
 created: "2026-03-10"
-updated: "2026-07-22"
+updated: "2026-07-24"
 owner: "@fffokazaki"
-ace_entry_count: 128
+ace_entry_count: 131
 tags: [ace, playbook, knowledge-management]
 references:
   - docs/ACE_FRAMEWORK.md
@@ -320,8 +320,19 @@ Playbook が 800 行を超えた場合、以下のように分割する：
 | ACE-70-1   | レビューが収束しない時、指摘が diff のどこに集中しているかを見る — 全部が「依頼外の追加分」ならスコープを疑う                                                               | process               | [playbook/process.md#ace-70-1](./playbook/process.md#ace-70-1)                               |
 | ACE-70-2   | CLI ラッパーがモデル・バージョン等の既定値を持つと SSOT が二重化して必ず腐る — 設定機構がある CLI には委譲する                                                              | tooling               | [playbook/tooling.md#ace-70-2](./playbook/tooling.md#ace-70-2)                               |
 | ACE-70-3   | argv 検証スタブは引数を空白連結すると境界を失う — 区切り記号 + 空白入りの値でクォート安全性まで固定する                                                                     | testing               | [playbook/testing.md#ace-70-3](./playbook/testing.md#ace-70-3)                               |
+| ACE-79-1   | 手順に無いステップは実行されない — 手順修正と機械ゲートはセットで入れる                                                                                                     | process               | [playbook/process.md#ace-79-1](./playbook/process.md#ace-79-1)                               |
+| ACE-79-2   | write モードの「すべて最新」は check と同じ不変条件を見てから言え                                                                                                           | tooling               | [playbook/tooling.md#ace-79-2](./playbook/tooling.md#ace-79-2)                               |
+| ACE-79-3   | Markdown セクション抽出は次の同レベル見出しまでに区切る                                                                                                                     | testing               | [playbook/testing.md#ace-79-3](./playbook/testing.md#ace-79-3)                               |
 
 ## Changelog
+
+### [1.61.0] - 2026-07-24
+
+#### 追加
+
+- ACE-79-1: 手順に無いステップは実行されない — 手順修正と機械ゲートはセットで入れる（Issue #76 / PR #79）
+- ACE-79-2: write モードの「すべて最新」は check と同じ不変条件を見てから言え（Issue #76 / PR #79）
+- ACE-79-3: Markdown セクション抽出は次の同レベル見出しまでに区切る（Issue #76 / PR #79）
 
 ### [1.60.0] - 2026-07-22
 
@@ -338,6 +349,12 @@ Playbook が 800 行を超えた場合、以下のように分割する：
 - ACE-27-4: Helpful +1（PR #70 で Codex の Critical 指摘を実測により誤検知と判定し据え置いた根拠として参照）
 - ACE-044: Helpful +1（PR #70 でスコープ外指摘を #71 / #72 / #73 へ分離する判断に参照）
 
+### [1.59.1] - 2026-07-21
+
+#### 追加
+
+- ACE-66-1: インストーラの exit 0 は導入完了ではない — post-install で実バイナリの存在・flavor を再検証し、失敗分岐もテストする（Issue #23 / PR #66）（Issue #76 で Changelog backfill。当時 frontmatter は 1.59.1）
+
 ### [1.59.0] - 2026-07-20
 
 #### 追加
@@ -350,6 +367,14 @@ Playbook が 800 行を超えた場合、以下のように分割する：
 - ACE-47-1: Helpful +1（PR #63 body の Reuse 記録 — 決定時点更新とマージ直前照合の二重チェック設計の根拠として参照）
 - ACE-42-3: Helpful +1（PR #63 body の Reuse 記録 — 4 行テンプレートと役割分担表を同 PR で用意する設計の根拠として参照）
 - ACE-38-2: Helpful +1（PR #63 body の Reuse 記録 — 決定事項コメントを後続セッションの「読む」導線として設計する根拠として参照）
+
+### [1.58.1] - 2026-07-19
+
+#### 追加
+
+- ACE-61-1: docs/spec のみの PR でも cross-model review を省略しない（PR #61）（Issue #76 で Changelog backfill）
+- ACE-61-2: 件数・存在の事実は「実行して得た決定的出力」で裏取りする（単一ツール出力を鵜呑みにしない）（PR #61）（Issue #76 で Changelog backfill）
+- ACE-61-3: ACE は RAG ではなく「使用時検索 × 保守」の両輪。関連ツールは両輪で設計する（PR #61）（Issue #76 で Changelog backfill）
 
 ### [1.58.0] - 2026-07-18
 
