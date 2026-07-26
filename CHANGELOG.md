@@ -15,6 +15,22 @@
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-07-26
+
+### 修正
+
+- docs-template のゲート例（pre-push フック / CI / 判定スクリプト）に残っていた **fail-silent（空振りを合格として通す）パターン**を横断的に修正した（Issue #154。Issue #152 / PR #153 で 1 ファイルを直した際の横断確認）
+  - `ai-tools-integration.md`: commit-msg フック例が commitlint の終了コードを判定に入れていなかった → `if !` + エラーメッセージの明示判定へ。husky のランナーは hook を `sh -e` で実行するため husky 配下では裸呼び出しでも止まるが、それは実行環境の暗黙の性質で、素の `.git/hooks` 直置きでは合否が最後の grep だけで決まる。環境に依存させない形に固定した
+  - `automated-code-review.md`: レビュー厳格度の判定例が「否定マーカーが見つからなければ合格」形式で、レビューが未実行・途中死した空の結果も合格として通していた → 結果ファイルの非空 + 未完了マーカー不在（契約形式の行頭アンカー。散文中の "incomplete" で誤ブロックしない）+ 肯定マーカー（行頭 `## Verdict: APPROVED`。部分文字列だと引用でも合格になる）で判定する fail-closed 形へ書き換えた。厳格モードは `REVIEW_STRICT=1` のノブとして分離し、「指摘行が無ければ合格」ではなく「`None found` があれば合格」の肯定マーカー判定にした（見出し改名・フォーマット逸脱・指摘残存のすべてがブロック側に倒れる。`sed | grep -q` の SIGPIPE 反転も変数受けで回避）。出力形式の規約（各セクションは指摘ゼロでも `None found`、判定は行頭 `## Verdict:` 行）も明文化した
+  - `automated-code-review.md`: 自動生成ファイル除外スニペットが `git diff --cached` の失敗と「ステージが空」を区別せず、列挙失敗時にレビューを丸ごとスキップしていた → 失敗時は中断する形へ。grep の rc=2（実行失敗）を `|| true` で「全件除外」に丸めない形も併記した
+  - `multi-cli-review-orchestration.md`: pre-push 例が統合レポート自体の存在を検査しておらず、レポート未生成の実行では `INCOMPLETE` / `CRITICAL_BLOCK` の両 grep が「不在 = 合格」で素通りしていた → 非空検査を先頭に追加した
+  - `REVIEW_AGENT_CREATION_GUIDE.md`: アダプター実装の骨格に失敗・打ち切り時の未完了マーカー出力が無く、この骨格で新規アダプターを作ると消費側ゲートの `INCOMPLETE` 検査が空回りする状態だった → orchestrator の機械判定契約（1 行目 `<!-- Status: incomplete -->`）+ `## INCOMPLETE` バナーを書く失敗経路と、exit 0 + 空出力を「完走」と読まない検査を骨格・チェックリストに追加した。終了コードも `exit 1` へ丸めず CLI のものを維持する
+  - `04-quality/TESTING.md`: CI 例のカバレッジ回収に `if: always()` が無く、失敗した回のレポートが出てこなかった → 追加した
+  - `DEPENDENCY_LINT.md`: config 例の `forbidden` ルールに `severity` が無く（既定 `warn` は違反検出でも exit 0）、CI 例が常に緑になる状態だった → `severity: "error"` を明記し、`allowedSeverity` は `allowed` ルール群用で forbidden の重大度は変わらない旨を注記した
+  - `health-check.md`: 終了コードを持たない診断スクリプト（出力 0 行 = 健全と空振りの区別がつかない）を自動ゲートにコピーしないよう注意書きを追加した
+  - `cursor-cli-reviewer.md`: PR #153 で削除済みの `timeout 120 cursor-agent` ラッパー例（stock macOS に timeout(1) が無く空振りの入口になる）が残っていた → アダプタ経由の記述へ揃えた
+- 上記の修正が退行しないよう、文面レベルの drift 検査 suite `tests/docs-gates/` を追加した（25 検査。修正パターンの実在 + 退行パターンの不在を検査し、`run-all.sh` の既定一覧に登録）。説明コメントが needle と同じ文字列を含む箇所は行頭アンカーの `must_match` でコード行そのものを特定し（散文が残ってもコードが消えれば red）、負の検査は grep 自体の失敗（rc>=2）を pass と読まない。needle の設計規則と「変異を当てて red を確認してから登録する」運用をヘッダーに記録した。コードフェンス内シェルの合否経路を静的に追う汎用検査は誤検出が多く載せない判断とし、判断理由も同ヘッダーに記録した
+
 ## [0.13.0] - 2026-07-26
 
 ### 修正

@@ -77,17 +77,15 @@ ignore_imports =
   "forbidden": [
     {
       "name": "domain-cannot-import-adapters",
+      "severity": "error",
       "from": { "path": "^src/domain" },
       "to": { "path": "^src/infrastructure" }
     }
-  ],
-  "options": {
-    "allowedSeverity": "warn"
-  }
+  ]
 }
 ```
 
-> 導入初期は `warn` でもよいが、CI で確実に止める段階では `error` に昇格する。
+> `severity` は `forbidden` ルールごとに指定する。**既定は `warn` で、depcruise は warn の違反では exit 0 を返す**（CI に載せても違反を検出したまま緑になる）。導入初期は `warn` でもよいが、CI で確実に止める段階ではルールの `severity` を `error` に昇格する。なお `allowedSeverity` は `allowed` ルール群の違反に対する設定で、`forbidden` ルールの重大度は変わらない。
 > 既知違反は `forbidden` を消すのではなく、`allowed` 例外（TS）や `ignore_imports`（Python）で管理し、コメントで追跡する。
 
 ## 5. CI / pre-commit への組み込み例
@@ -125,6 +123,10 @@ jobs:
         with:
           node-version: "24"
       - run: npm ci
+      # 注意: forbidden ルールの severity 既定は "warn" で、depcruise は warn の
+      # 違反では exit 0 を返す = 違反を検出してもこのジョブは常に緑になる
+      # （ゲートとして空振り）。CI で止めるルールには severity: "error" を明記
+      # すること（§4 の config 例と注記を参照）
       - run: npx depcruise --config .dependency-cruiser.cjs src
 ```
 

@@ -65,12 +65,9 @@ $(git diff --cached)"
 cursor-agent --print --model auto \
   "Review the following file for simplification opportunities:" \
   < src/services/complex-handler.ts
-
-# タイムアウト付き（ハング対策）
-timeout 120 cursor-agent --print --model auto \
-  "Analyze code complexity and suggest simplifications:
-$(git diff --cached)"
 ```
+
+> **ハング対策**: `cursor-agent --print` は非インタラクティブモードでハングする既知の問題があります。アダプタ経由で実行してください（`cursor-cli-adapter.sh` が 120 秒上限を自前で強制する）。stock macOS には `timeout` コマンドが無いため、手元で `timeout 120 cursor-agent ...` とラップする方法は使えません（[multi-cli-review-orchestration.md](./multi-cli-review-orchestration.md) の「Cursor CLI のハング問題」参照）。
 
 ---
 

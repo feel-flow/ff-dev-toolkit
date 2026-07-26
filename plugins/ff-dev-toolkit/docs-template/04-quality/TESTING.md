@@ -575,6 +575,10 @@ jobs:
         run: npm run test:e2e
 
       - name: Upload coverage
+        # if: always() が無いと、テストが失敗した回のカバレッジ・レポートが
+        # ランナーから出てこない。原因調査に必要なのはまさに失敗した回なので、
+        # 赤いときこそ回収する
+        if: always()
         uses: codecov/codecov-action@v3
         with:
           file: ./coverage/lcov.info

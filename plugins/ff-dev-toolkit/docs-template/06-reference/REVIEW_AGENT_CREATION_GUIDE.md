@@ -186,7 +186,33 @@ Output in the standard review format."
 # 多くのCLIは -p でプロンプトを渡すが、Cursor CLIは --print + positional引数
 # 例: claude -p "$PROMPT" / codex -p "$PROMPT" / gemini -p "$PROMPT"
 # 例: cursor-agent --print --model auto "$PROMPT"
-{cli} -p "$PROMPT" {flags} > "$OUTPUT_FILE" 2>&1
+#
+# 失敗・タイムアウト時は、部分出力の先頭に未完了マーカーを付けて保存してから、
+# CLI の終了コードそのままで非 0 終了する。マーカーが無いと、統合レポートの
+# INCOMPLETE 検査（pre-push ゲート等）が空回りし、打ち切られたレビューが
+# 「指摘なし」として通る（multi-cli-review-orchestration.md のゲート例を参照）。
+# 1 行目の `<!-- Status: incomplete -->` は orchestrator（multi-agent.sh）が
+# 機械判定するヘッダー契約（最初の空行より前・行頭・完全一致）。実装では
+# adapter-common.sh の write_output を使うのが確実
+if ! {cli} -p "$PROMPT" {flags} > "$OUTPUT_FILE" 2>&1; then
+  rc=$?
+  {
+    echo "<!-- Status: incomplete -->"
+    echo "## INCOMPLETE"
+    echo "Status: incomplete — このレビューは完走していない（失敗 or タイムアウト）。以下は打ち切り前の部分出力。"
+    echo
+    cat "$OUTPUT_FILE"
+  } > "${OUTPUT_FILE}.tmp"
+  mv "${OUTPUT_FILE}.tmp" "$OUTPUT_FILE"
+  exit "$rc"
+fi
+
+# 成功終了でも空出力は「完走したレビュー」ではない（認証失敗などを握って
+# exit 0 する CLI がある）。空のまま通すと統合時に黙って消える
+if [ ! -s "$OUTPUT_FILE" ]; then
+  printf '<!-- Status: incomplete -->\n## INCOMPLETE\nStatus: incomplete — CLI は exit 0 だが出力が空（完走ではなく未確認）。\n' > "$OUTPUT_FILE"
+  exit 1
+fi
 
 # 4. 出力パース（CLI固有の後処理）
 # ...
@@ -495,6 +521,7 @@ bash scripts/multi-review.sh --mode cross-model --perspective code-review
 - [ ] プロンプト構築ロジックを実装
 - [ ] 出力パースを実装（CLI固有 → 統一形式）
 - [ ] タイムアウト処理を実装
+- [ ] 失敗・打ち切り時に部分出力へ未完了マーカー（1 行目に `<!-- Status: incomplete -->`、続けて `## INCOMPLETE` バナー）を付けて保存し、非 0 で終了する処理を実装（無いと orchestrator の機械判定と消費側の INCOMPLETE 検査が空回りする）
 
 ### Step 3: 設定追加
 

@@ -403,7 +403,16 @@ npx husky init
 . "$(dirname "$0")/_/husky.sh"
 
 # Conventional Commits形式チェック
-npx --no-install commitlint --edit "$1"
+# 終了コードを if で明示的に判定に入れる。husky のランナーは hook を `sh -e` で
+# 実行するため、husky 配下では裸呼び出しでも失敗すれば止まる。ただしその挙動は
+# 実行環境の暗黙の性質で、素の .git/hooks に直置きした場合（errexit なし）は
+# 合否が最後の grep だけで決まり、commitlint の違反や --no-install での
+# 未インストール（何も実行されない）が合格として通る。環境に依存させず、
+# 明示判定 + エラーメッセージで固定する
+if ! npx --no-install commitlint --edit "$1"; then
+  echo "エラー: Conventional Commits 形式チェックに失敗しました（違反 or commitlint 未インストール）"
+  exit 1
+fi
 
 # ドキュメント参照チェック
 if ! grep -iqE "参照:" "$1"; then
@@ -412,6 +421,8 @@ if ! grep -iqE "参照:" "$1"; then
   exit 1
 fi
 ```
+
+> ⚠️ **ゲートを書くときの注意**: 検証コマンドの終了コードを捨てるゲートは、検証が実行されなかった・途中で死んだ「空振り」を合格として通します。errexit が効くかどうかは実行環境次第です（husky のランナーは `sh -e` で hook を実行するが、素の `.git/hooks` 直置きでは効かない）。環境の暗黙挙動に頼らず、判定に使うコマンドは必ず `if ! cmd; then exit 1; fi` の形で終了コードを見てください（Issue #154）。
 
 ### commitlint設定
 

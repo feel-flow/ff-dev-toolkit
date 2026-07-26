@@ -308,6 +308,14 @@ if ! bash scripts/multi-review.sh \
   exit 1
 fi
 
+# 統合レポート自体の存在を検査する。`grep ... 2>/dev/null` はファイル不在の
+# エラーも隠すため、レポートが生成されなかった実行（出力先の契約ドリフト等）
+# では以降の 2 つの grep が両方「不在 = 合格」で素通りしてしまう
+if [ ! -s .review-results/integrated-report.md ]; then
+  echo "❌ 統合レポートがありません。未生成は「指摘なし」ではなく「未確認」です。"
+  exit 1
+fi
+
 # 未完了の節が残っていればブロック（打ち切られたレビューは CRITICAL_BLOCK を
 # 出さないので、CRITICAL_BLOCK だけを見るゲートは「空振り」を pass と読む）
 if grep -q "INCOMPLETE" .review-results/integrated-report.md 2>/dev/null; then

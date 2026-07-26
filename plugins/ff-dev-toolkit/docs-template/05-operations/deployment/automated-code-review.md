@@ -231,6 +231,8 @@ None found
 **Reason**: No critical issues found. One important issue noted for follow-up.
 ```
 
+> **出力形式の規約**: 各セクション（Critical / Important / Suggestions）は指摘ゼロでも見出しを省略せず `None found` と出力する。最終判定は行頭の `## Verdict: APPROVED` または `## Verdict: REJECTED` の 1 行で表す。下の判定ロジック例はこの規約（肯定マーカーの存在）を前提にしている。
+
 ---
 
 ## カスタマイズ
@@ -260,16 +262,50 @@ None found
 `scripts/review-common.sh` の判定ロジックを変更:
 
 ```bash
-# 厳格モード: Important Issues でもブロック
-if grep -qEi "REJECTED|Important Issues" "$REVIEW_RESULT"; then
+# モードに関わらず、先に「レビューが完走したか」を検査する（fail-closed）。
+# 結果ファイルが無い・空・未完了マーカー残存は「指摘なし」ではなく「未確認」。
+# マーカーはアダプタが書く契約形式（行頭）に限定する。裸の `grep -qi incomplete`
+# だと、完走したレビュー本文の散文（"incomplete error handling" 等）でも
+# 誤ブロックする
+if [ ! -s "$REVIEW_RESULT" ] || grep -qE '^(<!-- Status: incomplete -->|## INCOMPLETE)' "$REVIEW_RESULT"; then
+    echo "❌ レビューが完走していません（未実行・失敗・タイムアウト）"
     exit 1
 fi
 
-# 緩和モード: Critical Issues のみブロック
-if grep -qEi "REJECTED" "$REVIEW_RESULT" && grep -qEi "Critical Issues" "$REVIEW_RESULT"; then
+# 合格は肯定マーカー（判定行）の存在で決める。「REJECTED が見つからなければ
+# 合格」の形は、レビューが途中で死んでマーカーが 1 つも書かれなかった実行まで
+# 合格として通す。行頭 `^## ` に固定するのは、部分文字列一致だと指摘本文中の
+# 引用（例: 理由欄に "Verdict: APPROVED" と書かれた REJECTED レビュー）でも
+# 合格になるため
+if ! grep -q "^## Verdict: APPROVED" "$REVIEW_RESULT"; then
+    echo "❌ レビューが APPROVED を返しませんでした"
     exit 1
 fi
+
+# 厳格モード（REVIEW_STRICT=1）: APPROVED でも Important Issues が空でなければ
+# ブロック。既定（緩和モード）は上の Verdict 検査までで判定する。
+# 出力形式の規約により、セクションは指摘ゼロでも "None found" を出力する。
+# そこで「指摘行が無ければ合格」ではなく「None found があれば合格」で判定する
+# （見出し改名・フォーマット逸脱・指摘残存のすべてがブロック側に倒れる）。
+# sed の出力は変数に受ける: `sed | grep -q` はマッチ時に grep が先に抜けて
+# sed が SIGPIPE (141) になり、pipefail 環境では判定が反転しうる
+if [ "${REVIEW_STRICT:-0}" = "1" ]; then
+    SECTION="$(sed -n '/^## Important Issues/,/^#\{1,6\} /p' "$REVIEW_RESULT")"
+    if [ -z "$SECTION" ]; then
+        echo "❌ Important Issues セクションが見つかりません（フォーマット逸脱 = 未確認）"
+        exit 1
+    fi
+    case "$SECTION" in
+        *"None found"*) ;;  # 指摘ゼロの肯定マーカーあり → 通す
+        *)
+            echo "❌ Important Issues が残っています（厳格モード）"
+            exit 1
+            ;;
+    esac
+fi
 ```
+
+> ⚠️ **ゲートを書くときの注意**: レビュープロセスの終了コードを捨ててマーカーの有無だけで判定すると、レビューが 1 件も完走しなかった実行が「マーカーなし = 合格」として通ります（Issue #152 / #154 の失敗モード）。ゲートは (a) 実行の成否（終了コード）、(b) 出力の完全性（非空 + `INCOMPLETE` 不在）、(c) 内容の判定（肯定マーカーの存在）の 3 つを別々に検査してください。この関数の呼び出し元でも、レビュー CLI 本体の終了コードを `if ! ...` で検査すること。
 
 ### 特定ファイルの除外
 
@@ -277,9 +313,24 @@ fi
 
 ```bash
 # 自動生成ファイルはスキップ
-STAGED_FILES=$(git diff --cached --name-only)
-# 除外対象でないファイルリストを取得
-NON_GENERATED_FILES=$(echo "$STAGED_FILES" | grep -vE '^(package-lock\.json|yarn\.lock|pnpm-lock.yaml|.*\.generated\..*)$')
+# git diff 自体の失敗と「ステージが空」を区別する。husky のランナーは hook を
+# `sh -e` で実行するため裸の代入でも失敗すれば止まるが、その場合は理由の説明が
+# 無いまま abort する。husky を外した運用（素の .git/hooks）では止まりすらしない
+# ので、実行環境に依存させず明示的に判定してメッセージを出す
+if ! STAGED_FILES=$(git diff --cached --name-only); then
+    echo "❌ git diff --cached が失敗しました。スキップ判定は行わず中断します"
+    exit 1
+fi
+# 除外対象でないファイルリストを取得。grep -v の終了コードは 0=残あり /
+# 1=全件除外（空でよい） / 2 以上=grep 自体の失敗。`|| true` で丸めると
+# 失敗まで「全件除外 = レビュー不要」に化けるので、1 だけを正常系として通す
+NON_GENERATED_FILES=$(echo "$STAGED_FILES" | grep -vE '^(package-lock\.json|yarn\.lock|pnpm-lock.yaml|.*\.generated\..*)$') || {
+    rc=$?
+    if [ "$rc" -gt 1 ]; then
+        echo "❌ 除外フィルタの実行に失敗しました (rc=$rc)。スキップ判定は行わず中断します"
+        exit 1
+    fi
+}
 
 # 除外対象でないファイルがなければスキップ
 if [ -z "$NON_GENERATED_FILES" ]; then
