@@ -97,7 +97,9 @@ agents:
 
 ### フォールバック時の動作
 
-Cursor CLIが利用不可の場合、`code-simplification` パースペクティブは `codex-cli` にフォールバックします。
+Cursor CLI が**未インストール**の場合、`code-simplification` パースペクティブはプラン構築時に `codex-cli` へ再分配されます。
+
+一方、インストール済みの Cursor CLI が**実行時にハング・タイムアウト・異常終了**した場合は、別 CLI への自動再実行は行いません（実行時 fallback は意図的に持たせていない）。そのタスクは失敗として報告され、失敗サマリーが次の一手を出力します。詳細は [multi-cli-review-orchestration.md](./multi-cli-review-orchestration.md) の「CLI がタイムアウト・異常終了したとき」を参照してください。
 
 ---
 
@@ -111,30 +113,18 @@ Cursor CLIが利用不可の場合、`code-simplification` パースペクティ
 
 **回避策**:
 
-1. **timeout コマンドでラップ**（推奨）:
+1. **アダプター経由で実行する**（推奨）:
+
+`scripts/adapters/cursor-cli-adapter.sh` が 120 秒の上限を適用し、`run_with_timeout` が期限到達時にプロセスグループごと停止させます（`timeout(1)` が無いホストでも自前の supervisor が効くので coreutils の導入は不要）。`multi-agent.sh` 経由なら上限は orchestrator 側で適用されるため、ログに出る秒数と提示される再実行コマンドが実際に適用された値と一致します。
+
+打ち切られた場合、それまでに得られた部分出力は `Status: incomplete` ヘッダーと `INCOMPLETE` バナー付きで結果ファイルに保存され、統合レポートでも完了レビューと区別されます。**未完了の節は「指摘なし」ではなく「未確認」と読んでください。**
+
+2. **手元で単発実行する場合**:
 
 ```bash
-# Linux
-timeout 120 cursor-agent --print --model auto "prompt here"
-
-# macOS（coreutilsが必要: brew install coreutils）
-gtimeout 120 cursor-agent --print --model auto "prompt here"
-```
-
-2. **アダプターでの対応**:
-
-```bash
-# adapter-cursor-cli.sh 内
-TIMEOUT=${REVIEW_TIMEOUT:-120}
-timeout "$TIMEOUT" cursor-agent --print --model auto "$PROMPT" > "$OUTPUT_FILE" 2>&1 || {
-  if [ $? -eq 124 ]; then
-    echo "WARNING: Cursor CLI timed out after ${TIMEOUT}s" >&2
-    echo "## Code Simplification Review Results
-
-**Reviewer**: Cursor CLI (timed out)
-**Verdict**: SKIPPED — Timeout after ${TIMEOUT}s" > "$OUTPUT_FILE"
-  fi
-}
+bash scripts/adapters/cursor-cli-adapter.sh \
+  scripts/perspectives/review/code-simplification.md \
+  .review-results/cursor-cli/code-simplification.md
 ```
 
 3. **Cursor CLIをスキップして代替CLIを使用**:

@@ -59,6 +59,9 @@ else
     "$SCRIPT_DIR/assess-impact/verify.sh"
     "$SCRIPT_DIR/validate-docs/verify.sh"
     "$SCRIPT_DIR/merge-cleanup/verify.sh"
+    # 一時 git リポジトリ + stub CLI を使い、打ち切りや猶予期間の実測待ちを含むので
+    # 後ろに置く（単体で〜35 秒。数字を更新するときは実測してから直すこと）
+    "$SCRIPT_DIR/multi-agent-timeout/verify.sh"
     "$SCRIPT_DIR/run-all/verify.sh"
   )
 fi

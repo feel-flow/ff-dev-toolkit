@@ -119,7 +119,7 @@ bash scripts/multi-review.sh --dry-run
 | ---------- | ---------------- | ----------------- | ------------------- |
 | Strategy   | balanced         | minimize_cost     | maximize_quality    |
 | Output Dir | .review-results/ | .explore-results/ | .implement-results/ |
-| Timeout    | 300s             | 600s              | 900s                |
+| Timeout    | 900s             | 600s              | 900s                |
 | Diff 含む  | Yes              | No                | Optional            |
 
 ## 設定 (agent-config.yaml)
@@ -131,7 +131,8 @@ v1.0 (review-config.yaml) との後方互換あり。
 
 - **Review/Explore**: read-only（コード変更なし）
 - **Implement**: ステージングディレクトリ出力（ワーキングツリー直接書き込み禁止）
-- **Fallback**: CLI未インストール時は自動的に代替CLIへ再分配
+- **Fallback（プラン構築時のみ）**: CLI未インストール時は自動的に代替CLIへ再分配
+- **実行時 fallback は無し**: インストール済み CLI がエラー／タイムアウトしても別 CLI へ振り替えず、失敗として報告して非 0 終了する。クロスモデル性が黙って変わること・代替先のコスト帯が上がりうること・タイムアウト再試行が同じ制限時間を再消費することを避けるため。部分出力は `Status: incomplete` 付きで保存し、統合レポートに `INCOMPLETE` を明示する（未完了の節は「指摘なし」ではなく「未確認」）
 - **Cost Strategy**: minimize_cost で premium CLI を flat-rate CLI に自動振り替え
 
 ## Perspective 作成ガイド

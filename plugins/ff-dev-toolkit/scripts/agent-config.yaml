@@ -8,11 +8,19 @@ mode: distributed  # distributed | cross-model
 parallel: true
 
 # ── Task-specific Settings ──
+# timeout は「1 CLI あたりの壁時計上限（秒）」。既定値は scripts/multi-agent.sh の
+# DEFAULT_TIMEOUT_* が正本。本ファイル・`--help`・アダプタ単独実行時の既定
+# （adapters/adapter-common.sh の REVIEW_TIMEOUT）・利用者向け文書の一致を
+# tests/multi-agent-timeout/verify.sh が検査する（片方だけ直すと red になる）。
+# なお cursor-cli だけは非インタラクティブ時のハング対策で 120 秒に上限が掛かる
+# （multi-agent.sh の get_cli_timeout_cap）。
+# review が 900 なのは 300 では足りなかったため: 中規模差分（3 files, +881/-14）の
+# Codex レビューが 300 秒時点でまだ作業中で、打ち切られて成果ゼロになった（Issue #152）。
 tasks:
   review:
     cost_strategy: balanced  # balanced | minimize_cost | maximize_quality
     output_dir: .review-results
-    timeout: 300
+    timeout: 900
   explore:
     cost_strategy: minimize_cost
     output_dir: .explore-results
@@ -103,7 +111,17 @@ agents:
       explore: '--print --model auto "{prompt}"'
       implement: '--print --model auto "{prompt}"'
 
-# ── Graceful Degradation ──
+# ── Graceful Degradation（プラン構築時のみ／実行時失敗には適用しない） ──
+# この対応表が**適用**されるのは「CLI が未インストールでプランを組めないとき」だけ。
+# 実行時失敗のあとにも参照はされるが、それは失敗サマリーで代替 CLI の名前とコスト帯を
+# 示すためで、自動実行はしない。
+# インストール済みの CLI が実行時にエラー／タイムアウトした場合、代替 CLI での
+# 再実行は行わず、そのタスクを失敗として報告して非 0 終了する（Issue #152）。
+# 理由: 本ツールの価値は同じ差分を**別のモデル**に見せることなので、黙って差し替えると
+# 「実際に何がレビューされたか」が変わるのにレポート上は観点が埋まって見える。
+# また代替先はコスト帯が上がる場合がある（codex-cli → claude-code は standard →
+# premium）。タイムアウト後の再試行は同じ制限時間をもう一度消費するだけになりやすい。
+# 代替を使いたいときは失敗サマリーが出力するコマンドで `--cli` 明示して実行する。
 fallback:
   claude-code: codex-cli
   codex-cli: claude-code

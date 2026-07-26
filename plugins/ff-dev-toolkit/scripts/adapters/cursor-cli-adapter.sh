@@ -14,9 +14,13 @@
 # Requires: cursor-agent (Cursor IDE CLI)
 # Cost tier: Flat-rate ($20/month subscription)
 #
-# ⚠️  Known issue: cursor-agent --print may hang in non-interactive mode.
-#     A shorter default timeout (120s) and forced timeout are applied.
-#     On macOS, install gtimeout: brew install coreutils
+# ⚠️  Known issue: cursor-agent --print may hang in non-interactive mode, so the
+#     timeout is capped at 120s. When run through multi-agent.sh the cap is
+#     applied there (get_cli_timeout_cap) so the limit it reports and advises is
+#     the one that applies; the cap below is for a direct invocation. Both values
+#     are gated against each other by tests/multi-agent-timeout/verify.sh.
+#     run_with_timeout enforces the limit with its own supervisor on every host —
+#     no coreutils install required.
 # ────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -27,8 +31,10 @@ source "${SCRIPT_DIR}/adapter-common.sh"
 readonly CLI_NAME="Cursor CLI"
 readonly CLI_COMMAND="cursor-agent"
 
-# Shorter default timeout due to known hanging issue
-readonly DEFAULT_CURSOR_TIMEOUT=120
+# Shorter default timeout due to known hanging issue.
+# FF_CURSOR_TIMEOUT_CAP is the same test seam multi-agent.sh honours, so a test can
+# exercise the cap without waiting out the real 120s.
+readonly DEFAULT_CURSOR_TIMEOUT="${FF_CURSOR_TIMEOUT_CAP:-120}"
 
 # ── Preflight ──
 
@@ -61,17 +67,28 @@ echo "   Timeout: ${TIMEOUT}s (capped for Cursor)" >&2
 
 # Cursor CLI: --print for non-interactive output, --model auto
 # Same flags for all task types (flat-rate, no sandbox granularity)
-stderr_log="$(mktemp)"
+perspective_name="$(basename "$PERSPECTIVE_FILE" .md)"
+# Guard this mktemp explicitly: under `set -e` a failure here would kill the
+# adapter with a bare 1 before run_with_timeout is ever reached, filing a broken
+# TMPDIR as "the CLI exited 1" and writing no artifact at all.
+stderr_log="$(mktemp 2>/dev/null)" || stderr_log=""
+if [[ -z "$stderr_log" ]]; then
+  fail_orchestrator_error "$perspective_name" \
+    "cannot create a temp file for ${CLI_NAME} stderr (check TMPDIR)."
+fi
 
 result=$(run_with_timeout "$TIMEOUT" \
   "$CLI_COMMAND" --print --model auto "$prompt" \
   2>"$stderr_log") || {
-    echo "ERROR: ${CLI_NAME} execution failed or timed out (known issue)." >&2
-    echo "Workaround: Use --cli copilot-cli to substitute." >&2
-    if [[ -s "$stderr_log" ]]; then
-      echo "--- CLI stderr ---" >&2; cat "$stderr_log" >&2; echo "--- end stderr ---" >&2
+    # Capture the status first: any command inside this block would overwrite $?.
+    rc=$?
+    # Ask the out-of-band reason rather than the number: cursor-agent exiting 124
+    # on its own is not our deadline firing, and the hang note would misdirect.
+    if [[ "$(read_timeout_reason)" == "timeout" ]]; then
+      echo "NOTE: ${CLI_NAME} is known to hang in non-interactive mode — a timeout" >&2
+      echo "      here may be the hang rather than a genuinely long review." >&2
     fi
-    rm -f "$stderr_log"; exit 1
+    fail_cli_task "$rc" "$stderr_log" "$perspective_name" "$result"
   }
 rm -f "$stderr_log"
 
@@ -82,5 +99,4 @@ fi
 
 # ── Write Output ──
 
-perspective_name="$(basename "$PERSPECTIVE_FILE" .md)"
 write_output "$OUTPUT_FILE" "$CLI_NAME" "$perspective_name" "$result"

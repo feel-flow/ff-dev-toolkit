@@ -111,7 +111,9 @@ agents:
 
 ### フォールバック時の動作
 
-Gemini CLIが利用不可の場合、担当パースペクティブ（`security-analysis`、`comment-analysis`）は `codex-cli` にフォールバックします。
+Gemini CLI が**未インストール**の場合、担当パースペクティブ（`security-analysis`、`comment-analysis`）はプラン構築時に `codex-cli` へ再分配されます。
+
+一方、インストール済みの Gemini CLI が**実行時にエラー・レート制限・タイムアウト**で失敗した場合は、別 CLI への自動再実行は行いません（実行時 fallback は意図的に持たせていない）。そのタスクは失敗として報告され、失敗サマリーが次の一手を出力します。詳細は [multi-cli-review-orchestration.md](./multi-cli-review-orchestration.md) の「CLI がタイムアウト・異常終了したとき」を参照してください。
 
 ---
 
@@ -172,7 +174,7 @@ Error: GEMINI_API_KEY is not set
 Error: 429 Too Many Requests
 ```
 
-**対応**: 無料枠の制限に達した場合、数分待つか、`minimize_cost` 戦略で他のCLIにフォールバック
+**対応**: レート制限は**実行時失敗**なので、他 CLI への自動再実行は起きません（そのタスクは失敗として報告される）。数分待って再実行するか、次回の実行を最初から他 CLI に割り当てます（`--cli` で明示、または `minimize_cost` 戦略で無料/固定料金 CLI を優先）。`minimize_cost` はプラン構築時の割り当てを変える指定で、失敗後の救済ではない点に注意してください。
 
 ### 長いレスポンス時間
 

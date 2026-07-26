@@ -27,8 +27,25 @@
 #   --base <branch>         Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop)
 #   --include-diff          Include diff in implement prompts
 #   --dry-run               Show plan without executing
-#   --timeout <seconds>     Timeout per CLI (auto-detected by task type)
+#   --timeout <seconds>     Timeout per CLI (default: review 900 / explore 600 / implement 900)
 #   --help                  Show this help
+#
+# Fallback semantics (two different things — do not confuse them):
+#   Plan-time (automatic):  a CLI that is NOT INSTALLED has its perspectives
+#                           reassigned to the `fallback:` CLI in agent-config.yaml
+#                           while the plan is built.
+#   Runtime (never automatic): a CLI that IS installed but then fails or times out
+#                           is NOT retried on another CLI. The task is reported as
+#                           failed and the run exits non-zero.
+#   Why runtime fallback is deliberately absent: this tool exists to get several
+#   *different* models onto the same diff, so silently swapping the model changes
+#   what was actually reviewed while the report still shows the perspective as
+#   covered; the configured substitute can also be a costlier tier (codex-cli →
+#   claude-code is standard → premium) that the user never asked to pay for; and
+#   a retry after a timeout spends a second full budget on the same slow work.
+#   Re-run the substitute yourself with --cli when you want it — the failure
+#   summary prints a ready-to-run command for each failed task, matched to why it
+#   failed (a longer limit is only offered when a limit is what ran out).
 #
 # Entry Points:
 #   Terminal:     bash scripts/multi-agent.sh --task review
@@ -157,13 +174,72 @@ get_default_output_dir() {
   esac
 }
 
+# ── Task-type default timeouts (seconds) ──
+# SSOT for the defaults. Every copy of these numbers must agree, and
+# tests/multi-agent-timeout/verify.sh gates all of them:
+#   - these constants
+#   - the --timeout line in this file's header (rendered verbatim as --help)
+#   - scripts/agent-config.yaml (tasks.*.timeout)
+#   - adapters/adapter-common.sh's REVIEW_TIMEOUT default, for a direct adapter run
+#   - the user-facing docs (commands/multi-review.md + two docs-template pages)
+#
+# Review is 900s because 300s did not fit reality: a Codex `exec` review of a
+# medium diff (3 files, +881/-14) was still working when the limit fired, so the
+# task produced nothing at all (issue #152). Measured after the fix, four runs of
+# that same review completed in 299-373s — straddling the old default, so the same
+# shape of diff used to succeed or fail by chance. 900s is ~2.4x the longest
+# measurement, and matches implement. A generous limit is close to free now that run_with_timeout returns as
+# soon as the CLI answers; before that fix, on hosts without timeout(1) (stock
+# macOS), every run paid the full limit regardless, which is why raising this
+# number used to be unaffordable.
+readonly DEFAULT_TIMEOUT_REVIEW=900
+readonly DEFAULT_TIMEOUT_EXPLORE=600
+readonly DEFAULT_TIMEOUT_IMPLEMENT=900
+
 get_default_timeout() {
   case "$1" in
-    review)    echo "300" ;;
-    explore)   echo "600" ;;
-    implement) echo "900" ;;
-    *)         echo "300" ;;
+    review)    echo "$DEFAULT_TIMEOUT_REVIEW" ;;
+    explore)   echo "$DEFAULT_TIMEOUT_EXPLORE" ;;
+    implement) echo "$DEFAULT_TIMEOUT_IMPLEMENT" ;;
+    *)         echo "$DEFAULT_TIMEOUT_REVIEW" ;;
   esac
+}
+
+# ── Per-CLI Timeout Caps ──
+# Some CLIs cannot be given the full budget. Cursor's --print mode has a known
+# non-interactive hang, so it is capped so one CLI cannot sit on the whole run.
+#
+# The cap lives HERE, not only in the adapter, because the orchestrator is what
+# reports and advises about timeouts. When the adapter capped silently, a
+# cursor-cli task that stopped at 120s was logged as "Timed out after 900s" and
+# the printed remedy was `--timeout 1800` — which the adapter clamped straight
+# back to 120, so following the advice changed nothing. Empty means no cap.
+# cursor-cli-adapter.sh keeps the same cap for direct invocation; the two values
+# are gated against each other by tests/multi-agent-timeout/verify.sh.
+#
+# Test seam: FF_CURSOR_TIMEOUT_CAP lowers the cap. Without it the *application* of
+# the cap (capping, reporting the capped number, advising that --timeout cannot
+# extend it) is untestable — pinning it behaviourally would cost a 120s hang, so
+# the suite only checked that the two constants matched. Same seam shape as
+# FF_TIMEOUT_KILL_GRACE in adapters/adapter-common.sh.
+readonly CURSOR_TIMEOUT_CAP="${FF_CURSOR_TIMEOUT_CAP:-120}"
+
+get_cli_timeout_cap() {
+  case "$1" in
+    cursor-cli) echo "$CURSOR_TIMEOUT_CAP" ;;
+    *)          echo "" ;;
+  esac
+}
+
+# The limit that will actually apply to this CLI.
+get_effective_timeout() {
+  local cap
+  cap="$(get_cli_timeout_cap "$1")"
+  if [[ -n "$cap" && "$TIMEOUT" -gt "$cap" ]]; then
+    echo "$cap"
+  else
+    echo "$TIMEOUT"
+  fi
 }
 
 get_default_strategy() {
@@ -203,6 +279,9 @@ MODE="distributed"
 STRATEGY=""
 PARALLEL=true
 OUTPUT_DIR=""
+# Whether --output-dir was given, so the retry advice can carry it (the value
+# itself is always set later by apply_task_defaults, so it cannot be inferred).
+OUTPUT_DIR_EXPLICIT=false
 # NOTE: keep this detection in sync with detect_base_branch() in adapters/adapter-common.sh
 BASE_BRANCH="${MULTI_AGENT_BASE_BRANCH:-}"
 BASE_BRANCH_SOURCE="MULTI_AGENT_BASE_BRANCH env"
@@ -232,6 +311,15 @@ AVAILABLE_CLIS=""
 
 # Execution plan: CLI_NAME:PERSPECTIVE pairs (newline-separated)
 EXECUTION_PLAN=""
+
+# Tasks that failed this run, as "cli/perspective:exit_code" (space-separated).
+# Drives the retry advice printed after execution — a bare count leaves the user to
+# work out which CLI to re-run and with what, which is exactly the moment they
+# reach for a runtime fallback that does not exist. The exit code rides along
+# because the right advice depends on it: more time helps a timeout and is useless
+# for expired credentials. cli/perspective are validated single path segments and
+# cannot contain ':', so the suffix is unambiguous.
+FAILED_TASKS=""
 
 # ── Utility ──
 
@@ -263,7 +351,7 @@ parse_args() {
       --perspective) PERSPECTIVE_FILTER="${PERSPECTIVE_FILTER:+$PERSPECTIVE_FILTER }$2"; shift 2 ;;
       --parallel)    PARALLEL=true; shift ;;
       --sequential)  PARALLEL=false; shift ;;
-      --output-dir)  OUTPUT_DIR="$2"; shift 2 ;;
+      --output-dir)  OUTPUT_DIR="$2"; OUTPUT_DIR_EXPLICIT=true; shift 2 ;;
       --base)        BASE_BRANCH="$2"; BASE_BRANCH_SOURCE="--base flag"; shift 2 ;;
       --dry-run)     DRY_RUN=true; shift ;;
       --timeout)     TIMEOUT="$2"; shift 2 ;;
@@ -431,7 +519,7 @@ build_distributed_plan() {
           echo "  ⚠️  ${cli_name}: fallback ${fallback_target} excluded by --cli filter. Skipping." >&2
           continue
         fi
-        echo "  ↪ ${cli_name} → ${fallback_target} (fallback)" >&2
+        echo "  ↪ ${cli_name} → ${fallback_target} (fallback — ${cli_name} not installed)" >&2
         for p in $perspectives; do
           if [[ -n "$PERSPECTIVE_FILTER" ]] && ! list_contains "$PERSPECTIVE_FILTER" "$p"; then
             continue
@@ -499,7 +587,9 @@ show_plan() {
   echo "   Output: ${OUTPUT_DIR}" >&2
   echo "   Base branch: ${BASE_BRANCH} (${BASE_BRANCH_SOURCE})" >&2
   echo "   Config: ${CONFIG_FILE} (${CONFIG_SOURCE})" >&2
-  echo "   Timeout: ${TIMEOUT}s" >&2
+  echo "   Timeout: ${TIMEOUT}s per CLI" >&2
+  echo "   Runtime fallback: none — a CLI that fails or times out is reported as" >&2
+  echo "                     failed, never retried on another model (see --help)" >&2
   if [[ -n "$DESCRIPTION" ]]; then
     echo "   Description: ${DESCRIPTION}" >&2
   fi
@@ -580,7 +670,7 @@ run_single_task() {
 
   bash "$adapter" "$perspective_file" "$output_file" \
     --base "$BASE_BRANCH" \
-    --timeout "$TIMEOUT" \
+    --timeout "$(get_effective_timeout "$cli_name")" \
     "${extra_args[@]}"
 }
 
@@ -659,6 +749,7 @@ execute_tasks() {
   local failed=0
   local count=0
   local seen=""
+  FAILED_TASKS=""
 
   while IFS= read -r entry; do
     [[ -z "$entry" ]] && continue
@@ -676,13 +767,20 @@ execute_tasks() {
       count=$((count + 1))
     else
       echo "▶ ${cli} → ${persp}" >&2
-      if ! run_single_task "$cli" "$persp"; then
+      # Capture the status rather than testing it inline: the parallel branch
+      # distinguishes a fired deadline from a crash, and this path has to give the
+      # same diagnosis or the reason depends on which mode you happened to run.
+      local task_rc=0
+      run_single_task "$cli" "$persp" || task_rc=$?
+      if [[ $task_rc -ne 0 ]]; then
         failed=$((failed + 1))
-        echo "  ❌ Failed: ${cli}/${persp}" >&2
+        FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${cli}/${persp}:${task_rc}"
+        report_task_failure "${cli}/${persp}" "$cli" "$task_rc"
       elif [[ ! -f "${OUTPUT_DIR}/${cli}/${persp}.md" ]]; then
         # Adapter reported success but wrote no output — count it as a failure so
         # a silently-empty run shows up in the exit code, not only the report.
         failed=$((failed + 1))
+        FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${cli}/${persp}:0"
         echo "  ❌ No output file: ${cli}/${persp}" >&2
       fi
     fi
@@ -704,10 +802,12 @@ execute_tasks() {
         echo "  ✅ Done: ${task_name}" >&2
       elif [[ $exit_code -ne 0 ]]; then
         failed=$((failed + 1))
-        echo "  ❌ Failed: ${task_name} (exit code: ${exit_code})" >&2
+        FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:${exit_code}"
+        report_task_failure "$task_name" "${task_name%%/*}" "$exit_code"
       else
         # Success exit but no output file — surface as a failure, not silent OK.
         failed=$((failed + 1))
+        FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:0"
         echo "  ❌ No output file: ${task_name}" >&2
       fi
     done
@@ -717,10 +817,180 @@ execute_tasks() {
   echo "" >&2
   if [[ $failed -gt 0 ]]; then
     echo "⚠️  ${failed} ${TASK_TYPE} task(s) failed." >&2
+    print_failure_advice
     return 1
   else
     echo "✅ All ${TASK_TYPE} tasks completed successfully." >&2
   fi
+}
+
+# ── One-Line Failure Diagnosis ──
+# Reports the limit that ACTUALLY applied to this CLI, not the run-wide setting:
+# a capped CLI (see get_cli_timeout_cap) stops earlier, and naming the run-wide
+# number there tells the user a deadline fired that never existed.
+# 124 is run_with_timeout's timeout status (see adapters/adapter-common.sh).
+report_task_failure() {
+  local task_name="$1" cli_name="$2" rc="$3"
+  if [[ "$rc" -eq 124 ]]; then
+    echo "  ❌ Timed out after $(get_effective_timeout "$cli_name")s: ${task_name}" >&2
+  else
+    echo "  ❌ Failed: ${task_name} (exit code: ${rc})" >&2
+  fi
+}
+
+# ── Retry Advice For Failed Tasks ──
+# A failed task is never re-dispatched to another CLI (see "Fallback semantics"
+# in the header). That is only a defensible default if the user is handed the
+# commands they would otherwise have wanted the tool to run behind their back,
+# so print them: same CLI with more time, or the configured substitute — named
+# explicitly, with its cost tier, as a choice rather than a surprise.
+print_failure_advice() {
+  [[ -n "$FAILED_TASKS" ]] || return 0
+
+  # Absolute path, not basename: this script normally lives inside an installed
+  # plugin and is invoked from the target project, where no same-named file
+  # exists. A bare `bash multi-agent.sh ...` would fail the moment it is pasted.
+  # printf %q keeps a path with spaces runnable.
+  local self
+  self="bash $(printf '%q' "${SCRIPT_DIR}/multi-agent.sh") --task ${TASK_TYPE}"
+  # Carry the flags that decide WHAT gets looked at. Dropping --base would retry
+  # against a different diff than the run that just failed, which makes the
+  # suggested command quietly not-a-retry.
+  if [[ "$TASK_TYPE" == "review" || "$INCLUDE_DIFF" == "true" ]]; then
+    self="${self} --base $(printf '%q' "$BASE_BRANCH")"
+  fi
+  if [[ "$INCLUDE_DIFF" == "true" ]]; then
+    # Without this the retry builds a prompt with no diff in it — a different task,
+    # not a retry of the one that failed.
+    self="${self} --include-diff"
+  fi
+  if [[ "$CONFIG_SOURCE" == "--config flag" || "$CONFIG_SOURCE" == "MULTI_AGENT_CONFIG env" ]]; then
+    self="${self} --config $(printf '%q' "$CONFIG_FILE")"
+  fi
+  if [[ "$OUTPUT_DIR_EXPLICIT" == "true" ]]; then
+    self="${self} --output-dir $(printf '%q' "$OUTPUT_DIR")"
+  fi
+  if [[ -n "$DESCRIPTION" ]]; then
+    self="${self} --description $(printf '%q' "$DESCRIPTION")"
+  fi
+
+  echo "" >&2
+  echo "   No runtime fallback was attempted (by design: swapping the model changes" >&2
+  echo "   what got reviewed, and the substitute may bill a costlier tier)." >&2
+  echo "   Re-run the failed task(s) yourself:" >&2
+
+  local entry task rc cli persp fb fb_tier cap
+  for entry in $FAILED_TASKS; do
+    task="${entry%:*}"
+    rc="${entry##*:}"
+    cli="${task%%/*}"
+    persp="${task#*/}"
+    echo "" >&2
+    # Only a timeout is helped by a longer limit. Offering it for expired
+    # credentials or a crash sends the user off to wait twice as long for the
+    # identical failure.
+    if [[ "$rc" -eq 124 ]]; then
+      cap="$(get_cli_timeout_cap "$cli")"
+      if [[ -n "$cap" ]]; then
+        echo "     ${task} — ${cli} is capped at ${cap}s (known non-interactive hang), so" >&2
+        echo "       --timeout cannot extend it. Use a different CLI for this perspective." >&2
+      else
+        echo "     ${task} — more time on the same CLI:" >&2
+        echo "       ${self} --cli ${cli} --perspective ${persp} --timeout $((TIMEOUT * 2))" >&2
+      fi
+    else
+      echo "     ${task} — failed for a reason more time will not fix; read the CLI" >&2
+      echo "       stderr in ${OUTPUT_DIR}/${cli}/${persp}.md, then re-run:" >&2
+      echo "       ${self} --cli ${cli} --perspective ${persp}" >&2
+    fi
+    fb="$(get_cli_fallback "$cli")"
+    if [[ -n "$fb" ]] && list_contains "$AVAILABLE_CLIS" "$fb"; then
+      fb_tier="$(get_cli_cost_tier "$fb")"
+      echo "     ${task} — or the configured substitute ${fb} [${fb_tier}]:" >&2
+      echo "       ${self} --cli ${fb} --perspective ${persp}" >&2
+    fi
+  done
+}
+
+# ── Report Body (shared by review / explore / implement) ──
+# Appends one section per plan entry to $1. Returns 0 if at least one section was
+# written, 1 if the plan yielded none (the caller prints its own "no results" line).
+#
+# issue #450: report exactly THIS run's entries by iterating the execution plan
+# instead of globbing ${cli}/*.md. A perspective absent from this plan is never
+# read. In the normal flow execute_tasks clears each entry's target before
+# running (clear_planned_outputs), so a prior run's result — a different
+# perspective, or a same-named stale file left by a failed task — does not
+# appear as current. The report only reads result files and writes report_file;
+# no result file is deleted or modified here, so a shared --output-dir re-run or
+# a partial --cli/--perspective run is non-destructive. A planned entry with no
+# output file (CLI failure) is surfaced, not silently dropped. Callers must pass
+# only validated plan entries — today every caller reaches here via
+# generate_report, which runs validate_execution_plan first.
+#
+# This was three byte-identical copies, one per task type. The incomplete-result
+# banner below has to be on every path — a truncated review that reads as a clean
+# one is the failure mode issue #152 is about — so there is one copy to change.
+append_plan_sections() {
+  local report_file="$1"
+  local wrote_any=1
+
+  local entry seen=""
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
+    # Skip a duplicate plan entry so a repeated cli:perspective (e.g. a plan
+    # fallback that reassigns a perspective to an already-listed CLI) is not
+    # pasted into the report twice.
+    if [[ " $seen " == *" $entry "* ]]; then continue; fi
+    seen="$seen $entry"
+    local cli_name="${entry%%:*}"
+    local perspective_name="${entry#*:}"
+    local result_file="${OUTPUT_DIR}/${cli_name}/${perspective_name}.md"
+    wrote_any=0
+
+    local tier
+    tier="$(get_cli_cost_tier "$cli_name")"
+
+    {
+      echo ""
+      echo "## ${cli_name} — ${perspective_name} [${tier}]"
+      echo ""
+      if [[ -f "$result_file" ]]; then
+        # An adapter marks salvaged partial output with `Status: incomplete`
+        # (adapters/adapter-common.sh). Repeat that in the report: without it the
+        # section looks like any other and its silence reads as "found nothing"
+        # rather than "never got there".
+        #
+        # Scoped to the header block, because a *complete* review whose body
+        # quotes that marker line would otherwise be flagged incomplete — very
+        # reachable here, where the tool reviews its own scripts.
+        #
+        # The scope ends at the first blank line, which is what separates
+        # write_output's header from the body. A fixed line count would silently
+        # drift the wrong way if the header ever gained a line: the marker would
+        # fall outside the window and an incomplete result would read as complete.
+        #
+        # Done with awk rather than `head | grep -q`: grep's early exit SIGPIPEs
+        # head, and under pipefail the pipeline returns 141, flipping a match into
+        # a non-match (the inversion class recorded in ACE-149).
+        if awk '/^$/ { exit } /^<!-- Status: incomplete -->$/ { found = 1 } END { exit found ? 0 : 1 }' "$result_file"; then
+          echo "⚠️ **INCOMPLETE** — the CLI failed or timed out; what follows is partial"
+          echo "output salvaged from that run, not a finished ${TASK_TYPE}. Absence of a"
+          echo "finding here means unchecked, not clean."
+          echo ""
+        fi
+        cat "$result_file"
+      else
+        echo "⚠️ No output produced by this task — the CLI failed before writing any"
+        echo "result. See the orchestrator log for the reason and the retry command."
+      fi
+      echo ""
+      echo "---"
+      echo ""
+    } >> "$report_file"
+  done <<< "$EXECUTION_PLAN"
+
+  return "$wrote_any"
 }
 
 # ── Generate Report (review) ──
@@ -741,48 +1011,8 @@ generate_review_report() {
 
 HEADER
 
-  local has_results=false
-
-  # issue #450: report exactly THIS run's entries by iterating the execution plan
-  # instead of globbing ${cli}/*.md. A perspective absent from this plan is never
-  # read. In the normal flow execute_tasks clears each entry's target before
-  # running (clear_planned_outputs), so a prior run's result — a different
-  # perspective, or a same-named stale file left by a failed task — does not
-  # appear as current. The report only reads result files and writes report_file;
-  # no result file is deleted or modified here, so a shared --output-dir re-run or
-  # a partial --cli/--perspective run is non-destructive. A planned entry with no
-  # output file (CLI failure) is surfaced, not silently dropped. The generate_report
-  # dispatcher validates every token before dispatching here.
-  local entry seen=""
-  while IFS= read -r entry; do
-    [[ -z "$entry" ]] && continue
-    # Skip a duplicate plan entry so a repeated cli:perspective (e.g. a plan
-    # fallback that reassigns a perspective to an already-listed CLI) is not
-    # pasted into the report twice.
-    if [[ " $seen " == *" $entry "* ]]; then continue; fi
-    seen="$seen $entry"
-    local cli_name="${entry%%:*}"
-    local perspective_name="${entry#*:}"
-    local result_file="${OUTPUT_DIR}/${cli_name}/${perspective_name}.md"
-    has_results=true
-
-    local tier
-    tier="$(get_cli_cost_tier "$cli_name")"
-
-    {
-      echo ""
-      echo "## ${cli_name} — ${perspective_name} [${tier}]"
-      echo ""
-      if [[ -f "$result_file" ]]; then
-        cat "$result_file"
-      else
-        echo "⚠️ No output produced by this task (CLI failure or missing result file)."
-      fi
-      echo ""
-      echo "---"
-      echo ""
-    } >> "$report_file"
-  done <<< "$EXECUTION_PLAN"
+  local has_results=true
+  append_plan_sections "$report_file" || has_results=false
 
   if [[ "$has_results" == "false" ]]; then
     echo "(No review results found.)" >> "$report_file"
@@ -815,48 +1045,8 @@ generate_explore_report() {
 
 HEADER
 
-  local has_results=false
-
-  # issue #450: report exactly THIS run's entries by iterating the execution plan
-  # instead of globbing ${cli}/*.md. A perspective absent from this plan is never
-  # read. In the normal flow execute_tasks clears each entry's target before
-  # running (clear_planned_outputs), so a prior run's result — a different
-  # perspective, or a same-named stale file left by a failed task — does not
-  # appear as current. The report only reads result files and writes report_file;
-  # no result file is deleted or modified here, so a shared --output-dir re-run or
-  # a partial --cli/--perspective run is non-destructive. A planned entry with no
-  # output file (CLI failure) is surfaced, not silently dropped. The generate_report
-  # dispatcher validates every token before dispatching here.
-  local entry seen=""
-  while IFS= read -r entry; do
-    [[ -z "$entry" ]] && continue
-    # Skip a duplicate plan entry so a repeated cli:perspective (e.g. a plan
-    # fallback that reassigns a perspective to an already-listed CLI) is not
-    # pasted into the report twice.
-    if [[ " $seen " == *" $entry "* ]]; then continue; fi
-    seen="$seen $entry"
-    local cli_name="${entry%%:*}"
-    local perspective_name="${entry#*:}"
-    local result_file="${OUTPUT_DIR}/${cli_name}/${perspective_name}.md"
-    has_results=true
-
-    local tier
-    tier="$(get_cli_cost_tier "$cli_name")"
-
-    {
-      echo ""
-      echo "## ${cli_name} — ${perspective_name} [${tier}]"
-      echo ""
-      if [[ -f "$result_file" ]]; then
-        cat "$result_file"
-      else
-        echo "⚠️ No output produced by this task (CLI failure or missing result file)."
-      fi
-      echo ""
-      echo "---"
-      echo ""
-    } >> "$report_file"
-  done <<< "$EXECUTION_PLAN"
+  local has_results=true
+  append_plan_sections "$report_file" || has_results=false
 
   if [[ "$has_results" == "false" ]]; then
     echo "(No explore results found.)" >> "$report_file"
@@ -887,48 +1077,8 @@ generate_implement_report() {
 
 HEADER
 
-  local has_results=false
-
-  # issue #450: report exactly THIS run's entries by iterating the execution plan
-  # instead of globbing ${cli}/*.md. A perspective absent from this plan is never
-  # read. In the normal flow execute_tasks clears each entry's target before
-  # running (clear_planned_outputs), so a prior run's result — a different
-  # perspective, or a same-named stale file left by a failed task — does not
-  # appear as current. The report only reads result files and writes report_file;
-  # no result file is deleted or modified here, so a shared --output-dir re-run or
-  # a partial --cli/--perspective run is non-destructive. A planned entry with no
-  # output file (CLI failure) is surfaced, not silently dropped. The generate_report
-  # dispatcher validates every token before dispatching here.
-  local entry seen=""
-  while IFS= read -r entry; do
-    [[ -z "$entry" ]] && continue
-    # Skip a duplicate plan entry so a repeated cli:perspective (e.g. a plan
-    # fallback that reassigns a perspective to an already-listed CLI) is not
-    # pasted into the report twice.
-    if [[ " $seen " == *" $entry "* ]]; then continue; fi
-    seen="$seen $entry"
-    local cli_name="${entry%%:*}"
-    local perspective_name="${entry#*:}"
-    local result_file="${OUTPUT_DIR}/${cli_name}/${perspective_name}.md"
-    has_results=true
-
-    local tier
-    tier="$(get_cli_cost_tier "$cli_name")"
-
-    {
-      echo ""
-      echo "## ${cli_name} — ${perspective_name} [${tier}]"
-      echo ""
-      if [[ -f "$result_file" ]]; then
-        cat "$result_file"
-      else
-        echo "⚠️ No output produced by this task (CLI failure or missing result file)."
-      fi
-      echo ""
-      echo "---"
-      echo ""
-    } >> "$report_file"
-  done <<< "$EXECUTION_PLAN"
+  local has_results=true
+  append_plan_sections "$report_file" || has_results=false
 
   if [[ "$has_results" == "false" ]]; then
     echo "(No implement results found.)" >> "$report_file"

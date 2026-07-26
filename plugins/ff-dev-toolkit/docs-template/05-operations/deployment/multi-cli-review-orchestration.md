@@ -297,11 +297,23 @@ agents:
 . "$(dirname "$0")/_/husky.sh"
 
 # Multi-CLI レビュー（固定料金/無料CLIのみ、高速）
-bash scripts/multi-review.sh \
+# 終了コードを捨てないこと: レビューが 1 本でも失敗・タイムアウトすると非 0 になる
+if ! bash scripts/multi-review.sh \
   --strategy minimize_cost \
   --cli cursor-cli \
   --cli gemini-cli \
-  --sequential
+  --sequential; then
+  echo "❌ レビューを完走できませんでした（失敗 or タイムアウト）。"
+  echo "   未完了のレビューは「指摘なし」ではなく「未確認」です。ゲートとしては通せません。"
+  exit 1
+fi
+
+# 未完了の節が残っていればブロック（打ち切られたレビューは CRITICAL_BLOCK を
+# 出さないので、CRITICAL_BLOCK だけを見るゲートは「空振り」を pass と読む）
+if grep -q "INCOMPLETE" .review-results/integrated-report.md 2>/dev/null; then
+  echo "❌ 未完了のレビュー結果が含まれています。再実行するか、対象を絞ってください。"
+  exit 1
+fi
 
 # Critical があればプッシュをブロック
 if grep -q "CRITICAL_BLOCK" .review-results/integrated-report.md 2>/dev/null; then
@@ -309,6 +321,8 @@ if grep -q "CRITICAL_BLOCK" .review-results/integrated-report.md 2>/dev/null; th
   exit 1
 fi
 ```
+
+> ⚠️ **ゲートを書くときの注意**: `bash scripts/multi-review.sh` の終了コードを捨てて `CRITICAL_BLOCK` の有無だけで判定すると、レビューが 1 件も完走しなかった実行が「Critical なし = 合格」として通ります。これは Issue #152 の失敗モードがそのまま一層外側に出た形です。**終了コードと `INCOMPLETE` の両方**を見てください。
 
 ### CI/CD（GitHub Actions）での実行
 
@@ -336,6 +350,10 @@ jobs:
       - name: Run Multi-CLI Review
         run: bash scripts/multi-review.sh --strategy minimize_cost
       - name: Upload results
+        # if: always() が無いと、レビューが失敗・タイムアウトした回の成果物
+        # （打ち切り前の部分出力）がランナーから出てこない。原因調査に必要なのは
+        # まさに失敗した回なので、赤いときこそ回収する
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: review-results
@@ -395,7 +413,7 @@ grep -A 5 "Critical" .review-results/integrated-report.md
 ERROR: codex is not installed
 ```
 
-**対応**: フォールバック設定に従い、自動的に別のCLIに再分配されます。手動で特定CLIをスキップするには：
+**対応**: フォールバック設定に従い、自動的に別のCLIに再分配されます。これは**未インストール時のプラン構築限定**の挙動です。手動で特定CLIをスキップするには：
 
 ```bash
 bash scripts/multi-review.sh --cli claude-code --cli gemini-cli
@@ -403,12 +421,32 @@ bash scripts/multi-review.sh --cli claude-code --cli gemini-cli
 
 ### タイムアウト
 
-特定のCLIが長時間応答しない場合：
+既定はレビュー 900 秒/CLI です（explore 600 秒・implement 900 秒）。CLI が先に応答すればその時点で次へ進むため、上限を大きく取っても速い CLI の待ち時間は増えません。上書きは `--timeout` で行います：
 
 ```bash
-# タイムアウトを設定（デフォルト: 300秒）
-export REVIEW_TIMEOUT=120
-bash scripts/multi-review.sh
+# 上限を延ばす（既定: 900秒）
+bash scripts/multi-review.sh --timeout 1800
+
+# 短く切り上げる（例: 手早く様子を見たいとき）
+bash scripts/multi-review.sh --timeout 180
+```
+
+> `REVIEW_TIMEOUT` 環境変数はアダプタを直叩きする場合の既定値にしか効きません。`multi-review.sh` / `multi-agent.sh` は常に `--timeout` をアダプタへ明示的に渡すため、この経路では無視されます。
+
+### CLI がタイムアウト・異常終了したとき
+
+そのタスクは**失敗として報告され、別 CLI での自動再実行は行われません**（実行時 fallback は意図的に持たせていない）。
+
+- 理由: 同じ差分を別のモデルに見せることがこの仕組みの目的なので、黙って差し替えるとレポート上は観点が埋まって見えるのに実際に見たモデルが変わる。代替先はコスト帯が上がる場合がある（`codex-cli` → `claude-code` は standard → premium）。タイムアウト後の再試行は同じ制限時間をもう一度消費するだけになりやすい。
+- 打ち切り前に得られた部分出力は捨てず、`Status: incomplete` 付きの結果ファイルとして保存し、統合レポートにも `INCOMPLETE` バナーを出します。**未完了の節は「指摘なし」ではなく「未確認」と読むこと。**
+- 失敗サマリーが 2 つの再実行コマンド（同じ CLI に時間を足す／設定上の代替 CLI を明示実行する）を出力するので、選んで実行します。
+
+```bash
+# 例: 同じ CLI に時間を足して再実行
+bash scripts/multi-agent.sh --task review --cli codex-cli --perspective code-review --timeout 1800
+
+# 例: 代替 CLI を自分の判断で明示実行
+bash scripts/multi-agent.sh --task review --cli claude-code --perspective code-review
 ```
 
 ### Cursor CLI のハング問題
@@ -417,7 +455,7 @@ Cursor CLI (`cursor-agent -p`) は非インタラクティブモードでハン�
 
 **回避策**:
 
-- `timeout` コマンドでラップ: `timeout 120 cursor-agent -p "..."`
+- アダプタ経由で実行する（`cursor-cli-adapter.sh` が 120 秒上限を自前で強制する。stock macOS には `timeout` コマンドが無いため、手元で `timeout 120 cursor-agent ...` とラップする方法は使えない）
 - Cursor CLIをスキップ: `--cli codex-cli` で代替
 
 ### 結果の不整合

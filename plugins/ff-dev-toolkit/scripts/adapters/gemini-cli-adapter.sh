@@ -7,7 +7,7 @@
 # Options:
 #   --changed-files <files>   Comma-separated list of changed files
 #   --base <branch>           Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop)
-#   --timeout <seconds>       Timeout in seconds (default: 300)
+#   --timeout <seconds>       Timeout in seconds (default: 900; the orchestrator always passes this explicitly)
 #   --task-type <type>        review | explore | implement (default: review)
 #   --description <text>      Task description (for explore/implement)
 #
@@ -60,18 +60,24 @@ get_gemini_sandbox_flag() {
 }
 
 sandbox_flag="$(get_gemini_sandbox_flag)"
-stderr_log="$(mktemp)"
+perspective_name="$(basename "$PERSPECTIVE_FILE" .md)"
+# Guard this mktemp explicitly: under `set -e` a failure here would kill the
+# adapter with a bare 1 before run_with_timeout is ever reached, filing a broken
+# TMPDIR as "the CLI exited 1" and writing no artifact at all.
+stderr_log="$(mktemp 2>/dev/null)" || stderr_log=""
+if [[ -z "$stderr_log" ]]; then
+  fail_orchestrator_error "$perspective_name" \
+    "cannot create a temp file for ${CLI_NAME} stderr (check TMPDIR)."
+fi
 
 result=$(run_with_timeout "$TIMEOUT" \
   "$CLI_COMMAND" -p "$prompt" \
     $sandbox_flag \
     --output-format text \
   2>"$stderr_log") || {
-    echo "ERROR: ${CLI_NAME} execution failed or timed out." >&2
-    if [[ -s "$stderr_log" ]]; then
-      echo "--- CLI stderr ---" >&2; cat "$stderr_log" >&2; echo "--- end stderr ---" >&2
-    fi
-    rm -f "$stderr_log"; exit 1
+    # Capture the status first: any command inside this block would overwrite $?.
+    rc=$?
+    fail_cli_task "$rc" "$stderr_log" "$perspective_name" "$result"
   }
 rm -f "$stderr_log"
 
@@ -82,5 +88,4 @@ fi
 
 # ── Write Output ──
 
-perspective_name="$(basename "$PERSPECTIVE_FILE" .md)"
 write_output "$OUTPUT_FILE" "$CLI_NAME" "$perspective_name" "$result"

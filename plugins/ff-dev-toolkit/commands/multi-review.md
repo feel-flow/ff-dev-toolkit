@@ -49,9 +49,11 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review.sh" --dry-run $ARGUMENTS
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review.sh" $ARGUMENTS
 ```
 
-**注意**: 実行には各CLIの利用コストが発生します（特に premium/standard ティアのCLI）。`--strategy minimize_cost` で固定料金/無料CLIを優先できます。タイムアウトはデフォルト300秒/CLIです。
+**注意**: 実行には各CLIの利用コストが発生します（特に premium/standard ティアのCLI）。`--strategy minimize_cost` で固定料金/無料CLIを優先できます。タイムアウトはデフォルト **900秒/CLI** です（旧既定の 5 分では中規模差分の Codex レビューが完走しなかったため引き上げ。`--timeout <秒>` で上書き可）。CLI が早く応答すればその時点で次に進むので、上限を大きく取っても待ち時間は増えません。
 
 実行中は進捗状況を監視し、完了を待ちます。
+
+**CLI が失敗・タイムアウトした場合**: そのタスクは失敗として報告され、**別 CLI での自動再実行（実行時 fallback）は行われません**。打ち切り前に得られた部分出力は `Status: incomplete` 付きの結果ファイルとして保存され、統合レポートにも「INCOMPLETE」と明示されます。**未完了の節は「指摘なし」ではなく「未確認」と読むこと。** 失敗サマリーが「同じ CLI に時間を足す」「設定上の代替 CLI を明示実行する」2 つのコマンドを出力するので、必要なものを選んで再実行します。
 
 ### 3. 結果分析と修正提案
 
@@ -135,6 +137,8 @@ git diff  # 修正内容の確認
 - Critical/Warning の自動修正はユーザー確認不要で実行すること（PR Review Response Policy準拠）
 - 妥当な Suggestion も確認不要で対応すること
 - Info は報告のみで修正しないこと
-- CLI未インストールの場合は fallback 設定に従って自動再分配されます
+- CLI **未インストール**の場合は fallback 設定に従って自動再分配されます（プラン構築時のみ）
+- インストール済み CLI の**実行時**エラー／タイムアウトは fallback しません。クロスモデル性（どのモデルが実際に見たか）が黙って変わること、代替先のコスト帯が上がりうること、タイムアウト後の再試行が同じ制限時間をもう一度消費することを避けるためです
+- `Status: incomplete` / `INCOMPLETE` が付いた節は未完了レビューです。Critical/Warning が無いことを「問題なし」と解釈しないこと
 - 結果は `.review-results/` に保存され、後から参照できます
 - 設定のカスタマイズ: プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される（環境変数 `MULTI_AGENT_CONFIG=<path>` または `--config <path>` でも上書き可）
