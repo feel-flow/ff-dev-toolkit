@@ -1,0 +1,17 @@
+{
+  "description": "ff-dev-toolkit の更新通知。セッション開始時に公開リポジトリの最新タグと比較し、新版があれば通知する（TTL キャッシュ付き・fail-open）",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/check-update.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

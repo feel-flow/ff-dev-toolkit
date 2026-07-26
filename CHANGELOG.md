@@ -15,6 +15,24 @@
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-26
+
+### 追加
+
+- **更新通知フック**を追加した（Issue #165）。plugin に `hooks/hooks.json` + `hooks/check-update.sh`（SessionStart hook）を新設し、セッション開始時にインストール済み `plugin.json` の version と公開リポジトリの最新 SemVer タグ（`git ls-remote --tags`。認証不要・API レート制限なし）を比較して、新版があるときだけ通知する。通知は `systemMessage`（ユーザーへ直接表示）と `additionalContext`（Claude へ更新手順を注入。「更新して」と言われたら `claude plugin marketplace update`（引数なし。marketplace 名はユーザーのローカル登録名に依存するため固定しない）→ `claude plugin update ff-dev-toolkit` → 再起動を案内できる）の両経路で出し、最新版なら完全に無出力にする。設計上の要点:
+  - **fail-open**: このフックはユーザーの全セッション起動に割り込むため、リポジトリ内のテストゲート群（fail-closed）とは逆に、ネットワーク不達・パース失敗などあらゆる異常は黙って通知をスキップして exit 0 で終える（自分の不具合でユーザーのセッションを壊さない）。stdout は通知 JSON 以外に出さず、stderr も汚さない（キャッシュ・環境変数由来の値は算術式・比較へ渡す前に数字のみ検査 + 基数 10 指定で検証し、先頭ゼロの八進数解釈エラーや余剰フィールドの算術式エラーを封じる）
+  - **同一バージョンは一度だけ通知**: 通知済み version を `notified` ファイルに記録し、resume / compact で SessionStart が再発火しても同じ通知を context へ再注入しない（compact 直後の最も苦しいコンテキスト予算に無関係な更新手順が繰り返し入るのを防ぐ）。より新しい版が出たら再通知する
+  - **非対称 TTL キャッシュ**: `${XDG_CACHE_HOME:-~/.cache}/ff-dev-toolkit/` に前回結果を保存し、成功 24h / 失敗 1h の TTL でネットワークアクセスを抑制する（オフライン環境での毎セッション再試行を防ぎつつ、復帰後 1h 以内に追従する）。fail マーカーはネットワークへ出る**前**に悲観的に書き、成功時に ok で上書きする — `hooks.json` の timeout がフックごと打ち切るハング型ネットワークでも fail が残り、「最も遅い失敗経路でだけ TTL が効かず毎セッション timeout 秒を払う」逆転を防ぐ。並行セッションが古い取得結果で新しい結果を巻き戻さないよう、書き込み時に自分より新しい既存キャッシュは上書きしない
+  - **ハング対策**: `GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS` 無効化 + SSH BatchMode で認証プロンプト待ちを封じ（`tests/changelog-links` と同じ対策）、`hooks.json` の timeout で低速ネットワーク時もフックごと打ち切る
+  - **互換性と安全**: bash 3.2（stock macOS）互換で jq / timeout(1) / sort -V に依存しない。タグ・キャッシュ由来の version 文字列は経路を問わず SemVer 3 要素の厳格検査を通ったものだけを JSON へ埋め込む（細工されたタグ名による JSON 注入の防止）
+  - **オプトアウト**: 環境変数 `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1` でキャッシュ読み書き含め全処理を無効化できる
+  - **既知の限界**: タグを打たずにリリースされた版（例: v0.13.2）は検出できない。タグ push が更新通知の前提条件になる（sync 手順への組み込みは Issue #163 で追跡）
+- `tests/update-check/verify.sh` を追加した（38 検査、`run-all.sh` の既定一覧に登録）。ローカルの bare git リポジトリ fixture のみで駆動し実ネットワークに触れない。通知 JSON の構文（単一オブジェクト検証含む）と内容・notified による通知一回性と新版での再通知・SemVer 数値比較の境界（0.9.9 < 0.10.0 の辞書順退行防止）・成功/失敗キャッシュの TTL 動作（到達不能 URL でも通知が出る/正常 URL でも再試行しないことで「ネットワークへ出ていない」を証明する形）・悲観的 fail マーカー（stub git を SIGKILL して取得中断でも fail が残ることを実証）・未来 timestamp（clock skew）の不信・オフライン耐性・到達可能だが SemVer タグ 0 件の経路・オプトアウト・SemVer 3 要素でないタグと peeled ref の除外・壊れたキャッシュ 4 形態（garbage / 余剰フィールド / 先頭ゼロ epoch / `ok - <ts>` ゾンビ形）の自己修復・非数値 TTL の既定値フォールバック・`CLAUDE_PLUGIN_ROOT` 経路（本番で常用される分岐）・hooks.json の静的整合・全経路の exit 0 + stderr 無出力（fail-open 契約）を固定する。登録前に 11 種の変異（辞書順比較化・オフライン exit 1・オプトアウト無効化・TTL 無視×2・SemVer 限定解除・悲観的 fail 書き込み削除・notified 抑制削除・数値検証弱体化・ok 枝の latest 検証削除・CLAUDE_PLUGIN_ROOT 経路破壊）を当てて全て red になることを確認した
+
+### 修正
+
+- CHANGELOG 末尾の比較リンクを実在の公開タグへ追従させた（`[Unreleased]` の compare 起点を v0.13.1 → v0.13.3 へ、`[0.13.3]` のリンク行を追加）。v0.13.2 はタグが飛ばされた版のため見出しのみ（運用ルール通り）。`tests/changelog-links` が検出した drift の解消で、同期手順への恒久組み込みは Issue #163 で追跡継続
+
 ## [0.13.3] - 2026-07-26
 
 ### 追加
@@ -300,7 +318,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.13.3...HEAD
+[0.13.3]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.13.1...v0.13.3
 [0.13.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.12.3...v0.13.0
 [0.12.3]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.12.0...v0.12.3

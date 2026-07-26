@@ -67,6 +67,9 @@ else
     # changelog-links の回帰検証（ローカル bare リポジトリ fixture のみ使用、
     # 実ネットワークには触らない）。本体の直後に置く。
     "$SCRIPT_DIR/changelog-links-selftest/verify.sh"
+    # 更新通知フック（hooks/check-update.sh）の回帰検証。ローカル bare リポジトリ
+    # fixture のみ使用し、実ネットワークには触らない。
+    "$SCRIPT_DIR/update-check/verify.sh"
     "$SCRIPT_DIR/merge-cleanup/verify.sh"
     # 一時 git リポジトリ + stub CLI を使い、打ち切りや猶予期間の実測待ちを含むので
     # 後ろに置く（単体で〜35 秒。数字を更新するときは実測してから直すこと）
