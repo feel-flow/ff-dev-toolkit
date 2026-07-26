@@ -663,6 +663,16 @@ gh pr merge ${PR_NUMBER} \
 
 **原則**: ブランチは速やかに削除し、developを最新に更新
 
+**マージ後は必ず `/merge-cleanup <PR番号>` を実行する**（[workflow-principles.md](./workflow-principles.md) のフルオート 10 ステップの step 10）。ff-dev-toolkit が提供するコマンドで、下記の手動手順に加えて `[gone]` ブランチ・関連 worktree の削除、リモート取り残しのガード付き自動削除、最終検証までを 1 プロセスで実施する。
+
+```bash
+/merge-cleanup 1234
+```
+
+**PR 番号は必須**。`delete_branch_on_merge = false` のリポジトリでは `--delete-branch` を付けてもリモートブランチが残るため、PR 番号から head ref を引いて明示削除する。
+
+コマンドが使えない環境（プラグイン未導入など）では以下を手動で実施する。
+
 ```bash
 # developブランチに戻る
 git checkout develop
@@ -683,6 +693,8 @@ git branch -r --list "origin/feature/${ISSUE_NUM}-user-auth"
 - ブランチは必ず削除（リモート・ローカル両方）
 - developを最新に更新してから次の作業へ（`--ff-only` で意図しないマージコミットを防止）
 - `--delete-branch` の成功だけで完了扱いにせず、`git branch -r --list` の出力が空であることを確認してから完了報告する
+- `/merge-cleanup` が「スキップした削除候補」を報告した場合は、警告文だけで判断せず `git ls-remote --heads origin <branch>` と `git branch --list` の実測で現物を確認する（`gh pr merge --delete-branch` を併用していると、削除済みブランチに対する lease 拒否が偽陽性として出る）
+- 未コミット変更が残っている場合、コマンドは中断して分類判断を仰ぐ。`git restore` / `git clean` で勝手に消さない
 
 ### ステップ10: ACE ナレッジ体系化（マージ後）【重要】
 

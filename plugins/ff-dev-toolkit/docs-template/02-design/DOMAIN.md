@@ -5,7 +5,7 @@ status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
 updated: "2026-07-15"
-changeImpact: "MEDIUM"
+changeImpact: "medium"
 ---
 
 # DOMAIN.md - ドメインモデル設計書

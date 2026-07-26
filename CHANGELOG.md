@@ -15,6 +15,31 @@
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-07-26
+
+### 変更
+
+- `/merge-cleanup` の frontmatter から `disable-model-invocation: true` を削除し、モデルから呼び出せるようにした。コマンドの実行部は同梱スクリプトを 1 回呼ぶだけなので、同フラグはスクリプト直叩きで迂回でき破壊的操作を防げない（実際の安全装置は MERGED 限定ゲート / `--force-with-lease` / dirty worktree 保護 / 取り残し削除の fail-closed ガードで、いずれも変更していない）。一方 docs-template の `workflow-principles.md` はフルオート 10 ステップの step 10 に `/merge-cleanup` を置いており、フラグは必須ステップの可用性だけを削っていた。同じマージ後フローの `/ace-curate` にフラグが無いのと揃える
+- docs-template の `05-operations/deployment/git-workflow.md` ステップ9（クリーンアップ）に `/merge-cleanup <PR番号>` を追記した。同ディレクトリの `workflow-principles.md` が step 10 に同コマンドを置いているのに対し、git-workflow 側は生の git コマンドのみを示していて食い違っていた。手動手順はコマンドが使えない環境向けの fallback として残し、`--delete-branch` 併用時に出る lease 拒否の偽陽性への対処も追記した
+
+### 追加
+
+- コマンド定義 frontmatter のポリシー検査 suite `tests/command-frontmatter/verify.sh` を新設。全コマンドについて `disable-model-invocation` が有効（`false` 以外）でないことを fail-closed に検証する。値は `true` の literal 列挙ではなく「`false` 以外を拒否」で判定し（`True` / `'true'` / `yes` / `on` / 行末コメント付き / 値を次行に置いた形を捕捉）、抽出が空でないこと・既知キーを含むことを先に確認して CRLF / BOM による空虚な pass を防ぐ。意図的に付与したい真に任意のコマンドは同ファイルの `ALLOWLIST` へ理由付きで追加する。一時ディレクトリも外部コマンドも要らないため `tests/run-all.sh` の先頭に配置した
+
+### 修正
+
+- docs-template の `02-design/DOMAIN.md` / `03-implementation/PATTERNS.md` の `changeImpact` を小文字（`medium`）へ戻した。0.12.1 の上流同期の副作用で `"MEDIUM"` になっており、テンプレート自身が定める「`changeImpact` は小文字で記録する」と `/validate-docs` の検証規則に違反していた
+- `oss/ff-dev-toolkit/CHANGELOG.md` に欠落していた `## [0.12.1]` 節を backfill した。version bump 時に節を追加しておらず、`plugin.json` version と CHANGELOG 最新見出しの一致を要求する fail-closed ゲートが red のままになっていた
+
+## [0.12.1] - 2026-07-24
+
+### 変更
+
+- `/ace-curate` に Changelog 更新手順（4-d）と version↔Changelog 整合の検証手順（4-e）を追加し、version の上げ方を「新規エントリ追加は minor +1・カウンター更新のみは据え置き・patch は使わない」に明文化した
+- docs-template に `scripts/ace/sync-playbook-frontmatter.ts` を新設（`ace_entry_count` の同期 + `version` の minor bump + version↔Changelog 一致の `--check` ゲート）。付随して `scripts/ace/run-subagent.sh` の shell hooks を整理し、テスト 2 本を追加
+- docs-template を上流同期（ADR-001）: ace-cycle / git-workflow / PR テンプレート / ARCHITECTURE / DOMAIN / CONVENTIONS / PATTERNS / DECISIONS / PLAYBOOK 索引 / SETUP_CURSOR / `.claude/hooks/post-merge.ace.sample.sh`
+- docs-template の ACE Playbook に 3 エントリを追加（上流同期）: 「手順に無いステップは実行されない — 手順修正と機械ゲートはセットで入れる」（process）/ 「write モードの『すべて最新』は check と同じ不変条件を見てから言え」（tooling）/ 「Markdown セクション抽出は次の同レベル見出しまでに区切る」（testing）
+
 ## [0.12.0] - 2026-07-24
 
 ### 追加

@@ -8,6 +8,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 SCRIPTS=(
+  # 一時ディレクトリも外部コマンドも要らない静的検査を先に置く。後続 suite が
+  # 落ちてもこれらは必ず実行済みになる（#146 で fail-fast 自体を見直すまでの並び）。
+  "$SCRIPT_DIR/command-frontmatter/verify.sh"
   "$SCRIPT_DIR/changelog-version/verify.sh"
   "$SCRIPT_DIR/setup-ai-config/verify.sh"
   "$SCRIPT_DIR/assess-impact/verify.sh"
