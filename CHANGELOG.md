@@ -15,6 +15,21 @@
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-07-26
+
+### 追加
+
+- `tests/changelog-links/verify.sh` を追加した（Issue #161）。CHANGELOG 末尾の比較リンクが公開タグに追従しているかを機械検査する: (A) `[Unreleased]` の compare 起点が公開リポジトリの実在最新タグと一致すること、(B) 各リンク行をラベル・compare元・compare先の個別レコードとして解析し、compare先（またはreleases/tag形式のタグ）がラベルと一致し、compare元・先の両方が実タグとして実在すること、(C) 実タグを持つ版にリンク行が欠けていないこと。PR #160（Issue #155）のレビューで `[Unreleased]` が 6 リリース分古いタグを指したまま + 実在 7 タグ分のリンク行が欠落していた drift の再発防止。`run-all.sh` の既定一覧に登録した。公開リポジトリへの到達を試み、DNS・タイムアウト等の接続不可と判定できた場合のみ suite 丸ごと `○ skip`（部分 skip でこのマーカーを出すと run-all.sh の report から実行結果が消えるため）。それ以外（リポジトリ削除・認証失敗・分類不能なエラーを含む）と、到達できたのに SemVer タグが 1 件も取得できない場合は fail にする（未知のエラーを skip 側のデフォルトにすると drift を再導入するため fail 側にデフォルトする設計）
+  - 既知の限界: `sync-dev-toolkit` 手順はタグ・Release 作成のみを行い CHANGELOG の `[Unreleased]` 起点・リンク行の更新は行わないため、新規タグ公開直後は本 suite が必ず red になる。恒久対応は Issue #163 で追跡する。この red は #163 が入るまでは想定内で、検査自体を無効化しないこと（ACE-160-3: 既定で赤いゲートは無視される運用を生む）
+  - 既知の限界2: リポジトリの改名（URL変更）は GitHub のリダイレクトが効くため本検査では検出できない
+- `tests/changelog-links-selftest/verify.sh` を追加した。`changelog-links/verify.sh` をローカルの bare git リポジトリ fixture（`FF_CHANGELOG_LINKS_REPO_URL`）と CHANGELOG fixture（`FF_CHANGELOG_LINKS_FILE`）で駆動し、実ネットワークに触れずに検査A/B/Cの pass/fail・接続不可時の skip・分類不能エラー時の fail・タグ0件時の fail を固定する（PR レビューで見つかった複数の drift 見逃しパターンの回帰防止）
+
+## [0.13.2] - 2026-07-26
+
+### 削除
+
+- `scripts/adapters/adapter-common.sh` から未使用の `parse_severity_counts()` と `SEVERITY_CRITICAL` / `SEVERITY_WARNING` / `SEVERITY_SUGGESTION` / `SEVERITY_INFO` 定数を削除した（Issue #155。PR #153 の作業中に検出）。呼び出し元はリポジトリ内にも同梱ドキュメント（docs-template / README / アダプター作成ガイド）にも存在せず、実装も結果ファイル全体への `grep -ci "critical"` 等の**マッチ行数カウント**（`grep -c` は一致した行数で、語の出現回数ではない）だったため、そのまま使えば散文中の一般語を含む行を件数として数える。とくに PR #153 で導入した `Status: incomplete`（打ち切られた部分出力）に当てると、途中までの本文で当該語を含む行数を「検出件数」として報告することになる。重大度集計が必要になった時点で、Output Format Standard の統一出力テンプレートに沿って各重大度セクション配下の項目を数える正しい実装として書き直す方が安全と判断した（集計機能そのものの実装は本 Issue のスコープ外）
+
 ## [0.13.1] - 2026-07-26
 
 ### 修正
@@ -285,7 +300,14 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.12.3...v0.13.0
+[0.12.3]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.12.0...v0.12.3
+[0.12.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.10.5...v0.12.0
+[0.10.5]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.10.4...v0.10.5
+[0.10.4]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.10.3...v0.10.4
+[0.10.3]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.10.1...v0.10.3
 [0.10.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.9.4...v0.10.1
 [0.9.4]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.8.0...v0.9.3

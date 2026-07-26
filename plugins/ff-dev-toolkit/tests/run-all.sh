@@ -59,6 +59,14 @@ else
     "$SCRIPT_DIR/setup-ai-config/verify.sh"
     "$SCRIPT_DIR/assess-impact/verify.sh"
     "$SCRIPT_DIR/validate-docs/verify.sh"
+    # 公開リポジトリへの実ネットワーク到達を試みる suite（接続不可のみ丸ごと
+    # ○ skip、それ以外は fail）。静的検査より後、破壊的操作を伴う
+    # merge-cleanup より前に置く。他の suite を network-dependent 化する場合も
+    # この位置関係（静的 → ネットワーク → 破壊的操作 → 低速）を保つこと。
+    "$SCRIPT_DIR/changelog-links/verify.sh"
+    # changelog-links の回帰検証（ローカル bare リポジトリ fixture のみ使用、
+    # 実ネットワークには触らない）。本体の直後に置く。
+    "$SCRIPT_DIR/changelog-links-selftest/verify.sh"
     "$SCRIPT_DIR/merge-cleanup/verify.sh"
     # 一時 git リポジトリ + stub CLI を使い、打ち切りや猶予期間の実測待ちを含むので
     # 後ろに置く（単体で〜35 秒。数字を更新するときは実測してから直すこと）

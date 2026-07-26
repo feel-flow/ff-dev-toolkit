@@ -10,12 +10,6 @@
 # which have their own set -euo pipefail. Setting it here would cause
 # return 1 in functions to kill the sourcing process under set -e.
 
-# ── Constants ──
-readonly SEVERITY_CRITICAL="Critical"
-readonly SEVERITY_WARNING="Warning"
-readonly SEVERITY_SUGGESTION="Suggestion"
-readonly SEVERITY_INFO="Info"
-
 # ── CLI Detection ──
 
 # Check if a CLI command is available
@@ -556,27 +550,6 @@ fail_orchestrator_error() {
   echo "ERROR: ${what}" >&2
   record_timeout_reason orchestrator-error
   fail_cli_task "$ORCHESTRATOR_ERROR_EXIT_CODE" "" "$perspective_name" ""
-}
-
-# ── Severity Parsing ──
-
-# Count occurrences of each severity level in a review result file
-# Usage: parse_severity_counts "result.md"
-parse_severity_counts() {
-  local result_file="$1"
-
-  if [[ ! -f "$result_file" ]]; then
-    echo "critical=0 warning=0 suggestion=0 info=0"
-    return
-  fi
-
-  local critical warning suggestion info
-  critical=$(grep -ci "critical" "$result_file" 2>/dev/null || echo "0")
-  warning=$(grep -ci "warning" "$result_file" 2>/dev/null || echo "0")
-  suggestion=$(grep -ci "suggestion" "$result_file" 2>/dev/null || echo "0")
-  info=$(grep -ci "info" "$result_file" 2>/dev/null || echo "0")
-
-  echo "critical=${critical} warning=${warning} suggestion=${suggestion} info=${info}"
 }
 
 # ── Argument Parsing Helper ──
