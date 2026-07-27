@@ -15,6 +15,18 @@
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-07-27
+
+### 修正
+
+- `/merge-cleanup` が、GitHub 側ですでに削除済みのリモートブランチを「マージ後 push あり（lease 拒否）」と誤表示する問題を修正した（Issue #169）。lease 削除が `stale info` / rejected になったときに対象 ref を stdout / stderr を分けて再取得し、ref 不在なら `already removed`、別 OID で存在する場合だけ競合 push と判定する。再取得失敗や期待 OID のまま削除に失敗した場合は推測せず fail-closed で停止する。削除済み / 別 OID / 再取得失敗 / 同一 OID / 成功時 stderr 警告の 5 経路を回帰テストで固定した
+
+## [0.14.1] - 2026-07-27
+
+### 修正
+
+- `/merge-cleanup` が、PR の base ブランチを別 worktree が checkout 済みのときに途中停止し、呼び出し元を base へ戻せない問題を修正した（Issue #167）。base 所有 worktree が clean なら同じ HEAD の detached 状態へ安全に退避して worktree と ignored ファイルを維持し、呼び出し元を base へ復帰して最新化する。保持側が dirty なら変更を破棄・stash・強制切替せず、リモートブランチ削除より前に fail-closed で停止する。clean / dirty 両経路の回帰テストを追加した
+
 ## [0.14.0] - 2026-07-26
 
 ### 追加
@@ -318,7 +330,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.13.3...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.13.3...v0.14.0
 [0.13.3]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.13.1...v0.13.3
 [0.13.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.12.3...v0.13.0

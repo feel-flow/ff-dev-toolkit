@@ -28,7 +28,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/merge-cleanup.sh" $ARGUMENTS
 
 1. **未コミット変更ガード** — あれば中断してユーザーに分類判断を仰ぐ（`git restore` / `git clean` は実行しない）
 2. **対象 PR の情報取得** — state / head / base / headRefOid / fork 判定。**MERGED でなければ破壊的処理の前に中断**（番号の打ち間違い対策）
-3. **base ブランチ復帰 + 最新化** — PR の `baseRefName` へ `git switch` し `fetch --prune` + `pull --ff-only`（develop 固定ではない）
+3. **base ブランチ復帰 + 最新化** — PR の `baseRefName` へ `git switch` し `fetch --prune` + `pull --ff-only`（develop 固定ではない）。別 worktree が base を保持している場合は、その worktree が clean のときだけ同じ HEAD の detached 状態へ退避して worktree 自体を残し、呼び出し元を base へ復帰する。保持側が dirty なら変更を触らず、リモート削除前に中断する
 4. **対象 PR のリモートブランチ削除** — same-repo かつ open PR で head 再利用されていない場合に、`--force-with-lease=<ref>:<期待OID>` で削除（照合と削除の間に push が入った場合はサーバー側で原子的に拒否 = TOCTOU 対策）
 5. **`[gone]` ローカルブランチ + 関連 worktree の削除** — worktree は **clean を確認してから**削除（dirty なら警告してスキップ）。squash merge 由来の "not fully merged" への `-D` エスカレーションは、**(名前, ローカル OID) が MERGED PR の head と一致する場合のみ**（`[gone]` は upstream 消失しか保証しないため、手動リモート削除された未マージ作業は保護される）
 6. **リモート取り残しのガード付き自動削除** — 過去のマージ漏れで累積したリモートブランチを掃除する（下記）
@@ -49,6 +49,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/merge-cleanup.sh" $ARGUMENTS
 
 - **保護ブランチはローカル・リモートとも絶対に削除しない**（Step 4 / 5 / 6 すべてにガードあり）
 - **未コミット変更を勝手に消さない** — メイン worktree は Step 1 で中断、別 worktree は削除前に clean 確認
+- **base を保持する別 worktree を削除しない** — clean の場合は同じ HEAD の detached 状態へ退避し、ignored ファイルを含む worktree は維持する。dirty の場合は fail-closed で中断
 - **upstream なしの孤児ブランチは削除しない** — 検出して警告のみ
 - **ガード情報の取得失敗は fail-closed** — 「取得失敗 = 空」ではなく「取得失敗 = 削除中止」
 - **失敗を握りつぶさない** — 部分失敗は PARTIAL として終了コード 2 で報告
@@ -58,7 +59,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/merge-cleanup.sh" $ARGUMENTS
 | code | 意味 |
 |------|------|
 | 0 | 完全成功 |
-| 1 | 致命的エラーで中断（引数不正 / 未コミット変更 / switch・pull 失敗 / gh 失敗 など） |
+| 1 | 致命的エラーで中断（引数不正 / 呼び出し元または base 所有 worktree の未コミット変更 / switch・pull 失敗 / gh 失敗 など） |
 | 2 | 完了したが一部失敗あり（PARTIAL）。サマリーの「失敗した項目」を確認して手動対応 |
 
 終了コードが 0 以外の場合、Claude はサマリーの失敗項目・中断理由をユーザーに報告し、勝手にリトライや強制削除をしないこと。
@@ -76,6 +77,7 @@ DDEV / Next.js キャッシュ / Tauri ビルド成果物 など、プロジェ�
 ## 注意事項
 
 - `/merge-cleanup` は **自動で base ブランチを push しない**。pull のみ
+- base を保持していた clean な別 worktree は、cleanup 後も同じ commit の detached 状態で残る。必要なら、その worktree で別ブランチを明示的に checkout して再利用する
 - worktree の削除は clean 確認後でも、**`.gitignore` 対象のファイル（`.env` 等）は clean 扱いのまま消える**。惜しいファイルを worktree の ignored 領域にだけ置く運用は避けること
 - `/ace-curate <PR番号>` の **前に** 実行する。ACE はナレッジ更新のみで cleanup はしない。cleanup が完了しないかぎり Git Workflow は終了していない
 - Step 6 の取り残し自動削除が過去のマージ漏れをまとめて回収するため、複数 PR 分の残骸も 1 回の実行で掃除される

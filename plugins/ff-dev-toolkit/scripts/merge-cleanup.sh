@@ -26,6 +26,8 @@
 #     MERGED PR の head と一致する場合に限定（[gone] だけではマージ済みの証明にならない）
 #   - ガードに必要な情報の取得に失敗したら削除せずスキップ（fail-closed）
 #   - dirty な worktree・upstream なしの孤児ブランチは削除しない（警告のみ）
+#   - base を保持する別 worktree は clean の場合だけ detached へ退避し、
+#     worktree と ignored ファイルを維持する。dirty なら変更せず中断する
 
 set -Eeuo pipefail
 
@@ -43,6 +45,27 @@ is_protected_branch() {
   esac
 }
 
+find_worktree_for_branch() {
+  # $1: branch name。見つかった worktree path を stdout へ返す。
+  # `git worktree list --porcelain` は path に空白があっても 1 レコード 1 行なので、
+  # 人間向けの整形済み出力を split せず block 単位で読む。
+  local target_ref="refs/heads/$1" worktree_path="" line=""
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      worktree\ *)
+        worktree_path="${line#worktree }"
+        ;;
+      branch\ "$target_ref")
+        printf '%s\n' "$worktree_path"
+        return 0
+        ;;
+    esac
+  done < <(git worktree list --porcelain)
+
+  return 1
+}
+
 # temp はディレクトリ 1 つにまとめ、trap で確実に回収する
 # （コマンド置換内で配列に追記する方式はサブシェルで消えるため使わない）
 WORK_TMP="$(mktemp -d)" || die "mktemp -d に失敗しました"
@@ -55,7 +78,7 @@ command -v jq >/dev/null 2>&1 || die "jq が必要です"
 # 戻り値 0=削除 / 2=既に無い / 3=lease 拒否（競合 push あり） / 1=その他失敗
 delete_remote_branch_with_lease() {
   # $1: branch / $2: expected OID
-  local branch="$1" expected="$2" out=""
+  local branch="$1" expected="$2" out="" remote_out="" remote_err="" remote_stderr="" remote_oid=""
   # エラーメッセージの文言照合があるため LC_ALL=C でロケール固定
   if out="$(LC_ALL=C git push --force-with-lease="refs/heads/$branch:$expected" \
       origin ":refs/heads/$branch" 2>&1)"; then
@@ -65,8 +88,27 @@ delete_remote_branch_with_lease() {
     return 2
   fi
   if printf '%s' "$out" | grep -qE 'stale info|\[rejected\]'; then
-    echo "$out" > "$WORK_TMP/last_push_error"
-    return 3
+    # GitHub の merge 時削除などで ref が既に無い場合も、Git は `stale info` を
+    # 返すことがある。ref を再取得し、真の競合 push と削除済みを区別する。
+    remote_err="$WORK_TMP/remote_recheck_error"
+    if remote_out="$(LC_ALL=C git ls-remote --heads origin "refs/heads/$branch" 2>"$remote_err")"; then
+      remote_stderr="$(cat "$remote_err")"
+      if [ -z "$remote_out" ]; then
+        return 2
+      fi
+      remote_oid="$(printf '%s\n' "$remote_out" | awk 'NR == 1 { print $1 }')"
+      if [ "$remote_oid" != "$expected" ]; then
+        printf '%s\nremote re-check:\n%s\n%s\n' \
+          "$out" "$remote_out" "$remote_stderr" > "$WORK_TMP/last_push_error"
+        return 3
+      fi
+      printf '%s\nremote re-check returned the expected OID; deletion failed for an unknown reason:\n%s\n%s\n' \
+        "$out" "$remote_out" "$remote_stderr" > "$WORK_TMP/last_push_error"
+      return 1
+    fi
+    remote_stderr="$(cat "$remote_err")"
+    printf '%s\nremote re-check failed:\n%s\n' "$out" "$remote_stderr" > "$WORK_TMP/last_push_error"
+    return 1
   fi
   echo "$out" > "$WORK_TMP/last_push_error"
   return 1
@@ -148,8 +190,48 @@ fi
 # 古い内容で fail して cleanup が中断することがある。
 # --prune が無いとリモート削除済みブランチに [gone] マーカーが付かず Step 5 で検出できない。
 
-git switch "$PR_BASE" 2>&1 \
-  || die "$PR_BASE への切り替えに失敗しました。他 worktree で使用中、または不存在の可能性があります（'git worktree list' / 'git branch -a' を確認）。"
+CURRENT_BRANCH_BEFORE="$(git branch --show-current)"
+BASE_WORKTREE=""
+BASE_WORKTREE_OID=""
+BASE_WORKTREE_DETACHED=0
+
+if [ "$CURRENT_BRANCH_BEFORE" != "$PR_BASE" ]; then
+  BASE_WORKTREE="$(find_worktree_for_branch "$PR_BASE" || true)"
+fi
+
+if [ -n "$BASE_WORKTREE" ] && [ "$BASE_WORKTREE" != "$REPO_ROOT" ]; then
+  BASE_WORKTREE_STATUS=""
+  BASE_WORKTREE_STATUS="$(git -C "$BASE_WORKTREE" status --porcelain 2>&1)" \
+    || die "$PR_BASE を保持する worktree の状態取得に失敗しました: $BASE_WORKTREE — $BASE_WORKTREE_STATUS"
+
+  if [ -n "$BASE_WORKTREE_STATUS" ]; then
+    echo "❌ $PR_BASE を保持する別 worktree に未コミット変更があります: $BASE_WORKTREE"
+    git -C "$BASE_WORKTREE" status --short
+    die "変更を保護するため、base ブランチの退避と cleanup を中断します。"
+  fi
+
+  BASE_WORKTREE_OID="$(git -C "$BASE_WORKTREE" rev-parse HEAD 2>&1)" \
+    || die "$PR_BASE を保持する worktree の HEAD 取得に失敗しました: $BASE_WORKTREE — $BASE_WORKTREE_OID"
+
+  echo "ℹ️ $PR_BASE は別の clean worktree が保持しています。worktree を残して detached へ退避します:"
+  echo "   $BASE_WORKTREE ($BASE_WORKTREE_OID)"
+  git -C "$BASE_WORKTREE" switch --detach "$BASE_WORKTREE_OID" 2>&1 \
+    || die "$PR_BASE を保持する worktree の detached 退避に失敗しました: $BASE_WORKTREE"
+  BASE_WORKTREE_DETACHED=1
+fi
+
+SWITCH_OUT=""
+if ! SWITCH_OUT="$(git switch "$PR_BASE" 2>&1)"; then
+  if [ "$BASE_WORKTREE_DETACHED" = "1" ]; then
+    if git -C "$BASE_WORKTREE" switch "$PR_BASE" >/dev/null 2>&1; then
+      echo "ℹ️ 呼び出し元の切り替え失敗に伴い、退避した worktree を $PR_BASE へ復旧しました。" >&2
+    else
+      die "$PR_BASE への切り替えに失敗し、退避した worktree の復旧にも失敗しました: $SWITCH_OUT（要手動確認: $BASE_WORKTREE）"
+    fi
+  fi
+  die "$PR_BASE への切り替えに失敗しました: $SWITCH_OUT（'git worktree list' / 'git branch -a' を確認）。"
+fi
+printf '%s\n' "$SWITCH_OUT"
 
 git fetch --prune origin 2>&1 \
   || die "git fetch --prune が失敗しました。ネットワーク / 認証を確認してください。"
