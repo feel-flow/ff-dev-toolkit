@@ -1,2 +1,5 @@
 .DS_Store
 node_modules/
+
+# spec-driven gate progress records are working-session intermediates (see spec-driven SKILL.md)
+spec-driven-gates-*.md
