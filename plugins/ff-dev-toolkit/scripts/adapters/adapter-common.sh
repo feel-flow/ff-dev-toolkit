@@ -36,21 +36,6 @@ detect_base_branch() {
   fi
 }
 
-# Get changed files (staged + unstaged) relative to a base branch
-# Usage: get_changed_files "develop"
-get_changed_files() {
-  local base_branch="${1:-$(detect_base_branch)}"
-  if git diff --name-only "${base_branch}...HEAD" 2>/dev/null; then
-    return 0
-  fi
-  echo "WARNING: Could not diff against '${base_branch}', falling back to HEAD diff." >&2
-  if git diff --name-only HEAD 2>/dev/null; then
-    return 0
-  fi
-  echo "ERROR: Failed to get changed files. Are you in a git repository with commits?" >&2
-  return 1
-}
-
 # Get the diff content for review
 # Usage: get_diff_content "develop"
 get_diff_content() {
