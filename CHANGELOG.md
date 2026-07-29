@@ -11,45 +11,52 @@
 - 各 `## [x.y.z]` は **plugin.json の version 境界**を記録する。公開 Git タグは同期タイミングにより一部の版を飛ばすことがあるが、CHANGELOG は plugin version 単位で残す（飛ばされた版の変更は次に付く公開タグに含まれる）
 - 0.1.0〜0.4.0 は公開リポジトリ作成前の内部版の要約である
 - 公開同期の禁止パターン（private リポジトリ識別子・秘密情報など）を書かない
+- 各変更説明は公開読者が単独で理解できる内容にし、SSOT 側の Issue / PR 識別子や番号は記載しない。変更の追跡には公開版の見出しと、文末の公開タグ・比較リンクを使う
 - 文末の比較リンクは、公開リポジトリに存在するタグ同士のみを記載する
 
 ## [Unreleased]
+
+## [0.16.4] - 2026-07-30
+
+### 変更
+
+- 公開 CHANGELOG の変更説明を単独で理解できる内容に統一し、公開側から辿れない SSOT の Issue / PR 番号参照を既存履歴から除去した。今後は公開版の見出しと公開タグ・比較リンクをトレーサビリティに使い、番号参照の再混入を `tests/changelog-public-references/` で検出する
 
 ## [0.16.3] - 2026-07-30
 
 ### 削除
 
-- `scripts/adapters/adapter-common.sh` から未使用の `get_changed_files()` を削除した（Issue #162）。リポジトリ内の呼び出し元はなく、同梱のアダプター作成ガイドでも public surface として案内されていないため、Issue の既定方針に従い削除を選んだ。これにより、「staged + unstaged」を取得すると説明しながら実装は `base...HEAD` のコミット済み差分のみを扱うコメント drift と、差分ゼロでも成功する空出力契約を利用者へ明示しないまま残す状態も解消した
+- `scripts/adapters/adapter-common.sh` から未使用の `get_changed_files()` を削除した。リポジトリ内の呼び出し元はなく、同梱のアダプター作成ガイドでも public surface として案内されていないため、既定方針に従い削除を選んだ。これにより、「staged + unstaged」を取得すると説明しながら実装は `base...HEAD` のコミット済み差分のみを扱うコメント drift と、差分ゼロでも成功する空出力契約を利用者へ明示しないまま残す状態も解消した
 
 ## [0.16.2] - 2026-07-29
 
 ### 追加
 
-- docs-template の実行可能な品質ゲート例を Markdown の見出しから抽出し、fixture に対して実行する `tests/docs-gates-runtime/` を追加した（Issue #157）。`automated-code-review.md` の判定ロジックは正常 / `INCOMPLETE` / 空ファイル / `Important Issues` 見出し drift / 厳格モードの実指摘 / REJECTED 本文中の APPROVED 引用を、`multi-cli-review-orchestration.md` の pre-push 例は正常 / レビュー実行失敗 / 空レポート / `INCOMPLETE` / `CRITICAL_BLOCK` を exit code で検証する。既存 `tests/docs-gates/` は文面 drift、本 suite は実行時の意味を担当し、両方を `tests/run-all.sh` で集約する
+- docs-template の実行可能な品質ゲート例を Markdown の見出しから抽出し、fixture に対して実行する `tests/docs-gates-runtime/` を追加した。`automated-code-review.md` の判定ロジックは正常 / `INCOMPLETE` / 空ファイル / `Important Issues` 見出し drift / 厳格モードの実指摘 / REJECTED 本文中の APPROVED 引用を、`multi-cli-review-orchestration.md` の pre-push 例は正常 / レビュー実行失敗 / 空レポート / `INCOMPLETE` / `CRITICAL_BLOCK` を exit code で検証する。既存 `tests/docs-gates/` は文面 drift、本 suite は実行時の意味を担当し、両方を `tests/run-all.sh` で集約する
 
 ## [0.16.1] - 2026-07-29
 
 ### 修正
 
-- `tests/**/*.sh` のパイプ入力判定から `grep -q*` を除去し、入力を最後まで読む `grep ... >/dev/null` へ統一した（Issue #150）。`set -euo pipefail` 下で大量入力の先頭付近に一致したとき、早期終了した `grep -q*` が上流を SIGPIPE (141) にして一致を不一致へ反転させる false green を防ぐ。64KB 超の動的回帰検証と、非コメント行の `| grep -q*` 再混入を検出する静的ガードを追加し、ファイルを直接読む安全な `grep -q*` は維持した
+- `tests/**/*.sh` のパイプ入力判定から `grep -q*` を除去し、入力を最後まで読む `grep ... >/dev/null` へ統一した。`set -euo pipefail` 下で大量入力の先頭付近に一致したとき、早期終了した `grep -q*` が上流を SIGPIPE (141) にして一致を不一致へ反転させる false green を防ぐ。64KB 超の動的回帰検証と、非コメント行の `| grep -q*` 再混入を検出する静的ガードを追加し、ファイルを直接読む安全な `grep -q*` は維持した
 
 ## [0.16.0] - 2026-07-29
 
 ### 追加
 
-- `setup-ai-config` の4種の AI 設定生成テンプレートに境界5「Secrets 露出防止」を追加した（Issue #196）。secret を stdout/stderr に出すコマンドの実行禁止、env ファイル・プロセス環境の全ダンプ禁止（個別キーの値全体出力を含む）、secret を読む CLI へ `--debug` / `--verbose` を付ける前の失敗時ダンプ内容確認、値の診断は prefix（先頭5字）+ length まで、露出時の即報告を、生成される CLAUDE.md / AGENTS.md / Cursor ルール / copilot-instructions.md に等価に含める。生成物パリティ検証（`tests/setup-ai-config/verify.sh`）も4境界から5境界へ拡張し、`docs-template/SETUP_CURSOR.md` のコピペ用テンプレート（現行 `.mdc` / Legacy `.cursorrules` の両方）と `oss/ff-dev-toolkit/USING_WITH_VSCODE_COPILOT.md` へも同じ境界を伝播させた。あわせて Legacy `.cursorrules` テンプレートに欠けていた境界4（スコープ外発見のルーティング）も追加し、「現行 `.mdc` 例と同じ境界を含む」という記述を実体と一致させた。生成物の契約が 1 つ増えるため MINOR bump とする。背景は、エージェントが CLI の `--debug` フラグを付けた結果 env ファイル全体が stderr にダンプされ secret が露出した実事故の再発防止
+- `setup-ai-config` の4種の AI 設定生成テンプレートに境界5「Secrets 露出防止」を追加した。secret を stdout/stderr に出すコマンドの実行禁止、env ファイル・プロセス環境の全ダンプ禁止（個別キーの値全体出力を含む）、secret を読む CLI へ `--debug` / `--verbose` を付ける前の失敗時ダンプ内容確認、値の診断は prefix（先頭5字）+ length まで、露出時の即報告を、生成される CLAUDE.md / AGENTS.md / Cursor ルール / copilot-instructions.md に等価に含める。生成物パリティ検証（`tests/setup-ai-config/verify.sh`）も4境界から5境界へ拡張し、`docs-template/SETUP_CURSOR.md` のコピペ用テンプレート（現行 `.mdc` / Legacy `.cursorrules` の両方）と `oss/ff-dev-toolkit/USING_WITH_VSCODE_COPILOT.md` へも同じ境界を伝播させた。あわせて Legacy `.cursorrules` テンプレートに欠けていた境界4（スコープ外発見のルーティング）も追加し、「現行 `.mdc` 例と同じ境界を含む」という記述を実体と一致させた。生成物の契約が 1 つ増えるため MINOR bump とする。背景は、エージェントが CLI の `--debug` フラグを付けた結果 env ファイル全体が stderr にダンプされ secret が露出した実事故の再発防止
 
 ## [0.15.1] - 2026-07-29
 
 ### 変更
 
-- スコープ外発見のルーティングを `YAGNI → インライン修正 → Issue 化` の三分岐へ統一した（Issue #190）。現在の根拠・利用者影響・検証可能な受け入れ条件がない提案は対応も Issue 化もせず、必要かつ軽微な修正は現 PR に束ねる。Issue 化の前には類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立する場合だけ関連 Issue を作る。`out-of-scope-issue` スキル、Git Workflow 正本、セットアップガイド、4 種の AI 設定生成テンプレートを同じ契約へ揃え、生成物パリティ検証も 3 境界から 4 境界へ拡張した
+- スコープ外発見のルーティングを `YAGNI → インライン修正 → Issue 化` の三分岐へ統一した。現在の根拠・利用者影響・検証可能な受け入れ条件がない提案は対応も Issue 化もせず、必要かつ軽微な修正は同じ変更に束ねる。Issue 化の前には類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立する場合だけ関連 Issue を作る。`out-of-scope-issue` スキル、Git Workflow 正本、セットアップガイド、4 種の AI 設定生成テンプレートを同じ契約へ揃え、生成物パリティ検証も 3 境界から 4 境界へ拡張した
 
 ## [0.15.0] - 2026-07-29
 
 ### 変更
 
-- ff-dev-toolkit の旧 `commands/*.md` 14件を、同名の `skills/<name>/SKILL.md` へ移行した（Issue #141）。Claude Code の `/ff-dev-toolkit:<name>` を維持しつつ、Codex でも `$ff-dev-toolkit:<name>` または自然文から全17スキルを利用できる。command / wrapper / user領域 copy の二重正本は作らず、各手順を Agent Skills 標準の1ファイルへ統一した
+- ff-dev-toolkit の旧 `commands/*.md` 14件を、同名の `skills/<name>/SKILL.md` へ移行した。Claude Code の `/ff-dev-toolkit:<name>` を維持しつつ、Codex でも `$ff-dev-toolkit:<name>` または自然文から全17スキルを利用できる。command / wrapper / user領域 copy の二重正本は作らず、各手順を Agent Skills 標準の1ファイルへ統一した
 - 同梱ファイルを使う移行対象スキルに、Claude Code の `${CLAUDE_PLUGIN_ROOT}` と Codex が読み込む `SKILL.md` の絶対パスから共通の `FF_DEV_TOOLKIT_ROOT` を解決する規則を追加した。バージョン別 cache を探索・選択しない
 - frontmatter 検査を `tests/skill-frontmatter/verify.sh` へ移行し、全skillの `name` / `description`、14件の必須存在、legacy `commands/*.md` 不在、バージョン固定 cache パス不在、`disable-model-invocation` ポリシーを fail-closed で検査する
 - README / marketplace metadata / テスト参照を17スキル構成へ更新し、旧 `~/.codex/skills/out-of-scope-issue` フルコピーは namespaced plugin skill の認識後に手動削除する移行手順を追加した
@@ -58,56 +65,56 @@
 
 ### 変更
 
-- `spec-driven` の G4 完了手順を明確化した（Issue #181）。監査要約を転記できない場合も、完了報告だけでなくゲート進行表へ `未転記` と必ず記録し、完了報告には転記用要約を含める。fixture の期待値も同じ契約へ引き上げ、規約文書と検証期待値の乖離を解消した
+- `spec-driven` の G4 完了手順を明確化した。監査要約を転記できない場合も、完了報告だけでなくゲート進行表へ `未転記` と必ず記録し、完了報告には転記用要約を含める。fixture の期待値も同じ契約へ引き上げ、規約文書と検証期待値の乖離を解消した
 
 ## [0.14.4] - 2026-07-28
 
 ### 変更
 
-- `spec-driven` スキルの検証 fixture（`fixtures/sample-feature-request.md`）に、ゲート進行表の永続化方針（v0.14.3 で明記した方針）の期待値を追加した（Issue #176）。G0〜G2 シナリオでは「進行表をコミット対象として扱わない・保存先で `spec-driven-gates-*.md` が ignore されていなければ `.gitignore` へのパターン追加を提案する（ignore 済みなら重複提案しない）」ことを、追加シナリオ（G4 完了時）では「監査要約の転記状態の明示（転記先を用意しない本 fixture では『未転記』の明示と転記用要約の同梱が正。転記済みや転記先 URL を捏造しない）」と「G1 の提案通過 → 通過への更新」を検査する。`.gitignore` 提案分岐を決定的に検査するための一時 git リポジトリ実行手順と、Git 追跡下の `sample-docs/` を汚さないための後始末も明記した
+- `spec-driven` スキルの検証 fixture（`fixtures/sample-feature-request.md`）に、ゲート進行表の永続化方針（v0.14.3 で明記した方針）の期待値を追加した。G0〜G2 シナリオでは「進行表をコミット対象として扱わない・保存先で `spec-driven-gates-*.md` が ignore されていなければ `.gitignore` へのパターン追加を提案する（ignore 済みなら重複提案しない）」ことを、追加シナリオ（G4 完了時）では「監査要約の転記状態の明示（転記先を用意しない本 fixture では『未転記』の明示と転記用要約の同梱が正。転記済みや転記先 URL を捏造しない）」と「G1 の提案通過 → 通過への更新」を検査する。`.gitignore` 提案分岐を決定的に検査するための一時 git リポジトリ実行手順と、Git 追跡下の `sample-docs/` を汚さないための後始末も明記した
 
 ## [0.14.3] - 2026-07-28
 
 ### 変更
 
-- `spec-driven` スキルのゲート進行表を「作業中の中間成果物」と位置づけ、既定ではリポジトリへコミットしない方針を明記した（Issue #173）。監査に必要な要約（ゲート判定・受け入れ基準の検証結果・スコープ外・未解決事項）は完了手順（Step 6）で PR 本文 / Issue コメントへ転記し、転記先または「未転記」を報告に含める。Git リポジトリ内に保存する場合、`spec-driven-gates-*.md` が ignore されていなければ `.gitignore` へのパターン追加を提案する（リポジトリ側にコミットして保存する方針が明示されている場合はそちらに従う）。本リポジトリの `.gitignore` にも同パターンを追加した
+- `spec-driven` スキルのゲート進行表を「作業中の中間成果物」と位置づけ、既定ではリポジトリへコミットしない方針を明記した。監査に必要な要約（ゲート判定・受け入れ基準の検証結果・スコープ外・未解決事項）は完了手順（Step 6）で PR 本文 / Issue コメントへ転記し、転記先または「未転記」を報告に含める。Git リポジトリ内に保存する場合、`spec-driven-gates-*.md` が ignore されていなければ `.gitignore` へのパターン追加を提案する（リポジトリ側にコミットして保存する方針が明示されている場合はそちらに従う）。本リポジトリの `.gitignore` にも同パターンを追加した
 
 ## [0.14.2] - 2026-07-27
 
 ### 修正
 
-- `/merge-cleanup` が、GitHub 側ですでに削除済みのリモートブランチを「マージ後 push あり（lease 拒否）」と誤表示する問題を修正した（Issue #169）。lease 削除が `stale info` / rejected になったときに対象 ref を stdout / stderr を分けて再取得し、ref 不在なら `already removed`、別 OID で存在する場合だけ競合 push と判定する。再取得失敗や期待 OID のまま削除に失敗した場合は推測せず fail-closed で停止する。削除済み / 別 OID / 再取得失敗 / 同一 OID / 成功時 stderr 警告の 5 経路を回帰テストで固定した
+- `/merge-cleanup` が、GitHub 側ですでに削除済みのリモートブランチを「マージ後 push あり（lease 拒否）」と誤表示する問題を修正した。lease 削除が `stale info` / rejected になったときに対象 ref を stdout / stderr を分けて再取得し、ref 不在なら `already removed`、別 OID で存在する場合だけ競合 push と判定する。再取得失敗や期待 OID のまま削除に失敗した場合は推測せず fail-closed で停止する。削除済み / 別 OID / 再取得失敗 / 同一 OID / 成功時 stderr 警告の 5 経路を回帰テストで固定した
 
 ## [0.14.1] - 2026-07-27
 
 ### 修正
 
-- `/merge-cleanup` が、PR の base ブランチを別 worktree が checkout 済みのときに途中停止し、呼び出し元を base へ戻せない問題を修正した（Issue #167）。base 所有 worktree が clean なら同じ HEAD の detached 状態へ安全に退避して worktree と ignored ファイルを維持し、呼び出し元を base へ復帰して最新化する。保持側が dirty なら変更を破棄・stash・強制切替せず、リモートブランチ削除より前に fail-closed で停止する。clean / dirty 両経路の回帰テストを追加した
+- `/merge-cleanup` が、PR の base ブランチを別 worktree が checkout 済みのときに途中停止し、呼び出し元を base へ戻せない問題を修正した。base 所有 worktree が clean なら同じ HEAD の detached 状態へ安全に退避して worktree と ignored ファイルを維持し、呼び出し元を base へ復帰して最新化する。保持側が dirty なら変更を破棄・stash・強制切替せず、リモートブランチ削除より前に fail-closed で停止する。clean / dirty 両経路の回帰テストを追加した
 
 ## [0.14.0] - 2026-07-26
 
 ### 追加
 
-- **更新通知フック**を追加した（Issue #165）。plugin に `hooks/hooks.json` + `hooks/check-update.sh`（SessionStart hook）を新設し、セッション開始時にインストール済み `plugin.json` の version と公開リポジトリの最新 SemVer タグ（`git ls-remote --tags`。認証不要・API レート制限なし）を比較して、新版があるときだけ通知する。通知は `systemMessage`（ユーザーへ直接表示）と `additionalContext`（Claude へ更新手順を注入。「更新して」と言われたら `claude plugin marketplace update`（引数なし。marketplace 名はユーザーのローカル登録名に依存するため固定しない）→ `claude plugin update ff-dev-toolkit` → 再起動を案内できる）の両経路で出し、最新版なら完全に無出力にする。設計上の要点:
+- **更新通知フック**を追加した。plugin に `hooks/hooks.json` + `hooks/check-update.sh`（SessionStart hook）を新設し、セッション開始時にインストール済み `plugin.json` の version と公開リポジトリの最新 SemVer タグ（`git ls-remote --tags`。認証不要・API レート制限なし）を比較して、新版があるときだけ通知する。通知は `systemMessage`（ユーザーへ直接表示）と `additionalContext`（Claude へ更新手順を注入。「更新して」と言われたら `claude plugin marketplace update`（引数なし。marketplace 名はユーザーのローカル登録名に依存するため固定しない）→ `claude plugin update ff-dev-toolkit` → 再起動を案内できる）の両経路で出し、最新版なら完全に無出力にする。設計上の要点:
   - **fail-open**: このフックはユーザーの全セッション起動に割り込むため、リポジトリ内のテストゲート群（fail-closed）とは逆に、ネットワーク不達・パース失敗などあらゆる異常は黙って通知をスキップして exit 0 で終える（自分の不具合でユーザーのセッションを壊さない）。stdout は通知 JSON 以外に出さず、stderr も汚さない（キャッシュ・環境変数由来の値は算術式・比較へ渡す前に数字のみ検査 + 基数 10 指定で検証し、先頭ゼロの八進数解釈エラーや余剰フィールドの算術式エラーを封じる）
   - **同一バージョンは一度だけ通知**: 通知済み version を `notified` ファイルに記録し、resume / compact で SessionStart が再発火しても同じ通知を context へ再注入しない（compact 直後の最も苦しいコンテキスト予算に無関係な更新手順が繰り返し入るのを防ぐ）。より新しい版が出たら再通知する
   - **非対称 TTL キャッシュ**: `${XDG_CACHE_HOME:-~/.cache}/ff-dev-toolkit/` に前回結果を保存し、成功 24h / 失敗 1h の TTL でネットワークアクセスを抑制する（オフライン環境での毎セッション再試行を防ぎつつ、復帰後 1h 以内に追従する）。fail マーカーはネットワークへ出る**前**に悲観的に書き、成功時に ok で上書きする — `hooks.json` の timeout がフックごと打ち切るハング型ネットワークでも fail が残り、「最も遅い失敗経路でだけ TTL が効かず毎セッション timeout 秒を払う」逆転を防ぐ。並行セッションが古い取得結果で新しい結果を巻き戻さないよう、書き込み時に自分より新しい既存キャッシュは上書きしない
   - **ハング対策**: `GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS` 無効化 + SSH BatchMode で認証プロンプト待ちを封じ（`tests/changelog-links` と同じ対策）、`hooks.json` の timeout で低速ネットワーク時もフックごと打ち切る
   - **互換性と安全**: bash 3.2（stock macOS）互換で jq / timeout(1) / sort -V に依存しない。タグ・キャッシュ由来の version 文字列は経路を問わず SemVer 3 要素の厳格検査を通ったものだけを JSON へ埋め込む（細工されたタグ名による JSON 注入の防止）
   - **オプトアウト**: 環境変数 `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1` でキャッシュ読み書き含め全処理を無効化できる
-  - **既知の限界**: タグを打たずにリリースされた版（例: v0.13.2）は検出できない。タグ push が更新通知の前提条件になる（sync 手順への組み込みは Issue #163 で追跡）
+  - **既知の限界**: タグを打たずにリリースされた版（例: v0.13.2）は検出できない。タグ push が更新通知の前提条件になる（同期手順で追跡）
 - `tests/update-check/verify.sh` を追加した（38 検査、`run-all.sh` の既定一覧に登録）。ローカルの bare git リポジトリ fixture のみで駆動し実ネットワークに触れない。通知 JSON の構文（単一オブジェクト検証含む）と内容・notified による通知一回性と新版での再通知・SemVer 数値比較の境界（0.9.9 < 0.10.0 の辞書順退行防止）・成功/失敗キャッシュの TTL 動作（到達不能 URL でも通知が出る/正常 URL でも再試行しないことで「ネットワークへ出ていない」を証明する形）・悲観的 fail マーカー（stub git を SIGKILL して取得中断でも fail が残ることを実証）・未来 timestamp（clock skew）の不信・オフライン耐性・到達可能だが SemVer タグ 0 件の経路・オプトアウト・SemVer 3 要素でないタグと peeled ref の除外・壊れたキャッシュ 4 形態（garbage / 余剰フィールド / 先頭ゼロ epoch / `ok - <ts>` ゾンビ形）の自己修復・非数値 TTL の既定値フォールバック・`CLAUDE_PLUGIN_ROOT` 経路（本番で常用される分岐）・hooks.json の静的整合・全経路の exit 0 + stderr 無出力（fail-open 契約）を固定する。登録前に 11 種の変異（辞書順比較化・オフライン exit 1・オプトアウト無効化・TTL 無視×2・SemVer 限定解除・悲観的 fail 書き込み削除・notified 抑制削除・数値検証弱体化・ok 枝の latest 検証削除・CLAUDE_PLUGIN_ROOT 経路破壊）を当てて全て red になることを確認した
 
 ### 修正
 
-- CHANGELOG 末尾の比較リンクを実在の公開タグへ追従させた（`[Unreleased]` の compare 起点を v0.13.1 → v0.13.3 へ、`[0.13.3]` のリンク行を追加）。v0.13.2 はタグが飛ばされた版のため見出しのみ（運用ルール通り）。`tests/changelog-links` が検出した drift の解消で、同期手順への恒久組み込みは Issue #163 で追跡継続
+- CHANGELOG 末尾の比較リンクを実在の公開タグへ追従させた（`[Unreleased]` の compare 起点を v0.13.1 → v0.13.3 へ、`[0.13.3]` のリンク行を追加）。v0.13.2 はタグが飛ばされた版のため見出しのみ（運用ルール通り）。`tests/changelog-links` が検出した drift を解消し、同期手順への恒久組み込みは後続変更で継続した
 
 ## [0.13.3] - 2026-07-26
 
 ### 追加
 
-- `tests/changelog-links/verify.sh` を追加した（Issue #161）。CHANGELOG 末尾の比較リンクが公開タグに追従しているかを機械検査する: (A) `[Unreleased]` の compare 起点が公開リポジトリの実在最新タグと一致すること、(B) 各リンク行をラベル・compare元・compare先の個別レコードとして解析し、compare先（またはreleases/tag形式のタグ）がラベルと一致し、compare元・先の両方が実タグとして実在すること、(C) 実タグを持つ版にリンク行が欠けていないこと。PR #160（Issue #155）のレビューで `[Unreleased]` が 6 リリース分古いタグを指したまま + 実在 7 タグ分のリンク行が欠落していた drift の再発防止。`run-all.sh` の既定一覧に登録した。公開リポジトリへの到達を試み、DNS・タイムアウト等の接続不可と判定できた場合のみ suite 丸ごと `○ skip`（部分 skip でこのマーカーを出すと run-all.sh の report から実行結果が消えるため）。それ以外（リポジトリ削除・認証失敗・分類不能なエラーを含む）と、到達できたのに SemVer タグが 1 件も取得できない場合は fail にする（未知のエラーを skip 側のデフォルトにすると drift を再導入するため fail 側にデフォルトする設計）
-  - 既知の限界: `sync-dev-toolkit` 手順はタグ・Release 作成のみを行い CHANGELOG の `[Unreleased]` 起点・リンク行の更新は行わないため、新規タグ公開直後は本 suite が必ず red になる。恒久対応は Issue #163 で追跡する。この red は #163 が入るまでは想定内で、検査自体を無効化しないこと（ACE-160-3: 既定で赤いゲートは無視される運用を生む）
+- `tests/changelog-links/verify.sh` を追加した。CHANGELOG 末尾の比較リンクが公開タグに追従しているかを機械検査する: (A) `[Unreleased]` の compare 起点が公開リポジトリの実在最新タグと一致すること、(B) 各リンク行をラベル・compare元・compare先の個別レコードとして解析し、compare先（またはreleases/tag形式ならそのタグ）がラベルと一致し、compare元・先の両方が実タグとして実在すること、(C) 実タグを持つ版にリンク行が欠けていないこと。公開前レビューで `[Unreleased]` が 6 リリース分古いタグを指したまま、かつ実在 7 タグ分のリンク行が欠落していた drift を確認したため、再発防止として `run-all.sh` の既定一覧に登録した。公開リポジトリへの到達を試み、DNS・タイムアウト等の接続不可と判定できた場合のみ suite 丸ごと `○ skip`（部分 skip でこのマーカーを出すと run-all.sh の report から実行結果が消えるため）。それ以外（リポジトリ削除・認証失敗・分類不能なエラーを含む）と、到達できたのに SemVer タグが 1 件も取得できない場合は fail にする（未知のエラーを skip 側のデフォルトにすると drift を再導入するため fail 側にデフォルトする設計）
+  - 既知の限界: 当時の同期手順はタグ・Release 作成のみを行い CHANGELOG の `[Unreleased]` 起点・リンク行の更新は行わなかったため、新規タグ公開直後は本 suite が必ず red になった。恒久対応前も検査自体は無効化せず、後続変更で同期手順へ追従処理を組み込んだ
   - 既知の限界2: リポジトリの改名（URL変更）は GitHub のリダイレクトが効くため本検査では検出できない
 - `tests/changelog-links-selftest/verify.sh` を追加した。`changelog-links/verify.sh` をローカルの bare git リポジトリ fixture（`FF_CHANGELOG_LINKS_REPO_URL`）と CHANGELOG fixture（`FF_CHANGELOG_LINKS_FILE`）で駆動し、実ネットワークに触れずに検査A/B/Cの pass/fail・接続不可時の skip・分類不能エラー時の fail・タグ0件時の fail を固定する（PR レビューで見つかった複数の drift 見逃しパターンの回帰防止）
 
@@ -115,13 +122,13 @@
 
 ### 削除
 
-- `scripts/adapters/adapter-common.sh` から未使用の `parse_severity_counts()` と `SEVERITY_CRITICAL` / `SEVERITY_WARNING` / `SEVERITY_SUGGESTION` / `SEVERITY_INFO` 定数を削除した（Issue #155。PR #153 の作業中に検出）。呼び出し元はリポジトリ内にも同梱ドキュメント（docs-template / README / アダプター作成ガイド）にも存在せず、実装も結果ファイル全体への `grep -ci "critical"` 等の**マッチ行数カウント**（`grep -c` は一致した行数で、語の出現回数ではない）だったため、そのまま使えば散文中の一般語を含む行を件数として数える。とくに PR #153 で導入した `Status: incomplete`（打ち切られた部分出力）に当てると、途中までの本文で当該語を含む行数を「検出件数」として報告することになる。重大度集計が必要になった時点で、Output Format Standard の統一出力テンプレートに沿って各重大度セクション配下の項目を数える正しい実装として書き直す方が安全と判断した（集計機能そのものの実装は本 Issue のスコープ外）
+- `scripts/adapters/adapter-common.sh` から未使用の `parse_severity_counts()` と `SEVERITY_CRITICAL` / `SEVERITY_WARNING` / `SEVERITY_SUGGESTION` / `SEVERITY_INFO` 定数を削除した。別変更の作業中に見つかり、呼び出し元はリポジトリ内にも同梱ドキュメント（docs-template / README / アダプター作成ガイド）にも存在しなかった。実装も結果ファイル全体への `grep -ci "critical"` 等の**マッチ行数カウント**（`grep -c` は一致した行数で、語の出現回数ではない）だったため、そのまま使えば散文中の一般語を含む行を件数として数える。とくに直前の変更で導入した `Status: incomplete`（打ち切られた部分出力）に当てると、途中までの本文で当該語を含む行数を「検出件数」として報告することになる。重大度集計が必要になった時点で、Output Format Standard の統一出力テンプレートに沿って各重大度セクション配下の項目を数える正しい実装として書き直す方が安全と判断した（集計機能そのものの実装はスコープ外）
 
 ## [0.13.1] - 2026-07-26
 
 ### 修正
 
-- docs-template のゲート例（pre-push フック / CI / 判定スクリプト）に残っていた **fail-silent（空振りを合格として通す）パターン**を横断的に修正した（Issue #154。Issue #152 / PR #153 で 1 ファイルを直した際の横断確認）
+- docs-template のゲート例（pre-push フック / CI / 判定スクリプト）に残っていた **fail-silent（空振りを合格として通す）パターン**を、先行修正で1ファイルを直した際の横断確認に基づいて修正した
   - `ai-tools-integration.md`: commit-msg フック例が commitlint の終了コードを判定に入れていなかった → `if !` + エラーメッセージの明示判定へ。husky のランナーは hook を `sh -e` で実行するため husky 配下では裸呼び出しでも止まるが、それは実行環境の暗黙の性質で、素の `.git/hooks` 直置きでは合否が最後の grep だけで決まる。環境に依存させない形に固定した
   - `automated-code-review.md`: レビュー厳格度の判定例が「否定マーカーが見つからなければ合格」形式で、レビューが未実行・途中死した空の結果も合格として通していた → 結果ファイルの非空 + 未完了マーカー不在（契約形式の行頭アンカー。散文中の "incomplete" で誤ブロックしない）+ 肯定マーカー（行頭 `## Verdict: APPROVED`。部分文字列だと引用でも合格になる）で判定する fail-closed 形へ書き換えた。厳格モードは `REVIEW_STRICT=1` のノブとして分離し、「指摘行が無ければ合格」ではなく「`None found` があれば合格」の肯定マーカー判定にした（見出し改名・フォーマット逸脱・指摘残存のすべてがブロック側に倒れる。`sed | grep -q` の SIGPIPE 反転も変数受けで回避）。出力形式の規約（各セクションは指摘ゼロでも `None found`、判定は行頭 `## Verdict:` 行）も明文化した
   - `automated-code-review.md`: 自動生成ファイル除外スニペットが `git diff --cached` の失敗と「ステージが空」を区別せず、列挙失敗時にレビューを丸ごとスキップしていた → 失敗時は中断する形へ。grep の rc=2（実行失敗）を `|| true` で「全件除外」に丸めない形も併記した
@@ -130,7 +137,7 @@
   - `04-quality/TESTING.md`: CI 例のカバレッジ回収に `if: always()` が無く、失敗した回のレポートが出てこなかった → 追加した
   - `DEPENDENCY_LINT.md`: config 例の `forbidden` ルールに `severity` が無く（既定 `warn` は違反検出でも exit 0）、CI 例が常に緑になる状態だった → `severity: "error"` を明記し、`allowedSeverity` は `allowed` ルール群用で forbidden の重大度は変わらない旨を注記した
   - `health-check.md`: 終了コードを持たない診断スクリプト（出力 0 行 = 健全と空振りの区別がつかない）を自動ゲートにコピーしないよう注意書きを追加した
-  - `cursor-cli-reviewer.md`: PR #153 で削除済みの `timeout 120 cursor-agent` ラッパー例（stock macOS に timeout(1) が無く空振りの入口になる）が残っていた → アダプタ経由の記述へ揃えた
+  - `cursor-cli-reviewer.md`: 先行修正で削除済みの `timeout 120 cursor-agent` ラッパー例（stock macOS に timeout(1) が無く空振りの入口になる）が残っていた → アダプタ経由の記述へ揃えた
 - 上記の修正が退行しないよう、文面レベルの drift 検査 suite `tests/docs-gates/` を追加した（25 検査。修正パターンの実在 + 退行パターンの不在を検査し、`run-all.sh` の既定一覧に登録）。説明コメントが needle と同じ文字列を含む箇所は行頭アンカーの `must_match` でコード行そのものを特定し（散文が残ってもコードが消えれば red）、負の検査は grep 自体の失敗（rc>=2）を pass と読まない。needle の設計規則と「変異を当てて red を確認してから登録する」運用をヘッダーに記録した。コードフェンス内シェルの合否経路を静的に追う汎用検査は誤検出が多く載せない判断とし、判断理由も同ヘッダーに記録した
 
 ## [0.13.0] - 2026-07-26
@@ -152,8 +159,8 @@
 - 統合レポートの未完了判定を**ヘッダー範囲に限定**した。ファイル全体を検索していたため、レビュー本文が `Status: incomplete` 行を引用しただけの**完了**結果が未完了として扱われうる（本ツールが自身のスクリプトをレビューする本リポジトリでは十分に起こりうる）。`head | grep -q` ではなく awk で判定する（`grep -q` の早期終了が上流を SIGPIPE で殺し、pipefail のもとで一致が不一致へ反転する事故を避けるため。ACE-149 と同型）
 - 失敗時に出力する**再実行コマンドがそのままでは動かなかった**のを修正した。`basename "$0"` を出していたが、本スクリプトは通常インストール済みプラグイン内の絶対パスから、対象プロジェクト側で実行される。プロジェクト root に同名ファイルは無いため提示コマンドは即座に失敗していた。絶対パス（空白を含む場合も `printf %q` で保護）を出し、「何を見るか」を決めるフラグ（`--base` / `--include-diff` / `--output-dir` / `--config` / `--description`）も引き継ぐ。これらが落ちると「失敗した実行の再試行」ではなく別のタスクになる（例: `--include-diff` が落ちた implement の再実行はプロンプトから差分が消える）
 - `--sequential` 経路が timeout と一般失敗を区別表示していなかったのを修正した。並列経路は「Timed out after Ns」を出すのに逐次経路は「Failed」だけで、どちらのモードで走らせたかによって診断が変わっていた
-- 打ち切り／異常終了時に、**すでに捕まえていた部分出力を捨てていた**のを修正した。5 つのアダプタの失敗経路は `result` を握ったまま `exit 1` しており、Codex の 300 秒ぶんの作業がまるごと消え、結果ファイルが 1 つも生成されないまま統合レポートだけが出る状態になっていた（Issue #152 の「空振り」）。部分出力を `Status: incomplete` ヘッダー + `INCOMPLETE` バナー付きの結果ファイルとして保存する。fail-loud は維持で、タスクは従来どおり失敗として計上され終了コードも非 0 のまま。バナーは「未完了の節は指摘なしではなく未確認」と明示する
-- `docs-template` が示す **pre-push ゲートの例が「空振り」を合格として通す**のを修正した。`multi-review.sh` の終了コードを捨てて `CRITICAL_BLOCK` の有無だけを見ていたため、レビューが 1 件も完走しなかった実行が「Critical なし = 合格」になっていた（Issue #152 の失敗モードがそのまま一層外側に出た形）。終了コードと `INCOMPLETE` の両方を見る例に差し替え、なぜ両方が必要かを併記した。GitHub Actions の例も `upload-artifact` に `if: always()` を付け、失敗した回の部分出力こそ回収できるようにした
+- 打ち切り／異常終了時に、**すでに捕まえていた部分出力を捨てていた**のを修正した。5 つのアダプタの失敗経路は `result` を握ったまま `exit 1` しており、Codex の 300 秒ぶんの作業がまるごと消え、結果ファイルが 1 つも生成されないまま統合レポートだけが出る「空振り」になっていた。部分出力を `Status: incomplete` ヘッダー + `INCOMPLETE` バナー付きの結果ファイルとして保存する。fail-loud は維持で、タスクは従来どおり失敗として計上され終了コードも非 0 のまま。バナーは「未完了の節は指摘なしではなく未確認」と明示する
+- `docs-template` が示す **pre-push ゲートの例が「空振り」を合格として通す**のを修正した。`multi-review.sh` の終了コードを捨てて `CRITICAL_BLOCK` の有無だけを見ていたため、レビューが 1 件も完走しなかった実行が「Critical なし = 合格」になっていた（同じ失敗モードが一層外側に出た形）。終了コードと `INCOMPLETE` の両方を見る例に差し替え、なぜ両方が必要かを併記した。GitHub Actions の例も `upload-artifact` に `if: always()` を付け、失敗した回の部分出力こそ回収できるようにした
 - CLI 別ページ（`cursor-cli-reviewer.md` / `gemini-cli-reviewer.md`）と `REVIEW_AGENT_CREATION_GUIDE.md` にも fallback の区別を反映した。「利用不可の場合フォールバックします」という言い回しが未インストールと実行時失敗を同一視しており、本 PR が他の文書で解消した曖昧さがここに双子で残っていた。Gemini のレート制限（＝実行時失敗）への対応として「`minimize_cost` で他 CLI にフォールバック」と案内していた箇所も、これはプラン構築時の割り当て指定で失敗後の救済ではない旨に直した。この drift クラスは「fallback に触れる文書は未インストール限定であることも書く」というゲートで固定した（言い回しの禁止ではなく必要語の存在を要求する形。表現替えでの迂回を避けるため）
 - `docs-template/05-operations/deployment/cursor-cli-reviewer.md` の記述を実装に合わせた。フォールバックの説明が未インストール時と実行時失敗を区別しておらず（本 PR が他の文書で解消した曖昧さがここだけ残っていた）、回避策として存在しないファイル名（`adapter-cursor-cli.sh`）と、現在は使われない `Verdict: SKIPPED` 形式の出力例を載せていた
 - `docs-template` のトラブルシューティングが `export REVIEW_TIMEOUT=120` を timeout 変更手段として案内していたのを修正した。`multi-review.sh` / `multi-agent.sh` は常に `--timeout` をアダプタへ明示的に渡すため、この経路では当該環境変数は無視される（アダプタ直叩き時の既定値にしか効かない）。`--timeout` の例に差し替え、効かない理由も併記した

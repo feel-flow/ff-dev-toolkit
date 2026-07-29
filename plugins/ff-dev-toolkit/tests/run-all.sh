@@ -55,6 +55,7 @@ else
     # 全 suite を実行するので、並び順は結果ではなく報告の読みやすさの問題）。
     "$SCRIPT_DIR/skill-frontmatter/verify.sh"
     "$SCRIPT_DIR/ace-curate-commit/verify.sh"
+    "$SCRIPT_DIR/changelog-public-references/verify.sh"
     "$SCRIPT_DIR/changelog-version/verify.sh"
     "$SCRIPT_DIR/docs-gates/verify.sh"
     "$SCRIPT_DIR/out-of-scope-routing/verify.sh"
