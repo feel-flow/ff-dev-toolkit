@@ -182,12 +182,16 @@ npm run ace:check-playbook-frontmatter
 
 **既定（推奨）— デフォルトブランチ直マージ**: `<default-branch>` に直接 commit + push する。
 
+コミット前に対象リポジトリの commitlint 設定（特に `header-max-length`）を確認し、件名を上限内に収める。カテゴリが複数でも件名には列挙せず、commit body に記録する。要約だけで上限を超える場合は、要約を短くするかコミットを分割する。
+
 ```bash
 # 1 回の curate で複数エントリ・複数カテゴリに触れることがあるため、
 # 変更した playbook/*.md を全て add する（PLAYBOOK.md の索引更新も対象）
 git add docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md
 git status --short  # 意図したファイルのみが含まれるか確認
-git commit -m "knowledge: ACE-<PR番号>-<連番> [category] [summary]"
+git commit \
+  -m "knowledge: ACE-<PR番号>-<連番> <要約>" \
+  -m "Categories: <category[, category...]>"
 git push origin <default-branch>
 ```
 
@@ -197,9 +201,11 @@ git push origin <default-branch>
 git checkout -b chore/ace-from-pr-<PR番号>
 git add docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md
 git status --short  # 意図したファイルのみが含まれるか確認
-git commit -m "knowledge: ACE-<PR番号>-<連番> [category] [summary]"
+git commit \
+  -m "knowledge: ACE-<PR番号>-<連番> <要約>" \
+  -m "Categories: <category[, category...]>"
 git push -u origin chore/ace-from-pr-<PR番号>
-gh pr create --base <default-branch> --title "knowledge: ACE-<PR番号>-<連番> [category]" --body "PR #<PR番号> から知見抽出"
+gh pr create --base <default-branch> --title "knowledge: ACE-<PR番号>-<連番> <要約>" --body "PR #<PR番号> から知見抽出"
 # レビュー後 squash merge → /merge-cleanup
 ```
 
