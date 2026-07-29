@@ -264,7 +264,7 @@ chmod +x "$MOCK/git"
 
 echo "== merge-cleanup 破壊的経路テスト =="
 
-remote_has() { git ls-remote --heads origin "refs/heads/$1" | grep -q .; }
+remote_has() { git ls-remote --heads origin "refs/heads/$1" | grep . >/dev/null; }
 
 # 呼び出し元を detached worktree に移し、元 clone が develop を保持する競合を再現する。
 # ignored file は clean 判定に出ないが、退避のために worktree ごと消してはならない。
@@ -368,7 +368,7 @@ fi
 if [ "$(git branch --show-current)" = "develop" ] \
   && [ -z "$(git -C "$BASE_OWNER" branch --show-current)" ] \
   && [ -f "$BASE_OWNER/.cleanup-owner-preserved" ] \
-  && git worktree list --porcelain | grep -qF "worktree $BASE_OWNER"; then
+  && git worktree list --porcelain | grep -F "worktree $BASE_OWNER" >/dev/null; then
   ok "clean な base 所有 worktree と ignored file を保ち、呼び出し元を develop へ復帰"
 else
   bad "clean な base 所有 worktree の退避または呼び出し元の develop 復帰に失敗"

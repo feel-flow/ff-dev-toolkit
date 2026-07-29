@@ -119,7 +119,7 @@ contains_exact_normalized_line() {
 }
 
 contains_literal() {
-  printf '%s\n' "$1" | grep -qF -- "$2"
+  printf '%s\n' "$1" | grep -F -- "$2" >/dev/null
 }
 
 context_forbidden_label_pattern() {
@@ -485,7 +485,7 @@ else
     else
       while IFS= read -r anchor; do
         [[ -n "$anchor" ]] || continue
-        if printf '%s\n' "$docs_blob" | grep -qF -- "$anchor"; then
+        if printf '%s\n' "$docs_blob" | grep -F -- "$anchor" >/dev/null; then
           echo "  ✓ docs anchor: $anchor"
         else
           echo "  ✗ docs/ にケース固有アンカーが無い: $anchor"
@@ -563,7 +563,7 @@ else
     rule="$(field_value "$expected" "検証する生成器規則")"
 
     if [[ -n "$verdict" ]]; then
-      if printf '%s' " $VALID_VERDICTS " | grep -qF -- " $verdict "; then
+      if printf '%s' " $VALID_VERDICTS " | grep -F -- " $verdict " >/dev/null; then
         if [[ -n "$expected_verdict" && "$verdict" != "$expected_verdict" ]]; then
           echo "  ✗ 期待総合判定がケース定義と不一致: actual=\"$verdict\" expected=\"$expected_verdict\""
           fail=1

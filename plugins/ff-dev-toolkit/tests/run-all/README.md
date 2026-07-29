@@ -48,6 +48,7 @@ fail-silent に反転するため、ランナーを集約実行へ変えまし�
 | case 7 | pass, fail-skip-marker | 非 0 終了の suite は、`○ skip` を出していても failed に計上される |
 | case 8 | （引数なし・入れ子） | 入れ子での引数なし実行を非 0 で拒否し、suite を 1 つも実行しない |
 | case 9 | （疑似 suite なし） | `merge-cleanup/verify.sh` が行頭 `○ skip` マーカーを今も出力する（契約の両端の drift 検出） |
+| case 10 | （全 `tests/**/*.sh` の静的監査） | 非コメント行のパイプ入力に `grep -q*` が再混入していないこと |
 
 case 5 が独立して必要なのは、case 1 が not-run と同時に fail も渡しているためです。終了コード判定から
 `|| ${#NOT_RUN[@]} -gt 0` を落としても `FAILED` 経路で非 0 が保たれてしまい、その削除を検出できません
@@ -64,12 +65,17 @@ case 7 は判定の**順序**を固定します。exit code を先に見ず「�
 case 9 が要るのは、skip マーカーの文言が変わると skip が pass として数えられ、
 「全部通った」表示に戻ってしまうためです。
 
+case 10 は Issue #150 の再混入ガードです。ファイルを直接読む `grep -q*` は上流プロセスが
+無いため許容し、`| grep -q*` だけを fail-closed で検出します。パイプ入力の照合は
+`grep ... >/dev/null` のように入力を最後まで読むか、パイプを介さないシェル内マッチを使います。
+同一行だけでなく、バックスラッシュ継続や行末 `|` で分割された論理行も監査対象です。
+
 ## ディレクトリ構成
 
 ```
 tests/run-all/
 ├── README.md                        # このファイル
-├── verify.sh                        # ランナーの挙動検証（9 ケース）
+├── verify.sh                        # ランナーの挙動検証（10 ケース）
 └── fixtures/
     ├── pass/verify.sh               # 常に成功（後続実行の目印を出力）
     ├── fail/verify.sh               # 常に失敗（stderr へ診断を出力）
@@ -111,6 +117,8 @@ bash plugins/ff-dev-toolkit/tests/run-all.sh
   `skip-large/verify.sh` の出力量を減らすとパイプ容量を下回り、case 4 が意味を失う。
 - suite の出力を照合するときは `grep -q` を使わないこと（上記 SIGPIPE 反転）。本 suite では
   `out_matches`（`grep -c`）を経由し、ランナー側はパイプを介さないシェル内マッチで判定する。
+- パイプ入力の `grep -q*` を追加すると case 10 が red になる。ファイルを直接読む
+  `grep -q*` は対象外なので、意味を変えずに一律置換しないこと。
 - 修正が「本物」か確かめる負例テスト。どのケースが落ちるかを見る（失敗**件数**は
   アサーションの増減やパイプのタイミングで変わるので、件数ではなくケースで判断すること）:
 
@@ -124,3 +132,4 @@ bash plugins/ff-dev-toolkit/tests/run-all.sh
   | `passed -eq 0` の下限ガードを外す | case 6 |
   | exit code より先に skip マーカーを見る（判定順序の入れ替え） | case 7 |
   | 入れ子の引数なし実行ガードを外す | case 8（※ ガードを完全に削ると無限再帰するので、`exit 1` を `exit 0` にする形で試すこと） |
+  | 任意の非コメント行へ `printf ... \| grep -q` を再追加する | case 10 |

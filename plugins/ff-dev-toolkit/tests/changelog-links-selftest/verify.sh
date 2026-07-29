@@ -171,7 +171,7 @@ expect_exit() {
 expect_output_has() {
   # $1: repo / $2: changelog / $3: grep BRE / $4: 検査名
   run_target "$1" "$2"
-  if printf '%s\n' "$OUT" | grep -q -- "$3"; then
+  if printf '%s\n' "$OUT" | grep -- "$3" >/dev/null; then
     ok "$4"
   else
     bad "${4} — 出力に /$3/ が無い（rc=${RC}）"

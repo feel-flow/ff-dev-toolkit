@@ -73,6 +73,8 @@ bash plugins/ff-dev-toolkit/tests/run-all.sh
 
 `verify.sh` は read-only 環境でも動作します（here-string / heredoc 不使用、`printf ... | cmd`。ACE-86-2）。
 `TMPDIR=/nonexistent bash plugins/ff-dev-toolkit/tests/assess-impact/verify.sh` でも実行できます。
+Issue #150 の回帰ガードとして、64KB を超える文字列の先頭アンカーを `contains_literal` が
+検出できることも実測します。パイプ下流は `grep -q*` で早期終了せず、入力を最後まで読み切ります。
 
 ### ブラインド実行（層 C）
 

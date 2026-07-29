@@ -169,8 +169,8 @@ if [ -n "$OUT" ] && printf '%s' "$OUT" | jq -e . >/dev/null 2>&1 \
 else
   bad "新版検出: 出力が単一 JSON として解析できない: $OUT"
 fi
-if printf '%s' "$OUT" | jq -er '.systemMessage' 2>/dev/null | grep -q "v0.14.0" \
-  && printf '%s' "$OUT" | jq -er '.systemMessage' 2>/dev/null | grep -q "v0.13.3"; then
+if printf '%s' "$OUT" | jq -er '.systemMessage' 2>/dev/null | grep "v0.14.0" >/dev/null \
+  && printf '%s' "$OUT" | jq -er '.systemMessage' 2>/dev/null | grep "v0.13.3" >/dev/null; then
   ok "新版検出: systemMessage に最新版と現行版の両方を含む"
 else
   bad "新版検出: systemMessage の内容が不正: $OUT"
@@ -180,19 +180,19 @@ if [ "$(printf '%s' "$OUT" | jq -er '.hookSpecificOutput.hookEventName' 2>/dev/n
 else
   bad "新版検出: hookEventName が不正"
 fi
-if printf '%s' "$OUT" | jq -er '.hookSpecificOutput.additionalContext' 2>/dev/null | grep -q "claude plugin update ff-dev-toolkit"; then
+if printf '%s' "$OUT" | jq -er '.hookSpecificOutput.additionalContext' 2>/dev/null | grep "claude plugin update ff-dev-toolkit" >/dev/null; then
   ok "新版検出: additionalContext に更新コマンドを含む"
 else
   bad "新版検出: additionalContext に更新コマンドが無い"
 fi
 # marketplace 名を固定した案内への退行防止（登録名はユーザー依存のため）
-if printf '%s' "$OUT" | grep -q "marketplace update ff-dev-toolkit"; then
+if printf '%s' "$OUT" | grep "marketplace update ff-dev-toolkit" >/dev/null; then
   bad "新版検出: marketplace 名を固定した更新コマンドを案内している"
 else
   ok "新版検出: marketplace 名を固定していない"
 fi
 # v0.15.0-rc.1 が最新として採用されていないこと（SemVer 3 要素限定の固定）
-if printf '%s' "$OUT" | grep -qF "0.15.0"; then
+if printf '%s' "$OUT" | grep -F "0.15.0" >/dev/null; then
   bad "新版検出: SemVer 3 要素でないタグ（v0.15.0-rc.1）を最新と誤認した"
 else
   ok "新版検出: SemVer 3 要素でないタグを無視した"
@@ -220,7 +220,7 @@ git -C "$TMP/work" tag v0.14.1
 git -C "$TMP/work" push -q origin v0.14.1
 rm -f "$CACHE/update-check"   # TTL を待たずネットワーク経路へ
 run_hook "$REPO" "$CACHE"
-if printf '%s' "$OUT" | grep -qF "v0.14.1"; then
+if printf '%s' "$OUT" | grep -F "v0.14.1" >/dev/null; then
   ok "通知済み抑制: さらに新しい版は再通知する"
 else
   bad "通知済み抑制: 新しい版 v0.14.1 が通知されない: [$OUT]"
@@ -246,7 +246,7 @@ fi
 set_version "0.9.9"
 run_hook "$REPO_0100" "$TMP/cache4"
 assert_clean "SemVer 比較 0.9.9→0.10.0"
-if printf '%s' "$OUT" | grep -qF "v0.10.0"; then
+if printf '%s' "$OUT" | grep -F "v0.10.0" >/dev/null; then
   ok "SemVer 比較: 0.9.9 → 0.10.0 を新版と判定（数値比較）"
 else
   bad "SemVer 比較: 0.10.0 を新版と判定できない（辞書順比較の疑い）: [$OUT]"
@@ -256,7 +256,7 @@ git -C "$TMP/work" tag v1.0.0
 git -C "$TMP/work" push -q origin v1.0.0
 run_hook "$REPO" "$TMP/cache4b"
 assert_clean "SemVer 比較 0.99.99→1.0.0"
-if printf '%s' "$OUT" | grep -qF "v1.0.0"; then
+if printf '%s' "$OUT" | grep -F "v1.0.0" >/dev/null; then
   ok "SemVer 比較: 0.99.99 → 1.0.0 を新版と判定"
 else
   bad "SemVer 比較: 1.0.0 を新版と判定できない: [$OUT]"
@@ -271,7 +271,7 @@ CACHE="$TMP/cache5"
 mkdir -p "$CACHE"
 printf 'ok 0.14.0 %s\n' "$(date +%s)" > "$CACHE/update-check"
 run_hook "$TMP/no-such-repo" "$CACHE"
-if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && printf '%s' "$OUT" | grep -qF "v0.14.0" \
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && printf '%s' "$OUT" | grep -F "v0.14.0" >/dev/null \
   && grep -q "^ok 0.14.0 " "$CACHE/update-check"; then
   ok "成功キャッシュ: TTL 内はネットワーク不要で通知が出てキャッシュも保たれる"
 else
@@ -296,7 +296,7 @@ mkdir -p "$CACHE"
 printf 'fail - %s\n' "$(( $(date +%s) - 7200 ))" > "$CACHE/update-check"
 run_hook "$REPO" "$CACHE"
 assert_clean "失敗キャッシュ期限切れ"
-if printf '%s' "$OUT" | grep -q "systemMessage"; then
+if printf '%s' "$OUT" | grep "systemMessage" >/dev/null; then
   ok "失敗キャッシュ期限切れ: 再試行して通知が出る"
 else
   bad "失敗キャッシュ期限切れ: 復帰しない: exit=$RC output=[$OUT]"
@@ -307,7 +307,7 @@ CACHE="$TMP/cache7b"
 mkdir -p "$CACHE"
 printf 'fail - %s\n' "$(( $(date +%s) + 999999 ))" > "$CACHE/update-check"
 run_hook "$REPO" "$CACHE"
-if printf '%s' "$OUT" | grep -q "systemMessage"; then
+if printf '%s' "$OUT" | grep "systemMessage" >/dev/null; then
   ok "未来 timestamp: 信用せず再試行して通知が出る"
 else
   bad "未来 timestamp: 遠未来キャッシュで沈黙した: exit=$RC output=[$OUT]"
@@ -390,7 +390,7 @@ for corrupt in "garbage" "ok 0.14.0 123 junk" "ok 0.14.0 08" "ok - 1785076003"; 
   printf '%s\n' "$corrupt" > "$CACHE/update-check"
   rm -f "$CACHE/notified"
   run_hook "$REPO" "$CACHE"
-  if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && printf '%s' "$OUT" | grep -q "systemMessage" \
+  if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && printf '%s' "$OUT" | grep "systemMessage" >/dev/null \
     && grep -q "^ok " "$CACHE/update-check"; then
     ok "壊れたキャッシュ [$corrupt]: stderr を汚さず自己修復して通知した"
   else
@@ -405,7 +405,7 @@ CACHE="$TMP/cache14"
 mkdir -p "$CACHE"
 printf 'ok 0.14.0 %s\n' "$(date +%s)" > "$CACHE/update-check"
 run_hook "$TMP/no-such-repo" "$CACHE" FF_DEV_TOOLKIT_UPDATE_TTL_OK=abc FF_DEV_TOOLKIT_UPDATE_TTL_FAIL=-5
-if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && printf '%s' "$OUT" | grep -qF "v0.14.0"; then
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && printf '%s' "$OUT" | grep -F "v0.14.0" >/dev/null; then
   ok "非数値 TTL: 既定値で動作し stderr を汚さない"
 else
   bad "非数値 TTL: exit=$RC stderr=[$ERR] output=[$OUT]"
@@ -426,7 +426,7 @@ OUT="$(env -u FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK \
   FF_DEV_TOOLKIT_UPDATE_CACHE_DIR="$CACHE" \
   bash "$TMP/detached/check-update.sh" 2>"$TMP/stderr")" || RC=$?
 ERR="$(cat "$TMP/stderr" 2>/dev/null || true)"
-if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && printf '%s' "$OUT" | grep -q "systemMessage"; then
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && printf '%s' "$OUT" | grep "systemMessage" >/dev/null; then
   ok "CLAUDE_PLUGIN_ROOT: env 経由で plugin.json を解決して通知が出る"
 else
   bad "CLAUDE_PLUGIN_ROOT: env 経路が機能していない: exit=$RC output=[$OUT] stderr=[$ERR]"
@@ -439,7 +439,7 @@ else
   bad "hooks.json: JSON として解析できない"
 fi
 if [ "$(jq -r '.hooks.SessionStart[0].hooks[0].type' "$HOOKS_JSON" 2>/dev/null)" = "command" ] \
-  && jq -r '.hooks.SessionStart[0].hooks[0].command' "$HOOKS_JSON" 2>/dev/null | grep -q "check-update.sh"; then
+  && jq -r '.hooks.SessionStart[0].hooks[0].command' "$HOOKS_JSON" 2>/dev/null | grep "check-update.sh" >/dev/null; then
   ok "hooks.json: SessionStart に check-update.sh が command 登録されている"
 else
   bad "hooks.json: SessionStart の command 登録が不正"

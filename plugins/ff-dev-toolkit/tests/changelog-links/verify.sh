@@ -109,8 +109,8 @@ fi
 if ! RAW_TAGS="$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=false git \
     -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 \
     ls-remote --refs --tags "$REMOTE_URL" 2>&1)"; then
-  if printf '%s' "$RAW_TAGS" | grep -qiE \
-      'could not resolve host|could not connect to server|connection (timed out|refused)|network is unreachable|operation timed out|empty reply from server|ssl connect error|failed to connect'; then
+  if printf '%s' "$RAW_TAGS" | grep -iE \
+      'could not resolve host|could not connect to server|connection (timed out|refused)|network is unreachable|operation timed out|empty reply from server|ssl connect error|failed to connect' >/dev/null; then
     echo "○ skip: 公開リポジトリ ($REMOTE_URL) へのネットワーク到達に失敗したためスキップ（本 suite の検査は1件も実行されていません）"
     echo "  詳細: $(printf '%s' "$RAW_TAGS" | head -c 300 | tr '\n' ' ')"
     exit 0

@@ -130,7 +130,7 @@ contains "$SETUP_CURSOR" "search similar open Issues first" "Cursor Legacy テ�
 
 contains "$OSS_README" "YAGNI（対応も Issue 化もしない）→ 軽微ならインライン修正 → Issue 化" "公開 README が三分岐"
 not_contains "$OSS_README" "「同 PR でインライン修正」か「Issue 化して後送り」" "公開 README の旧二分岐を排除"
-contains "$OSS_COPILOT" "次の4境界" "公開 Copilot ガイドが4境界"
+contains "$OSS_COPILOT" "次の5境界" "公開 Copilot ガイドが5境界"
 contains "$OSS_COPILOT" "Issue 化前に類似 Issue を検索" "公開 Copilot ガイドが類似 Issue を検索"
 
 FULL_INLINE_CONTRACT="10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件"

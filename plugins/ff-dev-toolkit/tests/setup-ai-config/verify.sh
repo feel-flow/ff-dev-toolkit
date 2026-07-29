@@ -3,13 +3,14 @@
 # verify.sh — /setup-ai-config が生成する4ファイルの「標準への入口」パリティ検証
 #
 # 目的（Issue #84）: CLAUDE.md / AGENTS.md / .cursor/rules/*.mdc / copilot-instructions.md の
-# 4ツール生成物が、同じ意味の4境界を等価に含むことを機械的に検証する。
+# 4ツール生成物が、同じ意味の5境界を等価に含むことを機械的に検証する。
 #
 #   境界1: MASTER 先行参照            -> "Read MASTER.md First"
 #   境界2: 索引からの到達            -> "MASTER.md index"（※文言の存在チェック。
 #                                        意味的な到達可能性までは検証しない）
 #   境界3: 情報不足時の確認プロトコル -> "Information Verification Protocol"
 #   境界4: スコープ外発見の三分岐     -> "YAGNI → インライン修正 → Issue 化"
+#   境界5: Secrets 露出防止（#196）   -> "secret を stdout/stderr に出すコマンドを実行しない"
 #
 # 2種類の対象を検証する:
 #   (1) 期待生成物 fixture（fixtures/expected/）    … スナップショットの自己一貫性
@@ -39,8 +40,8 @@ FILES=(
   ".github/copilot-instructions.md"
 )
 
-# 4境界の固定文字列アンカー（ラベル|検索文字列）。
-# 境界4 は複数の判断を含むため、境界数と配列要素数は一致しない。
+# 5境界の固定文字列アンカー（ラベル|検索文字列）。
+# 境界4・境界5 は複数の判断を含むため、境界数と配列要素数は一致しない。
 RULE_ANCHORS=(
   "境界1 MASTER先行参照|Read MASTER.md First"
   "境界2 索引からの到達|MASTER.md index"
@@ -51,6 +52,12 @@ RULE_ANCHORS=(
   "境界4 軽微の全条件|10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件"
   "境界4 類似Issueの集約|類似 Issue を検索"
   "境界4 独立時だけ関連Issue|関連付けた新規 Issue"
+  "境界5 secret出力禁止|secret を stdout/stderr に出すコマンドを実行しない"
+  "境界5 全ダンプ禁止|env ファイル・プロセス環境の全ダンプを禁止"
+  "境界5 個別キーも値全体禁止|個別キーでも値全体を出さない"
+  "境界5 デバッグフラグ事前確認|失敗時に何をダンプするかを確認"
+  "境界5 診断はprefix+length|prefix（先頭5字）+ length"
+  "境界5 露出時は即報告|隠さず即報告"
 )
 
 # Skill 定義のツール別テンプレート節（ラベル|開始行 regex|終了行 regex|Cursorか(1/0)）
@@ -97,7 +104,7 @@ echo "fixtures: $EXPECTED"
 echo "command : $CMD"
 echo
 
-# --- (1) 期待生成物 fixture の4境界チェック ---
+# --- (1) 期待生成物 fixture の5境界チェック ---
 echo "## 期待生成物 fixture"
 for rel in "${FILES[@]}"; do
   f="$EXPECTED/$rel"
@@ -120,7 +127,7 @@ for rel in "${FILES[@]}"; do
 done
 echo
 
-# --- (2) Skill 定義テンプレートの4境界チェック（生成器 drift 防止）---
+# --- (2) Skill 定義テンプレートの5境界チェック（生成器 drift 防止）---
 # fixtures/expected/ は手書きで自己一貫のため、テンプレが境界を落としても
 # fixture だけでは PASS してしまう。各ツール別テンプレの **コードフェンス内** を検査する。
 echo "## Skill 定義テンプレート（生成器・コードフェンス内）"
@@ -144,7 +151,7 @@ else
     for entry in "${RULE_ANCHORS[@]}"; do
       blabel="${entry%%|*}"
       needle="${entry#*|}"
-      if printf '%s\n' "$fence" | grep -qF -- "$needle"; then
+      if printf '%s\n' "$fence" | grep -F -- "$needle" >/dev/null; then
         echo "  ✓ $blabel"
       else
         echo "  ✗ ${blabel}（テンプレのコードフェンスに \"${needle}\" が無い）"
@@ -193,6 +200,34 @@ else
 fi
 echo
 
+# --- (3b) Skill 定義の規範テキストが境界数から drift していないか ---
+# section_fence() はコードフェンス内しか見ないため、「重要ルール」節のような
+# 散文のチェックリストが 4境界のまま取り残されても (2) では検出できない（#196）。
+# 生成エージェントが最後に読む要約なので、ここが古いと境界を落とした生成物が出る。
+echo "## Skill 定義の規範テキスト（コードフェンス外）"
+if [[ -f "$CMD" ]]; then
+  # フェンス外の行だけを抽出して、古い境界数の表記が残っていないか見る
+  prose="$(awk '/^```/ { infence = !infence; next } !infence { print }' "$CMD")"
+  if printf '%s\n' "$prose" | grep -E '[0-4]境界' >/dev/null; then
+    echo "  ✗ 散文に古い境界数の表記が残っている（5境界へ更新すること）:"
+    printf '%s\n' "$prose" | grep -nE '[0-4]境界' | sed 's/^/      /'
+    fail=1
+  else
+    echo "  ✓ 散文に古い境界数の表記が無い"
+  fi
+  # 「重要ルール」節が境界5を名指ししていること（列挙の取りこぼし検出）
+  if awk '/^## 重要ルール/{insec=1} insec' "$CMD" | grep -F "Secrets 露出防止" >/dev/null; then
+    echo "  ✓ 重要ルール節が境界5を列挙している"
+  else
+    echo "  ✗ 重要ルール節に「Secrets 露出防止」が無い（境界5が規範チェックリストから漏れている）"
+    fail=1
+  fi
+else
+  echo "  ✗ Skill 定義が見つからない: $CMD"
+  fail=1
+fi
+echo
+
 # --- (4) 入力↔期待の紐付け（期待が入力から乖離していないか）---
 echo "## 入力↔期待の紐付け"
 TOKEN="TaskFlow"
@@ -213,7 +248,7 @@ fi
 echo
 
 if [[ "$fail" -ne 0 ]]; then
-  echo "結果: FAIL — 4境界のパリティ / Cursor 形式 / 生成器テンプレ / 入力紐付けのいずれかに欠落あり"
+  echo "結果: FAIL — 5境界のパリティ / Cursor 形式 / 生成器テンプレ / 入力紐付けのいずれかに欠落あり"
   exit 1
 fi
-echo "結果: PASS — 4ツールが4境界を等価に含み（fixture + 生成器テンプレのコードフェンス）、Cursor は現行 Project Rules 形式"
+echo "結果: PASS — 4ツールが5境界を等価に含み（fixture + 生成器テンプレのコードフェンス）、Cursor は現行 Project Rules 形式"

@@ -92,8 +92,25 @@ contains_exact_normalized_line() {
 }
 
 contains_literal() {
-  printf '%s\n' "$1" | grep -qF -- "$2"
+  printf '%s\n' "$1" | grep -F -- "$2" >/dev/null
 }
+
+# Issue #150: パイプ容量を超える入力でも、先頭近くの一致が SIGPIPE で不一致へ
+# 反転しないことを実測する。here-doc / here-string / 一時ファイルは使わない。
+sigpipe_blob="SIGPIPE-ANCHOR"
+sigpipe_i=0
+while [ "$sigpipe_i" -lt 2048 ]; do
+  sigpipe_blob="${sigpipe_blob}
+0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  sigpipe_i=$((sigpipe_i + 1))
+done
+if [ "${#sigpipe_blob}" -gt 65536 ] && contains_literal "$sigpipe_blob" "SIGPIPE-ANCHOR"; then
+  echo "✓ 64KB 超の入力でも先頭アンカーを検出（SIGPIPE 反転なし）"
+else
+  echo "✗ 64KB 超の入力で先頭アンカーを検出できない" >&2
+  fail=1
+fi
+unset sigpipe_blob sigpipe_i
 
 # 期待ファイルから `- <label>: <value>` の value を取り出す（$1=file, $2=label）
 field_value() {
@@ -309,7 +326,7 @@ else
     fi
 
     if [[ -n "$imp" ]]; then
-      if printf '%s' " $VALID_IMPACTS " | grep -qF -- " $imp "; then
+      if printf '%s' " $VALID_IMPACTS " | grep -F -- " $imp " >/dev/null; then
         if [[ -n "$expected_imp" && "$imp" != "$expected_imp" ]]; then
           echo "  ✗ 期待影響度がケース定義と不一致: actual=\"$imp\" expected=\"$expected_imp\""
           fail=1

@@ -44,7 +44,7 @@ done
 
 # Issue #141 で commands/*.md は同名 skills/*/SKILL.md へ正本移行した。
 # legacy command を再追加すると Codex から見えない第2正本が復活するため拒否する。
-if [ -d "$PLUGIN_ROOT/commands" ] && find "$PLUGIN_ROOT/commands" -type f -name '*.md' -print -quit | grep -q .; then
+if [ -d "$PLUGIN_ROOT/commands" ] && find "$PLUGIN_ROOT/commands" -type f -name '*.md' -print -quit | grep . >/dev/null; then
   echo "✗ legacy commands/*.md が残っています。skills/<name>/SKILL.md を単一正本にしてください" >&2
   exit 1
 fi

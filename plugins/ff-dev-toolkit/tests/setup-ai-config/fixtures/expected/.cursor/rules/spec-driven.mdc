@@ -40,6 +40,15 @@ alwaysApply: true
 - Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
 - 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
 
+## 🚨 Secrets Exposure Prevention
+
+- secret を stdout/stderr に出すコマンドを実行しない（境界5）。エージェントの出力（トランスクリプト・ログ・PR コメント）は永続化され、値が一度でも出たら「露出」としてローテーション判断が必要になる
+- env ファイル・プロセス環境の全ダンプを禁止（`cat .env*` / `printenv` / `env` / `console.log(process.env)` 等）。個別キーでも値全体を出さない（`printenv KEY` / `echo $KEY` を含む）
+- secret を読み込む CLI に `--debug` / `--verbose` を付ける前に、失敗時に何をダンプするかを確認する。不明なら付けない
+- 値の診断・ログ出力は prefix（先頭5字）+ length まで
+- 露出した場合は隠さず即報告し、露出したキーと範囲を列挙する
+- TaskFlow の対象 secret とコマンド: `DATABASE_URL`（PostgreSQL 接続文字列）・JWT 署名鍵が対象。`npm config list -l`（`.npmrc` のトークンを表示）・`psql` の接続文字列を argv に置く実行・`node -e 'console.log(process.env)'` は実行しない
+
 ## 🚨 Information Verification Protocol
 
 情報が不足している場合は推測せず、必ず確認を求める（境界3）。

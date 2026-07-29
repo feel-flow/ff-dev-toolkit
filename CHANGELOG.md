@@ -15,6 +15,18 @@
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-07-29
+
+### 修正
+
+- `tests/**/*.sh` のパイプ入力判定から `grep -q*` を除去し、入力を最後まで読む `grep ... >/dev/null` へ統一した（Issue #150）。`set -euo pipefail` 下で大量入力の先頭付近に一致したとき、早期終了した `grep -q*` が上流を SIGPIPE (141) にして一致を不一致へ反転させる false green を防ぐ。64KB 超の動的回帰検証と、非コメント行の `| grep -q*` 再混入を検出する静的ガードを追加し、ファイルを直接読む安全な `grep -q*` は維持した
+
+## [0.16.0] - 2026-07-29
+
+### 追加
+
+- `setup-ai-config` の4種の AI 設定生成テンプレートに境界5「Secrets 露出防止」を追加した（Issue #196）。secret を stdout/stderr に出すコマンドの実行禁止、env ファイル・プロセス環境の全ダンプ禁止（個別キーの値全体出力を含む）、secret を読む CLI へ `--debug` / `--verbose` を付ける前の失敗時ダンプ内容確認、値の診断は prefix（先頭5字）+ length まで、露出時の即報告を、生成される CLAUDE.md / AGENTS.md / Cursor ルール / copilot-instructions.md に等価に含める。生成物パリティ検証（`tests/setup-ai-config/verify.sh`）も4境界から5境界へ拡張し、`docs-template/SETUP_CURSOR.md` のコピペ用テンプレート（現行 `.mdc` / Legacy `.cursorrules` の両方）と `oss/ff-dev-toolkit/USING_WITH_VSCODE_COPILOT.md` へも同じ境界を伝播させた。あわせて Legacy `.cursorrules` テンプレートに欠けていた境界4（スコープ外発見のルーティング）も追加し、「現行 `.mdc` 例と同じ境界を含む」という記述を実体と一致させた。生成物の契約が 1 つ増えるため MINOR bump とする。背景は、エージェントが CLI の `--debug` フラグを付けた結果 env ファイル全体が stderr にダンプされ secret が露出した実事故の再発防止
+
 ## [0.15.1] - 2026-07-29
 
 ### 変更

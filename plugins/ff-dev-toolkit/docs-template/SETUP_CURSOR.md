@@ -85,7 +85,7 @@ Cursor のプロジェクトルールには2つの形式があり、**既定は�
 
 ### 既定: `.cursor/rules/spec-driven.mdc` の作成（推奨）
 
-プロジェクトルートに `.cursor/rules/` を作成し、`spec-driven.mdc` を置きます。「標準への入口」4境界（MASTER 先行参照 / 索引からの到達 / 確認プロトコル / スコープ外発見のルーティング）を必ず含めます：
+プロジェクトルートに `.cursor/rules/` を作成し、`spec-driven.mdc` を置きます。「標準への入口」5境界（MASTER 先行参照 / 索引からの到達 / 確認プロトコル / スコープ外発見のルーティング / Secrets 露出防止）を必ず含めます：
 
 ```bash
 mkdir -p .cursor/rules
@@ -116,17 +116,24 @@ alwaysApply: true
 - Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
 - 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
 
+## 🚨 Secrets Exposure Prevention
+- secret を stdout/stderr に出すコマンドを実行しない（境界5）。エージェントの出力（トランスクリプト・ログ・PR コメント）は永続化され、値が一度でも出たら「露出」としてローテーション判断が必要になる
+- env ファイル・プロセス環境の全ダンプを禁止（`cat .env*` / `printenv` / `env` / `console.log(process.env)` 等）。個別キーでも値全体を出さない（`printenv KEY` / `echo $KEY` を含む）
+- secret を読み込む CLI に `--debug` / `--verbose` を付ける前に、失敗時に何をダンプするかを確認する。不明なら付けない
+- 値の診断・ログ出力は prefix（先頭5字）+ length まで
+- 露出した場合は隠さず即報告し、露出したキーと範囲を列挙する
+
 ## 🚨 Information Verification Protocol
 情報が不足している場合は推測せず、必ず確認を求める（境界3）。
 詳細は `docs-template/MASTER.md` の「情報不足時の必須確認プロトコル」を参照。
 EOF
 ```
 
-> この `.mdc` 例と下の Legacy `.cursorrules` テンプレートは、どちらも同じ4境界（MASTER 先行参照 / 索引からの到達 / 確認プロトコル / スコープ外発見のルーティング）を備えています。既定は `.cursor/rules/*.mdc` なので、両形式を同時に置く必要はありません（重複適用を避ける）。
+> この `.mdc` 例と下の Legacy `.cursorrules` テンプレートは、どちらも同じ5境界（MASTER 先行参照 / 索引からの到達 / 確認プロトコル / スコープ外発見のルーティング / Secrets 露出防止）を備えています。既定は `.cursor/rules/*.mdc` なので、両形式を同時に置く必要はありません（重複適用を避ける）。
 
 ### Legacy 互換オプション: `.cursorrules`（後方互換）
 
-> 以下は Legacy 形式（`.cursorrules`, ルート単一ファイル）の手順です。**既定は上記 `.cursor/rules/*.mdc`** であり、Legacy 運用が必要な場合のみ使用してください。ルール本文は現行 `.mdc` 例と同じ4境界を含みます。
+> 以下は Legacy 形式（`.cursorrules`, ルート単一ファイル）の手順です。**既定は上記 `.cursor/rules/*.mdc`** であり、Legacy 運用が必要な場合のみ使用してください。ルール本文は現行 `.mdc` 例と同じ5境界を含みます。
 
 ### ステップ1: .cursorrules ファイルの作成（15分）
 
@@ -314,6 +321,22 @@ After confirmation, please instruct: "Proceed with [confirmed information]"
 - Error handling: Result pattern (state this)
 
 For details, see `docs-template/MASTER.md` "Information Verification Protocol".
+
+## Out-of-Scope Finding Routing
+- 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
+- 判定順は `YAGNI → インライン修正 → Issue 化`
+- 現在の根拠・利用者影響・受け入れ条件がなければ YAGNI とし、対応も Issue 化もしない
+- 必要かつ軽微（10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件）なら現 PR で修正する
+- 仕様判断・別モジュール・独立検証が必要なら Issue 化ルートへ進む
+- Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
+- 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
+
+## 🚨 Secrets Exposure Prevention
+- secret を stdout/stderr に出すコマンドを実行しない（境界5）。エージェントの出力（トランスクリプト・ログ・PR コメント）は永続化され、値が一度でも出たら「露出」としてローテーション判断が必要になる
+- env ファイル・プロセス環境の全ダンプを禁止（`cat .env*` / `printenv` / `env` / `console.log(process.env)` 等）。個別キーでも値全体を出さない（`printenv KEY` / `echo $KEY` を含む）
+- secret を読み込む CLI に `--debug` / `--verbose` を付ける前に、失敗時に何をダンプするかを確認する。不明なら付けない
+- 値の診断・ログ出力は prefix（先頭5字）+ length まで
+- 露出した場合は隠さず即報告し、露出したキーと範囲を列挙する
 
 ---
 

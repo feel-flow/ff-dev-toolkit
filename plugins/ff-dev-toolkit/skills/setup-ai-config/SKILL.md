@@ -24,14 +24,15 @@ description: プロジェクトの docs/ を基に AI 開発ツール向け設�
 
 ## 標準への入口（全ツール共通の境界）
 
-生成する4ファイル（CLAUDE.md / AGENTS.md / Cursor ルール / copilot-instructions.md）は、ツールを問わず **同じ意味の「標準への入口」** を必ず含めます。各ツール固有のフォーマットで表現は変わっても、次の4つの境界を**等価に**生成してください。
+生成する4ファイル（CLAUDE.md / AGENTS.md / Cursor ルール / copilot-instructions.md）は、ツールを問わず **同じ意味の「標準への入口」** を必ず含めます。各ツール固有のフォーマットで表現は変わっても、次の5つの境界を**等価に**生成してください。
 
 1. **MASTER 先行参照** — 作業やコード生成の前に、必ず `docs/MASTER.md` を最初に読む（*Read MASTER.md First*）
 2. **索引からの到達** — MASTER.md の索引（各 `docs/NN-*` へのリンク）から、着手するタスクに関連する仕様へ到達する（*Use the MASTER.md index to reach the relevant specification*）
 3. **確認プロトコル** — 情報が不足している場合は推測で埋めず、必ず確認を求める（*Information Verification Protocol*）
 4. **スコープ外発見のルーティング** — `YAGNI → インライン修正 → Issue 化` の順で必要性と変更境界を判定する
+5. **Secrets 露出防止** — secret を stdout/stderr に出すコマンドを実行しない（*Secrets Exposure Prevention*）。エージェントの出力は永続化されるため、値が一度でも出たら「露出」になる
 
-> 生成物がこの4境界を等価に含むことは、`plugins/ff-dev-toolkit/tests/setup-ai-config/` の期待生成物 fixture と `verify.sh` で検証する。
+> 生成物がこの5境界を等価に含むことは、`plugins/ff-dev-toolkit/tests/setup-ai-config/` の期待生成物 fixture と `verify.sh` で検証する。
 
 ## 手順
 
@@ -95,6 +96,14 @@ description: プロジェクトの docs/ を基に AI 開発ツール向け設�
 - Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
 - 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
 
+## 🚨 Secrets Exposure Prevention
+- secret を stdout/stderr に出すコマンドを実行しない（境界5）。エージェントの出力（トランスクリプト・ログ・PR コメント）は永続化され、値が一度でも出たら「露出」としてローテーション判断が必要になる
+- env ファイル・プロセス環境の全ダンプを禁止（`cat .env*` / `printenv` / `env` / `console.log(process.env)` 等）。個別キーでも値全体を出さない（`printenv KEY` / `echo $KEY` を含む）
+- secret を読み込む CLI に `--debug` / `--verbose` を付ける前に、失敗時に何をダンプするかを確認する。不明なら付けない
+- 値の診断・ログ出力は prefix（先頭5字）+ length まで
+- 露出した場合は隠さず即報告し、露出したキーと範囲を列挙する
+- [プロジェクトの技術スタックから、対象となる secret（接続文字列・署名鍵・API キー等）と、それを出力し得る具体的コマンドを検出して列挙する。例示のコマンドはそのまま転記せず、実際に使うスタックのものへ置き換えること（例示: `supabase --debug` / `vercel env pull /dev/stdout` / `gh auth token` / `stripe config --list`）]
+
 ## 🚨 Information Verification Protocol
 情報が不足している場合は推測せず、必ず確認を求めること（境界3）。
 [MASTER.md の確認プロトコルをそのまま含める]
@@ -141,6 +150,14 @@ alwaysApply: true
 - Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
 - 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
 
+## 🚨 Secrets Exposure Prevention
+- secret を stdout/stderr に出すコマンドを実行しない（境界5）。エージェントの出力（トランスクリプト・ログ・PR コメント）は永続化され、値が一度でも出たら「露出」としてローテーション判断が必要になる
+- env ファイル・プロセス環境の全ダンプを禁止（`cat .env*` / `printenv` / `env` / `console.log(process.env)` 等）。個別キーでも値全体を出さない（`printenv KEY` / `echo $KEY` を含む）
+- secret を読み込む CLI に `--debug` / `--verbose` を付ける前に、失敗時に何をダンプするかを確認する。不明なら付けない
+- 値の診断・ログ出力は prefix（先頭5字）+ length まで
+- 露出した場合は隠さず即報告し、露出したキーと範囲を列挙する
+- [プロジェクトの技術スタックから、対象となる secret（接続文字列・署名鍵・API キー等）と、それを出力し得る具体的コマンドを検出して列挙する。例示のコマンドはそのまま転記せず、実際に使うスタックのものへ置き換えること（例示: `supabase --debug` / `vercel env pull /dev/stdout` / `gh auth token` / `stripe config --list`）]
+
 ## 🚨 Information Verification Protocol
 情報が不足している場合は推測せず、必ず確認を求める（境界3）。
 [MASTER.md の確認プロトコルを含める]
@@ -148,11 +165,11 @@ alwaysApply: true
 
 #### Legacy 互換オプション: `.cursorrules`（明示的に選んだ場合のみ）
 
-古い Cursor / 単一ファイル運用のための**後方互換**として、プロジェクトルートの `.cursorrules`（フロントマター無し）も生成できます。ユーザーが Legacy 形式を明示的に希望した場合のみ生成し、上記 `.cursor/rules/spec-driven.mdc` と**同じ4境界**（MASTER 先行参照 / 索引からの到達 / 確認プロトコル / スコープ外発見のルーティング）を等価に含めます。既定は `.cursor/rules/*.mdc` であり、Legacy 形式との併用は推奨しません（重複適用を避ける）。なお `.cursorrules` は Cursor の Agent モードでは無視されることがあるため、確実な適用のためにも現行 `.cursor/rules/*.mdc` を推奨します。
+古い Cursor / 単一ファイル運用のための**後方互換**として、プロジェクトルートの `.cursorrules`（フロントマター無し）も生成できます。ユーザーが Legacy 形式を明示的に希望した場合のみ生成し、上記 `.cursor/rules/spec-driven.mdc` と**同じ5境界**（MASTER 先行参照 / 索引からの到達 / 確認プロトコル / スコープ外発見のルーティング / Secrets 露出防止）を等価に含めます。既定は `.cursor/rules/*.mdc` であり、Legacy 形式との併用は推奨しません（重複適用を避ける）。なお `.cursorrules` は Cursor の Agent モードでは無視されることがあるため、確実な適用のためにも現行 `.cursor/rules/*.mdc` を推奨します。
 
 ### 5. copilot-instructions.md の生成
 
-以下の構造で `.github/copilot-instructions.md` を生成します。**他の3ファイル（CLAUDE.md / AGENTS.md / Cursor ルール）と同じ4境界**（MASTER 先行参照・索引からの到達・確認プロトコル・スコープ外発見のルーティング）を必ず含めます:
+以下の構造で `.github/copilot-instructions.md` を生成します。**他の3ファイル（CLAUDE.md / AGENTS.md / Cursor ルール）と同じ5境界**（MASTER 先行参照・索引からの到達・確認プロトコル・スコープ外発見のルーティング・Secrets 露出防止）を必ず含めます:
 
 ```markdown
 # GitHub Copilot Instructions
@@ -182,6 +199,14 @@ Use the MASTER.md index to reach the relevant specification for your task（境�
 - Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
 - 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
 
+## 🚨 Secrets Exposure Prevention
+- secret を stdout/stderr に出すコマンドを実行しない（境界5）。エージェントの出力（トランスクリプト・ログ・PR コメント）は永続化され、値が一度でも出たら「露出」としてローテーション判断が必要になる
+- env ファイル・プロセス環境の全ダンプを禁止（`cat .env*` / `printenv` / `env` / `console.log(process.env)` 等）。個別キーでも値全体を出さない（`printenv KEY` / `echo $KEY` を含む）
+- secret を読み込む CLI に `--debug` / `--verbose` を付ける前に、失敗時に何をダンプするかを確認する。不明なら付けない
+- 値の診断・ログ出力は prefix（先頭5字）+ length まで
+- 露出した場合は隠さず即報告し、露出したキーと範囲を列挙する
+- [プロジェクトの技術スタックから、対象となる secret（接続文字列・署名鍵・API キー等）と、それを出力し得る具体的コマンドを検出して列挙する。例示のコマンドはそのまま転記せず、実際に使うスタックのものへ置き換えること（例示: `supabase --debug` / `vercel env pull /dev/stdout` / `gh auth token` / `stripe config --list`）]
+
 ## 🚨 Information Verification Protocol
 When information is missing, DO NOT make assumptions — always ask for confirmation（境界3）.
 [MASTER.md の確認プロトコルを含める]
@@ -194,7 +219,7 @@ When information is missing, DO NOT make assumptions — always ask for confirma
 
 ### 6. AGENTS.md の生成（Codex CLI / 汎用エージェント共通）
 
-`AGENTS.md` は [agents.md](https://agents.md) 標準に沿った**クロスエージェントの共通入口**で、Codex CLI をはじめ多くの AI コーディングエージェントが参照します。プロジェクトルートに生成し、**他の3ツールと同じ4境界**（MASTER 先行参照・索引からの到達・確認プロトコル・スコープ外発見のルーティング）を必ず含めます。詳細は複製せず正本（`docs/MASTER.md` 等）を参照する薄い入口として構成します:
+`AGENTS.md` は [agents.md](https://agents.md) 標準に沿った**クロスエージェントの共通入口**で、Codex CLI をはじめ多くの AI コーディングエージェントが参照します。プロジェクトルートに生成し、**他の3ツールと同じ5境界**（MASTER 先行参照・索引からの到達・確認プロトコル・スコープ外発見のルーティング・Secrets 露出防止）を必ず含めます。詳細は複製せず正本（`docs/MASTER.md` 等）を参照する薄い入口として構成します:
 
 ```markdown
 # AGENTS.md
@@ -232,6 +257,14 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 - 仕様判断・別モジュール・独立検証が必要なら Issue 化ルートへ進む
 - Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
 - 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
+
+## 🚨 Secrets Exposure Prevention
+- secret を stdout/stderr に出すコマンドを実行しない（境界5）。エージェントの出力（トランスクリプト・ログ・PR コメント）は永続化され、値が一度でも出たら「露出」としてローテーション判断が必要になる
+- env ファイル・プロセス環境の全ダンプを禁止（`cat .env*` / `printenv` / `env` / `console.log(process.env)` 等）。個別キーでも値全体を出さない（`printenv KEY` / `echo $KEY` を含む）
+- secret を読み込む CLI に `--debug` / `--verbose` を付ける前に、失敗時に何をダンプするかを確認する。不明なら付けない
+- 値の診断・ログ出力は prefix（先頭5字）+ length まで
+- 露出した場合は隠さず即報告し、露出したキーと範囲を列挙する
+- [プロジェクトの技術スタックから、対象となる secret（接続文字列・署名鍵・API キー等）と、それを出力し得る具体的コマンドを検出して列挙する。例示のコマンドはそのまま転記せず、実際に使うスタックのものへ置き換えること（例示: `supabase --debug` / `vercel env pull /dev/stdout` / `gh auth token` / `stripe config --list`）]
 
 ## 🚨 Information Verification Protocol
 情報が不足している場合は推測せず、必ず確認を求める（境界3）。
@@ -281,8 +314,8 @@ Multi-CLI Agent Orchestrator のセットアップ結果も含めて報告して
 
 - 既存ファイルがある場合は上書き前に必ず確認すること
 - docs/ の内容を正確に反映すること（推測で情報を追加しない）
-- 生成する4ファイル（CLAUDE.md / AGENTS.md / Cursor ルール / copilot-instructions.md）には、ツールを問わず「標準への入口」4境界（**MASTER 先行参照 / 索引からの到達 / 情報不足時の確認プロトコル / スコープ外発見の YAGNI・インライン・Issue 化**）を等価に含めること（CLAUDE.md だけの要件ではない）
+- 生成する4ファイル（CLAUDE.md / AGENTS.md / Cursor ルール / copilot-instructions.md）には、ツールを問わず「標準への入口」5境界（**MASTER 先行参照 / 索引からの到達 / 情報不足時の確認プロトコル / スコープ外発見の YAGNI・インライン・Issue 化 / Secrets 露出防止**）を等価に含めること（CLAUDE.md だけの要件ではない）
 - Cursor は現行 Project Rules 形式（`.cursor/rules/*.mdc`, `alwaysApply: true`）を既定とし、Legacy `.cursorrules` はユーザーが明示的に希望した場合のみの互換オプションとすること
 - 各ツール固有のフォーマットや慣習に従うこと
 - 生成後、ファイルの内容をユーザーに確認してもらうこと
-- 生成物が4境界を等価に含むことは `plugins/ff-dev-toolkit/tests/setup-ai-config/verify.sh` で検証できる
+- 生成物が5境界を等価に含むことは `plugins/ff-dev-toolkit/tests/setup-ai-config/verify.sh` で検証できる

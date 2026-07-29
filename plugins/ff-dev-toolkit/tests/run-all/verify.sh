@@ -244,6 +244,57 @@ else
   bad "merge-cleanup/verify.sh の skip マーカーが見つからない（run-all.sh の skip 判定と drift）"
 fi
 
+# ---- ケース10: パイプ入力 grep -q* の再混入ガード -----------------------------
+# ファイルを直接読む grep -q* は上流プロセスが無いため対象外。`tests/**/*.sh` の
+# 非コメント行に「| grep -q*」があれば、早期終了で上流を SIGPIPE にする経路として
+# fail-closed で検出する。検査自身の正規表現は `[|]` と書き、自己検出を避ける。
+echo
+echo "== case 10: パイプ入力 grep -q* の再混入ガード =="
+PIPE_GREP_Q_HITS=""
+while IFS= read -r shell_file; do
+  file_hits="$(
+    awk '
+      function check_logical_line(line, start_line) {
+        if (line ~ /^[[:space:]]*#/) return
+        if (line ~ /[|][[:space:]]*grep[[:space:]]+-q[[:alpha:]]*/) {
+          print start_line ":" line
+        }
+      }
+      {
+        if (logical_line == "") {
+          logical_line = $0
+          start_line = FNR
+        } else {
+          logical_line = logical_line " " $0
+        }
+        if ($0 ~ /\\[[:space:]]*$/ || $0 ~ /[|][[:space:]]*$/) {
+          sub(/\\[[:space:]]*$/, " ", logical_line)
+          next
+        }
+        check_logical_line(logical_line, start_line)
+        logical_line = ""
+      }
+      END {
+        if (logical_line != "") {
+          check_logical_line(logical_line, start_line)
+        }
+      }
+    ' "$shell_file"
+  )"
+  if [ -n "$file_hits" ]; then
+    PIPE_GREP_Q_HITS="${PIPE_GREP_Q_HITS}${shell_file}:
+${file_hits}
+"
+  fi
+done < <(find "$TESTS_DIR" -type f -name '*.sh' -print)
+
+if [ -z "$PIPE_GREP_Q_HITS" ]; then
+  ok "tests/**/*.sh の非コメント行にパイプ入力の grep -q* が無い"
+else
+  bad "パイプ入力を早期終了する grep -q* が再混入した"
+  printf '%s' "$PIPE_GREP_Q_HITS" | sed 's/^/    | /' >&2
+fi
+
 echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ run-all verify: $FAIL 件失敗" >&2
