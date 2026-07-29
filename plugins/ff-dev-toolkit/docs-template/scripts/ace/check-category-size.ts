@@ -282,7 +282,7 @@ export function main(): number {
     if (isOverLineThreshold(lineCount, maxLines)) {
       const target = multiFile ? `${file} ` : "";
       console.error(
-        `⚠ ${target}行数が閾値を超過しています（${String(lineCount)} > ${String(maxLines)}）。分割・アーカイブを検討してください（別 Issue 起票を推奨）。`,
+        `⚠ ${target}行数が閾値を超過しています（${String(lineCount)} > ${String(maxLines)}）。分割・アーカイブを検討し、workflow-principles.md のスコープ外発見ルールで YAGNI / 既存 Issue への統合 / 関連 Issue 作成を判定してください。`,
       );
     }
   }
@@ -290,7 +290,7 @@ export function main(): number {
 
   if (overCategories.length > 0) {
     console.error(
-      "閾値超過カテゴリがあります。別 Issue で分割方針を起票してください:\n- " +
+      "閾値超過カテゴリがあります。スコープ外発見ルールで必要性と類似 Issue を確認し、必要なら分割方針を既存 Issue へ統合するか関連 Issue として起票してください:\n- " +
         overCategories.join("\n- "),
     );
     return EXIT_THRESHOLD_EXCEEDED;

@@ -3,12 +3,13 @@
 # verify.sh — /setup-ai-config が生成する4ファイルの「標準への入口」パリティ検証
 #
 # 目的（Issue #84）: CLAUDE.md / AGENTS.md / .cursor/rules/*.mdc / copilot-instructions.md の
-# 4ツール生成物が、同じ意味の3境界を等価に含むことを機械的に検証する。
+# 4ツール生成物が、同じ意味の4境界を等価に含むことを機械的に検証する。
 #
 #   境界1: MASTER 先行参照            -> "Read MASTER.md First"
 #   境界2: 索引からの到達            -> "MASTER.md index"（※文言の存在チェック。
 #                                        意味的な到達可能性までは検証しない）
 #   境界3: 情報不足時の確認プロトコル -> "Information Verification Protocol"
+#   境界4: スコープ外発見の三分岐     -> "YAGNI → インライン修正 → Issue 化"
 #
 # 2種類の対象を検証する:
 #   (1) 期待生成物 fixture（fixtures/expected/）    … スナップショットの自己一貫性
@@ -38,11 +39,18 @@ FILES=(
   ".github/copilot-instructions.md"
 )
 
-# 3境界の固定文字列アンカー（ラベル|検索文字列）
-BOUNDARIES=(
+# 4境界の固定文字列アンカー（ラベル|検索文字列）。
+# 境界4 は複数の判断を含むため、境界数と配列要素数は一致しない。
+RULE_ANCHORS=(
   "境界1 MASTER先行参照|Read MASTER.md First"
   "境界2 索引からの到達|MASTER.md index"
   "境界3 確認プロトコル|Information Verification Protocol"
+  "境界4 現PR必須修正|現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する"
+  "境界4 スコープ外発見の三分岐|YAGNI → インライン修正 → Issue 化"
+  "境界4 YAGNIはIssue化しない|対応も Issue 化もしない"
+  "境界4 軽微の全条件|10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件"
+  "境界4 類似Issueの集約|類似 Issue を検索"
+  "境界4 独立時だけ関連Issue|関連付けた新規 Issue"
 )
 
 # Skill 定義のツール別テンプレート節（ラベル|開始行 regex|終了行 regex|Cursorか(1/0)）
@@ -57,7 +65,7 @@ BLOCKS=(
 fail=0
 
 # エントリが `|` を含むことを保証（将来の編集ミス対策）
-for entry in "${BOUNDARIES[@]}" "${BLOCKS[@]}"; do
+for entry in "${RULE_ANCHORS[@]}" "${BLOCKS[@]}"; do
   [[ "$entry" == *"|"* ]] || { echo "malformed entry (no '|'): $entry" >&2; exit 2; }
 done
 
@@ -89,7 +97,7 @@ echo "fixtures: $EXPECTED"
 echo "command : $CMD"
 echo
 
-# --- (1) 期待生成物 fixture の3境界チェック ---
+# --- (1) 期待生成物 fixture の4境界チェック ---
 echo "## 期待生成物 fixture"
 for rel in "${FILES[@]}"; do
   f="$EXPECTED/$rel"
@@ -99,7 +107,7 @@ for rel in "${FILES[@]}"; do
     fail=1
     continue
   fi
-  for entry in "${BOUNDARIES[@]}"; do
+  for entry in "${RULE_ANCHORS[@]}"; do
     label="${entry%%|*}"
     needle="${entry#*|}"
     if grep -qF -- "$needle" "$f"; then
@@ -112,7 +120,7 @@ for rel in "${FILES[@]}"; do
 done
 echo
 
-# --- (2) Skill 定義テンプレートの3境界チェック（生成器 drift 防止）---
+# --- (2) Skill 定義テンプレートの4境界チェック（生成器 drift 防止）---
 # fixtures/expected/ は手書きで自己一貫のため、テンプレが境界を落としても
 # fixture だけでは PASS してしまう。各ツール別テンプレの **コードフェンス内** を検査する。
 echo "## Skill 定義テンプレート（生成器・コードフェンス内）"
@@ -133,7 +141,7 @@ else
       fail=1
       continue
     fi
-    for entry in "${BOUNDARIES[@]}"; do
+    for entry in "${RULE_ANCHORS[@]}"; do
       blabel="${entry%%|*}"
       needle="${entry#*|}"
       if printf '%s\n' "$fence" | grep -qF -- "$needle"; then
@@ -205,7 +213,7 @@ fi
 echo
 
 if [[ "$fail" -ne 0 ]]; then
-  echo "結果: FAIL — 3境界のパリティ / Cursor 形式 / 生成器テンプレ / 入力紐付けのいずれかに欠落あり"
+  echo "結果: FAIL — 4境界のパリティ / Cursor 形式 / 生成器テンプレ / 入力紐付けのいずれかに欠落あり"
   exit 1
 fi
-echo "結果: PASS — 4ツールが3境界を等価に含み（fixture + 生成器テンプレのコードフェンス）、Cursor は現行 Project Rules 形式"
+echo "結果: PASS — 4ツールが4境界を等価に含み（fixture + 生成器テンプレのコードフェンス）、Cursor は現行 Project Rules 形式"

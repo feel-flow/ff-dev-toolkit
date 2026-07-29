@@ -269,7 +269,8 @@ bash scripts/setup-multi-review.sh
 ### 5. 時間をかけすぎない
 
 - セルフレビューは15-30分程度で完了させる
-- 深刻な問題のみ修正し、細かい改善は別Issueで対応
+- 現 diff・AC・既存契約に関わる問題はマージ前に修正する
+- 独立した細かい改善は [workflow-principles.md 原則2](./workflow-principles.md) で YAGNI / インライン / Issue 化を判定し、Issue 化前に類似 Issue を検索する
 
 ---
 

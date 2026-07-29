@@ -39,6 +39,16 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 - コミットは `<type>: #<issue> <subject>`
 - PR に Issue リンク（例: `Closes #123`）を含める
 
+## Out-of-Scope Finding Routing
+
+- 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
+- 判定順は `YAGNI → インライン修正 → Issue 化`
+- 現在の根拠・利用者影響・受け入れ条件がなければ YAGNI とし、対応も Issue 化もしない
+- 必要かつ軽微（10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件）なら現 PR で修正する
+- 仕様判断・別モジュール・独立検証が必要なら Issue 化ルートへ進む
+- Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
+- 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
+
 ## 🚨 Information Verification Protocol
 
 情報が不足している場合は推測せず、必ず確認を求める（境界3）。

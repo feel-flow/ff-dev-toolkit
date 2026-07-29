@@ -310,7 +310,7 @@ docs-template/TESTING.mdのテスト戦略に従って、以下の機能のユ�
 
 ### ワークフロー
 
-1. **Issue作成** → `gh issue create --title "タイトル" --body "説明"`
+1. **Issue作成** → 対象を `expected_repo="OWNER/REPO"` と確定し、`gh issue create --repo "$expected_repo" --title "タイトル" --body "説明"`
 2. **Branch作成** → `git checkout -b feature/123-description`（developから）
 3. **実装** → MASTER.mdの規約に従う
 4. **セルフレビュー** → 後述のチェックリストを確認
@@ -352,17 +352,27 @@ PR作成前に以下を確認すること:
 
 ## スコープ外問題の取り扱い
 
-作業中にスコープ外の問題を発見した場合、**即座にGitHub Issueを作成**:
+作業中にスコープ外の問題を発見した場合、次の順で判定します:
+
+現在の diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は、次の分岐へ渡さず現 PR で解消します。
+
+1. **YAGNI**: 現在の再現例・利用者影響・受け入れ条件がなければ、対応も Issue 化もしない
+2. **インライン修正**: 必要かつ軽微（10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件）なら、現 PR で修正
+3. **Issue 化**: 仕様判断・別モジュール・独立検証が必要なら、先に類似 Issue を検索。同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立する場合だけ関連 Issue を作成
+
+Issue 化する場合:
 
 ```bash
-gh issue create --title "fix: 問題の説明" --body "詳細..." --label "bug"
+expected_repo="OWNER/REPO" # 現在の PR / Issue URL と対象範囲から確定
+gh issue create --repo "$expected_repo" --title "fix: 問題の説明" --body "詳細..." --label "bug"
 ```
 
 報告形式:
 
 ```
 📋 スコープ外の問題を発見しました
-Issue #XXX を作成しました: [タイトル]
+判定: YAGNI / インライン修正 / Issue #XXX
+対応: [対応内容または対応しない理由]
 優先度: Critical / High / Medium / Low
 ```
 

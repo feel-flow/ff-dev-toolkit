@@ -266,7 +266,7 @@
 3. **PR 作成時に PR description に転記または同梱**: レビュアーが「なぜ」を読みやすくなり、レビュー指摘の精度が上がる
 4. **ACE Phase 1 Generate の raw material は「PR description（implementation-notes 転記済み）」**: Action 5 でマージ前にファイル自体は削除されるため、ファイル本体ではなく PR description（転記済みの判断ログ）を `gh pr view --json body` で取得して Generate プロンプトに渡す。`gh pr diff` / `gh issue view` / レビューコメントと併せて入力にする（[ace-cycle.md §Phase 1](../05-operations/deployment/ace-cycle.md)）
 5. **マージ前にファイルを削除し PR description に統合（推奨）**: squash merge を標準とするリポでは「PR に同梱したまま残す」と squash 後にルート直下に前 PR のファイルが残り、次の feature branch が衝突・上書きする構造問題が起きる（ACE-021 と同型）。pr-ready 直前に (a) 中身を PR description に転記、(b) `git rm implementation-notes.md` で削除、(c) `git commit -m "chore: integrate implementation-notes into PR description"` の 3 ステップで処理する。長期保存したい場合は `notes/<issue-num>.md` 形式で per-PR ファイル化する代替案もあるが（並行 PR で衝突しない）、リポに notes/ が累積するトレードオフがある
-6. **スコープ外発見は引き続き Issue 化（[workflow-principles.md 原則2](../05-operations/deployment/workflow-principles.md)）**: implementation-notes は「現 PR の判断ログ」、Issue は「別タスクへの分岐」と役割を分ける（排他ではなく補完）
+6. **スコープ外発見は三分岐する（[workflow-principles.md 原則2](../05-operations/deployment/workflow-principles.md)）**: YAGNI なら対応・記録せず、必要かつ軽微なら現 PR で修正する。独立対応が必要なら類似 Issue を検索し、同じ完了条件なら既定はコメントで集約する。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立する場合だけ関連 Issue を作る。implementation-notes は「現 PR の判断ログ」であり、将来タスクの代替 backlog にはしない
 
 ---
 
@@ -389,7 +389,9 @@
 | Date       | 2026-05-20                  |
 | Helpful    | 4                           |
 | Harmful    | 0                           |
-| Status     | active                      |
+| Status     | deprecated                  |
+
+> **Deprecated by Issue #190**: 「touch ファイル外なら一律に別 Issue」という Action 1 / 5 は廃止した。現在は [workflow-principles.md 原則2](../05-operations/deployment/workflow-principles.md) に従い、現 diff・AC・既存契約に関わる指摘は現 PR で解消し、独立した発見だけを YAGNI / インライン / Issue 化へ分岐する。Issue 化前には類似 Issue を検索する。以下は当時の判断履歴として保持する。
 
 **Insight**: Toolkit / Copilot review は編集差分から離れた行も検査するため、本 PR で触っていない pre-existing stale を発見することがある。これを「同 PR で潰す」か「別 issue にする」かは「touch ファイル外 vs ファイル内」だけでは粒度が粗く、**「同セクション (= heading 配下) vs 別セクション」の境界** を判定軸に加えると読み手にとって自然な PR diff になる。同セクション内の隣接 stale を放置すると、`build:spec-index` を追加した PR が「半端な最新化（隣の行は古いまま）」と読まれ、レビュー時の文脈分断を招く。
 

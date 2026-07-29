@@ -77,11 +77,11 @@ GUI の Git クライアントや一部の CI では、マージ実行時に **`
 2. 3〜5 PR 程度で成功率・ロールバック有無を記録（[CASE_STUDIES.md](https://github.com/feel-flow/ai-spec-driven-development/blob/develop/docs/CASE_STUDIES.md) へ追記可能）。
 3. 問題なければ `ACE_SUBAGENT_AUTO_MERGE=1` を限定メンバーまたは特定ブランチのみで有効化。
 
-## Playbook 肥大化と別 Issue 起票
+## Playbook 肥大化とスコープ外発見のルーティング
 
-カテゴリあたりのエントリ数が閾値を超えた場合、**subagent 内で分割作業を続けない**方針を推奨します。`check-category-size.ts` が検知し、**別 Issue の起票**（手動または `gh issue create`）に委ねることで責務を分離します。
+カテゴリあたりのエントリ数が閾値を超えた場合、**subagent 内で分割作業を続けない**方針を推奨します。`check-category-size.ts` が検知したら、[workflow-principles.md 原則2](./workflow-principles.md) で YAGNI / インライン / Issue 化を判定します。Issue 化する場合は類似 Issue を先に検索し、同じ完了条件なら既定は既存 Issue へのコメントで集約します。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立する場合だけ関連 Issue を作成します。
 
-あわせて `check-category-size.ts` は Playbook の**総行数**も報告し、`ACE_MAX_PLAYBOOK_LINES`（既定 800）を超えると**警告のみ**（exit code は変えない）を出す。件数ゲート（exit 1）とは独立しており、行数超過は ACE の追記を止めず、分割・アーカイブの判断を別 Issue に委ねる。
+あわせて `check-category-size.ts` は Playbook の**総行数**も報告し、`ACE_MAX_PLAYBOOK_LINES`（既定 800）を超えると**警告のみ**（exit code は変えない）を出す。件数ゲート（exit 1）とは独立しており、行数超過は ACE の追記を止めず、分割・アーカイブの必要性を上記ルールで判断する。
 
 PLAYBOOK.md と同階層に `playbook/*.md`（カテゴリ別分割ファイル）がある場合、`check-category-size.ts` は自動検出して集計対象に含める（索引ファイル + 全サブファイルの合算で件数ゲート・行数警告を判定し、ファイルごとの行数も個別に報告する）。分割済みレイアウトの詳細は [PLAYBOOK.md §ファイル分割ルール](../../08-knowledge/PLAYBOOK.md#ファイル分割ルール) を参照。
 

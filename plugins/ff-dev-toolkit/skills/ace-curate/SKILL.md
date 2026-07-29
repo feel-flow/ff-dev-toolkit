@@ -239,4 +239,4 @@ gh pr create --base <default-branch> --title "knowledge: ACE-<PR番号>-<連番>
 - 既存エントリの Helpful/Harmful カウンター更新と Status 変更（active → deprecated）は許可
 - カウンターの更新は **インクリメントのみ**（減算しない）
 - 知見が抽出されない場合（typo修正のみ等）は「知見なし」と報告して終了
-- PLAYBOOK.md はカテゴリ別に `playbook/*.md` へ分割済み。肥大化チェックは `scripts/ace/` テンプレート導入済みプロジェクトの場合 `npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md` で実行できる（npm script として登録してもよい）。このチェックは `playbook/` サブディレクトリを自動検出して索引 + 全サブファイルの総行数・カテゴリ別件数を集計する。`ACE_MAX_PLAYBOOK_LINES`（既定 800）をいずれかのファイルが超えると警告が出る（**警告のみ・追記はブロックしない**）。個別カテゴリファイルが肥大化した場合はさらなる分割・アーカイブを別 Issue で検討する
+- PLAYBOOK.md はカテゴリ別に `playbook/*.md` へ分割済み。肥大化チェックは `scripts/ace/` テンプレート導入済みプロジェクトの場合 `npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md` で実行できる（npm script として登録してもよい）。このチェックは `playbook/` サブディレクトリを自動検出して索引 + 全サブファイルの総行数・カテゴリ別件数を集計する。`ACE_MAX_PLAYBOOK_LINES`（既定 800）をいずれかのファイルが超えると警告が出る（**警告のみ・追記はブロックしない**）。個別カテゴリファイルが肥大化した場合はスコープ外発見ルールで必要性と類似 Issue を確認し、必要なら既存 Issue への統合または関連 Issue として分割・アーカイブを扱う

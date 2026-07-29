@@ -85,7 +85,7 @@ Cursor のプロジェクトルールには2つの形式があり、**既定は�
 
 ### 既定: `.cursor/rules/spec-driven.mdc` の作成（推奨）
 
-プロジェクトルートに `.cursor/rules/` を作成し、`spec-driven.mdc` を置きます。「標準への入口」3境界（MASTER 先行参照 / 索引からの到達 / 確認プロトコル）を必ず含めます：
+プロジェクトルートに `.cursor/rules/` を作成し、`spec-driven.mdc` を置きます。「標準への入口」4境界（MASTER 先行参照 / 索引からの到達 / 確認プロトコル / スコープ外発見のルーティング）を必ず含めます：
 
 ```bash
 mkdir -p .cursor/rules
@@ -107,17 +107,26 @@ alwaysApply: true
 - Never use magic numbers — extract to named constants
 - エラーハンドリングは Result パターン
 
+## Out-of-Scope Finding Routing
+- 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
+- 判定順は `YAGNI → インライン修正 → Issue 化`
+- 現在の根拠・利用者影響・受け入れ条件がなければ YAGNI とし、対応も Issue 化もしない
+- 必要かつ軽微（10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件）なら現 PR で修正する
+- 仕様判断・別モジュール・独立検証が必要なら Issue 化ルートへ進む
+- Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
+- 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
+
 ## 🚨 Information Verification Protocol
 情報が不足している場合は推測せず、必ず確認を求める（境界3）。
 詳細は `docs-template/MASTER.md` の「情報不足時の必須確認プロトコル」を参照。
 EOF
 ```
 
-> この `.mdc` 例と下の Legacy `.cursorrules` テンプレートは、どちらも同じ3境界（MASTER 先行参照 / 索引からの到達 / 確認プロトコル）を備えています。既定は `.cursor/rules/*.mdc` なので、両形式を同時に置く必要はありません（重複適用を避ける）。
+> この `.mdc` 例と下の Legacy `.cursorrules` テンプレートは、どちらも同じ4境界（MASTER 先行参照 / 索引からの到達 / 確認プロトコル / スコープ外発見のルーティング）を備えています。既定は `.cursor/rules/*.mdc` なので、両形式を同時に置く必要はありません（重複適用を避ける）。
 
 ### Legacy 互換オプション: `.cursorrules`（後方互換）
 
-> 以下は Legacy 形式（`.cursorrules`, ルート単一ファイル）の手順です。**既定は上記 `.cursor/rules/*.mdc`** であり、Legacy 運用が必要な場合のみ使用してください。ルール本文は現行 `.mdc` 例と同じ3境界を含みます。
+> 以下は Legacy 形式（`.cursorrules`, ルート単一ファイル）の手順です。**既定は上記 `.cursor/rules/*.mdc`** であり、Legacy 運用が必要な場合のみ使用してください。ルール本文は現行 `.mdc` 例と同じ4境界を含みます。
 
 ### ステップ1: .cursorrules ファイルの作成（15分）
 
@@ -205,7 +214,7 @@ This is an AI-driven development project starting with a core 7-document structu
 
 Always start from an Issue and follow the full flow:
 
-1. **Create Issue** - `gh issue create --title "..." --body "..."`
+1. **Create Issue** - Resolve `expected_repo="OWNER/REPO"`, then run `gh issue create --repo "$expected_repo" --title "..." --body "..."`
 2. **Create Branch** - `git checkout -b feature/{issue-number}-{description}` (from `develop`)
 3. **Implement** - Follow `docs-template/MASTER.md` constraints
 4. **Self-Review** - Run checklist before PR
@@ -238,9 +247,12 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
 
 ## Out-of-Scope Issues
 If you find an out-of-scope problem while working:
-1. Create a GitHub Issue immediately
-2. Do not expand scope in current task
-3. Continue current task and reference the new issue in PR when needed
+1. Fix current-diff regressions, current Issue AC, existing contracts, mandatory quality gates, and Critical / Warning findings in the current PR before routing
+2. Apply `YAGNI → inline fix → Issue` in this order
+3. If there is no current evidence, user impact, or testable acceptance criterion, take no action and create no Issue
+4. If it is necessary and small (all conditions: at most 10 lines, same file, no specification decision, no cross-module impact, no independent verification, existing contract unchanged), fix it in the current PR
+5. If it needs a specification decision, another module, or independent verification, search similar open Issues first
+6. Consolidate it by comment when the completion condition is the same; edit acceptance criteria only with explicit authorization and a fresh conflict check. Create a related Issue only when it needs independent completion
 
 ## Code Generation Rules
 

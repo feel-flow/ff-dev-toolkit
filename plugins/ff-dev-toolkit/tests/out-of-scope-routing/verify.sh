@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+#
+# out-of-scope-issue と Git Workflow のルーティング契約を静的検査する。
+# Issue #190: YAGNI / 現 PR 修正 / 既存 Issue 集約 / 関連 Issue 作成と、
+# GitHub 検索失敗時の fail-closed を別文書の drift から守る。
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
+
+# SSOT モノレポでは公開文書は oss/ff-dev-toolkit/、公開リポジトリへ
+# 同期した後はリポジトリルートに展開される。両配置で同じ suite を実行する。
+if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
+  OSS_ROOT="$REPO_ROOT/oss/ff-dev-toolkit"
+else
+  OSS_ROOT="$REPO_ROOT"
+fi
+
+SKILL="$PLUGIN_ROOT/skills/out-of-scope-issue/SKILL.md"
+WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/workflow-principles.md"
+CLOSE_ISSUE="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
+REVIEW_POLICY="$PLUGIN_ROOT/docs-template/05-operations/deployment/review-response-policy.md"
+SETUP_CURSOR="$PLUGIN_ROOT/docs-template/SETUP_CURSOR.md"
+OSS_README="$OSS_ROOT/README.md"
+OSS_COPILOT="$OSS_ROOT/USING_WITH_VSCODE_COPILOT.md"
+
+PASS=0
+FAIL=0
+
+ok() {
+  echo "  ✓ $1"
+  PASS=$((PASS + 1))
+}
+
+bad() {
+  echo "  ✗ $1" >&2
+  FAIL=$((FAIL + 1))
+}
+
+contains() {
+  local file="$1" needle="$2" label="$3"
+  if grep -qF -- "$needle" "$file"; then
+    ok "$label"
+  else
+    bad "${label}（不足: ${needle}）"
+  fi
+}
+
+not_contains() {
+  local file="$1" needle="$2" label="$3"
+  if grep -qF -- "$needle" "$file"; then
+    bad "${label}（旧ルールが残存: ${needle}）"
+  else
+    ok "$label"
+  fi
+}
+
+gh_issue_blocks_bound() {
+  local file="$1" label="$2" violations
+  violations="$(
+    awk '
+      /^[[:space:]]*gh issue (list|create)[[:space:]]*\\/ {
+        start = NR
+        command = $0
+        while ($0 ~ /\\[[:space:]]*$/) {
+          if ((getline) <= 0) break
+          command = command "\n" $0
+        }
+        if (command !~ /--repo[[:space:]]+/) print start
+      }
+    ' "$file"
+  )"
+  if [[ -n "$violations" ]]; then
+    bad "${label}（--repo 欠落行: ${violations//$'\n'/, }）"
+  else
+    ok "$label"
+  fi
+}
+
+echo "== out-of-scope routing 契約検査 =="
+
+for file in "$SKILL" "$WORKFLOW" "$CLOSE_ISSUE" "$REVIEW_POLICY" "$SETUP_CURSOR" "$OSS_README" "$OSS_COPILOT"; do
+  if [[ ! -s "$file" ]]; then
+    bad "必須ファイルが存在し非空: $file"
+  fi
+done
+
+contains "$SKILL" "§1.1 にも §1.2 にも該当しない発見" "必須修正 / YAGNI / A-B の入口が排他的"
+contains "$SKILL" "B の上書き条件（いずれか 1 つ）" "B の条件はいずれか一致で上書き"
+contains "$SKILL" "A の全条件" "インライン修正は全条件一致"
+contains "$SKILL" "修正せず、Issue も作らない" "YAGNI は GitHub 書き込みを行わない"
+contains "$SKILL" 'expected_repo="OWNER/REPO"' "対象リポジトリを明示的に固定"
+contains "$SKILL" '--repo "$expected_repo"' "Issue 操作が対象リポジトリへ束縛"
+contains "$SKILL" 'gh issue view {number} --repo "$expected_repo"' "Issue 詳細取得が対象リポジトリへ束縛"
+contains "$SKILL" 'gh issue comment {number} --repo "$expected_repo"' "Issue コメントが対象リポジトリへ束縛"
+contains "$SKILL" 'gh issue edit {number} --repo "$expected_repo"' "Issue 本文更新が対象リポジトリへ束縛"
+contains "$SKILL" '--search "$search_query"' "検索語を引用した argv 値として渡す"
+not_contains "$SKILL" "--search '\"{主要語}\" in:title,body'" "検索語を shell コマンドへ直埋めしない"
+gh_issue_blocks_bound "$SKILL" "Skill の全 Issue list/create コマンドを対象リポジトリへ束縛"
+contains "$SKILL" "Issue の作成・コメント・本文更新を停止" "Issue 検索失敗は fail-closed"
+contains "$SKILL" "終了コード 0 かつ結果が空配列の場合だけ" "検索成功 0 件だけを候補なしと判定"
+contains "$SKILL" "候補の詳細取得が 1 件でも失敗した場合も統合・新規作成を確定せず停止" "Issue 詳細取得失敗も fail-closed"
+contains "$SKILL" "Issue URL を取得できた場合だけ成功" "Issue 作成成功の事後条件"
+contains "$SKILL" "コメントだけを既定" "既存 Issue 統合はコメントが既定"
+contains "$SKILL" "本文の変更を明示的に許可" "Issue 本文更新は明示許可が必要"
+contains "$SKILL" '`body` と `updatedAt`' "Issue 本文更新前に競合を確認"
+contains "$SKILL" "read-only レビューでは書き込まない" "read-only レビューの非変更境界"
+
+contains "$WORKFLOW" "YAGNI → インライン修正 → Issue 化" "Git Workflow が三分岐を正本化"
+contains "$WORKFLOW" "類似 Issue を検索" "Git Workflow が重複 Issue を抑制"
+contains "$WORKFLOW" "同じ完了条件へ軽微に吸収できる場合" "既存 Issue へのコメント・AC 統合"
+contains "$WORKFLOW" "既定は既存 Issue への発見元コメントだけ" "Git Workflow もコメント統合を既定化"
+contains "$WORKFLOW" '編集直前に `body` / `updatedAt` の競合がない場合だけ' "Git Workflow の本文更新競合ゲート"
+contains "$WORKFLOW" '--repo "$expected_repo"' "Git Workflow の Issue 作成先を固定"
+gh_issue_blocks_bound "$WORKFLOW" "Git Workflow の全 Issue create コマンドを対象リポジトリへ束縛"
+contains "$WORKFLOW" "完了条件が独立する場合" "独立時だけ関連 Issue を作成"
+
+contains "$CLOSE_ISSUE" "現 Issue の AC はスコープ外発見ではない" "未達 AC を後続 Issue へ送らない"
+not_contains "$CLOSE_ISSUE" "別 Issue を起票（\`gh issue create\`）して当該 AC を「対象外」" "未達 AC の自動先送りを禁止"
+
+contains "$REVIEW_POLICY" "変更対象外という理由だけで一律に別 Issue へ送らない" "レビュー指摘も三分岐へ委譲"
+contains "$REVIEW_POLICY" "レビューで Critical / Warning と確定した指摘は現 PR で解消" "Critical / Warning は必ず現 PR で解消"
+not_contains "$REVIEW_POLICY" "既存ファイルの改善は別Issueで対応する" "変更対象外ファイルの一律 Issue 化を禁止"
+
+contains "$SETUP_CURSOR" "YAGNI → インライン修正 → Issue 化" "Cursor 現行テンプレートが三分岐"
+contains "$SETUP_CURSOR" "YAGNI → inline fix → Issue" "Cursor Legacy テンプレートも三分岐"
+contains "$SETUP_CURSOR" "search similar open Issues first" "Cursor Legacy テンプレートも類似 Issue を検索"
+
+contains "$OSS_README" "YAGNI（対応も Issue 化もしない）→ 軽微ならインライン修正 → Issue 化" "公開 README が三分岐"
+not_contains "$OSS_README" "「同 PR でインライン修正」か「Issue 化して後送り」" "公開 README の旧二分岐を排除"
+contains "$OSS_COPILOT" "次の4境界" "公開 Copilot ガイドが4境界"
+contains "$OSS_COPILOT" "Issue 化前に類似 Issue を検索" "公開 Copilot ガイドが類似 Issue を検索"
+
+FULL_INLINE_CONTRACT="10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件"
+for file in \
+  "$PLUGIN_ROOT/skills/setup-ai-config/SKILL.md" \
+  "$PLUGIN_ROOT/docs-template/SETUP_CLAUDE_CODE.md" \
+  "$PLUGIN_ROOT/docs-template/SETUP_CURSOR.md" \
+  "$PLUGIN_ROOT/tests/setup-ai-config/fixtures/expected/CLAUDE.md" \
+  "$PLUGIN_ROOT/tests/setup-ai-config/fixtures/expected/AGENTS.md" \
+  "$PLUGIN_ROOT/tests/setup-ai-config/fixtures/expected/.cursor/rules/spec-driven.mdc" \
+  "$PLUGIN_ROOT/tests/setup-ai-config/fixtures/expected/.github/copilot-instructions.md"; do
+  contains "$file" "$FULL_INLINE_CONTRACT" "生成・公開コンシューマーが軽微判定の全条件を保持: ${file#$REPO_ROOT/}"
+done
+
+echo
+if [[ "$FAIL" -gt 0 ]]; then
+  echo "✗ out-of-scope routing verify: $FAIL 件失敗 / $PASS 件成功" >&2
+  exit 1
+fi
+
+echo "✓ out-of-scope routing verify: 全 $PASS 件 pass"

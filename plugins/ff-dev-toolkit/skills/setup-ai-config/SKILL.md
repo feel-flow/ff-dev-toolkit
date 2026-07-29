@@ -24,13 +24,14 @@ description: プロジェクトの docs/ を基に AI 開発ツール向け設�
 
 ## 標準への入口（全ツール共通の境界）
 
-生成する4ファイル（CLAUDE.md / AGENTS.md / Cursor ルール / copilot-instructions.md）は、ツールを問わず **同じ意味の「標準への入口」** を必ず含めます。各ツール固有のフォーマットで表現は変わっても、次の3つの境界を**等価に**生成してください。
+生成する4ファイル（CLAUDE.md / AGENTS.md / Cursor ルール / copilot-instructions.md）は、ツールを問わず **同じ意味の「標準への入口」** を必ず含めます。各ツール固有のフォーマットで表現は変わっても、次の4つの境界を**等価に**生成してください。
 
 1. **MASTER 先行参照** — 作業やコード生成の前に、必ず `docs/MASTER.md` を最初に読む（*Read MASTER.md First*）
 2. **索引からの到達** — MASTER.md の索引（各 `docs/NN-*` へのリンク）から、着手するタスクに関連する仕様へ到達する（*Use the MASTER.md index to reach the relevant specification*）
 3. **確認プロトコル** — 情報が不足している場合は推測で埋めず、必ず確認を求める（*Information Verification Protocol*）
+4. **スコープ外発見のルーティング** — `YAGNI → インライン修正 → Issue 化` の順で必要性と変更境界を判定する
 
-> 生成物がこの3境界を等価に含むことは、`plugins/ff-dev-toolkit/tests/setup-ai-config/` の期待生成物 fixture と `verify.sh` で検証する。
+> 生成物がこの4境界を等価に含むことは、`plugins/ff-dev-toolkit/tests/setup-ai-config/` の期待生成物 fixture と `verify.sh` で検証する。
 
 ## 手順
 
@@ -85,6 +86,15 @@ description: プロジェクトの docs/ を基に AI 開発ツール向け設�
 ## Development Workflow
 [docs/05-operations/ から抽出、なければデフォルト]
 
+## Out-of-Scope Finding Routing
+- 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
+- 判定順は `YAGNI → インライン修正 → Issue 化`
+- 現在の根拠・利用者影響・受け入れ条件がなければ YAGNI とし、対応も Issue 化もしない
+- 必要かつ軽微（10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件）なら現 PR で修正する
+- 仕様判断・別モジュール・独立検証が必要なら Issue 化ルートへ進む
+- Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
+- 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
+
 ## 🚨 Information Verification Protocol
 情報が不足している場合は推測せず、必ず確認を求めること（境界3）。
 [MASTER.md の確認プロトコルをそのまま含める]
@@ -123,7 +133,13 @@ alwaysApply: true
 - PR にはセルフレビュー結果・テスト結果・Issue リンク（例: `Closes #123`）を含める
 
 ## Out-of-Scope Issues
-- スコープ外の問題は即座に Issue を起票し、現行タスクは継続する（スコープ拡大はしない）
+- 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
+- 判定順は `YAGNI → インライン修正 → Issue 化`
+- 現在の根拠・利用者影響・受け入れ条件がなければ YAGNI とし、対応も Issue 化もしない
+- 必要かつ軽微（10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件）なら現 PR で修正する
+- 仕様判断・別モジュール・独立検証が必要なら Issue 化ルートへ進む
+- Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
+- 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
 
 ## 🚨 Information Verification Protocol
 情報が不足している場合は推測せず、必ず確認を求める（境界3）。
@@ -132,11 +148,11 @@ alwaysApply: true
 
 #### Legacy 互換オプション: `.cursorrules`（明示的に選んだ場合のみ）
 
-古い Cursor / 単一ファイル運用のための**後方互換**として、プロジェクトルートの `.cursorrules`（フロントマター無し）も生成できます。ユーザーが Legacy 形式を明示的に希望した場合のみ生成し、上記 `.cursor/rules/spec-driven.mdc` と**同じ3境界**（MASTER 先行参照 / 索引からの到達 / 確認プロトコル）を等価に含めます。既定は `.cursor/rules/*.mdc` であり、Legacy 形式との併用は推奨しません（重複適用を避ける）。なお `.cursorrules` は Cursor の Agent モードでは無視されることがあるため、確実な適用のためにも現行 `.cursor/rules/*.mdc` を推奨します。
+古い Cursor / 単一ファイル運用のための**後方互換**として、プロジェクトルートの `.cursorrules`（フロントマター無し）も生成できます。ユーザーが Legacy 形式を明示的に希望した場合のみ生成し、上記 `.cursor/rules/spec-driven.mdc` と**同じ4境界**（MASTER 先行参照 / 索引からの到達 / 確認プロトコル / スコープ外発見のルーティング）を等価に含めます。既定は `.cursor/rules/*.mdc` であり、Legacy 形式との併用は推奨しません（重複適用を避ける）。なお `.cursorrules` は Cursor の Agent モードでは無視されることがあるため、確実な適用のためにも現行 `.cursor/rules/*.mdc` を推奨します。
 
 ### 5. copilot-instructions.md の生成
 
-以下の構造で `.github/copilot-instructions.md` を生成します。**他の3ファイル（CLAUDE.md / AGENTS.md / Cursor ルール）と同じ3境界**（MASTER 先行参照・索引からの到達・確認プロトコル）を必ず含めます:
+以下の構造で `.github/copilot-instructions.md` を生成します。**他の3ファイル（CLAUDE.md / AGENTS.md / Cursor ルール）と同じ4境界**（MASTER 先行参照・索引からの到達・確認プロトコル・スコープ外発見のルーティング）を必ず含めます:
 
 ```markdown
 # GitHub Copilot Instructions
@@ -157,6 +173,15 @@ Use the MASTER.md index to reach the relevant specification for your task（境�
 ## Key Architecture Decisions
 [ARCHITECTURE.md からの要約]
 
+## Out-of-Scope Finding Routing
+- 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
+- 判定順は `YAGNI → インライン修正 → Issue 化`
+- 現在の根拠・利用者影響・受け入れ条件がなければ YAGNI とし、対応も Issue 化もしない
+- 必要かつ軽微（10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件）なら現 PR で修正する
+- 仕様判断・別モジュール・独立検証が必要なら Issue 化ルートへ進む
+- Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
+- 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
+
 ## 🚨 Information Verification Protocol
 When information is missing, DO NOT make assumptions — always ask for confirmation（境界3）.
 [MASTER.md の確認プロトコルを含める]
@@ -169,7 +194,7 @@ When information is missing, DO NOT make assumptions — always ask for confirma
 
 ### 6. AGENTS.md の生成（Codex CLI / 汎用エージェント共通）
 
-`AGENTS.md` は [agents.md](https://agents.md) 標準に沿った**クロスエージェントの共通入口**で、Codex CLI をはじめ多くの AI コーディングエージェントが参照します。プロジェクトルートに生成し、**他の3ツールと同じ3境界**（MASTER 先行参照・索引からの到達・確認プロトコル）を必ず含めます。詳細は複製せず正本（`docs/MASTER.md` 等）を参照する薄い入口として構成します:
+`AGENTS.md` は [agents.md](https://agents.md) 標準に沿った**クロスエージェントの共通入口**で、Codex CLI をはじめ多くの AI コーディングエージェントが参照します。プロジェクトルートに生成し、**他の3ツールと同じ4境界**（MASTER 先行参照・索引からの到達・確認プロトコル・スコープ外発見のルーティング）を必ず含めます。詳細は複製せず正本（`docs/MASTER.md` 等）を参照する薄い入口として構成します:
 
 ```markdown
 # AGENTS.md
@@ -198,6 +223,15 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 ## Commit & PR Guidelines
 - Issue 起票 → ブランチ → 実装 → セルフレビュー → PR → マージ
 - コミットは `<type>: #<issue> <subject>`
+
+## Out-of-Scope Finding Routing
+- 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
+- 判定順は `YAGNI → インライン修正 → Issue 化`
+- 現在の根拠・利用者影響・受け入れ条件がなければ YAGNI とし、対応も Issue 化もしない
+- 必要かつ軽微（10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件）なら現 PR で修正する
+- 仕様判断・別モジュール・独立検証が必要なら Issue 化ルートへ進む
+- Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
+- 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
 
 ## 🚨 Information Verification Protocol
 情報が不足している場合は推測せず、必ず確認を求める（境界3）。
@@ -247,8 +281,8 @@ Multi-CLI Agent Orchestrator のセットアップ結果も含めて報告して
 
 - 既存ファイルがある場合は上書き前に必ず確認すること
 - docs/ の内容を正確に反映すること（推測で情報を追加しない）
-- 生成する4ファイル（CLAUDE.md / AGENTS.md / Cursor ルール / copilot-instructions.md）には、ツールを問わず「標準への入口」3境界（**MASTER 先行参照 / 索引からの到達 / 情報不足時の確認プロトコル**）を等価に含めること（CLAUDE.md だけの要件ではない）
+- 生成する4ファイル（CLAUDE.md / AGENTS.md / Cursor ルール / copilot-instructions.md）には、ツールを問わず「標準への入口」4境界（**MASTER 先行参照 / 索引からの到達 / 情報不足時の確認プロトコル / スコープ外発見の YAGNI・インライン・Issue 化**）を等価に含めること（CLAUDE.md だけの要件ではない）
 - Cursor は現行 Project Rules 形式（`.cursor/rules/*.mdc`, `alwaysApply: true`）を既定とし、Legacy `.cursorrules` はユーザーが明示的に希望した場合のみの互換オプションとすること
 - 各ツール固有のフォーマットや慣習に従うこと
 - 生成後、ファイルの内容をユーザーに確認してもらうこと
-- 生成物が3境界を等価に含むことは `plugins/ff-dev-toolkit/tests/setup-ai-config/verify.sh` で検証できる
+- 生成物が4境界を等価に含むことは `plugins/ff-dev-toolkit/tests/setup-ai-config/verify.sh` で検証できる

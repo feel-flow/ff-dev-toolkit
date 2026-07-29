@@ -99,11 +99,12 @@ Claude Code で本プラグインを入れたうえで、対象プロジェク�
 /setup-ai-config
 ```
 
-GitHub Copilot 向けを選ぶと、次の3境界を含む指示ファイルが生成されます（他ツール向け設定と意味を揃える）。
+GitHub Copilot 向けを選ぶと、次の4境界を含む指示ファイルが生成されます（他ツール向け設定と意味を揃える）。
 
 1. **MASTER 先行参照** — 作業やコード生成の前に `docs/MASTER.md` を最初に読む  
 2. **索引からの到達** — MASTER の索引から関連仕様へ進む  
 3. **確認プロトコル** — 情報不足時は推測せず確認する  
+4. **スコープ外発見のルーティング** — `YAGNI → インライン修正 → Issue 化` の順で判定し、Issue 化前に類似 Issue を検索する
 
 ### 方法 B: VS Code の Copilot Chat で生成する
 
@@ -119,7 +120,11 @@ GitHub Copilot 用の .github/copilot-instructions.md を生成して。
 1. 作業前に docs/MASTER.md を最初に読む
 2. MASTER の索引から関連仕様へ辿る
 3. 情報不足時は推測せず確認する
-4. 技術スタック・コーディング規約・参照ドキュメント一覧
+4. スコープ外発見は YAGNI → インライン修正 → Issue 化の順で判定する。
+   Issue 化前に類似 Issue を検索し、同じ完了条件なら既定はコメントで集約、
+   本文 AC は明示許可と競合確認がある場合だけ最小追記し、
+   独立する場合だけ関連 Issue を作る
+5. 技術スタック・コーディング規約・参照ドキュメント一覧
 ```
 
 4. 提案を `.github/copilot-instructions.md` として保存し、チームで共有するならコミットする。
@@ -141,6 +146,10 @@ GitHub Copilot 用の .github/copilot-instructions.md を生成して。
 
 ## Information Verification Protocol
 不足情報は推測せず確認する。
+
+## Out-of-Scope Finding Routing
+YAGNI → インライン修正 → Issue 化の順で判定する。
+Issue 化前に類似 Issue を検索し、同じ完了条件なら既存 Issue にまとめる。
 
 ## Reference Documents
 - docs/MASTER.md
