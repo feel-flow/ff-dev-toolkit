@@ -16,6 +16,14 @@
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-30
+
+### 追加
+
+- distributed review が暗黙に単一 CLI へ解決されたとき、実行時 fallback が無いことによるゼロカバレッジのリスクと `--mode cross-model` の代替を stderr に表示する縮退警告を追加した。`--perspective` で除外された導入済み CLI は、CLI 名と所有 perspective を dry-run のプラン構築ログに表示する。意図的な `--cli` 単一指定は警告対象外とした
+- 単一の `--cli <name> --perspective <name>` を両方明示した場合、その組み合わせを perspective 所有レジストリより優先するようにした。実行時失敗サマリーが提示する代替 CLI + 元 perspective の再実行コマンドが、元 CLI も導入済みの環境で空プランになる問題を解消した。明示 CLI は cost strategy で別 CLI へ置換せず、repeatable な複数 CLI / perspective は既存の所有レジストリで絞り込み、想定外の全組み合わせや従量課金 CLI のタスクを追加しない。未知または対象 task に存在しない perspective は dry-run 前に非 0 で拒否する
+- perspective フィルタの縮退表示、明示ペアの非空プラン、警告抑制、`--help` の契約を実 CLI・ネットワーク・課金なしで検証する `tests/multi-agent-plan/` を追加した
+
 ## [0.16.4] - 2026-07-30
 
 ### 変更

@@ -77,6 +77,9 @@ else
     # fixture のみ使用し、実ネットワークには触らない。
     "$SCRIPT_DIR/update-check/verify.sh"
     "$SCRIPT_DIR/merge-cleanup/verify.sh"
+    # perspective フィルタの dry-run 契約。stub CLI の存在確認だけで完結し、
+    # 実 CLI・ネットワーク・課金を伴わない。
+    "$SCRIPT_DIR/multi-agent-plan/verify.sh"
     # 一時 git リポジトリ + stub CLI を使い、打ち切りや猶予期間の実測待ちを含むので
     # 後ろに置く（単体で〜35 秒。数字を更新するときは実測してから直すこと）
     "$SCRIPT_DIR/multi-agent-timeout/verify.sh"

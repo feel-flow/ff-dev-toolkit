@@ -105,8 +105,8 @@ bash scripts/multi-review.sh --dry-run
 | `--task`                  | タスクタイプ                            | review                    |
 | `--description`           | タスク説明                              | (explore/implementで必須) |
 | `--cli <name>`            | 特定CLIのみ実行                         | 全CLI                     |
-| `--perspective <name>`    | 特定perspectiveのみ                     | 全perspective             |
-| `--strategy`              | balanced/minimize_cost/maximize_quality | タスク別                  |
+| `--perspective <name>`    | 特定perspectiveのみ。distributed では所有CLIだけが残る | 全perspective             |
+| `--strategy`              | balanced/minimize_cost/maximize_quality（明示 `--cli` は置換しない） | タスク別                  |
 | `--mode`                  | distributed/cross-model                 | distributed               |
 | `--parallel/--sequential` | 実行方式                                | parallel                  |
 | `--include-diff`          | implementにdiffを含める                 | false                     |
@@ -126,6 +126,26 @@ bash scripts/multi-review.sh --dry-run
 
 v2.0 形式で、タスクタイプ別・エージェント別に設定可能。
 v1.0 (review-config.yaml) との後方互換あり。
+
+## Perspective フィルタと単一 CLI 縮退
+
+distributed モードの perspective は CLI ごとの固定レジストリから解決されます。
+`--perspective` だけを指定すると、その perspective を所有しない導入済み CLI は
+プランから除外されます。review プランが暗黙に単一 CLI へ縮退した場合は、
+実行時 fallback が無いことによるゼロカバレッジのリスクと
+`--mode cross-model --perspective <name>` の代替を警告します。
+
+単一の `--cli <name> --perspective <name>` を両方明示した場合は、その組み合わせを
+利用者の実行意図としてレジストリより優先します。したがって、失敗サマリーが提示する
+代替 CLI + 元 perspective の再実行コマンドも空プランになりません。repeatable な
+複数 CLI / perspective を指定した場合は、想定外の直積実行を避けるため既存の
+所有レジストリで絞り込みます。
+同じ perspective を複数モデルで比較する場合は `--mode cross-model` を使用します。
+複数 perspective が単一 CLI へ縮退した場合、警告は perspective ごとに独立した
+cross-model コマンドを表示します。
+明示した `--cli` は利用者の選択を優先し、`minimize_cost` 等の cost strategy で
+別 CLI へ置換しません。未知または対象 task に存在しない perspective は、
+実行だけでなく dry-run も非 0 で拒否します。
 
 ## 安全策
 

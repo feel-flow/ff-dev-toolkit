@@ -20,7 +20,9 @@
 #   --mode <mode>           distributed | cross-model
 #   --strategy <strategy>   balanced | minimize_cost | maximize_quality
 #   --cli <name>            Run only this CLI (repeatable)
-#   --perspective <name>    Run only this perspective (repeatable)
+#   --perspective <name>    Run only this perspective (repeatable). In distributed
+#                           mode, only its owning CLI remains unless --cli is also
+#                           explicit; use --mode cross-model for model comparison.
 #   --parallel              Parallel execution (default)
 #   --sequential            Sequential execution
 #   --output-dir <dir>      Output directory (auto-detected by task type)
@@ -46,6 +48,16 @@
 #   Re-run the substitute yourself with --cli when you want it — the failure
 #   summary prints a ready-to-run command for each failed task, matched to why it
 #   failed (a longer limit is only offered when a limit is what ran out).
+#
+# Perspective resolution:
+#   --perspective alone filters the distributed ownership registry and can shrink
+#   a review plan to one CLI. The plan reports installed CLIs excluded this way
+#   and warns when the remaining review has a single point of failure.
+#   A single --cli <name> + single --perspective <name> is an explicit pairing
+#   and runs that perspective on that CLI even when the registry assigns it
+#   elsewhere. Explicit CLIs are not replaced by a cost strategy. Repeatable
+#   multi-value filters retain registry ownership. A requested perspective must
+#   exist for the selected task; invalid names are rejected before dry-run.
 #
 # Entry Points:
 #   Terminal:     bash scripts/multi-agent.sh --task review
@@ -506,12 +518,36 @@ build_distributed_plan() {
     fi
 
     if list_contains "$AVAILABLE_CLIS" "$cli_name"; then
-      for p in $perspectives; do
-        if [[ -n "$PERSPECTIVE_FILTER" ]] && ! list_contains "$PERSPECTIVE_FILTER" "$p"; then
-          continue
+      # When both filters are explicit, the pair is the user's execution intent.
+      # This is also the shape printed by failure advice for a substitute CLI:
+      # forcing it back through the ownership registry can otherwise produce an
+      # empty plan (for example codex-cli + security-analysis).
+      if [[ -n "$CLI_FILTER" && "$CLI_FILTER" != *" "* \
+            && -n "$PERSPECTIVE_FILTER" && "$PERSPECTIVE_FILTER" != *" "* ]]; then
+        for p in $PERSPECTIVE_FILTER; do
+          add_to_plan "$cli_name" "$p"
+        done
+      else
+        local matched_perspective=false
+        for p in $perspectives; do
+          if [[ -n "$PERSPECTIVE_FILTER" ]] && ! list_contains "$PERSPECTIVE_FILTER" "$p"; then
+            continue
+          fi
+          add_to_plan "$cli_name" "$p"
+          matched_perspective=true
+        done
+
+        # Availability and perspective ownership are different facts. Surface
+        # the latter so an installed CLI is not mistaken for missing.
+        if [[ -n "$PERSPECTIVE_FILTER" && "$matched_perspective" == "false" ]]; then
+          if [[ "$PERSPECTIVE_FILTER" == *" "* ]]; then
+            echo "  ⏭  ${cli_name} skipped — owns none of the requested perspectives (${PERSPECTIVE_FILTER})" >&2
+          else
+            echo "  ⏭  ${cli_name} skipped — owns no '${PERSPECTIVE_FILTER}' perspective" >&2
+          fi
+          echo "     (has: ${perspectives}). Use --mode cross-model to include it." >&2
         fi
-        add_to_plan "$cli_name" "$p"
-      done
+      fi
     else
       fallback_target="$(get_cli_fallback "$cli_name")"
       if [[ -n "$fallback_target" ]] && list_contains "$AVAILABLE_CLIS" "$fallback_target"; then
@@ -533,7 +569,7 @@ build_distributed_plan() {
   done
 
   # Apply cost strategy: minimize_cost moves premium → flat-rate
-  if [[ "$STRATEGY" == "minimize_cost" ]]; then
+  if [[ "$STRATEGY" == "minimize_cost" && -z "$CLI_FILTER" ]]; then
     local new_plan=""
     while IFS= read -r entry; do
       [[ -z "$entry" ]] && continue
@@ -573,6 +609,25 @@ build_cross_model_plan() {
   done
 }
 
+# ── Validate Requested Perspectives ──
+# A dry-run is a plan validation boundary, not only a pretty-printer. Reject an
+# unsafe, unknown, or other-task perspective before showing a successful plan;
+# otherwise the same command fails only after a real CLI dispatch is attempted.
+validate_requested_perspectives() {
+  local perspective perspective_file
+  for perspective in $PERSPECTIVE_FILTER; do
+    if ! is_safe_token "$perspective"; then
+      echo "ERROR: unsafe perspective name: '${perspective}'" >&2
+      return 1
+    fi
+    perspective_file="$(resolve_perspective_file "$perspective")"
+    if [[ -z "$perspective_file" ]]; then
+      echo "ERROR: perspective '${perspective}' does not exist for task '${TASK_TYPE}'." >&2
+      return 1
+    fi
+  done
+}
+
 # ── Show Execution Plan ──
 show_plan() {
   local emoji
@@ -601,10 +656,16 @@ show_plan() {
   fi
 
   local current_cli=""
+  local planned_clis=""
+  local planned_cli_count=0
   while IFS= read -r entry; do
     [[ -z "$entry" ]] && continue
     local cli="${entry%%:*}"
     local persp="${entry#*:}"
+    if ! list_contains "$planned_clis" "$cli"; then
+      planned_clis="${planned_clis:+$planned_clis }$cli"
+      planned_cli_count=$((planned_cli_count + 1))
+    fi
     if [[ "$cli" != "$current_cli" ]]; then
       current_cli="$cli"
       local tier
@@ -613,6 +674,25 @@ show_plan() {
     fi
     echo "     - ${persp}" >&2
   done <<< "$EXECUTION_PLAN"
+
+  # An explicit --cli is intentionally single-model and should stay quiet.
+  # Cross-model mode is already the remedy, so this warning only applies when a
+  # distributed review resolved implicitly to one CLI.
+  if [[ "$TASK_TYPE" == "review" && "$MODE" == "distributed" \
+        && -z "$CLI_FILTER" && "$planned_cli_count" -eq 1 ]]; then
+    echo "" >&2
+    echo "   ⚠️  Plan resolved to a single CLI (${planned_clis}). A failure or timeout here" >&2
+    echo "       means zero review coverage — runtime fallback is deliberately absent." >&2
+    if [[ "$PERSPECTIVE_FILTER" == *" "* ]]; then
+      echo "       For cross-model coverage, run each perspective separately:" >&2
+      local requested_perspective
+      for requested_perspective in $PERSPECTIVE_FILTER; do
+        echo "         --mode cross-model --perspective ${requested_perspective}" >&2
+      done
+    else
+      echo "       For cross-model coverage: --mode cross-model --perspective ${PERSPECTIVE_FILTER:-code-review}" >&2
+    fi
+  fi
   echo "" >&2
 }
 
@@ -1126,6 +1206,7 @@ main() {
   load_config
   parse_args "$@"
   apply_task_defaults
+  validate_requested_perspectives
 
   emoji="$(get_task_emoji "$TASK_TYPE")"
 

@@ -28,6 +28,17 @@ description: 複数の AI CLI（Claude Code / Codex / Gemini / Cursor、Copilot 
   - 例: `--mode cross-model --perspective code-review`（クロスモデル比較）
   - 全オプションは `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --help` で確認できます
 
+distributed モードで `--perspective` だけを指定すると、固定レジストリ上でその
+perspective を所有する CLI だけがプランに残ります。導入済み CLI が除外された理由は
+dry-run に表示され、review が暗黙に単一 CLI へ縮退した場合は警告されます。
+同じ perspective を複数モデルで実行するには
+`--mode cross-model --perspective <name>` を指定してください。
+単一の `--cli <name> --perspective <name>` を両方明示した場合は、その組み合わせを
+実行します。複数 CLI / perspective の repeatable 指定は既存の所有レジストリで
+絞り込み、全組み合わせの直積にはしません。明示した `--cli` は cost strategy で
+別 CLI へ置換されません。未知または review に存在しない perspective は dry-run
+でもエラーになります。
+
 ## 手順
 
 ### 1. プラン確認（--dry-run）
@@ -143,6 +154,8 @@ git diff  # 修正内容の確認
 - 妥当な Suggestion も確認不要で対応すること
 - Info は報告のみで修正しないこと
 - CLI **未インストール**の場合は fallback 設定に従って自動再分配されます（プラン構築時のみ）
+- distributed モードの `--perspective` は所有 CLI だけを残すため、単一 CLI に縮退しうる。dry-run の除外理由と単一 CLI 警告を確認し、クロスモデル比較が必要なら `--mode cross-model` を使う
+- 単一の `--cli` と単一の `--perspective` を両方明示した場合は、レジストリ上の既定割当より利用者の指定を優先する。複数指定は所有レジストリで絞り込む
 - インストール済み CLI の**実行時**エラー／タイムアウトは fallback しません。クロスモデル性（どのモデルが実際に見たか）が黙って変わること、代替先のコスト帯が上がりうること、タイムアウト後の再試行が同じ制限時間をもう一度消費することを避けるためです
 - `Status: incomplete` / `INCOMPLETE` が付いた節は未完了レビューです。Critical/Warning が無いことを「問題なし」と解釈しないこと
 - 結果は `.review-results/` に保存され、後から参照できます
