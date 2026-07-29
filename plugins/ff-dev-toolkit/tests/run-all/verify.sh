@@ -230,7 +230,7 @@ else
   bad "入れ子の引数なし実行が通ってしまった（無限再帰の危険）"
 fi
 expect_has '^✗ run-all.sh を入れ子で引数なし実行しようとしました' "拒否理由を出力する"
-expect_lacks '^== command-frontmatter ==' "拒否時に suite を 1 つも実行しない"
+expect_lacks '^== skill-frontmatter ==' "拒否時に suite を 1 つも実行しない"
 
 # ---- ケース9: skip マーカーの契約 --------------------------------------------
 # ランナーは行頭 `○ skip` で skip を判定する。実在の skip 出力側（merge-cleanup）が

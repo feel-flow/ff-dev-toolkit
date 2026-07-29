@@ -1,10 +1,15 @@
 ---
+name: setup-ai-config
 description: プロジェクトの docs/ を基に AI 開発ツール向け設定ファイル（CLAUDE.md / AGENTS.md / .cursor/rules/*.mdc / copilot-instructions.md）を生成し、Multi-CLI エージェントをセットアップする
 ---
 
 # /setup-ai-config — AI開発ツール設定ファイル生成
 
 プロジェクトの `docs/` を基に、各AI開発ツール向けの設定ファイルを生成します。
+
+## プラグインルートの解決
+
+同梱ファイルを参照・実行する前に `FF_DEV_TOOLKIT_ROOT` を解決する。Claude Code では `${CLAUDE_PLUGIN_ROOT}` を使い、Codex など他ホストでは読み込んだこの `SKILL.md` の絶対パスから `../..` を解決する。以下の `${FF_DEV_TOOLKIT_ROOT}` はその絶対パスを指す。バージョン別 cache を探索して選ばない。
 
 ## 対象ツール
 
@@ -42,7 +47,7 @@ description: プロジェクトの docs/ を基に AI 開発ツール向け設�
 
 ### 2. 生成するツールの選択
 
-AskUserQuestion を使用して、どのツール向けの設定を生成するか確認します:
+利用中のホストに構造化質問機能があれば使用し、なければ通常の対話で、どのツール向けの設定を生成するか確認します:
 
 - **Claude Code (CLAUDE.md)** — 推奨
 - **Codex CLI / 汎用エージェント (AGENTS.md)**
@@ -209,18 +214,20 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 セットアップスクリプトを実行して、Multi-CLI Agent Orchestrator（review / explore / implement の3タスク）を構成します:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup-multi-agent.sh"
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
 ```
 
 このスクリプトが行うこと:
+
 - yq（YAMLパーサー）の確認・インストール
 - 5つのAI CLI（Claude Code / Codex / Copilot / Gemini / Cursor）の検出
 - 未インストールCLIのインストールガイド表示
 - `multi-agent.sh --dry-run` による動作確認
 
 セットアップ完了後、以下で利用できます（いずれも本プラグイン同梱）:
+
 - Claude Code: `/multi-review` / `/multi-explore` / `/multi-implement`
-- ターミナル: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-agent.sh" --task <review|explore|implement>`
+- ターミナル: `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task <review|explore|implement>`
 
 設定のカスタマイズ: プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される（環境変数 `MULTI_AGENT_CONFIG=<path>` または `--config <path>` でも上書き可）。
 
@@ -231,10 +238,10 @@ Multi-CLI Agent Orchestrator のセットアップ結果も含めて報告して
 
 ### 9. （任意）ACE autonomous テンプレートの案内
 
-ユーザーが **ACE ナレッジキャプチャの autonomous 化**（post-merge → subagent → worktree）に関心を示した場合、または Multi-CLI / Git 運用の文脈で自動化を聞かれた場合のみ、AskUserQuestion で希望を確認する。
+ユーザーが **ACE ナレッジキャプチャの autonomous 化**（post-merge → subagent → worktree）に関心を示した場合、または Multi-CLI / Git 運用の文脈で自動化を聞かれた場合のみ、利用中のホストの質問機能または通常の対話で希望を確認する。
 
 - **オプション例**: 「案内する」/「スキップ」
-- **案内する**を選んだ場合: `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/ace-autonomous.md`、`${CLAUDE_PLUGIN_ROOT}/docs-template/scripts/ace/`、`${CLAUDE_PLUGIN_ROOT}/docs-template/.claude/agents/ace-capture.md` テンプレのコピー先、環境変数（`ACE_SUBAGENT_ENABLED` / `ACE_SUBAGENT_AUTO_MERGE` / `ACE_GARDEN_WALL_PATHS`）の **明示 opt-in** を説明する。
+- **案内する**を選んだ場合: `${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/ace-autonomous.md`、`${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/`、`${FF_DEV_TOOLKIT_ROOT}/docs-template/.claude/agents/ace-capture.md` テンプレのコピー先、環境変数（`ACE_SUBAGENT_ENABLED` / `ACE_SUBAGENT_AUTO_MERGE` / `ACE_GARDEN_WALL_PATHS`）の **明示 opt-in** を説明する。
 
 ## 重要ルール
 

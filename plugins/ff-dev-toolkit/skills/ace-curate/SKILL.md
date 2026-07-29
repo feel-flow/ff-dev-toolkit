@@ -1,11 +1,15 @@
 ---
+name: ace-curate
 description: マージ済み PR から知見を抽出し ACE Playbook（docs/08-knowledge/）へ構造化エントリとして追記する
-argument-hint: [PR番号]
 ---
 
 # /ace-curate — ACE サイクル実行（Playbook 増分更新）
 
 マージ後・cleanup 後に PR から知見を抽出し、ACE Playbook に構造化エントリとして追記します。
+
+## プラグインルートの解決
+
+同梱ファイルを参照する前に `FF_DEV_TOOLKIT_ROOT` を解決する。Claude Code では `${CLAUDE_PLUGIN_ROOT}` を使い、Codex など他ホストでは読み込んだこの `SKILL.md` の絶対パスから `../..` を解決する。以下の `${FF_DEV_TOOLKIT_ROOT}` はその絶対パスを指す。バージョン別 cache を探索して選ばない。
 
 ## 前提
 
@@ -83,11 +87,11 @@ ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（例 `ACE-438-1`、非PR
 
 **採番前ガード（自己修復）** — 採番の前に以下を確認する:
 
-1. 対象 PLAYBOOK.md に「エントリID規則」セクションが存在するか確認する。存在しない場合（旧形式 PLAYBOOK、または plugin 非経由でセットアップされたプロジェクト）は、本プラグイン同梱の `${CLAUDE_PLUGIN_ROOT}/docs-template/08-knowledge/PLAYBOOK.md` の「エントリID規則」をセクションごとコピーして PLAYBOOK.md に追加してから、PRスコープ式で採番する。挿入位置は「運用ルール」セクションの直後（テンプレートと同じ位置）、該当セクションが無い場合は先頭見出し直後とする
+1. 対象 PLAYBOOK.md に「エントリID規則」セクションが存在するか確認する。存在しない場合（旧形式 PLAYBOOK、または plugin 非経由でセットアップされたプロジェクト）は、本プラグイン同梱の `${FF_DEV_TOOLKIT_ROOT}/docs-template/08-knowledge/PLAYBOOK.md` の「エントリID規則」をセクションごとコピーして PLAYBOOK.md に追加してから、PRスコープ式で採番する。挿入位置は「運用ルール」セクションの直後（テンプレートと同じ位置）、該当セクションが無い場合は先頭見出し直後とする
 2. 既存の ID なしエントリ（`## [Pattern] ...` 形式等）や旧 3 桁エントリは **改名・書き換えしない**（エントリID規則「既存 ID の扱い」に従い共存させる）
 3. プロジェクトに旧形式のローカル ACE コマンド（`.claude/commands/ace.md` 等、ID なし採番のもの）が存在する場合は、本コマンド（PRスコープ式）への一本化・旧コマンド撤去をユーザーに提案する（勝手に削除しない）
 
-#### 4-b. playbook/<category>.md への追記 + PLAYBOOK.md 索引の更新
+#### 4-b. playbook/category.md への追記 + PLAYBOOK.md 索引の更新
 
 エントリ本体は該当カテゴリの `docs/08-knowledge/playbook/<category>.md` の末尾に追記する（`XXX` は 4-a の PRスコープ式 ID に置換。例 `ace-438-1` / `ACE-438-1`）:
 

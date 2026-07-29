@@ -2,8 +2,8 @@
 #
 # verify.sh — /validate-docs の検証規則（プロンプト）回帰検証 + fixture 自己整合
 #
-# 目的（Issue #94）: PR #90 で標準へ整合した文書検証規則が、コマンド定義
-# （commands/validate-docs.md = 生成器＝プロンプト本体）から drift していないことを
+# 目的（Issue #94）: PR #90 で標準へ整合した文書検証規則が、Skill 定義
+# （skills/validate-docs/SKILL.md = 生成器＝プロンプト本体）から drift していないことを
 # 機械的に検証する。判定そのものはプロンプト実行（LLM）を伴うため、ここで検証するのは
 #   (A) 生成器（プロンプト）が検証規則を今も含むこと … 主たる回帰ガード（ACE-86-1）
 #   (B) fixture（docs セット＋期待）が構造的に妥当で、期待が実在の生成器規則へ紐づくこと
@@ -20,8 +20,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CASES="$SCRIPT_DIR/fixtures/cases"
-CMD="$SCRIPT_DIR/../../commands/validate-docs.md"
-INIT_DOCS_CMD="$SCRIPT_DIR/../../commands/init-docs.md"
+CMD="$SCRIPT_DIR/../../skills/validate-docs/SKILL.md"
+INIT_DOCS_CMD="$SCRIPT_DIR/../../skills/init-docs/SKILL.md"
 DOCS_TEMPLATE="$SCRIPT_DIR/../../docs-template"
 DOCS_TEMPLATE_MASTER="$DOCS_TEMPLATE/MASTER.md"
 

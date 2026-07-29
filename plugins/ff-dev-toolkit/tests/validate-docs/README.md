@@ -1,6 +1,6 @@
 # validate-docs 検証規則・fixture 回帰テスト
 
-`/validate-docs`（`plugins/ff-dev-toolkit/commands/validate-docs.md`）の文書検証規則が、
+`validate-docs`（`plugins/ff-dev-toolkit/skills/validate-docs/SKILL.md`）の文書検証規則が、
 PR #90 で標準へ整合した状態から drift しないことを検証するための fixture / 回帰テストです（Issue #94）。
 
 ## なぜ3層構成か

@@ -235,7 +235,7 @@ docs/ を前提に、この変更が ARCHITECTURE や DOMAIN にどう影響す�
 - [README.md](./README.md) — インストール・収録内容  
 - [CHANGELOG.md](./CHANGELOG.md) — バージョン履歴  
 - プラグイン内（install 後または本リポジトリ）:
-  - `plugins/ff-dev-toolkit/commands/setup-ai-config.md`
+  - `plugins/ff-dev-toolkit/skills/setup-ai-config/SKILL.md`
   - `plugins/ff-dev-toolkit/docs-template/SETUP_GITHUB_COPILOT.md`
   - `plugins/ff-dev-toolkit/docs-template/setup-guides/github-copilot/`
 

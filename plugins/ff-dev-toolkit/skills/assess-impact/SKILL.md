@@ -1,6 +1,6 @@
 ---
+name: assess-impact
 description: 変更の影響度を波及範囲と設計維持可能性から LOW/MEDIUM/HIGH で評価し、更新が必要な仕様文書を特定する（HIGH は ADR・移行計画の要否判定を促す）
-argument-hint: [ファイル | diff | Issue番号]
 ---
 
 # /assess-impact — 変更影響度評価

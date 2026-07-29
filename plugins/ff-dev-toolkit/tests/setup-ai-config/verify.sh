@@ -12,8 +12,8 @@
 #
 # 2種類の対象を検証する:
 #   (1) 期待生成物 fixture（fixtures/expected/）    … スナップショットの自己一貫性
-#   (2) コマンド定義のツール別テンプレート          … 生成器(テンプレ)が fixture から
-#       （commands/setup-ai-config.md）              drift していないか（Issue #84 の本題）。
+#   (2) Skill 定義のツール別テンプレート             … 生成器(テンプレ)が fixture から
+#       （skills/setup-ai-config/SKILL.md）           drift していないか（Issue #84 の本題）。
 #       説明文へアンカーを逃がしても通らないよう、各節の **コードフェンス内のみ** を検査する。
 # あわせて Cursor 出力（fixture と生成器テンプレの両方）が現行 Project Rules 形式
 # （.mdc + フロントマター内 alwaysApply: true + 閉じ ---）であることも検証する。
@@ -28,7 +28,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 EXPECTED="$SCRIPT_DIR/fixtures/expected"
 INPUT="$SCRIPT_DIR/fixtures/input/docs/MASTER.md"
-CMD="$SCRIPT_DIR/../../commands/setup-ai-config.md"
+CMD="$SCRIPT_DIR/../../skills/setup-ai-config/SKILL.md"
 
 # 検証対象の4生成物（相対パス）
 FILES=(
@@ -45,7 +45,7 @@ BOUNDARIES=(
   "境界3 確認プロトコル|Information Verification Protocol"
 )
 
-# コマンド定義のツール別テンプレート節（ラベル|開始行 regex|終了行 regex|Cursorか(1/0)）
+# Skill 定義のツール別テンプレート節（ラベル|開始行 regex|終了行 regex|Cursorか(1/0)）
 # 節番号を変えたらここも追随させること（drift 検出の canary）。
 BLOCKS=(
   "CLAUDE.md テンプレ|^### 3. |^### 4. |0"
@@ -73,7 +73,7 @@ frontmatter_ok() {
   '
 }
 
-# コマンド定義の指定節の「コードフェンス内」だけを stdout に出す（$CMD を読む）
+# Skill 定義の指定節の「コードフェンス内」だけを stdout に出す（$CMD を読む）
 # 引数: 開始行 regex, 終了行 regex
 section_fence() {
   awk -v s="$1" -v e="$2" '
@@ -112,12 +112,12 @@ for rel in "${FILES[@]}"; do
 done
 echo
 
-# --- (2) コマンド定義テンプレートの3境界チェック（生成器 drift 防止）---
+# --- (2) Skill 定義テンプレートの3境界チェック（生成器 drift 防止）---
 # fixtures/expected/ は手書きで自己一貫のため、テンプレが境界を落としても
 # fixture だけでは PASS してしまう。各ツール別テンプレの **コードフェンス内** を検査する。
-echo "## コマンド定義テンプレート（生成器・コードフェンス内）"
+echo "## Skill 定義テンプレート（生成器・コードフェンス内）"
 if [[ ! -f "$CMD" ]]; then
-  echo "  ✗ コマンド定義が見つからない: $CMD"
+  echo "  ✗ Skill 定義が見つからない: $CMD"
   fail=1
 else
   for spec in "${BLOCKS[@]}"; do

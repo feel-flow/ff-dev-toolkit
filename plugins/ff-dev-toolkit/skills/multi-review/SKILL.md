@@ -1,16 +1,20 @@
 ---
+name: multi-review
 description: 複数の AI CLI（Claude Code / Codex / Gemini / Cursor、Copilot はオプトイン）を並列実行し、異なる観点からクロスモデルレビューを行う
-argument-hint: [multi-agent.sh オプション]
 ---
 
 # /multi-review — 複数AIによるクロスモデルレビュー実行
 
 複数のAI CLI（Claude Code / Codex / Gemini / Cursor）を並列実行し、異なる観点からコードレビューを実行します。Copilot CLI は従量課金のため既定ラインナップ外です（`--cli copilot-cli` でオプトイン）。
 
+## プラグインルートの解決
+
+同梱スクリプトを実行する前に `FF_DEV_TOOLKIT_ROOT` を解決する。Claude Code では `${CLAUDE_PLUGIN_ROOT}` を使い、Codex など他ホストでは読み込んだこの `SKILL.md` の絶対パスから `../..` を解決する。以下の `${FF_DEV_TOOLKIT_ROOT}` はその絶対パスを指す。バージョン別 cache を探索して選ばない。
+
 ## 前提
 
 - git リポジトリで作業中であること
-- 本プラグイン同梱の `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review.sh` を使用する
+- 本プラグイン同梱の `${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh` を使用する
 - 少なくとも1つのAI CLIがインストールされていること（`claude`, `codex`, `copilot`, `gemini`, `cursor-agent` のいずれか）
 - `yq` がインストールされていること（`brew install yq`）
 - 未コミットまたはブランチ上の変更が存在すること
@@ -22,7 +26,7 @@ argument-hint: [multi-agent.sh オプション]
   - 例: `--strategy minimize_cost`（コスト最小化）
   - 例: `--perspective code-review`（特定パースペクティブのみ）
   - 例: `--mode cross-model --perspective code-review`（クロスモデル比較）
-  - 全オプションは `bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review.sh" --help` で確認できます
+  - 全オプションは `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --help` で確認できます
 
 ## 手順
 
@@ -31,10 +35,11 @@ argument-hint: [multi-agent.sh オプション]
 まず実行プランを表示し、ユーザーに確認を求めます:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review.sh" --dry-run $ARGUMENTS
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run $ARGUMENTS
 ```
 
 出力を確認し、以下をユーザーに報告:
+
 - 検出されたCLI一覧（✅/❌）
 - 各CLIに割り当てられたパースペクティブ
 - モード・戦略・タイムアウト設定
@@ -46,7 +51,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review.sh" --dry-run $ARGUMENTS
 ユーザーが承認したら、実際のレビューを実行します:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review.sh" $ARGUMENTS
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" $ARGUMENTS
 ```
 
 **注意**: 実行には各CLIの利用コストが発生します（特に premium/standard ティアのCLI）。`--strategy minimize_cost` で固定料金/無料CLIを優先できます。タイムアウトはデフォルト **900秒/CLI** です（旧既定の 5 分では中規模差分の Codex レビューが完走しなかったため引き上げ。`--timeout <秒>` で上書き可）。CLI が早く応答すればその時点で次に進むので、上限を大きく取っても待ち時間は増えません。

@@ -1,6 +1,6 @@
 # ff-dev-toolkit
 
-AI仕様駆動開発（AI-SDD）の公式実装となる Claude Code プラグイン。ドキュメント初期化から開発進行のゲート管理・影響度評価・クロスモデルレビュー・ナレッジ蓄積までを、Skills / Commands / MCP サーバーの組み合わせで統制します。
+AI仕様駆動開発（AI-SDD）の公式実装となる Claude Code / Codex プラグイン。ドキュメント初期化から開発進行のゲート管理・影響度評価・クロスモデルレビュー・ナレッジ蓄積までを、Skills / MCP サーバーの組み合わせで統制します。
 
 書籍『AI仕様駆動開発 公式ガイド』第2部（公式実装リファレンス）の対象実装です。方法論そのもの（コア7文書スキーマ・原則）は [ai-spec-driven-development](https://github.com/feel-flow/ai-spec-driven-development) を参照してください。
 
@@ -34,7 +34,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 
 ## 収録内容
 
-### Skills（3）
+### Skills（17）
 
 | スキル | 用途 |
 |---|---|
@@ -42,9 +42,9 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `harness-review` | エージェントハーネス設計のレビュー。アンチパターンカタログと観点チェックリストに基づく設計評価 |
 | `out-of-scope-issue` | スコープ外の発見（改善・バグ・リファクタ候補）を「同 PR でインライン修正」か「Issue 化して後送り」に判定してルーティング。判定チェックリスト + `gh issue create` の即時実行フロー付き |
 
-### Commands（14）
+以下の14件は v0.15.0 で旧 Commands から Agent Skills 標準へ移行しました。Claude Code では `/ff-dev-toolkit:<name>`、Codex では `$ff-dev-toolkit:<name>`、両方で自然文による自動発火を利用できます。
 
-| コマンド | 用途 |
+| ワークフロースキル | 用途 |
 |---|---|
 | `/init-docs` | AI仕様駆動開発のコア7文書 + 拡張フォルダ構造を初期化 |
 | `/validate-docs` | ドキュメント構造の検証（必須3文書、残る4文書は未作成なら N/A） |
@@ -60,6 +60,15 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `/multi-explore` | マルチAI CLI による並列探索 |
 | `/multi-implement` | マルチAI CLI による並列実装 |
 | `/multi-review` | マルチAI CLI による並列レビュー |
+
+### 旧 Codex standalone copy からの移行
+
+過去の手順で `~/.codex/skills/out-of-scope-issue` をフルコピーしている場合、先に marketplace と plugin を更新し、Codex の新規セッションで `/skills` に `ff-dev-toolkit:out-of-scope-issue` が出ることを確認してください。確認後、旧 standalone copy は drift と重複発火を避けるため削除できます。プラグイン側からユーザー領域を自動削除はしません。
+
+```bash
+codex plugin marketplace upgrade ff-dev-toolkit
+codex plugin add ff-dev-toolkit@ff-dev-toolkit
+```
 
 ### MCP サーバー（spec-docs）
 

@@ -6,7 +6,7 @@
 
 ## 運用
 
-- 公開物（Skills / Commands / docs-template / scripts / MCP 等）を変えて `plugin.json` の version を bump するとき、**同じ変更で本ファイルの対応節を更新する**
+- 公開物（Skills / docs-template / scripts / MCP 等）を変えて `plugin.json` の version を bump するとき、**同じ変更で本ファイルの対応節を更新する**
 - 未公開の作業中変更は `[Unreleased]` に積み、version bump 時にバージョン節へ移す
 - 各 `## [x.y.z]` は **plugin.json の version 境界**を記録する。公開 Git タグは同期タイミングにより一部の版を飛ばすことがあるが、CHANGELOG は plugin version 単位で残す（飛ばされた版の変更は次に付く公開タグに含まれる）
 - 0.1.0〜0.4.0 は公開リポジトリ作成前の内部版の要約である
@@ -14,6 +14,15 @@
 - 文末の比較リンクは、公開リポジトリに存在するタグ同士のみを記載する
 
 ## [Unreleased]
+
+## [0.15.0] - 2026-07-29
+
+### 変更
+
+- ff-dev-toolkit の旧 `commands/*.md` 14件を、同名の `skills/<name>/SKILL.md` へ移行した（Issue #141）。Claude Code の `/ff-dev-toolkit:<name>` を維持しつつ、Codex でも `$ff-dev-toolkit:<name>` または自然文から全17スキルを利用できる。command / wrapper / user領域 copy の二重正本は作らず、各手順を Agent Skills 標準の1ファイルへ統一した
+- 同梱ファイルを使う移行対象スキルに、Claude Code の `${CLAUDE_PLUGIN_ROOT}` と Codex が読み込む `SKILL.md` の絶対パスから共通の `FF_DEV_TOOLKIT_ROOT` を解決する規則を追加した。バージョン別 cache を探索・選択しない
+- frontmatter 検査を `tests/skill-frontmatter/verify.sh` へ移行し、全skillの `name` / `description`、14件の必須存在、legacy `commands/*.md` 不在、バージョン固定 cache パス不在、`disable-model-invocation` ポリシーを fail-closed で検査する
+- README / marketplace metadata / テスト参照を17スキル構成へ更新し、旧 `~/.codex/skills/out-of-scope-issue` フルコピーは namespaced plugin skill の認識後に手動削除する移行手順を追加した
 
 ## [0.14.5] - 2026-07-29
 

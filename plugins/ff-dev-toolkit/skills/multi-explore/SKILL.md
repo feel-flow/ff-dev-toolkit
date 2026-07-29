@@ -1,16 +1,20 @@
 ---
+name: multi-explore
 description: 複数の AI CLI を並列実行し、異なる観点からコードベースを探索・分析する（read-only）
-argument-hint: <探索対象の説明> [オプション]
 ---
 
 # /multi-explore — 複数AIによるコードベース探索
 
 5つのAI CLI（Claude Code / Codex / Copilot / Gemini / Cursor）を並列実行し、異なる観点からコードベースを探索・分析します。
 
+## プラグインルートの解決
+
+同梱スクリプトを実行する前に `FF_DEV_TOOLKIT_ROOT` を解決する。Claude Code では `${CLAUDE_PLUGIN_ROOT}` を使い、Codex など他ホストでは読み込んだこの `SKILL.md` の絶対パスから `../..` を解決する。以下の `${FF_DEV_TOOLKIT_ROOT}` はその絶対パスを指す。バージョン別 cache を探索して選ばない。
+
 ## 前提
 
 - git リポジトリで作業中であること
-- 本プラグイン同梱の `${CLAUDE_PLUGIN_ROOT}/scripts/multi-agent.sh` を使用する
+- 本プラグイン同梱の `${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh` を使用する
 - 少なくとも1つのAI CLIがインストールされていること
 - `yq` がインストールされていること（`brew install yq`）
 
@@ -20,7 +24,7 @@ argument-hint: <探索対象の説明> [オプション]
   - 例: `認証フローの仕組みを調査`
   - 例: `プロジェクト構造の概要 --cli codex-cli`（特定CLIのみ）
   - 例: `API エンドポイントの一覧 --strategy minimize_cost`（コスト最小化）
-  - 全オプションは `bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-agent.sh" --help` で確認できます
+  - 全オプションは `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --help` で確認できます
 
 ## 手順
 
@@ -34,10 +38,11 @@ argument-hint: <探索対象の説明> [オプション]
 まず実行プランを表示し、ユーザーに確認を求めます:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-agent.sh" --task explore --description "<探索対象>" --dry-run $OPTIONS
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task explore --description "<探索対象>" --dry-run $OPTIONS
 ```
 
 出力を確認し、以下をユーザーに報告:
+
 - 検出されたCLI一覧（✅/❌）
 - 各CLIに割り当てられたパースペクティブ
 - モード・戦略・タイムアウト設定
@@ -49,7 +54,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-agent.sh" --task explore --description
 ユーザーが承認したら、実際の探索を実行します:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-agent.sh" --task explore --description "<探索対象>" $OPTIONS
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task explore --description "<探索対象>" $OPTIONS
 ```
 
 **注意**: explore タスクは read-only です。コードの変更は行いません。

@@ -1,6 +1,6 @@
 ---
+name: close-issue
 description: マージ直前に PR が閉じる Issue の受け入れ条件（AC）を照合し、チェックボックス更新 + 完了報告コメントを投稿する（AC 照合ゲート）
-argument-hint: [PR番号]
 ---
 
 # /close-issue — Issue クローズ前の AC 照合ゲート
@@ -85,7 +85,7 @@ gh issue view $ISSUE_URL --json body,updatedAt
 #    body を /tmp/issue-body-<Issue番号>.md に保存し、updatedAt を控えておく
 
 # 2) 達成と判定した AC の行だけを "- [ ]" → "- [x]" に書き換える
-#    （Edit ツール等で該当行を個別に置換する。sed 等での一括置換は
+#    （利用中のホストが提供するファイル編集機能で該当行を個別に置換する。sed 等での一括置換は
 #      未達・対象外の項目まで完了扱いにしてしまうため禁止）
 
 # 3) 書き換え結果を diff し、「チェックボックス以外の変更がない」ことを確認

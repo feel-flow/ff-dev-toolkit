@@ -1,6 +1,6 @@
 ---
+name: refine-issue
 description: 既存 GitHub Issue の仕様曖昧さを6観点 + コードベース探索で検出し、trivial/architectural/critical の3階層で refine する
-argument-hint: <issue-number-or-url>
 ---
 
 # /refine-issue — 既存 Issue の仕様曖昧さを検出・refine
@@ -57,7 +57,7 @@ GitHub Enterprise Server (`*.ghe.com` 等) のサポートは MVP では対象�
 gh issue view <num> --repo <owner/repo> --json number,title,body,labels,comments,state,url,assignees,author
 ```
 
-`state` は `"OPEN"` / `"CLOSED"` の大文字で返ります。`state == "CLOSED"` の場合は `AskUserQuestion` ツールで「closed Issue を refine しますか？」を確認し、ユーザーが Yes と答えた場合のみ続行。No または応答なしの場合は警告のみ出して終了。
+`state` は `"OPEN"` / `"CLOSED"` の大文字で返ります。`state == "CLOSED"` の場合は、利用中のホストの質問機能または通常の対話で「closed Issue を refine しますか？」を確認し、ユーザーが Yes と答えた場合のみ続行。No または応答なしの場合は警告のみ出して終了。
 
 ### 3. 参照文書の自動提案
 
@@ -71,7 +71,7 @@ Issue body の内容から、関連しそうな参照文書を提案します（
 | インフラ・デプロイ | MASTER, DEPLOYMENT | ARCHITECTURE |
 | ドキュメント | MASTER | 更新対象文書 |
 
-判定が難しい場合は `AskUserQuestion` ツールで確認します。
+判定が難しい場合は、利用中のホストの質問機能または通常の対話で確認します。
 
 ### 4. 6 観点バリデーション（refine 用途向け、`/create-issue` ベース）
 
@@ -99,9 +99,9 @@ Issue body の内容から、関連しそうな参照文書を提案します（
 - 認証機能の追加とログ出力強化が同居 → 2 Issue に分割を推奨
 ```
 
-### 5. コードベース探索 SubAgent
+### 5. コードベース探索
 
-`Task` ツール（`subagent_type: "Explore"`、Claude Code 組み込み）を使い、Issue が触れていない論点を洗い出します。SubAgent を使うことで親 context のコンテキストウィンドウに探索の生ログを取り込まず、要約のみを返すことで compact 圧迫を防ぎます。`Explore` が利用できない環境では `subagent_type: "general-purpose"` をフォールバックとして使用。
+利用中のホストに read-only の探索用 subagent があれば使い、Issue が触れていない論点を洗い出します。探索の生ログではなく要約だけを親コンテキストへ返します。subagent がない環境では、検索・参照機能を直接使って同じ観点を調査します。
 
 SubAgent への指示テンプレート:
 
@@ -213,7 +213,7 @@ Issue body 全体を破壊しないよう、以下の手順で更新します:
 2. 補完すべき箇所のテキストを置換または追記して新しい body 文字列を構築する
    - **原則は追記**。既存の曖昧文をそのまま残すと矛盾する場合のみ置換する
    - 既存の見出し（`## ユーザーストーリー` / `## ジョブストーリー` `## 受け入れ条件（AC）` 等）と順序は維持する
-3. `Write` ツールで `/tmp/refine-issue-<num>.md` に新 body を書き出す
+3. 利用中のホストのファイル編集機能で `/tmp/refine-issue-<num>.md` に新 body を書き出す
 4. `gh issue edit <num> --repo <owner/repo> --body-file /tmp/refine-issue-<num>.md` で本文更新
 
 補完内容を注記コメントで通知:
@@ -302,7 +302,7 @@ URL: <Issue URL>
 - **Critical を検出したら他の階層処理を実行しない**: 手順 7 のゲート制御で保証。仕様未策定状態で部分補完を残すと「refine 済み」と誤解される
 - **既存 Issue body を破壊しない**: 自動補完は原則追記、矛盾解消が必要な場合のみ置換。原文の構造（見出し・順序）は保持
 - **`needs-spec` ラベルが存在しなければ作成する**: skill 内で `gh label create --repo <owner/repo> ... --force` を実行（冪等化のため `--force` 必須）
-- **closed Issue は AskUserQuestion で続行確認する**: ユーザーが明示的に Yes と答えた場合のみ続行
+- **closed Issue はホストの質問機能または通常の対話で続行確認する**: ユーザーが明示的に Yes と答えた場合のみ続行
 - **クロスリポジトリ対応**: 全 `gh` コマンド（`issue view`, `issue edit`, `issue comment`, `label create`）に必ず `--repo <owner/repo>` を渡す
 - **コメント投稿時は必ず Bot 識別を含める**: 「🤖 /refine-issue による...」「❓ /refine-issue が判断つかない論点（...）」「🛑 /refine-issue: 仕様策定が必要...」のようにプレフィックスを付け、人間のコメントと区別
 - **mention 対象が bot の場合は skip**: assignee / author が `[bot]` suffix の場合はフォールバック規則に従う

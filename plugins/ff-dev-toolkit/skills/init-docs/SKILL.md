@@ -1,10 +1,15 @@
 ---
+name: init-docs
 description: AI仕様駆動開発のコア7文書 + 拡張フォルダ構造をプロジェクトに初期化する
 ---
 
 # /init-docs — AI仕様駆動開発ドキュメント初期化
 
 プロジェクトに AI仕様駆動開発のコア7文書 + 拡張フォルダ構造をセットアップします。
+
+## プラグインルートの解決
+
+同梱ファイルを参照する前に `FF_DEV_TOOLKIT_ROOT` を解決する。Claude Code では `${CLAUDE_PLUGIN_ROOT}` を使い、Codex など他ホストでは読み込んだこの `SKILL.md` の絶対パスから `../..` を解決する。以下の `${FF_DEV_TOOLKIT_ROOT}` はその絶対パスを指す。バージョン別 cache を探索して選ばない。
 
 ## 前提
 
@@ -15,7 +20,7 @@ description: AI仕様駆動開発のコア7文書 + 拡張フォルダ構造を�
 
 ### 1. ユーザー情報の確認
 
-以下の情報をユーザーに確認してください（AskUserQuestion を使用）:
+以下の情報をユーザーに確認してください。利用中のホストに構造化質問機能があれば使用し、なければ通常の対話で確認します:
 
 - **プロジェクト名**: 具体的な名称
 - **技術スタック**: FE/BE/DB/Infra
@@ -57,13 +62,13 @@ docs/
     └── RISKS.md
 ```
 
-> **補足**: `00-planning/`（企画・PoC テンプレート）と `08-knowledge/`（ACE Playbook）は初期セットに含めない。`00-planning/` は必要になった時点で `${CLAUDE_PLUGIN_ROOT}/docs-template/00-planning/` からコピーし、`08-knowledge/` は `/ace-setup` が作成する。`03-implementation/DECISION_TREE.md` と `FALLBACK.md` は、`PATTERNS.md`・`MASTER.md` のコード生成ルール・エラーハンドリング方針から無条件に参照されるため初期セットに含める。
+> **補足**: `00-planning/`（企画・PoC テンプレート）と `08-knowledge/`（ACE Playbook）は初期セットに含めない。`00-planning/` は必要になった時点で `${FF_DEV_TOOLKIT_ROOT}/docs-template/00-planning/` からコピーし、`08-knowledge/` は `/ace-setup` が作成する。`03-implementation/DECISION_TREE.md` と `FALLBACK.md` は、`PATTERNS.md`・`MASTER.md` のコード生成ルール・エラーハンドリング方針から無条件に参照されるため初期セットに含める。
 
 ### 3. テンプレートの適用
 
 各ファイルの内容は、プラグイン同梱のテンプレートを参照してコピーしてください:
 
-- **テンプレートパス**: `${CLAUDE_PLUGIN_ROOT}/docs-template/` 配下の対応するファイル
+- **テンプレートパス**: `${FF_DEV_TOOLKIT_ROOT}/docs-template/` 配下の対応するファイル
 
 テンプレート内のプレースホルダー（`[プロジェクト名]`、`[システムの全体的な説明と目的]` などの角括弧表記、および frontmatter の `"@your-github-handle"`・`"YYYY-MM-DD"`）はステップ1で確認した情報で置換してください。
 
@@ -73,7 +78,7 @@ docs/
 - frontmatter の `updated` がテンプレートの具体日付（テンプレート自身の改訂日）になっている場合も**本日日付に更新**する（`created` ≤ `updated` を保つ）
 - frontmatter の `version` は `"1.0.0"` にリセットし、Changelog セクションはテンプレートの改訂履歴を削除して `[1.0.0] - <本日日付> 初版作成` の1行にする
 - frontmatter に `changeImpact` が存在する場合は、小文字の `low` / `medium` / `high` に正規化する（`/validate-docs` の Frontmatter スキーマチェックと整合させるため、`LOW` / `MEDIUM` / `HIGH` のままコピーしない）
-- テンプレートには**初期セット外のファイルへの参照**（`GETTING_STARTED*.md`、`05-operations/deployment/` 配下 等）が含まれる。`PATTERNS.md`・`TESTING.md` 内のこれらへのリンクはリンク切れのまま残ってよい — 必要になった時点で `${CLAUDE_PLUGIN_ROOT}/docs-template/` の同一相対パスから追加コピーする
+- テンプレートには**初期セット外のファイルへの参照**（`GETTING_STARTED*.md`、`05-operations/deployment/` 配下 等）が含まれる。`PATTERNS.md`・`TESTING.md` 内のこれらへのリンクはリンク切れのまま残ってよい — 必要になった時点で `${FF_DEV_TOOLKIT_ROOT}/docs-template/` の同一相対パスから追加コピーする
 - `MASTER.md`・`DEPLOYMENT.md` 内の初期セット外参照は角括弧リンクではなく案内テキストとして記述済みのため、そのままコピーしてよい（追加の置換作業は不要）
 
 ### 4. MASTER.md のカスタマイズ
@@ -95,10 +100,10 @@ MASTER.md は特に重要です。以下を必ず反映してください:
 
 ### 6. （任意）ACE autonomous テンプレートの案内
 
-ユーザーが **マージ後の ACE を subagent + worktree で自動化**したい場合のみ、AskUserQuestion で希望を確認する。
+ユーザーが **マージ後の ACE を subagent + worktree で自動化**したい場合のみ、利用中のホストの質問機能または通常の対話で希望を確認する。
 
 - **オプション例**: 「はい（テンプレートの場所を案内）」/「いいえ（スキップ）」
-- **はい**の場合: `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/ace-autonomous.md` と `${CLAUDE_PLUGIN_ROOT}/docs-template/scripts/ace/` をコピー先の目安とともに説明する。feature flag（`ACE_SUBAGENT_ENABLED` 等）は **デフォルト無効** で開始することを必ず伝える。
+- **はい**の場合: `${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/ace-autonomous.md` と `${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/` をコピー先の目安とともに説明する。feature flag（`ACE_SUBAGENT_ENABLED` 等）は **デフォルト無効** で開始することを必ず伝える。
 - **いいえ**の場合: 既存の手動 `/ace-curate` 運用で問題ない旨を一言添える。
 
 ## 重要ルール

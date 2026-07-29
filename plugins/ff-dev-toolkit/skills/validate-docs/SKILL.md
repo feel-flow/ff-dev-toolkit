@@ -1,10 +1,15 @@
 ---
+name: validate-docs
 description: プロジェクトの docs/ がコア7文書要件（存在・必須セクション・内容・Frontmatter スキーマ・相互リンク）を満たしているか検証する（常時必須は MASTER・PROJECT・ARCHITECTURE の3文書、残る4文書は未作成なら N/A）
 ---
 
 # /validate-docs — AI仕様駆動開発ドキュメント検証
 
 プロジェクトの `docs/` ディレクトリが AI仕様駆動開発のコア7文書要件を満たしているか検証します。
+
+## プラグインルートの解決
+
+同梱ファイルを参照する前に `FF_DEV_TOOLKIT_ROOT` を解決する。Claude Code では `${CLAUDE_PLUGIN_ROOT}` を使い、Codex など他ホストでは読み込んだこの `SKILL.md` の絶対パスから `../..` を解決する。以下の `${FF_DEV_TOOLKIT_ROOT}` はその絶対パスを指す。バージョン別 cache を探索して選ばない。
 
 > 本コマンドの検証規則（必須3文書と条件付き4文書の N/A 判定・兆候検出・同義見出しの内容判定・空セクションの状態明記・Frontmatter スキーマ・スコア算出）が drift しないことは、`plugins/ff-dev-toolkit/tests/validate-docs/` の fixture と `verify.sh` で検証する。規則の文言・節番号を変えたら同ディレクトリの `verify.sh` を追随させること。
 
@@ -83,7 +88,7 @@ description: プロジェクトの docs/ がコア7文書要件（存在・必�
 
 - MASTER.md からの索引リンクが実際のファイルを指しているか
 - 相対パスが正しいか
-- **初期セット外テンプレートへの参照は区別する**: リンク切れのうち、**同一相対パスのファイルが `${CLAUDE_PLUGIN_ROOT}/docs-template/` に存在するもの**（例: `GETTING_STARTED*.md`、`05-operations/deployment/` 配下、`08-knowledge/` 等）は「リンク切れ」ではなく「未導入テンプレートへの参照（必要時に ff-dev-toolkit プラグインの docs-template から追加コピー可）」として別枠で報告する。docs-template にも存在しないリンク先だけを真のリンク切れとして報告する
+- **初期セット外テンプレートへの参照は区別する**: リンク切れのうち、**同一相対パスのファイルが `${FF_DEV_TOOLKIT_ROOT}/docs-template/` に存在するもの**（例: `GETTING_STARTED*.md`、`05-operations/deployment/` 配下、`08-knowledge/` 等）は「リンク切れ」ではなく「未導入テンプレートへの参照（必要時に ff-dev-toolkit プラグインの docs-template から追加コピー可）」として別枠で報告する。docs-template にも存在しないリンク先だけを真のリンク切れとして報告する
 
 ### 6. Frontmatter スキーマチェック
 

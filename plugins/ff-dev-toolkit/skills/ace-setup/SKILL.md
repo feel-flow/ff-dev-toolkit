@@ -1,4 +1,5 @@
 ---
+name: ace-setup
 description: プロジェクトに ACE (Agentic Context Engineering) フレームワークを対話形式でセットアップする
 ---
 
@@ -6,6 +7,10 @@ description: プロジェクトに ACE (Agentic Context Engineering) フレー�
 
 プロジェクトに ACE (Agentic Context Engineering) フレームワークをセットアップします。
 対話形式で配置先やAIツールの設定を確認しながら進めます。テンプレートはすべて本プラグインに同梱されており、ネットワークアクセスは不要です。
+
+## プラグインルートの解決
+
+同梱ファイルを参照する前に `FF_DEV_TOOLKIT_ROOT` を解決する。Claude Code では `${CLAUDE_PLUGIN_ROOT}` を使い、Codex など他ホストでは読み込んだこの `SKILL.md` の絶対パスから `../..` を解決する。以下の `${FF_DEV_TOOLKIT_ROOT}` はその絶対パスを指す。バージョン別 cache を探索して選ばない。
 
 ## 前提
 
@@ -37,13 +42,13 @@ description: プロジェクトに ACE (Agentic Context Engineering) フレー�
 
 配置先ディレクトリが存在しない場合は自動作成し、以下を配置する:
 
-1. **PLAYBOOK.md** — `${CLAUDE_PLUGIN_ROOT}/docs-template/08-knowledge/PLAYBOOK.md` をコピーし、以下を調整:
+1. **PLAYBOOK.md** — `${FF_DEV_TOOLKIT_ROOT}/docs-template/08-knowledge/PLAYBOOK.md` をコピーし、以下を調整:
    - エントリ一覧セクション内のサンプルエントリは削除し、空の状態にする
    - Frontmatter の `owner` をユーザーのプロジェクト情報で置換する
    - Frontmatter の `created` / `updated` を今日の日付、`ace_entry_count` を `0`、`version` を `1.0.0` にする
    - Changelog セクションは `[1.0.0]` の初版のみ残す
    - エントリ本体のカテゴリ別分割ファイル（`playbook/<category>.md`）は最初のエントリ追記時に `/ace-curate` が作成するため、この時点では作らなくてよい
-2. **ace-cycle.md** — `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/ace-cycle.md` をそのままコピーする
+2. **ace-cycle.md** — `${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/ace-cycle.md` をそのままコピーする
 
 ### Step 4: AIツール固有の設定
 
@@ -87,7 +92,7 @@ description: プロジェクトに ACE (Agentic Context Engineering) フレー�
 
 ### （任意）ACE autonomous テンプレートの案内
 
-ユーザーが **マージ後の ACE を subagent + worktree で自動化**したい場合のみ、`${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/ace-autonomous.md` と `${CLAUDE_PLUGIN_ROOT}/docs-template/scripts/ace/` をコピー先の目安とともに案内する。feature flag（`ACE_SUBAGENT_ENABLED` 等）は**デフォルト無効**で開始することを必ず伝える。
+ユーザーが **マージ後の ACE を subagent + worktree で自動化**したい場合のみ、`${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/ace-autonomous.md` と `${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/` をコピー先の目安とともに案内する。feature flag（`ACE_SUBAGENT_ENABLED` 等）は**デフォルト無効**で開始することを必ず伝える。
 
 ## 参考（任意参照）
 

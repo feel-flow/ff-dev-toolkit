@@ -1,4 +1,5 @@
 ---
+name: pre-commit-check
 description: コミット前に MASTER.md ルール準拠・マジックナンバー・frontmatter・ドキュメント影響をチェックする
 ---
 

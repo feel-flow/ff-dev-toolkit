@@ -1,6 +1,6 @@
 # assess-impact 判定規則・fixture 回帰テスト
 
-`/assess-impact`（`plugins/ff-dev-toolkit/commands/assess-impact.md`）の影響度判定規則が、
+`assess-impact`（`plugins/ff-dev-toolkit/skills/assess-impact/SKILL.md`）の影響度判定規則が、
 PR #90 で標準へ整合した状態から drift しないことを検証するための fixture / 回帰テストです（Issue #94）。
 
 ## なぜ2層構成か

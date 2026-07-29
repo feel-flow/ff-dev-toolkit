@@ -1,16 +1,20 @@
 ---
+name: multi-implement
 description: 複数の AI CLI を並列実行して実装タスクを分担する（結果はステージングディレクトリ経由・ユーザー承認後に適用）
-argument-hint: <実装タスクの説明> [オプション]
 ---
 
 # /multi-implement — 複数AIによる並列実装
 
 5つのAI CLI（Claude Code / Codex / Copilot / Gemini / Cursor）を並列実行し、異なる観点から実装タスクを分担します。
 
+## プラグインルートの解決
+
+同梱スクリプトを実行する前に `FF_DEV_TOOLKIT_ROOT` を解決する。Claude Code では `${CLAUDE_PLUGIN_ROOT}` を使い、Codex など他ホストでは読み込んだこの `SKILL.md` の絶対パスから `../..` を解決する。以下の `${FF_DEV_TOOLKIT_ROOT}` はその絶対パスを指す。バージョン別 cache を探索して選ばない。
+
 ## 前提
 
 - git リポジトリで作業中であること
-- 本プラグイン同梱の `${CLAUDE_PLUGIN_ROOT}/scripts/multi-agent.sh` を使用する
+- 本プラグイン同梱の `${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh` を使用する
 - 少なくとも1つのAI CLIがインストールされていること
 - `yq` がインストールされていること（`brew install yq`）
 
@@ -20,7 +24,7 @@ argument-hint: <実装タスクの説明> [オプション]
   - 例: `新しいバリデーション関数を追加`
   - 例: `ユーザー認証ミドルウェアのリファクタリング --cli claude-code --cli codex-cli`
   - 例: `テストコードの拡充 --include-diff`（現在の差分も含める）
-  - 全オプションは `bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-agent.sh" --help` で確認できます
+  - 全オプションは `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --help` で確認できます
 
 ## 手順
 
@@ -34,10 +38,11 @@ argument-hint: <実装タスクの説明> [オプション]
 まず実行プランを表示し、ユーザーに確認を求めます:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-agent.sh" --task implement --description "<タスク説明>" --dry-run $OPTIONS
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task implement --description "<タスク説明>" --dry-run $OPTIONS
 ```
 
 出力を確認し、以下をユーザーに報告:
+
 - 検出されたCLI一覧（✅/❌）
 - 各CLIに割り当てられたパースペクティブ（実装/テスト/ドキュメント/リファクタ/マイグレーション）
 - モード・戦略・タイムアウト設定
@@ -49,7 +54,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-agent.sh" --task implement --descripti
 ユーザーが承認したら、実装を実行します:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/multi-agent.sh" --task implement --description "<タスク説明>" $OPTIONS
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task implement --description "<タスク説明>" $OPTIONS
 ```
 
 **重要**: 実装結果は `.implement-results/` ステージングディレクトリに出力されます。
@@ -95,11 +100,13 @@ ls -la .implement-results/
 #### 4-3. ワーキングツリーへの適用
 
 ユーザーに適用の承認を求めます:
+
 - 各CLIの結果を個別に確認
 - 競合がある場合は手動マージの提案
 - 承認された成果物のみをワーキングツリーに適用
 
 適用後:
+
 ```bash
 git diff  # 適用内容の確認
 ```

@@ -11,7 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-COMMAND_FILE="$PLUGIN_ROOT/commands/ace-curate.md"
+COMMAND_FILE="$PLUGIN_ROOT/skills/ace-curate/SKILL.md"
 
 [ -s "$COMMAND_FILE" ] || {
   echo "✗ ace-curate.md が存在しないか空です: $COMMAND_FILE" >&2

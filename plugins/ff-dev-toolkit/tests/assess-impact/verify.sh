@@ -2,8 +2,8 @@
 #
 # verify.sh — /assess-impact の判定規則（プロンプト）回帰検証 + fixture 自己整合
 #
-# 目的（Issue #94）: PR #90 で標準へ整合した影響度判定規則が、コマンド定義
-# （commands/assess-impact.md = 生成器＝プロンプト本体）から drift していないことを
+# 目的（Issue #94）: PR #90 で標準へ整合した影響度判定規則が、Skill 定義
+# （skills/assess-impact/SKILL.md = 生成器＝プロンプト本体）から drift していないことを
 # 機械的に検証する。判定そのものはプロンプト実行（LLM）を伴うため、ここで検証するのは
 #   (A) 生成器（プロンプト）が判定規則を今も含むこと … 主たる回帰ガード（ACE-86-1）
 #   (B) fixture（入力＋期待）が構造的に妥当で、期待が実在の生成器規則へ紐づくこと
@@ -20,7 +20,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CASES="$SCRIPT_DIR/fixtures/cases"
-CMD="$SCRIPT_DIR/../../commands/assess-impact.md"
+CMD="$SCRIPT_DIR/../../skills/assess-impact/SKILL.md"
 
 # --- 生成器（プロンプト）が含むべき判定規則アンカー ---
 # 各規則をコマンド定義の「節」へ構造スコープする（散文へ移動しても FAIL させるため）。

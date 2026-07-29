@@ -181,7 +181,7 @@ get_default_output_dir() {
 #   - the --timeout line in this file's header (rendered verbatim as --help)
 #   - scripts/agent-config.yaml (tasks.*.timeout)
 #   - adapters/adapter-common.sh's REVIEW_TIMEOUT default, for a direct adapter run
-#   - the user-facing docs (commands/multi-review.md + two docs-template pages)
+#   - the user-facing docs (skills/multi-review/SKILL.md + two docs-template pages)
 #
 # Review is 900s because 300s did not fit reality: a Codex `exec` review of a
 # medium diff (3 files, +881/-14) was still working when the limit fired, so the

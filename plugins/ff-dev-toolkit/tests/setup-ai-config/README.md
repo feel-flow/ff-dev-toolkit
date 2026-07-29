@@ -1,6 +1,6 @@
 # setup-ai-config 生成物パリティ fixture
 
-`/setup-ai-config`（`plugins/ff-dev-toolkit/commands/setup-ai-config.md`）が生成する4ファイルが、
+`setup-ai-config`（`plugins/ff-dev-toolkit/skills/setup-ai-config/SKILL.md`）が生成する4ファイルが、
 ツールを問わず**同じ意味の「標準への入口」3境界**を等価に含むことを検証するための fixture / スナップショットです（Issue #84）。
 
 ## 検証する3境界
@@ -47,7 +47,7 @@ tests/setup-ai-config/
 `verify.sh` は**2種類の対象**を検査し、いずれかで欠落があれば非ゼロ終了します:
 
 1. **期待生成物 fixture**（`fixtures/expected/`）— スナップショットの自己一貫性（4ファイル × 3境界）
-2. **コマンド定義のツール別テンプレート**（`commands/setup-ai-config.md` の各生成テンプレ節）— 生成器が fixture から drift していないこと。fixture は手書きで自己一貫のため、これが無いとテンプレから境界を落としても fixture だけは PASS してしまう（Issue #84 が直したのはまさにこの非対称な欠落）
+2. **Skill 定義のツール別テンプレート**（`skills/setup-ai-config/SKILL.md` の各生成テンプレ節）— 生成器が fixture から drift していないこと。fixture は手書きで自己一貫のため、これが無いとテンプレから境界を落としても fixture だけは PASS してしまう（Issue #84 が直したのはまさにこの非対称な欠落）
 
 あわせて Cursor 出力が現行 Project Rules 形式（`.mdc` + フロントマター内 `alwaysApply: true` + 閉じ `---`）であること、`.cursor/rules/` に無視される `.md` が無いこと、既定 fixture が Legacy `.cursorrules` を含まないこと、期待生成物が入力（`TaskFlow`）から乖離していないことも検証します。
 

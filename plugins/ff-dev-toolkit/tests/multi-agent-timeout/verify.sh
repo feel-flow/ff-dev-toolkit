@@ -36,7 +36,7 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 ADAPTER_COMMON="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
 AGENT_CONFIG="$PLUGIN_ROOT/scripts/agent-config.yaml"
-COMMAND_DOC="$PLUGIN_ROOT/commands/multi-review.md"
+COMMAND_DOC="$PLUGIN_ROOT/skills/multi-review/SKILL.md"
 DOC_REVIEW="$PLUGIN_ROOT/docs-template/05-operations/deployment/multi-cli-review-orchestration.md"
 DOC_AGENT="$PLUGIN_ROOT/docs-template/05-operations/deployment/multi-cli-agent-orchestration.md"
 
