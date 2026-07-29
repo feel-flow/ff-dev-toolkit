@@ -61,6 +61,9 @@ else
     "$SCRIPT_DIR/setup-ai-config/verify.sh"
     "$SCRIPT_DIR/assess-impact/verify.sh"
     "$SCRIPT_DIR/validate-docs/verify.sh"
+    # docs-template の実行可能フェンスを抽出して fixture 実行する動的検査。
+    # 一時作業領域を使うため静的検査の後、ネットワーク検査の前に置く。
+    "$SCRIPT_DIR/docs-gates-runtime/verify.sh"
     # 公開リポジトリへの実ネットワーク到達を試みる suite（接続不可のみ丸ごと
     # ○ skip、それ以外は fail）。静的検査より後、破壊的操作を伴う
     # merge-cleanup より前に置く。他の suite を network-dependent 化する場合も

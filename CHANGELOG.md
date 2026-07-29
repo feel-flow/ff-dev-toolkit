@@ -15,6 +15,12 @@
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-07-29
+
+### 追加
+
+- docs-template の実行可能な品質ゲート例を Markdown の見出しから抽出し、fixture に対して実行する `tests/docs-gates-runtime/` を追加した（Issue #157）。`automated-code-review.md` の判定ロジックは正常 / `INCOMPLETE` / 空ファイル / `Important Issues` 見出し drift / 厳格モードの実指摘 / REJECTED 本文中の APPROVED 引用を、`multi-cli-review-orchestration.md` の pre-push 例は正常 / レビュー実行失敗 / 空レポート / `INCOMPLETE` / `CRITICAL_BLOCK` を exit code で検証する。既存 `tests/docs-gates/` は文面 drift、本 suite は実行時の意味を担当し、両方を `tests/run-all.sh` で集約する
+
 ## [0.16.1] - 2026-07-29
 
 ### 修正
