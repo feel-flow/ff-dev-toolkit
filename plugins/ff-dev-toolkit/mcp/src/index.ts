@@ -314,6 +314,7 @@ const installTransportDiagnostics = (transport: StdioServerTransport): void => {
 
   transport.onerror = (error: Error) => {
     console.error(`[${SERVER_NAME}] transport error: ${briefly(error.message)}`);
+    reportedByTransport.add(error);
     pendingCloseError = error;
     queueMicrotask(() => {
       pendingCloseError = undefined;
@@ -328,13 +329,49 @@ const installTransportDiagnostics = (transport: StdioServerTransport): void => {
   };
 };
 
+/**
+ * Transport errors also flow into the protocol handler below: the SDK's connect()
+ * wrapper forwards every transport onerror to Protocol._onerror, which calls the
+ * Server-level onerror. Tracking what the transport handler already printed keeps
+ * each failure to a single stderr line. A WeakSet works because the SDK passes the
+ * same Error object through the whole chain, and it cannot pin dead errors. What
+ * makes the dedup safe (not a silencer) is that no other _onerror call site
+ * forwards a raw caller-supplied Error — the rest wrap in `new Error(...)`, which
+ * can never already be in the set. That is an SDK-internal invariant; if a bump
+ * breaks it, the double-log test catches the wrapper half, and a suppressed line
+ * would trace back here.
+ */
+const reportedByTransport = new WeakSet<Error>();
+
+/**
+ * Make protocol-level failures visible — the same "handler unset, error dropped"
+ * hole as the transport one, one object over: Protocol._onerror calls
+ * `this.onerror?.(error)` on the inner Server, which nothing assigns. Feeders
+ * reachable in this configuration (verified against the bundled SDK): a response
+ * for an id the server never requested, and a progress notification for an
+ * unknown token. Notification-handler throws and failed notification sends route
+ * through here in principle but are unreachable as configured (no handler of ours
+ * throws; stdio send only rejects on serialization, and the debounce option that
+ * adds another send path is off). Task-related sites need a task store we do not
+ * configure. None of these harm the connection — it stays usable, though a failed
+ * response send would cost that one in-flight request — so this only reports and
+ * never exits, same treatment as a malformed line above.
+ */
+const installProtocolDiagnostics = (server: McpServer): void => {
+  server.server.onerror = (error: Error) => {
+    if (reportedByTransport.has(error)) return;
+    console.error(`[${SERVER_NAME}] protocol error: ${briefly(error.message)}`);
+  };
+};
+
 // ---------- Start server ----------
 try {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // Safe to install after connect(): stdin 'data' events are macrotasks, so none
-  // can be processed before this synchronous assignment completes.
+  // can be processed before these synchronous assignments complete.
   installTransportDiagnostics(transport);
+  installProtocolDiagnostics(server);
   console.error(`[${SERVER_NAME}] server started (project root: ${PROJECT_ROOT})`);
   if (!fs.existsSync(DOCS_ROOT)) {
     console.error(`[${SERVER_NAME}] WARNING: no docs/ directory under ${PROJECT_ROOT} — tools will return DOCS_NOT_INITIALIZED.`);

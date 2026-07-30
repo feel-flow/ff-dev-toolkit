@@ -21525,6 +21525,7 @@ var installTransportDiagnostics = (transport) => {
   let pendingCloseError;
   transport.onerror = (error2) => {
     console.error(`[${SERVER_NAME}] transport error: ${briefly(error2.message)}`);
+    reportedByTransport.add(error2);
     pendingCloseError = error2;
     queueMicrotask(() => {
       pendingCloseError = void 0;
@@ -21538,10 +21539,18 @@ var installTransportDiagnostics = (transport) => {
     }
   };
 };
+var reportedByTransport = /* @__PURE__ */ new WeakSet();
+var installProtocolDiagnostics = (server2) => {
+  server2.server.onerror = (error2) => {
+    if (reportedByTransport.has(error2)) return;
+    console.error(`[${SERVER_NAME}] protocol error: ${briefly(error2.message)}`);
+  };
+};
 try {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   installTransportDiagnostics(transport);
+  installProtocolDiagnostics(server);
   console.error(`[${SERVER_NAME}] server started (project root: ${PROJECT_ROOT})`);
   if (!fs2.existsSync(DOCS_ROOT)) {
     console.error(`[${SERVER_NAME}] WARNING: no docs/ directory under ${PROJECT_ROOT} \u2014 tools will return DOCS_NOT_INITIALIZED.`);

@@ -239,3 +239,73 @@ describe('stdio transport failures are reported, and only fatal ones end the pro
     expect(session.stdinErrors).toEqual([]);
   }, 20000);
 });
+
+describe('protocol-level failures are reported without ending the process', () => {
+  /** A well-formed response envelope for an id the server never requested. */
+  const unsolicitedResponse = (id: number, result: unknown = {}) =>
+    JSON.stringify({ jsonrpc: '2.0', id, result });
+
+  it('logs a response for an unknown message id and keeps serving', async () => {
+    session = new Session();
+    await session.initialize();
+
+    session.write(`${unsolicitedResponse(999)}\n`);
+
+    // Regression guard: with Server.onerror unset, this arrived at the SDK's
+    // protocol handler and vanished — no log, nothing observable.
+    const list = await session.request(2, 'tools/list');
+    expect(list.result.tools.length).toBeGreaterThan(0);
+
+    expect(session.stderr).toContain('protocol error:');
+    expect(session.stderr).toContain('unknown message ID');
+    expect(session.stderr).not.toContain('exiting');
+    expect(session.child.exitCode).toBeNull();
+  }, 20000);
+
+  it('caps an oversized protocol error message', async () => {
+    session = new Session();
+    await session.initialize();
+
+    // The SDK embeds the whole offending message in the error text, so a large
+    // payload produces an error well past the cap.
+    session.write(`${unsolicitedResponse(998, { data: 'x'.repeat(2000) })}\n`);
+
+    await session.request(2, 'tools/list');
+
+    const line = session.stderr.split('\n').find((l) => l.includes('protocol error:'));
+    expect(line).toBeDefined();
+    expect(line).toContain('chars total');
+    // Cap (300) plus prefix and truncation suffix — far below the raw ~2 KB.
+    expect(line!.length).toBeLessThan(400);
+  }, 20000);
+
+  it('does not double-log transport errors through the protocol handler', async () => {
+    session = new Session();
+    // The SDK forwards every transport onerror into the protocol handler too;
+    // one bad line must produce exactly one stderr line, not two.
+    session.write('this is not json\n');
+
+    await session.initialize();
+
+    expect(session.stderr.match(/transport error:/g)).toHaveLength(1);
+    expect(session.stderr).not.toContain('protocol error:');
+  }, 20000);
+
+  it('reports an envelope that fits no message shape via the transport path', async () => {
+    session = new Session();
+    await session.initialize();
+
+    // Valid JSON but neither request, notification, nor response. The message
+    // schema rejects it at deserialization, so it surfaces as a transport error —
+    // the protocol-level "unknown message type" branch is unreachable from the
+    // wire. Covered here to pin where the report happens.
+    session.write(`${JSON.stringify({ jsonrpc: '2.0', foo: 'bar' })}\n`);
+
+    const list = await session.request(2, 'tools/list');
+    expect(list.result.tools.length).toBeGreaterThan(0);
+
+    expect(session.stderr).toContain('transport error:');
+    expect(session.stderr).not.toContain('exiting');
+    expect(session.child.exitCode).toBeNull();
+  }, 20000);
+});
