@@ -21508,9 +21508,40 @@ if (process.argv.includes("--check")) {
     process.exit(1);
   }
 }
+var FATAL_FLUSH_TIMEOUT_MS = 2e3;
+var MAX_LOGGED_ERROR_CHARS = 300;
+var briefly = (message) => message.length > MAX_LOGGED_ERROR_CHARS ? `${message.slice(0, MAX_LOGGED_ERROR_CHARS)}\u2026 (${message.length} chars total)` : message;
+var exitFatal = (message) => {
+  const backstop = setTimeout(() => process.exit(1), FATAL_FLUSH_TIMEOUT_MS);
+  process.stderr.write(`[${SERVER_NAME}] ${message}
+`, () => {
+    clearTimeout(backstop);
+    process.exit(1);
+  });
+};
+var installTransportDiagnostics = (transport) => {
+  const sdkOnError = transport.onerror;
+  const sdkOnClose = transport.onclose;
+  let pendingCloseError;
+  transport.onerror = (error2) => {
+    console.error(`[${SERVER_NAME}] transport error: ${briefly(error2.message)}`);
+    pendingCloseError = error2;
+    queueMicrotask(() => {
+      pendingCloseError = void 0;
+    });
+    sdkOnError?.(error2);
+  };
+  transport.onclose = () => {
+    sdkOnClose?.();
+    if (pendingCloseError) {
+      exitFatal(`transport closed after an error, exiting: ${briefly(pendingCloseError.message)}`);
+    }
+  };
+};
 try {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  installTransportDiagnostics(transport);
   console.error(`[${SERVER_NAME}] server started (project root: ${PROJECT_ROOT})`);
   if (!fs2.existsSync(DOCS_ROOT)) {
     console.error(`[${SERVER_NAME}] WARNING: no docs/ directory under ${PROJECT_ROOT} \u2014 tools will return DOCS_NOT_INITIALIZED.`);

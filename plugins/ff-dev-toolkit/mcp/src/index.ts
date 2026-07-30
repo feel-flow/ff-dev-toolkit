@@ -250,10 +250,91 @@ if (process.argv.includes('--check')) {
   }
 }
 
+/** Upper bound on waiting for the fatal stderr line to flush before forcing exit. */
+const FATAL_FLUSH_TIMEOUT_MS = 2000;
+/**
+ * Cap on one logged transport error. A single malformed message can expand to
+ * ~2 KB of nested schema detail, and that volume is what fills the stderr pipe
+ * and costs us the fatal line below — so the cap protects the diagnostic, not
+ * just the host's logs.
+ */
+const MAX_LOGGED_ERROR_CHARS = 300;
+
+const briefly = (message: string): string =>
+  message.length > MAX_LOGGED_ERROR_CHARS
+    ? `${message.slice(0, MAX_LOGGED_ERROR_CHARS)}… (${message.length} chars total)`
+    : message;
+
+/**
+ * Report a fatal condition on stderr and exit non-zero, without losing the line.
+ *
+ * stderr pipes are asynchronous on macOS, so console.error() queues whenever the
+ * parent is not draining, and process.exit() discards that queue — measured here:
+ * both fatal lines vanished while 131 KB of earlier output survived, which is the
+ * same silence this handler exists to remove. Waiting for the write to land keeps
+ * the cause visible whenever the parent reads again in time. The timer is the
+ * backstop for stderr that never drains at all: losing the line beats hanging.
+ * (fs.writeSync(2, …) is not an alternative — it throws EAGAIN on a full pipe.)
+ */
+const exitFatal = (message: string): void => {
+  const backstop = setTimeout(() => process.exit(1), FATAL_FLUSH_TIMEOUT_MS);
+  process.stderr.write(`[${SERVER_NAME}] ${message}\n`, () => {
+    clearTimeout(backstop);
+    process.exit(1);
+  });
+};
+
+/**
+ * Make transport failures visible. The SDK hands them to `onerror` and drops them
+ * when it is unset, and the try/catch around startup only covers connect().
+ *
+ * Three paths reach `onerror`, and only one is fatal:
+ *   - The stdin read buffer overflowing its cap throws out of the 'data' handler,
+ *     which calls onerror and then close() synchronously. Fatal: the server can
+ *     never answer again, and with stdin still open on the parent's side it would
+ *     otherwise linger silently, unusable.
+ *   - A malformed JSON-RPC line is caught per message, leaving the transport open.
+ *     Not fatal — exiting over one bad line is a worse regression than the silence.
+ *   - A stdin 'error' event, which also leaves the transport open. Reported only;
+ *     making it fatal needs a trigger we cannot reproduce, so it is tracked
+ *     separately rather than guessed at here.
+ * So `onerror` only reports, and `onclose` treats a close as a failure only when it
+ * lands in the same turn as the error — which is what separates the fatal path (the
+ * SDK calls onerror then close() with nothing awaited between) from a survivable
+ * error followed by an unrelated close later.
+ *
+ * Installed after connect() and chaining the SDK's own handlers, because the SDK
+ * documents connect() as *replacing* transport callbacks even though 1.30.0
+ * chains them. Wrapping afterwards works under either contract.
+ */
+const installTransportDiagnostics = (transport: StdioServerTransport): void => {
+  const sdkOnError = transport.onerror;
+  const sdkOnClose = transport.onclose;
+  let pendingCloseError: Error | undefined;
+
+  transport.onerror = (error: Error) => {
+    console.error(`[${SERVER_NAME}] transport error: ${briefly(error.message)}`);
+    pendingCloseError = error;
+    queueMicrotask(() => {
+      pendingCloseError = undefined;
+    });
+    sdkOnError?.(error);
+  };
+  transport.onclose = () => {
+    sdkOnClose?.();
+    if (pendingCloseError) {
+      exitFatal(`transport closed after an error, exiting: ${briefly(pendingCloseError.message)}`);
+    }
+  };
+};
+
 // ---------- Start server ----------
 try {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // Safe to install after connect(): stdin 'data' events are macrotasks, so none
+  // can be processed before this synchronous assignment completes.
+  installTransportDiagnostics(transport);
   console.error(`[${SERVER_NAME}] server started (project root: ${PROJECT_ROOT})`);
   if (!fs.existsSync(DOCS_ROOT)) {
     console.error(`[${SERVER_NAME}] WARNING: no docs/ directory under ${PROJECT_ROOT} — tools will return DOCS_NOT_INITIALIZED.`);
