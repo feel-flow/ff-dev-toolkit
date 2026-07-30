@@ -80,6 +80,12 @@ else
     # perspective フィルタの dry-run 契約。stub CLI の存在確認だけで完結し、
     # 実 CLI・ネットワーク・課金を伴わない。
     "$SCRIPT_DIR/multi-agent-plan/verify.sh"
+    # 同梱 MCP サーバーの検査 2 本。node_modules が無い環境では ○ skip。
+    # dist-gate（フレッシュビルド比較 + stdio-only 不変条件、〜1 秒）を先に、
+    # vitest（実プロセス起動を含む全テスト、〜5 秒）を後に置く — dist が stale
+    # なら先に dist-gate が名指しし、vitest の「stale な dist で green」を防ぐ。
+    "$SCRIPT_DIR/mcp-dist-gate/verify.sh"
+    "$SCRIPT_DIR/mcp-vitest/verify.sh"
     # 一時 git リポジトリ + stub CLI を使い、打ち切りや猶予期間の実測待ちを含むので
     # 後ろに置く（単体で〜35 秒。数字を更新するときは実測してから直すこと）
     "$SCRIPT_DIR/multi-agent-timeout/verify.sh"
