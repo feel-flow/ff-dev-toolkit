@@ -65,6 +65,8 @@ gh pr view $ARGUMENTS --json number,title,body,url,comments,reviews
 - [ ] 影響度が「中」以上か？（低→スキップ）
 - [ ] 汎用的すぎないか？（プロジェクト固有の文脈が含まれているか？）
 
+**一回性のインシデント叙述は Playbook に書かない**: 特定障害のタイムライン・復旧ログ・環境固有の調査記録は再現性ゲート「低→スキップ」の適用対象であり、Playbook ではなく `docs/08-knowledge/TROUBLESHOOTING.md` や runbook へ記録する。Playbook に残すのは「次に同型の状況で使える主張」だけで、その主張が導かれた個別事象の詳細は記録先を分ける。
+
 次に、既存 Playbook エントリとの照合を行います:
 
 - `docs/08-knowledge/PLAYBOOK.md` の索引テーブル全体（タイトル列）を眺め、知見候補と似たタイトルが**他カテゴリにもないか**を確認する（分割後は近縁エントリが別カテゴリへ分類されている場合がある）
@@ -93,28 +95,27 @@ ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（例 `ACE-438-1`、非PR
 
 #### 4-b. playbook/category.md への追記 + PLAYBOOK.md 索引の更新
 
-エントリ本体は該当カテゴリの `docs/08-knowledge/playbook/<category>.md` の末尾に追記する（`XXX` は 4-a の PRスコープ式 ID に置換。例 `ace-438-1` / `ACE-438-1`）:
+エントリ本体は該当カテゴリの `docs/08-knowledge/playbook/<category>.md` の末尾に、**コンパクト正準フォーマット**で追記する（`XXX` は 4-a の PRスコープ式 ID に置換。例 `ace-438-1` / `ACE-438-1`）:
 
 ```markdown
 <a id="ace-XXX"></a>
 
-### ACE-XXX: [タイトル]
+### ACE-XXX: [検索可能な主張 1 文のタイトル]
 
-| フィールド | 値           |
-| ---------- | ------------ |
-| Category   | [カテゴリ]   |
-| Origin     | PR #[PR番号] |
-| Date       | [今日の日付] |
-| Helpful    | 0            |
-| Harmful    | 0            |
-| Status     | active       |
+| Category | [カテゴリ] | Origin | PR #[PR番号] |
+| Date | [今日の日付] |
+| Helpful | 0 | Harmful | 0 |
+| Status | active |
 
-**Insight**: [知見の本質]
+[本文 2〜4 文。1 文目 = 知見の本質。非自明な適用条件が 1 文。推奨アクションで締める。手順の列挙・叙述は書かない — 主張が明確なら詳細手順は読み手（AI）が再導出できる]
 
-**Context**: [発見した状況]
-
-**Action**: [推奨アクション]
+---
 ```
+
+- メタ 4 行は**各行の行頭**に置く（`Category` / `Date` / `Helpful` / `Status` を行頭のパイプ区切りで書くことが `check-category-size` / `ace-reuse-report` のパース互換条件。1 行に畳んだ `H:n | #PR` 形式は集計から漏れるため使わない）
+- ヘッダ行・区切り行を持たないため GitHub 上ではテーブルとして描画されない（AI ファースト文書として意図した仕様。詳細は PLAYBOOK.md §エントリテンプレート）
+- 旧テーブル形式（`| フィールド | 値 |` + Insight/Context/Action）のエントリは**読み取り互換として共存**させる。新規追記には使わない
+- 重複時の `Helpful` +1 は、旧形式なら `| Helpful | n |` 行、新形式なら `| Helpful | n | Harmful | m |` 行の n を +1 する
 
 該当カテゴリの `playbook/<category>.md` が未作成の場合は新規作成する（`PLAYBOOK.md` §ファイル分割ルールのテンプレートに従う）。
 
@@ -123,6 +124,8 @@ ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（例 `ACE-438-1`、非PR
 ```markdown
 | ACE-XXX | [タイトル] | [カテゴリ] | [playbook/<category>.md#ace-xxx](./playbook/<category>.md#ace-xxx) |
 ```
+
+**索引行はタイトルのみ**。説明文・複数文・補足プロースを索引テーブルに書かない（索引の肥大は検索面そのものを劣化させる）。
 
 **anchor 命名規則**: 見出し直前に `<a id="ace-XXX"></a>` を 1 行付与（エントリ ID を小文字化、例 `ace-438-1`）。詳細・根拠は SSOT である [PLAYBOOK.md 記述ガイドライン](docs/08-knowledge/PLAYBOOK.md#記述ガイドライン) を参照。
 
@@ -167,7 +170,15 @@ ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（例 `ACE-438-1`、非PR
 
 - 最新版ブロックへ `#### カウンター更新`（無ければ追加）の下に行を追記する。新しい `### [x.y.z]` は作らない
 
-#### 4-e. 同期検証（必須）
+#### 4-e. 行数バジェット自己チェック（必須・ブロッキング）
+
+追記した各エントリのブロック行数（anchor 行〜終端 `---`）を数え、**15 行以内**であることを確認する。超過した場合:
+
+1. まず本文を削る（叙述・手順列挙を主張へ圧縮する）
+2. 反直感的な詳細がどうしても必要な場合のみ、本文に `<!-- ace-line-budget-exception: 理由 -->` を 1 行添えて **30 行以内**に収める
+3. 30 行でも収まらないなら、それは知見ではなくインシデント叙述の可能性が高い — Phase 2 の記録先分離（TROUBLESHOOTING.md / runbook 行き）を再検討する
+
+#### 4-f. 同期検証（必須）
 
 4-c / 4-d のあと、コミット前に必ず検証する:
 
@@ -235,8 +246,9 @@ gh pr create --base <default-branch> --title "knowledge: ACE-<PR番号>-<連番>
 
 ## 注意事項
 
-- エントリの追記は **末尾のみ**。既存エントリの本文（Insight/Context/Action）の書き換えは禁止
+- エントリの追記は **末尾のみ**。既存エントリの本文（新形式の本文 / 旧形式の Insight/Context/Action）の書き換えは禁止
+- **既存エントリの要約・アーカイブ・統合は `/ace-refine` のみが行う**（本スキルは grow 専用。refine 側は dry-run → ユーザー承認 → 原文アーカイブ保全付きで行う）
 - 既存エントリの Helpful/Harmful カウンター更新と Status 変更（active → deprecated）は許可
 - カウンターの更新は **インクリメントのみ**（減算しない）
 - 知見が抽出されない場合（typo修正のみ等）は「知見なし」と報告して終了
-- PLAYBOOK.md はカテゴリ別に `playbook/*.md` へ分割済み。肥大化チェックは `scripts/ace/` テンプレート導入済みプロジェクトの場合 `npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md` で実行できる（npm script として登録してもよい）。このチェックは `playbook/` サブディレクトリを自動検出して索引 + 全サブファイルの総行数・カテゴリ別件数を集計する。`ACE_MAX_PLAYBOOK_LINES`（既定 800）をいずれかのファイルが超えると警告が出る（**警告のみ・追記はブロックしない**）。個別カテゴリファイルが肥大化した場合はスコープ外発見ルールで必要性と類似 Issue を確認し、必要なら既存 Issue への統合または関連 Issue として分割・アーカイブを扱う
+- PLAYBOOK.md はカテゴリ別に `playbook/*.md` へ分割済み。肥大化チェックは `scripts/ace/` テンプレート導入済みプロジェクトの場合 `npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md` で実行できる（npm script として登録してもよい）。このチェックは `playbook/` サブディレクトリを自動検出して索引 + 全サブファイルの総行数・カテゴリ別件数を集計する（`playbook/archive/` 配下は対象外）。`ACE_MAX_PLAYBOOK_LINES`（既定 800）をいずれかのファイルが超えると警告が出る（**警告のみ・追記はブロックしない**）。行数警告・カテゴリ件数超過（130 件）が出た場合は `/ace-refine` で stale アーカイブ・圧縮・統合を実行する（分割だけで凌がない）

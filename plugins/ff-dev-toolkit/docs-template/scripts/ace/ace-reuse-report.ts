@@ -42,7 +42,8 @@ const ENTRY_HEADER_PATTERN = /^### (ACE-(?:\d+(?:-\d+)?|i\d+(?:-\d+)?)): (.+)$/g
 /** キュレーションコミット（エントリ追加・カウンター更新）は「再利用」に数えない */
 const CURATION_COMMIT_PREFIX = "knowledge:";
 
-const STATUS_ACTIVE = "active";
+/** ace-refine-report.ts の昇格候補フィルタからも参照するため export する */
+export const STATUS_ACTIVE = "active";
 
 export type PlaybookEntry = Readonly<{
   readonly id: string;
@@ -50,8 +51,16 @@ export type PlaybookEntry = Readonly<{
   /** YYYY-MM-DD。テーブル欠落・不正時は null */
   readonly date: string | null;
   readonly helpful: number;
+  /**
+   * Helpful フィールドが数値として読めたか。false のときの helpful=0 は
+   * 「実績ゼロ」ではなく「読めなかった」であり、アーカイブ候補判定等の
+   * 消費側は真正な 0 と区別する必要がある（安全側 = 候補にしない）。
+   */
+  readonly helpfulParsed: boolean;
   /** PLAYBOOK の Status 語彙は open（active / deprecated / 試行中 等）。欠落時は "unknown" */
   readonly status: string;
+  /** Category フィールドの値。欠落時は null（check-category-size が別途ゲートする） */
+  readonly category: string | null;
 }>;
 
 export type GitCommitRecord = Readonly<{
@@ -105,10 +114,12 @@ export function parsePlaybookEntries(
 
     const helpfulRaw = extractTableField(segment, "Helpful");
     let helpful = 0;
+    let helpfulParsed = false;
     if (helpfulRaw === null) {
       onWarn(`${WARN_PREFIX}: ${id} の Helpful フィールドが見つかりません（0 として扱います）`);
     } else if (/^\d+$/u.test(helpfulRaw)) {
       helpful = Number.parseInt(helpfulRaw, 10);
+      helpfulParsed = true;
     } else {
       onWarn(
         `${WARN_PREFIX}: ${id} の Helpful "${helpfulRaw}" は数値ではありません（0 として扱います）`,
@@ -131,7 +142,9 @@ export function parsePlaybookEntries(
       title: match[2].trim(),
       date,
       helpful,
+      helpfulParsed,
       status: status ?? "unknown",
+      category: extractTableField(segment, "Category"),
     });
   });
 
@@ -330,8 +343,9 @@ export function formatReport(
  * PLAYBOOK が属するリポジトリの git log を取得する。
  * - `git -C <repoDir>` で実行先を固定（カレントディレクトリ非依存）
  * - GIT_* 環境変数を除去（git hook 経由の実行で GIT_DIR を継承すると別リポジトリを集計する）
+ * - ace-refine-report.ts からも再利用するため export する
  */
-function readGitLog(repoDir: string): GitLogParseResult {
+export function readGitLog(repoDir: string): GitLogParseResult {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && !key.startsWith("GIT_")) {

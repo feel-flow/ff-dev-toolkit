@@ -55,6 +55,7 @@ else
     # 全 suite を実行するので、並び順は結果ではなく報告の読みやすさの問題）。
     "$SCRIPT_DIR/skill-frontmatter/verify.sh"
     "$SCRIPT_DIR/ace-curate-commit/verify.sh"
+    "$SCRIPT_DIR/ace-refine/verify.sh"
     "$SCRIPT_DIR/changelog-public-references/verify.sh"
     "$SCRIPT_DIR/changelog-version/verify.sh"
     "$SCRIPT_DIR/docs-gates/verify.sh"
@@ -86,6 +87,9 @@ else
     # なら先に dist-gate が名指しし、vitest の「stale な dist で green」を防ぐ。
     "$SCRIPT_DIR/mcp-dist-gate/verify.sh"
     "$SCRIPT_DIR/mcp-vitest/verify.sh"
+    # docs-template/scripts/ace の vitest（Playbook 集計スクリプト群 + refine 候補算出）。
+    # vitest 本体は mcp/node_modules を再利用するため mcp 系 suite の直後に置く。
+    "$SCRIPT_DIR/ace-scripts-vitest/verify.sh"
     # 一時 git リポジトリ + stub CLI を使い、打ち切りや猶予期間の実測待ちを含むので
     # 後ろに置く（単体で〜35 秒。数字を更新するときは実測してから直すこと）
     "$SCRIPT_DIR/multi-agent-timeout/verify.sh"

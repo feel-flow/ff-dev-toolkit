@@ -1,10 +1,10 @@
 ---
 title: "PATTERNS"
-version: "1.2.0"
+version: "1.3.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-07-15"
+updated: "2026-07-31"
 changeImpact: "medium"
 ---
 
@@ -655,7 +655,32 @@ Layer 1（[DECISION_TREE.md](./DECISION_TREE.md)）で決めた配置を、言�
 
 - 該当なし（運用開始後に追記）
 
+## 14. 実証済みパターン（ACE 昇格）
+
+ACE Playbook で `Helpful >= 5` に達した知見を、`/ace-refine` が蒸留して昇格させる節。実装着手前に本節を読めば、このプロジェクトで繰り返し実証されたルールを最優先で適用できる。
+
+- **形式**: 見出し 1 行 + ルール本文 1〜3 行（命令形）+ `出典:` の ACE ID リンク
+- **昇格は移動ではない**: 元の Playbook エントリは `Status: active` のまま残す（蒸留オーバーレイ）。詳細な適用条件は出典リンク先を参照
+- **昇格手順の SSOT**: `/ace-refine` スキル本体
+
+<!-- /ace-refine が以下の形式で追記する。まだない場合は削除せず「該当なし（昇格発生後に追記）」と明記する
+
+### [パターンを一言で表す見出し]
+
+[ルール本文 1〜3 行。実装前に読んで即適用できる命令形で書く]
+
+出典: [ACE-XXX](../08-knowledge/playbook/<category>.md#ace-xxx)
+-->
+
+- 該当なし（昇格発生後に追記）
+
 ## Changelog
+
+### [1.3.0] - 2026-07-31
+
+#### 追加
+
+- 「実証済みパターン（ACE 昇格）」セクションを追加（`/ace-refine` の昇格先。Issue #223）
 
 ### [1.2.0] - 2026-07-15
 

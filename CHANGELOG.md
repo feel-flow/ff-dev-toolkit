@@ -16,13 +16,30 @@
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-31
+
 ### 追加
 
+- **`/ace-refine` スキル**（ACE Playbook の grow-and-refine）を追加した。Playbook の肥大化（stale エントリの滞留・エントリの冗長化・索引の劣化）に対する定期整理を、dry-run レポート → ユーザー承認 → 適用の 3 フェーズで行う
+  - **アーカイブ**: helpful=0 かつ stale（既定 90 日参照なし）のエントリを `playbook/archive/<category>.md` へ verbatim 移動（原文保全・anchor 維持・集計対象外）
+  - **圧縮**: 行数バジェット超過エントリを、原文をアーカイブへ保全したうえでコンパクト正準フォーマットへ意味保存要約
+  - **統合**: 近似重複ペアをカウンター合算で 1 本化
+  - **昇格**: `Helpful >= 5` のエントリを `docs/03-implementation/PATTERNS.md` の「実証済みパターン（ACE 昇格）」節へ蒸留追記（元エントリは残す）
+- 候補算出スクリプト `scripts/ace/ace-refine-report.ts` を追加した（読み取り専用の dry-run レポート。環境変数 `ACE_MAX_ENTRY_LINES` / `ACE_PROMOTE_HELPFUL_MIN` / `ACE_REUSE_STALE_DAYS` / `ACE_PATTERNS_PATH` で閾値を調整）
+- テストランナーに `ace-refine` suite（refine の安全弁とゲート文言を fail-closed で検証）と `ace-scripts-vitest` suite（Playbook 集計スクリプト群の vitest を配線。従来は手動実行のみだった）を追加した（suite 数 19 → 21）
 - テストランナー（`tests/run-all.sh`）に同梱 MCP サーバーの検査 2 本を追加した（suite 数 17 → 19）
   - `mcp-dist-gate`: コミット済み `dist/index.js` が src + 現在の依存からのフレッシュビルドとバイト一致すること、および HTTP transport 系識別子が配布物に混入していないこと（stdio-only 不変条件）を検査する。作業ツリーの `dist/` には書き込まない
   - `mcp-vitest`: MCP の vitest スイート全体をランナーから実行する（従来は手動 `npm test` のみだった）。ビルドを伴わず、コミット済み `dist` を実プロセス起動して検証する
   - どちらも `mcp/node_modules` が無い環境では skip として報告する
 - `search` ツールの `limit` 既定値（5）と上限（20）が実際に適用されることを検証するテストを追加した
+
+### 変更
+
+- **Playbook のエントリテンプレートをコンパクト正準フォーマットへ変更した**（docs-template/08-knowledge/PLAYBOOK.md 1.62.0）。行頭パイプのメタ 4 行 + 本文 2〜4 文（約 13 行）で、従来のテーブル形式（約 21 行）より大幅に小さく、集計スクリプト群（`check-category-size` / `ace-reuse-report` / `sync-playbook-frontmatter`）は無改修でパースできる。旧テーブル形式は読み取り互換として共存（新規追記には使わない）
+- `/ace-curate` に書き込み時ゲートを追加した: 1 エントリ 15 行の行数バジェット（例外宣言 `<!-- ace-line-budget-exception: 理由 -->` 付きで 30 行）、一回性インシデント叙述の記録先分離（TROUBLESHOOTING/runbook 行き）、索引行タイトルのみルール
+- `check-category-size.ts` の行数警告・カテゴリ件数超過メッセージが `/ace-refine` を案内するようにした（ロジック・終了コードは不変）。`playbook/archive/` を集計対象外とする非再帰走査を仕様として明文化した
+- `docs-template/03-implementation/PATTERNS.md`（1.3.0）に「実証済みパターン（ACE 昇格）」節を追加し、Playbook の `Helpful >= 5` 昇格先を実体化した
+- `ace-cycle.md` に「定期 Refine」節を追加した（Generate → Reflect → Curate ＋ 定期 Refine）
 
 ## [0.17.3] - 2026-07-30
 

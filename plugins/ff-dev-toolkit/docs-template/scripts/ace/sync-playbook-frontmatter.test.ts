@@ -180,6 +180,15 @@ describe("countActualEntries", () => {
     if (r.ok) expect(r.total).toBe(1);
   });
 
+  it("旧テーブル形式とコンパクト正準フォーマット（1.62.0）の混在も正しく数える", () => {
+    const main = `---\nx: 1\n---\n索引のみ（エントリ無し）\n`;
+    const oldFormat = `### ACE-2-1: 旧形式\n\n| フィールド | 値 |\n| Category | coding |\n| Helpful | 0 |\n`;
+    const compact = `### ACE-24-1: 新形式\n\n| Category | coding | Origin | PR #24 |\n| Date | 2026-07-31 |\n| Helpful | 0 | Harmful | 0 |\n| Status | active |\n\n本文。\n\n---\n`;
+    const r = countActualEntries(main, [oldFormat, compact]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.total).toBe(2);
+  });
+
   it("分割レイアウトでも総エントリ数 0 は check-category-size と同じく error", () => {
     const main = `---\nx: 1\n---\n索引のみ（エントリ無し）\n`;
     const emptySub = `# 空カテゴリ\nエントリ無し\n`;

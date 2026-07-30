@@ -38,6 +38,32 @@ describe("analyzePlaybookMarkdown", () => {
     }
   });
 
+  it("コンパクト正準フォーマット（相乗りセルの Category 行）も集計される", () => {
+    // PLAYBOOK.md §エントリテンプレート（1.62.0）の正準形式。
+    // `| Category | coding | Origin | PR #24 |` の第 2 セルが Category 値として捕捉されること。
+    const md = `
+<a id="ace-24-1"></a>
+
+### ACE-24-1: コンパクト形式のエントリ
+
+| Category | coding | Origin | PR #24 |
+| Date | 2026-07-31 |
+| Helpful | 0 | Harmful | 0 |
+| Status | active |
+
+本文 2〜4 文。
+
+---
+`;
+
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.totalEntries).toBe(1);
+      expect(result.histogram.coding).toBe(1);
+    }
+  });
+
   it("ACE-1000 のように 4 桁以上の ID もエントリとして扱う", () => {
     const md = `
 ### ACE-1000: 将来の連番
@@ -192,6 +218,24 @@ describe("discoverPlaybookSubfiles", () => {
       path.join(subDir, "coding.md"),
       path.join(subDir, "tooling.md"),
     ]);
+  });
+
+  it("playbook/archive/ 配下（/ace-refine の退避先）は検出しない（非再帰の仕様固定）", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-split-"));
+    const playbookPath = path.join(tmpDir, "PLAYBOOK.md");
+    fs.writeFileSync(playbookPath, "# index\n");
+    const subDir = path.join(tmpDir, "playbook");
+    const archiveDir = path.join(subDir, "archive");
+    fs.mkdirSync(archiveDir, { recursive: true });
+    fs.writeFileSync(path.join(subDir, "coding.md"), "");
+    fs.writeFileSync(
+      path.join(archiveDir, "coding.md"),
+      "### ACE-1-1: アーカイブ済みエントリ\n\n| Category | coding |\n",
+    );
+
+    // archive 配下がここに混ざると ace_entry_count・カテゴリ件数ゲート・reuse 集計へ
+    // 二重計上される。/ace-refine のアーカイブ設計はこの非再帰走査に依存している。
+    expect(discoverPlaybookSubfiles(playbookPath)).toEqual([path.join(subDir, "coding.md")]);
   });
 });
 

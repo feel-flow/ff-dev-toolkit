@@ -5,6 +5,9 @@
  *   警告のみ出力する（終了コードは変えない）。
  * - PLAYBOOK.md と同階層に `playbook/*.md`（カテゴリ別分割ファイル）がある場合は
  *   自動検出し、集計・行数チェックの対象に含める（分割レイアウト）。
+ * - `playbook/archive/` 配下（/ace-refine が退避した原文）は集計対象に**含めない**。
+ *   discoverPlaybookSubfiles が playbook/ 直下の *.md のみを非再帰で走査するのは
+ *   この除外を実現する仕様であり、再帰化してはならない。
  * 実行例: npx --yes tsx scripts/ace/check-category-size.ts path/to/PLAYBOOK.md
  */
 import * as fs from "node:fs";
@@ -282,7 +285,7 @@ export function main(): number {
     if (isOverLineThreshold(lineCount, maxLines)) {
       const target = multiFile ? `${file} ` : "";
       console.error(
-        `⚠ ${target}行数が閾値を超過しています（${String(lineCount)} > ${String(maxLines)}）。分割・アーカイブを検討し、workflow-principles.md のスコープ外発見ルールで YAGNI / 既存 Issue への統合 / 関連 Issue 作成を判定してください。`,
+        `⚠ ${target}行数が閾値を超過しています（${String(lineCount)} > ${String(maxLines)}）。/ace-refine で stale アーカイブ・圧縮・統合を実行してください（候補は scripts/ace/ace-refine-report.ts の dry-run レポートで確認）。分割で凌ぐ場合は workflow-principles.md のスコープ外発見ルールで YAGNI / 既存 Issue への統合 / 関連 Issue 作成を判定してください。`,
       );
     }
   }
@@ -290,7 +293,7 @@ export function main(): number {
 
   if (overCategories.length > 0) {
     console.error(
-      "閾値超過カテゴリがあります。スコープ外発見ルールで必要性と類似 Issue を確認し、必要なら分割方針を既存 Issue へ統合するか関連 Issue として起票してください:\n- " +
+      "閾値超過カテゴリがあります。/ace-refine で stale アーカイブ・圧縮・統合を実行してください（候補は scripts/ace/ace-refine-report.ts の dry-run レポートで確認）。分割が必要な場合はスコープ外発見ルールで必要性と類似 Issue を確認し、既存 Issue へ統合するか関連 Issue として起票してください:\n- " +
         overCategories.join("\n- "),
     );
     return EXIT_THRESHOLD_EXCEEDED;
@@ -300,7 +303,11 @@ export function main(): number {
 }
 
 // 直接実行（tsx 経由の CLI）のときのみ自動実行する。テストから import した
-// ときは副作用なく関数だけを取り込めるようにする。
-if ((process.argv[1] ?? "").includes("check-category-size")) {
+// ときは副作用なく関数だけを取り込めるようにする（.test. 除外は同ディレクトリの
+// 他スクリプトと同じ契約。tsx で *.test.ts を直接実行しても main は走らない）。
+if (
+  (process.argv[1] ?? "").includes("check-category-size") &&
+  !(process.argv[1] ?? "").includes(".test.")
+) {
   process.exitCode = main();
 }

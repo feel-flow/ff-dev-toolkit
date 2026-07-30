@@ -1,4 +1,4 @@
-# ACE サイクル運用手順（Generate → Reflect → Curate）
+# ACE サイクル運用手順（Generate → Reflect → Curate ＋ 定期 Refine）
 
 > **Parent**: [DEPLOYMENT.md](../DEPLOYMENT.md) | **Workflow Step**: 10
 > **関連**: [knowledge-management.md](./knowledge-management.md) | [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) | [ACE フレームワーク概念](https://github.com/feel-flow/ai-spec-driven-development/blob/develop/docs/ACE_FRAMEWORK.md)
@@ -105,6 +105,10 @@ ACE 知見コミットのマージ方針は **[git-workflow.md ステップ10 §
 
 □ プロジェクト固有の文脈が十分に記述されているか？
   → 汎用的すぎる知見（「テストを書こう」等）は価値が低い
+
+□ 一回性のインシデント叙述になっていないか？
+  → 特定障害のタイムライン・復旧ログは TROUBLESHOOTING.md / runbook へ。
+    Playbook に残すのは「次に同型の状況で使える主張」だけ
 ```
 
 ### 既存エントリとの照合
@@ -147,28 +151,25 @@ ID は **PRスコープ式**（`ACE-<PR番号>-<連番>`）。採番ルールの
 
 #### 2. PLAYBOOK.md への追記
 
-エントリ一覧セクションの末尾に追記：
+該当カテゴリファイルの末尾に、コンパクト正準フォーマットで追記（SSOT は [PLAYBOOK.md §エントリテンプレート](../../08-knowledge/PLAYBOOK.md#エントリテンプレート)）：
 
 ```markdown
 <a id="ace-438-1"></a>
 
-### ACE-438-1: [タイトル]
+### ACE-438-1: [検索可能な主張 1 文のタイトル]
 
-| フィールド | 値               |
-| ---------- | ---------------- |
-| Category   | [カテゴリ]       |
-| Origin     | PR #${PR_NUMBER} |
-| Date       | YYYY-MM-DD       |
-| Helpful    | 0                |
-| Harmful    | 0                |
-| Status     | active           |
+| Category | [カテゴリ] | Origin | PR #${PR_NUMBER} |
+| Date | YYYY-MM-DD |
+| Helpful | 0 | Harmful | 0 |
+| Status | active |
 
-**Insight**: [知見の本質]
+[本文 2〜4 文。知見の本質 → 非自明な適用条件 → 推奨アクション]
 
-**Context**: [発見した状況]
-
-**Action**: [推奨アクション]
+---
 ```
+
+- 1 エントリの行数バジェットは **15 行**（anchor 行〜終端 `---`）。例外は `<!-- ace-line-budget-exception: 理由 -->` を添えて 30 行まで
+- 旧テーブル形式（`| フィールド | 値 |` + Insight/Context/Action）は読み取り互換として共存させる。新規追記には使わない
 
 **anchor 命名規則**: 見出し直前に `<a id="ace-XXX"></a>` を 1 行付与（エントリ ID を小文字化、例 `ace-438-1`）。詳細・根拠は SSOT である [PLAYBOOK.md 記述ガイドライン](../../08-knowledge/PLAYBOOK.md#記述ガイドライン) を参照。
 
@@ -210,12 +211,33 @@ ace_entry_count: N # 全エントリ数（deprecated含む）。新規時のみ 
 #### 4. コミット
 
 ```bash
-# コミットメッセージ規則
-git commit -m "knowledge: ACE-438-1 [performance] Prisma findMany の N+1 防止"
+# コミットメッセージ規則（件名は短く、カテゴリは body に置く — commitlint の header-max-length 対策）
+git commit \
+  -m "knowledge: ACE-438-1 Prisma findMany の N+1 防止" \
+  -m "Categories: performance"
 
 # 複数エントリの場合
-git commit -m "knowledge: ACE-438-1,ACE-438-2 [performance,testing] Prisma N+1防止, モックの分離原則"
+git commit \
+  -m "knowledge: ACE-438-1..2 Prisma N+1 防止とモックの分離原則" \
+  -m "Categories: performance, testing"
 ```
+
+---
+
+## 定期 Refine（grow-and-refine）
+
+Generate → Reflect → Curate は「増やす」一方向のサイクルであり、放置すると Playbook は肥大化して検索面が劣化する。**`/ace-refine`** が「整える」側を担う：
+
+| 操作 | 対象 | 結果 |
+| --- | --- | --- |
+| アーカイブ | helpful=0 かつ stale（既定 90 日参照なし） | `playbook/archive/<category>.md` へ verbatim 移動 |
+| 圧縮 | 行数バジェット超過エントリ | 原文をアーカイブへ保全 → live 側をコンパクト正準形式へ意味保存要約 |
+| 統合 | 近似重複ペア | カウンター合算で 1 本化、敗者はアーカイブ + ポインタ |
+| 昇格 | Helpful >= 5 | `docs/03-implementation/PATTERNS.md` へ蒸留追記（元エントリは残す） |
+
+- **実行タイミング**: 月次、または `check-category-size` の 130 件ゲートがブロックしたとき・行数警告が出たとき
+- **安全設計**: dry-run レポート（`scripts/ace/ace-refine-report.ts`）→ ユーザー承認 → 適用。承認前にファイルを書き換えない。原文は必ずアーカイブへ保全する
+- 手順の SSOT は `/ace-refine` スキル本体（plugin 同梱）
 
 ---
 
@@ -238,15 +260,20 @@ git commit -m "knowledge: ACE-438-1,ACE-438-2 [performance,testing] Prisma N+1�
 - [ ] 矛盾エントリの deprecated 処理
 
 ### Phase 3: Curate
-- [ ] 新規エントリを PLAYBOOK.md 末尾に追記
+- [ ] 新規エントリをコンパクト正準フォーマットで該当カテゴリファイル末尾に追記
+- [ ] 各エントリが行数バジェット内（15 行以内。例外宣言付きでも 30 行以内）
 - [ ] Frontmatter 更新（version=minor+1 on 新規 / updated / ace_entry_count）
 - [ ] Changelog 更新（当該版の `#### 追加` / `#### カウンター更新`。version と最新見出し一致）
 - [ ] `npm run ace:check-playbook-frontmatter` が exit 0（count + version↔Changelog）
-- [ ] コミット（knowledge: ACE-XXX [category] [summary]）
+- [ ] コミット（件名 `knowledge: ACE-XXX <要約>`、カテゴリは body の `Categories:` 行）
 
 ### 並行作業（任意）
 - [ ] 重要な知見は GitHub Discussions にも投稿
 - [ ] Discussion 内に ACE-XXX ID を記載
+
+### 定期 Refine（月次 or ゲート発火時）
+- [ ] `scripts/ace/ace-refine-report.ts` で dry-run レポートを確認
+- [ ] 承認のうえ `/ace-refine` で アーカイブ / 圧縮 / 統合 / 昇格 を適用
 ```
 
 ---

@@ -121,6 +121,63 @@ describe("parsePlaybookEntries", () => {
     expect(entries.find((e) => e.id === "ACE-100")?.status).toBe("unknown");
     expect(warnings.some((w) => w.includes("ACE-100") && w.includes("Status"))).toBe(true);
   });
+
+  it("コンパクト正準フォーマット（1.62.0）を警告なしでパースする", () => {
+    // 相乗りセル `| Helpful | 3 | Harmful | 1 |` から Helpful=3 が読めること。
+    // Helpful/Date/Status が行頭に無い形式（例: `H:3 | #24`）はこの互換を満たさないため、
+    // /ace-refine の stale 判定・カウンター運用が silent に壊れる — 本ケースはその境界を固定する。
+    const compact = `
+<a id="ace-24-1"></a>
+
+### ACE-24-1: コンパクト形式のエントリ
+
+| Category | coding | Origin | PR #24 |
+| Date | 2026-07-01 |
+| Helpful | 3 | Harmful | 1 |
+| Status | active |
+
+本文 2〜4 文。
+
+---
+`;
+    const warnings: string[] = [];
+    const entries = parsePlaybookEntries(compact, (m) => warnings.push(m));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "ACE-24-1",
+      date: "2026-07-01",
+      helpful: 3,
+      status: "active",
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it("旧テーブル形式とコンパクト形式の混在をどちらも読める", () => {
+    const mixed = `${PLAYBOOK_FIXTURE}
+<a id="ace-24-1"></a>
+
+### ACE-24-1: コンパクト形式のエントリ
+
+| Category | coding | Origin | PR #24 |
+| Date | 2026-07-01 |
+| Helpful | 3 | Harmful | 1 |
+| Status | active |
+
+本文。
+
+---
+`;
+    const entries = parsePlaybookEntries(mixed, () => {});
+    expect(entries.map((e) => e.id)).toEqual([
+      "ACE-005",
+      "ACE-449-1",
+      "ACE-i425-1",
+      "ACE-100",
+      "ACE-24-1",
+    ]);
+    expect(entries.find((e) => e.id === "ACE-005")?.helpful).toBe(7);
+    expect(entries.find((e) => e.id === "ACE-24-1")?.helpful).toBe(3);
+  });
 });
 
 describe("parseGitLog", () => {
