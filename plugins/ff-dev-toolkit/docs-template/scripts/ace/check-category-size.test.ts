@@ -391,6 +391,56 @@ describe("main（行数警告のみ・exit code 不変）", () => {
       expect(out).toContain("分割レイアウト検出");
     });
 
+
+    it("分割レイアウトでは索引 PLAYBOOK.md の行数超過を警告しない（カテゴリ側のみ監視）", () => {
+      const indexPath = writeSplitPlaybook("# 索引\n" + "y\n".repeat(30), {
+        "coding.md":
+          "### ACE-1-1: a\n\n| Category | coding |\n| Origin | PR #1 |\n",
+      });
+      process.env.ACE_MAX_PLAYBOOK_LINES = "5";
+      process.argv = ["node", "check-category-size.ts", indexPath];
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const code = main();
+
+      expect(code).toBe(0);
+      const out = log.mock.calls.flat().join("\n");
+      expect(out).toContain("索引ファイル・行数閾値の監視対象外");
+      // coding.md は閾値内なので警告なし
+      expect(err.mock.calls.flat().join("\n")).not.toContain("行数が閾値を超過");
+    });
+
+    it("分割レイアウトでも索引側にエントリが残る部分移行中は索引の行数超過を警告する", () => {
+      const indexPath = writeSplitPlaybook(
+        [
+          "# 索引 + 未移行エントリ",
+          "### ACE-9-1: still on index",
+          "",
+          "| Category | process |",
+          "| Origin | PR #9 |",
+          "",
+          "body",
+          "",
+        ].join("\n") + "\n" + "y\n".repeat(30),
+        {
+          "coding.md":
+            "### ACE-1-1: a\n\n| Category | coding |\n| Origin | PR #1 |\n",
+        },
+      );
+      process.env.ACE_MAX_PLAYBOOK_LINES = "5";
+      process.argv = ["node", "check-category-size.ts", indexPath];
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const code = main();
+
+      expect(code).toBe(0);
+      const out = log.mock.calls.flat().join("\n");
+      expect(out).not.toContain("索引ファイル・行数閾値の監視対象外");
+      expect(err.mock.calls.flat().join("\n")).toContain("行数が閾値を超過");
+    });
+
     it("サブファイル側の行数超過も個別に警告する（exit code は不変）", () => {
       const indexPath = writeSplitPlaybook("# 索引\n", {
         "coding.md":

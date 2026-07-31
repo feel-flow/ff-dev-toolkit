@@ -1,8 +1,9 @@
 /**
  * ACE Playbook の健全性チェック（Issue #367, #444, #15）。
  * - Category ごとのエントリ件数を数え、閾値超過で終了コード 1 を返す（ゲート）。
- * - Playbook の総行数を報告し、閾値（ACE_MAX_PLAYBOOK_LINES、既定 800）超過時は
- *   警告のみ出力する（終了コードは変えない）。
+ * - Playbook / カテゴリファイルの総行数を報告し、閾値（ACE_MAX_PLAYBOOK_LINES、既定 800）超過時は
+ *   警告のみ出力する（終了コードは変えない）。分割レイアウトでは索引 PLAYBOOK.md は
+ *   監視対象外（索引・Changelog はエントリ増加で伸びるため。Issue #212）。
  * - PLAYBOOK.md と同階層に `playbook/*.md`（カテゴリ別分割ファイル）がある場合は
  *   自動検出し、集計・行数チェックの対象に含める（分割レイアウト）。
  * - `playbook/archive/` 配下（/ace-refine が退避した原文）は集計対象に**含めない**。
@@ -279,8 +280,25 @@ export function main(): number {
   }
   console.log(`総エントリ数: ${String(merged.totalEntries)}`);
   const multiFile = filesToAnalyze.length > 1;
-  for (const { file, lineCount } of lineReports) {
+  // 分割レイアウトでは「エントリ 0 件の索引 PLAYBOOK.md」だけを行数監視対象外にする。
+  // playbook/*.md があるだけでは不十分（部分移行中に索引側にエントリが残る場合は監視する）。
+  // Issue #212 / ADR-016 / PR #230 レビュー。
+  const indexBase = path.basename(playbookPath);
+  for (let i = 0; i < lineReports.length; i++) {
+    const { file, lineCount } = lineReports[i];
+    const analyzed = analyses[i];
+    const isIndexInSplitLayout =
+      multiFile &&
+      path.basename(file) === indexBase &&
+      path.resolve(file) === path.resolve(playbookPath) &&
+      analyzed.totalEntries === 0;
     const suffix = multiFile ? ` — ${file}` : "";
+    if (isIndexInSplitLayout) {
+      console.log(
+        `総行数: ${String(lineCount)} (索引ファイル・行数閾値の監視対象外)${suffix}`,
+      );
+      continue;
+    }
     console.log(`総行数: ${String(lineCount)} (閾値 ${String(maxLines)})${suffix}`);
     if (isOverLineThreshold(lineCount, maxLines)) {
       const target = multiFile ? `${file} ` : "";

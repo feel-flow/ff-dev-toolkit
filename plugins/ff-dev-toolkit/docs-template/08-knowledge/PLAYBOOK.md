@@ -1,6 +1,6 @@
 ---
 title: "PLAYBOOK"
-version: "1.62.0"
+version: "1.63.0"
 status: "approved"
 created: "2026-03-10"
 updated: "2026-07-31"
@@ -32,7 +32,7 @@ GitHub Discussions が「人間が読むためのナラティブ（物語的記�
 | **行数バジェット**                 | 1 エントリ 15 行以内（anchor 行〜終端 `---`）。反直感的な詳細が必要な場合のみ `<!-- ace-line-budget-exception: 理由 -->` を添えて 30 行以内 |
 | **カウンターはインクリメントのみ** | Helpful/Harmful は +1 のみ。減算・リセットはしない（`/ace-refine` の重複統合時の合算は例外）                                   |
 | **削除禁止**                       | エントリを物理的に削除しない。不要な場合は `Status: deprecated` に変更、または `/ace-refine` で `playbook/archive/` へ原文保全のうえ移動 |
-| **800行超過時は分割**              | `playbook/` サブディレクトリにカテゴリ別ファイルとして分割                                                                     |
+| **800行超過時は refine → 必要なら分割** | カテゴリファイル（`playbook/*.md`）が 800 行を超えたら先に `/ace-refine`。それでも再超過が常態化したら分割を検討。分割レイアウトの索引 `PLAYBOOK.md` は行数閾値の監視対象外 |
 | **定期 Refine**                    | 月次または件数・行数ゲート発火時に `/ace-refine` で stale アーカイブ・圧縮・統合・昇格を実行（dry-run → 承認 → 適用）          |
 | **アーカイブの扱い**               | `playbook/archive/` 配下は `ace_entry_count`・カテゴリ件数ゲート・reuse 集計の対象外。参照リンクが切れていたら archive を ID で grep して探す |
 | **Frontmatter更新**                | エントリ追加時に `version`, `updated`, `ace_entry_count` を更新（`ace_entry_count` は live エントリ数 = archive を数えない）   |
