@@ -21559,6 +21559,11 @@ var installTransportDiagnostics = (transport) => {
       exitFatal(`transport closed after an error, exiting: ${briefly(pendingCloseError.message)}`);
     }
   };
+  process.stdin.on("error", (error2) => {
+    exitFatal(`stdin read error, exiting: ${briefly(error2.message)}`);
+    void transport.close().catch(() => {
+    });
+  });
 };
 var reportedByTransport = /* @__PURE__ */ new WeakSet();
 var installProtocolDiagnostics = (server2) => {

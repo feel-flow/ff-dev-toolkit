@@ -300,8 +300,9 @@ const exitFatal = (message: string): void => {
  * Make transport failures visible. The SDK hands them to `onerror` and drops them
  * when it is unset, and the try/catch around startup only covers connect().
  *
- * Three paths reach `onerror`; in isolation only the first is fatal, and any of
- * them becomes fatal in aggregate (see CONSECUTIVE FAILURES below):
+ * Three paths reach `onerror`; the first and third are fatal in isolation, the
+ * second only in aggregate — but all three feed the consecutive-failure counter
+ * (see CONSECUTIVE FAILURES below):
  *   - The stdin read buffer overflowing its cap throws out of the 'data' handler,
  *     which calls onerror and then close() synchronously. Fatal: the server can
  *     never answer again, and with stdin still open on the parent's side it would
@@ -310,12 +311,18 @@ const exitFatal = (message: string): void => {
  *     schema rejects (a JSON-RPC batch array, say) — is caught per line, leaving
  *     the transport open. A single one is survivable: exiting over one bad line
  *     is a worse regression than the silence.
- *   - A stdin 'error' event, which also leaves the transport open. A single one
- *     is reported only — making it fatal on its own needs a trigger we cannot
- *     reproduce — so sustained ones are left to the aggregate threshold rather
- *     than guessed at here.
- * So a single `onerror` only reports, and `onclose` treats a close as a failure
- * only when it lands in the same turn as the error — which is what separates the
+ *   - A stdin 'error' event (issue #216). Terminal for the stream — no further
+ *     'data' ever arrives — yet the SDK neither calls close() nor watches
+ *     'end'/'close', so onclose stays unreachable and the consecutive counter
+ *     stops at one. Measured without a handler: the event loop drains and the
+ *     process exits 0, indistinguishable from a clean shutdown for the host.
+ *     Fatal via a dedicated stdin listener below. Deterministic trigger,
+ *     measured: a write-only fd as fd 0 fails its first read() with EBADF (a
+ *     directory fd does NOT reproduce this — it reads as a clean EOF).
+ * So a single `onerror` only reports — fatality comes from elsewhere: the
+ * overflow's from `onclose` landing in the same turn, the stdin path's from its
+ * dedicated stdin listener below — and `onclose` treats a close as a failure
+ * only when it lands in the same turn as the error, which is what separates the
  * fatal path (the SDK calls onerror then close() with nothing awaited between)
  * from a survivable error followed by an unrelated close later.
  *
@@ -386,6 +393,26 @@ const installTransportDiagnostics = (transport: StdioServerTransport): void => {
       exitFatal(`transport closed after an error, exiting: ${briefly(pendingCloseError.message)}`);
     }
   };
+  // A stdin 'error' is terminal (the stream is destroyed; no further 'data'),
+  // but the SDK only forwards it to onerror — close() is never called — so
+  // neither the close-after-error path nor the consecutive counter can end the
+  // process, and it dies with code 0 or lingers, both hiding the failure from
+  // the host. The SDK's own stdin listener registered first, so the report line
+  // above still lands before this fatal one; and the threshold path's
+  // transport.close() detaches only SDK listeners, leaving this one attached —
+  // a late stdin error there is absorbed by exitFatal's first-call-wins guard.
+  // Registered on process.stdin directly because that is the stream the
+  // transport is constructed with at the bottom of this file.
+  process.stdin.on('error', (error: Error) => {
+    exitFatal(`stdin read error, exiting: ${briefly(error.message)}`);
+    // Same shutdown discipline as the threshold path above: a process committed
+    // to dying must not keep answering during the stderr flush wait. The stream
+    // is already destroyed so no *new* bytes can arrive, but closing keeps the
+    // two fatal paths symmetric instead of leaving that to the reader to derive.
+    // The onclose this fires lands in the same turn as the SDK's onerror report,
+    // so its exitFatal is absorbed by the first-call-wins guard.
+    void transport.close().catch(() => {});
+  });
 };
 
 /**

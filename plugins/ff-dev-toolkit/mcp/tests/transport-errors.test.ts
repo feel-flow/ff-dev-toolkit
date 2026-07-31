@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import url from 'url';
 import { STDIO_DEFAULT_MAX_BUFFER_SIZE } from '@modelcontextprotocol/sdk/shared/stdio.js';
@@ -356,6 +357,63 @@ describe('frame desync: consecutive parse failures without a parsed message are 
     expect(session.stderr).toContain('consecutive transport errors');
     expect(session.hasResponse(2)).toBe(false);
   }, 30000);
+});
+
+describe('a stdin read error is fatal', () => {
+  // Issue #216: the SDK forwards a stdin 'error' event to onerror but never
+  // calls close() and never watches 'end'/'close', so nothing downstream of
+  // onclose can fire. The stream error is terminal (one event, no further
+  // 'data'), so the consecutive-failure counter stops at 1 and the process
+  // either lingers or — measured before the fix — exits 0 with no fatal
+  // marker, indistinguishable from a clean shutdown for the MCP host.
+  it('reports the cause on stderr and exits non-zero', async () => {
+    // A write-only fd as fd 0 is the deterministic trigger: the first read()
+    // fails with EBADF and Node emits 'error' on process.stdin. (A directory
+    // fd does NOT work — it reads as a clean EOF, exit 0, no error event.)
+    const writeOnlyStdin = fs.openSync('/dev/null', 'w');
+    const child = spawn(process.execPath, [DIST], {
+      cwd: PROJECT_FIXTURE,
+      stdio: [writeOnlyStdin, 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr!.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    try {
+      const code = await new Promise<number | null>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`server did not exit within ${EXIT_TIMEOUT_MS}ms. stderr: ${stderr.trim()}`)),
+          EXIT_TIMEOUT_MS,
+        );
+        timer.unref();
+        // A spawn failure (EMFILE, ENOENT) must reject with its real cause, not
+        // surface later as a misleading "did not exit" timeout.
+        child.on('error', (spawnError) => {
+          clearTimeout(timer);
+          reject(spawnError);
+        });
+        // 'close', not 'exit': 'exit' can fire before the last stderr chunk is
+        // delivered to the parent, making the assertions below flaky-fail on a
+        // loaded machine. 'close' waits for the stdio pipes to drain, and
+        // exitCode is already populated by then.
+        child.on('close', (exitCode) => {
+          clearTimeout(timer);
+          resolve(exitCode);
+        });
+      });
+      // The SDK-path report line proves the error went through the transport
+      // handler; the fatal line proves the dedicated stdin listener acted on it —
+      // and in that order, pinning the listener-registration ordering the
+      // implementation comment relies on (SDK's stdin listener fires first).
+      expect(stderr).toContain('transport error: EBADF');
+      expect(stderr).toContain('stdin read error, exiting');
+      expect(stderr.indexOf('transport error: EBADF')).toBeLessThan(stderr.indexOf('stdin read error, exiting'));
+      expect(code).toBe(1);
+    } finally {
+      fs.closeSync(writeOnlyStdin);
+      if (child.exitCode === null) child.kill();
+    }
+  }, 20000);
 });
 
 describe('protocol-level failures are reported without ending the process', () => {
