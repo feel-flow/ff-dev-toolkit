@@ -21134,6 +21134,7 @@ import path2 from "path";
 
 // src/constants.ts
 var EXCERPT_PADDING_CHARS = 80;
+var MAX_CONSECUTIVE_TRANSPORT_ERRORS = 20;
 var SPEC_STATUS = [
   "draft",
   "review",
@@ -21511,7 +21512,13 @@ if (process.argv.includes("--check")) {
 var FATAL_FLUSH_TIMEOUT_MS = 2e3;
 var MAX_LOGGED_ERROR_CHARS = 300;
 var briefly = (message) => message.length > MAX_LOGGED_ERROR_CHARS ? `${message.slice(0, MAX_LOGGED_ERROR_CHARS)}\u2026 (${message.length} chars total)` : message;
+var exitingFatally = false;
 var exitFatal = (message) => {
+  if (exitingFatally) {
+    console.error(`[${SERVER_NAME}] (exit already in progress) suppressed: ${briefly(message)}`);
+    return;
+  }
+  exitingFatally = true;
   const backstop = setTimeout(() => process.exit(1), FATAL_FLUSH_TIMEOUT_MS);
   process.stderr.write(`[${SERVER_NAME}] ${message}
 `, () => {
@@ -21522,15 +21529,29 @@ var exitFatal = (message) => {
 var installTransportDiagnostics = (transport) => {
   const sdkOnError = transport.onerror;
   const sdkOnClose = transport.onclose;
+  const sdkOnMessage = transport.onmessage;
   let pendingCloseError;
+  let consecutiveErrors = 0;
+  transport.onmessage = (message) => {
+    consecutiveErrors = 0;
+    sdkOnMessage?.(message);
+  };
   transport.onerror = (error2) => {
     console.error(`[${SERVER_NAME}] transport error: ${briefly(error2.message)}`);
     reportedByTransport.add(error2);
+    consecutiveErrors += 1;
     pendingCloseError = error2;
     queueMicrotask(() => {
       pendingCloseError = void 0;
     });
     sdkOnError?.(error2);
+    if (consecutiveErrors >= MAX_CONSECUTIVE_TRANSPORT_ERRORS) {
+      exitFatal(
+        `${consecutiveErrors} consecutive transport errors without a parsed message \u2014 nothing on stdin is getting through, exiting. last: ${briefly(error2.message)}`
+      );
+      void transport.close().catch(() => {
+      });
+    }
   };
   transport.onclose = () => {
     sdkOnClose?.();

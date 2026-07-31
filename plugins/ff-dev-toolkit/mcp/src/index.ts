@@ -28,7 +28,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
-import { EXCERPT_PADDING_CHARS } from './constants.js';
+import { EXCERPT_PADDING_CHARS, MAX_CONSECUTIVE_TRANSPORT_ERRORS } from './constants.js';
 import { splitSections } from './utils.js';
 import { buildDocsState, resolveDocsPath, DocsState } from './indexer.js';
 
@@ -275,8 +275,20 @@ const briefly = (message: string): string =>
  * the cause visible whenever the parent reads again in time. The timer is the
  * backstop for stderr that never drains at all: losing the line beats hanging.
  * (fs.writeSync(2, …) is not an alternative — it throws EAGAIN on a full pipe.)
+ *
+ * First call wins: the desync threshold below and the close-after-error path can
+ * both fire on the same error (an overflow is also a transport error), and two
+ * queued exit messages would blame one failure twice.
  */
+let exitingFatally = false;
 const exitFatal = (message: string): void => {
+  if (exitingFatally) {
+    // Best-effort trace for a different second cause landing in the flush wait;
+    // the exit may still discard this queued line, but zero trace is worse.
+    console.error(`[${SERVER_NAME}] (exit already in progress) suppressed: ${briefly(message)}`);
+    return;
+  }
+  exitingFatally = true;
   const backstop = setTimeout(() => process.exit(1), FATAL_FLUSH_TIMEOUT_MS);
   process.stderr.write(`[${SERVER_NAME}] ${message}\n`, () => {
     clearTimeout(backstop);
@@ -288,38 +300,85 @@ const exitFatal = (message: string): void => {
  * Make transport failures visible. The SDK hands them to `onerror` and drops them
  * when it is unset, and the try/catch around startup only covers connect().
  *
- * Three paths reach `onerror`, and only one is fatal:
+ * Three paths reach `onerror`; in isolation only the first is fatal, and any of
+ * them becomes fatal in aggregate (see CONSECUTIVE FAILURES below):
  *   - The stdin read buffer overflowing its cap throws out of the 'data' handler,
  *     which calls onerror and then close() synchronously. Fatal: the server can
  *     never answer again, and with stdin still open on the parent's side it would
  *     otherwise linger silently, unusable.
- *   - A malformed JSON-RPC line is caught per message, leaving the transport open.
- *     Not fatal — exiting over one bad line is a worse regression than the silence.
- *   - A stdin 'error' event, which also leaves the transport open. Reported only;
- *     making it fatal needs a trigger we cannot reproduce, so it is tracked
- *     separately rather than guessed at here.
- * So `onerror` only reports, and `onclose` treats a close as a failure only when it
- * lands in the same turn as the error — which is what separates the fatal path (the
- * SDK calls onerror then close() with nothing awaited between) from a survivable
- * error followed by an unrelated close later.
+ *   - A line that fails to deserialize — invalid JSON *or* valid JSON the message
+ *     schema rejects (a JSON-RPC batch array, say) — is caught per line, leaving
+ *     the transport open. A single one is survivable: exiting over one bad line
+ *     is a worse regression than the silence.
+ *   - A stdin 'error' event, which also leaves the transport open. A single one
+ *     is reported only — making it fatal on its own needs a trigger we cannot
+ *     reproduce — so sustained ones are left to the aggregate threshold rather
+ *     than guessed at here.
+ * So a single `onerror` only reports, and `onclose` treats a close as a failure
+ * only when it lands in the same turn as the error — which is what separates the
+ * fatal path (the SDK calls onerror then close() with nothing awaited between)
+ * from a survivable error followed by an unrelated close later.
+ *
+ * CONSECUTIVE FAILURES (issue #218) — decision: threshold, not report-only, not
+ * ignore. One bad line is survivable because line framing resyncs at the next
+ * newline; a run of MAX_CONSECUTIVE_TRANSPORT_ERRORS transport errors with
+ * *zero* successfully parsed messages in between means nothing on stdin is
+ * getting through — frame desync, foreign output on stdin, pretty-printed
+ * JSON, or a client speaking a shape the schema rejects (a batch-only client
+ * fails line after line with framing fully intact, and could never get an
+ * answer from this server anyway). Whatever the cause, that is the same "alive
+ * but permanently unanswerable" state as the overflow above, reached through a
+ * path PR #214 left open. Report-only was rejected because MCP hosts act on
+ * process death, not on stderr — staying alive turns every tool call into a
+ * client-side timeout. False positives: a healthy peer's corruption burst is
+ * bounded by one frame (~1–2 fragment lines) and is followed by a parsed
+ * message, which resets the counter; sustaining the threshold with no success
+ * has no healthy cause we could construct. A parse-clean but protocol-invalid
+ * message (e.g. an unsolicited response) arrives via onmessage and resets,
+ * because message delivery is provably working there. On the fatal turn the
+ * transport is closed as well, so the exit's stderr flush wait cannot keep
+ * answering requests from a process already committed to dying.
  *
  * Installed after connect() and chaining the SDK's own handlers, because the SDK
  * documents connect() as *replacing* transport callbacks even though 1.30.0
- * chains them. Wrapping afterwards works under either contract.
+ * chains them. Wrapping afterwards works under either contract. The onmessage
+ * wrap shares that contract dependency; if an SDK bump stops routing messages
+ * through it, the counter-reset test (threshold-exceeding bursts separated by
+ * one parsed message) fails rather than letting long sessions accumulate into
+ * a spurious exit.
  */
 const installTransportDiagnostics = (transport: StdioServerTransport): void => {
   const sdkOnError = transport.onerror;
   const sdkOnClose = transport.onclose;
+  const sdkOnMessage = transport.onmessage;
   let pendingCloseError: Error | undefined;
+  let consecutiveErrors = 0;
 
+  transport.onmessage = (message) => {
+    consecutiveErrors = 0;
+    sdkOnMessage?.(message);
+  };
   transport.onerror = (error: Error) => {
     console.error(`[${SERVER_NAME}] transport error: ${briefly(error.message)}`);
     reportedByTransport.add(error);
+    consecutiveErrors += 1;
     pendingCloseError = error;
     queueMicrotask(() => {
       pendingCloseError = undefined;
     });
     sdkOnError?.(error);
+    if (consecutiveErrors >= MAX_CONSECUTIVE_TRANSPORT_ERRORS) {
+      exitFatal(
+        `${consecutiveErrors} consecutive transport errors without a parsed message — ` +
+          `nothing on stdin is getting through, exiting. last: ${briefly(error.message)}`,
+      );
+      // Stop consuming input: exitFatal waits for stderr to flush, and an open
+      // transport would keep answering requests from a process committed to
+      // dying. close() fires onclose in the same turn; its exitFatal is
+      // suppressed by the first-call-wins guard, and a close() failure is
+      // irrelevant with the exit already scheduled.
+      void transport.close().catch(() => {});
+    }
   };
   transport.onclose = () => {
     sdkOnClose?.();

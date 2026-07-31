@@ -14,6 +14,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import path from 'path';
 import url from 'url';
 import { STDIO_DEFAULT_MAX_BUFFER_SIZE } from '@modelcontextprotocol/sdk/shared/stdio.js';
+import { MAX_CONSECUTIVE_TRANSPORT_ERRORS } from '../src/constants.js';
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const DIST = path.resolve(__dirname, '../dist/index.js');
@@ -29,11 +30,12 @@ const EXIT_TIMEOUT_MS = 15000;
 /** Enough ~78-byte error lines to overflow the stderr pipe buffer. */
 const STDERR_FLOOD_LINES = 5000;
 /**
- * When the late-draining test starts reading stderr. Must land after the server
- * hits the overflow (measured ~850 ms for the flood plus the oversized chunk) and
- * before its flush backstop forces the exit (2 s after the overflow, ~2850 ms).
- * On a much slower machine the read would begin before the overflow, which makes
- * the test pass without exercising the flush wait — weaker, but never flaky.
+ * When the late-draining tests start reading stderr. Must land after the server
+ * hits the fatal trigger (measured ~850 ms for the original 5000-line flood; the
+ * interleaved notifications double the writes, moving slower machines toward the
+ * early-read case) and before the flush backstop forces the exit (2 s after the
+ * trigger). If the read begins before the trigger, the test passes without
+ * exercising the flush wait — weaker, but never flaky.
  */
 const LATE_DRAIN_DELAY_MS = 1500;
 
@@ -87,6 +89,10 @@ class Session {
     this.child.stderr.on('data', (chunk) => {
       this.stderr += chunk;
     });
+  }
+
+  hasResponse(id: number): boolean {
+    return this.responses.has(id);
   }
 
   write(chunk: string | Buffer): void {
@@ -214,7 +220,13 @@ describe('stdio transport failures are reported, and only fatal ones end the pro
     session = new Session({ drainStderr: false });
     await session.initialize();
 
-    for (let i = 0; i < STDERR_FLOOD_LINES; i += 1) session.write(`not json ${i}\n`);
+    // Each bad line is chased by a parsed notification so the desync counter
+    // resets and the flood reaches the stderr pipe cap instead of the
+    // consecutive-error threshold (which would exit long before the pipe fills).
+    for (let i = 0; i < STDERR_FLOOD_LINES; i += 1) {
+      session.write(`not json ${i}\n`);
+      session.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    }
     session.write(overflowChunk());
 
     await new Promise((resolve) => setTimeout(resolve, LATE_DRAIN_DELAY_MS));
@@ -238,6 +250,112 @@ describe('stdio transport failures are reported, and only fatal ones end the pro
     expect(session.stderr).not.toContain('exiting');
     expect(session.stdinErrors).toEqual([]);
   }, 20000);
+});
+
+describe('frame desync: consecutive parse failures without a parsed message are fatal', () => {
+  // Issue #218: with line framing, a healthy peer resyncs at the next newline,
+  // so a run of failures with zero successes means the stream itself is broken
+  // (foreign output on stdin, pretty-printed JSON, a non-MCP client). Staying
+  // alive there is the exact "alive but permanently unanswerable" state PR #214
+  // removed for the overflow path.
+
+  it('exits non-zero with the cause after the threshold of consecutive failures', async () => {
+    session = new Session();
+    await session.initialize();
+
+    for (let i = 0; i < MAX_CONSECUTIVE_TRANSPORT_ERRORS; i += 1) {
+      session.write(`still not json ${i}\n`);
+    }
+
+    const code = await session.waitForExit();
+    // Pin the diagnostics, not just the exit: the count, the "last:" fragment
+    // carrying the final underlying error, and the exit marker.
+    expect(session.stderr).toContain(
+      `${MAX_CONSECUTIVE_TRANSPORT_ERRORS} consecutive transport errors`,
+    );
+    expect(session.stderr).toMatch(/last: .*not valid JSON/);
+    expect(session.stderr).toContain('exiting');
+    expect(code).toBe(1);
+  }, 20000);
+
+  it('pins the decided threshold value', () => {
+    // The behavior tests above import this same constant and would track any
+    // value; this pins the issue #218 decision so changing 20 must be deliberate.
+    expect(MAX_CONSECUTIVE_TRANSPORT_ERRORS).toBe(20);
+  });
+
+  it('resets the counter on a successfully parsed message', async () => {
+    session = new Session();
+    await session.initialize();
+
+    // Two sub-threshold bursts with one good message between them: combined they
+    // exceed the threshold, so surviving both proves the reset actually happens.
+    for (let i = 0; i < MAX_CONSECUTIVE_TRANSPORT_ERRORS - 1; i += 1) {
+      session.write(`burst one ${i}\n`);
+    }
+    const first = await session.request(2, 'tools/list');
+    expect(first.result.tools.length).toBeGreaterThan(0);
+
+    for (let i = 0; i < MAX_CONSECUTIVE_TRANSPORT_ERRORS - 1; i += 1) {
+      session.write(`burst two ${i}\n`);
+    }
+    const second = await session.request(3, 'tools/list');
+    expect(second.result.tools.length).toBeGreaterThan(0);
+
+    expect(session.stderr).not.toContain('exiting');
+    expect(session.child.exitCode).toBeNull();
+  }, 20000);
+
+  it('reports exactly one fatal cause when the threshold error is also the overflow', async () => {
+    session = new Session();
+    await session.initialize();
+
+    for (let i = 0; i < MAX_CONSECUTIVE_TRANSPORT_ERRORS - 1; i += 1) {
+      session.write(`almost there ${i}\n`);
+    }
+    session.write(overflowChunk());
+
+    const code = await session.waitForExit();
+    // The overflow is the Nth consecutive error, so the threshold path and the
+    // close-after-error path fire on the same Error object. First-call-wins must
+    // keep that to a single exit message; the losing cause may appear only on a
+    // "suppressed" line.
+    const fatalLines = session.stderr
+      .split('\n')
+      .filter((line) => line.includes('exiting') && !line.includes('suppressed'));
+    expect(fatalLines).toHaveLength(1);
+    expect(fatalLines[0]).toContain('consecutive transport errors');
+    // The "last:" fragment must still identify the overflow as the final error.
+    expect(fatalLines[0]).toContain('ReadBuffer');
+    expect(code).toBe(1);
+  }, 20000);
+
+  it('stops serving once the threshold is hit, even while the exit waits on stderr', async () => {
+    // With stderr blocked, exitFatal's flush wait keeps the process alive for up
+    // to FATAL_FLUSH_TIMEOUT_MS. The transport must already be closed then: a
+    // server committed to dying must not answer one more request.
+    session = new Session({ drainStderr: false });
+    await session.initialize();
+
+    // Fill the stderr pipe first (resets interleaved so the threshold stays
+    // untripped), then trip the threshold and ask for one more tool call.
+    for (let i = 0; i < STDERR_FLOOD_LINES; i += 1) {
+      session.write(`fill ${i}\n`);
+      session.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    }
+    for (let i = 0; i < MAX_CONSECUTIVE_TRANSPORT_ERRORS; i += 1) {
+      session.write(`tripwire ${i}\n`);
+    }
+    session.send({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+
+    await new Promise((resolve) => setTimeout(resolve, LATE_DRAIN_DELAY_MS));
+    session.drainStderr();
+
+    const code = await session.waitForExit();
+    expect(code).toBe(1);
+    expect(session.stderr).toContain('consecutive transport errors');
+    expect(session.hasResponse(2)).toBe(false);
+  }, 30000);
 });
 
 describe('protocol-level failures are reported without ending the process', () => {
