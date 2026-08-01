@@ -11,6 +11,8 @@ description: Use when finding improvements, bugs, or refactoring opportunities o
 
 ユーザーの依頼が「レビュー・分析・報告のみ」の場合、本スキルは **判定結果の提案まで**に留める（Issue 作成・インライン修正はしない）。実際に `gh issue create` や修正コミットまで進むのは、実装・レビュー対応など**変更を伴うワークフローの中で発見が出た場合**か、ユーザーが対応を依頼した場合のみ。
 
+**この境界は自分の発言では解除できない。** read-only 依頼中は「別 Issue にする」と表明せず「Issue 化を推奨」までに留める。§2 / §3.2 の「言うだけで終わらせない」（表明したら必ず起票まで完了させる）は、**書き込みが許される文脈に入ってから**適用される規則であって、read-only 依頼中に表明することで起票を正当化する経路ではない。誤って表明した場合は、起票して辻褄を合わせるのではなく表明のほうを訂正する。
+
 ## 1. 判定（順序を変えない）
 
 ### 1.1 現 PR の必須修正か
@@ -133,10 +135,14 @@ URL: {issue_url}
 
 仕様判断を含む案件など、詳細な起票ゲート（種別確認 → 参照文書提案 → AC 粒度チェック → GWT+DoD）を通すべき規模なら、下の簡易テンプレートではなく `/create-issue` コマンドで起票する（§5 参照）。それ以外の軽量案件は簡易テンプレートで足りる。
 
+**アサインについて本スキルは中立**とする。`--assignee` は付けも禁じもしない。スコープ外発見の起票は backlog 化であって着手ではないため、「作成時にアサインする」か「着手時にアサインする」かは消費プロジェクトの Git Workflow が決める。プロジェクト側のルールが無い場合は付けない（未アサイン = 未着手が既定の読み方になるため）。この既定を「便利だから」で `--assignee @me` へ戻さないこと。
+
+ラベルは §3.3 の手順で組み立てた `label_args` を、`${label_args[@]+"${label_args[@]}"}` の形で渡す。**macOS 標準の bash 3.2 では、`set -u` 下で空配列を `"${label_args[@]}"` と展開すると `unbound variable` で落ちる**。空配列になるのは「ラベル一覧を取得できなかった」「実在するラベルが 1 つも無かった」という**続行したい fail-soft の経路**なので、素直に書くと復旧側だけが落ちる。
+
 ```bash
 gh issue create \
   --repo "$expected_repo" \
-  --assignee @me \
+  ${label_args[@]+"${label_args[@]}"} \
   --title "{type}: {簡潔なタイトル}" \
   --body "$(cat <<'EOF'
 ## 概要
@@ -153,7 +159,77 @@ EOF
 )"
 ```
 
-### 3.3 Title prefix
+### 3.3 ラベル（実在するものだけ付ける）
+
+無ラベルの follow-up Issue は backlog で「発生源が PR レビュー由来か独立要望か」「優先度は何か」を失う。一方、**存在しないラベル名を渡すと `gh issue create` 自体が失敗する**ため、ラベル名を直書きで固定することもできない（本スキルは複数プロジェクトで動く）。そこで **実在確認 → 存在するものだけ付与 → 省略したものは報告**（verify-then-skip）とする。
+
+付与を試みるのは次の 3 系統。具体的なラベル名は消費プロジェクトの分類に合わせる（下は代表例であり、この名前でなければならないという意味ではない）。
+
+| 系統 | 役割 | よくある名前 |
+|------|------|-------------|
+| type | 変更の種類。Title prefix（§3.4）と一致させる | `bug` / `enhancement` / `refactor` / `testing` / `chore` / `documentation` |
+| priority | 対応順序 | `priority:critical` / `priority:high` / `priority:medium` / `priority:low` |
+| follow-up | PR レビュー・実装から派生したという発生源の印 | `follow-up` |
+
+```bash
+# 実在するラベル名の一覧。取得できなければラベルなしで進める（起票自体は止めない）。
+# ⚠️ `--limit` は必須。省略時の既定は 30 件で、ラベルが 30 個を超えるリポジトリでは
+#    実在するラベルが「見つからない」と誤判定される（頻用ラベルほど後ろに来やすい）。
+label_lookup_failed=0
+if ! available_labels="$(gh label list --repo "$expected_repo" --limit 200 --json name --jq '.[].name')"; then
+  available_labels=""
+  label_lookup_failed=1
+fi
+
+label_args=()
+skipped_labels=()
+# type / priority / follow-up の順。値は消費プロジェクトの分類に合わせて決める。
+for candidate in "$type_label" "$priority_label" "$followup_label"; do
+  [[ -n "$candidate" ]] || continue
+  # 完全一致（行単位）を外部プロセスなしで判定する。`grep -q` へパイプで
+  # 流し込む書き方は、grep が一致した時点で読み取りを止めるため producer 側が
+  # SIGPIPE で落ち、`set -o pipefail` 下では「一致したのに失敗」に反転しうる。
+  if [[ $'\n'"$available_labels"$'\n' == *$'\n'"$candidate"$'\n'* ]]; then
+    label_args+=(--label "$candidate")
+  else
+    skipped_labels+=("$candidate")
+  fi
+done
+```
+
+`skipped_labels` が空でない場合は、**省略したラベル名と理由を報告に含める**。ラベルが付かなかったこと自体は起票の失敗ではないが、黙って落とすと「付いているはず」という誤解が残る。
+
+理由は `label_lookup_failed` で書き分ける。**「不在」と「照会失敗」を混同しない**:
+
+| `label_lookup_failed` | 報告する理由 |
+|---|---|
+| `0` | 対象リポジトリに存在しないため省略した |
+| `1` | **ラベル一覧を取得できなかった**ため、実在を確認できず省略した |
+
+照会が失敗しただけなのに「存在しない」と断定すると、運用者が実在するラベルを再作成して重複ラベルが生える。
+
+`gh issue create` が既存ラベル起因以外の理由で失敗した場合は §3.2 の通り成功として扱わない。
+
+#### priority の判定基準
+
+ラベル名はプロジェクト依存だが、判定の軸は共通にする。
+
+| 段階 | 基準 |
+|------|------|
+| critical | 本番で実害が進行中（障害・データ破損・コンプライアンス違反が現在形） |
+| high | 利用者に見える不具合、または開発全体をブロックする（品質ゲートが恒常的に赤、標準手順が実行不能） |
+| medium | 通常対応。実バグ・整合性リスクだが実害は顕在化していない |
+| low | リファクタ・保留可・実需要待ち |
+
+迷ったら medium。レビュー Suggestion 由来のリファクタ・テスト追加は原則 low〜medium。§1.2 で YAGNI と判定したものはそもそもここへ来ない。
+
+#### Epic への紐付け（該当する場合のみ）
+
+対象リポジトリが Epic 相当のラベルで大枠 Issue を管理している場合（`gh label list` に `epic` 等が実在する場合）は、`gh issue list --repo "$expected_repo" --label epic --state open` で open Epic を確認し、**該当領域だと確信できる場合のみ** Issue 本文の `## 発見元` に Epic 番号を記載する。判断に迷う場合は紐付けずに進めてよい（誤った紐付けは Epic の完了判定を汚す）。
+
+Epic 本文のチェックリストへ追記する場合は、§3.1 と同じ競合ガードに従う。`gh issue edit --body` は**本文全体の置換**であり追記ではないため、取得 → 追記 → `--body-file` で書き戻し → 反映確認の順で行い、取得時と書き戻し直前で `updatedAt` が変わっていたら書き込まずに再判断する。
+
+### 3.4 Title prefix
 
 | 種類 | Prefix | 例 |
 |------|--------|----|
@@ -163,7 +239,7 @@ EOF
 | 改善提案 | `chore:` | `chore: ログ改善` |
 | ドキュメント | `docs:` | `docs: API 仕様の更新` |
 
-### 3.4 Context 自動検出
+### 3.5 Context 自動検出
 
 Issue body の精度を上げるため以下を取得:
 
@@ -179,7 +255,7 @@ gh pr diff --name-only 2>/dev/null || git diff --name-only HEAD~1 2>/dev/null
 
 レビュー由来の場合は **発見した tool 名**（code-reviewer / silent-failure-hunter / code-simplifier / Copilot review / Codex 等）を `## 発見元` に書く。
 
-### 3.5 戻り値
+### 3.6 戻り値
 
 Issue 作成後、以下のフォーマットでユーザーに報告:
 

@@ -57,6 +57,37 @@ not_contains() {
   fi
 }
 
+# `--assignee` が「実行される引数」として現れないことを見る。素の grep だと
+# 「`--assignee @me` へ戻さないこと」のような散文の言及まで拾ってしまい、
+# ルールを書き残すほどテストが赤くなる（検査対象が広すぎる典型）。
+# 引数行 = 行頭（インデント可）が `--assignee` で始まる行、に限定する。
+no_assignee_argument() {
+  local file="$1" label="$2" violations
+  # grep は不一致で exit 1 を返し、`set -e` 下の代入ごとスクリプトを落とす。
+  # 常に exit 0 の awk で拾う（この file の gh_issue_blocks_bound と同じ理由）。
+  violations="$(awk '/^[[:space:]]*--assignee([[:space:]]|=)/ { print NR }' "$file")"
+  if [[ -n "$violations" ]]; then
+    bad "${label}（--assignee を引数として指定: ${violations//$'\n'/, } 行目）"
+  else
+    ok "$label"
+  fi
+}
+
+# producer をパイプで `grep -q*` に流し込む書き方を SKILL.md の手順からも締め出す。
+# grep -q は一致した時点で読み取りを止めるため producer が SIGPIPE で落ち、
+# `set -o pipefail` 下では「一致したのに失敗」に結果が反転しうる（run-all.sh の
+# case 10 が tests/**/*.sh に対して張っているのと同じ禁止。SKILL.md の bash は
+# エージェントがそのまま実行するので、同じ穴が空いていた）。
+no_piped_grep_q() {
+  local file="$1" label="$2" violations
+  violations="$(awk '/\|[[:space:]]*grep[[:space:]]+[^|]*-[a-zA-Z]*q/ { print NR }' "$file")"
+  if [[ -n "$violations" ]]; then
+    bad "${label}（パイプ入力の grep -q*: ${violations//$'\n'/, } 行目）"
+  else
+    ok "$label"
+  fi
+}
+
 gh_issue_blocks_bound() {
   local file="$1" label="$2" violations
   violations="$(
@@ -107,6 +138,18 @@ contains "$SKILL" "コメントだけを既定" "既存 Issue 統合はコメン
 contains "$SKILL" "本文の変更を明示的に許可" "Issue 本文更新は明示許可が必要"
 contains "$SKILL" '`body` と `updatedAt`' "Issue 本文更新前に競合を確認"
 contains "$SKILL" "read-only レビューでは書き込まない" "read-only レビューの非変更境界"
+
+# Issue #232: 起票時のアサイン既定とラベル方針。
+# スコープ外発見の起票は backlog 化であって着手ではないため、本スキルは
+# アサインを既定しない（消費プロジェクトの Git Workflow が決める）。
+no_assignee_argument "$SKILL" "Issue 作成テンプレートがアサインを既定しない"
+contains "$SKILL" "アサインについて本スキルは中立" "アサイン方針は消費プロジェクトへ委譲"
+# ラベルは verify-then-skip。存在しないラベル名は gh issue create 自体を
+# 失敗させるので、実在確認なしに固定名を渡す形へ戻さない。
+contains "$SKILL" 'gh label list --repo "$expected_repo"' "ラベルは実在確認してから付与"
+contains "$SKILL" "存在しないラベル名を渡すと" "存在しないラベルが起票を失敗させることを明示"
+contains "$SKILL" "省略したラベル名" "省略したラベルを報告（黙って落とさない）"
+no_piped_grep_q "$SKILL" "SKILL.md の手順がパイプ入力の grep -q* を使わない"
 
 contains "$WORKFLOW" "YAGNI → インライン修正 → Issue 化" "Git Workflow が三分岐を正本化"
 contains "$WORKFLOW" "類似 Issue を検索" "Git Workflow が重複 Issue を抑制"
