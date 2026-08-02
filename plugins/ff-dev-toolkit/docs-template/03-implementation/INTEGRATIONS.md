@@ -132,6 +132,8 @@ GitHub Copilotを使用する場合は、MASTER.mdをワークスペースルー
 
 ### 1.3 Cursor統合
 
+> **注**: Cursor 向け設定は `/setup-ai-config` の生成対象ではない（issue #240）。Cursor を併用する場合に**手で用意するための手順**として残している。`.mdc` は先頭の YAML フロントマターが必須で、`.cursor/rules/` 配下の `.md` は無視される点に注意。
+
 Cursor を使用する場合は、現行の Project Rules 形式 `.cursor/rules/spec-driven.mdc`（先頭に YAML フロントマター、`alwaysApply: true`）を作成し、以下を追加します。Legacy の `.cursorrules`（ルート単一ファイル）は後方互換のための互換オプションです：
 
 ```

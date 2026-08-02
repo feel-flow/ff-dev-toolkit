@@ -4,7 +4,7 @@
 
 ## 概要
 
-任意のAI CLIツールをレビューエージェントにラップするための汎用ガイドです。特定のCLIに依存しない「レビューエージェントの構成要素」を定義し、複数のAI CLI（Claude Code、Codex、Gemini、Cursor など）を統一的にオーケストレーションするための設計パターンを提供します。
+任意のAI CLIツールをレビューエージェントにラップするための汎用ガイドです。特定のCLIに依存しない「レビューエージェントの構成要素」を定義し、複数のAI CLI（Claude Code、Codex、Gemini、Copilot など）を統一的にオーケストレーションするための設計パターンを提供します。
 
 > **Note**: GitHub Copilot CLI は従量課金へ移行したため、レビューの既定ラインナップから除外しています（アダプタは残置、オプトイン利用可）。
 
@@ -72,12 +72,12 @@
 | #   | Perspective              | 分析対象                               | 推奨CLI     | 理由                             |
 | --- | ------------------------ | -------------------------------------- | ----------- | -------------------------------- |
 | 1   | **Code Review**          | コード品質、ガイドライン準拠、バグ検出 | Codex       | 汎用レビューはGPT系で別視点      |
-| 2   | **Error Handler Hunt**   | サイレント失敗、不適切なcatch          | Codex       | エラーパターン検出に強い         |
+| 2   | **Error Handler Hunt**   | サイレント失敗、不適切なcatch          | Grok        | 一般レビューと別モデルの目を当てる |
 | 3   | **Security Analysis**    | 脆弱性、インジェクション、認証問題     | Gemini      | 無料枠＋長コンテキスト活用       |
 | 4   | **Test Analysis**        | テストカバレッジ、エッジケース不足     | Codex       | クロスモデルでテスト網羅性を検証 |
 | 5   | **Type Design Analysis** | 型設計、カプセル化、不変性             | Claude Code | 最も高度な判断力が必要           |
 | 6   | **Comment Analysis**     | コメント正確性、ドキュメント品質       | Gemini      | 無料枠で繰り返し実行             |
-| 7   | **Code Simplification**  | 複雑性削減、リファクタリング提案       | Cursor      | エディタ連携が強い               |
+| 7   | **Code Simplification**  | 複雑性削減、リファクタリング提案       | Claude Code | 判断に設計文脈が要る             |
 
 ### パースペクティブファイル形式
 
@@ -108,12 +108,12 @@
 | Perspective          | pr-review-toolkit サブエージェント | 担当CLI             |
 | -------------------- | ---------------------------------- | ------------------- |
 | Code Review          | code-reviewer                      | Codex CLI           |
-| Error Handler Hunt   | silent-failure-hunter              | Codex CLI           |
+| Error Handler Hunt   | silent-failure-hunter              | Grok CLI            |
 | Security Analysis    | _(新規)_                           | Gemini CLI          |
 | Test Analysis        | pr-test-analyzer                   | Codex CLI           |
 | Type Design Analysis | type-design-analyzer               | Claude Code（据置） |
 | Comment Analysis     | comment-analyzer                   | Gemini CLI          |
-| Code Simplification  | code-simplifier                    | Cursor CLI          |
+| Code Simplification  | code-simplifier                    | Claude Code         |
 
 ---
 
@@ -150,7 +150,7 @@ adapter-{cli}.sh <perspective-file> <output-file> [--changed-files <file-list>]
 | Codex CLI   | `codex`        | `exec "..." --sandbox read-only`                            | 読み取り専用サンドボックス                     |
 | Copilot CLI | `copilot`      | `-p "..." --silent --allow-all-tools`                       | `--silent`でstats出力抑制                      |
 | Gemini CLI  | `gemini`       | `-p "..." --sandbox --output-format json`                   | サンドボックス＋JSON出力                       |
-| Cursor CLI  | `cursor-agent` | `--print --model auto "prompt"`                             | ヘッドレスモード（プロンプトはpositional引数） |
+| Grok CLI    | `grok`         | `-p "..." --sandbox read-only --output-format plain`        | カーネル強制の read-only プロファイル          |
 
 ### アダプター実装の骨格
 
@@ -183,10 +183,10 @@ Analyze the above changes according to the perspective.
 Output in the standard review format."
 
 # 3. CLI実行（CLI別に分岐が必要）
-# 多くのCLIは -p でプロンプトを渡すが、Cursor CLIは --print + positional引数
-# 例: claude -p "$PROMPT" / codex exec "$PROMPT" / gemini -p "$PROMPT"
-#     （codex の -p は --profile。プロンプトは positional 引数）
-# 例: cursor-agent --print --model auto "$PROMPT"
+# プロンプトの渡し方は CLI ごとに違う。-p が使えるとは限らないし、意味も同じとは
+# 限らないので、新しい CLI を足すときは必ず --help で確かめること。
+# 例: claude -p "$PROMPT" / gemini -p "$PROMPT" / copilot -p "$PROMPT"
+#     codex exec "$PROMPT"（codex の -p は --profile。プロンプトは positional 引数）
 #
 # 失敗・タイムアウト時は、部分出力の先頭に未完了マーカーを付けて保存してから、
 # CLI の終了コードそのままで非 0 終了する。マーカーが無いと、統合レポートの
@@ -254,10 +254,11 @@ codex exec "$PROMPT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"}
 | --- | ---------------- |
 | Claude Code | `opus` / `sonnet` / `haiku` / `fable` — **最新版を指すエイリアス**なので自己更新する |
 | Codex CLI | `-p/--profile <name>` — `~/.codex/<name>.config.toml` を base 設定に重ねる。モデルと reasoning effort を 1 ファイルで束ねられる |
-| Cursor CLI / Copilot CLI | `auto` — ベンダー側に選ばせる |
+| Copilot CLI | `auto` — ベンダー側に選ばせる |
+| Grok CLI | 該当なし（フラグを渡さず CLI 設定へ委譲する） |
 | Gemini CLI | 該当なし（フラグを渡さず CLI 設定へ委譲する） |
 
-> 実害の記録は `08-knowledge/playbook/tooling.md` の ACE-70-2 を参照。参照実装は ff-dev-toolkit プラグイン側にあり（`scripts/adapters/adapter-common.sh` の `reset_model_args` / `add_model_arg` を 5 アダプタで共有）、同プラグインの `tests/no-hardcoded-model/`（slug の直書きが無いことの静的検査）と `tests/adapter-model-args/`（環境変数が実際に argv へ届くことの stub CLI 検査）が機械的に守っている。本テンプレートには含まれないので、コピー先で実装するときは上のパターンに従うこと。
+> 実害の記録は `08-knowledge/playbook/tooling.md` の ACE-70-2 を参照。参照実装は ff-dev-toolkit プラグイン側にあり（`scripts/adapters/adapter-common.sh` の `reset_model_args` / `add_model_arg` を全アダプタで共有）、同プラグインの `tests/no-hardcoded-model/`（slug の直書きが無いことの静的検査）と `tests/adapter-model-args/`（環境変数が実際に argv へ届くことの stub CLI 検査。ベンダー中立な既定値の扱いはヘルパー単体で固定している）が機械的に守っている。本テンプレートには含まれないので、コピー先で実装するときは上のパターンに従うこと。
 
 ---
 
@@ -398,9 +399,6 @@ codex exec "$PROMPT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"}
 ┌──────────┐  security      ┌──────────────────────┐
 │ Gemini   │◄──────────────►│ セキュリティ＋コメント │
 └──────────┘  +comment      └──────────────────────┘
-┌──────────┐  simplify      ┌──────────────────────┐
-│ Cursor   │◄──────────────►│ コード簡素化          │
-└──────────┘                └──────────────────────┘
 ```
 
 **利点**: 各CLIの得意分野を活かし、コストを最適化
@@ -455,9 +453,6 @@ codex exec "$PROMPT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"}
 ├───────────┼──────────┼───────────┼───────────────────────┤
 │ Free-tier │ Gemini   │ 無料枠大   │ セキュリティスキャン、│
 │           │          │            │ ドキュメント分析      │
-├───────────┼──────────┼───────────┼───────────────────────┤
-│ Flat-rate │ Cursor   │ 月額固定   │ コード簡素化、        │
-│           │          │ ($20/月)   │ リファクタリング提案  │
 └───────────┴──────────┴───────────┴───────────────────────┘
 ```
 
@@ -479,13 +474,15 @@ fallback:
   codex-cli: claude-code # Codex不可 → Claudeへ（クロスモデル維持）
   copilot-cli: codex-cli # Copilot不可 → Codexへ
   gemini-cli: codex-cli # Gemini不可 → Codexへ
-  cursor-cli: codex-cli # Cursor不可 → Codexへ
+  grok-cli: gemini-cli  # Grok不可 → Gemini（無料枠）へ
 ```
 
 **フォールバック優先順位の設計思想**:
 
 - 標準の2本柱（Claude / Codex）は相互にフォールバックし、クロスモデル性を維持する
-- その他のCLIが不可 → Codex に集約（従量課金の Copilot へはフォールバックしない）
+- その他のCLIが不可 → 対応表の次のCLIへ。定額制のCLIは無料枠を先に見る（コスト最小化戦略の意図を保つため）
+- **対応表の経路が尽きたら、導入済みのCLIから選び直す**。対応表は相互参照を含むので、経路をたどるだけでは行き止まりが残る（実測: あるCLIだけを導入した構成で 7 観点中 1 つしか計画されなかった）。観点を落とすくらいなら、対応表に無いCLIで見てもらう方がよい
+- 従量課金のCLI（Copilot）へは最後の砦としてもフォールバックしない。利用者が求めていない課金が発生するため
 
 **この対応表はプラン構築時（未インストール）専用**:
 
@@ -591,5 +588,4 @@ bash scripts/multi-review.sh --mode cross-model --perspective code-review
 - [ai-tools-integration.md](../05-operations/deployment/ai-tools-integration.md) — AIツール統合ガイド
 - [multi-cli-review-orchestration.md](../05-operations/deployment/multi-cli-review-orchestration.md) — オーケストレーション運用ガイド
 - [gemini-cli-reviewer.md](../05-operations/deployment/gemini-cli-reviewer.md) — Gemini CLI セットアップ
-- [cursor-cli-reviewer.md](../05-operations/deployment/cursor-cli-reviewer.md) — Cursor CLI セットアップ
 - [git-workflow.md](../05-operations/deployment/git-workflow.md) — AI駆動Git Workflow

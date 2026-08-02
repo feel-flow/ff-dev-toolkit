@@ -57,7 +57,7 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # argv を <arg> 区切りで記録する。単純な空白連結だと "gpt 5x" が 2 引数へ割れても
 # 記録が同じに見えてしまい、語分割の退化を検出できない（ACE-36-1）。
 mkdir -p "$WORK/bin"
-for cli in claude codex gemini copilot cursor-agent; do
+for cli in claude codex gemini copilot grok; do
   {
     echo '#!/usr/bin/env bash'
     echo 'for a in "$@"; do printf "<%s>" "$a" >> "$ARGV_LOG"; done'
@@ -75,9 +75,11 @@ RUN_RC=0
 run_adapter() {
   local adapter="$1"; shift
   : > "$WORK/argv.log"
-  if env PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" CODEX_HOME="$WORK/codex" "$@" \
+  if env PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" CODEX_HOME="$WORK/codex" \
+       ${RUN_GROK_HOME:+GROK_HOME="$RUN_GROK_HOME"} "$@" \
        bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$WORK/out.md" \
-       --base HEAD --timeout 30 --task-type review >"$WORK/stdout.log" 2>"$WORK/stderr.log"; then
+       --base HEAD --timeout 30 --task-type "${RUN_TASK_TYPE:-review}" \
+       --description "stub task" >"$WORK/stdout.log" 2>"$WORK/stderr.log"; then
     RUN_RC=0
   else
     RUN_RC=$?
@@ -119,9 +121,11 @@ expect_argv_lacks "gemini-cli: env 未設定ならモデルフラグを渡さな
 run_adapter copilot-cli-adapter.sh
 expect_argv_lacks "copilot-cli: env 未設定ならモデルフラグを渡さない" "<--model>"
 
-# cursor だけはベンダー中立語 auto を既定値として持つ（変更前からの挙動）
-run_adapter cursor-cli-adapter.sh
-expect_argv_has "cursor-cli: env 未設定なら --model auto を渡す（既定値は auto のみ）" "<--model><auto>"
+run_adapter grok-cli-adapter.sh
+expect_argv_lacks "grok-cli: env 未設定ならモデルフラグを渡さない" "<-m>"
+# read-only 保証はプロファイル名まで含めて固定する。`--sandbox` を渡していても
+# プロファイルが workspace なら CWD へ書けるので、フラグの有無だけでは足りない。
+expect_argv_has "grok-cli: review では --sandbox read-only を渡す" "<--sandbox><read-only>"
 
 # ---- env による上書き ------------------------------------------------------------
 run_adapter claude-code-adapter.sh MULTI_AGENT_MODEL_CLAUDE_CODE=opus
@@ -136,9 +140,8 @@ expect_argv_has "gemini-cli: MULTI_AGENT_MODEL_GEMINI_CLI が -m に届く" "<-m
 run_adapter copilot-cli-adapter.sh MULTI_AGENT_MODEL_COPILOT_CLI=auto
 expect_argv_has "copilot-cli: MULTI_AGENT_MODEL_COPILOT_CLI が --model に届く" "<--model><auto>"
 
-run_adapter cursor-cli-adapter.sh MULTI_AGENT_MODEL_CURSOR_CLI=some-model
-expect_argv_has "cursor-cli: env 指定が既定値 auto を上書きする" "<--model><some-model>"
-expect_argv_lacks "cursor-cli: 上書き時に auto が残らない" "<auto>"
+run_adapter grok-cli-adapter.sh MULTI_AGENT_MODEL_GROK_CLI=some-model
+expect_argv_has "grok-cli: MULTI_AGENT_MODEL_GROK_CLI が -m に届く" "<-m><some-model>"
 
 # 空白入りの値が 1 引数に保たれること。文字列連結 + 非クォート展開への退化は
 # ここでしか検出できない（静的検査は形が同じなので通る）。
@@ -170,6 +173,197 @@ if [ "$RUN_RC" -ne 0 ]; then
 else
   bad "codex-cli: モデルとプロファイルの同時指定が素通りした（rc=0）"
 fi
+
+# ---- grok: タスク種別ごとの sandbox プロファイル -----------------------------------
+# `--sandbox` が付いているかだけを見ても保証にならない。read-only と workspace は
+# CWD へ書けるかどうかが違うので、**プロファイル名まで**固定する。逆に implement は
+# 成果物を書けないと機能しないため、read-only へ寄せる退行も落とす必要がある。
+RUN_TASK_TYPE=explore run_adapter grok-cli-adapter.sh
+expect_argv_has "grok-cli: explore でも --sandbox read-only" "<--sandbox><read-only>"
+
+RUN_TASK_TYPE=implement run_adapter grok-cli-adapter.sh
+expect_argv_has "grok-cli: implement では --sandbox workspace（成果物の書き込みに必要）" "<--sandbox><workspace>"
+expect_argv_lacks "grok-cli: implement で read-only へ寄せない" "<--sandbox><read-only>"
+
+# ---- grok: サンドボックス適用の肯定確認 -------------------------------------------
+# このアダプタを作業ツリーに向けて走らせてよい根拠はサンドボックスだけなので、
+# 「警告が出ていないこと」ではなく「適用イベントが出ていること」で判定する。
+#
+# stub に渡す文字列は **grok バイナリから抽出した実物**であって、こちらで考えた
+# 文言ではない（`strings ~/.grok/bin/grok | grep -i sandbox` で確認できる）。
+# 初版はアダプタが想定した文言を stub にも書いたため、ガードとテストが同じ誤解で
+# 合意して常に緑だった（ACE-249-1 と同型）。
+#   実物1: "warning: sandbox could not be applied:"  → CLI が exit 1 で起動を拒否
+#   実物2: "Sandbox could not be applied, continuing without sandbox"
+#                                                    → サンドボックス無しで続行
+# 危険なのは 2 の方で、初版のガードはこれに一致しなかった。
+GROK_EVENTS_HOME="$WORK/grok-home"
+mkdir -p "$GROK_EVENTS_HOME"
+
+# grok stub を差し替える。$1 = CLI 起動時に追加で行う副作用
+make_grok_stub() {
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'for a in "$@"; do printf "<%s>" "$a" >> "$ARGV_LOG"; done'
+    echo 'printf "\n" >> "$ARGV_LOG"'
+    echo "$1"
+    echo 'echo "stub review output"'
+  } > "$WORK/bin/grok"
+  chmod +x "$WORK/bin/grok"
+}
+
+# 実際に grok が書く形（timestamp が先頭、enforced は末尾寄り）。フィールド順に
+# 依存する判定を書くと、この形で正常系が落ちる（初版がそうだった）。
+emit_applied='mkdir -p "$GROK_HOME"; printf "%s\n" "{\"timestamp\":\"2026-08-02T00:00:00Z\",\"event_type\":\"ProfileApplied\",\"profile\":\"read-only\",\"workspace\":\"$(pwd -P)\",\"platform\":\"macos/seatbelt\",\"enforced\":true}" >> "$GROK_HOME/sandbox-events.jsonl"'
+
+grok_case() { # <説明> <stub の副作用> <期待 rc: ok|fail>
+  make_grok_stub "$2"
+  RUN_GROK_HOME="$GROK_EVENTS_HOME" run_adapter grok-cli-adapter.sh
+  if [ "$3" = "ok" ]; then
+    if [ "$RUN_RC" -eq 0 ] && grep -qF "<!-- Status: complete -->" "$WORK/out.md" 2>/dev/null; then
+      ok "$1"
+    else
+      bad "$1（rc=${RUN_RC}）"
+    fi
+  else
+    if [ "$RUN_RC" -ne 0 ] && grep -qF "<!-- Status: incomplete -->" "$WORK/out.md" 2>/dev/null; then
+      ok "$1"
+    else
+      bad "$1（rc=${RUN_RC}。サンドボックス未確認の結果を complete として受け取った）"
+    fi
+  fi
+}
+
+grok_case "grok-cli: ProfileApplied があれば complete として通す" "$emit_applied" ok
+grok_case "grok-cli: 適用イベントが無ければ結果を受け取らない（未適用と区別できない）" 'true' fail
+grok_case "grok-cli: 実物の「warn して続行」文字列を検出する" \
+  'echo "Sandbox could not be applied, continuing without sandbox" >&2' fail
+grok_case "grok-cli: ApplyFailed が混ざっていれば受け取らない" \
+  "$emit_applied"'; printf "%s\n" "{\"event_type\":\"ApplyFailed\",\"profile\":\"read-only\"}" >> "$GROK_HOME/sandbox-events.jsonl"' fail
+
+# fail-open の 3 経路。どれも「サンドボックスが効いた」と誤判定する向きなので、
+# 見逃すと無サンドボックスのレビューが complete として通る。いずれも実測で再現済み。
+#
+# (a) 前回実行が残したイベントで確認が成立する経路。baseline を取れないときに 0 で
+#     代用すると `tail -n +1` がファイル全体を「この実行の追記分」として返す。
+printf '%s\n' '{"timestamp":"old","event_type":"ProfileApplied","profile":"read-only","enforced":true}' \
+  > "$GROK_EVENTS_HOME/sandbox-events.jsonl"
+grok_case "grok-cli: 前回実行が残したイベントでは確認としない" 'true' fail
+
+# (b) 3 条件が別々の行で成立する経路。条件ごとに grep を分けると、無関係な行の
+#     組み合わせで「該当プロファイルが enforced で適用された」と読めてしまう。
+grok_case "grok-cli: 条件が別々の行に散っていれば確認としない" \
+  'mkdir -p "$GROK_HOME"; printf "%s\n" "{\"event_type\":\"ProfileApplied\",\"profile\":\"workspace\",\"enforced\":false}" "{\"event_type\":\"Heartbeat\",\"profile\":\"read-only\",\"enforced\":true}" >> "$GROK_HOME/sandbox-events.jsonl"' fail
+
+# (c) 別プロファイルが適用された場合。read-only を要求したのに workspace が
+#     適用されていたら、要求した保証は成立していない。
+grok_case "grok-cli: 別プロファイルの適用イベントでは確認としない" \
+  'mkdir -p "$GROK_HOME"; printf "%s\n" "{\"event_type\":\"ProfileApplied\",\"profile\":\"workspace\",\"enforced\":true}" >> "$GROK_HOME/sandbox-events.jsonl"' fail
+
+# (d) フィールド順が変わっても正常系は通ること。順序依存の判定にすると、ベンダーが
+#     JSON の並びを変えただけで全レビューが落ちる（fail-closed だが実質使えなくなる）。
+# (e) 同じイベントログを共有する別プロセスの成功イベントを、自分の証明として
+#     受け取らないこと。行数の差分だけでは並行実行を切り分けられない。
+grok_case "grok-cli: 別 workspace の適用イベントでは確認としない（並行実行の混線）" \
+  'mkdir -p "$GROK_HOME"; printf "%s\n" "{\"event_type\":\"ProfileApplied\",\"profile\":\"read-only\",\"workspace\":\"/some/other/repo\",\"enforced\":true}" >> "$GROK_HOME/sandbox-events.jsonl"' fail
+
+# (f) 自分の適用イベントが**ある上で**、同じ窓に別プロファイルの適用も並ぶ場合。
+#     肯定条件だけを見ると通ってしまう（実ログでは 107ms の間に 3 プロファイルの
+#     適用が並ぶことがある）。要求より広いプロファイルが同時に効いていたなら、
+#     要求した保証は成立していない。失格条件は肯定の裏返しで対称に置く。
+grok_case "grok-cli: 自分の適用があっても別プロファイルが同じ窓にあれば失格" \
+  "$emit_applied"'; printf "%s\n" "{\"event_type\":\"ProfileApplied\",\"profile\":\"workspace\",\"workspace\":\"$(pwd -P)\",\"enforced\":true}" >> "$GROK_HOME/sandbox-events.jsonl"' fail
+
+# (g) サンドボックスが実際に操作を止めた記録（FsViolation）は**失格にしない**。
+#     これは機能している証拠であって失敗ではない。ここを失格にすると、書き込みを
+#     試みた差分をレビューするたびに結果が捨てられる。
+grok_case "grok-cli: FsViolation は失格にしない（サンドボックスが働いた証拠）" \
+  "$emit_applied"'; printf "%s\n" "{\"event_type\":\"FsViolation\",\"operation\":\"write\",\"target\":\"/x\"}" >> "$GROK_HOME/sandbox-events.jsonl"' ok
+
+grok_case "grok-cli: イベントのフィールド順が変わっても確認できる" \
+  'mkdir -p "$GROK_HOME"; printf "%s\n" "{\"enforced\":true,\"workspace\":\"$(pwd -P)\",\"profile\":\"read-only\",\"event_type\":\"ProfileApplied\"}" >> "$GROK_HOME/sandbox-events.jsonl"' ok
+
+
+# 拒否時の報告内容。CLI は 0 で終了し結論にも到達しているので、
+# 「CLI が status 1 で落ちた」と書くと読み手は存在しないクラッシュを追う。
+#
+# 直前の実行結果に依存させない。ケースを足す順番が変わっただけで検査対象が
+# 別の成果物にすり替わり、実際に一度壊れた。拒否ケースをここで明示的に一度走らせる。
+make_grok_stub 'true'
+RUN_GROK_HOME="$GROK_EVENTS_HOME" run_adapter grok-cli-adapter.sh
+if grep -qF "sandbox" "$WORK/out.md" 2>/dev/null && ! grep -qF "exited with status 1" "$WORK/out.md" 2>/dev/null; then
+  ok "grok-cli: サンドボックス未確認を CLI のクラッシュとして報告しない"
+else
+  bad "grok-cli: サンドボックス未確認が CLI のクラッシュとして報告されている（原因の指し先が誤り）"
+fi
+
+# exit 0 + 空出力でも stderr を捨てない。捨てると「なぜ空か」を言う唯一のチャネルが消える。
+make_grok_stub "$emit_applied"'; echo "error: rate limit exceeded" >&2'
+# 出力を空にする stub（上の echo を打ち消すため専用に組む）
+{
+  echo '#!/usr/bin/env bash'
+  echo 'for a in "$@"; do printf "<%s>" "$a" >> "$ARGV_LOG"; done'
+  echo 'printf "\n" >> "$ARGV_LOG"'
+  echo "$emit_applied"
+  echo 'echo "error: rate limit exceeded" >&2'
+} > "$WORK/bin/grok"
+chmod +x "$WORK/bin/grok"
+RUN_GROK_HOME="$GROK_EVENTS_HOME" run_adapter grok-cli-adapter.sh
+if [ "$RUN_RC" -ne 0 ] && grep -qF "rate limit exceeded" "$WORK/out.md" 2>/dev/null; then
+  ok "grok-cli: 空出力でも CLI の stderr を成果物に残す（原因が失われない）"
+else
+  bad "grok-cli: 空出力時に stderr を捨てている（なぜ空かを言うチャネルが消える）"
+fi
+# stderr 抜粋が残っても、見出しが「CLI が status 1 で落ちた／止められた」のままだと
+# 読み手は存在しないクラッシュを追う。CLI は 0 で終了し、止められてもいない。
+if grep -qF "exited successfully but produced no output" "$WORK/out.md" 2>/dev/null \
+  && ! grep -qF "exited with status 1" "$WORK/out.md" 2>/dev/null \
+  && ! grep -qF "before the CLI was stopped" "$WORK/out.md" 2>/dev/null; then
+  ok "grok-cli: 空出力をクラッシュ／中断として報告しない"
+else
+  bad "grok-cli: 空出力が「CLI が落ちた／止められた」と報告されている（原因の指し先が誤り）"
+fi
+
+# 通常の stub に戻す（後続のヘルパー検査へ影響させない）
+make_grok_stub "$emit_applied"
+
+# ---- ヘルパーの第 3 引数（ベンダー中立な既定値） -----------------------------------
+# この経路を使うアダプタは無い。唯一の利用者だった cursor-cli の `auto` は issue #240
+# で消えたが、API は残っている。アダプタ経由で検査できなくなった以上ヘルパー単体で
+# 挙動を固定しておかないと、次に既定値を持つ CLI を足す人が誰も検証していない土台の
+# 上に書くことになる（検査を消すのではなく層を下げる）。
+#
+# 第 3 引数に書いてよいのは `auto` のようなベンダー中立語だけ。具体的なモデル slug を
+# 書くことは tests/no-hardcoded-model/verify.sh 側が静的に禁じている。
+helper_model_args() {
+  ( set -euo pipefail
+    # shellcheck disable=SC1090
+    . "$ADAPTERS_DIR/adapter-common.sh"
+    reset_model_args
+    add_model_arg "$@"
+    for a in ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"}; do printf "<%s>" "$a"; done )
+}
+
+expect_helper() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$actual" = "$expected" ]; then
+    ok "$desc"
+  else
+    bad "$desc — expected '$expected' / actual '$actual'"
+  fi
+}
+
+expect_helper "add_model_arg: env 未設定なら第 3 引数の既定値を渡す" \
+  "<--model><auto>" \
+  "$(helper_model_args --model FF_TEST_MODEL_UNSET auto)"
+
+expect_helper "add_model_arg: env 指定が第 3 引数の既定値を上書きする" \
+  "<--model><some-model>" \
+  "$(FF_TEST_MODEL_SET=some-model helper_model_args --model FF_TEST_MODEL_SET auto)"
+
+expect_helper "add_model_arg: 第 3 引数が無く env も未設定ならフラグ自体を渡さない" \
+  "" \
+  "$(helper_model_args --model FF_TEST_MODEL_UNSET)"
 
 # ---- ヘルパーの入力検証 -----------------------------------------------------------
 # env 変数名でない第 2 引数（呼び出し側のバグ）は沈黙せず非 0 を返す。

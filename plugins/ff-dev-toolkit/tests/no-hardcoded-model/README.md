@@ -64,7 +64,7 @@
 | `add_model_arg` の呼び出しを**全部**消す | ケース 13 が red（`NO_ADD`）※1 本だけ消しても検出されない — 下記「既知の限界」参照 |
 | `reset_model_args` の呼び出しを消す | ケース 13 が red（`NO_RESET`） |
 | `${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"}` を `"${MODEL_ARGS[@]}"` に変える | ケース 13 が red（`UNSAFE_EXPANSION`） |
-| cursor の第 3 引数 `auto` を `gpt-5.6-sol` に変える | ケース 13 が red（`BAD_DEFAULT_LITERAL`）＋ケース 11 が red |
+| アダプタの `add_model_arg` 第 3 引数に `gpt-5.6-sol` のような slug を書く | ケース 13 が red（`BAD_DEFAULT_LITERAL`）＋ケース 11 が red |
 | 既定値を行継続（`\`）の次行へ逃がす | ケース 13 が red（論理行へ結合してから検査する） |
 | `adapter-common.sh` の `fallback="${3:-}"` を `${3:-grok-4}` に変える | ケース 14 が red（`HELPER_DEFAULT`） |
 | `fixtures/clean.sh` に `gpt-5.6-sol` を書く | ケース 2 が red（横断検査は実行されない） |

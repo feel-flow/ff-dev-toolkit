@@ -18,11 +18,13 @@ OPENAI_MODEL="o3-mini"
 # 行頭コメント内の slug も検出する（誤検出側＝保守側に倒す）: gpt-4
 ANTHROPIC_MODEL="claude-3-5-sonnet-20241022"
 OTHER_VENDOR_A="grok-4"
+# CLI 識別子を接頭辞に持つ実 slug。退避を無条件にすると、ここが不可視になる
+IDENT_PREFIXED_SLUG="grok-cli-4"
 OTHER_VENDOR_B="llama-3.3-70b"
 OTHER_VENDOR_C="mistral-large-2411"
 OTHER_VENDOR_D="deepseek-r1"
 OTHER_VENDOR_E="qwen3-max"
-CURSOR_OWN_MODEL="composer-1"
+EXAMPLE_OWN_MODEL="composer-1"
 NO_HYPHEN="gpt5"
 # --model にベタ書きリテラルを渡す形は、slug が denylist に無くても検出する。
 # 「PR 以前の形へ戻す」が最も起きやすい回帰なので、構文で捕まえる。

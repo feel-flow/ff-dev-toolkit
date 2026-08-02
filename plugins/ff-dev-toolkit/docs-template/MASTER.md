@@ -515,7 +515,6 @@ metrics:
 
 - SETUP_GITHUB_COPILOT.md — GitHub Copilot設定（約30分）。`${CLAUDE_PLUGIN_ROOT}/docs-template/SETUP_GITHUB_COPILOT.md` からコピー
 - SETUP_CLAUDE_CODE.md — Claude Code設定（約40分）。`${CLAUDE_PLUGIN_ROOT}/docs-template/SETUP_CLAUDE_CODE.md` からコピー
-- SETUP_CURSOR.md — Cursor設定（約60分）。`${CLAUDE_PLUGIN_ROOT}/docs-template/SETUP_CURSOR.md` からコピー
 
 ### 既存プロジェクト向け（初期セット外・必要時にコピー）
 

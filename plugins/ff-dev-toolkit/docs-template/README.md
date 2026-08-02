@@ -20,7 +20,6 @@ docs-template/
 ├── GETTING_STARTED_NEW_PROJECT.md       # 新規プロジェクト向け
 ├── GETTING_STARTED_ABSOLUTE_BEGINNER.md # 初学者向け
 ├── SETUP_CLAUDE_CODE.md                 # Claude Code 詳細設定
-├── SETUP_CURSOR.md                      # Cursor 詳細設定
 └── SETUP_GITHUB_COPILOT.md              # GitHub Copilot 詳細設定
 ```
 

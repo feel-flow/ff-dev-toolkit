@@ -4,7 +4,7 @@
 
 ## 概要
 
-複数のAI CLI（Claude Code、Codex、Gemini、Cursor）を統一的にオーケストレーションする Multi-CLI レビューフレームワークです。
+複数のAI CLI（Claude Code、Codex、Gemini、Copilot）を統一的にオーケストレーションする Multi-CLI レビューフレームワークです。
 `git commit` 時に AI が自動でコードをレビューし、問題があればコミットをブロックします。各CLIの得意分野とコスト特性を活かした包括的レビューを実行できます。
 
 > **標準レビュー体制**: 一次レビューは Claude Code（pr-review-toolkit）、クロスモデルレビューは Codex CLI の2本柱を標準とします。GitHub Copilot（Copilot CLI / Copilot code review）は従量課金への移行に伴い**既定のレビューラインナップから除外**しました。アダプタ（`scripts/copilot-review.sh`）は残置しており、課金を許容する場合のみオプトインで利用できます。
@@ -24,10 +24,10 @@
                            CLI バイナリの存在を確認し          │
                            優先順位で選択:                    │
                            Claude > Codex                    │
-                           > Gemini > Cursor                 │
+                           > Gemini                          │
                                                             ▼
                                               ┌──────────────────────┐
-                                              │  5種並列レビュワー      │
+                                              │  4種並列レビュワー      │
                                               │  (review-common.sh)  │
                                               └──────────┬───────────┘
                                                          ▼
@@ -64,7 +64,7 @@
 | 機能               | 説明                                                                     |
 | ------------------ | ------------------------------------------------------------------------ |
 | 自動レビュー       | `git commit` 時に自動でコードレビューを実行                              |
-| Multi-CLI対応      | Claude Code、Codex、Gemini、Cursor の4 CLIを統合（Copilot はオプトイン） |
+| Multi-CLI対応      | Claude Code、Codex、Gemini の3 CLIを統合（Copilot はオプトイン）        |
 | コスト最適化       | 固定料金/無料CLIを優先するコスト戦略を選択可能                           |
 | 優先度分類         | Critical / Important / Quality の3段階で問題を分類                       |
 | ブロック機能       | Criticalな問題があればコミットをブロック                                 |
@@ -79,7 +79,7 @@
 
 - **Git**: 任意のバージョン
 - **Node.js**: >= 24.0.0（npm使用時）
-- **AI CLI**: Claude Code、Codex、Gemini、Cursor のうち1つ以上がインストール済み
+- **AI CLI**: Claude Code、Codex、Gemini のうち1つ以上がインストール済み
 
 ### 自動セットアップ（推奨）
 
@@ -108,7 +108,7 @@ mkdir -p .husky scripts .claude/commands
 # 2. スクリプトを手動で配置（後述のファイル内容を参照）
 
 # 3. 実行権限を付与
-chmod +x .husky/pre-commit scripts/review-common.sh scripts/review-prompts.sh scripts/claude-review.sh scripts/codex-review.sh scripts/copilot-review.sh scripts/cursor-review.sh scripts/gemini-review.sh
+chmod +x .husky/pre-commit scripts/review-common.sh scripts/review-prompts.sh scripts/claude-review.sh scripts/codex-review.sh scripts/copilot-review.sh scripts/gemini-review.sh
 ```
 
 ---
@@ -123,12 +123,11 @@ project-root/
 │   └── pre-commit                # Git pre-commit hook
 ├── scripts/
 │   ├── review-common.sh          # 共通基盤（並列実行・結果表示・差分取得）
-│   ├── review-prompts.sh         # 5種レビュワーのプロンプト定義
+│   ├── review-prompts.sh         # 4種レビュワーのプロンプト定義
 │   ├── claude-review.sh          # Claude Code アダプタ
 │   ├── codex-review.sh           # Codex CLI アダプタ
 │   ├── copilot-review.sh         # Copilot CLI アダプタ（従量課金・オプトイン）
 │   ├── gemini-review.sh          # Gemini CLI アダプタ
-│   ├── cursor-review.sh          # Cursor Agent アダプタ
 │   ├── setup-automated-review.sh # セットアップスクリプト（Husky + CLI アダプタ）
 │   ├── multi-agent.sh            # Multi-CLI オーケストレーター（高度）
 │   ├── setup-multi-agent.sh      # オーケストレーター用セットアップ
@@ -395,7 +394,6 @@ npx husky init
 | `npm run code-review:codex`       | Codex CLIでレビュー                           |
 | `npm run code-review:copilot`     | Copilot CLIでレビュー（従量課金・オプトイン） |
 | `npm run code-review:gemini`      | Gemini CLIでレビュー                          |
-| `npm run code-review:cursor`      | Cursor Agentでレビュー                        |
 | `git commit --no-verify`          | レビューをスキップ                            |
 | `SKIP_CLAUDE_REVIEW=1 git commit` | 環境変数でスキップ                            |
 

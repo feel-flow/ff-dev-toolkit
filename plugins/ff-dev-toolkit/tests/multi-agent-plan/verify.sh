@@ -36,8 +36,8 @@ git -C "$REPO" add app.txt
 git -C "$REPO" commit -qm "init"
 git -C "$REPO" switch -q -c feature/x
 
-# 5 CLI すべてを「導入済み」にする。dry-run なので stub 自体は起動されない。
-for name in claude codex copilot gemini cursor-agent; do
+# 全 CLI を「導入済み」にする。dry-run なので stub 自体は起動されない。
+for name in claude codex copilot gemini grok; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 99' > "$STUB/$name"
   chmod +x "$STUB/$name"
 done
@@ -62,7 +62,7 @@ else
 fi
 
 if grep -q "claude-code skipped — owns no 'code-review' perspective" "$FILTER_LOG" \
-  && grep -q '(has: type-design-analysis)' "$FILTER_LOG"; then
+  && grep -q '(has: type-design-analysis code-simplification)' "$FILTER_LOG"; then
   ok "除外された導入済み CLI と所有 perspective を表示"
 else
   bad "除外された導入済み CLI の理由が不足"
@@ -138,16 +138,22 @@ fi
 echo ""
 echo "== 複数 perspective の縮退警告 =="
 MULTI_PERSP_LOG="$TMP/multi-perspective.log"
+# 縮退を起こすには「両方とも同じ 1 つの CLI が所有する」観点の組が要る。
+# code-review + error-handler-hunt は codex-cli が両方持っていたが、grok-cli の
+# 追加（issue #252）で error-handler-hunt が grok へ移り、2 CLI に分かれて縮退
+# しなくなった。codex-cli が今も両方持つ組（code-review + test-analysis）を使う。
+# test-analysis は copilot-cli も所有するが metered で review 既定から外れるため、
+# 実際に計画へ載るのは codex-cli だけ。
 if run_plan "$MULTI_PERSP_LOG" \
-  --perspective code-review --perspective error-handler-hunt; then
+  --perspective code-review --perspective test-analysis; then
   ok "複数 perspective の単一 CLI 縮退 dry-run が成功"
 else
   bad "複数 perspective の単一 CLI 縮退 dry-run が失敗"
 fi
 
 if grep -q '^         --mode cross-model --perspective code-review$' "$MULTI_PERSP_LOG" \
-  && grep -q '^         --mode cross-model --perspective error-handler-hunt$' "$MULTI_PERSP_LOG" \
-  && ! grep -q -- '--perspective code-review error-handler-hunt' "$MULTI_PERSP_LOG"; then
+  && grep -q '^         --mode cross-model --perspective test-analysis$' "$MULTI_PERSP_LOG" \
+  && ! grep -q -- '--perspective code-review test-analysis' "$MULTI_PERSP_LOG"; then
   ok "複数 perspective は貼り付け可能な cross-model コマンドを個別表示"
 else
   bad "複数 perspective の代替コマンドが argv として不正"
@@ -169,11 +175,32 @@ fi
 
 if grep -q 'claude-code \[premium\]:' "$EXPLORE_LOG" \
   && grep -q '^     - dependency-mapping$' "$EXPLORE_LOG" \
-  && ! grep -q 'cursor-cli \[flat-rate\]:' "$EXPLORE_LOG" \
-  && ! grep -q 'minimize_cost:.*claude-code.*cursor-cli' "$EXPLORE_LOG"; then
+  && ! grep -q 'gemini-cli \[free-tier\]:' "$EXPLORE_LOG" \
+  && ! grep -q 'minimize_cost:.*claude-code.*gemini-cli' "$EXPLORE_LOG"; then
   ok "明示 --cli は minimize_cost でも別 CLI へ置換しない"
 else
   bad "明示 --cli が cost strategy で別 CLI へ置換された"
+fi
+
+# 上は「置換されないこと」の否定主張なので、置換そのものが壊れても緑のまま通る。
+# 置換先は cursor-cli [flat-rate] → gemini-cli [free-tier] へ移った（issue #240）ので、
+# 実際に置換が起きる経路（--cli 無し）を正の主張で押さえておく。
+EXPLORE_AUTO_LOG="$TMP/explore-auto.log"
+if (
+  cd "$REPO"
+  PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    --task explore --mode distributed --description "stub explore" --dry-run
+) >"$EXPLORE_AUTO_LOG" 2>&1; then
+  ok "Explore 既定 minimize_cost の dry-run が成功"
+else
+  bad "Explore 既定 minimize_cost の dry-run が失敗"
+fi
+
+if grep -q 'minimize_cost: architecture-analysis: claude-code → gemini-cli' "$EXPLORE_AUTO_LOG" \
+  && ! grep -q 'claude-code \[premium\]:' "$EXPLORE_AUTO_LOG"; then
+  ok "--cli 無しの minimize_cost は premium を free-tier へ置換する"
+else
+  bad "minimize_cost の premium → free-tier 置換が働いていない"
 fi
 
 echo ""
@@ -195,6 +222,90 @@ if run_plan "$WRONG_TASK_LOG" --cli codex-cli --perspective dependency-mapping; 
   bad "別 task 用 perspective の review dry-run が成功している"
 else
   ok "別 task 用 perspective を dry-run 前に非 0 で拒否"
+fi
+
+echo ""
+echo "== fallback チェーンの解決 =="
+# 代替先も未インストールのとき、一段で打ち切ると担当観点がプランから黙って消える。
+# さらに、チェーンを辿るだけでも足りない: 対応表は claude-code ⇄ codex-cli が終端
+# サイクルで、gemini-cli / grok-cli はそこへ流れ込むだけの片方向だった。実測では
+# gemini のみ 3/7、grok のみ 1/7 しか計画されなかった。
+#
+# **1 構成だけ試して「単一 CLI 構成でも大丈夫」と一般化しない。** 初版は claude-only
+# だけを見て名前にその一般化を書き、gemini/grok の欠落を見逃した。全 CLI を単独で
+# 回す。
+CHAIN_STUB="$TMP/chain-stub"
+REVIEW_PERSPECTIVE_TOTAL=7
+
+for solo_cmd in claude codex gemini grok; do
+  rm -rf "$CHAIN_STUB"
+  mkdir -p "$CHAIN_STUB"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 99' > "$CHAIN_STUB/$solo_cmd"
+  chmod +x "$CHAIN_STUB/$solo_cmd"
+  SOLO_LOG="$TMP/solo-$solo_cmd.log"
+  (
+    cd "$REPO"
+    PATH="$CHAIN_STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
+      --task review --mode distributed --strategy balanced --base develop --dry-run
+  ) >"$SOLO_LOG" 2>&1 || true
+
+  solo_count="$(grep -c '^     - ' "$SOLO_LOG" || true)"
+  if [ "$solo_count" -eq "$REVIEW_PERSPECTIVE_TOTAL" ]; then
+    ok "${solo_cmd} のみ導入でも review ${REVIEW_PERSPECTIVE_TOTAL} 観点すべてが計画される"
+  else
+    bad "${solo_cmd} のみ導入で観点が欠落（${solo_count} / ${REVIEW_PERSPECTIVE_TOTAL}）"
+    grep -E '↪|⚠️' "$SOLO_LOG" | sed 's/^/    /' >&2
+  fi
+done
+
+# 従量課金 CLI しか無い場合は、最後の砦としても選ばない（求めていない課金を避ける）。
+# ここは観点ゼロが正しい姿で、空プラン検査が fail-loud で拾う。
+rm -rf "$CHAIN_STUB"
+mkdir -p "$CHAIN_STUB"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 99' > "$CHAIN_STUB/copilot"
+chmod +x "$CHAIN_STUB/copilot"
+METERED_LOG="$TMP/solo-metered.log"
+(
+  cd "$REPO"
+  PATH="$CHAIN_STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
+    --task review --mode distributed --strategy balanced --base develop --dry-run
+) >"$METERED_LOG" 2>&1 || true
+if grep -q 'Execution plan is empty' "$METERED_LOG" \
+  && ! grep -q '^     - ' "$METERED_LOG"; then
+  ok "従量課金 CLI しか無ければ最後の砦にも選ばず、空プランとして fail-loud"
+else
+  bad "従量課金 CLI へ黙ってフォールバックしている（求めていない課金が発生する）"
+  grep -E '↪|⚠️|ERROR' "$METERED_LOG" | sed 's/^/    /' >&2
+fi
+
+echo "== CLI 入力検証 =="
+# 退役した名前（cursor-cli, issue #240）は綴りとして正しく見えるので、汎用の
+# 「フィルタが何にもマッチしなかった」エラーからは原因に辿り着けない。存在しない
+# CLI であることを名指しし、既知の一覧を添えて落ちること。
+RETIRED_LOG="$TMP/retired-cli.log"
+if run_plan "$RETIRED_LOG" --cli cursor-cli; then
+  bad "退役した CLI 名の dry-run が成功している"
+else
+  ok "退役した CLI 名を dry-run 前に非 0 で拒否"
+fi
+if grep -q "unknown CLI: 'cursor-cli'" "$RETIRED_LOG"; then
+  ok "未知 CLI のエラーが入力名を明示"
+else
+  bad "未知 CLI のエラーに入力名が出ていない"
+fi
+if grep -q 'Known CLIs: .*codex-cli' "$RETIRED_LOG"; then
+  ok "未知 CLI のエラーが既知 CLI 一覧を提示"
+else
+  bad "未知 CLI のエラーに既知 CLI 一覧が出ていない"
+fi
+
+# 空プランの判定は dry-run と実行で一致していること。従来は実行が非 0、dry-run が
+# 0 で食い違い、事前検証としての dry-run が空のレビューを通していた。
+EMPTY_LOG="$TMP/empty-plan.log"
+if run_plan "$EMPTY_LOG" --cli gemini-cli --perspective code-review --perspective test-analysis; then
+  bad "空プランの dry-run が成功している（実行時は非 0 なので判定が食い違う）"
+else
+  ok "空プランを dry-run でも非 0 で拒否（実行時と判定が一致）"
 fi
 
 echo ""

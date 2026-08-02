@@ -2,7 +2,7 @@
 
 ## 概要
 
-5つのAI CLI（Claude Code / Codex / Copilot / Gemini / Cursor）を統一オーケストレーターで並列実行し、**Review（レビュー）** / **Explore（探索）** / **Implement（実装）** の3タスクタイプを実行する仕組み。
+5つのAI CLI（Claude Code / Codex / Copilot / Gemini / Grok）を統一オーケストレーターで並列実行し、**Review（レビュー）** / **Explore（探索）** / **Implement（実装）** の3タスクタイプを実行する仕組み。
 
 > **Note**: GitHub Copilot CLI は従量課金へ移行したため、**Review タスクの既定ラインナップから除外**しています（`--cli copilot-cli` でオプトイン）。Explore / Implement では引き続き既定で使用します。
 
@@ -39,11 +39,11 @@ multi-agent.sh --task review|explore|implement [options]
 | -------------------- | ------------- | ---------------------- |
 | type-design-analysis | claude-code   | 型設計分析             |
 | code-review          | codex-cli     | コードレビュー         |
-| error-handler-hunt   | codex-cli     | エラーハンドリング検出 |
+| error-handler-hunt   | grok-cli      | エラーハンドリング検出 |
 | test-analysis        | codex-cli     | テスト分析             |
 | comment-analysis     | gemini-cli    | コメント分析           |
 | security-analysis    | gemini-cli    | セキュリティ分析       |
-| code-simplification  | cursor-cli    | コード簡素化           |
+| code-simplification  | claude-code   | コード簡素化           |
 
 ### Explore（探索）
 
@@ -54,8 +54,8 @@ multi-agent.sh --task review|explore|implement [options]
 | architecture-analysis | claude-code   | アーキテクチャ構造分析 |
 | dependency-mapping    | codex-cli     | 依存関係マッピング     |
 | api-surface-analysis  | copilot-cli   | API サーフェス分析     |
-| tech-debt-assessment  | gemini-cli    | 技術的負債評価         |
-| pattern-discovery     | cursor-cli    | パターン検出           |
+| tech-debt-assessment  | grok-cli      | 技術的負債評価         |
+| pattern-discovery     | gemini-cli    | パターン検出           |
 
 ### Implement（実装）
 
@@ -67,7 +67,7 @@ multi-agent.sh --task review|explore|implement [options]
 | refactoring            | codex-cli     | リファクタリング |
 | test-writing           | copilot-cli   | テスト生成       |
 | documentation          | gemini-cli    | ドキュメント生成 |
-| migration              | cursor-cli    | マイグレーション |
+| migration              | grok-cli      | マイグレーション |
 
 ## 使い方
 

@@ -56,6 +56,7 @@ else
     "$SCRIPT_DIR/skill-frontmatter/verify.sh"
     "$SCRIPT_DIR/skill-bash-blocks/verify.sh"
     "$SCRIPT_DIR/no-hardcoded-model/verify.sh"
+    "$SCRIPT_DIR/cli-registry-completeness/verify.sh"
     "$SCRIPT_DIR/ace-curate-commit/verify.sh"
     "$SCRIPT_DIR/ace-refine/verify.sh"
     "$SCRIPT_DIR/changelog-public-references/verify.sh"
@@ -72,6 +73,10 @@ else
     # 実 CLI・ネットワーク・課金は伴わない（〜2 秒）。静的検査の後、ネットワーク
     # 検査の前に置く。
     "$SCRIPT_DIR/adapter-model-args/verify.sh"
+    # 主+副レビュワーの解決・保存・縮退。一時ディレクトリと git リポジトリを使うが
+    # 実 CLI・ネットワーク・課金は伴わない。設定の保存先は XDG_CONFIG_HOME を
+    # 一時ディレクトリへ向けて隔離するので、利用者の実設定には触れない。
+    "$SCRIPT_DIR/reviewer-pair/verify.sh"
     # 公開リポジトリへの実ネットワーク到達を試みる suite（接続不可のみ丸ごと
     # ○ skip、それ以外は fail）。静的検査より後、破壊的操作を伴う
     # merge-cleanup より前に置く。他の suite を network-dependent 化する場合も

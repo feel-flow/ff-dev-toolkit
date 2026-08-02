@@ -340,7 +340,6 @@ git push
 セットアップ完了後は、以下のドキュメントも参照してください：
 
 - [SETUP_CLAUDE_CODE.md](../../SETUP_CLAUDE_CODE.md) - Claude Code セットアップ
-- [SETUP_CURSOR.md](../../SETUP_CURSOR.md) - Cursor セットアップ
 - [MASTER.md](../../MASTER.md) - プロジェクト全体のルール
 - [PATTERNS.md](../../03-implementation/PATTERNS.md) - 実装パターン
 

@@ -344,7 +344,7 @@ bash scripts/codex-review.sh --branch
 
 **Multi-CLI 分散レビュー**:
 
-複数のAI CLI（レビュー既定は Claude / Codex / Gemini / Cursor の4 CLI）を統一的にオーケストレーションする包括的レビューも利用可能です。
+複数のAI CLI（レビュー既定は Claude / Codex / Gemini の3 CLI。Copilot はオプトイン）を統一的にオーケストレーションする包括的レビューも利用可能です。
 詳細は [Multi-CLI Review Orchestration](./multi-cli-review-orchestration.md) を参照してください。
 
 **ベストプラクティス**:
@@ -467,7 +467,7 @@ bash scripts/codex-review.sh --branch
 さらに多観点で確認したい場合は、Multi-CLI 分散レビュー（オプション）を併用します：
 
 ```bash
-# 既定ラインナップ: Claude / Codex / Gemini / Cursor
+# 既定ラインナップ: Claude / Codex / Gemini（Copilot は --cli copilot-cli でオプトイン）
 bash scripts/multi-review.sh
 
 # 特定の観点のみ

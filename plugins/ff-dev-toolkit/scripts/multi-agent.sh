@@ -2,7 +2,7 @@
 # ────────────────────────────────────────────────────────────
 # multi-agent.sh — Multi-CLI Agent Orchestrator
 # ────────────────────────────────────────────────────────────
-# Orchestrates 5 AI CLIs (Claude Code, Codex, Copilot, Gemini, Cursor)
+# Orchestrates 5 AI CLIs (Claude Code, Codex, Copilot, Gemini, Grok)
 # for review, explore, and implement tasks using tool-agnostic perspectives.
 #
 # NOTE: Copilot CLI is metered (premium requests) — excluded from the
@@ -82,9 +82,15 @@ if [[ -z "$REPO_ROOT" ]]; then
 fi
 
 # ── All known CLI names ──
-ALL_CLIS="claude-code codex-cli copilot-cli gemini-cli cursor-cli"
+ALL_CLIS="claude-code codex-cli copilot-cli gemini-cli grok-cli"
 
 # ── Lookup Functions (bash 3.2 compatible — no associative arrays) ──
+#
+# Every name in ALL_CLIS must be answered by all of the lookups below
+# (command, adapter, the three perspective maps, fallback, model env, cost tier).
+# A missing case arm returns the empty default and the CLI then drops out of the
+# plan silently — no error, just a perspective that nobody runs.
+# tests/cli-registry-completeness/verify.sh gates that.
 
 get_cli_command() {
   case "$1" in
@@ -92,7 +98,7 @@ get_cli_command() {
     codex-cli)   echo "codex" ;;
     copilot-cli) echo "copilot" ;;
     gemini-cli)  echo "gemini" ;;
-    cursor-cli)  echo "cursor-agent" ;;
+    grok-cli)    echo "grok" ;;
     *) echo "" ;;
   esac
 }
@@ -103,20 +109,42 @@ get_cli_adapter() {
     codex-cli)   echo "${SCRIPT_DIR}/adapters/codex-cli-adapter.sh" ;;
     copilot-cli) echo "${SCRIPT_DIR}/adapters/copilot-cli-adapter.sh" ;;
     gemini-cli)  echo "${SCRIPT_DIR}/adapters/gemini-cli-adapter.sh" ;;
-    cursor-cli)  echo "${SCRIPT_DIR}/adapters/cursor-cli-adapter.sh" ;;
+    grok-cli)    echo "${SCRIPT_DIR}/adapters/grok-cli-adapter.sh" ;;
     *) echo "" ;;
   esac
 }
 
 # ── Task-type aware perspective mappings ──
+#
+# code-simplification / pattern-discovery / migration were owned by cursor-cli
+# until it was removed (issue #240). They were reassigned rather than retired:
+# a perspective with no owner is simply never reviewed.
+#   code-simplification → claude-code: direct counterpart in the pr-review-toolkit
+#     lineage (code-simplifier), so this is where it belongs.
+#   pattern-discovery → gemini-cli: a broad read-only sweep over the codebase,
+#     which is what the long-context free tier is for.
+#   migration → codex-cli, then → grok-cli when grok joined (issue #252).
+#
+# grok-cli's own three came from the CLIs carrying the most of each task, and
+# were moved rather than shared: the distributed plan runs each CLI's owned
+# perspectives, so two default-enabled CLIs sharing one perspective means paying
+# to review the same thing twice. Sharing is only harmless when one side is
+# excluded by default (copilot-cli, metered).
+#   error-handler-hunt → grok-cli (from codex-cli): hunting silent failures is
+#     worth a different model's eyes than the general code-review beside it.
+#   tech-debt-assessment → grok-cli (from gemini-cli): judgment-heavy, whereas
+#     the perspective gemini keeps (pattern-discovery) is the broad sweep its
+#     long context is actually for.
+#   migration → grok-cli (from codex-cli): self-contained, and it moves load off
+#     the CLI that otherwise carries the most of the implement task.
 
 get_cli_perspectives_review() {
   case "$1" in
-    claude-code) echo "type-design-analysis" ;;
-    codex-cli)   echo "code-review error-handler-hunt test-analysis" ;;
+    claude-code) echo "type-design-analysis code-simplification" ;;
+    codex-cli)   echo "code-review test-analysis" ;;
     copilot-cli) echo "test-analysis comment-analysis" ;;  # metered — runs ONLY with explicit --cli copilot-cli (see build_distributed_plan)
     gemini-cli)  echo "security-analysis comment-analysis" ;;
-    cursor-cli)  echo "code-simplification" ;;
+    grok-cli)    echo "error-handler-hunt" ;;
     *) echo "" ;;
   esac
 }
@@ -126,8 +154,8 @@ get_cli_perspectives_explore() {
     claude-code) echo "architecture-analysis" ;;
     codex-cli)   echo "dependency-mapping" ;;
     copilot-cli) echo "api-surface-analysis" ;;
-    gemini-cli)  echo "tech-debt-assessment" ;;
-    cursor-cli)  echo "pattern-discovery" ;;
+    gemini-cli)  echo "pattern-discovery" ;;
+    grok-cli)    echo "tech-debt-assessment" ;;
     *) echo "" ;;
   esac
 }
@@ -138,7 +166,7 @@ get_cli_perspectives_implement() {
     codex-cli)   echo "refactoring" ;;
     copilot-cli) echo "test-writing" ;;
     gemini-cli)  echo "documentation" ;;
-    cursor-cli)  echo "migration" ;;
+    grok-cli)    echo "migration" ;;
     *) echo "" ;;
   esac
 }
@@ -159,9 +187,58 @@ get_cli_fallback() {
     codex-cli)   echo "claude-code" ;;
     copilot-cli) echo "codex-cli" ;;
     gemini-cli)  echo "codex-cli" ;;
-    cursor-cli)  echo "codex-cli" ;;
+    grok-cli)    echo "gemini-cli" ;;   # flat-rate の代替は無料枠が先。minimize_cost の意図を保つ
     *) echo "" ;;
   esac
+}
+
+# get_cli_fallback は 1 手先しか返さない。代替先も未インストールなら、そこで打ち切ると
+# 担当観点がプランから黙って消える。実測（claude-code だけ導入した環境）では、
+# gemini-cli → codex-cli(未導入) と grok-cli → codex-cli(未導入) が両方行き止まりになり、
+# review 7 観点のうち 3 つが「No fallback available」の 1 行だけ残して落ちていた。
+# 利用者の多くが単一 CLI 構成であることを踏まえると、これが既定の姿になる。
+#
+# チェーンを辿って最初に導入済みの CLI を返す。表は相互参照を含む（claude-code ⇄
+# codex-cli）ので訪問済みを持って循環を切る。
+#
+# チェーンを辿るだけでは足りない。対応表のグラフは claude-code ⇄ codex-cli が
+# **終端サイクル**で、gemini-cli / grok-cli はそこへ流れ込むだけで逆向きの辺が無い。
+# 実測（各 CLI を単独で導入したときに計画された review 観点 / 全 7）:
+#   claude のみ 7 / codex のみ 7 / gemini のみ 3 / grok のみ 1
+# つまり「1 つでも CLI が入っていれば観点は落ちない」は成り立っていなかった。
+#
+# そこで、チェーンが行き止まりになったら**導入済みの CLI から選び直す**。観点を
+# 落とすくらいなら対応表に無い CLI で見てもらう方がよい（プラン出力に CLI 名と
+# コスト帯が出るので、誰が見たかは隠れない）。
+#
+# 従量課金の CLI は最後の砦から除く。既定で除外している CLI（copilot-cli）へ
+# 黙って落とすと、利用者が求めていない課金が発生する。それしか無い場合は空を
+# 返し、既定除外のガードと空プラン検査に任せる。
+resolve_available_fallback() {
+  local cli="$1" seen=" $1 " next candidate
+  while :; do
+    next="$(get_cli_fallback "$cli")"
+    [[ -n "$next" ]] || break
+    case "$seen" in
+      *" $next "*) break ;;   # 循環 — 設定された経路はここで尽きた
+    esac
+    if list_contains "$AVAILABLE_CLIS" "$next"; then
+      echo "$next"
+      return
+    fi
+    seen="${seen}${next} "
+    cli="$next"
+  done
+
+  # 設定された経路が尽きた。導入済みの非従量課金 CLI へ回す（ALL_CLIS の順）。
+  for candidate in $ALL_CLIS; do
+    [[ "$candidate" == "$1" ]] && continue
+    list_contains "$AVAILABLE_CLIS" "$candidate" || continue
+    [[ "$(get_cli_cost_tier "$candidate")" == "metered" ]] && continue
+    echo "$candidate"
+    return
+  done
+  echo ""
 }
 
 # ── Model-Selection Env Passthrough ──
@@ -178,7 +255,7 @@ get_cli_model_env_vars() {
     codex-cli)   echo "MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE" ;;
     copilot-cli) echo "MULTI_AGENT_MODEL_COPILOT_CLI" ;;
     gemini-cli)  echo "MULTI_AGENT_MODEL_GEMINI_CLI" ;;
-    cursor-cli)  echo "MULTI_AGENT_MODEL_CURSOR_CLI" ;;
+    grok-cli)    echo "MULTI_AGENT_MODEL_GROK_CLI" ;;
     *) echo "" ;;
   esac
 }
@@ -204,9 +281,253 @@ get_cli_cost_tier() {
     codex-cli)   echo "standard" ;;
     copilot-cli) echo "metered" ;;
     gemini-cli)  echo "free-tier" ;;
-    cursor-cli)  echo "flat-rate" ;;
+    grok-cli)    echo "flat-rate" ;;
+    # 既定の "unknown" は metered ではないので、resolve_available_fallback の
+    # 「最後の砦」に選ばれうる。tier の書き漏れは課金される側へ倒れるということ。
+    # 書き漏れ自体は tests/cli-registry-completeness が既知の tier 語で弾く。
     *) echo "unknown" ;;
   esac
+}
+
+# ── Reviewer Pair (main + sub) ──
+#
+# 分散モードは「全 CLI が入っている」前提の設計だった。実際の利用者はほとんどが
+# 単一 CLI で、未導入 CLI の観点は fallback で回されるため「誰が何を見たか」が
+# 導入状況で毎回変わる。主（メインで使っている CLI）に review 観点すべてを任せ、
+# 副がいれば総合レビューを 1 本だけ足す、という形にする。
+#
+# 保存するのは **CLI 名だけ**。モデルは各 CLI 自身の設定へ委譲する（issue #239 の
+# 不変条件）。設定ファイル経由でモデル slug を保存できてしまうと、.sh しか走査
+# しない tests/no-hardcoded-model をすり抜けて ACE-70-2 が再発する。
+readonly COMPREHENSIVE_PERSPECTIVE="comprehensive-review"
+
+reviewers_config_file() {
+  printf '%s/ff-dev-toolkit/reviewers' "${XDG_CONFIG_HOME:-$HOME/.config}"
+}
+
+# 値が CLI 名として妥当かを見る。ここが「モデル slug を保存できない」ことの
+# 構造的な担保になるので、enum 一致だけを許して他はすべて落とす。
+validate_reviewer_value() { # <役割> <値>
+  local role="$1" value="$2"
+  [[ -z "$value" ]] && return 0
+  if ! is_safe_token "$value"; then
+    echo "ERROR: unsafe ${role} reviewer name: '${value}'" >&2
+    return 1
+  fi
+  if ! list_contains "$ALL_CLIS" "$value"; then
+    echo "ERROR: unknown ${role} reviewer: '${value}'" >&2
+    echo "       Reviewers are CLI names, not model names. Known CLIs: ${ALL_CLIS}" >&2
+    echo "       Which model each CLI uses is delegated to that CLI's own config." >&2
+    return 1
+  fi
+  return 0
+}
+
+# ユーザーグローバルの保存ファイルを読む（`main=...` / `sub=...` の 2 行）。
+# ユーザーグローバルの保存ファイルを読み、指定された変数名へ入れる。
+# グローバルを直接書かないのは、フィールド単位の優先順位判定を呼び出し側に
+# 一元化するため（ここで書き戻すと「誰が入れた値か」が追えなくなる）。
+read_reviewers_file_into() { # <main を入れる変数名> <sub を入れる変数名>
+  local f key value
+  f="$(reviewers_config_file)"
+  [[ -f "$f" ]] || return 0
+  # `|| [[ -n "$key" ]]` が要る。read は末尾改行の無い最終行で非 0 を返すため、
+  # 素の while だとその行が黙って捨てられる。この設定は ~/.config の平文で説明
+  # コメント付きなので手編集を誘うし、落ちる形が「副が黙って消える」——まさに
+  # この機能が可視化しようとしている縮退そのもの。
+  while IFS='=' read -r key value || [[ -n "$key" ]]; do
+    case "$key" in
+      main) eval "$1=\"\$value\"" ;;
+      sub)  eval "$2=\"\$value\"" ;;
+    esac
+  done < "$f"
+  return 0
+}
+
+# env > プロジェクト設定 > ユーザーグローバル。既存の CONFIG_FILE 解決と同じ形。
+# 優先順位は **フィールド単位**（main と sub をそれぞれ独立に env > project > global で
+# 解決する）。ペア単位にすると「今回だけ副を変えたい」ができず、片側だけ指定した
+# ときに上位層の main と下位層の sub が非対称に混ざる（どちらの規則としても
+# 一貫しない状態になる）。フィールド単位なら片側指定の全組合せが説明できる。
+#
+# 副に空文字を明示指定する（MULTI_AGENT_REVIEW_SUB=）のは「今回は副なし」の意思
+# 表示なので、下位層で埋め戻さない。env が設定されているかどうかで判定する。
+resolve_reviewer_pair() {
+  local v
+  REVIEW_MAIN=""
+  REVIEW_SUB=""
+  local main_src="" sub_src=""
+  REVIEWERS_MAIN_SOURCE=""
+  REVIEWERS_SUB_SOURCE=""
+
+  if [[ -n "${MULTI_AGENT_REVIEW_MAIN:-}" ]]; then
+    REVIEW_MAIN="$MULTI_AGENT_REVIEW_MAIN"; main_src="env"
+  fi
+  # 空文字での明示指定も「決まった」とみなす（副なしの意思表示）
+  if [[ "${MULTI_AGENT_REVIEW_SUB+set}" == "set" ]]; then
+    REVIEW_SUB="$MULTI_AGENT_REVIEW_SUB"; sub_src="env"
+  fi
+
+  if [[ -f "$CONFIG_FILE" ]] && command -v yq &>/dev/null; then
+    if [[ -z "$main_src" ]]; then
+      v="$(yq -r '.review.main // ""' "$CONFIG_FILE" 2>/dev/null || true)"
+      [[ -n "$v" ]] && { REVIEW_MAIN="$v"; main_src="project config"; }
+    fi
+    if [[ -z "$sub_src" ]]; then
+      v="$(yq -r '.review.sub // ""' "$CONFIG_FILE" 2>/dev/null || true)"
+      [[ -n "$v" ]] && { REVIEW_SUB="$v"; sub_src="project config"; }
+    fi
+  fi
+
+  if [[ -z "$main_src" || -z "$sub_src" ]]; then
+    local file_main="" file_sub=""
+    read_reviewers_file_into file_main file_sub
+    if [[ -z "$main_src" && -n "$file_main" ]]; then REVIEW_MAIN="$file_main"; main_src="user config"; fi
+    if [[ -z "$sub_src"  && -n "$file_sub"  ]]; then REVIEW_SUB="$file_sub";  sub_src="user config"; fi
+  fi
+
+  # 出所は main / sub が同じなら 1 つ、違えば両方を出す（どこを直せばよいか分かる形）
+  if [[ -z "$main_src" && -z "$sub_src" ]]; then
+    REVIEWERS_SOURCE=""
+  elif [[ "$main_src" == "$sub_src" ]]; then
+    REVIEWERS_SOURCE="$main_src"
+  else
+    REVIEWERS_SOURCE="main:${main_src:-unset} sub:${sub_src:-unset}"
+  fi
+
+  REVIEWERS_MAIN_SOURCE="${main_src:-unset}"
+  REVIEWERS_SUB_SOURCE="${sub_src:-unset}"
+
+  validate_reviewer_value main "$REVIEW_MAIN" || return 1
+  validate_reviewer_value sub  "$REVIEW_SUB"  || return 1
+  return 0
+}
+
+# 書き込みは hooks/check-update.sh の write_cache と同じアトミック置換。
+# 部分的に書けたファイルを残すと、次回の読み出しが壊れた設定を拾う。
+write_reviewers_file() { # <main> <sub>
+  local f dir tmp
+  f="$(reviewers_config_file)"
+  dir="$(dirname "$f")"
+  mkdir -p "$dir" 2>/dev/null || {
+    echo "ERROR: cannot create ${dir}" >&2
+    return 1
+  }
+  # hooks/check-update.sh の write_cache は同じ位置で `rm -rf` して自己修復するが、
+  # あちらは**キャッシュ**なので捨ててよい。ここは利用者の設定なので、想定外の
+  # 形をしていたら消さずに止める（消してよいかを判断できるのは利用者だけ）。
+  if [[ -d "$f" ]]; then
+    echo "ERROR: ${f} is a directory, not a config file." >&2
+    echo "       Refusing to remove it. Move it aside and retry." >&2
+    return 1
+  fi
+  # kill された過去の実行が残した一時ファイルを掃除する（所有 PID が消えている
+  # ので自前の rm では回収できない）。check-update.sh の write_cache と同じ理由。
+  rm -f "$f".[0-9]* 2>/dev/null
+  tmp="$f.$$"
+  # 1 回の printf で書く。複数の printf を { } で束ねると、ブロックの終了状態は
+  # **最後の 1 つ**のものになり、途中の書き込み失敗を検出できない（切り詰められた
+  # ファイルがそのまま install される）。
+  if ! printf '%s\n' \
+    "# ff-dev-toolkit review reviewers (CLI names only — models are each CLI's own setting)" \
+    "main=$1" \
+    "sub=$2" > "$tmp"; then
+    rm -f "$tmp" 2>/dev/null
+    echo "ERROR: cannot write ${tmp}" >&2
+    return 1
+  fi
+  # mv の stderr は捨てない。EACCES / ENOSPC / read-only fs で次の一手が違う。
+  if ! mv -f "$tmp" "$f"; then
+    rm -f "$tmp" 2>/dev/null
+    echo "ERROR: cannot install ${f}" >&2
+    return 1
+  fi
+  return 0
+}
+
+# 機械可読の状態出力。スキル層はこの exit code で分岐する（マーカー行を
+# grep -q で拾う形にしない — SIGPIPE + pipefail で判定が反転する。Issue #234）。
+#   0 = 主が決まっている / 3 = 未設定
+print_reviewers_state() {
+  # 状態は検出より**先に**出す。detect_available_clis は CLI が 1 つも無いと
+  # インストール案内を出して `exit 1` する（関数の return ではないので `|| true`
+  # では捕まえられない）。検出を先に置くと、その環境では 1 バイトも出力されない
+  # まま終わる — しかもこれは /multi-review の最初のコマンドで、プラグインを
+  # 入れてから CLI を入れる人が最初に踏む経路になる。
+  printf 'main=%s\n' "$REVIEW_MAIN"
+  printf 'sub=%s\n' "$REVIEW_SUB"
+  printf 'main_source=%s\n' "${REVIEWERS_MAIN_SOURCE:-unset}"
+  printf 'sub_source=%s\n' "${REVIEWERS_SUB_SOURCE:-unset}"
+  printf 'source=%s\n' "${REVIEWERS_SOURCE:-unset}"
+  # stderr は握りつぶさない。CLI 未導入時の唯一の手がかり（インストール案内）が
+  # そこにしか無い。stdout の ✅/❌ だけを捨てる。
+  detect_available_clis >/dev/null
+  printf 'available=%s\n' "$AVAILABLE_CLIS"
+  printf 'known=%s\n' "$ALL_CLIS"
+  [[ -n "$REVIEW_MAIN" ]] && return 0
+  return 3
+}
+
+# `main=<cli>,sub=<cli>` を検証して保存する。検証はここ 1 箇所に閉じ込め、
+# スキル層にはプロンプト以外の判断をさせない。
+set_reviewers_from_spec() { # <spec>
+  local spec="$1" part key value main="" sub="" sub_given=false
+  # IFS の変更はカンマ分割のあいだだけに閉じる。関数の残り（validate_reviewer_value →
+  # list_contains）は `for i in $list` の単語分割に依存しているので、IFS=',' のまま
+  # 進むと既知の CLI 名すら「未知」と判定される（実際に踏んだ）。
+  local saved_ifs="$IFS"
+  IFS=','
+  for part in $spec; do
+    key="${part%%=*}"
+    value="${part#*=}"
+    case "$key" in
+      main) main="$value" ;;
+      sub)  sub="$value"; sub_given=true ;;
+      *)
+        echo "ERROR: unknown reviewer key: '${key}' (expected main= or sub=)" >&2
+        return 1
+        ;;
+    esac
+  done
+
+  IFS="$saved_ifs"
+
+  if [[ -z "$main" ]]; then
+    echo "ERROR: --set-reviewers requires main=<cli> (sub=<cli> is optional)." >&2
+    return 1
+  fi
+  # `main=X` だけを渡したときに副を黙って消さない。部分更新に見える指定が
+  # 全置換として振る舞うのは事故のもと。消したいときは `sub=` を明示する。
+  if [[ "$sub_given" != "true" ]]; then
+    local existing_main="" existing_sub=""
+    read_reviewers_file_into existing_main existing_sub
+    sub="$existing_sub"
+    [[ -n "$sub" ]] && echo "ℹ️  sub は既存の設定（${sub}）を引き継ぎます。消すには sub= を明示してください。" >&2
+  fi
+
+  validate_reviewer_value main "$main" || return 1
+  validate_reviewer_value sub  "$sub"  || return 1
+  if [[ -n "$sub" && "$sub" == "$main" ]]; then
+    echo "ERROR: sub reviewer must differ from main (both '${main}')." >&2
+    return 1
+  fi
+
+  # 従量課金の CLI は分散モードでは毎回 --cli 明示のオプトインを要求している。
+  # 保存はその一度きりの選択を「毎回のレビューで課金」へ変えるので、保存の時点で
+  # 言う（プラン表示の [metered] は最後の砦であって、気づく最初の機会ではない）。
+  local role value
+  for role in main sub; do
+    [[ "$role" == "main" ]] && value="$main" || value="$sub"
+    [[ -z "$value" ]] && continue
+    if [[ "$(get_cli_cost_tier "$value")" == "metered" ]]; then
+      echo "⚠️  ${value} は従量課金です。${role} に保存すると、変更するまで毎回のレビューで課金されます。" >&2
+    fi
+  done
+
+  write_reviewers_file "$main" "$sub" || return 1
+  echo "✅ Saved reviewers: main=${main} sub=${sub:-（なし）}" >&2
+  echo "   $(reviewers_config_file)" >&2
+  return 0
 }
 
 # ── Task-type defaults ──
@@ -251,42 +572,21 @@ get_default_timeout() {
   esac
 }
 
-# ── Per-CLI Timeout Caps ──
-# Some CLIs cannot be given the full budget. Cursor's --print mode has a known
-# non-interactive hang, so it is capped so one CLI cannot sit on the whole run.
+# ── Timeout policy (no per-CLI caps) ──
+# Every CLI gets the run-wide $TIMEOUT verbatim. cursor-cli had a cap (its --print mode has a known non-interactive
+# hang, so it was clamped to 120s) and was the only CLI that ever did; the cap
+# machinery went out with it in issue #240, so the limit reported on failure is
+# always the limit that actually applied.
 #
-# The cap lives HERE, not only in the adapter, because the orchestrator is what
-# reports and advises about timeouts. When the adapter capped silently, a
-# cursor-cli task that stopped at 120s was logged as "Timed out after 900s" and
-# the printed remedy was `--timeout 1800` — which the adapter clamped straight
-# back to 120, so following the advice changed nothing. Empty means no cap.
-# cursor-cli-adapter.sh keeps the same cap for direct invocation; the two values
-# are gated against each other by tests/multi-agent-timeout/verify.sh.
+# Enforced by tests/multi-agent-timeout/verify.sh, which statically rejects any
+# reassignment of TIMEOUT inside an adapter — the shape the old clamp took.
 #
-# Test seam: FF_CURSOR_TIMEOUT_CAP lowers the cap. Without it the *application* of
-# the cap (capping, reporting the capped number, advising that --timeout cannot
-# extend it) is untestable — pinning it behaviourally would cost a 120s hang, so
-# the suite only checked that the two constants matched. Same seam shape as
-# FF_TIMEOUT_KILL_GRACE in adapters/adapter-common.sh.
-readonly CURSOR_TIMEOUT_CAP="${FF_CURSOR_TIMEOUT_CAP:-120}"
-
-get_cli_timeout_cap() {
-  case "$1" in
-    cursor-cli) echo "$CURSOR_TIMEOUT_CAP" ;;
-    *)          echo "" ;;
-  esac
-}
-
-# The limit that will actually apply to this CLI.
-get_effective_timeout() {
-  local cap
-  cap="$(get_cli_timeout_cap "$1")"
-  if [[ -n "$cap" && "$TIMEOUT" -gt "$cap" ]]; then
-    echo "$cap"
-  else
-    echo "$TIMEOUT"
-  fi
-}
+# If a future CLI needs a cap, re-introduce it HERE rather than in the adapter
+# alone. When the adapter capped silently, a task that stopped at 120s was logged
+# as "Timed out after 900s" and the printed remedy was `--timeout 1800` — which
+# the adapter clamped straight back to 120, so following the advice changed
+# nothing. The orchestrator is what reports and advises about timeouts, so it has
+# to know the real number.
 
 get_default_strategy() {
   case "$1" in
@@ -321,7 +621,13 @@ if [[ -z "$CONFIG_FILE" ]]; then
     CONFIG_SOURCE="plugin default"
   fi
 fi
-MODE="distributed"
+MODE=""            # 未指定なら apply_task_defaults がタスク種別ごとに決める
+REVIEW_MAIN=""
+REVIEW_SUB=""
+REVIEWERS_SOURCE=""
+MODE_EXPLICIT=false
+PRINT_REVIEWERS=false
+SET_REVIEWERS=""
 STRATEGY=""
 PARALLEL=true
 OUTPUT_DIR=""
@@ -391,7 +697,7 @@ parse_args() {
       --description) DESCRIPTION="$2"; shift 2 ;;
       --include-diff) INCLUDE_DIFF=true; shift ;;
       --config)      CONFIG_FILE="$2"; CONFIG_SOURCE="--config flag"; shift 2 ;;
-      --mode)        MODE="$2"; shift 2 ;;
+      --mode)        MODE="$2"; MODE_EXPLICIT=true; shift 2 ;;
       --strategy)    STRATEGY="$2"; shift 2 ;;
       --cli)         CLI_FILTER="${CLI_FILTER:+$CLI_FILTER }$2"; shift 2 ;;
       --perspective) PERSPECTIVE_FILTER="${PERSPECTIVE_FILTER:+$PERSPECTIVE_FILTER }$2"; shift 2 ;;
@@ -400,6 +706,8 @@ parse_args() {
       --output-dir)  OUTPUT_DIR="$2"; OUTPUT_DIR_EXPLICIT=true; shift 2 ;;
       --base)        BASE_BRANCH="$2"; BASE_BRANCH_SOURCE="--base flag"; shift 2 ;;
       --dry-run)     DRY_RUN=true; shift ;;
+      --print-reviewers) PRINT_REVIEWERS=true; shift ;;
+      --set-reviewers)   SET_REVIEWERS="$2"; shift 2 ;;
       --timeout)     TIMEOUT="$2"; shift 2 ;;
       --help|-h)     show_help ;;
       *)
@@ -467,6 +775,12 @@ load_config() {
 
     if [[ "$version" == "2.0" ]]; then
       # Read task-specific settings
+      # mode をタスク単位で読む。グローバルの mode: は全タスク共通の既定で、
+      # review だけ pair にしたいといった指定ができなかった（v2.0 で cost_strategy /
+      # timeout / output_dir がタスク単位なのと同じ扱いへ揃える）。
+      cfg_val=$(yq -r ".tasks.${TASK_TYPE}.mode // \"\"" "$CONFIG_FILE" 2>/dev/null || true)
+      [[ -n "$cfg_val" ]] && MODE="$cfg_val"
+
       cfg_val=$(yq -r ".tasks.${TASK_TYPE}.cost_strategy // \"\"" "$CONFIG_FILE" 2>/dev/null || true)
       [[ -n "$cfg_val" && -z "$STRATEGY" ]] && STRATEGY="$cfg_val"
 
@@ -494,6 +808,19 @@ load_config() {
 
 # ── Apply task-type defaults (after config + CLI args) ──
 apply_task_defaults() {
+  # review だけ pair（主+副）を既定にする。explore / implement は従来の分散のまま。
+  # 既存の分散モードは --mode distributed で引き続き使える。
+  if [[ -z "$MODE" ]]; then
+    if [[ "$TASK_TYPE" == "review" ]]; then MODE="pair"; else MODE="distributed"; fi
+  fi
+  # pair は review 専用。build_pair_plan は review の観点しか組まないので、他タスクで
+  # 受け入れると dry-run だけ成功して実行時に「観点ファイルが無い」で全件失敗する
+  # （プランは正しく見えるのに中身が存在しない、という一番たちの悪い形）。
+  if [[ "$MODE" == "pair" && "$TASK_TYPE" != "review" ]]; then
+    echo "ERROR: --mode pair is review-only (got --task ${TASK_TYPE})." >&2
+    echo "       explore / implement use the distributed plan." >&2
+    exit 1
+  fi
   [[ -z "$OUTPUT_DIR" ]] && OUTPUT_DIR="$(get_default_output_dir "$TASK_TYPE")"
   [[ -z "$TIMEOUT" ]] && TIMEOUT="$(get_default_timeout "$TASK_TYPE")"
   [[ -z "$STRATEGY" ]] && STRATEGY="$(get_default_strategy "$TASK_TYPE")"
@@ -583,13 +910,20 @@ build_distributed_plan() {
         fi
       fi
     else
-      fallback_target="$(get_cli_fallback "$cli_name")"
-      if [[ -n "$fallback_target" ]] && list_contains "$AVAILABLE_CLIS" "$fallback_target"; then
+      fallback_target="$(resolve_available_fallback "$cli_name")"
+      if [[ -n "$fallback_target" ]]; then
         if [[ -n "$CLI_FILTER" ]] && ! list_contains "$CLI_FILTER" "$fallback_target"; then
           echo "  ⚠️  ${cli_name}: fallback ${fallback_target} excluded by --cli filter. Skipping." >&2
           continue
         fi
-        echo "  ↪ ${cli_name} → ${fallback_target} (fallback — ${cli_name} not installed)" >&2
+        # 「対応表どおりの代替」と「対応表が尽きて選び直した先」は利用者にとって
+        # 別の話。後者は設定していない CLI が担当することになるので、そう読める
+        # 表示にする。コスト帯も出す（最後の砦は課金先が変わりうる）。
+        if [[ "$fallback_target" == "$(get_cli_fallback "$cli_name")" ]]; then
+          echo "  ↪ ${cli_name} → ${fallback_target} (fallback — ${cli_name} not installed)" >&2
+        else
+          echo "  ↪ ${cli_name} → ${fallback_target} [$(get_cli_cost_tier "$fallback_target")] (last-resort — configured chain exhausted)" >&2
+        fi
         for p in $perspectives; do
           if [[ -n "$PERSPECTIVE_FILTER" ]] && ! list_contains "$PERSPECTIVE_FILTER" "$p"; then
             continue
@@ -597,22 +931,38 @@ build_distributed_plan() {
           add_to_plan "$fallback_target" "$p"
         done
       else
-        echo "  ⚠️  ${cli_name}: No fallback available. Skipping: ${perspectives}" >&2
+        # 「代替が設定されていない」と「設定はあるが連鎖の先まで全部未導入」は
+        # 利用者にとって別の話（後者はインストールで直る）。区別して出す。
+        echo "  ⚠️  ${cli_name}: no installed fallback (configured: $(get_cli_fallback "$cli_name")). Skipping: ${perspectives}" >&2
       fi
     fi
   done
 
-  # Apply cost strategy: minimize_cost moves premium → flat-rate
+  # Apply cost strategy: minimize_cost moves premium → free-tier.
+  # The substitute was hardcoded to cursor-cli until issue #240 deleted that arm;
+  # gemini-cli [free-tier] took its place. There is no tier ordering in the code
+  # (KNOWN_TIERS is an unordered set), so this is a named choice, not a computed
+  # one — which is deliberate: naming the substitute keeps the swap readable in
+  # the plan output, and the user sees which model actually ran.
+  #
+  # Known tradeoff of that swap: the substitute is now the ONE rate-limited tier,
+  # and execute_tasks launches every plan entry concurrently with no cap. A
+  # review under minimize_cost puts four simultaneous gemini calls on a free
+  # quota; the old flat-rate substitute had no such limit. Rate limiting is a
+  # *runtime* failure, and runtime fallback is deliberately absent (see the
+  # header), so a throttled task is zero coverage for that perspective rather
+  # than a retry elsewhere. Concurrency limiting is tracked in issue #251 — until
+  # then, --sequential is the workaround worth reaching for on large diffs.
   if [[ "$STRATEGY" == "minimize_cost" && -z "$CLI_FILTER" ]]; then
     local new_plan=""
     while IFS= read -r entry; do
       [[ -z "$entry" ]] && continue
       local cli="${entry%%:*}"
       local persp="${entry#*:}"
-      if [[ "$cli" == "claude-code" ]] && list_contains "$AVAILABLE_CLIS" "cursor-cli"; then
-        echo "  💰 minimize_cost: ${persp}: claude-code → cursor-cli" >&2
+      if [[ "$cli" == "claude-code" ]] && list_contains "$AVAILABLE_CLIS" "gemini-cli"; then
+        echo "  💰 minimize_cost: ${persp}: claude-code → gemini-cli" >&2
         new_plan="${new_plan:+$new_plan
-}cursor-cli:${persp}"
+}gemini-cli:${persp}"
       else
         new_plan="${new_plan:+$new_plan
 }${entry}"
@@ -620,6 +970,73 @@ build_distributed_plan() {
     done <<< "$EXECUTION_PLAN"
     EXECUTION_PLAN="$new_plan"
   fi
+}
+
+# ── Build Execution Plan (pair mode: main + sub) ──
+#
+# 主 = review 観点すべて / 副 = 総合レビュー 1 本。副が居なければ主だけに縮退する。
+# 縮退はすべて続行（exit 0）で、止めるのは「主が未インストール」のときだけ。
+build_pair_plan() {
+  EXECUTION_PLAN=""
+  local p sub_effective=""
+
+  if ! list_contains "$AVAILABLE_CLIS" "$REVIEW_MAIN"; then
+    echo "ERROR: main reviewer '${REVIEW_MAIN}' is not installed." >&2
+    echo "       Install it, or pick another with --set-reviewers." >&2
+    return 1
+  fi
+
+  # 副の縮退判定。どれも「主のみで続行」で、理由だけを変えて伝える。
+  if [[ -z "$REVIEW_SUB" ]]; then
+    echo "  ℹ️  No sub reviewer set — running single-reviewer. Set one for cross-model coverage." >&2
+  elif [[ "$REVIEW_SUB" == "$REVIEW_MAIN" ]]; then
+    echo "  ⏭  sub reviewer is the same CLI as main (${REVIEW_MAIN}) — skipping the duplicate." >&2
+  elif ! list_contains "$AVAILABLE_CLIS" "$REVIEW_SUB"; then
+    echo "  ⚠️  sub reviewer '${REVIEW_SUB}' is not installed — running single-reviewer." >&2
+  else
+    sub_effective="$REVIEW_SUB"
+  fi
+
+  for p in $(get_cli_perspectives_review "$REVIEW_MAIN"); do
+    [[ -n "$PERSPECTIVE_FILTER" ]] && ! list_contains "$PERSPECTIVE_FILTER" "$p" && continue
+    add_to_plan "$REVIEW_MAIN" "$p"
+  done
+  # 主は「review 観点すべて」を担当する。所有レジストリは分散モード用の割当なので、
+  # 主が所有していない観点もここでは主に回す（それが pair モードの定義）。
+  for p in $(all_review_perspectives); do
+    list_contains "$(get_cli_perspectives_review "$REVIEW_MAIN")" "$p" && continue
+    # 総合観点は副の担当なので、既定では主に載せない。ただし --perspective で
+    # 明示指定されていて副が居ない場合は主へ回す。ここを飛ばすと空プランになり、
+    # 「副が居なければ主のみで続行」という縮退契約に反して exit 1 で止まる。
+    if [[ "$p" == "$COMPREHENSIVE_PERSPECTIVE" ]]; then
+      if [[ -n "$sub_effective" ]] \
+        || [[ -z "$PERSPECTIVE_FILTER" ]] \
+        || ! list_contains "$PERSPECTIVE_FILTER" "$COMPREHENSIVE_PERSPECTIVE"; then
+        continue
+      fi
+      echo "  ↪ ${COMPREHENSIVE_PERSPECTIVE} → ${REVIEW_MAIN} (no sub reviewer available)" >&2
+    fi
+    [[ -n "$PERSPECTIVE_FILTER" ]] && ! list_contains "$PERSPECTIVE_FILTER" "$p" && continue
+    add_to_plan "$REVIEW_MAIN" "$p"
+  done
+
+  if [[ -n "$sub_effective" ]]; then
+    if [[ -z "$PERSPECTIVE_FILTER" ]] || list_contains "$PERSPECTIVE_FILTER" "$COMPREHENSIVE_PERSPECTIVE"; then
+      # 副に従量課金 CLI を選ぶのは明示的な指定なので opt-in とみなす。ただし
+      # コスト帯はプラン表示に出るので、黙って課金されることはない。
+      add_to_plan "$sub_effective" "$COMPREHENSIVE_PERSPECTIVE"
+    fi
+  fi
+  return 0
+}
+
+# review の観点ファイル一覧（総合レビューを含む、ディスク上の実体）。
+all_review_perspectives() {
+  local f
+  for f in "${SCRIPT_DIR}/perspectives/review"/*.md; do
+    [[ -f "$f" ]] || continue
+    basename "$f" .md
+  done
 }
 
 # ── Build Execution Plan (cross-model mode) ──
@@ -640,6 +1057,30 @@ build_cross_model_plan() {
       continue
     fi
     add_to_plan "$cli_name" "$perspective"
+  done
+}
+
+# ── Validate Requested CLIs ──
+# An unknown --cli used to fail late and vaguely: the name matched nothing in the
+# ownership registry, every CLI was filtered out, and the empty-plan guard then
+# reported "no CLI/perspective matched the given filters" without ever naming the
+# CLI that does not exist — leaving the user to guess whether the fault was the
+# --cli, the --perspective, or the --mode. A retired name (cursor-cli, removed in
+# issue #240) is the case that makes that guessing expensive, because the name
+# looks valid. Reject it here instead: before the plan is built, naming the
+# offending value and the CLIs that do exist.
+validate_requested_clis() {
+  local cli_name
+  for cli_name in $CLI_FILTER; do
+    if ! is_safe_token "$cli_name"; then
+      echo "ERROR: unsafe CLI name: '${cli_name}'" >&2
+      return 1
+    fi
+    if ! list_contains "$ALL_CLIS" "$cli_name"; then
+      echo "ERROR: unknown CLI: '${cli_name}'" >&2
+      echo "       Known CLIs: ${ALL_CLIS}" >&2
+      return 1
+    fi
   done
 }
 
@@ -784,7 +1225,7 @@ run_single_task() {
 
   bash "$adapter" "$perspective_file" "$output_file" \
     --base "$BASE_BRANCH" \
-    --timeout "$(get_effective_timeout "$cli_name")" \
+    --timeout "$TIMEOUT" \
     "${extra_args[@]}"
 }
 
@@ -889,7 +1330,7 @@ execute_tasks() {
       if [[ $task_rc -ne 0 ]]; then
         failed=$((failed + 1))
         FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${cli}/${persp}:${task_rc}"
-        report_task_failure "${cli}/${persp}" "$cli" "$task_rc"
+        report_task_failure "${cli}/${persp}" "$task_rc"
       elif [[ ! -f "${OUTPUT_DIR}/${cli}/${persp}.md" ]]; then
         # Adapter reported success but wrote no output — count it as a failure so
         # a silently-empty run shows up in the exit code, not only the report.
@@ -917,7 +1358,7 @@ execute_tasks() {
       elif [[ $exit_code -ne 0 ]]; then
         failed=$((failed + 1))
         FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:${exit_code}"
-        report_task_failure "$task_name" "${task_name%%/*}" "$exit_code"
+        report_task_failure "$task_name" "$exit_code"
       else
         # Success exit but no output file — surface as a failure, not silent OK.
         failed=$((failed + 1))
@@ -939,14 +1380,17 @@ execute_tasks() {
 }
 
 # ── One-Line Failure Diagnosis ──
-# Reports the limit that ACTUALLY applied to this CLI, not the run-wide setting:
-# a capped CLI (see get_cli_timeout_cap) stops earlier, and naming the run-wide
-# number there tells the user a deadline fired that never existed.
+# $TIMEOUT is the limit that actually applied — no CLI is capped below it any
+# more (see "Per-CLI Timeout Caps"), so this function does not need to know
+# which CLI failed. Re-introducing a cap means taking `cli_name` back as a
+# parameter (both call sites have it) and reporting the capped number rather
+# than the run-wide one: naming a deadline that never existed sends the user
+# after the wrong remedy.
 # 124 is run_with_timeout's timeout status (see adapters/adapter-common.sh).
 report_task_failure() {
-  local task_name="$1" cli_name="$2" rc="$3"
+  local task_name="$1" rc="$2"
   if [[ "$rc" -eq 124 ]]; then
-    echo "  ❌ Timed out after $(get_effective_timeout "$cli_name")s: ${task_name}" >&2
+    echo "  ❌ Timed out after ${TIMEOUT}s: ${task_name}" >&2
   else
     echo "  ❌ Failed: ${task_name} (exit code: ${rc})" >&2
   fi
@@ -993,7 +1437,7 @@ print_failure_advice() {
   echo "   what got reviewed, and the substitute may bill a costlier tier)." >&2
   echo "   Re-run the failed task(s) yourself:" >&2
 
-  local entry task rc cli persp fb fb_tier cap
+  local entry task rc cli persp fb fb_tier
   for entry in $FAILED_TASKS; do
     task="${entry%:*}"
     rc="${entry##*:}"
@@ -1004,21 +1448,17 @@ print_failure_advice() {
     # credentials or a crash sends the user off to wait twice as long for the
     # identical failure.
     if [[ "$rc" -eq 124 ]]; then
-      cap="$(get_cli_timeout_cap "$cli")"
-      if [[ -n "$cap" ]]; then
-        echo "     ${task} — ${cli} is capped at ${cap}s (known non-interactive hang), so" >&2
-        echo "       --timeout cannot extend it. Use a different CLI for this perspective." >&2
-      else
-        echo "     ${task} — more time on the same CLI:" >&2
-        echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp} --timeout $((TIMEOUT * 2))" >&2
-      fi
+      echo "     ${task} — more time on the same CLI:" >&2
+      echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp} --timeout $((TIMEOUT * 2))" >&2
     else
       echo "     ${task} — failed for a reason more time will not fix; read the CLI" >&2
       echo "       stderr in ${OUTPUT_DIR}/${cli}/${persp}.md, then re-run:" >&2
       echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp}" >&2
     fi
-    fb="$(get_cli_fallback "$cli")"
-    if [[ -n "$fb" ]] && list_contains "$AVAILABLE_CLIS" "$fb"; then
+    # プラン構築と同じ解決を使う。ここだけ get_cli_fallback を直接呼ぶと、
+    # 「設定上の代替は未導入だが、その先には導入済みがある」場合に代替案が出ない。
+    fb="$(resolve_available_fallback "$cli")"
+    if [[ -n "$fb" ]]; then
       fb_tier="$(get_cli_cost_tier "$fb")"
       echo "     ${task} — or the configured substitute ${fb} [${fb_tier}]:" >&2
       # 代替 CLI の行には代替 CLI に効く env だけを前置する（失敗した CLI の
@@ -1242,7 +1682,51 @@ main() {
   load_config
   parse_args "$@"
   apply_task_defaults
+  validate_requested_clis
   validate_requested_perspectives
+
+  # ── レビュワーの参照・保存（プランを組む前に処理して終了する経路） ──
+  #
+  # 聞く役はスキル層に置く。Claude Code の Bash 実行は stdin/stdout/stderr すべて
+  # NOT-TTY と実測済みで、`[ -t 0 ]` で対話を出す設計だと /multi-review 経由では
+  # プロンプトが一度も出ず、全員が黙って単一レビューのまま固定される。ここは
+  # 「状態を機械可読で返す」「検証して保存する」の 2 つだけを担う。
+  if [[ -n "$SET_REVIEWERS" ]]; then
+    set_reviewers_from_spec "$SET_REVIEWERS"
+    exit $?
+  fi
+
+  resolve_reviewer_pair || exit 1
+
+  if [[ "$PRINT_REVIEWERS" == "true" ]]; then
+    print_reviewers_state
+    exit $?
+  fi
+
+  # --cli は分散モード用のフィルタ（所有レジストリを絞る）で、pair モードには
+  # 対応する概念が無い。review の既定が pair になったことで、従来 --cli で回して
+  # いた指定が**黙って無視される**状態になっていた（効かないつまみ）。
+  # 明示的に --mode pair を要求されている場合だけ矛盾としてエラーにし、それ以外は
+  # 分散モードへ落として通知する（従来の使い方をそのまま通す）。
+  if [[ "$MODE" == "pair" && -n "$CLI_FILTER" ]]; then
+    if [[ "$MODE_EXPLICIT" == "true" ]]; then
+      echo "ERROR: --cli cannot be combined with --mode pair." >&2
+      echo "       In pair mode the reviewers are the main/sub pair, not a filter." >&2
+      echo "       Override them for one run with MULTI_AGENT_REVIEW_MAIN / _SUB." >&2
+      exit 1
+    fi
+    echo "ℹ️  --cli given — using the distributed plan (it is a distributed-mode filter)." >&2
+    echo "   To pick reviewers for one run instead: MULTI_AGENT_REVIEW_MAIN=<cli> MULTI_AGENT_REVIEW_SUB=<cli>" >&2
+    MODE="distributed"
+  fi
+
+  # review で主が決まっていない場合の縮退。CI を止めないため、対話は試みず
+  # 従来の分散プランへ落とす（今日までと同じ挙動）。
+  if [[ "$MODE" == "pair" && -z "$REVIEW_MAIN" ]]; then
+    echo "ℹ️  No reviewers configured — falling back to the distributed plan." >&2
+    echo "   Set them once with: bash $(printf '%q' "${SCRIPT_DIR}/multi-agent.sh") --task review --set-reviewers main=<cli>,sub=<cli>" >&2
+    MODE="distributed"
+  fi
 
   emoji="$(get_task_emoji "$TASK_TYPE")"
 
@@ -1258,6 +1742,8 @@ main() {
 
   if [[ "$MODE" == "cross-model" ]]; then
     build_cross_model_plan
+  elif [[ "$MODE" == "pair" ]]; then
+    build_pair_plan || exit 1
   else
     build_distributed_plan
   fi
@@ -1267,6 +1753,26 @@ main() {
   # Validate TIMEOUT
   if ! echo "$TIMEOUT" | grep -qE '^[0-9]+$' || [[ "$TIMEOUT" -eq 0 ]]; then
     echo "ERROR: --timeout must be a positive integer, got: '${TIMEOUT}'" >&2
+    exit 1
+  fi
+
+  # Fail loudly on an empty plan — never report success when nothing ran.
+  #
+  # This sits BEFORE the dry-run exit on purpose. It used to sit after, so a
+  # filter combination that matched nothing exited 1 on a real run but 0 on
+  # --dry-run, printing "🏁 Dry run complete." A dry run is a plan validation
+  # boundary (see the header), so the two paths have to agree on what an empty
+  # plan means.
+  if [[ -z "$EXECUTION_PLAN" ]]; then
+    echo "ERROR: Execution plan is empty — nothing would be reviewed." >&2
+    # 原因は 2 種類あり、利用者の次の一手が違う。フィルタを 1 つも渡していない人に
+    # 「--cli / --perspective を見直せ」と言っても指し先が誤っている。
+    if [[ -z "$CLI_FILTER" && -z "$PERSPECTIVE_FILTER" ]]; then
+      echo "       Every installed CLI is metered and excluded from the default lineup." >&2
+      echo "       Opt in explicitly (e.g. --cli copilot-cli), or install a non-metered CLI." >&2
+    else
+      echo "       Check --cli / --perspective / --mode combinations." >&2
+    fi
     exit 1
   fi
 
@@ -1292,13 +1798,6 @@ main() {
       echo "ERROR: nothing to review — branch diff against '${BASE_BRANCH}' and working-tree changes are both empty." >&2
       exit 1
     fi
-  fi
-
-  # Fail loudly on an empty plan — never report success when nothing ran
-  if [[ -z "$EXECUTION_PLAN" ]]; then
-    echo "ERROR: Execution plan is empty — no CLI/perspective matched the given filters." >&2
-    echo "       Check --cli / --perspective / --mode combinations." >&2
-    exit 1
   fi
 
   local task_failed=false

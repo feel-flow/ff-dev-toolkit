@@ -83,7 +83,7 @@ git --version
 - 高度なコード生成が可能
 - 無料プラン/有料プランあり
 
-**または: Cursor（VS Codeベース）**
+**または: Gemini CLI（無料枠が大きい）**
 
 - VS Codeと似た操作感
 - AI機能が統合されている
@@ -92,7 +92,6 @@ git --version
 
 - GitHub Copilot: [`SETUP_GITHUB_COPILOT.md`](./SETUP_GITHUB_COPILOT.md)
 - Claude Code: [`SETUP_CLAUDE_CODE.md`](./SETUP_CLAUDE_CODE.md)
-- Cursor: [`SETUP_CURSOR.md`](./SETUP_CURSOR.md)
 
 ### 1-2: プロジェクトフォルダの作成
 
@@ -226,7 +225,7 @@ VS Codeで `docs/00-planning/my-planning.md` を開きます。
 
 ### 3-1: AIに企画をレビューしてもらう
 
-あなたが選んだAIツール（GitHub Copilot / Claude Code / Cursor）で、以下のプロンプトを使います。
+あなたが選んだAIツール（GitHub Copilot / Claude Code / Codex CLI など）で、以下のプロンプトを使います。
 
 **コピー＆ペーストしてください:**
 

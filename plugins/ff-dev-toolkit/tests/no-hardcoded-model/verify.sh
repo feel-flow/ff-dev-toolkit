@@ -37,6 +37,12 @@
 #   - denylist は既知のベンダー命名規則のみを見る。新しい命名体系のモデルが出たら
 #     パターンの追加が要る。ただし `--model <literal>` の形はリテラル検査が命名に
 #     依存せず捕まえるので、素通りするのは「変数名や文字列にだけ slug が現れる」形
+#   - CLI 識別子がベンダー slug と語幹を共有する場合、識別子を退避してから走査する
+#     （現状 `grok-cli`）。退避は二段で、識別子に数字が続く形（`grok-cli-4`）は
+#     ベンダー slug の形へ畳んでから残りを退避するので検出力は落ちない。ただし
+#     **将来 CLI を足すたびにこの退避リストの更新が要る**。退避漏れは誤検出（赤）
+#     として現れるので静かには壊れないが、退避しすぎると穴になる。追加時は
+#     violation fixture に「識別子を接頭辞に持つ実 slug」のケースも足すこと
 #   - `-m <literal>` のリテラル検査はアダプタ限定。広域では `git commit -m` と
 #     区別できないため（アダプタには git 呼び出しが無いことを前提にしている）
 #   - コメント行の slug も検出する（誤検出側）。禁止例を .sh に書く必要が出たら
@@ -102,6 +108,18 @@ scan_model_slugs() {
       if (op == "\"" && substr(rest, 2, 1) == "$") return 0
       return 1
     }
+    # CLI 識別子とモデル slug が同じ語幹を持つ場合の退避。`grok-cli` は
+    # ALL_CLIS のメンバー名（かつコマンド名）であってモデル名ではないが、
+    # ベンダー slug の検査 `(grok|...)[-0-9]` は `grok-cli` にも一致してしまう。
+    # ここで先に潰しておかないと、CLI を追加した瞬間にファイル名・コメント・
+    # インストール URL のすべてが「モデル slug 直書き」として誤検出される。
+    # `[-0-9]` を `-?[0-9]` へ緩めて回避しない — それでは `deepseek-v3` 形式の
+    # 実在の slug を取り逃す。
+    #
+    # 退避は二段。無条件に潰すと `grok-cli-4` のような「識別子を接頭辞に持つ実 slug」
+    # まで不可視になり、退避が抜け道になる。数字が続く形を先にベンダー slug の形へ
+    # 畳んでから、残りの識別子だけを退避する。
+    { gsub(/grok-cli-[0-9]/, "grok-0"); gsub(/grok-cli/, "GROKCLIIDENT") }
     /(^|[^A-Za-z0-9_])gpt-?[0-9]/                                   { print FNR ":" $0; next }
     /(^|[^A-Za-z0-9_])claude-(opus|sonnet|haiku|fable|[0-9])/       { print FNR ":" $0; next }
     /(^|[^A-Za-z0-9_])gemini-[0-9]/                                 { print FNR ":" $0; next }
@@ -233,7 +251,7 @@ for f in violation.sh clean.sh adapter-ok.sh adapter-violations.sh adapter-no-ad
   [ -f "$FIXTURES_DIR/$f" ] || { echo "✗ fixture がありません: $FIXTURES_DIR/$f" >&2; exit 1; }
 done
 
-EXPECTED_SLUG_LINES="9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 29 30 32 33 34"
+EXPECTED_SLUG_LINES="9 10 11 12 13 14 15 16 17 18 19 20 22 23 24 25 26 27 28 31 32 34 35 36"
 actual_slug_lines="$(scan_model_slugs "$FIXTURES_DIR/violation.sh" | awk -F: '{ print $1 }' | paste -sd' ' -)" \
   || { echo "✗ 自己検証の scan パイプラインが失敗しました（violation.sh）" >&2; exit 1; }
 if [ "$actual_slug_lines" = "$EXPECTED_SLUG_LINES" ]; then

@@ -91,7 +91,7 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 
 - [Claude Code](https://docs.claude.com/en/docs/claude-code)（プラグインの第一ターゲット。Codex CLI / Claude Cowork も Claude 形式 marketplace 互換で利用可）
 - Node.js >= 22（MCP サーバー spec-docs の実行に必要。18/20 は EOL のためサポート外）
-- マルチAI CLI オーケストレーション（`/multi-*`）を使う場合のみ: Codex CLI / Gemini CLI / Copilot CLI / Cursor CLI のいずれか（オプション。Copilot CLI は `/multi-review` では従量課金のためオプトイン）
+- マルチAI CLI オーケストレーション（`/multi-*`）を使う場合のみ: Codex CLI / Gemini CLI / Copilot CLI のいずれか（オプション。Copilot CLI は `/multi-review` では従量課金のためオプトイン）
 
 ## 他のツールで使う
 
@@ -100,7 +100,6 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 | Claude Code | 上記「インストール」（第一ターゲット） |
 | Codex CLI / Claude Cowork | Claude 形式 marketplace を登録して install（CLI / UI は各製品の手順に読み替え） |
 | **VS Code + GitHub Copilot** | marketplace の plugin install は不可。`.github/copilot-instructions.md` と `docs/` で方法論を効かせる → **[USING_WITH_VSCODE_COPILOT.md](./USING_WITH_VSCODE_COPILOT.md)** |
-| Cursor | plugin install は不可。`/setup-ai-config` で Project Rules（`.cursor/rules/*.mdc`）を生成 |
 
 ## バージョンと書籍からの参照
 

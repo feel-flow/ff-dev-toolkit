@@ -4,7 +4,8 @@
 version: "2.0"
 
 # ── Global Defaults ──
-mode: distributed  # distributed | cross-model
+# mode はタスク単位でも指定できる（tasks.<task>.mode）。ここはその既定。
+mode: distributed  # distributed | cross-model | pair
 parallel: true
 
 # ── Task-specific Settings ──
@@ -12,12 +13,15 @@ parallel: true
 # DEFAULT_TIMEOUT_* が正本。本ファイル・`--help`・アダプタ単独実行時の既定
 # （adapters/adapter-common.sh の REVIEW_TIMEOUT）・利用者向け文書の一致を
 # tests/multi-agent-timeout/verify.sh が検査する（片方だけ直すと red になる）。
-# なお cursor-cli だけは非インタラクティブ時のハング対策で 120 秒に上限が掛かる
-# （multi-agent.sh の get_cli_timeout_cap）。
+# CLI 別の上限は無い。唯一持っていた cursor-cli は issue #240 で削除され、上限の
+# 仕組みごと撤去した（全 CLI が指定値をそのまま受け取る）。
 # review が 900 なのは 300 では足りなかったため: 中規模差分（3 files, +881/-14）の
 # Codex レビューが 300 秒時点でまだ作業中で、打ち切られて成果ゼロになった（Issue #152）。
 tasks:
   review:
+    # 主（メインで使う CLI）に review 観点すべて / 副に総合レビュー 1 本。
+    # 従来の分散は --mode distributed で引き続き使える。
+    mode: pair
     cost_strategy: balanced  # balanced | minimize_cost | maximize_quality
     output_dir: .review-results
     timeout: 900
@@ -29,6 +33,17 @@ tasks:
     cost_strategy: maximize_quality
     output_dir: .implement-results
     timeout: 900
+
+# ── Review Reviewers（主 + 副） ──
+# ⚠️ 下の agents: / fallback: と違い、**このブロックは実行時に読まれる**。
+# 解決順は env（MULTI_AGENT_REVIEW_MAIN / _SUB）> 本ファイル > ユーザーグローバル
+# （${XDG_CONFIG_HOME:-~/.config}/ff-dev-toolkit/reviewers）。
+#
+# 書けるのは **CLI 名だけ**。どのモデルを使うかは各 CLI 自身の設定へ委譲する
+# （issue #239 の不変条件）。CLI 名以外の値は実行前に非 0 で拒否される。
+#review:
+#  main: claude-code
+#  sub: codex-cli
 
 # ── Agent Definitions ──
 # ⚠️ このブロックは**実行時には読まれない**。CLI レジストリの正本は
@@ -50,6 +65,7 @@ agents:
     perspectives:
       review:
         - type-design-analysis
+        - code-simplification  # cursor-cli 削除（issue #240）に伴い移設
       explore:
         - architecture-analysis
       implement:
@@ -61,7 +77,6 @@ agents:
     perspectives:
       review:
         - code-review
-        - error-handler-hunt
         - test-analysis
       explore:
         - dependency-mapping
@@ -88,20 +103,20 @@ agents:
         - security-analysis
         - comment-analysis
       explore:
-        - tech-debt-assessment
+        - pattern-discovery  # cursor-cli 削除（issue #240）に伴い移設
       implement:
         - documentation
 
-  cursor-cli:
-    command: cursor-agent
+  grok-cli:
+    command: grok
     cost_tier: flat-rate
     perspectives:
       review:
-        - code-simplification
+        - error-handler-hunt  # grok-cli 追加（issue #252）に伴い codex-cli から移設
       explore:
-        - pattern-discovery
+        - tech-debt-assessment  # 同上（gemini-cli から移設）
       implement:
-        - migration
+        - migration  # 同上（codex-cli から移設）
 
 # ── Graceful Degradation（プラン構築時のみ／実行時失敗には適用しない） ──
 # ⚠️ agents: と同じく、このブロックも**実行時には読まれない**。正本は
@@ -122,4 +137,4 @@ fallback:
   codex-cli: claude-code
   copilot-cli: codex-cli
   gemini-cli: codex-cli
-  cursor-cli: codex-cli
+  grok-cli: gemini-cli  # 定額制の代替は無料枠を先に見る（minimize_cost の意図を保つ）

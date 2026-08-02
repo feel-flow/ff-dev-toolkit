@@ -1,6 +1,6 @@
 ---
 name: setup-ai-config
-description: プロジェクトの docs/ を基に AI 開発ツール向け設定ファイル（CLAUDE.md / AGENTS.md / .cursor/rules/*.mdc / copilot-instructions.md）を生成し、Multi-CLI エージェントをセットアップする
+description: プロジェクトの docs/ を基に AI 開発ツール向け設定ファイル（CLAUDE.md / AGENTS.md / copilot-instructions.md）を生成し、Multi-CLI エージェントをセットアップする
 ---
 
 # /setup-ai-config — AI開発ツール設定ファイル生成
@@ -17,14 +17,11 @@ description: プロジェクトの docs/ を基に AI 開発ツール向け設�
 |--------|-------------|---------|
 | Claude Code | `CLAUDE.md` | プロジェクトルート |
 | Codex CLI / 汎用エージェント | `AGENTS.md`（[agents.md](https://agents.md) 標準） | プロジェクトルート |
-| Cursor | `.cursor/rules/spec-driven.mdc`（既定・現行 Project Rules 形式） | `.cursor/rules/` |
 | GitHub Copilot | `.github/copilot-instructions.md` | `.github/` |
-
-> **Cursor の出力形式**: 既定は現行の Project Rules 形式（`.cursor/rules/*.mdc`, `alwaysApply: true`）。Legacy の単一ファイル `.cursorrules`（プロジェクトルート）は後方互換のための**明示的な互換オプション**として選べる（手順4参照）。
 
 ## 標準への入口（全ツール共通の境界）
 
-生成する4ファイル（CLAUDE.md / AGENTS.md / Cursor ルール / copilot-instructions.md）は、ツールを問わず **同じ意味の「標準への入口」** を必ず含めます。各ツール固有のフォーマットで表現は変わっても、次の5つの境界を**等価に**生成してください。
+生成する3ファイル（CLAUDE.md / AGENTS.md / copilot-instructions.md）は、ツールを問わず **同じ意味の「標準への入口」** を必ず含めます。各ツール固有のフォーマットで表現は変わっても、次の5つの境界を**等価に**生成してください。
 
 1. **MASTER 先行参照** — 作業やコード生成の前に、必ず `docs/MASTER.md` を最初に読む（*Read MASTER.md First*）
 2. **索引からの到達** — MASTER.md の索引（各 `docs/NN-*` へのリンク）から、着手するタスクに関連する仕様へ到達する（*Use the MASTER.md index to reach the relevant specification*）
@@ -53,7 +50,6 @@ description: プロジェクトの docs/ を基に AI 開発ツール向け設�
 
 - **Claude Code (CLAUDE.md)** — 推奨
 - **Codex CLI / 汎用エージェント (AGENTS.md)**
-- **Cursor (.cursor/rules/spec-driven.mdc)** — Legacy `.cursorrules` は明示的に希望した場合のみの互換オプション
 - **GitHub Copilot (.github/copilot-instructions.md)**
 - **すべて**
 
@@ -109,67 +105,9 @@ description: プロジェクトの docs/ を基に AI 開発ツール向け設�
 [MASTER.md の確認プロトコルをそのまま含める]
 ```
 
-### 4. Cursor 設定の生成（既定: Project Rules `.cursor/rules/*.mdc`）
+### 4. copilot-instructions.md の生成
 
-**既定は現行の Project Rules 形式**（`.cursor/rules/spec-driven.mdc`）で生成します。Cursor は `.cursor/rules/` 配下の `*.mdc`（拡張子 `.md` は Project Rules として認識されず無視される）を Project Rules として扱い、`alwaysApply: true` を付けると Always ルールとしてエージェント/チャットのモデルコンテキストに常時含まれます。
-
-以下の構造で `.cursor/rules/spec-driven.mdc` を生成します（先頭に YAML フロントマターが必要）:
-
-```markdown
----
-description: AI仕様駆動開発の標準ルール（MASTER 先行参照・索引からの到達・確認プロトコル）
-alwaysApply: true
----
-
-# Project Rules (Spec-Driven Development)
-
-## 🚨 MANDATORY: Read MASTER.md First
-コード生成の前に必ず `docs/MASTER.md` を最初に読む（境界1）。
-関連仕様には MASTER.md の索引から到達する
-（Use the MASTER.md index to reach the relevant specification）（境界2）。
-
-## Coding Standards
-[PATTERNS.md からの抽出]
-- Never use magic numbers — extract to named constants
-
-## Architecture
-[ARCHITECTURE.md からの要約]
-
-## Git Workflow (Mandatory)
-[docs/05-operations/deployment/git-workflow.md から要約（存在する場合。なければ汎用の Git ワークフロー原則を記載）]
-- Issue 起票から着手し、ブランチ → 実装 → セルフレビュー → PR → マージの順で進める
-- ブランチ命名規約とコミットメッセージ形式を守る
-- PR にはセルフレビュー結果・テスト結果・Issue リンク（例: `Closes #123`）を含める
-
-## Out-of-Scope Issues
-- 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
-- 判定順は `YAGNI → インライン修正 → Issue 化`
-- 現在の根拠・利用者影響・受け入れ条件がなければ YAGNI とし、対応も Issue 化もしない
-- 必要かつ軽微（10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件）なら現 PR で修正する
-- 仕様判断・別モジュール・独立検証が必要なら Issue 化ルートへ進む
-- Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
-- 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
-
-## 🚨 Secrets Exposure Prevention
-- secret を stdout/stderr に出すコマンドを実行しない（境界5）。エージェントの出力（トランスクリプト・ログ・PR コメント）は永続化され、値が一度でも出たら「露出」としてローテーション判断が必要になる
-- env ファイル・プロセス環境の全ダンプを禁止（`cat .env*` / `printenv` / `env` / `console.log(process.env)` 等）。個別キーでも値全体を出さない（`printenv KEY` / `echo $KEY` を含む）
-- secret を読み込む CLI に `--debug` / `--verbose` を付ける前に、失敗時に何をダンプするかを確認する。不明なら付けない
-- 値の診断・ログ出力は prefix（先頭5字）+ length まで
-- 露出した場合は隠さず即報告し、露出したキーと範囲を列挙する
-- [プロジェクトの技術スタックから、対象となる secret（接続文字列・署名鍵・API キー等）と、それを出力し得る具体的コマンドを検出して列挙する。例示のコマンドはそのまま転記せず、実際に使うスタックのものへ置き換えること（例示: `supabase --debug` / `vercel env pull /dev/stdout` / `gh auth token` / `stripe config --list`）]
-
-## 🚨 Information Verification Protocol
-情報が不足している場合は推測せず、必ず確認を求める（境界3）。
-[MASTER.md の確認プロトコルを含める]
-```
-
-#### Legacy 互換オプション: `.cursorrules`（明示的に選んだ場合のみ）
-
-古い Cursor / 単一ファイル運用のための**後方互換**として、プロジェクトルートの `.cursorrules`（フロントマター無し）も生成できます。ユーザーが Legacy 形式を明示的に希望した場合のみ生成し、上記 `.cursor/rules/spec-driven.mdc` と**同じ5境界**（MASTER 先行参照 / 索引からの到達 / 確認プロトコル / スコープ外発見のルーティング / Secrets 露出防止）を等価に含めます。既定は `.cursor/rules/*.mdc` であり、Legacy 形式との併用は推奨しません（重複適用を避ける）。なお `.cursorrules` は Cursor の Agent モードでは無視されることがあるため、確実な適用のためにも現行 `.cursor/rules/*.mdc` を推奨します。
-
-### 5. copilot-instructions.md の生成
-
-以下の構造で `.github/copilot-instructions.md` を生成します。**他の3ファイル（CLAUDE.md / AGENTS.md / Cursor ルール）と同じ5境界**（MASTER 先行参照・索引からの到達・確認プロトコル・スコープ外発見のルーティング・Secrets 露出防止）を必ず含めます:
+以下の構造で `.github/copilot-instructions.md` を生成します。**他の2ファイル（CLAUDE.md / AGENTS.md）と同じ5境界**（MASTER 先行参照・索引からの到達・確認プロトコル・スコープ外発見のルーティング・Secrets 露出防止）を必ず含めます:
 
 ```markdown
 # GitHub Copilot Instructions
@@ -217,9 +155,9 @@ When information is missing, DO NOT make assumptions — always ask for confirma
 - [その他のドキュメントリンク]
 ```
 
-### 6. AGENTS.md の生成（Codex CLI / 汎用エージェント共通）
+### 5. AGENTS.md の生成（Codex CLI / 汎用エージェント共通）
 
-`AGENTS.md` は [agents.md](https://agents.md) 標準に沿った**クロスエージェントの共通入口**で、Codex CLI をはじめ多くの AI コーディングエージェントが参照します。プロジェクトルートに生成し、**他の3ツールと同じ5境界**（MASTER 先行参照・索引からの到達・確認プロトコル・スコープ外発見のルーティング・Secrets 露出防止）を必ず含めます。詳細は複製せず正本（`docs/MASTER.md` 等）を参照する薄い入口として構成します:
+`AGENTS.md` は [agents.md](https://agents.md) 標準に沿った**クロスエージェントの共通入口**で、Codex CLI をはじめ多くの AI コーディングエージェントが参照します。プロジェクトルートに生成し、**他の2ツールと同じ5境界**（MASTER 先行参照・索引からの到達・確認プロトコル・スコープ外発見のルーティング・Secrets 露出防止）を必ず含めます。詳細は複製せず正本（`docs/MASTER.md` 等）を参照する薄い入口として構成します:
 
 ```markdown
 # AGENTS.md
@@ -272,11 +210,10 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 
 ## Tool-Specific Config
 - Claude Code: `CLAUDE.md`
-- Cursor: `.cursor/rules/*.mdc`（Legacy `.cursorrules`）
 - GitHub Copilot: `.github/copilot-instructions.md`
 ```
 
-### 7. Multi-CLI Agent Orchestrator のセットアップ
+### 6. Multi-CLI Agent Orchestrator のセットアップ
 
 セットアップスクリプトを実行して、Multi-CLI Agent Orchestrator（review / explore / implement の3タスク）を構成します:
 
@@ -287,7 +224,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
 このスクリプトが行うこと:
 
 - yq（YAMLパーサー）の確認・インストール
-- 5つのAI CLI（Claude Code / Codex / Copilot / Gemini / Cursor）の検出
+- 5つのAI CLI（Claude Code / Codex / Copilot / Gemini / Grok）の検出
 - 未インストールCLIのインストールガイド表示
 - `multi-agent.sh --dry-run` による動作確認
 
@@ -298,12 +235,12 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
 
 設定のカスタマイズ: プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される（環境変数 `MULTI_AGENT_CONFIG=<path>` または `--config <path>` でも上書き可）。
 
-### 8. 完了報告
+### 7. 完了報告
 
 生成したファイルの一覧と、各ファイルの要約を表示してください。
 Multi-CLI Agent Orchestrator のセットアップ結果も含めて報告してください。
 
-### 9. （任意）ACE autonomous テンプレートの案内
+### 8. （任意）ACE autonomous テンプレートの案内
 
 ユーザーが **ACE ナレッジキャプチャの autonomous 化**（post-merge → subagent → worktree）に関心を示した場合、または Multi-CLI / Git 運用の文脈で自動化を聞かれた場合のみ、利用中のホストの質問機能または通常の対話で希望を確認する。
 
@@ -314,8 +251,7 @@ Multi-CLI Agent Orchestrator のセットアップ結果も含めて報告して
 
 - 既存ファイルがある場合は上書き前に必ず確認すること
 - docs/ の内容を正確に反映すること（推測で情報を追加しない）
-- 生成する4ファイル（CLAUDE.md / AGENTS.md / Cursor ルール / copilot-instructions.md）には、ツールを問わず「標準への入口」5境界（**MASTER 先行参照 / 索引からの到達 / 情報不足時の確認プロトコル / スコープ外発見の YAGNI・インライン・Issue 化 / Secrets 露出防止**）を等価に含めること（CLAUDE.md だけの要件ではない）
-- Cursor は現行 Project Rules 形式（`.cursor/rules/*.mdc`, `alwaysApply: true`）を既定とし、Legacy `.cursorrules` はユーザーが明示的に希望した場合のみの互換オプションとすること
+- 生成する3ファイル（CLAUDE.md / AGENTS.md / copilot-instructions.md）には、ツールを問わず「標準への入口」5境界（**MASTER 先行参照 / 索引からの到達 / 情報不足時の確認プロトコル / スコープ外発見の YAGNI・インライン・Issue 化 / Secrets 露出防止**）を等価に含めること（CLAUDE.md だけの要件ではない）
 - 各ツール固有のフォーマットや慣習に従うこと
 - 生成後、ファイルの内容をユーザーに確認してもらうこと
 - 生成物が5境界を等価に含むことは `plugins/ff-dev-toolkit/tests/setup-ai-config/verify.sh` で検証できる

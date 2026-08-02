@@ -5,7 +5,7 @@ description: 複数の AI CLI を並列実行し、異なる観点からコー�
 
 # /multi-explore — 複数AIによるコードベース探索
 
-5つのAI CLI（Claude Code / Codex / Copilot / Gemini / Cursor）を並列実行し、異なる観点からコードベースを探索・分析します。
+5つのAI CLI（Claude Code / Codex / Copilot / Gemini / Grok）を並列実行し、異なる観点からコードベースを探索・分析します。
 
 ## プラグインルートの解決
 

@@ -166,15 +166,40 @@ must_contain "$f" '[ ! -s "$OUTPUT_FILE" ]' \
 must_match "04-quality/TESTING.md" '^[[:space:]]*if: always\(\)[[:space:]]*$' \
   "TESTING.md の CI 例が失敗回でもカバレッジを回収する（if: always() の実 directive）"
 
-# --- cursor-cli-reviewer.md: timeout(1) ラッパーの取り残し（PR #153 の残骸） ---
-# 散文中の言及（「timeout 120 ... は使えない」）は許容し、コマンド例としての
-# 行頭 timeout 呼び出し（インデント・gtimeout・秒サフィックス変種を含む）のみを
-# 退行とみなす
-must_not_match "05-operations/deployment/cursor-cli-reviewer.md" \
-  '^[[:space:]]*g?timeout [0-9]+s? +cursor-agent' \
-  "cursor-cli 例に timeout(1) ラッパー（stock macOS に無い）が残っていない"
-must_contain "05-operations/deployment/cursor-cli-reviewer.md" 'cursor-cli-adapter.sh' \
-  "cursor-cli 例がアダプタ経由の実行（120 秒上限）へ誘導している"
+# --- CLI 別 reviewer ページ: timeout(1) ラッパーの取り残し（PR #153 の残骸） ---
+# stock macOS に timeout(1) は無いので、コマンド例が直接それを呼ぶと利用者の手元で
+# 動かない。散文中の言及（「timeout 120 ... は使えない」）は許容し、コマンド例と
+# しての行頭 timeout 呼び出し（インデント・gtimeout・秒サフィックス変種を含む）
+# のみを退行とみなす。
+#
+# ファイル名を直書きせず glob で回すのは、cursor-cli-reviewer.md を消したとき
+# （issue #240）に「対象ファイルが無い」で red になったのと同じ更新漏れを、CLI を
+# 増減するたびに繰り返さないため。対象が 0 件なら検査が空振りしているので落とす。
+reviewer_pages=0
+for reviewer_page in "$DOCS"/05-operations/deployment/*-cli-reviewer.md; do
+  [ -f "$reviewer_page" ] || continue
+  reviewer_pages=$((reviewer_pages + 1))
+  rel="${reviewer_page#"$DOCS"/}"
+  must_not_match "$rel" \
+    '^[[:space:]]*g?timeout [0-9]+s? ' \
+    "${rel##*/}: timeout(1) ラッパー（stock macOS に無い）が残っていない"
+  # `-adapter.sh` を含むだけでは、gemini のページが codex のアダプタを案内していても
+  # 通る。削除済みのアダプタ名（cursor-cli-adapter.sh）ですら通った。ページの CLI
+  # 接頭辞から期待するアダプタ名を導き、その実在まで確認する。
+  page_cli="${rel##*/}"; page_cli="${page_cli%-reviewer.md}"
+  must_contain "$rel" "${page_cli}-adapter.sh" \
+    "${rel##*/}: 自分の CLI のアダプタ（${page_cli}-adapter.sh）へ誘導している"
+  if [ -f "$PLUGIN_ROOT/scripts/adapters/${page_cli}-adapter.sh" ]; then
+    ok "${rel##*/}: 案内先のアダプタが実在する"
+  else
+    bad "${rel##*/}: 案内先のアダプタが存在しない: scripts/adapters/${page_cli}-adapter.sh"
+  fi
+done
+if [ "$reviewer_pages" -gt 0 ]; then
+  ok "*-cli-reviewer.md を ${reviewer_pages} 件検査した"
+else
+  bad "*-cli-reviewer.md が 1 件も見つからない — 検査が空振りしている"
+fi
 
 # --- DEPENDENCY_LINT.md: warn 設定のまま CI に載せる空振りへの注意 ---
 must_contain "03-implementation/DEPENDENCY_LINT.md" '"severity": "error"' \

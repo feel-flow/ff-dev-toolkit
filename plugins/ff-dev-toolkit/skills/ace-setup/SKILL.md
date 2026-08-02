@@ -56,10 +56,9 @@ description: プロジェクトに ACE (Agentic Context Engineering) フレー�
 
 - **(a) Claude Code** — `/ace-curate` コマンドは**本プラグインが提供するため追加設定は不要**（プロジェクトへのコマンドコピーも不要）。PLAYBOOK.md の配置先を Step 2 でデフォルトから変更した場合のみ、その旨を CLAUDE.md に記録するよう案内する
 - **(b) GitHub Copilot** — `.github/copilot-instructions.md` に ACE 運用ルールを追記
-- **(c) Cursor** — `.cursorrules` に ACE 運用ルールを追記
-- **(d) Codex / その他の AI エージェント** — `AGENTS.md` に ACE 運用ルールを追記
+- **(c) Codex / その他の AI エージェント** — `AGENTS.md` に ACE 運用ルールを追記
 
-(b)〜(d) の指示ファイルへ追記する ACE 運用ルールは、配置済みの `docs/05-operations/deployment/ace-cycle.md`（3フェーズ手順）と PLAYBOOK.md の「運用ルール」「エントリID規則」セクションを要約して生成する。最低限含めるもの:
+(b)〜(c) の指示ファイルへ追記する ACE 運用ルールは、配置済みの `docs/05-operations/deployment/ace-cycle.md`（3フェーズ手順）と PLAYBOOK.md の「運用ルール」「エントリID規則」セクションを要約して生成する。最低限含めるもの:
 
 - PLAYBOOK.md の配置場所（Step 2 で確定したパス）
 - PRマージ後に Generate（知見抽出）→ Reflect（評価・分類・既存照合）→ Curate（増分追記）を実行すること
@@ -81,13 +80,13 @@ description: プロジェクトに ACE (Agentic Context Engineering) フレー�
 | -------------------------- | ---------------------------------------------------------- | -------- |
 | PLAYBOOK.md                | docs/08-knowledge/PLAYBOOK.md                              | 新規作成 |
 | ace-cycle.md               | docs/05-operations/deployment/ace-cycle.md                 | 新規作成 |
-| 指示ファイル（選択ツール） | .github/copilot-instructions.md / .cursorrules / AGENTS.md | 追記     |
+| 指示ファイル（選択ツール） | .github/copilot-instructions.md / AGENTS.md | 追記     |
 
 ## 次のステップ
 
 1. PRマージ・cleanup 後に ACE サイクルを実行してみましょう:
    - Claude Code: `/ace-curate` コマンドを実行
-   - Copilot / Cursor / Codex 等: 指示ファイルの ACE 運用ルールに従い「ACEサイクルを実行してください」と指示
+   - Copilot / Codex 等: 指示ファイルの ACE 運用ルールに従い「ACEサイクルを実行してください」と指示
 ```
 
 ### （任意）ACE autonomous テンプレートの案内

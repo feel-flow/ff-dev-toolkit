@@ -275,7 +275,6 @@ your-project/
 ### 他のAIツールのセットアップ
 
 - [SETUP_CLAUDE_CODE.md](./SETUP_CLAUDE_CODE.md) - Claude Code セットアップ
-- [SETUP_CURSOR.md](./SETUP_CURSOR.md) - Cursor セットアップ
 
 ### プロジェクト開発開始
 

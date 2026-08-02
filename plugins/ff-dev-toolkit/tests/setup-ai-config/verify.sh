@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# verify.sh — /setup-ai-config が生成する4ファイルの「標準への入口」パリティ検証
+# verify.sh — /setup-ai-config が生成する3ファイルの「標準への入口」パリティ検証
 #
-# 目的（Issue #84）: CLAUDE.md / AGENTS.md / .cursor/rules/*.mdc / copilot-instructions.md の
-# 4ツール生成物が、同じ意味の5境界を等価に含むことを機械的に検証する。
+# 目的（Issue #84）: CLAUDE.md / AGENTS.md / copilot-instructions.md の
+# 3ツール生成物が、同じ意味の5境界を等価に含むことを機械的に検証する。
 #
 #   境界1: MASTER 先行参照            -> "Read MASTER.md First"
 #   境界2: 索引からの到達            -> "MASTER.md index"（※文言の存在チェック。
@@ -17,8 +17,6 @@
 #   (2) Skill 定義のツール別テンプレート             … 生成器(テンプレ)が fixture から
 #       （skills/setup-ai-config/SKILL.md）           drift していないか（Issue #84 の本題）。
 #       説明文へアンカーを逃がしても通らないよう、各節の **コードフェンス内のみ** を検査する。
-# あわせて Cursor 出力（fixture と生成器テンプレの両方）が現行 Project Rules 形式
-# （.mdc + フロントマター内 alwaysApply: true + 閉じ ---）であることも検証する。
 #
 # 実装メモ: here-string(<<<) / heredoc は一時ファイルを要求し read-only 環境で失敗するため、
 # 標準入力へは `printf ... | cmd` を用いる（CI / レビューサンドボックスでも実行可能）。
@@ -32,11 +30,10 @@ EXPECTED="$SCRIPT_DIR/fixtures/expected"
 INPUT="$SCRIPT_DIR/fixtures/input/docs/MASTER.md"
 CMD="$SCRIPT_DIR/../../skills/setup-ai-config/SKILL.md"
 
-# 検証対象の4生成物（相対パス）
+# 検証対象の3生成物（相対パス）
 FILES=(
   "CLAUDE.md"
   "AGENTS.md"
-  ".cursor/rules/spec-driven.mdc"
   ".github/copilot-instructions.md"
 )
 
@@ -60,13 +57,12 @@ RULE_ANCHORS=(
   "境界5 露出時は即報告|隠さず即報告"
 )
 
-# Skill 定義のツール別テンプレート節（ラベル|開始行 regex|終了行 regex|Cursorか(1/0)）
+# Skill 定義のツール別テンプレート節（ラベル|開始行 regex|終了行 regex）
 # 節番号を変えたらここも追随させること（drift 検出の canary）。
 BLOCKS=(
-  "CLAUDE.md テンプレ|^### 3. |^### 4. |0"
-  "Cursor テンプレ|^### 4. |^### 5. |1"
-  "copilot テンプレ|^### 5. |^### 6. |0"
-  "AGENTS.md テンプレ|^### 6. |^### 7. |0"
+  "CLAUDE.md テンプレ|^### 3. |^### 4. "
+  "copilot テンプレ|^### 4. |^### 5. "
+  "AGENTS.md テンプレ|^### 5. |^### 6. "
 )
 
 fail=0
@@ -75,18 +71,6 @@ fail=0
 for entry in "${RULE_ANCHORS[@]}" "${BLOCKS[@]}"; do
   [[ "$entry" == *"|"* ]] || { echo "malformed entry (no '|'): $entry" >&2; exit 2; }
 done
-
-# フロントマター検証（stdin を読む）: 先頭 --- で開始し、閉じ --- までの内側に
-# alwaysApply: true があれば 0、無ければ 1 を返す。CRLF を許容。
-frontmatter_ok() {
-  awk '
-    { sub(/\r$/,"") }
-    NR==1 && $0=="---" { inb=1; next }
-    inb && $0=="---" { closed=1; exit }
-    inb && $0 ~ /^[[:space:]]*alwaysApply:[[:space:]]*true[[:space:]]*$/ { found=1 }
-    END { exit (closed && found) ? 0 : 1 }
-  '
-}
 
 # Skill 定義の指定節の「コードフェンス内」だけを stdout に出す（$CMD を読む）
 # 引数: 開始行 regex, 終了行 regex
@@ -138,9 +122,8 @@ else
   for spec in "${BLOCKS[@]}"; do
     label="${spec%%|*}"
     rest="${spec#*|}"
-    start="${rest%%|*}"; rest="${rest#*|}"
-    end="${rest%%|*}"
-    is_cursor="${rest##*|}"
+    start="${rest%%|*}"
+    end="${rest#*|}"
     fence="$(section_fence "$start" "$end")"
     echo "--- $label ---"
     if [[ -z "$fence" ]]; then
@@ -158,49 +141,11 @@ else
         fail=1
       fi
     done
-    if [[ "$is_cursor" == "1" ]]; then
-      if printf '%s\n' "$fence" | frontmatter_ok; then
-        echo "  ✓ Cursor テンプレのフロントマター（alwaysApply: true / 閉じ ---）"
-      else
-        echo "  ✗ Cursor テンプレのフロントマターが不正（alwaysApply: true / 閉じ --- が必要）"
-        fail=1
-      fi
-    fi
   done
 fi
 echo
 
-# --- (3) Cursor fixture の出力形式 ---
-MDC="$EXPECTED/.cursor/rules/spec-driven.mdc"
-echo "## Cursor fixture 形式（現行 Project Rules）"
-if [[ -f "$MDC" ]]; then
-  if frontmatter_ok < "$MDC"; then
-    echo "  ✓ フロントマター内に alwaysApply: true（閉じ --- あり）"
-  else
-    echo "  ✗ フロントマター（先頭 --- / 閉じ --- / 内側 alwaysApply: true）が不正"
-    fail=1
-  fi
-else
-  echo "  ✗ 既定の .cursor/rules/*.mdc が存在しない"
-  fail=1
-fi
-# 拡張子 .md（.mdc 以外）は Cursor に無視されるため、既定 fixture に混入していないこと
-if compgen -G "$EXPECTED/.cursor/rules/*.md" >/dev/null 2>&1; then
-  echo "  ✗ .cursor/rules/ に .md ファイルがある（Cursor は .md を無視。.mdc にすること）"
-  fail=1
-else
-  echo "  ✓ .cursor/rules/ は .md（無視される拡張子）を含まない"
-fi
-# 既定出力に Legacy .cursorrules を含めない（互換オプションのみ）
-if [[ -e "$EXPECTED/.cursorrules" ]]; then
-  echo "  ✗ 既定 fixture に Legacy .cursorrules が含まれている（互換オプション扱いのはず）"
-  fail=1
-else
-  echo "  ✓ 既定 fixture は .cursorrules を含まない（Legacy は明示オプション）"
-fi
-echo
-
-# --- (3b) Skill 定義の規範テキストが境界数から drift していないか ---
+# --- (3) Skill 定義の規範テキストが境界数から drift していないか ---
 # section_fence() はコードフェンス内しか見ないため、「重要ルール」節のような
 # 散文のチェックリストが 4境界のまま取り残されても (2) では検出できない（#196）。
 # 生成エージェントが最後に読む要約なので、ここが古いと境界を落とした生成物が出る。
@@ -248,7 +193,7 @@ fi
 echo
 
 if [[ "$fail" -ne 0 ]]; then
-  echo "結果: FAIL — 5境界のパリティ / Cursor 形式 / 生成器テンプレ / 入力紐付けのいずれかに欠落あり"
+  echo "結果: FAIL — 5境界のパリティ / 生成器テンプレ / 入力紐付けのいずれかに欠落あり"
   exit 1
 fi
-echo "結果: PASS — 4ツールが5境界を等価に含み（fixture + 生成器テンプレのコードフェンス）、Cursor は現行 Project Rules 形式"
+echo "結果: PASS — 3ツールが5境界を等価に含む（fixture + 生成器テンプレのコードフェンス）"

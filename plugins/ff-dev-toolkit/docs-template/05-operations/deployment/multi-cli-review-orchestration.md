@@ -4,7 +4,7 @@
 
 ## 概要
 
-複数のAI CLI（Claude Code、Codex、Gemini、Cursor）をレビュワーとしてオーケストレーションし、設定駆動で統一的に管理する運用ガイドです。
+複数のAI CLI（Claude Code、Codex、Gemini、Copilot）をレビュワーとしてオーケストレーションし、設定駆動で統一的に管理する運用ガイドです。
 
 **目的**: 各CLIの得意分野とコスト特性を活かし、高品質かつコスト効率の良いコードレビューを実現する
 
@@ -85,14 +85,14 @@ bash scripts/codex-review.sh --branch
                     │  └───────────────────────┘  │
                     └──────────┬──────────────────┘
                                │
-              ┌────────┬───────┼───────┬────────┐
-              │        │       │       │        │
-        ┌─────▼──┐ ┌──▼───┐ ┌▼────┐ ┌▼─────┐ ┌▼──────┐
-        │Claude  │ │Codex │ │Copi-│ │Gemini│ │Cursor │
-        │Adapter │ │Adapt.│ │lot  │ │Adapt.│ │Adapt. │
-        └───┬────┘ └──┬───┘ │Adapt│ └──┬───┘ └──┬────┘
-            │         │     └─┬───┘    │        │
-            ▼         ▼       ▼        ▼        ▼
+             ┌───────────┬─────┴─────┬───────────┐
+             │           │           │           │
+        ┌────▼────┐ ┌────▼────┐ ┌────▼────┐ ┌────▼────┐
+        │Claude   │ │Codex    │ │Copilot  │ │Gemini   │
+        │Adapter  │ │Adapter  │ │Adapter  │ │Adapter  │
+        └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘
+             │           │           │           │
+             ▼           ▼           ▼           ▼
         ┌────────────────────────────────────────────┐
         │          perspectives/*.md                  │
         │  (ツール非依存プロンプト)                     │
@@ -104,7 +104,6 @@ bash scripts/codex-review.sh --branch
                     │  ├── codex-cli/         │
                     │  ├── copilot-cli/       │
                     │  ├── gemini-cli/        │
-                    │  ├── cursor-cli/        │
                     │  └── integrated-report.md│
                     └─────────────────────────┘
 ```
@@ -142,7 +141,6 @@ command -v claude  && echo "✅ Claude Code" || echo "❌ Claude Code"
 command -v codex   && echo "✅ Codex CLI"   || echo "❌ Codex CLI"
 command -v copilot && echo "✅ Copilot CLI"  || echo "❌ Copilot CLI"
 command -v gemini  && echo "✅ Gemini CLI"   || echo "❌ Gemini CLI"
-command -v cursor-agent && echo "✅ Cursor CLI" || echo "❌ Cursor CLI"
 ```
 
 ---
@@ -190,17 +188,11 @@ agents:
     cost_tier: free-tier
     default_perspectives: [security-analysis, comment-analysis]
 
-  cursor-cli:
-    command: cursor-agent
-    cost_tier: flat-rate
-    default_perspectives: [code-simplification]
-
 fallback:
   claude-code: codex-cli
   codex-cli: claude-code
   copilot-cli: codex-cli
   gemini-cli: codex-cli
-  cursor-cli: codex-cli
 ```
 
 ### Step 3: 動作確認
@@ -234,16 +226,11 @@ bash scripts/multi-review.sh --cli codex-cli --perspective test-analysis
 
 ### よくあるカスタマイズ例
 
-#### 例1: Cursor + Gemini のみで運用（固定料金/無料）
+#### 例1: Gemini のみで運用（無料枠）
 
 ```yaml
 cost_strategy: minimize_cost
 agents:
-  cursor-cli:
-    command: cursor-agent
-    cost_tier: flat-rate
-    default_perspectives:
-      [code-review, test-analysis, comment-analysis, error-handler-hunt]
   gemini-cli:
     command: gemini
     cost_tier: free-tier
@@ -300,7 +287,6 @@ agents:
 # 終了コードを捨てないこと: レビューが 1 本でも失敗・タイムアウトすると非 0 になる
 if ! bash scripts/multi-review.sh \
   --strategy minimize_cost \
-  --cli cursor-cli \
   --cli gemini-cli \
   --sequential; then
   echo "❌ レビューを完走できませんでした（失敗 or タイムアウト）。"
@@ -457,14 +443,14 @@ bash scripts/multi-agent.sh --task review --cli codex-cli --perspective code-rev
 bash scripts/multi-agent.sh --task review --cli claude-code --perspective code-review
 ```
 
-### Cursor CLI のハング問題
+### CLI が非インタラクティブモードでハングするとき
 
-Cursor CLI (`cursor-agent -p`) は非インタラクティブモードでハングする既知の問題があります。
+`-p` / `--print` 系の非インタラクティブモードでハングする CLI があります（Cursor CLI がそうで、issue #240 でラインナップから外した理由の 1 つ）。
 
 **回避策**:
 
-- アダプタ経由で実行する（`cursor-cli-adapter.sh` が 120 秒上限を自前で強制する。stock macOS には `timeout` コマンドが無いため、手元で `timeout 120 cursor-agent ...` とラップする方法は使えない）
-- Cursor CLIをスキップ: `--cli codex-cli` で代替
+- 必ずアダプタ経由で実行する。アダプタは自前のウォッチドッグで待つので、`timeout(1)` を持たないホスト（stock macOS）でも期限で打ち切れる。手元で `timeout 120 <cli> ...` とラップする方法は使えない
+- その CLI をスキップして別 CLI に振る: `--cli codex-cli` など
 
 ### 結果の不整合
 
@@ -482,5 +468,4 @@ Cross-Modelモードで異なるCLIが矛盾する結果を返した場合：
 - [ai-tools-integration.md](./ai-tools-integration.md) — AIツール統合・コスト比較
 - [git-workflow.md](./git-workflow.md) — AI駆動Git Workflow
 - [gemini-cli-reviewer.md](./gemini-cli-reviewer.md) — Gemini CLI セットアップ
-- [cursor-cli-reviewer.md](./cursor-cli-reviewer.md) — Cursor CLI セットアップ
 - [COPILOT_AGENTS.md](../../06-reference/COPILOT_AGENTS.md) — Copilot エージェント定義（従量課金・オプトイン）

@@ -66,5 +66,4 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 ## Tool-Specific Config
 
 - Claude Code: `CLAUDE.md`
-- Cursor: `.cursor/rules/*.mdc`（Legacy `.cursorrules`）
 - GitHub Copilot: `.github/copilot-instructions.md`

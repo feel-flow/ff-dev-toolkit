@@ -261,4 +261,3 @@ docs/ を前提に、この変更が ARCHITECTURE や DOMAIN にどう影響す�
 | Codex CLI | Claude 形式 marketplace 互換で install 可能 |
 | Claude Cowork | UI から marketplace 追加 |
 | GitHub Copilot（本ガイド） | install 不可。`copilot-instructions.md` + `docs/` |
-| Cursor | install 不可。`/setup-ai-config` が `.cursor/rules/*.mdc` を生成する対象 |

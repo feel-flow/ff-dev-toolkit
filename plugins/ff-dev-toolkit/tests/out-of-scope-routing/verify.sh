@@ -22,7 +22,6 @@ SKILL="$PLUGIN_ROOT/skills/out-of-scope-issue/SKILL.md"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/workflow-principles.md"
 CLOSE_ISSUE="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
 REVIEW_POLICY="$PLUGIN_ROOT/docs-template/05-operations/deployment/review-response-policy.md"
-SETUP_CURSOR="$PLUGIN_ROOT/docs-template/SETUP_CURSOR.md"
 OSS_README="$OSS_ROOT/README.md"
 OSS_COPILOT="$OSS_ROOT/USING_WITH_VSCODE_COPILOT.md"
 
@@ -112,7 +111,7 @@ gh_issue_blocks_bound() {
 
 echo "== out-of-scope routing 契約検査 =="
 
-for file in "$SKILL" "$WORKFLOW" "$CLOSE_ISSUE" "$REVIEW_POLICY" "$SETUP_CURSOR" "$OSS_README" "$OSS_COPILOT"; do
+for file in "$SKILL" "$WORKFLOW" "$CLOSE_ISSUE" "$REVIEW_POLICY" "$OSS_README" "$OSS_COPILOT"; do
   if [[ ! -s "$file" ]]; then
     bad "必須ファイルが存在し非空: $file"
   fi
@@ -167,26 +166,30 @@ contains "$REVIEW_POLICY" "変更対象外という理由だけで一律に別 I
 contains "$REVIEW_POLICY" "レビューで Critical / Warning と確定した指摘は現 PR で解消" "Critical / Warning は必ず現 PR で解消"
 not_contains "$REVIEW_POLICY" "既存ファイルの改善は別Issueで対応する" "変更対象外ファイルの一律 Issue 化を禁止"
 
-contains "$SETUP_CURSOR" "YAGNI → インライン修正 → Issue 化" "Cursor 現行テンプレートが三分岐"
-contains "$SETUP_CURSOR" "YAGNI → inline fix → Issue" "Cursor Legacy テンプレートも三分岐"
-contains "$SETUP_CURSOR" "search similar open Issues first" "Cursor Legacy テンプレートも類似 Issue を検索"
-
 contains "$OSS_README" "YAGNI（対応も Issue 化もしない）→ 軽微ならインライン修正 → Issue 化" "公開 README が三分岐"
 not_contains "$OSS_README" "「同 PR でインライン修正」か「Issue 化して後送り」" "公開 README の旧二分岐を排除"
 contains "$OSS_COPILOT" "次の5境界" "公開 Copilot ガイドが5境界"
 contains "$OSS_COPILOT" "Issue 化前に類似 Issue を検索" "公開 Copilot ガイドが類似 Issue を検索"
 
 FULL_INLINE_CONTRACT="10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件"
+# 対象ファイル数を明示して固定する。生成対象が減ったとき（issue #240 で Cursor を
+# 外したときがそう）にループが黙って縮み、検査していないのに全 pass に見えるのを防ぐ。
+EXPECTED_INLINE_CONSUMERS=5
+INLINE_CONSUMERS_SEEN=0
 for file in \
   "$PLUGIN_ROOT/skills/setup-ai-config/SKILL.md" \
   "$PLUGIN_ROOT/docs-template/SETUP_CLAUDE_CODE.md" \
-  "$PLUGIN_ROOT/docs-template/SETUP_CURSOR.md" \
   "$PLUGIN_ROOT/tests/setup-ai-config/fixtures/expected/CLAUDE.md" \
   "$PLUGIN_ROOT/tests/setup-ai-config/fixtures/expected/AGENTS.md" \
-  "$PLUGIN_ROOT/tests/setup-ai-config/fixtures/expected/.cursor/rules/spec-driven.mdc" \
   "$PLUGIN_ROOT/tests/setup-ai-config/fixtures/expected/.github/copilot-instructions.md"; do
   contains "$file" "$FULL_INLINE_CONTRACT" "生成・公開コンシューマーが軽微判定の全条件を保持: ${file#$REPO_ROOT/}"
+  INLINE_CONSUMERS_SEEN=$((INLINE_CONSUMERS_SEEN + 1))
 done
+if [[ "$INLINE_CONSUMERS_SEEN" -eq "$EXPECTED_INLINE_CONSUMERS" ]]; then
+  PASS=$((PASS + 1)); echo "  ✓ 軽微判定の検査対象が ${EXPECTED_INLINE_CONSUMERS} 件（増減時は EXPECTED_INLINE_CONSUMERS も更新すること）"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ 軽微判定の検査対象が ${INLINE_CONSUMERS_SEEN} 件（期待 ${EXPECTED_INLINE_CONSUMERS} 件）— ループが黙って縮んでいる" >&2
+fi
 
 echo
 if [[ "$FAIL" -gt 0 ]]; then

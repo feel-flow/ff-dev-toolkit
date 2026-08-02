@@ -382,6 +382,8 @@ run_with_timeout() {
 #
 # `reason` is run_with_timeout's out-of-band verdict (see timeout_reason_file):
 # "timeout", "orchestrator-error", "command", or "" when it could not be recorded.
+# An adapter may also record "sandbox-refused" itself when the CLI succeeded but
+# a safety precondition it depends on did not hold.
 # It is consulted first because the status alone is ambiguous — a CLI is free to
 # exit 124 or 125 itself, and only the reason separates that from our own verdict.
 describe_cli_failure() {
@@ -394,6 +396,20 @@ describe_cli_failure() {
       ;;
     orchestrator-error)
       echo "could not be started by this orchestrator (see the error above)"
+      return
+      ;;
+    sandbox-refused)
+      # The CLI ran to completion and exited 0; this adapter is the one that
+      # refused the result, because the sandbox it asked for was not in effect.
+      # Saying "the CLI exited 1" here would send the reader after a crash that
+      # never happened, while the actual thing to fix is the sandbox.
+      echo "ran without the sandbox this adapter requires — its result was refused"
+      return
+      ;;
+    empty-output)
+      # Exited 0 and was never stopped, but wrote nothing to stdout. The cause is
+      # in the CLI's stderr (rate limits, auth), which the artifact carries below.
+      echo "exited successfully but produced no output"
       return
       ;;
   esac
@@ -499,7 +515,11 @@ fail_cli_task() {
 
 ${partial}"
   else
-    body="No output was captured before the CLI was stopped."
+    if [[ "$kind" == "empty-output" ]]; then
+      body="The CLI exited 0 without writing any output."
+    else
+      body="No output was captured before the CLI was stopped."
+    fi
   fi
 
   if [[ -n "$stderr_excerpt" ]]; then
@@ -512,8 +532,21 @@ ${stderr_excerpt}
 \`\`\`"
   fi
 
+  # The "never reached its conclusion" clause is false for a result we refused
+  # after the CLI finished, and a banner that misstates what happened sends the
+  # reader to the wrong place. Keep the INCOMPLETE contract, change the reason.
+  local banner_detail="the CLI never reached its conclusion, so anything it had not gotten to is simply absent — read the gaps as unknown, not as clean"
+  case "$kind" in
+    sandbox-refused)
+      banner_detail="the CLI did finish, but it ran outside the sandbox this adapter requires, so its findings are unverified and it may have modified the working tree — read this as unknown, not as clean"
+      ;;
+    empty-output)
+      banner_detail="the CLI exited successfully but wrote nothing, so nothing was reviewed at all — the reason is in the stderr excerpt below, not in a crash"
+      ;;
+  esac
+
   write_output "$OUTPUT_FILE" "$CLI_NAME" "$perspective_name" \
-    "> ⚠️ **INCOMPLETE — ${CLI_NAME} ${reason}.** This is not a finished ${TASK_TYPE:-review}: the CLI never reached its conclusion, so anything it had not gotten to is simply absent — read the gaps as unknown, not as clean.
+    "> ⚠️ **INCOMPLETE — ${CLI_NAME} ${reason}.** This is not a finished ${TASK_TYPE:-review}: ${banner_detail}.
 
 ${body}" \
     "incomplete"
@@ -551,10 +584,11 @@ fail_orchestrator_error() {
 # docs-template/08-knowledge/playbook/tooling.md の ACE-70-2 を参照。
 #
 # 第 3 引数の既定値に書いてよいのは「ベンダー中立で世代交代しない語」だけ。
-# 現状これを使っているのは cursor-agent の `auto` だけである（copilot も値として
-# auto を受け付けるが、それは利用者が env に指定する値であってラッパーが持つ
-# 既定値ではない）。具体的なモデル slug は既定値としてもフォールバックとしても
-# 持たないこと — tests/no-hardcoded-model/verify.sh がこれを機械的に検査している。
+# 現状これを使っているアダプタは無い。唯一の利用者だった cursor-agent の `auto`
+# は issue #240 の cursor-cli 削除で消えた（copilot も値として auto を受け付ける
+# が、それは利用者が env に指定する値であってラッパーが持つ既定値ではない）。
+# 具体的なモデル slug は既定値としてもフォールバックとしても持たないこと —
+# tests/no-hardcoded-model/verify.sh がこれを機械的に検査している。
 #
 # 代入ではなく追記にしているのは、codex が -m（モデル）と -p（プロファイル）の
 # 2 フラグを同時に取りうるため。代入式だと後の呼び出しが前の結果を黙って捨てる。

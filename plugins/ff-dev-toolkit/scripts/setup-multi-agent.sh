@@ -101,7 +101,7 @@ Multi-CLI Agent Orchestrator の依存ツールを確認・インストールし
   - Codex CLI (codex)         — Standard tier
   - Copilot CLI (copilot)     — Metered（従量課金。review 既定ラインナップ外）
   - Gemini CLI (gemini)       — Free tier
-  - Cursor Agent (cursor-agent) — Flat-rate tier
+  - Grok CLI (grok)           — Flat-rate tier
 
 詳細: docs-template/05-operations/deployment/multi-cli-review-orchestration.md
 EOF
@@ -234,7 +234,7 @@ detect_ai_clis() {
 codex-cli:codex:Standard
 copilot-cli:copilot:Metered
 gemini-cli:gemini:Free-tier
-cursor-cli:cursor-agent:Flat-rate"
+grok-cli:grok:Flat-rate"
 
     while IFS=: read -r name cmd tier; do
         if command -v "$cmd" &>/dev/null; then
@@ -256,7 +256,7 @@ cursor-cli:cursor-agent:Flat-rate"
         print_info "  Codex CLI:    npm install -g @openai/codex"
         print_info "  Copilot CLI:  gh extension install github/gh-copilot"
         print_info "  Gemini CLI:   npm install -g @google/gemini-cli"
-        print_info "  Cursor Agent: https://docs.cursor.com/cli"
+        print_info "  Grok CLI:     npm install -g @xai-official/grok"
         exit 1
     else
         print_success "${found}/${total} の AI CLI が利用可能です"
@@ -306,11 +306,11 @@ show_install_guides() {
         print_info "  https://github.com/google-gemini/gemini-cli"
     fi
 
-    if ! command -v cursor-agent &>/dev/null; then
+    if ! command -v grok &>/dev/null; then
         all_installed=false
         echo ""
-        echo -e "  ${BOLD}Cursor Agent (Flat-rate — エディタ連携でコード簡素化に最適)${NC}"
-        print_info "  https://docs.cursor.com/cli"
+        echo -e "  ${BOLD}Grok CLI (Flat-rate — サブスクリプション。--sandbox read-only で読み取り専用レビュー)${NC}"
+        print_info "  npm install -g @xai-official/grok"
     fi
 
     if [[ "$all_installed" == "true" ]]; then
@@ -438,6 +438,12 @@ print_summary() {
     echo ""
     echo "  # 後方互換（review のみ）"
     echo "  bash \"$SCRIPT_DIR/multi-review.sh\" --dry-run"
+    echo ""
+    echo "  # レビュワー（主 + 副）の設定 — 主に全観点、副に総合レビュー1本"
+    echo "  bash \"$SCRIPT_DIR/multi-agent.sh\" --task review --print-reviewers"
+    echo "  bash \"$SCRIPT_DIR/multi-agent.sh\" --task review --set-reviewers main=<cli>,sub=<cli>"
+    echo "    主 = メインで使う CLI / 副 = もう1つの CLI（省略可）"
+    echo "    保存するのは CLI 名だけ。モデルは各 CLI 自身の設定に委ねます"
     echo ""
     echo "  # 設定カスタマイズ（プロジェクト側 override が同梱デフォルトより優先）"
     echo "  cp \"$SCRIPT_DIR/agent-config.yaml\" .claude/agent-config.yaml && vim .claude/agent-config.yaml"

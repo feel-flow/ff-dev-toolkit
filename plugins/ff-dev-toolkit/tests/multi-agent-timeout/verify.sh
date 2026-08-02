@@ -24,7 +24,7 @@
 # 実行時失敗を別モデルへ振り替えることはしない（理由は multi-agent.sh のヘッダー）。
 # 黙って振り替わっていないことをテストで固定しないと、方針は文書だけの約束になる。
 #
-# 実 CLI は 1 つも起動しない。5 つの CLI コマンド名すべてを stub で覆い、課金や
+# 実 CLI は 1 つも起動しない。全 CLI のコマンド名を stub で覆い、課金や
 # ネットワークを伴わずに orchestrator の分岐だけを動かす。
 #
 # 書き込み不可の環境（read-only チェックアウト等）では skip して成功扱いにする。
@@ -108,7 +108,7 @@ else
   bad "adapter-common.sh の REVIEW_TIMEOUT 既定が不一致: adapter=${ADAPTER_DEFAULT} SSOT=${CANON}"
 fi
 
-for adapter in claude-code codex-cli copilot-cli gemini-cli; do
+for adapter in claude-code codex-cli copilot-cli gemini-cli grok-cli; do
   hdr="$PLUGIN_ROOT/scripts/adapters/${adapter}-adapter.sh"
   if grep -qE "^#   --timeout <seconds>.*default: ${CANON}([^0-9]|$)" "$hdr"; then
     ok "${adapter}-adapter.sh のヘッダー既定が一致 (${CANON})"
@@ -118,17 +118,35 @@ for adapter in claude-code codex-cli copilot-cli gemini-cli; do
   fi
 done
 
-# cursor-cli の上限は orchestrator（報告・助言の正本）とアダプタ（直叩き用）の
-# 2 箇所にある。食い違うと、ログに出る秒数や提示コマンドが実際に適用された値と
-# ずれる（まさに本 PR が直した種類の嘘）。
-CAP_ORCH="$(grep -E '^readonly CURSOR_TIMEOUT_CAP=' "$MULTI_AGENT" \
-  | sed -E 's/.*:-([0-9]+)\}.*/\1/')"
-CAP_ADAPTER="$(grep -E '^readonly DEFAULT_CURSOR_TIMEOUT=' "$PLUGIN_ROOT/scripts/adapters/cursor-cli-adapter.sh" \
-  | sed -E 's/.*:-([0-9]+)\}.*/\1/')"
-if [[ -n "$CAP_ORCH" && "$CAP_ORCH" == "$CAP_ADAPTER" ]]; then
-  ok "cursor-cli の timeout 上限が orchestrator とアダプタで一致 (${CAP_ORCH})"
+# CLI 別の timeout 上限は存在しない（唯一持っていた cursor-cli は issue #240 で削除）。
+# 上限を再導入するなら orchestrator 側（報告・助言の正本）に置くこと。アダプタだけで
+# 黙って clamp すると、ログに出る秒数や提示コマンドが実際に適用された値とずれる。
+#
+# 検出するのは**定数名ではなく挙動**。削除前の実装（cursor-cli-adapter.sh）はこうだった:
+#     readonly DEFAULT_CURSOR_TIMEOUT="${FF_CURSOR_TIMEOUT_CAP:-120}"
+#     if [[ "$TIMEOUT" -gt "$DEFAULT_CURSOR_TIMEOUT" ]]; then
+#       TIMEOUT="$DEFAULT_CURSOR_TIMEOUT"
+# 定数名は `DEFAULT_CURSOR_TIMEOUT` で `_TIMEOUT_CAP` では終わらない。名前で探す検査は
+# この実装を素通りする（初版がまさにそれで、再混入させても緑のままだった）。clamp の
+# 本体は「TIMEOUT への再代入」なので、そこを禁じる。インラインのリテラル比較で
+# clamp する変種も、代入が要る以上ここで捕まる。
+#
+# TIMEOUT を代入してよいのは adapter-common.sh だけ（既定値と --timeout の解釈）。
+#
+# grep の rc を 0 / 1 / それ以外で分岐する。`|| true` で丸めると rc=2（対象ファイルが
+# 無い・読めない・glob が展開されなかった）が rc=1（不一致）と同じ「検出なし」に見え、
+# 検査が走っていないのに緑になる（Issue #152 と同じ形）。本 Part は一時ディレクトリを
+# 使わない静的検査なので、stderr はファイルに落とさず rc だけで判定する。
+CLAMP_HITS=""
+CLAMP_RC=0
+CLAMP_HITS="$(grep -rnE '^[[:space:]]*TIMEOUT=' "$PLUGIN_ROOT"/scripts/adapters/*-adapter.sh 2>/dev/null)" || CLAMP_RC=$?
+if [[ "$CLAMP_RC" -eq 0 ]]; then
+  bad "アダプタが TIMEOUT を再代入している（orchestrator が報告する秒数と食い違う）:"
+  printf '%s\n' "$CLAMP_HITS" | sed 's/^/      /' >&2
+elif [[ "$CLAMP_RC" -eq 1 ]]; then
+  ok "アダプタが TIMEOUT を再代入していない（clamp はオーケストレータの責務）"
 else
-  bad "cursor-cli の timeout 上限が不一致: orchestrator=${CAP_ORCH} adapter=${CAP_ADAPTER}"
+  bad "TIMEOUT 再代入の検査自体が失敗した（grep rc=${CLAMP_RC}。対象 glob が展開されていない可能性）"
 fi
 
 # --help の表示（利用者が最初に見る値）
@@ -173,9 +191,11 @@ echo ""
 # Part C2: fallback の意味が文書間でぶれていないこと
 #
 # 「未インストール時のプラン構築限定」という区別は、multi-CLI の fallback を語る
-# **すべての**文書で成立していないと意味がない。実際 cursor / gemini の CLI 別ページに
-# 同じ曖昧な言い回し（「利用不可の場合…フォールバックします」）が双子で存在し、
+# **すべての**文書で成立していないと意味がない。実際、複数の CLI 別ページに同じ
+# 曖昧な言い回し（「利用不可の場合…フォールバックします」）が双子で存在し、
 # レビュアーが指した 1 ファイルだけ直すと残りが黙って矛盾したままになった。
+# だから対象はファイル名直書きではなく glob で拾う（CLI の増減で検査対象が
+# 抜け落ちないため）。
 #
 # 判定は「fallback に触れているなら、区別語（未インストール）も書いてあること」。
 # 特定の言い回しを禁止する形にすると表現替えで簡単に迂回されるので、必要な語の
@@ -385,11 +405,36 @@ git add app.txt
 git commit -qm "change"
 
 # --- stub CLI ---
-# 5 つの CLI コマンド名すべてを覆い、実 CLI が起動しないことを構造で保証する。
+# 全 CLI のコマンド名を覆い、実 CLI が起動しないことを構造で保証する。
 # codex 以外は呼ばれたら invoked-<name> を残すので、意図しない fallback を検出できる。
+#
+# stub 名を手で持つと CLI を足したときに漏れ、その CLI だけ実物が課金付きで起動する
+# ——「実 CLI は 1 つも起動しない」という本 suite の前提が静かに壊れる形。ALL_CLIS を
+# 正本から読んで突き合わせる。
 STUB="$TMP/stub-bin"
 mkdir -p "$STUB"
-for name in claude copilot gemini cursor-agent; do
+
+REGISTRY_CLIS="$(awk -F'"' '/^ALL_CLIS=/ { print $2; exit }' "$MULTI_AGENT")"
+REGISTRY_COMMANDS="$(
+  awk '/^get_cli_command\(\)/ { inside = 1; next }
+       inside && /^}/ { exit }
+       inside && match($0, /echo "[a-z0-9-]+"/) {
+         cmd = substr($0, RSTART + 6, RLENGTH - 7)
+         if (cmd != "") print cmd
+       }' "$MULTI_AGENT" | sort -u | tr '\n' ' '
+)"
+STUB_NAMES="claude codex copilot gemini grok"
+if [ "$(printf '%s\n' $REGISTRY_COMMANDS | sort -u | tr -d ' \n')" \
+   = "$(printf '%s\n' $STUB_NAMES | sort -u | tr -d ' \n')" ]; then
+  ok "stub の CLI コマンド名が get_cli_command の全 arm を覆っている (${STUB_NAMES})"
+else
+  bad "stub の CLI コマンド名がレジストリと不一致 — 覆えていない CLI は実物が起動する"
+  echo "      レジストリ: ${REGISTRY_COMMANDS}" >&2
+  echo "      stub:       ${STUB_NAMES}" >&2
+fi
+[ -n "$REGISTRY_CLIS" ] || bad "ALL_CLIS を読めない（stub 網の検査が空振りしている）"
+
+for name in claude copilot gemini grok; do
   cat > "$STUB/$name" <<SH
 #!/usr/bin/env bash
 touch "$TMP/invoked-$name"
@@ -468,7 +513,7 @@ run_orchestrator() { # $1: timeout 秒 / 出力: "rc elapsed"
 
 no_other_cli_invoked() {
   local n
-  for n in claude copilot gemini cursor-agent; do
+  for n in claude copilot gemini grok; do
     [ -e "$TMP/invoked-$n" ] && return 1
   done
   return 0
@@ -758,36 +803,13 @@ else
   bad "sequential: 対象 CLI 未起動 or 設定 fallback が黙って実行された"
 fi
 
-# --- ケース6: cursor-cli の上限が実際に適用され、助言も上限を踏まえること ---
-# 上限は 2 秒へ縮めて実行する（実寸 120 秒を待たずに適用経路を踏むため）。
-# 上限の「値の一致」だけを検査していると、上限を無視する退行や「延ばせない CLI に
-# --timeout を倍にせよ」と案内する退行が丸ごと検出できない。
-cat > "$STUB/cursor-agent" <<SH
-#!/usr/bin/env bash
-touch "$TMP/invoked-cursor-agent"
-echo "CURSOR PARTIAL"
-sleep 30 >/dev/null 2>&1
-SH
-chmod +x "$STUB/cursor-agent"
-rm -f "$TMP/invoked-"*
-set +e
-FF_CURSOR_TIMEOUT_CAP=2 PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
-  --task review --cli cursor-cli --perspective code-simplification \
-  --base develop --timeout 60 >"$TMP/run-cursor.log" 2>&1
-RC=$?
-set -e
-if [[ "$RC" -ne 0 ]] && grep -q 'Timed out after 2s' "$TMP/run-cursor.log"; then
-  ok "cap: 実効値（上限 2s）で打ち切り、実効値で報告する"
-else
-  bad "cap: 上限が適用されない or 実行全体の --timeout 60 を報告している (rc=$RC)"
-  grep -E '❌|Timed out' "$TMP/run-cursor.log" >&2 || true
-fi
-if grep -q 'cannot extend it' "$TMP/run-cursor.log" && ! grep -q -- '--timeout 120' "$TMP/run-cursor.log"; then
-  ok "cap: 上限付き CLI に --timeout での延長を案内しない"
-else
-  bad "cap: 従っても効かない --timeout 延長を案内している"
-  grep -A3 'cursor-cli/code-simplification' "$TMP/run-cursor.log" >&2 || true
-fi
+# ケース6（cursor-cli の上限が実際に適用されること）は issue #240 で削除した。
+# 上限を持つ CLI がもう無いので、上限の適用経路そのものが存在しない。
+# 「報告される秒数が実際に適用された秒数と一致する」という本来の性質は、上の
+# --timeout 3 のケース群（並列・逐次とも 'Timed out after 3s' を照合）が押さえて
+# いる。上限を再導入するときは、値の一致だけでなく適用の挙動をここで固定すること
+# — 値だけ見る検査では「上限を無視する退行」も「延ばせない CLI に --timeout を
+# 倍にせよと案内する退行」も丸ごと素通りする。
 
 echo ""
 if [ "$FAIL" -gt 0 ]; then

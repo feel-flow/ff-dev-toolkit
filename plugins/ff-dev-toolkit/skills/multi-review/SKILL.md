@@ -1,11 +1,11 @@
 ---
 name: multi-review
-description: 複数の AI CLI（Claude Code / Codex / Gemini / Cursor、Copilot はオプトイン）を並列実行し、異なる観点からクロスモデルレビューを行う
+description: 複数の AI CLI（Claude Code / Codex / Gemini / Grok、Copilot はオプトイン）を並列実行し、異なる観点からクロスモデルレビューを行う
 ---
 
 # /multi-review — 複数AIによるクロスモデルレビュー実行
 
-複数のAI CLI（Claude Code / Codex / Gemini / Cursor）を並列実行し、異なる観点からコードレビューを実行します。Copilot CLI は従量課金のため既定ラインナップ外です（`--cli copilot-cli` でオプトイン）。
+複数のAI CLI（Claude Code / Codex / Gemini / Grok）を並列実行し、異なる観点からコードレビューを実行します。Copilot CLI は従量課金のため既定ラインナップ外です（`--cli copilot-cli` でオプトイン）。
 
 ## プラグインルートの解決
 
@@ -15,7 +15,7 @@ description: 複数の AI CLI（Claude Code / Codex / Gemini / Cursor、Copilot 
 
 - git リポジトリで作業中であること
 - 本プラグイン同梱の `${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh` を使用する
-- 少なくとも1つのAI CLIがインストールされていること（`claude`, `codex`, `copilot`, `gemini`, `cursor-agent` のいずれか）
+- 少なくとも1つのAI CLIがインストールされていること（`claude`, `codex`, `copilot`, `gemini`, `grok` のいずれか）
 - `yq` がインストールされていること（`brew install yq`）
 - 未コミットまたはブランチ上の変更が存在すること
 
@@ -40,6 +40,38 @@ dry-run に表示され、review が暗黙に単一 CLI へ縮退した場合は
 でもエラーになります。
 
 ## 手順
+
+### 0. レビュワーの確認（未設定なら 1 度だけ聞く）
+
+レビューは **主（メインで使っている CLI）に全観点 + 副にもう 1 つの CLI で総合レビュー 1 本**の 2 段構えで走ります。副が無ければ主のみの単一レビューに縮退します。
+
+まず現在の設定を確認します。
+
+```bash
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
+```
+
+**終了コードで分岐します**（出力のマーカー行を `grep -q` で拾う形にしないこと。パイプ入力の `grep -q` は SIGPIPE + `pipefail` で判定が反転します）。
+
+- **exit 0** — 設定済み。ただし出力の `main=` が `available=` に含まれているか確認する（保存済みの CLI が未導入だとレビューは開始できない）。含まれていなければ exit 3 と同じ扱いで選び直してもらう
+- **exit 3** — 未設定。以下を行う
+- **それ以外（exit 1 など）** — 設定または環境の問題。**先へ進まない。** stderr をそのままユーザーへ提示して停止する。到達しうるのは、保存済みの値が不正な場合、AI CLI が 1 つも導入されていない場合など。CLI 未導入なら stderr にインストール手順が出ている
+
+未設定のときは、出力の `available=` に並ぶ CLI を選択肢として、利用中のホストに構造化質問機能があれば使用し、なければ通常の対話で、主と副を選んでもらいます。
+
+- **主** — メインで使っている CLI。review 観点すべてを担当する
+- **副** — もう 1 つ入っている CLI。総合レビューを 1 本だけ担当する（不要なら省略可）
+
+選んでもらったら保存します。以降は聞きません。
+
+```bash
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review \
+  --set-reviewers main=<cli>,sub=<cli>
+```
+
+保存するのは **CLI 名だけ**です（`claude-code` / `codex-cli` / `gemini-cli` / `grok-cli` / `copilot-cli`）。どのモデルを使うかは各 CLI 自身の設定に委ねるため、モデル名を渡すと拒否されます。
+
+> **非対話で実行している場合**（CI など）は、この手順を飛ばしてください。レビュワーが未設定でも従来の分散プランで続行し、ブロックしません。
 
 ### 1. プラン確認（--dry-run）
 
@@ -163,7 +195,7 @@ git diff  # 修正内容の確認
 
 ## モデル選択
 
-**ラッパーはモデルを選ばない。** どのモデルを使うかは各 CLI 自身の設定に委譲する — `~/.codex/config.toml`、Claude Code のモデル設定、Cursor / Copilot の `auto` など。ラッパー側に既定のモデル slug を持たせると、その値の SSOT がユーザーの CLI 設定と2重化して必ず古くなり、しかもフラグを無条件に渡す実装だとユーザー設定を黙って上書きする（`docs-template/08-knowledge/playbook/tooling.md` の ACE-70-2 に実害の記録がある）。
+**ラッパーはモデルを選ばない。** どのモデルを使うかは各 CLI 自身の設定に委譲する — `~/.codex/config.toml`、Claude Code のモデル設定、Copilot の `auto` など。ラッパー側に既定のモデル slug を持たせると、その値の SSOT がユーザーの CLI 設定と2重化して必ず古くなり、しかもフラグを無条件に渡す実装だとユーザー設定を黙って上書きする（`docs-template/08-knowledge/playbook/tooling.md` の ACE-70-2 に実害の記録がある）。
 
 明示的に指定したい場合だけ環境変数を使う。**未設定ならフラグ自体が渡らない**ので、指定しない限り CLI 側の設定がそのまま効く。
 
@@ -174,7 +206,7 @@ git diff  # 修正内容の確認
 | `MULTI_AGENT_MODEL_CODEX_CLI` | `-m` | Codex のモデルを単発で指定。`MULTI_AGENT_CODEX_PROFILE` とは併用不可 |
 | `MULTI_AGENT_MODEL_COPILOT_CLI` | `--model` | Copilot。`auto` で Copilot 側の自動選択 |
 | `MULTI_AGENT_MODEL_GEMINI_CLI` | `-m` | Gemini |
-| `MULTI_AGENT_MODEL_CURSOR_CLI` | `--model` | Cursor。未設定時の既定は `auto`（ベンダー中立語なので世代交代しない） |
+| `MULTI_AGENT_MODEL_GROK_CLI` | `-m` | Grok |
 
 ```bash
 # Codex を専用プロファイルでレビューさせる（推奨）

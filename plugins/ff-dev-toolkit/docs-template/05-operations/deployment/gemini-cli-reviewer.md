@@ -90,6 +90,16 @@ gemini -p "Review this file for security vulnerabilities:" < src/auth/handler.ts
 
 ## Multi-CLI Orchestration での役割
 
+### 実行はアダプタ経由
+
+オーケストレーション配下では `gemini` を直接叩かず、`scripts/adapters/gemini-cli-adapter.sh` を通します。上の「基本的な使い方」の `gemini -p ...` は手元で単発確認するときの形で、オーケストレーション経由の実行とは別物です。
+
+アダプタが引き受けているのはこの3つで、直接呼び出すとどれも失われます。
+
+- **時間切れの扱い** — `timeout(1)` は stock macOS に無いため、アダプタが自前のウォッチドッグで待ち、期限発火（124）と外部 kill（137）を区別して返す
+- **不完全な出力の明示** — 打ち切られた結果に `<!-- Status: incomplete -->` を付ける。これが無いと、途中で切れたレビューが統合レポート上「指摘なし」として通る
+- **モデル指定の委譲** — `MULTI_AGENT_MODEL_GEMINI_CLI` が設定されているときだけ `-m` を組み立てる（未設定ならフラグを渡さず Gemini CLI 自身の設定に従う）
+
 ### デフォルト設定
 
 ```yaml
@@ -189,4 +199,3 @@ Error: 429 Too Many Requests
 - [multi-cli-review-orchestration.md](./multi-cli-review-orchestration.md) — オーケストレーション運用ガイド
 - [REVIEW_AGENT_CREATION_GUIDE.md](../../06-reference/REVIEW_AGENT_CREATION_GUIDE.md) — 汎用レビューエージェント作成ガイド
 - [ai-tools-integration.md](./ai-tools-integration.md) — AIツール統合・コスト比較
-- [cursor-cli-reviewer.md](./cursor-cli-reviewer.md) — Cursor CLI セットアップ
