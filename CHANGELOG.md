@@ -16,6 +16,10 @@
 
 ## [Unreleased]
 
+### 追加
+
+- SKILL.md の bash コードブロックに対して「パイプ入力の早期終了 `grep -q*`」を禁止する横断検査 suite（`tests/skill-bash-blocks/`）を追加した。対象はプラグインのスキル（`plugins/*/skills/`）、配布テンプレート内のスキル（`docs-template/.github/skills/`）、リポジトリローカルのスキル（`.claude/skills/`、存在する場合のみ）。SKILL.md の bash ブロックはエージェントがそのまま実行するため、`set -euo pipefail` のもとでパイプの下流に `grep -q*` を置くと、一致した時点で上流 producer が SIGPIPE で落ち「一致したのに失敗」へ反転する。`|&` パイプ、`egrep` / `fgrep`、`command` / `env` / 変数代入プレフィックス、`--quiet` / `--silent` も検出し、閉じ忘れコードフェンス（後続ブロックが静かに未検査になる）は構造違反として報告する。散文中の注意書き・bash 以外のコードブロック・`||` 直後の grep は検出しない。検出力は違反 fixture / 非検出 fixture による自己検証で毎回実測し、検出器が壊れた状態では横断検査へ進まない
+
 ## [0.19.0] - 2026-08-02
 
 ### 追加
@@ -498,7 +502,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.18.2...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.18.2...v0.19.0
 [0.18.2]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.18.0...v0.18.2
 [0.18.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.17.3...v0.18.0
 [0.17.3]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.17.2...v0.17.3

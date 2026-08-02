@@ -248,6 +248,8 @@ fi
 # ファイルを直接読む grep -q* は上流プロセスが無いため対象外。`tests/**/*.sh` の
 # 非コメント行に「| grep -q*」があれば、早期終了で上流を SIGPIPE にする経路として
 # fail-closed で検出する。検査自身の正規表現は `[|]` と書き、自己検出を避ける。
+# SKILL.md の bash コードブロック側は tests/skill-bash-blocks/verify.sh が担当する
+# （本ケースの対象・regex を広げるときは両側の整合を確認すること）。
 echo
 echo "== case 10: パイプ入力 grep -q* の再混入ガード =="
 PIPE_GREP_Q_HITS=""

@@ -54,6 +54,7 @@ else
     # 一時ディレクトリも外部コマンドも要らない静的検査を先に置く（安価な順。
     # 全 suite を実行するので、並び順は結果ではなく報告の読みやすさの問題）。
     "$SCRIPT_DIR/skill-frontmatter/verify.sh"
+    "$SCRIPT_DIR/skill-bash-blocks/verify.sh"
     "$SCRIPT_DIR/ace-curate-commit/verify.sh"
     "$SCRIPT_DIR/ace-refine/verify.sh"
     "$SCRIPT_DIR/changelog-public-references/verify.sh"

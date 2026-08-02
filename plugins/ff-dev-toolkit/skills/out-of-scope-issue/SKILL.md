@@ -189,6 +189,7 @@ for candidate in "$type_label" "$priority_label" "$followup_label"; do
   # 完全一致（行単位）を外部プロセスなしで判定する。`grep -q` へパイプで
   # 流し込む書き方は、grep が一致した時点で読み取りを止めるため producer 側が
   # SIGPIPE で落ち、`set -o pipefail` 下では「一致したのに失敗」に反転しうる。
+  # この禁止は tests/skill-bash-blocks/verify.sh が全スキル横断で検査する。
   if [[ $'\n'"$available_labels"$'\n' == *$'\n'"$candidate"$'\n'* ]]; then
     label_args+=(--label "$candidate")
   else
