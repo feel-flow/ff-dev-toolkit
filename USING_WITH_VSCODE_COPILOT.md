@@ -260,4 +260,6 @@ docs/ を前提に、この変更が ARCHITECTURE や DOMAIN にどう影響す�
 | Claude Code | marketplace で install（第一ターゲット） |
 | Codex CLI | Claude 形式 marketplace 互換で install 可能 |
 | Claude Cowork | UI から marketplace 追加 |
-| GitHub Copilot（本ガイド） | install 不可。`copilot-instructions.md` + `docs/` |
+| grok CLI | Claude 形式 marketplace 互換で install 可能（v0.2.118 で実機検証済み） |
+| GitHub Copilot **CLI** | Claude 形式 marketplace 互換で install 可能（v1.0.75 で実機検証済み）。**本ガイドが扱う VS Code 拡張とは別経路** |
+| VS Code + GitHub Copilot（本ガイド） | install 不可（IDE 拡張）。`copilot-instructions.md` + `docs/` |

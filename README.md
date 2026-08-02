@@ -34,7 +34,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 
 ## 収録内容
 
-### Skills（17）
+### Skills（18）
 
 | スキル | 用途 |
 |---|---|
@@ -42,7 +42,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `harness-review` | エージェントハーネス設計のレビュー。アンチパターンカタログと観点チェックリストに基づく設計評価 |
 | `out-of-scope-issue` | スコープ外の発見を `YAGNI（対応も Issue 化もしない）→ 軽微ならインライン修正 → Issue 化` の順で判定。Issue 化前に類似 Issue を検索し、同じ完了条件ならコメントで集約。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立する場合だけ関連 Issue を作成 |
 
-以下の14件は v0.15.0 で旧 Commands から Agent Skills 標準へ移行しました。Claude Code では `/ff-dev-toolkit:<name>`、Codex では `$ff-dev-toolkit:<name>`、両方で自然文による自動発火を利用できます。
+以下のワークフロースキルのうち 14 件は v0.15.0 で旧 Commands から Agent Skills 標準へ移行したもので、残りはその後に追加しました（`/ace-refine` は v0.18.0）。Claude Code では `/ff-dev-toolkit:<name>`、Codex では `$ff-dev-toolkit:<name>`、両方で自然文による自動発火を利用できます。
 
 | ワークフロースキル | 用途 |
 |---|---|
@@ -56,6 +56,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `/merge-cleanup` | PR マージ後のクリーンアップ一括実行（base ブランチ復帰・[gone] ブランチ / worktree 削除・リモート取り残しのガード付き自動削除） |
 | `/ace-setup` | ACE（Agentic Context Engineering）フレームワークのセットアップ |
 | `/ace-curate` | マージ済み PR からの知見抽出・プレイブック追記 |
+| `/ace-refine` | ACE Playbook の定期整理（stale アーカイブ・長大エントリ圧縮・重複統合）。dry-run → 承認 → 適用の 3 フェーズで原文を保全する |
 | `/setup-ai-config` | AI 開発ツール設定の初期化 |
 | `/multi-explore` | マルチAI CLI による並列探索 |
 | `/multi-implement` | マルチAI CLI による並列実装 |
@@ -89,7 +90,7 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 
 ## 前提
 
-- [Claude Code](https://docs.claude.com/en/docs/claude-code)（プラグインの第一ターゲット。Codex CLI / Claude Cowork も Claude 形式 marketplace 互換で利用可）
+- [Claude Code](https://docs.claude.com/en/docs/claude-code)（プラグインの第一ターゲット。Codex CLI / Claude Cowork / grok CLI / GitHub Copilot CLI も Claude 形式 marketplace 互換で利用可。詳細は下記「他のツールで使う」）
 - Node.js >= 22（MCP サーバー spec-docs の実行に必要。18/20 は EOL のためサポート外）
 - マルチAI CLI オーケストレーション（`/multi-*`）を使う場合のみ: Codex CLI / Gemini CLI / Copilot CLI のいずれか（オプション。Copilot CLI は `/multi-review` では従量課金のためオプトイン）
 
@@ -99,7 +100,11 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 |------|----------|
 | Claude Code | 上記「インストール」（第一ターゲット） |
 | Codex CLI / Claude Cowork | Claude 形式 marketplace を登録して install（CLI / UI は各製品の手順に読み替え） |
-| **VS Code + GitHub Copilot** | marketplace の plugin install は不可。`.github/copilot-instructions.md` と `docs/` で方法論を効かせる → **[USING_WITH_VSCODE_COPILOT.md](./USING_WITH_VSCODE_COPILOT.md)** |
+| grok CLI | Claude 形式 marketplace を登録して install（v0.2.118 で実機検証済み）:<br>`grok plugin marketplace add feel-flow/ff-dev-toolkit`<br>`grok plugin install ff-dev-toolkit@feel-flow/ff-dev-toolkit` |
+| GitHub Copilot CLI | Claude 形式 marketplace を登録して install（v1.0.75 で実機検証済み）:<br>`copilot plugin marketplace add feel-flow/ff-dev-toolkit`<br>`copilot plugin install ff-dev-toolkit@ff-dev-toolkit`<br>導入したスキルは `copilot skill list` の Plugin skills に並ぶ |
+| **VS Code + GitHub Copilot** | marketplace の plugin install は不可（IDE 拡張。上記 Copilot **CLI** とは別経路）。`.github/copilot-instructions.md` と `docs/` で方法論を効かせる → **[USING_WITH_VSCODE_COPILOT.md](./USING_WITH_VSCODE_COPILOT.md)** |
+
+grok / Copilot CLI で確認したのは marketplace 登録 → インストール → コンポーネントの認識まで（2026-08-02 実測。上記コマンドのとおり本リポジトリ `feel-flow/ff-dev-toolkit` から直接導入して確認）。スキルの実行・hooks の発火・MCP サーバーの起動は未検証。
 
 ## バージョンと書籍からの参照
 
