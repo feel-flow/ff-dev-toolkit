@@ -55,6 +55,7 @@ else
     # 全 suite を実行するので、並び順は結果ではなく報告の読みやすさの問題）。
     "$SCRIPT_DIR/skill-frontmatter/verify.sh"
     "$SCRIPT_DIR/skill-bash-blocks/verify.sh"
+    "$SCRIPT_DIR/no-hardcoded-model/verify.sh"
     "$SCRIPT_DIR/ace-curate-commit/verify.sh"
     "$SCRIPT_DIR/ace-refine/verify.sh"
     "$SCRIPT_DIR/changelog-public-references/verify.sh"
@@ -67,6 +68,10 @@ else
     # docs-template の実行可能フェンスを抽出して fixture 実行する動的検査。
     # 一時作業領域を使うため静的検査の後、ネットワーク検査の前に置く。
     "$SCRIPT_DIR/docs-gates-runtime/verify.sh"
+    # アダプタが CLI へ渡す argv の実測。一時ディレクトリと stub CLI を使うが
+    # 実 CLI・ネットワーク・課金は伴わない（〜2 秒）。静的検査の後、ネットワーク
+    # 検査の前に置く。
+    "$SCRIPT_DIR/adapter-model-args/verify.sh"
     # 公開リポジトリへの実ネットワーク到達を試みる suite（接続不可のみ丸ごと
     # ○ skip、それ以外は fail）。静的検査より後、破壊的操作を伴う
     # merge-cleanup より前に置く。他の suite を network-dependent 化する場合も

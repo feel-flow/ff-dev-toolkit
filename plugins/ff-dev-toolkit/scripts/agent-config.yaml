@@ -31,6 +31,18 @@ tasks:
     timeout: 900
 
 # ── Agent Definitions ──
+# ⚠️ このブロックは**実行時には読まれない**。CLI レジストリの正本は
+# scripts/multi-agent.sh の get_cli_command / get_cli_cost_tier /
+# get_cli_perspectives_* / get_cli_fallback（bash 3.2 互換のため case 文）で、
+# 本ファイルから yq が読むのは version / mode / parallel と、version が "2.0" の
+# ときだけ tasks.<task>.{cost_strategy,timeout,output_dir} だけ。ここは人が読む
+# ための対応表として維持している。値を書き換えても挙動は変わらないので、
+# 実際の割当を変えるときは multi-agent.sh を直すこと。
+#
+# モデル指定はここでは行わない。ラッパーは既定のモデル slug を持たず、各 CLI 自身の
+# 設定（~/.codex/config.toml、Claude Code のモデル設定など）へ委譲する。明示指定が
+# 要るときは環境変数を使う（MULTI_AGENT_MODEL_<CLI> / MULTI_AGENT_CODEX_PROFILE）。
+# 理由は docs-template/08-knowledge/playbook/tooling.md の ACE-70-2 を参照。
 agents:
   claude-code:
     command: claude
@@ -42,10 +54,6 @@ agents:
         - architecture-analysis
       implement:
         - feature-implementation
-    flags:
-      review: '-p "{prompt}" --allowed-tools "Read,Grep,Glob,Bash(git diff*)"'
-      explore: '-p "{prompt}" --allowed-tools "Read,Grep,Glob,Bash(git*),Bash(find*),Bash(ls*)"'
-      implement: '-p "{prompt}" --allowed-tools "Read,Grep,Glob,Edit,Write,Bash"'
 
   codex-cli:
     command: codex
@@ -59,10 +67,6 @@ agents:
         - dependency-mapping
       implement:
         - refactoring
-    flags:
-      review: 'exec "{prompt}" --sandbox read-only'
-      explore: 'exec "{prompt}" --sandbox read-only'
-      implement: 'exec "{prompt}" --sandbox network-off'
 
   copilot-cli:
     command: copilot
@@ -75,10 +79,6 @@ agents:
         - api-surface-analysis
       implement:
         - test-writing
-    flags:
-      review: '-p "{prompt}" --silent'
-      explore: '-p "{prompt}" --silent'
-      implement: '-p "{prompt}" --silent'
 
   gemini-cli:
     command: gemini
@@ -91,10 +91,6 @@ agents:
         - tech-debt-assessment
       implement:
         - documentation
-    flags:
-      review: '-p "{prompt}" --sandbox --output-format text'
-      explore: '-p "{prompt}" --sandbox --output-format text'
-      implement: '-p "{prompt}" --sandbox --output-format text'
 
   cursor-cli:
     command: cursor-agent
@@ -106,12 +102,11 @@ agents:
         - pattern-discovery
       implement:
         - migration
-    flags:
-      review: '--print --model auto "{prompt}"'
-      explore: '--print --model auto "{prompt}"'
-      implement: '--print --model auto "{prompt}"'
 
 # ── Graceful Degradation（プラン構築時のみ／実行時失敗には適用しない） ──
+# ⚠️ agents: と同じく、このブロックも**実行時には読まれない**。正本は
+# scripts/multi-agent.sh の get_cli_fallback。ここは人が読むための対応表。
+#
 # この対応表が**適用**されるのは「CLI が未インストールでプランを組めないとき」だけ。
 # 実行時失敗のあとにも参照はされるが、それは失敗サマリーで代替 CLI の名前とコスト帯を
 # 示すためで、自動実行はしない。

@@ -70,10 +70,22 @@ if [[ -z "$stderr_log" ]]; then
     "cannot create a temp file for ${CLI_NAME} stderr (check TMPDIR)."
 fi
 
+# モデルは既定では指定せず Gemini CLI 側の設定に委譲する（ACE-70-2）。
+# MULTI_AGENT_MODEL_GEMINI_CLI が設定されたときだけ -m を渡す。
+# 引数不正は呼び出し側（このファイル）のバグ。素の呼び出しだと set -e が bare exit 2 で
+# 落とすため、INCOMPLETE 成果物が残らず「CLI が 2 で落ちた」と誤読される。
+reset_model_args
+add_model_arg -m MULTI_AGENT_MODEL_GEMINI_CLI \
+  || fail_orchestrator_error "$perspective_name" "add_model_arg の呼び出しが不正です（アダプタ側のバグ）。"
+echo_model_args
+
+# MODEL_ARGS は空になりうる。bash 3.2 では set -u 下で空配列を "${a[@]}" と
+# 展開すると unbound variable で落ちるため ${a[@]+"${a[@]}"} を使う。
 result=$(run_with_timeout "$TIMEOUT" \
   "$CLI_COMMAND" -p "$prompt" \
     $sandbox_flag \
     --output-format text \
+    ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   2>"$stderr_log") || {
     # Capture the status first: any command inside this block would overwrite $?.
     rc=$?

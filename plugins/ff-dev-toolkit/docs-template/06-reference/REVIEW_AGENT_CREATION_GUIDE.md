@@ -184,7 +184,8 @@ Output in the standard review format."
 
 # 3. CLI実行（CLI別に分岐が必要）
 # 多くのCLIは -p でプロンプトを渡すが、Cursor CLIは --print + positional引数
-# 例: claude -p "$PROMPT" / codex -p "$PROMPT" / gemini -p "$PROMPT"
+# 例: claude -p "$PROMPT" / codex exec "$PROMPT" / gemini -p "$PROMPT"
+#     （codex の -p は --profile。プロンプトは positional 引数）
 # 例: cursor-agent --print --model auto "$PROMPT"
 #
 # 失敗・タイムアウト時は、部分出力の先頭に未完了マーカーを付けて保存してから、
@@ -217,6 +218,46 @@ fi
 # 4. 出力パース（CLI固有の後処理）
 # ...
 ```
+
+### モデル指定は「既定値を持たない」
+
+アダプターに**モデル slug の既定値を持たせてはいけない**。持たせると、その値の SSOT がユーザーの CLI 設定（`~/.codex/config.toml` など）とアダプターの 2 箇所に分裂し、**アダプター側が必ず古くなる**。しかもフラグを無条件に渡す実装だと、ユーザー設定を黙って上書きするうえ、同じ設定ファイル内の関連項目（reasoning effort など）は上書きされないため「古いモデル + 新しい付随設定」という誰も意図していない組み合わせで動く。
+
+正しい形は「**env が設定されている時だけフラグを組み立て、未設定ならフラグ自体を渡さない**」。これで最新追従は CLI 自身の設定が担い、明示指定は env で効き、アダプターのメンテナンスはゼロになる。
+
+```bash
+# ❌ 悪い例 — 既定値を持ち、無条件に渡す
+CODEX_MODEL="${CODEX_MODEL:-gpt-5.5}"       # ここが必ず古くなる
+codex exec -m "$CODEX_MODEL" "$PROMPT"      # ユーザー設定を黙って上書きする
+
+# ✅ 良い例 — env があるときだけフラグを組み立てる
+MODEL_ARGS=()
+[[ -n "${CODEX_MODEL:-}" ]] && MODEL_ARGS+=(-m "$CODEX_MODEL")
+[[ -n "${CODEX_PROFILE:-}" ]] && MODEL_ARGS+=(-p "$CODEX_PROFILE")
+codex exec "$PROMPT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"}
+```
+
+注意点:
+
+- **配列を使う**こと。文字列連結 + 非クォート展開だと、値に空白を含むモデル名が複数引数に割れる。この退化は「argv を `<%s>` 区切りで記録する stub」でしか検出できない（空白連結で記録すると、割れても同じ文字列に見える）
+- **`${ARR[@]+"${ARR[@]}"}` の形で展開**すること。bash 3.2（macOS 既定）では `set -u` のもとで空配列を `"${ARR[@]}"` と展開すると `unbound variable` で落ちる
+- 組み立てをヘルパー関数に切り出す場合、**末尾を `[[ 条件 ]] && 代入` で終わらせない**。条件が偽のとき関数の戻り値が 1 になり、`set -e` のもとで呼び出し側が落ちる。明示的に `return 0` で締めること
+- **CLI が「その指定は無効です」と言ってくれるとは限らない**。たとえば codex は存在しないプロファイル名をエラーにせず base config のまま完走する（0.144.5 で実測）。設定が効いていないことを利用者が観測できない場合は、ラッパー側で事前に検証して落とす
+- **同じ設定源を 2 つ同時に渡さない**。codex の `-m`（モデル）と `-p`（プロファイル）を併用すると `-m` が勝ち、reasoning effort だけプロファイル由来という不整合な組み合わせになる。排他にするか、片方を拒否する
+- アダプターに書いてよいモデル値は「**ベンダー中立で世代交代しない語**」だけ（`auto` など）。具体的な slug は既定値としてもフォールバックとしても持たない
+- 同種のアダプターが複数あるなら、着手前に**全部を横断確認**してパターンの不統一を洗い出す（片方だけ直すと次の腐敗が別ファイルで再発する）
+- 委譲には代償がある — アダプターの表示が「実際に何を使ったか」を保証できなくなる。表示は「config 由来」と正直に書き、実使用値の記録が要る場合は CLI の出力（多くは stderr の起動バナー）から**観測値**を拾う。仮定を事実として表示しない
+
+各 CLI の「安定した間接参照」は非対称なので、指定するなら slug 直書きより次を優先する:
+
+| CLI | 安定した間接参照 |
+| --- | ---------------- |
+| Claude Code | `opus` / `sonnet` / `haiku` / `fable` — **最新版を指すエイリアス**なので自己更新する |
+| Codex CLI | `-p/--profile <name>` — `~/.codex/<name>.config.toml` を base 設定に重ねる。モデルと reasoning effort を 1 ファイルで束ねられる |
+| Cursor CLI / Copilot CLI | `auto` — ベンダー側に選ばせる |
+| Gemini CLI | 該当なし（フラグを渡さず CLI 設定へ委譲する） |
+
+> 実害の記録は `08-knowledge/playbook/tooling.md` の ACE-70-2 を参照。参照実装は ff-dev-toolkit プラグイン側にあり（`scripts/adapters/adapter-common.sh` の `reset_model_args` / `add_model_arg` を 5 アダプタで共有）、同プラグインの `tests/no-hardcoded-model/`（slug の直書きが無いことの静的検査）と `tests/adapter-model-args/`（環境変数が実際に argv へ届くことの stub CLI 検査）が機械的に守っている。本テンプレートには含まれないので、コピー先で実装するときは上のパターンに従うこと。
 
 ---
 

@@ -65,7 +65,7 @@ echo "   Perspective: $(basename "$PERSPECTIVE_FILE" .md)" >&2
 echo "   Task type: ${TASK_TYPE:-review}" >&2
 echo "   Timeout: ${TIMEOUT}s (capped for Cursor)" >&2
 
-# Cursor CLI: --print for non-interactive output, --model auto
+# Cursor CLI: --print for non-interactive output
 # Same flags for all task types (flat-rate, no sandbox granularity)
 perspective_name="$(basename "$PERSPECTIVE_FILE" .md)"
 # Guard this mktemp explicitly: under `set -e` a failure here would kill the
@@ -77,8 +77,20 @@ if [[ -z "$stderr_log" ]]; then
     "cannot create a temp file for ${CLI_NAME} stderr (check TMPDIR)."
 fi
 
+# 既定は auto（Cursor 側にモデルを選ばせる）。auto はベンダー中立で世代交代しない
+# 語なのでラッパーが持ってよい唯一の種類の値であり、具体的なモデル slug を既定値に
+# することはしない（ACE-70-2）。MULTI_AGENT_MODEL_CURSOR_CLI で上書きできる。
+# 引数不正は呼び出し側（このファイル）のバグ。素の呼び出しだと set -e が bare exit 2 で
+# 落とすため、INCOMPLETE 成果物が残らず「CLI が 2 で落ちた」と誤読される。
+reset_model_args
+add_model_arg --model MULTI_AGENT_MODEL_CURSOR_CLI auto \
+  || fail_orchestrator_error "$perspective_name" "add_model_arg の呼び出しが不正です（アダプタ側のバグ）。"
+echo_model_args
+
+# ここでは MODEL_ARGS は既定値 auto があるため常に非空だが、他アダプタと展開の
+# 書き方を揃える（bash 3.2 では set -u 下の空配列展開が unbound variable になる）。
 result=$(run_with_timeout "$TIMEOUT" \
-  "$CLI_COMMAND" --print --model auto "$prompt" \
+  "$CLI_COMMAND" --print ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} "$prompt" \
   2>"$stderr_log") || {
     # Capture the status first: any command inside this block would overwrite $?.
     rc=$?

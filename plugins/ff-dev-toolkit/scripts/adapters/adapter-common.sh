@@ -537,6 +537,74 @@ fail_orchestrator_error() {
   fail_cli_task "$ORCHESTRATOR_ERROR_EXIT_CODE" "" "$perspective_name" ""
 }
 
+# ── Model Selection ──
+#
+# ラッパーはモデルを選ばない。どのモデルを使うかは各 CLI 自身の設定
+# （~/.codex/config.toml、Claude Code のモデル設定など）へ委譲し、env が
+# 設定されているときだけフラグを組み立てる。未設定ならフラグ自体を渡さない。
+#
+# 既定値としてモデル slug を持たせると、その値の SSOT がユーザーの CLI 設定と
+# ラッパーの 2 箇所に分裂してラッパー側が必ず古くなる。しかも無条件にフラグを
+# 渡す実装だと、ユーザー設定を黙って上書きするうえ同じ設定ファイル内の関連項目
+# （reasoning effort など）は上書きされないため、「古いモデル + 新しい付随設定」
+# という誰も意図していない組み合わせで動く。実害の記録は
+# docs-template/08-knowledge/playbook/tooling.md の ACE-70-2 を参照。
+#
+# 第 3 引数の既定値に書いてよいのは「ベンダー中立で世代交代しない語」だけ。
+# 現状これを使っているのは cursor-agent の `auto` だけである（copilot も値として
+# auto を受け付けるが、それは利用者が env に指定する値であってラッパーが持つ
+# 既定値ではない）。具体的なモデル slug は既定値としてもフォールバックとしても
+# 持たないこと — tests/no-hardcoded-model/verify.sh がこれを機械的に検査している。
+#
+# 代入ではなく追記にしているのは、codex が -m（モデル）と -p（プロファイル）の
+# 2 フラグを同時に取りうるため。代入式だと後の呼び出しが前の結果を黙って捨てる。
+
+MODEL_ARGS=()
+
+# Usage: reset_model_args
+reset_model_args() {
+  MODEL_ARGS=()
+}
+
+# Usage: add_model_arg <flag> <ENV_VAR_NAME> [vendor_neutral_default]
+# 値は間接展開で読む（bash 3.2 には declare -n が無い）。
+#
+# 引数の不正は「呼び出し側のバグ」なので沈黙せず非 0 で返す。env 変数名を打ち
+# 間違えた呼び出し（例: MULTI_AGENT_MODEL_GEMINI_CL1）は、黙って無視すると
+# 利用者が設定した値が永久に届かない「効かないつまみ」になり、しかも実行結果
+# からは区別できない。素の呼び出しなら set -e が拾って落ちる。
+add_model_arg() {
+  if [[ $# -lt 2 || $# -gt 3 ]]; then
+    echo "add_model_arg: 引数は 2〜3 個です（受領: $#）" >&2
+    return 2
+  fi
+  local flag="$1" var="$2" fallback="${3:-}" value
+  if [[ ! "$var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "add_model_arg: 第 2 引数は環境変数名でなければなりません（受領: '$var'）" >&2
+    return 2
+  fi
+  value="${!var:-}"
+  [[ -z "$value" ]] && value="$fallback"
+  [[ -n "$value" ]] && MODEL_ARGS+=("$flag" "$value")
+  return 0
+}
+
+# 解決したモデル引数を起動バナーに出す。
+#
+# 委譲した以上「実際にどのモデルが使われたか」はラッパーには断定できないので、
+# ここで報告するのは**渡した引数**だけにし、実使用モデルを名乗らない。それでも
+# 出す価値があるのは、env 名の打ち間違いや未 export が「(なし)」として即座に
+# 見えるため — 設定したつもりで効いていない事故は、これが無いと成果物からも
+# ログからも判別できない。
+# Usage: echo_model_args
+echo_model_args() {
+  if [[ ${#MODEL_ARGS[@]} -gt 0 ]]; then
+    echo "   Model args: ${MODEL_ARGS[*]} (env 由来。実使用モデルは CLI 側の解決結果に従う)" >&2
+  else
+    echo "   Model args: (なし — CLI 自身の設定へ委譲)" >&2
+  fi
+}
+
 # ── Argument Parsing Helper ──
 
 # Parse common adapter arguments

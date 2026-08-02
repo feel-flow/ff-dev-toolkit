@@ -159,4 +159,36 @@ git diff  # 修正内容の確認
 - インストール済み CLI の**実行時**エラー／タイムアウトは fallback しません。クロスモデル性（どのモデルが実際に見たか）が黙って変わること、代替先のコスト帯が上がりうること、タイムアウト後の再試行が同じ制限時間をもう一度消費することを避けるためです
 - `Status: incomplete` / `INCOMPLETE` が付いた節は未完了レビューです。Critical/Warning が無いことを「問題なし」と解釈しないこと
 - 結果は `.review-results/` に保存され、後から参照できます
-- 設定のカスタマイズ: プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される（環境変数 `MULTI_AGENT_CONFIG=<path>` または `--config <path>` でも上書き可）
+- 設定のカスタマイズ: プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される（環境変数 `MULTI_AGENT_CONFIG=<path>` または `--config <path>` でも上書き可）。ただし**実際に読まれるのは `version` / `mode` / `parallel` と、`version: "2.0"` のときだけ `tasks.<task>.{cost_strategy,timeout,output_dir}` である**（`version` が `2.0` でない場合は v1 形式とみなされ、トップレベルの `cost_strategy` / `timeout` / `output_dir` が読まれる — `version` を書き忘れると `tasks.*` が黙って無視されるので注意）。`agents:` と `fallback:` はどのバージョンでも読まれず、人が読むための対応表にすぎない。実行時のレジストリの正本は `scripts/multi-agent.sh` の `get_cli_*` 関数
+
+## モデル選択
+
+**ラッパーはモデルを選ばない。** どのモデルを使うかは各 CLI 自身の設定に委譲する — `~/.codex/config.toml`、Claude Code のモデル設定、Cursor / Copilot の `auto` など。ラッパー側に既定のモデル slug を持たせると、その値の SSOT がユーザーの CLI 設定と2重化して必ず古くなり、しかもフラグを無条件に渡す実装だとユーザー設定を黙って上書きする（`docs-template/08-knowledge/playbook/tooling.md` の ACE-70-2 に実害の記録がある）。
+
+明示的に指定したい場合だけ環境変数を使う。**未設定ならフラグ自体が渡らない**ので、指定しない限り CLI 側の設定がそのまま効く。
+
+| 環境変数 | 渡されるフラグ | 対象 |
+|---|---|---|
+| `MULTI_AGENT_MODEL_CLAUDE_CODE` | `--model` | Claude Code。`opus` / `sonnet` / `haiku` / `fable` は**最新版を指すエイリアス**なので、slug 直書きより腐りにくい |
+| `MULTI_AGENT_CODEX_PROFILE` | `-p` | **Codex の推奨経路**。`~/.codex/<name>.config.toml` を base 設定に重ねる |
+| `MULTI_AGENT_MODEL_CODEX_CLI` | `-m` | Codex のモデルを単発で指定。`MULTI_AGENT_CODEX_PROFILE` とは併用不可 |
+| `MULTI_AGENT_MODEL_COPILOT_CLI` | `--model` | Copilot。`auto` で Copilot 側の自動選択 |
+| `MULTI_AGENT_MODEL_GEMINI_CLI` | `-m` | Gemini |
+| `MULTI_AGENT_MODEL_CURSOR_CLI` | `--model` | Cursor。未設定時の既定は `auto`（ベンダー中立語なので世代交代しない） |
+
+```bash
+# Codex を専用プロファイルでレビューさせる（推奨）
+#   事前に ~/.codex/review.config.toml へ model と model_reasoning_effort を書いておく
+MULTI_AGENT_CODEX_PROFILE=review \
+  bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" $ARGUMENTS
+```
+
+Codex は `-m`（単発 slug）より **`--profile` が推奨**。プロファイルはモデルと `model_reasoning_effort` を1つのファイルで束ねられるため、「古いモデル + 新しい reasoning effort」という誰も意図していない組み合わせを避けられる。
+
+ただしその利点が成立するのは `-p` 単独のときだけ。`-m` を併用すると **`-m` のモデルがプロファイルのモデルに勝ち、reasoning effort だけプロファイル由来**になる（codex 0.144.5 で実測）。まさに避けたかった組み合わせなので、**両方を設定した場合はアダプタが実行前に非 0 で落とす**。
+
+> **プロファイル名は実行前に検証される。** codex 自身は存在しないプロファイル名を**エラーにせず、base config のまま完走する**（0.144.5 で実測）。そのままだと名前を打ち間違えたとき「専用プロファイルでレビューさせたつもり」が成立してしまい、成果物からもログからも判別できない。そこでアダプタは `-p` を渡す前に `${CODEX_HOME:-~/.codex}/<name>.config.toml` の存在を確認し、無ければ CLI を起動せずに落とす。**これは意図した fail-loud であってバグではない。**
+
+各アダプタは起動時に、実際に渡すモデル引数を stderr のバナーへ出す（`Model args: ...`、渡さない場合は `(なし — CLI 自身の設定へ委譲)`）。委譲した以上「実際にどのモデルが使われたか」はラッパーには断定できないので、報告するのは**渡した引数だけ**で実使用モデルは名乗らない。それでも、env 名の打ち間違いや未 export は `(なし)` として即座に見えるので、設定したつもりで効いていない事故に気づける。
+
+なお、ラッパーが具体的なモデル slug を持ち込んでいないことは `tests/no-hardcoded-model/verify.sh` が、環境変数が実際に CLI の argv へ届くことは `tests/adapter-model-args/verify.sh` が機械的に検査している。

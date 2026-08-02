@@ -31,6 +31,9 @@
 | **コスト**                | 無料/Pro $20                    | トークン課金               | $10/月＋従量課金             | 無料枠大                   | 無料/Pro $20           |
 | **コストティア**          | Premium                         | Standard                   | Metered（従量課金）          | Free-tier                  | Flat-rate              |
 | **推奨レビュー用途**      | 型設計・アーキテクチャ          | コードレビュー・テスト分析 | レビュー既定外（オプトイン） | セキュリティ・コメント分析 | コード簡素化           |
+| **モデル指定の安定経路**  | `opus`/`sonnet`/`haiku`/`fable`（最新版エイリアス） | `-p/--profile <name>`（設定ファイルを重ねる） | `--model auto`               | 該当なし（CLI 設定へ委譲） | `--model auto`         |
+
+> **モデル選択の方針**: スクリプト側に具体的なモデル slug をベタ書きせず、各 CLI 自身の設定へ委譲する。環境変数が設定されているときだけフラグを組み立て、未設定ならフラグ自体を渡さない。理由と実装パターンは [REVIEW_AGENT_CREATION_GUIDE.md の「モデル指定は『既定値を持たない』」](../../06-reference/REVIEW_AGENT_CREATION_GUIDE.md#モデル指定は既定値を持たない) を参照。
 
 ### AI消費分散（Multi-CLI Orchestration）
 

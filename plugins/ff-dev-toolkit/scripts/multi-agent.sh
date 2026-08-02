@@ -164,6 +164,40 @@ get_cli_fallback() {
   esac
 }
 
+# ── Model-Selection Env Passthrough ──
+# モデル選択の env は「インラインで前置して 1 回だけ効かせる」形（multi-review の
+# SKILL.md の例もそれ）なので、元コマンドが終わると消える。再実行コマンドをそのまま
+# 出すと、貼り付けた人は既定のモデル / プロファイルで走ることになり、失敗した構成の
+# 再現にならない。
+#
+# 前置は**その行の CLI に効くものだけ**にする。全部まとめて前置すると、代替 CLI を
+# 案内する行にも無関係な env が乗り、実際には使われない設定を使うかのように読める。
+get_cli_model_env_vars() {
+  case "$1" in
+    claude-code) echo "MULTI_AGENT_MODEL_CLAUDE_CODE" ;;
+    codex-cli)   echo "MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE" ;;
+    copilot-cli) echo "MULTI_AGENT_MODEL_COPILOT_CLI" ;;
+    gemini-cli)  echo "MULTI_AGENT_MODEL_GEMINI_CLI" ;;
+    cursor-cli)  echo "MULTI_AGENT_MODEL_CURSOR_CLI" ;;
+    *) echo "" ;;
+  esac
+}
+
+# 設定されている env だけを `VAR=値 ` の形で連結して返す（無ければ空文字）。
+# codex でモデルとプロファイルが両方設定されている場合はアダプタが実行前に拒否するが、
+# ここでは両方そのまま前置する — 再実行は「失敗した構成の忠実な再現」であるべきで、
+# 片方を黙って落とすと、直したはずの「上書きが静かに消える」問題に戻る。利用者が
+# どちらを残すべきかはアダプタのエラーメッセージが明示している。
+model_env_prefix() {
+  local cli="$1" var prefix=""
+  for var in $(get_cli_model_env_vars "$cli"); do
+    if [[ -n "${!var:-}" ]]; then
+      prefix="${prefix}${var}=$(printf '%q' "${!var}") "
+    fi
+  done
+  printf '%s' "$prefix"
+}
+
 get_cli_cost_tier() {
   case "$1" in
     claude-code) echo "premium" ;;
@@ -976,18 +1010,20 @@ print_failure_advice() {
         echo "       --timeout cannot extend it. Use a different CLI for this perspective." >&2
       else
         echo "     ${task} — more time on the same CLI:" >&2
-        echo "       ${self} --cli ${cli} --perspective ${persp} --timeout $((TIMEOUT * 2))" >&2
+        echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp} --timeout $((TIMEOUT * 2))" >&2
       fi
     else
       echo "     ${task} — failed for a reason more time will not fix; read the CLI" >&2
       echo "       stderr in ${OUTPUT_DIR}/${cli}/${persp}.md, then re-run:" >&2
-      echo "       ${self} --cli ${cli} --perspective ${persp}" >&2
+      echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp}" >&2
     fi
     fb="$(get_cli_fallback "$cli")"
     if [[ -n "$fb" ]] && list_contains "$AVAILABLE_CLIS" "$fb"; then
       fb_tier="$(get_cli_cost_tier "$fb")"
       echo "     ${task} — or the configured substitute ${fb} [${fb_tier}]:" >&2
-      echo "       ${self} --cli ${fb} --perspective ${persp}" >&2
+      # 代替 CLI の行には代替 CLI に効く env だけを前置する（失敗した CLI の
+      # モデル指定を持ち越すと、実際には使われない設定を使うかのように読める）
+      echo "       $(model_env_prefix "$fb")${self} --cli ${fb} --perspective ${persp}" >&2
     fi
   done
 }
