@@ -149,6 +149,27 @@ else
   bad "TIMEOUT 再代入の検査自体が失敗した（grep rc=${CLAMP_RC}。対象 glob が展開されていない可能性）"
 fi
 
+# 空出力パス（rc=0 + stdout 空）の保全パターンは 5 アダプタへ手で写されている
+# （feel-flow/ff-dev-toolkit#6 の残件対応）。behavioral ケース（Part B の empty）は
+# codex-cli しか通らないため、残り 4 本は片側だけ旧実装へ戻っても緑のまま退行する
+# — 実際に gemini だけ戻す mutation が全件 pass を維持した。写し崩れの本体は
+# (a) record_timeout_reason empty-output の消失と (b) stderr_log の破棄（最後の
+# rm -f）が空出力チェックより前へ動くことの 2 点なので、行順で静的にピン留めする。
+# grep が失敗した場合（対象ファイル欠落・読取不能を含む）は変数が空になり bad へ
+# 落ちるため、rc の丸めが偽緑を作ることはない。
+for adapter in claude-code codex-cli copilot-cli gemini-cli grok-cli; do
+  f="$PLUGIN_ROOT/scripts/adapters/${adapter}-adapter.sh"
+  reason_line=""
+  reason_line="$(grep -n 'record_timeout_reason empty-output' "$f" 2>/dev/null | head -1 | cut -d: -f1)" || true
+  rm_line=""
+  rm_line="$(grep -n 'rm -f "\$stderr_log"' "$f" 2>/dev/null | tail -1 | cut -d: -f1)" || true
+  if [[ -n "$reason_line" && -n "$rm_line" && "$reason_line" -lt "$rm_line" ]]; then
+    ok "${adapter}: 空出力パスが stderr_log を保全してから破棄する"
+  else
+    bad "${adapter}: empty-output 保全パターンが崩れている (reason=${reason_line:-なし} rm=${rm_line:-なし})"
+  fi
+done
+
 # --help の表示（利用者が最初に見る値）
 HELP_OUT="$(bash "$MULTI_AGENT" --help 2>/dev/null || true)"
 if [[ "$HELP_OUT" == *"review ${CANON}"* ]]; then
@@ -476,6 +497,16 @@ case "\$mode" in
     echo "CLI chose to exit 124 itself"
     exit 124
     ;;
+  empty)
+    # exit 0 かつ stdout 空。原因（レート制限・認証切れ等）は stderr にしか出ない
+    # — feel-flow/ff-dev-toolkit#6 の残件が踏む形そのもの。
+    echo "stub: rate limited - no review produced" >&2
+    ;;
+  empty-silent)
+    # exit 0・stdout も stderr も完全に空。成果物のバナーが「存在しない stderr
+    # 抜粋」を案内しないことを見る（案内文が虚空を指すと、最も診断が要る成果物が
+    # 読み手を実在しないセクションへ送る）。
+    ;;
 esac
 SH
 chmod +x "$STUB/codex"
@@ -733,6 +764,107 @@ if grep -q -- '--include-diff' "$TMP/run-impl.log" && grep -qF -- "--output-dir"
 else
   bad "advice: --include-diff / --output-dir が再実行コマンドから落ちている"
   grep -A3 'more time on the same CLI' "$TMP/run-impl.log" >&2 || true
+fi
+
+# --- ケース2e: CLI が exit 0 のまま何も出力しない（stderr にのみ原因） ---
+# feel-flow/ff-dev-toolkit#6 の残件。この経路で stderr_log を先に rm すると、原因を
+# 語る唯一のチャネルが消え、成果物も残らない。「CLI は正常終了したのに何も言わな
+# かった」は最も診断が要る状況であり、他の失敗経路と同じ保全（INCOMPLETE 成果物 +
+# stderr 抜粋）を受けるべき。
+echo empty > "$TMP/codex-mode"
+read -r RC EL <<<"$(run_orchestrator 60)"
+
+if [[ "$RC" -ne 0 ]]; then
+  ok "empty: orchestrator が非 0 終了 (rc=$RC)"
+else
+  bad "empty: 空出力なのに 0 終了した"
+fi
+
+if [[ -f "$RESULT_FILE" ]] && grep -q '^<!-- Status: incomplete -->$' "$RESULT_FILE"; then
+  ok "empty: 結果ファイルが Status: incomplete で生成される（空振りしない）"
+else
+  bad "empty: 結果ファイルが生成されない（診断情報ゼロの silent failure が再発）"
+fi
+
+if [[ -f "$RESULT_FILE" ]] && grep -q 'exited successfully but produced no output' "$RESULT_FILE"; then
+  ok "empty: 理由が empty-output として記録される"
+else
+  bad "empty: 空出力の理由が成果物に残らない"
+fi
+
+# 原因は stderr にしか出ていない。ここが読めることが本ケースの主眼。
+if [[ -f "$RESULT_FILE" ]] && grep -q 'stub: rate limited' "$RESULT_FILE"; then
+  ok "empty: CLI の stderr が成果物に保全される（原因が後から読める）"
+else
+  bad "empty: stderr が破棄され、なぜ空だったかが読めない"
+fi
+
+if [[ -f "$RESULT_FILE" ]] && ! grep -q 'timed out' "$RESULT_FILE"; then
+  ok "empty: timeout と誤表示されない"
+else
+  bad "empty: 空出力が timeout として誤表示された"
+fi
+
+# ケース 2f の「抜粋を案内しない」否定検査の正アンカー。文言が変わって否定検査が
+# 空回りする退行をここで検出する。
+if [[ -f "$RESULT_FILE" ]] && grep -q 'stderr excerpt below' "$RESULT_FILE"; then
+  ok "empty: stderr があるときはバナーが抜粋の存在を案内する"
+else
+  bad "empty: stderr があるのにバナーが抜粋を案内しない（or 文言が変わった）"
+fi
+
+# 人間が実際に読む面（統合レポート）まで未完了バナーが届くこと。成果物側だけ見て
+# いると、レポートが「クラッシュ」文言のままでも緑になる。
+if [[ -f "$REPORT_FILE" ]] && grep -q 'finding here means unchecked, not clean' "$REPORT_FILE"; then
+  ok "empty: 統合レポートが未完了であることを明示する"
+else
+  bad "empty: 統合レポート側の未完了バナーが出ていない"
+fi
+
+# 時間を足しても直らない失敗に「時間を足せ」と案内しないこと（crash と同じ性質）。
+# 否定形単独だと案内ブロックごと消えた退行でも緑になるため、肯定とペアで照合する。
+if grep -q 'failed for a reason more time will not fix' "$TMP/run.log" \
+  && ! grep -q -- '--timeout 120' "$TMP/run.log"; then
+  ok "empty: 時間延長ではなく原因確認を案内する"
+else
+  bad "empty: 時間を足しても直らない空出力に時間延長を案内している（or 案内自体が消えた）"
+fi
+
+if target_cli_invoked && no_other_cli_invoked; then
+  ok "empty: 対象 CLI は起動し、実行時 fallback は起きていない（他 CLI は未起動）"
+else
+  bad "empty: 対象 CLI 未起動 or 設定 fallback が黙って実行された"
+fi
+
+# --- ケース2f: exit 0・stdout も stderr も空 ---
+# empty-output バナーの「the reason is in the stderr excerpt below」は、stderr が
+# 空だと抜粋セクション自体が付かず、読み手を実在しないセクションへ送る。stderr の
+# 有無でバナーを出し分けることを固定する。
+echo empty-silent > "$TMP/codex-mode"
+read -r RC EL <<<"$(run_orchestrator 60)"
+
+if [[ "$RC" -ne 0 ]]; then
+  ok "empty-silent: orchestrator が非 0 終了 (rc=$RC)"
+else
+  bad "empty-silent: 空出力なのに 0 終了した"
+fi
+
+if [[ -f "$RESULT_FILE" ]] && grep -q '^<!-- Status: incomplete -->$' "$RESULT_FILE"; then
+  ok "empty-silent: stderr も空でも成果物は残る"
+else
+  bad "empty-silent: stderr が空だと成果物が残らない"
+fi
+
+if [[ -f "$RESULT_FILE" ]] && grep -q 'wrote nothing to stdout or stderr' "$RESULT_FILE"; then
+  ok "empty-silent: 原因を捕捉できなかったことを明示する"
+else
+  bad "empty-silent: 原因未捕捉の明示がない"
+fi
+
+if [[ -f "$RESULT_FILE" ]] && ! grep -q 'stderr excerpt below' "$RESULT_FILE"; then
+  ok "empty-silent: 存在しない stderr 抜粋を案内しない"
+else
+  bad "empty-silent: バナーが実在しない stderr 抜粋セクションを指している"
 fi
 
 # --- ケース3: 正常完了（Bug A の回帰: 制限秒数を待たされない） ---

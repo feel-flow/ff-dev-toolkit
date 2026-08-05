@@ -16,6 +16,12 @@
 
 ## [Unreleased]
 
+### 修正
+
+- multi-agent レビューの codex-cli / claude-code / gemini-cli / copilot-cli の 4 アダプタで、CLI が **exit 0 かつ stdout 空**で終わった場合に stderr ログを表示せず削除し、結果ファイルも書かずに落ちていたのを修正した（[報告された silent failure](https://github.com/feel-flow/ff-dev-toolkit/issues/6) の残件）。レート制限や認証切れの原因は stderr にしか出ないため、この経路は「最も診断が要る状況で診断情報がゼロになる」形だった
+- 空出力は grok-cli アダプタと同じ保全経路に揃え、`Status: incomplete` の成果物に stderr 抜粋と「exited successfully but produced no output」の理由を残す。timeout やクラッシュとは区別して報告される。CLI が stderr にも何も書かなかった場合は、存在しない抜粋を案内せず「原因は捕捉できなかった」ことを明示するようバナーを出し分ける
+- 回帰テストを追加した: 空出力 stub ケース（検証 9 項目）、stderr も空の亜種ケース（検証 4 項目）、および 5 アダプタすべての保全パターンを行順で固定する静的検査。空出力の behavioral テストは codex-cli アダプタのみを通るため、残りのアダプタが個別に旧実装へ戻る退行は静的検査側が捕まえる
+
 ### ドキュメント
 
 - 収録スキル一覧の件数が 17 のままだったのを **18** に修正し、一覧から漏れていた `/ace-refine` を追加した

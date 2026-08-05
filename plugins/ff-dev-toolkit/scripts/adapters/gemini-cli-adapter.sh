@@ -91,12 +91,19 @@ result=$(run_with_timeout "$TIMEOUT" \
     rc=$?
     fail_cli_task "$rc" "$stderr_log" "$perspective_name" "$result"
   }
-rm -f "$stderr_log"
-
+# exit 0 + 空出力。ここで stderr を先に捨てると「なぜ空だったか」を言う唯一の
+# チャネルが消え、成果物も残らない（実測: レート制限の一文が stderr にだけ出て、
+# 成果物もログも残らなかった — feel-flow/ff-dev-toolkit#6 の残件）。fail_cli_task
+# へ通して、INCOMPLETE 成果物（stderr があれば抜粋つき）を残す。
 if [[ -z "$result" ]]; then
-  echo "ERROR: ${CLI_NAME} produced no output. The review may have failed silently." >&2
-  exit 1
+  echo "ERROR: ${CLI_NAME} produced no output. The ${TASK_TYPE:-review} may have failed silently." >&2
+  # クラッシュではない（0 で終了し、止められてもいない）。既定の reason のままだと
+  # 「CLI が status 1 で落ちた／途中で止められた」と報告され、読み手は存在しない
+  # クラッシュを追う。実際に見るべきは成果物に残る stderr 抜粋。
+  record_timeout_reason empty-output
+  fail_cli_task 1 "$stderr_log" "$perspective_name" ""
 fi
+rm -f "$stderr_log"
 
 # ── Write Output ──
 

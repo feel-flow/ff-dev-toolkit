@@ -229,7 +229,8 @@ timeout_reason_file() {
   echo "${TMPDIR:-/tmp}/ff-run-with-timeout-reason.$$"
 }
 
-# timeout | orchestrator-error | command
+# run_with_timeout 自身が書くのは timeout | orchestrator-error | command の 3 値。
+# アダプタが上書きで書く値（sandbox-refused | empty-output）もここを通る。
 record_timeout_reason() {
   printf '%s' "$1" >"$(timeout_reason_file)" 2>/dev/null || true
 }
@@ -382,8 +383,9 @@ run_with_timeout() {
 #
 # `reason` is run_with_timeout's out-of-band verdict (see timeout_reason_file):
 # "timeout", "orchestrator-error", "command", or "" when it could not be recorded.
-# An adapter may also record "sandbox-refused" itself when the CLI succeeded but
-# a safety precondition it depends on did not hold.
+# An adapter may also record a reason itself when the CLI succeeded but the result
+# is unusable: "sandbox-refused" (a safety precondition did not hold) or
+# "empty-output" (exit 0 with nothing on stdout).
 # It is consulted first because the status alone is ambiguous — a CLI is free to
 # exit 124 or 125 itself, and only the reason separates that from our own verdict.
 describe_cli_failure() {
@@ -541,7 +543,15 @@ ${stderr_excerpt}
       banner_detail="the CLI did finish, but it ran outside the sandbox this adapter requires, so its findings are unverified and it may have modified the working tree — read this as unknown, not as clean"
       ;;
     empty-output)
-      banner_detail="the CLI exited successfully but wrote nothing, so nothing was reviewed at all — the reason is in the stderr excerpt below, not in a crash"
+      # "below" must point at something that exists. When the CLI wrote nothing to
+      # stderr either, the excerpt section is absent (the -s guard above), and the
+      # most-diagnosis-needed artifact would send its reader hunting for a section
+      # that is not there.
+      if [[ -n "$stderr_excerpt" ]]; then
+        banner_detail="the CLI exited successfully but wrote nothing, so nothing was reviewed at all — the reason is in the stderr excerpt below, not in a crash"
+      else
+        banner_detail="the CLI exited successfully but wrote nothing to stdout or stderr, so no cause was captured — check the CLI's own logs or its auth/rate-limit state directly"
+      fi
       ;;
   esac
 
