@@ -12,6 +12,7 @@
 #   4. 対象 PR のリモートブランチ削除（same-repo かつ open PR 未使用、--force-with-lease で OID 一致時のみ）
 #   5. [gone] ローカルブランチ + 関連 worktree の削除
 #      （dirty worktree は保護。-D は MERGED PR head と OID 一致するブランチのみ）
+#   5.5 削除した worktree のトランスクリプト回収（cwd 照合のうえ tar.gz へアーカイブ）
 #   6. リモート取り残しブランチのガード付き自動削除（fail-closed）
 #   7. 最終検証と結果サマリー
 #
@@ -28,6 +29,9 @@
 #   - dirty な worktree・upstream なしの孤児ブランチは削除しない（警告のみ）
 #   - base を保持する別 worktree は clean の場合だけ detached へ退避し、
 #     worktree と ignored ファイルを維持する。dirty なら変更せず中断する
+#   - トランスクリプトの回収は「今回削除に成功した worktree の分」だけを対象にし、
+#     jsonl の cwd がその worktree を指すことを照合してから処理する。既定は削除では
+#     なく tar.gz へのアーカイブで、アーカイブに失敗したら元ディレクトリを残す
 
 set -Eeuo pipefail
 
@@ -64,6 +68,101 @@ find_worktree_for_branch() {
   done < <(git worktree list --porcelain)
 
   return 1
+}
+
+resolve_dir() {
+  # $1: ディレクトリ。シンボリックリンクを解決した絶対パスを stdout へ返す。
+  # realpath は環境によって無いため、サブシェルの cd + pwd -P で解決する。
+  ( cd "$1" 2>/dev/null && pwd -P ) || return 1
+}
+
+transcript_dir_names_for() {
+  # $1: worktree の絶対パス。対応するトランスクリプトディレクトリ名の候補を
+  # 1 行 1 件で出力する（重複は除去）。
+  #
+  # Claude Code は絶対パスを機械的にサニタイズした名前を使うが、実データ上は
+  # 2 系統が併存する:
+  #   A: 英数字以外をすべて '-' に潰す  … セッショントランスクリプト本体
+  #      (<sessionId>.jsonl と <sessionId>/tool-results/)
+  #   B: '.' と '_' は保持して残りを '-' … プラグインが書く付随データ
+  #      (<plugin>/skill-injections.jsonl 等。これらは cwd を持たない)
+  # 片方だけを見ると取りこぼすため、両方を候補に出す（'.' も '_' も含まない
+  # パスでは 2 つが同一になるため、重複は落とす）。
+  {
+    printf '%s\n' "$1" | sed 's/[^a-zA-Z0-9]/-/g'
+    printf '%s\n' "$1" | sed 's/[^a-zA-Z0-9._]/-/g'
+  } | awk '!seen[$0]++'
+}
+
+transcript_cwd_verdict() {
+  # $1: 候補ディレクトリ / $2: 許容する worktree パス（改行区切り。symlink 解決前後）
+  #
+  # jsonl に記録された cwd が「削除した worktree（またはその配下）」を
+  # 指しているかを照合する。名前一致だけを根拠にすると /a/b-c と /a/b/c が
+  # 同じ名前へ潰れて別プロジェクトの履歴を巻き込むため、証拠で確認する。
+  #
+  # grep は「一致 0 件」でも非 0 を返すため、終了コードでは「証拠が無い」と
+  # 「証拠を読めなかった」を区別できない。stderr が空かどうかで走査エラーを
+  # 判定し、取得に失敗したケースを「証拠が無い」へ降格させない
+  # （降格すると、後段の名前一致だけの回収へ落ちてしまう）。
+  #
+  # 判定は「記録された cwd の中に、削除した worktree（またはその配下）を指すものが
+  # 1 つでもあるか」で行う。セッションは途中で親リポジトリや別 worktree へ移動でき、
+  # その履歴も開始時の cwd から名付けられたディレクトリに残るため、「全ての cwd が
+  # worktree 配下であること」を要求すると正当なディレクトリを取りこぼす
+  # （実データでは cwd を持つ 71 件中 12 件が親リポジトリ等の cwd を併せ持っていた）。
+  # 名前が衝突した別プロジェクトのディレクトリには、この worktree を指す cwd が
+  # 1 つも無いので、衝突の検出力は保たれる。
+  #
+  # 戻り値:
+  #   0 = この worktree を指す cwd が見つかった
+  #   2 = cwd を記録した jsonl が無い（走査自体は正常に完了した）
+  #   3 = cwd はあるが、この worktree を指すものが 1 つも無い
+  #   4 = 走査・読み取りでエラーが出ており、証拠を取り切れていない
+  local dir="$1" allowed="$2" values="" line="" value="" base="" matched="" found=""
+  local scan_err="$WORK_TMP/transcript_scan_error"
+  local foreign="$WORK_TMP/transcript_foreign_cwd"
+
+  : > "$scan_err"
+  : > "$foreign"
+
+  # 判定材料は stderr の有無に一本化する。find / grep / sort のどれが失敗しても
+  # 診断は stderr に出るので、辿れないディレクトリも読めないファイルも同じ経路で
+  # 拾える。終了コードは使えない（grep は一致 0 件でも非 0 を返すため、
+  # 「証拠が無い」と「証拠を読めなかった」が区別できない）。
+  values="$( { find "$dir" -type f -name '*.jsonl' -exec grep -oh '"cwd":"[^"]*"' {} + | sort -u ; } 2>"$scan_err" )" || true
+  if [ -s "$scan_err" ]; then
+    return 4
+  fi
+  # jsonl が 1 つも無い場合と、jsonl はあるが cwd を含まない場合は同じ扱いにする
+  # （どちらも「所有者を確認できない」で、名前一致での回収経路は持たない）
+  [ -n "$values" ] || return 2
+
+  found=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    value="${line#\"cwd\":\"}"
+    value="${value%\"}"
+    matched=0
+    while IFS= read -r base; do
+      [ -n "$base" ] || continue
+      case "$value" in
+        "$base"|"$base"/*) matched=1; break ;;
+      esac
+    done <<< "$allowed"
+    if [ "$matched" = "1" ]; then
+      found=1
+    else
+      # 一致したものがあっても、外を指す cwd が混ざっていた事実は残す。
+      # 通常はセッションが親リポジトリへ移動しただけだが、名前が衝突した
+      # 別プロジェクトと同居している可能性もあり、その場合アーカイブは
+      # 相手の履歴も巻き込む。黙って進めず呼び出し元に伝える。
+      printf '%s\n' "$value" >> "$foreign"
+    fi
+  done <<< "$values"
+
+  [ "$found" = "1" ] || return 3
+  return 0
 }
 
 # temp はディレクトリ 1 つにまとめ、trap で確実に回収する
@@ -129,9 +228,15 @@ REPO_ROOT="$(git rev-parse --show-toplevel)" || die "git リポジトリ内で�
 # 参照時は必ず ${#arr[@]} でガードする）
 DELETED_BRANCHES=()
 DELETED_WORKTREES=()
+DELETED_WORKTREE_REALS=()
 DELETED_LEFTOVERS=()
 SKIPPED_LEFTOVERS=()
 FAILED_ITEMS=()
+ARCHIVED_TRANSCRIPTS=()
+SKIPPED_TRANSCRIPTS=()
+ARCHIVED_TRANSCRIPT_KB=0
+ARCHIVE_TOTAL_KB=0
+TRANSCRIPT_STEP_NOTE=""
 
 # ---- Step 1: 未コミット変更ガード -------------------------------------------
 
@@ -163,7 +268,7 @@ fi
 
 GH_OUT=""
 GH_OUT="$(gh pr view "$PR_NUM" --json headRefName,headRefOid,state,baseRefName,title,isCrossRepository 2>&1)" \
-  || die "gh pr view が失敗しました: $GH_OUT（ネットワーク / 認証 / gh CLI 設定を確認してください）"
+  || die "gh pr view が失敗しました: ${GH_OUT}（ネットワーク / 認証 / gh CLI 設定を確認してください）"
 
 PR_STATE="$(printf '%s' "$GH_OUT" | jq -r '.state')"
 PR_HEAD="$(printf '%s' "$GH_OUT" | jq -r '.headRefName')"
@@ -226,10 +331,10 @@ if ! SWITCH_OUT="$(git switch "$PR_BASE" 2>&1)"; then
     if git -C "$BASE_WORKTREE" switch "$PR_BASE" >/dev/null 2>&1; then
       echo "ℹ️ 呼び出し元の切り替え失敗に伴い、退避した worktree を $PR_BASE へ復旧しました。" >&2
     else
-      die "$PR_BASE への切り替えに失敗し、退避した worktree の復旧にも失敗しました: $SWITCH_OUT（要手動確認: $BASE_WORKTREE）"
+      die "$PR_BASE への切り替えに失敗し、退避した worktree の復旧にも失敗しました: ${SWITCH_OUT}（要手動確認: ${BASE_WORKTREE}）"
     fi
   fi
-  die "$PR_BASE への切り替えに失敗しました: $SWITCH_OUT（'git worktree list' / 'git branch -a' を確認）。"
+  die "$PR_BASE への切り替えに失敗しました: ${SWITCH_OUT}（'git worktree list' / 'git branch -a' を確認）。"
 fi
 printf '%s\n' "$SWITCH_OUT"
 
@@ -370,6 +475,14 @@ else
       fi
 
       echo "  worktree: $WORKTREE_PATH"
+      # Claude Code はトランスクリプト格納先の名前を「symlink 解決済みの絶対パス」から
+      # 導出する（macOS の /tmp は /private/tmp として記録される）。削除後は解決できない
+      # ので Step 5.5 のためにここで控える。解決できなければ元のパスで代用するが、
+      # その場合は候補名が総当たりで外れうるので黙って進めない。
+      WORKTREE_REAL="$(resolve_dir "$WORKTREE_PATH" || true)"
+      if [ -z "$WORKTREE_REAL" ]; then
+        echo "  ⚠️ worktree パスを正規化できませんでした。トランスクリプトを取りこぼす可能性があります: $WORKTREE_PATH"
+      fi
       # --force は付けない: 直前の clean 確認の後に変更が入った場合、
       # git 自身が拒否するので TOCTOU の安全網になる。
       # 注意: .gitignore 対象のファイル（.env 等）は clean 扱いのまま削除される。
@@ -383,6 +496,7 @@ else
       fi
       echo "  ✓ worktree removed: $WORKTREE_PATH"
       DELETED_WORKTREES+=("$WORKTREE_PATH")
+      DELETED_WORKTREE_REALS+=("${WORKTREE_REAL:-$WORKTREE_PATH}")
     fi
 
     # まず -d（小文字）でマージ済みのみ削除を試す
@@ -413,6 +527,275 @@ else
       FAILED_ITEMS+=("$branch: git branch -d 失敗")
     fi
   done <<< "$GONE_BRANCHES"
+fi
+
+# ---- Step 5.5: 削除した worktree のトランスクリプト回収 -----------------------
+#
+# Claude Code は作業ディレクトリごとに独立したトランスクリプトディレクトリを
+# <config>/projects/ 配下へ作る。worktree を消してもこれは残るため、二度と
+# 参照されない履歴が無制限に溜まる（標準の cleanupPeriodDays は経過日数でしか
+# 消さないので、期限内の孤児は残り続ける）。
+#
+# 「名前が一致したから消す」ことはしない。jsonl に記録された cwd が削除した
+# worktree を指していることを照合してから処理する。リモート削除を
+# --force-with-lease に、-D を OID 照合に限定しているのと同じ fail-closed の
+# 考え方で、名前だけの一致では /a/b-c と /a/b/c を区別できない。
+#
+# 既定は削除ではなく tar.gz へのアーカイブ。履歴を失わずに容量を回収でき、
+# 「未コミット変更を握りつぶさない」という本スクリプトの原則とも揃う。
+#
+# 環境変数:
+#   FF_MERGE_CLEANUP_TRANSCRIPTS=off                … この Step を無効化（既定 archive）
+#   FF_MERGE_CLEANUP_PROJECTS_DIR=<path>            … projects ディレクトリの上書き
+#   FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR=<path>  … アーカイブ先の上書き
+
+TRANSCRIPT_MODE="${FF_MERGE_CLEANUP_TRANSCRIPTS:-archive}"
+
+# 値の検証は「削除した worktree があったか」に依存させない。綴り違いで黙って
+# 無効化されると「回収したはず」の誤解を生むため、実行のたびに必ず報告する。
+if [ "$TRANSCRIPT_MODE" != "archive" ] && [ "$TRANSCRIPT_MODE" != "off" ]; then
+  echo ""
+  echo "⚠️ FF_MERGE_CLEANUP_TRANSCRIPTS の値が不正です: ${TRANSCRIPT_MODE}（archive / off のみ）"
+  TRANSCRIPT_STEP_NOTE="スキップ（環境変数の値が不正: ${TRANSCRIPT_MODE}）"
+  FAILED_ITEMS+=("トランスクリプト回収: FF_MERGE_CLEANUP_TRANSCRIPTS の値が不正 ($TRANSCRIPT_MODE)")
+elif [ "$TRANSCRIPT_MODE" = "off" ]; then
+  TRANSCRIPT_STEP_NOTE="無効（FF_MERGE_CLEANUP_TRANSCRIPTS=off）"
+elif [ "${#DELETED_WORKTREES[@]}" -eq 0 ]; then
+  : # 削除した worktree が無ければ対象も無い
+else
+  CLAUDE_HOME="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"
+  PROJECTS_DIR="${FF_MERGE_CLEANUP_PROJECTS_DIR:-$CLAUDE_HOME/projects}"
+  ARCHIVE_DIR="${FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR:-$CLAUDE_HOME/transcript-archives}"
+  PROJECTS_REAL=""
+  ARCHIVE_DIR_READY=0
+  PROCESSED_NAMES=""
+  TRANSCRIPT_CANDIDATES=0
+
+  if ! PROJECTS_REAL="$(resolve_dir "$PROJECTS_DIR")"; then
+    # 既定パスが無いのは Claude Code 未使用というだけで異常ではない。一方、
+    # 明示的に指定されたパスが解決できないのは設定ミスなので PARTIAL にする。
+    TRANSCRIPT_STEP_NOTE="スキップ（projects ディレクトリを解決できません: ${PROJECTS_DIR}）"
+    if [ -n "${FF_MERGE_CLEANUP_PROJECTS_DIR:-}" ] || [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+      echo ""
+      echo "⚠️ 明示指定された projects ディレクトリを解決できません: ${PROJECTS_DIR}"
+      FAILED_ITEMS+=("トランスクリプト回収: 指定された projects ディレクトリを解決できない ($PROJECTS_DIR)")
+    fi
+  else
+    echo ""
+    echo "🗂 削除した worktree のトランスクリプトを回収します（アーカイブ先: ${ARCHIVE_DIR}）"
+
+    for WT_IDX in "${!DELETED_WORKTREES[@]}"; do
+      # symlink 解決の前後どちらで記録されていても拾えるよう、両方を基準にする
+      WT_BASES="$(printf '%s\n%s\n' \
+        "${DELETED_WORKTREES[$WT_IDX]}" "${DELETED_WORKTREE_REALS[$WT_IDX]}" \
+        | awk 'NF && !seen[$0]++')"
+
+      while IFS= read -r WT_BASE; do
+        [ -n "$WT_BASE" ] || continue
+
+        while IFS= read -r CAND_NAME; do
+          # 複数の基準パスや worktree が同じ名前へ潰れても 1 回だけ処理する
+          case "$PROCESSED_NAMES" in
+            *"<$CAND_NAME>"*) continue ;;
+          esac
+          case "$CAND_NAME" in
+            ''|.|..|*/*) continue ;;
+          esac
+          PROCESSED_NAMES="$PROCESSED_NAMES<$CAND_NAME>"
+
+          CAND_PATH="$PROJECTS_DIR/$CAND_NAME"
+          [ -d "$CAND_PATH" ] || continue
+          # 1 件でも候補を見たら「対象なし」とは言わない（保護・失敗で終わった
+          # ものを「そもそも無かった」と報告すると、事実と食い違う）
+          TRANSCRIPT_CANDIDATES=$((TRANSCRIPT_CANDIDATES + 1))
+          # 候補そのものが symlink なら、リンク先が projects 内でも辿らない
+          if [ -L "$CAND_PATH" ]; then
+            echo "  ○ シンボリックリンクのため辿りません: $CAND_PATH"
+            SKIPPED_TRANSCRIPTS+=("$CAND_NAME: シンボリックリンク")
+            continue
+          fi
+          # 経路の途中に symlink があっても projects 直下へ着地することを確認する
+          # （直前の -L と重なる保護だが、片方だけでは経路途中の差し替えを塞げない）
+          CAND_REAL=""
+          if ! CAND_REAL="$(resolve_dir "$CAND_PATH")" \
+            || [ "$(dirname "$CAND_REAL")" != "$PROJECTS_REAL" ]; then
+            echo "  ○ projects ディレクトリ直下に解決されないため残します: $CAND_PATH"
+            SKIPPED_TRANSCRIPTS+=("$CAND_NAME: projects 直下へ解決されない")
+            continue
+          fi
+
+          CWD_VERDICT=0
+          transcript_cwd_verdict "$CAND_REAL" "$WT_BASES" || CWD_VERDICT=$?
+          case "$CWD_VERDICT" in
+            0)
+              CAND_REASON="cwd 照合一致"
+              if [ -s "$WORK_TMP/transcript_foreign_cwd" ]; then
+                # 通常はセッションが親リポジトリ等へ移動しただけ。ただし名前が
+                # 衝突した別プロジェクトと同居している可能性も残るため、
+                # アーカイブごと回収する事実を見えるところに出す。
+                CAND_REASON="cwd 照合一致（worktree 外の cwd も含む）"
+                echo "  ℹ️ この履歴には worktree 外の作業ディレクトリも記録されています。まとめてアーカイブします:"
+                sed 's/^/       /' "$WORK_TMP/transcript_foreign_cwd"
+              fi
+              ;;
+            2)
+              # cwd を記録した jsonl が無い。プラグインが書く付随データ
+              # （skill-injections.jsonl 等）だけのディレクトリが常にこれに当たる。
+              #
+              # ここで「名前が worktree 由来に見えるから消す」と降格させない。候補名は
+              # 削除した worktree のパスから導出したものなので、その名前を見ても
+              # 「渡されたパスが worktree だった」以上のことは分からず、目の前の
+              # ディレクトリが誰のものかという肝心の問いには答えていない。
+              # 回収できない分は別途 sweep 側で扱う。
+              SKIPPED_TRANSCRIPTS+=("$CAND_NAME: cwd を記録した jsonl が無く所有者を確認できない")
+              echo "  ○ 所有者を確認できないため残します（cwd を記録した jsonl なし）: $CAND_NAME"
+              continue
+              ;;
+            3)
+              # 名前が衝突した別プロジェクトのディレクトリはここに来る。異常では
+              # ないので PARTIAL にはせず、保護した事実だけ残す。
+              SKIPPED_TRANSCRIPTS+=("$CAND_NAME: cwd がこの worktree を指していない")
+              echo "  ○ この worktree を指す cwd が無いため残します: $CAND_NAME"
+              continue
+              ;;
+            4)
+              # 証拠の取得自体に失敗している。「証拠が無い」と同じ扱いにはできない
+              # （読めなかっただけかもしれない）ので、手当が要る失敗として報告する。
+              echo "  ⚠️ jsonl の走査でエラーが出たため処理しません（証拠を取り切れていない）: $CAND_NAME"
+              FAILED_ITEMS+=("トランスクリプト回収: jsonl 走査エラーで保護 ($CAND_NAME)")
+              continue
+              ;;
+            *)
+              echo "  ⚠️ 想定外の照合結果のため処理しません（判定コード ${CWD_VERDICT}）: $CAND_NAME"
+              FAILED_ITEMS+=("トランスクリプト回収: 想定外の照合結果で保護 ($CAND_NAME)")
+              continue
+              ;;
+          esac
+
+          if [ "$ARCHIVE_DIR_READY" != "1" ]; then
+            if ! mkdir -p "$ARCHIVE_DIR" 2>/dev/null; then
+              echo "  ❌ アーカイブ先を作成できません: $ARCHIVE_DIR"
+              echo "     残りの候補も同じ理由で失敗するため、この Step を中断します。"
+              FAILED_ITEMS+=("トランスクリプト回収: アーカイブ先を作成できない ($ARCHIVE_DIR)")
+              # note を立てないと、この後のサマリーが「対象はありませんでした」と
+              # 中断の事実に反する表示になる
+              TRANSCRIPT_STEP_NOTE="中断（アーカイブ先を作成できない: ${ARCHIVE_DIR}）"
+              break 3
+            fi
+            ARCHIVE_DIR_READY=1
+          fi
+
+          # 容量は付随情報。du の失敗で破壊的 Step 全体を落とさない
+          # （pipefail + errexit の下では、代入内のパイプ失敗がそのまま致命傷になる）
+          CAND_KB=""
+          CAND_KB="$(du -sk "$CAND_REAL" 2>"$WORK_TMP/du_error" | awk 'NR == 1 { print $1 }')" || CAND_KB=""
+          if [ -z "$CAND_KB" ]; then
+            CAND_KB=0
+            echo "  ⚠️ 容量を計測できませんでした（回収は続行します）: $CAND_NAME"
+          fi
+
+          # 同一秒に同名が来ても既存アーカイブを黙って上書きしない
+          # （-e は壊れた symlink を見落とすので -L も見る）
+          ARCHIVE_STAMP="$(date +%Y%m%d-%H%M%S)"
+          ARCHIVE_FILE="$ARCHIVE_DIR/$CAND_NAME-$ARCHIVE_STAMP.tar.gz"
+          ARCHIVE_SEQ=1
+          while [ -e "$ARCHIVE_FILE" ] || [ -L "$ARCHIVE_FILE" ]; do
+            ARCHIVE_FILE="$ARCHIVE_DIR/$CAND_NAME-$ARCHIVE_STAMP-$ARCHIVE_SEQ.tar.gz"
+            ARCHIVE_SEQ=$((ARCHIVE_SEQ + 1))
+          done
+
+          # 完成するまで最終名を名乗らせない。作業ファイル名は予測させない
+          # （予測できる名前だと、先回りして置かれた symlink のリンク先を
+          #  tar が切り詰めうる）。mktemp なら常に新規の通常ファイルになる。
+          ARCHIVE_TMP=""
+          if ! ARCHIVE_TMP="$(mktemp "$ARCHIVE_DIR/.merge-cleanup-archive-XXXXXX")"; then
+            FAILED_ITEMS+=("トランスクリプト回収: 作業ファイルを作成できない ($CAND_NAME)")
+            echo "  ❌ アーカイブ用の作業ファイルを作成できません。元ディレクトリは残します: $CAND_NAME"
+            continue
+          fi
+          ARCHIVE_LIST="$WORK_TMP/archive_list"
+          ARCHIVE_ERR="$WORK_TMP/archive_error"
+          # tar 実行中に元へ書き込みがあったかを見るための基準時刻
+          ARCHIVE_MARKER="$WORK_TMP/archive_marker"
+          : > "$ARCHIVE_MARKER"
+          TAR_OUT=""
+          ARCHIVE_FAIL=""
+
+          # ディレクトリ名は '-' 始まりなので、-C + './名前' でオプション誤認を避ける
+          if ! TAR_OUT="$(tar -czf "$ARCHIVE_TMP" -C "$PROJECTS_REAL" "./$CAND_NAME" 2>&1)"; then
+            ARCHIVE_FAIL="tar が失敗しました"
+          elif ! tar -tzf "$ARCHIVE_TMP" > "$ARCHIVE_LIST" 2>"$ARCHIVE_ERR"; then
+            # 終了コードだけを信じない。読み直せないアーカイブを根拠に元を消すと
+            # そのまま履歴の消失になる
+            TAR_OUT="$(cat "$ARCHIVE_ERR")"
+            ARCHIVE_FAIL="アーカイブを読み直せませんでした"
+          else
+            SRC_ENTRIES=""
+            SRC_ENTRIES="$(find "$CAND_REAL" ! -type d 2>/dev/null | wc -l | tr -d ' ')" || SRC_ENTRIES=""
+            # tar はディレクトリを末尾 '/' 付きで並べるので、それ以外を数える
+            ARC_ENTRIES="$(grep -cv '/$' "$ARCHIVE_LIST" || true)"
+            if [ -z "$SRC_ENTRIES" ] || [ "$SRC_ENTRIES" != "$ARC_ENTRIES" ]; then
+              TAR_OUT="元 ${SRC_ENTRIES:-?} 件 / アーカイブ ${ARC_ENTRIES} 件"
+              ARCHIVE_FAIL="アーカイブの件数が元と一致しません"
+            elif [ -n "$(find "$CAND_REAL" ! -type d -newer "$ARCHIVE_MARKER" -print -quit 2>/dev/null)" ]; then
+              # 件数照合は「アーカイブ後に既存ファイルへ追記された」を検出できない。
+              # 生きたセッションが書き足している最中に消すと、その分だけ失われる。
+              TAR_OUT="アーカイブ中に更新されたファイルがあります"
+              ARCHIVE_FAIL="アーカイブ中に元が変更されました"
+            fi
+          fi
+
+          if [ -n "$ARCHIVE_FAIL" ]; then
+            # 記録を先に積む。この後の出力や rm が失敗しても PARTIAL の主張を失わない
+            FAILED_ITEMS+=("トランスクリプト回収: $ARCHIVE_FAIL ($CAND_NAME)")
+            echo "  ❌ ${ARCHIVE_FAIL}。元ディレクトリは残します: $CAND_NAME"
+            printf '%s\n' "$TAR_OUT" | sed 's/^/     /' || true
+            rm -f "$ARCHIVE_TMP" || true
+            continue
+          fi
+
+          if ! mv "$ARCHIVE_TMP" "$ARCHIVE_FILE"; then
+            FAILED_ITEMS+=("トランスクリプト回収: アーカイブの確定に失敗 ($CAND_NAME)")
+            echo "  ❌ アーカイブの確定に失敗しました。元ディレクトリは残します: $CAND_NAME"
+            rm -f "$ARCHIVE_TMP" || true
+            continue
+          fi
+
+          # 照合から削除までの隙間で候補が差し替えられていないか直前に確かめ直す。
+          # bash では fd を握ったまま削除できないため窓を狭めるだけで、完全には
+          # 閉じられない（残る窓は mv 直後から rm までの数ミリ秒）
+          RECHECK_REAL=""
+          if [ -L "$CAND_PATH" ] \
+            || ! RECHECK_REAL="$(resolve_dir "$CAND_PATH")" \
+            || [ "$RECHECK_REAL" != "$CAND_REAL" ] \
+            || [ "$(dirname "$RECHECK_REAL")" != "$PROJECTS_REAL" ]; then
+            FAILED_ITEMS+=("トランスクリプト回収: 削除直前の再確認に失敗したため保護 ($CAND_NAME)")
+            echo "  ⚠️ 削除直前の再確認に失敗したため元ディレクトリは残します: $CAND_NAME"
+            echo "     アーカイブは作成済みです: $ARCHIVE_FILE"
+            continue
+          fi
+
+          if ! rm -rf "$CAND_REAL"; then
+            FAILED_ITEMS+=("トランスクリプト回収: アーカイブ後の削除失敗 ($CAND_NAME)")
+            echo "  ❌ アーカイブ後の削除に失敗しました（アーカイブと元が二重に残ります）: $CAND_REAL"
+            continue
+          fi
+
+          ARCHIVE_KB=""
+          ARCHIVE_KB="$(du -sk "$ARCHIVE_FILE" 2>/dev/null | awk 'NR == 1 { print $1 }')" || ARCHIVE_KB=""
+          [ -n "$ARCHIVE_KB" ] || ARCHIVE_KB=0
+          echo "  ✓ archived: $CAND_NAME (${CAND_KB} KB → ${ARCHIVE_KB} KB, $CAND_REASON)"
+          ARCHIVED_TRANSCRIPTS+=("$CAND_NAME")
+          ARCHIVED_TRANSCRIPT_KB=$((ARCHIVED_TRANSCRIPT_KB + CAND_KB))
+          ARCHIVE_TOTAL_KB=$((ARCHIVE_TOTAL_KB + ARCHIVE_KB))
+        done < <(transcript_dir_names_for "$WT_BASE")
+      done <<< "$WT_BASES"
+    done
+
+    if [ "$TRANSCRIPT_CANDIDATES" -eq 0 ] && [ -z "$TRANSCRIPT_STEP_NOTE" ]; then
+      echo "  対象のトランスクリプトはありませんでした。"
+    fi
+  fi
 fi
 
 # ---- Step 6: リモート取り残しのガード付き自動削除（fail-closed） ---------------
@@ -564,6 +947,20 @@ echo ""
 echo "- 対象 PR のリモートブランチ ($PR_HEAD): $PR_REMOTE_RESULT"
 echo "- 削除した [gone] ローカルブランチ: ${#DELETED_BRANCHES[@]} 本${DELETED_BRANCHES[*]+ (${DELETED_BRANCHES[*]})}"
 echo "- 削除した worktree: ${#DELETED_WORKTREES[@]} 個${DELETED_WORKTREES[*]+ (${DELETED_WORKTREES[*]})}"
+if [ -n "$TRANSCRIPT_STEP_NOTE" ]; then
+  echo "- worktree トランスクリプトの回収: $TRANSCRIPT_STEP_NOTE"
+elif [ "${#ARCHIVED_TRANSCRIPTS[@]}" -gt 0 ]; then
+  # 「回収」ではなく元サイズ→アーカイブサイズで書く。前者だけを回収量と呼ぶと、
+  # アーカイブが占める分を引いていない過大な数字になる
+  echo "- アーカイブした worktree トランスクリプト: ${#ARCHIVED_TRANSCRIPTS[@]} 件 / 元 ${ARCHIVED_TRANSCRIPT_KB} KB → アーカイブ ${ARCHIVE_TOTAL_KB} KB（${ARCHIVE_DIR:-}）"
+else
+  echo "- アーカイブした worktree トランスクリプト: 0 件"
+fi
+if [ "${#SKIPPED_TRANSCRIPTS[@]}" -gt 0 ]; then
+  # 所有者を確認できず残したものは異常ではないので、PARTIAL とは別枠で並べる
+  echo "- 所有者を確認できず残したトランスクリプト: ${#SKIPPED_TRANSCRIPTS[@]} 件"
+  printf '  - %s\n' "${SKIPPED_TRANSCRIPTS[@]}"
+fi
 if [ "$LEFTOVER_CHECK_DONE" = "1" ]; then
   echo "- 自動削除したリモート取り残し: ${#DELETED_LEFTOVERS[@]} 本${DELETED_LEFTOVERS[*]+ (${DELETED_LEFTOVERS[*]})}"
 else
