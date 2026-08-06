@@ -67,6 +67,11 @@ else
     # 直後に置くことを優先し、安価な順の例外として扱う。
     # yq / perl 不在、または一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/agent-config-mirror-selftest/verify.sh"
+    # 4 スキル（multi-* 3 本 + setup-ai-config）に複製されている agent-config.yaml の
+    # 説明文が一致し、実際に読まれるキーを正しく述べ、multi-agent.sh の yq 読み取りと
+    # 連動しているかの静的検査。外部コマンド不要だが、同じ設定ファイルを扱う
+    # agent-config-mirror 系の直後に置く。
+    "$SCRIPT_DIR/agent-config-doc-sync/verify.sh"
     "$SCRIPT_DIR/ace-curate-commit/verify.sh"
     "$SCRIPT_DIR/ace-refine/verify.sh"
     "$SCRIPT_DIR/changelog-public-references/verify.sh"

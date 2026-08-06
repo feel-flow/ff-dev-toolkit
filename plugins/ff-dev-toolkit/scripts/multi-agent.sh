@@ -34,8 +34,10 @@
 #
 # Fallback semantics (two different things — do not confuse them):
 #   Plan-time (automatic):  a CLI that is NOT INSTALLED has its perspectives
-#                           reassigned to the `fallback:` CLI in agent-config.yaml
-#                           while the plan is built.
+#                           reassigned to its fallback CLI while the plan is built.
+#                           The fallback registry lives in this script
+#                           (get_cli_fallback); agent-config.yaml only mirrors it
+#                           for readers and is never read for this.
 #   Runtime (never automatic): a CLI that IS installed but then fails or times out
 #                           is NOT retried on another CLI. The task is reported as
 #                           failed and the run exits non-zero.
