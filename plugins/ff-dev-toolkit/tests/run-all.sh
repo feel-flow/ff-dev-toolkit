@@ -57,6 +57,16 @@ else
     "$SCRIPT_DIR/skill-bash-blocks/verify.sh"
     "$SCRIPT_DIR/no-hardcoded-model/verify.sh"
     "$SCRIPT_DIR/cli-registry-completeness/verify.sh"
+    # agent-config.yaml が multi-agent.sh の case 文のミラーとして正しいか
+    # （command / cost_tier / perspectives / fallback の値を横断照合）。
+    # 上の「外部コマンド不要」の例外で、yq に依存する。読み取り専用の静的検査なので
+    # 関連する cli-registry-completeness の直後に置く（yq 不在なら丸ごと ○ skip）。
+    "$SCRIPT_DIR/agent-config-mirror/verify.sh"
+    # 上の gate の検出力を隔離コピーへの mutation で実測する。yq / perl / mktemp -d を
+    # 使い単体で〜15 秒かかる（数字を更新するときは実測してから直すこと）。検査対象の
+    # 直後に置くことを優先し、安価な順の例外として扱う。
+    # yq / perl 不在、または一時領域不可なら丸ごと ○ skip。
+    "$SCRIPT_DIR/agent-config-mirror-selftest/verify.sh"
     "$SCRIPT_DIR/ace-curate-commit/verify.sh"
     "$SCRIPT_DIR/ace-refine/verify.sh"
     "$SCRIPT_DIR/changelog-public-references/verify.sh"

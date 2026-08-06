@@ -60,22 +60,22 @@ lockstep で書く構造になっている。さらにレジストリの写し�
 
 ## 実装上の注意
 
-- **切り出し境界の fail-closed 検証（最重要）**: `multi-agent.sh` の前半だけを `eval` するために
-  `# ── Defaults ──` というコメント行を境界に使っている。コメントなので書き換えても
-  `multi-agent.sh` は文法エラーにならず、**境界を見失うと awk がファイル全体を返し、`eval` が
-  末尾の `main "$@"` まで実行してテストの中で本物の CLI が課金付きで起動する**。実測で
-  切り出しが 289 行 → 1320 行（全体）になることを確認済み。そのため 3 段の歯止めを置いている:
-  1. 切り出す前に境界行の実在を確認（無ければ exit 1）
-  2. 切り出した内容に `main "$@"` が含まれていないことを確認（含まれていれば eval せず exit 1）
-  3. eval 後に lookup 関数が `declare -F` で定義済みであることを確認（境界の前方ずれ検出）
-- **`SCRIPT_DIR` の再代入**: `eval` すると `SCRIPT_DIR="$(dirname "$0")"` も一緒に走り、`$0` が
-  本 verify.sh になる。`get_cli_adapter` が `tests/` 配下の存在しないパスを組み立てるので、
-  eval 直後に本来の `scripts/` へ戻している
-- **観点の照合はパイプなしの `case` / `comm`**: `printf ... | grep -qF` にすると `grep -q` が最初の
-  マッチで終了して `printf` が SIGPIPE で死に、`pipefail` 下で「マッチした」が「見つからない」へ
-  反転する（Issue #234。この suite の初版で実際に踏んだ）
+- **registry source は実行しない（最重要）**: 開始 `# ── All known CLI names ──` と終了
+  `# ── CLI Registry End ──` は各1件・正順でなければならない。共有
+  `tests/lib/cli-registry-parser.sh` は境界内の全行を `ALL_CLIS` と固定値を返す単純な
+  `case "$1"` lookup の制限文法として検証し、TSV データへ変換する。ファイル全体も走査し、
+  `ALL_CLIS` の境界外書き換え（`=` 代入だけでなく `printf -v` / `read` / `unset` も）と
+  `get_cli_*` の境界外定義を拒否する。`eval` / `source` は使わない。そのため、
+  トップレベル command、`}; command`、lookup 本体内 command のいずれも実行経路が無い
+- **parser の対象は宣言的 lookup だけ**: 動的 dispatcher（`get_cli_perspectives`）は終了境界の後に置く。
+  adapter 値は `${SCRIPT_DIR}/adapters/<cli>-adapter.sh` という固定形式まで parser が検証し、suite 側で
+  plugin の実 `scripts/` パスに組み立て直す
+- **集合照合は process substitution を使わない**: Bash 3.2 の membership loop で両方向を走査する。
+  `comm <(...)` は `/dev/fd` に依存し、macOS の read-only sandbox 上で Apple tool が開けない場合がある
+- **ASCII grammar を固定する**: parser と suite は `LC_ALL=C` で `[a-z]` の意味を固定し、CLI 名・観点名の
+  locale 依存を避ける
 - **動的に割り当てられる観点は明示 allowlist（`DYNAMIC_PERSPECTIVES`）**: 所有レジストリに載らない
-  観点を無条件に許すと迷子検出が死ぬ。現状は `build_cross_model_plan` の既定 perspective のみ。
+  観点を無条件に許すと迷子検出が死ぬ。現状は cross-model / pair plan の 2 観点だけ。
   新しい割り当て方を足すときは、ここへの追記という意図的な編集を強制する
 
 ## 変異による検証
@@ -87,8 +87,9 @@ needle を足したら、対応する変異を手で当てて red を確認す�
 |---|---|
 | `get_cli_fallback` から 1 CLI の arm を削除 | 「`get_cli_fallback` が空」で red |
 | `ALL_CLIS` に未登録の CLI 名を追加 | 複数の lookup + arm 集合 + アダプタ集合で red |
-| 切り出し境界のコメントを書き換える | 「境界が見つかりません」で exit 1（eval 前に停止） |
-| 切り出し境界を `ALL_CLIS` の前へ移動 | 「lookup の定義がありません」で exit 1 |
+| sentinel を重複・削除・逆順にする | 一意性/正順違反で exit 1（source は実行しない） |
+| 終了 sentinel 後で `ALL_CLIS` または lookup を再定義する | 境界外再定義として exit 1（後続定義だけが実行時に勝つ false-green を防ぐ） |
+| `}; touch <marker>` または lookup 本体へ `touch` を混ぜる | 制限文法違反で exit 1、marker は作られない |
 
 ## 実行方法
 
@@ -96,5 +97,5 @@ needle を足したら、対応する変異を手で当てて red を確認す�
 bash plugins/ff-dev-toolkit/tests/cli-registry-completeness/verify.sh
 ```
 
-実 CLI は起動しない。`multi-agent.sh` の前半を評価して lookup 関数を直接呼ぶだけなので、
+実 CLI は起動しない。`multi-agent.sh` の registry を静的 parser でデータ化するだけなので、
 課金もネットワークも一時ファイルも要らない。

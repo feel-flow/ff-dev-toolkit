@@ -82,6 +82,8 @@ if [[ -z "$REPO_ROOT" ]]; then
 fi
 
 # ── All known CLI names ──
+# ↑ この見出し行は tests/lib/cli-registry-parser.sh が完全一致で registry 境界の開始に
+# 使う。文言を変えると両 suite が「境界が一意ではありません」で落ちる。
 ALL_CLIS="claude-code codex-cli copilot-cli gemini-cli grok-cli"
 
 # ── Lookup Functions (bash 3.2 compatible — no associative arrays) ──
@@ -171,16 +173,6 @@ get_cli_perspectives_implement() {
   esac
 }
 
-get_cli_perspectives() {
-  local cli_name="$1"
-  case "$TASK_TYPE" in
-    review)    get_cli_perspectives_review "$cli_name" ;;
-    explore)   get_cli_perspectives_explore "$cli_name" ;;
-    implement) get_cli_perspectives_implement "$cli_name" ;;
-    *)         get_cli_perspectives_review "$cli_name" ;;
-  esac
-}
-
 get_cli_fallback() {
   case "$1" in
     claude-code) echo "codex-cli" ;;
@@ -189,6 +181,54 @@ get_cli_fallback() {
     gemini-cli)  echo "codex-cli" ;;
     grok-cli)    echo "gemini-cli" ;;   # flat-rate の代替は無料枠が先。minimize_cost の意図を保つ
     *) echo "" ;;
+  esac
+}
+
+get_cli_cost_tier() {
+  case "$1" in
+    claude-code) echo "premium" ;;
+    codex-cli)   echo "standard" ;;
+    copilot-cli) echo "metered" ;;
+    gemini-cli)  echo "free-tier" ;;
+    grok-cli)    echo "flat-rate" ;;
+    # 既定の "unknown" は metered ではないので、resolve_available_fallback の
+    # 「最後の砦」に選ばれうる。tier の書き漏れは課金される側へ倒れるということ。
+    # 書き漏れ自体は tests/cli-registry-completeness が既知の tier 語で弾く。
+    *) echo "unknown" ;;
+  esac
+}
+
+get_cli_model_env_vars() {
+  case "$1" in
+    claude-code) echo "MULTI_AGENT_MODEL_CLAUDE_CODE" ;;
+    codex-cli)   echo "MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE" ;;
+    copilot-cli) echo "MULTI_AGENT_MODEL_COPILOT_CLI" ;;
+    gemini-cli)  echo "MULTI_AGENT_MODEL_GEMINI_CLI" ;;
+    grok-cli)    echo "MULTI_AGENT_MODEL_GROK_CLI" ;;
+    *) echo "" ;;
+  esac
+}
+
+# ── CLI Registry End ──
+# 上の境界（registry 定義域）は ALL_CLIS と固定値を返す単純な case lookup だけに保つ。
+# tests/lib/cli-registry-parser.sh が shell として実行せず、制限文法として静的解析する。
+#
+# 境界外での制約（全ファイル走査で fail-closed に検出する）:
+#   - ALL_CLIS は参照だけ。`$ALL_CLIS` / `${ALL_CLIS}` の形で書くこと。裸の識別子は
+#     書き込みとみなして拒否する（`=` 代入だけでなく printf -v / read / unset も塞ぐ）
+#   - `get_cli_*` は定義しない。実行時の入力で戻り値が変わる get_cli_perspectives だけ
+#     が例外として許可されている（parser の allowlist に列挙）
+#   - どちらの制約も行全体コメントには適用しない。ただし**行末**コメントで裸の
+#     ALL_CLIS や `get_cli_foo()` に言及すると検出に引っかかるので、そこでは
+#     `$ALL_CLIS` と書くか括弧を外すこと
+
+get_cli_perspectives() {
+  local cli_name="$1"
+  case "$TASK_TYPE" in
+    review)    get_cli_perspectives_review "$cli_name" ;;
+    explore)   get_cli_perspectives_explore "$cli_name" ;;
+    implement) get_cli_perspectives_implement "$cli_name" ;;
+    *)         get_cli_perspectives_review "$cli_name" ;;
   esac
 }
 
@@ -249,16 +289,7 @@ resolve_available_fallback() {
 #
 # 前置は**その行の CLI に効くものだけ**にする。全部まとめて前置すると、代替 CLI を
 # 案内する行にも無関係な env が乗り、実際には使われない設定を使うかのように読める。
-get_cli_model_env_vars() {
-  case "$1" in
-    claude-code) echo "MULTI_AGENT_MODEL_CLAUDE_CODE" ;;
-    codex-cli)   echo "MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE" ;;
-    copilot-cli) echo "MULTI_AGENT_MODEL_COPILOT_CLI" ;;
-    gemini-cli)  echo "MULTI_AGENT_MODEL_GEMINI_CLI" ;;
-    grok-cli)    echo "MULTI_AGENT_MODEL_GROK_CLI" ;;
-    *) echo "" ;;
-  esac
-}
+# get_cli_model_env_vars 自体は上の副作用なしレジストリ定義域に置く。
 
 # 設定されている env だけを `VAR=値 ` の形で連結して返す（無ければ空文字）。
 # codex でモデルとプロファイルが両方設定されている場合はアダプタが実行前に拒否するが、
@@ -273,20 +304,6 @@ model_env_prefix() {
     fi
   done
   printf '%s' "$prefix"
-}
-
-get_cli_cost_tier() {
-  case "$1" in
-    claude-code) echo "premium" ;;
-    codex-cli)   echo "standard" ;;
-    copilot-cli) echo "metered" ;;
-    gemini-cli)  echo "free-tier" ;;
-    grok-cli)    echo "flat-rate" ;;
-    # 既定の "unknown" は metered ではないので、resolve_available_fallback の
-    # 「最後の砦」に選ばれうる。tier の書き漏れは課金される側へ倒れるということ。
-    # 書き漏れ自体は tests/cli-registry-completeness が既知の tier 語で弾く。
-    *) echo "unknown" ;;
-  esac
 }
 
 # ── Reviewer Pair (main + sub) ──
@@ -607,6 +624,8 @@ get_task_emoji() {
 }
 
 # ── Defaults ──
+# （旧 registry 境界。現在はどのテストも参照しない。機械的な意味を持つ見出しは
+# 上の「All known CLI names」/「CLI Registry End」の 2 つだけ）
 TASK_TYPE="review"
 DESCRIPTION=""
 INCLUDE_DIFF=false

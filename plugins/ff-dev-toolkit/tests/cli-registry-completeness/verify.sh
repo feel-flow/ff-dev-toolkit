@@ -23,8 +23,10 @@
 #   - 観点を review から explore へ付け替える取り違えを見なかった
 # いずれも実測で緑になることが確認されている。現在は集合一致（両方向）で閉じている。
 #
-# 実 CLI は 1 つも起動しない。multi-agent.sh の前半を評価して lookup 関数を直接
-# 呼ぶだけなので、課金もネットワークも一時ファイルも要らない。
+# 実 CLI は 1 つも起動しない。multi-agent.sh の registry は shell として実行せず、
+# 共有の制限文法 parser（tests/lib/cli-registry-parser.sh）でデータ化するだけなので、
+# 課金もネットワークも一時ファイルも要らない。source 内に副作用が混ざっていても、
+# このテストプロセスから実行される経路が無い。
 
 set -euo pipefail
 
@@ -50,6 +52,10 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 TASKS="review explore implement"
 KNOWN_TIERS="premium standard metered free-tier flat-rate"
 
+# `[a-z]` の意味を実行環境の locale に依存させない。
+LC_ALL=C
+export LC_ALL
+
 # レジストリの所有表に載らないが、モードによって動的に割り当てられる観点。
 # 「ファイルはあるが誰も所有していない」を無条件に許すと迷子検出が死ぬので、
 # 明示の allowlist にする。追加は意図的な編集を強制する形にしておくこと。
@@ -59,72 +65,69 @@ KNOWN_TIERS="premium standard metered free-tier flat-rate"
 #     「誰も所有していない迷子」として検出される
 DYNAMIC_PERSPECTIVES="review/code-review review/comprehensive-review"
 
-# ── multi-agent.sh の前半（lookup 定義域）だけを取り込む ─────────────────────
+# ── multi-agent.sh の registry を shell として実行せず静的に読む ─────────────
 #
-# 切り出しの境界は**コメント行**なので、書き換えても multi-agent.sh は文法エラーに
-# ならない。境界を検出できないまま awk を走らせるとファイル全体が返り、eval が
-# 末尾の `main "$@"` まで実行して、テストの中で本物の CLI が課金付きで起動する。
-# 実測: 境界を消すと切り出しが 289 行 → 1320 行（全体）になる。
-REGISTRY_SENTINEL='# ── Defaults ──'
+# agent-config-mirror と同じ共有 parser で sentinel 間の全行を制限文法として検証し、
+# case arm をデータ化する。ファイル全体で registry symbol の境界外再定義も拒否する。
+# mutable な本番 source を eval/source しないので、境界内に副作用を注入されても
+# テストプロセスから実行される経路が無い。
+REGISTRY_PARSER="$PLUGIN_ROOT/tests/lib/cli-registry-parser.sh"
+[ -f "$REGISTRY_PARSER" ] || { echo "✗ registry parser が見つかりません: $REGISTRY_PARSER" >&2; exit 1; }
+# shellcheck disable=SC1090,SC1091 # runtime-checked repo-local shared helper
+. "$REGISTRY_PARSER"
 
-if ! grep -qxF -- "$REGISTRY_SENTINEL" "$MULTI_AGENT"; then
-  echo "✗ multi-agent.sh に切り出し境界'${REGISTRY_SENTINEL}'が見つかりません" >&2
-  echo "  境界を変更したなら本 suite の REGISTRY_SENTINEL も更新してください" >&2
-  echo "  （このまま進むとファイル全体を eval して実 CLI を起動します）" >&2
+if ! cli_registry_load "$MULTI_AGENT"; then
+  echo "✗ multi-agent.sh の registry を安全に静的解析できません" >&2
+  printf '  %s\n' "$CLI_REGISTRY_ERROR" >&2
   exit 1
 fi
 
-REGISTRY_SRC="$(awk -v sentinel="$REGISTRY_SENTINEL" '$0 == sentinel { exit } { print }' "$MULTI_AGENT")"
-
-# 境界検出をすり抜けた場合の二重の歯止め。エントリポイントが混ざっていたら評価しない。
-case "$REGISTRY_SRC" in
-  *'main "$@"'*)
-    echo "✗ 切り出した範囲にエントリポイント（main \"\$@\"）が含まれています — eval を中止します" >&2
-    exit 1
-    ;;
-esac
-
-# shellcheck disable=SC1090
-eval "$REGISTRY_SRC"
-
-# 取り込んだ前半には `SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"` が含まれる。
-# $0 は本 verify.sh なので、そのままだと get_cli_adapter が tests/ 配下の
-# 存在しないパスを組み立てて「アダプタが無い」と誤検出する。本来の値へ戻す。
 SCRIPT_DIR="$PLUGIN_ROOT/scripts"
-
 LOOKUPS="get_cli_command get_cli_adapter get_cli_fallback get_cli_model_env_vars get_cli_cost_tier"
 for task in $TASKS; do LOOKUPS="$LOOKUPS get_cli_perspectives_${task}"; done
 
-for fn in $LOOKUPS; do
-  if ! declare -F "$fn" >/dev/null 2>&1; then
-    echo "✗ 切り出した範囲に ${fn} の定義がありません（境界がずれた可能性）" >&2
-    exit 1
+registry_print() { # <lookup名> <CLI>
+  if ! cli_registry_lookup "$1" "$2"; then
+    return 1
   fi
-done
-
-if [ -z "${ALL_CLIS:-}" ]; then
-  echo "✗ ALL_CLIS を読み出せません（multi-agent.sh の構造が変わった可能性）" >&2
-  exit 1
-fi
+  printf '%s\n' "$REPLY"
+}
+get_cli_command() { registry_print get_cli_command "$1"; }
+get_cli_adapter() {
+  # parser が source の値を `${SCRIPT_DIR}/adapters/<cli>-adapter.sh` と検証済み。
+  if ! cli_registry_lookup get_cli_adapter "$1"; then return 1; fi
+  [ -n "$REPLY" ] || return 0
+  printf '%s/adapters/%s-adapter.sh\n' "$SCRIPT_DIR" "$1"
+}
+get_cli_fallback() { registry_print get_cli_fallback "$1"; }
+get_cli_model_env_vars() { registry_print get_cli_model_env_vars "$1"; }
+get_cli_cost_tier() { registry_print get_cli_cost_tier "$1"; }
+get_cli_perspectives_review() { registry_print get_cli_perspectives_review "$1"; }
+get_cli_perspectives_explore() { registry_print get_cli_perspectives_explore "$1"; }
+get_cli_perspectives_implement() { registry_print get_cli_perspectives_implement "$1"; }
 
 list_has() { # <list> <needle>
   case " $1 " in *" $2 "*) return 0 ;; *) return 1 ;; esac
 }
 
-sorted() { printf '%s\n' $1 | sort -u; }   # 意図的な非クォート展開（空白区切り→行）
-
 # 集合の差分を「どちら側に何が余っているか」まで出す。件数だけだと直す先が分からない。
+# `comm <(...)` は /dev/fd を使い、read-only sandbox 上の Apple tool で開けないことが
+# あるため、Bash 3.2 の membership 比較だけで両方向を走査する。
 compare_sets() { # <label> <expected(空白区切り)> <actual(空白区切り)> <expected名> <actual名>
   local label="$1" expected="$2" actual="$3" ename="$4" aname="$5"
-  local only_e only_a
-  only_e="$(comm -23 <(sorted "$expected") <(sorted "$actual") | tr '\n' ' ')"
-  only_a="$(comm -13 <(sorted "$expected") <(sorted "$actual") | tr '\n' ' ')"
-  if [ -z "${only_e// }" ] && [ -z "${only_a// }" ]; then
+  local item only_e="" only_a=""
+  for item in $expected; do
+    if ! list_has "$actual" "$item"; then only_e="${only_e} ${item}"; fi
+  done
+  for item in $actual; do
+    if ! list_has "$expected" "$item"; then only_a="${only_a} ${item}"; fi
+  done
+  if [ -z "$only_e" ] && [ -z "$only_a" ]; then
     ok "$label"
   else
     bad "$label"
-    [ -n "${only_e// }" ] && echo "      ${ename} にだけある: ${only_e}" >&2
-    [ -n "${only_a// }" ] && echo "      ${aname} にだけある: ${only_a}" >&2
+    [ -n "$only_e" ] && echo "      ${ename} にだけある:${only_e}" >&2
+    [ -n "$only_a" ] && echo "      ${aname} にだけある:${only_a}" >&2
   fi
   return 0
 }
@@ -198,23 +201,15 @@ fi
 echo
 echo "== lookup → ALL_CLIS（消し忘れた case arm の検出） =="
 
-# lookup 本体から arm ラベルを収穫して ALL_CLIS と突き合わせる。
+# parser が検証してデータ化した arm ラベルを ALL_CLIS と突き合わせる。
 # 一方向（ALL_CLIS → lookup）だけだと、CLI を消したとき arm を 1 つ残しても
 # 誰も呼ばないまま気づかれない。差分にも「消した 6 箇所」しか現れない。
-harvest_arms() { # <関数名>
-  printf '%s\n' "$REGISTRY_SRC" | awk -v fn="$1" '
-    $0 ~ "^" fn "\\(\\)" { inside = 1; next }
-    inside && /^}/ { exit }
-    inside && match($0, /^[[:space:]]+[a-z0-9|_-]+\)/) {
-      label = substr($0, RSTART, RLENGTH - 1)
-      gsub(/[[:space:]]/, "", label)
-      if (label != "*") print label
-    }
-  '
-}
-
 for fn in $LOOKUPS; do
-  arms="$(harvest_arms "$fn" | tr '\n' ' ')"
+  if ! cli_registry_arms "$fn"; then
+    bad "${fn} の case arm を取得できない: ${CLI_REGISTRY_ERROR}"
+    continue
+  fi
+  arms="$REPLY"
   compare_sets "${fn} の case arm が ALL_CLIS と一致" "$ALL_CLIS" "$arms" "ALL_CLIS" "$fn"
 done
 
@@ -222,7 +217,11 @@ echo
 echo "== アダプタの過不足 =="
 
 expected_adapters="$(for cli in $ALL_CLIS; do basename "$(get_cli_adapter "$cli")"; done | tr '\n' ' ')"
-actual_adapters="$(cd "$ADAPTERS_DIR" && ls -1 ./*-adapter.sh 2>/dev/null | sed 's|^\./||' | tr '\n' ' ')"
+actual_adapters=""
+for adapter_file in "$ADAPTERS_DIR"/*-adapter.sh; do
+  [ -f "$adapter_file" ] || continue
+  actual_adapters="${actual_adapters} $(basename "$adapter_file")"
+done
 compare_sets "adapters/*-adapter.sh の集合が ALL_CLIS と一致" \
   "$expected_adapters" "$actual_adapters" "レジストリ" "実ファイル"
 
@@ -323,7 +322,8 @@ compare_sets "setup-multi-agent.sh の CLI 一覧が ALL_CLIS と一致" \
 
 # no-hardcoded-model の期待アダプタ数。ALL_CLIS から導ける値を手で持っているので、
 # ここでだけ突き合わせておく（あちらは multi-agent.sh を読まない設計のため）。
-expected_count="$(printf '%s\n' $ALL_CLIS | wc -l | tr -d ' ')"
+expected_count=0
+for cli in $ALL_CLIS; do expected_count=$((expected_count + 1)); done
 declared_count="$(awk -F= '/^EXPECTED_ADAPTER_COUNT=/ { print $2; exit }' "$NO_HARDCODED" | tr -d ' ')"
 if [ "$declared_count" = "$expected_count" ]; then
   ok "no-hardcoded-model の EXPECTED_ADAPTER_COUNT が ALL_CLIS の件数と一致 (${expected_count})"
