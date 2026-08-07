@@ -19,6 +19,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const EXIT_OK = 0;
 const EXIT_THRESHOLD_EXCEEDED = 1;
@@ -43,7 +44,8 @@ const BUDGET_EXCEPTION_MARKER = "ace-line-budget-exception";
 const ACE_ENTRY_HEADER_PATTERN = /^### ACE-(?:\d[\w-]*|i\d[\w-]*):/m;
 const CATEGORY_TABLE_LINE_PATTERN = /^\|\s*Category\s*\|\s*([^|]+)\|/im;
 
-export type CategoryHistogram = Readonly<Record<string, number>>;
+/** 存在しないキーは undefined（Record 全面 number ではない）。呼び出し側は ?? 0 で読む。 */
+export type CategoryHistogram = Readonly<Partial<Record<string, number>>>;
 
 export type AnalyzeSuccess = Readonly<{
   readonly kind: "ok";
@@ -179,6 +181,15 @@ export function analyzePlaybookMarkdown(
       };
     }
     const categoryKey = trimCategoryValue(match[1]);
+    // 行はあるが値が空（`| Category |  |`）は、Category 行が無いケースと同様に
+    // usage error。空文字キーで集計すると実在カテゴリの件数が過少し、超過時の
+    // メッセージも読めなくなる（公開 ff-dev-toolkit#9）。
+    if (categoryKey === "") {
+      return {
+        kind: "error",
+        message: "Category の値が空の ACE ブロックがあります。",
+      };
+    }
     incrementHistogram(histogram, categoryKey);
   }
 
@@ -198,6 +209,9 @@ export function mergeAnalyses(results: readonly AnalyzeSuccess[]): AnalyzeSucces
   for (const result of results) {
     totalEntries += result.totalEntries;
     for (const [categoryKey, count] of Object.entries(result.histogram)) {
+      // Partial 上の undefined を NaN にしない（呼び出し側が壊れた histogram を渡しても
+      // 閾値判定を silent にすり抜けさせない）。
+      if (typeof count !== "number" || !Number.isFinite(count)) continue;
       histogram[categoryKey] = (histogram[categoryKey] ?? 0) + count;
     }
   }
@@ -236,13 +250,16 @@ export function parsePositiveIntEnv(
     return defaultValue;
   }
   const trimmed = rawValue.trim();
-  if (!/^[0-9]+$/u.test(trimmed) || Number.parseInt(trimmed, 10) < 1) {
+  // Number.MAX_SAFE_INTEGER を超える値は精度を失ったまま閾値になり、
+  // 事実上チェックが無効になる。既に無効値を既定へ落とす契約なので isSafeInteger も同列に扱う。
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!/^[0-9]+$/u.test(trimmed) || parsed < 1 || !Number.isSafeInteger(parsed)) {
     console.warn(
       `${warnPrefix}: ${envName}="${trimmed}" は無効のため、既定値 ${String(defaultValue)} を使います。`,
     );
     return defaultValue;
   }
-  return Number.parseInt(trimmed, 10);
+  return parsed;
 }
 
 function parseMaxPerCategory(): number {
@@ -366,6 +383,7 @@ export function main(): number {
   const overCategories: string[] = [];
 
   for (const [categoryKey, count] of Object.entries(merged.histogram)) {
+    if (typeof count !== "number" || !Number.isFinite(count)) continue;
     if (count > maxAllowed) {
       overCategories.push(`${categoryKey} (${String(count)} > ${String(maxAllowed)})`);
     }
@@ -457,12 +475,34 @@ export function main(): number {
   return EXIT_OK;
 }
 
+/**
+ * このモジュールが CLI として直接実行されたときだけ true。
+ * `process.argv[1]` の部分一致（`.includes("check-category-size")` / `.includes(".test.")`）
+ * だと、上位ディレクトリ名に `.test.` が含まれるだけで main が走らず silent no-op になる
+ * （閾値ゲートが黙って無効化される）。逆にファイル名の部分一致は別スクリプトを誤爆しうる。
+ * 解決済みパスの完全一致ならどちらの方向にも誤らない（sync-playbook-frontmatter と同じ契約）。
+ */
+export function isDirectExecution(
+  moduleUrl: string,
+  argvPath: string | undefined,
+): boolean {
+  if (!argvPath) return false;
+  const modulePath = fileURLToPath(moduleUrl);
+  // path.resolve だけだと symlink / パス別名で import.meta.url と argv が食い違い、
+  // main が走らず silent success になる。実在パスは realpath で正規化し、
+  // 未作成パス（ユニットテストの合成パス）は resolve へフォールバックする。
+  try {
+    return (
+      fs.realpathSync.native(modulePath) ===
+      fs.realpathSync.native(path.resolve(argvPath))
+    );
+  } catch {
+    return path.resolve(modulePath) === path.resolve(argvPath);
+  }
+}
+
 // 直接実行（tsx 経由の CLI）のときのみ自動実行する。テストから import した
-// ときは副作用なく関数だけを取り込めるようにする（.test. 除外は同ディレクトリの
-// 他スクリプトと同じ契約。tsx で *.test.ts を直接実行しても main は走らない）。
-if (
-  (process.argv[1] ?? "").includes("check-category-size") &&
-  !(process.argv[1] ?? "").includes(".test.")
-) {
+// ときは副作用なく関数だけを取り込めるようにする。
+if (isDirectExecution(import.meta.url, process.argv[1])) {
   process.exitCode = main();
 }

@@ -54,6 +54,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `/pre-commit-check` | コミット前チェック |
 | `/close-issue` | マージ直前の AC 照合ゲート（チェックボックス更新 + 完了報告コメント） |
 | `/merge-cleanup` | PR マージ後のクリーンアップ一括実行（base ブランチ復帰・[gone] ブランチ / worktree 削除・リモート取り残しのガード付き自動削除） |
+| `/sweep-orphan-transcripts` | 既存の孤児 Claude Code トランスクリプトの一覧・アーカイブ回収（既定 dry-run、`--apply` で実行） |
 | `/setup-github-labels` | 推奨ラベル構成の冪等セットアップ（不足分だけ作成・既存ラベルは変更しない・照会を信用できなければ 1 件も作成せず停止） |
 | `/ace-setup` | ACE（Agentic Context Engineering）フレームワークのセットアップ |
 | `/ace-curate` | マージ済み PR からの知見抽出・プレイブック追記 |

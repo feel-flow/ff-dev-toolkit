@@ -35,7 +35,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh" $ARGUMENTS
 3. **base ブランチ復帰 + 最新化** — PR の `baseRefName` へ `git switch` し `fetch --prune` + `pull --ff-only`（develop 固定ではない）。別 worktree が base を保持している場合は、その worktree が clean のときだけ同じ HEAD の detached 状態へ退避して worktree 自体を残し、呼び出し元を base へ復帰する。保持側が dirty なら変更を触らず、リモート削除前に中断する
 4. **対象 PR のリモートブランチ削除** — same-repo かつ open PR で head 再利用されていない場合に、`--force-with-lease=<ref>:<期待OID>` で削除（照合と削除の間に push が入った場合はサーバー側で原子的に拒否 = TOCTOU 対策）
 5. **`[gone]` ローカルブランチ + 関連 worktree の削除** — worktree は **clean を確認してから**削除（dirty なら警告してスキップ）。squash merge 由来の "not fully merged" への `-D` エスカレーションは、**(名前, ローカル OID) が MERGED PR の head と一致する場合のみ**（`[gone]` は upstream 消失しか保証しないため、手動リモート削除された未マージ作業は保護される）
-5.5. **削除した worktree のトランスクリプト回収** — 消した worktree でだけ使われていた Claude Code の履歴を `tar.gz` へアーカイブして元ディレクトリを回収する（下記）
+5.5. **削除した worktree のトランスクリプト回収** — 消した worktree でだけ使われていた Claude Code の履歴を `tar.gz` へアーカイブして元ディレクトリを回収する（下記）。**すでに溜まっている孤児**の一括回収は本ステップの対象外で、`/sweep-orphan-transcripts` を使う
 6. **リモート取り残しのガード付き自動削除** — 過去のマージ漏れで累積したリモートブランチを掃除する（下記）
 7. **最終検証 + 結果サマリー** — 削除 / スキップ / 失敗を分類して報告
 

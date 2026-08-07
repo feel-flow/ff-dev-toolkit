@@ -15,7 +15,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import { discoverPlaybookSubfiles, parsePositiveIntEnv } from "./check-category-size";
+import {
+  discoverPlaybookSubfiles,
+  isDirectExecution,
+  parsePositiveIntEnv,
+} from "./check-category-size";
 
 const EXIT_OK = 0;
 const EXIT_RUNTIME_ERROR = 1;
@@ -465,6 +469,8 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
 
 // 直接実行（tsx 経由の CLI）のときのみ自動実行する。テストから import した
 // ときは副作用なく関数だけを取り込めるようにする。
-if ((process.argv[1] ?? "").includes("ace-reuse-report") && !(process.argv[1] ?? "").includes(".test.")) {
+// 判定は argv 部分一致ではなく isDirectExecution（パス完全一致）。上位ディレクトリ名に
+// `.test.` が含まれると silent no-op になる問題を避ける（check-category-size と同じ契約）。
+if (isDirectExecution(import.meta.url, process.argv[1])) {
   process.exitCode = main();
 }

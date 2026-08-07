@@ -16,8 +16,18 @@
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-08-07
+
+### 修正
+
+- ACE の `check-category-size.ts` で、Category 表の値が空（`| Category |  |`）のエントリを空文字キーとして静かに集計していたのを、Category 行が無い場合と同様に usage error で止めるようにした。空キー集計は実在カテゴリの件数を過少にし、閾値超過メッセージも読めなくなる
+- 同スクリプト群の「直接実行時だけ main を走らせる」判定を、`process.argv[1]` の部分一致（`.includes(".test.")` 除外など）から、モジュール URL と実行パスの完全一致へ揃えた。上位ディレクトリ名に `.test.` が含まれるだけで CLI が何もせず成功する silent no-op（閾値ゲートの黙った無効化）を防ぐ。対象: `check-category-size` / `check-entry-format` / `check-archive-links` / `ace-refine-report` / `ace-reuse-report`（`sync-playbook-frontmatter` は既に同契約）
+- `parsePositiveIntEnv` が `Number.MAX_SAFE_INTEGER` を超える巨大整数を閾値として受け入れていたのを、無効値として既定値へフォールバックするようにした（精度喪失でチェックが実質無効になるため）
+- MCP サーバーの推移依存を更新し、既知の脆弱性（hono CORS ReDoS、ip-address SSRF/分類誤判定、fast-uri host confusion）を解消した。`npm audit` は 0 件
+
 ### 追加
 
+- 既存の孤児 Claude Code トランスクリプトを回収する `/sweep-orphan-transcripts` スキルと `scripts/sweep-orphan-transcripts.sh` を追加した。`/merge-cleanup` の Step 5.5 は「その実行で削除した worktree の分」だけを対象にするため、過去に溜まった孤児は減らない。本ツールは `<config>/projects/` を走査し、jsonl の `cwd` がすべて現存しないディレクトリだけを候補にする（cwd が無い・1 つでも現存する・走査エラーは触らない）。既定は dry-run で、`--apply` を明示したときだけ tar.gz アーカイブ後に元を削除する。孤児と判定したディレクトリ全体（配下の `subagents/` を含む）を回収し、稼働中プロジェクト内の `subagents/` だけを年齢で消すことはしない（所有証拠が切れるため）。回帰テスト suite を追加した
 - 推奨ラベル構成を冪等に整備する `/setup-github-labels` スキルと、その実体である配布スクリプト `docs-template/scripts/setup-github-labels.sh` を追加した。GitHub 初期設定ガイド（github-setup）は従来から `./scripts/setup-github-labels.sh` の実行を案内していたが、スクリプトの実体はどこにも配布されておらず、参照だけが存在していた。スクリプトは不足しているカスタムラベル（major / minor / patch / hotfix / urgent）だけを作成し、既存ラベルの色・説明には一切触れない（`gh label create --force` を使わない — `--force` は既存ラベルの上書きを兼ね、利用プロジェクトが意図的に変えた色や説明を再実行が黙って戻してしまう）。ラベル一覧の照会を信用できない場合（取得失敗・空の一覧・取得上限到達）は 1 件も作成せず非 0 で終了する。「存在しない」と誤断定したまま作成に進むと、実在するラベルへの作成失敗や重複整備が起きるため。既存判定の照合は GitHub のラベル名一意制約に合わせて大文字小文字を区別しない（`Major` が既存のリポジトリで `major` を作りにいくと already exists で毎回失敗し、冪等が破れる）。未知の引数も黙って無視せず拒否する（`--dry-run` のような存在しないオプションを黙殺すると「dry-run したつもりの本番書き込み」になる）。起票側の verify-then-skip（存在するラベルだけ付ける・作らない）とは責務を分け、リポジトリ設定を変える操作をセットアップ時に集約した
 - `/create-issue` の完了報告に、省略理由が「不在」のラベルがあるとき `/setup-github-labels` で整備できる旨の案内を加えた。「照会失敗」のときは案内しない。実在を確認できていないのに整備を促すと、重複ラベルを生やす側へ倒れるため
 - ラベル定義の正本はスクリプトの `LABEL_DEFS` ブロックとし、github-setup ガイドの推奨ラベル表・手動セットアップ例との一致を検査する suite を追加した（suite 数 30 → 31）。あわせて stub の `gh` の下でスクリプトを実行し、不足分だけが作成されること・既存ラベルへ一切触れないこと・照会を信用できないときに 1 件も作成せず停止することを実測する
@@ -48,6 +58,7 @@
 - `out-of-scope-issue` の follow-up 起票を、ラベルの実在確認から `gh issue create` までが 1 つの bash ブロックで完結する構造に改めた。従来はラベルの組み立てと起票が別のブロックに分かれており、スキルの bash ブロックは呼び出しごとに別のシェルで走るため、別々に実行すると組み立てたラベル引数が失われる。しかも空配列許容の展開形（`${arr[@]+"${arr[@]}"}`）は未定義でも空へ展開して正常終了するので、「ラベル 0 個で起票が成功し、報告にはラベル名が並ぶ」という verify-then-skip が防ごうとしている当の食い違いが無言で起きていた（「同じシェルで続けて実行すること」という注記はあったが、注記は実行モデルが保証しない制約を人手に押し付けているだけで根治ではない）。統合したブロックは実際に付与・省略したラベルと照会状態を標準出力へ書き出し、報告はその出力を写す（記憶からは書かない）。ラベルの状態出力は 1 行 1 件とし、空白を含むラベル名（`good first issue` 等）でも境界が失われない形式へ両スキル揃えて変更した。あわせて本文が空のままの起票を両スキルで拒否するようにした（空の `--body` は「作成済みだが中身の無い」Issue を黙って生む）
 - あわせて契約検査を拡張した: ラベル決定ループと起票が同一の bash フェンスにあることの構造検査と、状態出力 4 行の散文契約を `out-of-scope-issue` にも適用し（従来は `create-issue` のみ）、統合ブロックを stub の `gh` で実際に走らせて「付与ラベルが出力とコマンド argv の両方に現れる」「不在ラベルが起票を止めず理由付きで省略される」「URL を返さない起票を成功として扱わない」ことを実測する
 - docs-template サンプル PLAYBOOK の frontmatter version に対応する Changelog 見出しが欠けており、frontmatter 検査（version ↔ Changelog 一致）が exit 1 になっていたのを修正した。あわせて同サンプルへ `changeImpact` を追記した
+
 
 ## [0.24.1] - 2026-08-07
 
@@ -658,7 +669,9 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.24.1...v0.25.0
+[0.24.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.20.0...v0.23.0
 [0.20.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.19.0...v0.20.0

@@ -22,6 +22,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const EXIT_OK = 0;
 const EXIT_VIOLATION = 1;
@@ -239,11 +240,29 @@ export function main(): number {
   return EXIT_OK;
 }
 
+/**
+ * このモジュールが CLI として直接実行されたときだけ true。
+ * argv の部分一致（`.includes(...)` / `.includes(".test.")`）だとディレクトリ名や
+ * 別名スクリプトで silent no-op / 誤爆するため、解決済みパスの完全一致で判定する。
+ */
+export function isDirectExecution(
+  moduleUrl: string,
+  argvPath: string | undefined,
+): boolean {
+  if (!argvPath) return false;
+  const modulePath = fileURLToPath(moduleUrl);
+  try {
+    return (
+      fs.realpathSync.native(modulePath) ===
+      fs.realpathSync.native(path.resolve(argvPath))
+    );
+  } catch {
+    return path.resolve(modulePath) === path.resolve(argvPath);
+  }
+}
+
 // 直接実行（tsx 経由の CLI）のときのみ自動実行する。テストから import したときは
 // 副作用なく関数だけを取り込めるようにする。
-if (
-  (process.argv[1] ?? "").includes("check-entry-format") &&
-  !(process.argv[1] ?? "").includes(".test.")
-) {
+if (isDirectExecution(import.meta.url, process.argv[1])) {
   process.exitCode = main();
 }

@@ -118,6 +118,9 @@ else
     # fixture のみ使用し、実ネットワークには触らない。
     "$SCRIPT_DIR/update-check/verify.sh"
     "$SCRIPT_DIR/merge-cleanup/verify.sh"
+    # 既存の孤児トランスクリプト sweep（実 ~/.claude は触らず隔離 tmp のみ）。
+    # merge-cleanup の Step 5.5 と同じアーカイブ思想の別口。直後に置く。
+    "$SCRIPT_DIR/sweep-orphan-transcripts/verify.sh"
     # perspective フィルタの dry-run 契約。stub CLI の存在確認だけで完結し、
     # 実 CLI・ネットワーク・課金を伴わない。
     "$SCRIPT_DIR/multi-agent-plan/verify.sh"

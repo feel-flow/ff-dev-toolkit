@@ -6,6 +6,7 @@ import {
   countPlaybookLines,
   deriveMaxLines,
   discoverPlaybookSubfiles,
+  isDirectExecution,
   isOverLineThreshold,
   main,
   mergeAnalyses,
@@ -14,6 +15,7 @@ import {
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 
 describe("analyzePlaybookMarkdown", () => {
   it("HTML コメント内の ACE 見出しは無視し、実エントリのみ数える", () => {
@@ -165,6 +167,29 @@ describe("analyzePlaybookMarkdown", () => {
 
   it("allowEmpty:true でも Category 行が解析できないブロックは依然 error", () => {
     const md = "### ACE-1-1: 実エントリだが Category 行が壊れている\n\n| Origin | PR #1 |\n";
+    const result = analyzePlaybookMarkdown(md, { allowEmpty: true });
+    expect(result.kind).toBe("error");
+  });
+
+  it("Category の値が空（| Category |  |）は error（空文字キーで集計しない）", () => {
+    const md = `
+### ACE-002-1: 空
+
+| Category |  |
+
+### ACE-002-2: 正常
+
+| Category | testing |
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("Category の値が空");
+    }
+  });
+
+  it("allowEmpty:true でも空 Category は error", () => {
+    const md = "### ACE-1-1: 空\n\n| Category |   |\n";
     const result = analyzePlaybookMarkdown(md, { allowEmpty: true });
     expect(result.kind).toBe("error");
   });
@@ -401,6 +426,50 @@ describe("parsePositiveIntEnv", () => {
     expect(parsePositiveIntEnv("0", 800, "X")).toBe(800);
     expect(parsePositiveIntEnv("-5", 800, "X")).toBe(800);
     expect(warn).toHaveBeenCalled();
+  });
+
+  it("Number.MAX_SAFE_INTEGER を超える巨大整数は既定値へフォールバックし警告する", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // 数字のみだが安全整数外 → 精度喪失で閾値が壊れる
+    expect(
+      parsePositiveIntEnv("999999999999999999999", 800, "ACE_MAX_PLAYBOOK_LINES"),
+    ).toBe(800);
+    expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe("isDirectExecution", () => {
+  let tmpDir = "";
+
+  afterEach(() => {
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  it("完全一致する argv path だけを直接実行扱いする", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-direct-"));
+    const scriptPath = path.join(tmpDir, "check-category-size.ts");
+    expect(isDirectExecution(pathToFileURL(scriptPath).href, scriptPath)).toBe(true);
+  });
+
+  it("上位ディレクトリ名に .test. があっても、スクリプト本体なら直接実行扱いする", () => {
+    // 旧実装は argv の部分一致で .test. を除外していたため、
+    // /tmp/my.test.project/... から実行すると silent no-op になっていた。
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "my.test.project-"));
+    const scriptPath = path.join(tmpDir, "check-category-size.ts");
+    expect(isDirectExecution(pathToFileURL(scriptPath).href, scriptPath)).toBe(true);
+  });
+
+  it("別名スクリプト（部分一致）や argv 無しは直接実行扱いしない", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-direct-"));
+    const scriptPath = path.join(tmpDir, "check-category-size.ts");
+    const wrapperPath = path.join(tmpDir, "wrapper-check-category-size.ts");
+    const testPath = path.join(tmpDir, "check-category-size.test.ts");
+    expect(isDirectExecution(pathToFileURL(scriptPath).href, wrapperPath)).toBe(false);
+    expect(isDirectExecution(pathToFileURL(scriptPath).href, testPath)).toBe(false);
+    expect(isDirectExecution(pathToFileURL(scriptPath).href, undefined)).toBe(false);
   });
 });
 
