@@ -78,6 +78,17 @@ else
     "$SCRIPT_DIR/changelog-version/verify.sh"
     "$SCRIPT_DIR/docs-gates/verify.sh"
     "$SCRIPT_DIR/out-of-scope-routing/verify.sh"
+    # 起票スキル 2 本（create-issue / out-of-scope-issue）に意図的に複製されている
+    # verify-then-skip ラベル契約の照合（bash は連続した行列として、散文は行単位で）と、
+    # 両者の意図的な非対称（候補の系統・アサイン方針）の固定。jq / gh / yq 不要の
+    # 静的検査（`bash -n` による構文検査だけは走らせるが、契約ブロックは実行しない）。
+    # 検査対象の一方 out-of-scope-issue を共有する out-of-scope-routing の直後に置く。
+    "$SCRIPT_DIR/issue-label-contract/verify.sh"
+    # 推奨ラベル・セットアップの SSOT（docs-template/scripts/setup-github-labels.sh の
+    # LABEL_DEFS）と github-setup.md の表・手動例の 3 箇所照合 + stub gh での振る舞い
+    # 実測（冪等・fail-closed）。実 CLI・ネットワーク・課金・一時ファイルを伴わない。
+    # ラベル契約つながりで issue-label-contract の直後に置く。
+    "$SCRIPT_DIR/github-labels-setup/verify.sh"
     "$SCRIPT_DIR/setup-ai-config/verify.sh"
     "$SCRIPT_DIR/assess-impact/verify.sh"
     "$SCRIPT_DIR/validate-docs/verify.sh"

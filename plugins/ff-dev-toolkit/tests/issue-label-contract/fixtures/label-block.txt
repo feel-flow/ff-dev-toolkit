@@ -1,0 +1,32 @@
+# 実在するラベル名の一覧。取得できなければラベルなしで進める（起票自体は止めない）。
+# ⚠️ `--limit` は必須。省略時の既定は 30 件で、ラベルが 30 個を超えるリポジトリでは
+#    実在するラベルが「見つからない」と誤判定される（頻用ラベルほど後ろに来やすい）。
+label_limit=200
+label_lookup_failed=0
+if ! available_labels="$(gh label list --repo "$expected_repo" --limit "$label_limit" --json name --jq '.[].name')"; then
+  available_labels=""
+  label_lookup_failed=1
+fi
+# 終了コード 0 でも一覧を信用できない 2 経路を「照会失敗」へ倒す。黙って通すと
+# 「不在」と誤断定し、運用者が実在するラベルを再作成して重複ラベルが生える。
+#   空: ラベルが 1 つも無いリポジトリと、絞り込みが機能しなかった場合を区別できない
+#   上限到達: 打ち切られた可能性があり、その先にあるラベルの不在を主張できない
+if [[ -z "$available_labels" ]] || (( $(printf '%s\n' "$available_labels" | wc -l) >= label_limit )); then
+  label_lookup_failed=1
+fi
+
+label_args=()
+skipped_labels=()
+#{{CANDIDATE-FAMILIES}}
+{{CANDIDATE-LOOP}}
+  [[ -n "$candidate" ]] || continue
+  # 完全一致（行単位）を外部プロセスなしで判定する。`grep -q` へパイプで
+  # 流し込む書き方は、grep が一致した時点で読み取りを止めるため producer 側が
+  # SIGPIPE で落ち、`set -o pipefail` 下では「一致したのに失敗」に反転しうる。
+  # この禁止は tests/skill-bash-blocks/verify.sh が全スキル横断で検査する。
+  if [[ $'\n'"$available_labels"$'\n' == *$'\n'"$candidate"$'\n'* ]]; then
+    label_args+=(--label "$candidate")
+  else
+    skipped_labels+=("$candidate")
+  fi
+done

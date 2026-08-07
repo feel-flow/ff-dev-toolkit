@@ -46,6 +46,8 @@ AI Spec-Driven Developmentでは、**GitHubデフォルトラベル + 必要最�
 
 セットアップスクリプトを使用して、必要なカスタムラベルを一括作成できます。
 
+スクリプトの実体は ff-dev-toolkit プラグインの `docs-template/scripts/setup-github-labels.sh` として配布されています。プロジェクトの `scripts/` へ未配置の場合は、プラグインの同パスからコピーしてください（`/setup-github-labels` スキルを使うと、コピーせずプラグイン同梱の実体を直接実行できます）。
+
 ```bash
 # リポジトリルートで実行
 ./scripts/setup-github-labels.sh
@@ -53,9 +55,10 @@ AI Spec-Driven Developmentでは、**GitHubデフォルトラベル + 必要最�
 
 **スクリプトの動作**:
 
-- カスタムラベル（major, minor, patch, hotfix, urgent）を作成
-- 既存ラベルはスキップ（エラーなし）
+- カスタムラベル（major, minor, patch, hotfix, urgent）のうち**存在しないものだけ**を作成（照合は GitHub のラベル名一意制約に合わせ大文字小文字を区別しない）
+- 既存ラベルはスキップとして報告（エラーにしない。色・説明の上書きもしない）
 - GitHubデフォルトラベルはそのまま使用
+- ラベル一覧の照会を信用できない場合（取得失敗・空・取得上限到達）は、**1 件も作成せず**非 0 で終了（「存在しない」と誤断定したまま作成に進まない）
 
 ### 手動セットアップ
 

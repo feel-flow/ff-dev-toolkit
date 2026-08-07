@@ -34,7 +34,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 
 ## 収録内容
 
-### Skills（18）
+### Skills（19）
 
 | スキル | 用途 |
 |---|---|
@@ -49,11 +49,12 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `/init-docs` | AI仕様駆動開発のコア7文書 + 拡張フォルダ構造を初期化 |
 | `/validate-docs` | ドキュメント構造の検証（必須3文書、残る4文書は未作成なら N/A） |
 | `/assess-impact` | 変更の影響度評価 |
-| `/create-issue` | 仕様バリデーション付き Issue 作成 |
+| `/create-issue` | 仕様バリデーション付き Issue 作成（種別・優先度ラベルは実在確認のうえ付与） |
 | `/refine-issue` | 既存 Issue の仕様精緻化 |
 | `/pre-commit-check` | コミット前チェック |
 | `/close-issue` | マージ直前の AC 照合ゲート（チェックボックス更新 + 完了報告コメント） |
 | `/merge-cleanup` | PR マージ後のクリーンアップ一括実行（base ブランチ復帰・[gone] ブランチ / worktree 削除・リモート取り残しのガード付き自動削除） |
+| `/setup-github-labels` | 推奨ラベル構成の冪等セットアップ（不足分だけ作成・既存ラベルは変更しない・照会を信用できなければ 1 件も作成せず停止） |
 | `/ace-setup` | ACE（Agentic Context Engineering）フレームワークのセットアップ |
 | `/ace-curate` | マージ済み PR からの知見抽出・プレイブック追記 |
 | `/ace-refine` | ACE Playbook の定期整理（stale アーカイブ・長大エントリ圧縮・重複統合）。dry-run → 承認 → 適用の 3 フェーズで原文を保全する |

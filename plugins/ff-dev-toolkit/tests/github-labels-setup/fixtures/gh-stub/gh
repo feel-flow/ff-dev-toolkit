@@ -1,0 +1,64 @@
+#!/bin/bash
+#
+# `gh` の stub（Issue #298 の behavioral 検査用）。実ネットワーク・実 API を叩かず、
+# `gh label list` の応答パターンを GH_STUB_MODE で切り替える。
+#
+#   normal      … GitHub デフォルト相当 + near-miss 3 件（カスタムラベルは全部不足）
+#   partial     … normal の一覧 + major / minor（カスタムの一部だけ既存）
+#   casevariant … normal の一覧 + Major / MINOR（大文字小文字違いで既存）
+#   allexist    … デフォルト 3 件 + カスタム 5 件すべて（作成対象なし）
+#   fail        … 非 0 終了（照会そのものの失敗）
+#   empty       … 終了コード 0 で空出力（0 件のリポジトリと区別できない経路）
+#   truncated   … 取得上限ちょうどの件数を返す（打ち切りの疑いがある経路）
+#   createfail  … label create が非 0 終了（権限不足などの作成失敗）
+#   norepoview  … repo view が非 0 終了（対象リポジトリを確定できない経路）
+#
+# near-miss（majority / patch-release / urgently）は、membership 判定が部分一致へ
+# 退化する変異（`grep -q` への安易な置換等）を検出するための毒餌。部分一致だと
+# major / patch / urgent が「既存」と誤判定され、CREATED の期待と食い違って赤になる。
+#
+# `gh label create` は渡された argv を stderr へ書き出すだけで、ラベルは作らない。
+# `gh repo view` は固定値 stub-owner/stub-repo を返す（norepoview モードを除く）。
+set -u
+
+BASE_LABELS='bug
+enhancement
+documentation
+majority
+patch-release
+urgently'
+
+case "${1:-} ${2:-}" in
+  "label list")
+    case "${GH_STUB_MODE:-normal}" in
+      fail)  exit 1 ;;
+      empty) exit 0 ;;
+      truncated)
+        # --limit の値ちょうどを返す。呼び出し側は「上限到達 = 打ち切りの疑い」と扱う。
+        limit=200
+        prev=""
+        for arg in "$@"; do
+          [ "$prev" = "--limit" ] && limit="$arg"
+          prev="$arg"
+        done
+        i=1
+        while [ "$i" -le "$limit" ]; do echo "stub-label-$i"; i=$((i + 1)); done
+        exit 0 ;;
+      partial)     printf '%s\nmajor\nminor\n' "$BASE_LABELS"; exit 0 ;;
+      casevariant) printf '%s\nMajor\nMINOR\n' "$BASE_LABELS"; exit 0 ;;
+      allexist)    printf 'bug\nenhancement\ndocumentation\nmajor\nminor\npatch\nhotfix\nurgent\n'; exit 0 ;;
+      *)           printf '%s\n' "$BASE_LABELS"; exit 0 ;;
+    esac ;;
+  "label create")
+    printf 'GH_LABEL_CREATE_ARGV: %s\n' "$*" >&2
+    [ "${GH_STUB_MODE:-normal}" = "createfail" ] && exit 1
+    echo "https://github.com/stub-owner/stub-repo/labels/${3:-}"
+    exit 0 ;;
+  "repo view")
+    [ "${GH_STUB_MODE:-normal}" = "norepoview" ] && exit 1
+    echo "stub-owner/stub-repo"
+    exit 0 ;;
+esac
+
+echo "gh stub: 想定外の呼び出し: $*" >&2
+exit 64
