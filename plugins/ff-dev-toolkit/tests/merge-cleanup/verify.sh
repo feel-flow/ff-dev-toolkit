@@ -39,7 +39,7 @@
 #  30. 削除しなかった dirty worktree のトランスクリプトには触れない
 #
 # あわせて静的検査として、bash 3.2 で変数名にマルチバイト文字が取り込まれる書き方
-# （"$VAR（..." のような直付け）が merge-cleanup.sh に無いことを確認する。検出器が
+# （"$VAR" の直後に全角文字を直付けする形）が merge-cleanup.sh に無いことを確認する。検出器が
 # 空振りしていないことを、違反 fixture への適用で毎回実測してから本検査へ進む。
 #
 # 書き込み不可の環境（read-only チェックアウト等）では skip して成功扱いにする。
@@ -73,12 +73,16 @@ bad()  { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # ---- 静的検査: $VAR 直後のマルチバイト文字 -------------------------------------
 #
 # macOS 標準の bash 3.2 は $VAR の直後に続くマルチバイト文字を変数名の一部として
-# 取り込む。日本語メッセージで "$name（...)" と書くと `name（` を参照することになり、
+# 取り込む。日本語メッセージで "$name" の直後へ全角括弧を直付けすると `name（` を参照することになり、
 # set -u 下では `unbound variable` で異常終了する。**これが起きるのは失敗を報告
 # しようとした瞬間だけ**なので、正常系が緑のあいだは誰も気付かない。
 #
 # LC_ALL=C では [:print:] も [:space:] も ASCII しか含まないため、
 # 「印字可能でも空白でもないバイト」= マルチバイトの先頭バイトを拾える。
+#
+# repo 横断の正本は tests/run-all/verify.sh case 11（論理行畳み込み・shebang 判定付き）。
+# ここは merge-cleanup.sh 単体への高速フィードバック用の簡易版（物理行のみ）で、
+# 検出仕様を広げるときは case 11 側を更新し、本検出器は追随か縮退を検討する。
 mbcs_adjacent_expansions() {
   # $1: 検査するファイル。違反行を出力する（無ければ何も出さない）
   LC_ALL=C grep -nE '\$[A-Za-z_][A-Za-z0-9_]*[^[:print:][:space:]]' "$1" || true
@@ -88,7 +92,11 @@ echo "== 静的検査: マルチバイト直付けの変数展開 =="
 
 # 検出器が本当に検出できるかを、違反 fixture で毎回実測してから本検査へ進む
 MBCS_PROBE="$TMP/mbcs-probe.sh"
-printf '%s\n' 'echo "失敗しました: $name（原因不明）"' > "$MBCS_PROBE"
+# 違反 probe は 2 分割で組み立てる（ACE-307-3）。1 行に直書きすると、repo 横断の
+# 再混入ガード（tests/run-all/verify.sh）がこの行自体を違反として検出する。
+MBCS_PROBE_LINE='echo "失敗しました: $name'
+MBCS_PROBE_LINE="${MBCS_PROBE_LINE}（原因不明）\""
+printf '%s\n' "$MBCS_PROBE_LINE" > "$MBCS_PROBE"
 if [ -n "$(mbcs_adjacent_expansions "$MBCS_PROBE")" ]; then
   ok "検出器が違反を検出できる（self-test）"
 else

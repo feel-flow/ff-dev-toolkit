@@ -203,10 +203,54 @@ contains() {
   local label="$1" needle="$2"
   if grep -qF -- "$needle" "$SETUP_SCRIPT"; then ok "$label"; else bad "${label}（不足: ${needle}）"; fi
 }
+# この契約文字列は実装の生テキストとの完全一致（`$repo` 直後は ASCII 空白なので
+# マルチバイト直付けの対象外）。実装側を `${repo}` へ揃えるリファクタはここも同時に更新する。
 contains "ラベル一覧の取得が --limit を明示する" 'gh label list --repo "$repo" --limit "$label_limit"'
 contains "照会失敗で作成せず終了する" '実在を確認できないため作成しません'
 contains "空の一覧を「不在」と誤断定しない" '取得が機能しなかった場合と区別できないため作成しません'
 contains "上限到達を「不在」と誤断定しない" '不在を確認できないため作成しません'
+# 件数不確定の case ガード（wc の失敗を fail-open へ反転させないための分岐）が実体として
+# 残っていること。この経路は stub gh からは踏めない（wc の失敗が必要）ため、静的に固定する。
+contains "件数不確定を「不在」と誤断定しない（fail-open 反転ガード）" '件数を確定できませんでした'
+
+# ---- 2b. 静的検査: $VAR 直付けのマルチバイト展開（bash 3.2 回帰ガード） ----------
+# bash 3.2（macOS 標準 /bin/bash）は $VAR 直後のマルチバイト文字の先頭バイトを変数名へ
+# 取り込み、set -u 下では失敗を報告しようとした瞬間だけ unbound variable で落ちる
+# （Issue #300）。後段の振る舞い検査は PATH の bash とロケールを継承するため、bash 5 や
+# LC_ALL=C の環境ではこの回帰を再現できない — 環境非依存の静的検査で固定する。
+# 検出器は merge-cleanup/verify.sh と同型: LC_ALL=C では [:print:] も [:space:] も
+# ASCII に限られるため、「印字可能でも空白でもないバイト」= マルチバイト先頭バイトを拾える。
+MBCS_RE='\$[A-Za-z_][A-Za-z0-9_]*[^[:print:][:space:]]'
+mbcs_file_hits()  { LC_ALL=C grep -nE "$MBCS_RE" "$1" || true; }
+mbcs_probe_hits() { printf '%s\n' "$1" | LC_ALL=C grep -E "$MBCS_RE" || true; }
+
+# 検出器の自己検証（空振りの fail-closed）。違反 probe は 2 分割で組み立てる —
+# 1 行に直書きすると、この verify.sh 自身も検査対象なので probe が違反として検出される。
+mbcs_probe_bad='echo "失敗しました: $name'
+mbcs_probe_bad="${mbcs_probe_bad}（原因不明）\""
+mbcs_probe_good='echo "失敗しました: ${name}（原因不明）"'
+if [ -n "$(mbcs_probe_hits "$mbcs_probe_bad")" ]; then
+  ok "MBCS 検出器が違反を検出できる（self-test）"
+else
+  bad "MBCS 検出器が違反を検出できない — 以降の静的検査は空振りしている"
+fi
+if [ -z "$(mbcs_probe_hits "$mbcs_probe_good")" ]; then
+  ok "MBCS 検出器が \${VAR} 形式を誤検出しない（self-test）"
+else
+  bad "MBCS 検出器が \${VAR} 形式を誤検出する"
+fi
+
+# 対象はスクリプト本体と、この verify.sh 自身（テストハーネスの失敗報告パスも
+# 同じバグクラスで落ちた実績があるため）。
+for mbcs_target in "$SETUP_SCRIPT" "$0"; do
+  mbcs_hits="$(mbcs_file_hits "$mbcs_target")"
+  if [ -z "$mbcs_hits" ]; then
+    ok "$(basename "$mbcs_target") に \$VAR 直付けのマルチバイト展開が無い"
+  else
+    bad "$(basename "$mbcs_target") に \$VAR 直付けのマルチバイト展開がある（\${VAR} 形式にすること）"
+    printf '%s\n' "$mbcs_hits" | sed 's/^/    | /' >&2
+  fi
+done
 
 # ---- 3. SKILL.md の発動トリガーと導線 -------------------------------------------
 description_line="$(awk '{ sub(/\r$/, "") } /^---$/ { n++; next } n == 1 && /^description:/ { print; exit } n == 2 { exit }' "$SKILL")"
@@ -261,7 +305,7 @@ resolved_gh="$(PATH="$STUB_DIR:$PATH" command -v gh || true)"
 if [ ! -x "$STUB_DIR/gh" ]; then
   bad "behavioral 検査: stub gh が実行可能でない（$STUB_DIR/gh）"
 elif [ "$resolved_gh" != "$STUB_DIR/gh" ]; then
-  bad "behavioral 検査: gh が stub に解決されない（$resolved_gh）— 実リポジトリへラベルを作る危険があるので実行しない"
+  bad "behavioral 検査: gh が stub に解決されない（${resolved_gh}）— 実リポジトリへラベルを作る危険があるので実行しない"
 else
   ok "behavioral 検査: gh が stub に解決される（実 API を叩かない）"
 
@@ -271,15 +315,32 @@ else
   }
   run_repo() { run_script "$1" --repo "stub-owner/stub-repo"; } # 既定形（--repo 明示）
 
+  # 出力を 1 行へ畳む（case 照合・診断表示用）。tr はロケール依存で、captured 出力に
+  # 不正なバイト列（bash 3.2 が変数名へ取り込んだマルチバイト先頭バイトなど。Issue #300）が
+  # 混ざると "Illegal byte sequence" で畳み込みが途切れ、失敗診断そのものが読めなくなる。
+  # 改行→縦棒はバイト単位の置換で足りるため LC_ALL=C に固定する。
+  fold_lines() { printf '%s' "$1" | LC_ALL=C tr '\n' '|'; }
+
+  # fold_lines の自己検証: 不正バイト（マルチバイト先頭バイト単独）が混ざっても畳み込みが
+  # 途切れないこと。LC_ALL=C が外れて locale 依存へ退化すると、正常な出力では緑のまま
+  # 「診断が必要な瞬間にだけ」壊れる — その退化をここで先に赤くする。
+  fold_probe_in="$(printf 'x\357y\nz')"
+  fold_probe_want="$(printf 'x\357y|z')"
+  if [ "$(fold_lines "$fold_probe_in")" = "$fold_probe_want" ]; then
+    ok "fold_lines が不正バイト入りの出力でも途切れず畳める（LC_ALL=C 固定・self-test）"
+  else
+    bad "fold_lines が不正バイト入りの出力で途切れる（LC_ALL=C が外れている疑い）"
+  fi
+
   expect_success() { # $1: モード / $2: 期待する部分列（| 区切りへ畳んだ出力に対する） / $3: 検査名
     local out
     if ! out="$(run_repo "$1")"; then
       bad "${3}（非 0 で終了した）"
       return
     fi
-    case "$(printf '%s' "$out" | tr '\n' '|')" in
+    case "$(fold_lines "$out")" in
       *"$2"*) ok "$3" ;;
-      *) bad "${3}（期待: ${2} / 実際: $(printf '%s' "$out" | tr '\n' '|')）" ;;
+      *) bad "${3}（期待: ${2} / 実際: $(fold_lines "$out")）" ;;
     esac
   }
 
@@ -298,7 +359,7 @@ else
     esac
     case "$out" in
       *"$2"*) ok "$3" ;;
-      *) bad "${3}（診断文言が期待と違う。期待: ${2} / 実際: $(printf '%s' "$out" | tr '\n' '|')）" ;;
+      *) bad "${3}（診断文言が期待と違う。期待: ${2} / 実際: $(fold_lines "$out")）" ;;
     esac
   }
 
@@ -318,7 +379,7 @@ else
   # 報告行は標準出力に出ること（SKILL.md の完了報告はこの行のパースに依存する。
   # 合流キャプチャだけだと printf が stderr へ移る変異が素通りする）
   out_stdout="$(PATH="$STUB_DIR:$PATH" GH_STUB_MODE=normal bash "$SETUP_SCRIPT" --repo "stub-owner/stub-repo" 2>/dev/null)" || true
-  case "$(printf '%s' "$out_stdout" | tr '\n' '|')" in
+  case "$(fold_lines "$out_stdout")" in
     *'CREATED=major minor patch hotfix urgent'*) ok "CREATED= の報告行が標準出力側に出る" ;;
     *) bad "CREATED= の報告行が標準出力に無い（stderr へ逃げると完了報告が読めない）" ;;
   esac
@@ -329,10 +390,10 @@ else
   if [ "$rc_partial" -ne 0 ]; then
     bad "一部既存の整備が非 0 で終了した"
   fi
-  case "$(printf '%s' "$out_partial" | tr '\n' '|')" in
+  case "$(fold_lines "$out_partial")" in
     *'CREATED=patch hotfix urgent'*'SKIPPED_EXISTING=major minor'*)
       ok "既存ラベルはスキップされ、不足分だけが作成される" ;;
-    *) bad "既存/不足の振り分けが期待と違う（実際: $(printf '%s' "$out_partial" | tr '\n' '|')）" ;;
+    *) bad "既存/不足の振り分けが期待と違う（実際: $(fold_lines "$out_partial")）" ;;
   esac
   case "$out_partial" in
     *'GH_LABEL_CREATE_ARGV: label create major'*|*'GH_LABEL_CREATE_ARGV: label create minor'*)
@@ -345,10 +406,10 @@ else
   # 既存側（スキップ）へ倒れることを固定する
   out_cv="$(run_repo casevariant)" || { bad "case 違い既存で非 0 終了した（冪等でない）"; out_cv=""; }
   if [ -n "$out_cv" ]; then
-    case "$(printf '%s' "$out_cv" | tr '\n' '|')" in
+    case "$(fold_lines "$out_cv")" in
       *'CREATED=patch hotfix urgent'*'SKIPPED_EXISTING=major minor'*)
         ok "大文字小文字違いの既存ラベルはスキップへ倒れる（case-insensitive 照合）" ;;
-      *) bad "case 違い既存の振り分けが期待と違う（実際: $(printf '%s' "$out_cv" | tr '\n' '|')）" ;;
+      *) bad "case 違い既存の振り分けが期待と違う（実際: $(fold_lines "$out_cv")）" ;;
     esac
   fi
 
@@ -359,19 +420,19 @@ else
       *GH_LABEL_CREATE_ARGV*) bad "全ラベル既存なのに label create が実行された" ;;
       *) ok "全ラベル既存なら 1 件も作成せず成功する（冪等）" ;;
     esac
-    case "$(printf '%s' "$out_all" | tr '\n' '|')" in
+    case "$(fold_lines "$out_all")" in
       *'CREATED=|'*'SKIPPED_EXISTING=major minor patch hotfix urgent'*)
         ok "全件スキップが報告に列挙される（CREATED は空）" ;;
-      *) bad "全件スキップの報告内容が期待と違う（実際: $(printf '%s' "$out_all" | tr '\n' '|')）" ;;
+      *) bad "全件スキップの報告内容が期待と違う（実際: $(fold_lines "$out_all")）" ;;
     esac
   fi
 
   # --repo 省略時はカレントリポジトリ（gh repo view）で確定する経路が生きていること
   out_norepo="$(run_script normal)" || { bad "--repo 省略時に非 0 終了した"; out_norepo=""; }
   if [ -n "$out_norepo" ]; then
-    case "$(printf '%s' "$out_norepo" | tr '\n' '|')" in
+    case "$(fold_lines "$out_norepo")" in
       *'REPO=stub-owner/stub-repo'*) ok "--repo 省略時は gh repo view で対象を確定する" ;;
-      *) bad "--repo 省略時の対象確定が期待と違う（実際: $(printf '%s' "$out_norepo" | tr '\n' '|')）" ;;
+      *) bad "--repo 省略時の対象確定が期待と違う（実際: $(fold_lines "$out_norepo")）" ;;
     esac
   fi
 
@@ -403,19 +464,21 @@ else
     bad "値の無い --repo が拒否されない"
   fi
 
-  # 照会を信用できない 3 経路はすべて fail-closed（作成ゼロ + 非 0 + 原因どおりの診断）
-  expect_failclosed fail "取得できませんでした" "照会失敗では 1 件も作成せず非 0 で終了する（fail-closed）"
-  expect_failclosed empty "空でした" "空の一覧では 1 件も作成せず非 0 で終了する"
-  expect_failclosed truncated "取得上限" "取得上限に達した一覧では 1 件も作成せず非 0 で終了する"
+  # 照会を信用できない 3 経路はすべて fail-closed（作成ゼロ + 非 0 + 原因どおりの診断）。
+  # 期待部分列に対象リポジトリ名の埋め込みまで含める — set -u が外れた状態で変数が
+  # 黙って空展開される変異（診断から repo 名が消える）もここで検出する。
+  expect_failclosed fail "取得できませんでした（stub-owner/stub-repo）" "照会失敗では 1 件も作成せず非 0 で終了する（fail-closed）"
+  expect_failclosed empty "空でした（stub-owner/stub-repo）" "空の一覧では 1 件も作成せず非 0 で終了する"
+  expect_failclosed truncated "取得上限（200 件）に達しました（stub-owner/stub-repo）" "取得上限に達した一覧では 1 件も作成せず非 0 で終了する"
 
   # 作成失敗は握り潰さない
   out_cf=""
   rc_cf=0
   out_cf="$(run_repo createfail)" || rc_cf=$?
   if [ "$rc_cf" -ne 0 ]; then
-    case "$(printf '%s' "$out_cf" | tr '\n' '|')" in
+    case "$(fold_lines "$out_cf")" in
       *'FAILED=major minor patch hotfix urgent'*) ok "作成失敗は FAILED= に列挙され非 0 で終了する" ;;
-      *) bad "作成失敗が FAILED= に載っていない（実際: $(printf '%s' "$out_cf" | tr '\n' '|')）" ;;
+      *) bad "作成失敗が FAILED= に載っていない（実際: $(fold_lines "$out_cf")）" ;;
     esac
   else
     bad "label create が失敗しても成功として終了した（silent failure）"

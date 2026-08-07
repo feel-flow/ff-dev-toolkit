@@ -125,7 +125,7 @@ ACE Playbook（`docs/08-knowledge/PLAYBOOK.md`）が存在する場合、索引�
 
 実在確認をパスしなかった候補は、**省略したラベル名と理由を手順 7 の完了報告に含める**。ラベルが付かなかったこと自体は起票の失敗ではないが、黙って落とすと「付いているはず」という誤解が残る。
 
-値は手順 6 のブロックが `LABEL_LOOKUP_FAILED=` として出力する。
+値は手順 6 のブロックが `LABEL_LOOKUP_FAILED=` / `APPLIED_LABEL=` / `SKIPPED_LABEL=` として出力する。
 
 理由は `label_lookup_failed` で書き分ける。**「不在」と「照会失敗」を混同しない**:
 
@@ -191,6 +191,12 @@ type_label=""
 priority_label=""
 # 上の構造で組み立てた Issue 本文。
 issue_body=""
+# 本文が空のまま起票しない。空の --body は「作成済みだが中身の無い」Issue を黙って生む
+#（set -e の無い実行環境では、本文の組み立て失敗もここへ合流する）。
+if [[ -z "$issue_body" ]]; then
+  echo "issue_body が空です（本文を組み立ててから実行してください）" >&2
+  exit 1
+fi
 
 # 実在するラベル名の一覧。取得できなければラベルなしで進める（起票自体は止めない）。
 # ⚠️ `--limit` は必須。省略時の既定は 30 件で、ラベルが 30 個を超えるリポジトリでは
@@ -239,11 +245,18 @@ if [[ -z "$issue_url" ]]; then
 fi
 
 # 状態の出力は**起票が成功してから**行う。先に出すと、起票が失敗しても
-# 「APPLIED=...」だけが残り、付いていないラベルが報告の材料になる。
+# 「APPLIED_LABEL=...」だけが残り、付いていないラベルが報告の材料になる。
+# ラベルは 1 行 1 件で出す。ラベル名は空白を含みうる（例: `good first issue`）ため、
+# 1 行に並べると読み手が境界を復元できない。
 printf 'ISSUE_URL=%s\n' "$issue_url"
 printf 'LABEL_LOOKUP_FAILED=%s\n' "$label_lookup_failed"
-printf 'APPLIED=%s\n' "${label_args[*]+${label_args[*]}}"
-printf 'SKIPPED=%s\n' "${skipped_labels[*]+${skipped_labels[*]}}"
+for lbl in ${label_args[@]+"${label_args[@]}"}; do
+  [[ "$lbl" != "--label" ]] || continue
+  printf 'APPLIED_LABEL=%s\n' "$lbl"
+done
+for lbl in ${skipped_labels[@]+"${skipped_labels[@]}"}; do
+  printf 'SKIPPED_LABEL=%s\n' "$lbl"
+done
 ```
 
 `gh issue create` の終了コードが 0 で `ISSUE_URL` が非空の場合だけ成功として扱う。失敗した場合は成功形式の報告を返さず、エラー内容と再試行方法を報告する。
@@ -254,7 +267,7 @@ printf 'SKIPPED=%s\n' "${skipped_labels[*]+${skipped_labels[*]}}"
 
 作成した Issue の URL を表示し、次のアクションを提案してください。あわせて次を含めます:
 
-- **付与したラベル**（`APPLIED=`）と、**省略したラベル名 + 理由**（`SKIPPED=` と `LABEL_LOOKUP_FAILED=` を手順 5 の表に当てて「不在」と「照会失敗」を書き分ける）。省略が無ければその旨は書かなくてよい。値は記憶からではなく**手順 6 のブロックが出力した行をそのまま読む** — 記憶で書くと、実際には付かなかったラベルを「付いた」と報告できてしまう
+- **付与したラベル**（`APPLIED_LABEL=` 行。1 行 1 ラベル）と、**省略したラベル名 + 理由**（`SKIPPED_LABEL=` 行と `LABEL_LOOKUP_FAILED=` を手順 5 の表に当てて「不在」と「照会失敗」を書き分ける）。省略が無ければその旨は書かなくてよい。値は記憶からではなく**手順 6 のブロックが出力した行をそのまま読む** — 記憶で書くと、実際には付かなかったラベルを「付いた」と報告できてしまう
 - 省略理由が「不在」のラベルがある場合は、`/setup-github-labels`（ff-dev-toolkit 同梱。推奨ラベル構成の不足分だけを冪等に作成する）で整備できる旨を 1 行添える。「照会失敗」のときは添えない（実在を確認できていないのに整備を促すと、重複ラベルを生やす側へ倒れる）。整備はそのスキルの責務で、本スキルからは実行しない
 - 非対話モード（手順 1）で推定した種別・優先度と、その根拠
 

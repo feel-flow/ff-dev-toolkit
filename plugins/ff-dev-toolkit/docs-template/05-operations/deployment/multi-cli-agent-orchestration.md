@@ -159,15 +159,17 @@ cross-model コマンドを表示します。
 
 ### 新しい Perspective を追加するには
 
-1. `scripts/perspectives/{task_type}/` に `.md` ファイルを作成
+実行時に効く変更と、対応表の追随（任意）を分けて書く。`agent-config.yaml` の `agents:` / `fallback:` ブロックは**実行時には読まれない**（正本は `multi-agent.sh` の case 文。値を書き換えても挙動は変わらない）。
+
+1. **（実行時・必須）** `scripts/perspectives/{task_type}/` に `.md` ファイルを作成
 2. 以下のセクション構造に従う:
    - `# Perspective: [名前]`
    - `## Role` — エージェントの役割定義
    - `## Analysis Focus` / `## Implementation Focus` — 分析・実装の焦点
    - `## Output Template` — 出力フォーマット
    - `## Notes` — 注意事項
-3. `agent-config.yaml` の該当 agent に perspective を追加
-4. `multi-agent.sh` の `get_cli_perspectives_{task_type}()` にマッピング追加
+3. **（実行時・必須）** `multi-agent.sh` の `get_cli_perspectives_{task_type}()` にマッピングを追加する（CLI レジストリの正本。ここを直さないとプランに載らない）
+4. **（任意・非実行時）** `agent-config.yaml` の該当 agent に perspective を追記する — **対応表のミラー追随のみ**。実行時には読まれない。書き換えても挙動は変わらない。ミラー検査（`tests/agent-config-mirror`）を通すため、case 文と揃えるときだけ更新する
 
 ### Perspective 設計原則
 

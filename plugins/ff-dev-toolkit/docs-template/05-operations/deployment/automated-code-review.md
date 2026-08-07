@@ -7,18 +7,20 @@
 複数のAI CLI（Claude Code、Codex、Gemini、Copilot）を統一的にオーケストレーションする Multi-CLI レビューフレームワークです。
 `git commit` 時に AI が自動でコードをレビューし、問題があればコミットをブロックします。各CLIの得意分野とコスト特性を活かした包括的レビューを実行できます。
 
-> **標準レビュー体制**: 一次レビューは Claude Code（pr-review-toolkit）、クロスモデルレビューは Codex CLI の2本柱を標準とします。GitHub Copilot（Copilot CLI / Copilot code review）は従量課金への移行に伴い**既定のレビューラインナップから除外**しました。アダプタ（`scripts/copilot-review.sh`）は残置しており、課金を許容する場合のみオプトインで利用できます。
+> **標準レビュー体制**: 一次レビューは Claude Code（pr-review-toolkit）、クロスモデルレビューは Codex CLI の2本柱を標準とします。GitHub Copilot（Copilot CLI / Copilot code review）は従量課金への移行に伴い**既定のレビューラインナップから除外**しました。同梱アダプタ（`scripts/adapters/copilot-cli-adapter.sh`）は残置しており、課金を許容する場合のみ `--cli copilot-cli` でオプトインできます。
 
 > **モデル選択の方針**: 各アダプタは**モデルを選ばない**。どのモデルを使うかは各 CLI 自身の設定（`~/.codex/config.toml` など）へ委譲し、環境変数が設定されているときだけフラグを組み立てる。アダプタにモデル slug の既定値を持たせると、その値がユーザーの CLI 設定と 2 重化して必ず古くなり、しかもユーザー設定を黙って上書きする。実装パターンは [REVIEW_AGENT_CREATION_GUIDE.md の「モデル指定は『既定値を持たない』」](../../06-reference/REVIEW_AGENT_CREATION_GUIDE.md#モデル指定は既定値を持たない)、実害の記録は `08-knowledge/playbook/tooling.md` の ACE-70-2 を参照。
 
+> **同梱 vs 利用側スクリプト**: プラグインが配布するのは `scripts/setup-multi-agent.sh` / `scripts/multi-agent.sh` / `scripts/multi-review.sh` / `scripts/adapters/*` / `scripts/perspectives/` / `scripts/agent-config.yaml`。`setup-automated-review.sh` / `setup-multi-review.sh` / `review-common.sh` / `review-prompts.sh` / `*-review.sh`（単体ラッパー）は**同梱されない**。下の「方法1」は消費プロジェクトが自前で組む構成例であり、セットアップ後に自動で現れるファイルではない。
+
 ### システム構成
 
-**方法1: 個別CLIアダプタ（setup-automated-review.sh）**
+**方法1: 個別CLIアダプタ（利用側で組む構成例・同梱セットアップなし）**
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌──────────────────────┐
 │   git commit    │────▶│  Husky Hook      │────▶│  最初に見つかった      │
-│                 │     │  (pre-commit)    │     │  CLI アダプタを実行    │
+│                 │     │  (pre-commit)    │     │  CLI ラッパーを実行    │
 └─────────────────┘     └──────────────────┘     └──────────┬───────────┘
                                                             │
                            CLI バイナリの存在を確認し          │
@@ -27,8 +29,8 @@
                            > Gemini                          │
                                                             ▼
                                               ┌──────────────────────┐
-                                              │  4種並列レビュワー      │
-                                              │  (review-common.sh)  │
+                                              │  利用側の共通基盤       │
+                                              │  (review-common.sh 等) │
                                               └──────────┬───────────┘
                                                          ▼
                                               ┌─────────────────────┐
@@ -37,12 +39,12 @@
                                               └─────────────────────┘
 ```
 
-**方法2: Multi-CLI オーケストレーター（setup-multi-review.sh）**
+**方法2: Multi-CLI オーケストレーター（同梱: setup-multi-agent.sh + multi-agent.sh）**
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌──────────────────────┐
 │   git commit    │────▶│  Husky Hook      │────▶│  multi-agent.sh      │
-│                 │     │  (pre-commit)    │     │  (Orchestrator)      │
+│                 │     │  (pre-commit)    │     │  (Orchestrator・同梱)  │
 └─────────────────┘     └──────────────────┘     └──────────┬───────────┘
                                                             │
                                               ┌─────────────┼─────────────┐
@@ -81,63 +83,77 @@
 - **Node.js**: >= 24.0.0（npm使用時）
 - **AI CLI**: Claude Code、Codex、Gemini のうち1つ以上がインストール済み
 
-### 自動セットアップ（推奨）
+### 自動セットアップ（推奨・同梱スクリプト）
 
-プロジェクトルートで以下を実行:
+プロジェクトルートで、プラグイン同梱のセットアップを実行:
 
 ```bash
-# 方法1: Husky pre-commit フック + 個別 CLI レビュー（シンプル）
-bash scripts/setup-automated-review.sh
+# Multi-CLI オーケストレーターの依存確認・導入（同梱）
+bash scripts/setup-multi-agent.sh
 
-# 方法2: Multi-CLI オーケストレーター（高度な分散レビュー）
-bash scripts/setup-multi-review.sh
+# レビュー実行（同梱ラッパー → multi-agent.sh --task review）
+bash scripts/multi-review.sh
 ```
 
-**方法1（setup-automated-review.sh）** は `git commit` 時に利用可能なAI CLIで自動レビューする基本構成です。Husky pre-commit フックと Claude Code `/code-review` コマンドを作成し、5つのCLIアダプタの存在を検証・有効化します。
+**同梱の `setup-multi-agent.sh`** は依存ツールの確認・導入と動作確認を行う。実行本体は `multi-agent.sh` / `multi-review.sh` と `adapters/*`。
 
-**方法2（setup-multi-review.sh）** は複数AI CLIを並列・分散実行するオーケストレーターです。コスト戦略やクロスモデル比較など高度な機能が利用できます。
+**利用側で組む構成（同梱されない）**: Husky pre-commit から単体 `*-review.sh` を呼ぶ簡易構成は、消費プロジェクトが自前でスクリプトを置く場合のパターンである。`setup-automated-review.sh` / `setup-multi-review.sh` / `review-common.sh` / `claude-review.sh` 等は**テンプレートに同梱されておらず、セットアップ後に自動生成もされない**。同梱オーケストレーターだけで足りる場合は方法1を作る必要はない。
 
-### 手動セットアップ
-
-npm/Node.jsを使用しない場合や、カスタマイズが必要な場合:
+### 手動セットアップ（同梱オーケストレーター）
 
 ```bash
-# 1. ディレクトリ作成
+# 1. 同梱スクリプトに実行権限を付与（コピー先のパスに合わせる）
+chmod +x scripts/setup-multi-agent.sh scripts/multi-agent.sh scripts/multi-review.sh scripts/adapters/*.sh
+
+# 2. 依存確認
+bash scripts/setup-multi-agent.sh
+
+# 3. （任意）pre-commit から multi-review.sh を呼ぶ hook を利用側で追加
+```
+
+利用側で単体ラッパー構成を自作する場合の例（いずれも**同梱されない**ファイル名）:
+
+```bash
 mkdir -p .husky scripts .claude/commands
-
-# 2. スクリプトを手動で配置（後述のファイル内容を参照）
-
-# 3. 実行権限を付与
-chmod +x .husky/pre-commit scripts/review-common.sh scripts/review-prompts.sh scripts/claude-review.sh scripts/codex-review.sh scripts/copilot-review.sh scripts/gemini-review.sh
+# review-common.sh / review-prompts.sh / claude-review.sh 等は利用側で作成
+chmod +x .husky/pre-commit scripts/review-common.sh scripts/review-prompts.sh \
+  scripts/claude-review.sh scripts/codex-review.sh scripts/copilot-review.sh scripts/gemini-review.sh
 ```
 
 ---
 
 ## ファイル構成
 
-セットアップ後、以下のファイルが作成されます:
+### プラグイン同梱（配布物）
+
+```
+scripts/
+├── multi-agent.sh            # Multi-CLI オーケストレーター
+├── multi-review.sh           # レビュー用ラッパー（→ multi-agent.sh --task review）
+├── setup-multi-agent.sh      # 依存確認・導入
+├── agent-config.yaml         # CLI・タスク設定（agents: 対応表は実行時非読込）
+├── adapters/                 # CLI アダプター（*-adapter.sh）
+└── perspectives/             # 観点定義
+```
+
+### 利用側で置く構成例（同梱されない・自動生成されない）
 
 ```
 project-root/
 ├── .husky/
-│   └── pre-commit                # Git pre-commit hook
+│   └── pre-commit                # Git pre-commit hook（利用側）
 ├── scripts/
-│   ├── review-common.sh          # 共通基盤（並列実行・結果表示・差分取得）
-│   ├── review-prompts.sh         # 4種レビュワーのプロンプト定義
-│   ├── claude-review.sh          # Claude Code アダプタ
-│   ├── codex-review.sh           # Codex CLI アダプタ
-│   ├── copilot-review.sh         # Copilot CLI アダプタ（従量課金・オプトイン）
-│   ├── gemini-review.sh          # Gemini CLI アダプタ
-│   ├── setup-automated-review.sh # セットアップスクリプト（Husky + CLI アダプタ）
-│   ├── multi-agent.sh            # Multi-CLI オーケストレーター（高度）
-│   ├── setup-multi-agent.sh      # オーケストレーター用セットアップ
-│   ├── setup-multi-review.sh     # レビュー用ラッパー（→ setup-multi-agent.sh）
-│   ├── agent-config.yaml         # CLI・タスク設定
-│   ├── adapters/                 # オーケストレーター用CLIアダプター
-│   └── perspectives/             # オーケストレーター用観点定義
+│   ├── review-common.sh          # 【利用側】共通基盤
+│   ├── review-prompts.sh         # 【利用側】プロンプト定義
+│   ├── claude-review.sh          # 【利用側】単体ラッパー
+│   ├── codex-review.sh           # 【利用側】単体ラッパー
+│   ├── copilot-review.sh         # 【利用側】単体ラッパー（従量課金・オプトイン）
+│   ├── gemini-review.sh          # 【利用側】単体ラッパー
+│   ├── setup-automated-review.sh # 【利用側】セットアップ用（存在する場合のみ）
+│   └── setup-multi-review.sh     # 【利用側】別名ラッパー例（存在する場合のみ）
 ├── .claude/
 │   └── commands/
-│       └── code-review.md        # /code-review スラッシュコマンド
+│       └── code-review.md        # /code-review（利用側または Claude プラグイン）
 └── package.json                  # npm scripts（オプション）
 ```
 
@@ -260,7 +276,7 @@ None found
 
 ### レビュー厳格度の調整
 
-`scripts/review-common.sh` の判定ロジックを変更:
+利用側で `scripts/review-common.sh`（**同梱されない**）を置いている場合、その判定ロジックを変更する例:
 
 ```bash
 # モードに関わらず、先に「レビューが完走したか」を検査する（fail-closed）。

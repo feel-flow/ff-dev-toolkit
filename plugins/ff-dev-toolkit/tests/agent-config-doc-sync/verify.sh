@@ -199,7 +199,7 @@ else
   LINK_FAIL=0
   for pat in "${REQUIRED_READS[@]}"; do
     if [[ "$YQ_LINES" != *"$pat"* ]]; then
-      bad "説明が「読まれる」と主張するキーの yq 読み取り式が multi-agent.sh に見当たらない: $pat（実装が変わったなら 4 スキルの説明と本検査を同時に更新すること）"
+      bad "説明が「読まれる」と主張するキーの yq 読み取り式が multi-agent.sh に見当たらない: ${pat}（実装が変わったなら 4 スキルの説明と本検査を同時に更新すること）"
       LINK_FAIL=1
     fi
   done

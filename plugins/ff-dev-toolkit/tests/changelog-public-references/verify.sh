@@ -35,7 +35,7 @@ if [[ "$GREP_RC" -eq 0 ]]; then
   exit 1
 fi
 if [[ "$GREP_RC" -ne 1 ]]; then
-  echo "✗ 公開 CHANGELOG の参照検査に失敗しました（grep rc=$GREP_RC）: $CHANGELOG" >&2
+  echo "✗ 公開 CHANGELOG の参照検査に失敗しました（grep rc=${GREP_RC}）: $CHANGELOG" >&2
   exit 1
 fi
 

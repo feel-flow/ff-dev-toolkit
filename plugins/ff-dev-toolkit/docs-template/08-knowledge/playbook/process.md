@@ -459,7 +459,7 @@
 
 **Action**:
 
-1. Claude 系セルフレビュー（`pr-review-toolkit` / subagent-driven の task・final レビュー）が全員 APPROVED でも、**cross-model レビュー（Codex `scripts/codex-review.sh --base develop`）を省略しない**。特に「既存と整合的だから」という理由で borderline を承認した箇所は cross-model に回す価値が高い。
+1. Claude 系セルフレビュー（`pr-review-toolkit` / subagent-driven の task・final レビュー）が全員 APPROVED でも、**cross-model レビュー（同梱: `bash scripts/multi-review.sh --mode cross-model --cli codex-cli`。単体 `scripts/codex-review.sh` は利用側・同梱されない）を省略しない**。特に「既存と整合的だから」という理由で borderline を承認した箇所は cross-model に回す価値が高い。
 2. 既存 helper を mirror するときは、**mirror 元の欠陥（loose な `parseInt` 等）を継承していないか**疑う。修正は片方だけ直して乖離させるより、共有ヘルパーに抽出して両方同時に堅牢化する。
 3. 入力検証は「mirror 元と同じ」ではなく、字面で正しさを担保する（例: `/^[0-9]+$/` で厳密な正の整数のみ受理）。
 
@@ -946,7 +946,7 @@
 
 **Insight**: cross-model レビューが収束しない時の原因は「設計が間違っている」（[ACE-464-2](#ace-464-2)）だけではない。**依頼されていないコードを PR に足したこと**が原因の場合があり、その診断信号は指摘の「テーマの持続」ではなく **diff 上の分布**にある。依頼された変更に指摘が 0 件で、追加分にすべて集中しているなら、正しい手当ては patch でもピボットでもなく**追加分の切り出し**。指摘に機能追加で応じるとレビュー対象面積が増えるため、足しながら green を待つほど収束は遠のく。切り出し先は多くの場合、同じ根本原因を扱う既存 Issue である（追加機能が必要になった理由＝未修正の根本原因、という関係が成り立つため）。
 
-**Context**: PR #69/#70（`codex-review.sh` のモデル固定を廃し codex config へ委譲）は 1 巡目に Toolkit（code-reviewer）と Codex（5 観点すべて PASS）双方から APPROVED を得た。**レビュアーは指摘が無ければ clean verdict を返す**（収束しなくなったのはレビュアーの設定ではなく対象を増やしたため、という証拠でもある）。その際 silent-failure-hunter が「委譲後は見出しが実モデルを保証しない」と指摘したため stderr バナーから実行モデルを拾う機能を追加したところ、2 巡目 5 件・3 巡目 6 件の指摘が**すべてこの追加機能とそのテスト**に集中し（依頼された委譲部分は 1 巡目以降ゼロ）、テスト行数が 500 行ソフト上限を超える指摘まで誘発した。追加機能が必要な根本原因は「`review-common.sh` が stderr を成功パスで捨てる」であり、これは別 Issue #72 の症状 1（timeout 警告の握り潰し）と同一の根だった。機能を #72 へ移して 1 巡目の形に戻したところループが止まった。
+**Context**: PR #69/#70（当時の**利用側** `codex-review.sh` のモデル固定を廃し codex config へ委譲。同梱経路ではない）は 1 巡目に Toolkit（code-reviewer）と Codex（5 観点すべて PASS）双方から APPROVED を得た。**レビュアーは指摘が無ければ clean verdict を返す**（収束しなくなったのはレビュアーの設定ではなく対象を増やしたため、という証拠でもある）。その際 silent-failure-hunter が「委譲後は見出しが実モデルを保証しない」と指摘したため stderr バナーから実行モデルを拾う機能を追加したところ、2 巡目 5 件・3 巡目 6 件の指摘が**すべてこの追加機能とそのテスト**に集中し（依頼された委譲部分は 1 巡目以降ゼロ）、テスト行数が 500 行ソフト上限を超える指摘まで誘発した。追加機能が必要な根本原因は「利用側 `review-common.sh` が stderr を成功パスで捨てる」であり、これは別 Issue #72 の症状 1（timeout 警告の握り潰し）と同一の根だった。機能を #72 へ移して 1 巡目の形に戻したところループが止まった。
 
 **Action**:
 

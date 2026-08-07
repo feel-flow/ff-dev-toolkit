@@ -41,8 +41,9 @@ Multi-CLI の全体オーケストレーションとは別に、**Claude系 + GP
 PR Review Toolkit（Claude系）でのセルフレビュー後に続けて実行します。CLAUDE.md のワークフロー指示に基づき、AIツールが Toolkit → Codex CLI の順で実行します。
 
 ```bash
-# Toolkit レビュー後に実行（codex exec ベース）
-bash scripts/codex-review.sh --branch
+# Toolkit レビュー後に実行（プラグイン同梱 multi-review → multi-agent 経由）
+bash scripts/multi-review.sh --mode cross-model --cli codex-cli
+# 単体ラッパー scripts/codex-review.sh は同梱されない（利用側で用意する場合のみ）
 ```
 
 レビュー結果は [PRレビュー対応ポリシー](./review-response-policy.md) に従って対応します。

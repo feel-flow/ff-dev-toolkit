@@ -55,6 +55,9 @@ else
     # 全 suite を実行するので、並び順は結果ではなく報告の読みやすさの問題）。
     "$SCRIPT_DIR/skill-frontmatter/verify.sh"
     "$SCRIPT_DIR/skill-bash-blocks/verify.sh"
+    # case 11（*.sh MBCS）の fail-closed 経路をシームで自動回帰（Issue #312）。
+    # skill-bash-blocks の直後: 同欠陥クラスの SKILL.md 側ガードと並べて報告する。
+    "$SCRIPT_DIR/mbcs-guard-failclosed/verify.sh"
     "$SCRIPT_DIR/no-hardcoded-model/verify.sh"
     "$SCRIPT_DIR/cli-registry-completeness/verify.sh"
     # agent-config.yaml が multi-agent.sh の case 文のミラーとして正しいか

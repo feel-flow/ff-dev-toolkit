@@ -9,8 +9,10 @@
 # のラベル判定に混入し、レビューで検出された）。
 #
 # 検査範囲の分担:
-#   - tests/**/*.sh → tests/run-all/verify.sh case 10
-#   - SKILL.md の bash 系コードブロック → 本 suite。対象は
+#   - tests/**/*.sh のパイプ入力 grep -q* → tests/run-all/verify.sh case 10
+#   - tracked shell の $VAR+マルチバイト → tests/run-all/verify.sh case 11
+#     （実装: tests/lib/mbcs-guard.sh。fail-closed 自動回帰: mbcs-guard-failclosed）
+#   - SKILL.md の bash 系コードブロック → 本 suite（grep -q* と MBCS の両方）。対象は
 #     plugins/*/skills/*/SKILL.md（全プラグインのスキル）、
 #     plugins/*/docs-template/.github/skills/*/SKILL.md（配布テンプレートのスキル）、
 #     リポジトリローカルの .claude/skills/*/SKILL.md（存在する場合のみ。公開 checkout
@@ -46,6 +48,8 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PLUGINS_DIR="$(cd "$PLUGIN_ROOT/.." && pwd)"
 REPO_ROOT="$(cd "$PLUGINS_DIR/.." && pwd)"
 FIXTURES_DIR="$SCRIPT_DIR/fixtures"
+# shellcheck source=../lib/mbcs-guard.sh
+. "$SCRIPT_DIR/../lib/mbcs-guard.sh"
 
 PASS=0
 FAIL=0
@@ -139,6 +143,29 @@ else
   printf '%s\n' "$clean_hits" | sed 's/^/    | /' >&2
 fi
 
+# ---- 自己検証: MBCS（Issue #311） --------------------------------------------
+[ -f "$FIXTURES_DIR/mbcs-violation.md" ] || { echo "✗ fixture がありません: $FIXTURES_DIR/mbcs-violation.md" >&2; exit 1; }
+[ -f "$FIXTURES_DIR/mbcs-clean.md" ] || { echo "✗ fixture がありません: $FIXTURES_DIR/mbcs-clean.md" >&2; exit 1; }
+
+# 行番号: bash ブロック内の ng1 / ng2 / ng-cont 開始 / ng3（sh）
+EXPECTED_MBCS_VIOLATION_LINES="6 8 9 18"
+actual_mbcs_lines="$(mbcs_scan_bash_blocks "$FIXTURES_DIR/mbcs-violation.md" | awk -F: '{ print $1 }' | paste -sd' ' -)" \
+  || { echo "✗ MBCS 自己検証の scan が失敗しました（mbcs-violation.md）" >&2; exit 1; }
+if [ "$actual_mbcs_lines" = "$EXPECTED_MBCS_VIOLATION_LINES" ]; then
+  ok "MBCS 違反 fixture の全違反を期待行で検出（${EXPECTED_MBCS_VIOLATION_LINES}）"
+else
+  bad "MBCS 違反 fixture の検出結果が期待と不一致（expected: '${EXPECTED_MBCS_VIOLATION_LINES}' / actual: '${actual_mbcs_lines}'）"
+fi
+
+mbcs_clean_hits="$(mbcs_scan_bash_blocks "$FIXTURES_DIR/mbcs-clean.md")" \
+  || { echo "✗ MBCS 自己検証の scan が失敗しました（mbcs-clean.md）" >&2; exit 1; }
+if [ -z "$mbcs_clean_hits" ]; then
+  ok "MBCS 非検出 fixture（braced・ASCII 隣接・非 bash ブロック）を誤検出しない"
+else
+  bad "MBCS 非検出 fixture を誤検出した:"
+  printf '%s\n' "$mbcs_clean_hits" | sed 's/^/    | /' >&2
+fi
+
 if [ "$FAIL" -gt 0 ]; then
   echo ""
   echo "✗ skill-bash-blocks verify: 検出器の自己検証に失敗（横断検査は実行しない）" >&2
@@ -182,6 +209,7 @@ else
 fi
 
 violation_files=0
+mbcs_violation_files=0
 for file in "${SKILL_FILES[@]}"; do
   hits="$(scan_skill_bash_blocks "$file")" \
     || { echo "✗ scanner 自体が失敗しました: $file" >&2; exit 1; }
@@ -191,10 +219,21 @@ for file in "${SKILL_FILES[@]}"; do
     printf '%s\n' "$hits" | sed 's/^/    | /' >&2
     echo "    shell のパターンマッチ（case / [[ == ]]）、grep >/dev/null、grep -c のいずれかへ置換してください" >&2
   fi
+  mbcs_hits="$(mbcs_scan_bash_blocks "$file")" \
+    || { echo "✗ MBCS scanner 自体が失敗しました: $file" >&2; exit 1; }
+  if [ -n "$mbcs_hits" ]; then
+    mbcs_violation_files=$((mbcs_violation_files + 1))
+    bad "${file#"$REPO_ROOT"/} の bash ブロックに \$VAR 直付けマルチバイトがある:"
+    printf '%s\n' "$mbcs_hits" | sed 's/^/    | /' >&2
+    echo "    \${VAR} 形式に置換してください（bash 3.2 + set -u で unbound variable になる）" >&2
+  fi
 done
 
 if [ "$violation_files" -eq 0 ]; then
   ok "全 ${#SKILL_FILES[@]} 件の SKILL.md の bash ブロックにパイプ入力の grep -q* が無い"
+fi
+if [ "$mbcs_violation_files" -eq 0 ]; then
+  ok "全 ${#SKILL_FILES[@]} 件の SKILL.md の bash ブロックに \$VAR 直付けマルチバイトが無い"
 fi
 
 echo ""

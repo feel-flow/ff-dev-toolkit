@@ -220,7 +220,7 @@ else
     end="${rest%%|*}"; needle="${rest#*|}"
     slice="$(section_slice "$start" "$end")"
     if [[ -z "$slice" ]]; then
-      echo "  ✗ $label — 節が抽出できない（見出しが変わった可能性: $start）"
+      echo "  ✗ $label — 節が抽出できない（見出しが変わった可能性: ${start}）"
       fail=1
       continue
     fi
@@ -260,7 +260,7 @@ else
     expected_cls="$(expected_class_for_case "$name")"
     expected_imp="$(expected_impact_for_case "$name")"
     if [[ -z "$expected_cls" || -z "$expected_imp" ]]; then
-      echo "  ✗ 未登録ケース: $name（expected_*_for_case へ期待値を追加してください）"
+      echo "  ✗ 未登録ケース: ${name}（expected_*_for_case へ期待値を追加してください）"
       fail=1
     fi
 

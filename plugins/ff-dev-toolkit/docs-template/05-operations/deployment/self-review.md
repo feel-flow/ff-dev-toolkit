@@ -130,8 +130,9 @@ PR Review Toolkit（Claude系）でのセルフレビューに加え、Codex CLI
 ### 実行方法
 
 ```bash
-# Toolkit レビュー後に実行
-bash scripts/codex-review.sh --branch
+# Toolkit レビュー後に実行（プラグイン同梱の multi-review 経由）
+bash scripts/multi-review.sh --mode cross-model --cli codex-cli
+# 単体ラッパー scripts/codex-review.sh は同梱されない（利用側で用意する場合のみ）
 ```
 
 ### レビュー結果の対応
@@ -176,7 +177,9 @@ pre-push hookで自動実行（`.husky/pre-push`）することも可能です�
 **セットアップ**:
 
 ```bash
-bash scripts/setup-multi-review.sh
+# 同梱: Multi-CLI オーケストレーターの依存確認・導入
+bash scripts/setup-multi-agent.sh
+# setup-multi-review.sh / setup-automated-review.sh は同梱されない（利用側で pre-commit 等を組む場合の別名例）
 ```
 
 **特徴**:

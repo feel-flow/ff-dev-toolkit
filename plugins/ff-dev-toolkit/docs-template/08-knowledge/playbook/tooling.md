@@ -396,7 +396,7 @@
 
 **Insight**: CLI をラップするスクリプトが「モデル slug」「ランタイムバージョン」のような**世代交代する値**の既定値を持つと、その値の SSOT がユーザーの CLI 設定とラッパーの 2 箇所に分裂し、ラッパー側が必ず古くなる。しかもラッパーがフラグを**無条件に渡す**実装だと、ユーザー設定を黙って上書きするうえ、同じ設定ファイル内の関連項目（例: reasoning effort）は上書きされないため「古いモデル + 新しい付随設定」という誰も意図していない組み合わせで動く。正しい形は「env が設定されている時だけフラグを組み立て、未設定ならフラグ自体を渡さない」。これで最新追従は CLI 設定が担い、明示指定は env で効き、ラッパーのメンテはゼロになる。
 
-**Context**: `scripts/codex-review.sh` は `CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"` と既定値を持ち `codex exec -m "$CODEX_MODEL"` と常に渡していた。ユーザーの `~/.codex/config.toml` は `model = "gpt-5.6-sol"` / `model_reasoning_effort = "xhigh"` だったため、普段より 2 世代古いモデルに xhigh の reasoning だけが乗った状態でレビューが走っていた。過去に `gpt-5.3` → `gpt-5.4` の手動更新コミットが実在し、腐敗が反復していたことが確認できた。同ディレクトリの `gemini-review.sh` は既に条件付き配列パターンで正しく実装されており、5 本のラッパーのうち 3 本が委譲済み・2 本が固定という不統一だった。
+**Context**: 当時の**利用側**単体ラッパー `scripts/codex-review.sh`（プラグイン同梱物ではない。現行の同梱経路は `multi-review.sh` / `adapters/codex-cli-adapter.sh`）は `CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"` と既定値を持ち `codex exec -m "$CODEX_MODEL"` と常に渡していた。ユーザーの `~/.codex/config.toml` は `model = "gpt-5.6-sol"` / `model_reasoning_effort = "xhigh"` だったため、普段より 2 世代古いモデルに xhigh の reasoning だけが乗った状態でレビューが走っていた。過去に `gpt-5.3` → `gpt-5.4` の手動更新コミットが実在し、腐敗が反復していたことが確認できた。同ディレクトリの `gemini-review.sh`（同様に利用側）は既に条件付き配列パターンで正しく実装されており、5 本のラッパーのうち 3 本が委譲済み・2 本が固定という不統一だった。
 
 **Action**:
 

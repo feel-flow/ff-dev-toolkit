@@ -323,7 +323,7 @@ else
     end="${rest%%|*}"; needle="${rest#*|}"
     slice="$(section_slice "$start" "$end")"
     if [[ -z "$slice" ]]; then
-      echo "  ✗ $label — 節が抽出できない（見出しが変わった可能性: $start）"
+      echo "  ✗ $label — 節が抽出できない（見出しが変わった可能性: ${start}）"
       fail=1
       continue
     fi
@@ -437,7 +437,7 @@ else
     expected="$dir/expected.md"
     expected_verdict="$(expected_verdict_for_case "$name")"
     if [[ -z "$expected_verdict" ]]; then
-      echo "  ✗ 未登録ケース: $name（expected_verdict_for_case へ期待値を追加してください）"
+      echo "  ✗ 未登録ケース: ${name}（expected_verdict_for_case へ期待値を追加してください）"
       fail=1
     fi
 

@@ -49,6 +49,7 @@ fail-silent に反転するため、ランナーを集約実行へ変えまし�
 | case 8 | （引数なし・入れ子） | 入れ子での引数なし実行を非 0 で拒否し、suite を 1 つも実行しない |
 | case 9 | （疑似 suite なし） | `merge-cleanup/verify.sh` が行頭 `○ skip` マーカーを今も出力する（契約の両端の drift 検出） |
 | case 10 | （全 `tests/**/*.sh` の静的監査） | 非コメント行のパイプ入力に `grep -q*` が再混入していないこと |
+| case 11 | （tracked shell の静的監査 + `tests/lib/mbcs-guard.sh`） | `$VAR` 直後マルチバイト展開の再混入が無いこと。検出器 self-test 付き。fail-closed 経路の自動回帰は別 suite `mbcs-guard-failclosed`（Issue #312）。SKILL.md bash ブロック側の MBCS は `skill-bash-blocks`（Issue #311） |
 
 case 5 が独立して必要なのは、case 1 が not-run と同時に fail も渡しているためです。終了コード判定から
 `|| ${#NOT_RUN[@]} -gt 0` を落としても `FAILED` 経路で非 0 が保たれてしまい、その削除を検出できません

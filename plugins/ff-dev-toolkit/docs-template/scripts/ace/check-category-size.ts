@@ -1,9 +1,15 @@
 /**
  * ACE Playbook の健全性チェック（Issue #367, #444, #15）。
- * - Category ごとのエントリ件数を数え、閾値超過で終了コード 1 を返す（ゲート）。
- * - Playbook / カテゴリファイルの総行数を報告し、閾値（ACE_MAX_PLAYBOOK_LINES、既定 800）超過時は
- *   警告のみ出力する（終了コードは変えない）。分割レイアウトでは索引 PLAYBOOK.md は
- *   監視対象外（索引・Changelog はエントリ増加で伸びるため。Issue #212）。
+ * - Category ごとのエントリ件数を数え、閾値超過で終了コード 1 を返す（ゲート）。件数が主指標。
+ * - Playbook / カテゴリファイルの総行数を報告し、上限超過時は警告のみ出力する
+ *   （終了コードは変えない）。上限は既定で**件数から導出**する（Issue #285 / ADR-019）:
+ *     上限 = ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1) + 例外件数 × ACE_MAX_ENTRY_LINES
+ *   固定行数を上限にすると「1 エントリ 13 行 × 件数」と構造的に噛み合わず、件数ゲート
+ *   （130 件 ≒ 1700 行）より 2 倍以上早く発火して警告が恒常化する。導出上限なら警告は
+ *   「1 エントリが太い」＝行数バジェット違反のときだけ出る。`ACE_MAX_PLAYBOOK_LINES` を
+ *   明示指定したときのみ従来どおり固定上限として扱う（エスケープハッチ・後方互換）。
+ *   分割レイアウトでは索引 PLAYBOOK.md は監視対象外（索引・Changelog はエントリ増加で
+ *   伸びるため。Issue #212 / ADR-016）。
  * - PLAYBOOK.md と同階層に `playbook/*.md`（カテゴリ別分割ファイル）がある場合は
  *   自動検出し、集計・行数チェックの対象に含める（分割レイアウト）。
  * - `playbook/archive/` 配下（/ace-refine が退避した原文）は集計対象に**含めない**。
@@ -19,7 +25,16 @@ const EXIT_THRESHOLD_EXCEEDED = 1;
 const EXIT_USAGE_ERROR = 2;
 
 const DEFAULT_MAX_ENTRIES_PER_CATEGORY = 130;
+/**
+ * `ACE_MAX_PLAYBOOK_LINES` を明示指定したが値が無効だったときのフォールバック。
+ * 未設定のときは固定上限を使わず件数から導出する（deriveMaxLines / ADR-019）ため、
+ * この定数は「明示指定の入力が壊れていた」場合の後方互換値としてのみ使う。
+ */
 const DEFAULT_MAX_PLAYBOOK_LINES = 800;
+/** 1 エントリの行数バジェット（anchor 行〜終端 `---`）。ace-refine-report.ts と同名・同既定。 */
+const DEFAULT_MAX_ENTRY_LINES = 15;
+/** 行数バジェット例外の宣言マーカー（PLAYBOOK.md §運用ルール）。 */
+const BUDGET_EXCEPTION_MARKER = "ace-line-budget-exception";
 /**
  * PLAYBOOK の ID 規則。旧 3 桁形式（ACE-001）と新 PRスコープ式（ACE-438-1 / ACE-i425-1）の両方に対応する。
  * 実 ID は必ず数字始まり（旧 3 桁・PR 番号）か `i` ＋数字（Issue 由来）で始まるため、
@@ -71,8 +86,65 @@ export function isOverLineThreshold(lineCount: number, max: number): boolean {
   return lineCount > max;
 }
 
-function stripHtmlBlockComments(source: string): string {
-  return source.replace(/<!--[\s\S]*?-->/gu, "");
+/**
+ * 最初の ACE エントリ見出しより前の行数（= ヘッダ部）を数える。
+ * エントリ見出しが 1 件も無いファイルは全体がヘッダなので総行数を返す。
+ * HTML コメントは行数を保ったまま空白化してから探すため、コメント内の追記例が
+ * ヘッダ境界として誤検出されることはない。
+ */
+export function countHeaderLines(content: string): number {
+  const blanked = blankHtmlBlockComments(content);
+  const match = blanked.match(ACE_ENTRY_HEADER_PATTERN);
+  if (match?.index === undefined) {
+    return countPlaybookLines(content);
+  }
+  return countPlaybookLines(blanked.slice(0, match.index));
+}
+
+/**
+ * 行数バジェット例外マーカー（`<!-- ace-line-budget-exception: 理由 -->`）の出現数。
+ * PLAYBOOK.md §運用ルールが例外に許す上限は通常バジェットの 2 倍なので、
+ * 導出上限はマーカー 1 件につきバジェット 1 本分の余裕を足す必要がある。
+ */
+export function countBudgetExceptions(content: string): number {
+  const matches = content.match(new RegExp(BUDGET_EXCEPTION_MARKER, "gu"));
+  return matches ? matches.length : 0;
+}
+
+/**
+ * エントリ密度から行数上限を導出する（Issue #285 / ADR-019）。
+ *
+ *   上限 = ヘッダ行数 + 件数 × (エントリ行数バジェット + 1) + 例外件数 × バジェット
+ *
+ * 固定行数を上限にすると「1 エントリ 13 行 × 件数」と構造的に噛み合わず、
+ * 件数ゲート（既定 130 件 ≒ 1700 行）より 2 倍以上早く発火して警告が恒常化する。
+ * 件数から導出すれば、警告が出るのは「1 エントリが太い」＝バジェット違反のときだけになり、
+ * curate で 1 件増えても上限が同じ分だけ伸びるため refine 直後の余裕が構造的に残る。
+ * `+ 1` はエントリブロック間の空行 1 行。
+ */
+export function deriveMaxLines(input: {
+  readonly headerLines: number;
+  readonly entryCount: number;
+  readonly exceptionCount: number;
+  readonly maxEntryLines: number;
+}): number {
+  return (
+    input.headerLines +
+    input.entryCount * (input.maxEntryLines + 1) +
+    input.exceptionCount * input.maxEntryLines
+  );
+}
+
+/**
+ * HTML ブロックコメントを「同じ行数の空白」へ置換する（除去しない）。
+ * コメント内の追記例（`### ACE-001` など）を走査対象から外す目的は除去と同じだが、
+ * 行数と行オフセットが保存されるため countHeaderLines が総行数と同じ基準で測れる。
+ * 除去にするとヘッダを過小に測り、導出上限が不当に厳しくなる。
+ */
+function blankHtmlBlockComments(source: string): string {
+  return source.replace(/<!--[\s\S]*?-->/gu, (matched: string) =>
+    matched.replace(/[^\n]/gu, " "),
+  );
 }
 
 /**
@@ -85,7 +157,7 @@ export function analyzePlaybookMarkdown(
   content: string,
   options: { readonly allowEmpty?: boolean } = {},
 ): AnalyzeResult {
-  const cleaned = stripHtmlBlockComments(content);
+  const cleaned = blankHtmlBlockComments(content);
   const segments = cleaned.split(ACE_ENTRY_HEADER_PATTERN).slice(1);
   if (segments.length === 0) {
     if (options.allowEmpty === true) {
@@ -181,11 +253,28 @@ function parseMaxPerCategory(): number {
   );
 }
 
-function parseMaxPlaybookLines(): number {
+/**
+ * `ACE_MAX_PLAYBOOK_LINES` を**明示指定したときだけ**固定上限として返す。
+ * 未設定なら undefined を返し、呼び出し側は件数から上限を導出する（ADR-019）。
+ * 無効値のときは既定 800 へフォールバックする従来挙動を保つ（エスケープハッチの後方互換）。
+ */
+function parseExplicitMaxPlaybookLines(): number | undefined {
+  const rawValue = process.env.ACE_MAX_PLAYBOOK_LINES;
+  if (rawValue === undefined || rawValue.trim() === "") {
+    return undefined;
+  }
   return parsePositiveIntEnv(
-    process.env.ACE_MAX_PLAYBOOK_LINES,
+    rawValue,
     DEFAULT_MAX_PLAYBOOK_LINES,
     "ACE_MAX_PLAYBOOK_LINES",
+  );
+}
+
+function parseMaxEntryLines(): number {
+  return parsePositiveIntEnv(
+    process.env.ACE_MAX_ENTRY_LINES,
+    DEFAULT_MAX_ENTRY_LINES,
+    "ACE_MAX_ENTRY_LINES",
   );
 }
 
@@ -237,7 +326,12 @@ export function main(): number {
   const filesToAnalyze = [playbookPath, ...subfiles];
 
   const analyses: AnalyzeSuccess[] = [];
-  const lineReports: { file: string; lineCount: number }[] = [];
+  const lineReports: {
+    file: string;
+    lineCount: number;
+    headerLines: number;
+    exceptionCount: number;
+  }[] = [];
 
   for (const filePath of filesToAnalyze) {
     const content = readFileOrExit(filePath);
@@ -254,7 +348,12 @@ export function main(): number {
       return EXIT_USAGE_ERROR;
     }
     analyses.push(analyzed);
-    lineReports.push({ file: filePath, lineCount: countPlaybookLines(content) });
+    lineReports.push({
+      file: filePath,
+      lineCount: countPlaybookLines(content),
+      headerLines: countHeaderLines(content),
+      exceptionCount: countBudgetExceptions(content),
+    });
   }
 
   const merged = mergeAnalyses(analyses);
@@ -272,7 +371,8 @@ export function main(): number {
     }
   }
 
-  const maxLines = parseMaxPlaybookLines();
+  const explicitMaxLines = parseExplicitMaxPlaybookLines();
+  const maxEntryLines = parseMaxEntryLines();
 
   console.log(`Playbook: ${playbookPath}`);
   if (subfiles.length > 0) {
@@ -285,7 +385,7 @@ export function main(): number {
   // Issue #212 / ADR-016 / PR #230 レビュー。
   const indexBase = path.basename(playbookPath);
   for (let i = 0; i < lineReports.length; i++) {
-    const { file, lineCount } = lineReports[i];
+    const { file, lineCount, headerLines, exceptionCount } = lineReports[i];
     const analyzed = analyses[i];
     const isIndexInSplitLayout =
       multiFile &&
@@ -299,11 +399,48 @@ export function main(): number {
       );
       continue;
     }
-    console.log(`総行数: ${String(lineCount)} (閾値 ${String(maxLines)})${suffix}`);
-    if (isOverLineThreshold(lineCount, maxLines)) {
-      const target = multiFile ? `${file} ` : "";
+    const target = multiFile ? `${file} ` : "";
+    if (explicitMaxLines !== undefined) {
+      // 明示指定は固定上限として尊重する（エスケープハッチ・後方互換）。
+      console.log(`総行数: ${String(lineCount)} (閾値 ${String(explicitMaxLines)})${suffix}`);
+      if (isOverLineThreshold(lineCount, explicitMaxLines)) {
+        console.error(
+          `⚠ ${target}行数が閾値を超過しています（${String(lineCount)} > ${String(explicitMaxLines)}）。/ace-refine で stale アーカイブ・圧縮・統合を実行してください（候補は scripts/ace/ace-refine-report.ts の dry-run レポートで確認）。分割で凌ぐ場合は workflow-principles.md のスコープ外発見ルールで YAGNI / 既存 Issue への統合 / 関連 Issue 作成を判定してください。`,
+        );
+      }
+      continue;
+    }
+    // 未設定時は件数から上限を導出し、行数を「1 エントリの密度」の指標として使う（ADR-019）。
+    // エントリ 0 件のカテゴリファイル（PLAYBOOK.md §新規カテゴリファイルのテンプレートで
+    // 作った直後）は測る密度が存在しない。導出上限はヘッダ行数と一致して境界で緑になるが、
+    // その偶然に依存せず対象外であることを明示する（off-by-one で偽赤にしない）。
+    if (analyzed.totalEntries === 0) {
+      console.log(
+        `総行数: ${String(lineCount)} (エントリ 0 件・密度の監視対象外)${suffix}`,
+      );
+      continue;
+    }
+    const derivedMax = deriveMaxLines({
+      headerLines,
+      entryCount: analyzed.totalEntries,
+      exceptionCount,
+      maxEntryLines,
+    });
+    const breakdown =
+      `ヘッダ ${String(headerLines)} + ${String(analyzed.totalEntries)} 件 × ${String(maxEntryLines + 1)}` +
+      (exceptionCount > 0
+        ? ` + 例外 ${String(exceptionCount)} × ${String(maxEntryLines)}`
+        : "");
+    console.log(
+      `総行数: ${String(lineCount)} (導出上限 ${String(derivedMax)} = ${breakdown})${suffix}`,
+    );
+    if (isOverLineThreshold(lineCount, derivedMax)) {
+      const perEntry =
+        analyzed.totalEntries > 0
+          ? ((lineCount - headerLines) / analyzed.totalEntries).toFixed(1)
+          : "-";
       console.error(
-        `⚠ ${target}行数が閾値を超過しています（${String(lineCount)} > ${String(maxLines)}）。/ace-refine で stale アーカイブ・圧縮・統合を実行してください（候補は scripts/ace/ace-refine-report.ts の dry-run レポートで確認）。分割で凌ぐ場合は workflow-principles.md のスコープ外発見ルールで YAGNI / 既存 Issue への統合 / 関連 Issue 作成を判定してください。`,
+        `⚠ ${target}エントリ密度が行数バジェットを超過しています（${String(lineCount)} 行 > 導出上限 ${String(derivedMax)} 行 = ${breakdown}）。実測 ${perEntry} 行/件（バジェット ${String(maxEntryLines)} 行 + ブロック間の空行 1 行）。ファイル全体が大きいことではなく 1 エントリが太いことが原因なので、/ace-refine の圧縮・正準化で密度を下げてください（旧テーブル形式のエントリが残っていると 16〜19 行/件になります）。候補は scripts/ace/ace-refine-report.ts の dry-run レポートで確認できます。`,
       );
     }
   }

@@ -3,11 +3,12 @@
 # `gh` の stub（Issue #292 の behavioral 検査用）。実ネットワーク・実 API を叩かず、
 # `gh label list` の応答パターンを GH_STUB_MODE で切り替える。
 #
-#   normal    … 4 件のラベルを返す（既定）
-#   fail      … 非 0 終了（照会そのものの失敗）
-#   empty     … 終了コード 0 で空出力（0 件のリポジトリと区別できない経路）
-#   truncated … 取得上限ちょうどの件数を返す（打ち切りの疑いがある経路）
-#   emptyurl  … issue create が終了コード 0 で URL を返さない
+#   normal     … 5 件のラベルを返す（既定。follow-up を含む）
+#   fail       … 非 0 終了（照会そのものの失敗）
+#   empty      … 終了コード 0 で空出力（0 件のリポジトリと区別できない経路）
+#   truncated  … 取得上限ちょうどの件数を返す（打ち切りの疑いがある経路）
+#   emptyurl   … issue create が終了コード 0 で URL を返さない
+#   createfail … issue create が非 0 で終了する（argv 出力後に失敗）
 #
 # `gh issue ...` は渡された argv を stderr へ書き出すだけで、Issue は作らない。
 set -u
@@ -28,10 +29,11 @@ case "${1:-}" in
         i=1
         while [ "$i" -le "$limit" ]; do echo "stub-label-$i"; i=$((i + 1)); done
         exit 0 ;;
-      *) printf 'bug\nenhancement\ndocumentation\npriority:high\n'; exit 0 ;;
+      *) printf 'bug\nenhancement\ndocumentation\npriority:high\nfollow-up\n'; exit 0 ;;
     esac ;;
   issue)
     printf 'GH_ISSUE_ARGV: %s\n' "$*" >&2
+    [ "${GH_STUB_MODE:-normal}" = "createfail" ] && exit 1
     [ "${GH_STUB_MODE:-normal}" = "emptyurl" ] && exit 0
     echo "https://github.com/stub-owner/stub-repo/issues/1"
     exit 0 ;;

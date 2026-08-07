@@ -127,7 +127,7 @@ else
     fence="$(section_fence "$start" "$end")"
     echo "--- $label ---"
     if [[ -z "$fence" ]]; then
-      echo "  ✗ コードフェンスが抽出できない（節見出しが変わった可能性: $start）"
+      echo "  ✗ コードフェンスが抽出できない（節見出しが変わった可能性: ${start}）"
       fail=1
       continue
     fi

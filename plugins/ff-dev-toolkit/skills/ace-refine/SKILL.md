@@ -16,7 +16,7 @@ description: ACE Playbook を定期整理する（stale エントリのアーカ
 - `docs/08-knowledge/PLAYBOOK.md` が存在すること（`/ace-setup` で作成済み）
 - 現在のブランチがデフォルト統合ブランチ（`develop` / `main` 等。以下 `<default-branch>`）であること
 - ワークツリーがクリーンであること（`git status --short` が空）
-- **実行タイミング**: 月次メンテナンス、`check-category-size` の 130 件ゲートがブロックしたとき、または行数警告が出たとき
+- **実行タイミング**: 月次メンテナンス、`check-category-size` の 130 件ゲートがブロックしたとき、またはエントリ密度の警告（行数が導出上限を超過）が出たとき
 
 ## 引数
 
@@ -27,7 +27,7 @@ description: ACE Playbook を定期整理する（stale エントリのアーカ
 | 環境変数 | 既定 | 意味 |
 | --- | --- | --- |
 | `ACE_REUSE_STALE_DAYS` | 90 | この日数以上 git 参照がない active エントリを stale とみなす |
-| `ACE_MAX_ENTRY_LINES` | 15 | 1 エントリの行数バジェット（anchor 行〜終端 `---`）。例外宣言付きは 2 倍（30） |
+| `ACE_MAX_ENTRY_LINES` | 15 | 1 エントリの行数バジェット（anchor 行〜終端 `---`）。例外宣言付きは 2 倍（30）。`check-category-size` のファイル行数上限もこの値から導出される（`ヘッダ行数 + 件数 × (本値 + 1)` — ADR-019） |
 | `ACE_PROMOTE_HELPFUL_MIN` | 5 | この Helpful 以上で PATTERNS.md への昇格候補 |
 | `ACE_PATTERNS_PATH` | `docs/03-implementation/PATTERNS.md` | 昇格先（レイアウトが異なる場合のみ上書き） |
 
@@ -72,9 +72,13 @@ dry-run レポート全文と近似重複の抽出結果を、操作種別ごと
    > **Parent**: [PLAYBOOK.md](../../PLAYBOOK.md) — アーカイブ済みエントリの保管場所。
    > `playbook/archive/` 配下は `ace_entry_count`・カテゴリ件数ゲート・reuse 集計の対象外。
    > 参照リンクが切れていた場合はこのディレクトリを ID で grep して探す。
+   >
+   > **保全本文内の相対リンクは live 基準**: 各エントリ本文は原文を verbatim 保全しているため、本文中の `./<category>.md#ace-xxx` は `playbook/` 直下を指す live 側のリンクである。このディレクトリから辿ると (a) ファイルが存在しない、(b) anchor が無い、(c) **live ではなくアーカイブ済みの複製に着地する**（リンクチェッカーには映らない）のいずれかになる。本文内リンクを辿るときは `../<category>.md#ace-xxx` に読み替えるか、[PLAYBOOK.md の索引テーブル](../../PLAYBOOK.md#エントリ一覧) から live を引くこと。
 
    ---
    ```
+
+   **保全本文内の相対リンクは書き換えない**（verbatim 保全が優先）。原文が live 側で持っていた `./<category>.md#ace-xxx` は、archive へ運ばれた時点で基準がずれるが、**書き換えれば verbatim 保全という契約そのものが壊れる**。したがって唯一 actionable な対応は上記の冒頭注記であり、注記は**必須**（`./` リンクを 1 件でも含むファイルでは省略できない）。この注記の存在は機械ゲートで強制される（下記 step 6 / R3-e）。着地先が archived copy になるケースを列挙する検査は採用しない — 検出できても verbatim 保全の下では直せないため、レポートが増えるだけになる。
 
 2. 対象エントリのブロック全体（anchor 行〜終端 `---`）を **verbatim で**アーカイブファイル末尾へコピーし、エントリ見出しの直後に理由ヘッダを挿入する:
 
@@ -84,15 +88,25 @@ dry-run レポート全文と近似重複の抽出結果を、操作種別ごと
 
 3. **アーカイブ書き込みの検証（必須）**: `grep -q "### <ID>:" docs/08-knowledge/playbook/archive/<category>.md` で当該 ID の存在を確認してから live 側を削除する。grep が失敗したら live 側に触れず中断する（この検証を挟まないと、書き込み失敗時に R3-e の全ゲートが green のままエントリが消失する — count は live 実数へ「修正」され、archive はゲート対象外のため）。
 4. live 側（`playbook/<category>.md`）から当該ブロックを削除し、`PLAYBOOK.md` の索引テーブルから当該行を削除する。
-5. `docs/` 配下をアーカイブした ID で grep し、`playbook/<category>.md#ace-x` 形式のリンクを `playbook/archive/<category>.md#ace-x` へ書き換える（アーカイブ先でも anchor は保持されるため着地は保たれる）。
+5. `docs/` 配下をアーカイブした ID で grep し、`playbook/<category>.md#ace-x` 形式のリンクを `playbook/archive/<category>.md#ace-x` へ書き換える（アーカイブ先でも anchor は保持されるため着地は保たれる）。**書き換え対象は「archive されたエントリを指すリンク」だけで、「archive された本文の中にあるリンク」は step 1 のとおり触らない。**
+6. 既存のアーカイブファイルへ追記した場合、そのファイル冒頭に step 1 の「保全本文内の相対リンクは live 基準」注記があるか確認し、無ければ追加する（注記の導入前に作られたファイルが該当する）。
 
 #### R3-b. 長大エントリの圧縮
 
-1. **先に**原文ブロック全体をアーカイブファイル末尾へ verbatim でコピーし、見出し直後に理由ヘッダを挿入する:
+1. **先に**原文ブロック全体をアーカイブファイル末尾へ verbatim でコピーし、見出し直後に理由ヘッダを挿入する。圧縮操作には 2 種類あり、**実際に行った操作に対応する変種を使う**（規定文を選ぶ判定条件は「live 側の本文文字列が原文と逐語同一かどうか」。1 文字でも変えたら (a)、メタ表の再整形だけで本文を触っていないなら (b)）:
 
    ```markdown
    > Compacted: YYYY-MM-DD（live 側を要約済み。本文の原文は本エントリが正）
    ```
+
+   ```markdown
+   > Compacted: YYYY-MM-DD（live 側はメタ表のみ正準フォーマットへ再整形。本文は逐語同一で無改変。本エントリが原文）
+   ```
+
+   - **(a) 第 1 変種**（`live 側を要約済み`）: 本文を意味保存要約した場合。
+   - **(b) 第 2 変種**（`メタ表のみ正準フォーマットへ再整形`）: 旧テーブル形式のメタ表 8 行を正準 4 行へ再整形しただけで、本文は逐語同一の場合。**このとき第 1 変種を使うと「要約済み」が虚偽になる**（archive は監査記録なので、実際にしていない操作を記録してはいけない）。
+   - **接頭辞 `Compacted:` は両変種で共通**にする。archive を `Compacted:` で grep する運用が既にあるため、再整形専用の別接頭辞（`Reformatted:` 等）を作ると圧縮履歴が 2 系統に分裂して追跡できなくなる。
+   - 本文の一部を要約し、かつメタ表も再整形した場合は (a) を使う（要約が含まれる以上「要約済み」は真）。
 
 2. **アーカイブ書き込みの検証（必須）**: `grep -q "### <ID>:"` でアーカイブ先に当該 ID が存在することを確認してから live 側を書き換える。
 3. live 側を PLAYBOOK.md §エントリテンプレートのコンパクト正準フォーマットへ**意味保存で要約**する:
@@ -104,11 +118,15 @@ dry-run レポート全文と近似重複の抽出結果を、操作種別ごと
 
 1. 残す側 = 総参照数（git 参照 + 相互参照）の多い方。同数なら **古い ID** を残す。
 2. 残す側の `Helpful` / `Harmful` に、統合される側のカウンター値を**合算**する。
-3. 統合される側はアーカイブファイルへ verbatim でコピーし、見出し直後にポインタを挿入する:
+3. 統合される側はアーカイブファイルへ verbatim でコピーし、見出し直後にポインタを挿入する。**あわせて archive 側のコピーの `Status` を `merged` に変える**:
 
    ```markdown
    > Merged into: [ACE-YYY](../<category>.md#ace-yyy)（YYYY-MM-DD /ace-refine）
    ```
+
+   - `Status: active` のまま残すと、archive を ID で grep した人には「有効なエントリ」に見える。`> Merged into:` ポインタは人間読者には効くが、**機械的には active と区別できない**。
+   - `Status` 変更は `/ace-curate` でも許可されている操作なので、削除禁止・カウンター不変の契約とは衝突しない（変えるのは archive 側のコピーだけで、統合先 = 残す側の Status は触らない）。
+   - これは verbatim 保全の唯一の例外である。`Status` 行 1 行のみを `active` → `merged` に変え、本文・ID・anchor・Origin・Date・カウンターは一切変えない（統合された事実は保全すべき原文の一部ではなく、保全後に付与されるメタ情報である）。
 
 4. **アーカイブ書き込みの検証（必須）**: `grep -q "### <ID>:"` でアーカイブ先に統合される側の ID が存在することを確認してから、live 側から当該ブロックを削除する。
 5. `docs/` 配下の統合された側 ID へのリンクを、残す側のエントリへ書き換える。索引テーブルから統合された側の行を削除する。
@@ -154,7 +172,13 @@ dry-run レポート全文と近似重複の抽出結果を、操作種別ごと
    # npm script が無い場合:
    # npx --yes tsx path/to/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
    npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md
+   # archive の保全本文内リンクが冒頭注記で担保されているか（Issue #288 穴 2）
+   npx --yes tsx scripts/ace/check-archive-links.ts docs/08-knowledge/PLAYBOOK.md
+   # 新規追記が旧テーブル形式でないことの機械検証（Issue #286）
+   npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
    ```
+
+6. **正準化した ID を allowlist から削除する**: R3-b の圧縮で旧テーブル形式をコンパクト正準へ再整形した場合、および R3-a/R3-c で live から消した場合、その ID を `docs/08-knowledge/legacy-format-allowlist.txt` から削除する（削除しないと `check-entry-format` が「正準化済みなのに allowlist に残っている」と警告する。警告のみでブロックはしないので、refine 自体は止まらない）。
 
 ### コミット
 
@@ -196,6 +220,9 @@ gh pr create --base <default-branch> --title "knowledge: ace-refine <YYYY-MM-DD>
 - **dry-run レポートの提示とユーザー承認より前に、いかなるファイルも書き換えない**
 - **原文はアーカイブへ verbatim で保全する。保全なしの削除・要約は禁止**（アーカイブファイルへの writeが確認できるまで live 側を消さない）
 - **エントリ ID と anchor は live・アーカイブの双方で改名しない**（外部参照・blob URL の互換維持）
+- **provenance 注記は実際に行った操作に対応する変種を使う**（本文を要約していないのに「要約済み」と書かない。archive は監査記録である）
+- **保全本文内の `./` 相対リンクは書き換えない。代わりに archive ファイル冒頭の「保全本文内の相対リンクは live 基準」注記を必須とする**（`check-archive-links.ts` が強制する）
+- **統合される側は archive 側のコピーの `Status` を `merged` に変える**（`active` のまま残すと grep した人に有効なエントリとして誤読される）
 - **カウンターは統合時の合算以外変更しない（減算・リセット禁止）**
 - **既存エントリ本文の書き換えは本スキル実行中のみ許可（/ace-curate は append-only のまま）**
 - **コミット件名と PR タイトルは `knowledge:` で始める**

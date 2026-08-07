@@ -152,7 +152,7 @@ for file in "${SKILL_FILES[@]}"; do
   grep_status=$?
   set -e
   if [ "$grep_status" -ge 2 ]; then
-    bad "$name — frontmatter の検査自体が失敗しました（grep exit $grep_status）"
+    bad "$name — frontmatter の検査自体が失敗しました（grep exit ${grep_status}）"
     continue
   fi
 

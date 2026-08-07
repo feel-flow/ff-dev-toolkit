@@ -39,7 +39,8 @@ G1 仕様ゲート（SKILL.md Step 3）で使う。**「この変更はどの文
 | MEDIUM | フィールド追加・オプション追加・API パラメータ追加 | 関連文書（DOMAIN/TESTING 等)の確認リストを作ってから先へ |
 | HIGH | データモデル変更・破壊的変更・ビジネスルールの根本変更 | **一旦停止**。関係者確認・ADR 作成・移行計画の要否を判定してから先へ |
 
-- バージョン更新の目安: LOW=patch / MEDIUM=minor / HIGH=major（frontmatter の version と changeImpact を更新）
+- バージョン更新の目安: 影響度 LOW → patch / MEDIUM → minor / HIGH → major（frontmatter の `version` と `changeImpact` を更新）
+- frontmatter の `changeImpact` へ書く値は**小文字**の `low` / `medium` / `high` のみ（`MEDIUM` 等の大文字は `/validate-docs` と frontmatter 検査ゲートで拒否される）。上表の LOW / MEDIUM / HIGH は影響度の概念名であり、frontmatter の値そのものではない
 - 変更したら文書の frontmatter（updated・version・changeImpact）を更新する
 
 ## 生きた仕様の4条件（G1 の前提）

@@ -1,6 +1,6 @@
 ---
 title: "PLAYBOOK"
-version: "1.64.0"
+version: "1.67.0"
 status: "approved"
 created: "2026-03-10"
 updated: "2026-08-07"
@@ -33,7 +33,7 @@ GitHub Discussions が「人間が読むためのナラティブ（物語的記�
 | **行数バジェット**                 | 1 エントリ 15 行以内（anchor 行〜終端 `---`）。反直感的な詳細が必要な場合のみ `<!-- ace-line-budget-exception: 理由 -->` を添えて 30 行以内 |
 | **カウンターはインクリメントのみ** | Helpful/Harmful は +1 のみ。減算・リセットはしない（`/ace-refine` の重複統合時の合算は例外）                                   |
 | **削除禁止**                       | エントリを物理的に削除しない。不要な場合は `Status: deprecated` に変更、または `/ace-refine` で `playbook/archive/` へ原文保全のうえ移動 |
-| **800行超過時は refine → 必要なら分割** | カテゴリファイル（`playbook/*.md`）が 800 行を超えたら先に `/ace-refine`。それでも再超過が常態化したら分割を検討。分割レイアウトの索引 `PLAYBOOK.md` は行数閾値の監視対象外 |
+| **密度超過時は正準化 → refine → 必要なら分割** | 行数上限は**件数から導出**する（`ヘッダ行数 + 件数 × 16`。16 = 行数バジェット 15 + ブロック間の空行 1）。超過は「ファイルが大きい」ではなく「**1 エントリが太い**」の意味なので、第一対応は旧テーブル形式の正準化、次に `/ace-refine`。それでも再超過が常態化したら分割を検討。総量の主指標は件数ゲート（130 件・exit 1）。分割レイアウトの索引 `PLAYBOOK.md` は行数監視対象外 |
 | **定期 Refine**                    | 月次または件数・行数ゲート発火時に `/ace-refine` で stale アーカイブ・圧縮・統合・昇格を実行（dry-run → 承認 → 適用）          |
 | **アーカイブの扱い**               | `playbook/archive/` 配下は `ace_entry_count`・カテゴリ件数ゲート・reuse 集計の対象外。参照リンクが切れていたら archive を ID で grep して探す |
 | **Frontmatter更新**                | エントリ追加時に `version`, `updated`, `changeImpact`（minor 上げ = `medium`）, `ace_entry_count` を更新（`ace_entry_count` は live エントリ数 = archive を数えない） |
@@ -75,6 +75,9 @@ ACE エントリ ID は **PRスコープ式** を採用する（このセクシ�
 | ------------ | -------------------------------------- | ------------------------------------------------------- |
 | `active`     | 有効な知見                             | 新規作成時のデフォルト                                  |
 | `deprecated` | 非推奨（古い情報、矛盾が発見された等） | Harmful >= 3 かつ Helpful < Harmful、または明示的な判断 |
+| `merged`     | 別エントリへ統合され live から消えた（`playbook/archive/` 側のコピーにのみ現れる） | `/ace-refine` の近似重複統合で「統合される側」になったとき（R3-c）。直上の `> Merged into:` ポインタと対になる |
+
+`merged` は archive 専用のステータスである。`> Merged into:` ポインタは人間読者には効くが機械的には `active` と区別できないため、archive を ID で grep した人に「有効なエントリ」として誤読されるのを防ぐ。`Status` 変更は削除禁止・カウンター不変の契約と衝突しない（`/ace-curate` でも許可されている操作）。
 
 ---
 
@@ -101,6 +104,7 @@ ACE エントリ ID は **PRスコープ式** を採用する（このセクシ�
 - **GitHub 上でテーブル描画されない**: ヘッダ行・区切り行を持たないため、パイプ行はプレーンテキストとして表示される。Playbook は AI が参照するための構造化文書であり、これは意図した仕様（markdownlint / Prettier が警告する場合は当該ブロックに `<!-- prettier-ignore -->` を付与する局所抑制で対応 — ACE-011 の適用）
 - **行数バジェット**: 1 エントリ 15 行以内（anchor 行〜終端 `---`）。反直感的な詳細が必要な場合のみ `<!-- ace-line-budget-exception: 理由 -->` を 1 行添えて 30 行以内
 - **旧形式との共存**: 旧テーブル形式（`| フィールド | 値 |` ヘッダ + **Insight**/**Context**/**Action** ブロック）のエントリは読み取り互換として共存させる（改稿は `/ace-refine` の圧縮操作のみが行う）。新規追記には使わない
+- **形式は機械ゲートで強制される**: `scripts/ace/check-entry-format.ts` が `playbook/*.md` 直下を走査し、PLAYBOOK.md と同階層の `legacy-format-allowlist.txt` に無い旧形式エントリを見つけると exit 1 でブロックする（allowlist ファイルが無ければ旧形式は全て赤 = strict）。**新規追記のために allowlist へ ID を足さない**（allowlist は既存エントリの互換維持のためのものであり、新規追記の抜け道ではない）。`/ace-refine` で正準化したら当該 ID を allowlist から削除する。`playbook/archive/` は原文を verbatim 保全する場所なので走査対象外
 
 ### 記述ガイドライン
 
@@ -136,7 +140,7 @@ ACE エントリ ID は **PRスコープ式** を採用する（このセクシ�
 
 ## ファイル分割ルール
 
-Playbook が 800 行を超えた場合、以下のように分割する：
+Playbook が導出上限（`ヘッダ行数 + 件数 × 16`）を超え、正準化・`/ace-refine` でも再超過が常態化する場合は、以下のように分割する：
 
 ```
 08-knowledge/
@@ -331,6 +335,28 @@ Playbook が 800 行を超えた場合、以下のように分割する：
 | ACE-79-3   | Markdown セクション抽出は次の同レベル見出しまでに区切る                                                                                                                     | testing               | [playbook/testing.md#ace-79-3](./playbook/testing.md#ace-79-3)                               |
 
 ## Changelog
+
+### [1.67.0] - 2026-08-07
+
+#### 変更（運用ルール）
+
+- エントリ形式に機械ゲート `scripts/ace/check-entry-format.ts` を新設。`playbook/*.md` 直下を走査し、PLAYBOOK.md と同階層の `legacy-format-allowlist.txt` に無い旧テーブル形式エントリで exit 1（allowlist 不在時は strict）
+- 「新規」と「既存の読み取り互換」の判定軸は allowlist ファイル。`Date` 閾値は著者の手書きフィールドで偶然満たせてしまうため採らない
+- `/ace-curate` の同期検証と `/ace-refine` の検証ゲートに配線。refine で正準化した ID は allowlist から削除する手順を追記
+
+### [1.66.0] - 2026-08-07
+
+#### 変更（運用ルール）
+
+- §ステータス定義に `merged` を追加。`/ace-refine` の統合で live から消えたエントリは archive 側のコピーで `Status: merged` に変える。`active` のまま残すと `> Merged into:` ポインタが人間読者にしか効かず、archive を ID で grep した人に「有効なエントリ」として誤読される
+
+### [1.65.0] - 2026-08-07
+
+#### 変更（運用ルール）
+
+- 行数上限を固定 800 行から**件数由来の導出値**へ変更（`ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1) + 例外宣言件数 × ACE_MAX_ENTRY_LINES`）。固定 800 行はコンパクト正準 13 行/件と噛み合わず 61 件で必ず発火し、件数ゲート（130 件 ≒ 1700 行）より 2 倍以上早く恒常警告になっていた
+- 行数警告の意味を「1 ファイルの絶対量」から「**1 エントリの密度**」へ移し、第一対応を旧テーブル形式の正準化と明記。総量の主指標は件数ゲート（130 件・exit 1）
+- `ACE_MAX_PLAYBOOK_LINES` は明示指定時のみ固定上限として尊重（エスケープハッチ・後方互換）
 
 ### [1.64.0] - 2026-08-07
 

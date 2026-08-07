@@ -75,14 +75,14 @@ urgent|FF6B00|緊急対応が必要'
 #    実在するラベルが「見つからない」と誤判定される。
 label_limit=200
 if ! available_labels="$(gh label list --repo "$repo" --limit "$label_limit" --json name --jq '.[].name')"; then
-  echo "✗ ラベル一覧を取得できませんでした（$repo）。実在を確認できないため作成しません" >&2
+  echo "✗ ラベル一覧を取得できませんでした（${repo}）。実在を確認できないため作成しません" >&2
   exit 1
 fi
 # 終了コード 0 でも一覧を信用できない 2 経路を「確認できなかった」へ倒す。
 #   空: ラベルが 1 つも無いリポジトリと、取得が機能しなかった場合を出力から区別できない
 #   上限到達: 打ち切られた可能性があり、その先にあるラベルの不在を主張できない
 if [ -z "$available_labels" ]; then
-  echo "✗ ラベル一覧が空でした（$repo）。取得が機能しなかった場合と区別できないため作成しません" >&2
+  echo "✗ ラベル一覧が空でした（${repo}）。取得が機能しなかった場合と区別できないため作成しません" >&2
   exit 1
 fi
 # 件数は先に確定し、数えられなかった場合も fail-closed に倒す。`if` の条件式に
@@ -91,11 +91,11 @@ fi
 label_count="$(printf '%s\n' "$available_labels" | wc -l | tr -d '[:space:]')" || label_count=""
 case "$label_count" in
   ''|*[!0-9]*)
-    echo "✗ ラベル一覧の件数を確定できませんでした（$repo）。不在を確認できないため作成しません" >&2
+    echo "✗ ラベル一覧の件数を確定できませんでした（${repo}）。不在を確認できないため作成しません" >&2
     exit 1 ;;
 esac
 if [ "$label_count" -ge "$label_limit" ]; then
-  echo "✗ ラベル一覧が取得上限（$label_limit 件）に達しました（$repo）。不在を確認できないため作成しません" >&2
+  echo "✗ ラベル一覧が取得上限（${label_limit} 件）に達しました（${repo}）。不在を確認できないため作成しません" >&2
   exit 1
 fi
 

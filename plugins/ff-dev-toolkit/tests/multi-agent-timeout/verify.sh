@@ -943,6 +943,115 @@ fi
 # — 値だけ見る検査では「上限を無視する退行」も「延ばせない CLI に --timeout を
 # 倍にせよと案内する退行」も丸ごと素通りする。
 
+# ════════════════════════════════════════════════════════════════════════════
+# Part D: timeout-reason ライフサイクル + build_prompt 失敗の保全（Issue #266 / #267）
+# ════════════════════════════════════════════════════════════════════════════
+
+echo "== timeout-reason lifecycle / build_prompt fail-closed =="
+
+# --- D1: record_timeout_reason の書き込み失敗が警告を出す（#266） ---
+# 親ディレクトリが無いパスへ書いて失敗させる（TMPDIR 全体を壊す必要はない）。
+export FF_TIMEOUT_REASON_FILE="$TMP/no-such-parent/reason-marker"
+# サブシェルで source し、本 suite の EXIT trap を上書きしない。
+# stderr を stdout に合流させてから捕捉する（`) 2>&1` は $() の外側で、
+# 警告が親の stderr に漏れて捕捉ゼロになる）。
+# shellcheck disable=SC1090
+set +e
+WARN_OUT="$(
+  exec 2>&1
+  # shellcheck source=../../scripts/adapters/adapter-common.sh
+  source "$ADAPTER_COMMON"
+  record_timeout_reason empty-output
+  true
+)"
+set -e
+unset FF_TIMEOUT_REASON_FILE
+# パイプ + grep -q は case 10 の禁止形（SIGPIPE 反転）。シェル内マッチを使う。
+if [[ $'\n'"$WARN_OUT"$'\n' == *$'\n'"WARNING: could not record timeout reason"* ]] \
+  || [[ "$WARN_OUT" == *"WARNING: could not record timeout reason"* ]]; then
+  ok "timeout-reason: 書き込み失敗時に stderr へ WARNING が 1 行出る"
+else
+  bad "timeout-reason: 書き込み失敗が無警告のまま（#266）"
+  printf '%s\n' "$WARN_OUT" | sed 's/^/    | /' >&2
+fi
+
+# --- D2: 成功パスで reason ファイルが残留しない（#266 / EXIT trap） ---
+SUCCESS_REASON="$TMP/reason-on-success"
+rm -f "$SUCCESS_REASON"
+(
+  export FF_TIMEOUT_REASON_FILE="$SUCCESS_REASON"
+  # shellcheck source=../../scripts/adapters/adapter-common.sh
+  source "$ADAPTER_COMMON"
+  record_timeout_reason command
+  [[ -f "$SUCCESS_REASON" ]] || { echo "marker missing before exit" >&2; exit 2; }
+  # 正常終了 → EXIT trap が clear_timeout_reason する
+  exit 0
+)
+if [[ ! -f "$SUCCESS_REASON" ]]; then
+  ok "timeout-reason: 成功パス終了後に reason ファイルが残留しない"
+else
+  bad "timeout-reason: 成功パスで reason ファイルが残留している（#266）"
+fi
+
+# --- D3: build_prompt 失敗時に INCOMPLETE + orchestrator 起因（#267） ---
+# 5 アダプタすべてを欠落 perspective で直接起動する。CLI は stub で preflight を通す。
+ADAPTERS_DIR="$PLUGIN_ROOT/scripts/adapters"
+# bash 3.2 互換のため連想配列は使わない
+ADAPTER_KEYS="claude-code codex-cli copilot-cli gemini-cli grok-cli"
+build_prompt_ok=0
+build_prompt_fail=0
+for key in $ADAPTER_KEYS; do
+  case "$key" in
+    claude-code) stub_cmd=claude ;;
+    codex-cli)   stub_cmd=codex ;;
+    copilot-cli) stub_cmd=copilot ;;
+    gemini-cli)  stub_cmd=gemini ;;
+    grok-cli)    stub_cmd=grok ;;
+  esac
+  adapter_sh="$ADAPTERS_DIR/${key}-adapter.sh"
+  out_file="$TMP/build-prompt-${key}.md"
+  rm -f "$out_file"
+  # 欠落 perspective。build_prompt → load_perspective が return 1。
+  set +e
+  PATH="$STUB:$PATH" bash "$adapter_sh" \
+    "$TMP/no-such-perspective-file.md" "$out_file" \
+    --timeout 30 --base develop >"$TMP/bp-${key}.log" 2>&1
+  bp_rc=$?
+  set -e
+  if [[ "$bp_rc" -ne 0 ]] \
+    && [[ -f "$out_file" ]] \
+    && grep -q 'orchestrator' "$out_file" \
+    && grep -qE 'INCOMPLETE|Status: incomplete' "$out_file"; then
+    build_prompt_ok=$((build_prompt_ok + 1))
+  else
+    build_prompt_fail=$((build_prompt_fail + 1))
+    bad "build_prompt: ${key} が INCOMPLETE/orchestrator 成果物を残さない (rc=${bp_rc})"
+    sed 's/^/    | /' "$TMP/bp-${key}.log" | tail -20 >&2 || true
+    [[ -f "$out_file" ]] && sed 's/^/    | /' "$out_file" | head -20 >&2 || true
+  fi
+done
+if [[ "$build_prompt_fail" -eq 0 && "$build_prompt_ok" -eq 5 ]]; then
+  ok "build_prompt: 5 アダプタすべてが欠落 perspective で INCOMPLETE + orchestrator を残す"
+fi
+
+# 静的: 5 アダプタが if ! prompt="$(build_prompt ...)" 形を保っていること
+# （素の prompt="$(build_prompt ...)" へ戻す退行を検出）
+static_bp_ok=1
+for key in $ADAPTER_KEYS; do
+  adapter_sh="$ADAPTERS_DIR/${key}-adapter.sh"
+  if ! grep -q 'if ! prompt="$(build_prompt' "$adapter_sh"; then
+    bad "build_prompt: ${key} が fail_orchestrator_error 経路の wrap を失っている"
+    static_bp_ok=0
+  fi
+  if grep -E '^\s*prompt="\$\(build_prompt' "$adapter_sh"; then
+    bad "build_prompt: ${key} に bare の prompt=\"\$(build_prompt ...)\" が残っている"
+    static_bp_ok=0
+  fi
+done
+if [[ "$static_bp_ok" -eq 1 ]]; then
+  ok "build_prompt: 5 アダプタすべてが if ! prompt= 形で wrap している"
+fi
+
 echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ multi-agent-timeout verify: $FAIL 件失敗（詳細: 直近の実行ログ抜粋）" >&2

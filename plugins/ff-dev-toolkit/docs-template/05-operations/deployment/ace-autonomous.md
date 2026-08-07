@@ -69,7 +69,8 @@ GUI の Git クライアントや一部の CI では、マージ実行時に **`
 | `ACE_GARDEN_WALL_PATHS`        | 編集を許可するパス（カンマ区切り）                    | プロジェクト固有（必須で設定）                                                               |
 | `ACE_PLAYBOOK_PATH`            | `check-category-size.ts` が読む Playbook ファイル     | 例: `docs/08-knowledge/PLAYBOOK.md`                                                          |
 | `ACE_MAX_ENTRIES_PER_CATEGORY` | カテゴリあたりの最大エントリ件数                      | 省略時は `130`。**非数値や 0 以下は無効**として既定値にフォールバックし、stderr に警告を出す |
-| `ACE_MAX_PLAYBOOK_LINES`       | Playbook 総行数の警告閾値（**警告のみ・非ブロック**） | 省略時は `800`。**非数値や 0 以下は無効**として既定値にフォールバックし、stderr に警告を出す |
+| `ACE_MAX_ENTRY_LINES`          | 1 エントリの行数バジェット（行数上限の導出元）         | 省略時は `15`。**非数値や 0 以下は無効**として既定値にフォールバックし、stderr に警告を出す   |
+| `ACE_MAX_PLAYBOOK_LINES`       | 行数上限を固定値で上書きする（**警告のみ・非ブロック**） | 省略時は**件数から導出**（`ヘッダ + 件数 × (ACE_MAX_ENTRY_LINES + 1)`）。明示指定時のみ固定上限。**非数値や 0 以下は無効**として既定値 `800` にフォールバックし、stderr に警告を出す |
 
 ## Shadow 運用（段階導入）
 
@@ -81,7 +82,7 @@ GUI の Git クライアントや一部の CI では、マージ実行時に **`
 
 カテゴリあたりのエントリ数が閾値を超えた場合、**subagent 内で分割作業を続けない**方針を推奨します。`check-category-size.ts` が検知したら、[workflow-principles.md 原則2](./workflow-principles.md) で YAGNI / インライン / Issue 化を判定します。Issue 化する場合は類似 Issue を先に検索し、同じ完了条件なら既定は既存 Issue へのコメントで集約します。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立する場合だけ関連 Issue を作成します。
 
-あわせて `check-category-size.ts` は Playbook の**総行数**も報告し、`ACE_MAX_PLAYBOOK_LINES`（既定 800）を超えると**警告のみ**（exit code は変えない）を出す。件数ゲート（exit 1）とは独立しており、行数超過は ACE の追記を止めず、分割・アーカイブの必要性を上記ルールで判断する。
+あわせて `check-category-size.ts` は Playbook の**総行数**も報告し、**件数から導出した上限**（`ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1)`）を超えると**警告のみ**（exit code は変えない）を出す。件数ゲート（exit 1）とは独立しており、超過は ACE の追記を止めない。導出上限の超過は「ファイルが大きい」ではなく「**1 エントリが太い**（行数バジェット違反）」の意味なので、第一対応は旧テーブル形式の正準化であり、分割・アーカイブの必要性は上記ルールで判断する。
 
 PLAYBOOK.md と同階層に `playbook/*.md`（カテゴリ別分割ファイル）がある場合、`check-category-size.ts` は自動検出して集計対象に含める（索引ファイル + 全サブファイルの合算で件数ゲート・行数警告を判定し、ファイルごとの行数も個別に報告する）。分割済みレイアウトの詳細は [PLAYBOOK.md §ファイル分割ルール](../../08-knowledge/PLAYBOOK.md#ファイル分割ルール) を参照。
 

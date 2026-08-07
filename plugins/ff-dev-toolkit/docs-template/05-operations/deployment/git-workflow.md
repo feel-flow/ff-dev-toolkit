@@ -79,19 +79,67 @@ release/*     ← リリース準備ブランチ（developから分岐）
 **原則**: 全ての作業は必ずIssueから開始する
 
 ```bash
-# GitHub CLIでIssueを作成
+# GitHub CLI で Issue を作成（ラベルは verify-then-skip: 実在するものだけ付与）
+# 存在しないラベル名を --label に直書きすると gh issue create 自体が失敗する。
+# ラベル一覧の照会に失敗した場合は「不在」と断定せず「確認できなかった」と報告し、起票は継続する。
+# bash 3.2 + set -u では空配列を "${arr[@]}" と展開すると unbound variable になるため、
+# 付与 0 件の経路では ${label_args[@]+"${label_args[@]}"} を使う。
 expected_repo="OWNER/REPO" # 現在の対象リポジトリから確定
-ISSUE_URL=$(gh issue create \
-  --repo "$expected_repo" \
-  --title "feat: ユーザー認証機能を実装" \
-  --body "## 概要
+type_label="enhancement"   # 候補。消費プロジェクトに無い名前なら空文字にする
+priority_label=""          # 使う場合のみ（例: priority:high）。未使用でも宣言する
+
+issue_body="## 概要
 [実装内容の説明]
 
 ## 受入基準
 - [ ] [基準1]
-- [ ] [基準2]" \
-  --label "enhancement" \
-  --assignee "@me")
+- [ ] [基準2]"
+
+label_limit=200
+label_lookup_failed=0
+if ! available_labels="$(gh label list --repo "$expected_repo" --limit "$label_limit" --json name --jq '.[].name')"; then
+  available_labels=""
+  label_lookup_failed=1
+fi
+if [[ -z "$available_labels" ]] || (( $(printf '%s\n' "$available_labels" | wc -l) >= label_limit )); then
+  label_lookup_failed=1
+fi
+
+label_args=()
+skipped_labels=()
+for candidate in "$type_label" "$priority_label"; do
+  [[ -n "$candidate" ]] || continue
+  if [[ $'\n'"$available_labels"$'\n' == *$'\n'"$candidate"$'\n'* ]]; then
+    label_args+=(--label "$candidate")
+  else
+    skipped_labels+=("$candidate")
+  fi
+done
+
+ISSUE_URL="$(gh issue create \
+  --repo "$expected_repo" \
+  ${label_args[@]+"${label_args[@]}"} \
+  --assignee "@me" \
+  --title "feat: ユーザー認証機能を実装" \
+  --body "$issue_body")"
+if [[ -z "$ISSUE_URL" ]]; then
+  echo "gh issue create が Issue URL を返しませんでした" >&2
+  exit 1
+fi
+
+printf 'ISSUE_URL=%s\n' "$ISSUE_URL"
+printf 'LABEL_LOOKUP_FAILED=%s\n' "$label_lookup_failed"
+for lbl in ${label_args[@]+"${label_args[@]}"}; do
+  [[ "$lbl" != "--label" ]] || continue
+  printf 'APPLIED_LABEL=%s\n' "$lbl"
+done
+for lbl in ${skipped_labels[@]+"${skipped_labels[@]}"}; do
+  if [[ "$label_lookup_failed" -eq 1 ]]; then
+    printf 'SKIPPED_LABEL=%s reason=lookup-failed\n' "$lbl"
+  else
+    printf 'SKIPPED_LABEL=%s reason=not-found\n' "$lbl"
+  fi
+done
 
 # Issue番号を抽出
 ISSUE_NUM=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
@@ -101,6 +149,9 @@ ISSUE_NUM=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
 
 - Issue番号は自動抽出（競合回避）
 - 受入基準を明確にする
+- ラベルは実在確認後にだけ付与する（verify-then-skip）。不在と照会失敗を書き分ける
+- スキル経由の起票（`/create-issue`）は同じ契約を持つ。本例はワークフロー正本の直接コマンド向け
+- `tests/issue-label-contract` は `create-issue` / `out-of-scope-issue` の二重スキル同期用であり、本テンプレート例は fixture 対象外（消費者が貼る参考例であり、スキル間ドリフト検出の対象ではない）
 
 ### ステップ2: ブランチ作成
 
@@ -331,11 +382,13 @@ Claude系（Toolkit）とGPT系（Codex CLI）で異なるモデルの観点か�
 詳細は [Multi-CLI Review Orchestration](./multi-cli-review-orchestration.md#クロスモデルレビュー推奨パターン) を参照してください。
 
 ```bash
-# Toolkit セルフレビュー後に実行
-bash scripts/codex-review.sh --branch
+# Toolkit セルフレビュー後に実行（同梱の multi-review 経由で Codex 観点）
+bash scripts/multi-review.sh --mode cross-model --cli codex-cli
 ```
 
 > **レビュー結果の対応**: 全てのレビュー結果は [PRレビュー対応ポリシー](./review-response-policy.md) に従って対応します。Critical/Warning は確認不要で即対応。
+>
+> **スクリプトの出自**: `scripts/multi-review.sh` / `scripts/multi-agent.sh` / `scripts/adapters/*` はプラグイン同梱。`scripts/codex-review.sh` のような単体ラッパーは**同梱されない**（利用側で用意する任意スクリプト）。
 
 **Claude Code + Husky 自動レビュー**:
 
@@ -430,8 +483,9 @@ gh pr create \
 Closes #${ISSUE_NUM}
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)" \
-  --label "enhancement" \
   --reviewer "team-lead"
+# PR ラベルも Issue 同様、存在しない名前を直書きすると失敗する。
+# 付ける場合はステップ1と同じ verify-then-skip（gh label list → 実在するものだけ --label）を使う。
 ```
 
 **PRの原則**:
@@ -459,15 +513,16 @@ Closes #${ISSUE_NUM}
 # 一次レビュー（Claude Code 内で実行）
 /pr-review-toolkit:review-pr
 
-# クロスモデルレビュー（GPT系の観点、read-only）
-# 基準ブランチは REVIEW_BASE_BRANCH で上書き可（デフォルト: develop）
-bash scripts/codex-review.sh --branch
+# クロスモデルレビュー（GPT系の観点、read-only・同梱 multi-review）
+bash scripts/multi-review.sh --mode cross-model --cli codex-cli
+# 単体ラッパー scripts/codex-review.sh は同梱されない（利用側で用意する場合のみ）
 ```
 
 さらに多観点で確認したい場合は、Multi-CLI 分散レビュー（オプション）を併用します：
 
 ```bash
 # 既定ラインナップ: Claude / Codex / Gemini（Copilot は --cli copilot-cli でオプトイン）
+# multi-review.sh / multi-agent.sh / adapters/* はプラグイン同梱
 bash scripts/multi-review.sh
 
 # 特定の観点のみ

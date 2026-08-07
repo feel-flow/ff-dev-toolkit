@@ -53,7 +53,7 @@ SUMMARY="$(printf '%s\n' "$OUTPUT" | grep -E '^[[:space:]]*Tests[[:space:]]' || 
 
 if [[ $RC -ne 0 ]]; then
   printf '%s\n' "$OUTPUT"
-  echo "✗ ace-scripts vitest が失敗しました（rc=$RC）" >&2
+  echo "✗ ace-scripts vitest が失敗しました（rc=${RC}）" >&2
   exit 1
 fi
 # 判定はシェル内の文字列マッチで行い、パイプを使わない（`printf | grep -q` は

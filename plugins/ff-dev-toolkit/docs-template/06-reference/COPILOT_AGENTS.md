@@ -48,18 +48,23 @@ your-project/
 │       ├── comment-analysis/SKILL.md
 │       └── code-simplification/SKILL.md
 └── scripts/
-    ├── copilot-review.sh                ← Copilot CLI レビュースクリプト
-    ├── claude-review.sh                 ← Claude Code CLI レビュースクリプト
-    ├── codex-review.sh                  ← Codex CLI レビュースクリプト
-    ├── gemini-review.sh                 ← Gemini CLI レビュースクリプト
-    ├── review-common.sh                 ← 共通レビューロジック
-    ├── review-prompts.sh                ← レビュープロンプト定義
-    └── multi-agent.sh                   ← マルチCLIオーケストレーター
+    ├── multi-agent.sh                   ← 【同梱】マルチCLIオーケストレーター
+    ├── multi-review.sh                  ← 【同梱】review タスク用ラッパー（→ multi-agent.sh）
+    ├── setup-multi-agent.sh             ← 【同梱】依存確認・導入
+    ├── adapters/                        ← 【同梱】CLI アダプタ（*-adapter.sh）
+    ├── copilot-review.sh                ← 【利用側】Copilot CLI 単体ラッパー（同梱されない）
+    ├── claude-review.sh                 ← 【利用側】Claude Code 単体ラッパー（同梱されない）
+    ├── codex-review.sh                  ← 【利用側】Codex 単体ラッパー（同梱されない）
+    ├── gemini-review.sh                 ← 【利用側】Gemini 単体ラッパー（同梱されない）
+    ├── review-common.sh                 ← 【利用側】共通レビューロジック（同梱されない）
+    └── review-prompts.sh                ← 【利用側】レビュープロンプト定義（同梱されない）
 ```
+
+> **同梱 vs 利用側**: `multi-agent.sh` / `multi-review.sh` / `setup-multi-agent.sh` / `adapters/*` はプラグインが配布する。`*-review.sh` / `review-common.sh` / `review-prompts.sh` はセットアップ後に自動で現れるファイルではなく、**消費プロジェクトが自前で置く構成例**である。
 
 ### モード1: Copilot CLI セッション分離（推奨）
 
-`scripts/copilot-review.sh` が5つの専門レビュアーを並列で `copilot -p` 実行。`scripts/multi-agent.sh` を使えば、Claude/Codex/Copilot/Gemini/Grok の5つのCLIで同時にクロスモデルレビューが可能です。
+利用側で用意した `scripts/copilot-review.sh` が5つの専門レビュアーを並列で `copilot -p` 実行する想定。**同梱**の `scripts/multi-agent.sh` を使えば、Claude/Codex/Copilot/Gemini/Grok の5つのCLIで同時にクロスモデルレビューが可能です。
 
 ### モード2: 動的 `read_file` 読み込み（フォールバック）
 

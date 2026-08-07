@@ -40,3 +40,11 @@
 ;; --- 意図的複製であることの相互参照（片方だけ直させないための導線） ---
 ~ tests/issue-label-contract/verify.sh
 ~ **fixture に載せた契約行を片方だけ書き換える／削除すると red になる**（fixture 未収載の複製文までは検出しない）ので、変更は必ず両方へ入れること。
+
+;; --- 起票ブロックの状態出力（Issue #297: 報告はこの出力を写す。両ファイルで同一行） ---
+;; ラベルは 1 行 1 件（APPLIED_LABEL= / SKIPPED_LABEL=）。ラベル名は空白を含みうるため、
+;; 1 行に並べる集約形式（APPLIED=...）へ戻すと境界を復元できなくなる。
+printf 'ISSUE_URL=%s\n' "$issue_url"
+printf 'LABEL_LOOKUP_FAILED=%s\n' "$label_lookup_failed"
+  printf 'APPLIED_LABEL=%s\n' "$lbl"
+  printf 'SKIPPED_LABEL=%s\n' "$lbl"

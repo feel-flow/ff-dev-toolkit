@@ -35,9 +35,17 @@ fi
 
 parse_adapter_args "$@"
 
+# perspective_name は build_prompt 失敗時の fail_orchestrator_error にも要る。
+# build_prompt を mktemp ガードより前に素で呼ぶと set -e が bare exit し、
+# INCOMPLETE 成果物が残らない（Issue #267）。
+perspective_name="$(basename "$PERSPECTIVE_FILE" .md)"
+
 # ── Build Prompt ──
 
-prompt="$(build_prompt "$PERSPECTIVE_FILE" "$BASE_BRANCH" "$CHANGED_FILES")"
+if ! prompt="$(build_prompt "$PERSPECTIVE_FILE" "$BASE_BRANCH" "$CHANGED_FILES")"; then
+  fail_orchestrator_error "$perspective_name" \
+    "cannot build the ${TASK_TYPE:-review} prompt (perspective missing, empty diff, or load failure)."
+fi
 
 # ── Task-type specific flags ──
 
@@ -53,12 +61,11 @@ get_allowed_tools() {
 # ── Execute Task ──
 
 echo "🔍 Running ${CLI_NAME} ${TASK_TYPE:-review}..." >&2
-echo "   Perspective: $(basename "$PERSPECTIVE_FILE" .md)" >&2
+echo "   Perspective: ${perspective_name}" >&2
 echo "   Task type: ${TASK_TYPE:-review}" >&2
 echo "   Timeout: ${TIMEOUT}s" >&2
 
 allowed_tools="$(get_allowed_tools)"
-perspective_name="$(basename "$PERSPECTIVE_FILE" .md)"
 # Guard this mktemp explicitly: under `set -e` a failure here would kill the
 # adapter with a bare 1 before run_with_timeout is ever reached, filing a broken
 # TMPDIR as "the CLI exited 1" and writing no artifact at all.

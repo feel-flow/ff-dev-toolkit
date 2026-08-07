@@ -50,7 +50,7 @@ REFINE_ISSUE="$PLUGIN_ROOT/skills/refine-issue/SKILL.md"
 
 # fixtures の実行対象行数。契約を増減したときは必ずここも直す。固定しないと、
 # 抽出が壊れて 0 行になっても「全 fragment 一致」で緑になる。
-EXPECTED_SHARED_FRAGMENTS=19
+EXPECTED_SHARED_FRAGMENTS=23
 EXPECTED_BLOCK_LINES=32
 
 PASS=0
@@ -399,7 +399,14 @@ contains "$CREATE_ISSUE" '`follow-up` 系のラベルは付けない' "着手前
 
 # ---- 5. out-of-scope-issue 固有 ------------------------------------------------
 contains "$OUT_OF_SCOPE" 'for candidate in "$type_label" "$priority_label" "$followup_label"; do' "候補は type / priority / follow-up の 3 系統"
-contains "$OUT_OF_SCOPE" "同じシェルで続けて実行すること" "分割実行の危険が注記されている"
+# Issue #297: 実在確認と起票が別フェンスに分かれていると、フェンスごとに別シェルで
+# 実行された時点で label_args が失われ、「ラベル 0 個で起票成功」が無言で起きる。
+# create-issue と同じ単一フェンス構造を out-of-scope-issue にも要求する。
+label_loop_and_create_same_fence "$OUT_OF_SCOPE" "ラベル決定ループと起票が同一の bash フェンス（out-of-scope-issue）"
+contains "$OUT_OF_SCOPE" 'ラベルの実在確認から `gh issue create` までを 1 つの bash ブロックで' "単一ブロックであることが本文にも書かれている（out-of-scope-issue）"
+contains "$OUT_OF_SCOPE" 'if [[ -z "$issue_url" ]]; then' "起票後に Issue URL の非空を確認する（out-of-scope-issue）"
+contains "$OUT_OF_SCOPE" 'printf '"'"'LABEL_LOOKUP_FAILED=%s\n'"'"'' "照会状態を出力して報告へ渡す（out-of-scope-issue）"
+contains "$OUT_OF_SCOPE" 'ブロックが出力した行をそのまま読む' "報告は記憶ではなく出力を写す（out-of-scope-issue）"
 
 # ---- 6. 意図的な非対称の固定（アサイン） ----------------------------------------
 # create-issue は着手前の起票ゲートなので同梱 Git Workflow に従い @me を付ける。
@@ -460,6 +467,24 @@ extract_first_bash_fence() {
   ' "$1"
 }
 
+# 指定した文字列を含む**最初の** bash フェンスを取り出す（Issue #297）。
+# out-of-scope-issue の統合ブロックはファイル先頭のフェンスではない（§3.1 の
+# 検索ブロックが先にある）ため、needle を含むフェンスで特定する。フェンス言語は
+# label_loop_and_create_same_fence と同じ集合を許容する（非対称だと、フェンスを
+# ```sh へ変えたとき構造検査と behavioral 検査が食い違った赤になり誤誘導する）。
+extract_fence_containing() {
+  awk -v needle="$2" '
+    { sub(/\r$/, "") }
+    in_f == 0 { if ($0 ~ /^[[:space:]]*```[[:space:]]*(bash|sh|shell|zsh)[[:space:]]*$/) { in_f = 1; buf = ""; hit = 0 }; next }
+    /^[[:space:]]*```[[:space:]]*$/ { if (hit) { printf "%s", buf; exit } ; in_f = 0; next }
+    { buf = buf $0 "\n"; if (index($0, needle)) hit = 1 }
+  ' "$1"
+}
+
+# out-of-scope-issue の統合ブロックを一意に特定する needle。素の `gh issue create` だと
+# 将来 §3.1 のコメントに同語が言及された時点で誤ったフェンスを先頭ヒットで掴む。
+SCOPE_FENCE_NEEDLE='issue_url="$(gh issue create'
+
 run_block() {
   # $1: GH_STUB_MODE / $2: type_label / $3: priority_label / $4: merge_stderr(yes|no)
   # プレースホルダを差し替えて標準入力から実行する。**一時ファイルを一切作らない**
@@ -482,6 +507,36 @@ run_block() {
   fi
 }
 
+run_scope_block() {
+  # $1: GH_STUB_MODE / $2: type_label / $3: priority_label / $4: followup_label /
+  # $5: merge_stderr(yes|no)
+  # out-of-scope-issue の統合ブロック（Issue #297）を実行する。issue_body の heredoc は
+  # **実行時に bash が一時ファイルを要求する**ため、read-only 環境では
+  # `cannot create temp file for here document` で必ず落ちる。「一時ファイルを
+  # 一切作らない」という本 suite の前提を守るため、heredoc の代入全体を
+  # `issue_body="stub body"` へ置き換えてから実行する。
+  local merged="${5:-no}"
+  if [ "$merged" = yes ]; then
+    extract_fence_containing "$OUT_OF_SCOPE" "$SCOPE_FENCE_NEEDLE" \
+      | sed -e 's|^expected_repo=.*|expected_repo="stub-owner/stub-repo"|' \
+            -e "s|^type_label=.*|type_label=\"$2\"|" \
+            -e "s|^priority_label=.*|priority_label=\"$3\"|" \
+            -e "s|^followup_label=.*|followup_label=\"$4\"|" \
+            -e '/^issue_body="\$(cat/,/^)"$/c\
+issue_body="stub body"' \
+      | PATH="$STUB_DIR:$PATH" GH_STUB_MODE="$1" bash -euo pipefail -s 2>&1
+  else
+    extract_fence_containing "$OUT_OF_SCOPE" "$SCOPE_FENCE_NEEDLE" \
+      | sed -e 's|^expected_repo=.*|expected_repo="stub-owner/stub-repo"|' \
+            -e "s|^type_label=.*|type_label=\"$2\"|" \
+            -e "s|^priority_label=.*|priority_label=\"$3\"|" \
+            -e "s|^followup_label=.*|followup_label=\"$4\"|" \
+            -e '/^issue_body="\$(cat/,/^)"$/c\
+issue_body="stub body"' \
+      | PATH="$STUB_DIR:$PATH" GH_STUB_MODE="$1" bash -euo pipefail -s 2>/dev/null
+  fi
+}
+
 behavioral_case() {
   # $1: モード / $2: type / $3: priority / $4: 期待する出力の部分列 / $5: 検査名
   # 出力は `|` 区切りへ畳んで部分列で照合するので、**行の順序も契約に含む**。
@@ -497,30 +552,50 @@ behavioral_case() {
   esac
 }
 
+scope_behavioral_case() {
+  # $1: モード / $2: type / $3: priority / $4: follow-up / $5: 期待する出力の部分列 /
+  # $6: 検査名。behavioral_case と同じく出力を `|` 区切りへ畳んで部分列で照合する
+  # （行の順序も契約に含む — §3.6 の報告はこの出力を読む前提のため）。
+  local out diag
+  if ! out="$(run_scope_block "$1" "$2" "$3" "$4")"; then
+    # 理由（sed がスクリプトを壊した / ガード発火 / stub 未解決）が出ないと
+    # 赤くなったときに調査の起点が無い。merged で撮り直して末尾を添える。
+    diag="$(run_scope_block "$1" "$2" "$3" "$4" yes || true)"
+    bad "${6}（ブロックが非 0 で終了した: $(printf '%s' "$diag" | tail -3 | tr '\n' '|')）"
+    return
+  fi
+  case "$(printf '%s' "$out" | tr '\n' '|')" in
+    *"$5"*) ok "$6" ;;
+    *) bad "${6}（期待: ${5} / 実際: $(printf '%s' "$out" | tr '\n' '|')）" ;;
+  esac
+}
+
 block_body="$(extract_first_bash_fence "$CREATE_ISSUE")"
 resolved_gh="$(PATH="$STUB_DIR:$PATH" command -v gh || true)"
 if [ ! -x "$STUB_DIR/gh" ]; then
   bad "behavioral 検査: stub gh が実行可能でない（$STUB_DIR/gh）"
 elif [ "$resolved_gh" != "$STUB_DIR/gh" ]; then
-  bad "behavioral 検査: gh が stub に解決されない（$resolved_gh）— 実 gh を叩く危険があるので実行しない"
+  bad "behavioral 検査: gh が stub に解決されない（${resolved_gh}）— 実 gh を叩く危険があるので実行しない"
 elif [ -z "$block_body" ]; then
   bad "behavioral 検査: create-issue の bash フェンスを取り出せない"
 else
   ok "behavioral 検査: gh が stub に解決される（実 API を叩かない）"
 
-  # AC1: 実在するラベルは付与され、gh の argv に載る
+  # AC1: 実在するラベルは付与され、gh の argv に載る。期待部分列を ISSUE_URL 行から
+  # 始めることで「状態出力は起票成功後」という順序契約も同時に固定する
+  # （ISSUE_URL は URL ガード通過後にしか出ない — 状態行を前置する変異で赤になる）。
   behavioral_case normal enhancement priority:high \
-    'APPLIED=--label enhancement --label priority:high' \
+    'ISSUE_URL=https://github.com/stub-owner/stub-repo/issues/1|LABEL_LOOKUP_FAILED=0|APPLIED_LABEL=enhancement|APPLIED_LABEL=priority:high' \
     "AC1: 実在する種別・優先度ラベルが付与された状態で起票される"
 
   # AC2: 不在の候補は起票を止めず、名前と理由が出力に残る
   behavioral_case normal enhancement priority:nonexistent \
-    'LABEL_LOOKUP_FAILED=0|APPLIED=--label enhancement|SKIPPED=priority:nonexistent' \
+    'LABEL_LOOKUP_FAILED=0|APPLIED_LABEL=enhancement|SKIPPED_LABEL=priority:nonexistent' \
     "AC2: 不在ラベルは起票を止めず、省略理由が「不在」として出る"
 
   # AC2: 照会そのものの失敗は「不在」と区別される（重複ラベルを生やさない側へ倒す）
   behavioral_case fail enhancement priority:high \
-    'LABEL_LOOKUP_FAILED=1|APPLIED=|SKIPPED=enhancement priority:high' \
+    'LABEL_LOOKUP_FAILED=1|SKIPPED_LABEL=enhancement|SKIPPED_LABEL=priority:high' \
     "AC2: 照会失敗はラベル無しで起票を続け、「不在」と区別して報告される"
 
   # 終了コード 0 でも信用できない 2 経路が「照会失敗」へ倒れる
@@ -530,8 +605,15 @@ else
     "取得上限に達した一覧を「不在」と誤断定しない"
 
   # 系統が無い場合は候補ごと読み飛ばし、起票は成功する
-  behavioral_case normal '' '' 'LABEL_LOOKUP_FAILED=0|APPLIED=|SKIPPED=' \
+  behavioral_case normal '' '' \
+    'ISSUE_URL=https://github.com/stub-owner/stub-repo/issues/1|LABEL_LOOKUP_FAILED=0' \
     "候補が空文字なら照合せず読み飛ばす"
+  # 部分列照合は「不在」を主張できないので、ラベル状態行が出ないことは別に見る
+  nolabel_out="$(run_block normal '' '' || true)"
+  case "$(printf '%s' "$nolabel_out" | tr '\n' '|')" in
+    *APPLIED_LABEL=*|*SKIPPED_LABEL=*) bad "候補が無いのにラベル状態行が出ている" ;;
+    *) ok "候補が無ければラベル状態行を出さない" ;;
+  esac
 
   # 終了コード 0 + 空 URL を成功として通さない
   if run_block emptyurl enhancement priority:high >/dev/null 2>&1; then
@@ -539,17 +621,115 @@ else
   else
     ok "URL を返さない起票は失敗として扱う"
   fi
+  # 失敗経路で状態出力が残らないこと。exit code だけ見る検査では、printf 群を
+  # URL ガードの前へ移す変異（起票失敗でも APPLIED_LABEL= が残り、実在しない
+  # Issue のラベル付き成功報告が書ける）が緑のまま通る。
+  emptyurl_out="$(run_block emptyurl enhancement priority:high yes || true)"
+  case "$(printf '%s' "$emptyurl_out" | tr '\n' '|')" in
+    *ISSUE_URL=*|*APPLIED_LABEL=*|*SKIPPED_LABEL=*)
+      bad "起票失敗後に状態出力が残る（付いていないラベルが報告の材料になる）" ;;
+    *'Issue URL を返しませんでした'*)
+      ok "起票失敗は状態出力を残さず、ガードの診断だけを出す" ;;
+    *)
+      bad "起票失敗時にガードの診断が出ていない（別の理由で落ちた可能性）" ;;
+  esac
 
-  # 実際に gh へ渡った argv を見る。出力の APPLIED= だけを見ると、報告用の文字列を
-  # 作っただけでコマンドには渡っていない、という食い違いを見逃す。
-  # stub は argv を stderr へ書くので、ここだけ stdout と合流させて受ける。
-  argv_out="$(run_block normal enhancement priority:high yes || true)"
+  # 起票コマンド自体の非 0 終了も成功として通さない（|| true 等で握りつぶす退行の固定）
+  if run_block createfail enhancement priority:high >/dev/null 2>&1; then
+    bad "起票コマンドの非 0 終了を成功として扱っている"
+  else
+    ok "起票コマンドの非 0 終了は失敗として扱う"
+  fi
+  createfail_out="$(run_block createfail enhancement priority:high yes || true)"
+  case "$(printf '%s' "$createfail_out" | tr '\n' '|')" in
+    *ISSUE_URL=*|*APPLIED_LABEL=*|*SKIPPED_LABEL=*)
+      bad "起票コマンド失敗後に成功形式の状態出力が残る" ;;
+    *) ok "起票コマンド失敗後に状態出力を残さない" ;;
+  esac
+
+  # 実際に gh へ渡った argv を見る。出力の APPLIED_LABEL= だけを見ると、報告用の
+  # 文字列を作っただけでコマンドには渡っていない、という食い違いを見逃す。
+  # stub は argv を stderr へ書くので merged で受け、**GH_ISSUE_ARGV 行だけに絞って**
+  # 照合する。合流ストリーム全体を glob で見ると `*` が行をまたぎ、argv にラベルが
+  # 無くても後続の状態出力行で充足してしまう（変異試験で実証済みの偽陽性経路）。
+  argv_out="$(run_block normal enhancement priority:high yes | sed -n '/^GH_ISSUE_ARGV: /p' || true)"
   case "$argv_out" in
-    *'GH_ISSUE_ARGV: '*'--label enhancement --label priority:high'*)
+    *'--label enhancement --label priority:high'*)
       ok "付与ラベルが報告用の文字列だけでなく gh の argv に載っている" ;;
     *)
       bad "gh へ渡った argv にラベルが載っていない（報告と実際の乖離）" ;;
   esac
+
+  # ---- Issue #297: out-of-scope-issue の統合ブロック（§3.3）も実測する ----------
+  # 契約ブロック（実在確認〜for ループ）は create-issue と共有だが、宣言・起票・
+  # 状態出力の結合部はファイル固有にある。分割時代はここが別シェルに分かれ、
+  # 「ラベル 0 個で起票成功」が無言で起きていた。fail-soft の分岐自体は共有ブロック内
+  # だが、その結果 `label_lookup_failed` を消費するのは結合部なので、照会失敗系も
+  # ここで実測する（結合部だけを fail-closed へ反転する変異は共有部の照合では捕まらない）。
+  scope_body="$(extract_fence_containing "$OUT_OF_SCOPE" "$SCOPE_FENCE_NEEDLE")"
+  if [ -z "$scope_body" ]; then
+    bad "behavioral 検査: out-of-scope-issue の統合ブロックを取り出せない"
+  else
+    # AC1: 実在する type / priority / follow-up の 3 系統が付与され、出力に現れる。
+    # ISSUE_URL 行から始めて「状態出力は起票成功後」の順序契約も固定する。
+    scope_behavioral_case normal bug priority:high follow-up \
+      'ISSUE_URL=https://github.com/stub-owner/stub-repo/issues/1|LABEL_LOOKUP_FAILED=0|APPLIED_LABEL=bug|APPLIED_LABEL=priority:high|APPLIED_LABEL=follow-up' \
+      "out-of-scope: 実在する 3 系統が付与された状態で起票され、出力に現れる"
+
+    # AC2: 不在の候補は起票を止めず、名前と理由が出力に残る
+    scope_behavioral_case normal bug priority:nonexistent follow-up \
+      'LABEL_LOOKUP_FAILED=0|APPLIED_LABEL=bug|APPLIED_LABEL=follow-up|SKIPPED_LABEL=priority:nonexistent' \
+      "out-of-scope: 不在ラベルは起票を止めず、省略理由が「不在」として出る"
+
+    # 照会失敗はラベル無しで起票を**続ける**（fail-soft）。結合部が
+    # label_lookup_failed に条件づけられて起票を止める変異で赤になる。
+    scope_behavioral_case fail bug priority:high follow-up \
+      'LABEL_LOOKUP_FAILED=1|SKIPPED_LABEL=bug|SKIPPED_LABEL=priority:high|SKIPPED_LABEL=follow-up' \
+      "out-of-scope: 照会失敗はラベル無しで起票を続け、「不在」と区別して報告される"
+    scope_behavioral_case empty bug priority:high follow-up 'LABEL_LOOKUP_FAILED=1' \
+      "out-of-scope: 空の一覧を「不在」と誤断定しない"
+    scope_behavioral_case truncated bug priority:high follow-up 'LABEL_LOOKUP_FAILED=1' \
+      "out-of-scope: 取得上限に達した一覧を「不在」と誤断定しない"
+
+    # 終了コード 0 + 空 URL を成功として通さない
+    if run_scope_block emptyurl bug priority:high follow-up >/dev/null 2>&1; then
+      bad "out-of-scope: URL を返さない起票を成功として扱っている（Issue が実在しない状態と区別できない）"
+    else
+      ok "out-of-scope: URL を返さない起票は失敗として扱う"
+    fi
+    scope_emptyurl_out="$(run_scope_block emptyurl bug priority:high follow-up yes || true)"
+    case "$(printf '%s' "$scope_emptyurl_out" | tr '\n' '|')" in
+      *ISSUE_URL=*|*APPLIED_LABEL=*|*SKIPPED_LABEL=*)
+        bad "out-of-scope: 起票失敗後に状態出力が残る（付いていないラベルが報告の材料になる）" ;;
+      *'Issue URL を返しませんでした'*)
+        ok "out-of-scope: 起票失敗は状態出力を残さず、ガードの診断だけを出す" ;;
+      *)
+        bad "out-of-scope: 起票失敗時にガードの診断が出ていない（別の理由で落ちた可能性）" ;;
+    esac
+
+    # 起票コマンド自体の非 0 終了も成功として通さない
+    if run_scope_block createfail bug priority:high follow-up >/dev/null 2>&1; then
+      bad "out-of-scope: 起票コマンドの非 0 終了を成功として扱っている"
+    else
+      ok "out-of-scope: 起票コマンドの非 0 終了は失敗として扱う"
+    fi
+    scope_createfail_out="$(run_scope_block createfail bug priority:high follow-up yes || true)"
+    case "$(printf '%s' "$scope_createfail_out" | tr '\n' '|')" in
+      *ISSUE_URL=*|*APPLIED_LABEL=*|*SKIPPED_LABEL=*)
+        bad "out-of-scope: 起票コマンド失敗後に成功形式の状態出力が残る" ;;
+      *) ok "out-of-scope: 起票コマンド失敗後に状態出力を残さない" ;;
+    esac
+
+    # 実際に gh へ渡った argv を見る。GH_ISSUE_ARGV 行だけに絞る理由は
+    # create-issue 側の argv 検査と同じ（行またぎ glob の偽陽性防止）。
+    scope_argv="$(run_scope_block normal bug priority:high follow-up yes | sed -n '/^GH_ISSUE_ARGV: /p' || true)"
+    case "$scope_argv" in
+      *'--label bug --label priority:high --label follow-up'*)
+        ok "out-of-scope: 付与ラベルが gh の argv に載っている" ;;
+      *)
+        bad "out-of-scope: gh へ渡った argv にラベルが載っていない（報告と実際の乖離）" ;;
+    esac
+  fi
 fi
 
 echo ""

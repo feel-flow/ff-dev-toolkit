@@ -128,7 +128,7 @@ set_version() {
 }
 
 # フック実行ヘルパー。呼び出し側環境の CLAUDE_PLUGIN_ROOT / オプトアウト / TTL
-# シームを打ち消し、出力を $OUT、stderr を $ERR、終了コードを $RC に入れる
+# シームを打ち消し、出力を ${OUT}、stderr を ${ERR}、終了コードを $RC に入れる
 # （set -e 下でも落ちない形）。
 OUT=""
 ERR=""

@@ -226,13 +226,26 @@ readonly TIMEOUT_KILL_GRACE
 # in a subshell, so both sides derive the same path with no argument to thread
 # through — and separate adapter processes get separate files.
 timeout_reason_file() {
-  echo "${TMPDIR:-/tmp}/ff-run-with-timeout-reason.$$"
+  # Test seam (Issue #266): pin the marker path so write-failure / residue tests
+  # do not depend on TMPDIR layout. Production callers leave this unset.
+  if [[ -n "${FF_TIMEOUT_REASON_FILE:-}" ]]; then
+    printf '%s\n' "$FF_TIMEOUT_REASON_FILE"
+    return 0
+  fi
+  printf '%s\n' "${TMPDIR:-/tmp}/ff-run-with-timeout-reason.$$"
 }
 
 # run_with_timeout 自身が書くのは timeout | orchestrator-error | command の 3 値。
 # アダプタが上書きで書く値（sandbox-refused | empty-output）もここを通る。
 record_timeout_reason() {
-  printf '%s' "$1" >"$(timeout_reason_file)" 2>/dev/null || true
+  local reason="$1" f
+  f="$(timeout_reason_file)"
+  # 書けなくても呼び出し側の失敗処理は続ける（従来どおり）。ただし黙ると
+  # empty-output が status 1 へ化けたり stale な timeout 案内の種になるので、
+  # 失敗時は stderr へ 1 行だけ警告する（Issue #266）。
+  if ! printf '%s' "$reason" >"$f" 2>/dev/null; then
+    echo "WARNING: could not record timeout reason '${reason}' at ${f}; failure classification may fall back to the exit status only." >&2
+  fi
 }
 
 # Echoes the recorded reason, or "" when it could not be recorded (a broken TMPDIR
@@ -247,6 +260,16 @@ read_timeout_reason() {
 clear_timeout_reason() {
   rm -f "$(timeout_reason_file)" 2>/dev/null || true
 }
+
+# 成功パスでは fail_cli_task が呼ばれないため、run_with_timeout が書いた
+# "command" マーカーが ${TMPDIR}/ff-run-with-timeout-reason.$$ に残る（Issue #266）。
+# プロセス終了時に必ず掃除し、stale 読み取りの種を残さない。fail_cli_task 内の
+# clear と二重になっても rm -f なので害はない。アダプタが source するたびに
+# trap を積み重ねないよう一度だけ仕掛ける。
+if [[ -z "${_FF_TIMEOUT_REASON_EXIT_TRAP:-}" ]]; then
+  _FF_TIMEOUT_REASON_EXIT_TRAP=1
+  trap 'clear_timeout_reason' EXIT
+fi
 
 # Run a command under a wall-clock limit and echo whatever it wrote to stdout.
 # Usage: run_with_timeout 900 some_command arg1 arg2

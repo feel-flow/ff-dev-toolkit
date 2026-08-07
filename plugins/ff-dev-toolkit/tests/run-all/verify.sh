@@ -297,6 +297,86 @@ else
   printf '%s' "$PIPE_GREP_Q_HITS" | sed 's/^/    | /' >&2
 fi
 
+# ---- ケース11: $VAR 直付けマルチバイト展開の再混入ガード -----------------------
+# bash 3.2（macOS 標準 /bin/bash）は $VAR 直後のマルチバイト文字の先頭バイトを変数名へ
+# 取り込み、set -u 下では失敗を報告しようとした瞬間だけ unbound variable で落ちる。
+# 発火が bash の版数とロケールに依存するため、振る舞いテストは回帰ガードにならない
+# （ACE-307-2）— git 管理下の *.sh 全体と shebang が bash/sh の tracked スクリプトを、
+# 違反の形そのものへの静的検査で縛る（Issue #278）。
+# 実装の正本は tests/lib/mbcs-guard.sh。fail-closed 経路の自動回帰は
+# tests/mbcs-guard-failclosed/verify.sh（Issue #312）。SKILL.md 内 bash ブロックは
+# tests/skill-bash-blocks/verify.sh が担当（Issue #311 / case 10 と同型の責務分担）。
+echo
+echo "== case 11: \$VAR 直付けマルチバイト展開の再混入ガード =="
+
+# shellcheck source=../lib/mbcs-guard.sh
+. "$SCRIPT_DIR/../lib/mbcs-guard.sh"
+
+# 検出器の自己検証（空振りの fail-closed）。違反 probe は 2 分割で組み立てる —
+# 1 行に直書きすると、本検査がこのファイル自体を違反として検出する（ACE-307-3）。
+MBCS_PROBE_BAD='echo "失敗しました: $name'
+MBCS_PROBE_BAD="${MBCS_PROBE_BAD}（原因不明）\""
+MBCS_PROBE_GOOD='echo "失敗しました: ${name}（原因不明）"'
+MBCS_PROBE_CONT='echo "失敗しました: $name\'
+MBCS_PROBE_CONT="${MBCS_PROBE_CONT}
+（原因不明）\""
+MBCS_SELFTEST_OK=1
+if [ -n "$(printf '%s\n' "$MBCS_PROBE_BAD" | mbcs_scan)" ]; then
+  ok "MBCS 検出器が違反を検出できる（self-test）"
+else
+  bad "MBCS 検出器が違反を検出できない — 横断検査は空振りするため実行しない"
+  MBCS_SELFTEST_OK=0
+fi
+if [ -z "$(printf '%s\n' "$MBCS_PROBE_GOOD" | mbcs_scan)" ]; then
+  ok "MBCS 検出器が \${VAR} 形式を誤検出しない（self-test）"
+else
+  bad "MBCS 検出器が \${VAR} 形式を誤検出する"
+  MBCS_SELFTEST_OK=0
+fi
+if [ -n "$(printf '%s\n' "$MBCS_PROBE_CONT" | mbcs_scan)" ]; then
+  ok "MBCS 検出器がバックスラッシュ行継続をまたぐ隣接も検出できる（self-test）"
+else
+  bad "MBCS 検出器が行継続をまたぐ隣接を取りこぼす"
+  MBCS_SELFTEST_OK=0
+fi
+
+if [ "$MBCS_SELFTEST_OK" -eq 1 ]; then
+  MBCS_REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || MBCS_REPO_ROOT=""
+  if [ -z "$MBCS_REPO_ROOT" ]; then
+    bad "リポジトリルートを解決できない（git rev-parse 失敗）— 横断検査を実行できない"
+  else
+    # stdout=サマリー1行 / stderr=詳細。成功時は詳細不要、失敗時だけ再実行して詳細を出す。
+    set +e
+    MBCS_SUMMARY="$(mbcs_check_tracked "$MBCS_REPO_ROOT" 2>/dev/null)"
+    MBCS_RC=$?
+    set -e
+    case "$MBCS_SUMMARY" in
+      MBCS_RESULT=ok\ *)
+        MBCS_SCANNED="$(printf '%s\n' "$MBCS_SUMMARY" | sed -E 's/.*SCANNED=([0-9]+).*/\1/')"
+        ok "tracked shell スクリプトに \$VAR 直付けのマルチバイト展開が無い（${MBCS_SCANNED} ファイル走査）"
+        ;;
+      MBCS_RESULT=hits\ *)
+        bad "\$VAR 直付けのマルチバイト展開が再混入した（\${VAR} 形式にすること）"
+        mbcs_check_tracked "$MBCS_REPO_ROOT" >/dev/null || true
+        ;;
+      MBCS_RESULT=error_repo\ *)
+        bad "リポジトリルートを解決できない（git rev-parse 失敗）— 横断検査を実行できない"
+        ;;
+      MBCS_RESULT=error_list\ *)
+        bad "検査対象の tracked ファイル一覧を取得できない（git ls-files 失敗/空）— 0 件の主張はできない"
+        ;;
+      MBCS_RESULT=error_scan\ *)
+        bad "走査に失敗した *.sh がある — そのファイルの 0 件は主張できない"
+        mbcs_check_tracked "$MBCS_REPO_ROOT" >/dev/null || true
+        ;;
+      *)
+        bad "MBCS 横断検査の結果を解釈できない (rc=${MBCS_RC}): ${MBCS_SUMMARY:-empty}"
+        mbcs_check_tracked "$MBCS_REPO_ROOT" >/dev/null || true
+        ;;
+    esac
+  fi
+fi
+
 echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ run-all verify: $FAIL 件失敗" >&2
