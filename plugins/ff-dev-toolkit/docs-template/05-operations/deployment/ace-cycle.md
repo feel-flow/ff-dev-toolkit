@@ -186,6 +186,7 @@ ID は **PRスコープ式**（`ACE-<PR番号>-<連番>`）。採番ルールの
 ```yaml
 version: "1.X.0" # 新規エントリ時のみ minor +1（patch は 0）
 updated: "YYYY-MM-DD"
+changeImpact: medium # minor 上げ = medium（欠落時は --write が自動追記）
 ace_entry_count: N # 全エントリ数（deprecated含む）。新規時のみ +件数
 ```
 
@@ -262,9 +263,9 @@ Generate → Reflect → Curate は「増やす」一方向のサイクルであ
 ### Phase 3: Curate
 - [ ] 新規エントリをコンパクト正準フォーマットで該当カテゴリファイル末尾に追記
 - [ ] 各エントリが行数バジェット内（15 行以内。例外宣言付きでも 30 行以内）
-- [ ] Frontmatter 更新（version=minor+1 on 新規 / updated / ace_entry_count）
+- [ ] Frontmatter 更新（version=minor+1 on 新規 / updated / changeImpact=medium / ace_entry_count）
 - [ ] Changelog 更新（当該版の `#### 追加` / `#### カウンター更新`。version と最新見出し一致）
-- [ ] `npm run ace:check-playbook-frontmatter` が exit 0（count + version↔Changelog）
+- [ ] `npm run ace:check-playbook-frontmatter` が exit 0（count + version↔Changelog + changeImpact）
 - [ ] コミット（件名 `knowledge: ACE-XXX <要約>`、カテゴリは body の `Categories:` 行）
 
 ### 並行作業（任意）

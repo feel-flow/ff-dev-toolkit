@@ -12,9 +12,17 @@
  * 機能:
  *   - `--check`（既定）: 実エントリ数と frontmatter `ace_entry_count` を比較し、
  *     ドリフトがあれば終了コード 1 を返す（CI ゲート）。`## Changelog` がある場合は
- *     frontmatter `version` と最新 `### [x.y.z]` の一致も検証する。
+ *     frontmatter `version` と最新 `### [x.y.z]` の一致も検証する。加えて
+ *     `changeImpact` を検証する（Issue #289: 変更済みなのに未記録、または値が
+ *     小文字の low / medium / high 以外ならドリフト扱い。値域は `/validate-docs` の
+ *     Frontmatter スキーマと同一。「変更済み」の判定は同スキーマのうち機械判定
+ *     できる部分集合 — created ≠ updated、または `## Changelog` に版見出しが
+ *     2 件以上 — を実装する）。
  *   - `--write`         : `ace_entry_count` を実数へ、`updated` を当日（または
  *     ACE_UPDATED_DATE）へ更新してファイルへ書き戻す（Changelog 本文は書き換えない）。
+ *     変更済みなのに `changeImpact` が欠落している場合は `medium` を自動追記する
+ *     （ACE の版上げは常に minor +1 のため）。値域違反（`MEDIUM` 等）は自動修正せず、
+ *     書き込み後も報告して終了コード 1 を返す。
  *   - `--bump-version`  : `--write` と併用時、`version`（semver）を **minor +1**
  *     し patch を 0 にする（ACE curate の版上げ方針。patch 上げは使わない）。
  *
@@ -44,6 +52,14 @@ const FRONT_BOUNDARY = "---";
 const COUNT_FIELD = "ace_entry_count";
 const UPDATED_FIELD = "updated";
 const VERSION_FIELD = "version";
+const CREATED_FIELD = "created";
+const CHANGE_IMPACT_FIELD = "changeImpact";
+/** `/validate-docs` の Frontmatter スキーマと同じ値域（小文字のみ有効）。 */
+const CHANGE_IMPACT_VALUES: ReadonlySet<string> = new Set(["low", "medium", "high"]);
+/** `--write` が欠落時に自動追記する値（ACE の版上げは常に minor +1 = medium）。 */
+const DEFAULT_CHANGE_IMPACT = "medium";
+/** Changelog の版見出しがこの件数以上なら「初版以外のエントリがある」= 変更済みとみなす。 */
+const MULTIPLE_CHANGELOG_VERSIONS_MIN = 2;
 const ISO_DATE_PATTERN = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
 
 const FLAG_CHECK = "--check";
@@ -81,7 +97,11 @@ const CHANGELOG_VERSION_HEADING_PATTERN = /^###[ \t]+\[([0-9]+\.[0-9]+\.[0-9]+)\
  */
 const NEXT_H2_HEADING_PATTERN = /\n##[ \t]+(?!#)/u;
 
-export type FrontmatterField = typeof COUNT_FIELD | typeof UPDATED_FIELD | typeof VERSION_FIELD;
+export type FrontmatterField =
+  | typeof COUNT_FIELD
+  | typeof UPDATED_FIELD
+  | typeof VERSION_FIELD
+  | typeof CHANGE_IMPACT_FIELD;
 
 export type FieldChange = Readonly<{
   readonly field: FrontmatterField;
@@ -128,6 +148,17 @@ export type SyncOk = Readonly<{
    * Changelog があるのに版見出しが無い / version フィールドが無い場合は false。
    */
   readonly versionChangelogInSync: boolean;
+  /** frontmatter トップレベルの changeImpact 生値（無ければ null） */
+  readonly changeImpactValue: string | null;
+  /**
+   * changeImpact がスキーマを満たしているか。変更済み（created ≠ updated、
+   * または Changelog に版見出しが 2 件以上）なのに未記録、または値が小文字の
+   * low / medium / high 以外なら false。変更済みと判定される根拠が無い文書
+   * （初版、created / updated を持たない最小 fixture）では presence を要求しない。
+   * 残る死角: created が欠落し Changelog も 1 件以下の文書は「変更済み」を
+   * 機械判定できず素通りする — その面は `/validate-docs` 側が捕捉する。
+   */
+  readonly changeImpactValid: boolean;
   /** 適用（write）または適用予定（check）の frontmatter 変更 */
   readonly changes: readonly FieldChange[];
   /** 更新後の全文（write=false でも「あるべき姿」を返す） */
@@ -164,6 +195,51 @@ export function readField(frontmatter: string, key: string): string | null {
   const match = frontmatter.match(re);
   if (!match) return null;
   return unquote(match[2].trim());
+}
+
+/**
+ * frontmatter の**トップレベル** key の生値を取り出す。無ければ null。
+ * readField と違いインデント（`metadata:` 等の配下にネストされたキー）を許容しない。
+ * changeImpact 等の検証で、ネストされた同名キーをトップレベル記録と誤認して
+ * fail-open にならないようにするための読み取り。
+ */
+export function readTopLevelField(frontmatter: string, key: string): string | null {
+  const re = new RegExp(`^${escapeRegExp(key)}:[ \\t]*(.*)$`, "mu");
+  const match = frontmatter.match(re);
+  if (!match) return null;
+  return unquote(match[1].trim());
+}
+
+/**
+ * frontmatter のトップレベル afterKey 行の直後へ `key: value` を 1 行追記する。
+ * afterKey が見つからなければ null（呼び出し側でエラーとして扱う）。
+ */
+export function insertFieldAfter(
+  frontmatter: string,
+  afterKey: string,
+  key: string,
+  value: string,
+): string | null {
+  const re = new RegExp(`^${escapeRegExp(afterKey)}:[ \\t]*.*$`, "mu");
+  const match = re.exec(frontmatter);
+  if (!match || match.index === undefined) return null;
+  const lineEnd = match.index + match[0].length;
+  return `${frontmatter.slice(0, lineEnd)}\n${key}: ${value}${frontmatter.slice(lineEnd)}`;
+}
+
+/**
+ * 「変更済み文書」の機械判定（`/validate-docs` スキーマの部分集合）:
+ * created ≠ updated（両フィールドが存在する場合）、または Changelog の版見出しが
+ * 2 件以上。created が欠落し Changelog も 1 件以下の文書は判定できず false になる
+ * （その面は `/validate-docs` 側が捕捉する）。
+ */
+export function isModifiedDocState(
+  created: string | null,
+  updated: string | null,
+  changelogVersionCount: number,
+): boolean {
+  if (created !== null && updated !== null && created !== updated) return true;
+  return changelogVersionCount >= MULTIPLE_CHANGELOG_VERSIONS_MIN;
 }
 
 /**
@@ -211,14 +287,15 @@ export function bumpMinor(version: string): string | null {
  * 本文から `## Changelog` 直下の最新版（最初の `### [x.y.z]`）を取り出す。
  * - Changelog セクションが無い → `{ kind: "absent" }`（fixture 後方互換で検証スキップ）
  * - あるが版見出しが無い → `{ kind: "empty" }`（ドリフト扱い）
- * - 見つかった → `{ kind: "found", version }`
+ * - 見つかった → `{ kind: "found", version, count }`（count = セクション内の版見出し総数。
+ *   2 件以上なら「初版以外のエントリがある」= 変更済み文書の機械判定に使う）
  */
 export function extractLatestChangelogVersion(
   content: string,
 ):
   | { readonly kind: "absent" }
   | { readonly kind: "empty" }
-  | { readonly kind: "found"; readonly version: string } {
+  | { readonly kind: "found"; readonly version: string; readonly count: number } {
   const heading = CHANGELOG_HEADING_PATTERN.exec(content);
   if (!heading || heading.index === undefined) {
     return { kind: "absent" };
@@ -232,7 +309,27 @@ export function extractLatestChangelogVersion(
   if (!versionMatch) {
     return { kind: "empty" };
   }
-  return { kind: "found", version: versionMatch[1] };
+  // グローバルフラグ付きの使い捨て正規表現で総数を数える（lastIndex 汚染を避ける）
+  const allHeadings = sectionBody.match(
+    new RegExp(CHANGELOG_VERSION_HEADING_PATTERN.source, "gmu"),
+  );
+  return { kind: "found", version: versionMatch[1], count: allHeadings?.length ?? 1 };
+}
+
+/** changeImpact 違反時の共通エラーメッセージ（check / write 共用）。 */
+export function formatChangeImpactViolation(changeImpactValue: string | null): string {
+  if (changeImpactValue === null) {
+    return (
+      "✗ 変更済み（created ≠ updated、または Changelog に複数版）なのに changeImpact が未記録です。\n" +
+      "  frontmatter トップレベルへ `changeImpact: low / medium / high`（小文字）を追記してください" +
+      "（ACE の版上げは常に minor +1 のため `medium`。`--write` で自動追記できる。" +
+      "/ace-curate 4-c / /ace-refine R3-e 参照）。"
+    );
+  }
+  return (
+    `✗ changeImpact="${changeImpactValue}" は無効な値です。` +
+    "`low` / `medium` / `high` のいずれか（小文字）へ修正してください。"
+  );
 }
 
 /** version↔Changelog 不一致時の共通エラーメッセージ（check / write 共用）。 */
@@ -352,6 +449,11 @@ export function computeSync(
   const recordedCount = recordedRaw !== null && /^[0-9]+$/u.test(recordedRaw) ? Number.parseInt(recordedRaw, 10) : null;
   const inSync = recordedCount === actualCount;
 
+  // Changelog 情報は本文側なので frontmatter 編集の前に一度だけ抽出する
+  // （version↔Changelog 一致と「変更済み文書」判定の両方で使う）
+  const changelogExtract = extractLatestChangelogVersion(content);
+  const changelogVersionCount = changelogExtract.kind === "found" ? changelogExtract.count : 0;
+
   const changes: FieldChange[] = [];
   let frontmatter = split.frontmatter;
 
@@ -401,6 +503,31 @@ export function computeSync(
       changes.push({ field: VERSION_FIELD, from: currentVersion, to: bumped });
       frontmatter = replaced;
     }
+
+    // 4) changeImpact の自動追記（欠落時のみ。値域違反は自動修正せず後段の検証で報告する）。
+    //    updated を動かした後の frontmatter で「変更済み」を判定するため、
+    //    write によって created ≠ updated へ遷移するケースも漏れなく対象になる。
+    const createdAfterWrite = readTopLevelField(frontmatter, CREATED_FIELD);
+    const updatedAfterWrite = readTopLevelField(frontmatter, UPDATED_FIELD);
+    if (
+      isModifiedDocState(createdAfterWrite, updatedAfterWrite, changelogVersionCount) &&
+      readTopLevelField(frontmatter, CHANGE_IMPACT_FIELD) === null
+    ) {
+      const inserted = insertFieldAfter(
+        frontmatter,
+        UPDATED_FIELD,
+        CHANGE_IMPACT_FIELD,
+        DEFAULT_CHANGE_IMPACT,
+      );
+      if (inserted === null) {
+        return {
+          kind: "error",
+          message: `${CHANGE_IMPACT_FIELD} を追記できませんでした（トップレベルの ${UPDATED_FIELD} 行が見つかりません）。`,
+        };
+      }
+      changes.push({ field: CHANGE_IMPACT_FIELD, from: null, to: DEFAULT_CHANGE_IMPACT });
+      frontmatter = inserted;
+    }
   }
 
   // split.rest は閉じ '---' 行から始まる（splitFrontmatter 参照）ため、
@@ -409,7 +536,6 @@ export function computeSync(
 
   // version ↔ Changelog 一致（本文側。write で version を上げても Changelog は自動追記しない）
   const frontmatterVersion = readField(frontmatter, VERSION_FIELD);
-  const changelogExtract = extractLatestChangelogVersion(content);
   let changelogVersion: string | null = null;
   let versionChangelogInSync = true;
   if (changelogExtract.kind === "absent") {
@@ -422,6 +548,23 @@ export function computeSync(
     versionChangelogInSync = frontmatterVersion !== null && frontmatterVersion === changelogVersion;
   }
 
+  // changeImpact 検証（Issue #289: 値域は /validate-docs の Frontmatter スキーマと同一、
+  // 「変更済み」判定は isModifiedDocState の機械判定可能な部分集合）。
+  // write モードで updated を当日へ動かし自動追記も終えた後の frontmatter を見るため、
+  // 「これから書き込む姿」が created ≠ updated になるケースも漏れなく検出する。
+  const createdValue = readTopLevelField(frontmatter, CREATED_FIELD);
+  const updatedValue = readTopLevelField(frontmatter, UPDATED_FIELD);
+  const changeImpactValue = readTopLevelField(frontmatter, CHANGE_IMPACT_FIELD);
+  const isModifiedDoc = isModifiedDocState(createdValue, updatedValue, changelogVersionCount);
+  let changeImpactValid = true;
+  if (changeImpactValue !== null) {
+    // フィールドが存在するなら、変更済みか否かによらず値域（小文字）を検証する
+    changeImpactValid = CHANGE_IMPACT_VALUES.has(changeImpactValue);
+  } else if (isModifiedDoc) {
+    // 変更済みなのに未記録は違反（write モードでは自動追記済みのため、ここへ来るのは check のみ）
+    changeImpactValid = false;
+  }
+
   return {
     kind: "ok",
     actualCount,
@@ -430,6 +573,8 @@ export function computeSync(
     frontmatterVersion,
     changelogVersion,
     versionChangelogInSync,
+    changeImpactValue,
+    changeImpactValid,
     changes,
     content: rebuilt,
   };
@@ -539,7 +684,7 @@ export function main(argv: readonly string[] = process.argv): number {
   );
 
   if (!write) {
-    // check モード: count と version↔Changelog の両方をゲートする
+    // check モード: count / version↔Changelog / changeImpact の三点をゲートする
     let failed = false;
     if (result.inSync) {
       console.log("✓ ace_entry_count は実数と一致しています。");
@@ -558,17 +703,35 @@ export function main(argv: readonly string[] = process.argv): number {
       failed = true;
       console.error(formatVersionChangelogMismatch(result.frontmatterVersion, result.changelogVersion));
     }
+    if (result.changeImpactValid) {
+      if (result.changeImpactValue !== null) {
+        console.log("✓ changeImpact は記録済みで、値も小文字の値域内です。");
+      } else {
+        // スキップを CI ログ上可視にする（ゲートが動かなかったのか通ったのかを区別できるように）
+        console.log(
+          "- changeImpact: 検証スキップ（変更済みと判定される根拠が無いため presence を要求しない）",
+        );
+      }
+    } else {
+      failed = true;
+      console.error(formatChangeImpactViolation(result.changeImpactValue));
+    }
     return failed ? EXIT_DRIFT : EXIT_OK;
   }
 
   // write モード: frontmatter のみ書き戻す（Changelog 本文は触らない）。
-  // version↔Changelog 不一致はここでも報告し、誤って「すべて最新」と出さない。
+  // version↔Changelog / changeImpact の違反はここでも報告し、誤って「すべて最新」と出さない。
   if (result.changes.length === 0) {
-    if (result.versionChangelogInSync) {
+    if (result.versionChangelogInSync && result.changeImpactValid) {
       console.log("✓ 更新は不要でした（すべて最新です）。");
       return EXIT_OK;
     }
-    console.error(formatVersionChangelogMismatch(result.frontmatterVersion, result.changelogVersion));
+    if (!result.versionChangelogInSync) {
+      console.error(formatVersionChangelogMismatch(result.frontmatterVersion, result.changelogVersion));
+    }
+    if (!result.changeImpactValid) {
+      console.error(formatChangeImpactViolation(result.changeImpactValue));
+    }
     return EXIT_DRIFT;
   }
 
@@ -590,11 +753,16 @@ export function main(argv: readonly string[] = process.argv): number {
         "`npm run ace:check-playbook-frontmatter` で一致を確認してください。",
     );
   }
+  let driftAfterWrite = false;
   if (!result.versionChangelogInSync) {
     console.error(formatVersionChangelogMismatch(result.frontmatterVersion, result.changelogVersion));
-    return EXIT_DRIFT;
+    driftAfterWrite = true;
   }
-  return EXIT_OK;
+  if (!result.changeImpactValid) {
+    console.error(formatChangeImpactViolation(result.changeImpactValue));
+    driftAfterWrite = true;
+  }
+  return driftAfterWrite ? EXIT_DRIFT : EXIT_OK;
 }
 
 /**

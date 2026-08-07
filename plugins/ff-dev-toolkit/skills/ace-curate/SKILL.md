@@ -142,6 +142,7 @@ ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（例 `ACE-438-1`、非PR
 その他:
 
 - `updated` を今日の日付に更新
+- `changeImpact`: **新規エントリ追加（minor +1）時に `medium` を設定・維持する**（version を上げる場合は常に minor のため、minor=medium の対応 — spec-docs-map のバージョン更新目安 — に従う）。カウンター更新のみの場合は既存値を変更しない（欠落していれば `medium` を追記する）。機械同期の `--write` も、変更済みなのに欠落している場合は `medium` を自動追記する。**PLAYBOOK.md の `changeImpact` 更新責任は本スキルと `/ace-refine` にある**（`/validate-docs` の Frontmatter スキーマ検証が「変更済みなのに未記録」を ❌ にするため、欠落のまま放置しない）
 - `ace_entry_count` をインクリメント（新規エントリ追加時のみ。カウンター更新のみの場合は変更しない）
 - 機械同期する場合はプロジェクトの `ace:bump-playbook-frontmatter`（`--write --bump-version`。**minor +1**）。count のみ直すなら `ace:sync-playbook-frontmatter`
 
@@ -188,7 +189,7 @@ npm run ace:check-playbook-frontmatter
 # npx --yes tsx path/to/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
 ```
 
-- exit 0 になるまで 4-c / 4-d を直す（`ace_entry_count` 不一致・version↔Changelog 不一致の両方をゲートする）
+- exit 0 になるまで 4-c / 4-d を直す（`ace_entry_count` 不一致・version↔Changelog 不一致・`changeImpact` 違反（変更済みなのに未記録 / 小文字 low・medium・high 以外）の三点をゲートする）
 - 通ってから手順 5 のコミットへ進む
 
 ### 5. コミット

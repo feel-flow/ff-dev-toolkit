@@ -153,14 +153,24 @@ describe("extractLatestChangelogVersion", () => {
     expect(extractLatestChangelogVersion("## Changelog\n\n（まだ無し）\n")).toEqual({ kind: "empty" });
   });
 
-  it("最新の ### [x.y.z] を返す（先頭が最新）", () => {
+  it("最新の ### [x.y.z] を返す（先頭が最新）。count はセクション内の版見出し総数", () => {
     const md = `## Changelog\n\n### [1.60.0] - 2026-07-22\n\n#### 追加\n\n### [1.59.0] - 2026-07-20\n`;
-    expect(extractLatestChangelogVersion(md)).toEqual({ kind: "found", version: "1.60.0" });
+    expect(extractLatestChangelogVersion(md)).toEqual({ kind: "found", version: "1.60.0", count: 2 });
+  });
+
+  it("版見出しが 1 件（初版のみ）なら count=1", () => {
+    const md = `## Changelog\n\n### [1.0.0] - 2026-01-01\n`;
+    expect(extractLatestChangelogVersion(md)).toEqual({ kind: "found", version: "1.0.0", count: 1 });
   });
 
   it("次の ## セクション以降の版見出しは拾わない（空 Changelog を found にしない）", () => {
     const md = `## Changelog\n\n（空）\n\n## 関連リソース\n\n### [9.9.9] - 2099-01-01\n`;
     expect(extractLatestChangelogVersion(md)).toEqual({ kind: "empty" });
+  });
+
+  it("count も次の ## セクション以降の版見出しを数えない", () => {
+    const md = `## Changelog\n\n### [1.1.0] - 2026-02-01\n\n## 関連リソース\n\n### [9.9.9] - 2099-01-01\n`;
+    expect(extractLatestChangelogVersion(md)).toEqual({ kind: "found", version: "1.1.0", count: 1 });
   });
 });
 
@@ -351,6 +361,149 @@ describe("computeSync (write)", () => {
   });
 });
 
+describe("computeSync (changeImpact)", () => {
+  const BODY = `
+### ACE-1-1: entry
+
+| Category | coding |
+`;
+  function fixtureWithFm(fmFields: string): string {
+    return `---\n${fmFields}\n---\n${BODY}`;
+  }
+
+  it("変更済み（created ≠ updated）なのに changeImpact 欠落なら changeImpactValid=false", () => {
+    const content = fixtureWithFm(
+      `title: "PLAYBOOK"\nversion: "1.59.0"\nace_entry_count: 1\ncreated: "2026-07-07"\nupdated: "2026-07-19"`,
+    );
+    const result = computeSync(content, 1);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.changeImpactValue).toBeNull();
+    expect(result.changeImpactValid).toBe(false);
+  });
+
+  it("created == updated でも Changelog に版見出しが 2 件以上あれば変更済み扱いで欠落を検出する", () => {
+    const content =
+      `---\ntitle: "PLAYBOOK"\nversion: "1.1.0"\nace_entry_count: 1\ncreated: "2026-07-07"\nupdated: "2026-07-07"\n---\n${BODY}\n## Changelog\n\n### [1.1.0] - 2026-07-07\n\n### [1.0.0] - 2026-07-01\n`;
+    const result = computeSync(content, 1);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.changeImpactValue).toBeNull();
+    expect(result.changeImpactValid).toBe(false);
+  });
+
+  it("初版（created == updated、Changelog 1 件以下）なら changeImpact 欠落でも指摘しない", () => {
+    const content = fixtureWithFm(
+      `title: "PLAYBOOK"\nversion: "1.0.0"\nace_entry_count: 1\ncreated: "2026-07-07"\nupdated: "2026-07-07"`,
+    );
+    const result = computeSync(content, 1);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.changeImpactValid).toBe(true);
+  });
+
+  it("created を持たない fixture（updated のみ・Changelog なし）では presence を要求しない（後方互換）", () => {
+    const result = computeSync(SAMPLE_FM, 1);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.changeImpactValid).toBe(true);
+  });
+
+  it("小文字の low / medium / high は valid（クォート付きも生値で判定）", () => {
+    for (const rendered of ["medium", '"low"', "'high'"]) {
+      const content = fixtureWithFm(
+        `title: "PLAYBOOK"\nversion: "1.59.0"\nace_entry_count: 1\ncreated: "2026-07-07"\nupdated: "2026-07-19"\nchangeImpact: ${rendered}`,
+      );
+      const result = computeSync(content, 1);
+      expect(result.kind).toBe("ok");
+      if (result.kind !== "ok") return;
+      expect(result.changeImpactValid).toBe(true);
+    }
+  });
+
+  it("大文字・混在（MEDIUM / Medium）や値域外は changeImpactValid=false", () => {
+    for (const bad of ["MEDIUM", "Medium", "critical"]) {
+      const content = fixtureWithFm(
+        `title: "PLAYBOOK"\nversion: "1.59.0"\nace_entry_count: 1\ncreated: "2026-07-07"\nupdated: "2026-07-19"\nchangeImpact: ${bad}`,
+      );
+      const result = computeSync(content, 1);
+      expect(result.kind).toBe("ok");
+      if (result.kind !== "ok") return;
+      expect(result.changeImpactValue).toBe(bad);
+      expect(result.changeImpactValid).toBe(false);
+    }
+  });
+
+  it("空値（changeImpact: のみ）は欠落扱いではなく値域違反として検出する", () => {
+    const content = fixtureWithFm(
+      `title: "PLAYBOOK"\nversion: "1.59.0"\nace_entry_count: 1\ncreated: "2026-07-07"\nupdated: "2026-07-19"\nchangeImpact:`,
+    );
+    const result = computeSync(content, 1);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.changeImpactValue).toBe("");
+    expect(result.changeImpactValid).toBe(false);
+  });
+
+  it("metadata 配下にネストされた changeImpact はトップレベル記録として扱わない（fail-open 防止）", () => {
+    const content = fixtureWithFm(
+      `title: "PLAYBOOK"\nversion: "1.59.0"\nace_entry_count: 1\ncreated: "2026-07-07"\nupdated: "2026-07-19"\nmetadata:\n  changeImpact: medium`,
+    );
+    const result = computeSync(content, 1);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.changeImpactValue).toBeNull();
+    expect(result.changeImpactValid).toBe(false);
+  });
+
+  it("フィールドが存在する場合は created == updated でも値域を検証する", () => {
+    const content = fixtureWithFm(
+      `title: "PLAYBOOK"\nversion: "1.0.0"\nace_entry_count: 1\ncreated: "2026-07-07"\nupdated: "2026-07-07"\nchangeImpact: HIGH`,
+    );
+    const result = computeSync(content, 1);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.changeImpactValid).toBe(false);
+  });
+
+  it("write で updated を動かして変更済みへ遷移したら changeImpact: medium を自動追記する", () => {
+    const content = fixtureWithFm(
+      `title: "PLAYBOOK"\nversion: "1.0.0"\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-01-01"`,
+    );
+    const result = computeSync(content, 1, { write: true, updatedDate: "2026-07-21" });
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.changes).toContainEqual({ field: "changeImpact", from: null, to: "medium" });
+    expect(result.changeImpactValue).toBe("medium");
+    expect(result.changeImpactValid).toBe(true);
+    // updated 行の直後へ追記される
+    expect(result.content).toContain(`updated: "2026-07-21"\nchangeImpact: medium`);
+  });
+
+  it("write でも値域違反（MEDIUM 等）は自動修正せず violation のまま返す", () => {
+    const content = fixtureWithFm(
+      `title: "PLAYBOOK"\nversion: "1.0.0"\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-01-01"\nchangeImpact: MEDIUM`,
+    );
+    const result = computeSync(content, 1, { write: true, updatedDate: "2026-07-21" });
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.changeImpactValue).toBe("MEDIUM");
+    expect(result.changeImpactValid).toBe(false);
+    expect(result.content).not.toContain("changeImpact: medium");
+  });
+
+  it("check モードでは自動追記しない（欠落は violation として返すのみ）", () => {
+    const content = fixtureWithFm(
+      `title: "PLAYBOOK"\nversion: "1.59.0"\nace_entry_count: 1\ncreated: "2026-07-07"\nupdated: "2026-07-19"`,
+    );
+    const result = computeSync(content, 1);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.changes).toEqual([]);
+    expect(result.content).not.toContain("changeImpact");
+  });
+});
+
 describe("main (CLI contract)", () => {
   it("パス引数なしなら usage error", () => {
     const { status, output } = withCapturedConsole(() => main(["node", "sync"]));
@@ -369,6 +522,120 @@ describe("main (CLI contract)", () => {
     expect(status).toBe(1);
     expect(output).toContain("ドリフト");
     expect(fs.readFileSync(playbook, "utf8")).toBe(content);
+  });
+
+  it("--check は変更済みなのに changeImpact 欠落なら exit 1（ファイルは書き換えない）", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const content = `---\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-02-01"\nversion: "1.1.0"\n---\n### ACE-1-1: a\n| Category | coding |\n`;
+    fs.writeFileSync(playbook, content);
+
+    const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--check"]));
+
+    expect(status).toBe(1);
+    expect(output).toContain("changeImpact が未記録");
+    expect(fs.readFileSync(playbook, "utf8")).toBe(content);
+  });
+
+  it("--check は changeImpact が小文字値域内なら exit 0", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const content = `---\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-02-01"\nversion: "1.1.0"\nchangeImpact: medium\n---\n### ACE-1-1: a\n| Category | coding |\n`;
+    fs.writeFileSync(playbook, content);
+
+    const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--check"]));
+
+    expect(status).toBe(0);
+    expect(output).toContain("changeImpact は記録済み");
+  });
+
+  it("--write は変更済みへ遷移した文書へ changeImpact: medium を自動追記して exit 0", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    fs.writeFileSync(
+      playbook,
+      `---\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-01-01"\nversion: "1.0.0"\n---\n### ACE-1-1: a\n| Category | coding |\n### ACE-1-2: b\n| Category | coding |\n`,
+    );
+    const previousDate = process.env.ACE_UPDATED_DATE;
+    process.env.ACE_UPDATED_DATE = "2026-07-21";
+    try {
+      const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--write"]));
+      expect(status).toBe(0);
+      expect(output).toContain("changeImpact: なし → medium");
+      const written = fs.readFileSync(playbook, "utf8");
+      expect(written).toContain("ace_entry_count: 2");
+      expect(written).toContain('updated: "2026-07-21"\nchangeImpact: medium');
+    } finally {
+      if (previousDate === undefined) delete process.env.ACE_UPDATED_DATE;
+      else process.env.ACE_UPDATED_DATE = previousDate;
+    }
+  });
+
+  it("--write は値域違反（MEDIUM 等）を自動修正せず、書き込み後も報告して exit 1", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    fs.writeFileSync(
+      playbook,
+      `---\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-01-01"\nversion: "1.0.0"\nchangeImpact: MEDIUM\n---\n### ACE-1-1: a\n| Category | coding |\n### ACE-1-2: b\n| Category | coding |\n`,
+    );
+    const previousDate = process.env.ACE_UPDATED_DATE;
+    process.env.ACE_UPDATED_DATE = "2026-07-21";
+    try {
+      const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--write"]));
+      expect(status).toBe(1);
+      expect(output).toContain("無効な値");
+      // count / updated の書き込み自体は行われている（違反報告と書き込みは独立）
+      const written = fs.readFileSync(playbook, "utf8");
+      expect(written).toContain("ace_entry_count: 2");
+      expect(written).toContain("changeImpact: MEDIUM");
+    } finally {
+      if (previousDate === undefined) delete process.env.ACE_UPDATED_DATE;
+      else process.env.ACE_UPDATED_DATE = previousDate;
+    }
+  });
+
+  it("--write で更新不要でも changeImpact 値域違反なら「すべて最新」と言わず exit 1", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const content = `---\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-07-21"\nversion: "1.0.0"\nchangeImpact: Medium\n---\n### ACE-1-1: a\n| Category | coding |\n`;
+    fs.writeFileSync(playbook, content);
+    const previousDate = process.env.ACE_UPDATED_DATE;
+    process.env.ACE_UPDATED_DATE = "2026-07-21";
+    try {
+      const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--write"]));
+      expect(status).toBe(1);
+      expect(output).toContain("無効な値");
+      expect(output).not.toContain("すべて最新");
+      expect(fs.readFileSync(playbook, "utf8")).toBe(content);
+    } finally {
+      if (previousDate === undefined) delete process.env.ACE_UPDATED_DATE;
+      else process.env.ACE_UPDATED_DATE = previousDate;
+    }
+  });
+
+  it("--write --bump-version は changeImpact が正常値なら false positive を出さない（exit 0）", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    fs.writeFileSync(
+      playbook,
+      `---\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-01-01"\nversion: "1.1.0"\nchangeImpact: medium\n---\n### ACE-1-1: a\n| Category | coding |\n`,
+    );
+    const previousDate = process.env.ACE_UPDATED_DATE;
+    process.env.ACE_UPDATED_DATE = "2026-07-21";
+    try {
+      const { status, output } = withCapturedConsole(() =>
+        main(["node", "sync", playbook, "--write", "--bump-version"]),
+      );
+      expect(status).toBe(0);
+      expect(output).not.toContain("changeImpact が未記録");
+      expect(output).not.toContain("無効な値");
+      const written = fs.readFileSync(playbook, "utf8");
+      expect(written).toContain('version: "1.2.0"');
+      expect(written).toContain("changeImpact: medium");
+    } finally {
+      if (previousDate === undefined) delete process.env.ACE_UPDATED_DATE;
+      else process.env.ACE_UPDATED_DATE = previousDate;
+    }
   });
 
   it("--bump-version を --write なしで渡したら usage error", () => {

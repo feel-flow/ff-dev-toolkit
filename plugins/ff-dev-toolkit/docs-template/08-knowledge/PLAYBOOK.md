@@ -1,9 +1,10 @@
 ---
 title: "PLAYBOOK"
-version: "1.63.0"
+version: "1.64.0"
 status: "approved"
 created: "2026-03-10"
-updated: "2026-07-31"
+updated: "2026-08-07"
+changeImpact: medium
 owner: "@fffokazaki"
 ace_entry_count: 131
 tags: [ace, playbook, knowledge-management]
@@ -35,7 +36,7 @@ GitHub Discussions が「人間が読むためのナラティブ（物語的記�
 | **800行超過時は refine → 必要なら分割** | カテゴリファイル（`playbook/*.md`）が 800 行を超えたら先に `/ace-refine`。それでも再超過が常態化したら分割を検討。分割レイアウトの索引 `PLAYBOOK.md` は行数閾値の監視対象外 |
 | **定期 Refine**                    | 月次または件数・行数ゲート発火時に `/ace-refine` で stale アーカイブ・圧縮・統合・昇格を実行（dry-run → 承認 → 適用）          |
 | **アーカイブの扱い**               | `playbook/archive/` 配下は `ace_entry_count`・カテゴリ件数ゲート・reuse 集計の対象外。参照リンクが切れていたら archive を ID で grep して探す |
-| **Frontmatter更新**                | エントリ追加時に `version`, `updated`, `ace_entry_count` を更新（`ace_entry_count` は live エントリ数 = archive を数えない）   |
+| **Frontmatter更新**                | エントリ追加時に `version`, `updated`, `changeImpact`（minor 上げ = `medium`）, `ace_entry_count` を更新（`ace_entry_count` は live エントリ数 = archive を数えない） |
 | **コミット規則**                   | 件名 `knowledge: ACE-XXX <要約>`、カテゴリは commit body の `Categories:` 行に記録                                             |
 
 ### エントリID規則
@@ -330,6 +331,18 @@ Playbook が 800 行を超えた場合、以下のように分割する：
 | ACE-79-3   | Markdown セクション抽出は次の同レベル見出しまでに区切る                                                                                                                     | testing               | [playbook/testing.md#ace-79-3](./playbook/testing.md#ace-79-3)                               |
 
 ## Changelog
+
+### [1.64.0] - 2026-08-07
+
+#### 変更（運用ルール）
+
+- Frontmatter更新の対象に `changeImpact`（minor 上げ = `medium`）を追加。frontmatter 検査ゲートが count / version↔Changelog に加えて changeImpact（変更済みなのに未記録・値域外）も検証する
+
+### [1.63.0] - 2026-07-31
+
+#### 変更（運用ルール — 行数閾値の適用明確化、Issue #212）
+
+- 800 行超過時の第一手段を `/ace-refine` とし、再超過が常態化した場合のみ分割を検討する運用へ変更（旧: 800 行超過時は即分割）。分割レイアウトの索引 `PLAYBOOK.md` は行数閾値の監視対象外であることを明記
 
 ### [1.62.0] - 2026-07-31
 

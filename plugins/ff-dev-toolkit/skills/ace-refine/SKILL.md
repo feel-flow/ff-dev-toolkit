@@ -127,12 +127,13 @@ dry-run レポート全文と近似重複の抽出結果を、操作種別ごと
    ```
 
 2. 昇格は**移動ではない**。元エントリは live に `Status: active` のまま残す（カウント意味論も不変）。既に同じ ACE ID が PATTERNS.md に収載済みならスキップする（冪等）。`deprecated` 等の非 active エントリは Helpful が高くても昇格させない（レポートの候補算出も active のみを列挙する）。
+3. 昇格を追記したら PATTERNS.md の Frontmatter も更新する: `version` を **minor +1**、`updated` を今日、`changeImpact` を `medium` に設定（無ければ追記）。PATTERNS.md に `## Changelog` セクションがある場合は先頭へ当該版のエントリも追記し、frontmatter の `version` と最新 `### [x.y.z]` の一致を保つ。昇格した文書を Frontmatter / Changelog 未更新のまま残さない。
 
 #### R3-e. 索引・Frontmatter・Changelog の整合
 
 1. **エントリ保全の一括検証（必須）**: R3-a/b/c で live から削除・書き換えした**全 ID** について、`playbook/archive/` 配下に `### <ID>:` 見出しが存在することを grep で確認する。1 件でも欠けていたらコミットせず、欠けたエントリを git から復元して該当操作をやり直す。
 2. `PLAYBOOK.md` 索引テーブルを再確認する（アーカイブ・統合で削除した行の消し忘れがないか）。索引行は**タイトルのみ**で、説明文を書かない。
-3. Frontmatter: `ace_entry_count` を **live エントリ実数**（`playbook/archive/` 配下は数えない）へ更新し、`version` を **minor +1**、`updated` を今日にする。
+3. Frontmatter: `ace_entry_count` を **live エントリ実数**（`playbook/archive/` 配下は数えない）へ更新し、`version` を **minor +1**、`updated` を今日、`changeImpact` を `medium` に設定する（無ければ追記。minor=medium の対応に従う。PLAYBOOK.md の `changeImpact` 更新責任は本スキルと `/ace-curate` にある）。
 4. `## Changelog` 先頭へ整理ブロックを追記する:
 
    ```markdown

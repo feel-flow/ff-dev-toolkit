@@ -16,6 +16,20 @@
 
 ## [Unreleased]
 
+### 追加
+
+- ACE playbook frontmatter 検査（`sync-playbook-frontmatter.ts --check`）が `changeImpact` も検証するようになった。変更済み文書（`created` ≠ `updated`、または `## Changelog` に版見出しが 2 件以上）なのに `changeImpact` が未記録、または値が小文字の `low` / `medium` / `high` 以外なら exit 1。値域は `/validate-docs` の Frontmatter スキーマと同一で、「変更済み」判定は同スキーマのうち機械判定できる部分集合を実装する。検証はトップレベルのフィールドだけを読み、ネストされた同名キーを記録と誤認しない。検証をスキップした場合はその旨をログへ出す
+- `--write` は、変更済みなのに `changeImpact` が欠落している場合 `medium` を自動追記する（ACE の版上げは常に minor +1 のため）。値域違反（`MEDIUM` 等）は自動修正せず、書き込み後も報告して exit 1 を返し、誤って「すべて最新」と表示しない
+
+### 変更
+
+- `/ace-curate`（Frontmatter の更新・検証ゲート）と `/ace-refine`（PATTERNS.md への昇格、索引・Frontmatter・Changelog の整合）に `changeImpact` の更新責任を明記した。version を minor +1 するとき `changeImpact: medium` を設定・維持する（minor=medium の対応に従う）。`/ace-refine` の PATTERNS.md 昇格手順に、昇格先の Frontmatter（version / updated / changeImpact）と Changelog の更新を追加した
+- ACE 運用文書（ace-cycle・scripts/ace README・サンプル PLAYBOOK の運用ルール表）の Frontmatter 更新対象・検証ゲート列挙へ `changeImpact` を追記した
+
+### 修正
+
+- docs-template サンプル PLAYBOOK の frontmatter version に対応する Changelog 見出しが欠けており、frontmatter 検査（version ↔ Changelog 一致）が exit 1 になっていたのを修正した。あわせて同サンプルへ `changeImpact` を追記した
+
 ## [0.24.0] - 2026-08-06
 
 ### 追加
