@@ -13,6 +13,12 @@
  *   伸びるため。Issue #212 / ADR-016）。
  * - PLAYBOOK.md と同階層に `playbook/*.md`（カテゴリ別分割ファイル）がある場合は
  *   自動検出し、集計・行数チェックの対象に含める（分割レイアウト）。
+ * - 1 エントリブロック内に Category 行が 2 本以上あるとき、および閉じていないコードフェンスが
+ *   あるときは usage error で落とす（Issue #340）。どちらも「見出しとして認識されないブロックが
+ *   直前のエントリへ吸収される」経路で、放置すると件数が過少になり（そのカテゴリの唯一の
+ *   エントリなら histogram から消え）、それでも正常終了する。なお本関数は CLI 専用ではなく
+ *   sync-playbook-frontmatter.ts の countActualEntries も消費するので、エラーはそちらでも
+ *   fail-loud になる。
  * - `playbook/archive/` 配下（/ace-refine が退避した原文）は集計対象に**含めない**。
  *   discoverPlaybookSubfiles が playbook/ 直下の *.md のみを非再帰で走査するのは
  *   この除外を実現する仕様であり、再帰化してはならない。
@@ -110,7 +116,39 @@ export function entryHeadingSource(mode: EntryHeadingMode): string {
   return String.raw`^### ${id}:`;
 }
 const ACE_ENTRY_HEADER_PATTERN = new RegExp(entryHeadingSource("non-capturing"), "mu");
-const CATEGORY_TABLE_LINE_PATTERN = /^\|\s*Category\s*\|\s*([^|]+)\|/im;
+/**
+ * Category 行。1 セグメント内の**本数**を数えるため matchAll で走らせる（Issue #340）。
+ *
+ * `g` を落とすと `matchAll` は TypeError を投げるので、その方向の変異は静かには壊れない。
+ * 静かに壊れるのは逆方向で、**この定数に対して `.test()` / `.exec()` を呼ぶこと**。
+ * global 正規表現はそれらの呼び出しで `lastIndex` を進め、モジュールレベル定数なので
+ * セグメント間・ファイル間に持ち越されて、同じ入力でも 3 回目が false になる。
+ * 「本数はもう要らないので boolean で十分」という将来の単純化がこの形になりやすい。
+ * 消費側を増やすときは matchAll のままにするか、関数内で正規表現を生成すること。
+ */
+const CATEGORY_TABLE_LINE_PATTERN = /^\|\s*Category\s*\|\s*([^|]+)\|/gim;
+/**
+ * フェンス開始行（``` / ~~~ の 3 本以上。以降は情報文字列）。
+ *
+ * **インデントは制限しない**（CommonMark は 3 まで）。ACE の本文はリスト項目の中に
+ * フェンスを置くことがあり、その場合インデントはリスト内容カラム基準で測られるため
+ * トップレベル基準の「3 まで」では取りこぼす。取りこぼすとフェンス内の行頭 `|` が
+ * 実 Category 行として数えられ、**正常なエントリが吸収エラーになる**（偽陽性）。
+ * 逆にインデントを許しすぎるとインデントコードブロック中の ``` を開始と誤認しうるが、
+ * その場合は対になる終端が無く unclosedFence の fail-closed 側へ落ちる（黙らない）。
+ */
+const FENCE_OPEN_PATTERN = /^[ \t]*(`{3,}|~{3,})/u;
+/**
+ * フェンス終了行の候補（記号だけの行。末尾は空白のみ）。
+ * 「開始と同じ記号・同数以上」の照合は呼び出し側（blankFencedCodeBlocks）が行う。
+ * この定数だけでは終端条件は完結しない。
+ */
+const FENCE_CLOSE_PATTERN = /^[ \t]*(`{3,}|~{3,})[ \t]*$/u;
+/**
+ * 見出し行（`#` 1〜6 + 空白）。吸収エラーで「認識されなかった見出し候補」を挙げるのに使う。
+ * 判定には使わない。呼び出し側が trim 済みの行を渡すのでインデントは問わない。
+ */
+const ANY_HEADING_LINE_PATTERN = /^#{1,6}\s/u;
 
 /** 存在しないキーは undefined（Record 全面 number ではない）。呼び出し側は ?? 0 で読む。 */
 export type CategoryHistogram = Readonly<Partial<Record<string, number>>>;
@@ -220,9 +258,94 @@ function blankHtmlBlockComments(source: string): string {
   );
 }
 
+/** blankFencedCodeBlocks の結果。`unclosedFence` は呼び出し側で fail-closed に使う。 */
+type BlankedSegment = Readonly<{
+  readonly text: string;
+  readonly unclosedFence: boolean;
+}>;
+
+/**
+ * Markdown のフェンス付きコードブロックを「同じ行数の空白」へ置換する（除去しない）。
+ * 目的は blankHtmlBlockComments と同じで、本文が例示している追記テンプレート
+ * （`| Category | coding | …` を含むフェンス）を走査対象から外すこと。
+ *
+ * **現行の実データはこの経路を通らない**。live / docs-template の PLAYBOOK.md はどちらも
+ * この断片を載せているが、置き場所が最初のエントリ見出しより前（索引のヘッダ領域）なので
+ * `split(...).slice(1)` が捨てる。空白化が要るのは (1) 部分移行で索引側にエントリが残り、
+ * 断片が最終セグメントへ入る場合、(2) カテゴリファイルのエントリ本文がテンプレートを
+ * 引用する場合の 2 つ。どちらも「起きうる」であって「今起きている」ではない。
+ * それでも入れるのは、空白化しないと**抽出とカウントが食い違って**フェンス内の例示が
+ * カテゴリ値として静かに採用されるため（analyzePlaybookMarkdown のループを参照）。
+ *
+ * 行単位で走査するのは、正規表現で開始〜終了を対にするより「行数が保存される」ことが
+ * 自明になるため（split/join("\n") は行数を変えない）。blankHtmlBlockComments が
+ * 先に走るので、HTML コメント内のバックティックは既に空白化されており、
+ * コメント内の断片が本文のフェンスと対になることはない。
+ *
+ * CommonMark の完全な実装ではない。既知の乖離は 2 つ:
+ * インデントを制限しない（FENCE_OPEN_PATTERN のコメント参照）ことと、
+ * バックティック開始フェンスの情報文字列にバックティックを含められない規則を見ないこと。
+ */
+function blankFencedCodeBlocks(source: string): BlankedSegment {
+  const lines = source.split("\n");
+  let openFence: string | undefined;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // CRLF 文書では split("\n") 後の各行末に \r が残る。FENCE_CLOSE_PATTERN は行末を
+    // アンカーするので、\r を落とさないと**すべてのフェンスが閉じなくなり**、
+    // 以降が丸ごと空白化されて本ファイルが足した吸収検出そのものが黙る。
+    const probe = line.endsWith("\r") ? line.slice(0, -1) : line;
+    if (openFence === undefined) {
+      const opened = FENCE_OPEN_PATTERN.exec(probe);
+      if (opened) {
+        openFence = opened[1];
+        lines[i] = blankLine(line);
+      }
+      continue;
+    }
+    const closed = FENCE_CLOSE_PATTERN.exec(probe);
+    lines[i] = blankLine(line);
+    // 終端記号は開始と同種・同数以上でなければ閉じない（``` の中の ~~~ や、
+    // 4 本フェンスの中の 3 本行は本文）。この照合を緩めると入れ子の例示が途中で
+    // 閉じ、続きの本文（実 Category 行を含む）が空白化される。
+    if (closed && closed[1][0] === openFence[0] && closed[1].length >= openFence.length) {
+      openFence = undefined;
+    }
+  }
+  return { text: lines.join("\n"), unclosedFence: openFence !== undefined };
+}
+
+function blankLine(line: string): string {
+  return line.replace(/[^\n]/gu, " ");
+}
+
+/**
+ * 吸収エラーのメッセージで「認識されなかった見出し候補」を名指しするための見出し行。
+ * **判定には使わない**（メッセージ文字列だけに影響する）。
+ *
+ * 引数は**フェンス空白化後**のテキストであること。生セグメントを渡すと、フェンス内の
+ * テンプレート例（`### ACE-XXX: …`）まで候補に混ざり、直すべき箇所として正しい本文を
+ * 指してしまう。ACE を含む行があればそれだけに絞り（本文の小見出しを混ぜない）、
+ * 1 本も無ければ見出し行全体を返す（`ACE-` ごと書き忘れた見出しも名指しできるように）。
+ */
+function findAbsorbedHeadingHints(scannable: string): string[] {
+  const headings = scannable
+    .split("\n")
+    .map((line: string) => line.trim())
+    .filter((line: string) => ANY_HEADING_LINE_PATTERN.test(line));
+  const aceLike = headings.filter((line: string) => line.includes("ACE"));
+  return aceLike.length > 0 ? aceLike : headings;
+}
+
 /**
  * PLAYBOOK.md 本文から ACE エントリブロックを走査し、Category 行を集計する。
- * HTML コメント内の追記例（### ACE-001 など）を除外するため、先にコメントを除去する。
+ * HTML コメント内の追記例（### ACE-001 など）を除外するため、先にコメントを空白化する
+ * （行数と行オフセットを保つため除去はしない）。コードフェンスの空白化は**分割の後**、
+ * セグメント単位で行う。したがってフェンス内に**正準形の** ID を持つ見出しがあると
+ * 分割はそこで切れる（テンプレートのプレースホルダを `ACE-XXX` のような非正準形に
+ * 保つ規則は ACE_ENTRY_ID_SOURCE のコメント参照）。この形はフェンスが対にならず
+ * unclosedFence の fail-closed へ落ちるので黙ってはいないが、分割・countHeaderLines・
+ * Category カウントの 3 者でフェンスの扱いが揃っていない状態ではある（Issue #342）。
  * `allowEmpty` が true の場合、エントリ見出しが 0 件でもエラーにせず空の結果を返す
  * （分割レイアウトの索引ファイルのように、単体では 0 件が正常なケース向け）。
  */
@@ -244,14 +367,63 @@ export function analyzePlaybookMarkdown(
   const histogram: Record<string, number> = {};
 
   for (const segment of segments) {
-    const match = segment.match(CATEGORY_TABLE_LINE_PATTERN);
-    if (!match?.[1]) {
+    // 本文が例示する追記テンプレート（フェンス内の `| Category | … |`）を数えない。
+    // **抽出と本数カウントは必ず同じテキストで行う**（Issue #340）。カウントだけを
+    // 空白化後に行うと、実 Category 行がフェンス例示の**後ろ**にあるブロックで
+    // 「本数は 1 本・値は先に現れた例示から採用」となり、誤ったカテゴリへ静かに 1 件入る。
+    // 同じテキストで数えれば 0 本 → 解析エラー / 1 本 → ok（値が空なら空値エラー）/
+    // 2 本以上 → 吸収エラー、に収まる。
+    const blanked = blankFencedCodeBlocks(segment);
+    // 閉じないフェンスは以降を末尾まで空白化する。実 Category 行はフェンスより前に
+    // あるので生き残り、フェンス以降にある**吸収ブロックの Category 行だけ**が消える。
+    // つまり本数が 1 本へ戻り、下の吸収検出が一度も発火しない — 偽陽性ガードが
+    // 検出器の証拠を消す形になる。閉じ忘れは Playbook の日常的な打ち間違いなので、
+    // ace-refine-report.ts の unmeasured クロスチェックと同じく前提が崩れたら落とす。
+    if (blanked.unclosedFence) {
+      return {
+        kind: "error",
+        message:
+          "閉じていないコードフェンス（``` / ~~~）を含む ACE ブロックがあります。" +
+          "以降の本文が走査対象から外れ、そこにあるエントリが件数からも Category 集計からも" +
+          "静かに消えます。フェンスを閉じてください。",
+      };
+    }
+    const scannable = blanked.text;
+    const matches = [...scannable.matchAll(CATEGORY_TABLE_LINE_PATTERN)];
+    if (matches.length === 0) {
       return {
         kind: "error",
         message: "Category 行を解析できない ACE ブロックがあります。",
       };
     }
-    const categoryKey = trimCategoryValue(match[1]);
+    // 1 ブロックに Category 行が 2 本以上あるのは、見出しとして認識されなかった
+    // ブロックが直前のエントリへ吸収された形（split がそこで切れなかった）。
+    // 検出しないと件数が過少になり、そのカテゴリの唯一のエントリなら histogram から
+    // 消えるのに kind:"ok" を返す（Issue #340）。
+    //
+    // 吸収以外の原因（本文が Category 行を素の表として例示している等）でも 2 本になる。
+    // メッセージは吸収を第一候補として挙げつつ、重複した Category 行の除去も促す。
+    // 空値チェック（この下）より**先**に判定するのは、2 本あること自体が構造の破れで、
+    // 値が空かどうかより根本的だから。順序を入れ替えると、吸収された側の値が空の
+    // ケースで「値が空」とだけ報告され、ブロックが 2 つ同居している事実が出なくなる。
+    if (matches.length >= 2) {
+      const values = matches
+        .map((entry) => trimCategoryValue(entry[1] ?? "") || "（空）")
+        .join(", ");
+      const hints = findAbsorbedHeadingHints(scannable);
+      const locator =
+        hints.length > 0 ? `認識されなかった見出し候補: ${hints.join(" / ")}。` : "";
+      return {
+        kind: "error",
+        message:
+          `見出しとして認識されないブロックが直前の ACE エントリへ吸収されている可能性があります` +
+          `（1 ブロック内に Category 行が ${String(matches.length)} 本あります）。` +
+          `検出した Category 値: ${values}。${locator}` +
+          `見出しの ID が正準形（check-category-size.ts の ACE_ENTRY_ID_SOURCE）から外れていないか、` +
+          `Category 行が重複していないかを確認してください。`,
+      };
+    }
+    const categoryKey = trimCategoryValue(matches[0][1] ?? "");
     // 行はあるが値が空（`| Category |  |`）は、Category 行が無いケースと同様に
     // usage error。空文字キーで集計すると実在カテゴリの件数が過少し、超過時の
     // メッセージも読めなくなる（公開 ff-dev-toolkit#9）。

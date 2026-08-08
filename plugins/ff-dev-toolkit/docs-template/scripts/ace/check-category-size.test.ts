@@ -193,6 +193,442 @@ describe("analyzePlaybookMarkdown", () => {
     const result = analyzePlaybookMarkdown(md, { allowEmpty: true });
     expect(result.kind).toBe("error");
   });
+
+  it("見出しとして認識されないブロックが直前エントリへ吸収されたら error（件数が静かに減らない）", () => {
+    // Issue #340: 中央のブロックだけ ID が正準形を外れると、そのブロックは直前の
+    // セグメントへ吸収される。修正前は kind:"ok" / histogram {coding:2} を返し、
+    // testing の 1 件は histogram から丸ごと消えたままエラーにもならなかった。
+    const md = `
+### ACE-1-1: 正常なエントリ
+
+| Category | coding | Origin | PR #1 |
+
+---
+
+### ACE-abc-1: ID を打ち間違えて見出しと認識されないエントリ
+
+| Category | testing | Origin | PR #1 |
+
+---
+
+### ACE-1-2: 正常なエントリ
+
+| Category | coding | Origin | PR #1 |
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("吸収");
+      // 「該当箇所の特定方法」= 認識されなかった見出しそのものを名指しできること。
+      expect(result.message).toContain("ACE-abc-1");
+      // 検出した Category 値は**全件**挙げる（先頭だけに縮退させない）。
+      expect(result.message).toContain("coding");
+      expect(result.message).toContain("testing");
+    }
+  });
+
+  it("吸収エラーの見出し候補に本文の小見出しを混ぜない", () => {
+    const md = `
+### ACE-4-1: 正常なエントリ
+
+| Category | coding | Origin | PR #4 |
+
+#### 補足の小見出し
+
+### ACE-abc-1: ID を打ち間違えたエントリ
+
+| Category | testing | Origin | PR #4 |
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("ACE-abc-1");
+      expect(result.message).not.toContain("補足の小見出し");
+    }
+  });
+
+  it("ACE を含まない見出しでも候補として名指しする（プレフィックスごと書き忘れた形）", () => {
+    // 候補は「ACE を含む行があればそれだけに絞る」が、1 本も無ければ見出し全体を返す。
+    // fixture の見出し文字列に "ACE" を混ぜるとフォールバック側を通らず、絞り込みだけを
+    // 検査したことになる（この形で一度偽の緑になった）。
+    const md = `
+### ACE-4-2: 正常なエントリ
+
+| Category | coding | Origin | PR #4 |
+
+### 340-1: 接頭辞ごと書き忘れた見出し
+
+| Category | testing | Origin | PR #4 |
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("340-1");
+    }
+  });
+
+  it("見出し候補にフェンス内のテンプレート見出しを混ぜない（空白化後を読む）", () => {
+    // 候補の抽出をフェンス空白化**前**のセグメントで行うと、本文が例示している
+    // テンプレート見出しまで「認識されなかった見出し」として提示され、
+    // 直すべき箇所として正しい本文を指してしまう。
+    const fence = "```";
+    const md = `
+### ACE-4-5: 追記テンプレートを例示するエントリ
+
+| Category | coding | Origin | PR #4 |
+
+${fence}markdown
+### ACE-XXX: [タイトル]
+${fence}
+
+### ACE-abc-1: ID を打ち間違えたエントリ
+
+| Category | testing | Origin | PR #4 |
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("ACE-abc-1");
+      expect(result.message).not.toContain("ACE-XXX");
+    }
+  });
+
+  it("見出しが 1 本も無い吸収では候補節そのものを出さない", () => {
+    const md = `
+### ACE-4-3: Category 行が 2 本並んだエントリ
+
+| Category | coding | Origin | PR #4 |
+| Category | testing | Origin | PR #4 |
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("Category 行が 2 本");
+      expect(result.message).not.toContain("見出し候補");
+    }
+  });
+
+  it("吸収された側の値が空でも、2 本あることを先に報告する（空値チェックより前）", () => {
+    const md = `
+### ACE-4-4: 正常なエントリ
+
+| Category | coding | Origin | PR #4 |
+
+### ACE-abc-1: ID を打ち間違えたエントリ
+
+| Category |  |
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("吸収");
+      // 空値も欠落させず「（空）」として数に合わせて挙げる。
+      expect(result.message).toContain("（空）");
+      expect(result.message).not.toContain("Category の値が空の ACE ブロック");
+    }
+  });
+
+  it("コードフェンス内に Category 表を例示するエントリは ok のまま（偽陽性を出さない）", () => {
+    // live / docs-template の PLAYBOOK.md はテンプレート断片をフェンスで囲って載せている。
+    // フェンスを空白化せずに Category 行を数えると、この正常なエントリが吸収扱いになる。
+    const fence = "```";
+    const md = `
+### ACE-2-1: 追記テンプレートを本文で例示するエントリ
+
+| Category | coding | Origin | PR #2 |
+| Date | 2026-08-09 |
+
+追記は次の形で行う。
+
+${fence}markdown
+### ACE-XXX: [検索可能な主張 1 文のタイトル]
+
+| Category | coding | Origin | PR #XXX |
+${fence}
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.totalEntries).toBe(1);
+      expect(result.histogram.coding).toBe(1);
+    }
+  });
+
+  it("Category 行がフェンス内にしか無いエントリは error（フェンス内の例示を値として採らない）", () => {
+    // 抽出とカウントを同じテキスト（フェンス空白化後）で行うことの担保。
+    // 片方だけ空白化すると、実 Category 行が無いのに例示の値で集計され、
+    // 「2 本以上」にも当たらないため静かに誤ったカテゴリへ 1 件加算される。
+    const fence = "~~~";
+    const md = `
+### ACE-2-2: 実 Category 行が欠けているエントリ
+
+${fence}markdown
+| Category | coding |
+${fence}
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("Category 行を解析できない");
+    }
+  });
+
+  it("インデントしたフェンスも空白化の対象（インデント許容だけを固定する）", () => {
+    // フェンス行だけインデントし、中身は行頭から始まる形。Category 行の正規表現は
+    // 行頭 `|` を要求するので、フェンス行のインデントを見落とすと**この形だけ**が
+    // 偽陽性へ抜ける。情報文字列の扱いは他のテストが既に通しているので、ここが単独で
+    // 守っているのは開始行・終了行のインデント許容のみ。
+    const fence = "```";
+    const md = `
+### ACE-2-3: インデントしたフェンスで例示するエントリ
+
+| Category | tooling | Origin | PR #2 |
+
+  ${fence}md title="追記例"
+| Category | testing |
+  ${fence}
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.totalEntries).toBe(1);
+      expect(result.histogram.tooling).toBe(1);
+      expect(result.histogram.testing).toBeUndefined();
+    }
+  });
+
+  it("リスト項目内の 4 スペースフェンスも空白化する（CommonMark の 3 まで規則を採らない）", () => {
+    // リスト内容カラム基準では有効なフェンス。トップレベル基準の「インデント 3 まで」で
+    // 実装すると取りこぼし、**正常なエントリが吸収エラーになる**（偽陽性）。
+    const fence = "```";
+    const md = `
+### ACE-2-4: リスト項目の中で例示するエントリ
+
+| Category | tooling | Origin | PR #2 |
+
+- 例:
+
+    ${fence}markdown
+| Category | testing |
+    ${fence}
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.histogram.tooling).toBe(1);
+      expect(result.histogram.testing).toBeUndefined();
+    }
+  });
+
+  it("フェンス例示の後ろに実 Category 行があるとき、例示の値を採らない", () => {
+    // 抽出とカウントを同じテキストで行うことの担保（値の側）。カウントだけ空白化して
+    // 抽出を生セグメントから行うと、先に現れる例示の値（testing）が採用される。
+    const fence = "```";
+    const md = `
+### ACE-3-1: 説明のあとにメタ行を置くエントリ
+
+書式は次のとおり。
+
+${fence}markdown
+| Category | testing |
+${fence}
+
+| Category | coding | Origin | PR #3 |
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.histogram.coding).toBe(1);
+      expect(result.histogram.testing).toBeUndefined();
+    }
+  });
+
+  it("閉じ忘れフェンスがあっても後続の吸収ブロックを見逃さない（fail-closed）", () => {
+    // 閉じないフェンスは以降を末尾まで空白化するため、吸収ブロックの Category 行だけが
+    // 消えて本数が 1 本へ戻る。偽陽性ガードが検出器の証拠を消す形なので、
+    // 「閉じていない」こと自体をエラーにする。
+    const fence = "```";
+    const md = `
+### ACE-5-1: 閉じ忘れフェンスを含むエントリ
+
+| Category | coding | Origin | PR #5 |
+
+${fence}text
+閉じ忘れ
+
+### ACE-abc-1: ID を打ち間違えたエントリ
+
+| Category | testing | Origin | PR #5 |
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("閉じていないコードフェンス");
+    }
+  });
+
+  it("フェンス内に正準形の見出しがあるとき、幻のエントリを静かに増やさない", () => {
+    // 分割はフェンス空白化より前に走るので、正準形 ID の例示は split の境界になる
+    // （Issue #342）。少なくとも静かには通さないこと — フェンスが対にならないため
+    // 閉じ忘れとして落ちる。
+    const fence = "```";
+    const md = `
+### ACE-6-1: 悪い書き方を引用するエントリ
+
+| Category | documentation-quality | Origin | PR #6 |
+
+${fence}markdown
+### ACE-9-9: 悪い例
+
+| Category | coding |
+${fence}
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+  });
+
+  it("``` フェンス内の ~~~ 行では閉じない（終端記号の種別）", () => {
+    const fence = "```";
+    const tilde = "~~~";
+    const md = `
+### ACE-3-2: フェンス内に別記号の区切りを含むエントリ
+
+| Category | coding | Origin | PR #3 |
+
+${fence}markdown
+${tilde}
+| Category | security |
+${fence}
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.histogram.coding).toBe(1);
+      expect(result.histogram.security).toBeUndefined();
+    }
+  });
+
+  it("4 本フェンス内の 3 本行では閉じない（終端記号の本数）", () => {
+    const fence = "```";
+    const outer = "````";
+    const md = `
+### ACE-3-3: 入れ子フェンスを例示するエントリ
+
+| Category | coding | Origin | PR #3 |
+
+${outer}markdown
+${fence}
+| Category | security |
+${fence}
+${outer}
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.histogram.coding).toBe(1);
+      expect(result.histogram.security).toBeUndefined();
+    }
+  });
+
+  it("情報文字列付きの行は終端にならない（終端は記号だけの行）", () => {
+    const fence = "```";
+    const md = `
+### ACE-3-4: フェンス内で別のフェンス開始行を例示するエントリ
+
+| Category | coding | Origin | PR #3 |
+
+${fence}markdown
+${fence}js
+| Category | security |
+${fence}
+
+---
+`;
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.histogram.coding).toBe(1);
+      expect(result.histogram.security).toBeUndefined();
+    }
+  });
+
+  it("CRLF でも吸収を検出する（終端フェンス判定が \\r で崩れない）", () => {
+    // split("\n") 後に残る \r を落とさないと全フェンスが閉じなくなり、以降が
+    // 丸ごと空白化されて吸収検出が黙る。docs-template は Windows チェックアウトを
+    // 含む他プロジェクトへ配布されるため、LF 前提にはできない。
+    const fence = "```";
+    const md = [
+      "### ACE-7-1: 正常なエントリ",
+      "",
+      "| Category | coding | Origin | PR #7 |",
+      "",
+      `${fence}markdown`,
+      "| Category | example |",
+      fence,
+      "",
+      "### ACE-abc-1: ID を打ち間違えたエントリ",
+      "",
+      "| Category | testing | Origin | PR #7 |",
+      "",
+    ].join("\r\n");
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("吸収");
+    }
+  });
+
+  it("CRLF の正常なエントリを偽陽性で落とさない", () => {
+    const fence = "```";
+    const md = [
+      "### ACE-7-2: フェンスで例示する正常なエントリ",
+      "",
+      "| Category | coding | Origin | PR #7 |",
+      "",
+      `${fence}markdown`,
+      "| Category | testing |",
+      fence,
+      "",
+      "---",
+      "",
+    ].join("\r\n");
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.histogram.coding).toBe(1);
+      expect(result.histogram.testing).toBeUndefined();
+    }
+  });
 });
 
 describe("mergeAnalyses", () => {
@@ -677,6 +1113,29 @@ describe("main（行数警告のみ・exit code 不変）", () => {
       }
       return indexPath;
     }
+
+    it("吸収が起きたサブファイルを名指しして exit 2（ゲートが exit 0 へ縮退しない）", () => {
+      // 分割レイアウトでは 7 ファイルのどれを直せばよいかを伝えるのは
+      // `${filePath}:` 接頭辞だけで、analyzePlaybookMarkdown の戻り値には含まれない。
+      // CI が消費するのは exit code なので、この経路が 0 へ落ちるとユニットは全部緑の
+      // ままゲートだけが消える（isDirectExecution のコメントが警戒する silent-gate と同型）。
+      const indexPath = writeSplitPlaybook("# 索引のみ、エントリ見出しなし\n", {
+        "coding.md": "### ACE-1-1: a\n\n| Category | coding |\n",
+        "testing.md":
+          "### ACE-1-2: b\n\n| Category | testing |\n\n" +
+          "### ACE-abc-1: ID を打ち間違えたエントリ\n\n| Category | testing |\n",
+      });
+      process.argv = ["node", "check-category-size.ts", indexPath];
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const code = main();
+
+      expect(code).toBe(2);
+      const errOut = err.mock.calls.flat().join("\n");
+      expect(errOut).toContain("testing.md");
+      expect(errOut).toContain("吸収");
+    });
 
     it("索引(0件) + サブファイルを合算し、総件数・カテゴリ別件数に反映する", () => {
       const indexPath = writeSplitPlaybook("# 索引のみ、エントリ見出しなし\n", {
