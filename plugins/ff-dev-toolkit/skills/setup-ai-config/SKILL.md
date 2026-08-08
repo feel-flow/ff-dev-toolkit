@@ -223,7 +223,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
 
 このスクリプトが行うこと:
 
-- yq（YAMLパーサー）の確認・インストール
+- Mike Farah yq v4（YAMLパーサー）の確認・インストール（Homebrew があれば brew、無ければ GitHub release の公式バイナリ。distro の apt/yum パッケージ yq は使わない）
 - 5つのAI CLI（Claude Code / Codex / Copilot / Gemini / Grok）の検出
 - 未インストールCLIのインストールガイド表示
 - `multi-agent.sh --dry-run` による動作確認

@@ -131,7 +131,10 @@ bash scripts/multi-review.sh --mode cross-model --cli codex-cli
 
 ### 推奨
 
-- `yq`（YAMLパーサー、設定ファイル読み込みに使用）
+- Mike Farah `yq` v4（YAMLパーサー、設定ファイル読み込みに使用）
+  - Homebrew がある場合（macOS / Linuxbrew）: `brew install yq`
+  - Homebrew が無い場合: 同梱の `bash scripts/setup-multi-agent.sh` が [mikefarah/yq](https://github.com/mikefarah/yq) の GitHub release から公式バイナリを導入する（`curl` または `wget` が必要。配置先は既定で `~/.local/bin`。PATH に無い場合は shell profile へ追加する）
+  - **注意**: Ubuntu 等の distro パッケージ（`apt install yq` / `yum install yq`）は別実装のことがあり、本ツールが使う `yq -r` 式や capability probe と互換にならない。パッケージ経由の導入は使わない
 - 3つ以上のAI CLIインストール（分散レビューの効果を最大化）
 
 ### CLI別インストール状態の確認

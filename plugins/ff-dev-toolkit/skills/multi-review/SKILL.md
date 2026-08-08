@@ -16,7 +16,7 @@ description: 複数の AI CLI（Claude Code / Codex / Gemini / Grok、Copilot �
 - git リポジトリで作業中であること
 - 本プラグイン同梱の `${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh` を使用する
 - 少なくとも1つのAI CLIがインストールされていること（`claude`, `codex`, `copilot`, `gemini`, `grok` のいずれか）
-- `yq` がインストールされていること（`brew install yq`）
+- Mike Farah `yq` v4 がインストールされていること（Homebrew があれば `brew install yq`、無ければ同梱 `setup-multi-agent.sh` が GitHub release から導入。distro の `apt`/`yum` パッケージ `yq` は別実装のことがあり非対応）
 - 未コミットまたはブランチ上の変更が存在すること
 
 ## 引数

@@ -16,7 +16,7 @@ description: 複数の AI CLI を並列実行し、異なる観点からコー�
 - git リポジトリで作業中であること
 - 本プラグイン同梱の `${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh` を使用する
 - 少なくとも1つのAI CLIがインストールされていること
-- `yq` がインストールされていること（`brew install yq`）
+- Mike Farah `yq` v4 がインストールされていること（Homebrew があれば `brew install yq`、無ければ同梱 `setup-multi-agent.sh` が GitHub release から導入。distro の `apt`/`yum` パッケージ `yq` は別実装のことがあり非対応）
 
 ## 引数
 

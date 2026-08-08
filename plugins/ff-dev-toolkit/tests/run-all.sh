@@ -92,6 +92,11 @@ else
     # 実測（冪等・fail-closed）。実 CLI・ネットワーク・課金・一時ファイルを伴わない。
     # ラベル契約つながりで issue-label-contract の直後に置く。
     "$SCRIPT_DIR/github-labels-setup/verify.sh"
+    # setup-multi-agent.sh の yq 導入が Mike Farah v4 を明示取得し、非互換 yq
+    # （distro パッケージ / Python / v3）を利用可能と誤認しないこと（Issue #271）。
+    # install の exit 0 を信用せず post-install で flavor/capability を再検証する。
+    # 一時ディレクトリと PATH 上の shim を使うが、ネットワーク・実インストールは伴わない。
+    "$SCRIPT_DIR/setup-multi-agent-yq/verify.sh"
     "$SCRIPT_DIR/setup-ai-config/verify.sh"
     "$SCRIPT_DIR/assess-impact/verify.sh"
     "$SCRIPT_DIR/validate-docs/verify.sh"
@@ -114,6 +119,12 @@ else
     # changelog-links の回帰検証（ローカル bare リポジトリ fixture のみ使用、
     # 実ネットワークには触らない）。本体の直後に置く。
     "$SCRIPT_DIR/changelog-links-selftest/verify.sh"
+    # 最新版節の path-like マーカーが compare 範囲で実際に追加・変更されたかを
+    # 公開タグ tree で限定検査（Issue #332 / ADR-020）。ネットワーク依存は
+    # changelog-links と同じ（接続不可のみ skip）。直後に selftest。
+    "$SCRIPT_DIR/changelog-attribution/verify.sh"
+    # changelog-attribution の回帰検証（ローカル bare fixture のみ、ネット非依存）。
+    "$SCRIPT_DIR/changelog-attribution-selftest/verify.sh"
     # 更新通知フック（hooks/check-update.sh）の回帰検証。ローカル bare リポジトリ
     # fixture のみ使用し、実ネットワークには触らない。
     "$SCRIPT_DIR/update-check/verify.sh"

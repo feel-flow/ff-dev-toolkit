@@ -23,6 +23,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { entryHeadingSource } from "./check-category-size";
 
 const EXIT_OK = 0;
 const EXIT_VIOLATION = 1;
@@ -31,10 +32,15 @@ const EXIT_USAGE_ERROR = 2;
 const DEFAULT_ALLOWLIST_BASENAME = "legacy-format-allowlist.txt";
 
 /**
- * エントリ見出しの検出。`check-category-size.ts` と同じ ID 規則（旧 3 桁・PRスコープ式・
- * Issue 式）で、テンプレートのプレースホルダ（`### ACE-XXX:`）は実 ID として扱わない。
+ * エントリ見出しの検出。ID 規則は `check-category-size.ts` の `entryHeadingSource` が単一の源
+ * （テンプレートのプレースホルダ `### ACE-XXX:` は実 ID として扱わない）。ここへ書き写すと、
+ * 同じ PLAYBOOK を読むスクリプト間で認識が静かに食い違いうる（#318）。
+ *
+ * 本ゲートは見出しを認識した後、**ID の形状は検査しない**（`match[1]` をそのまま id にする）。
+ * 二重ハイフン `ACE-337--1` のような不正 ID も旧形式判定の対象として通る。形状の fail-loud
+ * 検査を足すのは拒否範囲を変えるスコープ判断なので別 Issue（#339）で扱う。
  */
-const ACE_ENTRY_HEADER_LINE = /^### (ACE-(?:\d[\w-]*|i\d[\w-]*)):/u;
+const ACE_ENTRY_HEADER_LINE = new RegExp(entryHeadingSource("capture-id"), "u");
 
 /** 旧テーブル形式のメタ表ヘッダ行（`| フィールド | 値 |`）。 */
 const FIELD_TABLE_HEADER = /^\|\s*フィールド\s*\|/mu;

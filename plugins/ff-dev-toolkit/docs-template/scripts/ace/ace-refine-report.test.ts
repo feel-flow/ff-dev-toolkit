@@ -13,7 +13,12 @@ import {
   resolvePatternsPath,
   type EntryLineMeasurement,
 } from "./ace-refine-report";
-import { parsePlaybookEntries, type ReuseStats } from "./ace-reuse-report";
+import { computeReuseStats, parsePlaybookEntries, type ReuseStats } from "./ace-reuse-report";
+// 結合テスト（末尾の describe）で同一 fixture に対して check 側の判定も測るため。
+// 依存方向は ace-refine-report.ts → check-category-size.ts と同じ向きに揃えている。
+import { analyzePlaybookMarkdown, main as checkCategorySizeMain } from "./check-category-size";
+// 見出し認識の一致（#318）は 4 スクリプト横断なので、形式ゲート側もここへ通す。
+import { splitEntries } from "./check-entry-format";
 
 const NOW = new Date("2026-07-31T00:00:00Z");
 
@@ -560,5 +565,322 @@ describe("main（fixture E2E）", () => {
   it("引数なしは使用方法エラー（exit 2）", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     expect(main([], { readLog: emptyLog, now: () => NOW })).toBe(2);
+  });
+});
+
+/**
+ * 行数バジェット定数の結合テスト（Issue #313）。
+ *
+ * ace-refine-report と check-category-size は同じ 3 つの値（1 エントリのバジェット・
+ * 例外マーカー文字列・例外時の倍率）を使うが、判定の粒度が違う — refine は 1 エントリ単位で
+ * `lineCount > limit` を見て圧縮候補を挙げ、check はファイル全体の合計行数を
+ * 件数から導出した上限と比べて警告する。値がずれると「check は警告を出すのに
+ * refine の候補が空」という静かな不整合になる。
+ *
+ * ここでは**同一 fixture に両方の main を通す**。各ファイル内で自分の既定値を
+ * 個別にピンするテストは既にあるが（`- ACE-90-1: 20 行（上限 15）` /
+ * `導出上限 24 = ヘッダ 8 + 1 件 × 16`）、それらは「2 つの既定値が同じ値であること」を
+ * 検査しない — 片方の定数とその同ファイルのテストを揃えて書き換えれば両方緑で通る。
+ * 一致を assert するだけでも足りない（ACE-153-5: 定数の一致を検査しても適用は無検査に
+ * なりうる／ACE-301-4: 共有契約の byte 照合は結合部を守らない）ため、
+ * 両者の判定が同じ入力で同時に反転することを挙動で測る。
+ */
+describe("行数バジェット定数の単一源（check-category-size との結合）", () => {
+  const tempDirs: string[] = [];
+  const originalArgv = process.argv;
+  const emptyLog = () => ({ commits: [], malformedCount: 0 });
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    delete process.env.ACE_MAX_ENTRY_LINES;
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * wc -l 行数ちょうどのコンパクト正準エントリブロックを作る。
+   * 例外マーカーを足すぶん本文が 1 行減るので、**マーカーの有無で総行数が変わらない**。
+   * ケース A/B が同一行数で marker だけ differ できるのはこの性質による。
+   */
+  function entryBlockOfLines(id: string, totalLines: number, withException: boolean): string {
+    const fixed = [
+      `<a id="ace-${id}"></a>`,
+      "",
+      `### ACE-${id}: t`,
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "| Date | 2026-06-01 |",
+      "| Helpful | 0 | Harmful | 0 |",
+      "| Status | active |",
+      "",
+    ];
+    if (withException) {
+      fixed.push("<!-- ace-line-budget-exception: 反直感的な詳細のため -->");
+    }
+    const tail = ["---", "", ""];
+    const bodyCount = totalLines - (fixed.length + tail.length - 1);
+    if (bodyCount < 0) {
+      throw new Error(`totalLines=${String(totalLines)} は固定部より短く表現できません`);
+    }
+    const body = Array.from({ length: bodyCount }, (_, i) => `本文 ${String(i)}`);
+    return [...fixed, ...body, ...tail].join("\n");
+  }
+
+  function makeFixture(count: number, totalLines: number, withException: boolean): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ace-budget-coupling-"));
+    tempDirs.push(root);
+    const knowledgeDir = path.join(root, "docs", "08-knowledge");
+    const implDir = path.join(root, "docs", "03-implementation");
+    fs.mkdirSync(path.join(knowledgeDir, "playbook"), { recursive: true });
+    fs.mkdirSync(implDir, { recursive: true });
+
+    const playbookPath = path.join(knowledgeDir, "PLAYBOOK.md");
+    fs.writeFileSync(playbookPath, "# ACE Playbook\n\n## エントリ一覧\n", "utf8");
+    fs.writeFileSync(path.join(implDir, "PATTERNS.md"), "# PATTERNS.md\n", "utf8");
+
+    const entries = Array.from({ length: count }, (_, i) =>
+      entryBlockOfLines(`1-${String(i + 1)}`, totalLines, withException),
+    ).join("");
+    fs.writeFileSync(
+      path.join(knowledgeDir, "playbook", "coding.md"),
+      `# PLAYBOOK — コーディング (coding)\n\n${entries}`,
+      "utf8",
+    );
+    return playbookPath;
+  }
+
+  /** 同一 fixture に両方の main を通し、それぞれの出力を返す。 */
+  function runBoth(playbookPath: string): {
+    readonly refineReport: string;
+    readonly checkWarnings: string;
+  } {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(main([playbookPath], { readLog: emptyLog, now: () => NOW })).toBe(0);
+    const refineReport = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+
+    errSpy.mockClear();
+    process.argv = ["node", "check-category-size.ts", playbookPath];
+    // 行数超過は警告のみ（exit code は不変）という既存契約もここで踏む
+    expect(checkCategorySizeMain()).toBe(0);
+    const checkWarnings = errSpy.mock.calls.flat().map(String).join("\n");
+
+    return { refineReport, checkWarnings };
+  }
+
+  it("既定バジェットは両者に同じ値として効く（18 行 × 3 件・例外なし → 両方が超過を報告）", () => {
+    const { refineReport, checkWarnings } = runBoth(makeFixture(3, 19, false));
+
+    // refine: 1 エントリ 18 行 > 既定 15 → 3 件すべて候補
+    expect(refineReport).toContain("## 行数バジェット超過（3 件）");
+    expect(refineReport).toContain("18 行（上限 15）");
+    // check: 合計行数 > ヘッダ + 3 × (15 + 1) → 密度警告
+    expect(checkWarnings).toContain("エントリ密度が行数バジェットを超過");
+  });
+
+  it("例外マーカーは両者を同時に緩める（同一行数で marker だけ differ → 両方が沈黙）", () => {
+    const { refineReport, checkWarnings } = runBoth(makeFixture(3, 19, true));
+
+    // refine: 例外上限 15 × 2 = 30 なので 18 行は候補外
+    expect(refineReport).toContain("## 行数バジェット超過（0 件）");
+    // check: 例外 3 件ぶんの余裕が加算され上限内
+    expect(checkWarnings).not.toContain("エントリ密度が行数バジェットを超過");
+  });
+
+  it("例外時の倍率も両者に同じ値として効く（35 行 × 3 件・例外あり → 両方が超過を報告）", () => {
+    // 35 行は 15 × 2 = 30 超・15 × 3 = 45 以下。倍率が 2 から動くと両者の判定が反転する。
+    const { refineReport, checkWarnings } = runBoth(makeFixture(3, 36, true));
+
+    expect(refineReport).toContain("## 行数バジェット超過（3 件）");
+    expect(refineReport).toContain("35 行（上限 30・例外宣言あり）");
+    expect(checkWarnings).toContain("エントリ密度が行数バジェットを超過");
+  });
+});
+
+/**
+ * エントリ見出しの ID 規則が 4 スクリプトで一致していることを、同一 fixture を
+ * 4 者へ通して behavioral に測る（#318）。
+ *
+ * 期待値は「4 者が互いに一致すること」ではなく **正準形そのもの**で書く。相互一致だけを
+ * 測ると、ID 本体を狭い系へ戻す変異で 4 者が揃って取りこぼしても緑のまま通ってしまい、
+ * 変異試験が空振りする（ACE-153-5 の「一致を検査しても適用は無検査」と同型）。
+ */
+describe("エントリ見出し ID 規則の単一源（4 スクリプトの認識一致）", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** コンパクト正準の 1 エントリ。見出し行だけを差し替えられるようにしてある。 */
+  function entryBlock(heading: string): string {
+    return [
+      "",
+      heading,
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "| Date | 2026-06-01 |",
+      "| Helpful | 0 | Harmful | 0 |",
+      "| Status | active |",
+      "",
+      "本文",
+      "",
+      "---",
+      "",
+    ].join("\n");
+  }
+
+  /**
+   * プレースホルダ見出しを**必ず先頭**に置いた fixture を組む。
+   * 認識されない見出しのブロックは直前のセグメントへ吸収されるため、途中に置くと
+   * 「隣のエントリの Category 行が 2 本ある」状態になり、先勝ちで緑のまま通ってしまう。
+   * 先頭なら split の `.slice(1)` がヘッダごと捨てるので、誤認識が件数へ素直に出る。
+   */
+  function buildFixture(realHeadings: readonly string[]): string {
+    return [
+      "# PLAYBOOK — テスト",
+      "",
+      entryBlock("### ACE-XXX: プレースホルダ"),
+      ...realHeadings.map((h) => entryBlock(h)),
+    ].join("\n");
+  }
+
+  /**
+   * 同一 fixture を 4 スクリプトの見出し認識へ通す。
+   * check-category-size は split ベースで ID を返さず件数だけを返すため、
+   * ID 集合の照合は 3 者、件数の照合は 4 者で行う。
+   */
+  function recognizeByAll(content: string): {
+    readonly categorySizeCount: number;
+    readonly entryFormatIds: string[];
+    readonly refineIds: string[];
+    readonly reuseIds: string[];
+  } {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const analyzed = analyzePlaybookMarkdown(content);
+    if (analyzed.kind !== "ok") {
+      throw new Error(`check-category-size がこの fixture を解析できない: ${analyzed.message}`);
+    }
+    return {
+      categorySizeCount: analyzed.totalEntries,
+      entryFormatIds: splitEntries(content).map((e) => e.id),
+      refineIds: measureEntryLines(content).map((m) => m.id),
+      reuseIds: parsePlaybookEntries(content).map((e) => e.id),
+    };
+  }
+
+  it("3 段以上の ID（ACE-1-2-3）を 4 者すべてがエントリとして認識する", () => {
+    const got = recognizeByAll(buildFixture(["### ACE-1-2-3: 3 段 ID"]));
+
+    expect(got.entryFormatIds).toEqual(["ACE-1-2-3"]);
+    expect(got.refineIds).toEqual(["ACE-1-2-3"]);
+    expect(got.reuseIds).toEqual(["ACE-1-2-3"]);
+    expect(got.categorySizeCount).toBe(1);
+  });
+
+  it("`:` の直後にスペースが無い見出しを 4 者すべてがエントリとして認識する", () => {
+    const got = recognizeByAll(buildFixture(["### ACE-1-1:スペース無し"]));
+
+    expect(got.entryFormatIds).toEqual(["ACE-1-1"]);
+    expect(got.refineIds).toEqual(["ACE-1-1"]);
+    expect(got.reuseIds).toEqual(["ACE-1-1"]);
+    expect(got.categorySizeCount).toBe(1);
+  });
+
+  it("プレースホルダ見出し（ACE-XXX）は 4 者すべてがエントリとして数えない", () => {
+    const got = recognizeByAll(buildFixture(["### ACE-318-1: 実 ID"]));
+
+    expect(got.entryFormatIds).toEqual(["ACE-318-1"]);
+    expect(got.refineIds).toEqual(["ACE-318-1"]);
+    expect(got.reuseIds).toEqual(["ACE-318-1"]);
+    expect(got.categorySizeCount).toBe(1);
+  });
+
+  /**
+   * 正準な ID 形式それぞれについて、見出し認識（4 者）と参照走査の**両方**が同じ ID へ到達する
+   * ことを測る。3 段 ID だけを見ると `i` 枝や旧 3 桁を落とす変異が素通りするため、形式ごとに回す。
+   * 参照走査まで含めるのは、見出し側だけ広げると誤 stale → 誤アーカイブになるため（#318）。
+   */
+  const CANONICAL_IDS = ["ACE-001", "ACE-438-1", "ACE-i425-1", "ACE-1-2-3", "ACE-438-1a"] as const;
+  it.each(CANONICAL_IDS)("正準 ID %s は 4 者すべてが認識し、参照走査からも到達できる", (id) => {
+    const content = buildFixture([`### ${id}: 正準形`]);
+    const got = recognizeByAll(content);
+
+    expect(got.entryFormatIds).toEqual([id]);
+    expect(got.refineIds).toEqual([id]);
+    expect(got.reuseIds).toEqual([id]);
+    expect(got.categorySizeCount).toBe(1);
+
+    const stats = computeReuseStats(
+      parsePlaybookEntries(content),
+      [{ date: "2026-08-01", subject: `chore: ${id} を再利用した`, body: "" }],
+      content,
+    );
+    expect(stats.get(id)?.gitRefCount).toBe(1);
+  });
+
+  /**
+   * 末尾が `-` の ID を許すと、見出しは認識されるのに参照走査の `\b` が `-` の手前まで後退して
+   * その ID を永久に取り出せなくなる（参照 0 件 → 誤 stale → 誤アーカイブ）。単一源が末尾 `-` を
+   * 文法から外していることを、4 者そろって非認識になることで固定する。
+   */
+  it("末尾が `-` の ID（ACE-337-）は 4 者すべてがエントリとして認識しない", () => {
+    const content = buildFixture(["### ACE-337-: 末尾ハイフン", "### ACE-337-1: 正常"]);
+    const got = recognizeByAll(content);
+
+    expect(got.entryFormatIds).toEqual(["ACE-337-1"]);
+    expect(got.refineIds).toEqual(["ACE-337-1"]);
+    expect(got.reuseIds).toEqual(["ACE-337-1"]);
+    expect(got.categorySizeCount).toBe(1);
+  });
+
+  it("スペースの有無でタイトル抽出が壊れない（従来形式は従来どおり）", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const entries = parsePlaybookEntries(
+      buildFixture(["### ACE-318-1: スペースあり", "### ACE-318-2:スペース無し"]),
+    );
+
+    expect(entries.map((e) => [e.id, e.title])).toEqual([
+      ["ACE-318-1", "スペースあり"],
+      ["ACE-318-2", "スペース無し"],
+    ]);
+  });
+
+  /**
+   * タイトルの無い見出しは、従来 reuse だけが取りこぼす一方 check-category-size は件数に
+   * 数えていた（統合前の drift の一例）。統合後は 4 者そろって認識し、reuse は空タイトルを
+   * 黙って通さず onWarn で表面化させる。
+   */
+  it("タイトルの無い見出しは 4 者そろって認識し、reuse は空タイトルを警告する", () => {
+    const content = buildFixture(["### ACE-318-1:"]);
+    const got = recognizeByAll(content);
+
+    expect(got.entryFormatIds).toEqual(["ACE-318-1"]);
+    expect(got.refineIds).toEqual(["ACE-318-1"]);
+    expect(got.reuseIds).toEqual(["ACE-318-1"]);
+    expect(got.categorySizeCount).toBe(1);
+
+    const warnings: string[] = [];
+    const entries = parsePlaybookEntries(content, (m) => warnings.push(m));
+    expect(entries.map((e) => e.title)).toEqual([""]);
+    expect(warnings).toContain(
+      "ace-reuse-report: ACE-318-1 の見出しにタイトルがありません（空として扱います）",
+    );
+  });
+
+  it("ID 参照の走査も見出しと同じ ID 規則で行う（見出しだけ広げると誤 stale になる）", () => {
+    // 3 段 ID の参照が見えないと gitRefCount が 0 のまま stale 判定へ落ちる。
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const content = buildFixture(["### ACE-1-2-3: 3 段 ID"]);
+    const stats = computeReuseStats(
+      parsePlaybookEntries(content),
+      [{ date: "2026-08-01", subject: "chore: ACE-1-2-3 を再利用した", body: "" }],
+      content,
+    );
+
+    expect(stats.get("ACE-1-2-3")?.gitRefCount).toBe(1);
   });
 });

@@ -15,7 +15,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+  BUDGET_EXCEPTION_MARKER,
+  DEFAULT_MAX_ENTRY_LINES,
+  EXCEPTION_BUDGET_MULTIPLIER,
   discoverPlaybookSubfiles,
+  entryHeadingSource,
   isDirectExecution,
   parsePositiveIntEnv,
 } from "./check-category-size";
@@ -38,18 +42,15 @@ const WARN_PREFIX = "ace-refine-report";
 
 /** これより長く git 参照がないエントリを Archive 候補とする（ace-reuse-report と同じ既定・同じ環境変数） */
 const DEFAULT_STALE_DAYS = 90;
-/** 1 エントリの行数バジェット（anchor 行〜終端 `---` を含む） */
-const DEFAULT_MAX_ENTRY_LINES = 15;
-/** 例外宣言時の上限は既定の 2 倍（15 → 30） */
-const EXCEPTION_BUDGET_MULTIPLIER = 2;
 /** この Helpful 以上で PATTERNS.md への昇格候補とする */
 const DEFAULT_PROMOTE_HELPFUL_MIN = 5;
 
-/** 行数バジェット例外の宣言マーカー（HTML コメントとしてエントリブロック内に置く） */
-export const LINE_BUDGET_EXCEPTION_MARKER = "ace-line-budget-exception";
-
-/** ace-reuse-report と同じ実 ID 制約（プレースホルダ ACE-XXX は数字始まりでないため除外） */
-const ENTRY_HEADER_LINE_PATTERN = /^### (ACE-(?:\d+(?:-\d+)?|i\d+(?:-\d+)?)): /u;
+/**
+ * 実 ID の見出し行（プレースホルダ ACE-XXX は数字始まりでないため除外）。
+ * ID 規則は `check-category-size.ts` の `entryHeadingSource` が単一の源で、
+ * 同じ PLAYBOOK を読む他のスクリプトと同一の認識になる（#318）。
+ */
+const ENTRY_HEADER_LINE_PATTERN = new RegExp(entryHeadingSource("capture-id"), "u");
 const ANCHOR_LINE_PATTERN = /^<a id="ace-[\w-]+"><\/a>\s*$/iu;
 
 export type EntryLineMeasurement = Readonly<{
@@ -90,7 +91,7 @@ function maskCommentSpans(content: string): MaskedContent {
     const start = match.index ?? 0;
     const span = match[0];
     masked += content.slice(last, start);
-    if (span.includes(LINE_BUDGET_EXCEPTION_MARKER)) {
+    if (span.includes(BUDGET_EXCEPTION_MARKER)) {
       exceptionLines.add(countNewlinesBefore(content, start));
     }
     masked += span.replace(/[^\n]/gu, " ");

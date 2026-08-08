@@ -74,8 +74,9 @@ run_sut() {
 # --- 1. dry-run が既定で削除しない ---
 setup_projects
 OUT="$(run_sut 2>&1)" || fail "dry-run should exit 0: $OUT"
-echo "$OUT" | grep -q 'orphan-proj' || fail "dry-run should list orphan-proj"
-echo "$OUT" | grep -q 'dry-run' || fail "dry-run mode label"
+# パイプ + grep -q は使わない（run-all case 10 の SIGPIPE 再混入ガード）
+[[ "$OUT" == *'orphan-proj'* ]] || fail "dry-run should list orphan-proj"
+[[ "$OUT" == *'dry-run'* ]] || fail "dry-run mode label"
 [ -d "$WORK/claude/projects/orphan-proj" ] || fail "dry-run must not delete orphan"
 [ -d "$WORK/claude/projects/live-proj" ] || fail "live must remain"
 [ -d "$WORK/claude/projects/no-cwd-proj" ] || fail "no-cwd must remain"
@@ -93,7 +94,8 @@ ARCH_COUNT="$(find "$WORK/claude/transcript-archives" -name 'orphan-proj-*.tar.g
 [ "$ARCH_COUNT" -ge 1 ] || fail "archive file should exist"
 # subagents もアーカイブに含まれる
 ARCHIVE_FILE="$(find "$WORK/claude/transcript-archives" -name 'orphan-proj-*.tar.gz' | head -1)"
-tar -tzf "$ARCHIVE_FILE" | grep -q 'subagents' || fail "archive should include subagents"
+ARCHIVE_LIST="$(tar -tzf "$ARCHIVE_FILE")"
+[[ "$ARCHIVE_LIST" == *'subagents'* ]] || fail "archive should include subagents"
 ok "apply archives orphan (with subagents) and keeps live/no-cwd/mixed"
 
 # --- 3. 未知引数は usage error ---

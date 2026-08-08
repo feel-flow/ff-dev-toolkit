@@ -3,7 +3,8 @@
  * - Category ごとのエントリ件数を数え、閾値超過で終了コード 1 を返す（ゲート）。件数が主指標。
  * - Playbook / カテゴリファイルの総行数を報告し、上限超過時は警告のみ出力する
  *   （終了コードは変えない）。上限は既定で**件数から導出**する（Issue #285 / ADR-019）:
- *     上限 = ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1) + 例外件数 × ACE_MAX_ENTRY_LINES
+ *     上限 = ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1)
+ *            + 例外件数 × ACE_MAX_ENTRY_LINES × (EXCEPTION_BUDGET_MULTIPLIER - 1)
  *   固定行数を上限にすると「1 エントリ 13 行 × 件数」と構造的に噛み合わず、件数ゲート
  *   （130 件 ≒ 1700 行）より 2 倍以上早く発火して警告が恒常化する。導出上限なら警告は
  *   「1 エントリが太い」＝行数バジェット違反のときだけ出る。`ACE_MAX_PLAYBOOK_LINES` を
@@ -32,16 +33,83 @@ const DEFAULT_MAX_ENTRIES_PER_CATEGORY = 130;
  * この定数は「明示指定の入力が壊れていた」場合の後方互換値としてのみ使う。
  */
 const DEFAULT_MAX_PLAYBOOK_LINES = 800;
-/** 1 エントリの行数バジェット（anchor 行〜終端 `---`）。ace-refine-report.ts と同名・同既定。 */
-const DEFAULT_MAX_ENTRY_LINES = 15;
-/** 行数バジェット例外の宣言マーカー（PLAYBOOK.md §運用ルール）。 */
-const BUDGET_EXCEPTION_MARKER = "ace-line-budget-exception";
 /**
- * PLAYBOOK の ID 規則。旧 3 桁形式（ACE-001）と新 PRスコープ式（ACE-438-1 / ACE-i425-1）の両方に対応する。
- * 実 ID は必ず数字始まり（旧 3 桁・PR 番号）か `i` ＋数字（Issue 由来）で始まるため、
- * テンプレートのプレースホルダ見出し（### ACE-XXX: 等）はマッチさせず集計から除外する。
+ * 1 エントリの行数バジェット（anchor 行〜終端 `---`）。
+ * ace-refine-report.ts はこの値を import する（同名の重複定義を置かない）。
  */
-const ACE_ENTRY_HEADER_PATTERN = /^### ACE-(?:\d[\w-]*|i\d[\w-]*):/m;
+export const DEFAULT_MAX_ENTRY_LINES = 15;
+/**
+ * 行数バジェット例外の宣言マーカー（PLAYBOOK.md §運用ルール）。
+ * ace-refine-report.ts はこの値を import する（同名の重複定義を置かない）。
+ */
+export const BUDGET_EXCEPTION_MARKER = "ace-line-budget-exception";
+/**
+ * 例外宣言付きエントリに許す行数はバジェットの何倍か（PLAYBOOK.md §運用ルール）。
+ * ace-refine-report.ts は 1 エントリの上限として `バジェット × 本定数` を使い、
+ * 本ファイルの deriveMaxLines は EXCEPTION_EXTRA_BUDGET_FACTOR 経由で同じ値へ追従する。
+ * 片方だけ変わると「check は警告を出すのに refine の圧縮候補が空」になるため、源はここだけに置く。
+ */
+export const EXCEPTION_BUDGET_MULTIPLIER = 2;
+/**
+ * 例外宣言 1 件に与える「追加の」行数バジェット本数。
+ *
+ * refine は 1 エントリ単位で `バジェット × 倍率` を上限にするが、deriveMaxLines は
+ * ファイル全体のバジェット総和を組むため、`entryCount × (バジェット + 1)` の項で既に
+ * 1 本分を数えている。したがって例外へ足すべきは倍率そのものではなく `倍率 - 1` 本分になる
+ * （倍率 2 なら 1 本、3 なら 2 本）。
+ *
+ * この派生を定数にしておくと EXCEPTION_BUDGET_MULTIPLIER の変更に両スクリプトが同時に追従する。
+ * 式へ直接 `- 1` を書くと導出上限の行が読めなくなり、倍率との結合も見えなくなる。
+ * 逆に定数を経由せず固定値を置くと、倍率を変えても check 側が追従せず、
+ * それを検出するテストも書けない（ACE-153-5: 定数の一致を検査しても適用は無検査になりうる）。
+ */
+const EXCEPTION_EXTRA_BUDGET_FACTOR = EXCEPTION_BUDGET_MULTIPLIER - 1;
+/**
+ * PLAYBOOK の実 ID の本体（`ACE-` を含む）。文法は `ACE-` ＋ 省略可の `i` ＋ 数字 1 桁 ＋
+ * 続きがあれば単語文字で終わる。旧 3 桁形式（ACE-001）・PRスコープ式（ACE-438-1）・
+ * Issue 由来（ACE-i425-1）・3 段以上（ACE-1-2-3）・英字 suffix（ACE-438-1a）に一致する。
+ *
+ * 数字（または `i` ＋数字）始まりを要求するので、テンプレートのプレースホルダ見出し
+ * （`### ACE-XXX:` / `### ACE-iabc:` 等）は一致せず集計から除外される。
+ *
+ * **末尾が `-` の ID を許さないのは意図的**である。ID 参照の走査（ace-reuse-report の
+ * ACE_ID_REFERENCE_PATTERN）は `\b` 境界で ID を拾うが、`\b` は末尾の `-` の後では成立せず
+ * 手前まで後退する。仮に `ACE-337-` を見出しとして認識すると、本文やコミットメッセージ中の
+ * `ACE-337-` からは `ACE-337` しか取り出せず、その ID の参照が**永久に 0 件**になる。
+ * 結果として実際に何度も再利用された知見が 90 日後に理由なくアーカイブ候補へ載る。
+ * 見出し側と参照側が同じ文字クラスで終わることが、この非対称を構造的に防いでいる。
+ *
+ * この源は `entryHeadingSource` 経由で各スクリプトへ届く（`ACE_ENTRY_ID_SOURCE` を直接
+ * grep しても消費者の一覧は出ない）。現在の消費者は `entryHeadingSource` の import 元を
+ * grep して確認する。書き写すと、片方だけ広げたときに「件数ゲートは数えるのに refine の
+ * 圧縮候補は空」という #313 と同型の症状になる（#318 の時点で実際に 2 系統へ分裂していた）。
+ */
+export const ACE_ENTRY_ID_SOURCE = String.raw`ACE-i?\d(?:[\w-]*\w)?`;
+/** entryHeadingSource の生成モード。ID を捕捉するか、捕捉せず素の連接にするか。 */
+export type EntryHeadingMode = "capture-id" | "non-capturing";
+/**
+ * エントリ見出し行の正準形（`### <ID>:`）。`:` の直後のスペースは要求しない
+ * （`### ACE-1-1:タイトル` も見出しとして認識する）。
+ *
+ * `"non-capturing"` は `String.prototype.split` 用（本ファイルの analyzePlaybookMarkdown）と
+ * `countHeaderLines` の `match`（`match.index` だけを読む）用。split はキャプチャ内容を
+ * 結果配列へ挟み込むため、分割用にキャプチャすると件数と Category 集計の両方が壊れる。
+ * どちらの呼び出し側も ID を必要としないので、モードを `"capture-id"` へ変えてはならない。
+ *
+ * 非捕捉側も `(?:…)` で包む。源がトップレベルの alternation（`ACE-\d…|ACE-i\d…` のように
+ * `(?:)` を忘れた形）へ書き換わったとき、素で埋め込むと第 2 枝が `^###` と `:` の両方を失い、
+ * 行中どこにある `ACE-i425-1:` でも split が分割して件数が水増しされる。捕捉側は括弧が
+ * 付くので守られるため、包まないと**片方だけが静かに壊れる**。
+ *
+ * フラグは呼び出し側で付ける。split は `m`、matchAll は `g` が要るため、フラグまで
+ * 共通化するとどれか 1 つの用途に合わないフラグを全体へ強制することになる。
+ */
+export function entryHeadingSource(mode: EntryHeadingMode): string {
+  const id =
+    mode === "capture-id" ? `(${ACE_ENTRY_ID_SOURCE})` : `(?:${ACE_ENTRY_ID_SOURCE})`;
+  return String.raw`^### ${id}:`;
+}
+const ACE_ENTRY_HEADER_PATTERN = new RegExp(entryHeadingSource("non-capturing"), "mu");
 const CATEGORY_TABLE_LINE_PATTERN = /^\|\s*Category\s*\|\s*([^|]+)\|/im;
 
 /** 存在しないキーは undefined（Record 全面 number ではない）。呼び出し側は ?? 0 で読む。 */
@@ -122,7 +190,10 @@ export function countBudgetExceptions(content: string): number {
  * 件数ゲート（既定 130 件 ≒ 1700 行）より 2 倍以上早く発火して警告が恒常化する。
  * 件数から導出すれば、警告が出るのは「1 エントリが太い」＝バジェット違反のときだけになり、
  * curate で 1 件増えても上限が同じ分だけ伸びるため refine 直後の余裕が構造的に残る。
- * `+ 1` はエントリブロック間の空行 1 行。
+ * `+ 1` はエントリブロック間の空行 1 行。末項の EXCEPTION_EXTRA_BUDGET_FACTOR は例外宣言
+ * 1 件に与える追加バジェット本数で、EXCEPTION_BUDGET_MULTIPLIER から導出される
+ * （ace-refine-report.ts が 1 エントリ上限に使う倍率と同じ源。片方だけずれると
+ * 「check は警告を出すのに refine の候補が空」になる）。
  */
 export function deriveMaxLines(input: {
   readonly headerLines: number;
@@ -133,7 +204,7 @@ export function deriveMaxLines(input: {
   return (
     input.headerLines +
     input.entryCount * (input.maxEntryLines + 1) +
-    input.exceptionCount * input.maxEntryLines
+    input.exceptionCount * input.maxEntryLines * EXCEPTION_EXTRA_BUDGET_FACTOR
   );
 }
 

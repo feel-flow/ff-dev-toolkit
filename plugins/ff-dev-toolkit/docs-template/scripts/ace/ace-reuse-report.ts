@@ -16,7 +16,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import {
+  ACE_ENTRY_ID_SOURCE,
   discoverPlaybookSubfiles,
+  entryHeadingSource,
   isDirectExecution,
   parsePositiveIntEnv,
 } from "./check-category-size";
@@ -36,12 +38,31 @@ const RECORD_SEPARATOR = "\x1e";
 const FIELD_SEPARATOR = "\x1f";
 
 /**
- * 実 ID のみマッチ（旧 3 桁 ACE-001 / PRスコープ ACE-438-1 / Issue 由来 ACE-i425-1）。
- * テンプレートのプレースホルダ（ACE-XXX 等）は数字始まりでないため除外される。
+ * 本文・コミットメッセージ中の ID 参照（旧 3 桁 ACE-001 / PRスコープ ACE-438-1 /
+ * Issue 由来 ACE-i425-1）。テンプレートのプレースホルダ（ACE-XXX 等）は数字始まりでないため
+ * 除外される。ID 規則は見出し側と同じ `ACE_ENTRY_ID_SOURCE` から組む — 見出しだけを広げると
+ * 「エントリとしては数えるのに参照が 1 件も見えない」ため誤って stale 判定され、
+ * アーカイブ候補として提案されてしまう（#318）。`ACE_ENTRY_ID_SOURCE` が末尾 `-` を許さないのは
+ * ここの `\b` が末尾の `-` の後で成立しないためで、両者は対で意味を持つ。
+ *
+ * 3 段以上の ID が正当な文法になったため、`-` 区切りは常に ID の一部として最長一致する。
+ * したがって範囲を書くときは `ACE-318-1〜3` や `ACE-318-1 / ACE-318-2` のように非単語文字で
+ * 区切る（`ACE-318-1-2` と書くと「ACE-318-1 と 2」ではなく 3 段 ID として 1 件に一致する）。
  */
-const ACE_ID_REFERENCE_PATTERN = /\bACE-(?:\d+(?:-\d+)?|i\d+(?:-\d+)?)\b/gu;
+const ACE_ID_REFERENCE_PATTERN = new RegExp(String.raw`\b${ACE_ENTRY_ID_SOURCE}\b`, "gu");
 
-const ENTRY_HEADER_PATTERN = /^### (ACE-(?:\d+(?:-\d+)?|i\d+(?:-\d+)?)): (.+)$/gmu;
+/**
+ * 見出し行と、そこから取り出すタイトル。`:` の直後のスペースは要求せず、
+ * タイトルは既存どおり `.trim()` してから使う（`### ACE-1-1: t` の結果は従来と同一）。
+ *
+ * `(.*)$` はタイトルの無い見出し（`### ACE-1-1:`）も受ける。従来ここだけが取りこぼしていた
+ * 一方 check-category-size は件数に数えていたので、受けるのが整合方向である。ただし空タイトルは
+ * レポート行にそのまま出るため、集計へ落とす前に onWarn で表面化させる。
+ */
+const ENTRY_HEADER_PATTERN = new RegExp(
+  entryHeadingSource("capture-id") + String.raw`(.*)$`,
+  "gmu",
+);
 
 /** キュレーションコミット（エントリ追加・カウンター更新）は「再利用」に数えない */
 const CURATION_COMMIT_PREFIX = "knowledge:";
@@ -141,9 +162,17 @@ export function parsePlaybookEntries(
       onWarn(`${WARN_PREFIX}: ${id} の Date "${dateRaw}" は YYYY-MM-DD ではありません（不明として扱います）`);
     }
 
+    // 見出しにタイトルが無い（`### ACE-1-1:`）エントリは #318 以降ここで認識されるようになった。
+    // 空文字のまま黙って通すとアーカイブ・昇格候補のレポート行が ID だけになるため、
+    // 他のフィールド不正と同じく onWarn で表面化させたうえで空文字のまま集計へ落とす。
+    const title = match[2].trim();
+    if (title === "") {
+      onWarn(`${WARN_PREFIX}: ${id} の見出しにタイトルがありません（空として扱います）`);
+    }
+
     entries.push({
       id,
-      title: match[2].trim(),
+      title,
       date,
       helpful,
       helpfulParsed,
