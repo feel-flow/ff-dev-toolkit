@@ -60,7 +60,7 @@ describe("measureEntryLines", () => {
       "",
     ].join("\n");
 
-    const result = measureEntryLines(md);
+    const result = measureEntryLines(md).measurements;
     expect(result).toHaveLength(2);
     expect(result[0]).toMatchObject({ id: "ACE-24-1", lineCount: 7, hasException: false });
     expect(result[1]).toMatchObject({ id: "ACE-24-2", lineCount: 7, hasException: false });
@@ -77,7 +77,7 @@ describe("measureEntryLines", () => {
       "",
     ].join("\n");
 
-    const result = measureEntryLines(md);
+    const result = measureEntryLines(md).measurements;
     expect(result).toHaveLength(1);
     expect(result[0].lineCount).toBe(5);
   });
@@ -95,8 +95,96 @@ describe("measureEntryLines", () => {
       "---",
     ].join("\n");
 
-    const result = measureEntryLines(md);
+    const result = measureEntryLines(md).measurements;
     expect(result[0].hasException).toBe(true);
+  });
+
+  /**
+   * 未閉フェンス（Issue #349）。blankCodeRegions は「閉じていないフェンス以降を空白化しない」
+   * fail-open なので、そこから先の例外マーカー判定は**両方向へ**壊れる。片方だけを fixture に
+   * すると、もう片方の経路を消す変異が緑のまま通る（下の 2 件は hasException が逆に出る）。
+   */
+  it("未閉フェンス内のマーカーは宣言として残る（緩む方向）— unclosedFence で信用できないと分かる", () => {
+    const md = [
+      '<a id="ace-70-1"></a>',
+      "",
+      "### ACE-70-1: 閉じ忘れフェンスを含むエントリ",
+      "",
+      "```markdown",
+      "<!-- ace-line-budget-exception: 例示のつもり -->",
+      "",
+      "本文。",
+      "",
+      "---",
+    ].join("\n");
+
+    const result = measureEntryLines(md);
+    // コードとして例示しただけのマーカーが宣言に数えられ、そのエントリの上限が黙って 2 倍になる
+    expect(result.measurements[0].hasException).toBe(true);
+    expect(result.unclosedFence).toBe(true);
+  });
+
+  it("未閉フェンスが後続の実宣言を巻き込んで落とす（厳しい方向）— これも unclosedFence で分かる", () => {
+    // ```text が閉じられないまま、後続コードブロックの終端 ``` に閉じられ、その間にある
+    // **正当な宣言**がまとめて空白化される。最後に残った ``` が開いたままになる。
+    const md = [
+      '<a id="ace-71-1"></a>',
+      "",
+      "### ACE-71-1: 閉じ忘れが宣言を巻き込むエントリ",
+      "",
+      "```text",
+      "例示コード",
+      "<!-- ace-line-budget-exception: 本物の宣言 -->",
+      "本文。",
+      "```js",
+      "const a = 1;",
+      "```",
+      "続きの本文。",
+      "```",
+      "閉じ忘れた末尾。",
+      "",
+      "---",
+    ].join("\n");
+
+    const result = measureEntryLines(md);
+    // 実在する宣言が消え、伸びるはずの上限が伸びない（refine 側だけが 15 行で判定する）
+    expect(result.measurements[0].hasException).toBe(false);
+    expect(result.unclosedFence).toBe(true);
+  });
+
+  it("フェンスが閉じていれば unclosedFence は立たない（例示マーカーは宣言に数えない）", () => {
+    const md = [
+      '<a id="ace-72-1"></a>',
+      "",
+      "### ACE-72-1: フェンスが閉じたエントリ",
+      "",
+      "```markdown",
+      "<!-- ace-line-budget-exception: 書式の例示 -->",
+      "```",
+      "",
+      "本文。",
+      "",
+      "---",
+    ].join("\n");
+
+    const result = measureEntryLines(md);
+    expect(result.measurements[0].hasException).toBe(false);
+    expect(result.unclosedFence).toBe(false);
+  });
+
+  it("チルダフェンス（~~~）の閉じ忘れも unclosedFence になる（エラー文言が両方を名指しするため）", () => {
+    const md = [
+      '<a id="ace-73-1"></a>',
+      "",
+      "### ACE-73-1: チルダフェンスの閉じ忘れ",
+      "",
+      "~~~markdown",
+      "<!-- ace-line-budget-exception: 例示のつもり -->",
+      "",
+      "---",
+    ].join("\n");
+
+    expect(measureEntryLines(md).unclosedFence).toBe(true);
   });
 
   it("HTML コメント内の見出し（テンプレートの追記例）はエントリとして数えない", () => {
@@ -114,13 +202,13 @@ describe("measureEntryLines", () => {
       "---",
     ].join("\n");
 
-    const result = measureEntryLines(md);
+    const result = measureEntryLines(md).measurements;
     expect(result.map((m) => m.id)).toEqual(["ACE-50-1"]);
   });
 
   it("プレースホルダ見出し（ACE-XXX）はエントリとして数えない", () => {
     const md = ["### ACE-XXX: [タイトル]", "", "本文。", "---"].join("\n");
-    expect(measureEntryLines(md)).toHaveLength(0);
+    expect(measureEntryLines(md).measurements).toHaveLength(0);
   });
 
   it("閉じられていない <!--（コード例内の断片等）で後続エントリを見失わない", () => {
@@ -144,7 +232,7 @@ describe("measureEntryLines", () => {
       "---",
     ].join("\n");
 
-    const result = measureEntryLines(md);
+    const result = measureEntryLines(md).measurements;
     expect(result.map((m) => m.id)).toEqual(["ACE-60-1", "ACE-60-2"]);
     expect(result[0].lineCount).toBe(7);
     expect(result[1].lineCount).toBe(7);
@@ -163,7 +251,7 @@ describe("measureEntryLines", () => {
       "---",
     ].join("\n");
 
-    const result = measureEntryLines(md);
+    const result = measureEntryLines(md).measurements;
     expect(result[0].lineCount).toBe(9); // 中間の --- (6行目) で切らない
   });
 
@@ -186,7 +274,7 @@ describe("measureEntryLines", () => {
       "続き。",
     ].join("\n");
 
-    const result = measureEntryLines(md);
+    const result = measureEntryLines(md).measurements;
     expect(result).toHaveLength(1);
     // ## Changelog の手前（5行目の本文）まで。Changelog 内の --- (13行目) に届かない
     expect(result[0].lineCount).toBe(5);
@@ -202,7 +290,7 @@ describe("measureEntryLines", () => {
       "---",
     ].join("\n");
 
-    const result = measureEntryLines(md);
+    const result = measureEntryLines(md).measurements;
     expect(result[0].lineCount).toBe(6);
   });
 
@@ -217,14 +305,14 @@ describe("measureEntryLines", () => {
       "---",
     ].join("\n");
 
-    const result = measureEntryLines(md);
+    const result = measureEntryLines(md).measurements;
     expect(result[0].hasException).toBe(false);
   });
 });
 
 describe("findOverBudgetEntries", () => {
-  const byFile = (measurements: readonly EntryLineMeasurement[]) =>
-    new Map([["playbook/tooling.md", measurements]]);
+  const byFile = (measurements: readonly EntryLineMeasurement[], unclosedFence = false) =>
+    new Map([["playbook/tooling.md", { measurements, unclosedFence }]]);
 
   it("上限超過のみを行数降順で列挙し、例外宣言付きは 2 倍の上限で判定する", () => {
     const over = findOverBudgetEntries(
@@ -241,6 +329,18 @@ describe("findOverBudgetEntries", () => {
     expect(over[0].limit).toBe(30);
     expect(over[1].limit).toBe(15);
     expect(over[0].file).toBe("playbook/tooling.md");
+  });
+
+  /**
+   * hasException を読む唯一の関数なので、汚染された測定値を渡されたら落とす（Issue #349）。
+   * これはコンパイル時の強制ではなく backstop で、正規の入口は main のゲート — main の catch は
+   * ファイル名を含まない一般メッセージへ写像するため、ここまで来た時点で診断としては劣化している。
+   * それでも「静かに誤った候補一覧を出す」よりはよい。
+   */
+  it("未閉フェンスで汚染された測定値を渡されたら落ちる（main のゲートを迂回させない）", () => {
+    expect(() =>
+      findOverBudgetEntries(byFile([{ id: "ACE-1-1", lineCount: 99, hasException: true }], true), 15),
+    ).toThrow(/playbook\/tooling\.md/u);
   });
 });
 
@@ -566,6 +666,78 @@ describe("main（fixture E2E）", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     expect(main([], { readLog: emptyLog, now: () => NOW })).toBe(2);
   });
+
+  /**
+   * 未閉フェンスは実行時エラー（exit 1）で中断し、**レポート本文を 1 行も出さない**（Issue #349）。
+   * stderr 警告だけにすると、/ace-refine は stdout の「超過 0 件」を候補一覧として R2 の
+   * 承認ゲートへ積んでしまう。stdout に何も出ないことまで固定しないと、警告を足しただけの
+   * 実装が緑のまま通る。
+   */
+  it("未閉フェンスを含むファイルは fail-loud（exit 1）でレポートを出さない", () => {
+    const { playbookPath } = makeFixture();
+    const codingPath = path.join(path.dirname(playbookPath), "playbook", "coding.md");
+    fs.appendFileSync(codingPath, "\n```markdown\n閉じ忘れたフェンス。\n", "utf8");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(main([playbookPath], { readLog: emptyLog, now: () => NOW })).toBe(1);
+    const stderr = errSpy.mock.calls.flat().map(String).join("\n");
+    expect(stderr).toContain("閉じていないコードフェンス");
+    // どのファイルを直せばよいかを名指しする（複数サブファイルでは指名が唯一の手掛かり）
+    expect(stderr).toContain("coding.md");
+    expect(logSpy).not.toHaveBeenCalled();
+    // 本ゲートがここで return したこと。findOverBudgetEntries の backstop まで流れると
+    // 終了コードと logSpy は同じでも、名指しの無い一般メッセージへ劣化する
+    expect(stderr).not.toContain("レポート生成に失敗しました");
+  });
+
+  /**
+   * 索引 PLAYBOOK.md 自身も検査対象（README の documented invocation は
+   * `ace-refine-report.ts docs/08-knowledge/PLAYBOOK.md` で、エントリを索引に直接置く
+   * 非分割レイアウトではこのファイルが対象の 100% を占める）。サブファイルだけを fixture に
+   * すると、`file !== playbookPath` のような変異が緑のまま通り、しかもその変異体は
+   * exit 0 でレポートを印字する — Issue #349 の症状そのものが復活する。
+   */
+  it("索引ファイル自身の未閉フェンスも fail-loud（非分割レイアウトの既定形）", () => {
+    const { playbookPath } = makeFixture();
+    fs.appendFileSync(playbookPath, "\n```markdown\n閉じ忘れたフェンス。\n", "utf8");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(main([playbookPath], { readLog: emptyLog, now: () => NOW })).toBe(1);
+    const stderr = errSpy.mock.calls.flat().map(String).join("\n");
+    expect(stderr).toContain("PLAYBOOK.md");
+    expect(stderr).toContain("閉じていないコードフェンス");
+    expect(stderr).not.toContain("レポート生成に失敗しました");
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 全件を配列へ貯めてから落とす構造（最初の 1 件で return しない）は、複数ファイルを
+   * 一度に名指しするためだけに存在する。1 ファイルしか測らないと `join(", ")` を
+   * `[0]` へ縮める変異が生き残り、2 周目の実行まで残りの問題が見えない。
+   */
+  it("未閉フェンスが複数ファイルにあるとき全件を名指しする", () => {
+    const { playbookPath } = makeFixture();
+    const playbookDir = path.join(path.dirname(playbookPath), "playbook");
+    fs.appendFileSync(path.join(playbookDir, "coding.md"), "\n```markdown\n閉じ忘れ。\n", "utf8");
+    fs.writeFileSync(
+      path.join(playbookDir, "testing.md"),
+      "# PLAYBOOK — テスト (testing)\n\n```markdown\n閉じ忘れ。\n",
+      "utf8",
+    );
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(main([playbookPath], { readLog: emptyLog, now: () => NOW })).toBe(1);
+    const stderr = errSpy.mock.calls.flat().map(String).join("\n");
+    expect(stderr).toContain("coding.md");
+    expect(stderr).toContain("testing.md");
+    expect(stderr).not.toContain("レポート生成に失敗しました");
+  });
 });
 
 /**
@@ -700,6 +872,30 @@ describe("行数バジェット定数の単一源（check-category-size との�
     expect(refineReport).toContain("35 行（上限 30・例外宣言あり）");
     expect(checkWarnings).toContain("エントリ密度が行数バジェットを超過");
   });
+
+  /**
+   * 非対称そのものの回帰（Issue #349）。「check が処理を拒否したファイルを refine だけが
+   * 黙って測る」状態に戻らないことを、同一 fixture に対する両者の終了コードで固定する。
+   * refine 側を `not.toBe(0)` で測るのは、両ファイルが別々の終了コード taxonomy を持つため
+   * （refine の 2 は誤パス相当に予約されている）。値ではなく「拒否したこと」が契約。
+   */
+  it("未閉フェンスを含む同一 fixture は両者そろって拒否する（片方だけ測らない）", () => {
+    const playbookPath = makeFixture(1, 19, false);
+    fs.appendFileSync(
+      path.join(path.dirname(playbookPath), "playbook", "coding.md"),
+      "\n```markdown\n閉じ忘れたフェンス。\n",
+      "utf8",
+    );
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(main([playbookPath], { readLog: emptyLog, now: () => NOW })).not.toBe(0);
+    expect(logSpy).not.toHaveBeenCalled();
+
+    process.argv = ["node", "check-category-size.ts", playbookPath];
+    expect(checkCategorySizeMain()).toBe(2);
+  });
 });
 
 /**
@@ -767,7 +963,7 @@ describe("エントリ見出し ID 規則の単一源（4 スクリプトの認�
     return {
       categorySizeCount: analyzed.totalEntries,
       entryFormatIds: splitEntries(content).map((e) => e.id),
-      refineIds: measureEntryLines(content).map((m) => m.id),
+      refineIds: measureEntryLines(content).measurements.map((m) => m.id),
       reuseIds: parsePlaybookEntries(content).map((e) => e.id),
     };
   }

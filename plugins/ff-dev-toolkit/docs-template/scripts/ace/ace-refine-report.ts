@@ -69,6 +69,17 @@ export type EntryLineMeasurement = Readonly<{
   readonly hasException: boolean;
 }>;
 
+/** measureEntryLines の結果。診断を測定値と同じ戻り値に載せ、離して捨てられないようにする。 */
+export type EntryLineMeasurementResult = Readonly<{
+  readonly measurements: readonly EntryLineMeasurement[];
+  /**
+   * 閉じていないコードフェンスを見たか。**汚染されるのは `hasException` だけ**で、
+   * `id` と `lineCount` は影響を受けない（measureEntryLines の JSDoc 参照）。消費しないと
+   * Issue #349 の握りつぶしに戻るので、呼び出し側は必ず読むこと。
+   */
+  readonly unclosedFence: boolean;
+}>;
+
 /**
  * 閉じた HTML コメント span のみマッチ（parsePlaybookEntries の stripHtmlBlockComments と同じ意味論）。
  * ソースは check-category-size.ts に一本化してある（#343）— countBudgetExceptions が
@@ -86,6 +97,11 @@ type MaskedContent = Readonly<{
   readonly maskedLines: readonly string[];
   /** 行数バジェット例外マーカーを含むコメント span の開始行番号（0-origin） */
   readonly exceptionLines: ReadonlySet<number>;
+  /**
+   * blankCodeRegions が「閉じていないフェンスを見た」と報告したか。
+   * true のとき exceptionLines は信用できない（maskedLines は影響を受けない）。
+   */
+  readonly unclosedFence: boolean;
 }>;
 
 /**
@@ -105,7 +121,8 @@ type MaskedContent = Readonly<{
  */
 function maskCommentSpans(content: string): MaskedContent {
   const exceptionLines = new Set<number>();
-  const scannable = blankCodeRegions(content).text;
+  const blanked = blankCodeRegions(content);
+  const scannable = blanked.text;
   let masked = "";
   let last = 0;
   for (const match of content.matchAll(COMMENT_SPAN_PATTERN)) {
@@ -122,7 +139,11 @@ function maskCommentSpans(content: string): MaskedContent {
     last = start + span.length;
   }
   masked += content.slice(last);
-  return { maskedLines: masked.split("\n"), exceptionLines };
+  return {
+    maskedLines: masked.split("\n"),
+    exceptionLines,
+    unclosedFence: blanked.unclosedFence,
+  };
 }
 
 /** エントリ範囲を打ち切る `##` レベル見出し（Changelog 等の後続セクションをエントリに含めない） */
@@ -142,9 +163,16 @@ const SECTION_HEADING_PATTERN = SECTION_HEADING_LINE_PATTERN;
  * ただし `hasException` の判定はコードスパン・フェンスを除外する（maskCommentSpans 参照。
  * Issue #347）— こちらは countBudgetExceptions と一致していないと、上限だけが片側で
  * 2 倍になるため。
+ *
+ * `unclosedFence` が汚すのは **`hasException` だけ**。`id` と `lineCount` は影響を受けない
+ * （測定はコメントだけをマスクした `maskedLines` に対して行い、blankCodeRegions の出力は
+ * 例外マーカーのオフセット照合 1 箇所でしか使わないため）。それでも呼び出し側は必ず
+ * 消費すること（Issue #349。blankCodeRegions の契約と同じ）— レポート用途では
+ * `hasException` が上限を左右するので、measurements 側だけを取り出して黙って進むと、
+ * check が exit 2 で拒否したファイルを refine だけが誤った上限で測る非対称に戻る。
  */
-export function measureEntryLines(content: string): EntryLineMeasurement[] {
-  const { maskedLines, exceptionLines } = maskCommentSpans(content);
+export function measureEntryLines(content: string): EntryLineMeasurementResult {
+  const { maskedLines, exceptionLines, unclosedFence } = maskCommentSpans(content);
 
   type HeaderPos = { readonly id: string; readonly headerIndex: number; readonly startIndex: number };
   const headers: HeaderPos[] = [];
@@ -206,7 +234,7 @@ export function measureEntryLines(content: string): EntryLineMeasurement[] {
     });
   });
 
-  return measurements;
+  return { measurements, unclosedFence };
 }
 
 export type OverBudgetEntry = Readonly<{
@@ -221,13 +249,30 @@ export type OverBudgetEntry = Readonly<{
  * 行数バジェット超過のエントリを列挙する。例外宣言付きは上限を 2 倍（既定 30）にして判定する。
  * 旧テーブル形式はテンプレート由来で一律に上限を数行超えるため、圧縮効果の大きい順
  * （行数降順）に提示する。
+ *
+ * 引数が `EntryLineMeasurementResult` なのは、`hasException` を読む唯一の場所がここだから
+ * （Issue #349）。measurements だけを受け取る形にすると、main のガードを通ってきた値なのか
+ * どうかがこの関数から判断できず、正しさが**ガードの位置**にだけ支えられる。
+ *
+ * ただしこれは**コンパイル時の強制ではない**。汚染入力で throw しても main の catch が
+ * 「レポート生成に失敗しました」という、名指しの無い**より悪いメッセージ**へ写像する。
+ * 得られるのは「静かに誤った候補一覧を出す」が「まずいメッセージで落ちる」へ変わることだけ
+ * で、正規の入口は main のガードのまま。backstop としてだけ置いている。
  */
 export function findOverBudgetEntries(
-  measurementsByFile: ReadonlyMap<string, readonly EntryLineMeasurement[]>,
+  measurementsByFile: ReadonlyMap<string, EntryLineMeasurementResult>,
   maxEntryLines: number,
 ): OverBudgetEntry[] {
+  const contaminated = [...measurementsByFile]
+    .filter(([, result]) => result.unclosedFence)
+    .map(([file]) => file);
+  if (contaminated.length > 0) {
+    throw new Error(
+      `未閉フェンスで hasException が汚染された測定値が渡されました（main のゲートを通っていません）: ${contaminated.join(", ")}`,
+    );
+  }
   const over: OverBudgetEntry[] = [];
-  for (const [file, measurements] of measurementsByFile) {
+  for (const [file, { measurements }] of measurementsByFile) {
     for (const m of measurements) {
       const limit = m.hasException ? maxEntryLines * EXCEPTION_BUDGET_MULTIPLIER : maxEntryLines;
       if (m.lineCount > limit) {
@@ -449,6 +494,56 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
     }
     const combinedContent = [...contentsByFile.values()].join("\n\n");
 
+    const measurementsByFile = new Map<string, EntryLineMeasurementResult>();
+    const unclosedFenceFiles: string[] = [];
+    for (const [file, content] of contentsByFile) {
+      const label = path.relative(process.cwd(), file) || file;
+      const measured = measureEntryLines(content);
+      if (measured.unclosedFence) {
+        unclosedFenceFiles.push(label);
+      }
+      measurementsByFile.set(label, measured);
+    }
+
+    // 未閉フェンスの fail-loud（Issue #349）。blankCodeRegions は「閉じていないフェンス以降を
+    // 空白化しない」fail-open なので、その先の例外マーカー判定は**両方向へ**壊れる:
+    // (a) フェンス内で例示しているだけのマーカーが宣言として残り、そのエントリの上限が
+    //     黙って 2 倍（既定 15 → 30）になる、(b) 閉じ忘れの後ろで最初に現れる**記号だけの
+    //     フェンス行**（多くは後続コードブロックの閉じ行。情報文字列付きの開始行は
+    //     FENCE_CLOSE_PATTERN に合わないので終端になれない）が終端として消費され、間にある
+    //     正当な宣言がまとめて空白化されて落ちる。実測でどちらも再現する。
+    // どちらも「候補に出る / 出ない」という形でしか表に出ず、正常なレポートと区別がつかない。
+    // check-category-size は同じ入力を analyzePlaybookMarkdown で exit 2 にして拒否するため、
+    // ここで素通しすると「check が処理を拒否したファイルを refine だけが測る」非対称になる。
+    // 逆向き（refine が落として check が通る）は存在しない。ただしこの包含は片側だけで、
+    // 走査単位の違い（check はセグメント単位・こちらはファイル全体）により「check が拒否
+    // するのにこちらの unclosedFence が false」になる形は残っている（Issue #353）。
+    //
+    // 終了コードは 1（実行時エラー）。2 は本 CLI では**呼び出しが疑わしい**場合に予約して
+    // ある（引数なし・パス不在・エントリ 0 件＝誤パスの空レポート）。ここは引数もパスも
+    // 正しく、壊れているのは入力ファイルの中身なので、意味が近いのは後段の unmeasured
+    // クロスチェック（レポートが信用できないので中断する）と同じ 1 側。
+    // stderr 警告だけに留めない理由: /ace-refine はこのレポートをそのまま R2 の承認ゲートへ
+    // 積むので、stdout に「超過 0 件」の正常形が並んだ時点で警告は読み飛ばされうる。
+    // レポート本文を出す前に落とす（＝候補一覧を一切見せない）のが実効的な止め方になる。
+    //
+    // 位置は git log 取得より**前**。フェンスはファイル内容だけで判定できるのに後ろへ置くと、
+    // git 不在・非 git チェックアウトでは git のエラーが先に出て本当の原因が見えなくなる。
+    // なお 3 つのゲート（0 件 / 未閉フェンス / unmeasured）は互いに独立した事象で、順序が
+    // 情報を隠すことはない — parsePlaybookEntries も measureEntryLines の見出し検出も
+    // コードフェンスを見ない（コメント空白化のみ）ため、未閉フェンスは他の 2 つを引き起こせない。
+    // 並べ替えるときはこの独立性が保たれているか確認すること。
+    if (unclosedFenceFiles.length > 0) {
+      console.error(
+        `ERROR: 閉じていないコードフェンス（\`\`\` / ~~~）を含むファイルがあります:\n` +
+          `  ${unclosedFenceFiles.join("\n  ")}\n` +
+          `以降の本文がコード判定から外れ、行数バジェット例外の判定が過剰にも過少にも倒れるため、` +
+          `候補が不完全になります（check-category-size は同じ入力を exit 2 で拒否します）。` +
+          `フェンスを閉じてから再実行してください。`,
+      );
+      return EXIT_RUNTIME_ERROR;
+    }
+
     const entries = parsePlaybookEntries(combinedContent);
     if (entries.length === 0) {
       // check-category-size と同様に 0 件は fail-loud にする。誤パスの空レポートを
@@ -470,16 +565,11 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
 
     const archiveCandidates = findRefineArchiveCandidates(entries, stats, now, staleDays);
 
-    const measurementsByFile = new Map<string, readonly EntryLineMeasurement[]>();
-    for (const [file, content] of contentsByFile) {
-      measurementsByFile.set(path.relative(process.cwd(), file) || file, measureEntryLines(content));
-    }
-
     // エントリ照合（fail-loud）: パースされた全 ID が行数計測にも現れることを保証する。
     // ここが欠けると、コメント走査の意味論が乖離したときに over-budget 一覧だけが
     // 静かに欠落し、「超過 0 件」の正常風レポートで肥大化を見逃す。
     const measuredIds = new Set<string>();
-    for (const measurements of measurementsByFile.values()) {
+    for (const { measurements } of measurementsByFile.values()) {
       for (const m of measurements) {
         measuredIds.add(m.id);
       }

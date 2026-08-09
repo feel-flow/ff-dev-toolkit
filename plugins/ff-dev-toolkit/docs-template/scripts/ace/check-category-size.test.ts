@@ -972,7 +972,7 @@ describe("countBudgetExceptions", () => {
       "",
     ].join("\n");
 
-    const refineSide = measureEntryLines(md).filter((m) => m.hasException).length;
+    const refineSide = measureEntryLines(md).measurements.filter((m) => m.hasException).length;
     expect(countBudgetExceptions(md).declared).toBe(3);
     expect(refineSide).toBe(3);
     expect(countBudgetExceptions(md).declared).toBe(refineSide);
@@ -1058,7 +1058,7 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(md).declared).toBe(0);
-    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(0);
+    expect(measureEntryLines(md).measurements.filter((m) => m.hasException).length).toBe(0);
     expect(countBudgetExceptions(md).occurrences).toBe(2);
 
     // 終端 `---` を欠いたエントリでは、`##` の打ち切りだけが Changelog を締め出す。
@@ -1077,7 +1077,7 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(withoutTerminator).declared).toBe(0);
-    expect(measureEntryLines(withoutTerminator).filter((m) => m.hasException).length).toBe(
+    expect(measureEntryLines(withoutTerminator).measurements.filter((m) => m.hasException).length).toBe(
       0,
     );
   });
@@ -1100,7 +1100,7 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(md).declared).toBe(0);
-    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(0);
+    expect(measureEntryLines(md).measurements.filter((m) => m.hasException).length).toBe(0);
   });
 
   it("例示と宣言が別エントリにあるとき、宣言のあるエントリだけに紐づく", () => {
@@ -1130,7 +1130,7 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(md).declared).toBe(1);
-    expect(measureEntryLines(md).filter((m) => m.hasException).map((m) => m.id)).toEqual([
+    expect(measureEntryLines(md).measurements.filter((m) => m.hasException).map((m) => m.id)).toEqual([
       "ACE-1-2",
     ]);
   });
@@ -1153,7 +1153,7 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(md).declared).toBe(1);
-    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+    expect(measureEntryLines(md).measurements.filter((m) => m.hasException).length).toBe(1);
   });
 
   it("4 スペースのインデントコードブロックは宣言として数える（既知の限界・両側で同じ）", () => {
@@ -1174,7 +1174,7 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(md).declared).toBe(1);
-    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+    expect(measureEntryLines(md).measurements.filter((m) => m.hasException).length).toBe(1);
   });
 
   it("コードフェンス内のマーカー完全形は宣言として数えない（refine 側も同じ）", () => {
@@ -1195,7 +1195,7 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(md).declared).toBe(0);
-    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(0);
+    expect(measureEntryLines(md).measurements.filter((m) => m.hasException).length).toBe(0);
   });
 
   it("正当な宣言は理由にコードスパンを含んでいても数える", () => {
@@ -1213,7 +1213,7 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(md).declared).toBe(1);
-    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+    expect(measureEntryLines(md).measurements.filter((m) => m.hasException).length).toBe(1);
   });
 
   it("長さの合わないバックティック列は対にせず、同じ行の宣言を落とさない", () => {
@@ -1232,7 +1232,7 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(md).declared).toBe(1);
-    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+    expect(measureEntryLines(md).measurements.filter((m) => m.hasException).length).toBe(1);
   });
 
   it("同じ行に対にならないバックティックと宣言があっても落とさない", () => {
@@ -1249,7 +1249,7 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(md).declared).toBe(1);
-    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+    expect(measureEntryLines(md).measurements.filter((m) => m.hasException).length).toBe(1);
   });
 
   it("二重バックティック内に単一を含むコードスパンも列ごと空白化する", () => {
@@ -1267,7 +1267,7 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(md).declared).toBe(0);
-    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(0);
+    expect(measureEntryLines(md).measurements.filter((m) => m.hasException).length).toBe(0);
   });
 
   it("対にならないバックティックがある行は空白化せず、宣言を落とさない（fail-open）", () => {
@@ -1287,10 +1287,18 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(md).declared).toBe(1);
-    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+    expect(measureEntryLines(md).measurements.filter((m) => m.hasException).length).toBe(1);
   });
 
-  it("閉じていないフェンス以降は空白化せず、宣言を落とさない（fail-open）", () => {
+  /**
+   * これは**純粋関数レベル**の意味論のピン留めで、利用者から見える契約ではない。
+   * CLI としては両者ともこの入力を拒否する（refine は unclosedFence で exit 1、check は
+   * analyzePlaybookMarkdown で exit 2）。fail-open のまま値を返すこと自体は変わらないが、
+   * 「緩い値が返る」と同時に「信用できないと分かる」ことまで含めて固定する（Issue #349）。
+   * 診断のアサートを外すと、Issue #354（countBudgetExceptions 側の握りつぶし）を直したときに
+   * この test が「回帰」に見えてしまう。
+   */
+  it("閉じていないフェンス以降は空白化しない（fail-open）が、診断フラグで検出できる", () => {
     const md = [
       '<a id="ace-1-1"></a>',
       "",
@@ -1305,7 +1313,9 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(md).declared).toBe(1);
-    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+    const measured = measureEntryLines(md);
+    expect(measured.measurements.filter((m) => m.hasException).length).toBe(1);
+    expect(measured.unclosedFence).toBe(true);
   });
 });
 
