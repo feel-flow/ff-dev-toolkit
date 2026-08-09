@@ -12,6 +12,8 @@ import {
   main,
   mergeAnalyses,
   parsePositiveIntEnv,
+  scanUnclosedFence,
+  splitEntrySegments,
 } from "./check-category-size";
 import { measureEntryLines } from "./ace-refine-report";
 import * as fs from "node:fs";
@@ -273,6 +275,10 @@ describe("analyzePlaybookMarkdown", () => {
     if (result.kind === "error") {
       expect(result.message).toContain("ACE-abc-1");
       expect(result.message).not.toContain("補足の小見出し");
+      // セグメント自身の見出しは「認識された」側なので候補に出さない。
+      // splitEntrySegments が見出し行を保持するようになった（Issue #353）ので、
+      // 呼び出し側で 1 行目を落とさないと正しい見出しが候補の先頭に立つ。
+      expect(result.message).not.toContain("正常なエントリ");
     }
   });
 
@@ -1293,10 +1299,10 @@ describe("countBudgetExceptions", () => {
   /**
    * これは**純粋関数レベル**の意味論のピン留めで、利用者から見える契約ではない。
    * CLI としては両者ともこの入力を拒否する（refine は unclosedFence で exit 1、check は
-   * analyzePlaybookMarkdown で exit 2）。fail-open のまま値を返すこと自体は変わらないが、
-   * 「緩い値が返る」と同時に「信用できないと分かる」ことまで含めて固定する（Issue #349）。
-   * 診断のアサートを外すと、Issue #354（countBudgetExceptions 側の握りつぶし）を直したときに
-   * この test が「回帰」に見えてしまう。
+   * analyzePlaybookMarkdown と countBudgetExceptions の 2 経路のいずれかで exit 2。
+   * この fixture が踏むのは前者）。fail-open のまま値を返すこと自体は変わらないが、
+   * 「値が返る」と同時に「信用できないと分かる」ことまで含めて固定する（Issue #349 / #354）。
+   * 診断のアサートを外すと、以後の変更で握りつぶしが再発しても検出できない。
    */
   it("閉じていないフェンス以降は空白化しない（fail-open）が、診断フラグで検出できる", () => {
     const md = [
@@ -1313,9 +1319,467 @@ describe("countBudgetExceptions", () => {
     ].join("\n");
 
     expect(countBudgetExceptions(md).declared).toBe(1);
+    expect(countBudgetExceptions(md).unclosedFence).toBe(true);
     const measured = measureEntryLines(md);
     expect(measured.measurements.filter((m) => m.hasException).length).toBe(1);
     expect(measured.unclosedFence).toBe(true);
+  });
+
+  /**
+   * Issue #354: 診断（unclosedFence）を戻り値へ載せる前は、この 2 方向の誤りが
+   * `declared` の数値としてしか出てこず、正常な計数と区別がつかなかった。
+   * `declared` の値そのものは fail-open の設計どおりで**変えない**（変えると
+   * ace-refine-report の hasException との相互一致が崩れる）。固定するのは
+   * 「誤りうる状態だと呼び出し側が知れること」。
+   */
+  it("未閉フェンス内の例示マーカーを宣言に数えた（緩む側）ことを診断で示す", () => {
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "```markdown",
+      "<!-- ace-line-budget-exception: フェンス内の例示（閉じ忘れ） -->",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    const tally = countBudgetExceptions(md);
+    // 例示を宣言として数えている（fail-open）。診断が無ければ 1 件の正当な宣言と区別できない。
+    expect(tally.declared).toBe(1);
+    expect(tally.unclosedFence).toBe(true);
+  });
+
+  it("未閉フェンスが正当な宣言を巻き込んで落とした（厳しい側）ことを診断で示す", () => {
+    // 閉じ忘れた ```markdown の後ろで最初に現れる**記号だけのフェンス行**が終端として
+    // 消費され、間にある実宣言がまとめて空白化される。残った ```markdown は情報文字列付きで
+    // 終端になれないため、そこから EOF までが未閉のまま残る。
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "```markdown",
+      "閉じ忘れたフェンスの中",
+      "<!-- ace-line-budget-exception: 本物の宣言 -->",
+      "```",
+      "```markdown",
+      "後続の例示ブロック（閉じられない）",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    const tally = countBudgetExceptions(md);
+    // 正当な宣言が消えている（偽の密度警告になる側の誤り）。
+    expect(tally.declared).toBe(0);
+    expect(tally.unclosedFence).toBe(true);
+  });
+
+  it("フェンスが閉じている正常な入力では診断が立たない", () => {
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "```markdown",
+      "<!-- ace-line-budget-exception: 例示 -->",
+      "```",
+      "<!-- ace-line-budget-exception: 本物の宣言 -->",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    const tally = countBudgetExceptions(md);
+    expect(tally.declared).toBe(1);
+    expect(tally.unclosedFence).toBe(false);
+  });
+
+  /**
+   * **測った範囲だけを固定する**（ACE-352-4）。「ファイル全体走査が未閉を見たなら
+   * analyze も必ず拒否する」という全称は**偽**で、下の「反例」テストが実測で示している。
+   * ここで押さえるのは代表 4 形（本文 / ヘッダ / チルダ / 本数不足）だけ。
+   * `allowEmpty: true` も併せて通すのは、main が分割レイアウトで実際に渡す形だから
+   * （ヘッダ領域のフェンス検査が `segments.length === 0` の早期 return より**前**にある、
+   * という順序に依存している。順序が入れ替わればここが赤くなる）。
+   */
+  it("代表 4 形（本文 / ヘッダ / チルダ / 本数不足）の未閉フェンスは analyze も拒否する", () => {
+    const fixtures = [
+      // エントリ本文で閉じ忘れ
+      "### ACE-1-1: t\n\n| Category | coding |\n```markdown\n<!-- ace-line-budget-exception: 例示 -->\n",
+      // ヘッダ領域で閉じ忘れ
+      "# Header\n```markdown\n\n### ACE-1-1: t\n\n| Category | coding |\n",
+      // チルダフェンスの閉じ忘れ
+      "### ACE-1-1: t\n\n| Category | coding |\n~~~\n本文\n",
+      // 終端が短くて閉じない（4 本開始・3 本終端）
+      "### ACE-1-1: t\n\n| Category | coding |\n````\n本文\n```\n",
+    ];
+
+    for (const md of fixtures) {
+      expect(countBudgetExceptions(md).unclosedFence).toBe(true);
+      expect(analyzePlaybookMarkdown(md).kind).toBe("error");
+      expect(analyzePlaybookMarkdown(md, { allowEmpty: true }).kind).toBe("error");
+    }
+  });
+
+  /**
+   * かつて包含が破れていた形（Issue #354 で発見 → Issue #353 / #357 で解消）。
+   *
+   * 旧分割は `### ACE-1-1:` の接頭辞だけを消費していたため、見出しタイトルの残骸が
+   * セグメントの 1 行目になり、タイトルが 3 連バックティックで始まると**セグメント走査
+   * だけが偽のフェンス開始を見た**。当時この入力は analyze が ok を返し、
+   * countBudgetExceptions の診断だけが true（＝ main のガードが唯一の停止点）だった。
+   *
+   * splitEntrySegments が見出し行を保持するようになり、`###` 始まりの行はどちらの走査でも
+   * フェンスにならない。残る未閉フェンスは本文の裸の ``` だけで、**両者がそろって**拒否する。
+   * 3 つを同時に固定しておくと、分割規則を旧実装へ戻す変異が必ず赤くなる。
+   */
+  it("見出しタイトルが ``` で始まっても、実際の閉じ忘れは両者そろって拒否する", () => {
+    const md = [
+      "# Header",
+      "",
+      "### ACE-1-1: ```markdown の説明",
+      "",
+      "本文",
+      "```",
+      "| Category | tooling | Origin | PR #1 |",
+      "<!-- ace-line-budget-exception: 本物の宣言 -->",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(analyzePlaybookMarkdown(md).kind).toBe("error");
+    expect(countBudgetExceptions(md).unclosedFence).toBe(true);
+    expect(measureEntryLines(md).unclosedFence).toBe(true);
+  });
+
+  /**
+   * 同じ見出しでフェンスが**正しく対になっている**形。旧実装ではタイトルの偽 open が
+   * 1 本目の ``` で閉じ、2 本目が開いたまま残るため analyze だけが拒否していた
+   * （Issue #353 の向き）。見出し行を保持する分割では、このファイルは単に正常。
+   */
+  it("見出しタイトル中の ``` があっても、対になったフェンスは誰も拒否しない", () => {
+    const md = [
+      "# Header",
+      "",
+      "### ACE-1-1: ```markdown の説明",
+      "",
+      "| Category | tooling | Origin | PR #1 |",
+      "```",
+      "本文",
+      "```",
+      "<!-- ace-line-budget-exception: 本物の宣言 -->",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(analyzePlaybookMarkdown(md).kind).toBe("ok");
+    expect(countBudgetExceptions(md).unclosedFence).toBe(false);
+    expect(measureEntryLines(md).unclosedFence).toBe(false);
+    // 宣言はフェンスの外にあるので通常どおり 1 件
+    expect(countBudgetExceptions(md).declared).toBe(1);
+  });
+
+  /**
+   * **総当たりを主張ではなくテストとして着地させる**（ACE-356-3）。「N 通り試して 0 件」と
+   * コメントへ書いても、生成器が残っていなければ再実行も拡張もできず、実際に取りこぼして
+   * いた（Issue #354 の「到達不能」が偽だった経緯）。固定する不変条件は 2 つ:
+   * (1) 合成判定が立つ入力は analyze も必ず拒否する（check 内の 2 ゲートの包含）、
+   * (2) check と refine の診断が全ケースで一致する（Issue #353 の drift 検出源）。
+   */
+  it("フェンス断片の総当たりで、合成判定 ⊆ analyze の拒否・check と refine の診断一致が保たれる", () => {
+    const tokens = [
+      "",
+      "```",
+      "~~~",
+      "```markdown",
+      "````",
+      "<!-- ace-line-budget-exception: x -->",
+    ];
+    let cases = 0;
+    for (const header of tokens) {
+      for (const title of tokens) {
+        for (const body1 of tokens) {
+          for (const body2 of tokens) {
+            for (const between of tokens) {
+              const md = [
+                "# ACE Playbook",
+                "",
+                header,
+                "",
+                `### ACE-1-1: タイトル ${title}`,
+                "",
+                "| Category | coding |",
+                body1,
+                "本文",
+                body2,
+                "",
+                "---",
+                "",
+                "### ACE-1-2: 次",
+                "",
+                "| Category | tooling |",
+                // between をエントリ 2 の本文に置くのは、エントリ 1 で開きエントリ 2 で
+                // 閉じる同値類（= Issue #353 の非対称そのもの）を生成器に含めるため。
+                // エントリ 1 側へ置くと、分割境界が見出しオフセットなので全スロットが
+                // 同一セグメントへ落ち、この形に一度も到達しない。
+                between,
+                "",
+                "---",
+                "",
+              ].join("\n");
+              cases += 1;
+              const scan = scanUnclosedFence(md);
+              if (scan.found) {
+                expect(analyzePlaybookMarkdown(md, { allowEmpty: true }).kind).toBe("error");
+              }
+              // 包含の固定: ファイル全体走査が未閉を見たなら、セグメント単位も必ず見る
+              // （`scope === "both"`）。この向きが崩れると、分割規則が変わったときに
+              // 合成の片側だけが検出している状態へ黙って戻る。
+              if (blankCodeRegions(md).unclosedFence) {
+                expect(scan.found === true && scan.scope).toBe("both");
+              }
+              expect(countBudgetExceptions(md).unclosedFence).toBe(
+                measureEntryLines(md).unclosedFence,
+              );
+            }
+          }
+        }
+      }
+    }
+    // 生成器が縮んで空回りしていないこと（6^5）
+    expect(cases).toBe(7776);
+  });
+});
+
+/**
+ * 分割規則の単一源（Issue #353 / #357）。
+ * 旧実装は `split(ACE_ENTRY_HEADER_PATTERN)` で**見出しの接頭辞だけ**を消費していたため、
+ * タイトル残骸がセグメントの 1 行目になり、セグメント走査だけが偽の FENCE_OPEN を見ていた。
+ * 見出し行を丸ごと保持すれば、セグメント走査とファイル全体走査が同じ行集合を見る。
+ */
+describe("splitEntrySegments", () => {
+  const md = [
+    "# Header",
+    "",
+    "索引本文",
+    "",
+    "### ACE-1-1: 最初のエントリ",
+    "",
+    "| Category | coding |",
+    "",
+    "### ACE-1-2: 次のエントリ",
+    "",
+    "| Category | tooling |",
+    "",
+  ].join("\n");
+
+  it("セグメントは見出し行を含む（分割の境界で行が消えない）", () => {
+    const { entries } = splitEntrySegments(md);
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0].text.split("\n")[0]).toBe("### ACE-1-1: 最初のエントリ");
+    expect(entries[1].text.split("\n")[0]).toBe("### ACE-1-2: 次のエントリ");
+  });
+
+  it("ヘッダは最初の見出しより前・開始行を 0-origin で返す", () => {
+    const { header, entries } = splitEntrySegments(md);
+
+    expect(header.text).toBe("# Header\n\n索引本文\n\n");
+    expect(header.startLine).toBe(0);
+    expect(entries[0].startLine).toBe(4);
+    expect(entries[1].startLine).toBe(8);
+  });
+
+  it("見出しが 1 件も無ければ全体がヘッダ", () => {
+    const { header, entries } = splitEntrySegments("# Header\n本文\n");
+
+    expect(entries).toHaveLength(0);
+    expect(header.text).toBe("# Header\n本文\n");
+  });
+
+  it("行を 1 行も失わない（ヘッダ + 全セグメントで原文を再構成できる）", () => {
+    const { header, entries } = splitEntrySegments(md);
+
+    expect(header.text + entries.map((e) => e.text).join("")).toBe(md);
+  });
+});
+
+/**
+ * 未閉フェンスの合成判定（Issue #353）。
+ * `blankCodeRegions.unclosedFence`（ファイル全体）はそのままの意味を保ち、
+ * 「どちらの走査単位で見ても対にならないか」はこの関数だけが答える。
+ * check / refine の両方がこれを使うことで、拒否する入力集合が一致する。
+ */
+describe("scanUnclosedFence", () => {
+  it("セグメント境界をまたいで対になるフェンスを検出する（ファイル全体走査だけでは見えない）", () => {
+    // ヘッダで開いたフェンスが、エントリ本文の裸の ``` と対になる形。
+    // ファイル全体走査では「閉じている」ので、これを拾えるのはセグメント単位だけ。
+    const md = [
+      "# ACE Playbook",
+      "",
+      "追記例:",
+      "```markdown",
+      "| Category | coding |",
+      "",
+      "### ACE-80-1: 実エントリ",
+      "",
+      "| Category | coding |",
+      "<!-- ace-line-budget-exception: 本物の宣言 -->",
+      "本文。",
+      "```",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(blankCodeRegions(md).unclosedFence).toBe(false);
+    const scan = scanUnclosedFence(md);
+    expect(scan.found).toBe(true);
+    expect(scan.found === true && scan.scope).toBe("segment");
+    expect(scan.found === true && scan.line).toBe(3);
+    // **合成は判定だけに効かせ、空白化には持ち込まない**（この PR の中心的な制約）。
+    // 空白化はファイル全体走査のままなので、9 行目のマーカーはフェンス内として空白化され
+    // declared は 0。合成を空白化へ配線し直すと、ヘッダセグメントが未閉 → fail-open →
+    // マーカーが生き残って declared が 1 へ動く。occurrences を併記するのは、
+    // 「マーカーがそもそも無い fixture」との区別が付かないまま空回りしないため。
+    const tally = countBudgetExceptions(md);
+    expect(tally.declared).toBe(0);
+    expect(tally.occurrences).toBe(1);
+  });
+
+  it("エントリ本文の素直な閉じ忘れは両方の走査が見る（scope は both）", () => {
+    const md = "### ACE-1-1: t\n\n| Category | coding |\n```markdown\n閉じ忘れ\n";
+
+    expect(blankCodeRegions(md).unclosedFence).toBe(true);
+    const scan = scanUnclosedFence(md);
+    expect(scan.found).toBe(true);
+    expect(scan.found === true && scan.line).toBe(3);
+    // scope は包含関係の唯一の観測点。ここを assert しないと、ファイル全体走査の項を
+    // 落とす変異が「found は同じ」なので緑のまま通る。
+    expect(scan.found === true && scan.scope).toBe("both");
+  });
+
+  /**
+   * #357 の偽陽性が合成判定へ持ち込まれないこと。見出し行を保持する分割にしたので、
+   * `### ACE-1-1: ```md …` はどちらの走査でもフェンス開始にならない。
+   * ここが false でないと、実フェンスが 1 本も無いファイルを refine まで拒否し始める。
+   */
+  it("見出しタイトル中の ``` はフェンス開始にしない（実フェンスが無いファイルを拒否しない）", () => {
+    const md = [
+      "# Header",
+      "",
+      "### ACE-1-1: ```markdown の説明",
+      "",
+      "| Category | tooling |",
+      "本文（フェンスは 1 本も無い）",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(scanUnclosedFence(md).found).toBe(false);
+    expect(analyzePlaybookMarkdown(md).kind).toBe("ok");
+    expect(measureEntryLines(md).unclosedFence).toBe(false);
+  });
+
+  it("見出しタイトル中の ``` があっても本物の閉じ忘れは見逃さない", () => {
+    const md = [
+      "# Header",
+      "",
+      "### ACE-1-1: ```markdown の説明",
+      "",
+      "| Category | tooling |",
+      "```markdown",
+      "閉じ忘れ",
+      "",
+    ].join("\n");
+
+    expect(scanUnclosedFence(md).found).toBe(true);
+    expect(analyzePlaybookMarkdown(md).kind).toBe("error");
+    expect(measureEntryLines(md).unclosedFence).toBe(true);
+  });
+
+  it("フェンスが無い / 閉じているファイルでは found が false", () => {
+    expect(scanUnclosedFence("### ACE-1-1: t\n\n| Category | coding |\n").found).toBe(false);
+    expect(
+      scanUnclosedFence("### ACE-1-1: t\n\n| Category | coding |\n```md\n例\n```\n").found,
+    ).toBe(false);
+  });
+
+  /**
+   * CRLF は**偽陽性の方向**を固定する（検出方向は既存テストが押さえている）。
+   * \r の除去は 2 つの走査それぞれに入っており、片側だけの退行は「正常なファイルが
+   * 拒否される」形で出る。check と refine の一致 assertion では捕まらない
+   * （両者とも同じ関数へ委譲しているため）。
+   */
+  it("CRLF の正常なファイルを拒否しない（\\r 処理の片側退行を検出する）", () => {
+    const md = [
+      "# Header",
+      "",
+      "追記例:",
+      "```markdown",
+      "| Category | example |",
+      "```",
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding |",
+      "```md",
+      "本文の例示",
+      "```",
+      "",
+      "---",
+      "",
+    ].join("\r\n");
+
+    expect(scanUnclosedFence(md).found).toBe(false);
+    expect(analyzePlaybookMarkdown(md).kind).toBe("ok");
+    expect(measureEntryLines(md).unclosedFence).toBe(false);
+  });
+
+  /**
+   * ヘッダ領域のフェンス検査は `entries.length === 0` / `allowEmpty` の分岐より**前**に
+   * 走る。分割レイアウトの索引ファイル（0 件が正常）でもヘッダの閉じ忘れは止まる、を固定する。
+   * 順序を入れ替える変異は、これが無いと全て緑で通る。
+   */
+  it("allowEmpty でもヘッダ領域の閉じ忘れは止める（検査の順序を固定する）", () => {
+    const md = "# 索引\n\n```markdown\n閉じ忘れ\n";
+
+    const result = analyzePlaybookMarkdown(md, { allowEmpty: true });
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("ヘッダ領域");
+      expect(result.message).toContain("3 行目");
+    }
+  });
+
+  /**
+   * ヘッダ境界を求める実装は splitEntrySegments と countHeaderLines の 2 箇所ある
+   * （正規表現の源は entryHeadingSource で単一）。ずれると deriveMaxLines のヘッダ項が
+   * 誤り、導出上限が黙って動く。安いので両方向を固定する。
+   */
+  it("countHeaderLines は splitEntrySegments のヘッダ境界と一致する", () => {
+    const md = "# H\n\n本文\n\n### ACE-1-1: t\n\n| Category | coding |\n";
+    expect(countHeaderLines(md)).toBe(splitEntrySegments(md).entries[0].startLine);
+
+    const noEntries = "# H\n本文\n";
+    expect(countHeaderLines(noEntries)).toBe(
+      countPlaybookLines(splitEntrySegments(noEntries).header.text),
+    );
+  });
+
+  it("HTML コメント内のフェンスは走査対象にしない（分割前のマスクと同じ規則）", () => {
+    const md = "# H\n<!--\n```markdown\n-->\n\n### ACE-1-1: t\n\n| Category | coding |\n";
+
+    expect(scanUnclosedFence(md).found).toBe(false);
   });
 });
 
@@ -1539,6 +2003,74 @@ describe("main（行数警告のみ・exit code 不変）", () => {
     expect(code).toBe(0);
     expect(log.mock.calls.flat().join("\n")).toContain("総行数:");
     expect(err.mock.calls.flat().join("\n")).toContain("行数が閾値を超過");
+  });
+
+  /**
+   * 見出しタイトルに ``` を含むエントリ + 本文の閉じ忘れ。Issue #354 の時点では
+   * `analyzePlaybookMarkdown` が ok を返し、countBudgetExceptions のゲートだけが
+   * 止めていた（旧分割では見出しの接頭辞だけが消費され、タイトル残骸がセグメント走査
+   * だけで偽のフェンス開始になっていたため）。Issue #353 / #357 で分割規則を単一源に
+   * 揃えたので、いまは analyze が先に拒否する。**どちらのゲートが働いても止まること**
+   * ＝ 例外項が導出上限へ乗らないことを利用者から見える形で固定する。
+   */
+  it("見出しタイトルに ``` を含むエントリの閉じ忘れも usage error で止める", () => {
+    const body = [
+      "# Header",
+      "",
+      "### ACE-1-1: ```markdown の説明",
+      "",
+      "本文",
+      "```",
+      "| Category | coding | Origin | PR #1 |",
+      "<!-- ace-line-budget-exception: 宣言 -->",
+      "",
+      "---",
+      "",
+    ].join("\n");
+    const file = writePlaybook(body);
+    process.argv = ["node", "check-category-size.ts", file];
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const code = main();
+
+    expect(code).toBe(2);
+    const stderr = err.mock.calls.flat().join("\n");
+    expect(stderr).toContain("閉じていないコードフェンス");
+    // 位置を名指しする。6 行目 = 本文の裸の ```（1-origin）。見出し行（3 行目）は
+    // `###` 始まりなのでどちらの走査でもフェンスにならない。
+    expect(stderr).toContain("6 行目");
+    // どちらのゲートも外れると exit 0 で導出上限に例外項が乗る（実測: 上限 18 → 33）。
+    // 数値ではなく「例外項が出ていないこと」を見るのは、既定バジェットの変更で
+    // 壊れないようにするため。exit 2 を上で陽性に固定済みなので、この not 側が
+    // 単独で無音になることはない。
+    expect(log.mock.calls.flat().join("\n")).not.toContain("+ 例外");
+  });
+
+  /**
+   * 実フェンスが 1 本も無いのに止めない（Issue #357）。見出しタイトルにインラインコードを
+   * 書くのは PLAYBOOK では日常的で、旧分割ではこの形が「フェンスを閉じてください」の
+   * usage error になり、閉じるべきフェンスが存在しないため利用者に直しようがなかった。
+   */
+  it("見出しタイトル中の ``` だけでは止めない（閉じるべきフェンスが無い）", () => {
+    const body = [
+      "# Header",
+      "",
+      "### ACE-1-1: ```markdown の説明",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "本文（フェンスは 1 本も無い）",
+      "",
+      "---",
+      "",
+    ].join("\n");
+    const file = writePlaybook(body);
+    process.argv = ["node", "check-category-size.ts", file];
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(main()).toBe(0);
+    expect(log.mock.calls.flat().join("\n")).toContain("coding: 1");
   });
 
   it("カテゴリ件数超過なら exit 1（既存ゲートは不変）", () => {

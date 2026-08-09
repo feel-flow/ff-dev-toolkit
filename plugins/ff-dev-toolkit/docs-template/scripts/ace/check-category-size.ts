@@ -256,13 +256,62 @@ export function countHeaderLines(content: string): number {
   return countPlaybookLines(blanked.slice(0, match.index));
 }
 
-/** countBudgetExceptions の結果。導出上限へ足すのは declared のみ。 */
-export type BudgetExceptionTally = Readonly<{
+/** countBudgetExceptions の結果本体。導出上限へ足すのは declared のみ。 */
+type BudgetExceptionCounts = {
   /** 宣言として採用したエントリの数（deriveMaxLines へ渡す） */
   readonly declared: number;
   /** ファイル中のマーカー出現数（採用可否を問わない。差分の報告にだけ使う） */
   readonly occurrences: number;
-}>;
+};
+
+/**
+ * 未閉フェンスを見ていない tally。`declared` を導出上限へ流してよいのはこちらだけ。
+ * `unclosedFence` をリテラル型にしてあるので、`if (tally.unclosedFence) return …` を
+ * 通していない値をこの型の場所へ入れると**コンパイルが通らない**。正しさが
+ * 「main のどこでガードするか」という位置合わせではなく型で保たれる。
+ */
+export type ReliableBudgetExceptionTally = Readonly<
+  BudgetExceptionCounts & { readonly unclosedFence: false }
+>;
+
+/**
+ * countBudgetExceptions の結果。
+ *
+ * `unclosedFence` は `scanUnclosedFence`（ファイル全体走査とセグメント単位の合成。
+ * Issue #353）の結果。**`blankCodeRegions` 単体の結果とは一致しない** — 境界をまたいで
+ * 対になる形では、ファイル全体走査が false でもこちらは true になる。
+ *
+ * true のときの `declared` の壊れ方は 3 通りある（いずれも実測）:
+ * (1) 未閉フェンス内の例示マーカーが宣言として残り、上限が緩む、
+ * (2) 未閉フェンスの手前で偽の対が組まれ、正当な宣言が空白化されて偽の密度警告になる、
+ * (3) 境界をまたぐ偽の対で同じく宣言が落ちる（この形はファイル全体走査から見ると
+ * フェンスが閉じているので、空白化そのものは汚れていない — fail-closed 側の検出）。
+ * どれも「警告が出る / 出ない」という形でしか表に出ないため、値だけを見て正常な計数と
+ * 区別することはできない。
+ *
+ * **throw ではなく戻り値へ載せる**。理由は 2 つ: (1) `countBudgetExceptions` の呼び出しは
+ * `main()` の既存 try/catch（discoverPlaybookSubfiles を包むもの）の外にあり、モジュール
+ * 末尾の `process.exitCode = main()` も包まれていないので、throw は uncaught のスタック
+ * トレースとして表に出る（既存の「読み込み失敗: …」系メッセージと不揃いになる）。
+ * (2) 診断を値で持てば、呼び出し側がファイル名を添えて既存の exit 2（usage error =
+ * 入力そのものが壊れている）へそのまま写像できる。ace-refine-report.ts の
+ * EntryLineMeasurementResult が同じ形を取っているが、共有するのは理由 (2) だけ
+ * （あちらの main は try/catch を持つ。同ファイルの findOverBudgetEntries が
+ * 「throw しても main の catch がより悪いメッセージへ写像する」と書いているとおり）。
+ *
+ * 汚染側でも `declared` を**読めるまま**にしてあるのは、check と refine の相互一致テストが
+ * 「汚染入力で declared === 1 かつ unclosedFence === true」を同時に固定しており、
+ * 値を落とすと 2 ファイル間の唯一の drift 検出源が壊れるため。
+ */
+export type BudgetExceptionTally =
+  | ReliableBudgetExceptionTally
+  | Readonly<
+      BudgetExceptionCounts & {
+        readonly unclosedFence: true;
+        /** 閉じていないフェンスの開始行（0-origin）。汚染側にだけ載る */
+        readonly unclosedFenceLine: number;
+      }
+    >;
 
 /**
  * 行数バジェット例外を**宣言しているエントリの数**（マーカーの出現数ではない）と、
@@ -290,6 +339,11 @@ export type BudgetExceptionTally = Readonly<{
  * 閉じていないフェンス以降と、長さの合う相手が無いバックティック列。厳しい側へ倒すと
  * 正当な宣言が消えて偽の密度警告になり、refine とも食い違うため意図的に緩い側にしてある。
  * また複数行にまたがるコードスパン（CommonMark は許す）は行単位の走査では拾えない。
+ * このうち**未閉フェンスだけは検出できる**ので、空白化の方針（fail-open）は変えずに
+ * `unclosedFence` へ載せて返す（Issue #354）。方針は緩い側でも、**値そのものは両方向へ
+ * 倒れる** — 未閉フェンスは手前の正当な宣言を偽の対で巻き込むため declared が 0 まで落ちる
+ * ことがある。「値が返る」と「その値が信用できないと分かる」は別の話で、後者を落とすと
+ * 呼び出し側は誤った件数を正常な件数と区別できない。
  *
  * 行番号で対応を取るのは、空白化が UTF-16 の長さを保存しないため（blankHtmlBlockComments
  * のコメント参照）。文字オフセットで原文を切り出すと、コメント内に非 BMP 文字が 1 個あるだけで
@@ -299,7 +353,13 @@ export type BudgetExceptionTally = Readonly<{
 export function countBudgetExceptions(content: string): BudgetExceptionTally {
   // コードとして例示されているだけの記述を宣言と数えない（Issue #347）。
   // 長さ・行数が保存されるので、以降は原文と同じ行番号で扱える。
+  // **空白化はファイル全体走査のまま**（Issue #353 の合成は判定だけに効かせる。
+  // ここを変えると declared の値が動き、refine との相互一致テストの前提が崩れる）。
   const lines = blankCodeRegions(content).text.split("\n");
+  // 診断は合成判定（Issue #353）。捨てないこと自体は Issue #354 の契約で、
+  // blankCodeRegions が「呼び出し側は必ず消費すること」と書いている当のフラグを、
+  // セグメント単位の走査と OR で束ねた形。
+  const fenceScan = scanUnclosedFence(content);
   const blankedLines = blankHtmlBlockComments(content).split("\n");
   // 行単位で当てるので `m` は要らない（`^` は各行の先頭）。`g` も付けない —
   // `.test()` は global 正規表現の lastIndex を進めるため、共有インスタンスなら
@@ -368,10 +428,13 @@ export function countBudgetExceptions(content: string): BudgetExceptionTally {
       }
     }
   });
-  return {
-    declared,
-    occurrences: content.split(BUDGET_EXCEPTION_MARKER).length - 1,
-  };
+  const occurrences = content.split(BUDGET_EXCEPTION_MARKER).length - 1;
+  // 三項で分岐するのは `fenceScan.found` を経由してリテラル型（false / true）へ落とすため。
+  // ここで落としておくと、呼び出し側の `if (tally.unclosedFence) return …` が
+  // ReliableBudgetExceptionTally へ絞り込める。
+  return fenceScan.found
+    ? { declared, occurrences, unclosedFence: true, unclosedFenceLine: fenceScan.line }
+    : { declared, occurrences, unclosedFence: false };
 }
 
 /**
@@ -425,29 +488,55 @@ function blankNonNewline(text: string): string {
 }
 
 /**
- * blankCodeRegions の結果。`unclosedFence` は「そこから先はコード例外判定が効いていない」
+ * blankCodeRegions の結果。`unclosedFence` は「このファイルのコード例外判定は信用できない」
  * という意味なので、呼び出し側は必ず消費すること（黙って続けると出力から区別できない）。
+ *
+ * 汚染は**未閉フェンス以降だけではない**。閉じ忘れの後ろで最初に現れる記号だけのフェンス行が
+ * 終端として消費されるため、**閉じ忘れより手前**にある正当な宣言が偽の対の内側に入って
+ * 空白化される形も実測で起きる（Issue #354 の回帰テスト参照）。範囲を「以降」と限定して
+ * 読むと、手前は無事だと誤解する。
  */
-export type CodeRegionBlankResult = Readonly<{
-  readonly text: string;
-  readonly unclosedFence: boolean;
-}>;
+export type CodeRegionBlankResult =
+  | Readonly<{ readonly text: string; readonly unclosedFence: false }>
+  | Readonly<{
+      readonly text: string;
+      readonly unclosedFence: true;
+      /**
+       * 閉じていないフェンスの**開始行**（0-origin）。位置を返すのは、この診断が発火する形
+       * （ヘッダ領域で開いたフェンスがエントリ本文の裸の ``` と対になる形など）では
+       * ユーザーの目に本文のフェンスが対になって見えるため。ファイル名だけを渡すと、
+       * 閉じているように見える本文を延々見返すことになる。
+       *
+       * 任意プロパティにしないのは、この値が**利用者へ提示する行番号**になったから
+       * （「N 行目に始まる」）。`?? 0` で埋めると、生成側の抜けが「自信を持って 1 行目を
+       * 指す」形で表に出る — 本 PR が消したのと同じ失敗の形。
+       */
+      readonly unclosedFenceLine: number;
+    }>;
 
-/** blankFencedCodeBlocks の結果。`unclosedFence` は呼び出し側で fail-closed に使う。 */
-type BlankedSegment = Readonly<{
-  readonly text: string;
-  readonly unclosedFence: boolean;
-}>;
+/**
+ * blankFencedCodeBlocks の結果。`unclosedFence` は呼び出し側で fail-closed に使う。
+ * 位置を任意プロパティにしない理由は CodeRegionBlankResult と同じ。
+ */
+type BlankedSegment =
+  | Readonly<{ readonly text: string; readonly unclosedFence: false }>
+  | Readonly<{
+      readonly text: string;
+      readonly unclosedFence: true;
+      /** 閉じていないフェンスの開始行（セグメント内の 0-origin） */
+      readonly unclosedFenceLine: number;
+    }>;
 
 /**
  * Markdown のフェンス付きコードブロックを「同じ行数の空白」へ置換する（除去しない）。
  * 目的は blankHtmlBlockComments と同じで、本文が例示している追記テンプレート
  * （`| Category | coding | …` を含むフェンス）を走査対象から外すこと。
  *
- * **現行の実データはこの経路を通らない**。live / docs-template の PLAYBOOK.md はどちらも
- * この断片を載せているが、置き場所が最初のエントリ見出しより前（索引のヘッダ領域）なので
- * `split(...).slice(1)` が捨てる。空白化が要るのは (1) 部分移行で索引側にエントリが残り、
- * 断片が最終セグメントへ入る場合、(2) カテゴリファイルのエントリ本文がテンプレートを
+ * **空白化した `text` を実データが消費する経路は今のところ無い**。live / docs-template の
+ * PLAYBOOK.md はどちらもこの断片をヘッダ領域に載せており、ヘッダは Category 集計の対象外
+ * だからである（`unclosedFence` の方は毎回読まれる — analyze のヘッダ検査と
+ * scanUnclosedFence の両方が通る）。text の空白化が要るのは (1) 部分移行で索引側にエントリが
+ * 残り、断片が最終セグメントへ入る場合、(2) カテゴリファイルのエントリ本文がテンプレートを
  * 引用する場合の 2 つ。どちらも「起きうる」であって「今起きている」ではない。
  * それでも入れるのは、空白化しないと**抽出とカウントが食い違って**フェンス内の例示が
  * カテゴリ値として静かに採用されるため（analyzePlaybookMarkdown のループを参照）。
@@ -464,6 +553,7 @@ type BlankedSegment = Readonly<{
 function blankFencedCodeBlocks(source: string): BlankedSegment {
   const lines = source.split("\n");
   let openFence: string | undefined;
+  let openIndex = -1;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     // CRLF 文書では split("\n") 後の各行末に \r が残る。FENCE_CLOSE_PATTERN は行末を
@@ -474,6 +564,7 @@ function blankFencedCodeBlocks(source: string): BlankedSegment {
       const opened = FENCE_OPEN_PATTERN.exec(probe);
       if (opened) {
         openFence = opened[1];
+        openIndex = i;
         lines[i] = blankLine(line);
       }
       continue;
@@ -485,9 +576,13 @@ function blankFencedCodeBlocks(source: string): BlankedSegment {
     // 閉じ、続きの本文（実 Category 行を含む）が空白化される。
     if (closed && closed[1][0] === openFence[0] && closed[1].length >= openFence.length) {
       openFence = undefined;
+      openIndex = -1;
     }
   }
-  return { text: lines.join("\n"), unclosedFence: openFence !== undefined };
+  const text = lines.join("\n");
+  return openFence === undefined
+    ? { text, unclosedFence: false }
+    : { text, unclosedFence: true, unclosedFenceLine: openIndex };
 }
 
 function blankLine(line: string): string {
@@ -608,7 +703,8 @@ export function blankCodeRegions(source: string): CodeRegionBlankResult {
   }
   // openFence が残っている＝閉じていない。その開始行以降は原文のまま返す（fail-open）。
   // 呼び出し側は unclosedFence を必ず消費すること — 黙って続けると「コード例外判定が
-  // 途中から効いていない」状態を出力から区別できない。
+  // 信用できない」状態を出力から区別できない。汚染は以降だけに閉じない（閉じ忘れの後ろの
+  // 記号だけのフェンス行が終端として消費され、手前の正当な宣言が偽の対の内側に入る）。
   const text = out.join("\n");
   if (text.length !== source.length) {
     // 長さが崩れると、呼び出し側のオフセット照合（maskCommentSpans）が黙って false へ倒れ、
@@ -618,7 +714,9 @@ export function blankCodeRegions(source: string): CodeRegionBlankResult {
         `オフセット照合の前提が崩れており、例外宣言を黙って落とすため中断します。`,
     );
   }
-  return { text, unclosedFence: openFence !== undefined };
+  return openFence === undefined
+    ? { text, unclosedFence: false }
+    : { text, unclosedFence: true, unclosedFenceLine: openIndex };
 }
 
 /**
@@ -629,6 +727,11 @@ export function blankCodeRegions(source: string): CodeRegionBlankResult {
  * テンプレート例（`### ACE-XXX: …`）まで候補に混ざり、直すべき箇所として正しい本文を
  * 指してしまう。ACE を含む行があればそれだけに絞り（本文の小見出しを混ぜない）、
  * 1 本も無ければ見出し行全体を返す（`ACE-` ごと書き忘れた見出しも名指しできるように）。
+ *
+ * **セグメント自身の見出し行（1 行目）は呼び出し側が落としてから渡すこと**。
+ * splitEntrySegments が見出しを保持するようになったため（Issue #353）、渡したままだと
+ * 「正しく認識された見出し」が「認識されなかった候補」として先頭に出て、直すべき箇所を
+ * 取り違えさせる。
  */
 function findAbsorbedHeadingHints(scannable: string): string[] {
   const headings = scannable
@@ -639,15 +742,144 @@ function findAbsorbedHeadingHints(scannable: string): string[] {
   return aceLike.length > 0 ? aceLike : headings;
 }
 
+/** エントリブロック 1 つ分。`startLine` は原文における 0-origin の開始行。 */
+export type PlaybookSegment = Readonly<{
+  readonly text: string;
+  readonly startLine: number;
+}>;
+
+/** splitEntrySegments の結果。header + entries を連結すると原文が復元できる。 */
+export type PlaybookSegments = Readonly<{
+  /** 最初のエントリ見出しより前。エントリが 0 件ならファイル全体 */
+  readonly header: PlaybookSegment;
+  /** 各エントリブロック（**見出し行を含む**） */
+  readonly entries: readonly PlaybookSegment[];
+}>;
+
+/**
+ * PLAYBOOK 本文をエントリブロックへ切る。**見出し行はセグメントに残す**（Issue #353 / #357）。
+ *
+ * 旧実装は `split(ACE_ENTRY_HEADER_PATTERN)` を使っており、マッチした `### ACE-1-1:` が
+ * 結果から**消えていた**。消えるのは接頭辞だけなのでタイトル残骸（`` ```markdown の説明 `` の
+ * ような文字列）がセグメントの 1 行目として現れ、行ベースの状態機械には**フェンス開始行に
+ * 見える**。同じ物理行をファイル全体走査は `###` 始まりとして見るので一致しない — つまり
+ * 2 つの走査が同じファイルについて**別の行集合**を見ていた。実測される症状は 2 つで、
+ * どちらも見出しタイトルにインラインコードを書いた瞬間に踏む:
+ * (1) 実フェンスが 1 本も無いのに「閉じていないフェンス」で全体が止まる（Issue #357）、
+ * (2) エントリ内の記号だけのフェンス行の本数のパリティで、2 つの走査の判定が入れ替わる。
+ *
+ * 見出し行を保持すれば `^###` 始まりの行はどちらの走査でもフェンスにならず、この class が
+ * 丸ごと消える。セグメント境界の切り方を本関数へ集約したことで、走査単位の違い（セグメントは
+ * 境界で状態がリセットされる）だけが残り、それは scanUnclosedFence が合成して吸収する。
+ * ただし境界を求める実装はもう 1 箇所ある — `countHeaderLines` は同じ `entryHeadingSource`
+ * から組んだ正規表現で独立にヘッダ境界を出す（正規表現の源は単一だが実装は 2 つ）。
+ * 一致は check-category-size.test.ts が固定している。
+ *
+ * 引数は **HTML コメントを空白化済み**のテキストであること。生の本文を渡すと、コメント内の
+ * 追記例（`### ACE-001:` など）が境界になり、件数と Category 集計の両方が壊れる。
+ * `startLine` を生ファイルの行番号として使えるのは、blankHtmlBlockComments が改行位置を
+ * 保存するから（blankNonNewline のコメント参照）。除去に変えるとここが静かにずれる。
+ */
+export function splitEntrySegments(cleaned: string): PlaybookSegments {
+  // `g` はここで生成する正規表現にだけ付ける（モジュール定数へ付けると lastIndex が
+  // 呼び出し間で持ち越される。CATEGORY_TABLE_LINE_PATTERN のコメント参照）。
+  const pattern = new RegExp(entryHeadingSource("non-capturing"), "gmu");
+  const starts: number[] = [];
+  for (const match of cleaned.matchAll(pattern)) {
+    if (match.index !== undefined) {
+      starts.push(match.index);
+    }
+  }
+  const lineOf = (offset: number): number => {
+    const newlines = cleaned.slice(0, offset).match(/\n/gu);
+    return newlines ? newlines.length : 0;
+  };
+  const headerEnd = starts[0] ?? cleaned.length;
+  const entries = starts.map((start, index) => ({
+    text: cleaned.slice(start, starts[index + 1] ?? cleaned.length),
+    startLine: lineOf(start),
+  }));
+  return { header: { text: cleaned.slice(0, headerEnd), startLine: 0 }, entries };
+}
+
+/** scanUnclosedFence の結果。`found` が true のときだけ位置と走査単位が付く。 */
+export type UnclosedFenceScan =
+  | Readonly<{ readonly found: false }>
+  | Readonly<{
+      readonly found: true;
+      /** 原文における開始行（0-origin。2 つの走査が違う行を指すときは手前の方） */
+      readonly line: number;
+      /** どの走査が見たか。`"both"` は両方が同じ入力を未閉と判定したことを意味する */
+      readonly scope: "file" | "segment" | "both";
+    }>;
+
+/**
+ * 「どちらの走査単位で見ても対にならないフェンス」を探す合成判定（Issue #353）。
+ * check（countBudgetExceptions）と refine（maskCommentSpans）が**この関数だけ**を通すことで、
+ * **未閉フェンスを理由とする拒否**について 2 つの CLI の入力集合が一致する（check は
+ * Category 行の不備など他の理由でも拒否するので、拒否集合そのものは check の方が広い）。
+ *
+ * 合成する 2 つ:
+ * - **ファイル全体**（blankCodeRegions）: 例外マーカーの空白化が実際に行われる単位。
+ *   ここが汚れているという事実そのもの
+ * - **セグメント単位**（blankFencedCodeBlocks × ヘッダ + 各エントリ）: 境界で状態が
+ *   リセットされるため、**境界をまたいで対になる**書き間違い（ヘッダで開いたフェンスが
+ *   エントリ本文の裸の ``` と対になる形）を検出できる。ファイル全体走査はこれを
+ *   「閉じている」と見るので素通しする — Issue #353 が報告した非対称そのもの
+ *
+ * **測った包含関係**: 分割規則を splitEntrySegments へ揃えた現在、セグメント単位は
+ * ファイル全体を**包含している**（全セグメントが閉じて終わるなら、各セグメントへ閉じた状態で
+ * 入るファイル全体走査も閉じて終わる）。実測: ファイル全体の項を落とす変異でも**検出力
+ * （`found`）は 1 件も変わらず**、赤くなるのは包含を固定した `scope === "both"` の
+ * assertion だけ（総当たり 7776 件のうち 5724 件がファイル全体側でも未閉と判定する）。
+ * それでも OR のまま残すのは、この包含が「分割規則が単一源であること」に依存しており、
+ * 崩れたときに黙って検出力が下がる側だから。`scope` はそのための観測点で、
+ * 総当たりテストが固定している。なお `scope: "file"` は包含が成り立つ限り到達しない
+ * （実測 0/7776）。`Math.min` のタイブレークも同じ理由で現状は常にセグメント側を選ぶ。
+ *
+ * **合成するのは判定だけで、空白化には一切影響させない** — `declared` / `hasException` の値は
+ * 従来と同じ入力の関数のままにしておかないと、check と refine の相互一致テスト
+ * （唯一の drift 検出源）の前提が崩れる。
+ *
+ * 位置は 2 つのうち**先に現れる方**を返す。直すべき箇所は先頭側にあることが多く、
+ * 後ろを指すと「そこは対になっている」と読まれて調査が空回りする。
+ */
+export function scanUnclosedFence(content: string): UnclosedFenceScan {
+  const fileWide = blankCodeRegions(content);
+  const cleaned = blankHtmlBlockComments(content);
+  const { header, entries } = splitEntrySegments(cleaned);
+  let segmentLine: number | undefined;
+  for (const segment of [header, ...entries]) {
+    const blanked = blankFencedCodeBlocks(segment.text);
+    if (blanked.unclosedFence) {
+      segmentLine = segment.startLine + blanked.unclosedFenceLine;
+      break;
+    }
+  }
+  if (fileWide.unclosedFence) {
+    const fileLine = fileWide.unclosedFenceLine;
+    if (segmentLine === undefined) {
+      return { found: true, line: fileLine, scope: "file" };
+    }
+    return { found: true, line: Math.min(fileLine, segmentLine), scope: "both" };
+  }
+  if (segmentLine !== undefined) {
+    return { found: true, line: segmentLine, scope: "segment" };
+  }
+  return { found: false };
+}
+
 /**
  * PLAYBOOK.md 本文から ACE エントリブロックを走査し、Category 行を集計する。
  * HTML コメント内の追記例（### ACE-001 など）を除外するため、先にコメントを空白化する
- * （行数と行オフセットを保つため除去はしない）。コードフェンスの空白化は**分割の後**、
- * セグメント単位で行う。したがってフェンス内に**正準形の** ID を持つ見出しがあると
- * 分割はそこで切れる（テンプレートのプレースホルダを `ACE-XXX` のような非正準形に
- * 保つ規則は ACE_ENTRY_ID_SOURCE のコメント参照）。この形はフェンスが対にならず
- * unclosedFence の fail-closed へ落ちるので黙ってはいないが、分割・countHeaderLines・
- * Category カウントの 3 者でフェンスの扱いが揃っていない状態ではある（Issue #342）。
+ * （行数と行オフセットを保つため除去はしない）。分割は splitEntrySegments（見出し行を
+ * 保持する単一源）で行い、コードフェンスの空白化は**分割の後**、セグメント単位で行う。
+ * したがってフェンス内に**正準形の** ID を持つ見出しがあると分割はそこで切れる
+ * （テンプレートのプレースホルダを `ACE-XXX` のような非正準形に保つ規則は
+ * ACE_ENTRY_ID_SOURCE のコメント参照）。この形はフェンスが対にならず unclosedFence の
+ * fail-closed へ落ちるので黙ってはいない。なお分割・countHeaderLines・Category カウントの
+ * 3 者でフェンスの扱いが揃っていない状態そのものは続いている（分割と countHeaderLines は
+ * フェンスを見ず、Category カウントだけがセグメント単位で空白化する。Issue #342）。
  * `allowEmpty` が true の場合、エントリ見出しが 0 件でもエラーにせず空の結果を返す
  * （分割レイアウトの索引ファイルのように、単体では 0 件が正常なケース向け）。
  */
@@ -656,22 +888,23 @@ export function analyzePlaybookMarkdown(
   options: { readonly allowEmpty?: boolean } = {},
 ): AnalyzeResult {
   const cleaned = blankHtmlBlockComments(content);
-  const parts = cleaned.split(ACE_ENTRY_HEADER_PATTERN);
+  const { header, entries } = splitEntrySegments(cleaned);
   // ヘッダ領域（最初のエントリ見出しより前）も未閉フェンスを検査する。ここを外すと、
-  // 打ち間違いが `.slice(1)` のどちら側に落ちたかで検査の有無が変わる。ヘッダの
-  // 未閉フェンスは blankCodeRegions がファイル全体を走査するため後続の全エントリに
-  // 波及し、例外宣言の判定が黙って効かなくなる（Issue #347 のレビュー実測）。
-  if (blankFencedCodeBlocks(parts[0] ?? "").unclosedFence) {
+  // 打ち間違いがどちら側に落ちたかで検査の有無が変わる。ヘッダの未閉フェンスは
+  // blankCodeRegions がファイル全体を走査するため後続の全エントリに波及し、
+  // 例外宣言の判定が黙って効かなくなる（Issue #347 のレビュー実測）。
+  const headerScan = blankFencedCodeBlocks(header.text);
+  if (headerScan.unclosedFence) {
     return {
       kind: "error",
       message:
-        "最初の ACE エントリより前（ヘッダ領域）に閉じていないコードフェンス（``` / ~~~）があります。" +
+        `${String(headerScan.unclosedFenceLine + 1)} 行目に始まる、` +
+        "最初の ACE エントリより前（ヘッダ領域）の閉じていないコードフェンス（``` / ~~~）があります。" +
         "以降の本文が走査対象から外れ、行数バジェット例外の判定も黙って効かなくなります。" +
         "フェンスを閉じてください。",
     };
   }
-  const segments = parts.slice(1);
-  if (segments.length === 0) {
+  if (entries.length === 0) {
     if (options.allowEmpty === true) {
       return { kind: "ok", histogram: {}, totalEntries: 0 };
     }
@@ -682,24 +915,28 @@ export function analyzePlaybookMarkdown(
   }
   const histogram: Record<string, number> = {};
 
-  for (const segment of segments) {
+  for (const entry of entries) {
     // 本文が例示する追記テンプレート（フェンス内の `| Category | … |`）を数えない。
     // **抽出と本数カウントは必ず同じテキストで行う**（Issue #340）。カウントだけを
     // 空白化後に行うと、実 Category 行がフェンス例示の**後ろ**にあるブロックで
     // 「本数は 1 本・値は先に現れた例示から採用」となり、誤ったカテゴリへ静かに 1 件入る。
     // 同じテキストで数えれば 0 本 → 解析エラー / 1 本 → ok（値が空なら空値エラー）/
     // 2 本以上 → 吸収エラー、に収まる。
-    const blanked = blankFencedCodeBlocks(segment);
+    const blanked = blankFencedCodeBlocks(entry.text);
     // 閉じないフェンスは以降を末尾まで空白化する。実 Category 行はフェンスより前に
     // あるので生き残り、フェンス以降にある**吸収ブロックの Category 行だけ**が消える。
     // つまり本数が 1 本へ戻り、下の吸収検出が一度も発火しない — 偽陽性ガードが
     // 検出器の証拠を消す形になる。閉じ忘れは Playbook の日常的な打ち間違いなので、
     // ace-refine-report.ts の unmeasured クロスチェックと同じく前提が崩れたら落とす。
     if (blanked.unclosedFence) {
+      // 位置はセグメントの開始行 + セグメント内の相対行。ファイル名だけでは、
+      // 「本文だけを見ると対になって見える」形（ヘッダで開いたフェンスとの対など）で
+      // 直しようがない。130 件規模の PLAYBOOK では目視で追うことになる。
+      const line = entry.startLine + blanked.unclosedFenceLine + 1;
       return {
         kind: "error",
         message:
-          "閉じていないコードフェンス（``` / ~~~）を含む ACE ブロックがあります。" +
+          `${String(line)} 行目に始まる、閉じていないコードフェンス（\`\`\` / ~~~）を含む ACE ブロックがあります。` +
           "以降の本文が走査対象から外れ、そこにあるエントリが件数からも Category 集計からも" +
           "静かに消えます。フェンスを閉じてください。",
       };
@@ -726,7 +963,9 @@ export function analyzePlaybookMarkdown(
       const values = matches
         .map((entry) => trimCategoryValue(entry[1] ?? "") || "（空）")
         .join(", ");
-      const hints = findAbsorbedHeadingHints(scannable);
+      // 1 行目はこのセグメント自身の見出し（splitEntrySegments が保持する）。
+      // 落とさずに渡すと、正しく認識された見出しが「認識されなかった候補」の先頭に出る。
+      const hints = findAbsorbedHeadingHints(scannable.split("\n").slice(1).join("\n"));
       const locator =
         hints.length > 0 ? `認識されなかった見出し候補: ${hints.join(" / ")}。` : "";
       return {
@@ -755,7 +994,7 @@ export function analyzePlaybookMarkdown(
   return {
     kind: "ok",
     histogram,
-    totalEntries: segments.length,
+    totalEntries: entries.length,
   };
 }
 
@@ -940,12 +1179,15 @@ export function main(): number {
   // 解析結果と行数計測は 1 ファイル 1 レコードにまとめる。別々の配列へ同順に push して
   // 添字で突き合わせる形にすると、`continue` する分岐（索引除外・0 件除外・固定閾値）が
   // 増えるほど対応の崩れが検出しにくくなる（公開 ff-dev-toolkit#10 の Suggestion）。
+  // exceptionTally が Reliable 側に限定されているのが要点（Issue #354）。下の
+  // `if (exceptionTally.unclosedFence) return` を通っていない値はここへ push できない
+  // ため、「ガードの位置」ではなく型が導出上限への流入を止める。
   const fileReports: {
     file: string;
     analysis: AnalyzeSuccess;
     lineCount: number;
     headerLines: number;
-    exceptionTally: BudgetExceptionTally;
+    exceptionTally: ReliableBudgetExceptionTally;
   }[] = [];
 
   for (const filePath of filesToAnalyze) {
@@ -962,12 +1204,40 @@ export function main(): number {
       console.error(`${filePath}: ${analyzed.message}`);
       return EXIT_USAGE_ERROR;
     }
+    const exceptionTally = countBudgetExceptions(content);
+    // 例外件数の走査が未閉フェンスで汚染されたまま導出上限へ流れないようにする（Issue #354）。
+    //
+    // **現状この分岐は到達しない**。Issue #354 の時点では到達する入力が実在した
+    // （見出しタイトルが 3 連バックティックで始まる形。旧分割は `### ACE-1-1:` の接頭辞
+    // だけを消費し、タイトル残骸がセグメント走査でだけフェンス開始になっていた）。
+    // Issue #353 / #357 で分割を splitEntrySegments へ一本化し、見出し行を保持する
+    // ようにしたので、2 つの走査は同じ行集合を見る。全セグメントが閉じて終わるなら
+    // ファイル全体走査も閉じて終わるため、合成判定が立つ入力は analyze の error 側へ落ちる。
+    //
+    // **この包含はコメントではなくテストで固定してある** — check-category-size.test.ts の
+    // 総当たり（フェンス断片 6 種 × 5 箇所）が「合成判定が立つなら analyze も error」を
+    // 全ケースで検査する。数値だけをコメントに書くと再実行も拡張もできない（ACE-356-3）。
+    //
+    // それでも分岐を残すのは、到達不能性が**分割規則が単一源のままであること**に
+    // 依存しているのと、countBudgetExceptions が export されていて単体でも呼べるため。
+    // fileReports の型が ReliableBudgetExceptionTally なので、この分岐を消すと
+    // 実行時ではなく**型検査**が落ちる。
+    if (exceptionTally.unclosedFence) {
+      console.error(
+        `${filePath}:${String(exceptionTally.unclosedFenceLine + 1)}: ` +
+          `閉じていないコードフェンス（\`\`\` / ~~~）があり、行数バジェット例外の` +
+          `件数が信用できません（例示を宣言に数える / 正当な宣言を落とす、の両方向へ倒れます）。` +
+          `名指しした行から対になる終端まで確認してください` +
+          `（ヘッダ領域で開いたフェンスがエントリ本文の裸の \`\`\` と対になる形も含みます）。`,
+      );
+      return EXIT_USAGE_ERROR;
+    }
     fileReports.push({
       file: filePath,
       analysis: analyzed,
       lineCount: countPlaybookLines(content),
       headerLines: countHeaderLines(content),
-      exceptionTally: countBudgetExceptions(content),
+      exceptionTally,
     });
   }
 

@@ -896,6 +896,67 @@ describe("行数バジェット定数の単一源（check-category-size との�
     process.argv = ["node", "check-category-size.ts", playbookPath];
     expect(checkCategorySizeMain()).toBe(2);
   });
+
+  /**
+   * 走査単位の非対称そのものの回帰（Issue #353）。ヘッダ領域で開いたフェンスが
+   * エントリ本文の裸の ``` と対になる形は、**ファイル全体走査では「閉じている」**ため
+   * refine 側の診断が立たず、check だけが拒否していた。しかも refine はそのまま
+   * 「本物の例外宣言が無い」ものとして測るので、上限が 30 ではなく 15 で判定され
+   * 偽の圧縮候補が出る（実測: hasException が false へ倒れる）。
+   */
+  it("セグメント境界をまたいで対になる閉じ忘れも両者そろって拒否する（Issue #353）", () => {
+    const playbookPath = makeFixture(1, 19, false);
+    const codingPath = path.join(path.dirname(playbookPath), "playbook", "coding.md");
+    // ヘッダ領域（最初のエントリ見出しより前）で開き、エントリ本文の裸の ``` で対になる
+    fs.writeFileSync(
+      codingPath,
+      "# PLAYBOOK — 実装 (coding)\n\n追記例:\n```markdown\n" +
+        fs.readFileSync(codingPath, "utf8").replace(/^# .*\n/u, "") +
+        "\n```\n",
+      "utf8",
+    );
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(main([playbookPath], { readLog: emptyLog, now: () => NOW })).not.toBe(0);
+    const stderr = errSpy.mock.calls.flat().map(String).join("\n");
+    expect(stderr).toContain("閉じていないコードフェンス");
+    // 位置まで名指しする（Issue #353 の追加 DoD）。ファイル名だけでは、この形は
+    // 本文だけを見るとフェンスが対になって見えるため直しようがない。
+    // 4 行目 = ヘッダ領域で開いた ```markdown（1-origin）。
+    expect(stderr).toContain("coding.md:4");
+    expect(logSpy).not.toHaveBeenCalled();
+
+    process.argv = ["node", "check-category-size.ts", playbookPath];
+    expect(checkCategorySizeMain()).toBe(2);
+  });
+
+  /**
+   * 逆に、**実フェンスが 1 本も無い**ファイルはどちらも拒否しない（Issue #357）。
+   * 合成判定を素朴な OR にすると、見出しタイトル中の ``` を偽の開始と見なす側の
+   * 誤検出が refine へも広がり、正常なファイルが 2 つの CLI から拒否される。
+   * #353 の AC はこの形を含まないので、このテストが唯一の歯止めになる。
+   */
+  it("見出しタイトル中の ``` だけのファイルはどちらも拒否しない（Issue #357 の偽陽性を広げない）", () => {
+    const playbookPath = makeFixture(1, 19, false);
+    const codingPath = path.join(path.dirname(playbookPath), "playbook", "coding.md");
+    fs.writeFileSync(
+      codingPath,
+      fs
+        .readFileSync(codingPath, "utf8")
+        .replace(/^### (ACE-[\w-]+):.*$/mu, "### $1: ```markdown を説明するエントリ"),
+      "utf8",
+    );
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(main([playbookPath], { readLog: emptyLog, now: () => NOW })).toBe(0);
+
+    process.argv = ["node", "check-category-size.ts", playbookPath];
+    expect(checkCategorySizeMain()).toBe(0);
+  });
 });
 
 /**
@@ -933,7 +994,7 @@ describe("エントリ見出し ID 規則の単一源（4 スクリプトの認�
    * プレースホルダ見出しを**必ず先頭**に置いた fixture を組む。
    * 認識されない見出しのブロックは直前のセグメントへ吸収されるため、途中に置くと
    * 「隣のエントリの Category 行が 2 本ある」状態になり、先勝ちで緑のまま通ってしまう。
-   * 先頭なら split の `.slice(1)` がヘッダごと捨てるので、誤認識が件数へ素直に出る。
+   * 先頭なら分割のヘッダ側（splitEntrySegments の header）に入るので、誤認識が件数へ素直に出る。
    */
   function buildFixture(realHeadings: readonly string[]): string {
     return [

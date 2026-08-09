@@ -26,6 +26,7 @@ import {
   entryHeadingSource,
   isDirectExecution,
   parsePositiveIntEnv,
+  scanUnclosedFence,
 } from "./check-category-size";
 import {
   computeReuseStats,
@@ -69,16 +70,33 @@ export type EntryLineMeasurement = Readonly<{
   readonly hasException: boolean;
 }>;
 
-/** measureEntryLines の結果。診断を測定値と同じ戻り値に載せ、離して捨てられないようにする。 */
-export type EntryLineMeasurementResult = Readonly<{
-  readonly measurements: readonly EntryLineMeasurement[];
-  /**
-   * 閉じていないコードフェンスを見たか。**汚染されるのは `hasException` だけ**で、
-   * `id` と `lineCount` は影響を受けない（measureEntryLines の JSDoc 参照）。消費しないと
-   * Issue #349 の握りつぶしに戻るので、呼び出し側は必ず読むこと。
-   */
-  readonly unclosedFence: boolean;
-}>;
+/**
+ * measureEntryLines の結果。診断を測定値と同じ戻り値に載せ、離して捨てられないようにする。
+ *
+ * `unclosedFence` は「閉じていないコードフェンスを見たか」。**汚染されるのは `hasException`
+ * だけ**で、`id` と `lineCount` は影響を受けない（measureEntryLines の JSDoc 参照）。
+ * 消費しないと Issue #349 の握りつぶしに戻るので、呼び出し側は必ず読むこと。
+ *
+ * 判定は check-category-size の `scanUnclosedFence`（ファイル全体走査とセグメント単位の
+ * 合成）。ファイル全体走査だけを見ていた頃は、ヘッダで開いたフェンスがエントリ本文の
+ * 裸の ``` と対になる形を「閉じている」と判定し、check が exit 2 で拒否した入力を
+ * こちらだけが測っていた（Issue #353）。
+ *
+ * 判別可能ユニオンにしてあるのは、行番号を `number | undefined` にすると呼び出し側へ
+ * 「立っているのに位置が無い」分岐が生まれ、そこが到達不能なまま**位置なしで静かに劣化する**
+ * 経路として残るため（check 側の BudgetExceptionTally と同じ形）。
+ */
+export type EntryLineMeasurementResult =
+  | Readonly<{
+      readonly measurements: readonly EntryLineMeasurement[];
+      readonly unclosedFence: false;
+    }>
+  | Readonly<{
+      readonly measurements: readonly EntryLineMeasurement[];
+      readonly unclosedFence: true;
+      /** 未閉フェンスの開始行（0-origin） */
+      readonly unclosedFenceLine: number;
+    }>;
 
 /**
  * 閉じた HTML コメント span のみマッチ（parsePlaybookEntries の stripHtmlBlockComments と同じ意味論）。
@@ -97,12 +115,11 @@ type MaskedContent = Readonly<{
   readonly maskedLines: readonly string[];
   /** 行数バジェット例外マーカーを含むコメント span の開始行番号（0-origin） */
   readonly exceptionLines: ReadonlySet<number>;
-  /**
-   * blankCodeRegions が「閉じていないフェンスを見た」と報告したか。
-   * true のとき exceptionLines は信用できない（maskedLines は影響を受けない）。
-   */
-  readonly unclosedFence: boolean;
-}>;
+}> &
+  (
+    | Readonly<{ readonly unclosedFence: false }>
+    | Readonly<{ readonly unclosedFence: true; readonly unclosedFenceLine: number }>
+  );
 
 /**
  * 閉じた `<!-- ... -->` span だけを空白でマスクする。
@@ -121,7 +138,11 @@ type MaskedContent = Readonly<{
  */
 function maskCommentSpans(content: string): MaskedContent {
   const exceptionLines = new Set<number>();
+  // 空白化はファイル全体走査のまま（例外マーカーのオフセット照合がこの結果に依存する）。
+  // 診断だけをセグメント単位との合成にする（Issue #353）— 合成を空白化へ持ち込むと
+  // hasException の値が動き、countBudgetExceptions との相互一致が崩れる。
   const blanked = blankCodeRegions(content);
+  const fenceScan = scanUnclosedFence(content);
   const scannable = blanked.text;
   let masked = "";
   let last = 0;
@@ -139,11 +160,14 @@ function maskCommentSpans(content: string): MaskedContent {
     last = start + span.length;
   }
   masked += content.slice(last);
-  return {
-    maskedLines: masked.split("\n"),
-    exceptionLines,
-    unclosedFence: blanked.unclosedFence,
-  };
+  return fenceScan.found
+    ? {
+        maskedLines: masked.split("\n"),
+        exceptionLines,
+        unclosedFence: true,
+        unclosedFenceLine: fenceScan.line,
+      }
+    : { maskedLines: masked.split("\n"), exceptionLines, unclosedFence: false };
 }
 
 /** エントリ範囲を打ち切る `##` レベル見出し（Changelog 等の後続セクションをエントリに含めない） */
@@ -172,7 +196,8 @@ const SECTION_HEADING_PATTERN = SECTION_HEADING_LINE_PATTERN;
  * check が exit 2 で拒否したファイルを refine だけが誤った上限で測る非対称に戻る。
  */
 export function measureEntryLines(content: string): EntryLineMeasurementResult {
-  const { maskedLines, exceptionLines, unclosedFence } = maskCommentSpans(content);
+  const masked = maskCommentSpans(content);
+  const { maskedLines, exceptionLines } = masked;
 
   type HeaderPos = { readonly id: string; readonly headerIndex: number; readonly startIndex: number };
   const headers: HeaderPos[] = [];
@@ -234,7 +259,9 @@ export function measureEntryLines(content: string): EntryLineMeasurementResult {
     });
   });
 
-  return { measurements, unclosedFence };
+  return masked.unclosedFence
+    ? { measurements, unclosedFence: true, unclosedFenceLine: masked.unclosedFenceLine }
+    : { measurements, unclosedFence: false };
 }
 
 export type OverBudgetEntry = Readonly<{
@@ -500,7 +527,10 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
       const label = path.relative(process.cwd(), file) || file;
       const measured = measureEntryLines(content);
       if (measured.unclosedFence) {
-        unclosedFenceFiles.push(label);
+        // 位置まで名指しする（Issue #353 の追加 DoD）。この診断が発火する形は
+        // 「ヘッダで開いたフェンスがエントリ本文の裸の ``` と対になる」など、本文だけを
+        // 見ると対になって見えるものが多く、ファイル名だけでは直しようがない。
+        unclosedFenceFiles.push(`${label}:${String(measured.unclosedFenceLine + 1)}`);
       }
       measurementsByFile.set(label, measured);
     }
@@ -513,11 +543,13 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
     //     FENCE_CLOSE_PATTERN に合わないので終端になれない）が終端として消費され、間にある
     //     正当な宣言がまとめて空白化されて落ちる。実測でどちらも再現する。
     // どちらも「候補に出る / 出ない」という形でしか表に出ず、正常なレポートと区別がつかない。
-    // check-category-size は同じ入力を analyzePlaybookMarkdown で exit 2 にして拒否するため、
-    // ここで素通しすると「check が処理を拒否したファイルを refine だけが測る」非対称になる。
-    // 逆向き（refine が落として check が通る）は存在しない。ただしこの包含は片側だけで、
-    // 走査単位の違い（check はセグメント単位・こちらはファイル全体）により「check が拒否
-    // するのにこちらの unclosedFence が false」になる形は残っている（Issue #353）。
+    // check-category-size は同じ入力を exit 2 で拒否するため、ここで素通しすると
+    // 「check が処理を拒否したファイルを refine だけが測る」非対称になる。
+    // 判定は両者とも scanUnclosedFence（ファイル全体走査 + セグメント単位の合成）を通すので、
+    // **拒否する入力集合は一致する**（Issue #353）。かつては両方向に穴があった:
+    // 境界をまたいで対になる閉じ忘れは check だけが拒否し（こちらはファイル全体走査だけを
+    // 見ていた）、見出しタイトル中のフェンスが絡む形では check だけが通していた（Issue #354）。
+    // 一致は check-category-size.test.ts の総当たりテストで固定してある。
     //
     // 終了コードは 1（実行時エラー）。2 は本 CLI では**呼び出しが疑わしい**場合に予約して
     // ある（引数なし・パス不在・エントリ 0 件＝誤パスの空レポート）。ここは引数もパスも
