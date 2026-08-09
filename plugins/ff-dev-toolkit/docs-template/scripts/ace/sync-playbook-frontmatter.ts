@@ -423,6 +423,9 @@ export function countActualEntries(
   }
 
   const merged = mergeAnalyses(analyses);
+  if (merged.kind === "error") {
+    return { ok: false, message: merged.message };
+  }
   if (merged.totalEntries === 0) {
     return { ok: false, message: "ACE エントリ見出し（### ACE-数字:）が見つかりません。" };
   }

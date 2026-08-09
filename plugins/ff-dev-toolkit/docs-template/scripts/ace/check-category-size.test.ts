@@ -12,6 +12,7 @@ import {
   mergeAnalyses,
   parsePositiveIntEnv,
 } from "./check-category-size";
+import { measureEntryLines } from "./ace-refine-report";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -638,6 +639,8 @@ describe("mergeAnalyses", () => {
       { kind: "ok", histogram: { process: 4 }, totalEntries: 4 },
       { kind: "ok", histogram: {}, totalEntries: 0 },
     ]);
+    expect(merged.kind).toBe("ok");
+    if (merged.kind !== "ok") return;
     expect(merged.totalEntries).toBe(7);
     expect(merged.histogram).toEqual({ coding: 2, process: 5 });
   });
@@ -645,8 +648,59 @@ describe("mergeAnalyses", () => {
   it("空配列は totalEntries 0 の ok を返す", () => {
     const merged = mergeAnalyses([]);
     expect(merged.kind).toBe("ok");
+    if (merged.kind !== "ok") return;
     expect(merged.totalEntries).toBe(0);
     expect(merged.histogram).toEqual({});
+  });
+
+  it("histogram に undefined が混ざっていたら error を返す（silent に捨てない）", () => {
+    const merged = mergeAnalyses([
+      {
+        kind: "ok",
+        totalEntries: 200,
+        histogram: { testing: undefined, process: 5 },
+      },
+    ]);
+
+    expect(merged.kind).toBe("error");
+    if (merged.kind !== "error") return;
+    expect(merged.message).toContain("testing");
+  });
+
+  it("histogram に NaN が混ざっていたら error を返す（silent に捨てない）", () => {
+    const merged = mergeAnalyses([
+      { kind: "ok", totalEntries: 200, histogram: { coding: Number.NaN } },
+    ]);
+
+    expect(merged.kind).toBe("error");
+    if (merged.kind !== "error") return;
+    expect(merged.message).toContain("coding");
+  });
+
+  it("負数・小数の件数は有限でも error（131 + (-2) で閾値を静かに回避させない）", () => {
+    const negative = mergeAnalyses([
+      { kind: "ok", totalEntries: 2, histogram: { coding: 4, testing: -2 } },
+    ]);
+    expect(negative.kind).toBe("error");
+    if (negative.kind === "error") expect(negative.message).toContain("testing");
+
+    const fractional = mergeAnalyses([
+      { kind: "ok", totalEntries: 1, histogram: { coding: 1.5 } },
+    ]);
+    expect(fractional.kind).toBe("error");
+    if (fractional.kind === "error") expect(fractional.message).toContain("coding");
+  });
+
+  it("カテゴリ別件数の合計が総エントリ数と一致しなければ error（キーごと脱落した形）", () => {
+    // 値の検査では届かない破れ方。Object.entries に現れないキーは per-value 判定に
+    // 到達しないので、合計との突き合わせだけが検出できる。
+    const merged = mergeAnalyses([
+      { kind: "ok", totalEntries: 5, histogram: { coding: 1 } },
+    ]);
+
+    expect(merged.kind).toBe("error");
+    if (merged.kind !== "error") return;
+    expect(merged.message).toContain("一致しません");
   });
 });
 
@@ -780,20 +834,250 @@ describe("countHeaderLines", () => {
 });
 
 describe("countBudgetExceptions", () => {
-  it("ace-line-budget-exception マーカーの出現数を数える", () => {
+  it("宣言のあるエントリ数を数える（マーカーの出現数ではない）", () => {
+    // 2 番目のエントリは 2 本宣言しているが 1 件へ丸める。素の出現数を数える実装なら 3。
     const md = [
       "### ACE-1-1: a",
       "<!-- ace-line-budget-exception: 反直感的な詳細 -->",
+      "---",
       "### ACE-1-2: b",
       "<!-- ace-line-budget-exception: 別の理由 -->",
+      "<!-- ace-line-budget-exception: さらに別の理由 -->",
+      "---",
       "### ACE-1-3: c",
     ].join("\n");
 
-    expect(countBudgetExceptions(md)).toBe(2);
+    expect(countBudgetExceptions(md).declared).toBe(2);
+    expect(countBudgetExceptions(md).occurrences).toBe(3);
   });
 
   it("マーカーが無ければ 0", () => {
-    expect(countBudgetExceptions("### ACE-1-1: a\n")).toBe(0);
+    expect(countBudgetExceptions("### ACE-1-1: a\n").declared).toBe(0);
+    expect(countBudgetExceptions("### ACE-1-1: a\n").occurrences).toBe(0);
+  });
+
+  it("エントリ見出しより前（ヘッダ）のマーカーは加算しない", () => {
+    const md = [
+      "# Header",
+      "<!-- ace-line-budget-exception: 書式例 1 -->",
+      "<!-- ace-line-budget-exception: 書式例 2 -->",
+      "<!-- ace-line-budget-exception: 書式例 3 -->",
+      "",
+      "### ACE-1-1: a",
+      "| Category | coding |",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(0);
+  });
+
+  it("同一エントリ内に複数の宣言があっても 1 件に丸める", () => {
+    const md = [
+      "### ACE-1-1: a",
+      "| Category | coding |",
+      "<!-- ace-line-budget-exception: 理由 A -->",
+      "<!-- ace-line-budget-exception: 理由 B -->",
+      "<!-- ace-line-budget-exception: 理由 C -->",
+      "---",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(1);
+  });
+
+  it("HTML コメントとして書かれていない言及は宣言として数えない", () => {
+    const md = [
+      "### ACE-1-1: a",
+      "| Category | coding |",
+      "運用ルール: 例外は ace-line-budget-exception マーカーで宣言する。",
+      "記法は `ace-line-budget-exception` （コードスパン内の言及）。",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(0);
+  });
+
+  it("ace-refine-report の hasException 件数と一致する（期待値は正準形の実値でも固定）", () => {
+    // ACE-337-1: 相互一致だけを測ると「両者が揃って取りこぼす」変異に盲目になるため、
+    // 実値（2）と相互一致の両方を assert する。
+    const md = [
+      "# Header",
+      "<!-- ace-line-budget-exception: ヘッダの書式例（エントリ外） -->",
+      "",
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: 例外を 1 件だけ宣言したエントリ",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "<!-- ace-line-budget-exception: 反直感的な詳細のため -->",
+      "本文",
+      "",
+      "---",
+      "",
+      '<a id="ace-1-2"></a>',
+      "",
+      "### ACE-1-2: 同じ例外を 3 回書き分けたエントリ",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "<!-- ace-line-budget-exception: 理由 A -->",
+      "<!-- ace-line-budget-exception: 理由 B -->",
+      "<!-- ace-line-budget-exception: 理由 C -->",
+      "本文",
+      "",
+      "---",
+      "",
+      '<a id="ace-1-3"></a>',
+      "",
+      "### ACE-1-3: 散文で言及するだけのエントリ",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "例外は ace-line-budget-exception マーカーで宣言する（これは宣言ではない）。",
+      "",
+      "---",
+      "",
+      '<a id="ace-1-4"></a>',
+      "<!-- ace-line-budget-exception: anchor 行と見出し行の間 -->",
+      "### ACE-1-4: anchor 領域で宣言したエントリ",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "本文",
+      "",
+      "---",
+      "<!-- ace-line-budget-exception: 終端 --- の後（どちらの範囲でもない） -->",
+      "",
+      "## Changelog",
+      "",
+      "<!-- ace-line-budget-exception: 後続セクション（どちらの範囲でもない） -->",
+      "",
+    ].join("\n");
+
+    const refineSide = measureEntryLines(md).filter((m) => m.hasException).length;
+    expect(countBudgetExceptions(md).declared).toBe(3);
+    expect(refineSide).toBe(3);
+    expect(countBudgetExceptions(md).declared).toBe(refineSide);
+    // 採用しなかった 4 件（ヘッダ 1 + 重複 2 + 終端後 1 + 後続セクション 1 − 散文 0）も見える。
+    expect(countBudgetExceptions(md).occurrences).toBe(9);
+  });
+
+  it("コメント内に非 BMP 文字があってもブロック境界がずれない", () => {
+    // 空白化は `u` 無しでコードユニット単位に行うので UTF-16 の長さが保たれる。
+    // `u` 付き（サロゲートペアを空白 1 個へ潰す）だと以下がヘッダの宣言を拾って 1 になる。
+    const md = [
+      "# Header",
+      `<!-- ${"🎉".repeat(80)} -->`,
+      "<!-- ace-line-budget-exception: 書式例（エントリ外） -->",
+      "",
+      "### ACE-1-1: a",
+      "| Category | coding |",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(0);
+  });
+
+  it("エントリ内の宣言は非 BMP 文字があっても落とさない", () => {
+    const md = [
+      "### ACE-1-1: a",
+      "| Category | coding |",
+      "<!-- 🎉🎉🎉🎉🎉 -->",
+      "<!-- ace-line-budget-exception: 反直感的な詳細のため -->",
+      "---",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(1);
+  });
+
+  it("HTML コメント内のエントリ見出しは偽のブロック境界を作らない", () => {
+    // 境界を原文（空白化前）から取ると、コメント内の追記例で分割されて 2 になる。
+    const md = [
+      "### ACE-1-1: real",
+      "| Category | coding | Origin | PR #1 |",
+      "<!-- ace-line-budget-exception: 理由 A -->",
+      "<!--",
+      "### ACE-1-2: 追記例（コメント内の偽エントリ）",
+      "-->",
+      "<!-- ace-line-budget-exception: 理由 B -->",
+      "本文",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(1);
+  });
+
+  it("無関係なコメントに挟まれた散文の言及は跨いで拾わない（span は非貪欲）", () => {
+    const md = [
+      "### ACE-1-1: a",
+      "| Category | coding | Origin | PR #1 |",
+      "<!-- 無関係なコメント -->",
+      "例外は ace-line-budget-exception マーカーで宣言する（これは宣言ではない）。",
+      "<!-- もう一つ無関係なコメント -->",
+      "本文",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(0);
+  });
+
+  it("エントリの外側（終端 --- の後・後続 ## セクション）にある宣言は数えない", () => {
+    // ここを数えると「この機能を説明した Changelog 行」で直前エントリの上限が伸びる。
+    // measureEntryLines と同じ規則（終端 `---` で切り、`##` で打ち切る）でそろえている。
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "本文",
+      "",
+      "---",
+      "",
+      "エントリ間のメモ <!-- ace-line-budget-exception: 終端の後 -->",
+      "",
+      "## Changelog",
+      "",
+      "- 例外マーカー <!-- ace-line-budget-exception: Changelog の説明 --> を追加した",
+      "",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(0);
+    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(0);
+    expect(countBudgetExceptions(md).occurrences).toBe(2);
+
+    // 終端 `---` を欠いたエントリでは、`##` の打ち切りだけが Changelog を締め出す。
+    const withoutTerminator = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "本文",
+      "",
+      "## Changelog",
+      "",
+      "- 例外マーカー <!-- ace-line-budget-exception: Changelog の説明 --> を追加した",
+      "",
+    ].join("\n");
+
+    expect(countBudgetExceptions(withoutTerminator).declared).toBe(0);
+    expect(measureEntryLines(withoutTerminator).filter((m) => m.hasException).length).toBe(
+      0,
+    );
+  });
+
+  it("コードスパン内のマーカー完全形は宣言として数える（既知の限界・refine 側も同じ）", () => {
+    // 判定は markdown を解さない素のテキスト一致。live PLAYBOOK.md §運用ルールは
+    // この書き方でマーカーを説明しており、同じ書き方がエントリ本文へ入ると上限が伸びる。
+    // check と refine がそろって数えるので相互一致テストでは検出できない（Issue #347）。
+    const md = [
+      "# Header",
+      "",
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "例外は `<!-- ace-line-budget-exception: 理由 -->` を添えて宣言する。",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(1);
+    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
   });
 });
 
@@ -999,6 +1283,37 @@ describe("main（行数警告のみ・exit code 不変）", () => {
       return writePlaybook(body);
     }
 
+    it("ヘッダが例外マーカーの書式を説明していても導出上限は伸びない（密度警告を殺さない）", () => {
+      // §運用ルールにマーカーの書式を書くのは PLAYBOOK として自然な操作。
+      // これで上限が伸びると「警告が出ない＝正常」と見分けがつかなくなる。
+      const header = [
+        "# Header",
+        "<!-- ace-line-budget-exception: 書式例 1 -->",
+        "<!-- ace-line-budget-exception: 書式例 2 -->",
+        "<!-- ace-line-budget-exception: 書式例 3 -->",
+        "",
+      ].join("\n");
+      const body = Array.from({ length: 3 }, (_, i) =>
+        entryBlockOfLines(`1-${String(i + 1)}`, 20),
+      ).join("");
+      // 64 行（ヘッダ 4 + 20 行/件 × 3 件）。導出上限 = ヘッダ 6 + 3 件 × 16 = 54 行。
+      const file = writePlaybook(header + body);
+      process.argv = ["node", "check-category-size.ts", file];
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const code = main();
+
+      expect(code).toBe(0);
+      expect(log.mock.calls.flat().join("\n")).toContain("導出上限 54");
+      // 上限に反映しないことと、落としたことを黙らないことの両方を固定する。
+      expect(log.mock.calls.flat().join("\n")).not.toContain("+ 例外");
+      expect(log.mock.calls.flat().join("\n")).toContain(
+        "例外マーカー 3 件中 0 件を宣言として採用",
+      );
+      expect(err.mock.calls.flat().join("\n")).toContain("エントリ密度が行数バジェットを超過");
+    });
+
     it("1 エントリの行数バジェットを超える密度なら警告する（旧テーブル形式の残存を名指しできる）", () => {
       // 20 行/件 × 3 件 = 60 行。導出上限 = ヘッダ 2 + 3 × 16 = 50 行。
       const file = writeEntries(3, 20);
@@ -1113,6 +1428,48 @@ describe("main（行数警告のみ・exit code 不変）", () => {
       }
       return indexPath;
     }
+
+    it("ファイルごとの解析結果・ヘッダ行数・例外件数が取り違わらない（部分移行中の索引 + カテゴリファイル）", () => {
+      // 1 ファイル 1 レコードへ統合した箇所の回帰。別々の配列を添字で突き合わせる形へ
+      // 戻すと、ここで指標が入れ替わって導出上限が両方とも別の値になる。
+      // 索引側にもエントリを残す（＝索引も監視対象）ことで 2 ファイル分の内訳を比較できる。
+      const indexPath = writeSplitPlaybook(
+        [
+          "# 索引",
+          "ヘッダ 2 行目",
+          "ヘッダ 3 行目",
+          "",
+          "### ACE-1-1: 索引に残っているエントリ",
+          "| Category | coding |",
+          "本文",
+          "---",
+          "",
+        ].join("\n"),
+        {
+          "testing.md": [
+            "# testing",
+            "",
+            "### ACE-1-2: 例外を宣言したエントリ",
+            "| Category | testing |",
+            "<!-- ace-line-budget-exception: 反直感的な詳細のため -->",
+            "本文",
+            "---",
+            "",
+          ].join("\n"),
+        },
+      );
+      process.argv = ["node", "check-category-size.ts", indexPath];
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const code = main();
+      const out = log.mock.calls.flat().join("\n");
+
+      expect(code).toBe(0);
+      // 索引: ヘッダ 4 行 / 1 件 / 例外 0 件。カテゴリ: ヘッダ 2 行 / 1 件 / 例外 1 件。
+      expect(out).toContain("導出上限 20 = ヘッダ 4 + 1 件 × 16");
+      expect(out).toContain("導出上限 33 = ヘッダ 2 + 1 件 × 16 + 例外 1 × 15");
+    });
 
     it("吸収が起きたサブファイルを名指しして exit 2（ゲートが exit 0 へ縮退しない）", () => {
       // 分割レイアウトでは 7 ファイルのどれを直せばよいかを伝えるのは

@@ -17,7 +17,10 @@ import * as path from "node:path";
 import {
   BUDGET_EXCEPTION_MARKER,
   DEFAULT_MAX_ENTRY_LINES,
+  ENTRY_ANCHOR_LINE_PATTERN,
   EXCEPTION_BUDGET_MULTIPLIER,
+  HTML_COMMENT_SPAN_SOURCE,
+  SECTION_HEADING_LINE_PATTERN,
   discoverPlaybookSubfiles,
   entryHeadingSource,
   isDirectExecution,
@@ -51,7 +54,12 @@ const DEFAULT_PROMOTE_HELPFUL_MIN = 5;
  * 同じ PLAYBOOK を読む他のスクリプトと同一の認識になる（#318）。
  */
 const ENTRY_HEADER_LINE_PATTERN = new RegExp(entryHeadingSource("capture-id"), "u");
-const ANCHOR_LINE_PATTERN = /^<a id="ace-[\w-]+"><\/a>\s*$/iu;
+/**
+ * anchor 行・後続セクション見出しの源は check-category-size.ts に置く（#343）。
+ * countBudgetExceptions が同じ規則でエントリ範囲を切るため、片方だけ変えると
+ * 両者のブロック境界がずれ、宣言を片側だけが拾う。
+ */
+const ANCHOR_LINE_PATTERN = ENTRY_ANCHOR_LINE_PATTERN;
 
 export type EntryLineMeasurement = Readonly<{
   readonly id: string;
@@ -60,8 +68,12 @@ export type EntryLineMeasurement = Readonly<{
   readonly hasException: boolean;
 }>;
 
-/** 閉じた HTML コメント span のみマッチ（parsePlaybookEntries の stripHtmlBlockComments と同じ意味論） */
-const COMMENT_SPAN_PATTERN = /<!--[\s\S]*?-->/gu;
+/**
+ * 閉じた HTML コメント span のみマッチ（parsePlaybookEntries の stripHtmlBlockComments と同じ意味論）。
+ * ソースは check-category-size.ts に一本化してある（#343）— countBudgetExceptions が
+ * 同じ条件で例外宣言を数えるため、書き写すと片方だけ広げたときに件数が静かにずれる。
+ */
+const COMMENT_SPAN_PATTERN = new RegExp(HTML_COMMENT_SPAN_SOURCE, "gu");
 
 function countNewlinesBefore(content: string, offset: number): number {
   const matches = content.slice(0, offset).match(/\n/gu);
@@ -102,7 +114,7 @@ function maskCommentSpans(content: string): MaskedContent {
 }
 
 /** エントリ範囲を打ち切る `##` レベル見出し（Changelog 等の後続セクションをエントリに含めない） */
-const SECTION_HEADING_PATTERN = /^## /u;
+const SECTION_HEADING_PATTERN = SECTION_HEADING_LINE_PATTERN;
 
 /**
  * 各エントリのブロック行数を計測する。

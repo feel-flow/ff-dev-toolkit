@@ -5,6 +5,8 @@
  *   （終了コードは変えない）。上限は既定で**件数から導出**する（Issue #285 / ADR-019）:
  *     上限 = ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1)
  *            + 例外件数 × ACE_MAX_ENTRY_LINES × (EXCEPTION_BUDGET_MULTIPLIER - 1)
+ *   例外件数は**例外を宣言しているエントリの数**であって、マーカーの出現数ではない
+ *   （countBudgetExceptions 参照。Issue #343）。
  *   固定行数を上限にすると「1 エントリ 13 行 × 件数」と構造的に噛み合わず、件数ゲート
  *   （130 件 ≒ 1700 行）より 2 倍以上早く発火して警告が恒常化する。導出上限なら警告は
  *   「1 エントリが太い」＝行数バジェット違反のときだけ出る。`ACE_MAX_PLAYBOOK_LINES` を
@@ -149,6 +151,27 @@ const FENCE_CLOSE_PATTERN = /^[ \t]*(`{3,}|~{3,})[ \t]*$/u;
  * 判定には使わない。呼び出し側が trim 済みの行を渡すのでインデントは問わない。
  */
 const ANY_HEADING_LINE_PATTERN = /^#{1,6}\s/u;
+/**
+ * 閉じた HTML ブロックコメント span の**ソース文字列**。
+ * ace-refine-report.ts はこの値を import する（同名の重複定義を置かない）。
+ *
+ * 正規表現インスタンスではなくソースを export するのは、`g` 付きインスタンスを共有すると
+ * `.test()` / `.exec()` の呼び出しで lastIndex がモジュール境界を越えて持ち越されるため
+ * （CATEGORY_TABLE_LINE_PATTERN のコメント参照）。フラグは消費側が付ける。
+ */
+export const HTML_COMMENT_SPAN_SOURCE = String.raw`<!--[\s\S]*?-->`;
+/**
+ * エントリの anchor 行（`<a id="ace-…"></a>`）。エントリブロックの始点を見出しより
+ * 手前へ広げるのに使う。ace-refine-report.ts はこの値を import する。
+ * check と refine でブロック範囲が食い違うと、anchor 行と見出し行の間に置かれた宣言を
+ * 片側だけが拾い、「check は密度警告を出すのに refine の圧縮候補は空」になる。
+ */
+export const ENTRY_ANCHOR_LINE_PATTERN = /^<a id="ace-[\w-]+"><\/a>\s*$/iu;
+/**
+ * エントリ範囲を打ち切る `##` レベル見出し（Changelog 等の後続セクション）。
+ * ace-refine-report.ts はこの値を import する。
+ */
+export const SECTION_HEADING_LINE_PATTERN = /^## /u;
 
 /** 存在しないキーは undefined（Record 全面 number ではない）。呼び出し側は ?? 0 で読む。 */
 export type CategoryHistogram = Readonly<Partial<Record<string, number>>>;
@@ -165,6 +188,30 @@ export type AnalyzeFailure = Readonly<{
 }>;
 
 export type AnalyzeResult = AnalyzeSuccess | AnalyzeFailure;
+
+/**
+ * mergeAnalyses の検証を通った histogram。`CategoryHistogram` と違い `Partial` でないのは
+ * 意図的で、「合算を通った値はすべて非負の安全整数」という検証結果を型で表している。
+ * これにより呼び出し側は値の再チェックを持たずに済む（2 つ目の guard を置くと、
+ * 片方が `continue`・片方が error という分岐の食い違いが生まれる。Issue #343）。
+ * **キーの実在は保証しない**（`Record` 全面 number は添字読みに対して嘘をつく）ので、
+ * `Object.entries` で走査する用途にのみ使うこと。
+ */
+export type MergedCategoryHistogram = Readonly<Record<string, number>>;
+
+/** mergeAnalyses の成功結果。`AnalyzeSuccess` の histogram を狭めたリファインメント。 */
+export type MergeSuccess = Readonly<{
+  readonly kind: "ok";
+  readonly histogram: MergedCategoryHistogram;
+  readonly totalEntries: number;
+}>;
+
+export type MergeResult = MergeSuccess | AnalyzeFailure;
+
+/** 件数として妥当な値（非負の安全整数）か。負数・小数・安全整数外は合算前に弾く。 */
+function isEntryCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
 
 function trimCategoryValue(raw: string): string {
   return raw.replace(/\s+/gu, " ").trim();
@@ -209,20 +256,123 @@ export function countHeaderLines(content: string): number {
   return countPlaybookLines(blanked.slice(0, match.index));
 }
 
+/** countBudgetExceptions の結果。導出上限へ足すのは declared のみ。 */
+export type BudgetExceptionTally = Readonly<{
+  /** 宣言として採用したエントリの数（deriveMaxLines へ渡す） */
+  readonly declared: number;
+  /** ファイル中のマーカー出現数（採用可否を問わない。差分の報告にだけ使う） */
+  readonly occurrences: number;
+}>;
+
 /**
- * 行数バジェット例外マーカー（`<!-- ace-line-budget-exception: 理由 -->`）の出現数。
- * PLAYBOOK.md §運用ルールが例外に許す上限は通常バジェットの 2 倍なので、
- * 導出上限はマーカー 1 件につきバジェット 1 本分の余裕を足す必要がある。
+ * 行数バジェット例外を**宣言しているエントリの数**（マーカーの出現数ではない）と、
+ * 素の出現数の両方を返す。PLAYBOOK.md §運用ルールが例外に許す上限は通常バジェットの
+ * 2 倍なので、導出上限は宣言 1 件につきバジェット 1 本分の余裕を足す必要がある。
+ *
+ * 数え方は ace-refine-report.ts の `hasException` にそろえる（Issue #343）:
+ * (1) エントリブロックの内側にあること、(2) 閉じた HTML コメント span であること、
+ * (3) 1 ブロックにつき最大 1 件。refine 側は entry ごとの boolean なので (3) は自明だが、
+ * こちらは総和を取るため明示的に丸める。ブロック範囲（anchor 行〜終端 `---`、後続の
+ * `##` セクションで打ち切り）も measureEntryLines と同じ規則にしてある。範囲が食い違うと、
+ * 片側だけがマーカーを拾って「check は密度警告を出すのに refine の圧縮候補は空」になる。
+ * 規則を書き写している以上ずれうるので、両者が同じ入力で同じ件数を出すことを
+ * check-category-size.test.ts の相互一致テストで固定している（そこが唯一の drift 検出源）。
+ *
+ * 素の部分一致でファイル全体を数えると、**緩む方向へ静かに壊れる**:
+ * ヘッダの §運用ルールがマーカーの書式を説明しているだけで上限が伸び（docs-template 同梱の
+ * PLAYBOOK.md が実際に該当する）、同一エントリ内で理由を書き分けるとその数だけ多重加算される。
+ * 上限が伸びたことは「警告が出ない」という形でしか表に出ないので、正常な状態と区別がつかない。
+ *
+ * **残る限界**: 判定は markdown を解さない素のテキスト一致なので、エントリ本文が
+ * コードスパン・コードフェンスの中に `<!-- … -->` の完全形でマーカーを引用していると
+ * 1 件として数える（refine 側も同じく数えるので両者はそろっている。measureEntryLines の
+ * 「コードスパン内の `<!-- ... -->` はコメントとしてマスクされる」と同じ限界）。
+ * エントリ本文で書式を説明するときは `<!--` を崩して書くこと。
+ *
+ * 行番号で対応を取るのは、空白化が UTF-16 の長さを保存しないため（blankHtmlBlockComments
+ * のコメント参照）。文字オフセットで原文を切り出すと、コメント内に非 BMP 文字が 1 個あるだけで
+ * ブロック境界が 1 文字ずれ、宣言を拾いすぎたり落としたりする。`\n` の位置は必ず保存されるので
+ * 行番号なら前提そのものが要らない。
  */
-export function countBudgetExceptions(content: string): number {
-  const matches = content.match(new RegExp(BUDGET_EXCEPTION_MARKER, "gu"));
-  return matches ? matches.length : 0;
+export function countBudgetExceptions(content: string): BudgetExceptionTally {
+  const lines = content.split("\n");
+  const blankedLines = blankHtmlBlockComments(content).split("\n");
+  // 行単位で当てるので `m` は要らない（`^` は各行の先頭）。`g` も付けない —
+  // `.test()` は global 正規表現の lastIndex を進めるため、共有インスタンスなら
+  // 3 行目以降の見出しを取りこぼす（CATEGORY_TABLE_LINE_PATTERN のコメント参照）。
+  const headingPattern = new RegExp(entryHeadingSource("non-capturing"), "u");
+  const headerIndices: number[] = [];
+  for (let i = 0; i < blankedLines.length; i++) {
+    if (headingPattern.test(blankedLines[i])) {
+      headerIndices.push(i);
+    }
+  }
+  // ブロック始点: 見出し行。ただし直前 2 行以内に anchor があれば anchor 行から
+  // （PLAYBOOK テンプレートは anchor + 空行 + 見出しの並び）。measureEntryLines と同じ。
+  // なお anchor が見出しの直前にある枝（空行を挟まない並び）は、ここでは件数を変えない
+  // （anchor 行は正規表現上マーカーを載せられないため）。measureEntryLines と範囲を
+  // 一致させるためだけに置いてある。落とすと範囲がずれ、空行を挟む並びとの差も生まれる。
+  const startIndexOf = (headerIndex: number): number => {
+    if (headerIndex >= 1 && ENTRY_ANCHOR_LINE_PATTERN.test(blankedLines[headerIndex - 1])) {
+      return headerIndex - 1;
+    }
+    if (
+      headerIndex >= 2 &&
+      blankedLines[headerIndex - 1].trim() === "" &&
+      ENTRY_ANCHOR_LINE_PATTERN.test(blankedLines[headerIndex - 2])
+    ) {
+      return headerIndex - 2;
+    }
+    return headerIndex;
+  };
+  const spanPattern = new RegExp(HTML_COMMENT_SPAN_SOURCE, "gu");
+  let declared = 0;
+  headerIndices.forEach((headerIndex, order) => {
+    let rangeEnd =
+      order + 1 < headerIndices.length
+        ? startIndexOf(headerIndices[order + 1]) - 1
+        : blankedLines.length - 1;
+    // Changelog 等の後続セクションをエントリに含めない。ここで打ち切らないと、
+    // 「この機能を説明した Changelog 行」が直前エントリの宣言として数えられる。
+    for (let i = headerIndex + 1; i <= rangeEnd; i++) {
+      if (SECTION_HEADING_LINE_PATTERN.test(blankedLines[i])) {
+        rangeEnd = i - 1;
+        break;
+      }
+    }
+    let end = -1;
+    for (let i = rangeEnd; i > headerIndex; i--) {
+      if (blankedLines[i].trim() === "---") {
+        end = i;
+        break;
+      }
+    }
+    if (end === -1) {
+      end = rangeEnd;
+      while (end > headerIndex && blankedLines[end].trim() === "") {
+        end -= 1;
+      }
+    }
+    // マーカー自身が HTML コメントなので、走査は空白化**前**の原文に対して行う。
+    const block = lines.slice(startIndexOf(headerIndex), end + 1).join("\n");
+    for (const span of block.matchAll(spanPattern)) {
+      if (span[0].includes(BUDGET_EXCEPTION_MARKER)) {
+        declared += 1;
+        break;
+      }
+    }
+  });
+  return {
+    declared,
+    occurrences: content.split(BUDGET_EXCEPTION_MARKER).length - 1,
+  };
 }
 
 /**
  * エントリ密度から行数上限を導出する（Issue #285 / ADR-019）。
  *
- *   上限 = ヘッダ行数 + 件数 × (エントリ行数バジェット + 1) + 例外件数 × バジェット
+ *   上限 = ヘッダ行数 + 件数 × (エントリ行数バジェット + 1)
+ *          + 例外件数 × バジェット × (EXCEPTION_BUDGET_MULTIPLIER - 1)
  *
  * 固定行数を上限にすると「1 エントリ 13 行 × 件数」と構造的に噛み合わず、
  * 件数ゲート（既定 130 件 ≒ 1700 行）より 2 倍以上早く発火して警告が恒常化する。
@@ -249,13 +399,23 @@ export function deriveMaxLines(input: {
 /**
  * HTML ブロックコメントを「同じ行数の空白」へ置換する（除去しない）。
  * コメント内の追記例（`### ACE-001` など）を走査対象から外す目的は除去と同じだが、
- * 行数と行オフセットが保存されるため countHeaderLines が総行数と同じ基準で測れる。
+ * 行数が保存されるため countHeaderLines が総行数と同じ基準で測れる。
  * 除去にするとヘッダを過小に測り、導出上限が不当に厳しくなる。
  */
 function blankHtmlBlockComments(source: string): string {
-  return source.replace(/<!--[\s\S]*?-->/gu, (matched: string) =>
-    matched.replace(/[^\n]/gu, " "),
-  );
+  return source.replace(new RegExp(HTML_COMMENT_SPAN_SOURCE, "gu"), blankNonNewline);
+}
+
+/**
+ * 改行以外を空白へ置き換える。**`u` フラグを付けてはならない**。
+ * `u` を付けると `[^\n]` が非 BMP 文字（絵文字など）を 1 コードポイントとして拾い、
+ * UTF-16 で 2 単位のものを空白 1 個へ潰すため、結果が原文より短くなる。
+ * 行数（`\n` の位置）は `u` の有無に関わらず保存されるが、長さの保存は `u` を外して
+ * はじめて成立する。空白化後のオフセットで原文を切り出す消費者が現れたとき、
+ * `u` があると「コメント内に絵文字が 1 個あるだけで境界が 1 文字ずれる」形で静かに壊れる。
+ */
+function blankNonNewline(text: string): string {
+  return text.replace(/[^\n]/g, " ");
 }
 
 /** blankFencedCodeBlocks の結果。`unclosedFence` は呼び出し側で fail-closed に使う。 */
@@ -316,7 +476,7 @@ function blankFencedCodeBlocks(source: string): BlankedSegment {
 }
 
 function blankLine(line: string): string {
-  return line.replace(/[^\n]/gu, " ");
+  return blankNonNewline(line);
 }
 
 /**
@@ -445,18 +605,54 @@ export function analyzePlaybookMarkdown(
 
 /**
  * 複数ファイル分の解析結果（分割レイアウト用）をカテゴリ別件数・総件数で合算する。
+ *
+ * `CategoryHistogram` は `Partial` なので値が `undefined` になりうる。`NaN` へ倒すと比較が
+ * 常に false になって超過を見逃すが、**読み飛ばしても同じく見逃す**（totalEntries だけが
+ * 大きいまま、そのカテゴリの件数が 0 として扱われる）。どちらも silent に緩む側なので
+ * エラーとして返す（呼び出し側が usage error へ写像する。Issue #343 / 公開 ff-dev-toolkit#10）。
+ * 壊れた histogram は analyzePlaybookMarkdown からは出ないため、これは呼び出し側の
+ * 契約違反の検出にあたる。
+ *
+ * 検証は 2 段。per-value（非負の安全整数か）を先に走らせるのは、どのカテゴリが壊れて
+ * いるかを名指しできるのがこちらだけだから。そのうえで **合計 === totalEntries** を
+ * backstop に置く。ゲートが実際に依存しているのはこちらで、per-value では届かない
+ * 「キーごと脱落した」形（`Object.entries` に現れないので値の検査に到達しない）を拾う。
+ * 例: Category 値が `__proto__` のエントリは `{}` への代入が無視されて histogram から
+ * 消えるが、totalEntries は増える。この不一致はここでしか検出できない。
  */
-export function mergeAnalyses(results: readonly AnalyzeSuccess[]): AnalyzeSuccess {
+export function mergeAnalyses(results: readonly AnalyzeSuccess[]): MergeResult {
   const histogram: Record<string, number> = {};
   let totalEntries = 0;
   for (const result of results) {
+    if (!isEntryCount(result.totalEntries)) {
+      return {
+        kind: "error",
+        message:
+          `総エントリ数が非負の整数ではありません（${String(result.totalEntries)}）。` +
+          `集計元が壊れているため、件数ゲートの判定を続けると超過を静かに見逃します。`,
+      };
+    }
     totalEntries += result.totalEntries;
     for (const [categoryKey, count] of Object.entries(result.histogram)) {
-      // Partial 上の undefined を NaN にしない（呼び出し側が壊れた histogram を渡しても
-      // 閾値判定を silent にすり抜けさせない）。
-      if (typeof count !== "number" || !Number.isFinite(count)) continue;
+      if (!isEntryCount(count)) {
+        return {
+          kind: "error",
+          message:
+            `カテゴリ "${categoryKey}" の件数が非負の整数ではありません（${String(count)}）。` +
+            `集計元の histogram が壊れているため、件数ゲートの判定を続けると超過を静かに見逃します。`,
+        };
+      }
       histogram[categoryKey] = (histogram[categoryKey] ?? 0) + count;
     }
+  }
+  const summed = Object.values(histogram).reduce((sum, count) => sum + count, 0);
+  if (summed !== totalEntries) {
+    return {
+      kind: "error",
+      message:
+        `カテゴリ別件数の合計（${String(summed)}）が総エントリ数（${String(totalEntries)}）と一致しません。` +
+        `どちらかが脱落しているため、件数ゲートの判定を続けると超過を静かに見逃します。`,
+    };
   }
   return { kind: "ok", histogram, totalEntries };
 }
@@ -585,12 +781,15 @@ export function main(): number {
   }
   const filesToAnalyze = [playbookPath, ...subfiles];
 
-  const analyses: AnalyzeSuccess[] = [];
-  const lineReports: {
+  // 解析結果と行数計測は 1 ファイル 1 レコードにまとめる。別々の配列へ同順に push して
+  // 添字で突き合わせる形にすると、`continue` する分岐（索引除外・0 件除外・固定閾値）が
+  // 増えるほど対応の崩れが検出しにくくなる（公開 ff-dev-toolkit#10 の Suggestion）。
+  const fileReports: {
     file: string;
+    analysis: AnalyzeSuccess;
     lineCount: number;
     headerLines: number;
-    exceptionCount: number;
+    exceptionTally: BudgetExceptionTally;
   }[] = [];
 
   for (const filePath of filesToAnalyze) {
@@ -607,16 +806,20 @@ export function main(): number {
       console.error(`${filePath}: ${analyzed.message}`);
       return EXIT_USAGE_ERROR;
     }
-    analyses.push(analyzed);
-    lineReports.push({
+    fileReports.push({
       file: filePath,
+      analysis: analyzed,
       lineCount: countPlaybookLines(content),
       headerLines: countHeaderLines(content),
-      exceptionCount: countBudgetExceptions(content),
+      exceptionTally: countBudgetExceptions(content),
     });
   }
 
-  const merged = mergeAnalyses(analyses);
+  const merged = mergeAnalyses(fileReports.map((report) => report.analysis));
+  if (merged.kind === "error") {
+    console.error(merged.message);
+    return EXIT_USAGE_ERROR;
+  }
   if (merged.totalEntries === 0) {
     console.error("ACE エントリ見出し（### ACE-数字:）が見つかりません。");
     return EXIT_USAGE_ERROR;
@@ -625,8 +828,9 @@ export function main(): number {
   const maxAllowed = parseMaxPerCategory();
   const overCategories: string[] = [];
 
+  // 非有限値の再チェックは置かない。mergeAnalyses が error で弾いた後なので到達不能であり、
+  // ここに `continue` を残すと「壊れた値を静かに読み飛ばす」経路が 2 系統に戻る（Issue #343）。
   for (const [categoryKey, count] of Object.entries(merged.histogram)) {
-    if (typeof count !== "number" || !Number.isFinite(count)) continue;
     if (count > maxAllowed) {
       overCategories.push(`${categoryKey} (${String(count)} > ${String(maxAllowed)})`);
     }
@@ -645,9 +849,9 @@ export function main(): number {
   // playbook/*.md があるだけでは不十分（部分移行中に索引側にエントリが残る場合は監視する）。
   // Issue #212 / ADR-016 / PR #230 レビュー。
   const indexBase = path.basename(playbookPath);
-  for (let i = 0; i < lineReports.length; i++) {
-    const { file, lineCount, headerLines, exceptionCount } = lineReports[i];
-    const analyzed = analyses[i];
+  for (const report of fileReports) {
+    const { file, analysis: analyzed, lineCount, headerLines, exceptionTally } = report;
+    const exceptionCount = exceptionTally.declared;
     const isIndexInSplitLayout =
       multiFile &&
       path.basename(file) === indexBase &&
@@ -687,14 +891,30 @@ export function main(): number {
       exceptionCount,
       maxEntryLines,
     });
+    // 例外項の係数まで出す（EXCEPTION_EXTRA_BUDGET_FACTOR が 1 のときは省く）。
+    // 落とすと、倍率を 3 へ変えたときに「導出上限 = 内訳」の等式が成り立たなくなる。
+    const exceptionTerm =
+      exceptionCount > 0
+        ? ` + 例外 ${String(exceptionCount)} × ${String(maxEntryLines)}` +
+          (EXCEPTION_EXTRA_BUDGET_FACTOR === 1
+            ? ""
+            : ` × ${String(EXCEPTION_EXTRA_BUDGET_FACTOR)}`)
+        : "";
     const breakdown =
       `ヘッダ ${String(headerLines)} + ${String(analyzed.totalEntries)} 件 × ${String(maxEntryLines + 1)}` +
-      (exceptionCount > 0
-        ? ` + 例外 ${String(exceptionCount)} × ${String(maxEntryLines)}`
-        : "");
+      exceptionTerm;
     console.log(
       `総行数: ${String(lineCount)} (導出上限 ${String(derivedMax)} = ${breakdown})${suffix}`,
     );
+    // 採用しなかったマーカーがあることを黙らせない。宣言を書いた本人は、それが
+    // 効いているのか（エントリ外 / 同一ブロック内の重複で）落とされたのかを、
+    // 出力からしか区別できない。exit code は変えない（行数は警告のみ・非ブロック）。
+    if (exceptionTally.occurrences > exceptionCount) {
+      console.log(
+        `例外マーカー ${String(exceptionTally.occurrences)} 件中 ${String(exceptionCount)} 件を宣言として採用${suffix}` +
+          `（残りはエントリ外 / 同一エントリ内の重複 / HTML コメント外のため加算しません）`,
+      );
+    }
     if (isOverLineThreshold(lineCount, derivedMax)) {
       const perEntry =
         analyzed.totalEntries > 0
