@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   analyzePlaybookMarkdown,
+  blankCodeRegions,
   countBudgetExceptions,
   countHeaderLines,
   countPlaybookLines,
@@ -155,6 +156,29 @@ describe("analyzePlaybookMarkdown", () => {
   it("ACE 見出しが無い場合は error を返す", () => {
     const result = analyzePlaybookMarkdown("# 見出しのみ\n");
     expect(result.kind).toBe("error");
+  });
+
+  it("ヘッダ領域（最初のエントリより前）の未閉フェンスも error にする", () => {
+    // 従来の検査は split(...).slice(1) の後のセグメントにしか効かず、ヘッダ側の
+    // 打ち間違いは素通りしていた。ヘッダの未閉フェンスは blankCodeRegions が
+    // ファイル全体を走査するため後続の全エントリへ波及し、行数バジェット例外の
+    // 判定が黙って効かなくなる。
+    const md = [
+      "# Header",
+      "```markdown",
+      "閉じ忘れたフェンス",
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding |",
+      "",
+    ].join("\n");
+
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("ヘッダ領域");
+    }
   });
 
   it("allowEmpty:true なら見出し0件でも error にせず空の ok を返す（分割レイアウトの索引ファイル向け）", () => {
@@ -1058,10 +1082,9 @@ describe("countBudgetExceptions", () => {
     );
   });
 
-  it("コードスパン内のマーカー完全形は宣言として数える（既知の限界・refine 側も同じ）", () => {
-    // 判定は markdown を解さない素のテキスト一致。live PLAYBOOK.md §運用ルールは
-    // この書き方でマーカーを説明しており、同じ書き方がエントリ本文へ入ると上限が伸びる。
-    // check と refine がそろって数えるので相互一致テストでは検出できない（Issue #347）。
+  it("コードスパン内のマーカー完全形は宣言として数えない（refine 側も同じ）", () => {
+    // live PLAYBOOK.md §運用ルールはこの書き方でマーカーを説明しており、
+    // 同じ書き方がエントリ本文へ入ると上限が黙って伸びていた（Issue #347）。
     const md = [
       "# Header",
       "",
@@ -1076,8 +1099,283 @@ describe("countBudgetExceptions", () => {
       "",
     ].join("\n");
 
+    expect(countBudgetExceptions(md).declared).toBe(0);
+    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(0);
+  });
+
+  it("例示と宣言が別エントリにあるとき、宣言のあるエントリだけに紐づく", () => {
+    // refine 側の照合が span の範囲を見ずに「以降すべて」を見る形へ縮むと、
+    // 例示のある ACE-1-1 にも例外が付く。件数だけでは両者 1 で一致してしまうので、
+    // **どのエントリに付いたか**を assert する。
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: 書式を例示するだけのエントリ",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "例外は `<!-- ace-line-budget-exception: 理由 -->` を添えて宣言する。",
+      "",
+      "---",
+      "",
+      '<a id="ace-1-2"></a>',
+      "",
+      "### ACE-1-2: 実際に宣言したエントリ",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "<!-- ace-line-budget-exception: 反直感的な詳細のため -->",
+      "本文",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(1);
+    expect(measureEntryLines(md).filter((m) => m.hasException).map((m) => m.id)).toEqual([
+      "ACE-1-2",
+    ]);
+  });
+
+  it("コードスパン内に非 BMP 文字があっても宣言の紐づけがずれない", () => {
+    // refine は原文オフセットで空白化後テキストを参照するため、空白化が長さを
+    // 保存しなくなると宣言を黙って落とす。40 個は `<!-- ` + マーカー名を越える量。
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "`" + "🎉".repeat(40) + "`",
+      "<!-- ace-line-budget-exception: 反直感的な詳細のため -->",
+      "本文",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
     expect(countBudgetExceptions(md).declared).toBe(1);
     expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+  });
+
+  it("4 スペースのインデントコードブロックは宣言として数える（既知の限界・両側で同じ）", () => {
+    // フェンスでもコードスパンでもないため空白化の対象外。check・refine が
+    // そろって数えるので相互一致テストでは検出できない。書式を例示するときは
+    // インデントではなくフェンスかコードスパンを使うこと。
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "",
+      "    <!-- ace-line-budget-exception: インデントによる例示 -->",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(1);
+    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+  });
+
+  it("コードフェンス内のマーカー完全形は宣言として数えない（refine 側も同じ）", () => {
+    const fence = "```";
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      `${fence}markdown`,
+      "<!-- ace-line-budget-exception: 理由 -->",
+      fence,
+      "本文",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(0);
+    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(0);
+  });
+
+  it("正当な宣言は理由にコードスパンを含んでいても数える", () => {
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "<!-- ace-line-budget-exception: `execFileSync` の非対称を書き切るため -->",
+      "本文",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(1);
+    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+  });
+
+  it("長さの合わないバックティック列は対にせず、同じ行の宣言を落とさない", () => {
+    // `(`+)…\1` の後方参照は「同じ文字列」までしか保証せず、`+` がバックトラックで
+    // 縮むため 3 連と 2 連の一部どうしを組にして、間の宣言を空白化して落とす。
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "prefix ``` <!-- ace-line-budget-exception: 理由 --> ``",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(1);
+    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+  });
+
+  it("同じ行に対にならないバックティックと宣言があっても落とさない", () => {
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "`x <!-- ace-line-budget-exception: 理由 --> ``",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(1);
+    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+  });
+
+  it("二重バックティック内に単一を含むコードスパンも列ごと空白化する", () => {
+    // 列の一部だけを空白化すると、残ったバックティックが後続の列と誤って対になる。
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "``<!-- ace-line-budget-exception: 例示 -->`b`` の説明",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(0);
+    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(0);
+  });
+
+  it("対にならないバックティックがある行は空白化せず、宣言を落とさない（fail-open）", () => {
+    // 対を判定できない行まで空白化すると、正当な宣言が消えて偽の密度警告になる。
+    // refine 側は例外扱いのままなので「check だけが警告し refine の候補は空」になる。
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "対にならない ` バックティック",
+      "<!-- ace-line-budget-exception: 理由 -->",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(1);
+    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+  });
+
+  it("閉じていないフェンス以降は空白化せず、宣言を落とさない（fail-open）", () => {
+    const md = [
+      '<a id="ace-1-1"></a>',
+      "",
+      "### ACE-1-1: t",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "```markdown",
+      "<!-- ace-line-budget-exception: 理由 -->",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(1);
+    expect(measureEntryLines(md).filter((m) => m.hasException).length).toBe(1);
+  });
+});
+
+describe("blankCodeRegions", () => {
+  // 呼び出し側（countBudgetExceptions の行スライス / maskCommentSpans の
+  // scannable.slice(start, start + span.length)）は原文と同じオフセットで参照する。
+  // 長さか改行位置が変わった時点でどちらも静かにずれる。
+  const samples = [
+    "ふつうの本文\n",
+    "絵文字 🎉 と `code` を含む行\n次の行\n",
+    // 非 BMP は**空白化される領域の内側**に置く。外側だと blankNonNewline に `u` を
+    // 足す変異（サロゲートペアを空白 1 個へ潰す）が長さを変えず、検査が空振りする。
+    "コードスパン `🎉𝔘` の中に非 BMP\n",
+    "```md\n🎉𝔘 をフェンスの中に\n```\n",
+    "```markdown\n<!-- ace-line-budget-exception: 例示 -->\n```\n本文\n",
+    "閉じないフェンス\n```markdown\n<!-- ace-line-budget-exception: 理由 -->\n",
+    "CRLF の行\r\n```md\r\n例示\r\n```\r\n",
+    "~~~\nチルダフェンス\n~~~\n",
+    "対にならない ` バックティックと `pair` あり\n",
+  ];
+
+  it("UTF-16 の長さを保存する", () => {
+    for (const sample of samples) {
+      expect(blankCodeRegions(sample).text.length).toBe(sample.length);
+    }
+  });
+
+  it("CRLF でもフェンス内が空白化される（長さ保存だけでは検出できない）", () => {
+    // 終端フェンスの判定は行末アンカーなので、`\r` を落とさないと全フェンスが
+    // 閉じない扱いになる。長さ・改行位置はどちらでも保存されるため内容で固定する。
+    const crlf = ["```markdown", "<!-- ace-line-budget-exception: 例示 -->", "```", ""].join("\r\n");
+    expect(blankCodeRegions(crlf).text).not.toContain("ace-line-budget-exception");
+    expect(blankCodeRegions(crlf).unclosedFence).toBe(false);
+  });
+
+  it("終端フェンスは開始と同種・同数以上でなければ閉じない", () => {
+    // 早く閉じると、フェンス内の例示マーカーが空白化されず上限が黙って 2 倍になる。
+    const tilde = ["~~~", "```", "<!-- ace-line-budget-exception: 例示 -->", "~~~", ""].join("\n");
+    expect(blankCodeRegions(tilde).text).not.toContain("ace-line-budget-exception");
+
+    const quad = ["````", "```", "<!-- ace-line-budget-exception: 例示 -->", "````", ""].join("\n");
+    expect(blankCodeRegions(quad).text).not.toContain("ace-line-budget-exception");
+  });
+
+  it("閉じていないフェンスを結果で報告する（呼び出し側が消費できる）", () => {
+    expect(blankCodeRegions("```md\n本文\n").unclosedFence).toBe(true);
+    expect(blankCodeRegions("```md\n本文\n```\n").unclosedFence).toBe(false);
+    expect(blankCodeRegions("フェンスなし\n").unclosedFence).toBe(false);
+  });
+
+  it("HTML コメント内のフェンス開始行を本文の実フェンスと対にしない", () => {
+    // コメント内のテンプレート説明が本文の実フェンスと対になると、間にある
+    // 正当な宣言までまとめて空白化されて落ちる（実測で declared 1 → 0）。
+    const md = ["<!-- 追記例:", "```markdown", "-->", "本文 `code` あり", "```md", "例", "```"].join("\n");
+    const blanked = blankCodeRegions(md);
+    expect(blanked.unclosedFence).toBe(false);
+    expect(blanked.text.split("\n")[3]).toBe("本文        あり");
+  });
+
+  it("改行の位置をすべて保存する", () => {
+    for (const sample of samples) {
+      const offsets = (text: string): number[] => {
+        const result: number[] = [];
+        for (let i = 0; i < text.length; i++) {
+          if (text[i] === "\n") result.push(i);
+        }
+        return result;
+      };
+      expect(offsets(blankCodeRegions(sample).text)).toEqual(offsets(sample));
+    }
   });
 });
 

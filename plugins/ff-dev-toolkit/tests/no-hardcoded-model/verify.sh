@@ -12,7 +12,7 @@
 # しかもフラグを無条件に渡す実装だとユーザー設定を黙って上書きするうえ、同じ設定
 # ファイル内の関連項目（reasoning effort など）は上書きされないため「古いモデル +
 # 新しい付随設定」という誰も意図していない組み合わせで動く。実害の記録は
-# docs-template/08-knowledge/playbook/tooling.md の ACE-70-2 を参照。
+# 実害の記録は ACE-70-2（本リポジトリの ACE Playbook）を参照。
 #
 # 検査は 3 本立て:
 #   1. モデル slug の denylist + `--model` へのベタ書きリテラル — 配布される全
@@ -29,7 +29,7 @@
 #      アダプタが一斉に固定モデルを持つので、呼び出し側とは別に見張る。
 #
 # 検査範囲の分担:
-#   - .md は対象外。docs-template/08-knowledge/playbook/tooling.md（ACE-70-2）や
+#   - .md は対象外。ACE Playbook（ACE-70-2）や
 #     PLAYBOOK は事例として実在の slug を正当に引用しており、含めると初日から赤くなる
 #   - tests/ 配下（本 suite の fixture を含む）も対象外。fixture は意図的に slug を持つ
 #

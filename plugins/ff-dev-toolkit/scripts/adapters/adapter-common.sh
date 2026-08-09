@@ -614,7 +614,7 @@ fail_orchestrator_error() {
 # 渡す実装だと、ユーザー設定を黙って上書きするうえ同じ設定ファイル内の関連項目
 # （reasoning effort など）は上書きされないため、「古いモデル + 新しい付随設定」
 # という誰も意図していない組み合わせで動く。実害の記録は
-# docs-template/08-knowledge/playbook/tooling.md の ACE-70-2 を参照。
+# 実害の記録は ACE-70-2（本リポジトリの ACE Playbook）を参照。
 #
 # 第 3 引数の既定値に書いてよいのは「ベンダー中立で世代交代しない語」だけ。
 # 現状これを使っているアダプタは無い。唯一の利用者だった cursor-agent の `auto`

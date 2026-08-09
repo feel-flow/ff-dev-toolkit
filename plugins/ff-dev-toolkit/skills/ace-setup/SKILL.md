@@ -43,7 +43,7 @@ description: プロジェクトに ACE (Agentic Context Engineering) フレー�
 配置先ディレクトリが存在しない場合は自動作成し、以下を配置する:
 
 1. **PLAYBOOK.md** — `${FF_DEV_TOOLKIT_ROOT}/docs-template/08-knowledge/PLAYBOOK.md` をコピーし、以下を調整:
-   - エントリ一覧セクション内のサンプルエントリは削除し、空の状態にする
+   - エントリ一覧セクション内のサンプルエントリ（`ACE-000-*`）は索引テーブルごと削除し、空の状態にする。**「`ACE-000-*` は書き方の見本」と説明している引用ブロックも併せて削除する**（配置後のプロジェクトには該当エントリが無いため）
    - Frontmatter の `owner` をユーザーのプロジェクト情報で置換する
    - Frontmatter の `created` / `updated` を今日の日付、`ace_entry_count` を `0`、`version` を `1.0.0` にする
    - Changelog セクションは `[1.0.0]` の初版のみ残す

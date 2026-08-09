@@ -19,6 +19,7 @@ import {
   DEFAULT_MAX_ENTRY_LINES,
   ENTRY_ANCHOR_LINE_PATTERN,
   EXCEPTION_BUDGET_MULTIPLIER,
+  blankCodeRegions,
   HTML_COMMENT_SPAN_SOURCE,
   SECTION_HEADING_LINE_PATTERN,
   discoverPlaybookSubfiles,
@@ -94,16 +95,27 @@ type MaskedContent = Readonly<{
  *   計測から落とす事故を防ぐ（乖離が生じた場合は main のエントリ照合が fail-loud に検出する）
  * - 例外マーカーは「コメントとして書かれたもの」だけを有効とする（本文プロースでの言及や
  *   コメント形式でない記載は例外扱いしない）
+ * - さらに、コードスパン・コードフェンスの中で**例示**しているだけの記述も除外する
+ *   （blankCodeRegions。Issue #347）。判定は check-category-size の countBudgetExceptions と
+ *   同じ関数を通すこと — 片方だけ適用すると、そのエントリの上限が check では 15 行低いのに
+ *   こちらは 30 行まで許すことになり、「check は密度警告を出すのに圧縮候補は空」になる
+ *
+ * 範囲検出用の `masked` とは別に、原文と同じオフセットを保つ `scannable` を先に作って
+ * 照合する。`masked` から導くと、コメント span 自体が空白化済みで判定できない。
  */
 function maskCommentSpans(content: string): MaskedContent {
   const exceptionLines = new Set<number>();
+  const scannable = blankCodeRegions(content).text;
   let masked = "";
   let last = 0;
   for (const match of content.matchAll(COMMENT_SPAN_PATTERN)) {
     const start = match.index ?? 0;
     const span = match[0];
     masked += content.slice(last, start);
-    if (span.includes(BUDGET_EXCEPTION_MARKER)) {
+    if (
+      span.includes(BUDGET_EXCEPTION_MARKER) &&
+      scannable.slice(start, start + span.length).includes(BUDGET_EXCEPTION_MARKER)
+    ) {
       exceptionLines.add(countNewlinesBefore(content, start));
     }
     masked += span.replace(/[^\n]/gu, " ");
@@ -125,8 +137,11 @@ const SECTION_HEADING_PATTERN = SECTION_HEADING_LINE_PATTERN;
  * 閉じた HTML コメント内の見出し（テンプレートの追記例）はエントリとして数えないが、
  * 行数の計測自体は原文の行に対して行う（圧縮判断は「ファイル上の占有行数」が対象のため）。
  * 制約: 見出し行の末尾に同一行コメントが付いていても計測対象になる（span マスクは
- * コメント部分だけを空白化するため）。コードスパン内の `<!-- ... -->` はコメントとして
- * マスクされる（既知の限界。エントリ照合が件数の乖離を検出する）。
+ * コメント部分だけを空白化するため）。コードスパン内の `<!-- ... -->` も**範囲計測の
+ * マスクとしては**コメント扱いになる（既知の限界。エントリ照合が件数の乖離を検出する）。
+ * ただし `hasException` の判定はコードスパン・フェンスを除外する（maskCommentSpans 参照。
+ * Issue #347）— こちらは countBudgetExceptions と一致していないと、上限だけが片側で
+ * 2 倍になるため。
  */
 export function measureEntryLines(content: string): EntryLineMeasurement[] {
   const { maskedLines, exceptionLines } = maskCommentSpans(content);

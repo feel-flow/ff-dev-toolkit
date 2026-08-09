@@ -24,7 +24,7 @@ stub は各引数を `<arg>` で囲んで記録する。
 <exec><You are a code review agent...><--sandbox><read-only><-p><review>
 ```
 
-空白区切りで連結すると、`"model with spaces"` が 2 引数に割れても記録が同じに見えてしまい、**語分割の退化を検出できない**（ACE-36-1 / `docs-template/08-knowledge/playbook/testing.md`）。区切り文字を入れるのはそのため。
+空白区切りで連結すると、`"model with spaces"` が 2 引数に割れても記録が同じに見えてしまい、**語分割の退化を検出できない**（ACE-36-1）。区切り文字を入れるのはそのため。
 
 ## ケース表
 

@@ -258,7 +258,7 @@ codex exec "$PROMPT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"}
 | Grok CLI | 該当なし（フラグを渡さず CLI 設定へ委譲する） |
 | Gemini CLI | 該当なし（フラグを渡さず CLI 設定へ委譲する） |
 
-> 実害の記録は `08-knowledge/playbook/tooling.md` の ACE-70-2 を参照。参照実装は ff-dev-toolkit プラグイン側にあり（`scripts/adapters/adapter-common.sh` の `reset_model_args` / `add_model_arg` を全アダプタで共有）、同プラグインの `tests/no-hardcoded-model/`（slug の直書きが無いことの静的検査）と `tests/adapter-model-args/`（環境変数が実際に argv へ届くことの stub CLI 検査。ベンダー中立な既定値の扱いはヘルパー単体で固定している）が機械的に守っている。本テンプレートには含まれないので、コピー先で実装するときは上のパターンに従うこと。
+> 実害の記録: ラッパーが `CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"` のような既定値を持っていたため、ユーザーの CLI 設定（新しいモデル + `reasoning_effort` の指定）のうちモデルだけが黙って上書きされ、「古いモデル + 新しい付随設定」という誰も意図しない組み合わせでレビューが走っていた。参照実装は ff-dev-toolkit プラグイン側にあり（`scripts/adapters/adapter-common.sh` の `reset_model_args` / `add_model_arg` を全アダプタで共有）、同プラグインの `tests/no-hardcoded-model/`（slug の直書きが無いことの静的検査）と `tests/adapter-model-args/`（環境変数が実際に argv へ届くことの stub CLI 検査。ベンダー中立な既定値の扱いはヘルパー単体で固定している）が機械的に守っている。本テンプレートには含まれないので、コピー先で実装するときは上のパターンに従うこと。
 
 ---
 

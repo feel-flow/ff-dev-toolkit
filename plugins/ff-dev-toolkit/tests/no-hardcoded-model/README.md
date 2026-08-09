@@ -6,7 +6,7 @@
 
 ラッパーがモデル slug の既定値を持つと、その値の SSOT がユーザーの CLI 設定（`~/.codex/config.toml` など）とラッパーの 2 箇所に分裂し、**ラッパー側が必ず古くなる**。しかもフラグを無条件に渡す実装だと、ユーザー設定を黙って上書きするうえ、同じ設定ファイル内の関連項目（reasoning effort など）は上書きされないため「古いモデル + 新しい付随設定」という誰も意図していない組み合わせで動く。
 
-実害の記録が `docs-template/08-knowledge/playbook/tooling.md` の **ACE-70-2** にある。`codex-review.sh` が `CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"` を持っていたため、ユーザーの設定（当時 `gpt-5.6-sol` / `model_reasoning_effort = "xhigh"`）を上書きして 2 世代古いモデルでレビューが走っていた。さらに `gpt-5.3` → `gpt-5.4` の手動更新コミットが実在し、**腐敗が反復していた**ことも確認されている。
+実害の記録は **ACE-70-2**（本リポジトリの ACE Playbook）にある。`codex-review.sh` が `CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"` を持っていたため、ユーザーの設定（当時 `gpt-5.6-sol` / `model_reasoning_effort = "xhigh"`）を上書きして 2 世代古いモデルでレビューが走っていた。さらに `gpt-5.3` → `gpt-5.4` の手動更新コミットが実在し、**腐敗が反復していた**ことも確認されている。
 
 規約（コメントやドキュメント）だけでは再発を防げないので、機械的な検査にした。
 
@@ -49,7 +49,7 @@
 
 対象外:
 
-- `.md` — `docs-template/08-knowledge/playbook/tooling.md`（ACE-70-2）や `PLAYBOOK.md` は事例として実在の slug を正当に引用しており、含めると初日から赤くなる
+- `.md` — ACE Playbook（ACE-70-2）や `PLAYBOOK.md` は事例として実在の slug を正当に引用しており、含めると初日から赤くなる
 - `tests/` 配下 — 走査起点に含めていない（本 suite の fixture が意図的に slug を持つため）。将来 `docs-template/tests/` を作ると自動的に対象化される点に注意
 
 ## 負例テスト（変異させたら赤くなるか）

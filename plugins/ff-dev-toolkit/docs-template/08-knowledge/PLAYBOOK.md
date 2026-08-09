@@ -1,12 +1,12 @@
 ---
 title: "PLAYBOOK"
-version: "1.67.0"
+version: "1.68.0"
 status: "approved"
 created: "2026-03-10"
-updated: "2026-08-07"
+updated: "2026-08-09"
 changeImpact: medium
 owner: "@fffokazaki"
-ace_entry_count: 131
+ace_entry_count: 3
 tags: [ace, playbook, knowledge-management]
 references:
   - docs/ACE_FRAMEWORK.md
@@ -47,6 +47,7 @@ ACE エントリ ID は **PRスコープ式** を採用する（このセクシ�
 - **非PR由来の fallback**: `ACE-i<Issue番号>-<連番>`（例: `ACE-i425-1`）
 - **採番**: 同一 PR の既存 `ACE-<PR番号>-*` の最大連番 +1 を連番とする（既存が無ければ連番 `1`、すなわち最初のエントリは `ACE-<PR番号>-1`）。**全体の最新 ID を読む必要がない**ため並行採番でも衝突しない（PR 番号は GitHub が全体一意に採番するため、別 PR = 別 namespace）。
 - **連番の範囲**: 1 回の `/ace-curate` で同一 PR から 1〜3 件追記する想定。同一 PR を再 curate する場合は既存の最大連番から継続。
+- **見本用の予約**: `ACE-000-*` は本テンプレート同梱の見本エントリ専用に予約する。対応する PR は存在しないため、実プロジェクトでは採番しない（見本を消せば `ACE-000-*` も消える）。
 - **既存 ID の扱い**: 旧 `ACE-{連番3桁}` 形式（`ACE-001`〜）のエントリは **改名しない**。旧 3 桁形式と新 PRスコープ式は恒久的に共存する（参照・anchor 互換の維持）。ID にファイル位置の情報は持たせないため、分割後も ID はそのまま維持する。
 
 ---
@@ -109,7 +110,7 @@ ACE エントリ ID は **PRスコープ式** を採用する（このセクシ�
 ### 記述ガイドライン
 
 - **anchor**: 各エントリは見出し直前に `<a id="ace-XXX"></a>` を 1 行付与する。`XXX` は **エントリ ID を小文字化したもの**（新規は `ace-438-1` / `ace-i425-1`、旧エントリは `ace-001`。anchor 部分は常に小文字英数字＋ハイフン）。ファイルレベル参照（サブファイル単体）は常にファイル先頭に着地するため、anchor がなければ個別エントリへの誘導が成立しない。anchor 付与により他ドキュメントから `[ACE-438-1](path/to/playbook/<category>.md#ace-438-1)` 形式で**特定エントリに直接ジャンプ可能**になる。
-- **参照リンク形式**: 他ドキュメントから ACE エントリを参照する場合は `[ACE-XXX](path/to/playbook/<category>.md#ace-XXX)` 形式に統一する（`<category>` はそのエントリの Category 値、`XXX` はエントリ ID の接頭辞 `ACE-` / `ace-` を除いた部分。新規は `438-1`、旧は 3 桁 `040`。label は `ACE-438-1`、anchor は `#ace-438-1`）。カテゴリが分からない場合は本ファイルの [索引テーブル](#エントリ一覧) で確認する。`[PLAYBOOK ACE-XXX]` / `[PLAYBOOK.md ACE-XXX]` 等の異なる label は使わない（[ACE-040](./playbook/process.md#ace-040) 語彙統一 / [ACE-024](./playbook/documentation-quality.md#ace-024) 用語衝突防止 の系。Origin: Issue [#425](https://github.com/feel-flow/ai-spec-driven-development/issues/425)）。
+- **参照リンク形式**: 他ドキュメントから ACE エントリを参照する場合は `[ACE-XXX](path/to/playbook/<category>.md#ace-XXX)` 形式に統一する（`<category>` はそのエントリの Category 値、`XXX` はエントリ ID の接頭辞 `ACE-` / `ace-` を除いた部分。新規は `438-1`、旧は 3 桁 `040`。label は `ACE-438-1`、anchor は `#ace-438-1`）。カテゴリが分からない場合は本ファイルの [索引テーブル](#エントリ一覧) で確認する。`[PLAYBOOK ACE-XXX]` / `[PLAYBOOK.md ACE-XXX]` 等の異なる label は使わない（label が揺れると同じエントリが別物に見え、索引検索でも到達できなくなる）。
 - **本文の構成**: 1 文目 =「何を学んだか」（知見の本質）。2 文目 =「どんな状況で使うか」（非自明な適用条件。再現条件が明確であるほど価値が高い）。最後に「次回何をすべきか」（推奨アクション）。
 - **書かないもの**: 実施手順の番号付き列挙、インシデントのタイムライン叙述、環境固有の調査ログ。主張と適用条件が明確なら、詳細手順は参照時に AI が再導出できる。一回性の記録は TROUBLESHOOTING.md / runbook へ。
 - **タイトルが検索面**: 索引テーブルの検索は主にタイトルに対して行われる。タイトル単独で「主張 + 条件」が伝わる 1 文にする。
@@ -145,16 +146,8 @@ Playbook が導出上限（`ヘッダ行数 + 件数 × 16`）を超え、正準
 ```
 08-knowledge/
 ├── PLAYBOOK.md           ← 索引 + 運用ルール
-└── playbook/               ← 実際に使用中のカテゴリ（新規カテゴリが増えたら追加）
-    ├── process.md
-    ├── documentation-quality.md
-    ├── tooling.md
-    ├── architecture.md
-    ├── knowledge-management.md
-    ├── security.md
-    ├── coding.md
-    ├── devops.md
-    ├── documentation.md
+└── playbook/               ← 例。プロジェクトが実際に使うカテゴリだけ作る（増えたら追加）
+    ├── coding.md            ← カテゴリ名はプロジェクトが実際に使うものだけ作る
     ├── testing.md
     └── archive/             ← /ace-refine が退避した原文（集計・ゲート対象外）
         └── <category>.md
@@ -198,143 +191,25 @@ Playbook が導出上限（`ヘッダ行数 + 件数 × 16`）を超え、正準
 エントリ本体は Category 別に `playbook/` 配下のファイルへ分割されています。
 新規エントリは該当カテゴリの `playbook/<category>.md` 末尾に追記し、下記索引テーブルにも 1 行追加してください。
 エントリの記述テンプレートは [エントリテンプレート](#エントリテンプレート) を参照。
+
+> **`ACE-000-*` は書き方の見本**であり、実際の知見ではありません。`/ace-setup` はこれらを配置しないので、`docs-template/` を手でコピーした場合は削除してから運用を始めてください。
+
 **索引行はタイトルのみ**とし、説明文・補足プロースを書かない（索引は検索面そのものであり、肥大させると全エントリの検索精度が下がる）。
 
 | エントリID | タイトル                                                                                                                                                                    | Category              | 参照先                                                                                       |
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- | -------------------------------------------------------------------------------------------- |
-| ACE-001    | クロスモデルレビューは単一AIモデルでは検出できない問題を発見する                                                                                                            | process               | [playbook/process.md#ace-001](./playbook/process.md#ace-001)                                 |
-| ACE-002    | CLIフラグは実機の --help 出力と照合が必須                                                                                                                                   | tooling               | [playbook/tooling.md#ace-002](./playbook/tooling.md#ace-002)                                 |
-| ACE-003    | bash スクリプトは macOS デフォルト環境（bash 3.2）でテストする                                                                                                              | devops                | [playbook/devops.md#ace-003](./playbook/devops.md#ace-003)                                   |
-| ACE-004    | ドキュメントの動作説明は実装メカニズムと一致させる                                                                                                                          | process               | [playbook/process.md#ace-004](./playbook/process.md#ace-004)                                 |
-| ACE-005    | 索引と実体を分離する委譲パターンでAIコンテキスト消費を抑える                                                                                                                | architecture          | [playbook/architecture.md#ace-005](./playbook/architecture.md#ace-005)                       |
-| ACE-006    | サンプル付きテンプレファイルには⚠️SAMPLEバナーと固有化手順を必ず併設する                                                                                                    | tooling               | [playbook/tooling.md#ace-006](./playbook/tooling.md#ace-006)                                 |
-| ACE-007    | Claude Code skill 内のツール参照は名称・subagent_type を実機 / system prompt で照合する                                                                                     | tooling               | [playbook/tooling.md#ace-007](./playbook/tooling.md#ace-007)                                 |
-| ACE-008    | クロスリポジトリ操作する skill は全 gh コマンドに `--repo` 必須・mention は `@<assignee>` を使う                                                                            | tooling               | [playbook/tooling.md#ace-008](./playbook/tooling.md#ace-008)                                 |
-| ACE-009    | 長時間 Orchestrator の失敗の真因は upstream Issue spec 曖昧さ — 探索型 refine が必要                                                                                        | process               | [playbook/process.md#ace-009](./playbook/process.md#ace-009)                                 |
-| ACE-010    | Issue クローズ前は commit log でなく現在のファイル実体を grep 照合する — silent regression を検出する                                                                       | process               | [playbook/process.md#ace-010](./playbook/process.md#ace-010)                                 |
-| ACE-011    | Prettier × markdownlint MD060 衝突は当該テーブルだけに `<!-- prettier-ignore -->` を付与する局所抑制で解く                                                                  | tooling               | [playbook/tooling.md#ace-011](./playbook/tooling.md#ace-011)                                 |
-| ACE-012    | PR マージ・push 前は必ず `git status` でブランチを確認する（develop 直 push 事故防止）                                                                                      | process               | [playbook/process.md#ace-012](./playbook/process.md#ace-012)                                 |
-| ACE-013    | 並列 reviewer の指摘は古い snapshot 由来の誤検知を含む — 実態 grep で双方向検証する                                                                                         | process               | [playbook/process.md#ace-013](./playbook/process.md#ace-013)                                 |
-| ACE-014    | 索引文書は SSOT を子に集約し、自身は誘導と 1 行サマリのみ — 数値の重複は持たない                                                                                            | architecture          | [playbook/architecture.md#ace-014](./playbook/architecture.md#ace-014)                       |
-| ACE-015    | 表を導入したら散文の主張を表に対して再読する — 「N 段階」「太字の領域」型の自己矛盾は人手レビューで見落とされる                                                             | documentation-quality | [playbook/documentation-quality.md#ace-015](./playbook/documentation-quality.md#ace-015)     |
-| ACE-016    | Markdown の anchor link は label と URL の両方にフラグメントを書く — `\[text#anchor\]\(url\)` 形式は無効                                                                    | documentation-quality | [playbook/documentation-quality.md#ace-016](./playbook/documentation-quality.md#ace-016)     |
-| ACE-017    | 並列 review agent は worktree を巻き戻す副作用を持ち得る — `git status` 監視と `git restore --source=HEAD` で復旧する                                                       | process               | [playbook/process.md#ace-017](./playbook/process.md#ace-017)                                 |
-| ACE-018    | 横断的な番号・順序変更は着手前に grep で全 SSOT を列挙する                                                                                                                  | documentation-quality | [playbook/documentation-quality.md#ace-018](./playbook/documentation-quality.md#ace-018)     |
-| ACE-019    | 既存ルール違反になる新パターンは「例外」として明示的に名乗らせる                                                                                                            | process               | [playbook/process.md#ace-019](./playbook/process.md#ace-019)                                 |
-| ACE-020    | 自動コンテンツ生成ツールは自身のマーカー文字列を本文に含むドキュメントを破壊する                                                                                            | tooling               | [playbook/tooling.md#ace-020](./playbook/tooling.md#ace-020)                                 |
-| ACE-021    | テンプレ配布リポでは「リポ自身が使うインフラ」と「テンプレ利用者が受け取る成果物」を物理的に分離する                                                                        | architecture          | [playbook/architecture.md#ace-021](./playbook/architecture.md#ace-021)                       |
-| ACE-022    | 機能削除時は consumer だけでなく定数・型・ユーティリティも grep して取り残しを防ぐ                                                                                          | process               | [playbook/process.md#ace-022](./playbook/process.md#ace-022)                                 |
-| ACE-023    | ドキュメント中の事実主張（PR/Issue 番号・ハッシュ・数値）は執筆時に 1 次情報で照合する                                                                                      | documentation-quality | [playbook/documentation-quality.md#ace-023](./playbook/documentation-quality.md#ace-023)     |
-| ACE-024    | SSOT で確立した用語を再利用する前に既存定義との衝突を確認する                                                                                                               | documentation-quality | [playbook/documentation-quality.md#ace-024](./playbook/documentation-quality.md#ace-024)     |
-| ACE-025    | スクリプトの「対象範囲」を文書化するときは glob 表現ではなく実装上の対象列挙方式まで踏み込む                                                                                | documentation-quality | [playbook/documentation-quality.md#ace-025](./playbook/documentation-quality.md#ace-025)     |
-| ACE-026    | 同名関数が複数ファイルに併存する場合は機能対応表で並列説明する                                                                                                              | documentation-quality | [playbook/documentation-quality.md#ace-026](./playbook/documentation-quality.md#ace-026)     |
-| ACE-027    | 配布対象ファイル内の行番号 hard-coded 参照は採用後に即陳腐化するため heading anchor 化する                                                                                  | documentation-quality | [playbook/documentation-quality.md#ace-027](./playbook/documentation-quality.md#ace-027)     |
-| ACE-028    | 外部ツールの「現状」仕様を書くときは公式ドキュメントを WebFetch / WebSearch で必ず照合する                                                                                  | documentation-quality | [playbook/documentation-quality.md#ace-028](./playbook/documentation-quality.md#ace-028)     |
-| ACE-029    | 外部ツール依存物（shell script の依存コマンド、shebang、インストーラオプション）を文書化するときは実体を読んで列挙する                                                      | documentation-quality | [playbook/documentation-quality.md#ace-029](./playbook/documentation-quality.md#ace-029)     |
-| ACE-030    | 対応表で `⚠️` を多用したら判定軸自体が間違っているサイン                                                                                                                    | documentation-quality | [playbook/documentation-quality.md#ace-030](./playbook/documentation-quality.md#ace-030)     |
-| ACE-031    | ドキュメントを書くときは配布境界に基づいて「想定読者」を意識する（採用者向け / コントリビューター向け / リポメンテナ向け）                                                  | documentation-quality | [playbook/documentation-quality.md#ace-031](./playbook/documentation-quality.md#ace-031)     |
-| ACE-032    | 機能撤去型の改稿後は、残った value 主張・周辺記述・論理連鎖が全て成立しているか改めて読み直す                                                                               | documentation-quality | [playbook/documentation-quality.md#ace-032](./playbook/documentation-quality.md#ace-032)     |
-| ACE-033    | 対応表で全行 / 全 cell が uniform になったら、表自体が情報を持っていないサイン                                                                                              | documentation-quality | [playbook/documentation-quality.md#ace-033](./playbook/documentation-quality.md#ace-033)     |
-| ACE-034    | 実装中は implementation-notes.md を作業ブランチに並走させて spec 乖離・トレードオフ・判断理由を捕捉する                                                                     | process               | [playbook/process.md#ace-034](./playbook/process.md#ace-034)                                 |
-| ACE-035    | 新規 process パターンを Playbook に追加するときは「ドッグフード + advisor / second opinion」で運用上の構造問題を検出する                                                    | process               | [playbook/process.md#ace-035](./playbook/process.md#ace-035)                                 |
-| ACE-036    | 外部知見（SNS / ブログ / 社内 wiki）を Playbook に取り込む前に既存 ACE エントリ全件と grep 照合する                                                                         | knowledge-management  | [playbook/knowledge-management.md#ace-036](./playbook/knowledge-management.md#ace-036)       |
-| ACE-037    | ACE エントリの新規追加は対応する運用手順（workflow / self-review / ace-cycle）への組み込みを同 PR で済ませる                                                                | knowledge-management  | [playbook/knowledge-management.md#ace-037](./playbook/knowledge-management.md#ace-037)       |
-| ACE-038    | 「データ収集待ち」を要求する受入基準でも、ロールバック容易な変更は先行実装 + 試行中ステータス明記でフィードバックループを早める                                             | process               | [playbook/process.md#ace-038](./playbook/process.md#ace-038)                                 |
-| ACE-039    | AI プロンプトテンプレに「分析観点リスト」と「分類カテゴリリスト」が並存する場合、新観点追加時はカテゴリ対応を観点側に明記する                                               | tooling               | [playbook/tooling.md#ace-039](./playbook/tooling.md#ace-039)                                 |
-| ACE-040    | AI プロンプトテンプレ内で同概念を複数の語で表現すると AI 出力品質が下がる — 一次定義（SSOT）の語彙に統一する                                                                | process               | [playbook/process.md#ace-040](./playbook/process.md#ace-040)                                 |
-| ACE-041    | マージ後 cleanup の未追跡ファイルガードに引っかかったら、独立した chore PR で .gitignore 追加して cleanup を継続する                                                        | process               | [playbook/process.md#ace-041](./playbook/process.md#ace-041)                                 |
-| ACE-042    | テンプレファイル内の同一概念 placeholder は同一シンボル + 大文字で統一する — `XXX`/`NNN`/`xxx` 混在は AI/人のコピペ後置換漏れによる silent rot を誘発する                   | documentation         | [playbook/documentation.md#ace-042](./playbook/documentation.md#ace-042)                     |
-| ACE-043    | 品質ゲート script の chain と文書の「統括内容」記述は drift する — 自然文サマリではなく実体 script 名で列挙する                                                             | documentation-quality | [playbook/documentation-quality.md#ace-043](./playbook/documentation-quality.md#ace-043)     |
-| ACE-044    | review 指摘を取り込むスコープは「編集セクション境界」で判定する — 触ったセクション内の隣接 stale は同 PR、別ファイル / 別セクションは別 issue                               | process               | [playbook/process.md#ace-044](./playbook/process.md#ace-044)                                 |
-| ACE-045    | 設計文書内の「mirror 付録（実体の参照用コピー）」は本体改稿で silent drift する — mirror を持つなら本体改稿で同期、または mirror を削って外部参照に置換                     | documentation-quality | [playbook/documentation-quality.md#ace-045](./playbook/documentation-quality.md#ace-045)     |
-| ACE-046    | PR/Issue body 内の相対リンクは `pull/N/` または `issues/N/` 起点で展開される — リポローカルテンプレでは `blob/HEAD/` 絶対 URL を使い、配布版は plain text にする            | documentation-quality | [playbook/documentation-quality.md#ace-046](./playbook/documentation-quality.md#ace-046)     |
-| ACE-441-1  | ドキュメントを走査するツールの正規表現を緩めるときは実ファイルで件数検証し、パターンを「実 ID の形」に制約する                                                              | testing               | [playbook/testing.md#ace-441-1](./playbook/testing.md#ace-441-1)                             |
-| ACE-441-2  | pre-commit hook は正式品質ゲート（quality:local）の軽量サブセット — pr-ready 前に必ず full ゲートを回す                                                                     | process               | [playbook/process.md#ace-441-2](./playbook/process.md#ace-441-2)                             |
-| ACE-443-1  | framework リポは自テンプレをドッグフードするため知見ベースは `docs-template/` 配下 — AI レビュアーの「docs-template→docs」パス提案は実在確認してから採否を決める            | documentation-quality | [playbook/documentation-quality.md#ace-443-1](./playbook/documentation-quality.md#ace-443-1) |
-| ACE-445-1  | Claude 系レビュアーが「既存と整合的だから OK」と全員一致した箇所こそ cross-model レビューの出番 — 同系列の合意は正しさの証明ではない                                        | process               | [playbook/process.md#ace-445-1](./playbook/process.md#ace-445-1)                             |
-| ACE-447-1  | 別ドキュメントへの anchor 付きリンクは実見出しの slug と一致させる — label↔URL ミラー（ACE-016）だけでは壊れたアンカーを作りうる                                            | documentation-quality | [playbook/documentation-quality.md#ace-447-1](./playbook/documentation-quality.md#ace-447-1) |
-| ACE-447-2  | 配布物（docs-template/）内のリンクは配布ツリー外を指さない — ドッグフード絶対URLの相対化で `../../../` がツリーを脱出する                                                   | documentation-quality | [playbook/documentation-quality.md#ace-447-2](./playbook/documentation-quality.md#ace-447-2) |
-| ACE-447-3  | 大規模 doc PR の cross-model レビューは clean verdict に収束しない — ゲートは「Critical 不在＋実 Important 全対応」、green を待ってループしない                             | process               | [playbook/process.md#ace-447-3](./playbook/process.md#ace-447-3)                             |
-| ACE-449-1  | `set -e` 下の bash 関数は末尾を `[[ cond ]] && cmd` で終わらせない — cond 偽で関数が非ゼロを返し呼び出し元の errexit がスクリプトを無出力で殺す                             | tooling               | [playbook/tooling.md#ace-449-1](./playbook/tooling.md#ace-449-1)                             |
-| ACE-449-2  | 「既定から外す」変更はデータの空化ではなく明示的なゲート条件で実装し、ドキュメントに書いたオプトイン手順はその場で回帰テストに固定する                                      | process               | [playbook/process.md#ace-449-2](./playbook/process.md#ace-449-2)                             |
-| ACE-449-3  | 「設定駆動」を謳う config を編集する前に、そのキーが実際にスクリプトから読まれているか確認する — 読まれない飾りキーはハードコードとの同期注記を付ける                       | documentation-quality | [playbook/documentation-quality.md#ace-449-3](./playbook/documentation-quality.md#ace-449-3) |
-| ACE-459-1  | git hook 環境から spawn するサブプロセス git は GIT\_\* を除去しないと実リポジトリを破壊する — テストフィクスチャの git init/commit が呼び出し元リポジトリを直撃した        | tooling               | [playbook/tooling.md#ace-459-1](./playbook/tooling.md#ace-459-1)                             |
-| ACE-459-2  | linked worktree での並行開発は「メインと同じ」前提が3箇所で破れる — husky 不発・gitignore の symlink すり抜け・共有 config 汚染                                             | process               | [playbook/process.md#ace-459-2](./playbook/process.md#ace-459-2)                             |
-| ACE-460-1  | git diff の出力をパスで分類するツールは `--no-renames` を付ける — rename 表記 `{old => new}` は拡張子判定とディレクトリ前方一致の両方をすり抜ける                           | tooling               | [playbook/tooling.md#ace-460-1](./playbook/tooling.md#ace-460-1)                             |
-| ACE-462-1  | 安全ゲートをスキップするか判定するループでは、空文字・想定外入力を「危険側」ではなく「安全側（ゲート実行）」に倒す — `case $x in *[!0]*)` は空文字を「全ゼロ」と同一視する  | tooling               | [playbook/tooling.md#ace-462-1](./playbook/tooling.md#ace-462-1)                             |
-| ACE-464-1  | 集約レポートの stale 混入は「削除」でなく「読む側を今回の実行計画にスコープ」して断つ                                                                                       | architecture          | [playbook/architecture.md#ace-464-1](./playbook/architecture.md#ace-464-1)                   |
-| ACE-464-2  | cross-model レビューが実質的な新指摘を出し続けるなら各指摘を patch せず「設計を疑え」— 停止は「新規 Critical/Important 不在」                                               | process               | [playbook/process.md#ace-464-2](./playbook/process.md#ace-464-2)                             |
-| ACE-464-3  | 複数経路が同じ untrusted トークンを消費するなら消費地点ごとの silent skip でなく入口で一度 fail-loud 検証する                                                               | security              | [playbook/security.md#ace-464-3](./playbook/security.md#ace-464-3)                           |
-| ACE-465-1  | パース後どこからも読まれないデッドフラグ/デッド設定は「実装 vs 削除」を既定動作との重複と命名スキーマの整合で判定する                                                       | architecture          | [playbook/architecture.md#ace-465-1](./playbook/architecture.md#ace-465-1)                   |
-| ACE-465-2  | cross-model が指摘した「互換性破壊」も、修正案が Issue の明示的決定と矛盾するなら盲従せず実害（呼び出し元の実在）を検証して判断する                                         | process               | [playbook/process.md#ace-465-2](./playbook/process.md#ace-465-2)                             |
-| ACE-469-1  | opt-in 公開ゲートの fail-safe は構造破壊入力（閉じデリミタ欠落）で破れる — パーサは走査境界を先に確定し、壊れた構造は skip でなく fail-loud に回す                          | security              | [playbook/security.md#ace-469-1](./playbook/security.md#ace-469-1)                           |
-| ACE-469-2  | コピーして使う雛形ファイルに opt-in フラグの「許可値」を焼き込まない — 雛形経由で全新規文書が公開既定になる                                                                 | security              | [playbook/security.md#ace-469-2](./playbook/security.md#ace-469-2)                           |
-| ACE-2-1    | `file://` で開く自己完結HTMLはロジックを「クラシックスクリプト＋globalThis 代入」で切り出す — ESモジュールは file:// の CORS で起動が壊れる                                 | coding                | [playbook/coding.md#ace-2-1](./playbook/coding.md#ace-2-1)                                   |
-| ACE-2-2    | 複数箇所に描画されるコンポーネントの初期化は querySelectorAll＋per-element try/catch で隔離する — 単数 querySelector と無ガード dereference は「1つ壊れると黙って全滅」する | coding                | [playbook/coding.md#ace-2-2](./playbook/coding.md#ace-2-2)                                   |
-| ACE-2-3    | 同一ブランチで並行する Claude セッション（特にクラッシュ由来の孤児プロセス）を検知したら、闇雲な kill でなくアプリ完全再起動で一掃する                                      | process               | [playbook/process.md#ace-2-3](./playbook/process.md#ace-2-3)                                 |
-| ACE-7-1    | pre-push 品質ゲート起因の修正は、単体 check だけでなく SKIP なしの実 push で完了判定する                                                                                    | process               | [playbook/process.md#ace-7-1](./playbook/process.md#ace-7-1)                                 |
-| ACE-12-1   | セルフレビュー指摘の修正は commit してから ready/merge する — Edit ツールはファイルを書き換えるだけで commit しない                                                         | process               | [playbook/process.md#ace-12-1](./playbook/process.md#ace-12-1)                               |
-| ACE-12-2   | 派生数値を表示する UI は data-属性のパースを検証し、NaN/0/負値を握りつぶさず警告付きフォールバックする                                                                      | coding                | [playbook/coding.md#ace-12-2](./playbook/coding.md#ace-12-2)                                 |
-| ACE-16-1   | ドキュメント分割は、それを参照するスクリプト・手順書のファイルスコープ前提を静かに陳腐化させる                                                                              | documentation-quality | [playbook/documentation-quality.md#ace-16-1](./playbook/documentation-quality.md#ace-16-1)   |
-| ACE-16-2   | 単一ファイルの構造化パースを前提にした CLI ツールは、そのファイルが複数ファイルに分割されると誤診断や無警告の空集計に陥る                                                   | coding                | [playbook/coding.md#ace-16-2](./playbook/coding.md#ace-16-2)                                 |
-| ACE-16-3   | 大規模 diff の PR 自己レビューでレビュー agent が stall / API 切断した場合、resume を繰り返すより新規 agent へのスコープ限定リランが速い                                    | process               | [playbook/process.md#ace-16-3](./playbook/process.md#ace-16-3)                               |
-| ACE-24-1   | 副作用（監査ログ等）の記録処理は書き込み成否を検証してから成否を報告する — 「記録しました」の無条件出力は監査証跡を黙って欠落させる                                         | coding                | [playbook/coding.md#ace-24-1](./playbook/coding.md#ace-24-1)                                 |
-| ACE-24-2   | ビルド成果物（gitignore 対象の dist/）を直接起動する開発タスクは clean checkout で壊れる — build を含む npm script 経由にする                                               | tooling               | [playbook/tooling.md#ace-24-2](./playbook/tooling.md#ace-24-2)                               |
-| ACE-27-1   | pre-commit の変更ファイル列挙は `git diff --name-only \| grep \| xargs` ではスペース・非ASCII名を黙って取りこぼし block を無効化する                                        | tooling               | [playbook/tooling.md#ace-27-1](./playbook/tooling.md#ace-27-1)                               |
-| ACE-27-2   | warn-only の検査スクリプトは「検出結果」と「検査自体のクラッシュ」を区別せよ — `\|\| true` と xargs の exit code 丸めが checker 破損を隠す                                  | coding                | [playbook/coding.md#ace-27-2](./playbook/coding.md#ace-27-2)                                 |
-| ACE-27-3   | コードの関数/定数の抽出リファクタは、それを行番号でハードコード参照するドキュメントを無警告で陳腐化させる                                                                   | documentation-quality | [playbook/documentation-quality.md#ace-27-3](./playbook/documentation-quality.md#ace-27-3)   |
-| ACE-27-4   | cross-model セルフレビューの指摘は一次証拠で検証してから対応する — 誤検知は根拠を添えて据え置く                                                                             | process               | [playbook/process.md#ace-27-4](./playbook/process.md#ace-27-4)                               |
-| ACE-29-1   | lint-staged で warn-only 検査を回すなら `--verbose` は必須 — 既定は成功タスクの stdout を隠し警告が消える                                                                   | tooling               | [playbook/tooling.md#ace-29-1](./playbook/tooling.md#ace-29-1)                               |
-| ACE-29-2   | devDep を足すときは `engines.node` を満たす major を選ぶ — 「latest」が宣言サポート下限を割ることがある                                                                     | tooling               | [playbook/tooling.md#ace-29-2](./playbook/tooling.md#ace-29-2)                               |
-| ACE-29-3   | pre-commit 検査を staged 基準にするなら lint-staged の stash に委ねる — checker を `git show :path` 読みに書き換えない                                                      | architecture          | [playbook/architecture.md#ace-29-3](./playbook/architecture.md#ace-29-3)                     |
-| ACE-29-4   | fail-closed ゲートを単一ツール呼び出しに畳んだら exit code 伝播を明示し偽バイナリで伝播をテストする                                                                         | coding                | [playbook/coding.md#ace-29-4](./playbook/coding.md#ace-29-4)                                 |
-| ACE-30-1   | 「既知の負債 / stale」と明記した注記は、その負債を解消した瞬間に真偽が反転する — 別ファイルの注記ほど自己矛盾のまま出荷されやすい                                           | documentation-quality | [playbook/documentation-quality.md#ace-30-1](./playbook/documentation-quality.md#ace-30-1)   |
-| ACE-30-2   | frontmatter の「不正値 → 正典値」への機械的ラベル移行は content edit ではない — 全ファイル version bump / updated 更新をしない（運用実績を根拠に）                          | documentation-quality | [playbook/documentation-quality.md#ace-30-2](./playbook/documentation-quality.md#ace-30-2)   |
-| ACE-32-1   | ライフサイクル enum に終端状態を「追加 vs 移動・削除」で迷ったら in-place で撤退するアーティファクト（移動しない ADR 等）の有無が決め手                                     | architecture          | [playbook/architecture.md#ace-32-1](./playbook/architecture.md#ace-32-1)                     |
-| ACE-32-2   | stale な数え上げ記述の掃引は語彙バリアント（値/ステータス/statuses）で false-negative になる — enum 値そのものを grep する                                                  | documentation-quality | [playbook/documentation-quality.md#ace-32-2](./playbook/documentation-quality.md#ace-32-2)   |
-| ACE-33-1   | vitest + ESM では node 組み込みの named export を spyOn できない — 「実際に失敗する入力」で mock を回避する                                                                 | testing               | [playbook/testing.md#ace-33-1](./playbook/testing.md#ace-33-1)                               |
-| ACE-33-2   | `execFileSync` は成功時に子プロセスの stderr を捕捉しない — 成功パスの stderr を assert するなら `spawnSync`                                                                | testing               | [playbook/testing.md#ace-33-2](./playbook/testing.md#ace-33-2)                               |
-| ACE-33-3   | shell フック/スクリプトの E2E は「PATH 前方の fake バイナリ + stdin 注入 + ハーメティック git env」で外部依存を断つ                                                         | testing               | [playbook/testing.md#ace-33-3](./playbook/testing.md#ace-33-3)                               |
-| ACE-33-4   | パスを起動位置から固定解決する CLI は env-var seam でテスト可能化し、「seam が効いた」ことを discriminator で一意に証明する                                                 | testing               | [playbook/testing.md#ace-33-4](./playbook/testing.md#ace-33-4)                               |
-| ACE-34-1   | Git フルオートは push/ready/merge/cleanup/ACE まで含む — 「外向き操作だから」は停止理由にしない                                                                             | process               | [playbook/process.md#ace-34-1](./playbook/process.md#ace-34-1)                               |
-| ACE-34-2   | 運用原則の終端表記が部分的だと、上位のフルフロー記述と矛盾して途中停止が再発する                                                                                            | documentation-quality | [playbook/documentation-quality.md#ace-34-2](./playbook/documentation-quality.md#ace-34-2)   |
-| ACE-35-1   | オフライン自己完結デッキの行数超過は CSS/JS 外出しを先に切る — スライド HTML の分割は単一入口 UX を壊すなら後回し                                                           | architecture          | [playbook/architecture.md#ace-35-1](./playbook/architecture.md#ace-35-1)                     |
-| ACE-35-2   | オフライン資産の CSS/JS 分割には「構造回帰テスト」を足す — 相対参照・ロード順・非 module を固定する                                                                         | testing               | [playbook/testing.md#ace-35-2](./playbook/testing.md#ace-35-2)                               |
-| ACE-35-3   | 挙動不変の外出しリファクタでは「分割前からある console フォールバック」を Critical として直さない — 分割で増えた問題だけを 1 fix に束ねる                                   | process               | [playbook/process.md#ace-35-3](./playbook/process.md#ace-35-3)                               |
-| ACE-36-1   | 複数スキルが共有する判定基準は「A が正規ソース」注記だけでは足りない — 物理的な共有ファイルを SSOT にする                                                                   | process               | [playbook/process.md#ace-36-1](./playbook/process.md#ace-36-1)                               |
-| ACE-36-2   | 同数・同語の短いラベル（例: 「6 観点」）を別フレームワークに再利用しない — 衝突確認は ACE-024 の技能適用                                                                    | documentation-quality | [playbook/documentation-quality.md#ace-36-2](./playbook/documentation-quality.md#ace-36-2)   |
-| ACE-36-3   | 多段スキルの skip 条件は「最後のステップが 0 件」だけでは足りない — 上流ゲートの違反も AND で見る                                                                           | process               | [playbook/process.md#ace-36-3](./playbook/process.md#ace-36-3)                               |
-| ACE-38-1   | 配布物のローカルコピーは SSOT 修正では直らない — 消費側コマンドに実行時自己修復ガードを置く                                                                                 | architecture          | [playbook/architecture.md#ace-38-1](./playbook/architecture.md#ace-38-1)                     |
-| ACE-38-2   | 知見ループは Curate（書く）だけでは回らない — Reuse（読む）導線を Issue 作成時と着手前の二段で明文化する                                                                    | process               | [playbook/process.md#ace-38-2](./playbook/process.md#ace-38-2)                               |
-| ACE-38-3   | 「X に書けば Y の入力になる」は計測ツールの実際の読み取り対象と突き合わせてから書く                                                                                         | documentation-quality | [playbook/documentation-quality.md#ace-38-3](./playbook/documentation-quality.md#ace-38-3)   |
-| ACE-42-1   | AI の EOL バージョン選定は「最新LTSと書く」だけでは防げない — 選定時のライブ検証義務をセットで定義する                                                                      | process               | [playbook/process.md#ace-42-1](./playbook/process.md#ace-42-1)                               |
-| ACE-42-2   | AI 向け汎用ルールに特定エコシステムの語彙を使わない — 「Active LTS」は Node.js 専用、カテゴリでの分岐は misroute する                                                       | documentation-quality | [playbook/documentation-quality.md#ace-42-2](./playbook/documentation-quality.md#ace-42-2)   |
-| ACE-42-3   | 記録義務を課すルールは受け皿（表の列・記載欄）を同時に用意する — 置き場の無い義務は silent rot する                                                                         | documentation-quality | [playbook/documentation-quality.md#ace-42-3](./playbook/documentation-quality.md#ace-42-3)   |
-| ACE-45-1   | 条件選択型ルールは「該当ゼロの時期」を実在サイクルで反証テストする — フォールバック無しは AI を未定義動作に落とす                                                           | documentation-quality | [playbook/documentation-quality.md#ace-45-1](./playbook/documentation-quality.md#ace-45-1)   |
-| ACE-45-2   | 下流への port レビューは上流 SSOT の欠陥検出器 — 指摘は即 Issue 還元し、還元 PR の AC を「本文 diff 0」にする                                                               | process               | [playbook/process.md#ace-45-2](./playbook/process.md#ace-45-2)                               |
-| ACE-47-1   | Issue クローズは検証イベントにする — マージ直前の AC 照合ゲートで GWT+DoD を照合してから閉じる                                                                              | process               | [playbook/process.md#ace-47-1](./playbook/process.md#ace-47-1)                               |
-| ACE-47-2   | 機械が実行する手順書に UI 比喩（☑ 等）を書かない — 永続化フォーマットの具体記法で書く                                                                                       | documentation-quality | [playbook/documentation-quality.md#ace-47-2](./playbook/documentation-quality.md#ace-47-2)   |
-| ACE-47-3   | 手順書のコード例は verbatim 実行で成立させる — 変換ステップをコメントで済ませると no-op になる                                                                              | documentation-quality | [playbook/documentation-quality.md#ace-47-3](./playbook/documentation-quality.md#ace-47-3)   |
-| ACE-49-1   | 複数リポジトリを跨ぐリレー手順は Playbook 知見止まりにせず、起点リポジトリのスキルへ昇格する                                                                                | process               | [playbook/process.md#ace-49-1](./playbook/process.md#ace-49-1)                               |
-| ACE-52-1   | 文書間の導線契約は送り手と受け手を対で検証する — 受け口の無い「届く」は記録を静かに捨てる                                                                                   | documentation-quality | [playbook/documentation-quality.md#ace-52-1](./playbook/documentation-quality.md#ace-52-1)   |
-| ACE-53-1   | 配布コピーのフォーク運用は「上流還元ファースト + 最小除外リスト + byte 一致検証」で機械検証可能な同期に転換する                                                             | architecture          | [playbook/architecture.md#ace-53-1](./playbook/architecture.md#ace-53-1)                     |
-| ACE-53-2   | 検証ゲートの除外リストはスキップ範囲を最小の軸（内容のみ）に限定する — 全部スキップは配布物欠損と stale エントリを握りつぶす                                                | coding                | [playbook/coding.md#ace-53-2](./playbook/coding.md#ace-53-2)                                 |
-| ACE-55-1   | 丸ごとコピー同期は上流を公開領域にする — 公開側の禁止パターン制約は SSOT に遡及する                                                                                         | architecture          | [playbook/architecture.md#ace-55-1](./playbook/architecture.md#ace-55-1)                     |
-| ACE-56-1   | classic script の DOM 統合テストは helper API と自動初期化を分離し、副作用は 1 ファイル 1 import に閉じ込める                                                               | testing               | [playbook/testing.md#ace-56-1](./playbook/testing.md#ace-56-1)                               |
-| ACE-61-1   | docs/spec のみの PR でも cross-model review を省略しない                                                                                                                    | process               | [playbook/process.md#ace-61-1](./playbook/process.md#ace-61-1)                               |
-| ACE-61-2   | 件数・存在の事実は「実行して得た決定的出力」で裏取りする                                                                                                                    | process               | [playbook/process.md#ace-61-2](./playbook/process.md#ace-61-2)                               |
-| ACE-61-3   | ACE は RAG ではなく「使用時検索 × 保守」の両輪。関連ツールは両輪で設計する                                                                                                  | architecture          | [playbook/architecture.md#ace-61-3](./playbook/architecture.md#ace-61-3)                     |
-| ACE-63-1   | 運用ルールを導入する PR では同じ PR の作業でルール自体をドッグフーディングする                                                                                              | process               | [playbook/process.md#ace-63-1](./playbook/process.md#ace-63-1)                               |
-| ACE-63-2   | ミラー並走する文書ペアへのセクション追加は、対側への反映可否を追記時に判定する                                                                                              | documentation-quality | [playbook/documentation-quality.md#ace-63-2](./playbook/documentation-quality.md#ace-63-2)   |
-| ACE-66-1   | インストーラの exit 0 は導入完了ではない — post-install で実バイナリの存在・flavor を再検証し、失敗分岐もテストする                                                         | tooling               | [playbook/tooling.md#ace-66-1](./playbook/tooling.md#ace-66-1)                               |
-| ACE-70-1   | レビューが収束しない時、指摘が diff のどこに集中しているかを見る — 全部が「依頼外の追加分」ならスコープを疑う                                                               | process               | [playbook/process.md#ace-70-1](./playbook/process.md#ace-70-1)                               |
-| ACE-70-2   | CLI ラッパーがモデル・バージョン等の既定値を持つと SSOT が二重化して必ず腐る — 設定機構がある CLI には委譲する                                                              | tooling               | [playbook/tooling.md#ace-70-2](./playbook/tooling.md#ace-70-2)                               |
-| ACE-70-3   | argv 検証スタブは引数を空白連結すると境界を失う — 区切り記号 + 空白入りの値でクォート安全性まで固定する                                                                     | testing               | [playbook/testing.md#ace-70-3](./playbook/testing.md#ace-70-3)                               |
-| ACE-79-1   | 手順に無いステップは実行されない — 手順修正と機械ゲートはセットで入れる                                                                                                     | process               | [playbook/process.md#ace-79-1](./playbook/process.md#ace-79-1)                               |
-| ACE-79-2   | write モードの「すべて最新」は check と同じ不変条件を見てから言え                                                                                                           | tooling               | [playbook/tooling.md#ace-79-2](./playbook/tooling.md#ace-79-2)                               |
-| ACE-79-3   | Markdown セクション抽出は次の同レベル見出しまでに区切る                                                                                                                     | testing               | [playbook/testing.md#ace-79-3](./playbook/testing.md#ace-79-3)                               |
+| ACE-000-1 | 【見本】コンパクト正準フォーマットの実例 — 1 文目に主張、2 文目に適用条件、最後に推奨アクション | coding | [playbook/coding.md#ace-000-1](./playbook/coding.md#ace-000-1) |
+| ACE-000-2 | 【見本】カテゴリ別分割の実例 — 索引は PLAYBOOK.md、本体は `playbook/<category>.md` に置く | testing | [playbook/testing.md#ace-000-2](./playbook/testing.md#ace-000-2) |
+| ACE-000-3 | 【見本】行数バジェット例外の宣言 — 反直感的な詳細が 15 行に収まらないときだけ使う | testing | [playbook/testing.md#ace-000-3](./playbook/testing.md#ace-000-3) |
 
 ## Changelog
+
+### [1.68.0] - 2026-08-09
+
+#### 変更
+
+- 別リポジトリ由来のエントリ 131 件（3187 行）を削除し、コンパクト正準フォーマットの見本 3 件（`ACE-000-1`〜`ACE-000-3`）へ置き換えた。参照している PR 番号が本リポジトリの採番範囲を超えており、live 側の ID とも 10 件衝突していた。`/ace-setup` はこれらを配置しないため、正規の導入経路では 1 件も届かない状態だった
+- `legacy-format-allowlist.txt` を削除した。旧テーブル形式のエントリが 0 件になったため、`check-entry-format` の「allowlist 不在なら strict」が正しい既定になる
 
 ### [1.67.0] - 2026-08-07
 
@@ -733,9 +608,9 @@ Playbook が導出上限（`ヘッダ行数 + 件数 × 16`）を超え、正準
 #### 更新
 
 - ACE-001（クロスモデルレビュー）Helpful: 4 → 5 — PR #431 で Toolkit comment-analyzer (Suggestion 4 件) + Toolkit code-reviewer (Critical C1 + Important I1) + Copilot (3 inline comments) + Gemini Code Assist (org 設定で auto-attach、2 inline comments) の **4 系統が独立検出**。Gemini auto-attach により追加コストなしでレビュースタックが拡張された事例
-- ACE-014（索引文書 SSOT 集約）Helpful: 2 → 3 — PR #431 で `quality:local` の chain 列挙を **README + PR テンプレ + 付録 A の 3 箇所**に持っていた SSOT 違反を、`§3.3` 1 箇所に集約 + 他 2 箇所を参照型に整理した事例。Related に [ACE-045](./playbook/documentation-quality.md#ace-045) を追加
+- ACE-014（索引文書 SSOT 集約）Helpful: 2 → 3 — PR #431 で `quality:local` の chain 列挙を **README + PR テンプレ + 付録 A の 3 箇所**に持っていた SSOT 違反を、`§3.3` 1 箇所に集約 + 他 2 箇所を参照型に整理した事例。Related に ACE-045 を追加
 - ACE-016（anchor link は label と URL の両方に書く）Helpful: 0 → 1 — PR #431 で `[\`docs/...\` §3.3](../docs/...)`が label に`§3.3`を含むが URL に`#anchor`欠落のパターンを Toolkit code-reviewer C1 (95%) が再検出。fix は`<a id="quality-local-detail"></a>`を §3.3 見出し直前に付与し、参照側を`#quality-local-detail` で固定（PLAYBOOK 外で初適用）。explicit anchor 採用で heading slug 変更（日本語 / コードフェンス / コロン混在）への耐性も獲得
-- ACE-044（review 指摘スコープを編集セクション境界で判定）Helpful: 0 → 1 — PR #431 で 2 種類のスコープ判定をドッグフード: (a) Gemini の `../docs/` 相対パス指摘は touched ファイル内 (L28) だが pre-existing で L15/L54 を巻き込むため **spawn task で別 Issue 化**、(b) Appendix A drift は別ファイルだが **「mirror であることが明示」carve-out** で同 PR 内 fix commit に統合（[ACE-045](./playbook/documentation-quality.md#ace-045) Action 2 として運用ルール化）
+- ACE-044（review 指摘スコープを編集セクション境界で判定）Helpful: 0 → 1 — PR #431 で 2 種類のスコープ判定をドッグフード: (a) Gemini の `../docs/` 相対パス指摘は touched ファイル内 (L28) だが pre-existing で L15/L54 を巻き込むため **spawn task で別 Issue 化**、(b) Appendix A drift は別ファイルだが **「mirror であることが明示」carve-out** で同 PR 内 fix commit に統合（ACE-045 Action 2 として運用ルール化）
 
 ### [1.21.0] - 2026-05-20
 
@@ -746,7 +621,7 @@ Playbook が導出上限（`ヘッダ行数 + 件数 × 16`）を超え、正準
 
 #### 更新
 
-- ACE-025（スクリプトの対象範囲を実装列挙で書く）Helpful: 0 → 1 — PR #429 で「不在で no-op」のような慣用語ではなく「specs=0 で `dist/spec-index.json` を空索引として書き出し exit 0」と実装挙動を字面で書く事例として補強。Related に [ACE-043](./playbook/documentation-quality.md#ace-043) を追加
+- ACE-025（スクリプトの対象範囲を実装列挙で書く）Helpful: 0 → 1 — PR #429 で「不在で no-op」のような慣用語ではなく「specs=0 で `dist/spec-index.json` を空索引として書き出し exit 0」と実装挙動を字面で書く事例として補強。Related に ACE-043 を追加
 
 ### [1.20.0] - 2026-05-20
 

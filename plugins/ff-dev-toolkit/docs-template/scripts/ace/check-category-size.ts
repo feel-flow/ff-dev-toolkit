@@ -283,11 +283,13 @@ export type BudgetExceptionTally = Readonly<{
  * PLAYBOOK.md が実際に該当する）、同一エントリ内で理由を書き分けるとその数だけ多重加算される。
  * 上限が伸びたことは「警告が出ない」という形でしか表に出ないので、正常な状態と区別がつかない。
  *
- * **残る限界**: 判定は markdown を解さない素のテキスト一致なので、エントリ本文が
- * コードスパン・コードフェンスの中に `<!-- … -->` の完全形でマーカーを引用していると
- * 1 件として数える（refine 側も同じく数えるので両者はそろっている。measureEntryLines の
- * 「コードスパン内の `<!-- ... -->` はコメントとしてマスクされる」と同じ限界）。
- * エントリ本文で書式を説明するときは `<!--` を崩して書くこと。
+ * 本文が**コードとして例示している**だけのマーカー（対になったインラインコードスパンの
+ * 中、閉じたコードフェンスの中）は数えない（blankCodeRegions。Issue #347）。
+ *
+ * **残る限界**: 対を判定できない記述はコード扱いにできないため、宣言として数える —
+ * 閉じていないフェンス以降と、長さの合う相手が無いバックティック列。厳しい側へ倒すと
+ * 正当な宣言が消えて偽の密度警告になり、refine とも食い違うため意図的に緩い側にしてある。
+ * また複数行にまたがるコードスパン（CommonMark は許す）は行単位の走査では拾えない。
  *
  * 行番号で対応を取るのは、空白化が UTF-16 の長さを保存しないため（blankHtmlBlockComments
  * のコメント参照）。文字オフセットで原文を切り出すと、コメント内に非 BMP 文字が 1 個あるだけで
@@ -295,7 +297,9 @@ export type BudgetExceptionTally = Readonly<{
  * 行番号なら前提そのものが要らない。
  */
 export function countBudgetExceptions(content: string): BudgetExceptionTally {
-  const lines = content.split("\n");
+  // コードとして例示されているだけの記述を宣言と数えない（Issue #347）。
+  // 長さ・行数が保存されるので、以降は原文と同じ行番号で扱える。
+  const lines = blankCodeRegions(content).text.split("\n");
   const blankedLines = blankHtmlBlockComments(content).split("\n");
   // 行単位で当てるので `m` は要らない（`^` は各行の先頭）。`g` も付けない —
   // `.test()` は global 正規表現の lastIndex を進めるため、共有インスタンスなら
@@ -353,7 +357,9 @@ export function countBudgetExceptions(content: string): BudgetExceptionTally {
         end -= 1;
       }
     }
-    // マーカー自身が HTML コメントなので、走査は空白化**前**の原文に対して行う。
+    // マーカー自身が HTML コメントなので、走査は **HTML コメントを空白化する前**の
+    // テキストに対して行う（`lines` はコード領域だけを空白化済み。`blankedLines` を
+    // 使うとマーカーごと消えて常に 0 件になる）。
     const block = lines.slice(startIndexOf(headerIndex), end + 1).join("\n");
     for (const span of block.matchAll(spanPattern)) {
       if (span[0].includes(BUDGET_EXCEPTION_MARKER)) {
@@ -418,6 +424,15 @@ function blankNonNewline(text: string): string {
   return text.replace(/[^\n]/g, " ");
 }
 
+/**
+ * blankCodeRegions の結果。`unclosedFence` は「そこから先はコード例外判定が効いていない」
+ * という意味なので、呼び出し側は必ず消費すること（黙って続けると出力から区別できない）。
+ */
+export type CodeRegionBlankResult = Readonly<{
+  readonly text: string;
+  readonly unclosedFence: boolean;
+}>;
+
 /** blankFencedCodeBlocks の結果。`unclosedFence` は呼び出し側で fail-closed に使う。 */
 type BlankedSegment = Readonly<{
   readonly text: string;
@@ -480,6 +495,133 @@ function blankLine(line: string): string {
 }
 
 /**
+ * 1 行の中の**対になった**インラインコードスパン（`` `…` ``）を空白化する。
+ * CommonMark と同じく「**同じ長さの**バックティック列どうし」を開閉として対にし、
+ * 長さの合う相手が無い列はそのまま残す（fail-open）。
+ *
+ * 正規表現（`` /(`+)[^`\n]*?\1/ `` の形）では**書けない**。後方参照は「同じ文字列」までは
+ * 保証するが、`` `+ `` がバックトラックで縮むため**列の途中で切れない**ことは保証しない。
+ * 3 連と 2 連が同じ行にあると、片方の列の一部ともう片方の一部を勝手に組にして、
+ * その間にある**正当な宣言を空白化して落とす**（実測: `prefix ``` <!-- 宣言 --> ``` の行で
+ * declared が 1 → 0）。落とす側の誤りは refine と食い違うぶん質が悪い。
+ * 列を先にトークン化してから長さで対にすれば、この経路は構造的に消える。
+ */
+function blankInlineCodeSpans(probeLine: string, line: string): string {
+  const runs: { readonly start: number; readonly length: number }[] = [];
+  for (let i = 0; i < probeLine.length; ) {
+    if (probeLine[i] !== "`") {
+      i += 1;
+      continue;
+    }
+    let end = i;
+    while (end < probeLine.length && probeLine[end] === "`") {
+      end += 1;
+    }
+    runs.push({ start: i, length: end - i });
+    i = end;
+  }
+  const spans: { readonly start: number; readonly end: number }[] = [];
+  for (let i = 0; i < runs.length; ) {
+    const open = runs[i];
+    let close = -1;
+    for (let k = i + 1; k < runs.length; k++) {
+      if (runs[k].length === open.length) {
+        close = k;
+        break;
+      }
+    }
+    if (close === -1) {
+      i += 1;
+      continue;
+    }
+    spans.push({ start: open.start, end: runs[close].start + runs[close].length });
+    i = close + 1;
+  }
+  if (spans.length === 0) {
+    return line;
+  }
+  let result = "";
+  let last = 0;
+  for (const span of spans) {
+    result += line.slice(last, span.start) + blankNonNewline(line.slice(span.start, span.end));
+    last = span.end;
+  }
+  return result + line.slice(last);
+}
+
+/**
+ * コードとして書かれた領域（**閉じた**フェンス付きブロックと、対になったインライン
+ * コードスパン）を「同じ行数・同じ長さの空白」へ置換する（Issue #347）。
+ *
+ * 用途は例外宣言マーカーの判定を「コードとして**例示**しているだけの記述」から守ること。
+ * 判定は markdown を解さない素のテキスト一致なので、本文が書式を説明しているだけで
+ * 宣言 1 件と数えられ、そのエントリの行数バジェットが黙って 2 倍になる。live PLAYBOOK.md
+ * の §運用ルールが実際にコードスパンでこの書式を書いており、同じ書き方が ACE エントリの
+ * 本文へ入った瞬間に踏む（curate はこの機能自体を主題にしたエントリを書く）。
+ *
+ * **check と refine の両方で同じ結果を使うこと**。片方だけ適用すると、そのエントリの
+ * 上限が check では 15 行低いのに refine は 30 行まで許すことになり、「check は密度警告を
+ * 出すのに refine の圧縮候補は空」という ADR-019 が消したノイズが戻る。
+ *
+ * **判定できないものは空白化しない**（fail-open）。閉じていないフェンス以降と、対に
+ * ならないバックティックを含む行はそのまま残す。ここで空白化に倒すと、正当な宣言が
+ * 消えて偽の密度警告になり、しかも refine 側は例外扱いのままなので上と同じ非対称が
+ * 生じる。緩い側の誤り（例示を宣言と数える）は 1 エントリ分で頭打ちだが、
+ * 厳しい側の誤り（宣言を落とす）は refine と食い違うぶん質が悪い。
+ *
+ * 長さを保存するのは、呼び出し側が原文と同じオフセット・行番号で参照するため
+ * （blankNonNewline のコメント参照）。
+ */
+export function blankCodeRegions(source: string): CodeRegionBlankResult {
+  const lines = source.split("\n");
+  // **範囲の検出は HTML コメントを空白化したコピーで行い、空白化は原文へ当てる。**
+  // マーカー自身が HTML コメントなので、原文側を空白化しないと検出対象ごと消える。
+  // 逆に検出を原文で行うと、コメント内のテンプレート説明（`<!-- 追記例:` の中に置いた
+  // フェンス開始行 1 本など）が本文の実フェンスと対になり、間にある**正当な宣言を
+  // まとめて空白化して落とす**（実測: declared が 1 → 0 になり、しかも情報行は
+  // 「エントリ外 / 重複 / コメント外」という無関係な理由を名指しする）。
+  // blankHtmlBlockComments は行数・長さを保存するので、行番号も列位置もそのまま使える。
+  const probeLines = blankHtmlBlockComments(source).split("\n");
+  const out = [...lines];
+  let openFence: string | undefined;
+  let openIndex = -1;
+  for (let i = 0; i < probeLines.length; i++) {
+    const probe = probeLines[i].endsWith("\r") ? probeLines[i].slice(0, -1) : probeLines[i];
+    if (openFence === undefined) {
+      const opened = FENCE_OPEN_PATTERN.exec(probe);
+      if (opened) {
+        openFence = opened[1];
+        openIndex = i;
+        continue;
+      }
+      out[i] = blankInlineCodeSpans(probe, lines[i]);
+      continue;
+    }
+    const closed = FENCE_CLOSE_PATTERN.exec(probe);
+    if (closed && closed[1][0] === openFence[0] && closed[1].length >= openFence.length) {
+      // 閉じて初めて、開始行から終了行までをまとめて空白化する。
+      for (let j = openIndex; j <= i; j++) {
+        out[j] = blankLine(lines[j]);
+      }
+      openFence = undefined;
+    }
+  }
+  // openFence が残っている＝閉じていない。その開始行以降は原文のまま返す（fail-open）。
+  // 呼び出し側は unclosedFence を必ず消費すること — 黙って続けると「コード例外判定が
+  // 途中から効いていない」状態を出力から区別できない。
+  const text = out.join("\n");
+  if (text.length !== source.length) {
+    // 長さが崩れると、呼び出し側のオフセット照合（maskCommentSpans）が黙って false へ倒れ、
+    // 宣言を落とす側にだけ壊れる。契約違反はここで落とす（blankNonNewline のコメント参照）。
+    throw new Error(
+      `blankCodeRegions が長さを保存していません（${String(source.length)} → ${String(text.length)}）。` +
+        `オフセット照合の前提が崩れており、例外宣言を黙って落とすため中断します。`,
+    );
+  }
+  return { text, unclosedFence: openFence !== undefined };
+}
+
+/**
  * 吸収エラーのメッセージで「認識されなかった見出し候補」を名指しするための見出し行。
  * **判定には使わない**（メッセージ文字列だけに影響する）。
  *
@@ -514,7 +656,21 @@ export function analyzePlaybookMarkdown(
   options: { readonly allowEmpty?: boolean } = {},
 ): AnalyzeResult {
   const cleaned = blankHtmlBlockComments(content);
-  const segments = cleaned.split(ACE_ENTRY_HEADER_PATTERN).slice(1);
+  const parts = cleaned.split(ACE_ENTRY_HEADER_PATTERN);
+  // ヘッダ領域（最初のエントリ見出しより前）も未閉フェンスを検査する。ここを外すと、
+  // 打ち間違いが `.slice(1)` のどちら側に落ちたかで検査の有無が変わる。ヘッダの
+  // 未閉フェンスは blankCodeRegions がファイル全体を走査するため後続の全エントリに
+  // 波及し、例外宣言の判定が黙って効かなくなる（Issue #347 のレビュー実測）。
+  if (blankFencedCodeBlocks(parts[0] ?? "").unclosedFence) {
+    return {
+      kind: "error",
+      message:
+        "最初の ACE エントリより前（ヘッダ領域）に閉じていないコードフェンス（``` / ~~~）があります。" +
+        "以降の本文が走査対象から外れ、行数バジェット例外の判定も黙って効かなくなります。" +
+        "フェンスを閉じてください。",
+    };
+  }
+  const segments = parts.slice(1);
   if (segments.length === 0) {
     if (options.allowEmpty === true) {
       return { kind: "ok", histogram: {}, totalEntries: 0 };
@@ -912,7 +1068,7 @@ export function main(): number {
     if (exceptionTally.occurrences > exceptionCount) {
       console.log(
         `例外マーカー ${String(exceptionTally.occurrences)} 件中 ${String(exceptionCount)} 件を宣言として採用${suffix}` +
-          `（残りはエントリ外 / 同一エントリ内の重複 / HTML コメント外のため加算しません）`,
+          `（残りはエントリ外 / 同一エントリ内の重複 / HTML コメント外 / コードスパン・フェンス内の例示のため加算しません）`,
       );
     }
     if (isOverLineThreshold(lineCount, derivedMax)) {

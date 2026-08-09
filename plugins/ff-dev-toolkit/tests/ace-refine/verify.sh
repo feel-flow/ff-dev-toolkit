@@ -177,10 +177,10 @@ echo "== エントリ形式ゲート（Issue #286） =="
   echo "  ✗ 形式ゲートスクリプトが存在しないか空です: $FORMAT_GATE_SCRIPT" >&2
   FAIL=$((FAIL + 1))
 }
-[ -s "$LEGACY_ALLOWLIST_TEMPLATE" ] || {
-  echo "  ✗ allowlist テンプレートが存在しないか空です: $LEGACY_ALLOWLIST_TEMPLATE" >&2
-  FAIL=$((FAIL + 1))
-}
+# allowlist テンプレートの実在は検査しない。docs-template は旧テーブル形式のエントリを
+# 1 件も同梱しないので、allowlist が無い状態が正しい既定である（check-entry-format は
+# allowlist 不在時に strict へ倒す）。下の contains 検査は**ゲートスクリプト側**が
+# allowlist を判定軸にし続けていることを固定するもので、こちらは残す。
 
 # 判定軸（allowlist）と fail-closed の設計をスクリプト側で固定する。Date 閾値へ
 # 差し替えられると「著者が手で書くフィールド」が判定軸になり偶然通せるようになる。
@@ -211,16 +211,38 @@ contains "$REFINE_FILE" \
 contains "$PLAYBOOK_TEMPLATE" \
   "新規追記のために allowlist へ ID を足さない" \
   "PLAYBOOK テンプレ: allowlist を抜け道にしない"
-contains "$LEGACY_ALLOWLIST_TEMPLATE" \
-  "新規追記でこのファイルに ID を足さない" \
-  "allowlist テンプレ自身に運用ルールが書かれている"
+# 配布物の自己整合（Issue #344 で不変条件を反転した）。
+# 旧: 同梱シード（131 件の旧形式）が allowlist で網羅されていること。
+# 新: **同梱シードに旧テーブル形式が 1 件も無く、allowlist も同梱しないこと**。
+# check-entry-format は allowlist 不在時に strict へ倒すので、旧形式シードを
+# allowlist 無しで配ると利用者のコピー直後にゲートが赤くなる。逆に allowlist を
+# 同梱すると「新規追記の抜け道」を配ることになる。両方を fail-loud に固定する。
+if [ -e "$LEGACY_ALLOWLIST_TEMPLATE" ]; then
+  bad "allowlist テンプレートを同梱しない（旧形式シードが 0 件なので不要。同梱すると新規追記の抜け道を配ることになる）: $LEGACY_ALLOWLIST_TEMPLATE"
+else
+  ok "allowlist テンプレートを同梱していない（旧形式シード 0 件・strict が既定）"
+fi
 
-# 配布物の自己整合: docs-template 同梱の playbook シード（全 131 件が旧形式）が
-# テンプレート同梱の allowlist で網羅されていること。allowlist を空で配ると、
-# 利用者が docs-template をコピーした瞬間に形式ゲートが赤くなる。
-# 件数は allowlist / シードの双方を数えて突き合わせる（どちらかに固定値を書かない）。
 TEMPLATE_PLAYBOOK_DIR="$PLUGIN_ROOT/docs-template/08-knowledge/playbook"
-if [ -d "$TEMPLATE_PLAYBOOK_DIR" ]; then
+# ディレクトリ不在を skip にしない。`if [ -d ]` だけだと見本ごと消しても suite が緑になり、
+# 「同梱物が消えた」を検出できない（検査 0 件の silent green）。
+if [ ! -d "$TEMPLATE_PLAYBOOK_DIR" ]; then
+  bad "docs-template の playbook ディレクトリが存在しない（見本エントリを同梱しないと分割レイアウトの実例が消える）: $TEMPLATE_PLAYBOOK_DIR"
+else
+  # 見本の ID 集合を完全一致で固定する。件数だけだと、別 ID へ差し替えても通る。
+  SEED_IDS="$(
+    for pb in "$TEMPLATE_PLAYBOOK_DIR"/*.md; do
+      [ -f "$pb" ] || continue
+      grep -oE '^### ACE-[A-Za-z0-9-]+:' "$pb" | sed -E 's/^### (ACE-[A-Za-z0-9-]+):$/\1/'
+    done | sort -u | tr '\n' ' '
+  )"
+  EXPECTED_SEED_IDS="ACE-000-1 ACE-000-2 ACE-000-3 "
+  if [ "$SEED_IDS" = "$EXPECTED_SEED_IDS" ]; then
+    ok "docs-template の見本エントリが ACE-000-1〜3 の 3 件で固定されている"
+  else
+    bad "docs-template の見本エントリ ID が期待と違う（期待: ${EXPECTED_SEED_IDS}/ 実際: ${SEED_IDS}）"
+  fi
+
   SEED_LEGACY_IDS="$(
     for pb in "$TEMPLATE_PLAYBOOK_DIR"/*.md; do
       [ -f "$pb" ] || continue
@@ -234,13 +256,11 @@ if [ -d "$TEMPLATE_PLAYBOOK_DIR" ]; then
       ' "$pb"
     done | sort -u
   )"
-  ALLOWED_IDS="$(grep -E '^ACE-' "$LEGACY_ALLOWLIST_TEMPLATE" 2>/dev/null | sort -u || true)"
-  MISSING="$(comm -23 <(printf '%s\n' "$SEED_LEGACY_IDS") <(printf '%s\n' "$ALLOWED_IDS"))"
-  SEED_COUNT="$(printf '%s\n' "$SEED_LEGACY_IDS" | grep -c '^ACE-' || true)"
-  if [ -n "$MISSING" ]; then
-    bad "docs-template のシード旧形式エントリが allowlist に未収載（利用者のコピー直後にゲートが赤くなる）: $(printf '%s' "$MISSING" | tr '\n' ' ')"
+  SEED_LEGACY_COUNT="$(printf '%s\n' "$SEED_LEGACY_IDS" | grep -c '^ACE-' || true)"
+  if [ "$SEED_LEGACY_COUNT" -gt 0 ]; then
+    bad "docs-template のシードに旧テーブル形式が残っている（allowlist 不在では利用者のコピー直後にゲートが赤くなる）: $(printf '%s' "$SEED_LEGACY_IDS" | tr '\n' ' ')"
   else
-    ok "docs-template のシード旧形式 ${SEED_COUNT} 件がすべて allowlist に収載されている"
+    ok "docs-template のシードに旧テーブル形式が 0 件（コンパクト正準のみ）"
   fi
 fi
 

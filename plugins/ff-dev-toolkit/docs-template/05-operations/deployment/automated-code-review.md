@@ -9,7 +9,7 @@
 
 > **標準レビュー体制**: 一次レビューは Claude Code（pr-review-toolkit）、クロスモデルレビューは Codex CLI の2本柱を標準とします。GitHub Copilot（Copilot CLI / Copilot code review）は従量課金への移行に伴い**既定のレビューラインナップから除外**しました。同梱アダプタ（`scripts/adapters/copilot-cli-adapter.sh`）は残置しており、課金を許容する場合のみ `--cli copilot-cli` でオプトインできます。
 
-> **モデル選択の方針**: 各アダプタは**モデルを選ばない**。どのモデルを使うかは各 CLI 自身の設定（`~/.codex/config.toml` など）へ委譲し、環境変数が設定されているときだけフラグを組み立てる。アダプタにモデル slug の既定値を持たせると、その値がユーザーの CLI 設定と 2 重化して必ず古くなり、しかもユーザー設定を黙って上書きする。実装パターンは [REVIEW_AGENT_CREATION_GUIDE.md の「モデル指定は『既定値を持たない』」](../../06-reference/REVIEW_AGENT_CREATION_GUIDE.md#モデル指定は既定値を持たない)、実害の記録は `08-knowledge/playbook/tooling.md` の ACE-70-2 を参照。
+> **モデル選択の方針**: 各アダプタは**モデルを選ばない**。どのモデルを使うかは各 CLI 自身の設定（`~/.codex/config.toml` など）へ委譲し、環境変数が設定されているときだけフラグを組み立てる。アダプタにモデル slug の既定値を持たせると、その値がユーザーの CLI 設定と 2 重化して必ず古くなり、しかもユーザー設定を黙って上書きする。実装パターンと実害の記録は [REVIEW_AGENT_CREATION_GUIDE.md の「モデル指定は『既定値を持たない』」](../../06-reference/REVIEW_AGENT_CREATION_GUIDE.md#モデル指定は既定値を持たない) を参照。
 
 > **同梱 vs 利用側スクリプト**: プラグインが配布するのは `scripts/setup-multi-agent.sh` / `scripts/multi-agent.sh` / `scripts/multi-review.sh` / `scripts/adapters/*` / `scripts/perspectives/` / `scripts/agent-config.yaml`。`setup-automated-review.sh` / `setup-multi-review.sh` / `review-common.sh` / `review-prompts.sh` / `*-review.sh`（単体ラッパー）は**同梱されない**。下の「方法1」は消費プロジェクトが自前で組む構成例であり、セットアップ後に自動で現れるファイルではない。
 

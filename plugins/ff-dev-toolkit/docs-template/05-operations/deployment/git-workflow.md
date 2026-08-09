@@ -175,11 +175,11 @@ git checkout -b "feature/${ISSUE_NUM}-user-auth"
 
 #### 着手前の Playbook 参照（ACE Reuse）
 
-実装に入る前に [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) の索引（エントリ一覧）を変更対象領域のキーワードで検索し、関連する ACE エントリを読む。Issue 本文に「関連 ACE エントリ」が添付されている場合（`/create-issue` が生成）はそれを起点にする。参照して役立ったエントリは ACE ID で記録する。記録先ごとに届く仕組みが異なる: **コミット件名・本文**への記録は再利用計測 `ace-reuse-report` の入力になり（計測対象は git log の件名・本文のみ。squash merge 後は squash コミットの件名・本文に ACE ID が残るようにする）、**`implementation-notes.md`** への記録（[ACE-034](../../08-knowledge/playbook/process.md#ace-034) により PR description へ転記される）は `/ace-curate` での `Helpful` カウンター更新の入力になる。ACE サイクルは「書く」（ステップ10）だけでは完結せず、この「読む」導線があって初めて知見が循環する。
+実装に入る前に [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) の索引（エントリ一覧）を変更対象領域のキーワードで検索し、関連する ACE エントリを読む。Issue 本文に「関連 ACE エントリ」が添付されている場合（`/create-issue` が生成）はそれを起点にする。参照して役立ったエントリは ACE ID で記録する。記録先ごとに届く仕組みが異なる: **コミット件名・本文**への記録は再利用計測 `ace-reuse-report` の入力になり（計測対象は git log の件名・本文のみ。squash merge 後は squash コミットの件名・本文に ACE ID が残るようにする）、**`implementation-notes.md`** への記録（ACE-034 により PR description へ転記される）は `/ace-curate` での `Helpful` カウンター更新の入力になる。ACE サイクルは「書く」（ステップ10）だけでは完結せず、この「読む」導線があって初めて知見が循環する。
 
 #### 作業中の判断ログ: `implementation-notes.md` を並走させる
 
-実装着手と同時に **作業ブランチ直下** に `implementation-notes.md` を作成し、コミットと一緒に追記する。コミット diff には残らない「なぜこの選択をしたか / spec から変えた点 / 捨てた選択肢」を保持することで、ステップ5（Self-Review）の精度とステップ10（ACE Generate）の入力品質が上がる。詳細根拠は [ACE-034](../../08-knowledge/playbook/process.md#ace-034)。
+実装着手と同時に **作業ブランチ直下** に `implementation-notes.md` を作成し、コミットと一緒に追記する。コミット diff には残らない「なぜこの選択をしたか / spec から変えた点 / 捨てた選択肢」を保持することで、ステップ5（Self-Review）の精度とステップ10（ACE Generate）の入力品質が上がる。詳細根拠は ACE-034。
 
 最小ひな形（コピペして使う）:
 
@@ -205,7 +205,7 @@ git checkout -b "feature/${ISSUE_NUM}-user-auth"
 
 **運用ルール**:
 
-- **書くタイミングは「気付いた瞬間」**: 後で書こうとすると確実に忘れる（[ACE-032](../../08-knowledge/playbook/documentation-quality.md#ace-032) の発見経緯と同じ構造）
+- **書くタイミングは「気付いた瞬間」**: 後で書こうとすると確実に忘れる（ACE-032 の発見経緯と同じ構造）
 - **粒度は 1〜3 行**: 「なぜ A ではなく B を選んだか」を短文で残す
 - **スコープ外発見は本ファイルへ溜めず三分岐**: [ワークフロー運用原則 原則2](./workflow-principles.md) に従い、YAGNI なら記録対象にせず、必要かつ軽微なら現 PR で修正する。独立対応が必要なら類似 Issue を先に検索し、同じ完了条件へ吸収できれば既定は既存 Issue へのコメントで集約する。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立するなら関連 Issue を作成する。implementation-notes は「現 PR の判断ログ」であり、将来タスクの代替 backlog にはしない
 - **PR 作成時に PR description に転記**: ステップ6 でレビュアーが「なぜ」を読みやすくなる
@@ -932,7 +932,7 @@ GitHub Discussions への記録に加え、ACE Playbook への構造化記録を
 
 **任意エスカレーション — chore PR**: 大人数チーム、または知見内容自体をレビューに残したい場合のみ、develop から `chore/ace-from-pr-<PR番号>` ブランチを切り、PLAYBOOK.md 追記を小さい chore PR として PR レビュー → squash merge する。
 
-> **ACE-012 との関係（混同しないこと）**: [ACE-012](../../08-knowledge/playbook/process.md#ace-012) は _うっかり_ feature 作業を develop に直接 push してしまう事故（ブランチ切り替わりの見落とし）を防ぐルール。一方、本セクションの「develop 直マージ」は `knowledge:` プレフィックス付きの **PLAYBOOK 単独コミット** に限定した _意図的・承認済み_ のフローであり、両者は別物。ACE-012 は引き続き有効（deprecated にしない）。
+> **ACE-012 との関係（混同しないこと）**: ACE-012 は _うっかり_ feature 作業を develop に直接 push してしまう事故（ブランチ切り替わりの見落とし）を防ぐルール。一方、本セクションの「develop 直マージ」は `knowledge:` プレフィックス付きの **PLAYBOOK 単独コミット** に限定した _意図的・承認済み_ のフローであり、両者は別物。ACE-012 は引き続き有効（deprecated にしない）。
 
 ## タスク管理（Task Tracking）
 
