@@ -141,8 +141,22 @@ else
     # なら先に dist-gate が名指しし、vitest の「stale な dist で green」を防ぐ。
     "$SCRIPT_DIR/mcp-dist-gate/verify.sh"
     "$SCRIPT_DIR/mcp-vitest/verify.sh"
+    # docs-template/scripts/ace の型検査（Issue #358）。vitest は esbuild の transpile
+    # のみで型を見ないため、型エラーは下の ace-scripts-vitest では検出できない。
+    # vitest より前に置くのは mcp-dist-gate → mcp-vitest と同じ理由 — 型が壊れている
+    # ファイルのテストが偶然通った状態を「緑」として報告させないため。
+    # node_modules 不在なら ○ skip、install 済みで tsc だけ無い場合は fail-closed。
+    "$SCRIPT_DIR/ace-scripts-typecheck/verify.sh"
+    # 上の gate の検出力を隔離クローンへの mutation で実測する（単体で〜9 秒。tsc の lib
+    # 解析が cold の初回はさらに伸びる。数字を更新するときは実測してから直すこと）。
+    # node_modules は symlink で借りるだけで、実物への書き込みは行わない。検査対象の
+    # 直後に置くことを優先し、安価な順の例外として扱う。
+    # skip 条件は上の gate と同じ node_modules 不在に加えて perl 不在・一時領域不可
+    # （tsc だけ無い場合はこちらも fail-closed）。
+    "$SCRIPT_DIR/ace-scripts-typecheck-selftest/verify.sh"
     # docs-template/scripts/ace の vitest（Playbook 集計スクリプト群 + refine 候補算出）。
-    # vitest 本体は mcp/node_modules を再利用するため mcp 系 suite の直後に置く。
+    # vitest 本体は mcp/node_modules を再利用するため mcp 系 suite より後に置く
+    # （上の型検査 2 本も同じ node_modules を借りるので、この 3 本が同じ並びに入る）。
     "$SCRIPT_DIR/ace-scripts-vitest/verify.sh"
     # 一時 git リポジトリ + stub CLI を使い、打ち切りや猶予期間の実測待ちを含むので
     # 後ろに置く（単体で〜35 秒。数字を更新するときは実測してから直すこと）

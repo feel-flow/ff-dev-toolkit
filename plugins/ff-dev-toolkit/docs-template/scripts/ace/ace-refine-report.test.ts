@@ -12,6 +12,7 @@ import {
   measureEntryLines,
   resolvePatternsPath,
   type EntryLineMeasurement,
+  type EntryLineMeasurementResult,
 } from "./ace-refine-report";
 import { computeReuseStats, parsePlaybookEntries, type ReuseStats } from "./ace-reuse-report";
 // 結合テスト（末尾の describe）で同一 fixture に対して check 側の判定も測るため。
@@ -311,12 +312,30 @@ describe("measureEntryLines", () => {
 });
 
 describe("findOverBudgetEntries", () => {
-  const byFile = (measurements: readonly EntryLineMeasurement[], unclosedFence = false) =>
-    new Map([["playbook/tooling.md", { measurements, unclosedFence }]]);
+  const FIXTURE_FILE = "playbook/tooling.md";
+
+  /**
+   * 測定結果 1 ファイル分を組む。clean 側と汚染側を**別の関数**にしてあるのは、
+   * オプショナル引数 1 本にすると `number | undefined` を渡せてしまい、「未閉フェンスを
+   * 見たのに位置が無い」という production の判別 union が排除したはずの形を、fixture の
+   * 境界で作り直すことになるため（`EntryLineMeasurementResult` の JSDoc 参照）。
+   * 型検査が通る限り fixture は production が生成しうる値だけを表す（Issue #358）。
+   */
+  const cleanFile = (
+    measurements: readonly EntryLineMeasurement[],
+  ): ReadonlyMap<string, EntryLineMeasurementResult> =>
+    new Map([[FIXTURE_FILE, { measurements, unclosedFence: false }]]);
+
+  /** 汚染側。`unclosedFenceLine` は 0 始まりの行番号で、省略できない。 */
+  const contaminatedFile = (
+    measurements: readonly EntryLineMeasurement[],
+    unclosedFenceLine: number,
+  ): ReadonlyMap<string, EntryLineMeasurementResult> =>
+    new Map([[FIXTURE_FILE, { measurements, unclosedFence: true, unclosedFenceLine }]]);
 
   it("上限超過のみを行数降順で列挙し、例外宣言付きは 2 倍の上限で判定する", () => {
     const over = findOverBudgetEntries(
-      byFile([
+      cleanFile([
         { id: "ACE-1-1", lineCount: 15, hasException: false }, // ちょうど → OK
         { id: "ACE-1-2", lineCount: 16, hasException: false }, // 超過
         { id: "ACE-1-3", lineCount: 28, hasException: true }, // 例外内（<= 30）→ OK
@@ -339,7 +358,12 @@ describe("findOverBudgetEntries", () => {
    */
   it("未閉フェンスで汚染された測定値を渡されたら落ちる（main のゲートを迂回させない）", () => {
     expect(() =>
-      findOverBudgetEntries(byFile([{ id: "ACE-1-1", lineCount: 99, hasException: true }], true), 15),
+      // 行番号 12 は「未閉フェンスを見た」ことを表すためだけの値（この関数はファイル名しか
+      // メッセージに載せないので、期待値には現れない）
+      findOverBudgetEntries(
+        contaminatedFile([{ id: "ACE-1-1", lineCount: 99, hasException: true }], 12),
+        15,
+      ),
     ).toThrow(/playbook\/tooling\.md/u);
   });
 });
