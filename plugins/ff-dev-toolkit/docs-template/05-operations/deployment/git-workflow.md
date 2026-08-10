@@ -495,6 +495,47 @@ Closes #${ISSUE_NUM}
 - テスト結果を含める
 - セルフレビュー結果を含める
 
+#### PR タイトルと Issue 参照の規約【重要】
+
+**post-merge 検証（staging 実機確認・外部 ops など）が受け入れ条件に残る Issue では、PR タイトルにもコミット件名・本文にも `#N` を書かない**。本文の参照も `Closes #N` ではなく `Refs #N` にする。
+
+理由: GitHub の closing keyword は PR 本文だけでなく **squash commit のメッセージ**も走査する。`fix: #123 …` という Conventional Commits の自然な件名がそのまま `fix #123` として解釈され、本文を `Refs #123` にしても Issue が閉じる。squash メッセージの供給源はリポジトリ設定で決まり（`squash_merge_commit_title` / `squash_merge_commit_message`）、既定では **PR タイトルまたは単一コミットの件名**が件名に、**全コミットのメッセージ**が本文に入る。
+
+さらに、`gh pr view --json closingIssuesReferences` は **PR 本文しか見ない**（コミットメッセージは見ない）。コミット件名に `fix: #N` があっても空配列を返し、それでもマージで Issue は閉じる。**検出系が「この PR は Issue を閉じません」と報告しながら閉じる**のが、マージ時点の注意喚起では止まらない理由である。
+
+| Issue の性質                             | 本文の参照   | タイトル・コミットメッセージ       | マージ後の Issue |
+| ---------------------------------------- | ------------ | ---------------------------------- | ---------------- |
+| マージ前に全 AC を検証できる             | `Closes #N`  | `#N` を書いてよい                  | 自動クローズ     |
+| post-merge 検証が AC に残る（Refs 運用） | `Refs #N`    | **`#N` を書かない**（`(#PR番号)` は可） | open のまま維持  |
+
+`(#PR番号)` の形（GitHub が squash 時に末尾へ付ける PR 番号）が安全なのは、PR 番号と Issue 番号が同じ名前空間を共有していて、末尾の PR 番号がその PR 自身を指すためである。抵触するのは `fix: #N …` のように **closing keyword と Issue 参照が隣接**する形だけで、検出語は `close` / `closes` / `closed` / `fix` / `fixes` / `fixed` / `resolve` / `resolves` / `resolved` の 9 語（`fix:` のようにコロンが挟まる形も一致する）。`chore: 検査を追加する。fixes は 9 語ある（#123 参照）` のように keyword と番号が同居しているだけの件名は抵触ではない。
+
+この規約はステップ8 の `/close-issue` が機械的に検査する（PR タイトル + ブランチ上の全コミットの件名と本文が対象）。手作業で確認する場合は同じ検査を直接呼べる:
+
+```bash
+TARGET_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+[[ -n "${TARGET_REPO}" ]] || { echo "❌ リポジトリ名を解決できません" >&2; exit 2; }
+
+# パイプで直結すると上流の失敗が最終段の終了コードに隠れる（jq は部分出力して
+# から死ぬので、途中まで検査して緑、が成立する）。いったん実体化して確定させる。
+SURFACE="$(mktemp)"
+gh pr view "${PR_NUMBER}" --json title,commits --jq '
+  ("title\t" + .title),
+  (.commits[] | ("commit:" + .oid[0:7] + "\t" + .messageHeadline)),
+  (.commits[] | select(.messageBody != "")
+    | "commit-body:" + .oid[0:7] + "\t" + (.messageBody | gsub("\n"; " ")))
+' > "${SURFACE}" || { echo "❌ 検査面の取得に失敗（検査は成立していない）" >&2; exit 2; }
+
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-closing-keywords.sh" \
+  --repo "${TARGET_REPO}" --refs-issue "${ISSUE_NUM}" < "${SURFACE}"
+# 終了コード 0=抵触なし / 1=抵触あり / 2=検査が成立しない。0 と 1 以外はすべて停止側へ倒す
+rm -f "${SURFACE}"
+```
+
+`${FF_DEV_TOOLKIT_ROOT}` はプラグインの配置先。Claude Code では `${CLAUDE_PLUGIN_ROOT}` が同じ場所を指す。プラグイン未導入の環境ではこの手動確認は行えないため、ステップ8 のマージ直後 read-back を必ず実施すること。
+
+コミット件名・本文はマージ時に書き換えられないため、そこに `#N` が残ってしまった場合はステップ8 で `--subject` と `--body` を**両方明示**して squash メッセージを差し替える。両方明示した squash メッセージはその 2 つだけで決まり、コミットメッセージは畳み込まれない。
+
 ### ステップ7: レビュー対応（Review）
 
 #### 7a. クロスモデルレビュー（PR作成後）
@@ -690,18 +731,20 @@ mutation($body: String!) {
 
 マージの前に、AI エージェントへのスラッシュコマンド **`/close-issue <PR番号>`**（ff-dev-toolkit プラグイン提供。シェルコマンドではない点に注意。PR 番号省略時は現在のブランチの PR を自動検出）で AC 照合ゲートを実施する:
 
-- PR の `Closes` 参照から対象 Issue を自動検出し、受け入れ条件（GWT + DoD）を照合
+- PR の `Closes` 参照と `Refs` 参照から対象 Issue を自動検出し、受け入れ条件（GWT + DoD）を照合
+- `Refs` 運用の Issue がある場合、PR タイトル + ブランチ上の全コミットの件名と本文を closing keyword × Issue 参照で検査し、抵触があればマージへ進まずに改題を促す（ステップ6 のタイトル規約の機械チェック）。さらに、実際に渡す `--subject` / `--body` そのものを検査してからマージへ進む
 - 達成項目のチェックボックスを `- [x]` に更新 + 完了報告コメントを投稿してからマージへ進む
 - 未達 AC は fix commit → 再照合の自動修正ループで解消。実装で解消できない場合（仕様変更の判断が必要など）は停止してユーザーに確認する
 - 完了報告に照合時の head SHA（`headRefOid`）が含まれるので、マージ時に `--match-head-commit` へ渡す
 - プラグイン未導入の環境では同等の手順を `gh` コマンドで手動実施する
 
-ゲート通過後にマージする:
+ゲート通過後にマージする。**Issue を閉じてよいか（`Closes` 運用）／open のまま維持するか（`Refs` 運用）でテンプレートを使い分ける**:
 
 ```bash
 # /close-issue 完了報告の「照合時の head SHA」を転記する
 VERIFIED_HEAD_SHA="<照合時のheadSHA>"
 
+# --- Closes 運用: マージで Issue を閉じてよい場合 ---
 # レビュー承認後、Squash mergeでマージ
 # --match-head-commit で「AC 照合後に追加 push された未照合内容」の混入を防ぐ
 gh pr merge ${PR_NUMBER} \
@@ -711,10 +754,36 @@ gh pr merge ${PR_NUMBER} \
   --body "All checks passed. Merging to develop."
 ```
 
+```bash
+# --- Refs 運用: post-merge 検証が残るため Issue を open のまま維持する場合 ---
+# --subject と --body を必ず両方明示する。両方明示した squash メッセージはその 2 つだけで
+# 決まり、コミットメッセージは畳み込まれない。片方でも省略すると供給源がリポジトリ設定へ
+# 戻り、そこに `fix: #N` が残っていると Issue が閉じる
+gh pr merge ${PR_NUMBER} \
+  --squash \
+  --delete-branch \
+  --match-head-commit "${VERIFIED_HEAD_SHA}" \
+  --subject "fix: 誤クローズを防ぐ検査を追加する (#${PR_NUMBER})" \
+  --body "Refs #${ISSUE_NUM}
+
+All checks passed. post-merge 検証が残るため Issue は open のまま維持する。"
+```
+
+**マージ直後の read-back（必須）**: 検査を追加しても実測は省略しない。`/close-issue` の検査は既知の形（closing keyword × Issue 参照）しか見ないため、実際の state だけが最終的な証拠になる。
+
+```bash
+# Closes 運用なら CLOSED、Refs 運用なら OPEN であることを実測する
+gh issue view "${ISSUE_NUM}" --json state
+
+# 期待と違っていたら即座に復旧する（Refs 運用で閉じてしまった場合）
+# gh issue reopen "${ISSUE_NUM}" --comment "post-merge 検証が残るため再 open"
+```
+
 **マージの原則**:
 
 - Squash merge推奨（履歴を整理）
 - `--delete-branch` でリモートブランチを自動削除
+- `Refs` 運用では `--subject` を明示し、`gh issue view --json state` で結果を実測する
 
 ### ステップ9: クリーンアップ（Cleanup）
 

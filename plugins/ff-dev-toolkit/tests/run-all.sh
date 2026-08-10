@@ -81,6 +81,11 @@ else
     "$SCRIPT_DIR/changelog-version/verify.sh"
     "$SCRIPT_DIR/docs-gates/verify.sh"
     "$SCRIPT_DIR/out-of-scope-routing/verify.sh"
+    # squash 件名の closing keyword が Refs 運用の Issue を閉じる経路のガード。
+    # 検査ロジック（scripts/check-closing-keywords.sh）の振る舞いと、SKILL.md /
+    # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド
+    # 不要・一時ディレクトリ不要なので静的検査群に置く。
+    "$SCRIPT_DIR/closing-keyword-guard/verify.sh"
     # 起票スキル 2 本（create-issue / out-of-scope-issue）に意図的に複製されている
     # verify-then-skip ラベル契約の照合（bash は連続した行列として、散文は行単位で）と、
     # 両者の意図的な非対称（候補の系統・アサイン方針）の固定。jq / gh / yq 不要の
@@ -135,11 +140,24 @@ else
     # perspective フィルタの dry-run 契約。stub CLI の存在確認だけで完結し、
     # 実 CLI・ネットワーク・課金を伴わない。
     "$SCRIPT_DIR/multi-agent-plan/verify.sh"
-    # 同梱 MCP サーバーの検査 2 本。node_modules が無い環境では ○ skip。
+    # 同梱 MCP サーバーの検査 4 本。node_modules が無い環境ではいずれも ○ skip
+    # （型検査の 2 本は node が PATH に無い環境でも ○ skip。tsc の shebang が node を
+    # 要求するため、環境都合の失敗を型エラーと混ぜないための分岐）。
     # dist-gate（フレッシュビルド比較 + stdio-only 不変条件、〜1 秒）を先に、
     # vitest（実プロセス起動を含む全テスト、〜5 秒）を後に置く — dist が stale
     # なら先に dist-gate が名指しし、vitest の「stale な dist で green」を防ぐ。
     "$SCRIPT_DIR/mcp-dist-gate/verify.sh"
+    # 型検査（Issue #360）。vitest も esbuild build も transpile のみで型を見ないため、
+    # 型エラーは下の mcp-vitest では検出できない。vitest より前に置くのは
+    # mcp-dist-gate → mcp-vitest と同じ理由 — 型が壊れているファイルのテストが偶然
+    # 通った状態を「緑」として報告させないため。install 済みで tsc だけ無い場合は
+    # fail-closed（単体で〜1 秒）。
+    "$SCRIPT_DIR/mcp-typecheck/verify.sh"
+    # 上の gate の検出力を隔離クローンへの mutation で実測する（単体で〜5 秒。tsc の
+    # lib 解析が cold の初回はさらに伸びる。数字を更新するときは実測してから直すこと）。
+    # node_modules は symlink で借りるだけで、実物への書き込みは行わない。検査対象の
+    # 直後に置くことを優先し、安価な順の例外として扱う。
+    "$SCRIPT_DIR/mcp-typecheck-selftest/verify.sh"
     "$SCRIPT_DIR/mcp-vitest/verify.sh"
     # docs-template/scripts/ace の型検査（Issue #358）。vitest は esbuild の transpile
     # のみで型を見ないため、型エラーは下の ace-scripts-vitest では検出できない。

@@ -27,12 +27,15 @@
 
 ```bash
 npm install
-npm run typecheck    # tsc --noEmit（strict）
+npm run typecheck    # tsc --noEmit（strict、src + tests）
 npm test             # build してから vitest（utils + indexer + stdio e2e）
 npm run build        # esbuild → dist/index.js（src 変更時は再ビルドしてコミット）
 npm run verify:dist  # dist がコミット済み内容と一致するか検証（build 忘れ検知）
 node dist/index.js --check   # cwd を対象に索引統計 + spec エラー内訳を表示（docs/ 不在は exit 1）
 ```
+
+- **型検査の位置づけ**: `vitest` も `npm run build`（esbuild）も transpile のみで型を見ないため、型検査は `npm run typecheck` だけが行う。これを `tests/mcp-typecheck/` から `tests/run-all.sh` へ配線してあり、検査範囲は `tsconfig.json` の `include`（`src` + `tests`）が正本になる（ADR-023）。`tsconfig.json` は `noEmit` 既定で、配布物 `dist/index.js` は esbuild だけが作る
+- **`@ts-nocheck` / `@ts-ignore` は使わない**: これらはファイルを検査対象の一覧に残したまま検査だけを消すため、ゲートが「N ファイル・エラー 0 件」という偽の証明を出す。`tests/mcp-typecheck/` が混入を fail-closed で拒否する（判定は素のテキスト一致なので、`.ts` の中で語に言及しただけでも赤くなる）。抑制が必要な箇所は `@ts-expect-error` を使う
 
 ## トラブルシュート（プラグイン利用者向け）
 

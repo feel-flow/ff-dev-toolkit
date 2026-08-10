@@ -1,4 +1,9 @@
 {
+  "//": [
+    "本パッケージで tsc が担うのは型検査だけで、配布物 dist/index.js は esbuild が作る（package.json の build）。したがって outDir は置かず noEmit を既定にする — 素の `tsc -p tsconfig.json` が dist/index.js を非バンドルの出力で上書きする事故を、フラグの付け忘れに依存せず塞ぐため。",
+    "include に tests/ を含める根拠は ADR-023（docs/06-reference/DECISIONS.md）。tests/run-all.sh の mcp-typecheck suite は package.json の typecheck スクリプトをそのまま借りるので、この include がゲートの検査範囲そのものになる。",
+    "include をディレクトリ指定にしているのは、tsc が対応する拡張子（.ts / .tsx / .mts / .cts / .d.ts）を取りこぼさないため。`src/**/*.ts` 形式だと foo.mts が include にも、ゲート側の走査（既定は同じ拡張子群）にも現れず、両側で不可視のまま集合照合が一致してしまう。"
+  ],
   "compilerOptions": {
     "target": "ES2022",
     "module": "Node16",
@@ -7,8 +12,8 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": "dist",
+    "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src", "tests"]
 }
