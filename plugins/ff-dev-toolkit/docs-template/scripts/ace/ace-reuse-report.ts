@@ -17,8 +17,11 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import {
   ACE_ENTRY_ID_SOURCE,
+  blankFencedCodeBlocks,
+  blankHtmlBlockComments,
   discoverPlaybookSubfiles,
   entryHeadingSource,
+  findFencedCanonicalHeadings,
   isDirectExecution,
   parsePositiveIntEnv,
 } from "./check-category-size";
@@ -107,8 +110,22 @@ export type ReuseStats = Readonly<{
   readonly crossRefCount: number;
 }>;
 
-function stripHtmlBlockComments(source: string): string {
-  return source.replace(/<!--[\s\S]*?-->/gu, "");
+/**
+ * HTML コメントの前処理は check-category-size の blankHtmlBlockComments（同じ行数・
+ * 同じ文字数の空白化）を使う。かつてはここだけ `replace(..., "")` の**除去**だった —
+ * 除去は改行ごと消すため、findFencedCanonicalHeadings / 未閉フェンスの警告が返す
+ * 行番号が「先行する複数行コメントの行数ぶん」実ファイルより小さくなり、名指しの
+ * 意味を失う。また行の結合でフェンス開始の認識自体が他 3 スクリプトと食い違う入力も
+ * 作れた（Issue #342 レビューで実測）。
+ *
+ * フェンス空白化済みの見出し境界を選ぶ規則も 1 箇所に置く: 未閉フェンスは EOF まで
+ * 空白化が及び実在のエントリまで静かに吸収されるため、cleaned（空白化前）へ退化させる。
+ * 警告の責務は parsePlaybookEntries が持つ（main は同じ内容で必ず先に呼ぶため、
+ * computeReuseStats 側で重ねて警告すると同じ文言が二重に出る）。
+ */
+function fenceExcludedMatchSource(cleaned: string): string {
+  const probe = blankFencedCodeBlocks(cleaned);
+  return probe.unclosedFence ? cleaned : probe.text;
 }
 
 function extractTableField(segment: string, field: string): string | null {
@@ -126,16 +143,47 @@ export function parsePlaybookEntries(
   content: string,
   onWarn: (message: string) => void = (m) => console.warn(m),
 ): PlaybookEntry[] {
-  const cleaned = stripHtmlBlockComments(content);
+  const cleaned = blankHtmlBlockComments(content);
+  // 見出しの検出**とフィールド抽出**は**フェンス空白化済み**テキストで行う（Issue #342。
+  // フェンス内の正準形見出し `### ACE-9-9:` の例示をエントリとして数えず、フェンス内の
+  // `| Helpful | 7 |` のような例示テーブルを実エントリの値として拾わない —
+  // check-category-size / check-entry-format の分割と同じ前処理で、4 スクリプトの認識を
+  // 一致させる）。フィールド抽出を cleaned（空白化前）から切り出すと、実エントリに
+  // フィールドが欠けているときフェンス内の例示値が流入する（レビューで実測:
+  // Helpful 欠落の実エントリがフェンス内例示の 7 / deprecated を採用した）。
+  // 未閉フェンスは EOF まで空白化が及び以降のエントリが静かに吸収されるため、
+  // onWarn で表面化させたうえで旧来の境界（cleaned）へ戻す — 同じ文書を読む
+  // 件数ゲートが未閉を fail-closed に止めるため、この退化が CI を通過することはない。
+  const fenceProbe = blankFencedCodeBlocks(cleaned);
+  let matchSource = fenceProbe.text;
+  if (fenceProbe.unclosedFence) {
+    onWarn(
+      `${WARN_PREFIX}: コードフェンスが閉じていません（${String(fenceProbe.unclosedFenceLine + 1)} 行目に始まるフェンス）。フェンス内の例示を除外できないまま走査します（件数ゲート側で fail-closed になります）`,
+    );
+    matchSource = cleaned;
+  } else {
+    // 除外は黙って行わない — フェンス内の正準形見出しは件数ゲートが fail-loud に
+    // 拒否する状態なので、レポート側でも「数えなかった」ことを名指しで表面化させる。
+    const fenced = findFencedCanonicalHeadings(cleaned);
+    if (fenced.length > 0) {
+      onWarn(
+        `${WARN_PREFIX}: フェンス内に正準形の見出しがあります（${fenced
+          .map((h) => `${h.id}: ${String(h.line + 1)} 行目`)
+          .join(" / ")}）。エントリとしては数えません（件数ゲートが拒否する状態です。例示は ACE-XXX へ）`,
+      );
+    }
+  }
   const entries: PlaybookEntry[] = [];
-  const headers = [...cleaned.matchAll(ENTRY_HEADER_PATTERN)];
+  const headers = [...matchSource.matchAll(ENTRY_HEADER_PATTERN)];
 
   headers.forEach((match, index) => {
     const id = match[1];
     const start = (match.index ?? 0) + match[0].length;
     const end =
-      index + 1 < headers.length ? (headers[index + 1].index ?? cleaned.length) : cleaned.length;
-    const segment = cleaned.slice(start, end);
+      index + 1 < headers.length
+        ? (headers[index + 1].index ?? matchSource.length)
+        : matchSource.length;
+    const segment = matchSource.slice(start, end);
 
     const helpfulRaw = extractTableField(segment, "Helpful");
     let helpful = 0;
@@ -243,16 +291,25 @@ export function computeReuseStats(
     }
   }
 
-  // 相互参照: 各エントリのセグメント内に現れる他エントリの ID
+  // 相互参照: 各エントリのセグメント内に現れる他エントリの ID。
+  // セグメント境界も参照走査も parsePlaybookEntries と同じフェンス空白化済みテキストで
+  // 行う（Issue #342）。ここだけ空白化前の cleaned で再分割すると、パーサが除外した
+  // フェンス内見出しが所有エントリ境界として復活し、(a) 幻の owner に対する
+  // self-exclusion（id !== ownerId）が実エントリ自身への参照を cross-ref として
+  // 過大計上する、(b) フェンス前後の同じ参照が別セグメントへ割れて重複計上される。
+  // フェンス内の ID 出現（例示）を参照として数えないのも同じ除外規則の一部。
   const crossRefCount = new Map<string, number>();
-  const cleaned = stripHtmlBlockComments(playbookContent);
-  const headers = [...cleaned.matchAll(ENTRY_HEADER_PATTERN)];
+  const cleaned = blankHtmlBlockComments(playbookContent);
+  const matchSource = fenceExcludedMatchSource(cleaned);
+  const headers = [...matchSource.matchAll(ENTRY_HEADER_PATTERN)];
   headers.forEach((match, index) => {
     const ownerId = match[1];
     const start = (match.index ?? 0) + match[0].length;
     const end =
-      index + 1 < headers.length ? (headers[index + 1].index ?? cleaned.length) : cleaned.length;
-    const segment = cleaned.slice(start, end);
+      index + 1 < headers.length
+        ? (headers[index + 1].index ?? matchSource.length)
+        : matchSource.length;
+    const segment = matchSource.slice(start, end);
     const referenced = new Set(
       [...segment.matchAll(ACE_ID_REFERENCE_PATTERN)]
         .map((m) => m[0])

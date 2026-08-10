@@ -69,42 +69,16 @@ for cli in claude codex gemini copilot grok; do
   chmod +x "$WORK/bin/$cli"
 done
 
-# ---- 実行環境からの分離（Issue #374） ---------------------------------------------
+# ---- 実行環境からの分離（Issue #374 で導入、#378 で lib へ共通化） ----------------
 # MULTI_AGENT_MODEL_* / MULTI_AGENT_CODEX_PROFILE は利用者が設定する正規の設定つまみ
 # なので、export 済みの環境で走らせると「env 未設定」ケースの前提が崩れて恒常赤になる。
 # アダプタ起動時に env -u で明示的に取り除き、前提を仮定するのではなく作る。
-#
-# 一覧はアダプタ実装から動的に抽出する — アダプタが増えてもここが黙って漏れない。
-# この保証はアダプタが変数名をリテラルで書いている限りにおいて成立する（間接展開で
-# 変数名を組むと抽出を逃れる。現行の全アダプタはリテラル呼び出し）。コメント中の
-# 例示名（MULTI_AGENT_MODEL_GEMINI_CL1 等）も拾うが、未設定変数への -u は無害なので
-# 過剰包含で安全側に倒す。
-#
-# 抽出はパイプで直結せずいったん実体化して成否を確定させる。grep はファイルの一部が
-# 読めなくても残りの結果を部分出力して非 0(>1) で終わるため、直結すると欠けたアダプタの
-# 変数だけ分離リストから黙って落ちる（プロセス置換内の失敗は set -e に捕まらない）。
-ISOLATE_RAW="$WORK/isolate-vars.raw"
-GREP_RC=0
-grep -hoE 'MULTI_AGENT_[A-Z0-9_]+' "$ADAPTERS_DIR"/*.sh > "$ISOLATE_RAW" || GREP_RC=$?
-if [ "$GREP_RC" -gt 1 ]; then
-  echo "✗ アダプタ実装からの MULTI_AGENT_* 抽出が失敗しました（grep rc=${GREP_RC}）。部分的な読み取り失敗は分離リストの黙った欠落になるため続行しない" >&2
-  exit 1
-fi
-ISOLATE_ENV=()
-while IFS= read -r var; do
-  ISOLATE_ENV+=(-u "$var")
-done < <(sort -u "$ISOLATE_RAW")
-
-# 抽出が空振り（rc=1 で出力なし等）すると分離が静かに消え、設定済み環境で恒常赤へ
-# 戻る。既知の変数名をセンチネルにして fail-closed にする（変数名リテラルは env
-# 上書きケース側と重複するが、それ自体が実装との突き合わせになる — ファイル冒頭
-# コメントの方針と同じ）。
-case " ${ISOLATE_ENV[*]-} " in
-  *" MULTI_AGENT_MODEL_CLAUDE_CODE "*) : ;;
-  *)
-    echo "✗ 分離リストにセンチネル MULTI_AGENT_MODEL_CLAUDE_CODE がありません。抽出が空振りしたか、アダプタ側でこの変数名が改名された（改名時は本ファイルのセンチネル参照も更新する）。いずれでも実行環境からの分離を保証できないため続行しない" >&2
-    exit 1 ;;
-esac
+# 抽出・fail-closed の設計は lib 側ヘッダー参照（本 suite が初出、PR #379）。
+# センチネルの変数名リテラルは env 上書きケース側と重複するが、それ自体が実装との
+# 突き合わせになる — ファイル冒頭コメントの方針と同じ。
+# shellcheck source=../lib/adapter-env-isolation.sh
+. "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
+build_isolate_env MULTI_AGENT_MODEL_CLAUDE_CODE "$ADAPTERS_DIR"/*.sh
 
 # ---- 実行ヘルパー ---------------------------------------------------------------
 # run_adapter <adapter ファイル名> [VAR=VALUE ...]
@@ -119,7 +93,7 @@ RUN_RC=0
 run_adapter() {
   local adapter="$1"; shift
   : > "$WORK/argv.log"
-  if env ${ISOLATE_ENV[@]+"${ISOLATE_ENV[@]}"} \
+  if run_isolated \
        PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" CODEX_HOME="$WORK/codex" \
        GROK_HOME="${RUN_GROK_HOME:-$WORK/grok-home-empty}" "$@" \
        bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$WORK/out.md" \

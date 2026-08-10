@@ -7,6 +7,7 @@ import {
   countPlaybookLines,
   deriveMaxLines,
   discoverPlaybookSubfiles,
+  findFencedCanonicalHeadings,
   isDirectExecution,
   isOverLineThreshold,
   main,
@@ -523,9 +524,10 @@ ${fence}text
   });
 
   it("フェンス内に正準形の見出しがあるとき、幻のエントリを静かに増やさない", () => {
-    // 分割はフェンス空白化より前に走るので、正準形 ID の例示は split の境界になる
-    // （Issue #342）。少なくとも静かには通さないこと — フェンスが対にならないため
-    // 閉じ忘れとして落ちる。
+    // 閉じたフェンス内の正準形 ID は fail-loud で拒否する（Issue #342）。境界を
+    // フェンス空白化側へ付け替える案は採らない — セグメント跨ぎで偶然対になる
+    // 閉じ忘れ（#353 の曖昧形）で実エントリが引用として静かに吸収されるため、
+    // 例示を ACE-XXX へ直させる。
     const fence = "```";
     const md = `
 ### ACE-6-1: 悪い書き方を引用するエントリ
@@ -542,6 +544,10 @@ ${fence}
 `;
     const result = analyzePlaybookMarkdown(md);
     expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("ACE-9-9");
+      expect(result.message).toContain("ACE-XXX");
+    }
   });
 
   it("``` フェンス内の ~~~ 行では閉じない（終端記号の種別）", () => {
@@ -1619,9 +1625,13 @@ describe("splitEntrySegments", () => {
  * check / refine の両方がこれを使うことで、拒否する入力集合が一致する。
  */
 describe("scanUnclosedFence", () => {
-  it("セグメント境界をまたいで対になるフェンスを検出する（ファイル全体走査だけでは見えない）", () => {
+  it("セグメント跨ぎで対になる形は、真因（フェンス内の正準形見出し）の診断へ譲る（Issue #342）", () => {
     // ヘッダで開いたフェンスが、エントリ本文の裸の ``` と対になる形。
-    // ファイル全体走査では「閉じている」ので、これを拾えるのはセグメント単位だけ。
+    // ファイル全体走査では「閉じている」。かつては scanUnclosedFence がセグメント単位で
+    // 「未閉」と報告したが、本文を見ると対になって見えるため利用者の調査が空回りする。
+    // この形の観測可能な真因は「フェンス内に正準形の見出しがある」ことなので、
+    // scanUnclosedFence は譲り、findFencedCanonicalHeadings と analyze の拒否が名指しする
+    // （例示なら ACE-XXX へ、実エントリならフェンスの対応を確認、の両対処を案内）。
     const md = [
       "# ACE Playbook",
       "",
@@ -1641,10 +1651,18 @@ describe("scanUnclosedFence", () => {
     ].join("\n");
 
     expect(blankCodeRegions(md).unclosedFence).toBe(false);
+    // 真因の検出: フェンス内の正準形見出しとして名指しされる
+    const fenced = findFencedCanonicalHeadings(md);
+    expect(fenced.map((h) => h.id)).toEqual(["ACE-80-1"]);
+    // scanUnclosedFence は真因側へ譲る（「未閉」と言わない）
     const scan = scanUnclosedFence(md);
-    expect(scan.found).toBe(true);
-    expect(scan.found === true && scan.scope).toBe("segment");
-    expect(scan.found === true && scan.line).toBe(3);
+    expect(scan.found).toBe(false);
+    // 入力そのものは analyze が fail-loud に拒否する（黙って通しはしない）
+    const analyzed = analyzePlaybookMarkdown(md);
+    expect(analyzed.kind).toBe("error");
+    if (analyzed.kind === "error") {
+      expect(analyzed.message).toContain("ACE-80-1");
+    }
     // **合成は判定だけに効かせ、空白化には持ち込まない**（この PR の中心的な制約）。
     // 空白化はファイル全体走査のままなので、9 行目のマーカーはフェンス内として空白化され
     // declared は 0。合成を空白化へ配線し直すと、ヘッダセグメントが未閉 → fail-open →

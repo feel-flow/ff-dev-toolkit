@@ -966,14 +966,13 @@ build_distributed_plan() {
   # one — which is deliberate: naming the substitute keeps the swap readable in
   # the plan output, and the user sees which model actually ran.
   #
-  # Known tradeoff of that swap: the substitute is now the ONE rate-limited tier,
-  # and execute_tasks launches every plan entry concurrently with no cap. A
-  # review under minimize_cost puts four simultaneous gemini calls on a free
-  # quota; the old flat-rate substitute had no such limit. Rate limiting is a
-  # *runtime* failure, and runtime fallback is deliberately absent (see the
-  # header), so a throttled task is zero coverage for that perspective rather
-  # than a retry elsewhere. Concurrency limiting is tracked in issue #251 — until
-  # then, --sequential is the workaround worth reaching for on large diffs.
+  # Known tradeoff of that swap: the substitute is now the ONE rate-limited tier.
+  # Rate limiting is a *runtime* failure, and runtime fallback is deliberately
+  # absent (see the header), so a throttled task is zero coverage for that
+  # perspective rather than a retry elsewhere. As mitigation (issue #251),
+  # execute_tasks runs a free-tier CLI's tasks sequentially on one worker (no
+  # simultaneous burst) and show_plan names the residual risk — the limit itself
+  # does not disappear, so spreading perspectives across CLIs remains the real fix.
   if [[ "$STRATEGY" == "minimize_cost" && -z "$CLI_FILTER" ]]; then
     local new_plan=""
     while IFS= read -r entry; do
@@ -1171,6 +1170,33 @@ show_plan() {
     echo "     - ${persp}" >&2
   done <<< "$EXECUTION_PLAN"
 
+  # 同一 CLI への観点集中の可視化（Issue #251）。minimize_cost の振替でレート制限
+  # のある free-tier CLI に複数観点が集まる形が典型。実行側は同一 CLI 内を逐次化
+  # 済みだが、逐次でも連続リクエストで throttle されうるため、プランの時点で
+  # リスクを名指しする（実行時 fallback は無い = throttle された観点のカバレッジは
+  # ゼロになる、という帰結まで書く）。
+  # --sequential でも残存リスク（連続リクエストの throttle）は同じなので、警告は
+  # 実行モードに関係なく出し、実行形の説明だけ切り替える。
+  local warn_cli warn_count warn_tier warn_shape
+  if [[ "$PARALLEL" == "true" ]]; then
+    warn_shape="Its tasks are serialized (no burst)"
+  else
+    warn_shape="The run is already sequential"
+  fi
+  for warn_cli in $planned_clis; do
+    warn_count="$(printf '%s\n' "$EXECUTION_PLAN" | LC_ALL=C sort -u | grep -c "^${warn_cli}:")" || warn_count=0
+    warn_tier="$(get_cli_cost_tier "$warn_cli")"
+    if [[ "$warn_count" -ge 2 && "$warn_tier" == "free-tier" ]]; then
+      echo "" >&2
+      echo "   ⚠️  ${warn_cli} [${warn_tier}] runs ${warn_count} perspectives. ${warn_shape}," >&2
+      echo "       but consecutive requests can still hit the free-tier rate limit — and there" >&2
+      echo "       is no runtime fallback, so a throttled perspective yields zero coverage." >&2
+      echo "       Serialization also means this CLI can take up to ${warn_count} × ${TIMEOUT}s" >&2
+      echo "       wall-clock in the worst case. Consider spreading perspectives across CLIs" >&2
+      echo "       (--strategy balanced)." >&2
+    fi
+  done
+
   # An explicit --cli is intentionally single-model and should stay quiet.
   # Cross-model mode is already the remedy, so this warning only applies when a
   # distributed review resolved implicitly to one CLI.
@@ -1307,6 +1333,50 @@ clear_planned_outputs() {
   done <<< "$EXECUTION_PLAN"
 }
 
+# ── タスク実行 + rc 記録（Issue #251） ──
+# タスクの rc は 1 ファイルずつ status dir へ記録し、親が wait 後に回収する
+# （background プロセスの exit code だけでは、逐次ワーカーが抱える複数タスクの
+# 内訳が失われるため、並列タスク側も同じ記録方式に揃える）。
+# 記録は tmp へ書いてから mv する原子的保存 — 書き込み途中の死（ENOSPC 等）で
+# **空の rc ファイル**が残ると、bash 3.2 では [[ "" -eq 0 ]] が真になり、失敗した
+# タスクが INCOMPLETE 成果物の存在だけで「✅ Done」へ化ける（アダプタは失敗時も
+# サルベージ成果物を書く仕様のため、-f 検査はバックストップにならない）。
+# rc ファイルは ${cli}/${persp}.rc のサブディレクトリ構成 — 平坦な連結名だと
+# 区切り文字を含む CLI 名が将来入ったときに衝突が静かに開く。
+run_task_recorded() { # $1: cli / $2: perspective / $3: status dir
+  local rc=0
+  run_single_task "$1" "$2" || rc=$?
+  mkdir -p "${3}/${1}"
+  if ! { printf '%s\n' "$rc" > "${3}/${1}/${2}.rc.tmp" \
+         && mv "${3}/${1}/${2}.rc.tmp" "${3}/${1}/${2}.rc"; }; then
+    # 記録に失敗してもワーカーは死んでよいが、死ぬ前に名乗る — 回収側は
+    # 「ファイルなし = 失敗」で安全側に拾うが、原因（どのタスクの記録が
+    # 書けなかったか）はこの行にしか残らない。
+    echo "  ⚠️ Failed to record status for ${1}/${2} (task rc=${rc}): ${3} is not writable" >&2
+    return 1
+  fi
+}
+
+# ── Per-CLI Worker（Issue #251） ──
+# EXECUTION_PLAN から自分の CLI の観点だけを計画順に**逐次**実行する。free-tier
+# CLI 専用 — レート制限は実行時失敗であり、本ツールは実行時 fallback を持たない
+# ため、throttle された観点はカバレッジゼロになる。同時 burst を作らないことが
+# 防御になる。premium / standard tier は従来どおりタスク単位で並列（一律逐次化は
+# pair モード既定の premium 7 観点で実行時間を観点数倍にする退行になる）。
+run_cli_group() { # $1: cli / $2: status dir
+  local cli="$1" sdir="$2" entry gseen=""
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
+    [[ "${entry%%:*}" == "$cli" ]] || continue
+    if [[ " $gseen " == *" $entry "* ]]; then continue; fi
+    gseen="$gseen $entry"
+    # 進捗を名乗ってから実行する — ワーカーが途中で死んだとき、どのタスクの
+    # 処理中だったかはこの行でしか相関できない（逐次ブランチの ▶ 表示と対）。
+    echo "▶ ${cli} → ${entry#*:} (serialized)" >&2
+    run_task_recorded "$cli" "${entry#*:}" "$sdir" || return 1
+  done <<< "$EXECUTION_PLAN"
+}
+
 # ── Execute All Tasks ──
 execute_tasks() {
   if [[ -z "$EXECUTION_PLAN" ]]; then
@@ -1321,27 +1391,145 @@ execute_tasks() {
   clear_planned_outputs
 
   local pids=""
-  local tasks=""
   local failed=0
   local count=0
   local seen=""
   FAILED_TASKS=""
 
-  while IFS= read -r entry; do
-    [[ -z "$entry" ]] && continue
-    # Skip a duplicate plan entry so the same cli:perspective is not executed
-    # twice (a plan fallback can list it more than once).
-    if [[ " $seen " == *" $entry "* ]]; then continue; fi
-    seen="$seen $entry"
-    local cli="${entry%%:*}"
-    local persp="${entry#*:}"
+  if [[ "$PARALLEL" == "true" ]]; then
+    # ── 並列実行: CLI 間は並列、同一 CLI 内は逐次（Issue #251） ──
+    # minimize_cost が premium の観点を最安 tier へ振り替えると、同一 CLI
+    # （現行の振替先はレート制限のある free-tier）へ複数観点が集中する。本ツールは
+    # 実行時 fallback を意図的に持たないため、throttle されたタスクは別 CLI で
+    # 再実行されず**その観点のカバレッジがゼロ**になる — 同一 CLI への同時 burst を
+    # 作らないことが防御になる。CLI が違えばレート制限は独立なので並列のまま。
+    # status dir は実行ごとに一意にする — 固定パスだと同じ OUTPUT_DIR を使う
+    # 並行実行が互いの rc を削除・混同する。一意化は mktemp ではなく自 PID で行う
+    # — orchestrator は mktemp を呼ばない、がこのスクリプトの検査済み契約で
+    # （multi-agent-timeout suite の tmpdir ケースは「mktemp が壊れても落ちるのは
+    # アダプタ側だけ」を固定している）、並行実行は別プロセス = 別 PID なので
+    # 一意性はこれで足りる。同一 PID の残骸（過去のクラッシュ）は先に消す。
+    local status_dir="${OUTPUT_DIR}/.task-rc.$$"
+    rm -rf "$status_dir"
+    if ! mkdir -p "$status_dir"; then
+      echo "ERROR: cannot create task-status directory: ${status_dir}" >&2
+      return 1
+    fi
 
-    if [[ "$PARALLEL" == "true" ]]; then
-      run_single_task "$cli" "$persp" &
-      pids="${pids:+$pids }$!"
-      tasks="${tasks:+$tasks|}${cli}/${persp}"
+    local group_clis=""
+    while IFS= read -r entry; do
+      [[ -z "$entry" ]] && continue
+      # Skip a duplicate plan entry so the same cli:perspective is not executed
+      # twice (a plan fallback can list it more than once).
+      if [[ " $seen " == *" $entry "* ]]; then continue; fi
+      seen="$seen $entry"
       count=$((count + 1))
+      local cli="${entry%%:*}"
+      if ! list_contains "$group_clis" "$cli"; then
+        group_clis="${group_clis:+$group_clis }$cli"
+      fi
+    done <<< "$EXECUTION_PLAN"
+
+    # free-tier CLI は 1 本の逐次ワーカーへ、それ以外は従来どおりタスク単位で並列。
+    # pid と並行してラベル（worker:<cli> / task:<cli>/<persp>。空白を含まない）を
+    # 記録する — rc ファイル不在の失敗で「どのプロセスが・どの rc で死んだか」を
+    # 相関できるのはこの対応表だけ（wait の rc は下で回収して報告する）。
+    local serialized_clis="" pid_labels=""
+    local group_cli
+    for group_cli in $group_clis; do
+      if [[ "$(get_cli_cost_tier "$group_cli")" == "free-tier" ]]; then
+        serialized_clis="${serialized_clis:+$serialized_clis }$group_cli"
+        run_cli_group "$group_cli" "$status_dir" &
+        pids="${pids:+$pids }$!"
+        pid_labels="${pid_labels:+$pid_labels }worker:${group_cli}"
+      fi
+    done
+    local spawn_seen=""
+    while IFS= read -r entry; do
+      [[ -z "$entry" ]] && continue
+      if [[ " $spawn_seen " == *" $entry "* ]]; then continue; fi
+      spawn_seen="$spawn_seen $entry"
+      local spawn_cli="${entry%%:*}"
+      if list_contains "$serialized_clis" "$spawn_cli"; then continue; fi
+      run_task_recorded "$spawn_cli" "${entry#*:}" "$status_dir" &
+      pids="${pids:+$pids }$!"
+      pid_labels="${pid_labels:+$pid_labels }task:${spawn_cli}/${entry#*:}"
+    done <<< "$EXECUTION_PLAN"
+
+    if [[ -n "$serialized_clis" ]]; then
+      # 公開ユーザーの端末へ毎回出る行なので、SSOT 側の Issue 番号は書かない
+      # （公開リポジトリでは独立採番のため無関係な Issue を指す）。追跡はコメントで。
+      echo "⏳ Waiting for ${count} ${TASK_TYPE} task(s) — free-tier CLI(s) run their tasks sequentially (rate-limit protection):${serialized_clis:+ }${serialized_clis}" >&2
     else
+      echo "⏳ Waiting for ${count} parallel ${TASK_TYPE} tasks..." >&2
+    fi
+    # wait の rc は成否の情報源ではない（rc ファイルが単一情報源）が、外部 kill 等で
+    # ワーカーが記録前に死んだときの唯一の死因なので、非 0 は名指しで残す。
+    set +e
+    local pid wait_idx=0 wrc wlabel
+    for pid in $pids; do
+      wait_idx=$((wait_idx + 1))
+      wait "$pid"
+      wrc=$?
+      if [[ $wrc -ne 0 ]]; then
+        wlabel="$(printf '%s\n' $pid_labels | awk -v n="$wait_idx" 'NR == n')"
+        echo "  ⚠️ ${wlabel:-worker} exited with rc=${wrc} — tasks it had not recorded yet will be counted as failed below" >&2
+      fi
+    done
+    set -e
+
+    # 回収は計画順。rc ファイルが無い = ワーカーが記録前に死んだ（kill・クラッシュ）
+    # 形で、これも失敗として数える — 沈黙の未実行を「成功」に見せない。
+    local collect_seen=""
+    while IFS= read -r entry; do
+      [[ -z "$entry" ]] && continue
+      if [[ " $collect_seen " == *" $entry "* ]]; then continue; fi
+      collect_seen="$collect_seen $entry"
+      local cli="${entry%%:*}"
+      local persp="${entry#*:}"
+      local task_name="${cli}/${persp}"
+      local rc_file="${status_dir}/${cli}/${persp}.rc"
+      local exit_code
+      if [[ ! -f "$rc_file" ]]; then
+        failed=$((failed + 1))
+        FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:1"
+        echo "  ❌ Worker died before recording a status: ${task_name}" >&2
+        continue
+      fi
+      # 読めない・空・非数値の rc は「判定不能」として失敗へ倒す。bash 3.2 の
+      # [[ "" -eq 0 ]] は真、英字は unbound variable で set -e 即死のため、
+      # 数値検証を通してからでないと -eq 比較に入れられない。
+      exit_code="$(cat "$rc_file" 2>/dev/null)" || exit_code=""
+      if ! [[ "$exit_code" =~ ^[0-9]+$ ]]; then
+        failed=$((failed + 1))
+        FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:1"
+        echo "  ❌ Corrupt/empty status file (content='${exit_code}'): ${task_name}" >&2
+        continue
+      fi
+      if [[ "$exit_code" -eq 0 && -f "${OUTPUT_DIR}/${task_name}.md" ]]; then
+        echo "  ✅ Done: ${task_name}" >&2
+      elif [[ "$exit_code" -ne 0 ]]; then
+        failed=$((failed + 1))
+        FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:${exit_code}"
+        report_task_failure "$task_name" "$exit_code"
+      else
+        # Success exit but no output file — surface as a failure, not silent OK.
+        failed=$((failed + 1))
+        FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:0"
+        echo "  ❌ No output file: ${task_name}" >&2
+      fi
+    done <<< "$EXECUTION_PLAN"
+    rm -rf "$status_dir"
+  else
+    while IFS= read -r entry; do
+      [[ -z "$entry" ]] && continue
+      # Skip a duplicate plan entry so the same cli:perspective is not executed
+      # twice (a plan fallback can list it more than once).
+      if [[ " $seen " == *" $entry "* ]]; then continue; fi
+      seen="$seen $entry"
+      local cli="${entry%%:*}"
+      local persp="${entry#*:}"
+
       echo "▶ ${cli} → ${persp}" >&2
       # Capture the status rather than testing it inline: the parallel branch
       # distinguishes a fired deadline from a crash, and this path has to give the
@@ -1359,35 +1547,7 @@ execute_tasks() {
         FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${cli}/${persp}:0"
         echo "  ❌ No output file: ${cli}/${persp}" >&2
       fi
-    fi
-  done <<< "$EXECUTION_PLAN"
-
-  # Wait for parallel tasks
-  if [[ "$PARALLEL" == "true" && -n "$pids" ]]; then
-    echo "⏳ Waiting for ${count} parallel ${TASK_TYPE} tasks..." >&2
-    local idx=0
-    local exit_code
-    set +e
-    for pid in $pids; do
-      idx=$((idx + 1))
-      local task_name
-      task_name="$(echo "$tasks" | cut -d'|' -f"$idx")"
-      wait "$pid"
-      exit_code=$?
-      if [[ $exit_code -eq 0 && -f "${OUTPUT_DIR}/${task_name}.md" ]]; then
-        echo "  ✅ Done: ${task_name}" >&2
-      elif [[ $exit_code -ne 0 ]]; then
-        failed=$((failed + 1))
-        FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:${exit_code}"
-        report_task_failure "$task_name" "$exit_code"
-      else
-        # Success exit but no output file — surface as a failure, not silent OK.
-        failed=$((failed + 1))
-        FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:0"
-        echo "  ❌ No output file: ${task_name}" >&2
-      fi
-    done
-    set -e
+    done <<< "$EXECUTION_PLAN"
   fi
 
   echo "" >&2
@@ -1471,9 +1631,15 @@ print_failure_advice() {
     if [[ "$rc" -eq 124 ]]; then
       echo "     ${task} — more time on the same CLI:" >&2
       echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp} --timeout $((TIMEOUT * 2))" >&2
-    else
+    elif [[ -f "${OUTPUT_DIR}/${cli}/${persp}.md" ]]; then
       echo "     ${task} — failed for a reason more time will not fix; read the CLI" >&2
       echo "       stderr in ${OUTPUT_DIR}/${cli}/${persp}.md, then re-run:" >&2
+      echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp}" >&2
+    else
+      # ワーカーが記録前に死んだ形。成果物は書かれていないので、存在しない
+      # ファイルを読めとは案内しない（死因は上の ⚠️ worker 行にある）。
+      echo "     ${task} — no result file was written (orchestrator-side failure;" >&2
+      echo "       see the ⚠️ worker line above). Re-run:" >&2
       echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp}" >&2
     fi
     # プラン構築と同じ解決を使う。ここだけ get_cli_fallback を直接呼ぶと、
@@ -1595,7 +1761,72 @@ HEADER
     echo "(No review results found.)" >> "$report_file"
   fi
 
-  if grep -qE '^\s*-\s*\[.*:.*\]|^CRITICAL:|Critical:\s*[1-9]' "$report_file" 2>/dev/null; then
+  # CRITICAL_BLOCK は Critical の実所見があるときだけ出す（Issue #272）。マーカーは
+  # pre-push ゲートが push をブロックする根拠なので、誤出力は誤ブロック、出力漏れは
+  # ゲートの素通りになる。旧判定 `^\s*-\s*\[.*:.*\]` は重大度に関係なく [file:line]
+  # 箇条書き全部に発火し、Important のみのレビューでも Critical と宣言していた。
+  #
+  # 判定は連結後の統合レポートではなく**各 result file の本文**に掛ける — 連結後に
+  # 掛けると (1) 1 本の CLI 出力の未閉フェンスが後続セクション全部を不可視にする
+  # 越境マスク、(2) orchestrator 自身が書く節見出しの判定への混入、が構造的に生まれる。
+  # 判定の 3 経路（大文字小文字は tolower で吸収。perspective テンプレート群の
+  # CRITICAL Issues / Critical Vulnerabilities / Critical Gaps 表記を含む契約）:
+  #   (a) critical を含む見出しの配下の箇条書き。別の同深度以浅の見出しでスコープ
+  #       終了（サブ見出しでは維持）。no critical / non-critical 見出しと、
+  #       「- なし」「- none」等の空所見箇条書きは不算入
+  #   (b) 集計行 `- Critical[ Issues| Vulnerabilities| Gaps]: N`（N>=1。行頭アンカー
+  #       + 語彙固定で、散文の言及や「- critical path latency: 3ms」を拾わない）
+  #   (c) 行頭の `CRITICAL:` マーカー
+  # コードフェンス内（先頭空白許容）は引用として数えない — 本ツールが自身のスクリプト
+  # や perspective 文書をレビューすると、テンプレートの Critical 見出しごと引用される。
+  # フェンスが閉じないまま本文が終わる場合は判定不能（rc=2）として安全側（マーカー
+  # あり）へ倒す。awk 自体の失敗も同様に安全側へ倒し、診断を stderr へ残す。
+  # 検出力は tests/multi-agent-critical-marker/ が stub CLI の実走で固定する。
+  local crit_marker=false crit_entry crit_seen="" crit_file crit_rc
+  while IFS= read -r crit_entry; do
+    [[ -z "$crit_entry" ]] && continue
+    if [[ " $crit_seen " == *" $crit_entry "* ]]; then continue; fi
+    crit_seen="$crit_seen $crit_entry"
+    crit_file="${OUTPUT_DIR}/${crit_entry%%:*}/${crit_entry#*:}.md"
+    [[ -f "$crit_file" ]] || continue
+    set +e
+    awk '
+      /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+      fence { next }
+      { l = tolower($0) }
+      /^#+[[:space:]]/ {
+        match($0, /^#+/); lvl = RLENGTH
+        if (in_crit && lvl > crit_lvl) next
+        in_crit = 0
+        if (l ~ /critical/ && l !~ /no[[:space:]]+critical/ && l !~ /non-critical/) {
+          in_crit = 1; crit_lvl = lvl
+        }
+        next
+      }
+      in_crit && l ~ /^[[:space:]]*-[[:space:]]/ {
+        if (l !~ /^[[:space:]]*-[[:space:]]*(なし|該当なし|特になし|none|n\/a|no issues)[[:space:]。.]*$/) found = 1
+      }
+      l ~ /^[[:space:]]*-[[:space:]]*critical( issues| vulnerabilities| gaps)?:[[:space:]]*[1-9]/ { found = 1 }
+      l ~ /^critical:/ { found = 1 }
+      END {
+        if (fence != 0) exit 2
+        exit found ? 0 : 1
+      }
+    ' "$crit_file"
+    crit_rc=$?
+    set -e
+    case "$crit_rc" in
+      0) crit_marker=true ;;
+      1) : ;;
+      2)
+        echo "⚠️ CRITICAL_BLOCK 判定: ${crit_file} のコードフェンスが閉じておらず本文を判定しきれません。判定不能を Critical なしとして通さないため、安全側に倒してマーカーを出します" >&2
+        crit_marker=true ;;
+      *)
+        echo "⚠️ CRITICAL_BLOCK 判定を実行できませんでした（awk rc=${crit_rc}: ${crit_file}）。判定不能を Critical なしとして通さないため、安全側に倒してマーカーを出します" >&2
+        crit_marker=true ;;
+    esac
+  done <<< "$EXECUTION_PLAN"
+  if [[ "$crit_marker" == "true" ]]; then
     echo "" >> "$report_file"
     echo "<!-- CRITICAL_BLOCK -->" >> "$report_file"
     echo "Critical issues detected. Review before proceeding." >> "$report_file"

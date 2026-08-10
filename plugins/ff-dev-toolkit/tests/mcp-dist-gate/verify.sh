@@ -62,10 +62,32 @@ FAIL=0
 # （dirty かどうかの絶対判定にすると、開発者の作業中変更を本 suite の書き込みと
 # 誤帰属する）。git status は状態分類しか見ず「dirty なファイルへの上書き」を
 # 見逃すため、内容ハッシュで比較する。
+# 状態は 2 部構成: エントリ名の全一覧（種別を問わない。symlink やディレクトリの
+# 増減を検出する）+ 通常ファイルの内容ハッシュ。ハッシュは cksum（POSIX、shasum と
+# 違いどの環境にもある）を `-exec ... +` で取り、空白を含むパスでも分割しない。
+# ハッシュ処理自体の失敗（走査不能・コマンド不在）は握りつぶさず非 0 で止める —
+# 前後とも空文字なら比較は必ず一致し、read-only 契約の証明が黙って「検査 0 件」に
+# 退化するため（Issue #370。mcp-typecheck suite の tree_state と同じ方針で、対象が
+# dist/ に限られる点だけが異なる。同型の実装が mcp-vitest suite にもあり、直す
+# ときは両方を揃える）。pipefail はサブシェル内で自己宣言し、呼び出し文脈に依存
+# させない。検出対象は suite 自身による偶発的書き込み（非敵対モデル）— ファイル
+# モードの変更と symlink の張り替え先は対象外。
 dist_state() {
-  (cd "$MCP_DIR" && find dist -type f 2>/dev/null | LC_ALL=C sort | xargs shasum -a 256 2>/dev/null) || true
+  (
+    set -o pipefail
+    cd "$MCP_DIR" &&
+      find dist | LC_ALL=C sort &&
+      find dist -type f -exec cksum {} + | LC_ALL=C sort
+  )
 }
-STATE_BEFORE="$(dist_state)"
+if ! STATE_BEFORE="$(dist_state)"; then
+  echo "✗ dist/ の内容ハッシュを取得できませんでした（read-only 事後条件を検査できません）" >&2
+  exit 1
+fi
+if [[ -z "$STATE_BEFORE" ]]; then
+  echo "✗ dist/ の内容ハッシュが空です（走査が壊れているか dist/ が空で、read-only 事後条件が空検査になります）" >&2
+  exit 1
+fi
 
 # --- A. dist ↔ src+deps 一致 ---------------------------------------------
 # ビルドコマンドは package.json の build スクリプトを正とし、outfile だけ
@@ -134,8 +156,10 @@ else
 fi
 
 # --- 事後条件: 作業ツリー（dist/）を書き換えていない ----------------------
-STATE_AFTER="$(dist_state)"
-if [[ "$STATE_AFTER" != "$STATE_BEFORE" ]]; then
+if ! STATE_AFTER="$(dist_state)"; then
+  echo "✗ 実行後の dist/ 内容ハッシュを取得できませんでした（read-only 事後条件を検査できません）" >&2
+  FAIL=1
+elif [[ "$STATE_AFTER" != "$STATE_BEFORE" ]]; then
   echo "✗ 本 suite の実行が dist/ を書き換えた（read-only 契約違反）" >&2
   FAIL=1
 fi

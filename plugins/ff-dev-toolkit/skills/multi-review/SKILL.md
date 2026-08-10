@@ -5,7 +5,7 @@ description: 複数の AI CLI（Claude Code / Codex / Gemini / Grok、Copilot �
 
 # /multi-review — 複数AIによるクロスモデルレビュー実行
 
-複数のAI CLI（Claude Code / Codex / Gemini / Grok）を並列実行し、異なる観点からコードレビューを実行します。Copilot CLI は従量課金のため既定ラインナップ外です（`--cli copilot-cli` でオプトイン）。
+複数のAI CLI（Claude Code / Codex / Gemini / Grok）を並列実行し、異なる観点からコードレビューを実行します（free-tier CLI に複数観点が乗る場合、その CLI 内はレート制限保護のため逐次実行）。Copilot CLI は従量課金のため既定ラインナップ外です（`--cli copilot-cli` でオプトイン）。
 
 ## プラグインルートの解決
 

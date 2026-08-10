@@ -155,6 +155,28 @@ describe("splitEntries", () => {
     const content = CATEGORY_HEADER + "### ACE-XXX: [タイトル]\n\n| フィールド | 値 |\n| --- | --- |\n";
     expect(splitEntries(content)).toEqual([]);
   });
+
+  it("フェンス内の正準形見出しは境界にせず、本文は空白化前の行を保つ（Issue #342）", () => {
+    // 境界の判定はフェンス空白化済みの行、本文の収集は空白化前の行 — の二系統走査。
+    // 本文側まで空白化すると、旧形式マーカーの検出対象（引用された例示を含む本文）が
+    // 静かに消えて detectLegacyMarkers の入力が変わる。
+    const fence = "```";
+    const content =
+      CATEGORY_HEADER +
+      [
+        "### ACE-1-1: 例示を含む実エントリ",
+        "",
+        `${fence}markdown`,
+        "### ACE-9-9: 悪い例",
+        fence,
+        "",
+        "---",
+        "",
+      ].join("\n");
+    const entries = splitEntries(content);
+    expect(entries.map((e) => e.id)).toEqual(["ACE-1-1"]);
+    expect(entries[0].body).toContain("### ACE-9-9: 悪い例");
+  });
 });
 
 describe("main", () => {
@@ -329,5 +351,310 @@ describe("main", () => {
     if (originalEnv !== undefined) {
       process.env.ACE_PLAYBOOK_PATH = originalEnv;
     }
+  });
+});
+
+describe("ID 形状の fail-loud 検査（Issue #339）", () => {
+  const originalArgv = process.argv;
+  let tmpDir = "";
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  function runWith(content: string): { code: number; err: string } {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-shape-"));
+    const playbookPath = path.join(tmpDir, "PLAYBOOK.md");
+    fs.writeFileSync(playbookPath, "# 索引\n");
+    const subDir = path.join(tmpDir, "playbook");
+    fs.mkdirSync(subDir);
+    fs.writeFileSync(path.join(subDir, "coding.md"), content);
+    fs.writeFileSync(path.join(tmpDir, "legacy-format-allowlist.txt"), "");
+    process.argv = ["node", "check-entry-format.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const code = main();
+    return { code, err: err.mock.calls.flat().join("\n") };
+  }
+
+  it.each([
+    ["ACE-337--1", "二重ハイフン"],
+    ["ACE-1_9", "アンダースコア"],
+    ["ACE-01a", "英字 suffix（単段）"],
+    ["ACE-438-1a", "英字 suffix（多段。#339 で落とすと決定した形）"],
+    ["ACE-1", "連番の無い単段（PR 由来は連番必須）"],
+    ["ACE-01", "連番の無い 2 桁（旧 3 桁形式ではない）"],
+    ["ACE-0001", "連番の無い 4 桁（旧 3 桁形式ではない）"],
+    ["ACE-i425", "連番の無い Issue 由来（連番必須）"],
+  ])("不正 ID %s（%s）は非 0 で名指しされる", (badId) => {
+    const body = [
+      CATEGORY_HEADER,
+      `### ${badId}: 不正な形状のエントリ`,
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "| Date | 2026-01-01 |",
+      "| Helpful | 0 | Harmful | 0 |",
+      "| Status | active |",
+      "",
+      "本文。",
+      "",
+      "---",
+      "",
+    ].join("\n");
+    const { code, err } = runWith(body);
+    expect(code).toBe(1);
+    expect(err).toContain(badId);
+    expect(err).toContain("形状");
+    // AC の「直し方を名指しする」を固定 — 誘導先（§エントリID規則）と同じ解決策。
+    // 「単段」の禁止も文面に含まれること（regex だけ厳格化して文面が古い drift の検出）
+    expect(err).toContain("-<連番>");
+    expect(err).toContain("単段");
+  });
+
+  it.each(["ACE-001", "ACE-438-1", "ACE-i425-1", "ACE-1-2-3", "ACE-1-2-3-4"])(
+    "正準な ID %s は pass する",
+    (goodId) => {
+      const body = [
+        CATEGORY_HEADER,
+        `### ${goodId}: 正準な形状のエントリ`,
+        "",
+        "| Category | coding | Origin | PR #1 |",
+        "| Date | 2026-01-01 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | active |",
+        "",
+        "本文。",
+        "",
+        "---",
+        "",
+      ].join("\n");
+      const { code, err } = runWith(body);
+      expect(code).toBe(0);
+      expect(err).toBe("");
+    },
+  );
+
+  it("不正 ID は旧形式判定と独立に報告される（compact 形式でも赤）", () => {
+    const { code, err } = runWith(CATEGORY_HEADER + compactEntry("9-9").replace("ACE-9-9", "ACE-9--9"));
+    expect(code).toBe(1);
+    expect(err).toContain("ACE-9--9");
+  });
+});
+
+describe("ID 形状: 複数エントリ混在（Issue #339 / g フラグ回帰の検出）", () => {
+  const originalArgv = process.argv;
+  let tmpDir = "";
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  it("正 2 件 + 不正 2 件の混在で、不正のみ全件名指し・正は無罪になる", () => {
+    // 1 ファイル 1 エントリの fixture だけだと、形状 regex に g フラグが付く回帰
+    // （lastIndex 状態で .test() が交互に偽る）を検出できない。混在 + 全件報告の
+    // 検査は、報告の一括性（片方の違反で打ち切らない）も同時に固定する。
+    const mk = (id: string): string =>
+      [
+        `### ${id}: エントリ`,
+        "",
+        "| Category | coding | Origin | PR #1 |",
+        "| Date | 2026-01-01 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | active |",
+        "",
+        "本文。",
+        "",
+        "---",
+        "",
+      ].join("\n");
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-shape-mix-"));
+    const playbookPath = path.join(tmpDir, "PLAYBOOK.md");
+    fs.writeFileSync(playbookPath, "# 索引\n");
+    fs.mkdirSync(path.join(tmpDir, "playbook"));
+    fs.writeFileSync(
+      path.join(tmpDir, "playbook", "coding.md"),
+      CATEGORY_HEADER + mk("ACE-1-1") + mk("ACE-9--9") + mk("ACE-2-1") + mk("ACE-3_1"),
+    );
+    fs.writeFileSync(path.join(tmpDir, "legacy-format-allowlist.txt"), "");
+    process.argv = ["node", "check-entry-format.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const code = main();
+    const out = err.mock.calls.flat().join("\n");
+
+    expect(code).toBe(1);
+    expect(out).toContain("ACE-9--9");
+    expect(out).toContain("ACE-3_1");
+    expect(out).not.toContain("ACE-1-1（");
+    expect(out).not.toContain("ACE-2-1（");
+  });
+});
+
+describe("ID 形状違反時の allowlist 警告抑制（Issue #339）", () => {
+  const originalArgv = process.argv;
+  let tmpDir = "";
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  it("見出しの ID が壊れているとき、missing 警告で誤った allowlist 掃除を案内しない", () => {
+    // allowlist の ACE-9-9 が見出し側で ACE-9--9 に化けた形。ID は allowlist の
+    // キーなので、この状態で missing を計算すると「ACE-9-9 を削除してください」
+    // という誤案内になる — 形状違反があるときは掃除警告を出さない。
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-shape-warn-"));
+    const playbookPath = path.join(tmpDir, "PLAYBOOK.md");
+    fs.writeFileSync(playbookPath, "# 索引\n");
+    fs.mkdirSync(path.join(tmpDir, "playbook"));
+    fs.writeFileSync(
+      path.join(tmpDir, "playbook", "coding.md"),
+      CATEGORY_HEADER + legacyEntry("9--9"),
+    );
+    fs.writeFileSync(path.join(tmpDir, "legacy-format-allowlist.txt"), "ACE-9-9\n");
+    process.argv = ["node", "check-entry-format.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const code = main();
+
+    expect(code).toBe(1);
+    expect(err.mock.calls.flat().join("\n")).toContain("ACE-9--9");
+    expect(warn.mock.calls.flat().join("\n")).not.toContain("allowlist から削除");
+  });
+});
+
+describe("索引 PLAYBOOK.md 自身の走査（Issue #339）", () => {
+  const originalArgv = process.argv;
+  let tmpDir = "";
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  it("分割レイアウトでも索引に残った不正 ID を名指しする（部分移行中の穴）", () => {
+    // 件数ゲート・refine・reuse は索引の内容も集計対象に含める。索引だけ形式ゲート
+    // から外れると「認識して数えるが、どのゲートも形式が不正とは言わない」経路が残る。
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-shape-index-"));
+    const playbookPath = path.join(tmpDir, "PLAYBOOK.md");
+    fs.writeFileSync(
+      playbookPath,
+      "# 索引\n\n### ACE-337--1: 部分移行で索引に残ったエントリ\n\n本文。\n",
+    );
+    fs.mkdirSync(path.join(tmpDir, "playbook"));
+    fs.writeFileSync(path.join(tmpDir, "playbook", "coding.md"), CATEGORY_HEADER + compactEntry("1-1"));
+    fs.writeFileSync(path.join(tmpDir, "legacy-format-allowlist.txt"), "");
+    process.argv = ["node", "check-entry-format.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const code = main();
+
+    expect(code).toBe(1);
+    expect(err.mock.calls.flat().join("\n")).toContain("ACE-337--1");
+  });
+});
+
+describe("フェンス内の正準形見出し・未閉フェンスの一括報告（Issue #342）", () => {
+  const originalArgv = process.argv;
+  let tmpDir = "";
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  function runWithSubfiles(subfiles: Record<string, string>): { code: number; err: string } {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-fence-"));
+    const playbookPath = path.join(tmpDir, "PLAYBOOK.md");
+    fs.writeFileSync(playbookPath, "# 索引\n");
+    const subDir = path.join(tmpDir, "playbook");
+    fs.mkdirSync(subDir);
+    for (const [name, content] of Object.entries(subfiles)) {
+      fs.writeFileSync(path.join(subDir, name), content);
+    }
+    fs.writeFileSync(path.join(tmpDir, "legacy-format-allowlist.txt"), "");
+    process.argv = ["node", "check-entry-format.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const code = main();
+    return { code, err: err.mock.calls.flat().join("\n") };
+  }
+
+  const fence = "```";
+
+  function fencedHeadingEntry(): string {
+    return (
+      CATEGORY_HEADER +
+      [
+        "### ACE-1-1: 例示を含む実エントリ",
+        "",
+        `${fence}markdown`,
+        "### ACE-9-9: 悪い例",
+        fence,
+        "",
+        "---",
+        "",
+      ].join("\n")
+    );
+  }
+
+  it("フェンス内の正準形見出しは exit 1 でファイル・行・ID を名指しし、両対処を案内する", () => {
+    const { code, err } = runWithSubfiles({ "coding.md": fencedHeadingEntry() });
+    expect(code).toBe(1);
+    expect(err).toContain("coding.md");
+    expect(err).toContain("ACE-9-9");
+    expect(err).toContain("ACE-XXX");
+    expect(err).toContain("フェンスの対応");
+  });
+
+  it("別ファイルの形状違反も同じ 1 回の実行で報告する（二段階の修正ループを作らない）", () => {
+    const { code, err } = runWithSubfiles({
+      "coding.md": fencedHeadingEntry(),
+      "testing.md": CATEGORY_HEADER + compactEntry("337--1"),
+    });
+    expect(code).toBe(1);
+    expect(err).toContain("ACE-9-9");
+    expect(err).toContain("ACE-337--1");
+  });
+
+  it("未閉フェンスのファイルはスキップして記録し、他ファイルの違反も報告して exit 2", () => {
+    const unclosed =
+      CATEGORY_HEADER +
+      ["### ACE-1-1: 未閉フェンスを持つエントリ", "", fence, "閉じない例示", ""].join("\n");
+    const { code, err } = runWithSubfiles({
+      "coding.md": unclosed,
+      "testing.md": CATEGORY_HEADER + legacyEntry("9-9"),
+    });
+    // スキップしたファイルがある = 列挙が不完全なので usage error 側を優先する
+    expect(code).toBe(2);
+    expect(err).toContain("コードフェンスが閉じていない");
+    expect(err).toContain("coding.md");
+    expect(err).toContain("ACE-9-9");
   });
 });

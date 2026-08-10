@@ -45,10 +45,32 @@ rm -rf "$PROBE_DIR"
 # 事後条件の基準線: dist/ の状態を実行前に記録し、実行後は「変化」だけを検査する
 # （絶対判定だと開発者の作業中変更を本 suite の書き込みと誤帰属する）。git status の
 # 状態分類は dirty なファイルへの上書きを見逃すため、内容ハッシュで比較する。
+# 状態は 2 部構成: エントリ名の全一覧（種別を問わない。symlink やディレクトリの
+# 増減を検出する）+ 通常ファイルの内容ハッシュ。ハッシュは cksum（POSIX、shasum と
+# 違いどの環境にもある）を `-exec ... +` で取り、空白を含むパスでも分割しない。
+# ハッシュ処理自体の失敗（走査不能・コマンド不在）は握りつぶさず非 0 で止める —
+# 前後とも空文字なら比較は必ず一致し、read-only 契約の証明が黙って「検査 0 件」に
+# 退化するため（Issue #370。mcp-typecheck suite の tree_state と同じ方針で、対象が
+# dist/ に限られる点だけが異なる。同型の実装が mcp-dist-gate suite にもあり、直す
+# ときは両方を揃える）。pipefail はサブシェル内で自己宣言し、呼び出し文脈に依存
+# させない。検出対象は suite 自身による偶発的書き込み（非敵対モデル）— ファイル
+# モードの変更と symlink の張り替え先は対象外。
 dist_state() {
-  (cd "$MCP_DIR" && find dist -type f 2>/dev/null | LC_ALL=C sort | xargs shasum -a 256 2>/dev/null) || true
+  (
+    set -o pipefail
+    cd "$MCP_DIR" &&
+      find dist | LC_ALL=C sort &&
+      find dist -type f -exec cksum {} + | LC_ALL=C sort
+  )
 }
-STATE_BEFORE="$(dist_state)"
+if ! STATE_BEFORE="$(dist_state)"; then
+  echo "✗ dist/ の内容ハッシュを取得できませんでした（read-only 事後条件を検査できません）" >&2
+  exit 1
+fi
+if [[ -z "$STATE_BEFORE" ]]; then
+  echo "✗ dist/ の内容ハッシュが空です（走査が壊れているか dist/ が空で、read-only 事後条件が空検査になります）" >&2
+  exit 1
+fi
 
 # 出力は丸ごと受けてから判定する（vitest の exit code に加えて、成功サマリー行の
 # 実在も確認する fail-closed。exit 0 + 0 tests のような縮退を green にしない）。
@@ -57,7 +79,17 @@ OUTPUT="$(cd "$MCP_DIR" && ./node_modules/.bin/vitest run 2>&1)"
 RC=$?
 set -e
 
-SUMMARY="$(printf '%s\n' "$OUTPUT" | grep -E '^[[:space:]]*Tests[[:space:]]' || true)"
+# サマリー行の抽出は rc を三分する（mcp-dist-gate suite の B 検査と同じ規約）:
+# rc=1（一致なし）は後段の「検査 0 件の縮退」判定に委ね、rc>=2（grep 自体の異常）を
+# 「一致なし」と読まない — 誤帰属すると診断が誤った原因（縮退疑い）を指す。
+set +e
+SUMMARY="$(printf '%s\n' "$OUTPUT" | grep -E '^[[:space:]]*Tests[[:space:]]')"
+SUMMARY_RC=$?
+set -e
+if [[ $SUMMARY_RC -ge 2 ]]; then
+  echo "✗ 成功サマリー行の抽出に失敗した（grep rc=${SUMMARY_RC}）。異常を「一致なし」と読まずに停止する" >&2
+  exit 1
+fi
 
 if [[ $RC -ne 0 ]]; then
   echo "✗ mcp vitest が失敗した (exit $RC)" >&2
@@ -86,7 +118,10 @@ esac
 
 # 事後条件: dist/ を書き換えていない（vitest run は build を含まないため
 # 本来書き込まない。書き込まれたら構成が変わった合図）。
-STATE_AFTER="$(dist_state)"
+if ! STATE_AFTER="$(dist_state)"; then
+  echo "✗ 実行後の dist/ 内容ハッシュを取得できませんでした（read-only 事後条件を検査できません）" >&2
+  exit 1
+fi
 if [[ "$STATE_AFTER" != "$STATE_BEFORE" ]]; then
   echo "✗ 本 suite の実行が dist/ を書き換えた（read-only 契約違反）" >&2
   exit 1

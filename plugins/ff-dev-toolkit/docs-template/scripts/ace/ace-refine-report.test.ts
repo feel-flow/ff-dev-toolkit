@@ -17,7 +17,11 @@ import {
 import { computeReuseStats, parsePlaybookEntries, type ReuseStats } from "./ace-reuse-report";
 // 結合テスト（末尾の describe）で同一 fixture に対して check 側の判定も測るため。
 // 依存方向は ace-refine-report.ts → check-category-size.ts と同じ向きに揃えている。
-import { analyzePlaybookMarkdown, main as checkCategorySizeMain } from "./check-category-size";
+import {
+  ACE_ENTRY_ID_SHAPE,
+  analyzePlaybookMarkdown,
+  main as checkCategorySizeMain,
+} from "./check-category-size";
 // 見出し認識の一致（#318）は 4 スクリプト横断なので、形式ゲート側もここへ通す。
 import { splitEntries } from "./check-entry-format";
 
@@ -922,11 +926,11 @@ describe("行数バジェット定数の単一源（check-category-size との�
   });
 
   /**
-   * 走査単位の非対称そのものの回帰（Issue #353）。ヘッダ領域で開いたフェンスが
-   * エントリ本文の裸の ``` と対になる形は、**ファイル全体走査では「閉じている」**ため
-   * refine 側の診断が立たず、check だけが拒否していた。しかも refine はそのまま
-   * 「本物の例外宣言が無い」ものとして測るので、上限が 30 ではなく 15 で判定され
-   * 偽の圧縮候補が出る（実測: hasException が false へ倒れる）。
+   * 走査単位の非対称そのものの回帰（Issue #353 → 診断は #342 で移譲）。ヘッダ領域で
+   * 開いたフェンスがエントリ本文の裸の ``` と対になる形は、かつて check だけが
+   * 「未閉」として拒否し refine が素通していた。#353 で両者そろって拒否になり、
+   * #342 で診断が真因（フェンス内の正準形見出し）の名指しへ変わった — 拒否する
+   * 入力集合が一致していることは変わらない（このテストが固定する）。
    */
   it("セグメント境界をまたいで対になる閉じ忘れも両者そろって拒否する（Issue #353）", () => {
     const playbookPath = makeFixture(1, 19, false);
@@ -945,11 +949,12 @@ describe("行数バジェット定数の単一源（check-category-size との�
 
     expect(main([playbookPath], { readLog: emptyLog, now: () => NOW })).not.toBe(0);
     const stderr = errSpy.mock.calls.flat().map(String).join("\n");
-    expect(stderr).toContain("閉じていないコードフェンス");
-    // 位置まで名指しする（Issue #353 の追加 DoD）。ファイル名だけでは、この形は
-    // 本文だけを見るとフェンスが対になって見えるため直しようがない。
-    // 4 行目 = ヘッダ領域で開いた ```markdown（1-origin）。
-    expect(stderr).toContain("coding.md:4");
+    // 診断は Issue #342 で「フェンス内の正準形見出し」へ移譲した — この形はファイル全体
+    // では対になっており、「未閉」と言うと本文が対になって見えるため調査が空回りする。
+    // 観測可能な真因（フェンス内に実 ID の見出しがある）をファイル名 + 行 + ID で名指しし、
+    // 例示（ACE-XXX へ）と実エントリ（フェンス対応の確認）の両対処を案内する。
+    expect(stderr).toContain("フェンス内に正準形のエントリ見出し");
+    expect(stderr).toContain("coding.md");
     expect(logSpy).not.toHaveBeenCalled();
 
     process.argv = ["node", "check-category-size.ts", playbookPath];
@@ -1084,8 +1089,12 @@ describe("エントリ見出し ID 規則の単一源（4 スクリプトの認�
    * 正準な ID 形式それぞれについて、見出し認識（4 者）と参照走査の**両方**が同じ ID へ到達する
    * ことを測る。3 段 ID だけを見ると `i` 枝や旧 3 桁を落とす変異が素通りするため、形式ごとに回す。
    * 参照走査まで含めるのは、見出し側だけ広げると誤 stale → 誤アーカイブになるため（#318）。
+   *
+   * 英字 suffix（ACE-438-1a）はこの一覧から外した — #339 で「妥当な形状ではない」と
+   * 決定したため。ただし**認識**は従来どおり広い（下の専用テスト参照）。認識まで
+   * 狭めると #318 が解消したスクリプト間の分裂が再発する。
    */
-  const CANONICAL_IDS = ["ACE-001", "ACE-438-1", "ACE-i425-1", "ACE-1-2-3", "ACE-438-1a"] as const;
+  const CANONICAL_IDS = ["ACE-001", "ACE-438-1", "ACE-i425-1", "ACE-1-2-3"] as const;
   it.each(CANONICAL_IDS)("正準 ID %s は 4 者すべてが認識し、参照走査からも到達できる", (id) => {
     const content = buildFixture([`### ${id}: 正準形`]);
     const got = recognizeByAll(content);
@@ -1101,6 +1110,33 @@ describe("エントリ見出し ID 規則の単一源（4 スクリプトの認�
       content,
     );
     expect(stats.get(id)?.gitRefCount).toBe(1);
+  });
+
+  /**
+   * 英字 suffix は「認識される（広い文法）が、形状ゲートが拒否する（狭い妥当形）」の
+   * 二段構え（Issue #339）。認識側のこのテストが緑のまま、形状側は
+   * check-entry-format.test.ts が非 0 拒否を固定する — どちらか一方だけ変えると
+   * 「静かに数えない」（#318 の分裂）か「不正 ID が素通り」（#339 の穴）へ戻る。
+   */
+  it("英字 suffix（ACE-438-1a）は認識されるが、妥当な形状ではない", () => {
+    const content = buildFixture(["### ACE-438-1a: suffix 形"]);
+    const got = recognizeByAll(content);
+
+    expect(got.entryFormatIds).toEqual(["ACE-438-1a"]);
+    expect(got.refineIds).toEqual(["ACE-438-1a"]);
+    expect(got.reuseIds).toEqual(["ACE-438-1a"]);
+    expect(got.categorySizeCount).toBe(1);
+    expect(ACE_ENTRY_ID_SHAPE.test("ACE-438-1a")).toBe(false);
+
+    // 参照走査への到達性も維持する — 形状ゲートが赤の移行期間（suffix ID が live に
+    // 残ったまま refine/reuse を回す局面）に、参照側だけ SHAPE へ狭める変更が入ると
+    // 「見出しは数える・参照は 0 → 誤 stale → 誤アーカイブ」がテスト緑のまま成立する。
+    const stats = computeReuseStats(
+      parsePlaybookEntries(content),
+      [{ date: "2026-08-01", subject: "chore: ACE-438-1a を再利用した", body: "" }],
+      content,
+    );
+    expect(stats.get("ACE-438-1a")?.gitRefCount).toBe(1);
   });
 
   /**
@@ -1163,5 +1199,82 @@ describe("エントリ見出し ID 規則の単一源（4 スクリプトの認�
     );
 
     expect(stats.get("ACE-1-2-3")?.gitRefCount).toBe(1);
+  });
+});
+
+describe("フェンス内の正準形見出しの認識一致（Issue #342）", () => {
+  const mkContent = (lines: readonly string[]): string =>
+    ["# ACE Playbook（fixture）", "", ...lines, ""].join("\n");
+
+  it("パーサ 3 者は一致して除外し、件数ゲートは fail-loud に拒否する", () => {
+    // 実エントリ ACE-1-1 の本文が、閉じたフェンス内に正準形の見出しと Category 行を
+    // 例示する形。修正前は split がフェンス内の見出しで切れ、存在しないエントリ
+    // ACE-9-9 と存在しないカテゴリ testing が件数へ入っていた（Issue #342 の実測）。
+    const fence = "```";
+    const content = mkContent([
+      "### ACE-1-1: 例示を含む実エントリ",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "| Date | 2026-01-01 |",
+      "| Helpful | 0 | Harmful | 0 |",
+      "| Status | active |",
+      "",
+      "追記例の引用:",
+      "",
+      `${fence}markdown`,
+      "### ACE-9-9: 悪い例",
+      "",
+      "| Category | testing |",
+      fence,
+      "",
+      "---",
+    ]);
+
+    // パーサ 3 者（splitEntries / parsePlaybookEntries / measureEntryLines）は ACE-9-9 を除外
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(splitEntries(content).map((e) => e.id)).toEqual(["ACE-1-1"]);
+    expect(parsePlaybookEntries(content).map((e) => e.id)).toEqual(["ACE-1-1"]);
+    const measured = measureEntryLines(content);
+    expect(measured.unclosedFence).toBe(false);
+    expect(measured.measurements.map((m) => m.id)).toEqual(["ACE-1-1"]);
+    // lineCount はフェンスを含めて終端 --- まで測る。フェンス内見出しが境界に化けると
+    // ACE-1-1 が例示の位置で切り詰められる（見出し行 idx2 〜 終端 idx17 の 16 行）
+    expect(measured.measurements[0].lineCount).toBe(16);
+
+    // 件数ゲートは黙って除外せず、名指しで拒否する（例示は ACE-XXX へ）
+    const analyzed = analyzePlaybookMarkdown(content);
+    expect(analyzed.kind).toBe("error");
+    if (analyzed.kind === "error") {
+      expect(analyzed.message).toContain("ACE-9-9");
+      expect(analyzed.message).toContain("ACE-XXX");
+    }
+  });
+
+  it("非正準形のプレースホルダ（ACE-XXX）の例示は従来どおり無害", () => {
+    const fence = "```";
+    const content = mkContent([
+      "### ACE-1-1: プレースホルダを例示する実エントリ",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "| Date | 2026-01-01 |",
+      "| Helpful | 0 | Harmful | 0 |",
+      "| Status | active |",
+      "",
+      `${fence}markdown`,
+      "### ACE-XXX: [タイトル]",
+      "| Category | coding |",
+      fence,
+      "",
+      "---",
+    ]);
+
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(splitEntries(content).map((e) => e.id)).toEqual(["ACE-1-1"]);
+    expect(parsePlaybookEntries(content).map((e) => e.id)).toEqual(["ACE-1-1"]);
+    const analyzed = analyzePlaybookMarkdown(content);
+    expect(analyzed.kind).toBe("ok");
+    if (analyzed.kind === "ok") {
+      expect(analyzed.totalEntries).toBe(1);
+    }
   });
 });

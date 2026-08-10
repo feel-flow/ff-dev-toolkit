@@ -63,8 +63,14 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# path は物理パスで持つ（pwd -P）。本ゲートは tsconfig を絶対パスで渡すため、実測では
+# 論理パスのままでも prefix と --listFiles の展開が同源で一致し red にはならない。
+# それでも物理パスへ揃えるのは、cwd 相対で tsconfig を渡す mcp-typecheck suite で
+# 「symlink 配下のチェックアウトで対象集合が空になる red」が実測されており（tsc は cwd を
+# 物理パスとして扱う）、呼び出し形の変更 1 つで同じ分岐がここでも成立するため — 多層防御
+# として参照実装と同型に固定する（Issue #371。pwd -P の使用は selftest が静的に確認する）。
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 MCP_DIR="$PLUGIN_ROOT/mcp"
 ACE_SCRIPTS_DIR="$PLUGIN_ROOT/docs-template/scripts/ace"
 TSCONFIG="$SCRIPT_DIR/tsconfig.json"
@@ -80,6 +86,12 @@ TSCONFIG="$SCRIPT_DIR/tsconfig.json"
 
 if [[ ! -d "$MCP_DIR/node_modules" ]]; then
   echo "○ skip: $MCP_DIR/node_modules が無いためスキップ（本 suite の検査は1件も実行されていません。cd mcp && npm install で有効化）"
+  exit 0
+fi
+# node 本体が無い環境も skip（mcp-typecheck suite と同じ分水嶺）。ここを見ないと
+# tsc の shebang が rc=127 で落ち、「型検査が失敗しました」という誤誘導の hard red になる。
+if ! command -v node >/dev/null 2>&1; then
+  echo "○ skip: node が PATH に無いためスキップ（本 suite の検査は1件も実行されていません）"
   exit 0
 fi
 # node_modules はあるのに tsc が無いのは不完全な install。ここを skip に倒すと
@@ -103,10 +115,54 @@ fi
 # 大声で出て 1 編集で直せるが、偽陰性はこのゲートが塞ごうとしているものそのもの。
 # 判定を markdown / TS 対応にしにいくと、例示と宣言を取り違える種類のバグを持ち込む
 # （同型の失敗が Issue #343 / #347 で実際に起きている）。
-# **したがってこの規則自体を、走査対象の `.ts` の中に書かないこと。** 書く場所は本
+# **したがってこの規則自体を、走査対象のソースの中に書かないこと。** 書く場所は本
 # ヘッダか `tests/` 配下、または `docs-template/scripts/ace/README.md`。
-SUPPRESSORS="$(cd "$ACE_SCRIPTS_DIR" && find . -name node_modules -prune -o -name '*.ts' \
-  -exec grep -nE '@ts-nocheck|@ts-ignore' /dev/null {} + 2>/dev/null || true)"
+
+# ---- 検査対象の期待集合 -----------------------------------------------------
+# 期待する検査対象は実ディレクトリから導出する（後段の集合照合にも上の抑制走査にも
+# 同じ集合を使う — 走査した集合と照合した集合が乖離する経路を作らない）。
+# 拡張子を `.ts` に絞らないのは、`foo.mts` が `*.ts` の glob にも `find -name '*.ts'`
+# にも現れず、**両側で不可視のまま照合が一致してしまう**ため（Issue #371。tsc が対応する
+# ソース拡張子 .ts / .mts / .cts / .tsx を列挙する）。prune の条件は tsconfig の
+# exclude（`**/node_modules`）と対応させてある。
+EXPECTED="$(cd "$ACE_SCRIPTS_DIR" && find . -name node_modules -prune -o \
+  \( -name '*.ts' -o -name '*.mts' -o -name '*.cts' -o -name '*.tsx' \) -print |
+  sed 's|^\./||' | LC_ALL=C sort)"
+if [[ -z "$EXPECTED" ]]; then
+  echo "✗ $ACE_SCRIPTS_DIR に TypeScript ソースが 1 件もありません（検査対象の導出が壊れています）" >&2
+  exit 1
+fi
+
+# 走査は EXPECTED をファイル単位で回し、grep の rc を三分する（0=該当あり /
+# 1=該当なし / >=2=走査失敗）。`find -exec grep ... + || true` の形は「該当なし
+# (rc=1)」と「grep 自体の異常 (rc>=2)」を同じ扱いにし、走査できなかったファイルが
+# 黙って合格になる（Issue #371。playbook の規約: grep は exit 1 のみを「該当なし」と
+# し 2 以上は fail-closed）。失敗はサブシェルから exit 9 で外へ伝える。分岐に case を
+# 使わないのは bash 3.2 の制約で、`$( … )` の中の case はパターンの `)` が command
+# substitution の終端と誤解されて構文エラーになる（mcp-typecheck suite で実測）。
+# cd はループ外で 1 回だけ行い、失敗を専用 rc で外へ出す。ループ内の
+# `cd ... && grep ...` の形だと cd 失敗がコマンド置換 rc=1 になり、grep の
+# 「該当なし」と区別できず走査ゼロのまま静かに合格する（rc 三分が破れる）。
+set +e
+SUPPRESSORS="$(cd "$ACE_SCRIPTS_DIR" || exit 9
+  printf '%s\n' "$EXPECTED" | while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    hits="$(grep -nE '@ts-nocheck|@ts-ignore' /dev/null -- "$rel")"
+    grep_rc=$?
+    if [ "$grep_rc" -eq 0 ]; then
+      printf '%s\n' "$hits"
+    elif [ "$grep_rc" -ne 1 ]; then
+      echo "✗ 抑制ディレクティブの走査が失敗しました（grep rc=${grep_rc}）: $rel" >&2
+      echo "  走査できないファイルを「該当なし」として通すと、このゲートの「エラー 0 件」が偽になります" >&2
+      exit 9
+    fi
+  done)"
+SCAN_RC=$?
+set -e
+if [[ $SCAN_RC -ne 0 ]]; then
+  echo "✗ 抑制ディレクティブの走査を完了できませんでした（rc=${SCAN_RC}。9=cd 失敗またはループ内で名指し済みの走査失敗 / それ以外はパイプ上流の失敗）" >&2
+  exit 1
+fi
 if [[ -n "$SUPPRESSORS" ]]; then
   echo "✗ 型検査を無効化するディレクティブが混入しています（このゲートの「エラー 0 件」が偽になります）" >&2
   printf '%s\n' "$SUPPRESSORS" | sed 's/^/     /' >&2
@@ -138,7 +194,7 @@ set -e
 # （tsc は cwd 相対で診断を出すので通常は該当しないが、落とす側に倒すと本物の診断を
 # 消しうる。消える側ではなく残る側へ倒す）。
 CHECKED="$(printf '%s\n' "$OUTPUT" | awk -v prefix="$ACE_SCRIPTS_DIR/" '
-  index($0, prefix) == 1 && $0 ~ /\.ts$/ { print substr($0, length(prefix) + 1) }
+  index($0, prefix) == 1 && $0 ~ /\.(ts|mts|cts|tsx)$/ { print substr($0, length(prefix) + 1) }
 ' | LC_ALL=C sort)"
 DIAGNOSTICS="$(printf '%s\n' "$OUTPUT" | awk '
   index($0, "/") == 1 && $0 !~ /\): error TS[0-9]+:/ { next }
@@ -152,26 +208,19 @@ if [[ $RC -ne 0 ]]; then
   exit 1
 fi
 
-# 期待する検査対象を実ディレクトリから導出して**名前で**照合する。exit 0 は「検査した
-# 全ファイルにエラーが無い」しか意味せず、include の glob が一部を静かに取りこぼした
-# 状態（tsc が落ちるのは対象 0 件の TS18003 のときだけ）も緑になる。件数ではなく集合で
+# EXPECTED（冒頭で導出済み）と**名前で**照合する。exit 0 は「検査した全ファイルに
+# エラーが無い」しか意味せず、include の glob が一部を静かに取りこぼした状態
+# （tsc が落ちるのは対象 0 件の TS18003 のときだけ）も緑になる。件数ではなく集合で
 # 比べるのは、1 本増えて 1 本落ちた形を件数一致で見逃さないため。
-# prune の条件は tsconfig の exclude（`**/node_modules`）と対応させてある。
 #
 # なお include から外れても import 経由で到達できるファイルは --listFiles に残り、
 # tsc も完全に型検査する。したがってこの照合が捕まえるのは「**どこからも到達
 # しなくなった**ファイル」で、それが本当のカバレッジ喪失にあたる。逆に
 # `docs-template/scripts/ace/node_modules/` 配下の .d.ts が import 経由でプログラムに
 # 入ると CHECKED 側にだけ現れて赤くなる（現状そのような依存は無い）。
-EXPECTED="$(cd "$ACE_SCRIPTS_DIR" && find . -name node_modules -prune -o -name '*.ts' -print | sed 's|^\./||' | LC_ALL=C sort)"
-
-if [[ -z "$EXPECTED" ]]; then
-  echo "✗ $ACE_SCRIPTS_DIR に *.ts が 1 件もありません（検査対象の導出が壊れています）" >&2
-  exit 1
-fi
 if [[ "$CHECKED" != "$EXPECTED" ]]; then
   echo "✗ 型検査の対象集合が実ディレクトリと一致しません（tsconfig の include/exclude を確認）" >&2
-  echo "-- 期待（$ACE_SCRIPTS_DIR の *.ts）:" >&2
+  echo "-- 期待（$ACE_SCRIPTS_DIR の TypeScript ソース）:" >&2
   printf '%s\n' "$EXPECTED" | sed 's/^/     /' >&2
   echo "-- 実際（tsc --listFiles）:" >&2
   printf '%s\n' "$CHECKED" | sed 's/^/     /' >&2

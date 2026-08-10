@@ -20,10 +20,13 @@ import {
   ENTRY_ANCHOR_LINE_PATTERN,
   EXCEPTION_BUDGET_MULTIPLIER,
   blankCodeRegions,
+  blankFencedCodeBlocks,
+  blankHtmlBlockComments,
   HTML_COMMENT_SPAN_SOURCE,
   SECTION_HEADING_LINE_PATTERN,
   discoverPlaybookSubfiles,
   entryHeadingSource,
+  findFencedCanonicalHeadings,
   isDirectExecution,
   parsePositiveIntEnv,
   scanUnclosedFence,
@@ -188,10 +191,10 @@ const SECTION_HEADING_PATTERN = SECTION_HEADING_LINE_PATTERN;
  * Issue #347）— こちらは countBudgetExceptions と一致していないと、上限だけが片側で
  * 2 倍になるため。
  *
- * `unclosedFence` が汚すのは **`hasException` だけ**。`id` と `lineCount` は影響を受けない
- * （測定はコメントだけをマスクした `maskedLines` に対して行い、blankCodeRegions の出力は
- * 例外マーカーのオフセット照合 1 箇所でしか使わないため）。それでも呼び出し側は必ず
- * 消費すること（Issue #349。blankCodeRegions の契約と同じ）— レポート用途では
+ * `unclosedFence` が立つ入力では、`hasException` の汚染に加えて見出し境界の
+ * フェンス除外（Issue #342。関数本文の boundaryLines 参照）も空白化前へ退化する。
+ * 計測自体はコメントだけをマスクした `maskedLines` に対して行う。呼び出し側は必ず
+ * `unclosedFence` を消費すること（Issue #349。blankCodeRegions の契約と同じ）— レポート用途では
  * `hasException` が上限を左右するので、measurements 側だけを取り出して黙って進むと、
  * check が exit 2 で拒否したファイルを refine だけが誤った上限で測る非対称に戻る。
  */
@@ -199,20 +202,31 @@ export function measureEntryLines(content: string): EntryLineMeasurementResult {
   const masked = maskCommentSpans(content);
   const { maskedLines, exceptionLines } = masked;
 
+  // 見出し（と直前 anchor）の検出は**フェンス空白化済み**の行で行う（Issue #342。
+  // フェンス内の正準形見出し `### ACE-9-9:` を測定対象にしない — 幻のエントリを測る
+  // だけでなく、直前の実エントリの lineCount が例示の位置で切り詰められる。
+  // splitEntries / parsePlaybookEntries と同じ除外規則で、パーサ 3 者の認識を一致させる）。
+  // 範囲の計測（後続セクション・終端 `---`・例外マーカー照合）は従来どおり
+  // maskedLines に対して行う（圧縮判断の対象は「ファイル上の占有行数」のため）。
+  // 未閉フェンスは空白化が EOF まで及び実在の見出しまで吸収されるため maskedLines へ
+  // 退化させる — その入力は戻り値の unclosedFence が立ち、main が測定前に拒否する。
+  const fenceProbe = blankFencedCodeBlocks(maskedLines.join("\n"));
+  const boundaryLines = fenceProbe.unclosedFence ? maskedLines : fenceProbe.text.split("\n");
+
   type HeaderPos = { readonly id: string; readonly headerIndex: number; readonly startIndex: number };
   const headers: HeaderPos[] = [];
-  for (let i = 0; i < maskedLines.length; i += 1) {
-    const match = maskedLines[i].match(ENTRY_HEADER_LINE_PATTERN);
+  for (let i = 0; i < boundaryLines.length; i += 1) {
+    const match = boundaryLines[i].match(ENTRY_HEADER_LINE_PATTERN);
     if (!match) {
       continue;
     }
     let start = i;
-    if (i >= 1 && ANCHOR_LINE_PATTERN.test(maskedLines[i - 1])) {
+    if (i >= 1 && ANCHOR_LINE_PATTERN.test(boundaryLines[i - 1])) {
       start = i - 1;
     } else if (
       i >= 2 &&
-      maskedLines[i - 1].trim() === "" &&
-      ANCHOR_LINE_PATTERN.test(maskedLines[i - 2])
+      boundaryLines[i - 1].trim() === "" &&
+      ANCHOR_LINE_PATTERN.test(boundaryLines[i - 2])
     ) {
       start = i - 2;
     }
@@ -523,6 +537,7 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
 
     const measurementsByFile = new Map<string, EntryLineMeasurementResult>();
     const unclosedFenceFiles: string[] = [];
+    const fencedHeadingFiles: string[] = [];
     for (const [file, content] of contentsByFile) {
       const label = path.relative(process.cwd(), file) || file;
       const measured = measureEntryLines(content);
@@ -531,6 +546,13 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
         // 「ヘッダで開いたフェンスがエントリ本文の裸の ``` と対になる」など、本文だけを
         // 見ると対になって見えるものが多く、ファイル名だけでは直しようがない。
         unclosedFenceFiles.push(`${label}:${String(measured.unclosedFenceLine + 1)}`);
+      }
+      // 閉じたフェンスの内側にある正準形見出し（Issue #342）。check-category-size は
+      // 同じ入力を拒否するため、ここで素通しすると拒否する入力集合が非対称になる
+      // （#353 と同じ結合の要請）。パーサ（parsePlaybookEntries）は除外 + 警告するが、
+      // CLI としてはレポートを出す前に名指しで落とす。
+      for (const fenced of findFencedCanonicalHeadings(blankHtmlBlockComments(content))) {
+        fencedHeadingFiles.push(`${label}:${String(fenced.line + 1)} (${fenced.id})`);
       }
       measurementsByFile.set(label, measured);
     }
@@ -562,9 +584,10 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
     // 位置は git log 取得より**前**。フェンスはファイル内容だけで判定できるのに後ろへ置くと、
     // git 不在・非 git チェックアウトでは git のエラーが先に出て本当の原因が見えなくなる。
     // なお 3 つのゲート（0 件 / 未閉フェンス / unmeasured）は互いに独立した事象で、順序が
-    // 情報を隠すことはない — parsePlaybookEntries も measureEntryLines の見出し検出も
-    // コードフェンスを見ない（コメント空白化のみ）ため、未閉フェンスは他の 2 つを引き起こせない。
-    // 並べ替えるときはこの独立性が保たれているか確認すること。
+    // 情報を隠すことはない — parsePlaybookEntries と measureEntryLines の見出し検出は
+    // フェンス空白化済みテキストを使うが（Issue #342）、**未閉のときは空白化前へ退化する**
+    // ため、未閉フェンスが見出しを吸収して 0 件エラーや unmeasured を引き起こすことはない。
+    // 並べ替えるときはこの独立性（退化パス）が保たれているか確認すること。
     if (unclosedFenceFiles.length > 0) {
       console.error(
         `ERROR: 閉じていないコードフェンス（\`\`\` / ~~~）を含むファイルがあります:\n` +
@@ -572,6 +595,17 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
           `以降の本文がコード判定から外れ、行数バジェット例外の判定が過剰にも過少にも倒れるため、` +
           `候補が不完全になります（check-category-size は同じ入力を exit 2 で拒否します）。` +
           `フェンスを閉じてから再実行してください。`,
+      );
+      return EXIT_RUNTIME_ERROR;
+    }
+
+    if (fencedHeadingFiles.length > 0) {
+      console.error(
+        `ERROR: フェンス内に正準形のエントリ見出しがあります:\n` +
+          `  ${fencedHeadingFiles.join("\n  ")}\n` +
+          `例示なら ID を ACE-XXX のような非正準形にしてください。実エントリのつもりなら、` +
+          `直前のコードフェンスの対応（閉じ忘れ・裸の \`\`\` との偶然の対）を確認してください` +
+          `（check-category-size は同じ入力を exit 2 で拒否します）。`,
       );
       return EXIT_RUNTIME_ERROR;
     }

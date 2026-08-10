@@ -19,8 +19,8 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 MCP_DIR="$PLUGIN_ROOT/mcp"
 ACE_SCRIPTS_DIR="$PLUGIN_ROOT/docs-template/scripts/ace"
 SOURCE_VERIFY="$PLUGIN_ROOT/tests/ace-scripts-typecheck/verify.sh"
@@ -46,6 +46,10 @@ if [[ ! -x "$MCP_DIR/node_modules/.bin/tsc" ]]; then
   echo "✗ node_modules はあるが tsc が無い（npm install が不完全）: $MCP_DIR/node_modules/.bin/tsc" >&2
   exit 1
 fi
+if ! command -v node >/dev/null 2>&1; then
+  echo "○ skip: node が PATH に無いため mutation self-test をスキップ（tests/ace-scripts-typecheck の検出力は未測定のままです）"
+  exit 0
+fi
 if ! command -v perl >/dev/null 2>&1; then
   echo "○ skip: perl が見つからないため mutation self-test をスキップ（tests/ace-scripts-typecheck の検出力は未測定のままです）"
   exit 0
@@ -63,7 +67,8 @@ TMP="$(cd "$TMP" && pwd -P)"
 # 期待件数は実ディレクトリから導出する（直書きすると *.ts を 1 本増やしただけで
 # この suite が red になり、診断が「selftest が失敗した」というゲート側のバグに見える）。
 # 走査条件は reset_fixture のコピーと同一。
-ACE_TS_COUNT="$(cd "$ACE_SCRIPTS_DIR" && find . -name node_modules -prune -o -name '*.ts' -print | wc -l | tr -d ' ')"
+ACE_TS_COUNT="$(cd "$ACE_SCRIPTS_DIR" && find . -name node_modules -prune -o \
+  \( -name '*.ts' -o -name '*.mts' -o -name '*.cts' -o -name '*.tsx' \) -print | wc -l | tr -d ' ')"
 
 PASS=0
 FAIL=0
@@ -121,7 +126,8 @@ reset_fixture() {
   ln -s "$MCP_DIR/node_modules" "$TMP/plugin/mcp/node_modules"
   FIXTURE_ACE="$TMP/plugin/docs-template/scripts/ace"
   # ゲートの EXPECTED 導出と同じ走査条件で、サブディレクトリを保って複製する。
-  (cd "$ACE_SCRIPTS_DIR" && find . -name node_modules -prune -o -name '*.ts' -print) |
+  (cd "$ACE_SCRIPTS_DIR" && find . -name node_modules -prune -o \
+    \( -name '*.ts' -o -name '*.mts' -o -name '*.cts' -o -name '*.tsx' \) -print) |
     while IFS= read -r rel; do
       mkdir -p "$FIXTURE_ACE/$(dirname "$rel")"
       cp "$ACE_SCRIPTS_DIR/$rel" "$FIXTURE_ACE/$rel"
@@ -270,6 +276,89 @@ else
   bad "正当な *.ts 追加を対象集合の不一致と誤検出した"
   printf '    %s\n' "$RUN_OUTPUT" >&2
 fi
+
+# 9. 追加拡張子（.mts / .cts / .tsx）内の型エラーが検査対象に入ること（Issue #371 の
+#    方向 3）。拡張子の走査が `*.ts` に退化すると、これらは find にも include にも
+#    現れず**両側不可視のまま照合が一致**する — 型エラーが検出されず緑になるため、
+#    退化がここで赤になる。3 拡張子を同じ run に入れるのは実行回数の節約で、tsc は
+#    全ファイルの診断を 1 回で出すため名指しの照合は独立に成立する。
+#    （.tsx は jsx オプション未設定のため JSX 構文は書けない — このゲートの目的は
+#    「見落とさず検査対象にする」ことで、JSX のコンパイルではない。）
+reset_fixture
+printf '%s\n' 'export const selftestMts: string = 123;' > "$FIXTURE_ACE/selftest-poison.mts"
+# .cts は CommonJS 扱いで verbatimModuleSyntax の下では ESM の export が書けない
+# （TS1287）ため、モジュールにしないスクリプト形式で型エラーだけを仕込む。
+printf '%s\n' 'const selftestCts: string = 123; void selftestCts;' > "$FIXTURE_ACE/selftest-poison.cts"
+printf '%s\n' 'export const selftestTsx: string = 123;' > "$FIXTURE_ACE/selftest-poison.tsx"
+if run_fixture "追加拡張子（.mts/.cts/.tsx）内の型エラー"; then
+  assert_contains ".mts のエラーを名指し" "$RUN_OUTPUT" "docs-template/scripts/ace/selftest-poison.mts"
+  assert_contains ".cts のエラーを名指し" "$RUN_OUTPUT" "docs-template/scripts/ace/selftest-poison.cts"
+  assert_contains ".tsx のエラーを名指し" "$RUN_OUTPUT" "docs-template/scripts/ace/selftest-poison.tsx"
+fi
+
+# 10. 正当な .mts / .cts / .tsx 追加は green + 件数に乗る（方向 3 の逆向き）。件数
+#     アサーションが要るのは、拡張子走査が `*.ts` に退化しても「エラーの無い追加
+#     拡張子」は緑のままで、緑判定だけでは退化を検出できないため — 件数が N+3 に
+#     ならないことが唯一の兆候。
+reset_fixture
+printf '%s\n' 'export const selftestMtsOk = 1;' > "$FIXTURE_ACE/selftest-added.mts"
+printf '%s\n' 'const selftestCtsOk: number = 1; void selftestCtsOk;' > "$FIXTURE_ACE/selftest-added.cts"
+printf '%s\n' 'export const selftestTsxOk = 1;' > "$FIXTURE_ACE/selftest-added.tsx"
+if RUN_OUTPUT="$(/bin/bash "$FIXTURE_VERIFY" 2>&1)"; then
+  assert_contains "新規 .mts/.cts/.tsx の追加後も green" "$RUN_OUTPUT" "✓ ace-scripts-typecheck: pass"
+  assert_contains "追加した 3 拡張子を件数に含める" "$RUN_OUTPUT" "の $((ACE_TS_COUNT + 3)) ファイル"
+else
+  bad "正当な .mts/.cts/.tsx 追加を対象集合の不一致と誤検出した"
+  printf '    %s\n' "$RUN_OUTPUT" >&2
+fi
+
+# 11. symlink 経由の起動が green のままであることの固定（互換カナリア）。
+#     注意: これは方向 2（pwd -P → pwd）の退化検出器では**ない** — 本ゲートは tsconfig を
+#     絶対パスで渡すため、論理パス実装でも prefix と listFiles が同源で一致し red を
+#     再現できない（実測）。cwd 相対で tsconfig を渡す形へ変わったときに初めて分岐が
+#     生まれるので、その将来の形に備えて green を常設で固定し、pwd -P の使用自体は
+#     下の静的検査で縛る（振る舞いで測れない性質は形そのものを縛る — mbcs-guard と
+#     同じ判断）。
+reset_fixture
+rm -f "$TMP/plugin-link"
+LN_ERR="$(ln -s "$TMP/plugin" "$TMP/plugin-link" 2>&1)" || LN_ERR="${LN_ERR:-ln failed}"
+if [ -L "$TMP/plugin-link" ]; then
+  if RUN_OUTPUT="$(/bin/bash "$TMP/plugin-link/tests/ace-scripts-typecheck/verify.sh" 2>&1)"; then
+    assert_contains "symlink 経由でも対象集合の照合が成立して green" "$RUN_OUTPUT" "✓ ace-scripts-typecheck: pass"
+  else
+    bad "symlink 経由の起動が red（論理パスと物理パスの突き合わせ退化を疑う）"
+    printf '    %s\n' "$RUN_OUTPUT" >&2
+  fi
+else
+  echo "  ○ skip: symlink を作れない環境のため symlink 経由ケースは未測定（${LN_ERR}）"
+fi
+# pwd -P の静的検査（上のコメント参照。SCRIPT_DIR / PLUGIN_ROOT の 2 箇所）。
+PWD_P_COUNT="$(grep -c 'pwd -P' "$SOURCE_VERIFY")" || PWD_P_COUNT=0
+if [ "$PWD_P_COUNT" -ge 2 ]; then
+  ok "ゲートのパス解決が pwd -P（物理パス）を使っている"
+else
+  bad "ゲートのパス解決から pwd -P が消えている（論理パスへの退化。件数: ${PWD_P_COUNT}）"
+fi
+
+# 12. 抑制ディレクティブ走査の失敗を「該当なし」と読まないこと（Issue #371 の方向 1）。
+#     読めないファイルを 1 本作ると grep が rc>=2 で落ちる。root で走ると mode 000 でも
+#     読めるため、その環境では測定せず skip を明示する（測っていないものを ✓ にしない）。
+#     判定は rc ではなく走査失敗メッセージの照合であることが load-bearing — mode 000 の
+#     ファイルは旧実装でも tsc 自身が読めず非 0 になるため、「非 0 終了」だけでは
+#     走査の fail-closed を測ったことにならない。
+reset_fixture
+assert_target_exists "抑制ディレクティブ走査の失敗" "$FIXTURE_ACE/check-archive-links.ts" && {
+  chmod 000 "$FIXTURE_ACE/check-archive-links.ts"
+  if [ -r "$FIXTURE_ACE/check-archive-links.ts" ]; then
+    echo "  ○ skip: mode 000 でも読める環境（root 等）のため走査失敗ケースは未測定"
+  else
+    if run_fixture "抑制ディレクティブ走査の失敗"; then
+      assert_contains "走査失敗を名指しで報告" "$RUN_OUTPUT" "抑制ディレクティブの走査が失敗しました"
+      assert_contains "対象ファイルを示す" "$RUN_OUTPUT" "check-archive-links.ts"
+    fi
+  fi
+  chmod 644 "$FIXTURE_ACE/check-archive-links.ts" 2>/dev/null || true
+}
 
 echo
 if [ "$FAIL" -gt 0 ]; then

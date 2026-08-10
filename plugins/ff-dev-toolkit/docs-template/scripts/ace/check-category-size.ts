@@ -93,6 +93,26 @@ const EXCEPTION_EXTRA_BUDGET_FACTOR = EXCEPTION_BUDGET_MULTIPLIER - 1;
  * 圧縮候補は空」という #313 と同型の症状になる（#318 の時点で実際に 2 系統へ分裂していた）。
  */
 export const ACE_ENTRY_ID_SOURCE = String.raw`ACE-i?\d(?:[\w-]*\w)?`;
+/**
+ * 実 ID として**妥当**な形状（形式ゲート用。Issue #339）。認識（`ACE_ENTRY_ID_SOURCE`）
+ * より狭い二段構えである — 認識側を狭めると「件数ゲートは数えないのに refine/reuse は
+ * 数える」分裂（#318 が解消した症状）が再発するため、不正 ID は**静かに数えない**の
+ * ではなく、認識したうえで `check-entry-format` が fail-loud に拒否する（#318 設計文書
+ * §正とする系が予約していた安全網の実装）。
+ *
+ * 許す形: 旧 3 桁（ACE-001。単段を許すのは**この形だけ**）・PRスコープ（ACE-438-1）・
+ * Issue 由来（ACE-i425-1）・3 段以上（ACE-1-2-3）。落とす形: 二重ハイフン
+ * （ACE-337--1）・アンダースコア（ACE-1_9）・英字 suffix（ACE-01a / ACE-438-1a）・
+ * 連番の無い単段（ACE-1 / ACE-01 / ACE-0001 / ACE-i425 — 採番規則は PR 由来・
+ * Issue 由来とも連番を必須にしており、旧 3 桁だけが歴史的例外）。
+ *
+ * 英字 suffix は #339 で**落とす**と決定した。採番規則（PLAYBOOK §エントリID規則）に
+ * suffix の定義が無く、許すと同じエントリが suffix の有無で 2 通りに参照されうる —
+ * 参照走査は `\b` 境界なので `ACE-438-1a` への言及から `ACE-438-1` の参照は取り出せず、
+ * カウンターと stale 判定が分裂する。#318 の CANONICAL_IDS はこの決定に合わせて
+ * 「認識される」ことの検査へ役割を狭めた（認識は従来どおり広いまま）。
+ */
+export const ACE_ENTRY_ID_SHAPE = /^ACE-(?:\d{3}|i?\d+(?:-\d+)+)$/u;
 /** entryHeadingSource の生成モード。ID を捕捉するか、捕捉せず素の連接にするか。 */
 export type EntryHeadingMode = "capture-id" | "non-capturing";
 /**
@@ -470,8 +490,14 @@ export function deriveMaxLines(input: {
  * コメント内の追記例（`### ACE-001` など）を走査対象から外す目的は除去と同じだが、
  * 行数が保存されるため countHeaderLines が総行数と同じ基準で測れる。
  * 除去にするとヘッダを過小に測り、導出上限が不当に厳しくなる。
+ *
+ * export するのは、同じ PLAYBOOK を読む他 3 スクリプト（check-entry-format /
+ * ace-reuse-report / ace-refine-report）がフェンス走査の前処理として同じ空白化を
+ * 使うため（Issue #342。findFencedCanonicalHeadings は「空白化は文字数を保つ」ことを
+ * 前提に同一 offset で比較するので、前処理の私製コピーが 1 つでも除去や `u` 付き
+ * `[^\n]` に変わると、その利用者だけ境界が静かにずれる — 単一源はここに置く）。
  */
-function blankHtmlBlockComments(source: string): string {
+export function blankHtmlBlockComments(source: string): string {
   return source.replace(new RegExp(HTML_COMMENT_SPAN_SOURCE, "gu"), blankNonNewline);
 }
 
@@ -518,7 +544,7 @@ export type CodeRegionBlankResult =
  * blankFencedCodeBlocks の結果。`unclosedFence` は呼び出し側で fail-closed に使う。
  * 位置を任意プロパティにしない理由は CodeRegionBlankResult と同じ。
  */
-type BlankedSegment =
+export type BlankedSegment =
   | Readonly<{ readonly text: string; readonly unclosedFence: false }>
   | Readonly<{
       readonly text: string;
@@ -532,14 +558,15 @@ type BlankedSegment =
  * 目的は blankHtmlBlockComments と同じで、本文が例示している追記テンプレート
  * （`| Category | coding | …` を含むフェンス）を走査対象から外すこと。
  *
- * **空白化した `text` を実データが消費する経路は今のところ無い**。live / docs-template の
- * PLAYBOOK.md はどちらもこの断片をヘッダ領域に載せており、ヘッダは Category 集計の対象外
- * だからである（`unclosedFence` の方は毎回読まれる — analyze のヘッダ検査と
- * scanUnclosedFence の両方が通る）。text の空白化が要るのは (1) 部分移行で索引側にエントリが
- * 残り、断片が最終セグメントへ入る場合、(2) カテゴリファイルのエントリ本文がテンプレートを
- * 引用する場合の 2 つ。どちらも「起きうる」であって「今起きている」ではない。
- * それでも入れるのは、空白化しないと**抽出とカウントが食い違って**フェンス内の例示が
- * カテゴリ値として静かに採用されるため（analyzePlaybookMarkdown のループを参照）。
+ * 空白化した `text` は 2 通りに消費される（Issue #342）。(1) **フェンス内の正準形見出しの
+ * 検出**（findFencedCanonicalHeadings）: フェンス内に正準形の見出し（`### ACE-9-9:` の
+ * ような実 ID の例示）があると分割境界の判定が歪むため、件数ゲートと形式ゲートは
+ * fail-loud に拒否し、レポート系（reuse / refine）は空白化済みテキストで見出しを検出して
+ * **除外 + 警告**する — 4 スクリプトの認識一致は、認識正規表現の単一源だけでなく
+ * **前処理の単一源**も要る。境界を空白化側へ付け替える案は採らない（セグメント跨ぎで
+ * 偶然対になる閉じ忘れ（#353 の曖昧形）で、実エントリが引用として静かに吸収される）。
+ * (2) セグメント単位の Category 抽出（#341。フェンス内の `| Category | … |` 例示を
+ * 値として採用しない）。
  *
  * 行単位で走査するのは、正規表現で開始〜終了を対にするより「行数が保存される」ことが
  * 自明になるため（split/join("\n") は行数を変えない）。blankHtmlBlockComments が
@@ -550,7 +577,7 @@ type BlankedSegment =
  * インデントを制限しない（FENCE_OPEN_PATTERN のコメント参照）ことと、
  * バックティック開始フェンスの情報文字列にバックティックを含められない規則を見ないこと。
  */
-function blankFencedCodeBlocks(source: string): BlankedSegment {
+export function blankFencedCodeBlocks(source: string): BlankedSegment {
   const lines = source.split("\n");
   let openFence: string | undefined;
   let openIndex = -1;
@@ -587,6 +614,55 @@ function blankFencedCodeBlocks(source: string): BlankedSegment {
 
 function blankLine(line: string): string {
   return blankNonNewline(line);
+}
+
+/** findFencedCanonicalHeadings の 1 件。line は 0-origin（利用側で +1 して提示する）。 */
+export type FencedCanonicalHeading = Readonly<{
+  readonly id: string;
+  readonly line: number;
+}>;
+
+/**
+ * **閉じた**フェンスの内側にある正準形のエントリ見出しを列挙する（Issue #342）。
+ * 判定は「cleaned では見出しに一致するが、フェンス空白化後の同じ位置は空白化されて
+ * いる」こと — 空白化は文字数を保つため、同一 offset の文字比較で内外を判別できる。
+ *
+ * 未閉フェンスのときは空配列を返す（判定しない）。空白化が EOF まで及ぶため、実在の
+ * 見出しまで「フェンス内」に見えてしまう — その形は既存の未閉検査
+ * （scanUnclosedFence / analyzePlaybookMarkdown のヘッダ・セグメント検査）が名指しで
+ * 落とす領分であり、ここで重ねて報告すると診断が二重になる。
+ *
+ * 消費側の分担: 件数ゲート（analyzePlaybookMarkdown）と形式ゲート
+ * （check-entry-format）は fail-loud に拒否し、例示を ACE-XXX のような非正準形へ
+ * 直させる。レポート系（ace-reuse-report の parsePlaybookEntries、経由で
+ * ace-refine-report）は除外 + 警告 — 読み取り専用ツールは汚れた入力でも走れる方が
+ * 有用で、状態そのものはゲートが commit 前に止める。
+ */
+export function findFencedCanonicalHeadings(cleaned: string): FencedCanonicalHeading[] {
+  const probe = blankFencedCodeBlocks(cleaned);
+  if (probe.unclosedFence) {
+    return [];
+  }
+  const pattern = new RegExp(entryHeadingSource("capture-id"), "gmu");
+  const found: FencedCanonicalHeading[] = [];
+  for (const match of cleaned.matchAll(pattern)) {
+    const idx = match.index ?? 0;
+    // フェンス内の行は空白化されるので、見出し先頭の `#` が probe 側では ` ` になる
+    if (probe.text[idx] !== cleaned[idx]) {
+      const id = match[1];
+      if (id === undefined) {
+        // capture-id モードのパターンで capture が無いのは契約違反。空文字へ正常化すると
+        // 「ID の無い名指し」という自信を持って間違う診断になる（blankCodeRegions の
+        // 契約違反ガードと同じ判断）。
+        throw new Error(
+          "findFencedCanonicalHeadings: entryHeadingSource(\"capture-id\") のマッチに ID capture がありません（パターンの契約違反）",
+        );
+      }
+      const line = (cleaned.slice(0, idx).match(/\n/gu) ?? []).length;
+      found.push({ id, line });
+    }
+  }
+  return found;
 }
 
 /**
@@ -864,6 +940,14 @@ export function scanUnclosedFence(content: string): UnclosedFenceScan {
     return { found: true, line: Math.min(fileLine, segmentLine), scope: "both" };
   }
   if (segmentLine !== undefined) {
+    // ファイル全体では対になっているのにセグメント単位で対にならない形は、フェンス内に
+    // 正準形の見出しがあって**分割が対の内側で切れた**ときにも生じる（Issue #342）。
+    // その場合の真因はフェンス内見出しで、件数ゲート / 形式ゲートが名指しで拒否する。
+    // ここで「未閉」と報告すると、本文を見ると対になって見えるため利用者の調査が
+    // 空回りする — 真因側の診断へ譲る。
+    if (findFencedCanonicalHeadings(cleaned).length > 0) {
+      return { found: false };
+    }
     return { found: true, line: segmentLine, scope: "segment" };
   }
   return { found: false };
@@ -876,10 +960,12 @@ export function scanUnclosedFence(content: string): UnclosedFenceScan {
  * 保持する単一源）で行い、コードフェンスの空白化は**分割の後**、セグメント単位で行う。
  * したがってフェンス内に**正準形の** ID を持つ見出しがあると分割はそこで切れる
  * （テンプレートのプレースホルダを `ACE-XXX` のような非正準形に保つ規則は
- * ACE_ENTRY_ID_SOURCE のコメント参照）。この形はフェンスが対にならず unclosedFence の
- * fail-closed へ落ちるので黙ってはいない。なお分割・countHeaderLines・Category カウントの
- * 3 者でフェンスの扱いが揃っていない状態そのものは続いている（分割と countHeaderLines は
- * フェンスを見ず、Category カウントだけがセグメント単位で空白化する。Issue #342）。
+ * ACE_ENTRY_ID_SOURCE のコメント参照）。この形は本関数冒頭の findFencedCanonicalHeadings
+ * が真因（フェンス内の正準形見出し）を名指しで拒否する（Issue #342。かつては
+ * scanUnclosedFence のセグメント検査が「未閉フェンス」という**誤った診断**で拒否して
+ * いた — 現在の scanUnclosedFence はこの形を真因側の診断へ譲る）。分割と
+ * countHeaderLines がフェンスを見ない構造自体は変わっていないが、歪みを生む入力は
+ * この拒否で commit 前に止まるため無害化されている。
  * `allowEmpty` が true の場合、エントリ見出しが 0 件でもエラーにせず空の結果を返す
  * （分割レイアウトの索引ファイルのように、単体では 0 件が正常なケース向け）。
  */
@@ -888,6 +974,24 @@ export function analyzePlaybookMarkdown(
   options: { readonly allowEmpty?: boolean } = {},
 ): AnalyzeResult {
   const cleaned = blankHtmlBlockComments(content);
+  // フェンスが閉じているのに、その内側に正準形の見出しがある形は fail-loud で拒否する
+  // （Issue #342）。境界をフェンス空白化側へ付け替える案は採らない — セグメント跨ぎで
+  // 偶然対になる閉じ忘れ（#353 の曖昧形）で、実エントリが「引用」として**静かに吸収**
+  // される。拒否した上で、例示は非正準形（ACE-XXX）へ直させるのが安全側。
+  // 未閉フェンスのときは判定しない（空白化が EOF まで及び、実在の見出しまで
+  // 「フェンス内」に見える）— その形は既存の未閉検査が名指しで落とす。
+  const fencedHeadings = findFencedCanonicalHeadings(cleaned);
+  if (fencedHeadings.length > 0) {
+    return {
+      kind: "error",
+      message:
+        `フェンス内に正準形のエントリ見出しがあります（${fencedHeadings
+          .map((h) => `${h.id}: ${String(h.line + 1)} 行目`)
+          .join(" / ")}）。` +
+        "例示なら ID を ACE-XXX のような非正準形にしてください（正準形の例示は分割境界の判定を歪めます）。" +
+        "実エントリのつもりなら、直前のコードフェンスの対応（閉じ忘れ・裸の ``` との偶然の対）を確認してください",
+    };
+  }
   const { header, entries } = splitEntrySegments(cleaned);
   // ヘッダ領域（最初のエントリ見出しより前）も未閉フェンスを検査する。ここを外すと、
   // 打ち間違いがどちら側に落ちたかで検査の有無が変わる。ヘッダの未閉フェンスは

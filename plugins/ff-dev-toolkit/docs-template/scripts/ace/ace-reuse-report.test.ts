@@ -216,6 +216,148 @@ describe("computeReuseStats", () => {
   });
 });
 
+describe("フェンス内の例示の除外（Issue #342）", () => {
+  const FENCE = "```";
+
+  it("フェンス内の見出しを除外し、例示のメタデータを実エントリへ流入させない", () => {
+    // 実エントリ ACE-1-1 は Helpful を意図的に持たない。フェンス内の例示は Helpful 7 /
+    // deprecated を持つ — フィールド抽出を空白化前のセグメントから行うと、欠けた
+    // フィールドが例示の値で埋まる（レビューで実測した流入の形）。
+    const content = [
+      "# ACE Playbook",
+      "",
+      "### ACE-1-1: 例示を含む実エントリ",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "| Date | 2026-01-01 |",
+      "| Status | active |",
+      "",
+      "追記例の引用:",
+      "",
+      `${FENCE}markdown`,
+      "### ACE-9-9: 悪い例",
+      "",
+      "| Date | 2025-01-02 |",
+      "| Helpful | 7 | Harmful | 0 |",
+      "| Status | deprecated |",
+      "| Category | testing |",
+      FENCE,
+      "",
+      "---",
+    ].join("\n");
+    const warnings: string[] = [];
+    const entries = parsePlaybookEntries(content, (m) => warnings.push(m));
+    expect(entries.map((e) => e.id)).toEqual(["ACE-1-1"]);
+    expect(entries[0]).toMatchObject({
+      helpful: 0,
+      status: "active",
+      date: "2026-01-01",
+      category: "coding",
+    });
+    expect(warnings.some((w) => w.includes("ACE-9-9") && w.includes("数えません"))).toBe(true);
+    expect(warnings.some((w) => w.includes("ACE-1-1") && w.includes("Helpful"))).toBe(true);
+  });
+
+  it("警告の行番号は複数行 HTML コメントがあっても実ファイルの行を指す", () => {
+    // HTML コメントの前処理を「除去」にすると、コメント内の改行ごと消えて行番号が
+    // コメントの行数ぶん小さくなる（blankHtmlBlockComments の空白化で原文と一致する）。
+    const lines = [
+      "# ACE Playbook",
+      "<!--",
+      "テンプレート説明 1",
+      "テンプレート説明 2",
+      "-->",
+      "",
+      "### ACE-1-1: 実エントリ",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "| Date | 2026-01-01 |",
+      "| Helpful | 0 | Harmful | 0 |",
+      "| Status | active |",
+      "",
+      FENCE,
+      "### ACE-9-9: 悪い例",
+      FENCE,
+      "",
+      "---",
+    ];
+    const headingLineOneOrigin = lines.indexOf("### ACE-9-9: 悪い例") + 1;
+    const warnings: string[] = [];
+    parsePlaybookEntries(lines.join("\n"), (m) => warnings.push(m));
+    expect(
+      warnings.some((w) => w.includes(`ACE-9-9: ${String(headingLineOneOrigin)} 行目`)),
+    ).toBe(true);
+  });
+
+  it("未閉フェンスは警告して空白化前の境界へ退化する（実在エントリを吸収しない）", () => {
+    const content = [
+      "# ACE Playbook",
+      "",
+      "### ACE-1-1: 実エントリ",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "| Date | 2026-01-01 |",
+      "| Helpful | 0 | Harmful | 0 |",
+      "| Status | active |",
+      "",
+      FENCE,
+      "",
+      "### ACE-2-2: 未閉フェンスの後ろの実エントリ",
+      "",
+      "| Category | coding | Origin | PR #2 |",
+      "| Date | 2026-01-02 |",
+      "| Helpful | 0 | Harmful | 0 |",
+      "| Status | active |",
+    ].join("\n");
+    const warnings: string[] = [];
+    const entries = parsePlaybookEntries(content, (m) => warnings.push(m));
+    expect(entries.map((e) => e.id)).toEqual(["ACE-1-1", "ACE-2-2"]);
+    expect(
+      warnings.some(
+        (w) => w.includes("コードフェンスが閉じていません") && w.includes("10 行目"),
+      ),
+    ).toBe(true);
+  });
+
+  it("computeReuseStats はフェンス内の見出し・ID 参照を境界にも集計にも使わない", () => {
+    // 旧実装はここだけ空白化前のテキストで再分割していたため、(a) フェンス内の
+    // ACE-9-9 が owner 境界として復活し、実エントリ本文の自己言及が「他エントリからの
+    // 参照」として過大計上され、(b) フェンス内の ID 出現も参照として数えていた。
+    const content = [
+      "# ACE Playbook",
+      "",
+      "### ACE-1-1: 例示を含む実エントリ",
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "| Date | 2026-01-01 |",
+      "| Helpful | 0 | Harmful | 0 |",
+      "| Status | active |",
+      "",
+      FENCE,
+      "### ACE-9-9: 悪い例",
+      "ACE-2-2 をフェンス内で参照（数えない）",
+      FENCE,
+      "",
+      "ACE-1-1 自身への言及（幻の owner のセグメントへ割れると過大計上される）",
+      "",
+      "---",
+      "",
+      "### ACE-2-2: 参照される実エントリ",
+      "",
+      "| Category | coding | Origin | PR #2 |",
+      "| Date | 2026-01-02 |",
+      "| Helpful | 0 | Harmful | 0 |",
+      "| Status | active |",
+      "",
+      "---",
+    ].join("\n");
+    const entries = parsePlaybookEntries(content, () => {});
+    const stats = computeReuseStats(entries, [], content);
+    expect(stats.get("ACE-2-2")?.crossRefCount).toBe(0);
+    expect(stats.get("ACE-1-1")?.crossRefCount).toBe(0);
+  });
+});
+
 describe("findArchiveCandidates", () => {
   const entries = parsePlaybookEntries(PLAYBOOK_FIXTURE, () => {});
   const stats = statsFor(PLAYBOOK_FIXTURE, gitLogFixture());

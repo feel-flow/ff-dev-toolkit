@@ -44,6 +44,21 @@ for f in "$MULTI_AGENT" "$ADAPTER_COMMON" "$AGENT_CONFIG" "$COMMAND_DOC" "$DOC_R
   [ -f "$f" ] || { echo "✗ 対象ファイルが見つかりません: $f" >&2; exit 1; }
 done
 
+# ---- 実行環境からの分離（Issue #378） --------------------------------------------
+# MULTI_AGENT_CODEX_PROFILE が export された環境では、codex アダプタの profile 実在
+# 検査（Issue #239 系の仕様どおり fail-closed）がホストの $CODEX_HOME / ~/.codex に
+# 向かい（本 suite は HOME を差し替えない）、設定が解決できない環境では timeout/crash
+# 等のシナリオが「プロファイル不在エラー」にすり替わって前提が崩れる。解決できる
+# 環境でも stub の argv に -p が混入して被検体の挙動が env 依存になるため、いずれに
+# せよ分離が要る。orchestrator は MULTI_AGENT_CONFIG / MULTI_AGENT_REVIEW_MAIN 等も
+# 読むため、抽出対象は multi-agent.sh とアダプタ実装の両方に広げる。センチネルは
+# orchestrator 専用変数とアダプタ変数の 2 本 — 片方のソースだけ引数から落ちる形を
+# 単一センチネルでは検出できない。方式の詳細は lib 側ヘッダー参照。
+# shellcheck source=../lib/adapter-env-isolation.sh
+. "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE" \
+  "$MULTI_AGENT" "$PLUGIN_ROOT"/scripts/adapters/*.sh
+
 PASS=0
 FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
@@ -171,7 +186,7 @@ for adapter in claude-code codex-cli copilot-cli gemini-cli grok-cli; do
 done
 
 # --help の表示（利用者が最初に見る値）
-HELP_OUT="$(bash "$MULTI_AGENT" --help 2>/dev/null || true)"
+HELP_OUT="$(run_isolated bash "$MULTI_AGENT" --help 2>/dev/null || true)"
 if [[ "$HELP_OUT" == *"review ${CANON}"* ]]; then
   ok "--help が review ${CANON} を表示"
 else
@@ -533,7 +548,7 @@ run_orchestrator() { # $1: timeout 秒 / 出力: "rc elapsed"
   rm -f "$TMP/invoked-"*
   start="$(date +%s)"
   set +e
-  PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+  run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
     --task review --cli codex-cli --perspective code-review \
     --base develop --timeout "$to" >"$TMP/run.log" 2>&1
   rc=$?
@@ -731,7 +746,7 @@ echo ok > "$TMP/codex-mode"
 echo fail > "$TMP/mktemp-mode"
 rm -f "$TMP/invoked-"*
 set +e
-PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
   --task review --cli codex-cli --perspective code-review \
   --base develop --timeout 60 >"$TMP/run.log" 2>&1
 RC=$?
@@ -754,7 +769,7 @@ fi
 echo hang > "$TMP/codex-mode"
 ALT_OUT="$TMP/alt-results"
 set +e
-PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
   --task implement --description "stub task" --include-diff \
   --cli codex-cli --perspective refactoring \
   --base develop --output-dir "$ALT_OUT" --timeout 3 >"$TMP/run-impl.log" 2>&1
@@ -919,7 +934,7 @@ fi
 echo hang > "$TMP/codex-mode"
 rm -f "$TMP/invoked-"*
 set +e
-PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
   --task review --sequential --cli codex-cli --perspective code-review \
   --base develop --timeout 3 >"$TMP/run-seq.log" 2>&1
 RC=$?
@@ -933,6 +948,23 @@ if target_cli_invoked && no_other_cli_invoked; then
   ok "sequential: 実行時 fallback が起きていない（他 CLI は未起動）"
 else
   bad "sequential: 対象 CLI 未起動 or 設定 fallback が黙って実行された"
+fi
+
+# --- ケース5b: 分離の自己検証（Issue #378） ---
+# ホスト汚染を意図的に再現し、run_isolated のラップが起動経路から落ちる退行を
+# クリーンな環境でも検出する（落ちているとこのケースだけ汚染が漏れて赤くなる）。
+# 存在しないプロファイル名はアダプタの fail-closed 実在検査に、存在しない config
+# パスは orchestrator の設定読込にそれぞれ引っかかるため、adapter 側・orchestrator
+# 側どちらのラップ欠落も成功ケースの失敗として現れる。adapter-model-args の
+# 自己汚染ケースと同じ前置代入イディオム（関数実行中だけ環境へ export される）。
+echo ok > "$TMP/codex-mode"
+read -r RC EL <<<"$(MULTI_AGENT_CODEX_PROFILE=isolation-selftest-no-such-profile \
+  MULTI_AGENT_CONFIG="$TMP/no-such-config.yaml" run_orchestrator 60)"
+if [[ "$RC" -eq 0 ]] && target_cli_invoked; then
+  ok "isolation: 汚染を前置しても正常完了ケースが影響を受けない（除去が効いている）"
+else
+  bad "isolation: 汚染が漏れている — run_isolated のラップが起動経路から落ちていないか (rc=$RC)"
+  tail -5 "$TMP/run.log" | sed 's/^/    | /' >&2 || true
 fi
 
 # ケース6（cursor-cli の上限が実際に適用されること）は issue #240 で削除した。
@@ -1013,7 +1045,7 @@ for key in $ADAPTER_KEYS; do
   rm -f "$out_file"
   # 欠落 perspective。build_prompt → load_perspective が return 1。
   set +e
-  PATH="$STUB:$PATH" bash "$adapter_sh" \
+  run_isolated PATH="$STUB:$PATH" GROK_HOME="$TMP/grok-home-empty" bash "$adapter_sh" \
     "$TMP/no-such-perspective-file.md" "$out_file" \
     --timeout 30 --base develop >"$TMP/bp-${key}.log" 2>&1
   bp_rc=$?

@@ -115,7 +115,7 @@ bash scripts/multi-review.sh --mode cross-model --cli codex-cli
 2. **設定読み込み** → `review-config.yaml` からCLI設定・戦略を取得
 3. **CLI検出** → `command -v` で利用可能なCLIを検出
 4. **フォールバック** → 未インストールCLIのパースペクティブを再分配
-5. **並列実行** → 各CLIアダプターを並列で実行
+5. **並列実行** → 各CLIアダプターを並列で実行（free-tier CLI に複数観点が乗る場合、その CLI 内はレート制限保護のため逐次実行。CLI 間の並列は維持）
 6. **結果収集** → `.review-results/{cli-name}/{perspective}.md` に出力
 7. **統合レポート** → 重複除去・統合してレポート生成
 

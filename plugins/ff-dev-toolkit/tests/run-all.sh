@@ -133,6 +133,10 @@ else
     # 更新通知フック（hooks/check-update.sh）の回帰検証。ローカル bare リポジトリ
     # fixture のみ使用し、実ネットワークには触らない。
     "$SCRIPT_DIR/update-check/verify.sh"
+    # SSOT リポジトリの .claude/settings.json にある hook 起動コマンドのパス解決
+    # （Issue #273）。settings.json が無いチェックアウト（公開リポジトリ等）では
+    # ○ skip。一時ディレクトリ + stub hook のみ（〜2 秒）。
+    "$SCRIPT_DIR/claude-hooks-path/verify.sh"
     "$SCRIPT_DIR/merge-cleanup/verify.sh"
     # 既存の孤児トランスクリプト sweep（実 ~/.claude は触らず隔離 tmp のみ）。
     # merge-cleanup の Step 5.5 と同じアーカイブ思想の別口。直後に置く。
@@ -140,6 +144,18 @@ else
     # perspective フィルタの dry-run 契約。stub CLI の存在確認だけで完結し、
     # 実 CLI・ネットワーク・課金を伴わない。
     "$SCRIPT_DIR/multi-agent-plan/verify.sh"
+    # 統合レポートの CRITICAL_BLOCK 判定の構造検査（Issue #272）。一時 git リポジトリ +
+    # stub CLI で orchestrator を 9 回実走する（〜15 秒）。実 CLI・ネットワーク・課金は
+    # 伴わない。
+    "$SCRIPT_DIR/multi-agent-critical-marker/verify.sh"
+    # build_prompt の実行境界（再帰防止ガード）の回帰検査（Issue #263）。一時 git
+    # リポジトリ + stub CLI（〜3 秒）。実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/adapter-prompt-guard/verify.sh"
+    # free-tier CLI への観点集中の制御（Issue #251）: プラン警告 + free-tier 限定の
+    # 同一 CLI 内逐次化 + standard の並列維持 + 途中失敗の継続。一時 git リポジトリ +
+    # stub CLI で orchestrator を 3 回実走（〜42 秒。stub の滞留 0.6 秒 × 多数を含む。
+    # 数字を更新するときは実測してから直すこと）。実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/multi-agent-serialization/verify.sh"
     # 同梱 MCP サーバーの検査 4 本。node_modules が無い環境ではいずれも ○ skip
     # （型検査の 2 本は node が PATH に無い環境でも ○ skip。tsc の shebang が node を
     # 要求するため、環境都合の失敗を型エラーと混ぜないための分岐）。

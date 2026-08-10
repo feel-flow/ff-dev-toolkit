@@ -12,7 +12,7 @@ Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)
 | `ace-refine-report.ts`                        | `/ace-refine` 用の候補算出レポート（Archive 候補・行数バジェット超過・PATTERNS 昇格候補。読み取り専用の dry-run） |
 | `sync-playbook-frontmatter.ts`                | PLAYBOOK frontmatter（`ace_entry_count` / version↔Changelog / `changeImpact`）の同期・検証ゲート |
 | `check-archive-links.ts`                      | `playbook/archive/` の保全本文内に `./` 相対リンクがある場合、冒頭注記の存在を強制するゲート（違反で非ゼロ終了） |
-| `check-entry-format.ts`                       | 新規エントリが旧テーブル形式でないことを検証するゲート（allowlist 外の旧形式で非ゼロ終了） |
+| `check-entry-format.ts`                       | 新規エントリが旧テーブル形式でないこと + ID 形状が妥当（§エントリID規則）であることを検証するゲート（allowlist 外の旧形式・不正 ID で非ゼロ終了） |
 | `docs-template/.claude/agents/ace-capture.md` | Subagent 用プロンプト（コピー先は `.claude/agents/`）                                     |
 
 post-merge からの呼び出し例は `docs-template/.claude/hooks/post-merge.ace.sample.sh` を参照してください。
