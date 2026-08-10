@@ -15,8 +15,10 @@
 # 実 CLI は起動しない。PATH の先頭に argv を記録するだけの stub を置く。
 # 課金もネットワークアクセスも発生しない。
 #
-# env 変数名はこのファイル内にリテラルで書く。これが skills/multi-review/SKILL.md の
-# 表と実装の間の突き合わせになり、実装側だけ変数名を変えると red になる。
+# 検査ケースの env 変数名はこのファイル内にリテラルで書く。これが
+# skills/multi-review/SKILL.md の表と実装の間の突き合わせになり、実装側だけ
+# 変数名を変えると red になる（例外は実行環境からの分離リストのみ — そちらは
+# 実装からの動的抽出で、突き合わせではなく網羅が目的。下の分離ブロック参照）。
 #
 # 一時ディレクトリと git リポジトリを要求するので、いずれかが使えない環境では
 # 行頭 `○ skip` を出して exit 0 する（部分 skip はしない — 検査は全件走るか
@@ -67,16 +69,59 @@ for cli in claude codex gemini copilot grok; do
   chmod +x "$WORK/bin/$cli"
 done
 
+# ---- 実行環境からの分離（Issue #374） ---------------------------------------------
+# MULTI_AGENT_MODEL_* / MULTI_AGENT_CODEX_PROFILE は利用者が設定する正規の設定つまみ
+# なので、export 済みの環境で走らせると「env 未設定」ケースの前提が崩れて恒常赤になる。
+# アダプタ起動時に env -u で明示的に取り除き、前提を仮定するのではなく作る。
+#
+# 一覧はアダプタ実装から動的に抽出する — アダプタが増えてもここが黙って漏れない。
+# この保証はアダプタが変数名をリテラルで書いている限りにおいて成立する（間接展開で
+# 変数名を組むと抽出を逃れる。現行の全アダプタはリテラル呼び出し）。コメント中の
+# 例示名（MULTI_AGENT_MODEL_GEMINI_CL1 等）も拾うが、未設定変数への -u は無害なので
+# 過剰包含で安全側に倒す。
+#
+# 抽出はパイプで直結せずいったん実体化して成否を確定させる。grep はファイルの一部が
+# 読めなくても残りの結果を部分出力して非 0(>1) で終わるため、直結すると欠けたアダプタの
+# 変数だけ分離リストから黙って落ちる（プロセス置換内の失敗は set -e に捕まらない）。
+ISOLATE_RAW="$WORK/isolate-vars.raw"
+GREP_RC=0
+grep -hoE 'MULTI_AGENT_[A-Z0-9_]+' "$ADAPTERS_DIR"/*.sh > "$ISOLATE_RAW" || GREP_RC=$?
+if [ "$GREP_RC" -gt 1 ]; then
+  echo "✗ アダプタ実装からの MULTI_AGENT_* 抽出が失敗しました（grep rc=${GREP_RC}）。部分的な読み取り失敗は分離リストの黙った欠落になるため続行しない" >&2
+  exit 1
+fi
+ISOLATE_ENV=()
+while IFS= read -r var; do
+  ISOLATE_ENV+=(-u "$var")
+done < <(sort -u "$ISOLATE_RAW")
+
+# 抽出が空振り（rc=1 で出力なし等）すると分離が静かに消え、設定済み環境で恒常赤へ
+# 戻る。既知の変数名をセンチネルにして fail-closed にする（変数名リテラルは env
+# 上書きケース側と重複するが、それ自体が実装との突き合わせになる — ファイル冒頭
+# コメントの方針と同じ）。
+case " ${ISOLATE_ENV[*]-} " in
+  *" MULTI_AGENT_MODEL_CLAUDE_CODE "*) : ;;
+  *)
+    echo "✗ 分離リストにセンチネル MULTI_AGENT_MODEL_CLAUDE_CODE がありません。抽出が空振りしたか、アダプタ側でこの変数名が改名された（改名時は本ファイルのセンチネル参照も更新する）。いずれでも実行環境からの分離を保証できないため続行しない" >&2
+    exit 1 ;;
+esac
+
 # ---- 実行ヘルパー ---------------------------------------------------------------
 # run_adapter <adapter ファイル名> [VAR=VALUE ...]
 # 記録した argv を RUN_ARGV に、終了コードを RUN_RC に入れる。
+# 継承環境の MULTI_AGENT_* は ISOLATE_ENV で除去する。env は -u の除去を先に、
+# NAME=VALUE の代入を後に適用するため、ケース固有の上書き（"$@"）はそのまま効く。
+# GROK_HOME も同じクラスの実行環境つまみ（未設定だと grok アダプタが $HOME 配下へ
+# fallback し、ホストの実イベントログを読む）なので、常にスクラッチへ向ける。
+mkdir -p "$WORK/grok-home-empty"
 RUN_ARGV=""
 RUN_RC=0
 run_adapter() {
   local adapter="$1"; shift
   : > "$WORK/argv.log"
-  if env PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" CODEX_HOME="$WORK/codex" \
-       ${RUN_GROK_HOME:+GROK_HOME="$RUN_GROK_HOME"} "$@" \
+  if env ${ISOLATE_ENV[@]+"${ISOLATE_ENV[@]}"} \
+       PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" CODEX_HOME="$WORK/codex" \
+       GROK_HOME="${RUN_GROK_HOME:-$WORK/grok-home-empty}" "$@" \
        bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$WORK/out.md" \
        --base HEAD --timeout 30 --task-type "${RUN_TASK_TYPE:-review}" \
        --description "stub task" >"$WORK/stdout.log" 2>"$WORK/stderr.log"; then
@@ -107,18 +152,38 @@ expect_argv_lacks() {
   fi
 }
 
+# expect_launched <説明>
+# lacks 系しか見ないケースは、env の起動自体が失敗して argv が空のままでも「無い」
+# 判定で真空 PASS する（stub は起動されれば必ず argv を記録するので、空 = CLI 未起動）。
+# 起動の成立を明示的に固定して、個別行が「検証した」と嘘をつく穴を塞ぐ。
+# 注意: 全ケース一律には掛けない — 「プロファイル不在なら CLI を起動しない」のように
+# 空 argv が正であるケースが存在する。
+expect_launched() {
+  if [ -n "$RUN_ARGV" ]; then
+    ok "$1"
+  else
+    bad "$1 — argv 記録が空（CLI が起動していない。rc=${RUN_RC}）"
+  fi
+}
+
 # ---- 既定（env 未設定）: 変更前と同じ argv であること ----------------------------
+# 各 CLI で expect_launched を先に置く。grok だけは直後の --sandbox 肯定検査が
+# 起動の成立を兼ねるため不要。
 run_adapter claude-code-adapter.sh
+expect_launched "claude-code: 既定ケースで CLI が起動している"
 expect_argv_lacks "claude-code: env 未設定ならモデルフラグを渡さない" "<--model>"
 
 run_adapter codex-cli-adapter.sh
+expect_launched "codex-cli: 既定ケースで CLI が起動している"
 expect_argv_lacks "codex-cli: env 未設定ならモデルフラグを渡さない" "<-m>"
 expect_argv_lacks "codex-cli: env 未設定ならプロファイルフラグを渡さない" "<-p>"
 
 run_adapter gemini-cli-adapter.sh
+expect_launched "gemini-cli: 既定ケースで CLI が起動している"
 expect_argv_lacks "gemini-cli: env 未設定ならモデルフラグを渡さない" "<-m>"
 
 run_adapter copilot-cli-adapter.sh
+expect_launched "copilot-cli: 既定ケースで CLI が起動している"
 expect_argv_lacks "copilot-cli: env 未設定ならモデルフラグを渡さない" "<--model>"
 
 run_adapter grok-cli-adapter.sh
@@ -126,6 +191,16 @@ expect_argv_lacks "grok-cli: env 未設定ならモデルフラグを渡さな�
 # read-only 保証はプロファイル名まで含めて固定する。`--sandbox` を渡していても
 # プロファイルが workspace なら CWD へ書けるので、フラグの有無だけでは足りない。
 expect_argv_has "grok-cli: review では --sandbox read-only を渡す" "<--sandbox><read-only>"
+
+# ---- 分離の自己検証 ---------------------------------------------------------------
+# run_adapter から ISOLATE_ENV の適用が落ちる退行を検出する。ホスト環境の汚染を
+# 意図的に再現し、除去されることを固定する（Issue #374 の再発は「設定済み環境で
+# だけ恒常赤」という形で現れ、クリーンな CI では見えない — だから汚染をここで作る）。
+# 関数呼び出しへの前置代入は呼び出しの間だけ子プロセスへ export され、終了後は
+# 復元されるため後続ケースを汚染しない。
+MULTI_AGENT_MODEL_CLAUDE_CODE=polluted-from-host run_adapter claude-code-adapter.sh
+expect_launched "isolation: 自己汚染ケースで CLI が起動している"
+expect_argv_lacks "isolation: 継承環境の MULTI_AGENT_* が除去される" "<--model>"
 
 # ---- env による上書き ------------------------------------------------------------
 run_adapter claude-code-adapter.sh MULTI_AGENT_MODEL_CLAUDE_CODE=opus
