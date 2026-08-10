@@ -112,6 +112,13 @@ else
     # 実 CLI・ネットワーク・課金は伴わない（〜2 秒）。静的検査の後、ネットワーク
     # 検査の前に置く。
     "$SCRIPT_DIR/adapter-model-args/verify.sh"
+    # アダプタが渡す sandbox 値が、その CLI が実際に受け付ける値かの契約検査
+    # （Issue #403）。同じ argv 実測のクラスなので adapter-model-args の直後。
+    # 層 1 は stub CLI のみ。層 2 だけは**実 CLI の `--help`** を読むが、これは
+    # clap/yargs のヘルプ生成でローカル完結し、ネットワーク・課金・認証・エージェント
+    # 実行のいずれも伴わない（CLI が PATH に無ければその照合だけ ○ skip）。
+    # よってネットワーク検査より前のこの位置でよい（〜3 秒）。
+    "$SCRIPT_DIR/adapter-sandbox-contract/verify.sh"
     # 主+副レビュワーの解決・保存・縮退。一時ディレクトリと git リポジトリを使うが
     # 実 CLI・ネットワーク・課金は伴わない。設定の保存先は XDG_CONFIG_HOME を
     # 一時ディレクトリへ向けて隔離するので、利用者の実設定には触れない。

@@ -1315,8 +1315,11 @@ clear_staging_dir() {
 }
 
 # サンドボックスの書き込み境界は、CLI が継承する CWD（アダプタは cd しない）。
-# staging がその外に出ると、grok の workspace / codex のサンドボックスが書き込みを
+# staging がその外に出ると、grok の workspace / codex の workspace-write が書き込みを
 # 拒み、パスを渡したのにエージェントが書けない状態になる。
+#
+# codex がこの警告の対象になったのは Issue #403 から（それ以前は不正な sandbox 値で
+# 引数解析の段階で落ちており、staging に触れる所まで到達していなかった）。
 #
 # 比較は**両辺とも物理パス**で行う。OUTPUT_DIR は execute_tasks で pwd -P 済み、
 # ここも ${PWD}（論理パス）ではなく $(pwd -P) を使う。既定の OUTPUT_DIR は
@@ -1341,7 +1344,7 @@ warn_if_staging_outside_sandbox() {
   esac
   echo "  ⚠️  Staging dir is outside the CLI sandbox root (CWD): ${staging_dir}" >&2
   echo "      CWD: ${cwd_physical}" >&2
-  echo "      Sandboxed CLIs (grok: workspace / codex) may be denied writes there." >&2
+  echo "      Sandboxed CLIs (grok: workspace / codex: workspace-write) may be denied writes there." >&2
 }
 
 # ── Execute Single Task ──

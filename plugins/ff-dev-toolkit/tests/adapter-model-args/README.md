@@ -16,6 +16,17 @@
 
 実 CLI は起動しない。`PATH` の先頭に argv を記録するだけの stub を置くので、課金もネットワークアクセスも発生しない。
 
+## 姉妹 suite との境界（`adapter-sandbox-contract`）
+
+grok の `--sandbox` プロファイル名は、本 suite と `tests/adapter-sandbox-contract/` の**両方**が固定している。二重化を承知で残しているのは、赤くなる理由が違うため:
+
+| suite | 見ているもの |
+|---|---|
+| adapter-model-args（本 suite） | argv 組み立ての一部としての sandbox。フラグと値が渡っているか |
+| adapter-sandbox-contract | その値を **CLI が受け付けるか**（実 CLI が公表する列挙との突き合わせを含む） |
+
+**grok のプロファイル名を変えるときは両方を直すこと。** 片側だけ動くと、もう片側が古い契約を主張し続ける（`cli-registry-completeness` が潰している「手で維持する並行リストの片側だけが動く」クラス）。両 `verify.sh` にも相互参照コメントがある。
+
 ## argv の記録形式
 
 stub は各引数を `<arg>` で囲んで記録する。

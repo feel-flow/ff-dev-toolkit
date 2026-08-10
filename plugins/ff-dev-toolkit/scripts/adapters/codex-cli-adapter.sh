@@ -54,13 +54,84 @@ if ! prompt="$(build_prompt "$PERSPECTIVE_FILE" "$BASE_BRANCH" "$CHANGED_FILES")
 fi
 
 # ── Task-type specific sandbox ──
-
+#
+# The value goes straight to `codex exec --sandbox`, which is a closed enum.
+# Measured on codex-cli 0.144.5 (`codex exec --help`):
+#   -s, --sandbox <SANDBOX_MODE>
+#       [possible values: read-only, workspace-write, danger-full-access]
+# Anything else is rejected by argv parsing with rc=2 **before the CLI runs at
+# all** — the perspective is lost for the whole run, and the report shows an
+# INCOMPLETE artifact rather than "this adapter is misconfigured". implement used
+# to pass `network-off`, which is not in that enum, so every codex implement task
+# died there (Issue #403). tests/adapter-sandbox-contract pins this against the
+# enum the CLI itself publishes.
+#
+# Why workspace-write for implement, and what it does to the network. In codex
+# these two axes are bundled into the one mode, so there is no "confine writes
+# but keep the network off" value to choose separately. Measured on 0.144.5 with
+# `codex sandbox` (invokes no model — the probes below are free and local):
+#
+#   mode                 write into CWD   network
+#   read-only            denied           blocked (curl → HTTP 000)
+#   workspace-write      allowed          blocked (curl → HTTP 000)
+#   danger-full-access   allowed          open    (curl → HTTP 200)
+#
+# tests/adapter-sandbox-contract re-runs the **write** half of this table against
+# the installed codex, so the mode choice stops being a one-time measurement. The
+# network half needs an outbound request, which that suite must not do at its slot
+# in run-all (static → network → destructive), so it stays a recorded measurement.
+#
+# So workspace-write is the mode that lets implement write its staging output
+# while keeping the network shut — which is what the old `network-off` value was
+# reaching for. On the **write axis** it is the direct counterpart of grok's
+# `workspace` profile. Do not read that as full parity: grok's `--help` says its
+# profiles govern "filesystem and network access", but grok's network behaviour
+# under `workspace` has never been measured here, so the two adapters are only
+# known to agree about writes.
+#
+# The network default is not left to chance: implement also pins
+# `-c sandbox_workspace_write.network_access=false` (see sandbox_config_args).
 get_sandbox_mode() {
   case "${TASK_TYPE:-review}" in
     review)    echo "read-only" ;;
     explore)   echo "read-only" ;;
-    implement) echo "network-off" ;;
+    # implement has to write its staging output, so it gets the mode that allows
+    # CWD writes rather than a mode that denies them (or one that also opens the
+    # network). The kernel enforces "not outside the CWD"; "not outside staging"
+    # is only a promise made in the prompt — same gap as grok's, see Issue #398.
+    implement) echo "workspace-write" ;;
     *)         echo "read-only" ;;
+  esac
+}
+
+# Pin the network off explicitly under workspace-write. The mode default is
+# already `false`, so on a stock machine this changes nothing — it exists for the
+# machine whose ~/.codex/config.toml (or a layered profile) sets
+# `[sandbox_workspace_write] network_access = true`. Measured on 0.144.5: with
+# that config a workspace-write run reaches the network (curl → 200); adding this
+# override closes it again (→ 000). Without the pin the user gets a networked
+# implement run with no signal anywhere — not in stdout, not in the artifact, not
+# in the report.
+#
+# Passing it is weakly dominant, which is the whole argument. codex ignores an
+# unrecognized `-c` key silently (measured, with and without --strict-config on
+# `codex exec`), so if this key is ever renamed upstream the override simply stops
+# applying — and the behaviour degrades to the mode default, i.e. exactly where we
+# would have been without it. It can help and it cannot hurt. An earlier revision
+# of this adapter used the silent-ignore property as a reason NOT to pin; that
+# reasoning was wrong, because the failure mode it feared *is* the alternative.
+#
+# The silent ignore is still worth detecting, and it is detectable:
+# `codex exec --strict-config` rejects an unknown `-c` override with rc=1 and
+# "unknown configuration field ... in -c/--config override" (measured).
+# tests/adapter-sandbox-contract probes exactly that in a throwaway CODEX_HOME, so
+# a rename turns into a red test instead of a guard that quietly evaporates.
+# --strict-config is deliberately NOT used here: it also hard-errors on any
+# unrecognized field anywhere in the *user's own* config.toml, which would break
+# runs on other people's machines for reasons unrelated to this override.
+sandbox_config_args() {
+  case "$1" in
+    workspace-write) printf '%s\n%s\n' "-c" "sandbox_workspace_write.network_access=false" ;;
   esac
 }
 
@@ -72,6 +143,17 @@ echo "   Task type: ${TASK_TYPE:-review}" >&2
 echo "   Timeout: ${TIMEOUT}s" >&2
 
 sandbox_mode="$(get_sandbox_mode)"
+# bash 3.2 has no readarray; read the newline-separated pairs into an array with
+# a plain loop. The values are fixed literals from sandbox_config_args, so there
+# is no quoting hazard here, but keep them one-per-element so a value containing
+# a space could never split into two argv entries.
+SANDBOX_CONFIG_ARGS=()
+while IFS= read -r _sandbox_cfg_arg; do
+  [[ -n "$_sandbox_cfg_arg" ]] && SANDBOX_CONFIG_ARGS+=("$_sandbox_cfg_arg")
+done <<EOF
+$(sandbox_config_args "$sandbox_mode")
+EOF
+
 # Guard this mktemp explicitly: under `set -e` a failure here would kill the
 # adapter with a bare 1 before run_with_timeout is ever reached, filing a broken
 # TMPDIR as "the CLI exited 1" and writing no artifact at all.
@@ -122,6 +204,7 @@ echo_model_args
 result=$(run_with_timeout "$TIMEOUT" \
   "$CLI_COMMAND" exec "$prompt" \
     --sandbox "$sandbox_mode" \
+    ${SANDBOX_CONFIG_ARGS[@]+"${SANDBOX_CONFIG_ARGS[@]}"} \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   2>"$stderr_log") || {
     # Capture the status first: any command inside this block would overwrite $?.

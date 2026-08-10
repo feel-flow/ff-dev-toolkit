@@ -63,8 +63,17 @@ echo "   Task type: ${TASK_TYPE:-review}" >&2
 echo "   Timeout: ${TIMEOUT}s" >&2
 
 # Gemini CLI: -p for prompt, --output-format text for parseable output
-# Task-type specific sandbox: review/explore use --sandbox (read-only),
-# implement omits --sandbox to allow output generation
+#
+# Task-type specific sandbox: review/explore enable gemini's sandbox, implement
+# omits it to allow output generation.
+#
+# gemini's `--sandbox` is a **boolean** — `-s, --sandbox  Run in sandbox?  [boolean]`
+# (gemini 0.50.0). It takes no mode name, so unlike codex and grok there is no value
+# to get wrong here; the only contract is present/absent. An earlier version of this
+# comment said "--sandbox (read-only)", naming a mode this flag cannot express —
+# exactly the class of claim Issue #403 was about. tests/adapter-sandbox-contract
+# now machine-checks both the boolean shape against the live `--help` and the
+# present/absent split per task type.
 get_gemini_sandbox_flag() {
   case "${TASK_TYPE:-review}" in
     review|explore) echo "--sandbox" ;;

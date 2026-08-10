@@ -85,7 +85,8 @@ get_sandbox_profile() {
     # adapter-common.sh only *asks* the agent to confine itself to the staging
     # directory. The kernel enforces "not outside the CWD"; "not outside staging"
     # is a promise in the prompt. Narrowing that for every adapter (codex uses
-    # network-off, gemini passes no sandbox at all) is tracked separately (Issue #398).
+    # workspace-write, its equivalent; gemini passes no sandbox at all) is tracked
+    # separately (Issue #398).
     implement) echo "workspace" ;;
     *)         echo "read-only" ;;
   esac

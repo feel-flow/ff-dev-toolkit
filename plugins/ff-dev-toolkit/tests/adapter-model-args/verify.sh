@@ -236,6 +236,13 @@ fi
 # `--sandbox` が付いているかだけを見ても保証にならない。read-only と workspace は
 # CWD へ書けるかどうかが違うので、**プロファイル名まで**固定する。逆に implement は
 # 成果物を書けないと機能しないため、read-only へ寄せる退行も落とす必要がある。
+#
+# 同じ契約は tests/adapter-sandbox-contract/ でも全 CLI 横断で固定している（Issue #403）。
+# 二重化を承知で残しているのは、こちらが「argv 組み立ての一部としての sandbox」を、
+# 向こうが「CLI が受け付ける値かどうか」を見ており、赤くなる理由が違うため。
+# **grok のプロファイル名を変えるときは両方を直すこと** — 片側だけ動くと、もう片側が
+# 古い契約を主張し続ける（cli-registry-completeness が潰している並行リストの片側更新と
+# 同じクラス）。向こうにも本 suite への相互参照がある。
 RUN_TASK_TYPE=explore run_adapter grok-cli-adapter.sh
 expect_argv_has "grok-cli: explore でも --sandbox read-only" "<--sandbox><read-only>"
 
