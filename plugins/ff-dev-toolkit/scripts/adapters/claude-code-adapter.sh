@@ -10,6 +10,12 @@
 #   --timeout <seconds>       Timeout in seconds (default: 900; the orchestrator always passes this explicitly)
 #   --task-type <type>        review | explore | implement (default: review)
 #   --description <text>      Task description (for explore/implement)
+#   --staging-dir <dir>       Absolute, existing, writable dir the agent writes generated
+#                             files into (implement only; the orchestrator always passes it)
+#   --inline-output           implement without a staging dir: the CLI reports file contents
+#                             inline instead of writing them. An implement run with neither
+#                             this nor --staging-dir is rejected (a dropped path must not
+#                             silently degrade into inline mode)
 #
 # Requires: claude (npm i -g @anthropic-ai/claude-code)
 # Cost tier: Premium (token-based billing)

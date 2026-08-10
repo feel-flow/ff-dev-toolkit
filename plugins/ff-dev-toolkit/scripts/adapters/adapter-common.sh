@@ -70,12 +70,66 @@ load_perspective() {
 # Usage: build_prompt "scripts/perspectives/code-review.md" "develop" "file1.ts file2.ts"
 # Task-type is read from TASK_TYPE variable (default: review)
 # Description is read from DESCRIPTION variable (for explore/implement)
+# Staging dir is read from STAGING_DIR variable (implement only; see Issue #392)
 build_prompt() {
   local perspective_file="$1"
   local base_branch="${2:-$(detect_base_branch)}"
   local changed_files="${3:-}"
   local task_type="${TASK_TYPE:-review}"
   local description="${DESCRIPTION:-}"
+  # implement のみ意味を持つ。review / explore は read-only なので、値が入って
+  # いても無視する（下の file_boundary が task_type で分岐する）。
+  local staging_dir="${STAGING_DIR:-}"
+  local inline_output="${INLINE_OUTPUT:-false}"
+
+  # 「staging を渡し忘れた」と「意図的な直叩き」は、STAGING_DIR が空という
+  # 一点で区別がつかない。区別できないままだと前者が静かに退避モード（インライン
+  # 出力）へ落ちる — しかも成果物ファイル ${persp}.md は inline 内容を含んで
+  # 正常に書かれるので、「出力ファイルが無い」バックストップにも掛からず、
+  # exit 0・生成ファイル 0 個・警告なしで終わる。
+  # 分岐条件が multi-agent.sh（TASK_TYPE == implement で --staging-dir を付ける）と
+  # ここの 2 ファイルに二重化されている以上、片方だけが変わる事故は起こりうる。
+  # そこで退避モードを明示的なオプトインにし、渡し忘れは大声のエラーにする。
+  # 出力モードは排他。両方渡されたとき片方を黙って優先すると、呼び出し側は
+  # 「inline を頼んだのにファイルが書かれた」形の食い違いを警告なしで受け取る。
+  if [[ -n "$staging_dir" && "$inline_output" == "true" ]]; then
+    echo "ERROR: --staging-dir and --inline-output are mutually exclusive." >&2
+    echo "       Pick one output mode: write under the staging dir, or report inline." >&2
+    return 1
+  fi
+
+  if [[ "$task_type" == "implement" && -z "$staging_dir" && "$inline_output" != "true" ]]; then
+    echo "ERROR: implement task has no --staging-dir." >&2
+    echo "       Pass --staging-dir <dir>, or --inline-output to have the CLI report" >&2
+    echo "       generated file contents inline instead of writing them." >&2
+    return 1
+  fi
+
+  # 下の file_boundary は staging について 3 つのことを断言する — 絶対パスである、
+  # 実在する、書き込める。断言する層で検証しておかないと、直叩き実行が渡した
+  # 相対パス・不在パス・read-only パスに対しても同じ断言が出る。
+  # 相対パスが特に危険: 「これは絶対パスだ」と言われたエージェントは自分の CWD
+  # 基準で解決するので、書き込み先が作業ツリーになる。
+  if [[ "$task_type" == "implement" && -n "$staging_dir" ]]; then
+    case "$staging_dir" in
+      /*) ;;
+      *)
+        echo "ERROR: --staging-dir must be an absolute path (the prompt says so): ${staging_dir}" >&2
+        return 1
+        ;;
+    esac
+    if [[ ! -d "$staging_dir" ]]; then
+      echo "ERROR: --staging-dir does not exist: ${staging_dir}" >&2
+      return 1
+    fi
+    # ディレクトリにエントリを作るには write と search(x) の両方が要る。
+    # -w だけだと mode 0222 が検査を通ってしまう。必要条件であって十分条件では
+    # ない点は変わらない（ACL・read-only マウントはここでは分からない）。
+    if [[ ! -w "$staging_dir" || ! -x "$staging_dir" ]]; then
+      echo "ERROR: --staging-dir is not writable: ${staging_dir}" >&2
+      return 1
+    fi
+  fi
 
   local perspective_content
   if ! perspective_content="$(load_perspective "$perspective_file")"; then
@@ -122,7 +176,14 @@ ${description}"
       ;;
 
     implement)
-      preamble="You are an implementation agent. Follow the perspective instructions below to generate code. Output all generated files to the staging directory — do NOT write directly to the working tree."
+      # preamble と下の file_boundary は同じ分岐で揃える。片方だけが
+      # 「staging へ書け」と言い、もう片方が「書くな」と言う状態にすると、
+      # エージェントは矛盾を自分で解消して working tree へ書きに行く。
+      if [[ -n "$staging_dir" ]]; then
+        preamble="You are an implementation agent. Follow the perspective instructions below to generate code. Write all generated files under the staging directory named in the execution boundary below — do NOT write directly to the working tree."
+      else
+        preamble="You are an implementation agent. Follow the perspective instructions below to generate code. No staging directory is available in this run, so report the generated files inline — do NOT write to the working tree."
+      fi
 
       if [[ -n "$description" ]]; then
         context_section="
@@ -157,15 +218,45 @@ ${diff_content}"
   # 未測定（tests/adapter-prompt-guard が固定するのは位置の一貫性まで）。
   # review / explore は read-only、implement は staging への出力を許すため、
   # ファイル操作の行だけ task-type で切り替える。
-  # 注意: 新しい task-type を足すときは、上の preamble の case と各アダプタの
-  # sandbox 系 case（例: codex の get_sandbox_mode）も同時に揃えること — ここだけ
-  # 忘れると「サンドボックスは書けるのにプロンプトが read-only を命じる」矛盾になる。
-  # staging の実パスは現状プロンプトに載らない（明示的な受け渡しは Issue #392）ため、
-  # implement にはパス未伝達時の退避先（インライン出力）を明記する。
+  # 注意: **プロンプトとファイル操作権限の整合について**、新しい task-type を足す
+  # ときは (1) 上の preamble の case、(2) 各アダプタの task-type 分岐、(3) staging
+  # パスを渡すかどうか（multi-agent.sh の run_single_task）を同時に揃えること。
+  # (2) の関数名はアダプタごとに違う: codex は get_sandbox_mode、grok は
+  # get_sandbox_profile、gemini は get_gemini_sandbox_flag、**claude-code は
+  # get_allowed_tools**（Write/Edit を許すかどうかが唯一の書き込みゲート。"sandbox"
+  # で grep すると取りこぼす）、copilot は分岐なし。どれか 1 つを忘れると
+  # 「サンドボックスは書けるのにプロンプトが read-only を命じる」「staging へ書けと
+  # 命じるのにパスを渡していない」といった矛盾になる。
+  # なお task-type 追加そのものに必要な同期先（perspective の割り当て、既定の
+  # output_dir / timeout / strategy、レポート生成）は multi-agent.sh 側にあり、
+  # このリストの射程ではない。
+  #
+  # Issue #392: staging の実パスは orchestrator が解決して STAGING_DIR で渡す。
+  # パスを渡さないまま「staging にだけ書け」と命じると、エージェントは推測するしか
+  # なく、最も自然な推測は CWD = 作業ツリーになる（grok の implement サンドボックスは
+  # workspace = CWD 書き込み可のため、防ぎたい汚染をむしろ通してしまう）。
+  # 退避先（インライン出力）は orchestrator を経由しない直叩き実行のために残すが、
+  # 上のガードのとおり --inline-output の明示が要る。「パスが無ければ黙って退避」に
+  # すると、渡し忘れが警告なしで同じ経路へ落ちるため。
+  #
+  # 正直に書いておく: --inline-output は**プロンプト上の契約**にすぎない。各アダプタの
+  # サンドボックス／ツール許可は TASK_TYPE=implement のままなので（claude-code は
+  # Write/Edit 許可、codex/grok は CWD 書き込み可、gemini はサンドボックス無し）、
+  # 「書かずに inline で報告する」を機械的に強制してはいない。実効的な read-only
+  # 境界にする対応は Issue #398（アダプタ横断のサンドボックス整合）で扱う。
   local file_boundary
   case "$task_type" in
     implement)
-      file_boundary="- Write generated files ONLY under the staging directory. If no staging path was given to you, emit the file contents inline in your response instead of writing to the working tree." ;;
+      if [[ -n "$staging_dir" ]]; then
+        file_boundary="- Write generated files ONLY under this staging directory (absolute path):
+    ${staging_dir}
+  It already exists and is writable. Do NOT create, modify, or delete any file
+  outside it — the working tree is off limits. Do not ask where to put files."
+      else
+        file_boundary="- No staging directory path was given to you. Do NOT write to the working tree
+  at all — emit the file contents inline in your response instead."
+      fi
+      ;;
     *)
       file_boundary="- Operate strictly read-only: do not modify, create, or delete any files. Report your findings on stdout; the wrapper captures them." ;;
   esac
@@ -717,7 +808,7 @@ echo_model_args() {
 
 # Parse common adapter arguments
 # Sets: PERSPECTIVE_FILE, OUTPUT_FILE, CHANGED_FILES, BASE_BRANCH, TIMEOUT,
-#       TASK_TYPE, DESCRIPTION, INCLUDE_DIFF
+#       TASK_TYPE, DESCRIPTION, INCLUDE_DIFF, STAGING_DIR, INLINE_OUTPUT
 # Usage: parse_adapter_args "$@"
 parse_adapter_args() {
   PERSPECTIVE_FILE=""
@@ -733,6 +824,11 @@ parse_adapter_args() {
   TASK_TYPE="review"
   DESCRIPTION=""
   INCLUDE_DIFF="false"
+  # 直叩き実行では空のまま。orchestrator 経由のときだけ実パスが入る（Issue #392）。
+  STAGING_DIR=""
+  # staging 無しの implement を許す明示的オプトイン。無指定で staging も無ければ
+  # build_prompt が fail-loud に落ちる（渡し忘れを黙って退避モードにしないため）。
+  INLINE_OUTPUT="false"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -760,6 +856,14 @@ parse_adapter_args() {
         INCLUDE_DIFF="true"
         shift
         ;;
+      --staging-dir)
+        STAGING_DIR="$2"
+        shift 2
+        ;;
+      --inline-output)
+        INLINE_OUTPUT="true"
+        shift
+        ;;
       *)
         if [[ -z "$PERSPECTIVE_FILE" ]]; then
           PERSPECTIVE_FILE="$1"
@@ -772,7 +876,7 @@ parse_adapter_args() {
   done
 
   if [[ -z "$PERSPECTIVE_FILE" || -z "$OUTPUT_FILE" ]]; then
-    echo "Usage: $(basename "$0") <perspective-file> <output-file> [--changed-files <files>] [--base <branch>] [--timeout <seconds>] [--task-type <review|explore|implement>] [--description <text>]" >&2
+    echo "Usage: $(basename "$0") <perspective-file> <output-file> [--changed-files <files>] [--base <branch>] [--timeout <seconds>] [--task-type <review|explore|implement>] [--description <text>] [--staging-dir <dir>] [--inline-output]" >&2
     return 1
   fi
 }

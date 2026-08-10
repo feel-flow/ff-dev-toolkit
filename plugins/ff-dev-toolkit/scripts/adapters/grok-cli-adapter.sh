@@ -10,6 +10,12 @@
 #   --timeout <seconds>       Timeout in seconds (default: 900; the orchestrator always passes this explicitly)
 #   --task-type <type>        review | explore | implement (default: review)
 #   --description <text>      Task description (for explore/implement)
+#   --staging-dir <dir>       Absolute, existing, writable dir the agent writes generated
+#                             files into (implement only; the orchestrator always passes it)
+#   --inline-output           implement without a staging dir: the CLI reports file contents
+#                             inline instead of writing them. An implement run with neither
+#                             this nor --staging-dir is rejected (a dropped path must not
+#                             silently degrade into inline mode)
 #
 # Requires: grok (npm i -g @xai-official/grok)
 # Cost tier: Flat-rate (subscription)
@@ -79,7 +85,7 @@ get_sandbox_profile() {
     # adapter-common.sh only *asks* the agent to confine itself to the staging
     # directory. The kernel enforces "not outside the CWD"; "not outside staging"
     # is a promise in the prompt. Narrowing that for every adapter (codex uses
-    # network-off, gemini passes no sandbox at all) is tracked separately.
+    # network-off, gemini passes no sandbox at all) is tracked separately (Issue #398).
     implement) echo "workspace" ;;
     *)         echo "read-only" ;;
   esac

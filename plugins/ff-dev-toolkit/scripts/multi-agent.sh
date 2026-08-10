@@ -1239,6 +1239,111 @@ resolve_perspective_file() {
   echo ""
 }
 
+# ── Staging Directory（Issue #392） ──
+# implement タスクで生成物を置かせる実ディレクトリ。**タスク単位** = (CLI, 観点) 単位
+# であることが要点。CLI 単位にすると、同じ CLI に複数の観点が乗ったプランで並列に
+# 走るタスクが同一ディレクトリへ書き、同名ファイルが後勝ちで黙って消える。これは
+# 例外的な構成ではない: 導入済みの CLI が 1 つしかなければ fallback で全観点がその
+# CLI に集まるし、CLI が 1 つ欠けるだけでも fallback 先に 2 観点が乗る（実測）。
+#
+# パスを組み立てるのはここ 1 箇所で、消費点は run_single_task（作成して渡す）と
+# clear_planned_outputs（前回実行の残骸を消す）。両者がずれると「消した先と書く先が
+# 違う」形の stale が静かに開く。
+# ここを変えたらレイアウトを literal で案内している次も追随させること:
+#   - append_plan_sections の "**Staging:**" 行 … 実パスを出すので tests/
+#     adapter-prompt-guard が照合する（追随漏れは赤になる）
+#   - generate_implement_report のヘッダの `<cli>/files/<perspective>/` … 形だけの
+#     案内で、**機械ゲートは無い**。ここは人が揃える
+#   - skills/multi-implement/SKILL.md の表と注記 … 同上、機械ゲートは無い
+#
+# レポート本体（${OUTPUT_DIR}/${cli}/${persp}.md）と同じ階層に置かず専用の
+# サブディレクトリへ落とすのは、write_output が CLI 完走**後**に ${persp}.md を
+# 書くため — エージェントが同名のファイル（例: refactoring.md）を生成すると
+# レポートに黙って上書きされる。
+#
+# 引数はどちらも validate_execution_plan で安全な単一セグメントと確認済み。
+staging_dir_for() {
+  printf '%s\n' "${OUTPUT_DIR}/${1}/files/${2}"
+}
+
+# 前回実行の staging を消す。`rm -rf` を素で撃たないのは、パスの**途中の**コンポーネント
+# が symlink だと再帰削除が OUTPUT_DIR の外へ抜けるため。例えば <cli>/files が
+# /tmp/victim を指す symlink なら、rm -rf <cli>/files/<persp> は /tmp/victim/<persp> を
+# 消す。OUTPUT_DIR を pwd -P しても、文字列 prefix 判定では途中の symlink を見抜けない。
+# clear_planned_outputs は「プランの対象以外はディスク上の何にも触れない」と宣言して
+# いるので、その宣言を実際に成り立たせるための検査。
+#
+# 消す前に**解決後の物理パス**が OUTPUT_DIR 配下かを確認し、外なら消さずに落とす。
+# 削除自体も解決後のパスに対して行い、検査したものと消すものを一致させる。
+clear_staging_dir() {
+  local staging_dir="$1"
+
+  if [[ -d "$staging_dir" ]]; then
+    local resolved
+    if ! resolved="$(cd "$staging_dir" && pwd -P)"; then
+      echo "ERROR: cannot resolve staging dir: ${staging_dir}" >&2
+      return 1
+    fi
+    case "$resolved" in
+      "$OUTPUT_DIR"/*) ;;
+      *)
+        echo "ERROR: staging dir resolves outside the output dir — refusing to delete." >&2
+        echo "       path:     ${staging_dir}" >&2
+        echo "       resolves: ${resolved}" >&2
+        echo "       output:   ${OUTPUT_DIR}" >&2
+        echo "       A symlinked component would make this a recursive delete elsewhere." >&2
+        return 1
+        ;;
+    esac
+    if ! rm -rf "$resolved"; then
+      echo "ERROR: cannot clear staging dir: ${resolved}" >&2
+      echo "       A previous run's files would be reported as this run's output." >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  # ディレクトリでない残骸（ファイル・symlink・壊れた symlink）はリンク/ファイル
+  # 自体だけを消す。`rm -f` は symlink の指す先を追わないので、ここは安全。
+  if [[ -e "$staging_dir" || -L "$staging_dir" ]]; then
+    if ! rm -f "$staging_dir"; then
+      echo "ERROR: cannot remove non-directory at staging path: ${staging_dir}" >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# サンドボックスの書き込み境界は、CLI が継承する CWD（アダプタは cd しない）。
+# staging がその外に出ると、grok の workspace / codex のサンドボックスが書き込みを
+# 拒み、パスを渡したのにエージェントが書けない状態になる。
+#
+# 比較は**両辺とも物理パス**で行う。OUTPUT_DIR は execute_tasks で pwd -P 済み、
+# ここも ${PWD}（論理パス）ではなく $(pwd -P) を使う。既定の OUTPUT_DIR は
+# git rev-parse --show-toplevel（物理）由来なので、論理パスと比べると symlink 越しの
+# チェックアウト（macOS の /tmp・/var 配下など）でリポジトリルートに居ながら毎回
+# 誤発火する。誤発火する警告は「リポジトリルートで実行しろ」と、すでにそこに居る
+# 利用者へ言うことになり、症状から原因へ辿らせるという目的をむしろ壊す。
+#
+# ここを hard fail にしないのは、`--output-dir /tmp/...` のような CWD 外指定が
+# 現に動く経路だから（gemini の implement はサンドボックス無し、ラッパー自身の
+# レポート書き込みはサンドボックス外）。staging をサンドボックスルートへ揃える
+# 本筋対応は別 Issue #398（アダプタ横断のサンドボックス整合）で扱う。
+#
+# グリフは助言の ⚠️ に固定する — 致命（staging を作れない・書けない）は ❌ を使い、
+# 「続行できる助言」と「そのタスクが死んだ」を見分けられるようにしている。
+warn_if_staging_outside_sandbox() {
+  local staging_dir="$1"
+  local cwd_physical
+  cwd_physical="$(pwd -P)"
+  case "$staging_dir" in
+    "$cwd_physical"/*) return 0 ;;
+  esac
+  echo "  ⚠️  Staging dir is outside the CLI sandbox root (CWD): ${staging_dir}" >&2
+  echo "      CWD: ${cwd_physical}" >&2
+  echo "      Sandboxed CLIs (grok: workspace / codex) may be denied writes there." >&2
+}
+
 # ── Execute Single Task ──
 run_single_task() {
   local cli_name="$1"
@@ -1268,6 +1373,36 @@ run_single_task() {
   fi
   if [[ "$INCLUDE_DIFF" == "true" ]]; then
     extra_args+=(--include-diff)
+  fi
+  if [[ "$TASK_TYPE" == "implement" ]]; then
+    local staging_dir
+    staging_dir="$(staging_dir_for "$cli_name" "$perspective")"
+    # エージェント側で mkdir させない。staging が CWD の外に出る構成（--output-dir で
+    # 別の場所を指した場合など）ではサンドボックス下の親ディレクトリ作成が拒まれ、
+    # そこで詰まったエージェントは書ける場所を探し始める。既定の staging は CWD 配下
+    # なので拒まれないが、その 1 ケースのために毎回エージェント任せにはしない。
+    if ! mkdir -p "$staging_dir"; then
+      echo "  ❌ Cannot create staging dir: ${staging_dir}" >&2
+      echo "     Check the permissions of --output-dir; re-running as-is will fail again." >&2
+      return 1
+    fi
+    # mkdir -p は**既存ディレクトリなら権限に関係なく rc=0** を返す。この検査が
+    # 無いと、書き込めない staging に対してプロンプトが "It already exists and is
+    # writable" と断言することになる。書けると保証されたエージェントが書き込みを
+    # 拒まれると、拒否を報告するより「自分の理解が違う」と解釈して別の場所を
+    # 探す方向へ倒れる — プロンプトに書く断定は、コードが検証した分だけにする。
+    #
+    # -w だけでは足りない。ディレクトリにエントリを作るには write と search(x) の
+    # 両方が要るので、mode 0222 は -w を通っても書けない。
+    # なお -w -x は必要条件であって十分条件ではない（ACL・read-only マウント・
+    # 容量不足はここでは分からない）。build_prompt 側でも同じ検査をしている。
+    if [[ ! -w "$staging_dir" || ! -x "$staging_dir" ]]; then
+      echo "  ❌ Staging dir is not writable: ${staging_dir}" >&2
+      echo "     Check the permissions of --output-dir; re-running as-is will fail again." >&2
+      return 1
+    fi
+    warn_if_staging_outside_sandbox "$staging_dir"
+    extra_args+=(--staging-dir "$staging_dir")
   fi
 
   bash "$adapter" "$perspective_file" "$output_file" \
@@ -1318,18 +1453,34 @@ validate_execution_plan() {
 # (over)write that file on success, leaving a prior run's file in place on
 # failure/timeout. Deleting exactly this run's own targets up front means a task
 # that produces no output leaves NO stale same-name file to be mis-reported as
-# current (issue #450) — instead the report surfaces it as "no output". Scoped to
+# current — instead the report surfaces it as "no output". Scoped to
 # the plan's own (cli, perspective) targets only; nothing else on disk (other
 # CLIs, other perspectives, unrelated user files) is touched. Callers run
 # validate_execution_plan first, so every token here is already a safe segment.
+#
+# implement の staging（Issue #392）も同じ理由で消す。レポートだけ消して生成物を
+# 残すと、今回何も書かなかった実行のあとに前回の生成物がそのまま残り、「staging に
+# ある = 今回の成果」という読み方が静かに嘘になる — レポートについて上で塞いだ
+# 失敗と同型。
+#
+# 削除の失敗は握り潰さない。rm の rc を捨てると、消せなかった前回の生成物が
+# 今回の成果としてレポートに案内されたまま exit 0 で終わる（実測で再現した形）。
+# 痕跡は rm 自身の stderr 1 行だけで、並列実行では他タスクの出力に紛れる。
 clear_planned_outputs() {
   [[ -n "${OUTPUT_DIR:-}" ]] || return 0
-  local entry cli_name persp_name
+  local entry cli_name persp_name staging_dir
   while IFS= read -r entry; do
     [[ -z "$entry" ]] && continue
     cli_name="${entry%%:*}"
     persp_name="${entry#*:}"
-    rm -f "${OUTPUT_DIR}/${cli_name}/${persp_name}.md"
+    if ! rm -f "${OUTPUT_DIR}/${cli_name}/${persp_name}.md"; then
+      echo "ERROR: cannot clear previous result: ${OUTPUT_DIR}/${cli_name}/${persp_name}.md" >&2
+      return 1
+    fi
+    if [[ "${TASK_TYPE:-review}" == "implement" ]]; then
+      staging_dir="$(staging_dir_for "$cli_name" "$persp_name")"
+      clear_staging_dir "$staging_dir" || return 1
+    fi
   done <<< "$EXECUTION_PLAN"
 }
 
@@ -1385,10 +1536,24 @@ execute_tasks() {
   fi
 
   # Reject a plan with unsafe path segments before writing/deleting anything.
-  validate_execution_plan || return 1
+  # ここから下の準備段階の失敗は rc=2 で返す（main がレポート生成を止める根拠）。
+  validate_execution_plan || return 2
 
   mkdir -p "$OUTPUT_DIR"
-  clear_planned_outputs
+  # 実在させた直後に**絶対かつ物理**のパスへ解決する。ここが staging パスの
+  # 正規化の単一地点で、2 つの嘘を同時に潰している:
+  #   1) --output-dir / 設定ファイルは値を無加工で受けるので相対値が入りうる。
+  #      相対のまま implement へ流すと、プロンプトが "(absolute path)" と断言
+  #      しながら相対パスを渡し、受け取ったエージェントは自分の CWD = 作業ツリー
+  #      基準で解決してそこへ書く（本 Issue が塞ごうとした汚染そのもの）。
+  #   2) 既定の OUTPUT_DIR は git rev-parse --show-toplevel（物理）由来、$PWD は
+  #      論理なので、symlink 越しのチェックアウトでは同じ場所を違う綴りで指す。
+  #      揃えておかないと warn_if_staging_outside_sandbox が毎回誤発火する。
+  if ! OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)"; then
+    echo "ERROR: cannot resolve output dir: ${OUTPUT_DIR}" >&2
+    return 2
+  fi
+  clear_planned_outputs || return 2
 
   local pids=""
   local failed=0
@@ -1659,7 +1824,7 @@ print_failure_advice() {
 # Appends one section per plan entry to $1. Returns 0 if at least one section was
 # written, 1 if the plan yielded none (the caller prints its own "no results" line).
 #
-# issue #450: report exactly THIS run's entries by iterating the execution plan
+# Stale-result guard: report exactly THIS run's entries by iterating the execution plan
 # instead of globbing ${cli}/*.md. A perspective absent from this plan is never
 # read. In the normal flow execute_tasks clears each entry's target before
 # running (clear_planned_outputs), so a prior run's result — a different
@@ -1698,6 +1863,36 @@ append_plan_sections() {
       echo ""
       echo "## ${cli_name} — ${perspective_name} [${tier}]"
       echo ""
+      # implement は staging を**実測して**書く（Issue #392）。ヘッダの無条件な
+      # 「生成物は staging にある」だけだと、1 ファイルも生成しなかったタスクも
+      # 同じ案内になり、利用者は空のディレクトリを探しに行く。件数は数えれば
+      # 分かるのだから、断定ではなく観測を載せる。
+      # 0 件を失敗にはしない — 分析だけで生成ファイルが 0 個という結果は正当。
+      if [[ "${TASK_TYPE:-review}" == "implement" ]]; then
+        local staging_dir file_list file_count
+        staging_dir="$(staging_dir_for "$cli_name" "$perspective_name")"
+        if [[ ! -d "$staging_dir" ]]; then
+          echo "**Staging:** \`${staging_dir}\` — (no files generated)"
+        # find の rc を捨てると、走査に失敗した（権限・I/O エラー）ケースが
+        # 「0 件」や部分件数として出る。断定を観測に置き換えるのが目的なのに、
+        # 観測できなかったことを 0 件と言い切っては元の木阿弥になる。
+        elif ! file_list="$(find "$staging_dir" -type f 2>/dev/null)"; then
+          echo "**Staging:** \`${staging_dir}\` — ⚠️ could not read the staging directory (count unknown)"
+        else
+          # 空文字のときに grep -c が 1 を返す形を避けるため、空を先に分岐する。
+          if [[ -z "$file_list" ]]; then
+            file_count=0
+          else
+            file_count="$(printf '%s\n' "$file_list" | wc -l | tr -d ' ')"
+          fi
+          if [[ "$file_count" -gt 0 ]]; then
+            echo "**Staging:** \`${staging_dir}\` (${file_count} file(s))"
+          else
+            echo "**Staging:** \`${staging_dir}\` — (no files generated)"
+          fi
+        fi
+        echo ""
+      fi
       if [[ -f "$result_file" ]]; then
         # An adapter marks salvaged partial output with `Status: incomplete`
         # (adapters/adapter-common.sh). Repeat that in the report: without it the
@@ -1879,7 +2074,14 @@ generate_implement_report() {
 
 ---
 
-⚠️ **Implementation results are in staging directory.** Review before applying to working tree.
+⚠️ **Generated files are in the staging directory, not the working tree.** Review before applying.
+
+Staging (per task): \`${OUTPUT_DIR}/<cli>/files/<perspective>/\` — each section below
+names its own path and the number of files actually found there.
+
+Only the tasks in **this** run's plan had their staging cleared beforehand. If you
+narrowed the run (\`--cli\` / \`--perspective\`), other tasks' \`files/\` directories may
+still hold output from an earlier run — read the sections below, not the whole tree.
 
 ---
 
@@ -2052,8 +2254,29 @@ main() {
     fi
   fi
 
+  # execute_tasks の rc は 2 種類を区別する:
+  #   1 … タスクが失敗した。実行はしたので、何が落ちたかを含むレポートに価値がある
+  #   2 … 実行前の準備が失敗した（プラン検証・出力先の解決・前回出力の掃除）。
+  #        この場合レポートを出してはいけない — 掃除できなかった前回の成果物を
+  #        「今回の結果」として並べ、"Done! View results" と案内したうえで
+  #        exit 1 する形になり、本 PR が塞いだ stale 誤読をレポート層で再現する。
   local task_failed=false
-  execute_tasks || task_failed=true
+  local setup_failed=false
+  local exec_rc=0
+  execute_tasks || exec_rc=$?
+  case "$exec_rc" in
+    0) ;;
+    2) setup_failed=true ;;
+    *) task_failed=true ;;
+  esac
+
+  if [[ "$setup_failed" == "true" ]]; then
+    echo "" >&2
+    echo "❌ Aborted before running any task — no report was generated." >&2
+    echo "   (a report here would list the previous run's output as if it were this run's)" >&2
+    exit 1
+  fi
+
   generate_report
 
   echo "" >&2

@@ -58,7 +58,21 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task implement --descript
 ```
 
 **重要**: 実装結果は `.implement-results/` ステージングディレクトリに出力されます。
-ワーキングツリーには直接書き込みません。
+ワーキングツリーには直接書き込みません。内訳は 2 種類です:
+
+| パス | 中身 |
+|---|---|
+| `.implement-results/<cli>/<perspective>.md` | 各タスクの実装レポート（説明・方針・差分の解説） |
+| `.implement-results/<cli>/files/<perspective>/` | **生成されたファイル本体**（staging）。この実パスがプロンプトで各 CLI に明示されます |
+
+staging が (CLI, 観点) 単位なのは、同じ CLI に複数の観点が乗るプラン（CLI が 1 つしか
+導入されていない場合や fallback 時）でタスクが並列に走り、同名ファイルを上書きし合う
+のを防ぐためです。
+
+掃除されるのは**今回の実行プランに含まれるタスクの staging だけ**です。`--cli` や
+`--perspective` で対象を絞った場合、プランに入らなかったタスクの `files/` には前回の
+成果が残ります。統合レポートは各セクションに実パスと実測ファイル数を書くので、
+ツリー全体を眺めるのではなくレポートのセクションを読んでください。
 
 実行中は進捗状況を監視し、完了を待ちます。
 
@@ -116,5 +130,7 @@ git diff  # 適用内容の確認
 - ステップ2の dry-run 確認なしにステップ3を実行しないこと
 - 実装結果はステージングディレクトリに出力 — ワーキングツリーに直接書き込まない
 - ワーキングツリーへの適用前にユーザー承認を得ること
-- 結果は `.implement-results/` に保存され、後から参照できます
+- 結果は `.implement-results/` に保存され、後から参照できます（生成ファイル本体は `<cli>/files/<perspective>/`）
+- **生成ファイルを探すときは統合レポートのセクションに書かれた実パスを使う** — ツリーを直接 `find` すると、今回の実行プランに入らなかったタスクの前回分を混ぜて読むことになります
+- staging の実パスは orchestrator が解決して各 CLI のプロンプトに明示する。アダプタを直接叩く場合は `--staging-dir` を明示しない限り渡らず、その場合は `--inline-output` を付けて「ファイルを書かず内容を応答へインライン出力する」モードを明示的に選ぶ（無指定の implement は fail-loud で落ちる — 渡し忘れを静かに退避モードへ落とさないため）
 - 設定のカスタマイズ: プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される（環境変数 `MULTI_AGENT_CONFIG=<path>` または `--config <path>` でも上書き可。読み取りは `yq` 依存で、無い環境では設定ファイルは読まれず既定値で動く）。ただし**実際に読まれるのは `version` / `mode` / `parallel` / `review.main` / `review.sub` と、`version: "2.0"` のときだけ `tasks.<task>.{mode,cost_strategy,timeout,output_dir}` である**（`version` が `2.0` でない場合は v1 形式とみなされ、トップレベルの `cost_strategy` / `timeout` / `output_dir` が読まれる — `version` を書き忘れると `tasks.*` が黙って無視されるので注意）。`agents:` と `fallback:` はどのバージョンでも読まれず、人が読むための対応表にすぎない。実行時のレジストリの正本は `scripts/multi-agent.sh` の `get_cli_*` 関数

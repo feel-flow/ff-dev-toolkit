@@ -93,11 +93,20 @@ RUN_RC=0
 run_adapter() {
   local adapter="$1"; shift
   : > "$WORK/argv.log"
+  # implement は staging の実パス（または --inline-output）が要る（Issue #392）。
+  # 渡さない implement は build_prompt が fail-loud で拒否するため、CLI が
+  # 起動せず argv が空になる。ここは実行経路に近い方 = staging を渡す形にする。
+  local task_args=()
+  if [ "${RUN_TASK_TYPE:-review}" = "implement" ]; then
+    mkdir -p "$WORK/staging"
+    task_args=(--staging-dir "$WORK/staging")
+  fi
   if run_isolated \
        PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" CODEX_HOME="$WORK/codex" \
        GROK_HOME="${RUN_GROK_HOME:-$WORK/grok-home-empty}" "$@" \
        bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$WORK/out.md" \
        --base HEAD --timeout 30 --task-type "${RUN_TASK_TYPE:-review}" \
+       ${task_args[@]+"${task_args[@]}"} \
        --description "stub task" >"$WORK/stdout.log" 2>"$WORK/stderr.log"; then
     RUN_RC=0
   else
