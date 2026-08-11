@@ -132,7 +132,8 @@ PR Review Toolkit（Claude系）でのセルフレビューに加え、Codex CLI
 ```bash
 # Toolkit レビュー後に実行（プラグイン同梱の multi-review 経由）
 bash scripts/multi-review.sh --mode cross-model --cli codex-cli
-# 単体ラッパー scripts/codex-review.sh は同梱されない（利用側で用意する場合のみ）
+# scripts/codex-review.sh は multi-agent.sh へ委譲するシムとして同梱される
+# （setup-multi-agent.sh が配置する。下の呼び出しと等価）
 ```
 
 ### レビュー結果の対応

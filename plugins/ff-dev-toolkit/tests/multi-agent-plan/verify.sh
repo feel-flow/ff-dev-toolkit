@@ -299,10 +299,34 @@ else
   bad "未知 CLI のエラーに既知 CLI 一覧が出ていない"
 fi
 
+# 単一 CLI + 複数観点は「この CLI にこれらをやらせる」という曖昧さのない指定なので、
+# 所有権レジストリを迂回して全部プランに入る。以前は観点が 2 つ以上だと所有権
+# フィルタへ落ち、**一部だけ所有している場合に残りが黙って消えていた**（所有ゼロの
+# ときしか警告が出ないため）。実測で codex-cli へ 3 観点を渡すと 1 観点しか計画
+# されなかった。回帰させないよう全件が並ぶことを固定する。
+MULTI_PERSP_LOG="$TMP/multi-perspective.log"
+if run_plan "$MULTI_PERSP_LOG" --cli codex-cli \
+     --perspective code-review --perspective error-handler-hunt --perspective type-design-analysis; then
+  planned=0
+  for p in code-review error-handler-hunt type-design-analysis; do
+    grep -qE "^ *- ${p}$" "$MULTI_PERSP_LOG" && planned=$((planned + 1))
+  done
+  if [ "$planned" -eq 3 ]; then
+    ok "単一 CLI + 複数観点は所有権に関わらず全件プランに入る"
+  else
+    bad "単一 CLI + 複数観点のうち ${planned}/3 しかプランに入っていない（残りが黙って落ちている）"
+  fi
+else
+  bad "単一 CLI + 複数観点の dry-run が非 0 で終了した"
+fi
+
 # 空プランの判定は dry-run と実行で一致していること。従来は実行が非 0、dry-run が
 # 0 で食い違い、事前検証としての dry-run が空のレビューを通していた。
+#
+# 空プランは**複数 CLI**で作る。単一 CLI + 観点の組は上のとおり明示ペアとして
+# 通るようになったため、単一 CLI では空プランを構成できない。
 EMPTY_LOG="$TMP/empty-plan.log"
-if run_plan "$EMPTY_LOG" --cli gemini-cli --perspective code-review --perspective test-analysis; then
+if run_plan "$EMPTY_LOG" --cli gemini-cli --cli grok-cli --perspective code-review; then
   bad "空プランの dry-run が成功している（実行時は非 0 なので判定が食い違う）"
 else
   ok "空プランを dry-run でも非 0 で拒否（実行時と判定が一致）"

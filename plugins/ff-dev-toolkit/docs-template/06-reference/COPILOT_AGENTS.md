@@ -54,13 +54,13 @@ your-project/
     ├── adapters/                        ← 【同梱】CLI アダプタ（*-adapter.sh）
     ├── copilot-review.sh                ← 【利用側】Copilot CLI 単体ラッパー（同梱されない）
     ├── claude-review.sh                 ← 【利用側】Claude Code 単体ラッパー（同梱されない）
-    ├── codex-review.sh                  ← 【利用側】Codex 単体ラッパー（同梱されない）
+    ├── codex-review.sh                  ← 【同梱】multi-agent.sh へ委譲するシム（setup が配置）
     ├── gemini-review.sh                 ← 【利用側】Gemini 単体ラッパー（同梱されない）
     ├── review-common.sh                 ← 【利用側】共通レビューロジック（同梱されない）
     └── review-prompts.sh                ← 【利用側】レビュープロンプト定義（同梱されない）
 ```
 
-> **同梱 vs 利用側**: `multi-agent.sh` / `multi-review.sh` / `setup-multi-agent.sh` / `adapters/*` はプラグインが配布する。`*-review.sh` / `review-common.sh` / `review-prompts.sh` はセットアップ後に自動で現れるファイルではなく、**消費プロジェクトが自前で置く構成例**である。
+> **同梱 vs 利用側**: `multi-agent.sh` / `multi-review.sh` / `setup-multi-agent.sh` / `adapters/*` はプラグインが配布する。`codex-review.sh` は `multi-agent.sh` へ委譲するシムとして同梱され、**`setup-multi-agent.sh` が配置する**。それ以外の `*-review.sh`（`claude-review.sh` / `copilot-review.sh` / `gemini-review.sh`）と `review-common.sh` / `review-prompts.sh` はセットアップ後に自動で現れるファイルではなく、**消費プロジェクトが自前で置く構成例**である。
 
 ### モード1: Copilot CLI セッション分離（推奨）
 

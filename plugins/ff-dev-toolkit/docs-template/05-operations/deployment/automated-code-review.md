@@ -11,7 +11,7 @@
 
 > **モデル選択の方針**: 各アダプタは**モデルを選ばない**。どのモデルを使うかは各 CLI 自身の設定（`~/.codex/config.toml` など）へ委譲し、環境変数が設定されているときだけフラグを組み立てる。アダプタにモデル slug の既定値を持たせると、その値がユーザーの CLI 設定と 2 重化して必ず古くなり、しかもユーザー設定を黙って上書きする。実装パターンと実害の記録は [REVIEW_AGENT_CREATION_GUIDE.md の「モデル指定は『既定値を持たない』」](../../06-reference/REVIEW_AGENT_CREATION_GUIDE.md#モデル指定は既定値を持たない) を参照。
 
-> **同梱 vs 利用側スクリプト**: プラグインが配布するのは `scripts/setup-multi-agent.sh` / `scripts/multi-agent.sh` / `scripts/multi-review.sh` / `scripts/adapters/*` / `scripts/perspectives/` / `scripts/agent-config.yaml`。`setup-automated-review.sh` / `setup-multi-review.sh` / `review-common.sh` / `review-prompts.sh` / `*-review.sh`（単体ラッパー）は**同梱されない**。下の「方法1」は消費プロジェクトが自前で組む構成例であり、セットアップ後に自動で現れるファイルではない。
+> **同梱 vs 利用側スクリプト**: プラグインが配布するのは `scripts/setup-multi-agent.sh` / `scripts/multi-agent.sh` / `scripts/multi-review.sh` / `scripts/adapters/*` / `scripts/perspectives/` / `scripts/agent-config.yaml`。加えて `scripts/templates/codex-review.sh`（`multi-agent.sh` へ委譲する薄いシム）が同梱され、`setup-multi-agent.sh` が消費プロジェクトの `scripts/codex-review.sh` へ配置する（Issue #406）。`setup-automated-review.sh` / `setup-multi-review.sh` / `review-common.sh` / `review-prompts.sh` と、`codex-review.sh` **以外**の単体ラッパー（`claude-review.sh` / `copilot-review.sh` / `gemini-review.sh` 等）は**同梱されない**。下の「方法1」は消費プロジェクトが自前で組む構成例であり、セットアップ後に自動で現れるファイルではない。
 
 ### システム構成
 
@@ -117,7 +117,8 @@ bash scripts/setup-multi-agent.sh
 mkdir -p .husky scripts .claude/commands
 # review-common.sh / review-prompts.sh / claude-review.sh 等は利用側で作成
 chmod +x .husky/pre-commit scripts/review-common.sh scripts/review-prompts.sh \
-  scripts/claude-review.sh scripts/codex-review.sh scripts/copilot-review.sh scripts/gemini-review.sh
+  scripts/claude-review.sh scripts/copilot-review.sh scripts/gemini-review.sh
+# codex-review.sh は同梱シムを setup-multi-agent.sh が配置するので、ここには含めない
 ```
 
 ---
@@ -146,7 +147,7 @@ project-root/
 │   ├── review-common.sh          # 【利用側】共通基盤
 │   ├── review-prompts.sh         # 【利用側】プロンプト定義
 │   ├── claude-review.sh          # 【利用側】単体ラッパー
-│   ├── codex-review.sh           # 【利用側】単体ラッパー
+│   ├── codex-review.sh           # 【同梱】multi-agent.sh へ委譲するシム（setup が配置）
 │   ├── copilot-review.sh         # 【利用側】単体ラッパー（従量課金・オプトイン）
 │   ├── gemini-review.sh          # 【利用側】単体ラッパー
 │   ├── setup-automated-review.sh # 【利用側】セットアップ用（存在する場合のみ）

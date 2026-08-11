@@ -473,7 +473,22 @@ run_with_timeout() {
   # Job control makes each background job a process-group leader (pgid == pid),
   # which both guard 2 and guard 3 rely on.
   set -m
-  "$@" >"$out_file" &
+  # stdin is closed explicitly. It is NOT enough to rely on "async lists get
+  # /dev/null": POSIX grants that only when job control is **inactive**, and the
+  # `set -m` immediately above turns it on. Measured on bash 3.2 and 5, caller
+  # stdin = a held-open pipe:
+  #     `cat &` with job control off  -> fd 0 = /dev/null, returns at once
+  #     `cat &` after `set -m`        -> fd 0 = the pipe, blocks until EOF
+  # Today every adapter calls this as `result=$(run_with_timeout ...)`, and bash
+  # forces job control off inside a command-substitution subshell — so the hazard
+  # is masked. Measured: the same call outside a substitution blocks for the full
+  # lifetime of the caller's stdin. That is one ordinary refactor away
+  # (`run_with_timeout ... > file` instead of `$(...)`), and the failure it
+  # resurrects is the worst kind: `codex exec` reads stdin when it is not a TTY,
+  # prints nothing to stdout, and waits — indistinguishable from a hang, for the
+  # full timeout (Issue #406, where it cost 50 minutes and a wrong diagnosis).
+  # None of the five CLIs takes input on stdin; the prompt is always argv.
+  "$@" >"$out_file" </dev/null &
   local cmd_pid=$!
   (
     sleep "$timeout_seconds"

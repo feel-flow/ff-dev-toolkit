@@ -904,8 +904,16 @@ build_distributed_plan() {
       # This is also the shape printed by failure advice for a substitute CLI:
       # forcing it back through the ownership registry can otherwise produce an
       # empty plan (for example codex-cli + security-analysis).
+      #
+      # 観点は**複数でもよい**。以前はここで `"$PERSPECTIVE_FILTER" != *" "*` を要求し、
+      # 2 つ以上を指定すると下の所有権フィルタへ落ちていた。そちらは「1 つも一致
+      # しなかった」ときにしか警告しないため、**一部だけ所有している場合に残りが
+      # 黙って落ちる**（実測: codex-cli へ 3 観点を渡すと 1 観点だけが計画され、
+      # 落ちた 2 つはどこにも名指しされなかった）。下のループは元から複数を回せる
+      # 形になっており、条件だけが単数に絞っていた。CLI が 1 つに定まっていれば、
+      # 「この CLI にこれらの観点をやらせる」は曖昧さのない指定なので通す。
       if [[ -n "$CLI_FILTER" && "$CLI_FILTER" != *" "* \
-            && -n "$PERSPECTIVE_FILTER" && "$PERSPECTIVE_FILTER" != *" "* ]]; then
+            && -n "$PERSPECTIVE_FILTER" ]]; then
         for p in $PERSPECTIVE_FILTER; do
           add_to_plan "$cli_name" "$p"
         done

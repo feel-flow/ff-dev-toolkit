@@ -388,7 +388,7 @@ bash scripts/multi-review.sh --mode cross-model --cli codex-cli
 
 > **レビュー結果の対応**: 全てのレビュー結果は [PRレビュー対応ポリシー](./review-response-policy.md) に従って対応します。Critical/Warning は確認不要で即対応。
 >
-> **スクリプトの出自**: `scripts/multi-review.sh` / `scripts/multi-agent.sh` / `scripts/adapters/*` はプラグイン同梱。`scripts/codex-review.sh` のような単体ラッパーは**同梱されない**（利用側で用意する任意スクリプト）。
+> **スクリプトの出自**: `scripts/multi-review.sh` / `scripts/multi-agent.sh` / `scripts/adapters/*` はプラグイン同梱。`scripts/codex-review.sh` は **`multi-agent.sh` へ委譲する薄いシムとして同梱**され、`setup-multi-agent.sh` が消費プロジェクトへ配置する（Issue #406）。`review-common.sh` / `review-prompts.sh` / `claude-review.sh` などの自前ラッパー一式は引き続き**同梱されない**。
 
 **Claude Code + Husky 自動レビュー**:
 
@@ -556,7 +556,8 @@ rm -f "${SURFACE}"
 
 # クロスモデルレビュー（GPT系の観点、read-only・同梱 multi-review）
 bash scripts/multi-review.sh --mode cross-model --cli codex-cli
-# 単体ラッパー scripts/codex-review.sh は同梱されない（利用側で用意する場合のみ）
+# scripts/codex-review.sh は multi-agent.sh へ委譲するシムとして同梱される
+# （setup-multi-agent.sh が配置する。下の呼び出しと等価）
 ```
 
 さらに多観点で確認したい場合は、Multi-CLI 分散レビュー（オプション）を併用します：

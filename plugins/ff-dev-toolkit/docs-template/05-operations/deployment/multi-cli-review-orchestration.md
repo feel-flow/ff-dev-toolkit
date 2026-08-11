@@ -43,7 +43,8 @@ PR Review Toolkit（Claude系）でのセルフレビュー後に続けて実行
 ```bash
 # Toolkit レビュー後に実行（プラグイン同梱 multi-review → multi-agent 経由）
 bash scripts/multi-review.sh --mode cross-model --cli codex-cli
-# 単体ラッパー scripts/codex-review.sh は同梱されない（利用側で用意する場合のみ）
+# scripts/codex-review.sh は multi-agent.sh へ委譲するシムとして同梱される
+# （setup-multi-agent.sh が配置する。下の呼び出しと等価）
 ```
 
 レビュー結果は [PRレビュー対応ポリシー](./review-response-policy.md) に従って対応します。
@@ -125,9 +126,27 @@ bash scripts/multi-review.sh --mode cross-model --cli codex-cli
 
 ### 必須
 
-- Bash 4.0以上
+- Bash（**3.2 以上**。stock macOS の `/bin/bash` が 3.2 系であるため、同梱スクリプトは 3.2 互換で書かれている — 連想配列や `${var^^}` は使わない）
 - Git（diffの取得に使用）
 - 1つ以上のAI CLI
+
+### 対応プラットフォーム
+
+| プラットフォーム | 状態 |
+|---|---|
+| macOS | 対応（主な開発・検証環境） |
+| Linux | 対応 |
+| Windows（ネイティブ） | **非対応** |
+| Windows（WSL2 / Git Bash） | bash 環境として動作する想定。ただし未検証 |
+
+**Windows がネイティブ非対応なのは、このツールキットが端から端まで bash で書かれているため**。オーケストレータ（`multi-agent.sh`）、各 CLI アダプタ、セットアップ、更新通知フック、スキルが呼び出す実体まで、配布物のシェルスクリプトはすべて `.sh` であり、PowerShell / cmd 版は存在しない。レビューラッパーだけを PowerShell 化しても他が動かないため、部分的な移植は行っていない。
+
+Windows で使う場合は bash が動く環境を用意する:
+
+- **WSL2（推奨）** — Linux ディストリビューションを入れ、**その中に** Git・AI CLI・ツールキットを揃える。アダプタは PATH 経由で CLI を起動するので、CLI が Windows 側にしか入っていないと検出されない
+- **Git for Windows の Git Bash** — 軽量だが、AI CLI 側が Windows ネイティブとして振る舞うためパス表記（`C:\...` と `/c/...`）の食い違いが起こりうる
+
+いずれも継続的な検証はしていない。動かない場合は「Windows で動かない」ではなく**どのスクリプトがどう失敗したか**を添えて issue を立てること。ネイティブ対応（PowerShell 版の提供）はツールキット全体の設計判断であり、個別スクリプト単位では扱わない。
 
 ### 推奨
 

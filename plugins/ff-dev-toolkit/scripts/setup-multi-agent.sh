@@ -11,6 +11,13 @@
 # 対応環境:
 #   - macOS (Homebrew)
 #   - Linux (apt / yum / pacman)
+#   - Windows は**ネイティブ非対応**。このツールキットは配布物がすべて bash
+#     （PowerShell / cmd 版は存在しない）なので、WSL2 か Git Bash を使う。
+#     WSL2 の場合は AI CLI も WSL 側へ入れること（アダプタは PATH 経由で
+#     起動するため、Windows 側にしか無い CLI は検出されない）。いずれも
+#     継続検証はしていない。詳細は
+#     docs-template/05-operations/deployment/multi-cli-review-orchestration.md
+#     の「対応プラットフォーム」節。
 #
 # 使い方:
 #   bash scripts/setup-multi-agent.sh [オプション]
@@ -23,7 +30,12 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# ${BASH_SOURCE[0]} で導出する（$0 ではない）。このファイルは末尾で
+# `[[ "${BASH_SOURCE[0]}" == "${0}" ]]` を見て「source されたら main を走らせない」
+# 設計になっているが、$0 由来だと source された瞬間に SCRIPT_DIR が**呼び出し側の
+# ディレクトリ**を指し、同梱テンプレートの解決が静かに壊れる（テストから関数を
+# source して検証できるようにした意図と噛み合っていなかった）。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Colors
 RED='\033[0;31m'
@@ -36,7 +48,7 @@ BOLD='\033[1m'
 
 # Options
 SKIP_INSTALL=false
-TOTAL_STEPS=6
+TOTAL_STEPS=7
 
 # ============================================================================
 # Functions
@@ -601,7 +613,7 @@ show_install_guides() {
 # ── Step 5: Verification ──
 
 run_verification() {
-    print_step 5 "動作確認 (--dry-run) — 全タスクタイプ..."
+    print_step 6 "動作確認 (--dry-run) — 全タスクタイプ..."
 
     local all_passed=true
 
@@ -662,7 +674,7 @@ run_verification() {
 # ── Step 6: Config Check ──
 
 check_config() {
-    print_step 6 "設定ファイルを確認中..."
+    print_step 7 "設定ファイルを確認中..."
 
     # Mirror multi-agent.sh's 3-layer resolution (env > project override > plugin default)
     local project_root effective_config config_src
@@ -736,6 +748,92 @@ print_summary() {
 # Main
 # ============================================================================
 
+# ============================================================================
+# レビューラッパー（シム）の配置
+# ============================================================================
+#
+# 消費プロジェクトの scripts/ へ codex-review.sh を置く。中身は
+# multi-agent.sh へ委譲するだけの薄いシムで、実装はオーケストレータ 1 本に
+# 収束している（Issue #406）。グローバル規約が定める
+# `bash scripts/codex-review.sh --base develop` が、どのリポジトリでも
+# そのまま動くようにするための入口。
+#
+# 既存ファイルは**黙って上書きしない**。利用者が手を入れている可能性があり、
+# 消したことに気づけない上書きは、この toolkit が一貫して避けている
+# 「静かな破壊」になる。同一内容なら何もせず、異なる内容なら
+# `.bak` へ退避してから置き換え、どちらを行ったかを必ず出力する。
+#
+# INSTALL_WRAPPERS_TARGET を設定すると配置先を差し替えられる（テスト用の seam）。
+# 未設定なら CWD（= 消費プロジェクトのルート想定）。
+install_review_wrappers() {
+    # 配置先は git のトップレベルを優先する。$PWD をそのまま使うと、リポジトリの
+    # サブディレクトリから setup を実行したときに <subdir>/scripts/ へ落とし、
+    # 「成功しました」と報告しながら規約どおりの `bash scripts/codex-review.sh` からは
+    # 見えない場所に置くことになる（check_config が既に同じ解決を使っている）。
+    local target_root="${INSTALL_WRAPPERS_TARGET:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+    local src="${SCRIPT_DIR}/templates/codex-review.sh"
+    local dest_dir="${target_root}/scripts"
+    local dest="${dest_dir}/codex-review.sh"
+    local sidecar="${dest_dir}/.ff-dev-toolkit-root"
+
+    print_step 5 "レビューラッパー（シム）を配置中..."
+
+    if [ ! -f "$src" ]; then
+        print_error "同梱シムが見つかりません: ${src}"
+        return 1
+    fi
+    if [ ! -f "${SCRIPT_DIR}/multi-agent.sh" ]; then
+        print_error "multi-agent.sh が見つかりません: ${SCRIPT_DIR}/multi-agent.sh"
+        return 1
+    fi
+    if ! mkdir -p "$dest_dir"; then
+        print_error "配置先ディレクトリを作成できません: ${dest_dir}"
+        return 1
+    fi
+
+    # オーケストレータの場所はサイドカー（素のデータ 1 行）に書く。シムへ焼き込むと
+    # (1) 配置後のファイルがマシン固有になり、git 管理下の scripts/ に入ると他人の
+    # 環境や CI で壊れる、(2) toolkit 更新のたび内容が変わり冪等比較が毎回不一致に
+    # なって利用者の .bak を上書きし続ける、(3) 生成物がシェルコードなのでパスの
+    # & や $ や " が構文を壊す（実測）。データなら 3 つとも起きない。
+    if ! printf '%s\n' "$SCRIPT_DIR" > "$sidecar"; then
+        print_error "toolkit パスの記録に失敗しました: ${sidecar}"
+        return 1
+    fi
+    print_info "toolkit パスを記録しました: ${sidecar}"
+
+    if [ -f "$dest" ]; then
+        if cmp -s "$src" "$dest"; then
+            print_info "codex-review.sh は最新です（スキップ）: ${dest}"
+            return 0
+        fi
+        # 退避先は使い回さない。固定の .bak だと 2 回目の上書きで利用者の元ファイルが
+        # 機械生成物に置き換わり、最初の退避が失われる。既存があれば連番を足す。
+        local backup="${dest}.bak" n=1
+        while [ -e "$backup" ]; do
+            backup="${dest}.bak.${n}"
+            n=$((n + 1))
+        done
+        if ! cp "$dest" "$backup"; then
+            print_error "既存ファイルを退避できません: ${backup}"
+            return 1
+        fi
+        print_warning "既存の codex-review.sh を ${backup} へ退避し、上書きします"
+    fi
+
+    if ! cp "$src" "$dest"; then
+        print_error "配置に失敗しました: ${dest}"
+        return 1
+    fi
+    if ! chmod +x "$dest"; then
+        print_error "実行権限を付与できません: ${dest}"
+        return 1
+    fi
+    print_success "codex-review.sh を配置しました: ${dest}"
+    print_info "${sidecar} はマシン固有です。git 管理下なら .gitignore へ追加してください。"
+    return 0
+}
+
 main() {
     for arg in "$@"; do
         case "$arg" in
@@ -757,6 +855,7 @@ main() {
     fi
     detect_ai_clis
     show_install_guides
+    install_review_wrappers || print_warning "レビューラッパーの配置に失敗しました（セットアップは続行します）"
     run_verification
     check_config
     print_summary

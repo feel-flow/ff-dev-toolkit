@@ -188,6 +188,13 @@ Output in the standard review format."
 # 例: claude -p "$PROMPT" / gemini -p "$PROMPT" / copilot -p "$PROMPT"
 #     codex exec "$PROMPT"（codex の -p は --profile。プロンプトは positional 引数）
 #
+# ⚠ **stdin を必ず閉じる（`< /dev/null`）。** codex は stdin が TTY でないと
+#   「追加入力」として読みに行き、EOF が来るまで戻らない。stdout には何も出ないので
+#   外からはハングと区別がつかない（実測。長時間かけて「CLI が未応答」と誤診した
+#   事例がある）。パイプ越しに呼ばれる pre-commit や CI では確実に踏む。
+#   なお同梱の multi-agent.sh 経由なら、アダプタ側が閉じているので考えなくてよい —
+#   自前ラッパーを書く場合だけの注意点。
+#
 # 失敗・タイムアウト時は、部分出力の先頭に未完了マーカーを付けて保存してから、
 # CLI の終了コードそのままで非 0 終了する。マーカーが無いと、統合レポートの
 # INCOMPLETE 検査（pre-push ゲート等）が空回りし、打ち切られたレビューが
@@ -195,7 +202,7 @@ Output in the standard review format."
 # 1 行目の `<!-- Status: incomplete -->` は orchestrator（multi-agent.sh）が
 # 機械判定するヘッダー契約（最初の空行より前・行頭・完全一致）。実装では
 # adapter-common.sh の write_output を使うのが確実
-if ! {cli} -p "$PROMPT" {flags} > "$OUTPUT_FILE" 2>&1; then
+if ! {cli} -p "$PROMPT" {flags} < /dev/null > "$OUTPUT_FILE" 2>&1; then
   rc=$?
   {
     echo "<!-- Status: incomplete -->"
@@ -234,7 +241,7 @@ codex exec -m "$CODEX_MODEL" "$PROMPT"      # ユーザー設定を黙って上�
 MODEL_ARGS=()
 [[ -n "${CODEX_MODEL:-}" ]] && MODEL_ARGS+=(-m "$CODEX_MODEL")
 [[ -n "${CODEX_PROFILE:-}" ]] && MODEL_ARGS+=(-p "$CODEX_PROFILE")
-codex exec "$PROMPT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"}
+codex exec "$PROMPT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} < /dev/null
 ```
 
 注意点:
