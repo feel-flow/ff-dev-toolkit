@@ -109,6 +109,7 @@ if [[ -z "$COMPARE_LINE" ]]; then
   echo "○ skip: 最新節 [$NEWEST_VER] に対応する compare リンク行が無いためスキップ"
   echo "  （公開タグ前の開発周期では正常。リンクが付いたあと本検査が走る）"
   echo "  CHANGELOG: $CHANGELOG"
+  FF_REACHED_END=1
   exit 0
 fi
 
@@ -166,6 +167,7 @@ if [[ -z "$PATHS" ]]; then
   echo "✓ changelog-attribution: 最新節 [$NEWEST_VER] に path-like マーカー無し（検査対象 0）"
   echo "  compare: v${FROM_TAG}...v${TO_TAG}"
   echo "  CHANGELOG: $CHANGELOG"
+  FF_REACHED_END=1
   exit 0
 fi
 
@@ -174,9 +176,23 @@ PATH_COUNT="$(printf '%s\n' "$PATHS" | grep -c . || true)"
 # ---- 公開タグ 2 点を fetch ---------------------------------------------------
 if ! TMP="$(mktemp -d 2>/dev/null)"; then
   echo "○ skip: 一時ディレクトリを作成できない環境（read-only）のためスキップ"
+  FF_REACHED_END=1
   exit 0
 fi
-trap 'rm -rf "$TMP"' EXIT
+# 途中死を沈黙させない。`set -u` 等で死んだとき、トラップ突入時の $? は **0** になるため、
+# 終了ステータスを保存し直すだけでは足りない（実測）。「rc=0 なのに最後まで到達して
+# いない」を中断として扱う。明示的な非 0 終了はそのまま通す。
+FF_REACHED_END=0
+_ff_exit_guard() {
+  _ff_rc=$?
+  rm -rf "$TMP"
+  if [ "$_ff_rc" -eq 0 ] && [ "$FF_REACHED_END" -ne 1 ]; then
+    echo "✗ changelog-attribution: 最後まで到達しませんでした（途中で中断）" >&2
+    exit 1
+  fi
+  exit "$_ff_rc"
+}
+trap _ff_exit_guard EXIT
 
 BARE="$TMP/tags.git"
 git init --bare -q "$BARE"
@@ -199,6 +215,7 @@ if [[ "$FETCH_RC" -ne 0 ]]; then
       'could not resolve host|could not connect to server|connection (timed out|refused)|network is unreachable|operation timed out|empty reply from server|ssl connect error|failed to connect' >/dev/null; then
     echo "○ skip: 公開リポジトリ ($REMOTE_URL) へのネットワーク到達に失敗したためスキップ"
     echo "  詳細: $(printf '%s' "$FETCH_ERR" | head -c 300 | tr '\n' ' ')"
+    FF_REACHED_END=1
     exit 0
   fi
   echo "✗ タグ v${FROM_TAG} / v${TO_TAG} の取得に失敗しました（${REMOTE_URL}）" >&2
@@ -304,4 +321,6 @@ if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
 echo "✓ changelog-attribution verify: 全 ${PASS} 件 pass（skip=${SKIPPED}）"
+FF_REACHED_END=1
 exit 0
+FF_REACHED_END=1

@@ -30,9 +30,23 @@ build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE" \
 
 if ! TMP="$(mktemp -d 2>/dev/null)"; then
   echo "○ skip: 一時ディレクトリを作成できない環境（read-only）のためスキップ"
+  FF_REACHED_END=1
   exit 0
 fi
-trap 'rm -rf "$TMP"' EXIT
+# 途中死を沈黙させない。`set -u` 等で死んだとき、トラップ突入時の $? は **0** になるため、
+# 終了ステータスを保存し直すだけでは足りない（実測）。「rc=0 なのに最後まで到達して
+# いない」を中断として扱う。明示的な非 0 終了はそのまま通す。
+FF_REACHED_END=0
+_ff_exit_guard() {
+  _ff_rc=$?
+  rm -rf "$TMP"
+  if [ "$_ff_rc" -eq 0 ] && [ "$FF_REACHED_END" -ne 1 ]; then
+    echo "✗ multi-agent-serialization: 最後まで到達しませんでした（途中で中断）" >&2
+    exit 1
+  fi
+  exit "$_ff_rc"
+}
+trap _ff_exit_guard EXIT
 
 PASS=0
 FAIL=0
@@ -254,3 +268,4 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 echo "✓ multi-agent-serialization verify: 全 $PASS 件 pass"
+FF_REACHED_END=1

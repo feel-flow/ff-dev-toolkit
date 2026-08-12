@@ -35,20 +35,36 @@ echo "== アダプタが渡す argv の検証 =="
 
 if [ ! -f "$PERSPECTIVE" ]; then
   echo "○ skip: perspective ファイルが見つかりません（本 suite の検査は1件も実行されていません）: $PERSPECTIVE"
+  FF_REACHED_END=1
   exit 0
 fi
 
 if ! git -C "$PLUGIN_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
   echo "○ skip: git リポジトリ外のため実行できません（本 suite の検査は1件も実行されていません）"
+  FF_REACHED_END=1
   exit 0
 fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/ff-adapter-argv.XXXXXX" 2>/dev/null)" || WORK=""
 if [ -z "$WORK" ]; then
   echo "○ skip: 一時ディレクトリを作成できません（本 suite の検査は1件も実行されていません）"
+  FF_REACHED_END=1
   exit 0
 fi
-trap 'rm -rf "$WORK"' EXIT
+# 途中死を沈黙させない。`set -u` 等で死んだとき、トラップ突入時の $? は **0** になるため、
+# 終了ステータスを保存し直すだけでは足りない（実測）。「rc=0 なのに最後まで到達して
+# いない」を中断として扱う。明示的な非 0 終了はそのまま通す。
+FF_REACHED_END=0
+_ff_exit_guard() {
+  _ff_rc=$?
+  rm -rf "$WORK"
+  if [ "$_ff_rc" -eq 0 ] && [ "$FF_REACHED_END" -ne 1 ]; then
+    echo "✗ adapter-model-args: 最後まで到達しませんでした（途中で中断）" >&2
+    exit 1
+  fi
+  exit "$_ff_rc"
+}
+trap _ff_exit_guard EXIT
 
 PASS=0
 FAIL=0
@@ -448,3 +464,4 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 echo "✓ adapter-model-args verify: 全 $PASS 件 pass"
+FF_REACHED_END=1

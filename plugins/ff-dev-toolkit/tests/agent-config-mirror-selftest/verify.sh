@@ -12,6 +12,7 @@ SOURCE_VERIFY="$PLUGIN_ROOT/tests/agent-config-mirror/verify.sh"
 
 if ! command -v yq >/dev/null 2>&1; then
   echo "○ skip: yq が見つからないため agent-config-mirror の mutation self-test をスキップ（検査は1件も実行されていません）"
+  FF_REACHED_END=1
   exit 0
 fi
 
@@ -20,26 +21,43 @@ fi
 # 報告され、環境問題がハーネスの破損に見える。判定を対象側と揃える。
 if ! SELFTEST_YQ_VERSION="$(yq --version 2>&1)"; then
   echo "○ skip: yq --version を実行できないため mutation self-test をスキップ（検査は1件も実行されていません）"
+  FF_REACHED_END=1
   exit 0
 fi
 case "$SELFTEST_YQ_VERSION" in
   *github.com/mikefarah/yq*'version v4.'*) ;;
   *)
     echo "○ skip: Mike Farah yq v4 ではないため mutation self-test をスキップ（検出: ${SELFTEST_YQ_VERSION}。検査は1件も実行されていません）"
+    FF_REACHED_END=1
     exit 0
     ;;
 esac
 
 if ! command -v perl >/dev/null 2>&1; then
   echo "○ skip: perl が見つからないため agent-config-mirror の mutation self-test をスキップ（検査は1件も実行されていません）"
+  FF_REACHED_END=1
   exit 0
 fi
 
 if ! TMP="$(mktemp -d "${TMPDIR:-/tmp}/agent-config-mirror-selftest.XXXXXX" 2>/dev/null)"; then
   echo "○ skip: 書き込み可能な一時領域を作れないため agent-config-mirror の mutation self-test をスキップ（検査は1件も実行されていません）"
+  FF_REACHED_END=1
   exit 0
 fi
-trap 'rm -rf "$TMP"' EXIT
+# 途中死を沈黙させない。`set -u` 等で死んだとき、トラップ突入時の $? は **0** になるため、
+# 終了ステータスを保存し直すだけでは足りない（実測）。「rc=0 なのに最後まで到達して
+# いない」を中断として扱う。明示的な非 0 終了はそのまま通す。
+FF_REACHED_END=0
+_ff_exit_guard() {
+  _ff_rc=$?
+  rm -rf "$TMP"
+  if [ "$_ff_rc" -eq 0 ] && [ "$FF_REACHED_END" -ne 1 ]; then
+    echo "✗ agent-config-mirror-selftest: 最後まで到達しませんでした（途中で中断）" >&2
+    exit 1
+  fi
+  exit "$_ff_rc"
+}
+trap _ff_exit_guard EXIT
 
 PASS=0
 FAIL=0
@@ -560,3 +578,4 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 echo "✓ agent-config-mirror self-test: 全 $PASS 件 pass"
+FF_REACHED_END=1

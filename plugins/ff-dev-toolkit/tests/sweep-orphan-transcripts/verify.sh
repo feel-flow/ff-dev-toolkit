@@ -15,9 +15,23 @@ fi
 
 if ! WORK="$(mktemp -d "${TMPDIR:-/tmp}/sweep-orphan-test.XXXXXX" 2>/dev/null)"; then
   echo "○ skip: 一時ディレクトリを作成できないためスキップ（本 suite の検査は1件も実行されていません。書き込み可能な環境で再実行してください）"
+  FF_REACHED_END=1
   exit 0
 fi
-trap 'rm -rf "$WORK"' EXIT
+# 途中死を沈黙させない。`set -u` 等で死んだとき、トラップ突入時の $? は **0** になるため、
+# 終了ステータスを保存し直すだけでは足りない（実測）。「rc=0 なのに最後まで到達して
+# いない」を中断として扱う。明示的な非 0 終了はそのまま通す。
+FF_REACHED_END=0
+_ff_exit_guard() {
+  _ff_rc=$?
+  rm -rf "$WORK"
+  if [ "$_ff_rc" -eq 0 ] && [ "$FF_REACHED_END" -ne 1 ]; then
+    echo "✗ sweep-orphan-transcripts: 最後まで到達しませんでした（途中で中断）" >&2
+    exit 1
+  fi
+  exit "$_ff_rc"
+}
+trap _ff_exit_guard EXIT
 
 PASS=0
 fail() {
@@ -146,4 +160,6 @@ OUT="$(run_sut --apply 2>&1)" || fail "healthy apply after mutation test"
 ok "healthy apply still protects live after mutation experiment"
 
 echo "✓ sweep-orphan-transcripts: ${PASS} checks passed"
+FF_REACHED_END=1
 exit 0
+FF_REACHED_END=1

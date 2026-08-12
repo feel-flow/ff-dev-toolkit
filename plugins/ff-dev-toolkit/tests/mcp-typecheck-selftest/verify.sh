@@ -52,6 +52,7 @@ SOURCE_VERIFY="$PLUGIN_ROOT/tests/mcp-typecheck/verify.sh"
 # 飛んだ」のかを区別できない。
 if [[ ! -d "$MCP_DIR/node_modules" ]]; then
   echo "○ skip: $MCP_DIR/node_modules が無いため mutation self-test をスキップ（tests/mcp-typecheck の検出力は未測定のままです。cd mcp && npm install で有効化）"
+  FF_REACHED_END=1
   exit 0
 fi
 if [[ ! -x "$MCP_DIR/node_modules/.bin/tsc" ]]; then
@@ -60,6 +61,7 @@ if [[ ! -x "$MCP_DIR/node_modules/.bin/tsc" ]]; then
 fi
 if ! command -v node >/dev/null 2>&1; then
   echo "○ skip: node が PATH に無いため mutation self-test をスキップ（tests/mcp-typecheck の検出力は未測定のままです）"
+  FF_REACHED_END=1
   exit 0
 fi
 # mktemp の失敗理由（ディスク満杯・TMPDIR の設定ミス等）は捨てずに skip 文言へ添える。
@@ -71,10 +73,24 @@ MKTEMP_RC=$?
 set -e
 if [ "$MKTEMP_RC" -ne 0 ]; then
   echo "○ skip: 書き込み可能な一時領域を作れないため mutation self-test をスキップ（tests/mcp-typecheck の検出力は未測定のままです）${MKTEMP_OUT:+ / mktemp: $MKTEMP_OUT}"
+  FF_REACHED_END=1
   exit 0
 fi
 TMP="$MKTEMP_OUT"
-trap 'rm -rf "$TMP"' EXIT
+# 途中死を沈黙させない。`set -u` 等で死んだとき、トラップ突入時の $? は **0** になるため、
+# 終了ステータスを保存し直すだけでは足りない（実測）。「rc=0 なのに最後まで到達して
+# いない」を中断として扱う。明示的な非 0 終了はそのまま通す。
+FF_REACHED_END=0
+_ff_exit_guard() {
+  _ff_rc=$?
+  rm -rf "$TMP"
+  if [ "$_ff_rc" -eq 0 ] && [ "$FF_REACHED_END" -ne 1 ]; then
+    echo "✗ mcp-typecheck-selftest: 最後まで到達しませんでした（途中で中断）" >&2
+    exit 1
+  fi
+  exit "$_ff_rc"
+}
+trap _ff_exit_guard EXIT
 # 物理パスへ直す。macOS の $TMPDIR は /var → /private/var の symlink 配下にあり、
 # gate は cwd を物理・設定由来の path を論理として扱うため、そのままだと path の
 # 突き合わせが食い違う。
@@ -410,3 +426,4 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 echo "✓ mcp-typecheck self-test: 全 $PASS 件 pass"
+FF_REACHED_END=1

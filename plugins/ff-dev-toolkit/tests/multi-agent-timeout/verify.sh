@@ -264,9 +264,23 @@ if ! TMP="$(mktemp -d 2>/dev/null)"; then
   # 部分 skip でこのマーカーを出すと suite 全体が skip 扱いになり、上の Part C が
   # 走ったことが報告から消える。ここは検証本体が丸ごと成立しないケースなので出す。
   echo "○ skip: 一時ディレクトリを作成できない環境（read-only）のためスキップ"
+  FF_REACHED_END=1
   exit 0
 fi
-trap 'rm -rf "$TMP"' EXIT
+# 途中死を沈黙させない。`set -u` 等で死んだとき、トラップ突入時の $? は **0** になるため、
+# 終了ステータスを保存し直すだけでは足りない（実測）。「rc=0 なのに最後まで到達して
+# いない」を中断として扱う。明示的な非 0 終了はそのまま通す。
+FF_REACHED_END=0
+_ff_exit_guard() {
+  _ff_rc=$?
+  rm -rf "$TMP"
+  if [ "$_ff_rc" -eq 0 ] && [ "$FF_REACHED_END" -ne 1 ]; then
+    echo "✗ multi-agent-timeout: 最後まで到達しませんでした（途中で中断）" >&2
+    exit 1
+  fi
+  exit "$_ff_rc"
+}
+trap _ff_exit_guard EXIT
 
 # ════════════════════════════════════════════════════════════════════════════
 # Part A: run_with_timeout の単体挙動
@@ -1017,6 +1031,7 @@ rm -f "$SUCCESS_REASON"
   record_timeout_reason command
   [[ -f "$SUCCESS_REASON" ]] || { echo "marker missing before exit" >&2; exit 2; }
   # 正常終了 → EXIT trap が clear_timeout_reason する
+  FF_REACHED_END=1
   exit 0
 )
 if [[ ! -f "$SUCCESS_REASON" ]]; then
@@ -1091,3 +1106,4 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 echo "✓ multi-agent-timeout verify: 全 $PASS 件 pass"
+FF_REACHED_END=1

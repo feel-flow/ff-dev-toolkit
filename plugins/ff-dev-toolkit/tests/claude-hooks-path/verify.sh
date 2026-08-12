@@ -28,10 +28,12 @@ SETTINGS="${REPO_ROOT:+$REPO_ROOT/.claude/settings.json}"
 
 if [ -z "$REPO_ROOT" ] || [ ! -f "$SETTINGS" ]; then
   echo "○ skip: .claude/settings.json が無いチェックアウトのためスキップ（本 suite は SSOT リポジトリ専用の検査です）"
+  FF_REACHED_END=1
   exit 0
 fi
 if ! command -v jq >/dev/null 2>&1; then
   echo "○ skip: jq が見つからないためスキップ（.claude/settings.json の hook 起動コマンドは未検査のままです）"
+  FF_REACHED_END=1
   exit 0
 fi
 
@@ -52,6 +54,7 @@ PM_COUNT="$(jq -r '[.hooks.PostToolUse[]?.hooks[]?.command // empty | select(con
 SS_COUNT="$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command // empty | select(contains("session-start-sync-drift.sh"))] | length' "$SETTINGS")"
 if [ "$PM_COUNT" = 0 ] && [ "$SS_COUNT" = 0 ]; then
   echo "○ skip: 対象 hook の定義が settings.json に無いためスキップ（SSOT リポジトリ以外の構成）"
+  FF_REACHED_END=1
   exit 0
 fi
 if [ "$PM_COUNT" != 1 ] || [ "$SS_COUNT" != 1 ]; then
@@ -66,9 +69,23 @@ SS_CMD="$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command // empty | select(cont
 
 if ! TMP="$(mktemp -d 2>/dev/null)"; then
   echo "○ skip: 一時ディレクトリを作成できない環境（read-only）のためスキップ"
+  FF_REACHED_END=1
   exit 0
 fi
-trap 'rm -rf "$TMP"' EXIT
+# 途中死を沈黙させない。`set -u` 等で死んだとき、トラップ突入時の $? は **0** になるため、
+# 終了ステータスを保存し直すだけでは足りない（実測）。「rc=0 なのに最後まで到達して
+# いない」を中断として扱う。明示的な非 0 終了はそのまま通す。
+FF_REACHED_END=0
+_ff_exit_guard() {
+  _ff_rc=$?
+  rm -rf "$TMP"
+  if [ "$_ff_rc" -eq 0 ] && [ "$FF_REACHED_END" -ne 1 ]; then
+    echo "✗ claude-hooks-path: 最後まで到達しませんでした（途中で中断）" >&2
+    exit 1
+  fi
+  exit "$_ff_rc"
+}
+trap _ff_exit_guard EXIT
 
 PASS=0
 FAIL=0
@@ -243,3 +260,4 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 echo "✓ claude-hooks-path verify: 全 $PASS 件 pass"
+FF_REACHED_END=1

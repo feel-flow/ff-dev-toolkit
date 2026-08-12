@@ -307,6 +307,55 @@ fi
 # tests/mbcs-guard-failclosed/verify.sh（Issue #312）。SKILL.md 内 bash ブロックは
 # tests/skill-bash-blocks/verify.sh が担当（Issue #311 / case 10 と同型の責務分担）。
 echo
+echo ""
+echo "== case 12: 途中死した suite が rc=0 で pass と報告される形の再混入ガード =="
+
+# `trap 'rm -rf "$X"' EXIT` は、suite が途中で死んでも**トラップ最終コマンドの成功**が
+# 終了ステータスを上書きし、rc=0 で終わる。run-all はそれを passed に数えるので、
+# アサーションが 1 件も走らないまま「全部通った」と報告される（実測で 23 本中 20 本）。
+#
+# 終了ステータスの保存だけでは直らない — `set -u` による死ではトラップ突入時の $? が
+# **0** になるため。「rc=0 なのに最後まで到達していない」を中断として扱う必要がある。
+#
+# 振る舞いで測ると 23 suite を走らせることになるので、ここは構造で固定する。
+# 実際の検出力（注入した途中死で rc≠0 になること）は fixture で別途確認する。
+# 走査は ${TESTS_DIR}（tests/ 直下）。${SCRIPT_DIR} は tests/run-all/ を指すので、そちらを
+# 使うと**対象 0 件のまま「問題なし」と報告する**（初版がそうなっており、変異が素通りした）。
+# 走査できた件数も主張に含める — 抽出の失敗を「違反なし」と読まないため。
+_unguarded=""
+_scanned=0
+for _f in "$TESTS_DIR"/*/verify.sh; do
+  [ -f "$_f" ] || continue
+  # **コメント行を拾わない**。`trap ... EXIT` の話をしている説明文が先に現れると、
+  # そちらを実装として読んで誤検出する（初版が 2 本を誤って挙げた）。
+  # 行頭（空白のみ許容）から始まる実際の trap 文だけを見る。
+  _trap="$(grep -hE '^[[:space:]]*trap .*EXIT' "$_f" 2>/dev/null | head -1 || true)"
+  [ -n "$_trap" ] || continue
+  _scanned=$((_scanned + 1))
+  # トラップが素の `rm -rf` 単体なら、途中死を握り潰す形
+  case "$_trap" in
+    *"trap 'rm -rf"*) _unguarded="${_unguarded} $(basename "$(dirname "$_f")")" ;;
+  esac
+done
+if [ "$_scanned" -lt 20 ]; then
+  bad "trap EXIT を持つ suite を ${_scanned} 本しか走査できなかった（この検査は成立していない）"
+elif [ -z "$_unguarded" ]; then
+  ok "trap EXIT を持つ ${_scanned} 本すべてに素の rm -rf トラップが無い（途中死が rc=0 にならない）"
+else
+  bad "途中死を握り潰すトラップが再混入した:${_unguarded}"
+fi
+
+# 検出器そのものが効くことを fixture で確かめる（構造検査が空振りしていないこと）。
+# fixture は静的にコミットしてある — この suite は mktemp / heredoc を使わない方針
+# （ACE-86-2。read-only 環境でも完走させるため）。
+_fx_rc=0
+bash "$SCRIPT_DIR/fixtures/exit-guard/bare-trap.sh" >/dev/null 2>&1 || _fx_rc=$?
+if [ "$_fx_rc" -eq 0 ]; then
+  ok "fixture: 素の rm -rf トラップは実際に途中死を rc=0 へ潰す（検査の前提が成立）"
+else
+  bad "fixture: 素の rm -rf トラップが rc=${_fx_rc} を返した — この検査の前提が崩れている"
+fi
+
 echo "== case 11: \$VAR 直付けマルチバイト展開の再混入ガード =="
 
 # shellcheck source=../lib/mbcs-guard.sh

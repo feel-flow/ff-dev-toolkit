@@ -40,6 +40,7 @@ SOURCE_TSCONFIG="$PLUGIN_ROOT/tests/ace-scripts-typecheck/tsconfig.json"
 # 飛んだ」のかを区別できない。
 if [[ ! -d "$MCP_DIR/node_modules" ]]; then
   echo "○ skip: $MCP_DIR/node_modules が無いため mutation self-test をスキップ（tests/ace-scripts-typecheck の検出力は未測定のままです。cd mcp && npm install で有効化）"
+  FF_REACHED_END=1
   exit 0
 fi
 if [[ ! -x "$MCP_DIR/node_modules/.bin/tsc" ]]; then
@@ -48,17 +49,33 @@ if [[ ! -x "$MCP_DIR/node_modules/.bin/tsc" ]]; then
 fi
 if ! command -v node >/dev/null 2>&1; then
   echo "○ skip: node が PATH に無いため mutation self-test をスキップ（tests/ace-scripts-typecheck の検出力は未測定のままです）"
+  FF_REACHED_END=1
   exit 0
 fi
 if ! command -v perl >/dev/null 2>&1; then
   echo "○ skip: perl が見つからないため mutation self-test をスキップ（tests/ace-scripts-typecheck の検出力は未測定のままです）"
+  FF_REACHED_END=1
   exit 0
 fi
 if ! TMP="$(mktemp -d "${TMPDIR:-/tmp}/ace-scripts-typecheck-selftest.XXXXXX" 2>/dev/null)"; then
   echo "○ skip: 書き込み可能な一時領域を作れないため mutation self-test をスキップ（tests/ace-scripts-typecheck の検出力は未測定のままです）"
+  FF_REACHED_END=1
   exit 0
 fi
-trap 'rm -rf "$TMP"' EXIT
+# 途中死を沈黙させない。`set -u` 等で死んだとき、トラップ突入時の $? は **0** になるため、
+# 終了ステータスを保存し直すだけでは足りない（実測）。「rc=0 なのに最後まで到達して
+# いない」を中断として扱う。明示的な非 0 終了はそのまま通す。
+FF_REACHED_END=0
+_ff_exit_guard() {
+  _ff_rc=$?
+  rm -rf "$TMP"
+  if [ "$_ff_rc" -eq 0 ] && [ "$FF_REACHED_END" -ne 1 ]; then
+    echo "✗ ace-scripts-typecheck-selftest: 最後まで到達しませんでした（途中で中断）" >&2
+    exit 1
+  fi
+  exit "$_ff_rc"
+}
+trap _ff_exit_guard EXIT
 # 物理パスへ直す。macOS の $TMPDIR は /var → /private/var の symlink 配下にあり、
 # tsc は cwd を物理・設定由来の path を論理として扱うため、そのままだと診断が
 # `../../../../../../../../var/folders/...` という読めない相対パスで出る。
@@ -366,3 +383,4 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 echo "✓ ace-scripts-typecheck self-test: 全 $PASS 件 pass"
+FF_REACHED_END=1

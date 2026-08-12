@@ -34,6 +34,7 @@ DIST="$MCP_DIR/dist/index.js"
 
 if [[ ! -d "$MCP_DIR/node_modules" ]]; then
   echo "○ skip: $MCP_DIR/node_modules が無いためスキップ（本 suite の検査は1件も実行されていません。cd mcp && npm install で有効化）"
+  FF_REACHED_END=1
   exit 0
 fi
 
@@ -51,9 +52,23 @@ fi
 # と同形に揃える）。
 if ! TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mcp-dist-gate.XXXXXX" 2>/dev/null)"; then
   echo "○ skip: 一時ディレクトリを作成できないためスキップ（本 suite の検査は1件も実行されていません。書き込み可能な環境で再実行してください）"
+  FF_REACHED_END=1
   exit 0
 fi
-trap 'rm -rf "$TMP_DIR"' EXIT
+# 途中死を沈黙させない。`set -u` 等で死んだとき、トラップ突入時の $? は **0** になるため、
+# 終了ステータスを保存し直すだけでは足りない（実測）。「rc=0 なのに最後まで到達して
+# いない」を中断として扱う。明示的な非 0 終了はそのまま通す。
+FF_REACHED_END=0
+_ff_exit_guard() {
+  _ff_rc=$?
+  rm -rf "$TMP_DIR"
+  if [ "$_ff_rc" -eq 0 ] && [ "$FF_REACHED_END" -ne 1 ]; then
+    echo "✗ mcp-dist-gate: 最後まで到達しませんでした（途中で中断）" >&2
+    exit 1
+  fi
+  exit "$_ff_rc"
+}
+trap _ff_exit_guard EXIT
 TMP_OUT="$TMP_DIR/index.js"
 
 FAIL=0
@@ -169,3 +184,4 @@ if [[ "$FAIL" != "0" ]]; then
   exit 1
 fi
 echo "✓ mcp-dist-gate verify: 全検査 pass"
+FF_REACHED_END=1
