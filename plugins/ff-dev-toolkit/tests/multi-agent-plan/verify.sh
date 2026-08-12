@@ -11,6 +11,17 @@ MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 
 [ -f "$MULTI_AGENT" ] || { echo "✗ multi-agent.sh が見つかりません" >&2; exit 1; }
 
+# 実行環境の MULTI_AGENT_* からの分離（Issue #374 / #378 / #383）。
+# orchestrator は --config 未指定時に $MULTI_AGENT_CONFIG を最優先で読むため、
+# ホストが export していると suite が意図した config（プロジェクト直下 or 同梱既定）が
+# 実行環境の指定にすり替わる（実測: MULTI_AGENT_CONFIG=/no/such/config.yaml で rc=1）。
+# **存在検査より後に置くこと。** 先に置くと multi-agent.sh が無い環境で grep が rc=2 を
+# 返し、「抽出が失敗しました」という分離機構側の診断が先に出て、真因である
+# 「multi-agent.sh が見つかりません」が隠れる（既存の存在検査が事実上デッドコードになる）。
+# shellcheck source=../lib/adapter-env-isolation.sh
+source "$PLUGIN_ROOT/tests/lib/adapter-env-isolation.sh"
+build_isolate_env "MULTI_AGENT_CONFIG" "$MULTI_AGENT"
+
 PASS=0
 FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
@@ -66,7 +77,7 @@ run_plan() { # $1: output file, $2..: multi-agent args
   shift
   (
     cd "$REPO"
-    PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
       --task review --mode distributed --strategy balanced --base develop \
       --dry-run "$@"
   ) >"$output" 2>&1
@@ -183,7 +194,7 @@ echo "== 明示 CLI と cost strategy =="
 EXPLORE_LOG="$TMP/explore.log"
 if (
   cd "$REPO"
-  PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+  run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
     --task explore --mode distributed --description "stub explore" \
     --cli claude-code --perspective dependency-mapping --dry-run
 ) >"$EXPLORE_LOG" 2>&1; then
@@ -207,7 +218,7 @@ fi
 EXPLORE_AUTO_LOG="$TMP/explore-auto.log"
 if (
   cd "$REPO"
-  PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+  run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
     --task explore --mode distributed --description "stub explore" --dry-run
 ) >"$EXPLORE_AUTO_LOG" 2>&1; then
   ok "Explore 既定 minimize_cost の dry-run が成功"
@@ -264,7 +275,7 @@ for solo_cmd in claude codex gemini grok; do
   SOLO_LOG="$TMP/solo-$solo_cmd.log"
   (
     cd "$REPO"
-    PATH="$CHAIN_STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
+    run_isolated PATH="$CHAIN_STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
       --task review --mode distributed --strategy balanced --base develop --dry-run
   ) >"$SOLO_LOG" 2>&1 || true
 
@@ -286,7 +297,7 @@ chmod +x "$CHAIN_STUB/copilot"
 METERED_LOG="$TMP/solo-metered.log"
 (
   cd "$REPO"
-  PATH="$CHAIN_STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
+  run_isolated PATH="$CHAIN_STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
     --task review --mode distributed --strategy balanced --base develop --dry-run
 ) >"$METERED_LOG" 2>&1 || true
 if grep -q 'Execution plan is empty' "$METERED_LOG" \
@@ -354,7 +365,7 @@ fi
 echo ""
 echo "== help 契約 =="
 HELP_LOG="$TMP/help.log"
-bash "$MULTI_AGENT" --help >"$HELP_LOG" 2>&1
+run_isolated bash "$MULTI_AGENT" --help >"$HELP_LOG" 2>&1
 if grep -q 'Perspective resolution:' "$HELP_LOG" \
   && grep -q -- 'single --perspective <name> is an explicit pairing' "$HELP_LOG" \
   && grep -q 'Explicit CLIs are not replaced by a cost strategy' "$HELP_LOG" \
@@ -436,7 +447,7 @@ fi
 PAIR_LOG="$TMP/pair-exclude.log"
 (
   cd "$REPO"
-  PATH="$STUB:$PATH" bash "$MULTI_AGENT" --task review --mode pair --base develop \
+  run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" --task review --mode pair --base develop \
     --dry-run --exclude-perspective comprehensive-review
 ) >"$PAIR_LOG" 2>&1 || true
 if grep -qE '^ *- comprehensive-review$' "$PAIR_LOG"; then
@@ -474,7 +485,7 @@ EMPTY_LOG="$TMP/exclude-all.log"
 _empty_rc=0
 (
   cd "$REPO"
-  PATH="$STUB:$PATH" bash "$MULTI_AGENT" --task review --base develop --dry-run \
+  run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" --task review --base develop --dry-run \
     --perspective code-review --exclude-perspective code-review
 ) >"$EMPTY_LOG" 2>&1 || _empty_rc=$?
 if [ "$_empty_rc" -ne 0 ] && grep -q "Execution plan is empty" "$EMPTY_LOG"; then
@@ -488,7 +499,7 @@ fi
 # implement では「一覧を見たいだけ」なのに落ちる（実測）。
 for _t in explore implement; do
   L="$TMP/list-${_t}.log"
-  ( cd "$REPO"; PATH="$STUB:$PATH" bash "$MULTI_AGENT" --task "$_t" --list-perspectives ) >"$L" 2>&1 || true
+  ( cd "$REPO"; run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" --task "$_t" --list-perspectives ) >"$L" 2>&1 || true
   if [ -s "$L" ] && ! grep -q "ERROR" "$L"; then
     ok "--list-perspectives が task=${_t} でも一覧を出す"
   else

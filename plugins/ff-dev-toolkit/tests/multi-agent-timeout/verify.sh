@@ -56,8 +56,21 @@ done
 # 単一センチネルでは検出できない。方式の詳細は lib 側ヘッダー参照。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE" \
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE FF_TIMEOUT_KILL_GRACE" \
   "$MULTI_AGENT" "$PLUGIN_ROOT"/scripts/adapters/*.sh
+
+# ホスト由来の値を **suite の先頭で 1 回だけ** 落とす。probe() は `( source ...; 関数 )`
+# の形でプロセス内から run_with_timeout を呼ぶため env -u が構造的に届かず、そこだけ
+# ホストの FF_TIMEOUT_* が生き残っていた（実測: FF_TIMEOUT_KILL_GRACE=1 でこのケース
+# だけが赤くなる）。
+#
+# **probe() の内側で unset してはいけない。** 内側から見るとホスト由来の値と
+# `FF_TIMEOUT_KILL_GRACE=2 probe ...` というケース固有の前置代入は区別できず、後者まで
+# 消える。そうなるとシームが既定値へ戻り、シーム自体が壊れても検査が通る（= 検出力を
+# 失う）うえ SIGKILL 昇格ケースが grace 10 秒ぶん余計に待つ。先頭で 1 回落としておけば、
+# 前置代入は代入として subshell へ届く（実測: ホスト 99 は消え、ケース固有 2 は届く）。
+# run_isolated と同じ意味論 — ホストの値は除き、ケース固有の上書きは通す。
+unset_isolated_vars
 
 PASS=0
 FAIL=0
@@ -264,6 +277,50 @@ echo ""
 # パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に誤帰属し、
 # 恒常的に壊れた TMPDIR が suite を exit 0 で無効化し続ける。2>&1 で受けると
 # 成功時はパス・失敗時は理由が同じ変数に入る。
+# **mktemp の成功は「TMPDIR が使える」を意味しない。** BSD mktemp はテンプレート無しだと
+# TMPDIR が書き込み不可でも実 temp（/var/folders）へ黙って fallback する（実測）。
+# 一方この suite が検査するアダプタは reason ファイルを `${TMPDIR:-/tmp}/` に置くため、
+# TMPDIR が書けないと理由が記録されず、timeout/crash の区別を見る 5 件だけが赤くなる
+# — ゲートは通ったのに検査対象は動かない、という食い違いになる（Issue #382）。
+# ゲートが見るものを、suite が実際に必要とするもの（TMPDIR へ書けるか）に合わせる。
+# 環境都合の skip は「ここから先を実行しない」だけであって、**既に検出した失敗を
+# 取り消す権限は無い**。Part C の静的検査 30 件はこのゲートより手前で走り終えており、
+# bad() は FAIL を増やすだけで止めないため、素の `exit 0` は本物の退行（SSOT と
+# agent-config.yaml の timeout 乖離など）を「環境都合の skip」へ洗浄してしまう。
+# しかも run-all はそれを failed ではなく skipped に数えるので、他 suite が緑なら
+# 全体も緑になる（実測: 同一の変異が TMPDIR 書込可では rc=1 / 書込不可では rc=0）。
+# #405 で潰した「途中死が rc=0 で pass と報告される」と同じ形が、suite の内側で
+# 再発している状態。skip 行を出したまま非 0 で終えてよい — run-all は非 0 を
+# 無条件に failed へ数える（skip マーカーの有無を見るのは rc=0 の場合だけ）。
+_ff_skip_guard() {
+  [ "$FAIL" -eq 0 ] && return 0
+  echo "✗ multi-agent-timeout: 環境都合でスキップしますが、既に ${FAIL} 件の失敗を検出済みです（skip では消しません）" >&2
+  exit 1
+}
+
+_ff_tmpdir="${TMPDIR:-/tmp}"
+# 固定名 + `: >` で試さないこと。予測可能な名前を共有ディレクトリ（TMPDIR 既定は
+# /tmp）へ作るため、先回りで同名のシンボリックリンクを置かれるとリンク先を切り詰める
+# （実測: 用意した canary ファイルが空になる）。**テンプレート付き** mktemp は
+# 排他生成なのでこの経路が無く、しかもテンプレートを与えた場合は上で述べた fallback を
+# **しない** — 書けない TMPDIR では失敗する。つまり「安全に作る」と「TMPDIR の書き込み
+# 可否を測る」が同じ 1 呼び出しで両立する。失敗理由は 2>&1 で同じ変数に受ける
+# （捨てると read-only 以外の失敗まで「書き込み不可」へ誤帰属する）。
+if _ff_probe="$(mktemp "${_ff_tmpdir%/}/.ff-timeout-writable.XXXXXX" 2>&1)"; then
+  rm -f "$_ff_probe"
+else
+  # 文言は「ここから先が成立しない」までに留める。直前の静的検査（Part C）は既に
+  # 走っているので、「1 件も実行していない」と書くと診断が事実と食い違う。skip
+  # マーカーを出す以上ランナー上は suite 全体が skip として数えられる（部分 skip の
+  # 扱いは下の mktemp 分岐と同じ判断）が、出力そのものが嘘をつく必要はない。
+  echo "○ skip: TMPDIR へ書き込めない環境のためスキップ（一時ディレクトリを要する実行検査は 1 件も実行されていません）"
+  printf '  TMPDIR: %s（アダプタはここへ reason ファイルを置くため、書けないと timeout/crash の区別が成立しない）\n' "$_ff_tmpdir"
+  printf '  mktemp: %s\n' "$_ff_probe"
+  FF_REACHED_END=1
+  _ff_skip_guard
+  exit 0
+fi
+
 if _ff_mktemp_out="$(mktemp -d 2>&1)"; then
   TMP="$_ff_mktemp_out"
 else
@@ -272,6 +329,7 @@ else
   echo "○ skip: 一時ディレクトリを作成できない環境（read-only）のためスキップ"
   printf '  mktemp: %s\n' "$_ff_mktemp_out"
   FF_REACHED_END=1
+  _ff_skip_guard
   exit 0
 fi
 # 途中死を沈黙させない。`set -u` 等で死んだとき、トラップ突入時の $? は **0** になるため、
@@ -302,6 +360,9 @@ probe() { # $1: 制限秒 / $2..: コマンド。出力: "rc elapsed" を stdout
   local start end rc=0
   start="$(date +%s)"
   set +e
+  # ここは同じプロセス内で source して関数を直接呼ぶ経路なので env -u が届かない。
+  # ホスト由来の値は suite 先頭の unset_isolated_vars で既に落としてある（ここで
+  # unset するとケース固有の前置代入まで消える。理由は先頭の注記を参照）。
   ( source "$ADAPTER_COMMON"; run_with_timeout "$to" "$@" ) >"$TMP/probe.out" 2>/dev/null
   rc=$?
   set -e

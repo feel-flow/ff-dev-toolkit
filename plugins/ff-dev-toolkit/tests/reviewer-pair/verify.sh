@@ -21,9 +21,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
+
 PERSPECTIVES_DIR="$PLUGIN_ROOT/scripts/perspectives/review"
 
 [ -f "$MULTI_AGENT" ] || { echo "✗ multi-agent.sh が見つかりません" >&2; exit 1; }
+
+# 実行環境の MULTI_AGENT_* からの分離（Issue #374 / #378 / #383）。
+# orchestrator は --config 未指定時に $MULTI_AGENT_CONFIG を最優先で読むため、
+# ホストが export していると suite が意図した config（プロジェクト直下 or 同梱既定）が
+# 実行環境の指定にすり替わる（実測: MULTI_AGENT_CONFIG=/no/such/config.yaml で rc=1）。
+# **存在検査より後に置くこと。** 先に置くと multi-agent.sh が無い環境で grep が rc=2 を
+# 返し、「抽出が失敗しました」という分離機構側の診断が先に出て、真因である
+# 「multi-agent.sh が見つかりません」が隠れる（既存の存在検査が事実上デッドコードになる）。
+# shellcheck source=../lib/adapter-env-isolation.sh
+source "$PLUGIN_ROOT/tests/lib/adapter-env-isolation.sh"
+build_isolate_env "MULTI_AGENT_CONFIG" "$MULTI_AGENT"
 
 PASS=0
 FAIL=0
@@ -98,7 +110,7 @@ run() {
   set +e
   (
     cd "$REPO"
-    env PATH="$STUB:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
+    run_isolated env PATH="$STUB:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
       ${envs[@]+"${envs[@]}"} bash "$MULTI_AGENT" --task review --base develop "$@"
   ) >"$out" 2>&1
   RUN_RC=$?
@@ -138,7 +150,7 @@ mkdir -p "$NOCLI"
 set +e
 (
   cd "$REPO"
-  env PATH="$NOCLI:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
+  run_isolated env PATH="$NOCLI:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
     bash "$MULTI_AGENT" --task review --base develop --print-reviewers
 ) >"$TMP/nocli.log" 2>"$TMP/nocli.err"
 rc=$?
@@ -245,7 +257,7 @@ chmod +x "$SOLO/claude"
 set +e
 (
   cd "$REPO"
-  env PATH="$SOLO:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
+  run_isolated env PATH="$SOLO:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
     MULTI_AGENT_REVIEW_MAIN=claude-code MULTI_AGENT_REVIEW_SUB=codex-cli \
     bash "$MULTI_AGENT" --task review --base develop --dry-run
 ) >"$TMP/submissing.log" 2>&1
@@ -260,7 +272,7 @@ fi
 set +e
 (
   cd "$REPO"
-  env PATH="$SOLO:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
+  run_isolated env PATH="$SOLO:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
     MULTI_AGENT_REVIEW_MAIN=grok-cli \
     bash "$MULTI_AGENT" --task review --base develop --dry-run
 ) >"$TMP/mainmissing.log" 2>&1
@@ -405,7 +417,7 @@ reset_config
 set +e
 (
   cd "$REPO"
-  env PATH="$STUB:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
+  run_isolated env PATH="$STUB:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
     bash "$MULTI_AGENT" --task review --base develop --dry-run </dev/null
 ) >"$TMP/ci.log" 2>&1
 rc=$?
@@ -512,7 +524,7 @@ echo "-- pair の適用範囲 --"
 set +e
 (
   cd "$REPO"
-  env PATH="$STUB:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
+  run_isolated env PATH="$STUB:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
     bash "$MULTI_AGENT" --task explore --mode pair --description x --base develop --dry-run
 ) >"$TMP/pair-explore.log" 2>&1
 rc=$?
@@ -598,7 +610,7 @@ fi
 set +e
 (
   cd "$REPO"
-  env PATH="$STUB:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
+  run_isolated env PATH="$STUB:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
     bash "$MULTI_AGENT" --task explore --base develop --description x --dry-run
 ) >"$TMP/explore.log" 2>&1
 rc=$?
