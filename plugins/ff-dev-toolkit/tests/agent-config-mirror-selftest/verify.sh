@@ -39,7 +39,13 @@ if ! command -v perl >/dev/null 2>&1; then
   exit 0
 fi
 
-if ! TMP="$(mktemp -d "${TMPDIR:-/tmp}/agent-config-mirror-selftest.XXXXXX" 2>/dev/null)"; then
+# mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正な
+# パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に
+# 誤帰属し、恒常的に壊れた TMPDIR が suite を exit 0 で無効化し続ける。
+# 2>&1 で受けると、成功時はパス・失敗時は理由が同じ変数に入る。
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/agent-config-mirror-selftest.XXXXXX" 2>&1)"; then
+  TMP="$_ff_mktemp_out"
+else
   echo "○ skip: 書き込み可能な一時領域を作れないため agent-config-mirror の mutation self-test をスキップ（検査は1件も実行されていません）"
   FF_REACHED_END=1
   exit 0

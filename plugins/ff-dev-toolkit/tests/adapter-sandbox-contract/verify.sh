@@ -68,9 +68,14 @@ if ! git -C "$PLUGIN_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
   exit 0
 fi
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/ff-adapter-sandbox.XXXXXX" 2>/dev/null)" || WORK=""
+# mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正なパス・
+# quota 超過など）まで「書き込み可能な環境で」に誤帰属し、恒常的に壊れた TMPDIR が
+# suite を exit 0 で無効化し続ける。2>&1 で受けると成功時はパス・失敗時は理由が入る。
+_ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-adapter-sandbox.XXXXXX" 2>&1)" || true   # 失敗時は stderr の内容が残る（空にすると理由が消える）
+if [ -d "$_ff_mktemp_out" ]; then WORK="$_ff_mktemp_out"; else WORK=""; fi
 if [ -z "$WORK" ]; then
   echo "○ skip: 一時ディレクトリを作成できません（本 suite の検査は1件も実行されていません）"
+  printf '  mktemp: %s\n' "$_ff_mktemp_out"
   exit 0
 fi
 # 終了ステータスを**保存してから**掃除する。`trap 'rm -rf "$WORK"' EXIT` と書くと、

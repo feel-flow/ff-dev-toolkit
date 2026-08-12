@@ -49,7 +49,9 @@ export FF_RUN_ALL_NESTED=1
 
 if [[ $# -gt 0 ]]; then
   SCRIPTS=("$@")
+  USING_DEFAULT_SCRIPTS=0
 else
+  USING_DEFAULT_SCRIPTS=1
   SCRIPTS=(
     # 一時ディレクトリも外部コマンドも要らない静的検査を先に置く（安価な順。
     # 全 suite を実行するので、並び順は結果ではなく報告の読みやすさの問題）。
@@ -211,6 +213,109 @@ else
   )
 fi
 
+# ── 環境都合で消えてはいけない suite の名簿 ──────────────────────────────────
+# skip 契約（部分 skip 禁止・行頭 ○ skip・ランナーは pass と別に数える）は正しいが、
+# **強制する主体が居ない**。このリポジトリに CI は無く、run-all.sh が非 0 になるのは
+# 「pass が 0 件」のときだけなので、yq や node_modules が無いマシンでは該当 suite が
+# 丸ごと skip され、それでも全体は緑になる（実測。Issue #274 / #372）。
+#
+# ここは **fail-closed を既定**にする。「環境都合の skip を許容する」という既存の
+# 設計思想とは正面から衝突するが、衝突しているのは *許容するかどうか* ではなく
+# *誰が許容を宣言するか*。黙って消えるのをやめ、**環境側が明示的に宣言**する形にする。
+#
+# 回せない環境では、理由を添えて明示的に外す:
+#   FF_RUN_ALL_ALLOW_SKIP="agent-config-mirror agent-config-mirror-selftest" bash tests/run-all.sh
+#   FF_RUN_ALL_ALLOW_SKIP=all   # 全部許す（旧来の挙動。1 行の警告つき）
+REQUIRED_SUITES=(
+  # yq（Mike Farah v4）が要る。ミラー不変条件は他に代替する検査が無い（#274）
+  agent-config-mirror
+  agent-config-mirror-selftest
+  # mcp/node_modules が要る。型検査ゲート 2 系統ぶんがここに乗っている（#372）
+  mcp-dist-gate
+  mcp-vitest
+  mcp-typecheck
+  mcp-typecheck-selftest
+  ace-scripts-typecheck
+  ace-scripts-typecheck-selftest
+  ace-scripts-vitest
+)
+
+# ── 既定 suite 一覧の登録漏れ検査 ──────────────────────────────────────────────
+# SCRIPTS 配列は手で維持されており、**一覧から 1 行消しても誰も気づかない**。
+# 消した suite は走らず、残り全部が緑のまま「All ... passed」を出す。
+# 自己テスト（tests/run-all/verify.sh）は擬似 suite を明示引数で渡してランナーの集計を
+# 検査する作りなので、既定の配列を一度も読まない — つまり登録の正しさは規律だけで
+# 保たれていた。ここで実体（tests/<name>/verify.sh）と突き合わせる。
+#
+# 走査は tests/ の直下 1 階層だけ。run-all 自身の fixture は tests/run-all/fixtures/
+# の下にあり、この深さには現れないので誤検出しない。
+check_suite_registration() {
+  local disk_names=() registered=() missing=() name script
+  for script in "$SCRIPT_DIR"/*/verify.sh; do
+    [[ -f "$script" ]] || continue
+    disk_names+=("$(basename "$(dirname "$script")")")
+  done
+  # 既定一覧そのものを読む（別配列に写すと写し忘れで乖離する）。この関数は
+  # 既定一覧で走るときにしか呼ばれないので SCRIPTS が既定一覧に等しい。
+  for script in "${SCRIPTS[@]}"; do
+    registered+=("$(basename "$(dirname "$script")")")
+  done
+  # 走査が空なら「漏れなし」ではなく「検査が成立していない」
+  if [[ "${#disk_names[@]}" -eq 0 ]]; then
+    echo "✗ tests/ 直下に verify.sh が 1 件も見つかりません（登録検査が成立していません）" >&2
+    return 1
+  fi
+  local d r found
+  for d in "${disk_names[@]}"; do
+    found=0
+    for r in "${registered[@]}"; do
+      [[ "$d" == "$r" ]] && { found=1; break; }
+    done
+    [[ "$found" -eq 1 ]] || missing+=("$d")
+  done
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    echo "✗ run-all.sh の既定 suite 一覧に未登録の suite があります:" >&2
+    printf '    %s\n' "${missing[@]}" >&2
+    echo "  tests/<name>/verify.sh を追加したら SCRIPTS 配列にも 1 行足してください。" >&2
+    return 1
+  fi
+  # 名簿に実在しない suite 名が残ると、その行は永久に何も守らない（改名・削除に
+  # 追従できていない状態）。登録検査のついでに実在を確かめる。
+  local req unknown=()
+  for req in "${REQUIRED_SUITES[@]}"; do
+    found=0
+    for d in "${disk_names[@]}"; do
+      [[ "$req" == "$d" ]] && { found=1; break; }
+    done
+    [[ "$found" -eq 1 ]] || unknown+=("$req")
+  done
+  if [[ "${#unknown[@]}" -gt 0 ]]; then
+    echo "✗ REQUIRED_SUITES に実在しない suite 名があります:" >&2
+    printf '    %s\n' "${unknown[@]}" >&2
+    echo "  改名・削除に追従できていません（その行は何も守っていません）。" >&2
+    return 1
+  fi
+  echo "ℹ️  既定 suite 一覧の登録漏れなし（実体 ${#disk_names[@]} 件 / 必須 ${#REQUIRED_SUITES[@]} 件）"
+  return 0
+}
+
+# --check-registration: 登録照合だけを行って終わる。全 suite を走らせずに
+# この検査だけを回せるようにしておく（自己テストから安価に叩くため）。
+if [[ "${FF_RUN_ALL_CHECK_REGISTRATION:-0}" == "1" ]]; then
+  if [[ "$USING_DEFAULT_SCRIPTS" != "1" ]]; then
+    echo "✗ FF_RUN_ALL_CHECK_REGISTRATION は既定一覧に対してのみ意味を持ちます（引数なしで実行してください）" >&2
+    exit 2
+  fi
+  check_suite_registration
+  exit $?
+fi
+
+# 既定一覧で走らせるときだけ照合する（明示引数の実行は部分実行が正当な用途）。
+if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
+  check_suite_registration || exit 1
+fi
+
+
 PASSED=()
 FAILED=()
 SKIPPED=()
@@ -269,6 +374,34 @@ echo "suites: total=${#SCRIPTS[@]} run=$RUN passed=${#PASSED[@]} failed=${#FAILE
 if [[ ${#SKIPPED[@]} -gt 0 ]]; then
   echo "○ skipped (環境都合で検証本体が未実行): ${SKIPPED[*]}"
 fi
+
+# 必須名簿の suite が skip したら失敗として扱う（既定）。環境都合で回せない場合は
+# FF_RUN_ALL_ALLOW_SKIP で**明示的に宣言**する。黙って消えることを無くすのが目的で、
+# 許容そのものを禁じているわけではない。
+REQUIRED_SKIPPED=()
+if [[ "$USING_DEFAULT_SCRIPTS" == "1" && ${#SKIPPED[@]} -gt 0 ]]; then
+  _allow="${FF_RUN_ALL_ALLOW_SKIP:-}"
+  if [[ "$_allow" == "all" ]]; then
+    echo "⚠️  FF_RUN_ALL_ALLOW_SKIP=all — 必須 suite の skip を許容しています（検証されていない不変条件があります）" >&2
+  else
+    # カンマ区切りも受ける
+    _allow="${_allow//,/ }"
+    for _s in "${SKIPPED[@]}"; do
+      for _r in "${REQUIRED_SUITES[@]}"; do
+        [[ "$_s" == "$_r" ]] || continue
+        _declared=0
+        for _a in $_allow; do [[ "$_a" == "$_s" ]] && { _declared=1; break; }; done
+        [[ "$_declared" -eq 1 ]] || REQUIRED_SKIPPED+=("$_s")
+      done
+    done
+  fi
+fi
+if [[ ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
+  echo "✗ 環境都合で消してはいけない suite が skip しました: ${REQUIRED_SKIPPED[*]}" >&2
+  echo "  これらが守る不変条件には代替の検査がありません（yq / mcp の node_modules が要ります）。" >&2
+  echo "  回せない環境なら、理由を承知のうえで明示的に外してください:" >&2
+  echo "    FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh" >&2
+fi
 if [[ ${#NOT_RUN[@]} -gt 0 ]]; then
   echo "✗ not run (suite を起動できなかった): ${NOT_RUN[*]}" >&2
 fi
@@ -276,7 +409,7 @@ if [[ ${#FAILED[@]} -gt 0 ]]; then
   echo "✗ failed: ${FAILED[*]}" >&2
 fi
 
-if [[ ${#FAILED[@]} -gt 0 || ${#NOT_RUN[@]} -gt 0 ]]; then
+if [[ ${#FAILED[@]} -gt 0 || ${#NOT_RUN[@]} -gt 0 || ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
   exit 1
 fi
 

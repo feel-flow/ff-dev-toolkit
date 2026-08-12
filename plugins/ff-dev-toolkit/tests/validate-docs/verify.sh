@@ -478,7 +478,28 @@ else
       fail=1
     fi
 
-    docs_blob="$(find "$docs_dir" -type f -name '*.md' -print0 2>/dev/null | xargs -0 cat 2>/dev/null || true)"
+    # 走査の失敗を空文字へ畳み込まない。`2>/dev/null` + `|| true` + パイプの三重飲み込みは、
+    # find/xargs が落ちても「入力が空」と同じ結果になり、docs_blob を対象にした検査が
+    # **検査 0 件で pass** へ静かに退化する（#370 と同型）。
+    # 「該当なし」と「走査失敗」を分けて、後者は名指しで止める。
+    docs_scan_err="$docs_dir/../.ff-docs-scan.err"
+    docs_files="$(find "$docs_dir" -type f -name '*.md' -print 2>"$docs_scan_err")" || {
+      echo "  ✗ docs/ の走査に失敗しました: $docs_dir"
+      sed 's/^/      find: /' "$docs_scan_err" 2>/dev/null || true
+      rm -f "$docs_scan_err"
+      fail=1
+      docs_files=""
+    }
+    rm -f "$docs_scan_err"
+    if [[ -n "$docs_files" ]]; then
+      docs_blob="$(printf '%s\n' "$docs_files" | tr '\n' '\0' | xargs -0 cat)" || {
+        echo "  ✗ docs/ の Markdown を読み取れませんでした（走査は成功、読み取りで失敗）"
+        fail=1
+        docs_blob=""
+      }
+    else
+      docs_blob=""
+    fi
     if [[ -z "$docs_blob" ]]; then
       echo "  ✗ docs/ 配下の Markdown 入力が空"
       fail=1

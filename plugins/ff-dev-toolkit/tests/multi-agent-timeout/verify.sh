@@ -260,10 +260,17 @@ echo ""
 # ここから先は一時ディレクトリが必要
 # ════════════════════════════════════════════════════════════════════════════
 
-if ! TMP="$(mktemp -d 2>/dev/null)"; then
+# mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正な
+# パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に誤帰属し、
+# 恒常的に壊れた TMPDIR が suite を exit 0 で無効化し続ける。2>&1 で受けると
+# 成功時はパス・失敗時は理由が同じ変数に入る。
+if _ff_mktemp_out="$(mktemp -d 2>&1)"; then
+  TMP="$_ff_mktemp_out"
+else
   # 部分 skip でこのマーカーを出すと suite 全体が skip 扱いになり、上の Part C が
   # 走ったことが報告から消える。ここは検証本体が丸ごと成立しないケースなので出す。
   echo "○ skip: 一時ディレクトリを作成できない環境（read-only）のためスキップ"
+  printf '  mktemp: %s\n' "$_ff_mktemp_out"
   FF_REACHED_END=1
   exit 0
 fi

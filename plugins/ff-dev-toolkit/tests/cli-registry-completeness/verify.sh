@@ -49,6 +49,31 @@ FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
+# レジストリ参照の失敗を「診断ゼロの途中死」にしない。
+# `x="$(get_cli_... "$cli")"` の裸代入は、`set -euo pipefail` 下で失敗すると
+# **直前までの出力を出して rc=1、メッセージ無し**で終わる。どの CLI のどの lookup が
+# 落ちたのか読めない。
+#
+# 現状この経路は到達不能（cli-registry-parser.sh が「required 関数それぞれに `*` default
+# arm がちょうど 1 件」を強制するので lookup は必ず値を返す）。つまり実害はまだ無い。
+# しかしその不変条件に依存した fail-closed なので、default arm 要求を緩めた瞬間に
+# 「診断不能な red」へ変わる。壊れたときに原因が読める形にしておく。
+# agent-config-mirror/verify.sh の lookup_checked と同じ扱いに揃える。
+# 呼び出しは `x="$(lookup_checked ...)"` の形になる = **サブシェル**。この中で
+# カウンタを増やしても親には残らない（実測: ✗ 行だけ出て FAIL は 0 のまま = suite は
+# pass を名乗れる）。ここでは診断を stderr へ出すだけにして、**カウントは親で**上げる。
+lookup_checked() { # $1: 説明, $2...: 実行するコマンド
+  local what="$1"; shift
+  local out rc=0
+  out="$("$@" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "  ✗ レジストリ参照に失敗: ${what}（rc=${rc}）" >&2
+    printf '%s\n' "$out" | sed 's/^/      /' >&2
+    return 1
+  fi
+  printf '%s' "$out"
+}
+
 TASKS="review explore implement"
 KNOWN_TIERS="premium standard metered free-tier flat-rate"
 
@@ -143,11 +168,11 @@ for cli in $ALL_CLIS; do
   cli_count=$((cli_count + 1))
   echo "--- $cli ---"
 
-  cmd="$(get_cli_command "$cli")"
+  cmd="$(lookup_checked "get_cli_command($cli)" get_cli_command "$cli")" || { FAIL=$((FAIL + 1)); continue; }
   if [ -n "$cmd" ]; then ok "get_cli_command → $cmd"
   else bad "get_cli_command が空（case 文の書き漏らし）"; fi
 
-  adapter="$(get_cli_adapter "$cli")"
+  adapter="$(lookup_checked "get_cli_adapter($cli)" get_cli_adapter "$cli")" || { FAIL=$((FAIL + 1)); continue; }
   if [ -z "$adapter" ]; then
     bad "get_cli_adapter が空（case 文の書き漏らし）"
   elif [ -f "$adapter" ]; then
@@ -156,20 +181,20 @@ for cli in $ALL_CLIS; do
     bad "get_cli_adapter が実在しないパスを返す: $adapter"
   fi
 
-  tier="$(get_cli_cost_tier "$cli")"
+  tier="$(lookup_checked "get_cli_cost_tier($cli)" get_cli_cost_tier "$cli")" || { FAIL=$((FAIL + 1)); continue; }
   if list_has "$KNOWN_TIERS" "$tier"; then
     ok "get_cli_cost_tier → $tier"
   else
     bad "get_cli_cost_tier が未知の tier を返す: '${tier}'（既知: ${KNOWN_TIERS}）"
   fi
 
-  envs="$(get_cli_model_env_vars "$cli")"
+  envs="$(lookup_checked "get_cli_model_env_vars($cli)" get_cli_model_env_vars "$cli")" || { FAIL=$((FAIL + 1)); continue; }
   if [ -n "$envs" ]; then ok "get_cli_model_env_vars → $envs"
   else bad "get_cli_model_env_vars が空（失敗時の再実行コマンドに env が前置されない）"; fi
 
   # fallback は「その CLI が未インストールのときの代替」。自分自身を指すと
   # プラン構築が自分へ戻るだけで、代替として機能しない。
-  fb="$(get_cli_fallback "$cli")"
+  fb="$(lookup_checked "get_cli_fallback($cli)" get_cli_fallback "$cli")" || { FAIL=$((FAIL + 1)); continue; }
   if [ -z "$fb" ]; then
     bad "get_cli_fallback が空（未インストール時に観点が黙って落ちる）"
   elif [ "$fb" = "$cli" ]; then
@@ -183,7 +208,7 @@ for cli in $ALL_CLIS; do
   # タスクごとに個別で見る。3 つを連結して「どれか 1 つでもあれば OK」にすると、
   # 新規 CLI で review の arm だけ書き忘れた場合が通ってしまう（実測で確認済み）。
   for task in $TASKS; do
-    owned="$(get_cli_perspectives_"$task" "$cli")"
+    owned="$(lookup_checked "get_cli_perspectives_${task}($cli)" "get_cli_perspectives_${task}" "$cli")" || { FAIL=$((FAIL + 1)); continue; }
     if [ -n "$owned" ]; then
       ok "get_cli_perspectives_${task} → ${owned}"
     else
@@ -302,7 +327,7 @@ yaml_fallback_value() { # <cli>
 
 fallback_value_mismatch=0
 for cli in $ALL_CLIS; do
-  want="$(get_cli_fallback "$cli")"
+  want="$(lookup_checked "get_cli_fallback($cli)" get_cli_fallback "$cli")" || { FAIL=$((FAIL + 1)); continue; }
   got="$(yaml_fallback_value "$cli")"
   if [ "$want" != "$got" ]; then
     bad "agent-config.yaml の fallback.${cli} が実装と不一致: YAML=${got:-（空）} / 実装=${want}"

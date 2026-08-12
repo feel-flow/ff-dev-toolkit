@@ -308,6 +308,124 @@ fi
 # tests/skill-bash-blocks/verify.sh が担当（Issue #311 / case 10 と同型の責務分担）。
 echo
 echo ""
+echo "== case 13: 既定 suite 一覧の登録漏れ検査 =="
+
+# SCRIPTS 配列は手で維持されており、一覧から 1 行消しても残り全部が緑のまま
+# 「All ... passed」を出す（実測）。ランナー側に照合を持たせた。
+#
+# ここは全 suite を走らせずに照合だけを回す（FF_RUN_ALL_CHECK_REGISTRATION=1）。
+# その入口は引数なし実行を要求するので、入れ子ガードに当たらないよう
+# FF_RUN_ALL_NESTED を落として呼ぶ。
+_reg_rc=0
+if _reg_out="$(env -u FF_RUN_ALL_NESTED FF_RUN_ALL_CHECK_REGISTRATION=1 \
+  bash "$RUNNER" 2>&1)"; then _reg_rc=0; else _reg_rc=$?; fi
+case "$_reg_out" in
+  *"登録漏れなし"*) _reg_ok=1 ;;
+  *) _reg_ok=0 ;;
+esac
+if [ "$_reg_rc" -eq 0 ] && [ "$_reg_ok" -eq 1 ]; then
+  ok "現状の tests/ は既定一覧と整合している"
+else
+  bad "登録照合が現状で通らない (rc=${_reg_rc})"
+  printf '%s\n' "$_reg_out" | sed 's/^/    | /' >&2
+fi
+
+# 未登録の suite を検出できること。実体側に 1 本足して照合を回す
+# （run-all.sh 本体は触らない — 走査先は $SCRIPT_DIR なので、複製した木で試す）。
+# 複製先は tests/ の外。tests/ 直下に置くと、本体の登録検査自身がそれを
+# 未登録 suite として拾う（検査対象を作ることで検査を壊す形）。
+_reg_fx="${TMPDIR:-/tmp}/ff-registration-probe.$$"
+rm -rf "$_reg_fx"
+mkdir -p "$_reg_fx/unregistered-probe"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$_reg_fx/unregistered-probe/verify.sh"
+chmod +x "$_reg_fx/unregistered-probe/verify.sh"
+cp "$TESTS_DIR/run-all.sh" "$_reg_fx/run-all.sh"
+_reg_rc=0
+if _reg_out="$(env -u FF_RUN_ALL_NESTED FF_RUN_ALL_CHECK_REGISTRATION=1 \
+  bash "$_reg_fx/run-all.sh" 2>&1)"; then _reg_rc=0; else _reg_rc=$?; fi
+case "$_reg_out" in
+  *"unregistered-probe"*) _reg_named=1 ;;
+  *) _reg_named=0 ;;
+esac
+if [ "$_reg_rc" -ne 0 ] && [ "$_reg_named" -eq 1 ]; then
+  ok "未登録の suite を名指しして非 0 で終わる"
+else
+  bad "未登録の suite を検出できなかった (rc=${_reg_rc})"
+  printf '%s\n' "$_reg_out" | sed 's/^/    | /' >&2
+fi
+rm -rf "$_reg_fx"
+
+echo ""
+echo "== case 14: 必須 suite の skip が終了コードに現れる配線 =="
+
+# yq / node_modules が無い環境では該当 suite が丸ごと skip され、それでも全体は緑に
+# なっていた（実測。#274 / #372）。必須名簿を持たせ、名簿の suite が skip したら
+# 失敗として扱う（環境都合で回せない場合は FF_RUN_ALL_ALLOW_SKIP で明示宣言する）。
+#
+# 振る舞いの実測は「yq を PATH から外した run-all」で行った（PR 本文に記録）。
+# ここは**配線が外れないこと**を構造で固定する — 名簿を持っていても、終了コードへ
+# 効いていなければ意味が無い。
+_ra_src="$TESTS_DIR/run-all.sh"
+case "$(cat "$_ra_src")" in
+  *"REQUIRED_SUITES=("*) _has_roster=1 ;;
+  *) _has_roster=0 ;;
+esac
+if [ "$_has_roster" -eq 1 ]; then
+  ok "必須 suite 名簿が定義されている"
+else
+  bad "必須 suite 名簿が消えた（環境都合の skip が黙って通る）"
+fi
+# 終了条件に REQUIRED_SKIPPED が含まれること。名簿だけあって配線が無い形を弾く。
+# **エラー表示側の条件と取り違えない** — 表示だけ残して終了条件から外す変異は、
+# 「REQUIRED_SKIPPED を含む if 行」を数えるだけでは素通りする（実測）。
+# 終了条件は FAILED / NOT_RUN と同じ行に並ぶので、その共起で特定する。
+if grep -qE '^\s*if \[\[ .*FAILED\[@\].*REQUIRED_SKIPPED\[@\].*\]\]; then' "$_ra_src"; then
+  ok "必須 suite の skip が終了コードの判定に含まれている"
+else
+  bad "名簿はあるが終了コードへ効いていない（skip しても緑のまま）"
+fi
+# 名簿の実在検査が登録照合に相乗りしていること（改名・削除への追従）
+_reg_rc=0
+if _reg_out="$(env -u FF_RUN_ALL_NESTED FF_RUN_ALL_CHECK_REGISTRATION=1 \
+  bash "$RUNNER" 2>&1)"; then _reg_rc=0; else _reg_rc=$?; fi
+case "$_reg_out" in
+  *"必須 "*"件"*) _req_reported=1 ;;
+  *) _req_reported=0 ;;
+esac
+if [ "$_reg_rc" -eq 0 ] && [ "$_req_reported" -eq 1 ]; then
+  ok "登録照合が必須名簿の件数も報告する（実在しない名前は非 0）"
+else
+  bad "登録照合が必須名簿を見ていない (rc=${_reg_rc})"
+  printf '%s\n' "$_reg_out" | sed 's/^/    | /' >&2
+fi
+
+echo ""
+echo "== case 15: mktemp skip ゲートが失敗理由を捨てる形の再混入ガード =="
+
+# `mktemp -d ... 2>/dev/null` は、read-only 以外の失敗（TMPDIR が不正なパス・quota 超過
+# など）まで「書き込み可能な環境で再実行してください」に誤帰属する。恒常的に壊れた
+# TMPDIR は suite 群を exit 0 で無効化し続け、skip の連鎖は run-all のサマリーでは
+# 正常に見える（#385）。stderr は捨てず skip 行へ併記する。
+_swallow=""
+_scanned_mk=0
+for _f in "$TESTS_DIR"/*/verify.sh; do
+  [ -f "$_f" ] || continue
+  _scanned_mk=$((_scanned_mk + 1))
+  # **コメント行を拾わない**。この検査を説明する散文が同じ文字列を含むため、
+  # 素朴な grep は自分自身（run-all/verify.sh）を違反として挙げる（実測）。
+  if grep -qE '^[[:space:]]*[^#[:space:]].*mktemp -d[^|]*2>/dev/null' "$_f"; then
+    _swallow="${_swallow} $(basename "$(dirname "$_f")")"
+  fi
+done
+if [ "$_scanned_mk" -lt 20 ]; then
+  bad "suite を ${_scanned_mk} 本しか走査できなかった（この検査は成立していない）"
+elif [ -z "$_swallow" ]; then
+  ok "mktemp の失敗理由を捨てる skip ゲートが無い（${_scanned_mk} 本走査）"
+else
+  bad "mktemp の stderr を捨てる skip ゲートが再混入した:${_swallow}"
+fi
+
+echo ""
 echo "== case 12: 途中死した suite が rc=0 で pass と報告される形の再混入ガード =="
 
 # `trap 'rm -rf "$X"' EXIT` は、suite が途中で死んでも**トラップ最終コマンドの成功**が

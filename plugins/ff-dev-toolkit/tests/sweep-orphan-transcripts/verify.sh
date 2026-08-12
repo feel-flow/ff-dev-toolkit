@@ -13,8 +13,15 @@ if [ ! -f "$SUT" ]; then
   exit 1
 fi
 
-if ! WORK="$(mktemp -d "${TMPDIR:-/tmp}/sweep-orphan-test.XXXXXX" 2>/dev/null)"; then
+# mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正な
+# パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に
+# 誤帰属し、恒常的に壊れた TMPDIR が suite を exit 0 で無効化し続ける。
+# 2>&1 で受けると、成功時はパス・失敗時は理由が同じ変数に入る。
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/sweep-orphan-test.XXXXXX" 2>&1)"; then
+  WORK="$_ff_mktemp_out"
+else
   echo "○ skip: 一時ディレクトリを作成できないためスキップ（本 suite の検査は1件も実行されていません。書き込み可能な環境で再実行してください）"
+  printf '  mktemp: %s\n' "$_ff_mktemp_out"
   FF_REACHED_END=1
   exit 0
 fi

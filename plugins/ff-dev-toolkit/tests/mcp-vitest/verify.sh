@@ -36,8 +36,15 @@ fi
 # （検証本体を環境都合で実行できない）ため、契約どおり丸ごと skip する。
 # mktemp はテンプレート形式で呼ぶ（BSD/GNU/busybox すべてで有効。`-t <prefix>` は
 # GNU では XXXXXX 必須のためエラーになり、移植性バグを環境都合と誤帰属させる）。
-if ! PROBE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mcp-vitest.XXXXXX" 2>/dev/null)"; then
+# mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正な
+# パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に
+# 誤帰属し、恒常的に壊れた TMPDIR が suite を exit 0 で無効化し続ける。
+# 2>&1 で受けると、成功時はパス・失敗時は理由が同じ変数に入る。
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/mcp-vitest.XXXXXX" 2>&1)"; then
+  PROBE_DIR="$_ff_mktemp_out"
+else
   echo "○ skip: 一時ディレクトリを作成できないためスキップ（本 suite の検査は1件も実行されていません。書き込み可能な環境で再実行してください）"
+  printf '  mktemp: %s\n' "$_ff_mktemp_out"
   exit 0
 fi
 rm -rf "$PROBE_DIR"
