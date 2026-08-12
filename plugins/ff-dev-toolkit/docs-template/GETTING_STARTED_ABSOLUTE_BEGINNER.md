@@ -63,6 +63,12 @@ xcode-select --install
 2. 「Download」をクリック
 3. インストーラーを実行（全て「Next」でOK）
 
+> **Windows で進める前に必ず読むこと。**
+> このツールキットの配布物は端から端まで bash スクリプト（`.sh`）で、**PowerShell / コマンドプロンプト版は存在しません**。
+> Windows では **WSL2（推奨）** か、上でインストールした Git for Windows に同梱の **Git Bash** を使ってください。
+> 以降のコマンドは、コマンドプロンプトや PowerShell ではなく **その bash 環境で**実行します。
+> 詳細と既知の注意点は [対応プラットフォーム](./05-operations/deployment/multi-cli-review-orchestration.md#対応プラットフォーム) を参照。
+
 **確認方法:**
 
 ```bash
@@ -96,7 +102,8 @@ git --version
 ### 1-2: プロジェクトフォルダの作成
 
 ```bash
-# ターミナル（macOS）またはコマンドプロンプト（Windows）で実行
+# ターミナル（macOS / Linux）または Git Bash・WSL2（Windows）で実行
+# ※ Windows のコマンドプロンプト / PowerShell では動きません（対応プラットフォームを参照）
 
 # 1. プロジェクト用のフォルダを作成
 mkdir my-first-project

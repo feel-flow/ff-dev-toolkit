@@ -213,6 +213,32 @@ must_contain "05-operations/organizational-rollout/health-check.md" '自動ゲ�
 must_contain "05-operations/organizational-rollout/health-check.md" 'が非空であることを確認' \
   "health-check.md §4 に中間ファイル空振りの注意がある"
 
+# --- Windows 記述が doc セット内で矛盾しないこと ---
+# 配布物は端から端まで bash なので Windows ネイティブは非対応。初学者向け文書が
+# 「コマンドプロンプトで実行」と読める状態は、いちばん踏まれやすい。
+# 語だけを見ると、本文の別箇所（コード内コメント等）に同じ語が残っているだけで
+# 通ってしまう（実測: 相互参照リンクを消しても緑のままだった）。**リンク先そのもの**を要求する。
+must_contain "GETTING_STARTED_ABSOLUTE_BEGINNER.md" 'multi-cli-review-orchestration.md#対応プラットフォーム' \
+  "GETTING_STARTED が対応プラットフォーム節へ相互参照している"
+must_contain "GETTING_STARTED_ABSOLUTE_BEGINNER.md" 'PowerShell / コマンドプロンプト版は存在しません' \
+  "GETTING_STARTED が Windows ネイティブ非対応を明記している"
+# 固定文字列の不在検査は「その文言の復活」しか止められない。全角/半角括弧の差や
+# 言い換えは素通りする（実測）。ラベルは**実際に守っている範囲**まで狭めておく。
+must_not_contain "GETTING_STARTED_ABSOLUTE_BEGINNER.md" 'コマンドプロンプト（Windows）で実行' \
+  "GETTING_STARTED に旧文言『コマンドプロンプト（Windows）で実行』が復活していない"
+# 見出し（適用範囲の注意）ではなく**主張そのもの**を固定する。見出しだけを見ると、
+# 本文を「Windows ネイティブでも動きます」へ反転しても緑のまま通る（実測）。
+must_contain "05-operations/deployment/agent-deletion-prevention-harness.md" \
+  'Windows ネイティブで動くという意味ではありません' \
+  "削除防止ハーネスが「Windows 対象」の適用範囲を限定している"
+must_contain "05-operations/deployment/agent-deletion-prevention-harness.md" 'multi-cli-review-orchestration.md#対応プラットフォーム' \
+  "削除防止ハーネスが対応プラットフォーム節へ相互参照している"
+# リンク**先**が実在すること。参照側の文字列だけを守っていると、見出しを改名した
+# 瞬間に両方のリンクが死ぬのに検査は緑のまま（実測: 「動作環境」へ改名しても通った）。
+must_match "05-operations/deployment/multi-cli-review-orchestration.md" \
+  '^#{2,4} 対応プラットフォーム$' \
+  "リンク先の見出し『対応プラットフォーム』が実在する"
+
 echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ docs-gates verify: $FAIL 件失敗" >&2

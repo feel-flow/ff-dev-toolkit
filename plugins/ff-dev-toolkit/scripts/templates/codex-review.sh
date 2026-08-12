@@ -9,7 +9,7 @@
 #
 # 以前このファイルは各プロジェクトが自前で持つ 80〜390 行のラッパーで、
 # `review-common.sh` / `review-prompts.sh` と合わせて 3 本 1 組だった。同じ仕事を
-# オーケストレータと二重に持っていたため、7 リポジトリで 13 通りに分岐し、
+# オーケストレータと二重に持っていたため、消費プロジェクトごとにコピーが分岐し、
 # 依存欠落で起動できないコピーや、下記の stdin の罠を踏むコピーが生まれた
 # （Issue #406）。実装をオーケストレータ 1 本へ寄せ、この入口は名前と
 # コマンドラインの互換だけを担う。
@@ -38,7 +38,8 @@
 # シムは薄いので、旧ラッパーが持っていた機能の大半を持たない。渡されたものを
 # 黙って無視すると、利用者は指定したつもりのまま既定設定でレビューが走り、
 # 成果物からもログからも判別できない（ACE-70-2 が記録した実害と同じ形）。
-# 未対応のオプション・環境変数は非 0 で拒否し、正規の経路を案内する。
+# 未対応のオプションは非 0 で拒否し、正規の経路を案内する。旧ラッパーの環境変数は、
+# 写せるものは写して 1 行通知し、写せないものだけ拒否する（下記）。
 #
 # ## 使い方
 #
@@ -47,10 +48,33 @@
 #
 #   SKIP_CODEX_REVIEW=1  レビューを実行せず成功終了する（pre-commit の逃がし弁）
 #
+#   終了コード: 0 = 完走 or 意図的なスキップ（小 diff / SKIP_CODEX_REVIEW）
+#               2 = 入力の誤り（未対応オプション・不正な env）
+#               3 = diff が大きすぎてレビューできない（成功と区別する）
+#               その他 = 委譲先の終了コードをそのまま返す
+#     **リテラル `1` のみ**を見る。`true` / `yes` では走る。既存の各プロジェクト実装と
+#     同じ挙動で、値の解釈を広げると「どの値なら効くのか」が実装ごとに分かれるため、
+#     互換のまま狭く保つ。判断の記録であって、うっかりではない。
+#     skip はこのファイルの最初の分岐で短絡するので、skip したときは旧 env
+#     （CODEX_MODEL 等）の写像・拒否の通知も出ない。走らせない実行について
+#     設定の話をしても行動につながらないため、意図的にこの順序にしている。
+#
+#   同じオプションを 2 回渡した場合（`--base a --base b`）は両方そのまま委譲し、
+#   オーケストレータ側の last-wins に従う。一般的な CLI 慣習どおりだが、最初の指定は
+#   黙って捨てられる。ここで重複を検出して拒否すると、`--base` を既定で足す
+#   ラッパーの上からもう一度指定する、という実在の使い方を壊すのでそのままにする。
+#
 #   モデル / reasoning effort の指定は toolkit の正規経路を使う:
 #     MULTI_AGENT_MODEL_CODEX_CLI=<model>     モデルを明示する
 #     MULTI_AGENT_CODEX_PROFILE=<profile>     ~/.codex/<name>.config.toml を層に重ねる
 #   （両者は同時指定できない。詳細は skills/multi-review/SKILL.md の「モデル選択」）
+#
+#   旧ラッパーの env は写す（黙殺しない。1 行通知する）:
+#     CODEX_MODEL             → MULTI_AGENT_MODEL_CODEX_CLI
+#     CODEX_DEFAULT_REVIEWERS → 既定の観点（--reviewers 明示時はそちらが優先）
+#     CODEX_REASONING_EFFORT  → **写せないので非 0 で拒否**。effort 単体を受ける
+#                                入口が toolkit に無く、プロファイルへモデルごと
+#                                束ねる必要があるため 1:1 変換できない
 # ============================================================================
 
 set -euo pipefail
@@ -156,10 +180,19 @@ ${SCRIPT_NAME} — Codex cross-model レビュー（multi-agent.sh への薄い�
       test-analysis / type-design-analysis
 
   --timeout <秒>        CLI ごとの制限時間
+
+  上記は --opt=value 形式でも渡せる。パッケージマネージャが挟む --
+  （pnpm は透過、npm は除去）は位置を問わず読み飛ばす。
   --dry-run             実行せずプランだけ表示する
   --help                このヘルプ
 
   SKIP_CODEX_REVIEW=1   レビューを実行せず成功終了する
+
+旧ラッパーの env は写して 1 行通知する（黙って無視しない）:
+  CODEX_MODEL             → MULTI_AGENT_MODEL_CODEX_CLI（新が設定済みなら新を優先）
+  CODEX_DEFAULT_REVIEWERS → 既定の観点（--reviewers を明示した場合はそちらが優先）
+  CODEX_REASONING_EFFORT  → 非 0 で拒否。MULTI_AGENT_CODEX_PROFILE へ移行すること
+                            （effort 単体の入口が無く 1:1 変換できないため）
 
 モデル指定は MULTI_AGENT_MODEL_CODEX_CLI / MULTI_AGENT_CODEX_PROFILE を使う。
 ここに無いオプションは、直接 multi-agent.sh を呼んで指定する:
@@ -169,21 +202,135 @@ USAGE
 
 # ── 引数の解釈 ──────────────────────────────────────────────────────────────────
 ORCH_ARGS=(--task review --cli codex-cli)
+REVIEWERS_GIVEN=0
+TIMEOUT_GIVEN=0
+LIST_ONLY=0
+# diff サイズの歯止めを測るための基準。--base が明示されたときだけ埋まる。
+BASE_FOR_SIZE=""
+
+# 観点リスト（カンマ区切り）を --perspective の繰り返しへ展開する。
+# --reviewers と CODEX_DEFAULT_REVIEWERS の**両方**から呼ぶため関数にしてある。
+# 片方にしか写像を掛けないと、env 経由の指定だけが旧名のまま委譲されて
+# 「perspective が存在しない」で 1 件も走らない。
+# 第 2 引数はエラーメッセージ用の呼び出し元表示。
+# $3 は付けるフラグ（--perspective / --exclude-perspective）。包含と除外で写像表を
+# 共有する。別々に持つと、片方だけ改称に追従しない形が生まれる。
+append_perspectives() {
+  # `a, b, c` を許容する。除去しないと 2 件目以降が ' b' となり、写像表の case を
+  # 1 つも通らないまま**通知も出ずに**委譲され、オーケストレータ側で
+  # 「perspective ' comment-analyzer' does not exist」で全滅する（写像すると
+  # 約束した名前が、写像されずに存在しない名前として拒否される形）。
+  _list="${1//[[:space:]]/}"
+  _origin="$2"
+  case "$_list" in
+    ""|*,,*|,*|*,)
+      echo "ERROR: ${_origin} の値が空、または空の要素を含んでいます: '${_list}'" >&2
+      echo "       観点を 1 つ以上、カンマ区切りで指定してください（例: code-review）。" >&2
+      exit 2 ;;
+  esac
+  while [ -n "$_list" ]; do
+    _item="${_list%%,*}"
+    if [ "$_item" = "$_list" ]; then _list=""; else _list="${_list#*,}"; fi
+    [ -n "$_item" ] || continue
+    # 旧ラッパーが使っていた Claude エージェント名を、toolkit の perspective 名へ
+    # 写す。ヘルプに対応表を載せただけでは足りない — 既存の運用手順やコピペされた
+    # コマンドはそのまま旧名を渡してくるので、変換しないと「対応表は示すのに
+    # 実際には拒否される」形になる。**黙って読み替えず 1 行通知する**（利用者の
+    # 指定と実際に走った観点が食い違ったまま気づけない状態にしない）。
+    # toolkit が文書化している改称は 6 件。3 件だけ写すと、文書どおりの
+    # 6 件指定コマンドが未対応の 1 件目で拒否され**レビューが 1 件も走らない**
+    # （実測: `perspective 'comment-analyzer' does not exist` で rc=1）。
+    # 対応表は COPILOT_AGENTS.md / REVIEW_AGENT_CREATION_GUIDE.md と同じ 6 件。
+    case "$_item" in
+      code-reviewer)         _mapped="code-review" ;;
+      silent-failure-hunter) _mapped="error-handler-hunt" ;;
+      type-design-analyzer)  _mapped="type-design-analysis" ;;
+      comment-analyzer)      _mapped="comment-analysis" ;;
+      pr-test-analyzer)      _mapped="test-analysis" ;;
+      code-simplifier)       _mapped="code-simplification" ;;
+      *)                     _mapped="$_item" ;;
+    esac
+    if [ "$_mapped" != "$_item" ]; then
+      echo "ℹ️  旧観点名 '${_item}' を '${_mapped}' として解釈しました（perspective 名へ改称済み）。" >&2
+    fi
+    ORCH_ARGS+=("${3:---perspective}" "$_mapped")
+  done
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --)
+      # pnpm は版によって `pnpm run x -- --opt` の `--` をスクリプトへ**透過する**
+      # （実測: pnpm 9.15.9 で argv[1] が '--'。npm は除去する）。各リポジトリの手順書は
+      # `pnpm code-review:codex -- --base develop` の形なので、これを不明な引数として
+      # 拒否すると**文書どおりのコマンドが動かない**。`--` は利用者が渡した引数ではなく
+      # パッケージマネージャが挟むものなので、「黙って捨てない」の対象として不適切。
+      # 位置は pnpm の版や呼び出し方で変わりうるので、先頭に限定せず読み飛ばす。
+      shift
+      ;;
+    --base=*|--timeout=*)
+      # GNU 慣用の `--opt=value`。旧ラッパーが受けていたので手順書やスクリプトに残りうる。
+      _opt="${1%%=*}"
+      _val="${1#*=}"
+      if [ -z "$_val" ]; then
+        # 空値を読み飛ばすと黙って既定（自動検出の base / 既定 timeout）で走る。
+        echo "ERROR: ${_opt} には値が必要です。" >&2
+        usage
+        exit 2
+      fi
+      [ "$_opt" = "--base" ] && BASE_FOR_SIZE="$_val"
+      [ "$_opt" = "--timeout" ] && TIMEOUT_GIVEN=1
+      ORCH_ARGS+=("$_opt" "$_val")
+      shift
+      ;;
+    --reviewers=*)
+      # 空値・空要素は append_perspectives が拒否する（空白区切り側と同じ経路）。
+      append_perspectives "${1#*=}" "--reviewers"
+      REVIEWERS_GIVEN=1
+      shift
+      ;;
     --base|--timeout)
       if [ $# -lt 2 ]; then
         echo "ERROR: ${1} には値が必要です。" >&2
         usage
         exit 2
       fi
+      [ "$1" = "--base" ] && BASE_FOR_SIZE="$2"
+      [ "$1" = "--timeout" ] && TIMEOUT_GIVEN=1
       ORCH_ARGS+=("$1" "$2")
       shift 2
       ;;
     --dry-run)
       ORCH_ARGS+=(--dry-run)
       shift
+      ;;
+    --list-reviewers)
+      # 一覧はレジストリ（perspectives/<task>/*.md）が持つ。シムが独自の表を持つと、
+      # 観点ファイルを足したときにシムだけ古くなる。委譲して出させる。
+      # フラグにしておき、後段（skip / 旧 env / diff 閾値）を通さない。一覧を見たいだけ
+      # なのに「--base が無い」で落ちたり、閾値次第で一覧が出ないまま成功終了したりする
+      # のを避ける。
+      LIST_ONLY=1
+      shift
+      ;;
+    --exclude-reviewers)
+      if [ $# -lt 2 ]; then
+        echo "ERROR: --exclude-reviewers には値が必要です（例: --exclude-reviewers comment-analyzer）。" >&2
+        exit 2
+      fi
+      append_perspectives "$2" "--exclude-reviewers" "--exclude-perspective"
+      shift 2
+      ;;
+    --exclude-reviewers=*)
+      append_perspectives "${1#*=}" "--exclude-reviewers" "--exclude-perspective"
+      shift
+      ;;
+    --workdir|--workdir=*)
+      # 委譲先に対応する概念が無い。黙って無視すると、指定したディレクトリとは別の
+      # リポジトリの diff がレビューされる — 成果物を見ても取り違えに気づけない。
+      echo "ERROR: ${SCRIPT_NAME} は --workdir を受け付けません。" >&2
+      echo "       レビュー対象のリポジトリへ cd してから実行してください。" >&2
+      exit 2
       ;;
     --reviewers)
       if [ $# -lt 2 ]; then
@@ -203,40 +350,8 @@ while [ $# -gt 0 ]; do
       # 空値・空要素を読み飛ばすと --perspective が 1 件も付かず、**既定の観点セットが
       # 黙って走る**。指定したつもりの利用者は、意図しない観点に課金される
       # （このファイルの冒頭が「黙って捨てない」と宣言している当のクラス）。
-      case "$2" in
-        ""|*,,*|,*|*,)
-          echo "ERROR: --reviewers の値が空、または空の要素を含んでいます: '${2}'" >&2
-          echo "       観点を 1 つ以上、カンマ区切りで指定してください（例: --reviewers code-review）。" >&2
-          exit 2 ;;
-      esac
-      _list="$2"
-      while [ -n "$_list" ]; do
-        _item="${_list%%,*}"
-        if [ "$_item" = "$_list" ]; then _list=""; else _list="${_list#*,}"; fi
-        [ -n "$_item" ] || continue
-        # 旧ラッパーが使っていた Claude エージェント名を、toolkit の perspective 名へ
-        # 写す。ヘルプに対応表を載せただけでは足りない — 既存の運用手順やコピペされた
-        # コマンドはそのまま旧名を渡してくるので、変換しないと「対応表は示すのに
-        # 実際には拒否される」形になる。**黙って読み替えず 1 行通知する**（利用者の
-        # 指定と実際に走った観点が食い違ったまま気づけない状態にしない）。
-        # toolkit が文書化している改称は 6 件。3 件だけ写すと、文書どおりの
-        # 6 件指定コマンドが未対応の 1 件目で拒否され**レビューが 1 件も走らない**
-        # （実測: `perspective 'comment-analyzer' does not exist` で rc=1）。
-        # 対応表は COPILOT_AGENTS.md / REVIEW_AGENT_CREATION_GUIDE.md と同じ 6 件。
-        case "$_item" in
-          code-reviewer)         _mapped="code-review" ;;
-          silent-failure-hunter) _mapped="error-handler-hunt" ;;
-          type-design-analyzer)  _mapped="type-design-analysis" ;;
-          comment-analyzer)      _mapped="comment-analysis" ;;
-          pr-test-analyzer)      _mapped="test-analysis" ;;
-          code-simplifier)       _mapped="code-simplification" ;;
-          *)                     _mapped="$_item" ;;
-        esac
-        if [ "$_mapped" != "$_item" ]; then
-          echo "ℹ️  旧観点名 '${_item}' を '${_mapped}' として解釈しました（perspective 名へ改称済み）。" >&2
-        fi
-        ORCH_ARGS+=(--perspective "$_mapped")
-      done
+      append_perspectives "$2" "--reviewers"
+      REVIEWERS_GIVEN=1
       shift 2
       ;;
     --help|-h)
@@ -255,32 +370,194 @@ done
 
 # ── 逃がし弁 ────────────────────────────────────────────────────────────────────
 # pre-commit 構成が使う実在のつまみ。尊重しないと「skip したはずのレビューが走る」。
+# 一覧だけの経路。skip / 旧 env / diff 閾値のいずれも通さずに委譲して終わる。
+if [ "$LIST_ONLY" -eq 1 ]; then
+  if ! ORCHESTRATOR="$(resolve_orchestrator)"; then
+    echo "ERROR: multi-agent.sh が見つかりません。" >&2
+    exit 1
+  fi
+  exec bash "$ORCHESTRATOR" --task review --list-perspectives
+fi
+
 if [ "${SKIP_CODEX_REVIEW:-}" = "1" ]; then
   echo "ℹ️  SKIP_CODEX_REVIEW=1 のため Codex レビューをスキップします。" >&2
   exit 0
 fi
 
-# ── 効かない設定を黙って通さない ────────────────────────────────────────────────
-# 旧ラッパーは CODEX_MODEL / CODEX_REASONING_EFFORT を解釈していた。シムはこれらを
-# 使わないので、設定されたまま走ると「指定したつもりの設定が効いていない」状態に
-# なる。それはユーザー設定を黙って上書きしていた ACE-70-2 と同じ形の実害なので、
-# 気づける形で落とす。
-for _legacy in CODEX_MODEL CODEX_REASONING_EFFORT CODEX_DEFAULT_REVIEWERS; do
-  eval "_legacy_value=\${${_legacy}:-}"
-  if [ -n "$_legacy_value" ]; then
-    echo "ERROR: ${_legacy} は ${SCRIPT_NAME} では効きません（黙って無視すると、指定したつもりのまま既定設定でレビューが走ります）。" >&2
-    case "$_legacy" in
-      CODEX_MODEL)
-        echo "       モデルの明示指定には MULTI_AGENT_MODEL_CODEX_CLI を使ってください。" >&2 ;;
-      CODEX_REASONING_EFFORT)
-        echo "       reasoning effort はプロファイルで束ねてください: MULTI_AGENT_CODEX_PROFILE=<name>" >&2
-        echo "       （~/.codex/<name>.config.toml にモデルと effort を 1 ファイルで書く）" >&2 ;;
-      CODEX_DEFAULT_REVIEWERS)
-        echo "       観点の既定は --reviewers で渡すか、agent-config.yaml で設定してください。" >&2 ;;
-    esac
+# ── 旧ラッパーの env を写す ────────────────────────────────────────────────────
+# 旧ラッパーは CODEX_* を解釈していた。シムはこれらを直接は使わないので、設定された
+# まま黙って走ると「指定したつもりの設定が効いていない」状態になる（ユーザー設定を
+# 黙って上書きしていた ACE-70-2 と同じ形の実害）。
+#
+# 当初は一律 exit 2 で拒否していた。しかし移行にあたって消費リポジトリを実測したら
+# **7 本すべてがこれらを設定しており**、拒否はそのまま「移行できない」を意味した。
+# そこで黙殺と拒否の間に**写像 + 1 行通知**を置く。写せないものだけ拒否を残す。
+#
+# ただしこれで移行が完了するわけではない。拒否を維持した CODEX_REASONING_EFFORT こそ
+# 5/7 のラッパーが読んでおり、文書化された起動例（AGENTS.md / CLAUDE.md / playbook）も
+# `CODEX_REASONING_EFFORT=high <invoke>` の形。移行後は手順書どおりに叩いた利用者が
+# rc=2 で弾かれ、回避にはプロファイルファイルの新規作成が要る。effort 単体を受ける
+# 入口を toolkit 側に持つ案は #419。ここで写せるのは model と観点リストだけ、と
+# 理解しておくこと。
+if [ -n "${CODEX_MODEL:-}" ]; then
+  # 「新しい設定」は MULTI_AGENT_MODEL_CODEX_CLI **だけではない**。codex-cli の
+  # モデル指定は (model | profile) の 2 つが排他で、アダプタは両方が立っていると
+  # 非 0 で落ちる（codex-cli-adapter.sh の排他検査）。
+  # profile を見ずに model を写すと、**最も正しく移行した人**——効かない
+  # CODEX_REASONING_EFFORT を捨ててプロファイルへ移った人——だけが、自分では
+  # 設定していない MULTI_AGENT_MODEL_CODEX_CLI との衝突で落ちる。
+  # レジストリ（multi-agent.sh の get_cli_model_env_vars codex-cli）が宣言する
+  # 2 つを、まとめて「新しい設定」として扱う。
+  _new_model_setting=""
+  if [ -n "${MULTI_AGENT_MODEL_CODEX_CLI:-}" ]; then
+    _new_model_setting="MULTI_AGENT_MODEL_CODEX_CLI='${MULTI_AGENT_MODEL_CODEX_CLI}'"
+  elif [ -n "${MULTI_AGENT_CODEX_PROFILE:-}" ]; then
+    _new_model_setting="MULTI_AGENT_CODEX_PROFILE='${MULTI_AGENT_CODEX_PROFILE}'"
+  fi
+  if [ -n "$_new_model_setting" ]; then
+    # 黙って旧が勝つと、移行途中の環境で古い設定が生き残る。
+    echo "ℹ️  CODEX_MODEL と新しいモデル設定が両方あります。" >&2
+    echo "    新しい ${_new_model_setting} を使い、CODEX_MODEL は無視します。" >&2
+  else
+    export MULTI_AGENT_MODEL_CODEX_CLI="$CODEX_MODEL"
+    echo "ℹ️  CODEX_MODEL='${CODEX_MODEL}' を MULTI_AGENT_MODEL_CODEX_CLI として解釈しました（env 名を改称済み）。" >&2
+  fi
+fi
+
+# 未設定と「設定済みだが空」を区別する（`${VAR+x}`）。モデルの空値は「指定なし」と
+# 読むのが自然だが、**リストの空値は「計算結果が 0 件」**であり、読み飛ばすと既定の
+# 観点セットが黙って走って課金される。同じ値をコマンドラインから渡した
+# `--reviewers ""` は拒否しているので、env だけ通すのは同一コミット内での不整合でもある。
+if [ "${CODEX_DEFAULT_REVIEWERS+x}" = x ]; then
+  if [ "$REVIEWERS_GIVEN" -eq 1 ]; then
+    # 明示指定が env の既定に負けると、--reviewers を渡した意味が消える。
+    echo "ℹ️  --reviewers が明示されているため、CODEX_DEFAULT_REVIEWERS は無視します。" >&2
+  else
+    # 通知は**検証を通ってから**出す。先に出すと「解釈しました」の直後に
+    # 「値が空です」で落ち、解釈されたのかされていないのかが読み手に分からない。
+    append_perspectives "$CODEX_DEFAULT_REVIEWERS" "CODEX_DEFAULT_REVIEWERS"
+    echo "ℹ️  CODEX_DEFAULT_REVIEWERS='${CODEX_DEFAULT_REVIEWERS}' を既定の観点として解釈しました。" >&2
+  fi
+fi
+
+# reasoning effort だけは写せない。toolkit 側に effort 単体を受ける入口が無く、
+# プロファイル（~/.codex/<name>.config.toml）へモデルごと束ねる必要があるため、
+# 機械的に 1:1 変換できない。推測で写すと「指定したつもり」が別の意味で通ってしまい、
+# 写像の趣旨（利用者の指定と実際の設定を食い違わせない）に反するので拒否を維持する。
+
+# 旧ラッパーの timeout env。--timeout と同義なので写す。
+# **明示指定が env に負けないこと**。委譲先は last-wins なので、後から足すと
+# `--timeout 999` を渡しても env の値で走る（実測: 999 を指定して 321 秒になった）。
+_num_or_die() { # $1: 値, $2: env 名 → 正規化した値を stdout へ
+  case "$1" in
+    ''|*[!0-9]*)
+      echo "ERROR: ${2} は 0 以上の整数で指定してください（受け取った値: '${1}'）。" >&2
+      echo "       黙って既定へ落とすと、歯止めを設定したつもりで全件走ります。" >&2
+      exit 2 ;;
+  esac
+  # 数字だけでも大きすぎると shell の整数比較が壊れる。`[ 30 -lt 999…9 ]` は
+  # 「integer expression expected」を出して rc=2 を返し、if の条件としては**偽**に
+  # なる — つまり歯止めが黙って効かなくなる（実測でレビューが全件走った）。
+  if [ "${#1}" -gt 18 ]; then
+    echo "ERROR: ${2} が大きすぎます（${#1} 桁）。18 桁以内で指定してください。" >&2
+    echo "       この範囲を超えると整数比較が成立せず、歯止めが黙って効かなくなります。" >&2
     exit 2
   fi
-done
+  # "00" のような先頭ゼロを 10 進として正規化する。文字列比較で "0" と区別すると、
+  # 実効値 0 の歯止めが有効化され、あらゆる diff がスキップされる。
+  # **`printf '%d'` は使えない** — bash は先頭ゼロを 8 進として解釈するため、
+  # `010` が 8 になり、`008` は `invalid number` で落ちる（実測）。`10#` を付ける。
+  echo "$((10#$1))"
+}
+
+# 閾値 env と同じく「未設定」と「設定済みだが空」を区別する。`-n` だけだと空値が
+# 無言で捨てられ、設定したのに効かない状態になる（同じファイル内で扱いが割れる）。
+if [ "${CODEX_REVIEW_TIMEOUT_S+x}" = x ]; then
+  if [ "$TIMEOUT_GIVEN" -eq 1 ]; then
+    echo "ℹ️  --timeout が明示されているため、CODEX_REVIEW_TIMEOUT_S は無視します。" >&2
+  else
+    _timeout_val="$(_num_or_die "$CODEX_REVIEW_TIMEOUT_S" CODEX_REVIEW_TIMEOUT_S)"
+    echo "ℹ️  CODEX_REVIEW_TIMEOUT_S='${CODEX_REVIEW_TIMEOUT_S}' を --timeout として解釈しました。" >&2
+    ORCH_ARGS+=(--timeout "$_timeout_val")
+  fi
+fi
+
+if [ -n "${CODEX_REASONING_EFFORT:-}" ]; then
+  echo "ERROR: CODEX_REASONING_EFFORT は ${SCRIPT_NAME} では効きません（黙って無視すると、指定したつもりのまま既定設定でレビューが走ります）。" >&2
+  echo "       reasoning effort はプロファイルで束ねてください: MULTI_AGENT_CODEX_PROFILE=<name>" >&2
+  echo "       （~/.codex/<name>.config.toml にモデルと effort を 1 ファイルで書く）" >&2
+  exit 2
+fi
+
+# ── diff サイズの歯止め ──────────────────────────────────────────────────────────
+# 旧ラッパーが持っていたコスト制御。**既定は無効**にしてある。既定で有効にすると、
+# これまで走っていたレビューが黙ってスキップされる側へ倒れ、しかも「走らなかった」
+# ことに気づく手がかりが無い。歯止めは明示的に入れてもらう。
+# 未設定と「設定済みだが空」を区別する。`${VAR:-0}` は両方を 0 にするため、
+# `CODEX_REVIEW_MIN_LINES=` が非数値として拒否されず**歯止めが黙って無効になる**。
+# 設定したのに効かない、が最も気づきにくい形なので、設定済みなら空でも検証へ渡す。
+_min_lines=0
+_max_bytes=0
+if [ "${CODEX_REVIEW_MIN_LINES+x}" = x ]; then
+  _min_lines="$(_num_or_die "$CODEX_REVIEW_MIN_LINES" CODEX_REVIEW_MIN_LINES)"
+fi
+if [ "${CODEX_REVIEW_MAX_DIFF_BYTES+x}" = x ]; then
+  _max_bytes="$(_num_or_die "$CODEX_REVIEW_MAX_DIFF_BYTES" CODEX_REVIEW_MAX_DIFF_BYTES)"
+fi
+
+if [ "$_min_lines" != "0" ] || [ "$_max_bytes" != "0" ]; then
+  # 閾値を測るには基準が要る。--base が無いときの既定推論をここに持つと
+  # オーケストレータと同じ推論の 2 つ目のコピーになるので、**解決できなければ拒否**する。
+  # 利用者は歯止めを要求したのだから、守れないまま課金される実行を始めるより良い。
+  if [ -z "$BASE_FOR_SIZE" ]; then
+    echo "ERROR: diff サイズの歯止めが設定されていますが、比較の基準が分かりません。" >&2
+    echo "       --base <branch> を明示してください（歯止めを外す場合は env を 0 にする）。" >&2
+    exit 2
+  fi
+  # 測る範囲は**委譲先がレビューする範囲と同じ**にする。オーケストレータは
+  # BASE...HEAD に加えて作業ツリーの変更もレビュー対象として扱う。BASE...HEAD だけを
+  # 測ると、pre-commit（staged 未コミット）で「0 行」と判定してスキップし、
+  # レビューされるはずの変更が静かに飛ぶ — このファイル冒頭が pre-commit を想定利用先
+  # として挙げている以上、現実的な経路。
+  _errf="$(mktemp "${TMPDIR:-/tmp}/codex-review-git.XXXXXX")" || { echo "ERROR: 一時ファイルを作成できませんでした。" >&2; exit 2; }
+  _numstat="$( { git diff --numstat "${BASE_FOR_SIZE}...HEAD" && git diff --numstat HEAD; } 2>"$_errf" )" || {
+    echo "ERROR: diff を測れませんでした（基準: ${BASE_FOR_SIZE}）。" >&2
+    sed 's/^/       git: /' "$_errf" >&2
+    rm -f "$_errf"
+    exit 2
+  }
+  # バイナリファイルは numstat が `-` を出す。awk の加算では 0 に化けるので、**行数では
+  # 測れない**と判断する。測れないものを「小さい」と読んでスキップすると、200KB の
+  # バイナリ追加が無言で飛ぶ。
+  _unmeasurable=0
+  case "$_numstat" in
+    *"-	-	"*) _unmeasurable=1 ;;
+  esac
+  _lines="$(printf '%s\n' "$_numstat" | awk '{ a += $1; d += $2 } END { printf "%d", a + d }')"
+  _bytes="$( { git diff "${BASE_FOR_SIZE}...HEAD"; git diff HEAD; } 2>>"$_errf" | wc -c | tr -d ' ')"
+  rm -f "$_errf"
+  if [ -z "$_lines" ] || [ -z "$_bytes" ]; then
+    echo "ERROR: diff を測れませんでした（基準: ${BASE_FOR_SIZE}）。" >&2
+    exit 2
+  fi
+  if [ "$_min_lines" != "0" ] && [ "$_unmeasurable" -eq 1 ]; then
+    echo "ℹ️  diff にバイナリ変更が含まれ行数で測れないため、CODEX_REVIEW_MIN_LINES によるスキップは行いません。" >&2
+  elif [ "$_min_lines" != "0" ] && [ "$_lines" -lt "$_min_lines" ]; then
+    echo "ℹ️  diff が ${_lines} 行で CODEX_REVIEW_MIN_LINES=${_min_lines} 未満のため、レビューをスキップします。" >&2
+    exit 0
+  fi
+  if [ "$_max_bytes" != "0" ] && [ "$_bytes" -gt "$_max_bytes" ]; then
+    # **上限超過は非 0 で終わる。** 「小さすぎるからスキップ」（MIN_LINES、exit 0）と
+    # 「大きすぎてレビューできない」は別物で、後者を 0 で返すと呼び出し側から
+    # 「レビュー成功」と区別できない。**最もレビューが要る大きな差分ほどゲートを
+    # 素通りする**形になる（置き換え対象だった自前ラッパーは失敗扱いにしていた）。
+    # 通したいなら閾値を上げるか 0 で無効化するという明示的な操作を要求する。
+    echo "ERROR: diff が ${_bytes} バイトで CODEX_REVIEW_MAX_DIFF_BYTES=${_max_bytes} を超えるため、レビューを実行できません。" >&2
+    echo "       レビューせずに通すのは危険なので非 0 で終了します（意図的なスキップとは区別する）。" >&2
+    echo "       閾値を上げるか、CODEX_REVIEW_MAX_DIFF_BYTES=0 で無効化してください。" >&2
+    exit 3
+  fi
+fi
 
 # ── 委譲 ────────────────────────────────────────────────────────────────────────
 if ! ORCHESTRATOR="$(resolve_orchestrator)"; then

@@ -20,6 +20,11 @@
 #   --mode <mode>           distributed | cross-model
 #   --strategy <strategy>   balanced | minimize_cost | maximize_quality
 #   --cli <name>            Run only this CLI (repeatable)
+#   --exclude-perspective <name>
+#                           Drop this perspective from the plan (repeatable).
+#                           A name that does not exist is rejected, not ignored.
+#   --list-perspectives     Print the perspectives available for --task and exit.
+#                           Builds no plan and starts no CLI.
 #   --perspective <name>    Run only this perspective (repeatable). In distributed
 #                           mode, only its owning CLI remains unless --cli is also
 #                           explicit; use --mode cross-model for model comparison.
@@ -223,6 +228,10 @@ get_cli_model_env_vars() {
 #   - どちらの制約も行全体コメントには適用しない。ただし**行末**コメントで裸の
 #     ALL_CLIS や `get_cli_foo()` に言及すると検出に引っかかるので、そこでは
 #     `$ALL_CLIS` と書くか括弧を外すこと
+
+perspective_excluded() {
+  [[ -n "$EXCLUDE_PERSPECTIVES" ]] && list_contains "$EXCLUDE_PERSPECTIVES" "$1"
+}
 
 get_cli_perspectives() {
   local cli_name="$1"
@@ -678,6 +687,10 @@ TIMEOUT=""
 # Space-separated filter lists (bash 3.2 compatible)
 CLI_FILTER=""
 PERSPECTIVE_FILTER=""
+# 除外は包含フィルタへ畳み込まない。PERSPECTIVE_FILTER を埋めると、--cli と併用したとき
+# 「明示ペアリング」経路（所有レジストリを迂回する）を意図せず踏む。独立に保つ。
+EXCLUDE_PERSPECTIVES=""
+LIST_PERSPECTIVES=false
 
 # Detected available CLIs (space-separated)
 AVAILABLE_CLIS=""
@@ -722,6 +735,13 @@ parse_args() {
       --strategy)    STRATEGY="$2"; shift 2 ;;
       --cli)         CLI_FILTER="${CLI_FILTER:+$CLI_FILTER }$2"; shift 2 ;;
       --perspective) PERSPECTIVE_FILTER="${PERSPECTIVE_FILTER:+$PERSPECTIVE_FILTER }$2"; shift 2 ;;
+      --exclude-perspective)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --exclude-perspective には観点名が必要です。" >&2
+          exit 2
+        fi
+        EXCLUDE_PERSPECTIVES="${EXCLUDE_PERSPECTIVES:+$EXCLUDE_PERSPECTIVES }$2"; shift 2 ;;
+      --list-perspectives) LIST_PERSPECTIVES=true; shift ;;
       --parallel)    PARALLEL=true; shift ;;
       --sequential)  PARALLEL=false; shift ;;
       --output-dir)  OUTPUT_DIR="$2"; OUTPUT_DIR_EXPLICIT=true; shift 2 ;;
@@ -749,7 +769,11 @@ parse_args() {
   esac
 
   # Validate description for explore/implement
-  if [[ "$TASK_TYPE" != "review" && -z "$DESCRIPTION" && "$DRY_RUN" == "false" ]]; then
+  # --list-perspectives は「その task にどんな観点があるか」を出すだけで、タスクを
+  # 実行しない。description を要求すると、一覧を見たいだけの利用者が explore/implement で
+  # 落ちる（実測）。dry-run が免除されているのと同じ理由。
+  if [[ "$TASK_TYPE" != "review" && -z "$DESCRIPTION" \
+        && "$DRY_RUN" == "false" && "$LIST_PERSPECTIVES" == "false" ]]; then
     echo "ERROR: --description is required for ${TASK_TYPE} tasks." >&2
     exit 1
   fi
@@ -915,11 +939,13 @@ build_distributed_plan() {
       if [[ -n "$CLI_FILTER" && "$CLI_FILTER" != *" "* \
             && -n "$PERSPECTIVE_FILTER" ]]; then
         for p in $PERSPECTIVE_FILTER; do
+          perspective_excluded "$p" && continue
           add_to_plan "$cli_name" "$p"
         done
       else
         local matched_perspective=false
         for p in $perspectives; do
+          perspective_excluded "$p" && continue
           if [[ -n "$PERSPECTIVE_FILTER" ]] && ! list_contains "$PERSPECTIVE_FILTER" "$p"; then
             continue
           fi
@@ -954,6 +980,7 @@ build_distributed_plan() {
           echo "  ↪ ${cli_name} → ${fallback_target} [$(get_cli_cost_tier "$fallback_target")] (last-resort — configured chain exhausted)" >&2
         fi
         for p in $perspectives; do
+          perspective_excluded "$p" && continue
           if [[ -n "$PERSPECTIVE_FILTER" ]] && ! list_contains "$PERSPECTIVE_FILTER" "$p"; then
             continue
           fi
@@ -1026,6 +1053,7 @@ build_pair_plan() {
   fi
 
   for p in $(get_cli_perspectives_review "$REVIEW_MAIN"); do
+    perspective_excluded "$p" && continue
     [[ -n "$PERSPECTIVE_FILTER" ]] && ! list_contains "$PERSPECTIVE_FILTER" "$p" && continue
     add_to_plan "$REVIEW_MAIN" "$p"
   done
@@ -1044,12 +1072,14 @@ build_pair_plan() {
       fi
       echo "  ↪ ${COMPREHENSIVE_PERSPECTIVE} → ${REVIEW_MAIN} (no sub reviewer available)" >&2
     fi
+    perspective_excluded "$p" && continue
     [[ -n "$PERSPECTIVE_FILTER" ]] && ! list_contains "$PERSPECTIVE_FILTER" "$p" && continue
     add_to_plan "$REVIEW_MAIN" "$p"
   done
 
   if [[ -n "$sub_effective" ]]; then
-    if [[ -z "$PERSPECTIVE_FILTER" ]] || list_contains "$PERSPECTIVE_FILTER" "$COMPREHENSIVE_PERSPECTIVE"; then
+    if ! perspective_excluded "$COMPREHENSIVE_PERSPECTIVE" \
+      && { [[ -z "$PERSPECTIVE_FILTER" ]] || list_contains "$PERSPECTIVE_FILTER" "$COMPREHENSIVE_PERSPECTIVE"; }; then
       # 副に従量課金 CLI を選ぶのは明示的な指定なので opt-in とみなす。ただし
       # コスト帯はプラン表示に出るので、黙って課金されることはない。
       add_to_plan "$sub_effective" "$COMPREHENSIVE_PERSPECTIVE"
@@ -1059,6 +1089,17 @@ build_pair_plan() {
 }
 
 # review の観点ファイル一覧（総合レビューを含む、ディスク上の実体）。
+# タスク種別に対応する観点の一覧。観点の実体は perspectives/<task>/*.md なので、
+# 一覧も除外の検証もここから導出する。別に配列を持つと、ファイルを足したときに
+# 片方だけ古くなる。
+all_task_perspectives() {
+  local f
+  for f in "${SCRIPT_DIR}/perspectives/${TASK_TYPE}"/*.md; do
+    [[ -f "$f" ]] || continue
+    basename "$f" .md
+  done
+}
+
 all_review_perspectives() {
   local f
   for f in "${SCRIPT_DIR}/perspectives/review"/*.md; do
@@ -1084,6 +1125,7 @@ build_cross_model_plan() {
       echo "  ⏭  copilot-cli skipped (metered). Opt in with --cli copilot-cli." >&2
       continue
     fi
+    perspective_excluded "$perspective" && continue
     add_to_plan "$cli_name" "$perspective"
   done
 }
@@ -1097,6 +1139,21 @@ build_cross_model_plan() {
 # issue #240) is the case that makes that guessing expensive, because the name
 # looks valid. Reject it here instead: before the plan is built, naming the
 # offending value and the CLIs that do exist.
+# 存在しない観点名の除外を黙って受けると、typo が「除外したつもり」で素通りし、
+# 意図せず課金される観点が走る。名前は観点ファイルの実体と照合する。
+validate_excluded_perspectives() {
+  [[ -n "$EXCLUDE_PERSPECTIVES" ]] || return 0
+  local known ex
+  known="$(all_task_perspectives | tr '\n' ' ')"
+  for ex in $EXCLUDE_PERSPECTIVES; do
+    if ! list_contains "$known" "$ex"; then
+      echo "ERROR: --exclude-perspective に存在しない観点が指定されました: ${ex}" >&2
+      echo "       task '${TASK_TYPE}' で使える観点: ${known}" >&2
+      exit 2
+    fi
+  done
+}
+
 validate_requested_clis() {
   local cli_name
   for cli_name in $CLI_FILTER; do
@@ -2146,9 +2203,22 @@ main() {
 
   load_config
   parse_args "$@"
+
+  # 一覧は description 必須検査より前に返す（explore/implement で「一覧を見たいだけ」
+  # なのに落ちるのを避ける）。ただし**引数の妥当性検査は通す** — ここを飛ばすと
+  # `--list-perspectives --cli no-such-cli` が rc=0 になり、綴り間違いが成功として
+  # 返る（実測で一度そう作ってしまった）。
+  if [[ "$LIST_PERSPECTIVES" == "true" ]]; then
+    validate_requested_clis
+    validate_requested_perspectives
+    validate_excluded_perspectives
+    all_task_perspectives
+    exit 0
+  fi
   apply_task_defaults
   validate_requested_clis
   validate_requested_perspectives
+  validate_excluded_perspectives
 
   # ── レビュワーの参照・保存（プランを組む前に処理して終了する経路） ──
   #
@@ -2163,6 +2233,8 @@ main() {
 
   resolve_reviewer_pair || exit 1
 
+  # 一覧はプランを構築する**前**に返す。プラン構築まで進むと、一覧のつもりの実行で
+  # CLI 検出や設定読み込みの副作用が走る。
   if [[ "$PRINT_REVIEWERS" == "true" ]]; then
     print_reviewers_state
     exit $?

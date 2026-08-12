@@ -796,12 +796,6 @@ install_review_wrappers() {
     # 環境や CI で壊れる、(2) toolkit 更新のたび内容が変わり冪等比較が毎回不一致に
     # なって利用者の .bak を上書きし続ける、(3) 生成物がシェルコードなのでパスの
     # & や $ や " が構文を壊す（実測）。データなら 3 つとも起きない。
-    if ! printf '%s\n' "$SCRIPT_DIR" > "$sidecar"; then
-        print_error "toolkit パスの記録に失敗しました: ${sidecar}"
-        return 1
-    fi
-    print_info "toolkit パスを記録しました: ${sidecar}"
-
     if [ -f "$dest" ]; then
         if cmp -s "$src" "$dest"; then
             print_info "codex-review.sh は最新です（スキップ）: ${dest}"
@@ -821,15 +815,50 @@ install_review_wrappers() {
         print_warning "既存の codex-review.sh を ${backup} へ退避し、上書きします"
     fi
 
-    if ! cp "$src" "$dest"; then
-        print_error "配置に失敗しました: ${dest}"
+    # 同一ディレクトリの一時ファイルへ書き、実行権限まで付けてから mv する。
+    # cp で dest を直接上書きすると、書き込み途中で失敗したときに**壊れたラッパーが
+    # 残る** — しかもエラーは「配置に失敗しました」としか言わないので、既存ファイルが
+    # 壊れたことも、退避先に前の版があることも伝わらない。
+    # rename(2) は同一ファイルシステム内で原子的なので、中間状態が観測されない
+    # （dest は「前の内容」か「新しい内容」のどちらかで、途中の姿を取らない）。
+    local tmp="${dest}.tmp.$$"
+    # 中断（Ctrl-C / SIGTERM）で一時ファイルが残ると、**実行ビットの立った 25KB の
+    # 見慣れないファイル**が消費プロジェクトの git 管理下 scripts/ に置き去りになる。
+    # 実測: cp の途中で SIGTERM を送ると codex-review.sh.tmp.<pid> が残り、
+    # 再実行のたび PID 違いで増えていった。各失敗経路の rm だけでは信号を捕まえられない。
+    trap 'rm -f "$tmp"' EXIT INT TERM
+    if ! cp "$src" "$tmp"; then
+        rm -f "$tmp"
+        print_error "配置用の一時ファイルを作成できません: ${tmp}"
+        print_info "既存の ${dest} は変更していません。"
         return 1
     fi
-    if ! chmod +x "$dest"; then
-        print_error "実行権限を付与できません: ${dest}"
+    if ! chmod +x "$tmp"; then
+        rm -f "$tmp"
+        print_error "実行権限を付与できません: ${tmp}"
+        print_info "既存の ${dest} は変更していません。"
+        return 1
+    fi
+    if ! mv "$tmp" "$dest"; then
+        rm -f "$tmp"
+        print_error "配置に失敗しました: ${dest}"
+        print_info "既存の ${dest} は変更していません。"
+        return 1
+    fi
+    # mv が成功した時点で tmp はもう無い。trap を残すと、以降の失敗で存在しない
+    # パスへ rm がかかる（無害だが、意図しない対象を消しうる形は残さない）。
+    trap - EXIT INT TERM
+    # サイドカーはラッパーの配置が**成功してから**書く。先に書くと、配置に失敗したとき
+    # 「既存ファイルは変更していません」と言いながら、利用者が持っていなかったファイルを
+    # 作った状態で終わる（実測: cp を失敗させると sidecar だけが残り、その事実は
+    # どのメッセージにも現れなかった）。
+    if ! printf '%s\n' "$SCRIPT_DIR" > "$sidecar"; then
+        print_error "toolkit パスの記録に失敗しました: ${sidecar}"
+        print_info "ラッパーは配置済みですが、サイドカーが無いと実行時に解決できません。"
         return 1
     fi
     print_success "codex-review.sh を配置しました: ${dest}"
+    print_info "toolkit パスを記録しました: ${sidecar}"
     print_info "${sidecar} はマシン固有です。git 管理下なら .gitignore へ追加してください。"
     return 0
 }

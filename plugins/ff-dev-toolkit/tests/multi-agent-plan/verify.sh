@@ -20,7 +20,19 @@ if ! TMP="$(mktemp -d 2>/dev/null)"; then
   echo "○ skip: 一時ディレクトリを作成できない環境（read-only）のためスキップ"
   exit 0
 fi
-trap 'rm -rf "$TMP"' EXIT
+# set -e 下で途中死すると、trap の中では $? が 0 になりうる。それだけを頼りにすると
+# 「最後まで走った」と「途中で落ちた」が同じ結果になり、検査が fail-open する
+# （実測: 追加した検査が非 0 を返してスイートが無言で打ち切られ、run-all では
+#  出力ゼロのまま失敗した）。最終行のセンチネルを見る。
+FF_REACHED_END=0
+_cleanup() {
+  rm -rf "$TMP"
+  if [[ "$FF_REACHED_END" -ne 1 ]]; then
+    echo "✗ multi-agent-plan verify: スイートが最後まで到達しませんでした（途中で中断）" >&2
+    exit 1
+  fi
+}
+trap _cleanup EXIT
 
 REPO="$TMP/repo"
 STUB="$TMP/stub-bin"
@@ -347,9 +359,142 @@ else
   bad "--help の perspective 解決説明が不足"
 fi
 
+echo "== 観点の一覧と除外 =="
+
+# --list-perspectives: 消費側ラッパーの --list-reviewers が委譲する先。観点の実体は
+# perspectives/review/*.md なので、そこから導出しないと「レジストリと結ばれない
+# もう 1 つのコピー」になる。
+LIST_LOG="$TMP/list.log"
+if run_plan "$LIST_LOG" --list-perspectives; then
+  ok "--list-perspectives が成功する"
+else
+  bad "--list-perspectives が失敗した"
+  sed 's/^/    | /' "$LIST_LOG" >&2
+fi
+_missing=""
+for _p in code-review code-simplification comment-analysis comprehensive-review \
+          error-handler-hunt security-analysis test-analysis type-design-analysis; do
+  grep -qx -- "$_p" "$LIST_LOG" || _missing="${_missing} ${_p}"
+done
+if [ -z "$_missing" ]; then
+  ok "--list-perspectives が review 観点 8 件すべてを 1 行 1 件で出す"
+else
+  bad "--list-perspectives の出力に欠けがある:${_missing}"
+  sed 's/^/    | /' "$LIST_LOG" >&2
+fi
+# 一覧は「実行しない」入口。プラン表示や実行が混ざると、一覧のつもりで課金が走る。
+if grep -q "Execution Plan\|Dry run complete" "$LIST_LOG"; then
+  bad "--list-perspectives がプラン構築まで進んでいる（一覧だけを出す入口ではない）"
+else
+  ok "--list-perspectives はプランを構築せず一覧だけ出す"
+fi
+
+# --exclude-perspective: 指定した観点だけがプランから消え、他は残ること。
+EXC_LOG="$TMP/exclude.log"
+if run_plan "$EXC_LOG" --exclude-perspective code-review; then
+  ok "--exclude-perspective の dry-run が成功する"
+else
+  bad "--exclude-perspective の dry-run が失敗した"
+  sed 's/^/    | /' "$EXC_LOG" >&2
+fi
+if grep -qE '^ *- code-review$' "$EXC_LOG"; then
+  bad "除外したはずの code-review がプランに残っている"
+  sed 's/^/    | /' "$EXC_LOG" >&2
+else
+  ok "除外した観点がプランから消える"
+fi
+if grep -qE '^ *- test-analysis$' "$EXC_LOG"; then
+  ok "除外していない観点はプランに残る（除外が広がりすぎていない）"
+else
+  bad "除外していない観点まで消えた"
+  sed 's/^/    | /' "$EXC_LOG" >&2
+fi
+
+# 存在しない観点名を黙って受けると、typo が「除外したつもり」で素通りする。
+BAD_LOG="$TMP/exclude-bad.log"
+if run_plan "$BAD_LOG" --exclude-perspective no-such-perspective; then
+  bad "存在しない観点の除外が成功した（typo が黙って無視される）"
+else
+  ok "存在しない観点の除外を非 0 で拒否する"
+fi
+if grep -q "no-such-perspective" "$BAD_LOG"; then
+  ok "拒否メッセージが該当の観点名を名指しする"
+else
+  bad "拒否メッセージが観点名を名指ししていない"
+fi
+
+# 除外は**すべてのプラン構築経路**に効くこと。add_to_plan の呼び出しは 7 箇所あり、
+# 初版は 5 箇所にしかガードが無かった（pair モードの総合観点と cross-model が素通り）。
+# 経路ごとに 1 本ずつ確かめる。
+PAIR_LOG="$TMP/pair-exclude.log"
+(
+  cd "$REPO"
+  PATH="$STUB:$PATH" bash "$MULTI_AGENT" --task review --mode pair --base develop \
+    --dry-run --exclude-perspective comprehensive-review
+) >"$PAIR_LOG" 2>&1 || true
+if grep -qE '^ *- comprehensive-review$' "$PAIR_LOG"; then
+  bad "pair モードで除外した comprehensive-review がプランに残っている"
+  sed 's/^/    | /' "$PAIR_LOG" >&2
+else
+  ok "pair モードでも除外が効く"
+fi
+
+# cross-model は stub 環境では別の理由（導入済みが従量課金 CLI だけ）で空プランに
+# なるため、振る舞いで測れない。ここは**要求そのものを構造で固定**する —
+# 「除外はすべてのプラン構築経路に効く」。add_to_plan の呼び出しは複数あり、初版は
+# 5/7 にしかガードが無く、pair の総合観点と cross-model が素通りしていた（実測）。
+# 各呼び出しの直前 6 行以内に perspective_excluded があることを求める。
+_unguarded="$(awk '
+  { for (i = 6; i > 1; i--) p[i] = p[i-1]; p[1] = prev; prev = $0 }
+  /add_to_plan / {
+    guarded = 0
+    for (i = 1; i <= 6; i++) if (p[i] ~ /perspective_excluded/) guarded = 1
+    if (!guarded) print NR ": " $0
+  }' "$MULTI_AGENT")"
+_sites="$(grep -c "add_to_plan " "$MULTI_AGENT" || true)"
+if [ "${_sites:-0}" -lt 6 ]; then
+  bad "add_to_plan の呼び出しを ${_sites} 箇所しか見つけられなかった（この検査が成立していない）"
+elif [ -z "$_unguarded" ]; then
+  ok "除外ガードが add_to_plan の全経路（${_sites} 箇所）に掛かっている"
+else
+  bad "除外ガードの無い add_to_plan がある:"
+  printf '%s\n' "$_unguarded" | sed 's/^/    | /' >&2
+fi
+
+# 全部除外したら空プランとして非 0 で止まること。黙って 0 件レビューを成功扱いにすると、
+# 「レビューした」という記録だけが残る。
+EMPTY_LOG="$TMP/exclude-all.log"
+_empty_rc=0
+(
+  cd "$REPO"
+  PATH="$STUB:$PATH" bash "$MULTI_AGENT" --task review --base develop --dry-run \
+    --perspective code-review --exclude-perspective code-review
+) >"$EMPTY_LOG" 2>&1 || _empty_rc=$?
+if [ "$_empty_rc" -ne 0 ] && grep -q "Execution plan is empty" "$EMPTY_LOG"; then
+  ok "除外で空になったプランを非 0 で止める"
+else
+  bad "空プランが成功扱いになった (rc=${_empty_rc})"
+  sed 's/^/    | /' "$EMPTY_LOG" >&2
+fi
+
+# 一覧は review 以外でも出せること。description 必須検査より後ろに置くと、explore /
+# implement では「一覧を見たいだけ」なのに落ちる（実測）。
+for _t in explore implement; do
+  L="$TMP/list-${_t}.log"
+  ( cd "$REPO"; PATH="$STUB:$PATH" bash "$MULTI_AGENT" --task "$_t" --list-perspectives ) >"$L" 2>&1 || true
+  if [ -s "$L" ] && ! grep -q "ERROR" "$L"; then
+    ok "--list-perspectives が task=${_t} でも一覧を出す"
+  else
+    bad "--list-perspectives が task=${_t} で失敗した"
+    sed 's/^/    | /' "$L" >&2
+  fi
+done
+
 echo ""
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ multi-agent-plan verify: $FAIL 件失敗（$PASS 件成功）" >&2
+  FF_REACHED_END=1
   exit 1
 fi
+FF_REACHED_END=1
 echo "✓ multi-agent-plan verify: 全 $PASS 件 pass"
