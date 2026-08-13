@@ -37,6 +37,8 @@
 #  28. アーカイブ先を作れないときは中断し、「対象なし」と矛盾する報告をしない
 #  29. CLAUDE_CONFIG_DIR 由来の既定パスでも回収できる（実ユーザーが通る経路）
 #  30. 削除しなかった dirty worktree のトランスクリプトには触れない
+#  31. 削除 push は SKIP_SIMPLE_GIT_HOOKS=1 を付け、env が無いと拒否する
+#      pre-push fixture の下でもリモート削除が完了する
 #
 # あわせて静的検査として、bash 3.2 で変数名にマルチバイト文字が取り込まれる書き方
 # （"$VAR" の直後に全角文字を直付けする形）が merge-cleanup.sh に無いことを確認する。検出器が
@@ -138,6 +140,83 @@ else
   printf '%s\n' "$MBCS_HITS" | sed 's/^/     /' >&2
 fi
 
+# $1: 検査するファイル。delete_remote_branch_with_lease 内の git push が
+# すべて「同一物理行の prefix 代入 SKIP_SIMPLE_GIT_HOOKS=1」なら 0。
+# コメント内・XSKIP_・=10 は受理しない。env と git push は同じ行に置くこと。
+delete_push_sets_skip_hooks() {
+  awk '
+    /^delete_remote_branch_with_lease\(\)/ { in_fn = 1 }
+    in_fn && /^}/ { in_fn = 0 }
+    in_fn && /git[[:space:]]+push/ {
+      seen = 1
+      line = $0
+      sub(/#.*/, "", line)
+      if (line !~ /(^|[^=[:alnum:]_])SKIP_SIMPLE_GIT_HOOKS=1[[:space:]]/) missing = 1
+    }
+    END { if (seen && !missing) exit 0; exit 1 }
+  ' "$1"
+}
+
+echo ""
+echo "== 静的検査: 削除 push の SKIP_SIMPLE_GIT_HOOKS =="
+
+SKIP_HOOKS_PROBE="$TMP/skip-hooks-probe.sh"
+write_skip_hooks_probe() {
+  printf '%s\n' \
+    'delete_remote_branch_with_lease() {' \
+    "  $1" \
+    '}' \
+    > "$SKIP_HOOKS_PROBE"
+}
+
+write_skip_hooks_probe 'git push --force-with-lease="refs/heads/$branch:$expected" origin ":refs/heads/$branch"'
+if ! delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
+  ok "検出器が env 無しの git push を検出できる（self-test）"
+else
+  bad "検出器が env 無しの git push を見逃す — 以降の静的検査は信用しないこと"
+fi
+write_skip_hooks_probe 'LC_ALL=C SKIP_SIMPLE_GIT_HOOKS=1 git push --force-with-lease="refs/heads/$branch:$expected" origin ":refs/heads/$branch"'
+if delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
+  ok "検出器が env 付きの git push を誤検出しない（self-test）"
+else
+  bad "検出器が env 付きの git push を誤検出する"
+fi
+write_skip_hooks_probe 'git push --no-verify origin ":refs/heads/$branch" # SKIP_SIMPLE_GIT_HOOKS=1'
+if ! delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
+  ok "検出器がコメント内の SKIP_SIMPLE_GIT_HOOKS=1 を受理しない（self-test）"
+else
+  bad "検出器がコメント内の SKIP_SIMPLE_GIT_HOOKS=1 を受理する"
+fi
+write_skip_hooks_probe 'XSKIP_SIMPLE_GIT_HOOKS=1 git push origin ":refs/heads/$branch"'
+if ! delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
+  ok "検出器が XSKIP_SIMPLE_GIT_HOOKS=1 を受理しない（self-test）"
+else
+  bad "検出器が XSKIP_SIMPLE_GIT_HOOKS=1 を受理する"
+fi
+write_skip_hooks_probe 'SKIP_SIMPLE_GIT_HOOKS=10 git push origin ":refs/heads/$branch"'
+if ! delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
+  ok "検出器が SKIP_SIMPLE_GIT_HOOKS=10 を受理しない（self-test）"
+else
+  bad "検出器が SKIP_SIMPLE_GIT_HOOKS=10 を受理する"
+fi
+
+if delete_push_sets_skip_hooks "$TARGET"; then
+  ok "delete_remote_branch_with_lease の git push に SKIP_SIMPLE_GIT_HOOKS=1 がある"
+else
+  bad "delete_remote_branch_with_lease の git push に SKIP_SIMPLE_GIT_HOOKS=1 が無い"
+fi
+# --no-verify / hooksPath 無効化 / export は契約外。env の command-scoped 代入だけを許す。
+if awk '
+  /^delete_remote_branch_with_lease\(\)/ { in_fn = 1 }
+  in_fn && /^}/ { in_fn = 0 }
+  in_fn && /--no-verify|core\.hooksPath|GIT_CONFIG_COUNT|export[[:space:]]+SKIP_SIMPLE_GIT_HOOKS/ { bad = 1 }
+  END { exit bad ? 1 : 0 }
+' "$TARGET"; then
+  ok "delete_remote_branch_with_lease に --no-verify / hooksPath 無効化 / export が無い"
+else
+  bad "delete_remote_branch_with_lease が env 以外の hook 回避を使っている"
+fi
+
 
 # ---- fixture: bare origin + clone --------------------------------------------
 
@@ -213,9 +292,11 @@ add_clean_gone_worktree() {
   # develop と同じ HEAD（= git branch -d だけで消せる）の [gone] ブランチと
   # clean な worktree を用意し、-D エスカレーションの経路と独立させる。
   git branch -q "$1" develop
-  git push -q -u origin "$1"
+  # hook 導入後も fixture 組み立てが止まらないよう、セットアップ push だけ
+  # --no-verify する。cleanup 本体の削除経路は env で抜ける契約を別途検証する。
+  git push -q --no-verify -u origin "$1"
   git worktree add -q "$2" "$1"
-  git push -q origin --delete "$1"
+  git push -q --no-verify origin --delete "$1"
 }
 
 transcript_name_of() {
@@ -533,6 +614,38 @@ echo "== merge-cleanup 破壊的経路テスト =="
 
 remote_has() { git ls-remote --heads origin "refs/heads/$1" | grep . >/dev/null; }
 
+# simple-git-hooks 相当の pre-push: SKIP_SIMPLE_GIT_HOOKS=1 のときだけ通す。
+# fixture 組み立て（setup 中の git push --delete）が終わったあとで入れる。
+# worktree からもメイン .git/hooks を共有するので、呼び出し元 worktree でも効く。
+git branch -q 'feature/#31-hook-probe' develop
+git push -q origin 'feature/#31-hook-probe'
+# 相対パスだと呼び出し元 worktree へ移ったあと -x 判定が外れる
+HOOK_PATH="$TMP/work/.git/hooks/pre-push"
+HOOK_LOG="$TMP/pre-push-hook.log"
+: > "$HOOK_LOG"
+cat > "$HOOK_PATH" <<HOOK
+#!/bin/sh
+if [ "\${SKIP_SIMPLE_GIT_HOOKS:-}" = "1" ]; then
+  printf 'skip=1\n' >> "$HOOK_LOG"
+  exit 0
+fi
+printf 'block\n' >> "$HOOK_LOG"
+echo "pre-push gate ran (SKIP_SIMPLE_GIT_HOOKS is not 1)" >&2
+exit 1
+HOOK
+chmod +x "$HOOK_PATH"
+
+set +e
+env -u SKIP_SIMPLE_GIT_HOOKS git push -q origin --delete 'feature/#31-hook-probe' >/dev/null 2>&1
+HOOK_BLOCK_RC=$?
+set -e
+if [ "$HOOK_BLOCK_RC" -ne 0 ] && remote_has 'feature/#31-hook-probe'; then
+  ok "fixture hook は SKIP_SIMPLE_GIT_HOOKS 無しの削除 push を拒否する（self-test）"
+else
+  bad "fixture hook が削除 push を拒否しない — 以降の削除成功はゲート回避の証拠にならない"
+fi
+# 取り残し照合の mock に載せないので Step 6 は触らない。リモートに残してよい。
+
 # 呼び出し元を detached worktree に移し、元 clone が develop を保持する競合を再現する。
 # ignored file は clean 判定に出ないが、退避のために worktree ごと消してはならない。
 BASE_OWNER="$(git rev-parse --show-toplevel)"
@@ -541,6 +654,18 @@ printf '%s\n' '.cleanup-owner-preserved' >> "$BASE_OWNER/.git/info/exclude"
 echo preserve-me > "$BASE_OWNER/.cleanup-owner-preserved"
 git worktree add -q --detach "$CALLER" develop
 cd "$CALLER"
+
+# merge-cleanup はこちらの worktree から走る。hook 共有をここで実測する。
+set +e
+env -u SKIP_SIMPLE_GIT_HOOKS git push -q origin --delete 'feature/#31-hook-probe' >/dev/null 2>&1
+HOOK_WT_RC=$?
+set -e
+if [ "$HOOK_WT_RC" -ne 0 ] && remote_has 'feature/#31-hook-probe'; then
+  ok "呼び出し元 worktree からも fixture hook が削除 push を拒否する（self-test）"
+else
+  bad "呼び出し元 worktree で fixture hook が効いていない"
+fi
+: > "$HOOK_LOG"
 
 # 未マージ PR: 破壊的処理の前に exit 1 で中断し、リモートに手を付けないこと
 set +e
@@ -587,6 +712,16 @@ if remote_has 'feature/#1-merged-exact'; then
   bad "OID 一致の取り残しが削除されていない (feature/#1-merged-exact)"
 else
   ok "OID 一致の取り残しを削除 (feature/#1-merged-exact)"
+fi
+
+# 31. hook が実際に走り、SKIP_SIMPLE_GIT_HOOKS=1 を見て skip したことをログで見る。
+# --no-verify / hooksPath 無効化だと skip=1 は増えない（hook 自体が起動しない）。
+HOOK_SKIPS="$(grep -c '^skip=1$' "$HOOK_LOG" 2>/dev/null || true)"
+HOOK_BLOCKS="$(grep -c '^block$' "$HOOK_LOG" 2>/dev/null || true)"
+if [ "${HOOK_SKIPS:-0}" -ge 2 ] && [ "${HOOK_BLOCKS:-0}" -eq 0 ]; then
+  ok "削除 push で fixture hook が SKIP_SIMPLE_GIT_HOOKS=1 を見て skip した"
+else
+  bad "fixture hook の skip ログが期待どおりでない (skip=${HOOK_SKIPS:-0} block=${HOOK_BLOCKS:-0})"
 fi
 
 # 3. OID 不一致（マージ後 push あり）は削除されない

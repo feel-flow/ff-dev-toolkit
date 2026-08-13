@@ -23,6 +23,9 @@
 #   - 保護ブランチ（develop / main / master / release/* / staging/*）は絶対に削除しない
 #   - リモート削除は --force-with-lease=<ref>:<期待OID> で行い、照合と削除の間の
 #     push 競合（TOCTOU）をサーバー側で原子的に拒否させる
+#   - 削除 push はコード変更を運ばないため SKIP_SIMPLE_GIT_HOOKS=1 を付ける
+#     （consumer の simple-git-hooks フルゲートを起動しない）。core.hooksPath の
+#     一時無効化は他の guard まで落とすので使わない
 #   - ローカル [gone] ブランチの -D（強制削除）は (名前, ローカル OID) が
 #     MERGED PR の head と一致する場合に限定（[gone] だけではマージ済みの証明にならない）
 #   - ガードに必要な情報の取得に失敗したら削除せずスキップ（fail-closed）
@@ -174,12 +177,15 @@ command -v gh >/dev/null 2>&1 || die "gh CLI が必要です（https://cli.githu
 command -v jq >/dev/null 2>&1 || die "jq が必要です"
 
 # リモート削除の共通関数: --force-with-lease で「期待 OID のときだけ」削除する。
+# 削除 push はコード変更を運ばないため SKIP_SIMPLE_GIT_HOOKS=1 を付ける
+# （consumer の simple-git-hooks フルゲートを起動しない）。
+# core.hooksPath の一時無効化は他の guard まで落とすので使わない。
 # 戻り値 0=削除 / 2=既に無い / 3=lease 拒否（競合 push あり） / 1=その他失敗
 delete_remote_branch_with_lease() {
   # $1: branch / $2: expected OID
   local branch="$1" expected="$2" out="" remote_out="" remote_err="" remote_stderr="" remote_oid=""
   # エラーメッセージの文言照合があるため LC_ALL=C でロケール固定
-  if out="$(LC_ALL=C git push --force-with-lease="refs/heads/$branch:$expected" \
+  if out="$(LC_ALL=C SKIP_SIMPLE_GIT_HOOKS=1 git push --force-with-lease="refs/heads/$branch:$expected" \
       origin ":refs/heads/$branch" 2>&1)"; then
     return 0
   fi
@@ -290,9 +296,7 @@ fi
 
 # ---- Step 3: base ブランチ復帰 + 最新化（prune 必須） -------------------------
 
-# リモートブランチ削除より先に base を最新化すること。pre-push hook（simple-git-hooks 等）
-# は ref 削除 push にも実行されるため、base が古いまま削除 push すると hook の lint が
-# 古い内容で fail して cleanup が中断することがある。
+# リモートブランチ削除より先に base を最新化すること。
 # --prune が無いとリモート削除済みブランチに [gone] マーカーが付かず Step 5 で検出できない。
 
 CURRENT_BRANCH_BEFORE="$(git branch --show-current)"
@@ -807,6 +811,7 @@ fi
 #   3. 保護ブランチ名でない
 #   4. open PR の head として再利用されていない
 # 削除自体も --force-with-lease で「照合した OID のときだけ」実行する（TOCTOU 対策）。
+# 削除は delete_remote_branch_with_lease（SKIP_SIMPLE_GIT_HOOKS=1）経由。
 # ガード情報の取得に失敗している場合は Step 6 全体をスキップする（fail-closed）
 
 echo ""

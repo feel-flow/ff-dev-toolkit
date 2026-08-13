@@ -33,7 +33,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh" $ARGUMENTS
 1. **未コミット変更ガード** — あれば中断してユーザーに分類判断を仰ぐ（`git restore` / `git clean` は実行しない）
 2. **対象 PR の情報取得** — state / head / base / headRefOid / fork 判定。**MERGED でなければ破壊的処理の前に中断**（番号の打ち間違い対策）
 3. **base ブランチ復帰 + 最新化** — PR の `baseRefName` へ `git switch` し `fetch --prune` + `pull --ff-only`（develop 固定ではない）。別 worktree が base を保持している場合は、その worktree が clean のときだけ同じ HEAD の detached 状態へ退避して worktree 自体を残し、呼び出し元を base へ復帰する。保持側が dirty なら変更を触らず、リモート削除前に中断する
-4. **対象 PR のリモートブランチ削除** — same-repo かつ open PR で head 再利用されていない場合に、`--force-with-lease=<ref>:<期待OID>` で削除（照合と削除の間に push が入った場合はサーバー側で原子的に拒否 = TOCTOU 対策）
+4. **対象 PR のリモートブランチ削除** — same-repo かつ open PR で head 再利用されていない場合に、`--force-with-lease=<ref>:<期待OID>` で削除（照合と削除の間に push が入った場合はサーバー側で原子的に拒否 = TOCTOU 対策）。削除 push に新しい lint/test 対象のコミットは無いため `SKIP_SIMPLE_GIT_HOOKS=1` を付け、consumer の simple-git-hooks フルゲートを起動しない。Git の hook 起動自体は止めない（Husky 等は対象外）。削除可否は本スクリプトの保護ブランチ / lease / open-PR ガードが担う。`core.hooksPath` の一時無効化は他の guard まで落とすので使わない
 5. **`[gone]` ローカルブランチ + 関連 worktree の削除** — worktree は **clean を確認してから**削除（dirty なら警告してスキップ）。squash merge 由来の "not fully merged" への `-D` エスカレーションは、**(名前, ローカル OID) が MERGED PR の head と一致する場合のみ**（`[gone]` は upstream 消失しか保証しないため、手動リモート削除された未マージ作業は保護される）
 5.5. **削除した worktree のトランスクリプト回収** — 消した worktree でだけ使われていた Claude Code の履歴を `tar.gz` へアーカイブして元ディレクトリを回収する（下記）。**すでに溜まっている孤児**の一括回収は本ステップの対象外で、`/sweep-orphan-transcripts` を使う
 6. **リモート取り残しのガード付き自動削除** — 過去のマージ漏れで累積したリモートブランチを掃除する（下記）
@@ -104,7 +104,7 @@ worktree 外を指す `cwd` が混ざっていた場合は、回収したうえ�
 3. **保護ブランチ名でない** — `develop` / `main` / `master` / `release/*` / `staging/*`
 4. **open PR の head として再利用されていない**
 
-削除自体も `--force-with-lease=<ref>:<照合済みOID>` で実行するため、照合の後に push されたブランチはサーバー側で拒否される（skip 扱い）。ガードの構成に必要な情報（MERGED 一覧 / open 一覧 / `ls-remote`）の**どれか 1 つでも取得に失敗したら、削除を一切行わずスキップ**する（fail-closed）。照合は直近 1000 件のマージ済み PR まで。
+削除自体も `--force-with-lease=<ref>:<照合済みOID>` で実行するため、照合の後に push されたブランチはサーバー側で拒否される（skip 扱い）。削除 push には `SKIP_SIMPLE_GIT_HOOKS=1` を付ける（Step 4 と同じ）。ガードの構成に必要な情報（MERGED 一覧 / open 一覧 / `ls-remote`）の**どれか 1 つでも取得に失敗したら、削除を一切行わずスキップ**する（fail-closed）。照合は直近 1000 件のマージ済み PR まで。
 
 ## 安全原則（スクリプトが保証すること）
 
@@ -115,6 +115,7 @@ worktree 外を指す `cwd` が混ざっていた場合は、回収したうえ�
 - **ガード情報の取得失敗は fail-closed** — 「取得失敗 = 空」ではなく「取得失敗 = 削除中止」
 - **トランスクリプトは推測で消さない** — 削除に成功した worktree の分だけを対象に、jsonl の `cwd` 照合を通ったものだけを、**検証済みのアーカイブを作ってから** 回収する。名前の一致だけを根拠にする経路は持たない（Step 5.5）
 - **失敗を握りつぶさない** — 部分失敗は PARTIAL として終了コード 2 で報告
+- **削除 push で consumer の simple-git-hooks フルゲートを起動しない** — `SKIP_SIMPLE_GIT_HOOKS=1` を付ける。Git の hook 起動自体は止めない（Husky 等は対象外）。`core.hooksPath` の一時無効化は他の guard まで落とすので使わない
 
 ## 終了コード
 
