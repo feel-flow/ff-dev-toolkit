@@ -5,8 +5,8 @@
 # Orchestrates 5 AI CLIs (Claude Code, Codex, Copilot, Gemini, Grok)
 # for review, explore, and implement tasks using tool-agnostic perspectives.
 #
-# NOTE: Copilot CLI is metered (premium requests) — excluded from the
-# default review lineup. Opt in explicitly with --cli copilot-cli.
+# NOTE: Metered CLIs (currently Copilot CLI / premium requests) are excluded
+# from every default task lineup. Opt in explicitly with --cli copilot-cli.
 #
 # Compatible with bash 3.2+ (macOS default).
 #
@@ -32,6 +32,7 @@
 #   --sequential            Sequential execution
 #   --output-dir <dir>      Output directory (auto-detected by task type)
 #   --base <branch>         Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop)
+#   --staged                Review only the staged index diff (review task only; mutually exclusive with --base)
 #   --include-diff          Include diff in implement prompts
 #   --dry-run               Show plan without executing
 #   --timeout <seconds>     Timeout per CLI (default: review 900 / explore 600 / implement 900)
@@ -87,6 +88,28 @@ if [[ -z "$REPO_ROOT" ]]; then
   REPO_ROOT="$(pwd)"
   echo "⚠️  Not inside a git repository — using current directory as project root: ${REPO_ROOT}" >&2
 fi
+
+# ── Shared adapter utilities ──
+# diff の取り方・base ブランチの解決・リビジョンスナップショットは、アダプタと
+# **同じ実装**を使う。orchestrator が固定した diff をアダプタが受け取る構造上、
+# 2 つの実装がずれると「固定したつもりの diff」と「アダプタが読む diff」が食い違い、
+# しかもその食い違いは実行結果からは見えない。
+#
+# 注意 1: adapter-common.sh は source 時に EXIT trap（clear_timeout_reason）を仕掛ける。
+#   本スクリプトは acquire_output_lock で EXIT trap を張り直すのでそちらが勝つ。
+#   orchestrator は run_with_timeout を呼ばない（それはアダプタのプロセス内の話）ので、
+#   上書きしても失われる後始末は無い。
+# 注意 2: adapter-common.sh は意図的に set -euo pipefail を張らないので、
+#   source しても本スクリプトのシェルオプションは変わらない。
+ADAPTER_COMMON="${SCRIPT_DIR}/adapters/adapter-common.sh"
+if [[ ! -f "$ADAPTER_COMMON" ]]; then
+  echo "ERROR: shared adapter utilities not found: ${ADAPTER_COMMON}" >&2
+  echo "       The orchestrator and the adapters must resolve the same diff; refusing to" >&2
+  echo "       continue with a second, drifting copy." >&2
+  exit 1
+fi
+# shellcheck source=adapters/adapter-common.sh
+source "$ADAPTER_COMMON"
 
 # ── All known CLI names ──
 # ↑ この見出し行は tests/lib/cli-registry-parser.sh が完全一致で registry 境界の開始に
@@ -151,7 +174,7 @@ get_cli_perspectives_review() {
   case "$1" in
     claude-code) echo "type-design-analysis code-simplification" ;;
     codex-cli)   echo "code-review test-analysis" ;;
-    copilot-cli) echo "test-analysis comment-analysis" ;;  # metered — runs ONLY with explicit --cli copilot-cli (see build_distributed_plan)
+    copilot-cli) echo "test-analysis comment-analysis" ;;  # metered — every task requires explicit --cli copilot-cli (see build_distributed_plan)
     gemini-cli)  echo "security-analysis comment-analysis" ;;
     grok-cli)    echo "error-handler-hunt" ;;
     *) echo "" ;;
@@ -162,7 +185,7 @@ get_cli_perspectives_explore() {
   case "$1" in
     claude-code) echo "architecture-analysis" ;;
     codex-cli)   echo "dependency-mapping" ;;
-    copilot-cli) echo "api-surface-analysis" ;;
+    copilot-cli) echo "api-surface-analysis" ;;  # metered — every task requires explicit --cli copilot-cli
     gemini-cli)  echo "pattern-discovery" ;;
     grok-cli)    echo "tech-debt-assessment" ;;
     *) echo "" ;;
@@ -173,7 +196,7 @@ get_cli_perspectives_implement() {
   case "$1" in
     claude-code) echo "feature-implementation" ;;
     codex-cli)   echo "refactoring" ;;
-    copilot-cli) echo "test-writing" ;;
+    copilot-cli) echo "test-writing" ;;  # metered — every task requires explicit --cli copilot-cli
     gemini-cli)  echo "documentation" ;;
     grok-cli)    echo "migration" ;;
     *) echo "" ;;
@@ -208,7 +231,7 @@ get_cli_cost_tier() {
 get_cli_model_env_vars() {
   case "$1" in
     claude-code) echo "MULTI_AGENT_MODEL_CLAUDE_CODE" ;;
-    codex-cli)   echo "MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE" ;;
+    codex-cli)   echo "MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CODEX_REASONING_EFFORT" ;;
     copilot-cli) echo "MULTI_AGENT_MODEL_COPILOT_CLI" ;;
     gemini-cli)  echo "MULTI_AGENT_MODEL_GEMINI_CLI" ;;
     grok-cli)    echo "MULTI_AGENT_MODEL_GROK_CLI" ;;
@@ -664,11 +687,28 @@ OUTPUT_DIR=""
 # Whether --output-dir was given, so the retry advice can carry it (the value
 # itself is always set later by apply_task_defaults, so it cannot be inferred).
 OUTPUT_DIR_EXPLICIT=false
-# NOTE: keep this detection in sync with detect_base_branch() in adapters/adapter-common.sh
+# この実行の diff を固定したファイル。create_fixed_diff が埋め、run_single_task が
+# 全アダプタへ --diff-file として配る。diff を持たないタスク（description だけの
+# explore など）では空のまま = 従来どおりアダプタ側の判断に委ねる。
+FIXED_DIFF_FILE=""
+# 実行開始時点のリビジョンスナップショット（capture_repo_snapshot の 1 行）。
+# 実行後に取り直した値と突き合わせる。git リポジトリ外では空のまま。
+REPO_SNAPSHOT_BEFORE=""
+# 検出そのものは adapters/adapter-common.sh の関数へ委譲する（書き写しの人手同期を
+# やめるため）。ここに残すのは orchestrator 固有の方針だけ:
+#   1) MULTI_AGENT_BASE_BRANCH env を最優先する
+#   2) 「自動検出」と「origin/HEAD が無いのでフォールバック」を利用者へ名乗り分ける
+# 2 を保つために default_base_branch_name（空を返しうる）と resolve_base_branch_ref を
+# 別々に呼ぶ。畳んだ detect_base_branch では、どちらが起きたのか戻り値から分からない。
 BASE_BRANCH="${MULTI_AGENT_BASE_BRANCH:-}"
 BASE_BRANCH_SOURCE="MULTI_AGENT_BASE_BRANCH env"
+BASE_BRANCH_EXPLICIT=false
+if [[ -n "$BASE_BRANCH" ]]; then
+  BASE_BRANCH_EXPLICIT=true
+fi
+STAGED_DIFF=false
 if [[ -z "$BASE_BRANCH" ]]; then
-  BASE_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)"
+  BASE_BRANCH="$(default_base_branch_name)"
   BASE_BRANCH_SOURCE="auto-detected from origin/HEAD"
 fi
 if [[ -z "$BASE_BRANCH" ]]; then
@@ -676,11 +716,7 @@ if [[ -z "$BASE_BRANCH" ]]; then
   BASE_BRANCH_SOURCE="fallback — origin/HEAD not set"
 fi
 # Prefer the local branch; fall back to the remote-tracking ref when absent (clones)
-if ! git rev-parse --verify --quiet "refs/heads/${BASE_BRANCH}" >/dev/null 2>&1; then
-  if git rev-parse --verify --quiet "refs/remotes/origin/${BASE_BRANCH}" >/dev/null 2>&1; then
-    BASE_BRANCH="origin/${BASE_BRANCH}"
-  fi
-fi
+BASE_BRANCH="$(resolve_base_branch_ref "$BASE_BRANCH")"
 DRY_RUN=false
 TIMEOUT=""
 
@@ -706,6 +742,11 @@ EXECUTION_PLAN=""
 # for expired credentials. cli/perspective are validated single path segments and
 # cannot contain ':', so the suffix is unambiguous.
 FAILED_TASKS=""
+
+# 同じ output-dir を使う別 orchestrator との排他。成果物は run-id で分離せず、利用者が
+# 従来どおり固定パスから読める契約を保つ代わりに、1 output-dir = 1 active run とする。
+OUTPUT_LOCK_DIR=""
+OUTPUT_LOCK_HELD=false
 
 # ── Utility ──
 
@@ -745,7 +786,8 @@ parse_args() {
       --parallel)    PARALLEL=true; shift ;;
       --sequential)  PARALLEL=false; shift ;;
       --output-dir)  OUTPUT_DIR="$2"; OUTPUT_DIR_EXPLICIT=true; shift 2 ;;
-      --base)        BASE_BRANCH="$2"; BASE_BRANCH_SOURCE="--base flag"; shift 2 ;;
+      --base)        BASE_BRANCH="$2"; BASE_BRANCH_SOURCE="--base flag"; BASE_BRANCH_EXPLICIT=true; shift 2 ;;
+      --staged)      STAGED_DIFF=true; shift ;;
       --dry-run)     DRY_RUN=true; shift ;;
       --print-reviewers) PRINT_REVIEWERS=true; shift ;;
       --set-reviewers)   SET_REVIEWERS="$2"; shift 2 ;;
@@ -767,6 +809,16 @@ parse_args() {
       exit 1
       ;;
   esac
+
+  if [[ "$STAGED_DIFF" == "true" && "$TASK_TYPE" != "review" ]]; then
+    echo "ERROR: --staged is only valid for review tasks." >&2
+    exit 2
+  fi
+  if [[ "$STAGED_DIFF" == "true" && "$BASE_BRANCH_EXPLICIT" == "true" ]]; then
+    echo "ERROR: --staged and an explicit base (--base / MULTI_AGENT_BASE_BRANCH) are mutually exclusive." >&2
+    echo "       Choose the staged index or a base-branch diff; they are different review scopes." >&2
+    exit 2
+  fi
 
   # Validate description for explore/implement
   # --list-perspectives は「その task にどんな観点があるか」を出すだけで、タスクを
@@ -913,9 +965,12 @@ build_distributed_plan() {
     perspectives="$(get_cli_perspectives "$cli_name")"
     [[ -z "$perspectives" ]] && continue
 
-    # Copilot CLI is metered — include in review plans only when explicitly requested via --cli
-    if [[ "$cli_name" == "copilot-cli" && "$TASK_TYPE" == "review" && -z "$CLI_FILTER" ]]; then
-      echo "  ⏭  copilot-cli skipped (metered). Opt in with --cli copilot-cli." >&2
+    # A cost-bearing CLI must never enter any default task plan merely because it
+    # is installed. The cost tier is the SSOT: future metered CLIs inherit the
+    # same fail-safe without another name-specific branch. An explicit --cli is
+    # the auditable opt-in for review, explore, and implement alike (Issue #250).
+    if [[ "$(get_cli_cost_tier "$cli_name")" == "metered" && -z "$CLI_FILTER" ]]; then
+      echo "  ⏭  ${cli_name} skipped (metered). Opt in with --cli ${cli_name}." >&2
       continue
     fi
 
@@ -1200,7 +1255,11 @@ show_plan() {
   echo "   Strategy: ${STRATEGY}" >&2
   echo "   Parallel: ${PARALLEL}" >&2
   echo "   Output: ${OUTPUT_DIR}" >&2
-  echo "   Base branch: ${BASE_BRANCH} (${BASE_BRANCH_SOURCE})" >&2
+  if [[ "$STAGED_DIFF" == "true" ]]; then
+    echo "   Diff source: staged index (git diff --cached)" >&2
+  else
+    echo "   Base branch: ${BASE_BRANCH} (${BASE_BRANCH_SOURCE})" >&2
+  fi
   echo "   Config: ${CONFIG_FILE} (${CONFIG_SOURCE})" >&2
   echo "   Timeout: ${TIMEOUT}s per CLI" >&2
   echo "   Runtime fallback: none — a CLI that fails or times out is reported as" >&2
@@ -1379,37 +1438,176 @@ clear_staging_dir() {
   return 0
 }
 
-# サンドボックスの書き込み境界は、CLI が継承する CWD（アダプタは cd しない）。
-# staging がその外に出ると、grok の workspace / codex の workspace-write が書き込みを
-# 拒み、パスを渡したのにエージェントが書けない状態になる。
-#
-# codex がこの警告の対象になったのは Issue #403 から（それ以前は不正な sandbox 値で
-# 引数解析の段階で落ちており、staging に触れる所まで到達していなかった）。
-#
-# 比較は**両辺とも物理パス**で行う。OUTPUT_DIR は execute_tasks で pwd -P 済み、
-# ここも ${PWD}（論理パス）ではなく $(pwd -P) を使う。既定の OUTPUT_DIR は
-# git rev-parse --show-toplevel（物理）由来なので、論理パスと比べると symlink 越しの
-# チェックアウト（macOS の /tmp・/var 配下など）でリポジトリルートに居ながら毎回
-# 誤発火する。誤発火する警告は「リポジトリルートで実行しろ」と、すでにそこに居る
-# 利用者へ言うことになり、症状から原因へ辿らせるという目的をむしろ壊す。
-#
-# ここを hard fail にしないのは、`--output-dir /tmp/...` のような CWD 外指定が
-# 現に動く経路だから（gemini の implement はサンドボックス無し、ラッパー自身の
-# レポート書き込みはサンドボックス外）。staging をサンドボックスルートへ揃える
-# 本筋対応は別 Issue #398（アダプタ横断のサンドボックス整合）で扱う。
-#
-# グリフは助言の ⚠️ に固定する — 致命（staging を作れない・書けない）は ❌ を使い、
-# 「続行できる助言」と「そのタスクが死んだ」を見分けられるようにしている。
-warn_if_staging_outside_sandbox() {
-  local staging_dir="$1"
-  local cwd_physical
-  cwd_physical="$(pwd -P)"
-  case "$staging_dir" in
-    "$cwd_physical"/*) return 0 ;;
+# implement の CLI は常に REPO_ROOT から起動する。その CWD が codex workspace-write /
+# grok workspace / Copilot path boundary の書き込みルートになるため、OUTPUT_DIR も同じ
+# 物理ルート配下でなければならない。警告して続けると、プロンプトが「書ける」と名指し
+# した staging を sandbox が拒否するので、CLI を起動する前に fail-loud で止める。
+validate_implement_output_boundary() {
+  [[ "${TASK_TYPE:-review}" == "implement" ]] || return 0
+  local repo_physical
+  if ! repo_physical="$(cd "$REPO_ROOT" && pwd -P)"; then
+    echo "ERROR: cannot resolve repository sandbox root: ${REPO_ROOT}" >&2
+    return 1
+  fi
+  case "$OUTPUT_DIR" in
+    "$repo_physical"|"$repo_physical"/*) return 0 ;;
   esac
-  echo "  ⚠️  Staging dir is outside the CLI sandbox root (CWD): ${staging_dir}" >&2
-  echo "      CWD: ${cwd_physical}" >&2
-  echo "      Sandboxed CLIs (grok: workspace / codex: workspace-write) may be denied writes there." >&2
+  echo "ERROR: implement output dir is outside the CLI sandbox root — refusing to name an unwritable staging path." >&2
+  echo "       output:  ${OUTPUT_DIR}" >&2
+  echo "       sandbox: ${repo_physical}" >&2
+  echo "       Choose --output-dir under the repository root." >&2
+  return 1
+}
+
+# ── 出力ディレクトリのリポジトリ相対パス ──
+#
+# capture_repo_snapshot へ渡す除外パス。orchestrator は実行中ずっとこの配下へ成果物を
+# 書き続けるので、作業ツリーの変化として数えると**正常な実行が毎回**「リポジトリが
+# 変化した」と判定される。本リポジトリは .review-results/ を gitignore しているが、
+# 利用者のリポジトリがそうしている保証はない。
+#
+# 含有関係を確定できないときは**何も返さない**（= 何も除外しない）。推測した接頭辞で
+# 除外すると、本来監視すべき範囲を黙って監視対象から外しかねない。なお出力先が
+# リポジトリ外なのは異常ではない — 配下であることを検査しているのは implement だけで
+# （validate_implement_output_boundary）、review / explore は外を指定できる。
+output_dir_repo_relative() {
+  [[ -n "${OUTPUT_DIR:-}" ]] || return 0
+  local repo_physical parent base resolved
+  repo_physical="$(cd "$REPO_ROOT" 2>/dev/null && pwd -P)" || return 0
+  # OUTPUT_DIR はこの時点ではまだ存在しないことがある（作るのは execute_tasks）。
+  # 親は存在するので、親を物理パスへ解決してから名前を足す。論理パス（$PWD 由来）と
+  # 物理パス（git rev-parse --show-toplevel 由来）の綴り違いを揃える狙いも兼ねる
+  # （symlink 越しのチェックアウトで同じ場所が別の綴りになる。execute_tasks が
+  # OUTPUT_DIR を pwd -P で正規化しているのと同じ理由）。
+  parent="$(dirname "$OUTPUT_DIR")"
+  base="$(basename "$OUTPUT_DIR")"
+  parent="$(cd "$parent" 2>/dev/null && pwd -P)" || return 0
+  resolved="${parent%/}/${base}"
+  case "$resolved" in
+    "$repo_physical"/*) printf '%s\n' "${resolved#"$repo_physical"/}" ;;
+    *) return 0 ;;
+  esac
+}
+
+# ── 出力ディレクトリの境界検証 ──
+#
+# リビジョンガードは「出力ディレクトリ配下は orchestrator 自身が書くので数えない」
+# という前提で除外を掛ける。その前提が崩れる 2 つの構成をここで弾く。黙って動かすと、
+# **正しい実行が毎回破棄される**か、**ガードが実質的に無効化される**。
+#
+#   1) 出力先がリポジトリ root … 除外は厳密な部分パスしか表せないので何も除外できず、
+#      自分が書く .fixed-diff で毎回ガードに掛かる。しかも診断は「リポジトリが変化した」
+#      と出るので、利用者は起きていない checkout を探すことになる。
+#   2) 出力先に tracked ファイルがある … この実行はその配下を上書き・削除するため
+#      tracked の内容が動き、やはり毎回破棄になる。同時にこの検査は `--output-dir src`
+#      のようにソースを含むディレクトリを出力先に指定して**監視から外す**使い方も塞ぐ
+#      （除外は 4 つの問い合わせすべてに効くので、弾かないと実コードの変更がガードから
+#      消える）。
+validate_output_dir_boundary() {
+  [[ "$IN_GIT_REPO" == "true" ]] || return 0
+  local repo_physical rel tracked
+  repo_physical="$(cd "$REPO_ROOT" 2>/dev/null && pwd -P)" || return 0
+
+  if [[ "$OUTPUT_DIR" == "$repo_physical" ]]; then
+    echo "ERROR: the output dir must not be the repository root: ${OUTPUT_DIR}" >&2
+    echo "       This run writes its own artifacts there, and the revision guard would read" >&2
+    echo "       those writes as the repository changing under it — every run would be" >&2
+    echo "       discarded, blaming a checkout that never happened." >&2
+    echo "       Pass --output-dir <subdirectory> instead." >&2
+    return 1
+  fi
+
+  rel="$(output_dir_repo_relative)"
+  # リポジトリ外の出力先は対象外（review / explore では正当な指定）。
+  [[ -n "$rel" ]] || return 0
+
+  tracked="$(cd "$repo_physical" && git ls-files -- ":(literal)${rel}" 2>/dev/null | head -1)" || return 0
+  if [[ -n "$tracked" ]]; then
+    echo "ERROR: the output dir contains tracked files: ${OUTPUT_DIR}" >&2
+    echo "       first match: ${tracked}" >&2
+    echo "       This run overwrites and deletes files under the output dir. Tracked content" >&2
+    echo "       there would register as the repository changing mid-run, so every run would" >&2
+    echo "       be discarded after the CLIs had already been paid for." >&2
+    echo "       Pass an --output-dir that holds no tracked files." >&2
+    return 1
+  fi
+  return 0
+}
+
+# ── この実行の diff を 1 度だけ固定する ──
+#
+# 以前は各アダプタが**自分の起動時に** git から diff を取っていた。並列タスクの起動
+# 時刻はばらけるので、実行中に checkout / commit / stash が入るとタスクごとに別の
+# 瞬間の diff をレビューし、しかも全員が正常終了する。ここで 1 度だけ取ってファイルへ
+# 固定し、全タスクへ同じバイト列を配る。
+#
+# 置き場所が出力ディレクトリなのは、スナップショットの除外対象と同じ場所だから
+# （作業ツリーを汚さない）。同じ出力先の同時実行は acquire_output_lock が既に排他して
+# いるので、固定名で衝突しない。実行後もそのまま残すので、レポートと並べて
+# 「実際に何をレビューしたのか」を後から確認できる。
+create_fixed_diff() {
+  [[ "$IN_GIT_REPO" == "true" ]] || return 0
+  # diff をプロンプトへ載せないタスクでは何も固定しない。載せないものを固定しても
+  # 意味が無いうえ、diff を持たないリポジトリ状態での失敗を持ち込むだけになる。
+  if [[ "$TASK_TYPE" != "review" && "$INCLUDE_DIFF" != "true" ]]; then
+    return 0
+  fi
+  local target="${OUTPUT_DIR}/.fixed-diff"
+  # get_diff_content は STAGED_DIFF を見て --staged 実行を切り替える（adapter-common）。
+  # 同じプロセス内の変数なので、ここでの呼び出しにもそのまま効く。
+  if ! get_diff_content "$BASE_BRANCH" >"$target"; then
+    echo "ERROR: cannot capture this run's diff: ${target}" >&2
+    echo "       Every task must review the same bytes; refusing to let each adapter" >&2
+    echo "       compute its own diff instead." >&2
+    rm -f "$target" || echo "WARNING: could not remove the partial fixed diff: ${target}" >&2
+    return 1
+  fi
+  FIXED_DIFF_FILE="$target"
+  return 0
+}
+
+# ── 基準スナップショットの取得と diff 固定（この 2 つは隣接させる） ──
+#
+# 基準を先に離れた場所で取ると、基準取得から diff 固定までのあいだに「動いて元へ戻る」
+# 変化が入りうる。前後のスナップショットは一致するのに、固定 diff だけが途中の状態を
+# 写した内容になり、**この修正が防ごうとしている食い違いを自分で作る**。
+# そこで固定の直前と直後で 2 回取り、一致しなければ開始前に止める。一致した方を基準に
+# 採用するので、基準と固定 diff が同じ瞬間のリポジトリを写していることを、
+# **スナップショットが見える範囲で**確かめたことになる（見えない範囲は
+# capture_repo_snapshot の「見えないものを明示しておく」の項を参照）。
+#
+# --dry-run はここへ到達しない（main が手前で exit する）ので、実際にタスクを起動する
+# 実行だけが対象になる。review だけでなく explore / implement も対象: どのタスクでも
+# CLI エージェントは作業ツリーのファイルを読み、implement はそこへ書きうるので、
+# 対象が動けば結果の意味が変わるのは同じ。
+capture_baseline_and_fix_diff() {
+  [[ "$IN_GIT_REPO" == "true" ]] || return 0
+
+  local exclude before after
+  exclude="$(output_dir_repo_relative)"
+
+  if ! before="$(capture_repo_snapshot "$exclude")"; then
+    echo "ERROR: cannot read the repository state — refusing to start." >&2
+    echo "       Without a baseline there is no way to tell afterwards whether the" >&2
+    echo "       reviewed revision stayed put, and the result could not be trusted." >&2
+    return 1
+  fi
+
+  create_fixed_diff || return 1
+
+  if ! after="$(capture_repo_snapshot "$exclude")"; then
+    echo "ERROR: cannot re-read the repository state while fixing this run's diff." >&2
+    return 1
+  fi
+  if [[ "$before" != "$after" ]]; then
+    echo "ERROR: the repository changed while this run's diff was being captured." >&2
+    echo "       The captured diff would describe a state that no longer holds." >&2
+    echo "       Re-run once the repository is settled." >&2
+    return 1
+  fi
+
+  REPO_SNAPSHOT_BEFORE="$after"
+  return 0
 }
 
 # ── Execute Single Task ──
@@ -1438,6 +1636,11 @@ run_single_task() {
   extra_args+=(--task-type "$TASK_TYPE")
   if [[ -n "$DESCRIPTION" ]]; then
     extra_args+=(--description "$DESCRIPTION")
+  fi
+  # 固定した diff を全タスクへ配る。渡さなかった場合はアダプタが自分で git から取る
+  # （直叩き互換）ので、ここを落とすと不整合が黙って戻る。
+  if [[ -n "$FIXED_DIFF_FILE" ]]; then
+    extra_args+=(--diff-file "$FIXED_DIFF_FILE")
   fi
   if [[ "$INCLUDE_DIFF" == "true" ]]; then
     extra_args+=(--include-diff)
@@ -1469,14 +1672,20 @@ run_single_task() {
       echo "     Check the permissions of --output-dir; re-running as-is will fail again." >&2
       return 1
     fi
-    warn_if_staging_outside_sandbox "$staging_dir"
     extra_args+=(--staging-dir "$staging_dir")
   fi
 
-  bash "$adapter" "$perspective_file" "$output_file" \
-    --base "$BASE_BRANCH" \
-    --timeout "$TIMEOUT" \
-    "${extra_args[@]}"
+  # 全 adapter を対象リポジトリの物理 root から起動する。サブディレクトリから
+  # orchestrator を呼んでも CLI の CWD（sandbox root）を狭めないためで、diff の
+  # repository-relative path 解決も同じ基準へ固定される。
+  ( cd "$REPO_ROOT" && \
+    if [[ "$STAGED_DIFF" == "true" ]]; then
+      bash "$adapter" "$perspective_file" "$output_file" \
+        --staged --timeout "$TIMEOUT" "${extra_args[@]}"
+    else
+      bash "$adapter" "$perspective_file" "$output_file" \
+        --base "$BASE_BRANCH" --timeout "$TIMEOUT" "${extra_args[@]}"
+    fi )
 }
 
 # ── Path-Segment Safety ──
@@ -1537,6 +1746,22 @@ validate_execution_plan() {
 clear_planned_outputs() {
   [[ -n "${OUTPUT_DIR:-}" ]] || return 0
   local entry cli_name persp_name staging_dir
+  # 統合レポートも先に消す。generate_report は成功時にしか書かないので、これが無いと
+  # 「タスクは走ったがレポート生成まで到達しなかった」実行のあとに前回のレポートが
+  # そのまま残る。利用者へ案内している次の一手は `cat integrated-report.md` なので、
+  # 中断を告げた直後にその中断とは無関係な前回の結果を読ませることになる — 個別結果に
+  # ついて上で塞いだ stale 誤読と同型。
+  if ! rm -f "${OUTPUT_DIR}/integrated-report.md"; then
+    echo "ERROR: cannot clear the previous integrated report: ${OUTPUT_DIR}/integrated-report.md" >&2
+    return 1
+  fi
+  # 固定 diff も同様。diff を載せないタスク（description だけの explore など）は
+  # これを作らないので、消さないと直前の review が残した diff がその実行の成果物として
+  # 並ぶ。「ここにある = 今回レビューした内容」という読み方が静かに嘘になる。
+  if ! rm -f "${OUTPUT_DIR}/.fixed-diff"; then
+    echo "ERROR: cannot clear the previous fixed diff: ${OUTPUT_DIR}/.fixed-diff" >&2
+    return 1
+  fi
   while IFS= read -r entry; do
     [[ -z "$entry" ]] && continue
     cli_name="${entry%%:*}"
@@ -1550,6 +1775,55 @@ clear_planned_outputs() {
       clear_staging_dir "$staging_dir" || return 1
     fi
   done <<< "$EXECUTION_PLAN"
+}
+
+# ── Output Directory Lock（Issue #402） ──
+# レポート・staging は固定パスなので、同じ output-dir の 2 run を許すと後発 run の
+# clear_planned_outputs が先行 run の生成物を削除する。mkdir の原子性を lock として使い、
+# 同時実行はタスク起動前に fail-loud で止める。PID の生存確認による自動 stale 回収は
+# PID 再利用と確認→削除の race があるため行わない。異常終了後の lock は利用者が実行中
+# process が無いことを確認してから明示的に削除する。
+release_output_lock() {
+  [[ "$OUTPUT_LOCK_HELD" == "true" ]] || return 0
+  local owner_file="${OUTPUT_LOCK_DIR}/owner"
+  rm -f "$owner_file" 2>/dev/null || true
+  if ! rmdir "$OUTPUT_LOCK_DIR" 2>/dev/null; then
+    echo "WARNING: could not release output-dir lock: ${OUTPUT_LOCK_DIR}" >&2
+    echo "         Refusing recursive cleanup because unexpected files may be present." >&2
+    return 1
+  fi
+  OUTPUT_LOCK_HELD=false
+  return 0
+}
+
+output_lock_exit() {
+  local rc=$?
+  release_output_lock || {
+    [[ "$rc" -ne 0 ]] || rc=1
+  }
+  exit "$rc"
+}
+
+acquire_output_lock() {
+  OUTPUT_LOCK_DIR="${OUTPUT_DIR}/.multi-agent-run.lock"
+  if ! mkdir "$OUTPUT_LOCK_DIR" 2>/dev/null; then
+    echo "ERROR: output dir is already in use by another orchestrator (or a stale lock remains)." >&2
+    echo "       output: ${OUTPUT_DIR}" >&2
+    echo "       lock:   ${OUTPUT_LOCK_DIR}" >&2
+    echo "       Use a different --output-dir, or after confirming no run is active remove the stale lock." >&2
+    return 1
+  fi
+  OUTPUT_LOCK_HELD=true
+  if ! printf 'pid=%s\ntask=%s\ncwd=%s\n' "$$" "$TASK_TYPE" "$(pwd -P)" >"${OUTPUT_LOCK_DIR}/owner"; then
+    release_output_lock || true
+    echo "ERROR: cannot write output-dir lock metadata: ${OUTPUT_LOCK_DIR}/owner" >&2
+    return 1
+  fi
+  # Hold the lock through report generation. Releasing after execute_tasks but before generate_report
+  # would let another run clear the files while this run is reading them.
+  trap output_lock_exit EXIT
+  trap 'exit 130' HUP INT TERM
+  return 0
 }
 
 # ── タスク実行 + rc 記録（Issue #251） ──
@@ -1621,7 +1895,11 @@ execute_tasks() {
     echo "ERROR: cannot resolve output dir: ${OUTPUT_DIR}" >&2
     return 2
   fi
+  validate_implement_output_boundary || return 2
+  validate_output_dir_boundary || return 2
+  acquire_output_lock || return 2
   clear_planned_outputs || return 2
+  capture_baseline_and_fix_diff || return 2
 
   local pids=""
   local failed=0
@@ -1793,6 +2071,91 @@ execute_tasks() {
   fi
 }
 
+# ── 実行中にレビュー対象が動いていないことの検証 ──
+#
+# 実行開始時に取ったスナップショットと突き合わせ、一致しなければ結果を破棄する。
+# 警告に留めない理由: この機構が守っているのは「レポートの内容」ではなく「レポートを
+# 信じてよいかどうか」で、信じてよいか分からない結果を exit 0 で返すのは、この Issue が
+# 塞ごうとしている silent failure そのもの。
+#
+# 検出できない形は 1 つではない。既知のものを明示しておく:
+#   - 実行中に動いて**元へ戻された**変化（前後比較の原理的な限界）
+#   - gitignore 済みパスへの書き込み、除外パス配下の変化、内容を読めない untracked
+#     エントリの中身（capture_repo_snapshot の「見えないものを明示しておく」の項）
+#
+# 往復のケースで固定 diff が守るのは**プロンプトへ載る diff のバイト列**までで、
+# 「往復を受け持つ」わけではない。その区間にエージェントが直接読んだ作業ツリーの
+# ファイル実体は、固定 diff でも前後比較でも守れず、既知の穴として残る。
+# それでも 2 つで 1 組にする意味はある — 固定 diff は往復中も diff を動かさず、
+# 前後比較は往復しない変化（大多数）を捕らえるので、片方だけより穴が小さい。
+# 破棄した実行の成果物を「完成した結果」に見せない。
+#
+# レポートを書かないだけでは足りない。個別結果 ${cli}/${persp}.md はタスクが書いた
+# 時点でディスクに残り、ヘッダーは `Status: complete` のままになる。しかもそのパスは
+# skills/multi-review/SKILL.md が「結果は後から参照できる」と案内している場所そのもの
+# で、破棄を宣言した直後に完成扱いの結果が同じ場所に並ぶ。消さずに印を付けるのは、
+# CLI に払ったぶんの出力を証跡として残すため。
+mark_outputs_discarded() {
+  local entry cli persp f tmp
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
+    cli="${entry%%:*}"
+    persp="${entry#*:}"
+    f="${OUTPUT_DIR}/${cli}/${persp}.md"
+    [[ -f "$f" ]] || continue
+    tmp="${f}.discarding.$$"
+    # 差し替えは ASCII のみのパターンで行う（ロケール依存の text 処理を持ち込まない）。
+    if { printf '%s\n\n' "> DISCARDED — the repository changed while this run was in flight. Nothing below was verified against a stable revision; do not read it as a finished ${TASK_TYPE}." \
+         && sed 's/^<!-- Status: complete -->$/<!-- Status: discarded -->/' "$f"; } > "$tmp" 2>/dev/null \
+       && mv "$tmp" "$f"; then
+      continue
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    echo "  could not mark as discarded: ${f}" >&2
+  done <<< "$EXECUTION_PLAN"
+}
+
+verify_repo_unchanged() {
+  local after
+  if ! after="$(capture_repo_snapshot "$(output_dir_repo_relative)")"; then
+    echo "" >&2
+    echo "❌ Cannot read the repository state after the run — discarding the result." >&2
+    echo "   The baseline was taken, so this is a failure to verify, not a clean run:" >&2
+    echo "   nothing here can confirm the reviewed revision stayed put. Reporting an" >&2
+    echo "   unverifiable run as valid is the exact failure this guard exists to prevent." >&2
+    mark_outputs_discarded
+    echo "   No report was generated; this run's per-task results are marked DISCARDED." >&2
+    return 1
+  fi
+  [[ "$after" == "$REPO_SNAPSHOT_BEFORE" ]] && return 0
+
+  # どこが動いたのかを名指しする。3 つのうちどれが変わったかで利用者の次の一手が
+  # まったく違う（ブランチを戻す / commit を戻す / 作業ツリーを片付ける）。
+  local b_head b_branch b_tree a_head a_branch a_tree
+  read -r b_head b_branch b_tree <<< "$REPO_SNAPSHOT_BEFORE"
+  read -r a_head a_branch a_tree <<< "$after"
+
+  echo "" >&2
+  echo "❌ The repository changed while the ${TASK_TYPE} was running — discarding the result." >&2
+  if [[ "$b_branch" != "$a_branch" ]]; then
+    echo "   branch:   ${b_branch} → ${a_branch}" >&2
+  fi
+  if [[ "$b_head" != "$a_head" ]]; then
+    echo "   HEAD:     ${b_head} → ${a_head}" >&2
+  fi
+  if [[ "$b_tree" != "$a_tree" ]]; then
+    echo "   worktree: changed (tracked and untracked files, excluding the output dir)" >&2
+  fi
+  echo "" >&2
+  echo "   Tasks read the working tree while they run, so what each one actually looked" >&2
+  echo "   at is now unknown — and a report built from that would read as a clean result." >&2
+  mark_outputs_discarded
+  echo "   No report was generated; this run's per-task results are marked DISCARDED" >&2
+  echo "   so they cannot be mistaken for a finished ${TASK_TYPE}." >&2
+  echo "   Re-run once the repository is settled." >&2
+  return 1
+}
+
 # ── One-Line Failure Diagnosis ──
 # $TIMEOUT is the limit that actually applied — no CLI is capped below it any
 # more (see "Per-CLI Timeout Caps"), so this function does not need to know
@@ -1828,7 +2191,9 @@ print_failure_advice() {
   # Carry the flags that decide WHAT gets looked at. Dropping --base would retry
   # against a different diff than the run that just failed, which makes the
   # suggested command quietly not-a-retry.
-  if [[ "$TASK_TYPE" == "review" || "$INCLUDE_DIFF" == "true" ]]; then
+  if [[ "$STAGED_DIFF" == "true" ]]; then
+    self="${self} --staged"
+  elif [[ "$TASK_TYPE" == "review" || "$INCLUDE_DIFF" == "true" ]]; then
     self="${self} --base $(printf '%q' "$BASE_BRANCH")"
   fi
   if [[ "$INCLUDE_DIFF" == "true" ]]; then
@@ -2321,17 +2686,22 @@ main() {
   # ── Pre-dispatch safety: never burn CLI quota on a meaningless diff ──
   if [[ "$TASK_TYPE" == "review" || "$INCLUDE_DIFF" == "true" ]]; then
     if [[ "$IN_GIT_REPO" != "true" ]]; then
-      echo "ERROR: task '${TASK_TYPE}' diffs against '${BASE_BRANCH}', but the current directory is not inside a git repository." >&2
+      echo "ERROR: task '${TASK_TYPE}' requires a git diff, but the current directory is not inside a git repository." >&2
       exit 1
     fi
-    if ! git rev-parse --verify --quiet "${BASE_BRANCH}^{commit}" >/dev/null 2>&1; then
+    if [[ "$STAGED_DIFF" != "true" ]] && ! git rev-parse --verify --quiet "${BASE_BRANCH}^{commit}" >/dev/null 2>&1; then
       echo "ERROR: base branch '${BASE_BRANCH}' does not resolve to a commit." >&2
       echo "       Fix: pass --base <branch>, set MULTI_AGENT_BASE_BRANCH, or run: git remote set-head origin -a" >&2
       exit 1
     fi
   fi
   if [[ "$TASK_TYPE" == "review" ]]; then
-    if git diff --quiet "${BASE_BRANCH}...HEAD" 2>/dev/null && git diff --quiet HEAD 2>/dev/null; then
+    if [[ "$STAGED_DIFF" == "true" ]]; then
+      if git diff --cached --quiet 2>/dev/null; then
+        echo "ℹ️  No staged changes to review — skipping without starting any CLI." >&2
+        exit 0
+      fi
+    elif git diff --quiet "${BASE_BRANCH}...HEAD" 2>/dev/null && git diff --quiet HEAD 2>/dev/null; then
       echo "ERROR: nothing to review — branch diff against '${BASE_BRANCH}' and working-tree changes are both empty." >&2
       exit 1
     fi
@@ -2358,6 +2728,16 @@ main() {
     echo "❌ Aborted before running any task — no report was generated." >&2
     echo "   (a report here would list the previous run's output as if it were this run's)" >&2
     exit 1
+  fi
+
+  # ── リビジョンガード: 実行後の照合 ──
+  # 基準は execute_tasks が diff を固定するのと同じ瞬間に取っている
+  # （capture_baseline_and_fix_diff）。ここはその基準との突き合わせだけを行う。
+  # レポート生成の**前**に置く。後に置くと、破棄すると宣言した実行のレポートを
+  # 先に書き出してしまい、"Done! View results" の案内先にそれが残る。
+  # git リポジトリ外・タスク未実行では基準が空のままなので、その場合は何もしない。
+  if [[ -n "$REPO_SNAPSHOT_BEFORE" ]]; then
+    verify_repo_unchanged || exit 1
   fi
 
   generate_report

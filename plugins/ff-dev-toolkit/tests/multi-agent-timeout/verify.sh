@@ -565,6 +565,7 @@ done
 cat > "$STUB/codex" <<SH
 #!/usr/bin/env bash
 touch "$TMP/invoked-codex"
+printf '%s\n' "\$@" > "$TMP/codex-argv"
 mode="\$(cat "$TMP/codex-mode")"
 case "\$mode" in
   hang)
@@ -646,6 +647,126 @@ no_other_cli_invoked() {
   done
   return 0
 }
+
+# ブランチ差分が空で作業ツリーだけに変更がある pre-commit 経路。実行ガードと
+# prompt builder のどちらか一方だけが BASE...HEAD に戻る変異を、起動 rc と実際に
+# stub CLI へ渡ったプロンプトの両方で検出する。
+WORKTREE_ONLY_REPO="$TMP/worktree-only-repo"
+git init -q "$WORKTREE_ONLY_REPO"
+git -C "$WORKTREE_ONLY_REPO" config user.email "test@example.com"
+git -C "$WORKTREE_ONLY_REPO" config user.name "multi-agent-timeout-test"
+git -C "$WORKTREE_ONLY_REPO" config commit.gpgsign false
+git -C "$WORKTREE_ONLY_REPO" switch -q -c develop
+echo base > "$WORKTREE_ONLY_REPO/app.txt"
+echo base > "$WORKTREE_ONLY_REPO/unstaged.txt"
+git -C "$WORKTREE_ONLY_REPO" add app.txt unstaged.txt
+git -C "$WORKTREE_ONLY_REPO" commit -qm "init"
+git -C "$WORKTREE_ONLY_REPO" switch -q -c feature/worktree-only
+echo worktree-only-review-marker >> "$WORKTREE_ONLY_REPO/app.txt"
+git -C "$WORKTREE_ONLY_REPO" add app.txt
+echo unstaged-only-review-marker >> "$WORKTREE_ONLY_REPO/unstaged.txt"
+echo ok > "$TMP/codex-mode"
+rm -f "$TMP/invoked-codex" "$TMP/codex-argv"
+WORKTREE_ONLY_RC=0
+( cd "$WORKTREE_ONLY_REPO" && run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    --task review --cli codex-cli --perspective code-review \
+    --base develop --timeout 10 >"$TMP/worktree-only.log" 2>&1 ) || WORKTREE_ONLY_RC=$?
+if [ "$WORKTREE_ONLY_RC" -eq 0 ] && [ -e "$TMP/invoked-codex" ]; then
+  ok "作業ツリーだけに変更がある review も空振りせず CLI を起動する"
+else
+  bad "作業ツリーだけの変更で review が起動しない (rc=${WORKTREE_ONLY_RC})"
+  sed 's/^/    | /' "$TMP/worktree-only.log" >&2
+fi
+if grep -q "worktree-only-review-marker" "$TMP/codex-argv" \
+   && grep -q "unstaged-only-review-marker" "$TMP/codex-argv"; then
+  ok "staged / unstaged の両 diff が実際のレビュープロンプトへ入る"
+else
+  bad "ガードは通ったが staged / unstaged の片方がレビュープロンプトに無い（空 diff の silent success）"
+  sed 's/^/    | /' "$TMP/codex-argv" >&2
+fi
+
+# staged は pre-commit 用の第一級 diff source。作業ツリーの unstaged 変更やブランチ差分を
+# 混ぜると「コミットしようとしている内容」以外をレビューするため、prompt 実体で分離する。
+rm -f "$TMP/invoked-codex" "$TMP/codex-argv"
+STAGED_RC=0
+( cd "$WORKTREE_ONLY_REPO" && run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    --task review --cli codex-cli --perspective code-review \
+    --staged --timeout 10 >"$TMP/staged.log" 2>&1 ) || STAGED_RC=$?
+if [ "$STAGED_RC" -eq 0 ] && [ -e "$TMP/invoked-codex" ]; then
+  ok "--staged で staged 変更に対する review が起動する"
+else
+  bad "--staged review が起動しない (rc=${STAGED_RC})"
+  sed 's/^/    | /' "$TMP/staged.log" >&2
+fi
+if grep -q "worktree-only-review-marker" "$TMP/codex-argv" \
+   && ! grep -q "unstaged-only-review-marker" "$TMP/codex-argv"; then
+  ok "--staged の prompt は index 差分だけを含み unstaged を混ぜない"
+else
+  bad "--staged の prompt が staged / unstaged の境界を守っていない"
+  sed 's/^/    | /' "$TMP/codex-argv" >&2
+fi
+
+rm -f "$TMP/invoked-codex" "$TMP/codex-argv"
+STAGED_BASE_RC=0
+( cd "$WORKTREE_ONLY_REPO" && run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    --task review --cli codex-cli --perspective code-review \
+    --staged --base develop --timeout 10 >"$TMP/staged-base.log" 2>&1 ) || STAGED_BASE_RC=$?
+if [ "$STAGED_BASE_RC" -ne 0 ] && [ ! -e "$TMP/invoked-codex" ]; then
+  ok "--staged と --base の同時指定を CLI 起動前に拒否する"
+else
+  bad "--staged と --base の同時指定が素通りした (rc=${STAGED_BASE_RC})"
+fi
+
+git -C "$WORKTREE_ONLY_REPO" restore --staged app.txt
+rm -f "$TMP/invoked-codex" "$TMP/codex-argv"
+EMPTY_STAGED_RC=0
+( cd "$WORKTREE_ONLY_REPO" && run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    --task review --cli codex-cli --perspective code-review \
+    --staged --timeout 10 >"$TMP/staged-empty.log" 2>&1 ) || EMPTY_STAGED_RC=$?
+if [ "$EMPTY_STAGED_RC" -eq 0 ] && [ ! -e "$TMP/invoked-codex" ] \
+   && grep -q "No staged changes" "$TMP/staged-empty.log"; then
+  ok "staged 変更が無いときは明示 skip + rc=0 で CLI を起動しない"
+else
+  bad "空 staged の skip 契約が崩れた (rc=${EMPTY_STAGED_RC})"
+  sed 's/^/    | /' "$TMP/staged-empty.log" >&2
+fi
+
+# 和集合の反対側も固定する。上の BASE...HEAD=空ケースだけでは、実装を git diff HEAD
+# のみにしても緑になる。コミット済み・staged・unstaged の3層を同居させ、どれかを
+# 落とす変異をプロンプト実体で検出する。
+UNION_REPO="$TMP/union-repo"
+git init -q "$UNION_REPO"
+git -C "$UNION_REPO" config user.email "test@example.com"
+git -C "$UNION_REPO" config user.name "multi-agent-timeout-test"
+git -C "$UNION_REPO" config commit.gpgsign false
+git -C "$UNION_REPO" switch -q -c develop
+echo base > "$UNION_REPO/base.txt"
+echo base > "$UNION_REPO/unstaged.txt"
+git -C "$UNION_REPO" add base.txt unstaged.txt
+git -C "$UNION_REPO" commit -qm "init"
+git -C "$UNION_REPO" switch -q -c feature/union
+echo committed-review-marker > "$UNION_REPO/committed.txt"
+git -C "$UNION_REPO" add committed.txt
+git -C "$UNION_REPO" commit -qm "committed change"
+echo staged-review-marker > "$UNION_REPO/staged.txt"
+git -C "$UNION_REPO" add staged.txt
+echo unstaged-review-marker >> "$UNION_REPO/unstaged.txt"
+rm -f "$TMP/invoked-codex" "$TMP/codex-argv"
+UNION_RC=0
+( cd "$UNION_REPO" && run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    --task review --cli codex-cli --perspective code-review \
+    --base develop --timeout 10 >"$TMP/union.log" 2>&1 ) || UNION_RC=$?
+if [ "$UNION_RC" -eq 0 ] \
+   && grep -q "committed-review-marker" "$TMP/codex-argv" \
+   && grep -q "staged-review-marker" "$TMP/codex-argv" \
+   && grep -q "unstaged-review-marker" "$TMP/codex-argv"; then
+  ok "コミット済み・staged・unstaged の和集合がレビュープロンプトへ入る"
+else
+  bad "レビュー範囲の3層和集合から差分が欠落した (rc=${UNION_RC})"
+  sed 's/^/    | /' "$TMP/union.log" >&2
+  sed 's/^/    | /' "$TMP/codex-argv" >&2
+fi
+cd "$REPO"
 
 # 対象 CLI が本当に起動したことも確認する。これが無いと「stub が一度も呼ばれて
 # いないのに他 CLI も呼ばれていないので緑」という空回りが成立する。
@@ -849,7 +970,7 @@ fi
 # --output-dir / --include-diff が落ちると、提示コマンドは失敗した実行の再試行では
 # なく別のタスクになる（--base と同じ種類の欠落）。
 echo hang > "$TMP/codex-mode"
-ALT_OUT="$TMP/alt-results"
+ALT_OUT="$REPO/alt-results"
 set +e
 run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
   --task implement --description "stub task" --include-diff \

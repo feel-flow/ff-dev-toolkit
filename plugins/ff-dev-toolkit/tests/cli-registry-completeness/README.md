@@ -34,10 +34,11 @@ lockstep で書く構造になっている。さらにレジストリの写し�
 5. **各 lookup の `case` arm 集合が `ALL_CLIS` と一致**する（消し忘れた arm の検出）
 6. `adapters/*-adapter.sh` の実ファイル集合が `ALL_CLIS` から導いた集合と一致する
 7. **観点の集合が「レジストリが名指しするもの」と「`perspectives/` に実在するもの」で一致**する
-8. `agent-config.yaml` の `agents:` / `fallback:` のキーが `ALL_CLIS` と一致する
-9. `setup-multi-agent.sh` の CLI 一覧が `ALL_CLIS` と一致する
-10. `no-hardcoded-model` の `EXPECTED_ADAPTER_COUNT` が `ALL_CLIS` の件数と一致する
-11. `ALL_CLIS` と観点ファイルがそれぞれ 1 件以上ある（検査の空振り検出）
+8. **`cost_tier != metered` の既定有効 CLI 間で、task ごとの観点集合が重複しない**
+9. `agent-config.yaml` の `agents:` / `fallback:` のキーが `ALL_CLIS` と一致する
+10. `setup-multi-agent.sh` の CLI 一覧が `ALL_CLIS` と一致する
+11. `no-hardcoded-model` の `EXPECTED_ADAPTER_COUNT` が `ALL_CLIS` の件数と一致する
+12. `ALL_CLIS` と観点ファイルがそれぞれ 1 件以上ある（検査の空振り検出）
 
 件数は本文に書かない。**この suite 自身が count-rot を防ぐためのもの**なので、ここに
 「7 つの lookup」のような数を直書きすると真っ先に腐る（初版がまさにそれで、7 と書いて
@@ -54,6 +55,7 @@ lockstep で書く構造になっている。さらにレジストリの写し�
 | 観点を review から explore へ付け替える（種別の取り違え） | 緑 | red |
 | 誰も所有しない観点ファイルを追加（`analysis.md`） | 緑（`type-design-analysis` の部分文字列として一致） | red |
 | review の arm だけ書き忘れ（3 タスクを OR で見ていた） | 緑 | red |
+| 既定有効な 2 CLI に同じ観点を割り当てる（二重課金） | 緑 | red（観点名と両 CLI を名指し） |
 
 **`grep -w` では 4 番目は直らない。** ハイフンが非単語文字なので、`type-design-analysis` の中の
 `analysis` の両側に単語境界が立つ（実測で一致する）。`<task>/<name>` の集合一致にするのが正解。

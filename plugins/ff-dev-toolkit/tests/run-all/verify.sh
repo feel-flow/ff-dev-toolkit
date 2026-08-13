@@ -13,9 +13,9 @@
 # 一覧には本 suite も含まれるが、ここで呼ぶのは常に明示引数付きの実行なので再帰しない
 # （ランナー側にも入れ子の引数なし実行を拒否する歯止めがあり、case 8 で縛っている）。
 #
-# 実装メモ（ACE-86-2）: here-string / heredoc は一時ファイルを要求し read-only 環境で
-# 失敗するため使わない。疑似 suite は静的な fixture としてコミットしてあり、mktemp も
-# 不要なので本 suite は書き込み不可の環境でも完走する。
+# 実装メモ（ACE-86-2）: here-string / heredoc は一時ファイルを要求するため使わない。
+# 疑似 suite は静的な fixture としてコミットしてあるが、登録漏れ検査だけは一時 tree を
+# 必要とする。TMPDIR が使えなければ部分検査にせず、冒頭で suite 全体を明示 skip する。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/run-all/verify.sh
 
@@ -27,6 +27,17 @@ RUNNER="$TESTS_DIR/run-all.sh"
 FIXTURES="$SCRIPT_DIR/fixtures"
 
 [ -f "$RUNNER" ] || { echo "✗ run-all.sh が見つかりません: $RUNNER" >&2; exit 1; }
+
+if _ff_tmp_probe="$(mktemp -d "${TMPDIR:-/tmp}/run-all-preflight.XXXXXX" 2>&1)"; then
+  rmdir "$_ff_tmp_probe" || {
+    echo "✗ run-all self-test: 一時領域 probe を後片付けできません: $_ff_tmp_probe" >&2
+    exit 1
+  }
+else
+  echo "○ skip: 一時ディレクトリを作成できないため run-all self-test をスキップ（検査は1件も実行されていません）"
+  printf '  mktemp: %s\n' "$_ff_tmp_probe"
+  exit 0
+fi
 
 PASS=0
 FAIL=0
@@ -375,6 +386,30 @@ if [ "$_has_roster" -eq 1 ]; then
 else
   bad "必須 suite 名簿が消えた（環境都合の skip が黙って通る）"
 fi
+# Issue #436 / #440 で判断した一時領域依存 suite の名簿を固定する。名前を 1 行ずつ
+# 照合し、コメント内の言及を実登録と誤認しない。
+_required_block="$(awk '
+  /^REQUIRED_SUITES=\(/ { inside=1; next }
+  inside && /^\)/ { exit }
+  inside { print }
+' "$_ra_src")"
+for _required_tmp_suite in \
+  setup-multi-agent-yq \
+  docs-gates-runtime \
+  adapter-model-args \
+  adapter-sandbox-contract \
+  review-wrapper-shim \
+  sweep-orphan-transcripts \
+  multi-agent-timeout \
+  ace-scripts-mirror-selftest \
+  mcp-state-selftest \
+  run-all; do
+  if printf '%s\n' "$_required_block" | awk -v target="$_required_tmp_suite" '$1 == target { found=1 } END { exit !found }'; then
+    ok "一時領域依存の必須 suite を名簿に保持: $_required_tmp_suite"
+  else
+    bad "一時領域依存の必須 suite が名簿から消えた: $_required_tmp_suite"
+  fi
+done
 # 終了条件に REQUIRED_SKIPPED が含まれること。名簿だけあって配線が無い形を弾く。
 # **エラー表示側の条件と取り違えない** — 表示だけ残して終了条件から外す変異は、
 # 「REQUIRED_SKIPPED を含む if 行」を数えるだけでは素通りする（実測）。
@@ -424,6 +459,30 @@ elif [ -z "$_swallow" ]; then
 else
   bad "mktemp の stderr を捨てる skip ゲートが再混入した:${_swallow}"
 fi
+
+# BSD mktemp のテンプレート無し呼び出しは、使えない TMPDIR からシステムの一時領域へ
+# フォールバックし得る。後段だけが一時領域を使う suite も含め、冒頭の probe が同じ
+# TMPDIR を明示していないと環境都合が本物の失敗へ化ける。コメント中の説明ではなく、
+# 実行行に指定があることを固定する。
+for _probe_spec in \
+  'setup-multi-agent-yq|ff-setup-yq.XXXXXX' \
+  'markdownlint-selftest|markdownlint-selftest.XXXXXX' \
+  'mcp-state-selftest|mcp-state-selftest.XXXXXX' \
+  'ace-refine|ace-refine-preflight.XXXXXX' \
+  'run-all|run-all-preflight.XXXXXX'; do
+  _probe_suite="${_probe_spec%%|*}"
+  _probe_template="${_probe_spec#*|}"
+  _probe_src="$TESTS_DIR/${_probe_suite}/verify.sh"
+  if awk -v needle="\${TMPDIR:-/tmp}/${_probe_template}" '
+    /^[[:space:]]*#/ { next }
+    index($0, needle) { found=1 }
+    END { exit !found }
+  ' "$_probe_src"; then
+    ok "${_probe_suite} の一時領域 probe が TMPDIR を明示している"
+  else
+    bad "${_probe_suite} の mktemp が TMPDIR を固定していない（環境都合を後段の失敗へ化かす）"
+  fi
+done
 
 echo ""
 echo "== case 12: 途中死した suite が rc=0 で pass と報告される形の再混入ガード =="

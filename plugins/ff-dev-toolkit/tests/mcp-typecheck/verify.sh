@@ -74,6 +74,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 MCP_DIR="$PLUGIN_ROOT/mcp"
+# shellcheck source=../lib/tree-state.sh
+. "$SCRIPT_DIR/../lib/tree-state.sh"
 
 # path は物理パスで持つ。tsc（node）は cwd を symlink 解決後の物理パスとして扱うため、
 # 論理パスのまま `--listFiles` の絶対パスと突き合わせると、symlink 配下に置かれた
@@ -152,7 +154,7 @@ esac
 # 失敗（走査不能・cksum 不在）は握りつぶさず非 0 で止める — 前後とも空文字なら比較は
 # 必ず一致し、事後条件が黙って空検査になるため。
 tree_state() {
-  (cd "$MCP_DIR" && find . -name node_modules -prune -o -type f -exec cksum {} + | LC_ALL=C sort)
+  ff_tree_state "$MCP_DIR" . node_modules
 }
 if ! STATE_BEFORE="$(tree_state)"; then
   echo "✗ mcp ツリーの内容ハッシュを取得できませんでした（read-only 事後条件を検査できません）" >&2

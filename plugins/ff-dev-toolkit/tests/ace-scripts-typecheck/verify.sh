@@ -9,11 +9,10 @@
 # 通らない」構造を作ったが、その強制は CI に届いていなかった（正しさを型で保つ設計が、
 # 機械が確認しない場所にしか存在しない）。
 #
-# なお、その型による強制が成立しているのは `check-category-size.ts` の
-# `BudgetExceptionTally` 側だけである。`ace-refine-report.ts` の同形 union
-# （`EntryLineMeasurementResult`）は消費側が union をそのまま受け取り実行時 throw で
-# 弾く backstop で、main のゲートを削除しても型検査は緑のまま通る（実測）。
-# ace-refine-report.ts 自身の JSDoc がそう自己申告している。
+# Issue #363 で refine 側も `MeasurementSweep` の判別 union にし、未閉フェンスの
+# 終了ゲートを削除すると `byFile` を取り出せず型検査が落ちる構造へ揃えた。
+# `findOverBudgetEntries` の実行時 throw は、export 関数を直接呼ぶ経路の backstop として
+# 別に維持する。広い compiler flag の段階導入は本ゲートの責務外である。
 #
 # ---- 設計判断 1: tsconfig の置き場所 ---------------------------------------
 # 本 suite のディレクトリに置く（`tests/ace-scripts-typecheck/tsconfig.json`）。

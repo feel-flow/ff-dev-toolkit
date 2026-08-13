@@ -9,6 +9,7 @@
 #   (1) 実行層 — 同一 CLI のタスクは 1 本のワーカーで逐次実行（CLI 間は並列のまま）
 #   (2) プラン層 — free-tier CLI に複数観点が乗る形をプラン表示で名指しで警告
 # 本 suite は (1) を stub CLI の start/end ログの非交差で、(2) を dry-run 出力で固定する。
+# standard tier の並列維持は期限付きバリアと逐次化変異で固定する（詳細は README.md）。
 #
 # 実 CLI は 1 つも起動しない（全 CLI を stub で覆う）。書き込み不可の環境では skip。
 
@@ -17,6 +18,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
+CODEX_BARRIER_TIMEOUT_SECONDS=10
+CODEX_BARRIER_PARTIES=2
 
 [ -f "$MULTI_AGENT" ] || {
   echo "✗ 対象ファイルが見つかりません: $MULTI_AGENT" >&2
@@ -106,14 +109,68 @@ chmod +x "$STUB/gemini"
 # サンドボックス適用イベントの実在を fail-closed で要求するため、素朴な stub では
 # 完走できない（adapter-model-args suite 参照）。本 suite の主題は gemini の逐次化で、
 # grok の起動経路は検査対象外。
-# codex（standard tier）にも start/end ログを持たせる — 「逐次化は free-tier
-# **限定**で、standard はタスク並列のまま」という設計判断を固定するため。
-# 一律逐次化への退行が入ると、codex の 2 タスクが交差しなくなりここが赤くなる。
+#
+# ただし「置かない = 未インストール」が成り立つのは、**起動 PATH に実行環境の PATH を
+# 混ぜない**場合だけ。混ぜるとホストに grok が入っているかどうかで結果が変わる
+# （Issue #435。実測でどちらに転んでも期待の 1 件が成立しなかった）。
+# そこでホストを模した grok を用意し、**この suite 自身の PATH には載せる**。
+# 起動側が PATH を絞れていれば一度も呼ばれない。`$STUB:$PATH` へ戻す退行が入ると
+# ここが呼ばれて起動ログが残り、ホストに grok が無い環境でも赤くなる。
+HOSTMOCK="$TMP/host-bin"
+mkdir -p "$HOSTMOCK"
+HOSTMOCK_LOG="$TMP/hostmock-invocations.log"
+: > "$HOSTMOCK_LOG"
+cat > "$HOSTMOCK/grok" <<SH
+#!/usr/bin/env bash
+echo "invoked \$\$" >> "$HOSTMOCK_LOG"
+echo "## Findings"
+echo "- Suggestion: host-mock grok (should never run)"
+SH
+chmod +x "$HOSTMOCK/grok"
+export PATH="$HOSTMOCK:$PATH"
+# codex（standard tier）は 2-party の期限付きバリアで互いの開始を待つ。
+# 並列なら両者が通過し、standard まで逐次化すると先行タスクが期限切れになる。
+# 時間窓内の start/end 交差ではなく、相手の開始という事象を期限内で待つため、短い
+# 滞留窓より大きな spawn スキューを許容する。期限は壊れた実装で suite を hang させない
+# 安全弁である（Issue #415）。
 CODEX_LOG="$TMP/codex-events.log"
+CODEX_BARRIER="$TMP/codex-barrier"
+CODEX_BARRIER_TIMEOUT_LOG="$TMP/codex-barrier-timeouts.log"
+reset_codex_barrier() {
+  rm -rf "$CODEX_BARRIER"
+  mkdir -p "$CODEX_BARRIER"
+  : > "$CODEX_LOG"
+  : > "$CODEX_BARRIER_TIMEOUT_LOG"
+}
+count_codex_barrier_timeouts() {
+  local count grep_rc
+  count="$(/usr/bin/grep -c '^timeout ' "$CODEX_BARRIER_TIMEOUT_LOG")" && grep_rc=0 || grep_rc=$?
+  case "$grep_rc" in
+    0) printf '%s\n' "$count" ;;
+    1) printf '0\n' ;;
+    *) return "$grep_rc" ;;
+  esac
+}
 cat > "$STUB/codex" <<SH
 #!/usr/bin/env bash
 echo "start \$\$" >> "$CODEX_LOG"
-sleep 0.6
+: > "$CODEX_BARRIER/ready.\$\$" || {
+  echo "stub: codex barrier marker could not be created" >&2
+  exit 1
+}
+deadline=\$((SECONDS + $CODEX_BARRIER_TIMEOUT_SECONDS))
+while :; do
+  ready=\$(find "$CODEX_BARRIER" -maxdepth 1 -type f -name 'ready.*' | wc -l | tr -d ' ')
+  if [ "\$ready" -ge "$CODEX_BARRIER_PARTIES" ]; then
+    break
+  fi
+  if [ "\$SECONDS" -ge "\$deadline" ]; then
+    echo "timeout \$\$" >> "$CODEX_BARRIER_TIMEOUT_LOG"
+    echo "stub: codex barrier timed out after ${CODEX_BARRIER_TIMEOUT_SECONDS}s (ready=\${ready}/${CODEX_BARRIER_PARTIES})" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
 echo "end \$\$" >> "$CODEX_LOG"
 echo "## Findings"
 echo "- Suggestion: stub review"
@@ -131,7 +188,7 @@ done
 echo "== プラン層: free-tier 集中の警告（Issue #251） =="
 
 set +e
-PLAN_OUT="$(run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+PLAN_OUT="$(run_isolated PATH="$STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
   --task review --mode distributed --strategy minimize_cost --base develop --dry-run 2>&1)"
 PLAN_RC=$?
 set -e
@@ -139,6 +196,19 @@ if [[ $PLAN_RC -ne 0 ]]; then
   bad "dry-run が非 0 終了した (rc=$PLAN_RC)"
   printf '%s\n' "$PLAN_OUT" | tail -10 | sed 's/^/    | /' >&2
 fi
+
+# プラン層でも grok が未インストール扱いになっていること。**実行層の検査だけでは
+# ここは守れない** — dry-run は CLI を起動しないのでホスト模擬 grok のログが残らず、
+# 下の観点数の検査も `>= 2` なので集中数が 5 → 4 に変わっても通る。つまり dry-run の
+# PATH だけを実行環境まかせに戻す部分退行は、他の全検査を素通りする（実測で 13 件
+# すべて緑のまま通過した）。プラン層にも実行層と同じ強度の前提検査を置く。
+case "$PLAN_OUT" in
+  *"grok-cli (grok) — not installed"*)
+    ok "プラン層でも grok が未インストール扱い（dry-run 側の PATH 制限が効いている）" ;;
+  *)
+    bad "プラン層で grok が未インストール扱いになっていない（dry-run 側の PATH に実行環境の PATH が混ざっている）"
+    printf '%s\n' "$PLAN_OUT" | /usr/bin/grep -E 'grok' | head -3 | sed 's/^/    | /' >&2 ;;
+esac
 
 # 前提の確認: minimize_cost で gemini-cli に 2 観点以上が乗っていること。
 # プラン形が変わって集中自体が消えたら、警告の検査は空振りになるので名指しで止める。
@@ -166,9 +236,10 @@ esac
 echo "== 実行層: 同一 CLI 内の逐次化 =="
 
 : > "$GEMINI_LOG"
+reset_codex_barrier
 rm -rf "$REPO/.review-results"
 set +e
-run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+run_isolated PATH="$STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
   --task review --mode distributed --strategy minimize_cost --base develop --timeout 60 \
   >"$TMP/run.log" 2>&1
 RUN_RC=$?
@@ -202,37 +273,89 @@ else
   sed 's/^/    | /' "$GEMINI_LOG" >&2
 fi
 
-# tier 限定の対称検査: codex（standard）の 2 タスクは並列のまま = 交差が**ある**こと。
-# 0.6 秒の滞留窓に対して spawn スキューはミリ秒オーダーなので、並列なら交差する。
-#
-# この前提は外部負荷に弱い。spawn スキューが滞留窓（0.6 秒）を超えると、並列に
-# 起動していても交差が記録されず「並列が維持されていない」と**偽陽性**で赤くなる
-# （実装は正しいのにこの検査だけが鳴る）。
-# 実測: CPU を全コアの 2 倍に過負荷にしても再現しなかった（11 件 pass）。別の
-# エージェントや AI CLI を多数同時に走らせている環境で本 suite が赤くなった実績が
-# あるが、11 件のどれが落ちたかは記録が残っていない（Issue #411）。
-# **この検査が赤くなったら、まず実行環境の負荷を疑うこと** — オーケストレータの
-# 逐次化ロジックを触る前に、単独実行で再現するかを確かめる。
-# 滞留窓を広げれば頑健になる。**止めている理由は実行時間ではない** — 2 つの stub を
-# 0.6 → 0.9 秒にして実測したが、スイート全体の所要は変わらなかった（0.9 秒版
-# 27.2 / 27.3 秒、0.6 秒版 27.5 秒。ただし 0.6 秒版が 40.1 秒かかった回もあり、実行ごとの
-# ばらつきのほうが効果より大きい）。理由は**検出力**のほうで、窓を広げると本物の
-# 逐次化退行もその中で交差して見えるようになる。決定的な作りへの変更は #415。
+# tier 限定の対称検査: codex（standard）の 2 タスクは並列のまま = 両方が期限付き
+# バリアを通過し、start/start/end/end の交差が記録されること。
 CODEX_STARTS="$(/usr/bin/grep -c '^start ' "$CODEX_LOG")" || CODEX_STARTS=0
-if [[ "$CODEX_STARTS" -ge 2 ]]; then
-  ok "前提: codex（standard）に ${CODEX_STARTS} タスク（並列維持の検査対象）"
-  if awk '
-    /^start / { if (open) { bad = 1 }; open = 1; next }
-    /^end /   { if (!open) { bad = 1 }; open = 0; next }
-    END { exit (bad || open) ? 1 : 0 }
-  ' "$CODEX_LOG"; then
-    bad "standard tier まで逐次化されている（codex の start/end が交差しない — 一律逐次化への退行。既定 pair モードの実行時間が観点数倍になる）"
-    sed 's/^/    | /' "$CODEX_LOG" >&2
+if [[ "$CODEX_STARTS" -eq "$CODEX_BARRIER_PARTIES" ]]; then
+  ok "前提: codex（standard）に ${CODEX_STARTS} タスク（${CODEX_BARRIER_PARTIES}-party バリアの検査対象）"
+  if CODEX_TIMEOUTS="$(count_codex_barrier_timeouts)"; then
+    if [[ "$CODEX_TIMEOUTS" -eq 0 ]]; then
+      ok "standard tier の全タスクが期限付きバリアを通過（${CODEX_BARRIER_TIMEOUT_SECONDS} 秒までの spawn スキューを許容）"
+    else
+      bad "standard tier のバリアが ${CODEX_TIMEOUTS} 件期限切れ"
+      sed 's/^/    | /' "$CODEX_BARRIER_TIMEOUT_LOG" >&2
+    fi
+    if [[ "$CODEX_TIMEOUTS" -eq 0 ]]; then
+      if awk '
+        /^start / { if (open) { bad = 1 }; open = 1; next }
+        /^end /   { if (!open) { bad = 1 }; open = 0; next }
+        END { exit (bad || open) ? 1 : 0 }
+      ' "$CODEX_LOG"; then
+        bad "standard tier まで逐次化されている（codex の start/end が交差しない — 一律逐次化への退行。既定 pair モードの実行時間が観点数倍になる）"
+        sed 's/^/    | /' "$CODEX_LOG" >&2
+      else
+        ok "standard tier はタスク並列のまま（codex の start/end が交差 = tier 限定が効いている）"
+      fi
+    fi
   else
-    ok "standard tier はタスク並列のまま（codex の start/end が交差 = tier 限定が効いている）"
+    bad "codex バリア期限切れログを読み取れない"
   fi
 else
-  bad "前提が崩れた: codex のタスク数が ${CODEX_STARTS}（プラン形の変更を確認して本 suite を追随させること）"
+  bad "前提が崩れた: codex のタスク数が ${CODEX_STARTS}（期待 ${CODEX_BARRIER_PARTIES}。プラン形の変更を確認して本 suite を追随させること）"
+fi
+
+echo
+echo "== standard tier 逐次化変異の検出力 =="
+
+# 実 orchestrator を一時コピーし、free-tier 専用 worker の条件へ standard を加える。
+# 先行 codex stub は相手を起動できず期限切れになるため、時間窓を調整しても生き残らない。
+MUTATED_PLUGIN="$TMP/mutated-plugin"
+mkdir -p "$MUTATED_PLUGIN"
+cp -R "$PLUGIN_ROOT/scripts" "$MUTATED_PLUGIN/scripts"
+MUTATED_MULTI_AGENT="$MUTATED_PLUGIN/scripts/multi-agent.sh"
+# shellcheck disable=SC2016 # copied script で評価させる literal なのでこの shell では展開しない
+MUTATION_MATCH='      if [[ "$(get_cli_cost_tier "$group_cli")" == "free-tier" ]]; then'
+# shellcheck disable=SC2016 # 同上
+MUTATION_REPLACEMENT='      if [[ "$(get_cli_cost_tier "$group_cli")" == "free-tier" || "$(get_cli_cost_tier "$group_cli")" == "standard" ]]; then'
+MUTATION_MATCHES="$(awk -v target="$MUTATION_MATCH" '$0 == target { count++ } END { print count + 0 }' "$MUTATED_MULTI_AGENT")"
+MUTATION_APPLIED=0
+if [[ "$MUTATION_MATCHES" -eq 1 ]]; then
+  awk -v target="$MUTATION_MATCH" -v replacement="$MUTATION_REPLACEMENT" \
+    '{ if ($0 == target) $0 = replacement; print }' "$MUTATED_MULTI_AGENT" \
+    > "$MUTATED_MULTI_AGENT.tmp"
+  mv "$MUTATED_MULTI_AGENT.tmp" "$MUTATED_MULTI_AGENT"
+  chmod +x "$MUTATED_MULTI_AGENT"
+  MUTATION_APPLIED=1
+  ok "逐次化変異が tier 条件へ 1 回だけ適用された"
+else
+  bad "逐次化変異の対象行が ${MUTATION_MATCHES} 件（期待 1 件。orchestrator の tier 条件へ追随すること）"
+fi
+
+if [[ "$MUTATION_APPLIED" -eq 1 ]]; then
+  reset_codex_barrier
+  rm -rf "$REPO/.review-results"
+  set +e
+  run_isolated PATH="$STUB:/usr/bin:/bin" bash "$MUTATED_MULTI_AGENT" \
+    --task review --mode distributed --strategy minimize_cost --base develop --timeout 60 \
+    >"$TMP/mutated-run.log" 2>&1
+  MUTATED_RUN_RC=$?
+  set -e
+  if [[ "$MUTATED_RUN_RC" -ne 0 ]]; then
+    ok "standard tier 逐次化変異が非 0 終了"
+  else
+    bad "standard tier 逐次化変異が生き残った（rc=0）"
+    tail -15 "$TMP/mutated-run.log" | sed 's/^/    | /' >&2
+  fi
+  if MUTATED_TIMEOUTS="$(count_codex_barrier_timeouts)"; then
+    if [[ "$MUTATED_TIMEOUTS" -ge 1 ]]; then
+      ok "逐次化変異を codex バリアの期限切れで検出"
+    else
+      bad "逐次化変異で codex バリア期限切れが記録されていない"
+      tail -15 "$TMP/mutated-run.log" | sed 's/^/    | /' >&2
+    fi
+  else
+    bad "逐次化変異の codex バリア期限切れログを読み取れない"
+  fi
 fi
 
 echo "== 途中失敗後の継続と失敗の名指し =="
@@ -240,11 +363,12 @@ echo "== 途中失敗後の継続と失敗の名指し =="
 # 2 回目の gemini タスクだけ失敗させる。逐次ワーカーはタスク失敗で止まらず
 # 残りを実行し、失敗は 1 件として名指しされ、全体 rc は非 0 になること。
 : > "$GEMINI_LOG"
+reset_codex_barrier
 rm -f "$TMP/gemini-count"
 echo 2 > "$TMP/gemini-fail-nth"
 rm -rf "$REPO/.review-results"
 set +e
-run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+run_isolated PATH="$STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
   --task review --mode distributed --strategy minimize_cost --base develop --timeout 60 \
   >"$TMP/run2.log" 2>&1
 RUN2_RC=$?
@@ -261,12 +385,55 @@ if [[ "$GEMINI_STARTS2" -ge 3 ]]; then
 else
   bad "失敗タスクの後続が実行されていない（gemini 起動 ${GEMINI_STARTS2} 回）"
 fi
-FAILED_LINES="$(/usr/bin/grep -c '❌' "$TMP/run2.log")" || FAILED_LINES=0
+# `❌` はタスク失敗とプラン構築時の通知の両方に使われる。素のまま数えると
+# 「CLI が未インストール」通知が混ざり、しかもそれが出るかはホストにその CLI が
+# 入っているかで変わるため、検査が実機依存になる（実測: grok 導入済みなら
+# `❌ Failed: grok-cli/...`、未導入なら `❌ grok-cli (grok) — not installed` が出て
+# **どちらでも 2 件**になり、期待の 1 件が成立しない）。上の PATH 制限で未インストール
+# 側に固定したうえで、計数からその 1 行だけを除く。
+#
+# **許可リスト（`❌ Failed:` だけ数える）にはしない。** orchestrator はタスク失敗を
+# 5 通りの文言で報告する — Failed / Timed out after / No output file /
+# Worker died before recording a status / Corrupt-empty status file。1 形だけを数えると
+# 残り 4 形が無検査になり、gemini 以外のタスクが timeout しても本数 1 のまま通る。
+# 除外側を「プラン時の通知」1 種に限る形なら、将来 orchestrator が新しい失敗文言を
+# 足しても自動的に数えられる（増えた分は本数超過として赤くなる = fail-closed）。
+FAILED_LINES="$(/usr/bin/grep '❌' "$TMP/run2.log" | /usr/bin/grep -vc -- '— not installed')" || FAILED_LINES=0
 if [[ "$FAILED_LINES" -eq 1 ]] && /usr/bin/grep -q '❌.*gemini-cli/' "$TMP/run2.log"; then
   ok "失敗が 1 件だけ・gemini のタスク名で名指しされる"
 else
-  bad "失敗の名指しが期待と違う（❌ 行 ${FAILED_LINES} 件）"
+  bad "失敗の名指しが期待と違う（未インストール通知を除く ❌ 行 ${FAILED_LINES} 件）"
   /usr/bin/grep '❌' "$TMP/run2.log" | sed 's/^/    | /' >&2
+fi
+
+# orchestrator 自身が数えた件数でも裏を取る。上の ❌ 計数は行の**書式**に依存する
+# （除外パターンが文言変更で外れると計数が狂う）が、集約行は orchestrator の
+# 内部カウンタという単一の情報源なので、書式の変更と件数の変化を切り分けられる。
+if /usr/bin/grep -qE '^⚠️ +1 review task\(s\) failed\.' "$TMP/run2.log"; then
+  ok "orchestrator の集約も失敗 1 件と報告する（❌ 計数の裏取り）"
+else
+  bad "orchestrator の集約が失敗 1 件と報告していない"
+  /usr/bin/grep -E 'task\(s\) failed' "$TMP/run2.log" | head -2 | sed 's/^/    | /' >&2
+fi
+
+echo
+echo "== 実行環境の PATH からの独立 =="
+# 上の全実行が PATH を絞れていれば、ホスト模擬 grok は一度も呼ばれない。
+# `$STUB:$PATH` へ戻す退行が入るとここに起動記録が残る — ホストに grok が無い
+# 環境でも赤くなるので、この検査は実機の導入状況に依存しない。
+HOSTMOCK_CALLS="$(/usr/bin/grep -c '^invoked ' "$HOSTMOCK_LOG")" || HOSTMOCK_CALLS=0
+if [[ "$HOSTMOCK_CALLS" -eq 0 ]]; then
+  ok "ホスト模擬 grok が一度も起動されない（起動 PATH に実行環境の PATH が混ざっていない）"
+else
+  bad "ホスト模擬 grok が ${HOSTMOCK_CALLS} 回起動された — 起動 PATH に実行環境の PATH が混ざっている（\$STUB:\$PATH への退行）"
+fi
+# 未インストール扱いが実際に成立していることも確かめる。上の検査だけだと、grok が
+# そもそもプランに現れない形（観点の割り当てが変わる等）でも緑になるため。
+if /usr/bin/grep -q 'grok-cli (grok) — not installed' "$TMP/run2.log"; then
+  ok "grok が未インストールとして扱われている（前提が実際に作られている）"
+else
+  bad "grok の未インストール通知が無い — 前提が成立していない可能性がある"
+  /usr/bin/grep -E 'grok' "$TMP/run2.log" | head -3 | sed 's/^/    | /' >&2
 fi
 
 echo

@@ -31,6 +31,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MCP_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)/mcp"
 DIST="$MCP_DIR/dist/index.js"
+# shellcheck source=../lib/tree-state.sh
+. "$SCRIPT_DIR/../lib/tree-state.sh"
 
 if [[ ! -d "$MCP_DIR/node_modules" ]]; then
   echo "○ skip: $MCP_DIR/node_modules が無いためスキップ（本 suite の検査は1件も実行されていません。cd mcp && npm install で有効化）"
@@ -95,12 +97,7 @@ FAIL=0
 # させない。検出対象は suite 自身による偶発的書き込み（非敵対モデル）— ファイル
 # モードの変更と symlink の張り替え先は対象外。
 dist_state() {
-  (
-    set -o pipefail
-    cd "$MCP_DIR" &&
-      find dist | LC_ALL=C sort &&
-      find dist -type f -exec cksum {} + | LC_ALL=C sort
-  )
+  ff_tree_state "$MCP_DIR" dist
 }
 if ! STATE_BEFORE="$(dist_state)"; then
   echo "✗ dist/ の内容ハッシュを取得できませんでした（read-only 事後条件を検査できません）" >&2

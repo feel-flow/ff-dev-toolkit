@@ -7,6 +7,7 @@
 # Options:
 #   --changed-files <files>   Comma-separated list of changed files
 #   --base <branch>           Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop)
+#   --staged                  Review only staged changes (mutually exclusive with --base)
 #   --timeout <seconds>       Timeout in seconds (default: 900; the orchestrator always passes this explicitly)
 #   --task-type <type>        review | explore | implement (default: review)
 #   --description <text>      Task description (for explore/implement)
@@ -56,6 +57,10 @@ fi
 # ── Task-type specific flags ──
 
 get_allowed_tools() {
+  if [[ "${TASK_TYPE:-review}" == "implement" && "${INLINE_OUTPUT:-false}" == "true" ]]; then
+    echo 'Read,Grep,Glob,Bash(git diff*)'
+    return
+  fi
   case "${TASK_TYPE:-review}" in
     review)    echo 'Read,Grep,Glob,Bash(git diff*)' ;;
     explore)   echo 'Read,Grep,Glob,Bash(git*),Bash(find*),Bash(ls*)' ;;

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# ace-scripts-vitest: docs-template/scripts/ace の vitest スイートを run-all.sh へ配線する。
+# ace-scripts-vitest: docs-template と本体 mirror の ace vitest スイートを run-all.sh へ配線する。
 #
 # 背景 (Issue #223): ace スクリプト群（check-category-size / ace-reuse-report /
 # sync-playbook-frontmatter / shell-hooks / ace-refine-report）の vitest は
@@ -17,11 +17,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPOSITORY_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 MCP_DIR="$PLUGIN_ROOT/mcp"
 ACE_SCRIPTS_DIR="$PLUGIN_ROOT/docs-template/scripts/ace"
+ACE_SCRIPTS_MIRROR_DIR="$REPOSITORY_ROOT/scripts/ace"
 
 [ -d "$ACE_SCRIPTS_DIR" ] || {
   echo "✗ ace スクリプトディレクトリが見つかりません: $ACE_SCRIPTS_DIR" >&2
+  exit 1
+}
+[ -d "$ACE_SCRIPTS_MIRROR_DIR" ] || {
+  echo "✗ ace スクリプトの本体 mirror が見つかりません: $ACE_SCRIPTS_MIRROR_DIR" >&2
   exit 1
 }
 
@@ -49,27 +55,37 @@ else
 fi
 rm -rf "$PROBE_DIR"
 
-# 出力は丸ごと受けてから判定する（vitest の exit code に加えて、成功サマリー行の
-# 実在も確認する fail-closed。exit 0 + 0 tests のような縮退を green にしない）。
-set +e
-OUTPUT="$(cd "$MCP_DIR" && ./node_modules/.bin/vitest run --dir "$ACE_SCRIPTS_DIR" 2>&1)"
-RC=$?
-set -e
+run_vitest_dir() {
+  local label="$1"
+  local target_dir="$2"
+  local output rc summary
 
-SUMMARY="$(printf '%s\n' "$OUTPUT" | grep -E '^[[:space:]]*Tests[[:space:]]' || true)"
+  # 出力は丸ごと受けてから判定する（vitest の exit code に加えて、成功サマリー行の
+  # 実在も確認する fail-closed。exit 0 + 0 tests のような縮退を green にしない）。
+  if output="$(cd "$MCP_DIR" && ./node_modules/.bin/vitest run --dir "$target_dir" 2>&1)"; then
+    rc=0
+  else
+    rc=$?
+  fi
 
-if [[ $RC -ne 0 ]]; then
-  printf '%s\n' "$OUTPUT"
-  echo "✗ ace-scripts vitest が失敗しました（rc=${RC}）" >&2
-  exit 1
-fi
-# 判定はシェル内の文字列マッチで行い、パイプを使わない（`printf | grep -q` は
-# grep の早期終了で printf が SIGPIPE 死し、pipefail の下で判定が反転する）。
-if [[ -z "$SUMMARY" || "$SUMMARY" != *passed* ]]; then
-  printf '%s\n' "$OUTPUT"
-  echo "✗ vitest は exit 0 だが成功サマリー（Tests ... passed）を確認できません" >&2
-  exit 1
-fi
+  summary="$(printf '%s\n' "$output" | grep -E '^[[:space:]]*Tests[[:space:]]' || true)"
 
-printf '%s\n' "$SUMMARY" | sed 's/^[[:space:]]*/  ✓ /'
-echo "✓ ace-scripts vitest: pass"
+  if [[ $rc -ne 0 ]]; then
+    printf '%s\n' "$output"
+    echo "✗ ace-scripts vitest が失敗しました（配置=${label}, rc=${rc}）" >&2
+    return 1
+  fi
+  # 判定はシェル内の文字列マッチで行い、パイプを使わない（`printf | grep -q` は
+  # grep の早期終了で printf が SIGPIPE 死し、pipefail の下で判定が反転する）。
+  if [[ -z "$summary" || "$summary" != *passed* ]]; then
+    printf '%s\n' "$output"
+    echo "✗ vitest は exit 0 だが成功サマリーを確認できません（配置=${label}）" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$summary" | sed "s/^[[:space:]]*/  ✓ ${label}: /"
+}
+
+run_vitest_dir "docs-template" "$ACE_SCRIPTS_DIR"
+run_vitest_dir "repository mirror" "$ACE_SCRIPTS_MIRROR_DIR"
+echo "✓ ace-scripts vitest: 両配置 pass"

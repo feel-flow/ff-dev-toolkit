@@ -151,7 +151,7 @@ assert_file_changed() { # <label> <file>
 
 reset_fixture() {
   rm -rf "$TMP/plugin"
-  mkdir -p "$TMP/plugin/mcp" "$TMP/plugin/tests/mcp-typecheck"
+  mkdir -p "$TMP/plugin/mcp" "$TMP/plugin/tests/mcp-typecheck" "$TMP/plugin/tests/lib"
   # node_modules は symlink で借りる（コピーすると数百 MB になる）。tsc は既定で
   # symlink を解決するので、型定義の解決先は実物と同じになる。
   ln -s "$MCP_DIR/node_modules" "$TMP/plugin/mcp/node_modules"
@@ -166,6 +166,7 @@ reset_fixture() {
       cp "$MCP_DIR/$rel" "$FIXTURE_MCP/$rel"
     done
   cp "$SOURCE_VERIFY" "$TMP/plugin/tests/mcp-typecheck/verify.sh"
+  cp "$SCRIPT_DIR/../lib/tree-state.sh" "$TMP/plugin/tests/lib/tree-state.sh"
   FIXTURE_VERIFY="$TMP/plugin/tests/mcp-typecheck/verify.sh"
   FIXTURE_PKG="$FIXTURE_MCP/package.json"
   FIXTURE_TSCONFIG="$FIXTURE_MCP/tsconfig.json"

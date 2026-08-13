@@ -7,6 +7,7 @@
 # Options:
 #   --changed-files <files>   Comma-separated list of changed files
 #   --base <branch>           Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop)
+#   --staged                  Review only staged changes (mutually exclusive with --base)
 #   --timeout <seconds>       Timeout in seconds (default: 900; the orchestrator always passes this explicitly)
 #   --task-type <type>        review | explore | implement (default: review)
 #   --description <text>      Task description (for explore/implement)
@@ -92,13 +93,17 @@ fi
 # The network default is not left to chance: implement also pins
 # `-c sandbox_workspace_write.network_access=false` (see sandbox_config_args).
 get_sandbox_mode() {
+  if [[ "${TASK_TYPE:-review}" == "implement" && "${INLINE_OUTPUT:-false}" == "true" ]]; then
+    echo "read-only"
+    return
+  fi
   case "${TASK_TYPE:-review}" in
     review)    echo "read-only" ;;
     explore)   echo "read-only" ;;
     # implement has to write its staging output, so it gets the mode that allows
     # CWD writes rather than a mode that denies them (or one that also opens the
-    # network). The kernel enforces "not outside the CWD"; "not outside staging"
-    # is only a promise made in the prompt — same gap as grok's, see Issue #398.
+    # network). multi-agent.sh fixes that CWD to REPO_ROOT and rejects output dirs
+    # outside it before launch. Staging-only narrowing remains a prompt contract.
     implement) echo "workspace-write" ;;
     *)         echo "read-only" ;;
   esac
@@ -178,6 +183,19 @@ if [[ -n "${MULTI_AGENT_MODEL_CODEX_CLI:-}" && -n "${MULTI_AGENT_CODEX_PROFILE:-
     "MULTI_AGENT_MODEL_CODEX_CLI と MULTI_AGENT_CODEX_PROFILE は同時に指定できません（-m のモデルがプロファイルのモデルを上書きし、reasoning effort だけプロファイル由来という不整合な組み合わせになります）。どちらか一方にしてください。"
 fi
 
+# reasoning effort はモデルやプロファイルを作らず単発指定できる。Codex が受ける
+# 設定 enum を adapter 側でも検証し、typo を base config への黙った fallback に
+# しない。profile との併用は許可し、後段の -c が profile の値を明示上書きする。
+if [[ "${MULTI_AGENT_CODEX_REASONING_EFFORT+x}" == "x" ]]; then
+  case "${MULTI_AGENT_CODEX_REASONING_EFFORT:-}" in
+    none|minimal|low|medium|high|xhigh|max|ultra) ;;
+    *)
+      fail_orchestrator_error "$perspective_name" \
+        "MULTI_AGENT_CODEX_REASONING_EFFORT=${MULTI_AGENT_CODEX_REASONING_EFFORT:-} は不正です。none / minimal / low / medium / high / xhigh / max / ultra のいずれかを指定してください。"
+      ;;
+  esac
+fi
+
 # codex は**存在しないプロファイル名を黙って無視し、base config のまま完走する**
 # （0.144.5 で実測）。名前を打ち間違えると「専用プロファイルでレビューさせたつもり」
 # のまま既定設定で走り、成果物からもログからも判別できない。ラッパー側で存在を
@@ -197,7 +215,17 @@ add_model_arg -m MULTI_AGENT_MODEL_CODEX_CLI \
   || fail_orchestrator_error "$perspective_name" "add_model_arg の呼び出しが不正です（アダプタ側のバグ）。"
 add_model_arg -p MULTI_AGENT_CODEX_PROFILE \
   || fail_orchestrator_error "$perspective_name" "add_model_arg の呼び出しが不正です（アダプタ側のバグ）。"
+if [[ -n "${MULTI_AGENT_CODEX_REASONING_EFFORT:-}" ]]; then
+  MODEL_ARGS+=(-c "model_reasoning_effort=${MULTI_AGENT_CODEX_REASONING_EFFORT}")
+fi
 echo_model_args
+if [[ -n "${MULTI_AGENT_CODEX_REASONING_EFFORT:-}" ]]; then
+  if [[ -n "${MULTI_AGENT_CODEX_PROFILE:-}" ]]; then
+    echo "   Reasoning effort: ${MULTI_AGENT_CODEX_REASONING_EFFORT} (explicit -c override; profile value is overridden)" >&2
+  else
+    echo "   Reasoning effort: ${MULTI_AGENT_CODEX_REASONING_EFFORT} (explicit -c override)" >&2
+  fi
+fi
 
 # MODEL_ARGS は空になりうる。bash 3.2 では set -u 下で空配列を "${a[@]}" と
 # 展開すると unbound variable で落ちるため ${a[@]+"${a[@]}"} を使う。

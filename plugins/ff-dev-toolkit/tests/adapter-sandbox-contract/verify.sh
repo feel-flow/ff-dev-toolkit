@@ -281,7 +281,7 @@ build_isolate_env MULTI_AGENT_MODEL_CLAUDE_CODE "$ADAPTERS_DIR"/*.sh
 
 mkdir -p "$WORK/argv" "$WORK/grok-home-empty" "$WORK/staging" "$WORK/codex"
 
-# run_adapter <cli> <task-type>
+# run_adapter <cli> <task-type> [staging|inline]
 # argv を "$WORK/argv" 以下に記録する。アダプタの終了コードは見ない — grok は
 # stub 実行ではサンドボックス適用の肯定確認に失敗して非 0 で終わるが、argv は
 # 起動時に記録済みであり、本 suite が見たいのは「何を渡したか」だけ。
@@ -290,16 +290,22 @@ ARGC=0
 LAUNCHES=0
 BINARY=""
 run_adapter() {
-  local cli="$1" task="$2" adapter raw
+  local cli="$1" task="$2" output_mode="${3:-staging}" adapter raw
+  local output_args=()
   adapter="$(adapter_file "$cli")"
   rm -f "$WORK/argv"/arg.* "$WORK/argv/count" "$WORK/argv/launches" \
         "$WORK/argv/binary" 2>/dev/null || true
+  if [ "$task" = "implement" ] && [ "$output_mode" = "inline" ]; then
+    output_args+=(--inline-output)
+  else
+    output_args+=(--staging-dir "$WORK/staging")
+  fi
   run_isolated \
     PATH="$WORK/bin:$PATH" ARGV_DIR="$WORK/argv" CODEX_HOME="$WORK/codex" \
     GROK_HOME="$WORK/grok-home-empty" \
     bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$WORK/out.md" \
     --base HEAD --timeout 30 --task-type "$task" \
-    --staging-dir "$WORK/staging" \
+    "${output_args[@]}" \
     --description "stub task" >"$WORK/stdout.log" 2>"$WORK/stderr.log" || true
 
   # ここを `[ -f X ] && ARGC=...` の形で書くと、ファイル不在時に**関数が rc=1 を
@@ -326,6 +332,26 @@ run_adapter() {
 }
 
 arg_at() { cat "$WORK/argv/arg.$1" 2>/dev/null || true; }
+
+argv_has() {
+  local want="$1" i=0
+  while [ "$i" -lt "$ARGC" ]; do
+    [ "$(arg_at "$i")" = "$want" ] && return 0
+    i=$((i + 1))
+  done
+  return 1
+}
+
+argv_has_pair() {
+  local first="$1" second="$2" i=0
+  while [ "$i" -lt "$ARGC" ]; do
+    if [ "$(arg_at "$i")" = "$first" ] && [ "$(arg_at "$((i + 1))")" = "$second" ]; then
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
 
 # scan_sandbox — argv 中の sandbox フラグを**全件**走査する。
 #
@@ -560,6 +586,54 @@ expect_sandbox grok-cli implement workspace
 expect_sandbox gemini-cli review    boolean
 expect_sandbox gemini-cli explore   boolean
 expect_sandbox gemini-cli implement none
+
+echo "-- inline-output: implement を read-only 相当へ狭める --"
+
+run_adapter codex-cli implement inline
+scan_sandbox
+if [ "$SB_COUNT" -eq 1 ] && [ "$SB_VALUE" = "read-only" ]; then
+  ok "codex-cli/implement inline: --sandbox read-only"
+else
+  bad "codex-cli/implement inline: read-only sandbox になっていない"
+  dump_argv
+fi
+
+run_adapter grok-cli implement inline
+scan_sandbox
+if [ "$SB_COUNT" -eq 1 ] && [ "$SB_VALUE" = "read-only" ]; then
+  ok "grok-cli/implement inline: --sandbox read-only"
+else
+  bad "grok-cli/implement inline: read-only sandbox になっていない"
+  dump_argv
+fi
+
+run_adapter gemini-cli implement inline
+scan_sandbox
+if [ "$SB_COUNT" -eq 1 ] && [ "$SB_FORM" = "separate" ] \
+   && [ "${SB_VALUE#-}" != "$SB_VALUE" ]; then
+  ok "gemini-cli/implement inline: boolean --sandbox を有効化"
+else
+  bad "gemini-cli/implement inline: sandbox が有効になっていない"
+  dump_argv
+fi
+
+run_adapter claude-code implement inline
+if argv_has_pair --allowed-tools 'Read,Grep,Glob,Bash(git diff*)' \
+   && ! argv_has_pair --allowed-tools 'Read,Grep,Glob,Edit,Write,Bash'; then
+  ok "claude-code/implement inline: Edit / Write / 任意 Bash を許可しない"
+else
+  bad "claude-code/implement inline: 書き込み tool が有効なまま"
+  dump_argv
+fi
+
+run_adapter copilot-cli implement inline
+if argv_has_pair --deny-tool write && argv_has_pair --deny-tool shell \
+   && argv_has --disallow-temp-dir; then
+  ok "copilot-cli/implement inline: write / shell / temp-dir を機械的に拒否"
+else
+  bad "copilot-cli/implement inline: 書き込み permission deny が不足"
+  dump_argv
+fi
 
 # codex: implement がネットワーク遮断を明示的に pin していること。
 #

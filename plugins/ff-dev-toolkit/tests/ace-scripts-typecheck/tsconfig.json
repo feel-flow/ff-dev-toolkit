@@ -5,11 +5,13 @@
     "lib: target 既定の lib.es2022.full.d.ts は DOM を含む。実行系（tsx / vitest の node 環境）に DOM は無いので ES2022 だけに絞る（絞らないと document.title が型検査を通る）。",
     "isolatedModules / verbatimModuleSyntax: 実行系は tsx も vitest も esbuild による 1 ファイル単位の変換で、全プログラム解析を前提にする tsc とは受理集合が違う。この 2 つがその差をモデル化する（どちらも strict には含まれない）。",
     "paths: 名指しの allowlist は『ace スクリプトが依存してよいのは node builtin と vitest だけ』という配布上の不変条件を符号化している。docs-template のコピー先には package.json も node_modules も無いため、mcp のツリー全体を祝福する形（*: ../../mcp/node_modules/*）にすると、配布先で絶対に解決できない依存が型検査だけ通る。新しい bare import は TS2307 で落ちるのが正しい。",
-    "skipLibCheck: .d.ts 内部のエラーは見逃す（借り物の型宇宙である mcp/node_modules の依存 bump で、ace スクリプトと無関係な診断がこのゲートを赤くするのを避けるため）。.ts 側の TS2307 は見逃さない。"
+    "skipLibCheck: .d.ts 内部のエラーは見逃す（借り物の型宇宙である mcp/node_modules の依存 bump で、ace スクリプトと無関係な診断がこのゲートを赤くするのを避けるため）。.ts 側の TS2307 は見逃さない。",
+    "exactOptionalPropertyTypes: optional プロパティの『省略』と明示的な undefined を区別する。Issue #364 で実測した 2 件は実装上の曖昧さだったため修正して採用した。noUncheckedIndexedAccess は ADR-022 の追補どおり今回は採用しない。"
   ],
   "compilerOptions": {
     "noEmit": true,
     "strict": true,
+    "exactOptionalPropertyTypes": true,
     "target": "ES2022",
     "lib": ["ES2022"],
     "module": "esnext",

@@ -43,7 +43,8 @@
 #
 # ## 使い方
 #
-#   bash scripts/codex-review.sh [--base <branch>] [--reviewers a,b,c]
+#   bash scripts/codex-review.sh [--base <branch> | --staged] [--reviewers a,b,c]
+#                                [--exclude-reviewers a,b,c] [--list-reviewers]
 #                                [--timeout <秒>] [--dry-run]
 #
 #   SKIP_CODEX_REVIEW=1  レビューを実行せず成功終了する（pre-commit の逃がし弁）
@@ -67,14 +68,13 @@
 #   モデル / reasoning effort の指定は toolkit の正規経路を使う:
 #     MULTI_AGENT_MODEL_CODEX_CLI=<model>     モデルを明示する
 #     MULTI_AGENT_CODEX_PROFILE=<profile>     ~/.codex/<name>.config.toml を層に重ねる
+#     MULTI_AGENT_CODEX_REASONING_EFFORT=<effort>  effort だけを明示する
 #   （両者は同時指定できない。詳細は skills/multi-review/SKILL.md の「モデル選択」）
 #
 #   旧ラッパーの env は写す（黙殺しない。1 行通知する）:
 #     CODEX_MODEL             → MULTI_AGENT_MODEL_CODEX_CLI
 #     CODEX_DEFAULT_REVIEWERS → 既定の観点（--reviewers 明示時はそちらが優先）
-#     CODEX_REASONING_EFFORT  → **写せないので非 0 で拒否**。effort 単体を受ける
-#                                入口が toolkit に無く、プロファイルへモデルごと
-#                                束ねる必要があるため 1:1 変換できない
+#     CODEX_REASONING_EFFORT  → MULTI_AGENT_CODEX_REASONING_EFFORT
 # ============================================================================
 
 set -euo pipefail
@@ -164,9 +164,13 @@ usage() {
 ${SCRIPT_NAME} — Codex cross-model レビュー（multi-agent.sh への薄いシム）
 
   --base <branch>       差分の基準ブランチ
+  --staged             staged index だけをレビュー（--base と排他）
   --reviewers a,b,c     観点をカンマ区切りで指定（--perspective へ展開される）
+  --exclude-reviewers a,b,c
+                        観点をカンマ区切りで除外（--exclude-perspective へ展開される）
+  --list-reviewers      利用できる review 観点を一覧表示する
 
-    ⚠ 観点名は toolkit の perspective 名であり、旧ラッパーが使っていた
+    ⚠ --reviewers / --exclude-reviewers の観点名は toolkit の perspective 名であり、旧ラッパーが使っていた
       Claude エージェント名とは**別体系**。存在しない名前は multi-agent.sh が
       非 0 で拒否する（黙って既定へ落ちることはない）。
         旧 code-reviewer          → code-review
@@ -191,10 +195,11 @@ ${SCRIPT_NAME} — Codex cross-model レビュー（multi-agent.sh への薄い�
 旧ラッパーの env は写して 1 行通知する（黙って無視しない）:
   CODEX_MODEL             → MULTI_AGENT_MODEL_CODEX_CLI（新が設定済みなら新を優先）
   CODEX_DEFAULT_REVIEWERS → 既定の観点（--reviewers を明示した場合はそちらが優先）
-  CODEX_REASONING_EFFORT  → 非 0 で拒否。MULTI_AGENT_CODEX_PROFILE へ移行すること
-                            （effort 単体の入口が無く 1:1 変換できないため）
+  CODEX_REASONING_EFFORT  → MULTI_AGENT_CODEX_REASONING_EFFORT
+                            （新が設定済みなら新を優先）
 
-モデル指定は MULTI_AGENT_MODEL_CODEX_CLI / MULTI_AGENT_CODEX_PROFILE を使う。
+モデル指定は MULTI_AGENT_MODEL_CODEX_CLI / MULTI_AGENT_CODEX_PROFILE、
+effort 単体指定は MULTI_AGENT_CODEX_REASONING_EFFORT を使う。
 ここに無いオプションは、直接 multi-agent.sh を呼んで指定する:
   bash <toolkit>/scripts/multi-agent.sh --task review --cli codex-cli ...
 USAGE
@@ -207,6 +212,7 @@ TIMEOUT_GIVEN=0
 LIST_ONLY=0
 # diff サイズの歯止めを測るための基準。--base が明示されたときだけ埋まる。
 BASE_FOR_SIZE=""
+STAGED_GIVEN=0
 
 # 観点リスト（カンマ区切り）を --perspective の繰り返しへ展開する。
 # --reviewers と CODEX_DEFAULT_REVIEWERS の**両方**から呼ぶため関数にしてある。
@@ -300,6 +306,11 @@ while [ $# -gt 0 ]; do
       ORCH_ARGS+=("$1" "$2")
       shift 2
       ;;
+    --staged)
+      STAGED_GIVEN=1
+      ORCH_ARGS+=(--staged)
+      shift
+      ;;
     --dry-run)
       ORCH_ARGS+=(--dry-run)
       shift
@@ -360,7 +371,7 @@ while [ $# -gt 0 ]; do
       ;;
     *)
       echo "ERROR: ${SCRIPT_NAME} は '${1}' を受け付けません。" >&2
-      echo "       このシムが担うのは --base / --reviewers / --timeout / --dry-run だけです。" >&2
+      echo "       対応オプションは --help で確認してください。" >&2
       echo "       それ以外は multi-agent.sh を直接呼んで指定してください:" >&2
       echo "         bash <toolkit>/scripts/multi-agent.sh --task review --cli codex-cli ${1} ..." >&2
       exit 2
@@ -368,13 +379,20 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ "$STAGED_GIVEN" -eq 1 ] && [ -n "$BASE_FOR_SIZE" ]; then
+  echo "ERROR: --staged と --base は同時に指定できません。レビュー範囲をどちらか一方にしてください。" >&2
+  exit 2
+fi
+
 # ── 逃がし弁 ────────────────────────────────────────────────────────────────────
 # pre-commit 構成が使う実在のつまみ。尊重しないと「skip したはずのレビューが走る」。
 # 一覧だけの経路。skip / 旧 env / diff 閾値のいずれも通さずに委譲して終わる。
 if [ "$LIST_ONLY" -eq 1 ]; then
-  if ! ORCHESTRATOR="$(resolve_orchestrator)"; then
+  _resolve_rc=0
+  ORCHESTRATOR="$(resolve_orchestrator)" || _resolve_rc=$?
+  if [ "$_resolve_rc" -ne 0 ]; then
     echo "ERROR: multi-agent.sh が見つかりません。" >&2
-    exit 1
+    exit "$_resolve_rc"
   fi
   exec bash "$ORCHESTRATOR" --task review --list-perspectives
 fi
@@ -393,21 +411,17 @@ fi
 # **7 本すべてがこれらを設定しており**、拒否はそのまま「移行できない」を意味した。
 # そこで黙殺と拒否の間に**写像 + 1 行通知**を置く。写せないものだけ拒否を残す。
 #
-# ただしこれで移行が完了するわけではない。拒否を維持した CODEX_REASONING_EFFORT こそ
-# 5/7 のラッパーが読んでおり、文書化された起動例（AGENTS.md / CLAUDE.md / playbook）も
-# `CODEX_REASONING_EFFORT=high <invoke>` の形。移行後は手順書どおりに叩いた利用者が
-# rc=2 で弾かれ、回避にはプロファイルファイルの新規作成が要る。effort 単体を受ける
-# 入口を toolkit 側に持つ案は #419。ここで写せるのは model と観点リストだけ、と
-# 理解しておくこと。
+# Issue #419 で effort 単体の正規入口を追加したため、旧 CODEX_REASONING_EFFORT も
+# 1:1 で写せる。新旧が併存するときは新しい名前を優先し、どちらを使ったか通知する。
 if [ -n "${CODEX_MODEL:-}" ]; then
   # 「新しい設定」は MULTI_AGENT_MODEL_CODEX_CLI **だけではない**。codex-cli の
   # モデル指定は (model | profile) の 2 つが排他で、アダプタは両方が立っていると
   # 非 0 で落ちる（codex-cli-adapter.sh の排他検査）。
-  # profile を見ずに model を写すと、**最も正しく移行した人**——効かない
-  # CODEX_REASONING_EFFORT を捨ててプロファイルへ移った人——だけが、自分では
+  # profile を見ずに model を写すと、**最も正しく移行した人**——モデルと effort を
+  # プロファイルへ束ねた人——だけが、自分では
   # 設定していない MULTI_AGENT_MODEL_CODEX_CLI との衝突で落ちる。
-  # レジストリ（multi-agent.sh の get_cli_model_env_vars codex-cli）が宣言する
-  # 2 つを、まとめて「新しい設定」として扱う。
+  # レジストリ（multi-agent.sh の get_cli_model_env_vars codex-cli）が宣言するうち、
+  # モデルを選ぶ 2 つをまとめて「新しいモデル設定」として扱う。
   _new_model_setting=""
   if [ -n "${MULTI_AGENT_MODEL_CODEX_CLI:-}" ]; then
     _new_model_setting="MULTI_AGENT_MODEL_CODEX_CLI='${MULTI_AGENT_MODEL_CODEX_CLI}'"
@@ -440,10 +454,16 @@ if [ "${CODEX_DEFAULT_REVIEWERS+x}" = x ]; then
   fi
 fi
 
-# reasoning effort だけは写せない。toolkit 側に effort 単体を受ける入口が無く、
-# プロファイル（~/.codex/<name>.config.toml）へモデルごと束ねる必要があるため、
-# 機械的に 1:1 変換できない。推測で写すと「指定したつもり」が別の意味で通ってしまい、
-# 写像の趣旨（利用者の指定と実際の設定を食い違わせない）に反するので拒否を維持する。
+# effort は新しい単独入口へ 1:1 で写す。新旧が同時指定された場合は新を優先する。
+if [ -n "${CODEX_REASONING_EFFORT:-}" ]; then
+  if [ "${MULTI_AGENT_CODEX_REASONING_EFFORT+x}" = x ]; then
+    echo "ℹ️  CODEX_REASONING_EFFORT と MULTI_AGENT_CODEX_REASONING_EFFORT が両方あります。" >&2
+    echo "    新しい MULTI_AGENT_CODEX_REASONING_EFFORT='${MULTI_AGENT_CODEX_REASONING_EFFORT}' を使い、CODEX_REASONING_EFFORT は無視します。" >&2
+  else
+    export MULTI_AGENT_CODEX_REASONING_EFFORT="$CODEX_REASONING_EFFORT"
+    echo "ℹ️  CODEX_REASONING_EFFORT='${CODEX_REASONING_EFFORT}' を MULTI_AGENT_CODEX_REASONING_EFFORT として解釈しました（env 名を改称済み）。" >&2
+  fi
+fi
 
 # 旧ラッパーの timeout env。--timeout と同義なので写す。
 # **明示指定が env に負けないこと**。委譲先は last-wins なので、後から足すと
@@ -482,13 +502,6 @@ if [ "${CODEX_REVIEW_TIMEOUT_S+x}" = x ]; then
   fi
 fi
 
-if [ -n "${CODEX_REASONING_EFFORT:-}" ]; then
-  echo "ERROR: CODEX_REASONING_EFFORT は ${SCRIPT_NAME} では効きません（黙って無視すると、指定したつもりのまま既定設定でレビューが走ります）。" >&2
-  echo "       reasoning effort はプロファイルで束ねてください: MULTI_AGENT_CODEX_PROFILE=<name>" >&2
-  echo "       （~/.codex/<name>.config.toml にモデルと effort を 1 ファイルで書く）" >&2
-  exit 2
-fi
-
 # ── diff サイズの歯止め ──────────────────────────────────────────────────────────
 # 旧ラッパーが持っていたコスト制御。**既定は無効**にしてある。既定で有効にすると、
 # これまで走っていたレビューが黙ってスキップされる側へ倒れ、しかも「走らなかった」
@@ -509,7 +522,7 @@ if [ "$_min_lines" != "0" ] || [ "$_max_bytes" != "0" ]; then
   # 閾値を測るには基準が要る。--base が無いときの既定推論をここに持つと
   # オーケストレータと同じ推論の 2 つ目のコピーになるので、**解決できなければ拒否**する。
   # 利用者は歯止めを要求したのだから、守れないまま課金される実行を始めるより良い。
-  if [ -z "$BASE_FOR_SIZE" ]; then
+  if [ -z "$BASE_FOR_SIZE" ] && [ "$STAGED_GIVEN" -ne 1 ]; then
     echo "ERROR: diff サイズの歯止めが設定されていますが、比較の基準が分かりません。" >&2
     echo "       --base <branch> を明示してください（歯止めを外す場合は env を 0 にする）。" >&2
     exit 2
@@ -520,12 +533,23 @@ if [ "$_min_lines" != "0" ] || [ "$_max_bytes" != "0" ]; then
   # レビューされるはずの変更が静かに飛ぶ — このファイル冒頭が pre-commit を想定利用先
   # として挙げている以上、現実的な経路。
   _errf="$(mktemp "${TMPDIR:-/tmp}/codex-review-git.XXXXXX")" || { echo "ERROR: 一時ファイルを作成できませんでした。" >&2; exit 2; }
-  _numstat="$( { git diff --numstat "${BASE_FOR_SIZE}...HEAD" && git diff --numstat HEAD; } 2>"$_errf" )" || {
-    echo "ERROR: diff を測れませんでした（基準: ${BASE_FOR_SIZE}）。" >&2
-    sed 's/^/       git: /' "$_errf" >&2
-    rm -f "$_errf"
-    exit 2
-  }
+  if [ "$STAGED_GIVEN" -eq 1 ]; then
+    _diff_label="staged index"
+    _numstat="$(git diff --cached --numstat 2>"$_errf")" || {
+      echo "ERROR: staged diff を測れませんでした。" >&2
+      sed 's/^/       git: /' "$_errf" >&2
+      rm -f "$_errf"
+      exit 2
+    }
+  else
+    _diff_label="base ${BASE_FOR_SIZE}"
+    _numstat="$( { git diff --numstat "${BASE_FOR_SIZE}...HEAD" && git diff --numstat HEAD; } 2>"$_errf" )" || {
+      echo "ERROR: diff を測れませんでした（基準: ${BASE_FOR_SIZE}）。" >&2
+      sed 's/^/       git: /' "$_errf" >&2
+      rm -f "$_errf"
+      exit 2
+    }
+  fi
   # バイナリファイルは numstat が `-` を出す。awk の加算では 0 に化けるので、**行数では
   # 測れない**と判断する。測れないものを「小さい」と読んでスキップすると、200KB の
   # バイナリ追加が無言で飛ぶ。
@@ -534,10 +558,14 @@ if [ "$_min_lines" != "0" ] || [ "$_max_bytes" != "0" ]; then
     *"-	-	"*) _unmeasurable=1 ;;
   esac
   _lines="$(printf '%s\n' "$_numstat" | awk '{ a += $1; d += $2 } END { printf "%d", a + d }')"
-  _bytes="$( { git diff "${BASE_FOR_SIZE}...HEAD"; git diff HEAD; } 2>>"$_errf" | wc -c | tr -d ' ')"
+  if [ "$STAGED_GIVEN" -eq 1 ]; then
+    _bytes="$(git diff --cached 2>>"$_errf" | wc -c | tr -d ' ')"
+  else
+    _bytes="$( { git diff "${BASE_FOR_SIZE}...HEAD"; git diff HEAD; } 2>>"$_errf" | wc -c | tr -d ' ')"
+  fi
   rm -f "$_errf"
   if [ -z "$_lines" ] || [ -z "$_bytes" ]; then
-    echo "ERROR: diff を測れませんでした（基準: ${BASE_FOR_SIZE}）。" >&2
+    echo "ERROR: diff を測れませんでした（範囲: ${_diff_label}）。" >&2
     exit 2
   fi
   if [ "$_min_lines" != "0" ] && [ "$_unmeasurable" -eq 1 ]; then
@@ -560,7 +588,9 @@ if [ "$_min_lines" != "0" ] || [ "$_max_bytes" != "0" ]; then
 fi
 
 # ── 委譲 ────────────────────────────────────────────────────────────────────────
-if ! ORCHESTRATOR="$(resolve_orchestrator)"; then
+_resolve_rc=0
+ORCHESTRATOR="$(resolve_orchestrator)" || _resolve_rc=$?
+if [ "$_resolve_rc" -ne 0 ]; then
   echo "ERROR: multi-agent.sh が見つかりません。" >&2
   echo "       探索順: FF_DEV_TOOLKIT_ROOT → $(dirname "$0")/${FF_ROOT_SIDECAR_NAME}" >&2
   if [ -f "$(dirname "$0")/${FF_ROOT_SIDECAR_NAME}" ]; then
@@ -570,7 +600,7 @@ if ! ORCHESTRATOR="$(resolve_orchestrator)"; then
     echo "       サイドカーがありません。setup-multi-agent.sh を実行して配置し直すか、" >&2
     echo "       FF_DEV_TOOLKIT_ROOT を toolkit のプラグインルートへ向けてください。" >&2
   fi
-  exit 1
+  exit "$_resolve_rc"
 fi
 
 exec bash "$ORCHESTRATOR" "${ORCH_ARGS[@]}"

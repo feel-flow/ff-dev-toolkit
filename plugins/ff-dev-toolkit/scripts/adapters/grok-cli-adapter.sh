@@ -7,6 +7,7 @@
 # Options:
 #   --changed-files <files>   Comma-separated list of changed files
 #   --base <branch>           Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop)
+#   --staged                  Review only staged changes (mutually exclusive with --base)
 #   --timeout <seconds>       Timeout in seconds (default: 900; the orchestrator always passes this explicitly)
 #   --task-type <type>        review | explore | implement (default: review)
 #   --description <text>      Task description (for explore/implement)
@@ -74,19 +75,19 @@ fi
 # /var/tmp and ~/.grok by design. Running the check inside a temp directory
 # reports a false negative — the first attempt here did exactly that.
 get_sandbox_profile() {
+  if [[ "${TASK_TYPE:-review}" == "implement" && "${INLINE_OUTPUT:-false}" == "true" ]]; then
+    echo "read-only"
+    return
+  fi
   case "${TASK_TYPE:-review}" in
     review)    echo "read-only" ;;
     explore)   echo "read-only" ;;
     # implement has to write its staging output, so it gets the profile that
     # allows CWD writes rather than no sandbox at all.
     #
-    # Be honest about the gap: `workspace` permits writes anywhere under the CWD,
-    # i.e. the whole working tree — while the implement preamble in
-    # adapter-common.sh only *asks* the agent to confine itself to the staging
-    # directory. The kernel enforces "not outside the CWD"; "not outside staging"
-    # is a promise in the prompt. Narrowing that for every adapter (codex uses
-    # workspace-write, its equivalent; gemini passes no sandbox at all) is tracked
-    # separately (Issue #398).
+    # `workspace` permits writes anywhere under the CWD. multi-agent.sh fixes that
+    # CWD to REPO_ROOT and rejects output dirs outside it before launch; confining
+    # writes from the whole repository to staging alone remains a prompt contract.
     implement) echo "workspace" ;;
     *)         echo "read-only" ;;
   esac

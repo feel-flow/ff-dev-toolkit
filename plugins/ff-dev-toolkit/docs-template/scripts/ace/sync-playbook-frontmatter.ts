@@ -615,7 +615,12 @@ function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 
   const fromEnv = process.env.ACE_PLAYBOOK_PATH;
   const playbookPath = positional[0] ?? (fromEnv && fromEnv.trim() !== "" ? fromEnv : undefined);
-  return { playbookPath: playbookPath ? path.resolve(playbookPath) : undefined, write, bumpVersion };
+  const resolvedPlaybookPath = playbookPath ? path.resolve(playbookPath) : undefined;
+  return {
+    ...(resolvedPlaybookPath === undefined ? {} : { playbookPath: resolvedPlaybookPath }),
+    write,
+    bumpVersion,
+  };
 }
 
 /**
@@ -671,8 +676,13 @@ export function main(argv: readonly string[] = process.argv): number {
     return EXIT_USAGE_ERROR;
   }
 
+  const updatedDate = process.env.ACE_UPDATED_DATE;
   const syncOptions: SyncOptions = write
-    ? { write: true, bumpVersion, updatedDate: process.env.ACE_UPDATED_DATE }
+    ? {
+        write: true,
+        bumpVersion,
+        ...(updatedDate === undefined ? {} : { updatedDate }),
+      }
     : {};
   const result = computeSync(mainContent, counted.total, syncOptions);
   if (result.kind === "error") {

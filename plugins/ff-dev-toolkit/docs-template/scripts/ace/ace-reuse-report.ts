@@ -33,7 +33,7 @@ const EXIT_USAGE_ERROR = 2;
 const WARN_PREFIX = "ace-reuse-report";
 
 /** これより長く git 参照がないエントリを Archive 候補とする（日数、ACE_REUSE_STALE_DAYS で上書き可） */
-const DEFAULT_STALE_DAYS = 90;
+export const DEFAULT_STALE_DAYS = 90;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** git log のレコード / フィールド区切り（コミット本文に現れない制御文字） */

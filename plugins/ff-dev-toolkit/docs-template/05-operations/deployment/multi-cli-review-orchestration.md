@@ -47,6 +47,16 @@ bash scripts/multi-review.sh --mode cross-model --cli codex-cli
 # （setup-multi-agent.sh が配置する。下の呼び出しと等価）
 ```
 
+pre-commit で staged index だけをレビューする場合は次を使う。
+
+```bash
+bash scripts/multi-review.sh --staged
+```
+
+`--staged` は `git diff --cached` だけを各 prompt へ渡し、unstaged / branch 差分は
+混ぜない。変更が無ければ CLI を起動せず明示 skip + exit 0 になる。`--base` および
+`MULTI_AGENT_BASE_BRANCH` との同時指定はレビュー範囲が曖昧になるため拒否する。
+
 レビュー結果は [PRレビュー対応ポリシー](./review-response-policy.md) に従って対応します。
 
 #### Pattern 2: Parallel Task Suggestion（ユーザーに提案）

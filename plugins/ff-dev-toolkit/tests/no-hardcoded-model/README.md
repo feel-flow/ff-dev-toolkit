@@ -16,7 +16,7 @@
 
 > ラッパーが持ってよいモデル値は「ベンダー中立で世代交代しない語」だけ（現状は `auto` のみ）。具体的なモデル slug は既定値としてもフォールバックとしても持たず、未指定ならフラグ自体を渡さない。
 
-モデルの明示指定は環境変数で行う（`MULTI_AGENT_MODEL_<CLI>` / `MULTI_AGENT_CODEX_PROFILE`）。詳細は `skills/multi-review/SKILL.md` の「モデル選択」節を参照。
+モデルの明示指定は環境変数で行う（`MULTI_AGENT_MODEL_<CLI>` / `MULTI_AGENT_CODEX_PROFILE`）。Codex の effort だけを単発指定する場合は `MULTI_AGENT_CODEX_REASONING_EFFORT` を使う。詳細は `skills/multi-review/SKILL.md` の「モデル選択」節を参照。
 
 ## ケース表
 

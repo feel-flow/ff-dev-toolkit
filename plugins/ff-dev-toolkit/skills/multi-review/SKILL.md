@@ -28,6 +28,16 @@ description: 複数の AI CLI（Claude Code / Codex / Gemini / Grok、Copilot �
   - 例: `--mode cross-model --perspective code-review`（クロスモデル比較）
   - 全オプションは `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --help` で確認できます
 
+pre-commit で index に積んだ内容だけをレビューする場合は `--staged` を使う。
+
+```bash
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --staged
+```
+
+`--staged` は review 専用で、`--base` / `MULTI_AGENT_BASE_BRANCH` と排他。staged 変更が
+無い場合は明示的に skip して終了コード 0、変更がある場合は `git diff --cached` だけを
+各 CLI のプロンプトへ渡し、unstaged や branch diff は混ぜない。
+
 distributed モードで `--perspective` だけを指定すると、固定レジストリ上でその
 perspective を所有する CLI だけがプランに残ります。導入済み CLI が除外された理由は
 dry-run に表示され、review が暗黙に単一 CLI へ縮退した場合は警告されます。
@@ -204,6 +214,7 @@ git diff  # 修正内容の確認
 | `MULTI_AGENT_MODEL_CLAUDE_CODE` | `--model` | Claude Code。`opus` / `sonnet` / `haiku` / `fable` は**最新版を指すエイリアス**なので、slug 直書きより腐りにくい |
 | `MULTI_AGENT_CODEX_PROFILE` | `-p` | **Codex の推奨経路**。`~/.codex/<name>.config.toml` を base 設定に重ねる |
 | `MULTI_AGENT_MODEL_CODEX_CLI` | `-m` | Codex のモデルを単発で指定。`MULTI_AGENT_CODEX_PROFILE` とは併用不可 |
+| `MULTI_AGENT_CODEX_REASONING_EFFORT` | `-c model_reasoning_effort=<value>` | Codex の effort だけを単発指定。`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`。プロファイル併用時はこの値が明示上書きする |
 | `MULTI_AGENT_MODEL_COPILOT_CLI` | `--model` | Copilot。`auto` で Copilot 側の自動選択 |
 | `MULTI_AGENT_MODEL_GEMINI_CLI` | `-m` | Gemini |
 | `MULTI_AGENT_MODEL_GROK_CLI` | `-m` | Grok |
@@ -218,6 +229,8 @@ MULTI_AGENT_CODEX_PROFILE=review \
 Codex は `-m`（単発 slug）より **`--profile` が推奨**。プロファイルはモデルと `model_reasoning_effort` を1つのファイルで束ねられるため、「古いモデル + 新しい reasoning effort」という誰も意図していない組み合わせを避けられる。
 
 ただしその利点が成立するのは `-p` 単独のときだけ。`-m` を併用すると **`-m` のモデルがプロファイルのモデルに勝ち、reasoning effort だけプロファイル由来**になる（codex 0.144.5 で実測）。まさに避けたかった組み合わせなので、**両方を設定した場合はアダプタが実行前に非 0 で落とす**。
+
+プロファイルファイルを作らず effort だけ一時変更する場合は `MULTI_AGENT_CODEX_REASONING_EFFORT=high` のように指定する。プロファイルとの併用も許可され、その場合は `-c` の effort がプロファイル値を上書きする。アダプタは argv と `Reasoning effort: ... profile value is overridden` のログを出すため、どちらが効いたかを判別できる。不正値は CLI 起動前に拒否する。
 
 > **プロファイル名は実行前に検証される。** codex 自身は存在しないプロファイル名を**エラーにせず、base config のまま完走する**（0.144.5 で実測）。そのままだと名前を打ち間違えたとき「専用プロファイルでレビューさせたつもり」が成立してしまい、成果物からもログからも判別できない。そこでアダプタは `-p` を渡す前に `${CODEX_HOME:-~/.codex}/<name>.config.toml` の存在を確認し、無ければ CLI を起動せずに落とす。**これは意図した fail-loud であってバグではない。**
 

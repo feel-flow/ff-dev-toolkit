@@ -288,6 +288,43 @@ else
 fi
 
 echo
+echo "== 既定有効 CLI 間の観点重複（Issue #275） =="
+
+# distributed plan は各 CLI の所有観点をそのまま実行するため、既定で有効な 2 CLI が
+# 同じ観点を持つと、同じ問いへ二重にコストを払う。既定有効かどうかは別リストを
+# 増やさず get_cli_cost_tier != metered から導く。metered は全 task で明示 --cli が
+# 必要（Issue #250）なので、他 CLI と所有観点が重なっても既定プランでは競合しない。
+#
+# 意図的重複の allowlist は持たない。既定プランで重複させたい場合も、所有権を 1 CLI
+# へ寄せ、比較が必要な呼び出しだけ --mode cross-model を使うのがコスト境界だから。
+default_overlap=0
+for task in $TASKS; do
+  for cli in $ALL_CLIS; do
+    [ "$(get_cli_cost_tier "$cli")" = "metered" ] && continue
+    for p in $(get_cli_perspectives_"$task" "$cli"); do
+      for other in $ALL_CLIS; do
+        [ "$other" = "$cli" ] && break
+        [ "$(get_cli_cost_tier "$other")" = "metered" ] && continue
+        if list_has "$(get_cli_perspectives_"$task" "$other")" "$p"; then
+          bad "${task}/${p} を既定有効 CLI が重複所有: ${other}, ${cli}"
+          default_overlap=1
+        fi
+      done
+    done
+  done
+done
+[ "$default_overlap" -eq 0 ] && ok "既定有効 CLI の観点集合が task ごとに disjoint"
+
+# 現行レジストリには metered の copilot-cli と既定 CLI の意図的重複がある。この正例を
+# 名指しして、将来検査が「全 CLI の重複禁止」へ退化するのを防ぐ。
+if list_has "$(get_cli_perspectives_review copilot-cli)" "test-analysis" \
+  && list_has "$(get_cli_perspectives_review codex-cli)" "test-analysis"; then
+  ok "metered copilot-cli の重複所有は明示 opt-in のため許容"
+else
+  bad "metered CLI allow 例の前提（copilot-cli / codex-cli の test-analysis）が消失"
+fi
+
+echo
 echo "== レジストリの写し（人が手で維持している並行リスト） =="
 
 # agent-config.yaml の agents: / fallback: は実行時に読まれない対応表。だからこそ

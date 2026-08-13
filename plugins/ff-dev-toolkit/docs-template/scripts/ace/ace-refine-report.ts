@@ -33,6 +33,7 @@ import {
 } from "./check-category-size";
 import {
   computeReuseStats,
+  DEFAULT_STALE_DAYS,
   findArchiveCandidates,
   parsePlaybookEntries,
   readGitLog,
@@ -48,8 +49,6 @@ const EXIT_USAGE_ERROR = 2;
 
 const WARN_PREFIX = "ace-refine-report";
 
-/** これより長く git 参照がないエントリを Archive 候補とする（ace-reuse-report と同じ既定・同じ環境変数） */
-const DEFAULT_STALE_DAYS = 90;
 /** この Helpful 以上で PATTERNS.md への昇格候補とする */
 const DEFAULT_PROMOTE_HELPFUL_MIN = 5;
 
@@ -99,6 +98,27 @@ export type EntryLineMeasurementResult =
       readonly unclosedFence: true;
       /** 未閉フェンスの開始行（0-origin） */
       readonly unclosedFenceLine: number;
+    }>;
+
+type ReliableEntryLineMeasurementResult = Extract<
+  EntryLineMeasurementResult,
+  Readonly<{ readonly unclosedFence: false }>
+>;
+
+/**
+ * ファイル群の計測結果。未閉フェンスを 1 件でも見つけた sweep は、信頼できる測定値を
+ * 消費側へ公開しない。`main` が `kind` を判定して汚染入力を終了させた後でなければ
+ * `byFile` を読めないため、終了ゲートを丸ごと削除すると型検査が落ちる。
+ *
+ * `findOverBudgetEntries` の引数だけを Reliable 型へ狭め、汚染値を `continue` で捨てる案は
+ * 採らない。その形ではゲートを削除しても、汚染ファイルが候補一覧から静かに欠落したまま
+ * 型検査を通るためである。判別 union は「汚染の有無」と「信頼できる map」を分離不能にする。
+ */
+type MeasurementSweep =
+  | Readonly<{ readonly kind: "contaminated"; readonly files: readonly string[] }>
+  | Readonly<{
+      readonly kind: "ok";
+      readonly byFile: ReadonlyMap<string, ReliableEntryLineMeasurementResult>;
     }>;
 
 /**
@@ -278,6 +298,23 @@ export function measureEntryLines(content: string): EntryLineMeasurementResult {
     : { measurements, unclosedFence: false };
 }
 
+function sweepEntryLineMeasurements(contentsByFile: ReadonlyMap<string, string>): MeasurementSweep {
+  const byFile = new Map<string, ReliableEntryLineMeasurementResult>();
+  const contaminatedFiles: string[] = [];
+  for (const [file, content] of contentsByFile) {
+    const label = path.relative(process.cwd(), file) || file;
+    const measured = measureEntryLines(content);
+    if (measured.unclosedFence) {
+      contaminatedFiles.push(`${label}:${String(measured.unclosedFenceLine + 1)}`);
+    } else {
+      byFile.set(label, measured);
+    }
+  }
+  return contaminatedFiles.length > 0
+    ? { kind: "contaminated", files: contaminatedFiles }
+    : { kind: "ok", byFile };
+}
+
 export type OverBudgetEntry = Readonly<{
   readonly id: string;
   readonly lineCount: number;
@@ -295,10 +332,10 @@ export type OverBudgetEntry = Readonly<{
  * （Issue #349）。measurements だけを受け取る形にすると、main のガードを通ってきた値なのか
  * どうかがこの関数から判断できず、正しさが**ガードの位置**にだけ支えられる。
  *
- * ただしこれは**コンパイル時の強制ではない**。汚染入力で throw しても main の catch が
- * 「レポート生成に失敗しました」という、名指しの無い**より悪いメッセージ**へ写像する。
- * 得られるのは「静かに誤った候補一覧を出す」が「まずいメッセージで落ちる」へ変わることだけ
- * で、正規の入口は main のガードのまま。backstop としてだけ置いている。
+ * main の正規経路は `MeasurementSweep` の判別 union により、未閉フェンスの終了ゲートを
+ * 通らないと信頼できる map を取り出せない。ここで union を受け取るのは直接呼び出しが
+ * 汚染値を渡した場合にも実行時に止める backstop を維持するためであり、この throw は
+ * main の型ゲートを置き換えるものではない。
  */
 export function findOverBudgetEntries(
   measurementsByFile: ReadonlyMap<string, EntryLineMeasurementResult>,
@@ -535,18 +572,10 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
     }
     const combinedContent = [...contentsByFile.values()].join("\n\n");
 
-    const measurementsByFile = new Map<string, EntryLineMeasurementResult>();
-    const unclosedFenceFiles: string[] = [];
+    const measurementSweep = sweepEntryLineMeasurements(contentsByFile);
     const fencedHeadingFiles: string[] = [];
     for (const [file, content] of contentsByFile) {
       const label = path.relative(process.cwd(), file) || file;
-      const measured = measureEntryLines(content);
-      if (measured.unclosedFence) {
-        // 位置まで名指しする（Issue #353 の追加 DoD）。この診断が発火する形は
-        // 「ヘッダで開いたフェンスがエントリ本文の裸の ``` と対になる」など、本文だけを
-        // 見ると対になって見えるものが多く、ファイル名だけでは直しようがない。
-        unclosedFenceFiles.push(`${label}:${String(measured.unclosedFenceLine + 1)}`);
-      }
       // 閉じたフェンスの内側にある正準形見出し（Issue #342）。check-category-size は
       // 同じ入力を拒否するため、ここで素通しすると拒否する入力集合が非対称になる
       // （#353 と同じ結合の要請）。パーサ（parsePlaybookEntries）は除外 + 警告するが、
@@ -554,7 +583,6 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
       for (const fenced of findFencedCanonicalHeadings(blankHtmlBlockComments(content))) {
         fencedHeadingFiles.push(`${label}:${String(fenced.line + 1)} (${fenced.id})`);
       }
-      measurementsByFile.set(label, measured);
     }
 
     // 未閉フェンスの fail-loud（Issue #349）。blankCodeRegions は「閉じていないフェンス以降を
@@ -588,16 +616,17 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
     // フェンス空白化済みテキストを使うが（Issue #342）、**未閉のときは空白化前へ退化する**
     // ため、未閉フェンスが見出しを吸収して 0 件エラーや unmeasured を引き起こすことはない。
     // 並べ替えるときはこの独立性（退化パス）が保たれているか確認すること。
-    if (unclosedFenceFiles.length > 0) {
+    if (measurementSweep.kind === "contaminated") {
       console.error(
         `ERROR: 閉じていないコードフェンス（\`\`\` / ~~~）を含むファイルがあります:\n` +
-          `  ${unclosedFenceFiles.join("\n  ")}\n` +
+          `  ${measurementSweep.files.join("\n  ")}\n` +
           `以降の本文がコード判定から外れ、行数バジェット例外の判定が過剰にも過少にも倒れるため、` +
           `候補が不完全になります（check-category-size は同じ入力を exit 2 で拒否します）。` +
           `フェンスを閉じてから再実行してください。`,
       );
       return EXIT_RUNTIME_ERROR;
     }
+    const measurementsByFile = measurementSweep.byFile;
 
     if (fencedHeadingFiles.length > 0) {
       console.error(

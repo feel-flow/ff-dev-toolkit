@@ -197,6 +197,18 @@ else
   printf '    %s\n' "$RUN_OUTPUT" >&2
 fi
 
+# Issue #275: YAML と case 文のミラー整合を保ったままでも、既定 CLI 間の所有重複は
+# 起こせる。completeness fixture は YAML の perspective 値を照合しないため、既存の
+# grok-cli 所有観点を codex-cli にも注入し、重複専用ゲートだけで red になる形を撃つ。
+reset_completeness_fixture
+remember_file "$FIXTURE_MULTI"
+perl -0pi -e 's/codex-cli\)   echo "code-review test-analysis"/codex-cli)   echo "code-review test-analysis error-handler-hunt"/' "$FIXTURE_MULTI"
+if assert_file_changed "既定 CLI 間の観点重複" "$FIXTURE_MULTI" \
+  && run_fixture "既定 CLI 間の観点重複"; then
+  assert_contains "重複観点と両 CLI を名指し" "$RUN_OUTPUT" \
+    "review/error-handler-hunt を既定有効 CLI が重複所有: codex-cli, grok-cli"
+fi
+
 # 2. 値ドリフト。**この suite が存在する理由そのもの**で、両側とも構造的には正常な
 # YAML / case 文だが値だけが食い違う形。構造・輸送・安全系の mutation はすべて比較の
 # 上流で止まるため、最終比較（compare_scalar / compare_perspective）を潰しても

@@ -20,13 +20,24 @@ cli_available() {
 
 # ── Git Helpers ──
 
-# Detect the repository default branch (origin/HEAD), falling back to "develop".
-# Returns a ref usable with `git diff <ref>...HEAD`: prefers the local branch,
-# and falls back to the remote-tracking ref when no local branch exists (clones).
-detect_base_branch() {
-  local b
-  b="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)"
-  if [[ -z "$b" ]]; then b="develop"; fi
+# ── Base Branch Resolution ──
+#
+# 検出を 2 つの原子操作に割ってあるのは multi-agent.sh と実装を共有するため。
+# orchestrator は「origin/HEAD から自動検出した」のか「origin/HEAD が無くて develop へ
+# 倒した」のかを利用者へ名乗り分ける必要があり、両者を畳んだ detect_base_branch の
+# 戻り値だけでは区別できない。以前はそのために orchestrator 側が同じ検出を書き写して
+# おり、「keep this detection in sync」というコメントで人手同期を約束していた。
+
+# origin/HEAD が指す既定ブランチ名。設定されていなければ**空**を返す。
+# "develop" への既定化をここでやらないのは、上記のとおり呼び出し側の方針だから。
+default_base_branch_name() {
+  git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true
+}
+
+# `git diff <ref>...HEAD` に渡せる形へ解決する。ローカルブランチを優先し、無ければ
+# remote-tracking ref へ倒す（clone 直後はローカルブランチが存在しない）。
+resolve_base_branch_ref() {
+  local b="$1"
   if git rev-parse --verify --quiet "refs/heads/${b}" >/dev/null; then
     echo "$b"
   elif git rev-parse --verify --quiet "refs/remotes/origin/${b}" >/dev/null; then
@@ -36,19 +47,223 @@ detect_base_branch() {
   fi
 }
 
+# Detect the repository default branch (origin/HEAD), falling back to "develop".
+# Returns a ref usable with `git diff <ref>...HEAD`.
+detect_base_branch() {
+  local b
+  b="$(default_base_branch_name)"
+  if [[ -z "$b" ]]; then b="develop"; fi
+  resolve_base_branch_ref "$b"
+}
+
+# ── Repository Revision Snapshot ──
+#
+# 実行前後で「レビュー対象が動いていないこと」を確かめるための 1 行スナップショット。
+# HEAD の SHA・ブランチ名・作業ツリー状態のハッシュを空白区切りで返す。
+#
+# 3 つ全部を見るのは、どれか 1 つでは取りこぼすため:
+#   - SHA だけ …… 同じコミットを指す別ブランチへの切り替えが見えない
+#   - ブランチ名だけ …… commit や detached での移動が見えない
+#   - 作業ツリーだけ …… tracked 内容が同一なブランチ間の移動が見えない
+#
+# 作業ツリーは untracked も含めて見る（status を --untracked-files=no にしない）。
+# ただし untracked の**内容**まで見ているのは下の ls-files 側で、status が担うのは
+# 出現・消滅と状態遷移まで。
+# implement タスクが staging ではなく作業ツリーへ生成物を書いた事故は**新規ファイルの出現**と
+# してしか現れず、tracked だけを見ていると最も危険なケースを検出できない（実測で
+# 確認済み: -uno では新規 untracked ファイルの出現がスナップショットに現れない）。
+#
+# 第 1 引数は「除外するリポジトリ相対パス」。orchestrator 自身が実行中に成果物を
+# 書き込む出力ディレクトリを数えると、正常な実行が毎回「変化した」になる — 利用者の
+# リポジトリが .review-results/ を gitignore しているとは限らない。
+#
+# git のコマンドは**リポジトリ root へ cd してから**実行する。走査範囲そのものは
+# pathspec の ':/' が固定するので cd に依存しないが、**`:(exclude)` は CWD 相対**で、
+# cd を挟まないと除外がまったく効かない（実測: repo/src から
+# `git status --porcelain -- ':/' ':(exclude)b.txt'` を叩くと b.txt がそのまま出る）。
+# 効かないと orchestrator 自身の出力を数えてしまい、正常な実行が毎回「変化した」で
+# 落ちる — 静かに見逃すのではなく 100% 失敗する側へ倒れる。
+capture_repo_snapshot() {
+  local exclude_rel="${1:-}"
+  local root head branch worktree worktree_hash
+
+  if ! root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    return 1
+  fi
+
+  # コミットが 1 つも無い状態は「失敗」ではなく「状態」— 前後で同じ値になるので比較は
+  # 成立する。git 自体が答えられない場合とは symbolic-ref で切り分ける。
+  if head="$(git rev-parse --verify --quiet HEAD 2>/dev/null)"; then
+    :
+  elif git symbolic-ref --quiet HEAD >/dev/null 2>&1; then
+    head="unborn"
+  else
+    return 1
+  fi
+
+  # detached HEAD では symbolic-ref が空を返す（rc=1）。どのコミットに居るかは SHA が
+  # 捉えるので、ここは「ブランチに乗っていない」ことを記録できれば足りる。
+  branch="$(git symbolic-ref --short --quiet HEAD 2>/dev/null)" || branch="(detached)"
+  if [[ -z "$branch" ]]; then branch="(detached)"; fi
+
+  # pathspec は必ず ':/'（リポジトリ全体）から始める。除外だけを渡すと git の解釈が
+  # 版によって割れるうえ、意図も読み取りにくい。
+  local pathspec
+  pathspec=(':/')
+  if [[ -n "$exclude_rel" ]]; then
+    # `literal` を必ず付ける。付けないと git はパターンとして解釈し、`--output-dir 'a*'`
+    # のような名前が無関係なパス（abc/ など）まで監視から外す（実測: ':(exclude)a*' は
+    # a*/ と abc/ の両方を消し、':(exclude,literal)a*' は a*/ だけを消す）。監視範囲が
+    # 黙って縮む形なので、この機構が防ごうとしている失敗と同じ種類になる。
+    pathspec+=(":(exclude,literal)${exclude_rel}")
+  fi
+
+  # **`git status --porcelain` だけでは足りない。** 返るのは状態コードとパスであって
+  # 内容ではないので、実行前から変更済みのファイル（` M path`）を実行中にさらに
+  # 編集しても出力は同じ ` M path` のまま = 変化なしと判定される（実測で再現した）。
+  # レビュー対象に未コミット変更があるのは異常系ではなく通常の使い方で、diff も
+  # `git diff HEAD` を和集合に含めている以上、この取りこぼしは中心的なケースを直撃する。
+  # そこで内容そのものも指紋へ入れる:
+  #   - status ……… 追加・削除・rename・untracked の**出現**と状態遷移
+  #   - diff HEAD … tracked の**内容**（staged / unstaged をまとめた worktree の姿）
+  #   - diff --cached … index の**内容**。単なる再 stage は status の状態コードが
+  #                     ` M`→`M ` と動くので status でも拾えるが、`MM` のまま index
+  #                     だけが書き換わる形（git apply --cached 等）はコードが動かず、
+  #                     diff HEAD も worktree 側を見るので変化しない。ここだけが拾える
+  #
+  #   - untracked の内容 … 既存の untracked ファイルを上書きされても状態コードは
+  #                        `?? path` のまま変わらないため、内容を別に取る
+  #
+  # 見えないものを明示しておく（この指紋の限界）:
+  #   - **gitignore 済みパスへの書き込み**は丸ごと見えない。status も
+  #     ls-files --exclude-standard も無視するため、node_modules/ や dist/ へ書かれても
+  #     スナップショットは動かない
+  #   - 除外パス配下の変化（設計どおり）
+  #   - 実行中に起きて実行前の状態へ戻された変化（前後比較の原理的な限界）
+  #   - 内容を取れない untracked エントリ（symlink・読めないファイル）の中身
+  #
+  # 除外は 4 つの問い合わせすべてに同じものを効かせる。片方だけに効かせると、
+  # 「同じリポジトリを 2 つの物差しで測る」形になり、この機構が防ごうとしている
+  # 食い違いを自分で作る。除外先がソースを含む場合（`--output-dir src` 等）に監視が
+  # 消える問題は、ここではなく**入口で弾く**ことで解いている（orchestrator 側の
+  # validate_output_dir_boundary。出力先に tracked ファイルがあれば起動を止める）。
+  # そのため「orchestrator は tracked ファイルを書き換えない」が前提として成立し、
+  # 除外を diff に効かせても実コードの変更が漏れることはない。
+  worktree="$(
+    cd "$root" || exit 1
+    git status --porcelain -- "${pathspec[@]}" || exit 1
+    # unborn（コミットが 1 つも無い）で失敗するのは **git diff HEAD だけ**（rc=128）。
+    # --cached は空ツリー相手に成立するので回す — git add は最初の commit より前から
+    # 効くので、初回コミット前でも index には内容が入りうる。両方まとめて飛ばすと、
+    # `A  path` のまま stage 内容だけを差し替える変化を取りこぼす（実測で確認）。
+    if [[ "$head" != "unborn" ]]; then
+      git diff HEAD -- "${pathspec[@]}" || exit 1
+    fi
+    git diff --cached -- "${pathspec[@]}" || exit 1
+    # 内容を取るのは**通常ファイルで読めるものだけ**に絞る。git hash-object は blob に
+    # できないものに当たると fatal で落ちる（実測: symlink→ディレクトリで
+    # "Unable to hash dirlink"、壊れた symlink と mode 000 で "could not open ... for
+    # reading"）。素通しにすると、リポジトリに untracked の symlink が 1 つあるだけで
+    # スナップショット取得が失敗し、**ツール全体が起動しなくなる**。gitignore 済みは
+    # --exclude-standard が既に除くので、残るのは「無視されていない untracked の
+    # symlink や読めないファイル」— 未 ignore の pnpm/venv の symlink、中断した
+    # ビルドが残した壊れたリンク、共有チェックアウト上の他人所有ファイルなど、
+    # 普通に存在しうるものばかり。
+    #
+    # 内容を取れないものを落としても、守りたいものは失われない。生成物の作業ツリー
+    # 流出は「新しいパスの出現」として現れ、それは上の git status が捉えている。
+    # ここで足しているのは「**既にある** untracked ファイルの中身が変わった」分だけ。
+    #
+    # パスに改行を含む場合も同じ理由で内容対象から外す（--stdin-paths は 1 行 1 パス
+    # なので分割が壊れる）。存在自体は status 側に出るので、監視から消えるわけではない。
+    git ls-files --others --exclude-standard -z -- "${pathspec[@]}" \
+      | while IFS= read -r -d '' untracked_path; do
+          # 改行を含むパスは内容の対象から外す。case のパターンへ改行を持つ
+          # コマンド置換を書くと、構文検査は通るのに実行時に落ちる（実測）ので
+          # ANSI-C quoting で書く。
+          if [[ "$untracked_path" == *$'\n'* ]]; then
+            continue
+          fi
+          if [[ -f "$untracked_path" && -r "$untracked_path" ]]; then
+            printf '%s\n' "$untracked_path"
+          fi
+        done \
+      | git hash-object --stdin-paths || exit 1
+  )" || return 1
+
+  # ハッシュ化は git 自身にやらせる。md5 / sha1sum / shasum は OS ごとに名前も出力形も
+  # 違うが、git は本関数が動く前提そのもの。ロケール依存の text 処理も挟まない。
+  worktree_hash="$(printf '%s' "$worktree" | git hash-object --stdin 2>/dev/null)" || return 1
+
+  printf '%s %s %s\n' "$head" "$branch" "$worktree_hash"
+}
+
 # Get the diff content for review
 # Usage: get_diff_content "develop"
 get_diff_content() {
   local base_branch="${1:-$(detect_base_branch)}"
-  if git diff "${base_branch}...HEAD" 2>/dev/null; then
-    return 0
+  if [[ "${STAGED_DIFF:-false}" == "true" ]]; then
+    if git diff --cached 2>/dev/null; then
+      return 0
+    fi
+    echo "ERROR: Failed to get staged diff content." >&2
+    return 1
   fi
-  echo "WARNING: Could not diff against '${base_branch}', falling back to HEAD diff." >&2
+  # main のレビュー対象ガードは「ブランチ差分または作業ツリー差分があれば実行」と
+  # 判定する。ここも同じ和集合をプロンプトへ載せる。ブランチ差分だけを返すと、
+  # BASE...HEAD が空で staged / unstaged 変更だけがある pre-commit 経路で、ガードは
+  # 通るのに 0 byte の diff をレビューして成功する。
+  if ! git diff "${base_branch}...HEAD" 2>/dev/null; then
+    echo "WARNING: Could not diff against '${base_branch}', falling back to HEAD diff." >&2
+    if git diff HEAD 2>/dev/null; then
+      return 0
+    fi
+    echo "ERROR: Failed to get diff content. Are you in a git repository with commits?" >&2
+    return 1
+  fi
   if git diff HEAD 2>/dev/null; then
     return 0
   fi
-  echo "ERROR: Failed to get diff content. Are you in a git repository with commits?" >&2
+  echo "ERROR: Failed to get working-tree diff content." >&2
   return 1
+}
+
+# プロンプトへ載せる diff を返す。
+#
+# DIFF_FILE（orchestrator が --diff-file で渡す）があればその中身をそのまま使い、
+# 無ければ従来どおり自分で git から取る — アダプタ直叩きの後方互換。
+#
+# なぜ orchestrator が固定するのか: 以前は各アダプタが**自分の起動時に**
+# get_diff_content を呼んでいた。並列タスクの起動時刻はばらけるので、実行中に
+# checkout / commit / stash が入ると**タスクごとに別の瞬間の diff** をレビューし、
+# しかも全員が正常終了する。
+#
+# **存在しない / 読めない DIFF_FILE では従来取得へ落ちない。** 落とすと、固定した
+# はずの diff が失われたまま各タスクがそれぞれ別の diff を読む状態へ静かに戻る —
+# この固定機構が塞いでいる不整合そのものを、警告なしで再現することになる。
+#
+# 空の DIFF_FILE はエラーにしない。review は orchestrator 側の事前ガードが空 diff を
+# 止めるが、implement --include-diff にその保証は無く、「まだ変更が無い」という
+# 正常な状態をハードエラーへ変えてしまう。
+prompt_diff_content() {
+  local base_branch="${1:-}"
+  if [[ -n "${DIFF_FILE:-}" ]]; then
+    if [[ ! -f "$DIFF_FILE" || ! -r "$DIFF_FILE" ]]; then
+      echo "ERROR: --diff-file is missing or unreadable: ${DIFF_FILE}" >&2
+      echo "       Refusing to recompute the diff: the orchestrator fixed it so that every" >&2
+      echo "       task in this run reviews the same bytes." >&2
+      return 1
+    fi
+    # cat の rc を捨てない。捨てると、-r 検査の後にファイルが消えた / I/O エラーに
+    # なった場合に、空または途中までの内容で rc=0 を返す — 上で「静かに戻さない」と
+    # 宣言した退行の、より弱い形を自分で作ることになる。
+    if ! cat "$DIFF_FILE"; then
+      echo "ERROR: could not read the fixed diff: ${DIFF_FILE}" >&2
+      return 1
+    fi
+    return 0
+  fi
+  get_diff_content "$base_branch"
 }
 
 # ── Perspective Loading ──
@@ -145,7 +360,7 @@ build_prompt() {
       preamble="You are a code review agent. Follow the perspective instructions below to analyze the code changes."
 
       local diff_content
-      if ! diff_content="$(get_diff_content "$base_branch")"; then
+      if ! diff_content="$(prompt_diff_content "$base_branch")"; then
         echo "ERROR: aborting prompt build — no diff content available." >&2
         return 1
       fi
@@ -195,7 +410,13 @@ ${description}"
       # Optionally include diff for implement tasks
       if [[ "${INCLUDE_DIFF:-false}" == "true" ]]; then
         local diff_content
-        diff_content="$(get_diff_content "$base_branch")"
+        # rc を検査する。捨てると、diff を取れなかった実行が「## Current Changes」の
+        # 見出しだけを持つプロンプトとして通り、エージェントには「変更が無い」と
+        # 読める — 取得失敗と「変更なし」は別の事実で、後者だけが正常。
+        if ! diff_content="$(prompt_diff_content "$base_branch")"; then
+          echo "ERROR: aborting prompt build — --include-diff was requested but no diff content is available." >&2
+          return 1
+        fi
         context_section="${context_section}
 
 ## Current Changes (git diff)
@@ -224,7 +445,7 @@ ${diff_content}"
   # (2) の関数名はアダプタごとに違う: codex は get_sandbox_mode、grok は
   # get_sandbox_profile、gemini は get_gemini_sandbox_flag、**claude-code は
   # get_allowed_tools**（Write/Edit を許すかどうかが唯一の書き込みゲート。"sandbox"
-  # で grep すると取りこぼす）、copilot は分岐なし。どれか 1 つを忘れると
+  # で grep すると取りこぼす）、copilot は permission deny 配列。どれか 1 つを忘れると
   # 「サンドボックスは書けるのにプロンプトが read-only を命じる」「staging へ書けと
   # 命じるのにパスを渡していない」といった矛盾になる。
   # なお task-type 追加そのものに必要な同期先（perspective の割り当て、既定の
@@ -239,11 +460,9 @@ ${diff_content}"
   # 上のガードのとおり --inline-output の明示が要る。「パスが無ければ黙って退避」に
   # すると、渡し忘れが警告なしで同じ経路へ落ちるため。
   #
-  # 正直に書いておく: --inline-output は**プロンプト上の契約**にすぎない。各アダプタの
-  # サンドボックス／ツール許可は TASK_TYPE=implement のままなので（claude-code は
-  # Write/Edit 許可、codex/grok は CWD 書き込み可、gemini はサンドボックス無し）、
-  # 「書かずに inline で報告する」を機械的に強制してはいない。実効的な read-only
-  # 境界にする対応は Issue #398（アダプタ横断のサンドボックス整合）で扱う。
+  # Issue #398: --inline-output は task type が implement のままでも各 adapter が
+  # read-only 相当へ狭める（Claude=tool allowlist、Codex/Grok=read-only profile、
+  # Gemini=sandbox、Copilot=write/shell deny）。プロンプトだけの契約へ戻さない。
   local file_boundary
   case "$task_type" in
     implement)
@@ -822,14 +1041,16 @@ echo_model_args() {
 # ── Argument Parsing Helper ──
 
 # Parse common adapter arguments
-# Sets: PERSPECTIVE_FILE, OUTPUT_FILE, CHANGED_FILES, BASE_BRANCH, TIMEOUT,
-#       TASK_TYPE, DESCRIPTION, INCLUDE_DIFF, STAGING_DIR, INLINE_OUTPUT
+# Sets: PERSPECTIVE_FILE, OUTPUT_FILE, CHANGED_FILES, BASE_BRANCH, STAGED_DIFF, TIMEOUT,
+#       TASK_TYPE, DESCRIPTION, INCLUDE_DIFF, STAGING_DIR, INLINE_OUTPUT, DIFF_FILE
 # Usage: parse_adapter_args "$@"
 parse_adapter_args() {
   PERSPECTIVE_FILE=""
   OUTPUT_FILE=""
   CHANGED_FILES=""
   BASE_BRANCH="$(detect_base_branch)"
+  BASE_BRANCH_EXPLICIT="false"
+  STAGED_DIFF="false"
   # Standalone default for a direct adapter invocation. Kept in step with
   # multi-agent.sh's DEFAULT_TIMEOUT_REVIEW — an adapter run by hand should not
   # inherit the 300s that issue #152 identified as too short. The orchestrator
@@ -844,8 +1065,33 @@ parse_adapter_args() {
   # staging 無しの implement を許す明示的オプトイン。無指定で staging も無ければ
   # build_prompt が fail-loud に落ちる（渡し忘れを黙って退避モードにしないため）。
   INLINE_OUTPUT="false"
+  # orchestrator が固定した diff のパス。直叩き実行では空のままで、その場合は
+  # 従来どおりアダプタ自身が git から取る（prompt_diff_content を参照）。
+  DIFF_FILE=""
 
   while [[ $# -gt 0 ]]; do
+    # 値付きフラグを末尾に置いた場合、各 arm でいきなり "$2" を読むと set -u が
+    # 発火する。macOS 既定の Bash 3.2 ではこの死が呼び出し側から rc=0 に見えることが
+    # あり、「成功・成果物なし」へ反転する。値付きフラグの集合をここで一括して守り、
+    # どれか1つだけ直して残りが同じ silent exit を持ち続ける形を作らない。
+    case "$1" in
+      --changed-files|--base|--timeout|--task-type|--description|--staging-dir|--diff-file)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: ${1} requires a value." >&2
+          return 2
+        fi
+        # 次の既知フラグを値として吸収しない。末尾だけを見ると
+        # `--description --inline-output` が description の値として通り、利用者が指定した
+        # inline-output は黙って消える。未知の `--foo` まで一律拒否はしない（説明文等の
+        # 実値であり得るため）。このパーサー自身が知るフラグだけを欠落の証拠にする。
+        case "$2" in
+          --changed-files|--base|--timeout|--task-type|--description|--include-diff|--staged|--staging-dir|--inline-output|--diff-file)
+            echo "ERROR: ${1} requires a value; got option '${2}'." >&2
+            return 2
+            ;;
+        esac
+        ;;
+    esac
     case "$1" in
       --changed-files)
         CHANGED_FILES="$2"
@@ -853,7 +1099,12 @@ parse_adapter_args() {
         ;;
       --base)
         BASE_BRANCH="$2"
+        BASE_BRANCH_EXPLICIT="true"
         shift 2
+        ;;
+      --staged)
+        STAGED_DIFF="true"
+        shift
         ;;
       --timeout)
         TIMEOUT="$2"
@@ -875,6 +1126,10 @@ parse_adapter_args() {
         STAGING_DIR="$2"
         shift 2
         ;;
+      --diff-file)
+        DIFF_FILE="$2"
+        shift 2
+        ;;
       --inline-output)
         INLINE_OUTPUT="true"
         shift
@@ -890,8 +1145,17 @@ parse_adapter_args() {
     esac
   done
 
+  if [[ "$STAGED_DIFF" == "true" && "$BASE_BRANCH_EXPLICIT" == "true" ]]; then
+    echo "ERROR: --staged and --base are mutually exclusive." >&2
+    return 2
+  fi
+  if [[ "$STAGED_DIFF" == "true" && "$TASK_TYPE" != "review" ]]; then
+    echo "ERROR: --staged is only valid for review tasks." >&2
+    return 2
+  fi
+
   if [[ -z "$PERSPECTIVE_FILE" || -z "$OUTPUT_FILE" ]]; then
-    echo "Usage: $(basename "$0") <perspective-file> <output-file> [--changed-files <files>] [--base <branch>] [--timeout <seconds>] [--task-type <review|explore|implement>] [--description <text>] [--staging-dir <dir>] [--inline-output]" >&2
+    echo "Usage: $(basename "$0") <perspective-file> <output-file> [--changed-files <files>] [--base <branch> | --staged] [--diff-file <path>] [--timeout <seconds>] [--task-type <review|explore|implement>] [--description <text>] [--staging-dir <dir>] [--inline-output]" >&2
     return 1
   fi
 }

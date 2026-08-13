@@ -22,14 +22,30 @@ CHECK_SIZE_SCRIPT="$PLUGIN_ROOT/docs-template/scripts/ace/check-category-size.ts
 REFINE_REPORT_SCRIPT="$PLUGIN_ROOT/docs-template/scripts/ace/ace-refine-report.ts"
 FORMAT_GATE_SCRIPT="$PLUGIN_ROOT/docs-template/scripts/ace/check-entry-format.ts"
 LEGACY_ALLOWLIST_TEMPLATE="$PLUGIN_ROOT/docs-template/08-knowledge/legacy-format-allowlist.txt"
+ESBUILD_BIN="$PLUGIN_ROOT/mcp/node_modules/.bin/esbuild"
 
 for f in "$REFINE_FILE" "$CURATE_FILE" "$PLAYBOOK_TEMPLATE" "$PATTERNS_TEMPLATE" \
-         "$ACE_CYCLE_TEMPLATE" "$CHECK_SIZE_SCRIPT" "$REFINE_REPORT_SCRIPT"; do
+         "$ACE_CYCLE_TEMPLATE" "$CHECK_SIZE_SCRIPT" "$REFINE_REPORT_SCRIPT" \
+         "$FORMAT_GATE_SCRIPT"; do
   [ -s "$f" ] || {
     echo "✗ 検査対象が存在しないか空です: $f" >&2
     exit 1
   }
 done
+
+# 後半の check-entry-format 統合検査は一時領域を必要とする。静的検査だけを先に
+# pass として数えてから環境都合で落ちると本物の回帰と区別できないため、suite 全体の
+# 開始前に同じ TMPDIR を probe し、使えない場合は検査 0 件の明示 skip にする。
+if _ff_tmp_probe="$(mktemp -d "${TMPDIR:-/tmp}/ace-refine-preflight.XXXXXX" 2>&1)"; then
+  rmdir "$_ff_tmp_probe" || {
+    echo "✗ ace-refine: 一時領域 probe を後片付けできません: $_ff_tmp_probe" >&2
+    exit 1
+  }
+else
+  echo "○ skip: 一時ディレクトリを作成できないため ace-refine の検査をスキップ（検査は1件も実行されていません）"
+  printf '  mktemp: %s\n' "$_ff_tmp_probe"
+  exit 0
+fi
 
 PASS=0
 FAIL=0
@@ -229,38 +245,99 @@ TEMPLATE_PLAYBOOK_DIR="$PLUGIN_ROOT/docs-template/08-knowledge/playbook"
 if [ ! -d "$TEMPLATE_PLAYBOOK_DIR" ]; then
   bad "docs-template の playbook ディレクトリが存在しない（見本エントリを同梱しないと分割レイアウトの実例が消える）: $TEMPLATE_PLAYBOOK_DIR"
 else
-  # 見本の ID 集合を完全一致で固定する。件数だけだと、別 ID へ差し替えても通る。
-  SEED_IDS="$(
-    for pb in "$TEMPLATE_PLAYBOOK_DIR"/*.md; do
-      [ -f "$pb" ] || continue
-      grep -oE '^### ACE-[A-Za-z0-9-]+:' "$pb" | sed -E 's/^### (ACE-[A-Za-z0-9-]+):$/\1/'
-    done | sort -u | tr '\n' ' '
-  )"
-  EXPECTED_SEED_IDS="ACE-000-1 ACE-000-2 ACE-000-3 "
-  if [ "$SEED_IDS" = "$EXPECTED_SEED_IDS" ]; then
-    ok "docs-template の見本エントリが ACE-000-1〜3 の 3 件で固定されている"
+  # 見出しと旧形式マーカーの認識は shell に再実装せず、
+  # check-entry-format の機械可読 CLI へ委譲する（Issue #336）。
+  # esbuild / node が無い場合は「旧形式 0 件」を検査したことにできないので、
+  # 部分 skip にせず fail-closed で名指しする。
+  if [ ! -x "$ESBUILD_BIN" ]; then
+    bad "check-entry-format の CLI 実行に必要な esbuild が見つからない（cd mcp && npm install を実行）: $ESBUILD_BIN"
+  elif ! command -v node >/dev/null 2>&1; then
+    bad "check-entry-format の CLI 実行に必要な node が PATH に見つからない"
   else
-    bad "docs-template の見本エントリ ID が期待と違う（期待: ${EXPECTED_SEED_IDS}/ 実際: ${SEED_IDS}）"
-  fi
-
-  SEED_LEGACY_IDS="$(
-    for pb in "$TEMPLATE_PLAYBOOK_DIR"/*.md; do
-      [ -f "$pb" ] || continue
-      awk '
-        /^### ACE-/ { if (cur != "") emit(); cur = $2; sub(/:$/, "", cur); legacy = 0 }
-        /^\*\*(Insight|Context|Action)\*\*/ { legacy = 1 }
-        /^\|[[:space:]]*フィールド[[:space:]]*\|/ { legacy = 1 }
-        /^\|[[:space:]:|-]*-{3,}[[:space:]:|-]*\|/ { legacy = 1 }
-        END { if (cur != "") emit() }
-        function emit() { if (legacy) print cur }
-      ' "$pb"
-    done | sort -u
-  )"
-  SEED_LEGACY_COUNT="$(printf '%s\n' "$SEED_LEGACY_IDS" | grep -c '^ACE-' || true)"
-  if [ "$SEED_LEGACY_COUNT" -gt 0 ]; then
-    bad "docs-template のシードに旧テーブル形式が残っている（allowlist 不在では利用者のコピー直後にゲートが赤くなる）: $(printf '%s' "$SEED_LEGACY_IDS" | tr '\n' ' ')"
-  else
-    ok "docs-template のシードに旧テーブル形式が 0 件（コンパクト正準のみ）"
+    BUNDLE_DIR=""
+    if ! BUNDLE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ace-refine-format.XXXXXX")"; then
+      bad "check-entry-format の検証用一時ディレクトリを作成できない: ${TMPDIR:-/tmp}"
+    fi
+    if [ -n "$BUNDLE_DIR" ]; then
+    BUNDLE_PATH="$BUNDLE_DIR/check-entry-format.mjs"
+    set +e
+    # bundle すると import 先の `import.meta.url` も同じ出力ファイルを
+    # 指し、check-category-size の direct-execution guard まで誤爆する。
+    # 2 ファイルを個別 transpile し、extensionless import は type=module で解決する。
+    BUILD_OUTPUT="$(
+      set -e
+      printf '%s\n' '{"type":"module"}' > "$BUNDLE_DIR/package.json"
+      "$ESBUILD_BIN" "$CHECK_SIZE_SCRIPT" --platform=node --format=esm \
+        --log-level=error --outfile="$BUNDLE_DIR/check-category-size"
+      "$ESBUILD_BIN" "$FORMAT_GATE_SCRIPT" --platform=node --format=esm \
+        --log-level=error --outfile="$BUNDLE_PATH"
+    2>&1)"
+    BUILD_RC=$?
+    if [ "$BUILD_RC" -eq 0 ]; then
+      SEED_IDS="$(node "$BUNDLE_PATH" --list-entry-ids "$TEMPLATE_PLAYBOOK_DIR" 2>&1)"
+      SEED_LIST_RC=$?
+      SEED_LEGACY_IDS="$(node "$BUNDLE_PATH" --list-legacy "$TEMPLATE_PLAYBOOK_DIR" 2>&1)"
+      LIST_RC=$?
+      FIXTURE_DIR="$BUNDLE_DIR/fixture"
+      mkdir "$FIXTURE_DIR"
+      {
+        printf '%s%s\n\n' '### ' 'ACE-XXX: placeholder'
+        printf '%s\n\n' '**Insight**: placeholder'
+        printf '%s%s\n\n' '### ' 'ACE-2-1:タイトル'
+        printf '%s\n\n' '**Insight**: legacy'
+        printf '%s%s\n\n' '### ' 'ACE-1-1: first'
+        printf '%s\n' '**Insight**: legacy'
+      } > "$FIXTURE_DIR/a.md"
+      {
+        printf '%s%s\n\n' '### ' 'ACE-1-1: duplicate'
+        printf '%s\n' '**Insight**: legacy'
+      } > "$FIXTURE_DIR/b.md"
+      FIXTURE_IDS="$(node "$BUNDLE_PATH" --list-legacy "$FIXTURE_DIR" 2>&1)"
+      FIXTURE_RC=$?
+      ERROR_FIXTURE_DIR="$BUNDLE_DIR/error-fixture"
+      mkdir "$ERROR_FIXTURE_DIR"
+      {
+        printf '%s%s\n\n' '### ' 'ACE-1-1: before error'
+        printf '%s\n' '**Insight**: legacy'
+      } > "$ERROR_FIXTURE_DIR/a.md"
+      printf '%s\n' '```markdown' > "$ERROR_FIXTURE_DIR/b.md"
+      ERROR_STDOUT="$BUNDLE_DIR/error.stdout"
+      ERROR_STDERR="$BUNDLE_DIR/error.stderr"
+      node "$BUNDLE_PATH" --list-legacy "$ERROR_FIXTURE_DIR" \
+        > "$ERROR_STDOUT" 2> "$ERROR_STDERR"
+      ERROR_FIXTURE_RC=$?
+      ERROR_STDOUT_CONTENT="$(cat "$ERROR_STDOUT")"
+      ERROR_STDERR_CONTENT="$(cat "$ERROR_STDERR")"
+    fi
+    set -e
+    case "$BUNDLE_DIR" in
+      "${TMPDIR:-/tmp}"/ace-refine-format.*) rm -rf "$BUNDLE_DIR" ;;
+      *) bad "mktemp が想定外のパスを返したため一時バンドルを消去しない: $BUNDLE_DIR" ;;
+    esac
+    if [ "$BUILD_RC" -ne 0 ]; then
+      bad "check-entry-format の一時バンドル生成が失敗（rc=${BUILD_RC}）: $BUILD_OUTPUT"
+    elif [ "$SEED_LIST_RC" -ne 0 ]; then
+      bad "check-entry-format --list-entry-ids が失敗（rc=${SEED_LIST_RC}）: $SEED_IDS"
+    elif [ "$SEED_IDS" != $'ACE-000-1\nACE-000-2\nACE-000-3' ]; then
+      bad "docs-template の見本 ID 集合が期待と違う: $SEED_IDS"
+    elif [ "$LIST_RC" -ne 0 ]; then
+      bad "check-entry-format --list-legacy が失敗（rc=${LIST_RC}）: $SEED_LEGACY_IDS"
+    elif [ "$FIXTURE_RC" -ne 0 ]; then
+      bad "check-entry-format --list-legacy の統合 fixture が失敗（rc=${FIXTURE_RC}）: $FIXTURE_IDS"
+    elif [ "$FIXTURE_IDS" != $'ACE-1-1\nACE-2-1' ]; then
+      bad "check-entry-format --list-legacy が placeholder 除外・空白なし見出し・重複除去の契約と不一致: $FIXTURE_IDS"
+    elif [ "$ERROR_FIXTURE_RC" -ne 2 ]; then
+      bad "check-entry-format --list-legacy の入力エラーが exit 2 でない（rc=${ERROR_FIXTURE_RC}）"
+    elif [ -n "$ERROR_STDOUT_CONTENT" ]; then
+      bad "check-entry-format --list-legacy が入力エラー時に stdout へ部分結果を出した"
+    elif ! grep -Fq 'b.md' <<< "$ERROR_STDERR_CONTENT" || ! grep -Fq '閉じていません' <<< "$ERROR_STDERR_CONTENT"; then
+      bad "check-entry-format --list-legacy の入力エラー診断が対象ファイルと理由を stderr へ出していない"
+    elif [ -n "$SEED_LEGACY_IDS" ]; then
+      bad "docs-template のシードに旧テーブル形式が残っている（allowlist 不在では利用者のコピー直後にゲートが赤くなる）: $(printf '%s' "$SEED_LEGACY_IDS" | tr '\n' ' ')"
+    else
+      ok "check-entry-format の単一源判定で placeholder 除外・空白なし ID ・重複除去が一致し、docs-template の旧形式シードが 0 件"
+    fi
+    fi
   fi
 fi
 

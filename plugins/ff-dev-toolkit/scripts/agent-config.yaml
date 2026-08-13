@@ -64,7 +64,8 @@ tasks:
 #
 # モデル指定はここでは行わない。ラッパーは既定のモデル slug を持たず、各 CLI 自身の
 # 設定（~/.codex/config.toml、Claude Code のモデル設定など）へ委譲する。明示指定が
-# 要るときは環境変数を使う（MULTI_AGENT_MODEL_<CLI> / MULTI_AGENT_CODEX_PROFILE）。
+# 要るときは環境変数を使う（MULTI_AGENT_MODEL_<CLI> / MULTI_AGENT_CODEX_PROFILE /
+# MULTI_AGENT_CODEX_REASONING_EFFORT）。
 # 理由は ACE-70-2（本リポジトリの ACE Playbook）を参照。
 agents:
   claude-code:

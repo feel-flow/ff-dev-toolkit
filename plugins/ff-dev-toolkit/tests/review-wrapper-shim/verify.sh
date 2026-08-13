@@ -36,7 +36,60 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 SHIM="$PLUGIN_ROOT/scripts/templates/codex-review.sh"
 SETUP="$PLUGIN_ROOT/scripts/setup-multi-agent.sh"
+DIRECT_CLI_DETECTOR="$SCRIPT_DIR/direct-cli-detector.awk"
 SUITE_NAME="review-wrapper-shim"
+
+# ── 実行環境つまみからの分離（Issue #434） ──────────────────────────────────
+# シムは利用者が設定する env をそのまま解釈する層なので、ホストが export したまま
+# suite を回すと「env 未設定」前提のアサーションが崩れる。実測（1 変数ずつ設定）:
+#   MULTI_AGENT_CODEX_PROFILE=bogus    → 4 件赤（profile 優先の分岐へ食い込む）
+#   MULTI_AGENT_MODEL_CODEX_CLI=bogus  → 3 件赤
+#   CODEX_REASONING_EFFORT=high        → effort 写像のケースが赤
+#   SKIP_CODEX_REVIEW=1                → 53 件赤（委譲そのものが止まる）
+#
+# **共通ライブラリの保証境界は動かさない。** lib は対象を MULTI_AGENT_* /
+# FF_TIMEOUT_* の 2 プレフィックスと明文で宣言しており、CODEX_* / SKIP_CODEX_REVIEW
+# はその外。境界を広げると lib を source する他の 8 suite すべての名簿が変わるため、
+# ここでは **この suite の中で**シム固有の名前を落とす（影響範囲を 1 suite に閉じる）。
+#
+# 一覧は手で書かず実装から抽出する — シムが新しいつまみを足したとき、手書きの
+# 一覧は黙って漏れる。抽出が空振りすると分離が静かに消えるので、既知の名前を
+# センチネルとして fail-closed で検査する（lib と同じ設計）。
+# shellcheck source=../lib/adapter-env-isolation.sh
+. "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
+build_isolate_env "MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_REASONING_EFFORT" "$SHIM"
+
+# **左境界を持たせる。** 境界なしの `(CODEX|SKIP_CODEX)_[A-Z0-9_]+` は、シムに実在する
+# MULTI_AGENT_CODEX_PROFILE / MULTI_AGENT_MODEL_CODEX_CLI から **実在しない**
+# CODEX_PROFILE / CODEX_CLI を切り出す（実測）。過剰包含そのものは無害（未設定変数への
+# -u は no-op）だが、同じ欠陥は逆向き＝「実在する変数を別名として拾い、本体を素通り
+# させる」形でも成立する。先頭アンダースコアの取りこぼしで実害が出た前例があるため、
+# ここでも境界を明示する。境界文字は grep が一緒に返すので、語ごとに 1 文字剥がす。
+_shim_raw=""; _shim_grep_rc=0
+_shim_raw="$(grep -hoE '(^|[^A-Z0-9_])_?(CODEX|SKIP_CODEX)_[A-Z0-9_]+' "$SHIM")" || _shim_grep_rc=$?
+if [ "$_shim_grep_rc" -gt 1 ]; then
+  echo "✗ シムからの CODEX_* / SKIP_CODEX_* 抽出が失敗しました（grep rc=${_shim_grep_rc}）。部分的な読み取り失敗は分離リストの黙った欠落になるため続行しない" >&2
+  exit 1
+fi
+_shim_seen=" "
+for _v in $_shim_raw; do
+  # 行頭一致なら境界文字は付かない。それ以外は先頭 1 文字が境界なので落とす。
+  case "$_v" in
+    CODEX_*|SKIP_CODEX_*|_CODEX_*|_SKIP_CODEX_*) : ;;
+    *) _v="${_v#?}" ;;
+  esac
+  case "$_shim_seen" in *" $_v "*) continue ;; esac
+  _shim_seen="${_shim_seen}${_v} "
+  ISOLATE_ENV+=(-u "$_v")
+done
+for _s in CODEX_REASONING_EFFORT SKIP_CODEX_REVIEW CODEX_DEFAULT_REVIEWERS CODEX_MODEL; do
+  case " ${ISOLATE_ENV[*]-} " in
+    *" $_s "*) : ;;
+    *)
+      echo "✗ 分離リストにセンチネル ${_s} がありません。シムの実装で改名されたか、抽出が空振りした。実行環境からの分離を保証できないため続行しない" >&2
+      exit 1 ;;
+  esac
+done
 
 echo "== 同梱レビューラッパー（シム）の契約 =="
 
@@ -72,8 +125,9 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # ── 検出器: AI CLI を直接起動していないか ────────────────────────────────────────
 #
-# 走査対象は「コメントを除いた実行行」。コメントで `codex exec` に言及するのは
-# 正当（このファイル自身がそうしている）。
+# 走査対象は shell lexical model が command word と判定した語。コメント・通常の引数・
+# 文字列リテラル・heredoc 本文の言及は実行されないため除外する。一方、quote された
+# command word、eval の静的 surface、command substitution は実行文脈なので残す。
 #
 # **パス修飾された起動も検出する。** 初版は直前文字クラスから `/` `.` `-` を除いて
 # いたため `/opt/homebrew/bin/codex exec` が原理的に不可視だった — グローバル規約が
@@ -84,74 +138,36 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # 検出するのは 5 CLI すべて。codex だけを見ていると、同じ形の別 CLI ラッパーを
 # 足したときに素通りする。
 #
-# 限界（承知のうえ・**実測で確認した現在の穴**）:
-#   - 変数越しの起動（`CLI=codex; "$CLI" exec`）とバックスラッシュ行継続は静的走査では追えない
-#   - **改行をまたぐ文字列**（`x="1 行目<改行>2 行目"`）は追えない。クォート状態を行ごとに
-#     初期化しているため。持ち越す実装にすると、ファイル内に不均衡なクォートが 1 つあった
-#     だけで**そこから先が全部クォート内扱いになり検出器が丸ごと盲目になる**ので、
-#     より広い fail-open を避けてこちらを選んでいる
-#   - **heredoc 本文**はモデル化していない。本文中の `#` はコメントではないが、そう扱う
-#   - 文字列リテラルの中身は走査対象のまま。実行しない言及も違反として拾う（別 Issue）
-# `${var#pat}` と文字列内の `#` は**追えるようになった**（下の除去器を参照）。
-# シムは短く直接的に書く前提で、上記は「レビューで見る」に委ねる。
+# 限界: 変数だけを経由する動的起動（`CLI=codex; "$CLI" exec`）は静的には解決しない。
+# ただし `eval "$cmd codex exec"` のように静的 CLI 語が残る eval と、`$(codex exec)` は
+# 実行文脈として検出する。lexer が未閉 quote / heredoc に遭遇した場合は clean とせず rc=2。
 detects_direct_cli() {
-  local file="$1" stripped
-  # 読めないファイルを「一致なし」と同じ答えにしない。sed|grep の rc は右端の
-  # grep が支配するので、上流が失敗しても「clean」に見える（実測で読めない
-  # ファイルが clean と報告された）。中間結果を受けてから判定する。
-  # コメント除去はクォート状態を追う。`sed 's/#.*$//'` だと、クォートの中の # や
-  # ${var#pat} の # まで切ってしまい、**同じ行の実行部分が走査対象から消える**。
-  # 実測（旧実装）:
-  #   base="${1#--base=}"; codex exec ...   → 残るのは `base="${1` だけ → 見逃し
-  #   echo "see PR #406"; claude -p ...      → 行ごと消える           → 見逃し
-  # 検出器が「読んだつもりで読んでいない」形なので、実際の違反を隠す方向に外れる。
-  if ! stripped="$(awk '{
-    line = $0; out = ""; inq = ""; ansi_c = 0; n = length(line)
-    for (i = 1; i <= n; i++) {
-      c = substr(line, i, 1)
-      if (inq == "") {
-        # $'\'' は ANSI-C クォート。bash はこの中でも \ エスケープを解釈するので、
-        # 素の '\'' と区別しないと \'\'' で閉じたと誤認し、以降がずれる（実測で見逃した）。
-        if (c == "'"'"'") { inq = c; ansi_c = (i > 1 && substr(line, i - 1, 1) == "$"); out = out c; continue }
-        if (c == "\"") { inq = c; ansi_c = 0; out = out c; continue }
-        if (c == "\\") { out = out c; i++; if (i <= n) out = out substr(line, i, 1); continue }
-        if (c == "#") {
-          # コメントは行頭・空白の直後・制御演算子の直後に始まる。`true;# c` は bash では
-          # コメントだが、空白だけを見ていると本文として残り誤検出する（実測）。
-          # 一方 ${var#pat} や a#b はコメントではないので残す。
-          if (i == 1) break
-          prev = substr(line, i - 1, 1)
-          if (prev == " " || prev == "\t") break
-          if (prev == ";" || prev == "&" || prev == "|" || prev == "(") break
-          out = out c; continue
-        }
-        out = out c
-      } else {
-        if ((inq == "\"" || ansi_c) && c == "\\") { out = out c; i++; if (i <= n) out = out substr(line, i, 1); continue }
-        if (c == inq) { inq = ""; ansi_c = 0 }
-        out = out c
-      }
-    }
-    print out
-  }' "$file" 2>/dev/null)"; then
-    echo "DETECTOR-ERROR: 走査できません: ${file}" >&2
-    return 2
-  fi
-  # CLI 名のあとにオプションが挟まる形も拾う。`codex -s read-only exec ...` は
-  # 実在する書き方で、初版は exec/-p が直後に来る形しか見ていなかった（実測で素通り）。
-  # 規則は「CLI 名が**コマンド位置に完全な語として**現れないこと」。exec/-p が直後に
-  # 来る形だけを見ると、`codex -s read-only exec` のようにオプションを挟むだけで
-  # 回避できた（実測）。オプションとその値を数え上げる正規表現は複雑で脆いので、
-  # 語の出現そのものを禁じる方に倒す。委譲行の `--cli codex-cli` は語が codex-cli
-  # なので一致せず、`MULTI_AGENT_MODEL_CODEX_CLI` も大文字なので一致しない。
-  printf '%s\n' "$stripped" \
-    | grep -nE '(^|[;&|(]|[[:space:]])([^[:space:];&|()]*/)?(codex|claude|gemini|copilot|grok)([[:space:]]|$)' \
-    || return 1
+  local file="$1" rc=0
+  awk -f "$DIRECT_CLI_DETECTOR" "$file" || rc=$?
+  case "$rc" in
+    0|1) return "$rc" ;;
+    *) echo "DETECTOR-ERROR: 走査できません: ${file} (rc=${rc})" >&2; return 2 ;;
+  esac
+}
+
+expect_detector_clean() {
+  local file="$1" success_message="$2" false_positive_message="$3" rc=0
+  detects_direct_cli "$file" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    1) ok "$success_message" ;;
+    0) bad "$false_positive_message" ;;
+    *) bad "検出器: clean fixture の解析が成立しない: ${file} (rc=${rc})" ;;
+  esac
 }
 
 echo "-- 検出器の自己検証（fixture） --"
 
 mkdir -p "$WORK/fx"
+if [ -f "$DIRECT_CLI_DETECTOR" ]; then
+  ok "検出器: shell lexical model が同梱されている"
+else
+  bad "検出器: shell lexical model が見つからない: $DIRECT_CLI_DETECTOR"
+fi
 cat > "$WORK/fx/direct-codex.sh" <<'SH'
 #!/usr/bin/env bash
 # 悪い例: codex を直接叩く（stdin を閉じていないとハングする）
@@ -236,27 +252,227 @@ else
   bad "検出器: \$'...' のエスケープを誤読して直接起動を見逃した"
 fi
 
+# ── lexical model: positive / negative / boundary ───────────────────────────
+# 普通の引数・文字列・heredoc 本文は command word ではない。ヘルプや診断に利用例を
+# 書けることを固定する一方、その直後にある本物の起動は separator 後の command word
+# として検出する（文字列を行ごと捨てるだけの実装を弾く）。
+cat > "$WORK/fx/non-executing-mentions.sh" <<'SH'
+#!/usr/bin/env bash
+echo "codex exec を直接叩かないこと"
+printf '%s\n' 'claude -p は使用例の文字列'
+echo codex exec is documentation text
+cat <<'USAGE'
+例: codex exec -s read-only "..."
+例: claude -p "..."
+USAGE
+cat <<-TABBED
+	gemini -p "..."
+TABBED
+bash "$ORCH" --task review
+SH
+expect_detector_clean "$WORK/fx/non-executing-mentions.sh" \
+  "検出器: 引数・文字列・heredoc 本文の CLI 言及は誤検出しない" \
+  "検出器: 引数・文字列・heredoc 本文の CLI 言及を直接起動と誤検出した"
+
+cat > "$WORK/fx/heredoc-then-direct.sh" <<'SH'
+#!/usr/bin/env bash
+cat <<FIRST <<'SECOND'
+codex exec は 1 個目の heredoc 本文
+FIRST
+claude -p は 2 個目の heredoc 本文
+SECOND
+gemini -p "$prompt"
+SH
+if detects_direct_cli "$WORK/fx/heredoc-then-direct.sh" >/dev/null; then
+  ok "検出器: 複数 heredoc の本文を除外し、終端後の直接起動を検出する"
+else
+  bad "検出器: 複数 heredoc の境界を越えて後続の直接起動まで除外した"
+fi
+
+cat > "$WORK/fx/string-then-direct.sh" <<'SH'
+#!/usr/bin/env bash
+echo "codex exec は説明文字列"; codex exec "$prompt"
+SH
+if detects_direct_cli "$WORK/fx/string-then-direct.sh" >/dev/null; then
+  ok "検出器: 文字列直後の本物の直接起動を引き続き検出する"
+else
+  bad "検出器: 文字列を除外した結果、その直後の直接起動まで見逃した"
+fi
+
+# quote は「常に文字列」ではない。command word 自身を quote した起動は実行される。
+printf '%s\n' '#!/usr/bin/env bash' '"codex" exec "$prompt"' > "$WORK/fx/quoted-command.sh"
+if detects_direct_cli "$WORK/fx/quoted-command.sh" >/dev/null; then
+  ok "検出器: quote された command word の直接起動を検出する"
+else
+  bad "検出器: quote を一律除外して実行される command word を見逃した"
+fi
+printf '%s\n' '#!/usr/bin/env bash' "\$'codex' exec \"\$prompt\"" > "$WORK/fx/ansi-quoted-command.sh"
+if detects_direct_cli "$WORK/fx/ansi-quoted-command.sh" >/dev/null; then
+  ok "検出器: ANSI-C quote された command word の直接起動を検出する"
+else
+  bad "検出器: ANSI-C quote を動的文字列扱いして command word を見逃した"
+fi
+
+# prefix command の options / option values を command word と誤読して探索を止めない。
+cat > "$WORK/fx/prefix-options-direct.sh" <<'SH'
+#!/usr/bin/env bash
+env -i codex exec "$prompt"
+sudo -u root claude -p "$prompt"
+time -p gemini -p "$prompt"
+SH
+if detects_direct_cli "$WORK/fx/prefix-options-direct.sh" >/dev/null; then
+  ok "検出器: prefix command の option 後にある直接起動を検出する"
+else
+  bad "検出器: env/sudo/time の option を実 command と誤読して後続 CLI を見逃した"
+fi
+
+# prefix の実 command が別なら、その argv に現れる CLI 語は直接起動ではない。
+cat > "$WORK/fx/prefix-safe-arguments.sh" <<'SH'
+#!/usr/bin/env bash
+env -i printf '%s\n' codex
+sudo -u root printf '%s\n' claude
+command -v gemini
+SH
+expect_detector_clean "$WORK/fx/prefix-safe-arguments.sh" \
+  "検出器: prefix command の実 command 以降にある CLI 引数は誤検出しない" \
+  "検出器: prefix command の通常引数を直接起動と誤検出した"
+
+# eval / command substitution は quote 内でも shell code を実行する境界。静的に CLI 語が
+# 見える場合は、通常の説明文字列と区別して検出する。
+printf '%s\n' '#!/usr/bin/env bash' 'eval "$prefix codex exec \"$prompt\""' > "$WORK/fx/eval-direct.sh"
+if detects_direct_cli "$WORK/fx/eval-direct.sh" >/dev/null; then
+  ok "検出器: eval の静的 surface にある直接起動を検出する"
+else
+  bad "検出器: 文字列除外で eval 内の直接起動を見逃した"
+fi
+printf '%s\n' '#!/usr/bin/env bash' 'output="$(codex exec "$prompt")"' > "$WORK/fx/command-substitution.sh"
+if detects_direct_cli "$WORK/fx/command-substitution.sh" >/dev/null; then
+  ok "検出器: command substitution 内の直接起動を検出する"
+else
+  bad "検出器: quote 内の command substitution を説明文字列として捨てた"
+fi
+
+printf '%s\n' '#!/usr/bin/env bash' 'output=`codex exec "$prompt"`' \
+  > "$WORK/fx/legacy-backtick-direct.sh"
+if detects_direct_cli "$WORK/fx/legacy-backtick-direct.sh" >/dev/null; then
+  ok "検出器: legacy backtick 内の直接起動を検出する"
+else
+  bad "検出器: legacy backtick の実行 surface を通常引数として見逃した"
+fi
+
+cat > "$WORK/fx/shell-command-surface-direct.sh" <<'SH'
+#!/usr/bin/env bash
+bash --noprofile -lc 'claude -p "$prompt"'
+env -i /bin/sh -c 'gemini -p "$prompt"'
+SH
+if detects_direct_cli "$WORK/fx/shell-command-surface-direct.sh" >/dev/null; then
+  ok "検出器: shell -c 内の直接起動を検出する"
+else
+  bad "検出器: shell -c の実行 surface を通常引数として見逃した"
+fi
+
+cat > "$WORK/fx/redirection-substitution.sh" <<'SH'
+#!/usr/bin/env bash
+cat >"$(codex exec "$prompt")"
+cat <<< "$(claude -p "$prompt")"
+SH
+if detects_direct_cli "$WORK/fx/redirection-substitution.sh" >/dev/null; then
+  ok "検出器: redirection target 内の command substitution 直接起動を検出する"
+else
+  bad "検出器: redirection target を除外して内側の command substitution まで見逃した"
+fi
+
+cat > "$WORK/fx/safe-execution-surfaces.sh" <<'SH'
+#!/usr/bin/env bash
+out="$(printf '%s' 'codex exec')"
+eval "printf %s codex"
+out=`printf '%s' 'claude -p'`
+bash -c 'printf "%s\\n" gemini'
+printf '%s\n' bash -c 'codex exec'
+SH
+expect_detector_clean "$WORK/fx/safe-execution-surfaces.sh" \
+  "検出器: execution surface 内でも通常引数の CLI 言及は誤検出しない" \
+  "検出器: execution surface を語の存在だけで判定して誤検出した"
+
+# here-string は heredoc ではない。<<< の引数だけを読み飛ばし、次の行の検出を継続する。
+cat > "$WORK/fx/here-string-boundary.sh" <<'SH'
+#!/usr/bin/env bash
+cat <<< "codex exec は入力データ"
+claude -p "$prompt"
+SH
+if detects_direct_cli "$WORK/fx/here-string-boundary.sh" >/dev/null; then
+  ok "検出器: here-string を未閉 heredoc と誤読せず後続の直接起動を検出する"
+else
+  bad "検出器: here-string 後を heredoc 本文扱いして直接起動を見逃した"
+fi
+
+cat > "$WORK/fx/declaration-boundaries.sh" <<'SH'
+#!/usr/bin/env bash
+case "$tool" in
+  codex) echo selected ;;
+  claude|gemini) echo another ;;
+esac
+codex() {
+  echo mock
+}
+SH
+expect_detector_clean "$WORK/fx/declaration-boundaries.sh" \
+  "検出器: case pattern と function 宣言の CLI 名は誤検出しない" \
+  "検出器: case pattern / function 宣言を直接起動と誤検出した"
+
+# 未閉構文は「言及なし」と同じ rc=1 にしない。lexer が成立しない入力は rc=2。
+printf '%s\n' '#!/usr/bin/env bash' 'echo "unterminated' > "$WORK/fx/unclosed-quote.sh"
+_det_rc=0
+detects_direct_cli "$WORK/fx/unclosed-quote.sh" >/dev/null 2>&1 || _det_rc=$?
+if [ "$_det_rc" -eq 2 ]; then
+  ok "検出器: 未閉 quote を clean とせず解析不成立で止める"
+else
+  bad "検出器: 未閉 quote を clean と報告した (rc=${_det_rc})"
+fi
+
+# mutation: command-position 分岐を壊すと安全な引数が赤になり、直接起動の report を消すと
+# positive fixture が clean へ反転することを確認する。fixture 件数だけ増えて検出器が空洞化
+# する形を防ぐ。
+cp "$DIRECT_CLI_DETECTOR" "$WORK/fx/detector-command-position-broken.awk"
+perl -0pi -e 's/if \(word_at_command\) \{/if (1) {/' "$WORK/fx/detector-command-position-broken.awk"
+_mutation_rc=0
+awk -f "$WORK/fx/detector-command-position-broken.awk" "$WORK/fx/non-executing-mentions.sh" >/dev/null 2>&1 \
+  || _mutation_rc=$?
+if [ "$_mutation_rc" -eq 0 ]; then
+  ok "検出器 mutation: command-position 判定を壊すと非実行の CLI 言及を誤検出する"
+else
+  bad "検出器 mutation: command-position 判定の破壊を negative fixture が検出できない"
+fi
+
+cp "$DIRECT_CLI_DETECTOR" "$WORK/fx/detector-positive-broken.awk"
+perl -0pi -e 's/if \(!word_dynamic && is_cli\(word\)\) report_hit\(\)/if (0) report_hit()/g' \
+  "$WORK/fx/detector-positive-broken.awk"
+_mutation_rc=0
+awk -f "$WORK/fx/detector-positive-broken.awk" "$WORK/fx/direct-codex.sh" >/dev/null 2>&1 \
+  || _mutation_rc=$?
+if [ "$_mutation_rc" -eq 1 ]; then
+  ok "検出器 mutation: direct-command report を消すと positive fixture が clean へ反転する"
+else
+  bad "検出器 mutation: direct-command report の空洞化を positive fixture で識別できない (rc=${_mutation_rc})"
+fi
+
 # 制御演算子の直後から始まるコメント。空白の直後だけを見ていると本文として残り、
 # 中の CLI 名を誤検出して**正常なラッパーを違反として止める**（実測）。
 printf '%s\n' '#!/usr/bin/env bash' \
   'bash "$ORCH" --task review;# ここで codex exec を直接叩かない' \
   > "$WORK/fx/semicolon-comment.sh"
-if detects_direct_cli "$WORK/fx/semicolon-comment.sh" >/dev/null 2>&1; then
-  bad "検出器: 制御演算子直後のコメントを誤検出した（正常なラッパーを止める）"
-else
-  ok "検出器: 制御演算子直後のコメントは誤検出しない"
-fi
+expect_detector_clean "$WORK/fx/semicolon-comment.sh" \
+  "検出器: 制御演算子直後のコメントは誤検出しない" \
+  "検出器: 制御演算子直後のコメントを誤検出した（正常なラッパーを止める）"
 
 # 逆方向: 本物のコメントは従来どおり誤検出しないこと（除去をやめただけの実装を弾く）。
 printf '%s\n' '#!/usr/bin/env bash' \
   '# ここでは codex exec を直接叩かない（委譲する）' \
   'bash "$ORCH" --task review' \
   > "$WORK/fx/comment-mention.sh"
-if detects_direct_cli "$WORK/fx/comment-mention.sh" >/dev/null 2>&1; then
-  bad "検出器: コメント中の言及を誤検出した（コメント除去が効いていない）"
-else
-  ok "検出器: コメント中の言及は誤検出しない"
-fi
+expect_detector_clean "$WORK/fx/comment-mention.sh" \
+  "検出器: コメント中の言及は誤検出しない" \
+  "検出器: コメント中の言及を誤検出した（コメント除去が効いていない）"
 
 # 走査できないファイルを「clean」と同じ答えにしない（fail-closed）。
 printf '#!/usr/bin/env bash\ncodex exec "$p"\n' > "$WORK/fx/unreadable.sh"
@@ -270,11 +486,9 @@ else
   bad "検出器: 読めないファイルの扱いが「一致なし」と同じ (rc=${_det_rc}) — 走査ゼロで緑になる"
 fi
 
-if detects_direct_cli "$WORK/fx/delegating.sh" >/dev/null; then
-  bad "検出器: 委譲する fixture を誤検出した（コメント中の言及を拾っている）"
-else
-  ok "検出器: 委譲する fixture は誤検出しない"
-fi
+expect_detector_clean "$WORK/fx/delegating.sh" \
+  "検出器: 委譲する fixture は誤検出しない" \
+  "検出器: 委譲する fixture を誤検出した（コメント中の言及を拾っている）"
 
 echo "-- 同梱シムの静的契約 --"
 
@@ -331,7 +545,7 @@ for a in "$@"; do printf '%s\n' "$a" >> "$ARGV_LOG"; done
 # 「写したつもりで export していない」実装を素通しする（シムが exec で置き換わる
 # 以上、env は argv と同じく委譲の一部）。
 : > "$ENV_LOG"
-for v in MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE CODEX_MODEL; do
+for v in MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CODEX_REASONING_EFFORT CODEX_MODEL; do
   eval "_val=\${$v:-}"
   [ -n "$_val" ] && printf '%s=%s\n' "$v" "$_val" >> "$ENV_LOG"
 done
@@ -354,13 +568,18 @@ run_shim() {
     esac
   done
   : > "$WORK/env.log"
+  local run_cwd="${RUN_SHIM_CWD:-$PWD}"
   # stdout と stderr を**分けて**記録する。合流させてから grep すると、通知が
   # stdout へ移っても検査が通ってしまう（pre-commit 等で stdout だけ捨てる構成では
   # 通知が消える）。既存の検査のために合流版も残す。
-  env FF_DEV_TOOLKIT_ROOT="$PROJ/orch" ARGV_LOG="$WORK/argv.log" ENV_LOG="$WORK/env.log" \
-    ${envs[@]+"${envs[@]}"} \
-    bash "$PROJ/scripts/codex-review.sh" "$@" \
-    >"$WORK/stdout.log" 2>"$WORK/err.log" </dev/null || RUN_RC=$?
+  # run_isolated を先頭に付けて実行環境のつまみを落とす。env は -u の除去を先に、
+  # NAME=VALUE の代入を後に適用するので、ケース固有の指定（下の ${envs}）はそのまま効く
+  # — 「ホストの値は除く / ケースの上書きは通す」という順序契約に乗っている。
+  ( cd "$run_cwd" && \
+    run_isolated env FF_DEV_TOOLKIT_ROOT="$PROJ/orch" ARGV_LOG="$WORK/argv.log" ENV_LOG="$WORK/env.log" \
+      ${envs[@]+"${envs[@]}"} \
+      bash "$PROJ/scripts/codex-review.sh" "$@" \
+      >"$WORK/stdout.log" 2>"$WORK/err.log" </dev/null ) || RUN_RC=$?
   cat "$WORK/stdout.log" "$WORK/err.log" > "$WORK/out.log"
 }
 env_log_has() {
@@ -394,6 +613,39 @@ if argv_has_seq "--base" "develop"; then
 else
   bad "--base の値が委譲先へ届いていない"
   sed 's/^/    | /' "$WORK/argv.log" >&2
+fi
+
+run_shim --staged
+if [ "$RUN_RC" -eq 0 ] && argv_has "--staged" && ! argv_has "--base"; then
+  ok "--staged が base を足さずオーケストレータへ委譲される"
+else
+  bad "--staged の委譲範囲が不正 (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/argv.log" >&2
+fi
+
+run_shim --staged --base develop
+if [ "$RUN_RC" -eq 2 ] && [ ! -s "$WORK/argv.log" ]; then
+  ok "シムも --staged と --base の同時指定を委譲前に拒否する"
+else
+  bad "シムが曖昧な staged/base 指定を委譲した (rc=$RUN_RC)"
+fi
+
+STAGED_REPO="$WORK/staged-repo"
+git init -q "$STAGED_REPO"
+git -C "$STAGED_REPO" config user.email fixture@example.invalid
+git -C "$STAGED_REPO" config user.name fixture
+printf 'base\n' > "$STAGED_REPO/app.txt"
+git -C "$STAGED_REPO" add app.txt
+git -C "$STAGED_REPO" commit -qm init
+printf 'staged\n' >> "$STAGED_REPO/app.txt"
+git -C "$STAGED_REPO" add app.txt
+RUN_SHIM_CWD="$STAGED_REPO" run_shim CODEX_REVIEW_MIN_LINES=999 --staged --dry-run
+if [ "$RUN_RC" -eq 0 ] && [ ! -s "$WORK/argv.log" ] \
+   && grep -q 'CODEX_REVIEW_MIN_LINES=999 未満' "$WORK/out.log"; then
+  ok "staged 指定時の diff サイズ歯止めも index だけを測って skip する"
+else
+  bad "staged diff のサイズ歯止めが委譲範囲と一致しない (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
 fi
 
 # --reviewers は multi-agent.sh の --perspective へ写す（複数値は個別フラグへ展開）
@@ -438,6 +690,27 @@ if grep -q -- "--no-such-option" "$WORK/out.log"; then
 else
   bad "拒否メッセージが該当オプションを名指ししていない"
 fi
+if grep -q -- "対応オプションは --help" "$WORK/out.log"; then
+  ok "未対応オプションの案内が、古い固定列挙ではなく --help を正本として指す"
+else
+  bad "未対応オプションの案内が --help を指していない"
+fi
+
+# FF_DEV_TOOLKIT_ROOT の明示指定ミスは resolve_orchestrator が rc=2 と分類する。
+# `if ! VAR=$(...)` は `!` の status へ上書きするため、呼び出し側で 1 に潰さないこと。
+for _bad_root_arg in "--base develop --dry-run" "--list-reviewers"; do
+  set -- $_bad_root_arg
+  _bad_root_rc=0
+  run_isolated env FF_DEV_TOOLKIT_ROOT="$WORK/does-not-exist" \
+    bash "$PROJ/scripts/codex-review.sh" "$@" \
+    >"$WORK/bad-root.out" 2>&1 </dev/null || _bad_root_rc=$?
+  if [ "$_bad_root_rc" -eq 2 ]; then
+    ok "不正な FF_DEV_TOOLKIT_ROOT を rc=2 のまま返す (${_bad_root_arg})"
+  else
+    bad "不正な FF_DEV_TOOLKIT_ROOT の rc=2 が rc=${_bad_root_rc} に潰れた (${_bad_root_arg})"
+    sed 's/^/    | /' "$WORK/bad-root.out" >&2
+  fi
+done
 
 # 旧ラッパーのモデル指定 env は、黙殺でも拒否でもなく**写像 + 通知**にする。
 # 黙殺は「指定したつもりの設定が効かないまま走る」ACE-70-2 の形。拒否は安全だが、
@@ -476,19 +749,36 @@ else
   bad "旧を無視したことが通知されない"
 fi
 
-# reasoning effort だけは写像先が 1:1 でない（プロファイルへ束ねる必要がある）ので、
-# 推測で写さず拒否を維持する。機械変換できないものを写すと「指定したつもり」が
-# 別の意味で通ってしまい、写像の趣旨に反する。
+# reasoning effort は Issue #419 の単独入口へ 1:1 で写す。下の env_log_has は写像の
+# export 行を外す変異で必ず赤くなるため、通知文だけを見て通す真空 PASS を防ぐ。
 run_shim CODEX_REASONING_EFFORT=high
-if [ "$RUN_RC" -ne 0 ]; then
-  ok "CODEX_REASONING_EFFORT は写像先が 1:1 でないため拒否を維持する"
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "CODEX_REASONING_EFFORT は単独入口へ写せるため成功する"
 else
-  bad "CODEX_REASONING_EFFORT が黙って通った（プロファイルへ束ねる必要がある）"
+  bad "CODEX_REASONING_EFFORT の写像が非 0 で拒否された (rc=$RUN_RC)"
 fi
-if grep -q "MULTI_AGENT_CODEX_PROFILE" "$WORK/out.log"; then
-  ok "拒否メッセージがプロファイルへの移行を案内する"
+if env_log_has "MULTI_AGENT_CODEX_REASONING_EFFORT=high"; then
+  ok "CODEX_REASONING_EFFORT の値が新しい effort env として委譲先へ届く"
 else
-  bad "拒否メッセージが移行先を案内していない"
+  bad "CODEX_REASONING_EFFORT を写したつもりで export していない"
+  sed 's/^/    | /' "$WORK/env.log" >&2
+fi
+if grep -q "MULTI_AGENT_CODEX_REASONING_EFFORT" "$WORK/err.log"; then
+  ok "effort を写像した旨が stderr へ通知される"
+else
+  bad "effort の写像が無言で行われた"
+fi
+
+run_shim CODEX_REASONING_EFFORT=low MULTI_AGENT_CODEX_REASONING_EFFORT=xhigh
+if env_log_has "MULTI_AGENT_CODEX_REASONING_EFFORT=xhigh"; then
+  ok "旧新 effort の同時指定では新しい env が優先される"
+else
+  bad "旧新 effort の同時指定で旧値が勝った"
+fi
+if grep -q 'CODEX_REASONING_EFFORT は無視します' "$WORK/err.log"; then
+  ok "旧 effort を無視したことが通知される"
+else
+  bad "旧 effort を無視したことが通知されない"
 fi
 
 # 旧ラッパーの既定観点 env。観点名の写像も併せて適用されること。
@@ -663,7 +953,7 @@ fi
 if [ -f "$PLACED" ]; then
   : > "$WORK/argv.log"
   PROD_RC=0
-  env -u FF_DEV_TOOLKIT_ROOT ARGV_LOG="$WORK/argv.log" \
+  run_isolated env -u FF_DEV_TOOLKIT_ROOT ARGV_LOG="$WORK/argv.log" \
     bash "$PLACED" --base develop >"$WORK/prod.log" 2>&1 || PROD_RC=$?
   if [ "$PROD_RC" -eq 0 ]; then
     ok "本番経路: 環境変数なしでシムが完走する"
@@ -683,7 +973,7 @@ if [ -f "$PLACED" ]; then
   mkdir -p "$WORK/alt-orch"
   cp "$FAKE/scripts/multi-agent.sh" "$WORK/alt-orch/multi-agent.sh"
   : > "$WORK/argv-alt.log"
-  env FF_DEV_TOOLKIT_ROOT="$WORK/alt-orch" ARGV_LOG="$WORK/argv-alt.log" \
+  run_isolated env FF_DEV_TOOLKIT_ROOT="$WORK/alt-orch" ARGV_LOG="$WORK/argv-alt.log" \
     bash "$PLACED" --base develop >/dev/null 2>&1 || true
   if [ -s "$WORK/argv-alt.log" ]; then
     ok "env と サイドカーが両方あるとき env が勝つ"
@@ -694,7 +984,7 @@ fi
 
 # skill 群が使う正規形（プラグインルート指定）で解決できること。
 : > "$WORK/argv.log"
-env FF_DEV_TOOLKIT_ROOT="$FAKE" ARGV_LOG="$WORK/argv.log" \
+run_isolated env FF_DEV_TOOLKIT_ROOT="$FAKE" ARGV_LOG="$WORK/argv.log" \
   bash "$PLACED" --base develop >/dev/null 2>&1 || true
 if argv_has_seq "--cli" "codex-cli"; then
   ok "FF_DEV_TOOLKIT_ROOT にプラグインルートを渡す正規形で解決できる"
@@ -822,13 +1112,12 @@ else
   fi
 fi
 
-# 拒否経路では委譲先を一度も起動しないこと。終了コードと案内文だけを見ていると、
-# 「委譲してから非 0 を返す」実装へ退行したときに課金を伴う実行を見逃す。
+# 写像経路で委譲先を実際に起動すること。env だけを書いて exec を外す変異も落とす。
 run_shim CODEX_REASONING_EFFORT=high
-if [ ! -s "$WORK/argv.log" ]; then
-  ok "CODEX_REASONING_EFFORT 拒否時に委譲先を起動しない"
+if [ -s "$WORK/argv.log" ] && env_log_has "MULTI_AGENT_CODEX_REASONING_EFFORT=high"; then
+  ok "CODEX_REASONING_EFFORT の写像後に委譲先を起動する"
 else
-  bad "拒否したのに委譲先が起動された（課金を伴う実行を見逃す）"
+  bad "CODEX_REASONING_EFFORT の写像後に委譲が成立していない"
   sed 's/^/    | /' "$WORK/argv.log" >&2
 fi
 
@@ -958,7 +1247,7 @@ else
   ok "--help がコマンド置換を実行しない"
 fi
 # ヘルプに書いた語が実際に出ていること（置換で消えると空白だけが残る）
-for _word in "--base" "--reviewers" "--timeout" "--dry-run" "opt=value"; do
+for _word in "--base" "--staged" "--reviewers" "--exclude-reviewers" "--list-reviewers" "--timeout" "--dry-run" "opt=value"; do
   if grep -q -- "$_word" "$WORK/out.log"; then
     ok "--help に '${_word}' が出る"
   else

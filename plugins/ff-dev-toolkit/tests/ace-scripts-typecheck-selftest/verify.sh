@@ -210,8 +210,7 @@ fi
 # 2. Issue #354 / #356 の型強制そのもの。`if (exceptionTally.unclosedFence) return` の
 #    return を落とすと絞り込みが消え、union のまま fileReports（ReliableBudgetExceptionTally）
 #    へ push されるので**型検査だけ**が落ちる。この 1 件が「正しさがガードの位置ではなく
-#    型で保たれている」という主張の実測になる（check 側限定。refine 側の同形 union は
-#    実行時 backstop で、型では止まらない）。
+#    型で保たれている」という主張の check 側の実測になる。
 reset_fixture
 assert_target_exists "未閉フェンスガードの return 除去" "$FIXTURE_ACE/check-category-size.ts" && {
   remember_file "$FIXTURE_ACE/check-category-size.ts"
@@ -225,7 +224,24 @@ assert_target_exists "未閉フェンスガードの return 除去" "$FIXTURE_AC
   fi
 }
 
-# 3. strict が効いていること。strict（strictNullChecks）を外すと通ってしまう形を撃つ。
+# 3. refine 側の未閉フェンス終了ゲートを丸ごと落とすと、MeasurementSweep が
+#    contaminated / ok の union のままになり、ok 側にしかない byFile を読めず型検査が落ちる。
+#    findOverBudgetEntries の引数だけを狭めて汚染値を continue で捨てる形では、この mutation が
+#    緑のまま汚染ファイルを候補から欠落させるため、main の分岐そのものを撃つ。
+reset_fixture
+assert_target_exists "refine 未閉フェンスゲートの除去" "$FIXTURE_ACE/ace-refine-report.ts" && {
+  remember_file "$FIXTURE_ACE/ace-refine-report.ts"
+  perl -0pi -e 's/\n    if \(measurementSweep\.kind === "contaminated"\) \{.*?\n      return EXIT_RUNTIME_ERROR;\n    \}\n    const measurementsByFile = measurementSweep\.byFile;/\n    const measurementsByFile = measurementSweep.byFile;/s' \
+    "$FIXTURE_ACE/ace-refine-report.ts"
+  if assert_file_changed "refine 未閉フェンスゲートの除去" "$FIXTURE_ACE/ace-refine-report.ts" &&
+    run_fixture "refine 未閉フェンスゲートの除去"; then
+    assert_contains "refine の型エラーファイルを名指し" "$RUN_OUTPUT" "docs-template/scripts/ace/ace-refine-report.ts"
+    assert_contains "byFile 不在を型で報告" "$RUN_OUTPUT" "error TS2339"
+    assert_contains "判別 union の未絞り込みを名指し" "$RUN_OUTPUT" "byFile"
+  fi
+}
+
+# 4. strict が効いていること。strict（strictNullChecks）を外すと通ってしまう形を撃つ。
 #    tsconfig の strict を落とす mutation にすると「設定を消したら緑」しか測れず、
 #    設定が残っていても検出力が無い状態を区別できない。
 reset_fixture
@@ -237,7 +253,23 @@ assert_target_exists "strict 依存の型エラー（null 代入）" "$FIXTURE_A
   fi
 }
 
-# 4. *.test.ts も検査対象であること（設計判断 2 の固定）。テストを対象から外す変更が
+# 5. exactOptionalPropertyTypes が効いていること。optional プロパティの省略と
+#    明示的な undefined を混同する形を撃つ。この mutation は strict だけでは通るため、
+#    Issue #364 で追加したフラグを落とすと検出力が失われる。
+reset_fixture
+assert_target_exists "exact optional 依存の型エラー" "$FIXTURE_ACE/check-archive-links.ts" && {
+  printf '%s\n' \
+    'type __SelftestExactOptional = Readonly<{ value?: string }>;' \
+    'const __selftestExactOptional: __SelftestExactOptional = { value: undefined };' \
+    >> "$FIXTURE_ACE/check-archive-links.ts"
+  if run_fixture "exact optional 依存の型エラー"; then
+    assert_contains "exact optional のエラーを名指し" "$RUN_OUTPUT" "docs-template/scripts/ace/check-archive-links.ts"
+    assert_contains "exactOptionalPropertyTypes の診断を報告" "$RUN_OUTPUT" "exactOptionalPropertyTypes"
+    assert_contains "undefined の明示代入を報告" "$RUN_OUTPUT" "error TS2375"
+  fi
+}
+
+# 6. *.test.ts も検査対象であること（設計判断 2 の固定）。テストを対象から外す変更が
 #    入ると、この 1 件だけが red のまま残る。
 reset_fixture
 assert_target_exists "*.test.ts 内の型エラー" "$FIXTURE_ACE/shell-hooks.test.ts" && {
@@ -248,7 +280,7 @@ assert_target_exists "*.test.ts 内の型エラー" "$FIXTURE_ACE/shell-hooks.te
   fi
 }
 
-# 5. 対象集合の照合（--listFiles 突き合わせ）が効いていること。include を狭めて
+# 7. 対象集合の照合（--listFiles 突き合わせ）が効いていること。include を狭めて
 #    **どこからも到達しなくなった**ファイルを作ると、「検査したファイルにはエラーが
 #    無い」ので tsc は exit 0 になり、集合照合だけが red にできる。本 suite が防ぎたい
 #    「静かな部分カバレッジ」の直撃テスト。
@@ -263,7 +295,7 @@ if assert_file_changed "include の縮小" "$FIXTURE_TSCONFIG" && run_fixture "i
   assert_contains "取りこぼしたファイルを一覧で示す" "$RUN_OUTPUT" "sync-playbook-frontmatter.ts"
 fi
 
-# 6. vitest の型解決が load-bearing であること。マッピング先を壊すと *.test.ts が
+# 8. vitest の型解決が load-bearing であること。マッピング先を壊すと *.test.ts が
 #    TS2307 で赤くなる（解決できないときに黙って any へ倒れて緑になる、の否定）。
 #    着手時点の implicit any 7 件はこの any 化の下流症状だったので、ここが緑に倒れると
 #    「テストを検査している」という主張が中身を失う。
@@ -274,8 +306,8 @@ if assert_file_changed "vitest の paths 破壊" "$FIXTURE_TSCONFIG" && run_fixt
   assert_contains "vitest 未解決を型エラーとして報告" "$RUN_OUTPUT" "Cannot find module 'vitest'"
 fi
 
-# 7. ファイル内部から型検査を無効化する経路。`@ts-nocheck` はファイルを --listFiles に
-#    残したまま検査だけを消すので、case 5 の集合照合では捕まらない（include を狭める
+# 9. ファイル内部から型検査を無効化する経路。`@ts-nocheck` はファイルを --listFiles に
+#    残したまま検査だけを消すので、case 6 の集合照合では捕まらない（include を狭める
 #    「外側」の経路と、ファイル内部の「内側」の経路は別物）。ゲートが
 #    「エラー 0 件」という偽の証明を出さないことを固定する。
 reset_fixture
@@ -288,7 +320,7 @@ assert_target_exists "@ts-nocheck による無効化" "$FIXTURE_ACE/check-archiv
   fi
 }
 
-# 8. 逆向きの固定。*.ts を 1 本増やした正当な変更は green のままでなければならない
+# 10. 逆向きの固定。*.ts を 1 本増やした正当な変更は green のままでなければならない
 #    （対象集合の照合が固定リストへ退化すると、ここだけが red になる）。
 reset_fixture
 printf '%s\n' 'export const selftestAddedFile = 1;' > "$FIXTURE_ACE/selftest-added.ts"
@@ -300,7 +332,7 @@ else
   printf '    %s\n' "$RUN_OUTPUT" >&2
 fi
 
-# 9. 追加拡張子（.mts / .cts / .tsx）内の型エラーが検査対象に入ること（Issue #371 の
+# 11. 追加拡張子（.mts / .cts / .tsx）内の型エラーが検査対象に入ること（Issue #371 の
 #    方向 3）。拡張子の走査が `*.ts` に退化すると、これらは find にも include にも
 #    現れず**両側不可視のまま照合が一致**する — 型エラーが検出されず緑になるため、
 #    退化がここで赤になる。3 拡張子を同じ run に入れるのは実行回数の節約で、tsc は
@@ -319,7 +351,7 @@ if run_fixture "追加拡張子（.mts/.cts/.tsx）内の型エラー"; then
   assert_contains ".tsx のエラーを名指し" "$RUN_OUTPUT" "docs-template/scripts/ace/selftest-poison.tsx"
 fi
 
-# 10. 正当な .mts / .cts / .tsx 追加は green + 件数に乗る（方向 3 の逆向き）。件数
+# 12. 正当な .mts / .cts / .tsx 追加は green + 件数に乗る（方向 3 の逆向き）。件数
 #     アサーションが要るのは、拡張子走査が `*.ts` に退化しても「エラーの無い追加
 #     拡張子」は緑のままで、緑判定だけでは退化を検出できないため — 件数が N+3 に
 #     ならないことが唯一の兆候。
@@ -335,7 +367,7 @@ else
   printf '    %s\n' "$RUN_OUTPUT" >&2
 fi
 
-# 11. symlink 経由の起動が green のままであることの固定（互換カナリア）。
+# 13. symlink 経由の起動が green のままであることの固定（互換カナリア）。
 #     注意: これは方向 2（pwd -P → pwd）の退化検出器では**ない** — 本ゲートは tsconfig を
 #     絶対パスで渡すため、論理パス実装でも prefix と listFiles が同源で一致し red を
 #     再現できない（実測）。cwd 相対で tsconfig を渡す形へ変わったときに初めて分岐が
@@ -363,7 +395,7 @@ else
   bad "ゲートのパス解決から pwd -P が消えている（論理パスへの退化。件数: ${PWD_P_COUNT}）"
 fi
 
-# 12. 抑制ディレクティブ走査の失敗を「該当なし」と読まないこと（Issue #371 の方向 1）。
+# 14. 抑制ディレクティブ走査の失敗を「該当なし」と読まないこと（Issue #371 の方向 1）。
 #     読めないファイルを 1 本作ると grep が rc>=2 で落ちる。root で走ると mode 000 でも
 #     読めるため、その環境では測定せず skip を明示する（測っていないものを ✓ にしない）。
 #     判定は rc ではなく走査失敗メッセージの照合であることが load-bearing — mode 000 の

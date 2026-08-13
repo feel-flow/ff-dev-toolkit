@@ -21,7 +21,10 @@ SETUP="$PLUGIN_ROOT/scripts/setup-multi-agent.sh"
 # パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に誤帰属し、
 # 恒常的に壊れた TMPDIR が suite を exit 0 で無効化し続ける。2>&1 で受けると
 # 成功時はパス・失敗時は理由が同じ変数に入る。
-if _ff_mktemp_out="$(mktemp -d 2>&1)"; then
+# BSD mktemp はテンプレート無しだと、指定した TMPDIR が使えなくてもシステムの
+# 一時領域へフォールバックし得る。そこで成功すると後段の被検体だけが TMPDIR で落ち、
+# 環境都合が suite の失敗に化けるため、検査対象の TMPDIR をテンプレートで固定する。
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-setup-yq.XXXXXX" 2>&1)"; then
   TMP="$_ff_mktemp_out"
 else
   echo "○ skip: 一時ディレクトリを作成できない環境（read-only）のためスキップ"

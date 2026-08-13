@@ -4,9 +4,51 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const REPO_ROOT = resolve(__dirname, "../../..");
-const POST_MERGE_HOOK = join(REPO_ROOT, "docs-template", ".claude", "hooks", "post-merge.ace.sample.sh");
-const RUN_SUBAGENT = join(REPO_ROOT, "docs-template", "scripts", "ace", "run-subagent.sh");
+type ShellHookTestLayout = {
+  readonly executionRoot: string;
+  readonly docsTemplateRoot: string;
+};
+
+function resolveShellHookTestLayout(aceScriptsDir: string): ShellHookTestLayout {
+  const adjacentDocsTemplateRoot = resolve(aceScriptsDir, "../..");
+  const adjacentHook = join(adjacentDocsTemplateRoot, ".claude", "hooks", "post-merge.ace.sample.sh");
+  const adjacentRunner = join(aceScriptsDir, "run-subagent.sh");
+  if (existsSync(adjacentHook) && existsSync(adjacentRunner)) {
+    return {
+      executionRoot: resolve(adjacentDocsTemplateRoot, ".."),
+      docsTemplateRoot: adjacentDocsTemplateRoot,
+    };
+  }
+
+  const repositoryRoot = resolve(aceScriptsDir, "../..");
+  const repositoryDocsTemplateRoot = join(repositoryRoot, "plugins", "ff-dev-toolkit", "docs-template");
+  const repositoryHook = join(
+    repositoryDocsTemplateRoot,
+    ".claude",
+    "hooks",
+    "post-merge.ace.sample.sh",
+  );
+  if (existsSync(repositoryHook) && existsSync(adjacentRunner)) {
+    return {
+      executionRoot: repositoryRoot,
+      docsTemplateRoot: repositoryDocsTemplateRoot,
+    };
+  }
+
+  throw new Error(
+    `shell-hooks.test.ts の配置を解決できません: aceScriptsDir=${aceScriptsDir}`,
+  );
+}
+
+const TEST_LAYOUT = resolveShellHookTestLayout(__dirname);
+const REPO_ROOT = TEST_LAYOUT.executionRoot;
+const POST_MERGE_HOOK = join(
+  TEST_LAYOUT.docsTemplateRoot,
+  ".claude",
+  "hooks",
+  "post-merge.ace.sample.sh",
+);
+const RUN_SUBAGENT = join(__dirname, "run-subagent.sh");
 const BASE_PATH = "/usr/bin:/bin";
 const EXECUTABLE_MODE = 0o755;
 // サブプロセスの上限。超えると spawnSync 側で打ち切られ、runBashScript がスクリプト名を

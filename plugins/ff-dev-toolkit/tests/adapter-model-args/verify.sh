@@ -71,6 +71,15 @@ _ff_exit_guard() {
 }
 trap _ff_exit_guard EXIT
 
+# アダプタの review prompt は呼び出し元 Git リポジトリの diff を含む。suite 自身を
+# 変更中に実行すると、期待文字列（例: `<-m>`）がその diff 経由で prompt 引数へ入り、
+# 実フラグが無いのに argv 検査が拾う自己汚染になる。空の専用 repo から起動して、
+# テスト対象の argv とテスト実装の作業ツリーを分離する。
+mkdir -p "$WORK/repo"
+git -C "$WORK/repo" init -q
+git -C "$WORK/repo" -c user.name=fixture -c user.email=fixture@example.invalid \
+  commit --allow-empty -q -m fixture
+
 PASS=0
 FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
@@ -122,13 +131,13 @@ run_adapter() {
     mkdir -p "$WORK/staging"
     task_args=(--staging-dir "$WORK/staging")
   fi
-  if run_isolated \
-       PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" CODEX_HOME="$WORK/codex" \
-       GROK_HOME="${RUN_GROK_HOME:-$WORK/grok-home-empty}" "$@" \
-       bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$WORK/out.md" \
-       --base HEAD --timeout 30 --task-type "${RUN_TASK_TYPE:-review}" \
-       ${task_args[@]+"${task_args[@]}"} \
-       --description "stub task" >"$WORK/stdout.log" 2>"$WORK/stderr.log"; then
+  if ( cd "$WORK/repo" && run_isolated \
+         PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" CODEX_HOME="$WORK/codex" \
+         GROK_HOME="${RUN_GROK_HOME:-$WORK/grok-home-empty}" "$@" \
+         bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$WORK/out.md" \
+         --base HEAD --timeout 30 --task-type "${RUN_TASK_TYPE:-review}" \
+         ${task_args[@]+"${task_args[@]}"} \
+         --description "stub task" >"$WORK/stdout.log" 2>"$WORK/stderr.log" ); then
     RUN_RC=0
   else
     RUN_RC=$?
@@ -170,6 +179,75 @@ expect_launched() {
   fi
 }
 
+# ---- 値付きフラグの値欠落（Issue #401） -----------------------------------------
+#
+# parse_adapter_args は全アダプタが set -u 下で呼ぶ。Bash 3.2 では末尾の "$2" が
+# unbound variable になると、呼び出し側から rc=0 に見える実測があるため、関数単体
+# ではなく5アダプタの直叩きで検査する。全6フラグを直積で回し、非0だけでなく
+# stderr が欠落したフラグそのものを名指しすること、CLI が未起動であることも固定する。
+MISSING_VALUE_ADAPTERS="claude-code-adapter.sh codex-cli-adapter.sh copilot-cli-adapter.sh gemini-cli-adapter.sh grok-cli-adapter.sh"
+MISSING_VALUE_FLAGS="--changed-files --base --timeout --task-type --description --staging-dir"
+MISSING_VALUE_CASES=0
+for adapter in $MISSING_VALUE_ADAPTERS; do
+  for flag in $MISSING_VALUE_FLAGS; do
+    : > "$WORK/argv.log"
+    MISSING_RC=0
+    run_isolated PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" \
+      CODEX_HOME="$WORK/codex" GROK_HOME="$WORK/grok-home-empty" \
+      bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$WORK/missing-out.md" "$flag" \
+      >"$WORK/missing-stdout.log" 2>"$WORK/missing-stderr.log" </dev/null \
+      || MISSING_RC=$?
+    MISSING_VALUE_CASES=$((MISSING_VALUE_CASES + 1))
+    if [ "$MISSING_RC" -ne 0 ] \
+       && grep -F -- "$flag" "$WORK/missing-stderr.log" >/dev/null \
+       && [ ! -s "$WORK/argv.log" ]; then
+      ok "${adapter}: ${flag} の値欠落を非0・フラグ名指しで拒否し、CLIを起動しない"
+    else
+      bad "${adapter}: ${flag} の値欠落契約違反 (rc=${MISSING_RC}, cli_argv_bytes=$(wc -c < "$WORK/argv.log" | tr -d ' '))"
+      sed 's/^/    | /' "$WORK/missing-stderr.log" >&2
+    fi
+  done
+done
+if [ "$MISSING_VALUE_CASES" -eq 30 ]; then
+  ok "値付き6フラグ × 5アダプタの全30経路を検査した"
+else
+  bad "値欠落の検査件数が30でない（実測: ${MISSING_VALUE_CASES}）"
+fi
+
+# 末尾欠落だけでなく、次の既知フラグを値として吸収する経路も同じ欠落として扱う。
+# 値付き6フラグ × 既知9オプションを共通パーサーの1アダプタで回せば、
+# 上の全5アダプタ直積と合わせて
+# 「共通実装」と「全入口」の両方を固定できる。
+KNOWN_ADAPTER_OPTIONS="--changed-files --base --timeout --task-type --description --include-diff --staged --staging-dir --inline-output"
+OPTION_AS_VALUE_CASES=0
+for flag in $MISSING_VALUE_FLAGS; do
+  for next_option in $KNOWN_ADAPTER_OPTIONS; do
+    : > "$WORK/argv.log"
+    OPTION_AS_VALUE_RC=0
+    run_isolated PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" \
+      CODEX_HOME="$WORK/codex" GROK_HOME="$WORK/grok-home-empty" \
+      bash "$ADAPTERS_DIR/codex-cli-adapter.sh" "$PERSPECTIVE" "$WORK/missing-out.md" \
+      "$flag" "$next_option" \
+      >"$WORK/missing-stdout.log" 2>"$WORK/missing-stderr.log" </dev/null \
+      || OPTION_AS_VALUE_RC=$?
+    OPTION_AS_VALUE_CASES=$((OPTION_AS_VALUE_CASES + 1))
+    if [ "$OPTION_AS_VALUE_RC" -ne 0 ] \
+       && grep -F -- "$flag" "$WORK/missing-stderr.log" >/dev/null \
+       && grep -F -- "$next_option" "$WORK/missing-stderr.log" >/dev/null \
+       && [ ! -s "$WORK/argv.log" ]; then
+      ok "${flag}: 次の既知オプション ${next_option} を値として吸収せず、欠落を名指しする"
+    else
+      bad "${flag}: 次の既知オプション ${next_option} を値として吸収した (rc=${OPTION_AS_VALUE_RC})"
+      sed 's/^/    | /' "$WORK/missing-stderr.log" >&2
+    fi
+  done
+done
+if [ "$OPTION_AS_VALUE_CASES" -eq 54 ]; then
+  ok "値付き6フラグ × 既知9オプションの『次もオプション』全54経路を検査した"
+else
+  bad "『次もオプション』の検査件数が54でない（実測: ${OPTION_AS_VALUE_CASES}）"
+fi
+
 # ---- 既定（env 未設定）: 変更前と同じ argv であること ----------------------------
 # 各 CLI で expect_launched を先に置く。grok だけは直後の --sandbox 肯定検査が
 # 起動の成立を兼ねるため不要。
@@ -181,6 +259,7 @@ run_adapter codex-cli-adapter.sh
 expect_launched "codex-cli: 既定ケースで CLI が起動している"
 expect_argv_lacks "codex-cli: env 未設定ならモデルフラグを渡さない" "<-m>"
 expect_argv_lacks "codex-cli: env 未設定ならプロファイルフラグを渡さない" "<-p>"
+expect_argv_lacks "codex-cli: env 未設定なら reasoning effort を渡さない" "<model_reasoning_effort="
 
 run_adapter gemini-cli-adapter.sh
 expect_launched "gemini-cli: 既定ケースで CLI が起動している"
@@ -213,6 +292,9 @@ expect_argv_has "claude-code: MULTI_AGENT_MODEL_CLAUDE_CODE が --model に届�
 run_adapter codex-cli-adapter.sh MULTI_AGENT_MODEL_CODEX_CLI=some-model
 expect_argv_has "codex-cli: MULTI_AGENT_MODEL_CODEX_CLI が -m に届く" "<-m><some-model>"
 
+run_adapter codex-cli-adapter.sh MULTI_AGENT_CODEX_REASONING_EFFORT=high
+expect_argv_has "codex-cli: effort 単体が -c model_reasoning_effort へ届く" "<-c><model_reasoning_effort=high>"
+
 run_adapter gemini-cli-adapter.sh MULTI_AGENT_MODEL_GEMINI_CLI=some-model
 expect_argv_has "gemini-cli: MULTI_AGENT_MODEL_GEMINI_CLI が -m に届く" "<-m><some-model>"
 
@@ -233,6 +315,33 @@ mkdir -p "$WORK/codex"
 
 run_adapter codex-cli-adapter.sh MULTI_AGENT_CODEX_PROFILE=review
 expect_argv_has "codex-cli: 実在するプロファイルが -p に届く" "<-p><review>"
+
+# effort は profile を後から明示上書きする層として併用を許可する。argv とログの
+# 両方で勝者を判別できなければ「どちらが効いたか分からない」silent failure になる。
+run_adapter codex-cli-adapter.sh MULTI_AGENT_CODEX_PROFILE=review MULTI_AGENT_CODEX_REASONING_EFFORT=xhigh
+expect_argv_has "codex-cli: profile と effort の併用時も -p が届く" "<-p><review>"
+expect_argv_has "codex-cli: profile と effort の併用時は -c が明示上書きになる" "<-c><model_reasoning_effort=xhigh>"
+if grep -qF 'profile value is overridden' "$WORK/stderr.log"; then
+  ok "codex-cli: profile の effort を上書きすることがログで分かる"
+else
+  bad "codex-cli: profile と effort の勝者がログから判別できない"
+fi
+
+run_adapter codex-cli-adapter.sh MULTI_AGENT_CODEX_REASONING_EFFORT=definitely-invalid
+if [ "$RUN_RC" -ne 0 ]; then
+  ok "codex-cli: 不正な effort 値を非 0 で拒否する"
+else
+  bad "codex-cli: 不正な effort 値が黙って既定へ落ちた（rc=0）"
+fi
+expect_argv_lacks "codex-cli: 不正な effort では CLI を起動しない" "<exec>"
+
+run_adapter codex-cli-adapter.sh MULTI_AGENT_CODEX_REASONING_EFFORT=
+if [ "$RUN_RC" -ne 0 ]; then
+  ok "codex-cli: 明示された空 effort も不正値として拒否する"
+else
+  bad "codex-cli: 空 effort が未設定扱いで黙って既定へ落ちた（rc=0）"
+fi
+expect_argv_lacks "codex-cli: 空 effort では CLI を起動しない" "<exec>"
 
 # codex は存在しないプロファイル名を黙って無視し base config で完走する。
 # ラッパー側で落とさないと「専用プロファイルで走らせたつもり」が成立してしまう。

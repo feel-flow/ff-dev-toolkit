@@ -122,6 +122,20 @@ bash scripts/multi-review.sh --dry-run
 | Timeout    | 900s             | 600s              | 900s                |
 | Diff 含む  | Yes              | No                | Optional            |
 
+### Implement の書き込み境界
+
+orchestrator は CLI を対象リポジトリの物理ルートから起動し、そのルート配下の
+`output_dir` だけを許可する。サブディレクトリから起動しても sandbox root は狭まらない。
+`--output-dir` または設定でリポジトリ外を指定した場合は、書けない staging をプロンプトへ
+渡さず実行前に拒否する。
+
+CLI ごとの機械境界は意図的に非対称である。Codex は `workspace-write`（network off）、
+Grok は `workspace`、Gemini は sandbox 無し、Claude Code は Write/Edit/Bash tools、
+Copilot は既定 permission を使う。いずれも repository root より外へは広げず、staging
+だけへの限定はプロンプト契約である。アダプタ直叩きの `--inline-output` は別で、Codex /
+Grok を read-only、Gemini を sandbox、Claude Code を読み取り tools、Copilot を
+write / shell deny へ狭め、作業ツリーへ書かない契約を機械的に裏付ける（Issue #398）。
+
 ## 設定 (agent-config.yaml)
 
 v2.0 形式で、タスクタイプ別・エージェント別に設定可能。

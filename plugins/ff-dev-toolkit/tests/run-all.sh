@@ -57,6 +57,11 @@ else
     # 全 suite を実行するので、並び順は結果ではなく報告の読みやすさの問題）。
     "$SCRIPT_DIR/skill-frontmatter/verify.sh"
     "$SCRIPT_DIR/skill-bash-blocks/verify.sh"
+    # ルート設定で tracked Markdown 全体を lint し、DoD の「markdownlint エラーなし」を
+    # 実行可能にする。依存は同梱 MCP の node_modules から借り、直後の selftest が
+    # 新規違反を非 0・ファイル名付きで検出することを固定する（Issue #295）。
+    "$SCRIPT_DIR/markdownlint/verify.sh"
+    "$SCRIPT_DIR/markdownlint-selftest/verify.sh"
     # case 11（*.sh MBCS）の fail-closed 経路をシームで自動回帰（Issue #312）。
     # skill-bash-blocks の直後: 同欠陥クラスの SKILL.md 側ガードと並べて報告する。
     "$SCRIPT_DIR/mbcs-guard-failclosed/verify.sh"
@@ -78,7 +83,18 @@ else
     # agent-config-mirror 系の直後に置く。
     "$SCRIPT_DIR/agent-config-doc-sync/verify.sh"
     "$SCRIPT_DIR/ace-curate-commit/verify.sh"
-    "$SCRIPT_DIR/ace-refine/verify.sh"
+    # 行数バジェット例外の運用 SSOT（PLAYBOOK）と live、README の参照、見本
+    # ACE-000-3 の 4 条件を静的に照合する（Issue #351）。外部コマンド・一時領域不要。
+    "$SCRIPT_DIR/ace-line-budget-docs/verify.sh"
+    # docs-template/scripts/ace/*.ts（SSOT）と repository root scripts/ace/*.ts
+    # （実行用 mirror）のファイル集合 + byte-identical、および #318 で統合した
+    # entryHeadingSource の既知 consumer が共有 import を使うことを静的に固定する。
+    # README は配置文脈に応じた正当な差分があるため対象外（Issue #338）。
+    "$SCRIPT_DIR/ace-scripts-mirror/verify.sh"
+    # 上の gate を隔離コピーへ 1 byte drift / 片側ファイル / ローカル regex 書き戻しで
+    # poison し、検出器自身が red になることを実測する。perl / 一時領域が無い場合だけ
+    # suite 全体を ○ skip する（実作業ツリーは変更しない）。
+    "$SCRIPT_DIR/ace-scripts-mirror-selftest/verify.sh"
     "$SCRIPT_DIR/changelog-public-references/verify.sh"
     "$SCRIPT_DIR/changelog-version/verify.sh"
     "$SCRIPT_DIR/docs-gates/verify.sh"
@@ -130,6 +146,10 @@ else
     # 実 CLI・ネットワーク・課金は伴わない。設定の保存先は XDG_CONFIG_HOME を
     # 一時ディレクトリへ向けて隔離するので、利用者の実設定には触れない。
     "$SCRIPT_DIR/reviewer-pair/verify.sh"
+    # 実行環境分離ライブラリの検出力を、現consumer 9 suiteの名簿照合と隔離copyへの
+    # mutation（run_isolated除去 / センチネル部分欠落 / probe内unset / シム素起動）で
+    # 常設する（Issue #439）。一時領域のみ使い、実CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/adapter-env-isolation-selftest/verify.sh"
     # 公開リポジトリへの実ネットワーク到達を試みる suite（接続不可のみ丸ごと
     # ○ skip、それ以外は fail）。静的検査より後、破壊的操作を伴う
     # merge-cleanup より前に置く。他の suite を network-dependent 化する場合も
@@ -167,15 +187,23 @@ else
     "$SCRIPT_DIR/adapter-prompt-guard/verify.sh"
     # free-tier CLI への観点集中の制御（Issue #251）: プラン警告 + free-tier 限定の
     # 同一 CLI 内逐次化 + standard の並列維持 + 途中失敗の継続。一時 git リポジトリ +
-    # stub CLI で orchestrator を 3 回実走（〜42 秒。stub の滞留 0.6 秒 × 多数を含む。
-    # 数字を更新するときは実測してから直すこと）。実 CLI・ネットワーク・課金は伴わない。
+    # stub CLI で orchestrator を 4 回実走（単独実測 約 20 秒。詳細は suite README。
+    # standard の逐次化変異は期限付きバリアで検出）。実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/multi-agent-serialization/verify.sh"
-    # 同梱 MCP サーバーの検査 4 本。node_modules が無い環境ではいずれも ○ skip
+    # 実行中にレビュー対象（HEAD / ブランチ / 作業ツリー）が動いたときに結果を黙って
+    # 返さないこと（公開 Issue #11）。diff の固定と前後のリビジョン検証を、一時 git
+    # リポジトリ + stub CLI で実走して確かめる。ミューテーション 5 件つき（詳細は
+    # suite README）。実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/multi-agent-revision-guard/verify.sh"
+    # 同梱 MCP サーバーの実検査 4 本。node_modules が無い環境ではいずれも ○ skip
     # （型検査の 2 本は node が PATH に無い環境でも ○ skip。tsc の shebang が node を
     # 要求するため、環境都合の失敗を型エラーと混ぜないための分岐）。
     # dist-gate（フレッシュビルド比較 + stdio-only 不変条件、〜1 秒）を先に、
     # vitest（実プロセス起動を含む全テスト、〜5 秒）を後に置く — dist が stale
     # なら先に dist-gate が名指しし、vitest の「stale な dist で green」を防ぐ。
+    # dist_state / tree_state の共通 fail-closed 実装を mutation で、2 本の dist_state
+    # wrapper の byte 一致を静的比較で常設検証する（Issue #386、〜1 秒）。
+    "$SCRIPT_DIR/mcp-state-selftest/verify.sh"
     "$SCRIPT_DIR/mcp-dist-gate/verify.sh"
     # 型検査（Issue #360）。vitest も esbuild build も transpile のみで型を見ないため、
     # 型エラーは下の mcp-vitest では検出できない。vitest より前に置くのは
@@ -202,9 +230,18 @@ else
     # skip 条件は上の gate と同じ node_modules 不在に加えて perl 不在・一時領域不可
     # （tsc だけ無い場合はこちらも fail-closed）。
     "$SCRIPT_DIR/ace-scripts-typecheck-selftest/verify.sh"
+    # ace-refine 契約のうち、同梱シードの旧形式 0 件は
+    # check-entry-format の機械可読 CLI へ委譲する（Issue #336）。
+    # mcp/node_modules の esbuild を借りるため、同じ依存を使う typecheck / vitest 群に置く。
+    "$SCRIPT_DIR/ace-refine/verify.sh"
+    # repository root の live docs/08-knowledge に形式・frontmatter の 2 ゲートを適用する。
+    # live docs 不在は適用外として ○ skip、存在するのに依存や入力が欠ける場合は fail-closed。
+    # 直後の selftest は隔離 fixture への旧形式 / count drift mutation と不在境界を実測する。
+    "$SCRIPT_DIR/live-ace-gates/verify.sh"
+    "$SCRIPT_DIR/live-ace-gates-selftest/verify.sh"
     # docs-template/scripts/ace の vitest（Playbook 集計スクリプト群 + refine 候補算出）。
     # vitest 本体は mcp/node_modules を再利用するため mcp 系 suite より後に置く
-    # （上の型検査 2 本も同じ node_modules を借りるので、この 3 本が同じ並びに入る）。
+    # （上の型検査 2 本と ace-refine も同じ node_modules を借りるので、この 4 本が同じ並びに入る）。
     "$SCRIPT_DIR/ace-scripts-vitest/verify.sh"
     # 一時 git リポジトリ + stub CLI を使い、打ち切りや猶予期間の実測待ちを含むので
     # 後ろに置く（単体で〜35 秒。数字を更新するときは実測してから直すこと）
@@ -227,9 +264,15 @@ fi
 #   FF_RUN_ALL_ALLOW_SKIP="agent-config-mirror agent-config-mirror-selftest" bash tests/run-all.sh
 #   FF_RUN_ALL_ALLOW_SKIP=all   # 全部許す（旧来の挙動。1 行の警告つき）
 REQUIRED_SUITES=(
+  # 実行環境分離のselftestは、クリーン環境だと退行してもconsumerが緑になり得る。
+  # 一時領域不足で検出力ごと消える場合は明示許可を要求する（Issue #439）。
+  adapter-env-isolation-selftest
   # yq（Mike Farah v4）が要る。ミラー不変条件は他に代替する検査が無い（#274）
   agent-config-mirror
   agent-config-mirror-selftest
+  # mcp/node_modules が無いと repository Markdown lint の検証イベントが消える（#295）
+  markdownlint
+  markdownlint-selftest
   # mcp/node_modules が要る。型検査ゲート 2 系統ぶんがここに乗っている（#372）
   mcp-dist-gate
   mcp-vitest
@@ -237,7 +280,27 @@ REQUIRED_SUITES=(
   mcp-typecheck-selftest
   ace-scripts-typecheck
   ace-scripts-typecheck-selftest
+  ace-refine
+  # live docs 不在は正当な適用外なので本体は必須にしない。検出力 selftest は代替がなく、
+  # 環境都合で消える場合に明示許可を要求する（Issue #441）。
+  live-ace-gates-selftest
   ace-scripts-vitest
+  # ミラー検出器・tree-state helper・runner 自身の検出力にも代替がない。
+  ace-scripts-mirror-selftest
+  mcp-state-selftest
+  run-all
+  # 一時領域が無いと、以下が単独で守る実行時契約が丸ごと消える。単体 suite は
+  # 環境都合を ○ skip として区別するが、run-all では明示許可なしの skip を通さない
+  # （Issue #436 / #440）。「TMPDIR 書込不可でも全体を緑」は目標にしない。
+  setup-multi-agent-yq
+  docs-gates-runtime
+  adapter-model-args
+  adapter-sandbox-contract
+  review-wrapper-shim
+  sweep-orphan-transcripts
+  multi-agent-timeout
+  # 実行中のリビジョン変化を検出する契約は、この suite 以外どこも守っていない。
+  multi-agent-revision-guard
 )
 
 # ── 既定 suite 一覧の登録漏れ検査 ──────────────────────────────────────────────
@@ -398,7 +461,7 @@ if [[ "$USING_DEFAULT_SCRIPTS" == "1" && ${#SKIPPED[@]} -gt 0 ]]; then
 fi
 if [[ ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
   echo "✗ 環境都合で消してはいけない suite が skip しました: ${REQUIRED_SKIPPED[*]}" >&2
-  echo "  これらが守る不変条件には代替の検査がありません（yq / mcp の node_modules が要ります）。" >&2
+  echo "  これらが守る不変条件には代替の検査がありません（必要な実行環境は各 suite のコメントを参照）。" >&2
   echo "  回せない環境なら、理由を承知のうえで明示的に外してください:" >&2
   echo "    FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh" >&2
 fi

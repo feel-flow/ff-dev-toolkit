@@ -14,7 +14,12 @@ import {
   type EntryLineMeasurement,
   type EntryLineMeasurementResult,
 } from "./ace-refine-report";
-import { computeReuseStats, parsePlaybookEntries, type ReuseStats } from "./ace-reuse-report";
+import {
+  computeReuseStats,
+  main as reuseReportMain,
+  parsePlaybookEntries,
+  type ReuseStats,
+} from "./ace-reuse-report";
 // 結合テスト（末尾の describe）で同一 fixture に対して check 側の判定も測るため。
 // 依存方向は ace-refine-report.ts → check-category-size.ts と同じ向きに揃えている。
 import {
@@ -356,9 +361,9 @@ describe("findOverBudgetEntries", () => {
 
   /**
    * hasException を読む唯一の関数なので、汚染された測定値を渡されたら落とす（Issue #349）。
-   * これはコンパイル時の強制ではなく backstop で、正規の入口は main のゲート — main の catch は
-   * ファイル名を含まない一般メッセージへ写像するため、ここまで来た時点で診断としては劣化している。
-   * それでも「静かに誤った候補一覧を出す」よりはよい。
+   * これは直接呼び出し向けの runtime backstop。main の正規経路は MeasurementSweep の
+   * 判別 union でゲート削除を型エラーにするが、export 関数へ汚染値を渡す呼び出しも
+   * 安全側へ倒す最後の防波堤は別契約として維持する。
    */
   it("未閉フェンスで汚染された測定値を渡されたら落ちる（main のゲートを迂回させない）", () => {
     expect(() =>
@@ -765,6 +770,140 @@ describe("main（fixture E2E）", () => {
     expect(stderr).toContain("coding.md");
     expect(stderr).toContain("testing.md");
     expect(stderr).not.toContain("レポート生成に失敗しました");
+  });
+});
+
+/**
+ * stale 日数既定値の結合テスト（Issue #317）。
+ *
+ * 定数同士の identity は検査しない。同じ PLAYBOOK と同じ git log を両方の main へ渡し、
+ * 「最終参照が100日前」のエントリが reuse の stale 候補と refine の Archive 候補に
+ * 同時に現れることを測る。DEFAULT_STALE_DAYS を 120 へ変異させると両方が候補から外れ、
+ * この検査が赤くなるため、定数の export だけでなく両 main への適用まで固定できる。
+ */
+describe("stale 日数既定値の単一源（ace-reuse-report との結合）", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function makeFixture(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ace-stale-days-coupling-"));
+    tempDirs.push(root);
+    const knowledgeDir = path.join(root, "docs", "08-knowledge");
+    const implDir = path.join(root, "docs", "03-implementation");
+    fs.mkdirSync(knowledgeDir, { recursive: true });
+    fs.mkdirSync(implDir, { recursive: true });
+
+    const playbookPath = path.join(knowledgeDir, "PLAYBOOK.md");
+    fs.writeFileSync(
+      playbookPath,
+      [
+        "# ACE Playbook",
+        "",
+        '<a id="ace-317-1"></a>',
+        "",
+        "### ACE-317-1: 最終 git 参照が100日前のエントリ",
+        "",
+        "| Category | process | Origin | PR #317 |",
+        "| Date | 2026-01-01 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | active |",
+        "",
+        "本文。",
+        "",
+        "---",
+        "",
+        '<a id="ace-317-2"></a>',
+        "",
+        "### ACE-317-2: 最終 git 参照が90日前の境界エントリ",
+        "",
+        "| Category | process | Origin | PR #317 |",
+        "| Date | 2026-01-01 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | active |",
+        "",
+        "本文。",
+        "",
+        "---",
+        "",
+        '<a id="ace-317-3"></a>',
+        "",
+        "### ACE-317-3: 最終 git 参照が89日前の境界外エントリ",
+        "",
+        "| Category | process | Origin | PR #317 |",
+        "| Date | 2026-01-01 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | active |",
+        "",
+        "本文。",
+        "",
+        "---",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    fs.writeFileSync(path.join(implDir, "PATTERNS.md"), "# PATTERNS.md\n", "utf8");
+    return playbookPath;
+  }
+
+  it("環境変数なし・最終参照100日前なら両 main が同じエントリを候補にする", () => {
+    const playbookPath = makeFixture();
+    const previousStaleDays = process.env.ACE_REUSE_STALE_DAYS;
+    delete process.env.ACE_REUSE_STALE_DAYS;
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const deps = {
+      readLog: () => ({
+        commits: [
+          {
+            date: "2026-04-22",
+            subject: "docs: ACE-317-1 を再利用",
+            body: "",
+          },
+          {
+            date: "2026-05-02",
+            subject: "docs: ACE-317-2 を再利用",
+            body: "",
+          },
+          {
+            date: "2026-05-03",
+            subject: "docs: ACE-317-3 を再利用",
+            body: "",
+          },
+        ],
+        malformedCount: 0,
+      }),
+      now: () => NOW,
+    };
+
+    try {
+      expect(reuseReportMain([playbookPath], deps)).toBe(0);
+      const reuseReport = logSpy.mock.calls.flat().map(String).join("\n");
+
+      logSpy.mockClear();
+      expect(main([playbookPath], deps)).toBe(0);
+      const refineReport = logSpy.mock.calls.flat().map(String).join("\n");
+
+      expect(reuseReport).toContain("## Archive 候補（2 件）");
+      expect(reuseReport).toContain("- ACE-317-1: 最終 git 参照が100日前のエントリ");
+      expect(reuseReport).toContain("- ACE-317-2: 最終 git 参照が90日前の境界エントリ");
+      expect(reuseReport).not.toContain("- ACE-317-3: 最終 git 参照が89日前の境界外エントリ");
+      expect(refineReport).toContain("## Archive 候補（helpful=0 かつ stale、2 件）");
+      expect(refineReport).toContain("- ACE-317-1: 最終 git 参照が100日前のエントリ");
+      expect(refineReport).toContain("- ACE-317-2: 最終 git 参照が90日前の境界エントリ");
+      expect(refineReport).not.toContain("- ACE-317-3: 最終 git 参照が89日前の境界外エントリ");
+    } finally {
+      if (previousStaleDays === undefined) {
+        delete process.env.ACE_REUSE_STALE_DAYS;
+      } else {
+        process.env.ACE_REUSE_STALE_DAYS = previousStaleDays;
+      }
+    }
   });
 });
 

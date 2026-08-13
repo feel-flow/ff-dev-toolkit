@@ -308,6 +308,57 @@ else
   grep -E '↪|⚠️|ERROR' "$METERED_LOG" | sed 's/^/    /' >&2
 fi
 
+echo ""
+echo "== metered CLI は全 task で明示 opt-in（Issue #250） =="
+for metered_task in explore implement; do
+  case "$metered_task" in
+    explore) metered_perspective="api-surface-analysis" ;;
+    implement) metered_perspective="test-writing" ;;
+  esac
+
+  DEFAULT_METERED_LOG="$TMP/${metered_task}-default-metered.log"
+  if (
+    cd "$REPO"
+    run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+      --task "$metered_task" --mode distributed --base develop \
+      --description "metered default exclusion" --dry-run
+  ) >"$DEFAULT_METERED_LOG" 2>&1; then
+    ok "${metered_task} の既定 dry-run が成功"
+  else
+    bad "${metered_task} の既定 dry-run が失敗"
+  fi
+
+  if grep -q 'copilot-cli skipped (metered). Opt in with --cli copilot-cli.' "$DEFAULT_METERED_LOG" \
+    && ! grep -q 'copilot-cli \[metered\]:' "$DEFAULT_METERED_LOG" \
+    && ! grep -q "^     - ${metered_perspective}$" "$DEFAULT_METERED_LOG"; then
+    ok "${metered_task} の既定プランから metered CLI を理由付きで除外"
+  else
+    bad "${metered_task} の既定プランに metered CLI が混入、または opt-in 案内が不足"
+    sed 's/^/    | /' "$DEFAULT_METERED_LOG" >&2
+  fi
+
+  EXPLICIT_METERED_LOG="$TMP/${metered_task}-explicit-metered.log"
+  if (
+    cd "$REPO"
+    run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+      --task "$metered_task" --mode distributed --base develop \
+      --description "metered explicit opt-in" --cli copilot-cli \
+      --perspective "$metered_perspective" --dry-run
+  ) >"$EXPLICIT_METERED_LOG" 2>&1; then
+    ok "${metered_task} は明示 --cli copilot-cli で opt-in できる"
+  else
+    bad "${metered_task} の明示 metered opt-in が失敗"
+  fi
+
+  if grep -q 'copilot-cli \[metered\]:' "$EXPLICIT_METERED_LOG" \
+    && grep -q "^     - ${metered_perspective}$" "$EXPLICIT_METERED_LOG"; then
+    ok "${metered_task} の明示 opt-in が所有観点を計画"
+  else
+    bad "${metered_task} の明示 opt-in が計画へ反映されない"
+    sed 's/^/    | /' "$EXPLICIT_METERED_LOG" >&2
+  fi
+done
+
 echo "== CLI 入力検証 =="
 # 退役した名前（cursor-cli, issue #240）は綴りとして正しく見えるので、汎用の
 # 「フィルタが何にもマッチしなかった」エラーからは原因に辿り着けない。存在しない

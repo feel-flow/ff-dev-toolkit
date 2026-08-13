@@ -7,6 +7,7 @@
 # Options:
 #   --changed-files <files>   Comma-separated list of changed files
 #   --base <branch>           Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop)
+#   --staged                  Review only staged changes (mutually exclusive with --base)
 #   --timeout <seconds>       Timeout in seconds (default: 900; the orchestrator always passes this explicitly)
 #   --task-type <type>        review | explore | implement (default: review)
 #   --description <text>      Task description (for explore/implement)
@@ -61,7 +62,13 @@ echo "   Task type: ${TASK_TYPE:-review}" >&2
 echo "   Timeout: ${TIMEOUT}s" >&2
 
 # Copilot CLI: -p for prompt, --silent suppresses stats
-# Same flags for all task types (flat-rate, no sandbox granularity)
+# Copilot has no --sandbox profile, but permission denies are machine-enforced and
+# override allows. Inline implement therefore removes both file-write and shell
+# tools, and temp-dir access, so the prompt's no-write contract is not advisory.
+COPILOT_PERMISSION_ARGS=()
+if [[ "${TASK_TYPE:-review}" == "implement" && "${INLINE_OUTPUT:-false}" == "true" ]]; then
+  COPILOT_PERMISSION_ARGS+=(--deny-tool write --deny-tool shell --disallow-temp-dir)
+fi
 # Guard this mktemp explicitly: under `set -e` a failure here would kill the
 # adapter with a bare 1 before run_with_timeout is ever reached, filing a broken
 # TMPDIR as "the CLI exited 1" and writing no artifact at all.
@@ -86,6 +93,7 @@ echo_model_args
 result=$(run_with_timeout "$TIMEOUT" \
   "$CLI_COMMAND" -p "$prompt" \
     --silent \
+    ${COPILOT_PERMISSION_ARGS[@]+"${COPILOT_PERMISSION_ARGS[@]}"} \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   2>"$stderr_log") || {
     # Capture the status first: any command inside this block would overwrite $?.

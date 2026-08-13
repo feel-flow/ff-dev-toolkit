@@ -313,8 +313,8 @@ echo "== orchestrator 経由での staging 伝達（Issue #392 AC1） =="
 # --dry-run ではアダプタが起動しないので、ここは実行モードで回す（stub CLI のみ）。
 #
 # 出力先は**既定**（--output-dir 無指定 = ${REPO_ROOT}/.implement-results）にする。
-# 利用者が実際に通る経路であり、サンドボックス警告が出ない側の分岐でもある。
-# CWD 外を指す経路は下の「警告の発火」ケースで別に見る。
+# 利用者が実際に通る経路であり、CLI の CWD を repository root へ固定する側も見る。
+# repository root 外を指す経路は下の fail-loud ケースで別に見る。
 #
 # 注意: この実行は codex-cli が feature-implementation を担当できる前提に依存する
 # （scripts/agent-config.yaml の観点割り当て）。ラインナップを変えるとここが赤くなる
@@ -339,6 +339,7 @@ printf 'from an earlier run\n' > "$UNPLANNED_STAGING/old.txt"
 cat > "$STUB/codex" <<SH
 #!/usr/bin/env bash
 for a in "\$@"; do printf '%s\n' "\$a" >> "$TMP/argv.log"; done
+pwd -P > "$TMP/cli-cwd.log"
 sd=""
 for a in "\$@"; do
   case "\$a" in
@@ -416,17 +417,18 @@ else
     bad "統合レポートが生成されていない: $ORCH_REPORT"
   fi
 
-  # 既定パスは CWD 配下なので、サンドボックス警告は**出てはいけない**。
-  # 論理パス/物理パスのずれ（symlink 越しのチェックアウト）で誤発火する形の回帰は
-  # ここで赤くなる。
-  expect_lacks "既定の出力先ではサンドボックス警告を出さない" \
-    "$(cat "$TMP/orch.log")" "outside the CLI sandbox root"
+  if [ "$(cat "$TMP/cli-cwd.log" 2>/dev/null || true)" = "$(cd "$REPO" && pwd -P)" ]; then
+    ok "CLI の CWD（sandbox root）を repository root に固定する"
+  else
+    bad "CLI の CWD が repository root と一致しない"
+  fi
 fi
 
-echo "== サンドボックス境界の警告（発火する側） =="
+echo "== repository root 外の output-dir を実行前に拒否 =="
 
-# CWD 外を --output-dir で指したときは警告が出る。上の「出ない」ケースと対になって
-# いないと、警告関数を丸ごと no-op にする変異も、常に警告する変異も検出できない。
+# repository root 外を --output-dir で指したときは、書けない staging をプロンプトへ
+# 載せず、CLI 起動前に fail-loud で止める。
+: > "$TMP/argv.log"
 set +e
 ( cd "$REPO" && run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
   bash "$PLUGIN_ROOT/scripts/multi-agent.sh" \
@@ -437,11 +439,38 @@ set +e
 ORCH_OUTSIDE_RC=$?
 set -e
 if [ "$ORCH_OUTSIDE_RC" -ne 0 ]; then
-  bad "CWD 外 --output-dir の実行が非 0 終了した (rc=$ORCH_OUTSIDE_RC)"
-  tail -25 "$TMP/orch-outside.log" | sed 's/^/    | /' >&2
+  ok "repository root 外の output-dir を非 0 で拒否する (rc=$ORCH_OUTSIDE_RC)"
 else
-  expect_contains "CWD 外の staging ではサンドボックス警告を出す" \
-    "$(cat "$TMP/orch-outside.log")" "outside the CLI sandbox root"
+  bad "repository root 外の output-dir が実行された"
+fi
+expect_contains "拒否理由が sandbox root と output-dir の境界を名指しする" \
+  "$(cat "$TMP/orch-outside.log")" "outside the CLI sandbox root"
+if [ ! -s "$TMP/argv.log" ]; then
+  ok "境界外 output-dir では CLI を起動しない"
+else
+  bad "境界外 output-dir を拒否した後に CLI を起動した"
+fi
+
+echo "== サブディレクトリ起動でも repository root を sandbox root にする =="
+mkdir -p "$REPO/sub/dir"
+: > "$TMP/argv.log"
+set +e
+( cd "$REPO/sub/dir" && run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
+  bash "$PLUGIN_ROOT/scripts/multi-agent.sh" \
+  --task implement --cli codex-cli --perspective feature-implementation \
+  --description "fixture implement from subdir" --base develop --timeout 30 \
+  ) >"$TMP/orch-subdir.log" 2>&1
+ORCH_SUBDIR_RC=$?
+set -e
+if [ "$ORCH_SUBDIR_RC" -eq 0 ]; then
+  ok "サブディレクトリからの implement が完走する"
+else
+  bad "サブディレクトリからの implement が非 0 終了した (rc=$ORCH_SUBDIR_RC)"
+fi
+if [ "$(cat "$TMP/cli-cwd.log" 2>/dev/null || true)" = "$(cd "$REPO" && pwd -P)" ]; then
+  ok "サブディレクトリ起動でも CLI の CWD は repository root"
+else
+  bad "サブディレクトリ起動で CLI の CWD が呼び出し元 subdir のまま"
 fi
 
 echo "== 相対 --output-dir の絶対化 =="
@@ -476,7 +505,7 @@ echo "== 前回の staging を消せないときの fail-loud =="
 # rm の rc を捨てると、消せなかった前回の生成物が「今回の成果」としてレポートに
 # 案内されたまま実行が進む。staging 自体を書き込み不可にすると、中の残骸を
 # unlink できず rm が失敗する（親が書けても子は消せない）。
-RMFAIL_OUT="$TMP/rmfail-out"
+RMFAIL_OUT="$REPO/.rmfail-out"
 RMFAIL_STAGING="$RMFAIL_OUT/codex-cli/files/feature-implementation"
 mkdir -p "$RMFAIL_STAGING"
 printf 'stale\n' > "$RMFAIL_STAGING/stale.txt"
@@ -511,7 +540,7 @@ echo "== symlink 経由の再帰削除を拒否する =="
 # パスの**途中**が symlink だと、rm -rf が出力先の外を消しに行く。
 # <cli>/files が外部を指す symlink のとき、rm -rf <cli>/files/<persp> は
 # その外部側を消す。OUTPUT_DIR を物理化しても文字列 prefix 判定では見抜けない。
-SYM_OUT="$TMP/sym-out"
+SYM_OUT="$REPO/.sym-out"
 SYM_VICTIM="$TMP/sym-victim"
 mkdir -p "$SYM_OUT/codex-cli" "$SYM_VICTIM/feature-implementation"
 printf 'must survive\n' > "$SYM_VICTIM/feature-implementation/precious.txt"
@@ -571,7 +600,7 @@ echo "== staging を作れないときの fail-loud =="
 
 # 親ディレクトリが書けない状態は mkdir -p が失敗する reachable な経路。
 # ここを warn-and-continue に退行させると、staging 無しのまま実行が進む。
-MKFAIL_OUT="$TMP/mkfail-out"
+MKFAIL_OUT="$REPO/.mkfail-out"
 mkdir -p "$MKFAIL_OUT/codex-cli"
 chmod 555 "$MKFAIL_OUT/codex-cli"
 if [ -w "$MKFAIL_OUT/codex-cli" ]; then
@@ -595,6 +624,95 @@ else
     "$(cat "$TMP/orch-mkfail.log")" "Cannot create staging dir"
 fi
 chmod 755 "$MKFAIL_OUT/codex-cli"
+
+echo "== 同一 output-dir の並行実行を lock で拒否（Issue #402） =="
+
+LOCK_OUT="$REPO/.shared-output"
+LOCK_STAGING="$LOCK_OUT/codex-cli/files/feature-implementation"
+LOCK_STARTED="$TMP/lock-holder-started"
+LOCK_RELEASE="$TMP/lock-holder-release"
+LOCK_CALLS="$TMP/lock-holder-calls"
+: >"$LOCK_CALLS"
+cat >"$STUB/codex" <<SH
+#!/usr/bin/env bash
+echo "start \$\$" >> "$LOCK_CALLS"
+: > "$LOCK_STARTED"
+deadline=\$((SECONDS + 10))
+while [ ! -f "$LOCK_RELEASE" ]; do
+  if [ "\$SECONDS" -ge "\$deadline" ]; then
+    echo "stub: timed out waiting for release" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+echo "stub implement output"
+SH
+chmod +x "$STUB/codex"
+
+( cd "$REPO" && run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
+  bash "$PLUGIN_ROOT/scripts/multi-agent.sh" \
+  --task implement --cli codex-cli --perspective feature-implementation \
+  --description "first concurrent fixture" --base develop --timeout 30 \
+  --output-dir "$LOCK_OUT" \
+  ) >"$TMP/orch-lock-first.log" 2>&1 &
+LOCK_FIRST_PID=$!
+
+LOCK_WAIT=0
+while [ ! -f "$LOCK_STARTED" ] && [ "$LOCK_WAIT" -lt 100 ]; do
+  sleep 0.1
+  LOCK_WAIT=$((LOCK_WAIT + 1))
+done
+if [ ! -f "$LOCK_STARTED" ]; then
+  bad "先行 run が lock 保持中の CLI 実行へ到達しない"
+else
+  mkdir -p "$LOCK_STAGING"
+  printf 'must survive competing run\n' >"$LOCK_STAGING/sentinel.txt"
+
+  set +e
+  ( cd "$REPO" && run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
+    bash "$PLUGIN_ROOT/scripts/multi-agent.sh" \
+    --task implement --cli codex-cli --perspective feature-implementation \
+    --description "second concurrent fixture" --base develop --timeout 30 \
+    --output-dir "$LOCK_OUT" \
+    ) >"$TMP/orch-lock-second.log" 2>&1
+  LOCK_SECOND_RC=$?
+  set -e
+
+  if [ "$LOCK_SECOND_RC" -ne 0 ]; then
+    ok "同じ output-dir の後発 run をタスク起動前に非 0 で拒否する (rc=$LOCK_SECOND_RC)"
+  else
+    bad "同じ output-dir の後発 run が実行され、成果物競合を許した"
+  fi
+  expect_contains "競合した output-dir と lock path を名指しする" \
+    "$(cat "$TMP/orch-lock-second.log")" ".multi-agent-run.lock"
+  if [ -f "$LOCK_STAGING/sentinel.txt" ]; then
+    ok "後発 run が先行 run の staging 成果物を消さない"
+  else
+    bad "後発 run の実行前クリアが先行 run の staging 成果物を削除した"
+  fi
+  if [ "$(wc -l <"$LOCK_CALLS" | tr -d ' ')" -eq 1 ]; then
+    ok "競合拒否された後発 run は CLI を起動しない"
+  else
+    bad "競合拒否された後発 run も CLI を起動した"
+  fi
+fi
+
+: >"$LOCK_RELEASE"
+set +e
+wait "$LOCK_FIRST_PID"
+LOCK_FIRST_RC=$?
+set -e
+if [ "$LOCK_FIRST_RC" -eq 0 ]; then
+  ok "先行 run は lock 保持後も正常完了する"
+else
+  bad "先行 run が非 0 終了した (rc=$LOCK_FIRST_RC)"
+  tail -25 "$TMP/orch-lock-first.log" | sed 's/^/    | /' >&2
+fi
+if [ ! -e "$LOCK_OUT/.multi-agent-run.lock" ]; then
+  ok "完了時に output-dir lock を解放する"
+else
+  bad "完了後も output-dir lock が残っている"
+fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then

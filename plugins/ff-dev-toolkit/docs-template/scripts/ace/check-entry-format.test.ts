@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   detectLegacyMarkers,
+  listEntryIds,
+  listLegacyEntryIds,
   main,
   parseAllowlist,
   splitEntries,
@@ -8,6 +10,7 @@ import {
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** 旧テーブル形式のエントリ（メタ表ヘッダ + 区切り行 + Insight/Context/Action）。 */
 function legacyEntry(id: string): string {
@@ -87,7 +90,7 @@ const CATEGORY_HEADER = [
 
 describe("detectLegacyMarkers", () => {
   it("メタ表ヘッダ・区切り行・Insight ブロックをすべて検出する", () => {
-    const markers = detectLegacyMarkers(legacyEntry("1-1"));
+    const markers = detectLegacyMarkers(splitEntries(legacyEntry("1-1"))[0]?.body ?? "");
     expect(markers).toContain("field-table-header");
     expect(markers).toContain("table-separator");
     expect(markers).toContain("insight-block");
@@ -96,12 +99,28 @@ describe("detectLegacyMarkers", () => {
   it("メタ表だけ正準化されたハイブリッドも Insight ブロックで検出する", () => {
     // live 実データに 4 件存在する（メタ表を正準へ再整形し本文は逐語同一のまま残したもの）。
     // 区切り行だけを主判定にすると、このハイブリッドが新規追記されても通ってしまう。
-    const markers = detectLegacyMarkers(hybridEntry("1-2"));
+    const markers = detectLegacyMarkers(splitEntries(hybridEntry("1-2"))[0]?.body ?? "");
     expect(markers).toEqual(["insight-block"]);
   });
 
   it("コンパクト正準フォーマットは 1 つも検出しない", () => {
-    expect(detectLegacyMarkers(compactEntry("1-3"))).toEqual([]);
+    expect(detectLegacyMarkers(splitEntries(compactEntry("1-3"))[0]?.body ?? "")).toEqual([]);
+  });
+
+  it("正準メタの本文にある比較表は旧メタ表と誤認しない", () => {
+    const body = [
+      "| Category | process | Origin | PR #429 |",
+      "| Date | 2026-08-12 |",
+      "| Helpful | 0 | Harmful | 0 |",
+      "| Status | active |",
+      "",
+      "移行結果を比較する。",
+      "",
+      "| 移行 | 結果 |",
+      "| --- | --- |",
+      "| 1 本目 | 成功 |",
+    ].join("\n");
+    expect(detectLegacyMarkers(body)).toEqual([]);
   });
 
   it("Context / Action だけが残っている場合も検出する", () => {
@@ -176,6 +195,148 @@ describe("splitEntries", () => {
     const entries = splitEntries(content);
     expect(entries.map((e) => e.id)).toEqual(["ACE-1-1"]);
     expect(entries[0].body).toContain("### ACE-9-9: 悪い例");
+  });
+});
+
+describe("--list-legacy 機械可読 CLI（Issue #336）", () => {
+  let tmpDir = "";
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  function writeDirectory(files: Readonly<Record<string, string>>): string {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-list-legacy-"));
+    for (const [name, content] of Object.entries(files)) {
+      fs.writeFileSync(path.join(tmpDir, name), content);
+    }
+    return tmpDir;
+  }
+
+  function resolveSeedDirectory(): string {
+    const sourceDir = path.dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+      path.resolve(sourceDir, "../../08-knowledge/playbook"),
+      path.resolve(sourceDir, "../../plugins/ff-dev-toolkit/docs-template/08-knowledge/playbook"),
+    ];
+    const found = candidates.find((candidate) => fs.existsSync(candidate));
+    if (!found) {
+      throw new Error(`docs-template の見本ディレクトリが見つかりません: ${candidates.join(", ")}`);
+    }
+    return found;
+  }
+
+  it("プレースホルダは除外し、コロン直後に空白がない見出しも ID だけを返す", () => {
+    const directory = writeDirectory({
+      "coding.md": [
+        CATEGORY_HEADER,
+        "### ACE-XXX: [タイトル]",
+        "",
+        "**Insight**: これはテンプレート例。",
+        "",
+        "### ACE-1-1:タイトル",
+        "",
+        "**Insight**: 旧形式。",
+        "",
+      ].join("\n"),
+    });
+
+    expect(listLegacyEntryIds(directory)).toEqual(["ACE-1-1"]);
+  });
+
+  it("stdout は字典順・重複除去の 1 行 1 ID だけで、0 件なら空", () => {
+    const directory = writeDirectory({
+      "b.md": CATEGORY_HEADER + legacyEntry("2-1") + legacyEntry("1-1"),
+      "a.md": CATEGORY_HEADER + legacyEntry("1-1"),
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(main(["node", "check-entry-format.ts", "--list-legacy", directory])).toBe(0);
+    expect(log.mock.calls.map(([line]) => line)).toEqual(["ACE-1-1", "ACE-2-1"]);
+
+    log.mockClear();
+    fs.writeFileSync(path.join(directory, "a.md"), CATEGORY_HEADER + compactEntry("1-1"));
+    fs.writeFileSync(path.join(directory, "b.md"), CATEGORY_HEADER + compactEntry("2-1"));
+    expect(main(["node", "check-entry-format.ts", "--list-legacy", directory])).toBe(0);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("--list-entry-ids は形式を問わず認識した ID 集合を返す", () => {
+    const directory = writeDirectory({
+      "b.md": CATEGORY_HEADER + legacyEntry("2-1") + compactEntry("1-1"),
+      "a.md": CATEGORY_HEADER + compactEntry("1-1"),
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    expect(main(["node", "check-entry-format.ts", "--list-entry-ids", directory])).toBe(0);
+    expect(log.mock.calls.map(([line]) => line)).toEqual(["ACE-1-1", "ACE-2-1"]);
+  });
+
+  it("直下の Markdown だけを走査し、子ディレクトリは読まない", () => {
+    const directory = writeDirectory({ "coding.md": CATEGORY_HEADER + compactEntry("1-1") });
+    const archiveDir = path.join(directory, "archive");
+    fs.mkdirSync(archiveDir);
+    fs.writeFileSync(path.join(archiveDir, "coding.md"), CATEGORY_HEADER + legacyEntry("9-9"));
+
+    expect(listLegacyEntryIds(directory)).toEqual([]);
+  });
+
+  it("未閉コードフェンスは不完全な一覧を出さず exit 2", () => {
+    const directory = writeDirectory({
+      "a.md": CATEGORY_HEADER + legacyEntry("1-1"),
+      "b.md": CATEGORY_HEADER + "```markdown\n",
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(main(["node", "check-entry-format.ts", "--list-legacy", directory])).toBe(2);
+    expect(log).not.toHaveBeenCalled();
+    expect(err.mock.calls.flat().join("\n")).toContain("b.md");
+    expect(err.mock.calls.flat().join("\n")).toContain("閉じていません");
+  });
+
+  it("引数不備とディレクトリ以外の対象は exit 2", () => {
+    const directory = writeDirectory({ "coding.md": CATEGORY_HEADER + compactEntry("1-1") });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(main(["node", "check-entry-format.ts", "--list-legacy"])).toBe(2);
+    expect(
+      main(["node", "check-entry-format.ts", "--list-legacy", path.join(directory, "coding.md")]),
+    ).toBe(2);
+    expect(
+      main(["node", "check-entry-format.ts", "--list-legacy", path.join(directory, "missing")]),
+    ).toBe(2);
+    expect(err.mock.calls.flat().join("\n")).toContain("ディレクトリではありません");
+    expect(err.mock.calls.flat().join("\n")).toContain("missing");
+  });
+
+  it("未知の一覧オプションは通常ゲートへ落とさず stdout を空にして exit 2", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(main(["node", "check-entry-format.ts", "--list-legcy", "."])).toBe(2);
+    expect(log).not.toHaveBeenCalled();
+    expect(err.mock.calls.flat().join("\n")).toContain("Usage:");
+  });
+
+  it("Markdown が 0 件なら両一覧モードとも成功し stdout は空", () => {
+    const directory = writeDirectory({ "legacy.txt": legacyEntry("9-9") });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    expect(main(["node", "check-entry-format.ts", "--list-entry-ids", directory])).toBe(0);
+    expect(main(["node", "check-entry-format.ts", "--list-legacy", directory])).toBe(0);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("現行 docs-template の見本 ID 集合と旧形式 0 件を固定する", () => {
+    const seedDir = resolveSeedDirectory();
+    expect(listEntryIds(seedDir)).toEqual(["ACE-000-1", "ACE-000-2", "ACE-000-3"]);
+    expect(listLegacyEntryIds(seedDir)).toEqual([]);
   });
 });
 

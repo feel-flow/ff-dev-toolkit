@@ -7,6 +7,7 @@
 # Options:
 #   --changed-files <files>   Comma-separated list of changed files
 #   --base <branch>           Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop)
+#   --staged                  Review only staged changes (mutually exclusive with --base)
 #   --timeout <seconds>       Timeout in seconds (default: 900; the orchestrator always passes this explicitly)
 #   --task-type <type>        review | explore | implement (default: review)
 #   --description <text>      Task description (for explore/implement)
@@ -75,6 +76,10 @@ echo "   Timeout: ${TIMEOUT}s" >&2
 # now machine-checks both the boolean shape against the live `--help` and the
 # present/absent split per task type.
 get_gemini_sandbox_flag() {
+  if [[ "${TASK_TYPE:-review}" == "implement" && "${INLINE_OUTPUT:-false}" == "true" ]]; then
+    echo "--sandbox"
+    return
+  fi
   case "${TASK_TYPE:-review}" in
     review|explore) echo "--sandbox" ;;
     implement)      echo "" ;;

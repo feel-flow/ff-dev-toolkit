@@ -15,10 +15,14 @@
  * その値は著者が手で書くフィールドなので**偶然満たせてしまう**（`/ace-refine` の再整形でも
  * 動く）。allowlist に載っていない ID は偶然通れない。
  *
- * 走査対象は `playbook/*.md` 直下のみ（非再帰）。`playbook/archive/` は原文を verbatim
- * 保全する場所であり、旧形式であることが正常なので**巻き込まない**。
+ * 形式ゲートは索引 `PLAYBOOK.md` と `playbook/*.md` を走査する。一覧モードは指定された
+ * ディレクトリ直下の `*.md` を走査する。どちらも非再帰で、`playbook/archive/` は原文を
+ * verbatim 保全する場所であり、旧形式であることが正常なので**巻き込まない**。
  *
- * 実行例: npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
+ * 実行例:
+ * - 形式ゲート: npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
+ * - 全 ID 一覧: npx --yes tsx scripts/ace/check-entry-format.ts --list-entry-ids docs/08-knowledge/playbook
+ * - 旧形式 ID 一覧: npx --yes tsx scripts/ace/check-entry-format.ts --list-legacy docs/08-knowledge/playbook
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -34,6 +38,9 @@ import {
 const EXIT_OK = 0;
 const EXIT_VIOLATION = 1;
 const EXIT_USAGE_ERROR = 2;
+
+type ExitCode = typeof EXIT_OK | typeof EXIT_VIOLATION | typeof EXIT_USAGE_ERROR;
+type ListExitCode = typeof EXIT_OK | typeof EXIT_USAGE_ERROR;
 
 const DEFAULT_ALLOWLIST_BASENAME = "legacy-format-allowlist.txt";
 
@@ -59,9 +66,21 @@ const INSIGHT_BLOCK = /^\*\*(?:Insight|Context|Action)\*\*/mu;
 export type LegacyMarker = "field-table-header" | "table-separator" | "insight-block";
 
 export type PlaybookEntry = Readonly<{
-  readonly id: string;
+  readonly id: RecognizedAceEntryId;
   readonly body: string;
 }>;
+
+declare const recognizedAceEntryIdBrand: unique symbol;
+/** `entryHeadingSource` の共有パーサが認識した ID。形状ゲート通過済みとは限らない。 */
+export type RecognizedAceEntryId = string & {
+  readonly [recognizedAceEntryIdBrand]: true;
+};
+
+function asRecognizedAceEntryId(value: string): RecognizedAceEntryId {
+  // この変換は ACE_ENTRY_HEADER_LINE の capture 直後だけで行う。
+  // ローカル regex で再検証すると Issue #336 の単一源化を逆行する。
+  return value as RecognizedAceEntryId;
+}
 
 /**
  * カテゴリファイル本文をエントリ単位（見出し行から次の見出し行の直前まで）へ分割する。
@@ -71,19 +90,20 @@ export type PlaybookEntry = Readonly<{
  * 見出し `### ACE-9-9:` があってもエントリとして数えない — reuse / refine のパーサと
  * 同じ除外規則で、4 スクリプトの認識を一致させる）。本文はフェンス空白化**前**の
  * 行から集める（旧形式マーカーの検出対象を変えない）。フェンス内の正準形見出しと
- * 未閉フェンスへの**拒否**は呼び出し側の main が担う（パーサは除外するだけ —
- * 読み取り側から import されても汚れた入力で例外を投げない）。
+ * 未閉フェンスへの**拒否**は `splitEntries` の呼び出し側（形式ゲートの `main` または
+ * 一覧処理の `readEntries`）が担う（パーサは除外するだけ — 読み取り側から import
+ * されても汚れた入力で例外を投げない）。
  */
 export function splitEntries(content: string): PlaybookEntry[] {
   const source = blankHtmlBlockComments(content);
   const probe = blankFencedCodeBlocks(source);
   const boundaryLines = probe.text.split("\n");
   const lines = source.split("\n");
-  const entries: { id: string; bodyLines: string[] }[] = [];
+  const entries: { id: RecognizedAceEntryId; bodyLines: string[] }[] = [];
   for (let i = 0; i < lines.length; i++) {
     const match = boundaryLines[i].match(ACE_ENTRY_HEADER_LINE);
     if (match?.[1]) {
-      entries.push({ id: match[1], bodyLines: [] });
+      entries.push({ id: asRecognizedAceEntryId(match[1]), bodyLines: [] });
       continue;
     }
     if (entries.length > 0) {
@@ -98,15 +118,18 @@ export function splitEntries(content: string): PlaybookEntry[] {
  *
  * 3 つのマーカーを **OR** で見るのは実データの都合である。live には「メタ表だけ正準へ
  * 再整形され本文は Insight/Context/Action のまま残ったハイブリッド」が 4 件あり、
- * 区切り行だけを主判定にするとこの形の新規追記が通ってしまう。逆に区切り行のみを
- * 持つエントリは 0 件なので、Insight ブロックが実質の主判定になる。
+ * 区切り行だけを主判定にするとこの形の新規追記が通ってしまう。表形式の 2 マーカーは
+ * エントリ先頭のメタブロックだけを見る。本文中の比較表まで旧メタ表と誤認しないためで、
+ * ACE-429-1 がこの偽陽性を実際に踏んだ（Issue #441）。Insight ブロックは本文に残る
+ * ハイブリッドを検出するため、従来どおり本文全体を見る。
  */
 export function detectLegacyMarkers(body: string): LegacyMarker[] {
   const markers: LegacyMarker[] = [];
-  if (FIELD_TABLE_HEADER.test(body)) {
+  const metadataBlock = body.trimStart().split(/\r?\n[\t ]*\r?\n/u, 1)[0] ?? "";
+  if (FIELD_TABLE_HEADER.test(metadataBlock)) {
     markers.push("field-table-header");
   }
-  if (TABLE_SEPARATOR.test(body)) {
+  if (TABLE_SEPARATOR.test(metadataBlock)) {
     markers.push("table-separator");
   }
   if (INSIGHT_BLOCK.test(body)) {
@@ -156,8 +179,117 @@ function resolvePlaybookPath(argv: readonly string[]): string | undefined {
   return undefined;
 }
 
-export function main(): number {
-  const playbookPath = resolvePlaybookPath(process.argv);
+export class LegacyListInputError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = "LegacyListInputError";
+  }
+}
+
+function discoverMarkdownFiles(directoryPath: string): string[] {
+  try {
+    if (!fs.statSync(directoryPath).isDirectory()) {
+      throw new LegacyListInputError(`対象がディレクトリではありません: ${directoryPath}`);
+    }
+    return fs
+      .readdirSync(directoryPath)
+      .filter((entry: string) => entry.endsWith(".md"))
+      .map((entry: string) => path.join(directoryPath, entry))
+      .sort();
+  } catch (error: unknown) {
+    if (error instanceof LegacyListInputError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new LegacyListInputError(`${directoryPath}: ${message}`);
+  }
+}
+
+function readEntries(filePath: string): readonly PlaybookEntry[] {
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, "utf8");
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new LegacyListInputError(`${filePath}: ${message}`);
+  }
+  const fenceScan = blankFencedCodeBlocks(blankHtmlBlockComments(content));
+  if (fenceScan.unclosedFence) {
+    throw new LegacyListInputError(
+      `${filePath}: ${fenceScan.unclosedFenceLine + 1} 行目に始まるコードフェンスが閉じていません`,
+    );
+  }
+  return splitEntries(content);
+}
+
+/**
+ * 指定ディレクトリ直下で認識した形状検証前の ACE エントリ ID をソート・重複除去して返す。
+ * 読み込み失敗、非ディレクトリ、未閉フェンスは `LegacyListInputError` として送出する。
+ */
+export function listEntryIds(directoryPath: string): readonly RecognizedAceEntryId[] {
+  const ids = new Set<RecognizedAceEntryId>();
+  for (const filePath of discoverMarkdownFiles(directoryPath)) {
+    for (const entry of readEntries(filePath)) {
+      ids.add(entry.id);
+    }
+  }
+  return [...ids].sort();
+}
+
+/**
+ * 指定ディレクトリ直下の `*.md` を非再帰で読み、旧形式 ID のソート済み集合を返す。
+ * 読み込み失敗、非ディレクトリ、未閉フェンスは `LegacyListInputError` として送出する。
+ */
+export function listLegacyEntryIds(directoryPath: string): readonly RecognizedAceEntryId[] {
+  const ids = new Set<RecognizedAceEntryId>();
+  for (const filePath of discoverMarkdownFiles(directoryPath)) {
+    for (const entry of readEntries(filePath)) {
+      if (detectLegacyMarkers(entry.body).length > 0) {
+        ids.add(entry.id);
+      }
+    }
+  }
+  return [...ids].sort();
+}
+
+/**
+ * 一覧 CLI は ID を字典順・重複除去で 1 行 1 件 stdout へ出す。
+ * 入力全体の検証後に出力するため、入力エラー時は stdout を空に保ち診断を stderr へ出す。
+ * 0 件の stdout は空。成功は 0、引数/入力エラーは 2 で、1 は返さない。
+ */
+function runList(argv: readonly string[]): ListExitCode {
+  const mode = argv[2];
+  const directoryArg = argv[3];
+  if (
+    argv.length !== 4 ||
+    (mode !== "--list-entry-ids" && mode !== "--list-legacy") ||
+    !directoryArg ||
+    directoryArg.trim() === ""
+  ) {
+    console.error(
+      "Usage: npx --yes tsx scripts/ace/check-entry-format.ts (--list-entry-ids|--list-legacy) <directory>",
+    );
+    return EXIT_USAGE_ERROR;
+  }
+  const directoryPath = path.resolve(directoryArg);
+  try {
+    const ids = mode === "--list-entry-ids" ? listEntryIds(directoryPath) : listLegacyEntryIds(directoryPath);
+    for (const id of ids) {
+      console.log(id);
+    }
+  } catch (error: unknown) {
+    if (error instanceof LegacyListInputError) {
+      console.error(`読み込み失敗: ${error.message}`);
+      return EXIT_USAGE_ERROR;
+    }
+    throw error;
+  }
+  return EXIT_OK;
+}
+
+export function main(argv: readonly string[] = process.argv): ExitCode {
+  if (argv[2]?.startsWith("--list-")) {
+    return runList(argv);
+  }
+  const playbookPath = resolvePlaybookPath(argv);
   if (!playbookPath) {
     console.error(
       "引数に PLAYBOOK.md のパスを渡すか、ACE_PLAYBOOK_PATH を設定してください。",
