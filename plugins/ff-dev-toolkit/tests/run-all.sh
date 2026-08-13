@@ -171,6 +171,11 @@ else
     # （Issue #273）。settings.json が無いチェックアウト（公開リポジトリ等）では
     # ○ skip。一時ディレクトリ + stub hook のみ（〜2 秒）。
     "$SCRIPT_DIR/claude-hooks-path/verify.sh"
+    # 公開リポジトリの Dependabot 健全性検知（Issue #472）。依存グラフ無効の再発と
+    # 実在しない manifest パスに紐づく幽霊 alert を分けて捕捉する。検知スクリプト／
+    # hook が無いチェックアウト（公開リポジトリ等）では ○ skip。gh はスタブへ
+    # 差し替えるため実ネットワークには触らない。
+    "$SCRIPT_DIR/public-dependabot-health/verify.sh"
     "$SCRIPT_DIR/merge-cleanup/verify.sh"
     # 既存の孤児トランスクリプト sweep（実 ~/.claude は触らず隔離 tmp のみ）。
     # merge-cleanup の Step 5.5 と同じアーカイブ思想の別口。直後に置く。

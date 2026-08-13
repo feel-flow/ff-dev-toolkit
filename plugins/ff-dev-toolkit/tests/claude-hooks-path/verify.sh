@@ -37,7 +37,7 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
-HOOK_NAMES="post-merge-dev-toolkit-sync.sh session-start-sync-drift.sh"
+HOOK_NAMES="post-merge-dev-toolkit-sync.sh session-start-sync-drift.sh session-start-dependabot-health.sh"
 
 # settings.json が valid JSON であること自体を独立に固定する — 壊れていると
 # Claude Code は hook を全停止するため、これは沈黙の全無効化ゲートでもある。
@@ -52,13 +52,14 @@ fi
 # 全文 grep だと、対象 hook の削除が「対象外」として静かに成功してしまう）。
 PM_COUNT="$(jq -r '[.hooks.PostToolUse[]?.hooks[]?.command // empty | select(contains("post-merge-dev-toolkit-sync.sh"))] | length' "$SETTINGS")"
 SS_COUNT="$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command // empty | select(contains("session-start-sync-drift.sh"))] | length' "$SETTINGS")"
-if [ "$PM_COUNT" = 0 ] && [ "$SS_COUNT" = 0 ]; then
+DH_COUNT="$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command // empty | select(contains("session-start-dependabot-health.sh"))] | length' "$SETTINGS")"
+if [ "$PM_COUNT" = 0 ] && [ "$SS_COUNT" = 0 ] && [ "$DH_COUNT" = 0 ]; then
   echo "○ skip: 対象 hook の定義が settings.json に無いためスキップ（SSOT リポジトリ以外の構成）"
   FF_REACHED_END=1
   exit 0
 fi
-if [ "$PM_COUNT" != 1 ] || [ "$SS_COUNT" != 1 ]; then
-  echo "✗ 対象 hook の定義数が想定と違う（post-merge=${PM_COUNT} / session-start=${SS_COUNT}。片方だけの削除・重複は設定事故）" >&2
+if [ "$PM_COUNT" != 1 ] || [ "$SS_COUNT" != 1 ] || [ "$DH_COUNT" != 1 ]; then
+  echo "✗ 対象 hook の定義数が想定と違う（post-merge=${PM_COUNT} / session-start=${SS_COUNT} / dependabot-health=${DH_COUNT}。片方だけの削除・重複は設定事故）" >&2
   exit 1
 fi
 # 抽出も正確な JSON パスで行う（改行を含むコマンドでも全文が 1 要素として取れる —
@@ -66,6 +67,7 @@ fi
 # 実行する事故と、下流早期終了の SIGPIPE 事故を同居させる）。
 PM_CMD="$(jq -r '[.hooks.PostToolUse[]?.hooks[]?.command // empty | select(contains("post-merge-dev-toolkit-sync.sh"))][0]' "$SETTINGS")"
 SS_CMD="$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command // empty | select(contains("session-start-sync-drift.sh"))][0]' "$SETTINGS")"
+DH_CMD="$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command // empty | select(contains("session-start-dependabot-health.sh"))][0]' "$SETTINGS")"
 
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正な
 # パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に誤帰属し、
@@ -113,8 +115,9 @@ make_root() { # $1: ルートパス
 
 get_command() { # $1: hook 名 / stdout: settings.json の実コマンド文字列
   case "$1" in
-    post-merge-dev-toolkit-sync.sh) printf '%s\n' "$PM_CMD" ;;
-    session-start-sync-drift.sh)    printf '%s\n' "$SS_CMD" ;;
+    post-merge-dev-toolkit-sync.sh)     printf '%s\n' "$PM_CMD" ;;
+    session-start-sync-drift.sh)        printf '%s\n' "$SS_CMD" ;;
+    session-start-dependabot-health.sh) printf '%s\n' "$DH_CMD" ;;
   esac
 }
 
