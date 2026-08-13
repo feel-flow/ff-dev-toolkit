@@ -176,6 +176,10 @@ else
     # hook が無いチェックアウト（公開リポジトリ等）では ○ skip。gh はスタブへ
     # 差し替えるため実ネットワークには触らない。
     "$SCRIPT_DIR/public-dependabot-health/verify.sh"
+    # 公開対象の禁止パターン検査（Issue #476）。同期スクリプトの --check-only
+    # を使い、パターン配列は同期スクリプト側のまま再利用する。スクリプトや
+    # 公開対象ディレクトリが無い checkout（公開リポジトリ等）では ○ skip。
+    "$SCRIPT_DIR/sync-forbidden-patterns/verify.sh"
     "$SCRIPT_DIR/merge-cleanup/verify.sh"
     # 既存の孤児トランスクリプト sweep（実 ~/.claude は触らず隔離 tmp のみ）。
     # merge-cleanup の Step 5.5 と同じアーカイブ思想の別口。直後に置く。
@@ -306,6 +310,10 @@ REQUIRED_SUITES=(
   multi-agent-timeout
   # 実行中のリビジョン変化を検出する契約は、この suite 以外どこも守っていない。
   multi-agent-revision-guard
+  # 公開対象の禁止パターン検査。同期時以外に発火するゲートが他に無い（#476）。
+  # 公開 checkout はスクリプト不在で ○ skip、一時領域不足でも ○ skip する。
+  # そちらでは FF_RUN_ALL_ALLOW_SKIP=sync-forbidden-patterns が要る。
+  sync-forbidden-patterns
 )
 
 # ── 既定 suite 一覧の登録漏れ検査 ──────────────────────────────────────────────
