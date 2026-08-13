@@ -180,7 +180,11 @@ dry-run レポート全文と近似重複の抽出結果を、操作種別ごと
    npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
    ```
 
-6. **正準化した ID を allowlist から削除する**: R3-b の圧縮で旧テーブル形式をコンパクト正準へ再整形した場合、および R3-a/R3-c で live から消した場合、その ID を `docs/08-knowledge/legacy-format-allowlist.txt` から削除する（削除しないと `check-entry-format` が「正準化済みなのに allowlist に残っている」と警告する。警告のみでブロックはしないので、refine 自体は止まらない）。
+6. **正準化後の allowlist 操作は変種で分岐する**（`check-entry-format` の旧形式判定は field-table-header / table-separator / insight-block の 3 マーカー OR。allowlist から外してよいのは live 本文に 3 マーカーが 1 つも残っていない ID だけ。第 1 変種＝本文要約でも、行頭の **Insight**/**Context**/**Action** が残れば legacy のまま）:
+
+   - **第 1 変種かつ 3 マーカーが全て消えた場合**（完全正準化）: 当該 ID を `docs/08-knowledge/legacy-format-allowlist.txt` から削除する。削除しないと `check-entry-format` が「正準化済みなのに allowlist に残っている」と警告する（警告のみでブロックはしない）。
+   - **第 2 変種、または第 1 変種でも insight-block 等が残る場合**（ハイブリッド残置）: 本文の **Insight**/**Context**/**Action** が残るため `insight-block` マーカーで legacy 判定が継続する。**allowlist から削除しない**（削除すると allowlist に無い旧形式として exit 1 でブロックされる）。
+   - **R3-a / R3-c で live から消した場合**: 当該 ID を allowlist から削除する（live に無い ID は警告のみ。警告を消すための掃除）。
 
 ### コミット
 

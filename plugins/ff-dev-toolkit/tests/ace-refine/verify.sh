@@ -222,11 +222,35 @@ contains "$REFINE_FILE" \
   "check-entry-format" \
   "refine の検証ゲートに形式ゲートが配線されている"
 contains "$REFINE_FILE" \
-  "正準化した ID を allowlist から削除する" \
-  "refine 側: 正準化後の allowlist 掃除手順"
+  "正準化後の allowlist 操作は変種で分岐する" \
+  "refine 側: allowlist 操作が変種分岐であること"
+# 変種を書き分けないと、第 2 変種（ハイブリッド）まで allowlist から外して
+# insight-block 判定で exit 1 になる（Issue #493）。見出しだけでは分岐が落ちる。
+# 「allowlist から削除しない」単体は「削除しないと警告…なので削除する」の接頭辞に
+# 一致するため、exit 1 条項まで含めて第 2 変種専用にする。
+contains "$REFINE_FILE" \
+  "\`insight-block\` マーカーで legacy 判定が継続する" \
+  "refine 側: 第 2 変種が insight-block で legacy 判定を継続すること"
+contains "$REFINE_FILE" \
+  "**allowlist から削除しない**（削除すると allowlist に無い旧形式として exit 1" \
+  "refine 側: 第 2 変種は allowlist 残置（exit 1 のため削除しない）"
+contains "$REFINE_FILE" \
+  "ハイブリッド残置" \
+  "refine 側: 第 2 変種をハイブリッド残置として名指し"
 contains "$PLAYBOOK_TEMPLATE" \
   "新規追記のために allowlist へ ID を足さない" \
   "PLAYBOOK テンプレ: allowlist を抜け道にしない"
+contains "$PLAYBOOK_TEMPLATE" \
+  "ハイブリッド残置なら削除しない" \
+  "PLAYBOOK テンプレ: 第 2 変種は allowlist 残置"
+LIVE_PLAYBOOK="$(cd "$PLUGIN_ROOT/../.." && pwd)/docs/08-knowledge/PLAYBOOK.md"
+if [ -s "$LIVE_PLAYBOOK" ]; then
+  contains "$LIVE_PLAYBOOK" \
+    "ハイブリッド残置なら削除しない" \
+    "live PLAYBOOK: 第 2 変種は allowlist 残置"
+else
+  ok "live PLAYBOOK 不在（公開 checkout）— テンプレート側のみ検査"
+fi
 # 配布物の自己整合（Issue #344 で不変条件を反転した）。
 # 旧: 同梱シード（131 件の旧形式）が allowlist で網羅されていること。
 # 新: **同梱シードに旧テーブル形式が 1 件も無く、allowlist も同梱しないこと**。

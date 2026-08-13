@@ -1,9 +1,9 @@
 ---
 title: "PLAYBOOK"
-version: "1.69.0"
+version: "1.70.0"
 status: "approved"
 created: "2026-03-10"
-updated: "2026-08-12"
+updated: "2026-08-14"
 changeImpact: medium
 owner: "@fffokazaki"
 ace_entry_count: 3
@@ -116,7 +116,7 @@ ACE エントリ ID は **PRスコープ式** を採用する（このセクシ�
 - **GitHub 上でテーブル描画されない**: ヘッダ行・区切り行を持たないため、パイプ行はプレーンテキストとして表示される。Playbook は AI が参照するための構造化文書であり、これは意図した仕様（markdownlint / Prettier が警告する場合は当該ブロックに `<!-- prettier-ignore -->` を付与する局所抑制で対応 — ACE-011 の適用）
 - **行数バジェット**: 1 エントリ 15 行以内（anchor 行〜終端 `---`）。反直感的な詳細が必要な場合のみ `<!-- ace-line-budget-exception: 理由 -->` を 1 行添えて 30 行以内
 - **旧形式との共存**: 旧テーブル形式（`| フィールド | 値 |` ヘッダ + **Insight**/**Context**/**Action** ブロック）のエントリは読み取り互換として共存させる（改稿は `/ace-refine` の圧縮操作のみが行う）。新規追記には使わない
-- **形式は機械ゲートで強制される**: `scripts/ace/check-entry-format.ts` が `playbook/*.md` 直下を走査し、PLAYBOOK.md と同階層の `legacy-format-allowlist.txt` に無い旧形式エントリを見つけると exit 1 でブロックする（allowlist ファイルが無ければ旧形式は全て赤 = strict）。**新規追記のために allowlist へ ID を足さない**（allowlist は既存エントリの互換維持のためのものであり、新規追記の抜け道ではない）。`/ace-refine` で正準化したら当該 ID を allowlist から削除する。`playbook/archive/` は原文を verbatim 保全する場所なので走査対象外
+- **形式は機械ゲートで強制される**: `scripts/ace/check-entry-format.ts` が `playbook/*.md` 直下を走査し、PLAYBOOK.md と同階層の `legacy-format-allowlist.txt` に無い旧形式エントリを見つけると exit 1 でブロックする（allowlist ファイルが無ければ旧形式は全て赤 = strict）。**新規追記のために allowlist へ ID を足さない**（allowlist は既存エントリの互換維持のためのものであり、新規追記の抜け道ではない）。`/ace-refine` の allowlist 削除は変種で分岐する（完全正準化なら削除、ハイブリッド残置なら削除しない。手順は `/ace-refine` R3-e step 6）。`playbook/archive/` は原文を verbatim 保全する場所なので走査対象外
 
 ### 記述ガイドライン
 
@@ -214,6 +214,12 @@ Playbook が導出上限（`ヘッダ行数 + 件数 × 16`）を超え、正準
 | ACE-000-3 | 【見本】行数バジェット例外の宣言 — 反直感的な詳細が 15 行に収まらないときだけ使う | testing | [playbook/testing.md#ace-000-3](./playbook/testing.md#ace-000-3) |
 
 ## Changelog
+
+### [1.70.0] - 2026-08-14
+
+#### 変更（運用ルール）
+
+- `/ace-refine` の allowlist 削除を変種分岐へ書き換えた。完全正準化なら削除、メタ表のみ再整形したハイブリッドは `insight-block` で legacy 判定が続くため allowlist に残す（手順は `/ace-refine` R3-e step 6）
 
 ### [1.69.0] - 2026-08-12
 
