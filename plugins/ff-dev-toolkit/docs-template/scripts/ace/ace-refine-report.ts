@@ -384,18 +384,68 @@ function escapeRegExp(value: string): string {
 }
 
 /**
- * PATTERNS.md に当該 ID が「完全な ID トークンとして」収載済みか。
- * 素の includes だと `ACE-24-1` が `ACE-24-10` の部分文字列としてマッチし、
- * 片方の昇格がもう片方の候補を黙って永久に抑止する（PRスコープ式 ID は
- * 同一 PR 由来で必ず接頭辞を共有するため、これは現実的な衝突）。
+ * 「実証済みパターン（ACE 昇格）」節だけを切り出す。節が無い入力（単体テストの断片）は
+ * 全文を返す。Changelog など後続節の ID 言及を収載と誤判定しないため（Issue #492）。
+ */
+export function extractPromotionSection(patternsContent: string): string {
+  const lines = patternsContent.split("\n");
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^##\s+/u.test(lines[i]) && lines[i].includes("実証済みパターン（ACE 昇格）")) {
+      start = i + 1;
+      break;
+    }
+  }
+  if (start < 0) {
+    // 文書に Changelog があるのに昇格節が無い = 未収載。全文フォールバックすると
+    // Changelog の本文+出典を収載と誤判定する（Issue #492）。
+    if (/^##\s+/mu.test(patternsContent)) {
+      return "";
+    }
+    return patternsContent;
+  }
+  let end = lines.length;
+  for (let i = start; i < lines.length; i++) {
+    if (/^##\s+/u.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(start, end).join("\n");
+}
+
+/**
+ * PATTERNS.md に当該 ID が「パターン本文 + 出典リンク」の組として収載済みか。
+ * Changelog 内の ID 言及や 出典行だけのプレースホルダは収載と見なさない（Issue #492）。
+ * 出典行は `出典: [ACE-20-1](...)` の label 完全一致なので、`ACE-20-10` の収載が
+ * `ACE-20-1` を抑止することはない。
  */
 export function isListedInPatterns(patternsContent: string, id: string): boolean {
-  return new RegExp(`\\b${escapeRegExp(id)}\\b(?!-)`, "u").test(patternsContent);
+  const section = extractPromotionSection(patternsContent).replace(
+    /<!--[\s\S]*?-->/gu,
+    "",
+  );
+  const sourceLine = new RegExp(
+    `^出典:\\s*\\[${escapeRegExp(id)}\\]\\([^\\)]+\\)`,
+    "mu",
+  );
+  const blocks = section.split(/^###\s+/mu);
+  for (const block of blocks) {
+    if (!sourceLine.test(block)) continue;
+    const bodyLines = block.split("\n").filter((line, index) => {
+      if (index === 0 && !line.startsWith("出典:")) return false;
+      if (line.trim() === "") return false;
+      if (/^出典:/u.test(line)) return false;
+      return true;
+    });
+    if (bodyLines.length > 0) return true;
+  }
+  return false;
 }
 
 /**
  * PATTERNS.md 昇格候補 = Status が active、Helpful >= promoteMin、かつ PATTERNS.md に
- * 完全 ID トークンとして未収載のもの。deprecated 等の非 active エントリは Helpful が
+ * パターン本文 + 出典リンクの組として未収載のもの。deprecated 等の非 active エントリは Helpful が
  * 高くても昇格させない（「実証済みパターン」に反証済みの知見が混入するため）。
  * patternsContent が null（ファイル不在）の場合は収載チェックをスキップする。
  */

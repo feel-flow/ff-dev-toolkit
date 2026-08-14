@@ -21,12 +21,13 @@ ACE_CYCLE_TEMPLATE="$PLUGIN_ROOT/docs-template/05-operations/deployment/ace-cycl
 CHECK_SIZE_SCRIPT="$PLUGIN_ROOT/docs-template/scripts/ace/check-category-size.ts"
 REFINE_REPORT_SCRIPT="$PLUGIN_ROOT/docs-template/scripts/ace/ace-refine-report.ts"
 FORMAT_GATE_SCRIPT="$PLUGIN_ROOT/docs-template/scripts/ace/check-entry-format.ts"
+INVARIANTS_GATE_SCRIPT="$PLUGIN_ROOT/docs-template/scripts/ace/check-refine-invariants.ts"
 LEGACY_ALLOWLIST_TEMPLATE="$PLUGIN_ROOT/docs-template/08-knowledge/legacy-format-allowlist.txt"
 ESBUILD_BIN="$PLUGIN_ROOT/mcp/node_modules/.bin/esbuild"
 
 for f in "$REFINE_FILE" "$CURATE_FILE" "$PLAYBOOK_TEMPLATE" "$PATTERNS_TEMPLATE" \
          "$ACE_CYCLE_TEMPLATE" "$CHECK_SIZE_SCRIPT" "$REFINE_REPORT_SCRIPT" \
-         "$FORMAT_GATE_SCRIPT"; do
+         "$FORMAT_GATE_SCRIPT" "$INVARIANTS_GATE_SCRIPT"; do
   [ -s "$f" ] || {
     echo "✗ 検査対象が存在しないか空です: $f" >&2
     exit 1
@@ -120,6 +121,9 @@ contains "$REFINE_FILE" \
 contains "$REFINE_FILE" \
   "check-archive-links" \
   "注記の存在を強制する機械ゲートへの導線"
+contains "$REFINE_FILE" \
+  "check-refine-invariants" \
+  "refine 結果不変条件ゲートへの導線"
 
 # 穴 3: 統合された側が archive で active のまま残り、grep した人に有効と誤読される。
 contains "$REFINE_FILE" \

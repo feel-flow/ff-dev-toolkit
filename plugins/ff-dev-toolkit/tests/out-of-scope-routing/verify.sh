@@ -3,6 +3,8 @@
 # out-of-scope-issue と Git Workflow のルーティング契約を静的検査する。
 # Issue #190: YAGNI / 現 PR 修正 / 既存 Issue 集約 / 関連 Issue 作成と、
 # GitHub 検索失敗時の fail-closed を別文書の drift から守る。
+# Issue #497: 判定既定の軽量側反転（B を示せるまで A）・近傍ファイル許容・
+# バッチ統合・AC デカップリングの契約もここで固定する。
 
 set -euo pipefail
 
@@ -118,8 +120,22 @@ for file in "$SKILL" "$WORKFLOW" "$CLOSE_ISSUE" "$REVIEW_POLICY" "$OSS_README" "
 done
 
 contains "$SKILL" "§1.1 にも §1.2 にも該当しない発見" "必須修正 / YAGNI / A-B の入口が排他的"
-contains "$SKILL" "B の上書き条件（いずれか 1 つ）" "B の条件はいずれか一致で上書き"
-contains "$SKILL" "A の全条件" "インライン修正は全条件一致"
+contains "$SKILL" "B の上書き条件（いずれか 1 つに明確に該当）" "B の条件はいずれか一致で上書き"
+contains "$SKILL" "「A を証明できるまで B」ではなく「B を示せるまで A」" "判定の既定は軽量側（Issue #497）"
+contains "$SKILL" "defaults to inline repair" "frontmatter description が軽量側既定を反映"
+# 旧ルールの逐語復元を 2 つの断片で検出する。旧文は `**A の全条件**（10 行以内・…`
+# と太字マーカーを挟むため、`A の全条件（…` のような一続きの針は旧文にも一致しない
+# 空振りガードになる（PR #498 レビューで検出）。§「迷ったら」に残る旧規則への
+# 意図的な言及（「…へは戻さない」）には、どちらの針も一致しない。
+not_contains "$SKILL" "10 行以内・現在触っているファイル内" "旧・A 全条件 AND 判定の条件列を排除"
+not_contains "$SKILL" "をすべて満たす場合だけ A とする" "旧・A 全条件 AND 判定の結論文を排除"
+contains "$SKILL" "実装/本文の変更行だけを数える" "10 行閾値はテスト・fixture を除いた実装行"
+contains "$SKILL" "既存 suite への検査追加で足りるものは該当しない" "独立検証条件の縮小（既存 suite 追加は B にしない）"
+contains "$SKILL" "現在触っているファイル内に限らない" "近傍ファイルの小変更を A に含める"
+contains "$SKILL" "仕様判断・波及の 2 軸だけは不確かでも B へ倒す" "仕様判断・波及の迷いは安全側（B）"
+contains "$SKILL" "同一 PR からの複数発見は 1 Issue に束ねる（既定）" "同一 PR の複数発見をバッチ統合"
+contains "$SKILL" "完了条件・検証環境が互いに衝突する" "バッチ統合の分割条件を固定"
+contains "$SKILL" "AC の分量・詳細度を §1.3 の A/B 判定へ逆流させない" "AC 記載と A/B 判定のデカップリング"
 contains "$SKILL" "修正せず、Issue も作らない" "YAGNI は GitHub 書き込みを行わない"
 contains "$SKILL" 'expected_repo="OWNER/REPO"' "対象リポジトリを明示的に固定"
 contains "$SKILL" '--repo "$expected_repo"' "Issue 操作が対象リポジトリへ束縛"
@@ -158,6 +174,9 @@ contains "$WORKFLOW" '編集直前に `body` / `updatedAt` の競合がない場
 contains "$WORKFLOW" '--repo "$expected_repo"' "Git Workflow の Issue 作成先を固定"
 gh_issue_blocks_bound "$WORKFLOW" "Git Workflow の全 Issue create コマンドを対象リポジトリへ束縛"
 contains "$WORKFLOW" "完了条件が独立する場合" "独立時だけ関連 Issue を作成"
+contains "$WORKFLOW" "同一 PR からの複数発見は既定で 1 Issue に束ねる" "Git Workflow もバッチ統合を既定化"
+contains "$WORKFLOW" "規模・局所性・検証の重さの迷いはインラインへ倒す" "Git Workflow も軽量側既定を明記"
+contains "$WORKFLOW" "不確かでも Issue 化へ倒し" "Git Workflow も仕様判断・波及の安全側を明記"
 
 contains "$CLOSE_ISSUE" "現 Issue の AC はスコープ外発見ではない" "未達 AC を後続 Issue へ送らない"
 not_contains "$CLOSE_ISSUE" "別 Issue を起票（\`gh issue create\`）して当該 AC を「対象外」" "未達 AC の自動先送りを禁止"
@@ -171,18 +190,29 @@ not_contains "$OSS_README" "「同 PR でインライン修正」か「Issue 化
 contains "$OSS_COPILOT" "次の5境界" "公開 Copilot ガイドが5境界"
 contains "$OSS_COPILOT" "Issue 化前に類似 Issue を検索" "公開 Copilot ガイドが類似 Issue を検索"
 
-FULL_INLINE_CONTRACT="10 行以内・同一ファイル・仕様判断不要・別モジュール波及なし・独立検証不要・既存契約不変の全条件"
+# 軽微（インライン）判定の契約行。#497 で「全条件 AND」から「B 条件のいずれにも
+# 明確に該当しない」へ反転した。旧契約文字列の残骸・復元は not_contains で塞ぐ
+#（マージ解決ミスで新旧が併存しても contains だけでは緑のままになるため）。
+INLINE_CONTRACT="仕様判断・別モジュール波及・独立検証・実装 10 行超（テスト・fixture は数えない）のいずれにも明確に該当しない"
+# 近傍ファイル許容句は上の契約行の外に続くため別針で固定する（削除が黙って通る
+# のを防ぐ）。散文 5 ファイルは「。近傍…」、workflow-principles の表セルは
+# 「（近傍…）」と句読点が違うので、両者に共通の部分文字列を針にする。
+NEIGHBOR_CLAUSE="近傍の設定ファイルの小変更も含む"
+OLD_INLINE_CONTRACT="10 行以内・同一ファイル・仕様判断不要"
 # 対象ファイル数を明示して固定する。生成対象が減ったとき（issue #240 で Cursor を
 # 外したときがそう）にループが黙って縮み、検査していないのに全 pass に見えるのを防ぐ。
-EXPECTED_INLINE_CONSUMERS=5
+EXPECTED_INLINE_CONSUMERS=6
 INLINE_CONSUMERS_SEEN=0
 for file in \
   "$PLUGIN_ROOT/skills/setup-ai-config/SKILL.md" \
   "$PLUGIN_ROOT/docs-template/SETUP_CLAUDE_CODE.md" \
+  "$PLUGIN_ROOT/docs-template/05-operations/deployment/workflow-principles.md" \
   "$PLUGIN_ROOT/tests/setup-ai-config/fixtures/expected/CLAUDE.md" \
   "$PLUGIN_ROOT/tests/setup-ai-config/fixtures/expected/AGENTS.md" \
   "$PLUGIN_ROOT/tests/setup-ai-config/fixtures/expected/.github/copilot-instructions.md"; do
-  contains "$file" "$FULL_INLINE_CONTRACT" "生成・公開コンシューマーが軽微判定の全条件を保持: ${file#$REPO_ROOT/}"
+  contains "$file" "$INLINE_CONTRACT" "生成・公開コンシューマーが軽微判定の契約行を保持: ${file#$REPO_ROOT/}"
+  contains "$file" "$NEIGHBOR_CLAUSE" "近傍ファイル許容句を保持: ${file#$REPO_ROOT/}"
+  not_contains "$file" "$OLD_INLINE_CONTRACT" "旧契約行の残骸なし: ${file#$REPO_ROOT/}"
   INLINE_CONSUMERS_SEEN=$((INLINE_CONSUMERS_SEEN + 1))
 done
 if [[ "$INLINE_CONSUMERS_SEEN" -eq "$EXPECTED_INLINE_CONSUMERS" ]]; then

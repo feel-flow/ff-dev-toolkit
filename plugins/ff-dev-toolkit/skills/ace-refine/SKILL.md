@@ -16,7 +16,7 @@ description: ACE Playbook を定期整理する（stale エントリのアーカ
 - `docs/08-knowledge/PLAYBOOK.md` が存在すること（`/ace-setup` で作成済み）
 - 現在のブランチがデフォルト統合ブランチ（`develop` / `main` 等。以下 `<default-branch>`）であること
 - ワークツリーがクリーンであること（`git status --short` が空）
-- **実行タイミング**: 月次メンテナンス、`check-category-size` の 130 件ゲートがブロックしたとき、またはエントリ密度の警告（行数が導出上限を超過）が出たとき
+- **実行タイミング**: 月次メンテナンス、`check-category-size` の件数ゲートがブロックしたとき、refine 目安（既定 130 件）の警告、またはエントリ密度の警告（行数が導出上限を超過）が出たとき
 
 ## 引数
 
@@ -174,8 +174,10 @@ dry-run レポート全文と近似重複の抽出結果を、操作種別ごと
    # npm script が無い場合:
    # npx --yes tsx path/to/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
    npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md
-   # archive の保全本文内リンクが冒頭注記で担保されているか（Issue #288 穴 2）
+   # archive の保全本文内リンクが冒頭注記で担保されているか + <a id> 一意性（Issue #288 穴 2 / #492）
    npx --yes tsx scripts/ace/check-archive-links.ts docs/08-knowledge/PLAYBOOK.md
+   # compact 保全・merge 状態遷移・PATTERNS 収載（本文+出典）の結果不変条件（Issue #492）
+   npx --yes tsx scripts/ace/check-refine-invariants.ts docs/08-knowledge/PLAYBOOK.md
    # 新規追記が旧テーブル形式でないことの機械検証（Issue #286）
    npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
    ```

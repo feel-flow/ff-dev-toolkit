@@ -5,6 +5,8 @@ import {
   countBudgetExceptions,
   countHeaderLines,
   countPlaybookLines,
+  DEFAULT_MAX_ENTRIES_PER_CATEGORY,
+  DEFAULT_WARN_ENTRIES_PER_CATEGORY,
   deriveMaxLines,
   discoverPlaybookSubfiles,
   findFencedCanonicalHeadings,
@@ -1997,6 +1999,7 @@ describe("main（行数警告のみ・exit code 不変）", () => {
     process.argv = originalArgv;
     delete process.env.ACE_MAX_PLAYBOOK_LINES;
     delete process.env.ACE_MAX_ENTRIES_PER_CATEGORY;
+    delete process.env.ACE_WARN_ENTRIES_PER_CATEGORY;
     delete process.env.ACE_MAX_ENTRY_LINES;
     vi.restoreAllMocks();
     if (tmpDir) {
@@ -2006,10 +2009,34 @@ describe("main（行数警告のみ・exit code 不変）", () => {
   });
 
   function writePlaybook(body: string): string {
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-line-"));
     const file = path.join(tmpDir, "PLAYBOOK.md");
     fs.writeFileSync(file, body);
     return file;
+  }
+
+  function compactEntries(count: number, category = "coding"): string {
+    return Array.from({ length: count }, (_, index) => {
+      const id = `1-${String(index + 1)}`;
+      return [
+        `<a id="ace-${id}"></a>`,
+        "",
+        `### ACE-${id}: t`,
+        "",
+        `| Category | ${category} | Origin | PR #1 |`,
+        "| Date | 2026-08-14 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | active |",
+        "",
+        "body",
+        "",
+        "---",
+        "",
+      ].join("\n");
+    }).join("\n");
   }
 
   it("行数のみ超過なら exit 0・stderr に警告・行数は常時出力", () => {
@@ -2110,6 +2137,122 @@ describe("main（行数警告のみ・exit code 不変）", () => {
     const code = main();
 
     expect(code).toBe(1);
+  });
+
+  it("既定は refine 目安 130・ブロック上限 180（ADR-029）", () => {
+    expect(DEFAULT_WARN_ENTRIES_PER_CATEGORY).toBe(130);
+    expect(DEFAULT_MAX_ENTRIES_PER_CATEGORY).toBe(180);
+    expect(DEFAULT_WARN_ENTRIES_PER_CATEGORY).toBeLessThan(
+      DEFAULT_MAX_ENTRIES_PER_CATEGORY,
+    );
+  });
+
+  it("env 未設定の既定配線: 目安ちょうどは黙り、目安+1 は警告のみ", () => {
+    const atWarn = writePlaybook(compactEntries(DEFAULT_WARN_ENTRIES_PER_CATEGORY));
+    process.argv = ["node", "check-category-size.ts", atWarn];
+    const silentErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    expect(main()).toBe(0);
+    expect(silentErr.mock.calls.flat().join("\n")).not.toContain("refine 目安");
+    expect(silentErr.mock.calls.flat().join("\n")).not.toContain("閾値超過カテゴリ");
+    vi.restoreAllMocks();
+
+    const overWarn = writePlaybook(
+      compactEntries(DEFAULT_WARN_ENTRIES_PER_CATEGORY + 1),
+    );
+    process.argv = ["node", "check-category-size.ts", overWarn];
+    const warnErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    expect(main()).toBe(0);
+    const warnOut = warnErr.mock.calls.flat().join("\n");
+    expect(warnOut).toContain("refine 目安");
+    expect(warnOut).toContain(
+      `coding (${String(DEFAULT_WARN_ENTRIES_PER_CATEGORY + 1)} > ${String(DEFAULT_WARN_ENTRIES_PER_CATEGORY)} / ブロック上限 ${String(DEFAULT_MAX_ENTRIES_PER_CATEGORY)})`,
+    );
+    expect(warnOut).not.toContain("閾値超過カテゴリ");
+  });
+
+  it("env 未設定の既定配線: 上限ちょうどは警告のみ、上限+1 で exit 1", () => {
+    const atMax = writePlaybook(compactEntries(DEFAULT_MAX_ENTRIES_PER_CATEGORY));
+    process.argv = ["node", "check-category-size.ts", atMax];
+    const warnErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    expect(main()).toBe(0);
+    const warnOut = warnErr.mock.calls.flat().join("\n");
+    expect(warnOut).toContain("refine 目安");
+    expect(warnOut).not.toContain("閾値超過カテゴリ");
+    vi.restoreAllMocks();
+
+    const overMax = writePlaybook(
+      compactEntries(DEFAULT_MAX_ENTRIES_PER_CATEGORY + 1),
+    );
+    process.argv = ["node", "check-category-size.ts", overMax];
+    const blockErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    expect(main()).toBe(1);
+    const blockOut = blockErr.mock.calls.flat().join("\n");
+    expect(blockOut).toContain("閾値超過カテゴリ");
+    expect(blockOut).toContain(
+      `coding (${String(DEFAULT_MAX_ENTRIES_PER_CATEGORY + 1)} > ${String(DEFAULT_MAX_ENTRIES_PER_CATEGORY)})`,
+    );
+  });
+
+  it("ACE_MAX=130 の旧挙動は警告段を出さず 131 で exit 1", () => {
+    const file = writePlaybook(compactEntries(DEFAULT_WARN_ENTRIES_PER_CATEGORY + 1));
+    process.env.ACE_MAX_ENTRIES_PER_CATEGORY = String(
+      DEFAULT_WARN_ENTRIES_PER_CATEGORY,
+    );
+    process.argv = ["node", "check-category-size.ts", file];
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    expect(main()).toBe(1);
+    const out = err.mock.calls.flat().join("\n");
+    expect(out).toContain("閾値超過カテゴリ");
+    expect(out).toContain(
+      `coding (${String(DEFAULT_WARN_ENTRIES_PER_CATEGORY + 1)} > ${String(DEFAULT_WARN_ENTRIES_PER_CATEGORY)})`,
+    );
+    expect(out).not.toContain("refine 目安");
+  });
+
+  it("refine 目安超過・ブロック上限以下なら exit 0 で警告する", () => {
+    const body =
+      "### ACE-1-1: a\n\n| Category | coding |\n| Origin | PR #1 |\n" +
+      "### ACE-1-2: b\n\n| Category | coding |\n| Origin | PR #1 |\n" +
+      "### ACE-1-3: c\n\n| Category | coding |\n| Origin | PR #1 |\n";
+    const file = writePlaybook(body);
+    process.env.ACE_WARN_ENTRIES_PER_CATEGORY = "2";
+    process.env.ACE_MAX_ENTRIES_PER_CATEGORY = "10";
+    process.argv = ["node", "check-category-size.ts", file];
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const code = main();
+
+    expect(code).toBe(0);
+    expect(err.mock.calls.flat().join("\n")).toContain("refine 目安");
+    expect(err.mock.calls.flat().join("\n")).toContain("coding (3 > 2 / ブロック上限 10)");
+  });
+
+  it("ブロック上限超過なら exit 1（警告段を越えたハードゲート）", () => {
+    const body =
+      "### ACE-1-1: a\n\n| Category | coding |\n| Origin | PR #1 |\n" +
+      "### ACE-1-2: b\n\n| Category | coding |\n| Origin | PR #1 |\n" +
+      "### ACE-1-3: c\n\n| Category | coding |\n| Origin | PR #1 |\n";
+    const file = writePlaybook(body);
+    process.env.ACE_WARN_ENTRIES_PER_CATEGORY = "2";
+    process.env.ACE_MAX_ENTRIES_PER_CATEGORY = "2";
+    process.argv = ["node", "check-category-size.ts", file];
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const code = main();
+
+    expect(code).toBe(1);
+    const out = err.mock.calls.flat().join("\n");
+    expect(out).toContain("閾値超過カテゴリ");
+    expect(out).toContain("coding (3 > 2)");
+    expect(out).not.toContain("refine 目安");
   });
 
   describe("導出上限（エントリ密度）— ACE_MAX_PLAYBOOK_LINES 未設定時", () => {

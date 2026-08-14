@@ -1,6 +1,6 @@
 ---
 name: out-of-scope-issue
-description: Use when finding improvements, bugs, or refactoring opportunities outside the current task's scope during implementation or code review. Routes each finding through YAGNI (no action and no Issue), inline repair in the current PR, or consolidation into an existing or new follow-up GitHub Issue, then takes the selected action. Triggers on phrases like "スコープ外", "別Issueで", "out of scope", "別対応", "後で対応", or when review tools flag suggestions for future work.
+description: Use when finding improvements, bugs, or refactoring opportunities outside the current task's scope during implementation or code review. Routes each finding through YAGNI (no action and no Issue), inline repair in the current PR, or consolidation into an existing or new follow-up GitHub Issue, then takes the selected action. When uncertainty is only about size, locality, or verification weight, defaults to inline repair rather than filing an Issue; thematically adjacent findings from the same PR are batched into one follow-up Issue by default. Triggers on phrases like "スコープ外", "別Issueで", "out of scope", "別対応", "後で対応", or when review tools flag suggestions for future work.
 ---
 
 # Out-of-Scope Finding Router
@@ -42,32 +42,34 @@ YAGNI（理由: 現時点の利用者影響・再現例・受け入れ条件が�
 
 ### 1.3 必要な発見を A / B に分ける
 
-§1.1 にも §1.2 にも該当しない発見を、次の排他的な条件で分類する。先に B の上書き条件を確認し、1 つでも該当すれば B。該当しない場合だけ A の全条件を確認する。
+§1.1 にも §1.2 にも該当しない発見を、次の条件で分類する。B の上書き条件を確認し、いずれかに**明確に該当すると示せる**場合だけ B。示せなければ A（インライン）とする。既定方向は軽量側 — 「A を証明できるまで B」ではなく「B を示せるまで A」。ただし迷いの扱いは軸ごとに違う（下の「迷ったら」参照 — 仕様判断・波及の 2 軸だけは不確かでも B へ倒す）。
 
-**B の上書き条件（いずれか 1 つ）**:
+**B の上書き条件（いずれか 1 つに明確に該当）**:
 
 - 仕様判断が必要
 - 別モジュールへ波及する
-- 独立した受け入れ条件・検証環境が必要
-- 変更が 10 行を超える見込み
-
-上記に該当しない場合、**A の全条件**（10 行以内・現在触っているファイル内・仕様判断不要・別モジュールへ波及しない・独立検証不要・既存契約不変）をすべて満たす場合だけ A とする。
+- 独立した受け入れ条件・検証環境が必要（発見そのものの性質として。既存 suite への検査追加で足りるものは該当しない。また、起票すれば AC を書くことになる、という理由でこの条件を満たしたことにしない — それは判定の自己成就）
+- 変更が 10 行を超える見込み（**実装/本文の変更行だけを数える**。付随するテスト・fixture・ゲート追加分は数えない。本体 3 行の修正にテストが付いて合計が膨らんでも、それだけでは B にしない）
 
 ### A. その場で直す（インライン修正）
 
-**A の全条件**を満たすものは Issue 化せず、現在の PR の fix commit に束ねる。典型例は、明らかな typo / docstring 誤字 / コメント修正や、既存契約を壊さない小さな型注釈・null チェックなど。
+B の上書き条件を示せないものは Issue 化せず、現在の PR の fix commit に束ねる。典型例は、明らかな typo / docstring 誤字 / コメント修正や、小さな型注釈・null チェックなど（既存契約を壊す変更は仕様判断・波及として B に該当するため、ここには来ない）。**現在触っているファイル内に限らない** — `.gitignore`・設定ファイル・隣接ドキュメントなど、PR の diff を読む人が目的の理解を妨げられない近傍の小変更を含む。
 
 → そのまま実装に進む。Issue は作らない。
 
 ### B. Issue 化する（このスキルの本領）
 
-**B の上書き条件**を 1 つでも満たすものは Issue 化ルートへ進める。類似する既存 Issue にまとめるか、新しい関連 Issue を作るかは §3.1 で判定する。典型例は、別モジュール規模の refactor、UI/API/DB の仕様変更、独立検証が必要なテスト拡張・機能拡張など。
+**B の上書き条件**のいずれかに明確に該当するものは Issue 化ルートへ進める。類似する既存 Issue にまとめるか、新しい関連 Issue を作るかは §3.1 で判定する。典型例は、別モジュール規模の refactor、UI/API/DB の仕様変更、独立検証が必要なテスト拡張・機能拡張など。
 
 → 下の「Issue 化フロー」に進む。
 
 ### 迷ったら
 
-必要性を説明できなければ YAGNI。必要性はあるが A の全条件を証明できなければ B とする。過剰な Issue 分割は避けつつ、仕様判断や独立検証を「迷ったから軽微」と扱わない。Issue は「必要性があり、忘れずに独立して議論・検証したい」案件のために取っておく。
+- 必要性を説明できなければ **YAGNI**
+- **仕様判断の要否・別モジュールへの波及**に確信が持てない場合は **B** — この 2 軸だけは安全側へ倒す（不確かさ自体が、独立した議論の必要を示す）
+- それ以外の迷い（規模・局所性・検証の重さ）は **A（軽量側）** へ倒す。旧規則の「A 側を全条件で証明できるまで B」へは戻さない
+
+過剰な Issue 分割は、backlog ノイズに加えて Issue 1 件あたりの処理固定費（起票 → ブランチ → PR → レビュー → マージ → cleanup）を発見の実サイズと無関係に発生させる。Issue は「必要性があり、忘れずに独立して議論・検証したい」案件のために取っておく。
 
 ## 2. インライン修正の場合
 
@@ -83,7 +85,7 @@ YAGNI（理由: 現時点の利用者影響・再現例・受け入れ条件が�
 
 ### 3.1 類似 Issue の検索（新規作成より先）
 
-YAGNI ではなく、判定が B に該当したら、まず open な既存 Issue をタイトル・本文の主要語で検索する:
+YAGNI ではなく、判定が B に該当したら、まず open な既存 Issue をタイトル・本文の主要語で検索する。**同じパスから複数の新規 B 発見が出ている場合は、先に §3.1b で束ねる単位を決め、束ねた単位ごとにこの検索を 1 回行う**:
 
 ```bash
 # expected_repo は現在の PR / Issue URL から確定し、ユーザーが対象にした
@@ -128,6 +130,18 @@ gh issue list \
 Consolidated into Issue #{number} — {title}
 URL: {issue_url}
 ```
+
+### 3.1b 同一 PR からの複数発見は 1 Issue に束ねる（既定）
+
+同じ PR のレビュー・実装から**複数の新規 B 判定発見**が出た場合、既定ではテーマが近接するもの同士を 1 つのフォローアップ Issue に束ねて起票する（発見ごとに 1 Issue を作らない）。バッチの区切りは「同じレビュー・実装パスで出た発見一式」— レビュー指摘を 1 つの fix commit に束ねるのと同じ粒度で、そのパスの発見が出揃ってから起票する。束ねた Issue では、発見ごとに `## 概要` の箇条書きと受け入れ条件のチェックボックスを分け、後から個別に検証・消化できる形を保つ。Title prefix（§3.4）と type ラベルは、種類が混在する場合は最も重い種別に合わせる（fix > test > refactor > chore > docs の順）。
+
+分割して個別 Issue にするのは次のいずれかの場合だけ:
+
+- 完了条件・検証環境が互いに衝突する（片方の検証がもう片方の変更で壊れる）
+- 優先度・対応時期が明確に異なる（片方だけ先に出荷したい）
+- 担当や対象リポジトリが分かれる
+
+N 件の発見を N Issue にすると、処理固定費（起票 → ブランチ → PR → レビュー → マージ → cleanup）が N 倍になるうえ、後続の各 PR のレビューがさらに派生発見を生む再帰も起きる。束ねられるかをまず考え、分割は上の条件を示せるときだけにする。
 
 ### 3.2 ラベルの決定（実在するものだけ付ける）
 
@@ -179,9 +193,11 @@ Epic 本文のチェックリストへ追記する場合は、§3.1 と同じ競
 
 ### 3.3 新規 Issue 作成（実在確認から起票まで 1 ブロック）
 
-統合できる既存 Issue がなければ、その場で `gh issue create` を実行する。再試行時や検索から時間が空いた場合は直前に §3.1 の検索を再実行し、同じ発見の Issue がすでに作られていないことを確認する。**「別 Issue にする」と言うだけで PR 本文に書いて終わらせない**。`gh issue create` の終了コードが 0 で Issue URL を取得できた場合だけ成功として扱い、発行された Issue 番号を PR 本文 / コミットメッセージ / レビューコメントに記載する。
+統合できる既存 Issue がなければ、その場で `gh issue create` を実行する（複数発見を §3.1b で束ねた場合は、束ねた 1 単位につき 1 回。テンプレートの `## 概要` と受け入れ条件は発見ごとの箇条書き・チェックボックスに分けて埋める）。再試行時や検索から時間が空いた場合は直前に §3.1 の検索を再実行し、同じ発見の Issue がすでに作られていないことを確認する。**「別 Issue にする」と言うだけで PR 本文に書いて終わらせない**。`gh issue create` の終了コードが 0 で Issue URL を取得できた場合だけ成功として扱い、発行された Issue 番号を PR 本文 / コミットメッセージ / レビューコメントに記載する。
 
 仕様判断を含む案件など、詳細な起票ゲート（種別確認 → 参照文書提案 → AC 粒度チェック → GWT+DoD）を通すべき規模なら、下の簡易テンプレートではなく `/create-issue` コマンドで起票する（§5 参照）。それ以外の軽量案件は簡易テンプレートで足りる。
+
+**AC の書き方と判定の分離**: 受け入れ条件は従来どおり検証可能な粒度で書いてよく、確認ポイントの列挙を制限しない。ただし **AC の分量・詳細度を §1.3 の A/B 判定へ逆流させない** — 判定は発見そのものの性質で既に確定しており、「起票するなら AC を書くことになる（= 独立した受け入れ条件が必要）」という循環で B を正当化しない。逆に、B 判定を補強する目的で AC を膨らませることもしない。DoD 標準（変異試験・drift ゲート等）への展開は、起票時に書ける材料があれば書いてよいが、着手時に `/refine-issue` で行っても遅くない。
 
 **アサインについて本スキルは中立**とする。`--assignee` は付けも禁じもしない。スコープ外発見の起票は backlog 化であって着手ではないため、「作成時にアサインする」か「着手時にアサインする」かは消費プロジェクトの Git Workflow が決める。プロジェクト側のルールが無い場合は付けない（未アサイン = 未着手が既定の読み方になるため）。この既定を「便利だから」で `--assignee @me` へ戻さないこと。
 
@@ -346,10 +362,33 @@ URL: https://github.com/owner/repo/issues/1234
 入力:
 > `formatDate` の docstring に typo「fomart」を発見
 
-判定: A（typo・1 行・触っているファイル内）→ インライン修正
+判定: A（typo・1 行。B の上書き条件に該当なし）→ インライン修正
 
 出力:
 > スコープ外だが docstring の typo (1 行) なので同 PR で修正します。
+
+---
+
+入力:
+> setup スクリプトが生成する 2 ファイルが `.gitignore` に載っておらず、`git add -A` で誤コミットされうる（レビュー指摘）。`.gitignore` は今回の PR では触っていない
+
+判定: A（実装 7 行・近傍の設定ファイル・仕様判断不要。「触っていないファイル」だが B の上書き条件をどれも示せない）→ インライン修正
+
+出力:
+> スコープ外だが .gitignore への 7 行追加（近傍設定ファイル・仕様判断不要）なので同 PR で対応します。
+
+---
+
+入力:
+> 同一 PR のレビューで「エラーパスのテスト不足（独立 fixture が必要）」「同じ suite の timeout 値の見直し（負荷計測が必要）」の 2 件を発見
+
+判定: どちらも B（独立検証が必要 — 新しい fixture・負荷計測環境の構築が要り、既存 suite への検査追加では足りない）で、同じ test suite というテーマが近接 → §3.1b により 1 つのフォローアップ Issue に束ねる
+
+出力:
+```
+Issue created: #1240 — test: {suite 名} のエラーパス fixture 追加と timeout 実測見直し
+URL: https://github.com/owner/repo/issues/1240
+```
 
 ---
 

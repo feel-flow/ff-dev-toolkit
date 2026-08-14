@@ -1,6 +1,7 @@
 /**
  * ACE Playbook の健全性チェック（Issue #367, #444, #15）。
- * - Category ごとのエントリ件数を数え、閾値超過で終了コード 1 を返す（ゲート）。件数が主指標。
+ * - Category ごとのエントリ件数を数え、refine 目安超過は警告のみ（exit 0）、
+ *   ブロック上限超過で終了コード 1（ゲート）。件数が主指標。
  * - Playbook / カテゴリファイルの総行数を報告し、上限超過時は警告のみ出力する
  *   （終了コードは変えない）。上限は既定で**件数から導出**する（Issue #285 / ADR-019）:
  *     上限 = ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1)
@@ -8,7 +9,7 @@
  *   例外件数は**例外を宣言しているエントリの数**であって、マーカーの出現数ではない
  *   （countBudgetExceptions 参照。Issue #343）。
  *   固定行数を上限にすると「1 エントリ 13 行 × 件数」と構造的に噛み合わず、件数ゲート
- *   （130 件 ≒ 1700 行）より 2 倍以上早く発火して警告が恒常化する。導出上限なら警告は
+ *   より 2 倍以上早く発火して警告が恒常化する。導出上限なら警告は
  *   「1 エントリが太い」＝行数バジェット違反のときだけ出る。`ACE_MAX_PLAYBOOK_LINES` を
  *   明示指定したときのみ従来どおり固定上限として扱う（エスケープハッチ・後方互換）。
  *   分割レイアウトでは索引 PLAYBOOK.md は監視対象外（索引・Changelog はエントリ増加で
@@ -34,7 +35,17 @@ const EXIT_OK = 0;
 const EXIT_THRESHOLD_EXCEEDED = 1;
 const EXIT_USAGE_ERROR = 2;
 
-const DEFAULT_MAX_ENTRIES_PER_CATEGORY = 130;
+/**
+ * 件数ゲートのハード上限（exit 1）。refine を使い切っても検索語彙が分岐しない
+ * カテゴリが再超過したときの余裕（Issue #491 / ADR-029）。旧既定 130 は
+ * `DEFAULT_WARN_ENTRIES_PER_CATEGORY` として refine 目安の警告に残す。
+ */
+export const DEFAULT_MAX_ENTRIES_PER_CATEGORY = 180;
+/**
+ * 件数ゲートの refine 目安（警告のみ・exit 0）。`ACE_MAX_ENTRIES_PER_CATEGORY`
+ * を 130 に戻すと警告段は発火せず、旧来の 130 件で exit 1 になる。
+ */
+export const DEFAULT_WARN_ENTRIES_PER_CATEGORY = 130;
 /**
  * `ACE_MAX_PLAYBOOK_LINES` を明示指定したが値が無効だったときのフォールバック。
  * 未設定のときは固定上限を使わず件数から導出する（deriveMaxLines / ADR-019）ため、
@@ -464,7 +475,7 @@ export function countBudgetExceptions(content: string): BudgetExceptionTally {
  *          + 例外件数 × バジェット × (EXCEPTION_BUDGET_MULTIPLIER - 1)
  *
  * 固定行数を上限にすると「1 エントリ 13 行 × 件数」と構造的に噛み合わず、
- * 件数ゲート（既定 130 件 ≒ 1700 行）より 2 倍以上早く発火して警告が恒常化する。
+ * 件数ゲートより 2 倍以上早く発火して警告が恒常化する。
  * 件数から導出すれば、警告が出るのは「1 エントリが太い」＝バジェット違反のときだけになり、
  * curate で 1 件増えても上限が同じ分だけ伸びるため refine 直後の余裕が構造的に残る。
  * `+ 1` はエントリブロック間の空行 1 行。末項の EXCEPTION_EXTRA_BUDGET_FACTOR は例外宣言
@@ -1209,6 +1220,19 @@ function parseMaxPerCategory(): number {
 }
 
 /**
+ * refine 目安の警告閾値。ハード上限以上に設定されたときは警告段を出さない
+ * （`ACE_MAX_ENTRIES_PER_CATEGORY=130` で旧挙動へ戻す経路）。
+ */
+function parseWarnPerCategory(maxAllowed: number): number {
+  const warnAllowed = parsePositiveIntEnv(
+    process.env.ACE_WARN_ENTRIES_PER_CATEGORY,
+    DEFAULT_WARN_ENTRIES_PER_CATEGORY,
+    "ACE_WARN_ENTRIES_PER_CATEGORY",
+  );
+  return warnAllowed < maxAllowed ? warnAllowed : maxAllowed;
+}
+
+/**
  * `ACE_MAX_PLAYBOOK_LINES` を**明示指定したときだけ**固定上限として返す。
  * 未設定なら undefined を返し、呼び出し側は件数から上限を導出する（ADR-019）。
  * 無効値のときは既定 800 へフォールバックする従来挙動を保つ（エスケープハッチの後方互換）。
@@ -1356,13 +1380,19 @@ export function main(): number {
   }
 
   const maxAllowed = parseMaxPerCategory();
+  const warnAllowed = parseWarnPerCategory(maxAllowed);
   const overCategories: string[] = [];
+  const warnCategories: string[] = [];
 
   // 非有限値の再チェックは置かない。mergeAnalyses が error で弾いた後なので到達不能であり、
   // ここに `continue` を残すと「壊れた値を静かに読み飛ばす」経路が 2 系統に戻る（Issue #343）。
   for (const [categoryKey, count] of Object.entries(merged.histogram)) {
     if (count > maxAllowed) {
       overCategories.push(`${categoryKey} (${String(count)} > ${String(maxAllowed)})`);
+    } else if (count > warnAllowed) {
+      warnCategories.push(
+        `${categoryKey} (${String(count)} > ${String(warnAllowed)} / ブロック上限 ${String(maxAllowed)})`,
+      );
     }
   }
 
@@ -1457,6 +1487,12 @@ export function main(): number {
   }
   console.log("カテゴリ別件数:\n" + formatHistogram(merged.histogram));
 
+  if (warnCategories.length > 0) {
+    console.error(
+      "⚠ カテゴリ件数が refine 目安を超えています。/ace-refine で stale アーカイブ・圧縮・統合を実行してください（候補は scripts/ace/ace-refine-report.ts の dry-run レポートで確認）。検索語彙が分岐しないなら分割せず、ブロック上限までの余裕を使う（ADR-029）:\n- " +
+        warnCategories.join("\n- "),
+    );
+  }
   if (overCategories.length > 0) {
     console.error(
       "閾値超過カテゴリがあります。/ace-refine で stale アーカイブ・圧縮・統合を実行してください（候補は scripts/ace/ace-refine-report.ts の dry-run レポートで確認）。分割が必要な場合はスコープ外発見ルールで必要性と類似 Issue を確認し、既存 Issue へ統合するか関連 Issue として起票してください:\n- " +

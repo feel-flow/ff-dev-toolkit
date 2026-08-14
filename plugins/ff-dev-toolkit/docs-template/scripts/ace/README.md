@@ -7,11 +7,12 @@ Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)
 | ファイル                                      | 説明                                                                                      |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | `run-subagent.sh`                             | ロック取得、`git worktree` 作成、`claude -p` 起動、後片付けの骨子                         |
-| `check-category-size.ts`                      | Playbook の Category 件数（閾値超過で非ゼロ終了）と総行数（閾値超過で警告のみ）をチェック。集計の前提が崩れる形（Category 行が 1 ブロックに 2 本以上・閉じていないコードフェンス・Category 行が無い / 値が空）は usage error で停止 |
+| `check-category-size.ts`                      | Playbook の Category 件数（refine 目安超過は警告 / ブロック上限超過で非ゼロ終了）と総行数（超過は警告のみ）をチェック。集計の前提が崩れる形（Category 行が 1 ブロックに 2 本以上・閉じていないコードフェンス・Category 行が無い / 値が空）は usage error で停止 |
 | `ace-reuse-report.ts`                         | ACE 知見の再利用計測レポート（git 参照・相互参照・Archive 候補。読み取り専用）            |
 | `ace-refine-report.ts`                        | `/ace-refine` 用の候補算出レポート（Archive 候補・行数バジェット超過・PATTERNS 昇格候補。読み取り専用の dry-run） |
 | `sync-playbook-frontmatter.ts`                | PLAYBOOK frontmatter（`ace_entry_count` / version↔Changelog / `changeImpact`）の同期・検証ゲート |
-| `check-archive-links.ts`                      | `playbook/archive/` の保全本文内に `./` 相対リンクがある場合、冒頭注記の存在を強制するゲート（違反で非ゼロ終了） |
+| `check-archive-links.ts`                      | `playbook/archive/` の保全本文内に `./` 相対リンクがある場合、冒頭 Parent ブロック内の注記を強制し、同一ファイル内の `<a id>` 重複を拒否するゲート（違反で非ゼロ終了） |
+| `check-refine-invariants.ts`                  | `/ace-refine` の結果不変条件（compact 保全・merge 状態遷移・PATTERNS 収載）を検証するゲート（違反で非ゼロ終了） |
 | `check-entry-format.ts`                       | 新規エントリが旧テーブル形式でないこと + ID 形状が妥当（§エントリID規則）であることを検証するゲート（allowlist 外の旧形式・不正 ID で非ゼロ終了） |
 | `docs-template/.claude/agents/ace-capture.md` | Subagent 用プロンプト（コピー先は `.claude/agents/`）                                     |
 
@@ -33,7 +34,7 @@ Node 24+ を前提とします。TypeScript をそのまま実行する例:
 npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md
 ```
 
-環境変数 `ACE_MAX_ENTRIES_PER_CATEGORY`（省略時は `130`）で閾値を変更できます。値が **非数値または 1 未満**のときは既定値 `130` にフォールバックし、標準エラーに警告を出します。
+環境変数 `ACE_MAX_ENTRIES_PER_CATEGORY`（省略時は `180`）でブロック上限を変更できます。値が **非数値または 1 未満**のときは既定値 `180` にフォールバックし、標準エラーに警告を出します。`ACE_WARN_ENTRIES_PER_CATEGORY`（省略時は `130`）は refine 目安の警告閾値で、件数を超えても終了コードは変えません。警告閾値がブロック上限以上のときは警告段を出さず、旧来どおりブロック上限だけで判定します（`ACE_MAX_ENTRIES_PER_CATEGORY=130` で 130 件 exit 1 の旧挙動に戻せます）。
 
 行数の上限は**既定では件数から導出**します（Issue #285 / ADR-019）:
 
@@ -60,7 +61,7 @@ PLAYBOOK のコード領域除外は `blankCodeRegions` で実装し、`ace-refi
 
 なお件数・行数の判定より前に、**集計そのものが成立しない形**を usage error（終了コード 2）で止めます。1 エントリブロックに `| Category |` 行が 2 本以上ある場合（見出しとして認識されないブロックが直前のエントリへ吸収された形。件数が過少になり、そのカテゴリの唯一のエントリなら集計から消える）、閉じていないコードフェンスがある場合（以降の本文が走査対象から外れ、同じく静かに消える）、Category 行が無い / 値が空の場合が対象です。エラーには対象ファイルのパスと、認識されなかった見出しの候補が出ます。本文でメタ行の書式を例示するときは、コードフェンスで囲み必ず閉じてください（見出しのプレースホルダは `### ACE-XXX:` のような非正準形にします）。
 
-固定行数ではなく導出にするのは、コンパクト正準フォーマットが 13 行/件のため固定 800 行では 61 件で必ず発火し、件数ゲート（130 件）より 2 倍以上早く恒常警告になるからです。導出上限なら警告が出るのは「1 エントリが太い」＝行数バジェット違反のときだけで、対応は旧テーブル形式の正準化に一意に定まります。総量の主指標は件数ゲートです。
+固定行数ではなく導出にするのは、コンパクト正準フォーマットが 13 行/件のため固定 800 行では 61 件で必ず発火し、件数ゲートより 2 倍以上早く恒常警告になるからです。導出上限なら警告が出るのは「1 エントリが太い」＝行数バジェット違反のときだけで、対応は旧テーブル形式の正準化に一意に定まります。総量の主指標は件数ゲートです。
 
 環境変数 `ACE_MAX_PLAYBOOK_LINES` を**明示指定したときのみ**、導出をやめて固定上限として扱います（エスケープハッチ・後方互換）。値が **非数値または 1 未満**のときは既定値 `800` にフォールバックし警告します。**分割レイアウトでは索引 `PLAYBOOK.md` は行数監視対象外**で、`playbook/*.md`（カテゴリ本体）のみを警告対象にします（索引・Changelog はエントリ増加で伸びるため。Issue #212 / ADR-016）。
 
@@ -76,10 +77,25 @@ verbatim 保全が必須条件なのでリンク自体は書き換えられま�
 npx --yes tsx scripts/ace/check-archive-links.ts docs/08-knowledge/PLAYBOOK.md
 ```
 
-- `](./...)` 形式のリンクを 1 件以上含む archive ファイルに「保全本文内の相対リンクは live 基準」の注記が無ければ**非ゼロ終了**（違反ファイルは全件を名指しし、最初の 1 件で止めません）
+- `](./...)` 形式のリンクを 1 件以上含む archive ファイルに「保全本文内の相対リンクは live 基準」の注記が **冒頭 Parent ブロック内** に無ければ**非ゼロ終了**（エントリ本文への偶然一致は注記と見なさない。違反ファイルは全件を名指しし、最初の 1 件で止めません）
+- 同一 archive ファイル内で同じ `<a id>` が複数回出現したら**非ゼロ終了**（append 型 archive の重複保全。存在検証だけでは緑のまま通る）
 - `./` リンクが 0 件のファイルには注記を強制しません（不要な定型文を増やさない）
 - `../` で始まるリンクは archive 基準で正しいため対象外。コードスパン内の `` `./x.md#ace-y` `` は Markdown リンクではないので数えません（注記文そのものが例示として含むため、これを数えると注記入りファイルが常に違反になります）
 - 走査対象は `playbook/archive/` 直下の `*.md` のみ（非再帰）。`archive/` が無いプロジェクト（`/ace-refine` 未実行）は正常終了します
+
+## check-refine-invariants.ts の実行
+
+`/ace-refine` 適用後の結果不変条件を機械検証します:
+
+```bash
+npx --yes tsx scripts/ace/check-refine-invariants.ts docs/08-knowledge/PLAYBOOK.md
+```
+
+- **compact**: Changelog の `Compacted:` 行に載った ID が live と archive の両方にあり（後続 merge の統合元は live から消えてよい）、第 2 変種は provenance・メタ表を除く本文が逐語一致。Category / Origin / Date / Status は一致、Helpful / Harmful は live >= archive（後続のカウンター加算を許す）
+- **merge**: Changelog の `Merged: ACE-X → ACE-Y` について、X が live と索引から消え、archive で一意、`Status=merged`、`Merged into` が live の active な Y を指す。Y の Helpful / Harmful は X の値以上（合算下限）
+- **promote**: Changelog の `Promoted:` ID が PATTERNS.md の「実証済みパターン（ACE 昇格）」節に **パターン本文 + 出典リンク** の組として載っている。Changelog 内の ID 言及だけでは収載と見なさない
+- Changelog に対象行が無いプロジェクトは正常終了する
+
 ## check-entry-format.ts の実行
 
 新規エントリが**コンパクト正準フォーマット**で書かれていることを検証します。旧テーブル形式（`| フィールド | 値 |` ヘッダ + Insight/Context/Action ブロック）は読み取り互換として共存させますが、新規追記には使いません:

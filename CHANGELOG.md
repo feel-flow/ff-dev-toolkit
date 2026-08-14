@@ -18,6 +18,12 @@
 
 ## [Unreleased]
 
+### 変更
+
+- スコープ外発見のルーティング（`skills/out-of-scope-issue`）の判定既定を軽量側へ反転した。従来は「インライン修正の全条件を証明できなければ Issue 化」だったが、Issue 化の上書き条件（仕様判断・別モジュール波及・独立検証・実装 10 行超）のいずれにも明確に該当すると示せなければインライン修正とする。仕様判断・波及の 2 軸だけは不確かでも Issue 化へ倒す（安全側）。あわせて (1) 触っていない近傍ファイル（`.gitignore`・設定ファイル等）の小変更をインライン許容、(2) 10 行閾値はテスト・fixture を除いた実装/本文行で数える、(3) 同一 PR からの複数発見は既定で 1 つのフォローアップ Issue に束ねる、(4) 受け入れ条件の記載粒度を判定へ逆流させない、を明文化した。複製先（`skills/setup-ai-config` のテンプレート、`docs-template/SETUP_CLAUDE_CODE.md`、`docs-template/05-operations/deployment/workflow-principles.md`）も同じ契約へ更新し、`tests/out-of-scope-routing/` と `tests/setup-ai-config/` のゲートで新契約と旧文言の残骸検出を固定した
+
+- ACE のカテゴリ件数ゲートを二段にした。refine 目安（既定 130 件）は警告のみ、ブロック上限の既定を 180 件（exit 1）へ上げた。検索語彙が分岐しないカテゴリを分割せず追記を止めないため。`ACE_MAX_ENTRIES_PER_CATEGORY=130` で旧挙動に戻せる。対象: `docs-template/scripts/ace/check-category-size.ts`、`docs-template/08-knowledge/PLAYBOOK.md`、`skills/ace-curate`、`skills/ace-refine`
+
 ### 追加
 
 - `tests/claude-hooks-path/` に、**hook の起動チェーン全体が同じリポジトリを見ているか**を固定するケースを追加した。検査対象は開発リポジトリ（SSOT）側の hook と検査スクリプトで、いずれも公開配布物ではない。対象 hook の定義が `.claude/settings.json` に無いチェックアウトでは従来どおり行頭 `○ skip`（定義があるのに実体が無いのは SSOT 側の事故として fail-closed）。

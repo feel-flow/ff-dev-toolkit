@@ -468,7 +468,16 @@ describe("findPromotionCandidates", () => {
   );
 
   it("Helpful >= 閾値かつ PATTERNS.md 未収載のみ列挙する", () => {
-    const patterns = "## 実証済みパターン（ACE 昇格）\n\n出典: [ACE-20-2](...)\n";
+    const patterns = [
+      "## 実証済みパターン（ACE 昇格）",
+      "",
+      "### 収載済みパターン",
+      "",
+      "ルール本文。",
+      "",
+      "出典: [ACE-20-2](../08-knowledge/playbook/process.md#ace-20-2)",
+      "",
+    ].join("\n");
     const candidates = findPromotionCandidates(entries, patterns, 5);
     expect(candidates.map((c) => c.id)).toEqual(["ACE-20-1"]);
   });
@@ -495,14 +504,82 @@ describe("findPromotionCandidates", () => {
     expect(findPromotionCandidates(deprecated, null, 5)).toEqual([]);
   });
 
-  it("収載判定は完全 ID トークン一致（ACE-20-10 の収載が ACE-20-1 を抑止しない）", () => {
-    const patterns = "出典: [ACE-20-10](../08-knowledge/playbook/process.md#ace-20-10)\n";
+  it("収載判定はパターン本文 + 出典リンクの組（完全 ID。ACE-20-10 の収載が ACE-20-1 を抑止しない）", () => {
+    const patterns = [
+      "### 長い ID のパターン",
+      "",
+      "ルール本文。",
+      "",
+      "出典: [ACE-20-10](../08-knowledge/playbook/process.md#ace-20-10)",
+      "",
+    ].join("\n");
     expect(isListedInPatterns(patterns, "ACE-20-10")).toBe(true);
     expect(isListedInPatterns(patterns, "ACE-20-1")).toBe(false);
-    // 逆方向: ACE-20-1 の収載は ACE-20-10 を抑止しない
-    const patterns2 = "出典: [ACE-20-1](...)\n";
+    const patterns2 = [
+      "### 短い ID のパターン",
+      "",
+      "ルール本文。",
+      "",
+      "出典: [ACE-20-1](../08-knowledge/playbook/process.md#ace-20-1)",
+      "",
+    ].join("\n");
     expect(isListedInPatterns(patterns2, "ACE-20-1")).toBe(true);
     expect(isListedInPatterns(patterns2, "ACE-20-10")).toBe(false);
+  });
+
+  it("Changelog 内の ID 言及だけでは収載済みと判定しない", () => {
+    const patterns = [
+      "## 13. 実証済みパターン（ACE 昇格）",
+      "",
+      "- 該当なし（昇格発生後に追記）",
+      "",
+      "## Changelog",
+      "",
+      "### [1.4.0] - 2026-08-14",
+      "",
+      "- 「実証済みパターン（ACE 昇格）」節へ ACE-72-2 を蒸留昇格",
+      "",
+    ].join("\n");
+    expect(isListedInPatterns(patterns, "ACE-72-2")).toBe(false);
+  });
+
+  it("昇格節が無く Changelog だけある文書は全文フォールバックしない", () => {
+    const patterns = [
+      "# PATTERNS",
+      "",
+      "## Changelog",
+      "",
+      "### 偽のパターン",
+      "",
+      "ルール本文。",
+      "",
+      "出典: [ACE-72-2](../08-knowledge/playbook/tooling.md#ace-72-2)",
+      "",
+    ].join("\n");
+    expect(isListedInPatterns(patterns, "ACE-72-2")).toBe(false);
+  });
+
+  it("Changelog 節の本文+出典は昇格節の収載に数えない", () => {
+    const patterns = [
+      "## 13. 実証済みパターン（ACE 昇格）",
+      "",
+      "- 該当なし",
+      "",
+      "## Changelog",
+      "",
+      "### 偽のパターン",
+      "",
+      "ルール本文。",
+      "",
+      "出典: [ACE-72-2](../08-knowledge/playbook/tooling.md#ace-72-2)",
+      "",
+    ].join("\n");
+    expect(isListedInPatterns(patterns, "ACE-72-2")).toBe(false);
+  });
+
+  it("出典リンクだけ（パターン本文なし）は収載ではない", () => {
+    const patterns = "出典: [ACE-20-10](../08-knowledge/playbook/process.md#ace-20-10)\n";
+    expect(isListedInPatterns(patterns, "ACE-20-10")).toBe(false);
   });
 });
 

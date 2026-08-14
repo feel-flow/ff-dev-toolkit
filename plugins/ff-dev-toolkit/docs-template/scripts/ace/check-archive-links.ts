@@ -11,7 +11,8 @@
  * 対応は「archive ファイル冒頭に読み替えの注記を置く」であり、本スクリプトはその注記の
  * 存在を機械的に強制する:
  *
- *   archive ファイルに `](./...)` 形式のリンクが 1 件以上あるなら、冒頭注記が必須。
+ *   archive ファイルに `](./...)` 形式のリンクが 1 件以上あるなら、冒頭 **Parent ブロック内**
+ *   の注記が必須。加えて同一ファイル内の `<a id>` 重複を拒否する（Issue #492）。
  *
  * リンクが 0 件のファイルには注記を強制しない（不要な定型文を増やさない）。
  * 走査対象は `playbook/archive/` 直下の *.md のみ（非再帰）。
@@ -45,9 +46,72 @@ export function countRelativeEntryLinks(content: string): number {
   return matches ? matches.length : 0;
 }
 
-/** 冒頭注記（読み替えの案内）が存在するか。 */
+/**
+ * archive ファイル冒頭の Parent ブロック（`> **Parent**` から始まる連続引用）を返す。
+ * ファイル全体の includes だと、エントリ本文や後段の引用にマーカーが偶然含まれても
+ * 冒頭注記ありと誤判定する（Issue #492）。
+ * Parent ブロックが無ければ null。
+ */
+export function extractOpeningParentBlock(content: string): string | null {
+  const lines = content.split("\n");
+  let headerEnd = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    if (
+      lines[i].trim() === "---" ||
+      /^<a\s+id="/u.test(lines[i]) ||
+      /^###\s+ACE-/u.test(lines[i])
+    ) {
+      headerEnd = i;
+      break;
+    }
+  }
+  let start = -1;
+  for (let i = 0; i < headerEnd; i++) {
+    if (/^>\s*\*\*Parent\*\*/u.test(lines[i])) {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) {
+    return null;
+  }
+  const collected: string[] = [];
+  for (let i = start; i < headerEnd; i++) {
+    if (lines[i].startsWith(">")) {
+      collected.push(lines[i]);
+      continue;
+    }
+    break;
+  }
+  return collected.join("\n");
+}
+
+/**
+ * 冒頭注記（読み替えの案内）が **Parent ブロック内** に存在するか。
+ * ファイル全体を走査しない（本文への偶然一致を注記と見なさない）。
+ */
 export function hasLiveBasisNote(content: string): boolean {
-  return content.includes(LIVE_BASIS_NOTE_MARKER);
+  const parent = extractOpeningParentBlock(content);
+  return parent !== null && parent.includes(LIVE_BASIS_NOTE_MARKER);
+}
+
+const HTML_ID_ATTRIBUTE_PATTERN = /<a\s+id="([^"]+)"/giu;
+
+/**
+ * 同一ファイル内の `<a id>` 重複を検出する（Issue #492）。
+ * append 型 archive へ同じエントリを二度保全すると、存在検証は緑のまま
+ * アンカーが分裂する（ACE-490-2）。
+ */
+export function findDuplicateAnchors(content: string): string[] {
+  const counts = new Map<string, number>();
+  for (const match of content.matchAll(HTML_ID_ATTRIBUTE_PATTERN)) {
+    const id = match[1];
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([id]) => id)
+    .sort();
 }
 
 /**
@@ -105,7 +169,8 @@ export function main(): number {
   console.log(`archive ファイル: ${String(archiveFiles.length)} 件`);
 
   // 最初の違反で止めず全件を報告する。1 件目を直したら 2 件目が出る往復を作らない。
-  const violations: string[] = [];
+  const noteViolations: string[] = [];
+  const anchorViolations: string[] = [];
 
   for (const filePath of archiveFiles) {
     let content: string;
@@ -118,23 +183,39 @@ export function main(): number {
     }
     const linkCount = countRelativeEntryLinks(content);
     const noted = hasLiveBasisNote(content);
+    const duplicateIds = findDuplicateAnchors(content);
     console.log(
-      `  ${filePath}: ./ リンク ${String(linkCount)} 件 / 冒頭注記 ${noted ? "あり" : "なし"}`,
+      `  ${filePath}: ./ リンク ${String(linkCount)} 件 / 冒頭注記 ${noted ? "あり" : "なし"}` +
+        (duplicateIds.length > 0
+          ? ` / 重複 <a id> ${duplicateIds.join(", ")}`
+          : ""),
     );
     if (linkCount > 0 && !noted) {
-      violations.push(`${filePath}（./ リンク ${String(linkCount)} 件）`);
+      noteViolations.push(`${filePath}（./ リンク ${String(linkCount)} 件）`);
+    }
+    if (duplicateIds.length > 0) {
+      anchorViolations.push(`${filePath}（${duplicateIds.join(", ")}）`);
     }
   }
 
-  if (violations.length > 0) {
+  if (noteViolations.length > 0) {
     console.error(
       `⚠ 保全本文内に \`./\` 相対リンクがあるのに冒頭注記が無い archive ファイルがあります。原文は verbatim 保全のためリンクを書き換えられないので、代わりに「${LIVE_BASIS_NOTE_MARKER}」の注記をファイル冒頭（Parent ブロック内）へ追加してください（テンプレートは /ace-refine SKILL.md R3-a）。注記が無いと、読者は live に着いたつもりでアーカイブ済みの古い複製を読みます:\n- ` +
-        violations.join("\n- "),
+        noteViolations.join("\n- "),
     );
+  }
+  if (anchorViolations.length > 0) {
+    console.error(
+      `⚠ archive ファイル内で同一の \`<a id>\` が複数回出現しています。append 型 archive への保全は「存在」ではなく「一意」で検証してください（ACE-490-2）。重複アンカーは着地が分裂し、後段の存在検証を緑のまま通します:\n- ` +
+        anchorViolations.join("\n- "),
+    );
+  }
+  if (noteViolations.length > 0 || anchorViolations.length > 0) {
     return EXIT_VIOLATION;
   }
 
   console.log("✓ archive の保全本文内リンクはすべて注記で担保されています。");
+  console.log("✓ archive の <a id> アンカーは各ファイル内で一意です。");
   return EXIT_OK;
 }
 

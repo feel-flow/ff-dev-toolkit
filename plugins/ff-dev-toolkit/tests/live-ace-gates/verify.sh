@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# repository root の live ACE Playbook に、形式・frontmatter の 2 ゲートを適用する。
+# repository root の live ACE Playbook に、形式・frontmatter・archive リンク/アンカー・
+# refine 結果不変条件のゲートを適用する。
 # docs-template の fixture だけが緑でも live docs の drift は守れないため、run-all から
-# 実際の docs/08-knowledge/ を読み取る（Issue #441）。
+# 実際の docs/08-knowledge/ を読み取る（Issue #441 / #492）。
 
 set -euo pipefail
 
@@ -25,7 +26,11 @@ for file in \
   "$PLAYBOOK" \
   "$ACE_SCRIPTS/check-category-size.ts" \
   "$ACE_SCRIPTS/check-entry-format.ts" \
-  "$ACE_SCRIPTS/sync-playbook-frontmatter.ts"; do
+  "$ACE_SCRIPTS/sync-playbook-frontmatter.ts" \
+  "$ACE_SCRIPTS/check-archive-links.ts" \
+  "$ACE_SCRIPTS/check-refine-invariants.ts" \
+  "$ACE_SCRIPTS/ace-reuse-report.ts" \
+  "$ACE_SCRIPTS/ace-refine-report.ts"; do
   if [[ ! -s "$file" ]]; then
     echo "✗ live ACE ゲートの検査対象が存在しないか空です: $file" >&2
     exit 1
@@ -62,19 +67,28 @@ BUNDLE_REAL="$(cd "$BUNDLE_DIR" && pwd -P)"
 
 # tsx をネットワーク取得せず、同梱 esbuild で TypeScript を ESM へ変換する。
 # bundle すると依存側の import.meta.url も entry CLI の URL になり、依存モジュールの
-# direct-execution 判定が誤発火するため、3 ファイルを別々に出力する。既存 import の
+# direct-execution 判定が誤発火するため、ファイルを別々に出力する。既存 import の
 # extensionless / `.js` 両方を満たすよう共有モジュールだけ 2 名で配置する。
 printf '{"type":"module"}\n' >"$BUNDLE_DIR/package.json"
-"$ESBUILD_BIN" "$ACE_SCRIPTS/check-category-size.ts" \
-  --platform=node --format=esm --log-level=error \
-  --outfile="$BUNDLE_DIR/check-category-size"
-cp "$BUNDLE_DIR/check-category-size" "$BUNDLE_DIR/check-category-size.js"
+transpile_shared() {
+  local src="$1"
+  local dest="$BUNDLE_DIR/$(basename "$src" .ts)"
+  "$ESBUILD_BIN" "$src" --platform=node --format=esm --log-level=error --outfile="$dest"
+  cp "$dest" "$dest.js"
+}
+transpile_shared "$ACE_SCRIPTS/check-category-size.ts"
+transpile_shared "$ACE_SCRIPTS/ace-reuse-report.ts"
+transpile_shared "$ACE_SCRIPTS/ace-refine-report.ts"
+transpile_shared "$ACE_SCRIPTS/check-archive-links.ts"
 "$ESBUILD_BIN" "$ACE_SCRIPTS/check-entry-format.ts" \
   --platform=node --format=esm --log-level=error \
   --outfile="$BUNDLE_DIR/check-entry-format.mjs"
 "$ESBUILD_BIN" "$ACE_SCRIPTS/sync-playbook-frontmatter.ts" \
   --platform=node --format=esm --log-level=error \
   --outfile="$BUNDLE_DIR/sync-playbook-frontmatter.mjs"
+"$ESBUILD_BIN" "$ACE_SCRIPTS/check-refine-invariants.ts" \
+  --platform=node --format=esm --log-level=error \
+  --outfile="$BUNDLE_DIR/check-refine-invariants.mjs"
 
 echo "== live ACE entry format =="
 node "$BUNDLE_REAL/check-entry-format.mjs" "$PLAYBOOK"
@@ -84,3 +98,13 @@ echo
 echo "== live ACE frontmatter sync =="
 node "$BUNDLE_REAL/sync-playbook-frontmatter.mjs" "$PLAYBOOK" --check
 echo "✓ live ACE の entry count / version / changeImpact は同期済み"
+
+echo
+echo "== live ACE archive links / anchors =="
+node "$BUNDLE_REAL/check-archive-links" "$PLAYBOOK"
+echo "✓ live ACE の archive リンク注記と <a id> 一意性"
+
+echo
+echo "== live ACE refine invariants =="
+node "$BUNDLE_REAL/check-refine-invariants.mjs" "$PLAYBOOK"
+echo "✓ live ACE の refine 結果不変条件"
