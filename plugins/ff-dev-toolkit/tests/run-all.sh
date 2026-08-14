@@ -99,6 +99,17 @@ else
     "$SCRIPT_DIR/changelog-version/verify.sh"
     "$SCRIPT_DIR/docs-gates/verify.sh"
     "$SCRIPT_DIR/out-of-scope-routing/verify.sh"
+    # out-of-scope 判定の実挙動検証（Issue #499）: SKILL.md から抽出した行数閾値と
+    # prefix 優先順位を参照実装へ流し、判定表・バッチ表の期待ルートと照合する
+    # 静的検査。外部コマンド・一時領域不要。契約文言を見る out-of-scope-routing の
+    # 直後に置く。
+    "$SCRIPT_DIR/out-of-scope-decision/verify.sh"
+    # 上 2 gate の検出力を隔離 fixture への変異注入（旧規則の言い換え・矛盾文の
+    # 注入・SKILL 本文/コンシューマーからの契約節の個別削除・閾値/優先順位の改変・
+    # 抽出契約行の破壊・参照実装への依存注入、の 12 種）で実測する（Issue #499）。
+    # perl / 一時領域が無い場合だけ丸ごと ○ skip（実作業ツリーは変更しない）。
+    # 検査対象の直後に置くことを優先し、安価な順の例外として扱う。
+    "$SCRIPT_DIR/out-of-scope-routing-selftest/verify.sh"
     # squash 件名の closing keyword が Refs 運用の Issue を閉じる経路のガード。
     # 検査ロジック（scripts/check-closing-keywords.sh）の振る舞いと、SKILL.md /
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド
@@ -108,7 +119,7 @@ else
     # verify-then-skip ラベル契約の照合（bash は連続した行列として、散文は行単位で）と、
     # 両者の意図的な非対称（候補の系統・アサイン方針）の固定。jq / gh / yq 不要の
     # 静的検査（`bash -n` による構文検査だけは走らせるが、契約ブロックは実行しない）。
-    # 検査対象の一方 out-of-scope-issue を共有する out-of-scope-routing の直後に置く。
+    # 検査対象の一方 out-of-scope-issue を共有する out-of-scope 系 3 suite の直後に置く。
     "$SCRIPT_DIR/issue-label-contract/verify.sh"
     # 推奨ラベル・セットアップの SSOT（docs-template/scripts/setup-github-labels.sh の
     # LABEL_DEFS）と github-setup.md の表・手動例の 3 箇所照合 + stub gh での振る舞い
@@ -310,6 +321,9 @@ REQUIRED_SUITES=(
   multi-agent-timeout
   # 実行中のリビジョン変化を検出する契約は、この suite 以外どこも守っていない。
   multi-agent-revision-guard
+  # out-of-scope 契約ゲート（routing / decision）の検出力 selftest。代替の検査が
+  # 無く、perl・一時領域の都合で消える場合は明示許可を要求する（#499）。
+  out-of-scope-routing-selftest
   # 公開対象の禁止パターン検査。同期時以外に発火するゲートが他に無い（#476）。
   # 公開 checkout はスクリプト不在で ○ skip、一時領域不足でも ○ skip する。
   # そちらでは FF_RUN_ALL_ALLOW_SKIP=sync-forbidden-patterns が要る。
