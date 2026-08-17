@@ -1,3 +1,12 @@
+---
+title: "API"
+version: "1.0.0"
+status: "draft"
+owner: "@your-github-handle"
+created: "YYYY-MM-DD"
+updated: "YYYY-MM-DD"
+---
+
 # API.md - API設計書
 
 ## 1. API概要
@@ -354,3 +363,11 @@ Content-Security-Policy: default-src 'self'
 
 - URL: <https://sandbox.api.example.com/v1>
 - 認証: APIキー（ダッシュボードで発行）
+
+## Changelog
+
+### [1.0.0] - YYYY-MM-DD
+
+#### 追加
+
+- 初版作成

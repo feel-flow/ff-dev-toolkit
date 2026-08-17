@@ -18,6 +18,14 @@
 
 ## [Unreleased]
 
+### 変更
+
+- `/init-docs` の初期セット 20 ファイルのテンプレートすべてに YAML Frontmatter（必須6フィールド: `title` / `version` / `status` / `owner` / `created` / `updated`）と文書末尾の `## Changelog` セクションを付与した。従来はコア7文書 + 2 文書のみが Frontmatter を持ち、残り 11 文書（`CONSTRAINTS` / `API` / `DATABASE` / `CONVENTIONS` / `INTEGRATIONS` / `VALIDATION` / `GLOSSARY` / `DECISIONS` / `ROADMAP` / `TASKS` / `RISKS`）は Frontmatter が無いため `/validate-docs` の拡張文書チェック（Frontmatter を持つ場合のみ検証するオプトイン設計）の対象に入らず、検証から静かに漏れていた。あわせて「Frontmatter を要求するのは仕様文書のみで、補助文書（`GETTING_STARTED*.md`・`SETUP_*.md`・README・運用ガイド等）には付与しない」という線引き規則を `skills/init-docs` に明文化した。
+
+### 追加
+
+- `tests/docs-template-frontmatter/` に、初期セット 20 文書の構造契約（Frontmatter 必須6フィールド・SemVer / status 値域・changeImpact の小文字値域・文書末尾の `## Changelog`・`skills/init-docs` のディレクトリ構造ツリーとの集合一致）を fail-closed で固定するゲートを追加した。`/validate-docs` の拡張文書チェックはオプトイン設計のため、テンプレートから Frontmatter が欠落する回帰はどの既存 suite も検出できなかった。検出力は主張ではなく実測で、`tests/docs-template-frontmatter-selftest/` が 10 種類の変異（Frontmatter 除去・必須フィールド欠落・SemVer / status / changeImpact の値域違反・Changelog 除去・ファイル削除・Frontmatter 未閉鎖・ツリー片側更新・ツリー抽出の空振り）を fixture へ注入し、狙ったケースだけが赤化することを確認している`changeImpact` は初版では省略し初回変更時に追加する（MASTER テンプレートの文書管理ルール準拠）。あわせて ROADMAP テンプレートのロードマップ変更履歴表から初版以外の例示行を削除した（`/validate-docs` が「更新履歴に初版以外のエントリがある」ことを changeImpact 要求の根拠にするため、初期化直後の文書が誤って未達判定になる）
+
 ## [0.29.0] - 2026-08-14
 
 ### 変更

@@ -1,3 +1,12 @@
+---
+title: "DATABASE"
+version: "1.0.0"
+status: "draft"
+owner: "@your-github-handle"
+created: "YYYY-MM-DD"
+updated: "YYYY-MM-DD"
+---
+
 # DATABASE.md - データベース設計書
 
 ## 1. データベース概要
@@ -218,3 +227,11 @@ $$ LANGUAGE plpgsql;
 - 保存時暗号化: TDE有効
 - 転送時暗号化: SSL/TLS必須
 - カラムレベル暗号化: 機密データ対象
+
+## Changelog
+
+### [1.0.0] - YYYY-MM-DD
+
+#### 追加
+
+- 初版作成

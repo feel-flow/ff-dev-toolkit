@@ -1,3 +1,12 @@
+---
+title: "VALIDATION"
+version: "1.0.0"
+status: "draft"
+owner: "@your-github-handle"
+created: "YYYY-MM-DD"
+updated: "YYYY-MM-DD"
+---
+
 # VALIDATION.md - 検証・品質保証ガイド
 
 ## 1. 検証戦略
@@ -566,3 +575,11 @@ class ValidationReporter {
   }
 }
 ```
+
+## Changelog
+
+### [1.0.0] - YYYY-MM-DD
+
+#### 追加
+
+- 初版作成

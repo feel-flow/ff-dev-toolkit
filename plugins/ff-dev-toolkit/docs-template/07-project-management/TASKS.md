@@ -1,3 +1,12 @@
+---
+title: "TASKS"
+version: "1.0.0"
+status: "draft"
+owner: "@your-github-handle"
+created: "YYYY-MM-DD"
+updated: "YYYY-MM-DD"
+---
+
 # TASKS.md - タスク管理
 
 ## 1. 現在のスプリント
@@ -223,3 +232,11 @@ graph TD
 | [@dev2]  | ⭐⭐⭐     | ⭐⭐⭐⭐   | ⭐⭐     | ⭐⭐     |
 | [@dev3]  | ⭐⭐⭐⭐   | ⭐⭐⭐     | ⭐⭐⭐   | ⭐⭐⭐⭐ |
 | [@dev4]  | ⭐⭐       | ⭐⭐⭐⭐⭐ | ⭐       | ⭐⭐     |
+
+## Changelog
+
+### [1.0.0] - YYYY-MM-DD
+
+#### 追加
+
+- 初版作成

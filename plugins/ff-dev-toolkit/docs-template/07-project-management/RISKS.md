@@ -1,3 +1,12 @@
+---
+title: "RISKS"
+version: "1.0.0"
+status: "draft"
+owner: "@your-github-handle"
+created: "YYYY-MM-DD"
+updated: "YYYY-MM-DD"
+---
+
 # RISKS.md - リスク管理
 
 ## 1. リスク管理概要
@@ -261,3 +270,11 @@
   2. 新規リスクの評価
   3. 既存リスクの再評価
   4. 対策の優先順位付け
+
+## Changelog
+
+### [1.0.0] - YYYY-MM-DD
+
+#### 追加
+
+- 初版作成

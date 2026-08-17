@@ -1,3 +1,12 @@
+---
+title: "ROADMAP"
+version: "1.0.0"
+status: "draft"
+owner: "@your-github-handle"
+created: "YYYY-MM-DD"
+updated: "YYYY-MM-DD"
+---
+
 # ROADMAP.md - プロジェクトロードマップ
 
 ## 1. プロジェクト概要
@@ -223,4 +232,11 @@ graph LR
 | 日付   | バージョン | 変更内容         | 承認者 |
 | ------ | ---------- | ---------------- | ------ |
 | [日付] | 1.0        | 初版作成         | [名前] |
-| [日付] | 1.1        | Phase2の期間延長 | [名前] |
+
+## Changelog
+
+### [1.0.0] - YYYY-MM-DD
+
+#### 追加
+
+- 初版作成

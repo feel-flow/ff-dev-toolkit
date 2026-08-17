@@ -1,3 +1,12 @@
+---
+title: "CONSTRAINTS"
+version: "1.0.0"
+status: "draft"
+owner: "@your-github-handle"
+created: "YYYY-MM-DD"
+updated: "YYYY-MM-DD"
+---
+
 # CONSTRAINTS.md - プロジェクト制約事項
 
 ## 1. 技術的制約
@@ -147,3 +156,11 @@
 | 日付   | 制約項目 | 変更内容 | 承認者   |
 | ------ | -------- | -------- | -------- |
 | [日付] | [項目]   | [内容]   | [承認者] |
+
+## Changelog
+
+### [1.0.0] - YYYY-MM-DD
+
+#### 追加
+
+- 初版作成

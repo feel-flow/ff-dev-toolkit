@@ -1,3 +1,12 @@
+---
+title: "DECISIONS"
+version: "1.0.0"
+status: "draft"
+owner: "@your-github-handle"
+created: "YYYY-MM-DD"
+updated: "YYYY-MM-DD"
+---
+
 # DECISIONS.md - アーキテクチャ決定記録（ADR）
 
 ## ADR-001: マイクロサービスアーキテクチャの採用
@@ -496,3 +505,11 @@ AIツール（Claude Code、GitHub Copilot 等）の知識カットオフによ�
 
 - PRテンプレートへ Impact Level チェックボックス追加 (未着手)
 - VALIDATION.md へドキュメント構造検証手順統合 (計画中)
+
+## Changelog
+
+### [1.0.0] - YYYY-MM-DD
+
+#### 追加
+
+- 初版作成

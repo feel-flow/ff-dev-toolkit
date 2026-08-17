@@ -67,6 +67,13 @@ else
     "$SCRIPT_DIR/mbcs-guard-failclosed/verify.sh"
     "$SCRIPT_DIR/no-hardcoded-model/verify.sh"
     "$SCRIPT_DIR/cli-registry-completeness/verify.sh"
+    # 収録スキル数の手入力メタデータ（marketplace.json root/oss・plugin.json）と
+    # skills/*/SKILL.md の実数の整合検査（Issue #502）。jq のみに依存する読み取り
+    # 専用の静的検査。件数の複製を扱う点で cli-registry-completeness の直後に置く。
+    "$SCRIPT_DIR/skill-count-consistency/verify.sh"
+    # 上の gate の検出力を mktemp fixture への変異（スキル±1・補助物混入・root/oss
+    # 片側更新・内訳合計不一致・抽出空振り）で実測する。一時領域不可なら丸ごと ○ skip。
+    "$SCRIPT_DIR/skill-count-consistency-selftest/verify.sh"
     # agent-config.yaml が multi-agent.sh の case 文のミラーとして正しいか
     # （command / cost_tier / perspectives / fallback の値を横断照合）。
     # 上の「外部コマンド不要」の例外で、yq に依存する。読み取り専用の静的検査なので
@@ -134,6 +141,15 @@ else
     "$SCRIPT_DIR/setup-ai-config/verify.sh"
     "$SCRIPT_DIR/assess-impact/verify.sh"
     "$SCRIPT_DIR/validate-docs/verify.sh"
+    # docs-template 初期セット 20 文書の構造契約（Frontmatter 必須6フィールド +
+    # 文末 Changelog + init-docs SKILL ツリーとの集合一致）。/validate-docs の
+    # 拡張文書チェックはオプトイン設計なので、テンプレートの Frontmatter 欠落は
+    # この gate だけが守る。外部コマンド不要の静的検査（Issue #509）。
+    "$SCRIPT_DIR/docs-template-frontmatter/verify.sh"
+    # 上の gate の検出力を mktemp fixture への変異（FM 除去・フィールド欠落・
+    # 値域外・未閉鎖・ファイル削除・ツリー片側更新・抽出空振り）で実測する。
+    # perl 不在または一時領域不可なら丸ごと ○ skip。
+    "$SCRIPT_DIR/docs-template-frontmatter-selftest/verify.sh"
     # docs-template の実行可能フェンスを抽出して fixture 実行する動的検査。
     # 一時作業領域を使うため静的検査の後、ネットワーク検査の前に置く。
     "$SCRIPT_DIR/docs-gates-runtime/verify.sh"
@@ -304,6 +320,9 @@ REQUIRED_SUITES=(
   # live docs 不在は正当な適用外なので本体は必須にしない。検出力 selftest は代替がなく、
   # 環境都合で消える場合に明示許可を要求する（Issue #441）。
   live-ace-gates-selftest
+  # mktemp fixture が要る。収録スキル数ゲートの検出力 selftest は代替がなく、
+  # 一時領域不足で消えると count-rot の検出力喪失が黙って通る（Issue #502）。
+  skill-count-consistency-selftest
   ace-scripts-vitest
   # ミラー検出器・tree-state helper・runner 自身の検出力にも代替がない。
   ace-scripts-mirror-selftest
@@ -324,6 +343,9 @@ REQUIRED_SUITES=(
   # out-of-scope 契約ゲート（routing / decision）の検出力 selftest。代替の検査が
   # 無く、perl・一時領域の都合で消える場合は明示許可を要求する（#499）。
   out-of-scope-routing-selftest
+  # docs-template 構造契約ゲートの検出力 selftest。代替の検査が無く、perl・
+  # 一時領域の都合で消えると Frontmatter 欠落回帰の検出力喪失が黙って通る（#509）。
+  docs-template-frontmatter-selftest
   # 公開対象の禁止パターン検査。同期時以外に発火するゲートが他に無い（#476）。
   # 公開 checkout はスクリプト不在で ○ skip、一時領域不足でも ○ skip する。
   # そちらでは FF_RUN_ALL_ALLOW_SKIP=sync-forbidden-patterns が要る。

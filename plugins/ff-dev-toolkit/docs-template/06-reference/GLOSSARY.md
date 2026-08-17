@@ -1,3 +1,12 @@
+---
+title: "GLOSSARY"
+version: "1.0.0"
+status: "draft"
+owner: "@your-github-handle"
+created: "YYYY-MM-DD"
+updated: "YYYY-MM-DD"
+---
+
 # GLOSSARY.md - 用語集
 
 ## A
@@ -468,3 +477,11 @@ Webフック。イベント発生時に外部サービスに通知する仕組�
 | UUID  | Universally Unique Identifier                | 汎用一意識別子                     |
 | XML   | eXtensible Markup Language                   | 拡張可能マークアップ言語           |
 | XSS   | Cross-Site Scripting                         | クロスサイトスクリプティング       |
+
+## Changelog
+
+### [1.0.0] - YYYY-MM-DD
+
+#### 追加
+
+- 初版作成

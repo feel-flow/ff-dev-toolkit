@@ -1,3 +1,12 @@
+---
+title: "CONVENTIONS"
+version: "1.0.0"
+status: "draft"
+owner: "@your-github-handle"
+created: "YYYY-MM-DD"
+updated: "YYYY-MM-DD"
+---
+
 # CONVENTIONS.md - コーディング規約
 
 ## 0. ドキュメント命名規則
@@ -693,3 +702,11 @@ function processUserInput(input: unknown): void {
   );
 }
 ```
+
+## Changelog
+
+### [1.0.0] - YYYY-MM-DD
+
+#### 追加
+
+- 初版作成

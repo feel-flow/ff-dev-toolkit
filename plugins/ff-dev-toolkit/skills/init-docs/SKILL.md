@@ -70,6 +70,13 @@ docs/
 
 - **テンプレートパス**: `${FF_DEV_TOOLKIT_ROOT}/docs-template/` 配下の対応するファイル
 
+**Frontmatter 規則（仕様文書と補助文書の線引き）**:
+
+- 初期セット 20 ファイルのテンプレートは**すべて** YAML Frontmatter（必須6フィールド: `title` / `version` / `status` / `owner` / `created` / `updated`）と文書末尾の `## Changelog` セクションを持つ（`/validate-docs` の Frontmatter スキーマチェックと整合）。テンプレートを追加・改訂する際もこの規則を維持する。規則は `tests/docs-template-frontmatter/` が fail-closed で検証する
+- `changeImpact` は初版では省略し、初回変更時に Frontmatter へ追加する（MASTER.md の文書管理ルール準拠）
+- Frontmatter を要求するのは仕様文書（初期セット + 仕様系拡張文書）のみ。補助文書（`GETTING_STARTED*.md`・`SETUP_*.md`・索引/案内系の README・`05-operations/deployment/` 配下の運用ガイド・`setup-guides/` 等）には付与しない — `/validate-docs` の Frontmatter スキーマチェックも補助文書を検査対象外としている。仕様系の雛形群を説明する README（例: `03-implementation/templates/README.md`）が Frontmatter を持つのは例外として許容する
+- 文書内のドメイン履歴表（`CONSTRAINTS.md` の制約変更履歴・`ROADMAP.md` のロードマップ変更履歴等）は、文書レベルの `## Changelog` とは別物として併存してよい。ただしテンプレートの例示行に初版以外のエントリを置かない — `/validate-docs` は「更新履歴に初版以外のエントリがある」ことを changeImpact 要求の根拠にするため、初期化直後の文書が誤って ❌ になる
+
 テンプレート内のプレースホルダー（`[プロジェクト名]`、`[システムの全体的な説明と目的]` などの角括弧表記、および frontmatter の `"@your-github-handle"`・`"YYYY-MM-DD"`）はステップ1で確認した情報で置換してください。
 
 **置換ポリシー**:

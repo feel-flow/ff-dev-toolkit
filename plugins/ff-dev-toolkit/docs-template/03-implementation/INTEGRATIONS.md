@@ -1,3 +1,12 @@
+---
+title: "INTEGRATIONS"
+version: "1.0.0"
+status: "draft"
+owner: "@your-github-handle"
+created: "YYYY-MM-DD"
+updated: "YYYY-MM-DD"
+---
+
 # INTEGRATIONS.md - 統合・連携ガイド
 
 ## 1. AI開発ツール統合
@@ -707,3 +716,11 @@ const result = await retryWithBackoff(
   1000,
 );
 ```
+
+## Changelog
+
+### [1.0.0] - YYYY-MM-DD
+
+#### 追加
+
+- 初版作成
