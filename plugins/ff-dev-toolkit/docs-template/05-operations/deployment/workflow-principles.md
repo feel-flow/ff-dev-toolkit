@@ -12,15 +12,17 @@ AI駆動Git Workflowを効率的に運用するための基本原則を定義し
 
 ### 原則1: ノンストップフロー（フルオート）
 
-**ルール**: Issue作成から ACE まで、不要な確認を挟まず一気通貫で進める（push / Draft PR / ready / merge / cleanup / ACE を含む）
+**ルール**: Issue作成から振り返りまで、不要な確認を挟まず一気通貫で進める（push / Draft PR / ready / merge / cleanup / ACE / `/retrospective` の実施を含む）
 
 ```
 Issue作成 → ブランチ作成 → 実装 → テスト → セルフレビュー
   → Commit/push → Draft PR → Toolkit+Codex レビュー → 1 fix commit
   → gh pr ready → /close-issue（AC照合ゲート） → gh pr merge --squash
-  → /merge-cleanup → ACE
+  → /merge-cleanup → ACE → /retrospective（セッション振り返り）
                     ↑ この一連の流れを中断しない（フルオート） ↑
 ```
+
+> `/retrospective` はノンストップの範囲が**実施（振り返り + 提案の提示）まで**。改善提案の Issue 起票はチェーン外で、ユーザー承認を待ってから行う（承認ゲートは起票側にある。下の「止めてよい例外」の追加ではなく、フローがここで自然に終端する）。
 
 **やること**:
 
@@ -136,6 +138,7 @@ Issue #123 の作業中に発見。UserService.createUser() が150行を超え�
 9. [ ] gh pr ready → /close-issue（AC照合ゲート） → gh pr merge --squash
 10. [ ] /merge-cleanup
 11. [ ] ACE
+12. [ ] /retrospective（セッション振り返り）
 ```
 
 ### 運用ルール
@@ -152,7 +155,7 @@ Issue #123 の作業中に発見。UserService.createUser() が150行を超え�
 | ワークフローステップ | 適用される原則                                                |
 | -------------------- | ------------------------------------------------------------- |
 | Issue作成            | 原則3（曖昧仕様の確認）                                       |
-| ブランチ作成〜ACE    | 原則1（ノンストップフロー / フルオート）                      |
+| ブランチ作成〜振り返り実施 | 原則1（ノンストップフロー / フルオート。`/retrospective` の起票のみ承認待ち） |
 | 実装中の発見         | 原則2（YAGNI / インライン / Issue 化）                        |
 | セルフレビュー       | 原則1 + [Review Response Policy](./review-response-policy.md) |
 | レビュー対応         | 原則1 + 原則2                                                 |

@@ -6,7 +6,7 @@
 
 AI開発ツールに最適化されたGit Flowベースのワークフローです。Issue作成からマージ、ナレッジ体系化までをAIツールと協働で効率的に進めます。
 
-**コアサイクル（10ステップ）**: Issue → Branch → Implement → Test → Self-Review → PR → Review → Merge → Cleanup → ACE
+**コアサイクル（10ステップ + 振り返り）**: Issue → Branch → Implement → Test → Self-Review → PR → Review → Merge → Cleanup → ACE → Retrospective
 
 > **運用原則**: 本ワークフローは [ワークフロー運用原則](./workflow-principles.md)（ノンストップフロー（フルオート）・スコープ外発見の YAGNI / インライン / Issue 化・曖昧仕様確認タイミング）に従って運用します。
 
@@ -1003,6 +1003,10 @@ GitHub Discussions への記録に加え、ACE Playbook への構造化記録を
 **任意エスカレーション — chore PR**: 大人数チーム、または知見内容自体をレビューに残したい場合のみ、develop から `chore/ace-from-pr-<PR番号>` ブランチを切り、PLAYBOOK.md 追記を小さい chore PR として PR レビュー → squash merge する。
 
 > **ACE-012 との関係（混同しないこと）**: ACE-012 は _うっかり_ feature 作業を develop に直接 push してしまう事故（ブランチ切り替わりの見落とし）を防ぐルール。一方、本セクションの「develop 直マージ」は `knowledge:` プレフィックス付きの **PLAYBOOK 単独コミット** に限定した _意図的・承認済み_ のフローであり、両者は別物。ACE-012 は引き続き有効（deprecated にしない）。
+
+### チェーン末尾: セッション振り返り（/retrospective）
+
+ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行する（`/merge-cleanup` → `/ace-curate` → `/retrospective`）。ACE がコード・設計のプロジェクト知見を Playbook へ蓄積するのに対し、`/retrospective` はプロセス/ツール/スキルのメタ知見（そのセッションで**実測した**手戻り・無駄時間）から改善提案を最大 3 件出す（該当なしなら「振り返り: 改善候補なし」の 1 行で終了）。起票は提案 → ユーザー承認 → 対象 repo へ Issue 作成の順で、承認なしには起票しない。
 
 ## タスク管理（Task Tracking）
 

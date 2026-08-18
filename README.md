@@ -34,7 +34,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 
 ## 収録内容
 
-### Skills（19）
+### Skills（21）
 
 | スキル | 用途 |
 |---|---|
@@ -59,6 +59,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `/ace-setup` | ACE（Agentic Context Engineering）フレームワークのセットアップ |
 | `/ace-curate` | マージ済み PR からの知見抽出・プレイブック追記 |
 | `/ace-refine` | ACE Playbook の定期整理（stale アーカイブ・長大エントリ圧縮・重複統合）。dry-run → 承認 → 適用の 3 フェーズで原文を保全する |
+| `/retrospective` | ワークフローチェーン末尾（`/merge-cleanup` → `/ace-curate` → `/retrospective`）のセッション振り返り。実測した手戻り・無駄時間からプロセス/ツール改善を最大 3 件提案（該当なしなら 1 行報告）。起票はユーザー承認後のみ |
 | `/setup-ai-config` | AI 開発ツール設定の初期化 |
 | `/multi-explore` | マルチAI CLI による並列探索 |
 | `/multi-implement` | マルチAI CLI による並列実装 |

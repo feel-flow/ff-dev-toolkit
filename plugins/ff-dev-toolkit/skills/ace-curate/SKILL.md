@@ -231,7 +231,7 @@ gh pr create --base <default-branch> --title "knowledge: ACE-<PR番号>-<連番>
 
 > `knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、通常のコード変更に対する「統合ブランチへの直 push 禁止」ルールとは別物として扱う。
 
-### 6. 結果レポート
+### 6. 結果レポートと次のステップ
 
 以下の形式で結果を報告します:
 
@@ -248,6 +248,8 @@ gh pr create --base <default-branch> --title "knowledge: ACE-<PR番号>-<連番>
 - ACE-438-1: [タイトル] ([カテゴリ])
 - ACE-438-2: [タイトル] ([カテゴリ])
 ```
+
+**次のステップ**: ACE 完了後、ワークフローチェーンの末尾として `/retrospective`（セッション振り返り）を実行する（`/merge-cleanup` → `/ace-curate` → `/retrospective`）。プロセス/ツール/スキルのメタ知見（手戻り・無駄時間）は ACE Playbook ではなく `/retrospective` の提案経路で扱う。
 
 ## 注意事項
 

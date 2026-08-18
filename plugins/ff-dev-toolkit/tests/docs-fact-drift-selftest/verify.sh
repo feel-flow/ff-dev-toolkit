@@ -269,6 +269,18 @@ perl -i -pe 's/^## Changelog$/カウンターの例として Helpful >= 99 を�
 assert_present "$TMP/root/docs/07-project-management/RISKS.md" "Helpful >= 99" "G16" || true
 run_case "G16 昇格 を含まない Helpful >= N は照合しない" green
 
+# プラグイン数・総スキル数（N プラグイン・N スキル）claim は「調査時点」を含む
+# 歴史スナップショット行（DECISIONS.md ADR-024）を除外する。スナップショットの
+# 数値だけを現在値からずらし、除外が効いて緑のままであることを測る
+make_fixture
+cp "$TMP/root/docs/06-reference/DECISIONS.md" "$TMP/g22-before.md"
+perl -i -pe 's/([0-9]+) プラグイン・([0-9]+) スキル/($1 + 1) . " プラグイン・" . ($2 + 1) . " スキル"/ge if /調査時点/' \
+  "$TMP/root/docs/06-reference/DECISIONS.md"
+# 判別力は DECISIONS.md の「調査時点（…、N プラグイン・N スキル）」1 箇所に乗っている。
+# 表現が変われば置換は no-op になり、このケースは何も測らずに緑になる
+assert_changed "$TMP/g22-before.md" "$TMP/root/docs/06-reference/DECISIONS.md" "G22" || true
+run_case "G22 調査時点 を含む歴史スナップショット行は照合しない" green
+
 echo "== G17. 未閉鎖コメント開始行の記載も走査する（契約の固定）=="
 # 未閉鎖 opener は「対応探索を打ち切るだけ」で、その行の文字は本文に残る規則。
 # したがって未閉鎖コメント行に書いた古い件数もドリフトとして赤になる。

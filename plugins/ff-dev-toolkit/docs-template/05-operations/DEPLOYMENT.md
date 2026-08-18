@@ -1,11 +1,11 @@
 ---
 title: "DEPLOYMENT"
-version: "1.0.2"
+version: "1.1.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-07-07"
-changeImpact: "low"
+updated: "2026-08-19"
+changeImpact: "medium"
 ---
 
 # DEPLOYMENT.md - デプロイメント・運用ガイド
@@ -42,7 +42,7 @@ changeImpact: "low"
 ### AI駆動開発の基本フロー
 
 ```
-Issue → Branch → Implement → Test → Self-Review → PR → Review → Merge → Cleanup → ACE → Next Task
+Issue → Branch → Implement → Test → Self-Review → PR → Review → Merge → Cleanup → ACE → Retrospective → Next Task
 ```
 
 **詳細**: `deployment/git-workflow.md`
@@ -84,6 +84,8 @@ Git Flowベースで、**テスト・セルフレビュー（PR前）** と **AC
 8. **マージ** - Squash推奨
 9. **クリーンアップ** - ブランチ削除、`git fetch --prune`
 10. **ナレッジ体系化** - マージ後・cleanup 後 ← 詳細: `deployment/knowledge-management.md` | ACE Playbook: `deployment/ace-cycle.md`
+
+ステップ 10 の後、チェーン末尾として `/retrospective`（セッション振り返り）を毎回実行する。実測した手戻り・無駄時間からプロセス/ツール改善を最大 3 件提案し、起票はユーザー承認後のみ ← 詳細: `deployment/git-workflow.md` の「チェーン末尾: セッション振り返り」
 
 ### 詳細ドキュメント
 
@@ -270,6 +272,12 @@ PRマージ後のブランチ切り替え忘れを防ぐため、セッション
 ---
 
 ## Changelog
+
+### [1.1.0] - 2026-08-19
+
+#### 追加
+
+- ワークフローチェーン末尾の「セッション振り返り（`/retrospective`）」を基本フローと主要ステップの案内に追加
 
 ### [1.0.2] - 2026-07-07
 
