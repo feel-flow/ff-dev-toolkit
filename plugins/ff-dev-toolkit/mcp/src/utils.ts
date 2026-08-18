@@ -60,10 +60,104 @@ export const parseFrontMatter = (raw: string): { meta: Record<string, unknown>; 
   return { meta, body };
 };
 
+/**
+ * Blank the lines of GLOSSARY.md that must not be scanned for terms (Issue #517).
+ *
+ * Three exclusion regions, all confirmed-closed before they take effect:
+ *   1. closed code fences (``` / ~~~)         — format examples
+ *   2. closed HTML comments (<!-- ... -->)    — entry templates
+ *   3. everything from a `## Changelog` heading to EOF — release notes, whose
+ *      `- something: description` bullets otherwise register as terms
+ *
+ * **Unclosed** fences/comments are deliberately NOT treated as regions: a stray
+ * opening marker must not silently swallow every real term after it. The same
+ * "closed span only" rule the ACE line-budget exception uses.
+ *
+ * Lines are blanked rather than removed so indices stay stable for the caller's
+ * heading/definition scan.
+ */
+export const maskNonGlossaryLines = (lines: string[]): string[] => {
+  const masked = maskClosedSpans(lines);
+  // The Changelog cut is searched in the already-masked lines: a `## Changelog`
+  // shown inside a fence or comment is an example, and must not blank every
+  // real term that follows it.
+  const changelog = masked.findIndex((l) => /^##\s+Changelog\s*$/.test(l));
+  if (changelog !== -1) for (let i = changelog; i < masked.length; i++) masked[i] = '';
+  return masked;
+};
+
+/** A code fence opener: the run character and its length (CommonMark: >= 3). */
+const fenceOpenerOf = (l: string): { char: string; len: number } | null => {
+  const m = l.match(/^\s*(`{3,}|~{3,})/);
+  return m ? { char: m[1][0], len: m[1].length } : null;
+};
+
+/**
+ * True when `l` closes a fence opened by `open`. CommonMark requires the same
+ * character, a run at least as long, and **no info string** — so ```` ```ts ````
+ * inside a ```` ```markdown ```` block is content, not a closing marker.
+ */
+const closesFence = (l: string, open: { char: string; len: number }): boolean => {
+  const m = l.match(/^\s*(`{3,}|~{3,})\s*$/);
+  return !!m && m[1][0] === open.char && m[1].length >= open.len;
+};
+
+/**
+ * Blank every closed fence / HTML-comment span, left to right.
+ *
+ * A single pass is what makes the two kinds compose: whichever marker opens
+ * first wins, and any marker inside the resulting span is never examined (so a
+ * ``` inside a comment cannot pair with a fence outside it, and vice versa).
+ *
+ * Two deliberate narrowings:
+ *   - an opener with no matching close is **skipped, not honoured** — the scan
+ *     continues so a stray marker neither swallows the rest of the file nor
+ *     hides a later closed span
+ *   - for comments only the commented characters are removed, so a term with a
+ *     trailing note (`### ACE <!-- 補足 -->`) survives
+ */
+const maskClosedSpans = (lines: string[]): string[] => {
+  const out = [...lines];
+  let i = 0;
+  while (i < out.length) {
+    const fence = fenceOpenerOf(out[i]);
+    const commentAt = out[i].indexOf('<!--');
+    if (fence && (commentAt === -1 || out[i].indexOf(fence.char) < commentAt)) {
+      const close = out.findIndex((l, j) => j > i && closesFence(l, fence));
+      if (close === -1) { i++; continue; } // unclosed: skip this opener only
+      for (let k = i; k <= close; k++) out[k] = '';
+      i = close + 1;
+    } else if (commentAt !== -1) {
+      i = maskCommentAt(out, i, commentAt);
+    } else i++;
+  }
+  return out;
+};
+
+/**
+ * Remove one HTML comment starting at `out[i]`, column `at`. Returns the line
+ * index to examine next (the same line when the comment closed on it, so a
+ * second comment or a fence after it is still seen).
+ */
+const maskCommentAt = (out: string[], i: number, at: number): number => {
+  const sameLineEnd = out[i].indexOf('-->', at);
+  if (sameLineEnd !== -1) {
+    out[i] = out[i].slice(0, at) + out[i].slice(sameLineEnd + 3);
+    return i;
+  }
+  const close = out.findIndex((l, j) => j > i && l.includes('-->'));
+  if (close === -1) return i + 1; // unclosed: skip this opener only
+  const tail = out[close].slice(out[close].indexOf('-->') + 3);
+  out[i] = out[i].slice(0, at);
+  for (let k = i + 1; k < close; k++) out[k] = '';
+  out[close] = tail;
+  return close;
+};
+
 /** Build a glossary map from GLOSSARY.md content. */
 export const buildGlossary = (md: string): Glossary => {
   const res: Glossary = {};
-  const lines = md.split(/\r?\n/);
+  const lines = maskNonGlossaryLines(md.split(/\r?\n/));
   for (const line of lines) {
     const m = line.match(/^[-*]\s+([^:]+):\s*(.+)$/); if (m) res[m[1].trim()] = m[2].trim();
   }

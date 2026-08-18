@@ -21218,9 +21218,57 @@ var parseFrontMatter = (raw) => {
   }
   return { meta, body };
 };
+var maskNonGlossaryLines = (lines) => {
+  const masked = maskClosedSpans(lines);
+  const changelog = masked.findIndex((l) => /^##\s+Changelog\s*$/.test(l));
+  if (changelog !== -1) for (let i = changelog; i < masked.length; i++) masked[i] = "";
+  return masked;
+};
+var fenceOpenerOf = (l) => {
+  const m = l.match(/^\s*(`{3,}|~{3,})/);
+  return m ? { char: m[1][0], len: m[1].length } : null;
+};
+var closesFence = (l, open) => {
+  const m = l.match(/^\s*(`{3,}|~{3,})\s*$/);
+  return !!m && m[1][0] === open.char && m[1].length >= open.len;
+};
+var maskClosedSpans = (lines) => {
+  const out = [...lines];
+  let i = 0;
+  while (i < out.length) {
+    const fence = fenceOpenerOf(out[i]);
+    const commentAt = out[i].indexOf("<!--");
+    if (fence && (commentAt === -1 || out[i].indexOf(fence.char) < commentAt)) {
+      const close = out.findIndex((l, j) => j > i && closesFence(l, fence));
+      if (close === -1) {
+        i++;
+        continue;
+      }
+      for (let k = i; k <= close; k++) out[k] = "";
+      i = close + 1;
+    } else if (commentAt !== -1) {
+      i = maskCommentAt(out, i, commentAt);
+    } else i++;
+  }
+  return out;
+};
+var maskCommentAt = (out, i, at) => {
+  const sameLineEnd = out[i].indexOf("-->", at);
+  if (sameLineEnd !== -1) {
+    out[i] = out[i].slice(0, at) + out[i].slice(sameLineEnd + 3);
+    return i;
+  }
+  const close = out.findIndex((l, j) => j > i && l.includes("-->"));
+  if (close === -1) return i + 1;
+  const tail = out[close].slice(out[close].indexOf("-->") + 3);
+  out[i] = out[i].slice(0, at);
+  for (let k = i + 1; k < close; k++) out[k] = "";
+  out[close] = tail;
+  return close;
+};
 var buildGlossary = (md) => {
   const res = {};
-  const lines = md.split(/\r?\n/);
+  const lines = maskNonGlossaryLines(md.split(/\r?\n/));
   for (const line of lines) {
     const m = line.match(/^[-*]\s+([^:]+):\s*(.+)$/);
     if (m) res[m[1].trim()] = m[2].trim();
@@ -21255,41 +21303,42 @@ var readFileSafe = (p) => {
     return "";
   }
 };
-var resolveWithinRoot = (projectRoot, relOrAbs) => {
-  const rootAbs = path.resolve(projectRoot);
-  const abs = path.resolve(rootAbs, relOrAbs);
-  if (!abs.startsWith(rootAbs + path.sep)) return null;
-  if (!fs.existsSync(abs)) return null;
-  let real;
-  let realRoot;
-  try {
-    real = fs.realpathSync(abs);
-    realRoot = fs.realpathSync(rootAbs);
-  } catch {
-    return null;
-  }
-  if (!real.startsWith(realRoot + path.sep)) return null;
-  return real;
-};
 var resolveDocsPath = (projectRoot, relPath) => {
-  const abs = resolveWithinRoot(projectRoot, relPath);
-  if (!abs || !abs.toLowerCase().endsWith(".md")) return null;
+  const rootAbs = path.resolve(projectRoot);
+  const requested = path.resolve(rootAbs, relPath);
+  if (!requested.startsWith(rootAbs + path.sep)) return null;
+  if (!requested.toLowerCase().endsWith(".md")) return null;
+  if (!fs.existsSync(requested)) return null;
+  let real;
   let docsReal;
   try {
-    docsReal = fs.realpathSync(path.join(path.resolve(projectRoot), "docs"));
+    real = fs.realpathSync(requested);
+    docsReal = fs.realpathSync(path.join(rootAbs, "docs"));
   } catch {
     return null;
   }
-  return abs.startsWith(docsReal + path.sep) ? abs : null;
+  return real.startsWith(docsReal + path.sep) ? real : null;
 };
-var listMarkdown = (dir) => {
+var listMarkdown = (dir, containmentRoot = dir) => {
   if (!fs.existsSync(dir)) return [];
+  let realRoot;
+  let realDir;
+  try {
+    realRoot = fs.realpathSync(path.resolve(containmentRoot));
+    realDir = fs.realpathSync(path.resolve(dir));
+  } catch {
+    return [];
+  }
+  if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) return [];
+  return listMarkdownWithin(dir, realRoot);
+};
+var listMarkdownWithin = (dir, realRoot) => {
   const out = [];
   const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
   for (const e of entries) {
     const full = path.join(dir, e.name);
     if (e.isDirectory()) {
-      out.push(...listMarkdown(full));
+      out.push(...listMarkdownWithin(full, realRoot));
     } else if (e.name.toLowerCase().endsWith(".md")) {
       let isFile = e.isFile();
       if (!isFile && e.isSymbolicLink()) {
@@ -21299,10 +21348,29 @@ var listMarkdown = (dir) => {
           continue;
         }
       }
-      if (isFile) out.push(full);
+      if (!isFile) continue;
+      if (e.isSymbolicLink() && !isWithinRealRoot(full, realRoot)) continue;
+      out.push(full);
     }
   }
   return out;
+};
+var isWithinRealRoot = (p, realRoot) => {
+  try {
+    return fs.realpathSync(p).startsWith(realRoot + path.sep);
+  } catch {
+    return false;
+  }
+};
+var containedPath = (p, root) => {
+  let realRoot;
+  try {
+    realRoot = fs.realpathSync(path.resolve(root));
+  } catch {
+    return null;
+  }
+  if (!fs.existsSync(p)) return null;
+  return isWithinRealRoot(p, realRoot) ? p : null;
 };
 var buildSearchIndex = (files, projectRoot) => files.flatMap((f) => {
   const rel = path.relative(projectRoot, f);
@@ -21313,7 +21381,7 @@ var buildSearchIndex = (files, projectRoot) => files.flatMap((f) => {
 });
 var buildSpecIndex = (specsDir, projectRoot) => {
   if (!fs.existsSync(specsDir)) return { specs: [], errors: [] };
-  const files = listMarkdown(specsDir);
+  const files = listMarkdown(specsDir, path.dirname(specsDir));
   const seen = /* @__PURE__ */ new Set();
   const specs = [];
   const errors = [];
@@ -21338,13 +21406,13 @@ var buildSpecIndex = (specsDir, projectRoot) => {
 var buildDocsState = (projectRoot) => {
   const docsRoot = path.join(projectRoot, "docs");
   const specsDir = path.join(docsRoot, "specs");
-  const glossaryPath = path.join(docsRoot, "06-reference", "GLOSSARY.md");
+  const glossaryPath = containedPath(path.join(docsRoot, "06-reference", "GLOSSARY.md"), docsRoot);
   const mdFiles = listMarkdown(docsRoot);
   return {
     mdFiles,
     searchIndex: buildSearchIndex(mdFiles, projectRoot),
     specIndex: buildSpecIndex(specsDir, projectRoot),
-    glossary: fs.existsSync(glossaryPath) ? buildGlossary(readFileSafe(glossaryPath)) : {}
+    glossary: glossaryPath ? buildGlossary(readFileSafe(glossaryPath)) : {}
   };
 };
 

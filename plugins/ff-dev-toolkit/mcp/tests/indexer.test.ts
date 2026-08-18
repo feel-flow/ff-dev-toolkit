@@ -1,4 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import url from 'url';
 import { buildDocsState, listMarkdown, resolveWithinRoot, resolveDocsPath } from '../src/indexer.js';
@@ -81,6 +83,163 @@ describe('listMarkdown', () => {
     const b = listMarkdown(path.join(PROJECT_FIXTURE, 'docs'));
     expect(a).toEqual(b);
     expect(a).toEqual([...a].sort((x, y) => x.localeCompare(y)));
+  });
+});
+
+// ---------- Issue #521: symlink containment ----------
+describe('listMarkdown (symlink containment)', () => {
+  let tmp: string;
+  let docs: string;
+  const names = (files: string[]): string[] => files.map((f) => path.basename(f)).sort();
+
+  beforeAll(() => {
+    // macOS の /tmp は /private/tmp への symlink なので realpath 済みの base を使う
+    tmp = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'mcp-symlink-'));
+    docs = path.join(tmp, 'project', 'docs');
+    fs.mkdirSync(path.join(docs, 'sub'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'outside'), { recursive: true });
+
+    fs.writeFileSync(path.join(docs, 'real.md'), '# real\n');
+    fs.writeFileSync(path.join(docs, 'sub', 'inner.md'), '# inner\n');
+    fs.writeFileSync(path.join(tmp, 'outside', 'secret.md'), '# secret\n');
+
+    // 外部を指す symlink（封じ込め対象）
+    fs.symlinkSync(path.join(tmp, 'outside', 'secret.md'), path.join(docs, 'leak.md'));
+    // docs/ 内を指す symlink（許可されるべき）
+    fs.symlinkSync(path.join(docs, 'sub', 'inner.md'), path.join(docs, 'internal-link.md'));
+    // 壊れた symlink
+    fs.symlinkSync(path.join(tmp, 'outside', 'missing.md'), path.join(docs, 'broken.md'));
+  });
+
+  afterAll(() => {
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('docs/ 外を指すファイル symlink を索引しない', () => {
+    expect(names(listMarkdown(docs))).not.toContain('leak.md');
+  });
+
+  it('docs/ 内を指す symlink は従来どおり索引する', () => {
+    expect(names(listMarkdown(docs))).toContain('internal-link.md');
+  });
+
+  it('実ファイルは symlink 検査に影響されない', () => {
+    const got = names(listMarkdown(docs));
+    expect(got).toContain('real.md');
+    expect(got).toContain('inner.md');
+  });
+
+  it('壊れた symlink はスキップする', () => {
+    expect(names(listMarkdown(docs))).not.toContain('broken.md');
+  });
+
+  it('docs/ 自体が symlink の構成でも索引できる', () => {
+    const linkedProject = path.join(tmp, 'linked-project');
+    fs.mkdirSync(linkedProject, { recursive: true });
+    const docsLink = path.join(linkedProject, 'docs');
+    fs.symlinkSync(docs, docsLink);
+    const got = names(listMarkdown(docsLink));
+    expect(got).toContain('real.md');
+    expect(got).toContain('internal-link.md');
+    expect(got).not.toContain('leak.md');
+  });
+
+  it('containmentRoot を明示すると、その配下を指す symlink は許可される', () => {
+    // specs/ を歩きつつ containment を docs/ にすると、docs/ 内へのリンクは通る
+    const specs = path.join(docs, 'specs');
+    fs.mkdirSync(specs, { recursive: true });
+    fs.symlinkSync(path.join(docs, 'real.md'), path.join(specs, 'linked-spec.md'));
+    expect(names(listMarkdown(specs, docs))).toContain('linked-spec.md');
+    // containment を specs/ に狭めると同じリンクは弾かれる
+    expect(names(listMarkdown(specs, specs))).not.toContain('linked-spec.md');
+  });
+
+  it('buildDocsState は docs/ 外の symlink を検索索引へ入れない', () => {
+    const state = buildDocsState(path.join(tmp, 'project'));
+    expect(state.mdFiles.map((f) => path.basename(f))).not.toContain('leak.md');
+    expect(state.searchIndex.some((e) => e.content.includes('secret'))).toBe(false);
+  });
+
+  // ---- レビュー指摘（PR #523）: 走査の入口と、パスで読むファイル ----
+
+  it('開始ディレクトリ自体が docs/ 外を指す symlink なら 1 件も返さない', () => {
+    // docs/specs -> /outside の形。外部の「通常ファイル」は symlink フラグを
+    // 持たないため、各エントリの検査だけでは素通りしてしまう
+    const linkedSpecs = path.join(docs, 'linked-specs');
+    fs.symlinkSync(path.join(tmp, 'outside'), linkedSpecs);
+    expect(listMarkdown(linkedSpecs, docs)).toEqual([]);
+  });
+
+  it('buildDocsState は docs/specs が外部を指す symlink のとき spec を索引しない', () => {
+    const proj = path.join(tmp, 'escaped-specs-project');
+    const pdocs = path.join(proj, 'docs');
+    fs.mkdirSync(pdocs, { recursive: true });
+    fs.writeFileSync(path.join(pdocs, 'MASTER.md'), '# master\n');
+    const outsideSpecs = path.join(tmp, 'outside-specs');
+    fs.mkdirSync(outsideSpecs, { recursive: true });
+    fs.writeFileSync(
+      path.join(outsideSpecs, 'leaked-spec.md'),
+      '---\nspecId: SPEC-LEAK\ntitle: leaked\nstatus: draft\nversion: 1.0.0\n---\n\nsecret body\n',
+    );
+    fs.symlinkSync(outsideSpecs, path.join(pdocs, 'specs'));
+    const state = buildDocsState(proj);
+    expect(state.specIndex.specs.map((s) => s.specId)).not.toContain('SPEC-LEAK');
+  });
+
+  it('GLOSSARY.md が docs/ 外を指す symlink なら用語を読み込まない', () => {
+    const proj = path.join(tmp, 'escaped-glossary-project');
+    const ref = path.join(proj, 'docs', '06-reference');
+    fs.mkdirSync(ref, { recursive: true });
+    const outsideGlossary = path.join(tmp, 'outside-glossary.md');
+    fs.writeFileSync(outsideGlossary, '### LEAKED\n\n外部の定義\n');
+    fs.symlinkSync(outsideGlossary, path.join(ref, 'GLOSSARY.md'));
+    expect(buildDocsState(proj).glossary).toEqual({});
+  });
+
+  it('06-reference 自体が docs/ 外を指す symlink でも用語を読み込まない', () => {
+    const proj = path.join(tmp, 'escaped-refdir-project');
+    fs.mkdirSync(path.join(proj, 'docs'), { recursive: true });
+    const outsideRef = path.join(tmp, 'outside-ref');
+    fs.mkdirSync(outsideRef, { recursive: true });
+    fs.writeFileSync(path.join(outsideRef, 'GLOSSARY.md'), '### LEAKED\n\n外部の定義\n');
+    fs.symlinkSync(outsideRef, path.join(proj, 'docs', '06-reference'));
+    expect(buildDocsState(proj).glossary).toEqual({});
+  });
+
+  it('docs/ 自体が symlink の構成で extract_section も動作する（3 経路の一致）', () => {
+    // listMarkdown だけが動いて resolveDocsPath が落ちる非対称を防ぐ
+    const shared = path.join(tmp, 'shared-docs');
+    fs.mkdirSync(shared, { recursive: true });
+    fs.writeFileSync(path.join(shared, 'MASTER.md'), '## 概要\n\n本文\n');
+    const proj = path.join(tmp, 'symlinked-docs-project');
+    fs.mkdirSync(proj, { recursive: true });
+    fs.symlinkSync(shared, path.join(proj, 'docs'));
+
+    expect(listMarkdown(path.join(proj, 'docs')).map((f) => path.basename(f))).toContain('MASTER.md');
+    const resolved = resolveDocsPath(proj, 'docs/MASTER.md');
+    expect(resolved).not.toBeNull();
+    expect(fs.readFileSync(resolved!, 'utf-8')).toContain('本文');
+  });
+
+  it('docs/ が symlink でも ../ 脱出と docs/ 外は拒否する', () => {
+    const shared = path.join(tmp, 'shared-docs2');
+    fs.mkdirSync(shared, { recursive: true });
+    fs.writeFileSync(path.join(shared, 'MASTER.md'), '# m\n');
+    const proj = path.join(tmp, 'symlinked-docs-project2');
+    fs.mkdirSync(proj, { recursive: true });
+    fs.writeFileSync(path.join(proj, 'secret.md'), '# secret\n');
+    fs.symlinkSync(shared, path.join(proj, 'docs'));
+
+    expect(resolveDocsPath(proj, '../../../etc/hosts')).toBeNull();
+    expect(resolveDocsPath(proj, 'secret.md')).toBeNull(); // docs/ の外
+  });
+
+  it('docs/ 内の正常な GLOSSARY.md は従来どおり読み込む', () => {
+    const proj = path.join(tmp, 'ok-glossary-project');
+    const ref = path.join(proj, 'docs', '06-reference');
+    fs.mkdirSync(ref, { recursive: true });
+    fs.writeFileSync(path.join(ref, 'GLOSSARY.md'), '### ACE\n\nAgentic Context Engineering\n');
+    expect(buildDocsState(proj).glossary['ACE']).toBe('Agentic Context Engineering');
   });
 });
 

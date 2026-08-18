@@ -150,6 +150,19 @@ else
     # 値域外・未閉鎖・ファイル削除・ツリー片側更新・抽出空振り）で実測する。
     # perl 不在または一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/docs-template-frontmatter-selftest/verify.sh"
+    # 対象プロジェクトの docs/ 側 Frontmatter 付与規則の回帰ゲート。MASTER.md の
+    # 付与対象 / 付与しない表から両側を導出して集合一致を見る（規則と実体の drift 検出）。
+    # docs/ を持たない checkout では丸ごと ○ skip（Issue #513）。
+    "$SCRIPT_DIR/docs-frontmatter-repo/verify.sh"
+    # 上の gate の検出力を mktemp fixture への変異（FM 除去・値域外・未閉鎖・
+    # 実体/規則の片側追加・抽出空振り・除外規則の効き）で実測する（Issue #513）。
+    "$SCRIPT_DIR/docs-frontmatter-repo-selftest/verify.sh"
+    # docs/ に手書きした件数・閾値と実体のドリフト検査。期待値はすべて実体から導出し、
+    # 正準表現に 1 件も一致しなければ赤（抽出の空振りを緑にしない。Issue #519）。
+    "$SCRIPT_DIR/docs-fact-drift/verify.sh"
+    # 上の gate の検出力を、記載側 / 実体側の双方向の変異と対象外範囲（ACE 分割
+    # ファイル・Changelog 節）で実測する（Issue #519）。
+    "$SCRIPT_DIR/docs-fact-drift-selftest/verify.sh"
     # docs-template の実行可能フェンスを抽出して fixture 実行する動的検査。
     # 一時作業領域を使うため静的検査の後、ネットワーク検査の前に置く。
     "$SCRIPT_DIR/docs-gates-runtime/verify.sh"
@@ -346,6 +359,20 @@ REQUIRED_SUITES=(
   # docs-template 構造契約ゲートの検出力 selftest。代替の検査が無く、perl・
   # 一時領域の都合で消えると Frontmatter 欠落回帰の検出力喪失が黙って通る（#509）。
   docs-template-frontmatter-selftest
+  # 自リポジトリ docs/ の Frontmatter 規則ゲートと件数ドリフトゲートの検出力 selftest。
+  # 代替の検査が無く、perl・jq・一時領域の都合で消えると「規則と実体の drift を
+  # 検出できない状態」が黙って通る（#513 / #519）。
+  #
+  # **公開 checkout では root に docs/ が無いため両方 ○ skip する。** fixture は
+  # 「実リポジトリの docs/ をそのまま写す」設計で、baseline が実体と乖離しないことを
+  # 優先している（同梱 fixture にすると baseline 自体が腐る）。したがって公開側では
+  # sync-forbidden-patterns と合わせて 3 件の明示許可が要る:
+  #   FF_RUN_ALL_ALLOW_SKIP="sync-forbidden-patterns docs-frontmatter-repo-selftest docs-fact-drift-selftest" \
+  #     bash tests/run-all.sh
+  # 必須 skip で落ちたときは、この行と同じ内容をランナーが実際の skip 一覧から
+  # 組み立てて表示する（下の REQUIRED_SKIPPED の案内）。
+  docs-frontmatter-repo-selftest
+  docs-fact-drift-selftest
   # 公開対象の禁止パターン検査。同期時以外に発火するゲートが他に無い（#476）。
   # 公開 checkout はスクリプト不在で ○ skip、一時領域不足でも ○ skip する。
   # そちらでは FF_RUN_ALL_ALLOW_SKIP=sync-forbidden-patterns が要る。

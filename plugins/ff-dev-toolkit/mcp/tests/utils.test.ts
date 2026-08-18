@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { splitSections, parseScalar, parseFrontMatter, buildGlossary } from '../src/utils.js';
+import { splitSections, parseScalar, parseFrontMatter, buildGlossary, maskNonGlossaryLines } from '../src/utils.js';
 
 // ---------- splitSections ----------
 describe('splitSections', () => {
@@ -141,5 +141,276 @@ describe('buildGlossary', () => {
     const md = `- API: REST interface\n\n### API\n\nApplication Programming Interface`;
     const result = buildGlossary(md);
     expect(result['API']).toBe('REST interface');
+  });
+
+  // ---- Issue #517: 走査対象外の領域 ----
+
+  it('閉じた HTML コメント内の ### 見出しを用語として登録しない', () => {
+    const md = [
+      '<!-- 用語を追加するときの形式:',
+      '',
+      '### <用語>（<英語表記>）',
+      '',
+      '<定義と説明>',
+      '-->',
+      '',
+      '### ACE',
+      '',
+      'Agentic Context Engineering',
+    ].join('\n');
+    const result = buildGlossary(md);
+    expect(Object.keys(result)).toEqual(['ACE']);
+  });
+
+  it('1 行で閉じた HTML コメント内の見出しも登録しない', () => {
+    const md = `<!-- ### 雛形 -->\n\n### ACE\n\nAgentic Context Engineering`;
+    expect(Object.keys(buildGlossary(md))).toEqual(['ACE']);
+  });
+
+  it('閉じたコードフェンス内の ### 見出しを用語として登録しない', () => {
+    const md = [
+      '```markdown',
+      '### <用語>',
+      '',
+      '<定義>',
+      '```',
+      '',
+      '### ACE',
+      '',
+      'Agentic Context Engineering',
+    ].join('\n');
+    expect(Object.keys(buildGlossary(md))).toEqual(['ACE']);
+  });
+
+  it('~~~ フェンスも同様に除外する', () => {
+    const md = `~~~text\n### <用語>\n\n<定義>\n~~~\n\n### ACE\n\nAgentic Context Engineering`;
+    expect(Object.keys(buildGlossary(md))).toEqual(['ACE']);
+  });
+
+  it('コメント / フェンス外の実見出しは従来どおり登録する', () => {
+    const md = [
+      '### suite',
+      '',
+      'ゲートの最小単位',
+      '',
+      '<!-- 雛形は見出し行として書かない -->',
+      '',
+      '### SSOT',
+      '',
+      '単一の情報源',
+    ].join('\n');
+    const result = buildGlossary(md);
+    expect(result['suite']).toBe('ゲートの最小単位');
+    expect(result['SSOT']).toBe('単一の情報源');
+  });
+
+  it('複数のコメント / フェンスをそれぞれ正しく除外する', () => {
+    const md = [
+      '<!-- ### 雛形A -->',
+      '',
+      '### 用語1',
+      '',
+      '定義1',
+      '',
+      '```',
+      '### 雛形B',
+      '',
+      '本文',
+      '```',
+      '',
+      '### 用語2',
+      '',
+      '定義2',
+    ].join('\n');
+    const result = buildGlossary(md);
+    expect(Object.keys(result).sort()).toEqual(['用語1', '用語2']);
+  });
+
+  it('閉じていない HTML コメントは後続の正規用語を消さない（fail-safe）', () => {
+    const md = `<!-- 閉じ忘れ\n\n### ACE\n\nAgentic Context Engineering`;
+    const result = buildGlossary(md);
+    expect(result['ACE']).toBe('Agentic Context Engineering');
+  });
+
+  it('閉じていないコードフェンスは後続の正規用語を消さない（fail-safe）', () => {
+    const md = '```\n\n### ACE\n\nAgentic Context Engineering';
+    const result = buildGlossary(md);
+    expect(result['ACE']).toBe('Agentic Context Engineering');
+  });
+
+  it('コメント内外に同名見出しがある場合、実見出しの定義が入る', () => {
+    const md = `<!--\n### ACE\n\nコメント側の定義\n-->\n\n### ACE\n\n実体側の定義`;
+    expect(buildGlossary(md)['ACE']).toBe('実体側の定義');
+  });
+
+  it('## Changelog 節の "- 何か: 説明" 箇条書きを用語として登録しない', () => {
+    const md = [
+      '### ACE',
+      '',
+      'Agentic Context Engineering',
+      '',
+      '## Changelog',
+      '',
+      '### [1.1.0] - 2026-08-17',
+      '',
+      '#### 追加',
+      '',
+      '- 2 巡目レビューの指摘: シムの根拠を訂正',
+      '- 固有語 23 件を収録（API: HTTP API を提供しない）',
+    ].join('\n');
+    const result = buildGlossary(md);
+    expect(Object.keys(result)).toEqual(['ACE']);
+  });
+
+  it('Changelog 節の ### 見出し（版番号）も用語にしない', () => {
+    const md = `### ACE\n\n定義\n\n## Changelog\n\n### [2.0.0] - 2026-08-17\n\n#### 変更\n\n本文全体を書き換え`;
+    expect(Object.keys(buildGlossary(md))).toEqual(['ACE']);
+  });
+
+  // ---- レビュー指摘（PR #523）: 除外判定そのものの境界 ----
+
+  it('フェンス内の "## Changelog" は本物の節として扱わない（以降の用語を消さない）', () => {
+    const md = [
+      '```markdown',
+      '## Changelog',
+      '```',
+      '',
+      '### ACE',
+      '',
+      'Agentic Context Engineering',
+    ].join('\n');
+    expect(buildGlossary(md)['ACE']).toBe('Agentic Context Engineering');
+  });
+
+  it('HTML コメント内の "## Changelog" も以降の用語を消さない', () => {
+    const md = `<!--\n## Changelog\n-->\n\n### ACE\n\nAgentic Context Engineering`;
+    expect(buildGlossary(md)['ACE']).toBe('Agentic Context Engineering');
+  });
+
+  it('4 連バッククォートのフェンス内に 3 連の例を置いても外側が閉じない', () => {
+    const md = [
+      '````markdown',
+      '```',
+      '### <雛形A>',
+      '```',
+      '',
+      '### <雛形B>',
+      '',
+      '<定義>',
+      '````',
+      '',
+      '### ACE',
+      '',
+      'Agentic Context Engineering',
+    ].join('\n');
+    expect(Object.keys(buildGlossary(md))).toEqual(['ACE']);
+  });
+
+  it('info string 付きフェンス行は閉じフェンスにならない', () => {
+    const md = [
+      '```markdown',
+      '```ts',
+      '### <雛形>',
+      '',
+      '<定義>',
+      '```',
+      '',
+      '### ACE',
+      '',
+      'Agentic Context Engineering',
+    ].join('\n');
+    expect(Object.keys(buildGlossary(md))).toEqual(['ACE']);
+  });
+
+  it('閉じた HTML コメント内のフェンス記号が外側の用語を消さない', () => {
+    const md = [
+      '<!--',
+      '```',
+      '-->',
+      '',
+      '### ACE',
+      '',
+      'Agentic Context Engineering',
+      '',
+      '### suite',
+      '',
+      'ゲートの最小単位',
+    ].join('\n');
+    const result = buildGlossary(md);
+    expect(result['ACE']).toBe('Agentic Context Engineering');
+    expect(result['suite']).toBe('ゲートの最小単位');
+  });
+
+  it('閉じ忘れマーカーの後にある「閉じた span」もきちんと除外する', () => {
+    const md = [
+      '<!-- 閉じ忘れ',
+      '',
+      '### 用語1',
+      '',
+      '定義1',
+      '',
+      '```',
+      '### <雛形>',
+      '',
+      '<定義>',
+      '```',
+      '',
+      '### 用語2',
+      '',
+      '定義2',
+    ].join('\n');
+    const result = buildGlossary(md);
+    expect(Object.keys(result).sort()).toEqual(['用語1', '用語2']);
+  });
+
+  it('行内コメント付きの見出しは用語として残る', () => {
+    const md = `### ACE <!-- 補足: 略称 -->\n\nAgentic Context Engineering`;
+    expect(buildGlossary(md)['ACE']).toBe('Agentic Context Engineering');
+  });
+
+  it('行内コメント付きの箇条書きも用語として残る', () => {
+    const md = `- SSOT: Single Source of Truth <!-- 単一の情報源 -->`;
+    expect(buildGlossary(md)['SSOT']).toBe('Single Source of Truth');
+  });
+
+  it('複数行コメントの終了行に続く本文（-->の後ろ）は保持される', () => {
+    // buildGlossary 経由では検証できない: markdown では `--> ### x` は行頭でないため
+    // 見出しにならない。保持そのものをマスク関数の出力で直接確かめる
+    const masked = maskNonGlossaryLines(['<!--', '雛形', '--> 残すべき本文']);
+    expect(masked).toEqual(['', '', ' 残すべき本文']);
+  });
+
+  it('同一行に 2 つのコメントがあっても両方除去し、外側は残る', () => {
+    const md = `### ACE <!-- a --><!-- b -->\n\nAgentic Context Engineering`;
+    expect(buildGlossary(md)['ACE']).toBe('Agentic Context Engineering');
+  });
+
+  it('フェンス内の <!-- は外側のコメントと対にならない', () => {
+    const md = [
+      '```',
+      '<!--',
+      '```',
+      '',
+      '### ACE',
+      '',
+      'Agentic Context Engineering',
+    ].join('\n');
+    expect(buildGlossary(md)['ACE']).toBe('Agentic Context Engineering');
+  });
+
+  it('異なる記号（``` と ~~~）は互いを閉じない', () => {
+    const md = [
+      '```',
+      '~~~',
+      '### <雛形>',
+      '',
+      '<定義>',
+      '```',
+      '',
+      '### ACE',
+      '',
+      'Agentic Context Engineering',
+    ].join('\n');
+    expect(Object.keys(buildGlossary(md))).toEqual(['ACE']);
   });
 });
