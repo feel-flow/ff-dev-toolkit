@@ -117,6 +117,20 @@ else
     # perl / 一時領域が無い場合だけ丸ごと ○ skip（実作業ツリーは変更しない）。
     # 検査対象の直後に置くことを優先し、安価な順の例外として扱う。
     "$SCRIPT_DIR/out-of-scope-routing-selftest/verify.sh"
+    # /retrospective の規定（提案閾値・承認境界・read-only 境界・ask モード・trigger 語）
+    # と、ワークフローチェーン記載の相互整合の静的検査（Issue #540）。モノレポでは
+    # 7 ファイル / 13 針、公開配置では 6 ファイル / 11 針を見る。上限と 1 行報告の文面は
+    # SKILL.md から導出して消費側文書へ伝播しているかを照合する。外部コマンド・一時領域
+    # 不要。同じ「スキルの契約文言 × 消費側文書」を扱う out-of-scope 系に続けて置く。
+    "$SCRIPT_DIR/retrospective-contract/verify.sh"
+    # 上の gate の検出力を隔離 fixture への変異注入（チェーン記載の針それぞれからの
+    # コマンド削除・規定マーカーと伝播の契約行削除・上限の片側書き換え・抽出不能化・
+    # 上限の併存・絞り込み文の追従漏れ・1 行報告の drift・ゲート自身の針数ガードの
+    # 縮み、モノレポでは計 46 種）で実測し、赤化した検査の件数まで照合する。ゲートの
+    # 検査総数も縛るので、検査そのものが削除される侵食もここで赤くなる。モノレポでは
+    # 公開配置を模した第 2 fixture も回す。perl / 一時領域が無い場合だけ丸ごと ○ skip
+    # （実作業ツリーは変更しない）。検査対象の直後に置くことを優先し、安価な順の例外。
+    "$SCRIPT_DIR/retrospective-contract-selftest/verify.sh"
     # squash 件名の closing keyword が Refs 運用の Issue を閉じる経路のガード。
     # 検査ロジック（scripts/check-closing-keywords.sh）の振る舞いと、SKILL.md /
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド
@@ -126,7 +140,8 @@ else
     # verify-then-skip ラベル契約の照合（bash は連続した行列として、散文は行単位で）と、
     # 両者の意図的な非対称（候補の系統・アサイン方針）の固定。jq / gh / yq 不要の
     # 静的検査（`bash -n` による構文検査だけは走らせるが、契約ブロックは実行しない）。
-    # 検査対象の一方 out-of-scope-issue を共有する out-of-scope 系 3 suite の直後に置く。
+    # 検査対象の一方 out-of-scope-issue を共有するので、out-of-scope 系・retrospective 系の
+    # 契約検査群に続けて置く。
     "$SCRIPT_DIR/issue-label-contract/verify.sh"
     # 推奨ラベル・セットアップの SSOT（docs-template/scripts/setup-github-labels.sh の
     # LABEL_DEFS）と github-setup.md の表・手動例の 3 箇所照合 + stub gh での振る舞い
@@ -356,6 +371,9 @@ REQUIRED_SUITES=(
   # out-of-scope 契約ゲート（routing / decision）の検出力 selftest。代替の検査が
   # 無く、perl・一時領域の都合で消える場合は明示許可を要求する（#499）。
   out-of-scope-routing-selftest
+  # /retrospective 契約ゲートの検出力 selftest。代替の検査が無く、perl・一時領域の
+  # 都合で消えるとチェーン記載の針と規定マーカーの検出力喪失が黙って通る（#540）。
+  retrospective-contract-selftest
   # docs-template 構造契約ゲートの検出力 selftest。代替の検査が無く、perl・
   # 一時領域の都合で消えると Frontmatter 欠落回帰の検出力喪失が黙って通る（#509）。
   docs-template-frontmatter-selftest
