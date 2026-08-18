@@ -18,6 +18,8 @@
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-18
+
 ### 変更
 
 - `/init-docs` の初期セット 20 ファイルのテンプレートすべてに YAML Frontmatter（必須6フィールド: `title` / `version` / `status` / `owner` / `created` / `updated`）と文書末尾の `## Changelog` セクションを付与した。従来はコア7文書 + 2 文書のみが Frontmatter を持ち、残り 11 文書（`CONSTRAINTS` / `API` / `DATABASE` / `CONVENTIONS` / `INTEGRATIONS` / `VALIDATION` / `GLOSSARY` / `DECISIONS` / `ROADMAP` / `TASKS` / `RISKS`）は Frontmatter が無いため `/validate-docs` の拡張文書チェック（Frontmatter を持つ場合のみ検証するオプトイン設計）の対象に入らず、検証から静かに漏れていた。あわせて「Frontmatter を要求するのは仕様文書のみで、補助文書（`GETTING_STARTED*.md`・`SETUP_*.md`・README・運用ガイド等）には付与しない」という線引き規則を `skills/init-docs` に明文化した。
