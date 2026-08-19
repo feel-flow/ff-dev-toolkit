@@ -5,7 +5,8 @@
 # 使い方: merge-cleanup.sh <PR番号>
 #
 # やること:
-#   1. 未コミット変更ガード（あれば中断）
+#   1. 未コミット変更ガード（あれば中断。FF_MERGE_CLEANUP_IGNORE_PATHS で
+#      パスを対象外にできる）
 #   2. 対象 PR の情報取得（MERGED でなければ破壊的処理の前に中断）
 #   3. base ブランチへ復帰 + fetch --prune + pull --ff-only
 #   3.5 ガード情報の取得（MERGED / open PR 一覧。失敗時は後続の破壊的処理を fail-closed で縮退）
@@ -30,6 +31,9 @@
 #     MERGED PR の head と一致する場合に限定（[gone] だけではマージ済みの証明にならない）
 #   - ガードに必要な情報の取得に失敗したら削除せずスキップ（fail-closed）
 #   - dirty な worktree・upstream なしの孤児ブランチは削除しない（警告のみ）
+#   - 未コミット変更ガードのパス除外（FF_MERGE_CLEANUP_IGNORE_PATHS）が効くのは
+#     「中断しても何も消えない」ガードだけ（Step 1 / Step 3）。worktree 削除前の
+#     clean 確認（Step 5）は対象外で、除外指定があっても dirty なら削除しない
 #   - base を保持する別 worktree は clean の場合だけ detached へ退避し、
 #     worktree と ignored ファイルを維持する。dirty なら変更せず中断する
 #   - トランスクリプトの回収は「今回削除に成功した worktree の分」だけを対象にし、
@@ -71,6 +75,85 @@ find_worktree_for_branch() {
   done < <(git worktree list --porcelain)
 
   return 1
+}
+
+run_git_status_porcelain() {
+  # $1: worktree path（空ならカレント）/ 以降: pathspec。
+  # `git -C ""` は「カレントを変えない no-op」として仕様化されている（git 2.4 以降。
+  # 本スクリプトは --force-with-lease=<ref>:<OID> で既に git 2.13 以上を要求する）。
+  # したがって空かどうかで分岐する必要はない。
+  local worktree="$1"
+  shift
+  git -C "$worktree" status --porcelain "$@"
+}
+
+guard_status_error_raw() {
+  # $1: stderr を退避したファイル。非空白行だけを返す（無ければ何も出さない）。
+  # `cat` は空ファイルでも成功し、何も出力せずに失敗した git が改行 1 バイトだけを
+  # 残すこともあるため、中身の有無は -s ではなく非空白行で見る
+  # （理由は last_push_error_text と同じ）。
+  awk 'NF { print }' "$1" 2>/dev/null || true
+}
+
+guard_status_error_text() {
+  # $1: stderr を退避したファイル。die のメッセージへ載せる原因テキスト。
+  local text=""
+  text="$(guard_status_error_raw "$1")"
+  [ -n "$text" ] || text='詳細不明（git が stderr へ何も出さずに失敗しました。PATH 上の git・権限・一時ディレクトリの書き込み可否を確認してください）'
+  printf '%s\n' "$text"
+}
+
+guarded_status() {
+  # $1: worktree path（空ならカレント）
+  # 未コミット変更ガードが見る status。FF_MERGE_CLEANUP_IGNORE_PATHS に
+  # 一致するパスを除外して返す。除外指定が無ければ素の status と同じ。
+  #
+  # 全体に一致する :(top) を先頭に置いてから除外を重ねる。除外だけの pathspec が
+  # 「何も一致しない」と解釈される形を避けるための防御で、git 2.49 では除外のみでも
+  # 期待どおり動くことを実測している（= この 1 語を外しても現行 git では差が出ず、
+  # 回帰テストでは固定できない）。:(top) は全体一致なので意味論は変えない。
+  if [ "${#IGNORE_EXCLUDE_PATHSPECS[@]}" -eq 0 ]; then
+    run_git_status_porcelain "$1"
+  else
+    run_git_status_porcelain "$1" -- ':(top)' "${IGNORE_EXCLUDE_PATHSPECS[@]}"
+  fi
+}
+
+ignored_status() {
+  # $1: worktree path（空ならカレント）
+  # ガード対象外にした（= 除外指定に一致した）変更だけを返す。報告用。
+  # 除外後の status との差分を文字列で取らず、同じパターンの肯定形で git に引き直す。
+  if [ "${#IGNORE_MATCH_PATHSPECS[@]}" -eq 0 ]; then
+    return 0
+  fi
+  run_git_status_porcelain "$1" -- "${IGNORE_MATCH_PATHSPECS[@]}"
+}
+
+report_ignored_changes() {
+  # $1: worktree path（空ならカレント）/ $2: 表示用のラベル（空可）
+  # 無視した変更を件数と一覧で出す。黙って無視すると、ガードが緩んだのか
+  # 本当に clean なのかが実行ログから区別できなくなる。
+  local worktree="$1" label="$2" ignored="" count=0
+  local err_file="$WORK_TMP/guard_status_error.ignored"
+  if [ "${#IGNORE_MATCH_PATHSPECS[@]}" -eq 0 ]; then
+    return 0
+  fi
+  if ! ignored="$(ignored_status "$worktree" 2>"$err_file")"; then
+    die "無視した未コミット変更の一覧取得に失敗しました${label}: $(guard_status_error_text "$err_file")"
+  fi
+  if [ -z "$ignored" ]; then
+    # 指定はあるのに 1 件も一致しない = パターンの書き間違いが疑わしい。黙って
+    # 従来どおり中断すると、利用者からは「設定したのに何も変わらない」にしか見えない。
+    echo "ℹ️ FF_MERGE_CLEANUP_IGNORE_PATHS に一致する未コミット変更はありません${label}（パターンはリポジトリルート基準の glob: '${IGNORE_RAW}'）"
+    return 0
+  fi
+  # set -e 下では、この代入や下の出力が失敗すると理由なしで終了する。
+  # 他の全経路が die にメッセージを持たせている以上、ここだけ無言にしない。
+  count="$(printf '%s\n' "$ignored" | wc -l | tr -d ' ')" \
+    || die "無視した未コミット変更の件数集計に失敗しました${label}"
+  echo "ℹ️ ガード対象外として無視した未コミット変更: ${count} 件（FF_MERGE_CLEANUP_IGNORE_PATHS）${label}"
+  printf '%s\n' "$ignored" | sed 's/^/  - /' \
+    || die "無視した未コミット変更の一覧出力に失敗しました${label}"
 }
 
 resolve_dir() {
@@ -272,17 +355,93 @@ ARCHIVED_TRANSCRIPT_KB=0
 ARCHIVE_TOTAL_KB=0
 TRANSCRIPT_STEP_NOTE=""
 
+# ---- Step 0.5: 未コミット変更ガードのパス除外 --------------------------------
+#
+# 常駐ツール（chat-ui 等）が特定ディレクトリを書き続けるリポジトリでは、作業ツリーが
+# dirty なのが定常状態になる。そこでは Step 1 のガードは「異常の検出」ではなく
+# 「毎回必ず発火する障害」で、cleanup の実体（OID 照合・lease 削除・取り残し回収）を
+# 手作業で再現させてしまう。FF_MERGE_CLEANUP_IGNORE_PATHS に一致する変更だけを
+# ガードの対象外にする（既定は空 = 従来どおり全ての変更で中断）。
+#
+#   FF_MERGE_CLEANUP_IGNORE_PATHS='videos/**:tmp/**'   ← ':' 区切り、glob
+#
+# 適用先は「中断しても何も消えない」ガードだけ（Step 1 の呼び出し元 / Step 3 の
+# base 所有 worktree）。worktree 削除前の clean 確認（Step 5）は対象外で、
+# あちらは通すとファイルが実際に消える。
+
+IGNORE_EXCLUDE_PATHSPECS=()
+IGNORE_MATCH_PATHSPECS=()
+IGNORE_RAW="${FF_MERGE_CLEANUP_IGNORE_PATHS:-}"
+if [ -n "$IGNORE_RAW" ]; then
+  # 末尾の空要素も検出したいので、終端の ':' を足してから 1 要素ずつ剥がす
+  IGNORE_REST="${IGNORE_RAW}:"
+  while [ -n "$IGNORE_REST" ]; do
+    IGNORE_ITEM="${IGNORE_REST%%:*}"
+    IGNORE_REST="${IGNORE_REST#*:}"
+    if [ -z "$IGNORE_ITEM" ]; then
+      # 空パターンは pathspec として全パスに一致するため、除外すると status が
+      # 常に空になり、dirty な作業ツリーでガードが素通りする（fail-open。実測済み）。
+      # 先頭に ':' を持つ pathspec magic の直書き（:(exclude)... など）もここへ落ちる。
+      # 中間位置の magic（a:(exclude)b）は空要素を作らないので、下のリテラル扱いになる。
+      die "FF_MERGE_CLEANUP_IGNORE_PATHS に空のパターンがあります: '${IGNORE_RAW}' — 空パターンは全パスに一致してガードを無効化します（先頭・末尾・連続する ':' を確認）。':' は区切り文字なので pathspec magic は書けません（中間に書いた場合はリテラルとして扱われ、何にも一致しません）"
+    fi
+    case "$IGNORE_ITEM" in
+      [[:space:]]*|*[[:space:]])
+        # pathspec は前後の空白も含めて照合するため、この指定は何にも一致しない。
+        # 何も起きないまま従来どおり中断するので、空パターンと同じく明示的に弾く。
+        die "FF_MERGE_CLEANUP_IGNORE_PATHS のパターンに前後の空白があります: '${IGNORE_ITEM}' — pathspec は空白も含めて照合するため、この指定は何にも一致しません（':' の後に空白を入れていないか確認してください）"
+        ;;
+    esac
+    case "$IGNORE_ITEM" in
+      '**'|'*'|'.'|'/')
+        # 空パターンと同じく全パスへ一致する。ただし明示的に書かれた選択でもありうるので、
+        # 中断はせず「ガードは事実上無効」であることを実行ログに残す
+        # （無視した変更は下の一覧に全件出るため、黙って消えるわけではない）。
+        echo "⚠️ FF_MERGE_CLEANUP_IGNORE_PATHS のパターン '${IGNORE_ITEM}' は全パスに一致し、未コミット変更ガードを事実上無効化します。"
+        ;;
+    esac
+    IGNORE_EXCLUDE_PATHSPECS+=(":(exclude,glob,top)${IGNORE_ITEM}")
+    IGNORE_MATCH_PATHSPECS+=(":(glob,top)${IGNORE_ITEM}")
+  done
+fi
+
 # ---- Step 1: 未コミット変更ガード -------------------------------------------
 
-if [ -n "$(git status --porcelain)" ]; then
+# git の失敗を「変更なし」と読み替えない。ここが fail-open だと、dirty な作業ツリーで
+# ガードが素通りして worktree 削除まで進む。
+GUARD_ERR_STEP1="$WORK_TMP/guard_status_error.step1"
+DIRTY_STATUS=""
+if ! DIRTY_STATUS="$(guarded_status "" 2>"$GUARD_ERR_STEP1")"; then
+  die "未コミット変更の確認に失敗しました: $(guard_status_error_text "$GUARD_ERR_STEP1")"
+fi
+
+# exit 0 でも stderr に出力があれば、作業ツリーを完全には走査できていない可能性がある
+# （`warning: could not open directory …: Permission denied` は、その配下の未追跡
+# ファイルを列挙できないまま exit 0 になる）。旧実装では stderr が端末へ直接出ていて
+# 少なくとも目に入ったので、判定は変えずに可視性だけ戻す。
+DIRTY_STATUS_STDERR="$(guard_status_error_raw "$GUARD_ERR_STEP1")"
+if [ -n "$DIRTY_STATUS_STDERR" ]; then
+  echo "⚠️ git status が警告を出しました（作業ツリーを完全に走査できていない可能性があります）:"
+  printf '%s\n' "$DIRTY_STATUS_STDERR" | sed 's/^/   /'
+fi
+
+report_ignored_changes "" ""
+
+if [ -n "$DIRTY_STATUS" ]; then
   echo "❌ 未コミットの変更があります。cleanup を中断します。"
-  git status --short
+  printf '%s\n' "$DIRTY_STATUS"
   echo ""
   echo "対応方針（ユーザーが分類して判断）:"
   echo "  1. 作業ブランチで commit し損ねた変更 → 元ブランチに戻して commit / 別 PR 化"
   echo "  2. ツール / 設定（.claude/, scripts/ 等） → chore PR or .gitignore 追記"
   echo "  3. ビルド成果物（dist/, .next/, target/, node_modules/） → .gitignore 追記提案"
   echo "勝手に git restore / git clean は実行しません。"
+  if [ -z "$IGNORE_RAW" ]; then
+    echo "常駐ツールが書き続けるパスなら FF_MERGE_CLEANUP_IGNORE_PATHS で対象外にできます。"
+  else
+    # 設定済みの利用者に「設定できます」と案内すると、効いていないのかと読める
+    echo "現在の FF_MERGE_CLEANUP_IGNORE_PATHS: '${IGNORE_RAW}' — 上の変更はこの指定に一致していません。"
+  fi
   exit 1
 fi
 
@@ -337,13 +496,32 @@ if [ "$CURRENT_BRANCH_BEFORE" != "$PR_BASE" ]; then
 fi
 
 if [ -n "$BASE_WORKTREE" ] && [ "$BASE_WORKTREE" != "$REPO_ROOT" ]; then
+  # ここも Step 1 と同じ除外指定を効かせる。退避は同一 OID への detach なので
+  # 作業ツリーの中身は変わらず、中断しても何も消えない側のガードにあたる。
+  # 片方だけ緩めると、除外を設定したユーザーが別の dirty ガードで止まる。
+  GUARD_ERR_STEP3="$WORK_TMP/guard_status_error.step3"
   BASE_WORKTREE_STATUS=""
-  BASE_WORKTREE_STATUS="$(git -C "$BASE_WORKTREE" status --porcelain 2>&1)" \
-    || die "$PR_BASE を保持する worktree の状態取得に失敗しました: $BASE_WORKTREE — $BASE_WORKTREE_STATUS"
+  if ! BASE_WORKTREE_STATUS="$(guarded_status "$BASE_WORKTREE" 2>"$GUARD_ERR_STEP3")"; then
+    die "$PR_BASE を保持する worktree の状態取得に失敗しました: $BASE_WORKTREE — $(guard_status_error_text "$GUARD_ERR_STEP3")"
+  fi
+
+  # 旧実装は 2>&1 で stderr を status 出力へ合流させており、exit 0 でも警告が出れば
+  # 「非空 = dirty」とみなして中断していた（メッセージは的外れだが fail-closed）。
+  # stderr を分離するとその判定が消えるので、明示的に戻す。走査が不完全なまま
+  # detach → リモート削除 → worktree 削除へ進ませない（Step 5 の clean 確認が
+  # 2>&1 のままなのと同じ安全等級を保つ）。
+  BASE_WORKTREE_STDERR="$(guard_status_error_raw "$GUARD_ERR_STEP3")"
+  if [ -n "$BASE_WORKTREE_STDERR" ]; then
+    echo "❌ $PR_BASE を保持する worktree の status が警告を出しました: $BASE_WORKTREE"
+    printf '%s\n' "$BASE_WORKTREE_STDERR" | sed 's/^/   /'
+    die "作業ツリーを完全に走査できていない可能性があるため中断します（権限・マウント状態を確認してください）。"
+  fi
+
+  report_ignored_changes "$BASE_WORKTREE" "（${BASE_WORKTREE}）"
 
   if [ -n "$BASE_WORKTREE_STATUS" ]; then
     echo "❌ $PR_BASE を保持する別 worktree に未コミット変更があります: $BASE_WORKTREE"
-    git -C "$BASE_WORKTREE" status --short
+    printf '%s\n' "$BASE_WORKTREE_STATUS"
     die "変更を保護するため、base ブランチの退避と cleanup を中断します。"
   fi
 
@@ -374,7 +552,7 @@ git fetch --prune origin 2>&1 \
   || die "git fetch --prune が失敗しました。ネットワーク / 認証を確認してください。"
 
 git pull --ff-only origin "$PR_BASE" 2>&1 \
-  || die "git pull --ff-only が失敗しました。$PR_BASE がローカルで分岐しています（'git log $PR_BASE..origin/$PR_BASE' 等で確認し手動解消してください）。"
+  || die "git pull --ff-only が失敗しました。$PR_BASE がローカルで分岐しているか、未コミット変更（FF_MERGE_CLEANUP_IGNORE_PATHS で除外したものを含む）が更新と競合しています（'git log $PR_BASE..origin/$PR_BASE' と 'git status' で確認し手動解消してください）。"
 
 # ---- Step 3.5: ガード情報の取得（Step 4/5/6 で共用、fail-closed） --------------
 
