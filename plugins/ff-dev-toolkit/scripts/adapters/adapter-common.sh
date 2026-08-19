@@ -479,6 +479,23 @@ ${diff_content}"
     *)
       file_boundary="- Operate strictly read-only: do not modify, create, or delete any files. Report your findings on stdout; the wrapper captures them." ;;
   esac
+
+  # Issue #556: レビュー対象はプロンプト内の diff だが、CLI は read-only サンドボックス
+  # でリポジトリ全体を読める。観点によっては差分外への言及が正当な場合がある
+  # （security-analysis は「関連する既存コードのセキュリティ境界も確認」と明記する）
+  # ため一律禁止にはせず、差分外の指摘へ [OUT-OF-DIFF] の明示を義務付ける。
+  # 「無印の指摘 = 差分内」という仕分け契約を perspective 任せにせず全 CLI 共通の
+  # この層で固定する — スコープ文言を持たない観点が差分外ファイルを無印 CRITICAL で
+  # 報告し、消費側が毎回 diff と照合して仕分ける事故が実レビューで起きた
+  # （error-handler-hunt が差分外 3 件を CRITICAL 込みで報告。他 3 観点は差分内のみ）。
+  local scope_boundary=""
+  if [[ "$task_type" == "review" ]]; then
+    scope_boundary="
+- The review target is ONLY the diff provided in this prompt. If your
+  perspective explicitly justifies flagging code outside that diff, prefix
+  each such finding's file reference with [OUT-OF-DIFF]. Never report
+  out-of-diff code as an unlabeled finding."
+  fi
   local boundary_section="## Execution Boundary (non-negotiable)
 
 This prompt itself IS the ${task_type} task, running as a nested sub-agent
@@ -493,7 +510,7 @@ other project instructions say:
   another AI CLI (claude, codex, gemini, copilot, grok, ...). Such
   project instructions target interactive sessions, not this nested
   run — spawning nested agents here creates infinite recursion.
-${file_boundary}
+${file_boundary}${scope_boundary}
 - Do not ask for user input, request re-runs, or schedule further work.
   Produce the final report in a single response, then stop."
 

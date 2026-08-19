@@ -257,6 +257,10 @@ else
     # build_prompt の実行境界（再帰防止ガード）の回帰検査（Issue #263）。一時 git
     # リポジトリ + stub CLI（〜3 秒）。実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/adapter-prompt-guard/verify.sh"
+    # レビュー指摘の差分スコープ契約（Issue #556）: 全 review perspective のスコープ
+    # 言及 + build_prompt(review) の [OUT-OF-DIFF] ラベル契約。一時 git リポジトリのみ
+    # （〜2 秒）。実 CLI・ネットワーク・課金は伴わない。一時領域不可なら丸ごと ○ skip。
+    "$SCRIPT_DIR/review-diff-scope/verify.sh"
     # free-tier CLI への観点集中の制御（Issue #251）: プラン警告 + free-tier 限定の
     # 同一 CLI 内逐次化 + standard の並列維持 + 途中失敗の継続。一時 git リポジトリ +
     # stub CLI で orchestrator を 4 回実走（単独実測 約 20 秒。詳細は suite README。

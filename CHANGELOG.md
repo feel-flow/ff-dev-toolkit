@@ -19,6 +19,12 @@
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-08-19
+
+### 修正
+
+- review タスクの指摘が対象 diff の外へ漏れる問題を 2 層で修正した。実レビューで、error-handler-hunt 観点だけが差分外ファイルの問題を CRITICAL 込み・無印で報告し、消費側が毎回 diff と照合して「自分の変更への指摘」と「たまたま目に入った既存コードの指摘」を仕分ける必要があった。原因は (a) review の CLI は read-only サンドボックスでリポジトリ全体を読めること、(b) review の 8 観点のうち error-handler-hunt だけが検査範囲（何を対象にするか）への言及を持たなかったこと。対応として `scripts/perspectives/review/error-handler-hunt.md` に他観点と同じ「変更されていない部分の問題は報告しない」スコープ宣言を追加し、`scripts/adapters/adapter-common.sh` の build_prompt(review) の Execution Boundary に「差分外への指摘は `[OUT-OF-DIFF]` を前置する」ラベル契約を全 CLI 共通で追加した。差分外への言及を意図的に許す観点（security-analysis のセキュリティ境界確認など）があるため一律禁止にはせず、無印の指摘 = 差分内という仕分け契約にしている。回帰は `tests/review-diff-scope/` が固定する（全 review 観点のスコープ言及 + ラベル契約がプロンプトへ届くこと。検出力は両修正の変異で実測済み）
+
 ## [0.32.0] - 2026-08-19
 
 ### 追加
