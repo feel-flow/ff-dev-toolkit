@@ -219,6 +219,34 @@ delete_remote_branch_with_lease() {
   return 1
 }
 
+# last_push_error の読み出し。`cat` は空ファイルでも成功するため、`|| echo 詳細不明`
+# では「ファイルはあるが空」で原因欠落のメッセージになる。
+# サイズ検査（-s）でも足りない: 何も出力せずに失敗した push では `echo "$out"` が
+# 改行 1 バイトを書くため -s を通ってしまう。中身に非空白行があるかで判定する。
+last_push_error_text() {
+  if awk 'NF { found = 1 } END { exit !found }' "$WORK_TMP/last_push_error" 2>/dev/null; then
+    cat "$WORK_TMP/last_push_error"
+  else
+    echo '詳細不明'
+  fi
+}
+
+# Step 6 の取り残し掃除が「Step 4 で失敗した対象 PR の head」を再試行しているか。
+# 名前だけでは同名別 OID の取り残しを取り違えるため、OID も照合する。
+is_pr_head_retry() {
+  # $1: branch / $2: OID
+  [ "$1" = "$PR_HEAD" ] && [ "$2" = "$PR_HEAD_OID" ] && [ "$PR_REMOTE_RESULT" = "failed" ]
+}
+
+# サマリーの失敗項目は 1 行 1 件なので、原因は 1 行だけを改行なしで載せる。
+# 先頭行ではなく「最初の非空白行」を採る（先頭が空行でも原因を落とさないため）。
+last_push_error_head() {
+  local line=""
+  line="$(awk 'NF { print; exit }' "$WORK_TMP/last_push_error" 2>/dev/null | tr -d '\n')"
+  [ -n "$line" ] || line='詳細不明'
+  printf '%s' "$line"
+}
+
 # ---- Step 0: 引数 -----------------------------------------------------------
 
 PR_NUM="${1:-}"
@@ -408,13 +436,29 @@ else
       SKIPPED_LEFTOVERS+=("$PR_HEAD: マージ後 push あり（lease 拒否）")
       ;;
     *)
-      die "リモートブランチ削除に失敗しました: $(cat "$WORK_TMP/last_push_error" 2>/dev/null || echo '詳細不明')（権限 / ネットワーク / ブランチ保護ルールを確認）"
+      # 削除できなかったこと自体は Step 5 以降の掃除と独立している。ここで die すると
+      # 一過性のネットワーク断で [gone] ブランチ削除・トランスクリプト回収・取り残し
+      # 掃除・最終検証が丸ごと未実施のまま終わるため、Step 6 と同じく失敗として記録し
+      # PARTIAL で続行する（削除していない点は変わらない = 保護は維持）。
+      echo "  ❌ リモートブランチ削除に失敗しました: $(last_push_error_text)（権限 / ネットワーク / ブランチ保護ルールを確認）"
+      PR_REMOTE_RESULT="failed"
+      # 原因をサマリーまで運ぶ。従来は die のメッセージが最終行に出ていたが、続行に
+      # したことで診断行とサマリーの間に Step 5〜7 の出力が挟まるため。
+      FAILED_ITEMS+=("$PR_HEAD: リモート削除失敗（$(last_push_error_head)）")
       ;;
   esac
 fi
 
-# 削除を反映して [gone] マーカーを付ける
-git fetch --prune origin 2>&1 || die "git fetch --prune（削除反映）が失敗しました。"
+# 削除を反映して [gone] マーカーを付ける。
+# ここで die すると、リモート削除の失敗で掃除全体を止めないという上の判断が 2 行先で
+# 破れる（rc=1 の主要因であるネットワーク断は、この fetch も同時に失敗させる）。
+# 失敗しても安全側にしか外れない: ref は Step 3 の fetch 時点まで新しく、prune が
+# 飛ぶと「消えたはずのブランチが [gone] に見えない」= 処理対象が減るだけ。Step 5 の
+# -D は MERGED PR との (名前, OID) 照合を維持し、Step 6 は自前の ls-remote で判定する。
+git fetch --prune origin 2>&1 || {
+  echo "⚠️ 削除反映の fetch --prune が失敗しました。[gone] 判定が不完全な可能性があります。"
+  FAILED_ITEMS+=("削除反映の fetch --prune 失敗: [gone] 検出が不完全な可能性")
+}
 
 # ---- Step 5: [gone] ブランチ + 関連 worktree の削除 ---------------------------
 
@@ -866,17 +910,37 @@ else
           0)
             echo "  ✓ removed: $rbranch"
             DELETED_LEFTOVERS+=("$rbranch")
+            # Step 4 で削除に失敗した対象 PR の head をここで削除できた場合、サマリーの
+            # 「対象 PR のリモートブランチ」を失敗のまま残すと実態と食い違う。
+            # FAILED_ITEMS の記録は残す（実際に 1 回失敗しており PARTIAL が正しい）。
+            # 名前だけでなく OID も照合する（同名別 OID の取り残しを消したときに
+            # 対象 PR の行を書き換えないため）。
+            if is_pr_head_retry "$rbranch" "$roid"; then
+              PR_REMOTE_RESULT="deleted_by_leftover_retry"
+            fi
             ;;
           2)
             echo "  ℹ️  already removed: $rbranch"
+            # 再試行の時点で消えていた場合も、Step 4 の failed を残すと最終状態と
+            # 食い違う。消したのは自分ではないので deleted ではなく already 扱い。
+            if is_pr_head_retry "$rbranch" "$roid"; then
+              PR_REMOTE_RESULT="already_missing_at_leftover_retry"
+            fi
             ;;
           3)
             echo "  ⚠️ skip (照合後に push あり・lease 拒否): $rbranch"
             SKIPPED_LEFTOVERS+=("$rbranch: 照合後に push あり（lease 拒否）")
             ;;
           *)
-            echo "  ❌ 削除失敗: $rbranch — $(cat "$WORK_TMP/last_push_error" 2>/dev/null || echo '詳細不明')"
-            FAILED_ITEMS+=("$rbranch: リモート削除失敗")
+            echo "  ❌ 削除失敗: $rbranch — $(last_push_error_text)"
+            # 恒久的な失敗（ブランチ保護・権限など）では、Step 4 で失敗した head が
+            # ここで必ず再試行されて再び失敗する。同じ文言を 2 行並べると「2 本
+            # 失敗した」と読めるため、2 回目であることを文言で区別する。
+            if is_pr_head_retry "$rbranch" "$roid"; then
+              FAILED_ITEMS+=("$rbranch: リモート削除失敗（Step 6 の再試行も失敗: $(last_push_error_head)）")
+            else
+              FAILED_ITEMS+=("$rbranch: リモート削除失敗（$(last_push_error_head)）")
+            fi
             ;;
         esac
       done <<< "$LEFTOVER"

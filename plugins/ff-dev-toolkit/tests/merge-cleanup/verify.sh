@@ -16,9 +16,18 @@
 #      detached へ退避し、呼び出し元が最新 base ブランチへ復帰する
 #  11. 対象 PR のリモートブランチが既に無い場合は、lease 拒否と誤判定しない
 #  12. 対象 PR のリモートブランチが別 OID で存在する場合は、lease 拒否として保護する
-#  13. lease 拒否後の ref 再取得に失敗した場合は fail-closed で停止する
-#  14. lease 拒否後の ref が期待 OID のままなら、原因不明として fail-closed で停止する
+#  13. lease 拒否後の ref 再取得に失敗した場合は、失敗として記録し後続 Step を続行する
+#      （このケースの対象 ref は origin に無いため、非削除の検証は項目 14 が担う）
+#  14. lease 拒否後の ref が期待 OID のままなら、原因不明として記録し後続 Step を続行する
 #  15. ref 再取得が成功し stderr に警告だけ出ても、空の stdout を存在と誤判定しない
+#  15b. Step 4 の削除失敗を Step 6 の取り残し掃除が再試行して成功した場合、
+#       サマリーの「対象 PR のリモートブランチ」が失敗のまま矛盾しない
+#  15c. Step 4 の削除失敗の間にリモートが別 OID へ進んだ場合、Step 6 の再試行は
+#       (名前, OID) 照合で弾かれ、更新済みブランチを削除しない
+#  15d. Step 4 の失敗後、Step 6 の再試行時点で ref が消えていた場合も、
+#       サマリーを失敗のまま残さない（already removed として反映する）
+#  15e. Step 6 の再試行も失敗した場合、Step 4 と同一文言の失敗項目を 2 行並べない
+#  15f. 削除反映の fetch --prune が失敗しても中断せず、失敗として記録して続行する
 #  16. 削除した worktree のトランスクリプトを、cwd 照合のうえ tar.gz へ回収する
 #  17. cwd がこの worktree を指さないものは、名前が一致しても触らない
 #  18. cwd を記録した jsonl が無いものは、名前が worktree 由来でも回収しない
@@ -255,6 +264,68 @@ git branch 'feature/#15-same-oid' "$OID_SAME"
 git push -qu origin 'feature/#15-same-oid'
 git branch -q -D 'feature/#15-same-oid'
 
+# Step 4 の削除が失敗し、Step 6 の取り残し掃除が同じ branch を再試行するケース。
+# origin へは 6.11 の直前に push する（それ以前の run が取り残しとして拾わないように）。
+# mock のフラグはリセットしないので one-shot。同じ PR 番号を 2 回走らせる検証は足せない。
+git switch -q -c 'feature/#17-retry-succeeds' develop
+echo retry17 > retry17.txt
+git add retry17.txt
+git commit -qm "commit on feature/#17-retry-succeeds"
+OID_RETRY17="$(git rev-parse HEAD)"
+git switch -q develop
+git branch -q -D 'feature/#17-retry-succeeds'
+
+# Step 4 の削除失敗中にリモートが別 OID へ進むケース（15c）。
+# origin へは 15c の直前に push する。OID_CHANGED18B は mock git が横から push する。
+git switch -q -c 'feature/#18-changed-before-retry' develop
+echo changed18 > changed18.txt
+git add changed18.txt
+git commit -qm "commit on feature/#18-changed-before-retry"
+OID_CHANGED18="$(git rev-parse HEAD)"
+echo changed18-more > changed18b.txt
+git add changed18b.txt
+git commit -qm "push that lands while step 4 is failing"
+OID_CHANGED18B="$(git rev-parse HEAD)"
+git switch -q develop
+git branch -q -D 'feature/#18-changed-before-retry'
+
+# Step 6 の再試行時点で ref が消えているケース（15d）。
+git switch -q -c 'feature/#20-vanished-before-retry' develop
+echo vanished20 > vanished20.txt
+git add vanished20.txt
+git commit -qm "commit on feature/#20-vanished-before-retry"
+OID_VANISHED20="$(git rev-parse HEAD)"
+git switch -q develop
+git branch -q -D 'feature/#20-vanished-before-retry'
+
+# run 14（Step 4 が rc=1）で Step 6 が削除に成功する取り残し。対象 PR 以外の成功が
+# 対象 PR のサマリーを書き換えないこと・再試行されない対象が failed のまま残ることを見る。
+git switch -q -c 'feature/#23-leftover-for-14' develop
+echo leftover23 > leftover23.txt
+git add leftover23.txt
+git commit -qm "commit on feature/#23-leftover-for-14"
+OID_LEFTOVER23="$(git rev-parse HEAD)"
+git switch -q develop
+git branch -q -D 'feature/#23-leftover-for-14'
+
+# Step 6 の再試行も失敗するケース（15e）。origin へは 6.14 の直前に push する。
+git switch -q -c 'feature/#22-retry-fails' develop
+echo retryfail22 > retryfail22.txt
+git add retryfail22.txt
+git commit -qm "commit on feature/#22-retry-fails"
+OID_RETRYFAIL22="$(git rev-parse HEAD)"
+git switch -q develop
+git branch -q -D 'feature/#22-retry-fails'
+
+# 削除反映の fetch --prune が失敗するケース（15f）。origin へは 6.15 の直前に push する。
+git switch -q -c 'feature/#21-prune-fails' develop
+echo prunefail21 > prunefail21.txt
+git add prunefail21.txt
+git commit -qm "commit on feature/#21-prune-fails"
+OID_PRUNEFAIL21="$(git rev-parse HEAD)"
+git switch -q develop
+git branch -q -D 'feature/#21-prune-fails'
+
 # 名前再利用ケース: マージ済み PR の head OID の後に、さらに push が積まれている
 git switch -q -c 'feature/#2-reused' develop
 echo reused-merged > reused.txt
@@ -426,7 +497,13 @@ cat > "$MOCK/pr_list_merged.json" <<JSON
   {"headRefName": "feature/#1-merged-exact", "headRefOid": "$OID_EXACT", "isCrossRepository": false},
   {"headRefName": "feature/#2-reused", "headRefOid": "$OID_REUSED_MERGED", "isCrossRepository": false},
   {"headRefName": "feature/#3-open-reuse", "headRefOid": "$OID_OPEN", "isCrossRepository": false},
-  {"headRefName": "release/1.0", "headRefOid": "$OID_RELEASE", "isCrossRepository": false}
+  {"headRefName": "release/1.0", "headRefOid": "$OID_RELEASE", "isCrossRepository": false},
+  {"headRefName": "feature/#17-retry-succeeds", "headRefOid": "$OID_RETRY17", "isCrossRepository": false},
+  {"headRefName": "feature/#18-changed-before-retry", "headRefOid": "$OID_CHANGED18", "isCrossRepository": false},
+  {"headRefName": "feature/#20-vanished-before-retry", "headRefOid": "$OID_VANISHED20", "isCrossRepository": false},
+  {"headRefName": "feature/#21-prune-fails", "headRefOid": "$OID_PRUNEFAIL21", "isCrossRepository": false},
+  {"headRefName": "feature/#22-retry-fails", "headRefOid": "$OID_RETRYFAIL22", "isCrossRepository": false},
+  {"headRefName": "feature/#23-leftover-for-14", "headRefOid": "$OID_LEFTOVER23", "isCrossRepository": false}
 ]
 JSON
 
@@ -513,6 +590,61 @@ cat > "$MOCK/pr_view_16.json" <<JSON
 }
 JSON
 
+cat > "$MOCK/pr_view_17.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "feature/#17-retry-succeeds",
+  "headRefOid": "$OID_RETRY17",
+  "baseRefName": "develop",
+  "title": "step 4 failure retried by step 6",
+  "isCrossRepository": false
+}
+JSON
+
+cat > "$MOCK/pr_view_18.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "feature/#18-changed-before-retry",
+  "headRefOid": "$OID_CHANGED18",
+  "baseRefName": "develop",
+  "title": "remote advanced while step 4 was failing",
+  "isCrossRepository": false
+}
+JSON
+
+cat > "$MOCK/pr_view_20.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "feature/#20-vanished-before-retry",
+  "headRefOid": "$OID_VANISHED20",
+  "baseRefName": "develop",
+  "title": "ref vanished before the step 6 retry",
+  "isCrossRepository": false
+}
+JSON
+
+cat > "$MOCK/pr_view_21.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "feature/#21-prune-fails",
+  "headRefOid": "$OID_PRUNEFAIL21",
+  "baseRefName": "develop",
+  "title": "post-delete fetch --prune fails",
+  "isCrossRepository": false
+}
+JSON
+
+cat > "$MOCK/pr_view_22.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "feature/#22-retry-fails",
+  "headRefOid": "$OID_RETRYFAIL22",
+  "baseRefName": "develop",
+  "title": "step 6 retry fails as well",
+  "isCrossRepository": false
+}
+JSON
+
 cat > "$MOCK/gh" <<SH
 #!/usr/bin/env bash
 args="\$*"
@@ -524,6 +656,11 @@ case "\$args" in
   "pr view 14 --json"*)   cat "$MOCK/pr_view_14.json" ;;
   "pr view 15 --json"*)   cat "$MOCK/pr_view_15.json" ;;
   "pr view 16 --json"*)   cat "$MOCK/pr_view_16.json" ;;
+  "pr view 17 --json"*)   cat "$MOCK/pr_view_17.json" ;;
+  "pr view 18 --json"*)   cat "$MOCK/pr_view_18.json" ;;
+  "pr view 20 --json"*)   cat "$MOCK/pr_view_20.json" ;;
+  "pr view 21 --json"*)   cat "$MOCK/pr_view_21.json" ;;
+  "pr view 22 --json"*)   cat "$MOCK/pr_view_22.json" ;;
   "pr view 99 --json"*)   cat "$MOCK/pr_view_99.json" ;;
   *"--state merged"*)     cat "$MOCK/pr_list_merged.json" ;;
   *"--state open"*)       cat "$MOCK/pr_list_open.json" ;;
@@ -545,6 +682,47 @@ if [[ "\$*" == push\ --force-with-lease=refs/heads/feature/\#15-same-oid:* ]]; t
 fi
 if [[ "\$*" == push\ --force-with-lease=refs/heads/feature/\#16-warning-missing:* ]]; then
   echo "simulated stale info for missing ref" >&2
+  exit 1
+fi
+# 15f: 削除反映の fetch --prune を失敗させる（Step 3 の 1 回目は通す）。
+# 有効化フラグは 6.15 の直前に作り、直後に消すので他 run へ漏れない。
+if [ -f "$TMP/prune21.enabled" ] && [ "\$*" = "fetch --prune origin" ]; then
+  if [ -f "$TMP/prune21.first" ]; then
+    echo "simulated fetch --prune failure" >&2
+    exit 1
+  fi
+  : > "$TMP/prune21.first"
+fi
+# 15e: Step 4 も Step 6 の再試行も失敗する（リモートは期待 OID のまま残る）。
+if [[ "\$*" == push\ --force-with-lease=refs/heads/feature/\#22-retry-fails:* ]]; then
+  # 出力を一切出さずに失敗する（last_push_error が空になる経路のフォールバック検証）
+  exit 1
+fi
+# 15c: Step 4 の削除 push が失敗する間に、別の push がリモートへ着地する。
+# stale info ではない一般的な失敗なので、再取得を経ずに rc=1 へ落ちる経路も兼ねる。
+if [[ "\$*" == push\ --force-with-lease=refs/heads/feature/\#18-changed-before-retry:* ]]; then
+  SKIP_SIMPLE_GIT_HOOKS=1 "$REAL_GIT" push -q --force origin \
+    "$OID_CHANGED18B:refs/heads/feature/#18-changed-before-retry"
+  echo "simulated transport failure while another push landed" >&2
+  exit 1
+fi
+# 15d: Step 4 は一般的な失敗で rc=1。Step 6 の再試行時点では ref が消えている
+# （Step 6 の ls-remote には映っていたが、削除 push までの間に外部が消した）。
+if [[ "\$*" == push\ --force-with-lease=refs/heads/feature/\#20-vanished-before-retry:* ]]; then
+  if [ ! -f "$TMP/vanished20.attempted" ]; then
+    : > "$TMP/vanished20.attempted"
+    echo "simulated transport failure" >&2
+    exit 1
+  fi
+  SKIP_SIMPLE_GIT_HOOKS=1 "$REAL_GIT" push -q origin \
+    --delete 'feature/#20-vanished-before-retry'
+  echo "error: unable to delete 'feature/#20-vanished-before-retry': remote ref does not exist" >&2
+  exit 1
+fi
+if [[ "\$*" == push\ --force-with-lease=refs/heads/feature/\#17-retry-succeeds:* ]] \
+  && [ ! -f "$TMP/retry17.attempted" ]; then
+  : > "$TMP/retry17.attempted"
+  echo "simulated stale info for first attempt" >&2
   exit 1
 fi
 if [ "\$*" = "ls-remote --heads origin refs/heads/feature/#16-warning-missing" ]; then
@@ -802,31 +980,79 @@ else
   bad "別 OID リモート branch の lease 保護が期待どおりでない (exit=$EXIT_13)"
 fi
 
-# 6.8 ref 再取得が失敗した場合は「削除済み」と推測せず致命的エラーにする。
+# 6.8 ref 再取得が失敗した場合は「削除済み」と推測しない。削除はしないが、
+#     Step 6 の取り残し掃除と同じく「失敗として記録して続行」に揃える（PARTIAL）。
+# 後続 Step が「見出しに到達した」だけでなく実際に仕事をしたことを見るため、
+# この run で消えるはずの [gone] ローカルブランチを仕込む（develop 相当なので
+# 完全マージ済み = Step 5 の通常削除の対象）。
+git branch 'feature/#19-gone-after-fail' develop
+SKIP_SIMPLE_GIT_HOOKS=1 git push -qu origin 'feature/#19-gone-after-fail'
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin --delete 'feature/#19-gone-after-fail'
+# Step 6 が削除に成功する取り残しも同時に置く（対象 PR 以外の成功の影響を見る）
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_LEFTOVER23:refs/heads/feature/#23-leftover-for-14"
 set +e
 PATH="$MOCK:$PATH" bash "$TARGET" 14 > "$TMP/run-14.log" 2>&1
 EXIT_14=$?
 set -e
-if [ "$EXIT_14" -eq 1 ] \
+if [ "$EXIT_14" -eq 2 ] \
   && grep -q "remote re-check failed" "$TMP/run-14.log" \
-  && grep -q "simulated remote re-check failure" "$TMP/run-14.log"; then
-  ok "lease 拒否後の ref 再取得失敗を fail-closed で停止"
+  && grep -q "simulated remote re-check failure" "$TMP/run-14.log" \
+  && grep -q "feature/#14-recheck-fails: リモート削除失敗" "$TMP/run-14.log" \
+  && grep -q "結果: PARTIAL" "$TMP/run-14.log"; then
+  ok "lease 拒否後の ref 再取得失敗を失敗として記録し PARTIAL で報告"
 else
-  bad "ref 再取得失敗が fail-closed になっていない (exit=$EXIT_14)"
+  bad "ref 再取得失敗の報告が期待どおりでない (exit=$EXIT_14)"
 fi
 
-# 6.9 ref が期待 OID のまま存在する場合は、競合 push と断定せず原因不明で停止する。
+# 6.8d 再試行されない対象 PR は failed のまま残る。かつ同じ run で別ブランチの削除が
+#      成功しても、対象 PR のサマリー行は書き換わらない（更新条件の 2 つのガード）。
+if grep -q "リモートブランチ (feature/#14-recheck-fails): failed" "$TMP/run-14.log" \
+  && grep -q "✓ removed: feature/#23-leftover-for-14" "$TMP/run-14.log"; then
+  ok "他ブランチの削除成功が対象 PR の failed を書き換えない"
+else
+  bad "対象 PR のサマリー値が他ブランチの結果に引きずられている"
+fi
+
+# 6.8b 上記の失敗で cleanup 全体を落とさない（後続 Step が実行される）。
+if grep -q "=== リモート取り残し検証 ===" "$TMP/run-14.log" \
+  && grep -q "=== 最終状態 ===" "$TMP/run-14.log"; then
+  ok "Step 4 の削除失敗後も Step 6 / Step 7 が実行される"
+else
+  bad "Step 4 の削除失敗で後続 Step が実行されていない"
+fi
+
+# 6.8c 見出しへの到達だけでなく、Step 5 が実際に [gone] ブランチを消したことを見る。
+if ! git show-ref --verify --quiet 'refs/heads/feature/#19-gone-after-fail'; then
+  ok "Step 4 の削除失敗後も Step 5 が [gone] ローカルブランチを実際に削除する"
+else
+  bad "Step 4 の削除失敗で [gone] ローカルブランチの削除が行われていない"
+fi
+
+# 6.9 ref が期待 OID のまま存在する場合は、競合 push と断定せず原因不明として
+#     記録する。削除しない点は従来どおりで、報告だけ PARTIAL 続行へ揃える。
+# 続行にしたことで、削除に失敗した対象自身のローカル資産まで掃除してしまわないこと
+# を見る。この run はリモート ref が期待 OID のまま残るので [gone] にならない。
+git branch 'feature/#15-same-oid' "$OID_SAME" 2>/dev/null || true
+git branch --set-upstream-to=origin/'feature/#15-same-oid' 'feature/#15-same-oid' >/dev/null 2>&1
 set +e
 PATH="$MOCK:$PATH" bash "$TARGET" 15 > "$TMP/run-15.log" 2>&1
 EXIT_15=$?
 set -e
-if [ "$EXIT_15" -eq 1 ] \
+if [ "$EXIT_15" -eq 2 ] \
   && remote_has 'feature/#15-same-oid' \
   && grep -q "remote re-check returned the expected OID" "$TMP/run-15.log" \
+  && grep -q "feature/#15-same-oid: リモート削除失敗" "$TMP/run-15.log" \
   && ! grep -q "マージ後に更新されています" "$TMP/run-15.log"; then
-  ok "期待 OID のまま残る ref を原因不明として fail-closed で停止"
+  ok "期待 OID のまま残る ref を原因不明として記録し、削除せず PARTIAL で報告"
 else
   bad "期待 OID のまま残る ref の判定が期待どおりでない (exit=$EXIT_15)"
+fi
+
+# 6.9b リモート ref が残っている対象のローカルブランチを、続行のついでに消さない。
+if git show-ref --verify --quiet 'refs/heads/feature/#15-same-oid'; then
+  ok "削除に失敗し ref が残る対象のローカルブランチを掃除しない"
+else
+  bad "ref が残っているのに対象のローカルブランチが削除された"
 fi
 
 # 6.10 stdout が空なら、成功時の stderr 警告を ref 存在と誤読しない。
@@ -840,6 +1066,125 @@ if [ "$EXIT_16" -eq 2 ] \
   ok "成功時 stderr 警告を ref 存在と誤読せず already removed と判定"
 else
   bad "成功時 stderr 警告の分離が期待どおりでない (exit=$EXIT_16)"
+fi
+
+# 6.11 Step 4 が削除に失敗しても、Step 6 の取り残し掃除が同じ branch を再試行する。
+#      成功した場合にサマリーが「失敗」のまま残ると実態と食い違うため、結果を更新する。
+#      ここで初めて origin へ push する（先行 run が取り残しとして拾わないように）。
+# この時点では fixture の pre-push hook が入っているため、削除 push と同じ env を付ける
+# 遅延 push が load-bearing（先行 run の取り残し掃除に拾われないため）。
+# 既に origin へ出ていたら前提が崩れているので fail-loud にする。
+remote_has 'feature/#17-retry-succeeds' && bad "fixture 前提が崩れています（6.11 より前に feature/#17-retry-succeeds が origin へ出ている）"
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_RETRY17:refs/heads/feature/#17-retry-succeeds"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 17 > "$TMP/run-17.log" 2>&1
+EXIT_17=$?
+set -e
+if [ "$EXIT_17" -eq 2 ] \
+  && ! remote_has 'feature/#17-retry-succeeds' \
+  && grep -q "deleted_by_leftover_retry" "$TMP/run-17.log" \
+  && grep -q "✓ removed: feature/#17-retry-succeeds" "$TMP/run-17.log" \
+  && grep -q "feature/#17-retry-succeeds: リモート削除失敗" "$TMP/run-17.log" \
+  && ! grep -q "リモートブランチ (feature/#17-retry-succeeds): failed" "$TMP/run-17.log"; then
+  ok "Step 6 の再試行で削除できた場合、対象 PR の結果を失敗のまま残さない"
+else
+  bad "Step 6 再試行後のサマリーが期待どおりでない (exit=$EXIT_17)"
+fi
+
+# 6.12 Step 4 の削除が失敗している間にリモートが別 OID へ進んだ場合、Step 6 の
+#      再試行は (名前, OID) 照合で弾かれる。更新済みブランチを消してはならない。
+# 遅延 push が load-bearing（先行 run の取り残し掃除に拾われないため）。
+# 既に origin へ出ていたら前提が崩れているので fail-loud にする。
+remote_has 'feature/#18-changed-before-retry' && bad "fixture 前提が崩れています（6.12 より前に feature/#18-changed-before-retry が origin へ出ている）"
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_CHANGED18:refs/heads/feature/#18-changed-before-retry"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 18 > "$TMP/run-18.log" 2>&1
+EXIT_18=$?
+set -e
+CHANGED18_NOW="$(git ls-remote --heads origin 'refs/heads/feature/#18-changed-before-retry' | awk '{print $1}')"
+if [ "$EXIT_18" -eq 2 ] \
+  && [ "$CHANGED18_NOW" = "$OID_CHANGED18B" ] \
+  && grep -q "feature/#18-changed-before-retry: リモート削除失敗" "$TMP/run-18.log" \
+  && ! grep -qE '^  - feature/#18-changed-before-retry$' "$TMP/run-18.log" \
+  && ! grep -q "deleted_by_leftover_retry" "$TMP/run-18.log"; then
+  ok "Step 4 失敗中に別 OID へ進んだブランチを Step 6 の再試行が削除しない"
+else
+  bad "別 OID へ進んだブランチの再試行保護が期待どおりでない (exit=$EXIT_18)"
+fi
+
+# 6.13 Step 6 の再試行時点で ref が消えていた場合も、サマリーを失敗のまま残さない。
+#      削除したのは自分ではないので deleted ではなく already removed として扱う。
+# 遅延 push が load-bearing（先行 run の取り残し掃除に拾われないため）。
+# 既に origin へ出ていたら前提が崩れているので fail-loud にする。
+remote_has 'feature/#20-vanished-before-retry' && bad "fixture 前提が崩れています（6.13 より前に feature/#20-vanished-before-retry が origin へ出ている）"
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_VANISHED20:refs/heads/feature/#20-vanished-before-retry"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 20 > "$TMP/run-20.log" 2>&1
+EXIT_20=$?
+set -e
+if [ "$EXIT_20" -eq 2 ] \
+  && ! remote_has 'feature/#20-vanished-before-retry' \
+  && grep -q "already_missing_at_leftover_retry" "$TMP/run-20.log" \
+  && grep -q "feature/#20-vanished-before-retry: リモート削除失敗" "$TMP/run-20.log" \
+  && ! grep -q "リモートブランチ (feature/#20-vanished-before-retry): failed" "$TMP/run-20.log"; then
+  ok "Step 6 の再試行時点で ref が消えていた場合もサマリーを失敗のまま残さない"
+else
+  bad "ref 消失時の再試行後サマリーが期待どおりでない (exit=$EXIT_20)"
+fi
+
+# 6.14 恒久的な失敗（ブランチ保護・権限など）では、対象 PR の head は必ず Step 6 の
+#      (名前, OID) 照合に一致して再試行される。同一文言の失敗項目を 2 行並べない。
+remote_has 'feature/#22-retry-fails' && bad "fixture 前提が崩れています（6.14 より前に feature/#22-retry-fails が origin へ出ている）"
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_RETRYFAIL22:refs/heads/feature/#22-retry-fails"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 22 > "$TMP/run-22.log" 2>&1
+EXIT_22=$?
+set -e
+# 失敗項目は Step 4 と Step 6 で 2 行出るのが正しい（実際に 2 回失敗している）。
+# 禁じたいのは「バイト単位で同一の行が並ぶ」こと。行数と重複数の両方を見る。
+FAIL_LINES_22="$(grep -cE '^  - feature/#22-retry-fails: リモート削除失敗' "$TMP/run-22.log" || true)"
+DUP_LINES_22="$(grep -E '^  - feature/#22-retry-fails: リモート削除失敗' "$TMP/run-22.log" \
+  | sort | uniq -d | grep -c . || true)"
+if [ "$EXIT_22" -eq 2 ] \
+  && remote_has 'feature/#22-retry-fails' \
+  && [ "$FAIL_LINES_22" -eq 2 ] \
+  && [ "$DUP_LINES_22" -eq 0 ] \
+  && grep -q "feature/#22-retry-fails: リモート削除失敗（Step 6 の再試行も失敗" "$TMP/run-22.log" \
+  && grep -q "詳細不明" "$TMP/run-22.log"; then
+  ok "再試行も失敗した場合に失敗項目を重複させず、原因が空でも詳細不明で埋める"
+else
+  bad "再試行も失敗した場合の失敗項目が期待どおりでない (exit=$EXIT_22, 行数=$FAIL_LINES_22, 重複=$DUP_LINES_22)"
+fi
+
+# 6.15 削除反映の fetch --prune が失敗しても中断しない。ここで die すると、
+#      リモート削除の失敗で掃除全体を止めないという契約が 2 行先で破れる。
+remote_has 'feature/#21-prune-fails' && bad "fixture 前提が崩れています（6.15 より前に feature/#21-prune-fails が origin へ出ている）"
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_PRUNEFAIL21:refs/heads/feature/#21-prune-fails"
+# 見出し到達だけでなく実効を見る。Step 3 の prune の時点で既に [gone] になる
+# ローカルブランチを置き、削除反映 prune が飛んでも Step 5 が消すことを確かめる。
+git branch 'feature/#24-gone-before-prune' develop
+SKIP_SIMPLE_GIT_HOOKS=1 git push -qu origin 'feature/#24-gone-before-prune'
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin --delete 'feature/#24-gone-before-prune'
+: > "$TMP/prune21.enabled"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 21 > "$TMP/run-21.log" 2>&1
+EXIT_21=$?
+set -e
+rm -f "$TMP/prune21.enabled" "$TMP/prune21.first"
+if [ "$EXIT_21" -eq 2 ] \
+  && grep -q "=== 最終状態 ===" "$TMP/run-21.log" \
+  && grep -q "削除反映の fetch --prune" "$TMP/run-21.log" \
+  && grep -qE '^  - .*fetch --prune' "$TMP/run-21.log"; then
+  ok "削除反映の fetch --prune 失敗で中断せず、失敗として記録して続行する"
+else
+  bad "fetch --prune 失敗時の扱いが期待どおりでない (exit=$EXIT_21)"
+fi
+
+# 6.15b prune 失敗後も Step 5 が実際に [gone] ブランチを消す（見出し到達だけでなく）。
+if ! git show-ref --verify --quiet 'refs/heads/feature/#24-gone-before-prune'; then
+  ok "削除反映 prune が失敗しても Step 5 が [gone] ブランチを実際に削除する"
+else
+  bad "削除反映 prune 失敗後に Step 5 の削除が行われていない"
 fi
 
 # 7. サマリーに失敗項目が列挙されている（状態がサマリーまで届く）
