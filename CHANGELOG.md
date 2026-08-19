@@ -18,6 +18,8 @@
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-19
+
 ### 追加
 
 - `/retrospective` スキルを新設した（`skills/retrospective/`）。ワークフローチェーンの末尾（`/merge-cleanup` → `/ace-curate` → `/retrospective`）で毎回セッション振り返りを実施し、そのセッションで実測した手戻り・無駄時間からプロセス/ツール改善を最大 3 件提案する。`/ace-curate`（コード・設計のプロジェクト知見 → ACE Playbook）とは責務が別で、こちらはプロセス/ツール/スキルのメタ知見をユーザーへの提案（承認後に各リポジトリへ Issue 起票）として出す。改善候補が実測で見つからないセッションでは「振り返り: 改善候補なし」の 1 行で終了し、提案をひねり出さない。毎回実施がノイジーな環境向けに、引数 `ask` または環境変数 `RETROSPECTIVE_MODE=ask` で実施前確認式へ切り替えられる。あわせて `docs-template` の git-workflow / workflow-principles 文書と `skills/ace-curate` の完了案内にチェーン末尾としての位置づけを記載した
