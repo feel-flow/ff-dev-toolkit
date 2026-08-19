@@ -235,6 +235,14 @@ else
     # を使い、パターン配列は同期スクリプト側のまま再利用する。スクリプトや
     # 公開対象ディレクトリが無い checkout（公開リポジトリ等）では ○ skip。
     "$SCRIPT_DIR/sync-forbidden-patterns/verify.sh"
+    # 毎 sync リリース運用ゲート scripts/check-release-required.sh の検出力実測
+    # （Issue #552）。live 状態は検査しない — 「実変更 + [Unreleased] 非空 + version
+    # 据え置き」は開発中の PR では正常で、live 検査を常時ゲートに入れると通常開発が
+    # 恒常的に赤くなる。疑似 SSOT + 疑似公開 clone の fixture のみ使い、実 CLI・
+    # ネットワーク・課金は伴わない（〜3 秒）。同じ sync 系スクリプトを扱う
+    # sync-forbidden-patterns の直後に置く。スクリプト不在の checkout・jq 不在・
+    # 一時領域不可なら丸ごと ○ skip。
+    "$SCRIPT_DIR/release-required-selftest/verify.sh"
     "$SCRIPT_DIR/merge-cleanup/verify.sh"
     # 既存の孤児トランスクリプト sweep（実 ~/.claude は触らず隔離 tmp のみ）。
     # merge-cleanup の Step 5.5 と同じアーカイブ思想の別口。直後に置く。
@@ -384,8 +392,8 @@ REQUIRED_SUITES=(
   # **公開 checkout では root に docs/ が無いため両方 ○ skip する。** fixture は
   # 「実リポジトリの docs/ をそのまま写す」設計で、baseline が実体と乖離しないことを
   # 優先している（同梱 fixture にすると baseline 自体が腐る）。したがって公開側では
-  # sync-forbidden-patterns と合わせて 3 件の明示許可が要る:
-  #   FF_RUN_ALL_ALLOW_SKIP="sync-forbidden-patterns docs-frontmatter-repo-selftest docs-fact-drift-selftest" \
+  # sync-forbidden-patterns / release-required-selftest と合わせて 4 件の明示許可が要る:
+  #   FF_RUN_ALL_ALLOW_SKIP="sync-forbidden-patterns release-required-selftest docs-frontmatter-repo-selftest docs-fact-drift-selftest" \
   #     bash tests/run-all.sh
   # 必須 skip で落ちたときは、この行と同じ内容をランナーが実際の skip 一覧から
   # 組み立てて表示する（下の REQUIRED_SKIPPED の案内）。
@@ -395,6 +403,11 @@ REQUIRED_SUITES=(
   # 公開 checkout はスクリプト不在で ○ skip、一時領域不足でも ○ skip する。
   # そちらでは FF_RUN_ALL_ALLOW_SKIP=sync-forbidden-patterns が要る。
   sync-forbidden-patterns
+  # 毎 sync リリース運用ゲートの検出力 selftest（#552）。代替の検査が無く、
+  # 消えると「リリース漏れ・CHANGELOG 記載漏れを sync 前に止める」検出力の喪失が
+  # 黙って通る。公開 checkout は root スクリプト不在で ○ skip するため、そちらでは
+  # FF_RUN_ALL_ALLOW_SKIP=release-required-selftest が要る（上の 4 件の列挙参照）。
+  release-required-selftest
 )
 
 # ── 既定 suite 一覧の登録漏れ検査 ──────────────────────────────────────────────

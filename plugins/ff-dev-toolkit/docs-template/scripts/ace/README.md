@@ -45,7 +45,7 @@ npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md
 
 `ACE_MAX_ENTRY_LINES`（省略時は `15`）は 1 エントリの行数バジェット、`+ 1` はエントリブロック間の空行です。例外宣言（`<!-- ace-line-budget-exception: 理由 -->`）は上限がバジェットの 2 倍まで許されるため、1 件につきバジェット `(2 - 1) = 1` 本分を加算します（倍率を変えると加算本数も追従します）。上限を超えると標準エラーに警告を出しますが、**終了コードは変えません（警告のみ・非ブロック）**。
 
-例外宣言の運用条件 4 つの SSOT は、配置先の `docs/08-knowledge/PLAYBOOK.md#行数バジェット例外の有効条件` です。本 README はスクリプトの実装境界と診断だけを説明します。実装上のエントリブロックは anchor 行〜終端 `---` で、`##` レベルの見出し（Changelog 等）が来たらそこで打ち切ります。
+例外宣言の運用条件 4 つの SSOT は、配置先の `docs/08-knowledge/PLAYBOOK.md#行数バジェット例外の有効条件` です。本 README はスクリプトの実装境界と診断だけを説明します。実装上のエントリブロックは anchor 行〜終端 `---` で、`##` レベルの見出し（Changelog 等）が来たらそこで打ち切ります。終端 `---` が無いブロックは、次エントリの始点（または `##` 見出し）の手前を上限に、**原文で最後の非空行**までを範囲とします（HTML コメント行はファイル上非空なので範囲に含まれ、ブロック末尾に置いた例外宣言も有効です。空行判定を空白化後の行で行うとマーカー自身が範囲外へ押し出されるため、原文基準です）。
 
 採用しなかったマーカーがある場合は `例外マーカー N 件中 M 件を宣言として採用` を標準出力に出します（終了コードは変えません）。宣言を書いたのに効いていないことを、出力から区別できるようにするためです。
 
@@ -124,7 +124,7 @@ npx --yes tsx scripts/ace/ace-refine-report.ts docs/08-knowledge/PLAYBOOK.md
 | 候補 | 判定 | 環境変数（既定） |
 | --- | --- | --- |
 | Archive 候補 | `helpful == 0` かつ stale（active・作成から一定日数・git 参照なし） | `ACE_REUSE_STALE_DAYS`（90） |
-| 行数バジェット超過 | エントリブロック（anchor 行〜終端 `---`）の行数が上限超過。`ace-line-budget-exception` コメント付きは上限 2 倍で判定。行数降順で列挙 | `ACE_MAX_ENTRY_LINES`（15） |
+| 行数バジェット超過 | エントリブロック（anchor 行〜終端 `---`。`---` 欠落時は原文の最後の非空行まで）の行数が上限超過。`ace-line-budget-exception` コメント付きは上限 2 倍で判定。行数降順で列挙 | `ACE_MAX_ENTRY_LINES`（15） |
 | PATTERNS 昇格候補 | `Helpful >= 閾値` かつ昇格先未収載 | `ACE_PROMOTE_HELPFUL_MIN`（5）、昇格先は `ACE_PATTERNS_PATH`（`docs/03-implementation/PATTERNS.md`） |
 
 近似重複の検出は意味照合が必要なためスクリプトでは扱いません（`/ace-refine` スキルの手順で LLM が索引タイトルを照合します）。適用（アーカイブ・圧縮・統合・昇格）は `/ace-refine` の承認ゲートを経て行ってください。
