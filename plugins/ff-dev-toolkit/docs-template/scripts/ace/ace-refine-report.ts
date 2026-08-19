@@ -201,7 +201,8 @@ const SECTION_HEADING_PATTERN = SECTION_HEADING_LINE_PATTERN;
  * ブロック始点: 見出し行。ただし直前 2 行以内に anchor（<a id="ace-..."></a>）があれば
  * anchor 行から数える（PLAYBOOK テンプレートは anchor + 空行 + 見出しの並び）。
  * ブロック終点: 次エントリの始点・次の `##` レベル見出しのうち手前のものより前にある
- * 最後の `---` 行。無ければ最後の非空行。
+ * 最後の `---` 行。無ければ最後の非空行（**原文基準** — HTML コメント行は
+ * マスク後は空白だが、ファイル上は非空なのでブロックに含める。公開 Issue #12）。
  * 閉じた HTML コメント内の見出し（テンプレートの追記例）はエントリとして数えないが、
  * 行数の計測自体は原文の行に対して行う（圧縮判断は「ファイル上の占有行数」が対象のため）。
  * 制約: 見出し行の末尾に同一行コメントが付いていても計測対象になる（span マスクは
@@ -221,13 +222,20 @@ const SECTION_HEADING_PATTERN = SECTION_HEADING_LINE_PATTERN;
 export function measureEntryLines(content: string): EntryLineMeasurementResult {
   const masked = maskCommentSpans(content);
   const { maskedLines, exceptionLines } = masked;
+  // 終端フォールバック（末尾空行の切り詰め）の「空行」判定にだけ使う原文の行。
+  // maskedLines で判定すると、ブロック末尾に置いた宣言マーカー自身が空白化済みの
+  // ため空行として飛び越され、hasException が false に落ちる（公開 Issue #12。
+  // check-category-size.ts の countBudgetExceptions と同じ規則 — 片側だけ直すと
+  // 相互一致テストが乖離を検出する）。
+  const rawLines = content.split("\n");
 
   // 見出し（と直前 anchor）の検出は**フェンス空白化済み**の行で行う（Issue #342。
   // フェンス内の正準形見出し `### ACE-9-9:` を測定対象にしない — 幻のエントリを測る
   // だけでなく、直前の実エントリの lineCount が例示の位置で切り詰められる。
   // splitEntries / parsePlaybookEntries と同じ除外規則で、パーサ 3 者の認識を一致させる）。
   // 範囲の計測（後続セクション・終端 `---`・例外マーカー照合）は従来どおり
-  // maskedLines に対して行う（圧縮判断の対象は「ファイル上の占有行数」のため）。
+  // maskedLines に対して行う（圧縮判断の対象は「ファイル上の占有行数」のため。
+  // ただし終端フォールバックの末尾空行切り詰めのみ原文基準 — 上記 rawLines 参照）。
   // 未閉フェンスは空白化が EOF まで及び実在の見出しまで吸収されるため maskedLines へ
   // 退化させる — その入力は戻り値の unclosedFence が立ち、main が測定前に拒否する。
   const fenceProbe = blankFencedCodeBlocks(maskedLines.join("\n"));
@@ -275,7 +283,9 @@ export function measureEntryLines(content: string): EntryLineMeasurementResult {
     }
     if (end === -1) {
       end = rangeEnd;
-      while (end > header.headerIndex && maskedLines[end].trim() === "") {
+      // 原文基準（rawLines）で止める。原文が空行ならマスク後も必ず空行なので、
+      // maskedLines 側の条件は冗長になる（差が出るのは HTML コメント行だけ）。
+      while (end > header.headerIndex && rawLines[end].trim() === "") {
         end -= 1;
       }
     }

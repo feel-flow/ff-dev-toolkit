@@ -109,6 +109,44 @@ describe("measureEntryLines", () => {
     expect(result[0].hasException).toBe(true);
   });
 
+  it("終端 --- が無くても、ブロック末尾に置いた宣言は範囲外へ押し出さない（公開 Issue #12）", () => {
+    // 終端フォールバック（末尾空行の切り詰め）が maskedLines で判定すると、
+    // マーカー自身が空白化済みのため空行扱いで飛び越され、hasException が false に落ちる。
+    // 範囲修正そのものをロックするため lineCount（マーカー行を含む 6 行）も固定する。
+    // 末尾の "" は実運用の形（ファイル末尾改行）— 実空行は削り、マスク済みの
+    // マーカー行で止まる、という切り詰めループの両分岐をこの 1 本で通す。
+    const md = [
+      '<a id="ace-40-2"></a>',
+      "",
+      "### ACE-40-2: 終端 --- を欠いたエントリ",
+      "",
+      "**Action**: 本文",
+      "<!-- ace-line-budget-exception: 反直感的な仕様の詳細が必要 -->",
+      "",
+    ].join("\n");
+
+    const result = measureEntryLines(md).measurements;
+    expect(result[0]).toMatchObject({ id: "ACE-40-2", lineCount: 6, hasException: true });
+  });
+
+  it("終端 --- が無いブロック末尾の HTML コメントは、マーカー以外でも行数計測に含まれる", () => {
+    // ブロック終点の規則は「原文で最後の非空行」— HTML コメント行はマスク後は
+    // 空白だがファイル上は非空なので含める（JSDoc の一般則）。マーカー行だけを
+    // 特別扱いする形へ退化すると、この lineCount（6 行）が 5 へ縮んで赤くなる。
+    const md = [
+      '<a id="ace-41-1"></a>',
+      "",
+      "### ACE-41-1: 末尾に注記コメントを持つエントリ",
+      "",
+      "本文。",
+      "<!-- 追記メモ（宣言マーカーではない） -->",
+      "",
+    ].join("\n");
+
+    const result = measureEntryLines(md).measurements;
+    expect(result[0]).toMatchObject({ id: "ACE-41-1", lineCount: 6, hasException: false });
+  });
+
   /**
    * 未閉フェンス（Issue #349）。blankCodeRegions は「閉じていないフェンス以降を空白化しない」
    * fail-open なので、そこから先の例外マーカー判定は**両方向へ**壊れる。片方だけを fixture に

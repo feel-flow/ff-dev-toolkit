@@ -387,6 +387,12 @@ export function countBudgetExceptions(content: string): BudgetExceptionTally {
   // **空白化はファイル全体走査のまま**（Issue #353 の合成は判定だけに効かせる。
   // ここを変えると declared の値が動き、refine との相互一致テストの前提が崩れる）。
   const lines = blankCodeRegions(content).text.split("\n");
+  // 終端フォールバック（末尾空行の切り詰め）の「空行」判定にだけ使う原文の行。
+  // 空白化後の行で判定すると、ブロック末尾に置いた宣言マーカー自身が
+  // HTML コメント＝空白化済みのため空行として飛び越され、自分のブロックから
+  // 押し出される（公開 Issue #12。報告元の運用ではマーカーをエントリ本文の
+  // 末尾に置いており、その形ほど発火していた）。
+  const rawLines = content.split("\n");
   // 診断は合成判定（Issue #353）。捨てないこと自体は Issue #354 の契約で、
   // blankCodeRegions が「呼び出し側は必ず消費すること」と書いている当のフラグを、
   // セグメント単位の走査と OR で束ねた形。
@@ -420,13 +426,15 @@ export function countBudgetExceptions(content: string): BudgetExceptionTally {
     }
     return headerIndex;
   };
+  // 同じ見出しに対する startIndexOf を「前エントリの rangeEnd 決定」と「自エントリの
+  // block 切り出し」で 2 回計算しない（公開 Issue #12 の Suggestion）。境界ロジックが
+  // 重要な箇所なので、単一計算に寄せて将来変更時のズレを防ぐ。
+  const entryStarts = headerIndices.map(startIndexOf);
   const spanPattern = new RegExp(HTML_COMMENT_SPAN_SOURCE, "gu");
   let declared = 0;
   headerIndices.forEach((headerIndex, order) => {
     let rangeEnd =
-      order + 1 < headerIndices.length
-        ? startIndexOf(headerIndices[order + 1]) - 1
-        : blankedLines.length - 1;
+      order + 1 < headerIndices.length ? entryStarts[order + 1] - 1 : blankedLines.length - 1;
     // Changelog 等の後続セクションをエントリに含めない。ここで打ち切らないと、
     // 「この機能を説明した Changelog 行」が直前エントリの宣言として数えられる。
     for (let i = headerIndex + 1; i <= rangeEnd; i++) {
@@ -444,14 +452,16 @@ export function countBudgetExceptions(content: string): BudgetExceptionTally {
     }
     if (end === -1) {
       end = rangeEnd;
-      while (end > headerIndex && blankedLines[end].trim() === "") {
+      // 原文基準（rawLines）で止める。原文が空行なら空白化後も必ず空行なので、
+      // blankedLines 側の条件は冗長になる（差が出るのは HTML コメント行だけ）。
+      while (end > headerIndex && rawLines[end].trim() === "") {
         end -= 1;
       }
     }
     // マーカー自身が HTML コメントなので、走査は **HTML コメントを空白化する前**の
     // テキストに対して行う（`lines` はコード領域だけを空白化済み。`blankedLines` を
     // 使うとマーカーごと消えて常に 0 件になる）。
-    const block = lines.slice(startIndexOf(headerIndex), end + 1).join("\n");
+    const block = lines.slice(entryStarts[order], end + 1).join("\n");
     for (const span of block.matchAll(spanPattern)) {
       if (span[0].includes(BUDGET_EXCEPTION_MARKER)) {
         declared += 1;

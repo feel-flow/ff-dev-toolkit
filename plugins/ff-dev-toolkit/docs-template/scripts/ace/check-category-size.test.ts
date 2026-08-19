@@ -921,6 +921,70 @@ describe("countBudgetExceptions", () => {
     expect(countBudgetExceptions(md).declared).toBe(1);
   });
 
+  it("終端 --- が無くても、ブロック末尾に置いた宣言は範囲外へ押し出さない（ファイル末尾。公開 Issue #12）", () => {
+    // 終端フォールバック（末尾空行の切り詰め）が空白化後の行で判定すると、
+    // マーカー自身が HTML コメント＝空白化済みのため空行扱いで飛び越され declared=0 になる。
+    const md = [
+      "### ACE-1-1: a",
+      "",
+      "| Category | coding |",
+      "",
+      "**Action**: 本文",
+      "<!-- ace-line-budget-exception: 反直感的な詳細のため -->",
+    ].join("\n");
+
+    const tally = countBudgetExceptions(md);
+    expect(tally.declared).toBe(1);
+    expect(tally.occurrences).toBe(1);
+  });
+
+  it("終端 --- が無いブロック末尾の複数行コメント内の宣言も落とさない", () => {
+    // 切り詰めは原文の最終非空行（コメント終端の -->）で止まり、ブロックは
+    // コメント全体を含む。span 走査は複数行コメントもまたいで一致する。
+    const md = [
+      "### ACE-1-1: a",
+      "",
+      "| Category | coding |",
+      "",
+      "**Action**: 本文",
+      "<!--",
+      "ace-line-budget-exception: 複数行で書いた理由",
+      "-->",
+    ].join("\n");
+
+    expect(countBudgetExceptions(md).declared).toBe(1);
+  });
+
+  it("終端 --- が無くても、ブロック末尾の宣言は落とさない（後続エントリあり。最終エントリ限定ではない）", () => {
+    // フォールバックは終端 --- が見つからないブロックすべてで走るため、
+    // 後続エントリがあるケースも同じ形で declared=0 になる（公開 Issue #12 の実測表 3 行目）。
+    const md = [
+      "### ACE-1-1: a",
+      "",
+      "| Category | coding |",
+      "",
+      "**Action**: 本文",
+      "<!-- ace-line-budget-exception: 反直感的な詳細のため -->",
+      "",
+      "### ACE-1-2: b",
+      "",
+      "| Category | coding |",
+      "本文のみ",
+    ].join("\n");
+
+    const tally = countBudgetExceptions(md);
+    expect(tally.declared).toBe(1);
+    expect(tally.occurrences).toBe(1);
+    // refine 側と同じ規則で範囲を切っていること（相互一致）もこの形で固定する。
+    // 件数だけでなく所属エントリを ID 単位で見る — 境界計算がずれて宣言が
+    // 隣のエントリへ移っても件数は 1 のままなので、件数照合では検出できない。
+    const refineSide = measureEntryLines(md).measurements;
+    expect(refineSide.map((m) => [m.id, m.hasException])).toEqual([
+      ["ACE-1-1", true],
+      ["ACE-1-2", false],
+    ]);
+  });
+
   it("HTML コメントとして書かれていない言及は宣言として数えない", () => {
     const md = [
       "### ACE-1-1: a",
