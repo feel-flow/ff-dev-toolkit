@@ -31,9 +31,12 @@ fail-silent に反転するため、ランナーを集約実行へ変えまし�
 終了コードは「failed か not-run が 1 件でもあれば 1、それ以外は 0」です。
 ただし **passed が 0 で skipped だけの場合も 1** にします（検証が 1 件も成立していない状態を、
 終了コードしか見ない CI で「全部通った」と区別できなくなるため）。
+高速モード（`FF_RUN_ALL_FAST=1`。`-selftest` 終端の suite を実行対象から除外する）で
+**除外により実行対象が 0 件になった場合も 1** です（検査 0 件を成功として記録しない）。
 
-`All ff-dev-toolkit fixture checks passed.` は **全 suite が passed のときだけ**出力されます
-（skip が 1 件でもあれば「実行した N suite は全て通過」に切り替わり、本体が走っていない suite の存在を隠しません）。
+`All ff-dev-toolkit fixture checks passed.` は **既定モードで全 suite が passed のときだけ**出力されます
+（skip が 1 件でもあれば「実行した N suite は全て通過」に切り替わり、本体が走っていない suite の存在を
+隠しません。高速モードでは除外分が未実行のため、全 pass でもこの行を名乗らず専用の完了文言になります）。
 
 ## 検証ケース（verify.sh）
 
@@ -83,6 +86,8 @@ tests/run-all/
     ├── fail-skip-marker/verify.sh   # 非 0 終了 + 行頭 `○ skip`（判定順序の固定用）
     ├── skip/verify.sh               # exit 0 + 行頭 `○ skip`
     ├── skip-large/verify.sh         # 行頭 `○ skip` + パイプ容量超の出力（SIGPIPE 反転の検出用）
+    ├── pass-selftest/verify.sh      # `-selftest` 終端名の成功 suite（高速モードの除外判定用）
+    ├── pass-selftest-extra/verify.sh # `-selftest` を途中に含む成功 suite（終端一致の境界固定用）
     └── not-executable/verify.sh     # mode 644（実行ビットなしでコミット）
 ```
 

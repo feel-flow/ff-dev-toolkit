@@ -49,8 +49,17 @@ RUN_RC=0
 
 # ランナーを引数付きで実行し、出力と終了コードを記録する。
 # `out=$(...)` を素で書くと set -e が失敗時点で落とすので if 形式で受ける。
+#
+# FF_RUN_ALL_FAST は**常に落としてから**呼ぶ。本 suite 自身が高速モードの run-all から
+# 起動されると外側の FF_RUN_ALL_FAST=1 が環境へ漏れて継承され、既定モードを検査する
+# ケースが既定でなくなる（実測で 5 件壊れた）。高速モードの検査は RUN_FAST=1 で
+# 明示的に与える（case 13 の env -u FF_RUN_ALL_NESTED と同じ隔離の流儀）。
 run_runner() {
-  if RUN_OUT="$(bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+  if [ "${RUN_FAST:-0}" = "1" ]; then
+    if RUN_OUT="$(FF_RUN_ALL_FAST=1 bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+  else
+    if RUN_OUT="$(env -u FF_RUN_ALL_FAST bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+  fi
 }
 
 # 出力に $1（grep BRE）がマッチするかを返す。`grep -q` は使わない: マッチ時点で
@@ -233,7 +242,7 @@ expect_lacks '^○ skipped' "skip として報告されない"
 # merge-cleanup の一時 git リポジトリ生成ごと暴走する。
 echo
 echo "== case 8: 入れ子での引数なし実行 =="
-if RUN_OUT="$(FF_RUN_ALL_NESTED=1 bash "$RUNNER" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+if RUN_OUT="$(env -u FF_RUN_ALL_FAST FF_RUN_ALL_NESTED=1 bash "$RUNNER" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
 
 if [ "$RUN_RC" -ne 0 ]; then
   ok "入れ子の引数なし実行を非 0 で拒否する（rc=${RUN_RC}）"
@@ -328,7 +337,7 @@ echo "== case 13: 既定 suite 一覧の登録漏れ検査 =="
 # その入口は引数なし実行を要求するので、入れ子ガードに当たらないよう
 # FF_RUN_ALL_NESTED を落として呼ぶ。
 _reg_rc=0
-if _reg_out="$(env -u FF_RUN_ALL_NESTED FF_RUN_ALL_CHECK_REGISTRATION=1 \
+if _reg_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST FF_RUN_ALL_CHECK_REGISTRATION=1 \
   bash "$RUNNER" 2>&1)"; then _reg_rc=0; else _reg_rc=$?; fi
 case "$_reg_out" in
   *"登録漏れなし"*) _reg_ok=1 ;;
@@ -352,7 +361,7 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$_reg_fx/unregistered-probe/verify.sh"
 chmod +x "$_reg_fx/unregistered-probe/verify.sh"
 cp "$TESTS_DIR/run-all.sh" "$_reg_fx/run-all.sh"
 _reg_rc=0
-if _reg_out="$(env -u FF_RUN_ALL_NESTED FF_RUN_ALL_CHECK_REGISTRATION=1 \
+if _reg_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST FF_RUN_ALL_CHECK_REGISTRATION=1 \
   bash "$_reg_fx/run-all.sh" 2>&1)"; then _reg_rc=0; else _reg_rc=$?; fi
 case "$_reg_out" in
   *"unregistered-probe"*) _reg_named=1 ;;
@@ -421,7 +430,7 @@ else
 fi
 # 名簿の実在検査が登録照合に相乗りしていること（改名・削除への追従）
 _reg_rc=0
-if _reg_out="$(env -u FF_RUN_ALL_NESTED FF_RUN_ALL_CHECK_REGISTRATION=1 \
+if _reg_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST FF_RUN_ALL_CHECK_REGISTRATION=1 \
   bash "$RUNNER" 2>&1)"; then _reg_rc=0; else _reg_rc=$?; fi
 case "$_reg_out" in
   *"必須 "*"件"*) _req_reported=1 ;;
@@ -602,6 +611,296 @@ if [ "$MBCS_SELFTEST_OK" -eq 1 ]; then
     esac
   fi
 fi
+
+echo ""
+echo "== case 16: 高速モード（FF_RUN_ALL_FAST=1）が -selftest suite を除外する =="
+
+# 高速モードの中心契約（Issue #600）: suite 名（親ディレクトリ名）が `-selftest` で
+# 終わる suite を実行対象から外し、残りはすべて実行する。除外は total にも skipped にも
+# 数えない — 「意図的な除外」と「環境都合の skip」を混ぜると必須 skip 判定の意味が
+# 壊れるため。除外の件数・suite 名・未検証である旨はサマリーへ明示される。
+RUN_FAST=1 run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/pass-selftest/verify.sh"
+
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "高速モードで本体 suite が全 pass なら rc=0"
+else
+  bad "高速モードの全 pass 実行が非 0 で終わった（rc=${RUN_RC}）"
+  dump_out
+fi
+expect_has '^FIXTURE-PASS-EXECUTED$' "本体 suite は実行される"
+expect_lacks 'FIXTURE-PASS-SELFTEST-EXECUTED' "-selftest suite は実行されない"
+expect_lacks '^== pass-selftest ==' "-selftest suite の見出しも出ない（起動自体がされない）"
+expect_has '^suites: total=1 run=1 passed=1 failed=0 skipped=0 not-run=0$' \
+  "除外 suite は total にも skipped にも数えない（環境都合の skip と別勘定）"
+expect_has '^⚡ 高速モードで selftest 1 件を除外した' "サマリーが除外件数を明示する"
+expect_has 'これらが担う検査〔ゲート検出力・一部の live 検査〕は未実施' \
+  "サマリーから何を検証していないかが読み取れる"
+expect_has 'pass-selftest$' "サマリーが除外した suite 名を明示する"
+expect_lacks '^All ff-dev-toolkit fixture checks passed\.$' \
+  "高速モード（selftest 未実行）で全体 pass を名乗らない"
+expect_has '^実行した 1 suite は全て通過（高速モード' "高速モード専用の完了文言を出す"
+
+echo ""
+echo "== case 17: 高速モードで本体 suite が失敗したら非 0 =="
+
+RUN_FAST=1 run_runner "$FIXTURES/fail/verify.sh" "$FIXTURES/pass-selftest/verify.sh"
+
+if [ "$RUN_RC" -ne 0 ]; then
+  ok "高速モードでも本体 suite の失敗は非 0（rc=${RUN_RC}）"
+else
+  bad "高速モードで本体 suite の失敗が 0 で終わった"
+  dump_out
+fi
+expect_has '^✗ failed: fail$' "失敗した suite 名が名指しされる"
+expect_has '^suites: total=1 run=1 passed=0 failed=1 skipped=0 not-run=0$' \
+  "失敗の集計が高速モードでも従来どおり"
+
+echo ""
+echo "== case 18: FF_RUN_ALL_FAST なし（既定）では -selftest suite も実行される =="
+
+# 既定の挙動を変えないことの固定。環境変数を与えなければ従来どおり全 suite が走る。
+run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/pass-selftest/verify.sh"
+
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "既定モードの全 pass 実行が rc=0"
+else
+  bad "既定モードの全 pass 実行が非 0 で終わった（rc=${RUN_RC}）"
+  dump_out
+fi
+expect_has '^FIXTURE-PASS-SELFTEST-EXECUTED$' "既定モードでは -selftest suite も実行される"
+expect_has '^suites: total=2 run=2 passed=2 failed=0 skipped=0 not-run=0$' "既定モードの集計に除外が無い"
+expect_lacks '^⚡' "既定モードで高速モードの文言を出さない"
+expect_has '^All ff-dev-toolkit fixture checks passed\.$' "既定モードの全 pass は従来の全体 pass を名乗る"
+
+echo ""
+echo "== case 19: 高速モードの除外で実行対象が 0 件なら非 0 =="
+
+# 検査 0 件を成功として記録しない（run-all の「pass 0 で skip のみは非 0」と同じ思想）。
+RUN_FAST=1 run_runner "$FIXTURES/pass-selftest/verify.sh"
+
+if [ "$RUN_RC" -ne 0 ]; then
+  ok "実行対象 0 件は非 0 で終わる（rc=${RUN_RC}）"
+else
+  bad "実行対象 0 件なのに 0 で終わった（検査 0 件が緑になっている）"
+  dump_out
+fi
+expect_has '実行対象が 0 件になりました' "0 件になった理由を明示する"
+expect_lacks '^All ff-dev-toolkit fixture checks passed\.$' "全体 pass を名乗らない"
+
+echo ""
+echo "== case 20: 高速モードの除外と環境都合の skip が別勘定で報告される =="
+
+# 除外（検証しないと決めた）と skip（検証したかったが環境都合で出来なかった）を
+# 1 回の実行の中で同時に発生させ、別々の行で報告されることを実測する。
+RUN_FAST=1 run_runner \
+  "$FIXTURES/pass/verify.sh" \
+  "$FIXTURES/skip/verify.sh" \
+  "$FIXTURES/pass-selftest/verify.sh"
+
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "除外 + 環境都合 skip の併存でも rc=0（pass があるため）"
+else
+  bad "除外 + skip の併存で非 0 になった（rc=${RUN_RC}）"
+  dump_out
+fi
+expect_has '^suites: total=2 run=2 passed=1 failed=0 skipped=1 not-run=0$' \
+  "skipped に数えられるのは環境都合の skip だけ（除外は含まれない）"
+expect_has '^○ skipped (環境都合で検証本体が未実行): skip$' "環境都合の skip は従来の行で名指しされる"
+expect_has '^⚡ 高速モードで selftest 1 件を除外した' "除外は skip とは別の行で報告される"
+
+# 必須 skip 判定（REQUIRED_SKIPPED）は SKIPPED 配列だけから導出される（構造の固定）。
+# 上の実測で「除外は SKIPPED に入らない」ことが示されているので、両者を合成すると
+# 「高速モードの意図的な除外は、必須 suite の skip として赤にならない」が成立する。
+# 既定一覧の実実行との結合は case 26（複製木）が実測し、ここは走査元の構造を固定する
+# （case 14 の配線検査と同じ流儀）。
+if grep -qE 'for _s in "\$\{SKIPPED\[@\]\}"; do' "$TESTS_DIR/run-all.sh"; then
+  ok "必須 skip 判定が SKIPPED だけを走査する（高速モードの除外は判定対象外）"
+else
+  bad "必須 skip 判定の走査元が SKIPPED でなくなった（除外との競合を要再確認）"
+fi
+# 走査元の行が残っていても、REQUIRED_SKIPPED の導出ブロックへ FAST_EXCLUDED を合流させる
+# 第 2 ループの**追加**は上の grep では検出できない。ブロックを抽出して否定側も固定する。
+_req_derive_block="$(awk '
+  /^REQUIRED_SKIPPED=\(\)/ { inside=1 }
+  inside { print }
+  inside && /^fi$/ { exit }
+' "$TESTS_DIR/run-all.sh")"
+if [ -z "$_req_derive_block" ]; then
+  bad "REQUIRED_SKIPPED 導出ブロックを抽出できなかった（この否定検査は成立していない）"
+elif [ "$(printf '%s\n' "$_req_derive_block" | grep -c 'FAST_EXCLUDED')" -eq 0 ]; then
+  ok "必須 skip 判定の導出ブロックに FAST_EXCLUDED への言及が無い（除外の合流なし）"
+else
+  bad "必須 skip 判定の導出ブロックが FAST_EXCLUDED を参照している（除外が判定へ流入）"
+fi
+
+echo ""
+echo "== case 21: FF_RUN_ALL_FAST は値が 1 のときだけ有効 =="
+
+# 値の解釈を「1 との完全一致」に固定する。非空 truthy 判定へ改悪されると、
+# FF_RUN_ALL_FAST=0 を export した利用者の「フル実行のつもり」で selftest が黙って
+# 消える — このリポジトリが最も警戒する検出力の静かな喪失になる。
+for _fast_v in "0" "" "true"; do
+  if RUN_OUT="$(FF_RUN_ALL_FAST="$_fast_v" bash "$RUNNER" \
+    "$FIXTURES/pass/verify.sh" "$FIXTURES/pass-selftest/verify.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+  expect_has '^FIXTURE-PASS-SELFTEST-EXECUTED$' \
+    "FF_RUN_ALL_FAST='${_fast_v}' では高速モードにならない（selftest が実行される）"
+  expect_lacks '^⚡' "FF_RUN_ALL_FAST='${_fast_v}' で高速モードの文言が出ない"
+done
+
+echo ""
+echo "== case 22: 除外は終端一致のみ（名前の途中の -selftest は除外しない） =="
+
+# 判定 glob が *-selftest から *selftest* へ広がる変異を検出する。部分一致になると、
+# 名前に selftest を含むだけの本体 suite まで意図せず除外される。
+RUN_FAST=1 run_runner "$FIXTURES/pass-selftest-extra/verify.sh" "$FIXTURES/pass-selftest/verify.sh"
+
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "終端一致の除外後も本体 suite の実行で rc=0"
+else
+  bad "終端一致検査の実行が非 0 で終わった（rc=${RUN_RC}）"
+  dump_out
+fi
+expect_has '^FIXTURE-SELFTEST-MIDNAME-EXECUTED$' \
+  "-selftest を途中に含むだけの suite は高速モードでも実行される"
+expect_has '^suites: total=1 run=1 passed=1 failed=0 skipped=0 not-run=0$' \
+  "除外されるのは終端一致の 1 件だけ"
+expect_has '^⚡ 高速モードで selftest 1 件を除外した' "除外件数が 1 件（終端一致のみ）"
+
+echo ""
+echo "== case 23: 高速モードで除外対象が 0 件のとき =="
+
+# 除外 0 件の分岐（サマリーの else 側）と、その後の完了文言を固定する。
+RUN_FAST=1 run_runner "$FIXTURES/pass/verify.sh"
+
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "除外 0 件の高速モードは全 pass なら rc=0"
+else
+  bad "除外 0 件の高速モードが非 0 で終わった（rc=${RUN_RC}）"
+  dump_out
+fi
+expect_has '^⚡ 高速モード: 除外対象の selftest は 0 件だった' "除外 0 件がサマリーへ明示される"
+expect_lacks '^All ff-dev-toolkit fixture checks passed\.$' \
+  "除外 0 件でも高速モードは全体 pass を名乗らない"
+expect_has '^実行した 1 suite は全て通過（高速モード' "高速モード専用の完了文言を出す"
+
+echo ""
+echo "== case 24: 高速モードでも登録漏れ検査は既定一覧そのものへ掛かる =="
+
+# 除外フィルタは check_suite_registration の**後**にある。フィルタを照合の前へ移す
+# 変異は、除外された selftest 群が「未登録」扱いになって照合が赤くなる形で検出できる
+# （現実装では登録照合がフィルタ到達前に exit するので rc=0）。
+_reg_rc=0
+if _reg_out="$(env -u FF_RUN_ALL_NESTED FF_RUN_ALL_FAST=1 FF_RUN_ALL_CHECK_REGISTRATION=1 \
+  bash "$RUNNER" 2>&1)"; then _reg_rc=0; else _reg_rc=$?; fi
+case "$_reg_out" in
+  *"登録漏れなし"*) _reg_ok=1 ;;
+  *) _reg_ok=0 ;;
+esac
+if [ "$_reg_rc" -eq 0 ] && [ "$_reg_ok" -eq 1 ]; then
+  ok "高速モード指定下でも登録照合はフィルタ前の全一覧で通る"
+else
+  bad "高速モード指定下の登録照合が通らない (rc=${_reg_rc})"
+  printf '%s\n' "$_reg_out" | sed 's/^/    | /' >&2
+fi
+
+echo ""
+echo "== case 25: 必須 skip 案内が高速モードを落とさせない =="
+
+# 必須 suite（run-all は REQUIRED_SUITES 名簿に実在する）を skip させて案内文を出させ、
+# 高速モード中の再現コマンドに FF_RUN_ALL_FAST=1 が前置されることを固定する。
+# 案内をそのままコピペした利用者が、気づかずフル実行へ戻る形を防ぐ（除外との組で
+# 使う唯一の導線なので、文言 drift は静かな 8 分の損失として再発する）。
+# 明示引数の実行では必須 skip 判定が働かないため、ここも case 26 と同じ複製木を
+# 使わず、構造（分岐と前置の実在）で固定する。
+_fast_hint_block="$(awk '
+  /回せない環境なら、理由を承知のうえで明示的に外してください/ { inside=1 }
+  inside { print }
+  inside && /^fi$/ { exit }
+' "$TESTS_DIR/run-all.sh")"
+if [ -z "$_fast_hint_block" ]; then
+  bad "必須 skip 案内のブロックを抽出できなかった（この検査は成立していない）"
+elif [ "$(printf '%s\n' "$_fast_hint_block" | grep -c 'FF_RUN_ALL_FAST=1 FF_RUN_ALL_ALLOW_SKIP=')" -gt 0 ]; then
+  ok "高速モード中の必須 skip 案内に FF_RUN_ALL_FAST=1 が前置される"
+else
+  bad "必須 skip 案内が高速モードを落とした形になっている（コピペでフル実行へ戻る）"
+fi
+
+echo ""
+echo "== case 26: 既定一覧の統合動作（複製木への引数なし実行） =="
+
+# 既定一覧の高速モードは入れ子ガード（case 8）により本 suite からは直接回せない。
+# case 13 の登録照合と同じ流儀で run-all.sh を一時木へ複製し、実在の suite 名を
+# 写した stub 群に対して引数なしで実行する（stub は即終了するので数秒で完走する）。
+# ここで初めて「登録照合 → 高速フィルタ → 実行 → 必須 skip 判定」の全経路が
+# 既定一覧の形で結合される。
+_fast_fx="${TMPDIR:-/tmp}/ff-fast-integration.$$"
+rm -rf "$_fast_fx"
+mkdir -p "$_fast_fx"
+cp "$TESTS_DIR/run-all.sh" "$_fast_fx/run-all.sh"
+_fast_self=0
+_fast_body=0
+for _fast_d in "$TESTS_DIR"/*/verify.sh; do
+  [ -f "$_fast_d" ] || continue
+  _fast_n="$(basename "$(dirname "$_fast_d")")"
+  mkdir -p "$_fast_fx/$_fast_n"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$_fast_fx/$_fast_n/verify.sh"
+  chmod +x "$_fast_fx/$_fast_n/verify.sh"
+  case "$_fast_n" in
+    *-selftest) _fast_self=$((_fast_self + 1)) ;;
+    *) _fast_body=$((_fast_body + 1)) ;;
+  esac
+done
+# 前提: 既定一覧に selftest と本体の両方が居る（どちらかが 0 なら統合検査は成立しない）
+if [ "$_fast_self" -ge 1 ] && [ "$_fast_body" -ge 1 ]; then
+  ok "複製木に selftest ${_fast_self} 件 / 本体 ${_fast_body} 件が揃っている"
+else
+  bad "複製木の構成が前提を満たさない（selftest=${_fast_self} 本体=${_fast_body}）"
+fi
+
+# 26-A: 引数なしの高速モード — 登録照合を通過し、selftest だけが除外されて全 pass
+if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP FF_RUN_ALL_FAST=1 \
+  bash "$_fast_fx/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "既定一覧の高速モード実行が rc=0"
+else
+  bad "既定一覧の高速モード実行が非 0（rc=${RUN_RC}）"
+  dump_out
+fi
+expect_has "^⚡ 高速モードで selftest ${_fast_self} 件を除外した" \
+  "既定一覧の selftest が全件（実体と同数）除外される"
+expect_lacks '^== .*-selftest ==' "-selftest suite の見出しが 1 件も出ない"
+expect_has "^suites: total=${_fast_body} run=${_fast_body} passed=${_fast_body} failed=0 skipped=0 not-run=0$" \
+  "本体 suite がすべて実行される（実体の本体数と一致）"
+
+# 26-B: 必須の本体 suite（markdownlint）が環境都合で skip → 高速モードでも赤
+printf '#!/usr/bin/env bash\necho "○ skip: stub（環境都合を模す）"\nexit 0\n' \
+  > "$_fast_fx/markdownlint/verify.sh"
+if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP FF_RUN_ALL_FAST=1 \
+  bash "$_fast_fx/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+if [ "$RUN_RC" -ne 0 ]; then
+  ok "高速モードでも必須の本体 suite の skip は非 0（fail-closed が生きている）"
+else
+  bad "高速モードで必須 suite の skip が 0 で終わった"
+  dump_out
+fi
+expect_has '^✗ 環境都合で消してはいけない suite が skip しました: markdownlint$' \
+  "必須 skip の名指しに除外した selftest が混入しない"
+expect_has '^    FF_RUN_ALL_FAST=1 FF_RUN_ALL_ALLOW_SKIP="markdownlint" bash tests/run-all.sh$' \
+  "高速モード中の再現コマンドに FF_RUN_ALL_FAST=1 が前置される（case 25 の実測側）"
+
+# 26-C: 同じ木を既定モードで実行 — selftest も走り、必須 skip の fail-closed は従来どおり
+if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_FAST \
+  bash "$_fast_fx/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+if [ "$RUN_RC" -ne 0 ]; then
+  ok "既定モードの必須 skip fail-closed は従来どおり非 0"
+else
+  bad "既定モードで必須 suite の skip が 0 で終わった"
+  dump_out
+fi
+expect_has '^== mcp-state-selftest ==' "既定モードでは selftest も実行される"
+expect_has '^    FF_RUN_ALL_ALLOW_SKIP="markdownlint" bash tests/run-all.sh$' \
+  "既定モードの再現コマンドは従来どおり（FF_RUN_ALL_FAST を前置しない）"
+rm -rf "$_fast_fx"
 
 echo ""
 if [ "$FAIL" -gt 0 ]; then

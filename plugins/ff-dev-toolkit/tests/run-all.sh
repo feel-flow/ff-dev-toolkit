@@ -25,6 +25,28 @@
 # サマリーの suite 識別子は親ディレクトリ名なので、渡す suite は親ディレクトリ名が
 # 互いに一意であること（同名だとどちらが失敗したのか報告から読めない）。
 #
+# FF_RUN_ALL_FAST=1（値が 1 のときだけ有効）を与えると高速モードになり、suite 名
+# （親ディレクトリ名）が `-selftest` で終わる suite を実行対象から除外する。selftest の
+# 大半はゲート本体（tests/*/verify.sh）の検出力を変異注入で実測するもので、検査対象を
+# 変更しない限り原理的に結果が変わらないのに、既定一覧では 18 suite が所要時間の
+# 53.9% を占めていた（Issue #600 時点・全 76 suite の実測）。判定は `-selftest` の
+# 命名規約のみで除外名簿を持たないため、新規 selftest も自動的に対象になる。既定
+# （環境変数なし）は従来どおり全 suite 実行。除外は SKIPPED とは別勘定で、
+# REQUIRED_SUITES の必須 skip 判定には掛からない（意図的な除外と環境都合の skip を
+# 区別する）。明示引数の実行にも適用されるので、FF_RUN_ALL_FAST=1 を export したまま
+# selftest を名指しすると、その suite は実行されない（除外はサマリーに出る）。
+#
+# トレードオフ（意図的な選択）: 判定が命名規約だけなので、対になる本体 suite を持たず
+# live な検査を単独で担う `-selftest` も除外される（Issue #600 時点で 3 件:
+# release-required-selftest〔scripts/check-release-required.sh の唯一の検査〕・
+# mcp-state-selftest〔dist_state wrapper の byte 一致など〕・
+# adapter-env-isolation-selftest〔consumer 名簿の照合など〕）。高速モードで検証されない
+# のはゲートの検出力だけではない。selftest の検査対象（tests/*/verify.sh・
+# tests/lib/*.sh・scripts/check-release-required.sh）を変更した回を高速モードだけで
+# 通すと、退行はフル実行まで検出されない。フル実行の定期実行点は週次 CI（Issue #598。
+# 未導入で、導入までは定期実行点が存在しない）に置く規約とし、`tests/` 等の変更時に
+# 高速モードを拒否する安全弁は置かない — 条件分岐を増やさず、挙動を単純に保つ。
+#
 # 実行方式のトレードオフ: 各 suite の出力は skip マーカー判定のため command
 # substitution で丸ごと受けてから出力する。そのため suite 実行中のリアルタイム進捗は
 # 出ず（merge-cleanup は実 git 操作を伴うので体感差がある）、途中で kill された場合は
@@ -501,6 +523,36 @@ if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
   check_suite_registration || exit 1
 fi
 
+# ── 高速モード（FF_RUN_ALL_FAST=1）────────────────────────────────────────────
+# `-selftest` サフィックスの suite を実行対象から除外する（背景・トレードオフは
+# ヘッダー参照）。登録漏れ検査（check_suite_registration）は既定一覧そのものへ
+# 掛ける必要があるため、この除外は照合の**後**に行う。除外した suite は SKIPPED に
+# 一切現れないので、REQUIRED_SUITES の必須 skip 判定（SKIPPED だけを走査する）とは
+# 構造的に競合しない。
+FAST_MODE=0
+FAST_EXCLUDED=()
+if [[ "${FF_RUN_ALL_FAST:-0}" == "1" ]]; then
+  FAST_MODE=1
+  FAST_KEPT=()
+  for script in "${SCRIPTS[@]}"; do
+    name="$(basename "$(dirname "$script")")"
+    if [[ "$name" == *-selftest ]]; then
+      FAST_EXCLUDED+=("$name")
+    else
+      FAST_KEPT+=("$script")
+    fi
+  done
+  # 除外で実行対象が 0 件になったら成功として扱わない（検査 0 件を緑にしない）
+  if [[ ${#FAST_KEPT[@]} -eq 0 ]]; then
+    echo "✗ 高速モードの除外で実行対象が 0 件になりました（selftest ${#FAST_EXCLUDED[@]} 件を除外）。検査 0 件を成功として記録しません" >&2
+    exit 1
+  fi
+  SCRIPTS=("${FAST_KEPT[@]}")
+  if [[ ${#FAST_EXCLUDED[@]} -gt 0 ]]; then
+    echo "⚡ 高速モード: selftest ${#FAST_EXCLUDED[@]} 件を実行対象から除外します（内訳はサマリー）"
+    echo
+  fi
+fi
 
 PASSED=()
 FAILED=()
@@ -557,6 +609,17 @@ RUN=$(( ${#PASSED[@]} + ${#FAILED[@]} + ${#SKIPPED[@]} ))
 echo "== summary =="
 echo "suites: total=${#SCRIPTS[@]} run=$RUN passed=${#PASSED[@]} failed=${#FAILED[@]} skipped=${#SKIPPED[@]} not-run=${#NOT_RUN[@]}"
 
+# 高速モードの除外は「何を検証していないか」ごとサマリーへ明示する。除外は total にも
+# skipped にも数えない — 環境都合の skip（検証したかったが出来なかった）と、意図的な
+# 除外（検証しないと決めた）を混ぜると、必須 skip 判定の意味が壊れるため。
+if [[ "$FAST_MODE" == "1" ]]; then
+  if [[ ${#FAST_EXCLUDED[@]} -gt 0 ]]; then
+    echo "⚡ 高速モードで selftest ${#FAST_EXCLUDED[@]} 件を除外した（これらが担う検査〔ゲート検出力・一部の live 検査〕は未実施。フル検証は FF_RUN_ALL_FAST なしで実行）: ${FAST_EXCLUDED[*]}"
+  else
+    echo "⚡ 高速モード: 除外対象の selftest は 0 件だった（除外は行っていない）"
+  fi
+fi
+
 if [[ ${#SKIPPED[@]} -gt 0 ]]; then
   echo "○ skipped (環境都合で検証本体が未実行): ${SKIPPED[*]}"
 fi
@@ -586,7 +649,13 @@ if [[ ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
   echo "✗ 環境都合で消してはいけない suite が skip しました: ${REQUIRED_SKIPPED[*]}" >&2
   echo "  これらが守る不変条件には代替の検査がありません（必要な実行環境は各 suite のコメントを参照）。" >&2
   echo "  回せない環境なら、理由を承知のうえで明示的に外してください:" >&2
-  echo "    FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh" >&2
+  # 高速モード中の案内には FF_RUN_ALL_FAST=1 を前置する。落とした形をコピペすると、
+  # 利用者が気づかないままフル実行へ戻るため。
+  if [[ "$FAST_MODE" == "1" ]]; then
+    echo "    FF_RUN_ALL_FAST=1 FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh" >&2
+  else
+    echo "    FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh" >&2
+  fi
 fi
 if [[ ${#NOT_RUN[@]} -gt 0 ]]; then
   echo "✗ not run (suite を起動できなかった): ${NOT_RUN[*]}" >&2
@@ -606,7 +675,19 @@ if [[ ${#SKIPPED[@]} -gt 0 ]]; then
     echo "✗ 検証できた suite がありません（全 ${#SKIPPED[@]} suite が環境都合でスキップ）。書き込み可能な環境で再実行してください" >&2
     exit 1
   fi
-  echo "実行した ${#PASSED[@]} suite は全て通過（${#SKIPPED[@]} suite は環境都合でスキップ。全 suite の検証は書き込み可能な環境で行うこと）"
+  # 高速モードでは「書き込み可能な環境で回す」だけではフル検証にならない
+  # （FF_RUN_ALL_FAST も外す必要がある）ので、最終行の案内を分ける。
+  if [[ "$FAST_MODE" == "1" ]]; then
+    echo "実行した ${#PASSED[@]} suite は全て通過（${#SKIPPED[@]} suite は環境都合でスキップ、selftest ${#FAST_EXCLUDED[@]} 件は高速モードで未実行。フル検証は FF_RUN_ALL_FAST なしを書き込み可能な環境で行うこと）"
+  else
+    echo "実行した ${#PASSED[@]} suite は全て通過（${#SKIPPED[@]} suite は環境都合でスキップ。全 suite の検証は書き込み可能な環境で行うこと）"
+  fi
+  exit 0
+fi
+
+# 高速モードでは selftest が未実行なので、全体 pass（All ... passed）を名乗らない。
+if [[ "$FAST_MODE" == "1" ]]; then
+  echo "実行した ${#PASSED[@]} suite は全て通過（高速モード: selftest ${#FAST_EXCLUDED[@]} 件は未実行。フル検証は既定モードで行うこと）"
   exit 0
 fi
 
