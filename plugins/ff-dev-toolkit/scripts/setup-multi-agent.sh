@@ -796,11 +796,14 @@ install_review_wrappers() {
     # 環境や CI で壊れる、(2) toolkit 更新のたび内容が変わり冪等比較が毎回不一致に
     # なって利用者の .bak を上書きし続ける、(3) 生成物がシェルコードなのでパスの
     # & や $ や " が構文を壊す（実測）。データなら 3 つとも起きない。
+    local shim_changed=true
     if [ -f "$dest" ]; then
         if cmp -s "$src" "$dest"; then
+            shim_changed=false
             print_info "codex-review.sh は最新です（スキップ）: ${dest}"
-            return 0
         fi
+    fi
+    if [ "$shim_changed" = true ] && [ -f "$dest" ]; then
         # 退避先は使い回さない。固定の .bak だと 2 回目の上書きで利用者の元ファイルが
         # 機械生成物に置き換わり、最初の退避が失われる。既存があれば連番を足す。
         local backup="${dest}.bak" n=1
@@ -822,42 +825,50 @@ install_review_wrappers() {
     # rename(2) は同一ファイルシステム内で原子的なので、中間状態が観測されない
     # （dest は「前の内容」か「新しい内容」のどちらかで、途中の姿を取らない）。
     local tmp="${dest}.tmp.$$"
+    local sidecar_tmp="${sidecar}.tmp.$$"
     # 中断（Ctrl-C / SIGTERM）で一時ファイルが残ると、**実行ビットの立った 25KB の
     # 見慣れないファイル**が消費プロジェクトの git 管理下 scripts/ に置き去りになる。
     # 実測: cp の途中で SIGTERM を送ると codex-review.sh.tmp.<pid> が残り、
     # 再実行のたび PID 違いで増えていった。各失敗経路の rm だけでは信号を捕まえられない。
-    trap 'rm -f "$tmp"' EXIT INT TERM
-    if ! cp "$src" "$tmp"; then
+    trap 'rm -f "$tmp" "$sidecar_tmp"' EXIT INT TERM
+    if [ "$shim_changed" = true ] && ! cp "$src" "$tmp"; then
         rm -f "$tmp"
         print_error "配置用の一時ファイルを作成できません: ${tmp}"
         print_info "既存の ${dest} は変更していません。"
         return 1
     fi
-    if ! chmod +x "$tmp"; then
+    if [ "$shim_changed" = true ] && ! chmod +x "$tmp"; then
         rm -f "$tmp"
         print_error "実行権限を付与できません: ${tmp}"
         print_info "既存の ${dest} は変更していません。"
         return 1
     fi
-    if ! mv "$tmp" "$dest"; then
-        rm -f "$tmp"
+    if ! printf '%s\n' "$SCRIPT_DIR" >"$sidecar_tmp"; then
+        rm -f "$tmp" "$sidecar_tmp"
+        print_error "toolkit パスの一時記録に失敗しました: ${sidecar_tmp}"
+        print_info "既存の ${sidecar} は変更していません。"
+        return 1
+    fi
+    if [ "$shim_changed" = true ] && ! mv "$tmp" "$dest"; then
+        rm -f "$tmp" "$sidecar_tmp"
         print_error "配置に失敗しました: ${dest}"
         print_info "既存の ${dest} は変更していません。"
         return 1
     fi
-    # mv が成功した時点で tmp はもう無い。trap を残すと、以降の失敗で存在しない
-    # パスへ rm がかかる（無害だが、意図しない対象を消しうる形は残さない）。
-    trap - EXIT INT TERM
-    # サイドカーはラッパーの配置が**成功してから**書く。先に書くと、配置に失敗したとき
-    # 「既存ファイルは変更していません」と言いながら、利用者が持っていなかったファイルを
-    # 作った状態で終わる（実測: cp を失敗させると sidecar だけが残り、その事実は
-    # どのメッセージにも現れなかった）。
-    if ! printf '%s\n' "$SCRIPT_DIR" > "$sidecar"; then
+    # sidecar の確定（rename）はラッパー配置の成功後に行う。一時ファイルへの
+    # 書き込みは先行するが、失敗時は明示 cleanup と signal trap が両方を回収する。
+    if ! mv "$sidecar_tmp" "$sidecar"; then
+        rm -f "$tmp" "$sidecar_tmp"
         print_error "toolkit パスの記録に失敗しました: ${sidecar}"
-        print_info "ラッパーは配置済みですが、サイドカーが無いと実行時に解決できません。"
+        print_info "ラッパーは配置済みですが、サイドカーは更新されていません（初回なら未作成のままです）。"
+        print_info "cache から解決できない環境では setup を再実行してください。"
         return 1
     fi
-    print_success "codex-review.sh を配置しました: ${dest}"
+    # 両一時ファイルの rename が終わったので、signal/EXIT 用の trap を解除する。
+    trap - EXIT INT TERM
+    if [ "$shim_changed" = true ]; then
+        print_success "codex-review.sh を配置しました: ${dest}"
+    fi
     print_info "toolkit パスを記録しました: ${sidecar}"
     print_info "${sidecar} はマシン固有です。git 管理下なら .gitignore へ追加してください。"
     return 0

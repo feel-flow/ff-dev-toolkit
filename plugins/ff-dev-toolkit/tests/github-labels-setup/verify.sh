@@ -32,7 +32,7 @@ STUB_DIR="$SCRIPT_DIR/fixtures/gh-stub"
 
 # 定義の件数。増減したときは必ずここも直す。固定しないと、抽出が壊れて 0 件に
 # なっても「全定義一致」で緑になる。
-EXPECTED_LABEL_COUNT=5
+EXPECTED_LABEL_COUNT=13
 
 PASS=0
 FAIL=0
@@ -64,7 +64,12 @@ extract_script_defs() {
       line = $0
       sub(/^LABEL_DEFS='\''/, "", line)
       sub(/'\''$/, "", line)
-      if (line ~ /^[a-z][a-z-]*\|[0-9A-Fa-f]{6}\|/) print line
+      # `priority:critical` のような名前空間付きの名前があるため、コロンも通す。
+      # ここを [a-z-] へ戻すと priority:* だけが抽出から落ちる。直接のガードは下の
+      # 正の対照（コロン入りを拾えることの自己検証）で、そちらが先に赤くなり本検査
+      # へ進まない。probe が無かった頃は「件数が合わない」という遠い症状でしか
+      # 現れなかった — この 2 つは対なので、片方だけ消さないこと。
+      if (line ~ /^[a-z][a-z:-]*\|[0-9A-Fa-f]{6}\|/) print line
     }
   ' "$1"
 }
@@ -128,6 +133,15 @@ if [ -n "$(extract_manual_defs "$SETUP_SCRIPT")" ]; then
   bad "自己検証: 手動例の無いファイルから gh label create 定義を抽出できてしまった"
 else
   ok "自己検証: 手動例の無いファイルからは gh label create 定義を抽出しない"
+fi
+
+# 正の対照: 名前空間付き（コロン入り）の名前を SSOT 抽出が拾えること。
+# 抽出正規表現からコロンを落とす変異は、これが無いと「件数が合わない」としか出ない。
+colon_probe="$(extract_script_defs <(printf '# LABEL_DEFS_BEGIN\nLABEL_DEFS=%spriority:critical|B60205|probe%s\n# LABEL_DEFS_END\n' "'" "'"))"
+if [ "$colon_probe" = "priority:critical|B60205|probe" ]; then
+  ok "自己検証: SSOT 抽出がコロン入りのラベル名を拾える"
+else
+  bad "自己検証: SSOT 抽出がコロン入りのラベル名を拾えない（実際: ${colon_probe:-なし}）"
 fi
 
 # 比較器の対照: 1 行違いを本当に検出できること（常に「一致」を返す退化の検出）。
@@ -291,6 +305,22 @@ else
   bad "create-issue の案内に「照会失敗では出さない」条件が無い"
 fi
 
+# epic の副作用（ラベルの実在が out-of-scope-issue の分岐を開く）は、スクリプト・
+# github-setup.md・SKILL.md の 3 箇所に警告として書かれている。参照先が変わると
+# その 3 箇所が黙って嘘になるため、参照先の記述そのものをピン留めする。
+OUT_OF_SCOPE="$PLUGIN_ROOT/skills/out-of-scope-issue/SKILL.md"
+if [ ! -s "$OUT_OF_SCOPE" ]; then
+  bad "out-of-scope-issue の SKILL.md が見つからない（epic 副作用の参照先）"
+elif ! grep -qF -- '#### Epic への紐付け' "$OUT_OF_SCOPE"; then
+  bad "out-of-scope-issue に Epic 紐付けの節が無い（3 箇所の epic 警告文が嘘になる）"
+elif ! grep -qF -- '--label epic' "$OUT_OF_SCOPE"; then
+  bad "out-of-scope-issue が epic ラベルで open Epic を照会していない（3 箇所の epic 警告文が嘘になる）"
+else
+  # 散文の一致ではなく節の存在と照会コマンドで見る。文言の言い換えで赤にすると
+  # 「直し方が嘘のゲート」になるが、分岐そのものが消える退化はこの 2 つで拾える。
+  ok "epic 副作用の警告が参照先（out-of-scope-issue）の分岐と対応している"
+fi
+
 # github-setup.md の自動セットアップ手順が、配布実体への入手経路を示していること
 # （`./scripts/setup-github-labels.sh` の参照だけでは、スクリプトがどこから来るのか
 # 消費プロジェクトには分からない — Issue #298 の「壊れた参照」の再発防止）。
@@ -364,11 +394,11 @@ else
   }
 
   # 不足分だけが作成され、作成が argv に載る（報告用の文字列だけではない）。
-  # stub の一覧には near-miss（majority / patch-release / urgently）が混ざっており、
-  # membership 判定が部分一致へ退化すると CREATED から major / patch / urgent が
-  # 消えてここが赤くなる。
-  expect_success normal 'CREATED=major minor patch hotfix urgent' \
-    "不足しているカスタムラベル 5 件がすべて作成される（near-miss 既存名に部分一致しない）"
+  # stub の一覧には near-miss の毒餌が混ざっている（実体と一覧は fixtures/gh-stub/gh
+  # 冒頭のコメントが正本。ここに件数や名前を写すと片側だけ増えて drift する）。
+  # membership 判定が部分一致へ退化すると、対応する名前が CREATED から消えて赤くなる。
+  expect_success normal 'CREATED=major minor patch hotfix urgent priority:critical priority:high priority:medium priority:low follow-up refactor chore epic' \
+    "不足しているカスタムラベル 13 件がすべて作成される（near-miss 既存名に部分一致しない）"
   out_normal="$(run_repo normal)" || true
   case "$out_normal" in
     *'GH_LABEL_CREATE_ARGV: label create major --repo stub-owner/stub-repo'*'--color D93F0B'*)
@@ -380,7 +410,7 @@ else
   # 合流キャプチャだけだと printf が stderr へ移る変異が素通りする）
   out_stdout="$(PATH="$STUB_DIR:$PATH" GH_STUB_MODE=normal bash "$SETUP_SCRIPT" --repo "stub-owner/stub-repo" 2>/dev/null)" || true
   case "$(fold_lines "$out_stdout")" in
-    *'CREATED=major minor patch hotfix urgent'*) ok "CREATED= の報告行が標準出力側に出る" ;;
+    *'CREATED=major minor patch hotfix urgent priority:critical priority:high priority:medium priority:low follow-up refactor chore epic'*) ok "CREATED= の報告行が標準出力側に出る" ;;
     *) bad "CREATED= の報告行が標準出力に無い（stderr へ逃げると完了報告が読めない）" ;;
   esac
 
@@ -391,7 +421,7 @@ else
     bad "一部既存の整備が非 0 で終了した"
   fi
   case "$(fold_lines "$out_partial")" in
-    *'CREATED=patch hotfix urgent'*'SKIPPED_EXISTING=major minor'*)
+    *'CREATED=patch hotfix urgent priority:critical priority:high priority:medium priority:low follow-up refactor chore epic'*'SKIPPED_EXISTING=major minor'*)
       ok "既存ラベルはスキップされ、不足分だけが作成される" ;;
     *) bad "既存/不足の振り分けが期待と違う（実際: $(fold_lines "$out_partial")）" ;;
   esac
@@ -407,7 +437,7 @@ else
   out_cv="$(run_repo casevariant)" || { bad "case 違い既存で非 0 終了した（冪等でない）"; out_cv=""; }
   if [ -n "$out_cv" ]; then
     case "$(fold_lines "$out_cv")" in
-      *'CREATED=patch hotfix urgent'*'SKIPPED_EXISTING=major minor'*)
+      *'CREATED=patch hotfix urgent priority:critical priority:high priority:medium priority:low follow-up refactor chore epic'*'SKIPPED_EXISTING=major minor'*)
         ok "大文字小文字違いの既存ラベルはスキップへ倒れる（case-insensitive 照合）" ;;
       *) bad "case 違い既存の振り分けが期待と違う（実際: $(fold_lines "$out_cv")）" ;;
     esac
@@ -421,7 +451,7 @@ else
       *) ok "全ラベル既存なら 1 件も作成せず成功する（冪等）" ;;
     esac
     case "$(fold_lines "$out_all")" in
-      *'CREATED=|'*'SKIPPED_EXISTING=major minor patch hotfix urgent'*)
+      *'CREATED=|'*'SKIPPED_EXISTING=major minor patch hotfix urgent priority:critical priority:high priority:medium priority:low follow-up refactor chore epic'*)
         ok "全件スキップが報告に列挙される（CREATED は空）" ;;
       *) bad "全件スキップの報告内容が期待と違う（実際: $(fold_lines "$out_all")）" ;;
     esac
@@ -477,7 +507,7 @@ else
   out_cf="$(run_repo createfail)" || rc_cf=$?
   if [ "$rc_cf" -ne 0 ]; then
     case "$(fold_lines "$out_cf")" in
-      *'FAILED=major minor patch hotfix urgent'*) ok "作成失敗は FAILED= に列挙され非 0 で終了する" ;;
+      *'FAILED=major minor patch hotfix urgent priority:critical priority:high priority:medium priority:low follow-up refactor chore epic'*) ok "作成失敗は FAILED= に列挙され非 0 で終了する" ;;
       *) bad "作成失敗が FAILED= に載っていない（実際: $(fold_lines "$out_cf")）" ;;
     esac
   else

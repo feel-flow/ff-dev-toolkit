@@ -3,19 +3,30 @@
 # `gh` の stub（Issue #298 の behavioral 検査用）。実ネットワーク・実 API を叩かず、
 # `gh label list` の応答パターンを GH_STUB_MODE で切り替える。
 #
-#   normal      … GitHub デフォルト相当 + near-miss 3 件（カスタムラベルは全部不足）
+#   normal      … GitHub デフォルト相当 + near-miss 群（カスタムラベルは全部不足）
 #   partial     … normal の一覧 + major / minor（カスタムの一部だけ既存）
 #   casevariant … normal の一覧 + Major / MINOR（大文字小文字違いで既存）
-#   allexist    … デフォルト 3 件 + カスタム 5 件すべて（作成対象なし）
+#   allexist    … デフォルト 3 件 + カスタム 13 件すべて（作成対象なし）
 #   fail        … 非 0 終了（照会そのものの失敗）
 #   empty       … 終了コード 0 で空出力（0 件のリポジトリと区別できない経路）
 #   truncated   … 取得上限ちょうどの件数を返す（打ち切りの疑いがある経路）
 #   createfail  … label create が非 0 終了（権限不足などの作成失敗）
 #   norepoview  … repo view が非 0 終了（対象リポジトリを確定できない経路）
 #
-# near-miss（majority / patch-release / urgently）は、membership 判定が部分一致へ
-# 退化する変異（`grep -q` への安易な置換等）を検出するための毒餌。部分一致だと
-# major / patch / urgent が「既存」と誤判定され、CREATED の期待と食い違って赤になる。
+# near-miss は、membership 判定が部分一致へ退化する変異（`grep -q` への安易な置換等）を
+# 検出するための毒餌。部分一致だと対応するラベルが「既存」と誤判定され、CREATED の期待と
+# 食い違って赤になる。判定の 1 行はパターン前後・対象前後の 4 つの主張を持つので、毒餌も
+# 軸ごとに置く:
+#   前方一致への退化（対象名で始まる）… majority / patch-release / urgently /
+#                                        refactoring / follow-ups / epics /
+#                                        priority:critical-path
+#   後方一致への退化（対象名で終わる）… pre-major / sub-epic
+# 名前空間付き（コロン入り）の毒餌を混ぜてあるのは、`priority:` 前方一致への退化が
+# コロンを含まない毒餌だけでは踏めないため。
+#
+# 対象一覧の「先頭行」境界は partial / casevariant モードが踏む（一覧の先頭を
+# カスタムラベルにしてある）。全モードがデフォルトラベル始まりだと、対象先頭の
+# 区切りを落とす変異が出力を 1 文字も変えずに素通りする。
 #
 # `gh label create` は渡された argv を stderr へ書き出すだけで、ラベルは作らない。
 # `gh repo view` は固定値 stub-owner/stub-repo を返す（norepoview モードを除く）。
@@ -26,7 +37,13 @@ enhancement
 documentation
 majority
 patch-release
-urgently'
+urgently
+refactoring
+follow-ups
+epics
+priority:critical-path
+pre-major
+sub-epic'
 
 case "${1:-} ${2:-}" in
   "label list")
@@ -44,9 +61,9 @@ case "${1:-} ${2:-}" in
         i=1
         while [ "$i" -le "$limit" ]; do echo "stub-label-$i"; i=$((i + 1)); done
         exit 0 ;;
-      partial)     printf '%s\nmajor\nminor\n' "$BASE_LABELS"; exit 0 ;;
-      casevariant) printf '%s\nMajor\nMINOR\n' "$BASE_LABELS"; exit 0 ;;
-      allexist)    printf 'bug\nenhancement\ndocumentation\nmajor\nminor\npatch\nhotfix\nurgent\n'; exit 0 ;;
+      partial)     printf 'major\n%s\nminor\n' "$BASE_LABELS"; exit 0 ;;
+      casevariant) printf 'Major\n%s\nMINOR\n' "$BASE_LABELS"; exit 0 ;;
+      allexist)    printf 'bug\nenhancement\ndocumentation\nmajor\nminor\npatch\nhotfix\nurgent\npriority:critical\npriority:high\npriority:medium\npriority:low\nfollow-up\nrefactor\nchore\nepic\n'; exit 0 ;;
       *)           printf '%s\n' "$BASE_LABELS"; exit 0 ;;
     esac ;;
   "label create")

@@ -34,13 +34,31 @@ AI Spec-Driven Developmentでは、**GitHubデフォルトラベル + 必要最�
 
 #### カスタムラベル（追加が必要）
 
-| ラベル   | 用途                                 | カラー  | バージョン影響  |
-| -------- | ------------------------------------ | ------- | --------------- |
-| `major`  | メジャーバージョン変更（破壊的変更） | #D93F0B | v1.0.0 → v2.0.0 |
-| `minor`  | マイナーバージョン変更（新機能追加） | #FBCA04 | v1.0.0 → v1.1.0 |
-| `patch`  | パッチバージョン変更（バグ修正）     | #5FBF4A | v1.0.0 → v1.0.1 |
-| `hotfix` | 緊急修正（本番環境の重大な不具合）   | #E11D21 | -               |
-| `urgent` | 緊急対応が必要                       | #FF6B00 | -               |
+| ラベル              | 用途                                       | カラー  | バージョン影響  |
+| ------------------- | ------------------------------------------ | ------- | --------------- |
+| `major`             | メジャーバージョン変更（破壊的変更）       | #D93F0B | v1.0.0 → v2.0.0 |
+| `minor`             | マイナーバージョン変更（新機能追加）       | #FBCA04 | v1.0.0 → v1.1.0 |
+| `patch`             | パッチバージョン変更（バグ修正）           | #5FBF4A | v1.0.0 → v1.0.1 |
+| `hotfix`            | 緊急修正（本番環境の重大な不具合）         | #E11D21 | v1.0.0 → v1.0.1（§2 の例） |
+| `urgent`            | 緊急対応が必要                             | #FF6B00 | -               |
+| `priority:critical` | 優先度 最高（本番で実害が進行中）          | #B60205 | -               |
+| `priority:high`     | 優先度 高（利用者に見える不具合・開発をブロック） | #E99695 | -               |
+| `priority:medium`   | 優先度 中（通常対応。実害は未顕在）        | #F9D0C4 | -               |
+| `priority:low`      | 優先度 低（保留可・実需要待ち）            | #FEF2C0 | -               |
+| `follow-up`         | PR レビュー・実装から派生した追跡課題      | #006B75 | -               |
+| `refactor`          | リファクタリング（機能変更なし）           | #D4C5F9 | -               |
+| `chore`             | 保守タスク（依存更新・ビルド・CI・開発ツール） | #BFD4F2 | -               |
+| `epic`              | 親 Issue（複数の子 Issue を束ねる大枠）    | #5319E7 | -               |
+
+ラベルは 4 つの軸に分かれます。**バージョニング**（`major` / `minor` / `patch`）、**緊急度**（`hotfix` / `urgent`）、**優先度**（`priority:*`）、**分類の補完**（`follow-up` / `refactor` / `chore` / `epic`）です。このうち **優先度と分類の補完**（`priority:*` / `follow-up` / `refactor` / `chore` / `epic`）は、リリースノートの生成にもバージョン解決にも関与しません（§2 のサンプル設定で `version-resolver` にも `categories` にも載せないため、`default: patch` のまま・リリースノートには出ません）。緊急度の `hotfix` は例外で、同サンプルでは Fixes カテゴリと patch 解決の両方に載ります。
+
+`priority:*` と `follow-up` は、ff-dev-toolkit の起票スキルが付与を試みるラベルです（`create-issue` が種別と優先度、`out-of-scope-issue` が加えて `follow-up`）。これらが存在しないリポジトリでは、起票は成功したままラベルだけが省略されます。
+
+> **`epic` は作ると挙動が変わります**: `out-of-scope-issue` はこのラベルの**実在**を「大枠 Issue を Epic 相当で管理しているか」の判定に使います。実在すると open な Epic を照会し、**該当領域だと確信できる場合に限り** follow-up Issue 本文へ Epic 番号を記載します。Epic 側のチェックリストへ追記する場合は、`gh issue edit --body` が追記ではなく**本文全体の置換**であるため、既存 Issue 本文の取得 → 追記 → 書き戻しを伴います。
+>
+> GitHub ネイティブの sub-issues は親子の階層を表しますが、「**どの Issue を Epic として運用するか**」という意図までは表しません（子をまだ持たない Epic もあれば、偶発的な親子リンクもあります）。`gh issue list --label epic` を成立させるこのラベルがその意図を担い、sub-issues と併用します。
+>
+> 親子関係を運用しないプロジェクトでこの 1 件を作りたくない場合は、**自動セットアップを使わず**、下の「手動セットアップ」から `epic` の行を除いて実行してください。自動セットアップのスクリプトは 13 件固定で除外オプションを持たず、配布実体の定義を直接編集すると定義と文書の照合が赤になります。
 
 ### 自動セットアップ（推奨）
 
@@ -55,7 +73,7 @@ AI Spec-Driven Developmentでは、**GitHubデフォルトラベル + 必要最�
 
 **スクリプトの動作**:
 
-- カスタムラベル（major, minor, patch, hotfix, urgent）のうち**存在しないものだけ**を作成（照合は GitHub のラベル名一意制約に合わせ大文字小文字を区別しない）
+- 上表のカスタムラベル 13 件のうち**存在しないものだけ**を作成（照合は GitHub のラベル名一意制約に合わせ大文字小文字を区別しない）
 - 既存ラベルはスキップとして報告（エラーにしない。色・説明の上書きもしない）
 - GitHubデフォルトラベルはそのまま使用
 - ラベル一覧の照会を信用できない場合（取得失敗・空・取得上限到達）は、**1 件も作成せず**非 0 で終了（「存在しない」と誤断定したまま作成に進まない）
@@ -73,6 +91,18 @@ gh label create "patch" --description "パッチバージョン変更（バグ�
 # 緊急度ラベル
 gh label create "hotfix" --description "緊急修正（本番環境の重大な不具合）" --color "E11D21"
 gh label create "urgent" --description "緊急対応が必要" --color "FF6B00"
+
+# 優先度ラベル
+gh label create "priority:critical" --description "優先度 最高（本番で実害が進行中）" --color "B60205"
+gh label create "priority:high" --description "優先度 高（利用者に見える不具合・開発をブロック）" --color "E99695"
+gh label create "priority:medium" --description "優先度 中（通常対応。実害は未顕在）" --color "F9D0C4"
+gh label create "priority:low" --description "優先度 低（保留可・実需要待ち）" --color "FEF2C0"
+
+# 分類の補完
+gh label create "follow-up" --description "PR レビュー・実装から派生した追跡課題" --color "006B75"
+gh label create "refactor" --description "リファクタリング（機能変更なし）" --color "D4C5F9"
+gh label create "chore" --description "保守タスク（依存更新・ビルド・CI・開発ツール）" --color "BFD4F2"
+gh label create "epic" --description "親 Issue（複数の子 Issue を束ねる大枠）" --color "5319E7"
 ```
 
 ### ラベルの使い分け
@@ -185,11 +215,11 @@ version-resolver:
 
 ### 最小限のカスタムラベル
 
-必要最小限のカスタムラベル（バージョニングと緊急度のみ）を追加することで：
+カスタムラベルを **バージョニング / 緊急度 / 優先度 / 分類の補完** の 4 軸に限定することで：
 
-- **シンプルさ維持** - ラベルの乱立を防ぐ
-- **明確な目的** - 各ラベルの役割が明確
-- **運用負荷軽減** - 管理するラベルが少ない
+- **シンプルさ維持** - 軸の外にラベルが増えない（迷ったら「どの軸のどの段階か」を答えられないラベルは足さない）
+- **明確な目的** - 各ラベルが所属する軸から役割を読める
+- **運用負荷軽減** - 件数が増えても「どの軸か」の 4 択で覚えられる
 
 ## 5. トラブルシューティング
 
@@ -205,37 +235,38 @@ gh auth login
 
 ### 既存ラベルとの競合
 
-古いカスタムラベル（`feature`, `fix`, `docs`, `chore`）が存在する場合は削除して統合してください。
+古いカスタムラベル（`feature`, `fix`, `docs`）は GitHub デフォルトラベルと役割が重複します。存在する場合は削除して統合してください。
 
 ```bash
 # 重複ラベルの削除
 gh label delete "feature" --yes  # → enhancement を使用
 gh label delete "fix" --yes      # → bug を使用
 gh label delete "docs" --yes     # → documentation を使用
-gh label delete "chore" --yes    # → 下記の指針を参照
 ```
 
-#### `chore` ラベル廃止に伴う運用指針
+**`chore` は削除対象ではありません**（`refactor` も同様）。この 2 つは GitHub デフォルトに対応するラベルが無く、`create-issue` が種別ラベルとして付与を試みるため、推奨カスタムラベルに含めています。削除すると、保守タスクの Issue が種別ラベルなしで積まれます。
 
-`chore` ラベルを廃止したことで、以下のような保守タスクの扱いについて明確な指針が必要です。
+#### `chore` ラベルの運用指針
+
+保守タスクをどのラベルで扱うかの指針です。
 
 **`chore` タスクの分類と推奨ラベル**:
 
 | タスクの種類                                   | 推奨ラベル    | バージョン影響 | リリースノート掲載    | 理由                       |
 | ---------------------------------------------- | ------------- | -------------- | --------------------- | -------------------------- |
-| **依存関係の更新**（セキュリティ修正なし）     | ラベルなし    | patch          | 掲載しない            | ユーザーに影響なし         |
+| **依存関係の更新**（セキュリティ修正なし）     | `chore`       | patch          | 掲載しない            | ユーザーに影響なし         |
 | **依存関係の更新**（セキュリティ修正あり）     | `bug`         | patch          | Fixes セクションに    | セキュリティ改善として重要 |
-| **ビルドプロセス改善**                         | ラベルなし    | patch          | 掲載しない            | 内部改善のみ               |
-| **リファクタリング**（機能変更なし）           | ラベルなし    | patch          | 掲載しない            | 内部品質向上               |
+| **ビルドプロセス改善**                         | `chore`       | patch          | 掲載しない            | 内部改善のみ               |
+| **リファクタリング**（機能変更なし）           | `refactor`    | patch          | 掲載しない            | 内部品質向上               |
 | **リファクタリング**（パフォーマンス改善あり） | `enhancement` | minor          | Features セクションに | ユーザーメリットあり       |
-| **CI/CDパイプライン改善**                      | ラベルなし    | patch          | 掲載しない            | 開発効率化のみ             |
-| **開発ツール追加**                             | ラベルなし    | patch          | 掲載しない            | 開発者向け                 |
+| **CI/CDパイプライン改善**                      | `chore`       | patch          | 掲載しない            | 開発効率化のみ             |
+| **開発ツール追加**                             | `chore`       | patch          | 掲載しない            | 開発者向け                 |
 
 **運用ルール**:
 
-1. **ユーザーに影響がない保守タスク** → ラベルなしでマージ
-   - 手動リリースではチーム方針に従い `patch` 相当として扱う（自動ドラフト使用時は Release Drafter の解釈に従う）
-   - リリースノートには掲載されない（`default: patch`設定による）
+1. **ユーザーに影響がない保守タスク** → `chore`（コード構造の改善なら `refactor`）を付けてマージ
+   - どちらも Release Drafter の `version-resolver` にも `categories` にも載せないため、`patch` 相当・リリースノート非掲載のまま（`default: patch` 設定による）
+   - ラベルなしでも結果は同じだが、付けておくと backlog と PR 一覧で「何の作業か」が読める
 
 2. **ユーザーにメリットがある保守タスク** → 適切なラベルを付与
    - セキュリティ修正 → `bug` ラベル（Fixesセクションに掲載）
@@ -253,7 +284,7 @@ gh label delete "chore" --yes    # → 下記の指針を参照
 gh pr create --title "chore: Update dependencies" --label "enhancement"
 
 # ✅ 推奨（patchバージョンアップ、リリースノート非掲載）
-gh pr create --title "chore: Update dependencies"
+gh pr create --title "chore: Update dependencies" --label "chore"
 
 # ✅ 推奨（セキュリティ修正の場合）
 gh pr create --title "chore: Update dependencies (security fix)" --label "bug"

@@ -19,6 +19,26 @@
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-08-20
+
+### 追加
+
+- 推奨カスタムラベルを 5 件から 13 件へ拡張した（`docs-template/scripts/setup-github-labels.sh` の定義と `docs-template/05-operations/deployment/github-setup.md` の推奨ラベル表・手動セットアップ例）。追加したのは優先度の 4 段階（`priority:critical` / `priority:high` / `priority:medium` / `priority:low`）、発生源の印である `follow-up`、GitHub デフォルトに対応が無い種別のうち `refactor` と `chore`、そして親子関係を束ねる `epic`。動機は、`create-issue` が種別ラベルと優先度ラベルを、`out-of-scope-issue` がさらに `follow-up` を付与しようとするのに、セットアップ側がそれらを 1 件も作っていなかったこと。両スキルは実在しないラベル名を渡すと起票そのものが失敗するため verify-then-skip（実在するものだけ付ける）で動いており、**失敗せずラベルだけが落ちる**ため未整備が表面化しにくい。既存 5 件の名前・色・説明は変更していないため、再実行しても既存ラベルには触れない
+- `epic` は作ると他スキルの分岐が開くラベルであることを、スクリプト・`github-setup.md`・スキル手順の 3 箇所に明記した。`out-of-scope-issue` はこのラベルの実在を「大枠 Issue を Epic 相当で管理しているか」の判定に使い、実在すれば open な Epic を照会して、該当領域だと確信できる場合に限り follow-up Issue 本文へ Epic 番号を記載する（Epic 側のチェックリストへ追記する場合は既存 Issue 本文の全置換を伴う）。親子関係を運用しないプロジェクトではこの 1 件だけ作成対象から外せる（残る 12 件は分類が増えるだけで分岐を開かない）
+
+### 変更
+
+- `chore` の扱いを「廃止ラベル（削除を案内）」から推奨カスタムラベルへ反転した。`github-setup.md` の保守タスク運用指針は依存更新・ビルド・CI・開発ツールを `chore`、機能変更のないリファクタリングを `refactor` へ振り、削除案内は GitHub デフォルトと役割が重複する `feature` / `fix` / `docs` の 3 件に限定した。従来の指針が保守タスクを「ラベルなし」へ流していた一方で、起票スキルは同じ作業へ `chore` を付けようとしており、文書と実装が正面から食い違っていた。バージョン方針は変えていない — 追加した 8 件はいずれも Release Drafter の `version-resolver` にも `categories` にも載せないため、`default: patch` 相当・リリースノート非掲載のまま
+
+### 修正
+
+- 消費プロジェクトの `scripts/codex-review.sh` が setup 時点の sidecar だけを恒久参照し、Codex に新しい ff-dev-toolkit が入っていても Claude cache の旧版でレビューする問題を修正した。明示指定を最優先に、Codex/Claude cache を横断した semantic version 最大（同版は Codex 優先）、sidecar の順で解決する。実行前に version・source・root を表示し、配置済み shim と解決先テンプレート、plugin version と `agent-config.yaml` の版が食い違う場合はレビューを始めず拒否する。setup は shim が同一でも sidecar を更新し、sidecar 自体も一時ファイルからの rename で原子的に置き換える
+- `codex-review.sh --review-context-file` を追加し、前回レビューと通過済みゲートの証拠を review prompt へ引き継げるようにした。コンテキストは命令ではない untrusted data と明示し、解消済み論点の反復を避ける一方、現在差分で再発した問題や証拠の無い主張は抑制しない
+
+### ドキュメント
+
+- スキル未解決時のフォールバック 1 行（README / docs-template の DEPLOYMENT・git-workflow・workflow-principles、全サイト同一文言）を拡張し、`Unknown skill` を「スキル不在」と誤結論しないための手順を追加した。名前候補 1 つの失敗と別レジストリ（claude.ai 側）の空振りだけを根拠に、実在する必須スキル（レビュー等）をスキップしてマージした実測事例が動機。追加したのは (1) 実名をセッションの利用可能スキル一覧から検索して確かめる、(2) プレフィックスの有無それぞれの名前を試す（別名として共存しうる）、(3) `ListSkills` のような claude.ai 側レジストリを返すツールの空振りは不在の証拠にならない、の 3 点。片側 drift は `tests/retrospective-contract/` の伝播針（既存 1 針 + 新 3 針 × 全サイト）が検出し、検出力は selftest の変異注入で実測済み（フォールバック行削除の期待赤化 1→4 件、針ごとの個別空振りも実測）。侵食ガードの期待検査数は 63→78 / 58→70 へ更新
+
 ## [0.37.0] - 2026-08-20
 
 ### 追加

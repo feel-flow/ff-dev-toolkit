@@ -531,12 +531,24 @@ echo "-- 振る舞い（stub オーケストレータで実測） --"
 
 # stub の multi-agent.sh: 受け取った argv を 1 引数 1 行で記録する。
 PROJ="$WORK/proj"
-mkdir -p "$PROJ/scripts" "$PROJ/orch"
+TOOLKIT="$PROJ/toolkit"
+mkdir -p "$PROJ/scripts" "$TOOLKIT/scripts/templates" "$TOOLKIT/.claude-plugin"
 cp "$SHIM" "$PROJ/scripts/codex-review.sh"
+cp "$SHIM" "$TOOLKIT/scripts/templates/codex-review.sh"
 chmod +x "$PROJ/scripts/codex-review.sh"
+cat > "$TOOLKIT/.claude-plugin/plugin.json" <<'JSON'
+{
+  "name": "ff-dev-toolkit",
+  "version": "0.38.0"
+}
+JSON
+cat > "$TOOLKIT/scripts/agent-config.yaml" <<'YAML'
+version: "2.0"
+toolkit_version: "0.38.0"
+YAML
 # stub にもオーケストレータの印（--task / implement）を持たせる。シムは候補が
 # 本当に multi-agent.sh かを検査するので、印の無い stub は正しく拒否される。
-cat > "$PROJ/orch/multi-agent.sh" <<'SH'
+cat > "$TOOLKIT/scripts/multi-agent.sh" <<'SH'
 #!/usr/bin/env bash
 # stub orchestrator: --task review|explore|implement を受け付ける体裁
 : > "$ARGV_LOG"
@@ -551,7 +563,7 @@ for v in MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CODEX
 done
 echo "stub orchestrator ran"
 SH
-chmod +x "$PROJ/orch/multi-agent.sh"
+chmod +x "$TOOLKIT/scripts/multi-agent.sh"
 
 RUN_RC=0
 # run_shim [VAR=VALUE ...] [-- <シムへの引数> ...]
@@ -576,7 +588,7 @@ run_shim() {
   # NAME=VALUE の代入を後に適用するので、ケース固有の指定（下の ${envs}）はそのまま効く
   # — 「ホストの値は除く / ケースの上書きは通す」という順序契約に乗っている。
   ( cd "$run_cwd" && \
-    run_isolated env FF_DEV_TOOLKIT_ROOT="$PROJ/orch" ARGV_LOG="$WORK/argv.log" ENV_LOG="$WORK/env.log" \
+    run_isolated env FF_DEV_TOOLKIT_ROOT="$TOOLKIT" ARGV_LOG="$WORK/argv.log" ENV_LOG="$WORK/env.log" \
       ${envs[@]+"${envs[@]}"} \
       bash "$PROJ/scripts/codex-review.sh" "$@" \
       >"$WORK/stdout.log" 2>"$WORK/err.log" </dev/null ) || RUN_RC=$?
@@ -613,6 +625,52 @@ if argv_has_seq "--base" "develop"; then
 else
   bad "--base の値が委譲先へ届いていない"
   sed 's/^/    | /' "$WORK/argv.log" >&2
+fi
+
+printf '%s\n' 'PREVIOUS-REVIEW-MARKER' 'gate: unit tests passed' > "$WORK/review-context.txt"
+run_shim --review-context-file "$WORK/review-context.txt" --base develop
+if [ "$RUN_RC" -eq 0 ] \
+   && awk 'prev == "--description" && $0 == "PREVIOUS-REVIEW-MARKER" { marker = 1 }
+           marker && $0 == "gate: unit tests passed" { gate = 1 }
+           { prev = $0 }
+           END { exit(marker && gate ? 0 : 1) }' "$WORK/argv.log"; then
+  ok "--review-context-file の内容が --description として委譲される"
+else
+  bad "--review-context-file の内容が委譲先へ届いていない (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/argv.log" >&2
+fi
+: > "$WORK/empty-context.txt"
+run_shim --review-context-file "$WORK/empty-context.txt" --base develop
+if [ "$RUN_RC" -eq 2 ] && [ ! -s "$WORK/argv.log" ]; then
+  ok "空の --review-context-file を委譲前に拒否する"
+else
+  bad "空の --review-context-file が委譲された (rc=$RUN_RC)"
+fi
+run_shim --review-context-file "$WORK/missing-context.txt" --base develop
+if [ "$RUN_RC" -eq 2 ] && [ ! -s "$WORK/argv.log" ]; then
+  ok "不在の --review-context-file を委譲前に拒否する"
+else
+  bad "不在の --review-context-file が委譲された (rc=$RUN_RC)"
+fi
+run_shim --review-context-file="$WORK/review-context.txt" --base develop
+if [ "$RUN_RC" -eq 0 ] && argv_has "PREVIOUS-REVIEW-MARKER"; then
+  ok "--review-context-file=<path> 形式も委譲される"
+else
+  bad "--review-context-file=<path> 形式が委譲されない (rc=$RUN_RC)"
+fi
+head -c 65536 /dev/zero | tr '\0' x > "$WORK/context-65536.txt"
+run_shim --review-context-file "$WORK/context-65536.txt" --base develop
+if [ "$RUN_RC" -eq 0 ] && argv_has "--description"; then
+  ok "--review-context-file は上限ちょうど 65536 bytes を受理する"
+else
+  bad "--review-context-file が上限ちょうどを拒否した (rc=$RUN_RC)"
+fi
+printf x >> "$WORK/context-65536.txt"
+run_shim --review-context-file "$WORK/context-65536.txt" --base develop
+if [ "$RUN_RC" -eq 2 ] && [ ! -s "$WORK/argv.log" ]; then
+  ok "--review-context-file は 65537 bytes を委譲前に拒否する"
+else
+  bad "--review-context-file が上限超過を委譲した (rc=$RUN_RC)"
 fi
 
 run_shim --staged
@@ -890,9 +948,19 @@ echo "-- 本番経路（FF_DEV_TOOLKIT_ROOT を設定しない） --"
 # ここまでの検査はすべて FF_DEV_TOOLKIT_ROOT を設定していた。それだけだと
 # 「配置されたシムが自力でオーケストレータへ到達できるか」を一度も通らない。
 FAKE="$WORK/fake-toolkit"
-mkdir -p "$FAKE/scripts/templates" "$WORK/consumer2"
+mkdir -p "$FAKE/scripts/templates" "$FAKE/.claude-plugin" "$WORK/consumer2"
 cp "$SETUP" "$FAKE/scripts/setup-multi-agent.sh"
 cp "$SHIM" "$FAKE/scripts/templates/codex-review.sh"
+cat > "$FAKE/.claude-plugin/plugin.json" <<'JSON'
+{
+  "name": "ff-dev-toolkit",
+  "version": "0.38.0"
+}
+JSON
+cat > "$FAKE/scripts/agent-config.yaml" <<'YAML'
+version: "2.0"
+toolkit_version: "0.38.0"
+YAML
 cat > "$FAKE/scripts/multi-agent.sh" <<'SH'
 #!/usr/bin/env bash
 # stub orchestrator: --task review|explore|implement を受け付ける体裁
@@ -953,13 +1021,26 @@ fi
 if [ -f "$PLACED" ]; then
   : > "$WORK/argv.log"
   PROD_RC=0
-  run_isolated env -u FF_DEV_TOOLKIT_ROOT ARGV_LOG="$WORK/argv.log" \
+  run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
+    CLAUDE_CONFIG_DIR="$WORK/no-claude-home" ARGV_LOG="$WORK/argv.log" \
     bash "$PLACED" --base develop >"$WORK/prod.log" 2>&1 || PROD_RC=$?
   if [ "$PROD_RC" -eq 0 ]; then
     ok "本番経路: 環境変数なしでシムが完走する"
   else
     bad "本番経路: 環境変数なしで非 0 終了した (rc=$PROD_RC)"
     sed 's/^/    | /' "$WORK/prod.log" >&2
+  fi
+
+  # シムが同一でも sidecar は毎回現在の toolkit へ更新する。旧版を指す sidecar が
+  # 残ると、setup が「シムは最新」と早期 return して旧版を使い続ける。
+  printf '%s\n' "$WORK/stale-toolkit/scripts" > "$SIDECAR"
+  run_install_via_main "$WORK/consumer2"
+  _sidecar_got="$(cat "$SIDECAR")"
+  if [ "$_sidecar_got" = "$_sidecar_want" ] \
+     && [ ! -e "$WORK/consumer2/scripts/codex-review.sh.bak" ]; then
+    ok "本番経路: シムが同一でも sidecar だけを現在版へ更新する"
+  else
+    bad "本番経路: 同一シムで古い sidecar が更新されない、または不要な .bak を作った"
   fi
   if argv_has_seq "--base" "develop" && argv_has_seq "--cli" "codex-cli"; then
     ok "本番経路: サイドカー経由でオーケストレータへ引数が届く"
@@ -970,16 +1051,127 @@ if [ -f "$PLACED" ]; then
 
   # 環境変数はサイドカーに勝つこと。負けると、toolkit を移動・更新して
   # サイドカーが古くなったとき env で上書きできなくなる。
-  mkdir -p "$WORK/alt-orch"
-  cp "$FAKE/scripts/multi-agent.sh" "$WORK/alt-orch/multi-agent.sh"
+  ALT="$WORK/alt-toolkit"
+  mkdir -p "$ALT/scripts/templates" "$ALT/.claude-plugin"
+  cp "$FAKE/scripts/multi-agent.sh" "$ALT/scripts/multi-agent.sh"
+  cp "$SHIM" "$ALT/scripts/templates/codex-review.sh"
+  cp "$FAKE/scripts/agent-config.yaml" "$ALT/scripts/agent-config.yaml"
+  cp "$FAKE/.claude-plugin/plugin.json" "$ALT/.claude-plugin/plugin.json"
   : > "$WORK/argv-alt.log"
-  run_isolated env FF_DEV_TOOLKIT_ROOT="$WORK/alt-orch" ARGV_LOG="$WORK/argv-alt.log" \
+  run_isolated env FF_DEV_TOOLKIT_ROOT="$ALT" ARGV_LOG="$WORK/argv-alt.log" \
     bash "$PLACED" --base develop >/dev/null 2>&1 || true
   if [ -s "$WORK/argv-alt.log" ]; then
     ok "env と サイドカーが両方あるとき env が勝つ"
   else
     bad "env が指す先が使われていない（サイドカーが勝っている）"
   fi
+fi
+
+echo "-- cache 解決順・版整合 --"
+
+make_cache_toolkit() { # <root> <version>
+  local root="$1" version="$2"
+  mkdir -p "$root/scripts/templates" "$root/.claude-plugin"
+  cp "$FAKE/scripts/multi-agent.sh" "$root/scripts/multi-agent.sh"
+  cp "$SHIM" "$root/scripts/templates/codex-review.sh"
+  cat > "$root/.claude-plugin/plugin.json" <<JSON
+{
+  "name": "ff-dev-toolkit",
+  "version": "$version"
+}
+JSON
+  cat > "$root/scripts/agent-config.yaml" <<YAML
+version: "2.0"
+toolkit_version: "$version"
+YAML
+}
+
+CODEX_CACHE_HOME="$WORK/codex-cache-home"
+CLAUDE_CACHE_HOME="$WORK/claude-cache-home"
+make_cache_toolkit "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/0.9.0" "0.9.0"
+make_cache_toolkit "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/0.10.0" "0.10.0"
+make_cache_toolkit "$CLAUDE_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0" "9.0.0"
+: > "$WORK/argv-cache.log"
+CACHE_RC=0
+run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CODEX_CACHE_HOME" \
+  CLAUDE_CONFIG_DIR="$CLAUDE_CACHE_HOME" ARGV_LOG="$WORK/argv-cache.log" \
+  bash "$PLACED" --base develop >"$WORK/cache.log" 2>&1 || CACHE_RC=$?
+if [ "$CACHE_RC" -eq 0 ] \
+   && grep -q 'version=9.0.0 source=claude-cache' "$WORK/cache.log"; then
+  ok "cache: 両 cache を横断して最大 semantic version を選ぶ"
+else
+  bad "cache: 優先順位または semantic version 選択が不正 (rc=$CACHE_RC)"
+  sed 's/^/    | /' "$WORK/cache.log" >&2
+fi
+
+make_cache_toolkit "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0" "9.0.0"
+: > "$WORK/argv-cache.log"
+CACHE_RC=0
+run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CODEX_CACHE_HOME" \
+  CLAUDE_CONFIG_DIR="$CLAUDE_CACHE_HOME" ARGV_LOG="$WORK/argv-cache.log" \
+  bash "$PLACED" --base develop >"$WORK/cache.log" 2>&1 || CACHE_RC=$?
+if [ "$CACHE_RC" -eq 0 ] \
+   && grep -q 'version=9.0.0 source=codex-cache' "$WORK/cache.log"; then
+  ok "cache: 最大版が同じときだけ Codex cache を優先する"
+else
+  bad "cache: 同版の Codex 優先が不正 (rc=$CACHE_RC)"
+fi
+
+: > "$WORK/argv-cache.log"
+CACHE_RC=0
+run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/empty-codex-home" \
+  CLAUDE_CONFIG_DIR="$CLAUDE_CACHE_HOME" ARGV_LOG="$WORK/argv-cache.log" \
+  bash "$PLACED" --base develop >"$WORK/cache.log" 2>&1 || CACHE_RC=$?
+if [ "$CACHE_RC" -eq 0 ] \
+   && grep -q 'version=9.0.0 source=claude-cache' "$WORK/cache.log"; then
+  ok "cache: Codex 候補が無いとき Claude cache から完走する"
+else
+  bad "cache: Claude cache フォールバックが不正 (rc=$CACHE_RC)"
+fi
+
+cp "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0/scripts/templates/codex-review.sh" "$WORK/cache-template.good"
+printf '\n# mismatch\n' >> "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0/scripts/templates/codex-review.sh"
+printf '%s\n' "$FAKE/scripts" > "$SIDECAR"
+: > "$WORK/argv-cache.log"
+CACHE_RC=0
+run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CODEX_CACHE_HOME" \
+  CLAUDE_CONFIG_DIR="$WORK/empty-claude-home" ARGV_LOG="$WORK/argv-cache.log" \
+  bash "$PLACED" --base develop >"$WORK/cache.log" 2>&1 || CACHE_RC=$?
+mv "$WORK/cache-template.good" "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0/scripts/templates/codex-review.sh"
+if [ "$CACHE_RC" -eq 2 ] && [ ! -s "$WORK/argv-cache.log" ] \
+   && grep -q '配置済み shim の版が一致しません' "$WORK/cache.log" \
+   && ! grep -q 'source=sidecar' "$WORK/cache.log"; then
+  ok "cache: 最大候補の版不整合は sidecar へ落とさず fail closed"
+else
+  bad "cache: 版不整合が sidecar へフォールバックした (rc=$CACHE_RC)"
+fi
+
+cp "$TOOLKIT/scripts/agent-config.yaml" "$WORK/agent-config.good"
+printf '%s\n' 'version: "2.0"' 'toolkit_version: "0.37.0"' > "$TOOLKIT/scripts/agent-config.yaml"
+: > "$WORK/argv.log"
+MISMATCH_RC=0
+run_isolated env FF_DEV_TOOLKIT_ROOT="$TOOLKIT" ARGV_LOG="$WORK/argv.log" \
+  bash "$PROJ/scripts/codex-review.sh" --base develop >"$WORK/mismatch.log" 2>&1 || MISMATCH_RC=$?
+mv "$WORK/agent-config.good" "$TOOLKIT/scripts/agent-config.yaml"
+if [ "$MISMATCH_RC" -eq 2 ] && [ ! -s "$WORK/argv.log" ] \
+   && grep -q 'agent-config.yaml が一致しません' "$WORK/mismatch.log"; then
+  ok "版整合: plugin と agent-config の不一致をレビュー前に拒否する"
+else
+  bad "版整合: agent-config の不一致を拒否できない (rc=$MISMATCH_RC)"
+fi
+
+cp "$TOOLKIT/scripts/templates/codex-review.sh" "$WORK/template.good"
+printf '\n# mismatched template\n' >> "$TOOLKIT/scripts/templates/codex-review.sh"
+: > "$WORK/argv.log"
+MISMATCH_RC=0
+run_isolated env FF_DEV_TOOLKIT_ROOT="$TOOLKIT" ARGV_LOG="$WORK/argv.log" \
+  bash "$PROJ/scripts/codex-review.sh" --base develop >"$WORK/mismatch.log" 2>&1 || MISMATCH_RC=$?
+mv "$WORK/template.good" "$TOOLKIT/scripts/templates/codex-review.sh"
+if [ "$MISMATCH_RC" -eq 2 ] && [ ! -s "$WORK/argv.log" ] \
+   && grep -q '配置済み shim の版が一致しません' "$WORK/mismatch.log"; then
+  ok "版整合: 解決した toolkit と配置済み shim の不一致をレビュー前に拒否する"
+else
+  bad "版整合: shim の不一致を拒否できない (rc=$MISMATCH_RC)"
 fi
 
 # skill 群が使う正規形（プラグインルート指定）で解決できること。
@@ -1290,6 +1482,19 @@ if [ -n "$_install_body" ]; then
     *)
       bad "配置が原子的でない — dest を直接上書きすると、失敗時に壊れたラッパーが残る" ;;
   esac
+fi
+if [ -n "$_install_body" ]; then
+  case "$_install_body" in
+    *'mv "$sidecar_tmp" "$sidecar"'*)
+      ok "sidecar も一時ファイル + mv（原子的）になっている" ;;
+    *)
+      bad "sidecar が原子的に更新されない — 途中書き込みを resolver が読みうる" ;;
+  esac
+  if printf '%s\n' "$_install_body" | awk '/>[[:space:]]*"\$sidecar"/ { found = 1 } END { exit(found ? 0 : 1) }'; then
+    bad "install_review_wrappers が sidecar を直接上書きしている"
+  else
+    ok "install_review_wrappers に空白変種を含め sidecar を直接上書きする経路が無い"
+  fi
 fi
 # 照合は case で行う。`printf | grep -q` は grep が先に閉じるので pipefail 下で
 # SIGPIPE により rc が反転しうる（このリポジトリの run-all case 10 が禁止している形）。

@@ -1,11 +1,20 @@
 ---
 name: setup-github-labels
-description: Use when setting up recommended GitHub labels for a repository. 推奨ラベル構成（GitHub デフォルト + バージョニング・緊急度のカスタムラベル）のうち不足分だけを冪等に作成する。「ラベルを整備して」「ラベルをセットアップして」「推奨ラベルを作って」「set up labels」「create the recommended labels」と言われたとき、および create-issue や Git Workflow の実在確認（verify-then-skip）がラベル不在を報告したときに使用する。起票時にラベルを付けるのは create-issue（あちらはラベルを作らない）。本スキルはリポジトリ設定を変更する側で、既存ラベルには触れない。
+description: Use when setting up recommended GitHub labels for a repository. 推奨ラベル構成（GitHub デフォルト + バージョニング・緊急度・優先度・分類の補完からなるカスタムラベル 13 件）のうち不足分だけを冪等に作成する。「ラベルを整備して」「ラベルをセットアップして」「推奨ラベルを作って」「set up labels」「create the recommended labels」と言われたとき、および create-issue や Git Workflow の実在確認（verify-then-skip）がラベル不在を報告したときに使用する。起票時にラベルを付けるのは create-issue（あちらはラベルを作らない）。本スキルはリポジトリ設定を変更する側で、既存ラベルには触れない。
 ---
 
 # /setup-github-labels — 推奨ラベル構成の冪等セットアップ
 
-対象リポジトリに、AI Spec-Driven Development の推奨カスタムラベル（`major` / `minor` / `patch` / `hotfix` / `urgent`）のうち**存在しないものだけ**を作成します。既存ラベルの色・説明は変更しません。
+対象リポジトリに、AI Spec-Driven Development の推奨カスタムラベル 13 件のうち**存在しないものだけ**を作成します。既存ラベルの色・説明は変更しません。
+
+| 軸 | ラベル |
+|------|--------|
+| バージョニング | `major` / `minor` / `patch` |
+| 緊急度 | `hotfix` / `urgent` |
+| 優先度 | `priority:critical` / `priority:high` / `priority:medium` / `priority:low` |
+| 分類の補完 | `follow-up` / `refactor` / `chore` / `epic` |
+
+`priority:*` と `follow-up` は `create-issue` / `out-of-scope-issue` が付与を試みるラベルで、未整備のリポジトリでは起票が成功したままラベルだけ省略されます。本スキルはその不足を埋める側です。
 
 推奨ラベル構成の定義と背景は `docs-template/05-operations/deployment/github-setup.md`（導入済みプロジェクトでは `docs/05-operations/deployment/github-setup.md`）を参照してください。
 
@@ -20,9 +29,13 @@ description: Use when setting up recommended GitHub labels for a repository. 推
 
 ## 手順
 
-### 1. 対象リポジトリの確認
+### 1. 対象リポジトリの確認と epic の要否
 
 本スキルは**リポジトリ設定を変更する**（ラベルを作成する）。起票と違って Issue 単位で取り消せる操作ではないため、対象リポジトリ（`OWNER/REPO`）をユーザーの意図と突き合わせてから実行する。ユーザーが対象を明示していない場合はカレントリポジトリ（`gh repo view`）を候補として提示し、確認を取る。確認を挟まない自律フローから呼ばれた場合も、作業対象として文脈上確定しているリポジトリ以外へは適用しない。
+
+あわせて `epic` の要否を確認する。**このラベルだけは作ると他スキルの挙動が変わる**: `out-of-scope-issue` が実在を「Epic 相当で大枠 Issue を管理しているか」の判定に使い、実在すれば open Epic を照会して、該当領域だと確信できる場合に限り follow-up Issue 本文へ Epic 番号を記載する（Epic 側のチェックリストへ追記する場合は既存 Issue 本文の全置換を伴う）。残る 12 件は分類が増えるだけで、他スキルの分岐を開かない。
+
+`epic` は不要と確認できた場合、**手順 2 のスクリプトは使えない**。スクリプトは 13 件固定で除外オプションを持たず、余剰引数を fail-closed で拒否する（同梱の `LABEL_DEFS` を編集する回避も不可 — 定義と文書の 3 箇所照合が赤になる）。この場合は `github-setup.md` の「手動セットアップ」から `epic` の行を除いて `gh label create` を実行し、手順 3 ではその実行結果を報告する。
 
 ### 2. セットアップスクリプトの実行
 
@@ -50,5 +63,6 @@ bash "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/setup-github-labels.sh" --rep
 
 - 既存ラベルを変更・削除しないこと（`gh label create --force` や `gh label edit` を使わない。消費プロジェクトが意図的に変えた色・説明を上書きしない）
 - 対象リポジトリを確認せずに実行しないこと（リポジトリ設定の変更であり、暗黙の `GH_REPO` / cwd 任せにしない）
-- ラベル定義を変えるときはスクリプトの `LABEL_DEFS`・`github-setup.md` の推奨ラベル表・同ページの手動セットアップ例の 3 箇所を同時に変えること（件数が変わる場合は `tests/github-labels-setup/verify.sh` の `EXPECTED_LABEL_COUNT` も）。一部だけ直すと `tests/github-labels-setup` が red になる
+- ラベル定義を変えるときはスクリプトの `LABEL_DEFS`・`github-setup.md` の推奨ラベル表・同ページの手動セットアップ例の 3 箇所を同時に変えること（件数が変わる場合は `tests/github-labels-setup/verify.sh` の `EXPECTED_LABEL_COUNT`、`gh` stub の `allexist` 一覧、および `CREATED=` / `SKIPPED_EXISTING=` / `FAILED=` の全ラベル列挙 6 箇所も。この 6 箇所は `LABEL_DEFS` の宣言順に依存する）。一部だけ直すと `tests/github-labels-setup` が red になる
+- ラベル名に `priority:` のような名前空間を足す場合は、`verify.sh` の SSOT 抽出正規表現がその文字を通すかを先に確かめること。通らないとスクリプト側だけ抽出から落ち、「件数が合わない」という原因の読めない赤になる
 - 報告はスクリプトの出力を写すこと。付与系スキル（create-issue）との棲み分け: あちらは起票時に**既存ラベルを付けるだけ**（作らない）、こちらは**ラベルを作るだけ**（Issue には触れない）

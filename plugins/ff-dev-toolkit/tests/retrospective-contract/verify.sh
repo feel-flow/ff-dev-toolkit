@@ -301,13 +301,23 @@ fi
 # 新しくなりうる（docs-template は展開先プロジェクトに残る）ため、旧版プラグインの
 # 利用者が手順書どおりに実行して `Unknown skill` で止まる。全消費側文書に同一の
 # フォールバック 1 行があることを縛る（片側 drift の検出。文言は全サイト同一）。
+# Issue #607: `Unknown skill` を「スキル不在」と誤結論しないための 3 針を追加 —
+# 名前確認の手順（利用可能スキル一覧の検索）、プレフィックス付き / 無しの両試行、
+# `ListSkills`（claude.ai 側の別レジストリ）の空振りを不在の根拠にしない旨。
+# 4 針とも同一の 1 行に乗る。
 FALLBACK_NEEDLE="プラグインを更新するか、インストール済みプラグインの \`skills/<スキル名>/SKILL.md\` を直接 Read して手順に従う"
+FALLBACK_NAME_NEEDLE="セッションの利用可能スキル一覧をキーワードで検索して実名を確認"
+FALLBACK_PREFIX_NEEDLE="プレフィックス付き（\`<プラグイン名>:<スキル名>\`）と無しの両方を試す"
+FALLBACK_REGISTRY_NEEDLE="\`ListSkills\` が返すのは claude.ai 側の別レジストリであり、その空振りを不在の根拠にしない"
 FALLBACK_CONSUMERS=("$GIT_WORKFLOW" "$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   FALLBACK_CONSUMERS+=("$ROOT_README")
 fi
 for file in "${FALLBACK_CONSUMERS[@]}"; do
   contains "$file" "$FALLBACK_NEEDLE" "スキル未解決時のフォールバック: ${file#"$REPO_ROOT"/}"
+  contains "$file" "$FALLBACK_NAME_NEEDLE" "スキル名の確認手順: ${file#"$REPO_ROOT"/}"
+  contains "$file" "$FALLBACK_PREFIX_NEEDLE" "プレフィックス両試行: ${file#"$REPO_ROOT"/}"
+  contains "$file" "$FALLBACK_REGISTRY_NEEDLE" "別レジストリの区別: ${file#"$REPO_ROOT"/}"
 done
 
 # ── D. /ace-curate との責務分離 ──────────────────────────────────────────────

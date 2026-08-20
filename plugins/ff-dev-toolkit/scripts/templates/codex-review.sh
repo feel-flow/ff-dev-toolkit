@@ -45,6 +45,7 @@
 #
 #   bash scripts/codex-review.sh [--base <branch> | --staged] [--reviewers a,b,c]
 #                                [--exclude-reviewers a,b,c] [--list-reviewers]
+#                                [--review-context-file <path>]
 #                                [--timeout <秒>] [--dry-run]
 #
 #   SKIP_CODEX_REVIEW=1  レビューを実行せず成功終了する（pre-commit の逃がし弁）
@@ -83,9 +84,10 @@ SCRIPT_NAME="$(basename "$0")"
 
 # ── オーケストレータの解決 ──────────────────────────────────────────────────────
 #
-# 探索順は FF_DEV_TOOLKIT_ROOT（環境変数）→ 同じディレクトリのサイドカー
-# `.ff-dev-toolkit-root`（setup が書く）。どちらも解決できなければ推測で走らずに
-# 落とす — 「オーケストレータが無い」を「レビュー結果が空」に化けさせない。
+# 探索順は FF_DEV_TOOLKIT_ROOT（環境変数）→ Codex plugin cache → Claude plugin
+# cache → 同じディレクトリのサイドカー。両 cache を横断して semantic version の
+# 最大を選び、同じ版が両方にある場合だけ Codex cache を優先する。どれも解決
+# できなければ推測で走らずに落とす。
 #
 # **このファイルへパスを焼き込まない**理由が 3 つある:
 #   1. 焼き込むと配置後のファイルがマシン固有になる。配置先の scripts/ は通常
@@ -97,11 +99,86 @@ SCRIPT_NAME="$(basename "$0")"
 # サイドカーは**素のデータ 1 行**なので、どれも起こらない。読み取りも read -r だけで
 # eval を通さない。
 #
-# 固定パスの当て推量もしない。実インストール先は
-# ~/.claude/plugins/cache/<marketplace>/ff-dev-toolkit/<version>/scripts/ の形で
-# **複数バージョンが同居する**（実測で 0.9.0 / 0.14.0 / 0.19.0 が並存）。glob で
-# 拾うと古い版を静かに選びうる。
+# cache の配置規約は
+# ~/.{codex,claude}/plugins/cache/<marketplace>/ff-dev-toolkit/<version>/scripts/
+# の形で、複数版が同居する（実測で 0.9.0 / 0.14.0 / 0.19.0）。候補は glob で
+# 列挙するが、文字列順ではなく manifest の semantic version 最大を選ぶ。
+# pre-release を含む版は安定版の探索対象にせず、診断を出してスキップする。
 FF_ROOT_SIDECAR_NAME=".ff-dev-toolkit-root"
+
+toolkit_manifest_version() {
+  local root="$1" manifest="${1}/.claude-plugin/plugin.json" version
+  [ -r "$manifest" ] || return 1
+  version="$(sed -nE 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' "$manifest")"
+  [ "$(printf '%s\n' "$version" | grep -c . || true)" -eq 1 ] || return 1
+  printf '%s\n' "$version"
+}
+
+semver_is_newer() {
+  # toolkit_manifest_version を通過した X.Y.Z だけを受け取る。
+  local candidate="$1" current="$2" ca cb cc oa ob oc
+  IFS=. read -r ca cb cc <<<"$candidate"
+  IFS=. read -r oa ob oc <<<"$current"
+  ca=$((10#$ca)); cb=$((10#$cb)); cc=$((10#$cc))
+  oa=$((10#$oa)); ob=$((10#$ob)); oc=$((10#$oc))
+  [ "$ca" -gt "$oa" ] \
+    || { [ "$ca" -eq "$oa" ] && [ "$cb" -gt "$ob" ]; } \
+    || { [ "$ca" -eq "$oa" ] && [ "$cb" -eq "$ob" ] && [ "$cc" -gt "$oc" ]; }
+}
+
+canonical_toolkit_root() {
+  local input="$1"
+  if usable_orchestrator "${input}/scripts/multi-agent.sh"; then
+    (cd "$input" && pwd -P)
+  elif usable_orchestrator "${input}/multi-agent.sh"; then
+    (cd "${input}/.." && pwd -P)
+  else
+    return 1
+  fi
+}
+
+select_cache_toolkit() {
+  local cache_root="$1" root version best_root="" best_version=""
+  SELECTED_CACHE_ROOT=""
+  SELECTED_CACHE_VERSION=""
+  [ -d "$cache_root" ] || return 1
+  for root in "$cache_root"/*/ff-dev-toolkit/*; do
+    [ -d "$root" ] || continue
+    version="$(toolkit_manifest_version "$root" 2>/dev/null || true)"
+    if [ -z "$version" ]; then
+      echo "WARNING: ff-dev-toolkit cache 候補の安定版 version を読めないためスキップします: $root" >&2
+      continue
+    fi
+    if ! usable_orchestrator "$root/scripts/multi-agent.sh"; then
+      echo "WARNING: ff-dev-toolkit cache 候補の multi-agent.sh が不正なためスキップします: version=$version root=$root" >&2
+      continue
+    fi
+    if [ -z "$best_version" ] || semver_is_newer "$version" "$best_version"; then
+      best_root="$root"
+      best_version="$version"
+    fi
+  done
+  [ -n "$best_root" ] || return 1
+  SELECTED_CACHE_ROOT="$best_root"
+  SELECTED_CACHE_VERSION="$best_version"
+}
+
+verify_toolkit_identity() {
+  local root="$1" version="$2" config_version template
+  template="$root/scripts/templates/codex-review.sh"
+  if [ ! -r "$template" ] || ! cmp -s "$0" "$template"; then
+    echo "ERROR: 解決した ff-dev-toolkit と配置済み shim の版が一致しません。" >&2
+    echo "       toolkit=${root} version=${version}" >&2
+    echo "       bash ${root}/scripts/setup-multi-agent.sh を再実行してください。" >&2
+    return 2
+  fi
+  config_version="$(sed -nE 's/^toolkit_version:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' "$root/scripts/agent-config.yaml" 2>/dev/null || true)"
+  if [ "$config_version" != "$version" ]; then
+    echo "ERROR: ff-dev-toolkit の plugin version と agent-config.yaml が一致しません。" >&2
+    echo "       plugin=${version} agent-config=${config_version:-missing} root=${root}" >&2
+    return 2
+  fi
+}
 
 # 候補が「本当に multi-agent.sh か」まで見る。存在だけを見ると、0 バイトのファイルや
 # 無関係なスクリプトを掴んで **rc=0・出力ゼロ** で終わる — 元のバグと同じ signature に
@@ -114,49 +191,96 @@ usable_orchestrator() {
   grep -q -- "--task" "$f" && grep -q -- "implement" "$f"
 }
 
-resolve_orchestrator() {
-  local candidate sidecar sidecar_value
-  local -a env_candidates=() candidates=()
+resolve_toolkit() {
+  local root version sidecar sidecar_value codex_cache claude_cache
+  local codex_root="" codex_version="" claude_root="" claude_version=""
+  RESOLVED_ORCHESTRATOR=""
+  RESOLVED_TOOLKIT_ROOT=""
+  RESOLVED_TOOLKIT_VERSION=""
+  RESOLVED_TOOLKIT_SOURCE=""
   if [ -n "${FF_DEV_TOOLKIT_ROOT:-}" ]; then
     # skill 群は FF_DEV_TOOLKIT_ROOT を**プラグインルート**として定義し
     # ${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh を叩く。scripts/ を直接指す
     # 使い方も許すため両方を候補にする（前者が正規形）。
-    env_candidates=("${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh"
-                    "${FF_DEV_TOOLKIT_ROOT}/multi-agent.sh")
-    candidates+=("${env_candidates[@]}")
-  fi
-  sidecar="$(dirname "$0")/${FF_ROOT_SIDECAR_NAME}"
-  if [ -f "$sidecar" ]; then
-    IFS= read -r sidecar_value < "$sidecar" || sidecar_value=""
-    if [ -n "$sidecar_value" ]; then
-      candidates+=("${sidecar_value}/multi-agent.sh")
-    fi
-  fi
-
-  # 明示指定が使えないときに黙ってサイドカーへ落ちない。利用者が
-  # FF_DEV_TOOLKIT_ROOT でローカルの改造版を指したのにパスを間違えた場合、
-  # 落ちた先は**インストール済みの toolkit** で、出力は正常に見える。指定が
-  # 効かなかったことに気づけないまま「改造が効かない」と結論することになる。
-  if [ "${#env_candidates[@]}" -gt 0 ]; then
-    local env_ok=false
-    for candidate in "${env_candidates[@]}"; do
-      if usable_orchestrator "$candidate"; then env_ok=true; break; fi
-    done
-    if [ "$env_ok" != "true" ]; then
+    if ! root="$(canonical_toolkit_root "$FF_DEV_TOOLKIT_ROOT")"; then
       echo "ERROR: FF_DEV_TOOLKIT_ROOT が設定されていますが、使える multi-agent.sh がありません。" >&2
-      for candidate in "${env_candidates[@]}"; do
-        echo "       試したパス: ${candidate}" >&2
-      done
+      echo "       指定: ${FF_DEV_TOOLKIT_ROOT}" >&2
       echo "       明示指定を黙って無視して別の toolkit で走ることはしません。" >&2
       return 2
     fi
+    version="$(toolkit_manifest_version "$root" 2>/dev/null || true)"
+    [ -n "$version" ] || { echo "ERROR: FF_DEV_TOOLKIT_ROOT の plugin version を読めません: $root" >&2; return 2; }
+    set_resolved_toolkit "$root" "$version" "explicit"
+    return $?
   fi
 
-  # bash 3.2 は set -u 下で空配列を "${a[@]}" と展開すると unbound variable で落ちる
-  for candidate in ${candidates[@]+"${candidates[@]}"}; do
-    if usable_orchestrator "$candidate"; then printf '%s\n' "$candidate"; return 0; fi
-  done
+  codex_cache="${CODEX_HOME:-${HOME}/.codex}/plugins/cache"
+  claude_cache="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/plugins/cache"
+  if select_cache_toolkit "$codex_cache"; then
+    codex_root="$SELECTED_CACHE_ROOT"
+    codex_version="$SELECTED_CACHE_VERSION"
+  fi
+  if select_cache_toolkit "$claude_cache"; then
+    claude_root="$SELECTED_CACHE_ROOT"
+    claude_version="$SELECTED_CACHE_VERSION"
+  fi
+  if [ -n "$codex_root" ] && { [ -z "$claude_root" ] || ! semver_is_newer "$claude_version" "$codex_version"; }; then
+    set_resolved_toolkit "$codex_root" "$codex_version" "codex-cache"
+    return $?
+  fi
+  if [ -n "$claude_root" ]; then
+    set_resolved_toolkit "$claude_root" "$claude_version" "claude-cache"
+    return $?
+  fi
+
+  sidecar="$(dirname "$0")/${FF_ROOT_SIDECAR_NAME}"
+  if [ -f "$sidecar" ]; then
+    IFS= read -r sidecar_value < "$sidecar" || sidecar_value=""
+    if [ -n "$sidecar_value" ] && root="$(canonical_toolkit_root "$sidecar_value")"; then
+      version="$(toolkit_manifest_version "$root" 2>/dev/null || true)"
+      [ -n "$version" ] || { echo "ERROR: sidecar が指す toolkit の version を読めません: $root" >&2; return 2; }
+      set_resolved_toolkit "$root" "$version" "sidecar"
+      return $?
+    fi
+  fi
+
   return 1
+}
+
+set_resolved_toolkit() {
+  local root="$1" version="$2" source="$3"
+  case "$root$version$source" in
+    *$'\t'*|*$'\n'*)
+      echo "ERROR: ff-dev-toolkit の解決結果に区切り文字を含むため拒否します: root=$root" >&2
+      return 2 ;;
+  esac
+  verify_toolkit_identity "$root" "$version" || return $?
+  RESOLVED_ORCHESTRATOR="$root/scripts/multi-agent.sh"
+  RESOLVED_TOOLKIT_ROOT="$root"
+  RESOLVED_TOOLKIT_VERSION="$version"
+  RESOLVED_TOOLKIT_SOURCE="$source"
+}
+
+load_resolved_toolkit() {
+  local resolve_rc=0 sidecar
+  resolve_toolkit || resolve_rc=$?
+  if [ "$resolve_rc" -eq 2 ]; then
+    return 2
+  fi
+  if [ "$resolve_rc" -ne 0 ]; then
+    sidecar="$(dirname "$0")/${FF_ROOT_SIDECAR_NAME}"
+    echo "ERROR: multi-agent.sh が見つかりません。" >&2
+    echo "       探索順: FF_DEV_TOOLKIT_ROOT → Codex/Claude cache の最大版（同版は Codex 優先）→ ${sidecar}" >&2
+    if [ -f "$sidecar" ]; then
+      echo "       サイドカーは在りますが、指す先に multi-agent.sh がありません" >&2
+      echo "       （toolkit を更新・移動した場合は setup-multi-agent.sh を再実行してください）。" >&2
+    else
+      echo "       サイドカーがありません。setup-multi-agent.sh を実行して配置し直すか、" >&2
+      echo "       FF_DEV_TOOLKIT_ROOT を toolkit のプラグインルートへ向けてください。" >&2
+    fi
+    return "$resolve_rc"
+  fi
+  echo "ℹ️  ff-dev-toolkit version=${RESOLVED_TOOLKIT_VERSION} source=${RESOLVED_TOOLKIT_SOURCE} root=${RESOLVED_TOOLKIT_ROOT}" >&2
 }
 
 usage() {
@@ -169,6 +293,8 @@ ${SCRIPT_NAME} — Codex cross-model レビュー（multi-agent.sh への薄い�
   --exclude-reviewers a,b,c
                         観点をカンマ区切りで除外（--exclude-perspective へ展開される）
   --list-reviewers      利用できる review 観点を一覧表示する
+  --review-context-file <path>
+                        前回レビューと通過済みゲートの証拠を review prompt へ渡す
 
     ⚠ --reviewers / --exclude-reviewers の観点名は toolkit の perspective 名であり、旧ラッパーが使っていた
       Claude エージェント名とは**別体系**。存在しない名前は multi-agent.sh が
@@ -213,6 +339,23 @@ LIST_ONLY=0
 # diff サイズの歯止めを測るための基準。--base が明示されたときだけ埋まる。
 BASE_FOR_SIZE=""
 STAGED_GIVEN=0
+
+append_review_context_file() {
+  local context_file="$1" context_bytes context
+  if [ ! -f "$context_file" ] || [ ! -r "$context_file" ]; then
+    echo "ERROR: --review-context-file を読めません: $context_file" >&2
+    exit 2
+  fi
+  context_bytes="$(wc -c <"$context_file" | tr -d ' ')"
+  if ! printf '%s\n' "$context_bytes" | grep -Eq '^[0-9]+$' \
+    || [ "$context_bytes" -eq 0 ] || [ "$context_bytes" -gt 65536 ]; then
+    echo "ERROR: --review-context-file は 1〜65536 bytes にしてください: ${context_bytes:-unknown}" >&2
+    exit 2
+  fi
+  context="$(cat "$context_file")"
+  [ -n "$context" ] || { echo "ERROR: --review-context-file が空です" >&2; exit 2; }
+  ORCH_ARGS+=(--description "$context")
+}
 
 # 観点リスト（カンマ区切り）を --perspective の繰り返しへ展開する。
 # --reviewers と CODEX_DEFAULT_REVIEWERS の**両方**から呼ぶため関数にしてある。
@@ -289,6 +432,10 @@ while [ $# -gt 0 ]; do
       ORCH_ARGS+=("$_opt" "$_val")
       shift
       ;;
+    --review-context-file=*)
+      append_review_context_file "${1#*=}"
+      shift
+      ;;
     --reviewers=*)
       # 空値・空要素は append_perspectives が拒否する（空白区切り側と同じ経路）。
       append_perspectives "${1#*=}" "--reviewers"
@@ -304,6 +451,14 @@ while [ $# -gt 0 ]; do
       [ "$1" = "--base" ] && BASE_FOR_SIZE="$2"
       [ "$1" = "--timeout" ] && TIMEOUT_GIVEN=1
       ORCH_ARGS+=("$1" "$2")
+      shift 2
+      ;;
+    --review-context-file)
+      if [ $# -lt 2 ] || [ -z "$2" ]; then
+        echo "ERROR: --review-context-file には値が必要です。" >&2
+        exit 2
+      fi
+      append_review_context_file "$2"
       shift 2
       ;;
     --staged)
@@ -389,12 +544,9 @@ fi
 # 一覧だけの経路。skip / 旧 env / diff 閾値のいずれも通さずに委譲して終わる。
 if [ "$LIST_ONLY" -eq 1 ]; then
   _resolve_rc=0
-  ORCHESTRATOR="$(resolve_orchestrator)" || _resolve_rc=$?
-  if [ "$_resolve_rc" -ne 0 ]; then
-    echo "ERROR: multi-agent.sh が見つかりません。" >&2
-    exit "$_resolve_rc"
-  fi
-  exec bash "$ORCHESTRATOR" --task review --list-perspectives
+  load_resolved_toolkit || _resolve_rc=$?
+  [ "$_resolve_rc" -eq 0 ] || exit "$_resolve_rc"
+  exec bash "$RESOLVED_ORCHESTRATOR" --task review --list-perspectives
 fi
 
 if [ "${SKIP_CODEX_REVIEW:-}" = "1" ]; then
@@ -589,18 +741,7 @@ fi
 
 # ── 委譲 ────────────────────────────────────────────────────────────────────────
 _resolve_rc=0
-ORCHESTRATOR="$(resolve_orchestrator)" || _resolve_rc=$?
-if [ "$_resolve_rc" -ne 0 ]; then
-  echo "ERROR: multi-agent.sh が見つかりません。" >&2
-  echo "       探索順: FF_DEV_TOOLKIT_ROOT → $(dirname "$0")/${FF_ROOT_SIDECAR_NAME}" >&2
-  if [ -f "$(dirname "$0")/${FF_ROOT_SIDECAR_NAME}" ]; then
-    echo "       サイドカーは在りますが、指す先に multi-agent.sh がありません" >&2
-    echo "       （toolkit を更新・移動した場合は setup-multi-agent.sh を再実行してください）。" >&2
-  else
-    echo "       サイドカーがありません。setup-multi-agent.sh を実行して配置し直すか、" >&2
-    echo "       FF_DEV_TOOLKIT_ROOT を toolkit のプラグインルートへ向けてください。" >&2
-  fi
-  exit "$_resolve_rc"
-fi
+load_resolved_toolkit || _resolve_rc=$?
+[ "$_resolve_rc" -eq 0 ] || exit "$_resolve_rc"
 
-exec bash "$ORCHESTRATOR" "${ORCH_ARGS[@]}"
+exec bash "$RESOLVED_ORCHESTRATOR" "${ORCH_ARGS[@]}"
