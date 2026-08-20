@@ -126,11 +126,17 @@ else
     # 上の gate の検出力を隔離 fixture への変異注入（チェーン記載の針それぞれからの
     # コマンド削除・規定マーカーと伝播の契約行削除・上限の片側書き換え・抽出不能化・
     # 上限の併存・絞り込み文の追従漏れ・1 行報告の drift・ゲート自身の針数ガードの
-    # 縮み、モノレポでは計 46 種）で実測し、赤化した検査の件数まで照合する。ゲートの
+    # 縮み）で実測し、赤化した検査の件数まで照合する。ゲートの
     # 検査総数も縛るので、検査そのものが削除される侵食もここで赤くなる。モノレポでは
     # 公開配置を模した第 2 fixture も回す。perl / 一時領域が無い場合だけ丸ごと ○ skip
     # （実作業ツリーは変更しない）。検査対象の直後に置くことを優先し、安価な順の例外。
     "$SCRIPT_DIR/retrospective-contract-selftest/verify.sh"
+    # `retrospective-contract` は prompt 文言だけを固定する。実際の plugin Stop hook が
+    # 初回に block し、継続中・off・不正入力では fail-open するランタイム契約を fixture
+    # で実行する（Issue #583）。直後の selftest は入出力・再入・mode・依存・副作用・
+    # SKILL 同期・登録の変異を赤化し、consumer の検査総数も固定する。
+    "$SCRIPT_DIR/retrospective-stop-hook/verify.sh"
+    "$SCRIPT_DIR/retrospective-stop-hook-selftest/verify.sh"
     # squash 件名の closing keyword が Refs 運用の Issue を閉じる経路のガード。
     # 検査ロジック（scripts/check-closing-keywords.sh）の振る舞いと、SKILL.md /
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド
@@ -250,6 +256,10 @@ else
     # perspective フィルタの dry-run 契約。stub CLI の存在確認だけで完結し、
     # 実 CLI・ネットワーク・課金を伴わない。
     "$SCRIPT_DIR/multi-agent-plan/verify.sh"
+    # 同一入力の成功済み観点を内容hash付きで再利用し、未完了だけを再実行する
+    # --resume 契約（Issue #586）。8観点中7成功・1失敗、HEAD/設定/観点定義/集合変更、
+    # 破損キャッシュ、統合レポートのreused/executedを逐次stub CLIで実測する。
+    "$SCRIPT_DIR/multi-agent-resume/verify.sh"
     # 統合レポートの CRITICAL_BLOCK 判定の構造検査（Issue #272）。一時 git リポジトリ +
     # stub CLI で orchestrator を 9 回実走する（〜15 秒）。実 CLI・ネットワーク・課金は
     # 伴わない。
@@ -386,6 +396,8 @@ REQUIRED_SUITES=(
   # /retrospective 契約ゲートの検出力 selftest。代替の検査が無く、perl・一時領域の
   # 都合で消えるとチェーン記載の針と規定マーカーの検出力喪失が黙って通る（#540）。
   retrospective-contract-selftest
+  # 自動振り返りのランタイム検出力は mutation self-test 以外に代替がない（#583）。
+  retrospective-stop-hook-selftest
   # docs-template 構造契約ゲートの検出力 selftest。代替の検査が無く、perl・
   # 一時領域の都合で消えると Frontmatter 欠落回帰の検出力喪失が黙って通る（#509）。
   docs-template-frontmatter-selftest

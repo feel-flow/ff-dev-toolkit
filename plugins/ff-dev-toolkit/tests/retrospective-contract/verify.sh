@@ -16,7 +16,7 @@
 #      全導線に存在する。サイトごとに固定針を持ち、**ループが黙って縮まない**よう
 #      ファイル数・針数の両方を明示の期待値で縛る
 #   B. SKILL.md の規定マーカー（提案閾値・実測限定・提案の構造と出力形式・承認境界・
-#      read-only 境界・ask モードの 2 経路・trigger 語）が存在する。提案上限（最大 N 件）
+#      read-only 境界・ask/off モード・trigger 語）が存在する。提案上限（最大 N 件）
 #      と 1 行報告の文面は **SKILL.md から導出**し、抽出できなければ赤にする
 #      （fail-closed）。上限は SKILL.md 内で一意であることまで見る
 #   C. 導出した上限・1 行報告・承認境界が消費側文書（git-workflow / DEPLOYMENT /
@@ -236,6 +236,7 @@ fi
 contains "$SKILL" "**このセッションで実測した**手戻り・無駄時間に限る" "提案閾値: 実測したものに限定"
 contains "$SKILL" "一般論・仮説だけの提案は禁止" "提案閾値: 一般論・仮説を禁止"
 contains "$SKILL" "該当する候補が無ければ、次の 1 行だけで終了する" "提案閾値: 候補なしは 1 行で終了"
+contains "$SKILL" "**機微情報を提案本文へ引用しない**" "提案閾値: 機微情報を引用しない"
 
 contains "$SKILL" "**ユーザー承認を待つ**（承認なしに起票しない" "承認境界: 起票前にユーザー承認を待つ"
 contains "$SKILL" "フルオート運用でもこの確認は省略しない" "承認境界: フルオートの例外であることを明示"
@@ -254,10 +255,16 @@ contains "$SKILL" "- 期待効果: " "出力形式: 期待効果欄"
 contains "$SKILL" "「振り返り」「retrospective」「セッション振り返り」「プロセス改善の提案」と言われたとき" "frontmatter: trigger 語"
 
 contains "$SKILL" "**振り返りに入る前に、必ず最初にモードを判定する**" "ask モード: 判定を先頭で行う"
-contains "$SKILL" "引数に \`ask\` が指定されている（\`/retrospective ask\`）" "ask モード: 引数による指定"
+contains "$SKILL" "利用者が本スキルを明示指定した → 環境変数に関係なく実施する" "ask/off モード: 明示指定は環境変数を上書き"
 contains "$SKILL" "printenv RETROSPECTIVE_MODE" "ask モード: 環境変数を実測するコマンド"
-contains "$SKILL" "出力が \`ask\` なら ask モード。未設定（空）・それ以外の値なら既定モード" "ask モード: 判定結果の値域"
+contains "$SKILL" "出力が \`ask\` なら ask モード、\`off\` または上記の別名なら自動発火のみ無効" "ask/off モード: 判定結果の値域"
+contains "$SKILL" "**off モード**: Stop hook は継続せず" "off モード: 自動振り返りを無効化"
 contains "$SKILL" "**毎回実施・問いかけなし**" "既定モード: 問いかけなしで毎回実施"
+
+contains "$SKILL" "## 自動発火（Stop hook）" "自動発火: Stop hook 節"
+contains "$SKILL" "ユーザー依頼の作業がこの応答で完了する" "自動発火: 完了時は振り返りを実施"
+contains "$SKILL" "質問・承認待ち・外部状態待ち・作業途中である" "自動発火: 未完了時は対象外"
+contains "$SKILL" "自分で hook を再実行したり marker を作ったりしない" "自動発火: 再実行と marker を禁止"
 
 # ── C. 消費側文書への伝播 ────────────────────────────────────────────────────
 # 上限・1 行報告・承認境界が片側だけ書き換わるのを検出する。
@@ -289,6 +296,19 @@ contains "$OSS_README" "起票はユーザー承認後のみ" "承認境界が�
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   contains "$ROOT_README" "起票はユーザー承認後のみ" "承認境界がルート README へ伝播"
 fi
+
+# スキル未解決時のフォールバック（Issue #574）。チェーン手順は文書側がプラグインより
+# 新しくなりうる（docs-template は展開先プロジェクトに残る）ため、旧版プラグインの
+# 利用者が手順書どおりに実行して `Unknown skill` で止まる。全消費側文書に同一の
+# フォールバック 1 行があることを縛る（片側 drift の検出。文言は全サイト同一）。
+FALLBACK_NEEDLE="プラグインを更新するか、インストール済みプラグインの \`skills/<スキル名>/SKILL.md\` を直接 Read して手順に従う"
+FALLBACK_CONSUMERS=("$GIT_WORKFLOW" "$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
+if [[ "$IS_MONOREPO" -eq 1 ]]; then
+  FALLBACK_CONSUMERS+=("$ROOT_README")
+fi
+for file in "${FALLBACK_CONSUMERS[@]}"; do
+  contains "$file" "$FALLBACK_NEEDLE" "スキル未解決時のフォールバック: ${file#"$REPO_ROOT"/}"
+done
 
 # ── D. /ace-curate との責務分離 ──────────────────────────────────────────────
 contains "$ACE_CURATE" "ACE Playbook ではなく \`/retrospective\` の提案経路で扱う" "責務分離: ACE 側からの送り先明示"

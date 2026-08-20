@@ -49,8 +49,8 @@ SRC_DEPLOYMENT="$PLUGIN_ROOT/docs-template/05-operations/DEPLOYMENT.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=52
-EXPECTED_GATE_CHECKS_PUBLIC=48
+EXPECTED_GATE_CHECKS_MONOREPO=63
+EXPECTED_GATE_CHECKS_PUBLIC=58
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -347,6 +347,7 @@ fi
 MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|**このセッションで実測した**手戻り・無駄時間に限る|提案閾値: 実測したものに限定|2"
   "${FIX_SKILL}|retrospective-SKILL.md|該当する候補が無ければ、次の 1 行だけで終了する|提案閾値: 候補なしは 1 行で終了|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**機微情報を提案本文へ引用しない**|提案閾値: 機微情報を引用しない|1"
   "${FIX_SKILL}|retrospective-SKILL.md|各提案に **起票先 repo** と **期待効果**|提案の構造: 起票先と期待効果を必須にする|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 実測: |出力形式: 実測欄|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 起票先: |出力形式: 起票先欄|1"
@@ -355,10 +356,15 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|**ユーザー承認を待つ**（承認なしに起票しない|承認境界: 起票前にユーザー承認を待つ|2"
   "${FIX_SKILL}|retrospective-SKILL.md|振り返り工程ではファイル編集・コミット・Issue 作成を行わない|承認境界: 振り返り工程は read-only|2"
   "${FIX_SKILL}|retrospective-SKILL.md|**振り返りに入る前に、必ず最初にモードを判定する**|ask モード: 判定を先頭で行う|1"
-  "${FIX_SKILL}|retrospective-SKILL.md|引数に \`ask\` が指定されている|ask モード: 引数による指定|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|利用者が本スキルを明示指定した → 環境変数に関係なく実施する|ask/off モード: 明示指定は環境変数を上書き|1"
   "${FIX_SKILL}|retrospective-SKILL.md|printenv RETROSPECTIVE_MODE|ask モード: 環境変数を実測するコマンド|1"
-  "${FIX_SKILL}|retrospective-SKILL.md|出力が \`ask\` なら ask モード|ask モード: 判定結果の値域|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|出力が \`ask\` なら ask モード|ask/off モード: 判定結果の値域|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**off モード**: Stop hook は継続せず|off モード: 自動振り返りを無効化|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**毎回実施・問いかけなし**|既定モード: 問いかけなしで毎回実施|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|## 自動発火（Stop hook）|自動発火: Stop hook 節|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|ユーザー依頼の作業がこの応答で完了する|自動発火: 完了時は振り返りを実施|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|質問・承認待ち・外部状態待ち・作業途中である|自動発火: 未完了時は対象外|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|自分で hook を再実行したり marker を作ったりしない|自動発火: 再実行と marker を禁止|1"
   "${FIX_SKILL}|retrospective-SKILL.md|本スキルで扱わず、\`/ace-curate\`（または ACE Playbook への追記）へ回す|責務分離: retrospective 側からの送り先明示|1"
   "${FIX_ACE_CURATE}|ace-curate-SKILL.md|ACE Playbook ではなく \`/retrospective\` の提案経路で扱う|責務分離: ACE 側からの送り先明示|3"
   "${FIX_GIT_WORKFLOW}|git-workflow.md|承認なしには起票しない|承認境界が git-workflow へ伝播|4"
@@ -366,10 +372,17 @@ MARKER_MUTATIONS=(
   "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|\`/retrospective\` の起票のみ承認待ち|承認境界が適用タイミング表へ伝播|1"
   "${FIX_DEPLOYMENT}|DEPLOYMENT.md|起票はユーザー承認後のみ|承認境界が DEPLOYMENT へ伝播|3"
   "${FIX_OSS_README}|oss-README.md|起票はユーザー承認後のみ|承認境界が公開 README へ伝播|3"
+  "${FIX_GIT_WORKFLOW}|git-workflow.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: plugins/ff-dev-toolkit/docs-template/05-operations/deployment/git-workflow.md|1"
+  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: plugins/ff-dev-toolkit/docs-template/05-operations/deployment/workflow-principles.md|1"
+  "${FIX_DEPLOYMENT}|DEPLOYMENT.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: plugins/ff-dev-toolkit/docs-template/05-operations/DEPLOYMENT.md|1"
+  # oss README のラベルは配置で変わる（モノレポ: oss/ff-dev-toolkit/README.md /
+  # 公開: README.md）ため、両配置で一致する接頭辞だけを針にする（M-G と同じ扱い）。
+  "${FIX_OSS_README}|oss-README.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック:|1"
 )
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   MARKER_MUTATIONS+=(
     "${FIX_ROOT_README}|root-README.md|起票はユーザー承認後のみ|承認境界がルート README へ伝播|3"
+    "${FIX_ROOT_README}|root-README.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: README.md|1"
   )
 fi
 

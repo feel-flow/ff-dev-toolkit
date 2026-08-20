@@ -1008,6 +1008,10 @@ GitHub Discussions への記録に加え、ACE Playbook への構造化記録を
 
 ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行する（`/merge-cleanup` → `/ace-curate` → `/retrospective`）。ACE がコード・設計のプロジェクト知見を Playbook へ蓄積するのに対し、`/retrospective` はプロセス/ツール/スキルのメタ知見（そのセッションで**実測した**手戻り・無駄時間）から改善提案を最大 3 件出す（該当なしなら「振り返り: 改善候補なし」の 1 行で終了）。起票は提案 → ユーザー承認 → 対象 repo へ Issue 作成の順で、承認なしには起票しない。
 
+対応ホストでは Stop hook が応答終了前に自動継続する。`RETROSPECTIVE_MODE=ask` で実施前確認、`off` で自動発火を無効にできる。
+
+> **スキル未解決時のフォールバック**: チェーンのスキルが `Unknown skill` で解決できない場合（インストール済みプラグインが該当スキルの追加より古い）は、プラグインを更新するか、インストール済みプラグインの `skills/<スキル名>/SKILL.md` を直接 Read して手順に従う。
+
 ## タスク管理（Task Tracking）
 
 ワークフローの進捗は TodoWrite で管理します。詳細は [ワークフロー運用原則](./workflow-principles.md#タスク管理-todowrite) を参照してください。

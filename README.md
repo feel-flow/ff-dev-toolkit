@@ -59,11 +59,13 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `/ace-setup` | ACE（Agentic Context Engineering）フレームワークのセットアップ |
 | `/ace-curate` | マージ済み PR からの知見抽出・プレイブック追記 |
 | `/ace-refine` | ACE Playbook の定期整理（stale アーカイブ・長大エントリ圧縮・重複統合）。dry-run → 承認 → 適用の 3 フェーズで原文を保全する |
-| `/retrospective` | ワークフローチェーン末尾（`/merge-cleanup` → `/ace-curate` → `/retrospective`）のセッション振り返り。実測した手戻り・無駄時間からプロセス/ツール改善を最大 3 件提案（該当なしなら 1 行報告）。起票はユーザー承認後のみ |
+| `/retrospective` | ワークフローチェーン末尾（`/merge-cleanup` → `/ace-curate` → `/retrospective`）のセッション振り返り。対応ホストでは Stop hook が応答終了前に自動継続する（`RETROSPECTIVE_MODE=ask\|off` で制御）。実測した手戻り・無駄時間からプロセス/ツール改善を最大 3 件提案（該当なしなら 1 行報告）。起票はユーザー承認後のみ |
 | `/setup-ai-config` | AI 開発ツール設定の初期化 |
 | `/multi-explore` | マルチAI CLI による並列探索 |
 | `/multi-implement` | マルチAI CLI による並列実装 |
 | `/multi-review` | マルチAI CLI による並列レビュー |
+
+> **スキル未解決時のフォールバック**: チェーンのスキルが `Unknown skill` で解決できない場合（インストール済みプラグインが該当スキルの追加より古い）は、プラグインを更新するか、インストール済みプラグインの `skills/<スキル名>/SKILL.md` を直接 Read して手順に従う。
 
 ### 旧 Codex standalone copy からの移行
 
@@ -82,7 +84,7 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 
 - `docs-template/` — コア7文書 + 拡張フォルダのテンプレート一式
 - `scripts/` — マルチAI CLI オーケストレーション用スクリプト
-- `hooks/` — 更新通知フック（下記）
+- `hooks/` — 更新通知と自動振り返りのフック（下記）
 
 ### 更新通知
 
@@ -90,6 +92,15 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 
 - チェック成功の結果は 24 時間キャッシュされます。オフライン時や取得失敗時は何もせず黙ってスキップし（セッション起動を妨げません）、1 時間後に再試行します
 - 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1` を設定してください
+
+### 自動振り返り
+
+対応ホストでは、応答終了時の `Stop` hook が `/retrospective` を 1 回だけ自動継続する。継続後はホストの `stop_hook_active` と最終応答の振り返り結果で再入を止めるため、永続 marker は作らない。
+
+- 既定は自動実行。`RETROSPECTIVE_MODE=ask` で実施前確認へ切り替える
+- `RETROSPECTIVE_MODE=off` で自動発火を無効にする。`0` / `false` / `no` / `none` / `disabled` も大文字小文字と空白を無視して受け付ける
+- Node.js 22 以上が見つからない場合は応答をブロックせず、手動実行と復旧方法を通知する
+- 改善提案の Issue 起票は自動化せず、従来どおりユーザー承認後に行う
 
 ## 前提
 

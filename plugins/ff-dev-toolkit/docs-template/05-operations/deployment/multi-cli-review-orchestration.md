@@ -468,9 +468,11 @@ bash scripts/multi-review.sh --timeout 180
 - 打ち切り前に得られた部分出力は捨てず、`Status: incomplete` 付きの結果ファイルとして保存し、統合レポートにも `INCOMPLETE` バナーを出します。**未完了の節は「指摘なし」ではなく「未確認」と読むこと。**
 - 失敗サマリーが 2 つの再実行コマンド（同じ CLI に時間を足す／設定上の代替 CLI を明示実行する）を出力するので、選んで実行します。
 
+同一の task・CLI・base・HEAD・perspective 集合・設定・レビュー diff で未完了観点だけを再実行する場合は `--resume` を使う。成功済み結果は `.review-results/.resume-cache/` から内容 hash を検証して再利用され、欠落・破損・入力不一致は再実行へ倒れる。timeout は identity に含まれないため、失敗後に延長して再開できる。統合レポートの各節には `reused` / `executed` が表示される。
+
 ```bash
 # 例: 同じ CLI に時間を足して再実行
-bash scripts/multi-agent.sh --task review --cli codex-cli --perspective code-review --timeout 1800
+bash scripts/multi-agent.sh --task review --resume --timeout 1800
 
 # 例: 代替 CLI を自分の判断で明示実行
 bash scripts/multi-agent.sh --task review --cli claude-code --perspective code-review

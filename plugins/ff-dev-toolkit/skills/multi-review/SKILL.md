@@ -113,6 +113,12 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" $ARGUMENTS
 
 **CLI が失敗・タイムアウトした場合**: そのタスクは失敗として報告され、**別 CLI での自動再実行（実行時 fallback）は行われません**。打ち切り前に得られた部分出力は `Status: incomplete` 付きの結果ファイルとして保存され、統合レポートにも「INCOMPLETE」と明示されます。**未完了の節は「指摘なし」ではなく「未確認」と読むこと。** 失敗サマリーが「同じ CLI に時間を足す」「設定上の代替 CLI を明示実行する」2 つのコマンドを出力するので、必要なものを選んで再実行します。
 
+同じ CLI・base・HEAD・perspective 集合・設定・レビュー diff のまま未完了観点だけを再実行する場合は `--resume` を付ける。成功済み観点は内容 hash を検証して再利用され、統合レポートには各観点が `reused` / `executed` のどちらか表示される。timeout は延長して再開できるが、それ以外の入力変更やキャッシュ破損では安全側に全該当観点を再実行する。
+
+```bash
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --resume --timeout 1800
+```
+
 ### 3. 結果分析と修正提案
 
 レビュー結果は `.review-results/` ディレクトリに出力されます。

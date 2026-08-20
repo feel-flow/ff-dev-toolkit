@@ -19,6 +19,18 @@
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-08-20
+
+### 追加
+
+- 対応ホストの `Stop` hook から `/retrospective` を自動継続するようにした。初回の応答終了時だけ振り返りプロンプトを返し、ホストの `stop_hook_active` または最終応答の振り返り結果がある継続後は終了を許可するため、無限ループと stale marker を作らない。`RETROSPECTIVE_MODE=ask` で実施前確認、`off` と一般的な別名で自動発火を無効化できる。不正な hook 入力は無音で終了し、Node.js 不在は応答をブロックせず復旧方法を通知する。stdin は 2 秒で打ち切る
+- 自動振り返り hook の正常系、二重再入防止、ask/off、不正入力、Node.js 不在、stdin 上限、filesystem 無副作用、登録内容を実行する 18 検査の回帰ゲートと、主要契約の 14 変異を赤化する self-test を追加した
+- `multi-agent.sh` / `/multi-review` に `--resume` を追加した。同じ task・CLI・base・HEAD・perspective 集合・設定・レビュー入力で一部観点だけ失敗した場合、成功済み結果を内容 hash 付きキャッシュから再利用し、失敗・timeout・欠落・破損した観点だけを再実行する。timeout は延長再試行のため identity から除外し、それ以外の入力変更は新規実行へ倒す。統合レポートは全期待観点を維持し、各節へ `reused` / `executed` を表示する
+
+### ドキュメント
+
+- ワークフローチェーン（`/merge-cleanup` → `/ace-curate` → `/retrospective`）を記述する全文書（README / docs-template の DEPLOYMENT・git-workflow・workflow-principles）に、スキル未解決時のフォールバック 1 行を追加した。チェーン手順は文書側がプラグインより新しくなりうる（docs-template は展開先プロジェクトに残り、README は常に最新が読まれる）ため、少し古いプラグインを導入した利用者が手順書どおりに実行すると `Unknown skill` で必ず止まっていた。文言は全文書で同一: 「プラグインを更新するか、インストール済みプラグインの `skills/<スキル名>/SKILL.md` を直接 Read して手順に従う」。最小プラグイン版の併記ではなくフォールバックを採ったのは、版数はリリースのたびに腐る一方、この 1 行は版に依存せず将来追加されるスキルにも同じように効くため。片側だけ書き換わる drift は `tests/retrospective-contract/` の伝播検査が検出する（検出力は selftest の変異注入で実測済み）
+
 ## [0.34.0] - 2026-08-19
 
 ### 追加

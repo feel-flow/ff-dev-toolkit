@@ -33,6 +33,8 @@
 #   --output-dir <dir>      Output directory (auto-detected by task type)
 #   --base <branch>         Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop)
 #   --staged                Review only the staged index diff (review task only; mutually exclusive with --base)
+#   --resume                Reuse successful results from an identical prior input and
+#                           execute only failed, timed-out, missing, or corrupt tasks
 #   --include-diff          Include diff in implement prompts
 #   --dry-run               Show plan without executing
 #   --timeout <seconds>     Timeout per CLI (default: review 900 / explore 600 / implement 900)
@@ -550,8 +552,8 @@ set_reviewers_from_spec() { # <spec>
   # `main=X` だけを渡したときに副を黙って消さない。部分更新に見える指定が
   # 全置換として振る舞うのは事故のもと。消したいときは `sub=` を明示する。
   if [[ "$sub_given" != "true" ]]; then
-    local existing_main="" existing_sub=""
-    read_reviewers_file_into existing_main existing_sub
+    local _existing_main="" existing_sub=""
+    read_reviewers_file_into _existing_main existing_sub
     sub="$existing_sub"
     [[ -n "$sub" ]] && echo "ℹ️  sub は既存の設定（${sub}）を引き継ぎます。消すには sub= を明示してください。" >&2
   fi
@@ -718,6 +720,7 @@ fi
 # Prefer the local branch; fall back to the remote-tracking ref when absent (clones)
 BASE_BRANCH="$(resolve_base_branch_ref "$BASE_BRANCH")"
 DRY_RUN=false
+RESUME=false
 TIMEOUT=""
 
 # Space-separated filter lists (bash 3.2 compatible)
@@ -742,6 +745,17 @@ EXECUTION_PLAN=""
 # for expired credentials. cli/perspective are validated single path segments and
 # cannot contain ':', so the suffix is unambiguous.
 FAILED_TASKS=""
+
+# Resume state. EXECUTION_PLAN starts as the complete expected plan. Immediately
+# before dispatch, prepare_resume_execution_plan saves that plan here and replaces
+# EXECUTION_PLAN with only the tasks that still need execution. main restores the
+# complete plan before revision verification and report generation.
+FULL_EXECUTION_PLAN=""
+REUSED_TASKS=""
+EXECUTED_TASKS=""
+RESUME_IDENTITY_VERSION=1
+RESUME_IDENTITY=""
+RESUME_CACHE_DIR=""
 
 # 同じ output-dir を使う別 orchestrator との排他。成果物は run-id で分離せず、利用者が
 # 従来どおり固定パスから読める契約を保つ代わりに、1 output-dir = 1 active run とする。
@@ -788,6 +802,7 @@ parse_args() {
       --output-dir)  OUTPUT_DIR="$2"; OUTPUT_DIR_EXPLICIT=true; shift 2 ;;
       --base)        BASE_BRANCH="$2"; BASE_BRANCH_SOURCE="--base flag"; BASE_BRANCH_EXPLICIT=true; shift 2 ;;
       --staged)      STAGED_DIFF=true; shift ;;
+      --resume)      RESUME=true; shift ;;
       --dry-run)     DRY_RUN=true; shift ;;
       --print-reviewers) PRINT_REVIEWERS=true; shift ;;
       --set-reviewers)   SET_REVIEWERS="$2"; shift 2 ;;
@@ -1262,6 +1277,7 @@ show_plan() {
   fi
   echo "   Config: ${CONFIG_FILE} (${CONFIG_SOURCE})" >&2
   echo "   Timeout: ${TIMEOUT}s per CLI" >&2
+  echo "   Resume: ${RESUME}" >&2
   echo "   Runtime fallback: none — a CLI that fails or times out is reported as" >&2
   echo "                     failed, never retried on another model (see --help)" >&2
   if [[ -n "$DESCRIPTION" ]]; then
@@ -1755,13 +1771,8 @@ clear_planned_outputs() {
     echo "ERROR: cannot clear the previous integrated report: ${OUTPUT_DIR}/integrated-report.md" >&2
     return 1
   fi
-  # 固定 diff も同様。diff を載せないタスク（description だけの explore など）は
-  # これを作らないので、消さないと直前の review が残した diff がその実行の成果物として
-  # 並ぶ。「ここにある = 今回レビューした内容」という読み方が静かに嘘になる。
-  if ! rm -f "${OUTPUT_DIR}/.fixed-diff"; then
-    echo "ERROR: cannot clear the previous fixed diff: ${OUTPUT_DIR}/.fixed-diff" >&2
-    return 1
-  fi
+  # .fixed-diff はこの関数より前に capture_baseline_and_fix_diff が現在入力で上書きする。
+  # resume identity はその内容 hash を使うため、ここで消してはならない。
   while IFS= read -r entry; do
     [[ -z "$entry" ]] && continue
     cli_name="${entry%%:*}"
@@ -1775,6 +1786,145 @@ clear_planned_outputs() {
       clear_staging_dir "$staging_dir" || return 1
     fi
   done <<< "$EXECUTION_PLAN"
+}
+
+clear_previous_integrated_report() {
+  [[ -n "${OUTPUT_DIR:-}" ]] || return 0
+  if ! rm -f "${OUTPUT_DIR}/integrated-report.md"; then
+    echo "ERROR: cannot clear the previous integrated report: ${OUTPUT_DIR}/integrated-report.md" >&2
+    return 1
+  fi
+}
+
+# ── Resume Identity And Cache（Issue #586） ──
+#
+# Cache only complete task results, keyed by the whole run input. A task-level key
+# would wrongly reuse seven perspectives after the caller changed the requested
+# perspective set, which is explicitly part of the review contract. timeout is
+# intentionally absent: extending a deadline is the main recovery path resume is
+# meant to support and does not change what the CLI is asked to review.
+hash_file_or_missing() { # <label> <path>
+  local label="$1" path="$2" digest
+  if [[ -f "$path" ]]; then
+    digest="$(git hash-object "$path" 2>/dev/null)" || return 1
+    printf '%s=%s\n' "$label" "$digest"
+  else
+    printf '%s=(missing)\n' "$label"
+  fi
+}
+
+hash_text_value() { # <label> <value>
+  local label="$1" value="$2" digest
+  digest="$(printf '%s' "$value" | git hash-object --stdin 2>/dev/null)" || return 1
+  printf '%s=%s\n' "$label" "$digest"
+}
+
+compute_resume_identity() {
+  local plan_sorted entry cli persp env_name env_value head_oid="" base_oid=""
+  plan_sorted="$(printf '%s\n' "$EXECUTION_PLAN" | LC_ALL=C sort -u)"
+  if [[ "$IN_GIT_REPO" == "true" ]]; then
+    head_oid="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)" || return 1
+    if [[ "$STAGED_DIFF" == "true" ]]; then
+      base_oid="(staged)"
+    else
+      base_oid="$(git -C "$REPO_ROOT" rev-parse "${BASE_BRANCH}^{commit}" 2>/dev/null)" || return 1
+    fi
+  fi
+
+  {
+    printf 'identity-version=%s\n' "$RESUME_IDENTITY_VERSION"
+    printf 'task=%s\nmode=%s\nstrategy=%s\n' "$TASK_TYPE" "$MODE" "$STRATEGY"
+    printf 'base-ref=%s\nbase-oid=%s\nhead=%s\n' "$BASE_BRANCH" "$base_oid" "$head_oid"
+    printf 'staged=%s\ninclude-diff=%s\n' "$STAGED_DIFF" "$INCLUDE_DIFF"
+    hash_text_value description "$DESCRIPTION"
+    printf '%s\n' "$plan_sorted" | sed 's/^/plan=/'
+    hash_file_or_missing config "$CONFIG_FILE"
+    hash_file_or_missing orchestrator "${SCRIPT_DIR}/multi-agent.sh"
+    hash_file_or_missing adapter-common "$ADAPTER_COMMON"
+    if [[ -n "$FIXED_DIFF_FILE" ]]; then
+      hash_file_or_missing fixed-diff "$FIXED_DIFF_FILE"
+    else
+      printf '%s\n' 'fixed-diff=(none)'
+    fi
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] || continue
+      cli="${entry%%:*}"
+      persp="${entry#*:}"
+      hash_file_or_missing "adapter:${cli}" "$(get_cli_adapter "$cli")"
+      hash_file_or_missing "perspective:${TASK_TYPE}:${persp}" "$(resolve_perspective_file "$persp")"
+      for env_name in $(get_cli_model_env_vars "$cli"); do
+        eval "env_value=\${${env_name}-}"
+        hash_text_value "env:${env_name}" "$env_value"
+      done
+    done <<EOF
+$plan_sorted
+EOF
+  } | git hash-object --stdin 2>/dev/null
+}
+
+cache_task_result() { # <cli> <perspective>
+  local cli="$1" persp="$2" source_file cache_dir cache_file digest
+  source_file="${OUTPUT_DIR}/${cli}/${persp}.md"
+  [[ -f "$source_file" ]] || return 1
+  cache_dir="${RESUME_CACHE_DIR}/${cli}"
+  cache_file="${cache_dir}/${persp}.md"
+  mkdir -p "$cache_dir" || return 1
+  digest="$(git hash-object "$source_file" 2>/dev/null)" || return 1
+  cp "$source_file" "${cache_file}.tmp.$$" || return 1
+  printf '%s\n' "$digest" >"${cache_file}.hash.tmp.$$" || return 1
+  mv "${cache_file}.tmp.$$" "$cache_file" || return 1
+  mv "${cache_file}.hash.tmp.$$" "${cache_file}.hash" || return 1
+}
+
+restore_cached_result() { # <cli> <perspective>
+  local cli="$1" persp="$2" cache_file expected actual target
+  cache_file="${RESUME_CACHE_DIR}/${cli}/${persp}.md"
+  [[ -f "$cache_file" && -f "${cache_file}.hash" ]] || return 1
+  expected="$(cat "${cache_file}.hash" 2>/dev/null)" || return 1
+  [[ "$expected" =~ ^[0-9a-f]+$ ]] || return 1
+  actual="$(git hash-object "$cache_file" 2>/dev/null)" || return 1
+  [[ "$actual" == "$expected" ]] || return 1
+  target="${OUTPUT_DIR}/${cli}/${persp}.md"
+  mkdir -p "$(dirname "$target")" || return 1
+  cp "$cache_file" "$target" || return 1
+}
+
+prepare_resume_execution_plan() {
+  local entry cli persp active_plan=""
+  FULL_EXECUTION_PLAN="$EXECUTION_PLAN"
+  REUSED_TASKS=""
+  EXECUTED_TASKS=""
+  RESUME_IDENTITY="$(compute_resume_identity)" || {
+    echo "ERROR: cannot compute the resume input identity." >&2
+    return 1
+  }
+  [[ -n "$RESUME_IDENTITY" ]] || {
+    echo "ERROR: computed an empty resume input identity." >&2
+    return 1
+  }
+  RESUME_CACHE_DIR="${OUTPUT_DIR}/.resume-cache/${RESUME_IDENTITY}"
+  mkdir -p "$RESUME_CACHE_DIR" || {
+    echo "ERROR: cannot create resume cache: ${RESUME_CACHE_DIR}" >&2
+    return 1
+  }
+
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    cli="${entry%%:*}"
+    persp="${entry#*:}"
+    if [[ "$RESUME" == "true" ]] && restore_cached_result "$cli" "$persp"; then
+      REUSED_TASKS="${REUSED_TASKS:+$REUSED_TASKS }${cli}/${persp}"
+      echo "  ♻️  Reused: ${cli}/${persp}" >&2
+    else
+      if [[ "$RESUME" == "true" ]]; then
+        echo "  ▶ Resume executes: ${cli}/${persp} (no valid completed cache)" >&2
+      fi
+      active_plan="${active_plan:+$active_plan
+}${entry}"
+      EXECUTED_TASKS="${EXECUTED_TASKS:+$EXECUTED_TASKS }${cli}/${persp}"
+    fi
+  done <<< "$FULL_EXECUTION_PLAN"
+  EXECUTION_PLAN="$active_plan"
 }
 
 # ── Output Directory Lock（Issue #402） ──
@@ -1898,8 +2048,27 @@ execute_tasks() {
   validate_implement_output_boundary || return 2
   validate_output_dir_boundary || return 2
   acquire_output_lock || return 2
-  clear_planned_outputs || return 2
+  # capture/identity preparation can fail before clear_planned_outputs. Remove the
+  # prior report first so that a setup failure can never leave a stale report at
+  # the exact path printed by successful runs.
+  clear_previous_integrated_report || return 2
+  # A task without prompt diff must not inherit the previous review's fixed diff.
+  # Diff-bearing tasks overwrite the file in create_fixed_diff below; removing it
+  # here for all tasks would erase the bytes before resume identity can hash them.
+  if [[ "$TASK_TYPE" != "review" && "$INCLUDE_DIFF" != "true" ]]; then
+    if ! rm -f "${OUTPUT_DIR}/.fixed-diff"; then
+      echo "ERROR: cannot clear the previous fixed diff: ${OUTPUT_DIR}/.fixed-diff" >&2
+      return 2
+    fi
+  fi
   capture_baseline_and_fix_diff || return 2
+  prepare_resume_execution_plan || return 2
+  clear_planned_outputs || return 2
+
+  if [[ -z "$EXECUTION_PLAN" ]]; then
+    echo "♻️  All ${TASK_TYPE} tasks were restored from the validated resume cache." >&2
+    return 0
+  fi
 
   local pids=""
   local failed=0
@@ -1983,6 +2152,7 @@ execute_tasks() {
       wait "$pid"
       wrc=$?
       if [[ $wrc -ne 0 ]]; then
+        # shellcheck disable=SC2086 # one whitespace-delimited label per worker
         wlabel="$(printf '%s\n' $pid_labels | awk -v n="$wait_idx" 'NR == n')"
         echo "  ⚠️ ${wlabel:-worker} exited with rc=${wrc} — tasks it had not recorded yet will be counted as failed below" >&2
       fi
@@ -2019,6 +2189,11 @@ execute_tasks() {
       fi
       if [[ "$exit_code" -eq 0 && -f "${OUTPUT_DIR}/${task_name}.md" ]]; then
         echo "  ✅ Done: ${task_name}" >&2
+        if ! cache_task_result "$cli" "$persp"; then
+          failed=$((failed + 1))
+          FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:1"
+          echo "  ❌ Cannot persist completed resume cache: ${task_name}" >&2
+        fi
       elif [[ "$exit_code" -ne 0 ]]; then
         failed=$((failed + 1))
         FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:${exit_code}"
@@ -2057,6 +2232,10 @@ execute_tasks() {
         failed=$((failed + 1))
         FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${cli}/${persp}:0"
         echo "  ❌ No output file: ${cli}/${persp}" >&2
+      elif ! cache_task_result "$cli" "$persp"; then
+        failed=$((failed + 1))
+        FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${cli}/${persp}:1"
+        echo "  ❌ Cannot persist completed resume cache: ${cli}/${persp}" >&2
       fi
     done <<< "$EXECUTION_PLAN"
   fi
@@ -2296,6 +2475,12 @@ append_plan_sections() {
       echo ""
       echo "## ${cli_name} — ${perspective_name} [${tier}]"
       echo ""
+      if list_contains "$REUSED_TASKS" "${cli_name}/${perspective_name}"; then
+        echo "**Result source:** reused"
+      else
+        echo "**Result source:** executed"
+      fi
+      echo ""
       # implement は staging を**実測して**書く（Issue #392）。ヘッダの無条件な
       # 「生成物は staging にある」だけだと、1 ファイルも生成しなかったタスクも
       # 同じ案内になり、利用者は空のディレクトリを探しに行く。件数は数えれば
@@ -2455,9 +2640,11 @@ HEADER
     esac
   done <<< "$EXECUTION_PLAN"
   if [[ "$crit_marker" == "true" ]]; then
-    echo "" >> "$report_file"
-    echo "<!-- CRITICAL_BLOCK -->" >> "$report_file"
-    echo "Critical issues detected. Review before proceeding." >> "$report_file"
+    {
+      echo ""
+      echo "<!-- CRITICAL_BLOCK -->"
+      echo "Critical issues detected. Review before proceeding."
+    } >> "$report_file"
   fi
 
   echo "📄 Report: ${report_file}" >&2
@@ -2717,6 +2904,9 @@ main() {
   local setup_failed=false
   local exec_rc=0
   execute_tasks || exec_rc=$?
+  if [[ -n "$FULL_EXECUTION_PLAN" ]]; then
+    EXECUTION_PLAN="$FULL_EXECUTION_PLAN"
+  fi
   case "$exec_rc" in
     0) ;;
     2) setup_failed=true ;;

@@ -1,5 +1,5 @@
 {
-  "description": "ff-dev-toolkit の更新通知。セッション開始時に公開リポジトリの最新タグと比較し、新版があれば通知する（TTL キャッシュ付き・fail-open）",
+  "description": "ff-dev-toolkit の更新通知と自動振り返り。SessionStart で新版を通知し、Stop で振り返りを 1 回だけ継続する（fail-open）",
   "hooks": {
     "SessionStart": [
       {
@@ -9,6 +9,17 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/check-update.sh\"",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/retrospective-stop.sh\"",
+            "timeout": 5
           }
         ]
       }

@@ -1,10 +1,10 @@
 ---
 title: "DEPLOYMENT"
-version: "1.1.0"
+version: "1.2.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-08-19"
+updated: "2026-08-20"
 changeImpact: "medium"
 ---
 
@@ -86,6 +86,10 @@ Git Flowベースで、**テスト・セルフレビュー（PR前）** と **AC
 10. **ナレッジ体系化** - マージ後・cleanup 後 ← 詳細: `deployment/knowledge-management.md` | ACE Playbook: `deployment/ace-cycle.md`
 
 ステップ 10 の後、チェーン末尾として `/retrospective`（セッション振り返り）を毎回実行する。実測した手戻り・無駄時間からプロセス/ツール改善を最大 3 件提案し、起票はユーザー承認後のみ ← 詳細: `deployment/git-workflow.md` の「チェーン末尾: セッション振り返り」
+
+対応ホストでは `Stop` hook が応答終了前に自動継続する。`RETROSPECTIVE_MODE=ask` で実施前確認、`off` で自動発火を無効にできる。
+
+> **スキル未解決時のフォールバック**: チェーンのスキルが `Unknown skill` で解決できない場合（インストール済みプラグインが該当スキルの追加より古い）は、プラグインを更新するか、インストール済みプラグインの `skills/<スキル名>/SKILL.md` を直接 Read して手順に従う。
 
 ### 詳細ドキュメント
 
@@ -272,6 +276,13 @@ PRマージ後のブランチ切り替え忘れを防ぐため、セッション
 ---
 
 ## Changelog
+
+### [1.2.0] - 2026-08-20
+
+#### 追加
+
+- 対応ホストの Stop hook による自動振り返りと `RETROSPECTIVE_MODE=ask|off` の案内を追加
+- ワークフローチェーンのスキルが `Unknown skill` で解決できない場合のフォールバック（プラグイン更新、または SKILL.md の直接 Read）を主要ステップの案内に追加
 
 ### [1.1.0] - 2026-08-19
 
