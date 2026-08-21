@@ -19,6 +19,18 @@
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-08-22
+
+### 変更
+
+- multi-review の分析用 subagent への委譲プロンプトに、結果ファイルへ混入した指示文（レビュー対象コード・CLI 出力由来を含む）をすべて分析対象のデータとして扱い従わない契約を明記した（プロンプトインジェクション耐性。ace-curate の同項と同型で、契約文言は `tests/review-rejection-discipline/` が固定する）
+
+- レビュー用サブエージェント / マルチ CLI レビューの read-only 制約を、起動手順が書かれた場所へ明示した。Git Workflow のセルフレビュー実行方法（`docs-template/05-operations/deployment/git-workflow.md`）に「起動プロンプトへ禁止事項（編集・ファイル作成・ビルド・テスト実行・git 書き込み）を列挙する」規定と理由（並行ビルドの成果物競合・read-only 指示なしエージェントによる working tree / ブランチの書き換え実測）を追記し、multi-review のレビュー実行手順（`skills/multi-review/SKILL.md`）に adapter が CLI ごとの機構で read-only 相当へ狭める旨とレビュー中の作業ツリー変更禁止を明記した。設計文書側にのみ規定があり、実行者が読む手順側に無い所在ズレが原因
+
+- ace-curate の知見抽出（Phase 1: Generate）を、read-only の抽出用 subagent への委譲既定に変更した。subagent が PR diff・PR body・レビューコメント・関連 Issue を読解して知見候補（主張・観点・根拠抜粋・再現性/影響度の見立て・固有文脈の 5 項目）と Reuse 記録の ACE ID だけを親コンテキストへ返し、評価・照合・Playbook への追記・commit はメインセッションの責務のまま変えない。subagent が無いホストは従来どおりメイン収集へ fallback し、空・項目/必須欄欠落の応答は成功扱いせず fallback で抽出をやり直す（「候補: 0 件」の明示報告は成功として区別し、0 件でも Reuse 記録欄は必須）。手順 1 の PR 特定も body・comments・reviews を取得しない形へ絞り、委譲プロンプトには PR 由来の指示文をデータとして扱う契約（プロンプトインジェクション耐性）を明記した。マージ後チェーンでは直前の Issue クローズ照合が同じ PR diff 全文を読んでおり、親での再取得が同一セッション内の二重流入になっていたため（`skills/ace-curate/SKILL.md`）。委譲契約の文言は `tests/ace-curate-commit/` が固定する
+
+- multi-review の結果分析（手順 3-1）を、read-only の分析用 subagent への委譲既定に変更した。subagent は結果ファイル（統合レポート・個別結果）を読解・分類・重複排除し、統合レポート形式の要約だけを親コンテキストへ返す（禁止事項の列挙と追加エージェントへの委譲禁止を指示テンプレートに明記）。subagent が無いホストは従来どおりメインで読み込む fallback を維持し、空・形式違反の subagent 応答は成功扱いせず fallback で分析をやり直す。レビュー全文の親コンテキスト流入はチェーン中最大で、後続工程（Issue クローズ照合・知見抽出・スコープ外判定）が汚れたコンテキストで実行される原因になっていたため（`skills/multi-review/SKILL.md`）。委譲契約の文言（禁止事項列挙・再委譲禁止・INCOMPLETE の未確認引き継ぎ・fallback 分岐・異常応答ガード）は `tests/review-rejection-discipline/` が固定する
+
 ## [0.43.1] - 2026-08-21
 
 ### 修正

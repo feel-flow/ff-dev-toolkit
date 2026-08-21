@@ -348,11 +348,16 @@ npm audit --audit-level=moderate
 
 #### セルフレビューの実行方法
 
+**レビュー用サブエージェントは read-only で起動する（必須）**: 起動プロンプトに、編集・ファイル作成・ビルド・テスト実行・git 書き込み（checkout / commit / push / reset）の禁止を明示的に列挙する（「気をつけて」ではなく禁止事項を列挙する）。理由: (1) 複数エージェントが同じ worktree でビルドすると成果物ディレクトリを奪い合い、失敗するファイルが実行ごとに変わる形で壊れる、(2) read-only 指示の無いレビューエージェントは working tree・ブランチを書き換えうる（変異テストによる巻き戻し・checkout でのブランチ切り替えの実測あり）。read-only にしても指摘の質は落ちない。ビルドを伴う検証（変異テスト等）はオーケストレータが 1 つだけ実行する — 並列化するのは読解であって実行ではない。
+
 **AIツールによる対話的レビュー（推奨）**:
 
 ```
 プロンプト例:
 「以下の観点で、今回のコミット内容をレビューしてください：
+
+【制約】read-only で実行します: 編集・ファイル作成・ビルド・テスト実行・
+git 書き込み（checkout / commit / push / reset）を禁止します。
 
 1. コーディング規約（docs/MASTER.md、docs/PATTERNS.md）
 2. 仕様との整合性（docs/PROJECT.md、docs/ARCHITECTURE.md、docs/DOMAIN.md）
@@ -549,6 +554,8 @@ rm -f "${SURFACE}"
 > **Note**: 旧構成では GitHub Copilot の `@review-router` エージェント（VS Code Copilot Chat）を標準としていたが、Copilot の従量課金化に伴い既定構成から除外した。課金を許容する場合のオプトインとしては引き続き利用可能（[COPILOT_AGENTS.md](../../06-reference/COPILOT_AGENTS.md) 参照）。
 
 #### 実行方法
+
+> レビュー用サブエージェントの read-only 起動規定（禁止事項の列挙）は、ステップ5「セルフレビューの実行方法」を参照。ここで起動するレビューにも同じ規定が適用される。
 
 ```bash
 # 一次レビュー（Claude Code 内で実行）
