@@ -166,6 +166,46 @@ must_contain "$f" '[ ! -s "$OUTPUT_FILE" ]' \
 must_match "04-quality/TESTING.md" '^[[:space:]]*if: always\(\)[[:space:]]*$' \
   "TESTING.md の CI 例が失敗回でもカバレッジを回収する（if: always() の実 directive）"
 
+# --- 04-quality/TESTING.md: 変異注入の適用確認（Issue #628） ---
+# 変異が当たらなくても「テストが緑」は検出失敗と同じ出力になるため、適用確認の
+# 規範が節ごと消える退行を固定する。針は本文の主張そのもの（散文アンカー）と、
+# 良い例の実コード行（出現回数の検査・適用失敗で後続へ進まない分岐）の両方で持つ。
+f="04-quality/TESTING.md"
+must_contain "$f" '**変異が実際に適用されたことを機械的に確認してから**結果を読む' \
+  "TESTING.md の変異注入節が適用確認を先に要求している"
+must_contain "$f" "クォート済みヒアドキュメント（\`<<'PY'\`）でファイルへ書き出してから実行する" \
+  "TESTING.md の変異注入節がシェル補間を禁止しヒアドキュメント化を要求している"
+must_contain "$f" '適用に失敗したら非 0 で即座に落とす' \
+  "TESTING.md の変異注入節が出現回数検査と非 0 即停止を要求している"
+must_contain "$f" '「変異が当たらなかった」と「変異が検出されなかった」を出力から区別できる形にする' \
+  "TESTING.md の変異注入節が適用の成否と検査結果の併記を要求している"
+must_contain "$f" 'if s.count("needle\n") != 1:' \
+  "TESTING.md の良い例が出現回数を明示分岐で検査している（assert は -O で消えるため不可）"
+must_match "$f" '^[[:space:]]*python3 "\$MUT" \|\| exit 1' \
+  "TESTING.md の良い例が適用失敗で後続の検査へ進まない（|| exit 1 の実コード行）"
+
+# 正本（リポジトリ docs/）と配布テンプレートの節同期。上の針はすべて $DOCS =
+# docs-template 側にしか掛からないため、正本側だけのリライトは針では捕まらない。
+# 公開 checkout には正本（docs/04-quality/TESTING.md）が無いので、存在するときだけ
+# 突き合わせる（不在は skip であって欠陥ではない）。
+REPO_TESTING="$PLUGIN_ROOT/../../docs/04-quality/TESTING.md"
+if [ -f "$REPO_TESTING" ]; then
+  extract_mutation_section() {
+    awk '/^### 変異注入の適用確認$/ { f = 1 }
+         f && !/^### 変異注入の適用確認$/ && (/^## / || /^### /) { exit }
+         f { print }' "$1"
+  }
+  repo_section="$(extract_mutation_section "$REPO_TESTING")"
+  tmpl_section="$(extract_mutation_section "$DOCS/04-quality/TESTING.md")"
+  if [ -z "$repo_section" ] || [ -z "$tmpl_section" ]; then
+    bad "「変異注入の適用確認」節の抽出が空です（見出しの改名か節の削除。fail-closed）"
+  elif [ "$repo_section" = "$tmpl_section" ]; then
+    ok "「変異注入の適用確認」節が正本（docs/）と配布テンプレートで一致"
+  else
+    bad "「変異注入の適用確認」節が正本（docs/04-quality/TESTING.md）と配布テンプレートで乖離している"
+  fi
+fi
+
 # --- CLI 別 reviewer ページ: timeout(1) ラッパーの取り残し（PR #153 の残骸） ---
 # stock macOS に timeout(1) は無いので、コマンド例が直接それを呼ぶと利用者の手元で
 # 動かない。散文中の言及（「timeout 120 ... は使えない」）は許容し、コマンド例と

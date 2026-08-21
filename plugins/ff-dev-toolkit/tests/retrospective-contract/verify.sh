@@ -304,11 +304,18 @@ fi
 # Issue #607: `Unknown skill` を「スキル不在」と誤結論しないための 3 針を追加 —
 # 名前確認の手順（利用可能スキル一覧の検索）、プレフィックス付き / 無しの両試行、
 # `ListSkills`（claude.ai 側の別レジストリ）の空振りを不在の根拠にしない旨。
-# 4 針とも同一の 1 行に乗る。
+# Issue #630: プラグインが複数ディレクトリへ分割インストールされ、一部スキルが
+# 当該セッションのレジストリに載っていない場合の突き合わせ手順を 3 針で固定する
+# （原因の説明・実体突き合わせの操作・「不在と結論しない」の結論ガード。原因句
+# だけを守ると、操作と結論を消しても緑のまま手順が骨抜きになる）。
+# 7 針とも同一の 1 行に乗る。
 FALLBACK_NEEDLE="プラグインを更新するか、インストール済みプラグインの \`skills/<スキル名>/SKILL.md\` を直接 Read して手順に従う"
 FALLBACK_NAME_NEEDLE="セッションの利用可能スキル一覧をキーワードで検索して実名を確認"
 FALLBACK_PREFIX_NEEDLE="プレフィックス付き（\`<プラグイン名>:<スキル名>\`）と無しの両方を試す"
 FALLBACK_REGISTRY_NEEDLE="\`ListSkills\` が返すのは claude.ai 側の別レジストリであり、その空振りを不在の根拠にしない"
+FALLBACK_SPLIT_NEEDLE="プラグインが複数ディレクトリへ分割インストールされ、一部スキルが当該セッションのレジストリに載っていないことがある"
+FALLBACK_SPLIT_MATCH_NEEDLE="インストール済みプラグインディレクトリの中身を突き合わせる"
+FALLBACK_SPLIT_ACTION_NEEDLE="その場合はリポジトリ側の SKILL.md を読んで手順に従う（スキルが存在しないと結論しない）"
 FALLBACK_CONSUMERS=("$GIT_WORKFLOW" "$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   FALLBACK_CONSUMERS+=("$ROOT_README")
@@ -318,6 +325,9 @@ for file in "${FALLBACK_CONSUMERS[@]}"; do
   contains "$file" "$FALLBACK_NAME_NEEDLE" "スキル名の確認手順: ${file#"$REPO_ROOT"/}"
   contains "$file" "$FALLBACK_PREFIX_NEEDLE" "プレフィックス両試行: ${file#"$REPO_ROOT"/}"
   contains "$file" "$FALLBACK_REGISTRY_NEEDLE" "別レジストリの区別: ${file#"$REPO_ROOT"/}"
+  contains "$file" "$FALLBACK_SPLIT_NEEDLE" "分割インストールの突き合わせ: ${file#"$REPO_ROOT"/}"
+  contains "$file" "$FALLBACK_SPLIT_MATCH_NEEDLE" "分割インストールの実体突き合わせ操作: ${file#"$REPO_ROOT"/}"
+  contains "$file" "$FALLBACK_SPLIT_ACTION_NEEDLE" "分割インストール時の結論ガード: ${file#"$REPO_ROOT"/}"
 done
 
 # ── D. /ace-curate との責務分離 ──────────────────────────────────────────────

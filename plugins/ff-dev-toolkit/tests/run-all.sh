@@ -263,6 +263,11 @@ else
     # を使い、パターン配列は同期スクリプト側のまま再利用する。スクリプトや
     # 公開対象ディレクトリが無い checkout（公開リポジトリ等）では ○ skip。
     "$SCRIPT_DIR/sync-forbidden-patterns/verify.sh"
+    # sync-dev-toolkit SKILL の「記録 SHA = 同期内容」契約の静的検査（Issue #634）。
+    # skip の鍵は sync スクリプトの存在（sync-forbidden-patterns と同じ判定軸）:
+    # 公開 checkout（スクリプト不在）は ○ skip、SSOT なのに SKILL 不在は red。
+    # read-only・外部コマンド不要（〜1 秒）。sync 系ゲートの並びに置く。
+    "$SCRIPT_DIR/sync-sha-contract/verify.sh"
     # 毎 sync リリース運用ゲート scripts/check-release-required.sh の検出力実測
     # （Issue #552）。live 状態は検査しない — 「実変更 + [Unreleased] 非空 + version
     # 据え置き」は開発中の PR では正常で、live 検査を常時ゲートに入れると通常開発が

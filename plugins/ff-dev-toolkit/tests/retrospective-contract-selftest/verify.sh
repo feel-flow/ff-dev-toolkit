@@ -50,8 +50,8 @@ SRC_DEPLOYMENT="$PLUGIN_ROOT/docs-template/05-operations/DEPLOYMENT.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=78
-EXPECTED_GATE_CHECKS_PUBLIC=70
+EXPECTED_GATE_CHECKS_MONOREPO=93
+EXPECTED_GATE_CHECKS_PUBLIC=82
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -373,20 +373,20 @@ MARKER_MUTATIONS=(
   "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|\`/retrospective\` の起票のみ承認待ち|承認境界が適用タイミング表へ伝播|1"
   "${FIX_DEPLOYMENT}|DEPLOYMENT.md|起票はユーザー承認後のみ|承認境界が DEPLOYMENT へ伝播|3"
   "${FIX_OSS_README}|oss-README.md|起票はユーザー承認後のみ|承認境界が公開 README へ伝播|3"
-  # フォールバック行には 4 針（フォールバック本体・スキル名の確認手順・プレフィックス
-  # 両試行・別レジストリの区別、Issue #574 / #607）が同一行に乗るため、行削除で
-  # 4 件赤化する。
-  "${FIX_GIT_WORKFLOW}|git-workflow.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: plugins/ff-dev-toolkit/docs-template/05-operations/deployment/git-workflow.md|4"
-  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: plugins/ff-dev-toolkit/docs-template/05-operations/deployment/workflow-principles.md|4"
-  "${FIX_DEPLOYMENT}|DEPLOYMENT.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: plugins/ff-dev-toolkit/docs-template/05-operations/DEPLOYMENT.md|4"
+  # フォールバック行には 7 針（フォールバック本体・スキル名の確認手順・プレフィックス
+  # 両試行・別レジストリの区別・分割インストールの原因/実体突き合わせ/結論ガード、
+  # Issue #574 / #607 / #630）が同一行に乗るため、行削除で 7 件赤化する。
+  "${FIX_GIT_WORKFLOW}|git-workflow.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: plugins/ff-dev-toolkit/docs-template/05-operations/deployment/git-workflow.md|7"
+  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: plugins/ff-dev-toolkit/docs-template/05-operations/deployment/workflow-principles.md|7"
+  "${FIX_DEPLOYMENT}|DEPLOYMENT.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: plugins/ff-dev-toolkit/docs-template/05-operations/DEPLOYMENT.md|7"
   # oss README のラベルは配置で変わる（モノレポ: oss/ff-dev-toolkit/README.md /
   # 公開: README.md）ため、両配置で一致する接頭辞だけを針にする（M-G と同じ扱い）。
-  "${FIX_OSS_README}|oss-README.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック:|4"
+  "${FIX_OSS_README}|oss-README.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック:|7"
 )
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   MARKER_MUTATIONS+=(
     "${FIX_ROOT_README}|root-README.md|起票はユーザー承認後のみ|承認境界がルート README へ伝播|3"
-    "${FIX_ROOT_README}|root-README.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: README.md|4"
+    "${FIX_ROOT_README}|root-README.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: README.md|7"
   )
 fi
 
@@ -474,10 +474,11 @@ if assert_mutated "$FIX_SKILL" "$PRISTINE/retrospective-SKILL.md" "M-I 1 行報�
 fi
 restore_all
 
-# M-K〜M-M: フォールバック行の部分改変（Issue #607 の 3 新針の個別空振り実測）。
-# 行削除変異は 4 針同時の赤化しか見ないため、「行は残るが 1 句だけ消える」drift で
-# 各針が単独で噛むことを、句単位の削除で 1 針ずつ実測する（代表 1 サイトで足りる —
-# 針は全サイト共通の定数で、サイトごとの差は contains の対象ファイルだけ）。
+# M-K〜M-P: フォールバック行の部分改変（Issue #607 の 3 新針 + Issue #630 の
+# 3 新針の個別空振り実測）。行削除変異は 7 針同時の赤化しか見ないため、「行は
+# 残るが 1 句だけ消える」drift で各針が単独で噛むことを、句単位の削除で 1 針ずつ
+# 実測する（代表 1 サイトで足りる — 針は全サイト共通の定数で、サイトごとの差は
+# contains の対象ファイルだけ）。
 
 # M-K: 名前確認の手順だけを消す
 perl -pi -e 's/\Qセッションの利用可能スキル一覧をキーワードで検索して実名を確認し、\E//' "$FIX_GIT_WORKFLOW"
@@ -497,6 +498,27 @@ restore_all
 perl -pi -e 's/\Q`ListSkills` が返すのは claude.ai 側の別レジストリであり、その空振りを不在の根拠にしない。\E//' "$FIX_GIT_WORKFLOW"
 if assert_mutated "$FIX_GIT_WORKFLOW" "$PRISTINE/git-workflow.md" "M-M 別レジストリ区別の句削除"; then
   expect_red "M-M 別レジストリ区別の句削除（git-workflow）" "✗ 別レジストリの区別: plugins/ff-dev-toolkit/docs-template/05-operations/deployment/git-workflow.md" 1
+fi
+restore_all
+
+# M-N: 分割インストールの原因句だけを消す（Issue #630 の原因針の単独実測）
+perl -pi -e 's/\Qプラグインが複数ディレクトリへ分割インストールされ、一部スキルが当該セッションのレジストリに載っていないことがある。\E//' "$FIX_GIT_WORKFLOW"
+if assert_mutated "$FIX_GIT_WORKFLOW" "$PRISTINE/git-workflow.md" "M-N 分割インストール原因句の削除"; then
+  expect_red "M-N 分割インストール原因句の削除（git-workflow）" "✗ 分割インストールの突き合わせ: plugins/ff-dev-toolkit/docs-template/05-operations/deployment/git-workflow.md" 1
+fi
+restore_all
+
+# M-O: 実体突き合わせの操作句だけを消す（Issue #630 の操作針の単独実測）
+perl -pi -e 's/\Qとインストール済みプラグインディレクトリの中身を突き合わせる\E//' "$FIX_GIT_WORKFLOW"
+if assert_mutated "$FIX_GIT_WORKFLOW" "$PRISTINE/git-workflow.md" "M-O 実体突き合わせ操作句の削除"; then
+  expect_red "M-O 実体突き合わせ操作句の削除（git-workflow）" "✗ 分割インストールの実体突き合わせ操作: plugins/ff-dev-toolkit/docs-template/05-operations/deployment/git-workflow.md" 1
+fi
+restore_all
+
+# M-P: 結論ガード（不在と結論しない）だけを消す（Issue #630 の結論針の単独実測）
+perl -pi -e 's/\Qその場合はリポジトリ側の SKILL.md を読んで手順に従う（スキルが存在しないと結論しない）。\E//' "$FIX_GIT_WORKFLOW"
+if assert_mutated "$FIX_GIT_WORKFLOW" "$PRISTINE/git-workflow.md" "M-P 結論ガード句の削除"; then
+  expect_red "M-P 結論ガード句の削除（git-workflow）" "✗ 分割インストール時の結論ガード: plugins/ff-dev-toolkit/docs-template/05-operations/deployment/git-workflow.md" 1
 fi
 restore_all
 

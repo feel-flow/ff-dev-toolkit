@@ -1,10 +1,11 @@
 ---
 title: "TESTING"
-version: "1.0.0"
+version: "1.1.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "YYYY-MM-DD"
+updated: "2026-08-21"
+changeImpact: "medium"
 ---
 
 # TESTING.md - テスト戦略ガイド
@@ -654,7 +655,42 @@ test("update user", () => {
 });
 ```
 
+### 変異注入の適用確認
+
+変異注入で検出力を測るときは、**変異が実際に適用されたことを機械的に確認してから**結果を読む。適用に失敗しても「テストが緑」という出力は検出失敗時と同じため、確認を挟まないと「針が効かない」という逆の結論を引き出しうる。
+
+- 変異はシェル補間を通す形（`python3 -c "..."` のようなダブルクォート内スクリプト）で書かない。スクリプトがシェルの引用処理と Python の文字列リテラル解釈の 2 層を通るため、エスケープや引用の入れ子で「書いたつもりの文字列」と「実際に比較される文字列」がずれやすい（例: 対象ファイル内の literal な 2 文字 `\n` に対し、Python は `"needle\n"` を needle + 改行として解釈するので一致しない）。クォート済みヒアドキュメント（`<<'PY'`）でファイルへ書き出してから実行する
+- 変異スクリプトは対象文字列の出現回数を検査し、適用に失敗したら非 0 で即座に落とす（Python の `assert` 文は `-O` 実行で消えるため、明示の条件分岐で `SystemExit` を投げる）。呼び出し側も `|| exit 1` で受け、適用が確認できないまま後続のテスト実行へ進まない。不一致は traceback として loud に落ちても、呼び出し側が非 0 を無視すると最終出力は「全件 pass」に見える
+- 結果の報告には「適用の成否」と「検査結果」を必ず 2 つ並べて書く。「変異が当たらなかった」と「変異が検出されなかった」を出力から区別できる形にする
+
+```bash
+# ❌ 悪い例: シェル補間経由 — 引用の入れ子と文字列リテラル解釈の層がずれても、
+# 適用を検査しない形では外から見えない
+python3 -c "s = open('verify.sh').read(); assert 'needle\n' in s"
+
+# ✅ 良い例: クォート済みヒアドキュメントでファイル化する — シェル側の解釈層
+# （引用の入れ子・$ 展開）を排除し、実行したスクリプトを目視・再実行できる形で残す
+MUT="$(mktemp "${TMPDIR:-/tmp}/mutate.XXXXXX")"
+cat <<'PY' > "$MUT"
+import pathlib
+p = pathlib.Path("verify.sh")
+s = p.read_text()
+# 対象が literal な backslash 列を含む場合は raw 文字列（r"needle\n"）を使う
+if s.count("needle\n") != 1:
+    raise SystemExit("mutation target not found")
+p.write_text(s.replace("needle\n", "mutated\n"))
+PY
+python3 "$MUT" || exit 1  # 適用に失敗したら検査へ進まない
+echo "変異適用: OK"       # 報告には検査結果と並べてこの成否を併記する（変異後は git checkout -- で復元）
+```
+
 ## Changelog
+
+### [1.1.0] - 2026-08-21
+
+#### 追加
+
+- §10 に「変異注入の適用確認」節を追加（ヒアドキュメント化・適用の出現回数検査と非 0 即停止・適用の成否と検査結果の併記）
 
 ### [1.0.0] - YYYY-MM-DD
 

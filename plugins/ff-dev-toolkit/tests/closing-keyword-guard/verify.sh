@@ -12,7 +12,8 @@
 #   1. scripts/check-closing-keywords.sh の振る舞い（抵触あり / なし / Closes 運用の
 #      3 系統 + 境界条件 + fail-closed の分水嶺）。ここが検出力の本体。
 #   2. SKILL.md / git-workflow.md の契約（検査面・keyword 列挙・終了コード分岐・
-#      read-back 手順）がスクリプトから drift していないこと。DoD が文章側にも要求している。
+#      read-back 手順・AC 照合の判定規約）がスクリプトから drift していないこと。
+#      DoD が文章側にも要求している。
 #
 # テストデータに実在の private リポジトリ識別子を書かないこと。本ディレクトリは
 # plugins/ff-dev-toolkit ごと公開リポジトリへ同期される（PUBLIC_TARGETS）。
@@ -334,6 +335,14 @@ contains "$SKILL" "2b は何も保証しなくなる" "検査とマージの間�
 # 「Closes 運用の手順が消えていない」ことを言えるようにしておく）
 contains "$SKILL" "現 Issue の AC はスコープ外発見ではない" "未達 AC を後続 Issue へ送らない規約が残存"
 contains "$SKILL" 'gh issue edit "$ISSUE_URL" --body-file' "チェックボックス更新の手順が残存"
+# Issue #629: fix commit で実装が AC の前提を超えたのに Issue 側が旧値のままだと、
+# AC 文言基準の照合が「達成しているのに未達」と誤検知する。判定の分岐・解消手順・
+# 方向の限定（AC を弱めて緑にする迂回の禁止）・手順 5 例外の列挙を固定する。
+contains "$SKILL" '「未達」と「AC が実装より古い」を区別する' "AC 照合が未達と AC 陳腐化を区別する"
+contains "$SKILL" 'Issue 本文の該当 AC を実装に合わせて更新（変わった理由を 1 行添える）してから再照合' "AC 陳腐化は本文更新 + 再照合で解消する"
+contains "$SKILL" 'AC を弱める方向の書き換えには使わない' "AC 更新経路の方向限定（弱化への迂回を禁止）"
+contains "$SKILL" '更新は手順 5 と同じ競合確認手順' "AC 更新が手順 5 の競合確認手順に接続されている"
+contains "$SKILL" '例外は、手順 3 の「AC が実装より古い」判定で行う AC 更新と、手順 4 でユーザーがスコープ変更を明示した場合の AC 更新の 2 経路のみ' "本文不変規則の例外が 2 経路に限定列挙されている"
 
 # ---- git-workflow.md の契約 --------------------------------------------------
 echo
@@ -347,6 +356,16 @@ contains "$WORKFLOW" '--body "Refs #${ISSUE_NUM}' "Refs 版テンプレートが
 contains "$WORKFLOW" 'gh issue view "${ISSUE_NUM}" --json state' "マージ直後の read-back を手順として残す"
 contains "$WORKFLOW" "gh issue reopen" "誤クローズ時の復旧手順を示している"
 contains "$WORKFLOW" "check-closing-keywords.sh" "手作業でも同じ検査を呼べる導線がある"
+# Issue #629: AC 陳腐化はレビュー対応の時点で防ぐのが正。原則側の 1 行が消えると、
+# /close-issue 側の区別だけが残って「照合時に直せばよい」へ退化する。同じ規約は
+# workflow-principles（セルフレビューの 1 fix commit 経路）と review-response-policy
+# （対応手順）にも展開しており、どのサイトが消えても片翼喪失として検出する。
+contains "$WORKFLOW" 'その場で Issue 本文の該当 AC を実装に合わせて更新する（変わった理由を 1 行添える）' "レビュー対応の原則に AC 同時更新がある"
+contains "$WORKFLOW" '後回しにすると達成しているのに未達と誤検知される' "AC 同時更新の理由（AC 文言基準の照合の誤検知）が残存"
+PRINCIPLES="$PLUGIN_ROOT/docs-template/05-operations/deployment/workflow-principles.md"
+REVIEW_POLICY="$PLUGIN_ROOT/docs-template/05-operations/deployment/review-response-policy.md"
+contains "$PRINCIPLES" 'その場で Issue 本文の該当 AC も更新する（変わった理由を 1 行添える。スコープ外発見を別 Issue の AC へ追記する場合は原則2 に従う）' "workflow-principles の 1 fix commit 経路に AC 同時更新がある"
+contains "$REVIEW_POLICY" 'その場で Issue 本文の該当 AC も更新する（変わった理由を 1 行添える）' "review-response-policy の対応手順に AC 同時更新がある"
 
 # 2 文書の検査面が同じであること。git-workflow.md が「同じ検査を直接呼べる」と
 # 書いている以上、片方だけ commit-body を落とすと同じ PR で結果が割れる。
