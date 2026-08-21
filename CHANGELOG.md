@@ -19,6 +19,15 @@
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-08-21
+
+### 変更
+
+- `scripts/multi-agent.sh` の統合レポートの `CRITICAL_BLOCK` マーカーを観点別に段階化した。マーカーを立てるのはブロック観点（非ブロック名簿に載っていないすべての観点。同梱観点では code-review / security-analysis / error-handler-hunt / comprehensive-review）の Critical だけとし、非ブロック観点（既定名簿: comment-analysis / test-analysis / type-design-analysis / code-simplification）の Critical は本文に従来どおり Critical として現れたまま、`<!-- CRITICAL_NONBLOCK -->` の注記（修正必須だが単独では push ゲートを再発火させない）へ格下げする。文言指摘だけのためにフルゲート（全観点の再レビュー）を回し直す運用コストを外し、セキュリティ・正当性の Critical は従来どおり fail closed を維持する。名簿は denylist で、未知・未列挙の観点はブロック側へ倒れる（allowlist だと新設のセキュリティ系観点が名簿更新漏れで黙って非ブロックへ落ちる）。上書きは env `MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES`（空白またはカンマ区切り。空文字の明示指定は全観点ブロック = 旧挙動）> `.claude/agent-config.yaml` の `review.critical_nonblock_perspectives`（1 文字列。YAML リストで書くと警告して既定名簿へ落とす）> 既定の順で、config は既定名簿への追加ではなく置換。判定不能（未閉フェンス・awk 失敗）は従来どおり「Critical あり」へ倒すが、倒した先の重さはその観点の段階に従い、マーカー/注記の本文では実所見（Critical issues detected / Critical findings）と判定不能（Unparseable result treated as critical）を別の行で区別する — 従来はマーカーの有無だけが手掛かりで、判定不能の観測が stderr にしか残らなかった。契約は `tests/multi-agent-critical-marker/` を 9 検査から 49 検査（実 yq が無い環境では 43）へ拡張して固定する: run_case（既定名簿 4 観点の格下げ・非ブロック観点の Critical なしで注記も出ないこと・名簿外観点の fail closed・env 空文字復帰・env 上書きとカンマ / タブ区切り受理・未閉フェンス×非ブロック・config 単独 / 置換 / env との優先順位・awk 失敗の fail closed とその観点別分類・ブロックと非ブロックの混在）+ インライン検査（消費側 grep 非衝突・判定不能文言の区別・YAML リスト警告・混在時の観点名帰属）+ 検査総数アサート。config 層は suite が書く最小 YAML だけを決定的に解釈する yq stub で常時検査し、実 yq が居る環境では代表照合と YAML リスト分岐を実 yq でも走らせて stub との乖離を検出する。既定名簿の縮小・空文字の未設定同一視・マーカー名衝突・membership 反転・判定不能ルーティング退行・タブ正規化の欠落・YAML リスト検知の欠落の 7 変異が赤化することを実測した
+- **消費側ゲートの判定式の正**を、裸の `CRITICAL_BLOCK` への部分一致 `grep -q` から**マーカー全文**の固定文字列一致 `grep -qF -- '<!-- CRITICAL_BLOCK -->'` へ変更した（`docs-template/05-operations/deployment/multi-cli-review-orchestration.md` のゲート例と `deployment/git-workflow.md` の判定表）。連結されるレビュー本文は Verdict 語彙やマーカーの引用として同じ文字列を含みうるため、部分一致のままだと非ブロック観点だけの実行でもゲートが誤発火し、観点別段階化がその経路で無効になる（実レビュー成果物で実測）。本文がマーカー行そのものを逐語引用した場合は全文一致でも発火する（誤ブロック側 = 安全側の残余）。既存プロジェクトの pre-push フックを部分一致で書いている場合は判定式の更新を推奨する。`git-workflow.md` の判定表は「各エージェントの Verdict」（PASS / NEEDS_WORK / CRITICAL_BLOCK）と「統合レポートのマーカー」（オーケストレータが付与、エージェントは出力しない）の 2 層に分離し、Verdict 語彙とマーカーの混同 — エージェントに `CRITICAL_NONBLOCK` を出力させる誤読 — を封じた。実測は `tests/docs-gates-runtime/` に「裸の言及 + 非ブロック注記のみはブロックしない」fixture を追加して固定し、部分一致へ戻す変異が赤化することを確認した
+
+- `/validate-docs` の内容チェック（プレースホルダー残存）に免除区分を条文化した。閉じたコードフェンス、閉じた HTML コメント、同一行内で対になった単一バックティックのインラインコードスパンは検査対象外とする。閉じていないフェンス / コメントは除外区間にしない（閉じマーカー探索だけを打ち切り、開始行の本文は残して後続を走査する）。記入雛形は閉じたフェンスまたは閉じた HTML コメントに置く場合に限り残してよい。表セルなどフェンスに入れられない位置の変数スロットは具体例へ置換し、未記入のテンプレート骨組みは実体または「該当なし（理由）」へ置換する。これまではフェンス / コメント内の記入雛形も検出対象になり得た。規則の正本はスキル側であり、消費プロジェクトの MASTER.md へ委譲しない。機械照合は `tests/validate-docs-placeholders/` が fixture のトークン残存数で固定し、除外範囲の拡大 / 縮小は selftest が赤化を実測する。走査は `tests/lib/docs-scan.sh` のマスクを Frontmatter / 件数ドリフト検査と共有する
+
 ## [0.39.0] - 2026-08-21
 
 ### 追加

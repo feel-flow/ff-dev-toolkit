@@ -54,7 +54,7 @@ echo "== agent-config.yaml 説明文の ${#SKILLS[@]} スキル同期 =="
 
 # ---- anchor 検査: 説明が述べるべき内容（実際に読まれるキーと読まれないキー）----
 ANCHORS=(
-  '実際に読まれるのは `version` / `mode` / `parallel` / `review.main` / `review.sub`'
+  '実際に読まれるのは `version` / `mode` / `parallel` / `review.main` / `review.sub` / `review.critical_nonblock_perspectives`'
   '`version: "2.0"` のときだけ `tasks.<task>.{mode,cost_strategy,timeout,output_dir}`'
   '`agents:` と `fallback:` はどのバージョンでも読まれず'
   '`scripts/multi-agent.sh` の `get_cli_*` 関数'
@@ -158,7 +158,7 @@ fi
 
 # ---- 2) 共通の bullet が実際の挙動を正しく述べている（anchor 検査）----
 if check_anchors "$REF"; then
-  ok "bullet が実際に読まれるキー（version / mode / parallel / review.main / review.sub / tasks.*）と読まれないキー（agents / fallback）を正しく述べている"
+  ok "bullet が実際に読まれるキー（version / mode / parallel / review.main / review.sub / review.critical_nonblock_perspectives / tasks.*）と読まれないキー（agents / fallback）を正しく述べている"
 else
   bad "bullet に述べるべき内容が欠けている（bullet は 1 物理行である前提 — 折り返した場合も欠落扱いになる）:"
   for a in "${MISSING_ANCHORS[@]}"; do
@@ -188,6 +188,7 @@ else
     "'.parallel"
     "'.review.main"
     "'.review.sub"
+    "'.review.critical_nonblock_perspectives"
     '.tasks.${TASK_TYPE}.mode'
     '.tasks.${TASK_TYPE}.cost_strategy'
     '.tasks.${TASK_TYPE}.timeout'

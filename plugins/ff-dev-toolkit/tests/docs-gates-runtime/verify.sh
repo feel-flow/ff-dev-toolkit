@@ -207,8 +207,13 @@ run_pre_push_case "レビュースクリプト非 0 はブロック" 7 \
 run_pre_push_case "空の統合レポートはブロック" 0 __EMPTY__ 1
 run_pre_push_case "INCOMPLETE を含む統合レポートはブロック" 0 \
   "$FIXTURES/pre-push/incomplete-report.md" 1
-run_pre_push_case "CRITICAL_BLOCK を含む統合レポートはブロック" 0 \
+run_pre_push_case "CRITICAL_BLOCK マーカーを含む統合レポートはブロック" 0 \
   "$FIXTURES/pre-push/critical-report.md" 1
+# 判定はマーカー**全文**の固定文字列一致（Issue #645 の観点別段階化の前提）。
+# 本文中の裸の CRITICAL_BLOCK 言及（Verdict 語彙）や CRITICAL_NONBLOCK 注記で
+# 部分一致誤発火すると、非ブロック観点だけの実行でもゲートが再発火し段階化が無効になる
+run_pre_push_case "裸の CRITICAL_BLOCK 言及 + 非ブロック注記のみはブロックしない" 0 \
+  "$FIXTURES/pre-push/mention-only-report.md" 0
 
 echo
 if [ "$FAIL" -gt 0 ]; then

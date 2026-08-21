@@ -184,6 +184,13 @@ else
     "$SCRIPT_DIR/setup-ai-config/verify.sh"
     "$SCRIPT_DIR/assess-impact/verify.sh"
     "$SCRIPT_DIR/validate-docs/verify.sh"
+    # /validate-docs §4 のプレースホルダー免除（閉じたフェンス / コメント /
+    # インラインコードスパン、閉じ忘れは除外区間にしない）を fixture のトークン
+    # 残存数で固定する。LLM を介さない機械照合（Issue #518）。
+    "$SCRIPT_DIR/validate-docs-placeholders/verify.sh"
+    # 上の gate の検出力を、マスク実装の除外範囲の拡大 / 縮小で実測する。
+    # perl 不在または一時領域不可なら丸ごと ○ skip。
+    "$SCRIPT_DIR/validate-docs-placeholders-selftest/verify.sh"
     # docs-template 初期セット 20 文書の構造契約（Frontmatter 必須6フィールド +
     # 文末 Changelog + init-docs SKILL ツリーとの集合一致）。/validate-docs の
     # 拡張文書チェックはオプトイン設計なので、テンプレートの Frontmatter 欠落は
@@ -287,9 +294,9 @@ else
     # --resume 契約（Issue #586）。8観点中7成功・1失敗、HEAD/設定/観点定義/集合変更、
     # 破損キャッシュ、統合レポートのreused/executedを逐次stub CLIで実測する。
     "$SCRIPT_DIR/multi-agent-resume/verify.sh"
-    # 統合レポートの CRITICAL_BLOCK 判定の構造検査（Issue #272）。一時 git リポジトリ +
-    # stub CLI で orchestrator を 9 回実走する（〜15 秒）。実 CLI・ネットワーク・課金は
-    # 伴わない。
+    # 統合レポートの CRITICAL_BLOCK 判定の構造検査（Issue #272）と観点別段階化の
+    # 契約検査（Issue #645）。一時 git リポジトリ + stub CLI で orchestrator を
+    # ケースごとに実走する（1 ケース数秒）。実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/multi-agent-critical-marker/verify.sh"
     # build_prompt の実行境界（再帰防止ガード）の回帰検査（Issue #263）。一時 git
     # リポジトリ + stub CLI（〜3 秒）。実 CLI・ネットワーク・課金は伴わない。
@@ -428,6 +435,10 @@ REQUIRED_SUITES=(
   # docs-template 構造契約ゲートの検出力 selftest。代替の検査が無く、perl・
   # 一時領域の都合で消えると Frontmatter 欠落回帰の検出力喪失が黙って通る（#509）。
   docs-template-frontmatter-selftest
+  # /validate-docs §4 プレースホルダー免除ゲートの検出力 selftest。代替の検査が
+  # 無く、perl・一時領域の都合で消えるとフェンス / コメント境界の退行が黙って通る
+  # （#518）。
+  validate-docs-placeholders-selftest
   # 自リポジトリ docs/ の Frontmatter 規則ゲートと件数ドリフトゲートの検出力 selftest。
   # 代替の検査が無く、perl・jq・一時領域の都合で消えると「規則と実体の drift を
   # 検出できない状態」が黙って通る（#513 / #519）。

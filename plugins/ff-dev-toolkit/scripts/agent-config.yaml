@@ -2,7 +2,7 @@
 # See: docs-template/05-operations/deployment/multi-cli-review-orchestration.md
 
 version: "2.0"
-toolkit_version: "0.39.0"
+toolkit_version: "0.40.0"
 
 # ── Global Defaults ──
 # mode はタスク単位でも指定できる（tasks.<task>.mode）。ここはその既定。
@@ -45,6 +45,11 @@ tasks:
 #review:
 #  main: claude-code
 #  sub: codex-cli
+#  # CRITICAL_BLOCK を立てない「非ブロック観点」名簿の上書き（1 文字列、空白または
+#  # カンマ区切り。YAML リストは不可）。既定は multi-agent.sh の
+#  # DEFAULT_CRITICAL_NONBLOCK_PERSPECTIVES。env
+#  # MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES が設定されていればそちらが優先
+#  critical_nonblock_perspectives: "comment-analysis test-analysis type-design-analysis code-simplification"
 
 # ── Agent Definitions ──
 # ⚠️ このブロックは**実行時には読まれない**。CLI レジストリの正本は

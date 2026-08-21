@@ -342,14 +342,25 @@ if grep -q "INCOMPLETE" .review-results/integrated-report.md 2>/dev/null; then
   exit 1
 fi
 
-# Critical があればプッシュをブロック
-if grep -q "CRITICAL_BLOCK" .review-results/integrated-report.md 2>/dev/null; then
+# Critical があればプッシュをブロック（マーカー**全文**の固定文字列一致にする。
+# 裸の CRITICAL_BLOCK への部分一致にしないこと — 連結されるレビュー本文が
+# Verdict 語彙やマーカーの引用として同じ文字列を含むと、非ブロック観点だけの
+# 実行でも誤発火し、観点別段階化が無効になる）
+if grep -qF -- '<!-- CRITICAL_BLOCK -->' .review-results/integrated-report.md 2>/dev/null; then
   echo "❌ Critical issues found. Fix before pushing."
   exit 1
 fi
 ```
 
 > ⚠️ **ゲートを書くときの注意**: `bash scripts/multi-review.sh` の終了コードを捨てて `CRITICAL_BLOCK` の有無だけで判定すると、レビューが 1 件も完走しなかった実行が「Critical なし = 合格」として通ります。これは Issue #152 の失敗モードがそのまま一層外側に出た形です。**終了コードと `INCOMPLETE` の両方**を見てください。
+
+#### CRITICAL_BLOCK の観点別段階化
+
+`<!-- CRITICAL_BLOCK -->` を立てるのは**ブロック観点**（既定では非ブロック名簿に載っていないすべての観点。同梱観点では code-review / security-analysis / error-handler-hunt / comprehensive-review）の Critical だけです。**非ブロック観点**（既定: comment-analysis / test-analysis / type-design-analysis / code-simplification）の Critical は、レポート本文には従来どおり Critical として現れますが、マーカーとしては `<!-- CRITICAL_NONBLOCK -->` の注記になり、それ単独では push ゲートを再発火させません（修正必須である点は変わりません — 次回の通常レビューまたは部分再検証で確認します）。
+
+- 名簿は「格下げする観点」の列挙（denylist）です。載っていない観点 — 将来追加される観点や名簿の typo を含む — は従来どおりブロックします（fail closed）
+- 上書きは env `MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES`（空白またはカンマ区切り。**空文字の明示指定 = 全観点ブロック（旧挙動）**）> プロジェクト設定 `.claude/agent-config.yaml` の `review.critical_nonblock_perspectives`（1 文字列）> 既定、の順で解決されます
+- ゲート側の判定は**マーカー全文**の固定文字列一致（`grep -qF -- '<!-- CRITICAL_BLOCK -->'`、上のゲート例）が正です。裸の `CRITICAL_BLOCK` への部分一致は使わないでください — 連結されるレビュー本文には Verdict 語彙やマーカーの引用として同じ文字列が現れうるため、非ブロック観点だけの実行でも誤発火します。なお本文がマーカー行そのものを逐語で引用した場合は全文一致でも発火します（誤ブロック側 = 安全側の残余）。`CRITICAL_NONBLOCK` のマーカー名・注記本文はどちらの判定式にも掛からない形が保たれており、`tests/multi-agent-critical-marker/` が固定しています
 
 ### CI/CD（GitHub Actions）での実行
 

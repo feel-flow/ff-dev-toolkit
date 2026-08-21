@@ -29,6 +29,7 @@ PR #90 で標準へ整合した状態から drift しないことを検証する
 - 必須セクションは**見出し文字列一致でなく内容の責務で判定**し、**充足の根拠（対応見出し+要旨）を出力**する
 - 空セクションの状態明記チェック（「該当なし」等があれば ✅、なければ ❌）
 - **Frontmatter スキーマチェック**（Issue #93）: 存在する文書の先頭 YAML Frontmatter について、必須6フィールド（title / version / status / owner / created / updated）の充足・version の SemVer 形式・status の値域（draft / review / approved / deprecated）・変更済み文書の changeImpact 記録と小文字（low / medium / high）を検証し、違反は ❌ として最終判定に反映する
+- **プレースホルダー免除区分**（Issue #518）: 閉じたコードフェンス / 閉じた HTML コメント / 同一行内で対になったインラインコードスパンは検査対象外。閉じ忘れは除外区間にしない。機械照合は `tests/validate-docs-placeholders/`（節スコープの条文ピンは本 suite の (A)）
 - **全体スコア = 充足項目数 ÷ 判定対象項目数**で算出し、**N/A はスコアの分母から除外**する
 - **最終判定は ❌ ゼロ**（達成 / 未達）
 - 番号付きフォルダ名の揺れ（01-context vs 01-business）を許容
@@ -92,7 +93,7 @@ bash plugins/ff-dev-toolkit/tests/run-all.sh
 
 ## メンテナンス
 
-- コマンド定義（`validate-docs.md`）の**節番号**や規則の文言を変えたら、
+- コマンド定義（`skills/validate-docs/SKILL.md`）の**節番号**や規則の文言を変えたら、
   `verify.sh` の `GENERATOR_RULES`（節の開始/終了 regex・検索文字列）を追随させること。
   最終節（重要ルール）は終了 regex に次の level-2 見出し（`^## `）を使う。現在は後続見出しが無いため EOF まで読むが、将来 `##` 節が追加されたらそこで止める。
 - `/validate-docs` の Frontmatter 規則を変えたら、`docs-template/` と `/init-docs` の置換ポリシーも同じ標準へ追随させること。`verify.sh` は `docs-template` の frontmatter `changeImpact` が小文字値であること、`MASTER.md` の標準表が `low / medium / high` であること、`/init-docs` が小文字正規化を指示していることを検証する。

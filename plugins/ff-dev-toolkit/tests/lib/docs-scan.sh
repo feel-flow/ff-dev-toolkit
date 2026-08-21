@@ -2,9 +2,11 @@
 #
 # 対象プロジェクトの docs/ を検査する suite の共有実装（Issue #513 / #519 / #518）。
 #
-# 3 つの suite が「docs/ を歩く」「Frontmatter を読む」「フェンス / コメント境界を
-# 尊重する」を必要とするため、実装を 1 か所に置く（同じ走査を 3 本書くと、片方だけ
-# 直される drift がそのまま検出漏れになる）。
+# マスク（フェンス / コメント境界）を 1 か所に置く。同じ走査を 3 本書くと、片方だけ
+# 直される drift がそのまま検出漏れになる。
+#   docs-frontmatter-repo / docs-fact-drift: docs/ を歩き Frontmatter も読む
+#   validate-docs-placeholders（#518）: マスクだけを使いプレースホルダー免除を固定する
+#   （docs/ 走査と Frontmatter 判定はしない）
 #
 # 提供する関数:
 #   ff_docs_rule_targets <master_md>   規則側の対象一覧（MASTER.md から導出）
@@ -13,6 +15,7 @@
 #                                      実体側の対象一覧（FS から導出、除外規則適用）
 #   ff_docs_fm_verdict <file>          Frontmatter / Changelog 構造の判定
 #   ff_docs_mask_spans <file>          閉じたフェンスは空行化・閉じたコメントは該当文字を除去
+#   ff_docs_mask_inline_spans          同一行内で対になったインラインコードスパンを空白化（stdin→stdout）
 #   ff_docs_body <file>                走査用の本文（Frontmatter・マスク済み・Changelog 節を除く）
 #
 # 設計上の制約:
@@ -316,6 +319,32 @@ ff_docs_mask_spans() {
       for (i = 1; i <= n; i++) print line[i]
     }
   ' "$1"
+}
+
+# 同一行内で対になったインラインコードスパン（`...`）を空白化して stdout へ。
+#
+# /validate-docs §4 の第 3 免除（規則説明のための引用。ACE の行数バジェット例外と
+# 同じ「対になったスパンだけ有効」）。閉じていないバックティックは残す。
+# フェンス / HTML コメントは ff_docs_mask_spans 側。こちらは stdin フィルタなので
+# `ff_docs_mask_spans file | ff_docs_mask_inline_spans` と合成する。
+#
+# 単一バックティックの対だけを見る（二重以上は対象外。§4 も同じ限定。本リポジトリの
+# 記入雛形・規則引用は単一スパンで書く）。エスケープされたバックティックは区別しない。
+ff_docs_mask_inline_spans() {
+  awk '
+    {
+      s = $0
+      out = ""
+      while (match(s, /`[^`]*`/)) {
+        out = out substr(s, 1, RSTART - 1)
+        pad = ""
+        for (i = 1; i <= RLENGTH; i++) pad = pad " "
+        out = out pad
+        s = substr(s, RSTART + RLENGTH)
+      }
+      print out s
+    }
+  '
 }
 
 # 走査用の本文を stdout へ。Frontmatter とフェンス / コメント内、および

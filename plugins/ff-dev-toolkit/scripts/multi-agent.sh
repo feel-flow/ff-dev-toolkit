@@ -2549,6 +2549,55 @@ append_plan_sections() {
   return "$wrote_any"
 }
 
+# ── CRITICAL_BLOCK 段階化（Issue #645）──
+# 「非ブロック」へ格下げする観点の集合。ここに載った観点の Critical は修正必須の
+# まま（本文はレポートに従来どおり Critical として現れる）だが、それ単独では
+# <!-- CRITICAL_BLOCK --> を立てず <!-- CRITICAL_NONBLOCK --> の注記になる。
+# 実測 22 巡のうち終盤 4 巡が comment-analysis の文言 Critical だけでフルゲートを
+# 再実行しており、セキュリティ穴と文言指摘が同じ重さでは重い方の警報が薄まる。
+#
+# 集合は denylist — 載っていない観点（comprehensive-review・将来の追加観点を含む）
+# は従来どおりブロックする。allowlist（ブロックする観点を列挙）にすると、新設の
+# セキュリティ系観点が名簿更新を忘れただけで黙って非ブロックへ落ちる（fail open）。
+#
+# 解決の**形**（env の `+set` 判定・空文字の意思表示・project config の yq 読み）は
+# resolve_reviewer_pair に合わせるが、第 3 層は別物 — あちらはユーザーグローバル
+# （reviewers ファイル）へ落ち、こちらは組み込み既定へ落ちる:
+#   env    MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES
+#          空文字の明示指定は「全観点ブロック（旧挙動）」の意思表示なので、
+#          下位層で埋め戻さない
+#   config review.critical_nonblock_perspectives（空白またはカンマ区切りの **1 文字列**。
+#          YAML リストで書くと yq -r が複数行を返し名前が観点に一致しなくなるため、
+#          警告して既定へ落とす。yq が無い環境でも読めず既定へ落ちる — 解析不能な
+#          config を既定で動かす扱いは load_config と同じ）
+DEFAULT_CRITICAL_NONBLOCK_PERSPECTIVES="comment-analysis test-analysis type-design-analysis code-simplification"
+
+resolve_critical_nonblock_perspectives() {
+  local v cfg
+  if [[ "${MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES+set}" == "set" ]]; then
+    v="$MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES"
+  else
+    v="$DEFAULT_CRITICAL_NONBLOCK_PERSPECTIVES"
+    if [[ -f "$CONFIG_FILE" ]] && command -v yq &>/dev/null; then
+      cfg="$(yq -r '.review.critical_nonblock_perspectives // ""' "$CONFIG_FILE" 2>/dev/null || true)"
+      # 複数行 = 複数要素のリスト、行頭の "- " = 単一要素のリスト（yq -r は
+      # どちらもブロックシーケンス形で返す。観点名が "-" で始まることはない）
+      if [[ "$cfg" == *$'\n'* || "$cfg" == -* ]]; then
+        echo "⚠️ review.critical_nonblock_perspectives は YAML リストではなく 1 文字列（空白またはカンマ区切り）で指定してください。読み飛ばして既定名簿を使います" >&2
+      elif [[ -n "$cfg" && "$cfg" != "null" ]]; then
+        v="$cfg"
+      fi
+    fi
+  fi
+  # 区切りをスペースへ正規化（カンマ・タブ区切りも受ける）。membership 判定は
+  # 前後スペースの literal 一致なので、正規化しないとタブ区切りで指定された観点が
+  # 黙ってブロック側へ倒れる — fail closed の向きではあるが、利用者の指定が
+  # 静かに無視される形になる
+  v="${v//,/ }"
+  v="${v//$'\t'/ }"
+  printf '%s\n' "$v"
+}
+
 # ── Generate Report (review) ──
 generate_review_report() {
   local report_file="${OUTPUT_DIR}/integrated-report.md"
@@ -2579,6 +2628,18 @@ HEADER
   # ゲートの素通りになる。旧判定 `^\s*-\s*\[.*:.*\]` は重大度に関係なく [file:line]
   # 箇条書き全部に発火し、Important のみのレビューでも Critical と宣言していた。
   #
+  # さらに観点別の段階化を掛ける（Issue #645）: 非ブロック観点（既定は
+  # DEFAULT_CRITICAL_NONBLOCK_PERSPECTIVES、上の resolve_critical_nonblock_perspectives
+  # で上書き可）の Critical は CRITICAL_BLOCK を立てず、<!-- CRITICAL_NONBLOCK -->
+  # の注記として出す。注記のマーカー名と本文に文字列 "CRITICAL_BLOCK" を含めては
+  # ならない — 消費側ゲートの正規契約はマーカー全文の固定文字列一致
+  # `grep -qF -- '<!-- CRITICAL_BLOCK -->'`（multi-cli-review-orchestration.md）だが、
+  # 旧来のゲートには裸の部分一致 `grep -q "CRITICAL_BLOCK"` が残っており、含めると
+  # ブロックしないはずの注記がブロックとして誤検知される。なお連結される各 result
+  # file の**本文**が当該文字列を含む可能性（Verdict 語彙・マーカーの引用）は
+  # 生成側では消せない — 引用ごと書き換えるとレビュー本文を改変することになる。
+  # だからこそ消費側契約をマーカー全文一致に締めてある（裸の言及では発火しない）。
+  #
   # 判定は連結後の統合レポートではなく**各 result file の本文**に掛ける — 連結後に
   # 掛けると (1) 1 本の CLI 出力の未閉フェンスが後続セクション全部を不可視にする
   # 越境マスク、(2) orchestrator 自身が書く節見出しの判定への混入、が構造的に生まれる。
@@ -2595,7 +2656,21 @@ HEADER
   # フェンスが閉じないまま本文が終わる場合は判定不能（rc=2）として安全側（マーカー
   # あり）へ倒す。awk 自体の失敗も同様に安全側へ倒し、診断を stderr へ残す。
   # 検出力は tests/multi-agent-critical-marker/ が stub CLI の実走で固定する。
-  local crit_marker=false crit_entry crit_seen="" crit_file crit_rc
+  local crit_entry crit_seen="" crit_file crit_rc crit_found crit_persp
+  local crit_block_hits="" crit_nonblock_hits="" crit_nonblock_set
+  # 判定不能（未閉フェンス / awk 失敗）は実所見と別のリストに持つ。マーカーの
+  # 発火条件としては同格（安全側 = Critical あり）だが、レポート上で「実所見が
+  # あった」と「本文を判定しきれなかった」を同じ文で報告すると、判定不能の観測が
+  # stderr にしか残らず、INCOMPLETE と同型の「空振りを所見と読む」誤読を生む。
+  local crit_block_unparse="" crit_nonblock_unparse="" crit_target
+  crit_nonblock_set="$(resolve_critical_nonblock_perspectives)"
+  # 名簿の typo は「その観点が計画に現れない」だけでブロック側へ倒れる（fail closed）
+  # ため実害はないが、意図した格下げが黙って効かないので診断を残す。
+  for crit_persp in $crit_nonblock_set; do
+    if [[ -z "$(resolve_perspective_file "$crit_persp")" ]]; then
+      echo "⚠️ critical_nonblock_perspectives の '${crit_persp}' は存在しない観点名です（typo?）。未知の名前は無視され、載っていない観点は従来どおりブロックします" >&2
+    fi
+  done
   while IFS= read -r crit_entry; do
     [[ -z "$crit_entry" ]] && continue
     if [[ " $crit_seen " == *" $crit_entry "* ]]; then continue; fi
@@ -2628,22 +2703,64 @@ HEADER
     ' "$crit_file"
     crit_rc=$?
     set -e
+    # 判定不能（rc=2: 未閉フェンス / rc>2: awk 失敗）は「Critical あり」へ倒す。
+    # 倒した先の重さ（ブロック / 非ブロック）はその観点の段階に従う — 非ブロック
+    # 観点は Critical が実在してもブロックしない契約なので、判定不能をブロックまで
+    # 格上げすると安全側を越えて旧挙動の誤ブロックが戻る。
+    crit_found=""
     case "$crit_rc" in
-      0) crit_marker=true ;;
+      0) crit_found=real ;;
       1) : ;;
       2)
-        echo "⚠️ CRITICAL_BLOCK 判定: ${crit_file} のコードフェンスが閉じておらず本文を判定しきれません。判定不能を Critical なしとして通さないため、安全側に倒してマーカーを出します" >&2
-        crit_marker=true ;;
+        echo "⚠️ CRITICAL_BLOCK 判定: ${crit_file} のコードフェンスが閉じておらず本文を判定しきれません。判定不能を Critical なしとして通さないため、安全側（Critical あり）に倒します" >&2
+        crit_found=unparse ;;
       *)
-        echo "⚠️ CRITICAL_BLOCK 判定を実行できませんでした（awk rc=${crit_rc}: ${crit_file}）。判定不能を Critical なしとして通さないため、安全側に倒してマーカーを出します" >&2
-        crit_marker=true ;;
+        echo "⚠️ CRITICAL_BLOCK 判定を実行できませんでした（awk rc=${crit_rc}: ${crit_file}）。判定不能を Critical なしとして通さないため、安全側（Critical あり）に倒します" >&2
+        crit_found=unparse ;;
     esac
+    if [[ -n "$crit_found" ]]; then
+      crit_persp="${crit_entry#*:}"
+      if [[ " ${crit_nonblock_set} " == *" ${crit_persp} "* ]]; then
+        crit_target="nonblock"
+      else
+        crit_target="block"
+      fi
+      case "${crit_target}:${crit_found}" in
+        block:real)
+          [[ " ${crit_block_hits} " == *" ${crit_persp} "* ]] || crit_block_hits="${crit_block_hits:+${crit_block_hits} }${crit_persp}" ;;
+        block:unparse)
+          [[ " ${crit_block_unparse} " == *" ${crit_persp} "* ]] || crit_block_unparse="${crit_block_unparse:+${crit_block_unparse} }${crit_persp}" ;;
+        nonblock:real)
+          [[ " ${crit_nonblock_hits} " == *" ${crit_persp} "* ]] || crit_nonblock_hits="${crit_nonblock_hits:+${crit_nonblock_hits} }${crit_persp}" ;;
+        nonblock:unparse)
+          [[ " ${crit_nonblock_unparse} " == *" ${crit_persp} "* ]] || crit_nonblock_unparse="${crit_nonblock_unparse:+${crit_nonblock_unparse} }${crit_persp}" ;;
+      esac
+    fi
   done <<< "$EXECUTION_PLAN"
-  if [[ "$crit_marker" == "true" ]]; then
+  if [[ -n "$crit_block_hits" || -n "$crit_block_unparse" ]]; then
     {
       echo ""
       echo "<!-- CRITICAL_BLOCK -->"
-      echo "Critical issues detected. Review before proceeding."
+      if [[ -n "$crit_block_hits" ]]; then
+        echo "Critical issues detected (${crit_block_hits// /, }). Review before proceeding."
+      fi
+      if [[ -n "$crit_block_unparse" ]]; then
+        echo "Unparseable result treated as critical (${crit_block_unparse// /, }): the body could not be fully judged — see the run diagnostics."
+      fi
+    } >> "$report_file"
+  fi
+  if [[ -n "$crit_nonblock_hits" || -n "$crit_nonblock_unparse" ]]; then
+    # 本文に "CRITICAL_BLOCK" を部分一致で含めないこと（上の段階化コメント参照）。
+    {
+      echo ""
+      echo "<!-- CRITICAL_NONBLOCK -->"
+      if [[ -n "$crit_nonblock_hits" ]]; then
+        echo "Critical findings in non-blocking perspectives (${crit_nonblock_hits// /, })."
+      fi
+      if [[ -n "$crit_nonblock_unparse" ]]; then
+        echo "Unparseable result treated as critical, in non-blocking perspectives (${crit_nonblock_unparse// /, })."
+      fi
+      echo "Fix them per the review response policy; on their own they do not re-trigger the full gate."
     } >> "$report_file"
   fi
 
