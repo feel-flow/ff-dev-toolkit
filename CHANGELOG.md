@@ -19,6 +19,12 @@
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-08-21
+
+### 追加
+
+- SessionStart にスキル実体ドリフト検査を追加した。`plugins/<plugin>/skills/` を持つチェックアウトで、リポジトリのスキル集合とインストール実体（`~/.claude/plugins/cache` / `marketplaces` / `CLAUDE_PLUGIN_ROOT`）を照合し、リポジトリに在るがどの実体にも無いスキル名を名指しする。ユニーク version が 2 以上のときは 1 つだけを最新と見なさず全パスと version を列挙する。スキル集合が一致し version が 1 種類なら無音（同一 version の cache と marketplace checkout は通常構成。version 差だけの 1 実体は更新通知 hook の管轄）。インストール実体を 1 つも見つけられない環境は「検出不能」と報告してセッションは止めない（fail-open）。古い cache の削除は通知と手順提示に留め、hook 自身は破壊的操作をしない。オプトアウトは `FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1`。回帰は `tests/skill-drift-check/` が 4 つの振る舞いと、差分検出を落とす変異 / 併存列挙を 1 件に潰す変異の検出力を固定する
+
 ## [0.40.0] - 2026-08-21
 
 ### 変更

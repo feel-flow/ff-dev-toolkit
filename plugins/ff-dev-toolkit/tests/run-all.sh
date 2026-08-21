@@ -257,6 +257,12 @@ else
     # 更新通知フック（hooks/check-update.sh）の回帰検証。ローカル bare リポジトリ
     # fixture のみ使用し、実ネットワークには触らない。
     "$SCRIPT_DIR/update-check/verify.sh"
+    # スキル実体ドリフト検査（hooks/check-skill-drift.sh、Issue #656）。
+    # リポジトリ skills/ とインストール実体の集合差分・ユニーク version 併存・検出不能
+    # ・一致時無音（同一 version の cache+marketplace 含む）を fixture で固定し、
+    # 差分検出を落とす変異と併存列挙を 1 件に潰す変異の検出力も同じ suite で実測する。
+    # 実 ~/.claude には触れない。
+    "$SCRIPT_DIR/skill-drift-check/verify.sh"
     # SSOT リポジトリの .claude/settings.json にある hook 起動コマンドのパス解決
     # （Issue #273）。settings.json が無いチェックアウト（公開リポジトリ等）では
     # ○ skip。一時ディレクトリ + stub hook のみ（〜2 秒）。
@@ -432,6 +438,9 @@ REQUIRED_SUITES=(
   retrospective-contract-selftest
   # 自動振り返りのランタイム検出力は mutation self-test 以外に代替がない（#583）。
   retrospective-stop-hook-selftest
+  # スキル実体ドリフト検査は、この suite 以外に代替がない。一時領域不足で消えると
+  # 未登録スキル / 古い cache 併存の検出が黙って通る（Issue #656）。
+  skill-drift-check
   # docs-template 構造契約ゲートの検出力 selftest。代替の検査が無く、perl・
   # 一時領域の都合で消えると Frontmatter 欠落回帰の検出力喪失が黙って通る（#509）。
   docs-template-frontmatter-selftest

@@ -84,7 +84,7 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 
 - `docs-template/` — コア7文書 + 拡張フォルダのテンプレート一式
 - `scripts/` — マルチAI CLI オーケストレーション用スクリプト
-- `hooks/` — 更新通知と自動振り返りのフック（下記）
+- `hooks/` — 更新通知・スキル実体ドリフト検査と自動振り返りのフック（下記）
 
 ### 更新通知
 
@@ -92,6 +92,16 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 
 - チェック成功の結果は 24 時間キャッシュされます。オフライン時や取得失敗時は何もせず黙ってスキップし（セッション起動を妨げません）、1 時間後に再試行します
 - 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1` を設定してください
+
+### スキル実体ドリフト検査
+
+`plugins/<plugin>/skills/` を持つチェックアウト（開発元の marketplace モノレポ）でセッションを開始すると、インストール済みの実体とリポジトリのスキル集合を照合します。公開リポジトリのルート直下 `skills/` レイアウトでは照合対象外として無音です。
+
+- リポジトリにあるスキルがどのインストール実体にも無い場合、またはユニーク version が 2 以上の cache が併存している場合に通知します
+- スキル集合が一致し version が 1 種類なら無音です。同一 version の cache と marketplace checkout が並ぶのは通常構成です。version 差だけの 1 実体は上の更新通知に任せます
+- インストール実体を 1 つも見つけられないときは「検出不能」と報告し、セッションは止めません
+- 古い cache は自動削除しません。通知の古い version ディレクトリだけを手動で削除し、`claude plugin marketplace update`（引数なし）→ `claude plugin update ff-dev-toolkit` → Claude Code の再起動、の順で追従してください。marketplace checkout は消さないでください
+- 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1` を設定してください
 
 ### 自動振り返り
 

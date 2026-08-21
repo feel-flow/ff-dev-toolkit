@@ -1,5 +1,5 @@
 {
-  "description": "ff-dev-toolkit の更新通知と自動振り返り。SessionStart で新版を通知し、Stop で振り返りを 1 回だけ継続する（fail-open）",
+  "description": "ff-dev-toolkit の更新通知・スキル実体ドリフト検査と自動振り返り。SessionStart で新版、スキル集合の欠落、複数 version のインストール実体併存を通知し、Stop で振り返りを 1 回だけ継続する（fail-open）",
   "hooks": {
     "SessionStart": [
       {
@@ -9,6 +9,11 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/check-update.sh\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/check-skill-drift.sh\"",
+            "timeout": 5
           }
         ]
       }
