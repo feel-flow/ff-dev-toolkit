@@ -164,6 +164,13 @@ else
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド
     # 不要・一時ディレクトリ不要なので静的検査群に置く。
     "$SCRIPT_DIR/closing-keyword-guard/verify.sh"
+    # レビュー指摘を却下するときの検証規律（Issue #655）: review-response-policy の
+    # 却下 4 要件（単変数実測・実測範囲のみ記載・指示形禁止・趣旨と実装の分離）と、
+    # 実測要求を技術的制約の主張に絞る発動条件を節スコープで、対応フローからの導線と
+    # multi-review の委譲行を全文針で静的に固定する。外部コマンド・一時領域不要。
+    # 同じくワークフロー文書（docs-template/deployment）の契約文言を固定する
+    # closing-keyword-guard の直後に置く。
+    "$SCRIPT_DIR/review-rejection-discipline/verify.sh"
     # 起票スキル 2 本（create-issue / out-of-scope-issue）に意図的に複製されている
     # verify-then-skip ラベル契約の照合（bash は連続した行列として、散文は行単位で）と、
     # 両者の意図的な非対称（候補の系統・アサイン方針）の固定。jq / gh / yq 不要の
