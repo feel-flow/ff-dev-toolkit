@@ -14,9 +14,18 @@
 #   ff_docs_actual_targets <docs_root> <master_md>
 #                                      実体側の対象一覧（FS から導出、除外規則適用）
 #   ff_docs_fm_verdict <file>          Frontmatter / Changelog 構造の判定
-#   ff_docs_mask_spans <file>          閉じたフェンスは空行化・閉じたコメントは該当文字を除去
+#   ff_docs_mask_spans <file> [keep-fences]
+#                                      閉じたフェンスは空行化・閉じたコメントは該当文字を除去。
+#                                      keep-fences はフェンスの中身を残す（対応探索・優先順位は同一）
 #   ff_docs_mask_inline_spans          同一行内で対になったインラインコードスパンを空白化（stdin→stdout）
-#   ff_docs_body <file>                走査用の本文（Frontmatter・マスク済み・Changelog 節を除く）
+#   ff_docs_body <file>                走査用の本文（Frontmatter・マスク済み・Changelog 節を除く）。
+#                                      数値 claim の走査には使わない（そちらは ff_docs_claim_body。
+#                                      こちらを使うとフェンス内の図の件数が走査から落ちる —
+#                                      新しい suite が選ぶ際は注意）。現在の消費者は
+#                                      docs-fact-drift-selftest の判別力ガード（assert_fence_only =
+#                                      「フェンス外に無い」ことの検証にフェンス除外走査を使う）のみ
+#   ff_docs_claim_body <file>          数値 claim 走査用の本文（ff_docs_body と同じ範囲だが
+#                                      フェンスの中身を残す。図に手書きした件数を走査対象にする）
 #
 # 設計上の制約:
 #   - bash 3.2 互換（連想配列・mapfile を使わない）
@@ -233,6 +242,12 @@ ff_docs_fm_verdict() {
 # 見出しや数値の「例示」を実体と取り違えないための前処理（例: フェンス内に書いた
 # `## Changelog` を本物の節と誤認すると、以降の本文が走査から落ちる）。
 #
+# 第 2 引数に keep-fences を渡すと**フェンスの中身を消さずに残す**（Issue #525）。
+# 対応探索と優先順位（先に開いたマーカーが勝つ / 未閉鎖 opener はその行だけ飛ばす）は
+# 既定モードと完全に同一で、消すかどうかだけが変わる。フェンス内のマーカーを
+# 検査しない規則も同じなので、フェンス内の `<!--` が新たにコメントとして
+# 対になることはない。用途は ff_docs_claim_body（図に手書きした件数の走査）。
+#
 # 3 つの narrowing（同梱 MCP の maskClosedSpans と同一の規則。Issue #517 / #519）:
 #   1. 単一パスで左から処理する — 先に開いたマーカーが勝ち、その区間内のマーカーは
 #      検査しない（コメント内の ``` が外側のフェンスと対にならない）
@@ -254,7 +269,9 @@ ff_docs_fm_verdict() {
 #     とし、4 桁以上はインデントコードブロックだが、`^[ \t]*` は無制限に許す。現在の
 #     docs に 4 桁以上のフェンス行は無い（実測）ため実害は出ていない
 ff_docs_mask_spans() {
-  awk '
+  local keep=0
+  [ "${2:-}" = "keep-fences" ] && keep=1
+  awk -v keep_fences="$keep" '
     # --- フェンス判定 ---------------------------------------------------------
     # 開始マーカーを見つけたら FC（記号）と FL（長さ）へ入れ、開始桁を返す。
     function fence_open(s,   m) {
@@ -310,7 +327,8 @@ ff_docs_mask_spans() {
           close_at = 0
           for (j = i + 1; j <= n; j++) if (fence_closes(line[j], fc, fl)) { close_at = j; break }
           if (close_at == 0) { i++; continue }
-          for (k = i; k <= close_at; k++) line[k] = ""
+          # keep-fences でも i の前進は同じ（フェンス内のマーカーを検査しない規則を保つ）
+          if (!keep_fences) for (k = i; k <= close_at; k++) line[k] = ""
           i = close_at + 1
         } else if (cpos > 0) {
           i = mask_comment(i, cpos)
@@ -362,5 +380,46 @@ ff_docs_body() {
     in_fm              { next }
     /^## Changelog$/   { after_changelog = 1 }
     !after_changelog   { print }
+  '
+}
+
+# 数値 claim 走査用の本文を stdout へ。範囲は ff_docs_body と同じ（Frontmatter・
+# コメント内・`## Changelog` 節以降を除く）だが、**フェンスの中身を残す**。
+#
+# 本リポジトリのフェンスは例示だけでなく図（```text の構成図・```mermaid の依存図）の
+# 置き場でもあり、そこに実体の件数が手書きされる。既定の ff_docs_body で走査すると
+# 図の件数がどのゲートからも見えず、静かにドリフトする（Issue #525。suite 数で実測
+# 3 箇所が検出漏れだった）。
+#
+# 一方、範囲の**境界判定**はフェンスを残さないマスクで行う — フェンス内に例示として
+# 書いた `## Changelog` を本物の節と数えると、それ以降の本文が走査から落ちる
+# （ff_docs_body がフェンスを消す動機と同じ。docs-fact-drift-selftest G24 で固定）。
+# マスクは行数を保つので、境界の行番号は keep-fences 出力とそのまま対応する。
+ff_docs_claim_body() {
+  local f="$1" masked first fm_end cl_line
+  # 境界（Frontmatter 閉じ行・Changelog 見出し）は**両方ともマスク済み本文**から
+  # 導出する。fm_end を原文から探すと、閉じない Frontmatter の後ろにフェンスで
+  # 例示した `---` があるとき、その例示行を終端と取り違えて本文を出してしまう
+  # （ff_docs_body はマスク後の走査なので出さない。PR レビューで検出）。
+  # マスクは行数を保つので、行番号は keep-fences 出力とそのまま対応する。
+  masked="$(ff_docs_mask_spans "$f")"
+  # 先頭行の判定にパイプ（head -1）を使わない: 下流が先に閉じると上流の printf が
+  # SIGPIPE で死に、set -e の呼び出し側を殺す（run-all case 10 と同型）
+  first="${masked%%$'\n'*}"
+  fm_end=0
+  if [ "$first" = "---" ]; then
+    # awk で exit しない（printf 上流の SIGPIPE を避ける。ff_docs_body 参照）
+    fm_end="$(printf '%s\n' "$masked" | awk 'NR > 1 && /^---$/ && !e { e = NR } END { if (e) print e }')"
+    # 開始だけあって閉じない Frontmatter は「以降ぜんぶ Frontmatter」なので本文なし
+    # （ff_docs_body の in_fm が下りない挙動と同じ）
+    [ -n "$fm_end" ] || { return 0; }
+  fi
+  cl_line="$(printf '%s\n' "$masked" | awk -v fe="$fm_end" \
+    'NR > fe && /^## Changelog$/ && !c { c = NR } END { if (c) print c }')"
+  [ -n "$cl_line" ] || cl_line=0
+  ff_docs_mask_spans "$f" keep-fences | awk -v fe="$fm_end" -v cl="$cl_line" '
+    NR <= fe            { next }
+    cl > 0 && NR >= cl  { next }
+    { print }
   '
 }

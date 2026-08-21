@@ -20,6 +20,7 @@
 #        件数 / ACE ブロック上限 / エントリ行数 / 昇格 Helpful）を 1 件ずつずらす → 赤
 #   G14〜G16. claim の narrowing（`後続 N suite` / spec-docs 無しの `N ツール` /
 #        `昇格` 無しの `Helpful >= N`）は照合しない → 緑
+#   G22. `調査時点` を含む歴史スナップショット行（DECISIONS.md ADR-024）は照合しない → 緑
 #   G17. 未閉鎖コメント開始行に書いた件数も走査対象 → 赤（契約の固定）
 #   G18. 既知の制限の pin: 散文中の `` `<!--` `` が後続の `-->` と対になり、間の件数
 #        記載が落ちる（Issue #527）→ **現状は検出しないので緑**。修正したら
@@ -31,6 +32,15 @@
 #   G20. 書き込み不可の TMPDIR でも完走し、claim の照合まで実行される
 #   G21. 実体側にスキル / suite / MCP ツールを 1 件足す → 赤（Issue #519 AC-2。
 #        docs 側をずらす変異と対になる逆方向で、運用上いちばん起こる形）
+#   G23. 図（フェンス内）に手書きした件数をずらす → 赤（Issue #525。```text の構成図と
+#        ```mermaid の依存図の両方。claim の走査はフェンスの中身を含む =
+#        ff_docs_claim_body。ここが緑のままだと図の件数が静かにドリフトする）
+#   G24. フェンス内に例示した `## Changelog` で claim 走査が打ち切られないこと → 赤
+#        （Changelog 境界の判定はフェンスを消したマスクで行う。生テキストの見出し検索で
+#        境界を決める実装だと、例示以降の本文が走査から落ちてこのケースが緑になる）
+#   G25. keep-fences がフェンス内のマーカーを検査しないこと → 赤（不変条件の固定。
+#        「マスクしないならフェンス検出自体を省く」素通し実装だと、フェンス内の `<!--` が
+#        後続の mermaid 矢印 `-->` と対になり、間の claim 記載が落ちて緑になる）
 #   G11. docs/MASTER.md が無いツリー → 行頭 `○ skip` で緑
 #
 # 「1 一致に数値が 2 つ以上」の claim 定義誤りは fixture から到達できない（claim の
@@ -47,6 +57,10 @@ REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 TARGET="$TESTS_DIR/docs-fact-drift/verify.sh"
 
 [ -f "$TARGET" ] || { echo "✗ docs-fact-drift/verify.sh が見つかりません: $TARGET" >&2; exit 1; }
+
+# fixture ファイルの前提検証（assert_fence_only）に ff_docs_body を使う
+# shellcheck source=../lib/docs-scan.sh
+. "$TESTS_DIR/lib/docs-scan.sh"
 [ -f "$REPO_ROOT/docs/MASTER.md" ] || {
   echo "○ skip: $REPO_ROOT/docs/MASTER.md が無いためスキップ（fixture の元になる docs/ が必要）"
   exit 0
@@ -119,8 +133,9 @@ make_fixture() {
 # $1=ケース名 $2=期待（green / red）$3=赤のとき出力に必要な理由（ERE、省略可）
 #
 # 第 3 引数は「狙った claim で赤くなったか」を見る。これは検出力の確認そのもので、
-# 変異が走査対象外の場所（図＝フェンス内など）に落ちて別の理由で赤くなったケースを
-# 検出力ありと数えないための歯止め（レビュー指摘 + Issue #525 の実例）。
+# 変異が走査対象外の場所（Changelog 節内・ACE 分割ファイルなど）に落ちて別の理由で
+# 赤くなったケースを検出力ありと数えないための歯止め（レビュー指摘 + Issue #525 の実例。
+# 図＝フェンス内は #525 の修正で走査対象になった）。
 run_case() {
   local name="$1" expect="$2" why="${3:-}" rc=0
   FF_DOCS_REPO_ROOT="$TMP/root" bash "$TARGET" > "$TMP/out.log" 2>&1 || rc=$?
@@ -159,6 +174,20 @@ assert_changed() { # $1=変異前の写し $2=変異後のファイル $3=ケー
   if ! cmp -s "$1" "$2"; then return 0; fi
   bad "$3: 変異が入っていません（ファイルが変化していません）。対象文書の表現が変わった可能性があります"
   return 1
+}
+
+# 判別力の前提の自己検証（G23 用）: 対象表現が**フェンス外に存在しない**ことを確かめる。
+# G23 の判別力は「記載が図＝フェンス内にのみある」ことに乗っている。散文へ同じ表現が
+# 転記されると、変異が散文側にも入り、フェンスを走査しない旧実装でも赤になって
+# ケースが何も測らずに通る（run_case 第 3 引数や G18b と同じ動機の歯止め）。
+assert_fence_only() { # $1=fixture ファイル $2=対象 ERE $3=ケース名
+  local hits
+  hits="$(ff_docs_body "$1" | grep -cE "$2" || true)"
+  if [ "${hits:-0}" -ne 0 ]; then
+    bad "$3: 判別力の前提が崩れています（${2} がフェンス外に ${hits} 行あります。散文へ転記されるとこのケースはフェンス走査を測れません）"
+    return 1
+  fi
+  return 0
 }
 
 echo "== G1. baseline =="
@@ -213,8 +242,8 @@ run_case "G10 Changelog 節に不一致の数値" green
 echo "== G12. 行内コメント付きの記載（PR #524 レビュー 2 巡目）=="
 # 1 文書だけをずらす。他の文書（ARCHITECTURE.md）に一致行が残るので hits は 0 に
 # ならず、「抽出の空振り」ではなく「行内コメント付きの行を読めているか」だけを測れる。
-# 対象は**フェンス外に記載がある**文書を選ぶ（DOMAIN.md / ROADMAP.md の suite 数は
-# 図の中＝フェンス内にしかないため、ここでは測定に使えない）。
+# 対象は散文（フェンス外）に記載がある PROJECT.md を使う — このケースが測るのは
+# 行内コメントの扱いであって、フェンス走査（そちらは G23）ではないため。
 make_fixture
 perl -i -pe 's/([0-9]+) suite/($1 + 1) . " suite <!-- note -->"/ge' "$TMP/root/docs/01-context/PROJECT.md"
 run_case "G12 行内コメント付きの記載もずれを検出する" red "suite 数: [0-9]+ 件が実体"
@@ -307,6 +336,52 @@ make_fixture
 perl -i -pe 's/^## Changelog$/本文に 999 suite と書く。\n\n$&/' \
   "$TMP/root/docs/01-context/PROJECT.md"
 run_case "G18b 同じ挿入をマーカー無しで行うと検出する（G18 の緑が空振りでないこと）" red "suite 数: [0-9]+ 件が実体"
+
+echo "== G23. 図（フェンス内）の件数をずらす（Issue #525）=="
+# DOMAIN.md の ```text 構成図と ROADMAP.md の ```mermaid 依存図は、suite 数を
+# `tests/ N suite` の形でフェンス内にのみ持つ。走査がフェンスを除外する実装
+# （ff_docs_body）へ戻ると、この 2 ケースだけが「緑のまま通りました」で赤くなる。
+# 判別力は各図の `tests/ N suite` がフェンス内にのみあることに乗っているため、
+# 2 つのガードで前提を自己検証する: assert_fence_only（散文への転記が起きていない）と
+# assert_changed（変異の実在。表現が変われば置換は no-op になり何も測らずに通る）。
+make_fixture
+cp "$TMP/root/docs/02-design/DOMAIN.md" "$TMP/g23-before.md"
+assert_fence_only "$TMP/g23-before.md" 'tests/ [0-9]+ suite' "G23a" || true
+perl -i -pe 's/tests\/ ([0-9]+) suite/"tests\/ " . ($1 + 1) . " suite"/ge' \
+  "$TMP/root/docs/02-design/DOMAIN.md"
+assert_changed "$TMP/g23-before.md" "$TMP/root/docs/02-design/DOMAIN.md" "G23a" || true
+run_case "G23a text 構成図（DOMAIN.md）内の suite 数をずらす" red "suite 数: [0-9]+ 件が実体"
+
+make_fixture
+cp "$TMP/root/docs/07-project-management/ROADMAP.md" "$TMP/g23b-before.md"
+assert_fence_only "$TMP/g23b-before.md" 'tests/ [0-9]+ suite' "G23b" || true
+perl -i -pe 's/tests\/ ([0-9]+) suite/"tests\/ " . ($1 + 1) . " suite"/ge' \
+  "$TMP/root/docs/07-project-management/ROADMAP.md"
+assert_changed "$TMP/g23b-before.md" "$TMP/root/docs/07-project-management/ROADMAP.md" "G23b" || true
+run_case "G23b mermaid 依存図（ROADMAP.md）内の suite 数をずらす" red "suite 数: [0-9]+ 件が実体"
+
+echo "== G24. フェンス内の Changelog 例示で走査が打ち切られないこと =="
+# claim 走査はフェンスの中身を含む（G23）が、`## Changelog` 境界の判定は
+# フェンスを消したマスクで行う。境界を生テキストの見出し検索で決める実装だと、
+# フェンス内の例示 `## Changelog` を本物の節と取り違え、それ以降の本文
+# （ここでは直後に置いた不一致の suite 数）が走査から落ちて緑になる。
+make_fixture
+perl -i -pe 's/^## Changelog$/```text\n## Changelog\n```\n\n本文に 999 suite と書く。\n\n$&/' \
+  "$TMP/root/docs/02-design/ARCHITECTURE.md"
+assert_present "$TMP/root/docs/02-design/ARCHITECTURE.md" "999 suite" "G24" || true
+run_case "G24 フェンス内の Changelog 例示より後ろの記載も走査する" red "suite 数: [0-9]+ 件が実体"
+
+echo "== G25. keep-fences はフェンス内のマーカーを検査しない（不変条件の固定）=="
+# keep-fences モードは「消すかどうか」だけが既定モードと違い、フェンスの対応探索と
+# 優先順位は共有する（docs-scan.sh の契約）。これを「マスクしないならフェンス検出
+# 自体を省く」素通し実装へ単純化すると、フェンス内の裸の `<!--` が後続の mermaid
+# 矢印 `-->` と対になり、間の claim 記載が落ちて緑のまま通る（Issue #525 が潰した
+# 「静かなドリフト」の再発形。M1/M2 のどちらの変異クラスとも別で、この 1 本が固定する）。
+make_fixture
+perl -i -pe 's/^## Changelog$/```text\n<!-- 図中の注記例\n```\n\n本文に 999 suite と書く。\n\n```mermaid\ngraph TD\n    A[x] --> B[y]\n```\n\n$&/' \
+  "$TMP/root/docs/01-context/PROJECT.md"
+assert_present "$TMP/root/docs/01-context/PROJECT.md" "999 suite" "G25" || true
+run_case "G25 フェンス内の <!-- が外のマーカーと対にならず、間の記載を走査する" red "suite 数: [0-9]+ 件が実体"
 
 echo "== G21. 実体側を 1 件増やす（Issue #519 AC-2 の逆方向）=="
 # docs 側をずらす変異（G2 / G4 / G13）と対になる、**実体側**の変異。スキル・suite・
