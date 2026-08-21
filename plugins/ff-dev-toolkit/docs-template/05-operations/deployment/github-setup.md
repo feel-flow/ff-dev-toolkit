@@ -48,9 +48,10 @@ AI Spec-Driven Developmentでは、**GitHubデフォルトラベル + 必要最�
 | `follow-up`         | PR レビュー・実装から派生した追跡課題      | #006B75 | -               |
 | `refactor`          | リファクタリング（機能変更なし）           | #D4C5F9 | -               |
 | `chore`             | 保守タスク（依存更新・ビルド・CI・開発ツール） | #BFD4F2 | -               |
+| `testing`           | テスト整備（テストの追加・修正・検出力強化） | #C2E0C6 | -               |
 | `epic`              | 親 Issue（複数の子 Issue を束ねる大枠）    | #5319E7 | -               |
 
-ラベルは 4 つの軸に分かれます。**バージョニング**（`major` / `minor` / `patch`）、**緊急度**（`hotfix` / `urgent`）、**優先度**（`priority:*`）、**分類の補完**（`follow-up` / `refactor` / `chore` / `epic`）です。このうち **優先度と分類の補完**（`priority:*` / `follow-up` / `refactor` / `chore` / `epic`）は、リリースノートの生成にもバージョン解決にも関与しません（§2 のサンプル設定で `version-resolver` にも `categories` にも載せないため、`default: patch` のまま・リリースノートには出ません）。緊急度の `hotfix` は例外で、同サンプルでは Fixes カテゴリと patch 解決の両方に載ります。
+ラベルは 4 つの軸に分かれます。**バージョニング**（`major` / `minor` / `patch`）、**緊急度**（`hotfix` / `urgent`）、**優先度**（`priority:*`）、**分類の補完**（`follow-up` / `refactor` / `chore` / `testing` / `epic`）です。このうち **優先度と分類の補完**（`priority:*` / `follow-up` / `refactor` / `chore` / `testing` / `epic`）は、リリースノートの生成にもバージョン解決にも関与しません（§2 のサンプル設定で `version-resolver` にも `categories` にも載せないため、`default: patch` のまま・リリースノートには出ません）。緊急度の `hotfix` は例外で、同サンプルでは Fixes カテゴリと patch 解決の両方に載ります。
 
 `priority:*` と `follow-up` は、ff-dev-toolkit の起票スキルが付与を試みるラベルです（`create-issue` が種別と優先度、`out-of-scope-issue` が加えて `follow-up`）。これらが存在しないリポジトリでは、起票は成功したままラベルだけが省略されます。
 
@@ -58,7 +59,7 @@ AI Spec-Driven Developmentでは、**GitHubデフォルトラベル + 必要最�
 >
 > GitHub ネイティブの sub-issues は親子の階層を表しますが、「**どの Issue を Epic として運用するか**」という意図までは表しません（子をまだ持たない Epic もあれば、偶発的な親子リンクもあります）。`gh issue list --label epic` を成立させるこのラベルがその意図を担い、sub-issues と併用します。
 >
-> 親子関係を運用しないプロジェクトでこの 1 件を作りたくない場合は、**自動セットアップを使わず**、下の「手動セットアップ」から `epic` の行を除いて実行してください。自動セットアップのスクリプトは 13 件固定で除外オプションを持たず、配布実体の定義を直接編集すると定義と文書の照合が赤になります。
+> 親子関係を運用しないプロジェクトでこの 1 件を作りたくない場合は、**自動セットアップを使わず**、下の「手動セットアップ」から `epic` の行を除いて実行してください。自動セットアップのスクリプトは 14 件固定で除外オプションを持たず、配布実体の定義を直接編集すると定義と文書の照合が赤になります。
 
 ### 自動セットアップ（推奨）
 
@@ -73,7 +74,7 @@ AI Spec-Driven Developmentでは、**GitHubデフォルトラベル + 必要最�
 
 **スクリプトの動作**:
 
-- 上表のカスタムラベル 13 件のうち**存在しないものだけ**を作成（照合は GitHub のラベル名一意制約に合わせ大文字小文字を区別しない）
+- 上表のカスタムラベル 14 件のうち**存在しないものだけ**を作成（照合は GitHub のラベル名一意制約に合わせ大文字小文字を区別しない）
 - 既存ラベルはスキップとして報告（エラーにしない。色・説明の上書きもしない）
 - GitHubデフォルトラベルはそのまま使用
 - ラベル一覧の照会を信用できない場合（取得失敗・空・取得上限到達）は、**1 件も作成せず**非 0 で終了（「存在しない」と誤断定したまま作成に進まない）
@@ -102,6 +103,7 @@ gh label create "priority:low" --description "優先度 低（保留可・実需
 gh label create "follow-up" --description "PR レビュー・実装から派生した追跡課題" --color "006B75"
 gh label create "refactor" --description "リファクタリング（機能変更なし）" --color "D4C5F9"
 gh label create "chore" --description "保守タスク（依存更新・ビルド・CI・開発ツール）" --color "BFD4F2"
+gh label create "testing" --description "テスト整備（テストの追加・修正・検出力強化）" --color "C2E0C6"
 gh label create "epic" --description "親 Issue（複数の子 Issue を束ねる大枠）" --color "5319E7"
 ```
 
@@ -244,7 +246,7 @@ gh label delete "fix" --yes      # → bug を使用
 gh label delete "docs" --yes     # → documentation を使用
 ```
 
-**`chore` は削除対象ではありません**（`refactor` も同様）。この 2 つは GitHub デフォルトに対応するラベルが無く、`create-issue` が種別ラベルとして付与を試みるため、推奨カスタムラベルに含めています。削除すると、保守タスクの Issue が種別ラベルなしで積まれます。
+**`chore` は削除対象ではありません**（`refactor` / `testing` も同様）。この 3 つは GitHub デフォルトに対応するラベルが無く、種別ラベルとして付与が試みられる（`chore` / `refactor` は `create-issue` / `out-of-scope-issue` の両方が、`testing` は `out-of-scope-issue` が試みる）ため、推奨カスタムラベルに含めています。削除すると、保守タスクやテスト整備の Issue が種別ラベルなしで積まれます。
 
 #### `chore` ラベルの運用指針
 

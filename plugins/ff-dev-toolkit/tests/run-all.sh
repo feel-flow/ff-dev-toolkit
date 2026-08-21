@@ -172,10 +172,18 @@ else
     # 契約検査群に続けて置く。
     "$SCRIPT_DIR/issue-label-contract/verify.sh"
     # 推奨ラベル・セットアップの SSOT（docs-template/scripts/setup-github-labels.sh の
-    # LABEL_DEFS）と github-setup.md の表・手動例の 3 箇所照合 + stub gh での振る舞い
-    # 実測（冪等・fail-closed）。実 CLI・ネットワーク・課金・一時ファイルを伴わない。
-    # ラベル契約つながりで issue-label-contract の直後に置く。
+    # LABEL_DEFS）と github-setup.md の表・手動例・setup-github-labels SKILL.md
+    # 軸別表の 4 箇所照合 + delete 案内との交差 + 名前の正本との位置比較 +
+    # stub gh での振る舞い実測（冪等・fail-closed・部分失敗）。実 CLI・ネットワーク・
+    # 課金・一時ファイルを伴わない。ラベル契約つながりで issue-label-contract の直後に置く。
     "$SCRIPT_DIR/github-labels-setup/verify.sh"
+    # 起票スキルが参照するラベル名 ⊆ (LABEL_DEFS ∪ GitHub デフォルト allowlist) の
+    # 包含照合（Issue #624）。issue-label-contract は両スキル間の複製同期、
+    # github-labels-setup は供給側 4 箇所の同期を見るのに対し、本 suite は
+    # 参照側と供給側をまたぐ包含を見る（verify-then-skip の fail-soft により、
+    # 供給されない参照は「起票成功のままラベルだけ黙って落ちる」ため）。
+    # gh / jq / yq・一時ファイル不要の静的検査。
+    "$SCRIPT_DIR/issue-label-supply/verify.sh"
     # setup-multi-agent.sh の yq 導入が Mike Farah v4 を明示取得し、非互換 yq
     # （distro パッケージ / Python / v3）を利用可能と誤認しないこと（Issue #271）。
     # install の exit 0 を信用せず post-install で flavor/capability を再検証する。

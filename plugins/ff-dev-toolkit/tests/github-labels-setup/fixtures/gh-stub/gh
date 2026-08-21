@@ -6,11 +6,14 @@
 #   normal      … GitHub デフォルト相当 + near-miss 群（カスタムラベルは全部不足）
 #   partial     … normal の一覧 + major / minor（カスタムの一部だけ既存）
 #   casevariant … normal の一覧 + Major / MINOR（大文字小文字違いで既存）
-#   allexist    … デフォルト 3 件 + カスタム 13 件すべて（作成対象なし）
+#   allexist    … デフォルト 3 件 + カスタム 14 件すべて（作成対象なし）
 #   fail        … 非 0 終了（照会そのものの失敗）
 #   empty       … 終了コード 0 で空出力（0 件のリポジトリと区別できない経路）
 #   truncated   … 取得上限ちょうどの件数を返す（打ち切りの疑いがある経路）
 #   createfail  … label create が非 0 終了（権限不足などの作成失敗）
+#   createfailone … label create が urgent の 1 件だけ非 0 終了（部分失敗。
+#                   Issue #625: 成功分 CREATED / 失敗分 FAILED の振り分けと、
+#                   失敗後も残りの試行を継続することの検査に使う）
 #   norepoview  … repo view が非 0 終了（対象リポジトリを確定できない経路）
 #
 # near-miss は、membership 判定が部分一致へ退化する変異（`grep -q` への安易な置換等）を
@@ -63,12 +66,15 @@ case "${1:-} ${2:-}" in
         exit 0 ;;
       partial)     printf 'major\n%s\nminor\n' "$BASE_LABELS"; exit 0 ;;
       casevariant) printf 'Major\n%s\nMINOR\n' "$BASE_LABELS"; exit 0 ;;
-      allexist)    printf 'bug\nenhancement\ndocumentation\nmajor\nminor\npatch\nhotfix\nurgent\npriority:critical\npriority:high\npriority:medium\npriority:low\nfollow-up\nrefactor\nchore\nepic\n'; exit 0 ;;
+      allexist)    printf 'bug\nenhancement\ndocumentation\nmajor\nminor\npatch\nhotfix\nurgent\npriority:critical\npriority:high\npriority:medium\npriority:low\nfollow-up\nrefactor\nchore\ntesting\nepic\n'; exit 0 ;;
       *)           printf '%s\n' "$BASE_LABELS"; exit 0 ;;
     esac ;;
   "label create")
     printf 'GH_LABEL_CREATE_ARGV: %s\n' "$*" >&2
     [ "${GH_STUB_MODE:-normal}" = "createfail" ] && exit 1
+    if [ "${GH_STUB_MODE:-normal}" = "createfailone" ] && [ "${3:-}" = "urgent" ]; then
+      exit 1
+    fi
     echo "https://github.com/stub-owner/stub-repo/labels/${3:-}"
     exit 0 ;;
   "repo view")

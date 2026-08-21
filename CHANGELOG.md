@@ -19,6 +19,14 @@
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-08-21
+
+### 追加
+
+- 推奨カスタムラベルに `testing`（テスト整備）を追加し、13 件から 14 件にした（`docs-template/scripts/setup-github-labels.sh` の `LABEL_DEFS`、`docs-template/05-operations/deployment/github-setup.md` の表・手動例、`skills/setup-github-labels/SKILL.md` の件数・軸別表）。out-of-scope-issue の type 系統は従来から `testing` ↔ `test:` の対応を例示していたが、供給側に定義が無く、verify-then-skip（実在するものだけ付ける）の構造上「起票は成功したままラベルだけ黙って落ちる」状態が残っていた
+- 推奨ラベル・セットアップの契約検査 `tests/github-labels-setup/` を構造強化した。ラベル名の正本を検査スクリプト内の単一列挙に固定して behavioral 期待と件数を導出化し（正本と `LABEL_DEFS` は位置比較で並べ替えを検出、重複は導出件数と正本の一意性自己検査の組で検出）、`gh label delete` 案内の対象を期待集合との完全一致 + 定義済みラベルとの case-insensitive 交差で照合、手動セットアップ例抽出の節スコープ化（節外・インデント行を拾わない対照付き）、`setup-github-labels` SKILL.md 軸別表を照合の 4 箇所目として追加、途中 1 件だけ作成失敗する stub モードによる CREATED / FAILED 振り分け・継続試行・非 0 終了の実測、報告行照合の行境界アンカー化、導出器の語数自己検証、実行検査数の侵食ガード（全検査成功ラン限定の完全一致）を追加した。正本の片側追加・全写し同時重複・delete 案内の矛盾・節外移動・軸別表の欠落・最初の失敗で試行が止まる変異・検査の無効化の 7 変異が赤化することを実測した
+- 起票スキル（create-issue / out-of-scope-issue）が参照するラベル名を機械抽出し、供給側（`LABEL_DEFS` ∪ GitHub デフォルトラベル allowlist）に含まれることを照合するゲート `tests/issue-label-supply/` を追加した。抽出はラベル系統表・シェル代入・`--label` 引数の 3 経路で、`feat:` のような conventional-commit プレフィックス例示や変数渡しは除外する。allowlist は本文の GitHub デフォルトラベル表から導出し（直書きの写しを増やさない）、参照数はファイルごとに固定して抽出の空振り（0 件化）を赤にする。参照側にだけラベル名を足す変異・供給側から 1 件消す変異が赤化することを実測した
+
 ## [0.41.0] - 2026-08-21
 
 ### 追加
