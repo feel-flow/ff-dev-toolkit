@@ -108,6 +108,7 @@ description: プロジェクトの docs/ がコア7文書要件（存在・必�
 判定ルール:
 
 - 各フィールドの**プレースホルダー残存**（`owner` の `@your-github-handle`、`created` / `updated` の `YYYY-MM-DD` 等）は §4 の内容チェックで扱う。本チェックはフィールドの**存在・形式・値域**に絞り、二重指摘しない
+- **`docs/specs/` の 6 ステータスは別スキーマ**: 仕様ファイル（`docs/specs/`）は Spec Kit 運用ガイドの Front Matter スキーマ（`specId` / `owners` / `lastUpdated` と、中間状態 `implementing` / `done` を含む 6 ステータス）を持つ。これはコア7文書・拡張文書の Frontmatter とは**別のスキーマ**であり、本チェックの対象外。本節の 4 値（`draft` / `review` / `approved` / `deprecated`）へ `implementing` / `done` を混ぜない（`docs-template/MASTER.md` §Frontmatter の注記も同じ線引きを持つ。機械側の pin は `tests/docs-template-frontmatter-selftest` G18）
 - Frontmatter を持たない補助ドキュメント（`GETTING_STARTED*.md`・`SETUP_*.md` 等）は本チェックの対象外。Frontmatter を持つ拡張文書は同じ基準で検証する
 - Frontmatter スキーマ違反は ❌ として扱い、最終判定（達成 / 未達）に反映する。**値の違反を正常扱いする silent failure を防ぐことが本チェックの目的**
 

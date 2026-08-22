@@ -223,15 +223,23 @@ ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（例 `ACE-438-1`、非PR
 
 #### 4-f. 同期検証（必須）
 
-4-c / 4-d のあと、コミット前に必ず検証する:
+4-c / 4-d のあと、コミット前に必ず検証する。**同期検証・形式ゲートそれぞれについて、プロジェクトの状態に合う 1 本だけを実行する**（下のブロックを一括実行しない。未導入プロジェクトでは導入済み向けの行が必ず失敗し、直後の「exit 0 になるまで直す」判定と噛み合わなくなる）:
 
 ```bash
+# 同期検証 — 次の 3 つのうち 1 本だけを実行する
+# (1) npm script を登録済みの場合
 npm run ace:check-playbook-frontmatter
-# プロジェクトに npm script が無い場合:
-# npx --yes tsx path/to/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
+# (2) npm script は無いがプロジェクトに scripts/ace/ を導入済みの場合
+npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
+# (3) scripts/ace/ 未導入の場合はプラグイン同梱のテンプレートを直接使う（インストール不要）
+npx --yes tsx "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check
 
 # 形式ゲート: 新規追記が旧テーブル形式でないことを機械検証する（Issue #286）
+# 次の 2 つのうち 1 本だけを実行する
+# (1) プロジェクトに scripts/ace/ を導入済みの場合
 npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
+# (2) 未導入の場合はプラグイン同梱のテンプレートを直接使う
+npx --yes tsx "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md
 ```
 
 - exit 0 になるまで 4-c / 4-d を直す（`ace_entry_count` 不一致・version↔Changelog 不一致・`changeImpact` 違反（変更済みなのに未記録 / 小文字 low・medium・high 以外）の三点をゲートする）
@@ -300,4 +308,4 @@ gh pr create --base <default-branch> --title "knowledge: ACE-<PR番号>-<連番>
 - 既存エントリの Helpful/Harmful カウンター更新と Status 変更（active → deprecated）は許可
 - カウンターの更新は **インクリメントのみ**（減算しない）
 - 知見が抽出されない場合（typo修正のみ等）は「知見なし」と報告して終了（ただし Reuse 記録の反映〔手順 3〕は候補 0 件でも実施してから終了する）
-- PLAYBOOK.md はカテゴリ別に `playbook/*.md` へ分割済み。肥大化チェックは `scripts/ace/` テンプレート導入済みプロジェクトの場合 `npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md` で実行できる（npm script として登録してもよい）。このチェックは `playbook/` サブディレクトリを自動検出して索引 + 全サブファイルの総行数・カテゴリ別件数を集計する（`playbook/archive/` 配下は対象外）。行数上限は**件数から導出**される（`ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1)`。`ACE_MAX_PLAYBOOK_LINES` を明示指定したときだけ固定上限。ADR-019）。超過すると警告が出る（**警告のみ・追記はブロックしない**）。導出上限の超過は「ファイルが大きい」ではなく「**1 エントリが太い**」の意味なので、第一対応は旧テーブル形式の正準化。密度警告・カテゴリ件数の refine 目安超過（既定 130 件・警告）またはブロック上限超過（既定 180 件・exit 1）が出た場合は `/ace-refine` で正準化・stale アーカイブ・圧縮・統合を実行する。分割は検索語彙が明確に分岐するときだけ（分割だけで凌がない）
+- PLAYBOOK.md はカテゴリ別に `playbook/*.md` へ分割済み。肥大化チェックは `scripts/ace/` テンプレート導入済みプロジェクトの場合 `npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md` で実行できる（npm script として登録してもよい）。未導入のプロジェクトでは同梱テンプレートを直接叩く（インストール不要）: `npx --yes tsx "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-category-size.ts" docs/08-knowledge/PLAYBOOK.md`。このチェックは `playbook/` サブディレクトリを自動検出して索引 + 全サブファイルの総行数・カテゴリ別件数を集計する（`playbook/archive/` 配下は対象外）。行数上限は**件数から導出**される（`ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1)`。`ACE_MAX_PLAYBOOK_LINES` を明示指定したときだけ固定上限。ADR-019）。超過すると警告が出る（**警告のみ・追記はブロックしない**）。導出上限の超過は「ファイルが大きい」ではなく「**1 エントリが太い**」の意味なので、第一対応は旧テーブル形式の正準化。密度警告・カテゴリ件数の refine 目安超過（既定 130 件・警告）またはブロック上限超過（既定 180 件・exit 1）が出た場合は `/ace-refine` で正準化・stale アーカイブ・圧縮・統合を実行する。分割は検索語彙が明確に分岐するときだけ（分割だけで凌がない）

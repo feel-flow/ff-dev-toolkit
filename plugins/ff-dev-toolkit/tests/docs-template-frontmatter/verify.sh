@@ -14,13 +14,22 @@
 #   B. skills/init-docs/SKILL.md のディレクトリ構造ツリー（ステップ2 のフェンス）と
 #      本 suite の一覧が集合として一致する（SKILL 側だけ増減 = 赤。一覧の複製 drift
 #      を fail-closed で検出する）
-#   C. 各ファイルの先頭行が `---` で、Frontmatter ブロックが閉じている
-#   D. 必須6フィールド（title / version / status / owner / created / updated）が
-#      引用符付き `key: "value"` 形式で揃っている
-#   E. version が SemVer 形式、status が値域（draft/review/approved/deprecated）内
-#   F. changeImpact は存在する場合のみ小文字 low/medium/high（初版省略可のため
-#      存在自体は要求しない。MASTER.md の文書管理ルール準拠）
-#   G. 文書内に `## Changelog` 見出しがある
+#   C. 各ファイルの Frontmatter / Changelog 構造（tests/lib/docs-scan.sh の
+#      ff_docs_fm_verdict に委譲。先頭行 `---` / 閉じ / 必須6フィールドの引用符付き /
+#      重複キー無し / SemVer（先頭ゼロ不可）/ status 値域 / created・updated の日付形式と
+#      前後関係 / changeImpact は存在時のみ小文字値域 / `## Changelog` 見出し）
+#
+# **C の判定ロジックは持たない。** 同型ゲート tests/docs-frontmatter-repo/（対象
+# プロジェクトの docs/ 側）と awk を二重に持っていたため、重複キー拒否と SemVer 先頭ゼロ
+# 拒否が片方にしか入らず非対称になった（Issue #526）。契約は lib 側 1 箇所に置く。
+#
+# docs-template は**記入前の雛形**なので `created` / `updated` は `"YYYY-MM-DD"` の
+# プレースホルダーのまま入っている。この差だけを引数 allow-date-placeholder で表現する
+# （changeImpact の初版省略は lib 側も既に「存在時のみ検証」なので差にならない）。
+#
+# なお lib は `changeImpact` を引用符あり / なしの両形で受理する（本リポジトリの
+# PLAYBOOK.md を書く生成器が引用符なしで出すため）。docs-template は全ファイル
+# 引用符付きで書くので、この緩さはテンプレート側の検出力を下げない。
 #
 # 正規表現は ASCII クラスのみ使用（bash 3.2 / BSD ツールの MBCS 事故防止）。
 # 一時ディレクトリ不要の純粋なファイル検査で、read-only 環境でも完走する。
@@ -33,6 +42,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ROOT="${FF_DOCS_TEMPLATE_ROOT:-$DEFAULT_ROOT}"
+
+# lib は**本スクリプトの位置**から解決する（$ROOT からではない）。
+# FF_DOCS_TEMPLATE_ROOT が指す fixture は docs-template/ と skills/ しか持たない。
+# shellcheck source=../lib/docs-scan.sh
+. "$SCRIPT_DIR/../lib/docs-scan.sh"
 
 TEMPLATE_DIR="$ROOT/docs-template"
 INIT_DOCS_SKILL="$ROOT/skills/init-docs/SKILL.md"
@@ -87,11 +101,16 @@ done
 echo "== B. skills/init-docs/SKILL.md のツリーとの集合一致 =="
 # ステップ2 見出し（### 2.）以降の最初のフェンスブロックから *.md 名を抽出する。
 # フェンスの検出・ファイル名抽出とも ASCII パターンのみ（罫線文字には触れない）。
+#
+# grep だけを `|| true` で包む: 抽出 0 件のとき grep が非 0 を返し、`set -euo pipefail` が
+# **下の fail-closed 分岐に到達する前に**スクリプトを殺す（理由を一言も出さないまま
+# rc=1 で死ぬ形。空振りの報告が消える）。Issue #526 の理由照合で実測した。
+# パイプライン全体を包むと awk 側の失敗まで飲むので、飲むのは grep の 0 件だけにする。
 tree_names="$(awk '
   /^### 2\./ { in_step2 = 1; next }
   in_step2 && /^```/ { if (in_fence) { exit } in_fence = 1; next }
   in_fence { print }
-' "$INIT_DOCS_SKILL" | grep -oE '[A-Za-z_]+\.md' | LC_ALL=C sort)"
+' "$INIT_DOCS_SKILL" | { grep -oE '[A-Za-z_]+\.md' || true; } | LC_ALL=C sort)"
 list_names="$(for rel in "${INITIAL_SET[@]}"; do basename "$rel"; done | LC_ALL=C sort)"
 if [ -z "$tree_names" ]; then
   bad "SKILL.md のツリーから .md 名を 1 件も抽出できません（抽出の空振りを緑にしない）"
@@ -105,80 +124,16 @@ else
   LC_ALL=C comm -13 <(printf '%s\n' "$tree_names") <(printf '%s\n' "$list_names") | sed 's/^/    /' >&2
 fi
 
-echo "== C〜G. 各ファイルの Frontmatter / Changelog 構造 =="
+echo "== C. 各ファイルの Frontmatter / Changelog 構造 =="
 for rel in "${INITIAL_SET[@]}"; do
   f="$TEMPLATE_DIR/$rel"
   [ -f "$f" ] || continue  # 欠落は検査 A で既に赤
-
-  # C. 先頭行が --- で、2 行目以降に閉じの --- がある
-  first_line="$(head -1 "$f")"
-  if [ "$first_line" != "---" ]; then
-    bad "$rel: 先頭行が Frontmatter 開始（---）ではありません"
-    continue
-  fi
-  close_line="$(awk 'NR > 1 && /^---$/ { print NR; exit }' "$f")"
-  if [ -z "$close_line" ]; then
-    bad "$rel: Frontmatter が閉じていません（2 行目以降に --- がない）"
-    continue
-  fi
-
-  # D〜G をファイル 1 パスの awk で判定する（パイプ入力の grep -q* は SIGPIPE 事故
-  # 防止のため禁止 — run-all case 10）。flags はこの awk の printf が全出力を統制する
-  flags="$(awk -v fm_end="$close_line" '
-    NR >= 2 && NR < fm_end {
-      if ($0 ~ /^title: "[^"]+"$/)    f["title"] = 1
-      if ($0 ~ /^version: "[^"]+"$/)  f["version"] = 1
-      if ($0 ~ /^version: "[0-9]+\.[0-9]+\.[0-9]+"$/) f["semver"] = 1
-      if ($0 ~ /^status: "[^"]+"$/)   f["status"] = 1
-      if ($0 ~ /^status: "(draft|review|approved|deprecated)"$/) f["statusdom"] = 1
-      if ($0 ~ /^owner: "[^"]+"$/)    f["owner"] = 1
-      if ($0 ~ /^created: "[^"]+"$/)  f["created"] = 1
-      if ($0 ~ /^updated: "[^"]+"$/)  f["updated"] = 1
-      if ($0 ~ /^changeImpact:/)      f["ci"] = 1
-      if ($0 ~ /^changeImpact: "(low|medium|high)"$/) f["cidom"] = 1
-    }
-    /^## Changelog$/ { f["changelog"] = 1 }
-    END {
-      printf "title=%d version=%d semver=%d status=%d statusdom=%d owner=%d created=%d updated=%d ci=%d cidom=%d changelog=%d\n", \
-        f["title"], f["version"], f["semver"], f["status"], f["statusdom"], \
-        f["owner"], f["created"], f["updated"], f["ci"], f["cidom"], f["changelog"]
-    }
-  ' "$f")"
-  has_flag() { case " $flags " in *" $1=1 "*) return 0 ;; *) return 1 ;; esac; }
-
-  # D. 必須6フィールド（引用符付き key: "value" 形式）
-  missing=""
-  for key in title version status owner created updated; do
-    has_flag "$key" || missing="$missing $key"
-  done
-  if [ -n "$missing" ]; then
-    bad "$rel: 必須フィールドが欠落または引用符なし:${missing}"
-    continue
-  fi
-
-  # E. version の SemVer 形式と status の値域
-  if ! has_flag semver; then
-    bad "$rel: version が SemVer 形式（\"x.y.z\"）ではありません"
-    continue
-  fi
-  if ! has_flag statusdom; then
-    bad "$rel: status が値域（draft/review/approved/deprecated）外です"
-    continue
-  fi
-
-  # F. changeImpact は存在する場合のみ小文字の値域を要求（初版省略可）
-  if has_flag ci && ! has_flag cidom; then
-    bad "$rel: changeImpact が小文字の low/medium/high ではありません"
-    continue
-  fi
-
-  # G. ## Changelog 見出し
-  if ! has_flag changelog; then
-    bad "$rel: ## Changelog セクションがありません"
-    continue
-  fi
-
-  ok "$rel: Frontmatter / Changelog 構造 OK"
+  verdict="$(ff_docs_fm_verdict "$f" allow-date-placeholder)"
+  case "$verdict" in
+    OK)   ok "$rel: Frontmatter / Changelog 構造 OK" ;;
+    NG:*) bad "$rel: ${verdict#NG:}" ;;
+    *)    bad "$rel: 判定関数が想定外の値を返しました: $verdict" ;;
+  esac
 done
 
 echo ""

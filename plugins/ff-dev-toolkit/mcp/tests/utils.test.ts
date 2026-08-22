@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { splitSections, parseScalar, parseFrontMatter, buildGlossary, maskNonGlossaryLines } from '../src/utils.js';
+import { execFileSync } from 'child_process';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import url from 'url';
+import { splitSections, parseScalar, parseFrontMatter, buildGlossary, maskNonGlossaryLines, maskClosedSpans } from '../src/utils.js';
 
 // ---------- splitSections ----------
 describe('splitSections', () => {
@@ -412,5 +417,189 @@ describe('buildGlossary', () => {
       'Agentic Context Engineering',
     ].join('\n');
     expect(Object.keys(buildGlossary(md))).toEqual(['ACE']);
+  });
+});
+
+// ---------- maskClosedSpans: インラインコードスパン / CRLF（Issue #527） ----------
+
+const TEST_DIR = path.dirname(url.fileURLToPath(import.meta.url));
+const DOCS_SCAN_LIB = path.resolve(TEST_DIR, '../../tests/lib/docs-scan.sh');
+
+/**
+ * The Issue #527 reproduction: prose quoting `<!--` in an inline code span,
+ * followed by a mermaid arrow (`-->`) that must not be taken as the closer.
+ *
+ * The last line is the composite case: two code spans plus a real comment on
+ * one line, with the quoted marker sitting *after* the real one. It exercises
+ * both the "skip spans" rule and the re-examination of the same line after a
+ * comment is removed (the quoted marker must not open on the second pass).
+ *
+ * Shared by the TS behaviour test and the awk/TS parity test below.
+ */
+const INLINE_MARKER_FIXTURE = [
+  'マーカーは `<!--` と書く',
+  '- **回帰ゲート（69 suite）**: 実体と一致するはず',
+  '- 初期セット 20 ファイル',
+  '```mermaid',
+  'graph TD',
+  '    A[x] --> B[y]',
+  '```',
+  'KEEP-AFTER',
+  '`a` <!-- x --> `<!--`',
+];
+
+describe('maskClosedSpans (Issue #527)', () => {
+  it('対になったインラインコードスパン内の <!-- はコメントを開始しない', () => {
+    expect(maskClosedSpans(INLINE_MARKER_FIXTURE)).toEqual([
+      'マーカーは `<!--` と書く',
+      '- **回帰ゲート（69 suite）**: 実体と一致するはず',
+      '- 初期セット 20 ファイル',
+      '',
+      '',
+      '',
+      '',
+      'KEEP-AFTER',
+      '`a`  `<!--`',
+    ]);
+  });
+
+  it('コードスパン外の <!-- は従来どおりコメントを開始する（narrowing の縮小防止）', () => {
+    expect(maskClosedSpans(['本文 <!-- 注 --> 続き'])).toEqual(['本文  続き']);
+  });
+
+  it('同一行にスパン内の <!-- と実コメントがあるとき、実コメントだけが開始になる', () => {
+    expect(maskClosedSpans(['`<!--` の説明 <!-- 実コメント', '中身', '--> 残り'])).toEqual([
+      '`<!--` の説明 ',
+      '',
+      ' 残り',
+    ]);
+  });
+
+  it('閉じていないバックティックはスパンにならない（<!-- は開始として扱う）', () => {
+    expect(maskClosedSpans(['`<!-- 閉じないスパン --> 続き'])).toEqual(['` 続き']);
+  });
+
+  it('CRLF 行末でも閉じたフェンスをマスクする（awk 版と同じ判断）', () => {
+    expect(maskClosedSpans(['```text\r', '中身\r', '```\r', 'KEEP\r'])).toEqual(['', '', '', 'KEEP\r']);
+  });
+});
+
+// ---------- 実利用経路（用語集索引）での固定（Issue #527 統合経路） ----------
+//
+// maskClosedSpans 単体の期待値だけを固定すると、内部表現を変えたリファクタで
+// 「マスクは正しいのに索引から用語が消える」形の回帰を取り逃す。本 Issue の実害は
+// **用語が索引から静かに落ちること**なので、公開 API の buildGlossary を通した
+// 用語集合そのものをここで固定する。
+//
+// マーカー行に `-->` を同居させないのが判別力の要: 同居させると narrowing 前の実装でも
+// 同一行内で対が閉じてしまい、どのケースも緑になって何も測れない。
+describe('buildGlossary: 引用マーカーが用語索引を落とさない（Issue #527）', () => {
+  it('コードスパン内の <!-- と後続 mermaid 矢印の間にある用語も索引される', () => {
+    const md = [
+      '雛形は `<!--` で開いて書く',
+      '',
+      '### ACE',
+      '',
+      'Agentic Context Engineering',
+      '',
+      '```mermaid',
+      'graph TD',
+      '    A[x] --> B[y]',
+      '```',
+      '',
+      '### SSOT',
+      '',
+      '単一の情報源',
+    ].join('\n');
+    const result = buildGlossary(md);
+    expect(Object.keys(result).sort()).toEqual(['ACE', 'SSOT']);
+    expect(result['ACE']).toBe('Agentic Context Engineering');
+  });
+
+  it('引用マーカーの後にある実コメント内の用語は索引に入らない', () => {
+    const md = [
+      '雛形は `<!--` で開いて書く',
+      '',
+      '<!--',
+      '### 雛形用語',
+      '',
+      '雛形の定義',
+      '-->',
+      '',
+      '### ACE',
+      '',
+      'Agentic Context Engineering',
+    ].join('\n');
+    expect(Object.keys(buildGlossary(md))).toEqual(['ACE']);
+  });
+
+  it('引用マーカー・実コメント・フェンスが同居しても公開用語集合が期待どおり', () => {
+    const md = [
+      'この節では `<!--` をマーカーとして説明する',
+      '',
+      '### 用語1',
+      '',
+      '定義1',
+      '',
+      '<!-- ### 雛形A は索引に入らない -->',
+      '',
+      '```markdown',
+      '### 雛形B',
+      '',
+      '<定義>',
+      '```',
+      '',
+      '### 用語2',
+      '',
+      '定義2',
+      '',
+      '```mermaid',
+      'graph TD',
+      '    用語1 --> 用語2',
+      '```',
+      '',
+      '- SSOT: 単一の情報源',
+    ].join('\n');
+    expect(Object.keys(buildGlossary(md)).sort()).toEqual(['SSOT', '用語1', '用語2']);
+  });
+});
+
+// ---------- awk 版との一致（Issue #527 AC-2。機械照合の常設ゲートは #528） ----------
+
+/** Run `ff_docs_mask_spans` from tests/lib/docs-scan.sh over the given lines. */
+const runAwkMask = (lines: string[], eol: string): string[] => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ff-527-'));
+  try {
+    const file = path.join(dir, 'fixture.md');
+    fs.writeFileSync(file, lines.join(eol) + eol);
+    const out = execFileSync(
+      'bash',
+      ['-c', '. "$1" && ff_docs_mask_spans "$2"', 'bash', DOCS_SCAN_LIB, file],
+      { encoding: 'utf8' },
+    );
+    return out.replace(/\n$/, '').split('\n');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+// CR は比較の前に落とす: awk は RS="\n" で読むため未マスク行に \r が残るが、TS 側は
+// `/\r?\n/` で分割した後の行を受け取る。AC-3 が問うのは「マスクするかどうかの判断」で
+// あって CR を保存するかではない。
+const stripCr = (lines: string[]): string[] => lines.map((l) => l.replace(/\r$/, ''));
+
+describe('ff_docs_mask_spans (awk) と maskClosedSpans (TS) の一致', () => {
+  const hasLib = fs.existsSync(DOCS_SCAN_LIB);
+
+  it.skipIf(!hasLib)('インラインコードスパン fixture で完全に一致する', () => {
+    expect(runAwkMask(INLINE_MARKER_FIXTURE, '\n')).toEqual(maskClosedSpans(INLINE_MARKER_FIXTURE));
+  });
+
+  it.skipIf(!hasLib)('CRLF fixture で一致する（両方ともフェンスをマスクする）', () => {
+    const lines = ['```text', '中身', '```', 'KEEP'];
+    const awk = stripCr(runAwkMask(lines, '\r\n'));
+    const ts = stripCr(maskClosedSpans(lines.map((l) => l + '\r')));
+    expect(awk).toEqual(['', '', '', 'KEEP']);
+    expect(awk).toEqual(ts);
   });
 });

@@ -103,25 +103,50 @@ const closesFence = (l: string, open: { char: string; len: number }): boolean =>
 };
 
 /**
+ * Replace each paired single-backtick code span with the same number of spaces.
+ *
+ * Used only to locate a comment opener: padding preserves length, so a column in
+ * the returned string maps straight back to the same column of the original.
+ *
+ * The rule must stay identical to `ff_docs_mask_inline_spans` /
+ * `blank_code_spans` in `tests/lib/docs-scan.sh` — single-backtick pairs only,
+ * escaped backticks not distinguished. Changing one side alone drifts silently.
+ */
+const blankCodeSpans = (l: string): string => l.replace(/`[^`]*`/g, (m) => ' '.repeat(m.length));
+
+/**
  * Blank every closed fence / HTML-comment span, left to right.
  *
  * A single pass is what makes the two kinds compose: whichever marker opens
  * first wins, and any marker inside the resulting span is never examined (so a
  * ``` inside a comment cannot pair with a fence outside it, and vice versa).
  *
- * Two deliberate narrowings:
+ * Three deliberate narrowings:
  *   - an opener with no matching close is **skipped, not honoured** — the scan
  *     continues so a stray marker neither swallows the rest of the file nor
  *     hides a later closed span
  *   - for comments only the commented characters are removed, so a term with a
  *     trailing note (`### ACE <!-- 補足 -->`) survives
+ *   - a `<!--` inside a paired inline code span does **not** open a comment
+ *     (Issue #527): prose quoting the marker would otherwise pair with the next
+ *     `-->` in the file — a mermaid arrow (`A --> B`) is enough — and silently
+ *     swallow everything in between. The closing search is deliberately left
+ *     alone; only the opener is narrowed.
+ *
+ * Known limitation: the closing search still **crosses fence spans**. A bare
+ * `<!--` outside any code span still pairs with a `-->` that lives inside a
+ * later fence. Narrowing the opener closed the Issue #527 path, not this rule.
+ * Tracked as Issue #706 (kept identical to the awk side in docs-scan.sh).
  */
-const maskClosedSpans = (lines: string[]): string[] => {
+export const maskClosedSpans = (lines: string[]): string[] => {
   const out = [...lines];
   let i = 0;
   while (i < out.length) {
     const fence = fenceOpenerOf(out[i]);
-    const commentAt = out[i].indexOf('<!--');
+    // Fence detection reads the raw line (``` itself would be blanked); only the
+    // comment opener is looked up in the blanked copy. Lengths match, so the
+    // `indexOf(fence.char) < commentAt` precedence comparison is unaffected.
+    const commentAt = blankCodeSpans(out[i]).indexOf('<!--');
     if (fence && (commentAt === -1 || out[i].indexOf(fence.char) < commentAt)) {
       const close = out.findIndex((l, j) => j > i && closesFence(l, fence));
       if (close === -1) { i++; continue; } // unclosed: skip this opener only

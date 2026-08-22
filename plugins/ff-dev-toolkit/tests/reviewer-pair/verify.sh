@@ -230,6 +230,15 @@ if awk '/^   claude-code /{f=1;seen=1;next} /^   [a-z]/{f=0} f&&/comprehensive-r
 else
   bad "総合レビューが主にも割り当てられている（同じ差分を二重に見る）"
 fi
+# --perspective 無しの既定形。副が計画されているので縮退の話は一切出ない
+# （Issue #597 の追加出力が正常系へ漏れていないことの確認）。
+if ! grep -q 'Plan resolved to a single CLI' "$TMP/pair.log" \
+  && ! grep -q 'running single-reviewer' "$TMP/pair.log"; then
+  ok "既定の pair プランでは縮退メッセージが一切出ない"
+else
+  bad "縮退していないのに縮退メッセージが出ている"
+  sed 's/^/    | /' "$TMP/pair.log" >&2
+fi
 
 # ── 縮退（すべて続行。止めるのは主が未導入のときだけ） ──────────
 
@@ -490,12 +499,34 @@ fi
 echo ""
 echo "-- --perspective と縮退 --"
 run "$TMP/persp-main.log" -- --perspective code-review --dry-run
+# 「プランに総合観点が無い」はプラン行の書式で測る。ログ全体の grep にすると、
+# 副の脱落理由（観点名を名乗る 1 行）まで拾って判定が反転する（Issue #597）。
 if [ "$RUN_RC" -eq 0 ] \
   && grep -q '^     - code-review$' "$TMP/persp-main.log" \
-  && ! grep -q 'comprehensive-review' "$TMP/persp-main.log"; then
+  && ! grep -q '^     - comprehensive-review$' "$TMP/persp-main.log"; then
   ok "個別観点だけを指定すると主のその観点だけが計画される"
 else
   bad "個別観点の --perspective が期待どおりでない（rc=${RUN_RC}）"
+fi
+
+# 副の脱落は 4 経路すべてが理由を出すこと（Issue #597）。ここだけ else が無く、
+# クロスモデルのつもりが単一 CLI レビューになったことに気づけなかった。
+if grep -q "sub reviewer 'codex-cli' runs only 'comprehensive-review'" "$TMP/persp-main.log" \
+  && grep -q -- '--perspective (code-review)' "$TMP/persp-main.log"; then
+  ok "--perspective で副が落ちる経路も理由を名乗る（無言で落とさない）"
+else
+  bad "--perspective による副の脱落が無言（他 3 経路と不揃い）"
+  sed 's/^/    | /' "$TMP/persp-main.log" >&2
+fi
+
+# 単一 CLI へ縮退したこと自体の警告（#183 と同等）が pair モードでも出ること。
+if grep -q 'Plan resolved to a single CLI (claude-code)' "$TMP/persp-main.log" \
+  && grep -q 'means zero review coverage' "$TMP/persp-main.log" \
+  && grep -q -- '--mode cross-model --perspective code-review' "$TMP/persp-main.log"; then
+  ok "pair モードでも単一 CLI 縮退警告と cross-model の案内が出る"
+else
+  bad "pair モードで単一 CLI 縮退警告が出ていない（#183 の gate が distributed 限定のまま）"
+  sed 's/^/    | /' "$TMP/persp-main.log" >&2
 fi
 
 run "$TMP/persp-comp.log" -- --perspective comprehensive-review --dry-run
@@ -503,6 +534,50 @@ if [ "$RUN_RC" -eq 0 ] && grep -q 'codex-cli \[standard\]:' "$TMP/persp-comp.log
   ok "総合観点だけを指定すると副だけが計画される"
 else
   bad "総合観点の --perspective が期待どおりでない（rc=${RUN_RC}）"
+fi
+
+# 副が残っている以上、縮退はしていない。プランの CLI 数は 1 になるが、それは
+# 要求どおりなので警告は雑音（Issue #597）。CLI 数だけを見る gate はここで落ちる。
+if ! grep -q 'Plan resolved to a single CLI' "$TMP/persp-comp.log" \
+  && ! grep -q 'runs only' "$TMP/persp-comp.log"; then
+  ok "総合観点の明示指定では副が残り、余計な縮退警告を出さない"
+else
+  bad "副が計画されているのに縮退警告が出ている（正常系を壊している）"
+  sed 's/^/    | /' "$TMP/persp-comp.log" >&2
+fi
+
+# --exclude-perspective で副の唯一の担当を外した経路。理由は名乗るが、縮退警告は
+# 出さない（「その観点を走らせるな」は明示指定なので、--mode cross-model の案内は
+# 的外れ）。理由と警告は別の判断なので、両方を 1 ケースで固定する。
+run "$TMP/persp-excl.log" -- --exclude-perspective comprehensive-review --dry-run
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q "sub reviewer 'codex-cli' runs only 'comprehensive-review'" "$TMP/persp-excl.log" \
+  && grep -q -- 'excluded by --exclude-perspective' "$TMP/persp-excl.log"; then
+  ok "--exclude-perspective で副が落ちる経路も理由を名乗る"
+else
+  bad "--exclude-perspective による副の脱落が無言、または理由が不正確（rc=${RUN_RC}）"
+  sed 's/^/    | /' "$TMP/persp-excl.log" >&2
+fi
+if ! grep -q 'Plan resolved to a single CLI' "$TMP/persp-excl.log"; then
+  ok "明示的な除外には縮退警告を出さない（cross-model の案内が的外れなため）"
+else
+  bad "明示的な --exclude-perspective へ縮退警告を出している"
+  sed 's/^/    | /' "$TMP/persp-excl.log" >&2
+fi
+
+# 併用時の優先順位。除外は「走らせるな」で、フィルタは「これを走らせろ」。両方が
+# 副を落とす条件を満たすため、どちらの理由を名乗るかは分岐の順序で決まる。除外を
+# 先に評価しないと、--perspective の値を括弧に入れた理由文が出て、しかも縮退警告
+# まで付く（明示的に外した観点について cross-model を勧める形になる）。
+run "$TMP/persp-both.log" -- --perspective code-review --exclude-perspective comprehensive-review --dry-run
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q -- 'excluded by --exclude-perspective' "$TMP/persp-both.log" \
+  && ! grep -q -- 'not in --perspective' "$TMP/persp-both.log" \
+  && ! grep -q 'Plan resolved to a single CLI' "$TMP/persp-both.log"; then
+  ok "--perspective と --exclude-perspective の併用は除外を先に評価する"
+else
+  bad "併用時に --perspective 側の理由が出ている（除外より後に評価されている）（rc=${RUN_RC}）"
+  sed 's/^/    | /' "$TMP/persp-both.log" >&2
 fi
 
 # 副が居ないのに総合観点を明示された場合。空プランで exit 1 になると
@@ -586,6 +661,13 @@ if grep -q 'gemini-cli \[free-tier\]:' "$TMP/clifilter.log" \
   ok "落とした先の分散プランで --cli が実際に効いている"
 else
   bad "分散へ落としたのに --cli が反映されていない"
+fi
+
+# 明示 --cli は意図的な単一モデルなので、縮退警告は出さない（#183 の設計を維持）。
+if ! grep -q 'Plan resolved to a single CLI' "$TMP/clifilter.log"; then
+  ok "明示 --cli の単一 CLI には縮退警告を出さない"
+else
+  bad "意図的な単一モデル指定へ縮退警告を出している"
 fi
 
 run "$TMP/clipair.log" -- --mode pair --cli gemini-cli --dry-run

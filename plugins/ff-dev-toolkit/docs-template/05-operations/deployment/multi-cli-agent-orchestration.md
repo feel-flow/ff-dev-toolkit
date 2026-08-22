@@ -149,6 +149,23 @@ distributed モードの perspective は CLI ごとの固定レジストリか�
 実行時 fallback が無いことによるゼロカバレッジのリスクと
 `--mode cross-model --perspective <name>` の代替を警告します。
 
+pair モードでも同じ縮退が起きます。副レビュワーは `comprehensive-review` 専任なので、
+それを含まない `--perspective` を渡すと副がプランから外れます。副が落ちる 5 経路
+（副が未設定 / 主と同一 CLI / 未導入 / `--perspective` に副の担当が無い /
+`--exclude-perspective` で副の担当を除外）は、いずれも同じ書式で 1 行の理由を出します。
+
+**上記の単一 CLI 縮退警告が追加で出るのは `--perspective` の経路だけ**です。副を立て
+られたのにフィルタで落ちた場合だけがクロスモデルの取りこぼしだからです。残る 4 経路
+では出しません — 未設定 / 主と同一 / 未導入は副そのものが使えず `--mode cross-model`
+にしても解決しないため、`--exclude-perspective` は「その観点を走らせるな」という明示
+指定のためです。`--perspective comprehensive-review` のように副だけが残る指定も、
+プランの CLI は 1 つになりますが要求どおりなので警告しません。
+
+なお pair モードに `--cli` は存在しません。`--mode pair` を明示したうえでの `--cli` は
+矛盾として拒否され、既定で pair になっている場合の `--cli` は distributed へ降格した
+うえで通知されます（降格先では従来どおり、明示 `--cli` は意図的な単一モデル指定として
+警告対象外です）。
+
 単一の `--cli <name> --perspective <name>` を両方明示した場合は、その組み合わせを
 利用者の実行意図としてレジストリより優先します。したがって、失敗サマリーが提示する
 代替 CLI + 元 perspective の再実行コマンドも空プランになりません。repeatable な

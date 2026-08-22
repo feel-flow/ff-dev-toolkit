@@ -125,6 +125,12 @@ else
     # suite 全体を ○ skip する（実作業ツリーは変更しない）。
     "$SCRIPT_DIR/ace-scripts-mirror-selftest/verify.sh"
     "$SCRIPT_DIR/changelog-public-references/verify.sh"
+    # 上の gate の検出力を fixture への変異注入で実測する（Issue #610）。本体は実
+    # CHANGELOG を検査するので、緑のままでは「何を検出できるか」が分からない。
+    # perl / 一時領域が無い場合は ○ skip するが、検出力が丸ごと消えるため
+    # REQUIRED_SUITES に載せて明示許可を要求する。
+    # 検査対象の直後に置くことを優先し、安価な順の例外として扱う。
+    "$SCRIPT_DIR/changelog-public-references-selftest/verify.sh"
     "$SCRIPT_DIR/changelog-version/verify.sh"
     "$SCRIPT_DIR/docs-gates/verify.sh"
     "$SCRIPT_DIR/out-of-scope-routing/verify.sh"
@@ -139,6 +145,12 @@ else
     # perl / 一時領域が無い場合だけ丸ごと ○ skip（実作業ツリーは変更しない）。
     # 検査対象の直後に置くことを優先し、安価な順の例外として扱う。
     "$SCRIPT_DIR/out-of-scope-routing-selftest/verify.sh"
+    # /refine-issue の skip 条件契約（Issue #683）: 手順 6・7 を skip してよいのは
+    # 「6 観点違反 0 件 かつ SubAgent 論点 0 件」のときだけ、という AND を SKILL.md の
+    # 3 箇所（skip 条件・階層化判定の入口・skip 時の報告見出し）で固定する。単一条件へ
+    # 戻すと上流ゲートの検出結果が後段へ届かず落ちる。外部コマンド・一時領域不要。
+    # 同じ「スキルの契約文言」を扱う out-of-scope 系に続けて置く。
+    "$SCRIPT_DIR/refine-issue-skip-contract/verify.sh"
     # /retrospective の規定（提案閾値・承認境界・read-only 境界・ask モード・trigger 語）
     # と、ワークフローチェーン記載の相互整合の静的検査（Issue #540）。モノレポでは
     # 7 ファイル / 13 針、公開配置では 6 ファイル / 11 針を見る。上限と 1 行報告の文面は
@@ -212,7 +224,10 @@ else
     # この gate だけが守る。外部コマンド不要の静的検査（Issue #509）。
     "$SCRIPT_DIR/docs-template-frontmatter/verify.sh"
     # 上の gate の検出力を mktemp fixture への変異（FM 除去・フィールド欠落・
-    # 値域外・未閉鎖・ファイル削除・ツリー片側更新・抽出空振り）で実測する。
+    # 値域外・未閉鎖・ファイル削除・ツリー片側更新・抽出空振り・重複キー（引用符付き
+    # キーを含む）・SemVer 先頭ゼロ・status の中間状態・日付プレースホルダー免除の
+    # 境界・created/updated の前後関係）で実測する。赤ケースは理由の文言まで照合し、
+    # ケース数は selftest 側の EXPECTED_G_CASES が固定する（Issue #526）。
     # perl 不在または一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/docs-template-frontmatter-selftest/verify.sh"
     # 対象プロジェクトの docs/ 側 Frontmatter 付与規則の回帰ゲート。MASTER.md の
@@ -384,6 +399,12 @@ else
     # vitest 本体は mcp/node_modules を再利用するため mcp 系 suite より後に置く
     # （上の型検査 2 本と ace-refine も同じ node_modules を借りるので、この 4 本が同じ並びに入る）。
     "$SCRIPT_DIR/ace-scripts-vitest/verify.sh"
+    # /ace-curate 4-f の未導入 fallback を、scripts/ace/ を持たない一時プロジェクトで
+    # 実際に走らせる挙動検査（Issue #614）。SKILL.md が案内する `npx --yes tsx <同梱パス>`
+    # をそのまま使うため tsx の取得（初回のみネットワーク。以降は npm cache）に依存し、
+    # 4 回の npx 起動で単体〜20 秒かかる。node / npx / 一時領域が無い、または tsx を
+    # 解決できない環境では丸ごと ○ skip する。
+    "$SCRIPT_DIR/ace-curate-fallback-exec/verify.sh"
     # 一時 git リポジトリ + stub CLI を使い、打ち切りや猶予期間の実測待ちを含むので
     # 後ろに置く（単体で〜35 秒。数字を更新するときは実測してから直すこと）
     "$SCRIPT_DIR/multi-agent-timeout/verify.sh"
@@ -429,6 +450,11 @@ REQUIRED_SUITES=(
   # 一時領域不足で消えると count-rot の検出力喪失が黙って通る（Issue #502）。
   skill-count-consistency-selftest
   ace-scripts-vitest
+  # node / npx / tsx 解決（初回はネットワーク）が要る。ace-curate-commit は案内パスの
+  # 文字列と同梱スクリプトの実在までは見るが、**そのパスで実際に走って exit 0 になるか**を
+  # 確かめるのはこの suite だけ。黙って消えると、スクリプトが壊れて未導入プロジェクトの
+  # 必須ゲートが再び到達不能になっても緑のままになる（Issue #614）。
+  ace-curate-fallback-exec
   # ミラー検出器・tree-state helper・runner 自身の検出力にも代替がない。
   ace-scripts-mirror-selftest
   mcp-state-selftest
@@ -448,6 +474,10 @@ REQUIRED_SUITES=(
   # out-of-scope 契約ゲート（routing / decision）の検出力 selftest。代替の検査が
   # 無く、perl・一時領域の都合で消える場合は明示許可を要求する（#499）。
   out-of-scope-routing-selftest
+  # 公開 CHANGELOG 参照ゲートの検出力 selftest。本体は実 CHANGELOG が clean な限り
+  # 緑のままなので、検出パターンが弱っても本体だけでは分からない。perl・一時領域の
+  # 都合で消えると「参照検出の退行が黙って通る」状態になる（Issue #610）。
+  changelog-public-references-selftest
   # /retrospective 契約ゲートの検出力 selftest。代替の検査が無く、perl・一時領域の
   # 都合で消えるとチェーン記載の針と規定マーカーの検出力喪失が黙って通る（#540）。
   retrospective-contract-selftest

@@ -109,10 +109,63 @@ expect_contains \
   '（無ければ「Reuse 記録なし」）' \
   "Reuse 記録欄を候補件数と独立の必須出力として保持"
 
+echo "== 同梱スクリプトへの到達可能性検査 =="
+# ゲートの実行例が `path/to/` 等のプレースホルダのままだと、scripts/ace/ 未導入の
+# プロジェクトでは「必須」と書かれたゲートが素通りする（Issue #614）。同梱テンプレート
+# への解決可能なパスを fail-closed で固定する。
+
+if grep -Fq -- 'path/to/' "$COMMAND_FILE"; then
+  bad "実行例に未解決のプレースホルダ path/to/ が残っています"
+else
+  ok "実行例に未解決のプレースホルダ path/to/ が無い"
+fi
+
+expect_contains \
+  '"${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check' \
+  "同期検証の未導入 fallback が同梱スクリプトの解決可能なパス"
+
+expect_contains \
+  '"${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md' \
+  "形式ゲートの未導入 fallback が同梱スクリプトの解決可能なパス"
+
+expect_contains \
+  '"${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-category-size.ts" docs/08-knowledge/PLAYBOOK.md' \
+  "肥大化チェックの未導入 fallback が同梱スクリプトの解決可能なパス"
+
+# 導入済み側。npm script の登録と scripts/ace/ の配置は別条件なので、npm script 未登録
+# でも scripts/ace/ を持つプロジェクトが直接叩ける選択肢を消さない。
+expect_contains \
+  'npm run ace:check-playbook-frontmatter' \
+  "同期検証に npm script 登録済み向けの選択肢がある"
+
+expect_contains \
+  'npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check' \
+  "同期検証に scripts/ace/ 導入済み向けの直接呼び出しがある"
+
+# 4 本とも live command のため、フェンス一括実行を明示的に禁じておかないと未導入
+# プロジェクトでは前半が必ず失敗し、直後の exit 0 判定と噛み合わなくなる。
+expect_contains \
+  'プロジェクトの状態に合う 1 本だけを実行する' \
+  "同期検証・形式ゲートの実行が排他であることの明示"
+
+# 展開元の定義が消えると上の 3 本は解決できないパスへ静かに退行する。
+expect_contains \
+  'Claude Code では `${CLAUDE_PLUGIN_ROOT}` を使い' \
+  "FF_DEV_TOOLKIT_ROOT の解決手順が本文に定義されている"
+
+# 同梱スクリプトが実在すること（SKILL.md の記述だけ直って実体が消える drift を防ぐ）。
+for _ff_script in sync-playbook-frontmatter check-entry-format check-category-size; do
+  if [ -s "$PLUGIN_ROOT/docs-template/scripts/ace/${_ff_script}.ts" ]; then
+    ok "同梱スクリプトが実在: docs-template/scripts/ace/${_ff_script}.ts"
+  else
+    bad "同梱スクリプトが存在しないか空です: docs-template/scripts/ace/${_ff_script}.ts"
+  fi
+done
+
 echo
 # 検査総数の固定。expect_* 呼び出しの削除侵食（検査だけが消えて緑のまま通る）を
 # 赤くする。針の増減時は EXPECTED_TOTAL も同時に更新すること。
-EXPECTED_TOTAL=14
+EXPECTED_TOTAL=25
 TOTAL=$((PASS + FAIL))
 if [ "$TOTAL" -eq "$EXPECTED_TOTAL" ]; then
   ok "検査総数が ${EXPECTED_TOTAL} 件（増減時は EXPECTED_TOTAL も更新すること）"

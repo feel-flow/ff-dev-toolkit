@@ -164,6 +164,23 @@ else
   printf '%s\n' "$GATE_OUTPUT" >&2
 fi
 
+# Issue #615: `## Changelog` セクションごと消すと version 検証が素通りしていた
+# fail-open を、統合層（実ゲート経由）でも固定する。unit test だけだと、CLI の
+# 配線を外しても赤くならない。
+cp "$FIXTURE_ROOT/baseline-playbook.md" "$FIXTURE_PLAYBOOK"
+perl -0pi -e 's/\n## Changelog\n.*\z//s' "$FIXTURE_PLAYBOOK"
+if grep -q '^## Changelog' "$FIXTURE_PLAYBOOK"; then
+  bad "Changelog 削除 mutation が適用できていない（検査が成立しない）"
+else
+  run_gate
+  if [[ "$GATE_RC" -ne 0 ]] && [[ "$GATE_OUTPUT" == *"\`## Changelog\` セクションがありません"* ]]; then
+    ok "## Changelog セクションの消失を専用診断付きで拒否する"
+  else
+    bad "Changelog 消失 mutation を拒否できない（rc=${GATE_RC}）"
+    printf '%s\n' "$GATE_OUTPUT" >&2
+  fi
+fi
+
 write_refine_fixture() {
   local knowledge="$FIXTURE_KNOWLEDGE"
   mkdir -p "$knowledge/playbook/archive" "$FIXTURE_REPO/docs/03-implementation"

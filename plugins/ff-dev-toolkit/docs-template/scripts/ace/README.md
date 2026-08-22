@@ -10,7 +10,7 @@ Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)
 | `check-category-size.ts`                      | Playbook の Category 件数（refine 目安超過は警告 / ブロック上限超過で非ゼロ終了）と総行数（超過は警告のみ）をチェック。集計の前提が崩れる形（Category 行が 1 ブロックに 2 本以上・閉じていないコードフェンス・Category 行が無い / 値が空）は usage error で停止 |
 | `ace-reuse-report.ts`                         | ACE 知見の再利用計測レポート（git 参照・相互参照・Archive 候補。読み取り専用）            |
 | `ace-refine-report.ts`                        | `/ace-refine` 用の候補算出レポート（Archive 候補・行数バジェット超過・PATTERNS 昇格候補。読み取り専用の dry-run） |
-| `sync-playbook-frontmatter.ts`                | PLAYBOOK frontmatter（`ace_entry_count` / version↔Changelog / `changeImpact`）の同期・検証ゲート |
+| `sync-playbook-frontmatter.ts`                | PLAYBOOK frontmatter（`ace_entry_count` / version↔Changelog / `changeImpact`）の同期・検証ゲート。`## Changelog` セクションが無い場合もドリフト扱い（版の一致を検証できないため）。frontmatter の読み書きは**トップレベルのキーのみ**を対象とし、`metadata:` 配下等へネストされた同名キーは記録として認めず、書き換えもしない。トップレベルの同名キー重複は usage error |
 | `check-archive-links.ts`                      | `playbook/archive/` の保全本文内に `./` 相対リンクがある場合、冒頭 Parent ブロック内の注記を強制し、同一ファイル内の `<a id>` 重複を拒否するゲート（違反で非ゼロ終了） |
 | `check-refine-invariants.ts`                  | `/ace-refine` の結果不変条件（compact 保全・merge 状態遷移・PATTERNS 収載）を検証するゲート（違反で非ゼロ終了） |
 | `check-entry-format.ts`                       | 新規エントリが旧テーブル形式でないこと + ID 形状が妥当（§エントリID規則）であることを検証するゲート（allowlist 外の旧形式・不正 ID で非ゼロ終了） |

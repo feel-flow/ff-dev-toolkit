@@ -22,10 +22,19 @@
 #        `昇格` 無しの `Helpful >= N`）は照合しない → 緑
 #   G22. `調査時点` を含む歴史スナップショット行（DECISIONS.md ADR-024）は照合しない → 緑
 #   G17. 未閉鎖コメント開始行に書いた件数も走査対象 → 赤（契約の固定）
-#   G18. 既知の制限の pin: 散文中の `` `<!--` `` が後続の `-->` と対になり、間の件数
-#        記載が落ちる（Issue #527）→ **現状は検出しないので緑**。修正したら
-#        このケースは赤へ更新する。G18b は同じ挿入をマーカー無しで行うと赤になることを
-#        見て、G18 の緑が「挿入の空振り」でないことを担保する
+#   G18. 散文中の `` `<!--` ``（インラインコードスパン内）は後続の `-->`（mermaid の
+#        矢印を含む）と対にならず、間の件数記載も走査される → 赤（Issue #527）。
+#        G18b は同じ挿入をマーカー無しで行っても赤になることを見て、G18 の赤が
+#        「マーカーの有無に関係なく赤」= 判別力ゼロではないことの対照になる
+#        （G26 がマスク出力を直接見て、マーカー行が保持されることを固定する）
+#   G26. ff_docs_mask_spans をマスク出力で直接検査する（Issue #527 AC-1）: 対になった
+#        コードスパン内の `<!--` は開始として扱わず、後続のフェンス（mermaid）だけが
+#        マスクされる。コードスパン外の `<!--` は従来どおり開始として扱う。
+#        最終行は合成ケース（1 行に複数 span + 実コメント同居。実コメント除去後の
+#        同一行再検査で、引用のマーカーが開始にならないこと）
+#   G27. CRLF 改行でも閉じたフェンスをマスクする（Issue #527 AC-3）。awk は RS="\n" で
+#        読むため行末に \r が残り、`[ \t]*$` の閉じ判定だけが CRLF で空振りしていた
+#        （`/\r?\n/` で分割する同梱 MCP 側とは結果が食い違う非対称）
 #   G19. 導出元（`tests/` / `skills/`）を削除 → 赤、しかも理由が「導出できません」で
 #        あること。`find | wc -l` は 0 を出すため、0 を実体値として受理すると導出元の
 #        消失が「実体は 0 件」に化ける（終了コードだけでは区別できない = 実測で確認）
@@ -318,24 +327,23 @@ make_fixture
 perl -i -pe 's/^## Changelog$/<!-- 999 suite unclosed opener\n\n$&/' "$TMP/root/docs/02-design/ARCHITECTURE.md"
 run_case "G17 未閉鎖コメント開始行の件数記載もずれを検出する" red "suite 数: [0-9]+ 件が実体"
 
-echo "== G18. 既知の制限の pin（Issue #527）=="
-# コメント開始の探索はインラインコードスパンを区別しないため、散文中の `` `<!--` `` が
-# 後続の `-->`（ここでは mermaid の矢印）と対になり、間の本文が走査から落ちる。
-# **これは望ましい挙動ではない。** 同梱 MCP の maskCommentAt も同一挙動で、片側だけ
-# 直すと乖離するため両実装まとめて別 Issue で扱う。ここでは現挙動を固定して、
-# 修正されたら（= このケースが赤になったら）気付けるようにする。
+echo "== G18. 散文中の コードスパン内 <!-- は後続の --> と対にならない（Issue #527）=="
+# コメント開始の探索はインラインコードスパンを区別する。散文中の `` `<!--` `` は
+# 後続の `-->`（ここでは mermaid の矢印）と対にならず、間の件数記載も走査される。
+# 区別しない実装へ戻すと、間の `999 suite` がマスクされてこのケースが緑になる。
 make_fixture
-perl -i -pe 's/^## Changelog$/マーカーは `<!--` と書く。\n\n本文に 999 suite と書いても落ちる。\n\n```mermaid\ngraph TD\n    A[x] --> B[y]\n```\n\n$&/' \
+perl -i -pe 's/^## Changelog$/マーカーは `<!--` と書く。\n\n本文に 999 suite と書く。\n\n```mermaid\ngraph TD\n    A[x] --> B[y]\n```\n\n$&/' \
   "$TMP/root/docs/01-context/PROJECT.md"
 assert_present "$TMP/root/docs/01-context/PROJECT.md" "999 suite" "G18" || true
-run_case "G18 既知の制限: 散文中の <!-- が後続の --> と対になり間の記載が落ちる" green
+run_case "G18 コードスパン内の <!-- を挟んでも間の記載を検出する" red "suite 数: [0-9]+ 件が実体"
 
-# 対になるケース。同じ挿入からマーカー行と mermaid を外すと赤になる = G18 の緑は
-# 「挿入が失敗した」ではなく「マスクされた」ことによる（緑の pin だけでは区別できない）
+# 対照。同じ挿入からマーカー行と mermaid を外しても赤になる = G18 の赤は「マーカーを
+# 置いたせいで赤くなった」のではない。どちらが原因かの切り分けは G26（マスク出力を
+# 直接見て、マーカー行と間の本文が保持されることを確かめる）が担う。
 make_fixture
 perl -i -pe 's/^## Changelog$/本文に 999 suite と書く。\n\n$&/' \
   "$TMP/root/docs/01-context/PROJECT.md"
-run_case "G18b 同じ挿入をマーカー無しで行うと検出する（G18 の緑が空振りでないこと）" red "suite 数: [0-9]+ 件が実体"
+run_case "G18b 同じ挿入をマーカー無しで行っても検出する（対照）" red "suite 数: [0-9]+ 件が実体"
 
 echo "== G23. 図（フェンス内）の件数をずらす（Issue #525）=="
 # DOMAIN.md の ```text 構成図と ROADMAP.md の ```mermaid 依存図は、suite 数を
@@ -382,6 +390,60 @@ perl -i -pe 's/^## Changelog$/```text\n<!-- 図中の注記例\n```\n\n本文に
   "$TMP/root/docs/01-context/PROJECT.md"
 assert_present "$TMP/root/docs/01-context/PROJECT.md" "999 suite" "G25" || true
 run_case "G25 フェンス内の <!-- が外のマーカーと対にならず、間の記載を走査する" red "suite 数: [0-9]+ 件が実体"
+
+echo "== G26. マスク出力の直接検査: コードスパン内の <!-- は開始でない（Issue #527 AC-1）=="
+# G18 は「間の記載が走査される」を本体経由で見るが、赤の理由がマーカーの有無に
+# よらないため、マスクそのものの判別力はここで固定する。fixture は here-doc を使わず
+# printf で組む（read-only TMPDIR 契約）。
+printf '%s\n' \
+  'マーカーは `<!--` と書く' \
+  '- 回帰ゲート（69 suite）' \
+  '```mermaid' \
+  'graph TD' \
+  '    A[x] --> B[y]' \
+  '```' \
+  'KEEP-AFTER' \
+  '本文 <!-- 注 --> 続き' \
+  '`a` <!-- x --> `<!--`' \
+  > "$TMP/mask-inline.md"
+printf '%s\n' \
+  'マーカーは `<!--` と書く' \
+  '- 回帰ゲート（69 suite）' \
+  '' '' '' '' \
+  'KEEP-AFTER' \
+  '本文  続き' \
+  '`a`  `<!--`' \
+  > "$TMP/mask-inline.expected"
+rc=0
+ff_docs_mask_spans "$TMP/mask-inline.md" > "$TMP/mask-inline.actual" || rc=$?
+if [ "$rc" -eq 0 ] && cmp -s "$TMP/mask-inline.expected" "$TMP/mask-inline.actual"; then
+  ok "G26 コードスパン内の <!-- は開始にならず、スパン外の <!-- は従来どおり除去される"
+else
+  bad "G26 マスク出力が期待と違います（rc=${rc}）"
+  # 診断出力に `|| true` を付ける（G18 系の run_case と同型）。diff は差分ありで
+  # rc=1 を返し、`set -e` + `pipefail` の下では**このケースが落ちた瞬間に selftest 全体が
+  # 中断**して G27 以降が未実行のまま終わる（サマリも出ない）。
+  diff "$TMP/mask-inline.expected" "$TMP/mask-inline.actual" 2>&1 | sed 's/^/    /' | head -12 >&2 || true
+fi
+
+echo "== G27. CRLF 改行でも閉じたフェンスをマスクする（Issue #527 AC-3）=="
+# awk は RS="\n" で読むため行末に \r が残る。閉じ判定が \r を空白として許さないと、
+# CRLF ファイルだけフェンスが 1 つも閉じられず、`/\r?\n/` で分割する同梱 MCP 側
+# （maskClosedSpans）と結果が食い違う。マスクしない行の \r は保持する。
+printf '```text\r\n' > "$TMP/mask-crlf.md"
+printf '%s\r\n' '中身' >> "$TMP/mask-crlf.md"
+printf '```\r\n' >> "$TMP/mask-crlf.md"
+printf 'KEEP\r\n' >> "$TMP/mask-crlf.md"
+printf '\n\n\nKEEP\r\n' > "$TMP/mask-crlf.expected"
+rc=0
+ff_docs_mask_spans "$TMP/mask-crlf.md" > "$TMP/mask-crlf.actual" || rc=$?
+if [ "$rc" -eq 0 ] && cmp -s "$TMP/mask-crlf.expected" "$TMP/mask-crlf.actual"; then
+  ok "G27 CRLF のフェンスもマスクする（TS 版と同じ判断）"
+else
+  bad "G27 CRLF のマスク出力が期待と違います（rc=${rc}）"
+  # G26 と同じ理由で `|| true`（診断出力の非 0 で selftest 全体を中断させない）
+  cat -A "$TMP/mask-crlf.actual" 2>/dev/null | sed 's/^/    /' | head -8 >&2 || true
+fi
 
 echo "== G21. 実体側を 1 件増やす（Issue #519 AC-2 の逆方向）=="
 # docs 側をずらす変異（G2 / G4 / G13）と対になる、**実体側**の変異。スキル・suite・

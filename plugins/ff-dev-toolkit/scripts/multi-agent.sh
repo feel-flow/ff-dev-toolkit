@@ -737,6 +737,14 @@ AVAILABLE_CLIS=""
 # Execution plan: CLI_NAME:PERSPECTIVE pairs (newline-separated)
 EXECUTION_PLAN=""
 
+# pair モードで「副を立てられたのに --perspective の指定で落ちた」かどうか。
+# 単一 CLI 縮退警告の gate が読む。build_pair_plan を通らないモード（distributed /
+# cross-model）では、現状の gate の式が短絡するためこの変数は展開されない。それでも
+# 必ず初期化するのは、gate が壊れない根拠を**式の書き方**に依存させないため — 条件の
+# 順序を入れ替えた瞬間に set -u で未定義参照になり、しかも壊れるのは pair 以外という
+# 遠い場所になる。
+PAIR_SUB_DROPPED=false
+
 # Tasks that failed this run, as "cli/perspective:exit_code" (space-separated).
 # Drives the retry advice printed after execution — a bare count leaves the user to
 # work out which CLI to re-run and with what, which is exactly the moment they
@@ -1103,6 +1111,7 @@ build_distributed_plan() {
 # 縮退はすべて続行（exit 0）で、止めるのは「主が未インストール」のときだけ。
 build_pair_plan() {
   EXECUTION_PLAN=""
+  PAIR_SUB_DROPPED=false
   local p sub_effective=""
 
   if ! list_contains "$AVAILABLE_CLIS" "$REVIEW_MAIN"; then
@@ -1153,6 +1162,25 @@ build_pair_plan() {
       # 副に従量課金 CLI を選ぶのは明示的な指定なので opt-in とみなす。ただし
       # コスト帯はプラン表示に出るので、黙って課金されることはない。
       add_to_plan "$sub_effective" "$COMPREHENSIVE_PERSPECTIVE"
+    elif perspective_excluded "$COMPREHENSIVE_PERSPECTIVE"; then
+      # --exclude-perspective で副の唯一の担当を外したケース。理由は名乗るが、
+      # 単一 CLI 縮退警告（下の PAIR_SUB_DROPPED）は立てない。「その観点を走らせ
+      # るな」という明示指定は #183 の --cli と同じく意図的な単一モデルなので、
+      # 黙る側に倒す。
+      echo "  ⏭  sub reviewer '${sub_effective}' runs only '${COMPREHENSIVE_PERSPECTIVE}', excluded by --exclude-perspective — running single-reviewer." >&2
+    else
+      # --perspective が総合観点を含まないケース（Issue #597）。他 3 経路（副が
+      # 未設定 / 主と同一 / 未導入）は全部理由を出しているのに、ここだけ else が
+      # 無く無言で落ちていた。書式を揃える。
+      #
+      # ここだけが「クロスモデルにできたのに単一になった」経路なので、単一 CLI
+      # 縮退警告のフラグを立てるのもここだけ。他 3 経路は主しか使えない状況を
+      # それぞれの 1 行で説明済みで、そこへ「--mode cross-model にせよ」と足しても
+      # 副が居ない事実は変わらない。逆に --perspective comprehensive-review は
+      # 副だけが残って単一 CLI になるが、それは要求どおりなので警告しない
+      # （プラン CLI 数だけを見る一般化された gate では、この差が潰れる）。
+      PAIR_SUB_DROPPED=true
+      echo "  ⏭  sub reviewer '${sub_effective}' runs only '${COMPREHENSIVE_PERSPECTIVE}', not in --perspective (${PERSPECTIVE_FILTER}) — running single-reviewer." >&2
     fi
   fi
   return 0
@@ -1339,9 +1367,22 @@ show_plan() {
 
   # An explicit --cli is intentionally single-model and should stay quiet.
   # Cross-model mode is already the remedy, so this warning only applies when a
-  # distributed review resolved implicitly to one CLI.
-  if [[ "$TASK_TYPE" == "review" && "$MODE" == "distributed" \
-        && -z "$CLI_FILTER" && "$planned_cli_count" -eq 1 ]]; then
+  # review resolved *implicitly* to one CLI.
+  #
+  # pair モードも対象に含める（Issue #597）。#183 でこの警告を入れた時点では
+  # review の既定が distributed だったが、#255 で pair が既定になり、いちばん
+  # 踏みやすい構成でだけ警告が出ない状態になっていた。ただし pair は「プランの
+  # CLI が 1 つ」だけでは判定できない — --perspective comprehensive-review は
+  # 副だけの単一 CLI プランになるが、それは要求どおりで警告は雑音になる。
+  # 「副を立てられたのに落ちた」= PAIR_SUB_DROPPED を条件にする。
+  #
+  # 非対称なのは承知のうえ: distributed 側は利用者の意図を見ずに、--exclude-perspective
+  # で 1 CLI へ絞った場合でも警告する。あちらは観点と CLI の対応がレジストリ次第で、
+  # 「1 つに絞った」のか「絞った結果たまたま 1 つになった」のかを区別できないため。
+  # pair は副の担当が comprehensive-review 固定なので、その区別がつく。
+  if [[ "$TASK_TYPE" == "review" && -z "$CLI_FILTER" && "$planned_cli_count" -eq 1 ]] \
+     && { [[ "$MODE" == "distributed" ]] \
+          || [[ "$MODE" == "pair" && "$PAIR_SUB_DROPPED" == "true" ]]; }; then
     echo "" >&2
     echo "   ⚠️  Plan resolved to a single CLI (${planned_clis}). A failure or timeout here" >&2
     echo "       means zero review coverage — runtime fallback is deliberately absent." >&2

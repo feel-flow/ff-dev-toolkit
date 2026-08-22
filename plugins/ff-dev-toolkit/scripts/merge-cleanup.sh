@@ -321,6 +321,18 @@ is_pr_head_retry() {
   [ "$1" = "$PR_HEAD" ] && [ "$2" = "$PR_HEAD_OID" ] && [ "$PR_REMOTE_RESULT" = "failed" ]
 }
 
+# 同上だが、`headRefOid` を取得できずスキップした場合（skipped_oid_unavailable）用。
+# この状態では $PR_HEAD_OID が "null" なので上の関数は恒偽になり、Step 6 が同じ
+# ブランチを削除してもサマリーが「削除未実施」のまま残って自己矛盾する。
+# **名前だけの照合で安全**なのは、ここへ来る $2 が Step 6 のガード 1（取り残し一覧の
+# (名前, OID) 完全一致）を既に通っているため。名前が一致する時点で「その OID は
+# MERGED 済み PR の head である」ことが証明済みで、削除自体も照合済み OID を
+# アンカーにした --force-with-lease で行われている。取り違えの余地は残らない。
+is_pr_head_retry_no_oid() {
+  # $1: branch
+  [ "$1" = "$PR_HEAD" ] && [ "$PR_REMOTE_RESULT" = "skipped_oid_unavailable" ]
+}
+
 # サマリーの失敗項目は 1 行 1 件なので、原因は 1 行だけを改行なしで載せる。
 # 先頭行ではなく「最初の非空白行」を採る（先頭が空行でも原因を落とさないため）。
 last_push_error_head() {
@@ -349,11 +361,19 @@ DELETED_WORKTREE_REALS=()
 DELETED_LEFTOVERS=()
 SKIPPED_LEFTOVERS=()
 FAILED_ITEMS=()
+# 失敗でもスキップでもない補足（Step 6 が肩代わりして解消した事象など）。
+# PARTIAL の判定には数えない
+INFO_ITEMS=()
 ARCHIVED_TRANSCRIPTS=()
 SKIPPED_TRANSCRIPTS=()
 ARCHIVED_TRANSCRIPT_KB=0
 ARCHIVE_TOTAL_KB=0
 TRANSCRIPT_STEP_NOTE=""
+
+# headRefOid を取得できずリモート削除をスキップしたときの失敗行。Step 4 では
+# FAILED_ITEMS へ積まず、Step 6 の取り残し掃除が同じブランチを消せなかった場合だけ
+# Step 8 の冒頭で積む（消せた場合は「実際には失敗が起きていない」ため補足行にする）。
+PR_OID_PENDING_FAILURE=""
 
 # ---- Step 0.5: 未コミット変更ガードのパス除外 --------------------------------
 #
@@ -472,6 +492,24 @@ PR_CROSS_REPO="$(printf '%s' "$GH_OUT" | jq -r '.isCrossRepository')"
 
 [ -n "$PR_HEAD" ] && [ "$PR_HEAD" != "null" ] || die "PR #$PR_NUM の headRefName が取得できません: $GH_OUT"
 [ -n "$PR_BASE" ] && [ "$PR_BASE" != "null" ] || die "PR #$PR_NUM の baseRefName が取得できません: $GH_OUT"
+
+# headRefOid は Step 4 の --force-with-lease のアンカー。未検証のまま渡すと
+# 「権限 / ネットワーク / ブランチ保護ルールを確認」という的外れな案内になる（真因は
+# 「照合すべき OID が無い」ことで、どの選択肢にも含まれない）。壊れ方は 2 通りで、
+# 実際に来るのは前者だけ:
+#   - "null": jq -r が JSON null を文字列化した値。git が object name として解析できず
+#     push は `stale info` にも `remote ref does not exist` にもマッチせず rc=1 になる
+#   - 空文字列: --force-with-lease=<ref>: は「ref は存在しないはず」という別の意味に
+#     なり、lease 拒否（= マージ後 push あり）として誤報される。jq -r が空を返す経路は
+#     無いので実質到達不能だが、保険で同じ扱いにする
+# ここでは die しない — 名前 / base と違い、これが欠けても止まるのは Step 4 の
+# リモート削除だけで、[gone] 掃除・トランスクリプト回収・取り残し検証は成立する。
+# Step 4 で `skipped_guard_unavailable` と同じ「ガード情報が構成できない → 削除だけ
+# スキップして PARTIAL で続行」へ落とす（判断軸は ACE-166-1）。
+PR_HEAD_OID_OK=1
+if [ -z "$PR_HEAD_OID" ] || [ "$PR_HEAD_OID" = "null" ]; then
+  PR_HEAD_OID_OK=0
+fi
 
 if [ "$PR_STATE" != "MERGED" ]; then
   die "PR #$PR_NUM は $PR_STATE 状態です（MERGED ではない）。番号の誤りの可能性があるため、破壊的処理に入る前に中断します。"
@@ -593,6 +631,51 @@ elif grep -qxF "$PR_HEAD" "$OPEN_LIST"; then
   echo "⚠️ $PR_HEAD は別の open PR の head として使用中です。リモート削除をスキップします。"
   PR_REMOTE_RESULT="skipped_open_reuse"
   SKIPPED_LEFTOVERS+=("$PR_HEAD: open PR の head として使用中")
+elif [ "$PR_HEAD_OID_OK" != "1" ]; then
+  # open PR ガードの後に置く。open PR で再利用中なら削除しないこと自体は正常系で、
+  # OID が無いことを失敗として重ねると余計な PARTIAL になる。
+  #
+  # 削除を諦める前に ref の実在だけは確かめる。GitHub の merge 時削除などで
+  # 既に消えている場合、「削除未実施」を積むと**毎回 PARTIAL が出続ける**
+  # （消すものが無いので何度実行しても解消しない）。
+  # --exit-code は「ref なし」を 2 で返す。通信・認証の失敗（128 等）と区別し、
+  # 後者は「消えている」と断定せず fail-closed で失敗として扱う。
+  PR_HEAD_LSREMOTE_ERR="$WORK_TMP/pr_head_lsremote_error"
+  PR_HEAD_LSREMOTE_OUT=""
+  set +e
+  PR_HEAD_LSREMOTE_OUT="$(LC_ALL=C git ls-remote --exit-code --heads origin "refs/heads/$PR_HEAD" 2>"$PR_HEAD_LSREMOTE_ERR")"
+  PR_HEAD_LSREMOTE_RC=$?
+  set -e
+  PR_REMOTE_RESULT="skipped_oid_unavailable"
+  case "$PR_HEAD_LSREMOTE_RC" in
+    0)
+      PR_HEAD_REMOTE_OID="$(printf '%s\n' "$PR_HEAD_LSREMOTE_OUT" | awk 'NR == 1 { print $1 }')"
+      echo "⚠️ PR #$PR_NUM の headRefOid を取得できませんでした（gh pr view の応答が null）。--force-with-lease の照合対象が無いため、リモートブランチ削除をスキップします（fail-closed）。"
+      echo "   origin には $PR_HEAD が残っています（現在の OID: ${PR_HEAD_REMOTE_OID}）。"
+      # 無条件の `push --delete` は案内しない。この時点で「その ref が対象 PR の
+      # head である」ことは誰も確認していないため、確認と削除の間に入った push や
+      # 同名ブランチの再利用ごと消してしまう。人間が OID を照合したうえで、
+      # 照合した OID を lease に載せる形だけを案内する。
+      echo "   復旧手順: 1) 上の OID が PR #$PR_NUM の head であることを PR ページ / コミット履歴で確認する"
+      echo "             2) 確認できたら: git push origin --force-with-lease=refs/heads/$PR_HEAD:${PR_HEAD_REMOTE_OID} :refs/heads/$PR_HEAD"
+      echo "             3) 確認できなければ削除しない（別の作業が push している可能性がある）"
+      echo "             4) 削除できたら merge-cleanup を再実行してローカル資産を掃除する"
+      # ここでは FAILED_ITEMS へ積まない。Step 6 の取り残し掃除が同じブランチを
+      # （一覧側の正常な OID をアンカーに）消せる場合があり、その場合は実際の失敗が
+      # 起きていないため。消せなかった場合だけ Step 8 の冒頭で失敗として積む。
+      PR_OID_PENDING_FAILURE="$PR_HEAD: headRefOid を取得できずリモート削除未実施 — origin の現 OID ${PR_HEAD_REMOTE_OID} が PR #$PR_NUM の head だと確認できた場合のみ 'git push origin --force-with-lease=refs/heads/$PR_HEAD:${PR_HEAD_REMOTE_OID} :refs/heads/$PR_HEAD' で削除し merge-cleanup を再実行（確認できない場合は削除しない）"
+      ;;
+    2)
+      # ref が無い = 削除すべきものが無い。失敗ではないので積まない
+      echo "ℹ️  PR #$PR_NUM の headRefOid は取得できませんでしたが、origin に $PR_HEAD は既にありません（削除不要）。"
+      PR_REMOTE_RESULT="already_missing"
+      INFO_ITEMS+=("$PR_HEAD: headRefOid は gh pr view から取得できなかったが、origin 上の ref は既に存在しない")
+      ;;
+    *)
+      echo "⚠️ PR #$PR_NUM の headRefOid を取得できず、origin 上の $PR_HEAD の実在確認にも失敗しました。リモートブランチ削除をスキップします（fail-closed）: $(cat "$PR_HEAD_LSREMOTE_ERR")"
+      PR_OID_PENDING_FAILURE="$PR_HEAD: headRefOid の取得と ref の実在確認がどちらも失敗しリモート削除未実施 — ネットワーク / 認証を確認して merge-cleanup を再実行（実在と OID を確認できるまで削除しない）"
+      ;;
+  esac
 else
   echo "🗑️  リモートブランチ削除: $PR_HEAD (PR #$PR_NUM: $PR_TITLE)"
   set +e
@@ -1059,7 +1142,14 @@ else
     LEFTOVER="$(comm -12 "$MERGED_LIST" "$REMOTE_LIST")"
 
     if [ -z "$LEFTOVER" ]; then
-      echo "✅ リモート取り残しなし（直近 1000 件のマージ済み PR と (名前, OID) 照合）"
+      # 対象 PR の削除をスキップしていた場合、その head は照合に一致しないまま
+      # origin に残っている可能性がある。「取り残しなし」と断定すると、スキップの
+      # 通知を読み飛ばした利用者に「掃除は完了した」と伝わるため、除外を添える。
+      LEFTOVER_NONE_NOTE=""
+      case "$PR_REMOTE_RESULT" in
+        skipped*) LEFTOVER_NONE_NOTE="（今回スキップした ${PR_HEAD} を除く）" ;;
+      esac
+      echo "✅ リモート取り残しなし（直近 1000 件のマージ済み PR と (名前, OID) 照合）${LEFTOVER_NONE_NOTE}"
     else
       echo "🧹 リモート取り残しのマージ済みブランチを検出しました:"
       printf '%s\n' "$LEFTOVER" | cut -f1 | sed 's/^/  - /'
@@ -1095,6 +1185,13 @@ else
             # 対象 PR の行を書き換えないため）。
             if is_pr_head_retry "$rbranch" "$roid"; then
               PR_REMOTE_RESULT="deleted_by_leftover_retry"
+            elif is_pr_head_retry_no_oid "$rbranch"; then
+              # headRefOid が取れずスキップした対象を、一覧側の正常な OID を
+              # アンカーにここで消せたケース。Step 4 の「失敗」は起きていない
+              # （削除を見送っただけ）ので、保留していた失敗行は補足行へ落とす。
+              PR_REMOTE_RESULT="deleted_by_leftover_retry"
+              PR_OID_PENDING_FAILURE=""
+              INFO_ITEMS+=("$rbranch: headRefOid は gh pr view から取得できなかったが、取り残し検証の (名前, OID) 照合で削除済み")
             fi
             ;;
           2)
@@ -1103,11 +1200,27 @@ else
             # 食い違う。消したのは自分ではないので deleted ではなく already 扱い。
             if is_pr_head_retry "$rbranch" "$roid"; then
               PR_REMOTE_RESULT="already_missing_at_leftover_retry"
+            elif is_pr_head_retry_no_oid "$rbranch"; then
+              PR_REMOTE_RESULT="already_missing_at_leftover_retry"
+              PR_OID_PENDING_FAILURE=""
+              INFO_ITEMS+=("$rbranch: headRefOid は gh pr view から取得できなかったが、取り残し検証の時点で既に削除済み")
             fi
             ;;
           3)
             echo "  ⚠️ skip (照合後に push あり・lease 拒否): $rbranch"
             SKIPPED_LEFTOVERS+=("$rbranch: 照合後に push あり（lease 拒否）")
+            if is_pr_head_retry_no_oid "$rbranch"; then
+              # headRefOid が取れずスキップした対象を Step 6 が拾い、照合の後に
+              # push が入って lease に拒否されたケース。**削除しないのは保護**で
+              # あって失敗ではない（Step 4 の skipped_lease_rejected と同格）ため、
+              # 保留していた「削除未実施」の失敗行を落とす。残さないと、正常な
+              # 保護に対して PARTIAL と誤った復旧手順を出すことになる。
+              # 既知 OID 側（is_pr_head_retry）の rc=3 はここでは触らない。
+              # あちらは Step 4 で実際に削除を試みて失敗しており、その失敗行が
+              # 残るのは正当なため。
+              PR_REMOTE_RESULT="skipped_lease_rejected_at_leftover_retry"
+              PR_OID_PENDING_FAILURE=""
+            fi
             ;;
           *)
             echo "  ❌ 削除失敗: $rbranch — $(last_push_error_text)"
@@ -1116,6 +1229,16 @@ else
             # 失敗した」と読めるため、2 回目であることを文言で区別する。
             if is_pr_head_retry "$rbranch" "$roid"; then
               FAILED_ITEMS+=("$rbranch: リモート削除失敗（Step 6 の再試行も失敗: $(last_push_error_head)）")
+            elif is_pr_head_retry_no_oid "$rbranch"; then
+              # Step 4 は削除を試みていない（headRefOid が無くスキップ）ので「再試行」
+              # ではなく最初の試行。保留していた「未実施」の行はここで消し、1 行に
+              # 束ねる（「未実施」と「削除失敗」を 2 行並べると実態と食い違う）。
+              PR_OID_PENDING_FAILURE=""
+              # ここでの $roid は取り残し一覧との (名前, OID) 完全一致を通っており、
+              # 「MERGED 済み PR の head」であることが確認済み。無条件の削除ではなく、
+              # その OID を lease に載せた形を案内する（再試行までの間に push が
+              # 入っていれば、この形なら拒否されて保護される）。
+              FAILED_ITEMS+=("$rbranch: リモート削除失敗（headRefOid が無く Step 4 はスキップ / 取り残し検証での削除も失敗: $(last_push_error_head)）— 'git push origin --force-with-lease=refs/heads/$rbranch:$roid :refs/heads/$rbranch' で再試行し merge-cleanup を再実行")
             else
               FAILED_ITEMS+=("$rbranch: リモート削除失敗（$(last_push_error_head)）")
             fi
@@ -1186,6 +1309,12 @@ fi
 
 # ---- Step 8: 結果サマリー -----------------------------------------------------
 
+# headRefOid が取れずスキップした対象が、Step 6 でも解消していない場合はここで
+# 失敗として積む（解消した場合は Step 6 が空にし、補足行だけを残している）。
+if [ -n "$PR_OID_PENDING_FAILURE" ]; then
+  FAILED_ITEMS+=("$PR_OID_PENDING_FAILURE")
+fi
+
 echo ""
 echo "## マージ後 Cleanup 結果"
 echo ""
@@ -1219,6 +1348,14 @@ if [ "${#SKIPPED_LEFTOVERS[@]}" -gt 0 ]; then
   echo ""
   echo "**⚠️ スキップした削除候補**:"
   printf '  - %s\n' "${SKIPPED_LEFTOVERS[@]}"
+fi
+
+if [ "${#INFO_ITEMS[@]}" -gt 0 ]; then
+  # 実際の失敗は起きていないので PARTIAL には数えない。手当てが要らないことを
+  # 明示するために、失敗項目とは別枠で出す
+  echo ""
+  echo "**ℹ️ 補足（手当て不要）**:"
+  printf '  - %s\n' "${INFO_ITEMS[@]}"
 fi
 
 EXIT_CODE=0

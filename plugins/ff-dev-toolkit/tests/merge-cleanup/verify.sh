@@ -28,6 +28,24 @@
 #       サマリーを失敗のまま残さない（already removed として反映する）
 #  15e. Step 6 の再試行も失敗した場合、Step 4 と同一文言の失敗項目を 2 行並べない
 #  15f. 削除反映の fetch --prune が失敗しても中断せず、失敗として記録して続行する
+#  15g. (6.16) headRefOid が null で返り、取り残し一覧側の OID も null な PR では、
+#       lease のアンカーが無いことを名指ししてリモート削除をスキップし（削除は
+#       行わない）、PARTIAL で後続 Step を続行する
+#  15h. (6.17) headRefOid は null だが取り残し一覧側の OID は正常な PR（混在ケース）
+#       では、Step 6 が (名前, OID) 照合で実際に削除し、サマリーを
+#       deleted_by_leftover_retry へ更新して「削除未実施」の虚偽行を出さない
+#  15i. (6.18) 同じ混在ケースで Step 6 の削除が lease 拒否になった場合、削除しない
+#       のは保護なので失敗として数えず、スキップした削除候補として列挙する
+#  15j. (6.19) 同じ混在ケースで Step 6 の削除が一般エラーで失敗した場合、失敗行を
+#       1 行に束ね（Step 4 スキップ + Step 6 失敗）、二重計上せず ref を残す
+#  15k. (6.20) 同じ混在ケースで Step 6 の削除時点に ref が消えていた場合、
+#       already_missing_at_leftover_retry へ更新し失敗として数えない
+#  15l. (6.21) headRefOid が null で origin に ref も無い場合、実在確認（ls-remote
+#       --exit-code）で already_missing と判定し、解消しない PARTIAL を出さない
+#
+# 上の番号（`15b` / `15g` のような枝番）は本一覧の通し番号で、実行部のインライン
+# コメントは `<Step>.<連番>`（`6.11` / `6.16`）を使う別系列である。新しいケースを
+# 足すときは、上のように括弧で対応するインライン番号を添えること。
 #  16. 削除した worktree のトランスクリプトを、cwd 照合のうえ tar.gz へ回収する
 #  17. cwd がこの worktree を指さないものは、名前が一致しても触らない
 #  18. cwd を記録した jsonl が無いものは、名前が worktree 由来でも回収しない
@@ -358,6 +376,67 @@ OID_PRUNEFAIL21="$(git rev-parse HEAD)"
 git switch -q develop
 git branch -q -D 'feature/#21-prune-fails'
 
+# headRefOid が null で返るケース（6.16）。origin へは 6.16 の直前に push する。
+git switch -q -c 'feature/#41-null-oid' develop
+echo nulloid41 > nulloid41.txt
+git add nulloid41.txt
+git commit -qm "commit on feature/#41-null-oid"
+OID_NULLOID41="$(git rev-parse HEAD)"
+git switch -q develop
+git branch -q -D 'feature/#41-null-oid'
+
+# 混在ケース（6.17）: gh pr view は null だが、取り残し一覧側の OID は正常。
+# Step 6 が (名前, OID) 照合で実際に削除できる構成にする。
+git switch -q -c 'feature/#42-null-oid-mixed' develop
+echo nulloid42 > nulloid42.txt
+git add nulloid42.txt
+git commit -qm "commit on feature/#42-null-oid-mixed"
+OID_NULLOID42="$(git rev-parse HEAD)"
+git switch -q develop
+git branch -q -D 'feature/#42-null-oid-mixed'
+
+# 混在ケースで lease 拒否になる系（6.18）: 一覧との照合後に別 push が着地する。
+# OID_NULLOID43B は mock git が削除 push の最中に横から push する。
+git switch -q -c 'feature/#43-null-oid-lease' develop
+echo nulloid43 > nulloid43.txt
+git add nulloid43.txt
+git commit -qm "commit on feature/#43-null-oid-lease"
+OID_NULLOID43="$(git rev-parse HEAD)"
+echo nulloid43-more > nulloid43b.txt
+git add nulloid43b.txt
+git commit -qm "push that lands after the leftover match"
+OID_NULLOID43B="$(git rev-parse HEAD)"
+git switch -q develop
+git branch -q -D 'feature/#43-null-oid-lease'
+
+# 混在ケースで Step 6 の削除が一般エラーになる系（6.19）。
+git switch -q -c 'feature/#44-null-oid-failure' develop
+echo nulloid44 > nulloid44.txt
+git add nulloid44.txt
+git commit -qm "commit on feature/#44-null-oid-failure"
+OID_NULLOID44="$(git rev-parse HEAD)"
+git switch -q develop
+git branch -q -D 'feature/#44-null-oid-failure'
+
+# 混在ケースで Step 6 の削除時点に ref が消えている系（6.20）。
+git switch -q -c 'feature/#45-null-oid-vanished' develop
+echo nulloid45 > nulloid45.txt
+git add nulloid45.txt
+git commit -qm "commit on feature/#45-null-oid-vanished"
+OID_NULLOID45="$(git rev-parse HEAD)"
+git switch -q develop
+git branch -q -D 'feature/#45-null-oid-vanished'
+
+# headRefOid が null で、かつ origin に ref が既に無い系（6.21）。
+# origin へは一度も push しない（GitHub の merge 時削除などで消えている状態）。
+git switch -q -c 'feature/#46-null-oid-gone' develop
+echo nulloid46 > nulloid46.txt
+git add nulloid46.txt
+git commit -qm "commit on feature/#46-null-oid-gone"
+OID_NULLOID46="$(git rev-parse HEAD)"
+git switch -q develop
+git branch -q -D 'feature/#46-null-oid-gone'
+
 # 名前再利用ケース: マージ済み PR の head OID の後に、さらに push が積まれている
 git switch -q -c 'feature/#2-reused' develop
 echo reused-merged > reused.txt
@@ -535,7 +614,13 @@ cat > "$MOCK/pr_list_merged.json" <<JSON
   {"headRefName": "feature/#20-vanished-before-retry", "headRefOid": "$OID_VANISHED20", "isCrossRepository": false},
   {"headRefName": "feature/#21-prune-fails", "headRefOid": "$OID_PRUNEFAIL21", "isCrossRepository": false},
   {"headRefName": "feature/#22-retry-fails", "headRefOid": "$OID_RETRYFAIL22", "isCrossRepository": false},
-  {"headRefName": "feature/#23-leftover-for-14", "headRefOid": "$OID_LEFTOVER23", "isCrossRepository": false}
+  {"headRefName": "feature/#23-leftover-for-14", "headRefOid": "$OID_LEFTOVER23", "isCrossRepository": false},
+  {"headRefName": "feature/#41-null-oid", "headRefOid": null, "isCrossRepository": false},
+  {"headRefName": "feature/#42-null-oid-mixed", "headRefOid": "$OID_NULLOID42", "isCrossRepository": false},
+  {"headRefName": "feature/#43-null-oid-lease", "headRefOid": "$OID_NULLOID43", "isCrossRepository": false},
+  {"headRefName": "feature/#44-null-oid-failure", "headRefOid": "$OID_NULLOID44", "isCrossRepository": false},
+  {"headRefName": "feature/#45-null-oid-vanished", "headRefOid": "$OID_NULLOID45", "isCrossRepository": false},
+  {"headRefName": "feature/#46-null-oid-gone", "headRefOid": "$OID_NULLOID46", "isCrossRepository": false}
 ]
 JSON
 
@@ -677,6 +762,72 @@ cat > "$MOCK/pr_view_22.json" <<JSON
 }
 JSON
 
+cat > "$MOCK/pr_view_41.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "feature/#41-null-oid",
+  "headRefOid": null,
+  "baseRefName": "develop",
+  "title": "headRefOid is null",
+  "isCrossRepository": false
+}
+JSON
+
+cat > "$MOCK/pr_view_42.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "feature/#42-null-oid-mixed",
+  "headRefOid": null,
+  "baseRefName": "develop",
+  "title": "headRefOid is null but the merged list has it",
+  "isCrossRepository": false
+}
+JSON
+
+cat > "$MOCK/pr_view_43.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "feature/#43-null-oid-lease",
+  "headRefOid": null,
+  "baseRefName": "develop",
+  "title": "headRefOid is null and the leftover deletion is lease-rejected",
+  "isCrossRepository": false
+}
+JSON
+
+cat > "$MOCK/pr_view_44.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "feature/#44-null-oid-failure",
+  "headRefOid": null,
+  "baseRefName": "develop",
+  "title": "headRefOid is null and the leftover deletion fails outright",
+  "isCrossRepository": false
+}
+JSON
+
+cat > "$MOCK/pr_view_45.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "feature/#45-null-oid-vanished",
+  "headRefOid": null,
+  "baseRefName": "develop",
+  "title": "headRefOid is null and the ref vanishes before the leftover deletion",
+  "isCrossRepository": false
+}
+JSON
+
+cat > "$MOCK/pr_view_46.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "feature/#46-null-oid-gone",
+  "headRefOid": null,
+  "baseRefName": "develop",
+  "title": "headRefOid is null and the remote ref is already gone",
+  "isCrossRepository": false
+}
+JSON
+
 cat > "$MOCK/gh" <<SH
 #!/usr/bin/env bash
 args="\$*"
@@ -693,6 +844,12 @@ case "\$args" in
   "pr view 20 --json"*)   cat "$MOCK/pr_view_20.json" ;;
   "pr view 21 --json"*)   cat "$MOCK/pr_view_21.json" ;;
   "pr view 22 --json"*)   cat "$MOCK/pr_view_22.json" ;;
+  "pr view 41 --json"*)   cat "$MOCK/pr_view_41.json" ;;
+  "pr view 42 --json"*)   cat "$MOCK/pr_view_42.json" ;;
+  "pr view 43 --json"*)   cat "$MOCK/pr_view_43.json" ;;
+  "pr view 44 --json"*)   cat "$MOCK/pr_view_44.json" ;;
+  "pr view 45 --json"*)   cat "$MOCK/pr_view_45.json" ;;
+  "pr view 46 --json"*)   cat "$MOCK/pr_view_46.json" ;;
   "pr view 99 --json"*)   cat "$MOCK/pr_view_99.json" ;;
   *"--state merged"*)     cat "$MOCK/pr_list_merged.json" ;;
   *"--state open"*)       cat "$MOCK/pr_list_open.json" ;;
@@ -728,6 +885,26 @@ fi
 # 15e: Step 4 も Step 6 の再試行も失敗する（リモートは期待 OID のまま残る）。
 if [[ "\$*" == push\ --force-with-lease=refs/heads/feature/\#22-retry-fails:* ]]; then
   # 出力を一切出さずに失敗する（last_push_error が空になる経路のフォールバック検証）
+  exit 1
+fi
+# 15j: 混在ケースで Step 6 の削除 push が一般エラーで失敗する（stale info ではない）。
+if [[ "\$*" == push\ --force-with-lease=refs/heads/feature/\#44-null-oid-failure:* ]]; then
+  echo "simulated transport failure for the leftover deletion" >&2
+  exit 1
+fi
+# 15k: 混在ケースで、Step 6 の削除 push の時点には ref が消えている。
+if [[ "\$*" == push\ --force-with-lease=refs/heads/feature/\#45-null-oid-vanished:* ]]; then
+  SKIP_SIMPLE_GIT_HOOKS=1 "$REAL_GIT" push -q origin \
+    --delete 'feature/#45-null-oid-vanished'
+  echo "error: unable to delete 'feature/#45-null-oid-vanished': remote ref does not exist" >&2
+  exit 1
+fi
+# 15i: 混在ケースで Step 6 の削除 push が lease 拒否になる。照合（ls-remote）の後に
+# 別の push が着地した状況を再現する。再取得は素通りさせるので rc=3 へ落ちる。
+if [[ "\$*" == push\ --force-with-lease=refs/heads/feature/\#43-null-oid-lease:* ]]; then
+  SKIP_SIMPLE_GIT_HOOKS=1 "$REAL_GIT" push -q --force origin \
+    "$OID_NULLOID43B:refs/heads/feature/#43-null-oid-lease"
+  echo "stale info: simulated push landed after the leftover match" >&2
   exit 1
 fi
 # 15c: Step 4 の削除 push が失敗する間に、別の push がリモートへ着地する。
@@ -1253,6 +1430,134 @@ if ! git show-ref --verify --quiet 'refs/heads/feature/#24-gone-before-prune'; t
   ok "削除反映 prune が失敗しても Step 5 が [gone] ブランチを実際に削除する"
 else
   bad "削除反映 prune 失敗後に Step 5 の削除が行われていない"
+fi
+
+# 6.16 headRefOid が null で返る PR。lease のアンカーが無いので削除は行わず、
+#      「headRefOid を取得できない」ことを名指しする（push のエラーを「権限 /
+#      ネットワーク / ブランチ保護ルール」へ誤帰属させない）。Step 6 の取り残し
+#      掃除も、一覧側の OID が null なら (名前, OID) 照合に一致せず削除しない。
+# 遅延 push が load-bearing（先行 run の取り残し掃除に拾われないため）。
+remote_has 'feature/#41-null-oid' && bad "fixture 前提が崩れています（6.16 より前に feature/#41-null-oid が origin へ出ている）"
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_NULLOID41:refs/heads/feature/#41-null-oid"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 41 > "$TMP/run-41.log" 2>&1
+EXIT_41=$?
+set -e
+NULLOID41_NOW="$(git ls-remote --heads origin 'refs/heads/feature/#41-null-oid' | awk '{print $1}')"
+if [ "$EXIT_41" -eq 2 ] \
+  && [ "$NULLOID41_NOW" = "$OID_NULLOID41" ] \
+  && grep -q "headRefOid を取得できませんでした" "$TMP/run-41.log" \
+  && grep -q "リモートブランチ (feature/#41-null-oid): skipped_oid_unavailable" "$TMP/run-41.log" \
+  && grep -qE '^  - feature/#41-null-oid: headRefOid を取得できず' "$TMP/run-41.log" \
+  && ! grep -q "権限 / ネットワーク / ブランチ保護ルールを確認" "$TMP/run-41.log" \
+  && grep -q "=== 最終状態 ===" "$TMP/run-41.log"; then
+  ok "headRefOid が null なら削除せず、原因を名指しして PARTIAL で続行する"
+else
+  bad "headRefOid が null のときの扱いが期待どおりでない (exit=$EXIT_41)"
+fi
+
+# 6.17 混在ケース: gh pr view は headRefOid=null だが、取り残し一覧側の OID は正常。
+#      Step 6 は照合済み OID をアンカーに実際に削除できるので、サマリーを
+#      deleted_by_leftover_retry へ更新し、「リモート削除未実施」の虚偽行を出さない。
+#      Step 4 は削除を試みてすらいないため、この経路は失敗として数えない（補足行）。
+# 遅延 push が load-bearing（先行 run の取り残し掃除に拾われないため）。
+remote_has 'feature/#42-null-oid-mixed' && bad "fixture 前提が崩れています（6.17 より前に feature/#42-null-oid-mixed が origin へ出ている）"
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_NULLOID42:refs/heads/feature/#42-null-oid-mixed"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 42 > "$TMP/run-42.log" 2>&1
+EXIT_42=$?
+set -e
+# この run には別件（feature/#22-retry-fails の恒久的な削除失敗）が必ず混ざるため
+# 終了コードは 2 になる。見たいのは「#42 が失敗として数えられていないこと」なので、
+# 全体の PARTIAL ではなく #42 の行だけを見る。
+if ! remote_has 'feature/#42-null-oid-mixed' \
+  && grep -q "✓ removed: feature/#42-null-oid-mixed" "$TMP/run-42.log" \
+  && grep -q "リモートブランチ (feature/#42-null-oid-mixed): deleted_by_leftover_retry" "$TMP/run-42.log" \
+  && grep -q "補足（手当て不要）" "$TMP/run-42.log" \
+  && grep -qE '^  - feature/#42-null-oid-mixed: headRefOid は gh pr view から取得できなかったが、取り残し検証の \(名前, OID\) 照合で削除済み' "$TMP/run-42.log" \
+  && ! grep -q "feature/#42-null-oid-mixed: headRefOid を取得できずリモート削除未実施" "$TMP/run-42.log" \
+  && ! grep -qE '^  - feature/#42-null-oid-mixed: リモート削除' "$TMP/run-42.log"; then
+  ok "headRefOid が view だけ null の混在ケースは Step 6 が削除し、失敗行を残さない"
+else
+  bad "混在ケース（view=null / list=正常 OID）の扱いが期待どおりでない (exit=$EXIT_42)"
+fi
+
+# 6.18 混在ケースで Step 6 の削除が lease 拒否になった場合。削除しないのは
+#      「マージ後 push があったので保護した」という正常系（Step 4 の
+#      skipped_lease_rejected と同格）なので、失敗として数えない。
+# 遅延 push が load-bearing（先行 run の取り残し掃除に拾われないため）。
+remote_has 'feature/#43-null-oid-lease' && bad "fixture 前提が崩れています（6.18 より前に feature/#43-null-oid-lease が origin へ出ている）"
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_NULLOID43:refs/heads/feature/#43-null-oid-lease"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 43 > "$TMP/run-43.log" 2>&1
+EXIT_43=$?
+set -e
+NULLOID43_NOW="$(git ls-remote --heads origin 'refs/heads/feature/#43-null-oid-lease' | awk '{print $1}')"
+if [ "$NULLOID43_NOW" = "$OID_NULLOID43B" ] \
+  && grep -q "skip (照合後に push あり・lease 拒否): feature/#43-null-oid-lease" "$TMP/run-43.log" \
+  && grep -q "リモートブランチ (feature/#43-null-oid-lease): skipped_lease_rejected_at_leftover_retry" "$TMP/run-43.log" \
+  && grep -qE '^  - feature/#43-null-oid-lease: 照合後に push あり' "$TMP/run-43.log" \
+  && ! grep -q "feature/#43-null-oid-lease: headRefOid を取得できずリモート削除未実施" "$TMP/run-43.log" \
+  && ! grep -qE '^  - feature/#43-null-oid-lease: リモート削除' "$TMP/run-43.log"; then
+  ok "混在ケースの lease 拒否は保護として扱い、削除未実施の失敗行を残さない"
+else
+  bad "混在ケースの lease 拒否の扱いが期待どおりでない (exit=$EXIT_43)"
+fi
+
+# 6.19 混在ケースで Step 6 の削除が一般エラーで失敗した場合。Step 4 は削除を試みて
+#      いないので「未実施」と「削除失敗」を 2 行並べず、1 行に束ねる。
+# 遅延 push が load-bearing（先行 run の取り残し掃除に拾われないため）。
+remote_has 'feature/#44-null-oid-failure' && bad "fixture 前提が崩れています（6.19 より前に feature/#44-null-oid-failure が origin へ出ている）"
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_NULLOID44:refs/heads/feature/#44-null-oid-failure"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 44 > "$TMP/run-44.log" 2>&1
+EXIT_44=$?
+set -e
+FAIL_LINES_44="$(grep -cE '^  - feature/#44-null-oid-failure:' "$TMP/run-44.log" || true)"
+if [ "$EXIT_44" -eq 2 ] \
+  && remote_has 'feature/#44-null-oid-failure' \
+  && [ "$FAIL_LINES_44" -eq 1 ] \
+  && grep -q "feature/#44-null-oid-failure: リモート削除失敗（headRefOid が無く Step 4 はスキップ" "$TMP/run-44.log" \
+  && grep -q -- "--force-with-lease=refs/heads/feature/#44-null-oid-failure:$OID_NULLOID44" "$TMP/run-44.log" \
+  && ! grep -q "feature/#44-null-oid-failure: headRefOid を取得できずリモート削除未実施" "$TMP/run-44.log"; then
+  ok "混在ケースの一般エラーは 1 行に束ね、二重計上せず ref を残す"
+else
+  bad "混在ケースの一般エラーの扱いが期待どおりでない (exit=$EXIT_44, 行数=$FAIL_LINES_44)"
+fi
+
+# 6.20 混在ケースで、Step 6 の削除 push の時点には ref が消えていた場合。
+#      消したのは自分ではないので already 扱いにし、失敗としては数えない。
+remote_has 'feature/#45-null-oid-vanished' && bad "fixture 前提が崩れています（6.20 より前に feature/#45-null-oid-vanished が origin へ出ている）"
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_NULLOID45:refs/heads/feature/#45-null-oid-vanished"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 45 > "$TMP/run-45.log" 2>&1
+EXIT_45=$?
+set -e
+if ! remote_has 'feature/#45-null-oid-vanished' \
+  && grep -q "already removed: feature/#45-null-oid-vanished" "$TMP/run-45.log" \
+  && grep -q "リモートブランチ (feature/#45-null-oid-vanished): already_missing_at_leftover_retry" "$TMP/run-45.log" \
+  && grep -qE '^  - feature/#45-null-oid-vanished: headRefOid は gh pr view から取得できなかったが、取り残し検証の時点で既に削除済み' "$TMP/run-45.log" \
+  && ! grep -qE '^  - feature/#45-null-oid-vanished: (headRefOid を取得できず|リモート削除失敗)' "$TMP/run-45.log"; then
+  ok "混在ケースで再試行時点に ref が消えていたら already 扱いにし、失敗に数えない"
+else
+  bad "混在ケースの ref 消失時の扱いが期待どおりでない (exit=$EXIT_45)"
+fi
+
+# 6.21 headRefOid が null で、origin にも ref が無い場合。削除すべきものが無いので
+#      失敗として積まない（積むと何度実行しても解消しない PARTIAL になる）。
+remote_has 'feature/#46-null-oid-gone' && bad "fixture 前提が崩れています（6.21 の対象が origin へ出ている）"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 46 > "$TMP/run-46.log" 2>&1
+EXIT_46=$?
+set -e
+if grep -q "リモートブランチ (feature/#46-null-oid-gone): already_missing" "$TMP/run-46.log" \
+  && grep -q "origin に feature/#46-null-oid-gone は既にありません" "$TMP/run-46.log" \
+  && grep -qE '^  - feature/#46-null-oid-gone: headRefOid は gh pr view から取得できなかったが、origin 上の ref は既に存在しない' "$TMP/run-46.log" \
+  && ! grep -q "feature/#46-null-oid-gone: headRefOid を取得できずリモート削除未実施" "$TMP/run-46.log" \
+  && ! grep -qE '^  - feature/#46-null-oid-gone:.*リモート削除未実施' "$TMP/run-46.log"; then
+  ok "headRefOid が null でも ref が既に無ければ already_missing とし、失敗に数えない"
+else
+  bad "ref 不在時の headRefOid 欠落の扱いが期待どおりでない (exit=$EXIT_46)"
 fi
 
 # 7. サマリーに失敗項目が列挙されている（状態がサマリーまで届く）
@@ -2052,7 +2357,7 @@ fi
 # 個々のアサートでは検出できない（誰も落ちないまま緑になる）。件数を変えたときは
 # 意図的な変更としてこの値を更新すること。全ケースは無条件に実行されるため、
 # 環境によって増減しない（書き込み不可環境は冒頭で skip して exit 0 になる）。
-EXPECTED_PASS=86
+EXPECTED_PASS=92
 if [ "$PASS" -ne "$EXPECTED_PASS" ]; then
   echo "✗ merge-cleanup verify: 検査総数が想定と違います（期待 ${EXPECTED_PASS} / 実際 ${PASS}）" >&2
   echo "  ケースを増減したなら EXPECTED_PASS を更新すること。減っている場合は、" >&2

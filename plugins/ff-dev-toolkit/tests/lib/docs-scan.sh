@@ -13,7 +13,8 @@
 #   ff_docs_exclusion_patterns <master_md>  除外パターン（付与しない表から導出）
 #   ff_docs_actual_targets <docs_root> <master_md>
 #                                      実体側の対象一覧（FS から導出、除外規則適用）
-#   ff_docs_fm_verdict <file>          Frontmatter / Changelog 構造の判定
+#   ff_docs_fm_verdict <file> [allow-date-placeholder]
+#                                      Frontmatter / Changelog 構造の判定
 #   ff_docs_mask_spans <file> [keep-fences]
 #                                      閉じたフェンスは空行化・閉じたコメントは該当文字を除去。
 #                                      keep-fences はフェンスの中身を残す（対応探索・優先順位は同一）
@@ -108,13 +109,16 @@ ff_docs_exclusion_patterns() {
 }
 
 # Frontmatter / Changelog 構造の判定。stdout に "OK" または "NG:<理由>" を出す。
+# 消費者は tests/docs-frontmatter-repo/（対象プロジェクトの docs/）と
+# tests/docs-template-frontmatter/（docs-template の初期セット 20 文書）の 2 本。
 #
-# 検査内容は tests/docs-template-frontmatter/verify.sh の C〜G を基にした契約:
+# 検査内容:
 #   先頭行が --- / Frontmatter が閉じている / 必須6フィールドが引用符付きで揃う /
-#   version が SemVer / status が値域内 / changeImpact は存在時のみ小文字値域 /
-#   `## Changelog` 見出しがある（Frontmatter より後ろ）
+#   重複キーが無い / version が SemVer（先頭ゼロ不可）/ status が値域内 /
+#   created・updated が YYYY-MM-DD で updated >= created /
+#   changeImpact は存在時のみ小文字値域 / `## Changelog` 見出しがある（Frontmatter より後ろ）
 #
-# ただし次の 4 点は docs-template-frontmatter より**厳しい**（PR #524 のレビュー）:
+# 設計の要点（PR #524 のレビューで足した 4 点。Issue #526 で両消費者へ効く）:
 #   - 重複キーを拒否する。「有効な行が 1 本あれば OK」にすると
 #     `version: "2.1.0"` と `version: "invalid"` の併記が通り、宣言と YAML パーサの
 #     実効値（多くは後勝ち）が食い違う。キー名は正規化して数えるので
@@ -124,9 +128,17 @@ ff_docs_exclusion_patterns() {
 #   - `created` / `updated` の形式（YYYY-MM-DD）と前後関係（updated >= created）を見る
 #   - `## Changelog` を Frontmatter より後ろに限る（YAML コメントとして 1 行置くだけで
 #     通ってしまうのを防ぐ）
-# docs-template-frontmatter 側への反映と、そちらが本 lib を使う形への統合は Issue #526。
+#
+# 第 2 引数 allow-date-placeholder（docs-template 用。Issue #526）:
+#   `created: "YYYY-MM-DD"` / `updated: "YYYY-MM-DD"` を日付形式として受理し、
+#   前後関係の比較からも外す。docs-template は**記入前の雛形**で、この 2 値は
+#   /init-docs がプロジェクト側で埋めるまで意図的に残るプレースホルダー
+#   （validate-docs/SKILL.md §4 が「置換対象のプレースホルダー」として扱う正本）。
+#   受理するのはこの**完全一致の綴りだけ**で、`TBD` など他の未記入表現は通さない。
 ff_docs_fm_verdict() {
   local f="$1"
+  local allow_ph=0
+  [ "${2:-}" = "allow-date-placeholder" ] && allow_ph=1
   [ -f "$f" ] || { echo "NG:ファイルが存在しません"; return 0; }
   if [ "$(head -1 "$f")" != "---" ]; then
     echo "NG:先頭行が Frontmatter 開始（---）ではありません"
@@ -150,7 +162,7 @@ ff_docs_fm_verdict() {
     has_changelog=1
   fi
   local flags
-  flags="$(awk -v fm_end="$close_line" '
+  flags="$(awk -v fm_end="$close_line" -v allow_ph="$allow_ph" '
     BEGIN { nkeys = split("title version status owner created updated changeImpact", KEYS, " ") }
     NR >= 2 && NR < fm_end {
       # キーの出現回数を数える。重複キーは YAML として不正で、実効値はパーサ依存
@@ -181,6 +193,10 @@ ff_docs_fm_verdict() {
       # 見ない — 狙いは誤記と雛形の残りを弾くことで、暦計算は範囲外
       if ($0 ~ /^created: "[0-9][0-9][0-9][0-9]-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])"$/) f["cfmt"] = 1
       if ($0 ~ /^updated: "[0-9][0-9][0-9][0-9]-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])"$/) f["ufmt"] = 1
+      # docs-template の未記入プレースホルダー。**この綴りの完全一致だけ**受理する
+      # （`TBD` 等まで許すと「日付が入っていない雛形」が素通りする）
+      if (allow_ph && $0 ~ /^created: "YYYY-MM-DD"$/) f["cfmt"] = 1
+      if (allow_ph && $0 ~ /^updated: "YYYY-MM-DD"$/) f["ufmt"] = 1
       if ($0 ~ /^changeImpact:/)      f["ci"] = 1
       # 引用符は「両側あり」か「両側なし」のみ受理する（片側だけは YAML として不正）。
       # docs-template 側は常に引用符付きだが、本リポジトリの PLAYBOOK.md は
@@ -220,10 +236,15 @@ ff_docs_fm_verdict() {
   case " $flags " in *" statusdom=1 "*) ;; *) echo "NG:status が値域（draft/review/approved/deprecated）外です"; return 0 ;; esac
   case " $flags " in *" cfmt=1 "*) ;; *) echo "NG:created が YYYY-MM-DD 形式ではありません"; return 0 ;; esac
   case " $flags " in *" ufmt=1 "*) ;; *) echo "NG:updated が YYYY-MM-DD 形式ではありません"; return 0 ;; esac
-  # 前後関係。ISO 8601 の日付は辞書順比較がそのまま日付順になる
+  # 前後関係。ISO 8601 の日付は辞書順比較がそのまま日付順になる。
+  # 未記入プレースホルダーは比較から外す（辞書順では "YYYY-MM-DD" が常に実日付より
+  # 後ろになるため、created だけ雛形のままの docs-template が偽陽性で赤くなる）。
+  # allow-date-placeholder を渡していなければ、この綴りは cfmt / ufmt で先に赤くなる。
   local cval uval
   cval="$(awk -v fm_end="$close_line" 'NR >= 2 && NR < fm_end && /^created: "/ { gsub(/^created: "|"$/, ""); print; exit }' "$f")"
   uval="$(awk -v fm_end="$close_line" 'NR >= 2 && NR < fm_end && /^updated: "/ { gsub(/^updated: "|"$/, ""); print; exit }' "$f")"
+  [ "$cval" = "YYYY-MM-DD" ] && cval=""
+  [ "$uval" = "YYYY-MM-DD" ] && uval=""
   if [[ -n "$cval" && -n "$uval" && "$uval" < "$cval" ]]; then
     echo "NG:updated（${uval}）が created（${cval}）より前です"
     return 0
@@ -248,7 +269,7 @@ ff_docs_fm_verdict() {
 # 検査しない規則も同じなので、フェンス内の `<!--` が新たにコメントとして
 # 対になることはない。用途は ff_docs_claim_body（図に手書きした件数の走査）。
 #
-# 3 つの narrowing（同梱 MCP の maskClosedSpans と同一の規則。Issue #517 / #519）:
+# 4 つの narrowing（同梱 MCP の maskClosedSpans と同一の規則。Issue #517 / #519 / #527）:
 #   1. 単一パスで左から処理する — 先に開いたマーカーが勝ち、その区間内のマーカーは
 #      検査しない（コメント内の ``` が外側のフェンスと対にならない）
 #   2. 閉じていない opener はその行だけ飛ばす — 走査を打ち切ると、後続の閉じた span が
@@ -259,12 +280,19 @@ ff_docs_fm_verdict() {
 #      maskCommentAt が未閉鎖時に i+1 を返すのと同じ振る舞いに揃えている
 #   3. コメントは**コメントされた文字だけ**を消す — `N suite <!-- 注 -->` の記載自体が
 #      走査対象から消えると、ドリフト検査が誤って成功する
+#   4. コメント開始の探索は**インラインコードスパンを区別する**（Issue #527） —
+#      同一行内で対になったバッククォート span の中の `<!--` は開始として扱わない。
+#      区別しないと、散文中の `` `<!--` `` が後続の `-->`（mermaid の矢印 `A --> B` を
+#      含む）と対になり、間の本文が丸ごと走査から落ちる。現挙動は
+#      docs-fact-drift-selftest G18 / G26 で固定している
 #
-# 既知の制限（いずれも同梱 MCP の maskClosedSpans / maskCommentAt と同一挙動。片側だけ
-# 直すと乖離するため両実装まとめて Issue #527 で扱う）:
-#   - コメント開始の探索が**インラインコードスパンを区別しない** — 散文中の
-#     `` `<!--` `` が後続の `-->`（mermaid の矢印を含む）と対になり、間の本文が落ちる。
-#     現挙動は docs-fact-drift-selftest G18 で固定している
+# 既知の制限（同梱 MCP の maskClosedSpans / maskCommentAt と同一挙動。片側だけ
+# 直すと乖離する。機械照合は Issue #528）:
+#   - 閉じ側 `-->` の探索はインラインコードスパンを区別しない（開始側のみの narrowing）
+#   - 閉じ側 `-->` の探索は**フェンス span を跨ぐ** — 開始側が narrowing された結果
+#     Issue #527 の再現経路は塞がったが、コードスパン外の裸の `<!--` が閉じないまま
+#     置かれると、後続のフェンス内にある `-->`（mermaid の矢印など）が閉じとして
+#     採用され、間の本文が落ちる規則自体は残っている。閉じ側の非対称は Issue #706
 #   - フェンスの**インデント上限を見ていない** — CommonMark はフェンスの字下げを 3 桁まで
 #     とし、4 桁以上はインデントコードブロックだが、`^[ \t]*` は無制限に許す。現在の
 #     docs に 4 桁以上のフェンス行は無い（実測）ため実害は出ていない
@@ -282,10 +310,30 @@ ff_docs_mask_spans() {
     }
     # 閉じマーカーか。CommonMark に合わせ「同記号・同長以上・後続は空白のみ」を要求
     # する（```markdown の中の ```ts は content なので閉じない）。
+    # 末尾の CR も空白として許す — awk は RS="\n" で読むため CRLF 改行のファイルでは
+    # 行末に \r が残る。ここで弾くと CRLF ファイルだけフェンスが 1 つも閉じられず、
+    # `/\r?\n/` で分割する同梱 MCP 側（maskClosedSpans）と結果が食い違う（Issue #527）。
     function fence_closes(s, c, l,   t) {
-      if (s !~ /^[ \t]*(```+|~~~+)[ \t]*$/) return 0
-      t = s; sub(/^[ \t]*/, "", t); sub(/[ \t]*$/, "", t)
+      if (s !~ /^[ \t]*(```+|~~~+)[ \t\r]*$/) return 0
+      t = s; sub(/^[ \t]*/, "", t); sub(/[ \t\r]*$/, "", t)
       return (substr(t, 1, 1) == c && length(t) >= l)
+    }
+    # 同一行内で対になったインラインコードスパンを同じ長さの空白へ置き換えて返す。
+    # コメント開始の探索位置を求めるためだけに使う（長さを保つので、返り値上の桁は
+    # 原文の桁とそのまま対応する）。
+    # 規則は shell 側の ff_docs_mask_inline_spans と**同一の正規表現**にする
+    # （単一バックティックの対だけ。二重以上とエスケープは対象外）。片方だけ変えると
+    # 「散文の引用がコメントとして扱われる」形で静かに乖離するため、両方まとめて直すこと。
+    function blank_code_spans(s,   out, pad, i) {
+      out = ""
+      while (match(s, /`[^`]*`/)) {
+        out = out substr(s, 1, RSTART - 1)
+        pad = ""
+        for (i = 1; i <= RLENGTH; i++) pad = pad " "
+        out = out pad
+        s = substr(s, RSTART + RLENGTH)
+      }
+      return out s
     }
     # --- コメント除去 ---------------------------------------------------------
     # line[i] の桁 at から始まるコメントを 1 つ消し、次に検査すべき行番号を返す。
@@ -322,7 +370,12 @@ ff_docs_mask_spans() {
       while (i <= n) {
         fpos = fence_open(line[i])
         fc = FC; fl = FL
-        cpos = index(line[i], "<!--")
+        # コメント開始の探索は**インラインコードスパンを空白化した写し**で行う
+        # （Issue #527）。散文中の `` `<!--` `` を開始と誤認すると、後続の `-->`
+        # （mermaid の矢印 `A --> B` を含む）と対になって間の本文が丸ごと走査から
+        # 落ちる。空白化は長さを保つので、fpos との前後比較はそのまま成立する。
+        # フェンス判定は原文で行う（``` 自体が空白化されるため）。
+        cpos = index(blank_code_spans(line[i]), "<!--")
         if (fpos > 0 && (cpos == 0 || fpos < cpos)) {
           close_at = 0
           for (j = i + 1; j <= n; j++) if (fence_closes(line[j], fc, fl)) { close_at = j; break }
@@ -348,6 +401,10 @@ ff_docs_mask_spans() {
 #
 # 単一バックティックの対だけを見る（二重以上は対象外。§4 も同じ限定。本リポジトリの
 # 記入雛形・規則引用は単一スパンで書く）。エスケープされたバックティックは区別しない。
+#
+# 同じ規則を ff_docs_mask_spans 内の awk 関数 blank_code_spans が持つ（コメント開始の
+# 探索用。awk 関数から shell 関数は呼べないための第 2 実装）。**正規表現を変えるときは
+# 両方同時に変えること** — 片方だけだと「散文の引用がコメント扱いになる」形で乖離する。
 ff_docs_mask_inline_spans() {
   awk '
     {

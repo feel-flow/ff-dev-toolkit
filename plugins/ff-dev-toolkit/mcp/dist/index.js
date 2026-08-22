@@ -21232,12 +21232,13 @@ var closesFence = (l, open) => {
   const m = l.match(/^\s*(`{3,}|~{3,})\s*$/);
   return !!m && m[1][0] === open.char && m[1].length >= open.len;
 };
+var blankCodeSpans = (l) => l.replace(/`[^`]*`/g, (m) => " ".repeat(m.length));
 var maskClosedSpans = (lines) => {
   const out = [...lines];
   let i = 0;
   while (i < out.length) {
     const fence = fenceOpenerOf(out[i]);
-    const commentAt = out[i].indexOf("<!--");
+    const commentAt = blankCodeSpans(out[i]).indexOf("<!--");
     if (fence && (commentAt === -1 || out[i].indexOf(fence.char) < commentAt)) {
       const close = out.findIndex((l, j) => j > i && closesFence(l, fence));
       if (close === -1) {

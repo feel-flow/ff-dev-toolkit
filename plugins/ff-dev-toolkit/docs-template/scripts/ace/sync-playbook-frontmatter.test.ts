@@ -8,11 +8,12 @@ import {
   bumpPatch,
   computeSync,
   countActualEntries,
+  countTopLevelFieldOccurrences,
   extractLatestChangelogVersion,
   isDirectExecution,
   main,
-  readField,
-  replaceField,
+  readTopLevelField,
+  replaceTopLevelField,
   splitFrontmatter,
 } from "./sync-playbook-frontmatter";
 
@@ -74,46 +75,76 @@ describe("splitFrontmatter", () => {
   });
 });
 
-describe("readField", () => {
+describe("readTopLevelField", () => {
   it("クォート付き・数値・配列を生値で取り出す", () => {
     const fm = 'title: "PLAYBOOK"\nace_entry_count: 123\ntags: [a, b]';
-    expect(readField(fm, "title")).toBe("PLAYBOOK");
-    expect(readField(fm, "ace_entry_count")).toBe("123");
-    expect(readField(fm, "tags")).toBe("[a, b]");
+    expect(readTopLevelField(fm, "title")).toBe("PLAYBOOK");
+    expect(readTopLevelField(fm, "ace_entry_count")).toBe("123");
+    expect(readTopLevelField(fm, "tags")).toBe("[a, b]");
   });
 
   it("存在しないキーは null", () => {
-    expect(readField("title: x", "missing")).toBeNull();
+    expect(readTopLevelField("title: x", "missing")).toBeNull();
+  });
+
+  it("metadata 配下にネストされたキーはトップレベルとして読まない（fail-open 防止）", () => {
+    const fm = 'title: "PLAYBOOK"\nmetadata:\n  version: "1.0.0"\n  ace_entry_count: 1';
+    expect(readTopLevelField(fm, "version")).toBeNull();
+    expect(readTopLevelField(fm, "ace_entry_count")).toBeNull();
   });
 });
 
-describe("replaceField", () => {
+describe("countTopLevelFieldOccurrences", () => {
+  it("トップレベルの出現回数だけを数える（ネストは数えない）", () => {
+    const fm = 'version: "1.0.0"\nmetadata:\n  version: "9.9.9"';
+    expect(countTopLevelFieldOccurrences(fm, "version")).toBe(1);
+  });
+
+  it("トップレベルの重複は 2 以上として返す", () => {
+    expect(countTopLevelFieldOccurrences('version: "1.0.0"\nversion: "2.0.0"', "version")).toBe(2);
+  });
+
+  it("存在しなければ 0", () => {
+    expect(countTopLevelFieldOccurrences("title: x", "version")).toBe(0);
+  });
+
+  it("前方一致する別キーは数えない", () => {
+    expect(countTopLevelFieldOccurrences("ace_entry_count_note: x", "ace_entry_count")).toBe(0);
+  });
+});
+
+describe("replaceTopLevelField", () => {
   it("クォートの有無を保って値だけ差し替える", () => {
     const fm = 'version: "1.0.0"\nace_entry_count: 5';
-    expect(replaceField(fm, "version", "1.0.1")).toContain('version: "1.0.1"');
-    expect(replaceField(fm, "ace_entry_count", "6")).toContain("ace_entry_count: 6");
+    expect(replaceTopLevelField(fm, "version", "1.0.1")).toContain('version: "1.0.1"');
+    expect(replaceTopLevelField(fm, "ace_entry_count", "6")).toContain("ace_entry_count: 6");
   });
 
   it("単一引用符も保ち、YAML の単一引用符エスケープ規則に従う", () => {
     const fm = "updated: '2026-01-01'\nnote: 'old'";
-    expect(replaceField(fm, "updated", "2026-07-20")).toContain("updated: '2026-07-20'");
-    expect(replaceField(fm, "note", "Bob's note")).toContain("note: 'Bob''s note'");
+    expect(replaceTopLevelField(fm, "updated", "2026-07-20")).toContain("updated: '2026-07-20'");
+    expect(replaceTopLevelField(fm, "note", "Bob's note")).toContain("note: 'Bob''s note'");
   });
 
   it("差し替えても他フィールドは不変", () => {
     const fm = 'version: "1.0.0"\nace_entry_count: 5';
-    const out = replaceField(fm, "ace_entry_count", "6");
+    const out = replaceTopLevelField(fm, "ace_entry_count", "6");
     expect(out).toContain('version: "1.0.0"');
   });
 
   it("特殊文字を含む値でも壊れない（$& 等）", () => {
     const fm = "note: old";
-    const out = replaceField(fm, "note", "a$&b");
+    const out = replaceTopLevelField(fm, "note", "a$&b");
     expect(out).toBe("note: a$&b");
   });
 
   it("存在しないキーは null", () => {
-    expect(replaceField("a: 1", "b", "2")).toBeNull();
+    expect(replaceTopLevelField("a: 1", "b", "2")).toBeNull();
+  });
+
+  it("ネストされた同名キーしか無ければ null（ネスト側を書き換えない）", () => {
+    const fm = 'title: "PLAYBOOK"\nmetadata:\n  version: "1.0.0"';
+    expect(replaceTopLevelField(fm, "version", "1.1.0")).toBeNull();
   });
 });
 
@@ -208,6 +239,30 @@ describe("countActualEntries", () => {
   });
 });
 
+/**
+ * 重複キー検査用の fixture。それ以外は完全に健全な PLAYBOOK に、指定した
+ * トップレベル行を 1 本だけ足して重複させる。
+ */
+function duplicatedFieldFixture(duplicateLine: string): string {
+  return (
+    `---\ntitle: "T"\nversion: "1.0.0"\ncreated: "2026-01-01"\nupdated: "2026-01-01"\n` +
+    `changeImpact: medium\nace_entry_count: 1\n${duplicateLine}\n---\n` +
+    `### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n### [1.0.0] - 2026-01-01\n`
+  );
+}
+
+/**
+ * 管理対象 5 フィールドすべてで重複を拒否する（1 つだけ守られている状態を作らない）。
+ * computeSync 層と CLI 層の両方から同じ表を回す。
+ */
+const MANAGED_FIELD_DUPLICATES = [
+  { field: "ace_entry_count", duplicate: "ace_entry_count: 2" },
+  { field: "version", duplicate: 'version: "9.9.9"' },
+  { field: "created", duplicate: 'created: "2026-09-09"' },
+  { field: "updated", duplicate: 'updated: "2026-09-09"' },
+  { field: "changeImpact", duplicate: "changeImpact: high" },
+] as const;
+
 describe("computeSync (check)", () => {
   it("記録値と実数が一致していれば inSync=true / changes 空", () => {
     const content = `---\nace_entry_count: 2\n---\n### ACE-1-1: a\n| Category | coding |\n### ACE-1-2: b\n| Category | coding |\n`;
@@ -252,6 +307,39 @@ describe("computeSync (check)", () => {
     const result = computeSync(content, 1, {});
     expect(result.kind).toBe("error");
   });
+
+  it("ace_entry_count が metadata 配下にしか無ければ欠落として error（Issue #615）", () => {
+    const content = `---\ntitle: x\nmetadata:\n  ace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n`;
+    const result = computeSync(content, 1, {});
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("ace_entry_count");
+      // 「トップレベルを見ている」ことを診断が明示していないと、ネストした人が原因へ辿れない
+      expect(result.message).toContain("トップレベル");
+    }
+  });
+
+  it("version が metadata 配下にしか無ければトップレベル未記録として扱う（Issue #615）", () => {
+    const content = `---\nace_entry_count: 1\nmetadata:\n  version: "1.0.0"\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n### [1.0.0] - 2026-08-20\n`;
+    const result = computeSync(content, 1, {});
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.frontmatterVersion).toBeNull();
+      expect(result.versionChangelogInSync).toBe(false);
+    }
+  });
+
+  for (const { field, duplicate } of MANAGED_FIELD_DUPLICATES) {
+    it(`トップレベルの ${field} 重複は error（読んだ行と書く行がずれるため）`, () => {
+      const content = duplicatedFieldFixture(duplicate);
+      const result = computeSync(content, 1, {});
+      expect(result.kind).toBe("error");
+      if (result.kind === "error") {
+        expect(result.message).toContain(field);
+        expect(result.message).toContain("2 回");
+      }
+    });
+  }
 });
 
 describe("computeSync (write)", () => {
@@ -284,13 +372,34 @@ describe("computeSync (write)", () => {
     }
   });
 
-  it("Changelog が無い fixture では versionChangelogInSync は true（検証スキップ）", () => {
+  it("Changelog セクションが無ければドリフト扱い（Issue #615: 消せば検証が消える fail-open を塞ぐ）", () => {
     const content = `---\nversion: "1.0.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n`;
     const result = computeSync(content, 1, {});
     expect(result.kind).toBe("ok");
     if (result.kind === "ok") {
+      expect(result.changelogState).toBe("absent");
       expect(result.changelogVersion).toBeNull();
+      expect(result.versionChangelogInSync).toBe(false);
+    }
+  });
+
+  it("allowMissingChangelog を渡した fixture でだけ Changelog 不在を許す（CLI からは到達しない）", () => {
+    const content = `---\nversion: "1.0.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n`;
+    const result = computeSync(content, 1, { allowMissingChangelog: true });
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogState).toBe("absent");
       expect(result.versionChangelogInSync).toBe(true);
+    }
+  });
+
+  it("Changelog はあるが版見出しが無い場合は allowMissingChangelog でも許さない", () => {
+    const content = `---\nversion: "1.0.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n（まだ無し）\n`;
+    const result = computeSync(content, 1, { allowMissingChangelog: true });
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogState).toBe("empty");
+      expect(result.versionChangelogInSync).toBe(false);
     }
   });
 
@@ -339,14 +448,20 @@ describe("computeSync (write)", () => {
     const content = `---\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n`;
     const result = computeSync(content, 1, { write: true });
     expect(result.kind).toBe("error");
-    if (result.kind === "error") expect(result.message).toContain("updated");
+    if (result.kind === "error") {
+      expect(result.message).toContain("updated");
+      expect(result.message).toContain("トップレベル");
+    }
   });
 
   it("bumpVersion で version が欠落していれば error（黙って未更新にしない）", () => {
     const content = `---\nace_entry_count: 1\nupdated: "2026-01-01"\n---\n### ACE-1-1: a\n| Category | coding |\n`;
     const result = computeSync(content, 1, { write: true, bumpVersion: true });
     expect(result.kind).toBe("error");
-    if (result.kind === "error") expect(result.message).toContain("version");
+    if (result.kind === "error") {
+      expect(result.message).toContain("version");
+      expect(result.message).toContain("トップレベル");
+    }
   });
 
   it("round-trip: 変更対象フィールド以外は完全一致", () => {
@@ -540,7 +655,7 @@ describe("main (CLI contract)", () => {
   it("--check は changeImpact が小文字値域内なら exit 0", () => {
     const dir = tempDir();
     const playbook = path.join(dir, "PLAYBOOK.md");
-    const content = `---\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-02-01"\nversion: "1.1.0"\nchangeImpact: medium\n---\n### ACE-1-1: a\n| Category | coding |\n`;
+    const content = `---\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-02-01"\nversion: "1.1.0"\nchangeImpact: medium\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n### [1.1.0] - 2026-02-01\n`;
     fs.writeFileSync(playbook, content);
 
     const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--check"]));
@@ -554,7 +669,7 @@ describe("main (CLI contract)", () => {
     const playbook = path.join(dir, "PLAYBOOK.md");
     fs.writeFileSync(
       playbook,
-      `---\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-01-01"\nversion: "1.0.0"\n---\n### ACE-1-1: a\n| Category | coding |\n### ACE-1-2: b\n| Category | coding |\n`,
+      `---\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-01-01"\nversion: "1.0.0"\n---\n### ACE-1-1: a\n| Category | coding |\n### ACE-1-2: b\n| Category | coding |\n\n## Changelog\n\n### [1.0.0] - 2026-01-01\n`,
     );
     const previousDate = process.env.ACE_UPDATED_DATE;
     process.env.ACE_UPDATED_DATE = "2026-07-21";
@@ -618,7 +733,8 @@ describe("main (CLI contract)", () => {
     const playbook = path.join(dir, "PLAYBOOK.md");
     fs.writeFileSync(
       playbook,
-      `---\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-01-01"\nversion: "1.1.0"\nchangeImpact: medium\n---\n### ACE-1-1: a\n| Category | coding |\n`,
+      // Changelog は先に bump 後の版（1.2.0）を持つ運用（`/ace-curate` 4-d）を写す。
+      `---\nace_entry_count: 1\ncreated: "2026-01-01"\nupdated: "2026-01-01"\nversion: "1.1.0"\nchangeImpact: medium\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n### [1.2.0] - 2026-07-21\n`,
     );
     const previousDate = process.env.ACE_UPDATED_DATE;
     process.env.ACE_UPDATED_DATE = "2026-07-21";
@@ -680,7 +796,7 @@ describe("main (CLI contract)", () => {
     const playbook = path.join(dir, "PLAYBOOK.md");
     fs.writeFileSync(
       playbook,
-      `---\nace_entry_count: 1\nupdated: "2026-01-01"\nversion: "1.0.0"\n---\n### ACE-1-1: a\n| Category | coding |\n### ACE-1-2: b\n| Category | coding |\n`,
+      `---\nace_entry_count: 1\nupdated: "2026-01-01"\nversion: "1.0.0"\n---\n### ACE-1-1: a\n| Category | coding |\n### ACE-1-2: b\n| Category | coding |\n\n## Changelog\n\n### [1.0.0] - 2026-01-01\n`,
     );
     const previousDate = process.env.ACE_UPDATED_DATE;
     process.env.ACE_UPDATED_DATE = "2026-07-21";
@@ -720,7 +836,8 @@ describe("main (CLI contract)", () => {
     const playbook = path.join(dir, "PLAYBOOK.md");
     fs.writeFileSync(
       playbook,
-      `---\nace_entry_count: 1\nupdated: "2026-01-01"\nversion: "1.0.0"\n---\n### ACE-1-1: a\n| Category | coding |\n`,
+      // bump 後の 1.1.0 が Changelog に既にある状態（Changelog 先行運用）。
+      `---\nace_entry_count: 1\nupdated: "2026-01-01"\nversion: "1.0.0"\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n### [1.1.0] - 2026-07-21\n`,
     );
     const previousPath = process.env.ACE_PLAYBOOK_PATH;
     const previousDate = process.env.ACE_UPDATED_DATE;
@@ -763,6 +880,123 @@ describe("main (CLI contract)", () => {
 
     expect(status).toBe(1);
     expect(output).toContain("版見出しなし");
+  });
+
+  // Issue #615 の再現 fixture（報告本文の frontmatter / 本文をそのまま写す）。
+  const ISSUE_615_BODY = `
+# T
+
+<a id="ace-1-1"></a>
+
+### ACE-1-1: サンプル
+
+| フィールド | 値      |
+| ---------- | ------- |
+| Category   | process |
+| Origin     | PR feel-flow/ff-dev-toolkit#1   |
+| Date       | 2026-08-20 |
+| Helpful    | 0       |
+| Harmful    | 0       |
+| Status     | active  |
+
+**Insight**: x
+`;
+
+  it("--check は ## Changelog セクションごと消えていれば exit 1（Issue #615 再現 1）", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const content = `---\ntitle: "T"\nversion: "1.0.0"\ncreated: "2026-08-01"\nupdated: "2026-08-20"\nchangeImpact: "medium"\nace_entry_count: 1\n---\n${ISSUE_615_BODY}`;
+    fs.writeFileSync(playbook, content);
+
+    const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--check"]));
+
+    expect(status).toBe(1);
+    expect(output).toContain("`## Changelog` セクションがありません");
+    // 受理する見出し表記（レベル 2・大小文字一致）を診断が明示する
+    expect(output).toContain("レベル 2");
+    expect(fs.readFileSync(playbook, "utf8")).toBe(content);
+  });
+
+  it("--allow-missing-changelog は CLI から渡せない（fixture 用の緩和を本番経路へ漏らさない）", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const content = `---\nace_entry_count: 1\nupdated: "2026-01-01"\nversion: "1.0.0"\n---\n### ACE-1-1: a\n| Category | coding |\n`;
+    fs.writeFileSync(playbook, content);
+
+    const { status, output } = withCapturedConsole(() =>
+      main(["node", "sync", playbook, "--check", "--allow-missing-changelog"]),
+    );
+
+    expect(status).toBe(2);
+    expect(output).toContain("未知のオプション");
+    expect(output).toContain("--allow-missing-changelog");
+    expect(fs.readFileSync(playbook, "utf8")).toBe(content);
+  });
+
+  for (const { field, duplicate } of MANAGED_FIELD_DUPLICATES) {
+    it(`--write は ${field} がトップレベルで重複していれば usage error でファイルを書き換えない`, () => {
+      const dir = tempDir();
+      const playbook = path.join(dir, "PLAYBOOK.md");
+      const content = duplicatedFieldFixture(duplicate);
+      fs.writeFileSync(playbook, content);
+      const previousDate = process.env.ACE_UPDATED_DATE;
+      process.env.ACE_UPDATED_DATE = "2026-07-21";
+      try {
+        const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--write"]));
+        expect(status).toBe(2);
+        expect(output).toContain(field);
+        expect(fs.readFileSync(playbook, "utf8")).toBe(content);
+      } finally {
+        if (previousDate === undefined) delete process.env.ACE_UPDATED_DATE;
+        else process.env.ACE_UPDATED_DATE = previousDate;
+      }
+    });
+  }
+
+  it("--check は version だけ metadata 配下にあるとき exit 1（ファイルは書き換えない）", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const content = `---\nace_entry_count: 1\nupdated: "2026-01-01"\nmetadata:\n  version: "1.0.0"\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n### [1.0.0] - 2026-01-01\n`;
+    fs.writeFileSync(playbook, content);
+
+    const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--check"]));
+
+    expect(status).toBe(1);
+    expect(output).toContain("frontmatter=なし");
+    expect(output).toContain("frontmatter なし ≠ Changelog 1.0.0");
+    expect(fs.readFileSync(playbook, "utf8")).toBe(content);
+  });
+
+  it("--check は version / ace_entry_count が metadata 配下にしか無ければ非 0（Issue #615 再現 2）", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const content = `---\ntitle: "T"\ncreated: "2026-08-01"\nupdated: "2026-08-20"\nchangeImpact: "medium"\nmetadata:\n  version: "1.0.0"\n  ace_entry_count: 1\n---\n${ISSUE_615_BODY}`;
+    fs.writeFileSync(playbook, content);
+
+    const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--check"]));
+
+    // トップレベルに ace_entry_count が無い = 壊れた frontmatter なので usage error 側で止める
+    expect(status).toBe(2);
+    expect(output).toContain("ace_entry_count");
+    expect(output).toContain("トップレベル");
+    expect(fs.readFileSync(playbook, "utf8")).toBe(content);
+  });
+
+  it("--write は metadata 配下へネストされた値を書き換えない（Issue #615 再現 2 の未検証部分）", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const content = `---\ntitle: "T"\ncreated: "2026-08-01"\nupdated: "2026-08-20"\nchangeImpact: "medium"\nmetadata:\n  version: "1.0.0"\n  ace_entry_count: 1\n---\n${ISSUE_615_BODY}`;
+    fs.writeFileSync(playbook, content);
+    const previousDate = process.env.ACE_UPDATED_DATE;
+    process.env.ACE_UPDATED_DATE = "2026-08-21";
+    try {
+      const { status } = withCapturedConsole(() => main(["node", "sync", playbook, "--write"]));
+      expect(status).toBe(2);
+      expect(fs.readFileSync(playbook, "utf8")).toBe(content);
+    } finally {
+      if (previousDate === undefined) delete process.env.ACE_UPDATED_DATE;
+      else process.env.ACE_UPDATED_DATE = previousDate;
+    }
   });
 
   it("--write は count 一致でも version desync なら「すべて最新」と言わず exit 1", () => {

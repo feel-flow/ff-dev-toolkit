@@ -11,8 +11,10 @@
  *
  * 機能:
  *   - `--check`（既定）: 実エントリ数と frontmatter `ace_entry_count` を比較し、
- *     ドリフトがあれば終了コード 1 を返す（CI ゲート）。`## Changelog` がある場合は
- *     frontmatter `version` と最新 `### [x.y.z]` の一致も検証する。加えて
+ *     ドリフトがあれば終了コード 1 を返す（CI ゲート）。frontmatter `version` と
+ *     `## Changelog` 最新 `### [x.y.z]` の一致も検証する。`## Changelog` セクション
+ *     そのものが無い場合もドリフト扱いにする（Issue #615: 以前はスキップしていたため、
+ *     セクションごと消せば version 検証が永久に効かなくなる fail-open だった）。加えて
  *     `changeImpact` を検証する（Issue #289: 変更済みなのに未記録、または値が
  *     小文字の low / medium / high 以外ならドリフト扱い。値域は `/validate-docs` の
  *     Frontmatter スキーマと同一。「変更済み」の判定は同スキーマのうち機械判定
@@ -25,6 +27,11 @@
  *     書き込み後も報告して終了コード 1 を返す。
  *   - `--bump-version`  : `--write` と併用時、`version`（semver）を **minor +1**
  *     し patch を 0 にする（ACE curate の版上げ方針。patch 上げは使わない）。
+ *
+ * frontmatter の読み書きは**トップレベルのキーだけ**を対象にする（Issue #615）。
+ * インデントを許すと `metadata:` 配下の同名キーをトップレベル記録と誤認し、必須項目が
+ * 欠落していても check が通り、`--write` がネスト側を書き換える。トップレベルに同名
+ * キーが重複する場合も、YAML の後勝ちと「最初の 1 行だけ差し替え」がずれるため拒否する。
  *
  * 集計は check-category-size.ts と同じロジック（HTML コメント内の追記例やテンプレの
  * プレースホルダ見出しを除外、playbook/ 分割レイアウトも合算）を再利用するため、
@@ -54,6 +61,19 @@ const UPDATED_FIELD = "updated";
 const VERSION_FIELD = "version";
 const CREATED_FIELD = "created";
 const CHANGE_IMPACT_FIELD = "changeImpact";
+/**
+ * 本スクリプトが読み書きする frontmatter フィールド（`created` は読み取り専用で、
+ * 「変更済み文書」の判定にだけ使う）。トップレベルでの重複を拒否する対象でもある
+ * （Issue #615）。読むだけのフィールドも重複を拒否するのは、後勝ちで判定が変わる
+ * 曖昧な frontmatter をそもそも受け付けないため。
+ */
+const MANAGED_TOP_LEVEL_FIELDS: readonly string[] = [
+  COUNT_FIELD,
+  UPDATED_FIELD,
+  VERSION_FIELD,
+  CREATED_FIELD,
+  CHANGE_IMPACT_FIELD,
+];
 /** `/validate-docs` の Frontmatter スキーマと同じ値域（小文字のみ有効）。 */
 const CHANGE_IMPACT_VALUES: ReadonlySet<string> = new Set(["low", "medium", "high"]);
 /** `--write` が欠落時に自動追記する値（ACE の版上げは常に minor +1 = medium）。 */
@@ -73,10 +93,9 @@ const SEMVER_MAJOR_INDEX = 0;
 const SEMVER_MINOR_INDEX = 1;
 const SEMVER_PATCH_INDEX = 2;
 
-// replaceField の正規表現キャプチャ添字（1=インデント, 2=key: 後の空白, 3=値）。
-const FIELD_INDENT_GROUP = 1;
-const FIELD_SPACING_GROUP = 2;
-const FIELD_VALUE_GROUP = 3;
+// replaceTopLevelField の正規表現キャプチャ添字（1=key: 後の空白, 2=値）。
+const FIELD_SPACING_GROUP = 1;
+const FIELD_VALUE_GROUP = 2;
 
 // YYYY-MM-DD 生成時の 0 埋め桁数と日付パートの添字。
 const YEAR_PAD_WIDTH = 4;
@@ -109,23 +128,36 @@ export type FieldChange = Readonly<{
   readonly to: string;
 }>;
 
-export type SyncCheckOptions = Readonly<{
-  /** check モード（既定）。frontmatter へは書き戻さない。 */
-  readonly write?: false;
-  /** check モードでは version bump を許可しない。 */
-  readonly bumpVersion?: never;
-  /** check モードでは updated 日付指定を許可しない。 */
-  readonly updatedDate?: never;
+/**
+ * `## Changelog` セクション不在をドリフト扱いにしない緩和（Issue #615）。
+ * **Changelog を持たない最小 fixture を組むユニットテスト専用**で、CLI からは設定
+ * できない。実運用の PLAYBOOK.md は `/ace-setup` が配るテンプレートの時点で
+ * `## Changelog` を持つため、不在は「消された」以外の意味を持たない — そこへ
+ * CLI フラグを生やすと、fail-open を潰す修正に fail-open の逃げ道を付けることになる。
+ */
+type AllowMissingChangelogOption = Readonly<{
+  readonly allowMissingChangelog?: boolean;
 }>;
 
-export type SyncWriteOptions = Readonly<{
-  /** write モード。frontmatter へ書き戻す前提の内容を計算する。 */
-  readonly write: true;
-  /** version を minor +1（patch は 0）するか。 */
-  readonly bumpVersion?: boolean;
-  /** `updated` に入れる日付（YYYY-MM-DD）。省略時は当日。 */
-  readonly updatedDate?: string;
-}>;
+export type SyncCheckOptions = AllowMissingChangelogOption &
+  Readonly<{
+    /** check モード（既定）。frontmatter へは書き戻さない。 */
+    readonly write?: false;
+    /** check モードでは version bump を許可しない。 */
+    readonly bumpVersion?: never;
+    /** check モードでは updated 日付指定を許可しない。 */
+    readonly updatedDate?: never;
+  }>;
+
+export type SyncWriteOptions = AllowMissingChangelogOption &
+  Readonly<{
+    /** write モード。frontmatter へ書き戻す前提の内容を計算する。 */
+    readonly write: true;
+    /** version を minor +1（patch は 0）するか。 */
+    readonly bumpVersion?: boolean;
+    /** `updated` に入れる日付（YYYY-MM-DD）。省略時は当日。 */
+    readonly updatedDate?: string;
+  }>;
 
 export type SyncOptions = SyncCheckOptions | SyncWriteOptions;
 
@@ -139,12 +171,19 @@ export type SyncOk = Readonly<{
   readonly frontmatterVersion: string | null;
   /**
    * `## Changelog` 内の最新版（最初の `### [x.y.z]`）。
-   * Changelog セクションが無い fixture では null（検証スキップ）。
+   * セクションが無い / 版見出しが無い場合は null。
    */
   readonly changelogVersion: string | null;
   /**
+   * `## Changelog` セクションの状態。`absent`（セクションごと無い）と
+   * `empty`（あるが版見出しが無い）は診断文が異なるため呼び出し側で区別する。
+   */
+  readonly changelogState: "absent" | "empty" | "found";
+  /**
    * frontmatter version と Changelog 最新版が一致しているか。
-   * Changelog が無い場合は true（後方互換: 最小 fixture では検証しない）。
+   * Changelog セクションが無い場合も false（Issue #615: セクションを消すだけで
+   * version 検証が永久に効かなくなる fail-open を塞ぐ）。ただし
+   * `allowMissingChangelog` を渡したテスト fixture では true のまま。
    * Changelog があるのに版見出しが無い / version フィールドが無い場合は false。
    */
   readonly versionChangelogInSync: boolean;
@@ -189,25 +228,28 @@ export function splitFrontmatter(
   return { frontmatter: fmLines.join("\n"), rest };
 }
 
-/** frontmatter から key の生値（クォート除去済み）を取り出す。無ければ null。 */
-export function readField(frontmatter: string, key: string): string | null {
-  const re = new RegExp(`^(\\s*)${escapeRegExp(key)}:[ \\t]*(.*)$`, "mu");
-  const match = frontmatter.match(re);
-  if (!match) return null;
-  return unquote(match[2].trim());
-}
-
 /**
- * frontmatter の**トップレベル** key の生値を取り出す。無ければ null。
- * readField と違いインデント（`metadata:` 等の配下にネストされたキー）を許容しない。
- * changeImpact 等の検証で、ネストされた同名キーをトップレベル記録と誤認して
- * fail-open にならないようにするための読み取り。
+ * frontmatter の**トップレベル** key の生値（クォート除去済み）を取り出す。無ければ null。
+ * インデント（`metadata:` 等の配下にネストされたキー）は一切許容しない。ネストされた
+ * 同名キーをトップレベル記録と誤認すると、必須項目が欠落したまま check が通る
+ * （Issue #615）。本スクリプトの読み取りはすべてこの関数を通す。
  */
 export function readTopLevelField(frontmatter: string, key: string): string | null {
   const re = new RegExp(`^${escapeRegExp(key)}:[ \\t]*(.*)$`, "mu");
   const match = frontmatter.match(re);
   if (!match) return null;
   return unquote(match[1].trim());
+}
+
+/**
+ * frontmatter のトップレベルに key が何回現れるかを数える。
+ * YAML は同名キーの後勝ちだが replaceTopLevelField は最初の 1 行だけを差し替えるため、
+ * 重複したまま書き込むと「読んだ値」と「書いた行」がずれる。呼び出し側は 2 以上を
+ * エラーとして扱う（Issue #615）。
+ */
+export function countTopLevelFieldOccurrences(frontmatter: string, key: string): number {
+  const matches = frontmatter.match(new RegExp(`^${escapeRegExp(key)}:`, "gmu"));
+  return matches?.length ?? 0;
 }
 
 /**
@@ -243,23 +285,24 @@ export function isModifiedDocState(
 }
 
 /**
- * frontmatter の key の値だけを差し替える。クォートの有無・インデントは既存の
+ * frontmatter の**トップレベル** key の値だけを差し替える。クォートの有無は既存の
  * 形式を踏襲する（コメント・キー順・他フィールドは一切触らない）。
- * key が存在しなければ null（呼び出し側でフィールド欠落として扱う）。
+ * ネストされた同名キー（`metadata:` 配下等）は対象にしない — 書き換えてしまうと
+ * トップレベルの必須項目が欠けたまま「同期済み」になる（Issue #615）。
+ * トップレベルに key が存在しなければ null（呼び出し側でフィールド欠落として扱う）。
  */
-export function replaceField(
+export function replaceTopLevelField(
   frontmatter: string,
   key: string,
   newValue: string,
 ): string | null {
-  const re = new RegExp(`^(\\s*)${escapeRegExp(key)}:([ \\t]*)(.*)$`, "mu");
+  const re = new RegExp(`^${escapeRegExp(key)}:([ \\t]*)(.*)$`, "mu");
   const match = frontmatter.match(re);
   if (!match) return null;
-  const indent = match[FIELD_INDENT_GROUP];
   const spacing = match[FIELD_SPACING_GROUP] === "" ? " " : match[FIELD_SPACING_GROUP];
   const rendered = renderFieldValue(match[FIELD_VALUE_GROUP].trim(), newValue);
   // 関数リプレーサで $ 等の特殊文字混入を防ぐ。
-  return frontmatter.replace(re, () => `${indent}${key}:${spacing}${rendered}`);
+  return frontmatter.replace(re, () => `${key}:${spacing}${rendered}`);
 }
 
 /** semver 文字列の patch を +1 する。x.y.z 以外は null。 */
@@ -285,7 +328,8 @@ export function bumpMinor(version: string): string | null {
 
 /**
  * 本文から `## Changelog` 直下の最新版（最初の `### [x.y.z]`）を取り出す。
- * - Changelog セクションが無い → `{ kind: "absent" }`（fixture 後方互換で検証スキップ）
+ * - Changelog セクションが無い → `{ kind: "absent" }`（呼び出し側では既定でドリフト。
+ *   緩和は computeSync の allowMissingChangelog = テスト fixture 専用オプションのみ）
  * - あるが版見出しが無い → `{ kind: "empty" }`（ドリフト扱い）
  * - 見つかった → `{ kind: "found", version, count }`（count = セクション内の版見出し総数。
  *   2 件以上なら「初版以外のエントリがある」= 変更済み文書の機械判定に使う）
@@ -316,6 +360,21 @@ export function extractLatestChangelogVersion(
   return { kind: "found", version: versionMatch[1], count: allHeadings?.length ?? 1 };
 }
 
+/**
+ * トップレベルのフィールドが読めなかったときの共通診断。
+ * 「frontmatter にありません」だけだと、`metadata:` 配下へネストして書いた人が
+ * 「書いてあるのに」と受け取る。本スクリプトが見るのはトップレベルだけである旨を
+ * 診断そのものへ入れる（Issue #615）。
+ */
+function missingTopLevelFieldMessage(field: string): string {
+  return `トップレベルの ${field} フィールドが frontmatter にありません（\`metadata:\` 配下等へネストされた同名キーは記録として扱いません）。`;
+}
+
+/** トップレベルのフィールドを書き換えられなかったときの共通診断。 */
+function unwritableTopLevelFieldMessage(field: string): string {
+  return `トップレベルの ${field} フィールドを更新できませんでした（\`metadata:\` 配下等へネストされた同名キーは書き換えません）。`;
+}
+
 /** changeImpact 違反時の共通エラーメッセージ（check / write 共用）。 */
 export function formatChangeImpactViolation(changeImpactValue: string | null): string {
   if (changeImpactValue === null) {
@@ -329,6 +388,21 @@ export function formatChangeImpactViolation(changeImpactValue: string | null): s
   return (
     `✗ changeImpact="${changeImpactValue}" は無効な値です。` +
     "`low` / `medium` / `high` のいずれか（小文字）へ修正してください。"
+  );
+}
+
+/**
+ * `## Changelog` セクション不在時の共通エラーメッセージ（check / write 共用）。
+ * 「版見出しが無い」（= セクションはある）とは診断が別なので文言も分ける。
+ */
+export function formatChangelogAbsent(frontmatterVersion: string | null): string {
+  return (
+    "✗ `## Changelog` セクションがありません（version 検証が成立しません）。\n" +
+    `  frontmatter version=${String(frontmatterVersion ?? "なし")} の一致相手が無いため、` +
+    "`## Changelog` を復元し `### [x.y.z] - YYYY-MM-DD` を記載してください" +
+    "（`/ace-curate` の 4-d 参照）。\n" +
+    "  受理する見出しは行頭の `## Changelog` のみです（レベル 2・大文字小文字は完全一致。" +
+    "`### Changelog` や `## changelog` は認識しません）。"
   );
 }
 
@@ -448,7 +522,18 @@ export function computeSync(
     return { kind: "error", message: "frontmatter が見つかりません（先頭が '---' で始まる YAML ブロックが必要です）。" };
   }
 
-  const recordedRaw = readField(split.frontmatter, COUNT_FIELD);
+  // トップレベルの同名キー重複は「読んだ行」と「書いた行」がずれるため先に拒否する。
+  for (const key of MANAGED_TOP_LEVEL_FIELDS) {
+    const occurrences = countTopLevelFieldOccurrences(split.frontmatter, key);
+    if (occurrences > 1) {
+      return {
+        kind: "error",
+        message: `${key} が frontmatter のトップレベルに ${String(occurrences)} 回あります。YAML は後勝ちですが本スクリプトは最初の 1 行を書き換えるため、読み取りと書き込みがずれます。1 つに統合してください。`,
+      };
+    }
+  }
+
+  const recordedRaw = readTopLevelField(split.frontmatter, COUNT_FIELD);
   const recordedCount = recordedRaw !== null && /^[0-9]+$/u.test(recordedRaw) ? Number.parseInt(recordedRaw, 10) : null;
   const inSync = recordedCount === actualCount;
 
@@ -462,9 +547,9 @@ export function computeSync(
 
   // 1) ace_entry_count を実数へ
   if (recordedCount !== actualCount) {
-    const replaced = replaceField(frontmatter, COUNT_FIELD, String(actualCount));
+    const replaced = replaceTopLevelField(frontmatter, COUNT_FIELD, String(actualCount));
     if (replaced === null) {
-      return { kind: "error", message: `${COUNT_FIELD} フィールドが frontmatter にありません。` };
+      return { kind: "error", message: missingTopLevelFieldMessage(COUNT_FIELD) };
     }
     changes.push({ field: COUNT_FIELD, from: recordedRaw, to: String(actualCount) });
     frontmatter = replaced;
@@ -476,14 +561,14 @@ export function computeSync(
     if (!isIsoDateString(targetDate)) {
       return { kind: "error", message: `updatedDate="${targetDate}" は YYYY-MM-DD 形式ではありません。` };
     }
-    const currentUpdated = readField(frontmatter, UPDATED_FIELD);
+    const currentUpdated = readTopLevelField(frontmatter, UPDATED_FIELD);
     if (currentUpdated === null) {
-      return { kind: "error", message: `${UPDATED_FIELD} フィールドが frontmatter にありません。` };
+      return { kind: "error", message: missingTopLevelFieldMessage(UPDATED_FIELD) };
     }
     if (currentUpdated !== targetDate) {
-      const replaced = replaceField(frontmatter, UPDATED_FIELD, targetDate);
+      const replaced = replaceTopLevelField(frontmatter, UPDATED_FIELD, targetDate);
       if (replaced === null) {
-        return { kind: "error", message: `${UPDATED_FIELD} フィールドを更新できませんでした。` };
+        return { kind: "error", message: unwritableTopLevelFieldMessage(UPDATED_FIELD) };
       }
       changes.push({ field: UPDATED_FIELD, from: currentUpdated, to: targetDate });
       frontmatter = replaced;
@@ -491,17 +576,17 @@ export function computeSync(
 
     // 3) version の minor bump（オプトイン。ACE curate 方針: patch は上げない）
     if (options.bumpVersion === true) {
-      const currentVersion = readField(frontmatter, VERSION_FIELD);
+      const currentVersion = readTopLevelField(frontmatter, VERSION_FIELD);
       if (currentVersion === null) {
-        return { kind: "error", message: `${VERSION_FIELD} フィールドが frontmatter にありません。` };
+        return { kind: "error", message: missingTopLevelFieldMessage(VERSION_FIELD) };
       }
       const bumped = bumpMinor(currentVersion);
       if (bumped === null) {
         return { kind: "error", message: `version="${currentVersion}" は semver (x.y.z) ではないため bump できません。` };
       }
-      const replaced = replaceField(frontmatter, VERSION_FIELD, bumped);
+      const replaced = replaceTopLevelField(frontmatter, VERSION_FIELD, bumped);
       if (replaced === null) {
-        return { kind: "error", message: `${VERSION_FIELD} フィールドを更新できませんでした。` };
+        return { kind: "error", message: unwritableTopLevelFieldMessage(VERSION_FIELD) };
       }
       changes.push({ field: VERSION_FIELD, from: currentVersion, to: bumped });
       frontmatter = replaced;
@@ -538,12 +623,13 @@ export function computeSync(
   const rebuilt = `${FRONT_BOUNDARY}\n${frontmatter}\n${split.rest}`;
 
   // version ↔ Changelog 一致（本文側。write で version を上げても Changelog は自動追記しない）
-  const frontmatterVersion = readField(frontmatter, VERSION_FIELD);
+  const frontmatterVersion = readTopLevelField(frontmatter, VERSION_FIELD);
   let changelogVersion: string | null = null;
   let versionChangelogInSync = true;
   if (changelogExtract.kind === "absent") {
-    // fixture / 旧テンプレ互換: Changelog が無いときは検証スキップ
-    versionChangelogInSync = true;
+    // Issue #615: セクションごと消せば version 検証が永久に効かなくなるため既定でドリフト。
+    // 緩和はテスト fixture 専用のオプションでのみ（CLI からは到達しない）。
+    versionChangelogInSync = options.allowMissingChangelog === true;
   } else if (changelogExtract.kind === "empty") {
     versionChangelogInSync = false;
   } else {
@@ -575,6 +661,7 @@ export function computeSync(
     inSync,
     frontmatterVersion,
     changelogVersion,
+    changelogState: changelogExtract.kind,
     versionChangelogInSync,
     changeImpactValue,
     changeImpactValid,
@@ -621,6 +708,42 @@ function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     write,
     bumpVersion,
   };
+}
+
+/**
+ * PLAYBOOK.md を同ディレクトリの一時ファイル経由で置き換える。書き込み失敗（途中で
+ * ディスクが尽きる等）でも原本を欠損させないため、`rename` の原子性に乗せる。
+ * 一時ファイルは同一ディレクトリに作る（別 FS を跨ぐと rename が EXDEV で失敗する）。
+ * 成功時は null、失敗時は診断メッセージを返す。
+ */
+function writeFileAtomically(targetPath: string, content: string): string | null {
+  const tempPath = `${targetPath}.sync-tmp-${String(process.pid)}`;
+  try {
+    fs.writeFileSync(tempPath, content, "utf8");
+    fs.renameSync(tempPath, targetPath);
+    return null;
+  } catch (error: unknown) {
+    // 失敗経路の残骸を残さない。削除自体の失敗は本来の失敗理由を覆い隠すので握る。
+    try {
+      fs.rmSync(tempPath, { force: true });
+    } catch {
+      /* 一時ファイルの後始末失敗は原本の状態に影響しないため報告しない */
+    }
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/**
+ * version↔Changelog 違反の報告先を状態で振り分ける。`absent`（セクションごと無い）を
+ * 「Changelog 版見出しなし」と同じ文言で出すと、消えたセクションの復元という実際の
+ * 対処が読み手に伝わらない（Issue #615）。
+ */
+function reportVersionChangelogViolation(result: SyncOk): void {
+  if (result.changelogState === "absent") {
+    console.error(formatChangelogAbsent(result.frontmatterVersion));
+    return;
+  }
+  console.error(formatVersionChangelogMismatch(result.frontmatterVersion, result.changelogVersion));
 }
 
 /**
@@ -692,8 +815,14 @@ export function main(argv: readonly string[] = process.argv): number {
 
   console.log(`Playbook: ${playbookPath}`);
   console.log(`実エントリ数: ${String(result.actualCount)} / frontmatter 記録値: ${String(result.recordedCount ?? "なし")}`);
+  // 「なし」の理由（セクション不在 / 版見出し不在）を出し分ける。両者は対処が違う。
+  const changelogSummary =
+    result.changelogVersion ??
+    (result.changelogState === "absent"
+      ? "なし（## Changelog セクションが無い）"
+      : "なし（セクションはあるが版見出しが無い）");
   console.log(
-    `version: frontmatter=${String(result.frontmatterVersion ?? "なし")} / Changelog最新=${String(result.changelogVersion ?? "なし（セクション無し or 空）")}`,
+    `version: frontmatter=${String(result.frontmatterVersion ?? "なし")} / Changelog最新=${changelogSummary}`,
   );
 
   if (!write) {
@@ -711,10 +840,14 @@ export function main(argv: readonly string[] = process.argv): number {
     if (result.versionChangelogInSync) {
       if (result.changelogVersion !== null) {
         console.log("✓ frontmatter version と Changelog 最新版は一致しています。");
+      } else {
+        // ここへ来るのは allowMissingChangelog を渡した呼び出しだけ（CLI からは到達しない）。
+        // 「一致した」と「そもそも検証していない」を CI ログ上で区別できるようにする。
+        console.log("- version↔Changelog: 検証スキップ（allowMissingChangelog）");
       }
     } else {
       failed = true;
-      console.error(formatVersionChangelogMismatch(result.frontmatterVersion, result.changelogVersion));
+      reportVersionChangelogViolation(result);
     }
     if (result.changeImpactValid) {
       if (result.changeImpactValue !== null) {
@@ -740,7 +873,7 @@ export function main(argv: readonly string[] = process.argv): number {
       return EXIT_OK;
     }
     if (!result.versionChangelogInSync) {
-      console.error(formatVersionChangelogMismatch(result.frontmatterVersion, result.changelogVersion));
+      reportVersionChangelogViolation(result);
     }
     if (!result.changeImpactValid) {
       console.error(formatChangeImpactViolation(result.changeImpactValue));
@@ -748,11 +881,9 @@ export function main(argv: readonly string[] = process.argv): number {
     return EXIT_DRIFT;
   }
 
-  try {
-    fs.writeFileSync(playbookPath, result.content, "utf8");
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`書き込み失敗: ${playbookPath}: ${message}`);
+  const writeError = writeFileAtomically(playbookPath, result.content);
+  if (writeError !== null) {
+    console.error(`書き込み失敗: ${playbookPath}: ${writeError}\n  元ファイルは変更していません。`);
     return EXIT_USAGE_ERROR;
   }
 
@@ -768,7 +899,7 @@ export function main(argv: readonly string[] = process.argv): number {
   }
   let driftAfterWrite = false;
   if (!result.versionChangelogInSync) {
-    console.error(formatVersionChangelogMismatch(result.frontmatterVersion, result.changelogVersion));
+    reportVersionChangelogViolation(result);
     driftAfterWrite = true;
   }
   if (!result.changeImpactValid) {
