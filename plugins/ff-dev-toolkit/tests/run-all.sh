@@ -84,6 +84,14 @@ else
     # 新規違反を非 0・ファイル名付きで検出することを固定する（Issue #295）。
     "$SCRIPT_DIR/markdownlint/verify.sh"
     "$SCRIPT_DIR/markdownlint-selftest/verify.sh"
+    # tracked shell スクリプト全体の静的検査（Issue #530）。Markdown 側の
+    # markdownlint と対になる shell 側の lint ゲートなので直後に置く。赤にするのは
+    # error 重大度のみ（構文エラーと抑制ディレクティブのパース不能。線引きの根拠は
+    # suite のヘッダ）。抑制ディレクティブの構文エラーは「そのファイルの静的検査が
+    # 丸ごと止まる」形なので、ゲートが無いと永久に気付けない。検出力は同 suite 内の
+    # fixture 2 本（不正ディレクティブ / 正しいディレクティブ + error 未満の指摘）で
+    # 常設実測する。shellcheck が PATH に無ければ丸ごと ○ skip（単体で〜14 秒）。
+    "$SCRIPT_DIR/shellcheck/verify.sh"
     # case 11（*.sh MBCS）の fail-closed 経路をシームで自動回帰（Issue #312）。
     # skill-bash-blocks の直後: 同欠陥クラスの SKILL.md 側ガードと並べて報告する。
     "$SCRIPT_DIR/mbcs-guard-failclosed/verify.sh"
@@ -197,7 +205,8 @@ else
     # 課金・一時ファイルを伴わない。ラベル契約つながりで issue-label-contract の直後に置く。
     "$SCRIPT_DIR/github-labels-setup/verify.sh"
     # 起票スキルが参照するラベル名 ⊆ (LABEL_DEFS ∪ GitHub デフォルト allowlist) の
-    # 包含照合（Issue #624）。issue-label-contract は両スキル間の複製同期、
+    # 包含照合（Issue #624）。issue-label-contract はスキル間で複製された契約
+    # テキストの同期（ラベル付与手順・粒度チェック項目リスト）、
     # github-labels-setup は供給側 4 箇所の同期を見るのに対し、本 suite は
     # 参照側と供給側をまたぐ包含を見る（verify-then-skip の fail-soft により、
     # 供給されない参照は「起票成功のままラベルだけ黙って落ちる」ため）。
@@ -450,6 +459,11 @@ REQUIRED_SUITES=(
   # mcp/node_modules が無いと repository Markdown lint の検証イベントが消える（#295）
   markdownlint
   markdownlint-selftest
+  # shellcheck（外部バイナリ）が要る。抑制ディレクティブの構文エラーは「そのファイルの
+  # 静的検査が静かに止まる」形で、他のどの suite も見ていない。黙って skip すると
+  # ゲートを入れた意味が丸ごと消えるので明示許可を要求する（Issue #530）。
+  # 未導入環境では FF_RUN_ALL_ALLOW_SKIP=shellcheck が要る（brew/apt で導入可）。
+  shellcheck
   # mcp/node_modules が要る。型検査ゲート 2 系統ぶんがここに乗っている（#372）
   mcp-dist-gate
   mcp-vitest

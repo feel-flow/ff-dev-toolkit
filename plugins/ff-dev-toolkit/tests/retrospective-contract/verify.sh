@@ -309,26 +309,49 @@ fi
 # （原因の説明・実体突き合わせの操作・「不在と結論しない」の結論ガード。原因句
 # だけを守ると、操作と結論を消しても緑のまま手順が骨抜きになる）。
 # 7 針とも同一の 1 行に乗る。
-FALLBACK_NEEDLE="プラグインを更新するか、インストール済みプラグインの \`skills/<スキル名>/SKILL.md\` を直接 Read して手順に従う"
-FALLBACK_NAME_NEEDLE="セッションの利用可能スキル一覧をキーワードで検索して実名を確認"
-FALLBACK_PREFIX_NEEDLE="プレフィックス付き（\`<プラグイン名>:<スキル名>\`）と無しの両方を試す"
-FALLBACK_REGISTRY_NEEDLE="\`ListSkills\` が返すのは claude.ai 側の別レジストリであり、その空振りを不在の根拠にしない"
-FALLBACK_SPLIT_NEEDLE="プラグインが複数ディレクトリへ分割インストールされ、一部スキルが当該セッションのレジストリに載っていないことがある"
-FALLBACK_SPLIT_MATCH_NEEDLE="インストール済みプラグインディレクトリの中身を突き合わせる"
-FALLBACK_SPLIT_ACTION_NEEDLE="その場合はリポジトリ側の SKILL.md を読んで手順に従う（スキルが存在しないと結論しない）"
+#
+# 針は `ラベル|針` の表で持ち、本数を EXPECTED_FALLBACK_NEEDLES で宣言する（Issue #640）。
+# 表は行頭側の最初の `|` で切るので、**ラベルに `|` を含めないこと**（針側は残り全部を
+# 採るため `|` を含んでよい）。
+# 宣言値は selftest 側が出力から読み、句単位変異（M-K〜M-Q）の実行数と突き合わせる
+# 網羅ガードの比較相手になる。**針を増減したら 4 箇所が同時に動く**:
+#   1. この表と EXPECTED_FALLBACK_NEEDLES
+#   2. selftest の FALLBACK_CLAUSE_MUTATIONS（句単位変異を 1 件追加する。狙う検査名は
+#      表の中で一意でなければならない — 複製で件数だけ合わせるのを selftest が弾く）
+#   3. selftest の MARKER_MUTATIONS にある「フォールバック行の削除」4〜5 件の期待 ✗ 件数
+#   4. selftest の EXPECTED_GATE_CHECKS_MONOREPO / _PUBLIC（針 1 件につき消費側の
+#      ファイル数ぶん増える = モノレポ +5 / 公開 +4）
+FALLBACK_NEEDLES=(
+  "スキル未解決時のフォールバック|プラグインを更新するか、インストール済みプラグインの \`skills/<スキル名>/SKILL.md\` を直接 Read して手順に従う"
+  "スキル名の確認手順|セッションの利用可能スキル一覧をキーワードで検索して実名を確認"
+  "プレフィックス両試行|プレフィックス付き（\`<プラグイン名>:<スキル名>\`）と無しの両方を試す"
+  "別レジストリの区別|\`ListSkills\` が返すのは claude.ai 側の別レジストリであり、その空振りを不在の根拠にしない"
+  "分割インストールの突き合わせ|プラグインが複数ディレクトリへ分割インストールされ、一部スキルが当該セッションのレジストリに載っていないことがある"
+  "分割インストールの実体突き合わせ操作|インストール済みプラグインディレクトリの中身を突き合わせる"
+  "分割インストール時の結論ガード|その場合はリポジトリ側の SKILL.md を読んで手順に従う（スキルが存在しないと結論しない）"
+)
+EXPECTED_FALLBACK_NEEDLES=7
+
 FALLBACK_CONSUMERS=("$GIT_WORKFLOW" "$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   FALLBACK_CONSUMERS+=("$ROOT_README")
 fi
 for file in "${FALLBACK_CONSUMERS[@]}"; do
-  contains "$file" "$FALLBACK_NEEDLE" "スキル未解決時のフォールバック: ${file#"$REPO_ROOT"/}"
-  contains "$file" "$FALLBACK_NAME_NEEDLE" "スキル名の確認手順: ${file#"$REPO_ROOT"/}"
-  contains "$file" "$FALLBACK_PREFIX_NEEDLE" "プレフィックス両試行: ${file#"$REPO_ROOT"/}"
-  contains "$file" "$FALLBACK_REGISTRY_NEEDLE" "別レジストリの区別: ${file#"$REPO_ROOT"/}"
-  contains "$file" "$FALLBACK_SPLIT_NEEDLE" "分割インストールの突き合わせ: ${file#"$REPO_ROOT"/}"
-  contains "$file" "$FALLBACK_SPLIT_MATCH_NEEDLE" "分割インストールの実体突き合わせ操作: ${file#"$REPO_ROOT"/}"
-  contains "$file" "$FALLBACK_SPLIT_ACTION_NEEDLE" "分割インストール時の結論ガード: ${file#"$REPO_ROOT"/}"
+  for entry in "${FALLBACK_NEEDLES[@]}"; do
+    # `#` の右辺はパターン文脈。クォートしないと REPO_ROOT に含まれる [ * ? が
+    # パターンとして解釈され、前置き除去が効かずラベルが変わる（fixture の
+    # REPO_ROOT は TMPDIR 由来なので実際に踏みうる）。
+    contains "$file" "${entry#*|}" "${entry%%|*}: ${file#"$REPO_ROOT"/}"
+  done
 done
+
+# 針の本数を宣言する。selftest 側の句単位変異がこの本数を覆っていることを、あちらが
+# この行の値と突き合わせる（針だけ増やして変異を増やさない状態の検出）。
+if [[ "${#FALLBACK_NEEDLES[@]}" -eq "$EXPECTED_FALLBACK_NEEDLES" ]]; then
+  ok "フォールバック針が ${EXPECTED_FALLBACK_NEEDLES} 件（増減時は EXPECTED_FALLBACK_NEEDLES も更新すること）"
+else
+  bad "フォールバック針が ${#FALLBACK_NEEDLES[@]} 件（期待 ${EXPECTED_FALLBACK_NEEDLES} 件）— 針の増減に宣言値が追従していない"
+fi
 
 # ── D. /ace-curate との責務分離 ──────────────────────────────────────────────
 contains "$ACE_CURATE" "ACE Playbook ではなく \`/retrospective\` の提案経路で扱う" "責務分離: ACE 側からの送り先明示"

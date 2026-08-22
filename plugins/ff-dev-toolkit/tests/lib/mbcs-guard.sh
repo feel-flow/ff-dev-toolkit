@@ -16,7 +16,10 @@
 #   FF_MBCS_GIT   git コマンド（既定: git）
 #   FF_MBCS_AWK   awk コマンド（既定: awk）
 #
-# shellcheck source 用: 本ファイルは source される前提（実行ビット不要）。
+# 本ファイルは source される前提（実行ビット不要）。
+# 補足: 行頭が `# shellcheck …` の形をした散文コメントは shellcheck にディレクティブとして
+# 解釈され、SC1072/SC1073 でそのファイルの静的検査が丸ごと止まる（Issue #530）。
+# この注記の書き出しを変えないこと。
 
 # 論理行（バックスラッシュ継続を連結）へ畳んでから走査する。
 # LC_ALL=C では [:print:]/[:space:] が ASCII のみ → マルチバイト先頭バイトを拾える。

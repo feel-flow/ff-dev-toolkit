@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 #
-# 起票スキル 2 本のラベル付与契約（verify-then-skip）の同期検査（Issue #292）。
+# 起票・refine スキル間で複製されている契約の同期検査。2 系統を扱う:
+#   A. 起票スキル 2 本（create-issue / out-of-scope-issue）のラベル付与契約
+#      （verify-then-skip）の同期（Issue #292 / #297）… 検査 1〜9
+#   B. create-issue 手順 4 の粒度チェック項目リストと、refine-issue がそれを
+#      写した派生対応表の同期（Issue #591）… 検査 10
 #
 # `create-issue`（着手前の起票ゲート）と `out-of-scope-issue`（スコープ外発見の
 # follow-up 起票）は、どちらも「実在するラベルだけを付ける」同じ手順を持つ。
@@ -24,10 +28,17 @@
 #      照合する。既定は**行全体の完全一致**（部分一致だと片側の行末に文を継ぎ足す
 #      ドリフトが素通りする）。文の長さが意図的に違う箇所だけ `~ ` で部分一致にする。
 #
-# 検出範囲の限界（過大に主張しない）: 本 suite が赤くするのは fixtures に載せた
-# 契約テキストを片方だけ書き換えた／削除した場合である。fixtures に載っていない
-# 複製文が片方だけ変わっても検出しない。SKILL.md 側の「片方だけ直すと red になる」
-# という注記も、この範囲に限定して書くこと。
+# 検出範囲の限界（過大に主張しない）:
+#   系統 A（ラベル契約）が赤くするのは fixtures に載せた契約テキストを片方だけ
+#   書き換えた／削除した場合である。fixtures に載っていない複製文が片方だけ変わっても
+#   検出しない。
+#   系統 B（項目リスト）が赤くするのは、create-issue 手順 4 の**項目名の集合**と
+#   refine-issue の対応表の**左列の集合**が食い違った場合、およびどちらかの抽出が
+#   0 件になった場合である（fail-closed）。右列の文言・対応表の行順・refine 自身の
+#   6 観点の項目名は見ない。期待値は両ファイルの実体から導出するので、テスト側に
+#   項目数を書かない（書くと項目を増やすたびにここも直す必要が生まれ、忘れれば
+#   検査対象の増減が緑のまま通る）。
+#   SKILL.md 側の「片方だけ直すと red になる」という注記も、この範囲に限定して書くこと。
 #
 # 一時ディレクトリも jq / gh / yq も要らない純粋なファイル検査なので、書き込み不可の
 # 環境でも完走する。契約を意図的に変えるときは fixtures/regenerate.sh を使う。
@@ -45,7 +56,8 @@ LABEL_BLOCK="$FIXTURES_DIR/label-block.txt"
 
 CREATE_ISSUE="$PLUGIN_ROOT/skills/create-issue/SKILL.md"
 OUT_OF_SCOPE="$PLUGIN_ROOT/skills/out-of-scope-issue/SKILL.md"
-# `gh label create` 検出器の生きた対照。refine-issue は needs-spec を実際に作る。
+# 2 つの役割を持つ: (1) `gh label create` 検出器の生きた対照（refine-issue は
+# needs-spec を実際に作る）、(2) 検査 10 の同期対象そのもの（手順 4 の対応表）。
 REFINE_ISSUE="$PLUGIN_ROOT/skills/refine-issue/SKILL.md"
 
 # fixtures の実行対象行数。契約を増減したときは必ずここも直す。固定しないと、
@@ -60,7 +72,7 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 rel() { printf '%s' "${1#"$REPO_ROOT"/}"; }
 
-echo "== 起票スキルのラベル契約（verify-then-skip）同期検査 =="
+echo "== 起票スキルのラベル契約 + create-issue↔refine-issue 項目リストの同期検査 =="
 
 for file in "$CREATE_ISSUE" "$OUT_OF_SCOPE" "$REFINE_ISSUE" "$FRAGMENTS" "$LABEL_BLOCK" "$FIXTURES_DIR/extract.sh"; do
   [ -s "$file" ] || { echo "✗ 必須ファイルが無いか空です: $file" >&2; exit 1; }
@@ -730,6 +742,415 @@ else
         bad "out-of-scope: gh へ渡った argv にラベルが載っていない（報告と実際の乖離）" ;;
     esac
   fi
+fi
+
+# ---- 10. create-issue 手順 4 の項目リスト ↔ refine-issue の派生対応表（Issue #591） ----
+# PR #588 で create-issue 手順 4 を 6 → 7 項目にしたとき、その項目構成を写している
+# refine-issue の記述が古いまま残り、当時の 76 suite のどれも検出しなかった
+# （レビューで人手検出）。同型のドリフトは ACE-36-1 が既に記録した再発である。
+#
+# 対策は「共有」ではなく「照合」— 本 suite 冒頭の方針と同じ。refine-issue は
+# create-issue 手順 4 の項目名を左列に持つ対応表を明示的に複製し、その複製が実体と
+# 一致していることをここで機械照合する。
+#
+# 検査対象は**左列の集合と、その一意性だけ**。見ないものと、その理由:
+#   - 右列の文言 … 右列は refine 側が「どう引き継いだか」を述べる表現であって、正規
+#     ソース側の項目名の集合とは別物なので本検査の対象にならない。右列と refine 自身の
+#     観点名の整合（右列だけが古くなる型）は別 Issue #736 で扱う
+#   - 行順 … 対応は名前で取る。並びはドリフトではない
+#   - refine 自身の観点リストの項目名 … refine 側の再編は refine の自由で、create 側の
+#     項目増減で赤くしてはいけない（AC4）
+# 期待値は両ファイルの実体から導出し、項目数はテスト側に置かない。
+
+MAPPING_ANCHOR='#### `/create-issue` 手順 4 との対応'
+
+# `### 4.` 節の `- [ ] **項目名**` を採る。フェンス内（改善案の例示）は除外する。
+extract_create_check_items() {
+  awk '
+    { sub(/\r$/, "") }
+    /^```/ { fence = 1 - fence; next }
+    fence { next }
+    /^### / { insec = ($0 ~ /^### 4\./) ? 1 : 0; next }
+    insec && /^- \[ \] \*\*/ {
+      s = $0
+      sub(/^- \[ \] \*\*/, "", s)
+      i = index(s, "**")
+      if (i > 1) print substr(s, 1, i - 1)
+    }
+  '
+}
+
+# 対応表の左列を採る。アンカー見出しから次の見出しまでに限定するので、refine 自身の
+# 6 観点チェックリスト（同じ `- [ ] **名前**` 形）は構造的に入り込まない。
+extract_refine_mapping_keys() {
+  awk -v anchor="$MAPPING_ANCHOR" '
+    { sub(/\r$/, "") }
+    index($0, anchor) == 1 { insec = 1; seen = 0; next }
+    insec && /^#/ { insec = 0 }
+    insec && /^\|/ {
+      s = $0
+      sub(/^\|[ \t]*/, "", s)
+      i = index(s, "|")
+      if (i == 0) next
+      cell = substr(s, 1, i - 1)
+      sub(/[ \t]+$/, "", cell)
+      if (cell ~ /^:?-+:?$/) next   # 区切り行
+      seen++
+      if (seen == 1) next           # ヘッダ行
+      if (cell != "") print cell
+    }
+  '
+}
+
+# 集合演算。`comm` + プロセス置換は `/dev/fd` の無い環境で $TMPDIR へ FIFO を作る。
+# 本 suite は「一時ファイルを一切作らない」前提なので（比較に diff を使わないのと
+# 同じ理由。上の compare_block を参照）、2 集合を区切り行で連結した 1 本の
+# ストリームを awk で読む。区切りは検査対象の文書に現れない ASCII 文字列。
+SET_SEP='__FF_SET_SEPARATOR__'
+# $1 にあって $2 に無い行
+set_difference() {
+  printf '%s\n%s\n%s\n' "$2" "$SET_SEP" "$1" | awk -v sep="$SET_SEP" '
+    $0 == sep { second = 1; next }
+    !second { have[$0] = 1; next }
+    $0 != "" && !($0 in have) { print }
+  '
+}
+# $1 と $2 の両方にある行
+set_intersection() {
+  printf '%s\n%s\n%s\n' "$2" "$SET_SEP" "$1" | awk -v sep="$SET_SEP" '
+    $0 == sep { second = 1; next }
+    !second { have[$0] = 1; next }
+    $0 != "" && ($0 in have) { print }
+  '
+}
+
+# 2 つの本文（文字列）を受け、不一致の診断行を返す。一致なら無出力。
+# 一時ファイルを作らないという本 suite の前提を守るため、入力はすべて文字列で渡す。
+
+# 同一行が 2 回以上現れる項目を「名前 (N 回)」で返す。入力はソート済みを想定。
+duplicate_entries() {
+  printf '%s\n' "$1" | awk 'NF { c[$0]++ } END { for (k in c) if (c[k] > 1) print k " (" c[k] " 回)" }' | LC_ALL=C sort
+}
+
+mapping_diagnosis() {
+  local items keys only_create only_refine dup_items dup_keys
+  items="$(printf '%s\n' "$1" | extract_create_check_items | LC_ALL=C sort)"
+  keys="$(printf '%s\n' "$2" | extract_refine_mapping_keys | LC_ALL=C sort)"
+  # fail-closed: 抽出が 0 件になったら「差分なし」ではなく検査対象の消失として扱う。
+  if [ -z "$items" ]; then
+    printf '%s\n' "create-issue 手順 4 の粒度チェック項目を 1 件も抽出できない（見出し「### 4.」または「- [ ] **項目名**」の形が変わった）"
+    return 0
+  fi
+  if [ -z "$keys" ]; then
+    printf '%s\n' "refine-issue の対応表から左列を 1 件も抽出できない（見出し「${MAPPING_ANCHOR}」または表そのものが消えた）"
+    return 0
+  fi
+  # 集合比較の前に一意性を見る。同じ項目名が 2 行あると集合としては一致したまま
+  # なので、集合比較だけでは「項目 A を 2 回対応づけ、項目 B を落とした」形の
+  # 片方（重複側）が素通りする。左列と create 側のそれぞれで独立に診断する。
+  dup_items="$(duplicate_entries "$items")"
+  dup_keys="$(duplicate_entries "$keys")"
+  [ -z "$dup_items" ] || { printf '%s\n' "$dup_items" | sed 's/^/create-issue 手順 4 に重複する項目名: /' || true; }
+  [ -z "$dup_keys" ]  || { printf '%s\n' "$dup_keys"  | sed 's/^/対応表の左列に重複する項目名: /' || true; }
+  only_create="$(set_difference "$items" "$keys")"
+  only_refine="$(set_difference "$keys" "$items")"
+  [ -z "$only_create" ] || { printf '%s\n' "$only_create" | sed 's/^/対応表に無い create-issue の項目: /' || true; }
+  [ -z "$only_refine" ] || { printf '%s\n' "$only_refine" | sed 's/^/create-issue に無い対応表の左列: /' || true; }
+}
+
+# 検査ケース数を固定する。針を 1 本ずつ壊す変異試験は「検査そのものを消す」退化を
+# 原理的に測れないため、実行本数を baseline で縛る（ACE-542-1）。
+MAPPING_CASES=0
+EXPECTED_MAPPING_CASES=15
+mapping_ok()  { MAPPING_CASES=$((MAPPING_CASES + 1)); ok  "$1"; }
+mapping_bad() {
+  MAPPING_CASES=$((MAPPING_CASES + 1)); bad "$1"
+  [ -z "${2:-}" ] || { printf '%s\n' "$2" | sed 's/^/    | /' >&2 || true; }
+}
+
+CREATE_TEXT="$(cat "$CREATE_ISSUE")"
+REFINE_TEXT="$(cat "$REFINE_ISSUE")"
+FIRST_ITEM="$(printf '%s\n' "$CREATE_TEXT" | extract_create_check_items | awk 'NR == 1')"
+LAST_ITEM="$(printf '%s\n' "$CREATE_TEXT" | extract_create_check_items | awk 'END { print }')"
+NEW_ITEM="変異試験用の追加項目"
+BOGUS_KEY="変異試験用の余分な左列"
+
+# 10-1. 正: 実体同士が一致している（AC「両者一致なら pass」）
+#
+# 以降の緑 pin は「無出力であること」ではなく「この baseline から診断が増えも減りも
+# しないこと」で判定する。実体を対照にしたまま無出力を要求すると、本物のドリフトが
+# 起きた瞬間に緑 pin まで «過剰検出» と名乗って赤くなり、本当の原因（10-1）が
+# ノイズに埋もれる。赤の変異試験は baseline に依存しない名指しで判定する。
+BASELINE_DIAG="$(mapping_diagnosis "$CREATE_TEXT" "$REFINE_TEXT")"
+mapping_diag="$BASELINE_DIAG"
+if [ -z "$mapping_diag" ]; then
+  mapping_ok "create-issue 手順 4 の項目集合と refine-issue の対応表の左列が一致"
+else
+  mapping_bad "create-issue 手順 4 の項目集合と refine-issue の対応表の左列が食い違う" "$mapping_diag"
+fi
+
+if [ -z "$FIRST_ITEM" ] || [ -z "$LAST_ITEM" ]; then
+  echo "✗ 変異試験の素材（手順 4 の項目名）を実体から採れない。以降の検査は実行しない" >&2
+  exit 1
+fi
+
+# 10-2. 変異: 対応表の左列を 1 件改名する
+mut_rename="$(printf '%s\n' "$REFINE_TEXT" | awk -v old="| $FIRST_ITEM |" -v new="| ${FIRST_ITEM}-改名 |" '
+  { if (index($0, old) == 1) $0 = new substr($0, length(old) + 1); print }')"
+mapping_diag="$(mapping_diagnosis "$CREATE_TEXT" "$mut_rename")"
+if [ "$mut_rename" = "$REFINE_TEXT" ]; then
+  mapping_bad "変異（左列の改名）: 変異が当たっていない（対応表の行形が変わった疑い）"
+elif [ -z "$mapping_diag" ]; then
+  mapping_bad "変異（左列の改名）: 改名しても緑のまま（検出力なし）"
+else
+  case "$mapping_diag" in
+    *"対応表に無い create-issue の項目: $FIRST_ITEM"*)
+      mapping_ok "変異（左列の改名）: 赤になり、対応が失われた項目名を名指しする" ;;
+    *)
+      mapping_bad "変異（左列の改名）: 赤にはなるが項目名を名指ししない" "$mapping_diag" ;;
+  esac
+fi
+
+# 10-3. 変異: 対応表から 1 行削除する（create 側の項目が未対応で残る形）
+mut_drop="$(printf '%s\n' "$REFINE_TEXT" | awk -v old="| $FIRST_ITEM |" '{ if (index($0, old) == 1) next; print }')"
+mapping_diag="$(mapping_diagnosis "$CREATE_TEXT" "$mut_drop")"
+if [ "$mut_drop" = "$REFINE_TEXT" ]; then
+  mapping_bad "変異（行の削除）: 変異が当たっていない"
+else
+  case "$mapping_diag" in
+    *"対応表に無い create-issue の項目: $FIRST_ITEM"*)
+      mapping_ok "変異（行の削除）: 赤になり、未対応になった項目名を名指しする" ;;
+    *)
+      mapping_bad "変異（行の削除）: 未対応の項目を名指ししない" "$mapping_diag" ;;
+  esac
+fi
+
+# 10-4. 変異: create 側に無い左列を対応表へ足す（幽霊の項目を主張する形）
+mut_extra="$(printf '%s\n' "$REFINE_TEXT" | awk -v old="| $FIRST_ITEM |" -v add="| $BOGUS_KEY | 観点「変異」 |" '
+  { print; if (index($0, old) == 1) print add }')"
+mapping_diag="$(mapping_diagnosis "$CREATE_TEXT" "$mut_extra")"
+if [ "$mut_extra" = "$REFINE_TEXT" ]; then
+  mapping_bad "変異（余分な左列）: 変異が当たっていない"
+else
+  case "$mapping_diag" in
+    *"create-issue に無い対応表の左列: $BOGUS_KEY"*)
+      mapping_ok "変異（余分な左列）: 赤になり、実体に無い左列を名指しする" ;;
+    *)
+      mapping_bad "変異（余分な左列）: 実体に無い左列を名指ししない" "$mapping_diag" ;;
+  esac
+fi
+
+# 10-5. 変異: create 側に項目を足し、対応表は据え置く（PR #588 の退行そのもの）
+mut_create_grow="$(printf '%s\n' "$CREATE_TEXT" | awk -v last="- [ ] **$LAST_ITEM**" -v add="- [ ] **$NEW_ITEM**: 変異試験" '
+  { print; if (index($0, last) == 1) print add }')"
+mapping_diag="$(mapping_diagnosis "$mut_create_grow" "$REFINE_TEXT")"
+if [ "$mut_create_grow" = "$CREATE_TEXT" ]; then
+  mapping_bad "変異（create 側の項目追加）: 変異が当たっていない"
+else
+  case "$mapping_diag" in
+    *"対応表に無い create-issue の項目: $NEW_ITEM"*)
+      mapping_ok "変異（create 側の項目追加・対応表据え置き）: 赤になり、追随漏れの項目名を名指しする" ;;
+    *)
+      mapping_bad "変異（create 側の項目追加・対応表据え置き）: PR #588 と同型の退行を検出しない" "$mapping_diag" ;;
+  esac
+fi
+
+# 10-6. fail-closed: 対応表そのものが消える（検査対象の消失を緑と報告しない）
+mut_no_table="$(printf '%s\n' "$REFINE_TEXT" | awk -v anchor="$MAPPING_ANCHOR" '
+  index($0, anchor) == 1 { skipping = 1; next }
+  skipping && /^#/ { skipping = 0 }
+  skipping { next }
+  { print }')"
+mapping_diag="$(mapping_diagnosis "$CREATE_TEXT" "$mut_no_table")"
+if [ "$mut_no_table" = "$REFINE_TEXT" ]; then
+  mapping_bad "fail-closed（対応表の消失）: 変異が当たっていない"
+else
+  case "$mapping_diag" in
+    *"refine-issue の対応表から左列を 1 件も抽出できない"*)
+      mapping_ok "fail-closed（対応表の消失）: 抽出 0 件を差分なしと報告せず赤にする" ;;
+    *)
+      mapping_bad "fail-closed（対応表の消失）: 抽出 0 件が緑または別の理由で赤になっている" "$mapping_diag" ;;
+  esac
+fi
+
+# 10-7. fail-closed: create 側の抽出が壊れる（見出しの改名）
+mut_create_broken="$(printf '%s\n' "$CREATE_TEXT" | awk '{ if ($0 ~ /^### 4\./) sub(/^### 4\./, "### 手順4"); print }')"
+mapping_diag="$(mapping_diagnosis "$mut_create_broken" "$REFINE_TEXT")"
+if [ "$mut_create_broken" = "$CREATE_TEXT" ]; then
+  mapping_bad "fail-closed（create 側の抽出破壊）: 変異が当たっていない"
+else
+  case "$mapping_diag" in
+    *"create-issue 手順 4 の粒度チェック項目を 1 件も抽出できない"*)
+      mapping_ok "fail-closed（create 側の抽出破壊）: 抽出 0 件を差分なしと報告せず赤にする" ;;
+    *)
+      mapping_bad "fail-closed（create 側の抽出破壊）: 抽出 0 件が緑または別の理由で赤になっている" "$mapping_diag" ;;
+  esac
+fi
+
+# 10-8. 緑 pin: 装飾だけの変化（セルの余白・右列の文言）は赤にしない。
+# 異常系だけで固めると「変化があれば理由を問わず赤」でも全部通る（ACE-725-1）。
+mut_cosmetic="$(printf '%s\n' "$REFINE_TEXT" | awk -v anchor="$MAPPING_ANCHOR" '
+  { sub(/\r$/, "") }
+  index($0, anchor) == 1 { insec = 1; seen = 0; print; next }
+  insec && /^#/ { insec = 0 }
+  insec && /^\|/ {
+    s = $0
+    sub(/^\|[ \t]*/, "", s)
+    i = index(s, "|")
+    if (i > 0) {
+      cell = substr(s, 1, i - 1)
+      sub(/[ \t]+$/, "", cell)
+      if (cell !~ /^:?-+:?$/) {
+        seen++
+        if (seen > 1) {
+          rest = substr(s, i + 1)
+          sub(/[ \t]*\|[ \t]*$/, "", rest)
+          sub(/^[ \t]+/, "", rest)
+          print "|   " cell "   |   " rest "（右列の文言を書き換えた）   |"
+          next
+        }
+      }
+    }
+    print
+    next
+  }
+  { print }')"
+mapping_diag="$(mapping_diagnosis "$CREATE_TEXT" "$mut_cosmetic")"
+if [ "$mut_cosmetic" = "$REFINE_TEXT" ]; then
+  mapping_bad "緑 pin（装飾のみ）: 変異が当たっていない（緑が空振りで得られている）"
+elif [ "$mapping_diag" = "$BASELINE_DIAG" ]; then
+  mapping_ok "緑 pin（装飾のみ）: セルの余白と右列の文言を変えても判定が変わらない"
+else
+  mapping_bad "緑 pin（装飾のみ）: 左列が変わっていないのに判定が変わる（過剰検出）" "$mapping_diag"
+fi
+
+# 10-9. 緑 pin: 行順の入れ替えは赤にしない（対応は名前で取る、順序では取らない）
+mut_reorder="$(printf '%s\n' "$REFINE_TEXT" | awk -v anchor="$MAPPING_ANCHOR" '
+  function flush(   k) { for (k = n; k >= 1; k--) print rows[k]; n = 0 }
+  { sub(/\r$/, "") }
+  index($0, anchor) == 1 { insec = 1; seen = 0; n = 0; print; next }
+  insec && /^#/ { if (n) flush(); insec = 0; print; next }
+  insec && /^\|/ {
+    s = $0
+    sub(/^\|[ \t]*/, "", s)
+    i = index(s, "|")
+    if (i == 0) { print; next }
+    cell = substr(s, 1, i - 1)
+    sub(/[ \t]+$/, "", cell)
+    if (cell ~ /^:?-+:?$/) { print; next }
+    seen++
+    if (seen == 1) { print; next }
+    rows[++n] = $0
+    next
+  }
+  insec && n > 0 { flush(); print; next }
+  { print }
+  END { if (n) flush() }')"
+mapping_diag="$(mapping_diagnosis "$CREATE_TEXT" "$mut_reorder")"
+if [ "$mut_reorder" = "$REFINE_TEXT" ]; then
+  mapping_bad "緑 pin（行順の入れ替え）: 変異が当たっていない（緑が空振りで得られている）"
+elif [ "$mapping_diag" = "$BASELINE_DIAG" ]; then
+  mapping_ok "緑 pin（行順の入れ替え）: 行の並びを変えても判定が変わらない"
+else
+  mapping_bad "緑 pin（行順の入れ替え）: 順序に依存して判定が変わっている" "$mapping_diag"
+fi
+
+# 10-10. AC4 の緑 pin: create 側の項目数が変わっても、対応表が追随していれば緑。
+# refine 自身の「6 観点」表記には一切触れずに成立することを同時に確かめる。
+mut_refine_grow="$(printf '%s\n' "$REFINE_TEXT" | awk -v old="| $FIRST_ITEM |" -v add="| $NEW_ITEM | 非継承 |" '
+  { print; if (index($0, old) == 1) print add }')"
+mapping_diag="$(mapping_diagnosis "$mut_create_grow" "$mut_refine_grow")"
+if [ "$mut_refine_grow" = "$REFINE_TEXT" ] || [ "$mut_create_grow" = "$CREATE_TEXT" ]; then
+  mapping_bad "緑 pin（項目追加に対応表が追随）: 変異が当たっていない"
+elif [ "$mapping_diag" = "$BASELINE_DIAG" ]; then
+  mapping_ok "緑 pin（項目追加に対応表が追随）: 項目数が増えても両者が揃っていれば判定が変わらない"
+else
+  mapping_bad "緑 pin（項目追加に対応表が追随）: 揃えて足したのに判定が変わる" "$mapping_diag"
+fi
+
+# 10-11. AC4: 上の緑は refine 自身の観点リストを 1 件も変えずに得られている。
+#
+# 「6 観点」というリテラルで見てはいけない。(a) 本 suite が自ら禁じた項目数の
+# ハードコードになり、(b) 上の変異は対応表へ 1 行足すだけなのでその文字列に構造上
+# 触れ得ず、検査が常に真を返す（発火し得ない偽の変異検査）。refine 自身の観点
+# リストを実体から抽出し、変異の前後で不変であることを見る。
+own_before="$(printf '%s\n' "$REFINE_TEXT" | extract_create_check_items)"
+own_after="$(printf '%s\n' "$mut_refine_grow" | extract_create_check_items)"
+if [ -z "$own_before" ]; then
+  mapping_bad "AC4: refine 自身の観点リストを実体から抽出できない（不変の主張ができない）"
+elif [ "$own_before" = "$own_after" ]; then
+  mapping_ok "AC4: 上の緑は refine 自身の観点リスト（実体抽出）を 1 件も変えずに成立している"
+else
+  mapping_bad "AC4: refine 自身の観点リストが変異で変化しており、緑 pin の主張が成立しない"
+fi
+
+# 10-12. AC4: 対応表の左列に refine 固有の観点名が混ざっていない（検査対象の分離）。
+# refine 固有 = refine 手順 4 の項目 − create 手順 4 の項目。実体から導出する。
+refine_own_items="$(printf '%s\n' "$REFINE_TEXT" | extract_create_check_items | LC_ALL=C sort)"
+create_items_sorted="$(printf '%s\n' "$CREATE_TEXT" | extract_create_check_items | LC_ALL=C sort)"
+refine_only="$(set_difference "$refine_own_items" "$create_items_sorted")"
+mapping_keys_sorted="$(printf '%s\n' "$REFINE_TEXT" | extract_refine_mapping_keys | LC_ALL=C sort)"
+leaked="$(set_intersection "$refine_only" "$mapping_keys_sorted")"
+# 交差が空でも、片側が空なら「混ざっていない」は主張できない（本ケース自身が
+# 「検査対象の消失を緑と報告しない」を主題にしているので、両側の非空を要求する）。
+if [ -z "$refine_only" ] || [ -z "$mapping_keys_sorted" ]; then
+  mapping_bad "AC4: refine 固有の観点または対応表の左列を実体から導出できない（対照が空で分離を主張できない）"
+elif [ -z "$leaked" ]; then
+  mapping_ok "AC4: refine 固有の観点は対応表の左列に混ざらない（refine 自身の観点リストは検査対象外）"
+else
+  mapping_bad "AC4: refine 固有の観点が対応表の左列に混ざっている" "$leaked"
+fi
+
+# 10-13. 10-12 の negative control。左列を 1 件 refine 固有の観点名へ差し替えると
+# 混入検出が赤くなること（10-12 が常に真を返していないことの実測）。
+refine_only_first="$(printf '%s\n' "$refine_only" | awk 'NR == 1')"
+mut_leak="$(printf '%s\n' "$REFINE_TEXT" | awk -v old="| $FIRST_ITEM |" -v new="| $refine_only_first |" '
+  { if (index($0, old) == 1) $0 = new substr($0, length(old) + 1); print }')"
+leak_keys="$(printf '%s\n' "$mut_leak" | extract_refine_mapping_keys | LC_ALL=C sort)"
+leaked_mut="$(set_intersection "$refine_only" "$leak_keys")"
+if [ -z "$refine_only_first" ] || [ "$mut_leak" = "$REFINE_TEXT" ]; then
+  mapping_bad "negative control（refine 固有の観点を左列へ混入）: 変異が当たっていない"
+elif [ -n "$leaked_mut" ]; then
+  mapping_ok "negative control（refine 固有の観点を左列へ混入）: 混入検出が赤になる"
+else
+  mapping_bad "negative control（refine 固有の観点を左列へ混入）: 混入しても検出しない（10-12 が常に真）"
+fi
+
+# 10-14. 一意性の緑 pin: 実体には重複した項目名が無い。
+dup_live="$(duplicate_entries "$create_items_sorted")
+$(duplicate_entries "$mapping_keys_sorted")"
+if [ -z "$(printf '%s' "$dup_live" | tr -d '[:space:]')" ]; then
+  mapping_ok "一意性: create-issue の項目名にも対応表の左列にも重複が無い"
+else
+  mapping_bad "一意性: 重複した項目名がある" "$dup_live"
+fi
+
+# 10-15. 変異: 対応表の左列を 1 件重複させる。集合としては一致したままなので、
+# 一意性の診断が無いとこの形は素通りする（「項目 A を 2 回対応づけ、B を落とす」
+# 型の片割れ）。集合差の診断が出ないことも同時に固定する。
+mut_dup="$(printf '%s\n' "$REFINE_TEXT" | awk -v old="| $FIRST_ITEM |" '
+  { print; if (index($0, old) == 1) print $0 }')"
+# 判定は baseline との差分で見る（他の緑 pin と同じ理由。実体が既に食い違っている
+# ときに、その既存の診断行を「重複が集合差として出た」と誤読して赤くしないため）。
+mapping_diag="$(mapping_diagnosis "$CREATE_TEXT" "$mut_dup")"
+mapping_added="$(set_difference "$mapping_diag" "$BASELINE_DIAG")"
+if [ "$mut_dup" = "$REFINE_TEXT" ]; then
+  mapping_bad "変異（左列の重複）: 変異が当たっていない"
+else
+  case "$mapping_added" in
+    *"対応表に無い create-issue の項目"*|*"create-issue に無い対応表の左列"*)
+      mapping_bad "変異（左列の重複）: 集合差として報告されている（一意性の検査になっていない）" "$mapping_added" ;;
+    *"対応表の左列に重複する項目名: $FIRST_ITEM (2 回)"*)
+      mapping_ok "変異（左列の重複）: 集合は一致したままでも一意性だけで赤になり、重複した項目名を名指しする" ;;
+    *)
+      mapping_bad "変異（左列の重複）: 重複を検出しない（集合比較だけでは素通りする形）" "$mapping_added" ;;
+  esac
+fi
+
+if [ "$MAPPING_CASES" -eq "$EXPECTED_MAPPING_CASES" ]; then
+  ok "項目リスト同期の検査を ${EXPECTED_MAPPING_CASES} 件実行（増減時は EXPECTED_MAPPING_CASES も更新すること）"
+else
+  bad "項目リスト同期の検査が ${MAPPING_CASES} 件（期待 ${EXPECTED_MAPPING_CASES} 件）— 検査が黙って消えている"
 fi
 
 echo ""

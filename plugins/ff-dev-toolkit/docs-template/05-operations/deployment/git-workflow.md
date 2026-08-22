@@ -151,7 +151,7 @@ ISSUE_NUM=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
 - 受入基準を明確にする
 - ラベルは実在確認後にだけ付与する（verify-then-skip）。不在と照会失敗を書き分ける
 - スキル経由の起票（`/create-issue`）は同じ契約を持つ。本例はワークフロー正本の直接コマンド向け
-- `tests/issue-label-contract` は `create-issue` / `out-of-scope-issue` の二重スキル同期用であり、本テンプレート例は fixture 対象外（消費者が貼る参考例であり、スキル間ドリフト検出の対象ではない）
+- `tests/issue-label-contract` は起票・refine スキル間で複製された契約テキストの同期（ラベル付与手順・粒度チェック項目リスト）を照合するものであり、本テンプレート例は fixture 対象外（消費者が貼る参考例であり、スキル間ドリフト検出の対象ではない）
 
 ### ステップ2: ブランチ作成
 
