@@ -25,25 +25,37 @@
 # サマリーの suite 識別子は親ディレクトリ名なので、渡す suite は親ディレクトリ名が
 # 互いに一意であること（同名だとどちらが失敗したのか報告から読めない）。
 #
-# FF_RUN_ALL_FAST=1（値が 1 のときだけ有効）を与えると高速モードになり、suite 名
-# （親ディレクトリ名）が `-selftest` で終わる suite を実行対象から除外する。selftest の
-# 大半はゲート本体（tests/*/verify.sh）の検出力を変異注入で実測するもので、検査対象を
-# 変更しない限り原理的に結果が変わらないのに、既定一覧では 18 suite が所要時間の
-# 53.9% を占めていた（Issue #600 時点・全 76 suite の実測）。判定は `-selftest` の
-# 命名規約のみで除外名簿を持たないため、新規 selftest も自動的に対象になる。既定
-# （環境変数なし）は従来どおり全 suite 実行。除外は SKIPPED とは別勘定で、
-# REQUIRED_SUITES の必須 skip 判定には掛からない（意図的な除外と環境都合の skip を
-# 区別する）。明示引数の実行にも適用されるので、FF_RUN_ALL_FAST=1 を export したまま
-# selftest を名指しすると、その suite は実行されない（除外はサマリーに出る）。
+# FF_RUN_ALL_FAST=1（値が 1 のときだけ有効。`0` と空値は「無効」、それ以外の非空値は
+# 解釈できない指定として 1 行警告のうえ既定モードで続行する）を与えると高速モードになり、
+# suite 名（親ディレクトリ名）が `-selftest` で終わり **かつ対になる本体 suite
+# （名前から `-selftest` を落としたディレクトリの verify.sh）が実在する** suite だけを
+# 実行対象から除外する。この種の selftest はゲート本体（tests/*/verify.sh）の検出力を
+# 変異注入で実測するもので、検査対象を変更しない限り原理的に結果が変わらない。除外していた
+# 全 `-selftest` 18 suite が既定一覧の所要時間の 53.9% を占めていた（Issue #600 時点・全 76
+# suite の実測）。うち 3 件は下記のとおり除外対象から外したので、**現在の削減幅はこれより
+# 小さい**。
+# 判定は命名規約と対の実在だけで導出し除外名簿を持たないため、新規 selftest も自動的に
+# 対象になる。既定（環境変数なし）は従来どおり全 suite 実行。除外は SKIPPED とは別勘定で、
+# REQUIRED_SUITES の必須 skip 判定には掛からない（意図的な除外と環境都合の skip を区別する）。
 #
-# トレードオフ（意図的な選択）: 判定が命名規約だけなので、対になる本体 suite を持たず
-# live な検査を単独で担う `-selftest` も除外される（Issue #600 時点で 3 件:
-# release-required-selftest〔scripts/check-release-required.sh の唯一の検査〕・
-# mcp-state-selftest〔dist_state wrapper の byte 一致など〕・
-# adapter-env-isolation-selftest〔consumer 名簿の照合など〕）。高速モードで検証されない
-# のはゲートの検出力だけではない。selftest の検査対象（tests/*/verify.sh・
-# tests/lib/*.sh・scripts/check-release-required.sh）を変更した回を高速モードだけで
-# 通すと、退行はフル実行まで検出されない。フル実行の定期実行点は週次 CI（Issue #598。
+# 対になる本体 suite を持たない `-selftest` は除外しない（Issue #602 / ADR-031）。根拠は
+# 「live な検査だから」ではない — release-required-selftest は隔離 fixture への変異注入だけを
+# 行い、ライブリポジトリの状態を見ない（同 suite のヘッダーに明記）。対が無いということは
+# **その検査対象を見る suite が他に無い**ということで、除外するとその対象を触った変更が
+# 無検査で通る（#602 時点で 3 件: release-required-selftest
+# 〔scripts/check-release-required.sh の唯一の検査〕・mcp-state-selftest〔dist_state
+# wrapper の byte 一致など〕・adapter-env-isolation-selftest〔consumer 名簿の照合など〕）。
+# 除外しなかった件数と suite 名はサマリーへ出す。
+#
+# 明示引数の実行にも高速モードは適用される。tests/run-all/verify.sh が疑似 suite を明示
+# 引数で渡すことが本ランナーの高速モードを実測する唯一の口で、明示引数を適用外にすると
+# 「除外で実行対象が 0 件 → exit 1」の fail-closed 経路が検査不能になる（既定一覧では
+# 本体 suite が必ず残るうえ、selftest だけの木は登録漏れ検査が先に落ちる）。代わりに、
+# 名指しした suite が除外されたときは stderr へ 1 行警告し、矛盾を可視化する。
+#
+# 残るトレードオフ（意図的な選択）: 対を持つ selftest は除外されるので、その検査対象
+# （tests/*/verify.sh・tests/lib/*.sh）を変更した回を高速モードだけで通すと、ゲートの
+# 検出力の退行はフル実行まで検出されない。フル実行の定期実行点は週次 CI（Issue #598。
 # 未導入で、導入までは定期実行点が存在しない）に置く規約とし、`tests/` 等の変更時に
 # 高速モードを拒否する安全弁は置かない — 条件分岐を増やさず、挙動を単純に保つ。
 #
@@ -499,6 +511,13 @@ REQUIRED_SUITES=(
   docs-gates-runtime
   adapter-model-args
   adapter-sandbox-contract
+  # build_prompt の実行境界（再帰防止・staging 出力境界・出力モードの排他）と、
+  # レビュー指摘の差分スコープ契約。どちらも他の suite が見ていない実行時契約を
+  # 単独で守っており、一時領域が無いと丸ごと消える（Issue #564）。公開 checkout でも
+  # 実体は同梱されるため、skip 条件は一時領域の有無だけ = 公開側の
+  # FF_RUN_ALL_ALLOW_SKIP 案内に追加は要らない。
+  adapter-prompt-guard
+  review-diff-scope
   review-wrapper-shim
   sweep-orphan-transcripts
   multi-agent-timeout
@@ -632,24 +651,48 @@ if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
 fi
 
 # ── 高速モード（FF_RUN_ALL_FAST=1）────────────────────────────────────────────
-# `-selftest` サフィックスの suite を実行対象から除外する（背景・トレードオフは
-# ヘッダー参照）。登録漏れ検査（check_suite_registration）は既定一覧そのものへ
-# 掛ける必要があるため、この除外は照合の**後**に行う。除外した suite は SKIPPED に
-# 一切現れないので、REQUIRED_SUITES の必須 skip 判定（SKIPPED だけを走査する）とは
-# 構造的に競合しない。
+# `-selftest` サフィックスを持ち、かつ対になる本体 suite が実在する suite を実行対象から
+# 除外する（背景・トレードオフはヘッダー参照）。登録漏れ検査（check_suite_registration）は
+# 既定一覧そのものへ掛ける必要があるため、この除外は照合の**後**に行う。除外した suite は
+# SKIPPED に一切現れないので、REQUIRED_SUITES の必須 skip 判定（SKIPPED だけを走査する）
+# とは構造的に競合しない。
 FAST_MODE=0
 FAST_EXCLUDED=()
-if [[ "${FF_RUN_ALL_FAST:-0}" == "1" ]]; then
-  FAST_MODE=1
+FAST_KEPT_SELFTEST=()
+# 値の解釈は「1 との完全一致でのみ有効」。`0` / 空値は通常の off なので黙って既定モードへ
+# 落とすが、それ以外の非空値（`true` / `2` など）は利用者の意図と挙動が乖離しているので
+# 黙って落とさない。挙動自体は fail-safe 側（全 suite 実行）のままにする。
+case "${FF_RUN_ALL_FAST:-}" in
+  1) FAST_MODE=1 ;;
+  ""|0) ;;
+  *)
+    echo "⚠️  FF_RUN_ALL_FAST=\"${FF_RUN_ALL_FAST}\" は解釈できない値です（高速モードになるのは 1 のときだけ）。既定モード（全 suite 実行）で続行します" >&2
+    ;;
+esac
+if [[ "$FAST_MODE" == "1" ]]; then
   FAST_KEPT=()
   for script in "${SCRIPTS[@]}"; do
-    name="$(basename "$(dirname "$script")")"
+    suite_dir="$(dirname "$script")"
+    name="$(basename "$suite_dir")"
     if [[ "$name" == *-selftest ]]; then
-      FAST_EXCLUDED+=("$name")
-    else
-      FAST_KEPT+=("$script")
+      # 対になる本体 suite が実在するときだけ除外する。対が無い `-selftest` は live な
+      # 検査を単独で担っており、除外するとその検査対象が無検査で通る（ADR-031）。
+      if [[ -f "$(dirname "$suite_dir")/${name%-selftest}/verify.sh" ]]; then
+        FAST_EXCLUDED+=("$name")
+        continue
+      fi
+      FAST_KEPT_SELFTEST+=("$name")
     fi
+    FAST_KEPT+=("$script")
   done
+  # 名指しした suite が黙って消えるのを防ぐ。除外自体は明示引数でも適用する（理由は
+  # ヘッダー）ので、矛盾はここで 1 行だけ報告する。**0 件判定より前に出す** — 名指しが
+  # 全件除外された回はこの警告が最も要る場面なのに、後段へ置くと直前の exit 1 で到達せず、
+  # API.md の「名指しした suite が除外されたときは stderr へ 1 行警告する」（無条件の契約）
+  # を破る。
+  if [[ ${#FAST_EXCLUDED[@]} -gt 0 && "$USING_DEFAULT_SCRIPTS" != "1" ]]; then
+    echo "⚠️  明示引数で名指しした suite のうち ${#FAST_EXCLUDED[@]} 件を高速モードが除外しました（名指しの意図と矛盾。実行するには FF_RUN_ALL_FAST を外してください）: ${FAST_EXCLUDED[*]}" >&2
+  fi
   # 除外で実行対象が 0 件になったら成功として扱わない（検査 0 件を緑にしない）
   if [[ ${#FAST_KEPT[@]} -eq 0 ]]; then
     echo "✗ 高速モードの除外で実行対象が 0 件になりました（selftest ${#FAST_EXCLUDED[@]} 件を除外）。検査 0 件を成功として記録しません" >&2
@@ -722,9 +765,14 @@ echo "suites: total=${#SCRIPTS[@]} run=$RUN passed=${#PASSED[@]} failed=${#FAILE
 # 除外（検証しないと決めた）を混ぜると、必須 skip 判定の意味が壊れるため。
 if [[ "$FAST_MODE" == "1" ]]; then
   if [[ ${#FAST_EXCLUDED[@]} -gt 0 ]]; then
-    echo "⚡ 高速モードで selftest ${#FAST_EXCLUDED[@]} 件を除外した（これらが担う検査〔ゲート検出力・一部の live 検査〕は未実施。フル検証は FF_RUN_ALL_FAST なしで実行）: ${FAST_EXCLUDED[*]}"
+    echo "⚡ 高速モードで selftest ${#FAST_EXCLUDED[@]} 件を除外した（これらが担う検査〔対の本体 suite に対するゲート検出力。対の実在を代理指標にしているため、除外側に live な照合が残ることもある〕は未実施。フル検証は FF_RUN_ALL_FAST なしで実行）: ${FAST_EXCLUDED[*]}"
   else
     echo "⚡ 高速モード: 除外対象の selftest は 0 件だった（除外は行っていない）"
+  fi
+  # 対を持たない selftest は除外しない。「-selftest なのに走っている」を読み手が
+  # 例外や漏れと誤読しないよう、件数と理由を明示する（ADR-031）。
+  if [[ ${#FAST_KEPT_SELFTEST[@]} -gt 0 ]]; then
+    echo "⚡ 対になる本体 suite を持たない selftest ${#FAST_KEPT_SELFTEST[@]} 件は除外しなかった（その検査対象を見る suite が他に無いため。必須 skip の許可時はこの中に skip も含まれうる）: ${FAST_KEPT_SELFTEST[*]}"
   fi
 fi
 

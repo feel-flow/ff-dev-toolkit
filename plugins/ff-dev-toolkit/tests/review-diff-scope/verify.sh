@@ -137,13 +137,14 @@ PERSPECTIVE="$TMP/perspective.md"
 printf '%s\n' '# Fixture Perspective' 'PERSPECTIVE-CONTENT-MARKER' > "$PERSPECTIVE"
 
 # adapter-prompt-guard と同じ経路で build_prompt をサブシェル直呼びする。
-# DIFF_FILE / STAGED_DIFF は利用者の環境から漏れると diff の取得元が変わって
-# しまうため明示的に unset する（本 suite は自前リポジトリの diff を前提にする。
-# CHANGED_FILES は diff 取得元には影響しないが、プロンプトの Changed Files 節へ
-# 漏れ込むため予防的に落とす）。
+# DIFF_FILE / STAGED_DIFF / INCLUDE_DIFF は利用者の環境から漏れると diff の取得元や有無が
+# 変わってしまうため明示的に unset する（本 suite は自前リポジトリの diff を前提にする）。
+# INCLUDE_DIFF は #564 のレビューで気付いた非対称の解消で、漏れると implement プロンプトへ
+# 本来無い diff 節が生える。CHANGED_FILES は build_prompt が位置引数から束縛しており環境からは
+# 読まれないが、将来環境を読む形へ戻ったときのための予防として併せて落とす。
 gen_prompt() { # $1: task_type / $2: inline_output / $3: description / stdout: プロンプト
   (
-    unset DIFF_FILE STAGED_DIFF CHANGED_FILES
+    unset DIFF_FILE STAGED_DIFF INCLUDE_DIFF CHANGED_FILES
     TASK_TYPE="$1"
     if [ "$#" -ge 3 ]; then DESCRIPTION="$3"; else DESCRIPTION="fixture task"; fi
     STAGING_DIR=""

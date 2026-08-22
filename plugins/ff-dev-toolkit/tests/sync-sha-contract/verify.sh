@@ -64,6 +64,13 @@ else
   fi
 fi
 
+# 実行検査数の侵食ガード（TESTING.md の EXPECTED_CHECKS 方針）。針を 1 本消しても
+# 残りが緑のまま「全 N 件 pass」で通るため、総数を別途固定する。検査を増減したときの
+# 更新箇所は 2 つ: ok / bad を増減させた箇所と、この宣言。
+# 公開 checkout では上の skip 経路が 1 件も検査せずに exit 0 するため、ここには
+# 到達しない（配置による期待値の分岐は不要）。
+EXPECTED_CHECKS=14
+
 PASS=0
 FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
@@ -160,8 +167,15 @@ if [[ -n "${L_COMMIT}" ]]; then
 fi
 
 echo
+# 検査総数の侵食ガード。全検査成功ラン（FAIL=0）に限って完全一致を要求する — 行番号を
+# 引けない失敗経路は後続の case 検査を飛ばすため、そのランはこのガード無しですでに赤い。
+if [[ "$FAIL" -eq 0 && "$PASS" -ne "$EXPECTED_CHECKS" ]]; then
+  echo "✗ sync-sha-contract verify: 実行検査数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査が黙って増減している（増減時は EXPECTED_CHECKS も更新すること）" >&2
+  exit 1
+fi
+
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ sync-sha-contract verify: $FAIL 件失敗 / $PASS 件成功" >&2
   exit 1
 fi
-echo "✓ sync-sha-contract verify: 全 $PASS 件 pass"
+echo "✓ sync-sha-contract verify: 全 $PASS 件 pass（検査総数ガード ${EXPECTED_CHECKS} 件と一致）"

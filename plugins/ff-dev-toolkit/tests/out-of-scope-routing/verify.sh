@@ -27,6 +27,13 @@ REVIEW_POLICY="$PLUGIN_ROOT/docs-template/05-operations/deployment/review-respon
 OSS_README="$OSS_ROOT/README.md"
 OSS_COPILOT="$OSS_ROOT/USING_WITH_VSCODE_COPILOT.md"
 
+# 実行検査数の侵食ガード（TESTING.md の EXPECTED_CHECKS 方針）。針を 1 本消しても
+# 残りが緑のまま「全 N 件 pass」で通るため、総数を別途固定する。検査を増減したときの
+# 更新箇所は 2 つ: ok / bad を増減させた箇所と、この宣言。
+# 検査対象ファイルの集合は上の OSS_ROOT 分岐で両配置とも同数になるため、期待値は
+# モノレポ / 公開配置で共通（EXPECTED_INLINE_CONSUMERS と同じ前提）。
+EXPECTED_CHECKS=75
+
 PASS=0
 FAIL=0
 
@@ -222,9 +229,16 @@ else
 fi
 
 echo
+# 検査総数の侵食ガード。全検査成功ラン（FAIL=0）に限って完全一致を要求する — 失敗
+# 経路は後続検査を飛ばすことがあり、そのランはこのガード無しですでに赤いため。
+if [[ "$FAIL" -eq 0 && "$PASS" -ne "$EXPECTED_CHECKS" ]]; then
+  echo "✗ out-of-scope routing verify: 実行検査数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査が黙って増減している（増減時は EXPECTED_CHECKS も更新すること）" >&2
+  exit 1
+fi
+
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ out-of-scope routing verify: $FAIL 件失敗 / $PASS 件成功" >&2
   exit 1
 fi
 
-echo "✓ out-of-scope routing verify: 全 $PASS 件 pass"
+echo "✓ out-of-scope routing verify: 全 $PASS 件 pass（検査総数ガード ${EXPECTED_CHECKS} 件と一致）"

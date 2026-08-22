@@ -28,6 +28,13 @@ GUARD="$PLUGIN_ROOT/scripts/check-closing-keywords.sh"
 SKILL="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 
+# 実行検査数の侵食ガード（TESTING.md の EXPECTED_CHECKS 方針）。針を 1 本消しても
+# 残りが緑のまま「全 N 件 pass」で通るため、総数を別途固定する。検査を増減したときの
+# 更新箇所は 2 つ: ok / bad を増減させた箇所と、この宣言。
+# keyword 系統のループは check-closing-keywords.sh --list-keywords の出力件数に比例
+# するので、keyword を増減したときもここを直す。
+EXPECTED_CHECKS=121
+
 PASS=0
 FAIL=0
 
@@ -379,9 +386,16 @@ contains "$SKILL" "$HEADLINE_MARKER" "SKILL.md の検査面がコミット件名
 contains "$WORKFLOW" "$HEADLINE_MARKER" "git-workflow.md の検査面がコミット件名を含む"
 
 echo
+# 検査総数の侵食ガード。全検査成功ラン（FAIL=0）に限って完全一致を要求する — 失敗
+# 経路は後続検査を飛ばすことがあり、そのランはこのガード無しですでに赤いため。
+if [[ "$FAIL" -eq 0 && "$PASS" -ne "$EXPECTED_CHECKS" ]]; then
+  echo "✗ closing-keyword-guard verify: 実行検査数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査が黙って増減している（増減時は EXPECTED_CHECKS も更新すること）" >&2
+  exit 1
+fi
+
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ closing-keyword-guard verify: $FAIL 件失敗 / $PASS 件成功" >&2
   exit 1
 fi
 
-echo "✓ closing-keyword-guard verify: 全 $PASS 件 pass"
+echo "✓ closing-keyword-guard verify: 全 $PASS 件 pass（検査総数ガード ${EXPECTED_CHECKS} 件と一致）"

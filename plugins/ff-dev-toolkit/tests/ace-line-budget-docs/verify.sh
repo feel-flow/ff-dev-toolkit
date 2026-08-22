@@ -24,6 +24,13 @@ for required in "$TEMPLATE_PLAYBOOK" "$LIVE_PLAYBOOK" "$TEMPLATE_README" \
   fi
 done
 
+# 実行検査数の侵食ガード（TESTING.md の EXPECTED_CHECKS 方針）。針を 1 本消しても
+# 残りが緑のまま「全 N 件 pass」で通るため、総数を別途固定する。検査を増減したときの
+# 更新箇所は 2 つ: ok / bad を増減させた箇所（RULE_NEEDLES / SEED_NEEDLES の増減を
+# 含む）と、この宣言。検査対象が欠けるランは上の必須ファイル検査が exit 1 するため、
+# ここには到達しない。
+EXPECTED_CHECKS=27
+
 PASS=0
 FAIL=0
 ok() {
@@ -177,9 +184,16 @@ contains "$REFINE_CODE" \
   'blankCodeRegions,' \
   "refine がコード領域除外の実装 SSOTを import する"
 
+# 検査総数の侵食ガード。全検査成功ラン（FAIL=0）に限って完全一致を要求する — 抽出に
+# 失敗するランは後続検査を飛ばすことがあり、そのランはこのガード無しですでに赤いため。
+if [[ $FAIL -eq 0 && $PASS -ne $EXPECTED_CHECKS ]]; then
+  echo "ace-line-budget-docs verify: 実行検査数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査が黙って増減している（増減時は EXPECTED_CHECKS も更新すること）" >&2
+  exit 1
+fi
+
 if [[ $FAIL -ne 0 ]]; then
   echo "ace-line-budget-docs verify: ${FAIL} 件失敗 / ${PASS} 件 pass" >&2
   exit 1
 fi
 
-echo "ace-line-budget-docs verify: 全 ${PASS} 件 pass"
+echo "ace-line-budget-docs verify: 全 ${PASS} 件 pass（検査総数ガード ${EXPECTED_CHECKS} 件と一致）"

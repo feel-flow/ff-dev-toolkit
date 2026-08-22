@@ -104,7 +104,27 @@ SCRIPT_NAME="$(basename "$0")"
 # の形で、複数版が同居する（実測で 0.9.0 / 0.14.0 / 0.19.0）。候補は glob で
 # 列挙するが、文字列順ではなく manifest の semantic version 最大を選ぶ。
 # pre-release を含む版は安定版の探索対象にせず、診断を出してスキップする。
+#
+# ## 期待するパスの形（env とサイドカーで違わない）
+#
+# env とサイドカーは**慣習上の正規形が違う**: skill 群は FF_DEV_TOOLKIT_ROOT を
+# プラグインルートとして定義し、setup-multi-agent.sh はサイドカーへ toolkit の
+# scripts/ ディレクトリを書く。ただし解決はどちらも canonical_toolkit_root を
+# 通るので、**両方の入口が両方の形を受け付ける**（実測で確認済み）。
+# 診断はこの事実に合わせること — 「サイドカーには scripts/ を書く」のような
+# 片側だけの案内は事実に反し、利用者を存在しない設定ミスの修正へ誘導する。
 FF_ROOT_SIDECAR_NAME=".ff-dev-toolkit-root"
+
+# 期待するパスの形を 1 か所で持つ。診断が「指す先に multi-agent.sh がありません」で
+# 止まると、利用者は scripts/ を足すのか外すのかが判らず、設定ミスの解消に何往復も
+# かかる（Issue #603 の実測）。形を明示すれば 1 回で終わる。
+print_toolkit_path_shapes() {
+  local indent="$1"
+  echo "${indent}期待するパスの形（どちらの入口も両方の形を受け付けます）:" >&2
+  echo "${indent}  FF_DEV_TOOLKIT_ROOT: プラグインルート（例 .../ff-dev-toolkit）— skill 群が使う正規形" >&2
+  echo "${indent}  ${FF_ROOT_SIDECAR_NAME}: toolkit の scripts/ ディレクトリ（例 .../ff-dev-toolkit/scripts）— setup-multi-agent.sh が書く形" >&2
+  echo "${indent}  条件は「multi-agent.sh を含むディレクトリ、または（それが scripts/ の場合）その親」です。" >&2
+}
 
 toolkit_manifest_version() {
   local root="$1" manifest="${1}/.claude-plugin/plugin.json" version
@@ -192,7 +212,7 @@ usable_orchestrator() {
 }
 
 resolve_toolkit() {
-  local root version sidecar sidecar_value codex_cache claude_cache
+  local root version sidecar sidecar_value="" codex_cache claude_cache
   local codex_root="" codex_version="" claude_root="" claude_version=""
   RESOLVED_ORCHESTRATOR=""
   RESOLVED_TOOLKIT_ROOT=""
@@ -206,6 +226,7 @@ resolve_toolkit() {
       echo "ERROR: FF_DEV_TOOLKIT_ROOT が設定されていますが、使える multi-agent.sh がありません。" >&2
       echo "       指定: ${FF_DEV_TOOLKIT_ROOT}" >&2
       echo "       明示指定を黙って無視して別の toolkit で走ることはしません。" >&2
+      print_toolkit_path_shapes "       "
       return 2
     fi
     version="$(toolkit_manifest_version "$root" 2>/dev/null || true)"
@@ -235,7 +256,9 @@ resolve_toolkit() {
 
   sidecar="$(dirname "$0")/${FF_ROOT_SIDECAR_NAME}"
   if [ -f "$sidecar" ]; then
-    IFS= read -r sidecar_value < "$sidecar" || sidecar_value=""
+    # read は「値を代入したうえで EOF により非 0」を返す（末尾に改行が無いファイル）。
+    # その非 0 を「読めなかった」と同一視して空へ倒すと、手書きのサイドカーが解決できない。
+    IFS= read -r sidecar_value < "$sidecar" || true
     if [ -n "$sidecar_value" ] && root="$(canonical_toolkit_root "$sidecar_value")"; then
       version="$(toolkit_manifest_version "$root" 2>/dev/null || true)"
       [ -n "$version" ] || { echo "ERROR: sidecar が指す toolkit の version を読めません: $root" >&2; return 2; }
@@ -245,6 +268,66 @@ resolve_toolkit() {
   fi
 
   return 1
+}
+
+sidecar_recorded_value() {
+  # 記録値そのものを診断へ出す。パスの形の違いは「何が書いてあるか」を見せないと
+  # 判断できない。空行・欠落は空文字ではなく明示の印にする（診断が黙って欠ける形になるため）。
+  # read は最終行に改行が無い / 空ファイルで非 0 を返す。set -e 下でそのまま置くと診断の
+  # 途中で死ぬので非 0 は受け流すが、**値は捨てない** — 末尾に改行が無いだけのファイルを
+  # (empty) と報告すると、診断が最も要る手設定の場面で嘘をつくことになる。読めない場合は
+  # 空と区別する（cat も失敗する状況なので、利用者を chmod へ向ける必要がある）。
+  local sidecar="$1" value=""
+  if [ -f "$sidecar" ]; then
+    if [ ! -r "$sidecar" ]; then
+      printf '%s\n' "(読み取り権限がありません)"
+      return 0
+    fi
+    IFS= read -r value < "$sidecar" || true
+  fi
+  [ -n "$value" ] || value="(empty)"
+  printf '%s\n' "$value"
+}
+
+warn_env_masked_sidecar() {
+  # FF_DEV_TOOLKIT_ROOT が使えないサイドカーを覆い隠す事故だけを告知する。
+  # 実測（Issue #603）: 同じシェルで FF_DEV_TOOLKIT_ROOT を export したまま成功したため
+  # 「サイドカーは正しい」と誤って結論し、env の無い次のシェル（= 実際の運用）で失敗した。
+  #
+  # **cache 経路は対象にしない。** env はシェルスコープなので「ここでは在るが次では無い」が
+  # 成立するのに対し、plugin cache はマシンに永続していて同じマシンの次のシェルでも同じように
+  # 解決する。cache が勝った実行で「この経路が無い環境では失敗します」と言うのは端的に嘘で、
+  # 利用者が設定していない env の名前まで挙げることになる。しかも cache はサイドカーより
+  # 先に引かれるので、plugin の版が上がって旧 cache ディレクトリが消えた消費リポジトリでは
+  # **毎回**鳴る（実測）。常時鳴る警告は、同じブロックが運んでいる本物の案内ごと
+  # 読み飛ばされるようにするだけで、埋めたはずの診断の穴より悪い。
+  #
+  # **「別の toolkit を指している」だけでも鳴らさない。** env がサイドカーに勝つのは
+  # toolkit を移動・更新したときの正規の上書き手段で、開発 clone と cache を併用する構成では
+  # 両者が食い違うのが普通。鳴らすのは「env の無い次のシェルで確実に失敗する値」だけ。
+  #
+  # 判定は canonical_toolkit_root（= 使えるオーケストレータを指しているか）までで、版や
+  # 配置済みテンプレートの同一性（verify_toolkit_identity）は見ない。そこまで見ると、
+  # テンプレートを編集中の開発 clone を指すサイドカーで毎回鳴ることになり、上で避けたはずの
+  # «常時鳴る警告» を自分で作る。この境界の外（版不一致の覆い隠し）は告知の対象外である。
+  #
+  # 告知であって上書きではないので rc は変えない。
+  local sidecar sidecar_value
+  [ "$RESOLVED_TOOLKIT_SOURCE" = "explicit" ] || return 0
+  sidecar="$(dirname "$0")/${FF_ROOT_SIDECAR_NAME}"
+  [ -f "$sidecar" ] || return 0
+  IFS= read -r sidecar_value < "$sidecar" || sidecar_value=""
+  if [ -n "$sidecar_value" ] && canonical_toolkit_root "$sidecar_value" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "WARNING: 今回は FF_DEV_TOOLKIT_ROOT で解決しましたが、サイドカーは使える toolkit を指していません。" >&2
+  echo "         サイドカー: ${sidecar}" >&2
+  echo "         記録値: $(sidecar_recorded_value "$sidecar")" >&2
+  print_toolkit_path_shapes "         "
+  echo "         FF_DEV_TOOLKIT_ROOT はこのシェル限りなので、export していないシェルや CI では" >&2
+  echo "         plugin cache が無いかぎり失敗します。" >&2
+  echo "         bash <toolkit>/scripts/setup-multi-agent.sh を再実行して記録し直してください。" >&2
+  return 0
 }
 
 set_resolved_toolkit() {
@@ -273,14 +356,17 @@ load_resolved_toolkit() {
     echo "       探索順: FF_DEV_TOOLKIT_ROOT → Codex/Claude cache の最大版（同版は Codex 優先）→ ${sidecar}" >&2
     if [ -f "$sidecar" ]; then
       echo "       サイドカーは在りますが、指す先に multi-agent.sh がありません" >&2
+      echo "       記録値: $(sidecar_recorded_value "$sidecar")" >&2
       echo "       （toolkit を更新・移動した場合は setup-multi-agent.sh を再実行してください）。" >&2
     else
       echo "       サイドカーがありません。setup-multi-agent.sh を実行して配置し直すか、" >&2
       echo "       FF_DEV_TOOLKIT_ROOT を toolkit のプラグインルートへ向けてください。" >&2
     fi
+    print_toolkit_path_shapes "       "
     return "$resolve_rc"
   fi
   echo "ℹ️  ff-dev-toolkit version=${RESOLVED_TOOLKIT_VERSION} source=${RESOLVED_TOOLKIT_SOURCE} root=${RESOLVED_TOOLKIT_ROOT}" >&2
+  warn_env_masked_sidecar
 }
 
 usage() {

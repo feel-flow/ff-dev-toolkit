@@ -35,6 +35,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 SHIM="$PLUGIN_ROOT/scripts/templates/codex-review.sh"
+# 覆い隠し告知の needle は実体（シム）から導出する。リテラルを書き写すと、文言を変えたときに
+# 肯定側の針だけが赤くなり、不在側（「鳴らないこと」）の 2 本は «何も検証しない緑» へ静かに
+# 退化する（ACE-734-1）。抽出できない場合は fail-closed で落とす。
+MASK_NEEDLE="$(/usr/bin/grep -m1 -o 'サイドカーは使える toolkit を指していません' "$SHIM" || true)"
+[ -n "$MASK_NEEDLE" ] || { echo "✗ 覆い隠し告知の needle をシムから抽出できません（不在側の検査が空振りします）" >&2; exit 1; }
 SETUP="$PLUGIN_ROOT/scripts/setup-multi-agent.sh"
 DIRECT_CLI_DETECTOR="$SCRIPT_DIR/direct-cli-detector.awk"
 SUITE_NAME="review-wrapper-shim"
@@ -1065,6 +1070,112 @@ if [ -f "$PLACED" ]; then
   else
     bad "env が指す先が使われていない（サイドカーが勝っている）"
   fi
+
+  # ── パスの形の対称性と、env によるサイドカーの覆い隠し（Issue #603） ──────────
+  #
+  # env とサイドカーは慣習上の正規形が違う（前者=プラグインルート / 後者=scripts/）が、
+  # 解決はどちらも canonical_toolkit_root を通るので**両形を受け付ける**。ここを
+  # 検査しないと、片側だけの補完へ戻す変異が緑のまま通り、診断が案内する形と
+  # 実装が食い違う。サイドカーへプラグインルートを書く形は既存の検査が 1 件も
+  # 触れていなかった（サイドカー=scripts/ と env=プラグインルートしか通っていない）。
+  : > "$WORK/argv.log"
+  printf '%s\n' "$FAKE" > "$SIDECAR"
+  run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
+    CLAUDE_CONFIG_DIR="$WORK/no-claude-home" ARGV_LOG="$WORK/argv.log" \
+    bash "$PLACED" --base develop >"$WORK/shape.log" 2>&1 || true
+  if argv_has_seq "--cli" "codex-cli"; then
+    ok "サイドカーにプラグインルートを書いても解決できる（env と対称）"
+  else
+    bad "サイドカーがプラグインルート形を受け付けない（案内する形と実装が食い違う）"
+    sed 's/^/    | /' "$WORK/shape.log" >&2
+  fi
+
+  # env が使えないサイドカーを覆い隠す事故。実測（Issue #603）: 同じシェルで
+  # FF_DEV_TOOLKIT_ROOT を export したまま成功したため「サイドカーは正しい」と
+  # 誤って結論し、env の無い次のシェル（= 実際の運用）で失敗した。
+  # 告知であって上書きではないので **rc は 0 のまま**であること。
+  : > "$WORK/argv.log"
+  printf '%s\n' "$WORK/nonexistent-toolkit" > "$SIDECAR"
+  MASK_RC=0
+  run_isolated env FF_DEV_TOOLKIT_ROOT="$ALT" ARGV_LOG="$WORK/argv.log" \
+    bash "$PLACED" --base develop >"$WORK/mask.log" 2>&1 || MASK_RC=$?
+  if [ "$MASK_RC" -eq 0 ] && [ -s "$WORK/argv.log" ] \
+     && grep -qF "$MASK_NEEDLE" "$WORK/mask.log"; then
+    ok "env が使えないサイドカーを覆い隠すとき告知する（レビューは止めない）"
+  else
+    bad "壊れたサイドカーが env に覆い隠されたまま黙って通った (rc=$MASK_RC)"
+    sed 's/^/    | /' "$WORK/mask.log" >&2
+  fi
+
+  # 逆に「別の toolkit を指しているだけ」では鳴らさないこと。env がサイドカーに
+  # 勝つのは正規の上書き手段で、開発 clone と cache を併用する構成では食い違うのが
+  # 普通。そこで鳴らすと毎回出て、上の本物の告知ごと読み飛ばされる。
+  printf '%s\n' "$_sidecar_want" > "$SIDECAR"
+  run_isolated env FF_DEV_TOOLKIT_ROOT="$ALT" ARGV_LOG="$WORK/argv.log" \
+    bash "$PLACED" --base develop >"$WORK/nomask.log" 2>&1 || true
+  if grep -qF "$MASK_NEEDLE" "$WORK/nomask.log"; then
+    bad "使えるサイドカーにまで警告が出る（毎回鳴って本物の告知が読み飛ばされる）"
+  else
+    ok "使えるサイドカーが env と食い違うだけでは警告しない"
+  fi
+
+  # cache が勝つ場合の告知抑止は、fixture 生成器（make_cache_toolkit）が定義される
+  # 「cache 解決順・版整合」の節で検査する。
+
+  # 解決に失敗したときの診断は、期待するパスの形と記録値の両方を出すこと。
+  # 「指す先に multi-agent.sh がありません」だけだと、利用者は scripts/ を足すのか
+  # 外すのかが判らず設定ミスの解消に何往復もかかる（Issue #603 の実測）。
+  printf '%s\n' "$WORK/nonexistent-toolkit" > "$SIDECAR"
+  : > "$WORK/argv-shape.log"
+  SHAPE_RC=0
+  run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
+    CLAUDE_CONFIG_DIR="$WORK/no-claude-home" ARGV_LOG="$WORK/argv-shape.log" \
+    bash "$PLACED" --base develop >"$WORK/nohint.log" 2>&1 || SHAPE_RC=$?
+  if [ "$SHAPE_RC" -ne 0 ] && [ ! -s "$WORK/argv-shape.log" ] \
+     && grep -q '期待するパスの形' "$WORK/nohint.log" \
+     && grep -q 'FF_DEV_TOOLKIT_ROOT: プラグインルート' "$WORK/nohint.log" \
+     && grep -qF "$(basename "$SIDECAR"): toolkit の scripts/ ディレクトリ" "$WORK/nohint.log" \
+     && grep -qF "記録値: ${WORK}/nonexistent-toolkit" "$WORK/nohint.log"; then
+    ok "解決失敗の診断が期待するパスの形と記録値を示す"
+  else
+    bad "解決失敗の診断に期待するパスの形または記録値が無い (rc=$SHAPE_RC)"
+    sed 's/^/    | /' "$WORK/nohint.log" >&2
+  fi
+
+  # 空のサイドカーは記録値を「(empty)」と明示すること（診断が黙って欠ける形にしない）。
+  : > "$SIDECAR"
+  : > "$WORK/argv-empty.log"
+  EMPTY_REC_RC=0
+  run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
+    CLAUDE_CONFIG_DIR="$WORK/no-claude-home" ARGV_LOG="$WORK/argv-empty.log" \
+    bash "$PLACED" --base develop >"$WORK/emptyrec.log" 2>&1 || EMPTY_REC_RC=$?
+  if [ "$EMPTY_REC_RC" -ne 0 ] && [ ! -s "$WORK/argv-empty.log" ] \
+     && grep -qF '記録値: (empty)' "$WORK/emptyrec.log"; then
+    ok "空のサイドカーは記録値を (empty) と明示する"
+  else
+    bad "空のサイドカーで記録値の明示が無い、または委譲してしまった (rc=$EMPTY_REC_RC)"
+    sed 's/^/    | /' "$WORK/emptyrec.log" >&2
+  fi
+
+  # 末尾に改行が無いサイドカーでも解決すること。`read` は値を代入したうえで EOF で非 0 を
+  # 返すため、その非 0 を「読めなかった」と同一視して空へ倒すと、非空のファイルを
+  # 「記録値: (empty)」と報告しながら解決にも失敗する（手設定こそこの形になりやすい）。
+  : > "$WORK/argv-nonl.log"
+  printf '%s' "$_sidecar_want" > "$SIDECAR"
+  NONL_RC=0
+  run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
+    CLAUDE_CONFIG_DIR="$WORK/no-claude-home" ARGV_LOG="$WORK/argv-nonl.log" \
+    bash "$PLACED" --base develop >"$WORK/nonl.log" 2>&1 || NONL_RC=$?
+  if [ "$NONL_RC" -eq 0 ] && [ -s "$WORK/argv-nonl.log" ] \
+     && grep -q 'source=sidecar' "$WORK/nonl.log"; then
+    ok "末尾に改行が無いサイドカーでも解決する（read の EOF 非 0 で値を捨てない）"
+  else
+    bad "末尾改行の無いサイドカーが解決できない (rc=$NONL_RC)"
+    sed 's/^/    | /' "$WORK/nonl.log" >&2
+  fi
+
+  # 後続の検査は本番経路のサイドカーが生きている前提なので戻す。
+  printf '%s\n' "$_sidecar_want" > "$SIDECAR"
 fi
 
 echo "-- cache 解決順・版整合 --"
@@ -1144,6 +1255,29 @@ if [ "$CACHE_RC" -eq 2 ] && [ ! -s "$WORK/argv-cache.log" ] \
   ok "cache: 最大候補の版不整合は sidecar へ落とさず fail closed"
 else
   bad "cache: 版不整合が sidecar へフォールバックした (rc=$CACHE_RC)"
+fi
+
+# cache が勝った実行では、使えないサイドカーがあっても告知しないこと（Issue #603）。
+# env はシェルスコープなので「ここでは在るが次のシェルでは無い」が成立するが、plugin cache は
+# マシンに永続していて次のシェルでも CI でも同じように解決する。cache 下で「この経路が
+# 無い環境では失敗します」と言うのは端的に嘘になる。しかも cache はサイドカーより先に
+# 引かれるので、plugin の版が上がって旧 cache ディレクトリが消えた消費リポジトリでは
+# **毎回**鳴る（実測）。常時鳴る警告は、同じブロックが運んでいる本物のパス案内ごと
+# 読み飛ばされるようにするだけで、埋めたはずの診断の穴より悪い。
+CACHE_QUIET_HOME="$WORK/cache-quiet-home"
+make_cache_toolkit "$CACHE_QUIET_HOME/plugins/cache/market/ff-dev-toolkit/0.38.0" "0.38.0"
+printf '%s\n' "$WORK/nonexistent-toolkit" > "$SIDECAR"
+CACHE_QUIET_RC=0
+run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CACHE_QUIET_HOME" \
+  CLAUDE_CONFIG_DIR="$WORK/no-claude-home" ARGV_LOG="$WORK/argv-cache.log" \
+  bash "$PLACED" --base develop >"$WORK/cachequiet.log" 2>&1 || CACHE_QUIET_RC=$?
+printf '%s\n' "$FAKE/scripts" > "$SIDECAR"
+if [ "$CACHE_QUIET_RC" -eq 0 ] && grep -q 'source=codex-cache' "$WORK/cachequiet.log" \
+   && ! grep -qF "$MASK_NEEDLE" "$WORK/cachequiet.log"; then
+  ok "cache が勝った実行では壊れたサイドカーを告知しない（毎回鳴る警告にしない）"
+else
+  bad "cache 経路で警告が鳴った、または cache で解決していない (rc=$CACHE_QUIET_RC)"
+  sed 's/^/    | /' "$WORK/cachequiet.log" >&2
 fi
 
 cp "$TOOLKIT/scripts/agent-config.yaml" "$WORK/agent-config.good"

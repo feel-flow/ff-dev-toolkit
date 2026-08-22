@@ -31,8 +31,13 @@ fail-silent に反転するため、ランナーを集約実行へ変えまし�
 終了コードは「failed か not-run が 1 件でもあれば 1、それ以外は 0」です。
 ただし **passed が 0 で skipped だけの場合も 1** にします（検証が 1 件も成立していない状態を、
 終了コードしか見ない CI で「全部通った」と区別できなくなるため）。
-高速モード（`FF_RUN_ALL_FAST=1`。`-selftest` 終端の suite を実行対象から除外する）で
-**除外により実行対象が 0 件になった場合も 1** です（検査 0 件を成功として記録しない）。
+高速モード（`FF_RUN_ALL_FAST=1`。`-selftest` 終端 **かつ**対になる本体 suite が実在する suite を
+実行対象から除外する。ADR-031）で **除外により実行対象が 0 件になった場合も 1** です
+（検査 0 件を成功として記録しない）。対になる本体 suite を持たない `-selftest` は、その検査対象を
+見る suite が他に無いため除外されず、除外しなかった件数と suite 名はサマリーに出ます。
+`FF_RUN_ALL_FAST` が `1` 以外の非空値（`true` / `2` など）のときは 1 行警告のうえ既定モードで
+続行し、明示引数で名指しした suite が除外された場合も 1 行警告します（いずれも終了コードは
+変えません）。
 
 `All ff-dev-toolkit fixture checks passed.` は **既定モードで全 suite が passed のときだけ**出力されます
 （skip が 1 件でもあれば「実行した N suite は全て通過」に切り替わり、本体が走っていない suite の存在を
@@ -79,15 +84,17 @@ case 10 は Issue #150 の再混入ガードです。ファイルを直接読む
 ```
 tests/run-all/
 ├── README.md                        # このファイル
-├── verify.sh                        # ランナーの挙動検証（10 ケース）
+├── verify.sh                        # ランナーの挙動検証（28 ケース）
 └── fixtures/
     ├── pass/verify.sh               # 常に成功（後続実行の目印を出力）
     ├── fail/verify.sh               # 常に失敗（stderr へ診断を出力）
     ├── fail-skip-marker/verify.sh   # 非 0 終了 + 行頭 `○ skip`（判定順序の固定用）
     ├── skip/verify.sh               # exit 0 + 行頭 `○ skip`
     ├── skip-large/verify.sh         # 行頭 `○ skip` + パイプ容量超の出力（SIGPIPE 反転の検出用）
-    ├── pass-selftest/verify.sh      # `-selftest` 終端名の成功 suite（高速モードの除外判定用）
+    ├── pass-selftest/verify.sh      # `-selftest` 終端名の成功 suite（対 = pass があるので除外側）
     ├── pass-selftest-extra/verify.sh # `-selftest` を途中に含む成功 suite（終端一致の境界固定用）
+    ├── orphan-selftest/verify.sh    # 対になる本体 suite を持たない `-selftest`（除外しない側。
+    │                                #   `fixtures/orphan/` を作ると検査が裏返るので作らないこと）
     └── not-executable/verify.sh     # mode 644（実行ビットなしでコミット）
 ```
 

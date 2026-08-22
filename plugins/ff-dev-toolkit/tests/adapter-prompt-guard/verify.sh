@@ -47,12 +47,15 @@ build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_CLAUDE_CODE" \
 # パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に誤帰属し、
 # 恒常的に壊れた TMPDIR が suite を exit 0 で無効化し続ける。2>&1 で受けると
 # 成功時はパス・失敗時は理由が同じ変数に入る。
-if _ff_mktemp_out="$(mktemp -d 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の git init が原因不明の失敗に化けるため。
+# skip 文言で read-only と断定しない（すぐ上のコメントのとおり原因は 1 つではない。
+# 断定すると、壊れた TMPDIR の調査が read-only の確認だけで打ち切られる）。
+if _ff_mktemp_out="$(mktemp -d 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   TMP="$_ff_mktemp_out"
 else
-  echo "○ skip: 一時ディレクトリを作成できない環境（read-only）のためスキップ"
+  echo "○ skip: 一時ディレクトリを作成できない環境のためスキップ"
   printf '  mktemp: %s\n' "$_ff_mktemp_out"
-  FF_REACHED_END=1
   exit 0
 fi
 # 途中死を沈黙させない。`set -u` 等で死んだとき、トラップ突入時の $? は **0** になるため、
@@ -66,6 +69,12 @@ _ff_exit_guard() {
     echo "✗ adapter-prompt-guard: 最後まで到達しませんでした（途中で中断）" >&2
     exit 1
   fi
+  # rc≠0 の途中死にも 1 行の文脈を残す。死んだコマンドが自分では何も喋らない形
+  #（SIGPIPE 等）だと、captured 出力は ✓ の羅列のまま suite だけ赤くなり、
+  # 読む人に原因の手がかりが残らない。
+  if [ "$_ff_rc" -ne 0 ] && [ "$FF_REACHED_END" -ne 1 ]; then
+    echo "✗ adapter-prompt-guard: サマリー前に中断しました (rc=${_ff_rc})" >&2
+  fi
   exit "$_ff_rc"
 }
 trap _ff_exit_guard EXIT
@@ -76,6 +85,12 @@ ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # --- diff を持つ一時リポジトリ（review の build_prompt は diff 必須） ---
+# グローバル / システムの git 設定（core.hooksPath / init.templateDir 由来の hook など）を
+# fixture へ継承させない。継承すると利用者環境の hook が fixture の git commit で実行され、
+# 失敗時に suite の文脈なしの git エラーで abort する。orchestrator を起動するケースでも
+# 同じ設定で走らせたいので export する（run_isolated の -u は MULTI_AGENT_* / FF_TIMEOUT_*
+# だけを落とすので、この 2 つはサブプロセスまで届く）。
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 REPO="$TMP/repo"
 git init -q "$REPO"
 cd "$REPO"
@@ -91,14 +106,43 @@ printf 'base\nchange\n' > app.txt
 git add app.txt
 git commit -qm "change"
 
+# 上の遮断が効いていることを検査で固定する（項目 4 だけが針を持たず fail-open していた）。
+# GIT_CONFIG_GLOBAL は git 2.32 以降でしか解釈されないので、古い git では継承が起きる。
+# 黙って継承したまま緑にするより、理由を名指しして赤くする方がよい。
+# 判定は「全件 == ローカル件数」で行う。origin のパス書式に照合しないこと: git は
+# --show-origin を **cwd 相対**（`file:.git/config`）で出すため、絶対パスで除外する形は
+# cwd 依存で静かに空振りする（実測でこれを踏んだ）。件数は git 自身に数えさせる。
+git config --list >"$TMP/gitcfg-all.txt" 2>/dev/null || true
+git config --list --local >"$TMP/gitcfg-local.txt" 2>/dev/null || true
+GITCFG_ALL="$(/usr/bin/grep -c '' "$TMP/gitcfg-all.txt" || true)"
+GITCFG_LOCAL="$(/usr/bin/grep -c '' "$TMP/gitcfg-local.txt" || true)"
+[ -n "$GITCFG_ALL" ] || GITCFG_ALL=0
+[ -n "$GITCFG_LOCAL" ] || GITCFG_LOCAL=0
+if [ "$GITCFG_ALL" -eq "$GITCFG_LOCAL" ] && [ "$GITCFG_LOCAL" -gt 0 ]; then
+  ok "fixture の git 設定はグローバル / システムを継承しない（全 ${GITCFG_ALL} 件がローカル）"
+else
+  bad "fixture の git 設定に外部由来が混ざる（全 ${GITCFG_ALL} 件 / ローカル ${GITCFG_LOCAL} 件。GIT_CONFIG_GLOBAL は git 2.32 以降。実行中: $(git --version)）"
+  git config --list --show-origin >"$TMP/gitcfg-origins.txt" 2>/dev/null || true
+  sed 's/^/    | /' "$TMP/gitcfg-origins.txt" >&2 || true
+fi
+
 # --- perspective fixture（プロジェクト指示文の位置を示す一意マーカー入り） ---
 PERSPECTIVE="$TMP/perspective.md"
 printf '%s\n' '# Fixture Perspective' 'PERSPECTIVE-CONTENT-MARKER' > "$PERSPECTIVE"
 
 # build_prompt をサブシェルで直接呼ぶ（multi-agent-timeout の D1/D2 と同じ経路）。
 # $2 を省略すると STAGING_DIR 未設定 = orchestrator を経由しない直叩き実行の再現。
+#
+# DIFF_FILE / STAGED_DIFF / INCLUDE_DIFF は build_prompt が環境から読む値なので、
+# 利用者の環境から漏れると diff の取得元や有無が変わる（本 suite は fixture リポジトリの
+# diff を前提にする）。アダプタを CLI として起動する経路では parse_adapter_args が
+# 毎回初期化するため、漏れるのはこの「source して関数を直呼び」経路だけ。
+# CHANGED_FILES は build_prompt が位置引数から束縛しており（adapter-common.sh の
+# `local changed_files="${3:-}"`）、環境からは読まれない。落としているのは将来 Changed Files 節が
+# 環境を読む形へ戻ったときのための予防で、現時点で塞いでいる漏洩経路があるわけではない。
 gen_prompt() { # $1: task_type / $2: staging_dir（省略可） / $3: inline_output（省略可） / stdout: プロンプト
   (
+    unset DIFF_FILE STAGED_DIFF INCLUDE_DIFF CHANGED_FILES
     TASK_TYPE="$1"
     DESCRIPTION="fixture task"
     STAGING_DIR="${2:-}"
@@ -147,13 +191,69 @@ expect_contains "review: 単一応答で完結することを明記" "$REVIEW_PR
 # 位置の一貫性）。行番号抽出は awk 1 本で行う — `grep -nF | head | cut` の形は、
 # 不一致（grep rc=1）が pipefail + set -e で suite を無言 abort させ、下の bad 分岐と
 # サマリ行を到達不能にする（grep の SIGPIPE 反転も同時に回避）。
-BOUNDARY_LINE="$(printf '%s\n' "$REVIEW_PROMPT" | awk 'index($0, "## Execution Boundary") { print NR; exit }')"
-PERSPECTIVE_LINE="$(printf '%s\n' "$REVIEW_PROMPT" | awk 'index($0, "PERSPECTIVE-CONTENT-MARKER") { print NR; exit }')"
+# awk 側もマッチ後に全行を読み切る形にする。早期 exit だと printf が書き込み中の
+# 場合に SIGPIPE（rc=141）→ pipefail でトップレベル代入が失敗し、set -e が何の
+# メッセージも出さずに suite を打ち切る。現状の fixture プロンプトはパイプバッファ
+#（64KB）に収まるが、その暗黙の前提に依存しない。
+BOUNDARY_LINE="$(printf '%s\n' "$REVIEW_PROMPT" | awk 'n == 0 && index($0, "## Execution Boundary") { n = NR } END { if (n) print n }')"
+PERSPECTIVE_LINE="$(printf '%s\n' "$REVIEW_PROMPT" | awk 'n == 0 && index($0, "PERSPECTIVE-CONTENT-MARKER") { n = NR } END { if (n) print n }')"
 if [ -n "$BOUNDARY_LINE" ] && [ -n "$PERSPECTIVE_LINE" ] && [ "$BOUNDARY_LINE" -lt "$PERSPECTIVE_LINE" ]; then
   ok "review: 境界宣言が perspective より前にある（${BOUNDARY_LINE} 行目 < ${PERSPECTIVE_LINE} 行目）"
 else
   bad "review: 境界宣言が perspective より前に無い（boundary=${BOUNDARY_LINE:-なし} perspective=${PERSPECTIVE_LINE:-なし}）"
 fi
+
+echo "== ホスト環境からの diff 汚染の遮断（Issue #564） =="
+
+# gen_prompt の unset が外れると、利用者が export した DIFF_FILE / STAGED_DIFF /
+# INCLUDE_DIFF を build_prompt が読み、**fixture リポジトリではない diff**（あるいは
+# 空の diff）でプロンプトを組み立てる。症状は「そのマシンでだけ赤い suite」で、
+# Issue #374 / #378 で潰した env 漏れと同型。unset する 3 変数それぞれに、漏れたときだけ
+# 落ちる針を置く（DIFF_FILE は載る側と囮の不在の 2 件、STAGED_DIFF は載る側 1 件、
+# INCLUDE_DIFF は diff 節が生えないことの不在検査 1 件。「対」になっているのは DIFF_FILE のみ）。
+#
+# 効いている針は「fixture の変更行が載っていること」の方。DECOY マーカーの不在は
+# 単独では空振りしうる（漏れ方によっては diff が空になり、マーカーも当然入らない）。
+# CHANGED_FILES は現在 build_prompt から読まれていないため針を書けない。unset は
+# 将来 Changed Files 節が復活したときのための予防で、ここでは主張しない。
+DECOY_DIFF="$TMP/decoy.diff"
+printf '%s\n' 'diff --git a/decoy.txt b/decoy.txt' '+DECOY-DIFF-MARKER' > "$DECOY_DIFF"
+
+if ! DIFFFILE_LEAK_PROMPT="$(
+  export DIFF_FILE="$DECOY_DIFF" CHANGED_FILES="decoy.txt"
+  gen_prompt review
+)"; then
+  bad "review(DIFF_FILE 汚染下): プロンプト生成自体が失敗した"
+  DIFFFILE_LEAK_PROMPT=""
+fi
+expect_contains "ホストの DIFF_FILE 下でも fixture の diff を載せる" "$DIFFFILE_LEAK_PROMPT" "+change"
+expect_lacks "ホストの DIFF_FILE の中身を載せない" "$DIFFFILE_LEAK_PROMPT" "DECOY-DIFF-MARKER"
+
+# STAGED_DIFF が漏れると get_diff_content が `git diff --cached` へ切り替わり、
+# 全コミット済みの fixture では diff が空になる（DIFF_FILE より後に効くので、
+# 上のケースだけでは STAGED_DIFF を unset から外す変異が生き残る）。
+if ! STAGED_LEAK_PROMPT="$(
+  export STAGED_DIFF=true
+  gen_prompt review
+)"; then
+  bad "review(STAGED_DIFF 汚染下): プロンプト生成自体が失敗した"
+  STAGED_LEAK_PROMPT=""
+fi
+expect_contains "ホストの STAGED_DIFF 下でも fixture の diff を載せる" "$STAGED_LEAK_PROMPT" "+change"
+
+# INCLUDE_DIFF は implement のみで効く（review には diff が常に載る）。漏れると
+# implement プロンプトへ本来無い diff 節が生える。
+if ! INCLUDEDIFF_LEAK_PROMPT="$(
+  export INCLUDE_DIFF=true
+  gen_prompt implement "$STAGING_FIXTURE"
+)"; then
+  bad "implement(INCLUDE_DIFF 汚染下): プロンプト生成自体が失敗した"
+  INCLUDEDIFF_LEAK_PROMPT=""
+fi
+expect_lacks "ホストの INCLUDE_DIFF で implement へ diff 節が生えない" \
+  "$INCLUDEDIFF_LEAK_PROMPT" "## Current Changes (git diff)"
+
+echo "== Execution Boundary の生成（続き） =="
 
 if ! EXPLORE_PROMPT="$(gen_prompt explore)"; then
   bad "explore: プロンプト生成自体が失敗した"
@@ -180,8 +280,10 @@ expect_lacks "implement: read-only 行を含まない（staging 書き込みと�
 # もう片方が「書くな」だと、エージェントは矛盾を自分で解消して working tree へ行く。
 # 抽出は行番号固定ではなく「境界セクションより前の領域」— preamble を可読性のため
 # 折り返しただけで赤くなる形にはしない。
+# 打ち切りは exit ではなくフラグで行う（上の行番号抽出と同じ理由 — 早期 exit は
+# 上流 printf の SIGPIPE を招き、pipefail + set -e で無言 abort する）。
 preamble_of() { # $1: プロンプト / stdout: 境界セクションより前の全行
-  printf '%s\n' "$1" | awk 'index($0, "## Execution Boundary") { exit } { print }'
+  printf '%s\n' "$1" | awk 'index($0, "## Execution Boundary") { stop = 1 } stop != 1 { print }'
 }
 IMPLEMENT_PREAMBLE="$(preamble_of "$IMPLEMENT_PROMPT")"
 expect_contains "implement: preamble も staging へ書く指示になっている" "$IMPLEMENT_PREAMBLE" "under the staging directory"
@@ -497,7 +599,11 @@ elif grep -qF "$REPO/rel-out/codex-cli/files/feature-implementation" "$TMP/argv.
   ok "相対 --output-dir でもプロンプトには絶対パスが載る"
 else
   bad "相対 --output-dir が絶対化されずプロンプトへ渡っている"
-  grep -n 'staging directory' -A 2 "$TMP/argv.log" | head -6 | sed 's/^/    | /' >&2
+  # 診断でパイプを死なせない。`grep | head` は head が先に終わると grep が SIGPIPE で
+  # 死に、pipefail + set -e が **失敗を報告している最中に** suite を打ち切る（不一致で
+  # grep が rc=1 になる経路も同じ）。一度ファイルへ落としてから読む。
+  { grep -n 'staging directory' -A 2 "$TMP/argv.log" || true; } > "$TMP/relout-diag.log"
+  head -6 "$TMP/relout-diag.log" | sed 's/^/    | /' >&2
 fi
 
 echo "== 前回の staging を消せないときの fail-loud =="
@@ -580,13 +686,10 @@ rm -f "$SYM_OUT/codex-cli/files"
 echo "== 出力モードの排他 =="
 
 set +e
-BOTH_ERR="$( (
-  TASK_TYPE=implement DESCRIPTION=d STAGING_DIR="$STAGING_FIXTURE" INLINE_OUTPUT=true
-  export TASK_TYPE DESCRIPTION STAGING_DIR INLINE_OUTPUT
-  # shellcheck source=../../scripts/adapters/adapter-common.sh
-  source "$ADAPTER_COMMON"
-  build_prompt "$PERSPECTIVE" develop
-) 2>&1 >/dev/null )"
+# gen_prompt を使う（同じ引数で両モードを指定できる）。ここで build_prompt を
+# もう一度べた書きすると、gen_prompt の環境分離（DIFF_FILE 等の unset）を持たない
+# 2 つ目の直呼び経路が生まれ、ホスト環境の値でこのケースだけが揺れる。
+BOTH_ERR="$( (gen_prompt implement "$STAGING_FIXTURE" true) 2>&1 >/dev/null )"
 BOTH_RC=$?
 set -e
 if [ "$BOTH_RC" -ne 0 ]; then
@@ -717,6 +820,9 @@ fi
 echo
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ adapter-prompt-guard verify: $FAIL 件失敗" >&2
+  # サマリーへ到達した失敗はセンチネルを立ててから終える。立てないと EXIT トラップの
+  # 「サマリー前に中断しました」が正規の失敗にも付き、途中死と区別できなくなる。
+  FF_REACHED_END=1
   exit 1
 fi
 echo "✓ adapter-prompt-guard verify: 全 $PASS 件 pass"

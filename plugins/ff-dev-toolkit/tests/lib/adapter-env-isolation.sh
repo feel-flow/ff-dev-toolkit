@@ -30,6 +30,10 @@
 #     run_isolated と同じ意味論（ホストの値は除く / ケース固有の上書きは通す）になる。
 #
 # 保証の境界（ここに書いていない保護は無い）:
+#   - **プレフィックスを持たないが呼び出し口で落としているものがある。** build_prompt を
+#     サブシェルで直呼びする suite（adapter-prompt-guard / review-diff-scope）は
+#     DIFF_FILE / STAGED_DIFF / INCLUDE_DIFF / CHANGED_FILES を各自の gen_prompt で unset
+#     する。本 lib はそれらに関与しないので、両 suite の名簿がずれても本 lib は何も言わない。
 #   - 対象は MULTI_AGENT_* と FF_TIMEOUT_* の 2 プレフィックスで、**先頭の
 #     アンダースコア 1 つを含む形**（_FF_TIMEOUT_* / _MULTI_AGENT_*）まで。後者は
 #     adapter-common.sh の Test seam（FF_TIMEOUT_KILL_GRACE / FF_TIMEOUT_REASON_FILE /

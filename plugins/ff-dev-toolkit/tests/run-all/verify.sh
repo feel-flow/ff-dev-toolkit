@@ -9,7 +9,10 @@
 # 縛っておかないと、この修正自体が静かに巻き戻る。
 #
 # 検証は fixtures/ の疑似 suite（pass / fail / fail-skip-marker / skip / skip-large /
-# not-executable、および存在しない missing）をランナーへ明示引数で渡して行う。既定の suite
+# not-executable、および存在しない missing）をランナーへ明示引数で渡して行う。高速モードの
+# 検査にはさらに pass-selftest（対の本体 pass/ が実在する = 除外される）・pass-selftest-extra
+# （`-selftest` 終端でない）・orphan-selftest（対の fixtures/orphan/ を**作らない**ことで
+# 「対なし = 除外しない」を作る）を使う。orphan/ を作ると case 16・26 の前提が崩れる。既定の suite
 # 一覧には本 suite も含まれるが、ここで呼ぶのは常に明示引数付きの実行なので再帰しない
 # （ランナー側にも入れ子の引数なし実行を拒否する歯止めがあり、case 8 で縛っている）。
 #
@@ -25,6 +28,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TESTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUNNER="$TESTS_DIR/run-all.sh"
 FIXTURES="$SCRIPT_DIR/fixtures"
+
+# 「対を持たない selftest を除外しなかった」サマリー行の文言は、case 26-A と case 27 の 2 箇所が
+# アサートする。リテラルを両方へ書き写していたため、実装の文言を変えたときに片方（変数展開形）
+# だけ追随し、もう片方（リテラルの件数形）が «間違った理由で赤い» になった（実測）。文言は
+# ここへ 1 度だけ置き、実装側に実在することを fail-closed で確かめる。
+KEPT_SELFTEST_HEAD='対になる本体 suite を持たない selftest'
+KEPT_SELFTEST_TAIL='件は除外しなかった'
+for _kept_needle in "$KEPT_SELFTEST_HEAD" "$KEPT_SELFTEST_TAIL"; do
+  /usr/bin/grep -qF -- "$_kept_needle" "$RUNNER" \
+    || { echo "✗ run-all verify: サマリー文言「${_kept_needle}」が run-all.sh に見つかりません（この検査は空振りします）" >&2; exit 1; }
+done
 
 [ -f "$RUNNER" ] || { echo "✗ run-all.sh が見つかりません: $RUNNER" >&2; exit 1; }
 
@@ -395,8 +409,9 @@ if [ "$_has_roster" -eq 1 ]; then
 else
   bad "必須 suite 名簿が消えた（環境都合の skip が黙って通る）"
 fi
-# Issue #436 / #440 で判断した一時領域依存 suite の名簿を固定する。名前を 1 行ずつ
-# 照合し、コメント内の言及を実登録と誤認しない。
+# Issue #436 / #440 で判断した一時領域依存 suite の名簿を固定する（Issue #564 で
+# adapter-prompt-guard / review-diff-scope の 2 件を追加）。名前を 1 行ずつ照合し、
+# コメント内の言及を実登録と誤認しない。
 _required_block="$(awk '
   /^REQUIRED_SUITES=\(/ { inside=1; next }
   inside && /^\)/ { exit }
@@ -407,6 +422,8 @@ for _required_tmp_suite in \
   docs-gates-runtime \
   adapter-model-args \
   adapter-sandbox-contract \
+  adapter-prompt-guard \
+  review-diff-scope \
   review-wrapper-shim \
   sweep-orphan-transcripts \
   multi-agent-timeout \
@@ -613,12 +630,29 @@ if [ "$MBCS_SELFTEST_OK" -eq 1 ]; then
 fi
 
 echo ""
-echo "== case 16: 高速モード（FF_RUN_ALL_FAST=1）が -selftest suite を除外する =="
+echo "== case 16: 高速モード（FF_RUN_ALL_FAST=1）が対を持つ -selftest suite を除外する =="
 
-# 高速モードの中心契約（Issue #600）: suite 名（親ディレクトリ名）が `-selftest` で
-# 終わる suite を実行対象から外し、残りはすべて実行する。除外は total にも skipped にも
-# 数えない — 「意図的な除外」と「環境都合の skip」を混ぜると必須 skip 判定の意味が
-# 壊れるため。除外の件数・suite 名・未検証である旨はサマリーへ明示される。
+# 前提の実測（case 16〜23・27 が依存する）: 除外判定は「`-selftest` 終端 かつ 対になる
+# 本体 suite が実在する」で導出される（ADR-031）ので、fixtures/pass の実在と
+# fixtures/orphan の不在が検査の分岐そのものを決める。誰かが fixtures/pass を消す・
+# fixtures/orphan を足すと、以下のケースは緑のまま逆側の分岐を検査し始めるため、
+# 前提をここでアサートしておく。
+if [ -f "$FIXTURES/pass/verify.sh" ]; then
+  ok "前提: fixtures/pass が実在する（pass-selftest は「対を持つ selftest」= 除外側）"
+else
+  bad "前提が崩れている: fixtures/pass が無い（pass-selftest が除外されなくなる）"
+fi
+if [ -e "$FIXTURES/orphan" ]; then
+  bad "前提が崩れている: fixtures/orphan がある（orphan-selftest が除外側へ移る）"
+else
+  ok "前提: fixtures/orphan は存在しない（orphan-selftest は「対を持たない selftest」= 実行側）"
+fi
+
+# 高速モードの中心契約（Issue #600 / #602）: suite 名（親ディレクトリ名）が `-selftest` で
+# 終わり、かつ対になる本体 suite が実在する suite を実行対象から外し、残りはすべて実行
+# する。除外は total にも skipped にも数えない — 「意図的な除外」と「環境都合の skip」を
+# 混ぜると必須 skip 判定の意味が壊れるため。除外の件数・suite 名・未検証である旨は
+# サマリーへ明示される。
 RUN_FAST=1 run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/pass-selftest/verify.sh"
 
 if [ "$RUN_RC" -eq 0 ]; then
@@ -633,7 +667,7 @@ expect_lacks '^== pass-selftest ==' "-selftest suite の見出しも出ない（
 expect_has '^suites: total=1 run=1 passed=1 failed=0 skipped=0 not-run=0$' \
   "除外 suite は total にも skipped にも数えない（環境都合の skip と別勘定）"
 expect_has '^⚡ 高速モードで selftest 1 件を除外した' "サマリーが除外件数を明示する"
-expect_has 'これらが担う検査〔ゲート検出力・一部の live 検査〕は未実施' \
+expect_has 'これらが担う検査〔対の本体 suite に対するゲート検出力' \
   "サマリーから何を検証していないかが読み取れる"
 expect_has 'pass-selftest$' "サマリーが除外した suite 名を明示する"
 expect_lacks '^All ff-dev-toolkit fixture checks passed\.$' \
@@ -686,6 +720,11 @@ else
 fi
 expect_has '実行対象が 0 件になりました' "0 件になった理由を明示する"
 expect_lacks '^All ff-dev-toolkit fixture checks passed\.$' "全体 pass を名乗らない"
+# 名指しが全件除外された回は、この警告が最も要る場面である。0 件判定の exit 1 より前に
+# 出していないと到達せず、API.md の無条件の契約（名指しが除外されたら stderr へ 1 行警告）が
+# 破れる。case 28 は本体 suite を併記した経路しか通らないので、この分岐はここでしか縛れない。
+expect_has '^⚠️  明示引数で名指しした suite のうち 1 件を高速モードが除外しました' \
+  "名指しが全件除外された回も警告する（0 件判定の exit 1 より前に出る）"
 
 echo ""
 echo "== case 20: 高速モードの除外と環境都合の skip が別勘定で報告される =="
@@ -734,17 +773,37 @@ else
 fi
 
 echo ""
-echo "== case 21: FF_RUN_ALL_FAST は値が 1 のときだけ有効 =="
+echo "== case 21: FF_RUN_ALL_FAST は値が 1 のときだけ有効（解釈できない値は警告する） =="
 
 # 値の解釈を「1 との完全一致」に固定する。非空 truthy 判定へ改悪されると、
 # FF_RUN_ALL_FAST=0 を export した利用者の「フル実行のつもり」で selftest が黙って
 # 消える — このリポジトリが最も警戒する検出力の静かな喪失になる。
-for _fast_v in "0" "" "true"; do
+#
+# 併せて警告の**発火条件**も両側から固定する（Issue #602）。`0` / 空値は通常の off なので
+# 黙って既定モードへ落とし、それ以外の非空値だけ「意図と挙動の乖離」として警告する。
+# 不在側（quiet なはずの値）を縛らないと、警告はいずれ無条件のノイズへ育つ。
+for _fast_v in "0" ""; do
   if RUN_OUT="$(FF_RUN_ALL_FAST="$_fast_v" bash "$RUNNER" \
     "$FIXTURES/pass/verify.sh" "$FIXTURES/pass-selftest/verify.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   expect_has '^FIXTURE-PASS-SELFTEST-EXECUTED$' \
     "FF_RUN_ALL_FAST='${_fast_v}' では高速モードにならない（selftest が実行される）"
   expect_lacks '^⚡' "FF_RUN_ALL_FAST='${_fast_v}' で高速モードの文言が出ない"
+  expect_lacks '解釈できない値です' "FF_RUN_ALL_FAST='${_fast_v}' は通常の off なので警告しない"
+done
+for _fast_v in "true" "2"; do
+  if RUN_OUT="$(FF_RUN_ALL_FAST="$_fast_v" bash "$RUNNER" \
+    "$FIXTURES/pass/verify.sh" "$FIXTURES/pass-selftest/verify.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+  expect_has '^FIXTURE-PASS-SELFTEST-EXECUTED$' \
+    "FF_RUN_ALL_FAST='${_fast_v}' では高速モードにならない（selftest が実行される）"
+  expect_lacks '^⚡' "FF_RUN_ALL_FAST='${_fast_v}' で高速モードの文言が出ない"
+  expect_has "FF_RUN_ALL_FAST=\"${_fast_v}\" は解釈できない値です" \
+    "FF_RUN_ALL_FAST='${_fast_v}' は解釈できない値として警告する（黙って既定モードへ落とさない）"
+  if [ "$RUN_RC" -eq 0 ]; then
+    ok "FF_RUN_ALL_FAST='${_fast_v}' は警告のみで実行は継続する（fail-safe 側のまま）"
+  else
+    bad "FF_RUN_ALL_FAST='${_fast_v}' が非 0 で終わった（警告のみのはず。rc=${RUN_RC}）"
+    dump_out
+  fi
 done
 
 echo ""
@@ -837,27 +896,46 @@ _fast_fx="${TMPDIR:-/tmp}/ff-fast-integration.$$"
 rm -rf "$_fast_fx"
 mkdir -p "$_fast_fx"
 cp "$TESTS_DIR/run-all.sh" "$_fast_fx/run-all.sh"
-_fast_self=0
-_fast_body=0
 for _fast_d in "$TESTS_DIR"/*/verify.sh; do
   [ -f "$_fast_d" ] || continue
   _fast_n="$(basename "$(dirname "$_fast_d")")"
   mkdir -p "$_fast_fx/$_fast_n"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$_fast_fx/$_fast_n/verify.sh"
   chmod +x "$_fast_fx/$_fast_n/verify.sh"
+done
+# 分類は複製木の**実体**から導出する（名簿を持たない = 実装と同じ導出規則）。コピーが
+# 終わってから走査するのは、対の本体ディレクトリが未作成の時点で selftest を判定して
+# しまうのを避けるため。
+_fast_excl=0
+_fast_orphan=0
+_fast_body=0
+_fast_excl_name=""
+_fast_orphan_name=""
+for _fast_dir in "$_fast_fx"/*/; do
+  _fast_n="$(basename "$_fast_dir")"
   case "$_fast_n" in
-    *-selftest) _fast_self=$((_fast_self + 1)) ;;
+    *-selftest)
+      if [ -f "$_fast_fx/${_fast_n%-selftest}/verify.sh" ]; then
+        _fast_excl=$((_fast_excl + 1))
+        [ -n "$_fast_excl_name" ] || _fast_excl_name="$_fast_n"
+      else
+        _fast_orphan=$((_fast_orphan + 1))
+        [ -n "$_fast_orphan_name" ] || _fast_orphan_name="$_fast_n"
+      fi
+      ;;
     *) _fast_body=$((_fast_body + 1)) ;;
   esac
 done
-# 前提: 既定一覧に selftest と本体の両方が居る（どちらかが 0 なら統合検査は成立しない）
-if [ "$_fast_self" -ge 1 ] && [ "$_fast_body" -ge 1 ]; then
-  ok "複製木に selftest ${_fast_self} 件 / 本体 ${_fast_body} 件が揃っている"
+_fast_run=$((_fast_body + _fast_orphan))
+# 前提: 既定一覧に「対を持つ selftest」「対を持たない selftest」「本体」の 3 種が揃って
+# いる（どれかが 0 なら、この統合検査はその分岐を検査していない）。
+if [ "$_fast_excl" -ge 1 ] && [ "$_fast_orphan" -ge 1 ] && [ "$_fast_body" -ge 1 ]; then
+  ok "複製木に 対あり selftest ${_fast_excl} 件 / 対なし selftest ${_fast_orphan} 件 / 本体 ${_fast_body} 件が揃っている"
 else
-  bad "複製木の構成が前提を満たさない（selftest=${_fast_self} 本体=${_fast_body}）"
+  bad "複製木の構成が前提を満たさない（対あり=${_fast_excl} 対なし=${_fast_orphan} 本体=${_fast_body}）"
 fi
 
-# 26-A: 引数なしの高速モード — 登録照合を通過し、selftest だけが除外されて全 pass
+# 26-A: 引数なしの高速モード — 登録照合を通過し、対を持つ selftest だけが除外されて全 pass
 if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP FF_RUN_ALL_FAST=1 \
   bash "$_fast_fx/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
 if [ "$RUN_RC" -eq 0 ]; then
@@ -866,11 +944,22 @@ else
   bad "既定一覧の高速モード実行が非 0（rc=${RUN_RC}）"
   dump_out
 fi
-expect_has "^⚡ 高速モードで selftest ${_fast_self} 件を除外した" \
-  "既定一覧の selftest が全件（実体と同数）除外される"
-expect_lacks '^== .*-selftest ==' "-selftest suite の見出しが 1 件も出ない"
-expect_has "^suites: total=${_fast_body} run=${_fast_body} passed=${_fast_body} failed=0 skipped=0 not-run=0$" \
-  "本体 suite がすべて実行される（実体の本体数と一致）"
+expect_has "^⚡ 高速モードで selftest ${_fast_excl} 件を除外した" \
+  "既定一覧の「対を持つ selftest」が全件（実体と同数）除外される"
+expect_has "^⚡ ${KEPT_SELFTEST_HEAD} ${_fast_orphan} ${KEPT_SELFTEST_TAIL}" \
+  "既定一覧の「対を持たない selftest」は除外されずサマリーで名指しされる（ADR-031）"
+# 明示引数の警告が既定一覧で鳴らないことを縛る。これが無いと run-all.sh 側の
+# USING_DEFAULT_SCRIPTS ガードを消しても全ケースが緑のまま通り、既定一覧の高速モード実行が
+# 毎回「明示引数で名指しした…」という端的に虚偽の警告を出すようになる（case 28 の不在側は
+# 除外 0 件の経路なのでガードへ到達せず、この退行を捕まえられない）。
+expect_lacks '^⚠️  明示引数' \
+  "既定一覧の実行では明示引数の警告を出さない（USING_DEFAULT_SCRIPTS ガードが効いている）"
+expect_lacks "^== ${_fast_excl_name} ==" \
+  "対を持つ selftest（${_fast_excl_name}）の見出しは出ない"
+expect_has "^== ${_fast_orphan_name} ==" \
+  "対を持たない selftest（${_fast_orphan_name}）は高速モードでも実行される"
+expect_has "^suites: total=${_fast_run} run=${_fast_run} passed=${_fast_run} failed=0 skipped=0 not-run=0$" \
+  "本体 + 対なし selftest がすべて実行される（実体からの導出値と一致）"
 
 # 26-B: 必須の本体 suite（markdownlint）が環境都合で skip → 高速モードでも赤
 printf '#!/usr/bin/env bash\necho "○ skip: stub（環境都合を模す）"\nexit 0\n' \
@@ -897,10 +986,67 @@ else
   bad "既定モードで必須 suite の skip が 0 で終わった"
   dump_out
 fi
-expect_has '^== mcp-state-selftest ==' "既定モードでは selftest も実行される"
+# 対を持たない selftest は高速モードでも走るので、既定モードとの差を示す見出しには
+# **対を持つ** selftest（26-A で除外された側）を使う。
+expect_has "^== ${_fast_excl_name} ==" "既定モードでは対を持つ selftest も実行される"
 expect_has '^    FF_RUN_ALL_ALLOW_SKIP="markdownlint" bash tests/run-all.sh$' \
   "既定モードの再現コマンドは従来どおり（FF_RUN_ALL_FAST を前置しない）"
 rm -rf "$_fast_fx"
+
+echo ""
+echo "== case 27: 対になる本体 suite を持たない -selftest は高速モードでも実行される =="
+
+# 除外境界の本体（Issue #602 / ADR-031）。命名規約だけで除外すると、live な検査を単独で
+# 担う selftest（release-required-selftest 等）まで消え、その検査対象を触った変更が
+# 無検査で通る。判定へ「対の実在」を足したことを、疑似 suite で両側から実測する。
+# 前提（fixtures/pass の実在・fixtures/orphan の不在）は case 16 でアサート済み。
+RUN_FAST=1 run_runner \
+  "$FIXTURES/pass/verify.sh" \
+  "$FIXTURES/pass-selftest/verify.sh" \
+  "$FIXTURES/orphan-selftest/verify.sh"
+
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "対あり除外 + 対なし実行の混在で rc=0"
+else
+  bad "対あり除外 + 対なし実行の混在が非 0 で終わった（rc=${RUN_RC}）"
+  dump_out
+fi
+expect_has '^FIXTURE-ORPHAN-SELFTEST-EXECUTED$' \
+  "対になる本体 suite が無い -selftest は高速モードでも実行される"
+expect_lacks 'FIXTURE-PASS-SELFTEST-EXECUTED' "対になる本体 suite がある -selftest は除外される"
+expect_has '^suites: total=2 run=2 passed=2 failed=0 skipped=0 not-run=0$' \
+  "対なし selftest は実行対象に数えられる（本体 1 + 対なし selftest 1）"
+expect_has '^⚡ 高速モードで selftest 1 件を除外した' "除外は対を持つ 1 件だけ"
+expect_has "^⚡ ${KEPT_SELFTEST_HEAD} 1 ${KEPT_SELFTEST_TAIL}" \
+  "除外しなかった selftest の件数と理由がサマリーに出る"
+expect_has 'orphan-selftest$' "除外しなかった selftest 名が名指しされる"
+
+# 対なし selftest だけを高速モードで渡す = 除外 0 件。実行対象 0 件（case 19）とは
+# 別の経路なので、こちらは通常どおり完走することを確かめる。
+RUN_FAST=1 run_runner "$FIXTURES/orphan-selftest/verify.sh"
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "対なし selftest 単独の高速モード実行は rc=0（0 件実行にならない）"
+else
+  bad "対なし selftest 単独の高速モード実行が非 0（rc=${RUN_RC}）"
+  dump_out
+fi
+expect_has '^FIXTURE-ORPHAN-SELFTEST-EXECUTED$' "対なし selftest が単独でも実行される"
+expect_lacks '実行対象が 0 件になりました' "対なし selftest は 0 件実行の経路へ落ちない"
+
+echo ""
+echo "== case 28: 明示引数で名指しした suite の除外は警告される =="
+
+# 明示引数にも高速モードを適用する設計（理由は run-all.sh のヘッダー: この口を適用外に
+# すると case 19 の fail-closed 経路が検査不能になる）を保ったまま、「名指ししたのに
+# 走らない」を黙って通さないことを固定する。警告の**不在**側も同時に縛る。
+RUN_FAST=1 run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/pass-selftest/verify.sh"
+expect_has '^⚠️  明示引数で名指しした suite のうち 1 件を高速モードが除外しました' \
+  "明示引数で名指しした suite が除外されたら警告する"
+expect_has 'pass-selftest$' "警告が除外された suite 名を挙げる"
+
+RUN_FAST=1 run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/orphan-selftest/verify.sh"
+expect_lacks '^⚠️  明示引数で名指しした suite' \
+  "名指しした suite が 1 件も除外されなければ警告しない"
 
 echo ""
 if [ "$FAIL" -gt 0 ]; then

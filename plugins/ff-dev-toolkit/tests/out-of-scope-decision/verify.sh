@@ -28,6 +28,13 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 SKILL="$PLUGIN_ROOT/skills/out-of-scope-issue/SKILL.md"
 
+# 実行検査数の侵食ガード（TESTING.md の EXPECTED_CHECKS 方針）。針を 1 本消しても
+# 残りが緑のまま「全 N 件 pass」で通るため、総数を別途固定する。検査を増減したときの
+# 更新箇所は 2 つ: ok / bad を増減させた箇所（DECISION_CASES / INVALID_PROBES /
+# BATCH_CASES の行の増減を含む）と、この宣言。BATCH_CASES の下限 15 行ガードは行の
+# 削除だけを見るので、表の外にある検査行の削除はこちらが受け持つ。
+EXPECTED_CHECKS=52
+
 PASS=0
 FAIL=0
 
@@ -410,9 +417,16 @@ else
 fi
 
 echo
+# 検査総数の侵食ガード。全検査成功ラン（FAIL=0）に限って完全一致を要求する — 失敗
+# 経路は後続検査を飛ばすことがあり、そのランはこのガード無しですでに赤いため。
+if [[ "$FAIL" -eq 0 && "$PASS" -ne "$EXPECTED_CHECKS" ]]; then
+  echo "✗ out-of-scope decision verify: 実行検査数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査が黙って増減している（増減時は EXPECTED_CHECKS も更新すること）" >&2
+  exit 1
+fi
+
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ out-of-scope decision verify: $FAIL 件失敗 / $PASS 件成功" >&2
   exit 1
 fi
 
-echo "✓ out-of-scope decision verify: 全 $PASS 件 pass"
+echo "✓ out-of-scope decision verify: 全 $PASS 件 pass（検査総数ガード ${EXPECTED_CHECKS} 件と一致）"
