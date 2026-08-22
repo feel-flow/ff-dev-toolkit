@@ -330,6 +330,16 @@ else
     # --resume 契約（Issue #586）。8観点中7成功・1失敗、HEAD/設定/観点定義/集合変更、
     # 破損キャッシュ、統合レポートのreused/executedを逐次stub CLIで実測する。
     "$SCRIPT_DIR/multi-agent-resume/verify.sh"
+    # 前回実行の観点ファイルが「今回の結果」として読まれないことの実挙動検査
+    # （Issue #537 / #654）。プラン外 × orchestrator 自筆の結果を <cli>/previous/ へ
+    # 退避し、利用者の .md・プラン外 CLI・非 .md・サブディレクトリには触れず名指しだけ
+    # する、previous/ の symlink は追わずリンクを消す、<cli> が自分以外を指す symlink
+    # （出力先の内外どちらでも）なら**何も書かず消さずに**中断する、を stub CLI の
+    # 実走で固定する（部分 / 完全 resume の再利用分を自分で退避しないことを含む。
+    # 一時 git リポジトリ + stub CLI で 9 回実走、単独で〜30 秒）。
+    # resume と同じ「前回実行との関係」を扱うので直後に置く。
+    # 環境都合で skip すると退避の検出力が丸ごと消えるため REQUIRED_SUITES に載せる。
+    "$SCRIPT_DIR/multi-agent-stale-outputs/verify.sh"
     # 統合レポートの CRITICAL_BLOCK 判定の構造検査（Issue #272）と観点別段階化の
     # 契約検査（Issue #645）。一時 git リポジトリ + stub CLI で orchestrator を
     # ケースごとに実走する（1 ケース数秒）。実 CLI・ネットワーク・課金は伴わない。
@@ -373,6 +383,11 @@ else
     # 直後に置くことを優先し、安価な順の例外として扱う。
     "$SCRIPT_DIR/mcp-typecheck-selftest/verify.sh"
     "$SCRIPT_DIR/mcp-vitest/verify.sh"
+    # docs 走査マスクの awk 版（tests/lib/docs-scan.sh）と TS 版（mcp/src/utils.ts）の
+    # 出力を共有 fixture で機械照合する（Issue #528）。TS 側は mcp/node_modules の
+    # esbuild で一時領域へ束ねて走らせるため、同じ依存を借りる mcp 系の並びに置く。
+    # node / node_modules / 一時領域が無ければ ○ skip（単体で〜1 秒）。
+    "$SCRIPT_DIR/docs-scan-mirror/verify.sh"
     # docs-template/scripts/ace の型検査（Issue #358）。vitest は esbuild の transpile
     # のみで型を見ないため、型エラーは下の ace-scripts-vitest では検出できない。
     # vitest より前に置くのは mcp-dist-gate → mcp-vitest と同じ理由 — 型が壊れている
@@ -438,6 +453,10 @@ REQUIRED_SUITES=(
   # mcp/node_modules が要る。型検査ゲート 2 系統ぶんがここに乗っている（#372）
   mcp-dist-gate
   mcp-vitest
+  # node + mcp/node_modules が要る。awk 版 / TS 版のマスクが乖離していないことは
+  # 他のどの suite も見ておらず、skip すると「2 回起きた片側ドリフト」の検出力が
+  # 丸ごと消える（Issue #528）
+  docs-scan-mirror
   mcp-typecheck
   mcp-typecheck-selftest
   ace-scripts-typecheck
@@ -471,6 +490,11 @@ REQUIRED_SUITES=(
   multi-agent-timeout
   # 実行中のリビジョン変化を検出する契約は、この suite 以外どこも守っていない。
   multi-agent-revision-guard
+  # 前回結果の退避契約（Issue #537 / #654）。他の suite は「今回のプランの結果が
+  # 揃うか」しか見ないため、退避が丸ごと外れても緑のまま通る。加えて、この suite だけが
+  # 「<cli> が外向き symlink のとき外部を消さない・書かない」を実測する（#722 で残りを
+  # 塞ぐまでの唯一の実行時検査）。一時領域不足で消える場合は明示許可を要求する。
+  multi-agent-stale-outputs
   # out-of-scope 契約ゲート（routing / decision）の検出力 selftest。代替の検査が
   # 無く、perl・一時領域の都合で消える場合は明示許可を要求する（#499）。
   out-of-scope-routing-selftest

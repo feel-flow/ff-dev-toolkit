@@ -50,6 +50,25 @@
 #   G25. keep-fences がフェンス内のマーカーを検査しないこと → 赤（不変条件の固定。
 #        「マスクしないならフェンス検出自体を省く」素通し実装だと、フェンス内の `<!--` が
 #        後続の mermaid 矢印 `-->` と対になり、間の claim 記載が落ちて緑になる）
+#   G28. 正準形の記載を他文書に残したまま 1 文書だけ装飾付き（`**N** suite` /
+#        `` `N` suite ``）へ書き換える → 赤（Issue #529 AC-1）。装飾を許さない実装では
+#        hits が 0 にならない（正準形が他文書に残る）ため空振りガードも発火せず、
+#        **緑のまま見逃す** = このケースが「赤を期待しましたが緑」で落ちる
+#   G29. 装飾しても別概念（`後続 N suite`）・版番号・日付は照合しない → 緑
+#        （Issue #529 AC-2。行単位の narrowing が装飾で崩れていないこと）
+#   G30. 全 claim（件数はゲートから導出）を装飾付きへ書き換える → 赤（Issue #529 AC-3）。claim ごとの
+#        検出力を 1 本ずつ測る。**G28 と形が違う点**: 対象文書を書かない（記載が別文書へ
+#        移動しても追随不要）ぶん走査対象すべてを書き換えるため正準形が 1 件も残らず、
+#        装飾を許さない実装では「空振り」で赤になる。run_case の理由 ERE に
+#        「件が実体」を要求して、空振りではなく**不一致として**赤くなったかを見る
+#        （AC-1 の「正準形が残った状態」は G28 が担う。なお `計 N スキル` は
+#        実リポジトリ全体で 1 件しか無く、この claim では正準形を残す形自体が作れない）
+#   G31. 値は変えず装飾だけを足す（`**N** suite` / `` `N` suite ``）→ 緑。赤ケースだけ
+#        では「装飾があれば理由を問わず赤」への退行（照合前に数値を取り出す処理が装飾を
+#        剥がさなくなる形）が全部緑で通ってしまうため、正しい値の pin をここで持つ
+#   G32. 一致文字列に当たるファイルを cwd に置いた状態でも結果が変わらない → 緑。
+#        旧実装の `for hit in $(...)` は単語分割に加えパス名展開も通るため、装飾を許した
+#        一致が cwd のファイル名へ化けて、正しい記載が赤になる
 #   G11. docs/MASTER.md が無いツリー → 行頭 `○ skip` で緑
 #
 # 「1 一致に数値が 2 つ以上」の claim 定義誤りは fixture から到達できない（claim の
@@ -197,6 +216,20 @@ assert_fence_only() { # $1=fixture ファイル $2=対象 ERE $3=ケース名
     return 1
   fi
   return 0
+}
+
+# AC-1 の判別力の前提（正準表現の記載が**別文書に**残っている）を自己検証する。
+# 残っていないと空振りガードが発火し、装飾を許さない実装でも赤になるため、
+# 「装飾された記載を見逃す」ことを測れないまま通ってしまう。
+#
+# `grep -q` は最初の一致で終了するため上流の awk が SIGPIPE で落ち、`set -o pipefail`
+# の下では**一致していても非 0**になる（assert_fence_only と同じく件数で受ける）。
+assert_canonical_elsewhere() { # $1=正準形が残っているはずのファイル $2=ERE $3=ケース名
+  local hits
+  hits="$(ff_docs_claim_body "$1" | grep -cE "$2" || true)"
+  if [ "${hits:-0}" -ne 0 ]; then return 0; fi
+  bad "$3: 判別力の前提が崩れています（${1##*/} に正準表現 ${2} の記載が残っていません）"
+  return 1
 }
 
 echo "== G1. baseline =="
@@ -391,6 +424,114 @@ perl -i -pe 's/^## Changelog$/```text\n<!-- 図中の注記例\n```\n\n本文に
 assert_present "$TMP/root/docs/01-context/PROJECT.md" "999 suite" "G25" || true
 run_case "G25 フェンス内の <!-- が外のマーカーと対にならず、間の記載を走査する" red "suite 数: [0-9]+ 件が実体"
 
+echo "== G28. 装飾付きの件数記載を検出する（Issue #529 AC-1）=="
+# 正準表現の記載を他文書（ARCHITECTURE.md）に残したまま、PROJECT.md の散文だけを
+# 装飾付きへ書き換える。装飾を許さない実装では、この記載は照合対象に入らないうえ
+# hits も 0 にならない（正準形が残る）ため、空振りガードも発火せず緑のまま通る。
+make_fixture
+cp "$TMP/root/docs/01-context/PROJECT.md" "$TMP/g28a-before.md"
+assert_canonical_elsewhere "$TMP/root/docs/02-design/ARCHITECTURE.md" '[0-9]+ suite' "G28a" || true
+perl -i -pe 's/([0-9]+) suite/"**" . ($1 + 1) . "** suite"/ge' "$TMP/root/docs/01-context/PROJECT.md"
+assert_changed "$TMP/g28a-before.md" "$TMP/root/docs/01-context/PROJECT.md" "G28a" || true
+run_case "G28a 強調付き（**N** suite）のずれを検出する" red "suite 数: [0-9]+ 件が実体"
+
+make_fixture
+cp "$TMP/root/docs/01-context/PROJECT.md" "$TMP/g28b-before.md"
+assert_canonical_elsewhere "$TMP/root/docs/02-design/ARCHITECTURE.md" '[0-9]+ suite' "G28b" || true
+perl -i -pe 's/([0-9]+) suite/"`" . ($1 + 1) . "` suite"/ge' "$TMP/root/docs/01-context/PROJECT.md"
+assert_changed "$TMP/g28b-before.md" "$TMP/root/docs/01-context/PROJECT.md" "G28b" || true
+run_case "G28b コードスパン付き（\`N\` suite）のずれを検出する" red "suite 数: [0-9]+ 件が実体"
+
+echo "== G29. 装飾しても別概念・版番号・日付は照合しない（Issue #529 AC-2）=="
+# 装飾を許したぶん、行単位の narrowing（除外列 `後続`）が効かなくなっていないかを見る。
+# 挿入する数値は実体から到達し得ない 999 にする（実体と偶然一致して緑になるのを防ぐ）。
+make_fixture
+perl -i -pe 's/^## Changelog$/後続 **999** suite の実行を止めた（別概念）。\n\nバージョン **v0.44.0** は `2026-08-22` に付けた。\n\n$&/' \
+  "$TMP/root/docs/07-project-management/RISKS.md"
+assert_present "$TMP/root/docs/07-project-management/RISKS.md" "後続 **999** suite" "G29" || true
+run_case "G29 装飾付きの 後続 N suite・版番号・日付は照合しない" green
+
+echo "== G30. 全 claim で装飾付きの記載を検出する（Issue #529 AC-3）=="
+# name|perl 置換式|期待する理由（ERE）。G13 と同じ制約（シングルクォート必須・`|` 不可）。
+DECORATED_MUTATIONS=(
+  'プラグイン数|s/([0-9]+) プラグイン/"**" . ($1 + 1) . "** プラグイン"/ge|プラグイン数: [0-9]+ 件が実体'
+  '総スキル数（計 N スキル）|s/計 ([0-9]+) スキル/"計 **" . ($1 + 1) . "** スキル"/ge|総スキル数（計 N スキル）: [0-9]+ 件が実体'
+  '総スキル数（N プラグイン・N スキル）|s/プラグイン・([0-9]+) スキル/"プラグイン・**" . ($1 + 1) . "** スキル"/ge|総スキル数（N プラグイン・N スキル）: [0-9]+ 件が実体'
+  'ff-dev-toolkit スキル数|s/ff-dev-toolkit（([0-9]+) スキル/"ff-dev-toolkit（**" . ($1 + 1) . "** スキル"/ge|ff-dev-toolkit スキル数: [0-9]+ 件が実体'
+  'suite 数|s/([0-9]+) suite/"**" . ($1 + 1) . "** suite"/ge|suite 数: [0-9]+ 件が実体'
+  'MCP ツール数|s/([0-9]+) ツール/"**" . ($1 + 1) . "** ツール"/ge|MCP ツール数: [0-9]+ 件が実体'
+  '初期セット件数|s/初期セット ([0-9]+) ファイル/"初期セット **" . ($1 + 1) . "** ファイル"/ge|初期セット件数: [0-9]+ 件が実体'
+  'ACE refine 目安|s/refine 目安 ([0-9]+)/"refine 目安 **" . ($1 + 1) . "**"/ge|ACE refine 目安: [0-9]+ 件が実体'
+  'ACE ブロック上限|s/ブロック上限 ([0-9]+)/"ブロック上限 **" . ($1 + 1) . "**"/ge|ACE ブロック上限: [0-9]+ 件が実体'
+  'ACE 1 エントリ行数|s/エントリ ([0-9]+) 行/"エントリ **" . ($1 + 1) . "** 行"/ge|ACE 1 エントリ行数: [0-9]+ 件が実体'
+  'ACE 昇格 Helpful|s/Helpful >= ([0-9]+)/"Helpful >= **" . ($1 + 1) . "**"/ge|ACE 昇格 Helpful: [0-9]+ 件が実体'
+)
+# claim の件数は**ゲート側から導出**する（この suite に 11 と書かない）。ゲートへ
+# claim を足して変異を足し忘れると、その claim だけ装飾許容が測られないまま通る。
+# awk の失敗を `|| true` で受ける（`set -e` で死ぬと、下の fail-closed メッセージへ
+# 到達しないまま selftest が黙って中断する）。数値以外は 0 = 導出失敗として扱う。
+GATE_CLAIM_COUNT="$(awk '/^CLAIMS=\(/ { s = 1; next } s && /^\)/ { exit } s && /%N%/ { n++ } END { print n + 0 }' "$TARGET" || true)"
+case "${GATE_CLAIM_COUNT}" in
+  ''|*[!0-9]*) GATE_CLAIM_COUNT=0 ;;
+esac
+if [ "${GATE_CLAIM_COUNT}" -eq 0 ]; then
+  bad "G30 ゲートの claim 件数を導出できません（CLAIMS 配列の書式が変わった可能性。fail-closed）"
+elif [ "${#DECORATED_MUTATIONS[@]}" -eq "${GATE_CLAIM_COUNT}" ]; then
+  ok "G30 装飾変異をゲートの全 ${GATE_CLAIM_COUNT} claim ぶん持っている"
+else
+  bad "G30 装飾変異が ${#DECORATED_MUTATIONS[@]} 件（ゲートの claim は ${GATE_CLAIM_COUNT} 件）— claim を足したらここも足すこと"
+fi
+for dm in "${DECORATED_MUTATIONS[@]}"; do
+  dm_name="$(printf '%s' "${dm}" | cut -d'|' -f1)"
+  dm_mut="$(printf '%s' "${dm}" | cut -d'|' -f2)"
+  dm_why="$(printf '%s' "${dm}" | cut -d'|' -f3)"
+  make_fixture
+  find "$TMP/root/docs" -name '*.md' -type f -exec perl -i -pe "${dm_mut}" {} +
+  run_case "G30 ${dm_name} の記載を装飾付きで +1" red "${dm_why}"
+done
+
+echo "== G31. 実体と一致する値は装飾されていても緑（Issue #529 レビュー指摘）=="
+# 値は変えず**装飾だけ**を足す（`$1` をそのまま使い、期待値をこの suite に直書きしない）。
+# G28/G30 の赤ケースだけでは「装飾があれば理由を問わず赤」へ退行しても全部緑で通ってしまう。
+# 具体的には、照合前に一致から数値だけを取り出す処理（`grep -oE '[0-9]+'`）が装飾を
+# 剥がさなくなる形の退行を、この 2 件が捕まえる。
+make_fixture
+cp "$TMP/root/docs/02-design/ARCHITECTURE.md" "$TMP/g31a-before.md"
+find "$TMP/root/docs" -name '*.md' -type f -exec perl -i -pe 's/([0-9]+) suite/"**" . $1 . "** suite"/ge' {} +
+assert_changed "$TMP/g31a-before.md" "$TMP/root/docs/02-design/ARCHITECTURE.md" "G31a" || true
+run_case "G31a 正しい値へ強調だけ足す（**N** suite）" green
+
+make_fixture
+cp "$TMP/root/docs/02-design/ARCHITECTURE.md" "$TMP/g31b-before.md"
+find "$TMP/root/docs" -name '*.md' -type f -exec perl -i -pe 's/([0-9]+) suite/"`" . $1 . "` suite"/ge' {} +
+assert_changed "$TMP/g31b-before.md" "$TMP/root/docs/02-design/ARCHITECTURE.md" "G31b" || true
+run_case "G31b 正しい値へコードスパンだけ足す（\`N\` suite）" green
+
+echo "== G32. 一致文字列をパス名展開に晒さない（Issue #529 レビュー指摘）=="
+# 旧実装 `for hit in $(... | tr ' ' '_')` は単語分割に加えて**パス名展開**も通る。装飾を
+# 許した一致 `**85**_suite` は glob として `*85*_suite` 相当に振る舞い、cwd に当たる
+# ファイルがあるとその名前へ化ける（化けた先の数値が読まれ、正しい記載が赤になる）。
+# デコイ名に埋める件数は fixture から導出する（この suite に数値を直書きしない）。
+make_fixture
+find "$TMP/root/docs" -name '*.md' -type f -exec perl -i -pe 's/([0-9]+) suite/"**" . $1 . "** suite"/ge' {} +
+GLOB_CWD="$TMP/globcwd"
+rm -rf "$GLOB_CWD"
+mkdir -p "$GLOB_CWD"
+n_suites="$(find "$TMP/root/plugins/ff-dev-toolkit/tests" -mindepth 2 -maxdepth 2 -name verify.sh -type f | wc -l | tr -d ' ')"
+case "${n_suites}" in
+  ''|0) bad "G32 fixture の suite 数を導出できません（デコイのファイル名を作れません）" ;;
+esac
+: > "$GLOB_CWD/999${n_suites}_suite"
+rc=0
+( cd "$GLOB_CWD" && FF_DOCS_REPO_ROOT="$TMP/root" bash "$TARGET" ) > "$TMP/out.log" 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "G32 一致文字列に当たるファイルが cwd にあっても結果が変わらない（glob 展開しない）"
+else
+  bad "G32 cwd のファイル名に引きずられて赤になりました（rc=${rc}。一致をパス名展開に晒している）"
+  # 診断出力の非 0 で selftest 全体を中断させない（G26 / G27 と同型）
+  grep '✗' "$TMP/out.log" | sed 's/^/    /' | head -6 >&2 || true
+fi
+
 echo "== G26. マスク出力の直接検査: コードスパン内の <!-- は開始でない（Issue #527 AC-1）=="
 # G18 は「間の記載が走査される」を本体経由で見るが、赤の理由がマーカーの有無に
 # よらないため、マスクそのものの判別力はここで固定する。fixture は here-doc を使わず
@@ -513,7 +654,19 @@ fi
 
 echo ""
 echo "結果: pass=${PASS} fail=${FAIL}"
-if [ "$FAIL" -gt 0 ]; then
+
+# 検査総数ガード: ケースが黙って消える（条件分岐で丸ごと飛ぶ・編集で落ちる）変更を
+# 捕まえる。健全な実行では assert_* は 1 件も bad を出さないので、総数 = ケース数。
+# ケースを増減したら**この値も同時に更新する**。
+EXPECTED_CHECKS=56
+TOTAL=$((PASS + FAIL))
+COUNT_MISMATCH=0
+if [ "$TOTAL" -ne "$EXPECTED_CHECKS" ]; then
+  # FAIL の有無に関わらず報告する（消えたケースと落ちたケースが相殺して隠れないように）
+  echo "✗ 検査総数が ${TOTAL} 件です（期待 ${EXPECTED_CHECKS} 件）。ケースの増減時は EXPECTED_CHECKS も更新すること" >&2
+  COUNT_MISMATCH=1
+fi
+if [ "$FAIL" -gt 0 ] || [ "$COUNT_MISMATCH" -ne 0 ]; then
   exit 1
 fi
 if [ "$PASS" -eq 0 ]; then

@@ -19,6 +19,22 @@
  * ディレクトリ直下の `*.md` を走査する。どちらも非再帰で、`playbook/archive/` は原文を
  * verbatim 保全する場所であり、旧形式であることが正常なので**巻き込まない**。
  *
+ * **検証範囲（Issue #617）**。本ゲートが赤にするのは次の 5 つだけである:
+ * (1) allowlist に無いエントリに旧テーブル形式のマーカーが残っていること、
+ * (2) 認識した ID の形状が `ACE_ENTRY_ID_SHAPE` を外れること、
+ * (3) `###` + `ACE-` で始まる（行頭と `###` 直後の空白は問わない）のに、正準の見出し形
+ *     （`### <ID>:`）へ一致しない行があること、
+ * (4) 同じ ID のエントリ見出しが走査対象に 2 つ以上あること、
+ * (5) 未閉フェンス・フェンス内の正準形見出し（分割の前提が壊れる形）。
+ *
+ * 逆に、**コンパクト正準フォーマットの構造そのものは検証しない** — anchor 行
+ * （`<a id="ace-…"></a>`）・メタ 4 行・終端 `---` のいずれも**存在を要求しない**ので、
+ * それらを 1 つも持たない「本文だけ」のエントリは本ゲートを通る。判定軸が旧形式マーカーの
+ * **不在**だからで、「新規追記が正準フォーマットであること」まで機械保証していると
+ * 読まないこと（本ゲートの保証は「旧テーブル形式の新規追記を止める」まで）。構造の
+ * 検証が要るなら別ゲートとして足す（行数バジェットに基づくブロック範囲の解釈は
+ * `ace-refine-report.ts` が既に持っている）。
+ *
  * 実行例:
  * - 形式ゲート: npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
  * - 全 ID 一覧: npx --yes tsx scripts/ace/check-entry-format.ts --list-entry-ids docs/08-knowledge/playbook
@@ -55,6 +71,58 @@ const DEFAULT_ALLOWLIST_BASENAME = "legacy-format-allowlist.txt";
  * スクリプト間の分裂が再発する）。
  */
 const ACE_ENTRY_HEADER_LINE = new RegExp(entryHeadingSource("capture-id"), "u");
+/**
+ * 「エントリ見出しのつもりで書かれた行」の候補を判定する 2 つの接頭辞（`###` と `ACE-`。
+ * 行頭の空白と `###` 直後の空白は許容する — `isEntryHeadingCandidate` を参照）。
+ * **判定の広い側**で、ここに載って `ACE_ENTRY_HEADER_LINE` に載らない行が形状違反になる
+ * （Issue #617）。
+ *
+ * `ACE_ENTRY_ID_SHAPE` の検査は「認識された ID」にしか掛からないため、`### ACE-1.:` の
+ * ように**認識器の文法から外れた**見出しは、エントリとして数えられないまま本文が直前の
+ * エントリへ吸収され、形状検査にすら到達しなかった。直前が allowlist 済みなら旧形式
+ * マーカー入りでも exit 0 になる（#318 / #339 が閉じた「認識して数えるが不正と言わない」
+ * 穴の、「認識すらされない」変種）。空白に寛容な接頭辞判定で広く拾えば、認識器を緩めずに
+ * fail-loud へ落とせる — 認識を広げると件数ゲート・refine・reuse の集計まで動くので、
+ * 広げるのは**この診断だけ**にする。
+ *
+ * フェンス空白化済みのテキストに対して使う。テンプレートのプレースホルダ
+ * （`### ACE-XXX:`）はフェンス内に書く規約なので空白化で消える — 逆に言えば、フェンスの
+ * 外に書いたプレースホルダはここで赤くなるのが正しい（そのままだと吸収を起こす）。
+ *
+ * **正規表現ではなく素の接頭辞にしてある**。ID 文法を 1 文字も含まないことが、この定数が
+ * `entryHeadingSource` の第 2 の実装**ではない**ことを構文レベルで示す（規則を書き写すと
+ * #318 のスクリプト間分裂が再発する）。ここが持つ知識は「見出しは `###` で始まり `ACE-`
+ * が続く」だけで、その先の妥当性判定はすべて共有の認識器へ委ねる。
+ */
+const ENTRY_HEADING_LEVEL_PREFIX = "###";
+/** 見出しレベルの直後に来る、エントリ ID の共通接頭辞。 */
+const ENTRY_HEADING_CANDIDATE_PREFIX = "ACE-";
+
+/**
+ * 「エントリ見出しのつもりで書かれた行」か（判定の広い側）。
+ *
+ * **行頭の空白と `###` 直後の空白の有無を許す**のが認識器（`ACE_ENTRY_HEADER_LINE`）との
+ * 差である。`   ### ACE-1-1:`（インデント）も `###ACE-1-1:`（空白なし）も、書き手は
+ * エントリ見出しのつもりだが認識器は取らない = 吸収を起こす形なので、候補としては拾って
+ * 形状違反に落とす。**認識器の側は生の行のまま**にしておくこと — こちらも空白を許すと、
+ * 吸収を起こす形が「正常なエントリ」として通り、件数ゲート・refine・reuse の分割境界だけが
+ * 食い違う（沈黙する方向への悪化で、この診断を足した意味が消える）。
+ *
+ * `####` 以上は候補にならない。エントリ見出しは `###` 固定であり、本文中の小見出しまで
+ * 巻き込むと、正常なエントリを「直すべき箇所」として名指しする偽陽性になる。除外は
+ * **専用の分岐ではなく構造で効く** — `###` を消費した残りが `#` で始まり、`trimStart` は
+ * 空白しか落とさないので `ACE-` へ届かない。`#` を落とす向きの変更（`replace(/^#+/, "")`
+ * のような「単純化」）はこの除外を静かに壊すため、`#### ACE-…` が緑のままであることを
+ * テストで固定してある。
+ */
+function isEntryHeadingCandidate(line: string): boolean {
+  const trimmed = line.trimStart();
+  if (!trimmed.startsWith(ENTRY_HEADING_LEVEL_PREFIX)) {
+    return false;
+  }
+  const afterLevel = trimmed.slice(ENTRY_HEADING_LEVEL_PREFIX.length);
+  return afterLevel.trimStart().startsWith(ENTRY_HEADING_CANDIDATE_PREFIX);
+}
 
 /** 旧テーブル形式のメタ表ヘッダ行（`| フィールド | 値 |`）。 */
 const FIELD_TABLE_HEADER = /^\|\s*フィールド\s*\|/mu;
@@ -111,6 +179,94 @@ export function splitEntries(content: string): PlaybookEntry[] {
     }
   }
   return entries.map((entry) => ({ id: entry.id, body: entry.bodyLines.join("\n") }));
+}
+
+/** 認識された見出し 1 件。line は 0-origin（利用側で +1 して提示する）。 */
+export type CanonicalEntryHeading = Readonly<{
+  readonly id: RecognizedAceEntryId;
+  readonly line: number;
+}>;
+
+/** 見出しのつもりだが認識されない行 1 件。line は 0-origin。 */
+export type MalformedEntryHeading = Readonly<{
+  readonly line: number;
+  readonly text: string;
+}>;
+
+/** scanEntryHeadings の結果。両者は同じ 1 回の走査から出る（行番号の基準が揃う）。 */
+export type EntryHeadingScan = Readonly<{
+  readonly canonical: readonly CanonicalEntryHeading[];
+  readonly malformed: readonly MalformedEntryHeading[];
+}>;
+
+/**
+ * エントリ見出しの候補行を 1 回走査し、認識された見出し（ID + 行番号）と、見出しの
+ * つもりだが正準形（`### <ID>:`）へ一致しない行へ振り分ける（Issue #617）。
+ *
+ * 引数は**フェンス空白化済み**（かつ HTML コメント空白化済み）のテキストであること。
+ * 生の本文を渡すと、フェンス内の例示やコメント内の追記例まで違反として名指ししてしまう。
+ * 空白化は文字数と改行位置を保つので、`line` はそのまま原文の行番号として使える。
+ *
+ * 両者を**同じ走査**から出すのは、重複 ID の報告位置と形状違反の報告位置が同じ行基準で
+ * あることを構造的に保証するため（別々に数えると、片方だけがフェンスや HTML コメントの
+ * 扱いを変えたときに「20 行目」が別の行を指す）。
+ *
+ * `### ACE-337--1:` のように**認識はされる**が形状が不正な ID は `malformed` には載らない
+ * （`ACE_ENTRY_HEADER_LINE` に一致するため `canonical` 側へ入る）。あちらは
+ * `ACE_ENTRY_ID_SHAPE` の検査が拾うので、二重報告にはならない。
+ */
+export function scanEntryHeadings(cleaned: string): EntryHeadingScan {
+  const canonical: CanonicalEntryHeading[] = [];
+  const malformed: MalformedEntryHeading[] = [];
+  const lines = cleaned.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (!isEntryHeadingCandidate(line)) {
+      continue;
+    }
+    const match = line.match(ACE_ENTRY_HEADER_LINE);
+    if (match?.[1]) {
+      canonical.push({ id: asRecognizedAceEntryId(match[1]), line: index });
+      continue;
+    }
+    malformed.push({ line: index, text: line.trimEnd() });
+  }
+  return { canonical, malformed };
+}
+
+/**
+ * `scanEntryHeadings` の malformed だけを取り出す**テスト向けの薄いラッパ**。
+ * 本番経路（`main`）は `scanEntryHeadings` を直接呼び、canonical 側も同時に使う。
+ */
+export function findMalformedEntryHeadings(cleaned: string): readonly MalformedEntryHeading[] {
+  return scanEntryHeadings(cleaned).malformed;
+}
+
+/** エントリ ID の出現位置 1 件（1-origin の行番号）。 */
+export type EntryLocation = Readonly<{
+  readonly file: string;
+  readonly line: number;
+}>;
+
+/**
+ * 出現位置を `coding.md: 5 行目 / process.md: 7 行目` の形へ整形する（Issue #617）。
+ * 同一ファイル内の連続する出現はファイル名をまとめる（`testing.md: 20 行目 / 41 行目`）。
+ * ファイル名だけだと同一ファイル内の重複で「2 箇所: testing.md, testing.md」となり、
+ * どこを直せばよいか分からないため、行番号まで出す。
+ */
+export function formatEntryLocations(locations: readonly EntryLocation[]): string {
+  const groups: { file: string; lines: number[] }[] = [];
+  for (const location of locations) {
+    const last = groups[groups.length - 1];
+    if (last && last.file === location.file) {
+      last.lines.push(location.line);
+      continue;
+    }
+    groups.push({ file: location.file, lines: [location.line] });
+  }
+  return groups
+    .map((group) => `${group.file}: ${group.lines.map((line) => `${String(line)} 行目`).join(" / ")}`)
+    .join(" / ");
 }
 
 /**
@@ -337,8 +493,14 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
   const shapeViolations: string[] = [];
   const unclosedFenceFiles: string[] = [];
   const fencedHeadingViolations: string[] = [];
+  const malformedHeadingViolations: string[] = [];
   const seenLegacy = new Set<string>();
   const seenIds = new Set<string>();
+  // ID → 出現箇所（走査順）。重複を検出したうえで**どこにあるか**まで出す（Issue #617）。
+  // Set の size 差分だけだと「どれが重複か」が出ず、84 エントリの Playbook では
+  // 追記者が自力で突き止められない。同一ファイル内の重複もあるのでファイル名だけでは
+  // 足りず、行番号まで持つ（scanEntryHeadings が形状違反と同じ走査で出す）。
+  const idLocations = new Map<string, { file: string; line: number }[]>();
 
   for (const filePath of filesToScan) {
     let content: string;
@@ -376,6 +538,24 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
           fencedHeadings.map((h) => `${h.id}: ${String(h.line + 1)} 行目`).join(" / "),
       );
     }
+    // 見出し行の走査は 1 回だけ。正準形へ一致しない `### ACE-` 行は、エントリとして
+    // 数えられないまま本文を直前のエントリへ吸収させるので、記録して続行し（他の違反も
+    // 同時に出す）終了判定で赤にする。認識された側は重複 ID の出現位置に使う。
+    const headingScan = scanEntryHeadings(fenceScan.text);
+    if (headingScan.malformed.length > 0) {
+      malformedHeadingViolations.push(
+        `${path.basename(filePath)}: ` +
+          headingScan.malformed
+            .map((heading) => `${String(heading.line + 1)} 行目: ${heading.text}`)
+            .join(" / "),
+      );
+    }
+    for (const heading of headingScan.canonical) {
+      idLocations.set(heading.id, [
+        ...(idLocations.get(heading.id) ?? []),
+        { file: path.basename(filePath), line: heading.line + 1 },
+      ]);
+    }
     for (const entry of splitEntries(content)) {
       seenIds.add(entry.id);
       if (!ACE_ENTRY_ID_SHAPE.test(entry.id)) {
@@ -401,7 +581,14 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
   // 「ACE-9-9 を allowlist から削除してください」という**誤った掃除案内**になる。
   // 未閉フェンスのファイルをスキップした場合も出さない — seenIds が不完全なので
   // missing の計算が「実在する ID を削除してください」という誤案内になる。
-  if (shapeViolations.length === 0 && unclosedFenceFiles.length === 0) {
+  // 正準形を外れた見出し（Issue #617）も同じ理由で抑制する — その見出しのエントリは
+  // 数えられておらず seenIds に載らないため、live に居るのに missing として案内される。
+  // ID 重複はこの条件へ加えない（seenIds は不完全にならず、missing/stale の計算は正しい）。
+  if (
+    shapeViolations.length === 0 &&
+    unclosedFenceFiles.length === 0 &&
+    malformedHeadingViolations.length === 0
+  ) {
     const stale = allowlist.filter((id: string) => seenIds.has(id) && !seenLegacy.has(id));
     const missing = allowlist.filter((id: string) => !seenIds.has(id));
     if (stale.length > 0) {
@@ -438,6 +625,35 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
     );
   }
 
+  if (malformedHeadingViolations.length > 0) {
+    console.error(
+      "⚠ `### ACE-` で始まるのにエントリ見出しとして認識されない行があります。" +
+        "この行はエントリの境界にならず、本文が直前のエントリへ**吸収**されます" +
+        "（件数からも消え、旧形式マーカーの検査も直前のエントリの allowlist 判定に" +
+        "乗ってしまいます）。見出しを `### <ID>: <タイトル>` の形（ID は " +
+        "`ACE-<番号>-<連番>`。行頭の空白と `###` 直後の空白の省略も認識されません）へ" +
+        "直してください。テンプレートのプレースホルダならコードフェンスで囲みます:\n- " +
+        malformedHeadingViolations.join("\n- "),
+    );
+  }
+
+  const duplicateIdViolations = [...idLocations.entries()]
+    .filter(([, locations]) => locations.length > 1)
+    .map(
+      ([id, locations]) =>
+        `${id}（${String(locations.length)} 箇所: ${formatEntryLocations(locations)}）`,
+    );
+  if (duplicateIdViolations.length > 0) {
+    console.error(
+      "⚠ 同じエントリ ID が複数箇所にあります。ID はアンカー（`<a id=\"ace-…\">`）・" +
+        "索引の参照先・allowlist・再利用カウンタのキーであり、重複すると" +
+        "「allowlist 済み ID を再利用した新規追記が旧形式でも通る」「参照リンクが" +
+        "どちらか一方にしか飛ばない」といった形で静かに壊れます。採番規則" +
+        "（PLAYBOOK.md §エントリID規則）どおり PR ごとに連番を振り直してください:\n- " +
+        duplicateIdViolations.join("\n- "),
+    );
+  }
+
   if (shapeViolations.length > 0) {
     console.error(
       "⚠ ID の形状が不正なエントリがあります（PLAYBOOK.md §エントリID規則の形 " +
@@ -464,6 +680,8 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
   }
   if (
     fencedHeadingViolations.length > 0 ||
+    malformedHeadingViolations.length > 0 ||
+    duplicateIdViolations.length > 0 ||
     shapeViolations.length > 0 ||
     violations.length > 0
   ) {

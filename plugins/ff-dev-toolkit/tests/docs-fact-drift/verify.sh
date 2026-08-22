@@ -26,6 +26,23 @@
 # 「後続 4 suite の実行を止めた」）。したがって claim ごとに文脈を含む表現を固定し、
 # 表現を変えたら**この suite も同時に更新する**運用にする（更新漏れは空振り = 赤で判る）。
 #
+# ただし正準表現を**リテラルの空白＋数字**に固定すると、`**68** suite` /
+# `` `68` suite `` のように件数を Markdown の強調・コードスパンで装飾した記載が一致せず、
+# 照合対象から静かに落ちる（Issue #529）。hits は全対象文書で合算されるため、正準表現の
+# 記載が 1 件でも残っていれば空振りガード（hits == 0 → 赤）も発火せず、装飾された古い
+# 件数だけが見逃される。そこで claim の ERE には数値を直接書かず、プレースホルダ `%N%`
+# を置き、**装飾を任意に許す数値**（NUM_ERE）へ機械的に展開する。11 claim すべてへ
+# 一様に効くことは A2 の自己検証で機械的に固定する。
+#
+# 検出範囲の限界（意図的）: 許すのは**数値まわりの装飾**だけで、語順や単位表記そのものを
+# 変えた記載（`suite 数は 68` / `68 スイート`）は依然として照合対象に入らない。これらまで
+# 拾うには単位語だけで走査することになり、上に挙げた別概念（「移行した 14 スキル」
+# 「後続 4 suite」）を巻き込む = 誤検知を claim ごとの除外列で潰し続ける運用になる。
+# 同じ理由で、装飾のせいで**単位語との間の空白が落ちた**記載（`**7**プラグイン`）も照合
+# しない。NUM_ERE 側で空白を任意にすると `[0-9]+プラグイン` 相当まで一致するようになり、
+# 版番号・箇条書き番号・別概念の数値を拾う面が広がる（展開も入り組む）。
+# 件数の書き方はレビューで正準形へ寄せる前提とし、ここでは主張しない。
+#
 # docs/MASTER.md が無いチェックアウト（公開リポジトリ側など）では行頭 `○ skip`。
 #
 # FF_DOCS_REPO_ROOT で対象リポジトリのルートを差し替えられる（selftest 用）。
@@ -121,6 +138,16 @@ done
 # claim 定義: name|期待値|数値を捕まえる ERE|除外する行の固定文字列|必須の固定文字列
 # 空欄は「指定なし」。同じ単位が別概念に使われる claim は 4/5 列目で narrowing する。
 #
+# 3 列目の ERE には数値を直接書かず `%N%` を置く（Issue #529）。照合直前に NUM_ERE へ
+# 展開され、`68` / `**68**` / `` `68` `` のいずれも同じ 1 件として拾える。
+# 装飾として許すのは `*`（強調）と `` ` ``（コードスパン）だけに絞る:
+#   - 全角空白は**入れない**。ブラケット式に多バイト文字を書くと LC_ALL=C 下で
+#     バイト単位に分解される（run-all case 11 の MBCS ガードが見ている壊れ方）
+#   - `_`（強調の別記法）も入れない。本リポジトリの docs に用例が無く、許容文字を
+#     増やすほど別概念を巻き込む面が広がるだけになる
+# 展開後も 1 一致に含まれる数値は 1 つのまま（装飾クラスに数字を含めないため）。
+NUM_ERE='[*`]*[0-9]+[*`]*'
+#
 # 実装上の注意（性能）: 行ごとに grep を起動すると 1 万行 × 全 claim で 10 万プロセス
 # 規模になり、suite 単体で 10 分を超える。**ファイル単位で 1 回 grep して一致行だけを
 # 取り出し**、その数行に対してのみフィルタと数値抽出を行う。
@@ -128,18 +155,62 @@ CLAIMS=(
   # 「調査時点」を含む行は歴史スナップショット（例: DECISIONS.md ADR-024 の
   # 「調査時点（2026-08-10、7 プラグイン・98 スキル）」）であり、現在値の主張では
   # ないため照合から除外する（プラグイン数・総スキル数の 2 claim。selftest G22）
-  "プラグイン数|${D_PLUGINS}|[0-9]+ プラグイン|調査時点|"
-  "総スキル数（計 N スキル）|${D_SKILLS}|計 [0-9]+ スキル||"
-  "総スキル数（N プラグイン・N スキル）|${D_SKILLS}|プラグイン・[0-9]+ スキル|調査時点|"
-  "ff-dev-toolkit スキル数|${D_FF_SKILLS}|ff-dev-toolkit（[0-9]+ スキル||"
-  "suite 数|${D_SUITES}|[0-9]+ suite|後続|"
-  "MCP ツール数|${D_MCP_TOOLS}|[0-9]+ ツール|コミット|spec-docs"
-  "初期セット件数|${D_INITIAL_SET}|初期セット [0-9]+ ファイル||"
-  "ACE refine 目安|${D_ACE_WARN}|refine 目安 [0-9]+||"
-  "ACE ブロック上限|${D_ACE_BLOCK}|ブロック上限 [0-9]+||"
-  "ACE 1 エントリ行数|${D_ENTRY_LINES}|エントリ [0-9]+ 行||"
-  "ACE 昇格 Helpful|${D_PROMOTE}|Helpful >= [0-9]+||昇格"
+  "プラグイン数|${D_PLUGINS}|%N% プラグイン|調査時点|"
+  "総スキル数（計 N スキル）|${D_SKILLS}|計 %N% スキル||"
+  "総スキル数（N プラグイン・N スキル）|${D_SKILLS}|プラグイン・%N% スキル|調査時点|"
+  "ff-dev-toolkit スキル数|${D_FF_SKILLS}|ff-dev-toolkit（%N% スキル||"
+  "suite 数|${D_SUITES}|%N% suite|後続|"
+  "MCP ツール数|${D_MCP_TOOLS}|%N% ツール|コミット|spec-docs"
+  "初期セット件数|${D_INITIAL_SET}|初期セット %N% ファイル||"
+  "ACE refine 目安|${D_ACE_WARN}|refine 目安 %N%||"
+  "ACE ブロック上限|${D_ACE_BLOCK}|ブロック上限 %N%||"
+  "ACE 1 エントリ行数|${D_ENTRY_LINES}|エントリ %N% 行||"
+  "ACE 昇格 Helpful|${D_PROMOTE}|Helpful >= %N%||昇格"
 )
+
+# claim ごとの ERE を照合用へ展開する（`%N%` → NUM_ERE）
+claim_ere() { # $1=claim 定義行
+  local raw
+  raw="$(printf '%s' "$1" | cut -d'|' -f3)"
+  printf '%s' "${raw//%N%/${NUM_ERE}}"
+}
+
+echo "== A2. claim 定義の自己検証（装飾許容が全 claim へ一様に効くこと）=="
+# `%N%` を使わず生の `[0-9]` を書いた claim は、装飾された記載をそのぶんだけ見逃す
+# （Issue #529 の穴が 1 claim だけ残る形）。claim を足すときの歯止めとしてここで弾く。
+BAD_CLAIMS=""
+for claim in "${CLAIMS[@]}"; do
+  c_name="$(printf '%s' "${claim}" | cut -d'|' -f1)"
+  c_raw="$(printf '%s' "${claim}" | cut -d'|' -f3)"
+  case "${c_raw}" in
+    *'%N%'*) ;;
+    *) BAD_CLAIMS="${BAD_CLAIMS}${c_name}（%N% が無い） " ; continue ;;
+  esac
+  case "${c_raw}" in
+    *'[0-9]'*|*'[[:digit:]]'*) BAD_CLAIMS="${BAD_CLAIMS}${c_name}（生の数値クラスを含む） " ;;
+  esac
+done
+if [ -z "${BAD_CLAIMS}" ]; then
+  ok "全 ${#CLAIMS[@]} claim が %N% で数値を表現している（装飾された件数も同じ 1 件として拾う）"
+else
+  bad "数値を %N% で表現していない claim があります: ${BAD_CLAIMS}"
+fi
+
+# NUM_ERE 自身の性質もここで固定する。claim 側が全部 %N% でも、NUM_ERE を `[0-9]+` へ
+# 戻せば装飾許容は消える（上のループは通過してしまう）。直接プローブして、**戻し変異が
+# ゲート単体で赤になる**ようにしておく。素の数値も引き続き一致すること（後方互換）まで見る。
+# `grep -q` は最初の一致で終了して上流を SIGPIPE で殺し、pipefail 下では一致していても
+# 非 0 になるため、件数で受ける。
+DEC_MISS=""
+for probe in '**1**' '`1`' '*1*' '1'; do
+  probe_hits="$(printf '%s\n' "${probe}" | grep -cE "^${NUM_ERE}$" || true)"
+  [ "${probe_hits:-0}" -ne 0 ] || DEC_MISS="${DEC_MISS}${probe} "
+done
+if [ -z "${DEC_MISS}" ]; then
+  ok "NUM_ERE が装飾付き・素の数値の双方に一致する（**1** / \`1\` / *1* / 1）"
+else
+  bad "NUM_ERE が次の表記に一致しません: ${DEC_MISS}（装飾許容が失われています）"
+fi
 
 echo "== B. 走査対象の導出 =="
 # ACE Playbook の分割ファイル（08-knowledge/playbook/**）は追記型の歴史記録で、
@@ -177,7 +248,7 @@ while IFS= read -r rel; do
   for claim in "${CLAIMS[@]}"; do
     idx=$((idx + 1))
     c_expect="$(printf '%s' "${claim}" | cut -d'|' -f2)"
-    c_ere="$(printf '%s' "${claim}" | cut -d'|' -f3)"
+    c_ere="$(claim_ere "${claim}")"
     c_skip="$(printf '%s' "${claim}" | cut -d'|' -f4)"
     c_need="$(printf '%s' "${claim}" | cut -d'|' -f5)"
     [ -n "${c_expect}" ] || continue   # 導出失敗は A で赤にしている
@@ -191,9 +262,13 @@ while IFS= read -r rel; do
       if [ -n "${c_need}" ]; then
         case "${line}" in *"${c_need}"*) ;; *) continue ;; esac
       fi
-      # 1 つの一致に数値が 2 つ以上入る ERE は claim 定義の誤り（どちらを比べるべきか
-      # 決まらない）。黙って先頭を採らず赤にする。
-      for hit in $(printf '%s\n' "${line}" | grep -oE "${c_ere}" | tr ' ' '_'); do
+      # 一致は**1 件ずつ read で受ける**。`for hit in $(...)` は単語分割に加えて
+      # パス名展開も通るため、装飾を許した ERE が返す `**68** suite` のような一致が
+      # glob として解釈される（Issue #529）。read なら空白も装飾記号もそのまま運べる。
+      while IFS= read -r hit; do
+        [ -n "${hit}" ] || continue
+        # 1 つの一致に数値が 2 つ以上入る ERE は claim 定義の誤り（どちらを比べるべきか
+        # 決まらない）。黙って先頭を採らず赤にする。
         nums="$(printf '%s\n' "${hit}" | grep -oE '[0-9]+' | wc -l | tr -d ' ')"
         if [ "${nums}" -ne 1 ]; then
           c_name="$(printf '%s' "${claim}" | cut -d'|' -f1)"
@@ -210,7 +285,7 @@ while IFS= read -r rel; do
           echo "  ✗ ${c_name}: ${rel} の記載 ${num} が実体 ${c_expect} と一致しません" >&2
           printf '      %s\n' "${line}" >&2
         fi
-      done
+      done < <(printf '%s\n' "${line}" | grep -oE "${c_ere}" || true)
     done < <(printf '%s\n' "${matched}")
   done
 done < <(printf '%s\n' "${TARGET_DOCS}")

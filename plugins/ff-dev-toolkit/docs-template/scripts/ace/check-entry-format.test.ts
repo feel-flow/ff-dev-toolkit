@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   detectLegacyMarkers,
+  findMalformedEntryHeadings,
+  isDirectExecution,
   listEntryIds,
   listLegacyEntryIds,
   main,
@@ -10,7 +12,7 @@ import {
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** 旧テーブル形式のエントリ（メタ表ヘッダ + 区切り行 + Insight/Context/Action）。 */
 function legacyEntry(id: string): string {
@@ -817,5 +819,365 @@ describe("フェンス内の正準形見出し・未閉フェンスの一括報�
     expect(err).toContain("コードフェンスが閉じていない");
     expect(err).toContain("coding.md");
     expect(err).toContain("ACE-9-9");
+  });
+});
+
+describe("findMalformedEntryHeadings（Issue #617）", () => {
+  it("正準形の見出しだけのテキストでは 1 件も返さない（正値の固定）", () => {
+    // 過剰に広い候補パターンへ変異したとき、正常なエントリを名指ししてしまう形を
+    // ここで落とす。旧 3 桁・PR スコープ式・Issue 由来・3 段・コロン直後に空白の
+    // 無い形まで、認識器が通す全ての形を並べる。
+    // 末尾 3 行は「候補の接頭辞を `### ` まで広げる」変異の検出用 — ACE エントリ
+    // ではない h3 見出しは候補にならない（これが無いと接頭辞の変異が生き残る）。
+    const cleaned = [
+      "### ACE-001: 旧 3 桁",
+      "### ACE-438-1: PR スコープ式",
+      "### ACE-i425-1: Issue 由来",
+      "### ACE-1-2-3: 3 段",
+      "### ACE-1-1:コロン直後に空白なし",
+      "本文の行。",
+      "## ACE- ではじまる ## 見出し",
+      "### 補足",
+      "### ACE 記法についての h3 見出し",
+      "#### ACE-1-1: h4 はエントリ見出しではない",
+    ].join("\n");
+
+    expect(findMalformedEntryHeadings(cleaned)).toEqual([]);
+  });
+
+  it("インデント付き・`###` 直後の空白なしの見出しも候補として拾う", () => {
+    // どちらも書き手はエントリ見出しのつもりだが認識器は取らない = 吸収を起こす形。
+    // 候補側だけを空白に寛容にすることで、認識器を広げずに fail-loud へ落とす。
+    const cleaned = ["   ### ACE-1-1: インデント付き", "###ACE-1-2: 空白なし"].join("\n");
+
+    expect(findMalformedEntryHeadings(cleaned)).toEqual([
+      { line: 0, text: "   ### ACE-1-1: インデント付き" },
+      { line: 1, text: "###ACE-1-2: 空白なし" },
+    ]);
+  });
+
+  it("認識器の文法から外れた見出しを 0-origin 行番号つきで返す", () => {
+    const cleaned = ["# 索引", "", "### ACE-1.: 検証用の不正ID", "", "本文。"].join("\n");
+
+    expect(findMalformedEntryHeadings(cleaned)).toEqual([
+      { line: 2, text: "### ACE-1.: 検証用の不正ID" },
+    ]);
+  });
+
+  it("認識される不正形状 ID（ACE-337--1）は返さない（形状検査との二重報告を作らない）", () => {
+    const cleaned = "### ACE-337--1: 二重ハイフン\n";
+
+    expect(findMalformedEntryHeadings(cleaned)).toEqual([]);
+  });
+});
+
+describe("認識されない `### ACE-` 見出しの fail-loud（Issue #617）", () => {
+  const originalArgv = process.argv;
+  let tmpDir = "";
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  function run(options: {
+    readonly subfiles: Record<string, string>;
+    readonly allowlist?: string;
+  }): { code: number; err: string; warn: string } {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-malformed-"));
+    const playbookPath = path.join(tmpDir, "PLAYBOOK.md");
+    fs.writeFileSync(playbookPath, "# 索引\n");
+    const subDir = path.join(tmpDir, "playbook");
+    fs.mkdirSync(subDir);
+    for (const [name, content] of Object.entries(options.subfiles)) {
+      fs.writeFileSync(path.join(subDir, name), content);
+    }
+    fs.writeFileSync(
+      path.join(tmpDir, "legacy-format-allowlist.txt"),
+      options.allowlist ?? "",
+    );
+    process.argv = ["node", "check-entry-format.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const code = main();
+    return {
+      code,
+      err: err.mock.calls.flat().join("\n"),
+      warn: warn.mock.calls.flat().join("\n"),
+    };
+  }
+
+  it("直前の allowlist 済みエントリへ吸収される不正 ID 見出しを exit 1 で名指しする", () => {
+    // Issue #617 の実測形。`### ACE-1.:` はエントリとして数えられず、旧形式マーカー
+    // 入りの本文が直前の allowlist 済みエントリへ吸収されて exit 0 になっていた。
+    const { code, err } = run({
+      subfiles: {
+        "coding.md":
+          CATEGORY_HEADER +
+          legacyEntry("97-1") +
+          ["### ACE-1.: 検証用の不正ID", "", "**Insight**: 旧形式マーカー入り。", ""].join("\n"),
+      },
+      allowlist: "ACE-97-1\n",
+    });
+
+    expect(code).toBe(1);
+    expect(err).toContain("coding.md");
+    expect(err).toContain("### ACE-1.: 検証用の不正ID");
+    expect(err).toContain("吸収");
+  });
+
+  it("インデント付きの見出しを exit 1 で名指しする（吸収を起こす形）", () => {
+    const { code, err } = run({
+      subfiles: {
+        "coding.md": CATEGORY_HEADER + "   ### ACE-1-1: インデント付き\n\n本文。\n",
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(err).toContain("### ACE-1-1: インデント付き");
+  });
+
+  it("`###` 直後の空白が無い見出しを exit 1 で名指しする", () => {
+    const { code, err } = run({
+      subfiles: { "coding.md": CATEGORY_HEADER + "###ACE-1-1: 空白なし\n\n本文。\n" },
+    });
+
+    expect(code).toBe(1);
+    expect(err).toContain("###ACE-1-1: 空白なし");
+  });
+
+  it("フェンスの外に置いたプレースホルダ見出しも赤にする", () => {
+    const { code, err } = run({
+      subfiles: { "coding.md": CATEGORY_HEADER + "### ACE-XXX: [タイトル]\n\n本文。\n" },
+    });
+
+    expect(code).toBe(1);
+    expect(err).toContain("### ACE-XXX: [タイトル]");
+  });
+
+  it("フェンス内のプレースホルダ見出しは緑のまま通る（正値の固定）", () => {
+    const fence = "```";
+    const { code, err } = run({
+      subfiles: {
+        "coding.md":
+          CATEGORY_HEADER +
+          [
+            "### ACE-1-1: 例示を含む実エントリ",
+            "",
+            `${fence}markdown`,
+            "### ACE-XXX: [タイトル]",
+            fence,
+            "",
+            "---",
+            "",
+          ].join("\n"),
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(err).not.toContain("認識されない");
+  });
+
+  it("正準形の見出しだけのレイアウトは緑のまま通る（正値の固定）", () => {
+    // `### 補足` は ACE エントリではない h3 見出し。候補の接頭辞を `### ` へ広げる
+    // 変異はここで赤くなる（正準エントリだけの fixture では変異が生き残る）。
+    // `#### ACE-…` は h4 なのでエントリ見出しではない — 見出しレベルの検査を外す変異は
+    // ここで赤くなる。
+    const { code, err } = run({
+      subfiles: {
+        "coding.md":
+          CATEGORY_HEADER +
+          compactEntry("1-1") +
+          compactEntry("i425-1") +
+          "### 補足\n\n#### ACE-1-1 の適用条件\n\n本文。\n",
+        "testing.md": CATEGORY_HEADER + compactEntry("001") + compactEntry("1-2-3"),
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+  });
+
+  it("不正 ID 見出しがあるときは allowlist 掃除の警告を出さない（誤案内の抑制）", () => {
+    // 吸収された見出しは seenIds に載らないので、missing を計算すると live に居る
+    // ID を「削除してください」と案内してしまう（形状違反時の抑制と同じ理由）。
+    const { code, warn } = run({
+      subfiles: {
+        "coding.md": CATEGORY_HEADER + compactEntry("1-1") + "### ACE-1.: 不正ID\n\n本文。\n",
+      },
+      allowlist: "ACE-9-9\n",
+    });
+
+    expect(code).toBe(1);
+    expect(warn).not.toContain("allowlist から削除");
+  });
+});
+
+describe("エントリ ID の重複検出（Issue #617）", () => {
+  const originalArgv = process.argv;
+  let tmpDir = "";
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  function run(options: {
+    readonly index?: string;
+    readonly subfiles: Record<string, string>;
+    readonly archive?: Record<string, string>;
+    readonly allowlist?: string;
+  }): { code: number; err: string; warn: string } {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-dup-id-"));
+    const playbookPath = path.join(tmpDir, "PLAYBOOK.md");
+    fs.writeFileSync(playbookPath, options.index ?? "# 索引\n");
+    const subDir = path.join(tmpDir, "playbook");
+    fs.mkdirSync(subDir);
+    for (const [name, content] of Object.entries(options.subfiles)) {
+      fs.writeFileSync(path.join(subDir, name), content);
+    }
+    if (options.archive) {
+      const archiveDir = path.join(subDir, "archive");
+      fs.mkdirSync(archiveDir);
+      for (const [name, content] of Object.entries(options.archive)) {
+        fs.writeFileSync(path.join(archiveDir, name), content);
+      }
+    }
+    fs.writeFileSync(
+      path.join(tmpDir, "legacy-format-allowlist.txt"),
+      options.allowlist ?? "",
+    );
+    process.argv = ["node", "check-entry-format.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const code = main();
+    return {
+      code,
+      err: err.mock.calls.flat().join("\n"),
+      warn: warn.mock.calls.flat().join("\n"),
+    };
+  }
+
+  it("allowlist 済み ID を再利用した旧形式の新規追記を exit 1 で止める", () => {
+    // Issue #617 の実測形。allowed.has(entry.id) は ID 単位なので、既存の
+    // allowlist 済み ID を再利用すると旧形式のまま新規追加できていた。
+    const { code, err } = run({
+      subfiles: { "coding.md": CATEGORY_HEADER + legacyEntry("97-1") + legacyEntry("97-1") },
+      allowlist: "ACE-97-1\n",
+    });
+
+    expect(code).toBe(1);
+    expect(err).toContain("ACE-97-1");
+    expect(err).toContain("2 箇所");
+  });
+
+  it("同一ファイル内の重複は行番号で場所を分けて示す（ファイル名だけでは直せない）", () => {
+    // legacyEntry は anchor 行 + 空行 + 見出しなので、CATEGORY_HEADER（8 行）の直後に
+    // 2 件並べると見出しは 10 行目と 30 行目に来る。
+    const { code, err } = run({
+      subfiles: { "coding.md": CATEGORY_HEADER + legacyEntry("97-1") + legacyEntry("97-1") },
+      allowlist: "ACE-97-1\n",
+    });
+
+    expect(code).toBe(1);
+    expect(err).toContain("coding.md: 10 行目 / 30 行目");
+  });
+
+  it("別カテゴリファイルにまたがる重複は出現箇所をファイルごとに示す", () => {
+    const { code, err } = run({
+      subfiles: {
+        "coding.md": CATEGORY_HEADER + compactEntry("524-1"),
+        "process.md": CATEGORY_HEADER + compactEntry("524-1"),
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(err).toContain("ACE-524-1");
+    expect(err).toContain("coding.md: 10 行目");
+    expect(err).toContain("process.md: 10 行目");
+  });
+
+  it("重複 ID があっても allowlist の掃除案内は出す（抑制対象は見出し不一致だけ）", () => {
+    // 重複しても seenIds は不完全にならないので missing の計算は正しい。ここを
+    // 見出し不一致と同じ抑制条件へ入れると、本来出るべき掃除案内が黙って消える。
+    const { code, warn } = run({
+      subfiles: {
+        "coding.md": CATEGORY_HEADER + compactEntry("524-1"),
+        "process.md": CATEGORY_HEADER + compactEntry("524-1"),
+      },
+      allowlist: "ACE-9-9\n",
+    });
+
+    expect(code).toBe(1);
+    expect(warn).toContain("allowlist から削除");
+  });
+
+  it("索引 PLAYBOOK.md 側との重複も検出する（部分移行中の二重掲載）", () => {
+    const { code, err } = run({
+      index: "# 索引\n\n" + compactEntry("1-1"),
+      subfiles: { "coding.md": CATEGORY_HEADER + compactEntry("1-1") },
+    });
+
+    expect(code).toBe(1);
+    expect(err).toContain("ACE-1-1");
+  });
+
+  it("各 ID が 1 回ずつなら緑のまま通る（正値の固定）", () => {
+    const { code, err } = run({
+      subfiles: {
+        "coding.md": CATEGORY_HEADER + compactEntry("524-1") + compactEntry("524-2"),
+        "process.md": CATEGORY_HEADER + compactEntry("524-3"),
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+  });
+
+  it("archive に同じ ID の原文があっても重複扱いしない（compact の保全形は正常）", () => {
+    // playbook/archive/ は走査対象外。ここを巻き込むと /ace-refine の compact
+    // （live と archive の両方に同じ ID が残る形）が構造的に赤くなる。
+    const { code, err } = run({
+      subfiles: { "coding.md": CATEGORY_HEADER + compactEntry("41-3") },
+      archive: { "coding.md": legacyEntry("41-3") },
+    });
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+  });
+});
+
+describe("isDirectExecution", () => {
+  function tempDir(): string {
+    return fs.realpathSync.native(os.tmpdir());
+  }
+
+  it("完全一致する argv path だけを直接実行扱いする", () => {
+    const scriptPath = path.join(tempDir(), "check-entry-format.ts");
+    expect(isDirectExecution(pathToFileURL(scriptPath).href, scriptPath)).toBe(true);
+  });
+
+  it("ファイル名を含む別スクリプトの部分一致では直接実行扱いしない", () => {
+    const dir = tempDir();
+    const scriptPath = path.join(dir, "check-entry-format.ts");
+    const wrapperPath = path.join(dir, "wrapper-check-entry-format.ts");
+    const testPath = path.join(dir, "check-entry-format.test.ts");
+    expect(isDirectExecution(pathToFileURL(scriptPath).href, wrapperPath)).toBe(false);
+    expect(isDirectExecution(pathToFileURL(scriptPath).href, testPath)).toBe(false);
+  });
+
+  it("argv path が無ければ直接実行扱いしない", () => {
+    const scriptPath = path.join(tempDir(), "check-entry-format.ts");
+    expect(isDirectExecution(pathToFileURL(scriptPath).href, undefined)).toBe(false);
   });
 });

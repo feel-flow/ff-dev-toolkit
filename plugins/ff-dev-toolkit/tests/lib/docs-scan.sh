@@ -2,11 +2,15 @@
 #
 # 対象プロジェクトの docs/ を検査する suite の共有実装（Issue #513 / #519 / #518）。
 #
-# マスク（フェンス / コメント境界）を 1 か所に置く。同じ走査を 3 本書くと、片方だけ
-# 直される drift がそのまま検出漏れになる。
+# マスク（フェンス / コメント境界）を 1 か所に置く。同じ走査を何本も書くと、片方だけ
+# 直される drift がそのまま検出漏れになる。現在の消費者（本ファイルを source する suite）:
 #   docs-frontmatter-repo / docs-fact-drift: docs/ を歩き Frontmatter も読む
-#   validate-docs-placeholders（#518）: マスクだけを使いプレースホルダー免除を固定する
-#   （docs/ 走査と Frontmatter 判定はしない）
+#   docs-fact-drift-selftest: 上の隔離クローンへ変異を入れて検出力を実測する
+#   docs-template-frontmatter: docs-template/ 側の Frontmatter / Changelog 構造を検査する
+#   validate-docs-placeholders（#518）+ その selftest: マスクだけを使いプレースホルダー
+#   免除を固定する（docs/ 走査と Frontmatter 判定はしない）
+#   docs-scan-mirror（#528）: ff_docs_mask_spans と同梱 MCP の maskClosedSpans が
+#   共有 fixture で同じ出力を返すことを機械照合する（片側ドリフトの常設ゲート）
 #
 # 提供する関数:
 #   ff_docs_rule_targets <master_md>   規則側の対象一覧（MASTER.md から導出）

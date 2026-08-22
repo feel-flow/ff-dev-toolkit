@@ -13,7 +13,7 @@ Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)
 | `sync-playbook-frontmatter.ts`                | PLAYBOOK frontmatter（`ace_entry_count` / version↔Changelog / `changeImpact`）の同期・検証ゲート。`## Changelog` セクションが無い場合もドリフト扱い（版の一致を検証できないため）。frontmatter の読み書きは**トップレベルのキーのみ**を対象とし、`metadata:` 配下等へネストされた同名キーは記録として認めず、書き換えもしない。トップレベルの同名キー重複は usage error |
 | `check-archive-links.ts`                      | `playbook/archive/` の保全本文内に `./` 相対リンクがある場合、冒頭 Parent ブロック内の注記を強制し、同一ファイル内の `<a id>` 重複を拒否するゲート（違反で非ゼロ終了） |
 | `check-refine-invariants.ts`                  | `/ace-refine` の結果不変条件（compact 保全・merge 状態遷移・PATTERNS 収載）を検証するゲート（違反で非ゼロ終了） |
-| `check-entry-format.ts`                       | 新規エントリが旧テーブル形式でないこと + ID 形状が妥当（§エントリID規則）であることを検証するゲート（allowlist 外の旧形式・不正 ID で非ゼロ終了） |
+| `check-entry-format.ts`                       | 新規エントリが旧テーブル形式でないこと + ID 形状が妥当（§エントリID規則）であること + ID が一意であること + 見出しが正準形へ一致することを検証するゲート（allowlist 外の旧形式・不正 ID・重複 ID・認識されない `### ACE-` 行で非ゼロ終了）。**正準構造の存在（anchor / メタ 4 行 / 終端 `---`）は検証しません** |
 | `docs-template/.claude/agents/ace-capture.md` | Subagent 用プロンプト（コピー先は `.claude/agents/`）                                     |
 
 post-merge からの呼び出し例は `docs-template/.claude/hooks/post-merge.ace.sample.sh` を参照してください。
@@ -98,7 +98,7 @@ npx --yes tsx scripts/ace/check-refine-invariants.ts docs/08-knowledge/PLAYBOOK.
 
 ## check-entry-format.ts の実行
 
-新規エントリが**コンパクト正準フォーマット**で書かれていることを検証します。旧テーブル形式（`| フィールド | 値 |` ヘッダ + Insight/Context/Action ブロック）は読み取り互換として共存させますが、新規追記には使いません:
+新規エントリに**旧テーブル形式が混ざっていないこと**を検証します。旧テーブル形式（`| フィールド | 値 |` ヘッダ + Insight/Context/Action ブロック）は読み取り互換として共存させますが、新規追記には使いません:
 
 ```bash
 npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
@@ -110,6 +110,10 @@ npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
 - 検出は 3 マーカーの OR: メタ表ヘッダ（`| フィールド | 値 |`）、Markdown テーブルの区切り行、`**Insight**` / `**Context**` / `**Action**` の太字ラベル。「メタ表だけ正準化され本文は Insight のまま」というハイブリッドを取りこぼさないための冗長です
 - allowlist にあるのに旧形式でなくなった ID / live に存在しない ID は**警告のみ**（`/ace-refine` の正準化と allowlist の掃除を同一 PR に強制してゲートが refine をブロックすることを避けるため）
 - 走査対象は `playbook/*.md` 直下のみ（非再帰）。`playbook/archive/` は原文を verbatim 保全する場所で旧形式が正常なので巻き込みません
+- `### ACE-` で始まるのに正準の見出し形（`### <ID>: <タイトル>`）へ一致しない行も**非ゼロ終了**です（Issue #617）。`### ACE-1.:` のような行はエントリの境界にならず、本文が直前のエントリへ吸収されて件数からも消えるうえ、直前が allowlist 済みなら旧形式マーカー入りでも通ってしまいます。テンプレートのプレースホルダ（`### ACE-XXX:`）はコードフェンスで囲んでください（フェンス内は走査対象外）
+  - 候補の判定だけは**行頭の空白と `###` 直後の空白の省略を許します**（`   ### ACE-1-1:` / `###ACE-1-1:` も赤）。どちらも書き手はエントリ見出しのつもりですが認識器は取らず、実際に吸収を起こす形だからです。**認識器（`ACE_ENTRY_HEADER_LINE`）の側は生の行のまま**にしてください — こちらまで空白に寛容にすると吸収を起こす形が「正常なエントリ」として通り、件数ゲートとの境界だけが食い違って沈黙します。`####` 以上は候補にしません（本文中の小見出しを巻き込むと偽陽性になります）
+- 同じエントリ ID が走査対象に 2 つ以上あるときも**非ゼロ終了**です（Issue #617）。ID はアンカー・索引の参照先・allowlist・再利用カウンタのキーなので、重複すると allowlist 済み ID を再利用した旧形式の新規追記が通ります。報告は同一ファイル内でも場所を特定できるよう、ファイル名 + 行番号（`coding.md: 10 行目 / 30 行目`）で出します。なお**重複 ID は allowlist 掃除警告の抑制対象ではありません**（重複しても `seenIds` は欠けず、掃除案内は正しいままなので、抑制すると本来出るべき案内が消えます）
+- **検証しないこと**: コンパクト正準フォーマットの**構造そのもの**（anchor 行 `<a id="ace-…"></a>`・メタ 4 行・終端 `---`）は存在を要求しません。判定軸が旧形式マーカーの**不在**であるため、それらを 1 つも持たない「本文だけ」のエントリはこのゲートを通ります（Issue #617）。本ゲートの保証は「旧テーブル形式の新規追記を止める」までです
 
 ## ace-refine-report.ts の実行
 

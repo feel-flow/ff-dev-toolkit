@@ -6,6 +6,12 @@
 #   1. 対象 PR のリモートブランチが削除される（OID 一致）
 #   2. 取り残し: (名前, OID) 一致のマージ済みブランチは削除される
 #   3. 取り残し: 名前一致でも OID 不一致（マージ後 push あり）は削除されない
+#   3b. (6.22) その OID 不一致の取り残しは、削除が lease に拒まれる前に**取り残し
+#       候補一覧そのものへ載らない**（事前照合の検出力。項目 3 だけでは、照合を
+#       名前一致へ退化させても lease 拒否が同じ「削除されない」観測を作る）
+#   3c. (6.23) 名前と OID を別々のマージ済み PR から借りたブランチも候補にならない
+#       （照合が (名前, OID) の**ペア**であり、名前の集合 × OID の集合の独立照合へ
+#       退化していないこと。3b の入力では両者を区別できない）
 #   4. 取り残し: open PR の head として再利用中は削除されない
 #   5. 取り残し: 保護ブランチ（release/*）は照合一致でも削除されない
 #   6. dirty worktree 付き [gone] ブランチは保護され、終了コードが 2（PARTIAL）になる
@@ -97,8 +103,9 @@
 #      対する防御として実装側コメントに理由を残してある（テスト不在 = 不要ではない）。
 #
 # あわせて静的検査として、bash 3.2 で変数名にマルチバイト文字が取り込まれる書き方
-# （"$VAR" の直後に全角文字を直付けする形）が merge-cleanup.sh に無いことを確認する。検出器が
-# 空振りしていないことを、違反 fixture への適用で毎回実測してから本検査へ進む。
+# （"$VAR" の直後に全角文字を直付けする形）が merge-cleanup.sh と本 suite 自身に無いことを
+# 確認する。検出器は共有実装（tests/lib/mbcs-guard.sh）を使い、走査できなかった場合は
+# 「違反なし」ではなく失敗として報告する。
 #
 # 書き込み不可の環境（read-only チェックアウト等）では skip して成功扱いにする。
 #
@@ -162,42 +169,53 @@ bad()  { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # LC_ALL=C では [:print:] も [:space:] も ASCII しか含まないため、
 # 「印字可能でも空白でもないバイト」= マルチバイトの先頭バイトを拾える。
 #
-# repo 横断の正本は tests/run-all/verify.sh case 11（論理行畳み込み・shebang 判定付き）。
-# ここは merge-cleanup.sh 単体への高速フィードバック用の簡易版（物理行のみ）で、
-# 検出仕様を広げるときは case 11 側を更新し、本検出器は追随か縮退を検討する。
-mbcs_adjacent_expansions() {
-  # $1: 検査するファイル。違反行を出力する（無ければ何も出さない）
-  LC_ALL=C grep -nE '\$[A-Za-z_][A-Za-z0-9_]*[^[:print:][:space:]]' "$1" || true
-}
+# 検出器は共有実装 tests/lib/mbcs-guard.sh の mbcs_scan を使う（repo 横断ガード
+# tests/run-all/verify.sh case 11 と同じ実体）。論理行へ畳んでから走査するので、
+# バックスラッシュ行継続をまたぐ隣接も拾える。検出器そのものの回帰は専用 suite
+# （tests/mbcs-guard-failclosed/）が持つため、ここに自前の probe は置かない
+# ——「この suite が検出器を呼んでいる」配線は末尾の EXPECTED_PASS が固定する。
+# shellcheck source=../lib/mbcs-guard.sh
+. "$SCRIPT_DIR/../lib/mbcs-guard.sh"
 
 echo "== 静的検査: マルチバイト直付けの変数展開 =="
 
-# 検出器が本当に検出できるかを、違反 fixture で毎回実測してから本検査へ進む
-MBCS_PROBE="$TMP/mbcs-probe.sh"
-# 違反 probe は 2 分割で組み立てる（ACE-307-3）。1 行に直書きすると、repo 横断の
-# 再混入ガード（tests/run-all/verify.sh）がこの行自体を違反として検出する。
-MBCS_PROBE_LINE='echo "失敗しました: $name'
-MBCS_PROBE_LINE="${MBCS_PROBE_LINE}（原因不明）\""
-printf '%s\n' "$MBCS_PROBE_LINE" > "$MBCS_PROBE"
-if [ -n "$(mbcs_adjacent_expansions "$MBCS_PROBE")" ]; then
-  ok "検出器が違反を検出できる（self-test）"
-else
-  bad "検出器が違反を検出できない — 以降の静的検査は無意味なので信用しないこと"
-fi
-printf '%s\n' 'echo "失敗しました: ${name}（原因不明）"' > "$MBCS_PROBE"
-if [ -z "$(mbcs_adjacent_expansions "$MBCS_PROBE")" ]; then
-  ok "検出器が正しい書き方を誤検出しない（self-test）"
-else
-  bad "検出器が \${VAR} 形式を誤検出する"
-fi
+mbcs_assert_clean() {
+  # $1: 検査するファイル / $2: 報告に使う表示名
+  #
+  # 走査の失敗（awk 非 0 = 読めない・実行できない）を「違反なし」へ倒さない。
+  # 握り潰すと検査が黙って無効化され、緑のまま何も見ていない状態になる。
+  local file="$1" label="$2" hits rc
+  if [ ! -f "$file" ]; then
+    bad "${label} を検査できない（ファイルが見つからない: ${file}）"
+    return
+  fi
+  set +e
+  hits="$(mbcs_scan "$file" 2>/dev/null)"
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    bad "${label} を走査できない（awk rc=${rc}）— このファイルの「違反 0 件」は主張できない"
+    return
+  fi
+  if [ -z "$hits" ]; then
+    ok "${label} に \$VAR 直付けのマルチバイト展開が無い"
+  else
+    bad "${label} に \$VAR 直付けのマルチバイト展開がある（\${VAR} 形式にすること）"
+    printf '%s\n' "$hits" | sed 's/^/     /' >&2 || true
+  fi
+}
 
-MBCS_HITS="$(mbcs_adjacent_expansions "$TARGET")"
-if [ -z "$MBCS_HITS" ]; then
-  ok "merge-cleanup.sh に \$VAR 直付けのマルチバイト展開が無い"
-else
-  bad "merge-cleanup.sh に \$VAR 直付けのマルチバイト展開がある（\${VAR} 形式にすること）"
-  printf '%s\n' "$MBCS_HITS" | sed 's/^/     /' >&2
-fi
+# 検査対象は merge-cleanup.sh と本 suite 自身の 2 つ。suite 自身を外すと、verify.sh を
+# 編集した本人が単体実行では自分の違反に気付けず、repo 横断ガード（tests/run-all/verify.sh
+# の case 11）まで持ち越される。しかも違反が失敗報告の文言に入った場合は、静的検査を
+# すり抜けたまま実行時に `unbound variable` で suite が途中死する。二重に見えるが役割は
+# 別で、ここは「書いたその場での即時フィードバック」、case 11 は「再混入の横断防止」。
+#
+# 本ファイル内のコメント・診断文言そのものが検査対象になる点に注意する（`$VAR` の直後へ
+# 全角文字を書かない）。書き分けの実例は末尾の検査総数の診断で、`${EXPECTED_PASS}` /
+# `${PASS}` と波括弧で括ってある。裸で書くと `PASS（` を参照して suite が途中死する。
+mbcs_assert_clean "$TARGET" "merge-cleanup.sh"
+mbcs_assert_clean "$SCRIPT_DIR/verify.sh" "本 suite (tests/merge-cleanup/verify.sh)"
 
 # $1: 検査するファイル。delete_remote_branch_with_lease 内の git push が
 # すべて「同一物理行の prefix 代入 SKIP_SIMPLE_GIT_HOOKS=1」なら 0。
@@ -449,8 +467,30 @@ git commit -qm "new work pushed after merge"
 git push -qu origin 'feature/#2-reused'
 git switch -q develop
 
+# クロスペアケース（6.23）: 名前と OID を**別々の**マージ済み PR から借りると
+# 一致してしまう構成。origin に残るのは feature/#47-crosspair（現 OID は
+# OID_CROSSPAIR_NOW）で、マージ済み一覧には
+#   PR A = (feature/#47-crosspair, OID_CROSSPAIR_MERGED)  … 名前は一致するが OID は古い
+#   PR B = (feature/#48-crosspair-other, OID_CROSSPAIR_NOW) … OID は一致するが名前が違う
+# の 2 件が載る。ペアで照合する現行実装ではどちらとも一致しないが、名前の集合と
+# OID の集合を独立に照合する退化では「名前も OID もどれかの head と一致する」ため
+# 通ってしまう。feature/#48-crosspair-other は origin へ push しない（OID の供給元
+# としてだけ存在させ、削除対象を feature/#47-crosspair 1 本に保つ）。
+git switch -q -c 'feature/#47-crosspair' develop
+echo crosspair47 > crosspair47.txt
+git add crosspair47.txt
+git commit -qm "merged head of crosspair"
+OID_CROSSPAIR_MERGED="$(git rev-parse HEAD)"
+echo crosspair47-extra > crosspair47b.txt
+git add crosspair47b.txt
+git commit -qm "new work pushed after merge"
+OID_CROSSPAIR_NOW="$(git rev-parse HEAD)"
+git push -qu origin 'feature/#47-crosspair'
+git switch -q develop
+
 # 取り残し系はローカルブランチを消してリモートだけ残す（過去のマージ漏れを再現）
-git branch -q -D 'feature/#1-merged-exact' 'feature/#2-reused' 'feature/#3-open-reuse' 'release/1.0'
+git branch -q -D 'feature/#1-merged-exact' 'feature/#2-reused' 'feature/#3-open-reuse' \
+  'release/1.0' 'feature/#47-crosspair'
 
 # dirty worktree 付き [gone] ブランチ: リモートを先に消して prune 対象にする
 git worktree add -q "$TMP/wt-dirty" 'feature/#10-target' 2>/dev/null || \
@@ -620,7 +660,9 @@ cat > "$MOCK/pr_list_merged.json" <<JSON
   {"headRefName": "feature/#43-null-oid-lease", "headRefOid": "$OID_NULLOID43", "isCrossRepository": false},
   {"headRefName": "feature/#44-null-oid-failure", "headRefOid": "$OID_NULLOID44", "isCrossRepository": false},
   {"headRefName": "feature/#45-null-oid-vanished", "headRefOid": "$OID_NULLOID45", "isCrossRepository": false},
-  {"headRefName": "feature/#46-null-oid-gone", "headRefOid": "$OID_NULLOID46", "isCrossRepository": false}
+  {"headRefName": "feature/#46-null-oid-gone", "headRefOid": "$OID_NULLOID46", "isCrossRepository": false},
+  {"headRefName": "feature/#47-crosspair", "headRefOid": "$OID_CROSSPAIR_MERGED", "isCrossRepository": false},
+  {"headRefName": "feature/#48-crosspair-other", "headRefOid": "$OID_CROSSPAIR_NOW", "isCrossRepository": false}
 ]
 JSON
 
@@ -1152,6 +1194,92 @@ if remote_has 'feature/#2-reused'; then
   ok "OID 不一致の再利用ブランチを保護 (feature/#2-reused)"
 else
   bad "マージ後 push のあるブランチが誤削除された (feature/#2-reused)"
+fi
+
+# 6.22 OID 不一致の取り残しは、削除が拒否されるより前に**取り残し候補一覧そのもの
+#      から除外される**。
+#
+#      直前の項目 3（remote_has）だけでは、Step 6 の事前照合を「名前一致のみ」へ
+#      退化させても検出できない: 削除 push が --force-with-lease（アンカーは
+#      MERGED 一覧側の OID）に拒まれ、結局「削除されない」という同じ観測へ落ちる
+#      ためで、二重の防御のうち外側（事前照合）が消えた事実が内側に吸われる。
+#      そこで候補一覧を直接読み、事前照合の段階で除外されていることを固定する。
+#
+#      この退化を赤にできる検査は従来 6.12（Step 4 の失敗中に別 OID へ進んだ
+#      ブランチ）だけで、そちらは再試行経路のシナリオに従属している。基本の
+#      取り残し経路（本ケース）では lease 拒否に吸収されて緑のままだった。
+#      シナリオ従属の検査は差し替えれば消えるため、照合そのものを主題にした
+#      検査をここへ独立に置く。
+leftover_candidates() {
+  # $1: 実行ログ。Step 6 が出す取り残し候補一覧のブランチ名だけを 1 行 1 件で返す。
+  # 一覧は見出しの直後に "  - <branch>" が並び、空行で終わる。
+  awk '
+    /^🧹 リモート取り残しのマージ済みブランチを検出しました:$/ { in_list = 1; next }
+    in_list && /^  - / { sub(/^  - /, ""); print; next }
+    in_list { exit }
+  ' "$1"
+}
+
+# 一覧はファイルへ落として grep する。パイプで grep -q へ渡すと、一致で早期終了した
+# grep が上流へ SIGPIPE を返し、pipefail 下ではその 141 が条件式の値になって
+# 「一致したのに偽」という反転を起こす。
+LEFTOVER_CANDIDATES="$TMP/run-leftover-candidates.txt"
+leftover_candidates "$TMP/run.log" > "$LEFTOVER_CANDIDATES"
+
+# 先に「一覧を読み出せている」ことを固定する（green pin）。見出しの文言が変わって
+# awk が何も拾わなくなると、後続の「載っていない」は空振りで緑になるため。
+if grep -qxF 'feature/#1-merged-exact' "$LEFTOVER_CANDIDATES"; then
+  ok "取り残し候補一覧を読み出せる（(名前, OID) 一致の feature/#1-merged-exact が載る）"
+else
+  bad "取り残し候補一覧を読み出せない — 以降の「載っていない」主張は空振りの可能性がある"
+  { grep -n 'リモート取り残し' "$TMP/run.log" | tail -5 | sed 's/^/     /' >&2 || true; }
+fi
+
+if grep -qxF 'feature/#2-reused' "$LEFTOVER_CANDIDATES"; then
+  bad "OID 不一致の再利用ブランチが取り残し候補一覧に載っている（事前照合が名前一致へ退化）"
+  { tail -20 "$LEFTOVER_CANDIDATES" | sed 's/^/     /' >&2 || true; }
+else
+  ok "OID 不一致の再利用ブランチは取り残し候補一覧に載らない (feature/#2-reused)"
+fi
+
+# 同じことを削除側からも見る。事前照合で除外されていれば削除は試みられないので、
+# lease 拒否のスキップ記録（= 内側の防御が働いた痕跡）もサマリーの列挙も残らない。
+# 特定の文言（"lease 拒否): <branch>"）ではなく実行ログ全体での言及 0 件で見るのは、
+# 診断文言が変わったときに検査が黙って通る形を避けるため。正しい実行では Step 6 が
+# この branch に一切触れないので、この run のログには 1 度も名前が出ない（実測値）。
+if grep -qF 'feature/#2-reused' "$TMP/run.log"; then
+  bad "OID 不一致の再利用ブランチが Step 6 の処理対象になっている（事前照合を通過している）"
+  { grep -n -F 'feature/#2-reused' "$TMP/run.log" | tail -5 | sed 's/^/     /' >&2 || true; }
+else
+  ok "OID 不一致の再利用ブランチは実行ログに一度も現れない（削除自体を試みていない）"
+fi
+
+# 6.23 照合は (名前, OID) の**ペア**で行う。名前の集合と OID の集合を独立に見る形
+#      （名前がどれかの head と一致し、かつ OID がどれかの head と一致すれば通す）は、
+#      6.22 の入力では区別が付かない — feature/#2-reused の現 OID はどのマージ済み
+#      head でもないため、集合独立でも一致しないからだ。区別できるのは、名前と OID を
+#      別々の PR から借りられる入力だけ。feature/#47-crosspair は名前が PR A と、
+#      現 OID が PR B と一致するが、そのどちらのペアとも一致しない。
+#      集合独立の退化では削除まで到達する（lease のアンカーがリモートの現 OID に
+#      なるため lease でも止まらない）ので、リモートの残存も併せて固定する。
+if grep -qxF 'feature/#47-crosspair' "$LEFTOVER_CANDIDATES"; then
+  bad "クロスペアのブランチが取り残し候補一覧に載っている（名前と OID を独立に照合している）"
+  { tail -20 "$LEFTOVER_CANDIDATES" | sed 's/^/     /' >&2 || true; }
+else
+  ok "名前と OID を別 PR から借りたブランチは取り残し候補一覧に載らない (feature/#47-crosspair)"
+fi
+
+if grep -qF 'feature/#47-crosspair' "$TMP/run.log"; then
+  bad "クロスペアのブランチが Step 6 の処理対象になっている（ペア照合が集合照合へ退化）"
+  { grep -n -F 'feature/#47-crosspair' "$TMP/run.log" | tail -5 | sed 's/^/     /' >&2 || true; }
+else
+  ok "クロスペアのブランチは実行ログに一度も現れない (feature/#47-crosspair)"
+fi
+
+if remote_has 'feature/#47-crosspair'; then
+  ok "クロスペアのブランチを保護 (feature/#47-crosspair)"
+else
+  bad "名前と OID が別 PR 由来のブランチが誤削除された (feature/#47-crosspair)"
 fi
 
 # 4. open PR の head は削除されない
@@ -2357,7 +2485,15 @@ fi
 # 個々のアサートでは検出できない（誰も落ちないまま緑になる）。件数を変えたときは
 # 意図的な変更としてこの値を更新すること。全ケースは無条件に実行されるため、
 # 環境によって増減しない（書き込み不可環境は冒頭で skip して exit 0 になる）。
-EXPECTED_PASS=92
+#
+# 直近の変更で 91 → 97。内訳は +6（項目 3b = 6.22: 取り残し候補一覧の読み出しを固定
+# する green pin 1 件 + 事前照合の検出力 2 件 / 項目 3c = 6.23: ペア照合が集合独立照合
+# へ退化していないことの 3 件）。その前は 92 → 91 と**減って**おり、内訳は
+# +1（静的検査の対象へ verify.sh 自身を追加）/ -2（自前の検出器 self-test probe 2 件を
+# 廃止し、共有実装 tests/lib/mbcs-guard.sh の専用 suite tests/mbcs-guard-failclosed/ へ
+# 寄せた）。「黙って消えた」ではないことを残すために内訳を書く — 減少はここに理由が
+# 無ければ疑うべき兆候である。
+EXPECTED_PASS=97
 if [ "$PASS" -ne "$EXPECTED_PASS" ]; then
   echo "✗ merge-cleanup verify: 検査総数が想定と違います（期待 ${EXPECTED_PASS} / 実際 ${PASS}）" >&2
   echo "  ケースを増減したなら EXPECTED_PASS を更新すること。減っている場合は、" >&2

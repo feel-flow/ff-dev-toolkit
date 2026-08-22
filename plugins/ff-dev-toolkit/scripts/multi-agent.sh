@@ -69,6 +69,28 @@
 #   multi-value filters retain registry ownership. A requested perspective must
 #   exist for the selected task; invalid names are rejected before dry-run.
 #
+# Output layout (and what is NOT cleaned):
+#   <output-dir>/integrated-report.md      Aggregated report for THIS run only.
+#   <output-dir>/<cli>/<perspective>.md    This run's per-perspective results.
+#   <output-dir>/<cli>/previous/           Results left by an earlier run that this
+#                                          run does not plan to write.
+#   Before any CLI starts, a result file this orchestrator wrote under a planned
+#   CLI's directory that is not one of this run's targets is MOVED into
+#   <cli>/previous/, so listing that directory shows this run's results only.
+#   `previous/` is rebuilt on every run that includes its CLI — it holds what the
+#   latest such run displaced, not an archive; whatever it held is discarded (with
+#   a count on stderr). A CLI absent from this run's plan keeps both its results and
+#   its `previous/` untouched, so those directories are NOT rebuilt and are NOT this
+#   run's output; they are named on stderr and in the report instead.
+#   Deliberately untouched: directories of CLIs absent from this run's plan, `.md`
+#   files this orchestrator did not write (no `<!-- Multi-CLI ... Result -->` first
+#   line — a user's own notes are never moved or discarded), entries that are not
+#   `*.md` directly under <cli>/ (implement staging `files/` included), and anything
+#   reached through a symlink. A `<cli>/` that resolves anywhere other than itself
+#   (a symlink, pointing inside or outside <output-dir>) aborts the run before
+#   anything is written, deleted, or restored from the resume cache; a
+#   `<cli>/previous` *symlink* is removed as a link, never followed.
+#
 # Entry Points:
 #   Terminal:     bash scripts/multi-agent.sh --task review
 #   Claude Code:  /multi-review, /multi-explore, /multi-implement
@@ -759,6 +781,12 @@ FAILED_TASKS=""
 # EXECUTION_PLAN with only the tasks that still need execution. main restores the
 # complete plan before revision verification and report generation.
 FULL_EXECUTION_PLAN=""
+
+# 今回の実行では動かさないが、出力ディレクトリに残っている結果ファイルの名指し
+# （Issue #537 / #654）。quarantine_unplanned_outputs が実行ごとに詰め直し、
+# append_plan_sections が統合レポートへも載せる（stderr だけだと、レポート経由で
+# 結果を読む消費者に届かない）。
+UNPLANNED_RESULT_NOTES=""
 REUSED_TASKS=""
 EXECUTED_TASKS=""
 RESUME_IDENTITY_VERSION=1
@@ -1789,8 +1817,12 @@ validate_execution_plan() {
 # that produces no output leaves NO stale same-name file to be mis-reported as
 # current — instead the report surfaces it as "no output". Scoped to
 # the plan's own (cli, perspective) targets only; nothing else on disk (other
-# CLIs, other perspectives, unrelated user files) is touched. Callers run
+# CLIs, other perspectives, unrelated user files) is DELETED here. Callers run
 # validate_execution_plan first, so every token here is already a safe segment.
+# 「消さない」だけでは、観点を絞った実行のあとに前回結果が同じディレクトリへ残って
+# 今回の結果と読まれる（Issue #537 / #654）。その分は削除ではなく移動で塞ぐ —
+# 直後に走る quarantine_unplanned_outputs が、今回のプラン外の**自筆の**結果を
+# <cli>/previous/ へ退避する。利用者のファイルは移動対象にもしない。
 #
 # implement の staging（Issue #392）も同じ理由で消す。レポートだけ消して生成物を
 # 残すと、今回何も書かなかった実行のあとに前回の生成物がそのまま残り、「staging に
@@ -1835,6 +1867,291 @@ clear_previous_integrated_report() {
     echo "ERROR: cannot clear the previous integrated report: ${OUTPUT_DIR}/integrated-report.md" >&2
     return 1
   fi
+}
+
+# ── Quarantine Previous Runs' Unplanned Results（Issue #537 / #654） ──
+#
+# clear_planned_outputs が消すのは**今回のプランが書く先**だけなので、観点セットを
+# 絞った実行のあとには前回実行で書かれた別観点のファイルが同じディレクトリに残る。
+# integrated-report.md はプランを反復するので混ざらないが、`ls .review-results/<cli>/`
+# や個別ファイルを直接読む消費者（人間・エージェント）には現行結果と区別がつかない。
+# 実運用で 2 度、数日前の別 PR への Critical 指摘を今回の diff への指摘として読み
+# 始めるところだった（どちらもファイル先頭の `Generated` 時刻に気付いて回避した =
+# 能動的に確認しない限り気付けない状態だった）。
+#
+# 削除ではなく `<cli>/previous/` への**退避**にするのは、clear_planned_outputs が
+# 宣言している「プランの対象以外はディスク上の何にも触れない」を壊さないため
+# （`rm -rf <cli>/` は利用者がそこへ置いた無関係なファイルまで消す）。
+#
+# 動かすのは **orchestrator 自身が書いた結果ファイルだけ**（write_output の固定
+# 1 行目マーカーで判定する）。利用者が同じディレクトリへ置いた `.md` は退避しない
+# — 退避物は次の実行で捨てられるので、他人のファイルを退避すると「削除ではない」
+# という上の根拠が 1 実行遅れで嘘になる。マーカーの無い `.md` は動かさずに名指しする。
+#
+# 対象は今回のプランに載っている CLI のディレクトリ**だけ**、その直下の `*.md`
+# **だけ**。プラン外の CLI のディレクトリ、`files/`（implement の staging）、
+# `.md` 以外のファイルには触れない（触れない代わりに、結果ファイルを持つプラン外
+# ディレクトリは report_unplanned_result_dirs が名指しする）。
+#
+# `previous/` は毎回作り直す（追記しない）。世代を溜めると previous/ 自体が
+# 「いつの実行のものか分からない」第二の stale になり、本 Issue と同じ誤読を
+# 一段深いところで再現する。previous/ はアーカイブではなく「直前の実行が
+# 押し出した結果」の置き場で、次にその CLI を含む実行が走った時点で捨てる。
+
+# write_output（adapters/adapter-common.sh）が全結果ファイルの 1 行目へ必ず書く
+# マーカーの形。ここを変えるなら write_output と同時に変えること（退避対象の判定が
+# 静かに全外れして、前回結果が今回の結果として残る形の退行になる）。
+# ワイルドカードが受け持つのは task_label（Review / Explore / Implement）1 語ぶんだけ
+# — その語に ` Result -->` は現れないので、3 タスクすべてを取りこぼさず、
+# かつ本文の任意行を誤って 1 行目扱いすることもない。
+is_orchestrator_result() { # <file>
+  local path="$1" first=""
+  # `read` の rc は捨てる — 改行で終わらない 1 行ファイルは EOF で 1 を返すが、
+  # 読めた内容は正しい。読めなければ first は空のままで下の照合が偽になる。
+  IFS= read -r first < "$path" 2>/dev/null || true
+  [[ "$first" == '<!-- Multi-CLI '*' Result -->' ]]
+}
+
+# 解決後の物理パスが**渡されたパスそのもの**であることを確認して、その物理パスを返す。
+# 呼び出し側は OUTPUT_DIR（既に pwd -P 済み）から組み立てたパスを渡すので、実体の
+# ディレクトリなら解決結果は必ず一致する。一致しない = 途中に symlink があるという
+# ことで、そのときは触らない。
+#
+# 「OUTPUT_DIR 配下か」だけを見ないのは、配下判定が 2 つの穴を通すため:
+#   - <cli> が出力先の**内側**を指す symlink（例 codex-cli -> ./claude-code）だと配下
+#     判定を通るが、2 つの CLI 名が同じ実ディレクトリを共有し、同じ場所から退避しつつ
+#     「今回のプラン外」と名指しする矛盾した実行になる
+#   - 文字列 prefix 判定は途中の symlink を見抜けない（clear_staging_dir と同じ理由）
+# 検査したものと操作するものを一致させるため、呼び出し側は返り値の物理パスを使う。
+#
+# 前提（呼び出し側の責務）: 渡すパスの**接頭部は既に物理**であること。現在の呼び出しは
+# すべて OUTPUT_DIR（execute_tasks が pwd -P 済み）から組み立てている。論理パスを
+# 渡すと、symlink でないディレクトリでも不一致になり「symlink だ」と誤って中断する。
+resolve_expected_dir() { # <path> <label>
+  local path="$1" label="$2" resolved
+  if ! resolved="$(cd "$path" && pwd -P)"; then
+    echo "ERROR: cannot resolve ${label}: ${path}" >&2
+    return 1
+  fi
+  if [[ "$resolved" != "$path" ]]; then
+    echo "ERROR: ${label} is a symlink to another location — refusing to touch it." >&2
+    echo "       path:     ${path}" >&2
+    echo "       resolves: ${resolved}" >&2
+    case "$resolved" in
+      "$OUTPUT_DIR"/*)
+        echo "       Results are keyed by CLI name; two names sharing one directory would" >&2
+        echo "       quarantine from a directory this run also reports as not its own." >&2
+        ;;
+      *)
+        echo "       output:   ${OUTPUT_DIR}" >&2
+        echo "       Moving or deleting through it would reach outside the output dir." >&2
+        ;;
+    esac
+    return 1
+  fi
+  printf '%s\n' "$resolved"
+}
+
+# ── Phase 1: 検査（最初の破壊操作より前に一括で） ──
+# resume の書き戻し（restore_cached_result の mkdir -p + cp）も clear_planned_outputs
+# の rm -f も `${OUTPUT_DIR}/<cli>/` を素通りするので、<cli> が外向き symlink だと
+# **退避処理へ到達する前に**外部へ書き、外部を消してしまう。したがって解決検査は
+# 退避の中ではなく、プラン上の全 CLI について execute_tasks の破壊操作より前で行う。
+# 一括にするもう 1 つの理由: CLI ごとに検査していると「A は退避済み・B で検査落ち」
+# の中断が起こり、退避済みの A が次回実行の previous/ 作り直しで失われる。
+validate_planned_result_dirs() {
+  [[ -n "${OUTPUT_DIR:-}" ]] || return 0
+  local entry cli seen_clis=""
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    cli="${entry%%:*}"
+    case " ${seen_clis} " in
+      *" ${cli} "*) continue ;;
+    esac
+    seen_clis="${seen_clis} ${cli}"
+    validate_result_dir_paths "$cli" || return 1
+  done <<< "$EXECUTION_PLAN"
+}
+
+validate_result_dir_paths() { # <cli>
+  local cli="$1" cli_dir="${OUTPUT_DIR}/${cli}" prev_dir
+  if [[ -d "$cli_dir" ]]; then
+    resolve_expected_dir "$cli_dir" "the result dir for ${cli}" >/dev/null || return 1
+  elif [[ -e "$cli_dir" || -L "$cli_dir" ]]; then
+    echo "ERROR: the result path for ${cli} exists but is not a directory: ${cli_dir}" >&2
+    echo "       Results are written under it, so this run cannot proceed." >&2
+    return 1
+  else
+    return 0
+  fi
+  prev_dir="${cli_dir}/previous"
+  # symlink は追わずリンク自体を消す（clear_quarantine_dir）ので、解決検査が要るのは
+  # 実体のディレクトリだけ。
+  if [[ -d "$prev_dir" && ! -L "$prev_dir" ]]; then
+    resolve_expected_dir "$prev_dir" "the quarantine dir" >/dev/null || return 1
+  fi
+  return 0
+}
+
+# ── Phase 2: 退避（clear_planned_outputs の後） ──
+quarantine_unplanned_outputs() {
+  [[ -n "${OUTPUT_DIR:-}" ]] || return 0
+  UNPLANNED_RESULT_NOTES=""
+  local entry cli seen_clis=""
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    cli="${entry%%:*}"
+    case " ${seen_clis} " in
+      *" ${cli} "*) continue ;;
+    esac
+    seen_clis="${seen_clis} ${cli}"
+    quarantine_cli_results "$cli" || return 1
+  done <<< "$FULL_EXECUTION_PLAN"
+  # 報告専用の関数を最終式にしない。呼び出し側は rc=2（準備段階の失敗 = レポートを
+  # 出さずに中断）へ倒すので、名指しの走査が何かの拍子に非 0 を返すと、退避は成功して
+  # いるのに実行ごと落ちる。退避の成否は上のループが既に返している。
+  report_unplanned_result_dirs
+  return 0
+}
+
+# 前回退避分を消す。素の `rm -rf` を撃たないのは clear_staging_dir と同じ理由
+# （途中の symlink で再帰削除が OUTPUT_DIR の外へ抜ける）。
+clear_quarantine_dir() { # <dir>
+  local dir="$1" resolved discarded=0 f
+  # symlink は**追わない**。`[[ -d ]]` は symlink→dir でも真になるため -L を先に見る。
+  # 追うと指し先を丸ごと消す — `previous -> ../claude-code` ならプラン外 CLI の結果
+  # 一式、`previous -> .` なら自分の CLI ディレクトリ（staging の files/ を含む）。
+  # 解決先が OUTPUT_DIR 配下でも消してはいけないので、配下判定ではなくリンク自体の
+  # 削除で塞ぐ。同型の追従は clear_staging_dir にも残るが、そちらは Issue #722 の
+  # スコープ（本 PR は診断文言を固定している既存 suite を壊さないため触らない）。
+  if [[ -L "$dir" ]]; then
+    if ! rm -f "$dir"; then
+      echo "ERROR: cannot remove the symlink at the quarantine path: ${dir}" >&2
+      return 1
+    fi
+    echo "  ⚠️ Removed a symlink at the quarantine path (its target was left untouched): ${dir}" >&2
+    return 0
+  fi
+  if [[ -d "$dir" ]]; then
+    resolved="$(resolve_expected_dir "$dir" "the quarantine dir")" || return 1
+    for f in "$resolved"/*.md; do
+      if [[ -f "$f" || -L "$f" ]]; then
+        discarded=$((discarded + 1))
+      fi
+    done
+    if ! rm -rf "$resolved"; then
+      echo "ERROR: cannot clear the previous quarantine dir: ${resolved}" >&2
+      return 1
+    fi
+    # 無言で捨てない。退避物の寿命は「次にこの CLI を含む実行が走るまで」なので、
+    # 捨てた事実と件数が出ていないと、利用者は previous/ を残っているものとして探す。
+    if [[ "$discarded" -gt 0 ]]; then
+      echo "  🗑️  Discarded ${discarded} quarantined result(s) from an earlier run: ${resolved}" >&2
+    fi
+    return 0
+  fi
+  # ディレクトリでない残骸（ファイル・壊れた symlink 以外の実体）はそれ自体を消す。
+  if [[ -e "$dir" ]]; then
+    if ! rm -f "$dir"; then
+      echo "ERROR: cannot remove non-directory at quarantine path: ${dir}" >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
+plan_has_entry() { # <cli:perspective>
+  local target="$1" entry
+  while IFS= read -r entry; do
+    [[ "$entry" == "$target" ]] && return 0
+  done <<< "$FULL_EXECUTION_PLAN"
+  return 1
+}
+
+plan_has_cli() { # <cli>
+  local target="$1" entry
+  while IFS= read -r entry; do
+    [[ "${entry%%:*}" == "$target" ]] && return 0
+  done <<< "$FULL_EXECUTION_PLAN"
+  return 1
+}
+
+# 動かさないが名指しはする残骸を記録する。stderr へ 1 行出し、統合レポートにも
+# 同じ内容を載せる（レポートだけを読む消費者にも届かせるため）。
+note_unplanned_results() { # <text>
+  UNPLANNED_RESULT_NOTES="${UNPLANNED_RESULT_NOTES:+${UNPLANNED_RESULT_NOTES}
+}$1"
+  echo "  ⚠️ Not part of this run: $1" >&2
+}
+
+quarantine_cli_results() { # <cli>
+  local cli="$1"
+  local cli_dir="${OUTPUT_DIR}/${cli}"
+  [[ -d "$cli_dir" ]] || return 0
+
+  local resolved_cli
+  resolved_cli="$(resolve_expected_dir "$cli_dir" "the result dir for ${cli}")" || return 1
+
+  local prev_dir="${resolved_cli}/previous"
+  clear_quarantine_dir "$prev_dir" || return 1
+
+  local moved=0 foreign=0 moved_names="" file base resolved_prev=""
+  for file in "$resolved_cli"/*.md; do
+    # nullglob は使わない（グローバルに効かせると他の展開の意味まで変わる）。
+    # 一致 0 件のとき glob はパターンそのものへ展開されるので、実体検査で弾く。
+    # ディレクトリ（`foo.md/`）は結果ファイルではないので触らない。
+    [[ -f "$file" || -L "$file" ]] || continue
+    base="${file##*/}"
+    plan_has_entry "${cli}:${base%.md}" && continue
+    if ! is_orchestrator_result "$file"; then
+      foreign=$((foreign + 1))
+      continue
+    fi
+    if [[ -z "$resolved_prev" ]]; then
+      if ! mkdir -p "$prev_dir"; then
+        echo "ERROR: cannot create quarantine dir: ${prev_dir}" >&2
+        return 1
+      fi
+      resolved_prev="$(resolve_expected_dir "$prev_dir" "the quarantine dir")" || return 1
+    fi
+    if ! mv "$file" "${resolved_prev}/${base}"; then
+      echo "ERROR: cannot quarantine a previous run's result: ${file}" >&2
+      echo "       A previous run's result would be read as this run's output." >&2
+      return 1
+    fi
+    moved=$((moved + 1))
+    moved_names="${moved_names:+${moved_names}, }${base%.md}"
+  done
+
+  if [[ "$moved" -gt 0 ]]; then
+    echo "  🧹 Moved ${moved} result(s) from a previous run into ${resolved_prev}: ${moved_names}" >&2
+  fi
+  if [[ "$foreign" -gt 0 ]]; then
+    note_unplanned_results "${cli}/ (${foreign} .md file(s) this orchestrator did not write — left in place, not this run's output)"
+  fi
+  return 0
+}
+
+# プラン外の CLI ディレクトリは 1 バイトも動かさない。ただし黙っていると
+# `ls .review-results/` が前回実行の結果一式を今回の結果のように見せるので、
+# 結果ファイルを持つものを名指しする（本 Issue が塞いだ誤読の、ディレクトリ単位版）。
+report_unplanned_result_dirs() {
+  local dir cli count file
+  for dir in "$OUTPUT_DIR"/*/; do
+    [[ -d "$dir" ]] || continue
+    cli="${dir%/}"
+    cli="${cli##*/}"
+    plan_has_cli "$cli" && continue
+    count=0
+    for file in "${dir}"*.md; do
+      if [[ -f "$file" || -L "$file" ]]; then
+        count=$((count + 1))
+      fi
+    done
+    if [[ "$count" -gt 0 ]]; then
+      note_unplanned_results "${cli}/ (${count} result file(s) from an earlier run — left untouched, not this run's output)"
+    fi
+  done
 }
 
 # ── Resume Identity And Cache（Issue #586） ──
@@ -2093,6 +2410,13 @@ execute_tasks() {
   # prior report first so that a setup failure can never leave a stale report at
   # the exact path printed by successful runs.
   clear_previous_integrated_report || return 2
+  # 結果ディレクトリの解決検査は**<cli>/ 配下へ触る最初の操作より前**に一括で行う
+  # （Issue #537 / #654）。この下の resume 書き戻し（cp）・clear_planned_outputs
+  # （rm -f）・退避（mv）はどれも `${OUTPUT_DIR}/<cli>/` を素通りするので、検査を
+  # 退避の中に置くと <cli> が外向き symlink のときに検査到達前へ書き込み・削除が
+  # 済んでしまう。統合レポートの削除より後に置くのは、この検査で落ちた実行が
+  # 「前回のレポートを今回の結果として案内する」状態を残さないため（上の理由と対）。
+  validate_planned_result_dirs || return 2
   # A task without prompt diff must not inherit the previous review's fixed diff.
   # Diff-bearing tasks overwrite the file in create_fixed_diff below; removing it
   # here for all tasks would erase the bytes before resume identity can hash them.
@@ -2105,6 +2429,12 @@ execute_tasks() {
   capture_baseline_and_fix_diff || return 2
   prepare_resume_execution_plan || return 2
   clear_planned_outputs || return 2
+  # 今回のプランに載っていない前回結果を退避する。プラン**全体**（resume で再利用へ
+  # 倒れた観点を含む FULL_EXECUTION_PLAN）を基準にする — 実行分だけの
+  # EXECUTION_PLAN で判定すると、resume が直前にキャッシュから書き戻した結果を
+  # 自分で退避してしまう。レポートも main で FULL_EXECUTION_PLAN へ戻してから
+  # 反復するので、「今回のもの」の定義が両者で一致する。
+  quarantine_unplanned_outputs || return 2
 
   if [[ -z "$EXECUTION_PLAN" ]]; then
     echo "♻️  All ${TASK_TYPE} tasks were restored from the validated resume cache." >&2
@@ -2483,8 +2813,11 @@ print_failure_advice() {
 # running (clear_planned_outputs), so a prior run's result — a different
 # perspective, or a same-named stale file left by a failed task — does not
 # appear as current. The report only reads result files and writes report_file;
-# no result file is deleted or modified here, so a shared --output-dir re-run or
-# a partial --cli/--perspective run is non-destructive. A planned entry with no
+# no result file is deleted or modified *here*, though the run itself is not
+# side-effect free on a shared --output-dir: execute_tasks deletes this run's own
+# targets (clear_planned_outputs) and moves the plan's other results into
+# <cli>/previous/, discarding what an earlier run left there
+# (quarantine_unplanned_outputs). A planned entry with no
 # output file (CLI failure) is surfaced, not silently dropped. Callers must pass
 # only validated plan entries — today every caller reaches here via
 # generate_report, which runs validate_execution_plan first.
@@ -2495,6 +2828,23 @@ print_failure_advice() {
 append_plan_sections() {
   local report_file="$1"
   local wrote_any=1
+
+  # 今回の実行が書かなかった結果ファイルの名指し（Issue #537 / #654）。退避できない
+  # もの（プラン外 CLI のディレクトリ・orchestrator 以外が書いた .md）は動かさない
+  # 契約なので、レポート側で「これは今回の結果ではない」と言い切っておく。
+  local note
+  if [[ -n "${UNPLANNED_RESULT_NOTES:-}" ]]; then
+    {
+      echo ""
+      echo "> **Not part of this run** — the output directory also holds files this run did not write."
+      echo "> They were left untouched and are NOT this run's results:"
+      echo ">"
+      while IFS= read -r note; do
+        [[ -n "$note" ]] || continue
+        echo "> - ${note}"
+      done <<< "$UNPLANNED_RESULT_NOTES"
+    } >> "$report_file"
+  fi
 
   local entry seen=""
   while IFS= read -r entry; do

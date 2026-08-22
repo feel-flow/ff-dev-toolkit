@@ -1,9 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'child_process';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import url from 'url';
 import { splitSections, parseScalar, parseFrontMatter, buildGlossary, maskNonGlossaryLines, maskClosedSpans } from '../src/utils.js';
 
 // ---------- splitSections ----------
@@ -422,9 +417,6 @@ describe('buildGlossary', () => {
 
 // ---------- maskClosedSpans: インラインコードスパン / CRLF（Issue #527） ----------
 
-const TEST_DIR = path.dirname(url.fileURLToPath(import.meta.url));
-const DOCS_SCAN_LIB = path.resolve(TEST_DIR, '../../tests/lib/docs-scan.sh');
-
 /**
  * The Issue #527 reproduction: prose quoting `<!--` in an inline code span,
  * followed by a mermaid arrow (`-->`) that must not be taken as the closer.
@@ -434,7 +426,10 @@ const DOCS_SCAN_LIB = path.resolve(TEST_DIR, '../../tests/lib/docs-scan.sh');
  * both the "skip spans" rule and the re-examination of the same line after a
  * comment is removed (the quoted marker must not open on the second pass).
  *
- * Shared by the TS behaviour test and the awk/TS parity test below.
+ * The same *cases* also appear, as separate input of the same shape (not the
+ * same bytes), in the shared corpus the awk/TS mirror gate reads
+ * (tests/docs-scan-mirror/fixtures/inline-code-span-quote.md) — that gate owns
+ * the cross-implementation comparison, this test owns the TS expectation.
  */
 const INLINE_MARKER_FIXTURE = [
   'マーカーは `<!--` と書く',
@@ -564,42 +559,14 @@ describe('buildGlossary: 引用マーカーが用語索引を落とさない（I
   });
 });
 
-// ---------- awk 版との一致（Issue #527 AC-2。機械照合の常設ゲートは #528） ----------
-
-/** Run `ff_docs_mask_spans` from tests/lib/docs-scan.sh over the given lines. */
-const runAwkMask = (lines: string[], eol: string): string[] => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ff-527-'));
-  try {
-    const file = path.join(dir, 'fixture.md');
-    fs.writeFileSync(file, lines.join(eol) + eol);
-    const out = execFileSync(
-      'bash',
-      ['-c', '. "$1" && ff_docs_mask_spans "$2"', 'bash', DOCS_SCAN_LIB, file],
-      { encoding: 'utf8' },
-    );
-    return out.replace(/\n$/, '').split('\n');
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-};
-
-// CR は比較の前に落とす: awk は RS="\n" で読むため未マスク行に \r が残るが、TS 側は
-// `/\r?\n/` で分割した後の行を受け取る。AC-3 が問うのは「マスクするかどうかの判断」で
-// あって CR を保存するかではない。
-const stripCr = (lines: string[]): string[] => lines.map((l) => l.replace(/\r$/, ''));
-
-describe('ff_docs_mask_spans (awk) と maskClosedSpans (TS) の一致', () => {
-  const hasLib = fs.existsSync(DOCS_SCAN_LIB);
-
-  it.skipIf(!hasLib)('インラインコードスパン fixture で完全に一致する', () => {
-    expect(runAwkMask(INLINE_MARKER_FIXTURE, '\n')).toEqual(maskClosedSpans(INLINE_MARKER_FIXTURE));
-  });
-
-  it.skipIf(!hasLib)('CRLF fixture で一致する（両方ともフェンスをマスクする）', () => {
-    const lines = ['```text', '中身', '```', 'KEEP'];
-    const awk = stripCr(runAwkMask(lines, '\r\n'));
-    const ts = stripCr(maskClosedSpans(lines.map((l) => l + '\r')));
-    expect(awk).toEqual(['', '', '', 'KEEP']);
-    expect(awk).toEqual(ts);
-  });
-});
+// ---------- awk 版との一致は tests/docs-scan-mirror へ移設（Issue #528） ----------
+//
+// ここには fixture 2 件ぶんの暫定照合（`ff_docs_mask_spans` を bash 経由で叩いて
+// 比較する）が置かれていたが、コーパスを 2 箇所に持つことになるうえ、AC-1 が要求する
+// 境界ケース（未閉鎖 opener / 記号混在 / フェンス長 / 末尾 opener など）を網羅できない。
+// 常設の mirror ゲートは tests/docs-scan-mirror/verify.sh（run-all.sh の
+// REQUIRED_SUITES 登録済み）が担う。**このファイルには awk 側との照合を再び書かない**
+// — 二重化すると片方だけ更新されて、どちらが正本か分からなくなる。
+//
+// 上の describe は TS 側単体の意味論（Issue #527 の narrowing）を固定するもので、
+// mirror ゲートとは関心事が違うのでここに残す。

@@ -6,7 +6,7 @@
 
 - ライブラリの未設定 / 空配列 / 有値、prefix境界、重複除去、センチネル拒否、
   `env -u`後のケース固有代入を直接実測する
-- 共通ライブラリをsourceするconsumerを自動発見し、現行9 suiteの名簿と双方向照合する
+- 共通ライブラリをsourceするconsumerを自動発見し、現行12 suiteの名簿と双方向照合する
 - `run_isolated`除去、センチネル部分欠落、先頭`unset_isolated_vars`のprobe内移動、
   `review-wrapper-shim`の素起動追加を隔離コピーへ入れ、各変異が名指しでredになることを測る
 
