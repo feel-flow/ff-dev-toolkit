@@ -2,7 +2,7 @@
 
 ## 概要
 
-5つのAI CLI（Claude Code / Codex / Copilot / Gemini / Grok）を統一オーケストレーターで並列実行し、**Review（レビュー）** / **Explore（探索）** / **Implement（実装）** の3タスクタイプを実行する仕組み。
+4つのAI CLI（Claude Code / Codex / Copilot / Grok）を統一オーケストレーターで並列実行し、**Review（レビュー）** / **Explore（探索）** / **Implement（実装）** の3タスクタイプを実行する仕組み。
 
 > **Note**: GitHub Copilot CLI は従量課金へ移行したため、**Review タスクの既定ラインナップから除外**しています（`--cli copilot-cli` でオプトイン）。Explore / Implement では引き続き既定で使用します。
 
@@ -25,7 +25,7 @@ multi-agent.sh --task review|explore|implement [options]
 | `multi-agent.sh`    | 統一オーケストレーター                               |
 | `multi-review.sh`   | 後方互換ラッパー（→ multi-agent.sh --task review）   |
 | `adapter-common.sh` | 共通ユーティリティ（prompt構築、出力、タイムアウト） |
-| `*-adapter.sh`      | CLI固有の薄いラッパー（5つ）                         |
+| `*-adapter.sh`      | CLI固有の薄いラッパー（4つ）                         |
 | `perspectives/`     | タスクタイプ別プロンプトテンプレート                 |
 | `agent-config.yaml` | 設定ファイル（v2.0）                                 |
 
@@ -41,8 +41,8 @@ multi-agent.sh --task review|explore|implement [options]
 | code-review          | codex-cli     | コードレビュー         |
 | error-handler-hunt   | grok-cli      | エラーハンドリング検出 |
 | test-analysis        | codex-cli     | テスト分析             |
-| comment-analysis     | gemini-cli    | コメント分析           |
-| security-analysis    | gemini-cli    | セキュリティ分析       |
+| comment-analysis     | claude-code   | コメント分析           |
+| security-analysis    | grok-cli      | セキュリティ分析       |
 | code-simplification  | claude-code   | コード簡素化           |
 
 ### Explore（探索）
@@ -55,7 +55,7 @@ multi-agent.sh --task review|explore|implement [options]
 | dependency-mapping    | codex-cli     | 依存関係マッピング     |
 | api-surface-analysis  | copilot-cli   | API サーフェス分析     |
 | tech-debt-assessment  | grok-cli      | 技術的負債評価         |
-| pattern-discovery     | gemini-cli    | パターン検出           |
+| pattern-discovery     | grok-cli      | パターン検出           |
 
 ### Implement（実装）
 
@@ -66,7 +66,7 @@ multi-agent.sh --task review|explore|implement [options]
 | feature-implementation | claude-code   | コア実装         |
 | refactoring            | codex-cli     | リファクタリング |
 | test-writing           | copilot-cli   | テスト生成       |
-| documentation          | gemini-cli    | ドキュメント生成 |
+| documentation          | codex-cli     | ドキュメント生成 |
 | migration              | grok-cli      | マイグレーション |
 
 ## 使い方
@@ -130,10 +130,10 @@ orchestrator は CLI を対象リポジトリの物理ルートから起動し�
 渡さず実行前に拒否する。
 
 CLI ごとの機械境界は意図的に非対称である。Codex は `workspace-write`（network off）、
-Grok は `workspace`、Gemini は sandbox 無し、Claude Code は Write/Edit/Bash tools、
+Grok は `workspace`、Claude Code は Write/Edit/Bash tools、
 Copilot は既定 permission を使う。いずれも repository root より外へは広げず、staging
 だけへの限定はプロンプト契約である。アダプタ直叩きの `--inline-output` は別で、Codex /
-Grok を read-only、Gemini を sandbox、Claude Code を読み取り tools、Copilot を
+Grok を read-only、Claude Code を読み取り tools、Copilot を
 write / shell deny へ狭め、作業ツリーへ書かない契約を機械的に裏付ける（Issue #398）。
 
 ## 設定 (agent-config.yaml)

@@ -388,7 +388,7 @@ done < <(find "$PLUGIN_ROOT/scripts/adapters" -name '*-adapter.sh' -type f | LC_
 
 # アダプタは CLI ごとに 1 本。数が減ったら検査が静かに縮むので下限を主張する。
 # CLI を増減したらこの数字も更新すること。
-EXPECTED_ADAPTER_COUNT=5
+EXPECTED_ADAPTER_COUNT=4
 if [ "${#ADAPTER_FILES[@]}" -eq "$EXPECTED_ADAPTER_COUNT" ]; then
   ok "アダプタ ${EXPECTED_ADAPTER_COUNT} 本すべてを配線検査の対象にしている"
 else

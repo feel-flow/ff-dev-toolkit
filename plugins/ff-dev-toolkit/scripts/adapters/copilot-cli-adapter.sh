@@ -88,10 +88,22 @@ add_model_arg --model MULTI_AGENT_MODEL_COPILOT_CLI \
   || fail_orchestrator_error "$perspective_name" "add_model_arg の呼び出しが不正です（アダプタ側のバグ）。"
 echo_model_args
 
+# プロンプトは argv ではなく stdin で渡す（Issue #712: argv 渡しは Windows の
+# CreateProcess 上限 ~32KB で exit 126 になる）。copilot は `-p ""`（空文字）の
+# とき stdin をプロンプトとして読む（GitHub Copilot CLI 1.0.80 で実測）。
+# `-p` を**非空**にすると stdin は無視される（同バージョンで実測: stdin の
+# マーカーが届かず NO_STDIN 応答）ため、空文字から変えないこと。
+prompt_file="$(materialize_prompt_file "$prompt")" || prompt_file=""
+if [[ -z "$prompt_file" ]]; then
+  fail_orchestrator_error "$perspective_name" \
+    "cannot write the prompt to a temp file (check TMPDIR)."
+fi
+_FF_PROMPT_FILE="$prompt_file"
+
 # MODEL_ARGS は空になりうる。bash 3.2 では set -u 下で空配列を "${a[@]}" と
 # 展開すると unbound variable で落ちるため ${a[@]+"${a[@]}"} を使う。
-result=$(run_with_timeout "$TIMEOUT" \
-  "$CLI_COMMAND" -p "$prompt" \
+result=$(run_with_timeout --stdin-file "$prompt_file" "$TIMEOUT" \
+  "$CLI_COMMAND" -p "" \
     --silent \
     ${COPILOT_PERMISSION_ARGS[@]+"${COPILOT_PERMISSION_ARGS[@]}"} \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
@@ -100,6 +112,8 @@ result=$(run_with_timeout "$TIMEOUT" \
     rc=$?
     fail_cli_task "$rc" "$stderr_log" "$perspective_name" "$result"
   }
+rm -f "$prompt_file"
+_FF_PROMPT_FILE=""
 # exit 0 + 空出力。ここで stderr を先に捨てると「なぜ空だったか」を言う唯一の
 # チャネルが消え、成果物も残らない（実測: レート制限の一文が stderr にだけ出て、
 # 成果物もログも残らなかった — feel-flow/ff-dev-toolkit#6 の残件）。fail_cli_task

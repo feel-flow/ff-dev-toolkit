@@ -5,7 +5,7 @@ description: 複数の AI CLI を並列実行して実装タスクを分担す�
 
 # /multi-implement — 複数AIによる並列実装
 
-5つのAI CLI（Claude Code / Codex / Copilot / Gemini / Grok）を並列実行し、異なる観点から実装タスクを分担します。
+4つのAI CLI（Claude Code / Codex / Copilot / Grok）を並列実行し、異なる観点から実装タスクを分担します。
 
 ## プラグインルートの解決
 
@@ -98,7 +98,7 @@ ls -la .implement-results/
 | claude-code | feature-implementation | src/... | 新規作成 |
 | codex-cli | refactoring | src/... | 変更 |
 | copilot-cli | test-writing | tests/... | 新規作成 |
-| gemini-cli | documentation | docs/... | 新規作成 |
+| codex-cli | documentation | docs/... | 新規作成 |
 
 ### 競合チェック
 - 同一ファイルを複数CLIが変更している場合は警告

@@ -1,6 +1,6 @@
 # multi-agent-serialization test
 
-`scripts/multi-agent.sh` の free-tier 限定逐次化と、それ以外の tier でタスク並列を維持する契約を stub CLI で検証する suite。
+`scripts/multi-agent.sh` の flat-rate（minimize_cost の振替先）限定逐次化と、それ以外の tier でタスク並列を維持する契約を stub CLI で検証する suite。tier の付け替え経緯: free-tier の gemini-cli が対象だったが、issue #783 の gemini 削除に伴い flat-rate の grok-cli へ移った。
 
 ## 並列維持の判定
 
@@ -8,7 +8,7 @@ standard tier の codex stub 2 本は、各自が開始マーカーを書いた�
 
 検出力は、一時コピーした orchestrator の tier 条件へ standard tier を加える変異で実測する。変異が対象行へ 1 回だけ当たったこと、実行が非 0 になったこと、codex stub がバリア期限切れを記録したことをそれぞれ検査する。
 
-free-tier の gemini stub は従来どおり 0.6 秒の滞留窓と start/end の厳密な交互列で逐次化を検査する。この既存検査は Issue #415 では変更しない。
+flat-rate の grok stub は 0.6 秒の滞留窓と start/end の厳密な交互列で逐次化を検査する（Issue #415 当時は free-tier の gemini stub。issue #783 で grok へ移行）。grok アダプタのサンドボックス肯定確認は、stub が本物と同形の ProfileApplied イベントを GROK_HOME へ追記して通す。
 
 ## 実行時間
 

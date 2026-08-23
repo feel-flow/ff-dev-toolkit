@@ -431,9 +431,11 @@ mkdir -p "$PROMPT_DIR"
 
 # codex stub。受け取ったプロンプトを PID ごとに保存し、リポジトリを動かす指示
 # ファイルがあればそのとおりに動かす（実行中のブランチ操作の決定的な再現）。
+# プロンプト本文は Issue #712 以降 stdin で届くため argv と stdin を合成して
+# 保存する（argv だけだと diff 照合の中核検査が空集合同士の一致で空洞化する）。
 cat > "$STUB/codex" <<SH
 #!/usr/bin/env bash
-printf '%s\n' "\$*" > "$PROMPT_DIR/prompt.\$\$"
+{ printf '%s\n' "\$*"; cat; } > "$PROMPT_DIR/prompt.\$\$"
 if [ -f "$TMP/mutate-commit" ]; then
   git -C "$REPO" commit -q --allow-empty -m "changed by stub" 2>/dev/null || true
 fi

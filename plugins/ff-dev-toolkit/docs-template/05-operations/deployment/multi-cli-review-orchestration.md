@@ -4,7 +4,7 @@
 
 ## 概要
 
-複数のAI CLI（Claude Code、Codex、Gemini、Copilot）をレビュワーとしてオーケストレーションし、設定駆動で統一的に管理する運用ガイドです。
+複数のAI CLI（Claude Code、Codex、Copilot、Grok）をレビュワーとしてオーケストレーションし、設定駆動で統一的に管理する運用ガイドです。
 
 **目的**: 各CLIの得意分野とコスト特性を活かし、高品質かつコスト効率の良いコードレビューを実現する
 
@@ -57,6 +57,15 @@ bash scripts/multi-review.sh --staged
 混ぜない。変更が無ければ CLI を起動せず明示 skip + exit 0 になる。`--base` および
 `MULTI_AGENT_BASE_BRANCH` との同時指定はレビュー範囲が曖昧になるため拒否する。
 
+`--base <branch>` の裸のブランチ名は**ローカル ref を先に**見る。ブランチを
+`origin/<branch>` の先端から切ったのにローカル base が後退している場合、三点比較の
+merge-base がずれ、他ブランチのマージ済みコミットがレビュー diff に混入する。
+この形（merge-base の不一致）を検出した場合、review / `--include-diff` の実行では
+プラン表示の前に混入件数つきの警告を出す（中断はしない — 意図的にローカル base を
+使う運用を壊さないため。`origin/<branch>` の明示指定か、base の pull 最新化で解消）。
+なお「pull していないローカル base から切ったブランチ」は behind でも混入ゼロなので
+警告しない（behind 数ではなく merge-base を比較する）。
+
 レビュー結果は [PRレビュー対応ポリシー](./review-response-policy.md) に従って対応します。
 
 #### Pattern 2: Parallel Task Suggestion（ユーザーに提案）
@@ -100,7 +109,7 @@ bash scripts/multi-review.sh --staged
              ┌───────────┬─────┴─────┬───────────┐
              │           │           │           │
         ┌────▼────┐ ┌────▼────┐ ┌────▼────┐ ┌────▼────┐
-        │Claude   │ │Codex    │ │Copilot  │ │Gemini   │
+        │Claude   │ │Codex    │ │Copilot  │ │Grok     │
         │Adapter  │ │Adapter  │ │Adapter  │ │Adapter  │
         └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘
              │           │           │           │
@@ -115,7 +124,7 @@ bash scripts/multi-review.sh --staged
                     │  ├── claude-code/       │
                     │  ├── codex-cli/         │
                     │  ├── copilot-cli/       │
-                    │  ├── gemini-cli/        │
+                    │  ├── grok-cli/          │
                     │  └── integrated-report.md│
                     └─────────────────────────┘
 ```
@@ -126,7 +135,7 @@ bash scripts/multi-review.sh --staged
 2. **設定読み込み** → `review-config.yaml` からCLI設定・戦略を取得
 3. **CLI検出** → `command -v` で利用可能なCLIを検出
 4. **フォールバック** → 未インストールCLIのパースペクティブを再分配
-5. **並列実行** → 各CLIアダプターを並列で実行（free-tier CLI に複数観点が乗る場合、その CLI 内はレート制限保護のため逐次実行。CLI 間の並列は維持）
+5. **並列実行** → 各CLIアダプターを並列で実行（flat-rate CLI に複数観点が乗る場合、その CLI 内はレート制限保護のため逐次実行。CLI 間の並列は維持）
 6. **結果収集** → `.review-results/{cli-name}/{perspective}.md` に出力（実行開始時に、今回のプランに無い自筆の前回結果を `{cli-name}/previous/` へ退避してから書く）
 7. **統合レポート** → 重複除去・統合してレポート生成
 
@@ -173,7 +182,7 @@ Windows で使う場合は bash が動く環境を用意する:
 command -v claude  && echo "✅ Claude Code" || echo "❌ Claude Code"
 command -v codex   && echo "✅ Codex CLI"   || echo "❌ Codex CLI"
 command -v copilot && echo "✅ Copilot CLI"  || echo "❌ Copilot CLI"
-command -v gemini  && echo "✅ Gemini CLI"   || echo "❌ Gemini CLI"
+command -v grok    && echo "✅ Grok CLI"     || echo "❌ Grok CLI"
 ```
 
 ---
@@ -204,28 +213,28 @@ agents:
   claude-code:
     command: claude
     cost_tier: premium
-    default_perspectives: [type-design-analysis]
+    default_perspectives: [type-design-analysis, comment-analysis]
 
   codex-cli:
     command: codex
     cost_tier: standard
-    default_perspectives: [code-review, error-handler-hunt, test-analysis]
+    default_perspectives: [code-review, test-analysis]
 
   copilot-cli:
     command: copilot
     cost_tier: metered # 従量課金 — 既定プランには載らない（--cli copilot-cli 明示時のみ実行）
     default_perspectives: [test-analysis, comment-analysis]
 
-  gemini-cli:
-    command: gemini
-    cost_tier: free-tier
-    default_perspectives: [security-analysis, comment-analysis]
+  grok-cli:
+    command: grok
+    cost_tier: flat-rate
+    default_perspectives: [error-handler-hunt, security-analysis]
 
 fallback:
   claude-code: codex-cli
   codex-cli: claude-code
   copilot-cli: codex-cli
-  gemini-cli: codex-cli
+  grok-cli: codex-cli
 ```
 
 ### Step 3: 動作確認
@@ -247,7 +256,7 @@ bash scripts/multi-review.sh --cli codex-cli --perspective test-analysis
 | 戦略               | 説明                       | 推奨場面                 |
 | ------------------ | -------------------------- | ------------------------ |
 | `balanced`         | コストと品質のバランス     | 通常の開発（デフォルト） |
-| `minimize_cost`    | 固定料金/無料CLIを優先使用 | 予算制約がある場合       |
+| `minimize_cost`    | 定額（flat-rate）CLIを優先使用 | 予算制約がある場合       |
 | `maximize_quality` | 高品質CLIに多く割当        | リリース前の最終レビュー |
 
 ### モード
@@ -259,14 +268,14 @@ bash scripts/multi-review.sh --cli codex-cli --perspective test-analysis
 
 ### よくあるカスタマイズ例
 
-#### 例1: Gemini のみで運用（無料枠）
+#### 例1: Grok のみで運用（定額）
 
 ```yaml
 cost_strategy: minimize_cost
 agents:
-  gemini-cli:
-    command: gemini
-    cost_tier: free-tier
+  grok-cli:
+    command: grok
+    cost_tier: flat-rate
     default_perspectives:
       [security-analysis, code-simplification, type-design-analysis]
 ```
@@ -316,11 +325,11 @@ agents:
 #!/bin/sh
 . "$(dirname "$0")/_/husky.sh"
 
-# Multi-CLI レビュー（固定料金/無料CLIのみ、高速）
+# Multi-CLI レビュー（定額CLIのみ、高速）
 # 終了コードを捨てないこと: レビューが 1 本でも失敗・タイムアウトすると非 0 になる
 if ! bash scripts/multi-review.sh \
   --strategy minimize_cost \
-  --cli gemini-cli \
+  --cli grok-cli \
   --sequential; then
   echo "❌ レビューを完走できませんでした（失敗 or タイムアウト）。"
   echo "   未完了のレビューは「指摘なし」ではなく「未確認」です。ゲートとしては通せません。"
@@ -383,8 +392,8 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           # Codex CLI: https://github.com/openai/codex
           npm install -g @openai/codex
-          # Gemini CLI: https://github.com/google-gemini/gemini-cli
-          npm install -g @google/gemini-cli
+          # Grok CLI
+          npm install -g @xai-official/grok
       - name: Run Multi-CLI Review
         run: bash scripts/multi-review.sh --strategy minimize_cost
       - name: Upload results
@@ -461,7 +470,7 @@ ERROR: codex is not installed
 **対応**: フォールバック設定に従い、自動的に別のCLIに再分配されます。これは**未インストール時のプラン構築限定**の挙動です。手動で特定CLIをスキップするには：
 
 ```bash
-bash scripts/multi-review.sh --cli claude-code --cli gemini-cli
+bash scripts/multi-review.sh --cli claude-code --cli grok-cli
 ```
 
 ### タイムアウト
@@ -520,5 +529,5 @@ Cross-Modelモードで異なるCLIが矛盾する結果を返した場合：
 - [REVIEW_AGENT_CREATION_GUIDE.md](../../06-reference/REVIEW_AGENT_CREATION_GUIDE.md) — 汎用レビューエージェント作成ガイド
 - [ai-tools-integration.md](./ai-tools-integration.md) — AIツール統合・コスト比較
 - [git-workflow.md](./git-workflow.md) — AI駆動Git Workflow
-- [gemini-cli-reviewer.md](./gemini-cli-reviewer.md) — Gemini CLI セットアップ
+- [grok-cli-reviewer.md](./grok-cli-reviewer.md) — Grok CLI セットアップ
 - [COPILOT_AGENTS.md](../../06-reference/COPILOT_AGENTS.md) — Copilot エージェント定義（従量課金・オプトイン）

@@ -1,11 +1,11 @@
 ---
 name: multi-review
-description: 複数の AI CLI（Claude Code / Codex / Gemini / Grok、Copilot はオプトイン）を並列実行し、異なる観点からクロスモデルレビューを行う
+description: 複数の AI CLI（Claude Code / Codex / Grok、Copilot はオプトイン）を並列実行し、異なる観点からクロスモデルレビューを行う
 ---
 
 # /multi-review — 複数AIによるクロスモデルレビュー実行
 
-複数のAI CLI（Claude Code / Codex / Gemini / Grok）を並列実行し、異なる観点からコードレビューを実行します（free-tier CLI に複数観点が乗る場合、その CLI 内はレート制限保護のため逐次実行）。Copilot CLI は従量課金のため既定ラインナップ外です（`--cli copilot-cli` でオプトイン）。
+複数のAI CLI（Claude Code / Codex / Grok）を並列実行し、異なる観点からコードレビューを実行します（flat-rate CLI に複数観点が乗る場合、その CLI 内はレート制限保護のため逐次実行）。Copilot CLI は従量課金のため既定ラインナップ外です（`--cli copilot-cli` でオプトイン）。
 
 ## プラグインルートの解決
 
@@ -15,7 +15,7 @@ description: 複数の AI CLI（Claude Code / Codex / Gemini / Grok、Copilot �
 
 - git リポジトリで作業中であること
 - 本プラグイン同梱の `${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh` を使用する
-- 少なくとも1つのAI CLIがインストールされていること（`claude`, `codex`, `copilot`, `gemini`, `grok` のいずれか）
+- 少なくとも1つのAI CLIがインストールされていること（`claude`, `codex`, `copilot`, `grok` のいずれか）
 - Mike Farah `yq` v4 がインストールされていること（Homebrew があれば `brew install yq`、無ければ同梱 `setup-multi-agent.sh` が GitHub release から導入。distro の `apt`/`yum` パッケージ `yq` は別実装のことがあり非対応）
 - 未コミットまたはブランチ上の変更が存在すること
 
@@ -82,7 +82,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review \
   --set-reviewers main=<cli>,sub=<cli>
 ```
 
-保存するのは **CLI 名だけ**です（`claude-code` / `codex-cli` / `gemini-cli` / `grok-cli` / `copilot-cli`）。どのモデルを使うかは各 CLI 自身の設定に委ねるため、モデル名を渡すと拒否されます。
+保存するのは **CLI 名だけ**です（`claude-code` / `codex-cli` / `grok-cli` / `copilot-cli`）。どのモデルを使うかは各 CLI 自身の設定に委ねるため、モデル名を渡すと拒否されます。
 
 > **非対話で実行している場合**（CI など）は、この手順を飛ばしてください。レビュワーが未設定でも従来の分散プランで続行し、ブロックしません。
 
@@ -110,9 +110,9 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run $ARGUMENTS
 bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" $ARGUMENTS
 ```
 
-**注意**: 実行には各CLIの利用コストが発生します（特に premium/standard ティアのCLI）。`--strategy minimize_cost` で固定料金/無料CLIを優先できます。タイムアウトはデフォルト **900秒/CLI** です（旧既定の 5 分では中規模差分の Codex レビューが完走しなかったため引き上げ。`--timeout <秒>` で上書き可）。CLI が早く応答すればその時点で次に進むので、上限を大きく取っても待ち時間は増えません。
+**注意**: 実行には各CLIの利用コストが発生します（特に premium/standard ティアのCLI）。`--strategy minimize_cost` で定額（flat-rate）CLIを優先できます。タイムアウトはデフォルト **900秒/CLI** です（旧既定の 5 分では中規模差分の Codex レビューが完走しなかったため引き上げ。`--timeout <秒>` で上書き可）。CLI が早く応答すればその時点で次に進むので、上限を大きく取っても待ち時間は増えません。
 
-**レビューは read-only 前提で実行される**: review タスクは全 CLI 共通でプロンプト境界（書き込み禁止の明示）を持ち、機械的強制の有無は CLI ごとに異なる — Claude は tool allowlist、Codex / Grok は read-only サンドボックスプロファイルで書き込みを伴う実行を失敗させる。Gemini の `--sandbox` は boolean で read-only モードの指定ではなく、オプトインの Copilot はプロンプト境界のみ（機械的強制なし）。レビュー実行中にオーケストレータ側で作業ツリーを変更しないこと（レビュー対象 diff とレビュー結果の対応が崩れ、並行ビルドは成果物の奪い合いで不規則に壊れる）。
+**レビューは read-only 前提で実行される**: review タスクは全 CLI 共通でプロンプト境界（書き込み禁止の明示）を持ち、機械的強制の有無は CLI ごとに異なる — Claude は tool allowlist、Codex / Grok は read-only サンドボックスプロファイルで書き込みを伴う実行を失敗させる。オプトインの Copilot はプロンプト境界のみ（機械的強制なし）。レビュー実行中にオーケストレータ側で作業ツリーを変更しないこと（レビュー対象 diff とレビュー結果の対応が崩れ、並行ビルドは成果物の奪い合いで不規則に壊れる）。
 
 実行中は進捗状況を監視し、完了を待ちます。
 
@@ -285,7 +285,6 @@ git diff  # 修正内容の確認
 | `MULTI_AGENT_MODEL_CODEX_CLI` | `-m` | Codex のモデルを単発で指定。`MULTI_AGENT_CODEX_PROFILE` とは併用不可 |
 | `MULTI_AGENT_CODEX_REASONING_EFFORT` | `-c model_reasoning_effort=<value>` | Codex の effort だけを単発指定。`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`。プロファイル併用時はこの値が明示上書きする |
 | `MULTI_AGENT_MODEL_COPILOT_CLI` | `--model` | Copilot。`auto` で Copilot 側の自動選択 |
-| `MULTI_AGENT_MODEL_GEMINI_CLI` | `-m` | Gemini |
 | `MULTI_AGENT_MODEL_GROK_CLI` | `-m` | Grok |
 
 ```bash

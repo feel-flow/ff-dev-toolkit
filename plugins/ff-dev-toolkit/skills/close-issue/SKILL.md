@@ -63,11 +63,15 @@ PR_BODY="$(gh pr view "${PR_NUMBER}" --json body --jq '.body')" \
 # awk は不一致でも 0 を返すので、rc!=0 は本物の失敗だけを意味する。
 # pipefail をサブシェルで有効にするのは、既定では最終段（sort）の終了コードしか
 # 見えず、awk の異常終了が「参照 0 件」に化けて検査全体を素通りさせるため。
+# awk の現在行を $(0) と書くのは、裸のドル記号 + 0 がスキル読み込み時の引数展開で
+# PR 番号へ置換され、走査対象が PR 本文から定数文字列に化けるため（実測: #776。
+# 抽出 0 件でも EXTRACT_RC は 0 なので手順 2 の検査が丸ごとスキップされる fail-open）。
+# awk では $ は演算子なので $(0) は現在行と完全に同義。
 set +e
 REFS_RAW="$(set -o pipefail
   printf '%s\n' "${PR_BODY}" | awk '
     {
-      line = $0
+      line = $(0)
       while (match(line, /(^|[^A-Za-z])[Rr][Ee][Ff][Ss]?[ \t:]*([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)?#[0-9]+/)) {
         token = substr(line, RSTART, RLENGTH)
         sub(/^([^A-Za-z])?[Rr][Ee][Ff][Ss]?[ \t:]*/, "", token)

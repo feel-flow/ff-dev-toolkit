@@ -50,7 +50,6 @@ codex は**引数解析の段階で落ちる**ので CLI 本体は 1 バイト�
 | codex-cli | アダプタが pin する設定キー `sandbox_workspace_write.network_access` が今も認識されるか（`--strict-config`） |
 | codex-cli | 書き込み境界の再測（`codex sandbox`: read-only=拒否 / workspace-write=許可） |
 | grok-cli | 「列挙を公表しない」という**前提そのもの**がまだ成り立つか |
-| gemini-cli | `--sandbox` が `[boolean]` のままか |
 | claude-code / copilot-cli | `--help` に `--sandbox` が現れていないか（`none` 宣言の前提） |
 
 実 CLI を起動するのは `--help`、`codex sandbox`（モデルを呼ばずローカル完結）、`codex exec --strict-config`（使い捨て `CODEX_HOME` なので認証が無く、モデルに到達する前に終わる）だけ。ネットワーク・課金・エージェント実行のいずれも伴わない。
@@ -63,7 +62,6 @@ codex は**引数解析の段階で落ちる**ので CLI 本体は 1 バイト�
 |---|---|---|---|---|
 | codex-cli | 値つき | `read-only` `workspace-write` `danger-full-access` | 可 | codex-cli 0.144.5 / `codex exec --help` の `[possible values: ...]` |
 | grok-cli | 値つき | **（空）** | 不可 | grok 1.0.0 / `grok --help` は `--sandbox <PROFILE>` とだけ書く |
-| gemini-cli | boolean | — | 形のみ | gemini 0.50.0 / `gemini --help`: `-s, --sandbox  Run in sandbox?  [boolean]` |
 | claude-code | 渡さない | — | 不在のみ | `--sandbox` の概念を持たない。書き込みゲートは `--allowed-tools` |
 | copilot-cli | 渡さない | — | 不在のみ | `--sandbox` の概念を持たない |
 
@@ -78,7 +76,6 @@ grok を「照合不可」としているのは `--help` に載っていない�
 | claude-code | 渡さない | 渡さない | 渡さない | — |
 | codex-cli | `read-only` | `read-only` | `workspace-write` | `read-only` |
 | copilot-cli | 渡さない | 渡さない | 渡さない | — |
-| gemini-cli | boolean（付ける） | boolean（付ける） | 渡さない | — |
 | grok-cli | `read-only` | `read-only` | `workspace` | `read-only` |
 
 未知の task-type も検査するのは、`case` の `*)` 既定枝が死んだコードではないため。`parse_adapter_args` も `multi-agent.sh` も task-type を allowlist で検証していないので、アダプタ直叩きで到達しうる。
@@ -104,7 +101,7 @@ codex の implement が `workspace-write` である理由: codex はこのモー
 | 1 | codex implement を別の不正値（`no-such-mode`）にする | リテラル pin + 列挙照合の 2 件 red |
 | 2 | codex implement を `danger-full-access`（列挙内だが選択として誤り）にする | リテラル pin red |
 | 3 | codex の起動行から `--sandbox` を削除する | codex の全 task-type が red |
-| 4 | gemini の implement にも `--sandbox` を付ける | 「渡さないはずが渡している」red |
+| 4 | gemini の implement にも `--sandbox` を付ける | 「渡さないはずが渡している」red（gemini-cli は issue #783 で削除 — 当時の実測記録として残す） |
 | 5 | 宣言列挙に `network-off` を足して緑にしようとする | **層 2** が「宣言側が腐っている」で red |
 | 6 | アダプタ・リテラル pin・宣言列挙を**すべてつじつま合わせで**戻す | **層 2 単独**で red |
 | 7 | 宣言列挙を**空にして**バグを完全復元する | **層 0** が「空集合は自明に部分集合」で red |

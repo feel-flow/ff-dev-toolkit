@@ -89,11 +89,6 @@ git --version
 - 高度なコード生成が可能
 - 無料プラン/有料プランあり
 
-**または: Gemini CLI（無料枠が大きい）**
-
-- VS Codeと似た操作感
-- AI機能が統合されている
-
 **👉 詳細なセットアップ方法:**
 
 - GitHub Copilot: [`SETUP_GITHUB_COPILOT.md`](./SETUP_GITHUB_COPILOT.md)

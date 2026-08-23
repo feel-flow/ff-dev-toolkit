@@ -5,12 +5,14 @@ description: >-
   integration, 5% E2E), Arrange-Act-Assert pattern, and project coverage
   thresholds (branches 70%, functions 80%, lines 80%, statements 80%).
   Covers test naming conventions, test independence, mock and stub patterns,
-  test data management with fixtures and builders, and CI integration.
+  test data management with fixtures and builders, CI integration, and a
+  destination check before observing TDD RED for tests that launch real
+  processes or external services.
   Use when writing tests, reviewing test code, or setting up test infrastructure.
 metadata:
   version: "1.0.0"
   author: feel-flow
-  tags: "testing, unit-test, integration-test, e2e, coverage, aaa-pattern"
+  tags: "testing, unit-test, integration-test, e2e, coverage, aaa-pattern, tdd, red-safety"
   references: "docs-template/04-quality/TESTING.md"
 ---
 
@@ -251,7 +253,25 @@ export const fixtures = {
 - バリデーションエラーの表示も検証
 - テストデータは各テストで独立して作成
 
-## 8. CI/CD 統合
+## 8. 実プロセスを起動するテストの宛先確認（RED 観測の安全）
+
+**TDD の RED 観測とは、検査対象が機能していない状態でテストを走らせることである。** ガードを検証するテストで、ガードを**未実装・スタブ化した状態を RED として観測する**場合、その瞬間は「ガードが効いていない」— そこに本番へ届く経路があると、手順そのものが破壊の引き金になる（報告元の運用で実測: 読み取り専用ガードの RED を観測するためガード関数をスタブ化した結果、テストデータの破壊的な DELETE が既定宛先の本番 DB へ届き千行超を消した。復旧不能な資産に当たらなかったのは運）。
+
+注入した偽の依存（fake runner・モック）だけで完結するユニットテストは安全。これは**実プロセス・実バイナリ・外部サービスを起動するテスト**（CLI・マイグレーション・デプロイスクリプト・外部 API クライアント）に固有の問題で、「気をつける」ではなく**確認する対象を名指しする**:
+
+> **RED を観測する前に、そのテストが実プロセス・実バイナリ・外部サービスを起動するかを確認する。** 起動するなら、**宛先（接続先フラグ・環境変数・エンドポイント）が本番既定でないこと**を確認してから実行する。宛先を明示してローカル/テスト環境へ向け、そうした理由をテストの doc コメントに残す。
+
+チェックリスト（RED を観測する前）:
+
+- [ ] このテストは実プロセス・実バイナリ・外部サービスを起動するか？（しない = 以降は不要）
+- [ ] 起動するコマンドの**既定の宛先**は何か？（例: `--remote` が既定 = 本番）
+- [ ] 実プロセスを起動するテストの宛先が本番既定でないことを確認した（RED 観測時に副作用が出ない）
+- [ ] 破壊的なテストデータ（DELETE / DROP / 上書き）を使うなら、宛先の明示は**テストコード側**にあるか（実行時の記憶に頼らない）
+- [ ] 宛先をローカル/テスト環境へ向けた理由をテストの doc コメントに残したか
+
+破壊的なテストデータを選ぶ判断と、コマンドの既定宛先を思い出す判断は**別々に起きる** — 後者が抜けたときに手順が止まる構造（宛先の名指し確認）だけが防御になる。
+
+## 9. CI/CD 統合
 
 テストは以下の順序で CI パイプラインに組み込む：
 

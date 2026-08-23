@@ -3,11 +3,11 @@
 # multi-agent-serialization: 同一 CLI への観点集中の制御（Issue #251）。
 #
 # minimize_cost は premium（claude-code）の担当観点を最安 tier へ振り替えるため、
-# レート制限のある free-tier CLI に複数観点が集中する。本ツールは実行時 fallback を
-# 意図的に持たないので、throttle されたタスクは別 CLI で再実行されず**その観点の
-# カバレッジがゼロ**になる。対策は 2 層:
+# 振替先 CLI（gemini [free-tier] → issue #783 以降は grok [flat-rate]）に複数観点が
+# 集中する。本ツールは実行時 fallback を意図的に持たないので、throttle された
+# タスクは別 CLI で再実行されず**その観点のカバレッジがゼロ**になる。対策は 2 層:
 #   (1) 実行層 — 同一 CLI のタスクは 1 本のワーカーで逐次実行（CLI 間は並列のまま）
-#   (2) プラン層 — free-tier CLI に複数観点が乗る形をプラン表示で名指しで警告
+#   (2) プラン層 — flat-rate CLI に複数観点が乗る形をプラン表示で名指しで警告
 # 本 suite は (1) を stub CLI の start/end ログの非交差で、(2) を dry-run 出力で固定する。
 # standard tier の並列維持は期限付きバリアと逐次化変異で固定する（詳細は README.md）。
 #
@@ -80,53 +80,66 @@ git add app.txt
 git commit -qm "change"
 
 # --- stub CLI 群 ---
-# gemini は start/end を PID つきで記録し（時刻は取らない。判定は順序だけで足りる）、
-# 意図的に 0.6 秒滞留する — 旧実装
+# grok（minimize_cost の振替先 = 逐次化対象）は start/end を PID つきで記録し
+# （時刻は取らない。判定は順序だけで足りる）、意図的に 0.6 秒滞留する — 旧実装
 # （全タスク一斉 background）では同一 CLI の 2 タスクがこの滞留窓で必ず交差する。
 # 他 CLI は即答（並列のままでよい側なので、ここでは順序を主張しない）。
+# grok アダプタはサンドボックス適用の肯定確認（ProfileApplied イベントの実在）を
+# fail-closed で要求するため、stub は本物と同形のイベント行を GROK_HOME の
+# sandbox-events.jsonl へ追記して完走させる（判定条件: 1 行に ProfileApplied +
+# workspace=pwd -P + profile + enforced:true。grok-cli-adapter.sh の awk 参照）。
 STUB="$TMP/bin"
-mkdir -p "$STUB"
-GEMINI_LOG="$TMP/gemini-events.log"
-# $TMP/gemini-fail-nth があるときは、その回数目の起動だけ失敗する（途中失敗後の
+mkdir -p "$STUB" "$TMP/grok-home"
+GROK_LOG="$TMP/grok-events.log"
+# $TMP/grok-fail-nth があるときは、その回数目の起動だけ失敗する（途中失敗後の
 # 継続の検査に使う。カウンタは逐次実行前提 — 本 suite が固定する性質そのもの）。
-cat > "$STUB/gemini" <<SH
+cat > "$STUB/grok" <<SH
 #!/usr/bin/env bash
-n=\$( (cat "$TMP/gemini-count" 2>/dev/null || echo 0) )
+n=\$( (cat "$TMP/grok-count" 2>/dev/null || echo 0) )
 n=\$((n + 1))
-echo "\$n" > "$TMP/gemini-count"
-echo "start \$\$" >> "$GEMINI_LOG"
+echo "\$n" > "$TMP/grok-count"
+echo "start \$\$" >> "$GROK_LOG"
 sleep 0.6
-echo "end \$\$" >> "$GEMINI_LOG"
-if [ -f "$TMP/gemini-fail-nth" ] && [ "\$n" -eq "\$(cat "$TMP/gemini-fail-nth")" ]; then
+echo "end \$\$" >> "$GROK_LOG"
+prof=""
+prev=""
+for a in "\$@"; do
+  if [ "\$prev" = "--sandbox" ]; then prof="\$a"; fi
+  prev="\$a"
+done
+ws="\$(pwd -P)"
+printf '{"event_type":"ProfileApplied","profile":"%s","enforced":true,"workspace":"%s"}\n' "\$prof" "\$ws" \
+  >> "\${GROK_HOME:?}/sandbox-events.jsonl"
+if [ -f "$TMP/grok-fail-nth" ] && [ "\$n" -eq "\$(cat "$TMP/grok-fail-nth")" ]; then
   echo "stub: simulated rate-limit failure" >&2
   exit 1
 fi
 echo "## Findings"
-echo "- Suggestion: stub gemini review"
+echo "- Suggestion: stub grok review"
 SH
-chmod +x "$STUB/gemini"
-# grok は置かない（未インストール扱いにしてプラン fallback へ委ねる）— grok アダプタは
-# サンドボックス適用イベントの実在を fail-closed で要求するため、素朴な stub では
-# 完走できない（adapter-model-args suite 参照）。本 suite の主題は gemini の逐次化で、
-# grok の起動経路は検査対象外。
+chmod +x "$STUB/grok"
+# copilot は置かない（未インストール扱い。metered で既定除外のためプランにも乗らない）。
 #
 # ただし「置かない = 未インストール」が成り立つのは、**起動 PATH に実行環境の PATH を
-# 混ぜない**場合だけ。混ぜるとホストに grok が入っているかどうかで結果が変わる
+# 混ぜない**場合だけ。混ぜるとホストに copilot が入っているかどうかで結果が変わる
 # （Issue #435。実測でどちらに転んでも期待の 1 件が成立しなかった）。
-# そこでホストを模した grok を用意し、**この suite 自身の PATH には載せる**。
-# 起動側が PATH を絞れていれば一度も呼ばれない。`$STUB:$PATH` へ戻す退行が入ると
-# ここが呼ばれて起動ログが残り、ホストに grok が無い環境でも赤くなる。
+# そこでホストを模した copilot を用意し、**この suite 自身の PATH には載せる**。
+# 注意（#783 で対象が grok → copilot に移った際の性質変化）: copilot は metered で
+# 既定プランから常に除外されるため、PATH が漏れても**起動はされない** — 本物の
+# 検出器は「copilot-cli (copilot) — not installed」の文言 grep（PATH 漏れで
+# 「インストール済み・metered スキップ」へ変わり赤くなる）であり、下の起動ログ
+# 検査は将来プラン形が変わった場合の二次的なトリップワイヤに格下げされている。
 HOSTMOCK="$TMP/host-bin"
 mkdir -p "$HOSTMOCK"
 HOSTMOCK_LOG="$TMP/hostmock-invocations.log"
 : > "$HOSTMOCK_LOG"
-cat > "$HOSTMOCK/grok" <<SH
+cat > "$HOSTMOCK/copilot" <<SH
 #!/usr/bin/env bash
 echo "invoked \$\$" >> "$HOSTMOCK_LOG"
 echo "## Findings"
-echo "- Suggestion: host-mock grok (should never run)"
+echo "- Suggestion: host-mock copilot (should never run)"
 SH
-chmod +x "$HOSTMOCK/grok"
+chmod +x "$HOSTMOCK/copilot"
 export PATH="$HOSTMOCK:$PATH"
 # codex（standard tier）は 2-party の期限付きバリアで互いの開始を待つ。
 # 並列なら両者が通過し、standard まで逐次化すると先行タスクが期限切れになる。
@@ -176,7 +189,7 @@ echo "## Findings"
 echo "- Suggestion: stub review"
 SH
 chmod +x "$STUB/codex"
-for name in claude copilot; do
+for name in claude; do
   cat > "$STUB/$name" <<'SH'
 #!/usr/bin/env bash
 echo "## Findings"
@@ -185,10 +198,10 @@ SH
   chmod +x "$STUB/$name"
 done
 
-echo "== プラン層: free-tier 集中の警告（Issue #251） =="
+echo "== プラン層: flat-rate 集中の警告（Issue #251） =="
 
 set +e
-PLAN_OUT="$(run_isolated PATH="$STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
+PLAN_OUT="$(run_isolated PATH="$STUB:/usr/bin:/bin" GROK_HOME="$TMP/grok-home" bash "$MULTI_AGENT" \
   --task review --mode distributed --strategy minimize_cost --base develop --dry-run 2>&1)"
 PLAN_RC=$?
 set -e
@@ -197,34 +210,44 @@ if [[ $PLAN_RC -ne 0 ]]; then
   printf '%s\n' "$PLAN_OUT" | tail -10 | sed 's/^/    | /' >&2
 fi
 
-# プラン層でも grok が未インストール扱いになっていること。**実行層の検査だけでは
-# ここは守れない** — dry-run は CLI を起動しないのでホスト模擬 grok のログが残らず、
-# 下の観点数の検査も `>= 2` なので集中数が 5 → 4 に変わっても通る。つまり dry-run の
-# PATH だけを実行環境まかせに戻す部分退行は、他の全検査を素通りする（実測で 13 件
-# すべて緑のまま通過した）。プラン層にも実行層と同じ強度の前提検査を置く。
+# プラン層でも copilot が未インストール扱いになっていること。**実行層の検査だけでは
+# ここは守れない** — dry-run は CLI を起動しないのでホスト模擬 copilot のログが残らず、
+# 観点数の検査も `>= 2` なので集中数が変わっても通る。つまり dry-run の PATH だけを
+# 実行環境まかせに戻す部分退行は、他の全検査を素通りする（Issue #435 の実測で全件
+# 緑のまま通過した）。プラン層にも実行層と同じ強度の前提検査を置く。
 case "$PLAN_OUT" in
-  *"grok-cli (grok) — not installed"*)
-    ok "プラン層でも grok が未インストール扱い（dry-run 側の PATH 制限が効いている）" ;;
+  *"copilot-cli (copilot) — not installed"*)
+    ok "プラン層でも copilot が未インストール扱い（dry-run 側の PATH 制限が効いている）" ;;
   *)
-    bad "プラン層で grok が未インストール扱いになっていない（dry-run 側の PATH に実行環境の PATH が混ざっている）"
-    printf '%s\n' "$PLAN_OUT" | /usr/bin/grep -E 'grok' | head -3 | sed 's/^/    | /' >&2 ;;
+    bad "プラン層で copilot が未インストール扱いになっていない（dry-run 側の PATH に実行環境の PATH が混ざっている）"
+    printf '%s\n' "$PLAN_OUT" | /usr/bin/grep -E 'copilot' | head -3 | sed 's/^/    | /' >&2 ;;
 esac
 
-# 前提の確認: minimize_cost で gemini-cli に 2 観点以上が乗っていること。
-# プラン形が変わって集中自体が消えたら、警告の検査は空振りになるので名指しで止める。
-GEMINI_TASKS="$(printf '%s\n' "$PLAN_OUT" | awk '/^   gemini-cli \[/{f=1;next} /^   [a-z]/{f=0} f && /^     - /{n++} END{print n+0}')"
-if [[ "$GEMINI_TASKS" -ge 2 ]]; then
-  ok "前提: minimize_cost で gemini-cli に ${GEMINI_TASKS} 観点が集中する"
+# 前提の確認: minimize_cost で grok-cli に「自身の 2 観点 + claude からの振替 3 観点」
+# の計 5 観点が乗っていること。>=2 の緩い判定だと、grok 自身の観点だけで通ってしまい
+# 振替の一部欠落（minimize_cost の部分退行）を検出できない（Codex レビュー指摘）。
+GROK_TASKS="$(printf '%s\n' "$PLAN_OUT" | awk '/^   grok-cli \[/{f=1;next} /^   [a-z]/{f=0} f && /^     - /{n++} END{print n+0}')"
+if [[ "$GROK_TASKS" -eq 5 ]]; then
+  ok "前提: minimize_cost で grok-cli に 5 観点（自身 2 + claude 振替 3）が集中する"
 else
-  bad "前提が崩れた: gemini-cli の観点数が ${GEMINI_TASKS}（プラン形の変更を確認して本 suite を追随させること）"
+  bad "前提が崩れた: grok-cli の観点数が ${GROK_TASKS}（期待 5。プラン形の変更を確認して本 suite を追随させること）"
+fi
+GROK_SECTION="$(printf '%s\n' "$PLAN_OUT" | awk '/^   grok-cli \[/{f=1;next} /^   [a-z]/{f=0} f')"
+if printf '%s\n' "$GROK_SECTION" | /usr/bin/grep -q 'type-design-analysis' \
+  && printf '%s\n' "$GROK_SECTION" | /usr/bin/grep -q 'code-simplification' \
+  && printf '%s\n' "$GROK_SECTION" | /usr/bin/grep -q 'comment-analysis'; then
+  ok "claude の 3 観点（type-design-analysis / code-simplification / comment-analysis）が grok へ振替されている"
+else
+  bad "claude からの振替観点が grok のプランに揃っていない"
+  printf '%s\n' "$GROK_SECTION" | sed 's/^/    | /' >&2
 fi
 
 case "$PLAN_OUT" in
   *"rate limit"*)
-    ok "プラン表示が free-tier のレート制限リスクを警告する" ;;
+    ok "プラン表示が flat-rate のレート制限リスクを警告する" ;;
   *)
     bad "プラン表示にレート制限の警告が無い"
-    printf '%s\n' "$PLAN_OUT" | /usr/bin/grep -A3 'gemini-cli \[' | sed 's/^/    | /' >&2 ;;
+    printf '%s\n' "$PLAN_OUT" | /usr/bin/grep -A3 'grok-cli \[' | sed 's/^/    | /' >&2 ;;
 esac
 case "$PLAN_OUT" in
   *"zero coverage"*)
@@ -235,11 +258,11 @@ esac
 
 echo "== 実行層: 同一 CLI 内の逐次化 =="
 
-: > "$GEMINI_LOG"
+: > "$GROK_LOG"
 reset_codex_barrier
 rm -rf "$REPO/.review-results"
 set +e
-run_isolated PATH="$STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
+run_isolated PATH="$STUB:/usr/bin:/bin" GROK_HOME="$TMP/grok-home" bash "$MULTI_AGENT" \
   --task review --mode distributed --strategy minimize_cost --base develop --timeout 60 \
   >"$TMP/run.log" 2>&1
 RUN_RC=$?
@@ -251,11 +274,11 @@ else
   tail -10 "$TMP/run.log" | sed 's/^/    | /' >&2
 fi
 
-GEMINI_STARTS="$(/usr/bin/grep -c '^start ' "$GEMINI_LOG")" || GEMINI_STARTS=0
-if [[ "$GEMINI_STARTS" -ge 2 ]]; then
-  ok "前提: gemini stub が ${GEMINI_STARTS} 回起動した（集中の実行形）"
+GROK_STARTS="$(/usr/bin/grep -c '^start ' "$GROK_LOG")" || GROK_STARTS=0
+if [[ "$GROK_STARTS" -eq 5 ]]; then
+  ok "前提: grok stub が 5 回起動した（プランの 5 観点と一致する実行形）"
 else
-  bad "前提が崩れた: gemini stub の起動が ${GEMINI_STARTS} 回（逐次化の検査が空振りする）"
+  bad "前提が崩れた: grok stub の起動が ${GROK_STARTS} 回（期待 5。逐次化の検査が空振りする）"
 fi
 
 # 非交差の検査: ログが start/end の厳密な交互列であること。旧実装（一斉 background）
@@ -266,11 +289,11 @@ if awk '
   /^start / { if (open) { bad = 1 }; open = 1; next }
   /^end /   { if (!open) { bad = 1 }; open = 0; next }
   END { exit (bad || open) ? 1 : 0 }
-' "$GEMINI_LOG"; then
+' "$GROK_LOG"; then
   ok "同一 CLI のタスクが交差なく逐次実行されている（start/end が厳密な交互列）"
 else
   bad "同一 CLI のタスクが並列に走っている（start/end が交差。レート制限 burst の再発）"
-  sed 's/^/    | /' "$GEMINI_LOG" >&2
+  sed 's/^/    | /' "$GROK_LOG" >&2
 fi
 
 # tier 限定の対称検査: codex（standard）の 2 タスクは並列のまま = 両方が期限付き
@@ -307,16 +330,16 @@ fi
 echo
 echo "== standard tier 逐次化変異の検出力 =="
 
-# 実 orchestrator を一時コピーし、free-tier 専用 worker の条件へ standard を加える。
+# 実 orchestrator を一時コピーし、flat-rate 専用 worker の条件へ standard を加える。
 # 先行 codex stub は相手を起動できず期限切れになるため、時間窓を調整しても生き残らない。
 MUTATED_PLUGIN="$TMP/mutated-plugin"
 mkdir -p "$MUTATED_PLUGIN"
 cp -R "$PLUGIN_ROOT/scripts" "$MUTATED_PLUGIN/scripts"
 MUTATED_MULTI_AGENT="$MUTATED_PLUGIN/scripts/multi-agent.sh"
 # shellcheck disable=SC2016 # copied script で評価させる literal なのでこの shell では展開しない
-MUTATION_MATCH='      if [[ "$(get_cli_cost_tier "$group_cli")" == "free-tier" ]]; then'
+MUTATION_MATCH='      if [[ "$STRATEGY" == "minimize_cost" && "$(get_cli_cost_tier "$group_cli")" == "flat-rate" ]]; then'
 # shellcheck disable=SC2016 # 同上
-MUTATION_REPLACEMENT='      if [[ "$(get_cli_cost_tier "$group_cli")" == "free-tier" || "$(get_cli_cost_tier "$group_cli")" == "standard" ]]; then'
+MUTATION_REPLACEMENT='      if [[ "$STRATEGY" == "minimize_cost" && ( "$(get_cli_cost_tier "$group_cli")" == "flat-rate" || "$(get_cli_cost_tier "$group_cli")" == "standard" ) ]]; then'
 MUTATION_MATCHES="$(awk -v target="$MUTATION_MATCH" '$0 == target { count++ } END { print count + 0 }' "$MUTATED_MULTI_AGENT")"
 MUTATION_APPLIED=0
 if [[ "$MUTATION_MATCHES" -eq 1 ]]; then
@@ -335,7 +358,7 @@ if [[ "$MUTATION_APPLIED" -eq 1 ]]; then
   reset_codex_barrier
   rm -rf "$REPO/.review-results"
   set +e
-  run_isolated PATH="$STUB:/usr/bin:/bin" bash "$MUTATED_MULTI_AGENT" \
+  run_isolated PATH="$STUB:/usr/bin:/bin" GROK_HOME="$TMP/grok-home" bash "$MUTATED_MULTI_AGENT" \
     --task review --mode distributed --strategy minimize_cost --base develop --timeout 60 \
     >"$TMP/mutated-run.log" 2>&1
   MUTATED_RUN_RC=$?
@@ -360,30 +383,30 @@ fi
 
 echo "== 途中失敗後の継続と失敗の名指し =="
 
-# 2 回目の gemini タスクだけ失敗させる。逐次ワーカーはタスク失敗で止まらず
+# 2 回目の grok タスクだけ失敗させる。逐次ワーカーはタスク失敗で止まらず
 # 残りを実行し、失敗は 1 件として名指しされ、全体 rc は非 0 になること。
-: > "$GEMINI_LOG"
+: > "$GROK_LOG"
 reset_codex_barrier
-rm -f "$TMP/gemini-count"
-echo 2 > "$TMP/gemini-fail-nth"
+rm -f "$TMP/grok-count"
+echo 2 > "$TMP/grok-fail-nth"
 rm -rf "$REPO/.review-results"
 set +e
-run_isolated PATH="$STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
+run_isolated PATH="$STUB:/usr/bin:/bin" GROK_HOME="$TMP/grok-home" bash "$MULTI_AGENT" \
   --task review --mode distributed --strategy minimize_cost --base develop --timeout 60 \
   >"$TMP/run2.log" 2>&1
 RUN2_RC=$?
 set -e
-rm -f "$TMP/gemini-fail-nth"
+rm -f "$TMP/grok-fail-nth"
 if [[ $RUN2_RC -ne 0 ]]; then
   ok "タスク失敗があると全体 rc が非 0"
 else
   bad "タスク失敗があるのに全体 rc=0（失敗の沈黙）"
 fi
-GEMINI_STARTS2="$(/usr/bin/grep -c '^start ' "$GEMINI_LOG")" || GEMINI_STARTS2=0
-if [[ "$GEMINI_STARTS2" -ge 3 ]]; then
-  ok "失敗タスクの後続も実行される（gemini 起動 ${GEMINI_STARTS2} 回 — ワーカーは失敗で止まらない）"
+GROK_STARTS2="$(/usr/bin/grep -c '^start ' "$GROK_LOG")" || GROK_STARTS2=0
+if [[ "$GROK_STARTS2" -ge 3 ]]; then
+  ok "失敗タスクの後続も実行される（grok 起動 ${GROK_STARTS2} 回 — ワーカーは失敗で止まらない）"
 else
-  bad "失敗タスクの後続が実行されていない（gemini 起動 ${GEMINI_STARTS2} 回）"
+  bad "失敗タスクの後続が実行されていない（grok 起動 ${GROK_STARTS2} 回）"
 fi
 # `❌` はタスク失敗とプラン構築時の通知の両方に使われる。素のまま数えると
 # 「CLI が未インストール」通知が混ざり、しかもそれが出るかはホストにその CLI が
@@ -395,12 +418,12 @@ fi
 # **許可リスト（`❌ Failed:` だけ数える）にはしない。** orchestrator はタスク失敗を
 # 5 通りの文言で報告する — Failed / Timed out after / No output file /
 # Worker died before recording a status / Corrupt-empty status file。1 形だけを数えると
-# 残り 4 形が無検査になり、gemini 以外のタスクが timeout しても本数 1 のまま通る。
+# 残り 4 形が無検査になり、grok 以外のタスクが timeout しても本数 1 のまま通る。
 # 除外側を「プラン時の通知」1 種に限る形なら、将来 orchestrator が新しい失敗文言を
 # 足しても自動的に数えられる（増えた分は本数超過として赤くなる = fail-closed）。
 FAILED_LINES="$(/usr/bin/grep '❌' "$TMP/run2.log" | /usr/bin/grep -vc -- '— not installed')" || FAILED_LINES=0
-if [[ "$FAILED_LINES" -eq 1 ]] && /usr/bin/grep -q '❌.*gemini-cli/' "$TMP/run2.log"; then
-  ok "失敗が 1 件だけ・gemini のタスク名で名指しされる"
+if [[ "$FAILED_LINES" -eq 1 ]] && /usr/bin/grep -q '❌.*grok-cli/' "$TMP/run2.log"; then
+  ok "失敗が 1 件だけ・grok のタスク名で名指しされる"
 else
   bad "失敗の名指しが期待と違う（未インストール通知を除く ❌ 行 ${FAILED_LINES} 件）"
   /usr/bin/grep '❌' "$TMP/run2.log" | sed 's/^/    | /' >&2
@@ -418,22 +441,24 @@ fi
 
 echo
 echo "== 実行環境の PATH からの独立 =="
-# 上の全実行が PATH を絞れていれば、ホスト模擬 grok は一度も呼ばれない。
-# `$STUB:$PATH` へ戻す退行が入るとここに起動記録が残る — ホストに grok が無い
-# 環境でも赤くなるので、この検査は実機の導入状況に依存しない。
+# 上の全実行が PATH を絞れていれば、ホスト模擬 copilot は一度も呼ばれない。
+# ただし copilot は metered 既定除外のため、PATH が漏れても既定プランからは起動
+# されない — PATH 漏れの実効検出は上の「not installed」文言 grep が担う（stub 定義
+# 部の注意コメント参照）。ここは非既定経路（--cli 明示等）が将来この suite に
+# 増えた場合の二次トリップワイヤとして残す。
 HOSTMOCK_CALLS="$(/usr/bin/grep -c '^invoked ' "$HOSTMOCK_LOG")" || HOSTMOCK_CALLS=0
 if [[ "$HOSTMOCK_CALLS" -eq 0 ]]; then
-  ok "ホスト模擬 grok が一度も起動されない（起動 PATH に実行環境の PATH が混ざっていない）"
+  ok "ホスト模擬 copilot が一度も起動されない（起動 PATH に実行環境の PATH が混ざっていない）"
 else
-  bad "ホスト模擬 grok が ${HOSTMOCK_CALLS} 回起動された — 起動 PATH に実行環境の PATH が混ざっている（\$STUB:\$PATH への退行）"
+  bad "ホスト模擬 copilot が ${HOSTMOCK_CALLS} 回起動された — 起動 PATH に実行環境の PATH が混ざっている（\$STUB:\$PATH への退行）"
 fi
-# 未インストール扱いが実際に成立していることも確かめる。上の検査だけだと、grok が
-# そもそもプランに現れない形（観点の割り当てが変わる等）でも緑になるため。
-if /usr/bin/grep -q 'grok-cli (grok) — not installed' "$TMP/run2.log"; then
-  ok "grok が未インストールとして扱われている（前提が実際に作られている）"
+# 未インストール扱いが実際に成立していることも確かめる。上の検査だけだと、copilot が
+# そもそもプランに現れない形でも緑になるため。
+if /usr/bin/grep -q 'copilot-cli (copilot) — not installed' "$TMP/run2.log"; then
+  ok "copilot が未インストールとして扱われている（前提が実際に作られている）"
 else
-  bad "grok の未インストール通知が無い — 前提が成立していない可能性がある"
-  /usr/bin/grep -E 'grok' "$TMP/run2.log" | head -3 | sed 's/^/    | /' >&2
+  bad "copilot の未インストール通知が無い — 前提が成立していない可能性がある"
+  /usr/bin/grep -E 'copilot' "$TMP/run2.log" | head -3 | sed 's/^/    | /' >&2
 fi
 
 echo

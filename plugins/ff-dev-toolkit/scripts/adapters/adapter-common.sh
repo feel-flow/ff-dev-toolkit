@@ -473,7 +473,7 @@ ${diff_content}"
   # ときは (1) 上の preamble の case、(2) 各アダプタの task-type 分岐、(3) staging
   # パスを渡すかどうか（multi-agent.sh の run_single_task）を同時に揃えること。
   # (2) の関数名はアダプタごとに違う: codex は get_sandbox_mode、grok は
-  # get_sandbox_profile、gemini は get_gemini_sandbox_flag、**claude-code は
+  # get_sandbox_profile、**claude-code は
   # get_allowed_tools**（Write/Edit を許すかどうかが唯一の書き込みゲート。"sandbox"
   # で grep すると取りこぼす）、copilot は permission deny 配列。どれか 1 つを忘れると
   # 「サンドボックスは書けるのにプロンプトが read-only を命じる」「staging へ書けと
@@ -664,13 +664,69 @@ clear_timeout_reason() {
 # プロセス終了時に必ず掃除し、stale 読み取りの種を残さない。fail_cli_task 内の
 # clear と二重になっても rm -f なので害はない。アダプタが source するたびに
 # trap を積み重ねないよう一度だけ仕掛ける。
+# プロンプト一時ファイル（diff 込みで数百 KB になりうる）の失敗経路の掃除もここで
+# 行う。fail_cli_task は内部で exit するため、アダプタ本文の成功パスに置いた
+# `rm -f "$prompt_file"` には失敗時に到達しない — trap でなければ、タイムアウト・
+# 認証エラー・CLI クラッシュのたびに残留する（Codex クロスモデルレビュー指摘）。
+# アダプタは materialize_prompt_file の戻り値を _FF_PROMPT_FILE へも代入すること
+# （関数は $( ) で呼ばれるため、関数内で設定したグローバルは親に残らない）。
+_ff_adapter_exit_cleanup() {
+  clear_timeout_reason
+  if [[ -n "${_FF_PROMPT_FILE:-}" ]]; then
+    rm -f "$_FF_PROMPT_FILE" 2>/dev/null || true
+  fi
+}
+# EXIT trap は untrapped なシグナル死（Ctrl-C の INT / orchestrator からの TERM）
+# では走らない。プロンプトファイルは 1 タスクあたり数百 KB になりうるので、
+# シグナルでも掃除してから慣例の終了コード（128+signum）で終える。ここからの
+# exit は EXIT trap を再度発火させるが、掃除は rm -f の冪等なので二重実行は無害。
 if [[ -z "${_FF_TIMEOUT_REASON_EXIT_TRAP:-}" ]]; then
   _FF_TIMEOUT_REASON_EXIT_TRAP=1
-  trap 'clear_timeout_reason' EXIT
+  trap '_ff_adapter_exit_cleanup' EXIT
+  trap '_ff_adapter_exit_cleanup; exit 130' INT
+  trap '_ff_adapter_exit_cleanup; exit 143' TERM
+  trap '_ff_adapter_exit_cleanup; exit 129' HUP
 fi
 
+# プロンプト本文を一時ファイルへ実体化し、そのパスを echo する（失敗時は非 0）。
+# 全アダプタ共通の受け渡し口。プロンプト（diff 込みで数百 KB になりうる）を argv に
+# 乗せると Windows / Git Bash の CreateProcess 上限（約 32KB）で exit 126 になる
+# （Issue #712。codex-cli / copilot-cli で同一 stderr を実測）。macOS / Linux も
+# ARG_MAX が大きいだけで上限自体はあるため、経路ごと argv から外す。
+# 呼び出し側は戻り値を _FF_PROMPT_FILE へも代入し（EXIT trap の掃除対象になる。
+# 本関数は $( ) で呼ばれるため関数内でグローバルを設定しても親に残らない）、
+# 成功パスでは使用後すみやかに rm -f すること（失敗パスは fail_cli_task が exit
+# するため本文の rm に到達しない — trap が唯一の掃除経路になる）。
+materialize_prompt_file() {
+  local content="$1" f
+  # mktemp の stderr を捨てない — read-only TMPDIR / 不在ディレクトリ / ENOSPC を
+  # 区別できる唯一の診断がそこにある（捨てると全部「check TMPDIR」に潰れる）。
+  # 2>&1 合流のため、成功でも -f で実在を確かめてから使う（成功 + stderr 警告の
+  # 環境で変数へ警告文が混入する形への防御）。
+  if ! f="$(mktemp 2>&1)" || [ ! -f "$f" ]; then
+    printf 'materialize_prompt_file: mktemp failed: %s\n' "$f" >&2
+    return 1
+  fi
+  # 末尾に改行を 1 つ付ける。stdin の末尾へ別テキストを連結する型の CLI で、
+  # diff の最終行と後続テキストが同一行へ癒着するのを防ぐ（連結しない CLI には無害）。
+  if ! printf '%s\n' "$content" >"$f"; then
+    rm -f "$f"
+    return 1
+  fi
+  printf '%s\n' "$f"
+}
+
 # Run a command under a wall-clock limit and echo whatever it wrote to stdout.
-# Usage: run_with_timeout 900 some_command arg1 arg2
+# Usage: run_with_timeout [--stdin-file <path>] 900 some_command arg1 arg2
+#
+# --stdin-file <path> は子プロセスの stdin を /dev/null ではなく指定ファイルへ
+# 接続する（Issue #712: プロンプトを argv で渡すと Windows / Git Bash の
+# CreateProcess 上限（約 32KB）を超えた時点で npm shim の node 起動が
+# "Argument list too long" の exit 126 になるため、プロンプト本文は stdin か
+# CLI のファイル渡しオプションで渡す）。通常ファイルは読み切りで必ず EOF に
+# 到達するため、下記コメントの「held-open pipe を待ち続ける」ハングは再発
+# しない — 危険なのは stdin を**開いたまま**にする形であり、有限のファイルを
+# 与える形ではない。
 #
 # Returns the command's own exit status, $TIMEOUT_EXIT_CODE (124) when the limit
 # fired, or $ORCHESTRATOR_ERROR_EXIT_CODE (125) when this wrapper could not run
@@ -718,6 +774,21 @@ fi
 # The *reason* for a non-zero status travels out of band, via timeout_reason_file
 # below — an exit status is one channel and would otherwise carry two meanings.
 run_with_timeout() {
+  local stdin_source=/dev/null
+  if [[ "${1:-}" == "--stdin-file" ]]; then
+    # 既知の残余（TOCTOU）: この検査と実際の open（子起動時のリダイレクト）の間に
+    # ファイルが消えると、リダイレクト失敗は rc=1 として「CLI が 1 で落ちた」に
+    # 帰属される（reason は既に command）。bash のエラーメッセージは stderr_log 経由で
+    # INCOMPLETE 成果物に残るため無言にはならない。tmp reaper との競合という低頻度
+    # ケースのため、帰属の正確化よりコードの単純さを取って受容する。
+    if [[ ! -f "${2:-}" || ! -r "${2:-}" ]]; then
+      echo "ERROR: run_with_timeout: --stdin-file '${2:-}' is not a readable regular file." >&2
+      record_timeout_reason orchestrator-error
+      return "$ORCHESTRATOR_ERROR_EXIT_CODE"
+    fi
+    stdin_source="$2"
+    shift 2
+  fi
   local timeout_seconds="$1"
   shift
 
@@ -753,8 +824,11 @@ run_with_timeout() {
   # resurrects is the worst kind: `codex exec` reads stdin when it is not a TTY,
   # prints nothing to stdout, and waits — indistinguishable from a hang, for the
   # full timeout (Issue #406, where it cost 50 minutes and a wrong diagnosis).
-  # None of the five CLIs takes input on stdin; the prompt is always argv.
-  "$@" >"$out_file" </dev/null &
+  # Since Issue #712 the prompt travels on stdin (a regular temp file via
+  # --stdin-file, default /dev/null) — both give the child a guaranteed EOF, so
+  # the held-open-pipe hang above cannot come back through this path. What must
+  # NOT come back is inheriting the **caller's** stdin.
+  "$@" >"$out_file" <"$stdin_source" &
   local cmd_pid=$!
   (
     sleep "$timeout_seconds"

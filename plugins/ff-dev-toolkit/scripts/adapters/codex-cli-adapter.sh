@@ -227,10 +227,21 @@ if [[ -n "${MULTI_AGENT_CODEX_REASONING_EFFORT:-}" ]]; then
   fi
 fi
 
+# プロンプトは argv ではなく stdin で渡す（Issue #712: argv 渡しは Windows の
+# CreateProcess 上限 ~32KB で exit 126 になる）。`codex exec -` は PROMPT を
+# stdin から読む（`codex exec --help` に明記。codex-cli 0.144.1 + 一時ファイル
+# 経由で実測済み — 有限ファイルなので Issue #406 の stdin 待ちハングは起きない）。
+prompt_file="$(materialize_prompt_file "$prompt")" || prompt_file=""
+if [[ -z "$prompt_file" ]]; then
+  fail_orchestrator_error "$perspective_name" \
+    "cannot write the prompt to a temp file (check TMPDIR)."
+fi
+_FF_PROMPT_FILE="$prompt_file"
+
 # MODEL_ARGS は空になりうる。bash 3.2 では set -u 下で空配列を "${a[@]}" と
 # 展開すると unbound variable で落ちるため ${a[@]+"${a[@]}"} を使う。
-result=$(run_with_timeout "$TIMEOUT" \
-  "$CLI_COMMAND" exec "$prompt" \
+result=$(run_with_timeout --stdin-file "$prompt_file" "$TIMEOUT" \
+  "$CLI_COMMAND" exec - \
     --sandbox "$sandbox_mode" \
     ${SANDBOX_CONFIG_ARGS[@]+"${SANDBOX_CONFIG_ARGS[@]}"} \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
@@ -239,6 +250,8 @@ result=$(run_with_timeout "$TIMEOUT" \
     rc=$?
     fail_cli_task "$rc" "$stderr_log" "$perspective_name" "$result"
   }
+rm -f "$prompt_file"
+_FF_PROMPT_FILE=""
 # exit 0 + 空出力。ここで stderr を先に捨てると「なぜ空だったか」を言う唯一の
 # チャネルが消え、成果物も残らない（実測: レート制限の一文が stderr にだけ出て、
 # 成果物もログも残らなかった — feel-flow/ff-dev-toolkit#6 の残件）。fail_cli_task

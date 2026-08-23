@@ -241,6 +241,13 @@ git checkout -b "feature/${ISSUE_NUM}-user-auth"
 | PR 本文                    | 何をどう変えたか（実装の what / how）               | PR に永続。レビュー・`/close-issue` の入力               |
 | ACE Playbook               | プロジェクト横断で再利用可能な知見                  | ステップ10 で恒久蓄積                                    |
 
+#### RED を観測する前に: 実プロセスを起動するテストの宛先確認
+
+ガードを**未実装・スタブ化した状態を RED として観測する**場合、その瞬間はガードが存在しない — テストが**実プロセス・実バイナリ・外部サービスを起動する**なら、破壊的なテストデータが宛先へ素通しで到達する（報告元の運用で実測: 読み取り専用ガードの RED 観測中に、既定宛先が本番のコマンド経由で破壊的な `DELETE` が本番 DB へ届いた）。RED を観測する前に、**宛先（接続先フラグ・環境変数・エンドポイント）が本番既定でないこと**を名指しで確認し、ローカルへ明示してからテストを実行する。確認項目の詳細は [test-patterns スキル](../../.github/skills/test-patterns/SKILL.md) §8 を参照。注入した偽の依存だけで完結するユニットテストは対象外。
+
+- [ ] 実プロセスを起動するテストの宛先が本番既定でないことを確認した（RED 観測時に副作用が出ない）
+- [ ] 宛先をローカル/テスト環境へ向けた理由をテストの doc コメントに残した
+
 #### 先行タスクの interface を後続タスクへ渡すとき
 
 1 つの Issue を複数タスクへ分割し、サブエージェントへ順に渡して実装する進め方（サブエージェント駆動開発 / Subagent-Driven Development。`/spec-driven` の仕様駆動ゲートとは別の話）では、後続タスクへの指示文（dispatch）に、先行タスクが作った関数・型の interface を書き写すことになる。計画時点で書いた brief は先行タスクのレビュー対応で変わった API を知らないため、ここは実コードから採る。
@@ -420,7 +427,7 @@ bash scripts/multi-review.sh --mode cross-model --cli codex-cli
 
 **Multi-CLI 分散レビュー**:
 
-複数のAI CLI（レビュー既定は Claude / Codex / Gemini の3 CLI。Copilot はオプトイン）を統一的にオーケストレーションする包括的レビューも利用可能です。
+複数のAI CLI（レビュー既定は Claude / Codex / Grok の3 CLI。Copilot はオプトイン）を統一的にオーケストレーションする包括的レビューも利用可能です。
 詳細は [Multi-CLI Review Orchestration](./multi-cli-review-orchestration.md) を参照してください。
 
 **ベストプラクティス**:
@@ -588,7 +595,7 @@ bash scripts/multi-review.sh --mode cross-model --cli codex-cli
 さらに多観点で確認したい場合は、Multi-CLI 分散レビュー（オプション）を併用します：
 
 ```bash
-# 既定ラインナップ: Claude / Codex / Gemini（Copilot は --cli copilot-cli でオプトイン）
+# 既定ラインナップ: Claude / Codex / Grok（Copilot は --cli copilot-cli でオプトイン）
 # multi-review.sh / multi-agent.sh / adapters/* はプラグイン同梱
 bash scripts/multi-review.sh
 

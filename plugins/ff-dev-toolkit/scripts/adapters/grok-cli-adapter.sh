@@ -150,10 +150,22 @@ add_model_arg -m MULTI_AGENT_MODEL_GROK_CLI \
   || fail_orchestrator_error "$perspective_name" "add_model_arg の呼び出しが不正です（アダプタ側のバグ）。"
 echo_model_args
 
+# プロンプトは argv ではなく一時ファイルで渡す（Issue #712: argv 渡しは Windows の
+# CreateProcess 上限 ~32KB で exit 126 になる）。grok は stdin をプロンプトとして
+# 読まない（0.2.118 で実測: stdin のマーカーが届かない）ため、専用の
+# `--prompt-file <PATH>`（Single-turn prompt from a file）を使う（同バージョンで
+# 実測済み）。stdin は run_with_timeout の既定どおり /dev/null に閉じる。
+prompt_file="$(materialize_prompt_file "$prompt")" || prompt_file=""
+if [[ -z "$prompt_file" ]]; then
+  fail_orchestrator_error "$perspective_name" \
+    "cannot write the prompt to a temp file (check TMPDIR)."
+fi
+_FF_PROMPT_FILE="$prompt_file"
+
 # MODEL_ARGS は空になりうる。bash 3.2 では set -u 下で空配列を "${a[@]}" と
 # 展開すると unbound variable で落ちるため ${a[@]+"${a[@]}"} を使う。
 result=$(run_with_timeout "$TIMEOUT" \
-  "$CLI_COMMAND" -p "$prompt" \
+  "$CLI_COMMAND" --prompt-file "$prompt_file" \
     --sandbox "$sandbox_profile" \
     --output-format plain \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
@@ -162,6 +174,8 @@ result=$(run_with_timeout "$TIMEOUT" \
     rc=$?
     fail_cli_task "$rc" "$stderr_log" "$perspective_name" "$result"
   }
+rm -f "$prompt_file"
+_FF_PROMPT_FILE=""
 
 # ── Confirm the sandbox actually took effect ──
 #

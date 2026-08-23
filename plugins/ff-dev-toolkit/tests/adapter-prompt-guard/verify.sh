@@ -350,20 +350,24 @@ else
 fi
 chmod 755 "$NOWRITE_STAGING"
 
-echo "== codex アダプタの実 argv への到達 =="
+echo "== codex アダプタの実入力（stdin）への到達 =="
 
-# stub codex は受け取った argv を 1 引数 1 行で記録する（exec "$prompt" の形で
-# プロンプトが argv に乗ることを、アダプタの実起動経路で確かめる）。
+# stub codex は argv を 1 引数 1 行で、stdin を丸ごと記録する。Issue #712 以降
+# プロンプト本文は argv ではなく stdin（--stdin-file の一時ファイル）で届くため、
+# 「プロンプトが届いたか」は stdin.log を、「本文が argv に乗っていないか」
+# （Windows CreateProcess ~32KB 上限の再発防止）は argv.log を見る。
 STUB="$TMP/bin"
 mkdir -p "$STUB"
 cat > "$STUB/codex" <<SH
 #!/usr/bin/env bash
 for a in "\$@"; do printf '%s\n' "\$a" >> "$TMP/argv.log"; done
+cat >> "$TMP/stdin.log"
 echo "stub review output"
 SH
 chmod +x "$STUB/codex"
 
 : > "$TMP/argv.log"
+: > "$TMP/stdin.log"
 set +e
 run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
   bash "$ADAPTERS_DIR/codex-cli-adapter.sh" "$PERSPECTIVE" "$TMP/out.md" \
@@ -376,17 +380,31 @@ if [ "$ADAPTER_RC" -ne 0 ]; then
   tail -20 "$TMP/adapter.log" | sed 's/^/    | /' >&2
 elif [ ! -s "$TMP/argv.log" ]; then
   bad "codex の argv が記録されていない（stub 未経由の疑い）"
-elif grep -qF '## Execution Boundary (non-negotiable)' "$TMP/argv.log"; then
-  ok "codex の実 argv に境界宣言が届いている"
+elif grep -qF '## Execution Boundary (non-negotiable)' "$TMP/stdin.log"; then
+  ok "codex の実入力（stdin）に境界宣言が届いている"
 else
-  bad "codex の実 argv に境界宣言が無い（build_prompt を経由していない疑い）"
+  bad "codex の実入力に境界宣言が無い（build_prompt を経由していない疑い）"
+  head -10 "$TMP/stdin.log" | sed 's/^/    | /' >&2
+fi
+
+# Issue #712 の AC そのもの: プロンプト本文が argv に乗らないこと。ここが argv へ
+# 戻ると、Windows / Git Bash では diff が大きいだけで全 CLI が exit 126 になる。
+# 負の主張は起動成功（argv 非空）を前提条件にする — アダプタが exec 前に死ぬと
+# 空ログへの grep 不一致が「乗っていない」と同じ顔で緑になる。
+if [ ! -s "$TMP/argv.log" ]; then
+  bad "argv が記録されておらず、負の主張（argv に乗らない）を測定できない"
+elif grep -qF '## Execution Boundary (non-negotiable)' "$TMP/argv.log"; then
+  bad "プロンプト本文が argv に乗っている（Issue #712 の退行 — Windows で exit 126 に戻る）"
   head -10 "$TMP/argv.log" | sed 's/^/    | /' >&2
+else
+  ok "プロンプト本文は argv に乗らない（stdin / 一時ファイル経由を維持）"
 fi
 
 # --staging-dir が parse_adapter_args → build_prompt → 実 argv まで通ることを、
 # アダプタの実起動経路で確かめる。build_prompt 単体の出力だけを見ていると、
 # アダプタが引数を落としていても気づけない（本 Issue の原因はまさに伝達漏れ）。
 : > "$TMP/argv.log"
+: > "$TMP/stdin.log"
 set +e
 run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
   bash "$ADAPTERS_DIR/codex-cli-adapter.sh" "$PERSPECTIVE" "$TMP/out-implement.md" \
@@ -400,11 +418,11 @@ if [ "$ADAPTER_RC" -ne 0 ]; then
   tail -20 "$TMP/adapter-implement.log" | sed 's/^/    | /' >&2
 elif [ ! -s "$TMP/argv.log" ]; then
   bad "codex(implement) の argv が記録されていない（stub 未経由の疑い）"
-elif grep -qF "$STAGING_FIXTURE" "$TMP/argv.log"; then
-  ok "codex の実 argv に staging の実パスが届いている"
+elif grep -qF "$STAGING_FIXTURE" "$TMP/stdin.log"; then
+  ok "codex の実入力（stdin）に staging の実パスが届いている"
 else
-  bad "codex の実 argv に staging パスが無い（--staging-dir の伝達漏れ）"
-  head -10 "$TMP/argv.log" | sed 's/^/    | /' >&2
+  bad "codex の実入力に staging パスが無い（--staging-dir の伝達漏れ）"
+  head -10 "$TMP/stdin.log" | sed 's/^/    | /' >&2
 fi
 
 echo "== orchestrator 経由での staging 伝達（Issue #392 AC1） =="
@@ -431,30 +449,26 @@ printf 'stale from a previous run\n' > "$ORCH_STAGING/stale.txt"
 
 # プランに含まれない CLI の staging も仕込む。掃除は実行プランに閉じている（意図的）
 # ことを固定し、「全部消える」という誤った期待がドキュメントへ再流入するのを防ぐ。
-UNPLANNED_STAGING="$ORCH_OUT/gemini-cli/files/documentation"
+UNPLANNED_STAGING="$ORCH_OUT/grok-cli/files/migration"
 mkdir -p "$UNPLANNED_STAGING"
 printf 'from an earlier run\n' > "$UNPLANNED_STAGING/old.txt"
 
-# 本物のエージェントのように staging へ書き込む stub。プロンプト（argv のどれか）
-# から実パスを読み取る — 位置ではなく全 argv を走査するのは、codex アダプタが
-# プロンプトを 2 番目の引数として渡すため。
+# 本物のエージェントのように staging へ書き込む stub。プロンプト本文は Issue #712
+# 以降 stdin で届くため、stdin を丸ごと記録してから実パスを読み取る（argv も記録し、
+# 本文が argv へ戻る退行を上の負の検査で見張れるようにする）。
 cat > "$STUB/codex" <<SH
 #!/usr/bin/env bash
 for a in "\$@"; do printf '%s\n' "\$a" >> "$TMP/argv.log"; done
+cat >> "$TMP/stdin.log"
 pwd -P > "$TMP/cli-cwd.log"
-sd=""
-for a in "\$@"; do
-  case "\$a" in
-    *"ONLY under this staging directory"*)
-      sd="\$(printf '%s\n' "\$a" | awk '/ONLY under this staging directory/{getline; gsub(/^[ \t]+|[ \t]+\$/,""); print; exit}')" ;;
-  esac
-done
+sd="\$(awk '/ONLY under this staging directory/{getline; gsub(/^[ \t]+|[ \t]+\$/,""); print; exit}' "$TMP/stdin.log")"
 if [ -n "\$sd" ] && [ -d "\$sd" ]; then printf 'generated\n' > "\$sd/gen.ts"; fi
 echo "stub implement output"
 SH
 chmod +x "$STUB/codex"
 
 : > "$TMP/argv.log"
+: > "$TMP/stdin.log"
 set +e
 ( cd "$REPO" && run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
   bash "$PLUGIN_ROOT/scripts/multi-agent.sh" \
@@ -502,7 +516,7 @@ else
 
   if [ ! -s "$TMP/argv.log" ]; then
     bad "orchestrator 経由の argv が記録されていない（stub 未経由の疑い）"
-  elif grep -qF "$ORCH_STAGING" "$TMP/argv.log"; then
+  elif grep -qF "$ORCH_STAGING" "$TMP/stdin.log"; then
     ok "orchestrator が解決した staging の実パスがプロンプトへ届いている"
   else
     bad "プロンプトに staging の実パスが無い（orchestrator → アダプタの伝達漏れ）"
@@ -531,6 +545,7 @@ echo "== repository root 外の output-dir を実行前に拒否 =="
 # repository root 外を --output-dir で指したときは、書けない staging をプロンプトへ
 # 載せず、CLI 起動前に fail-loud で止める。
 : > "$TMP/argv.log"
+: > "$TMP/stdin.log"
 set +e
 ( cd "$REPO" && run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
   bash "$PLUGIN_ROOT/scripts/multi-agent.sh" \
@@ -556,6 +571,7 @@ fi
 echo "== サブディレクトリ起動でも repository root を sandbox root にする =="
 mkdir -p "$REPO/sub/dir"
 : > "$TMP/argv.log"
+: > "$TMP/stdin.log"
 set +e
 ( cd "$REPO/sub/dir" && run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
   bash "$PLUGIN_ROOT/scripts/multi-agent.sh" \
@@ -581,6 +597,7 @@ echo "== 相対 --output-dir の絶対化 =="
 # "(absolute path)" と断言しながら相対パスを渡す。受け取ったエージェントは
 # 自分の CWD = 作業ツリー基準で解決するので、本 Issue が塞ごうとした汚染に戻る。
 : > "$TMP/argv.log"
+: > "$TMP/stdin.log"
 set +e
 ( cd "$REPO" && run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
   bash "$PLUGIN_ROOT/scripts/multi-agent.sh" \
@@ -595,14 +612,14 @@ if [ "$ORCH_REL_RC" -ne 0 ]; then
   tail -25 "$TMP/orch-rel.log" | sed 's/^/    | /' >&2
 elif [ ! -s "$TMP/argv.log" ]; then
   bad "相対 --output-dir 実行の argv が記録されていない（stub 未経由の疑い）"
-elif grep -qF "$REPO/rel-out/codex-cli/files/feature-implementation" "$TMP/argv.log"; then
+elif grep -qF "$REPO/rel-out/codex-cli/files/feature-implementation" "$TMP/stdin.log"; then
   ok "相対 --output-dir でもプロンプトには絶対パスが載る"
 else
   bad "相対 --output-dir が絶対化されずプロンプトへ渡っている"
   # 診断でパイプを死なせない。`grep | head` は head が先に終わると grep が SIGPIPE で
   # 死に、pipefail + set -e が **失敗を報告している最中に** suite を打ち切る（不一致で
   # grep が rc=1 になる経路も同じ）。一度ファイルへ落としてから読む。
-  { grep -n 'staging directory' -A 2 "$TMP/argv.log" || true; } > "$TMP/relout-diag.log"
+  { grep -n 'staging directory' -A 2 "$TMP/stdin.log" || true; } > "$TMP/relout-diag.log"
   head -6 "$TMP/relout-diag.log" | sed 's/^/    | /' >&2
 fi
 
@@ -815,6 +832,139 @@ if [ ! -e "$LOCK_OUT/.multi-agent-run.lock" ]; then
   ok "完了時に output-dir lock を解放する"
 else
   bad "完了後も output-dir lock が残っている"
+fi
+
+echo "== 全 4 アダプタのプロンプト受け渡し形（Issue #712） =="
+
+# fixture リポジトリの diff を約 240KB へ太らせる（この suite の後続検査は無いので
+# ここからの変異は安全）。プロンプト本文が argv から stdin / prompt-file へ移った
+# ことに加え、「argv の総量がプロンプト規模と独立」という Issue #712 の実性質を
+# 実寸で固定する（Windows / Git Bash の CreateProcess ~32KB 上限が診る量は argv）。
+awk 'BEGIN { for (i = 0; i < 4000; i++) printf "large-diff-line-%06d-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n", i }' > "$REPO/big.txt"
+git -C "$REPO" add big.txt
+git -C "$REPO" commit -qm "large diff fixture"
+
+DELIV="$TMP/deliv"
+DELIV_BIN="$DELIV/bin"
+mkdir -p "$DELIV_BIN" "$TMP/grok-home"
+
+BOUNDARY_MARKER='## Execution Boundary (non-negotiable)'
+
+# stub: argv を 1 行 1 引数で、stdin を丸ごと記録する。--prompt-file の値がある
+# 場合はその実体も stdin ログへ写す（アダプタは実行後にファイルを消すため、
+# 実行中にしか読めない）。
+for cli in claude codex copilot grok; do
+  cat > "$DELIV_BIN/$cli" <<SH
+#!/usr/bin/env bash
+prev=""
+pf=""
+for a in "\$@"; do
+  printf '%s\n' "\$a" >> "$DELIV/${cli}-argv.log"
+  if [ "\$prev" = "--prompt-file" ]; then pf="\$a"; fi
+  prev="\$a"
+done
+cat >> "$DELIV/${cli}-stdin.log"
+if [ -n "\$pf" ] && [ -f "\$pf" ]; then cat "\$pf" >> "$DELIV/${cli}-stdin.log"; fi
+echo "stub review output"
+SH
+  chmod +x "$DELIV_BIN/$cli"
+done
+
+deliver_adapter() { # $1: cli 名 / $2: adapter ファイル名
+  local cli="$1" adapter="$2" rc=0 argv_bytes stdin_bytes
+  : > "$DELIV/${cli}-argv.log"
+  : > "$DELIV/${cli}-stdin.log"
+  set +e
+  ( cd "$REPO" && run_isolated PATH="$DELIV_BIN:$PATH" CODEX_HOME="$TMP/codex-home" GROK_HOME="$TMP/grok-home" \
+      bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$DELIV/out-${cli}.md" \
+      --base develop --timeout 30 --task-type review --description "fixture" \
+    ) >"$DELIV/${cli}.log" 2>&1
+  rc=$?
+  set -e
+  # grok はサンドボックス適用の肯定確認が stub では成立せず非 0 で終わりうる
+  # （adapter-sandbox-contract と同じ扱い）。ここで見るのは受け渡し形なので rc は
+  # 条件にせず、stub 到達（argv 非空）だけを前提条件にする。
+  if [ ! -s "$DELIV/${cli}-argv.log" ]; then
+    bad "${cli}: stub が起動していない（受け渡し形の検査が成立しない） (rc=${rc})"
+    tail -5 "$DELIV/${cli}.log" | sed 's/^/    | /' >&2
+    return 0
+  fi
+  if grep -qF "$BOUNDARY_MARKER" "$DELIV/${cli}-argv.log"; then
+    bad "${cli}: プロンプト本文が argv に乗っている（Issue #712 の退行 — Windows で exit 126 に戻る）"
+  else
+    ok "${cli}: プロンプト本文は argv に乗らない"
+  fi
+  if grep -qF "$BOUNDARY_MARKER" "$DELIV/${cli}-stdin.log"; then
+    ok "${cli}: プロンプト本文が stdin / prompt-file 経由で CLI へ届く"
+  else
+    bad "${cli}: プロンプト本文が CLI へ届いていない"
+    tail -5 "$DELIV/${cli}.log" | sed 's/^/    | /' >&2
+  fi
+  argv_bytes="$(wc -c < "$DELIV/${cli}-argv.log" | tr -d ' ')"
+  stdin_bytes="$(wc -c < "$DELIV/${cli}-stdin.log" | tr -d ' ')"
+  if [ "$argv_bytes" -lt 8192 ] && [ "$stdin_bytes" -gt 200000 ]; then
+    ok "${cli}: argv ${argv_bytes}B < 8KB / 本文 ${stdin_bytes}B > 200KB（argv がプロンプト規模と独立）"
+  else
+    bad "${cli}: argv=${argv_bytes}B / 本文=${stdin_bytes}B が期待レンジ外（argv 肥大 or 本文欠落）"
+  fi
+}
+
+deliver_adapter claude claude-code-adapter.sh
+deliver_adapter codex codex-cli-adapter.sh
+deliver_adapter copilot copilot-cli-adapter.sh
+deliver_adapter grok grok-cli-adapter.sh
+
+# CLI 固有の受け渡し形。実測で確定した契約が編集で崩れると、Windows の exit 126 か
+# 「stdin 無視で誤ったプロンプトに答える」（copilot の非空 -p）へ戻る。
+if awk 'prev == "-p" && $0 == "" { found = 1 } { prev = $0 } END { exit found ? 0 : 1 }' "$DELIV/copilot-argv.log"; then
+  ok "copilot: -p は空文字（1.0.80 実測: 非空にすると stdin が無視される）"
+else
+  bad "copilot: -p が空文字でない（stdin 無視＝プロンプト全損の退行リスク）"
+fi
+if grep -qxF -- "--prompt-file" "$DELIV/grok-argv.log"; then
+  ok "grok: --prompt-file 経由（0.2.118 実測: stdin を読まない）"
+else
+  bad "grok: --prompt-file が argv に無い"
+fi
+if grep -qxF -- "-" "$DELIV/codex-argv.log" && grep -qxF "exec" "$DELIV/codex-argv.log"; then
+  ok "codex: exec - の形（PROMPT を stdin から読む）"
+else
+  bad "codex: exec - の形でない"
+fi
+if grep -qxF -- "-p" "$DELIV/claude-argv.log"; then
+  ok "claude: -p + stdin（位置引数プロンプトなし）"
+else
+  bad "claude: -p が argv に無い"
+fi
+
+echo "== 失敗経路のプロンプト一時ファイル掃除（EXIT trap） =="
+
+# fail_cli_task は exit するため、成功パスの rm -f には失敗時に到達しない。
+# 専用 TMPDIR で CLI を exit 1 させ、プロンプト（境界宣言を含む）が残留しない
+# ことを実測する。stderr_log 等の他の一時ファイルは境界宣言を含まないので、
+# marker で引けば残留プロンプトだけを掴める。
+FAILTMP="$TMP/failtmp"
+FAILBIN="$DELIV/fail-bin"
+mkdir -p "$FAILTMP" "$FAILBIN"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$FAILBIN/codex"
+chmod +x "$FAILBIN/codex"
+set +e
+( cd "$REPO" && run_isolated PATH="$FAILBIN:$PATH" CODEX_HOME="$TMP/codex-home" TMPDIR="$FAILTMP" \
+    bash "$ADAPTERS_DIR/codex-cli-adapter.sh" "$PERSPECTIVE" "$DELIV/out-fail.md" \
+    --base develop --timeout 30 --task-type review --description "fixture" \
+  ) >"$DELIV/fail.log" 2>&1
+FAIL_RC=$?
+set -e
+if [ "$FAIL_RC" -ne 0 ]; then
+  ok "CLI 失敗でアダプタは非 0 終了する (rc=${FAIL_RC})"
+else
+  bad "CLI が exit 1 なのにアダプタが 0 で完走した"
+fi
+if grep -rlF "$BOUNDARY_MARKER" "$FAILTMP" >/dev/null 2>&1; then
+  bad "失敗経路でプロンプト一時ファイルが TMPDIR に残留している（EXIT trap の掃除漏れ）"
+  grep -rlF "$BOUNDARY_MARKER" "$FAILTMP" 2>/dev/null | sed 's/^/    | /' >&2
+else
+  ok "失敗経路でもプロンプト一時ファイルが残留しない（EXIT trap が掃除）"
 fi
 
 echo

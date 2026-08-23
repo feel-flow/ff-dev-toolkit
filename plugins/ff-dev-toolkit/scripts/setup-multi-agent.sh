@@ -115,7 +115,6 @@ Multi-CLI Agent Orchestrator の依存ツールを確認・インストールし
   - Claude Code (claude)      — Premium tier
   - Codex CLI (codex)         — Standard tier
   - Copilot CLI (copilot)     — Metered（従量課金。review 既定ラインナップ外）
-  - Gemini CLI (gemini)       — Free tier
   - Grok CLI (grok)           — Flat-rate tier
 
 詳細: docs-template/05-operations/deployment/multi-cli-review-orchestration.md
@@ -520,12 +519,11 @@ detect_ai_clis() {
     print_step 3 "AI CLI を検出中..."
 
     local found=0
-    local total=5
+    local total=4
 
     local clis="claude-code:claude:Premium
 codex-cli:codex:Standard
 copilot-cli:copilot:Metered
-gemini-cli:gemini:Free-tier
 grok-cli:grok:Flat-rate"
 
     while IFS=: read -r name cmd tier; do
@@ -547,7 +545,6 @@ grok-cli:grok:Flat-rate"
         print_info "  Claude Code:  npm install -g @anthropic-ai/claude-code"
         print_info "  Codex CLI:    npm install -g @openai/codex"
         print_info "  Copilot CLI:  gh extension install github/gh-copilot"
-        print_info "  Gemini CLI:   npm install -g @google/gemini-cli"
         print_info "  Grok CLI:     npm install -g @xai-official/grok"
         exit 1
     else
@@ -590,14 +587,6 @@ show_install_guides() {
         print_info "  https://docs.github.com/en/copilot/github-copilot-in-the-cli"
     fi
 
-    if ! command -v gemini &>/dev/null; then
-        all_installed=false
-        echo ""
-        echo -e "  ${BOLD}Gemini CLI (Free tier — 無料枠でセキュリティスキャンに最適)${NC}"
-        print_info "  npm install -g @google/gemini-cli"
-        print_info "  https://github.com/google-gemini/gemini-cli"
-    fi
-
     if ! command -v grok &>/dev/null; then
         all_installed=false
         echo ""
@@ -606,7 +595,7 @@ show_install_guides() {
     fi
 
     if [[ "$all_installed" == "true" ]]; then
-        print_success "全5つの AI CLI がインストール済みです！"
+        print_success "全4つの AI CLI がインストール済みです！"
     fi
 }
 

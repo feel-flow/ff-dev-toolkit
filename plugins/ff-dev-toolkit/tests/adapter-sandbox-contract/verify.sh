@@ -117,8 +117,8 @@ skipped() { echo "  ○ skip: $1"; SKIP=$((SKIP + 1)); }
 #
 # sandbox_shape <cli>   — アダプタが渡す --sandbox の形
 #   value    : `--sandbox <値>`（次の引数が値）
-#   boolean  : `--sandbox` 単独（値を取らない）
 #   none     : --sandbox を渡さない
+#   （boolean 形は旧 gemini-cli 専用だった。issue #783 の削除で分岐ごと撤去）
 #
 # declared_enum <cli>   — その CLI が受け付ける値の集合（value 形のみ）
 # enum_live_checkable <cli> — 実 CLI の出力と機械照合できるか（yes / no）
@@ -143,9 +143,6 @@ skipped() { echo "  ○ skip: $1"; SKIP=$((SKIP + 1)); }
 #                 ここを空にしているのは「grok は検証済み」ではなく
 #                 「grok は照合できていない」という意味。層 2 では代わりに
 #                 「公表していないという前提がまだ成り立つか」を検査する。
-#   gemini-cli  gemini 0.50.0 / `gemini --help`:
-#                 -s, --sandbox  Run in sandbox?  [boolean]
-#               → 値を取らない。enum の概念が無い。層 2 で [boolean] を再確認する。
 #   claude-code / copilot-cli
 #               → --sandbox という概念を持たない。claude-code の書き込みゲートは
 #                 --allowed-tools（adapter-common.sh の get_allowed_tools）。
@@ -155,7 +152,6 @@ sandbox_shape() {
     claude-code) echo "none" ;;
     codex-cli)   echo "value" ;;
     copilot-cli) echo "none" ;;
-    gemini-cli)  echo "boolean" ;;
     grok-cli)    echo "value" ;;
     *)           echo "" ;;
   esac
@@ -182,7 +178,6 @@ adapter_file() {
     claude-code) echo "claude-code-adapter.sh" ;;
     codex-cli)   echo "codex-cli-adapter.sh" ;;
     copilot-cli) echo "copilot-cli-adapter.sh" ;;
-    gemini-cli)  echo "gemini-cli-adapter.sh" ;;
     grok-cli)    echo "grok-cli-adapter.sh" ;;
     *)           echo "" ;;
   esac
@@ -196,13 +191,12 @@ cli_binary() {
     claude-code) echo "claude" ;;
     codex-cli)   echo "codex" ;;
     copilot-cli) echo "copilot" ;;
-    gemini-cli)  echo "gemini" ;;
     grok-cli)    echo "grok" ;;
     *)           echo "" ;;
   esac
 }
 
-DECLARED_CLIS="claude-code codex-cli copilot-cli gemini-cli grok-cli"
+DECLARED_CLIS="claude-code codex-cli copilot-cli grok-cli"
 
 # 変数名を DECLARED_CLIS にしているのは必須の回避で、好みではない。共有 parser
 # （tests/lib/cli-registry-parser.sh）は **`ALL_CLIS` というグローバル名を自分で使う**
@@ -256,7 +250,7 @@ registry_check() {
 # （プリフライト + 本番など）で**最後の 1 回だけ**が採点され、1 回目の argv が
 # 検査を素通りする。
 mkdir -p "$WORK/bin"
-for cli in claude codex gemini copilot grok; do
+for cli in claude codex copilot grok; do
   {
     echo '#!/usr/bin/env bash'
     echo 'd="$ARGV_DIR"'
@@ -440,7 +434,7 @@ for cli in $DECLARED_CLIS; do
         ok "${cli}: declared_enum と enum_live_checkable が整合（checkable=${checkable}）"
       fi
       ;;
-    none|boolean)
+    none)
       if [ -n "$enum" ]; then
         bad "${cli}: shape=${shape} なのに declared_enum が埋まっている（値を取らない CLI に enum は無い）"
       else
@@ -511,24 +505,10 @@ expect_sandbox() {
     return
   fi
 
-  if [ "$want" = "boolean" ]; then
-    # boolean 単独。等号形は「値を取った」ことの直接の証拠。次の引数が値に見える
-    # （`-` 始まりでない）場合も同じ。末尾なら次が無いので、代わりに argv 末尾が
-    # そこで切れていないこと（後続フラグの存在）で真空 PASS を防ぐ。
-    if [ "$SB_FORM" = "inline" ]; then
-      bad "${label}: --sandbox=${SB_VALUE} の等号形で値を取っている（この CLI の --sandbox は boolean）"
-      dump_argv
-    elif [ "$SB_VALUE_PRESENT" -eq 0 ]; then
-      bad "${label}: --sandbox が argv の末尾にある — この CLI は --sandbox の後に必ず別の引数を渡すはずで、末尾は起動行が途中で切れた形"
-      dump_argv
-    elif [ "${SB_VALUE#-}" != "$SB_VALUE" ]; then
-      ok "${label}: --sandbox は値を取らない（次は別フラグ ${SB_VALUE}）"
-    else
-      bad "${label}: --sandbox が値 '${SB_VALUE}' を取っている（この CLI の --sandbox は boolean）"
-      dump_argv
-    fi
-    return
-  fi
+  # boolean 形（旧 gemini-cli の `--sandbox` 単独）は issue #783 の gemini 削除で
+  # 宣言する CLI が消えたため分岐ごと撤去した。boolean 形の CLI を再登録するときは
+  # git 履歴（#783 以前）の boolean 分岐を復元し、fixture で真空 PASS 防止
+  # （等号形・末尾切れ）の検出力を再実測すること。
 
   # value 形: 値そのものを固定する。
   if [ "$SB_VALUE_PRESENT" -eq 0 ]; then
@@ -582,11 +562,6 @@ expect_sandbox grok-cli review    read-only
 expect_sandbox grok-cli explore   read-only
 expect_sandbox grok-cli implement workspace
 
-# gemini: --sandbox は boolean。implement は成果物生成のため付けない。
-expect_sandbox gemini-cli review    boolean
-expect_sandbox gemini-cli explore   boolean
-expect_sandbox gemini-cli implement none
-
 echo "-- inline-output: implement を read-only 相当へ狭める --"
 
 run_adapter codex-cli implement inline
@@ -604,16 +579,6 @@ if [ "$SB_COUNT" -eq 1 ] && [ "$SB_VALUE" = "read-only" ]; then
   ok "grok-cli/implement inline: --sandbox read-only"
 else
   bad "grok-cli/implement inline: read-only sandbox になっていない"
-  dump_argv
-fi
-
-run_adapter gemini-cli implement inline
-scan_sandbox
-if [ "$SB_COUNT" -eq 1 ] && [ "$SB_FORM" = "separate" ] \
-   && [ "${SB_VALUE#-}" != "$SB_VALUE" ]; then
-  ok "gemini-cli/implement inline: boolean --sandbox を有効化"
-else
-  bad "gemini-cli/implement inline: sandbox が有効になっていない"
   dump_argv
 fi
 
@@ -826,26 +791,6 @@ if command -v grok >/dev/null 2>&1; then
   fi
 else
   skipped "grok-cli: grok が PATH に無いため前提（enum 非公表）を再確認していない"
-fi
-
-# gemini: --sandbox が boolean のままであること。値を取るようになったら層 1 の
-# 形の宣言ごと見直しが要る。
-LAYER2_TOTAL=$((LAYER2_TOTAL + 1))
-if command -v gemini >/dev/null 2>&1; then
-  capture_help "$WORK/gemini-help.txt" gemini --help
-  if help_unusable "gemini-cli" "$WORK/gemini-help.txt"; then
-    :
-  else
-    LAYER2_RUN=$((LAYER2_RUN + 1))
-    if awk '/--sandbox/ && /\[boolean\]/ { found = 1 } END { exit(found ? 0 : 1) }' \
-         "$WORK/gemini-help.txt"; then
-      ok "gemini-cli: --sandbox は実 CLI でも boolean"
-    else
-      bad "gemini-cli: --help の --sandbox が [boolean] ではなくなった — sandbox_shape の宣言を見直すこと"
-    fi
-  fi
-else
-  skipped "gemini-cli: gemini が PATH に無いため --sandbox の形を再確認していない"
 fi
 
 # claude-code / copilot-cli: 「--sandbox という概念を持たない」という前提の再確認。

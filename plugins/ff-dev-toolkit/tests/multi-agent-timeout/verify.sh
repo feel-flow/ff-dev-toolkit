@@ -136,7 +136,7 @@ else
   bad "adapter-common.sh の REVIEW_TIMEOUT 既定が不一致: adapter=${ADAPTER_DEFAULT} SSOT=${CANON}"
 fi
 
-for adapter in claude-code codex-cli copilot-cli gemini-cli grok-cli; do
+for adapter in claude-code codex-cli copilot-cli grok-cli; do
   hdr="$PLUGIN_ROOT/scripts/adapters/${adapter}-adapter.sh"
   if grep -qE "^#   --timeout <seconds>.*default: ${CANON}([^0-9]|$)" "$hdr"; then
     ok "${adapter}-adapter.sh のヘッダー既定が一致 (${CANON})"
@@ -177,7 +177,7 @@ else
   bad "TIMEOUT 再代入の検査自体が失敗した（grep rc=${CLAMP_RC}。対象 glob が展開されていない可能性）"
 fi
 
-# 空出力パス（rc=0 + stdout 空）の保全パターンは 5 アダプタへ手で写されている
+# 空出力パス（rc=0 + stdout 空）の保全パターンは 4 アダプタへ手で写されている
 # （feel-flow/ff-dev-toolkit#6 の残件対応）。behavioral ケース（Part B の empty）は
 # codex-cli しか通らないため、残り 4 本は片側だけ旧実装へ戻っても緑のまま退行する
 # — 実際に gemini だけ戻す mutation が全件 pass を維持した。写し崩れの本体は
@@ -185,7 +185,7 @@ fi
 # rm -f）が空出力チェックより前へ動くことの 2 点なので、行順で静的にピン留めする。
 # grep が失敗した場合（対象ファイル欠落・読取不能を含む）は変数が空になり bad へ
 # 落ちるため、rc の丸めが偽緑を作ることはない。
-for adapter in claude-code codex-cli copilot-cli gemini-cli grok-cli; do
+for adapter in claude-code codex-cli copilot-cli grok-cli; do
   f="$PLUGIN_ROOT/scripts/adapters/${adapter}-adapter.sh"
   reason_line=""
   reason_line="$(grep -n 'record_timeout_reason empty-output' "$f" 2>/dev/null | head -1 | cut -d: -f1)" || true
@@ -370,6 +370,40 @@ probe() { # $1: 制限秒 / $2..: コマンド。出力: "rc elapsed" を stdout
   echo "$rc $((end - start))"
 }
 
+# probe の --stdin-file 版（$1: stdin ファイル / $2: 制限秒 / $3..: コマンド）。
+probe_stdin_file() {
+  local sf="$1" to="$2"; shift 2
+  local start end rc=0
+  start="$(date +%s)"
+  set +e
+  ( source "$ADAPTER_COMMON"; run_with_timeout --stdin-file "$sf" "$to" "$@" ) >"$TMP/probe.out" 2>/dev/null
+  rc=$?
+  set -e
+  end="$(date +%s)"
+  echo "$rc $((end - start))"
+}
+
+# --- --stdin-file（Issue #712）: 内容到達 / EOF 完走 / 不可読の fail-loud ---
+# 有限ファイルは必ず EOF に到達するので、`cat` が制限内に自力で終わることが
+# 「stdin 待ちハング（Issue #406 の形）が再発しない」ことの直接の証拠になる。
+printf 'stdin-delivery-marker' > "$TMP/stdin-src.txt"
+read -r RC EL <<<"$(probe_stdin_file "$TMP/stdin-src.txt" 10 cat)"
+BODY="$(cat "$TMP/probe.out")"
+if [[ "$RC" -eq 0 && "$EL" -lt 8 && "$BODY" == "stdin-delivery-marker" ]]; then
+  ok "--stdin-file の内容が子の stdin へ届き、EOF で完走する（${EL}s）"
+else
+  bad "--stdin-file の配送が壊れている (rc=$RC elapsed=${EL}s body=[${BODY}])"
+fi
+
+# 不可読ファイルは CLI を起動せず orchestrator エラー（125）で止まる。素の 1 に
+# 化けると「CLI がクラッシュした」と誤読され、読み手は存在しないクラッシュを追う。
+read -r RC EL <<<"$(probe_stdin_file "$TMP/no-such-stdin-src" 10 cat)"
+if [[ "$RC" -eq 125 ]]; then
+  ok "--stdin-file が不可読なら rc=125（orchestrator エラー）で CLI を起動しない"
+else
+  bad "--stdin-file 不可読の rc が 125 でない (rc=$RC)"
+fi
+
 read -r RC EL <<<"$(probe 20 bash -c 'echo HELLO; sleep 1; echo BYE')"
 BODY="$(cat "$TMP/probe.out")"
 # 上限 8 秒は「制限秒数（20）を待っていない」ことだけを見る幅。旧実装はここで必ず 20 秒。
@@ -541,7 +575,7 @@ REGISTRY_COMMANDS="$(
          if (cmd != "") print cmd
        }' "$MULTI_AGENT" | sort -u | tr '\n' ' '
 )"
-STUB_NAMES="claude codex copilot gemini grok"
+STUB_NAMES="claude codex copilot grok"
 if [ "$(printf '%s\n' $REGISTRY_COMMANDS | sort -u | tr -d ' \n')" \
    = "$(printf '%s\n' $STUB_NAMES | sort -u | tr -d ' \n')" ]; then
   ok "stub の CLI コマンド名が get_cli_command の全 arm を覆っている (${STUB_NAMES})"
@@ -552,7 +586,7 @@ else
 fi
 [ -n "$REGISTRY_CLIS" ] || bad "ALL_CLIS を読めない（stub 網の検査が空振りしている）"
 
-for name in claude copilot gemini grok; do
+for name in claude copilot grok; do
   cat > "$STUB/$name" <<SH
 #!/usr/bin/env bash
 touch "$TMP/invoked-$name"
@@ -562,10 +596,15 @@ SH
 done
 
 # codex stub の振る舞いは $TMP/codex-mode で切り替える
+# codex-argv には argv と stdin の両方を記録する。Issue #712 以降プロンプト本文は
+# argv ではなく stdin（--stdin-file の一時ファイル）で届くため、argv だけを見ると
+# 「プロンプト内容が CLI に届く」検査が空振りする。本 suite の関心は到達内容で
+# あって経路ではないので、両チャネルを合成して従来の marker 照合を保つ
+# （経路の検査 — argv に本文が乗らないこと — は adapter-prompt-guard 側）。
 cat > "$STUB/codex" <<SH
 #!/usr/bin/env bash
 touch "$TMP/invoked-codex"
-printf '%s\n' "\$@" > "$TMP/codex-argv"
+{ printf '%s\n' "\$@"; cat; } > "$TMP/codex-argv"
 mode="\$(cat "$TMP/codex-mode")"
 case "\$mode" in
   hang)
@@ -642,7 +681,7 @@ run_orchestrator() { # $1: timeout 秒 / 出力: "rc elapsed"
 
 no_other_cli_invoked() {
   local n
-  for n in claude copilot gemini grok; do
+  for n in claude copilot grok; do
     [ -e "$TMP/invoked-$n" ] && return 1
   done
   return 0
@@ -1230,10 +1269,10 @@ else
 fi
 
 # --- D3: build_prompt 失敗時に INCOMPLETE + orchestrator 起因（#267） ---
-# 5 アダプタすべてを欠落 perspective で直接起動する。CLI は stub で preflight を通す。
+# 4 アダプタすべてを欠落 perspective で直接起動する。CLI は stub で preflight を通す。
 ADAPTERS_DIR="$PLUGIN_ROOT/scripts/adapters"
 # bash 3.2 互換のため連想配列は使わない
-ADAPTER_KEYS="claude-code codex-cli copilot-cli gemini-cli grok-cli"
+ADAPTER_KEYS="claude-code codex-cli copilot-cli grok-cli"
 build_prompt_ok=0
 build_prompt_fail=0
 for key in $ADAPTER_KEYS; do
@@ -1241,7 +1280,6 @@ for key in $ADAPTER_KEYS; do
     claude-code) stub_cmd=claude ;;
     codex-cli)   stub_cmd=codex ;;
     copilot-cli) stub_cmd=copilot ;;
-    gemini-cli)  stub_cmd=gemini ;;
     grok-cli)    stub_cmd=grok ;;
   esac
   adapter_sh="$ADAPTERS_DIR/${key}-adapter.sh"
@@ -1266,11 +1304,11 @@ for key in $ADAPTER_KEYS; do
     [[ -f "$out_file" ]] && sed 's/^/    | /' "$out_file" | head -20 >&2 || true
   fi
 done
-if [[ "$build_prompt_fail" -eq 0 && "$build_prompt_ok" -eq 5 ]]; then
-  ok "build_prompt: 5 アダプタすべてが欠落 perspective で INCOMPLETE + orchestrator を残す"
+if [[ "$build_prompt_fail" -eq 0 && "$build_prompt_ok" -eq 4 ]]; then
+  ok "build_prompt: 4 アダプタすべてが欠落 perspective で INCOMPLETE + orchestrator を残す"
 fi
 
-# 静的: 5 アダプタが if ! prompt="$(build_prompt ...)" 形を保っていること
+# 静的: 4 アダプタが if ! prompt="$(build_prompt ...)" 形を保っていること
 # （素の prompt="$(build_prompt ...)" へ戻す退行を検出）
 static_bp_ok=1
 for key in $ADAPTER_KEYS; do
@@ -1285,7 +1323,7 @@ for key in $ADAPTER_KEYS; do
   fi
 done
 if [[ "$static_bp_ok" -eq 1 ]]; then
-  ok "build_prompt: 5 アダプタすべてが if ! prompt= 形で wrap している"
+  ok "build_prompt: 4 アダプタすべてが if ! prompt= 形で wrap している"
 fi
 
 echo ""

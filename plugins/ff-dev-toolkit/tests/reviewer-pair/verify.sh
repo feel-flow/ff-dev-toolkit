@@ -87,7 +87,7 @@ git -C "$REPO" commit -qm init
 git -C "$REPO" switch -q -c feature/x
 
 # 全 CLI を導入済みにする（dry-run なので stub は起動されない）
-for name in claude codex copilot gemini grok; do
+for name in claude codex copilot grok; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 99' > "$STUB/$name"
   chmod +x "$STUB/$name"
 done
@@ -387,8 +387,8 @@ fi
 echo ""
 echo "-- 3 層解決 --"
 run "$TMP/setbase.log" -- --set-reviewers main=claude-code,sub=codex-cli
-run "$TMP/envwin.log" MULTI_AGENT_REVIEW_MAIN=gemini-cli MULTI_AGENT_REVIEW_SUB=grok-cli -- --print-reviewers
-if grep -q '^main=gemini-cli$' "$TMP/envwin.log" && grep -q '^source=env$' "$TMP/envwin.log"; then
+run "$TMP/envwin.log" MULTI_AGENT_REVIEW_MAIN=copilot-cli MULTI_AGENT_REVIEW_SUB=grok-cli -- --print-reviewers
+if grep -q '^main=copilot-cli$' "$TMP/envwin.log" && grep -q '^source=env$' "$TMP/envwin.log"; then
   ok "env がユーザーグローバルより優先される"
 else
   bad "3 層解決の優先順位が env > user になっていない"
@@ -403,7 +403,7 @@ tasks:
     mode: pair
 review:
   main: grok-cli
-  sub: gemini-cli
+  sub: copilot-cli
 YAML
 run "$TMP/projwin.log" -- --print-reviewers
 if [ "$YQ_AVAILABLE" = "true" ]; then
@@ -461,8 +461,8 @@ else
   sed 's/^/    /' "$TMP/src-user.log" >&2
 fi
 
-run "$TMP/one-main.log" MULTI_AGENT_REVIEW_MAIN=gemini-cli -- --print-reviewers
-if grep -q '^main=gemini-cli$' "$TMP/one-main.log" && grep -q '^sub=codex-cli$' "$TMP/one-main.log"; then
+run "$TMP/one-main.log" MULTI_AGENT_REVIEW_MAIN=copilot-cli -- --print-reviewers
+if grep -q '^main=copilot-cli$' "$TMP/one-main.log" && grep -q '^sub=codex-cli$' "$TMP/one-main.log"; then
   ok "env で main だけ指定すると sub は下位層から引き継ぐ"
 else
   bad "main だけの env 指定で sub の解決が壊れている"
@@ -645,7 +645,7 @@ run "$TMP/restore.log" -- --set-reviewers main=claude-code,sub=codex-cli
 
 echo ""
 echo "-- --cli との相互作用 --"
-run "$TMP/clifilter.log" -- --cli gemini-cli --dry-run
+run "$TMP/clifilter.log" -- --cli grok-cli --dry-run
 if [ "$RUN_RC" -eq 0 ] \
   && grep -q 'using the distributed plan' "$TMP/clifilter.log" \
   && grep -q 'Mode: distributed' "$TMP/clifilter.log"; then
@@ -656,7 +656,7 @@ else
 fi
 
 # 落ちた先で --cli が実際に効いていること。通知だけ出して無視していたら意味がない。
-if grep -q 'gemini-cli \[free-tier\]:' "$TMP/clifilter.log" \
+if grep -q 'grok-cli \[flat-rate\]:' "$TMP/clifilter.log" \
   && ! grep -q 'comprehensive-review' "$TMP/clifilter.log"; then
   ok "落とした先の分散プランで --cli が実際に効いている"
 else
@@ -670,7 +670,7 @@ else
   bad "意図的な単一モデル指定へ縮退警告を出している"
 fi
 
-run "$TMP/clipair.log" -- --mode pair --cli gemini-cli --dry-run
+run "$TMP/clipair.log" -- --mode pair --cli grok-cli --dry-run
 if [ "$RUN_RC" -ne 0 ] && grep -q 'cannot be combined with --mode pair' "$TMP/clipair.log"; then
   ok "--mode pair を明示したうえでの --cli は矛盾として拒否する"
 else

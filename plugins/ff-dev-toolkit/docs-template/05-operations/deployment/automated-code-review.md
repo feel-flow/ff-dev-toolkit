@@ -4,14 +4,14 @@
 
 ## 概要
 
-複数のAI CLI（Claude Code、Codex、Gemini、Copilot）を統一的にオーケストレーションする Multi-CLI レビューフレームワークです。
+複数のAI CLI（Claude Code、Codex、Copilot、Grok）を統一的にオーケストレーションする Multi-CLI レビューフレームワークです。
 `git commit` 時に AI が自動でコードをレビューし、問題があればコミットをブロックします。各CLIの得意分野とコスト特性を活かした包括的レビューを実行できます。
 
 > **標準レビュー体制**: 一次レビューは Claude Code（pr-review-toolkit）、クロスモデルレビューは Codex CLI の2本柱を標準とします。GitHub Copilot（Copilot CLI / Copilot code review）は従量課金への移行に伴い**既定のレビューラインナップから除外**しました。同梱アダプタ（`scripts/adapters/copilot-cli-adapter.sh`）は残置しており、課金を許容する場合のみ `--cli copilot-cli` でオプトインできます。
 
 > **モデル選択の方針**: 各アダプタは**モデルを選ばない**。どのモデルを使うかは各 CLI 自身の設定（`~/.codex/config.toml` など）へ委譲し、環境変数が設定されているときだけフラグを組み立てる。アダプタにモデル slug の既定値を持たせると、その値がユーザーの CLI 設定と 2 重化して必ず古くなり、しかもユーザー設定を黙って上書きする。実装パターンと実害の記録は [REVIEW_AGENT_CREATION_GUIDE.md の「モデル指定は『既定値を持たない』」](../../06-reference/REVIEW_AGENT_CREATION_GUIDE.md#モデル指定は既定値を持たない) を参照。
 
-> **同梱 vs 利用側スクリプト**: プラグインが配布するのは `scripts/setup-multi-agent.sh` / `scripts/multi-agent.sh` / `scripts/multi-review.sh` / `scripts/adapters/*` / `scripts/perspectives/` / `scripts/agent-config.yaml`。加えて `scripts/templates/codex-review.sh`（`multi-agent.sh` へ委譲する薄いシム）が同梱され、`setup-multi-agent.sh` が消費プロジェクトの `scripts/codex-review.sh` へ配置する（Issue #406）。`setup-automated-review.sh` / `setup-multi-review.sh` / `review-common.sh` / `review-prompts.sh` と、`codex-review.sh` **以外**の単体ラッパー（`claude-review.sh` / `copilot-review.sh` / `gemini-review.sh` 等）は**同梱されない**。下の「方法1」は消費プロジェクトが自前で組む構成例であり、セットアップ後に自動で現れるファイルではない。
+> **同梱 vs 利用側スクリプト**: プラグインが配布するのは `scripts/setup-multi-agent.sh` / `scripts/multi-agent.sh` / `scripts/multi-review.sh` / `scripts/adapters/*` / `scripts/perspectives/` / `scripts/agent-config.yaml`。加えて `scripts/templates/codex-review.sh`（`multi-agent.sh` へ委譲する薄いシム）が同梱され、`setup-multi-agent.sh` が消費プロジェクトの `scripts/codex-review.sh` へ配置する（Issue #406）。`setup-automated-review.sh` / `setup-multi-review.sh` / `review-common.sh` / `review-prompts.sh` と、`codex-review.sh` **以外**の単体ラッパー（`claude-review.sh` / `copilot-review.sh` / `grok-review.sh` 等）は**同梱されない**。下の「方法1」は消費プロジェクトが自前で組む構成例であり、セットアップ後に自動で現れるファイルではない。
 
 ### システム構成
 
@@ -26,7 +26,7 @@
                            CLI バイナリの存在を確認し          │
                            優先順位で選択:                    │
                            Claude > Codex                    │
-                           > Gemini                          │
+                           > Grok                            │
                                                             ▼
                                               ┌──────────────────────┐
                                               │  利用側の共通基盤       │
@@ -50,7 +50,7 @@
                                               ┌─────────────┼─────────────┐
                                               ▼             ▼             ▼
                                         ┌──────────┐ ┌──────────┐ ┌──────────┐
-                                        │ Claude   │ │ Codex    │ │ Gemini   │
+                                        │ Claude   │ │ Codex    │ │ Grok     │
                                         │ Code     │ │ CLI      │ │ CLI      │ ...
                                         └────┬─────┘ └────┬─────┘ └────┬─────┘
                                              └─────────────┼─────────────┘
@@ -66,8 +66,8 @@
 | 機能               | 説明                                                                     |
 | ------------------ | ------------------------------------------------------------------------ |
 | 自動レビュー       | `git commit` 時に自動でコードレビューを実行                              |
-| Multi-CLI対応      | Claude Code、Codex、Gemini の3 CLIを統合（Copilot はオプトイン）        |
-| コスト最適化       | 固定料金/無料CLIを優先するコスト戦略を選択可能                           |
+| Multi-CLI対応      | Claude Code、Codex、Grok の3 CLIを統合（Copilot はオプトイン）          |
+| コスト最適化       | 定額（flat-rate）CLIを優先するコスト戦略を選択可能                           |
 | 優先度分類         | Critical / Important / Quality の3段階で問題を分類                       |
 | ブロック機能       | Criticalな問題があればコミットをブロック                                 |
 | スラッシュコマンド | `/code-review` で手動レビューも可能                                      |
@@ -81,7 +81,7 @@
 
 - **Git**: 任意のバージョン
 - **Node.js**: >= 24.0.0（npm使用時）
-- **AI CLI**: Claude Code、Codex、Gemini のうち1つ以上がインストール済み
+- **AI CLI**: Claude Code、Codex、Grok のうち1つ以上がインストール済み
 
 ### 自動セットアップ（推奨・同梱スクリプト）
 
@@ -117,7 +117,7 @@ bash scripts/setup-multi-agent.sh
 mkdir -p .husky scripts .claude/commands
 # review-common.sh / review-prompts.sh / claude-review.sh 等は利用側で作成
 chmod +x .husky/pre-commit scripts/review-common.sh scripts/review-prompts.sh \
-  scripts/claude-review.sh scripts/copilot-review.sh scripts/gemini-review.sh
+  scripts/claude-review.sh scripts/copilot-review.sh scripts/grok-review.sh
 # codex-review.sh は同梱シムを setup-multi-agent.sh が配置するので、ここには含めない
 ```
 
@@ -149,7 +149,7 @@ project-root/
 │   ├── claude-review.sh          # 【利用側】単体ラッパー
 │   ├── codex-review.sh           # 【同梱】multi-agent.sh へ委譲するシム（setup が配置）
 │   ├── copilot-review.sh         # 【利用側】単体ラッパー（従量課金・オプトイン）
-│   ├── gemini-review.sh          # 【利用側】単体ラッパー
+│   ├── grok-review.sh            # 【利用側】単体ラッパー
 │   ├── setup-automated-review.sh # 【利用側】セットアップ用（存在する場合のみ）
 │   └── setup-multi-review.sh     # 【利用側】別名ラッパー例（存在する場合のみ）
 ├── .claude/
@@ -410,7 +410,7 @@ npx husky init
 | `npm run code-review:branch`      | ブランチ全体をClaude Codeでレビュー           |
 | `npm run code-review:codex`       | Codex CLIでレビュー                           |
 | `npm run code-review:copilot`     | Copilot CLIでレビュー（従量課金・オプトイン） |
-| `npm run code-review:gemini`      | Gemini CLIでレビュー                          |
+| `npm run code-review:grok`        | Grok CLIでレビュー                            |
 | `git commit --no-verify`          | レビューをスキップ                            |
 | `SKIP_CLAUDE_REVIEW=1 git commit` | 環境変数でスキップ                            |
 

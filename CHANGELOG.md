@@ -19,6 +19,23 @@
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-08-23
+
+### 追加
+
+- テストパターンガイド（`docs-template/.github/skills/test-patterns/`）と Git Workflow テンプレート（`docs-template/05-operations/deployment/git-workflow.md`）へ、「**RED を観測する前に、実プロセスを起動するテストの宛先を確認する**」手順を追加した。TDD の RED 観測は検査対象が機能していない状態でテストを走らせることなので、実プロセス・実バイナリ・外部サービスを起動するテストでは、その瞬間だけガードが存在せず、破壊的なテストデータが**コマンドの既定の宛先**へ素通しで到達する（報告元の運用で実測: 読み取り専用ガードの RED 観測中に、既定宛先が本番のコマンド経由で DELETE が本番 DB へ届いた）。「気をつける」ではなく確認する対象（接続先フラグ・環境変数・エンドポイント）を名指しするチェックリストとして追加し、宛先をローカルへ明示した理由はテストの doc コメントへ残す形にした。注入した偽の依存だけで完結するユニットテストは対象外
+- Multi-CLI Agent が、`--base` の裸のブランチ名が指す**ローカル** ref の後退でレビュー diff が汚染される形を、プラン表示の前に混入件数つきで警告するようになった。ブランチを `origin/<branch>` の先端から切ったのにローカル base が古いと、三点比較の merge-base がずれ、他ブランチのマージ済みコミットが diff へ混入して指摘の宛先が「自分の差分に無いファイル」になる（報告元の運用で実測）。判定は behind の数ではなく **merge-base の比較**で行う — 「pull していないローカル base から切った」だけの形は behind でも混入ゼロで、そこへ警告すると最も普通の運用が常時ノイズになる（セルフレビューの実測反証を受けて述語を修正済み）。警告するのは base の diff を実際に使う実行（review / `--include-diff`）だけで、中断はしない（意図的にローカル base を使う運用を壊さない）。`origin/<branch>` が無い・比較が失敗する場合は黙って従来どおり動く。`--help` と運用ドキュメントに「裸のブランチ名はローカル ref を先に見る」ことを明記した
+
+### 削除
+
+- Multi-CLI Agent から gemini-cli サポートを削除した（本プロジェクトでは未使用のため）。登録 CLI は claude-code / codex-cli / copilot-cli / grok-cli の 4 つになる。gemini が持っていた観点は廃止せず再配置した — review の security-analysis と explore の pattern-discovery は grok-cli へ、review の comment-analysis は claude-code へ、implement の documentation は codex-cli へ。`minimize_cost` の振替先は free-tier の消滅に伴い flat-rate（grok-cli）へ移り、振替先へ観点が集中したときの逐次実行とプラン警告も flat-rate を対象に追随する。`scripts/adapters/gemini-cli-adapter.sh` と配布ドキュメント `docs-template/05-operations/deployment/gemini-cli-reviewer.md` は撤去
+
+### 修正
+
+- Multi-CLI Agent（`scripts/multi-agent.sh` のアダプタ群）がレビュー/実装プロンプトを CLI の**引数として**渡していたのを、stdin（または CLI のファイル渡しオプション）経由へ変更した。diff 込みのプロンプトは数百 KB になりうるため、引数渡しは Windows / Git Bash のコマンドライン長上限（CreateProcess 約 32KB）を超えた時点で npm shim の node 起動が「Argument list too long」の exit 126 になり、全 CLI が同時に落ちる（codex-cli / copilot-cli で同一 stderr を実測）。経路は CLI ごとに実測して選定した — codex は `exec -`（stdin から読む）、claude は `-p` + stdin、copilot は `-p ""` + stdin（**非空の `-p` は stdin を無視する**実測があるため空文字固定）、grok は stdin を読まないため専用の `--prompt-file`、gemini は `-p` の「stdin 入力へ追記」というドキュメント仕様に基づき短い固定文 + stdin（この gemini 経路は本リリース内の gemini-cli サポート削除で撤去済み — §削除 参照）。タイムアウトラッパーには stdin ファイル注入の口（`--stdin-file`）を追加した — 有限の通常ファイルは必ず EOF に到達するため、過去に塞いだ「stdin 待ちハング」は再発しない。プロンプト本文が argv へ戻る退行は `tests/adapter-prompt-guard/` の負の検査で固定した
+- クローズ前ゲートスキル（`skills/close-issue/`）の手順 1 が提示する Refs 参照抽出の awk が、スキル読み込み時の引数展開で壊れる問題を修正した。ホストはスキル本文中の `$ARGUMENTS` に加えて**裸のドル記号 + 0** も引数値へ置換する（実測で確認）。awk の現在行参照がまさにこの形だったため、読み込まれた手順では走査対象が PR 本文から定数文字列に化け、参照 0 件・終了コード 0 のまま closing keyword 抵触検査が丸ごとスキップされる fail-open になっていた。現在行参照を、意味が同一で置換に拾われない `$(0)` へ退避し、抽出が実際に参照を取り出すことを SKILL.md からの抽出→実行の機能検査（`tests/closing-keyword-guard/`）として固定した
+- 同型の混入を止める静的検査を `tests/skill-bash-blocks/` に追加した。全スキル本文とスラッシュコマンド本文（存在する checkout のみ）の**全文**から、裸のドル記号 + 0（braced 形含む）を行番号付きで検出する。置換はコードブロックの内外・言語タグ・コメント行のいずれにも依存しないため、ブロック抽出をせず全行を見る。ドル記号 + 1〜9 は置換されないことを実測したうえで対象外とし、その根拠と検出器の検出力（違反 fixture の期待行一致・変異注入で赤）を検査自身の自己検証として残してある
+
 ## [0.49.0] - 2026-08-23
 
 ### 追加

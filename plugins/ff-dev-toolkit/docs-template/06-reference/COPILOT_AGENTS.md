@@ -55,16 +55,16 @@ your-project/
     ├── copilot-review.sh                ← 【利用側】Copilot CLI 単体ラッパー（同梱されない）
     ├── claude-review.sh                 ← 【利用側】Claude Code 単体ラッパー（同梱されない）
     ├── codex-review.sh                  ← 【同梱】multi-agent.sh へ委譲するシム（setup が配置）
-    ├── gemini-review.sh                 ← 【利用側】Gemini 単体ラッパー（同梱されない）
+    ├── grok-review.sh                   ← 【利用側】Grok 単体ラッパー（同梱されない）
     ├── review-common.sh                 ← 【利用側】共通レビューロジック（同梱されない）
     └── review-prompts.sh                ← 【利用側】レビュープロンプト定義（同梱されない）
 ```
 
-> **同梱 vs 利用側**: `multi-agent.sh` / `multi-review.sh` / `setup-multi-agent.sh` / `adapters/*` はプラグインが配布する。`codex-review.sh` は `multi-agent.sh` へ委譲するシムとして同梱され、**`setup-multi-agent.sh` が配置する**。それ以外の `*-review.sh`（`claude-review.sh` / `copilot-review.sh` / `gemini-review.sh`）と `review-common.sh` / `review-prompts.sh` はセットアップ後に自動で現れるファイルではなく、**消費プロジェクトが自前で置く構成例**である。
+> **同梱 vs 利用側**: `multi-agent.sh` / `multi-review.sh` / `setup-multi-agent.sh` / `adapters/*` はプラグインが配布する。`codex-review.sh` は `multi-agent.sh` へ委譲するシムとして同梱され、**`setup-multi-agent.sh` が配置する**。それ以外の `*-review.sh`（`claude-review.sh` / `copilot-review.sh` / `grok-review.sh`）と `review-common.sh` / `review-prompts.sh` はセットアップ後に自動で現れるファイルではなく、**消費プロジェクトが自前で置く構成例**である。
 
 ### モード1: Copilot CLI セッション分離（推奨）
 
-利用側で用意した `scripts/copilot-review.sh` が5つの専門レビュアーを並列で `copilot -p` 実行する想定。**同梱**の `scripts/multi-agent.sh` を使えば、Claude/Codex/Copilot/Gemini/Grok の5つのCLIで同時にクロスモデルレビューが可能です。
+利用側で用意した `scripts/copilot-review.sh` が5つの専門レビュアーを並列で `copilot -p` 実行する想定。**同梱**の `scripts/multi-agent.sh` を使えば、Claude/Codex/Copilot/Grok の4つのCLIで同時にクロスモデルレビューが可能です。
 
 ### モード2: 動的 `read_file` 読み込み（フォールバック）
 
@@ -749,9 +749,9 @@ PR作成後に `@review-router` を呼び出すだけで、変更内容を自動
 ## 関連ドキュメント
 
 - [REVIEW_AGENT_CREATION_GUIDE.md](./REVIEW_AGENT_CREATION_GUIDE.md) - 汎用レビューエージェント作成ガイド（ツール非依存のパースペクティブ定義・アダプターパターン）
-- [multi-cli-review-orchestration.md](../05-operations/deployment/multi-cli-review-orchestration.md) - Multi-CLI レビューオーケストレーション（5 CLI統合運用）
+- [multi-cli-review-orchestration.md](../05-operations/deployment/multi-cli-review-orchestration.md) - Multi-CLI レビューオーケストレーション（4 CLI統合運用）
 - [MASTER.md](../MASTER.md) - プロジェクト全体の設定
 - [PATTERNS.md](../03-implementation/PATTERNS.md) - 実装パターン
 - [TESTING.md](../04-quality/TESTING.md) - テスト戦略
 
-> **💡 Note**: 本ドキュメントのエージェントテンプレートはGitHub Copilot固有ですが、ツール非依存の汎用パターンについては [REVIEW_AGENT_CREATION_GUIDE.md](./REVIEW_AGENT_CREATION_GUIDE.md) を参照してください。同ガイドでは、本ドキュメントの6エージェントを含む7つの標準パースペクティブを5つのAI CLI（Claude Code、Codex、Copilot、Gemini、Grok）で統一的に管理する方法を定義しています。
+> **💡 Note**: 本ドキュメントのエージェントテンプレートはGitHub Copilot固有ですが、ツール非依存の汎用パターンについては [REVIEW_AGENT_CREATION_GUIDE.md](./REVIEW_AGENT_CREATION_GUIDE.md) を参照してください。同ガイドでは、本ドキュメントの6エージェントを含む7つの標準パースペクティブを4つのAI CLI（Claude Code、Codex、Copilot、Grok）で統一的に管理する方法を定義しています。

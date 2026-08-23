@@ -12,7 +12,8 @@
 #   - tests/**/*.sh のパイプ入力 grep -q* → tests/run-all/verify.sh case 10
 #   - tracked shell の $VAR+マルチバイト → tests/run-all/verify.sh case 11
 #     （実装: tests/lib/mbcs-guard.sh。fail-closed 自動回帰: mbcs-guard-failclosed）
-#   - SKILL.md の bash 系コードブロック → 本 suite（grep -q* と MBCS の両方）。対象は
+#   - SKILL.md の bash 系コードブロック → 本 suite（grep -q* と MBCS。裸の $0 検査
+#     も本 suite だが、対象はブロックではなくファイル全文 + commands/*.md）。対象は
 #     plugins/*/skills/*/SKILL.md（全プラグインのスキル）、
 #     plugins/*/docs-template/.github/skills/*/SKILL.md（配布テンプレートのスキル）、
 #     リポジトリローカルの .claude/skills/*/SKILL.md（存在する場合のみ。公開 checkout
@@ -25,11 +26,27 @@
 # `command` / `env` / `sudo` / 変数代入（`LC_ALL=C` 等）のプレフィックス、`--quiet` /
 # `--silent` も検出する。
 #
+# 裸の $0 検査（Issue #776）: SKILL.md はスキル読み込み時に引数展開を受けるため、
+# 本文中の裸の $0 は引数値へ置換される（実測: close-issue の awk の `line = $0` が
+# `line = 774` に化け、Refs 抽出が 0 件のまま rc=0 → closing keyword ガードが丸ごと
+# スキップされる fail-open）。awk の現在行は $(0)、shell のスクリプト名参照が要る
+# 場合も $0 を直接書かない形へ退避する。説明文で言及するときは「ドル記号 + 0」の
+# ように崩して書く（literal に書くと置換で文章側が壊れる）。
+# 置換はフェンスの内外・言語タグ・コメント行のいずれにも依存しないため、この検査は
+# **ファイル全文の全行**を対象にする（grep -q* / MBCS 検査と違いブロック抽出を
+# しない）。braced 形 ${0} は置換されるか未実測だが、fail-closed 側に倒して検出
+# 対象に含める。対象ファイルも SKILL.md に加えて plugins/*/commands/*.md（引数展開
+# の本来の面。存在する checkout でのみ）を含める。
+# 置換の実測記録（cache 0.41.0 の close-issue を引数 987654 で読み込み）: 置換された
+# のは $ARGUMENTS と裸の $0 のみで、$1 / $2 は原文のまま残った。よって $1-$9 は本
+# 検査の対象外（SKILL.md 内の shell/awk の $1 等は通常どおり書いてよい）。
+#
 # 既知の限界（保守側に倒す・変更時はこの一覧と fixture を更新すること）:
 #   - オペランドの後ろに置いた -q（`grep -e "$pat" -q` 形）は非検出
 #   - bash ブロック内の文字列リテラル・行末コメント内の言及は検出する（誤検出側。
 #     禁止例を書くときは行頭コメントに置くこと）
 #   - 言語タグは小文字完全一致（bash / sh / shell / zsh）。タグ無しブロックは対象外
+#     （grep -q* / MBCS 検査のみ。$0 検査はフェンス抽出をせず全行を見る）
 #   - 閉じられないままファイル末尾に達したフェンスは UNCLOSED_FENCE として構造違反に
 #     する（後続の bash ブロックが静かに未検査になるのを防ぐ）
 #
@@ -117,6 +134,16 @@ scan_skill_bash_blocks() {
   ' "$1"
 }
 
+# ファイル全文の行に現れる裸の $0（braced 形 ${0} 含む）を「行番号:行」で出力する。
+# 置換はフェンスの内外を問わないため、フェンス追跡をせず全行を素通しで見る（論理行
+# 結合も不要 — $0 は行をまたげない）。$(0) は $ の直後に 0 が続かないので一致しない。
+scan_skill_dollar0() {
+  awk '
+    { sub(/\r$/, "") }
+    /\$0|\$\{0/ { print FNR ":" $0 }
+  ' "$1"
+}
+
 echo "== SKILL.md bash ブロックのパイプ入力 grep -q* 検査 =="
 
 # ---- 自己検証（変異試験の恒久化） --------------------------------------------
@@ -166,6 +193,39 @@ else
   printf '%s\n' "$mbcs_clean_hits" | sed 's/^/    | /' >&2
 fi
 
+# ---- 自己検証: 裸の $0（Issue #776） ------------------------------------------
+[ -f "$FIXTURES_DIR/dollar0-violation.md" ] || { echo "✗ fixture がありません: $FIXTURES_DIR/dollar0-violation.md" >&2; exit 1; }
+[ -f "$FIXTURES_DIR/dollar0-clean.md" ] || { echo "✗ fixture がありません: $FIXTURES_DIR/dollar0-clean.md" >&2; exit 1; }
+
+# 行番号: 散文 $0 / bash ブロック 3 行（コメント行含む）/ text ブロック /
+# インライン code / braced 形 ${0}
+EXPECTED_DOLLAR0_VIOLATION_LINES="3 6 7 8 12 15 17"
+actual_dollar0_lines="$(scan_skill_dollar0 "$FIXTURES_DIR/dollar0-violation.md" | awk -F: '{ print $1 }' | paste -sd' ' -)" \
+  || { echo "✗ \$0 自己検証の scan が失敗しました（dollar0-violation.md）" >&2; exit 1; }
+if [ "$actual_dollar0_lines" = "$EXPECTED_DOLLAR0_VIOLATION_LINES" ]; then
+  ok "\$0 違反 fixture の全違反を期待行で検出（${EXPECTED_DOLLAR0_VIOLATION_LINES}）"
+else
+  bad "\$0 違反 fixture の検出結果が期待と不一致（expected: '${EXPECTED_DOLLAR0_VIOLATION_LINES}' / actual: '${actual_dollar0_lines}'）"
+fi
+
+dollar0_clean_hits="$(scan_skill_dollar0 "$FIXTURES_DIR/dollar0-clean.md")" \
+  || { echo "✗ \$0 自己検証の scan が失敗しました（dollar0-clean.md）" >&2; exit 1; }
+if [ -z "$dollar0_clean_hits" ]; then
+  ok "\$0 非検出 fixture（\$(0) 形式・崩した言及・\$1）を誤検出しない"
+else
+  bad "\$0 非検出 fixture を誤検出した:"
+  printf '%s\n' "$dollar0_clean_hits" | sed 's/^/    | /' >&2
+fi
+
+# 非検出主張のデコイ実在確認: clean fixture から負荷担体（$(0) と $1）が消えると
+# 「誤検出しない」が空主張になる。文字列の存在自体を正の主張として固定する。
+if grep -F 'line = $(0)' "$FIXTURES_DIR/dollar0-clean.md" >/dev/null \
+   && grep -F 'POS="$1"' "$FIXTURES_DIR/dollar0-clean.md" >/dev/null; then
+  ok "\$0 非検出 fixture のデコイ（\$(0) / \$1）が実在する"
+else
+  bad "\$0 非検出 fixture のデコイが欠落しています（dollar0-clean.md を確認）"
+fi
+
 if [ "$FAIL" -gt 0 ]; then
   echo ""
   echo "✗ skill-bash-blocks verify: 検出器の自己検証に失敗（横断検査は実行しない）" >&2
@@ -210,6 +270,7 @@ fi
 
 violation_files=0
 mbcs_violation_files=0
+dollar0_violation_files=0
 for file in "${SKILL_FILES[@]}"; do
   hits="$(scan_skill_bash_blocks "$file")" \
     || { echo "✗ scanner 自体が失敗しました: $file" >&2; exit 1; }
@@ -229,11 +290,37 @@ for file in "${SKILL_FILES[@]}"; do
   fi
 done
 
+# ---- $0 検査（対象は SKILL.md + commands/*.md、ファイル全文） -----------------
+# commands/*.md はスラッシュコマンドの本文で、引数展開の本来の面。ff-dev-toolkit
+# 自体は commands を持たず公開 checkout に存在保証が無いため、.claude/skills と
+# 同じく「存在する checkout でのみ対象」とし、コントロールにはしない。
+shopt -s nullglob
+DOLLAR0_EXTRA_FILES=(
+  "$PLUGINS_DIR"/*/commands/*.md
+  "$REPO_ROOT"/.claude/commands/*.md
+)
+shopt -u nullglob
+DOLLAR0_FILES=("${SKILL_FILES[@]}" ${DOLLAR0_EXTRA_FILES[@]+"${DOLLAR0_EXTRA_FILES[@]}"})
+
+for file in "${DOLLAR0_FILES[@]}"; do
+  dollar0_hits="$(scan_skill_dollar0 "$file")" \
+    || { echo "✗ \$0 scanner 自体が失敗しました: $file" >&2; exit 1; }
+  if [ -n "$dollar0_hits" ]; then
+    dollar0_violation_files=$((dollar0_violation_files + 1))
+    bad "${file#"$REPO_ROOT"/} に裸の \$0（または \${0}）がある（スキル読み込み時に引数値へ置換される）:"
+    printf '%s\n' "$dollar0_hits" | sed 's/^/    | /' >&2
+    echo "    コードでは awk の現在行を \$(0) にする等 \$0 を直接書かない形へ、説明文では「ドル記号 + 0」のように崩してください（Issue #776）" >&2
+  fi
+done
+
 if [ "$violation_files" -eq 0 ]; then
   ok "全 ${#SKILL_FILES[@]} 件の SKILL.md の bash ブロックにパイプ入力の grep -q* が無い"
 fi
 if [ "$mbcs_violation_files" -eq 0 ]; then
   ok "全 ${#SKILL_FILES[@]} 件の SKILL.md の bash ブロックに \$VAR 直付けマルチバイトが無い"
+fi
+if [ "$dollar0_violation_files" -eq 0 ]; then
+  ok "全 ${#DOLLAR0_FILES[@]} 件の SKILL.md / commands の全文に裸の \$0 が無い"
 fi
 
 echo ""

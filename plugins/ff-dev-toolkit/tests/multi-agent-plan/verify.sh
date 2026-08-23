@@ -67,7 +67,7 @@ git -C "$REPO" commit -qm "init"
 git -C "$REPO" switch -q -c feature/x
 
 # 全 CLI を「導入済み」にする。dry-run なので stub 自体は起動されない。
-for name in claude codex copilot gemini grok; do
+for name in claude codex copilot grok; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 99' > "$STUB/$name"
   chmod +x "$STUB/$name"
 done
@@ -92,7 +92,7 @@ else
 fi
 
 if grep -q "claude-code skipped — owns no 'code-review' perspective" "$FILTER_LOG" \
-  && grep -q '(has: type-design-analysis code-simplification)' "$FILTER_LOG"; then
+  && grep -q '(has: type-design-analysis code-simplification comment-analysis)' "$FILTER_LOG"; then
   ok "除外された導入済み CLI と所有 perspective を表示"
 else
   bad "除外された導入済み CLI の理由が不足"
@@ -205,15 +205,16 @@ fi
 
 if grep -q 'claude-code \[premium\]:' "$EXPLORE_LOG" \
   && grep -q '^     - dependency-mapping$' "$EXPLORE_LOG" \
-  && ! grep -q 'gemini-cli \[free-tier\]:' "$EXPLORE_LOG" \
-  && ! grep -q 'minimize_cost:.*claude-code.*gemini-cli' "$EXPLORE_LOG"; then
+  && ! grep -q 'grok-cli \[flat-rate\]:' "$EXPLORE_LOG" \
+  && ! grep -q 'minimize_cost:.*claude-code.*grok-cli' "$EXPLORE_LOG"; then
   ok "明示 --cli は minimize_cost でも別 CLI へ置換しない"
 else
   bad "明示 --cli が cost strategy で別 CLI へ置換された"
 fi
 
 # 上は「置換されないこと」の否定主張なので、置換そのものが壊れても緑のまま通る。
-# 置換先は cursor-cli [flat-rate] → gemini-cli [free-tier] へ移った（issue #240）ので、
+# 置換先は cursor-cli → gemini-cli（issue #240）→ grok-cli [flat-rate]（issue #783）と
+# 移ったので、
 # 実際に置換が起きる経路（--cli 無し）を正の主張で押さえておく。
 EXPLORE_AUTO_LOG="$TMP/explore-auto.log"
 if (
@@ -226,11 +227,11 @@ else
   bad "Explore 既定 minimize_cost の dry-run が失敗"
 fi
 
-if grep -q 'minimize_cost: architecture-analysis: claude-code → gemini-cli' "$EXPLORE_AUTO_LOG" \
+if grep -q 'minimize_cost: architecture-analysis: claude-code → grok-cli' "$EXPLORE_AUTO_LOG" \
   && ! grep -q 'claude-code \[premium\]:' "$EXPLORE_AUTO_LOG"; then
-  ok "--cli 無しの minimize_cost は premium を free-tier へ置換する"
+  ok "--cli 無しの minimize_cost は premium を flat-rate へ置換する"
 else
-  bad "minimize_cost の premium → free-tier 置換が働いていない"
+  bad "minimize_cost の premium → flat-rate 置換が働いていない"
 fi
 
 echo ""
@@ -258,8 +259,9 @@ echo ""
 echo "== fallback チェーンの解決 =="
 # 代替先も未インストールのとき、一段で打ち切ると担当観点がプランから黙って消える。
 # さらに、チェーンを辿るだけでも足りない: 対応表は claude-code ⇄ codex-cli が終端
-# サイクルで、gemini-cli / grok-cli はそこへ流れ込むだけの片方向だった。実測では
-# gemini のみ 3/7、grok のみ 1/7 しか計画されなかった。
+# サイクルで、gemini-cli（当時）/ grok-cli はそこへ流れ込むだけの片方向だった。
+# 実測では gemini のみ 3/7、grok のみ 1/7 しか計画されなかった（gemini は issue
+# #783 で削除）。
 #
 # **1 構成だけ試して「単一 CLI 構成でも大丈夫」と一般化しない。** 初版は claude-only
 # だけを見て名前にその一般化を書き、gemini/grok の欠落を見逃した。全 CLI を単独で
@@ -267,7 +269,7 @@ echo "== fallback チェーンの解決 =="
 CHAIN_STUB="$TMP/chain-stub"
 REVIEW_PERSPECTIVE_TOTAL=7
 
-for solo_cmd in claude codex gemini grok; do
+for solo_cmd in claude codex grok; do
   rm -rf "$CHAIN_STUB"
   mkdir -p "$CHAIN_STUB"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 99' > "$CHAIN_STUB/$solo_cmd"
@@ -407,7 +409,7 @@ fi
 # 空プランは**複数 CLI**で作る。単一 CLI + 観点の組は上のとおり明示ペアとして
 # 通るようになったため、単一 CLI では空プランを構成できない。
 EMPTY_LOG="$TMP/empty-plan.log"
-if run_plan "$EMPTY_LOG" --cli gemini-cli --cli grok-cli --perspective code-review; then
+if run_plan "$EMPTY_LOG" --cli claude-code --cli grok-cli --perspective code-review; then
   bad "空プランの dry-run が成功している（実行時は非 0 なので判定が食い違う）"
 else
   ok "空プランを dry-run でも非 0 で拒否（実行時と判定が一致）"
@@ -558,6 +560,184 @@ for _t in explore implement; do
     sed 's/^/    | /' "$L" >&2
   fi
 done
+
+echo "== ローカル base の鮮度警告（Issue #759） =="
+
+# origin を持つ fixture。**真陽性の形**を作る: origin/develop を 2 コミット進め、
+# feature ブランチは **origin/develop の先端から**切り、ローカル develop は古いまま。
+# このとき merge-base(develop, HEAD) ≠ merge-base(origin/develop, HEAD) となり、
+# --base develop の三点 diff に他ブランチの 2 コミットが実際に混入する（Issue #759
+# の実測事故と同じ形）。behind の数を述語にすると、逆の「古いローカルから切った」
+# 形（混入ゼロ）で誤警告する — その反証ケースは下で別に固定する。
+STALE_ORIGIN="$TMP/stale-origin.git"
+STALE_REPO="$TMP/stale-repo"
+git init -q --bare "$STALE_ORIGIN"
+git init -q "$STALE_REPO"
+git -C "$STALE_REPO" config user.email "test@example.com"
+git -C "$STALE_REPO" config user.name "multi-agent-plan-test"
+git -C "$STALE_REPO" config commit.gpgsign false
+git -C "$STALE_REPO" switch -q -c develop
+echo base > "$STALE_REPO/app.txt"
+git -C "$STALE_REPO" add app.txt
+git -C "$STALE_REPO" commit -qm "init"
+git -C "$STALE_REPO" remote add origin "$STALE_ORIGIN"
+git -C "$STALE_REPO" push -q origin develop
+# origin/develop を 2 コミット進める
+echo merged1 > "$STALE_REPO/other.txt"
+git -C "$STALE_REPO" add other.txt
+git -C "$STALE_REPO" commit -qm "other work 1"
+echo merged2 >> "$STALE_REPO/other.txt"
+git -C "$STALE_REPO" add other.txt
+git -C "$STALE_REPO" commit -qm "other work 2"
+git -C "$STALE_REPO" push -q origin develop
+# feature は origin の先端から切る（実務: git switch -c feature origin/develop）
+git -C "$STALE_REPO" switch -q -c feature/stale
+echo change >> "$STALE_REPO/app.txt"
+git -C "$STALE_REPO" add app.txt
+git -C "$STALE_REPO" commit -qm "feature change"
+# ローカル develop だけを後退させる（pull していない状態の再現）
+git -C "$STALE_REPO" switch -q develop
+git -C "$STALE_REPO" reset -q --hard HEAD~2
+git -C "$STALE_REPO" switch -q feature/stale
+
+run_stale_plan() { # $1: output file, $2..: multi-agent args
+  local output="$1"
+  shift
+  (
+    cd "$STALE_REPO"
+    run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+      --task review --mode distributed --strategy balanced \
+      --dry-run "$@"
+  ) >"$output" 2>&1
+}
+
+STALE_LOG="$TMP/stale-base.log"
+if run_stale_plan "$STALE_LOG" --base develop; then
+  ok "behind なローカル base でも dry-run は従来どおり成功する（中断しない）"
+else
+  bad "behind 警告が実行を中断した（警告のみの契約に違反）"
+  tail -5 "$STALE_LOG" | sed 's/^/    | /' >&2
+fi
+if grep -q "他ブランチのマージ済みコミット 2 件が diff に混入します" "$STALE_LOG"; then
+  ok "混入 2 件の警告が件数つきで出る"
+else
+  bad "behind なローカル base の警告が出ていない"
+  grep -n "ローカル ref\|⚠️" "$STALE_LOG" | head -3 | sed 's/^/    | /' >&2
+fi
+if grep -q -- "--base origin/develop を検討してください" "$STALE_LOG"; then
+  ok "警告が origin/develop の明示指定という解消手段を案内する"
+else
+  bad "警告に解消手段の案内が無い"
+fi
+# 警告がプラン表示（Base branch: 行）より前にあること
+WARN_LINE="$(grep -n "はローカル ref で" "$STALE_LOG" | head -1 | cut -d: -f1)"
+PLAN_LINE="$(grep -n "Base branch:" "$STALE_LOG" | head -1 | cut -d: -f1)"
+if [[ -n "$WARN_LINE" && -n "$PLAN_LINE" && "$WARN_LINE" -lt "$PLAN_LINE" ]]; then
+  ok "警告はプラン表示より前に出る（行 ${WARN_LINE} < ${PLAN_LINE}）"
+else
+  bad "警告の位置がプラン表示より前でない（warn=${WARN_LINE:-なし} plan=${PLAN_LINE:-なし}）"
+fi
+
+# 偽陽性の反証: **古いローカル base から**切ったブランチは、ローカルが behind でも
+# merge-base が一致し diff に混入は無い — behind 数を述語にする実装への退行を検出する
+# （セルフレビューで実測反証された形そのもの）
+git -C "$STALE_REPO" switch -q -c feature/from-stale develop
+echo from-stale-change > "$STALE_REPO/from-stale.txt"
+git -C "$STALE_REPO" add from-stale.txt
+git -C "$STALE_REPO" commit -qm "cut from stale local base"
+FROMSTALE_LOG="$TMP/from-stale-base.log"
+if run_stale_plan "$FROMSTALE_LOG" --base develop \
+   && ! grep -q "はローカル ref で" "$FROMSTALE_LOG"; then
+  ok "古いローカル base から切ったブランチ（混入ゼロ）では警告を出さない（behind 数でなく merge-base 比較）"
+else
+  bad "混入が起きない形なのに警告が出た（behind 数を述語にする退行）"
+  grep -n "はローカル ref で" "$FROMSTALE_LOG" | head -2 | sed 's/^/    | /' >&2
+fi
+git -C "$STALE_REPO" switch -q feature/stale
+
+# origin/<branch> の明示指定は対象外 — **behind のまま**確認する（同期後に確認すると
+# 「stale でも誤警告しない」の検出力が無い。Codex レビュー指摘）
+EXPLICIT_LOG="$TMP/explicit-origin-base.log"
+if run_stale_plan "$EXPLICIT_LOG" --base origin/develop \
+   && ! grep -q "はローカル ref で" "$EXPLICIT_LOG"; then
+  ok "--base origin/develop の明示指定では（behind でも）警告を出さず rc=0"
+else
+  bad "origin/ 明示指定の挙動が期待と違う（警告混入または非 0 終了）"
+  tail -5 "$EXPLICIT_LOG" | sed 's/^/    | /' >&2
+fi
+
+# --staged も behind のまま対象外を確認する（base を使わない）
+git -C "$STALE_REPO" switch -q feature/stale
+echo staged-change >> "$STALE_REPO/app.txt"
+git -C "$STALE_REPO" add app.txt
+STAGED_LOG="$TMP/staged-base.log"
+STAGED_RC=0
+(
+  cd "$STALE_REPO"
+  run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    --task review --mode distributed --strategy balanced --staged --dry-run
+) >"$STAGED_LOG" 2>&1 || STAGED_RC=$?
+git -C "$STALE_REPO" reset -q app.txt
+git -C "$STALE_REPO" checkout -q app.txt
+if [[ "$STAGED_RC" -eq 0 ]] && ! grep -q "はローカル ref で" "$STAGED_LOG"; then
+  ok "--staged では（behind でも）鮮度警告を出さず rc=0"
+else
+  bad "--staged の挙動が期待と違う (rc=${STAGED_RC})"
+  tail -5 "$STAGED_LOG" | sed 's/^/    | /' >&2
+fi
+
+# 一致していれば警告なし
+git -C "$STALE_REPO" fetch -q origin
+git -C "$STALE_REPO" switch -q develop
+git -C "$STALE_REPO" merge -q --ff-only origin/develop
+git -C "$STALE_REPO" switch -q feature/stale
+SYNC_LOG="$TMP/sync-base.log"
+run_stale_plan "$SYNC_LOG" --base develop || true
+if ! grep -q "はローカル ref で" "$SYNC_LOG"; then
+  ok "ローカルと origin が一致していれば警告は出ない"
+else
+  bad "一致しているのに鮮度警告が出た"
+fi
+
+# base の diff を使わないタスク（explore、--include-diff 無し）では警告しない
+EXPLORE_WARN_LOG="$TMP/explore-warn.log"
+(
+  cd "$STALE_REPO"
+  run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    --task explore --mode distributed --description "stub explore" --base develop --dry-run
+) >"$EXPLORE_WARN_LOG" 2>&1 || true
+if ! grep -q "はローカル ref で" "$EXPLORE_WARN_LOG"; then
+  ok "explore（diff 不使用）では鮮度警告を出さない"
+else
+  bad "diff を使わない explore に鮮度警告が出た"
+fi
+
+# ローカルが**進んでいる**だけ（ahead-only）は対象外 — behind の向きだけを見る
+git -C "$STALE_REPO" switch -q develop
+echo local-ahead > "$STALE_REPO/local-ahead.txt"
+git -C "$STALE_REPO" add local-ahead.txt
+git -C "$STALE_REPO" commit -qm "local ahead"
+git -C "$STALE_REPO" switch -q feature/stale
+AHEAD_LOG="$TMP/ahead-base.log"
+if run_stale_plan "$AHEAD_LOG" --base develop \
+   && ! grep -q "はローカル ref で" "$AHEAD_LOG"; then
+  ok "ローカルが進んでいるだけなら警告を出さず rc=0（behind の向きだけを見る）"
+else
+  bad "ahead-only で挙動が期待と違う（警告混入または非 0 終了）"
+  tail -5 "$AHEAD_LOG" | sed 's/^/    | /' >&2
+fi
+git -C "$STALE_REPO" switch -q develop
+git -C "$STALE_REPO" reset -q --hard origin/develop
+git -C "$STALE_REPO" switch -q feature/stale
+
+# origin remote の無い repo（既存 REPO fixture）では fail-open で警告なし
+NOORIGIN_LOG="$TMP/no-origin-base.log"
+run_plan "$NOORIGIN_LOG"
+if ! grep -q "はローカル ref で" "$NOORIGIN_LOG"; then
+  ok "origin/<branch> が存在しない場合は警告を出さない（fail-open）"
+else
+  bad "origin 不在なのに鮮度警告が出た"
+fi
 
 echo ""
 if [[ "$FAIL" -gt 0 ]]; then

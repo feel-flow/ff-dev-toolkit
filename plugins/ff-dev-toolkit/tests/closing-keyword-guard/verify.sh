@@ -33,7 +33,7 @@ WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 # 更新箇所は 2 つ: ok / bad を増減させた箇所と、この宣言。
 # keyword 系統のループは check-closing-keywords.sh --list-keywords の出力件数に比例
 # するので、keyword を増減したときもここを直す。
-EXPECTED_CHECKS=121
+EXPECTED_CHECKS=123
 
 PASS=0
 FAIL=0
@@ -316,6 +316,39 @@ contains "$SKILL" "空を理由に打ち切ると" "closingIssuesReferences が�
 contains "$SKILL" '拾う綴りは `Ref` / `Refs` のみ' "Refs 参照として拾う綴りを固定している"
 contains "$SKILL" "RSTART, RLENGTH" "Refs 参照の抽出を機械化している（目視に委ねない）"
 contains "$SKILL" 'EXTRACT_RC}" -eq 0' "抽出の失敗を rc の意味論に依存せず判定する"
+
+# ---- 手順 1 の awk を実体として実行する機能検査（Issue #776 AC） --------------
+# contains のテキスト照合では「awk が原文どおり存在する」ことしか言えず、引数展開
+# による意味破壊（line = $0 が line = <PR番号> へ化ける類）や正規表現の退行は検出
+# できない。SKILL.md のフェンスから awk プログラムを抽出し、Refs を含む本文へ実際
+# に適用して抽出結果を固定する。マーカー（"| awk" 開始行〜"sort -u" 終了行）が
+# 変わって抽出できなくなった場合は fail-closed でこの検査を赤にする。
+# 終端行（`}' | sort -u ...`）はクォート以降を切り落として残りを出力する。固定文字列
+# "    }" を合成すると、終端行に実文が同居する形へ変わったときに黙って欠落する。
+SKILL_AWK_SRC="$(awk -v q="'" '
+  extracting == 1 && index($0, "sort -u") > 0 {
+    tail_pos = index($0, q)
+    if (tail_pos > 1) print substr($0, 1, tail_pos - 1)
+    found = 1; extracting = 0; next
+  }
+  extracting == 1 { print }
+  found == 0 && extracting == 0 && index($0, "| awk") > 0 { extracting = 1 }
+  END { exit found == 1 ? 0 : 1 }
+' "$SKILL")" || SKILL_AWK_SRC=""
+if [[ -n "$SKILL_AWK_SRC" ]]; then
+  ok "手順 1 の awk プログラムを SKILL.md のフェンスから抽出できる"
+else
+  bad "手順 1 の awk プログラムを SKILL.md から抽出できない（マーカー行の変更時はこの検査を追随させる）"
+fi
+
+REFS_EXTRACTED="$(printf '%s\n' 'Closes #100' 'Refs #620' 'refs owner/repo#42 と Ref: #7 を参照' \
+  | awk "$SKILL_AWK_SRC" | LC_ALL=C sort -u)" || REFS_EXTRACTED="(awk 実行に失敗)"
+REFS_EXPECTED="$(printf '%s\n' '#620' '#7' 'owner/repo#42')"
+if [[ "$REFS_EXTRACTED" == "$REFS_EXPECTED" ]]; then
+  ok "抽出した awk が Refs 参照を実際に取り出す（#620 / #7 / owner/repo#42。Closes は拾わない）"
+else
+  bad "抽出した awk の出力が期待と不一致（expected: $(printf '%s' "$REFS_EXPECTED" | tr '\n' ' ') / actual: $(printf '%s' "$REFS_EXTRACTED" | tr '\n' ' ')）"
+fi
 contains "$SKILL" "既定のマージ経路" "抵触時は既定のマージ経路が安全でないと宣言する"
 contains "$SKILL" "2b の結果をマージの条件にする" "コミット由来の抵触は 2b へ委ねる"
 contains "$SKILL" "2a の抵触で無条件に停止しない" "改題で消せない抵触で永久に赤にならない"

@@ -408,7 +408,7 @@ EOF
 
 > **他のAIツール設定ファイルにも同様の記載を推奨**:
 > CLAUDE.md に記載した作業スタイル、Git Workflow、セルフレビューチェックリストなどは、
-> `AGENTS.md`（Gemini等）や `.github/copilot-instructions.md`（GitHub Copilot）にも
+> `AGENTS.md`（Codex等）や `.github/copilot-instructions.md`（GitHub Copilot）にも
 > 同様に記載することで、どのAIツールでも統一された開発体験が得られます。
 > 詳細は [AIツール設定ファイルのベストプラクティス](../docs/AI_CONFIG_BEST_PRACTICES.md) を参照してください。
 

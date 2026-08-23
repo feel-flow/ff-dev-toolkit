@@ -89,7 +89,7 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # argv を <arg> 区切りで記録する。単純な空白連結だと "gpt 5x" が 2 引数へ割れても
 # 記録が同じに見えてしまい、語分割の退化を検出できない（ACE-36-1）。
 mkdir -p "$WORK/bin"
-for cli in claude codex gemini copilot grok; do
+for cli in claude codex copilot grok; do
   {
     echo '#!/usr/bin/env bash'
     echo 'for a in "$@"; do printf "<%s>" "$a" >> "$ARGV_LOG"; done'
@@ -183,9 +183,9 @@ expect_launched() {
 #
 # parse_adapter_args は全アダプタが set -u 下で呼ぶ。Bash 3.2 では末尾の "$2" が
 # unbound variable になると、呼び出し側から rc=0 に見える実測があるため、関数単体
-# ではなく5アダプタの直叩きで検査する。全6フラグを直積で回し、非0だけでなく
+# ではなく4アダプタの直叩きで検査する。全6フラグを直積で回し、非0だけでなく
 # stderr が欠落したフラグそのものを名指しすること、CLI が未起動であることも固定する。
-MISSING_VALUE_ADAPTERS="claude-code-adapter.sh codex-cli-adapter.sh copilot-cli-adapter.sh gemini-cli-adapter.sh grok-cli-adapter.sh"
+MISSING_VALUE_ADAPTERS="claude-code-adapter.sh codex-cli-adapter.sh copilot-cli-adapter.sh grok-cli-adapter.sh"
 MISSING_VALUE_FLAGS="--changed-files --base --timeout --task-type --description --staging-dir"
 MISSING_VALUE_CASES=0
 for adapter in $MISSING_VALUE_ADAPTERS; do
@@ -208,15 +208,15 @@ for adapter in $MISSING_VALUE_ADAPTERS; do
     fi
   done
 done
-if [ "$MISSING_VALUE_CASES" -eq 30 ]; then
-  ok "値付き6フラグ × 5アダプタの全30経路を検査した"
+if [ "$MISSING_VALUE_CASES" -eq 24 ]; then
+  ok "値付き6フラグ × 4アダプタの全24経路を検査した"
 else
-  bad "値欠落の検査件数が30でない（実測: ${MISSING_VALUE_CASES}）"
+  bad "値欠落の検査件数が24でない（実測: ${MISSING_VALUE_CASES}）"
 fi
 
 # 末尾欠落だけでなく、次の既知フラグを値として吸収する経路も同じ欠落として扱う。
 # 値付き6フラグ × 既知9オプションを共通パーサーの1アダプタで回せば、
-# 上の全5アダプタ直積と合わせて
+# 上の全4アダプタ直積と合わせて
 # 「共通実装」と「全入口」の両方を固定できる。
 KNOWN_ADAPTER_OPTIONS="--changed-files --base --timeout --task-type --description --include-diff --staged --staging-dir --inline-output"
 OPTION_AS_VALUE_CASES=0
@@ -261,10 +261,6 @@ expect_argv_lacks "codex-cli: env 未設定ならモデルフラグを渡さな�
 expect_argv_lacks "codex-cli: env 未設定ならプロファイルフラグを渡さない" "<-p>"
 expect_argv_lacks "codex-cli: env 未設定なら reasoning effort を渡さない" "<model_reasoning_effort="
 
-run_adapter gemini-cli-adapter.sh
-expect_launched "gemini-cli: 既定ケースで CLI が起動している"
-expect_argv_lacks "gemini-cli: env 未設定ならモデルフラグを渡さない" "<-m>"
-
 run_adapter copilot-cli-adapter.sh
 expect_launched "copilot-cli: 既定ケースで CLI が起動している"
 expect_argv_lacks "copilot-cli: env 未設定ならモデルフラグを渡さない" "<--model>"
@@ -295,9 +291,6 @@ expect_argv_has "codex-cli: MULTI_AGENT_MODEL_CODEX_CLI が -m に届く" "<-m><
 run_adapter codex-cli-adapter.sh MULTI_AGENT_CODEX_REASONING_EFFORT=high
 expect_argv_has "codex-cli: effort 単体が -c model_reasoning_effort へ届く" "<-c><model_reasoning_effort=high>"
 
-run_adapter gemini-cli-adapter.sh MULTI_AGENT_MODEL_GEMINI_CLI=some-model
-expect_argv_has "gemini-cli: MULTI_AGENT_MODEL_GEMINI_CLI が -m に届く" "<-m><some-model>"
-
 run_adapter copilot-cli-adapter.sh MULTI_AGENT_MODEL_COPILOT_CLI=auto
 expect_argv_has "copilot-cli: MULTI_AGENT_MODEL_COPILOT_CLI が --model に届く" "<--model><auto>"
 
@@ -306,8 +299,9 @@ expect_argv_has "grok-cli: MULTI_AGENT_MODEL_GROK_CLI が -m に届く" "<-m><so
 
 # 空白入りの値が 1 引数に保たれること。文字列連結 + 非クォート展開への退化は
 # ここでしか検出できない（静的検査は形が同じなので通る）。
-run_adapter gemini-cli-adapter.sh "MULTI_AGENT_MODEL_GEMINI_CLI=model with spaces"
-expect_argv_has "gemini-cli: 空白を含むモデル名が 1 引数に保たれる" "<-m><model with spaces>"
+# （担い手は gemini-cli 削除（issue #783）に伴い grok-cli へ変更 — 検査意図は同一）
+run_adapter grok-cli-adapter.sh "MULTI_AGENT_MODEL_GROK_CLI=model with spaces"
+expect_argv_has "grok-cli: 空白を含むモデル名が 1 引数に保たれる" "<-m><model with spaces>"
 
 # ---- codex のプロファイル経路 -----------------------------------------------------
 mkdir -p "$WORK/codex"

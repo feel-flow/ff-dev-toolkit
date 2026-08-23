@@ -2,7 +2,7 @@
 # ────────────────────────────────────────────────────────────
 # multi-agent.sh — Multi-CLI Agent Orchestrator
 # ────────────────────────────────────────────────────────────
-# Orchestrates 5 AI CLIs (Claude Code, Codex, Copilot, Gemini, Grok)
+# Orchestrates 4 AI CLIs (Claude Code, Codex, Copilot, Grok)
 # for review, explore, and implement tasks using tool-agnostic perspectives.
 #
 # NOTE: Metered CLIs (currently Copilot CLI / premium requests) are excluded
@@ -31,7 +31,11 @@
 #   --parallel              Parallel execution (default)
 #   --sequential            Sequential execution
 #   --output-dir <dir>      Output directory (auto-detected by task type)
-#   --base <branch>         Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop)
+#   --base <branch>         Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop).
+#                           A bare branch name resolves to the LOCAL ref first. If the branch was cut
+#                           from a newer origin/<branch> while the local ref lags, merged commits from
+#                           other branches leak into the three-dot diff — review / --include-diff runs
+#                           print a warning before the plan (pass origin/<branch> or pull to resolve)
 #   --staged                Review only the staged index diff (review task only; mutually exclusive with --base)
 #   --resume                Reuse successful results from an identical prior input and
 #                           execute only failed, timed-out, missing, or corrupt tasks
@@ -119,10 +123,11 @@ fi
 # 2 つの実装がずれると「固定したつもりの diff」と「アダプタが読む diff」が食い違い、
 # しかもその食い違いは実行結果からは見えない。
 #
-# 注意 1: adapter-common.sh は source 時に EXIT trap（clear_timeout_reason）を仕掛ける。
+# 注意 1: adapter-common.sh は source 時に EXIT trap（_ff_adapter_exit_cleanup =
+#   timeout-reason とプロンプト一時ファイルの掃除）を仕掛ける。
 #   本スクリプトは acquire_output_lock で EXIT trap を張り直すのでそちらが勝つ。
-#   orchestrator は run_with_timeout を呼ばない（それはアダプタのプロセス内の話）ので、
-#   上書きしても失われる後始末は無い。
+#   orchestrator は run_with_timeout も materialize_prompt_file も呼ばない（それは
+#   アダプタのプロセス内の話）ので、上書きしても失われる後始末は無い。
 # 注意 2: adapter-common.sh は意図的に set -euo pipefail を張らないので、
 #   source しても本スクリプトのシェルオプションは変わらない。
 ADAPTER_COMMON="${SCRIPT_DIR}/adapters/adapter-common.sh"
@@ -138,7 +143,7 @@ source "$ADAPTER_COMMON"
 # ── All known CLI names ──
 # ↑ この見出し行は tests/lib/cli-registry-parser.sh が完全一致で registry 境界の開始に
 # 使う。文言を変えると両 suite が「境界が一意ではありません」で落ちる。
-ALL_CLIS="claude-code codex-cli copilot-cli gemini-cli grok-cli"
+ALL_CLIS="claude-code codex-cli copilot-cli grok-cli"
 
 # ── Lookup Functions (bash 3.2 compatible — no associative arrays) ──
 #
@@ -153,7 +158,6 @@ get_cli_command() {
     claude-code) echo "claude" ;;
     codex-cli)   echo "codex" ;;
     copilot-cli) echo "copilot" ;;
-    gemini-cli)  echo "gemini" ;;
     grok-cli)    echo "grok" ;;
     *) echo "" ;;
   esac
@@ -164,7 +168,6 @@ get_cli_adapter() {
     claude-code) echo "${SCRIPT_DIR}/adapters/claude-code-adapter.sh" ;;
     codex-cli)   echo "${SCRIPT_DIR}/adapters/codex-cli-adapter.sh" ;;
     copilot-cli) echo "${SCRIPT_DIR}/adapters/copilot-cli-adapter.sh" ;;
-    gemini-cli)  echo "${SCRIPT_DIR}/adapters/gemini-cli-adapter.sh" ;;
     grok-cli)    echo "${SCRIPT_DIR}/adapters/grok-cli-adapter.sh" ;;
     *) echo "" ;;
   esac
@@ -177,8 +180,9 @@ get_cli_adapter() {
 # a perspective with no owner is simply never reviewed.
 #   code-simplification → claude-code: direct counterpart in the pr-review-toolkit
 #     lineage (code-simplifier), so this is where it belongs.
-#   pattern-discovery → gemini-cli: a broad read-only sweep over the codebase,
-#     which is what the long-context free tier is for.
+#   pattern-discovery → gemini-cli (→ grok-cli when gemini was removed, issue
+#     #783): a broad read-only sweep; flat-rate has no marginal cost, the closest
+#     analogue to the free tier this sweep was originally priced for.
 #   migration → codex-cli, then → grok-cli when grok joined (issue #252).
 #
 # grok-cli's own three came from the CLIs carrying the most of each task, and
@@ -188,19 +192,25 @@ get_cli_adapter() {
 # excluded by default (copilot-cli, metered).
 #   error-handler-hunt → grok-cli (from codex-cli): hunting silent failures is
 #     worth a different model's eyes than the general code-review beside it.
-#   tech-debt-assessment → grok-cli (from gemini-cli): judgment-heavy, whereas
-#     the perspective gemini keeps (pattern-discovery) is the broad sweep its
-#     long context is actually for.
+#   tech-debt-assessment → grok-cli (from gemini-cli): judgment-heavy.
 #   migration → grok-cli (from codex-cli): self-contained, and it moves load off
 #     the CLI that otherwise carries the most of the implement task.
+#
+# gemini-cli was removed in issue #783 (unused in this project). Its perspectives
+# were reassigned rather than retired, same doctrine as the cursor-cli removal:
+#   security-analysis → grok-cli: hunting-shaped judgment work, pairs with
+#     error-handler-hunt it already owns.
+#   comment-analysis → claude-code: pr-review-toolkit lineage (comment-analyzer
+#     is a Claude agent). Sharing with copilot-cli is harmless — copilot is
+#     metered and excluded by default.
+#   pattern-discovery → grok-cli, documentation → codex-cli (see notes above).
 
 get_cli_perspectives_review() {
   case "$1" in
-    claude-code) echo "type-design-analysis code-simplification" ;;
+    claude-code) echo "type-design-analysis code-simplification comment-analysis" ;;
     codex-cli)   echo "code-review test-analysis" ;;
     copilot-cli) echo "test-analysis comment-analysis" ;;  # metered — every task requires explicit --cli copilot-cli (see build_distributed_plan)
-    gemini-cli)  echo "security-analysis comment-analysis" ;;
-    grok-cli)    echo "error-handler-hunt" ;;
+    grok-cli)    echo "error-handler-hunt security-analysis" ;;
     *) echo "" ;;
   esac
 }
@@ -210,8 +220,7 @@ get_cli_perspectives_explore() {
     claude-code) echo "architecture-analysis" ;;
     codex-cli)   echo "dependency-mapping" ;;
     copilot-cli) echo "api-surface-analysis" ;;  # metered — every task requires explicit --cli copilot-cli
-    gemini-cli)  echo "pattern-discovery" ;;
-    grok-cli)    echo "tech-debt-assessment" ;;
+    grok-cli)    echo "tech-debt-assessment pattern-discovery" ;;
     *) echo "" ;;
   esac
 }
@@ -219,9 +228,8 @@ get_cli_perspectives_explore() {
 get_cli_perspectives_implement() {
   case "$1" in
     claude-code) echo "feature-implementation" ;;
-    codex-cli)   echo "refactoring" ;;
+    codex-cli)   echo "refactoring documentation" ;;
     copilot-cli) echo "test-writing" ;;  # metered — every task requires explicit --cli copilot-cli
-    gemini-cli)  echo "documentation" ;;
     grok-cli)    echo "migration" ;;
     *) echo "" ;;
   esac
@@ -232,8 +240,7 @@ get_cli_fallback() {
     claude-code) echo "codex-cli" ;;
     codex-cli)   echo "claude-code" ;;
     copilot-cli) echo "codex-cli" ;;
-    gemini-cli)  echo "codex-cli" ;;
-    grok-cli)    echo "gemini-cli" ;;   # flat-rate の代替は無料枠が先。minimize_cost の意図を保つ
+    grok-cli)    echo "codex-cli" ;;
     *) echo "" ;;
   esac
 }
@@ -243,7 +250,6 @@ get_cli_cost_tier() {
     claude-code) echo "premium" ;;
     codex-cli)   echo "standard" ;;
     copilot-cli) echo "metered" ;;
-    gemini-cli)  echo "free-tier" ;;
     grok-cli)    echo "flat-rate" ;;
     # 既定の "unknown" は metered ではないので、resolve_available_fallback の
     # 「最後の砦」に選ばれうる。tier の書き漏れは課金される側へ倒れるということ。
@@ -257,7 +263,6 @@ get_cli_model_env_vars() {
     claude-code) echo "MULTI_AGENT_MODEL_CLAUDE_CODE" ;;
     codex-cli)   echo "MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CODEX_REASONING_EFFORT" ;;
     copilot-cli) echo "MULTI_AGENT_MODEL_COPILOT_CLI" ;;
-    gemini-cli)  echo "MULTI_AGENT_MODEL_GEMINI_CLI" ;;
     grok-cli)    echo "MULTI_AGENT_MODEL_GROK_CLI" ;;
     *) echo "" ;;
   esac
@@ -295,6 +300,8 @@ get_cli_perspectives() {
 # gemini-cli → codex-cli(未導入) と grok-cli → codex-cli(未導入) が両方行き止まりになり、
 # review 7 観点のうち 3 つが「No fallback available」の 1 行だけ残して落ちていた。
 # 利用者の多くが単一 CLI 構成であることを踏まえると、これが既定の姿になる。
+# （上記実測は gemini-cli 在籍時のもの。#783 で gemini は削除されたが、「チェーンの
+# 行き止まりで観点が黙って落ちる」という機構の教訓は CLI 構成に依らず有効）
 #
 # チェーンを辿って最初に導入済みの CLI を返す。表は相互参照を含む（claude-code ⇄
 # codex-cli）ので訪問済みを持って循環を切る。
@@ -995,7 +1002,7 @@ detect_available_clis() {
     echo "ERROR: No AI CLIs are installed. Install at least one:" >&2
     echo "  npm install -g @anthropic-ai/claude-code" >&2
     echo "  npm install -g @openai/codex" >&2
-    echo "  npm install -g @google/gemini-cli" >&2
+    echo "  npm install -g @xai-official/grok" >&2
     exit 1
   fi
 }
@@ -1100,30 +1107,27 @@ build_distributed_plan() {
     fi
   done
 
-  # Apply cost strategy: minimize_cost moves premium → free-tier.
-  # The substitute was hardcoded to cursor-cli until issue #240 deleted that arm;
-  # gemini-cli [free-tier] took its place. There is no tier ordering in the code
-  # (KNOWN_TIERS is an unordered set), so this is a named choice, not a computed
-  # one — which is deliberate: naming the substitute keeps the swap readable in
-  # the plan output, and the user sees which model actually ran.
+  # Apply cost strategy: minimize_cost moves premium → the cheapest remaining
+  # tier. The substitute was cursor-cli until issue #240, then gemini-cli
+  # [free-tier] until issue #783 removed it; grok-cli [flat-rate] now takes the
+  # role (no marginal cost per task — the closest analogue to the free tier).
+  # There is no tier ordering in the code (KNOWN_TIERS is an unordered set), so
+  # this is a named choice, not a computed one — which is deliberate: naming the
+  # substitute keeps the swap readable in the plan output, and the user sees
+  # which model actually ran.
   #
-  # Known tradeoff of that swap: the substitute is now the ONE rate-limited tier.
-  # Rate limiting is a *runtime* failure, and runtime fallback is deliberately
-  # absent (see the header), so a throttled task is zero coverage for that
-  # perspective rather than a retry elsewhere. As mitigation (issue #251),
-  # execute_tasks runs a free-tier CLI's tasks sequentially on one worker (no
-  # simultaneous burst) and show_plan names the residual risk — the limit itself
-  # does not disappear, so spreading perspectives across CLIs remains the real fix.
+  # The sequential-worker mitigation (issue #251) in execute_tasks is tier-keyed
+  # and follows the substitute: it now serializes flat-rate CLI groups.
   if [[ "$STRATEGY" == "minimize_cost" && -z "$CLI_FILTER" ]]; then
     local new_plan=""
     while IFS= read -r entry; do
       [[ -z "$entry" ]] && continue
       local cli="${entry%%:*}"
       local persp="${entry#*:}"
-      if [[ "$cli" == "claude-code" ]] && list_contains "$AVAILABLE_CLIS" "gemini-cli"; then
-        echo "  💰 minimize_cost: ${persp}: claude-code → gemini-cli" >&2
+      if [[ "$cli" == "claude-code" ]] && list_contains "$AVAILABLE_CLIS" "grok-cli"; then
+        echo "  💰 minimize_cost: ${persp}: claude-code → grok-cli" >&2
         new_plan="${new_plan:+$new_plan
-}gemini-cli:${persp}"
+}grok-cli:${persp}"
       else
         new_plan="${new_plan:+$new_plan
 }${entry}"
@@ -1315,6 +1319,62 @@ validate_requested_perspectives() {
 }
 
 # ── Show Execution Plan ──
+# --base（または env / 自動検出）が**ローカル** branch を指し、それが origin より
+# 後退している場合に、プラン構築前へ警告を 1 行群で出す（Issue #759）。
+#
+# 背景（消費側 ACE-209-1 の実測）: ブランチは origin/develop から切ったのに
+# --base develop はローカル develop（2 コミット古い）を指し、レビュー diff に他人の
+# マージ済みコミット 7 ファイルが混入 — Critical 指摘 2 件が全部「自分の差分に無い
+# ファイル」の話になった。逆にローカル base が新しい（rebase 済み等）と自分の差分の
+# 一部がレビューされない偽陰性にもなる。
+#
+# 設計:
+#   - **中断ではなく警告**。意図的にローカル base を使う運用（オフライン・ローカル
+#     統合ブランチ等）を壊さない
+#   - **fail-open**: origin/<branch> が無い・rev-list が失敗・数値が取れない場合は
+#     黙って従来どおり。判定できないことを警告にすると常時ノイズになる
+#   - **--staged は対象外**（base を使わない）。`origin/...` 形式や SHA 指定も対象外
+#     （refs/heads に解決されない = ローカル branch を指していない）
+#   - **ローカルが進んでいる（ahead）だけの場合も対象外**。未 push のローカル
+#     コミットを base にするのは「ローカルで積んだ統合ブランチ」という別の意図的
+#     運用で、警告すると常設ノイズになる。混入事故の向き（behind）だけを見る
+#   - 判定は behind の**数ではなく merge-base の比較**で行う。diff は三点比較
+#     （BASE...HEAD = merge-base(BASE, HEAD) から HEAD）なので、ブランチを**古い
+#     ローカル base から**切った場合は、ローカルがいくら behind でも diff は
+#     origin 比較と同一で混入は起きない — behind>0 を述語にすると、この最も普通の
+#     「pull していないだけ」の形で毎回誤警告する（セルフレビューで実測反証）。
+#     混入が起きるのは merge-base(local, HEAD) と merge-base(origin, HEAD) が
+#     食い違うときで、その差分コミット数がまさに混入する件数になる
+warn_if_stale_local_base() {
+  [[ "$STAGED_DIFF" == "true" ]] && return 0
+  [[ "$IN_GIT_REPO" == "true" ]] || return 0
+  local base="$BASE_BRANCH" mb_local mb_origin leaked base_q origin_q
+  # origin/ 前置は「remote 側を明示した」意図なので、たとえローカルに同名 branch
+  # （refs/heads/origin/develop）が併存していても対象外にする（Codex レビュー指摘）
+  case "$base" in origin/*) return 0 ;; esac
+  # 裸名だと同名 tag が branch より先に解決されて比較がずれるため、完全修飾で固定する
+  git rev-parse --verify --quiet "refs/heads/${base}" >/dev/null 2>&1 || return 0
+  git rev-parse --verify --quiet "refs/remotes/origin/${base}" >/dev/null 2>&1 || return 0
+  mb_local="$(git merge-base "refs/heads/${base}" HEAD 2>/dev/null)" || return 0
+  mb_origin="$(git merge-base "refs/remotes/origin/${base}" HEAD 2>/dev/null)" || return 0
+  [[ -n "$mb_local" && -n "$mb_origin" ]] || return 0
+  [[ "$mb_local" == "$mb_origin" ]] && return 0
+  leaked="$(git rev-list --count "${mb_local}..${mb_origin}" 2>/dev/null)" || return 0
+  [[ "$leaked" =~ ^[0-9]+$ ]] || return 0
+  if [[ "$leaked" -gt 0 ]]; then
+    # 貼り付け実行される案内コマンドに branch 名を素で埋めない（; や $( ) を含む
+    # branch 名は git 的に合法で、%q ならシェル安全な引用になる。通常名は素のまま）
+    base_q="$(printf '%q' "$base")"
+    origin_q="$(printf '%q' "origin/${base}")"
+    echo "" >&2
+    echo "⚠️  base '${base}' はローカル ref で、このブランチの分岐点（origin/${base} 基準）より古い状態です。" >&2
+    echo "    他ブランチのマージ済みコミット ${leaked} 件が diff に混入します。" >&2
+    echo "    最新化（git fetch && git switch ${base_q} && git pull --ff-only）または" >&2
+    echo "    --base ${origin_q} を検討してください。" >&2
+  fi
+  return 0
+}
+
 show_plan() {
   local emoji
   emoji="$(get_task_emoji "$TASK_TYPE")"
@@ -1366,11 +1426,12 @@ show_plan() {
     echo "     - ${persp}" >&2
   done <<< "$EXECUTION_PLAN"
 
-  # 同一 CLI への観点集中の可視化（Issue #251）。minimize_cost の振替でレート制限
-  # のある free-tier CLI に複数観点が集まる形が典型。実行側は同一 CLI 内を逐次化
-  # 済みだが、逐次でも連続リクエストで throttle されうるため、プランの時点で
-  # リスクを名指しする（実行時 fallback は無い = throttle された観点のカバレッジは
-  # ゼロになる、という帰結まで書く）。
+  # 同一 CLI への観点集中の可視化（Issue #251）。minimize_cost の振替で、振替先の
+  # CLI（cursor → gemini [free-tier] → issue #783 以降は grok [flat-rate]）に複数
+  # 観点が集まる形が典型。実行側は同一 CLI 内を逐次化済みだが、逐次でも連続
+  # リクエストで throttle されうるため、プランの時点でリスクを名指しする（実行時
+  # fallback は無い = throttle された観点のカバレッジはゼロになる、という帰結まで
+  # 書く）。対象 tier は minimize_cost の振替先（flat-rate）。
   # --sequential でも残存リスク（連続リクエストの throttle）は同じなので、警告は
   # 実行モードに関係なく出し、実行形の説明だけ切り替える。
   local warn_cli warn_count warn_tier warn_shape
@@ -1382,10 +1443,13 @@ show_plan() {
   for warn_cli in $planned_clis; do
     warn_count="$(printf '%s\n' "$EXECUTION_PLAN" | LC_ALL=C sort -u | grep -c "^${warn_cli}:")" || warn_count=0
     warn_tier="$(get_cli_cost_tier "$warn_cli")"
-    if [[ "$warn_count" -ge 2 && "$warn_tier" == "free-tier" ]]; then
+    # 逐次化と対の警告なので発火条件も揃える: minimize_cost の振替で集中した場合
+    # だけ。balanced では grok が自前の 2 観点を持つのが常態で、そこへ毎回警告を
+    # 出すと「balanced へ分散せよ」という対処文が自己矛盾する（レビュー指摘）。
+    if [[ "$STRATEGY" == "minimize_cost" && "$warn_count" -ge 2 && "$warn_tier" == "flat-rate" ]]; then
       echo "" >&2
       echo "   ⚠️  ${warn_cli} [${warn_tier}] runs ${warn_count} perspectives. ${warn_shape}," >&2
-      echo "       but consecutive requests can still hit the free-tier rate limit — and there" >&2
+      echo "       but consecutive requests can still hit the provider rate limit — and there" >&2
       echo "       is no runtime fallback, so a throttled perspective yields zero coverage." >&2
       echo "       Serialization also means this CLI can take up to ${warn_count} × ${TIMEOUT}s" >&2
       echo "       wall-clock in the worst case. Consider spreading perspectives across CLIs" >&2
@@ -2359,7 +2423,7 @@ run_task_recorded() { # $1: cli / $2: perspective / $3: status dir
 }
 
 # ── Per-CLI Worker（Issue #251） ──
-# EXECUTION_PLAN から自分の CLI の観点だけを計画順に**逐次**実行する。free-tier
+# EXECUTION_PLAN から自分の CLI の観点だけを計画順に**逐次**実行する。flat-rate
 # CLI 専用 — レート制限は実行時失敗であり、本ツールは実行時 fallback を持たない
 # ため、throttle された観点はカバレッジゼロになる。同時 burst を作らないことが
 # 防御になる。premium / standard tier は従来どおりタスク単位で並列（一律逐次化は
@@ -2450,7 +2514,8 @@ execute_tasks() {
   if [[ "$PARALLEL" == "true" ]]; then
     # ── 並列実行: CLI 間は並列、同一 CLI 内は逐次（Issue #251） ──
     # minimize_cost が premium の観点を最安 tier へ振り替えると、同一 CLI
-    # （現行の振替先はレート制限のある free-tier）へ複数観点が集中する。本ツールは
+    # （現行の振替先は flat-rate の grok-cli — issue #783 で free-tier が消えた後の
+    # 最安 tier）へ複数観点が集中する。本ツールは
     # 実行時 fallback を意図的に持たないため、throttle されたタスクは別 CLI で
     # 再実行されず**その観点のカバレッジがゼロ**になる — 同一 CLI への同時 burst を
     # 作らないことが防御になる。CLI が違えばレート制限は独立なので並列のまま。
@@ -2481,14 +2546,17 @@ execute_tasks() {
       fi
     done <<< "$EXECUTION_PLAN"
 
-    # free-tier CLI は 1 本の逐次ワーカーへ、それ以外は従来どおりタスク単位で並列。
+    # minimize_cost の振替で観点が集中したときだけ、振替先 tier（flat-rate）の CLI を
+    # 1 本の逐次ワーカーへ（balanced 等では flat-rate も従来どおりタスク並列 — 自前の
+    # 2 観点は集中ではなく常態のため。レビュー指摘で strategy 条件を追加）。それ以外は
+    # 従来どおりタスク単位で並列。
     # pid と並行してラベル（worker:<cli> / task:<cli>/<persp>。空白を含まない）を
     # 記録する — rc ファイル不在の失敗で「どのプロセスが・どの rc で死んだか」を
     # 相関できるのはこの対応表だけ（wait の rc は下で回収して報告する）。
     local serialized_clis="" pid_labels=""
     local group_cli
     for group_cli in $group_clis; do
-      if [[ "$(get_cli_cost_tier "$group_cli")" == "free-tier" ]]; then
+      if [[ "$STRATEGY" == "minimize_cost" && "$(get_cli_cost_tier "$group_cli")" == "flat-rate" ]]; then
         serialized_clis="${serialized_clis:+$serialized_clis }$group_cli"
         run_cli_group "$group_cli" "$status_dir" &
         pids="${pids:+$pids }$!"
@@ -2510,7 +2578,7 @@ execute_tasks() {
     if [[ -n "$serialized_clis" ]]; then
       # 公開ユーザーの端末へ毎回出る行なので、SSOT 側の Issue 番号は書かない
       # （公開リポジトリでは独立採番のため無関係な Issue を指す）。追跡はコメントで。
-      echo "⏳ Waiting for ${count} ${TASK_TYPE} task(s) — free-tier CLI(s) run their tasks sequentially (rate-limit protection):${serialized_clis:+ }${serialized_clis}" >&2
+      echo "⏳ Waiting for ${count} ${TASK_TYPE} task(s) — flat-rate CLI(s) run their tasks sequentially (rate-limit protection):${serialized_clis:+ }${serialized_clis}" >&2
     else
       echo "⏳ Waiting for ${count} parallel ${TASK_TYPE} tasks..." >&2
     fi
@@ -3333,6 +3401,12 @@ main() {
 
   echo "🔎 Detecting available CLIs..." >&2
   detect_available_clis
+
+  # base の diff を実際に使うタスクでだけ警告する（explore / implement（--include-diff
+  # 無し）は base を読まないので、混入の警告は虚偽になる — セルフレビュー指摘）
+  if [[ "$TASK_TYPE" == "review" || "$INCLUDE_DIFF" == "true" ]]; then
+    warn_if_stale_local_base
+  fi
 
   echo "" >&2
   echo "📊 Building execution plan..." >&2

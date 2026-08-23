@@ -247,7 +247,7 @@ fi
 # Issue #242 の GWT-2 そのもの: 実装側の観点を 1 つ増やし、YAML は据え置く。
 reset_fixture
 remember_file "$FIXTURE_MULTI"
-perl -0pi -e 's/(get_cli_perspectives_review\(\) \{\n  case "\$1" in\n    claude-code\) echo "type-design-analysis code-simplification)"/${1} extra-perspective"/' "$FIXTURE_MULTI"
+perl -0pi -e 's/(get_cli_perspectives_review\(\) \{\n  case "\$1" in\n    claude-code\) echo "type-design-analysis code-simplification comment-analysis)"/${1} extra-perspective"/' "$FIXTURE_MULTI"
 if assert_file_changed "実装側の観点追加" "$FIXTURE_MULTI" && run_fixture "実装側の観点追加"; then
   assert_contains "実装側の観点追加を報告" "$RUN_OUTPUT" "perspectives.review が不一致"
 fi
@@ -316,7 +316,9 @@ done
 # 7. scalar / list / root map の型違い。後続の fallback 検査とサマリーまで集約する。
 reset_fixture
 perl -0pi -e 's/command: claude\n/command: [claude]\n/' "$FIXTURE_YAML"
-perl -0pi -e 's/review:\n        - type-design-analysis/review: wrong-type/' "$FIXTURE_YAML"
+# リスト全体をスカラーへ置換する（先頭 1 項目だけ潰すと、残項目の本数によって
+# YAML の折り畳み挙動が変わり、型異常ではなく構文エラーに化ける — 実測）。
+perl -0pi -e 's/review:\n(?:        - [^\n]*\n)+/review: wrong-type\n/' "$FIXTURE_YAML"
 perl -0pi -e 's/^fallback:\n(?:  [^\n]*\n)*/fallback: wrong-type\n/m' "$FIXTURE_YAML"
 if run_fixture "複合型異常"; then
   assert_contains "scalar 型異常を報告" "$RUN_OUTPUT" "型が文字列でない"
