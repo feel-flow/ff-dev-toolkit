@@ -892,9 +892,11 @@ describe("main（fixture E2E）", () => {
  * stale 日数既定値の結合テスト（Issue #317）。
  *
  * 定数同士の identity は検査しない。同じ PLAYBOOK と同じ git log を両方の main へ渡し、
- * 「最終参照が100日前」のエントリが reuse の stale 候補と refine の Archive 候補に
- * 同時に現れることを測る。DEFAULT_STALE_DAYS を 120 へ変異させると両方が候補から外れ、
- * この検査が赤くなるため、定数の export だけでなく両 main への適用まで固定できる。
+ * 「最終参照が40日前」のエントリが reuse の stale 候補と refine の Archive 候補に
+ * 同時に現れることを測る。fixture は既定値 30 を挟む 3 点（40 日前 / 30 日前 = 境界 /
+ * 29 日前 = 境界外）を置くので、DEFAULT_STALE_DAYS の変異は**どちらの向きでも**赤くなる
+ * — 大きく変異させれば 40/30 日前が候補から外れ、小さく変異させれば 29 日前が候補へ入る。
+ * これにより定数の export だけでなく両 main への適用まで固定できる。
  */
 describe("stale 日数既定値の単一源（ace-reuse-report との結合）", () => {
   const tempDirs: string[] = [];
@@ -922,7 +924,7 @@ describe("stale 日数既定値の単一源（ace-reuse-report との結合）",
         "",
         '<a id="ace-317-1"></a>',
         "",
-        "### ACE-317-1: 最終 git 参照が100日前のエントリ",
+        "### ACE-317-1: 最終 git 参照が40日前のエントリ",
         "",
         "| Category | process | Origin | PR #317 |",
         "| Date | 2026-01-01 |",
@@ -935,7 +937,7 @@ describe("stale 日数既定値の単一源（ace-reuse-report との結合）",
         "",
         '<a id="ace-317-2"></a>',
         "",
-        "### ACE-317-2: 最終 git 参照が90日前の境界エントリ",
+        "### ACE-317-2: 最終 git 参照が30日前の境界エントリ",
         "",
         "| Category | process | Origin | PR #317 |",
         "| Date | 2026-01-01 |",
@@ -948,7 +950,7 @@ describe("stale 日数既定値の単一源（ace-reuse-report との結合）",
         "",
         '<a id="ace-317-3"></a>',
         "",
-        "### ACE-317-3: 最終 git 参照が89日前の境界外エントリ",
+        "### ACE-317-3: 最終 git 参照が29日前の境界外エントリ",
         "",
         "| Category | process | Origin | PR #317 |",
         "| Date | 2026-01-01 |",
@@ -966,7 +968,7 @@ describe("stale 日数既定値の単一源（ace-reuse-report との結合）",
     return playbookPath;
   }
 
-  it("環境変数なし・最終参照100日前なら両 main が同じエントリを候補にする", () => {
+  it("環境変数なし・最終参照40日前なら両 main が同じエントリを候補にする", () => {
     const playbookPath = makeFixture();
     const previousStaleDays = process.env.ACE_REUSE_STALE_DAYS;
     delete process.env.ACE_REUSE_STALE_DAYS;
@@ -976,17 +978,17 @@ describe("stale 日数既定値の単一源（ace-reuse-report との結合）",
       readLog: () => ({
         commits: [
           {
-            date: "2026-04-22",
+            date: "2026-06-21",
             subject: "docs: ACE-317-1 を再利用",
             body: "",
           },
           {
-            date: "2026-05-02",
+            date: "2026-07-01",
             subject: "docs: ACE-317-2 を再利用",
             body: "",
           },
           {
-            date: "2026-05-03",
+            date: "2026-07-02",
             subject: "docs: ACE-317-3 を再利用",
             body: "",
           },
@@ -1005,13 +1007,104 @@ describe("stale 日数既定値の単一源（ace-reuse-report との結合）",
       const refineReport = logSpy.mock.calls.flat().map(String).join("\n");
 
       expect(reuseReport).toContain("## Archive 候補（2 件）");
-      expect(reuseReport).toContain("- ACE-317-1: 最終 git 参照が100日前のエントリ");
-      expect(reuseReport).toContain("- ACE-317-2: 最終 git 参照が90日前の境界エントリ");
-      expect(reuseReport).not.toContain("- ACE-317-3: 最終 git 参照が89日前の境界外エントリ");
+      expect(reuseReport).toContain("- ACE-317-1: 最終 git 参照が40日前のエントリ");
+      expect(reuseReport).toContain("- ACE-317-2: 最終 git 参照が30日前の境界エントリ");
+      expect(reuseReport).not.toContain("- ACE-317-3: 最終 git 参照が29日前の境界外エントリ");
       expect(refineReport).toContain("## Archive 候補（helpful=0 かつ stale、2 件）");
-      expect(refineReport).toContain("- ACE-317-1: 最終 git 参照が100日前のエントリ");
-      expect(refineReport).toContain("- ACE-317-2: 最終 git 参照が90日前の境界エントリ");
-      expect(refineReport).not.toContain("- ACE-317-3: 最終 git 参照が89日前の境界外エントリ");
+      expect(refineReport).toContain("- ACE-317-1: 最終 git 参照が40日前のエントリ");
+      expect(refineReport).toContain("- ACE-317-2: 最終 git 参照が30日前の境界エントリ");
+      expect(refineReport).not.toContain("- ACE-317-3: 最終 git 参照が29日前の境界外エントリ");
+    } finally {
+      if (previousStaleDays === undefined) {
+        delete process.env.ACE_REUSE_STALE_DAYS;
+      } else {
+        process.env.ACE_REUSE_STALE_DAYS = previousStaleDays;
+      }
+    }
+  });
+
+  /**
+   * 作成日フロア側の固定（Issue #652）。
+   *
+   * findArchiveCandidates は staleDays を「作成からの経過」と「最終参照からの経過」の
+   * 両方に使う。上の it は全エントリの作成日を十分古くしてあるため**参照側の境界しか
+   * 動かさない** — 作成日フロアだけを既定から切り離す変異（そこに 90 を直接書く等）は
+   * 上の it では生き残る。ここでは git 参照を 1 件も置かず、作成日だけを境界に据えて、
+   * フロアが既定値そのもので動いていることを両 main の挙動で固定する。
+   */
+  function makeAgeFixture(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ace-stale-days-age-"));
+    tempDirs.push(root);
+    const knowledgeDir = path.join(root, "docs", "08-knowledge");
+    const implDir = path.join(root, "docs", "03-implementation");
+    fs.mkdirSync(knowledgeDir, { recursive: true });
+    fs.mkdirSync(implDir, { recursive: true });
+
+    const playbookPath = path.join(knowledgeDir, "PLAYBOOK.md");
+    fs.writeFileSync(
+      playbookPath,
+      [
+        "# ACE Playbook",
+        "",
+        '<a id="ace-652-1"></a>',
+        "",
+        "### ACE-652-1: 作成30日前の境界エントリ",
+        "",
+        "| Category | process | Origin | PR #652 |",
+        "| Date | 2026-07-01 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | active |",
+        "",
+        "本文。",
+        "",
+        "---",
+        "",
+        '<a id="ace-652-2"></a>',
+        "",
+        "### ACE-652-2: 作成29日前の境界外エントリ",
+        "",
+        "| Category | process | Origin | PR #652 |",
+        "| Date | 2026-07-02 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | active |",
+        "",
+        "本文。",
+        "",
+        "---",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    fs.writeFileSync(path.join(implDir, "PATTERNS.md"), "# PATTERNS.md\n", "utf8");
+    return playbookPath;
+  }
+
+  it("環境変数なし・git 参照ゼロなら作成日フロアが既定値の境界で両 main を同時に反転させる", () => {
+    const playbookPath = makeAgeFixture();
+    const previousStaleDays = process.env.ACE_REUSE_STALE_DAYS;
+    delete process.env.ACE_REUSE_STALE_DAYS;
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    // git 参照を 1 件も置かない → 判定に残るのは作成日フロアだけになる。
+    const deps = {
+      readLog: () => ({ commits: [], malformedCount: 0 }),
+      now: () => NOW,
+    };
+
+    try {
+      expect(reuseReportMain([playbookPath], deps)).toBe(0);
+      const reuseReport = logSpy.mock.calls.flat().map(String).join("\n");
+
+      logSpy.mockClear();
+      expect(main([playbookPath], deps)).toBe(0);
+      const refineReport = logSpy.mock.calls.flat().map(String).join("\n");
+
+      expect(reuseReport).toContain("## Archive 候補（1 件）");
+      expect(reuseReport).toContain("- ACE-652-1: 作成30日前の境界エントリ");
+      expect(reuseReport).not.toContain("- ACE-652-2: 作成29日前の境界外エントリ");
+      expect(refineReport).toContain("## Archive 候補（helpful=0 かつ stale、1 件）");
+      expect(refineReport).toContain("- ACE-652-1: 作成30日前の境界エントリ");
+      expect(refineReport).not.toContain("- ACE-652-2: 作成29日前の境界外エントリ");
     } finally {
       if (previousStaleDays === undefined) {
         delete process.env.ACE_REUSE_STALE_DAYS;

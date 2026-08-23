@@ -26,7 +26,7 @@ description: ACE Playbook を定期整理する（stale エントリのアーカ
 
 | 環境変数 | 既定 | 意味 |
 | --- | --- | --- |
-| `ACE_REUSE_STALE_DAYS` | 90 | この日数以上 git 参照がない active エントリを stale とみなす |
+| `ACE_REUSE_STALE_DAYS` | 30 | active エントリを stale とみなす日数。**作成からの経過と最終 git 参照からの経過の両方**に適用される。作成日側にも効くため、**Playbook の運用開始からこの日数が経つまで候補は 0 件**になる（ADR-033）。なお本スキルの Archive 候補は `helpful === 0` の積集合まで絞った**実施可能件数**であり、`ace-reuse-report` が報告する候補数（母数）とは一致しない |
 | `ACE_MAX_ENTRY_LINES` | 15 | 1 エントリの行数バジェット（anchor 行〜終端 `---`）。例外宣言付きは 2 倍（30）。`check-category-size` のファイル行数上限もこの値から導出される（`ヘッダ行数 + 件数 × (本値 + 1)` — ADR-019） |
 | `ACE_PROMOTE_HELPFUL_MIN` | 5 | この Helpful 以上で PATTERNS.md への昇格候補 |
 | `ACE_PATTERNS_PATH` | `docs/03-implementation/PATTERNS.md` | 昇格先（レイアウトが異なる場合のみ上書き） |

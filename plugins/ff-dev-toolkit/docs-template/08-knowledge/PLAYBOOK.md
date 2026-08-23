@@ -1,9 +1,9 @@
 ---
 title: "PLAYBOOK"
-version: "1.73.0"
+version: "1.74.0"
 status: "approved"
 created: "2026-03-10"
-updated: "2026-08-22"
+updated: "2026-08-23"
 changeImpact: medium
 owner: "@fffokazaki"
 ace_entry_count: 3
@@ -34,7 +34,8 @@ GitHub Discussions が「人間が読むためのナラティブ（物語的記�
 | **カウンターはインクリメントのみ** | Helpful/Harmful は +1 のみ。減算・リセットはしない（`/ace-refine` の重複統合時の合算は例外）                                   |
 | **削除禁止**                       | エントリを物理的に削除しない。不要な場合は `Status: deprecated` に変更、または `/ace-refine` で `playbook/archive/` へ原文保全のうえ移動 |
 | **密度超過時は正準化 → refine → 必要なら分割** | 行数上限は**件数から導出**する（`ヘッダ行数 + 件数 × 16`。16 = 行数バジェット 15 + ブロック間の空行 1）。超過は「ファイルが大きい」ではなく「**1 エントリが太い**」の意味なので、第一対応は旧テーブル形式の正準化、次に `/ace-refine`。件数ゲートは二段（refine 目安 130 件・警告 / ブロック上限 180 件・exit 1）。分割は「同一カテゴリ内で検索語彙が明確に分岐する」ときだけ。ファイル分割だけでは Category 値が合算されるため件数ゲートは解除されない。分割レイアウトの索引 `PLAYBOOK.md` は行数監視対象外 |
-| **定期 Refine**                    | 月次または件数・行数ゲート発火時に `/ace-refine` で stale アーカイブ・圧縮・統合・昇格を実行（dry-run → 承認 → 適用）          |
+| **追記の新規性バー**               | 判定は「**読者が取る実行可能なアクションが既存エントリと同一か**」（`/ace-refine` の統合判定と同一基準）。同一なら新規追加せず `Helpful` +1。**追記件数の上限は設けない**。件数を減らせるのは archive と統合の 2 つだが、**archive の供給は「作成から閾値日数の経過 かつ（git 参照が無い または 最終参照から閾値日数の経過）かつ `helpful === 0`」**に限られるため、均衡は入口で作る（ADR-033） |
+| **定期 Refine**                    | 月次または件数・行数ゲート発火時に `/ace-refine` で stale アーカイブ・圧縮・統合・昇格を実行（dry-run → 承認 → 適用）。stale 閾値は**作成からの経過と最終参照からの経過の両方**に適用される（`ACE_REUSE_STALE_DAYS`）。**実施可能件数は `/ace-refine` 側で見る** — `ace-reuse-report` の候補数は `helpful === 0` で絞る前の母数 |
 | **アーカイブの扱い**               | `playbook/archive/` 配下は `ace_entry_count`・カテゴリ件数ゲート・reuse 集計の対象外。参照リンクが切れていたら archive を ID で grep して探す |
 | **Frontmatter更新**                | エントリ追加時に `version`, `updated`, `changeImpact`（minor 上げ = `medium`）, `ace_entry_count` を更新（`ace_entry_count` は live エントリ数 = archive を数えない） |
 | **コミット規則**                   | 件名 `knowledge: ACE-XXX <要約>`、カテゴリは commit body の `Categories:` 行に記録                                             |
@@ -148,7 +149,7 @@ ACE エントリ ID は **PRスコープ式** を採用する（このセクシ�
 | `Helpful >= 5`                           | 高品質エントリ。[PATTERNS.md](../03-implementation/PATTERNS.md) の「実証済みパターン（ACE 昇格）」節への蒸留昇格を検討（`/ace-refine` が実施。元エントリは active のまま残す） |
 | `Helpful >= 3, Harmful == 0`             | 良質なエントリ                             |
 | `Harmful >= 3, Helpful < Harmful`        | deprecated 候補                            |
-| `Helpful == 0, Harmful == 0`（90日以上） | 有効性未検証。次回関連タスクで意識的に検証 |
+| `Helpful == 0, Harmful == 0`（閾値日数以上・参照が無いか最終参照が閾値以上前） | `/ace-refine` の archive 候補。archive は削除ではなく `playbook/archive/` への verbatim 保全。適用は dry-run → ユーザー承認を経る |
 
 ---
 
@@ -225,6 +226,16 @@ Playbook が導出上限（`ヘッダ行数 + 件数 × 16`）を超え、正準
 | ACE-000-3 | 【見本】行数バジェット例外の宣言 — 反直感的な詳細が 15 行に収まらないときだけ使う | testing | [playbook/testing.md#ace-000-3](./playbook/testing.md#ace-000-3) |
 
 ## Changelog
+
+### [1.74.0] - 2026-08-23
+
+#### 追加
+
+- §運用ルールに「追記の新規性バー」を追加（判定は「読者が取る実行可能なアクションが既存エントリと同一か」。同一なら新規追加せず `Helpful` +1。追記件数の上限は設けない）
+
+#### 変更
+
+- 「定期 Refine」に、stale 閾値が「作成からの経過」と「最終参照からの経過」の**両方**に適用される点と、**実施可能件数は `/ace-refine` 側で見る**（`ace-reuse-report` の候補数は `helpful === 0` で絞る前の母数）ことを追記。カウンター解釈表の `Helpful == 0, Harmful == 0` 行を archive 候補として明記し、verbatim 保全・承認フローを添えた
 
 ### [1.73.0] - 2026-08-22
 

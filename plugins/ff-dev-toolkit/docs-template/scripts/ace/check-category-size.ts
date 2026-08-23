@@ -95,7 +95,7 @@ const EXCEPTION_EXTRA_BUDGET_FACTOR = EXCEPTION_BUDGET_MULTIPLIER - 1;
  * ACE_ID_REFERENCE_PATTERN）は `\b` 境界で ID を拾うが、`\b` は末尾の `-` の後では成立せず
  * 手前まで後退する。仮に `ACE-337-` を見出しとして認識すると、本文やコミットメッセージ中の
  * `ACE-337-` からは `ACE-337` しか取り出せず、その ID の参照が**永久に 0 件**になる。
- * 結果として実際に何度も再利用された知見が 90 日後に理由なくアーカイブ候補へ載る。
+ * 結果として実際に何度も再利用された知見が stale 閾値の経過後に理由なくアーカイブ候補へ載る。
  * 見出し側と参照側が同じ文字クラスで終わることが、この非対称を構造的に防いでいる。
  *
  * この源は `entryHeadingSource` 経由で各スクリプトへ届く（`ACE_ENTRY_ID_SOURCE` を直接

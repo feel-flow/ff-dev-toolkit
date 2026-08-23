@@ -231,7 +231,7 @@ Generate → Reflect → Curate は「増やす」一方向のサイクルであ
 
 | 操作 | 対象 | 結果 |
 | --- | --- | --- |
-| アーカイブ | helpful=0 かつ stale（既定 90 日参照なし） | `playbook/archive/<category>.md` へ verbatim 移動 |
+| アーカイブ | helpful=0 かつ stale（既定 30 日。作成からの経過と最終参照からの経過の両方に適用） | `playbook/archive/<category>.md` へ verbatim 移動 |
 | 圧縮 | 行数バジェット超過エントリ | 原文をアーカイブへ保全 → live 側をコンパクト正準形式へ意味保存要約 |
 | 統合 | 近似重複ペア | カウンター合算で 1 本化、敗者はアーカイブ + ポインタ |
 | 昇格 | Helpful >= 5 | `docs/03-implementation/PATTERNS.md` へ蒸留追記（元エントリは残す） |
@@ -351,7 +351,7 @@ Generate → Reflect → Curate は「増やす」一方向のサイクルであ
 
 ```bash
 npm run ace:reuse-report
-# 閾値の上書き（既定 90 日）
+# 閾値の上書き（既定 30 日）
 ACE_REUSE_STALE_DAYS=120 npm run ace:reuse-report
 ```
 

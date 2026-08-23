@@ -32,8 +32,15 @@ const EXIT_USAGE_ERROR = 2;
 
 const WARN_PREFIX = "ace-reuse-report";
 
-/** これより長く git 参照がないエントリを Archive 候補とする（日数、ACE_REUSE_STALE_DAYS で上書き可） */
-export const DEFAULT_STALE_DAYS = 90;
+/**
+ * Archive 候補の日数閾値（ACE_REUSE_STALE_DAYS で上書き可）。**作成からの経過日数と
+ * 最終 git 参照からの経過日数の両方**に適用される（findArchiveCandidates 参照）。
+ * 作成日側にも効くため、Playbook の運用開始からこの日数が経つまで候補は 0 件になる。
+ *
+ * この値の候補数は archive の**母数**であり、実施可能件数ではない。/ace-refine は
+ * findRefineArchiveCandidates で helpful === 0 の積集合をさらに取る（ADR-033）。
+ */
+export const DEFAULT_STALE_DAYS = 30;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** git log のレコード / フィールド区切り（コミット本文に現れない制御文字） */
