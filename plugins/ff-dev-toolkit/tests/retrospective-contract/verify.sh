@@ -258,13 +258,13 @@ contains "$SKILL" "**振り返りに入る前に、必ず最初にモードを�
 contains "$SKILL" "利用者が本スキルを明示指定した → 環境変数に関係なく実施する" "ask/off モード: 明示指定は環境変数を上書き"
 contains "$SKILL" "printenv RETROSPECTIVE_MODE" "ask モード: 環境変数を実測するコマンド"
 contains "$SKILL" "出力が \`ask\` なら ask モード、\`off\` または上記の別名なら自動発火のみ無効" "ask/off モード: 判定結果の値域"
-contains "$SKILL" "**off モード**: Stop hook は継続せず" "off モード: 自動振り返りを無効化"
+contains "$SKILL" "**off モード**: 事前注入と Stop fallback はどちらも動作せず" "off モード: 自動振り返りを無効化"
 contains "$SKILL" "**毎回実施・問いかけなし**" "既定モード: 問いかけなしで毎回実施"
 
-contains "$SKILL" "## 自動発火（Stop hook）" "自動発火: Stop hook 節"
+contains "$SKILL" "## 自動発火（事前注入 + Stop fallback）" "自動発火: 事前注入と Stop fallback 節"
 contains "$SKILL" "ユーザー依頼の作業がこの応答で完了する" "自動発火: 完了時は振り返りを実施"
 contains "$SKILL" "質問・承認待ち・外部状態待ち・作業途中である" "自動発火: 未完了時は対象外"
-contains "$SKILL" "自分で hook を再実行したり marker を作ったりしない" "自動発火: 再実行と marker を禁止"
+contains "$SKILL" "UserPromptSubmit の \`additionalContext\`" "自動発火: 応答生成前に振り返り契約を注入"
 
 # ── C. 消費側文書への伝播 ────────────────────────────────────────────────────
 # 上限・1 行報告・承認境界が片側だけ書き換わるのを検出する。

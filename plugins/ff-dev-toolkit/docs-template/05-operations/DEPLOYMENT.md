@@ -87,7 +87,7 @@ Git Flowベースで、**テスト・セルフレビュー（PR前）** と **AC
 
 ステップ 10 の後、チェーン末尾として `/retrospective`（セッション振り返り）を毎回実行する。実測した手戻り・無駄時間からプロセス/ツール改善を最大 3 件提案し、起票はユーザー承認後のみ ← 詳細: `deployment/git-workflow.md` の「チェーン末尾: セッション振り返り」
 
-対応ホストでは `Stop` hook が応答終了前に自動継続する。`RETROSPECTIVE_MODE=ask` で実施前確認、`off` で自動発火を無効にできる。
+対応ホストでは `UserPromptSubmit` hook が応答前に注入し、`Stop` hook は実行漏れ時だけ自動継続する。`RETROSPECTIVE_MODE=ask` で実施前確認、`off` で自動発火を無効にできる。
 
 #### 変更規模による tier
 

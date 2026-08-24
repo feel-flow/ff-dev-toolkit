@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Mutation self-test for retrospective-stop-hook (Issue #583).
+# Mutation self-test for retrospective prompt/Stop hooks (Issues #583 / #616).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONSUMER="$PLUGIN_ROOT/tests/retrospective-stop-hook/verify.sh"
-EXPECTED_CONSUMER_CHECKS=18
+EXPECTED_CONSUMER_CHECKS=23
 
 command -v perl >/dev/null 2>&1 || { echo "○ skip: perl が無いため retrospective Stop hook self-test をスキップ"; exit 0; }
 if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/retrospective-stop-hook-selftest.XXXXXX" 2>&1)"; then
@@ -32,6 +32,7 @@ make_fixture() {
   local root="$TMP/$name/plugin"
   mkdir -p "$root/hooks" "$root/tests/retrospective-stop-hook" "$root/skills/retrospective"
   cp "$PLUGIN_ROOT/hooks/retrospective-stop.sh" "$root/hooks/retrospective-stop.sh"
+  cp "$PLUGIN_ROOT/hooks/retrospective-context.sh" "$root/hooks/retrospective-context.sh"
   cp "$PLUGIN_ROOT/hooks/hooks.json" "$root/hooks/hooks.json"
   cp "$PLUGIN_ROOT/skills/retrospective/SKILL.md" "$root/skills/retrospective/SKILL.md"
   cp "$CONSUMER" "$root/tests/retrospective-stop-hook/verify.sh"
@@ -89,6 +90,22 @@ ROOT="$(make_fixture registration)"
 perl -0pi -e 's/"Stop": \[/"StopDisabled": [/' "$ROOT/hooks/hooks.json"
 check_mutation "Stop 登録削除" "hooks.json の Stop 登録が不正" "$ROOT"
 
+ROOT="$(make_fixture context-registration)"
+perl -0pi -e 's/"UserPromptSubmit": \[/"UserPromptSubmitDisabled": [/' "$ROOT/hooks/hooks.json"
+check_mutation "UserPromptSubmit 登録削除" "hooks.json の UserPromptSubmit 登録が不正" "$ROOT"
+
+ROOT="$(make_fixture context-visible-warning)"
+perl -0pi -e 's/\{"hookSpecificOutput"/\{"systemMessage":"visible","hookSpecificOutput"/g' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "事前注入への表示用 Warning 混入" "UserPromptSubmit の事前注入契約が不正" "$ROOT"
+
+ROOT="$(make_fixture context-off-guard)"
+perl -0pi -e 's/case "\$MODE" in/case "auto" in/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "事前注入の off ガード削除" "context hook も RETROSPECTIVE_MODE=off なら無効" "$ROOT"
+
+ROOT="$(make_fixture context-skill-routing)"
+perl -0pi -e 's/ff-dev-toolkit:retrospective/ff-dev-toolkit:missing/g' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "事前注入のスキル経路破壊" "UserPromptSubmit の事前注入契約が不正" "$ROOT"
+
 ROOT="$(make_fixture initial-decision)"
 perl -0pi -e 's/decision/decisionBroken/g' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "初回 decision 破壊" "初回 Stop の出力契約が不正" "$ROOT"
@@ -129,9 +146,9 @@ ROOT="$(make_fixture ask-system-message)"
 perl -0pi -e 's/Automatic retrospective check before stop/Automatic retrospective before stop/' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "ask systemMessage drift" "ask モードの出力契約が不正" "$ROOT"
 
-if [ "$MUTATIONS" -ne 14 ]; then
+if [ "$MUTATIONS" -ne 18 ]; then
   echo "✗ mutation 実行数が不正: $MUTATIONS" >&2
   exit 1
 fi
 REACHED_END=1
-echo "✓ retrospective Stop hook mutation self-test: 14 件すべて検出"
+echo "✓ retrospective Stop hook mutation self-test: 18 件すべて検出"

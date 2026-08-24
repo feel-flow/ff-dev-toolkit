@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Runtime contract for hooks/retrospective-stop.sh (Issue #583).
+# Runtime contract for retrospective prompt/Stop hooks (Issues #583 / #616).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/hooks/retrospective-stop.sh"
+CONTEXT_TARGET="$PLUGIN_ROOT/hooks/retrospective-context.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 SKILL="$PLUGIN_ROOT/skills/retrospective/SKILL.md"
 
 [ -f "$TARGET" ] || { echo "✗ retrospective-stop.sh が見つかりません: $TARGET" >&2; exit 1; }
+[ -f "$CONTEXT_TARGET" ] || { echo "✗ retrospective-context.sh が見つかりません: $CONTEXT_TARGET" >&2; exit 1; }
 [ -f "$HOOKS_JSON" ] || { echo "✗ hooks.json が見つかりません: $HOOKS_JSON" >&2; exit 1; }
 [ -f "$SKILL" ] || { echo "✗ retrospective/SKILL.md が見つかりません: $SKILL" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "✗ jq が必要です" >&2; exit 1; }
@@ -56,6 +58,20 @@ run_hook() {
   rm -f "$errfile"
 }
 
+run_context_hook() {
+  local mode="${1-__unset__}"
+  local input='{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}'
+  local errfile="$TEST_TMP/context-stderr"
+  RC=0
+  if [ "$mode" = "__unset__" ]; then
+    OUT="$(printf '%s' "$input" | env -u RETROSPECTIVE_MODE /bin/bash "$CONTEXT_TARGET" 2>"$errfile")" || RC=$?
+  else
+    OUT="$(printf '%s' "$input" | env RETROSPECTIVE_MODE="$mode" /bin/bash "$CONTEXT_TARGET" 2>"$errfile")" || RC=$?
+  fi
+  ERR="$(cat "$errfile" 2>/dev/null || true)"
+  rm -f "$errfile"
+}
+
 assert_silent_success() {
   local label="$1"
   if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ]; then
@@ -66,6 +82,49 @@ assert_silent_success() {
 }
 
 echo "== retrospective Stop hook =="
+
+run_context_hook
+CONTEXT="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
+  && [ "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.hookEventName // empty' 2>/dev/null)" = "UserPromptSubmit" ] \
+  && [ -n "$CONTEXT" ] \
+  && printf '%s' "$CONTEXT" | grep -F 'ff-dev-toolkit:retrospective' >/dev/null \
+  && printf '%s' "$CONTEXT" | grep -F '振り返り: 今回は作業完了前のため対象外' >/dev/null \
+  && printf '%s' "$OUT" | jq -e 'has("decision") | not' >/dev/null 2>&1 \
+  && printf '%s' "$OUT" | jq -e 'has("reason") | not' >/dev/null 2>&1 \
+  && printf '%s' "$OUT" | jq -e 'has("systemMessage") | not' >/dev/null 2>&1; then
+  ok "UserPromptSubmit は表示用 Feedback なしで自動振り返りを事前注入"
+else
+  bad "UserPromptSubmit の事前注入契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
+run_context_hook off
+assert_silent_success "context hook も RETROSPECTIVE_MODE=off なら無効"
+
+CONTEXT_MODE_ALIASES_OK=1
+for mode_alias in OFF " off " 0 false NO none Disabled; do
+  run_context_hook "$mode_alias"
+  if [ "$RC" -ne 0 ] || [ -n "$OUT" ] || [ -n "$ERR" ]; then
+    CONTEXT_MODE_ALIASES_OK=0
+  fi
+done
+if [ "$CONTEXT_MODE_ALIASES_OK" -eq 1 ]; then
+  ok "context hook の off 別名も大文字小文字と空白を無視"
+else
+  bad "context hook の off 別名に無効化できない値があります"
+fi
+
+run_context_hook ask
+ASK_CONTEXT="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
+  && printf '%s' "$ASK_CONTEXT" | grep -F 'RETROSPECTIVE_MODE=ask' >/dev/null \
+  && printf '%s' "$OUT" | jq -e 'has("decision") | not' >/dev/null 2>&1 \
+  && printf '%s' "$OUT" | jq -e 'has("reason") | not' >/dev/null 2>&1 \
+  && printf '%s' "$OUT" | jq -e 'has("systemMessage") | not' >/dev/null 2>&1; then
+  ok "ask モードも表示用 Feedback なしで実施前確認を事前注入"
+else
+  bad "ask モードの事前注入契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
 
 FIRST_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","stop_hook_active":false}'
 ACTIVE_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","stop_hook_active":true}'
@@ -174,6 +233,15 @@ else
   bad "hooks.json の Stop 登録が不正"
 fi
 
+if jq -e '.hooks.UserPromptSubmit | length == 1' "$HOOKS_JSON" >/dev/null 2>&1 \
+  && [ "$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].type' "$HOOKS_JSON")" = "command" ] \
+  && [ "$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].timeout' "$HOOKS_JSON")" = "5" ] \
+  && jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$HOOKS_JSON" | grep -F '${CLAUDE_PLUGIN_ROOT}/hooks/retrospective-context.sh' >/dev/null; then
+  ok "hooks.json が UserPromptSubmit の事前注入を timeout 5 秒で登録"
+else
+  bad "hooks.json の UserPromptSubmit 登録が不正"
+fi
+
 if grep -F 'stop_hook_active' "$TARGET" >/dev/null \
   && ! grep -E '(^|/)(\.retrospective|retrospective-state|retrospective-marker)' "$TARGET" >/dev/null; then
   ok "再入防止はホスト入力を使い marker ファイルを持たない"
@@ -184,7 +252,7 @@ fi
 INCOMPLETE_REPORT='振り返り: 今回は作業完了前のため対象外'
 if grep -F "$INCOMPLETE_REPORT" "$SKILL" >/dev/null \
   && printf '%s' "$FIRST_INPUT" | /bin/bash "$TARGET" | jq -r '.reason // empty' | grep -F "$INCOMPLETE_REPORT" >/dev/null \
-  && grep -F '## 自動発火（Stop hook）' "$SKILL" >/dev/null \
+  && grep -F '## 自動発火（事前注入 + Stop fallback）' "$SKILL" >/dev/null \
   && grep -F '自分で hook を再実行したり marker を作ったりしない' "$SKILL" >/dev/null; then
   ok "未完了報告と自動発火境界が hook / SKILL.md で一致"
 else
@@ -198,6 +266,8 @@ printf '%s' "$FIRST_INPUT" | env -u RETROSPECTIVE_MODE HOME="$FS_ROOT/home" TMPD
 printf '%s' "$FIRST_INPUT" | env RETROSPECTIVE_MODE=ask HOME="$FS_ROOT/home" TMPDIR="$FS_ROOT/tmp" /bin/bash "$TARGET" >/dev/null 2>&1
 printf '%s' "$ACTIVE_INPUT" | env RETROSPECTIVE_MODE=ask HOME="$FS_ROOT/home" TMPDIR="$FS_ROOT/tmp" /bin/bash "$TARGET" >/dev/null 2>&1
 printf '%s' "$FIRST_INPUT" | env RETROSPECTIVE_MODE=off HOME="$FS_ROOT/home" TMPDIR="$FS_ROOT/tmp" /bin/bash "$TARGET" >/dev/null 2>&1
+printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"test"}' | env -u RETROSPECTIVE_MODE HOME="$FS_ROOT/home" TMPDIR="$FS_ROOT/tmp" /bin/bash "$CONTEXT_TARGET" >/dev/null 2>&1
+printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"test"}' | env RETROSPECTIVE_MODE=ask HOME="$FS_ROOT/home" TMPDIR="$FS_ROOT/tmp" /bin/bash "$CONTEXT_TARGET" >/dev/null 2>&1
 FS_AFTER="$(cd "$FS_ROOT" && find . -print | sort)"
 if [ "$FS_BEFORE" = "$FS_AFTER" ]; then
   ok "初回・再入・ask・off の実行で filesystem marker を作らない"
@@ -205,7 +275,7 @@ else
   bad "hook が filesystem へ副作用を作成"
 fi
 
-EXPECTED_CHECKS=18
+EXPECTED_CHECKS=23
 if [ $((PASS + FAIL)) -ne "$EXPECTED_CHECKS" ]; then
   bad "検査総数が $((PASS + FAIL)) 件（期待 ${EXPECTED_CHECKS} 件）"
 fi

@@ -202,7 +202,7 @@ else
     # 公開配置を模した第 2 fixture も回す。perl / 一時領域が無い場合だけ丸ごと ○ skip
     # （実作業ツリーは変更しない）。検査対象の直後に置くことを優先し、安価な順の例外。
     "$SCRIPT_DIR/retrospective-contract-selftest/verify.sh"
-    # `retrospective-contract` は prompt 文言だけを固定する。実際の plugin Stop hook が
+    # `retrospective-contract` は prompt 文言だけを固定する。実際の plugin context / Stop hook が
     # 初回に block し、継続中・off・不正入力では fail-open するランタイム契約を fixture
     # で実行する（Issue #583）。直後の selftest は入出力・再入・mode・依存・副作用・
     # SKILL 同期・登録の変異を赤化し、consumer の検査総数も固定する。

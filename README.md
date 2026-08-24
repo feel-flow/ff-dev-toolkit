@@ -59,7 +59,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `/ace-setup` | ACE（Agentic Context Engineering）フレームワークのセットアップ |
 | `/ace-curate` | マージ済み PR からの知見抽出・プレイブック追記 |
 | `/ace-refine` | ACE Playbook の定期整理（stale アーカイブ・長大エントリ圧縮・重複統合）。dry-run → 承認 → 適用の 3 フェーズで原文を保全する |
-| `/retrospective` | ワークフローチェーン末尾（`/merge-cleanup` → `/ace-curate` → `/retrospective`）のセッション振り返り。対応ホストでは Stop hook が応答終了前に自動継続する（`RETROSPECTIVE_MODE=ask\|off` で制御）。実測した手戻り・無駄時間からプロセス/ツール改善を最大 3 件提案（該当なしなら 1 行報告）。起票はユーザー承認後のみ |
+| `/retrospective` | ワークフローチェーン末尾（`/merge-cleanup` → `/ace-curate` → `/retrospective`）のセッション振り返り。対応ホストでは UserPromptSubmit で応答前に注入し、Stop hook は実行漏れ時だけ継続する（`RETROSPECTIVE_MODE=ask\|off` で制御）。実測した手戻り・無駄時間からプロセス/ツール改善を最大 3 件提案（該当なしなら 1 行報告）。起票はユーザー承認後のみ |
 | `/setup-ai-config` | AI 開発ツール設定の初期化 |
 | `/multi-explore` | マルチAI CLI による並列探索 |
 | `/multi-implement` | マルチAI CLI による並列実装 |
@@ -105,7 +105,7 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 
 ### 自動振り返り
 
-対応ホストでは、応答終了時の `Stop` hook が `/retrospective` を 1 回だけ自動継続する。継続後はホストの `stop_hook_active` と最終応答の振り返り結果で再入を止めるため、永続 marker は作らない。
+対応ホストでは、`UserPromptSubmit` hook が `/retrospective` の実行契約を応答前に注入し、通常時は最初の応答内で振り返りを完了する。応答終了時の `Stop` hook は結果が無い実行漏れ時だけ 1 回継続する。継続後はホストの `stop_hook_active` と最終応答の振り返り結果で再入を止めるため、永続 marker は作らない。
 
 - 既定は自動実行。`RETROSPECTIVE_MODE=ask` で実施前確認へ切り替える
 - `RETROSPECTIVE_MODE=off` で自動発火を無効にする。`0` / `false` / `no` / `none` / `disabled` も大文字小文字と空白を無視して受け付ける
