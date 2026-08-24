@@ -64,15 +64,29 @@ RUN_RC=0
 # ランナーを引数付きで実行し、出力と終了コードを記録する。
 # `out=$(...)` を素で書くと set -e が失敗時点で落とすので if 形式で受ける。
 #
-# FF_RUN_ALL_FAST は**常に落としてから**呼ぶ。本 suite 自身が高速モードの run-all から
-# 起動されると外側の FF_RUN_ALL_FAST=1 が環境へ漏れて継承され、既定モードを検査する
-# ケースが既定でなくなる（実測で 5 件壊れた）。高速モードの検査は RUN_FAST=1 で
-# 明示的に与える（case 13 の env -u FF_RUN_ALL_NESTED と同じ隔離の流儀）。
+# FF_RUN_ALL_FAST と FF_RUN_ALL_FULL は**常に落としてから**呼ぶ。本 suite 自身が高速モードや
+# 全件実行の run-all から起動されると外側の値が環境へ漏れて継承され、検査したいモードが
+# その回だけ別モードになる（FF_RUN_ALL_FAST の漏れは実測で 5 件壊した。FF_RUN_ALL_FULL は
+# 既定反転〔ADR-034〕で全件実行の入口になったため、リリース前・公開同期前の全件実行から
+# 本 suite が呼ばれる経路で同じ漏れ方をする）。モードは RUN_FAST=1 / RUN_FULL=1 で明示的に
+# 与える（case 13 の env -u FF_RUN_ALL_NESTED と同じ隔離の流儀）。
+#
+# どちらも与えない呼び出しは「明示引数 + 環境変数なし」= 名指しした suite を全部走らせる形
+# （ADR-034）。引数なしの既定一覧が高速モードであることは case 26 が複製木で検査する。
 run_runner() {
+  # 両方 1 は呼び出し側の意図が不明なので黙って一方を採らない（この suite が最も警戒する形）。
+  if [ "${RUN_FAST:-0}" = "1" ] && [ "${RUN_FULL:-0}" = "1" ]; then
+    bad "run_runner: RUN_FAST と RUN_FULL の同時指定（呼び出し側の誤り）"
+    RUN_OUT=""
+    RUN_RC=99
+    return 0
+  fi
   if [ "${RUN_FAST:-0}" = "1" ]; then
-    if RUN_OUT="$(FF_RUN_ALL_FAST=1 bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FULL FF_RUN_ALL_FAST=1 bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+  elif [ "${RUN_FULL:-0}" = "1" ]; then
+    if RUN_OUT="$(env -u FF_RUN_ALL_FAST FF_RUN_ALL_FULL=1 bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   else
-    if RUN_OUT="$(env -u FF_RUN_ALL_FAST bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   fi
 }
 
@@ -256,7 +270,7 @@ expect_lacks '^○ skipped' "skip として報告されない"
 # merge-cleanup の一時 git リポジトリ生成ごと暴走する。
 echo
 echo "== case 8: 入れ子での引数なし実行 =="
-if RUN_OUT="$(env -u FF_RUN_ALL_FAST FF_RUN_ALL_NESTED=1 bash "$RUNNER" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL FF_RUN_ALL_NESTED=1 bash "$RUNNER" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
 
 if [ "$RUN_RC" -ne 0 ]; then
   ok "入れ子の引数なし実行を非 0 で拒否する（rc=${RUN_RC}）"
@@ -351,7 +365,7 @@ echo "== case 13: 既定 suite 一覧の登録漏れ検査 =="
 # その入口は引数なし実行を要求するので、入れ子ガードに当たらないよう
 # FF_RUN_ALL_NESTED を落として呼ぶ。
 _reg_rc=0
-if _reg_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST FF_RUN_ALL_CHECK_REGISTRATION=1 \
+if _reg_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL FF_RUN_ALL_CHECK_REGISTRATION=1 \
   bash "$RUNNER" 2>&1)"; then _reg_rc=0; else _reg_rc=$?; fi
 case "$_reg_out" in
   *"登録漏れなし"*) _reg_ok=1 ;;
@@ -375,7 +389,7 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$_reg_fx/unregistered-probe/verify.sh"
 chmod +x "$_reg_fx/unregistered-probe/verify.sh"
 cp "$TESTS_DIR/run-all.sh" "$_reg_fx/run-all.sh"
 _reg_rc=0
-if _reg_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST FF_RUN_ALL_CHECK_REGISTRATION=1 \
+if _reg_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL FF_RUN_ALL_CHECK_REGISTRATION=1 \
   bash "$_reg_fx/run-all.sh" 2>&1)"; then _reg_rc=0; else _reg_rc=$?; fi
 case "$_reg_out" in
   *"unregistered-probe"*) _reg_named=1 ;;
@@ -447,7 +461,7 @@ else
 fi
 # 名簿の実在検査が登録照合に相乗りしていること（改名・削除への追従）
 _reg_rc=0
-if _reg_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST FF_RUN_ALL_CHECK_REGISTRATION=1 \
+if _reg_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL FF_RUN_ALL_CHECK_REGISTRATION=1 \
   bash "$RUNNER" 2>&1)"; then _reg_rc=0; else _reg_rc=$?; fi
 case "$_reg_out" in
   *"必須 "*"件"*) _req_reported=1 ;;
@@ -690,21 +704,31 @@ expect_has '^suites: total=1 run=1 passed=0 failed=1 skipped=0 not-run=0$' \
   "失敗の集計が高速モードでも従来どおり"
 
 echo ""
-echo "== case 18: FF_RUN_ALL_FAST なし（既定）では -selftest suite も実行される =="
+echo "== case 18: 明示引数は環境変数なしなら名指しした -selftest も実行する =="
 
-# 既定の挙動を変えないことの固定。環境変数を与えなければ従来どおり全 suite が走る。
+# ADR-034 の分岐点。既定一覧は高速モードになったが、**明示引数は名指ししたものを走らせる**。
+# ここが除外側へ倒れると、`bash run-all.sh tests/<名>-selftest/verify.sh` が名指ししたのに
+# 何も実行しない形になる（既定反転で最も踏みやすい退行）。
 run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/pass-selftest/verify.sh"
 
 if [ "$RUN_RC" -eq 0 ]; then
-  ok "既定モードの全 pass 実行が rc=0"
+  ok "明示引数（環境変数なし）の全 pass 実行が rc=0"
 else
-  bad "既定モードの全 pass 実行が非 0 で終わった（rc=${RUN_RC}）"
+  bad "明示引数（環境変数なし）の全 pass 実行が非 0 で終わった（rc=${RUN_RC}）"
   dump_out
 fi
-expect_has '^FIXTURE-PASS-SELFTEST-EXECUTED$' "既定モードでは -selftest suite も実行される"
-expect_has '^suites: total=2 run=2 passed=2 failed=0 skipped=0 not-run=0$' "既定モードの集計に除外が無い"
-expect_lacks '^⚡' "既定モードで高速モードの文言を出さない"
-expect_has '^All ff-dev-toolkit fixture checks passed\.$' "既定モードの全 pass は従来の全体 pass を名乗る"
+expect_has '^FIXTURE-PASS-SELFTEST-EXECUTED$' "明示引数では名指しした -selftest も実行される"
+expect_has '^suites: total=2 run=2 passed=2 failed=0 skipped=0 not-run=0$' "明示引数の集計に除外が無い"
+expect_lacks '^⚡' "明示引数（環境変数なし）で高速モードの文言を出さない"
+expect_has '^All ff-dev-toolkit fixture checks passed\.$' \
+  "明示引数（環境変数なし）の全 pass も全体 pass を名乗る（除外が掛かっていない実行だから）"
+
+# 全件実行の明示指定（FF_RUN_ALL_FULL=1）でも同じであること。明示引数へ除外が掛からない
+# のは「環境変数なし」の帰結ではなく全件実行そのものの帰結だ、という側も縛る。
+RUN_FULL=1 run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/pass-selftest/verify.sh"
+expect_has '^FIXTURE-PASS-SELFTEST-EXECUTED$' "FF_RUN_ALL_FULL=1 でも名指しした -selftest が実行される"
+expect_lacks '^⚡' "FF_RUN_ALL_FULL=1 で高速モードの文言を出さない"
+expect_lacks '解釈できない値です' "FF_RUN_ALL_FULL=1 は正当な値なので警告しない"
 
 echo ""
 echo "== case 19: 高速モードの除外で実行対象が 0 件なら非 0 =="
@@ -776,14 +800,15 @@ echo ""
 echo "== case 21: FF_RUN_ALL_FAST は値が 1 のときだけ有効（解釈できない値は警告する） =="
 
 # 値の解釈を「1 との完全一致」に固定する。非空 truthy 判定へ改悪されると、
-# FF_RUN_ALL_FAST=0 を export した利用者の「フル実行のつもり」で selftest が黙って
-# 消える — このリポジトリが最も警戒する検出力の静かな喪失になる。
+# FF_RUN_ALL_FAST=0 を export した利用者の「全件実行のつもり」で selftest が黙って
+# 消える — このリポジトリが最も警戒する検出力の静かな喪失になる。既定反転（ADR-034）後は
+# `0` が「明示的に高速モードでない」= 全件実行を意味する（既定一覧側の実測は case 26-C）。
 #
 # 併せて警告の**発火条件**も両側から固定する（Issue #602）。`0` / 空値は通常の off なので
-# 黙って既定モードへ落とし、それ以外の非空値だけ「意図と挙動の乖離」として警告する。
+# 黙って落とし、それ以外の非空値だけ「意図と挙動の乖離」として警告する。
 # 不在側（quiet なはずの値）を縛らないと、警告はいずれ無条件のノイズへ育つ。
 for _fast_v in "0" ""; do
-  if RUN_OUT="$(FF_RUN_ALL_FAST="$_fast_v" bash "$RUNNER" \
+  if RUN_OUT="$(env -u FF_RUN_ALL_FULL FF_RUN_ALL_FAST="$_fast_v" bash "$RUNNER" \
     "$FIXTURES/pass/verify.sh" "$FIXTURES/pass-selftest/verify.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   expect_has '^FIXTURE-PASS-SELFTEST-EXECUTED$' \
     "FF_RUN_ALL_FAST='${_fast_v}' では高速モードにならない（selftest が実行される）"
@@ -791,13 +816,13 @@ for _fast_v in "0" ""; do
   expect_lacks '解釈できない値です' "FF_RUN_ALL_FAST='${_fast_v}' は通常の off なので警告しない"
 done
 for _fast_v in "true" "2"; do
-  if RUN_OUT="$(FF_RUN_ALL_FAST="$_fast_v" bash "$RUNNER" \
+  if RUN_OUT="$(env -u FF_RUN_ALL_FULL FF_RUN_ALL_FAST="$_fast_v" bash "$RUNNER" \
     "$FIXTURES/pass/verify.sh" "$FIXTURES/pass-selftest/verify.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   expect_has '^FIXTURE-PASS-SELFTEST-EXECUTED$' \
     "FF_RUN_ALL_FAST='${_fast_v}' では高速モードにならない（selftest が実行される）"
   expect_lacks '^⚡' "FF_RUN_ALL_FAST='${_fast_v}' で高速モードの文言が出ない"
   expect_has "FF_RUN_ALL_FAST=\"${_fast_v}\" は解釈できない値です" \
-    "FF_RUN_ALL_FAST='${_fast_v}' は解釈できない値として警告する（黙って既定モードへ落とさない）"
+    "FF_RUN_ALL_FAST='${_fast_v}' は解釈できない値として警告する（黙って落とさない）"
   if [ "$RUN_RC" -eq 0 ]; then
     ok "FF_RUN_ALL_FAST='${_fast_v}' は警告のみで実行は継続する（fail-safe 側のまま）"
   else
@@ -849,7 +874,7 @@ echo "== case 24: 高速モードでも登録漏れ検査は既定一覧その�
 # 変異は、除外された selftest 群が「未登録」扱いになって照合が赤くなる形で検出できる
 # （現実装では登録照合がフィルタ到達前に exit するので rc=0）。
 _reg_rc=0
-if _reg_out="$(env -u FF_RUN_ALL_NESTED FF_RUN_ALL_FAST=1 FF_RUN_ALL_CHECK_REGISTRATION=1 \
+if _reg_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FULL FF_RUN_ALL_FAST=1 FF_RUN_ALL_CHECK_REGISTRATION=1 \
   bash "$RUNNER" 2>&1)"; then _reg_rc=0; else _reg_rc=$?; fi
 case "$_reg_out" in
   *"登録漏れなし"*) _reg_ok=1 ;;
@@ -863,12 +888,13 @@ else
 fi
 
 echo ""
-echo "== case 25: 必須 skip 案内が高速モードを落とさせない =="
+echo "== case 25: 必須 skip 案内が実行中のモードを落とさせない =="
 
 # 必須 suite（run-all は REQUIRED_SUITES 名簿に実在する）を skip させて案内文を出させ、
-# 高速モード中の再現コマンドに FF_RUN_ALL_FAST=1 が前置されることを固定する。
-# 案内をそのままコピペした利用者が、気づかずフル実行へ戻る形を防ぐ（除外との組で
-# 使う唯一の導線なので、文言 drift は静かな 8 分の損失として再発する）。
+# **全件実行中**の再現コマンドに FF_RUN_ALL_FULL=1 が前置されることを固定する。
+# 既定反転（ADR-034）で前置が要る側が入れ替わった: 高速モードは既定なので前置不要、
+# 全件実行のほうが前置を落とすと既定（高速）へ静かに戻る。案内をそのままコピペした
+# 利用者が気づかずモードを落とす形を防ぐ（文言 drift は静かな検出力の損失として再発する）。
 # 明示引数の実行では必須 skip 判定が働かないため、ここも case 26 と同じ複製木を
 # 使わず、構造（分岐と前置の実在）で固定する。
 _fast_hint_block="$(awk '
@@ -878,20 +904,22 @@ _fast_hint_block="$(awk '
 ' "$TESTS_DIR/run-all.sh")"
 if [ -z "$_fast_hint_block" ]; then
   bad "必須 skip 案内のブロックを抽出できなかった（この検査は成立していない）"
-elif [ "$(printf '%s\n' "$_fast_hint_block" | grep -c 'FF_RUN_ALL_FAST=1 FF_RUN_ALL_ALLOW_SKIP=')" -gt 0 ]; then
-  ok "高速モード中の必須 skip 案内に FF_RUN_ALL_FAST=1 が前置される"
+elif [ "$(printf '%s\n' "$_fast_hint_block" | grep -c 'FF_RUN_ALL_FULL=1 FF_RUN_ALL_ALLOW_SKIP=')" -gt 0 ]; then
+  ok "全件実行中の必須 skip 案内に FF_RUN_ALL_FULL=1 が前置される"
 else
-  bad "必須 skip 案内が高速モードを落とした形になっている（コピペでフル実行へ戻る）"
+  bad "必須 skip 案内が全件実行を落とした形になっている（コピペで既定の高速モードへ戻る）"
 fi
 
 echo ""
-echo "== case 26: 既定一覧の統合動作（複製木への引数なし実行） =="
+echo "== case 26: 既定一覧の統合動作とモード行列（複製木への引数なし実行） =="
 
-# 既定一覧の高速モードは入れ子ガード（case 8）により本 suite からは直接回せない。
+# 既定一覧の実行は入れ子ガード（case 8）により本 suite からは直接回せない。
 # case 13 の登録照合と同じ流儀で run-all.sh を一時木へ複製し、実在の suite 名を
-# 写した stub 群に対して引数なしで実行する（stub は即終了するので数秒で完走する）。
+# 写した stub 群に対して実行する（stub は即終了するので数秒で完走する）。
 # ここで初めて「登録照合 → 高速フィルタ → 実行 → 必須 skip 判定」の全経路が
-# 既定一覧の形で結合される。
+# 既定一覧の形で結合される。**既定一覧でしか観測できないモード解決（ADR-034 の
+# 既定反転・FF_RUN_ALL_FULL・FF_RUN_ALL_FAST=0・矛盾指定）もここで実測する** —
+# 明示引数の実行はモードに依らず名指しを走らせるため、そちらでは差が出ない。
 _fast_fx="${TMPDIR:-/tmp}/ff-fast-integration.$$"
 rm -rf "$_fast_fx"
 mkdir -p "$_fast_fx"
@@ -935,17 +963,33 @@ else
   bad "複製木の構成が前提を満たさない（対あり=${_fast_excl} 対なし=${_fast_orphan} 本体=${_fast_body}）"
 fi
 
-# 26-A: 引数なしの高速モード — 登録照合を通過し、対を持つ selftest だけが除外されて全 pass
-if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP FF_RUN_ALL_FAST=1 \
-  bash "$_fast_fx/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+# 実体から導出した「全件実行時の suite 数」。「既定で走る分 + 除外分 = 全件」という、
+# 26-B 以降のアサートが依拠する関係そのものを式にする（3 項を並べ直すと _fast_run と
+# 独立に腐りうる）。
+_fast_all=$((_fast_run + _fast_excl))
+
+# 複製木を引数なしで実行する。入れ子ガードと ALLOW_SKIP は常に落とす（外側から漏れると
+# モード行列の観測がその回だけ別物になる）。**モードは呼び出し側が env 引数で明示する。**
+run_tree() {
+  if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP "$@" \
+    bash "$_fast_fx/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+}
+
+# 26-A: 引数なし・環境変数なし = **新しい既定**（ADR-034）。登録照合を通過し、対を持つ
+# selftest だけが除外されて全 pass。ここが全件側へ倒れると既定反転そのものが消える。
+run_tree -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL
 if [ "$RUN_RC" -eq 0 ]; then
-  ok "既定一覧の高速モード実行が rc=0"
+  ok "既定一覧の引数なし実行が rc=0"
 else
-  bad "既定一覧の高速モード実行が非 0（rc=${RUN_RC}）"
+  bad "既定一覧の引数なし実行が非 0（rc=${RUN_RC}）"
   dump_out
 fi
 expect_has "^⚡ 高速モードで selftest ${_fast_excl} 件を除外した" \
-  "既定一覧の「対を持つ selftest」が全件（実体と同数）除外される"
+  "引数なしの既定で「対を持つ selftest」が全件（実体と同数）除外される"
+expect_has 'うち REQUIRED_SUITES 掲載 [1-9]' \
+  "除外のうち必須名簿掲載の件数が出る（既定では fail-closed 保護が及ばない重みを可視化する）"
+expect_has '全件実行は FF_RUN_ALL_FULL=1' \
+  "不完全な実行であることと全件実行への導線がサマリーに出る"
 expect_has "^⚡ ${KEPT_SELFTEST_HEAD} ${_fast_orphan} ${KEPT_SELFTEST_TAIL}" \
   "既定一覧の「対を持たない selftest」は除外されずサマリーで名指しされる（ADR-031）"
 # 明示引数の警告が既定一覧で鳴らないことを縛る。これが無いと run-all.sh 側の
@@ -954,43 +998,145 @@ expect_has "^⚡ ${KEPT_SELFTEST_HEAD} ${_fast_orphan} ${KEPT_SELFTEST_TAIL}" \
 # 除外 0 件の経路なのでガードへ到達せず、この退行を捕まえられない）。
 expect_lacks '^⚠️  明示引数' \
   "既定一覧の実行では明示引数の警告を出さない（USING_DEFAULT_SCRIPTS ガードが効いている）"
+expect_lacks '^🔎 全件実行' "既定（高速モード）では全件実行のマーカーを出さない"
 expect_lacks "^== ${_fast_excl_name} ==" \
   "対を持つ selftest（${_fast_excl_name}）の見出しは出ない"
 expect_has "^== ${_fast_orphan_name} ==" \
-  "対を持たない selftest（${_fast_orphan_name}）は高速モードでも実行される"
+  "対を持たない selftest（${_fast_orphan_name}）は既定でも実行される"
 expect_has "^suites: total=${_fast_run} run=${_fast_run} passed=${_fast_run} failed=0 skipped=0 not-run=0$" \
   "本体 + 対なし selftest がすべて実行される（実体からの導出値と一致）"
+expect_lacks '^All ff-dev-toolkit fixture checks passed\.$' \
+  "既定（高速モード）は全体 pass を名乗らない"
 
-# 26-B: 必須の本体 suite（markdownlint）が環境都合で skip → 高速モードでも赤
+# 26-B: 全件実行の明示指定（FF_RUN_ALL_FULL=1）— 登録されている suite が全部走る。
+# 「全件実行した」ことを ⚡ の**不在**でしか判別できないと、リリース前・公開同期前の全件実行
+# （ADR-034 決定 2）の報告が目視頼みになる。肯定的なマーカーの実在もここで縛る。
+run_tree -u FF_RUN_ALL_FAST FF_RUN_ALL_FULL=1
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "FF_RUN_ALL_FULL=1 の既定一覧実行が rc=0"
+else
+  bad "FF_RUN_ALL_FULL=1 の既定一覧実行が非 0（rc=${RUN_RC}）"
+  dump_out
+fi
+expect_has "^🔎 全件実行: 登録されている ${_fast_all} suite をすべて実行対象にします" \
+  "全件実行であることを肯定的に 1 行で出す（実体からの導出値と一致）"
+expect_has "^suites: total=${_fast_all} run=${_fast_all} passed=${_fast_all} failed=0 skipped=0 not-run=0$" \
+  "FF_RUN_ALL_FULL=1 では登録されている suite が全件走る（実体からの導出値と一致）"
+expect_has "^== ${_fast_excl_name} ==" "FF_RUN_ALL_FULL=1 では対を持つ selftest も実行される"
+expect_lacks '^⚡' "FF_RUN_ALL_FULL=1 で高速モードの文言を出さない"
+expect_has '^All ff-dev-toolkit fixture checks passed\.$' "全件実行の全 pass は従来の全体 pass を名乗る"
+
+# 26-C: FF_RUN_ALL_FAST=0 は「明示的に高速モードでない」= 全件実行（ADR-034）。既定反転より
+# 前に `export FF_RUN_ALL_FAST=0` で全件実行を意図していた呼び出し側を、既定の変更で黙って
+# 高速モードへ落とさない。ここが既定へ倒れると、対を持つ selftest ぶんの検出力が静かに消える。
+run_tree -u FF_RUN_ALL_FULL FF_RUN_ALL_FAST=0
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "FF_RUN_ALL_FAST=0 の既定一覧実行が rc=0"
+else
+  bad "FF_RUN_ALL_FAST=0 の既定一覧実行が非 0（rc=${RUN_RC}）"
+  dump_out
+fi
+expect_has "^suites: total=${_fast_all} run=${_fast_all} passed=${_fast_all} failed=0 skipped=0 not-run=0$" \
+  "FF_RUN_ALL_FAST=0 は全件実行（既定へ落とさない）"
+expect_lacks '^⚡' "FF_RUN_ALL_FAST=0 で高速モードの文言を出さない"
+expect_lacks '解釈できない値です' "FF_RUN_ALL_FAST=0 は通常の off なので警告しない"
+
+# 26-D: 矛盾する同時指定は黙って一方を採らず、fail-safe 側（全件実行）を採る。
+run_tree FF_RUN_ALL_FULL=1 FF_RUN_ALL_FAST=1
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "矛盾指定でも警告のみで rc=0（終了コードは変えない）"
+else
+  bad "矛盾指定が非 0 で終わった（警告のみのはず。rc=${RUN_RC}）"
+  dump_out
+fi
+expect_has '^⚠️  FF_RUN_ALL_FULL=1 と FF_RUN_ALL_FAST=1 が同時に指定されています' \
+  "矛盾する同時指定を 1 行警告する"
+expect_has "^suites: total=${_fast_all} run=${_fast_all} passed=${_fast_all} failed=0 skipped=0 not-run=0$" \
+  "矛盾時は fail-safe 側（全件実行）を採る"
+
+# 26-E: FF_RUN_ALL_FULL の値の解釈（`0` は通常の off で quiet、それ以外の非空値は警告 +
+# fail-safe 側）。off 側を縛らないと、警告はいずれ無条件のノイズへ育つ。
+run_tree -u FF_RUN_ALL_FAST FF_RUN_ALL_FULL=0
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "FF_RUN_ALL_FULL=0 の既定一覧実行が rc=0"
+else
+  bad "FF_RUN_ALL_FULL=0 の既定一覧実行が非 0（rc=${RUN_RC}）"
+  dump_out
+fi
+expect_has "^suites: total=${_fast_run} run=${_fast_run} passed=${_fast_run} failed=0 skipped=0 not-run=0$" \
+  "FF_RUN_ALL_FULL=0 は通常の off（既定の高速モードのまま）"
+expect_lacks '解釈できない値です' "FF_RUN_ALL_FULL=0 は通常の off なので警告しない"
+run_tree -u FF_RUN_ALL_FAST FF_RUN_ALL_FULL=true
+expect_has 'FF_RUN_ALL_FULL="true" は解釈できない値です' \
+  "FF_RUN_ALL_FULL の解釈できない値は 1 行警告する"
+expect_has "^suites: total=${_fast_all} run=${_fast_all} passed=${_fast_all} failed=0 skipped=0 not-run=0$" \
+  "解釈できない FF_RUN_ALL_FULL 値でも fail-safe 側（全件実行）で続行する"
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "解釈できない FF_RUN_ALL_FULL 値は警告のみで実行は継続する"
+else
+  bad "解釈できない FF_RUN_ALL_FULL 値が非 0 で終わった（警告のみのはず。rc=${RUN_RC}）"
+  dump_out
+fi
+
+# 26-F: FF_RUN_ALL_FAST の値の解釈を**既定一覧で**実測する。case 21 は明示引数で回すため、
+# 明示引数ルール（FAST_REQUESTED != 1 なら除外しない）が先に効いて同じ結果になり、
+# 「不正値を fail-safe 側へ倒す」分岐を落とす変異が緑のまま通る（レビューで実測）。
+# 分岐の生死が観測できるのは既定一覧だけなので、FULL 側（26-E）と対称にここへ置く。
+for _tree_fast_v in "true" "2"; do
+  run_tree -u FF_RUN_ALL_FULL FF_RUN_ALL_FAST="$_tree_fast_v"
+  expect_has "FF_RUN_ALL_FAST=\"${_tree_fast_v}\" は解釈できない値です" \
+    "既定一覧で FF_RUN_ALL_FAST='${_tree_fast_v}' を 1 行警告する"
+  expect_has "^suites: total=${_fast_all} run=${_fast_all} passed=${_fast_all} failed=0 skipped=0 not-run=0$" \
+    "既定一覧で FF_RUN_ALL_FAST='${_tree_fast_v}' は fail-safe 側（全件実行）へ倒れる"
+  expect_lacks '^⚡' "FF_RUN_ALL_FAST='${_tree_fast_v}' で高速モードにならない"
+  if [ "$RUN_RC" -eq 0 ]; then
+    ok "FF_RUN_ALL_FAST='${_tree_fast_v}' は警告のみで実行は継続する"
+  else
+    bad "FF_RUN_ALL_FAST='${_tree_fast_v}' が非 0 で終わった（警告のみのはず。rc=${RUN_RC}）"
+    dump_out
+  fi
+done
+
+# 不正値経由で立った全件要求を矛盾警告が拾うと、利用者が書いていない `FULL=1` を事実として
+# 述べる警告になる（レビュー指摘）。不正値の警告は出しつつ、矛盾警告は出さないことを縛る。
+run_tree FF_RUN_ALL_FULL=true FF_RUN_ALL_FAST=1
+expect_has 'FF_RUN_ALL_FULL="true" は解釈できない値です' \
+  "FULL が不正値 + FAST=1 でも不正値の警告は出る"
+expect_lacks '^⚠️  FF_RUN_ALL_FULL=1 と FF_RUN_ALL_FAST=1 が同時に指定されています' \
+  "FULL が不正値のときは矛盾警告を出さない（設定していない値を事実として述べない）"
+expect_has "^suites: total=${_fast_all} run=${_fast_all} passed=${_fast_all} failed=0 skipped=0 not-run=0$" \
+  "FULL が不正値 + FAST=1 でも fail-safe 側（全件実行）"
+
+# 26-G: 必須の本体 suite（markdownlint）が環境都合で skip → 既定（高速モード）でも赤
 printf '#!/usr/bin/env bash\necho "○ skip: stub（環境都合を模す）"\nexit 0\n' \
   > "$_fast_fx/markdownlint/verify.sh"
-if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP FF_RUN_ALL_FAST=1 \
-  bash "$_fast_fx/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+run_tree -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL
 if [ "$RUN_RC" -ne 0 ]; then
-  ok "高速モードでも必須の本体 suite の skip は非 0（fail-closed が生きている）"
+  ok "既定（高速モード）でも必須の本体 suite の skip は非 0（fail-closed が生きている）"
 else
-  bad "高速モードで必須 suite の skip が 0 で終わった"
+  bad "既定（高速モード）で必須 suite の skip が 0 で終わった"
   dump_out
 fi
 expect_has '^✗ 環境都合で消してはいけない suite が skip しました: markdownlint$' \
   "必須 skip の名指しに除外した selftest が混入しない"
-expect_has '^    FF_RUN_ALL_FAST=1 FF_RUN_ALL_ALLOW_SKIP="markdownlint" bash tests/run-all.sh$' \
-  "高速モード中の再現コマンドに FF_RUN_ALL_FAST=1 が前置される（case 25 の実測側）"
+expect_has '^    FF_RUN_ALL_ALLOW_SKIP="markdownlint" bash tests/run-all.sh$' \
+  "既定（高速モード）の再現コマンドに前置は要らない"
+expect_lacks '^    FF_RUN_ALL_FULL=1 FF_RUN_ALL_ALLOW_SKIP=' \
+  "既定の案内へ全件実行の前置を混ぜない（コピペで意図せず全件へ戻さない）"
 
-# 26-C: 同じ木を既定モードで実行 — selftest も走り、必須 skip の fail-closed は従来どおり
-if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP -u FF_RUN_ALL_FAST \
-  bash "$_fast_fx/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+# 26-H: 同じ木を全件実行で回す — selftest も走り、案内は全件実行を保つ形になる（case 25 の実測側）
+run_tree -u FF_RUN_ALL_FAST FF_RUN_ALL_FULL=1
 if [ "$RUN_RC" -ne 0 ]; then
-  ok "既定モードの必須 skip fail-closed は従来どおり非 0"
+  ok "全件実行の必須 skip fail-closed は従来どおり非 0"
 else
-  bad "既定モードで必須 suite の skip が 0 で終わった"
+  bad "全件実行で必須 suite の skip が 0 で終わった"
   dump_out
 fi
-# 対を持たない selftest は高速モードでも走るので、既定モードとの差を示す見出しには
+# 対を持たない selftest は既定でも走るので、既定との差を示す見出しには
 # **対を持つ** selftest（26-A で除外された側）を使う。
-expect_has "^== ${_fast_excl_name} ==" "既定モードでは対を持つ selftest も実行される"
-expect_has '^    FF_RUN_ALL_ALLOW_SKIP="markdownlint" bash tests/run-all.sh$' \
-  "既定モードの再現コマンドは従来どおり（FF_RUN_ALL_FAST を前置しない）"
+expect_has "^== ${_fast_excl_name} ==" "全件実行では対を持つ selftest も実行される"
+expect_has '^    FF_RUN_ALL_FULL=1 FF_RUN_ALL_ALLOW_SKIP="markdownlint" bash tests/run-all.sh$' \
+  "全件実行中の再現コマンドに FF_RUN_ALL_FULL=1 が前置される（case 25 の実測側）"
 rm -rf "$_fast_fx"
 
 echo ""
@@ -1036,9 +1182,10 @@ expect_lacks '実行対象が 0 件になりました' "対なし selftest は 0
 echo ""
 echo "== case 28: 明示引数で名指しした suite の除外は警告される =="
 
-# 明示引数にも高速モードを適用する設計（理由は run-all.sh のヘッダー: この口を適用外に
-# すると case 19 の fail-closed 経路が検査不能になる）を保ったまま、「名指ししたのに
-# 走らない」を黙って通さないことを固定する。警告の**不在**側も同時に縛る。
+# ADR-034 で明示引数の既定は「名指ししたものを走らせる」へ変わったが、FF_RUN_ALL_FAST=1 を
+# **明示**したときだけは従来どおり除外を適用する（理由は run-all.sh のヘッダー: この口を
+# 完全に適用外にすると case 19 の fail-closed 経路が検査不能になる）。その残した口で
+# 「名指ししたのに走らない」を黙って通さないことを固定する。警告の**不在**側も同時に縛る。
 RUN_FAST=1 run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/pass-selftest/verify.sh"
 expect_has '^⚠️  明示引数で名指しした suite のうち 1 件を高速モードが除外しました' \
   "明示引数で名指しした suite が除外されたら警告する"
@@ -1053,5 +1200,22 @@ if [ "$FAIL" -gt 0 ]; then
   echo "✗ run-all verify: $FAIL 件失敗" >&2
   exit 1
 fi
-echo "✓ run-all verify: 全 $PASS 件 pass"
+
+# 検査総数の侵食ガード。本 suite はケースの追加・改稿が多く（ADR-034 のモード行列で
+# 26-A〜26-H を丸ごと書き直した）、その過程で expect_* が 1 本消えても残りが緑のまま
+# 「全 N 件 pass」で通る。全検査成功ラン（FAIL=0）に限って完全一致を要求する — 失敗経路は
+# 後続検査を飛ばすので、無条件比較は既に赤いランへ二重の失敗を積む。
+#
+# 更新が要る箇所は 3 つ。ok / bad / expect_has / expect_lacks の呼び出しを増減したときに
+# 加えて、**呼び出し行を 1 行も触らずに件数が動く固定リストが 2 つある**:
+#   - case 14 の必須 suite 名リスト（一時領域依存。1 件足すと +1）
+#   - case 15 の mktemp probe 仕様リスト（1 件足すと +1）
+# 一方、走査対象の件数からは導出されない（case 10・11・26 はいずれも走査結果を 1 件の判定へ
+# 畳む）ので、suite を追加しても動かず、SSOT モノレポと公開 checkout の両配置で同じ値になる。
+EXPECTED_CHECKS=190
+if [ "$PASS" -ne "$EXPECTED_CHECKS" ]; then
+  echo "✗ run-all verify: 検査総数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査の削除、または追加時の期待値未更新" >&2
+  exit 1
+fi
+echo "✓ run-all verify: 全 $PASS 件 pass（検査総数ガード ${EXPECTED_CHECKS} 件と一致）"
 exit 0

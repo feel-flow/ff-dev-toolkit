@@ -76,10 +76,16 @@ tests/validate-docs/
 bash plugins/ff-dev-toolkit/tests/validate-docs/verify.sh
 ```
 
-全 fixture 検証をまとめて実行する場合:
+登録 suite をまとめて実行する場合（**既定は高速モード**で、対を持つ `-selftest` は除外される）:
 
 ```bash
 bash plugins/ff-dev-toolkit/tests/run-all.sh
+```
+
+除外なしの全件実行:
+
+```bash
+FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh
 ```
 
 `verify.sh` は read-only 環境でも動作します（here-string / heredoc 不使用、`printf ... | cmd`。ACE-86-2）。

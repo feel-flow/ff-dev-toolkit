@@ -65,8 +65,8 @@
 #
 # 対の `-selftest` suite は**置かない**。検出力 fixture は本 suite の実行のたびに走るので
 # 効き目を毎回実測できる（docs-scan-mirror が golden 一致で同じ判断をしている）。加えて
-# `-selftest` は `FF_RUN_ALL_FAST=1` で除外されるため、検出力をそちらへ移すと高速モードで
-# 丸ごと消える。in-suite なら既定・高速のどちらでも走る。
+# 対を持つ `-selftest` は**既定（高速モード）で除外される**ので（ADR-034）、検出力をそちらへ
+# 移すと日常の実行から丸ごと消える。in-suite なら既定でも全件実行でも走る。
 #
 # [ACE-725-1]: docs/08-knowledge/playbook/testing.md#ace-725-1
 # [ACE-717-1]: docs/08-knowledge/playbook/testing.md#ace-717-1

@@ -24,7 +24,7 @@
 
 ```bash
 bash plugins/ff-dev-toolkit/tests/setup-multi-agent-yq/verify.sh
-# または
+# または（既定は高速モード。除外なしの全件は FF_RUN_ALL_FULL=1 を前置する）
 bash plugins/ff-dev-toolkit/tests/run-all.sh
 ```
 

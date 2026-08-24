@@ -2,7 +2,9 @@
 #
 # ff-dev-toolkit prompt fixture regression test runner.
 #
-# 全 suite を必ず実行し、結果を集約して報告する（Issue #146）。最初の失敗で停止する
+# 実行対象の suite を最初の red で止めず全部回し、結果を集約して報告する（Issue #146）。
+# 「実行対象」は既定では高速モードの集合（対を持つ selftest を除いた残り。ADR-034）で、
+# 登録されている全 suite を回すのは FF_RUN_ALL_FULL=1 のとき。最初の失敗で停止する
 # fail-fast だと、1 件のゲート違反が無関係な後続 suite の検出力をまとめて 0 にする。
 # 実際に PR #144 の changelog-version red が 2 日間、後続 4 suite（破壊的操作を扱う
 # merge-cleanup を含む）の実行を止め、その隙間で別の回帰が隠れていた。fail-fast は
@@ -25,18 +27,29 @@
 # サマリーの suite 識別子は親ディレクトリ名なので、渡す suite は親ディレクトリ名が
 # 互いに一意であること（同名だとどちらが失敗したのか報告から読めない）。
 #
-# FF_RUN_ALL_FAST=1（値が 1 のときだけ有効。`0` と空値は「無効」、それ以外の非空値は
-# 解釈できない指定として 1 行警告のうえ既定モードで続行する）を与えると高速モードになり、
-# suite 名（親ディレクトリ名）が `-selftest` で終わり **かつ対になる本体 suite
-# （名前から `-selftest` を落としたディレクトリの verify.sh）が実在する** suite だけを
-# 実行対象から除外する。この種の selftest はゲート本体（tests/*/verify.sh）の検出力を
-# 変異注入で実測するもので、検査対象を変更しない限り原理的に結果が変わらない。除外していた
-# 全 `-selftest` 18 suite が既定一覧の所要時間の 53.9% を占めていた（Issue #600 時点・全 76
-# suite の実測）。うち 3 件は下記のとおり除外対象から外したので、**現在の削減幅はこれより
-# 小さい**。
+# ── 実行モード: 既定は高速モード（ADR-034）──────────────────────────────────
+# **引数なしの既定一覧は高速モードで走る。** 高速モードは、suite 名（親ディレクトリ名）が
+# `-selftest` で終わり **かつ対になる本体 suite（名前から `-selftest` を落としたディレクトリ
+# の verify.sh）が実在する** suite だけを実行対象から除外する。この種の selftest はゲート
+# 本体（tests/*/verify.sh）の検出力を変異注入で実測するもので、検査対象を変更しない限り
+# 原理的に結果が変わらない。既定を反転した回の実測（所要時間の前後比較）は ADR-034 が指す
+# Issue のコメントに残す — ここへ数値を書くと suite の増減で静かに腐る（旧ヘッダーが抱えて
+# いた「53.9%」がまさにその形で、現在値との乖離を注記で釈明する状態になっていた）。
 # 判定は命名規約と対の実在だけで導出し除外名簿を持たないため、新規 selftest も自動的に
-# 対象になる。既定（環境変数なし）は従来どおり全 suite 実行。除外は SKIPPED とは別勘定で、
-# REQUIRED_SUITES の必須 skip 判定には掛からない（意図的な除外と環境都合の skip を区別する）。
+# 対象になる。除外は SKIPPED とは別勘定で、REQUIRED_SUITES の必須 skip 判定には掛からない
+# （意図的な除外と環境都合の skip を区別する）。
+#
+# **全件実行は明示指定する**: FF_RUN_ALL_FULL=1（値が 1 のときだけ有効。`0` と空値は
+# 「無効」、それ以外の非空値は解釈できない指定として 1 行警告のうえ全件実行で続行する）。
+# リリース前・公開同期前は全件実行が必須（docs/04-quality/TESTING.md）。
+#
+# FF_RUN_ALL_FAST は後方互換のために残す。`1` は高速モード（既定と同じなので実質 no-op、
+# ただし明示引数への適用だけは下記のとおり変える）、`0` は「明示的に高速モードでない」=
+# 全件実行として扱う — 既定反転より前に `export FF_RUN_ALL_FAST=0` で全件実行を意図して
+# いた呼び出し側の検出力を、既定の変更で黙って落とさないため（`0` と空値を等価に扱って
+# いた ADR-031 決定 3 からの意図的な変更）。`1` / `0` / 空値以外は 1 行警告のうえ全件実行
+# （fail-safe 側）。FF_RUN_ALL_FULL=1 と FF_RUN_ALL_FAST=1 の同時指定は矛盾なので 1 行
+# 警告し、除外しない側（既定一覧なら全件実行、明示引数なら名指しの全実行）を採る。
 #
 # 対になる本体 suite を持たない `-selftest` は除外しない（Issue #602 / ADR-031）。根拠は
 # 「live な検査だから」ではない — release-required-selftest は隔離 fixture への変異注入だけを
@@ -47,17 +60,21 @@
 # wrapper の byte 一致など〕・adapter-env-isolation-selftest〔consumer 名簿の照合など〕）。
 # 除外しなかった件数と suite 名はサマリーへ出す。
 #
-# 明示引数の実行にも高速モードは適用される。tests/run-all/verify.sh が疑似 suite を明示
-# 引数で渡すことが本ランナーの高速モードを実測する唯一の口で、明示引数を適用外にすると
-# 「除外で実行対象が 0 件 → exit 1」の fail-closed 経路が検査不能になる（既定一覧では
-# 本体 suite が必ず残るうえ、selftest だけの木は登録漏れ検査が先に落ちる）。代わりに、
-# 名指しした suite が除外されたときは stderr へ 1 行警告し、矛盾を可視化する。
+# 明示引数の実行は「名指ししたものを走らせる」を既定にする（ADR-034 で ADR-031 決定 4 を
+# 変更）。既定一覧の高速化と違い、名指しした suite を黙って落とすのは意図と端的に食い違う
+# ためで、既定反転後は `bash tests/run-all.sh tests/<名>-selftest/verify.sh` が何も実行しない
+# 形になってしまう。ただし **FF_RUN_ALL_FAST=1 を明示したときだけ**は従来どおり明示引数にも
+# 除外を適用する — tests/run-all/verify.sh が疑似 suite を明示引数で渡すことが「除外で実行
+# 対象が 0 件 → exit 1」の fail-closed 経路を実測する唯一の口だから（既定一覧では本体 suite が
+# 必ず残るうえ、selftest だけの木は登録漏れ検査が先に落ちる）。そのとき名指しした suite が
+# 除外されたら stderr へ 1 行警告し、矛盾を可視化する。
 #
-# 残るトレードオフ（意図的な選択）: 対を持つ selftest は除外されるので、その検査対象
-# （tests/*/verify.sh・tests/lib/*.sh）を変更した回を高速モードだけで通すと、ゲートの
-# 検出力の退行はフル実行まで検出されない。フル実行の定期実行点は週次 CI（Issue #598。
-# 未導入で、導入までは定期実行点が存在しない）に置く規約とし、`tests/` 等の変更時に
-# 高速モードを拒否する安全弁は置かない — 条件分岐を増やさず、挙動を単純に保つ。
+# 残るトレードオフ（意図的な選択）: 対を持つ selftest は既定で除外されるので、その検査対象
+# （tests/*/verify.sh・tests/lib/*.sh）を変更した回を既定のまま通すと、ゲートの検出力の退行は
+# 全件実行まで検出されない。**既定反転により、このトレードオフは毎回取られることになる。**
+# したがって定期実行点をリリース前・公開同期前の全件実行に置く（週次 CI = Issue #598 は未導入
+# のままで、それ以外に定期実行点は存在しない）。`tests/` 等の変更時に高速モードを拒否する
+# 安全弁は置かない — 条件分岐を増やさず、挙動を単純に保つ（ADR-034 で再確認した）。
 #
 # 実行方式のトレードオフ: 各 suite の出力は skip マーカー判定のため command
 # substitution で丸ごと受けてから出力する。そのため suite 実行中のリアルタイム進捗は
@@ -461,6 +478,11 @@ fi
 # 回せない環境では、理由を添えて明示的に外す:
 #   FF_RUN_ALL_ALLOW_SKIP="agent-config-mirror agent-config-mirror-selftest" bash tests/run-all.sh
 #   FF_RUN_ALL_ALLOW_SKIP=all   # 全部許す（旧来の挙動。1 行の警告つき）
+# **対の本体 suite を持つ `-selftest` をここへ載せても、既定（高速モード）では
+# fail-closed 保護は働かない**（ADR-034）。除外された suite は SKIPPED に現れず、下の
+# 必須 skip 判定は SKIPPED だけを走査するため。保護が効くのは全件実行（FF_RUN_ALL_FULL=1）
+# のときだけで、既定実行では「除外した selftest のうち何件が必須名簿掲載か」をサマリーが
+# 名指しする（意図した除外であることは変わらないが、重みが読めるようにする）。
 REQUIRED_SUITES=(
   # 実行環境分離のselftestは、クリーン環境だと退行してもconsumerが緑になり得る。
   # 一時領域不足で検出力ごと消える場合は明示許可を要求する（Issue #439）。
@@ -558,10 +580,15 @@ REQUIRED_SUITES=(
   # 「実リポジトリの docs/ をそのまま写す」設計で、baseline が実体と乖離しないことを
   # 優先している（同梱 fixture にすると baseline 自体が腐る）。したがって公開側では
   # sync-forbidden-patterns / release-required-selftest と合わせて 4 件の明示許可が要る:
-  #   FF_RUN_ALL_ALLOW_SKIP="sync-forbidden-patterns release-required-selftest docs-frontmatter-repo-selftest docs-fact-drift-selftest" \
-  #     bash tests/run-all.sh
+  #   FF_RUN_ALL_FULL=1 FF_RUN_ALL_ALLOW_SKIP="sync-forbidden-patterns release-required-selftest \
+  #     docs-frontmatter-repo-selftest docs-fact-drift-selftest" bash tests/run-all.sh
   # 必須 skip で落ちたときは、この行と同じ内容をランナーが実際の skip 一覧から
   # 組み立てて表示する（下の REQUIRED_SKIPPED の案内）。
+  #
+  # **既定（高速モード）では docs-frontmatter-repo-selftest / docs-fact-drift-selftest は
+  # 除外される**（対の本体 suite が実在するため）。除外は SKIPPED に現れないので明示許可も
+  # 要らないが、**検証もされない**。上の 4 件を明示許可で通す形が成立するのは全件実行のとき
+  # だけで、既定では組み立てられるのも残り 2 件になる（ADR-034）。
   docs-frontmatter-repo-selftest
   docs-fact-drift-selftest
   # 公開対象の禁止パターン検査。同期時以外に発火するゲートが他に無い（#476）。
@@ -650,25 +677,66 @@ if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
   check_suite_registration || exit 1
 fi
 
-# ── 高速モード（FF_RUN_ALL_FAST=1）────────────────────────────────────────────
+# ── 実行モードの解決（既定は高速モード。ADR-034）──────────────────────────────
 # `-selftest` サフィックスを持ち、かつ対になる本体 suite が実在する suite を実行対象から
 # 除外する（背景・トレードオフはヘッダー参照）。登録漏れ検査（check_suite_registration）は
 # 既定一覧そのものへ掛ける必要があるため、この除外は照合の**後**に行う。除外した suite は
 # SKIPPED に一切現れないので、REQUIRED_SUITES の必須 skip 判定（SKIPPED だけを走査する）
 # とは構造的に競合しない。
-FAST_MODE=0
+FAST_MODE=1
 FAST_EXCLUDED=()
 FAST_KEPT_SELFTEST=()
-# 値の解釈は「1 との完全一致でのみ有効」。`0` / 空値は通常の off なので黙って既定モードへ
-# 落とすが、それ以外の非空値（`true` / `2` など）は利用者の意図と挙動が乖離しているので
-# 黙って落とさない。挙動自体は fail-safe 側（全 suite 実行）のままにする。
-case "${FF_RUN_ALL_FAST:-}" in
-  1) FAST_MODE=1 ;;
+
+# 値の解釈は両変数とも「1 との完全一致でのみ有効」。`0` と空値は **quiet**（警告を出さない）で、
+# それ以外の非空値（`true` / `2` など）だけ「利用者の意図と挙動の乖離」として 1 行警告し、
+# 挙動を fail-safe 側（全 suite 実行）へ倒す。
+#
+# ※ **quiet であることと「既定へ落ちる」ことは別軸**。FF_RUN_ALL_FAST=0 は quiet だが全件実行を
+#    能動的に選ぶし、FF_RUN_ALL_FULL=0 は quiet で既定（高速モード）のままになる。
+#
+# 状態は 3 つに分ける。「不正値だから全件へ倒した」を「FF_RUN_ALL_FULL=1 の明示」と同じ変数へ
+# 畳むと、矛盾警告が利用者の設定していない `FULL=1` を事実として述べてしまう。
+FULL_EXPLICIT=0        # FF_RUN_ALL_FULL=1 の明示。矛盾警告の発火条件にだけ使う
+FAST_EXPLICIT=0        # FF_RUN_ALL_FAST=1 の明示。明示引数への除外適用の可否にも使う
+FULL_RUN_REQUESTED=0   # 全件実行の要求。入口は上の 2 変数の値ごとに複数ある
+case "${FF_RUN_ALL_FULL:-}" in
+  1) FULL_EXPLICIT=1; FULL_RUN_REQUESTED=1 ;;
   ""|0) ;;
   *)
-    echo "⚠️  FF_RUN_ALL_FAST=\"${FF_RUN_ALL_FAST}\" は解釈できない値です（高速モードになるのは 1 のときだけ）。既定モード（全 suite 実行）で続行します" >&2
+    echo "⚠️  FF_RUN_ALL_FULL=\"${FF_RUN_ALL_FULL}\" は解釈できない値です（全件実行になるのは 1 のときだけ）。fail-safe 側の全 suite 実行で続行します" >&2
+    FULL_RUN_REQUESTED=1
     ;;
 esac
+
+# FF_RUN_ALL_FAST は既定反転（ADR-034）後も後方互換の入口として残す。`0` は「明示的に高速
+# モードでない」= 全件実行として扱う（空値と等価に扱わない理由はヘッダー）。
+case "${FF_RUN_ALL_FAST:-}" in
+  1) FAST_EXPLICIT=1 ;;
+  "") ;;
+  0) FULL_RUN_REQUESTED=1 ;;
+  *)
+    echo "⚠️  FF_RUN_ALL_FAST=\"${FF_RUN_ALL_FAST}\" は解釈できない値です（高速モードになるのは 1 のときだけ）。fail-safe 側の全 suite 実行で続行します" >&2
+    FULL_RUN_REQUESTED=1
+    ;;
+esac
+
+# 矛盾する指定は黙って一方を採らない。挙動は fail-safe 側（全 suite 実行）。
+# **両方が明示的な `1` のときだけ**鳴らす — 不正値経由で立った全件要求をここで拾うと、
+# 利用者が書いていない `FULL=1` を事実として述べる警告になる。
+if [[ "$FULL_EXPLICIT" == "1" && "$FAST_EXPLICIT" == "1" ]]; then
+  echo "⚠️  FF_RUN_ALL_FULL=1 と FF_RUN_ALL_FAST=1 が同時に指定されています（矛盾）。fail-safe 側の全 suite 実行を採ります" >&2
+fi
+if [[ "$FULL_RUN_REQUESTED" == "1" ]]; then
+  FAST_MODE=0
+fi
+
+# 明示引数は「名指ししたものを走らせる」を既定にする（ADR-034）。FF_RUN_ALL_FAST=1 を
+# **明示**したときだけ、従来どおり明示引数にも除外を適用する — その口が「除外で実行対象が
+# 0 件 → exit 1」の fail-closed 経路を実測する唯一の手段だから（理由はヘッダー）。
+if [[ "$USING_DEFAULT_SCRIPTS" != "1" && "$FAST_EXPLICIT" != "1" ]]; then
+  FAST_MODE=0
+fi
+
 if [[ "$FAST_MODE" == "1" ]]; then
   FAST_KEPT=()
   for script in "${SCRIPTS[@]}"; do
@@ -685,13 +753,15 @@ if [[ "$FAST_MODE" == "1" ]]; then
     fi
     FAST_KEPT+=("$script")
   done
-  # 名指しした suite が黙って消えるのを防ぐ。除外自体は明示引数でも適用する（理由は
-  # ヘッダー）ので、矛盾はここで 1 行だけ報告する。**0 件判定より前に出す** — 名指しが
+  # 名指しした suite が黙って消えるのを防ぐ。明示引数への除外適用は FF_RUN_ALL_FAST=1 を
+  # 明示したときだけ（ADR-034。理由はヘッダー）なので、ここへ来るのは「除外を要求しつつ
+  # 除外対象を名指しした」回に限られる。矛盾はここで 1 行だけ報告する。**0 件判定より前に出す** — 名指しが
   # 全件除外された回はこの警告が最も要る場面なのに、後段へ置くと直前の exit 1 で到達せず、
-  # API.md の「名指しした suite が除外されたときは stderr へ 1 行警告する」（無条件の契約）
+  # API.md の「名指しした suite が除外されたときは stderr へ 1 行警告する」（この分岐へ
+  # 入ったら 0 件判定の有無に関わらず必ず出す契約）
   # を破る。
   if [[ ${#FAST_EXCLUDED[@]} -gt 0 && "$USING_DEFAULT_SCRIPTS" != "1" ]]; then
-    echo "⚠️  明示引数で名指しした suite のうち ${#FAST_EXCLUDED[@]} 件を高速モードが除外しました（名指しの意図と矛盾。実行するには FF_RUN_ALL_FAST を外してください）: ${FAST_EXCLUDED[*]}" >&2
+    echo "⚠️  明示引数で名指しした suite のうち ${#FAST_EXCLUDED[@]} 件を高速モードが除外しました（名指しの意図と矛盾。実行するには FF_RUN_ALL_FAST を外すか、外せない場合は FF_RUN_ALL_FAST=0 か FF_RUN_ALL_FULL=1 を与えてください）: ${FAST_EXCLUDED[*]}" >&2
   fi
   # 除外で実行対象が 0 件になったら成功として扱わない（検査 0 件を緑にしない）
   if [[ ${#FAST_KEPT[@]} -eq 0 ]]; then
@@ -700,9 +770,17 @@ if [[ "$FAST_MODE" == "1" ]]; then
   fi
   SCRIPTS=("${FAST_KEPT[@]}")
   if [[ ${#FAST_EXCLUDED[@]} -gt 0 ]]; then
-    echo "⚡ 高速モード: selftest ${#FAST_EXCLUDED[@]} 件を実行対象から除外します（内訳はサマリー）"
+    echo "⚡ 高速モード: selftest ${#FAST_EXCLUDED[@]} 件を実行対象から除外します（内訳はサマリー。全件実行は FF_RUN_ALL_FULL=1）"
     echo
   fi
+fi
+
+# 全件実行であることを肯定的に 1 行で出す。「⚡ が出ていない」ことでしか全件を判別できないと、
+# リリース前・公開同期前の全件実行（ADR-034 決定 2）を実施したという報告が目視頼みになる。
+# 明示引数の実行も FAST_MODE=0 だが「全件」ではないので、既定一覧に限って出す。
+if [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$FAST_MODE" == "0" ]]; then
+  echo "🔎 全件実行: 登録されている ${#SCRIPTS[@]} suite をすべて実行対象にします（高速モードの除外なし）"
+  echo
 fi
 
 PASSED=()
@@ -765,7 +843,19 @@ echo "suites: total=${#SCRIPTS[@]} run=$RUN passed=${#PASSED[@]} failed=${#FAILE
 # 除外（検証しないと決めた）を混ぜると、必須 skip 判定の意味が壊れるため。
 if [[ "$FAST_MODE" == "1" ]]; then
   if [[ ${#FAST_EXCLUDED[@]} -gt 0 ]]; then
-    echo "⚡ 高速モードで selftest ${#FAST_EXCLUDED[@]} 件を除外した（これらが担う検査〔対の本体 suite に対するゲート検出力。対の実在を代理指標にしているため、除外側に live な照合が残ることもある〕は未実施。フル検証は FF_RUN_ALL_FAST なしで実行）: ${FAST_EXCLUDED[*]}"
+    # 除外のうち REQUIRED_SUITES 掲載が何件かを出す。名簿は持たず 2 つの配列の積を取るだけ
+    # （導出のみ。ADR-031 の方針）。件数を出さないと、読み手が「環境都合で消えたら赤にすると
+    # 宣言した suite」が意図的に落ちていることに気づけない（ADR-034 §影響）。
+    _fast_excl_required=0
+    for _fe in "${FAST_EXCLUDED[@]}"; do
+      for _r in "${REQUIRED_SUITES[@]}"; do
+        if [[ "$_fe" == "$_r" ]]; then
+          _fast_excl_required=$((_fast_excl_required + 1))
+          break
+        fi
+      done
+    done
+    echo "⚡ 高速モードで selftest ${#FAST_EXCLUDED[@]} 件を除外した（うち REQUIRED_SUITES 掲載 ${_fast_excl_required} 件 — 既定では必須 skip の fail-closed 保護がこれらへ及ばない。これらが担う検査〔対の本体 suite に対するゲート検出力。対の実在を代理指標にしているため、除外側に live な照合が残ることもある〕は未実施。全件実行は FF_RUN_ALL_FULL=1）: ${FAST_EXCLUDED[*]}"
   else
     echo "⚡ 高速モード: 除外対象の selftest は 0 件だった（除外は行っていない）"
   fi
@@ -805,12 +895,13 @@ if [[ ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
   echo "✗ 環境都合で消してはいけない suite が skip しました: ${REQUIRED_SKIPPED[*]}" >&2
   echo "  これらが守る不変条件には代替の検査がありません（必要な実行環境は各 suite のコメントを参照）。" >&2
   echo "  回せない環境なら、理由を承知のうえで明示的に外してください:" >&2
-  # 高速モード中の案内には FF_RUN_ALL_FAST=1 を前置する。落とした形をコピペすると、
-  # 利用者が気づかないままフル実行へ戻るため。
+  # 案内は**実行中のモードを保つ形**で出す。高速モードは既定なので前置は要らないが、
+  # 全件実行中に前置を落とした案内を出すと、コピペした利用者が気づかないまま既定（高速）へ
+  # 落ちる — 既定反転（ADR-034）で前置が要る側が入れ替わった。
   if [[ "$FAST_MODE" == "1" ]]; then
-    echo "    FF_RUN_ALL_FAST=1 FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh" >&2
-  else
     echo "    FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh" >&2
+  else
+    echo "    FF_RUN_ALL_FULL=1 FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh" >&2
   fi
 fi
 if [[ ${#NOT_RUN[@]} -gt 0 ]]; then
@@ -831,19 +922,19 @@ if [[ ${#SKIPPED[@]} -gt 0 ]]; then
     echo "✗ 検証できた suite がありません（全 ${#SKIPPED[@]} suite が環境都合でスキップ）。書き込み可能な環境で再実行してください" >&2
     exit 1
   fi
-  # 高速モードでは「書き込み可能な環境で回す」だけではフル検証にならない
-  # （FF_RUN_ALL_FAST も外す必要がある）ので、最終行の案内を分ける。
+  # 高速モードでは「書き込み可能な環境で回す」だけでは全件検証にならない
+  # （FF_RUN_ALL_FULL=1 も要る）ので、最終行の案内を分ける。
   if [[ "$FAST_MODE" == "1" ]]; then
-    echo "実行した ${#PASSED[@]} suite は全て通過（${#SKIPPED[@]} suite は環境都合でスキップ、selftest ${#FAST_EXCLUDED[@]} 件は高速モードで未実行。フル検証は FF_RUN_ALL_FAST なしを書き込み可能な環境で行うこと）"
+    echo "実行した ${#PASSED[@]} suite は全て通過（${#SKIPPED[@]} suite は環境都合でスキップ、selftest ${#FAST_EXCLUDED[@]} 件は高速モードで未実行。全件検証は FF_RUN_ALL_FULL=1 を書き込み可能な環境で行うこと）"
   else
     echo "実行した ${#PASSED[@]} suite は全て通過（${#SKIPPED[@]} suite は環境都合でスキップ。全 suite の検証は書き込み可能な環境で行うこと）"
   fi
   exit 0
 fi
 
-# 高速モードでは selftest が未実行なので、全体 pass（All ... passed）を名乗らない。
+# 高速モード（既定）では selftest が未実行なので、全体 pass（All ... passed）を名乗らない。
 if [[ "$FAST_MODE" == "1" ]]; then
-  echo "実行した ${#PASSED[@]} suite は全て通過（高速モード: selftest ${#FAST_EXCLUDED[@]} 件は未実行。フル検証は既定モードで行うこと）"
+  echo "実行した ${#PASSED[@]} suite は全て通過（高速モード: selftest ${#FAST_EXCLUDED[@]} 件は未実行。全件検証は FF_RUN_ALL_FULL=1 で行うこと）"
   exit 0
 fi
 

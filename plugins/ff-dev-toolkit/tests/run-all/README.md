@@ -31,15 +31,23 @@ fail-silent に反転するため、ランナーを集約実行へ変えまし�
 終了コードは「failed か not-run が 1 件でもあれば 1、それ以外は 0」です。
 ただし **passed が 0 で skipped だけの場合も 1** にします（検証が 1 件も成立していない状態を、
 終了コードしか見ない CI で「全部通った」と区別できなくなるため）。
-高速モード（`FF_RUN_ALL_FAST=1`。`-selftest` 終端 **かつ**対になる本体 suite が実在する suite を
-実行対象から除外する。ADR-031）で **除外により実行対象が 0 件になった場合も 1** です
-（検査 0 件を成功として記録しない）。対になる本体 suite を持たない `-selftest` は、その検査対象を
-見る suite が他に無いため除外されず、除外しなかった件数と suite 名はサマリーに出ます。
-`FF_RUN_ALL_FAST` が `1` 以外の非空値（`true` / `2` など）のときは 1 行警告のうえ既定モードで
-続行し、明示引数で名指しした suite が除外された場合も 1 行警告します（いずれも終了コードは
-変えません）。
+高速モード（`-selftest` 終端 **かつ**対になる本体 suite が実在する suite を実行対象から除外する。
+ADR-031）で **除外により実行対象が 0 件になった場合も 1** です（検査 0 件を成功として記録しない）。
+対になる本体 suite を持たない `-selftest` は、その検査対象を見る suite が他に無いため除外されず、
+除外しなかった件数と suite 名はサマリーに出ます。
 
-`All ff-dev-toolkit fixture checks passed.` は **既定モードで全 suite が passed のときだけ**出力されます
+**引数なしの既定一覧は高速モードで走ります（ADR-034）。** 全件実行は `FF_RUN_ALL_FULL=1` で明示
+指定します（リリース前・公開同期前は全件実行が必須）。`FF_RUN_ALL_FAST` は後方互換の入口として
+残り、`1` は高速モード（既定と同じ）、`0` は「明示的に高速モードでない」= 全件実行として扱います。
+どちらの変数も `1` / `0` / 空値以外の値のときは 1 行警告のうえ全件実行（fail-safe 側）で続行し、
+`FF_RUN_ALL_FULL=1` と `FF_RUN_ALL_FAST=1` の同時指定も 1 行警告して全件実行を採ります。
+
+**明示引数の実行は名指ししたものを走らせます**（ADR-034 で ADR-031 決定 4 を変更）。例外は
+`FF_RUN_ALL_FAST=1` を明示したときだけで、そのときは従来どおり除外が掛かり、名指しした suite が
+除外されたら 1 行警告します（終了コードは変えません）。この口を残しているのは、「除外で実行対象が
+0 件 → exit 1」の fail-closed 経路を実測できる唯一の手段だからです（case 19）。
+
+`All ff-dev-toolkit fixture checks passed.` は **除外が掛かっていない実行**（全件実行、および明示引数の実行）で対象がすべて passed のときだけ出力されます
 （skip が 1 件でもあれば「実行した N suite は全て通過」に切り替わり、本体が走っていない suite の存在を
 隠しません。高速モードでは除外分が未実行のため、全 pass でもこの行を名乗らず専用の完了文言になります）。
 
@@ -107,10 +115,16 @@ tests/run-all/
 bash plugins/ff-dev-toolkit/tests/run-all/verify.sh
 ```
 
-全 fixture 検証をまとめて実行する場合:
+登録 suite をまとめて実行する場合（**既定は高速モード**で、対を持つ `-selftest` は除外される）:
 
 ```bash
 bash plugins/ff-dev-toolkit/tests/run-all.sh
+```
+
+除外なしの全件実行:
+
+```bash
+FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh
 ```
 
 本 suite は `run-all.sh` の既定の suite 一覧にも含まれますが、ここから呼ぶランナーは常に
@@ -125,6 +139,10 @@ bash plugins/ff-dev-toolkit/tests/run-all.sh
 - サマリーの文言（`suites: total=… run=…` / `✗ failed:` / `○ skipped (…)` / `✗ not run (…)` /
   `✗ 検証できた suite がありません…`）を変えたら、`verify.sh` の完全一致パターンも追随させること。
   数の内訳を完全一致で固定しているのは、「未実行があるのに success に見える」状態を再び通さないため。
+- `ok` / `bad` / `expect_has` / `expect_lacks` の呼び出しを増減したら、末尾の `EXPECTED_CHECKS`
+  （検査総数の侵食ガード）も同時に直すこと。ケースを書き直す過程で針が 1 本消えても、残りが緑のまま
+  「全 N 件 pass」で通ってしまうため置いている。実行検査数は走査対象の件数から導出されない
+  （case 10・11・26 は走査結果を 1 件の判定へ畳む）ので、公開 checkout でも同じ値になる。
 - 疑似 suite の目印文字列（`FIXTURE-PASS-EXECUTED` など）は `verify.sh` が探すので変えないこと。
   `not-executable/verify.sh` の mode を誤って 755 に戻すと、目印が出力に現れて FAIL する。
   `skip-large/verify.sh` の出力量を減らすとパイプ容量を下回り、case 4 が意味を失う。

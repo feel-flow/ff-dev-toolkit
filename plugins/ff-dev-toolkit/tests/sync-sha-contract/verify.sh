@@ -69,7 +69,7 @@ fi
 # 更新箇所は 2 つ: ok / bad を増減させた箇所と、この宣言。
 # 公開 checkout では上の skip 経路が 1 件も検査せずに exit 0 するため、ここには
 # 到達しない（配置による期待値の分岐は不要）。
-EXPECTED_CHECKS=14
+EXPECTED_CHECKS=17
 
 PASS=0
 FAIL=0
@@ -120,11 +120,22 @@ contains 'HEAD から再導出してはならない' \
 contains 'stale な origin/develop で続行しない' \
   "退避経路の fetch 失敗時に中断することが明記されている"
 
+# 全件実行ゲート（ADR-034 決定 2）。既定が高速モードになったため、素の run-all.sh は
+# REQUIRED_SUITES 掲載を含む selftest 群を除外して **exit 0** で返す。除外は SKIPPED に
+# 現れないので必須 skip の fail-closed にも掛からず、「検査が実行されないまま緑」がそのまま
+# 不可逆な公開同期へ接続する。週次 CI が無い本リポジトリではこの手順が定期実行点そのもの
+# なので、手順から消えたら赤くする（機械強制ではなく手順の固定が、静的検査の上限）。
+contains 'FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh' \
+  "手順 0 が全件実行のゲートを踏む（ADR-034 決定 2）"
+contains '非 0 なら**同期しない**' \
+  "全件ゲートが非 0 のとき同期しないことが明記されている"
+
 # ── 2. 順序（行番号の単調増加） ──────────────────────────────────────────────
 L_RECORD="$(line_of 'SYNC_SRC_SHA=$(git rev-parse HEAD)')"
 L_SYNC="$(awk '$0 == "scripts/sync-dev-toolkit-to-public.sh --target \"$PUBLIC\"" { print NR; exit }' "$SKILL")"
 L_GUARD="$(line_of 'if [ -n "${SYNC_SRC_SHA:-}" ] && [ "$(git rev-parse HEAD)" = "$SYNC_SRC_SHA" ]; then')"
 L_COMMIT="$(line_of 'git -C "$PUBLIC" commit -m "sync: ')"
+L_FULLGATE="$(line_of 'FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh')"
 
 if [[ -z "${L_RECORD}" || -z "${L_SYNC}" || -z "${L_GUARD}" || -z "${L_COMMIT}" ]]; then
   bad "順序検査のアンカーが欠落（record=${L_RECORD} sync=${L_SYNC} guard=${L_GUARD} commit=${L_COMMIT}）— 空振りは fail-closed"
@@ -143,6 +154,14 @@ else
     ok "順序: HEAD 突合が commit より前（${L_GUARD} < ${L_COMMIT}）"
   else
     bad "順序: HEAD 突合が commit より後ろにある（${L_GUARD} >= ${L_COMMIT}）— 突合前に記録が確定する退行"
+  fi
+  # 全件ゲートは同期実行より前になければ意味がない（同期後に回しても不可逆操作は済んでいる）。
+  if [[ -z "${L_FULLGATE}" ]]; then
+    bad "順序検査のアンカーが欠落（fullgate=${L_FULLGATE}）— 空振りは fail-closed"
+  elif [[ "${L_FULLGATE}" -lt "${L_SYNC}" ]]; then
+    ok "順序: 全件実行ゲートが同期実行より前（${L_FULLGATE} < ${L_SYNC}）"
+  else
+    bad "順序: 全件実行ゲートが同期実行より後ろにある（${L_FULLGATE} >= ${L_SYNC}）— 不可逆操作の後で検査する退行"
   fi
 fi
 
