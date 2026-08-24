@@ -258,6 +258,19 @@ PR Review Response Policy に従い、Critical/Warning/妥当な Suggestion を�
 git diff  # 修正内容の確認
 ```
 
+#### 3-6. fix 後の再検証（部分再検証）
+
+**同じ PR で**全観点のフルレビューを 1 度通過した後の fix commit は、それが**単一観点の指摘に閉じている**場合に限り、その観点だけを限定して再検証してよい:
+
+```bash
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective <観点名>
+```
+
+- 次のいずれかに該当する場合はフル再実行する: ブロック観点（既定の同梱観点では code-review / security-analysis / error-handler-hunt / comprehensive-review。名簿は `review.critical_nonblock_perspectives` で上書きされる）の Critical を修正した / 修正が複数観点にまたがる / レビュー対象 diff の土台が変わった（base への追随・rebase を含む）
+- 部分再検証後の統合レポートには**再実行した観点だけ**が載る。前回結果の退避（`{cli}/previous/`）が起きるのは今回のプランに載っている CLI の配下だけで、**プラン外 CLI のディレクトリは前回結果のまま残る**（統合レポートの「Not part of this run」節で名指しされる。手順 3-1 の注意と同じ）。どちらも「全観点の最新判定」として読まないこと
+- `<!-- CRITICAL_BLOCK -->` / `<!-- CRITICAL_NONBLOCK -->` を立てた観点は、必ず再実行セットに含めてマーカー解消を実測する。レポートの手編集でマーカーを消さない
+- `--resume`（手順 2 の未完了観点の再開）とは別物 — `--resume` は**同一入力**の続行、部分再検証は **fix 後の新しいレビュー実行**
+
 ## 重要ルール
 
 - ステップ1の dry-run 確認なしにステップ2を実行しないこと

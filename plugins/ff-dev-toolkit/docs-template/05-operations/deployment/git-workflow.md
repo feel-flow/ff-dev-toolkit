@@ -638,6 +638,8 @@ bash scripts/multi-review.sh --perspective test-analysis
 | `<!-- CRITICAL_BLOCK -->`   | ブロック観点（セキュリティ・正当性系）の重大な問題あり     | 必ず修正が必要（push ゲートが再発火する）        |
 | `<!-- CRITICAL_NONBLOCK -->` | 非ブロック観点（文言・テスト・型設計・簡素化系）の重大な問題あり | 必ず修正が必要（単独ではフルゲート再実行は不要） |
 
+fix 後の再検証を修正が影響する観点だけに限定できる条件（**部分再検証**）と、そのときの統合レポート・マーカーの整合ルールは [multi-cli-review-orchestration.md](./multi-cli-review-orchestration.md#fix-ループの部分再検証--reviewers-限定再実行) を参照。
+
 #### 7b. AI支援レビュー対応
 
 **原則**: レビュー指摘には**必ずスレッド形式で返信**し、修正内容を明確にする

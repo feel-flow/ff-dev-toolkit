@@ -146,6 +146,8 @@ bash scripts/multi-review.sh --mode cross-model --cli codex-cli
 - **Suggestion**: 妥当なものは修正
 - **Info / Good Practice**: 確認のみ
 
+**fix 後の再検証**: 同じ PR で全観点のフルレビューを 1 度通過した後の fix は、それが単一観点の指摘に閉じている場合に限り、その観点だけの**部分再検証**（`--reviewers` / `--perspective` 限定再実行）でよい。ブロック観点の Critical を修正した場合・修正が複数観点にまたがる場合・レビュー対象 diff の土台が変わった場合はフル再実行する。適用条件と結果ファイル（統合レポート・`CRITICAL_BLOCK` マーカー）の整合ルールは [Multi-CLI Review Orchestration](./multi-cli-review-orchestration.md#fix-ループの部分再検証--reviewers-限定再実行) を参照。
+
 詳細なパターン（Parallel Task Suggestion、Second Opinion）については [Multi-CLI Review Orchestration](./multi-cli-review-orchestration.md#クロスモデルレビュー推奨パターン) を参照してください。
 
 ---

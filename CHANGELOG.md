@@ -19,6 +19,12 @@
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-08-25
+
+### 追加
+
+- fix ループの**部分再検証**を標準手順として明文化した。同じ PR で全観点のフルレビューを 1 度通過した後の fix commit は、単一観点の指摘に閉じている場合に限り、その観点だけの限定再実行（`multi-review.sh --perspective <観点名>` / シム経由は `codex-review.sh --reviewers <観点名>`）で再検証してよい。ブロック観点の Critical を修正した場合・修正が複数観点にまたがる場合・レビュー対象 diff の土台が変わった場合はフル再実行とし、部分再検証後の統合レポートは再実行観点だけを含むため「全観点の最新判定」として読まないこと、`CRITICAL_BLOCK` / `CRITICAL_NONBLOCK` マーカーを立てた観点は必ず再実行セットに含めて解消を実測することを整合ルールとして定めた。正本は `docs-template/05-operations/deployment/multi-cli-review-orchestration.md` の新設節で、`skills/multi-review/SKILL.md`（手順 3-6）・`docs-template/05-operations/deployment/self-review.md`・`docs-template/05-operations/deployment/git-workflow.md` から導線を張った
+
 ## [0.55.0] - 2026-08-24
 
 ### 追加
