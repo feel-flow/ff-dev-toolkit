@@ -21,7 +21,19 @@
 #   - 変異ケースは終了コードだけでなく赤の理由（メッセージ）も照合する
 #   - 緑ケースは変異が実際にコミットへ入ったこと（no-op でないこと）を確認する
 #   - version の巻き戻し・版節の欠落・空の版節は「bump 済み」として green にしない
-#   - 出力契約（RELEASE_CHECK= / REASON= / SKIP_REASON=）は行頭一致・件数まで照合する
+#   - 公開 clone のローカル main が origin/main より遅れていても、--fetch 時は
+#     origin/main を基点に pull 済みと同じ判定を返し、clone 後に origin へ打たれた
+#     タグも取得する（Issue #817 事故 A）
+#   - SSOT の HEAD が origin/develop より遅れていたら exit 2 / UNAVAILABLE で中断し、
+#     SKIP_REASON が遅れ commit 数を示す（Issue #817 事故 B）。この比較は --fetch の
+#     有無に依存しない（origin/develop が解決できる限り常に走る）
+#   - SSOT の fetch 失敗は公開側の fetch 失敗と文言で区別できる UNAVAILABLE
+#   - origin remote があるのに origin/main / origin/develop を解決できない配置
+#     （default branch 改名・single-branch clone 等）は HEAD へ fallback せず UNAVAILABLE
+#   - narrow な remote.origin.fetch 構成でも --fetch は明示 refspec で origin/main を
+#     強制更新する（FETCH_HEAD だけ更新して stale ref で判定を続けない）
+#   - 出力契約（RELEASE_CHECK= / REASON= / SKIP_REASON=）は行頭一致・件数・
+#     RELEASE_CHECK の一意性・反対キーの混入ゼロ・理由 ERE のキー行限定まで照合する
 #   - 実行検査総数を baseline で縛る（検査そのものの削除への耐性。ACE-542-1）
 #
 # root の scripts/check-release-required.sh が存在しない配置（公開リポジトリの
@@ -78,7 +90,7 @@ ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # 検査総数の期待値。検査の追加・削除時はここも更新する（黙って縮む侵食をここで赤にする）。
-EXPECTED_CHECKS=37
+EXPECTED_CHECKS=48
 
 # SSOT リポジトリ名は禁止パターン検査（公開同期）対象のため実行時に組み立てる。
 SSOT_NAME="$(printf '%s%s' 'feelflow-' 'plugins')"
@@ -178,6 +190,16 @@ git -C "$SSOT_FIX" commit -qm "baseline"
 BASE_FULL="$(git -C "$SSOT_FIX" rev-parse HEAD)"
 BASE_SHORT="$(git -C "$SSOT_FIX" rev-parse --short HEAD)"
 
+# SSOT 鮮度検査（Issue #817）を通すための origin。実リポジトリと同じく develop を
+# 既定ブランチにした bare を origin として配線する（--fetch 時に fetch 先が要る）。
+# 直後に一度 fetch して refs/remotes/origin/develop を作っておく — スクリプトは
+# 「origin remote があるのに origin/develop を解決できない」を UNAVAILABLE にするため、
+# これを欠くと S0 以降の全ケースが exit 2 に落ちる（テストの実行順にも依存させない）。
+git -C "$SSOT_FIX" branch -M develop
+git clone -q --bare "$SSOT_FIX" "$TMP/ssot-origin.git"
+git -C "$SSOT_FIX" remote add origin "$TMP/ssot-origin.git"
+git -C "$SSOT_FIX" fetch -q origin
+
 make_public() { # $1=dir $2=commit message $3=tag（空なら打たない）
   mkdir -p "$1"
   git -C "$1" init -q
@@ -186,6 +208,8 @@ make_public() { # $1=dir $2=commit message $3=tag（空なら打たない）
   printf '%s\n' 'public mirror' > "$1/README.md"
   git -C "$1" add -A
   git -C "$1" commit -qm "$2"
+  # 公開リポジトリの既定ブランチは main（--fetch が origin main を取得する契約）
+  git -C "$1" branch -M main
   if [[ -n "$3" ]]; then
     git -C "$1" tag "$3"
   fi
@@ -217,23 +241,44 @@ expect_check() { # $1=label $2=期待 rc $3=RELEASE_CHECK 値 $4=理由の ERE�
   fi
   # 出力契約は行単位で照合する（部分一致だとキーの改名・行頭崩れが緑のまま通る）。
   # パイプ + grep -q は SIGPIPE 反転の恐れがあるため shell 内で数える。
+  # RELEASE_CHECK= の一意性・反対キー（REASON/SKIP_REASON の他方）の混入ゼロ・
+  # 理由 ERE のキー行限定照合まで縛る（出力全体への一致だと、REASON が壊れていても
+  # 他の行が偶然一致して green のまま通る）。
   if [[ $'\n'"$OUT"$'\n' != *$'\n'"RELEASE_CHECK=${marker}"$'\n'* ]]; then
     bad "${label}: 行頭一致の RELEASE_CHECK=${marker} 行が出力に無い"
     printf '%s\n' "$OUT" | sed 's/^/    | /' >&2
     return
   fi
-  local key="REASON" n=0 l
-  [[ "$want_rc" -eq 2 ]] && key="SKIP_REASON"
+  local key="REASON" other="SKIP_REASON" n=0 o=0 c=0 l key_line=""
+  if [[ "$want_rc" -eq 2 ]]; then
+    key="SKIP_REASON"
+    other="REASON"
+  fi
   while IFS= read -r l; do
-    [[ "$l" == "${key}="* ]] && n=$((n + 1))
+    [[ "$l" == "RELEASE_CHECK="* ]] && c=$((c + 1))
+    if [[ "$l" == "${key}="* ]]; then
+      n=$((n + 1))
+      key_line="$l"
+    fi
+    [[ "$l" == "${other}="* ]] && o=$((o + 1))
   done < <(printf '%s\n' "$OUT")
+  if [[ "$c" -ne 1 ]]; then
+    bad "${label}: 行頭一致の RELEASE_CHECK= 行がちょうど 1 行でない（${c} 行）"
+    printf '%s\n' "$OUT" | sed 's/^/    | /' >&2
+    return
+  fi
   if [[ "$n" -ne 1 ]]; then
     bad "${label}: 行頭一致の ${key}= 行がちょうど 1 行でない（${n} 行）"
     printf '%s\n' "$OUT" | sed 's/^/    | /' >&2
     return
   fi
-  if [[ -n "$reason_re" ]] && ! [[ "$OUT" =~ $reason_re ]]; then
-    bad "${label}: 理由メッセージが期待の ERE に一致しない（期待: ${reason_re}）"
+  if [[ "$o" -ne 0 ]]; then
+    bad "${label}: 反対キー ${other}= 行が混入している（${o} 行）"
+    printf '%s\n' "$OUT" | sed 's/^/    | /' >&2
+    return
+  fi
+  if [[ -n "$reason_re" ]] && ! [[ "$key_line" =~ $reason_re ]]; then
+    bad "${label}: ${key}= 行が期待の ERE に一致しない（期待: ${reason_re}）"
     printf '%s\n' "$OUT" | sed 's/^/    | /' >&2
     return
   fi
@@ -433,8 +478,112 @@ git -C "$PUB_FETCH" remote add origin "$PUB_FETCH"
 run_check "$PUB_FETCH" --fetch
 expect_check "S15 --fetch は origin があれば最新化のうえ通常判定（OK）" 0 "OK" "実変更なし"
 
+# SSOT 側の fetch 失敗（U8）と区別するため公開側の文言まで照合する
 run_check "$PUB" --fetch
-expect_check "U7 --fetch で origin 不在なら検査不能（exit 2）" 2 "UNAVAILABLE" "fetch に失敗"
+expect_check "U7 --fetch で origin 不在なら検査不能（exit 2）" 2 "UNAVAILABLE" "公開側 clone の fetch に失敗"
+
+# ── S16. 公開 clone のローカル main が stale でも --fetch は origin/main 基準 ──
+# Issue #817 事故 A の再現: 並行セッションが公開側へ push した sync commit が
+# ローカル main に無いと、base が 1 世代前に解決され誤判定（fail-open）していた。
+# 「SSOT の変更は公開 origin へ sync 済み・clone のローカル main だけが stale」を
+# 実入力で組み、pull 済みの場合と同じ判定（OK / base=最新 sync）を要求する。
+touch_skill
+commit_fix "S16"
+if assert_committed "S16" "plugins/ff-dev-toolkit/skills/demo/SKILL.md"; then
+  NEW_FULL="$(git -C "$SSOT_FIX" rev-parse HEAD)"
+  NEW_SHORT="$(git -C "$SSOT_FIX" rev-parse --short HEAD)"
+  # SSOT 側の鮮度検査を green に保つ（HEAD == origin/develop）
+  git -C "$SSOT_FIX" push -q origin develop
+  PUB_STALE_ORIGIN="$TMP/public-stale-origin"
+  make_public "$PUB_STALE_ORIGIN" "$SYNC_MSG" "v0.31.0"
+  PUB_STALE="$TMP/public-stale"
+  git clone -q "$PUB_STALE_ORIGIN" "$PUB_STALE"
+  git -C "$PUB_STALE" config user.email selftest@example.com
+  git -C "$PUB_STALE" config user.name release-required-selftest
+  # clone 後に origin 側だけ進める = 並行セッションの push（clone は stale のまま）。
+  # タグも clone 後に origin へ打つ — --fetch を明示 refspec 化してタグ追従が消える
+  # 退行（LATEST_TAG が古いまま）をここで検出する。
+  printf '%s\n' 'newer sync' >> "$PUB_STALE_ORIGIN/README.md"
+  git -C "$PUB_STALE_ORIGIN" add -A
+  git -C "$PUB_STALE_ORIGIN" commit -qm "sync: ${SSOT_NAME} ${NEW_SHORT} を反映"
+  git -C "$PUB_STALE_ORIGIN" tag v0.32.0
+  run_check "$PUB_STALE" --fetch
+  expect_check "S16 stale なローカル main でも --fetch は origin/main 基準で OK" 0 "OK" "実変更なし"
+  if [[ $'\n'"$OUT"$'\n' == *$'\n'"BASE_SHA=${NEW_FULL}"$'\n'* ]]; then
+    ok "S16 BASE_SHA が origin/main の最新 sync commit（pull 済みと同じ基点）"
+  else
+    bad "S16 BASE_SHA が stale なローカル main から解決されている疑い（期待 ${NEW_FULL}）"
+    printf '%s\n' "$OUT" | sed 's/^/    | /' >&2
+  fi
+  if [[ $'\n'"$OUT"$'\n' == *$'\n'"LATEST_TAG=v0.32.0"$'\n'* ]]; then
+    ok "S16 clone 後に origin へ打たれたタグを --fetch が取得している（タグ鮮度）"
+  else
+    bad "S16 LATEST_TAG が clone 時点の古いタグのまま（--fetch のタグ追従が消えた疑い）"
+    printf '%s\n' "$OUT" | sed 's/^/    | /' >&2
+  fi
+  git -C "$SSOT_FIX" push -qf origin "${BASE_FULL}:develop"
+fi
+reset_ssot
+
+# ── S17. SSOT の HEAD が origin/develop より遅れていたら UNAVAILABLE ──────────
+# Issue #817 事故 B の再現: 並行セッションの PR が origin/develop に入っているのに
+# ローカル develop が古いままリリース準備を始めると重複する。fail-closed で中断し、
+# SKIP_REASON が遅れ commit 数を機械可読で示すこと。
+touch_skill
+commit_fix "S17"
+git -C "$SSOT_FIX" push -q origin develop
+git -C "$SSOT_FIX" reset -q --hard "$BASE_FULL"
+if [[ "$(git -C "$SSOT_FIX" rev-list --count "HEAD..origin/develop")" -eq 1 ]]; then
+  ok "S17: HEAD が origin/develop より 1 commit 遅れた fixture を構築"
+  run_check "$PUB_FETCH" --fetch
+  expect_check "S17 stale な develop は検査不能（exit 2）で中断" 2 "UNAVAILABLE" "origin/develop より 1 commit 遅れている"
+  # 鮮度比較は --fetch の有無に依存しない（origin/develop が解決できる限り常に走る）。
+  # 「DO_FETCH のときだけ比較する」への退行をここで検出する。
+  run_check "$PUB_STALE"
+  expect_check "S17 fetch 無しでも既存の origin/develop で遅れを検出する" 2 "UNAVAILABLE" "origin/develop より 1 commit 遅れている"
+else
+  bad "S17: 遅れ fixture の構築に失敗（HEAD..origin/develop が 1 でない）"
+fi
+git -C "$SSOT_FIX" push -qf origin "${BASE_FULL}:develop"
+reset_ssot
+
+# ── U8. SSOT の fetch 失敗は検査不能（公開側の fetch 失敗と文言で区別できる） ──
+# 変異検査で「SSOT fetch の失敗を握りつぶす（|| true 化）」が生き残った経路を塞ぐ。
+git -C "$SSOT_FIX" remote set-url origin "$TMP/no-such-origin.git"
+run_check "$PUB_FETCH" --fetch
+expect_check "U8 SSOT の fetch 失敗は検査不能（exit 2）" 2 "UNAVAILABLE" "SSOT の fetch に失敗"
+git -C "$SSOT_FIX" remote set-url origin "$TMP/ssot-origin.git"
+
+# ── U9. origin remote があるのに origin/main を解決できない公開 clone は検査不能 ──
+# default branch 改名・single-branch clone 等で HEAD へ静かに fallback すると、
+# 事故 A（stale な基点からの誤判定）が fallback 経由で再発する（fail-open）。
+PUB_NOREF="$TMP/public-noref"
+make_public "$PUB_NOREF" "$SYNC_MSG" "v0.31.0"
+git -C "$PUB_NOREF" remote add origin "$PUB_NOREF"   # remote はあるが一度も fetch していない
+run_check "$PUB_NOREF"
+expect_check "U9 origin があるのに origin/main を解決できない clone は検査不能（exit 2）" 2 "UNAVAILABLE" "origin/main を解決できない"
+
+# ── U10. origin remote があるのに origin/develop を解決できない SSOT は検査不能 ──
+git -C "$SSOT_FIX" update-ref -d refs/remotes/origin/develop
+run_check "$PUB"
+expect_check "U10 origin があるのに origin/develop を解決できない SSOT は検査不能（exit 2）" 2 "UNAVAILABLE" "origin/develop を解決できない"
+git -C "$SSOT_FIX" fetch -q origin
+
+# ── S18. narrow な remote.origin.fetch でも --fetch は origin/main を強制更新する ──
+# 素の `git fetch origin main` は narrow な refspec 構成で FETCH_HEAD しか更新せず、
+# fetch 成功後も stale な origin/main で判定を続ける（fail-open）。明示 refspec
+# （+refs/heads/main:refs/remotes/origin/main）への退行防止。clone 時点の origin/main
+# には sync commit が無く、fetch が効いて初めて OK になる構図にしてある。
+PUB_NARROW_ORIGIN="$TMP/public-narrow-origin"
+make_public "$PUB_NARROW_ORIGIN" "initial commit" "v0.31.0"
+PUB_NARROW="$TMP/public-narrow"
+git clone -q "$PUB_NARROW_ORIGIN" "$PUB_NARROW"
+git -C "$PUB_NARROW" config remote.origin.fetch "+refs/heads/__none__:refs/remotes/origin/__none__"
+printf '%s\n' 'sync arrives' >> "$PUB_NARROW_ORIGIN/README.md"
+git -C "$PUB_NARROW_ORIGIN" add -A
+git -C "$PUB_NARROW_ORIGIN" commit -qm "$SYNC_MSG"
+run_check "$PUB_NARROW" --fetch
+expect_check "S18 narrow な remote.origin.fetch でも --fetch は origin/main を更新して判定する" 0 "OK" "実変更なし"
 
 # ── U1〜U6. 判定材料が取得できない → exit 2 / UNAVAILABLE（exit 1 と区別） ────
 

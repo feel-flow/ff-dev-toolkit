@@ -396,6 +396,12 @@ else
     # 言及 + build_prompt(review) の [OUT-OF-DIFF] ラベル契約。一時 git リポジトリのみ
     # （〜2 秒）。実 CLI・ネットワーク・課金は伴わない。一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/review-diff-scope/verify.sh"
+    # レビュー実行中の作業ツリー凍結の契約（Issue #818）: オーケストレータ（親）が
+    # 読解中のツリーを書き換えない規定を、git-workflow.md ステップ5 の節スコープと
+    # 消費側 2 文書で固定する。機械検査の無いホストのサブエージェント経路では手順書の
+    # 文言だけが防御になるため、文言の消失を回帰として扱う。純粋な静的検査で一時領域も
+    # git も要らず、skip 経路を持たない（部分 skip をマーカーで出さないため独立 suite）。
+    "$SCRIPT_DIR/review-freeze-contract/verify.sh"
     # flat-rate CLI への観点集中の制御（Issue #251、#783 で free-tier から付替）: プラン警告 + minimize_cost 限定の
     # 同一 CLI 内逐次化 + standard の並列維持 + 途中失敗の継続。一時 git リポジトリ +
     # stub CLI で orchestrator を 4 回実走（単独実測 約 20 秒。詳細は suite README。
@@ -547,6 +553,12 @@ REQUIRED_SUITES=(
   # FF_RUN_ALL_ALLOW_SKIP 案内に追加は要らない。
   adapter-prompt-guard
   review-diff-scope
+  # 手順書の凍結契約は、機械検査の無いサブエージェント経路で唯一の防御（Issue #818）。
+  # この suite は静的検査だけで skip 経路を持たないが、掲載は空振りではない —
+  # check_suite_registration が名簿の各名の実在を検査するため、この 1 行が
+  # ディレクトリ名の改名・削除を今日すでに pin している。加えて将来 skip 経路が
+  # 入ったときに「環境都合で契約検査が消えた」を黙って通さない。
+  review-freeze-contract
   review-wrapper-shim
   sweep-orphan-transcripts
   multi-agent-timeout
