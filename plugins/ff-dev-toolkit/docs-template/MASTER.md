@@ -1,10 +1,10 @@
 ---
 title: "MASTER"
-version: "1.4.1"
+version: "1.5.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-07-22"
+updated: "2026-08-24"
 changeImpact: "low"
 ---
 
@@ -370,9 +370,7 @@ AIツールがランタイム・依存のバージョンを選定する際は、
 
 本プロジェクトでは、Git FlowをベースとしたAI開発ツール最適化ワークフローを採用しています。
 
-**基本フロー**: Issue → Branch → Commit → **Self-Review** → PR → Review → Merge → Cleanup → **Knowledge (ACE + Discussions)** → Next Task
-
-詳細は [DEPLOYMENT.md](./05-operations/DEPLOYMENT.md#1-ai仕様駆動git-workflow) を参照してください。
+**段の正本は [DEPLOYMENT.md](./05-operations/DEPLOYMENT.md#主要ステップ) §主要ステップ である。** 段の一覧と、変更規模による tier（フル / 軽量 / 標準）の判定はそこにあり、本節は書き写さない。tier 判定は `${CLAUDE_PLUGIN_ROOT}/scripts/workflow-tier.sh` が差分から導出する（自己申告ではない）。
 
 **重要なポイント**:
 
@@ -706,6 +704,12 @@ Changelog エントリには以下のカテゴリを使用する（[Keep a Chang
 - [ ] 定数の配置が層責務に沿っている（Domain/Application/Infrastructure）
 
 ## Changelog
+
+### [1.5.0] - 2026-08-24
+
+#### 変更
+
+- §AI仕様駆動Git Workflow の「基本フロー」（段の写し）を削除し、段の正本 [DEPLOYMENT.md §主要ステップ](./05-operations/DEPLOYMENT.md#主要ステップ) への参照へ統一
 
 ### [1.4.1] - 2026-07-22
 

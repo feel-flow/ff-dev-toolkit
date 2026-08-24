@@ -62,6 +62,39 @@ contains() {
   fi
 }
 
+# 節スコープの固定文言検査。文書全体の grep だけだと、同じ文をハードルール節へ
+# 書き写した時点で手順側から消えても緑のままになる（本 suite で実測: R3-0 の
+# 一意性の一文を存在検証へ戻してもハードルールの写しに一致し、全件 pass だった）。
+# 手順の分岐は「その節に在ること」自体が要件なので、節を切り出してから照合する。
+# 節は見出し行の次行から、次の見出し行（行頭 `#`）の直前まで。SKILL.md の入れ子
+# コードフェンスは字下げされているため、フェンス内の `#` 見出しでは切れない。
+# 照合に grep は使わない（パイプ入力の grep -q* は set -euo pipefail 下で
+# SIGPIPE 事故になる。tests/run-all/verify.sh case 10 が横断検査している）。
+# 見出しが 2 本ある文書では、要件が別々の節へ散っていても抽出は先頭 1 本だけを見て
+# 緑になる（節を分割した瞬間に検出力が落ちる）。一致本数を先に数え、1 本でなければ
+# fail-closed で名指しする。
+section_contains() {
+  local file="$1" heading="$2" needle="$3" label="$4" section heading_hits
+  heading_hits="$(awk -v h="$heading" 'index($(0), h) == 1 { n++ } END { print n + 0 }' "$file")"
+  if [ "$heading_hits" -ne 1 ]; then
+    bad "${label} — 節 '$heading' の見出しが ${heading_hits} 本あります（1 本であること。$(basename "$file")）"
+    return
+  fi
+  section="$(awk -v h="$heading" '
+    index($(0), h) == 1 { inside = 1; next }
+    inside && /^#+ / { inside = 0 }
+    inside { print }
+  ' "$file")"
+  if [ -z "$section" ]; then
+    bad "${label} — 節 '$heading' が空です（$(basename "$file")）"
+    return
+  fi
+  case "$section" in
+    *"$needle"*) ok "$label" ;;
+    *) bad "${label} — 節 '$heading' に '$needle' がありません（$(basename "$file")）" ;;
+  esac
+}
+
 echo "== ace-refine ハードルール（安全弁の固定文言） =="
 
 contains "$REFINE_FILE" \
@@ -132,6 +165,65 @@ contains "$REFINE_FILE" \
 contains "$PLAYBOOK_TEMPLATE" \
   "\`merged\`" \
   "PLAYBOOK テンプレの §ステータス定義に merged がある"
+
+echo
+echo "== archive 追記前の共通規則（保全済み ID の分岐 / Issue #796） =="
+
+# 過去の圧縮（R3-b）は原文を archive に残したまま live へ要約を置くので、live と
+# archive の双方に同じ ID が在るのが正常な状態である。その ID を後から R3-a/R3-c で
+# 「手順どおり」verbatim コピーすると同一 anchor が 2 つでき、アンカーは先勝ちなので
+# 後から足したブロックへは到達できない（着地だけが静かに分裂する）。分岐（数える →
+# 0 / 1 / 2 件以上）と一意性検証が SKILL.md から落ちると、実行者は毎回この穴を踏む。
+# 同型は ACE-490-2 に記録済みだったが手順へ反映されておらず、再発した。
+R30_HEADING="#### R3-0. archive へ追記する前の共通規則"
+R3A_HEADING="#### R3-a. stale エントリのアーカイブ"
+R3B_HEADING="#### R3-b. 長大エントリの圧縮"
+R3C_HEADING="#### R3-c. 近似重複の統合"
+R3E_HEADING="#### R3-e. 索引・Frontmatter・Changelog の整合"
+HARD_RULES_HEADING="## ハードルール"
+
+contains "$REFINE_FILE" \
+  "$R30_HEADING" \
+  "保全済み ID の分岐が独立節として存在する"
+section_contains "$REFINE_FILE" "$R30_HEADING" \
+  'grep -c "^### <ID>:"' \
+  "R3-0: archive の既存出現数を数えるコマンド（分岐の起点）"
+section_contains "$REFINE_FILE" "$R30_HEADING" \
+  "既に保全済みの ID へ原文を再コピーしない" \
+  "R3-0: 保全済み ID には原文を再コピーしない分岐"
+section_contains "$REFINE_FILE" "$R30_HEADING" \
+  "2 件以上なら live に触れず中断する" \
+  "R3-0: 既に分裂している場合は live を消さず中断する"
+section_contains "$REFINE_FILE" "$R30_HEADING" \
+  "保全検証は「存在（≥1）」ではなく「一意（=1）」で行う" \
+  "R3-0: 保全検証が存在ではなく一意で書かれている"
+section_contains "$REFINE_FILE" "$R30_HEADING" \
+  "ACE-490-2" \
+  "R3-0: 同型を記録した知見（ACE-490-2）への参照"
+section_contains "$REFINE_FILE" "$R3A_HEADING" \
+  "保全済み（1 件）なら**原文を再コピーせず**" \
+  "R3-a: 保全済みなら既存ブロックへ Archived 注記を追記する"
+section_contains "$REFINE_FILE" "$R3A_HEADING" \
+  "**ちょうど 1 件**あることを確認してから live 側を削除する" \
+  "R3-a: 保全検証が一意（=1）で書かれている"
+section_contains "$REFINE_FILE" "$R3B_HEADING" \
+  "保全済みなら原文を再コピーせず、既存ブロックへ今回の \`> Compacted:\` 行だけを追記する" \
+  "R3-b: 保全済みなら既存ブロックへ Compacted 注記を追記する"
+section_contains "$REFINE_FILE" "$R3B_HEADING" \
+  "**ちょうど 1 件**であることを確認してから live 側を書き換える" \
+  "R3-b: 保全検証が一意（=1）で書かれている"
+section_contains "$REFINE_FILE" "$R3C_HEADING" \
+  "既存の archive レコードへ \`> Merged into:\` を追記して \`Status\` を \`merged\` に変える" \
+  "R3-c: 保全済みなら既存レコードへ Merged into 追記と Status=merged を行う"
+section_contains "$REFINE_FILE" "$R3C_HEADING" \
+  "0 件でも 2 件以上でも live 側に触れず中断する" \
+  "R3-c: 保全検証が一意（=1）で書かれている"
+section_contains "$REFINE_FILE" "$R3E_HEADING" \
+  "見出しが**ちょうど 1 件**（存在ではなく一意）" \
+  "R3-e: 一括検証が一意性で書かれている"
+section_contains "$REFINE_FILE" "$HARD_RULES_HEADING" \
+  "archive へ追記する前に既存出現数を数え、保全済み ID には原文を再コピーしない" \
+  "ハードルール: 保全済み ID への再コピー禁止"
 
 echo
 echo "== ace-curate 書き込み時ゲート =="

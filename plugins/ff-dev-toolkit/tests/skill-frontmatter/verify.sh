@@ -7,8 +7,8 @@
 # `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/x.sh" $ARGUMENTS` の 1 行）では、モデルは
 # 同じスクリプトを Bash から直接叩けるため、破壊的操作は防げない。塞げるのは
 # ラッパーの発見性だけである。一方 docs-template の
-# `05-operations/deployment/workflow-principles.md` はフルオート 10 ステップの
-# step 10 に `/merge-cleanup` を置いており、フラグは必須ステップの可用性だけを削る。
+# `05-operations/deployment/workflow-principles.md` はフルオート運用のチェーンに
+# `/merge-cleanup` を置いており、フラグは必須ステップの可用性だけを削る。
 #
 # 本 suite は全 skill が Agent Skills 標準の構造・name を持ち、frontmatter に
 # 同フラグ（`false` 以外の値）が無いことを fail-closed で検証する。真に任意の skill
@@ -191,7 +191,7 @@ EOF
   echo "    このフラグは実体をスクリプトへ抽出した skill では破壊的操作を防げず" >&2
   echo "    （同じスクリプトを Bash から直接叩ける）、ワークフロー正本" >&2
   echo "    （docs-template の 05-operations/deployment/workflow-principles.md）が" >&2
-  echo "    step 10 に置く必須ステップの可用性だけを削ります。詳細は ACE-147-1。" >&2
+  echo "    チェーンに置く必須ステップの可用性だけを削ります。詳細は ACE-147-1。" >&2
   echo "    真に任意の skill なら本ファイルの ALLOWLIST へ理由付きで追加してください。" >&2
 done
 

@@ -19,6 +19,24 @@
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-08-24
+
+### 追加
+
+- ワークフローの段を変更規模で分ける **tier 判定** `scripts/workflow-tier.sh` を追加した。`git diff --name-only` から導出し、**上から順に評価して最初に一致した tier を採る**（1: 配布・リリースへ影響する path を含む = フル / 2: 変更が `.md` のみ = 軽量 / 3: それ以外 = 標準）。判定を機械側へ置くのが要点で、`docs-template/05-operations/DEPLOYMENT.md` §主要ステップ には規則だけを書き、パターンの実効値は `--list-rules` が出す。フルの判定 path は既定でツールキット同梱物の形に合わせてあり、導入先プロジェクトは `WORKFLOW_TIER_FULL_PATTERNS` に自プロジェクトの配布・リリース成果物を与えて置き換える
+- `skills/spec-driven/SKILL.md` のモード判定を tier 判定へ接続した。従来は「軽微なタスクは軽量モードを**宣言する**」という自己申告制で、宣言し忘れれば全タスクが標準モードを通っていた。着手時点はまだ差分が無いため予定 path を渡す暫定判定になるが、**PR を出す前の確定判定（引数なし実行）が拘束する**（暫定を追認しない）
+
+### 変更
+
+- **ワークフローの段の正本を `docs-template/05-operations/DEPLOYMENT.md` §主要ステップ に定めた。** `docs-template/MASTER.md` と `docs-template/05-operations/deployment/git-workflow.md` は段を書き写さず参照する。写しはそれぞれ独立に腐るため、同じワークフローが文書ごとに違う段数で書かれる状態になっていた。段の**数**の記載は本文から外し、`docs-template/05-operations/deployment/git-workflow.md` の「ステップN」は段の ID として維持している（多数の文書・スキルが参照するため）。`docs-template/05-operations/deployment/workflow-principles.md` の TodoWrite チェックリストは、段より細かいタスク分解として**意図的に残す**（その番号が段番号ではないことを同ファイルへ明記した）
+- tier が他の規則を免除しないことを明記した。配布対象を変更した回の CHANGELOG 記載や、テストを触った回の全件実行のように、完了の定義が tier と独立に課す要求は残る。レビューの**深さ**（どのレビュアーを何本回すか）も別の軸で、導入先プロジェクトがレビュー深度の判定スクリプトを持つならそちらが決める（この種のスクリプトはツールキットには同梱していない）。2 つを同じ表へ混ぜると、同じ変更に対してどちらが支配するのか読めなくなる
+- 「フルオート 10 ステップの step 10」という参照を、番号に依存しない表現へ置き換えた（`skills/merge-cleanup/SKILL.md` / `docs-template/05-operations/deployment/git-workflow.md` / `tests/skill-frontmatter/verify.sh`）。参照先 `docs-template/05-operations/deployment/workflow-principles.md` のチェックリストは項番 10 が `/merge-cleanup` で**番号自体は正しかった**が、総数「10 ステップ」が実体と食い違っていた（チェックリストは 12 項目）。総数を書かずに済む表現へ寄せている
+
+### 修正
+
+- `skills/ace-refine/SKILL.md` に **archive へ追記する前の共通規則**（R3-0）を追加し、保全済み ID へ原文を再コピーしない分岐を明文化した。長大エントリの圧縮は原文を archive へ残したまま live に要約を置くため、live と archive の双方に同じエントリ ID が在るのが正常な状態で、そこへ手順どおり verbatim コピーを足すと同一アンカーが 2 つできる。アンカーは先勝ちなので後から足したブロックへは到達できず、着地だけが静かに分裂していた
+- 併せてアーカイブ保全の検証を「存在（≥1）」から「一意（=1）」へ変えた（stale のアーカイブ・圧縮・統合・コミット前の一括検証のすべて）。存在だけを見る検証が防げるのは書き込み失敗だけで、重複していても真を返すため分裂した archive を緑のまま通していた。回帰は `tests/ace-refine/` が節スコープの固定文言検査で押さえる（同じ一文をハードルール節へ書き写すと文書全体 grep では検出力が消えるため、節を切り出してから照合する）
+
 ## [0.52.0] - 2026-08-24
 
 ### 変更

@@ -213,6 +213,13 @@ else
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド
     # 不要・一時ディレクトリ不要なので静的検査群に置く。
     "$SCRIPT_DIR/closing-keyword-guard/verify.sh"
+    # Git Workflow の tier 判定（scripts/workflow-tier.sh）の振る舞いと、段の単一正本の
+    # 契約（Issue #801）。判定は path 一覧を受ける入口を持つので git の状態を捏造せずに
+    # 全ケースを回せる。段数・tier 件数・分布の手書きが無いことは否定の主張なので、
+    # 一時コピーへの変異注入で検出力を毎回実測する（一時領域が無い場合はその部分だけ
+# 名指しで skip）。ワークフロー文書の契約群（closing-keyword-guard /
+    # review-rejection-discipline）と同じ並びに置く。
+    "$SCRIPT_DIR/workflow-tier/verify.sh"
     # レビュー指摘を却下するときの検証規律（Issue #655）: review-response-policy の
     # 却下 4 要件（単変数実測・実測範囲のみ記載・指示形禁止・趣旨と実装の分離）と、
     # 実測要求を技術的制約の主張に絞る発動条件を節スコープで、対応フローからの導線と

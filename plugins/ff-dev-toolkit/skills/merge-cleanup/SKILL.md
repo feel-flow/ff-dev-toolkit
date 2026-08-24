@@ -26,7 +26,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh" $ARGUMENTS
 
 **前提ツール**: 認証済み `gh` CLI と `jq`（不足していればスクリプトが冒頭で中断して案内する）
 
-**`disable-model-invocation` は意図的に付けない。** 上の実行部が 1 行なのでフラグはスクリプト直叩きで迂回でき破壊的操作を防げない一方、[git-workflow](../../docs-template/05-operations/deployment/git-workflow.md) のステップ9 と [workflow-principles](../../docs-template/05-operations/deployment/workflow-principles.md) の step 10 が本スキルの実行を求めているため、可用性だけが落ちる。判断の全文は ACE Playbook の ACE-147-1、回帰防止は `tests/skill-frontmatter/verify.sh`。
+**`disable-model-invocation` は意図的に付けない。** 上の実行部が 1 行なのでフラグはスクリプト直叩きで迂回でき破壊的操作を防げない一方、[git-workflow](../../docs-template/05-operations/deployment/git-workflow.md) のステップ9 と [workflow-principles](../../docs-template/05-operations/deployment/workflow-principles.md) のフルオートチェーンが本スキルの実行を求めているため、可用性だけが落ちる。判断の全文は ACE Playbook の ACE-147-1、回帰防止は `tests/skill-frontmatter/verify.sh`。
 
 ## スクリプトがやること
 

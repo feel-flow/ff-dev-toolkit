@@ -6,7 +6,9 @@
 
 AI開発ツールに最適化されたGit Flowベースのワークフローです。Issue作成からマージ、ナレッジ体系化までをAIツールと協働で効率的に進めます。
 
-**コアサイクル（10ステップ + 振り返り）**: Issue → Branch → Implement → Test → Self-Review → PR → Review → Merge → Cleanup → ACE → Retrospective
+**コアサイクル**: Issue → Branch → Implement → Test → Self-Review → PR → Review → Merge → Cleanup → ACE → Retrospective
+
+> **段の正本は [DEPLOYMENT.md](../DEPLOYMENT.md#主要ステップ) §主要ステップ である。** 本書は各ステップの**やり方**を書く場所で、段の一覧と、変更規模による tier（フル / 軽量 / 標準）の判定はそちらが持つ。上の矢印 1 行は**意図的に残した記憶用の要約**であり、段の一覧ではない（番号も件数も持たせない）。本書の「ステップN」は §主要ステップ の番号と同じものを指す。tier は `${CLAUDE_PLUGIN_ROOT}/scripts/workflow-tier.sh` が差分から導出する（自己申告ではない）。
 
 > **運用原則**: 本ワークフローは [ワークフロー運用原則](./workflow-principles.md)（ノンストップフロー（フルオート）・スコープ外発見の YAGNI / インライン / Issue 化・曖昧仕様確認タイミング）に従って運用します。
 
@@ -572,7 +574,7 @@ rm -f "${SURFACE}"
 
 **原則**: PR作成後、マージ前に **Claude Code（pr-review-toolkit）+ Codex CLI** のクロスモデルレビューを実施する
 
-> **レビュー深度（Risk-Based Workflow）**: `bash scripts/review-level.sh --base develop` で変更の規模・種別から 3 段階（1: 軽量 = docs のみ ≤50行は Toolkit のみ / 2: 標準 = Toolkit + Codex / 3: 重点 = 400 行超・実行系ディレクトリ・`*.sh`・`package.json`・ルート直下設定ファイルは multi-review 併用推奨）を判定し、深度を変更のリスクに釣り合わせる。判定は推奨でありブロックしない。PR 説明に貼れる形式は `--format pr`（レベル＋PR Size Check の `[x]` 判定＋センシティブパス一覧）。
+> **レビュー深度（Risk-Based Workflow）**: `bash scripts/review-level.sh --base develop` で変更の規模・種別からレビュー深度（1: 軽量 = docs のみ ≤50行は Toolkit のみ / 2: 標準 = Toolkit + Codex / 3: 重点 = 400 行超・実行系ディレクトリ・`*.sh`・`package.json`・ルート直下設定ファイルは multi-review 併用推奨）を判定し、深度を変更のリスクに釣り合わせる。判定は推奨でありブロックしない。**これは [DEPLOYMENT.md](../DEPLOYMENT.md#主要ステップ) の tier とは別の軸である** — tier が決めるのは段の重さで、こちらが決めるのはレビューの深さ。tier はレビューの本数を減らさない。PR 説明に貼れる形式は `--format pr`（レベル＋PR Size Check の `[x]` 判定＋センシティブパス一覧）。
 >
 > **push 時の可視化**: `.husky/pre-push` は品質ゲート実行前に review-level 判定を表示し、Level 3 では重点レビューを促す（既定は advisory・非ブロック）。`REVIEW_LEVEL_BLOCK=1 git push` のときだけ Level 3 を push ブロックに昇格できる（opt-in）。変更行数・パスの機械判定は review-level.sh に一本化し、`/assess-impact` はその結果を入力として互換性・アーキテクチャ影響（LOW/MEDIUM/HIGH）を評価する。
 >
@@ -832,7 +834,7 @@ gh issue view "${ISSUE_NUM}" --json state
 
 **原則**: ブランチは速やかに削除し、developを最新に更新
 
-**マージ後は必ず `/merge-cleanup <PR番号>` を実行する**（[workflow-principles.md](./workflow-principles.md) のフルオート 10 ステップの step 10）。ff-dev-toolkit が提供するコマンドで、下記の手動手順に加えて `[gone]` ブランチ・関連 worktree の削除、リモート取り残しのガード付き自動削除、最終検証までを 1 プロセスで実施する。
+**マージ後は必ず `/merge-cleanup <PR番号>` を実行する**（[workflow-principles.md](./workflow-principles.md) のフルオート運用のチェーンに含まれる）。ff-dev-toolkit が提供するコマンドで、下記の手動手順に加えて `[gone]` ブランチ・関連 worktree の削除、リモート取り残しのガード付き自動削除、最終検証までを 1 プロセスで実施する。
 
 ```bash
 /merge-cleanup 1234
