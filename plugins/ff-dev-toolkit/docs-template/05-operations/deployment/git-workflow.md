@@ -1066,7 +1066,7 @@ GitHub Discussions への記録に加え、ACE Playbook への構造化記録を
 
 ### チェーン末尾: セッション振り返り（/retrospective）
 
-ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行する（`/merge-cleanup` → `/ace-curate` → `/retrospective`）。ACE がコード・設計のプロジェクト知見を Playbook へ蓄積するのに対し、`/retrospective` はプロセス/ツール/スキルのメタ知見（そのセッションで**実測した**手戻り・無駄時間）から改善提案を最大 3 件出す（該当なしなら「振り返り: 改善候補なし」の 1 行で終了）。起票は提案 → ユーザー承認 → 対象 repo へ Issue 作成の順で、承認なしには起票しない。
+ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行する（`/merge-cleanup` → `/ace-curate` → `/retrospective`）。ACE がコード・設計のプロジェクト知見を Playbook へ蓄積するのに対し、`/retrospective` はプロセス/ツール/スキルのメタ知見（そのセッションで**実測した**手戻り・無駄時間）から改善提案を最大 3 件出す（該当なしなら「振り返り: 改善候補なし」の 1 行で終了）。起票は既存確認 → 提案 → ユーザー承認 → 対象 repo へ Issue 作成の順で、承認なしには起票しない。提案の提示前に既存知見・既存 Issue との重複を確認し、重複していた提案は新規起票ではなく既存への追記へ切り替える（確認手順の詳細はスキルの「起票前の既存確認」。手順そのものはここへ複製せず参照する）。
 
 対応ホストでは UserPromptSubmit で応答前に注入し、Stop hook は実行漏れ時だけ自動継続する。`RETROSPECTIVE_MODE=ask` で実施前確認、`off` で自動発火を無効にできる。
 

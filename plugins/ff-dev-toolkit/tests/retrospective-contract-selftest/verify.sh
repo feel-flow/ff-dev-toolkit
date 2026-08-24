@@ -51,8 +51,8 @@ SRC_DEPLOYMENT="$PLUGIN_ROOT/docs-template/05-operations/DEPLOYMENT.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=94
-EXPECTED_GATE_CHECKS_PUBLIC=83
+EXPECTED_GATE_CHECKS_MONOREPO=99
+EXPECTED_GATE_CHECKS_PUBLIC=88
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -379,10 +379,15 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|**このセッションで実測した**手戻り・無駄時間に限る|提案閾値: 実測したものに限定|2"
   "${FIX_SKILL}|retrospective-SKILL.md|該当する候補が無ければ、次の 1 行だけで終了する|提案閾値: 候補なしは 1 行で終了|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**機微情報を提案本文へ引用しない**|提案閾値: 機微情報を引用しない|1"
-  "${FIX_SKILL}|retrospective-SKILL.md|各提案に **起票先 repo** と **期待効果**|提案の構造: 起票先と期待効果を必須にする|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|各提案に **起票先 repo** と **期待効果**|提案の構造: 必須 4 欄を列挙する|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 実測: |出力形式: 実測欄|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|   - 既存確認: |出力形式: 既存確認欄|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 起票先: |出力形式: 起票先欄|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|   - 付与予定ラベル: |出力形式: 付与予定ラベル欄|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 期待効果: |出力形式: 期待効果欄|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|### 起票前の既存確認（必須）|起票前の既存確認: 節が存在する|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|この行を書けない提案は提示しない|起票前の既存確認: 既存確認を書けない提案は提示しない|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|--state all --limit 200|起票前の既存確認: 既存 Issue 検索は state 非限定 + 取得上限を明示|1"
   "${FIX_SKILL}|retrospective-SKILL.md|「振り返り」「retrospective」「セッション振り返り」「プロセス改善の提案」と言われたとき|frontmatter: trigger 語|2"
   "${FIX_SKILL}|retrospective-SKILL.md|**ユーザー承認を待つ**（承認なしに起票しない|承認境界: 起票前にユーザー承認を待つ|2"
   "${FIX_SKILL}|retrospective-SKILL.md|振り返り工程ではファイル編集・コミット・Issue 作成を行わない|承認境界: 振り返り工程は read-only|2"
