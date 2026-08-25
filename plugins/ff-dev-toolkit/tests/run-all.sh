@@ -288,6 +288,13 @@ else
     # 上の gate の検出力を、記載側 / 実体側の双方向の変異と対象外範囲（ACE 分割
     # ファイル・Changelog 節）で実測する（Issue #519）。
     "$SCRIPT_DIR/docs-fact-drift-selftest/verify.sh"
+    # docs/ のリリース表と CHANGELOG 実体の照合。docs-fact-drift は数値 claim 専用で
+    # 版番号を見ないため、版・日付の乖離と「いまここ」を指す現在値マーカー（腐る書き方）
+    # をこちらで弾く（Issue #841）。
+    "$SCRIPT_DIR/roadmap-release-facts/verify.sh"
+    # 上の gate の検出力を、隔離 fixture への変異（日付ズレ・不在版・マーカー混入・
+    # 書式変更による抽出空振り・CHANGELOG 欠落）で実測する（Issue #841）。
+    "$SCRIPT_DIR/roadmap-release-facts-selftest/verify.sh"
     # docs-template の実行可能フェンスを抽出して fixture 実行する動的検査。
     # 一時作業領域を使うため静的検査の後、ネットワーク検査の前に置く。
     "$SCRIPT_DIR/docs-gates-runtime/verify.sh"
@@ -610,6 +617,11 @@ REQUIRED_SUITES=(
   # だけで、既定では組み立てられるのも残り 2 件になる（ADR-034）。
   docs-frontmatter-repo-selftest
   docs-fact-drift-selftest
+  # ROADMAP のリリース表ゲートの検出力 selftest（#841）。一時領域が作れないと
+  # ○ skip する経路を持ち、本ゲートの検出力を測る手段は他に無い。上の 2 件と違い
+  # fixture は自前で組む（実 docs/ を写さない）ので、**公開 checkout でも走る**
+  # — 明示許可が要るのは一時領域を作れない環境だけ。
+  roadmap-release-facts-selftest
   # 公開対象の禁止パターン検査。同期時以外に発火するゲートが他に無い（#476）。
   # 公開 checkout はスクリプト不在で ○ skip、一時領域不足でも ○ skip する。
   # そちらでは FF_RUN_ALL_ALLOW_SKIP=sync-forbidden-patterns が要る。

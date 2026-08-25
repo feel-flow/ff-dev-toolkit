@@ -32,8 +32,8 @@
 # られる（変異実測用）が、明示指定が不在の場合は skip ではなく fail。
 #
 # needle を追加・変更したら、対象行だけを削除・移動する変異を手で当てて red に
-# なることを確認する（docs-gates と同じ規則）。外部コマンド・一時領域は不要。
-# read-only。bash 3.2 互換。
+# なることを確認する（docs-gates と同じ規則）。手順書の針型検査は read-only。
+# 全件 green 再利用判定だけは、一時 Git リポジトリで実挙動も固定する。bash 3.2 互換。
 
 set -euo pipefail
 
@@ -43,6 +43,7 @@ REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 
 SYNC_SCRIPT="$REPO_ROOT/scripts/sync-dev-toolkit-to-public.sh"
 DEFAULT_SKILL="$REPO_ROOT/.claude/skills/sync-dev-toolkit/SKILL.md"
+FULL_GATE_REUSE_SCRIPT="$REPO_ROOT/scripts/check-full-gate-reuse.sh"
 
 if [[ -n "${FF_SYNC_SHA_SKILL:-}" ]]; then
   SKILL="$FF_SYNC_SHA_SKILL"
@@ -69,7 +70,7 @@ fi
 # 更新箇所は 2 つ: ok / bad を増減させた箇所と、この宣言。
 # 公開 checkout では上の skip 経路が 1 件も検査せずに exit 0 するため、ここには
 # 到達しない（配置による期待値の分岐は不要）。
-EXPECTED_CHECKS=17
+EXPECTED_CHECKS=30
 
 PASS=0
 FAIL=0
@@ -84,6 +85,18 @@ contains() {
     1) bad "${label}（不足: ${needle}）" ;;
     *) bad "${label}（grep が失敗 rc=${rc}）" ;;
   esac
+}
+
+# 出現「回数」まで固定する。同じ文字列が複数の分岐に現れる針は、片方が消えても
+# もう片方に一致して緑のままになり、識別力を失う（Issue #830 レビュー）。
+contains_exactly() {
+  local needle="$1" want="$2" label="$3" got
+  got="$(grep -cF -- "$needle" "$SKILL" || true)"
+  if [[ "$got" == "$want" ]]; then
+    ok "$label"
+  else
+    bad "${label}（期待 ${want} 箇所 / 実際 ${got} 箇所: ${needle}）"
+  fi
 }
 
 not_contains() {
@@ -125,10 +138,36 @@ contains 'stale な origin/develop で続行しない' \
 # 現れないので必須 skip の fail-closed にも掛からず、「検査が実行されないまま緑」がそのまま
 # 不可逆な公開同期へ接続する。週次 CI が無い本リポジトリではこの手順が定期実行点そのもの
 # なので、手順から消えたら赤くする（機械強制ではなく手順の固定が、静的検査の上限）。
-contains 'FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh' \
-  "手順 0 が全件実行のゲートを踏む（ADR-034 決定 2）"
+contains_exactly 'FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh' 2 \
+  "手順 0 が全件実行のゲートを踏む — 初回ブロックと fail-closed 分岐の 2 箇所（ADR-034 決定 2）"
 contains '非 0 なら**同期しない**' \
   "全件ゲートが非 0 のとき同期しないことが明記されている"
+contains 'FULL_GATE_SHA=$(git rev-parse HEAD)' \
+  "全件 green の実測 SHA を次の収束周回へ控える"
+contains 'scripts/check-full-gate-reuse.sh --green-sha "$FULL_GATE_SHA"' \
+  "収束周回で全件 green SHA と HEAD の tree 差分を機械判定する"
+contains 'FULL_GATE_REUSE=CHANGELOG_FOOTER_ONLY' \
+  "footer-only 判定だけを限定ゲートへ接続する"
+# 省略が起きる分岐そのものと、fail-closed の受け皿を針で固定する。件数ガードは「書かれた
+# 検査の削除」しか捕まえないので、書かれていない検査には保護が及ばない（Issue #830 レビュー）。
+contains '0:*FULL_GATE_REUSE=IDENTICAL*)' \
+  "tree 同一の受理条件が分岐として明示されている"
+contains '他差分・dirty・非祖先・判定不能・未知の出力はすべて全件へ倒す（fail-closed）' \
+  "未知・判定不能をすべて全件へ倒す受け皿がある"
+contains 'HEAD から「直前の値」を再導出してはならない' \
+  "全件 green SHA を HEAD から再導出する操作を禁じている"
+contains 'failed=0 skipped=0 not-run=0' \
+  "限定ゲートは skip / 未実行を成功と読まない"
+contains 'plugins/ff-dev-toolkit/tests/changelog-public-references/verify.sh' \
+  "限定ゲートが公開 CHANGELOG の SSOT 参照検査を含む"
+contains '検査した tree と HEAD の tree が一致しないため green を記録しない' \
+  "dirty なまま得た green を SHA として記録しない"
+contains 'plugins/ff-dev-toolkit/tests/changelog-links/verify.sh' \
+  "footer-only 時に CHANGELOG リンクを検証する"
+contains 'plugins/ff-dev-toolkit/tests/changelog-attribution/verify.sh' \
+  "footer-only 時に CHANGELOG 帰属を検証する"
+contains 'plugins/ff-dev-toolkit/tests/changelog-version/verify.sh' \
+  "footer-only 時に CHANGELOG version を検証する"
 
 # ── 2. 順序（行番号の単調増加） ──────────────────────────────────────────────
 L_RECORD="$(line_of 'SYNC_SRC_SHA=$(git rev-parse HEAD)')"
@@ -174,6 +213,12 @@ not_contains '$(git rev-parse --short origin/develop)' \
   "ブランチ ref（origin/develop）から SHA を採るコマンド置換が無い"
 not_contains 'refs/heads/develop' \
   "refs/heads/develop 経由の採取が無い"
+
+if bash "$SCRIPT_DIR/reuse-runtime.sh" "$FULL_GATE_REUSE_SCRIPT"; then
+  ok "全件成功の再利用判定が同一 tree / footer-only / fail-closed を区別する"
+else
+  bad "全件成功の再利用判定の実行契約が壊れている"
+fi
 
 # commit 行そのものに develop を含む SHA 式が無いこと（変数化などの迂回の検出）。
 if [[ -n "${L_COMMIT}" ]]; then
