@@ -51,8 +51,8 @@ SRC_DEPLOYMENT="$PLUGIN_ROOT/docs-template/05-operations/DEPLOYMENT.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=99
-EXPECTED_GATE_CHECKS_PUBLIC=88
+EXPECTED_GATE_CHECKS_MONOREPO=105
+EXPECTED_GATE_CHECKS_PUBLIC=94
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -381,13 +381,22 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|**機微情報を提案本文へ引用しない**|提案閾値: 機微情報を引用しない|1"
   "${FIX_SKILL}|retrospective-SKILL.md|各提案に **起票先 repo** と **期待効果**|提案の構造: 必須 4 欄を列挙する|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 実測: |出力形式: 実測欄|1"
-  "${FIX_SKILL}|retrospective-SKILL.md|   - 既存確認: |出力形式: 既存確認欄|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|   - 既存確認: |出力形式: 既存確認欄|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|重複・方針矛盾なしと判断したか|出力形式: 既存確認欄は重複と方針矛盾の両方を判定して書く|2"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 起票先: |出力形式: 起票先欄|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 付与予定ラベル: |出力形式: 付与予定ラベル欄|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 期待効果: |出力形式: 期待効果欄|1"
   "${FIX_SKILL}|retrospective-SKILL.md|### 起票前の既存確認（必須）|起票前の既存確認: 節が存在する|1"
   "${FIX_SKILL}|retrospective-SKILL.md|この行を書けない提案は提示しない|起票前の既存確認: 既存確認を書けない提案は提示しない|1"
   "${FIX_SKILL}|retrospective-SKILL.md|--state all --limit 200|起票前の既存確認: 既存 Issue 検索は state 非限定 + 取得上限を明示|1"
+  # Issue #865: 確認の**タイミング**（閾値側）は単独の行に乗るため巻き添え無し。
+  "${FIX_SKILL}|retrospective-SKILL.md|起票先 repo の既存 Issue 検索まで済ませてから提示する|提案閾値: 提示前に既存 Issue 検索を済ませる|1"
+  # 「全文読み」と「明示か取り下げ」は同一行、「提示前に確認」と「確認不能時の向き」も
+  # 同一行（節冒頭の段落）。どちらの組も行削除で 2 針が同時に落ちるので期待 ✗ は 2 件。
+  "${FIX_SKILL}|retrospective-SKILL.md|矛盾する提案はそのまま出さず、方針側の変更提案であることを明示するか取り下げる|起票前の既存確認: 方針に矛盾する提案は明示か取り下げ|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|本文を**全文**読み（先頭だけで切らない）|起票前の既存確認: ヒットした Issue の本文を全文読む|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|提案を提示する**前**に、各提案について次を確認する|起票前の既存確認: 確認は提示前に行う（正本側）|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|は「重複なし」と扱わない|起票前の既存確認: 確認不能時は重複なしと扱わない|2"
   "${FIX_SKILL}|retrospective-SKILL.md|「振り返り」「retrospective」「セッション振り返り」「プロセス改善の提案」と言われたとき|frontmatter: trigger 語|2"
   "${FIX_SKILL}|retrospective-SKILL.md|**ユーザー承認を待つ**（承認なしに起票しない|承認境界: 起票前にユーザー承認を待つ|2"
   "${FIX_SKILL}|retrospective-SKILL.md|振り返り工程ではファイル編集・コミット・Issue 作成を行わない|承認境界: 振り返り工程は read-only|2"
