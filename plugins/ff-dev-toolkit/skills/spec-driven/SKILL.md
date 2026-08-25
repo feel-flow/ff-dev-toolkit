@@ -8,6 +8,20 @@ description: 開発タスクを仕様駆動の5ゲート（要件→仕様→計
 開発セッションを「要件確認 → 仕様 → 計画 → 実装 → 検証」の5ゲートで統制する。
 FeelFlow の書籍『AI仕様駆動開発』の方法論を蒸留したもの。成果物ドキュメントを作る genai-consultant 系と違い、**開発の進行そのものを駆動する**プロセススキル。
 
+## プラグインルートの固定（必須）
+
+<!-- ff-dev-toolkit-plugin-root-contract:start -->
+同梱resourceを参照する前に `FF_DEV_TOOLKIT_ROOT` を**一度だけ**解決し、実行中は変更しない。
+
+- Claude Codeでは、その呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}` を使う
+- Codexなど他ホストでは、実際に読み込んだこの `SKILL.md` の絶対パスから `../..` を解決する
+
+解決後は同じ絶対パスだけを使い、cache / marketplace / 旧インストール領域を走査して選ばない。
+version sortによる版の選び直しや、sidecarを使った別実体への切替も行わない。
+解決済みrootまたは必要resourceが消失・不整合になった場合は、別versionへfallbackせず
+「ff-dev-toolkit更新後にこのskillを再呼び出してください」と案内して停止する。
+<!-- ff-dev-toolkit-plugin-root-contract:end -->
+
 ## 成果物
 
 **ゲート進行表** `spec-driven-gates-{タスクslug}-{YYYYMMDD}.md`（YYYYMMDD は**開始日＝初回実行日**〔実行環境のローカルタイムゾーン〕。タスク中は同一ファイルを更新し続ける）— 以下の構成:
@@ -27,7 +41,7 @@ FeelFlow の書籍『AI仕様駆動開発』の方法論を蒸留したもの。
 |---|---|
 | `references/gate-criteria.md` | ゲート判定時（Step 2 以降常時）。各ゲートの通過条件チェックリストと運用原則 |
 | `references/spec-docs-map.md` | G1 仕様ゲート時。7文書体系・判断マトリクス・影響度評価 |
-| `${CLAUDE_PLUGIN_ROOT}/docs-template/`（`${CLAUDE_PLUGIN_ROOT}` は本スキルを提供するプラグインのインストールルート） | 仕様文書が存在しないとき。コア7文書のテンプレート（MASTER.md はルート直下、他は `01-context/PROJECT.md`・`02-design/ARCHITECTURE.md`・`02-design/DOMAIN.md`・`03-implementation/PATTERNS.md`・`04-quality/TESTING.md`・`05-operations/DEPLOYMENT.md`）。frontmatter はテンプレート本体に組み込み済み。ドキュメント体系のフル整備・検証は `/init-docs`・`/validate-docs` コマンドを使う（ゲート判定には gate-criteria.md を使う） |
+| `${FF_DEV_TOOLKIT_ROOT}/docs-template/` | 仕様文書が存在しないとき。コア7文書のテンプレート（MASTER.md はルート直下、他は `01-context/PROJECT.md`・`02-design/ARCHITECTURE.md`・`02-design/DOMAIN.md`・`03-implementation/PATTERNS.md`・`04-quality/TESTING.md`・`05-operations/DEPLOYMENT.md`）。frontmatter はテンプレート本体に組み込み済み。ドキュメント体系のフル整備・検証は `/init-docs`・`/validate-docs` コマンドを使う（ゲート判定には gate-criteria.md を使う） |
 
 ## 実行手順
 
@@ -37,7 +51,7 @@ FeelFlow の書籍『AI仕様駆動開発』の方法論を蒸留したもの。
 2. **モード判定**: Git Workflow の tier 判定に従う（**自己申告で宣言しない**。宣言制は申告漏れがそのまま「全部標準」または「全部軽量」へ倒れる）。着手時点はまだ差分が無いので、予定している変更対象の path を渡した**暫定判定**を使う:
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-tier.sh" docs/MASTER.md README.md
+   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/workflow-tier.sh" docs/MASTER.md README.md
    ```
 
    引数は「これから変更する予定の path」を並べる（上は例）。出力の `WORKFLOW_TIER=light` なら**軽量モード**（G1〜G2 を簡略化。ただし受け入れ基準1個と影響度 LOW の確認は必須）、`standard` / `full` と、判定材料が取れなかった `unknown` は標準モード。**判定パターンの実効値は `workflow-tier.sh --list-rules` が持ち、各 tier で何をするかの正本は `docs-template/05-operations/DEPLOYMENT.md` §主要ステップ が持つ**（文書は判定パターンを書き写さないので、上書きされた環境でも嘘にならない）。スクリプトが無い環境では標準モードで進める。
@@ -60,7 +74,7 @@ FeelFlow の書籍『AI仕様駆動開発』の方法論を蒸留したもの。
 
 `references/spec-docs-map.md` を読み:
 
-1. 変更が影響する仕様文書を判断マトリクスで特定する。文書がなければ `${CLAUDE_PLUGIN_ROOT}/docs-template/` の対応テンプレートから最小構成で新設する（**新設するのは変更が影響する文書のみ**。7文書・最小3文書への底上げは別タスクとして SD-n に提案する。書く材料がない文書を推測で起こさない）
+1. 変更が影響する仕様文書を判断マトリクスで特定する。文書がなければ `${FF_DEV_TOOLKIT_ROOT}/docs-template/` の対応テンプレートから最小構成で新設する（**新設するのは変更が影響する文書のみ**。7文書・最小3文書への底上げは別タスクとして SD-n に提案する。書く材料がない文書を推測で起こさない）
 2. **コードより先に仕様文書を更新する**（ドキュメント先、コード後）。**依頼範囲が実装前まで（G2 以前）の場合は、更新案（差分）の提示に留め、適用はユーザー確認後とし、G1 の状態は「提案通過」と記録する**（適用後に「通過」へ更新）
 3. 影響度を LOW / MEDIUM / HIGH で評価する。**HIGH の場合は一旦停止**し、関係者確認・ADR・移行計画の要否を判定する（対話できない場合は SD-n に記録して停止し、指示を仰ぐ）
 4. frontmatter（version / updated / changeImpact〔値は小文字: low|medium|high〕）の更新を差分に含め、進行表に証拠（更新した文書のパスと差分要約）を記録する。テンプレートから新設する場合、**frontmatter はテンプレート本体に組み込み済みのため、プレースホルダー（owner / created 等）を実際の値で埋める**（`changeImpact` キーが無いテンプレート由来文書には追記し、テンプレート初期値が大文字の場合は小文字へ正規化する）

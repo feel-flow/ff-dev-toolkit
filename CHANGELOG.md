@@ -19,6 +19,12 @@
 
 ## [Unreleased]
 
+## [0.58.1] - 2026-08-25
+
+### 修正
+
+- 同梱resourceを使うskillは、その呼び出しで読み込んだplugin rootを一度だけ解決して実行中に固定するよう統一した。cacheや旧インストール領域から別versionを選び直すfallbackを禁止し、開始時rootが消失・不整合になった場合はplugin更新後のskill再呼び出しを案内して停止する。live全skillの契約一致に加え、契約marker欠落・cache再探索・別version fallbackのnegative controlを回帰検査へ追加した
+
 ## [0.58.0] - 2026-08-25
 
 ### 追加

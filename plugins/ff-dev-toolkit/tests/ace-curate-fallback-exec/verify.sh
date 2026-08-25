@@ -7,7 +7,7 @@
 # 静かに到達不能へ戻る。ここでは scripts/ace/ を持たない一時プロジェクトを作り、
 # SKILL.md に書かれた形のコマンドを実際に走らせて exit code を確認する。
 #
-# FF_DEV_TOOLKIT_ROOT は SKILL.md 冒頭「プラグインルートの解決」の手順どおり
+# FF_DEV_TOOLKIT_ROOT は SKILL.md 冒頭「プラグインルートの固定（必須）」の手順どおり
 # 「読み込んだ SKILL.md の絶対パスから ../.. を解決する」で導出する（ハードコードしない）。
 # 導出した root 配下の実パスと、SKILL.md に書かれた文字列が一致することも併せて固定する
 # ため、片方だけ直した drift はここで赤くなる。
@@ -77,7 +77,7 @@ FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
-# ── FF_DEV_TOOLKIT_ROOT の解決（SKILL.md L12 の手順を写す）───────────────────
+# ── FF_DEV_TOOLKIT_ROOT の解決（SKILL.md「プラグインルートの固定（必須）」節の手順を写す）───────────────────
 # 「読み込んだ SKILL.md の絶対パスから ../.. を解決する」= skills/<name>/ の 2 つ上。
 FF_DEV_TOOLKIT_ROOT="$(cd "$(dirname "${SKILL_MD}")/../.." && pwd)"
 

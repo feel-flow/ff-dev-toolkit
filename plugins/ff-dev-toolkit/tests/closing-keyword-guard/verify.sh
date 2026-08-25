@@ -359,7 +359,7 @@ contains "$SKILL" "抵触なしとして扱わず停止する" "検査不成立�
 contains "$SKILL" 'case "${GATE_STATUS}" in' "終了コードを実行可能な分岐として書いている"
 contains "$SKILL" "INSPECTED" "検査行数を呼び出し側へ返す契約がある"
 contains "$SKILL" "EXPECTED_COMMITS" "コミット取得の切り詰めを検出する"
-contains "$SKILL" 'FF_DEV_TOOLKIT_ROOT` を解決する' "同梱スクリプトのパス解決手順がある"
+contains "$SKILL" 'FF_DEV_TOOLKIT_ROOT` を**一度だけ**解決し' "同梱スクリプトのパス解決手順がある"
 contains "$SKILL" "post-merge 検証待ち" "post-merge 検証待ちの判定を定義している"
 contains "$SKILL" 'MERGE_BODY="Refs #${REFS_ISSUE}' "Refs 運用の merge 本文が Refs 参照から組み立てられる"
 # 2b が検査した文字列とマージで渡す文字列の間に「人が書き写す」継ぎ目を作らない。

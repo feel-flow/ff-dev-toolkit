@@ -18,13 +18,26 @@ Refs 運用は、post-merge 検証（staging 実機確認・外部 ops など）
 
 起票時の `/create-issue`（GWT + DoD 起票）と対になり、Issue のライフサイクル両端で仕様が検証される構造を作ります。
 
+## プラグインルートの固定（必須）
+
+<!-- ff-dev-toolkit-plugin-root-contract:start -->
+同梱resourceを参照する前に `FF_DEV_TOOLKIT_ROOT` を**一度だけ**解決し、実行中は変更しない。
+
+- Claude Codeでは、その呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}` を使う
+- Codexなど他ホストでは、実際に読み込んだこの `SKILL.md` の絶対パスから `../..` を解決する
+
+解決後は同じ絶対パスだけを使い、cache / marketplace / 旧インストール領域を走査して選ばない。
+version sortによる版の選び直しや、sidecarを使った別実体への切替も行わない。
+解決済みrootまたは必要resourceが消失・不整合になった場合は、別versionへfallbackせず
+「ff-dev-toolkit更新後にこのskillを再呼び出してください」と案内して停止する。
+<!-- ff-dev-toolkit-plugin-root-contract:end -->
+
 ## 前提
 
 - git リポジトリで作業中であること
 - 対象 PR が open であること（Draft のままでも実行はエラーにせず警告のみとするが、レビュー対応完了後・マージ直前の実行を想定）
 - 実装変更がコミット済み + push 済みであること（AC 照合は push 済みの diff を対象とする）
 - **実行タイミング**: レビュー対応完了後（Draft PR 運用時は `gh pr ready` の後）・`gh pr merge --squash` の前
-- 同梱スクリプトを実行する前に `FF_DEV_TOOLKIT_ROOT` を解決する。Claude Code では `${CLAUDE_PLUGIN_ROOT}` を使い、Codex など他ホストでは読み込んだこの `SKILL.md` の絶対パスから `../..` を解決する（未定義のまま実行するとルート直下の存在しないパスを叩き、終了コード 127 になる）
 
 ## 引数
 

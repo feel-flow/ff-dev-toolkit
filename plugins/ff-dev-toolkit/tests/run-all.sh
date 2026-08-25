@@ -107,6 +107,9 @@ else
     # 一時ディレクトリも外部コマンドも要らない静的検査を先に置く（安価な順。
     # 全 suite を実行するので、並び順は結果ではなく報告の読みやすさの問題）。
     "$SCRIPT_DIR/skill-frontmatter/verify.sh"
+    # 同梱resourceを使う全skillが、読み込み元rootを実行中に固定し、cache再探索や
+    # 別version fallbackをしない契約を持つことをlive走査 + negative controlで固定する。
+    "$SCRIPT_DIR/plugin-root-contract/verify.sh"
     "$SCRIPT_DIR/skill-bash-blocks/verify.sh"
     # ルート設定で tracked Markdown 全体を lint し、DoD の「markdownlint エラーなし」を
     # 実行可能にする。依存は同梱 MCP の node_modules から借り、直後の selftest が
@@ -504,6 +507,9 @@ fi
 # のときだけで、既定実行では「除外した selftest のうち何件が必須名簿掲載か」をサマリーが
 # 名指しする（意図した除外であることは変わらないが、重みが読めるようにする）。
 REQUIRED_SUITES=(
+  # root契約のnegative controlは一時領域を使う。skipすると旧版誤選択を拒否する
+  # 検出力が丸ごと消えるため、明示許可なしのskipを認めない（Issue #838）。
+  plugin-root-contract
   # 実行環境分離のselftestは、クリーン環境だと退行してもconsumerが緑になり得る。
   # 一時領域不足で検出力ごと消える場合は明示許可を要求する（Issue #439）。
   adapter-env-isolation-selftest

@@ -7,9 +7,19 @@ description: プロジェクトの docs/ がコア7文書要件（存在・必�
 
 プロジェクトの `docs/` ディレクトリが AI仕様駆動開発のコア7文書要件を満たしているか検証します。
 
-## プラグインルートの解決
+## プラグインルートの固定（必須）
 
-同梱ファイルを参照する前に `FF_DEV_TOOLKIT_ROOT` を解決する。Claude Code では `${CLAUDE_PLUGIN_ROOT}` を使い、Codex など他ホストでは読み込んだこの `SKILL.md` の絶対パスから `../..` を解決する。以下の `${FF_DEV_TOOLKIT_ROOT}` はその絶対パスを指す。バージョン別 cache を探索して選ばない。
+<!-- ff-dev-toolkit-plugin-root-contract:start -->
+同梱resourceを参照する前に `FF_DEV_TOOLKIT_ROOT` を**一度だけ**解決し、実行中は変更しない。
+
+- Claude Codeでは、その呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}` を使う
+- Codexなど他ホストでは、実際に読み込んだこの `SKILL.md` の絶対パスから `../..` を解決する
+
+解決後は同じ絶対パスだけを使い、cache / marketplace / 旧インストール領域を走査して選ばない。
+version sortによる版の選び直しや、sidecarを使った別実体への切替も行わない。
+解決済みrootまたは必要resourceが消失・不整合になった場合は、別versionへfallbackせず
+「ff-dev-toolkit更新後にこのskillを再呼び出してください」と案内して停止する。
+<!-- ff-dev-toolkit-plugin-root-contract:end -->
 
 > 本コマンドの検証規則（必須3文書と条件付き4文書の N/A 判定・兆候検出・同義見出しの内容判定・空セクションの状態明記・Frontmatter スキーマ・スコア算出・プレースホルダー免除区分）が drift しないことは、`plugins/ff-dev-toolkit/tests/validate-docs/verify.sh`（節スコープの条文ピン）と `plugins/ff-dev-toolkit/tests/validate-docs-placeholders/verify.sh`（境界の機械照合）で検証する。規則の文言・節番号を変えたら `tests/validate-docs/verify.sh` を追随させること。
 

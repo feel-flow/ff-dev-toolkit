@@ -150,7 +150,7 @@ expect_contains \
 
 # 展開元の定義が消えると上の 3 本は解決できないパスへ静かに退行する。
 expect_contains \
-  'Claude Code では `${CLAUDE_PLUGIN_ROOT}` を使い' \
+  'Claude Codeでは、その呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}` を使う' \
   "FF_DEV_TOOLKIT_ROOT の解決手順が本文に定義されている"
 
 # 同梱スクリプトが実在すること（SKILL.md の記述だけ直って実体が消える drift を防ぐ）。
