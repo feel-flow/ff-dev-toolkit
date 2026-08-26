@@ -98,6 +98,10 @@ if [[ "${FF_RUN_ALL_NESTED:-0}" != "0" && $# -eq 0 ]]; then
 fi
 export FF_RUN_ALL_NESTED=1
 
+# ゲート開始時の HEAD を控える。全件実行は長く、その間に commit があると終了時の HEAD は
+# 「一度も読んでいないツリー」になる。記録側へ渡して、動いていたら記録させない（Issue #880）。
+FF_GATE_START_HEAD="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+
 if [[ $# -gt 0 ]]; then
   SCRIPTS=("$@")
   USING_DEFAULT_SCRIPTS=0
@@ -216,6 +220,11 @@ else
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド
     # 不要・一時ディレクトリ不要なので静的検査群に置く。
     "$SCRIPT_DIR/closing-keyword-guard/verify.sh"
+    # マージ直前の鮮度ゲート（Issue #880）: 「リモート先端 == ゲート実測対象」の照合と、
+    # 記録側（scripts/record-gate-head.sh）・本ランナーの配線・SKILL / ワークフロー文書の
+    # 文言が drift していないこと。一時領域と git を要するが、closing-keyword-guard と
+    # 同じ「マージ直前の窓」を守る契約なので、安価な順より主題の近さを優先して隣に置く。
+    "$SCRIPT_DIR/merge-freshness/verify.sh"
     # Git Workflow の tier 判定（scripts/workflow-tier.sh）の振る舞いと、段の単一正本の
     # 契約（Issue #801）。判定は path 一覧を受ける入口を持つので git の状態を捏造せずに
     # 全ケースを回せる。段数・tier 件数・分布の手書きが無いことは否定の主張なので、
@@ -566,6 +575,10 @@ REQUIRED_SUITES=(
   # FF_RUN_ALL_ALLOW_SKIP 案内に追加は要らない。
   adapter-prompt-guard
   review-diff-scope
+  # 一時領域 + git が要る。マージ直前の鮮度ゲートの検出力（不一致で止まる / 一致で
+  # 黙る / 判定不能を素通りさせない）を見るのはこの suite だけで、消えるとゲートの
+  # 退行が squash merge に畳み込まれる形で表に出る（Issue #880）。
+  merge-freshness
   # 手順書の凍結契約は、機械検査の無いサブエージェント経路で唯一の防御（Issue #818）。
   # この suite は静的検査だけで skip 経路を持たないが、掲載は空振りではない —
   # check_suite_registration が名簿の各名の実在を検査するため、この 1 行が
@@ -948,9 +961,69 @@ if [[ ${#FAILED[@]} -gt 0 ]]; then
   echo "✗ failed: ${FAILED[*]}" >&2
 fi
 
+# >>> ff-gate-record-block（tests/merge-freshness/verify.sh がこの関数定義を抽出して
+# 隔離環境で実行し、記録が実際に書かれることを実測する。マーカーを消すとその検査が
+# 「抽出 0 行」で赤くなる。範囲は**関数定義だけ**にすること — 呼び出し側まで含めると
+# 抽出したコードが exit を持ち込む）
+#
+# 通過した実行が**どのコミットを測ったのか**を記録し、マージ直前の鮮度照合
+# （scripts/check-merge-freshness.sh）が「リモート先端 == 実測対象」を機械で言える
+# ようにする（Issue #880）。
+#
+# 記録するのは既定一覧の実行だけ。明示引数の実行は名指しした suite しか回らないので、
+# それを「ゲートが通った」として記録すると、2 suite だけ回した結果がマージの根拠に
+# なりうる（fail-open）。緑の記録は PASSED > 0 も自分で確かめる（後段の件数ガードは
+# 呼び出し位置より下にあるので当てにしない）。
+#
+# **赤い実行も記録する（--status fail）。** 書かずに済ませると、同じコミットで前回
+# 通った記録が残り、照合は無出力の exit 0 を返す — 「一度通ったコミット」が「いま
+# 通るコミット」に化ける。
+#
+# 記録の失敗は**検証結果の失敗ではない**。1 行警告して終了コードは変えない
+# （記録が無ければ照合側が「判定不能」として報告する。黙って緑にはならない）。
+ff_record_gate_head() { # <pass|fail>
+  local status="$1" recorder mode
+  [[ "$USING_DEFAULT_SCRIPTS" == "1" ]] || return 0
+  if [[ "${FF_GATE_RECORD:-1}" == "0" ]]; then
+    echo "○ FF_GATE_RECORD=0 のためゲート実測対象を記録しません（マージ前の鮮度照合は「判定不能」になります）" >&2
+    return 0
+  fi
+  [[ "$status" != "pass" || ${#PASSED[@]} -gt 0 ]] || return 0
+  recorder="$SCRIPT_DIR/../scripts/record-gate-head.sh"
+  if [[ ! -f "$recorder" ]]; then
+    echo "⚠️  記録器が見つかりません: ${recorder}（マージ前の鮮度照合は「判定不能」になります）" >&2
+    return 0
+  fi
+  if [[ "$FAST_MODE" == "1" ]]; then mode="fast"; else mode="full"; fi
+  # 記録するのは**このランナーが在るリポジトリ**の HEAD。呼び出し元の cwd を基準に
+  # すると、別のリポジトリから起動した回に無関係な HEAD を実測対象として記録する。
+  ( cd "$SCRIPT_DIR" && bash "$recorder" \
+      --gate "tests/run-all.sh" \
+      --status "$status" \
+      --mode "$mode" \
+      --expect-head "${FF_GATE_START_HEAD:-}" \
+      --result "passed=${#PASSED[@]} failed=${#FAILED[@]} skipped=${#SKIPPED[@]} not-run=${#NOT_RUN[@]} excluded=${#FAST_EXCLUDED[@]}" ) \
+    || echo "⚠️  ゲート実測対象を記録できませんでした（マージ前の鮮度照合は「判定不能」になります）" >&2
+}
+# <<< ff-gate-record-block
+
 if [[ ${#FAILED[@]} -gt 0 || ${#NOT_RUN[@]} -gt 0 || ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
+  ff_record_gate_head fail
   exit 1
 fi
+
+# ここから下は全て exit 0（唯一の例外は「pass 0 件で skip だけ」= 検証が成立して
+# いない場合で、下の PASSED 件数ガードがそれを弾く）。通過した実行が**どのコミットを
+# 測ったのか**を記録し、マージ直前の鮮度照合（scripts/check-merge-freshness.sh）が
+# 「リモート先端 == 実測対象」を機械で言えるようにする（Issue #880）。
+#
+# 記録するのは既定一覧の実行だけ。明示引数の実行は名指しした suite しか回らないので、
+# それを「ゲートが通った」として記録すると、2 suite だけ回した結果がマージの根拠に
+# なりうる（fail-open）。
+#
+# 記録の失敗は**検証結果の失敗ではない**。1 行警告して終了コードは変えない
+# （記録が無ければ照合側が「判定不能」として報告する。黙って緑にはならない）。
+ff_record_gate_head pass
 
 if [[ ${#SKIPPED[@]} -gt 0 ]]; then
   # skip だけで pass が 0 = 検証が 1 件も成立していない。文言だけ出して 0 で終わると、

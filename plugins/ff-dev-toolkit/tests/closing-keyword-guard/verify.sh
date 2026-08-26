@@ -33,7 +33,7 @@ WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 # 更新箇所は 2 つ: ok / bad を増減させた箇所と、この宣言。
 # keyword 系統のループは check-closing-keywords.sh --list-keywords の出力件数に比例
 # するので、keyword を増減したときもここを直す。
-EXPECTED_CHECKS=123
+EXPECTED_CHECKS=124
 
 PASS=0
 FAIL=0
@@ -366,7 +366,12 @@ contains "$SKILL" 'MERGE_BODY="Refs #${REFS_ISSUE}' "Refs 運用の merge 本文
 # ここが literal の例示に戻ると、実際の再発経路（--subject のコピペ）が復活する。
 contains "$SKILL" '--subject %q' "merge コマンドを検査済み変数から組み立てる"
 contains "$SKILL" '"${MERGE_SUBJECT}" "${MERGE_BODY}"' "生成に 2b で検査した変数をそのまま展開する"
-contains "$SKILL" "手順 2b の printf が出力した gh pr merge コマンドをそのまま貼る" "報告テンプレートが生成物を貼る形になっている"
+# merge コマンドの生成は手順 7（鮮度照合の後）へ移した。`--match-head-commit` へ渡して
+# よい先端は照合を通った値だけで、2b の時点では確定しないため（Issue #880）。ここが
+# 見ているのは「報告へ貼るのは生成物であって書き写しではない」という契約で、
+# 生成の位置が変わってもその契約は変わらない。
+contains "$SKILL" "手順 7 の printf が出力した gh pr merge コマンドをそのまま貼る" "報告テンプレートが生成物を貼る形になっている"
+contains "$SKILL" '文字列を打ち直さずそのまま手順 7 へ持ち越す' "2b が検査した文字列が打ち直されずに生成側へ渡る"
 contains "$SKILL" "書き写さない" "報告の merge コマンドを書き写させない"
 contains "$SKILL" "gh issue view 46 --json state" "マージ直後の read-back を手順として残す"
 contains "$SKILL" "read-back は検査を追加しても省略しない" "検査追加を理由に実測を省かせない"

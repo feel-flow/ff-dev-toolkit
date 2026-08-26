@@ -211,16 +211,10 @@ set -e
   || { echo "❌ 実際に渡す squash メッセージが Issue を閉じます（status=${FINAL_STATUS}）" >&2; exit 1; }
 ```
 
-検査を通ったら、**merge コマンドを検査済みの変数から組み立てる**。文字列を打ち直すと、そこが検査とマージの間の継ぎ目になる（`--subject` のコピペこそが実際の再発経路だった）:
+検査を通った `MERGE_SUBJECT` / `MERGE_BODY` は、**文字列を打ち直さずそのまま手順 7 へ持ち越す**（`--subject` のコピペこそが実際の再発経路だった）。
 
-```bash
-# 検査した変数をそのまま展開する。%q はシェルで安全な引用形へ変換する
-printf 'gh pr merge %s --squash --match-head-commit %s \\\n  --subject %q \\\n  --body %q\n' \
-  "${PR_NUMBER}" "${HEAD_SHA}" "${MERGE_SUBJECT}" "${MERGE_BODY}"
-```
+**merge コマンドの組み立ては手順 7 で行う。** ここで先に組み立てないのは、`--match-head-commit` へ渡してよい先端が「鮮度照合を通った値」に限られ、それが確定するのが手順 7 だからである（ここで組み立てると、未達 AC の修正ループで fix commit を積んだ回に古い先端が残り、照合を通ってもマージが拒否される）。
 
-- **この出力をそのまま手順 7 の報告へ貼る**。報告に載る merge コマンドは、2b が検査した文字列から機械的に導出されたものでなければならない。人手で書き写した時点で、2b は何も保証しなくなる
-- `%q` の出力はエスケープが入って読みにくいが、**シェルが解釈した結果は検査した文字列と同一**（多行の本文は `$'\n'` として現れる）。読みやすさのために引用を書き換えないこと — 書き換えた時点で「検査した文字列」ではなくなる
 - Refs 運用の Issue が 0 件（従来どおりの `Closes` 運用）の場合、2a・2b とも実行しない。この経路の振る舞いは従来と変わらない
 
 ### 3. AC 照合
@@ -332,7 +326,87 @@ gh issue comment "$ISSUE_URL" --body-file "/tmp/close-issue-report-${ISSUE_NUMBE
 - AC 記載なしの Issue の場合は「AC 検証結果」の代わりに「この Issue には AC の記載がないため照合をスキップした」旨と実装サマリを記載する
 - post-merge 検証待ちが 1 件でもある場合は、コメントに「この Issue はマージ後も open のまま維持する」ことと、実測後に閉じる手順を明記する
 
-### 7. 完了報告
+### 7. ゲート実測鮮度の照合（マージ直前）
+
+ローカルで回した検証スイートの結果は、**その時点の特定コミットに対する実測**です。実測とマージのあいだにリモートが進んでいると、squash merge は**未実測のコミットまで畳み込む**ため、ゲートを回した意味が消えます。実測では、cloud セッションが作成した PR をローカルの worktree で引き取って作業しているあいだに、**同じセッションが同じブランチへ別方向の修正を push していた**（気付いたのは push が non-fast-forward で拒否されたとき）。
+
+手順 8 で渡す `--match-head-commit` とは**守る窓が違います**:
+
+| 検査 | 守る窓 |
+| --- | --- |
+| `--match-head-commit` | **AC 照合の後**に追加 push された内容がマージへ混入すること |
+| 本手順の鮮度照合 | **ゲート実測の後**にリモートが先行していたこと。`headRefOid` はそのドリフトの後に読まれるので、`--match-head-commit` からは見えない |
+
+比較の材料には **API の値（`headRefOid`）を照合直前に読み直して使う**。`git fetch` + `git rev-parse origin/<branch>` を比較に使ってはいけない — remote-tracking ref は前回 fetch 時点のスナップショットで、fetch を忘れた回・失敗した回に「古い先端 == 古い実測対象」で一致してしまい、いちばん守りたい経路で fail-open します。`--fetch` は**関係の分類**（自分が進めたのか、別セッションが push したのか）にだけ使います。
+
+実測対象は自己申告ではなく**記録**から取ります。`scripts/record-gate-head.sh` がゲートの通過時に HEAD・作業ツリーの汚れ・モードを書き、`tests/run-all.sh` は既定一覧の実行が通ったときにこれを呼びます（明示引数の実行は名指しした suite しか回らないので記録しません）。
+
+```bash
+PR_NUMBER="${PR_NUMBER:?PR 番号を先に設定すること}"
+# 照合直前に読み直す（手順 1 からの経過中にリモートが進んでいる可能性がある）。
+# remote-tracking ref ではなく API の値を使い、**ここで得た値を手順 8 の
+# --match-head-commit へそのまま渡す**（照合した先端とマージする先端を同じにする）
+REMOTE_HEAD="$(gh pr view "${PR_NUMBER}" --json headRefOid --jq .headRefOid)" \
+  || { echo "❌ リモート先端を取得できません（検査は成立していない）" >&2; exit 2; }
+FRESHNESS="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}/scripts/check-merge-freshness.sh"
+
+set +e
+FRESH_OUT="$(bash "${FRESHNESS}" --remote-head "${REMOTE_HEAD}" --fetch)"
+FRESH_STATUS=$?
+set -e
+
+case "${FRESH_STATUS}" in
+  0)
+    # 一致。無出力のままマージへ進む（常時ノイズにしない）。
+    # 報告には実測の素性（ゲート名・モード）も載せる — 高速モードの記録を
+    # 「全件実行で通した」と読ませないため（モードは合否には使わない）
+    FRESH_RECORD="$(bash "${FRESHNESS}" --print-record || true)"
+    FRESH_GATE="$(printf '%s\n' "${FRESH_RECORD}" | sed -n 's/^GATE=//p')"
+    FRESH_MODE="$(printf '%s\n' "${FRESH_RECORD}" | sed -n 's/^MODE=//p')"
+    FRESH_RESULT="$(printf '%s\n' "${FRESH_RECORD}" | sed -n 's/^RESULT=//p')"
+    FRESH_REPORT="✅ 一致（${FRESH_GATE:-ゲート不明} / モード ${FRESH_MODE:-不明} / ${FRESH_RESULT:-結果不明}）"
+    ;;
+  1)
+    printf '%s\n' "${FRESH_OUT}" >&2
+    echo "❌ リモート先端がゲート実測対象と一致しません。取り込んで測り直すこと" >&2
+    exit 1
+    ;;
+  2)
+    # 判定不能（記録が無い / 汚れた木で測った / 記録の内容を信頼できない）。マージは止めないが、
+    # ACTION 行をそのまま完了報告へ載せる（黙って素通りさせない）
+    printf '%s\n' "${FRESH_OUT}"
+    FRESH_REPORT="⚠️ 判定不能 — $(printf '%s\n' "${FRESH_OUT}" | sed -n 's/^ACTION=//p')"
+    ;;
+  *)
+    printf '%s\n' "${FRESH_OUT}" >&2
+    echo "❌ 鮮度照合が成立していません（status=${FRESH_STATUS}）。一致として扱わず停止する" >&2
+    exit 2
+    ;;
+esac
+```
+
+- 終了コード **0 = 一致（無出力）**、**1 = 不一致（マージを止める）**、**2 = 判定不能（止めないが報告する）**、**3 = 検査不成立（停止する）**
+- 判定不能に当たる原因は増えうる（記録が無い / 汚れた木で測った / 直近のゲートが赤い / 記録の版や内容を解釈できない / 実測対象のコミットが手元に無い）。**個別の原因ではなく `FRESH_STATUS` で分岐する**
+- **2 で止めないのは意図的**です。記録の仕組みを持たないプロジェクトでは判定不能が常態で、そこで無条件にマージを止めると検査ごと迂回されます。**この窓は静かに外れると squash merge に畳み込まれるので、ノイズより見逃しのコストが高い** — だから「黙って緑を返さない」ことを最低線として守り、判定不能は手順 8 の完了報告に必ず載せる
+- 不一致の `RELATION` で次の一手が変わる: `ancestor`（実測後に自分が push した）→ 取り込んで再実測 / `unpushed`（未 push のコミットを測っている）→ push して再実測 / `divergent`（別セッションが push した）→ **force-push で押し切らず**、相手のコミットの上に自分の変更を積んでから再実測
+- 未達 AC の修正ループ（手順 4）で fix commit を push した場合、この照合は必ず不一致になる。**ゲートを回し直してから**マージへ進む
+
+照合を通ったら、**merge コマンドをここで組み立てる**。渡す先端は直前に照合した `REMOTE_HEAD` で、件名・本文は手順 2b が検査した変数をそのまま展開する:
+
+```bash
+# Refs 運用: 手順 2b が検査した MERGE_SUBJECT / MERGE_BODY を使う
+# %q はシェルで安全な引用形へ変換する
+printf 'gh pr merge %s --squash --match-head-commit %s \\\n  --subject %q \\\n  --body %q\n' \
+  "${PR_NUMBER}" "${REMOTE_HEAD}" "${MERGE_SUBJECT}" "${MERGE_BODY}"
+
+# Closes 運用（Refs 対象が 0 件）: 件名・本文の明示は要らない
+# printf 'gh pr merge %s --squash --match-head-commit %s\n' "${PR_NUMBER}" "${REMOTE_HEAD}"
+```
+
+- **この出力をそのまま手順 8 の報告へ貼る**。報告に載る merge コマンドは、2b が検査した文字列とこの手順が照合した先端から機械的に導出されたものでなければならない。人手で書き写した時点で、検査は何も保証しなくなる
+- `%q` の出力はエスケープが入って読みにくいが、**シェルが解釈した結果は検査した文字列と同一**（多行の本文は `$'\n'` として現れる）。読みやすさのために引用を書き換えないこと — 書き換えた時点で「検査した文字列」ではなくなる
+
+### 8. 完了報告
 
 全対象 Issue の照合・更新・コメントが完了したら、結果を要約して報告し、**そのまま実行できる形の merge コマンド**を提示します。Refs 運用では `--subject` と `--body` を必ず両方明示します（片方でも省略すると、squash メッセージの供給源がリポジトリ設定に応じて PR タイトル・コミットメッセージへ戻る）:
 
@@ -345,11 +419,12 @@ gh issue comment "$ISSUE_URL" --body-file "/tmp/close-issue-report-${ISSUE_NUMBE
 - チェックボックス更新: ✅
 - 完了報告コメント: ✅
 - closing keyword 抵触検査: 対象なし（Closes 運用）
+- ゲート実測鮮度: <手順 7 の FRESH_REPORT をそのまま貼る>
 - 照合時の head SHA: <headRefOid>
 
 → マージに進めます:
 
-    gh pr merge <PR番号> --squash --match-head-commit <headRefOid>
+    <手順 7 の printf が出力した gh pr merge コマンドをそのまま貼る>
 
 → マージ直後に read-back（CLOSED を実測する）:
 
@@ -365,19 +440,21 @@ gh issue comment "$ISSUE_URL" --body-file "/tmp/close-issue-report-${ISSUE_NUMBE
 - チェックボックス更新: ✅
 - 完了報告コメント: ✅
 - closing keyword 抵触検査: ✅ 2a 抵触なし（INSPECTED 7 行）/ 2b 抵触なし（INSPECTED 2 行）
+- ゲート実測鮮度: <手順 7 の FRESH_REPORT をそのまま貼る>
 - 照合時の head SHA: <headRefOid>
 
-→ マージに進めます（下のコマンドは**手順 2b の末尾で生成したものを貼る**。書き写さない）:
+→ マージに進めます（下のコマンドは**手順 7 の末尾で生成したものを貼る**。書き写さない）:
 
-    <手順 2b の printf が出力した gh pr merge コマンドをそのまま貼る>
+    <手順 7 の printf が出力した gh pr merge コマンドをそのまま貼る>
 
 → マージ直後に read-back（OPEN のままであることを実測する）:
 
     gh issue view 46 --json state
 ```
 
-- **照合時点の `headRefOid` を報告に含め、マージには `--match-head-commit <SHA>` を推奨する**。照合後に PR へ追加 push があった場合、照合済みでない内容がマージされることを防げる（SHA 不一致ならマージが拒否されるので、再度 `/close-issue` を実行する）
-- **報告に載せる merge コマンドは手順 2b が生成したものを貼る**（書き写さない）。`--subject` は PR タイトルのコピペになりやすく、そこに Issue 参照が残っていると `--body "Refs #N"` を守っても件名側で閉じる（この経路が実際の再発事例）。人が文字列を打ち直す時点で、そこが検査とマージの間の継ぎ目になり、2b は何も保証しなくなる
+- **報告に載せる `headRefOid` は手順 7 が照合した値**にする（別に読み直した値を書くと、照合した先端とマージする先端が別物になりうる）。マージには `--match-head-commit <SHA>` を推奨する。照合後に PR へ追加 push があった場合、照合済みでない内容がマージされることを防げる（SHA 不一致ならマージが拒否されるので、再度 `/close-issue` を実行する）
+- **報告に載せる merge コマンドは手順 7 が生成したものを貼る**（書き写さない）。`--subject` は PR タイトルのコピペになりやすく、そこに Issue 参照が残っていると `--body "Refs #N"` を守っても件名側で閉じる（この経路が実際の再発事例）。人が文字列を打ち直す時点で、そこが検査とマージの間の継ぎ目になり、2b は何も保証しなくなる
+- **ゲート実測鮮度は判定不能でも省略しない**。手順 7 が exit 2 を返した回は `ACTION` 行をそのまま報告へ載せる（「実測対象を特定できないためマージ前の再実行を推奨」）。判定不能を報告から落とすと、この窓は静かに外れたまま squash merge に畳み込まれる
 - **検査した行数（`INSPECTED`）は報告に転記する**。自分で数えた件数を書かない — 上流が切り詰められていた場合、その数字だけが食い違いを示す
 - **read-back は検査を追加しても省略しない**。手順 2 の検査は既知の形（closing keyword × `#N` / `owner/repo#N`）しか見ず、`GH-N` 形式や Issue の完全 URL は対象外なので、実際の state だけが最終的な証拠になる。期待と違う state だった場合は `gh issue reopen` / `gh issue close` で復旧し、原因を記録する
 
