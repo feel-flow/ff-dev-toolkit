@@ -12,18 +12,28 @@
 # 並行マージで develop ref が 87da5c8 へ進み、commit メッセージだけが 87a5... 系の
 # 未同期 SHA になった）。
 #
-# 「記録 SHA ≠ 同期内容」の実ミスマッチはオフラインの suite からは観測できない
-# （公開 clone と実 sync の実行を要する）ため、機械検査の上限は**手順の文面**の
-# 固定である。検査するのは次の 3 層:
-#   1. 出現: SHA の記録・if 連結の HEAD 突合・控えた SHA からの採取・detached 退避・
-#      同一シェル規定（HEAD からの再導出禁止）・fetch 失敗時の中断が存在する
-#   2. 順序: 記録 → 同期実行 → 突合 → commit の行番号が単調増加している
-#      （記録を同期の後ろへ動かす退行・突合を commit の後ろへ動かす退行の検出）
+# 同期元 SHA の受け渡しはシェル変数ではなくファイル（Issue #895）。同期スクリプトが
+# 「実際に展開した内容の SHA」を target の git ディレクトリ配下 `ff-sync-src-sha` へ
+# 書き、手順 4 がそれを読む。手順 3 と手順 4 が別プロセスでも値が生存するので、
+# 「別シェルになったら手順 3 からやり直す」（＝直前の成功が残した差分に当たって
+# 必ず失敗する）という詰みが消える。不変条件（記録 SHA == 同期内容）は維持する。
+#
+# 検査するのは次の 4 層:
+#   1. 出現（手順書）: 記録の読み取り・if 連結の HEAD 突合・読んだ SHA からの採取・
+#      記録不在時の中断・detached 退避・HEAD からの再導出禁止・fetch 失敗時の中断
+#   2. 順序（手順書）: 同期実行 → 記録の読み取り → 突合 → commit の行番号が単調増加
+#      （読み取りを同期の前へ動かす退行・突合を commit の後ろへ動かす退行の検出）
 #   3. 禁止: ブランチ ref から SHA を採るコマンド置換（develop / origin/develop /
-#      refs/heads/develop）が復活していない。commit 行そのものに `develop` を含む
-#      SHA 式が無い
+#      refs/heads/develop）が復活していない。手順 3 でシェル変数へ HEAD を控える
+#      旧方式が復活していない。commit 行そのものに `develop` を含む SHA 式が無い
+#   4. 出現・順序（同期スクリプト）: 同期する SHA を展開の前に固定し、記録は
+#      ミラー書き込みの前に消してミラー成功の後に書く
 # 順序は行番号の単調性のみで、同一フェンス内であること・実行時の競合までは
 # 主張しない（実行時の防波堤は手順 4 の if 連結突合）。
+#
+# 「記録 SHA ≠ 同期内容」の実ミスマッチは静的検査では観測できないので、実 Git
+# fixture の runtime（src-sha-runtime.sh）が記録の実挙動と手順 4 ブロックの実行を
+# 受け持つ。静的検査は文面の固定、runtime は挙動の固定という分担。
 #
 # skip の鍵は検査対象そのものではなく**リポジトリの同一性**（sync スクリプトの
 # 存在。sync-forbidden-patterns と同じ判定軸）: 公開 checkout（スクリプト不在）は
@@ -65,12 +75,23 @@ else
   fi
 fi
 
+# 同期スクリプト側の検査対象。既定は上で解決した実体と同じで、FF_SYNC_SHA_SCRIPT で
+# 差し替えられる（変異実測用）。SKILL 側と同じく、明示指定の不在は skip ではなく失敗。
+SYNC_SCRIPT_UNDER_TEST="${FF_SYNC_SHA_SCRIPT:-$SYNC_SCRIPT}"
+if [[ -n "${FF_SYNC_SHA_SCRIPT:-}" ]]; then
+  echo "⚠ FF_SYNC_SHA_SCRIPT で同期スクリプトの検査対象を差し替えています: $SYNC_SCRIPT_UNDER_TEST" >&2
+fi
+if [[ ! -f "$SYNC_SCRIPT_UNDER_TEST" ]]; then
+  echo "✗ 検査対象の同期スクリプトがありません: $SYNC_SCRIPT_UNDER_TEST" >&2
+  exit 1
+fi
+
 # 実行検査数の侵食ガード（TESTING.md の EXPECTED_CHECKS 方針）。針を 1 本消しても
 # 残りが緑のまま「全 N 件 pass」で通るため、総数を別途固定する。検査を増減したときの
 # 更新箇所は 2 つ: ok / bad を増減させた箇所と、この宣言。
 # 公開 checkout では上の skip 経路が 1 件も検査せずに exit 0 するため、ここには
 # 到達しない（配置による期待値の分岐は不要）。
-EXPECTED_CHECKS=30
+EXPECTED_CHECKS=43
 
 PASS=0
 FAIL=0
@@ -115,11 +136,42 @@ line_of() {
   awk -v pat="$1" 'index($0, pat) { print NR; exit }' "$SKILL"
 }
 
+# 同期スクリプト側の針。SKILL 用の contains / line_of と同型で、対象だけが違う。
+script_contains() {
+  local needle="$1" label="$2" rc=0
+  grep -qF -- "$needle" "$SYNC_SCRIPT_UNDER_TEST" || rc=$?
+  case "$rc" in
+    0) ok "$label" ;;
+    1) bad "${label}（不足: ${needle}）" ;;
+    *) bad "${label}（grep が失敗 rc=${rc}）" ;;
+  esac
+}
+
+script_line_of() {
+  awk -v pat="$1" 'index($0, pat) { print NR; exit }' "$SYNC_SCRIPT_UNDER_TEST"
+}
+
+# 行番号の単調性を 1 件の検査として報告する。アンカーが引けない場合は fail-closed。
+assert_order() {
+  local before="$1" after="$2" ok_msg="$3" bad_msg="$4"
+  if [[ -z "$before" || -z "$after" ]]; then
+    bad "順序検査のアンカーが欠落（before=${before:-<不在>} after=${after:-<不在>}）— 空振りは fail-closed: ${ok_msg}"
+  elif [[ "$before" -lt "$after" ]]; then
+    ok "${ok_msg}（${before} < ${after}）"
+  else
+    bad "${bad_msg}（${before} >= ${after}）"
+  fi
+}
+
 echo "== sync-dev-toolkit SHA 記録契約 =="
 
 # ── 1. 出現 ──────────────────────────────────────────────────────────────────
-contains 'SYNC_SRC_SHA=$(git rev-parse HEAD)' \
-  "手順 3 が同期内容の SHA を HEAD から控える"
+contains '`ff-sync-src-sha` へ書き出す' \
+  "手順 3 が、同期スクリプトの記録先（公開側 clone の .git 配下）を明示している"
+contains 'SYNC_SRC_SHA=$(cat "$(git -C "$PUBLIC" rev-parse --absolute-git-dir)/ff-sync-src-sha" 2>/dev/null || true)' \
+  "手順 4 が同期元 SHA を記録ファイルから読む（シェル変数を跨がせない）"
+contains '記録の不在を「一致」と扱わない' \
+  "記録が無いときに中断することが明記されている（不在を一致にしない）"
 contains 'if [ -n "${SYNC_SRC_SHA:-}" ] && [ "$(git rev-parse HEAD)" = "$SYNC_SRC_SHA" ]; then' \
   "手順 4 が HEAD の不動と SYNC_SRC_SHA の存在を if 連結で突合する（set -e 非依存）"
 contains 'git rev-parse --short "$SYNC_SRC_SHA"' \
@@ -129,7 +181,7 @@ contains 'git checkout --detach origin/develop' \
 contains 'ref から SHA を採ると「同期していない SHA を反映済み」と記録し' \
   "退避時に HEAD 基準の記録が必須になる理由が明記されている"
 contains 'HEAD から再導出してはならない' \
-  "別シェル時は手順 3 からやり直す（再導出の禁止）が明記されている"
+  "記録が無いときに HEAD から再導出することが禁じられている"
 contains 'stale な origin/develop で続行しない' \
   "退避経路の fetch 失敗時に中断することが明記されている"
 
@@ -156,53 +208,64 @@ contains '他差分・dirty・非祖先・判定不能・未知の出力はす�
   "未知・判定不能をすべて全件へ倒す受け皿がある"
 contains 'HEAD から「直前の値」を再導出してはならない' \
   "全件 green SHA を HEAD から再導出する操作を禁じている"
-contains 'failed=0 skipped=0 not-run=0' \
-  "限定ゲートは skip / 未実行を成功と読まない"
-contains 'plugins/ff-dev-toolkit/tests/changelog-public-references/verify.sh' \
-  "限定ゲートが公開 CHANGELOG の SSOT 参照検査を含む"
 contains '検査した tree と HEAD の tree が一致しないため green を記録しない' \
   "dirty なまま得た green を SHA として記録しない"
-contains 'plugins/ff-dev-toolkit/tests/changelog-links/verify.sh' \
-  "footer-only 時に CHANGELOG リンクを検証する"
-contains 'plugins/ff-dev-toolkit/tests/changelog-attribution/verify.sh' \
-  "footer-only 時に CHANGELOG 帰属を検証する"
-contains 'plugins/ff-dev-toolkit/tests/changelog-version/verify.sh' \
-  "footer-only 時に CHANGELOG version を検証する"
+
+# 限定ゲートの 4 suite 呼び出しは **2 箇所**にある — 手順 0 の CHANGELOG_FOOTER_ONLY 分岐と、
+# 手順 8 の footer ブランチ先端での実行（Issue #892）。件数まで固定するのは、
+#   (a) 手順 8 のブロックを丸ごと削除する退行を捕まえるため。単なる `contains` では
+#       手順 0 の側に一致して緑のままになり、「削除しても全 suite が緑」という
+#       検出力ゼロの状態が残る（本 PR のレビュー指摘 W1）
+#   (b) 片方だけ suite を足し引きする退行を捕まえるため。両者は同じ 4 suite でなければ、
+#       footer PR の先端と回し直しとで別のものを検査することになる
+# needle に行末の継続（バックスラッシュ）を含めるのは、散文中の同名の言及を数えないため
+# （`changelog-links/verify.sh` は手順 8 の再実行の説明にも出る）。`contains_exactly` は
+# `grep -cF` で**行数**を数えるので、1 行に 2 回現れる needle には使えない。
+contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-links/verify.sh \' 2 \
+  "限定ゲートの CHANGELOG リンク検査が手順 0 と手順 8 の 2 箇所にある"
+contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-attribution/verify.sh \' 2 \
+  "限定ゲートの CHANGELOG 帰属検査が手順 0 と手順 8 の 2 箇所にある"
+contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-version/verify.sh \' 2 \
+  "限定ゲートの CHANGELOG version 検査が手順 0 と手順 8 の 2 箇所にある"
+contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-public-references/verify.sh 2>&1)" \' 2 \
+  "限定ゲートの公開 CHANGELOG SSOT 参照検査が手順 0 と手順 8 の 2 箇所にある"
+# skip / 未実行を成功と読まない要求も両方に要る。4 suite だけを走らせる分岐で
+# `changelog-links` / `changelog-attribution` が無言の no-op になると代替物が何も残らない。
+contains_exactly "grep -F -- 'failed=0 skipped=0 not-run=0' >/dev/null; then" 2 \
+  "限定ゲートは skip / 未実行を成功と読まない — 手順 0 と手順 8 の 2 箇所"
+
+# 手順 8 が「記録の COMMIT= を footer ブランチの先端にする」ことをブロックの中で読み戻す。
+# 目的そのものを確かめずに終わると、先端を動かす操作（develop 追従・fix commit）を
+# 挟んだ回に記録が先端でなくなり、マージ直前の照合が exit 1 でそこを初めて知る。
+contains 'check-merge-freshness.sh --print-record' \
+  "手順 8 が記録の COMMIT= を読み戻して先端と突合する"
+contains '先端を動かしたなら限定ゲートを回し直すこと' \
+  "読み戻しが失敗したときの次の一手が示されている"
+contains '限定ゲートは、develop 追従を含むすべての push の後に回す' \
+  "限定ゲートを先端が確定した後に回すことが明記されている（順序が記録を無効化しうる）"
 
 # ── 2. 順序（行番号の単調増加） ──────────────────────────────────────────────
-L_RECORD="$(line_of 'SYNC_SRC_SHA=$(git rev-parse HEAD)')"
+L_READ="$(line_of 'SYNC_SRC_SHA=$(cat "$(git -C "$PUBLIC" rev-parse --absolute-git-dir)/ff-sync-src-sha"')"
 L_SYNC="$(awk '$0 == "scripts/sync-dev-toolkit-to-public.sh --target \"$PUBLIC\"" { print NR; exit }' "$SKILL")"
 L_GUARD="$(line_of 'if [ -n "${SYNC_SRC_SHA:-}" ] && [ "$(git rev-parse HEAD)" = "$SYNC_SRC_SHA" ]; then')"
 L_COMMIT="$(line_of 'git -C "$PUBLIC" commit -m "sync: ')"
 L_FULLGATE="$(line_of 'FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh')"
 
-if [[ -z "${L_RECORD}" || -z "${L_SYNC}" || -z "${L_GUARD}" || -z "${L_COMMIT}" ]]; then
-  bad "順序検査のアンカーが欠落（record=${L_RECORD} sync=${L_SYNC} guard=${L_GUARD} commit=${L_COMMIT}）— 空振りは fail-closed"
-else
-  if [[ "${L_RECORD}" -lt "${L_SYNC}" ]]; then
-    ok "順序: SHA の記録が同期実行より前（${L_RECORD} < ${L_SYNC}）"
-  else
-    bad "順序: SHA の記録が同期実行より後ろにある（${L_RECORD} >= ${L_SYNC}）— 動いた後の SHA を記録する退行"
-  fi
-  if [[ "${L_SYNC}" -lt "${L_GUARD}" ]]; then
-    ok "順序: HEAD 突合が同期実行より後（${L_SYNC} < ${L_GUARD}）"
-  else
-    bad "順序: HEAD 突合が同期実行より前にある（${L_SYNC} >= ${L_GUARD}）— 競合窓を検査しない退行"
-  fi
-  if [[ "${L_GUARD}" -lt "${L_COMMIT}" ]]; then
-    ok "順序: HEAD 突合が commit より前（${L_GUARD} < ${L_COMMIT}）"
-  else
-    bad "順序: HEAD 突合が commit より後ろにある（${L_GUARD} >= ${L_COMMIT}）— 突合前に記録が確定する退行"
-  fi
-  # 全件ゲートは同期実行より前になければ意味がない（同期後に回しても不可逆操作は済んでいる）。
-  if [[ -z "${L_FULLGATE}" ]]; then
-    bad "順序検査のアンカーが欠落（fullgate=${L_FULLGATE}）— 空振りは fail-closed"
-  elif [[ "${L_FULLGATE}" -lt "${L_SYNC}" ]]; then
-    ok "順序: 全件実行ゲートが同期実行より前（${L_FULLGATE} < ${L_SYNC}）"
-  else
-    bad "順序: 全件実行ゲートが同期実行より後ろにある（${L_FULLGATE} >= ${L_SYNC}）— 不可逆操作の後で検査する退行"
-  fi
-fi
+# 記録の読み取りが同期実行より前にあると、前回の同期が残した記録を掴む（今回の
+# 同期内容とは無関係な SHA を「反映済み」と記録する退行）。
+assert_order "${L_SYNC}" "${L_READ}" \
+  "順序: 記録の読み取りが同期実行より後" \
+  "順序: 記録の読み取りが同期実行より前にある — 前回の記録を掴む退行"
+assert_order "${L_READ}" "${L_GUARD}" \
+  "順序: HEAD 突合が記録の読み取りより後" \
+  "順序: HEAD 突合が記録の読み取りより前にある — 読む前に判定する退行"
+assert_order "${L_GUARD}" "${L_COMMIT}" \
+  "順序: HEAD 突合が commit より前" \
+  "順序: HEAD 突合が commit より後ろにある — 突合前に記録が確定する退行"
+# 全件ゲートは同期実行より前になければ意味がない（同期後に回しても不可逆操作は済んでいる）。
+assert_order "${L_FULLGATE}" "${L_SYNC}" \
+  "順序: 全件実行ゲートが同期実行より前" \
+  "順序: 全件実行ゲートが同期実行より後ろにある — 不可逆操作の後で検査する退行"
 
 # ── 3. 禁止（ブランチ ref からの採取の復活） ────────────────────────────────
 # コマンド置換の形に限定する（散文の説明や Common Mistakes 表への記載を誤検出
@@ -213,6 +276,44 @@ not_contains '$(git rev-parse --short origin/develop)' \
   "ブランチ ref（origin/develop）から SHA を採るコマンド置換が無い"
 not_contains 'refs/heads/develop' \
   "refs/heads/develop 経由の採取が無い"
+# 旧方式（手順 3 でシェル変数へ HEAD を控える）の復活。値がシェルを跨いで生存
+# しないため、手順が別プロセスへ割れた瞬間に「記録あり」の経路ごと消える。
+not_contains 'SYNC_SRC_SHA=$(git rev-parse HEAD)' \
+  "同期元 SHA をシェル変数へ HEAD から控える旧方式が復活していない"
+
+# ── 4. 同期スクリプト側（記録の生成契約） ────────────────────────────────────
+# 記録するのは「実際に展開した内容の SHA」。HEAD は同期中にも動きうるので、
+# 展開を HEAD で行って記録を後から rev-parse すると両者がずれる（#634 の再発）。
+script_contains 'SRC_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)"' \
+  "同期スクリプトが同期対象の SHA を一度だけ固定する"
+script_contains 'rm -f "$SRC_SHA_RECORD"' \
+  "ミラー書き込みの前に古い記録を消す（中断した同期の記録を残さない）"
+script_contains 'printf '"'"'%s\n'"'"' "$SRC_SHA" > "$SRC_SHA_RECORD"' \
+  "ミラー成功後に同期元 SHA を記録する"
+
+L_SRC_CAPTURE="$(script_line_of 'SRC_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)"')"
+L_ARCHIVE="$(script_line_of 'git -C "$ROOT" archive "$SRC_SHA"')"
+L_RM="$(script_line_of 'rm -f "$SRC_SHA_RECORD"')"
+L_RSYNC="$(script_line_of 'run_rsync "${RSYNC_FLAGS[@]}" --itemize-changes')"
+# アンカーに `\n` を含めないこと — awk の -v 代入はエスケープを解釈するため、
+# `'%s\n'` を含む needle は実改行へ化けて必ず空振りする（この suite で実測）。
+L_WRITE="$(script_line_of '"$SRC_SHA" > "$SRC_SHA_RECORD"')"
+
+assert_order "${L_SRC_CAPTURE}" "${L_ARCHIVE}" \
+  "順序: 同期スクリプトが SHA を固定してから staging を展開する" \
+  "順序: staging の展開が SHA の固定より前にある — 記録 SHA と同期内容がずれる退行"
+assert_order "${L_RM}" "${L_RSYNC}" \
+  "順序: 古い記録の削除がミラー書き込みより前" \
+  "順序: 古い記録の削除がミラー書き込みより後ろにある — 中断時に古い記録が残る退行"
+assert_order "${L_RSYNC}" "${L_WRITE}" \
+  "順序: 記録の書き込みがミラー成功より後" \
+  "順序: 記録の書き込みがミラー成功より前にある — 失敗した同期を「同期済み」にする退行"
+
+if bash "$SCRIPT_DIR/src-sha-runtime.sh" "$SYNC_SCRIPT_UNDER_TEST" "$SKILL"; then
+  ok "同期元 SHA の記録と手順 4 の実行が、別プロセス・HEAD 移動・記録不在を区別する"
+else
+  bad "同期元 SHA の受け渡しの実行契約が壊れている"
+fi
 
 if bash "$SCRIPT_DIR/reuse-runtime.sh" "$FULL_GATE_REUSE_SCRIPT"; then
   ok "全件成功の再利用判定が同一 tree / footer-only / fail-closed を区別する"

@@ -88,10 +88,39 @@ fi
 # ステータスの保存だけでは足りない。set -u による死ではトラップに入った時点の `$?` が
 # **0** になるため（実測）、`exit $?` でも 0 のまま出ていく。末尾に到達したかどうかを
 # センチネルで持ち、到達していないのに 0 なら 1 へ倒す。
+
+# ── 書き込み境界 probe の置き場所 ─────────────────────────────────────────────────
+#
+# **`$TMPDIR` と `/tmp` の外**でなければならない。workspace-write は書き込みルートを
+# どこへ絞っても `/tmp` と `$TMPDIR` は書けるまま残す（実測: cwd を絞った状態でも
+# 親ディレクトリへ書けるのは probe が $TMPDIR 配下にあるときだけ）。つまり $WORK
+# （= mktemp -d = $TMPDIR 由来）の下に probe を置くと、**絞りが効いていなくても緑**に
+# なる。実際、絞り導入前の「workspace-write=許可」arm はこの理由で通っていた
+# （モード軸の測定にはなっていなかった）。
+#
+# そこでリポジトリ配下へ使い捨てディレクトリを作る。EXIT トラップで必ず消すので、
+# untracked として見えるのは本 suite の実行中だけ。作れなければ probe を skip する
+# （$TMPDIR へ退避すると上の false green が戻るため、退避先は用意しない）。
+#
+# **作るのは実際に使う直前**（ensure_probe_root）。ここで無条件に作ると、codex も
+# perl も無くて層 2 が丸ごと skip される環境にまで使い捨てディレクトリが生えるうえ、
+# 生成が下の EXIT トラップ設置**より前**になり、その間に死ぬと取り残す。
+# 変数だけ先に初期化するのは、トラップと set -u のため。
+PROBE_ROOT=""
+ensure_probe_root() {
+  [ -z "$PROBE_ROOT" ] || return 0
+  local repo=""
+  repo="$(git -C "$PLUGIN_ROOT" rev-parse --show-toplevel 2>/dev/null)" || return 0
+  [ -n "$repo" ] || return 0
+  mkdir -p "${repo}/.ff-sandbox-probe.$$" 2>/dev/null || return 0
+  PROBE_ROOT="${repo}/.ff-sandbox-probe.$$"
+}
+
 FF_REACHED_END=0
 ff_cleanup() {
   ff_rc=$?
   rm -rf "$WORK"
+  if [ -n "$PROBE_ROOT" ]; then rm -rf "$PROBE_ROOT"; fi
   if [ "$FF_REACHED_END" != "1" ] && [ "$ff_rc" -eq 0 ]; then
     echo "✗ ${SUITE_NAME} verify: 末尾に到達せず終了した（set -e / set -u による途中死。残りのアサーションは 1 件も実行されていない）" >&2
     ff_rc=1
@@ -248,23 +277,69 @@ registry_check() {
 #
 # 起動回数と自分の名前も記録する。回数を見ないと、アダプタが 2 回起動する形
 # （プリフライト + 本番など）で**最後の 1 回だけ**が採点され、1 回目の argv が
-# 検査を素通りする。
+# 検査を素通りする。codex の implement は実際にその形になった（起動前の
+# `codex exec --help` による -C/--cd 能力確認）ので、**起動ごとの argv も**
+# `launch.<n>/` へ残し、回数と 1 回目の中身の両方を固定できるようにする。
+# 期待起動回数は expect_sandbox の引数にする — CLI 決め打ちの例外にすると、
+# 次にプリフライトを足したアダプタが無検査で通ってしまう。
+#
+# codex の stub は `exec --help` に応答する。応答内容は FF_STUB_CODEX_HELP の指す
+# ファイルから読むので、`-C/--cd` を持たない**旧版の help** も fixture として
+# 与えられる（= 能力確認の fail-loud を負例で測れる）。
 mkdir -p "$WORK/bin"
 for cli in claude codex copilot grok; do
   {
     echo '#!/usr/bin/env bash'
     echo 'd="$ARGV_DIR"'
     echo 'n=$(cat "$d/launches" 2>/dev/null || echo 0)'
-    echo 'printf "%s" "$((n + 1))" > "$d/launches"'
+    echo 'n=$((n + 1))'
+    echo 'printf "%s" "$n" > "$d/launches"'
     echo 'printf "%s" "$(basename "$0")" > "$d/binary"'
     echo 'rm -f "$d"/arg.* 2>/dev/null'
+    echo 'mkdir -p "$d/launch.$n"'
     echo 'i=0'
-    echo 'for a in "$@"; do printf "%s" "$a" > "$d/arg.$i"; i=$((i + 1)); done'
+    echo 'for a in "$@"; do'
+    echo '  printf "%s" "$a" > "$d/arg.$i"'
+    echo '  printf "%s" "$a" > "$d/launch.$n/arg.$i"'
+    echo '  i=$((i + 1))'
+    echo 'done'
     echo 'printf "%s" "$i" > "$d/count"'
+    echo 'printf "%s" "$i" > "$d/launch.$n/count"'
+    echo 'if [ "$(basename "$0")" = "codex" ] && [ "${1:-}" = "exec" ] && [ "${2:-}" = "--help" ]; then'
+    echo '  cat "${FF_STUB_CODEX_HELP:-/dev/null}"'
+    echo '  exit 0'
+    echo 'fi'
     echo 'echo "stub output"'
   } > "$WORK/bin/$cli"
   chmod +x "$WORK/bin/$cli"
 done
+
+# `codex exec --help` の転記（codex-cli 0.149.1）。実 CLI の出力そのままではなく
+# アダプタが判定に使う行だけを写す。legacy 版は `-C, --cd` の行だけを落としたもので、
+# 「このオプションを持たない codex」を再現する。
+CODEX_HELP_MODERN="$WORK/codex-help-modern.txt"
+CODEX_HELP_LEGACY="$WORK/codex-help-legacy.txt"
+cat > "$CODEX_HELP_MODERN" <<'HELP'
+  -s, --sandbox <SANDBOX_MODE>
+          Select the sandbox policy to use when executing model-generated shell commands
+
+          [possible values: read-only, workspace-write, danger-full-access]
+
+  -C, --cd <DIR>
+          Tell the agent to use the specified directory as its working root
+
+      --add-dir <DIR>
+          Additional directories that should be writable alongside the primary workspace
+HELP
+cat > "$CODEX_HELP_LEGACY" <<'HELP'
+  -s, --sandbox <SANDBOX_MODE>
+          Select the sandbox policy to use when executing model-generated shell commands
+
+          [possible values: read-only, workspace-write, danger-full-access]
+
+      --add-dir <DIR>
+          Additional directories that should be writable alongside the primary workspace
+HELP
 
 # ── 実行環境からの分離（Issue #374 / #378） ──────────────────────────────────────
 # 利用者が export している MULTI_AGENT_* で前提が崩れないよう、アダプタ起動時に
@@ -283,24 +358,31 @@ mkdir -p "$WORK/argv" "$WORK/grok-home-empty" "$WORK/staging" "$WORK/codex"
 ARGC=0
 LAUNCHES=0
 BINARY=""
+ADAPTER_RC=0
+# stub の codex が `exec --help` に返す内容。既定は現行の help（`-C, --cd` あり）。
+# 旧版検出の負例だけがここを差し替える。
+STUB_CODEX_HELP=""
 run_adapter() {
   local cli="$1" task="$2" output_mode="${3:-staging}" adapter raw
   local output_args=()
   adapter="$(adapter_file "$cli")"
   rm -f "$WORK/argv"/arg.* "$WORK/argv/count" "$WORK/argv/launches" \
         "$WORK/argv/binary" 2>/dev/null || true
+  rm -rf "$WORK/argv"/launch.* 2>/dev/null || true
   if [ "$task" = "implement" ] && [ "$output_mode" = "inline" ]; then
     output_args+=(--inline-output)
   else
     output_args+=(--staging-dir "$WORK/staging")
   fi
+  ADAPTER_RC=0
   run_isolated \
     PATH="$WORK/bin:$PATH" ARGV_DIR="$WORK/argv" CODEX_HOME="$WORK/codex" \
     GROK_HOME="$WORK/grok-home-empty" \
+    FF_STUB_CODEX_HELP="${STUB_CODEX_HELP:-$CODEX_HELP_MODERN}" \
     bash "$ADAPTERS_DIR/$adapter" "$PERSPECTIVE" "$WORK/out.md" \
     --base HEAD --timeout 30 --task-type "$task" \
     "${output_args[@]}" \
-    --description "stub task" >"$WORK/stdout.log" 2>"$WORK/stderr.log" || true
+    --description "stub task" >"$WORK/stdout.log" 2>"$WORK/stderr.log" || ADAPTER_RC=$?
 
   # ここを `[ -f X ] && ARGC=...` の形で書くと、ファイル不在時に**関数が rc=1 を
   # 返し**、set -e が呼び出し側で suite 全体を殺す。殺されるのは「CLI が起動して
@@ -326,6 +408,24 @@ run_adapter() {
 }
 
 arg_at() { cat "$WORK/argv/arg.$1" 2>/dev/null || true; }
+
+# 起動ごとの argv。arg_at / ARGC は**最後の起動**しか見ないので、プリフライトを
+# 持つアダプタでは 1 回目の中身がこちらからしか読めない。
+launch_arg_at() { cat "$WORK/argv/launch.$1/arg.$2" 2>/dev/null || true; }
+launch_argc() {
+  local raw
+  raw="$(cat "$WORK/argv/launch.$1/count" 2>/dev/null || true)"
+  case "$raw" in (''|*[!0-9]*) raw=0 ;; esac
+  printf '%s' "$raw"
+}
+
+# 期待どおりのプリフライト（`codex exec --help` だけ）かどうか。引数を 2 つに固定して
+# いるのは、能力確認の名を借りて本番相当の argv を流す形を通さないため。
+launch_is_help_probe() {
+  [ "$(launch_argc "$1")" = "2" ] \
+    && [ "$(launch_arg_at "$1" 0)" = "exec" ] \
+    && [ "$(launch_arg_at "$1" 1)" = "--help" ]
+}
 
 argv_has() {
   local want="$1" i=0
@@ -401,6 +501,46 @@ scan_sandbox() {
   done
 }
 
+# scan_cd — 書き込みルートを絞る `-C/--cd` を argv 中から**全件**走査する。
+# scan_sandbox と同じ理由で 4 つの形を見る（別形の取りこぼしは「渡していない」と
+# 同じ顔で緑になる）。`-c`（設定上書き）とは大文字小文字で別物なので、case の
+# パターンは `-C` を大文字のまま書くこと — 実 argv には `-c` が複数含まれる。
+CD_COUNT=0
+CD_FORM=""
+CD_VALUE=""
+CD_VALUE_PRESENT=0
+scan_cd() {
+  CD_COUNT=0; CD_FORM=""; CD_VALUE=""; CD_VALUE_PRESENT=0
+  local i=0 a
+  while [ "$i" -lt "$ARGC" ]; do
+    a="$(arg_at "$i")"
+    case "$a" in
+      -C?*)
+        CD_COUNT=$((CD_COUNT + 1))
+        if [ "$CD_COUNT" -eq 1 ]; then
+          CD_FORM="attached"; CD_VALUE="${a#-C}"; CD_VALUE_PRESENT=1
+        fi
+        ;;
+      -C|--cd)
+        CD_COUNT=$((CD_COUNT + 1))
+        if [ "$CD_COUNT" -eq 1 ]; then
+          CD_FORM="separate"
+          if [ "$((i + 1))" -lt "$ARGC" ]; then
+            CD_VALUE="$(arg_at "$((i + 1))")"; CD_VALUE_PRESENT=1
+          fi
+        fi
+        ;;
+      --cd=*)
+        CD_COUNT=$((CD_COUNT + 1))
+        if [ "$CD_COUNT" -eq 1 ]; then
+          CD_FORM="inline"; CD_VALUE="${a#--cd=}"; CD_VALUE_PRESENT=1
+        fi
+        ;;
+    esac
+    i=$((i + 1))
+  done
+}
+
 dump_argv() {
   local i=0
   while [ "$i" -lt "$ARGC" ]; do
@@ -449,11 +589,15 @@ done
 
 # ── 層 1: 形と値の契約 ───────────────────────────────────────────────────────────
 #
-# expect_sandbox <cli> <task-type> <期待>
+# expect_sandbox <cli> <task-type> <期待> [期待起動回数]
 #   <期待> は "none" | "boolean" | 値そのもの（value 形の CLI のとき）
+#   <期待起動回数> は既定 1。プリフライトを持つ経路だけが 2 以上を宣言する。
+#   宣言より多くても少なくても赤にする — 「最後の 1 回しか記録されない」以上、
+#   回数がずれた実行は未検査の argv を抱えている。
 COVERED=""
 expect_sandbox() {
   local cli="$1" task="$2" want="$3" label="${1}/${2}" enum want_binary
+  local want_launches="${4:-1}"
 
   # 検査した (CLI, task-type) の組を記録する。expect_sandbox の呼び出しは
   # DECLARED_CLIS で回さずリテラルで並べている（期待値が CLI ごとに違い、リテラルの
@@ -477,8 +621,8 @@ expect_sandbox() {
     bad "${label}: 起動された実行ファイルが '${BINARY}'（期待: ${want_binary}）— 別 CLI を起動している、または stub を経由していない"
     return
   fi
-  if [ "$LAUNCHES" != "1" ]; then
-    bad "${label}: CLI の起動回数が ${LAUNCHES} 回（期待: 1 回）— 記録されるのは最後の 1 回だけなので、他の起動の argv は未検査のまま素通りする"
+  if [ "$LAUNCHES" != "$want_launches" ]; then
+    bad "${label}: CLI の起動回数が ${LAUNCHES} 回（期待: ${want_launches} 回）— arg.* に残るのは最後の 1 回だけなので、宣言と食い違う起動の argv は未検査のまま素通りする"
     return
   fi
 
@@ -547,9 +691,13 @@ done
 # ではない。codex 0.144.5 の実測では read-only / workspace-write はどちらも既定で
 # ネットワーク遮断、danger-full-access だけが開放。つまり implement を
 # danger-full-access へ寄せる退行は書き込み境界とネットワークの両方を同時に失う。
+#
+# implement だけ起動回数が 2 なのは、アダプタが本番起動の直前に
+# `codex exec --help` で `-C/--cd` の有無を確かめるため（下の「書き込み境界を
+# staging へ絞る」節を参照）。
 expect_sandbox codex-cli review    read-only
 expect_sandbox codex-cli explore   read-only
-expect_sandbox codex-cli implement workspace-write
+expect_sandbox codex-cli implement workspace-write 2
 
 # grok: 同じ思想のプロファイル名（workspace が CWD 書き込みを許す側）。
 #
@@ -598,6 +746,84 @@ if argv_has_pair --deny-tool write && argv_has_pair --deny-tool shell \
 else
   bad "copilot-cli/implement inline: 書き込み permission deny が不足"
   dump_argv
+fi
+
+echo "-- implement の書き込み境界を staging へ絞る（codex exec -C） --"
+#
+# `--sandbox workspace-write` が許すのは「エージェントの作業ルート配下」であって
+# リポジトリ全体ではない。そのルートを決めるのが `-C/--cd` で、implement だけが
+# staging を指す。ここは argv 側の固定で、実際に境界が動くことは層 2 が実 CLI で測る。
+#
+# review / explore / inline に**付かない**ことも見る。付いていたら read-only 経路の
+# 作業ルートまで staging へ移ったということで、リポジトリを起点にした相対パスの
+# 読み取りが黙って壊れる。
+
+run_adapter codex-cli implement
+scan_cd
+if [ "$CD_COUNT" -eq 0 ]; then
+  bad "codex-cli/implement: -C/--cd が argv に無い — 書き込み境界がリポジトリ全体のまま（staging 外への書き込みをサンドボックスが止めない）"
+  dump_argv
+elif [ "$CD_COUNT" -gt 1 ]; then
+  bad "codex-cli/implement: -C/--cd を ${CD_COUNT} 個渡している — 値が妥当でも clap は重複を拒否し、起動前に死ぬ"
+  dump_argv
+elif [ "$CD_VALUE_PRESENT" -eq 0 ]; then
+  bad "codex-cli/implement: -C に値が続いていない（期待: ${WORK}/staging）"
+  dump_argv
+elif [ "$CD_VALUE" = "$WORK/staging" ]; then
+  ok "codex-cli/implement: -C ${WORK}/staging（書き込みルート = staging）"
+else
+  bad "codex-cli/implement: -C の値が '${CD_VALUE}'（期待: ${WORK}/staging）— staging 以外を書き込みルートにしている"
+  dump_argv
+fi
+
+# 能力確認の起動が「help を見ただけ」であることを固定する。ここを見ないと、
+# プリフライトの名目で本番相当の argv を投げる形（= 課金される 2 回目）が
+# 起動回数の宣言だけで通ってしまう。
+if [ "$LAUNCHES" = "2" ] && launch_is_help_probe 1; then
+  ok "codex-cli/implement: 1 回目の起動は 'exec --help' のみ（-C 能力確認）で、本番は 2 回目"
+else
+  bad "codex-cli/implement: プリフライトが 'exec --help' 単独ではない（launches=${LAUNCHES} / 1 回目 argc=$(launch_argc 1)）"
+  dump_argv
+fi
+
+for t in review explore; do
+  run_adapter codex-cli "$t"
+  scan_cd
+  if [ "$CD_COUNT" -eq 0 ]; then
+    ok "codex-cli/${t}: -C/--cd を渡さない（read-only 経路の作業ルートは動かさない）"
+  else
+    bad "codex-cli/${t}: -C/--cd を渡している（form=${CD_FORM} value=${CD_VALUE}）— read-only の作業ルートまで staging へ移している"
+    dump_argv
+  fi
+done
+
+run_adapter codex-cli implement inline
+scan_cd
+if [ "$CD_COUNT" -eq 0 ]; then
+  ok "codex-cli/implement inline: -C/--cd を渡さない（書かない実行に書き込みルートは要らない）"
+else
+  bad "codex-cli/implement inline: -C/--cd を渡している（form=${CD_FORM} value=${CD_VALUE}）"
+  dump_argv
+fi
+
+# 旧版 codex（`-C/--cd` を持たない）の検出。ここが無いと、絞り込みは
+# 「新しい codex が入っているマシンでだけ効く保護」になり、古い CLI では
+# **リポジトリ全体を書ける境界のまま黙って走る**。stub の help を差し替えて
+# 旧版を再現し、fail-loud を実測する。
+STUB_CODEX_HELP="$CODEX_HELP_LEGACY"
+run_adapter codex-cli implement
+STUB_CODEX_HELP=""
+if [ "$ADAPTER_RC" -eq 0 ]; then
+  bad "codex-cli/implement: -C/--cd を持たない codex でも成功した（広い境界のまま走っている）"
+  dump_argv
+elif [ "$LAUNCHES" != "1" ] || ! launch_is_help_probe 1; then
+  bad "codex-cli/implement: 旧版検出後も CLI を起動している（launches=${LAUNCHES}）— 検出しただけで走らせては意味がない"
+  dump_argv
+elif grep -q -- '-C, --cd' "$WORK/stderr.log"; then
+  ok "codex-cli/implement: -C/--cd を持たない codex を rc=${ADAPTER_RC} で拒否し、本番起動を行わない"
+else
+  bad "codex-cli/implement: 旧版を拒否したが、理由（-C, --cd の不在）が stderr に出ていない"
+  sed 's/^/    | /' "$WORK/stderr.log" >&2 2>/dev/null || true
 fi
 
 # codex: implement がネットワーク遮断を明示的に pin していること。
@@ -861,6 +1087,57 @@ else
   fi
 fi
 
+# codex: アダプタが渡す `-C <staging>` を、実 CLI が**その位置で**受け付けるか。
+#
+# 上の書き込み境界 probe は `codex sandbox`（別サブコマンド）で seatbelt の床を測る
+# ものなので、`codex exec` の argv に `-C` が生えているかは見ていない。help に
+# `-C, --cd` があることの確認はアダプタ側（require_cd_capability）がやるが、それは
+# help の文字列照合であって、アダプタが組み立てる**並び**での受理ではない。
+#
+# 判定は rc ではなく clap のエラー文字列で行う（認証もディレクトリ信頼も非 0 で
+# 終わるため rc では区別できない）。実測（0.149.1）: アダプタと同じ並びに `-C <dir>` を
+# 足すと `No prompt provided via stdin.` で rc=1 — argv 解析は通り、**モデルにも
+# git 検査にも到達せず**に終わる。未知フラグなら `error: unexpected argument ... found`
+# で rc=2。使い捨て CODEX_HOME で走らせるのは strict_probe と同じ理由（利用者の
+# config.toml を読ませない・認証が無いのでモデルへ到達しない）。
+#
+# 陽性対照が要る。対照なしだと「未知フラグを拒否しない CLI」でも緑になり、arm は
+# 何も測っていないのに通る。
+LAYER2_TOTAL=$((LAYER2_TOTAL + 1))
+if ! command -v codex >/dev/null 2>&1; then
+  skipped "codex-cli: codex が PATH に無いため exec の argv が -C を受け付けるか確認していない"
+elif ! command -v perl >/dev/null 2>&1; then
+  skipped "codex-cli: perl が無く実行時間を上限できないため exec の argv が -C を受け付けるか確認していない"
+else
+  mkdir -p "$WORK/codex-clean" "$WORK/cd-probe"
+  ARGV_REJECT_RE='unexpected argument'
+  # argv_probe <追加引数...> — アダプタと同じ並びで codex exec を起動し、
+  # argv 解析で拒否されたら 0、通ったら 1 を返す。
+  argv_probe() {
+    CODEX_HOME="$WORK/codex-clean" perl -e 'alarm shift; exec @ARGV' 30 \
+      codex exec - --sandbox workspace-write -c "${CODEX_PIN_KEY}=false" "$@" \
+      </dev/null >"$WORK/argv.out" 2>"$WORK/argv.err" || true
+    awk -v re="$ARGV_REJECT_RE" 'index($0, re) { f = 1 } END { exit(f ? 0 : 1) }' "$WORK/argv.err"
+  }
+  if ! argv_probe --ff-probe-no-such-flag "$WORK/cd-probe"; then
+    bad "codex-cli: 未知フラグが argv 解析で拒否されなかった（陽性対照の失敗）— この probe では -C の受理を判定できない"
+  else
+    LAYER2_RUN=$((LAYER2_RUN + 1))
+    if argv_probe -C "$WORK/cd-probe"; then
+      bad "codex-cli: アダプタと同じ並びの -C <dir> が argv 解析で拒否された — implement が起動そのものに失敗する（成果物は INCOMPLETE になり、原因は argv だと分からない）"
+      sed 's/^/    | /' "$WORK/argv.err" >&2
+    else
+      ok "codex-cli: 実 CLI が exec の argv で -C <dir> を受け付ける（アダプタと同じ並びで確認）"
+    fi
+  fi
+fi
+
+# 2 つの arm は同じ理由で同時に落ちる。理由文だけを差し替えて 2 行出す。
+skip_narrow_probes() { # <理由（「〜ため」に続く形）>
+  skipped "codex-cli: ${1}ため書き込み境界の表を再測していない"
+  skipped "codex-cli: ${1}ため -C による staging への絞り込みを再測していない"
+}
+
 # codex: 書き込み境界の実測を再現する。
 #
 # アダプタのコメントが載せている write×network の表のうち、**write 軸だけ**は
@@ -869,45 +1146,105 @@ fi
 # network 軸は外向きリクエストが要り、run-all の並び（静的 → ネットワーク →
 # 破壊的 → 低速）における本 suite の位置と衝突するのでここでは測らない
 # — そちらは実測の記録として残すに留める（アダプタのコメント参照）。
-LAYER2_TOTAL=$((LAYER2_TOTAL + 1))
+LAYER2_TOTAL=$((LAYER2_TOTAL + 2))
 if ! command -v perl >/dev/null 2>&1; then
-  skipped "codex-cli: perl が無く実行時間を上限できないため書き込み境界の表を再測していない"
-elif command -v codex >/dev/null 2>&1; then
-  SBX="$WORK/sandbox-probe"
-  mkdir -p "$SBX" "$WORK/codex-clean"
-  # サンドボックスの書き込みルートは CLI が継承する CWD なので、`cd` してから
-  # 起動する。`-C/--cd` は使えない — codex sandbox の -C は --permission-profile を
-  # 同時に要求し、指定しないと usage エラーで終わる（実測）。
-  # 実行時間の上限を必ず掛ける。掛けないと、止まった codex sandbox で suite ごと
-  # 抱え込む（実測で 90 秒超えて外から kill する形になった）。この repo は macOS を
-  # 主対象にしており timeout(1) が無いので、strict_probe と同じ perl の alarm を使う。
-  probe_write() {
-    rm -f "$SBX/probe.txt" 2>/dev/null || true
-    ( cd "$SBX" && CODEX_HOME="$WORK/codex-clean" \
-        perl -e 'alarm shift; exec @ARGV' 30 \
-        codex sandbox -c "sandbox_mode=$1" -- /bin/sh -c 'echo x > ./probe.txt' \
-    ) </dev/null >/dev/null 2>&1 || true
-    [ -f "$SBX/probe.txt" ]
-  }
-  LAYER2_RUN=$((LAYER2_RUN + 1))
-  # 陽性対照を先に取る。「書けなかった」は境界が締まったのか probe が起動すら
-  # していないのかを区別できず、対照が無いと後者を「境界が変わった」と誤診する
-  # （実際に -C の usage エラーでその誤診が出た）。danger-full-access で書けなければ
-  # 判定材料が無いので、境界の主張はせず probe 側の異常として報告する。
-  if ! probe_write danger-full-access; then
-    bad "codex-cli: 書き込み境界 probe が起動していない（danger-full-access でも書けなかった）— codex sandbox の呼び出し形が変わった可能性。境界の判定はできていない"
+  skip_narrow_probes "perl が無く実行時間を上限できない"
+elif ! command -v codex >/dev/null 2>&1; then
+  skip_narrow_probes "codex が PATH に無い"
+else
+  # probe ディレクトリは**ここで初めて作る**。上の 2 分岐（層 2 が丸ごと skip される
+  # 環境）では 1 つも作らない。順序は「生成 → 判定」で、逆にすると下の -z 判定が
+  # 常に真になって 2 arm が黙って skip され、`層2: N/N` だけが減って suite は緑の
+  # まま終わる（この suite が塞いでいる false green そのもの）。
+  ensure_probe_root
+  if [ -z "$PROBE_ROOT" ]; then
+    # $TMPDIR へ退避しない。workspace-write は $TMPDIR / /tmp を常に書けるまま残すので、
+    # そこで測ると「絞りが効いていなくても緑」になる（この suite が塞いだ穴そのもの）。
+    skip_narrow_probes "リポジトリ配下に probe ディレクトリを作れない"
   else
-    ro_wrote=no; ww_wrote=no
-    probe_write read-only       && ro_wrote=yes
-    probe_write workspace-write && ww_wrote=yes
-    if [ "$ro_wrote" = "no" ] && [ "$ww_wrote" = "yes" ]; then
-      ok "codex-cli: 書き込み境界の実測が今も成立（read-only=拒否 / workspace-write=許可）"
+    mkdir -p "$WORK/codex-clean"
+    # 実行時間の上限を必ず掛ける。掛けないと、止まった codex sandbox で suite ごと
+    # 抱え込む（実測で 90 秒超えて外から kill する形になった）。この repo は macOS を
+    # 主対象にしており timeout(1) が無いので、strict_probe と同じ perl の alarm を使う。
+    #
+    # サンドボックスの書き込みルートは CLI が継承する CWD なので、`cd` してから
+    # 起動する。`codex sandbox` の `-C/--cd` は使えない — こちらの -C は
+    # --permission-profile を同時に要求し、指定しないと usage エラーで終わる（実測、
+    # 0.149.1 でも再現）。`codex exec` の `-C`（アダプタが渡す方）とは別物で、測って
+    # いるのは両者が共有する **seatbelt の床**（作業ルート = 書き込み境界）である。
+    probe_run() { # <mode> <cwd> <sh -c で走らせる文字列>
+      ( cd "$2" && CODEX_HOME="$WORK/codex-clean" \
+          perl -e 'alarm shift; exec @ARGV' 30 \
+          codex sandbox -c "sandbox_mode=$1" -- /bin/sh -c "$3" \
+      ) </dev/null >/dev/null 2>&1 || true
+    }
+
+    # ── モード軸（read-only=拒否 / workspace-write=許可） ──
+    SBX="$PROBE_ROOT/mode"
+    mkdir -p "$SBX"
+    probe_write() {
+      rm -f "$SBX/probe.txt" 2>/dev/null || true
+      probe_run "$1" "$SBX" 'echo x > ./probe.txt'
+      [ -f "$SBX/probe.txt" ]
+    }
+    LAYER2_RUN=$((LAYER2_RUN + 1))
+    # 陽性対照を先に取る。「書けなかった」は境界が締まったのか probe が起動すら
+    # していないのかを区別できず、対照が無いと後者を「境界が変わった」と誤診する
+    # （実際に -C の usage エラーでその誤診が出た）。danger-full-access で書けなければ
+    # 判定材料が無いので、境界の主張はせず probe 側の異常として報告する。
+    if ! probe_write danger-full-access; then
+      bad "codex-cli: 書き込み境界 probe が起動していない（danger-full-access でも書けなかった）— codex sandbox の呼び出し形が変わった可能性。境界の判定はできていない"
     else
-      bad "codex-cli: 書き込み境界が変わった（read-only で書けた=${ro_wrote} / workspace-write で書けた=${ww_wrote}）— implement に workspace-write を選んだ根拠が崩れている"
+      ro_wrote=no; ww_wrote=no
+      probe_write read-only       && ro_wrote=yes
+      probe_write workspace-write && ww_wrote=yes
+      if [ "$ro_wrote" = "no" ] && [ "$ww_wrote" = "yes" ]; then
+        ok "codex-cli: 書き込み境界の実測が今も成立（read-only=拒否 / workspace-write=許可）"
+      else
+        bad "codex-cli: 書き込み境界が変わった（read-only で書けた=${ro_wrote} / workspace-write で書けた=${ww_wrote}）— implement に workspace-write を選んだ根拠が崩れている"
+      fi
+    fi
+
+    # ── 絞り込み軸（作業ルートを staging 相当へ移すと、その外は書けない） ──
+    #
+    # アダプタが implement へ渡す `codex exec -C <staging>` の根拠。ここで測るのは
+    # 「作業ルートの外＝親ディレクトリへ書けないこと」「作業ルートの中へは書けること」
+    # 「作業ルートの外を**読む**のは通ること」の 3 点で、AC の 3 行に 1:1 で対応する。
+    #
+    # 置き場所がリポジトリ配下なのは必須条件（$TMPDIR は絞りの有無に関わらず書ける）。
+    # 加えて親ディレクトリを 1 段挟んでいる: 絞りが効かなかった場合に落ちる先が
+    # リポジトリ root ではなく probe 配下になるので、失敗しても作業ツリーを汚さない。
+    NARROW_PARENT="$PROBE_ROOT/narrow"
+    NARROW_CWD="$NARROW_PARENT/inner"
+    mkdir -p "$NARROW_CWD"
+    probe_parent_write() {
+      rm -f "$NARROW_PARENT/PARENT_WRITE.txt" 2>/dev/null || true
+      probe_run "$1" "$NARROW_CWD" 'echo x > ../PARENT_WRITE.txt'
+      [ -f "$NARROW_PARENT/PARENT_WRITE.txt" ]
+    }
+    LAYER2_RUN=$((LAYER2_RUN + 1))
+    if ! probe_parent_write danger-full-access; then
+      bad "codex-cli: 絞り込み probe が起動していない（danger-full-access でも親へ書けなかった）— 拒否の観測が「絞れている」根拠にならないため判定を保留する"
+    else
+      rm -f "$NARROW_PARENT/PARENT_WRITE.txt" 2>/dev/null || true
+      narrow_parent=denied
+      probe_parent_write workspace-write && narrow_parent=wrote
+      rm -f "$NARROW_CWD/own.txt" 2>/dev/null || true
+      probe_run workspace-write "$NARROW_CWD" 'echo x > ./own.txt'
+      narrow_own=denied
+      [ -f "$NARROW_CWD/own.txt" ] && narrow_own=wrote
+      rm -f "$NARROW_CWD/read-ok.txt" 2>/dev/null || true
+      probe_run workspace-write "$NARROW_CWD" \
+        "wc -l < '$ADAPTERS_DIR/codex-cli-adapter.sh' > ./read-ok.txt"
+      narrow_read=denied
+      [ -s "$NARROW_CWD/read-ok.txt" ] && narrow_read=ok
+      if [ "$narrow_parent" = "denied" ] && [ "$narrow_own" = "wrote" ] && [ "$narrow_read" = "ok" ]; then
+        ok "codex-cli: 作業ルートを絞ると外への書き込みだけが止まる（親=拒否 / ルート内=許可 / ルート外の読み取り=許可）"
+      else
+        bad "codex-cli: 絞り込みの前提が崩れた（親への書き込み=${narrow_parent} / ルート内への書き込み=${narrow_own} / ルート外の読み取り=${narrow_read}）— implement へ -C <staging> を渡す根拠が成立していない"
+      fi
     fi
   fi
-else
-  skipped "codex-cli: codex が PATH に無いため書き込み境界の表を再測していない"
 fi
 
 echo

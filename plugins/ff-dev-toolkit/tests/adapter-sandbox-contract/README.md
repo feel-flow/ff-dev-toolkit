@@ -48,9 +48,30 @@ codex は**引数解析の段階で落ちる**ので CLI 本体は 1 バイト�
 |---|---|
 | codex-cli | 宣言列挙 ⊆ `codex exec --help` の `[possible values:]` |
 | codex-cli | アダプタが pin する設定キー `sandbox_workspace_write.network_access` が今も認識されるか（`--strict-config`） |
+| codex-cli | アダプタと同じ argv の並びで `codex exec` が `-C <dir>` を受け付けるか（clap のエラー文字列で判定。未知フラグを陽性対照に置く） |
 | codex-cli | 書き込み境界の再測（`codex sandbox`: read-only=拒否 / workspace-write=許可） |
+| codex-cli | **作業ルートの絞り込みの再測**（作業ルートの外へは書けない / 中へは書ける / 外を**読む**のは通る） |
 | grok-cli | 「列挙を公表しない」という**前提そのもの**がまだ成り立つか |
 | claude-code / copilot-cli | `--help` に `--sandbox` が現れていないか（`none` 宣言の前提） |
+
+### probe の置き場所は検査の一部（$TMPDIR に置くと無意味になる）
+
+書き込み境界の probe は **`$TMPDIR` と `/tmp` の外**に置かなければならない。`workspace-write` は作業ルートをどこへ絞っても `/tmp` と `$TMPDIR` は書けるまま残すからで、そこに probe を置くと**絞りが効いていなくても書き込みが成功する**。
+
+これは仮説ではなく、この suite が実際に踏んでいた穴である。絞り込みを入れる前の「workspace-write=許可」arm は `mktemp -d`（= `$TMPDIR`）配下で測っていたので、**作業ルートの境界ではなく tmpdir の例外**によって通っていた。実測（probe を `$TMPDIR` 配下へ戻すと）:
+
+| probe の置き場所 | モード軸の arm | 作業ルートの外（親）への書き込み |
+|---|---|---|
+| リポジトリ配下（現行） | ✓ 緑 | **拒否**（絞りが観測できる） |
+| `$TMPDIR` 配下（旧） | ✓ 緑 | 許可（絞りが観測できない） |
+
+同じ実行でモード軸だけが緑になることが、旧 arm が別の理由で通っていた証拠になっている。したがって probe root はリポジトリ配下の使い捨てディレクトリ（`.ff-sandbox-probe.<pid>`、EXIT トラップで削除）に作り、**作れなければ `$TMPDIR` へ退避せず skip する**。退避すると上の false green がそのまま戻るため。
+
+作るのは**層 2 の probe を実際に使う直前**（`ensure_probe_root`）。codex も perl も無くて層 2 が丸ごと skip される環境に使い捨てディレクトリを生やさないためと、生成を EXIT トラップの設置より後ろに置くため。順序は「生成 → `-z` 判定」で、逆にすると判定が常に真になって 2 arm が黙って skip され、`層2: N/N` だけが減って suite は緑のまま終わる。
+
+このディレクトリはリポジトリ root に作られるので、**`.gitignore` は配布先の root にも要る**。このリポジトリの root と `oss/ff-dev-toolkit/.gitignore`（公開リポジトリの root へ展開される）を対で維持すること。
+
+絞り込みの probe は親ディレクトリを 1 段挟む（`<probe root>/narrow/inner` を作業ルートにする）。絞りが効かなかったときに書き込みが落ちる先がリポジトリ root ではなく probe 配下になるので、**失敗しても作業ツリーを汚さない**。
 
 実 CLI を起動するのは `--help`、`codex sandbox`（モデルを呼ばずローカル完結）、`codex exec --strict-config`（使い捨て `CODEX_HOME` なので認証が無く、モデルに到達する前に終わる）だけ。ネットワーク・課金・エージェント実行のいずれも伴わない。
 
@@ -60,8 +81,8 @@ codex は**引数解析の段階で落ちる**ので CLI 本体は 1 バイト�
 
 | CLI | 形 | 宣言列挙 | live 照合 | 転記元 |
 |---|---|---|---|---|
-| codex-cli | 値つき | `read-only` `workspace-write` `danger-full-access` | 可 | codex-cli 0.144.5 / `codex exec --help` の `[possible values: ...]` |
-| grok-cli | 値つき | **（空）** | 不可 | grok 1.0.0 / `grok --help` は `--sandbox <PROFILE>` とだけ書く |
+| codex-cli | 値つき | `read-only` `workspace-write` `danger-full-access` | 可 | codex-cli 0.149.1 / `codex exec --help` の `[possible values: ...]` |
+| grok-cli | 値つき | **（空）** | 不可 | grok 1.0.0 で転記 / インストール済みは 1.0.5（2026-08-26）でも `grok --help` は `--sandbox <PROFILE>` とだけ書き `[possible values:]` を持たない（層 2 が毎回この行を実 CLI で再確認する） |
 | claude-code | 渡さない | — | 不在のみ | `--sandbox` の概念を持たない。書き込みゲートは `--allowed-tools` |
 | copilot-cli | 渡さない | — | 不在のみ | `--sandbox` の概念を持たない |
 
@@ -80,21 +101,41 @@ grok を「照合不可」としているのは `--help` に載っていない�
 
 未知の task-type も検査するのは、`case` の `*)` 既定枝が死んだコードではないため。`parse_adapter_args` も `multi-agent.sh` も task-type を allowlist で検証していないので、アダプタ直叩きで到達しうる。
 
-codex の implement が `workspace-write` である理由: codex はこのモード 1 つに「書き込み境界」と「ネットワーク」の両方を束ねているので、「書き込みは CWD 内に閉じるがネットは切る」を別々に選ぶ値が無い。codex-cli 0.144.5 を `codex sandbox` で実測:
+codex の implement が `workspace-write` である理由: codex はこのモード 1 つに「書き込み境界」と「ネットワーク」の両方を束ねているので、「書き込みは作業ルート内に閉じるがネットは切る」を別々に選ぶ値が無い。codex-cli 0.149.1 を `codex sandbox` で実測:
 
-| mode | CWD への書き込み | ネットワーク |
+| mode | 作業ルートへの書き込み | ネットワーク |
 |---|---|---|
-| `read-only` | 拒否 | 遮断（curl HTTP 000） |
-| `workspace-write` | 許可 | **遮断（curl HTTP 000）** |
-| `danger-full-access` | 許可 | 開放（HTTP 200） |
+| `read-only` | 拒否 | 遮断（`network-outbound` の denial） |
+| `workspace-write` | 許可 | **遮断（`network-outbound` の denial）** |
+| `danger-full-access` | 許可 | 開放（denial なし） |
 
-この表の**write 軸は層 2 が再測する**（ローカル・無料）。network 軸は外向きリクエストが要り、`run-all.sh` の並び（静的 → ネットワーク → 破壊的 → 低速）における本 suite の位置と衝突するので測っていない — そちらは実測の記録に留まる。表の正本は `scripts/adapters/codex-cli-adapter.sh` の `get_sandbox_mode` 直前のコメントで、ここはその写し。**再測したら両方を更新すること。**
+この表の**write 軸は層 2 が再測する**（ローカル・無料）。network 軸は外向きの接続要求が要り、`run-all.sh` の並び（静的 → ネットワーク → 破壊的 → 低速）における本 suite の位置と衝突するので suite では測っていない — そちらは実測の記録に留まる（測り方は `codex sandbox --log-denials` で閉じたローカルポートへ接続を試み、denial の有無で判定する。外へは 1 バイトも出ない）。表の正本は `scripts/adapters/codex-cli-adapter.sh` の `get_sandbox_mode` 直前のコメントで、ここはその写し。**再測したら両方を更新すること。**
 
 なお grok の `workspace` は write 軸での対応物であって、network 軸は未測定。`grok --help` は「filesystem and network access」を司ると書いているが、その挙動はこのリポジトリのどこにも記録が無い。
 
+### implement の書き込みルート（`codex exec -C`）
+
+`workspace-write` が許すのは「エージェントの作業ルート配下」であって、リポジトリ全体ではない。そのルートを決めるのが `codex exec -C <DIR>` で、codex の implement だけが staging を指す。
+
+| CLI | task | 書き込みルート | 絞り込みの手段 |
+|---|---|---|---|
+| codex-cli | implement | **staging のみ** | `codex exec -C <staging>` |
+| codex-cli | implement inline / review / explore | （書けない） | `--sandbox read-only`。`-C` は渡さない |
+| grok-cli | implement | リポジトリ全体 | 無し（staging 限定はプロンプト契約のまま） |
+
+層 1 は「`-C` の値が staging であること」「read-only 経路には付かないこと」を argv で固定し、層 2 が「絞ると外へ書けなくなる／中へは書ける／外を読むのは通る」を実 CLI で測る。
+
+`--add-dir` は絞り込みの手段にならない（**追加**しかできないので、CWD 側が書けたまま残る）。`--skip-git-repo-check` は不要 — staging は `validate_implement_output_boundary` によりリポジトリ配下に強制されている。
+
+**旧版 codex の検出**: `-C/--cd` を持たない codex では絞り込みが成立しない。アダプタは本番起動の前に `codex exec --help` を読み、`-C, --cd` が無ければ**広い境界で走らせずに停止する**。この経路のため codex の implement だけ CLI 起動が 2 回になるので、`expect_sandbox` は期待起動回数を引数で受け、1 回目が `exec --help` 単独であることも固定する（能力確認の名目で本番相当の argv を投げる形を通さないため）。
+
+**grok の版数が文書内で 3 つ出てくる件**（provenance 表の 1.0.0 / アダプタの sandbox 表の 0.2.118 / インストール済みの 1.0.5）は転記漏れではなく、主張ごとに出典が違うため。`--help` の書式は無料で再確認できるので層 2 が 1.0.5 で毎回確認しており、read-only プロファイルの実挙動（0.2.118 で実測）は課金される実行を要するので再測していない。版数を揃える方向で機械的に書き換えないこと。
+
+grok 側を同じように絞らないのは意図的で、**不可能だからではなく未実測だから**。grok 1.0.5 は `--cwd` を持つが、`workspace` プロファイルの書き込みルートがそれに追従するかを確かめるオフライン probe が grok には無く（`codex sandbox` に相当するサブコマンドが無い）、確認は課金される実行を要する。詳細は `scripts/adapters/grok-cli-adapter.sh` の `get_sandbox_profile` 直前のコメント。
+
 ## 負例テスト（変異させたら赤くなるか）
 
-すべて実測で red を確認済み。**7 以降は初版の suite を素通りしたもの**で、セルフレビュー（Toolkit 4 エージェント + 再レビュー 1 本）で発見して塞いだ。
+**26 を除きすべて実測で red を確認済み**（26 だけは red ではなく skip 件数の変化を見る変異で、期待値は表に明記した）。**7 以降は初版の suite を素通りしたもの**で、セルフレビュー（Toolkit 4 エージェント + 再レビュー 1 本）で発見して塞いだ。
 
 | # | 変異 | 結果 |
 |---|---|---|
@@ -118,6 +159,14 @@ codex の implement が `workspace-write` である理由: codex はこのモー
 | 18 | 短縮形の値密着 `-s<値>` で `--sandbox` を重複させる | 「2 回渡している」red |
 | 19 | レジストリに CLI を追加して宣言一覧に足し忘れる | 「レジストリの CLI が欠けている」red |
 | 20 | 宣言一覧に実在しない CLI を残す | 「レジストリに無い CLI がある」red |
+| 21 | implement から `-C <staging>` を落とす | 4 件 red（`-C` 不在 / 起動回数 / プリフライト内容 / 旧版でも成功） |
+| 22 | 旧版検出（`codex exec --help` の能力確認）だけを外す | 3 件 red — `-C` は渡っているのに、持たない codex を止めなくなる |
+| 23 | 能力確認の照合語を緩める（`-C, --cd` ではなく help の別の行を見る） | 「旧版でも成功した」red — stub の help を信じるだけの検査になっていない |
+| 24 | 層 2 の probe root を `$TMPDIR` 配下へ戻す | 絞り込み arm が「親へ書けた」で red。**同じ実行でモード軸の arm は緑のまま**で、旧 arm が別の理由で通っていたことが出力に残る |
+| 25 | `-C` の argv 受理 arm で `-C` の代わりに実在しないフラグを渡す（実 CLI が絞り込みフラグを失った状況の再現） | 「アダプタと同じ並びの `-C <dir>` が argv 解析で拒否された」で red。陽性対照（未知フラグの拒否）は緑のまま残るので、probe 自体は動いていて判定だけが変わったことが出力から分かる |
+| 26 | `ensure_probe_root` を無条件 `return 0` にする（probe 置き場所を確保できない環境の再現） | red にはならない — **skip がちょうど 2 件**（`リポジトリ配下に probe ディレクトリを作れない…`）増えて `層2: 6/8`、suite は緑で rc=0。これが正しい挙動で、この変異は「skip 分岐の入れ子が正しく結線されている」ことの確認に使う。skip が 1 件だけ・8/8 のまま・落ちる、のいずれかなら結線が壊れている |
+
+21〜26 は書き込みルートの絞り込み（`codex exec -C`）の分（26 だけは red ではなく「skip の増え方」を見る変異）。24 が構造的に重要で、21〜23 が「絞りを外した」ことを見ているのに対し、24 は**検査の置き場所そのもの**が測定の成否を決めることを示している。25 は実 CLI 側の退行（`-C` が消える／改名される）を見る分で、陽性対照を残したまま判定だけが赤くなることを確かめている — 対照が無いと「未知フラグを拒否しない CLI」でも緑になり、実 CLI を起動しているのに何も判定していない arm になる。
 
 7 が最も重い。5 は宣言を*書き換える*変異で、7 は*消す*変異 — 空文字が正当なマーカーとして使われているため、消す方が「慣用的な編集」に見えて危険だった。
 
@@ -144,7 +193,11 @@ perspective ファイルの不在は**環境都合ではなくリポジトリの
 
 ## argv の記録形式
 
-stub は **1 引数 = 1 ファイル**（`$ARGV_DIR/arg.<i>` と `count`）で記録し、あわせて起動回数（`launches`）と自分の実行ファイル名（`binary`）も残す。
+stub は **1 引数 = 1 ファイル**（`$ARGV_DIR/arg.<i>` と `count`）で記録し、あわせて起動回数（`launches`）と自分の実行ファイル名（`binary`）も残す。さらに**起動ごとの argv** を `launch.<n>/arg.<i>` に残す — `arg.<i>` は最後の起動で上書きされるので、プリフライトを持つ経路（codex の implement）の 1 回目はこちらからしか読めない。
+
+期待起動回数は `expect_sandbox` の引数（既定 1）にしている。CLI 決め打ちの例外にすると、次にプリフライトを足したアダプタが無検査で通ってしまうため。
+
+codex の stub は `exec --help` に応答する。返す内容は `FF_STUB_CODEX_HELP` の指すファイルから読むので、`-C, --cd` を**持たない旧版の help** も fixture として与えられる。これがあるおかげで、旧版検出の fail-loud を負例（変異 22・23）で実測できる。
 
 `adapter-model-args` の `<arg>` 連結方式は部分文字列の有無を見るには十分だが、本 suite は「`--sandbox` の**次の**引数」を正確に切り出す必要がある。プロンプトには `<`, `>`, 改行が任意に含まれるため、どんな区切り文字を選んでも曖昧さが残る。ファイル境界ならエスケープの問題が原理的に発生しない。
 

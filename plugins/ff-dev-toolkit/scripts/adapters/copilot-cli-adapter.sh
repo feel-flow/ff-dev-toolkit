@@ -126,6 +126,15 @@ if [[ -z "$result" ]]; then
   record_timeout_reason empty-output
   fail_cli_task 1 "$stderr_log" "$perspective_name" ""
 fi
+# exit 0 + 非空でも、レビュー本文の実体行を 1 行も含まない捕捉結果は complete に
+# しない（Issue #893。観測は claude-code だが、捕捉経路は「CLI の最終出力を command
+# substitution で受ける」の 4 アダプタ共通形なので同じゲートを掛ける）。**受理条件の
+# 正は adapter-common.sh の review_body_present ヘッダ** — ここに列挙を複製しない。
+if [[ "${TASK_TYPE:-review}" == "review" ]] && ! review_body_present "$result"; then
+  echo "ERROR: ${CLI_NAME} output ($(printf '%s' "$result" | wc -c | tr -d '[:space:]') bytes) contains no severity count/zero line, no severity-labeled finding line, and no finding bullet under a severity heading — refusing it as a review result. The review body may have been emitted in an earlier, uncaptured turn." >&2
+  record_timeout_reason missing-review-body
+  fail_cli_task 1 "$stderr_log" "$perspective_name" "$result"
+fi
 rm -f "$stderr_log"
 
 # ── Write Output ──

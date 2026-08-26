@@ -4,16 +4,33 @@
 #
 # 使い方:
 # --- usage:start ---
-#   record-gate-head.sh --gate <ラベル> [--status pass|fail] [--mode <文字列>]
-#                       [--result <文字列>] [--expect-head <SHA40>] [--record <パス>]
+#   record-gate-head.sh --gate <ラベル> [--status pass|fail|partial] [--mode <文字列>]
+#                       [--suites <空白区切りの suite 名>] [--result <文字列>]
+#                       [--expect-head <SHA40>] [--record <パス>]
 #   record-gate-head.sh --print-path
 #
+#   --status       pass    … ゲートが定める検査一式が丸ごと通った
+#                  partial … 名指しした一部だけを実行して通った。照合側は**一致しても
+#                            「判定不能」として報告する**（全件緑へ昇格しない）。
+#                            同じ `COMMIT` に `pass` の記録が既にあれば**上書きしない**
+#                            （上位互換の証拠を潰さない。詳細は下の「記録先」）
+#                  fail    … 通らなかった。前回の緑を無効化する
+#   --suites       partial のときに「**通った** suite」を空白区切りで残す。消費側は
+#                  この値を「検証済み」として提示するので、実行はしたが skip / 赤だった
+#                  suite を混ぜてはならない（未検証のものが検証済みとして載る）。
+#                  `SUITES=` の行は値が無くても常に書く。
+#                  値に混じった CR/LF は空白へ畳んでから書く — 記録は 1 行 1 キーで、
+#                  消費側は `head -n 1` で読む。改行を通すと 2 行目以降が別のキーとして
+#                  読まれる（あるいは黙って捨てられる）。
 #   --expect-head  ゲート開始時の HEAD。現在の HEAD と違えば**記録しない**。
 #                  長時間のゲートは実行中に HEAD が動きうる（別セッションの commit、
 #                  自分の commit）。終了時の HEAD をそのまま書くと、suite が一度も
 #                  読んでいないツリーが「実測済み」として記録され、照合はリモート先端と
 #                  一致して静かに緑になる — この検査が塞ごうとしている false green と
 #                  同じ形が、記録側から入り込む。呼び出し側は開始時の HEAD を控えて渡す。
+#                  **`fail` 以外のすべての status に掛ける**。`partial` を素通しにすると、
+#                  「一度も読んでいないツリーに部分緑が付く」という同じ false green の
+#                  入口が、部分記録の側へそっくり移るだけになる。
 #
 # 何のための記録か:
 #   ローカルで回した検証スイートの結果は、**その時点の特定コミットに対する実測**である。
@@ -38,7 +55,33 @@
 #   ただし**上書きしないこと**は安全側ではない。同じコミットでゲートが赤くなった回に
 #   何も書かないと、前回の緑の記録がそのまま残り、照合は無出力の exit 0 を返す
 #   （「一度通ったコミット」が「いま通るコミット」に化ける）。赤い回は
-#   `--status fail` で記録を**無効化**すること。照合側は `STATUS=pass` だけを通す。
+#   `--status fail` で記録を**無効化**すること。
+#
+#   **例外は 1 つだけ: 同じ `COMMIT` の `pass` を `partial` で潰さない。**
+#   `pass@X` は「そのツリーで既定一覧が丸ごと通った」という、`partial@X` の上位互換の
+#   証拠である。同じ X に対して名指し実行を 1 本足しただけで照合が exit 0 → exit 2 へ
+#   変わるのは、安全側への寄与がゼロの情報の純減で、REASON は「同じツリーで全件が
+#   通っている」事実を過少申告する。しかも毎回黄色いゲートは読まれなくなる（Issue #163
+#   の劣化経路そのもの）。全件ゲートの後にレビュー対応で名指し suite を 1 本回す、は
+#   ごく普通の並びなので、放置すると常時発生する。
+#
+#   **この例外を `fail` へ広げないこと。** 赤が前回の緑を無効化する規定は上のとおり
+#   load-bearing で、`fail` まで「上書きしない」に含めると「一度通ったコミット」が
+#   「いま通るコミット」に化ける経路がそのまま戻る。判定材料は**取り込む status が
+#   `partial` であること**だけで、既存側は「v1 として解釈できる `pass` で `COMMIT` が
+#   同じ」を全部満たすときに限って残す（解釈できない記録は残さず上書きする — 読めない
+#   記録を温存する理由が無い）。
+#
+#   照合側が**無出力の exit 0 で通すのは `STATUS=pass` だけ**である。`partial` は
+#   一致していても「判定不能」として報告され、`fail` と未知の値も同じく通らない。
+#
+#   部分実行の判別子を STATUS に置いたのは、**古い照合側でも構造的に昇格できない**
+#   ようにするため。記録先は checkout の git dir 配下だが、照合器はインストール済み
+#   プラグイン側でありうる（記録器 = 新 / 照合器 = 旧 の組み合わせが常態）。
+#   `STATUS=pass` のまま別のキー（`MODE=explicit` のような）で部分性を表すと、その
+#   キーを知らない旧照合器は未知行として読み飛ばし、部分実行の記録を全件緑として
+#   通してしまう。`partial` は旧照合器の STATUS allowlist の `*)` に落ちるので、
+#   知らない版に食わせても「解釈できない」= 判定不能にしかならない。
 #
 # 作業ツリーが汚れている場合:
 #   記録は書くが `DIRTY=yes` を立てる。汚れた木で測った結果は**どのコミットに対する
@@ -68,6 +111,7 @@ SELF="${BASH_SOURCE[0]}"
 GATE=""
 STATUS="pass"
 MODE=""
+SUITES=""
 RESULT=""
 EXPECT_HEAD=""
 RECORD_PATH=""
@@ -87,9 +131,18 @@ while [[ $# -gt 0 ]]; do
     --status)
       [[ $# -ge 2 ]] || fail "--status に値がありません"
       case "$2" in
-        pass|fail) STATUS="$2" ;;
-        *) fail "--status は pass / fail のいずれかです（受領: $2）" ;;
+        pass|fail|partial) STATUS="$2" ;;
+        *) fail "--status は pass / fail / partial のいずれかです（受領: $2）" ;;
       esac
+      shift 2
+      ;;
+    --suites)
+      [[ $# -ge 2 ]] || fail "--suites に値がありません"
+      # CR/LF を空白へ畳む。記録は 1 行 1 キーで消費側は head -n 1 で読むため、
+      # 改行を通すと 2 行目以降が別のキーとして読まれる（あるいは黙って捨てられる）。
+      # 削除ではなく空白への置換にするのは、suite 名どうしが連結して別名に化けるのを
+      # 避けるため（`a\nb` を `ab` にしない）。
+      SUITES="$(printf '%s' "$2" | tr '\r\n' '  ')"
       shift 2
       ;;
     --result) [[ $# -ge 2 ]] || fail "--result に値がありません"; RESULT="$2"; shift 2 ;;
@@ -136,8 +189,36 @@ COMMIT="$(git rev-parse HEAD 2>/dev/null)" \
 
 # ゲート実行中に HEAD が動いていたら記録しない。終了時の HEAD を書くと、
 # 実際には読まれていないツリーが実測対象として記録される。
-if [[ "$STATUS" == "pass" && -n "$EXPECT_HEAD" && "$EXPECT_HEAD" != "$COMMIT" ]]; then
+#
+# 条件は `fail` 以外のすべて（`pass` と `partial`）。`pass` だけに掛けると、
+# 「一度も読んでいないツリーに部分緑が付く」という同じ false green の入口が
+# 部分記録の側へ移る。赤い記録は前回の緑の**無効化**であって実測の主張ではないので、
+# HEAD が動いていても書く（書かない方が危険側に倒れる）。
+if [[ "$STATUS" != "fail" && -n "$EXPECT_HEAD" && "$EXPECT_HEAD" != "$COMMIT" ]]; then
   fail "ゲート実行中に HEAD が変わりました（開始 ${EXPECT_HEAD} / 現在 ${COMMIT}）。実行したのは開始時のツリーなので記録しません"
+fi
+
+# 同じコミットの `pass` を `partial` で潰さない（詳細はヘッダの「記録先」を参照）。
+# `pass@X` は `partial@X` の上位互換の証拠なので、置き換えは安全側への寄与ゼロの
+# 情報損失にしかならない。
+#
+# **`fail` には掛けない。** 条件は「取り込む status が partial」で、既存側は v1 として
+# 解釈できる `pass` かつ `COMMIT` が同じときだけ残す。読めない記録・別コミットの記録・
+# `partial` / `fail` の記録は従来どおり上書きする。
+#
+# 判定は `git status` の実行より**前**に置く。書かないと決まった回に木の状態を調べる
+# 必要はなく、汚れた木での名指し実行が（書かないにもかかわらず）exit 2 で落ちるのも
+# 避けたい（呼び出し側は記録の失敗を警告として出す）。
+#
+# 記録の読み取りに eval を使わない（記録ファイルは書き換え可能な入力である）。
+if [[ "$STATUS" == "partial" && -f "$TARGET" ]]; then
+  PREV_VERSION="$(sed -n 's/^RECORD_VERSION=//p' "$TARGET" 2>/dev/null | head -n 1)"
+  PREV_STATUS="$(sed -n 's/^STATUS=//p' "$TARGET" 2>/dev/null | head -n 1)"
+  PREV_COMMIT="$(sed -n 's/^COMMIT=//p' "$TARGET" 2>/dev/null | head -n 1)"
+  if [[ "$PREV_VERSION" == "$RECORD_VERSION" && "$PREV_STATUS" == "pass" && "$PREV_COMMIT" == "$COMMIT" ]]; then
+    # 成功時は無出力の契約を守る（記録の内容は既に正しい。呼び出し側に足す情報が無い）
+    exit 0
+  fi
 fi
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
@@ -184,6 +265,7 @@ TMP="${TARGET}.tmp.$$"
   printf 'DIRTY=%s\n' "$DIRTY"
   printf 'GATE=%s\n' "$GATE"
   printf 'MODE=%s\n' "$MODE"
+  printf 'SUITES=%s\n' "$SUITES"
   printf 'RESULT=%s\n' "$RESULT"
   printf 'RECORDED_AT=%s\n' "$RECORDED_AT"
 } > "$TMP" 2>/dev/null || { rm -f "$TMP" 2>/dev/null || true; fail "記録を書き込めません: ${TARGET}"; }

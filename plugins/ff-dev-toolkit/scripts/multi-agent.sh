@@ -1587,10 +1587,27 @@ clear_staging_dir() {
   return 0
 }
 
-# implement の CLI は常に REPO_ROOT から起動する。その CWD が codex workspace-write /
-# grok workspace / Copilot path boundary の書き込みルートになるため、OUTPUT_DIR も同じ
-# 物理ルート配下でなければならない。警告して続けると、プロンプトが「書ける」と名指し
-# した staging を sandbox が拒否するので、CLI を起動する前に fail-loud で止める。
+# implement の CLI は常に REPO_ROOT から起動する。OUTPUT_DIR（= staging）も同じ
+# 物理ルート配下でなければ、プロンプトが「書ける」と名指しした staging を CLI 側が
+# 拒否する。警告して続けると起動してから初めて分かるので、起動前に fail-loud で止める。
+#
+# この検査が何を担保するかはアダプタごとに違う。一括で「4 アダプタのパス境界」と
+# 書かないこと — claude-code にはパス境界そのものが無い（adapter-common.sh の
+# build_prompt にも同じ注意がある）:
+#
+#   codex   … `codex exec -C <staging>` で書き込みルートは CWD ではなく staging 単独
+#             （Issue #896）。この検査は境界そのものではなく、codex の git リポジトリ
+#             検査（`--skip-git-repo-check` を渡さない前提）が要求する「staging が
+#             リポジトリ配下」を満たす役割で、外すと implement が起動に失敗する。
+#   grok    … `workspace` プロファイルの書き込みルートは CWD = REPO_ROOT。`-C` 相当の
+#             絞り込みは未実測（grok-cli-adapter.sh の get_sandbox_profile 直前を参照）
+#             なので、この検査が staging をその境界の内側に保つ担保。
+#   copilot … 非 inline の implement には permission deny を渡さない（deny 配列は
+#             inline 専用）。書き込みが CWD 由来のどこまでに閉じるかはこのリポジトリに
+#             実測の記録が無いので、この検査は「staging を REPO_ROOT 配下に保つ」まで。
+#   claude-code … パス境界を持たない。書き込みゲートは get_allowed_tools の
+#             Write/Edit だけで、この検査はパス境界の担保にはならない（それでも
+#             staging がリポジトリ外へ出る形は他の 3 つと同じく塞ぐ）。
 validate_implement_output_boundary() {
   [[ "${TASK_TYPE:-review}" == "implement" ]] || return 0
   local repo_physical
@@ -2462,7 +2479,8 @@ execute_tasks() {
   #      基準で解決してそこへ書く（本 Issue が塞ごうとした汚染そのもの）。
   #   2) 既定の OUTPUT_DIR は git rev-parse --show-toplevel（物理）由来、$PWD は
   #      論理なので、symlink 越しのチェックアウトでは同じ場所を違う綴りで指す。
-  #      揃えておかないと warn_if_staging_outside_sandbox が毎回誤発火する。
+  #      揃えておかないと validate_implement_output_boundary が毎回誤発火する
+  #      （旧名 warn_if_staging_outside_sandbox。現存しないので grep しないこと）。
   if ! OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)"; then
     echo "ERROR: cannot resolve output dir: ${OUTPUT_DIR}" >&2
     return 2
@@ -2989,9 +3007,12 @@ append_plan_sections() {
         # head, and under pipefail the pipeline returns 141, flipping a match into
         # a non-match (the inversion class recorded in ACE-149).
         if awk '/^$/ { exit } /^<!-- Status: incomplete -->$/ { found = 1 } END { exit found ? 0 : 1 }' "$result_file"; then
-          echo "⚠️ **INCOMPLETE** — the CLI failed or timed out; what follows is partial"
-          echo "output salvaged from that run, not a finished ${TASK_TYPE}. Absence of a"
-          echo "finding here means unchecked, not clean."
+          # 理由は断定しない — incomplete はクラッシュ・タイムアウトだけでなく、
+          # アダプタが結果を拒否した場合（sandbox-refused / missing-review-body）も
+          # 通る。具体的な理由は成果物内の INCOMPLETE バナーが名指しする。
+          echo "⚠️ **INCOMPLETE** — the CLI failed, timed out, or its result was refused;"
+          echo "what follows is output salvaged from that run, not a finished ${TASK_TYPE}."
+          echo "Absence of a finding here means unchecked, not clean."
           echo ""
         fi
         cat "$result_file"
@@ -3109,7 +3130,20 @@ HEADER
   #       「- なし」「- none」等の空所見箇条書きは不算入
   #   (b) 集計行 `- Critical[ Issues| Vulnerabilities| Gaps]: N`（N>=1。行頭アンカー
   #       + 語彙固定で、散文の言及や「- critical path latency: 3ms」を拾わない）
-  #   (c) 行頭の `CRITICAL:` マーカー
+  #   (c) 行頭の `CRITICAL:` マーカー。ただし明示ゼロ行は除外 — Issue #893 で
+  #       comprehensive-review のゼロ件報告が独立行 `Critical: 0 / Warning: 0 /
+  #       Suggestion: 0` に契約化され、素の `^critical:` 判定だとこの正常系が
+  #       100% 偽 CRITICAL_BLOCK を発火する。除外は明示ゼロの数値形（`0` — 直後が
+  #       行末 / 空白+行末 / `/` 区切り / 「件」/ 全角開き括弧のみ）と、アダプタ側
+  #       受理ゲート s1 が同じ境界で受理するゼロ語形（なし / none / n/a / zero /
+  #       ゼロ — s1 の実列挙と完全一致させる）の
+  #       両方（片側だけだと `Critical: none` の契約準拠ゼロ報告が偽 BLOCK になる）。
+  #       境界を広げないこと（`0([^0-9]|$)` の
+  #       形は `CRITICAL: 0-day exploit` / `0x41` / `0 trust policy bypass` の
+  #       ような 0 始まりの実指摘まで明示ゼロとして飲み込む fail-open だった）。
+  #       bullet 版と同じ [1-9] 必須にもしない — `CRITICAL: 認証チェックの欠落` の
+  #       ような数字を含まない散文マーカー（このパス (c) の本来の対象）まで黙って
+  #       検出から外れるため
   # コードフェンス内（先頭空白許容）は引用として数えない — 本ツールが自身のスクリプト
   # や perspective 文書をレビューすると、テンプレートの Critical 見出しごと引用される。
   # フェンスが閉じないまま本文が終わる場合は判定不能（rc=2）として安全側（マーカー
@@ -3151,10 +3185,14 @@ HEADER
         next
       }
       in_crit && l ~ /^[[:space:]]*-[[:space:]]/ {
-        if (l !~ /^[[:space:]]*-[[:space:]]*(なし|該当なし|特になし|none|n\/a|no issues)[[:space:]。.]*$/) found = 1
+        # 空所見語彙はアダプタ側の受理ゲート s2（指摘なし・該当なし・指摘事項なし
+        # — adapter-common.sh review_body_present）と揃える。片側だけに語彙を足すと
+        # 「アダプタは受理するのに集約が実 Critical と数える」ドリフトになり、
+        # `- 指摘なし` が偽 CRITICAL_BLOCK を発火する（Issue #893 の 5 巡目で実測）。
+        if (l !~ /^[[:space:]]*-[[:space:]]*(なし|該当なし|特になし|指摘なし|指摘事項なし|none|n\/a|no issues)[[:space:]。.]*$/) found = 1
       }
       l ~ /^[[:space:]]*-[[:space:]]*critical( issues| vulnerabilities| gaps)?:[[:space:]]*[1-9]/ { found = 1 }
-      l ~ /^critical:/ { found = 1 }
+      l ~ /^critical:/ && l !~ /^critical:[[:space:]]*(0[[:space:]]*(\/|件|（|$)|(なし|none|n\/a|zero|ゼロ)[[:space:]]*(\/|。|（|$))/ { found = 1 }
       END {
         if (fence != 0) exit 2
         exit found ? 0 : 1

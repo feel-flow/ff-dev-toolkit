@@ -520,11 +520,26 @@ ${diff_content}"
   # （error-handler-hunt が差分外 3 件を CRITICAL 込みで報告。他 3 観点は差分内のみ）。
   local scope_boundary=""
   if [[ "$task_type" == "review" ]]; then
+    # 最終メッセージ集約の指示（Issue #893）も review 限定 — 空振りが観測されたのは
+    # review で、explore / implement のプロンプトへ無条件に足すと出力契約の異なる
+    # task-type の指示文が黙って変わる。review_body_present のゲートと同じスコープに
+    # 揃える（片方だけ広げると「指示は無いのにゲートだけ落とす」形になる）。
     scope_boundary="
 - The review target is ONLY the diff provided in this prompt. If your
   perspective explicitly justifies flagging code outside that diff, prefix
   each such finding's file reference with [OUT-OF-DIFF]. Never report
-  out-of-diff code as an unlabeled finding."
+  out-of-diff code as an unlabeled finding.
+- Only your FINAL message is captured as the result — anything you emit in
+  earlier turns is discarded. That final message must contain the complete
+  review itself, never a summary of or a reference to earlier output
+  (\"the review is above\" delivers nothing). The wrapper only accepts a
+  final message that contains at least one of: a severity count line (e.g.
+  \"Critical: 0 / Warning: 0 / Suggestion: 0\"), a severity-labeled finding
+  line, findings listed as bullets under a severity heading, or a standalone
+  zero-findings line (e.g. \"指摘なし\") — a final message without any of
+  these is rejected as an incomplete result. Do NOT wrap the report (or the
+  whole message) in a code fence: fenced content is treated as quotation,
+  not as the review."
   fi
   local boundary_section="## Execution Boundary (non-negotiable)
 
@@ -560,6 +575,150 @@ PROMPT
 }
 
 # ── Output Helpers ──
+
+# ── Review-body fail-loud gate（Issue #893）──
+# 各アダプタが捕捉するのは CLI が stdout へ出した最終出力だけで、サブ CLI が
+# レビュー本文をセッション途中のターンに出力すると、捕捉結果には前置き・メタ記述
+# （「本レスポンスは read-only レビュー sub-agent の報告であり…」の 1 段落）だけが
+# 残る。exit 0 + 非空出力なので empty-output ガードを素通りし、`Status: complete`
+# の「実質未レビュー」成果物が統合レポートに完了として並ぶ（#882 のセルフレビューで
+# claude-code の実測 616〜761 bytes の空振りを観測。捕捉経路は 4 アダプタ共通の
+# `result=$(run_with_timeout ...)` なので、ゲートも 4 アダプタ共通に掛ける）。
+#
+# ■ 受理条件（正）— ここが唯一の定義。4 アダプタのゲートコメント・tests/run-all.sh の
+# 登録コメント・診断文（describe_cli_failure / fail_cli_task のバナーと body・各アダプタ
+# の ERROR 行）・公開 CHANGELOG は、この列挙への参照または同一列挙で書くこと（初版から
+# 2 度、記述ごとに条件がズレた）。診断文の英語正規形は
+# "no severity count/zero line, no severity-labeled finding line, and no finding
+# bullet under a severity heading"。
+#
+# コードフェンス外に、次のいずれかの**実体行**が 1 行でもあれば受理（rc=0）。
+# bullet は `-` / `*` / `+` の 3 種を等価に扱う:
+#   (s1) 件数行 — 行頭（任意の bullet / `**` 強調可）が critical / warning /
+#        suggestion（大文字小文字・複数形不問、Issues / Vulnerabilities / Gaps 修飾可）
+#        + コロン + **数値またはゼロ語（なし / none / n/a / zero / ゼロ）**の行
+#        （`- CRITICAL: 3` / `Critical: 0` — error-handler-hunt が根拠付き 0 件を
+#        返す正常系を含む）。**数値は直後が行末 / 空白+行末 / `/` 区切り / 「件」/
+#        全角開き括弧のときだけ件数と認める**（`Warning: 401 authentication
+#        expired` や `Critical: 0-day exploit` を件数と誤認しない。ゼロ語も直後が
+#        行末 / `/` / 「。」/ 全角開き括弧のときのみ）。値を行内に持つ自己完結行
+#        なので、行単位の参照語 veto の対象外（`Critical: 0 / Warning: 0 /
+#        Suggestion: 0（前述の観点はすべて確認済み）` のような契約準拠ゼロ報告 +
+#        参照注記を落とさない）
+#   (s2) ゼロ件報告行 — 行頭（任意の bullet 可）が「指摘なし」「該当なし」
+#        「指摘事項なし」で始まる行、または「指摘 … 0 件」の行。(s1) と同じく
+#        自己完結行として参照語 veto の対象外
+#   (s3) ラベル付き指摘行 — bullet または行頭 `**` 強調の重大度ラベル + コロン +
+#        **非空の本文**（`- Suggestion: 〜を単純化できる` / `**Warning**: …`）。
+#        参照語 veto の対象（`- Critical: 詳細は前のターンです` は不受理）
+#   (s4) 重大度見出し配下の bullet 行 — critical / warning / suggestion / 重大度 を
+#        含む Markdown 見出しのスコープ内（次の見出しまで）の bullet 行。指摘
+#        （comprehensive-review の `### Critical` + `- **要約**（file:line）` 形）と
+#        `- なし` 等の空所見の別を問わない。参照語 veto の対象
+# 除外規則（実体行に数えない）:
+#   - 参照語の行単位 veto — 「前のターン」「前述」「報告済み」「上記で報告/完了」
+#     earlier/previous turn・reported above/earlier・see above を含む行は (s3)(s4)
+#     として数えない（`Critical: 詳細は前のターンです` 型の復唱・参照を塞ぐ。
+#     (s1)(s2) は値を行内に持つため行単位 veto はしない — 「前述の観点はすべて
+#     確認済み」のような注記付きゼロ報告は受理される）。veto は**行単位のみ** —
+#     メッセージ単位の完了主張 veto（「上記で完了」等で全体を落とす）は 5 巡目で
+#     導入したが 6 巡目で撤回した: プロンプト契約に存在しない語彙で正当なレビュー
+#     （対象コードの説明に同語を含む等）を全損させ、検出力も完全一致 3 パターンに
+#     留まるため。したがって「完了主張の散文 + 契約準拠ゼロ行」は受理される
+#     （既知の限界。塞ぐなら受理契約側ではなくプロンプト契約とセットの別対応）
+#   - コロン後が空のラベル（`Critical:` 単独）と、bullet も `**` も持たない
+#     ラベル + 散文（`Warning: authentication expired` 型の CLI エラー文）は
+#     (s1)(s3) のどちらにも該当しない = 不受理
+#   - コードフェンス内の行 — テンプレートを引用しただけの出力を受理しない。
+#     フェンスは CommonMark 準拠で追跡する: 開始行（``` / ~~~、3 文字以上）の
+#     文字種と長さを記録し、**同種・同長以上・フェンス文字列の後が空白のみ・
+#     インデント 3 以下**の行でのみ閉じる（バッククォートフェンス内の ~~~、
+#     4 連フェンス内の 3 連、```info-string 付きの行では閉じない）。レポート
+#     全文を閉じたフェンスで包んだ出力も不受理（Execution Boundary が包むことを
+#     禁止）
+#   - 見出し行そのもの — (s4) のスコープを開くだけで、見出し単独の出力は不受理
+# 未閉フェンス（フェンスが閉じないまま本文が終わる）の扱い: どこからが引用か確定
+# できないため、フェンスマスクを放棄し、**全文のどこかに自己完結行（s1/s2/s3）が
+# あれば受理・無ければ不受理**とする。統合レポートの CRITICAL 判定（multi-agent.sh）
+# が未閉フェンス（rc=2）を「素通りさせない側 = Critical あり」へ倒すのと同じ向きで、
+# 実体の証拠なしに受理はしない（tests/multi-agent-critical-marker のケース 7 / 16 は
+# フェンス内に `- Critical: 1` を持つため、このフォールバックで従来どおり通る）。
+# どの実体行も無ければ rc=1 = 本文なし。散文中の重大度語（「上記のレビューで
+# Critical 1 件…詳細は前述のとおり」等）は行頭アンカーと参照行 veto で落ちる。
+# バイト長は判定に使わない — 実体行を持たない出力は、長くても出力契約（各 perspective
+# の Output Template。件数サマリ節を持つ 7 観点 + comprehensive-review のゼロ件時
+# 独立行契約）に反する未検証結果として不合格にする（長さは診断に併記する）。
+# なお perspective の Output Template と Execution Boundary の集約指示は、この受理
+# 条件を満たす形を CLI へ明示している（契約の一本化 — 指示なしにゲートだけで落とさない）。
+#
+# 既知の判別限界（語彙では判別不能なもの）:
+#   - bullet 付きのエラー文（`- Warning: rate limit exceeded` 等）は (s3) の形と
+#     区別できず受理される（エラー文と指摘文の語彙判別は行わない）
+#   - bullet 無しの `CRITICAL: 説明` マーカー形は、同形の CLI エラー文と区別できない
+#     ため**受理しない**（集約側の CRITICAL 検出はこの形を引き続き検出する —
+#     受理と検出は別契約）
+review_body_present() { # $1: captured review body / rc0 = 上記の受理条件を満たす
+  local content="$1"
+  # awk は入力を読み切ってから終了する（早期 exit の SIGPIPE 反転を作らない）。
+  # awk 自体の失敗は rc 非 0 = 本文なし側へ倒れる（fail-loud）。
+  # 見出しの `#+` は interval（{1,6}）を使わない — BSD awk の interval 対応に
+  # 依存しないため。7 個以上の # は Markdown 見出しではないが、スコープ開始として
+  # 扱っても実体行の要求は変わらない。
+  # found = フェンスマスク下の実体行 / found_any = 自己完結行（s1/s2/s3）をフェンスを
+  # 無視して数えたもの。未閉フェンスの分岐は found と found_any の**論理和**で判定する
+  # （フェンス外で見つけた実体行も、放棄したマスクの内側で見つけた自己完結行も、
+  # どちらも受理の根拠になる。s4 はスコープがフェンスと独立に定義できないため
+  # found_any には含めない）。
+  printf '%s\n' "$content" | awk '
+    /^[[:space:]]*(```|~~~)/ {
+      # CommonMark 準拠のフェンス追跡:
+      #   開始 — インデント 3 以下の ``` / ~~~（3 文字以上）。文字種と長さを記録
+      #   閉じ — 同種・同長以上・フェンス文字列の後が空白のみ・インデント 3 以下
+      # 単純な反転トグルだとバッククォートフェンス内の ~~~ や 4 連フェンス内の
+      # 3 連を、後続検証なしだと ```not-a-closing-fence のような info string 付きの
+      # 行を「閉じ」と誤認し、引用中のテンプレート bullet が実体行として受理される。
+      # インデント 4 以上のフェンス様の行は indented code の一部（フェンスを開閉
+      # しない）として通常行へ落とす。
+      match($0, /^[[:space:]]*/)
+      indent = RLENGTH
+      rest = substr($0, RLENGTH + 1)
+      ch = substr(rest, 1, 1)
+      run = 0
+      while (substr(rest, run + 1, 1) == ch) run++
+      tail = substr(rest, run + 1)
+      if (fence == 0) {
+        if (indent <= 3) { fence = 1; fence_ch = ch; fence_len = run; next }
+      } else if (ch == fence_ch && run >= fence_len && indent <= 3 && tail ~ /^[[:space:]]*$/) {
+        fence = 0; next
+      }
+      # 開閉いずれの条件も満たさないフェンス様の行は通常行 / 引用の中身。
+      # fall through — 下の実体行評価で扱う（フェンス内は !fence ガードで found が立たない）
+    }
+    {
+      l = tolower($0)
+      isref = (l ~ /前のターン|前述|報告済み|上記で報告|上記で完了|earlier turn|previous turn|reported above|reported earlier|see above/)
+      if (!fence && l ~ /^[[:space:]]*#+[[:space:]]/) {
+        in_sev = (l ~ /critical|warning|suggestion/ || index($0, "重大度") > 0)
+        next
+      }
+      self = 0
+      if (l ~ /^[[:space:]]*[-*+]?[[:space:]]*[*]*(critical|warning|suggestion)s?( issues| vulnerabilities| gaps)?[*]*[[:space:]]*(:|：)[[:space:]]*([0-9]+[[:space:]]*(\/|件|（|$)|(なし|none|n\/a|zero|ゼロ)[[:space:]]*(\/|。|（|$))/) self = 1
+      else if ($0 ~ /^[[:space:]]*[-*+]?[[:space:]]*(指摘なし|該当なし|指摘事項なし)/) self = 1
+      else if ($0 ~ /^[[:space:]]*[-*+]?[[:space:]]*指摘[^0-9]*0[[:space:]]*件/) self = 1
+      else if (!isref && l ~ /^[[:space:]]*[-*+][[:space:]]+[*]*(critical|warning|suggestion)s?( issues| vulnerabilities| gaps)?[*]*[[:space:]]*(:|：)[[:space:]]*[^[:space:]]/) self = 1
+      else if (!isref && l ~ /^[[:space:]]*\*\*(critical|warning|suggestion)s?( issues| vulnerabilities| gaps)?\*\*[[:space:]]*(:|：)[[:space:]]*[^[:space:]]/) self = 1
+      if (self) {
+        found_any = 1
+        if (!fence) found = 1
+      }
+      if (!fence && in_sev && !isref && l ~ /^[[:space:]]*[-*+][[:space:]]/) found = 1
+    }
+    END {
+      if (fence != 0) exit (found || found_any) ? 0 : 1
+      exit found ? 0 : 1
+    }
+  '
+}
 
 # Write review output with a standard header
 # Usage: write_output "output.md" "Claude Code" "code-review" "review content..." [status]
@@ -634,9 +793,23 @@ timeout_reason_file() {
 }
 
 # run_with_timeout 自身が書くのは timeout | orchestrator-error | command の 3 値。
-# アダプタが上書きで書く値（sandbox-refused | empty-output）もここを通る。
+# アダプタが上書きで書く値（sandbox-refused | empty-output | missing-review-body）も
+# ここを通る。許可値の検証はこの入口に一箇所で集約する — 文字列は疑似 Union であり、
+# 任意文字列を受けると typo した理由が describe_cli_failure / fail_cli_task の
+# case をすべて素通りして既定文言（「status 1 で落ちた」）へ黙って化ける。
 record_timeout_reason() {
   local reason="$1" f
+  case "$reason" in
+    timeout|orchestrator-error|command|sandbox-refused|empty-output|missing-review-body) : ;;
+    *)
+      # 呼び出し側（アダプタ）のバグ。記録せず名指しして続行する。このとき残るのは
+      # 「記録なし」ではなく、run_with_timeout が起動時に記録した command（CLI 自身
+      # の終了）— typo した理由よりは正確な既定で、分類は exit status ベースの文言に
+      # なる。
+      echo "WARNING: record_timeout_reason called with unknown reason '${reason}' (adapter bug); not recording it. Failure classification falls back to the exit status." >&2
+      return 0
+      ;;
+  esac
   f="$(timeout_reason_file)"
   # 書けなくても呼び出し側の失敗処理は続ける（従来どおり）。ただし黙ると
   # empty-output が status 1 へ化けたり stale な timeout 案内の種になるので、
@@ -898,6 +1071,9 @@ run_with_timeout() {
 # "empty-output" (exit 0 with nothing on stdout).
 # It is consulted first because the status alone is ambiguous — a CLI is free to
 # exit 124 or 125 itself, and only the reason separates that from our own verdict.
+# "missing-review-body" is the third adapter-recorded value (exit 0 with output,
+# but the output has no substantive review line — the acceptance conditions are
+# defined once, in review_body_present's header; Issue #893).
 describe_cli_failure() {
   local rc="$1" timeout_seconds="$2" reason="${3:-}"
 
@@ -922,6 +1098,14 @@ describe_cli_failure() {
       # Exited 0 and was never stopped, but wrote nothing to stdout. The cause is
       # in the CLI's stderr (rate limits, auth), which the artifact carries below.
       echo "exited successfully but produced no output"
+      return
+      ;;
+    missing-review-body)
+      # Exited 0 with output, but the captured output has no substantive review
+      # line (acceptance conditions: review_body_present's header — the phrase
+      # below is its canonical English form). The CLI may have emitted the
+      # review in an earlier, uncaptured turn (Issue #893).
+      echo "finished, but its captured output contains no severity count/zero line, no severity-labeled finding line, and no finding bullet under a severity heading — refused as a review result"
       return
       ;;
   esac
@@ -1023,9 +1207,18 @@ fail_cli_task() {
 
   local body
   if [[ -n "$partial" ]]; then
-    body="Partial output captured before the CLI was stopped:
+    if [[ "$kind" == "missing-review-body" ]]; then
+      # The CLI was never stopped here — it finished, and this is everything it
+      # gave us. Calling that "partial output before the CLI was stopped" would
+      # send the reader after a crash or timeout that never happened.
+      body="The output that was captured (refused as a ${TASK_TYPE:-review} result because it contains no severity count/zero line, no severity-labeled finding line, and no finding bullet under a severity heading):
 
 ${partial}"
+    else
+      body="Partial output captured before the CLI was stopped:
+
+${partial}"
+    fi
   else
     if [[ "$kind" == "empty-output" ]]; then
       body="The CLI exited 0 without writing any output."
@@ -1049,6 +1242,9 @@ ${stderr_excerpt}
   # reader to the wrong place. Keep the INCOMPLETE contract, change the reason.
   local banner_detail="the CLI never reached its conclusion, so anything it had not gotten to is simply absent — read the gaps as unknown, not as clean"
   case "$kind" in
+    missing-review-body)
+      banner_detail="the CLI did finish, but its captured output contains no severity count/zero line, no severity-labeled finding line, and no finding bullet under a severity heading, so this perspective went effectively unreviewed — read it as unchecked, not as clean"
+      ;;
     sandbox-refused)
       banner_detail="the CLI did finish, but it ran outside the sandbox this adapter requires, so its findings are unverified and it may have modified the working tree — read this as unknown, not as clean"
       ;;

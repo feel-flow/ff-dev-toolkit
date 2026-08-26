@@ -74,6 +74,32 @@ fi
 # Caveat when re-verifying: the read-only profile permits writes to /tmp,
 # /var/tmp and ~/.grok by design. Running the check inside a temp directory
 # reports a false negative — the first attempt here did exactly that.
+#
+# Provenance is stale and cannot be refreshed for free. The table above was
+# measured on grok 0.2.118; the installed CLI is 1.0.5 (2026-08-26). Unlike codex
+# — which ships `codex sandbox`, a subcommand that runs an arbitrary command under
+# the same sandbox without invoking a model — grok has no offline probe
+# (`grok --help` lists no `sandbox` subcommand), and its positive confirmation
+# path is the `ProfileApplied` record that only a real, billed agent run writes.
+# So the rows above are NOT re-measured on 1.0.5, and this comment does not claim
+# they are.
+#
+# Write-boundary narrowing (Issue #896): codex confines implement writes to the
+# staging dir alone via `codex exec -C <staging>`. The equivalent for grok is
+# UNMEASURED, not impossible. grok 1.0.5 does expose `--cwd <CWD>` ("Working
+# directory"), so the mechanism plausibly exists — but whether the `workspace`
+# profile's write root follows `--cwd` cannot be established without a billed
+# run, for the reason above. Until someone measures it, the asymmetry stands and
+# is intentional:
+#
+#   codex implement … writes confined to staging by the sandbox
+#   grok  implement … writes confined to the repository by the sandbox;
+#                     staging-only remains a prompt contract
+#
+# Do not narrow this adapter on the strength of the codex measurement. The two
+# CLIs implement their sandboxes independently, and a `--cwd` that only relocated
+# the CWD without moving the sandbox root would silently change nothing while the
+# comment claimed otherwise.
 get_sandbox_profile() {
   if [[ "${TASK_TYPE:-review}" == "implement" && "${INLINE_OUTPUT:-false}" == "true" ]]; then
     echo "read-only"
@@ -87,7 +113,8 @@ get_sandbox_profile() {
     #
     # `workspace` permits writes anywhere under the CWD. multi-agent.sh fixes that
     # CWD to REPO_ROOT and rejects output dirs outside it before launch; confining
-    # writes from the whole repository to staging alone remains a prompt contract.
+    # writes from the whole repository to staging alone remains a prompt contract
+    # here (see the note above on why the codex-style narrowing is not copied over).
     implement) echo "workspace" ;;
     *)         echo "read-only" ;;
   esac
@@ -292,6 +319,15 @@ if [[ -z "$result" ]]; then
   # クラッシュを追う。実際に見るべきは成果物に残る stderr 抜粋。
   record_timeout_reason empty-output
   fail_cli_task 1 "$stderr_log" "$perspective_name" ""
+fi
+# exit 0 + 非空でも、レビュー本文の実体行を 1 行も含まない捕捉結果は complete に
+# しない（Issue #893。観測は claude-code だが、捕捉経路は「CLI の最終出力を command
+# substitution で受ける」の 4 アダプタ共通形なので同じゲートを掛ける）。**受理条件の
+# 正は adapter-common.sh の review_body_present ヘッダ** — ここに列挙を複製しない。
+if [[ "${TASK_TYPE:-review}" == "review" ]] && ! review_body_present "$result"; then
+  echo "ERROR: ${CLI_NAME} output ($(printf '%s' "$result" | wc -c | tr -d '[:space:]') bytes) contains no severity count/zero line, no severity-labeled finding line, and no finding bullet under a severity heading — refusing it as a review result. The review body may have been emitted in an earlier, uncaptured turn." >&2
+  record_timeout_reason missing-review-body
+  fail_cli_task 1 "$stderr_log" "$perspective_name" "$result"
 fi
 rm -f "$stderr_log"
 

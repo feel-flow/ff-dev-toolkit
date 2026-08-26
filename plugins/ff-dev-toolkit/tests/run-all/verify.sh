@@ -61,6 +61,15 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 RUN_OUT=""
 RUN_RC=0
 
+# ランナーの記録先を本 suite 専用の使い捨てへ逃がす。run_runner は疑似 suite を
+# **わざと赤くする**呼び出しを含むので、隔離しないと本リポジトリの実測記録が
+# 明示引数の赤い実行の記録（`STATUS=fail`）で潰れる（マージ直前の鮮度照合が
+# 判定不能になる）。明示引数の赤は `partial` へ落とさず `fail` のまま記録するのが
+# ランナーの契約なので、ここで消えるのは「部分記録」ではなく緑の記録そのものである。
+# 同 suite の `_reg_fx` と同じ流儀で、末尾で消す。
+RUN_GATE_RECORD="${TMPDIR:-/tmp}/ff-run-all-gate-record.$$"
+rm -f "$RUN_GATE_RECORD"
+
 # ランナーを引数付きで実行し、出力と終了コードを記録する。
 # `out=$(...)` を素で書くと set -e が失敗時点で落とすので if 形式で受ける。
 #
@@ -82,11 +91,11 @@ run_runner() {
     return 0
   fi
   if [ "${RUN_FAST:-0}" = "1" ]; then
-    if RUN_OUT="$(env -u FF_RUN_ALL_FULL FF_RUN_ALL_FAST=1 bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FULL FF_RUN_ALL_FAST=1 FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   elif [ "${RUN_FULL:-0}" = "1" ]; then
-    if RUN_OUT="$(env -u FF_RUN_ALL_FAST FF_RUN_ALL_FULL=1 bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FAST FF_RUN_ALL_FULL=1 FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   else
-    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   fi
 }
 
@@ -390,7 +399,7 @@ chmod +x "$_reg_fx/unregistered-probe/verify.sh"
 cp "$TESTS_DIR/run-all.sh" "$_reg_fx/run-all.sh"
 _reg_rc=0
 if _reg_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL FF_RUN_ALL_CHECK_REGISTRATION=1 \
-  bash "$_reg_fx/run-all.sh" 2>&1)"; then _reg_rc=0; else _reg_rc=$?; fi
+  FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$_reg_fx/run-all.sh" 2>&1)"; then _reg_rc=0; else _reg_rc=$?; fi
 case "$_reg_out" in
   *"unregistered-probe"*) _reg_named=1 ;;
   *) _reg_named=0 ;;
@@ -424,8 +433,8 @@ else
   bad "必須 suite 名簿が消えた（環境都合の skip が黙って通る）"
 fi
 # Issue #436 / #440 で判断した一時領域依存 suite の名簿を固定する（Issue #564 で
-# adapter-prompt-guard / review-diff-scope の 2 件を追加）。名前を 1 行ずつ照合し、
-# コメント内の言及を実登録と誤認しない。
+# adapter-prompt-guard / review-diff-scope、Issue #893 で review-capture-fail-loud
+# を追加）。名前を 1 行ずつ照合し、コメント内の言及を実登録と誤認しない。
 _required_block="$(awk '
   /^REQUIRED_SUITES=\(/ { inside=1; next }
   inside && /^\)/ { exit }
@@ -438,6 +447,7 @@ for _required_tmp_suite in \
   adapter-sandbox-contract \
   adapter-prompt-guard \
   review-diff-scope \
+  review-capture-fail-loud \
   review-wrapper-shim \
   sweep-orphan-transcripts \
   multi-agent-timeout \
@@ -1195,6 +1205,8 @@ RUN_FAST=1 run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/orphan-selftest/veri
 expect_lacks '^⚠️  明示引数で名指しした suite' \
   "名指しした suite が 1 件も除外されなければ警告しない"
 
+rm -f "$RUN_GATE_RECORD"
+
 echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ run-all verify: $FAIL 件失敗" >&2
@@ -1212,7 +1224,7 @@ fi
 #   - case 15 の mktemp probe 仕様リスト（1 件足すと +1）
 # 一方、走査対象の件数からは導出されない（case 10・11・26 はいずれも走査結果を 1 件の判定へ
 # 畳む）ので、suite を追加しても動かず、SSOT モノレポと公開 checkout の両配置で同じ値になる。
-EXPECTED_CHECKS=190
+EXPECTED_CHECKS=191
 if [ "$PASS" -ne "$EXPECTED_CHECKS" ]; then
   echo "✗ run-all verify: 検査総数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査の削除、または追加時の期待値未更新" >&2
   exit 1

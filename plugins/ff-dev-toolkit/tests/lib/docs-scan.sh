@@ -5,6 +5,9 @@
 # マスク（フェンス / コメント境界）を 1 か所に置く。同じ走査を何本も書くと、片方だけ
 # 直される drift がそのまま検出漏れになる。現在の消費者（本ファイルを source する suite）:
 #   docs-frontmatter-repo / docs-fact-drift: docs/ を歩き Frontmatter も読む
+#   docs-version-changelog: docs/ を歩き、マスク済みの行から `## Changelog` 節と
+#   版エントリ見出しを読む（frontmatter version との一致検査。ff_docs_fm_close_line
+#   も使う。対の selftest は本体 suite を駆動する間接検証で、本ファイルを直接は読まない）
 #   docs-fact-drift-selftest: 上の隔離クローンへ変異を入れて検出力を実測する
 #   docs-template-frontmatter: docs-template/ 側の Frontmatter / Changelog 構造を検査する
 #   validate-docs-placeholders（#518）+ その selftest: マスクだけを使いプレースホルダー
@@ -17,6 +20,8 @@
 #   ff_docs_exclusion_patterns <master_md>  除外パターン（付与しない表から導出）
 #   ff_docs_actual_targets <docs_root> <master_md>
 #                                      実体側の対象一覧（FS から導出、除外規則適用）
+#   ff_docs_fm_close_line <file>       Frontmatter 閉じ行の位置（YAML らしさの検証つき。
+#                                      none / unclosed / malformed:<n> / <n> を出力）
 #   ff_docs_fm_verdict <file> [allow-date-placeholder]
 #                                      Frontmatter / Changelog 構造の判定
 #   ff_docs_mask_spans <file> [keep-fences]
@@ -110,6 +115,42 @@ ff_docs_exclusion_patterns() {
   ' "$master")"
   [ -n "$out" ] || return 2
   printf '%s\n' "$out"
+}
+
+# Frontmatter 閉じ行の位置を、**閉じ行と推定した範囲の中身の検証つき**で求める。
+# stdout に 1 トークンを出す:
+#   none          先頭行が --- ではない（Frontmatter なし。空ファイルを含む）
+#   unclosed      開始はあるが閉じ `---` が最後まで現れない
+#   malformed:<n> 行 n の `---` を閉じ行と推定したが、そこまでに本文らしい行が混在
+#   <n>           行 n が閉じ行（範囲は YAML らしい行だけで構成される）
+#
+# 「2 行目以降で最初の `^---$`」だけを閉じ行と採ると、閉じ行が欠落した破損
+# Frontmatter が**本文の水平線 `---` で隠れて**しまい、本文に水平線を持つ文書では
+# 閉じ欠落の検査が実質無効になる（Issue #884 の 3 巡目レビューで検出された
+# fail-open）。ここでは閉じ行までの各行が YAML らしい行（空行 / `key:` 形式 /
+# リスト項目 / インデント継続）だけであることを検証し、本文らしい行が混ざって
+# いたら malformed を返す。
+#
+# **ff_docs_fm_verdict との判定差（未統合）**: あちらの close_line 検出は
+# 「最初の `^---$`」の素朴実装のままで、同型の fail-open が残っている。さらに
+# `#` 始まりの行の扱いが逆 — 本関数は**本文らしい行**として扱う（本リポジトリと
+# docs-template の Frontmatter はコメントを使わず、markdown 見出しの可能性が
+# 支配的なため）が、ff_docs_fm_verdict は `## Changelog` が YAML コメントとして
+# Frontmatter 内に置かれ得ることを前提に検査している。所有ゲート側
+# （ff_docs_fm_verdict とその消費者）への統合はこの差の解消込みで follow-up。
+#
+# 消費者: tests/docs-version-changelog/（Frontmatter の閉じ判定）。
+ff_docs_fm_close_line() {
+  awk '
+    NR == 1 { if ($0 != "---") { print "none"; done = 1; exit }; next }
+    /^---$/ { print (bad ? "malformed:" NR : NR); done = 1; exit }
+    $0 ~ /^[ \t]*$/ { next }                                    # 空行
+    $0 ~ /^["\047]?[A-Za-z][A-Za-z0-9_-]*["\047]?[ \t]*:/ { next } # key: 形式
+    $0 ~ /^[ \t]*- / { next }                                   # リスト項目
+    $0 ~ /^[ \t]+[^ \t]/ { next }                               # インデント継続
+    { bad = 1 }
+    END { if (!done) print (NR == 0 ? "none" : "unclosed") }
+  ' "$1"
 }
 
 # Frontmatter / Changelog 構造の判定。stdout に "OK" または "NG:<理由>" を出す。

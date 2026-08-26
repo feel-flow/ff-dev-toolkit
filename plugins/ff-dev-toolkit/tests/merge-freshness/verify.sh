@@ -19,8 +19,10 @@
 #      空を直接測る（「余計な出力を出さない」は否定の主張で、目視では腐る）
 #   B. scripts/record-gate-head.sh の振る舞い。実測対象の記録が自己申告ではなく機械の
 #      書き込みであること、汚れた木を汚れとして記録すること
-#   C. tests/run-all.sh の配線。**通った既定一覧の実行だけ**が緑を記録すること、赤い実行が
-#      前回の緑を無効化すること、記録の失敗が検証結果の失敗に化けないこと（終了コードで実測）
+#   C. tests/run-all.sh の配線。既定一覧の緑が**全件緑**（STATUS=pass）として、明示引数の
+#      緑が**部分実行**（STATUS=partial + 通った suite 一覧）として記録されること、
+#      赤い実行が前回の緑を無効化すること、記録の失敗が検証結果の失敗に化けないこと
+#      （いずれも文字列照合ではなく終了コードと記録の中身で実測）
 #   D. SKILL.md / git-workflow.md / 本リポジトリ側 DEPLOYMENT.md の契約文言が
 #      スクリプトの振る舞いから drift していないこと。DoD が文章側にも要求している
 #
@@ -55,7 +57,7 @@ DEPLOYMENT="$ROOT/docs/05-operations/DEPLOYMENT.md"
 # EXPECTED_CHECKS_BASE は手で管理する（検査の追加・削除と同時に更新する）。
 # リポジトリ側 docs/ ぶんは INHERIT_NEEDLES から導出する — 針を 1 本足すと
 # WORKFLOW 側と DEPLOYMENT 側で 2 件増えるので、手書きだと片方を取りこぼす。
-EXPECTED_CHECKS_BASE=130
+EXPECTED_CHECKS_BASE=185
 
 PASS=0
 FAIL=0
@@ -168,7 +170,9 @@ run_check --remote-head "$C1"
 [[ "$RC" -eq 1 ]] && ok "未 push の実測も exit 1" || bad "未 push の実測で exit ${RC}（期待 1）"
 out_has "$OUT" "RELATION=unpushed" "実測対象がリモートより先行なら unpushed と分類する"
 
-# --- 不一致: 別セッションが push した（分岐） ---
+# --- 不一致: 実測対象とリモート先端が分岐した ---
+# 原因は 1 つではない（別セッションの push / 実測対象がマージ済み・削除済みのブランチ上
+# にある など）。固定するのは分類であって原因ではない。
 git_q checkout -q -b other "$C1" >/dev/null 2>&1
 echo three > c.txt
 git_q add c.txt >/dev/null 2>&1
@@ -177,7 +181,7 @@ C3="$(git_q rev-parse HEAD)"
 git_q checkout -q - >/dev/null 2>&1
 run_check --remote-head "$C3" --measured "$C2"
 [[ "$RC" -eq 1 ]] && ok "分岐した先端も exit 1" || bad "分岐した先端で exit ${RC}（期待 1）"
-out_has "$OUT" "RELATION=divergent" "分岐は divergent と分類する（別セッションの push）"
+out_has "$OUT" "RELATION=divergent" "分岐は divergent と分類する（原因は 1 つに断定しない）"
 out_has "$OUT" "force-push" "分岐時の指示が force-push を禁じている"
 
 # --- 不一致: リモートのコミットが手元に無い ---
@@ -220,15 +224,23 @@ run_check --remote-head "$C1" --record "$BROKEN"
 
 # 汚れの判定は allowlist（`no` のみ通す）。「yes でなければ clean」だと、欠落・空・
 # 未知の値を持つ壊れた記録が一致として通り、未実測のコミットが緑になる。
-printf 'RECORD_VERSION=1\nCOMMIT=%s\n' "$C1" > "$BROKEN"
+#
+# fixture には **`STATUS=pass` を入れる**。照合は STATUS の allowlist を DIRTY より
+# **前**に通すので、`STATUS=` を欠いた記録は DIRTY の値に関係なく STATUS の `*)` で
+# exit 2 になり、3 件ともラベルとは別の理由で緑になる（`DIRTY` の `*)` を削除しても
+# 検出しない空振り）。ラベルどおりの経路を測るために、手前の関門は通しておく。
+printf 'RECORD_VERSION=1\nSTATUS=pass\nCOMMIT=%s\n' "$C1" > "$BROKEN"
 run_check --remote-head "$C1" --record "$BROKEN"
 [[ "$RC" -eq 2 ]] && ok "DIRTY 欠落の記録は判定不能（clean として通さない）" || bad "DIRTY 欠落で exit ${RC}（期待 2）"
-printf 'RECORD_VERSION=1\nCOMMIT=%s\nDIRTY=\n' "$C1" > "$BROKEN"
+out_has "$OUT" "作業ツリー状態を解釈できません" "DIRTY 欠落は DIRTY の allowlist で落ちる（STATUS の *) ではない）"
+printf 'RECORD_VERSION=1\nSTATUS=pass\nCOMMIT=%s\nDIRTY=\n' "$C1" > "$BROKEN"
 run_check --remote-head "$C1" --record "$BROKEN"
 [[ "$RC" -eq 2 ]] && ok "DIRTY 空値の記録は判定不能" || bad "DIRTY 空値で exit ${RC}（期待 2）"
-printf 'RECORD_VERSION=1\nCOMMIT=%s\nDIRTY=unknown\n' "$C1" > "$BROKEN"
+out_has "$OUT" "作業ツリー状態を解釈できません" "DIRTY 空値は DIRTY の allowlist で落ちる"
+printf 'RECORD_VERSION=1\nSTATUS=pass\nCOMMIT=%s\nDIRTY=unknown\n' "$C1" > "$BROKEN"
 run_check --remote-head "$C1" --record "$BROKEN"
 [[ "$RC" -eq 2 ]] && ok "DIRTY 未知値の記録は判定不能" || bad "DIRTY 未知値で exit ${RC}（期待 2）"
+out_has "$OUT" "作業ツリー状態を解釈できません" "DIRTY 未知値は DIRTY の allowlist で落ちる"
 
 # 実測対象が手元に無い SHA なら、リモート先端と同値でも通さない（自己申告だけで
 # ゲートを抜けられないようにする）。
@@ -254,6 +266,63 @@ out_has "$OUT" "MODE=fast" "--print-record が実測モードを出す（報告�
 out_has "$OUT" "GATE=tests/run-all.sh" "--print-record が何を実測したかを出す"
 run_check --print-record --record "$WORK/does-not-exist"
 [[ "$RC" -eq 2 ]] && ok "記録が無ければ --print-record も判定不能" || bad "記録なしの --print-record で exit ${RC}（期待 2）"
+
+# --- 部分実行の記録（STATUS=partial）: 一致しても全件緑へ昇格しない ---
+# 名指しした suite だけを回した記録は「pass 相当だが部分的」として受け、リモート先端と
+# 一致していても判定不能（exit 2）へ倒す。マージは止めない（Issue #892）。
+PART_REC="$WORK/partial-record"
+bash "$RECORD" --gate "tests/run-all.sh" --status partial --mode explicit \
+  --suites "changelog-links changelog-version" \
+  --result "passed=2 failed=0 skipped=0 not-run=0" --record "$PART_REC" >/dev/null 2>&1
+PART_COMMIT="$(sed -n 's/^COMMIT=//p' "$PART_REC" | head -n 1)"
+PART_AT="$(sed -n 's/^RECORDED_AT=//p' "$PART_REC" | head -n 1)"
+run_check --remote-head "$PART_COMMIT" --record "$PART_REC"
+[[ "$RC" -eq 2 ]] && ok "部分実行の記録は一致していても判定不能（全件緑へ昇格しない）" \
+  || bad "部分記録 × 一致で exit ${RC}（期待 2）"
+out_has "$OUT" "FRESHNESS=UNDETERMINED" "部分実行も判定行は UNDETERMINED"
+# REASON は「何を検証したのか」を名指しする。赤で止まるゲートを毎回同じ黄色い警告へ
+# 替えただけでは、そのうち常時黄色いゲートとして読まれなくなる（#163 の劣化経路）。
+out_has "$OUT" "changelog-links changelog-version" "REASON が何を検証したのか（SUITES の中身）を名指しする"
+out_has "$OUT" "tests/run-all.sh" "REASON がどのゲートの記録かを述べる"
+out_has "$OUT" "explicit" "REASON が記録のモードを報告材料として載せる（判定には使わない）"
+out_has "$OUT" "$PART_AT" "REASON が実測時刻を載せる"
+out_has "$OUT" "このままマージしてよい" "ACTION が「その範囲で足りるならマージしてよい」と述べる"
+out_has "$OUT" "ゲートの既定一覧を回して記録を更新すること" "ACTION が足りない場合の次の一手を述べる"
+
+# 部分性の判定は**コミット比較の後**にある。前へ移すと「部分記録 × 分岐した先端」
+# （= 止めるべき状態）まで判定不能へ格下げされ、証拠がより強いケースがより弱い判定を
+# 返す逆転が起きる（実在確認を一致経路の内側に置いているのと同じ理由）。
+run_check --remote-head "$C3" --record "$PART_REC"
+[[ "$RC" -eq 1 ]] && ok "部分記録でも先端がずれていれば exit 1 で止まる（部分性の判定は比較の後）" \
+  || bad "部分記録 × 不一致で exit ${RC}（期待 1）"
+out_has "$OUT" "FRESHNESS=MISMATCH" "部分記録 × 不一致は MISMATCH のまま（判定不能へ格下げしない）"
+out_has "$OUT" "RELATION=divergent" "部分記録でも関係の分類は行われる"
+
+run_check --print-record --record "$PART_REC"
+out_has "$OUT" "STATUS=partial" "--print-record が部分実行であることを出す"
+out_has "$OUT" "SUITES=changelog-links changelog-version" "--print-record が通った suite 一覧を出す"
+
+# 部分性の判定は **STATUS だけ**で行う。MODE は allowlist を持たない自由文字列なので、
+# 判定に混ぜると「未知の MODE は全件扱い」という fail-open が入口として残る。加えて
+# 記録器（checkout）と照合器（インストール済みプラグイン）の版が食い違うのが常態で、
+# `STATUS=pass` のまま新キーで部分性を表すと旧照合器がその行を読み飛ばして昇格させる。
+# 「MODE で判定すれば単純」と後から畳まれないよう、両方向を実測で固定する。
+printf 'RECORD_VERSION=1\nSTATUS=partial\nCOMMIT=%s\nDIRTY=no\nGATE=g\nMODE=full\nSUITES=alpha\n' "$C1" > "$BROKEN"
+run_check --remote-head "$C1" --record "$BROKEN"
+[[ "$RC" -eq 2 ]] && ok "MODE=full でも STATUS=partial なら判定不能（判定は STATUS だけを見る）" \
+  || bad "STATUS=partial + MODE=full で exit ${RC}（期待 2）"
+out_has "$OUT" "記録は部分実行です" "STATUS=partial の理由が部分実行であることを述べる（MODE で分岐していない）"
+printf 'RECORD_VERSION=1\nSTATUS=pass\nCOMMIT=%s\nDIRTY=no\nGATE=g\nMODE=explicit\nSUITES=alpha\n' "$C1" > "$BROKEN"
+run_check --remote-head "$C1" --record "$BROKEN"
+[[ "$RC" -eq 0 ]] && ok "MODE=explicit でも STATUS=pass なら一致（MODE を合否に混ぜない既存契約の維持）" \
+  || bad "STATUS=pass + MODE=explicit で exit ${RC}（期待 0）"
+
+# STATUS の allowlist は緩めない。partial を足したことで未知値まで通るようになると、
+# 「知らない版の記録は判定不能」という構造的な昇格不能性が崩れる。
+printf 'RECORD_VERSION=1\nSTATUS=bogus\nCOMMIT=%s\nDIRTY=no\n' "$C1" > "$BROKEN"
+run_check --remote-head "$C1" --record "$BROKEN"
+[[ "$RC" -eq 2 ]] && ok "未知の STATUS は判定不能（allowlist を緩めない）" || bad "未知 STATUS で exit ${RC}（期待 2）"
+out_has "$OUT" "記録のゲート結果を解釈できません" "未知の STATUS はその旨を理由に述べる"
 
 # --- --measured は記録より優先される（記録が無くても照合できる） ---
 run_check --remote-head "$C1" --measured "$C1" --record "$WORK/does-not-exist"
@@ -332,6 +401,84 @@ FF_GATE_RECORD_FILE="$ALT" bash "$RECORD" --gate g >/dev/null 2>&1
 
 run_record --mode fast
 [[ "$RC" -eq 2 ]] && ok "--gate 無しは記録しない（何を実測したか不明な記録を作らない）" || bad "--gate 無しで exit ${RC}（期待 2）"
+
+# --- 部分実行の記録（--status partial / --suites）---
+contains "$REC" "SUITES=" "--suites を渡さない実行でも SUITES= 行を書く（キーの有無で欠落と空を分けない）"
+
+PART_B="$WORK/record-partial"
+run_record --gate "tests/run-all.sh" --status partial --mode explicit --suites "alpha beta" --record "$PART_B"
+[[ "$RC" -eq 0 ]] && ok "--status partial は記録できる" || bad "--status partial で exit ${RC}（期待 0）"
+contains "$PART_B" "STATUS=partial" "部分実行は STATUS=partial として記録される"
+contains "$PART_B" "SUITES=alpha beta" "--suites の値が記録に残る"
+
+# 記録は 1 行 1 キーで、消費側は `head -n 1` で読む。値に混じった CR/LF を素通しすると
+# 2 行目以降が別のキーとして読まれる（あるいは黙って捨てられる）。
+CRLF_REC="$WORK/record-crlf"
+bash "$RECORD" --gate g --status partial --suites "$(printf 'aa\rbb\ncc')" --record "$CRLF_REC" >/dev/null 2>&1
+CRLF_LINES="$(LC_ALL=C awk 'END { print NR + 0 }' "$CRLF_REC")"
+PART_B_LINES="$(LC_ALL=C awk 'END { print NR + 0 }' "$PART_B")"
+if [[ "$CRLF_LINES" -eq "$PART_B_LINES" && "$PART_B_LINES" -gt 0 ]]; then
+  ok "--suites の CR/LF は畳まれる（記録の 1 行 1 キーが崩れない）"
+else
+  bad "--suites の改行が記録の行数を変えました（${CRLF_LINES} 行 / 期待 ${PART_B_LINES} 行）"
+fi
+contains "$CRLF_REC" "SUITES=aa bb cc" "CR/LF は削除ではなく空白へ置換する（suite 名が連結して別名に化けない）"
+
+run_record --gate g --status bogus --record "$WORK/record-bogus"
+[[ "$RC" -eq 2 ]] && ok "未知の --status は記録しない（allowlist を緩めない）" || bad "未知 --status で exit ${RC}（期待 2）"
+
+# HEAD ドリフトのガードは pass だけでなく partial にも掛かる。partial を素通しにすると
+# 「一度も読んでいないツリーに部分緑が付く」入口が部分記録の側へそっくり移る。
+DRIFT_PART="$WORK/record-drift-partial"
+bash "$RECORD" --gate g --status partial --suites alpha --expect-head "$ABSENT" --record "$DRIFT_PART" >/dev/null 2>&1
+[[ ! -f "$DRIFT_PART" ]] && ok "HEAD が動いた回は partial でも記録しない" || bad "HEAD ドリフト時に partial の記録が書かれました"
+
+# --- 同じコミットの上書き規則: `pass` は `partial` で潰さないが、`fail` では潰される ---
+# `pass@X` は `partial@X` の上位互換の証拠なので、名指し実行を 1 本足しただけで照合が
+# exit 0 → exit 2 へ変わるのは安全側への寄与ゼロの情報の純減になる（全件ゲートの後に
+# レビュー対応で 1 本回す、はごく普通の並び）。一方 `fail` が前回の緑を無効化する規定は
+# load-bearing なので、**両方向を同時に固定する**（片側だけだと、緩めた側が反対向きへ
+# 滑っても緑のまま）。
+DOWN_REC="$WORK/record-downgrade"
+DOWN_COPY="$WORK/record-downgrade.before"
+
+bash "$RECORD" --gate "tests/run-all.sh" --status pass --mode full \
+  --result "passed=96 failed=0" --record "$DOWN_REC" >/dev/null 2>&1
+cp "$DOWN_REC" "$DOWN_COPY"
+# 記録の RECORDED_AT は秒精度なので、同じ秒に書き換わると差分が出ない。1 秒ずらす。
+sleep 1
+run_record --gate "tests/run-all.sh" --status partial --mode explicit \
+  --suites "changelog-links" --record "$DOWN_REC"
+[[ "$RC" -eq 0 ]] && ok "同じコミットの pass へ partial を書いても exit 0（呼び出し側は警告を出さない）" \
+  || bad "pass@X への partial 記録で exit ${RC}（期待 0）"
+# STATUS だけを見る針では、RECORDED_AT / MODE / SUITES の書き換えを見逃す。
+# 記録が**丸ごと**据え置かれることを byte 比較で測る。
+if cmp -s "$DOWN_REC" "$DOWN_COPY"; then
+  ok "同じコミットの pass は partial で上書きされない（記録が byte 一致で据え置かれる）"
+else
+  bad "pass@X が partial@X で書き換わりました: $(diff "$DOWN_COPY" "$DOWN_REC" | head -4 | tr '\n' ' ')"
+fi
+
+# 反対向き: 赤い実行は同じコミットでも前回の緑を無効化する（この向きを緩めると
+# 「一度通ったコミット」が「いま通るコミット」に化ける）。
+bash "$RECORD" --gate "tests/run-all.sh" --status fail --mode full --record "$DOWN_REC" >/dev/null 2>&1
+contains "$DOWN_REC" "STATUS=fail" "同じコミットの pass は fail で無効化される（据え置きを fail へ広げていない）"
+
+# 据え置きは「既存が pass かつ同じコミット」に限る。partial 同士では新しい実行の
+# suite 一覧へ更新されないと、報告が前回の名指し範囲を述べ続ける。
+bash "$RECORD" --gate g --status partial --suites "alpha" --record "$DOWN_REC" >/dev/null 2>&1
+bash "$RECORD" --gate g --status partial --suites "beta" --record "$DOWN_REC" >/dev/null 2>&1
+contains "$DOWN_REC" "SUITES=beta" "partial 同士は上書きされる（据え置きは pass の記録だけ）"
+
+# 別コミットの pass も据え置かない（記録は「いまの HEAD の実測」を指さねばならない）。
+printf 'RECORD_VERSION=1\nSTATUS=pass\nCOMMIT=%s\nDIRTY=no\nGATE=g\nMODE=full\nSUITES=\n' "$ABSENT" > "$DOWN_REC"
+bash "$RECORD" --gate g --status partial --suites "gamma" --record "$DOWN_REC" >/dev/null 2>&1
+contains "$DOWN_REC" "STATUS=partial" "別コミットの pass は据え置かない（COMMIT が同じときだけ守る）"
+
+# 解釈できない版の記録を温存する理由は無い（読めない記録を守っても照合は判定不能のまま）。
+printf 'RECORD_VERSION=9\nSTATUS=pass\nCOMMIT=%s\nDIRTY=no\n' "$HEAD_B2" > "$DOWN_REC"
+bash "$RECORD" --gate g --status partial --suites "delta" --record "$DOWN_REC" >/dev/null 2>&1
+contains "$DOWN_REC" "SUITES=delta" "解釈できない版の pass は据え置かない（v1 として読めるものだけを守る）"
 
 # git status が失敗した回を「clean」と書かない。`$(git status ... 2>/dev/null)` の空文字は
 # 「clean」と「status が失敗した」の両方を意味するので、区別しないと偽の clean 記録ができる。
@@ -428,6 +575,17 @@ contains "$RUNNER" 'cd "$SCRIPT_DIR" && bash "$recorder"' "記録はランナー
 contains "$RUNNER" 'ff_record_gate_head fail' "赤い実行も記録を更新する（前回の緑を残さない）"
 contains "$RUNNER" 'ff_record_gate_head pass' "通った実行が記録を更新する"
 contains "$RUNNER" '--expect-head' "ゲート開始時の HEAD を記録側へ渡す"
+contains "$RUNNER" '--suites "$suites"' "ランナーが通った suite 一覧を記録側へ渡す"
+contains "$RUNNER" 'status="partial"' "明示引数の緑を partial へ写像している"
+
+# 「明示引数なら記録ごと飛ばす」縮退が復活していないこと。この 1 行が戻ると、
+# 名指し実行しか走らない収束経路を通った PR には「最後の全件記録 = 別コミット」
+# だけが残り、鮮度照合が必ず赤くなる（Issue #892 の再発）。
+if LC_ALL=C awk '/^  \[\[ "\$USING_DEFAULT_SCRIPTS" == "1" \]\] \|\| return 0$/ { found = 1 } END { exit found ? 1 : 0 }' "$RUNNER"; then
+  ok "明示引数の実行を記録ごと飛ばす縮退が残っていない"
+else
+  bad "ff_record_gate_head の冒頭に「明示引数なら記録しない」の縮退が復活しています"
+fi
 
 # 失敗した実行が記録へ到達しないことを**行順**で固定する（条件式だけでは、
 # 記録の呼び出しが失敗判定より前へ移動しても緑のままになる）。
@@ -527,8 +685,6 @@ FF_GATE_RECORD_FILE="/dev/null/not-a-dir/rec" bash "$SIM" "$SIM_REPO/tests" 1 1 
 rm -f "$SIM_REC"
 FF_GATE_RECORD_FILE="$SIM_REC" bash "$SIM" "$SIM_REPO/tests" 1 0 0 pass 0 >/dev/null 2>&1
 [[ ! -f "$SIM_REC" ]] && ok "pass が 0 件の実行は記録しない" || bad "pass 0 件で記録が書かれました"
-FF_GATE_RECORD_FILE="$SIM_REC" bash "$SIM" "$SIM_REPO/tests" 0 1 3 pass 0 >/dev/null 2>&1
-[[ ! -f "$SIM_REC" ]] && ok "既定一覧でない実行は記録しない" || bad "明示引数相当の実行で記録が書かれました"
 FF_GATE_RECORD=0 FF_GATE_RECORD_FILE="$SIM_REC" bash "$SIM" "$SIM_REPO/tests" 1 1 3 pass 0 >/dev/null 2>&1
 [[ ! -f "$SIM_REC" ]] && ok "FF_GATE_RECORD=0 で記録を止められる" || bad "FF_GATE_RECORD=0 でも記録が書かれました"
 FF_GATE_RECORD_FILE="$SIM_REC" bash "$SIM" "$SIM_REPO/tests" 1 0 2 pass 0 >/dev/null 2>&1
@@ -555,22 +711,67 @@ FF_GATE_RECORD_FILE="$SIM_REC" FF_GATE_START_HEAD="$ABSENT" \
   bash "$SIM" "$SIM_REPO/tests" 1 1 0 fail 2 >/dev/null 2>&1
 contains "$SIM_REC" "STATUS=fail" "HEAD が動いていても赤い実行は記録を無効化する"
 
-# 明示引数の実行が記録しないことを実測する（疑似 suite を 1 本だけ渡す）。
+# --- 明示引数の経路: 記録は残すが、全件緑へ**昇格しない形**で残す（Issue #892）---
+# 記録ごと飛ばしていた頃は、名指し実行しか走らない収束経路（CHANGELOG footer 追従など）を
+# 通った PR に「最後の全件記録 = 別コミット」だけが残り、鮮度照合が必ず赤くなった。
+# 毎回無視するゲートは、そのうち本当の赤も無視される。
+rm -f "$SIM_REC"
+FF_GATE_RECORD_FILE="$SIM_REC" bash "$SIM" "$SIM_REPO/tests" 0 1 3 pass 0 >/dev/null 2>&1
+if [[ -f "$SIM_REC" ]]; then
+  ok "明示引数の実行も記録する（名指し実行しか走らない収束経路が必ず赤くなるのを防ぐ）"
+  contains "$SIM_REC" "STATUS=partial" "明示引数の緑は partial として記録される（全件緑へ昇格しない）"
+  contains "$SIM_REC" "MODE=explicit" "明示引数の実行はモード explicit として記録される（報告材料。判定には使わない）"
+  contains "$SIM_REC" "SUITES=s0 s1 s2" "記録に実際に通った suite の一覧が入る"
+  SIM_RC3=0
+  SIM_OUT3="$(cd "$SIM_REPO" && bash "$CHECK" --remote-head "$(git_q -C "$SIM_REPO" rev-parse HEAD)" --record "$SIM_REC" 2>&1)" || SIM_RC3=$?
+  [[ "$SIM_RC3" -eq 2 ]] && ok "明示引数の記録は一致していても判定不能（マージは止めない）" \
+    || bad "明示引数の記録の照合が exit ${SIM_RC3}（期待 2）"
+  out_has "$SIM_OUT3" "s0 s1 s2" "照合の報告が何を検証したのかを名指しする"
+else
+  bad "明示引数の実行が記録しません"
+  bad "（従属検査）明示引数の記録の STATUS を確認できません"
+  bad "（従属検査）明示引数の記録の MODE を確認できません"
+  bad "（従属検査）明示引数の記録の SUITES を確認できません"
+  bad "（従属検査）明示引数の記録の照合結果を確認できません"
+  bad "（従属検査）照合の報告内容を確認できません"
+fi
+
+# 明示引数の**赤い**実行は `fail` のまま記録する。`partial` へ落とすと、赤い実行が
+# 前回の緑を無効化しそこねる（「一度通ったコミット」が「いま通るコミット」に化ける）。
+FF_GATE_RECORD_FILE="$SIM_REC" bash "$SIM" "$SIM_REPO/tests" 0 1 0 fail 2 >/dev/null 2>&1
+contains "$SIM_REC" "STATUS=fail" "明示引数の赤い実行は STATUS=fail で記録を無効化する（partial へ落とさない）"
+
+# 明示引数でも pass 0 件なら記録しない（SUITES= が空の部分記録を作らない）。
+rm -f "$SIM_REC"
+FF_GATE_RECORD_FILE="$SIM_REC" bash "$SIM" "$SIM_REPO/tests" 0 1 0 pass 0 >/dev/null 2>&1
+[[ ! -f "$SIM_REC" ]] && ok "明示引数でも pass 0 件の実行は記録しない" || bad "明示引数 + pass 0 件で記録が書かれました"
+
+# 記録を止める逃げ道は経路で差別化しない。
+FF_GATE_RECORD=0 FF_GATE_RECORD_FILE="$SIM_REC" bash "$SIM" "$SIM_REPO/tests" 0 1 3 pass 0 >/dev/null 2>&1
+[[ ! -f "$SIM_REC" ]] && ok "FF_GATE_RECORD=0 は明示引数の経路にも掛かる" || bad "FF_GATE_RECORD=0 でも明示引数の実行が記録しました"
+
+# ランナー本体を起動して配線ごと実測する（疑似 suite を 1 本だけ渡す）。SIM は記録
+# ブロックだけを抜き出した隔離実行なので、引数・cwd・FF_GATE_START_HEAD の受け渡しは
+# ここでしか測れない。この主張に検出力があるのは、ランナー自身が git 管理下に在るため
+# （記録は `cd "$SCRIPT_DIR"` してから走るので、呼び出し元の cwd は関係しない）。
 PSEUDO_DIR="$WORK/pseudo/pass"
 mkdir -p "$PSEUDO_DIR"
 printf '#!/usr/bin/env bash\necho PSEUDO-OK\nexit 0\n' > "$PSEUDO_DIR/verify.sh"
 chmod +x "$PSEUDO_DIR/verify.sh"
 PSEUDO_RECORD="$WORK/pseudo-record"
-# この否定の主張に検出力があるのは、ランナー自身が git 管理下に在るため
-# （記録は `cd "$SCRIPT_DIR"` してから走るので、呼び出し元の cwd は関係しない）。
-# 記録器が「呼ばれれば書ける」状態でなければ、条件を壊しても記録が生まれず、
-# この検査は空振りしたまま緑になる。
+rm -f "$PSEUDO_RECORD"
 RC=0
 FF_GATE_RECORD_FILE="$PSEUDO_RECORD" bash "$RUNNER" "$PSEUDO_DIR/verify.sh" >/dev/null 2>&1 || RC=$?
-if [[ "$RC" -eq 0 && ! -f "$PSEUDO_RECORD" ]]; then
-  ok "明示引数の実行は記録しない（名指しした suite だけの結果をマージの根拠にしない）"
+if [[ "$RC" -eq 0 && -f "$PSEUDO_RECORD" ]]; then
+  ok "明示引数の実行はランナー本体からも記録される"
+  contains "$PSEUDO_RECORD" "STATUS=partial" "ランナー本体でも明示引数の緑は partial（名指しした suite だけの結果をマージの根拠にしない）"
+  contains "$PSEUDO_RECORD" "MODE=explicit" "ランナー本体が明示引数をモード explicit として記録する"
+  contains "$PSEUDO_RECORD" "SUITES=pass" "ランナー本体が実際に通った suite 名を記録する"
 else
-  bad "明示引数の実行が記録しました（rc=${RC} / 記録=$([[ -f "$PSEUDO_RECORD" ]] && echo あり || echo なし)）"
+  bad "明示引数の実行がランナー本体から記録されません（rc=${RC} / 記録=$([[ -f "$PSEUDO_RECORD" ]] && echo あり || echo なし)）"
+  bad "（従属検査）ランナー本体の記録の STATUS を確認できません"
+  bad "（従属検査）ランナー本体の記録の MODE を確認できません"
+  bad "（従属検査）ランナー本体の記録の SUITES を確認できません"
 fi
 
 # =============================================================================
@@ -589,6 +790,21 @@ contains "$SKILL" "判定不能は手順 8 の完了報告に必ず載せる" "�
 contains "$SKILL" "ゲート実測鮮度: <手順 7 の FRESH_REPORT をそのまま貼る>" "完了報告テンプレートに鮮度の欄がある"
 contains "$SKILL" "record-gate-head.sh" "実測対象が自己申告ではなく記録であることを述べている"
 contains "$SKILL" "--print-record" "報告に実測の素性（ゲート名・モード）を載せる"
+# 部分記録の導入で虚偽になった旧記述（「明示引数の実行は…記録しません」）が復活して
+# いないこと。記録の説明が実体（明示引数 = 部分記録）を述べていることを直接見る。
+contains "$SKILL" '`STATUS=partial`（部分実行）として記録されます' \
+  "close-issue の記録説明が「明示引数は部分記録になる」旨を述べている"
+# 上の一文だけだと、同じコミットに全件緑がある場合の実挙動（据え置き → exit 0）を
+# 読み手が予測できない。操作者は「全件ゲート → 名指し 1 本」で exit 2 を予期して
+# しまう（実際は exit 0）。例外は本文と配布文書の両方に要る。
+contains "$SKILL" '同じコミットに全件緑（`STATUS=pass`）の記録が既にあるときは、部分実行で上書きしません' \
+  "close-issue が同一コミットの pass 据え置きを例外として述べている"
+contains "$WORKFLOW" "同じコミットに全件緑の記録が既にあれば、部分実行で上書きされない" \
+  "配布 git-workflow が同一コミットの pass 据え置きを述べている"
+# 判定不能の原因列挙。散文の側を名指しで見る（コード内コメントにも同じ語があるため、
+# 前後を含めた形で拾わないと片方だけ古くなっても緑のままになる）。
+contains "$SKILL" "直近のゲートが赤い / 記録が部分実行である" \
+  "close-issue の判定不能 原因列挙に部分実行が入っている"
 # 実際に「マージを止める」のは SKILL の case 節である（スクリプトの exit 1 ではない）。
 # 散文の針だけだと `1)` から exit 1 を落としても全部緑のままなので、節を切り出して
 # 分岐の実体を見る。
@@ -607,6 +823,12 @@ fi
 contains "$CASE_BLOCK" "exit 1" "不一致の分岐がマージを止める（exit 1）"
 contains "$CASE_BLOCK" "exit 2" "検査不成立の分岐が停止する（exit 2）"
 contains "$CASE_BLOCK" "FRESH_REPORT=" "各分岐が報告用の文字列を残す"
+# 判定不能の報告は ACTION だけでは閉じない。部分実行の ACTION は「上に名指しした
+# suite で…」と REASON を指すため、REASON を落とすと報告の中で指す先が消える。
+# 「FRESH_REPORT= がある」だけの針は REASON の脱落を素通しするので、報告文字列が
+# REASON を実際に載せていることを見る。
+contains "$CASE_BLOCK" 'FRESH_REPORT="⚠️ 判定不能 — ${FRESH_REASON}' \
+  "判定不能の報告が ACTION だけでなく REASON も載せる"
 contains "$SKILL" '「全件実行で通した」と読ませないため' "高速モードの記録を全件実行と読ませない意図が書かれている"
 contains "$SKILL" '"${PR_NUMBER}" "${REMOTE_HEAD}" "${MERGE_SUBJECT}"' "merge コマンドの生成が照合した先端を使う"
 
@@ -614,6 +836,10 @@ contains "$WORKFLOW" "ff-dev-toolkit-merge-freshness-contract:start" "git-workfl
 contains "$WORKFLOW" "check-merge-freshness.sh" "git-workflow が検査スクリプトを名指ししている"
 contains "$WORKFLOW" "未実測のコミットまで畳み込む" "squash merge が未実測を畳み込むことを述べている"
 contains "$WORKFLOW" "3 = 検査不成立（停止する）" "終了コードの意味が配布文書にも書かれている"
+# 終了コードの意味は 3 箇所（check-merge-freshness.sh ヘッダ / close-issue SKILL /
+# 配布 git-workflow）に複製されている。部分記録の扱いを片方だけ直すと drift する。
+contains "$WORKFLOW" "部分記録は一致していても exit 2" \
+  "git-workflow の鮮度契約ブロックに部分記録 → exit 2 が入っている"
 contains "$WORKFLOW" "ff-dev-toolkit-merge-freshness-contract:end" "鮮度ゲートの契約ブロックが閉じている"
 contains "$WORKFLOW" 'case "${FRESH_STATUS}" in' "配布スニペットが終了コードを分岐する（出力の有無で判断させない）"
 

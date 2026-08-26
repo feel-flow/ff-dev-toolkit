@@ -502,6 +502,100 @@ else
   bad "ケース 16 のレポートが残っていない（文言検査は空振り）"
 fi
 
+# 17. 裸の `Critical: 0` 独立行（comprehensive-review のゼロ件報告契約の形。
+#     Issue #893 で契約化）→ 出ない。素の `^critical:` 判定はこの行で 100% 偽
+#     CRITICAL_BLOCK を発火していた（3 巡目レビューの security-analysis 誤列挙で
+#     実証）。ガードは「明示ゼロ」だけを除外し、ケース 5 の数字を含まない散文
+#     マーカー（`CRITICAL: 説明`）の検出は維持する。
+run_case "裸の Critical: 0 独立行（ゼロ件報告契約）" absent "sentinel-case-17" <<'BODY'
+<!-- sentinel-case-17 -->
+## 総合レビュー
+
+観点間の隙間と相互作用を中心に diff 全体を確認したが、報告すべき問題は見つからなかった。
+
+Critical: 0 / Warning: 0 / Suggestion: 0
+BODY
+
+# 18. 裸の `Critical: 0` 単独行（区切りなしの明示ゼロ）→ 出ない。
+#     除外境界のもう一方の正例（ケース 17 は `/` 区切り形）。
+run_case "裸の Critical: 0 単独行" absent "sentinel-case-18" <<'BODY'
+<!-- sentinel-case-18 -->
+## 総合レビュー
+
+diff 全体を読解したが、報告すべき問題は無かった。
+
+Critical: 0
+BODY
+
+# 19. `CRITICAL: 0-day …` 型の 0 始まり実指摘 → 出る。明示ゼロ除外を
+#     `0([^0-9]|$)` のような広い形にすると、この実指摘まで明示ゼロとして
+#     飲み込まれる（fail-open）。除外は「0 の直後が行末 / 空白+行末 / `/`
+#     区切り」だけに限定していることの負の回帰。
+# 注: Warning bullet はアダプタ側受理ゲートを通すためのもの（bullet 無しの
+# `CRITICAL: 散文` は受理ゲートの実体行ではない — 受理と検出は別契約）。
+# 集約側の Critical 検出は bare 行だけを見るので、この bullet は判定に混ざらない。
+run_case "CRITICAL: 0-day 型の 0 始まり実指摘" present "sentinel-case-19" <<'BODY'
+<!-- sentinel-case-19 -->
+## Review
+
+CRITICAL: 0-day exploit の兆候が diff の依存追加に含まれている
+
+- Warning: 依存追加の検証手順が未記載
+BODY
+
+# 20. `### Critical` 配下の `- 指摘なし` → 出ない。空所見語彙はアダプタ側の
+#     受理ゲート s2（指摘なし・該当なし・指摘事項なし）と揃える — 片側だけに
+#     語彙があると「アダプタは受理するのに集約は実 Critical と数える」ドリフトで
+#     偽 BLOCK になる（5 巡目で実測）。
+run_case "Critical 見出し配下の - 指摘なし" absent "sentinel-case-20" <<'BODY'
+<!-- sentinel-case-20 -->
+## 総合レビュー
+
+### Critical
+
+- 指摘なし
+
+### Warning
+
+- 指摘なし
+BODY
+
+# 21. 裸の `Critical: 0 件` → 出ない（明示ゼロの日本語形。除外境界の「件」。
+#     ケース 19 の 0-day 負回帰と対）。
+run_case "裸の Critical: 0 件" absent "sentinel-case-21" <<'BODY'
+<!-- sentinel-case-21 -->
+## 総合レビュー
+
+diff 全体を読解した。
+
+Critical: 0 件
+BODY
+
+# 22. 裸の `Critical: none`（ゼロ語形の明示ゼロ）→ 出ない。アダプタ側受理ゲート
+#     s1 はゼロ語（none / なし / n/a / ゼロ）を契約準拠ゼロ報告として受理する。
+#     集約側の除外が数値形だけだと、この受理された正常系が偽 BLOCK になる
+#     （語彙の対称性はケース 20 の空所見 bullet と同じ論点）。
+run_case "裸の Critical: none（ゼロ語形）" absent "sentinel-case-22" <<'BODY'
+<!-- sentinel-case-22 -->
+## Review
+
+diff was reviewed in full.
+
+Critical: none
+BODY
+
+# 23. 裸の `Critical: zero`（英語ゼロ語のもう一形）→ 出ない。除外語彙は s1 の
+#     実列挙（なし / none / n/a / zero / ゼロ）と完全一致させる — 1 語でも欠けると
+#     その形の契約準拠ゼロ報告だけが偽 BLOCK になる。
+run_case "裸の Critical: zero（英語ゼロ語）" absent "sentinel-case-23" <<'BODY'
+<!-- sentinel-case-23 -->
+## Review
+
+diff was reviewed in full.
+
+Critical: zero
+BODY
+
 # ── config 層（.claude/agent-config.yaml 経由）の実挙動 ──
 # yq の有無で config 契約が丸ごと未検証にならないよう、この suite が書く最小
 # config（printf の 2 行）だけを決定的に解釈する yq stub を用意して**常時**実行する。
@@ -756,8 +850,8 @@ fi
 # インライン検査が黙って削られても FAIL=0 のまま通ってしまうため、✓ の総数まで
 # 固定する。ケースを増減させたらここも同時に更新すること。
 # 実 yq が居る環境では代表照合 17R（2）+ YAML リスト L1（2）+ L2（2）の 6 検査が加わる
-EXPECTED_PASS=43
-[ "$HAVE_YQ" -eq 1 ] && EXPECTED_PASS=49
+EXPECTED_PASS=50
+[ "$HAVE_YQ" -eq 1 ] && EXPECTED_PASS=56
 if [ "$PASS" -ne "$EXPECTED_PASS" ]; then
   echo "✗ multi-agent-critical-marker verify: 検査数が想定と違います（実測 ${PASS} / 想定 ${EXPECTED_PASS}）。検査が黙って消えたか、追加分の想定更新漏れです" >&2
   exit 1

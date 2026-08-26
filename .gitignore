@@ -3,3 +3,9 @@ node_modules/
 
 # spec-driven gate progress records are working-session intermediates (see spec-driven SKILL.md)
 spec-driven-gates-*.md
+
+# plugins/ff-dev-toolkit/tests/adapter-sandbox-contract の書き込み境界 probe。
+# $TMPDIR 配下では workspace-write が常に書けてしまい絞り込みを観測できないため、
+# リポジトリ配下に作って EXIT トラップで消す。中断した実行の取り残しを追跡対象に
+# しない（この suite はリポジトリ root へ作るので、root の .gitignore が要る）。
+.ff-sandbox-probe.*

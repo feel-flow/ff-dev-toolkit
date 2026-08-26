@@ -56,8 +56,18 @@ fi
 
 # ── Task-type specific sandbox ──
 #
+# **Version numbers in this file are per-claim provenance, not a file-wide
+# stamp. Do NOT bulk-rewrite them.** A claim is re-stamped only when it has
+# actually been re-measured. Everything reachable for free — `codex exec --help`
+# and `codex sandbox`, neither of which invokes a model — was re-measured on
+# 0.149.1. The claims that still say 0.144.x are the ones whose only check is a
+# BILLED `codex exec` run against the model (`-m` vs `-p` precedence, and codex
+# silently ignoring a non-existent profile); they are NOT re-measured on 0.149.1
+# and the comments there do not claim they are. Each such block carries the same
+# note inline, so a reader who lands mid-file does not have to find this one.
+#
 # The value goes straight to `codex exec --sandbox`, which is a closed enum.
-# Measured on codex-cli 0.144.5 (`codex exec --help`):
+# Measured on codex-cli 0.149.1 (`codex exec --help`):
 #   -s, --sandbox <SANDBOX_MODE>
 #       [possible values: read-only, workspace-write, danger-full-access]
 # Anything else is rejected by argv parsing with rc=2 **before the CLI runs at
@@ -69,7 +79,7 @@ fi
 #
 # Why workspace-write for implement, and what it does to the network. In codex
 # these two axes are bundled into the one mode, so there is no "confine writes
-# but keep the network off" value to choose separately. Measured on 0.144.5 with
+# but keep the network off" value to choose separately. Measured on 0.149.1 with
 # `codex sandbox` (invokes no model — the probes below are free and local):
 #
 #   mode                 write into CWD   network
@@ -101,22 +111,117 @@ get_sandbox_mode() {
     review)    echo "read-only" ;;
     explore)   echo "read-only" ;;
     # implement has to write its staging output, so it gets the mode that allows
-    # CWD writes rather than a mode that denies them (or one that also opens the
-    # network). multi-agent.sh fixes that CWD to REPO_ROOT and rejects output dirs
-    # outside it before launch. Staging-only narrowing remains a prompt contract.
+    # writes into the agent's working root rather than a mode that denies them
+    # (or one that also opens the network). That working root is NOT the whole
+    # repository: implement also passes `-C <staging>` (see cd_narrow_args), so
+    # the write boundary is the staging dir alone. multi-agent.sh still fixes the
+    # process CWD to REPO_ROOT and rejects output dirs outside it before launch —
+    # that keeps the git-repo check satisfied and keeps the other three adapters,
+    # which have no equivalent of `-C`, inside the repository.
     implement) echo "workspace-write" ;;
     *)         echo "read-only" ;;
   esac
 }
 
+# ── Write-boundary narrowing: implement writes only into staging ──
+#
+# `codex exec -C <DIR>` tells the agent to use DIR as its working root, and under
+# workspace-write that root **is** the write boundary. Measured on codex-cli
+# 0.149.1 with `codex sandbox` (invokes no model — free and local), with the
+# probe dir nested inside the repository so the repo root is a real ancestor:
+#
+#   cwd        mode                 write ../ or REPO_ROOT   write ./
+#   staging    workspace-write      DENIED                   allowed
+#   REPO_ROOT  workspace-write      allowed (the old shape)  allowed
+#   staging    danger-full-access   allowed (positive ctrl)  allowed
+#   staging    read-only            DENIED                   DENIED
+#
+# Three properties of that narrowing were measured rather than assumed:
+#
+#   1. Reads are NOT narrowed with it. The session's environment_context keeps
+#      `access="read"` on `:root` (the whole filesystem) while the single
+#      `access="write"` entry is the staging dir, and a narrowed probe reads
+#      repository files with zero denials. So the agent can still consult
+#      CLAUDE.md, existing implementations and git history (Issue #896).
+#   2. The network pin below keeps working while narrowed. Measured on 0.149.1
+#      with `codex sandbox --log-denials` against a closed local port (no
+#      outbound traffic): read-only, workspace-write, and workspace-write plus
+#      the pin all log `(curl) network-outbound` denials; only
+#      `network_access=true` and danger-full-access let the connect through.
+#   3. `--add-dir` cannot do this. It only ADDS writable roots — passing the
+#      staging dir that way leaves the CWD (REPO_ROOT) writable, so it is not a
+#      narrowing primitive. It also accepts a non-existent dir without
+#      complaining, so a typo there would fail open.
+#
+# Known consequence, deliberately not papered over here: the agent's working root
+# is now the staging dir, so a bare relative path resolves there rather than in
+# the repository. The prompt already hands it the staging path as an absolute
+# path (Issue #392) and carries the diff inline, and the Execution Boundary
+# section already tells it to ignore AGENTS.md / CLAUDE.md for this nested run
+# (Issue #263) — but whether codex still discovers a repository-root AGENTS.md
+# from a narrowed working root is UNMEASURED (it would take a billed
+# `codex exec` run to see). Naming the repository root in the shared prompt was
+# considered and rejected for this change: build_prompt is shared with the three
+# adapters that are NOT narrowed, so the sentence would be false for them.
+# Tracked separately as Issue #900.
+#
+# `--skip-git-repo-check` is deliberately NOT passed: validate_implement_output_boundary
+# (multi-agent.sh) already forces the staging dir to live under REPO_ROOT, so the
+# working root is inside a git repository and the check passes.
+#
+# Note the asymmetry with grok, which is documented at get_sandbox_profile in
+# grok-cli-adapter.sh: only codex's implement writes are confined to staging by
+# the sandbox. For grok the boundary is still the repository, and staging-only
+# remains a prompt contract there.
+# Kept pure: it is called inside `$( )`, so it cannot fail the run itself — an
+# `exit` from a command substitution only kills the subshell and the caller would
+# carry on with an empty array. The "narrow or stop" decision therefore lives at
+# the call site below, in the main shell.
+cd_narrow_args() {
+  # STAGING_DIR is non-empty exactly for a non-inline implement run: build_prompt
+  # (called far above, before any argv is assembled) returns 1 for an implement
+  # with neither a staging dir nor --inline-output, and this adapter turns that
+  # into fail_orchestrator_error. So the third condition is unreachable in this
+  # adapter's flow; it is kept so a direct call of this function cannot emit
+  # `-C ""`, and the call site below turns the unreachable case into a loud
+  # failure rather than a silent widening of the boundary.
+  [[ "${TASK_TYPE:-review}" == "implement" ]] || return 0
+  [[ "${INLINE_OUTPUT:-false}" != "true" ]] || return 0
+  [[ -n "${STAGING_DIR:-}" ]] || return 0
+  printf '%s\n%s\n' "-C" "$STAGING_DIR"
+}
+
+# `-C/--cd` arrived after the version this adapter was first written against, so
+# an older codex on PATH would reject it during argv parsing — the perspective
+# would be lost for the whole run and the report would show an INCOMPLETE
+# artifact rather than "this machine's codex cannot confine the writes" (the
+# Issue #403 failure shape). Worse, "just drop the flag on old versions" would
+# put us back to writing anywhere in the repository with no signal at all. So
+# require the capability up front and stop loudly if it is missing.
+require_cd_capability() {
+  local help rc=0
+  help="$(run_with_timeout 30 "$CLI_COMMAND" exec --help 2>/dev/null)" || rc=$?
+  if [[ "$rc" -ne 0 || -z "$help" ]]; then
+    fail_orchestrator_error "$perspective_name" \
+      "'${CLI_COMMAND} exec --help' を取得できませんでした（rc=${rc}）。implement の書き込み境界を staging へ絞る -C/--cd の有無を確認できないため、リポジトリ全体を書ける広い境界のまま起動せずに停止します。"
+  fi
+  case "$help" in
+    *"-C, --cd"*) return 0 ;;
+  esac
+  fail_orchestrator_error "$perspective_name" \
+    "インストール済みの ${CLI_NAME} は 'exec -C/--cd' を持ちません（'${CLI_COMMAND} exec --help' に -C, --cd が現れません）。このオプションが無いと implement の書き込み境界が staging ではなくリポジトリ全体になるため、黙って広い境界で走らせずに停止します。codex-cli を 0.149.1 以降へ更新してください（npm install -g @openai/codex）。"
+}
+
 # Pin the network off explicitly under workspace-write. The mode default is
 # already `false`, so on a stock machine this changes nothing — it exists for the
 # machine whose ~/.codex/config.toml (or a layered profile) sets
-# `[sandbox_workspace_write] network_access = true`. Measured on 0.144.5: with
-# that config a workspace-write run reaches the network (curl → 200); adding this
-# override closes it again (→ 000). Without the pin the user gets a networked
-# implement run with no signal anywhere — not in stdout, not in the artifact, not
-# in the report.
+# `[sandbox_workspace_write] network_access = true`. Measured on 0.149.1 with
+# `codex sandbox --log-denials`: with `network_access=true` an outbound connect
+# goes through unlogged; adding this override brings back the
+# `(curl) network-outbound` denial. The measurement holds with the write boundary
+# narrowed to staging, so the two settings do not cancel each other. Without the
+# pin the user gets a networked implement run with no signal anywhere — not in
+# stdout, not in the artifact, not in the report.
 #
 # Passing it is weakly dominant, which is the whole argument. codex ignores an
 # unrecognized `-c` key silently (measured, with and without --strict-config on
@@ -159,6 +264,28 @@ done <<EOF
 $(sandbox_config_args "$sandbox_mode")
 EOF
 
+# 同じ理由で `-C <staging>` も 1 要素 1 引数で受ける（staging パスは空白を含みうる）。
+CD_NARROW_ARGS=()
+while IFS= read -r _cd_narrow_arg; do
+  [[ -n "$_cd_narrow_arg" ]] && CD_NARROW_ARGS+=("$_cd_narrow_arg")
+done <<EOF
+$(cd_narrow_args)
+EOF
+# 「絞るはずの実行なのに -C が組み立てられなかった」を黙って通さない。ここで
+# 素通りさせると、書き込み境界がリポジトリ全体に戻った implement が**警告なしで**
+# 走る（プロンプトは staging を名指ししたままなので、出力からも判別できない）。
+# 上のとおり build_prompt が先に拒否するので現状は到達しないが、防御の向きは
+# 「絞れないなら止める」で揃えておく — 到達不能なガードが黙って広い方へ倒れる形は、
+# このアダプタが他所（--add-dir の fail-open）で避けているクラスそのもの。
+if [[ "${TASK_TYPE:-review}" == "implement" && "${INLINE_OUTPUT:-false}" != "true" \
+      && "${#CD_NARROW_ARGS[@]}" -eq 0 ]]; then
+  fail_orchestrator_error "$perspective_name" \
+    "implement（非 inline）なのに書き込み境界を staging へ絞る -C を組み立てられませんでした（--staging-dir が空）。リポジトリ全体を書ける広い境界のまま起動せずに停止します。"
+fi
+if [[ "${#CD_NARROW_ARGS[@]}" -gt 0 ]]; then
+  echo "   Write boundary: ${STAGING_DIR} (codex exec -C)" >&2
+fi
+
 # Guard this mktemp explicitly: under `set -e` a failure here would kill the
 # adapter with a bare 1 before run_with_timeout is ever reached, filing a broken
 # TMPDIR as "the CLI exited 1" and writing no artifact at all.
@@ -176,6 +303,10 @@ fi
 # ただしその利点が成立するのは -p 単独のときだけ。codex 0.144.5 で実測すると
 # -m を併用した場合は -m のモデルがプロファイルのモデルに勝ち、reasoning effort
 # だけプロファイル由来になる — ACE-70-2 が問題視した組み合わせそのものになる。
+# **版数は 0.144.5 のまま（意図）。** 優先順位はモデルへ到達しないと観測できず、
+# 確認には課金される `codex exec` の実行が要るため、このファイルの他の主張と違って
+# 0.149.1 では再測していない（していないものを再測したことにしない）。冒頭の
+# 「版数は主張ごとの出典」の注記のとおり、ここを機械的に 0.149.1 へ書き換えないこと。
 # 黙って通すと利用者は「プロファイルで束ねたつもり」のまま不整合な設定で走るので、
 # 両方が設定されていたら落とす。
 if [[ -n "${MULTI_AGENT_MODEL_CODEX_CLI:-}" && -n "${MULTI_AGENT_CODEX_PROFILE:-}" ]]; then
@@ -197,9 +328,13 @@ if [[ "${MULTI_AGENT_CODEX_REASONING_EFFORT+x}" == "x" ]]; then
 fi
 
 # codex は**存在しないプロファイル名を黙って無視し、base config のまま完走する**
-# （0.144.5 で実測）。名前を打ち間違えると「専用プロファイルでレビューさせたつもり」
-# のまま既定設定で走り、成果物からもログからも判別できない。ラッパー側で存在を
-# 確認して落とす（ACE-70-2 の再発そのものを防ぐ）。
+# （0.144.5 で実測）。**版数は 0.144.5 のまま（意図）。** 「完走する」の確認は
+# モデルへ到達する実行を伴うため課金され、0.149.1 では再測していない。冒頭の
+# 「版数は主張ごとの出典」の注記のとおり、機械的に書き換えないこと。
+#
+# 名前を打ち間違えると「専用プロファイルでレビューさせたつもり」のまま既定設定で
+# 走り、成果物からもログからも判別できない。ラッパー側で存在を確認して落とす
+# （ACE-70-2 の再発そのものを防ぐ）。
 if [[ -n "${MULTI_AGENT_CODEX_PROFILE:-}" ]]; then
   codex_profile_file="${CODEX_HOME:-$HOME/.codex}/${MULTI_AGENT_CODEX_PROFILE}.config.toml"
   if [[ ! -f "$codex_profile_file" ]]; then
@@ -229,8 +364,10 @@ fi
 
 # プロンプトは argv ではなく stdin で渡す（Issue #712: argv 渡しは Windows の
 # CreateProcess 上限 ~32KB で exit 126 になる）。`codex exec -` は PROMPT を
-# stdin から読む（`codex exec --help` に明記。codex-cli 0.144.1 + 一時ファイル
-# 経由で実測済み — 有限ファイルなので Issue #406 の stdin 待ちハングは起きない）。
+# stdin から読む（0.149.1 の `codex exec --help` に明記 —「If not provided as an
+# argument (or if `-` is used), instructions are read from stdin」。help を読むだけ
+# なので無料で再確認でき、0.144.1 + 一時ファイル経由の実測も併せて済んでいる。
+# 有限ファイルなので Issue #406 の stdin 待ちハングは起きない）。
 prompt_file="$(materialize_prompt_file "$prompt")" || prompt_file=""
 if [[ -z "$prompt_file" ]]; then
   fail_orchestrator_error "$perspective_name" \
@@ -238,12 +375,19 @@ if [[ -z "$prompt_file" ]]; then
 fi
 _FF_PROMPT_FILE="$prompt_file"
 
+# 能力確認は起動直前に置く。ここより上の検証（モデル引数・プロファイル・TMPDIR）は
+# すべてローカルで完結するので、それらが落ちる実行に CLI 起動を 1 回足さない。
+if [[ "${#CD_NARROW_ARGS[@]}" -gt 0 ]]; then
+  require_cd_capability
+fi
+
 # MODEL_ARGS は空になりうる。bash 3.2 では set -u 下で空配列を "${a[@]}" と
 # 展開すると unbound variable で落ちるため ${a[@]+"${a[@]}"} を使う。
 result=$(run_with_timeout --stdin-file "$prompt_file" "$TIMEOUT" \
   "$CLI_COMMAND" exec - \
     --sandbox "$sandbox_mode" \
     ${SANDBOX_CONFIG_ARGS[@]+"${SANDBOX_CONFIG_ARGS[@]}"} \
+    ${CD_NARROW_ARGS[@]+"${CD_NARROW_ARGS[@]}"} \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   2>"$stderr_log") || {
     # Capture the status first: any command inside this block would overwrite $?.
@@ -263,6 +407,15 @@ if [[ -z "$result" ]]; then
   # クラッシュを追う。実際に見るべきは成果物に残る stderr 抜粋。
   record_timeout_reason empty-output
   fail_cli_task 1 "$stderr_log" "$perspective_name" ""
+fi
+# exit 0 + 非空でも、レビュー本文の実体行を 1 行も含まない捕捉結果は complete に
+# しない（Issue #893。観測は claude-code だが、捕捉経路は「CLI の最終出力を command
+# substitution で受ける」の 4 アダプタ共通形なので同じゲートを掛ける）。**受理条件の
+# 正は adapter-common.sh の review_body_present ヘッダ** — ここに列挙を複製しない。
+if [[ "${TASK_TYPE:-review}" == "review" ]] && ! review_body_present "$result"; then
+  echo "ERROR: ${CLI_NAME} output ($(printf '%s' "$result" | wc -c | tr -d '[:space:]') bytes) contains no severity count/zero line, no severity-labeled finding line, and no finding bullet under a severity heading — refusing it as a review result. The review body may have been emitted in an earlier, uncaptured turn." >&2
+  record_timeout_reason missing-review-body
+  fail_cli_task 1 "$stderr_log" "$perspective_name" "$result"
 fi
 rm -f "$stderr_log"
 

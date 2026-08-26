@@ -65,6 +65,13 @@ FF_REACHED_END=0
 _ff_exit_guard() {
   _ff_rc=$?
   rm -rf "$TMP"
+  # 残留検査の陰性対照だけは $TMP の外（走査先の共有 temp 直下）に置くので、
+  # 上の rm -rf では届かない。途中死でも取り残さないようここで消す。
+  if [ -n "${FF_DECOY_LIST:-}" ]; then
+    printf '%s' "$FF_DECOY_LIST" | while IFS= read -r _ff_decoy; do
+      if [ -n "$_ff_decoy" ]; then rm -f "$_ff_decoy"; fi
+    done
+  fi
   if [ "$_ff_rc" -eq 0 ] && [ "$FF_REACHED_END" -ne 1 ]; then
     echo "✗ adapter-prompt-guard: 最後まで到達しませんでした（途中で中断）" >&2
     exit 1
@@ -356,13 +363,21 @@ echo "== codex アダプタの実入力（stdin）への到達 =="
 # プロンプト本文は argv ではなく stdin（--stdin-file の一時ファイル）で届くため、
 # 「プロンプトが届いたか」は stdin.log を、「本文が argv に乗っていないか」
 # （Windows CreateProcess ~32KB 上限の再発防止）は argv.log を見る。
+#
+# implement のアダプタは本番起動の前に `codex exec --help` を読み、書き込み境界を
+# staging へ絞る `-C/--cd` があることを確かめてから走る（無ければ広い境界で走らせず
+# に停止する）。stub もそこに応答しないと、implement 経路がその停止で終わってしまう。
+# 能力確認は本題ではないので**記録も stdin 読み取りもせず**に返し、以降のログ検査を
+# 従来どおりの内容に保つ。
+CODEX_HELP_ARM='case " $* " in *" exec --help "*) printf "  -C, --cd <DIR>\n"; exit 0 ;; esac'
 STUB="$TMP/bin"
 mkdir -p "$STUB"
 cat > "$STUB/codex" <<SH
 #!/usr/bin/env bash
+${CODEX_HELP_ARM}
 for a in "\$@"; do printf '%s\n' "\$a" >> "$TMP/argv.log"; done
 cat >> "$TMP/stdin.log"
-echo "stub review output"
+echo "- Suggestion: stub review output"
 SH
 chmod +x "$STUB/codex"
 
@@ -458,6 +473,7 @@ printf 'from an earlier run\n' > "$UNPLANNED_STAGING/old.txt"
 # 本文が argv へ戻る退行を上の負の検査で見張れるようにする）。
 cat > "$STUB/codex" <<SH
 #!/usr/bin/env bash
+${CODEX_HELP_ARM}
 for a in "\$@"; do printf '%s\n' "\$a" >> "$TMP/argv.log"; done
 cat >> "$TMP/stdin.log"
 pwd -P > "$TMP/cli-cwd.log"
@@ -755,6 +771,7 @@ LOCK_CALLS="$TMP/lock-holder-calls"
 : >"$LOCK_CALLS"
 cat >"$STUB/codex" <<SH
 #!/usr/bin/env bash
+${CODEX_HELP_ARM}
 echo "start \$\$" >> "$LOCK_CALLS"
 : > "$LOCK_STARTED"
 deadline=\$((SECONDS + 10))
@@ -865,7 +882,7 @@ for a in "\$@"; do
 done
 cat >> "$DELIV/${cli}-stdin.log"
 if [ -n "\$pf" ] && [ -f "\$pf" ]; then cat "\$pf" >> "$DELIV/${cli}-stdin.log"; fi
-echo "stub review output"
+echo "- Suggestion: stub review output"
 SH
   chmod +x "$DELIV_BIN/$cli"
 done
@@ -940,17 +957,122 @@ fi
 echo "== 失敗経路のプロンプト一時ファイル掃除（EXIT trap） =="
 
 # fail_cli_task は exit するため、成功パスの rm -f には失敗時に到達しない。
-# 専用 TMPDIR で CLI を exit 1 させ、プロンプト（境界宣言を含む）が残留しない
-# ことを実測する。stderr_log 等の他の一時ファイルは境界宣言を含まないので、
-# marker で引けば残留プロンプトだけを掴める。
+# CLI を失敗させ、プロンプトが残留しないことを実測する。
+#
+# **専用 TMPDIR を渡すだけでは検査にならない**（実測）。macOS の /usr/bin/mktemp は
+# テンプレート無しで呼ぶと `$TMPDIR` を無視し、Darwin のユーザ専用 temp
+# （confstr(_CS_DARWIN_USER_TEMP_DIR) = /var/folders/.../T）へ書く。
+# アダプタの materialize_prompt_file は素の `mktemp` なので、差し替えた TMPDIR の
+# 中を見る検査は**常に空のディレクトリを見ている**ことになり、掃除漏れがあっても緑になる。
+# そこで「同じ env で mktemp が実際に使う場所」を 1 度測ってから、そこを見る。
+# 直前に置いたセンチネルより新しいファイルだけを対象にして、無関係な残骸を拾わない。
+#
+# **走査は BOUNDARY_MARKER で引いてはいけない。** そこは Darwin ではユーザ共有の
+# temp であり、境界宣言は全アダプタ・全 task-type のプロンプトへ必ず入るので、
+# 並行して走っている**別プロセスの生きたプロンプト**にも一致する。一致すると
+# (1) こちらは「EXIT trap の掃除漏れ」として偽陽性で赤くなり、(2) 下の rm -f が
+# 相手の生きたファイルを消して、相手を run_with_timeout の TOCTOU 経由で
+# 「CLI が 1 で落ちた」へ誤帰属させる。原因がこの suite にあるので相手側からは
+# 追跡できない。そこで実行ごと・arm ごとに一意なトークンを perspective 本文へ埋め、
+# それで引く。perspective 本文は build_prompt がどの task-type でもプロンプトへ載せる
+# ので、残留の検出力は落ちない（変異 5 = _FF_PROMPT_FILE の登録外しで両 arm が赤くなる
+# ことを実測済み）。触らないことの側は下の陰性対照 arm が針を持つ。
+
+# resolve_real_tmpdir <env で渡す TMPDIR> — その env で mktemp が実際に書くディレクトリ
+resolve_real_tmpdir() {
+  local probe dir
+  probe="$(TMPDIR="$1" mktemp 2>/dev/null)" || return 1
+  [ -f "$probe" ] || return 1
+  dir="$(dirname "$probe")"
+  rm -f "$probe"
+  printf '%s\n' "$dir"
+}
+
+# prompt_residue <センチネル> <トークン> <走査するディレクトリ...> — トークンを含む残留ファイル
+prompt_residue() {
+  local sentinel="$1" token="$2" d
+  shift 2
+  for d in "$@"; do
+    [ -d "$d" ] || continue
+    find "$d" -maxdepth 1 -type f -newer "$sentinel" \
+      -exec grep -lF "$token" {} + 2>/dev/null
+  done
+  # 「見つからなかった」は非 0 で返さない。`$( )` 代入の rc が set -e に拾われて
+  # スイートが**残留無しのときだけ**途中死する（実測）。
+  return 0
+}
+
+# arm ごとに一意なトークンと、それを本文に持つ perspective fixture を作る。
+# fixture 自体は $TMP 配下（走査は -maxdepth 1 なので届かない）に置く。
+RESIDUE_SEQ=0
+RESIDUE_TOKEN=""
+RESIDUE_PERSPECTIVE=""
+FF_DECOY_LIST=""
+new_residue_fixture() {
+  RESIDUE_SEQ=$((RESIDUE_SEQ + 1))
+  RESIDUE_TOKEN="FF-PROMPT-RESIDUE-TOKEN-$$-${RESIDUE_SEQ}"
+  RESIDUE_PERSPECTIVE="$TMP/perspective-residue-${RESIDUE_SEQ}.md"
+  printf '%s\n' '# Fixture Perspective' 'PERSPECTIVE-CONTENT-MARKER' "$RESIDUE_TOKEN" \
+    > "$RESIDUE_PERSPECTIVE"
+}
+
+# assert_residue_clean <ラベル> <トークン> <陰性対照の置き場所> <走査するディレクトリ...>
+#
+# 2 つの arm（CLI 失敗経路 / 起動前拒否経路）が同じ手順を踏むのでヘルパへ括る。
+# 検査は 2 件:
+#   1. 自分の実行のプロンプトが残っていないこと（本題）
+#   2. 境界宣言だけを持ちトークンを持たないファイル＝**並行して走る別プロセスの
+#      生きたプロンプト相当**に、走査も削除も及ばないこと（陰性対照）
+# 2 は共有 temp を走査する以上ずっと必要な針で、マーカー走査へ戻す変異で赤くなる。
+#
+# 移行期の注意（Issue #896 のマージまで）: 陰性対照は境界宣言を含むファイルを共有
+# temp 直下へ一時的に置く。**修正前**の本 suite（マーカーで引いて rm -f する形）が
+# 並行して走っていると、それを掴んで消すので 2 の arm が赤くなる。原因は退行ではなく
+# 相手側の旧コードなので、そのときは相手の実行が終わってから測り直すこと。
+# 修正後どうしの並行実行はトークンが PID ごとに違うので衝突しない。
+assert_residue_clean() {
+  local label="$1" token="$2" real_tmp="$3"
+  shift 3
+  local decoy="" residue
+  if [ -n "$real_tmp" ] && [ -d "$real_tmp" ]; then
+    decoy="${real_tmp}/ff-prompt-guard-foreign.$$.${RESIDUE_SEQ}"
+    FF_DECOY_LIST="${FF_DECOY_LIST}${decoy}
+"
+    printf '%s\n' "$BOUNDARY_MARKER" 'foreign live prompt of a concurrent run' > "$decoy"
+  fi
+  residue="$(prompt_residue "$SENTINEL" "$token" "$@")"
+  if [ -n "$residue" ]; then
+    bad "${label}でプロンプト一時ファイルが残留している（EXIT trap の掃除漏れ）"
+    printf '%s\n' "$residue" | sed 's/^/    | /' >&2
+    printf '%s\n' "$residue" | while IFS= read -r leaked; do rm -f "$leaked"; done
+  else
+    ok "${label}でもプロンプト一時ファイルが残留しない（EXIT trap が掃除。走査先: ${real_tmp}）"
+  fi
+  if [ -z "$decoy" ]; then
+    bad "${label}: 陰性対照を置けなかった（他プロセスのファイルに触らないことを確かめていない）"
+  elif [ -f "$decoy" ]; then
+    ok "${label}: 境界宣言だけを持つ他プロセス相当のファイルには触らない（陰性対照が生存）"
+    rm -f "$decoy"
+  else
+    bad "${label}: 走査が他プロセス相当のファイルを削除した（共有 temp の巻き添え — 並行実行中の別プロセスを壊す）"
+  fi
+}
+
 FAILTMP="$TMP/failtmp"
 FAILBIN="$DELIV/fail-bin"
 mkdir -p "$FAILTMP" "$FAILBIN"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$FAILBIN/codex"
 chmod +x "$FAILBIN/codex"
+REAL_TMP="$(resolve_real_tmpdir "$FAILTMP")" || REAL_TMP=""
+if [ -z "$REAL_TMP" ]; then
+  bad "mktemp が実際に使うディレクトリを特定できない（残留検査は成立しない）"
+fi
+new_residue_fixture
+SENTINEL="$TMP/prompt-residue-sentinel"
+: > "$SENTINEL"
 set +e
 ( cd "$REPO" && run_isolated PATH="$FAILBIN:$PATH" CODEX_HOME="$TMP/codex-home" TMPDIR="$FAILTMP" \
-    bash "$ADAPTERS_DIR/codex-cli-adapter.sh" "$PERSPECTIVE" "$DELIV/out-fail.md" \
+    bash "$ADAPTERS_DIR/codex-cli-adapter.sh" "$RESIDUE_PERSPECTIVE" "$DELIV/out-fail.md" \
     --base develop --timeout 30 --task-type review --description "fixture" \
   ) >"$DELIV/fail.log" 2>&1
 FAIL_RC=$?
@@ -960,12 +1082,46 @@ if [ "$FAIL_RC" -ne 0 ]; then
 else
   bad "CLI が exit 1 なのにアダプタが 0 で完走した"
 fi
-if grep -rlF "$BOUNDARY_MARKER" "$FAILTMP" >/dev/null 2>&1; then
-  bad "失敗経路でプロンプト一時ファイルが TMPDIR に残留している（EXIT trap の掃除漏れ）"
-  grep -rlF "$BOUNDARY_MARKER" "$FAILTMP" 2>/dev/null | sed 's/^/    | /' >&2
-else
-  ok "失敗経路でもプロンプト一時ファイルが残留しない（EXIT trap が掃除）"
+assert_residue_clean "失敗経路" "$RESIDUE_TOKEN" "$REAL_TMP" "$FAILTMP" "$REAL_TMP"
+
+# 上のケースは「CLI が起動して非 0 で落ちた」形。アダプタが**起動前に自分で止める**
+# 形（orchestrator-error / rc=125）は別経路で、こちらも同じ掃除を受けなければ
+# ならない。implement のプロンプトは diff 込みで数百 KB になりうるので、拒否する
+# たびに残ると効いてくる。実例が codex の `-C/--cd` 能力確認（Issue #896）— 旧版の
+# codex を検出して本番起動をやめる経路。
+LEGACYTMP="$TMP/legacytmp"
+LEGACYBIN="$DELIV/legacy-bin"
+LEGACYSTAGE="$TMP/legacy-staging"
+mkdir -p "$LEGACYTMP" "$LEGACYBIN" "$LEGACYSTAGE"
+# `-C, --cd` を持たない codex の help を返す stub（本番起動には応答しない）。
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' 'case " $* " in'
+  printf '%s\n' '  *" exec --help "*) printf "  -s, --sandbox <SANDBOX_MODE>\n      --add-dir <DIR>\n"; exit 0 ;;'
+  printf '%s\n' 'esac'
+  printf '%s\n' 'echo "stub output"'
+} > "$LEGACYBIN/codex"
+chmod +x "$LEGACYBIN/codex"
+LEGACY_REAL_TMP="$(resolve_real_tmpdir "$LEGACYTMP")" || LEGACY_REAL_TMP=""
+if [ -z "$LEGACY_REAL_TMP" ]; then
+  bad "mktemp が実際に使うディレクトリを特定できない（起動前拒否の残留検査は成立しない）"
 fi
+new_residue_fixture
+: > "$SENTINEL"
+set +e
+( cd "$REPO" && run_isolated PATH="$LEGACYBIN:$PATH" CODEX_HOME="$TMP/codex-home" TMPDIR="$LEGACYTMP" \
+    bash "$ADAPTERS_DIR/codex-cli-adapter.sh" "$RESIDUE_PERSPECTIVE" "$DELIV/out-legacy.md" \
+    --base develop --timeout 30 --task-type implement --description "fixture" \
+    --staging-dir "$LEGACYSTAGE" \
+  ) >"$DELIV/legacy.log" 2>&1
+LEGACY_RC=$?
+set -e
+if [ "$LEGACY_RC" -ne 0 ]; then
+  ok "起動前の拒否（-C/--cd 非対応の codex）でアダプタは非 0 終了する (rc=${LEGACY_RC})"
+else
+  bad "-C/--cd を持たない codex なのにアダプタが 0 で完走した"
+fi
+assert_residue_clean "起動前の拒否経路" "$RESIDUE_TOKEN" "$LEGACY_REAL_TMP" "$LEGACYTMP" "$LEGACY_REAL_TMP"
 
 echo
 if [ "$FAIL" -gt 0 ]; then

@@ -115,6 +115,11 @@ else
     # 別version fallbackをしない契約を持つことをlive走査 + negative controlで固定する。
     "$SCRIPT_DIR/plugin-root-contract/verify.sh"
     "$SCRIPT_DIR/skill-bash-blocks/verify.sh"
+    # 全プラグイン SKILL.md の references 相対参照（バッククォート単一トークンと
+    # Markdown リンクの `references/…` / `../<skill>/…`）の実在・プラグイン内収まりの
+    # 検査（Issue #889）。同じ SKILL.md 横断走査なので skill-bash-blocks の直後に置く。
+    # 検出力は同 suite 内の fixture（抽出・非検出・変種・解決の 4 系統）で毎回実測する。
+    "$SCRIPT_DIR/skill-references-existence/verify.sh"
     # ルート設定で tracked Markdown 全体を lint し、DoD の「markdownlint エラーなし」を
     # 実行可能にする。依存は同梱 MCP の node_modules から借り、直後の selftest が
     # 新規違反を非 0・ファイル名付きで検出することを固定する（Issue #295）。
@@ -294,6 +299,20 @@ else
     # 上の gate の検出力を mktemp fixture への変異（FM 除去・値域外・未閉鎖・
     # 実体/規則の片側追加・抽出空振り・除外規則の効き）で実測する（Issue #513）。
     "$SCRIPT_DIR/docs-frontmatter-repo-selftest/verify.sh"
+    # frontmatter の version が文書自身の Changelog 節の最大版エントリ（### [x.y.z]）
+    # と一致することの検査（Issue #884）。docs-frontmatter-repo は構造（節の有無）
+    # まで、roadmap-release-facts は ROADMAP のリリース表専用。**PLAYBOOK.md は
+    # 対象外** — ACE 側ゲート（live-ace-gates が回す sync-playbook-frontmatter.ts
+    # --check。先頭エントリ一致・最大版なしの別仕様）が検査するため、判定条件の
+    # 異なる検査を同一文書へ重ねない。本 suite が埋める
+    # のは PLAYBOOK.md 以外の docs 文書。対象は実体から導出（Frontmatter +
+    # Changelog 節を持つ docs/**/*.md）。docs/ を持たない checkout では丸ごと ○ skip。
+    "$SCRIPT_DIR/docs-version-changelog/verify.sh"
+    # 上の gate の検出力を、実 docs/ を写した隔離 fixture への変異（frontmatter のみ
+    # bump / エントリのみ追加 / version 欠落・重複・不正形式 / エントリ 0 件 / 不正
+    # 見出し / FM 未閉鎖 / 読み取り失敗 / 対象 0 件）と正例（フェンス・コメント内の
+    # 偽見出し無視 / 昇順 Changelog / PLAYBOOK 除外）で実測する（Issue #884）。
+    "$SCRIPT_DIR/docs-version-changelog-selftest/verify.sh"
     # docs/ に手書きした件数・閾値と実体のドリフト検査。期待値はすべて実体から導出し、
     # 正準表現に 1 件も一致しなければ赤（抽出の空振りを緑にしない。Issue #519）。
     "$SCRIPT_DIR/docs-fact-drift/verify.sh"
@@ -411,6 +430,13 @@ else
     # build_prompt の実行境界（再帰防止ガード）の回帰検査（Issue #263）。一時 git
     # リポジトリ + stub CLI（〜3 秒）。実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/adapter-prompt-guard/verify.sh"
+    # レビュー本文を含まない捕捉結果の fail-loud 契約（Issue #893）: 受理条件
+    # （正は scripts/adapters/adapter-common.sh の review_body_present ヘッダ —
+    # ここに列挙を複製しない）の両方向 + アダプタ実走での INCOMPLETE 降格 +
+    # 4 アダプタへのゲート常在の静的 pin + build_prompt の集約指示と perspective
+    # 出力契約の一本化検査（review 限定）。一時 git リポジトリ + stub CLI
+    # （〜3 秒）。実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/review-capture-fail-loud/verify.sh"
     # レビュー指摘の差分スコープ契約（Issue #556）: 全 review perspective のスコープ
     # 言及 + build_prompt(review) の [OUT-OF-DIFF] ラベル契約。一時 git リポジトリのみ
     # （〜2 秒）。実 CLI・ネットワーク・課金は伴わない。一時領域不可なら丸ごと ○ skip。
@@ -519,6 +545,11 @@ REQUIRED_SUITES=(
   # root契約のnegative controlは一時領域を使う。skipすると旧版誤選択を拒否する
   # 検出力が丸ごと消えるため、明示許可なしのskipを認めない（Issue #838）。
   plugin-root-contract
+  # 一時領域を使わない read-only の静的検査（依存: awk・grep・sed・dirname）で
+  # skip 経路を持たないが、references 参照の実在は他のどの suite も見ておらず、
+  # 将来 skip 経路が生えても黙って消えてはならない検出力なので名簿に載せて宣言する
+  # （Issue #889）。
+  skill-references-existence
   # 実行環境分離のselftestは、クリーン環境だと退行してもconsumerが緑になり得る。
   # 一時領域不足で検出力ごと消える場合は明示許可を要求する（Issue #439）。
   adapter-env-isolation-selftest
@@ -575,6 +606,11 @@ REQUIRED_SUITES=(
   # FF_RUN_ALL_ALLOW_SKIP 案内に追加は要らない。
   adapter-prompt-guard
   review-diff-scope
+  # レビュー本文を含まない捕捉結果を complete にしない fail-loud 契約（Issue #893）。
+  # 判定関数・4 アダプタのゲート常在・INCOMPLETE 降格はこの suite しか見ておらず、
+  # 一時領域が無い環境で mktemp skip すると「空振り結果が完了として並ぶ」退行が
+  # 黙って通る。skip 条件は adapter-prompt-guard と同じく一時領域の有無だけ。
+  review-capture-fail-loud
   # 一時領域 + git が要る。マージ直前の鮮度ゲートの検出力（不一致で止まる / 一致で
   # 黙る / 判定不能を素通りさせない）を見るのはこの suite だけで、消えるとゲートの
   # 退行が squash merge に畳み込まれる形で表に出る（Issue #880）。
@@ -624,18 +660,32 @@ REQUIRED_SUITES=(
   # **公開 checkout では root に docs/ が無いため両方 ○ skip する。** fixture は
   # 「実リポジトリの docs/ をそのまま写す」設計で、baseline が実体と乖離しないことを
   # 優先している（同梱 fixture にすると baseline 自体が腐る）。したがって公開側では
-  # sync-forbidden-patterns / release-required-selftest と合わせて 4 件の明示許可が要る:
+  # sync-forbidden-patterns / release-required-selftest / docs-version-changelog（と
+  # その selftest）と合わせて 6 件の明示許可が要る:
   #   FF_RUN_ALL_FULL=1 FF_RUN_ALL_ALLOW_SKIP="sync-forbidden-patterns release-required-selftest \
-  #     docs-frontmatter-repo-selftest docs-fact-drift-selftest" bash tests/run-all.sh
+  #     docs-frontmatter-repo-selftest docs-fact-drift-selftest docs-version-changelog \
+  #     docs-version-changelog-selftest" bash tests/run-all.sh
   # 必須 skip で落ちたときは、この行と同じ内容をランナーが実際の skip 一覧から
   # 組み立てて表示する（下の REQUIRED_SKIPPED の案内）。
   #
   # **既定（高速モード）では docs-frontmatter-repo-selftest / docs-fact-drift-selftest は
   # 除外される**（対の本体 suite が実在するため）。除外は SKIPPED に現れないので明示許可も
-  # 要らないが、**検証もされない**。上の 4 件を明示許可で通す形が成立するのは全件実行のとき
-  # だけで、既定では組み立てられるのも残り 2 件になる（ADR-034）。
+  # 要らないが、**検証もされない**。上の 6 件を明示許可で通す形が成立するのは全件実行のとき
+  # だけで、既定では組み立てられるのも残り 3 件になる（ADR-034）。
   docs-frontmatter-repo-selftest
   docs-fact-drift-selftest
+  # frontmatter version ↔ 自 Changelog 最大版の一致は、PLAYBOOK.md（ACE 側ゲートが
+  # 先頭一致の別仕様で検査）以外では他のどのゲートも見ていない（Issue #884）。外部コマンド不要で、
+  # skip 経路は「docs/ を持たない checkout」だけ。名簿に載せるのは、SSOT 側で docs/ の
+  # パス変更などにより suite が黙って適用外へ落ちる事故を fail-closed にするため。
+  # docs/ を持たない公開 checkout では sync-forbidden-patterns と同様に
+  # FF_RUN_ALL_ALLOW_SKIP=docs-version-changelog の明示許可が要る
+  # （既定実行でも走る本体 suite なので、全件実行に限らない）。
+  docs-version-changelog
+  # 上の gate の検出力 selftest。fixture は実 docs/ を写す設計（baseline を腐らせない）
+  # なので docs-frontmatter-repo-selftest と同様、公開 checkout では ○ skip し
+  # 全件実行時に明示許可が要る。既定（高速モード）では対の本体があるため除外される。
+  docs-version-changelog-selftest
   # ROADMAP のリリース表ゲートの検出力 selftest（#841）。一時領域が作れないと
   # ○ skip する経路を持ち、本ゲートの検出力を測る手段は他に無い。上の 2 件と違い
   # fixture は自前で組む（実 docs/ を写さない）ので、**公開 checkout でも走る**
@@ -648,7 +698,7 @@ REQUIRED_SUITES=(
   # 毎 sync リリース運用ゲートの検出力 selftest（#552）。代替の検査が無く、
   # 消えると「リリース漏れ・CHANGELOG 記載漏れを sync 前に止める」検出力の喪失が
   # 黙って通る。公開 checkout は root スクリプト不在で ○ skip するため、そちらでは
-  # FF_RUN_ALL_ALLOW_SKIP=release-required-selftest が要る（上の 4 件の列挙参照）。
+  # FF_RUN_ALL_ALLOW_SKIP=release-required-selftest が要る（上の 6 件の列挙参照）。
   release-required-selftest
 )
 
@@ -970,20 +1020,30 @@ fi
 # （scripts/check-merge-freshness.sh）が「リモート先端 == 実測対象」を機械で言える
 # ようにする（Issue #880）。
 #
-# 記録するのは既定一覧の実行だけ。明示引数の実行は名指しした suite しか回らないので、
-# それを「ゲートが通った」として記録すると、2 suite だけ回した結果がマージの根拠に
-# なりうる（fail-open）。緑の記録は PASSED > 0 も自分で確かめる（後段の件数ガードは
-# 呼び出し位置より下にあるので当てにしない）。
+# 明示引数の実行も記録する。ただし**全件緑へ昇格しない形**で記録する — 名指しした
+# suite しか回っていない結果が「ゲートが通った」としてマージの根拠になると fail-open
+# になるため、緑は `--status partial` として書く（照合側は一致していても「判定不能」
+# として報告し、何を検証したのかを `--suites` の中身から名指しする）。
+#
+# 記録そのものを飛ばしていた頃は、名指し実行しか走らない収束経路（CHANGELOG footer
+# 追従など）を通った PR には「最後の全件記録 = 別コミット」だけが残り、鮮度照合が
+# 必ず赤くなった。毎回無視するゲートは、そのうち本当の赤も無視される（Issue #892）。
+#
+# 緑の記録は PASSED > 0 も自分で確かめる（後段の件数ガードは呼び出し位置より下に
+# あるので当てにしない）。この帰結として `SUITES=` が空 ⟺ 部分実行ではない、が成り立つ。
 #
 # **赤い実行も記録する（--status fail）。** 書かずに済ませると、同じコミットで前回
 # 通った記録が残り、照合は無出力の exit 0 を返す — 「一度通ったコミット」が「いま
-# 通るコミット」に化ける。
+# 通るコミット」に化ける。明示引数の赤も同じ理由で `fail` のまま記録する（`partial`
+# へ落とすと、赤い実行が前回の緑を無効化しそこねる）。
+#
+# `FF_GATE_RECORD=0` は明示引数の経路にも掛ける。記録を止める逃げ道を経路ごとに
+# 差別化すると、「どちらの経路なら止まるのか」を読み手が別途覚えることになる。
 #
 # 記録の失敗は**検証結果の失敗ではない**。1 行警告して終了コードは変えない
 # （記録が無ければ照合側が「判定不能」として報告する。黙って緑にはならない）。
 ff_record_gate_head() { # <pass|fail>
-  local status="$1" recorder mode
-  [[ "$USING_DEFAULT_SCRIPTS" == "1" ]] || return 0
+  local status="$1" recorder mode suites
   if [[ "${FF_GATE_RECORD:-1}" == "0" ]]; then
     echo "○ FF_GATE_RECORD=0 のためゲート実測対象を記録しません（マージ前の鮮度照合は「判定不能」になります）" >&2
     return 0
@@ -994,13 +1054,29 @@ ff_record_gate_head() { # <pass|fail>
     echo "⚠️  記録器が見つかりません: ${recorder}（マージ前の鮮度照合は「判定不能」になります）" >&2
     return 0
   fi
-  if [[ "$FAST_MODE" == "1" ]]; then mode="fast"; else mode="full"; fi
+  # 呼び出し側の 2 行（`ff_record_gate_head fail` / `pass`）はバイトのまま固定されて
+  # いる（tests/merge-freshness/verify.sh の針）。既定一覧かどうかによる写像はここで行う。
+  suites=""
+  if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
+    if [[ "$FAST_MODE" == "1" ]]; then mode="fast"; else mode="full"; fi
+  else
+    mode="explicit"
+    if [[ "$status" == "pass" ]]; then
+      status="partial"
+      # suite 名は**実際に緑で通ったものだけ**を挙げる。skip した suite を混ぜると
+      # 「検証済み」の一覧が検証していないものを含む。bash 3.2 では空配列の
+      # `${PASSED[*]}` が set -u で unbound になるので件数で囲む（上の PASSED > 0
+      # ガードを通っているが、条件の一方が動いたときに黙って壊れないようにする）。
+      [[ ${#PASSED[@]} -eq 0 ]] || suites="${PASSED[*]}"
+    fi
+  fi
   # 記録するのは**このランナーが在るリポジトリ**の HEAD。呼び出し元の cwd を基準に
   # すると、別のリポジトリから起動した回に無関係な HEAD を実測対象として記録する。
   ( cd "$SCRIPT_DIR" && bash "$recorder" \
       --gate "tests/run-all.sh" \
       --status "$status" \
       --mode "$mode" \
+      --suites "$suites" \
       --expect-head "${FF_GATE_START_HEAD:-}" \
       --result "passed=${#PASSED[@]} failed=${#FAILED[@]} skipped=${#SKIPPED[@]} not-run=${#NOT_RUN[@]} excluded=${#FAST_EXCLUDED[@]}" ) \
     || echo "⚠️  ゲート実測対象を記録できませんでした（マージ前の鮮度照合は「判定不能」になります）" >&2
@@ -1017,9 +1093,8 @@ fi
 # 測ったのか**を記録し、マージ直前の鮮度照合（scripts/check-merge-freshness.sh）が
 # 「リモート先端 == 実測対象」を機械で言えるようにする（Issue #880）。
 #
-# 記録するのは既定一覧の実行だけ。明示引数の実行は名指しした suite しか回らないので、
-# それを「ゲートが通った」として記録すると、2 suite だけ回した結果がマージの根拠に
-# なりうる（fail-open）。
+# 明示引数の実行も記録するが、`--status partial` として書く（照合側は一致していても
+# 判定不能として報告し、全件緑へ昇格しない）。写像は ff_record_gate_head の中。
 #
 # 記録の失敗は**検証結果の失敗ではない**。1 行警告して終了コードは変えない
 # （記録が無ければ照合側が「判定不能」として報告する。黙って緑にはならない）。

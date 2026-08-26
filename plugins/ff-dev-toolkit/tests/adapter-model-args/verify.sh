@@ -94,7 +94,7 @@ for cli in claude codex copilot grok; do
     echo '#!/usr/bin/env bash'
     echo 'for a in "$@"; do printf "<%s>" "$a" >> "$ARGV_LOG"; done'
     echo 'printf "\n" >> "$ARGV_LOG"'
-    echo 'echo "stub review output"'
+    echo 'echo "- Suggestion: stub review output"'
   } > "$WORK/bin/$cli"
   chmod +x "$WORK/bin/$cli"
 done
@@ -396,7 +396,7 @@ make_grok_stub() {
     echo 'for a in "$@"; do printf "<%s>" "$a" >> "$ARGV_LOG"; done'
     echo 'printf "\n" >> "$ARGV_LOG"'
     echo "$1"
-    echo 'echo "stub review output"'
+    echo 'echo "- Suggestion: stub review output"'
   } > "$WORK/bin/grok"
   chmod +x "$WORK/bin/grok"
 }

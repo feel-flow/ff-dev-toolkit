@@ -26,6 +26,16 @@
 # モードを合否に混ぜると、この検査が実行モードの方針を二重に持つことになる。代わりに
 # `--print-record` でモードを報告へ回し、「93/93」と過大に述べない材料にする。
 #
+# **部分実行の判別も MODE ではなく `STATUS=partial` で行う**（同上の契約をそのまま維持
+# する）。MODE は自由文字列で allowlist を持たないため、`MODE=explicit` を判定に使うと
+# 「未知の MODE は全件扱い」という fail-open が入口として残る。加えて記録先は checkout の
+# git dir 配下だが照合器はインストール済みプラグイン側でありうる（記録器 = 新 /
+# 照合器 = 旧 が常態）ので、`STATUS=pass` のまま新キーで部分性を表すと、旧照合器は
+# その行を読み飛ばして部分記録を全件緑として通す。`partial` は旧照合器の STATUS
+# allowlist の `*)` に落ちるので、知らない版に食わせても判定不能にしかならない。
+# **「MODE で判定すれば単純」と後から畳まないこと。** 単純になるのと引き換えに、
+# この検査が塞いでいる false green の入口が 2 つ開く。
+#
 # 守っている窓:
 #   ローカルで回したゲートの結果は**特定コミットに対する実測**である。実測とマージの
 #   あいだにリモートが進んでいると、squash merge は未実測のコミットまで畳み込み、
@@ -48,9 +58,23 @@
 # 終了コード（呼び出し側の扱いを分けるため 判定不能 と 検査不成立 を区別する）:
 #   0 = 一致（実測対象 == リモート先端）。**無出力**でマージへ進む
 #   1 = 不一致。マージを止め、取り込んで測り直す
-#   2 = 判定不能（記録が無い / 汚れた木で測った / 記録の内容を信頼できない）。
-#       マージは止めないが、「実測対象を特定できないためマージ前の再実行を推奨」と
-#       **完了報告へ明示する**。静かに素通りさせないことがこの終了コードの役割
+#   2 = 判定不能（記録が無い / 汚れた木で測った / **部分実行の記録である** /
+#       記録の内容を信頼できない）。マージは止めないが、「実測対象を特定できないため
+#       マージ前の再実行を推奨」と **完了報告へ明示する**。静かに素通りさせないことが
+#       この終了コードの役割
+#
+#       部分実行（`STATUS=partial`）は「リモート先端 == 実測対象」が成り立っていても
+#       判定不能へ倒す。名指しした suite しか回っていない記録を全件緑へ昇格させないため
+#       であって、その記録が信用できないという意味ではない。だから REASON は
+#       **何を検証したのか**（`SUITES=` の中身・ゲート名・実測時刻）を名指しし、
+#       ACTION は「その範囲で差分の意味を検査できているならマージしてよい」と述べる
+#       — 毎回同じ黄色い警告を出すだけのゲートは、そのうち読まれなくなる
+#
+#       旧版のインストールへ `STATUS=partial` の記録を食わせると、STATUS allowlist の
+#       `*)` に落ちて「記録のゲート結果を解釈できません」という文言で exit 2 を返す。
+#       **判定（判定不能）は正しく、文言だけが不正確**である（バグ報告として立てる前に
+#       照合器の版を確認すること）。判別子を STATUS へ置いたのは、まさにこの
+#       「知らない版でも構造的に昇格できない」性質を取るためである
 #   3 = 検査不成立（使い方の誤り・git 不在・SHA 形式不正）。停止する
 #
 #   2 で止めないのは、記録の仕組みを持たないプロジェクトでは判定不能が常態であり、
@@ -69,7 +93,7 @@
 #
 #   `--print-record` の契約:
 #     exit 0 … 既知のキー（RECORD_VERSION / STATUS / COMMIT / BRANCH / DIRTY / GATE / MODE /
-#              RESULT / RECORDED_AT）を `KEY=値` で出力する
+#              SUITES / RESULT / RECORDED_AT）を `KEY=値` で出力する
 #     exit 2 … 記録が無い / 版を解釈できない / 既知のキーが 1 つも無い。
 #              FRESHNESS=UNDETERMINED + REASON + ACTION を出す
 #
@@ -87,6 +111,12 @@ RECORD_PATH=""
 DO_FETCH=0
 PRINT_RECORD=0
 REMOTE_NAME="origin"
+
+# 記録が部分実行（STATUS=partial）だったか。一致判定の**後**に見る（理由は下の
+# 部分性の判定を参照）。--measured を明示した経路では記録を読まないので 0 のまま。
+RECORD_PARTIAL=0
+RECORD_SUITES=""
+RECORD_MODE=""
 
 SELF="${BASH_SOURCE[0]}"
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
@@ -144,7 +174,7 @@ if [[ "$PRINT_RECORD" -eq 1 ]]; then
   # 既知のキーだけを写す（記録に無関係な行が混ざっても報告へ流し込まない）。
   # `sed` の BRE で交替（バックスラッシュ + 縦棒）を使わない — BSD sed はこれを
   # 交替として解釈せず、**無出力のまま exit 0** になる（macOS が主対象なので致命的）。
-  RECORD_BODY="$(LC_ALL=C awk '/^(RECORD_VERSION|STATUS|COMMIT|BRANCH|DIRTY|GATE|MODE|RESULT|RECORDED_AT)=/ { print }' "$RECORD_PATH")"
+  RECORD_BODY="$(LC_ALL=C awk '/^(RECORD_VERSION|STATUS|COMMIT|BRANCH|DIRTY|GATE|MODE|SUITES|RESULT|RECORDED_AT)=/ { print }' "$RECORD_PATH")"
   if [[ -z "$RECORD_BODY" ]]; then
     printf 'FRESHNESS=UNDETERMINED\n'
     printf 'REASON=%s\n' "記録に既知のキーがありません: ${RECORD_PATH}"
@@ -201,6 +231,9 @@ if [[ -z "$MEASURED" ]]; then
   RECORD_COMMIT="$(sed -n 's/^COMMIT=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
   RECORD_GATE="$(sed -n 's/^GATE=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
   RECORD_AT="$(sed -n 's/^RECORDED_AT=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
+  # 部分実行の報告材料。**判定には使わない**（MODE を判定に混ぜない契約はヘッダ参照）。
+  RECORD_SUITES="$(sed -n 's/^SUITES=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
+  RECORD_MODE="$(sed -n 's/^MODE=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
 
   is_sha40 "${RECORD_COMMIT:-}" \
     || undetermined "記録のコミットが読めません（COMMIT=${RECORD_COMMIT:-なし}）: ${RECORD_PATH}" \
@@ -215,8 +248,12 @@ if [[ -z "$MEASURED" ]]; then
   # 赤い回のゲートは実測対象を**無効化**する。書かずに済ませると、同じコミットで
   # 前回通った記録がそのまま残り、照合は無出力の exit 0 を返す（「一度通った
   # コミット」が「いま通るコミット」に化ける）。ここも allowlist で受ける。
+  #
+  # `partial` は「通ったが名指しした一部だけ」。ここでは pass 相当に受けてフラグだけ
+  # 立て、**コミット比較を通した後**で判定不能へ落とす（理由は下の部分性の判定）。
   case "$RECORD_STATUS" in
     pass) : ;;
+    partial) RECORD_PARTIAL=1 ;;
     fail)
       undetermined "直近のゲートが失敗しています（${RECORD_GATE:-gate} / ${RECORD_AT:-時刻不明}）" \
                    "ゲートを通してから記録を更新すること"
@@ -256,11 +293,27 @@ if [[ "$MEASURED" == "$REMOTE_HEAD" ]]; then
     undetermined "実測対象のコミットが手元にありません（MEASURED=${MEASURED}）" \
                  "実測対象を特定できないため、マージ前にゲートを再実行すること"
   fi
+
+  # 部分実行の記録は、リモート先端と一致していても全件緑へ**昇格しない**。
+  #
+  # この判定を比較より**前**へ置いてはいけない。前に置くと「部分記録 × 分岐した先端」
+  # （= 止めるべき状態）まで判定不能へ格下げされ、証拠がより強いケースがより弱い判定を
+  # 返す逆転が起きる。実在確認を一致経路の内側に置いているのと同じ理由である。
+  #
+  # REASON は**何を検証したのか**を名指しする。毎回同じ黄色い警告を出すだけのゲートは
+  # 読まれなくなり、赤で止まるゲートを黄色へ替えただけの劣化になる。
+  if [[ "$RECORD_PARTIAL" -eq 1 ]]; then
+    undetermined "記録は部分実行です（名指しした suite だけを実行した記録で、ゲートの既定一覧は回っていません）。検証済み: ${RECORD_SUITES:-（suite 名の記録なし）} / ゲート: ${RECORD_GATE:-不明} / モード: ${RECORD_MODE:-不明} / 実測: ${RECORD_AT:-時刻不明}" \
+                 "上に名指しした suite で差分の意味を検査できている変更（CHANGELOG footer の追従など）なら、このままマージしてよい。それでは足りない差分なら、ゲートの既定一覧を回して記録を更新すること"
+  fi
   exit 0
 fi
 
 # ---- 不一致の分類 -----------------------------------------------------------
-# 「実測後に自分が push した」と「別セッションが push した」は次の一手が違う。
+# 「祖先か（実測のあとに push された）」「未 push か」「分岐か」で次の一手が違う。
+# 分岐の**原因**は 1 つに断定しない — 別セッションの push だけでなく、実測対象が
+# マージ済み・削除済みのブランチ上にある場合も分岐になる（分類そのものは正しく、
+# 原因を名指しした文言だけが誤りうる）。
 # 区別にはリモートのコミットが手元に要るので、必要なら fetch する（比較そのものは
 # 既に API の値で終わっている。fetch の成否は判定を変えない）。
 RELATION="unknown"
@@ -291,7 +344,7 @@ case "$RELATION" in
     ACTION="push してからゲートを再実行し、記録を更新してからマージすること"
     ;;
   divergent)
-    REASON="実測対象とリモート先端が分岐しています。別セッションが同じブランチへ push した可能性があります"
+    REASON="実測対象とリモート先端が分岐しています（別セッションが同じブランチへ push した、実測対象がマージ済み・削除済みのブランチ上にある、など原因は複数ありえます）"
     ACTION="force-push で押し切らず、リモートのコミットの上に自分の変更を積んでからゲートを再実行すること"
     ;;
   *)
