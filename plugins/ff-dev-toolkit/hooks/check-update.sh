@@ -5,8 +5,12 @@
 # インストール済み plugin.json の version と、公開リポジトリ
 # https://github.com/feel-flow/ff-dev-toolkit の最新 SemVer タグを比較し、
 # 新版があるときだけ通知 JSON を stdout に出力する。最新版なら完全に無出力。
-# 同一の新版について通知するのは一度だけ（notified ファイルに記録し、compact 等で
-# SessionStart が再発火しても同じ通知を context へ再注入しない）。
+# 同じ (現在版, 最新版) の組み合わせについては TTL 内で一度だけ通知する（notified
+# ファイルに記録し、compact 等で SessionStart が再発火しても同じ通知を context へ
+# 再注入しない）。TTL を切らずに「一度だけ」にすると、通知を一度見逃した利用者が
+# 更新しないまま二度と通知されない状態になる（Issue #943 の実測: 実行中 v0.14.0 /
+# notified 0.61.0 のまま 1 か月無通知）。抑止のキーに現在版を含めるのは、
+# 「通知した」と「更新した」を別の事実として扱うためである。
 #
 # 設計原則:
 #   - fail-open: このフックはユーザーの全セッション起動に割り込む。リポジトリ内の
@@ -37,12 +41,15 @@
 #   FF_DEV_TOOLKIT_UPDATE_CACHE_DIR     キャッシュディレクトリの上書き
 #   FF_DEV_TOOLKIT_UPDATE_TTL_OK        成功キャッシュ TTL 秒の上書き（既定 86400）
 #   FF_DEV_TOOLKIT_UPDATE_TTL_FAIL      失敗キャッシュ TTL 秒の上書き（既定 3600）
+#   FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED  通知抑止 TTL 秒の上書き（既定 86400。0 で毎回通知）
 #
 # キャッシュ形式: update-check は 1 行 `<status> <latest|-> <epoch>`（status は
 # ok / fail）。想定形式以外（余剰フィールド・非数値 epoch・SemVer でない latest）は
-# 「キャッシュなし」として扱い、上書きして自己修復する。notified は通知済みの
-# 最新版 version を 1 行で持つ独立ファイル（TTL 管理と直交させ、キャッシュの
-# timestamp を保ったまま通知済みだけを記録できるようにする）。
+# 「キャッシュなし」として扱い、上書きして自己修復する。notified は 1 行
+# `<現在版> <最新版> <epoch>` を持つ独立ファイル（update-check の TTL と直交させ、
+# 取得キャッシュの timestamp を保ったまま通知履歴だけを記録できるようにする）。
+# 想定形式以外（欄数違い・非数値 epoch・旧形式の version 1 行）は「未通知」として
+# 扱い通知する — 形式を変えた直後に無音へ倒れると、移行した瞬間に通知が消えるため。
 
 # fail-open のため set -e は使わない。set -u も、未定義変数参照が非 0 終了で
 # フックを汚すため使わない（参照はすべて ${VAR:-default} 形で行う）。
@@ -81,6 +88,7 @@ cache_file="$cache_dir/update-check"
 notified_file="$cache_dir/notified"
 ttl_ok="${FF_DEV_TOOLKIT_UPDATE_TTL_OK:-86400}"
 ttl_fail="${FF_DEV_TOOLKIT_UPDATE_TTL_FAIL:-3600}"
+ttl_notified="${FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED:-86400}"
 
 # TTL・epoch は算術式へ渡す前に「数字のみ」を強制する（[0-9]* は前方一致なので
 # 使わない）。非数値の TTL は既定値へフォールバックする。
@@ -93,6 +101,7 @@ is_digits() {
 }
 is_digits "$ttl_ok" || ttl_ok=86400
 is_digits "$ttl_fail" || ttl_fail=3600
+is_digits "$ttl_notified" || ttl_notified=86400
 
 now="$(date +%s 2>/dev/null)" || exit 0
 is_digits "$now" || exit 0
@@ -135,7 +144,14 @@ write_cache() {
     IFS=' ' read -r e_status _e_latest e_ts _e_junk 2>/dev/null < "$cache_file" || e_status=""
     if is_digits "${e_ts:-}"; then
       if [ "$((10#$e_ts))" -gt "$now" ]; then
-        return 0
+        # 並行セッション由来の「わずかに新しい」結果だけを守る。遠未来は clock skew
+        # による破損で、無条件に守ると fail マーカーも ok も永久に書けず、
+        # キャッシュが二度と修復されないまま毎セッション ls-remote を払い続ける
+        # （ヘッダーが述べる「最も遅い失敗経路で毎セッション timeout を払う逆転」
+        #  そのもの。実測: 未来 timestamp を 1 度書くと 3 回実行しても未修復）。
+        if [ "$((10#$e_ts - now))" -le 300 ]; then
+          return 0
+        fi
       fi
       if [ "$((10#$e_ts))" -eq "$now" ] && [ "${e_status:-}" = "ok" ] && [ "$1" = "fail" ]; then
         return 0
@@ -198,22 +214,48 @@ version_gt() {
 
 version_gt "$latest" "$current" || exit 0
 
-# ---- 通知済みチェック（同一バージョンは一度だけ） ----------------------------
-notified="$(head -n 1 2>/dev/null < "$notified_file")" || notified=""
-[ "$notified" = "$latest" ] && exit 0
+# ---- 通知済みチェック（同じ組み合わせは TTL 内で一度だけ） -------------------
+# 抑止するのは「同じ (現在版, 最新版) を TTL 内に通知済み」のときだけ。抑止キーへ
+# 現在版を含めるのは、**部分更新**（0.13.3 → 0.14.0、最新は 0.14.1）で TTL を待たずに
+# 通知するため — この経路は実在し、現在版がここで変わらないと考えてキーを latest 単独へ
+# 「簡素化」すると Issue #943 の欠陥がそのまま戻る。ここへ来た = version_gt が通った =
+# 利用者はまだ最新に届いていない。時間で区切ることで、更新するまで通知が届き続ける。
+if [ -f "$notified_file" ]; then
+  # 余剰フィールドは n_junk が吸収する。読み取り失敗のエラーは 2>/dev/null を
+  # 「先に」置いて入力リダイレクトの失敗メッセージごと封じる（update-check の
+  # キャッシュ読み取りと同じ形）。
+  IFS=' ' read -r n_current n_latest n_ts n_junk 2>/dev/null < "$notified_file" || n_current=""
+  if [ -z "${n_junk:-}" ] && [ "${n_current:-}" = "$current" ] \
+    && [ "${n_latest:-}" = "$latest" ] && is_digits "${n_ts:-}"; then
+    # 10# の基数指定は先頭ゼロの八進数解釈エラーを防ぐ
+    n_age=$((now - 10#$n_ts))
+    if [ "$n_age" -ge 0 ] && [ "$n_age" -lt "$ttl_notified" ]; then
+      exit 0
+    fi
+  fi
+  # 旧形式（version 1 行）・欄数違い・非数値 epoch・未来 timestamp はここへ落ち、
+  # 「未通知」として通知経路へ進んで新形式で上書き自己修復する
+fi
 
 # ---- 通知出力 ----------------------------------------------------------------
 # systemMessage: ユーザーへ直接表示。additionalContext: Claude へ更新手順を注入し、
 # 「更新して」と言われたときに正しいコマンドを案内できるようにする。
 # marketplace 名はユーザーのローカル登録名に依存するため固定しない
 # （引数なしの `claude plugin marketplace update` は全 marketplace を更新する）。
-printf '{"systemMessage":"📦 ff-dev-toolkit v%s が利用可能です（現在 v%s）。更新: claude plugin marketplace update && claude plugin update ff-dev-toolkit","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"ff-dev-toolkit の新バージョン v%s が公開されています（インストール済みは v%s）。ユーザーが更新を希望したら次の手順を案内すること: (1) claude plugin marketplace update （引数なし。marketplace 名はユーザーの登録名に依存するため） (2) claude plugin update ff-dev-toolkit (3) 適用には Claude Code の再起動が必要。変更点は https://github.com/feel-flow/ff-dev-toolkit/blob/main/CHANGELOG.md を参照。この通知を止めたい場合は環境変数 FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1 を設定する。"}}\n' \
+printf '{"systemMessage":"📦 ff-dev-toolkit v%s が利用可能です（現在 v%s）。更新: claude plugin marketplace update → claude plugin list で登録 ID を確認 → claude plugin update その ID","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"ff-dev-toolkit の新バージョン v%s が公開されています（インストール済みは v%s）。ユーザーが更新を希望したら次の手順を案内すること: (1) claude plugin marketplace update （引数なし。marketplace 名はユーザーの登録名に依存するため） (2) claude plugin list で登録 ID を確認する。ID は プラグイン名@marketplace名 の形式で、素の名前を渡すと Plugin not found で失敗する (3) claude plugin update に (2) で確認した ID を渡す (4) 適用には Claude Code の再起動が必要。ただし既存の会話を再開すると古いプラグインのスナップショットへ再接続されるため、新しい会話を開始すること。変更点は https://github.com/feel-flow/ff-dev-toolkit/blob/main/CHANGELOG.md を参照。この通知を止めたい場合は環境変数 FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1 を設定する。"}}\n' \
   "$latest" "$current" "$latest" "$current"
 
-# 通知済みを記録（書き込み失敗は fail-open: 次セッションで再通知されるだけ）
-mkdir -p "$cache_dir" 2>/dev/null \
-  && printf '%s\n' "$latest" > "$notified_file.$$" 2>/dev/null \
-  && mv -f "$notified_file.$$" "$notified_file" 2>/dev/null
-rm -f "$notified_file.$$" 2>/dev/null
+# 通知済みを記録（書き込み失敗は fail-open: 次セッションで再通知されるだけ）。
+# notified がディレクトリ化した病的状態は除去する — 放置すると mv がその中へ潜り込んで
+# rc=0 を返すため、記録が永久に成立せず毎セッション・毎 compact で再通知になる
+# （update-check 側 write_cache の [ -d ] 除去と同じ理由）。timeout kill で孤児化した
+# 過去の一時ファイルも掃除する（PID が変わるため自前の rm では回収できない）。
+if mkdir -p "$cache_dir" 2>/dev/null; then
+  [ -d "$notified_file" ] && rm -rf "$notified_file" 2>/dev/null
+  rm -f "$notified_file".* 2>/dev/null
+  printf '%s %s %s\n' "$current" "$latest" "$now" > "$notified_file.$$" 2>/dev/null \
+    && mv -f "$notified_file.$$" "$notified_file" 2>/dev/null
+  rm -f "$notified_file.$$" 2>/dev/null
+fi
 
 exit 0

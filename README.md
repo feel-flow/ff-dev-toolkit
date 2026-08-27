@@ -88,9 +88,10 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 
 ### 更新通知
 
-セッション開始時に本リポジトリの最新リリースタグを確認し、新しいバージョンが公開されていれば通知します（更新コマンドは通知に表示されます）。同じバージョンについての通知は一度だけです。
+セッション開始時に本リポジトリの最新リリースタグを確認し、新しいバージョンが公開されていれば通知します（更新コマンドは通知に表示されます）。同じ組み合わせ（使っている版 × 公開されている版）についての通知は 1 日に一度までで、**更新するまで日をまたぐたびに届きます**。更新すれば止まり、さらに新しい版が出れば間隔を待たずに通知します。
 
 - チェック成功の結果は 24 時間キャッシュされます。オフライン時や取得失敗時は何もせず黙ってスキップし（セッション起動を妨げません）、1 時間後に再試行します
+- 通知の間隔は環境変数 `FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED`（秒・既定 86400）で変更できます。0 を指定すると毎セッション通知します
 - 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1` を設定してください
 
 ### スキル実体ドリフト検査
@@ -100,7 +101,7 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 - リポジトリにあるスキルがどのインストール実体にも無い場合、またはユニーク version が 2 以上の cache が併存している場合に通知します
 - スキル集合が一致し version が 1 種類なら無音です。同一 version の cache と marketplace checkout が並ぶのは通常構成です。version 差だけの 1 実体は上の更新通知に任せます
 - インストール実体を 1 つも見つけられないときは「検出不能」と報告し、セッションは止めません
-- 古い cache は自動削除しません。通知の古い version ディレクトリだけを手動で削除し、`claude plugin marketplace update`（引数なし）→ `claude plugin update ff-dev-toolkit` → Claude Code の再起動、の順で追従してください。marketplace checkout は消さないでください
+- 古い cache は自動削除しません。通知の古い version ディレクトリだけを手動で削除し、`claude plugin marketplace update`（引数なし）→ `claude plugin list` で登録 ID（`プラグイン名@marketplace名` 形式）を確認 → `claude plugin update <確認した ID>` → Claude Code の再起動、の順で追従してください（素の名前を渡すと `Plugin not found` で失敗します）。再起動しても既存の会話を再開すると古いスナップショットへ再接続されるため、新しい会話を開始してください。marketplace checkout は消さないでください
 - 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1` を設定してください
 
 ### 自動振り返り

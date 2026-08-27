@@ -13,7 +13,8 @@
 #
 # 固定する経路:
 #   - 新版検出時の通知 JSON（jq で構文検証・単一オブジェクト検証 + 内容）と
-#     notified 記録による「同一バージョンは一度だけ」の抑制、新しい版での再通知
+#     notified 記録（<現在版> <最新版> <epoch>）による TTL 付き抑止と、TTL 超過 /
+#     現在版の変化 / 新しい版での再通知、旧形式・壊れた記録の自己修復
 #   - 最新版・ローカル先行時の完全無出力
 #   - SemVer の数値比較（0.9.9 < 0.10.0、0.99.99 < 1.0.0。辞書順比較への退行防止）
 #   - 成功キャッシュ TTL 内はネットワークへ出ない（到達不能 URL でも通知が出ることで証明）
@@ -161,6 +162,7 @@ run_hook() {
   RC=0
   OUT="$(env -u CLAUDE_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK \
     -u FF_DEV_TOOLKIT_UPDATE_TTL_OK -u FF_DEV_TOOLKIT_UPDATE_TTL_FAIL \
+    -u FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED \
     FF_DEV_TOOLKIT_UPDATE_REPO_URL="$repo" \
     FF_DEV_TOOLKIT_UPDATE_CACHE_DIR="$cache" \
     "$@" bash "$HOOK" 2>"$TMP/stderr")" || RC=$?
@@ -201,10 +203,28 @@ if [ "$(printf '%s' "$OUT" | jq -er '.hookSpecificOutput.hookEventName' 2>/dev/n
 else
   bad "新版検出: hookEventName が不正"
 fi
-if printf '%s' "$OUT" | jq -er '.hookSpecificOutput.additionalContext' 2>/dev/null | grep "claude plugin update ff-dev-toolkit" >/dev/null; then
-  ok "新版検出: additionalContext に更新コマンドを含む"
+# 素の plugin 名は pin しない（Issue #943: それは not found で失敗する形）。
+# 案内が 3 段（marketplace 更新 → 登録 ID の確認 → その ID で update）揃うことを見る。
+AC="$(printf '%s' "$OUT" | jq -er '.hookSpecificOutput.additionalContext' 2>/dev/null || echo '')"
+MISSING=""
+for FRAG in "claude plugin marketplace update" "claude plugin list" "claude plugin update"; do
+  printf '%s' "$AC" | grep -F "$FRAG" >/dev/null || MISSING="$MISSING [$FRAG]"
+done
+if [ -z "$MISSING" ]; then
+  ok "新版検出: additionalContext に更新手順 3 段を含む"
 else
-  bad "新版検出: additionalContext に更新コマンドが無い"
+  bad "新版検出: additionalContext に欠けている案内:$MISSING"
+fi
+# 素の名前での update を禁じる（<plugin>@<marketplace> 形式は正しい案内）。実測
+# （Issue #943）: `claude plugin update ff-dev-toolkit` は Plugin not found で失敗する。
+# 正の断片検査の隣に置く — 離すと、片方の削除でもう片方が黙って無効化される。
+# 対照が経路へ届いていること（$OUT が空でないこと）を先に固定する（ACE-924-2）。
+if [ -z "$OUT" ]; then
+  bad "案内コマンド: 対照が経路へ届いていない（否定の主張が空振りする）"
+elif printf '%s' "$OUT" | grep -Eq 'claude plugin update ff-dev-toolkit([^@]|$)'; then
+  bad "案内コマンド: 素の plugin 名で update を案内している（not found になる）: [$OUT]"
+else
+  ok "案内コマンド: 素の plugin 名での update を案内していない"
 fi
 # marketplace 名を固定した案内への退行防止（登録名はユーザー依存のため）
 if printf '%s' "$OUT" | grep "marketplace update ff-dev-toolkit" >/dev/null; then
@@ -223,8 +243,10 @@ if [ -f "$CACHE/update-check" ] && grep -q "^ok 0.14.0 " "$CACHE/update-check"; 
 else
   bad "新版検出: 成功キャッシュが不正: $(cat "$CACHE/update-check" 2>/dev/null || echo '<missing>')"
 fi
-if [ -f "$CACHE/notified" ] && [ "$(cat "$CACHE/notified")" = "0.14.0" ]; then
-  ok "新版検出: notified に通知済みバージョンを記録した"
+# 記録は `<現在版> <最新版> <epoch>` の 3 欄。latest 単独では「更新したか」を
+# 判別できず、抑止が「一生に一度」に化ける（Issue #943）。
+if [ -f "$CACHE/notified" ] && grep -Eq '^0\.13\.3 0\.14\.0 [0-9]+$' "$CACHE/notified"; then
+  ok "新版検出: notified に (現在版, 最新版, 時刻) を記録した"
 else
   bad "新版検出: notified が不正: $(cat "$CACHE/notified" 2>/dev/null || echo '<missing>')"
 fi
@@ -245,6 +267,118 @@ if printf '%s' "$OUT" | grep -F "v0.14.1" >/dev/null; then
   ok "通知済み抑制: さらに新しい版は再通知する"
 else
   bad "通知済み抑制: 新しい版 v0.14.1 が通知されない: [$OUT]"
+fi
+
+# ---- 2b. 通知の再開: 同じ組み合わせでも TTL を超えたら再通知する -------------
+# 旧実装は notified を latest 単独キーの永続ファイルにしていたため、一度通知した
+# 版については更新の有無に関わらず永久に無音だった（Issue #943 の実測: 実行中
+# v0.14.0 / notified 0.61.0 のまま 1 か月無通知）。抑止は TTL で時間を区切る。
+#
+# 以下すべての run_hook に assert_clean を付ける。notified 由来の値は
+# `$((now - 10#$n_ts))` で算術へ入るため、壊れ方は「通知しない」ではなく
+# 「hook が非 0 で死ぬ + stderr を汚す」として現れる（非対話シェルは算術展開
+#  エラーで即終了する）。$OUT の grep だけでは両者を区別できない。
+run_hook "$REPO" "$CACHE"
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ]; then
+  ok "通知の再開: TTL 内は無出力（compact 再注入の防止は保たれる）"
+else
+  bad "通知の再開: TTL 内で出力された: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+# 前回通知が TTL より古い記録へ差し替える（既定 TTL のまま経過だけを進める）。
+# epoch を変数に取り、再通知後に「値が変わったこと」まで見る — 事前状態がそのまま
+# 判定の正規表現に一致すると、記録を書かない変異が緑のまま通る（空振り）。
+STALE_TS="$(( $(date +%s) - 200000 ))"
+printf '0.13.3 0.14.1 %s\n' "$STALE_TS" > "$CACHE/notified"
+run_hook "$REPO" "$CACHE"
+assert_clean "通知の再開: TTL 超過"
+if printf '%s' "$OUT" | grep -F "v0.14.1" >/dev/null; then
+  ok "通知の再開: TTL 超過で再通知する（見逃した利用者へ届き続ける）"
+else
+  bad "通知の再開: TTL 超過でも通知されない: [$OUT]"
+fi
+if grep -Eq '^0\.13\.3 0\.14\.1 [0-9]+$' "$CACHE/notified" 2>/dev/null \
+  && ! grep -Fq " $STALE_TS" "$CACHE/notified"; then
+  ok "通知の再開: 再通知で記録の時刻が実際に書き換わる"
+else
+  bad "通知の再開: 再通知後の notified が不正または未更新: $(cat "$CACHE/notified" 2>/dev/null || echo '<missing>')"
+fi
+# TTL は環境変数で上書きできる（0 は「毎回通知」）。fixture はリテラルで置く —
+# 直前の書き込み結果を使い回すと、書き込み側が壊れた変異でタプル不一致になり、
+# TTL 上書きではなく別の理由で通知が出て緑になる（vacuous pass）。
+printf '0.13.3 0.14.1 %s\n' "$(date +%s)" > "$CACHE/notified"
+run_hook "$REPO" "$CACHE" FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED=0
+assert_clean "通知の再開: TTL 上書き"
+if printf '%s' "$OUT" | grep -F "v0.14.1" >/dev/null; then
+  ok "通知の再開: TTL の環境変数上書きが効く"
+else
+  bad "通知の再開: TTL=0 でも通知されない: [$OUT]"
+fi
+# 抑止キーの「現在版」成分。ここが無いと、中間版へ更新した利用者に対して
+# より新しい版の存在が TTL いっぱい伏せられる。書き側（記録形式）は上で固定して
+# いるが、読み側の比較はこの 1 件でしか測れない。
+printf '0.13.3 0.14.1 %s\n' "$(date +%s)" > "$CACHE/notified"
+set_version "0.13.4"          # 中間版へ部分更新した利用者
+run_hook "$REPO" "$CACHE"
+assert_clean "通知の再開: 現在版が変わった"
+if printf '%s' "$OUT" | grep -F "v0.14.1" >/dev/null; then
+  ok "通知の再開: 現在版が変われば TTL 内でも通知する（抑止キーの現在版成分）"
+else
+  bad "通知の再開: 部分更新した利用者へ新版が伏せられた: [$OUT]"
+fi
+set_version "0.13.3"          # 後続セクションへ漏らさない
+# 未来 timestamp（clock skew / 共有 cache）。`-ge 0` ガードが無いと n_age が負に
+# なり常に TTL 内と判定され、時計が追いつくまで永久に沈黙する = #943 の再発。
+# update-check キャッシュ側は既に同型を固定済み（下の case 7b）。
+printf '0.13.3 0.14.1 %s\n' "$(( $(date +%s) + 999999 ))" > "$CACHE/notified"  # 判定は通知の有無なので値の捕捉は不要
+run_hook "$REPO" "$CACHE"
+assert_clean "通知の再開: 未来 timestamp"
+if printf '%s' "$OUT" | grep -F "v0.14.1" >/dev/null; then
+  ok "通知の再開: 未来 timestamp の記録を信用せず通知する"
+else
+  bad "通知の再開: 未来 timestamp で沈黙した: [$OUT]"
+fi
+
+# ---- 2c. 記録の自己修復: 旧形式・壊れた記録は「未通知」として扱う ------------
+# 形式が変わった直後の利用者は旧形式のファイルを持っている。ここで無音に倒れると
+# 移行した瞬間から通知が消えるので、解析できない記録は必ず通知側へ倒す。
+# `08` は先頭ゼロ epoch: is_digits は通すので `10#` の八進数対策が実際に効いており、
+# 外すと `value too great for base` で hook が非 0 で死ぬ（assert_clean が拾う）。
+for BROKEN in "0.14.1" "0.13.3 0.14.1" "0.13.3 0.14.1 abc" "0.13.3 0.14.1 08" ""; do
+  printf '%s\n' "$BROKEN" > "$CACHE/notified"
+  run_hook "$REPO" "$CACHE"
+  assert_clean "記録の自己修復 [$BROKEN]"
+  if printf '%s' "$OUT" | grep -F "v0.14.1" >/dev/null; then
+    ok "記録の自己修復: 解析できない記録 [$BROKEN] は通知する"
+  else
+    bad "記録の自己修復: [$BROKEN] で通知されない: [$OUT]"
+  fi
+done
+# 余剰フィールドは **新鮮な epoch** と組み合わせて測る。古い epoch と組み合わせると、
+# 欄数ガードを外しても TTL 超過で通知されてしまい、この検査の検出力が 0 になる
+# （変異注入で実測。ACE-924-2「否定の主張は対照が経路へ届くことを先に固定する」）。
+printf '0.13.3 0.14.1 %s junk\n' "$(date +%s)" > "$CACHE/notified"
+run_hook "$REPO" "$CACHE"
+assert_clean "記録の自己修復: 余剰フィールド"
+if printf '%s' "$OUT" | grep -F "v0.14.1" >/dev/null; then
+  ok "記録の自己修復: 余剰フィールドは TTL 内でも通知する（欄数ガードの到達性つき）"
+else
+  bad "記録の自己修復: 余剰フィールド + 新鮮な epoch で通知されない: [$OUT]"
+fi
+if [ -f "$CACHE/notified" ] && grep -Eq '^0\.13\.3 0\.14\.1 [0-9]+$' "$CACHE/notified"; then
+  ok "記録の自己修復: 通知後に新形式へ書き直される"
+else
+  bad "記録の自己修復: 新形式へ直っていない: $(cat "$CACHE/notified" 2>/dev/null || echo '<missing>')"
+fi
+# notified がディレクトリ化した病的状態。除去しないと mv がその中へ潜り込んで
+# rc=0 を返し、記録が永久に成立せず毎セッション再通知になる（抑止が完全に無効）。
+rm -f "$CACHE/notified"; mkdir -p "$CACHE/notified"
+run_hook "$REPO" "$CACHE"
+assert_clean "記録の自己修復: notified がディレクトリ"
+run_hook "$REPO" "$CACHE"
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ]; then
+  ok "記録の自己修復: ディレクトリ化した notified を除去して記録が成立する"
+else
+  bad "記録の自己修復: ディレクトリ化後も抑止が効かない: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
 
 # ---- 3. 最新版・ローカル先行: 完全無出力 -------------------------------------
@@ -326,12 +460,26 @@ fi
 # 常に TTL 内と判定され通知が長期沈黙する。ガード -ge 0 の退行防止。
 CACHE="$TMP/cache7b"
 mkdir -p "$CACHE"
-printf 'fail - %s\n' "$(( $(date +%s) + 999999 ))" > "$CACHE/update-check"
+# 未来の epoch は変数で捕まえる。`$(( now + 999999 ))` の計算結果に "999999" という
+# 部分文字列は現れないので、リテラルで grep すると修復の検査が常に真になる（空振り）。
+FUTURE_TS="$(( $(date +%s) + 999999 ))"
+printf 'fail - %s\n' "$FUTURE_TS" > "$CACHE/update-check"
 run_hook "$REPO" "$CACHE"
 if printf '%s' "$OUT" | grep "systemMessage" >/dev/null; then
   ok "未来 timestamp: 信用せず再試行して通知が出る"
 else
   bad "未来 timestamp: 遠未来キャッシュで沈黙した: exit=$RC output=[$OUT]"
+fi
+# 通知が出ることだけでは足りない。write_cache が遠未来の記録を「並行セッションの
+# 新しい結果」として守り続けると、fail マーカーも ok も永久に書けず、キャッシュが
+# 二度と修復されないまま毎セッション ls-remote を払う（ヘッダーが述べる逆転そのもの）。
+# 版番号は suite のこの時点のタグに依存するので pin しない。見るのは
+# 「遠未来の記録が残っていないこと」= 修復が起きたことだけ。
+if grep -Eq '^(ok|fail) [0-9.-]+ [0-9]+$' "$CACHE/update-check" 2>/dev/null \
+  && ! grep -Fq " $FUTURE_TS" "$CACHE/update-check"; then
+  ok "未来 timestamp: キャッシュを上書き修復した（毎セッション再取得に陥らない）"
+else
+  bad "未来 timestamp: キャッシュが修復されない: $(cat "$CACHE/update-check" 2>/dev/null || echo '<missing>')"
 fi
 
 # ---- 8. オフライン: 無出力 + exit 0 + fail キャッシュ記録 --------------------
@@ -425,9 +573,14 @@ done
 CACHE="$TMP/cache14"
 mkdir -p "$CACHE"
 printf 'ok 0.14.0 %s\n' "$(date +%s)" > "$CACHE/update-check"
-run_hook "$TMP/no-such-repo" "$CACHE" FF_DEV_TOOLKIT_UPDATE_TTL_OK=abc FF_DEV_TOOLKIT_UPDATE_TTL_FAIL=-5
+# notified 側の TTL 検証も同じ実行で測る。TTL 超過の記録を置くので通知条件は
+# 変わらないが、is_digits の検証を外すと `[ 200000 -lt abc ]` が
+# integer expression expected を stderr へ漏らし、下の [ -z "$ERR" ] が赤にする。
+printf '0.13.3 0.14.0 %s\n' "$(( $(date +%s) - 200000 ))" > "$CACHE/notified"
+run_hook "$TMP/no-such-repo" "$CACHE" FF_DEV_TOOLKIT_UPDATE_TTL_OK=abc FF_DEV_TOOLKIT_UPDATE_TTL_FAIL=-5 \
+  FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED=abc
 if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && printf '%s' "$OUT" | grep -F "v0.14.0" >/dev/null; then
-  ok "非数値 TTL: 既定値で動作し stderr を汚さない"
+  ok "非数値 TTL: 3 つとも既定値で動作し stderr を汚さない"
 else
   bad "非数値 TTL: exit=$RC stderr=[$ERR] output=[$OUT]"
 fi
