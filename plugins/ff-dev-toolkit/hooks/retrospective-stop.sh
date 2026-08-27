@@ -65,6 +65,6 @@ case "$MODE" in
   ;;
 esac
 
-printf '%s\n' '{"decision":"block","reason":"Before stopping, run the ff-dev-toolkit:retrospective skill now. If this turn completes the user requested work, inspect only events measured in this session and include the retrospective result in the final response. If this is a clarification, approval wait, external-state wait, or unfinished work, do not invent proposals; report exactly: 振り返り: 今回は作業完了前のため対象外. The retrospective is read-only: do not edit files or create issues without user approval.","systemMessage":"Automatic retrospective before stop"}'
+printf '%s\n' '{"decision":"block","reason":"Before stopping, run the ff-dev-toolkit:retrospective skill now. If this turn completes the user requested work, inspect only events measured in this session and include the retrospective result in the final response. If this is a clarification, approval wait, external-state wait, or unfinished work, do not invent proposals; report exactly: 振り返り: 今回は作業完了前のため対象外. The retrospective inspection is read-only: apart from the observation-ledger recording defined by the skill, do not edit files or create issues without user approval.","systemMessage":"Automatic retrospective before stop"}'
 
 exit 0

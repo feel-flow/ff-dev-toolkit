@@ -153,7 +153,7 @@ fi
 # 公開 CHANGELOG の主張（HTTP アダプタ非同梱）をコードで固定する。
 # パターンは部分文字列の誤爆を避けるため具体的な識別子に限定する。
 # grep の rc は 0（一致あり）/ 1（一致なし）/ 2 以上（grep 自体の異常）を分けて
-# 扱う（changelog-public-references と同じ規約 — 異常を「一致なし」と読まない）。
+# 扱う（changelog-contract と同じ規約 — 異常を「一致なし」と読まない）。
 B_FAIL=0
 for PATTERN in 'serve-static' '@hono/node-server' 'StreamableHTTPServerTransport' 'SSEServerTransport'; do
   set +e

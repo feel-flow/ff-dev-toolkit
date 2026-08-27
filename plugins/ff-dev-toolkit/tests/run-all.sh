@@ -72,8 +72,10 @@
 # 残るトレードオフ（意図的な選択）: 対を持つ selftest は既定で除外されるので、その検査対象
 # （tests/*/verify.sh・tests/lib/*.sh）を変更した回を既定のまま通すと、ゲートの検出力の退行は
 # 全件実行まで検出されない。**既定反転により、このトレードオフは毎回取られることになる。**
-# したがって定期実行点をリリース前・公開同期前の全件実行に置く（週次 CI = Issue #598 は未導入
-# のままで、それ以外に定期実行点は存在しない）。`tests/` 等の変更時に高速モードを拒否する
+# したがって定期実行点はリリース前・公開同期前の全件実行に置く（ADR-034 決定 2。これは変えない）。
+# 加えて開発元リポジトリでは週次 CI（.github/workflows/weekly-run-all.yml、Issue #598 / ADR-037）が
+# セーフティネットとして全件を回し、リリースが空いた期間の検出遅れに上限を付ける（定期実行点を
+# 置き換えるものではない。配布物には含まれない）。`tests/` 等の変更時に高速モードを拒否する
 # 安全弁は置かない — 条件分岐を増やさず、挙動を単純に保つ（ADR-034 で再確認した）。
 #
 # 実行方式のトレードオフ: 各 suite の出力は skip マーカー判定のため command
@@ -101,6 +103,65 @@ export FF_RUN_ALL_NESTED=1
 # ゲート開始時の HEAD を控える。全件実行は長く、その間に commit があると終了時の HEAD は
 # 「一度も読んでいないツリー」になる。記録側へ渡して、動いていたら記録させない（Issue #880）。
 FF_GATE_START_HEAD="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+
+# 走行中にランナー自身が書き換えられた実行を「緑」として観測させない（Issue #885）。
+# bash はスクリプトを一括で読まず**実行しながら読み進める**ため、走行中にファイルが
+# 書き換わるとオフセットがずれ、無関係な位置から読み直す。実測（Issue #880 / PR #883）
+# では `run-all.sh: line 878: king: command not found` を出し、サマリー行を一切出さない
+# まま **exit 0** で終わった — 破棄された実行が「静かに終わった緑」に化ける。
+#
+# 指紋は外部依存の少ない順に cksum → wc -c で取る。git は worktree の外や未インストール
+# 環境で使えず、mtime は stat の方言差（BSD/GNU）を抱える。どちらも標準入力で完結し
+# 一時ファイルを作らないので、本ファイル冒頭の read-only 制約を守れる。
+#
+# **この検査は「最終行まで到達できた場合の保険」**である。走行中の書き換えはプロセス
+# 自体を壊すため、多くの場合ここへ到達しない。到達しなかった実行の検出は
+# **サマリー行（`suites: total=…`）の不在**で行う（呼び出し側の契約。docs/04-quality/TESTING.md）。
+SELF_PATH="$SCRIPT_DIR/$(basename "$0")"
+ff_self_fingerprint() { # -> stdout（取得できなければ空 + 非 0）
+  if command -v cksum >/dev/null 2>&1; then
+    cksum < "$SELF_PATH" 2>/dev/null && return 0
+  fi
+  wc -c < "$SELF_PATH" 2>/dev/null
+}
+# 指紋が取れない環境では検査を無効化する（この検査は保険であり、取得不能を赤にすると
+# 本来の検証結果が環境事情で潰れる）。ただし無効化したことは黙らせない。
+FF_SELF_FINGERPRINT_START="$(ff_self_fingerprint || true)"
+if [[ -z "$FF_SELF_FINGERPRINT_START" ]]; then
+  echo "⚠️  ランナー自身の指紋を取得できません（${SELF_PATH}）— 走行中の自己書き換え検査は無効です" >&2
+fi
+
+# >>> ff-summary-head-block（tests/run-all/verify.sh がこのマーカーで切り出し、
+# 指紋照合とサマリー行の出力が同一関数に同居していることを静的に検査する）
+# 指紋照合と**サマリー冒頭 2 行の出力**を同じ関数に置く。bash の関数定義は読み込み時に
+# 本体ごとパースされるので、suite ループより前に定義したこの関数の中身は走行中の
+# 書き換えでは変わらない。結果として **「サマリー行が出た ⟹ 指紋照合を通った」** が
+# **構造的に**成り立つ。
+#
+# 照合を「サマリー出力の直前の行」に置くだけでは、位置による保証にしかならない。
+# 読み取りオフセットのずれ先が照合ブロックより後だった場合、照合を経ずにサマリーが
+# 出て exit 0 になりうる（レビュー指摘）。呼び出し行ごと飛ばされた場合はサマリー行が
+# 出ないので、そちらは読み手側の契約（サマリー行の不在 = 未完了）で受け止める。
+#
+# `exit` は関数内でもシェル全体を終わらせる。RUN も内側で組み立てて、外へ出す情報を
+# この関数だけに閉じる。
+ff_emit_summary_head() {
+  local _now
+  if [[ -n "$FF_SELF_FINGERPRINT_START" ]]; then
+    _now="$(ff_self_fingerprint || true)"
+    if [[ "$_now" != "$FF_SELF_FINGERPRINT_START" ]]; then
+      echo "✗ 実行中にランナー自身が書き換えられました: ${SELF_PATH}" >&2
+      echo "  起動時の指紋: ${FF_SELF_FINGERPRINT_START} / 現在: ${_now:-取得不能}" >&2
+      echo "  bash は実行しながらスクリプトを読み進めるため、この実行がどのスナップショットに対するものか不明です。" >&2
+      echo "  この実行の結果は証拠に使えません。編集を確定させてから最初から回し直してください。" >&2
+      exit 1
+    fi
+  fi
+  RUN=$(( ${#PASSED[@]} + ${#FAILED[@]} + ${#SKIPPED[@]} ))
+  echo "== summary =="
+  echo "suites: total=${#SCRIPTS[@]} run=$RUN passed=${#PASSED[@]} failed=${#FAILED[@]} skipped=${#SKIPPED[@]} not-run=${#NOT_RUN[@]}"
+}
+# <<< ff-summary-head-block
 
 if [[ $# -gt 0 ]]; then
   SCRIPTS=("$@")
@@ -173,14 +234,16 @@ else
     # poison し、検出器自身が red になることを実測する。perl / 一時領域が無い場合だけ
     # suite 全体を ○ skip する（実作業ツリーは変更しない）。
     "$SCRIPT_DIR/ace-scripts-mirror-selftest/verify.sh"
-    "$SCRIPT_DIR/changelog-public-references/verify.sh"
+    # 版の一致（旧 changelog-version）と参照境界を 1 本で見る（Issue #800 で統合）。
+    # どちらも同じ CHANGELOG を同じ手順で解決し、外部依存を持たず read-only で完走する
+    # ため可用性条件が一致する（ACE-927-3: 混ぜてよいのはここが揃うときだけ）。
+    "$SCRIPT_DIR/changelog-contract/verify.sh"
     # 上の gate の検出力を fixture への変異注入で実測する（Issue #610）。本体は実
     # CHANGELOG を検査するので、緑のままでは「何を検出できるか」が分からない。
     # perl / 一時領域が無い場合は ○ skip するが、検出力が丸ごと消えるため
     # REQUIRED_SUITES に載せて明示許可を要求する。
     # 検査対象の直後に置くことを優先し、安価な順の例外として扱う。
-    "$SCRIPT_DIR/changelog-public-references-selftest/verify.sh"
-    "$SCRIPT_DIR/changelog-version/verify.sh"
+    "$SCRIPT_DIR/changelog-contract-selftest/verify.sh"
     "$SCRIPT_DIR/docs-gates/verify.sh"
     "$SCRIPT_DIR/out-of-scope-routing/verify.sh"
     # out-of-scope 判定の実挙動検証（Issue #499）: SKILL.md から抽出した行数閾値と
@@ -510,6 +573,11 @@ else
     # vitest 本体は mcp/node_modules を再利用するため mcp 系 suite より後に置く
     # （上の型検査 2 本と ace-refine も同じ node_modules を借りるので、この 4 本が同じ並びに入る）。
     "$SCRIPT_DIR/ace-scripts-vitest/verify.sh"
+    # 同梱ゲートの runner 解決層（scripts/ace-run-ts.sh）の挙動検査（Issue #879）。
+    # bash と一時領域だけで完結し、npx・ネットワークに依存しない。下の
+    # ace-curate-fallback-exec と分けてあるのは、あちらの tsx 取得失敗で丸ごと skip
+    # されると「runner が無い環境で fail-closed するか」がその環境でだけ消えるため。
+    "$SCRIPT_DIR/ace-run-ts/verify.sh"
     # /ace-curate 4-f の未導入 fallback を、scripts/ace/ を持たない一時プロジェクトで
     # 実際に走らせる挙動検査（Issue #614）。SKILL.md が案内する `npx --yes tsx <同梱パス>`
     # をそのまま使うため tsx の取得（初回のみネットワーク。以降は npm cache）に依存し、
@@ -588,6 +656,9 @@ REQUIRED_SUITES=(
   # 確かめるのはこの suite だけ。黙って消えると、スクリプトが壊れて未導入プロジェクトの
   # 必須ゲートが再び到達不能になっても緑のままになる（Issue #614）。
   ace-curate-fallback-exec
+  # runner 解決層の検出力には代替が無い。一時領域不足で消えると、workspace 環境の
+  # 到達不能・runner 不在の fail-closed・終了コード伝播が丸ごと無検査になる（Issue #879）。
+  ace-run-ts
   # ミラー検出器・tree-state helper・runner 自身の検出力にも代替がない。
   ace-scripts-mirror-selftest
   mcp-state-selftest
@@ -637,7 +708,7 @@ REQUIRED_SUITES=(
   # 公開 CHANGELOG 参照ゲートの検出力 selftest。本体は実 CHANGELOG が clean な限り
   # 緑のままなので、検出パターンが弱っても本体だけでは分からない。perl・一時領域の
   # 都合で消えると「参照検出の退行が黙って通る」状態になる（Issue #610）。
-  changelog-public-references-selftest
+  changelog-contract-selftest
   # /retrospective 契約ゲートの検出力 selftest。代替の検査が無く、perl・一時領域の
   # 都合で消えるとチェーン記載の針と規定マーカーの検出力喪失が黙って通る（#540）。
   retrospective-contract-selftest
@@ -933,10 +1004,7 @@ done
 # ---- サマリー --------------------------------------------------------------
 # 「実行した suite 数」と「失敗/スキップ/未実行の suite 名」を必ず出す。総数と
 # 実行数が食い違ったまま success を名乗らないことが、本 Issue の masking 対策の本体。
-RUN=$(( ${#PASSED[@]} + ${#FAILED[@]} + ${#SKIPPED[@]} ))
-
-echo "== summary =="
-echo "suites: total=${#SCRIPTS[@]} run=$RUN passed=${#PASSED[@]} failed=${#FAILED[@]} skipped=${#SKIPPED[@]} not-run=${#NOT_RUN[@]}"
+ff_emit_summary_head
 
 # 高速モードの除外は「何を検証していないか」ごとサマリーへ明示する。除外は total にも
 # skipped にも数えない — 環境都合の skip（検証したかったが出来なかった）と、意図的な

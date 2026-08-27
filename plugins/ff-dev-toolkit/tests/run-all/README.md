@@ -164,3 +164,4 @@ FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh
   | exit code より先に skip マーカーを見る（判定順序の入れ替え） | case 7 |
   | 入れ子の引数なし実行ガードを外す | case 8（※ ガードを完全に削ると無限再帰するので、`exit 1` を `exit 0` にする形で試すこと） |
   | 任意の非コメント行へ `printf ... \| grep -q` を再追加する | case 10 |
+  | 走行中の自己書き換え検査（起動時の指紋照合）を外す・サマリー行の出力と別の関数へ分ける | case 29 |

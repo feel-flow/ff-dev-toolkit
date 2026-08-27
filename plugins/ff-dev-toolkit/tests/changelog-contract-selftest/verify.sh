@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# changelog-public-references/verify.sh 自身の検出力の実測（Issue #610）。
+# changelog-contract/verify.sh 自身の検出力の実測（Issue #610）。
 #
 # 本体は実ファイル（oss/ff-dev-toolkit/CHANGELOG.md）を検査するゲートなので、
 # 「何を検出できるか」は本体を緑にしたままでは分からない。ここでは fixture を
@@ -23,9 +23,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TESTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-TARGET="$TESTS_DIR/changelog-public-references/verify.sh"
+TARGET="$TESTS_DIR/changelog-contract/verify.sh"
 
-[ -f "$TARGET" ] || { echo "✗ changelog-public-references/verify.sh が見つかりません: $TARGET" >&2; exit 1; }
+[ -f "$TARGET" ] || { echo "✗ changelog-contract/verify.sh が見つかりません: $TARGET" >&2; exit 1; }
 
 if ! command -v perl >/dev/null 2>&1; then
   echo "○ skip: perl が無いためスキップ（変異注入に必要。本 suite の検査は1件も実行されていません）"
@@ -34,10 +34,10 @@ fi
 
 # mktemp の診断を捨てると不正 TMPDIR と read-only を区別できないため、成功時のパスと
 # 失敗時の理由を同じ変数へ受ける。案内では原因を断定せず、理由は mktemp 行に委ねる。
-if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/changelog-public-references-selftest.XXXXXX" 2>&1)"; then
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/changelog-contract-selftest.XXXXXX" 2>&1)"; then
   TMP="$_ff_mktemp_out"
 else
-  echo "○ skip: 一時ディレクトリを作成できないため changelog-public-references-selftest を実行できません（検査は1件も実行されていません）"
+  echo "○ skip: 一時ディレクトリを作成できないため changelog-contract-selftest を実行できません（検査は1件も実行されていません）"
   printf '  mktemp: %s\n' "$_ff_mktemp_out"
   FF_REACHED_END=1
   exit 0
@@ -49,7 +49,7 @@ _ff_exit_guard() {
   _ff_rc=$?
   rm -rf "$TMP"
   if [ "$_ff_rc" -eq 0 ] && [ "$FF_REACHED_END" -ne 1 ]; then
-    echo "✗ changelog-public-references-selftest: 最後まで到達しませんでした（途中で中断）" >&2
+    echo "✗ changelog-contract-selftest: 最後まで到達しませんでした（途中で中断）" >&2
     exit 1
   fi
   exit "$_ff_rc"
@@ -63,7 +63,7 @@ ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); TOTAL=$((TOTAL + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); TOTAL=$((TOTAL + 1)); }
 
 # 検査総数の固定（アサーションが削除で静かに減るのを赤化する）。
-EXPECTED_TOTAL=19
+EXPECTED_TOTAL=25
 
 # ---- fixture: CHANGELOG.md バリエーション --------------------------------------
 # 本体の禁止パターンに触れない共通ヘッダ。実ファイルと同じく compare URL を含める
@@ -206,8 +206,23 @@ expect_no_out '⚠ FF_CHANGELOG_PUBLIC_REFERENCES_FILE' "シーム未設定な�
 # `#` の前置ガード（`(^|[^[:alnum:]_])`）を旧実装へ戻す。完全修飾参照だけが
 # 取り逃されることを確認する（この 1 箇所が検出力の所在であることの実測）。
 echo "== C. 変異注入（前置ガードを旧実装へ戻す）=="
-MUTANT="$TMP/mutant.sh"
+# 統合後のゲートは版の一致（plugin.json / agent-config.yaml / 実 CHANGELOG）も見るため、
+# 平置きの一時ファイルへコピーすると `$PLUGIN_ROOT/../..` が実リポジトリを指さず、
+# 「CHANGELOG.md not found」で**変異とは無関係に赤くなる**（実測で踏んだ）。
+# 配置を写し、必要な 3 ファイルを実体からコピーしてから変異を測る。
+MUT_TREE="$TMP/mutrepo"
+MUT_DIR="$MUT_TREE/plugins/ff-dev-toolkit/tests/changelog-contract"
+mkdir -p "$MUT_DIR" "$MUT_TREE/oss/ff-dev-toolkit" \
+  "$MUT_TREE/plugins/ff-dev-toolkit/.claude-plugin" "$MUT_TREE/plugins/ff-dev-toolkit/scripts"
+cp "$TESTS_DIR/../.claude-plugin/plugin.json" "$MUT_TREE/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
+cp "$TESTS_DIR/../scripts/agent-config.yaml" "$MUT_TREE/plugins/ff-dev-toolkit/scripts/agent-config.yaml"
+cp "$TESTS_DIR/../../../oss/ff-dev-toolkit/CHANGELOG.md" "$MUT_TREE/oss/ff-dev-toolkit/CHANGELOG.md"
+MUTANT="$MUT_DIR/verify.sh"
 cp "$TARGET" "$MUTANT"
+# 陽性対照: **変異前**の複製が実体と同じ結果を返すこと。ここを測らずに下の
+# expect_exit を読むと、レイアウト不整合による赤を「変異が効いた」と読み違える
+# （ACE-924-2: 到達性を先に固定する）。
+expect_exit "$MUTANT" "$TMP/clean.md" 0 "対照: 配置を写した未変異の複製は実体と同じく pass（複製が動いている）"
 if ! perl -0pi -e 's/\Q|#[0-9]+\E/|(^|[^[:alnum:]_])#[0-9]+/' "$MUTANT"; then
   bad "変異注入に失敗しました（perl の書き換えが非 0）"
 elif cmp -s "$TARGET" "$MUTANT"; then
@@ -221,15 +236,65 @@ expect_exit "$MUTANT" "$TMP/bare_hash.md" 1 "変異版でも空白直後の #56 
 expect_exit "$MUTANT" "$TMP/pr_hash.md"   1 "変異版でも PR #34 は検出（変異が狙ったケースだけに効く）"
 expect_exit "$MUTANT" "$TMP/clean.md"     0 "変異版でも参照の無い CHANGELOG は pass"
 
+echo "== D. 版の一致（旧 changelog-version）の検出力 =="
+# 統合で版検査が 1 本の suite の中へ入った。壊れたときに赤くなる suite が他に無い
+# （= TESTING.md「新設ゲートに恒久 selftest を要求しない」の恒久化条件その 2）ため、
+# ここで検出力を実測する。MUT_TREE（配置を写した複製）を使い、実リポジトリは触らない。
+#
+# 注意: 2 つの検査は独立に走り、両方を実行してから終了コードが決まる（ゲート側の契約）。
+# したがって版検査だけを壊した実行は「参照検査は ✓ のまま rc=1」になる。
+ver_case() { # <名前> <期待 rc> <期待診断の一部>
+  local name="$1" want_rc="$2" needle="$3" rc=0 out
+  out="$(cd "$MUT_TREE" && bash "$MUT_DIR/verify.sh" 2>&1)" || rc=$?
+  if [ "$rc" -eq "$want_rc" ] && printf '%s' "$out" | grep -F "$needle" >/dev/null; then
+    ok "${name}（rc=${rc}）"
+  else
+    bad "${name} — 期待 rc=${want_rc} + 診断「${needle}」/ 実際 rc=${rc}"
+    printf '%s\n' "$out" | sed 's/^/    | /' | head -6 >&2
+  fi
+}
+
+# 変異前の複製は緑（陽性対照）。ここが赤いと以下の赤は別の理由になる。
+VER_TREE_RC=0
+( cd "$MUT_TREE" && bash "$MUT_DIR/verify.sh" ) >/dev/null 2>&1 || VER_TREE_RC=$?
+[ "$VER_TREE_RC" -eq 0 ] && ok "対照: 版検査つきの複製は未変異なら pass" \
+  || bad "対照: 未変異の複製が rc=${VER_TREE_RC}（以降の赤が別の理由になる）"
+
+# (1) plugin.json ↔ CHANGELOG 最新見出しの不一致。
+#     ずらすのは **CHANGELOG 側**にする。plugin.json をずらすと agent-config との
+#     照合が先に落ち、CHANGELOG 比較まで到達しない（実測）— 変異は測りたい分岐へ
+#     届く位置に入れる。
+perl -0pi -e 's/^## \[[0-9]+\.[0-9]+\.[0-9]+/## [99.99.99/m' \
+  "$MUT_TREE/oss/ff-dev-toolkit/CHANGELOG.md"
+ver_case "plugin.json と CHANGELOG 最新見出しの不一致を検出" 1 "CHANGELOG newest="
+cp "$TESTS_DIR/../../../oss/ff-dev-toolkit/CHANGELOG.md" "$MUT_TREE/oss/ff-dev-toolkit/CHANGELOG.md"
+
+# (2) agent-config.yaml ↔ plugin.json の不一致
+perl -0pi -e 's/toolkit_version: "[0-9]+\.[0-9]+\.[0-9]+"/toolkit_version: "98.98.98"/' \
+  "$MUT_TREE/plugins/ff-dev-toolkit/scripts/agent-config.yaml"
+ver_case "agent-config.yaml と plugin.json の不一致を検出" 1 "agent-config.yaml="
+cp "$TESTS_DIR/../scripts/agent-config.yaml" "$MUT_TREE/plugins/ff-dev-toolkit/scripts/agent-config.yaml"
+
+# (3) 日付つき版見出しが 1 つも無い CHANGELOG
+perl -0pi -e 's/^## \[[0-9]+\.[0-9]+\.[0-9]+[^\]]*\]\s*-.*$/## [Unreleased]/mg' \
+  "$MUT_TREE/oss/ff-dev-toolkit/CHANGELOG.md"
+ver_case "日付つき版見出しの不在を検出" 1 "no dated release heading"
+cp "$TESTS_DIR/../../../oss/ff-dev-toolkit/CHANGELOG.md" "$MUT_TREE/oss/ff-dev-toolkit/CHANGELOG.md"
+
+# (4) 版検査の前提が欠けても参照検査は到達する（統合で持ち込んだ回帰の回帰ガード）
+rm -f "$MUT_TREE/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
+ver_case "版検査の前提不足でも参照検査は到達する" 1 "公開 CHANGELOG に SSOT の Issue / PR 番号参照はありません"
+cp "$TESTS_DIR/../.claude-plugin/plugin.json" "$MUT_TREE/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
+
 echo ""
 if [ "$TOTAL" -ne "$EXPECTED_TOTAL" ]; then
-  echo "✗ changelog-public-references-selftest: 検査総数が ${TOTAL} 件（期待 ${EXPECTED_TOTAL} 件）。ケースを増減したら EXPECTED_TOTAL も更新する" >&2
+  echo "✗ changelog-contract-selftest: 検査総数が ${TOTAL} 件（期待 ${EXPECTED_TOTAL} 件）。ケースを増減したら EXPECTED_TOTAL も更新する" >&2
   exit 1
 fi
 if [ "$FAIL" -gt 0 ]; then
-  echo "✗ changelog-public-references-selftest: ${FAIL} 件失敗" >&2
+  echo "✗ changelog-contract-selftest: ${FAIL} 件失敗" >&2
   exit 1
 fi
-echo "✓ changelog-public-references-selftest: 全 ${PASS} 件 pass"
+echo "✓ changelog-contract-selftest: 全 ${PASS} 件 pass"
 FF_REACHED_END=1
 exit 0

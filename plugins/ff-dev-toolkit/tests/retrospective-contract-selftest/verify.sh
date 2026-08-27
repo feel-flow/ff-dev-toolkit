@@ -51,8 +51,8 @@ SRC_DEPLOYMENT="$PLUGIN_ROOT/docs-template/05-operations/DEPLOYMENT.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=105
-EXPECTED_GATE_CHECKS_PUBLIC=94
+EXPECTED_GATE_CHECKS_MONOREPO=115
+EXPECTED_GATE_CHECKS_PUBLIC=104
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -376,7 +376,7 @@ fi
 # 同一行に複数の針が乗っているものは期待件数を 2 以上にしてある（例: 実測限定と
 # 一般論禁止は SKILL.md の同じ箇条書き行）。
 MARKER_MUTATIONS=(
-  "${FIX_SKILL}|retrospective-SKILL.md|**このセッションで実測した**手戻り・無駄時間に限る|提案閾値: 実測したものに限定|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|**実測に限る**: このセッションで実測した手戻り・無駄時間、または台帳に実測として積まれた観測履歴|提案閾値: 実測したものに限定|2"
   "${FIX_SKILL}|retrospective-SKILL.md|該当する候補が無ければ、次の 1 行だけで終了する|提案閾値: 候補なしは 1 行で終了|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**機微情報を提案本文へ引用しない**|提案閾値: 機微情報を引用しない|1"
   "${FIX_SKILL}|retrospective-SKILL.md|各提案に **起票先 repo** と **期待効果**|提案の構造: 必須 4 欄を列挙する|1"
@@ -399,7 +399,9 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|は「重複なし」と扱わない|起票前の既存確認: 確認不能時は重複なしと扱わない|2"
   "${FIX_SKILL}|retrospective-SKILL.md|「振り返り」「retrospective」「セッション振り返り」「プロセス改善の提案」と言われたとき|frontmatter: trigger 語|2"
   "${FIX_SKILL}|retrospective-SKILL.md|**ユーザー承認を待つ**（承認なしに起票しない|承認境界: 起票前にユーザー承認を待つ|2"
-  "${FIX_SKILL}|retrospective-SKILL.md|振り返り工程ではファイル編集・コミット・Issue 作成を行わない|承認境界: 振り返り工程は read-only|2"
+  # read-only 行には read-only 針 + 定型記録針 + 起票承認針の 3 本が乗る（観測台帳の導入で
+  # 書き込み境界が 2 系統へ分かれたため。行削除で 3 件赤化する）。
+  "${FIX_SKILL}|retrospective-SKILL.md|振り返り工程ではファイル編集・コミット・Issue 作成を行わない|承認境界: 振り返り工程は read-only|3"
   "${FIX_SKILL}|retrospective-SKILL.md|**振り返りに入る前に、必ず最初にモードを判定する**|ask モード: 判定を先頭で行う|1"
   "${FIX_SKILL}|retrospective-SKILL.md|利用者が本スキルを明示指定した → 環境変数に関係なく実施する|ask/off モード: 明示指定は環境変数を上書き|1"
   "${FIX_SKILL}|retrospective-SKILL.md|printenv RETROSPECTIVE_MODE|ask モード: 環境変数を実測するコマンド|1"
@@ -411,6 +413,17 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|質問・承認待ち・外部状態待ち・作業途中である|自動発火: 未完了時は対象外|1"
   "${FIX_SKILL}|retrospective-SKILL.md|UserPromptSubmit の \`additionalContext\`|自動発火: 応答生成前に振り返り契約を注入|1"
   "${FIX_SKILL}|retrospective-SKILL.md|本スキルで扱わず、\`/ace-curate\`（または ACE Playbook への追記）へ回す|責務分離: retrospective 側からの送り先明示|1"
+  # 観測台帳（起票の前段バッファ・KPT 拡張）の 9 針。いずれも SKILL.md 内で単独の行に
+  # 乗せてあるため、行削除の期待 ✗ は各 1 件。
+  "${FIX_SKILL}|retrospective-SKILL.md|## 観測の記録 — 観測台帳（起票の前段バッファ）|観測台帳: 節が存在する|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|まず**観測台帳**へ記録する|観測台帳: 起票前にまず台帳へ記録|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**累計 3 回**に到達し、対応 Issue が未リンク|観測台帳: Issue 昇格の閾値|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**特急レーン**|観測台帳: 重大観測の特急レーン|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|アクションに繋がらない Keep は記録しない|観測台帳: Keep はアクションに繋がるものだけ記録|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|\`[observation]\` 接頭辞の Issue として受け渡す|観測台帳: 導入先からは observation Issue で受け渡す|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|open な \`observation\` Issue|観測台帳: SSOT での inbox 取り込み|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**再現価値のある成功パターン（Keep）**|観察チェックリスト: Keep レンズ|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**過剰動作**|観察チェックリスト: 過剰動作レンズ|1"
   "${FIX_ACE_CURATE}|ace-curate-SKILL.md|ACE Playbook ではなく \`/retrospective\` の提案経路で扱う|責務分離: ACE 側からの送り先明示|3"
   "${FIX_GIT_WORKFLOW}|git-workflow.md|承認なしには起票しない|承認境界が git-workflow へ伝播|4"
   "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|ユーザー承認を待ってから行う|承認境界が workflow-principles へ伝播|2"

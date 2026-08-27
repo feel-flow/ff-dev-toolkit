@@ -21,6 +21,8 @@
 #   G14〜G16. claim の narrowing（`後続 N suite` / spec-docs 無しの `N ツール` /
 #        `昇格` 無しの `Helpful >= N`）は照合しない → 緑
 #   G22. `調査時点` を含む歴史スナップショット行（DECISIONS.md ADR-024）は照合しない → 緑
+#   G33. `調査時点` を含む歴史スナップショット行の suite 数（TESTING.md）は照合しない → 緑
+#        （suite 数 claim の除外列が `後続;調査時点` の複数指定であることの実測。Issue #929）
 #   G17. 未閉鎖コメント開始行に書いた件数も走査対象 → 赤（契約の固定）
 #   G18. 散文中の `` `<!--` ``（インラインコードスパン内）は後続の `-->`（mermaid の
 #        矢印を含む）と対にならず、間の件数記載も走査される → 赤（Issue #527）。
@@ -352,6 +354,20 @@ perl -i -pe 's/([0-9]+) プラグイン・([0-9]+) スキル/($1 + 1) . " プラ
 assert_changed "$TMP/g22-before.md" "$TMP/root/docs/06-reference/DECISIONS.md" "G22" || true
 run_case "G22 調査時点 を含む歴史スナップショット行は照合しない" green
 
+# suite 数 claim は除外列に 2 つ持つ（`後続` = 別概念の誤検知回避 / `調査時点` = 歴史
+# スナップショット）。除外列が単一文字列へ戻ると、足せなくなった側が表記回避へ逃げて
+# 検出面が静かに縮む（ACE-539-3 / Issue #929）。複数除外が効いていることを、TESTING.md の
+# 歴史スナップショット行の数値だけを現在値からずらして測る。
+make_fixture
+cp "$TMP/root/docs/04-quality/TESTING.md" "$TMP/g33-before.md"
+perl -i -pe 's/([0-9]+) suite/($1 + 1) . " suite"/ge if /調査時点/' \
+  "$TMP/root/docs/04-quality/TESTING.md"
+# 判別力は TESTING.md の「調査時点 …・N suite」1 箇所に乗っている。表現が変われば
+# 置換は no-op になり、このケースは何も測らずに緑になる（G22 と同じ歯止め）。
+assert_changed "$TMP/g33-before.md" "$TMP/root/docs/04-quality/TESTING.md" "G33" || true
+run_case "G33 調査時点 を含む歴史スナップショット行の suite 数は照合しない" green
+
+
 echo "== G17. 未閉鎖コメント開始行の記載も走査する（契約の固定）=="
 # 未閉鎖 opener は「対応探索を打ち切るだけ」で、その行の文字は本文に残る規則。
 # したがって未閉鎖コメント行に書いた古い件数もドリフトとして赤になる。
@@ -658,7 +674,7 @@ echo "結果: pass=${PASS} fail=${FAIL}"
 # 検査総数ガード: ケースが黙って消える（条件分岐で丸ごと飛ぶ・編集で落ちる）変更を
 # 捕まえる。健全な実行では assert_* は 1 件も bad を出さないので、総数 = ケース数。
 # ケースを増減したら**この値も同時に更新する**。
-EXPECTED_CHECKS=56
+EXPECTED_CHECKS=57
 TOTAL=$((PASS + FAIL))
 COUNT_MISMATCH=0
 if [ "$TOTAL" -ne "$EXPECTED_CHECKS" ]; then

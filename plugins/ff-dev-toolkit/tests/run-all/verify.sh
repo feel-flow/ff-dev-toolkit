@@ -433,8 +433,8 @@ else
   bad "必須 suite 名簿が消えた（環境都合の skip が黙って通る）"
 fi
 # Issue #436 / #440 で判断した一時領域依存 suite の名簿を固定する（Issue #564 で
-# adapter-prompt-guard / review-diff-scope、Issue #893 で review-capture-fail-loud
-# を追加）。名前を 1 行ずつ照合し、コメント内の言及を実登録と誤認しない。
+# adapter-prompt-guard / review-diff-scope、Issue #893 で review-capture-fail-loud、
+# Issue #879 で ace-run-ts を追加）。名前を 1 行ずつ照合し、コメント内の言及を実登録と誤認しない。
 _required_block="$(awk '
   /^REQUIRED_SUITES=\(/ { inside=1; next }
   inside && /^\)/ { exit }
@@ -448,6 +448,7 @@ for _required_tmp_suite in \
   adapter-prompt-guard \
   review-diff-scope \
   review-capture-fail-loud \
+  ace-run-ts \
   review-wrapper-shim \
   sweep-orphan-transcripts \
   multi-agent-timeout \
@@ -1205,6 +1206,135 @@ RUN_FAST=1 run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/orphan-selftest/veri
 expect_lacks '^⚠️  明示引数で名指しした suite' \
   "名指しした suite が 1 件も除外されなければ警告しない"
 
+echo ""
+echo "== case 29: 走行中にランナー自身が書き換えられた実行は緑を名乗らない =="
+
+# bash はスクリプトを一括で読まず**実行しながら読み進める**ため、走行中の書き換えは
+# 実行そのものを壊す。実測（Issue #885）ではサマリー行を一切出さないまま exit 0 で
+# 終わり、破棄された実行が「静かに終わった緑」として観測された。
+#
+# ここで測るのは **最終行まで到達できた回の保険**（run-all.sh の自己指紋照合）。
+# 照合は `ff_emit_summary_head` の中でサマリー行の出力と同居しており、bash が関数定義を
+# 読み込み時に本体ごとパースする性質から「サマリー行が出た ⟹ 照合を通った」が構造的に
+# 成り立つ。その同居は下の静的な針でも固定する — 照合をサマリーの外の 1 行へ戻すと、
+# 読み取りオフセットのずれ先が照合より後だった回に偽の緑が復活する。
+# 疑似 suite が複製ランナーの**末尾へ追記**するので既存バイトのオフセットは動かず、
+# 実行は壊れずに最後まで到達する = 検査の対象そのものを決定論的に作れる。
+# オフセットがずれて途中で落ちる回は原理的にここへ到達しないので、その検出は
+# サマリー行の不在で行う（docs/04-quality/TESTING.md の読み手側の契約）。
+#
+# 書き換えるのは複製だけで、実作業ツリーの run-all.sh には触れない。
+_selfmut_fx="${TMPDIR:-/tmp}/ff-run-all-selfmut.$$"
+rm -rf "$_selfmut_fx"
+mkdir -p "$_selfmut_fx/selfmut-mutator" "$_selfmut_fx/selfmut-quiet" "$_selfmut_fx/selfmut-samesize"
+cp "$RUNNER" "$_selfmut_fx/run-all.sh"
+# 疑似 suite は printf で組む（heredoc / here-string は一時ファイルを要求する。ACE-86-2）。
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'printf "\\n# mutated mid-run\\n" >> "$FF_SELFMUT_TARGET"\n'
+  printf 'echo FIXTURE-SELFMUT-EXECUTED\n'
+} > "$_selfmut_fx/selfmut-mutator/verify.sh"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'echo FIXTURE-SELFMUT-QUIET-EXECUTED\n'
+} > "$_selfmut_fx/selfmut-quiet/verify.sh"
+# 同一バイト数のまま内容だけを変える疑似 suite（cksum 経路の針）。書き換えは
+# 一時ファイル + mv で行う: 走行中の bash は元の inode を読み続けるので実行は壊れず、
+# 指紋照合は**パス**を読み直して新しい内容を見る = 検出器だけを決定論的に測れる。
+# 置換対象は末尾に足したパッド行なので、コードの意味は変わらない。
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'LC_ALL=C sed "s/selfmut-pad-AAAA/selfmut-pad-BBBB/" "$FF_SELFMUT_TARGET" > "$FF_SELFMUT_TARGET.new"\n'
+  printf 'mv "$FF_SELFMUT_TARGET.new" "$FF_SELFMUT_TARGET"\n'
+  printf 'echo FIXTURE-SELFMUT-SAMESIZE-EXECUTED\n'
+} > "$_selfmut_fx/selfmut-samesize/verify.sh"
+chmod +x "$_selfmut_fx/selfmut-mutator/verify.sh" "$_selfmut_fx/selfmut-quiet/verify.sh" \
+  "$_selfmut_fx/selfmut-samesize/verify.sh"
+# パッド行は複製ランナーの末尾（コメント）に置く。起動時の指紋に含まれるので、
+# 同一バイト数の置換が「内容の変化」として観測できる。
+printf '# selfmut-pad-AAAA\n' >> "$_selfmut_fx/run-all.sh"
+
+_selfmut_run() { # <疑似 suite path...>
+  if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_NESTED \
+      FF_SELFMUT_TARGET="$_selfmut_fx/run-all.sh" \
+      FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" \
+      bash "$_selfmut_fx/run-all.sh" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+}
+
+# 陰性対照を先に測る。複製ランナー自体が別の理由（記録器の不在など）で非 0 になるなら、
+# 下の赤は「書き換えを検出したから」ではなくなる。
+_selfmut_run "$_selfmut_fx/selfmut-quiet/verify.sh"
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "書き換えなしの複製ランナーは従来どおり rc=0"
+else
+  bad "書き換えなしの複製ランナーが非 0（rc=${RUN_RC}）— 下の検査が別の理由で赤くなる"
+  dump_out
+fi
+expect_has '^suites: total=1 run=1 passed=1 failed=0 skipped=0 not-run=0$' \
+  "書き換えなしの実行は従来どおりサマリーを出す"
+expect_lacks '実行中にランナー自身が書き換えられました' "書き換えなしの実行は何も報告しない"
+# 複製木には ../scripts/record-gate-head.sh が無いので、記録呼び出しへ到達した実行だけが
+# この警告を出す。下の「書き換え回は記録へ到達しない」を**空振りさせない**ための前提。
+expect_has '⚠️  記録器が見つかりません' "書き換えなしの実行はゲート記録の呼び出しまで到達する"
+
+_selfmut_run "$_selfmut_fx/selfmut-mutator/verify.sh"
+if [ "$RUN_RC" -ne 0 ]; then
+  ok "走行中に書き換えられた実行は非 0 で終わる（rc=${RUN_RC}）"
+else
+  bad "走行中に書き換えられた実行が rc=0 で終わった（偽の緑）"
+  dump_out
+fi
+expect_has '^FIXTURE-SELFMUT-EXECUTED$' "疑似 suite が実際に走った（書き換えの起きた回を測っている）"
+expect_has '^✗ 実行中にランナー自身が書き換えられました' "書き換えをランナー名指しで報告する"
+expect_has 'この実行の結果は証拠に使えません' "結果を証拠に使えない旨を報告する"
+expect_lacks '^suites: total=' "サマリー行を出さない（ログ末尾だけを見る読み手に緑と誤読させない）"
+expect_lacks 'All ff-dev-toolkit fixture checks passed' "全体 pass を名乗らない"
+# 無効な実行がゲート実測記録を更新しないこと。異常終了だけ検出できても、記録が
+# 上書きされると鮮度照合が「この実行」を根拠にしうる。到達の有無は陰性対照が出した
+# 記録器不在の警告の**不在**で測る（記録ファイルの中身を見る形は、複製木では記録器へ
+# そもそも到達しないため常に緑になる = 空振りする）。
+expect_lacks '記録器が見つかりません' "書き換えを検出した実行はゲート記録の呼び出しへ到達しない"
+
+# 同一バイト数のまま内容だけが変わる書き換え。指紋がバイト数だけへ退行しても
+# 末尾追記のケースは通ってしまうので、内容差分を見ていることを別に測る。
+if command -v cksum >/dev/null 2>&1; then
+  _selfmut_run "$_selfmut_fx/selfmut-samesize/verify.sh"
+  if [ "$RUN_RC" -ne 0 ]; then
+    ok "同一バイト数のまま内容だけ変わった書き換えも非 0 で落ちる（指紋が内容を見ている）"
+  else
+    bad "同一バイト数の書き換えが rc=0 で通った（指紋がバイト数だけへ退行している）"
+    dump_out
+  fi
+else
+  ok "cksum 不在のため同一バイト数の検出は対象外（指紋はバイト数のみへ縮退する仕様）"
+fi
+
+rm -rf "$_selfmut_fx"
+
+# 構造の針: 照合とサマリー行の出力が同一関数に同居していること。上の実行検査は
+# 「照合が効いている」ことしか測れず、照合をサマリーの外の 1 行へ戻す変更を素通しする。
+# 一時ファイルを作らずマーカー範囲を awk の状態で切る（本 suite の read-only 制約）。
+if LC_ALL=C awk '
+  /^# >>> ff-summary-head-block/ { grab = 1 }
+  /^# <<< ff-summary-head-block/ { grab = 0 }
+  grab && /^ff_emit_summary_head\(\) \{$/ { infn = 1; next }
+  grab && infn && /^\}$/ { infn = 0 }
+  grab && infn && /実行中にランナー自身が書き換えられました/ { seen_check = 1 }
+  grab && infn && /echo "suites: total=/ { seen_summary = 1 }
+  END { exit (seen_check && seen_summary) ? 0 : 1 }
+' "$RUNNER"; then
+  ok "指紋照合とサマリー行の出力が同一関数に同居している（サマリー行 ⟹ 照合済み）"
+else
+  bad "ff-summary-head-block に照合とサマリー行が揃っていません（照合が位置依存へ戻っています）"
+fi
+# 関数の外にサマリー行の複製が無いこと。複製があると上の同居が迂回される。
+if [ "$(LC_ALL=C grep -c 'echo "suites: total=' "$RUNNER")" -eq 1 ]; then
+  ok "サマリー行の出力箇所は 1 つだけ（関数の外に複製がない）"
+else
+  bad "サマリー行の出力が複数箇所にあります（関数外の複製から偽の緑が出ます）"
+fi
+
+
 rm -f "$RUN_GATE_RECORD"
 
 echo ""
@@ -1224,7 +1354,7 @@ fi
 #   - case 15 の mktemp probe 仕様リスト（1 件足すと +1）
 # 一方、走査対象の件数からは導出されない（case 10・11・26 はいずれも走査結果を 1 件の判定へ
 # 畳む）ので、suite を追加しても動かず、SSOT モノレポと公開 checkout の両配置で同じ値になる。
-EXPECTED_CHECKS=191
+EXPECTED_CHECKS=206
 if [ "$PASS" -ne "$EXPECTED_CHECKS" ]; then
   echo "✗ run-all verify: 検査総数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査の削除、または追加時の期待値未更新" >&2
   exit 1

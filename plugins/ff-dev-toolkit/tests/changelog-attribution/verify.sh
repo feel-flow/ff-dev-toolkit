@@ -4,7 +4,7 @@
 # compare リンク範囲で実際に追加・変更されているかを限定検査する（Issue #332 / ADR-020）。
 #
 # 背景: Issue #331 で [0.25.0] に公開タグ v0.24.1 出荷済みの 24 項目が誤帰属していた。
-# changelog-links / changelog-version はリンク端点と version 見出しだけを見て、
+# changelog-links / changelog-contract はリンク端点と version 見出しだけを見て、
 # 節の項目がその compare 範囲に属するかは見ない。本 suite はその死角の**一部**を埋める。
 #
 # 設計（限定的・fail-closed だが常時赤にしない — ACE-172-2）:

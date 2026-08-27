@@ -4,7 +4,7 @@
 #
 # 背景: `docs/07-project-management/ROADMAP.md` §3「バージョンロードマップ」の表末尾が
 # `v0.29.0 ... ← 現行` のまま 26 版・10 日ぶん取り残されていた。既存ゲートはどれも
-# ROADMAP を読んでいない — `changelog-version` は plugin.json と CHANGELOG 先頭だけを
+# ROADMAP を読んでいない — `changelog-contract` は plugin.json と CHANGELOG 先頭だけを
 # 見て docs/ を 1 文字も読まず、`docs-fact-drift` は件数・閾値の **数値** claim 専用で
 # 版番号は対象外（derive() が数値以外を導出失敗として弾く）。
 #
@@ -12,7 +12,7 @@
 #   - **現在値マーカーを禁止する**（検査 D）。`← 現行` のように「今どこか」を ROADMAP へ
 #     手書きすると、リリースのたびに追従が要る = 必ず腐る。2026-08-24 の 1 日だけで 6 版
 #     出ており、抜粋表を毎回書き換える運用は成立しない。現行版の正本は plugin.json
-#     （と CHANGELOG 先頭）で、その一致は `changelog-version` が既に見ている。
+#     （と CHANGELOG 先頭）で、その一致は `changelog-contract` が既に見ている。
 #     したがって ROADMAP 側は**履歴の抜粋に徹する**ことにし、腐る書き方そのものを弾く。
 #   - 残る検査は「書いてある版が実在するか」（B）と「日付が実体と合っているか」（C）。
 #     どちらも追従を要求しない — 過去の版と日付は後から変わらないため、リリースを重ねても
@@ -202,7 +202,7 @@ if [ -n "$MARKER_HITS" ]; then
   printf '%s\n' "$MARKER_HITS" | sed 's/^/      /' >&2
   echo "      → マーカーを外し、現行版の参照先（plugin.json / CHANGELOG 先頭）を示す記述へ置き換えてください" >&2
 else
-  ok "現在値マーカーなし（現行版の正本は plugin.json 側。changelog-version が検査）"
+  ok "現在値マーカーなし（現行版の正本は plugin.json 側。changelog-contract が検査）"
 fi
 
 echo

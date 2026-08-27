@@ -159,7 +159,10 @@ CLAIMS=(
   "総スキル数（計 N スキル）|${D_SKILLS}|計 %N% スキル||"
   "総スキル数（N プラグイン・N スキル）|${D_SKILLS}|プラグイン・%N% スキル|調査時点|"
   "ff-dev-toolkit スキル数|${D_FF_SKILLS}|ff-dev-toolkit（%N% スキル||"
-  "suite 数|${D_SUITES}|%N% suite|後続|"
+  # 除外は `;` 区切りで複数書ける。`後続`（「後続 4 suite」= 別概念の誤検知回避）と
+  # `調査時点`（歴史スナップショット。TESTING.md / DECISIONS.md の当時の観測値）。
+  # 表記を変えて正規表現を空振りさせる回避はしない（ACE-539-3 / Issue #929。selftest G33）
+  "suite 数|${D_SUITES}|%N% suite|後続;調査時点|"
   "MCP ツール数|${D_MCP_TOOLS}|%N% ツール|コミット|spec-docs"
   "初期セット件数|${D_INITIAL_SET}|初期セット %N% ファイル||"
   "ACE refine 目安|${D_ACE_WARN}|refine 目安 %N%||"
@@ -257,7 +260,27 @@ while IFS= read -r rel; do
     while IFS= read -r line; do
       [ -n "${line}" ] || continue
       if [ -n "${c_skip}" ]; then
-        case "${line}" in *"${c_skip}"*) continue ;; esac
+        # `;` 区切りで**複数**の除外文字列を受ける（Issue #929）。1 つの claim が
+        # 「別概念の誤検知回避」と「歴史スナップショットの除外」を同時に要ることがある
+        # （suite 数 claim の `後続` と `調査時点`）。ここを 1 つに縛ると、足せない側が
+        # 表記回避へ逃げて検出面が静かに縮む（ACE-539-3 が挙げる 3 つの害そのもの）。
+        # 語分割は使うがパス名展開はしない（除外文字列に `*` が来ても cwd を見ない）。
+        _skip_hit=0
+        _skip_ifs="$IFS"
+        set -f
+        IFS=';'
+        # 区切りのタイポ（`;;` や前後の `;`）は空要素を生み（実測: `;後続;;調査時点;`
+        # → 4 要素中 2 つが空）、空文字列は `case *""*` で全行にマッチする = その
+        # claim の全行が skip される。**ここに空要素ガードは置かない** — 全行 skip は
+        # 下の `hits -eq 0` の fail-closed（「正準表現に 1 件も一致しません」）が必ず
+        # 赤にするため、ガードを足しても赤くなる経路が 1 本増えるだけで、退行の検出
+        # 結果は変わらない（実測: ガードを外しても selftest は赤のまま）。
+        for _skip_needle in ${c_skip}; do
+          case "${line}" in *"${_skip_needle}"*) _skip_hit=1; break ;; esac
+        done
+        IFS="$_skip_ifs"
+        set +f
+        [ "${_skip_hit}" -eq 0 ] || continue
       fi
       if [ -n "${c_need}" ]; then
         case "${line}" in *"${c_need}"*) ;; *) continue ;; esac

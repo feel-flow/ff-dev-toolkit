@@ -247,15 +247,22 @@ npm run ace:check-playbook-frontmatter
 # (2) npm script は無いがプロジェクトに scripts/ace/ を導入済みの場合
 npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
 # (3) scripts/ace/ 未導入の場合はプラグイン同梱のテンプレートを直接使う（インストール不要）
-npx --yes tsx "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check
 
 # 形式ゲート: 新規追記が旧テーブル形式でないことを機械検証する（Issue #286）
 # 次の 2 つのうち 1 本だけを実行する
 # (1) プロジェクトに scripts/ace/ を導入済みの場合
 npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
 # (2) 未導入の場合はプラグイン同梱のテンプレートを直接使う
-npx --yes tsx "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md
 ```
+
+**同梱テンプレートを叩く経路で `npx --yes tsx` を直接書かないこと**（Issue #879）。root package に `tsx` binary が無い workspace 環境では `tsx: command not found` で 3 ゲートとも到達不能になり、実測ではそこから手作業照合へ戻る動きが起きた。`ace-run-ts.sh` は候補を**実際に起動して**確かめながら次の順で解決する — `FF_ACE_TS_RUNNER`（明示指定。`pnpm --filter <pkg> exec tsx` のような複数語も可） → PATH の `tsx` → 上位ディレクトリを含む `node_modules/.bin/tsx` → `pnpm` / `yarn` の `exec` → `npx --yes tsx`。
+
+- どれも起動できなければ **exit 3 で停止**する（fail-closed）。**手作業照合や別 version の plugin へのフォールバックで代替しない** — ゲートが成立しないまま先へ進む経路を作らないため
+- **exit 2 は同梱ファイルの破損**（probe スクリプトが読めない / 空 / 起動形が特定できない）を意味する。呼び出し形の誤りではないので、`npx --yes tsx` の直叩きなど別の呼び出しを試して回避してはならない（それは上の禁止事項そのもの）。表示された案内に従って再インストールし、symlink 経由で起動している場合は実体のパスで起動する
+- 検証スクリプトの非ゼロ終了は**そのまま伝播**する（runner 層で成功へ変換しない）
+- 選ばれた runner は stderr に `ace-run-ts: runner=...` として出るので、意図と違う runner が選ばれた回はログから分かる
 
 - exit 0 になるまで 4-c / 4-d を直す（`ace_entry_count` 不一致・version↔Changelog 不一致・`changeImpact` 違反（変更済みなのに未記録 / 小文字 low・medium・high 以外）の三点をゲートする）
 - **形式ゲートが赤なら、追記したエントリをコンパクト正準フォーマットへ書き直す**。`legacy-format-allowlist.txt` に新規 ID を足して通すことはしない（allowlist は既存エントリの読み取り互換のためのものであり、新規追記の抜け道ではない）
@@ -323,4 +330,4 @@ gh pr create --base <default-branch> --title "knowledge: ACE-<PR番号>-<連番>
 - 既存エントリの Helpful/Harmful カウンター更新と Status 変更（active → deprecated）は許可
 - カウンターの更新は **インクリメントのみ**（減算しない）
 - 知見が抽出されない場合（typo修正のみ等）は「知見なし」と報告して終了（ただし Reuse 記録の反映〔手順 3〕は候補 0 件でも実施してから終了する）
-- PLAYBOOK.md はカテゴリ別に `playbook/*.md` へ分割済み。肥大化チェックは `scripts/ace/` テンプレート導入済みプロジェクトの場合 `npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md` で実行できる（npm script として登録してもよい）。未導入のプロジェクトでは同梱テンプレートを直接叩く（インストール不要）: `npx --yes tsx "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-category-size.ts" docs/08-knowledge/PLAYBOOK.md`。このチェックは `playbook/` サブディレクトリを自動検出して索引 + 全サブファイルの総行数・カテゴリ別件数を集計する（`playbook/archive/` 配下は対象外）。行数上限は**件数から導出**される（`ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1)`。`ACE_MAX_PLAYBOOK_LINES` を明示指定したときだけ固定上限。ADR-019）。超過すると警告が出る（**警告のみ・追記はブロックしない**）。導出上限の超過は「ファイルが大きい」ではなく「**1 エントリが太い**」の意味なので、第一対応は旧テーブル形式の正準化。密度警告・カテゴリ件数の refine 目安超過（既定 130 件・警告）またはブロック上限超過（既定 180 件・exit 1）が出た場合は `/ace-refine` で正準化・stale アーカイブ・圧縮・統合を実行する。分割は検索語彙が明確に分岐するときだけ（分割だけで凌がない）
+- PLAYBOOK.md はカテゴリ別に `playbook/*.md` へ分割済み。肥大化チェックは `scripts/ace/` テンプレート導入済みプロジェクトの場合 `npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md` で実行できる（npm script として登録してもよい）。未導入のプロジェクトでは同梱テンプレートを直接叩く（インストール不要）: `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-category-size.ts" docs/08-knowledge/PLAYBOOK.md`（runner 解決は手順 4-f を参照）。このチェックは `playbook/` サブディレクトリを自動検出して索引 + 全サブファイルの総行数・カテゴリ別件数を集計する（`playbook/archive/` 配下は対象外）。行数上限は**件数から導出**される（`ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1)`。`ACE_MAX_PLAYBOOK_LINES` を明示指定したときだけ固定上限。ADR-019）。超過すると警告が出る（**警告のみ・追記はブロックしない**）。導出上限の超過は「ファイルが大きい」ではなく「**1 エントリが太い**」の意味なので、第一対応は旧テーブル形式の正準化。密度警告・カテゴリ件数の refine 目安超過（既定 130 件・警告）またはブロック上限超過（既定 180 件・exit 1）が出た場合は `/ace-refine` で正準化・stale アーカイブ・圧縮・統合を実行する。分割は検索語彙が明確に分岐するときだけ（分割だけで凌がない）

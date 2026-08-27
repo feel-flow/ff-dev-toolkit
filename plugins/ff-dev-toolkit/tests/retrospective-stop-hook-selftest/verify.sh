@@ -61,6 +61,38 @@ else
   exit 1
 fi
 
+# ---- 変異を書くときの規則（Issue #936）--------------------------------------
+# **対象が複数箇所に現れうる変異には `/g` を付ける。** 単発置換だと、後から同じ
+# 文字列が増えた時点で「1 箇所だけ変異 → 残りが契約を満たすので消費側は緑」という
+# 空振りになり、selftest が「変異が検出されない」という**逆の理由**で赤くなる。
+# 実測（PR #926 が SKILL.md へ定型文の 2 箇所目を足した回）: SKILL 定型文 drift の
+# 変異が空振りし、develop の全件ゲートが赤いまま残った。
+#
+# 棚卸し（2026-08-27 実測。対象ファイル内の出現数）:
+#   複数箇所 → `/g` 必須: `case "$MODE" in`（retrospective-stop.sh: 2）/
+#     `振り返り: 今回は作業完了前のため対象外`（SKILL.md: 2）/
+#     `ff-dev-toolkit:retrospective`（context.sh: 2）/ `{"hookSpecificOutput"`（context.sh: 2）
+#   1 箇所のみ: `if [ "$HOOK_STATE" != "first" ]; then` / `input.stop_hook_active || retrospectiveDone` /
+#     `INPUT_TIMEOUT_SECONDS=2` / `Automatic retrospective check before stop` /
+#     `if ! command -v node ...` / `"Stop": [` / `"UserPromptSubmit": [`
+#   `process.exit(2)` は 3 箇所あるが、変異は前後の行ごと指定して一意に当てている
+#
+# 変異対象の文字列を増やす変更を入れたら、この棚卸しを実測し直すこと。
+
+# 棚卸しを**機械検査**にする（Issue #936 のレビュー指摘）。ヘッダーのコメントだけでは
+# 出現数が増えたことに誰も気づけない — #936 はまさにその形で develop を赤くした。
+# 変異の直前に出現数を固定し、増減したら「変異が届いていないかもしれない」と名指しで落とす。
+expect_occurrences() { # <ファイル> <固定文字列> <期待数>
+  local n
+  n="$(LC_ALL=C grep -cF -- "$2" "$1" 2>/dev/null || echo 0)"
+  if [ "$n" -ne "$3" ]; then
+    echo "✗ 変異対象の出現数が想定と違います（${1##*/}: 「$2」が ${n} 件 / 期待 $3 件）" >&2
+    echo "  出現が増えたなら /g の要否とヘッダーの棚卸しを見直すこと。単発置換のままだと" >&2
+    echo "  変異が空振りし、selftest が「検出されない」という逆の理由で赤くなる（Issue #936）" >&2
+    exit 1
+  fi
+}
+
 MUTATIONS=0
 check_mutation() {
   local name="$1" expected="$2" root="$3"
@@ -79,7 +111,8 @@ perl -0pi -e 's/if \[ "\$HOOK_STATE" != "first" \]; then/if false; then/' "$ROOT
 check_mutation "再入ガード削除" "stop_hook_active=true は再継続せず終了を許可" "$ROOT"
 
 ROOT="$(make_fixture off-guard)"
-perl -0pi -e 's/case "\$MODE" in/case "auto" in/' "$ROOT/hooks/retrospective-stop.sh"
+expect_occurrences "$ROOT/hooks/retrospective-stop.sh" 'case "$MODE" in' 2
+perl -0pi -e 's/case "\$MODE" in/case "auto" in/g' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "off ガード削除" "RETROSPECTIVE_MODE=off は自動振り返りを無効化" "$ROOT"
 
 ROOT="$(make_fixture invalid-json)"
@@ -95,6 +128,7 @@ perl -0pi -e 's/"UserPromptSubmit": \[/"UserPromptSubmitDisabled": [/' "$ROOT/ho
 check_mutation "UserPromptSubmit 登録削除" "hooks.json の UserPromptSubmit 登録が不正" "$ROOT"
 
 ROOT="$(make_fixture context-visible-warning)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" '{"hookSpecificOutput"' 2
 perl -0pi -e 's/\{"hookSpecificOutput"/\{"systemMessage":"visible","hookSpecificOutput"/g' "$ROOT/hooks/retrospective-context.sh"
 check_mutation "事前注入への表示用 Warning 混入" "UserPromptSubmit の事前注入契約が不正" "$ROOT"
 
@@ -103,6 +137,7 @@ perl -0pi -e 's/case "\$MODE" in/case "auto" in/' "$ROOT/hooks/retrospective-con
 check_mutation "事前注入の off ガード削除" "context hook も RETROSPECTIVE_MODE=off なら無効" "$ROOT"
 
 ROOT="$(make_fixture context-skill-routing)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'ff-dev-toolkit:retrospective' 2
 perl -0pi -e 's/ff-dev-toolkit:retrospective/ff-dev-toolkit:missing/g' "$ROOT/hooks/retrospective-context.sh"
 check_mutation "事前注入のスキル経路破壊" "UserPromptSubmit の事前注入契約が不正" "$ROOT"
 
@@ -135,7 +170,8 @@ perl -0pi -e 's{\A(#![^\n]*\n)}{$1: > "\$HOME/.ff-stop-state"\n}' "$ROOT/hooks/r
 check_mutation "filesystem marker 追加" "hook が filesystem へ副作用を作成" "$ROOT"
 
 ROOT="$(make_fixture skill-drift)"
-perl -0pi -e 's/振り返り: 今回は作業完了前のため対象外/振り返り: 未完了/' "$ROOT/skills/retrospective/SKILL.md"
+expect_occurrences "$ROOT/skills/retrospective/SKILL.md" '振り返り: 今回は作業完了前のため対象外' 2
+perl -0pi -e 's/振り返り: 今回は作業完了前のため対象外/振り返り: 未完了/g' "$ROOT/skills/retrospective/SKILL.md"
 check_mutation "SKILL 定型文 drift" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
 
 ROOT="$(make_fixture stdin-timeout)"

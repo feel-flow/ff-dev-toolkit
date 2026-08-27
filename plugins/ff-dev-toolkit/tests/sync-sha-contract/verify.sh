@@ -91,7 +91,7 @@ fi
 # 更新箇所は 2 つ: ok / bad を増減させた箇所と、この宣言。
 # 公開 checkout では上の skip 経路が 1 件も検査せずに exit 0 するため、ここには
 # 到達しない（配置による期待値の分岐は不要）。
-EXPECTED_CHECKS=43
+EXPECTED_CHECKS=42
 
 PASS=0
 FAIL=0
@@ -188,8 +188,10 @@ contains 'stale な origin/develop で続行しない' \
 # 全件実行ゲート（ADR-034 決定 2）。既定が高速モードになったため、素の run-all.sh は
 # REQUIRED_SUITES 掲載を含む selftest 群を除外して **exit 0** で返す。除外は SKIPPED に
 # 現れないので必須 skip の fail-closed にも掛からず、「検査が実行されないまま緑」がそのまま
-# 不可逆な公開同期へ接続する。週次 CI が無い本リポジトリではこの手順が定期実行点そのもの
-# なので、手順から消えたら赤くする（機械強制ではなく手順の固定が、静的検査の上限）。
+# 不可逆な公開同期へ接続する。開発元リポジトリの週次 CI（weekly-run-all。公開配布物には
+# 含まれない）はセーフティネットで、既定ブランチの最大 7 日古いツリーしか測らないため、
+# いま同期しようとしているツリーの直前保証にはならない。この手順がそれを担う。手順から
+# 消えたら赤くする（機械強制ではなく手順の固定が、静的検査の上限）。
 contains_exactly 'FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh' 2 \
   "手順 0 が全件実行のゲートを踏む — 初回ブロックと fail-closed 分岐の 2 箇所（ADR-034 決定 2）"
 contains '非 0 なら**同期しない**' \
@@ -211,12 +213,12 @@ contains 'HEAD から「直前の値」を再導出してはならない' \
 contains '検査した tree と HEAD の tree が一致しないため green を記録しない' \
   "dirty なまま得た green を SHA として記録しない"
 
-# 限定ゲートの 4 suite 呼び出しは **2 箇所**にある — 手順 0 の CHANGELOG_FOOTER_ONLY 分岐と、
+# 限定ゲートの suite 呼び出し（3 suite / 4 観点。Issue #800 で changelog-contract へ統合）は **2 箇所**にある — 手順 0 の CHANGELOG_FOOTER_ONLY 分岐と、
 # 手順 8 の footer ブランチ先端での実行（Issue #892）。件数まで固定するのは、
 #   (a) 手順 8 のブロックを丸ごと削除する退行を捕まえるため。単なる `contains` では
 #       手順 0 の側に一致して緑のままになり、「削除しても全 suite が緑」という
 #       検出力ゼロの状態が残る（本 PR のレビュー指摘 W1）
-#   (b) 片方だけ suite を足し引きする退行を捕まえるため。両者は同じ 4 suite でなければ、
+#   (b) 片方だけ suite を足し引きする退行を捕まえるため。両者は同じ 3 suite でなければ、
 #       footer PR の先端と回し直しとで別のものを検査することになる
 # needle に行末の継続（バックスラッシュ）を含めるのは、散文中の同名の言及を数えないため
 # （`changelog-links/verify.sh` は手順 8 の再実行の説明にも出る）。`contains_exactly` は
@@ -225,11 +227,10 @@ contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-links/verify.sh \' 2 \
   "限定ゲートの CHANGELOG リンク検査が手順 0 と手順 8 の 2 箇所にある"
 contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-attribution/verify.sh \' 2 \
   "限定ゲートの CHANGELOG 帰属検査が手順 0 と手順 8 の 2 箇所にある"
-contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-version/verify.sh \' 2 \
-  "限定ゲートの CHANGELOG version 検査が手順 0 と手順 8 の 2 箇所にある"
-contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-public-references/verify.sh 2>&1)" \' 2 \
-  "限定ゲートの公開 CHANGELOG SSOT 参照検査が手順 0 と手順 8 の 2 箇所にある"
-# skip / 未実行を成功と読まない要求も両方に要る。4 suite だけを走らせる分岐で
+# 版の一致と公開参照の境界は Issue #800 で changelog-contract へ統合した（1 本で両方を見る）。
+contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-contract/verify.sh 2>&1)" \' 2 \
+  "限定ゲートの CHANGELOG 契約検査（版の一致 + 公開参照の境界）が手順 0 と手順 8 の 2 箇所にある"
+# skip / 未実行を成功と読まない要求も両方に要る。3 suite だけを走らせる分岐で
 # `changelog-links` / `changelog-attribution` が無言の no-op になると代替物が何も残らない。
 contains_exactly "grep -F -- 'failed=0 skipped=0 not-run=0' >/dev/null; then" 2 \
   "限定ゲートは skip / 未実行を成功と読まない — 手順 0 と手順 8 の 2 箇所"
