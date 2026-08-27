@@ -201,12 +201,26 @@ ROOT="$(make_fixture skill-drift)"
 # 判定リストへ固定済みで、散文への引用追加は契約を変えない（Issue #956）。
 # 壊すのは**意味を担う出現**（自動発火の判定リスト内）だけにする。この定型文はスキルの
 # 正規出力なので散文中にも引用され、素朴な最左一致では「散文側の 1 件目」を壊すだけの
-# 空振りになりうる（Issue #931）。範囲を節に閉じる — 行頭アンカーで同一行の相互参照を、
-# 負の先読み `(?!\n## )` で節越えを、それぞれ別に塞ぐ。
+# 空振りになりうる（Issue #931）。範囲を節に閉じたうえで、**判定リスト行**（`N. ` 始まり）
+# の中の出現だけを狙う。節に閉じるだけでは、リストより前の散文引用へ最短一致が当たり、
+# 消費側は正常なリストを見て緑のまま = 偽の赤になる（Issue #962）。塞ぐのは 3 つ:
+# 行頭アンカーで同一行の相互参照、負の先読み `(?!\n## )` で節越え、
+# `\n\d+\. [^\n]*?` で「判定リスト行の中」。
 FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
-  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E(?:(?!\n## ).)*?)振り返り: 今回は作業完了前のため対象外/${1}振り返り: 未完了/ms' \
+  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E(?:(?!\n## ).)*?\n\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外/${1}振り返り: 未完了/ms' \
   "$ROOT/skills/retrospective/SKILL.md"
 check_mutation "SKILL 定型文 drift（自動発火の判定リスト側）" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
+
+# 節内かつ判定リストより前へ引用を足しても、変異が判定リスト行へ到達すること。
+# 上の 3 つ目の絞りが外れると、変異が散文へ当たって消費側が緑になるため検出できる。
+ROOT="$(make_fixture skill-drift-with-in-section-prose)"
+FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
+  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E\n)/${1}\n参考: 未完了ターンは `振り返り: 今回は作業完了前のため対象外` と報告する。\n/m' \
+  "$ROOT/skills/retrospective/SKILL.md"
+FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
+  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E(?:(?!\n## ).)*?\n\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外/${1}振り返り: 未完了/ms' \
+  "$ROOT/skills/retrospective/SKILL.md"
+check_mutation "節内散文が先にあっても変異は判定リスト行へ届く" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
 
 # 見出しを改名すると節の抽出が空になり、消費側は赤へ倒れる。
 # この針が測るのは**抽出が空になった場合の挙動**であって、`[ -n ... ]` ガードの有無では
@@ -267,7 +281,7 @@ perl -0pi -e 's{(対応ホストでは[^\n]*\n)}{$1\n```text\n## セッション
 check_no_regression "自動発火 節内へフェンス例示を追加" "$ROOT"
 
 # 件数は名前付き定数で持つ（このファイルは EXPECTED_CONSUMER_CHECKS で既にその慣習）。
-EXPECTED_MUTATIONS=22
+EXPECTED_MUTATIONS=23
 EXPECTED_BENIGN=2
 if [ "$MUTATIONS" -ne "$EXPECTED_MUTATIONS" ]; then
   echo "✗ mutation 実行数が不正: ${MUTATIONS}（期待 ${EXPECTED_MUTATIONS}）" >&2
