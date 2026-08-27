@@ -62,16 +62,17 @@ else
 fi
 
 # ---- 変異を書くときの規則（Issue #936）--------------------------------------
-# **対象が複数箇所に現れうる変異には `/g` を付ける。** 単発置換だと、後から同じ
-# 文字列が増えた時点で「1 箇所だけ変異 → 残りが契約を満たすので消費側は緑」という
-# 空振りになり、selftest が「変異が検出されない」という**逆の理由**で赤くなる。
+# **意味の錨を持たず、対象が複数箇所に現れうる変異には `/g` を付ける。** 単発置換だと、
+# 後から同じ文字列が増えた時点で「1 箇所だけ変異 → 残りが契約を満たすので消費側は緑」
+# という空振りになり、selftest が「変異が検出されない」という**逆の理由**で赤くなる。
 # 実測（PR #926 が SKILL.md へ定型文の 2 箇所目を足した回）: SKILL 定型文 drift の
 # 変異が空振りし、develop の全件ゲートが赤いまま残った。
 #
 # 棚卸し（2026-08-27 実測。対象ファイル内の出現数）:
 #   複数箇所 → `/g` 必須: `case "$MODE" in`（retrospective-stop.sh: 2）/
-#     `振り返り: 今回は作業完了前のため対象外`（SKILL.md: 2）/
 #     `ff-dev-toolkit:retrospective`（context.sh: 2）/ `{"hookSpecificOutput"`（context.sh: 2）
+#   意味の錨へ限定: SKILL.md の定型文は自動発火節の番号付き判定リストへ範囲を閉じる。
+#     散文中の引用数は契約ではないため数えず、増減を良性変更として許容する（Issue #956）
 #   1 箇所のみ: `if [ "$HOOK_STATE" != "first" ]; then` / `input.stop_hook_active || retrospectiveDone` /
 #     `INPUT_TIMEOUT_SECONDS=2` / `Automatic retrospective check before stop` /
 #     `if ! command -v node ...` / `"Stop": [` / `"UserPromptSubmit": [`
@@ -196,7 +197,8 @@ fi
 echo "  ✓ 消費側から節見出しを取得した（${AUTOFIRE_HEADING}）"
 
 ROOT="$(make_fixture skill-drift)"
-expect_occurrences "$ROOT/skills/retrospective/SKILL.md" '振り返り: 今回は作業完了前のため対象外' 2
+# グローバルな出現数は固定しない。消費側とこの変異はどちらも意味を担う自動発火節の
+# 判定リストへ固定済みで、散文への引用追加は契約を変えない（Issue #956）。
 # 壊すのは**意味を担う出現**（自動発火の判定リスト内）だけにする。この定型文はスキルの
 # 正規出力なので散文中にも引用され、素朴な最左一致では「散文側の 1 件目」を壊すだけの
 # 空振りになりうる（Issue #931）。範囲を節に閉じる — 行頭アンカーで同一行の相互参照を、
