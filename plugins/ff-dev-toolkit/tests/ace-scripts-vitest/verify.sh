@@ -62,7 +62,8 @@ run_vitest_dir() {
 
   # 出力は丸ごと受けてから判定する（vitest の exit code に加えて、成功サマリー行の
   # 実在も確認する fail-closed。exit 0 + 0 tests のような縮退を green にしない）。
-  if output="$(cd "$MCP_DIR" && ./node_modules/.bin/vitest run --dir "$target_dir" 2>&1)"; then
+  # GitHub Actions でもサマリー行の先頭に ANSI 装飾が付かないよう固定する。
+  if output="$(cd "$MCP_DIR" && NO_COLOR=1 ./node_modules/.bin/vitest run --dir "$target_dir" 2>&1)"; then
     rc=0
   else
     rc=$?

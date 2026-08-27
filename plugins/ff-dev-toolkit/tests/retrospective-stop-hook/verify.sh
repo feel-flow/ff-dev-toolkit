@@ -81,6 +81,11 @@ assert_silent_success() {
   fi
 }
 
+# 未完了報告の定型文（hook の出力と SKILL.md の判定リストの両側で一致する契約）。
+# literal を 1 か所で持つ — 写しが増えると、片側だけ直した drift を狙う変異が
+# 静かに空振りする（Issue #931 と同じ形）。
+INCOMPLETE_REPORT='振り返り: 今回は作業完了前のため対象外'
+
 echo "== retrospective Stop hook =="
 
 run_context_hook
@@ -89,7 +94,7 @@ if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
   && [ "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.hookEventName // empty' 2>/dev/null)" = "UserPromptSubmit" ] \
   && [ -n "$CONTEXT" ] \
   && printf '%s' "$CONTEXT" | grep -F 'ff-dev-toolkit:retrospective' >/dev/null \
-  && printf '%s' "$CONTEXT" | grep -F '振り返り: 今回は作業完了前のため対象外' >/dev/null \
+  && printf '%s' "$CONTEXT" | grep -F "$INCOMPLETE_REPORT" >/dev/null \
   && printf '%s' "$OUT" | jq -e 'has("decision") | not' >/dev/null 2>&1 \
   && printf '%s' "$OUT" | jq -e 'has("reason") | not' >/dev/null 2>&1 \
   && printf '%s' "$OUT" | jq -e 'has("systemMessage") | not' >/dev/null 2>&1; then
@@ -141,7 +146,7 @@ else
   bad "初回 Stop の出力契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
 if printf '%s' "$REASON" | grep -F 'ff-dev-toolkit:retrospective' >/dev/null \
-  && printf '%s' "$REASON" | grep -F '振り返り: 今回は作業完了前のため対象外' >/dev/null \
+  && printf '%s' "$REASON" | grep -F "$INCOMPLETE_REPORT" >/dev/null \
   && printf '%s' "$REASON" | grep -F 'do not edit files or create issues' >/dev/null; then
   ok "継続理由がスキル・未完了境界・read-only 境界を含む"
 else
@@ -249,11 +254,44 @@ else
   bad "再入防止が stop_hook_active の無状態契約から外れた"
 fi
 
-INCOMPLETE_REPORT='振り返り: 今回は作業完了前のため対象外'
-if grep -F "$INCOMPLETE_REPORT" "$SKILL" >/dev/null \
+# 定型文の照合は「SKILL.md のどこかに 1 つあれば満たす」形にしてはならない（Issue #931）。
+# この文字列はスキルの正規出力なので散文中にも引用される（観測 inbox の説明など）。
+# 出現が 2 つ以上あると、**意味を担う自動発火の判定リスト側が壊れても**散文側の出現で
+# 緑になり、この検査を守る変異注入がそのまま空振りする（実測: PR #926 が 2 か所目を
+# 追加した時点で selftest が「狙った診断で red になりません」と報告した）。
+# 判定リストのある「## 自動発火」節へ絞って照合する。節を切り出せない場合（見出しの
+# 改名・構造崩れ）も空になって赤へ倒れる（fail-closed）。
+# 見出しの literal は 1 か所で持つ（節の切り出しと実在検査が同じ値を使う）。
+AUTOFIRE_HEADING='## 自動発火（事前注入 + Stop fallback）'
+# 切り出しで気をつける点が 2 つある。
+#   1. コードフェンス内の `## ` 行で節が早期終了しないこと。SKILL.md は実際にフェンス内へ
+#      `## セッション振り返り` を含んでおり、同種のフェンスが節内へ入った瞬間に
+#      「節は非空だが定型文を含まない」= **偽の赤**になる
+#   2. 見出しの一致は前方一致ではなく**完全一致**にすること。前方一致だと、見出しの後ろへ
+#      文字を足した別見出し（`## 自動発火（…）の補足` など）が開始規則に当たって exit を
+#      迂回し、節が次の見出しまで広がる。広がった範囲に散文の出現が入れば、また
+#      「どこかに 1 つあれば満たす」へ戻る（節の広がり）
+AUTOFIRE_SECTION="$(awk -v h="$AUTOFIRE_HEADING" '
+  { sub(/\r$/, "") }
+  /^```/ { inf = !inf; next }
+  inf { next }
+  $0 == h { f = 1; next }
+  /^## / { if (f) exit }
+  f
+' "$SKILL")"
+# 節に絞るだけでは足りない。**節内の散文**へ定型文が引用された時点で、判定リスト側を
+# 壊しても散文側の出現で満たされ、#931 と同じ見逃しが狭い範囲で再発する（クロスモデル
+# レビュー指摘）。契約を担っているのは判定リストの項目そのものなので、**番号付きリスト行**
+# へさらに絞る。空なら（リストが消えた・形式が変わった）赤へ倒れる。
+AUTOFIRE_JUDGMENT="$(printf '%s\n' "$AUTOFIRE_SECTION" | awk '/^[0-9]+\. /')"
+# 照合はパイプを使わずシェル内で行う（`printf | grep >/dev/null` は GNU grep が
+# 一致で早期終了する経路を持ち、pipefail 下で向きが反転しうる。変数は手元にあるので
+# パイプを挟む理由がない）。
+if [ -n "$AUTOFIRE_SECTION" ] && [ -n "$AUTOFIRE_JUDGMENT" ] \
+  && [[ $AUTOFIRE_JUDGMENT == *"$INCOMPLETE_REPORT"* ]] \
   && printf '%s' "$FIRST_INPUT" | /bin/bash "$TARGET" | jq -r '.reason // empty' | grep -F "$INCOMPLETE_REPORT" >/dev/null \
-  && grep -F '## 自動発火（事前注入 + Stop fallback）' "$SKILL" >/dev/null \
-  && grep -F '自分で hook を再実行したり marker を作ったりしない' "$SKILL" >/dev/null; then
+  && grep -F "$AUTOFIRE_HEADING" "$SKILL" >/dev/null \
+  && [[ $AUTOFIRE_JUDGMENT == *'自分で hook を再実行したり marker を作ったりしない'* ]]; then
   ok "未完了報告と自動発火境界が hook / SKILL.md で一致"
 else
   bad "hook / SKILL.md の自動発火契約が drift"

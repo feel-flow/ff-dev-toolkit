@@ -711,6 +711,19 @@ else
   sed 's/^/    | /' "$WORK/out.log" >&2
 fi
 
+# 履歴差分を使う検査は、checkout 側の fetch-depth や直近コミットが空かどうかに
+# 依存させない。2つの非空コミットを持つ専用 fixture で HEAD~1 を必ず成立させる。
+DIFF_REPO="$WORK/diff-repo"
+git init -q "$DIFF_REPO"
+git -C "$DIFF_REPO" config user.email fixture@example.invalid
+git -C "$DIFF_REPO" config user.name fixture
+printf 'base\n' > "$DIFF_REPO/app.txt"
+git -C "$DIFF_REPO" add app.txt
+git -C "$DIFF_REPO" commit -qm base
+printf 'changed\n' >> "$DIFF_REPO/app.txt"
+git -C "$DIFF_REPO" add app.txt
+git -C "$DIFF_REPO" commit -qm changed
+
 # --reviewers は multi-agent.sh の --perspective へ写す（複数値は個別フラグへ展開）
 run_shim --reviewers code-review,security-analysis
 if argv_has_seq "--perspective" "code-review" \
@@ -1746,7 +1759,7 @@ fi
 # 上限を極小にすると、大きすぎる diff としてスキップする。
 # 上限超過は**非 0**。0 で返すと呼び出し側から「レビュー成功」と区別できず、
 # 最もレビューが要る大きな差分ほどゲートを素通りする。
-run_shim CODEX_REVIEW_MAX_DIFF_BYTES=1 --base HEAD~1 --dry-run
+RUN_SHIM_CWD="$DIFF_REPO" run_shim CODEX_REVIEW_MAX_DIFF_BYTES=1 --base HEAD~1 --dry-run
 if [ "$RUN_RC" -eq 3 ] && [ ! -s "$WORK/argv.log" ]; then
   ok "diff が上限を超えたら非 0（3）で終了し、委譲しない"
 else
@@ -1859,7 +1872,7 @@ fi
 # `010` が 8 になり `008` は invalid number で落ちる（実測）。閾値が 8 進で解釈されると、
 # 設定した値と実際に効く値が食い違ったまま気づけない。
 # 008 は 8 進として解釈できない値。printf '%d' だと invalid number で落ちる。
-run_shim CODEX_REVIEW_MIN_LINES=008 --base HEAD~1 --dry-run
+RUN_SHIM_CWD="$DIFF_REPO" run_shim CODEX_REVIEW_MIN_LINES=008 --base HEAD~1 --dry-run
 if [ "$RUN_RC" -eq 0 ]; then
   ok "先頭ゼロ付きの 008 が数値として扱われる（8 進解釈でエラーにならない）"
 else
@@ -1870,7 +1883,7 @@ fi
 # 解釈されても「落ちなかった」で通ってしまう（初版がそうだった）。
 # 十分大きい値にして必ずスキップさせ、通知の数値を照合する。
 # 10 進なら 10000000、8 進なら 2097152 になる。
-run_shim CODEX_REVIEW_MIN_LINES=010000000 --base HEAD~1 --dry-run
+RUN_SHIM_CWD="$DIFF_REPO" run_shim CODEX_REVIEW_MIN_LINES=010000000 --base HEAD~1 --dry-run
 if grep -q "CODEX_REVIEW_MIN_LINES=10000000" "$WORK/err.log"; then
   ok "先頭ゼロ付きの値が 10 進として正規化される"
 else

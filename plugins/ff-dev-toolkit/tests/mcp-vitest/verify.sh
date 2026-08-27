@@ -79,7 +79,9 @@ fi
 # 出力は丸ごと受けてから判定する（vitest の exit code に加えて、成功サマリー行の
 # 実在も確認する fail-closed。exit 0 + 0 tests のような縮退を green にしない）。
 set +e
-OUTPUT="$(cd "$MCP_DIR" && ./node_modules/.bin/vitest run 2>&1)"
+# GitHub Actions では TTY が無くても ANSI 装飾が付く場合がある。行頭アンカーで
+# 成功サマリーを検査するため、出力契約を無着色へ固定する。
+OUTPUT="$(cd "$MCP_DIR" && NO_COLOR=1 ./node_modules/.bin/vitest run 2>&1)"
 RC=$?
 set -e
 

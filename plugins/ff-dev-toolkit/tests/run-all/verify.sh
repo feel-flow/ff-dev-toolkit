@@ -574,15 +574,15 @@ else
 fi
 
 # 検出器そのものが効くことを fixture で確かめる（構造検査が空振りしていないこと）。
-# fixture は静的にコミットしてある — この suite は mktemp / heredoc を使わない方針
-# （ACE-86-2。read-only 環境でも完走させるため）。
-_fx_rc=0
-bash "$SCRIPT_DIR/fixtures/exit-guard/bare-trap.sh" >/dev/null 2>&1 || _fx_rc=$?
-if [ "$_fx_rc" -eq 0 ]; then
-  ok "fixture: 素の rm -rf トラップは実際に途中死を rc=0 へ潰す（検査の前提が成立）"
-else
-  bad "fixture: 素の rm -rf トラップが rc=${_fx_rc} を返した — この検査の前提が崩れている"
-fi
+# trap が途中死の終了コードを上書きするかは Bash の版で異なるため fixture は実行せず、
+# 本体と同じ静的条件で違反行を検出する。read-only 環境でも完走できる方針も維持する。
+_fixture_trap="$(grep -hE '^[[:space:]]*trap .*EXIT' "$SCRIPT_DIR/fixtures/exit-guard/bare-trap.sh" 2>/dev/null | head -1 || true)"
+case "$_fixture_trap" in
+  *"trap 'rm -rf"*)
+    ok "fixture: 素の rm -rf トラップを本体と同じ静的条件で検出する" ;;
+  *)
+    bad "fixture: 素の rm -rf トラップを検出できない — 構造検査が空振りしている" ;;
+esac
 
 echo "== case 11: \$VAR 直付けマルチバイト展開の再混入ガード =="
 

@@ -106,6 +106,22 @@ check_mutation() {
   fi
 }
 
+# 良性の変更で赤くならないことも測る（Issue #931）。定型文の照合を「どこかに 1 つ」から
+# 「自動発火の節の中」へ絞ったので、逆に厳しすぎないかを固定しておく必要がある。
+# 散文への加筆で毎回この suite が止まるなら、SKILL.md を書き足せなくなる。
+BENIGN=0
+check_no_regression() { # <名前> <root>
+  local name="$1" root="$2"
+  run_consumer "$root"
+  if [ "$RC" -eq 0 ]; then
+    echo "  ✓ $name では red にならない"
+    BENIGN=$((BENIGN + 1))
+  else
+    echo "✗ $name で red になりました（偽の赤）: exit=$RC output=[$OUT]" >&2
+    exit 1
+  fi
+}
+
 ROOT="$(make_fixture active-guard)"
 perl -0pi -e 's/if \[ "\$HOOK_STATE" != "first" \]; then/if false; then/' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "再入ガード削除" "stop_hook_active=true は再継続せず終了を許可" "$ROOT"
@@ -169,10 +185,60 @@ ROOT="$(make_fixture filesystem-side-effect)"
 perl -0pi -e 's{\A(#![^\n]*\n)}{$1: > "\$HOME/.ff-stop-state"\n}' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "filesystem marker 追加" "hook が filesystem へ副作用を作成" "$ROOT"
 
+# 節見出しの literal は消費側から採る（テスト側へ複製しない）。複製すると、見出しを
+# 改名したときに変異が無音の no-op へ変わり、`check_mutation` は「狙った診断で red に
+# なりません」と落ちるだけで原因に辿れない。取得できなければここで止める。
+AUTOFIRE_HEADING="$(awk -F"'" '/^AUTOFIRE_HEADING=/ {print $2; exit}' "$CONSUMER")"
+if [ -z "$AUTOFIRE_HEADING" ]; then
+  echo "✗ 消費側から AUTOFIRE_HEADING を取得できません（変異が空振りするため中断）" >&2
+  exit 1
+fi
+echo "  ✓ 消費側から節見出しを取得した（${AUTOFIRE_HEADING}）"
+
 ROOT="$(make_fixture skill-drift)"
 expect_occurrences "$ROOT/skills/retrospective/SKILL.md" '振り返り: 今回は作業完了前のため対象外' 2
-perl -0pi -e 's/振り返り: 今回は作業完了前のため対象外/振り返り: 未完了/g' "$ROOT/skills/retrospective/SKILL.md"
-check_mutation "SKILL 定型文 drift" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
+# 壊すのは**意味を担う出現**（自動発火の判定リスト内）だけにする。この定型文はスキルの
+# 正規出力なので散文中にも引用され、素朴な最左一致では「散文側の 1 件目」を壊すだけの
+# 空振りになりうる（Issue #931）。範囲を節に閉じる — 行頭アンカーで同一行の相互参照を、
+# 負の先読み `(?!\n## )` で節越えを、それぞれ別に塞ぐ。
+FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
+  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E(?:(?!\n## ).)*?)振り返り: 今回は作業完了前のため対象外/${1}振り返り: 未完了/ms' \
+  "$ROOT/skills/retrospective/SKILL.md"
+check_mutation "SKILL 定型文 drift（自動発火の判定リスト側）" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
+
+# 見出しを改名すると節の抽出が空になり、消費側は赤へ倒れる。
+# この針が測るのは**抽出が空になった場合の挙動**であって、`[ -n ... ]` ガードの有無では
+# ない（そのガードを外しても、空文字列を非空パターンで照合すれば偽になるので赤のまま。
+# ガードは多重防御であり、この fixture はその削除に無感応である）。
+ROOT="$(make_fixture autofire-heading-rename)"
+FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
+  -e 's/^\Q$ENV{FF_AUTOFIRE_HEADING}\E/## 自動発火の契約/m' \
+  "$ROOT/skills/retrospective/SKILL.md"
+check_mutation "自動発火 節見出しの改名" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
+
+# 節に絞るだけでは足りない — **節内の散文**へ定型文を足したうえで判定リスト側を壊すと、
+# 節全体を見る実装では散文側の出現で満たされ、#931 が狭い範囲で再発する（クロスモデル
+# レビュー指摘）。この 2 段変異が赤くなることで「番号付きリスト行まで絞っている」ことを
+# 実測する。1 段目だけでは良性変更なので、2 段目の破壊とセットで初めて意味を持つ。
+ROOT="$(make_fixture in-section-prose-then-drift)"
+FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
+  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E\n)/${1}\n本節では `振り返り: 今回は作業完了前のため対象外` の扱いを説明する（節内の散文）。\n/m' \
+  "$ROOT/skills/retrospective/SKILL.md"
+perl -0pi -e 's/^(\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外/${1}振り返り: 未完了/m' \
+  "$ROOT/skills/retrospective/SKILL.md"
+check_mutation "節内の散文を残して判定リスト側を壊す" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
+
+# 定型文の契約は**両側**（SKILL.md の判定リストと hook の出力）で成立する。SKILL 側だけを
+# 固定しても、hook 側の文字列が変わった drift は検出できない。
+ROOT="$(make_fixture hook-incomplete-report)"
+perl -0pi -e 's/振り返り: 今回は作業完了前のため対象外/振り返り: 未完了/g' \
+  "$ROOT/hooks/retrospective-stop.sh"
+check_mutation "hook 側 定型文 drift" "継続理由の必須境界が不足" "$ROOT"
+
+ROOT="$(make_fixture context-incomplete-report)"
+perl -0pi -e 's/振り返り: 今回は作業完了前のため対象外/振り返り: 未完了/g' \
+  "$ROOT/hooks/retrospective-context.sh"
+check_mutation "事前注入の 定型文 drift" "UserPromptSubmit の事前注入契約が不正" "$ROOT"
 
 ROOT="$(make_fixture stdin-timeout)"
 perl -0pi -e 's/INPUT_TIMEOUT_SECONDS=2/INPUT_TIMEOUT_SECONDS=5/' "$ROOT/hooks/retrospective-stop.sh"
@@ -182,9 +248,32 @@ ROOT="$(make_fixture ask-system-message)"
 perl -0pi -e 's/Automatic retrospective check before stop/Automatic retrospective before stop/' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "ask systemMessage drift" "ask モードの出力契約が不正" "$ROOT"
 
-if [ "$MUTATIONS" -ne 18 ]; then
-  echo "✗ mutation 実行数が不正: $MUTATIONS" >&2
+# 節の外（散文）へ定型文を足すだけの変更は、意味を担う出現を壊していないので緑のまま
+# であること。ここが赤くなる実装は「出現数の増加そのもの」を検出しているだけで、
+# Issue #931 の欠陥（意味を担う側の破壊を見逃す）は直っていない。
+ROOT="$(make_fixture prose-mention)"
+printf '\n本節は `振り返り: 今回は作業完了前のため対象外` の扱いに触れる（散文中の引用）。\n' \
+  >> "$ROOT/skills/retrospective/SKILL.md"
+check_no_regression "節外の散文へ定型文を追記" "$ROOT"
+
+# 節**内**へコードフェンスの例示を足しても赤くならないこと。上の EOF 追記は awk の
+# 打ち切り位置より後なので節の境界を一切通らない — 境界そのものを測るのはこちら。
+# フェンス内の `## ` 行で抽出が早期終了する実装だと、純粋な加筆でここが赤くなる。
+ROOT="$(make_fixture fenced-heading-in-section)"
+perl -0pi -e 's{(対応ホストでは[^\n]*\n)}{$1\n```text\n## セッション振り返り\n```\n}' \
+  "$ROOT/skills/retrospective/SKILL.md"
+check_no_regression "自動発火 節内へフェンス例示を追加" "$ROOT"
+
+# 件数は名前付き定数で持つ（このファイルは EXPECTED_CONSUMER_CHECKS で既にその慣習）。
+EXPECTED_MUTATIONS=22
+EXPECTED_BENIGN=2
+if [ "$MUTATIONS" -ne "$EXPECTED_MUTATIONS" ]; then
+  echo "✗ mutation 実行数が不正: ${MUTATIONS}（期待 ${EXPECTED_MUTATIONS}）" >&2
+  exit 1
+fi
+if [ "$BENIGN" -ne "$EXPECTED_BENIGN" ]; then
+  echo "✗ 良性変更の検査数が不正: ${BENIGN}（期待 ${EXPECTED_BENIGN}）" >&2
   exit 1
 fi
 REACHED_END=1
-echo "✓ retrospective Stop hook mutation self-test: 18 件すべて検出"
+echo "✓ retrospective Stop hook mutation self-test: ${EXPECTED_MUTATIONS} 件すべて検出 / 良性変更 ${EXPECTED_BENIGN} 件は緑"
