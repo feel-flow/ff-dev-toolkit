@@ -607,29 +607,60 @@ if [ "$NAME_VARIANT_B" = "$NAME_VARIANT_A" ]; then
 fi
 make_transcript_dir "$NAME_VARIANT_B" "$(cd "$TMP/wt-29" && pwd -P)"
 
-# 一部の jsonl が読めないケース。読めた分だけで「一致」と判定してはいけない
+# find が一部の jsonl を走査できないケース。権限bitはrootで無効なので、
+# 後段のpath限定stubがこのディレクトリだけfind失敗にする。
 add_clean_gone_worktree 'feature/#30-wt-scanerr' "$TMP/wt-30"
 NAME_SCANERR="$(transcript_name_of "$TMP/wt-30")"
 make_transcript_dir "$NAME_SCANERR" "$(cd "$TMP/wt-30" && pwd -P)"
 mkdir -p "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_SCANERR/locked"
 printf '{"type":"user","cwd":"/somewhere/else"}\n' \
   > "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_SCANERR/locked/hidden.jsonl"
-chmod 000 "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_SCANERR/locked"
 
-# 同じ「読めない」でも、ディレクトリを辿れない場合（find が失敗する）と
-# ファイルを読めない場合（find は成功し grep が失敗する）は別経路になる。
+# 同じ「読めない」でも、find 失敗と grep 失敗は別経路になる。
 # 片方だけを fixture にすると、もう片方の検出を外しても緑のままになる。
+# こちらもpath限定stubでgrep失敗を注入し、uidに依存させない。
 add_clean_gone_worktree 'feature/#38-wt-unreadable' "$TMP/wt-38"
 NAME_UNREADABLE="$(transcript_name_of "$TMP/wt-38")"
 make_transcript_dir "$NAME_UNREADABLE" "$(cd "$TMP/wt-38" && pwd -P)"
 printf '{"type":"user","cwd":"/somewhere/else"}\n' \
   > "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_UNREADABLE/unreadable.jsonl"
-chmod 000 "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_UNREADABLE/unreadable.jsonl"
 
 # ---- mock gh ------------------------------------------------------------------
 
 MOCK="$TMP/mock-bin"
 mkdir -p "$MOCK"
+
+# 権限bitで読み取り失敗を作るとroot実行時に前提が崩れる。対象pathだけを
+# 失敗させ、それ以外は実コマンドへ委譲する。markerはfixtureの発火証拠にする。
+REAL_FIND="$(command -v find)"
+cat > "$MOCK/find" <<SH
+#!/usr/bin/env bash
+case "\${1-}" in
+*/"$NAME_SCANERR")
+  : > "$TMP/mock-find-failed"
+  echo "simulated transcript find failure" >&2
+  exit 1
+  ;;
+esac
+exec "$REAL_FIND" "\$@"
+SH
+chmod +x "$MOCK/find"
+
+REAL_GREP="$(command -v grep)"
+cat > "$MOCK/grep" <<SH
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+  */"$NAME_UNREADABLE"/unreadable.jsonl)
+    : > "$TMP/mock-grep-failed"
+    echo "simulated transcript grep failure" >&2
+    exit 2
+    ;;
+  esac
+done
+exec "$REAL_GREP" "\$@"
+SH
+chmod +x "$MOCK/grep"
 
 cat > "$MOCK/pr_view_10.json" <<JSON
 {
@@ -1794,22 +1825,22 @@ fi
 # 12.7 一部の jsonl が読めない場合、読めた分だけで一致と判定しない
 if [ -d "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_SCANERR" ] \
   && [ -z "$(archive_of "$NAME_SCANERR")" ] \
+  && [ -f "$TMP/mock-find-failed" ] \
   && grep -q "トランスクリプト回収: jsonl 走査エラーで保護 ($NAME_SCANERR)" "$TMP/run.log"; then
-  ok "jsonl を読み切れない場合は、一致する cwd が見えていても保護して PARTIAL"
+  ok "find 失敗をuid非依存で注入し、一致する cwd が見えていても保護して PARTIAL"
 else
-  bad "jsonl 走査エラー時の保護が期待どおりでない ($NAME_SCANERR)"
+  bad "find 失敗fixtureの保護が期待どおりでない ($NAME_SCANERR)"
 fi
-chmod 755 "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_SCANERR/locked" 2>/dev/null || true
 
 # 12.8 ファイル単位で読めない場合も同様に保護する（find は成功し grep が失敗する経路）
 if [ -d "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_UNREADABLE" ] \
   && [ -z "$(archive_of "$NAME_UNREADABLE")" ] \
+  && [ -f "$TMP/mock-grep-failed" ] \
   && grep -q "トランスクリプト回収: jsonl 走査エラーで保護 ($NAME_UNREADABLE)" "$TMP/run.log"; then
-  ok "読めない jsonl が混ざっている場合も、見えた分だけで判定せず保護"
+  ok "grep 失敗をuid非依存で注入し、見えた分だけで判定せず保護"
 else
-  bad "読めない jsonl の保護が期待どおりでない ($NAME_UNREADABLE)"
+  bad "grep 失敗fixtureの保護が期待どおりでない ($NAME_UNREADABLE)"
 fi
-chmod 644 "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_UNREADABLE/unreadable.jsonl" 2>/dev/null || true
 
 # 13. サマリーに回収件数と容量が出る
 if grep -qE "アーカイブした worktree トランスクリプト: 3 件 / 元 [1-9][0-9]* KB → アーカイブ [1-9][0-9]* KB" "$TMP/run.log"; then

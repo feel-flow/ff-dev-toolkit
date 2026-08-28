@@ -13,6 +13,7 @@
 #   G8. 初期セットの 1 ファイルを削除 → 赤
 #   G9. SKILL.md のツリーにだけ新ファイルを追記（suite 一覧は未更新） → 赤（drift 検出）
 #   G10. Frontmatter の閉じ `---` を除去 → 赤
+#   G10b. 本文に水平線を持つ文書の Frontmatter 閉じ `---` を除去 → 赤
 #   G11. SKILL.md のツリーから .md 名を抽出できない書式破損 → 赤（fail-closed）
 #
 # Issue #526（共有 lib ff_docs_fm_verdict への統合で入った検査）:
@@ -28,8 +29,7 @@
 #   G23〜G25. status の正当値 review / approved / deprecated → 各々緑
 #             （`draft` は初期セット全 20 文書の値なので G1 baseline が測っている）
 #   G26. status が `done`（specs 側スキーマの中間状態） → 赤・理由は「status が値域」
-#   G27. `## Changelog` を Frontmatter 内へ移動（`#` 始まりは YAML コメントとして
-#        成立するため、配置制約が無いと通る） → 赤・理由は「Changelog セクションがありません」
+#   G27. `## Changelog` を Frontmatter 内へ移動 → `#` 始まりを本文らしい行として赤
 #
 # ケース数は EXPECTED_G_CASES で固定する（検査の削除、または追加時の期待値未更新を
 # 赤にする。release-required-selftest の EXPECTED_CHECKS と同型）。
@@ -83,7 +83,7 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # run_case の実行数。末尾で EXPECTED_G_CASES と突き合わせる（検査の削除、または
 # 追加時の期待値未更新を赤にする。release-required-selftest の EXPECTED_CHECKS と同型）。
 CASES=0
-EXPECTED_G_CASES=27
+EXPECTED_G_CASES=28
 
 # 初期セット 20 ファイル（本体 suite と同一の一覧）
 INITIAL_SET=(
@@ -220,6 +220,11 @@ close_line="$(awk 'NR > 1 && /^---$/ { print NR; exit }' "$TMP/root/docs-templat
 perl -i -ne 'print unless $. == '"$close_line" "$TMP/root/docs-template/02-design/DATABASE.md"
 run_case "G10 DATABASE.md の閉じ --- 除去" red "Frontmatter が閉じていません"
 
+make_fixture
+close_line="$(awk 'NR > 1 && /^---$/ { print NR; exit }' "$TMP/root/docs-template/03-implementation/CONVENTIONS.md")"
+perl -i -ne 'print unless $. == '"$close_line" "$TMP/root/docs-template/03-implementation/CONVENTIONS.md"
+run_case "G10b CONVENTIONS.md の閉じ --- 除去（本文に水平線あり）" red "本文らしい行が混在"
+
 echo "== G11. ツリー抽出の空振り（fail-closed） =="
 make_fixture
 # ステップ2 のフェンスを開始直後に閉じ、ツリー本体を抽出不能にする
@@ -305,11 +310,11 @@ run_case "G26 FALLBACK.md の status を done へ" red "status が値域"
 
 echo "== G27. ## Changelog が Frontmatter 内（配置制約） =="
 make_fixture
-# 本物の節を潰し、`## Changelog` を Frontmatter の中へ置く。`#` 始まりは YAML の
-# コメントとして成立するので、配置制約（Frontmatter より後ろ）が無いとこれで通る
+# 本物の節を潰し、`## Changelog` を Frontmatter の中へ置く。`#` 始まりを YAML
+# コメントとして許容すると閉じ忘れ後の Markdown 見出しと区別できないため、fail closed にする
 perl -i -pe 's/^## Changelog$/## History/; s/^(title: ".*")$/$1\n## Changelog/' \
   "$TMP/root/docs-template/02-design/API.md"
-run_case "G27 API.md の ## Changelog を Frontmatter 内へ移動" red "Changelog セクションがありません"
+run_case "G27 API.md の ## Changelog を Frontmatter 内へ移動" red "本文らしい行が混在"
 
 echo "== G21. 引用符付きキーの重複（キー名の正規化） =="
 make_fixture

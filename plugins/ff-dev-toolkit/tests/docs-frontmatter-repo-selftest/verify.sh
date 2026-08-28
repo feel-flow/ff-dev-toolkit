@@ -11,6 +11,7 @@
 #   G6.  changeImpact を大文字（"LOW"）へ → 赤
 #   G7.  `## Changelog` 見出しを除去 → 赤
 #   G8.  Frontmatter の閉じ `---` を除去 → 赤
+#   G8b. 本文に水平線を持つ文書の閉じ `---` を除去 → 赤（本文の線を閉じにしない）
 #   G9.  実体側にだけ新しい仕様文書を追加（MASTER の索引は未更新）→ 赤（drift 検出。
 #        **これが #513 の本来の目的** — Frontmatter 無しの文書を足しても気付かない穴）
 #   G10. 規則側にだけリンクを追加（実体は無い）→ 赤（drift 検出）
@@ -133,6 +134,7 @@ assert_mutated() { # $1=docs/ 起点の相対パス $2=ケース名
 }
 
 VICTIM="docs/07-project-management/RISKS.md"
+VICTIM_HR="docs/06-reference/DECISIONS.md"
 
 echo "== G1. baseline =="
 make_fixture
@@ -166,6 +168,11 @@ run_case "G7 ## Changelog 見出しの除去" red "Changelog セクションが�
 make_fixture
 perl -i -pe 'if (/^---$/) { $ff_n++; $_ = "-  -\n" if $ff_n == 2 }' "$TMP/root/$VICTIM"
 run_case "G8 Frontmatter の閉じ --- を破損" red "Frontmatter が閉じていません"
+
+make_fixture
+perl -i -pe 'if (/^---$/) { $ff_n++; $_ = "-  -\n" if $ff_n == 2 }' "$TMP/root/$VICTIM_HR"
+assert_mutated "$VICTIM_HR" "G8b" || true
+run_case "G8b 本文に水平線を持つ文書の閉じ --- を破損" red "本文らしい行が混在"
 
 echo "== G9〜G10. 規則と実体の drift =="
 make_fixture
@@ -269,7 +276,7 @@ echo "== G27〜G31. レビュー 4 巡目のケース =="
 make_fixture
 perl -i -pe 's/^## Changelog$/## 変更履歴/' "$TMP/root/$VICTIM"
 perl -i -pe 's/^(changeImpact: .*)$/$1\n## Changelog/' "$TMP/root/$VICTIM"
-run_case "G27 Frontmatter 内の ## Changelog を実在節と数えない" red "Changelog セクションがありません"
+run_case "G27 Frontmatter 内の ## Changelog を本文らしい行として拒否" red "本文らしい行が混在"
 
 # status の正常系。値域が誤って 3 値へ戻っても baseline（全 draft）では気付けない
 for _st in review approved deprecated; do

@@ -139,7 +139,7 @@ while IFS= read -r f; do
     *) fm_end="$fm_state" ;;
   esac
 
-  # マスク後の行から 1 パスで取る: `## Changelog` の有無 / 節内 `### ` 見出しの
+  # マスク後の行から 1 パスで取る: `## Changelog` の件数 / 節内 `### ` 見出しの
   # うち版エントリとして解析できた数・できなかった数 / 解析できた中の最大版。
   # 下流 awk は exit しない（上流 ff_docs_mask_spans の SIGPIPE を避ける）。
   # 節の終端は次のレベル 2 見出し（Changelog は文末規約だが、後続節が
@@ -162,7 +162,7 @@ while IFS= read -r f; do
       return 0
     }
     NR <= fe { next }
-    !cl && /^## Changelog$/ { cl = 1; next }
+    /^## Changelog$/ { ncl++; if (!cl) { cl = 1; next } }
     cl && !done && /^## / { done = 1 }
     cl && !done && /^### / {
       if ($0 ~ /^### \[(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\]( .*)?$/) {
@@ -175,18 +175,18 @@ while IFS= read -r f; do
       }
     }
     END {
-      printf "%s %s %d\n", (cl ? "yes" : "no"), (maxv == "" ? "-" : maxv), ninv + 0
+      printf "%d %s %d\n", ncl + 0, (maxv == "" ? "-" : maxv), ninv + 0
     }
   ')"
-  # フィールドはすべて空白を含まない制御下のトークン（yes/no・版・数値）。
+  # フィールドはすべて空白を含まない制御下のトークン（件数・版・数値）。
   # here-string で read すると一時ファイルが要るため、set -- で分解する。
   # shellcheck disable=SC2086 # info は意図的に語分割する
   set -- $info
-  has_cl="$1"
+  changelog_n="$1"
   max_ver="$2"
   invalid_n="$3"
 
-  [ "$has_cl" = "yes" ] || continue
+  [ "$changelog_n" -gt 0 ] || continue
   TARGETS=$((TARGETS + 1))
 
   if [ -z "$fm_end" ]; then
@@ -195,6 +195,11 @@ while IFS= read -r f; do
     else
       bad "$rel: Frontmatter が閉じていません（version を検証できないため fail-closed）"
     fi
+    continue
+  fi
+
+  if [ "$changelog_n" -ne 1 ]; then
+    bad "$rel: ## Changelog 節が ${changelog_n} 件あります（複数節を集約せず、文書構造の不正として fail-closed）"
     continue
   fi
 

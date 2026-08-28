@@ -17,7 +17,9 @@
 #     これを pass ではなく skip として数え、サマリーで名指しする。マーカー文言は
 #     tests/run-all/verify.sh が実在を検査するので、変えると red になる。
 #     一部の検査だけを飛ばす「部分 skip」でこのマーカーを出さないこと（1 行でも
-#     あると suite 全体が skip 扱いになり、実際に走った検査が報告から消える）
+#     あると suite 全体が skip 扱いになり、実際に走った検査が報告から消える）。部分
+#     skip は1文字以上インデントした `○ skip` を出す。ランナーは検査件数を
+#     `checks-skipped` へ別集計し、suite-level の skipped / REQUIRED_SUITES 判定へは混ぜない
 #   - 終了コード: 失敗 or 未実行が 1 件でもあれば 1、それ以外は 0。ただし passed が
 #     0 で skipped だけの場合も 1（検証が 1 件も成立していない状態を緑にしない）
 #
@@ -84,6 +86,32 @@
 # 実行中 suite の出力が残らない。stdout/stderr も 1 本に合流する。skip を pass から
 # 区別するために意図して受け入れているトレードオフ。
 #
+# ── 並列実行（Issue #595）────────────────────────────────────────────────────
+# suite は既定で並列に走る。**実行対象は変わらない** — 変わるのは起動の順序と同時
+# 実行数だけで、「全 suite を必ず実行して結果を集約する」設計（Issue #146）はそのまま。
+# 出力は完了順ではなく**登録順**に suite 単位でまとめて出す（逐次実行と同じ並び。
+# 完了順にすると同じ suite 一覧でも実行のたびに並びが変わり、前回との差分が読めない）。
+#
+#   既定の同時実行数: 論理 CPU 数（上限 8）
+#   上書き: FF_RUN_ALL_JOBS=<1〜256 の整数>。`1` で逐次実行へ戻る。解釈できない値と
+#           上限超過は 1 行警告のうえ既定値で続行する（fail-safe 側）
+#   入れ子（外側の run-all.sh から suite として呼ばれた回）は、FF_RUN_ALL_JOBS を
+#   明示しない限り逐次で走る — 外側と内側で同時実行数が掛け算になるのを避ける
+#
+# 上限を 8 に置くのは、実時間の上限を見る suite があるため（multi-agent-timeout の
+# 「早く終われば早く返る（< 8 秒）」など）。同時実行数を上げすぎると、その幅を負荷
+# 経由で食って «間違った理由で赤い» を作る。数値の実測は Issue #595 のコメントに残す
+# — ここへ書くと suite の増減で静かに腐る（ADR-034 のヘッダーが辿った形）。
+#
+# 並列実行は spool ディレクトリ（mktemp -d）を要求するため、下の read-only 制約から
+# 外れる。**制約は逐次実行の経路で維持する** — 一時領域を確保できない環境では 1 行
+# 警告して逐次へ退避し、skip も失敗もしない（実行対象と結果は同じで所要時間だけ伸びる）。
+# 各 suite の出力はファイルへ落とし、終了コードは本文を書き終えた**後に** rename で
+# 置く。「rc ファイルの実在 = その suite の出力が完成している」を親が追加の同期なしに
+# 読めるようにするため。rc を残さず子が消えた場合は pass にも fail にも倒さず未実行
+# として数える。spool の後片付けに EXIT トラップは置かない（理由は該当箇所のコメント。
+# 終了コードの正しさを一時ディレクトリの残骸より優先する）。
+#
 # Keep this read-only friendly: do not create temporary files and avoid here-doc / here-string.
 
 set -euo pipefail
@@ -93,6 +121,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # 入れ子で既定 suite 一覧を走らせると、自己テスト → 本ランナー → 自己テスト … と
 # 無限再帰する（merge-cleanup の一時 git リポジトリ生成まで巻き込んで暴走する）。
 # 明示引数付きの入れ子だけを許し、引数なしの入れ子は fail-closed で止める。
+# 入れ子だったかを export で潰す前に控える。既定の同時実行数の決定（Issue #595）が
+# 「外側の run-all.sh から呼ばれた回か」を見るために要る。
+if [[ "${FF_RUN_ALL_NESTED:-0}" != "0" ]]; then
+  FF_ENTERED_NESTED=1
+else
+  FF_ENTERED_NESTED=0
+fi
+
 if [[ "${FF_RUN_ALL_NESTED:-0}" != "0" && $# -eq 0 ]]; then
   echo "✗ run-all.sh を入れ子で引数なし実行しようとしました（既定 suite 一覧は無限再帰します）" >&2
   echo "  入れ子からは検証したい suite のパスを明示引数で渡してください" >&2
@@ -133,7 +169,7 @@ fi
 
 # >>> ff-summary-head-block（tests/run-all/verify.sh がこのマーカーで切り出し、
 # 指紋照合とサマリー行の出力が同一関数に同居していることを静的に検査する）
-# 指紋照合と**サマリー冒頭 2 行の出力**を同じ関数に置く。bash の関数定義は読み込み時に
+# 指紋照合と**サマリー冒頭 3 行の出力**を同じ関数に置く。bash の関数定義は読み込み時に
 # 本体ごとパースされるので、suite ループより前に定義したこの関数の中身は走行中の
 # 書き換えでは変わらない。結果として **「サマリー行が出た ⟹ 指紋照合を通った」** が
 # **構造的に**成り立つ。
@@ -160,6 +196,7 @@ ff_emit_summary_head() {
   RUN=$(( ${#PASSED[@]} + ${#FAILED[@]} + ${#SKIPPED[@]} ))
   echo "== summary =="
   echo "suites: total=${#SCRIPTS[@]} run=$RUN passed=${#PASSED[@]} failed=${#FAILED[@]} skipped=${#SKIPPED[@]} not-run=${#NOT_RUN[@]}"
+  echo "checks-skipped: total=${CHECKS_SKIPPED_TOTAL} suites=${#CHECKS_SKIPPED[@]}"
 }
 # <<< ff-summary-head-block
 
@@ -958,53 +995,320 @@ PASSED=()
 FAILED=()
 SKIPPED=()
 NOT_RUN=()
+CHECKS_SKIPPED_TOTAL=0
+CHECKS_SKIPPED=()
 
-for script in "${SCRIPTS[@]}"; do
-  name="$(basename "$(dirname "$script")")"
+# ── 実行経路の共有部（Issue #595）────────────────────────────────────────────
+# 「何を走らせ、どう数えるか」は逐次・並列で 1 か所へ集約する。並列化で変わるのは
+# 起動のタイミングだけで、集計・skip 判定・終了コードの意味は同じコードを通す。
+# suite 本文は $FF_SUITE_OUTPUT で渡す（引数に載せると skip-large のような 64KB 超の
+# 出力を呼び出しのたびに複製することになる）。
+FF_SUITE_OUTPUT=""
+
+ff_suite_kind() { # <script> -> run|missing|notexec
+  if [[ ! -f "$1" ]]; then
+    printf 'missing\n'
+  elif [[ ! -x "$1" ]]; then
+    printf 'notexec\n'
+  else
+    printf 'run\n'
+  fi
+}
+
+ff_consume() { # <name> <kind: run|missing|notexec|gone> <script> <rc>。本文は $FF_SUITE_OUTPUT
+  local name="$1" kind="$2" script="$3" suite_rc="$4"
+  local checks_skipped
+
   echo "== $name =="
 
-  # 起動できない suite は「未実行」として記録し、ループは継続する（ここで exit すると
+  # 起動できない suite は「未実行」として記録し、実行は続ける（ここで exit すると
   # 裏口から fail-fast が戻る）。最後に非 0 終了へ寄与させることで fail-closed を保つ。
-  if [[ ! -f "$script" ]]; then
+  if [[ "$kind" == "missing" ]]; then
     echo "✗ verify script is missing: $script" >&2
     NOT_RUN+=("$name (missing)")
     echo
-    continue
+    return 0
   fi
-  if [[ ! -x "$script" ]]; then
+  if [[ "$kind" == "notexec" ]]; then
     echo "✗ verify script is not executable: $script" >&2
     NOT_RUN+=("$name (not executable)")
     echo
-    continue
+    return 0
+  fi
+  # 並列実行の子が終了コードを残さずに消えた場合（kill -9・OOM など）。pass にも
+  # fail にも倒さず「未実行」として数える — 走ったかどうかが分からない実行を
+  # 成功側へ寄せないのが本ランナーの fail-closed の要（Issue #146）。
+  if [[ "$kind" == "gone" ]]; then
+    echo "✗ suite プロセスが終了コードを残さずに消えました: $script" >&2
+    NOT_RUN+=("$name (process gone)")
+    echo
+    return 0
+  fi
+  # 並列実行の spool を読み出せなかった場合（一時領域の枯渇・削除など）。ここで
+  # ランナーごと落とすと**残りの suite が未起動のまま消える** = 裏口からの fail-fast に
+  # なるので、当該 suite だけを未実行として記録し、実行は続ける。
+  if [[ "$kind" == "unreadable" ]]; then
+    echo "✗ suite の出力・終了コードを spool から読み出せませんでした: $script" >&2
+    NOT_RUN+=("$name (spool unreadable)")
+    echo
+    return 0
   fi
 
-  # 出力を変数へ受けるのは skip マーカーを判定するため。command substitution は
-  # パイプで完結し一時ファイルを作らないので read-only 環境でも動く。判定後に
-  # そのまま全量を出力するので、診断情報は失敗時も成功時も欠けない。
-  if output="$(bash "$script" 2>&1)"; then
-    printf '%s\n' "$output"
+  printf '%s\n' "$FF_SUITE_OUTPUT"
+
+  # インデント付き `○ skip` は、suite 内の一部検査だけを環境都合で飛ばしたマーカー。
+  # 行頭マーカー（suite 全体の skip）とは別勘定にし、終了コードや REQUIRED_SUITES の
+  # fail-closed 判定を変えない。awk は入力を最後まで読むため、大量出力でも grep -q の
+  # SIGPIPE 反転を持ち込まない。
+  checks_skipped="$(printf '%s\n' "$FF_SUITE_OUTPUT" \
+    | awk '/^[[:space:]]+○ skip(:|$)/ { n++ } END { print n + 0 }')"
+  if [[ "$checks_skipped" -gt 0 ]]; then
+    CHECKS_SKIPPED_TOTAL=$((CHECKS_SKIPPED_TOTAL + checks_skipped))
+    CHECKS_SKIPPED+=("${name}=${checks_skipped}")
+  fi
+
+  if [[ "$suite_rc" -eq 0 ]]; then
     # 判定はシェル内の文字列マッチで行い、パイプを使わない。`printf | grep -q` だと
     # grep がマッチ時点で終了して上流の printf が SIGPIPE (141) で死に、pipefail の
     # もとでパイプライン全体が失敗扱いになる = マッチが「不一致」へ反転する。出力が
     # パイプ容量（64KB 程度）を超える suite で skip が pass に化ける fail-silent で、
     # 本 Issue が潰そうとしている masking と同じ種類の事故になる。
     # 左辺に改行を前置するのは、1 行目の `○ skip` も行頭マッチさせるため。
-    if [[ $'\n'"$output" == *$'\n○ skip'* ]]; then
+    if [[ $'\n'"$FF_SUITE_OUTPUT" == *$'\n○ skip'* ]]; then
       SKIPPED+=("$name")
     else
       PASSED+=("$name")
     fi
   else
-    printf '%s\n' "$output"
     FAILED+=("$name")
   fi
   echo
-done
+}
+
+# 逐次実行。一時領域を要求しない経路で、read-only 環境の退避先でもある。
+ff_run_sequential() {
+  local script name kind suite_rc
+  for script in "${SCRIPTS[@]}"; do
+    name="$(basename "$(dirname "$script")")"
+    kind="$(ff_suite_kind "$script")"
+    FF_SUITE_OUTPUT=""
+    suite_rc=0
+    if [[ "$kind" == "run" ]]; then
+      # 出力を変数へ受けるのは skip マーカー判定のため。command substitution は
+      # パイプで完結し一時ファイルを作らないので read-only 環境でも動く。判定後に
+      # そのまま全量を出力するので、診断情報は失敗時も成功時も欠けない。
+      if FF_SUITE_OUTPUT="$(bash "$script" 2>&1)"; then
+        suite_rc=0
+      else
+        suite_rc=$?
+      fi
+    fi
+    ff_consume "$name" "$kind" "$script" "$suite_rc"
+  done
+}
+
+# 並列実行。${SPOOL}（mktemp -d 済み）を要求する。
+ff_run_parallel() {
+  local total="${#SCRIPTS[@]}"
+  local i next_launch=0 next_print=0 running=0 suite_rc
+  # 配列名の DONE / PIDS を避けるのは shellcheck 対策。`DONE[$i]=1` が文頭に来ると
+  # `done` キーワードの大文字違い（SC1081）+ `[` の前のスペース欠落（SC1069）と読まれる。
+  local -a SUITE_KIND SUITE_PID SUITE_DONE
+
+  for ((i = 0; i < total; i++)); do
+    SUITE_KIND[$i]="$(ff_suite_kind "${SCRIPTS[$i]}")"
+    SUITE_PID[$i]=0
+    SUITE_DONE[$i]=0
+  done
+
+  while [[ "$next_print" -lt "$total" ]]; do
+    # 空きスロットへ登録順に投入する
+    while [[ "$next_launch" -lt "$total" && "$running" -lt "$JOBS" ]]; do
+      i="$next_launch"
+      next_launch=$((next_launch + 1))
+      if [[ "${SUITE_KIND[$i]}" != "run" ]]; then
+        SUITE_DONE[$i]=1
+        continue
+      fi
+      # 出力はファイルへ落とし、終了コードは**本文を書き終えた後に** rename で置く。
+      # 「rc ファイルの実在 = その suite の出力が完成している」を、親が追加の同期
+      # なしに読めるようにするため（部分的に書かれた出力を完成品として読まない）。
+      (
+        set +e
+        bash "${SCRIPTS[$i]}" >"$SPOOL/$i.out" 2>&1
+        printf '%s\n' "$?" >"$SPOOL/$i.rc.part"
+        mv -f "$SPOOL/$i.rc.part" "$SPOOL/$i.rc"
+      ) &
+      SUITE_PID[$i]=$!
+      running=$((running + 1))
+    done
+
+    # 完了を回収してスロットを空ける
+    for ((i = next_print; i < next_launch; i++)); do
+      [[ "${SUITE_DONE[$i]}" == "0" ]] || continue
+      if [[ -f "$SPOOL/$i.rc" ]]; then
+        SUITE_DONE[$i]=1
+        running=$((running - 1))
+        continue
+      fi
+      # rc を残さず子が消えた実行を「未実行」へ倒す。判定は必ず
+      # 「rc 不在 → pid 消滅 → なお rc 不在」の順で行う — 先に pid を見ると、
+      # rename 直後に終了した子（正常完了）を gone と取り違える。
+      if ! kill -0 "${SUITE_PID[$i]}" 2>/dev/null && [[ ! -f "$SPOOL/$i.rc" ]]; then
+        SUITE_KIND[$i]=gone
+        SUITE_DONE[$i]=1
+        running=$((running - 1))
+      fi
+    done
+
+    # 出力は完了順ではなく**登録順**に、suite 単位でまとめて出す。完了順に出すと
+    # 同じ suite 一覧でも実行のたびに並びが変わり、前回との差分が読めなくなる。
+    while [[ "$next_print" -lt "$next_launch" ]] && [[ "${SUITE_DONE[$next_print]}" == "1" ]]; do
+      i="$next_print"
+      next_print=$((next_print + 1))
+      FF_SUITE_OUTPUT=""
+      suite_rc=0
+      if [[ "${SUITE_KIND[$i]}" == "run" ]]; then
+        # 読み出しの失敗で set -e に落ちない。落ちるとサマリーも出ないまま
+        # 残りの suite が未起動で消える（ff_consume の unreadable 分岐の理由）。
+        if suite_rc="$(cat "$SPOOL/$i.rc" 2>/dev/null)" \
+          && FF_SUITE_OUTPUT="$(cat "$SPOOL/$i.out" 2>/dev/null)"; then
+          rm -f "$SPOOL/$i.out" "$SPOOL/$i.rc" 2>/dev/null || true
+        else
+          SUITE_KIND[$i]=unreadable
+          suite_rc=0
+          FF_SUITE_OUTPUT=""
+        fi
+      fi
+      ff_consume "$(basename "$(dirname "${SCRIPTS[$i]}")")" "${SUITE_KIND[$i]}" "${SCRIPTS[$i]}" "$suite_rc"
+    done
+
+    if [[ "$next_print" -lt "$total" ]]; then
+      # 投入すべき suite が残っておらず、先頭 suite だけが未完了の局面では、
+      # ポーリングではなくその子を直接 wait する。登録順にしか出力できない以上
+      # ここで待つのは無駄にならず、**PID 再利用で kill -0 が生き続ける形**も
+      # ここで解ける（wait は自分の子でない PID には即座に返るため、戻った時点で
+      # rc が無ければ gone と確定してよい）。
+      #
+      # 残余リスク: 投入待ちが残っている局面（next_launch < total）で子が rc を
+      # 残さず死に、かつその PID が別プロセスへ再利用されると、スロットが空かず
+      # ポーリングが続く。この場合ランナーはサマリー行を出さないので
+      # 「サマリー行が出ていない実行は緑ではない」（docs/04-quality/TESTING.md）で
+      # fail-closed に落ちる — 偽の緑にはならない。
+      if [[ "$next_launch" -ge "$total" ]] \
+        && [[ "${SUITE_DONE[$next_print]}" == "0" ]] \
+        && [[ "${SUITE_KIND[$next_print]}" == "run" ]]; then
+        wait "${SUITE_PID[$next_print]}" 2>/dev/null || true
+        if [[ ! -f "$SPOOL/$next_print.rc" ]]; then
+          SUITE_KIND[$next_print]=gone
+          SUITE_DONE[$next_print]=1
+          running=$((running - 1))
+        fi
+      else
+        sleep "$FF_POLL_INTERVAL"
+      fi
+    fi
+  done
+
+  wait 2>/dev/null || true
+
+  # 正常完了時だけ後片付けする（EXIT トラップを置かない理由は spool 確保側のコメント）。
+  if [[ -n "$SPOOL" ]]; then
+    rm -rf "$SPOOL"
+    SPOOL=""
+  fi
+}
+
+# ── 同時実行数と実行経路の解決（Issue #595）──────────────────────────────────
+FF_POLL_INTERVAL=0.1
+if ! sleep "$FF_POLL_INTERVAL" 2>/dev/null; then
+  # 小数秒を受けない sleep（POSIX 準拠の実装）では 1 秒刻みへ落とす。刻みが粗いと
+  # スロットの再充填が遅れるだけで、結果は変わらない。
+  FF_POLL_INTERVAL=1
+fi
+
+ff_detect_cpus() {
+  local n
+  n="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+  if [[ ! "$n" =~ ^[1-9][0-9]*$ ]]; then
+    n="$(sysctl -n hw.ncpu 2>/dev/null || true)"
+  fi
+  if [[ ! "$n" =~ ^[1-9][0-9]*$ ]]; then
+    n=4
+  fi
+  printf '%s\n' "$n"
+}
+
+FF_JOBS_CAP=8
+# 明示指定として受け付ける上限。桁数を先に見るのは、正規表現を通る巨大値をそのまま
+# 算術比較へ渡すと bash の整数が符号あり 64bit で折り返し、`-gt 1` が偽になって
+# **警告なしに逐次へ化ける**ため（同時に、桁数を見ないと 100000 並列の投入も通る）。
+FF_JOBS_LIMIT=256
+ff_resolve_jobs() {
+  local raw cpus
+  raw="${FF_RUN_ALL_JOBS:-}"
+  if [[ -n "$raw" ]]; then
+    if [[ "$raw" =~ ^[1-9][0-9]*$ ]]; then
+      if [[ "${#raw}" -le 3 && "$raw" -le "$FF_JOBS_LIMIT" ]]; then
+        printf '%s\n' "$raw"
+        return 0
+      fi
+      echo "⚠️  FF_RUN_ALL_JOBS が上限 ${FF_JOBS_LIMIT} を超えています: ${raw} — 既定の同時実行数で続行します" >&2
+    else
+      echo "⚠️  FF_RUN_ALL_JOBS を解釈できません（1 以上の整数のみ）: ${raw} — 既定の同時実行数で続行します" >&2
+    fi
+  fi
+  # 入れ子の実行（外側の run-all.sh から suite として呼ばれた回）は、明示指定が
+  # 無ければ逐次で走らせる。外側の同時実行数と掛け算になり、実時間の上限を見る
+  # suite の幅を負荷経由で食うため。
+  if [[ "$FF_ENTERED_NESTED" == "1" ]]; then
+    printf '1\n'
+    return 0
+  fi
+  cpus="$(ff_detect_cpus)"
+  if [[ "$cpus" -gt "$FF_JOBS_CAP" ]]; then
+    printf '%s\n' "$FF_JOBS_CAP"
+  else
+    printf '%s\n' "$cpus"
+  fi
+}
+
+JOBS="$(ff_resolve_jobs)"
+
+# 並列実行は spool ディレクトリを要求する。確保できない環境では逐次へ退避する
+# （skip も失敗もしない。実行対象と結果は同じで、所要時間だけが伸びる）。
+SPOOL=""
+if [[ "$JOBS" -gt 1 && ${#SCRIPTS[@]} -gt 1 ]]; then
+  # spool の後片付けに EXIT トラップは**置かない**。`trap 'rm -rf ...' EXIT` は
+  # トラップ最終コマンドの成功が終了ステータスを上書きし、途中死を rc=0 に化けさせる
+  # （tests/run-all/verify.sh case 12 が suite 側で実測した形。23 本中 20 本）。rc を
+  # 保存する版でも直らない — `set -u` による死ではトラップ突入時の $? が 0 になるため、
+  # 保存した「0」で exit してしまう。**ランナーの終了コードを守る方を採る**：後片付けは
+  # 正常完了時に明示的に行い、途中で死んだ回は $TMPDIR に ff-run-all-spool.* を
+  # 残す（OS の一時領域の掃除に委ねる。名前で識別できる）。
+  if SPOOL="$(mktemp -d "${TMPDIR:-/tmp}/ff-run-all-spool.XXXXXX" 2>/dev/null)"; then
+    :
+  else
+    SPOOL=""
+    echo "⚠️  一時領域を確保できないため逐次実行へ退避します（実行対象と結果は同じで、所要時間だけが伸びます）" >&2
+  fi
+fi
+
+if [[ -n "$SPOOL" ]]; then
+  echo "🧵 並列実行: 同時実行数 ${JOBS}（逐次に戻すには FF_RUN_ALL_JOBS=1）"
+  echo
+  ff_run_parallel
+else
+  ff_run_sequential
+fi
 
 # ---- サマリー --------------------------------------------------------------
 # 「実行した suite 数」と「失敗/スキップ/未実行の suite 名」を必ず出す。総数と
 # 実行数が食い違ったまま success を名乗らないことが、本 Issue の masking 対策の本体。
 ff_emit_summary_head
+if [[ ${#CHECKS_SKIPPED[@]} -gt 0 ]]; then
+  echo "○ checks skipped (suite内の部分skip。suite-level skippedとは別勘定): ${CHECKS_SKIPPED[*]}"
+fi
 
 # 高速モードの除外は「何を検証していないか」ごとサマリーへ明示する。除外は total にも
 # skipped にも数えない — 環境都合の skip（検証したかったが出来なかった）と、意図的な

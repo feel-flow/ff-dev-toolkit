@@ -131,15 +131,12 @@ ff_docs_exclusion_patterns() {
 # リスト項目 / インデント継続）だけであることを検証し、本文らしい行が混ざって
 # いたら malformed を返す。
 #
-# **ff_docs_fm_verdict との判定差（未統合）**: あちらの close_line 検出は
-# 「最初の `^---$`」の素朴実装のままで、同型の fail-open が残っている。さらに
-# `#` 始まりの行の扱いが逆 — 本関数は**本文らしい行**として扱う（本リポジトリと
-# docs-template の Frontmatter はコメントを使わず、markdown 見出しの可能性が
-# 支配的なため）が、ff_docs_fm_verdict は `## Changelog` が YAML コメントとして
-# Frontmatter 内に置かれ得ることを前提に検査している。所有ゲート側
-# （ff_docs_fm_verdict とその消費者）への統合はこの差の解消込みで follow-up。
+# `#` 始まりの行は**本文らしい行**として扱う。本リポジトリと docs-template の
+# Frontmatter は YAML コメントを使わず、閉じ忘れ後の Markdown 見出しと構文上
+# 区別できないため、コメントとして許容せず fail closed に倒す。
 #
-# 消費者: tests/docs-version-changelog/（Frontmatter の閉じ判定）。
+# 消費者: tests/docs-version-changelog/ と ff_docs_fm_verdict
+# （docs-frontmatter-repo / docs-template-frontmatter）の Frontmatter 閉じ判定。
 ff_docs_fm_close_line() {
   awk '
     NR == 1 { if ($0 != "---") { print "none"; done = 1; exit }; next }
@@ -189,12 +186,30 @@ ff_docs_fm_verdict() {
     echo "NG:先頭行が Frontmatter 開始（---）ではありません"
     return 0
   fi
-  local close_line
-  close_line="$(awk 'NR > 1 && /^---$/ { print NR; exit }' "$f")"
-  if [ -z "$close_line" ]; then
-    echo "NG:Frontmatter が閉じていません（2 行目以降に --- がない）"
+  local close_line fm_state
+  if ! fm_state="$(ff_docs_fm_close_line "$f" 2>/dev/null)"; then
+    echo "NG:Frontmatter の閉じ判定中にファイルを読み取れません"
     return 0
   fi
+  case "$fm_state" in
+    unclosed)
+      echo "NG:Frontmatter が閉じていません（2 行目以降に --- がない）"
+      return 0
+      ;;
+    malformed:*)
+      echo "NG:Frontmatter の閉じ行と推定した --- までに本文らしい行が混在しています（閉じ行の欠落が疑われます）"
+      return 0
+      ;;
+    none)
+      echo "NG:先頭行が Frontmatter 開始（---）ではありません"
+      return 0
+      ;;
+    *[!0-9]*|"")
+      echo "NG:Frontmatter 閉じ判定が想定外の値を返しました（${fm_state:-空}）"
+      return 0
+      ;;
+    *) close_line="$fm_state" ;;
+  esac
   # `## Changelog` の有無はマスク後の行で判定する（フェンス内の例示を本物の節と
   # 数えないため）。Frontmatter の各フィールドは行位置が要るので原文で見る。
   # 探索は Frontmatter の閉じ行より後ろに限る — `## Changelog` は YAML コメントとしても

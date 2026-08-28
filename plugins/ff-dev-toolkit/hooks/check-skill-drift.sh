@@ -203,6 +203,44 @@ if [ -n "$missing_joined" ]; then
   drift_skill_set=1
 fi
 
+# ---- ロード中のコピーに無いスキル（Issue #881）---------------------------------
+# 上の差分は **union**（全インストール実体の和集合）を見るので、「どこかのコピーに
+# 在れば無音」になる。ところがセッションが呼べるのは **いま読み込まれているコピー**の
+# スキルだけで、そこに無ければ `Unknown skill` で落ちる。
+#
+# 実測（Issue #881）: ロード済みが v0.14.0（3 スキル）、キャッシュに v0.61.0（21 スキル）が
+# 併存する状態で、ワークフローがチェーン末尾に必須と定める `/retrospective` が
+# `Unknown skill: ff-dev-toolkit:retrospective` になった。union には在るので上の検査は無音
+# だった。呼べる集合を見ていないことが原因なので、own_root を別に差分する。
+#
+# 名簿は持たない — 比較対象はリポジトリの skills/ の実体で、ワークフロー文書が名指しする
+# スキル名を書き写さない（二重管理を作らない。#881 の DoD）。
+#
+# 既知の限界: この検査はロード中のコピーの hook として走るので、**この検査を含まない
+# 古い版がロードされている回は自分自身を報告できない**。その回は下の併存検出（複数
+# version の列挙）が受け皿になる。
+#
+# ロード中のコピーに `skills/` ディレクトリ自体が無い場合は差分を取らない。「ディレクトリ
+# が無い」と「スキルが 0 件」を出力から区別できず、本 hook は fail-open 設計（自分の不具合で
+# セッションを壊さない）だからである。現実のロード実体は必ず skills/ を持つ（#881 の
+# v0.14.0 も 3 件持っていた）。この経路が抜けても、どのインストール実体にも無い場合は上の
+# union 差分が受け止める。
+loaded_missing_joined=""
+if [ -s "$work/repo_skills" ] && [ -n "${own_root:-}" ] && [ -d "$own_root/skills" ]; then
+  list_skills_into "$own_root" "$work/loaded_skills"
+  comm -23 "$work/repo_skills" "$work/loaded_skills" > "$work/loaded_missing" 2>/dev/null \
+    || : > "$work/loaded_missing"
+  if [ -s "$work/loaded_missing" ]; then
+    loaded_missing_joined="$(tr '\n' ',' < "$work/loaded_missing" | sed 's/,$//; s/,/, /g')"
+  fi
+fi
+
+# --- loaded-set-diff (mutation target: loaded_missing_joined を空にすると検出が落ちる) ---
+drift_loaded_set=0
+if [ -n "$loaded_missing_joined" ]; then
+  drift_loaded_set=1
+fi
+
 # --- coexistence-list (mutation target: do not collapse to 1 via head -n 1) ---
 # 併存はユニーク version が 2 以上のときだけ。同一 version の cache と
 # marketplace checkout は Claude Code の通常構成なので無音にする。
@@ -220,7 +258,7 @@ fi
 
 # 正常: スキル集合一致かつ version が 1 種類（path が複数でも同じ version なら無音。
 # version 不一致の 1 実体は check-update.sh の管轄）
-if [ "$drift_skill_set" -eq 0 ] && [ "$drift_coexist" -eq 0 ]; then
+if [ "$drift_skill_set" -eq 0 ] && [ "$drift_loaded_set" -eq 0 ] && [ "$drift_coexist" -eq 0 ]; then
   exit 0
 fi
 
@@ -245,6 +283,17 @@ ctx=""
 if [ "$drift_skill_set" -eq 1 ]; then
   sys="⚠️ ff-dev-toolkit のスキル実体がリポジトリより古いまたは欠けています。リポジトリに在るがインストール実体に無いスキル: ${missing_joined}（リポジトリ v${repo_version} / インストール実体: ${install_lines}）"
   ctx="ff-dev-toolkit のリポジトリ skills/（v${repo_version}）に在るがインストール実体に無いスキル: ${missing_joined}。インストール実体: ${install_lines}。"
+fi
+if [ "$drift_loaded_set" -eq 1 ]; then
+  # union に在っても、いま読み込まれているコピーに無ければ呼べない。呼び出しは
+  # `Unknown skill` で落ちるので、欠落したスキル名とロード元のパスを名指しする。
+  loaded_msg="⚠️ いま読み込まれている ff-dev-toolkit（${own_root}）に無いスキルがあります: ${loaded_missing_joined}。これらの呼び出しは Unknown skill で失敗します（リポジトリ v${repo_version}）"
+  if [ -n "$sys" ]; then
+    sys="${sys} ${loaded_msg}"
+  else
+    sys="$loaded_msg"
+  fi
+  ctx="${ctx}いま読み込まれている ff-dev-toolkit のコピー（${own_root}）に無いスキル: ${loaded_missing_joined}。別のインストール実体に在っても、セッションが呼べるのはこのコピーのスキルだけなので、これらは Unknown skill になる。リポジトリ内の正本 plugins/ff-dev-toolkit/skills/<name>/SKILL.md を直接読んで手順を代替実行できる。"
 fi
 if [ "$drift_coexist" -eq 1 ]; then
   if [ -n "$sys" ]; then

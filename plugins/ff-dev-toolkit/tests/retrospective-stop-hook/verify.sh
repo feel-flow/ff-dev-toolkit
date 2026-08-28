@@ -206,25 +206,56 @@ else
   bad "Node.js 不在の fail-open 通知が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
 
-OPEN_FIFO="$TEST_TMP/open-stdin"
-mkfifo "$OPEN_FIFO"
-(
-  exec 3>"$OPEN_FIFO"
-  printf '%s' "$FIRST_INPUT" >&3
-  sleep 4
-) &
-WRITER_PID=$!
-SECONDS=0
-RC=0
-OUT="$(env -u RETROSPECTIVE_MODE /bin/bash "$TARGET" <"$OPEN_FIFO" 2>"$TEST_TMP/open-stderr")" || RC=$?
-ELAPSED=$SECONDS
-kill "$WRITER_PID" >/dev/null 2>&1 || true
-wait "$WRITER_PID" 2>/dev/null || true
-ERR="$(cat "$TEST_TMP/open-stderr" 2>/dev/null || true)"
-if [ "$RC" -eq 0 ] && [ "$ELAPSED" -lt 4 ] && [ -z "$ERR" ]; then
-  ok "stdin が閉じられなくても入力上限内に復帰"
+READ_STUB="$TEST_TMP/read-stub.bash"
+printf '%s\n' \
+  'read() {' \
+  '  local destination="" delimiter="__unset__" timeout="__unset__"' \
+  '  while [ "$#" -gt 0 ]; do' \
+  '    case "$1" in' \
+  '      -r) shift ;;' \
+  '      -t) timeout="$2"; shift 2 ;;' \
+  '      -d) delimiter="$2"; shift 2 ;;' \
+  '      *) destination="$1"; shift ;;' \
+  '    esac' \
+  '  done' \
+  '  [ "$timeout" = "2" ] || return 97' \
+  '  [ -z "$delimiter" ] || return 98' \
+  '  [ "$destination" = "HOOK_INPUT" ] || return 99' \
+  '  printf -v "$destination" "%s" "$RETROSPECTIVE_TEST_INPUT"' \
+  '  return 1' \
+  '}' >"$READ_STUB"
+
+run_input_limit_fixture() {
+  local target="$1" errfile="$TEST_TMP/input-limit-stderr"
+  RC=0
+  OUT="$(env -u RETROSPECTIVE_MODE \
+    BASH_ENV="$READ_STUB" \
+    RETROSPECTIVE_TEST_INPUT="$FIRST_INPUT" \
+    /bin/bash "$target" 2>"$errfile")" || RC=$?
+  ERR="$(cat "$errfile" 2>/dev/null || true)"
+  rm -f "$errfile"
+}
+
+run_input_limit_fixture "$TARGET"
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
+  && printf '%s' "$OUT" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+  ok "stdin 入力上限は壁時間に依存せず partial input を処理"
 else
-  bad "stdin 入力上限が機能しない: elapsed=${ELAPSED}s exit=$RC output=[$OUT] stderr=[$ERR]"
+  bad "stdin 入力上限の決定的fixtureが失敗: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
+TIMEOUT_READ_COUNT="$(grep -Fc -- '-t "$INPUT_TIMEOUT_SECONDS"' "$TARGET")"
+MUTANT="$TEST_TMP/retrospective-stop-no-read-timeout.sh"
+if [ "$TIMEOUT_READ_COUNT" -eq 1 ]; then
+  sed 's/ -t "$INPUT_TIMEOUT_SECONDS"//' "$TARGET" >"$MUTANT"
+  run_input_limit_fixture "$MUTANT"
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ]; then
+    ok "変異: read のtimeout配線を外すと決定的fixtureが退行を検出"
+  else
+    bad "変異: timeout除去の検出結果が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
+  fi
+else
+  bad "変異: timeout付き read は1件の想定（実際 ${TIMEOUT_READ_COUNT} 件）"
 fi
 
 # The plugin-root expression is intentionally matched as a literal contract.
@@ -313,7 +344,7 @@ else
   bad "hook が filesystem へ副作用を作成"
 fi
 
-EXPECTED_CHECKS=23
+EXPECTED_CHECKS=24
 if [ $((PASS + FAIL)) -ne "$EXPECTED_CHECKS" ]; then
   bad "検査総数が $((PASS + FAIL)) 件（期待 ${EXPECTED_CHECKS} 件）"
 fi

@@ -783,6 +783,14 @@ PAIR_SUB_DROPPED=false
 # cannot contain ':', so the suffix is unambiguous.
 FAILED_TASKS=""
 
+# Previous unresolved review state captured before result cleanup (Issue #843).
+# It is deliberately small: perspective names and their existing block/nonblock
+# classification only. A failed rerun keeps that classification; a successful
+# rerun is judged from the new result as usual.
+PREVIOUS_UNRESOLVED_BLOCK=""
+PREVIOUS_UNRESOLVED_NONBLOCK=""
+PRESERVE_PREVIOUS_CRITICAL_REPORT=false
+
 # Resume state. EXECUTION_PLAN starts as the complete expected plan. Immediately
 # before dispatch, prepare_resume_execution_plan saves that plan here and replaces
 # EXECUTION_PLAN with only the tasks that still need execution. main restores the
@@ -799,6 +807,7 @@ EXECUTED_TASKS=""
 RESUME_IDENTITY_VERSION=1
 RESUME_IDENTITY=""
 RESUME_CACHE_DIR=""
+RESUME_CACHE_PENDING=""
 
 # 同じ output-dir を使う別 orchestrator との排他。成果物は run-id で分離せず、利用者が
 # 従来どおり固定パスから読める契約を保つ代わりに、1 output-dir = 1 active run とする。
@@ -1916,14 +1925,16 @@ validate_execution_plan() {
 clear_planned_outputs() {
   [[ -n "${OUTPUT_DIR:-}" ]] || return 0
   local entry cli_name persp_name staging_dir
-  # 統合レポートも先に消す。generate_report は成功時にしか書かないので、これが無いと
-  # 「タスクは走ったがレポート生成まで到達しなかった」実行のあとに前回のレポートが
-  # そのまま残る。利用者へ案内している次の一手は `cat integrated-report.md` なので、
-  # 中断を告げた直後にその中断とは無関係な前回の結果を読ませることになる — 個別結果に
-  # ついて上で塞いだ stale 誤読と同型。
-  if ! rm -f "${OUTPUT_DIR}/integrated-report.md"; then
-    echo "ERROR: cannot clear the previous integrated report: ${OUTPUT_DIR}/integrated-report.md" >&2
-    return 1
+  # 統合レポートは通常ここで消す。generate_report は成功時にしか書かないので、
+  # 「タスクは走ったがレポート生成まで到達しなかった」実行のあとに無関係な前回結果を
+  # 残さないためである。ただし未解消 Critical のレポートは、次回ガードが読む唯一の
+  # 永続状態でもある。setup failure や事後 revision guard がそれを消すと次回の省略を
+  # 許してしまうため、新しい review report が置き換えるまで保持する。
+  if [[ "$PRESERVE_PREVIOUS_CRITICAL_REPORT" != "true" ]]; then
+    if ! rm -f "${OUTPUT_DIR}/integrated-report.md"; then
+      echo "ERROR: cannot clear the previous integrated report: ${OUTPUT_DIR}/integrated-report.md" >&2
+      return 1
+    fi
   fi
   # .fixed-diff はこの関数より前に capture_baseline_and_fix_diff が現在入力で上書きする。
   # resume identity はその内容 hash を使うため、ここで消してはならない。
@@ -1944,6 +1955,9 @@ clear_planned_outputs() {
 
 clear_previous_integrated_report() {
   [[ -n "${OUTPUT_DIR:-}" ]] || return 0
+  if [[ "$PRESERVE_PREVIOUS_CRITICAL_REPORT" == "true" ]]; then
+    return 0
+  fi
   if ! rm -f "${OUTPUT_DIR}/integrated-report.md"; then
     echo "ERROR: cannot clear the previous integrated report: ${OUTPUT_DIR}/integrated-report.md" >&2
     return 1
@@ -2317,6 +2331,7 @@ cache_task_result() { # <cli> <perspective>
 
 restore_cached_result() { # <cli> <perspective>
   local cli="$1" persp="$2" cache_file expected actual target
+  [[ ! -e "${RESUME_CACHE_DIR}/.pending" ]] || return 1
   cache_file="${RESUME_CACHE_DIR}/${cli}/${persp}.md"
   [[ -f "$cache_file" && -f "${cache_file}.hash" ]] || return 1
   expected="$(cat "${cache_file}.hash" 2>/dev/null)" || return 1
@@ -2364,6 +2379,23 @@ prepare_resume_execution_plan() {
     fi
   done <<< "$FULL_EXECUTION_PLAN"
   EXECUTION_PLAN="$active_plan"
+
+  if [[ -n "$EXECUTION_PLAN" ]]; then
+    RESUME_CACHE_PENDING="${RESUME_CACHE_DIR}/.pending"
+    if ! printf 'pid=%s\n' "$$" > "$RESUME_CACHE_PENDING"; then
+      echo "ERROR: cannot mark the resume cache as pending verification: ${RESUME_CACHE_PENDING}" >&2
+      return 1
+    fi
+  fi
+}
+
+finalize_resume_cache() {
+  [[ -n "$RESUME_CACHE_PENDING" ]] || return 0
+  if ! rm -f "$RESUME_CACHE_PENDING"; then
+    echo "ERROR: cannot mark the resume cache as verified: ${RESUME_CACHE_PENDING}" >&2
+    return 1
+  fi
+  RESUME_CACHE_PENDING=""
 }
 
 # ── Output Directory Lock（Issue #402） ──
@@ -2413,6 +2445,233 @@ acquire_output_lock() {
   trap output_lock_exit EXIT
   trap 'exit 130' HUP INT TERM
   return 0
+}
+
+# ── Unresolved Critical guard (Issue #843) ──
+# A narrowed review rebuilds integrated-report.md from only this run's plan. Read
+# the orchestrator-owned state before cleanup and reject a plan that omits a
+# still-unresolved perspective. The machine line is always the report's last line;
+# legacy reports fall back to the final marker summary lines only.
+previous_report_has_critical_marker() { # <report-file>
+  local summary
+  summary="$(tail -n 12 "$1")" || return 2
+  printf '%s\n' "$summary" \
+    | grep -Fx -e '<!-- CRITICAL_BLOCK -->' \
+      -e '<!-- CRITICAL_NONBLOCK -->' >/dev/null
+}
+
+current_review_series_id() {
+  local branch scope repo symbolic_ref_rc
+  repo="$(cd "$REPO_ROOT" && pwd -P)" || return 1
+  if branch="$(git symbolic-ref --quiet HEAD)"; then
+    :
+  else
+    symbolic_ref_rc=$?
+    [[ "$symbolic_ref_rc" -eq 1 ]] || return 1
+    branch="detached:$(git rev-parse HEAD 2>/dev/null)" || return 1
+  fi
+  if [[ "$STAGED_DIFF" == "true" ]]; then scope="staged"; else scope="branch"; fi
+  # This is an accidental-mixing guard, not an authentication boundary. POSIX
+  # cksum keeps the persisted token portable across macOS and Linux.
+  printf 'repo=%s\nbranch=%s\nbase=%s\nscope=%s\n' "$repo" "$branch" "$BASE_BRANCH" "$scope" \
+    | cksum | awk '{ print $1 "-" $2 }'
+}
+
+extract_unresolved_critical_perspectives() { # <report-file>
+  local last_line report_tail
+  report_tail="$(tail -n 12 "$1")" || return 1
+  last_line="$(printf '%s\n' "$report_tail" | tail -n 1)" || return 1
+  case "$last_line" in
+    '<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:'*' block:'*' nonblock:'*' -->')
+      printf '%s\n' "$last_line" | awk '
+        {
+          line = $0
+          sub(/^<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:/, "", line)
+          sub(/ -->$/, "", line)
+          if (split(line, series_parts, " block:") != 2) exit 2
+          if (split(series_parts[2], parts, " nonblock:") != 2) exit 2
+          if (parts[1] == "" || parts[2] == "") exit 2
+          print "series:" series_parts[1]
+          if (parts[1] != "-") {
+            n = split(parts[1], names, " ")
+            for (i = 1; i <= n; i++) if (names[i] != "") print "block:" names[i]
+          }
+          if (parts[2] != "-") {
+            n = split(parts[2], names, " ")
+            for (i = 1; i <= n; i++) if (names[i] != "") print "nonblock:" names[i]
+          }
+        }
+      '
+      return $?
+      ;;
+  esac
+
+  # A machine-state marker is valid only in its complete final-line form. If a
+  # marker-like line exists elsewhere in the tail, legacy parsing must not drop
+  # its series identity and silently accept a different branch/base/scope.
+  if grep -F 'MULTI_CLI_UNRESOLVED_CRITICAL' "$1" >/dev/null; then
+    return 1
+  else
+    local marker_scan_rc=$?
+    [[ "$marker_scan_rc" -eq 1 ]] || return 1
+  fi
+
+  printf '%s\n' "$report_tail" | awk '
+    /^Critical issues detected \([^)]*\)\. Review before proceeding\.$/ ||
+    /^Unparseable result treated as critical \([^)]*\):/ {
+      line = $0; sub(/^[^(]*\(/, "", line); sub(/\).*$/, "", line)
+      gsub(/,[[:space:]]*/, "\nblock:", line); print "block:" line
+    }
+    /^Critical findings in non-blocking perspectives \([^)]*\)\.$/ ||
+    /^Unparseable result treated as critical, in non-blocking perspectives \([^)]*\)\.$/ {
+      line = $0; sub(/^[^(]*\(/, "", line); sub(/\).*$/, "", line)
+      gsub(/,[[:space:]]*/, "\nnonblock:", line); print "nonblock:" line
+    }
+  '
+}
+
+execution_plan_has_perspective() { # <perspective>
+  local entry
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    [[ "${entry#*:}" == "$1" ]] && return 0
+  done <<< "$EXECUTION_PLAN"
+  return 1
+}
+
+is_unfiltered_full_review_plan() {
+  [[ "$MODE" != "cross-model" \
+    && -z "$CLI_FILTER" \
+    && -z "$PERSPECTIVE_FILTER" \
+    && -z "$EXCLUDE_PERSPECTIVES" ]]
+}
+
+capture_and_guard_unresolved_critical_state() {
+  [[ "$TASK_TYPE" == "review" ]] || return 0
+  local report_file="${OUTPUT_DIR}/integrated-report.md" parsed tagged tag perspective missing="" marker_rc=0
+  local previous_series="" current_series=""
+  [[ -f "$report_file" ]] || return 0
+  if ! parsed="$(extract_unresolved_critical_perspectives "$report_file")"; then
+    echo "ERROR: cannot inspect unresolved Critical perspectives in the previous report." >&2
+    echo "       Previous results were left untouched: ${report_file}" >&2
+    return 1
+  fi
+  if [[ -z "$parsed" ]]; then
+    if previous_report_has_critical_marker "$report_file"; then
+      marker_rc=0
+    else
+      marker_rc=$?
+    fi
+    case "$marker_rc" in
+      1) return 0 ;;
+      0)
+        echo "ERROR: the previous report has a Critical marker without a readable perspective list." >&2
+        echo "       Inspect the legacy report and move/delete it only if it is obsolete, then run a full review." >&2
+        echo "       Previous results were left untouched: ${report_file}" >&2
+        return 1
+        ;;
+      *)
+        echo "ERROR: cannot inspect Critical markers in the previous report." >&2
+        echo "       Previous results were left untouched: ${report_file}" >&2
+        return 1
+        ;;
+    esac
+  fi
+
+  while IFS= read -r tagged; do
+    [[ -n "$tagged" ]] || continue
+    tag="${tagged%%:*}"
+    perspective="${tagged#*:}"
+    if [[ "$tag" == "series" ]]; then
+      if [[ -n "$previous_series" ]] || ! [[ "$perspective" =~ ^[0-9]+-[0-9]+$ ]]; then
+        echo "ERROR: invalid review-series entry in previous Critical state: '${tagged}'" >&2
+        echo "       Previous results were left untouched: ${report_file}" >&2
+        return 1
+      fi
+      previous_series="$perspective"
+      continue
+    fi
+    if [[ "$tag" != "block" && "$tag" != "nonblock" ]] || ! is_safe_token "$perspective"; then
+      echo "ERROR: invalid perspective entry in previous Critical state: '${tagged}'" >&2
+      echo "       Previous results were left untouched: ${report_file}" >&2
+      return 1
+    fi
+    if [[ "$tag" == "block" ]]; then
+      list_contains "$PREVIOUS_UNRESOLVED_BLOCK" "$perspective" \
+        || PREVIOUS_UNRESOLVED_BLOCK="${PREVIOUS_UNRESOLVED_BLOCK:+$PREVIOUS_UNRESOLVED_BLOCK }$perspective"
+    else
+      list_contains "$PREVIOUS_UNRESOLVED_NONBLOCK" "$perspective" \
+        || PREVIOUS_UNRESOLVED_NONBLOCK="${PREVIOUS_UNRESOLVED_NONBLOCK:+$PREVIOUS_UNRESOLVED_NONBLOCK }$perspective"
+    fi
+  done <<< "$parsed"
+
+  if [[ -n "$PREVIOUS_UNRESOLVED_BLOCK" || -n "$PREVIOUS_UNRESOLVED_NONBLOCK" ]]; then
+    # Keep the prior report until an atomically completed new report replaces
+    # it. A new review series does not inherit the classifications, but setup
+    # failure must still not erase the old series' only durable evidence.
+    PRESERVE_PREVIOUS_CRITICAL_REPORT=true
+  fi
+
+  # A machine state line is written after every review, including an all-clear
+  # run. With no unresolved perspectives there is nothing to protect, so a
+  # later base/branch/scope change must not block an otherwise valid run.
+  if [[ -z "$PREVIOUS_UNRESOLVED_BLOCK" && -z "$PREVIOUS_UNRESOLVED_NONBLOCK" ]]; then
+    if previous_report_has_critical_marker "$report_file"; then
+      echo "ERROR: the previous report has a Critical marker but its machine state is empty." >&2
+      echo "       Previous results were left untouched: ${report_file}" >&2
+      return 1
+    else
+      marker_rc=$?
+    fi
+    case "$marker_rc" in
+      1) return 0 ;;
+      *)
+        echo "ERROR: cannot inspect Critical markers in the previous report." >&2
+        echo "       Previous results were left untouched: ${report_file}" >&2
+        return 1
+        ;;
+    esac
+  fi
+
+  if [[ -n "$previous_series" ]]; then
+    current_series="$(current_review_series_id)" || {
+      echo "ERROR: cannot identify the current review series." >&2
+      return 1
+    }
+    if [[ "$previous_series" != "$current_series" ]]; then
+      if is_unfiltered_full_review_plan; then
+        PREVIOUS_UNRESOLVED_BLOCK=""
+        PREVIOUS_UNRESOLVED_NONBLOCK=""
+        echo "ℹ️  Previous Critical state belongs to another branch/base/scope; this unfiltered full review starts a new series." >&2
+        return 0
+      fi
+      echo "ERROR: the previous Critical state belongs to another branch/base/scope." >&2
+      echo "       Run an unfiltered full review to start a new review series." >&2
+      echo "       Previous results were left untouched: ${report_file}" >&2
+      return 1
+    fi
+  fi
+
+  for perspective in $PREVIOUS_UNRESOLVED_BLOCK $PREVIOUS_UNRESOLVED_NONBLOCK; do
+    execution_plan_has_perspective "$perspective" \
+      || missing="${missing:+$missing }$perspective"
+  done
+
+  if [[ -n "$missing" ]]; then
+    echo "ERROR: narrowed review omits unresolved Critical perspective(s): ${missing}" >&2
+    echo "       Include every listed perspective and verify its marker is resolved before narrowing." >&2
+    echo "       Previous results were left untouched: ${report_file}" >&2
+    return 1
+  fi
+  return 0
+}
+
+task_failed_for_perspective() { # <cli> <perspective>
+  local failed_entry prefix="${1}/${2}:"
+  for failed_entry in $FAILED_TASKS; do
+    [[ "$failed_entry" == "$prefix"* ]] && return 0
+  done
+  return 1
 }
 
 # ── タスク実行 + rc 記録（Issue #251） ──
@@ -2488,16 +2747,19 @@ execute_tasks() {
   validate_implement_output_boundary || return 2
   validate_output_dir_boundary || return 2
   acquire_output_lock || return 2
-  # capture/identity preparation can fail before clear_planned_outputs. Remove the
-  # prior report first so that a setup failure can never leave a stale report at
-  # the exact path printed by successful runs.
+  # The previous report is the evidence this guard validates. Run it before
+  # clear_previous_integrated_report and before any result file is changed.
+  capture_and_guard_unresolved_critical_state || return 2
+  # An all-clear prior report is stale once this run starts. An unresolved prior
+  # report remains the durable guard state until a new report proves resolution,
+  # so clear_previous_integrated_report deliberately preserves that case.
   clear_previous_integrated_report || return 2
   # 結果ディレクトリの解決検査は**<cli>/ 配下へ触る最初の操作より前**に一括で行う
   # （Issue #537 / #654）。この下の resume 書き戻し（cp）・clear_planned_outputs
   # （rm -f）・退避（mv）はどれも `${OUTPUT_DIR}/<cli>/` を素通りするので、検査を
   # 退避の中に置くと <cli> が外向き symlink のときに検査到達前へ書き込み・削除が
-  # 済んでしまう。統合レポートの削除より後に置くのは、この検査で落ちた実行が
-  # 「前回のレポートを今回の結果として案内する」状態を残さないため（上の理由と対）。
+  # 済んでしまう。all-clear の統合レポート削除より後に置く。未解消レポートは次回
+  # ガードの状態なので、この検査が落ちても保持する（上の例外規則）。
   validate_planned_result_dirs || return 2
   # A task without prompt diff must not inherit the previous review's fixed diff.
   # Diff-bearing tasks overwrite the file in create_fixed_diff below; removing it
@@ -3080,11 +3342,16 @@ resolve_critical_nonblock_perspectives() {
 
 # ── Generate Report (review) ──
 generate_review_report() {
-  local report_file="${OUTPUT_DIR}/integrated-report.md"
+  local final_report_file="${OUTPUT_DIR}/integrated-report.md"
+  local report_file="${final_report_file}.building.$$"
 
   echo "📝 Generating integrated review report..." >&2
 
-  cat > "$report_file" <<HEADER
+  if ! rm -f "$report_file"; then
+    echo "ERROR: cannot clear the temporary integrated review report: ${report_file}" >&2
+    return 1
+  fi
+  if ! cat > "$report_file" <<HEADER
 # Multi-CLI Review — Integrated Report
 
 **Generated:** $(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -3095,12 +3362,21 @@ generate_review_report() {
 ---
 
 HEADER
+  then
+    echo "ERROR: cannot initialize the integrated review report." >&2
+    rm -f "$report_file" 2>/dev/null || true
+    return 1
+  fi
 
   local has_results=true
   append_plan_sections "$report_file" || has_results=false
 
   if [[ "$has_results" == "false" ]]; then
-    echo "(No review results found.)" >> "$report_file"
+    if ! echo "(No review results found.)" >> "$report_file"; then
+      echo "ERROR: cannot write the integrated review report." >&2
+      rm -f "$report_file" 2>/dev/null || true
+      return 1
+    fi
   fi
 
   # CRITICAL_BLOCK は Critical の実所見があるときだけ出す（Issue #272）。マーカーは
@@ -3156,6 +3432,7 @@ HEADER
   # あった」と「本文を判定しきれなかった」を同じ文で報告すると、判定不能の観測が
   # stderr にしか残らず、INCOMPLETE と同型の「空振りを所見と読む」誤読を生む。
   local crit_block_unparse="" crit_nonblock_unparse="" crit_target
+  local crit_block_retained="" crit_nonblock_retained="" state_block state_nonblock state_series
   crit_nonblock_set="$(resolve_critical_nonblock_perspectives)"
   # 名簿の typo は「その観点が計画に現れない」だけでブロック側へ倒れる（fail closed）
   # ため実害はないが、意図した格下げが黙って効かないので診断を残す。
@@ -3168,6 +3445,19 @@ HEADER
     [[ -z "$crit_entry" ]] && continue
     if [[ " $crit_seen " == *" $crit_entry "* ]]; then continue; fi
     crit_seen="$crit_seen $crit_entry"
+    crit_persp="${crit_entry#*:}"
+    # A failed/timeout rerun did not prove resolution. Preserve that
+    # perspective's prior classification instead of judging incomplete output.
+    if task_failed_for_perspective "${crit_entry%%:*}" "$crit_persp"; then
+      if list_contains "$PREVIOUS_UNRESOLVED_BLOCK" "$crit_persp"; then
+        crit_block_retained="${crit_block_retained:+$crit_block_retained }$crit_persp"
+        continue
+      fi
+      if list_contains "$PREVIOUS_UNRESOLVED_NONBLOCK" "$crit_persp"; then
+        crit_nonblock_retained="${crit_nonblock_retained:+$crit_nonblock_retained }$crit_persp"
+        continue
+      fi
+    fi
     crit_file="${OUTPUT_DIR}/${crit_entry%%:*}/${crit_entry#*:}.md"
     [[ -f "$crit_file" ]] || continue
     set +e
@@ -3216,7 +3506,6 @@ HEADER
         crit_found=unparse ;;
     esac
     if [[ -n "$crit_found" ]]; then
-      crit_persp="${crit_entry#*:}"
       if [[ " ${crit_nonblock_set} " == *" ${crit_persp} "* ]]; then
         crit_target="nonblock"
       else
@@ -3234,8 +3523,8 @@ HEADER
       esac
     fi
   done <<< "$EXECUTION_PLAN"
-  if [[ -n "$crit_block_hits" || -n "$crit_block_unparse" ]]; then
-    {
+  if [[ -n "$crit_block_hits" || -n "$crit_block_unparse" || -n "$crit_block_retained" ]]; then
+    if ! {
       echo ""
       echo "<!-- CRITICAL_BLOCK -->"
       if [[ -n "$crit_block_hits" ]]; then
@@ -3244,11 +3533,18 @@ HEADER
       if [[ -n "$crit_block_unparse" ]]; then
         echo "Unparseable result treated as critical (${crit_block_unparse// /, }): the body could not be fully judged — see the run diagnostics."
       fi
-    } >> "$report_file"
+      if [[ -n "$crit_block_retained" ]]; then
+        echo "Previous Critical remains unresolved because its rerun failed (${crit_block_retained// /, })."
+      fi
+    } >> "$report_file"; then
+      echo "ERROR: cannot write blocking Critical state to the integrated review report." >&2
+      rm -f "$report_file" 2>/dev/null || true
+      return 1
+    fi
   fi
-  if [[ -n "$crit_nonblock_hits" || -n "$crit_nonblock_unparse" ]]; then
+  if [[ -n "$crit_nonblock_hits" || -n "$crit_nonblock_unparse" || -n "$crit_nonblock_retained" ]]; then
     # 本文に "CRITICAL_BLOCK" を部分一致で含めないこと（上の段階化コメント参照）。
-    {
+    if ! {
       echo ""
       echo "<!-- CRITICAL_NONBLOCK -->"
       if [[ -n "$crit_nonblock_hits" ]]; then
@@ -3257,11 +3553,43 @@ HEADER
       if [[ -n "$crit_nonblock_unparse" ]]; then
         echo "Unparseable result treated as critical, in non-blocking perspectives (${crit_nonblock_unparse// /, })."
       fi
+      if [[ -n "$crit_nonblock_retained" ]]; then
+        echo "Previous non-blocking Critical remains unresolved because its rerun failed (${crit_nonblock_retained// /, })."
+      fi
       echo "Fix them per the review response policy; on their own they do not re-trigger the full gate."
-    } >> "$report_file"
+    } >> "$report_file"; then
+      echo "ERROR: cannot write non-blocking Critical state to the integrated review report." >&2
+      rm -f "$report_file" 2>/dev/null || true
+      return 1
+    fi
   fi
 
-  echo "📄 Report: ${report_file}" >&2
+  # Machine-readable final line for the next partial run. It is intentionally
+  # unsigned and minimal: the guard prevents accidental omission, not hostile
+  # report tampering. Perspective names are validated before they are consumed.
+  state_block="${crit_block_hits}${crit_block_hits:+ }${crit_block_unparse}${crit_block_unparse:+ }${crit_block_retained}"
+  state_nonblock="${crit_nonblock_hits}${crit_nonblock_hits:+ }${crit_nonblock_unparse}${crit_nonblock_unparse:+ }${crit_nonblock_retained}"
+  state_block="${state_block% }"
+  state_nonblock="${state_nonblock% }"
+  state_series="$(current_review_series_id)" || {
+    echo "ERROR: cannot identify the current review series for the report." >&2
+    rm -f "$report_file" 2>/dev/null || true
+    return 1
+  }
+  if ! printf '<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:%s block:%s nonblock:%s -->\n' \
+    "$state_series" "${state_block:--}" "${state_nonblock:--}" >> "$report_file"; then
+    echo "ERROR: cannot persist unresolved Critical state in the integrated report." >&2
+    rm -f "$report_file" 2>/dev/null || true
+    return 1
+  fi
+
+  if ! mv "$report_file" "$final_report_file"; then
+    echo "ERROR: cannot publish the completed integrated review report." >&2
+    rm -f "$report_file" 2>/dev/null || true
+    return 1
+  fi
+
+  echo "📄 Report: ${final_report_file}" >&2
 }
 
 # ── Generate Report (explore) ──
@@ -3549,8 +3877,9 @@ main() {
   if [[ -n "$REPO_SNAPSHOT_BEFORE" ]]; then
     verify_repo_unchanged || exit 1
   fi
+  finalize_resume_cache || exit 1
 
-  generate_report
+  generate_report || exit 1
 
   echo "" >&2
   echo "🏁 Done! View results:" >&2

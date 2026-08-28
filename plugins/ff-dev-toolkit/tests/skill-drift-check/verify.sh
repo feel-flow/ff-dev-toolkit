@@ -520,6 +520,68 @@ else
   ok "併存列挙を 1 件に潰す変異: 全件列挙が崩れる（検出力の実測）"
 fi
 
+# ---- ロード中のコピーに無いスキル（Issue #881）---------------------------------
+# union（全インストール実体の和集合）との差分は「どこかに在れば無音」なので、
+# **セッションが実際に読んでいるコピー**に無いスキルを取り逃がす。実測（#881）:
+# ロード済みが v0.14.0（3 スキル）、キャッシュに v0.61.0（21 スキル）が併存する状態で
+# `/retrospective` が Unknown skill になったのに、union には在るので無音だった。
+#
+# ここでは own_root（= CLAUDE_PLUGIN_ROOT）に skills/ を持たせた fixture を使う。
+# 既定の $FIX は skills/ を持たない名前提供用のスタブなので、専用の root を作る。
+LOADED="$TMP/loaded-old"
+mkdir -p "$LOADED/hooks"
+make_plugin "$LOADED" "0.14.0" alpha
+cp "$TARGET" "$LOADED/hooks/check-skill-drift.sh"
+chmod +x "$LOADED/hooks/check-skill-drift.sh"
+
+REPO="$TMP/repo-loaded"
+CLAUDE="$TMP/claude-loaded"
+make_plugin "$REPO/plugins/ff-dev-toolkit" "0.40.0" alpha beta gamma
+# キャッシュ側は全スキルを持つ = union では欠落なし（この検査が無いと無音になる形）
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.40.0" "0.40.0" alpha beta gamma
+
+LOADED_OUT="$(CLAUDE_PLUGIN_ROOT="$LOADED" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE" \
+  bash "$LOADED/hooks/check-skill-drift.sh" 2>/dev/null)"
+
+# 前提: union には欠落が無い（この検査だけが赤にできる状況であることの確認）。
+# ここを測らずに下を読むと、union 差分が出した通知を「新しい検査が効いた」と読み違える。
+if printf '%s' "$LOADED_OUT" | grep -F 'インストール実体に無いスキル' >/dev/null; then
+  bad "ロード中コピー検査: union 差分が発火しており、この検査だけの効果を測れていない"
+else
+  ok "ロード中コピー検査: union には欠落が無い（前提の確認）"
+fi
+if printf '%s' "$LOADED_OUT" | grep -F 'いま読み込まれている ff-dev-toolkit' >/dev/null \
+  && printf '%s' "$LOADED_OUT" | grep -E '無いスキルがあります: .*\bbeta\b' >/dev/null \
+  && printf '%s' "$LOADED_OUT" | grep -E '無いスキルがあります: .*\bgamma\b' >/dev/null; then
+  ok "ロード中コピー検査: 呼べないスキル名を名指しする"
+else
+  bad "ロード中コピー検査: 名指しが不足: $(printf '%s' "$LOADED_OUT" | head -c 400)"
+fi
+if printf '%s' "$LOADED_OUT" | grep -E '無いスキルがあります: .*\balpha\b' >/dev/null; then
+  bad "ロード中コピー検査: ロード中コピーに在るスキルまで名指ししている"
+else
+  ok "ロード中コピー検査: ロード中コピーに在るスキルは名指ししない"
+fi
+if printf '%s' "$LOADED_OUT" | grep -F 'Unknown skill' >/dev/null; then
+  ok "ロード中コピー検査: 呼び出しがどう失敗するかを述べている"
+else
+  bad "ロード中コピー検査: 失敗の形（Unknown skill）が伝わらない"
+fi
+
+# 一致していれば無出力（常時ノイズにしない。#881 の GWT 2 つ目）
+make_plugin "$LOADED" "0.40.0" alpha beta gamma
+SAME_OUT="$(CLAUDE_PLUGIN_ROOT="$LOADED" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE" \
+  bash "$LOADED/hooks/check-skill-drift.sh" 2>/dev/null)"
+if [ -z "$SAME_OUT" ]; then
+  ok "ロード中コピー検査: 一致していれば無出力"
+else
+  bad "ロード中コピー検査: 一致しているのに通知した: $(printf '%s' "$SAME_OUT" | head -c 200)"
+fi
+
 echo
 echo "skill-drift-check: passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

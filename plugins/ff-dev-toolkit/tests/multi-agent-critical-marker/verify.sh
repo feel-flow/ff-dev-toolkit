@@ -85,6 +85,16 @@ STUB="$TMP/bin"
 mkdir -p "$STUB"
 cat > "$STUB/codex" <<SH
 #!/usr/bin/env bash
+printf 'call\n' >> "$TMP/stub-calls"
+if [[ -f "$TMP/stub-exit" ]]; then
+  exit "\$(cat "$TMP/stub-exit")"
+fi
+if [[ -f "$TMP/stub-sleep" ]]; then
+  sleep 30
+fi
+if [[ -f "$TMP/stub-mutate-repo" ]]; then
+  printf 'mutation during review\n' >> "$REPO/app.txt"
+fi
 cat "$TMP/body.md"
 SH
 chmod +x "$STUB/codex"
@@ -841,6 +851,391 @@ else
   bad "ケース 20 のレポートが残っていない（帰属検査は空振り）"
 fi
 
+echo "== 未解消 Critical を除外する部分再検証の拒否 =="
+
+run_sequence_step() { # $1: orchestrator / $2: perspective / $3: log / $4: timeout / $5: resume
+  local target="$1" perspective="$2" log="$3" timeout="${4:-60}" resume="${5:-false}"
+  SEQUENCE_RC=0
+  set +e
+  if [[ "$resume" == "true" ]]; then
+    run_isolated PATH="$STUB:$PATH" bash "$target" \
+      --task review --cli codex-cli --perspective "$perspective" \
+      --base develop --timeout "$timeout" --resume >"$log" 2>&1
+  else
+    run_isolated PATH="$STUB:$PATH" bash "$target" \
+      --task review --cli codex-cli --perspective "$perspective" \
+      --base develop --timeout "$timeout" >"$log" 2>&1
+  fi
+  SEQUENCE_RC=$?
+  set -e
+}
+
+rm -rf "$REPO/.review-results"
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-unresolved-critical -->
+## Code Review Results
+
+### Critical Issues
+- [app.txt:2] 認証チェックの欠落
+
+### Summary
+- Critical: 1
+BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/unresolved-initial.log"
+if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
+  && grep -qF "$MARKER" "$REPORT" \
+  && tail -n 1 "$REPORT" | grep -F 'block:code-review nonblock:-' >/dev/null; then
+  ok "未解消 Critical の初回レポートが機械可読な観点状態を持つ"
+else
+  bad "未解消観点の初回状態を作れない (rc=$SEQUENCE_RC)"
+fi
+
+cp "$REPORT" "$TMP/report-before-omission.md"
+
+# ガード通過後の setup failure でも、唯一の永続状態である旧レポートを失わない。
+mv "$REPO/.review-results/codex-cli" "$TMP/codex-cli-before-setup-failure"
+mkdir -p "$TMP/outside-result-dir"
+ln -s "$TMP/outside-result-dir" "$REPO/.review-results/codex-cli"
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/unresolved-setup-failure.log"
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'Aborted before running any task' "$TMP/unresolved-setup-failure.log" \
+  && cmp -s "$TMP/report-before-omission.md" "$REPORT"; then
+  ok "再検証の準備失敗でも前回の未解消レポートを保持する"
+else
+  bad "準備失敗で前回の未解消状態が失われる (rc=$SEQUENCE_RC)"
+fi
+rm "$REPO/.review-results/codex-cli"
+mv "$TMP/codex-cli-before-setup-failure" "$REPO/.review-results/codex-cli"
+
+# タスク完了後の revision guard 失敗でも、旧レポートを新しい成功扱いに
+# 置き換えず、次回の省略ガードへ残す。
+touch "$TMP/stub-mutate-repo"
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/unresolved-revision-failure.log"
+rm -f "$TMP/stub-mutate-repo"
+printf 'base\nchange for review\n' > "$REPO/app.txt"
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'The repository changed while the review was running' "$TMP/unresolved-revision-failure.log" \
+  && cmp -s "$TMP/report-before-omission.md" "$REPORT"; then
+  ok "リビジョン変更で破棄した再検証も前回の未解消レポートを保持する"
+else
+  bad "リビジョン変更で前回の未解消状態が失われる (rc=$SEQUENCE_RC)"
+fi
+
+calls_before="$(wc -l < "$TMP/stub-calls" | tr -d ' ')"
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/unresolved-after-revision-resume.log" 60 true
+calls_after="$(wc -l < "$TMP/stub-calls" | tr -d ' ')"
+if [[ "$SEQUENCE_RC" -eq 0 && "$calls_after" -eq $((calls_before + 1)) ]] \
+  && grep -qF "$MARKER" "$REPORT"; then
+  ok "リビジョン変更で破棄した結果を resume cache から再利用しない"
+else
+  bad "破棄した再検証結果が resume cache から再利用された (rc=$SEQUENCE_RC)"
+fi
+cp "$REPORT" "$TMP/report-before-omission.md"
+
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-omitted-perspective -->
+## Comment Analysis Results
+
+### Critical Issues
+- なし
+
+### Summary
+- Critical: 0
+BODY
+run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/unresolved-omitted.log"
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'omits unresolved Critical perspective(s): code-review' "$TMP/unresolved-omitted.log"; then
+  ok "未解消観点を除外した部分再検証を実行前に拒否する"
+else
+  bad "未解消観点を除外した部分再検証が拒否されない (rc=$SEQUENCE_RC)"
+fi
+if cmp -s "$TMP/report-before-omission.md" "$REPORT" \
+  && [[ ! -e "$REPO/.review-results/codex-cli/comment-analysis.md" ]]; then
+  ok "拒否時は直前レポートと結果ファイルを変更しない"
+else
+  bad "拒否前の証拠が書き換えられた"
+fi
+
+# 別ブランチの同名観点で元ブランチの状態を解消できない。
+git switch -q -c other-review-series
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/other-series.log"
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'belongs to another branch/base/scope' "$TMP/other-series.log"; then
+  ok "別ブランチからの絞り込み付き再検証を拒否する"
+else
+  bad "別ブランチの同名観点が元の未解消状態を通過した (rc=$SEQUENCE_RC)"
+fi
+if cmp -s "$TMP/report-before-omission.md" "$REPORT"; then
+  ok "レビュー系列の不一致拒否時も前回レポートを保持する"
+else
+  bad "レビュー系列の不一致拒否時に証拠が変更された"
+fi
+
+SEQUENCE_RC=0
+set +e
+run_isolated PATH="$STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
+  --task review --mode cross-model --base develop --timeout 60 \
+  >"$TMP/other-series-cross-model.log" 2>&1
+SEQUENCE_RC=$?
+set -e
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'belongs to another branch/base/scope' "$TMP/other-series-cross-model.log" \
+  && cmp -s "$TMP/report-before-omission.md" "$REPORT"; then
+  ok "別系列の cross-model 単一観点をフルレビューとして扱わない"
+else
+  bad "cross-model 単一観点が別系列の未解消状態を解除した (rc=$SEQUENCE_RC)"
+fi
+
+mv "$REPO/.review-results/codex-cli" "$TMP/codex-cli-before-new-series-setup-failure"
+mkdir -p "$TMP/outside-new-series-result-dir"
+ln -s "$TMP/outside-new-series-result-dir" "$REPO/.review-results/codex-cli"
+SEQUENCE_RC=0
+set +e
+run_isolated PATH="$STUB:/usr/bin:/bin" \
+  MULTI_AGENT_REVIEW_MAIN=codex-cli MULTI_AGENT_REVIEW_SUB= \
+  bash "$MULTI_AGENT" --task review --base develop --timeout 60 \
+  >"$TMP/new-series-setup-failure.log" 2>&1
+SEQUENCE_RC=$?
+set -e
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'Aborted before running any task' "$TMP/new-series-setup-failure.log" \
+  && cmp -s "$TMP/report-before-omission.md" "$REPORT"; then
+  ok "別系列のフルレビューも準備失敗時は前系列の未解消レポートを保持する"
+else
+  bad "別系列の準備失敗で前系列の未解消状態が失われる (rc=$SEQUENCE_RC)"
+fi
+rm "$REPO/.review-results/codex-cli"
+mv "$TMP/codex-cli-before-new-series-setup-failure" "$REPO/.review-results/codex-cli"
+git switch -q feature/x
+
+# Guard call を外した変異は、同じ入力で部分再検証を通し、マーカーを
+# 最新レポートから消すことを実測する。
+MUTANT_PLUGIN="$TMP/mutant-plugin"
+cp -R "$PLUGIN_ROOT" "$MUTANT_PLUGIN"
+sed '/capture_and_guard_unresolved_critical_state || return 2/d' \
+  "$MULTI_AGENT" > "$MUTANT_PLUGIN/scripts/multi-agent.sh.mutant"
+mv "$MUTANT_PLUGIN/scripts/multi-agent.sh.mutant" "$MUTANT_PLUGIN/scripts/multi-agent.sh"
+chmod +x "$MUTANT_PLUGIN/scripts/multi-agent.sh"
+run_sequence_step "$MUTANT_PLUGIN/scripts/multi-agent.sh" comment-analysis "$TMP/unresolved-mutant.log"
+if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
+  && grep -qF 'sentinel-omitted-perspective' "$REPORT" \
+  && ! grep -qF "$MARKER" "$REPORT"; then
+  ok "ガード除去変異は未解消マーカーを消す（suite が退行を検出できる）"
+else
+  bad "ガード除去変異が従来の偽の緑を再現しない (rc=$SEQUENCE_RC)"
+fi
+
+# 未解消観点を再実行しても、CLI 失敗は解消の証拠ではない。
+rm -rf "$REPO/.review-results"
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-rerun-failure-initial -->
+## Code Review Results
+### Critical Issues
+- [app.txt:2] 認可欠落
+### Summary
+- Critical: 1
+BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/rerun-failure-initial.log"
+printf '17\n' > "$TMP/stub-exit"
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/rerun-failure.log"
+rm -f "$TMP/stub-exit"
+if [[ "$SEQUENCE_RC" -ne 0 ]]; then
+  ok "未解消観点の CLI 失敗を非 0 で報告する"
+else
+  bad "未解消観点の CLI 失敗が成功扱いになった"
+fi
+if [[ -f "$REPORT" ]] \
+  && grep -qF 'Previous Critical remains unresolved because its rerun failed (code-review).' "$REPORT" \
+  && grep -qF "$MARKER" "$REPORT"; then
+  ok "再実行失敗時は前回の未解消マーカーを保持する"
+else
+  bad "再実行失敗時に未解消マーカーが消えた"
+fi
+
+touch "$TMP/stub-sleep"
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/rerun-timeout.log" 1
+rm -f "$TMP/stub-sleep"
+if [[ "$SEQUENCE_RC" -ne 0 ]] && grep -qF 'timed out after 1s' "$TMP/rerun-timeout.log"; then
+  ok "未解消観点の実 timeout を非 0 で報告する"
+else
+  bad "未解消観点の実 timeout 経路を作れない (rc=$SEQUENCE_RC)"
+fi
+if [[ -f "$REPORT" ]] \
+  && grep -qF 'Previous Critical remains unresolved because its rerun failed (code-review).' "$REPORT" \
+  && grep -qF "$MARKER" "$REPORT"; then
+  ok "実 timeout 時も前回の未解消マーカーを保持する"
+else
+  bad "実 timeout 時に未解消マーカーが消えた"
+fi
+
+# 正しい観点が正常完了して解消した場合だけ、状態を消す。
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-resolved-perspective -->
+## Code Review Results
+### Critical Issues
+- なし
+### Summary
+- Critical: 0
+BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/resolved.log"
+if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
+  && grep -qF 'sentinel-resolved-perspective' "$REPORT" \
+  && ! grep -qF "$MARKER" "$REPORT" \
+  && tail -n 1 "$REPORT" | grep -F 'block:- nonblock:-' >/dev/null; then
+  ok "未解消観点の正常再実行でマーカーを解消できる"
+else
+  bad "未解消観点を正常再実行しても解消できない (rc=$SEQUENCE_RC)"
+fi
+
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-after-resolution -->
+## Comment Analysis Results
+### Critical Issues
+- なし
+### Summary
+- Critical: 0
+BODY
+run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/after-resolution.log"
+if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
+  && grep -qF 'sentinel-after-resolution' "$REPORT" \
+  && ! grep -qF "$MARKER" "$REPORT"; then
+  ok "解消後は別観点の部分再検証を許可する"
+else
+  bad "解消後も部分再検証が拒否される (rc=$SEQUENCE_RC)"
+fi
+
+git switch -q -c cleared-other-review-series
+run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/after-resolution-other-series.log"
+if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
+  && grep -qF 'sentinel-after-resolution' "$REPORT" \
+  && ! grep -qF "$MARKER" "$REPORT"; then
+  ok "未解消観点が無ければ別レビュー系列の絞り込みも許可する"
+else
+  bad "解消済み状態なのに別レビュー系列の絞り込みが拒否される (rc=$SEQUENCE_RC)"
+fi
+git switch -q feature/x
+
+# 非ブロック観点も同じ生命周期で保護する。
+rm -rf "$REPO/.review-results"
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-nonblock-initial -->
+## Comment Analysis Results
+### Critical Issues
+- 用語の事実誤認
+### Summary
+- Critical: 1
+BODY
+run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/nonblock-initial.log"
+if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
+  && grep -qF "$NONBLOCK_MARKER" "$REPORT" \
+  && tail -n 1 "$REPORT" | grep -F 'nonblock:comment-analysis' >/dev/null; then
+  ok "非ブロック Critical も観点状態として記録する"
+else
+  bad "非ブロック Critical の初回状態を作れない"
+fi
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/nonblock-omitted.log"
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'omits unresolved Critical perspective(s): comment-analysis' "$TMP/nonblock-omitted.log"; then
+  ok "未解消の非ブロック観点を省く再検証も拒否する"
+else
+  bad "非ブロック観点の省略を拒否できない"
+fi
+printf '17\n' > "$TMP/stub-exit"
+run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/nonblock-failed.log"
+rm -f "$TMP/stub-exit"
+if [[ "$SEQUENCE_RC" -ne 0 && -f "$REPORT" ]] \
+  && grep -qF 'Previous non-blocking Critical remains unresolved because its rerun failed (comment-analysis).' "$REPORT"; then
+  ok "非ブロック観点も再実行失敗時に分類を保持する"
+else
+  bad "非ブロック観点の失敗時保持が機能しない"
+fi
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-nonblock-resolved -->
+## Comment Analysis Results
+### Critical Issues
+- なし
+### Summary
+- Critical: 0
+BODY
+run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/nonblock-resolved.log"
+if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
+  && ! grep -qF "$NONBLOCK_MARKER" "$REPORT" \
+  && tail -n 1 "$REPORT" | grep -F 'nonblock:-' >/dev/null; then
+  ok "非ブロック観点も正常再実行で解消できる"
+else
+  bad "非ブロック観点を正常再実行しても解消できない"
+fi
+
+# 機械状態の構文破損は未解消なしとして通さない。
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:code-review nonblock:test-analysis nonblock:comment-analysis -->
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/malformed-state.log"
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'cannot inspect unresolved Critical perspectives' "$TMP/malformed-state.log"; then
+  ok "nonblock 区切りが重複する破損状態を fail closed で拒否する"
+else
+  bad "破損した機械状態から観点が黙って脱落した"
+fi
+
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block: nonblock:- -->
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/empty-state-field.log"
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'cannot inspect unresolved Critical perspectives' "$TMP/empty-state-field.log"; then
+  ok "空の block フィールドを未解消なしとして受理しない"
+else
+  bad "空の機械状態フィールドを正常状態として受理した"
+fi
+
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:- nonblock:- -->
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/inconsistent-empty-state.log"
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'Critical marker but its machine state is empty' "$TMP/inconsistent-empty-state.log"; then
+  ok "Critical マーカーと空の機械状態の矛盾を fail closed で拒否する"
+else
+  bad "Critical マーカーと空状態の矛盾を見逃した"
+fi
+
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:code-review nonblock:- -->
+REPORT_BODY
+for trailing_index in 1 2 3 4 5 6 7 8 9 10 11 12 13; do
+  printf 'trailing diagnostic %s\n' "$trailing_index" >> "$REPORT"
+done
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/machine-state-not-final.log"
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'cannot inspect unresolved Critical perspectives' "$TMP/machine-state-not-final.log"; then
+  ok "最終行でない機械状態を旧形式として復元しない"
+else
+  bad "位置が壊れた機械状態から series が黙って脱落した"
+fi
+
+# アップグレード直後の旧形式レポートは末尾の既存要約から復元する。
+cat > "$REPORT" <<'REPORT_BODY'
+# Legacy integrated report
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/legacy-state.log"
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'omits unresolved Critical perspective(s): code-review' "$TMP/legacy-state.log"; then
+  ok "旧形式レポートの観点一覧も部分再検証ガードへ引き継ぐ"
+else
+  bad "旧形式レポートの未解消観点を復元できない"
+fi
+
 echo
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ multi-agent-critical-marker verify: $FAIL 件失敗" >&2
@@ -850,8 +1245,8 @@ fi
 # インライン検査が黙って削られても FAIL=0 のまま通ってしまうため、✓ の総数まで
 # 固定する。ケースを増減させたらここも同時に更新すること。
 # 実 yq が居る環境では代表照合 17R（2）+ YAML リスト L1（2）+ L2（2）の 6 検査が加わる
-EXPECTED_PASS=50
-[ "$HAVE_YQ" -eq 1 ] && EXPECTED_PASS=56
+EXPECTED_PASS=77
+[ "$HAVE_YQ" -eq 1 ] && EXPECTED_PASS=83
 if [ "$PASS" -ne "$EXPECTED_PASS" ]; then
   echo "✗ multi-agent-critical-marker verify: 検査数が想定と違います（実測 ${PASS} / 想定 ${EXPECTED_PASS}）。検査が黙って消えたか、追加分の想定更新漏れです" >&2
   exit 1

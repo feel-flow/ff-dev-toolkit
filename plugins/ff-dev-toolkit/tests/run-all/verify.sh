@@ -9,7 +9,7 @@
 # 縛っておかないと、この修正自体が静かに巻き戻る。
 #
 # 検証は fixtures/ の疑似 suite（pass / fail / fail-skip-marker / skip / skip-large /
-# not-executable、および存在しない missing）をランナーへ明示引数で渡して行う。高速モードの
+# partial-skip / not-executable、および存在しない missing）をランナーへ明示引数で渡して行う。高速モードの
 # 検査にはさらに pass-selftest（対の本体 pass/ が実在する = 除外される）・pass-selftest-extra
 # （`-selftest` 終端でない）・orphan-selftest（対の fixtures/orphan/ を**作らない**ことで
 # 「対なし = 除外しない」を作る）を使う。orphan/ を作ると case 16・26 の前提が崩れる。既定の suite
@@ -82,6 +82,10 @@ rm -f "$RUN_GATE_RECORD"
 #
 # どちらも与えない呼び出しは「明示引数 + 環境変数なし」= 名指しした suite を全部走らせる形
 # （ADR-034）。引数なしの既定一覧が高速モードであることは case 26 が複製木で検査する。
+#
+# 同時実行数は RUN_JOBS で与える。**既定は 1（逐次）**にする — 並列実行（Issue #595）は
+# 起動順とスロットの空き方で完了順が変わるため、既定のままだとケースごとに再現性の無い
+# 実行になる。並列側の契約は case 30〜32 が RUN_JOBS を明示して測る。
 run_runner() {
   # 両方 1 は呼び出し側の意図が不明なので黙って一方を採らない（この suite が最も警戒する形）。
   if [ "${RUN_FAST:-0}" = "1" ] && [ "${RUN_FULL:-0}" = "1" ]; then
@@ -91,11 +95,11 @@ run_runner() {
     return 0
   fi
   if [ "${RUN_FAST:-0}" = "1" ]; then
-    if RUN_OUT="$(env -u FF_RUN_ALL_FULL FF_RUN_ALL_FAST=1 FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FULL FF_RUN_ALL_FAST=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   elif [ "${RUN_FULL:-0}" = "1" ]; then
-    if RUN_OUT="$(env -u FF_RUN_ALL_FAST FF_RUN_ALL_FULL=1 FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FAST FF_RUN_ALL_FULL=1 FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   else
-    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+    if RUN_OUT="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL FF_RUN_ALL_JOBS="${RUN_JOBS:-1}" FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" "$@" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
   fi
 }
 
@@ -183,6 +187,31 @@ expect_has '^○ skipped (環境都合で検証本体が未実行): skip$' "skip
 expect_lacks '^All ff-dev-toolkit fixture checks passed\.$' \
   "skip があるときに無条件の全体 pass を名乗らない"
 
+# ---- ケース2b: suite内の部分skipは別勘定 -------------------------------------
+# 外部AI CLIが無いCIの形。検査の一部だけを飛ばしてもsuiteはpassedのままだが、
+# 未実行の検査数はchecks-skippedで読める。suite-level skippedへ混ぜると
+# REQUIRED_SUITESの意味が変わるため、両方を同時に固定する。
+echo
+echo "== case 2b: suite内の部分skipは別勘定 =="
+run_runner "$FIXTURES/partial-skip/verify.sh"
+
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "per-check skipがあってもsuiteの終了コードは従来どおり0"
+else
+  bad "per-check skipだけで非0になった（rc=${RUN_RC}）"
+  dump_out
+fi
+expect_has '^suites: total=1 run=1 passed=1 failed=0 skipped=0 not-run=0$' \
+  "per-check skipをsuite-level skippedへ混ぜない"
+expect_has '^checks-skipped: total=2 suites=1$' \
+  "per-check skipの検査数と該当suite数が機械可読で出る"
+expect_has '^○ checks skipped .*: partial-skip=2$' \
+  "per-check skipのsuite別内訳が出る"
+expect_lacks '^○ skipped (環境都合で検証本体が未実行):' \
+  "per-check skipをsuite全体のskipとして報告しない"
+expect_has '^All ff-dev-toolkit fixture checks passed\.$' \
+  "per-check skipは情報表示に留めて既存のpass判定を変えない"
+
 # ---- ケース3: 全 pass -------------------------------------------------------
 echo
 echo "== case 3: 全 pass =="
@@ -195,6 +224,7 @@ else
   dump_out
 fi
 expect_has '^suites: total=1 run=1 passed=1 failed=0 skipped=0 not-run=0$' "全 pass のサマリー"
+expect_has '^checks-skipped: total=0 suites=0$' "部分skipが無い実行も0件を明示する"
 expect_has '^All ff-dev-toolkit fixture checks passed\.$' "全 pass のときだけ全体 pass を名乗る"
 
 # ---- ケース4: 大量出力を伴う skip（SIGPIPE 反転の回帰） ------------------------
@@ -1335,6 +1365,254 @@ else
 fi
 
 
+echo ""
+echo "== case 30: 並列実行が逐次実行と同じ結果・同じ並びを出す =="
+# 並列化で変わってよいのは所要時間だけで、実行対象・集計・出力の並びは変わらない
+# （Issue #595）。混在 fixture（fail / pass / skip / not-executable / missing）を同じ
+# 一覧で 2 回走らせ、逐次と並列の出力を丸ごと突き合わせる。個別のアサートを並べる
+# 代わりに全文比較にするのは、**後から suite の種別が増えても書き忘れが差分として
+# 出る**ため（並列側だけ扱いを落とす退行は、種別ごとの列挙では取りこぼす）。
+# 比較の前に落とすのは並列実行の告知行と空行だけ。告知は並列側にしか出ない。
+_norm_run_out() { printf '%s\n' "$1" | grep -v '^🧵 ' | grep -v '^[[:space:]]*$' || true; }
+
+RUN_JOBS=1 run_runner \
+  "$FIXTURES/fail/verify.sh" \
+  "$FIXTURES/pass/verify.sh" \
+  "$FIXTURES/skip/verify.sh" \
+  "$FIXTURES/not-executable/verify.sh" \
+  "$FIXTURES/missing/verify.sh"
+_par_seq_rc="$RUN_RC"
+_par_seq_out="$(_norm_run_out "$RUN_OUT")"
+
+RUN_JOBS=4 run_runner \
+  "$FIXTURES/fail/verify.sh" \
+  "$FIXTURES/pass/verify.sh" \
+  "$FIXTURES/skip/verify.sh" \
+  "$FIXTURES/not-executable/verify.sh" \
+  "$FIXTURES/missing/verify.sh"
+_par_par_rc="$RUN_RC"
+_par_par_out="$(_norm_run_out "$RUN_OUT")"
+
+# 並列で走ったことの確証。これが無いと「両方とも逐次だったので一致した」でも緑になる。
+expect_has '^🧵 並列実行: 同時実行数 4' "FF_RUN_ALL_JOBS=4 が並列実行を選ぶ（比較が並列側を測っている）"
+
+expect_has '^suites: total=5 run=3 passed=1 failed=1 skipped=1 not-run=2$' \
+  "並列実行でも total / run / passed / failed / skipped / not-run が逐次と同じ意味で数えられる"
+expect_has '^○ skipped (環境都合で検証本体が未実行): skip$' \
+  "並列実行でも行頭マーカー「○ skip」は pass ではなく skip として名指しされる"
+expect_has '^✗ failed: fail$' "並列実行でも失敗 suite が名指しされる"
+expect_has '^== pass ==$' "失敗 suite があっても後続 suite の実行は止まらない（並列実行）"
+
+if [ "$_par_par_rc" -eq 1 ]; then
+  ok "並列実行でも失敗・未実行があれば終了コードが 1"
+else
+  bad "並列実行の終了コードが 1 でない (rc=${_par_par_rc})"
+  dump_out
+fi
+
+if [ "$_par_seq_rc" -eq "$_par_par_rc" ]; then
+  ok "終了コードが逐次実行と一致する（rc=${_par_par_rc}）"
+else
+  bad "終了コードが逐次実行と食い違う（逐次=${_par_seq_rc} 並列=${_par_par_rc}）"
+fi
+
+if [ "$_par_seq_out" = "$_par_par_out" ]; then
+  ok "出力（告知行・空行を除く全文）が逐次実行と一致する — 集計も suite の並びも変わらない"
+else
+  bad "並列実行の出力が逐次実行と一致しない"
+  printf '%s\n' "-- 逐次:" >&2
+  printf '%s\n' "$_par_seq_out" | sed 's/^/    | /' >&2
+  printf '%s\n' "-- 並列:" >&2
+  printf '%s\n' "$_par_par_out" | sed 's/^/    | /' >&2
+fi
+
+echo ""
+echo "== case 31: 並列実行でも出力は suite 単位でまとまり、逐次より短く終わる =="
+# 4 本の slow fixture は 1 秒かけて HEAD / TAIL の 2 行を出す。完了順にストリームする
+# 実装だと HEAD が並んでから TAIL が並ぶ形になり、HEAD と TAIL の隣接が崩れる。
+# **同時実行数（2）より多い 4 本を渡す**のは、空いたスロットへ後続を投入する経路を
+# 通すため — 本数を同時実行数以下にすると再充填が一度も起きず、「3 本目以降が起動
+# されない / 無限ループする」退行を丸ごと見逃す。
+# 所要時間は整数秒で測る（bash 3.2 に小数秒の時計が無い）。逐次は約 4 秒・2 並列は
+# 約 2 秒なので、幅は 4 対 2 あって取り違えない。
+_par_t0="$SECONDS"
+RUN_JOBS=2 run_runner \
+  "$FIXTURES/slow-a/verify.sh" "$FIXTURES/slow-b/verify.sh" \
+  "$FIXTURES/slow-c/verify.sh" "$FIXTURES/slow-d/verify.sh"
+_par_elapsed=$((SECONDS - _par_t0))
+_par_slow_rc="$RUN_RC"
+_par_slow_out="$RUN_OUT"
+
+if [ "$_par_slow_rc" -eq 0 ]; then
+  ok "並列実行で 4 本すべてが pass なら rc=0"
+else
+  bad "slow fixture の並列実行が非 0（rc=${_par_slow_rc}）"
+  dump_out
+fi
+
+expect_has '^suites: total=4 run=4 passed=4 failed=0 skipped=0 not-run=0$' \
+  "同時実行数より多い suite を渡しても全件が実行され、集計に漏れがない（スロット再充填）"
+
+# 1 つの suite の出力が他 suite の出力と行単位で混ざらない
+_par_grouped=1
+for _par_tag in A B C D; do
+  case "$_par_slow_out" in
+    *"SLOW-${_par_tag}-HEAD"$'\n'"SLOW-${_par_tag}-TAIL"*) : ;;
+    *) _par_grouped=0 ;;
+  esac
+done
+if [ "$_par_grouped" -eq 1 ]; then
+  ok "各 suite の 2 行が隣接して出る（他 suite の出力が行間に割り込まない）"
+else
+  bad "並列実行で suite の出力が行単位で混ざった"
+  printf '%s\n' "$_par_slow_out" | sed 's/^/    | /' >&2
+fi
+
+# 見出しは完了順ではなく登録順
+_par_order="$(printf '%s\n' "$_par_slow_out" | grep '^== ' || true)"
+if [ "$_par_order" = "== slow-a ==
+== slow-b ==
+== slow-c ==
+== slow-d ==
+== summary ==" ]; then
+  ok "suite の見出しが完了順ではなく登録順に並ぶ（逐次実行と同じ並び）"
+else
+  bad "並列実行の見出しの並びが登録順でない"
+  printf '%s\n' "$_par_order" | sed 's/^/    | /' >&2
+fi
+
+_par_t0="$SECONDS"
+RUN_JOBS=1 run_runner \
+  "$FIXTURES/slow-a/verify.sh" "$FIXTURES/slow-b/verify.sh" \
+  "$FIXTURES/slow-c/verify.sh" "$FIXTURES/slow-d/verify.sh"
+_par_seq_elapsed=$((SECONDS - _par_t0))
+
+if [ "$_par_elapsed" -lt "$_par_seq_elapsed" ]; then
+  ok "同一 suite 一覧で並列実行の方が短い（並列 ${_par_elapsed}s < 逐次 ${_par_seq_elapsed}s）"
+else
+  bad "並列実行が逐次実行より短くならない（並列 ${_par_elapsed}s / 逐次 ${_par_seq_elapsed}s）"
+fi
+
+echo ""
+echo "== case 32: FF_RUN_ALL_JOBS の解決（逐次への復帰と不正値の扱い） =="
+RUN_JOBS=1 run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/skip/verify.sh"
+expect_lacks '^🧵 並列実行' "FF_RUN_ALL_JOBS=1 は逐次実行へ戻る（並列の告知を出さない）"
+expect_has '^suites: total=2 run=2 passed=1 failed=0 skipped=1 not-run=0$' \
+  "逐次実行への復帰でも集計は変わらない"
+
+# 解釈できない値は「黙って既定へ倒す」のではなく 1 行警告してから続行する（fail-safe 側）。
+# 実行を止めないのは、同時実行数の指定ミスで検証そのものが失われるのを避けるため。
+RUN_JOBS=zero run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/skip/verify.sh"
+expect_has '^⚠️  FF_RUN_ALL_JOBS を解釈できません' "解釈できない FF_RUN_ALL_JOBS を 1 行で警告する"
+expect_has '^suites: total=2 run=2 passed=1 failed=0 skipped=1 not-run=0$' \
+  "解釈できない値でも実行は続行し、集計は変わらない"
+if [ "$RUN_RC" -eq 0 ]; then
+  ok "解釈できない FF_RUN_ALL_JOBS は実行を失敗させない"
+else
+  bad "解釈できない FF_RUN_ALL_JOBS で実行が失敗した（rc=${RUN_RC}）"
+  dump_out
+fi
+
+# 「検査が 1 件も成立していない状態を緑にしない」を並列側でも直接測る。終了コードの
+# 判定は実行経路の外側にある共通コードだが、この形（passed=0 で skipped だけ）は
+# 本ランナーが最も守りたい不変条件なので、経路ごとに実測する。
+RUN_JOBS=2 run_runner "$FIXTURES/skip/verify.sh" "$FIXTURES/skip-large/verify.sh"
+expect_has '^suites: total=2 run=2 passed=0 failed=0 skipped=2 not-run=0$' \
+  "並列実行でも skip だけの実行が skipped として数えられる"
+if [ "$RUN_RC" -eq 1 ]; then
+  ok "並列実行でも passed が 0 で skipped だけなら終了コードが 1"
+else
+  bad "並列実行で passed=0・skipped のみの実行が非 1（rc=${RUN_RC}）"
+  dump_out
+fi
+
+
+echo ""
+echo "== case 33: FF_RUN_ALL_JOBS 未指定時の既定解決（CPU 由来の値・上限・入れ子） =="
+# run_runner はケース間の再現性のため既定で FF_RUN_ALL_JOBS=1 を注入する。したがって
+# 「未指定のとき何が選ばれるか」（CPU 数由来・上限 8・入れ子なら逐次）は、この
+# ケースだけ素の環境で起動して測る。
+_par_run_default() { # <env への追加指定...>（-u NAME でも NAME=VALUE でもよい）
+  if _par_dflt_out="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_JOBS "$@" \
+    FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" \
+    "$FIXTURES/pass/verify.sh" "$FIXTURES/skip/verify.sh" 2>&1)"; then
+    _par_dflt_rc=0
+  else
+    _par_dflt_rc=$?
+  fi
+}
+
+_par_run_default -u FF_RUN_ALL_NESTED
+if [ "$_par_dflt_rc" -eq 0 ]; then
+  ok "FF_RUN_ALL_JOBS 未指定の実行が rc=0"
+else
+  bad "FF_RUN_ALL_JOBS 未指定の実行が非 0（rc=${_par_dflt_rc}）"
+  printf '%s\n' "$_par_dflt_out" | sed 's/^/    | /' >&2
+fi
+
+# 上限 8 は「1 桁かつ 8 以下」で縛る。16 コア機なら `同時実行数 16` になって落ちるので、
+# 上限を外す退行はここで赤くなる。論理 CPU が 1 の環境では並列にならないので、その回は
+# 告知が出ないことを主張する（機械の性質で分岐するが、どちらも「既定の解決結果」を測る）。
+_par_ncpu="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+case "$_par_ncpu" in
+  ''|*[!0-9]*) _par_ncpu=1 ;;
+esac
+if [ "$_par_ncpu" -gt 1 ]; then
+  if [ "$(printf '%s\n' "$_par_dflt_out" | grep -c '^🧵 並列実行: 同時実行数 [1-8]（')" -gt 0 ]; then
+    ok "未指定の既定は 1〜8 の同時実行数へ解決される（上限 8 が効いている。論理 CPU=${_par_ncpu}）"
+  else
+    bad "未指定の既定が 1〜8 の同時実行数にならない（論理 CPU=${_par_ncpu}）"
+    printf '%s\n' "$_par_dflt_out" | grep '^🧵' | sed 's/^/    | /' >&2
+  fi
+else
+  if [ "$(printf '%s\n' "$_par_dflt_out" | grep -c '^🧵 並列実行')" -eq 0 ]; then
+    ok "論理 CPU が 1 の環境では既定でも並列にしない（告知を出さない）"
+  else
+    bad "論理 CPU が 1 なのに並列実行の告知が出た"
+  fi
+fi
+
+# 入れ子（外側の run-all.sh から suite として呼ばれた回）は明示指定が無い限り逐次。
+# 外側と内側で同時実行数が掛け算になるのを避ける規定（ヘッダー）。
+_par_run_default FF_RUN_ALL_NESTED=1
+if [ "$(printf '%s\n' "$_par_dflt_out" | grep -c '^🧵 並列実行')" -eq 0 ]; then
+  ok "入れ子の実行は FF_RUN_ALL_JOBS 未指定なら逐次で走る"
+else
+  bad "入れ子の実行が既定で並列になった（外側と同時実行数が掛け算になる）"
+  printf '%s\n' "$_par_dflt_out" | grep '^🧵' | sed 's/^/    | /' >&2
+fi
+
+# 上限を超える指定は「黙って逐次へ化ける」のではなく警告して既定へ倒す。桁数を見ずに
+# 算術比較へ渡すと、64bit を折り返した値が `-gt 1` を偽にして無警告で逐次になる。
+RUN_JOBS=9223372036854775808 run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/skip/verify.sh"
+expect_has '^⚠️  FF_RUN_ALL_JOBS が上限 [0-9]* を超えています' \
+  "上限を超える FF_RUN_ALL_JOBS を 1 行で警告する（無警告で逐次へ化けない）"
+expect_has '^suites: total=2 run=2 passed=1 failed=0 skipped=1 not-run=0$' \
+  "上限超過でも実行は続行し、集計は変わらない"
+
+echo ""
+echo "== case 34: rc を残さず子が消えた suite は未実行として数える =="
+# 並列経路の gone 判定（pass にも fail にも倒さず「未実行」へ数える）を実測する。
+# fixture は自分の親＝並列ラッパーの subshell を SIGKILL するので、rc が置かれない。
+export FF_FIXTURE_KILL_PARENT=1
+RUN_JOBS=2 run_runner \
+  "$FIXTURES/pass/verify.sh" "$FIXTURES/kill-wrapper/verify.sh" "$FIXTURES/skip/verify.sh"
+unset FF_FIXTURE_KILL_PARENT
+
+expect_has '^✗ suite プロセスが終了コードを残さずに消えました' \
+  "rc を残さず消えた suite を名指しで報告する"
+expect_has 'kill-wrapper (process gone)' "未実行の一覧で名指しされる"
+expect_has '^suites: total=3 run=2 passed=1 failed=0 skipped=1 not-run=1$' \
+  "消えた suite は passed でも failed でもなく not-run に数えられる"
+expect_has '^== skip ==$' "子が消えても後続 suite の実行は止まらない"
+if [ "$RUN_RC" -eq 1 ]; then
+  ok "未実行が 1 件でもあれば終了コードが 1"
+else
+  bad "子が消えたのに終了コードが 1 でない（rc=${RUN_RC}）"
+  dump_out
+fi
+
+
 rm -f "$RUN_GATE_RECORD"
 
 echo ""
@@ -1354,7 +1632,7 @@ fi
 #   - case 15 の mktemp probe 仕様リスト（1 件足すと +1）
 # 一方、走査対象の件数からは導出されない（case 10・11・26 はいずれも走査結果を 1 件の判定へ
 # 畳む）ので、suite を追加しても動かず、SSOT モノレポと公開 checkout の両配置で同じ値になる。
-EXPECTED_CHECKS=206
+EXPECTED_CHECKS=243
 if [ "$PASS" -ne "$EXPECTED_CHECKS" ]; then
   echo "✗ run-all verify: 検査総数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査の削除、または追加時の期待値未更新" >&2
   exit 1

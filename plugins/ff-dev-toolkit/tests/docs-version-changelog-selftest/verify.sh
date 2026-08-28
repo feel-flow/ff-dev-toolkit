@@ -34,6 +34,7 @@
 #        chmod 500 が効かない環境（root 実行等）は G13 と同様に理由付きで見送る
 #   G18. Changelog 節の**後続**に置いた別節（## Appendix）配下の ### [9.9.9] を
 #        エントリと数えない → 緑（節終端の境界が効いていること）
+#   G19. 実在する `## Changelog` 節を2件にする → 赤（後続節を無視しない）
 #
 # 検査総数は EXPECTED_CHECKS で固定する（TESTING.md §検査総数ガードの流儀。
 # ケースの削除・スキップの侵食を拾う）。G13 / G17 の環境都合の見送りは
@@ -90,10 +91,10 @@ trap _ff_exit_guard EXIT
 PASS=0
 FAIL=0
 ENV_SKIPPED=0
-# 実行ケース数の完全一致ガード（G1〜G18 + G6b + G9b の 20 件。FAIL=0 のとき
+# 実行ケース数の完全一致ガード（G1〜G19 + G6b + G9b の 21 件。FAIL=0 のとき
 # PASS + ENV_SKIPPED との完全一致を要求する。ケースを増減したら同時に直す。
 # G13 / G17 が環境都合で見送られた回は ENV_SKIPPED 側に計上され、合計は変わらない）
-EXPECTED_CHECKS=20
+EXPECTED_CHECKS=21
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 env_skip() { echo "  ○ $1"; ENV_SKIPPED=$((ENV_SKIPPED + 1)); }
@@ -225,7 +226,7 @@ echo "== G12. マスク（フェンス / コメント内の偽エントリ）=="
 make_fixture
 # Changelog 節の中にフェンス内・コメント内の偽エントリ [9.9.9] を置く。
 # マスクが外れていれば最大版が 9.9.9 になり frontmatter と食い違って赤くなる。
-perl -i -pe 's/^## Changelog$/$&\n\n```markdown\n### [9.9.9] - 2099-01-01\n```\n\n<!--\n### [9.9.9] - 2099-01-01\n-->/' "$TMP/root/$VICTIM"
+perl -i -pe 's/^## Changelog$/$&\n\n```markdown\n## Changelog\n### [9.9.9] - 2099-01-01\n```\n\n<!--\n## Changelog\n### [9.9.9] - 2099-01-01\n-->/' "$TMP/root/$VICTIM"
 assert_mutated "$VICTIM" "G12" || true
 run_case "G12 フェンス・コメント内の偽エントリ [9.9.9] を無視" green
 
@@ -290,6 +291,12 @@ make_fixture
 printf '\n## Appendix\n\n### [9.9.9] - 2099-01-01\n\n- 別節に置いたエントリ様の見出し（数えてはいけない）\n' >> "$TMP/root/$VICTIM"
 assert_mutated "$VICTIM" "G18" || true
 run_case "G18 後続の別節（## Appendix）配下の [9.9.9] を数えない" green
+
+echo "== G19. Changelog 節の重複を fail-closed =="
+make_fixture
+printf '\n## Changelog\n\n### [9.9.9] - 2099-01-01\n\n- 重複節へ隠した版エントリ\n' >> "$TMP/root/$VICTIM"
+assert_mutated "$VICTIM" "G19" || true
+run_case "G19 実在する ## Changelog 節が2件" red "## Changelog 節が 2 件あります"
 
 echo ""
 echo "結果: pass=${PASS} fail=${FAIL} env-skip=${ENV_SKIPPED}"
