@@ -11,6 +11,8 @@
 #
 # 固定する契約:
 #   - 実変更 + [Unreleased] 非空 + version 据え置き → exit 1 / RELEASE_CHECK=RELEASE_REQUIRED
+#   - 実変更 + changelog.d 断片 + version 据え置き → exit 1 / RELEASE_CHECK=RELEASE_REQUIRED
+#   - 契約外の断片は version / 版節の状態によらず false green にせず CHANGELOG_MISSING
 #   - 実変更 + [Unreleased] 空 + version 据え置き → exit 1 / RELEASE_CHECK=CHANGELOG_MISSING
 #     （ただし allowlist 内のメタ変更のみなら exit 0）
 #   - CHANGELOG footer 行のみの差分 → exit 0（version 据え置きが正。手順 8 の収束保証）
@@ -48,6 +50,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
 CHECK="${REPO_ROOT:+$REPO_ROOT/scripts/check-release-required.sh}"
 SYNC="${REPO_ROOT:+$REPO_ROOT/scripts/sync-dev-toolkit-to-public.sh}"
+MATERIALIZE="${REPO_ROOT:+$REPO_ROOT/scripts/materialize-dev-toolkit-changelog.sh}"
 
 if [[ -z "$REPO_ROOT" || ! -f "$CHECK" ]]; then
   echo "○ skip: scripts/check-release-required.sh が無いチェックアウトのためスキップ（本 suite は SSOT リポジトリ専用の検査です）"
@@ -55,6 +58,10 @@ if [[ -z "$REPO_ROOT" || ! -f "$CHECK" ]]; then
 fi
 if [[ ! -f "$SYNC" ]]; then
   echo "✗ 同期スクリプトが存在しません（check-release-required.sh はあるのに --list-targets の依存先が無い）" >&2
+  exit 1
+fi
+if [[ ! -f "$MATERIALIZE" ]]; then
+  echo "✗ 断片集約スクリプトが存在しません（check-release-required.sh の contract SSOT が無い）" >&2
   exit 1
 fi
 if ! command -v jq >/dev/null 2>&1; then
@@ -90,7 +97,7 @@ ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # 検査総数の期待値。検査の追加・削除時はここも更新する（黙って縮む侵食をここで赤にする）。
-EXPECTED_CHECKS=48
+EXPECTED_CHECKS=60
 
 # SSOT リポジトリ名は禁止パターン検査（公開同期）対象のため実行時に組み立てる。
 SSOT_NAME="$(printf '%s%s' 'feelflow-' 'plugins')"
@@ -105,11 +112,18 @@ mkdir -p \
   "$SSOT_FIX/scripts" \
   "$SSOT_FIX/plugins/ff-dev-toolkit/.claude-plugin" \
   "$SSOT_FIX/plugins/ff-dev-toolkit/skills/demo" \
-  "$SSOT_FIX/oss/ff-dev-toolkit"
+  "$SSOT_FIX/oss/ff-dev-toolkit" \
+  "$SSOT_FIX/changelog.d"
 
 cp "$CHECK" "$SSOT_FIX/scripts/check-release-required.sh"
 cp "$SYNC" "$SSOT_FIX/scripts/sync-dev-toolkit-to-public.sh"
-chmod +x "$SSOT_FIX/scripts/check-release-required.sh" "$SSOT_FIX/scripts/sync-dev-toolkit-to-public.sh"
+cp "$MATERIALIZE" "$SSOT_FIX/scripts/materialize-dev-toolkit-changelog.sh"
+mkdir -p "$SSOT_FIX/scripts/lib"
+cp "$REPO_ROOT/scripts/lib/changelog-fragment-functions.sh" "$SSOT_FIX/scripts/lib/changelog-fragment-functions.sh"
+cp "$REPO_ROOT/scripts/lib/changelog-transaction-functions.sh" "$SSOT_FIX/scripts/lib/changelog-transaction-functions.sh"
+cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/exact-link-functions.sh" "$SSOT_FIX/scripts/lib/exact-link-functions.sh"
+chmod +x "$SSOT_FIX/scripts/check-release-required.sh" "$SSOT_FIX/scripts/sync-dev-toolkit-to-public.sh" "$SSOT_FIX/scripts/materialize-dev-toolkit-changelog.sh"
+printf '%s\n' '# fragments' > "$SSOT_FIX/changelog.d/README.md"
 
 write_plugin_json() { # $1=version
   printf '{\n  "name": "ff-dev-toolkit",\n  "version": "%s"\n}\n' "$1" \
@@ -319,7 +333,7 @@ touch_skill() {
 }
 
 add_unreleased_item() {
-  awk 'BEGIN{done=0} {print} /^## \[Unreleased\]$/ && !done {print ""; print "- 新しい変更"; done=1}' \
+  awk 'BEGIN{done=0} {print} /^## \[Unreleased\]$/ && !done {print ""; print "### 変更"; print ""; print "- 新しい変更"; done=1}' \
     "$SSOT_FIX/$CHANGELOG_REL" > "$TMP/cl.new"
   mv "$TMP/cl.new" "$SSOT_FIX/$CHANGELOG_REL"
 }
@@ -342,6 +356,60 @@ commit_fix "S1"
 if assert_committed "S1" "plugins/ff-dev-toolkit/skills/demo/SKILL.md"; then
   run_check
   expect_check "S1 実変更 + Unreleased 非空 + version 据え置きは赤" 1 "RELEASE_REQUIRED" "リリース準備が必要"
+fi
+reset_ssot
+
+# ── S1b. 実変更 + CHANGELOG 断片 + version 据え置き → RELEASE_REQUIRED ──────
+touch_skill
+mkdir -p "$SSOT_FIX/changelog.d"
+printf '%s\n' '- 断片で記録した変更' > "$SSOT_FIX/changelog.d/764.changed.release-required.md"
+commit_fix "S1b"
+if assert_committed "S1b" "changelog.d/764.changed.release-required.md"; then
+  run_check
+  expect_check "S1b 実変更 + 断片 + version 据え置きは赤" 1 "RELEASE_REQUIRED" "リリース準備が必要"
+fi
+reset_ssot
+
+# ── S1e. 公開対象差分0件でも未消費断片だけで RELEASE_REQUIRED ───────────────
+printf '%s\n' '- 追補として残った未消費断片' > "$SSOT_FIX/changelog.d/764.changed.fragment-only.md"
+commit_fix "S1e"
+if assert_committed "S1e" "changelog.d/764.changed.fragment-only.md"; then
+  run_check
+  expect_check "S1e 断片だけが残る状態も false green にしない" 1 "RELEASE_REQUIRED" "リリース準備が必要"
+fi
+reset_ssot
+
+# ── S1f. bump / 版節昇格済みでも有効断片が残れば RELEASE_REQUIRED ────────────
+touch_skill
+write_plugin_json "0.32.0"
+write_changelog_promoted
+printf '%s\n' '- 昇格後に残った有効な未消費断片' > "$SSOT_FIX/changelog.d/764.changed.promoted-fragment.md"
+commit_fix "S1f"
+if assert_committed "S1f" "changelog.d/764.changed.promoted-fragment.md"; then
+  run_check
+  expect_check "S1f bump / 版節昇格済みでも未消費断片は赤" 1 "RELEASE_REQUIRED" "未公開項目.*残っている"
+fi
+reset_ssot
+
+# ── S1c. 契約外断片 + version 据え置き → false green にしない ───────────────
+touch_skill
+printf '%s\n' '- typo fragment' > "$SSOT_FIX/changelog.d/764.change.typo.md"
+commit_fix "S1c"
+if assert_committed "S1c" "changelog.d/764.change.typo.md"; then
+  run_check
+  expect_check "S1c 契約外断片を無診断で読み飛ばさない" 1 "CHANGELOG_MISSING" "contract 違反"
+fi
+reset_ssot
+
+# ── S1d. 契約外断片 + bump / 版節昇格済みでも green にしない ────────────────
+touch_skill
+write_plugin_json "0.32.0"
+write_changelog_promoted
+printf '%s\n' '- typo fragment' > "$SSOT_FIX/changelog.d/764.change.typo.md"
+commit_fix "S1d"
+if assert_committed "S1d" "changelog.d/764.change.typo.md"; then
+  run_check
+  expect_check "S1d bump 済みでも契約外断片を green にしない" 1 "CHANGELOG_MISSING" "contract 違反"
 fi
 reset_ssot
 
@@ -622,6 +690,20 @@ else
   bad "U6: sync スクリプトを除去できていない（変異が no-op）"
 fi
 reset_ssot
+
+# ── U11. materialize 自体が検査不能なら contract 違反へ縮退しない ─────────────
+mkdir "$SSOT_FIX/changelog.d/.ff-changelog.lock"
+run_check "$PUB"
+expect_check "U11 writer lock 中の断片検査不能は exit 2 / UNAVAILABLE" 2 "UNAVAILABLE" "CHANGELOG 断片 contract を検査できない"
+rmdir "$SSOT_FIX/changelog.d/.ff-changelog.lock"
+
+# ── U12. materialize の silent contract failure を success に縮退しない ─────
+cp "$SSOT_FIX/scripts/materialize-dev-toolkit-changelog.sh" "$TMP/materialize-backup.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$SSOT_FIX/scripts/materialize-dev-toolkit-changelog.sh"
+chmod +x "$SSOT_FIX/scripts/materialize-dev-toolkit-changelog.sh"
+run_check "$PUB"
+expect_check "U12 無診断の断片 contract 違反も CHANGELOG_MISSING" 1 "CHANGELOG_MISSING" "無診断で contract 違反終了"
+mv "$TMP/materialize-backup.sh" "$SSOT_FIX/scripts/materialize-dev-toolkit-changelog.sh"
 
 # ── S9. check スクリプトが無い配置（公開 checkout）では本 suite 自身が ○ skip ──
 PUBCO="$TMP/public-checkout"

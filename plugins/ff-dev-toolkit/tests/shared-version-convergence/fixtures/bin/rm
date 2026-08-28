@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+target="${!#}"
+installed_current=0
+if [[ ("${FAKE_CLAIM_RM_REPLACE_CURRENT:-0}" == 1 || "${FAKE_CLAIM_RM_MUTATE_DOC:-0}" == 1) && "$target" == */.version-claim-old.* ]]; then
+  shopt -s nullglob
+  for candidate in "${target%/*}"/.version-claim.[A-Za-z0-9]*; do
+    [[ "$candidate" == *-old.* || "$candidate" == *-snapshot.* ]] && continue
+    [[ -e "${FAKE_CLAIM_CURRENT:?}" && "$FAKE_CLAIM_CURRENT" -ef "$candidate" ]] && installed_current=1
+  done
+fi
+if [[ "${FAKE_CLAIM_RM_MUTATE_DOC:-0}" == 1 && "$installed_current" -eq 1 ]]; then
+  "${FAKE_CLAIM_REAL_RM:-/bin/rm}" "$@" || exit $?
+  printf '%s\n' 'external cleanup document change' >> "${FAKE_CLAIM_DOCUMENT:?}"
+  exit 0
+fi
+if [[ "${FAKE_CLAIM_RM_REPLACE_CURRENT:-0}" == 1 && "$installed_current" -eq 1 ]]; then
+  "${FAKE_CLAIM_REAL_RM:-/bin/rm}" "$@" || exit $?
+  race_tmp="${FAKE_CLAIM_CURRENT:?}.external-race"
+  printf '%s\n' 'external=finalize-race' > "$race_tmp"
+  /bin/mv "$race_tmp" "$FAKE_CLAIM_CURRENT"
+  exit 0
+fi
+if [[ "${FAKE_CLAIM_RM_FAIL:-0}" == 1 && "${!#}" == */.version-claim.* ]]; then
+  echo "simulated claim temp cleanup failure" >&2
+  exit 9
+fi
+exec "${FAKE_CLAIM_REAL_RM:-/bin/rm}" "$@"

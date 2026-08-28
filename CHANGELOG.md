@@ -19,6 +19,13 @@
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-08-29
+
+### 変更
+
+- 文書と ACE Playbook の共有版境界を、default branch の最新 tip と文書別 version claim の競合 sentinel で検証し、最新 tree から再計算して安全に収束させる手順へ改めた
+- 公開 CHANGELOG の通常変更を Issue 単位の断片へ分散し、並行ブランチが共有の `[Unreleased]` 節で競合しないリリース準備フローを追加した
+
 ## [0.64.0] - 2026-08-29
 
 ### 変更

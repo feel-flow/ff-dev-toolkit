@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+args=" $* "
+if [[ "${FAKE_CLAIM_GIT_FAIL_ORIGIN_CONFIG:-0}" == 1 && "$args" == *" config --get remote.origin.url "* ]]; then
+  echo "simulated origin config failure" >&2
+  exit 9
+fi
+if [[ "${FAKE_CLAIM_GIT_FAIL_INDEX_LOOKUP:-0}" == 1 && "$args" == *" ls-files --stage "* ]]; then
+  echo "simulated index lookup failure" >&2
+  exit 9
+fi
+if [[ "${FAKE_CLAIM_GIT_FAIL_CONTRACT_TREE:-0}" == 1 && "$args" == *" ls-tree "* && "$args" == *" .version-claims "* ]]; then
+  echo "simulated contract tree failure" >&2
+  exit 9
+fi
+if [[ "${FAKE_CLAIM_GIT_MUTATE_INDEX:-0}" == 1 && "$args" == *" diff --cached "* && "$args" == *" --name-only "* && ! -e "${FAKE_CLAIM_GIT_MARKER:?}" ]]; then
+  : > "$FAKE_CLAIM_GIT_MARKER"
+  "${FAKE_CLAIM_REAL_GIT:?}" -C "${FAKE_CLAIM_GIT_ROOT:?}" update-index --cacheinfo "100644,${FAKE_CLAIM_GIT_BLOB:?},${FAKE_CLAIM_GIT_PATH:?}"
+fi
+if [[ "${FAKE_CLAIM_GIT_MOVE_BASE:-0}" == 1 && "$args" == *" diff --cached "* && "$args" == *" --name-only "* && ! -e "${FAKE_CLAIM_GIT_BASE_MARKER:?}" ]]; then
+  : > "$FAKE_CLAIM_GIT_BASE_MARKER"
+  "${FAKE_CLAIM_REAL_GIT:?}" -C "${FAKE_CLAIM_GIT_ROOT:?}" update-ref refs/remotes/origin/develop "${FAKE_CLAIM_GIT_NEW_BASE:?}"
+fi
+exec "${FAKE_CLAIM_REAL_GIT:?}" "$@"

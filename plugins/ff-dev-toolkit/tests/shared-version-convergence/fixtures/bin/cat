@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+if [[ "${FAKE_CLAIM_CAT_MUTATE:-0}" == 1 && "${1:-}" == *.claim ]]; then
+  printf '%s\n' 'external=mutation' >> "$1"
+fi
+exec "${FAKE_CLAIM_REAL_CAT:-/bin/cat}" "$@"

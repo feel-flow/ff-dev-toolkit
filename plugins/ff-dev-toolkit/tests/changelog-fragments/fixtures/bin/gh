@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+if [[ "${1:-}" == repo ]]; then
+  [[ "${FAKE_GH_MODE:-ok}" != unavailable ]] || { echo "HTTP 401: authentication required" >&2; exit 1; }
+  printf '%s%s\n' 'feelflow-' 'plugins'
+  exit 0
+fi
+case "${FAKE_GH_MODE:-ok}" in
+  ok)
+    echo "${3:-764}" >> "${FAKE_GH_LOG:?}"
+    if [[ -n "${FAKE_GH_START_WRITER_FRAGMENT:-}" && -n "${FAKE_GH_START_WRITER_LOCK:-}" && ! -d "$FAKE_GH_START_WRITER_LOCK" ]]; then
+      /bin/mkdir "$FAKE_GH_START_WRITER_LOCK"
+      /bin/mv "$FAKE_GH_START_WRITER_FRAGMENT" "$FAKE_GH_START_WRITER_LOCK/"
+    fi
+    [[ -z "${FAKE_GH_ADD_FRAGMENT:-}" ]] || printf '%s\n' '- late fragment' > "$FAKE_GH_ADD_FRAGMENT"
+    [[ -z "${FAKE_GH_MUTATE_FRAGMENT:-}" ]] || printf '%s\n' '- external mutation' > "$FAKE_GH_MUTATE_FRAGMENT"
+    printf '%s\n' "${3:-764}"
+    ;;
+  not_found) echo "HTTP 404: not found" >&2; exit 1 ;;
+  unavailable) echo "HTTP 401: authentication required" >&2; exit 1 ;;
+esac

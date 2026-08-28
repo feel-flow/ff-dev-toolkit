@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+last="${*: -1}"
+if [[ "${FAKE_LN_FAIL_RETAINED:-0}" == 1 && "$last" == */.ff-changelog.lock/.retained/*.md ]]; then
+  echo "retained hard link failure" >&2
+  exit 9
+fi
+if [[ "${FAKE_LN_FAIL_RECOVERY:-0}" == 1 && "$last" == */.ff-changelog.lock/.recovery/*.md ]]; then
+  echo "recovery hard link failure" >&2
+  exit 9
+fi
+if [[ "$last" == */CHANGELOG.md ]]; then
+  [[ "${FAKE_LN_FAIL_CHANGELOG:-0}" != 1 ]] || { echo "read-only destination" >&2; exit 9; }
+  [[ "${FAKE_LN_DANGLING_RACE:-0}" != 1 ]] || /bin/ln -s missing-external-target "$last"
+  [[ "${FAKE_LN_ATOMIC_RACE:-0}" != 1 ]] || printf '%s\n' 'external atomic replacement' > "$last"
+  if [[ "${FAKE_LN_MUTATE_OLD:-0}" == 1 ]]; then
+    shopt -s nullglob
+    old=("${FAKE_LN_OLD_DIR:?}"/.ff-changelog-old.*)
+    printf '%s\n' 'external old inode edit' >> "${old[0]:?}"
+  fi
+  if [[ "${FAKE_LN_INSTALL_SIGNAL:-0}" == 1 ]]; then
+    /bin/ln "$@"
+    parent="$(ps -o ppid= -p "$PPID" | tr -d ' ')"
+    kill -TERM "$parent"
+    exit 0
+  fi
+fi
+exec /bin/ln "$@"

@@ -152,6 +152,32 @@ ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（例 `ACE-438-1`、非PR
 
 #### 4-b. playbook/category.md への追記 + PLAYBOOK.md 索引の更新
 
+**共有値の確定前ガード（4-b〜4-d の直前）**: `version` / `ace_entry_count` / Changelog は、着手時のローカル値から決めない。作業ツリーが clean な状態で default branch を解決し、明示 refspec で remote-tracking ref を更新する。fetch 失敗・ref 解決不能・diverge は stale 値へ fallback せず停止する。
+
+```bash
+default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || {
+  echo "origin/HEAD を解決できません（git remote set-head origin -a を実行してください）" >&2
+  exit 1
+}
+[[ "$default_ref" == origin/* ]] || { echo "default branch ref が不正です: $default_ref" >&2; exit 1; }
+default_branch="${default_ref#origin/}"
+[[ -z "$(git status --porcelain --untracked-files=all)" ]] || { echo "PLAYBOOK 追記前に作業ツリーを clean にしてください" >&2; exit 1; }
+if ! git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" >/dev/null 2>&1; then
+  echo "origin/${default_branch} を取得できません（stale 値で版を確定しない。認証・通信・remote 設定を確認）" >&2
+  exit 1
+fi
+git rev-parse --verify --quiet "refs/remotes/origin/${default_branch}" >/dev/null || {
+  echo "remote-tracking ref を解決できません: origin/${default_branch}" >&2
+  exit 1
+}
+git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
+  echo "origin/${default_branch} を取り込んでから採番・版確定をやり直してください" >&2
+  exit 1
+}
+```
+
+remote が先行していた場合は**追記前に** `git pull --ff-only`（直 push フロー）または `git rebase origin/<default-branch>`（専用ブランチ）で取り込む。fresh read は同時 read を防がない。直 push の最終境界は手順 5 の non-fast-forward である。`.version-claims` contract があるリポジトリでは、**直 push / PR のどちらでも** PLAYBOOK.md と同じ commit で `.version-claims/docs/08-knowledge/PLAYBOOK.md.claim` を `document` / `version` / `change` の3行だけへ更新する。version 不変のカウンター更新でも `change` は更新するため、直 push と進行中 PR の交差も claim conflict で止まる。`change` は同梱 `scripts/update-version-claim.sh` が最新 base/current の blob ID から Git 設定非依存で生成する。merge-ready 前の `origin/<default-branch>` 祖先検査後に同じ文書の別更新が先行しても、claim の content conflict で停止させ、最新 base から version / `ace_entry_count` / Changelog / claim を再生成する（feature branch 自身への push は default branch の CAS ではなく、claim の片寄せ・削除で競合を解消しない）。
+
 エントリ本体は該当カテゴリの `docs/08-knowledge/playbook/<category>.md` の末尾に、**コンパクト正準フォーマット**で追記する（`XXX` は 4-a の PRスコープ式 ID に置換。例 `ace-438-1` / `ACE-438-1`）:
 
 ```markdown
@@ -200,7 +226,7 @@ ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（例 `ACE-438-1`、非PR
 
 - `updated` を今日の日付に更新
 - `changeImpact`: **新規エントリ追加（minor +1）時に `medium` を設定・維持する**（version を上げる場合は常に minor のため、minor=medium の対応 — spec-docs-map のバージョン更新目安 — に従う）。カウンター更新のみの場合は既存値を変更しない（欠落していれば `medium` を追記する）。機械同期の `--write` も、変更済みなのに欠落している場合は `medium` を自動追記する。**PLAYBOOK.md の `changeImpact` 更新責任は本スキルと `/ace-refine` にある**（`/validate-docs` の Frontmatter スキーマ検証が「変更済みなのに未記録」を ❌ にするため、欠落のまま放置しない）
-- `ace_entry_count` をインクリメント（新規エントリ追加時のみ。カウンター更新のみの場合は変更しない）
+- `ace_entry_count` は merged tree の live エントリ実数から再計算する（`playbook/archive/` は除外）。ローカル値への `+N` は並行更新後にずれるため使わない
 - 機械同期する場合はプロジェクトの `ace:bump-playbook-frontmatter`（`--write --bump-version`。**minor +1**）。count のみ直すなら `ace:sync-playbook-frontmatter`
 
 #### 4-d. Changelog の更新
@@ -279,7 +305,16 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs
 ```bash
 # 1 回の curate で複数エントリ・複数カテゴリに触れることがあるため、
 # 変更した playbook/*.md を全て add する（PLAYBOOK.md の索引更新も対象）
-git add docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md
+if [[ -d .version-claims ]]; then
+  [[ -n "${FF_DEV_TOOLKIT_ROOT:-}" && -x "$FF_DEV_TOOLKIT_ROOT/scripts/update-version-claim.sh" ]] || { echo "FF_DEV_TOOLKIT_ROOT の claim helper を解決できません" >&2; exit 1; }
+  default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || { echo "origin/HEAD を解決できません。git remote set-head origin --auto 後に再実行してください" >&2; exit 1; }
+  [[ "$default_ref" == origin/* ]] || { echo "origin/HEAD が不正です" >&2; exit 1; }
+  default_branch="${default_ref#origin/}"
+  "$FF_DEV_TOOLKIT_ROOT/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document docs/08-knowledge/PLAYBOOK.md || exit 1
+fi
+git add docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md || { echo "PLAYBOOK 変更を stage できません" >&2; exit 1; }
+[[ ! -d .version-claims ]] || { [[ -f .version-claims/docs/08-knowledge/PLAYBOOK.md.claim ]] || { echo "PLAYBOOK claim がありません。上の update-version-claim.sh を再実行してください: .version-claims/docs/08-knowledge/PLAYBOOK.md.claim" >&2; exit 1; }; git add .version-claims/docs/08-knowledge/PLAYBOOK.md.claim || { echo "PLAYBOOK claim を stage できません" >&2; exit 1; }; }
+[[ ! -d .version-claims ]] || "$FF_DEV_TOOLKIT_ROOT/scripts/check-version-claims.sh" --root "$(git rev-parse --show-toplevel)" || exit 1
 git status --short  # 意図したファイルのみが含まれるか確認
 git commit \
   -m "knowledge: ACE-<PR番号>-<連番> <要約>" \
@@ -287,11 +322,31 @@ git commit \
 git push origin <default-branch>
 ```
 
+push が non-fast-forward で拒否された場合は、別セッションの更新を検出した正常な競合経路として次を**最大 3 回**繰り返す。
+
+1. 同じ明示 refspec で `origin/<default-branch>` を再取得する（失敗時は停止）
+2. remote の版ブロック・エントリ・索引を保全して rebase し、自分のエントリを残す。同じ版番号へ内容を混ぜず、自分の版を remote 最新の次へ繰り上げる
+3. `ace_entry_count` を merged tree の live 実数から再同期し、version / Changelog を再生成する
+4. **各再試行で**上の commit block と同じ claim 生成（既存 claim を退避し、上書き禁止 hard link で install）・3行完全一致検証を最新 base からやり直し、PLAYBOOK claim を stage する
+5. 手順 4-f の全ゲートを再実行し、commit を amend して通常の `git push` を再試行する
+
+3 回で収束しなければ「共有版境界が高頻度更新中」と報告して直列化を求める。`--force` / `--force-with-lease` で先行セッションを上書きしない。
+
 **任意エスカレーション — chore PR**: 大人数チーム / 知見レビューを残したい場合のみ `chore/ace-from-pr-<PR番号>` ブランチで小さい PR を作成。
 
 ```bash
 git checkout -b chore/ace-from-pr-<PR番号>
-git add docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md
+if [[ -d .version-claims ]]; then
+  [[ -n "${FF_DEV_TOOLKIT_ROOT:-}" && -x "$FF_DEV_TOOLKIT_ROOT/scripts/update-version-claim.sh" ]] || { echo "FF_DEV_TOOLKIT_ROOT の claim helper を解決できません" >&2; exit 1; }
+  default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || { echo "origin/HEAD を解決できません。git remote set-head origin --auto 後に再実行してください" >&2; exit 1; }
+  [[ "$default_ref" == origin/* ]] || { echo "origin/HEAD が不正です" >&2; exit 1; }
+  default_branch="${default_ref#origin/}"
+  "$FF_DEV_TOOLKIT_ROOT/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document docs/08-knowledge/PLAYBOOK.md || exit 1
+  [[ -f .version-claims/docs/08-knowledge/PLAYBOOK.md.claim ]] || { echo "PR 経路に PLAYBOOK version claim がありません" >&2; exit 1; }
+fi
+git add docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md || { echo "PLAYBOOK 変更を stage できません" >&2; exit 1; }
+[[ ! -d .version-claims ]] || git add .version-claims/docs/08-knowledge/PLAYBOOK.md.claim || { echo "PLAYBOOK claim を stage できません" >&2; exit 1; }
+[[ ! -d .version-claims ]] || "$FF_DEV_TOOLKIT_ROOT/scripts/check-version-claims.sh" --root "$(git rev-parse --show-toplevel)" || exit 1
 git status --short  # 意図したファイルのみが含まれるか確認
 git commit \
   -m "knowledge: ACE-<PR番号>-<連番> <要約>" \

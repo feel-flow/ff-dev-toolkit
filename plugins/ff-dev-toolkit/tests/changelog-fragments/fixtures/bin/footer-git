@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+args=("$@")
+if [[ -n "${FF_CHANGELOG_TEST_REMOTE:-}" && "$*" == *"ls-remote --refs --tags"* ]]; then
+  isolated_dir=""
+  for ((i=0; i<${#args[@]}; i++)); do
+    if [[ "${args[$i]}" == -C && $((i + 1)) -lt ${#args[@]} ]]; then isolated_dir="${args[$((i + 1))]}"; fi
+  done
+  if [[ -z "$isolated_dir" || -e "$isolated_dir/.git" || "${GIT_CEILING_DIRECTORIES:-}" != "$isolated_dir" || -n "${GIT_DIR:-}${GIT_WORK_TREE:-}${GIT_COMMON_DIR:-}${GIT_CONFIG_PARAMETERS:-}${GIT_CONFIG_COUNT:-}" ]]; then
+    echo "tag fetch did not isolate repository-local Git configuration" >&2
+    exit 8
+  fi
+  [[ -z "${FAKE_FOOTER_ISOLATION_MARKER:-}" ]] || : > "$FAKE_FOOTER_ISOLATION_MARKER"
+  for ((i=0; i<${#args[@]}; i++)); do
+    [[ "${args[$i]}" != https://github.com/feel-flow/ff-dev-toolkit.git ]] || args[$i]="$FF_CHANGELOG_TEST_REMOTE"
+    [[ "${args[$i]}" != protocol.file.allow=never ]] || args[$i]=protocol.file.allow=always
+  done
+fi
+if [[ "$*" == *"ls-remote --refs --tags"* && -n "${FAKE_FOOTER_LOCK_MARKER:-}" ]]; then
+  : > "$FAKE_FOOTER_LOCK_MARKER"
+  while [[ ! -e "${FAKE_FOOTER_RELEASE_MARKER:?}" ]]; do sleep 0.05; done
+fi
+if [[ "$*" == *"ls-remote --refs --tags"* && "${FAKE_FOOTER_LS_REMOTE_FAIL:-0}" == 1 ]]; then
+  echo "simulated tag fetch failure" >&2
+  exit 9
+fi
+exec "${FAKE_FOOTER_REAL_GIT:?}" "${args[@]}"

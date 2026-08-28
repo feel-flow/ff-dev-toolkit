@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+src="${1:-}"
+dest="${!#}"
+is_claim_move=0
+[[ "$dest" == *.claim || "$dest" == */.version-claim-old.* ]] && is_claim_move=1
+if [[ "${FAKE_CLAIM_MV_REPLACE_SOURCE:-0}" == 1 && "$dest" == */.version-claim-old.* ]]; then
+  race_tmp="${src}.external-race"
+  printf '%s\n' 'external=claim-replacement' > "$race_tmp"
+  /bin/mv "$race_tmp" "$src"
+fi
+if [[ "${FAKE_CLAIM_MV_FAIL:-0}" == 1 && "$is_claim_move" -eq 1 ]]; then
+  echo "simulated claim mv failure" >&2
+  exit 9
+fi
+if [[ "${FAKE_CLAIM_MV_SIGNAL_BEFORE:-0}" == 1 && "$is_claim_move" -eq 1 && ! -e "${FAKE_CLAIM_SIGNAL_MARKER:-/nonexistent}" ]]; then
+  [[ -z "${FAKE_CLAIM_SIGNAL_MARKER:-}" ]] || : > "$FAKE_CLAIM_SIGNAL_MARKER"
+  kill -TERM "$PPID"
+  sleep 0.1
+  exit 130
+fi
+"${FAKE_CLAIM_REAL_MV:-/bin/mv}" "$@"
+rc=$?
+if [[ "$rc" -eq 0 && "${FAKE_CLAIM_MV_SIGNAL:-0}" == 1 && "$is_claim_move" -eq 1 && ! -e "${FAKE_CLAIM_SIGNAL_MARKER:-/nonexistent}" ]]; then
+  [[ -z "${FAKE_CLAIM_SIGNAL_MARKER:-}" ]] || : > "$FAKE_CLAIM_SIGNAL_MARKER"
+  kill -TERM "$PPID"
+  sleep 0.1
+fi
+exit "$rc"

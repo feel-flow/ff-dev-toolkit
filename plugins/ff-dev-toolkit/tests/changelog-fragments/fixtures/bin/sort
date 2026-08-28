@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+if [[ "${FAKE_SORT_SIGNAL:-0}" == 1 ]]; then
+  parent="$(ps -o ppid= -p "$PPID" | tr -d ' ')"
+  kill -TERM "$parent"
+  exit 143
+fi
+[[ "${FAKE_SORT_FAIL:-0}" != 1 ]] || exit 9
+exec /usr/bin/sort "$@"

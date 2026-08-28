@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+last="${!#}"
+if [[ "${FAKE_CLAIM_SNAPSHOT_DIRECTORY_RACE:-0}" == 1 && "${last##*/}" == .version-claim-snapshot.* ]]; then /bin/mkdir "$last"; fi
+if [[ "${FAKE_CLAIM_LN_SWAP_PARENT:-0}" == 1 && "$last" == ./*.claim ]]; then
+  /bin/rmdir "${FAKE_CLAIM_PARENT:?}"
+  /bin/ln -s "${FAKE_CLAIM_EXTERNAL_PARENT:?}" "$FAKE_CLAIM_PARENT"
+fi
+if [[ "$last" == *.claim && "${FAKE_CLAIM_LN_FAIL_INSTALL:-0}" == 1 ]]; then echo "claim install failure" >&2; exit 9; fi
+if [[ "$last" == *.claim && "${FAKE_CLAIM_LINK_DIRECTORY_RACE:-0}" == 1 ]]; then /bin/mkdir "$last"; fi
+if [[ "$last" == *.claim && "${FAKE_CLAIM_LN_CREATE_EXTERNAL:-0}" == 1 ]]; then printf '%s\n' 'external=concurrent-claim' > "$last"; fi
+if [[ "$last" == *.claim && "${FAKE_CLAIM_LN_CREATE_DANGLING:-0}" == 1 ]]; then /bin/ln -s missing-external-target "$last"; fi
+/usr/bin/perl "$@"
+rc=$?
+if [[ "$rc" -eq 0 && "$last" == *.claim && "${FAKE_CLAIM_LN_SIGNAL_AFTER_INSTALL:-0}" == 1 ]]; then
+  parent="$(ps -o ppid= -p "$PPID" | tr -d ' ')"
+  kill -TERM "$parent"
+  exit 0
+fi
+if [[ "$rc" -eq 0 && "$last" == *.claim && "${FAKE_CLAIM_LN_APPEND_BLANK:-0}" == 1 ]]; then printf '\n' >> "$last"; fi
+if [[ "$rc" -eq 0 && "$last" == *.claim && "${FAKE_CLAIM_LN_MUTATE_DOC:-0}" == 1 ]]; then printf '%s\n' 'external document change' >> "${FAKE_CLAIM_DOCUMENT:?}"; fi
+exit "$rc"

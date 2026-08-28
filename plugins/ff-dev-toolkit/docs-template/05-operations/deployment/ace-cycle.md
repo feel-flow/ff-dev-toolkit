@@ -175,6 +175,8 @@ ID は **PRスコープ式**（`ACE-<PR番号>-<連番>`）。採番ルールの
 
 #### 3. Frontmatter の更新
 
+`version` / `ace_entry_count` / Changelog を確定する直前に、clean な tree で `origin/<default-branch>` を明示 refspec により fetch する。remote が先行していれば追記前に取り込み、取得不能・diverge は stale 値へ fallback せず停止する。fresh read は同時 read を防がない。直 push は non-fast-forward を境界とする。`.version-claims` contract がある場合は**直 push / PR のどちらでも**、PLAYBOOK.md と同じ commit で `.version-claims/docs/08-knowledge/PLAYBOOK.md.claim` の `document` / `version` / `change` を3行だけで更新する。version 不変のカウンター更新でも `change` を更新する。`change` は ff-dev-toolkit 同梱の `scripts/update-version-claim.sh` が最新 base/current の blob ID から Git 設定非依存で生成する。同じ文書の直 push と PR が交差しても claim の content conflict で停止し、最新 tree から再生成する。claim の片寄せ・削除で競合を回避しない。
+
 `version` の上げ方（semver）:
 
 | 変更内容                         | `version` の操作                          | 例                  |
@@ -187,7 +189,7 @@ ID は **PRスコープ式**（`ACE-<PR番号>-<連番>`）。採番ルールの
 version: "1.X.0" # 新規エントリ時のみ minor +1（patch は 0）
 updated: "YYYY-MM-DD"
 changeImpact: medium # minor 上げ = medium（欠落時は --write が自動追記）
-ace_entry_count: N # 全エントリ数（deprecated含む）。新規時のみ +件数
+ace_entry_count: N # merged tree の live 実数（archive 除外）。ローカル値へ +N しない
 ```
 
 #### 3b. Changelog の更新
@@ -222,6 +224,8 @@ git commit \
   -m "knowledge: ACE-438-1..2 Prisma N+1 防止とモックの分離原則" \
   -m "Categories: performance, testing"
 ```
+
+push が non-fast-forward なら、remote のエントリと版ブロックを保全して rebase し、version / `ace_entry_count` / Changelog を最新 tree から再生成する。全ゲートを再実行して通常 push を最大 3 回再試行し、収束しなければ直列化を求めて停止する。force push は使わない。
 
 ---
 
@@ -263,7 +267,7 @@ Generate → Reflect → Curate は「増やす」一方向のサイクルであ
 ### Phase 3: Curate
 - [ ] 新規エントリをコンパクト正準フォーマットで該当カテゴリファイル末尾に追記
 - [ ] 各エントリが行数バジェット内（15 行以内。例外宣言付きでも 30 行以内）
-- [ ] Frontmatter 更新（version=minor+1 on 新規 / updated / changeImpact=medium / ace_entry_count）
+- [ ] push 直前に remote を最新化し、Frontmatter 更新（version=minor+1 on 新規 / updated / changeImpact=medium / ace_entry_count=live 実数）
 - [ ] Changelog 更新（当該版の `#### 追加` / `#### カウンター更新`。version と最新見出し一致）
 - [ ] `npm run ace:check-playbook-frontmatter` が exit 0（count + version↔Changelog + changeImpact）
 - [ ] コミット（件名 `knowledge: ACE-XXX <要約>`、カテゴリは body の `Categories:` 行）

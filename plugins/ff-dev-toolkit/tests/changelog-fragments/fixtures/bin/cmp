@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+[[ "${FAKE_CMP_FAIL:-0}" != 1 ]] || exit 2
+[[ -z "${FAKE_CMP_MUTATE:-}" ]] || printf '%s\n' 'external concurrent edit' >> "$2"
+/usr/bin/cmp "$@"
+cmp_rc=$?
+if [[ "$cmp_rc" -eq 0 && "${FAKE_CMP_REPLACE_AFTER:-0}" == 1 ]]; then
+  race_tmp="${FAKE_CMP_REPLACE_TARGET:?}.cmp-race"
+  printf '%s\n' 'external footer cmp replacement' > "$race_tmp"
+  /bin/mv "$race_tmp" "$FAKE_CMP_REPLACE_TARGET"
+fi
+exit "$cmp_rc"

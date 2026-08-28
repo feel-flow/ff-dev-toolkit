@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+if [[ "${FAKE_GREP_FAIL:-0}" == 1 && "$*" == *"type-"* ]]; then
+  echo "simulated grep failure" >&2
+  exit 2
+fi
+exec /usr/bin/grep "$@"

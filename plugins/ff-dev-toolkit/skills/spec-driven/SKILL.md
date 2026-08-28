@@ -78,6 +78,7 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 2. **コードより先に仕様文書を更新する**（ドキュメント先、コード後）。**依頼範囲が実装前まで（G2 以前）の場合は、更新案（差分）の提示に留め、適用はユーザー確認後とし、G1 の状態は「提案通過」と記録する**（適用後に「通過」へ更新）
 3. 影響度を LOW / MEDIUM / HIGH で評価する。**HIGH の場合は一旦停止**し、関係者確認・ADR・移行計画の要否を判定する（対話できない場合は SD-n に記録して停止し、指示を仰ぐ）
 4. frontmatter（version / updated / changeImpact〔値は小文字: low|medium|high〕）の更新を差分に含め、進行表に証拠（更新した文書のパスと差分要約）を記録する。テンプレートから新設する場合、**frontmatter はテンプレート本体に組み込み済みのため、プレースホルダー（owner / created 等）を実際の値で埋める**（`changeImpact` キーが無いテンプレート由来文書には追記し、テンプレート初期値が大文字の場合は小文字へ正規化する）
+5. G1 で置く version は作業 tree 上の暫定値である。共有版を置く commit の基準として、この時点の `origin/<default-branch>` SHA を進行表へ記録する。再確定の実行手順は G4 が正本であり、ここでは先取りして完了扱いしない
 
 ### Step 4: G2 計画ゲート
 
@@ -91,15 +92,24 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 1. 単位ごとに「実装 → テスト → 確認」を回す（一括実装しない）
 2. **仕様にない挙動が必要になったら G1 に戻る**（仕様を先に更新してから実装。戻った事実を進行表に記録）
 3. スコープ外に踏み出しそうになったら止まり、別タスク化を提案する
-4. 全単位の完了とテストのパスを確認して通過判定する
+4. リポジトリに `changelog.d/README.md` があり、ff-dev-toolkit の公開対象を変える通常 PR なら、同 README の schema に従う一意な断片を追加し、共有の `oss/ff-dev-toolkit/CHANGELOG.md` は編集しない。共有本文を編集するのは plugin version を同時に上げるリリース準備、または同期手順が規定する比較リンク footer-only 追従 PR だけとする
+5. 全単位の完了とテストのパスを確認して通過判定する
 
 ### Step 6: G4 検証ゲートと完了
 
-1. **受け入れ基準を1つずつ実行して判定**し、結果（PASS/FAIL と証拠）を進行表に記録する。FAIL があれば完了と言わずに該当ゲートへ戻る
-2. 仕様文書と実装の乖離がないか最終確認する
-3. 学び（ハマりどころ・設計判断）があれば1〜3行で進行表に記録する
-4. **監査要約を転記する**: 進行表はコミットしないため、要約（ゲート判定・受け入れ基準の検証結果・スコープ外・未解決事項〔SD-n〕）を PR 本文または Issue コメントへ転記する。転記の成否にかかわらず、転記状態を進行表に記録する: 転記済みの場合は転記先（URL 等）、転記先がまだ無い・書き込めない場合は「未転記」と記録し、後者は次項の報告に転記用の要約を含める（転記済みか未転記の進行表への記録があるまで、監査証拠を伴う完了として扱わない。リポジトリ方針で進行表自体をコミットする場合は転記不要）
-5. 進行表を完成させ、ユーザーに以下を報告する: 全ゲートの通過状況 / 受け入れ基準の判定結果 / 未解決事項（SD-n）/ 監査要約の転記状態（転記先 URL または未転記）
+1. **共有版を最新 default branch から再確定する**:
+   1. G1/G3 の変更と断片を provisional commit にまとめる（まだ push しない）。`git status --porcelain --untracked-files=all` が空になるまで無関係な変更を混ぜず、以後の version / claim 更新はこの commit へ `git commit --amend --no-edit` する
+   2. `default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)"` を解決し、`origin/*` 形式であることを確認して `default_branch="${default_ref#origin/}"` を得る。`git rev-parse --verify --quiet "refs/remotes/origin/${default_branch}"` も通らなければ停止する
+   3. `git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"` で明示 refspec を fetch する。dirty tree・fetch 失敗・ref 解決不能は stale 値へ fallback せず停止する
+   4. `git merge-base --is-ancestor "origin/${default_branch}" HEAD` が偽なら、先行 tree を rebase / merge で取り込み、remote の版ブロックを保全した現在版から version と Changelog を再生成する
+   5. `.version-claims/` が存在するリポジトリでは、version を変更した文書、およびリポジトリ固有ルールで version 不変時にも claim を要求する PLAYBOOK / PATTERNS ごとに、同梱 `${FF_DEV_TOOLKIT_ROOT}/scripts/update-version-claim.sh --base "origin/${default_branch}" --document <path>` を実行し、元の階層を保持した `.version-claims/<文書 path>.claim` を `document=<path>` / `version=<version>` / `change=<hash>` の3行だけで更新する。`.version-claims/` が無い利用先ではこの手順だけを省略する。helper は base blob ID（新規時は `ABSENT`）と current blob ID から Git 設定非依存の hash を生成し、symlink 親階層や検査不能を拒否する。文書・Changelog・claim と検証修正を stage し、`${FF_DEV_TOOLKIT_ROOT}/scripts/check-version-claims.sh --root "$(git rev-parse --show-toplevel)"` で index/tree の双方向対応を検査してから provisional commit を amend し、同じ commit に含める
+   6. 同じ文書の先行 PR が祖先検査後に merge された場合、claim の content conflict を片寄せ・削除で解消せず、最新 base から version / Changelog / claim を再生成する。feature branch 自身への push は default branch の CAS ではなく、merge-ready 前の祖先検査と文書別 claim を PR 経路の境界とする
+   7. amend 後の commit に対して受け入れ基準を再実行し、**初回 push 前**と merge-ready 直前にも手順2〜4を繰り返す。初回 push 前に remote が動いたら rebase と再生成へ戻る。既に feature branch を push 済みなら公開済み commit を amend / rebase せず、最新 default branch を merge して現在版から再生成した reconciliation commit を追加し、claim と G4 を再実行して通常 push する。再生成と G4 は最大3回とし、収束しなければ直列化を求めて停止する。`--force` / `--force-with-lease` で上書きしない
+2. **受け入れ基準を1つずつ実行して判定**し、結果（PASS/FAIL と証拠）を進行表に記録する。FAIL があれば完了と言わずに該当ゲートへ戻る
+3. 仕様文書と実装の乖離がないか最終確認する
+4. 学び（ハマりどころ・設計判断）があれば1〜3行で進行表に記録する
+5. **監査要約を転記する**: 進行表はコミットしないため、要約（ゲート判定・受け入れ基準の検証結果・スコープ外・未解決事項〔SD-n〕）を PR 本文または Issue コメントへ転記する。転記の成否にかかわらず、転記状態を進行表に記録する: 転記済みの場合は転記先（URL 等）、転記先がまだ無い・書き込めない場合は「未転記」と記録し、後者は次項の報告に転記用の要約を含める（転記済みか未転記の進行表への記録があるまで、監査証拠を伴う完了として扱わない。リポジトリ方針で進行表自体をコミットする場合は転記不要）
+6. 進行表を完成させ、ユーザーに以下を報告する: 全ゲートの通過状況 / 受け入れ基準の判定結果 / 未解決事項（SD-n）/ 監査要約の転記状態（転記先 URL または未転記）
 
 ## 注意事項
 

@@ -72,7 +72,34 @@ dry-run レポート全文と近似重複の抽出結果を、操作種別ごと
 
 ### Phase R3: 適用
 
-承認された操作のみを以下の順で適用する。
+承認された操作を適用する**前**に、R2 の承認対象を作った base が最新か確認する。R3-a〜R3-d の書き込み後に clean tree を要求してはならない。
+
+```bash
+default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || {
+  echo "origin/HEAD を解決できません（git remote set-head origin -a を実行してください）" >&2
+  exit 1
+}
+[[ "$default_ref" == origin/* ]] || { echo "default branch ref が不正です: $default_ref" >&2; exit 1; }
+default_branch="${default_ref#origin/}"
+[[ -z "$(git status --porcelain --untracked-files=all)" ]] || {
+  echo "ACE refine 適用前に作業ツリーを clean にしてください" >&2
+  exit 1
+}
+if ! git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" >/dev/null 2>&1; then
+  echo "origin/${default_branch} を取得できません（stale 値で版を確定しない。認証・通信・remote 設定を確認）" >&2
+  exit 1
+fi
+git rev-parse --verify --quiet "refs/remotes/origin/${default_branch}" >/dev/null || {
+  echo "remote-tracking ref を解決できません: origin/${default_branch}" >&2
+  exit 1
+}
+git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
+  echo "origin/${default_branch} が先行しています。取り込んで R2 の承認対象を作り直してください" >&2
+  exit 1
+}
+```
+
+fetch 失敗・ref 解決不能・diverge は stale 値へ fallback せず停止する。remote が先行していれば取り込み、dry-run と R2 の承認対象差分から作り直す。確認後、承認された操作のみを以下の順で適用する。
 
 #### R3-0. archive へ追記する前の共通規則（保全済み ID の分岐・一意性検証）
 
@@ -191,6 +218,8 @@ R3-a / R3-b / R3-c はいずれも live のブロックを `playbook/archive/<ca
 
 #### R3-e. 索引・Frontmatter・Changelog の整合
 
+R3 開始前ガードで確定した default branch を基準にする。`.version-claims` contract があるリポジトリでは、**直 push / PR のどちらでも**変更した PLAYBOOK.md / PATTERNS.md ごとに元の階層を保持した `.version-claims/<文書 path>.claim` を `document` / `version` / `change` の3行だけで更新し、同じ最終 commit に含める。version 不変の整理でも文書を変えたら `change` を更新する。同じ文書を同じ base から変えた直 push と PR も claim の同じ行を異なる値へ更新するため、祖先検査後の race を content conflict で停止する。claim の片寄せ・削除では解消せず、最新 base から整理結果・version・集約値・claim を再生成する。
+
 1. **エントリ保全の一括検証（必須）**: R3-a/b/c で live から削除・書き換えした**全 ID** について、`playbook/archive/` 配下に `### <ID>:` 見出しが**ちょうど 1 件**（存在ではなく一意）あることを `grep -c` で確認する。0 件ならコミットせず、欠けたエントリを git から復元して該当操作をやり直す。2 件以上なら着地が分裂しているので、原文を 1 ブロックに畳み provenance 行だけを既存レコードへ寄せてからコミットする。
 2. `PLAYBOOK.md` 索引テーブルを再確認する（アーカイブ・統合で削除した行の消し忘れがないか）。索引行は**タイトルのみ**で、説明文を書かない。
 3. Frontmatter: `ace_entry_count` を **live エントリ実数**（`playbook/archive/` 配下は数えない）へ更新し、`version` を **minor +1**、`updated` を今日、`changeImpact` を `medium` に設定する（無ければ追記。minor=medium の対応に従う。PLAYBOOK.md の `changeImpact` 更新責任は本スキルと `/ace-curate` にある）。
@@ -228,13 +257,44 @@ R3-a / R3-b / R3-c はいずれも live のブロックを `playbook/archive/<ca
    - **第 2 変種、または第 1 変種でも insight-block 等が残る場合**（ハイブリッド残置）: 本文の **Insight**/**Context**/**Action** が残るため `insight-block` マーカーで legacy 判定が継続する。**allowlist から削除しない**（削除すると allowlist に無い旧形式として exit 1 でブロックされる）。
    - **R3-a / R3-c で live から消した場合**: 当該 ID を allowlist から削除する（live に無い ID は警告のみ。警告を消すための掃除）。
 
+7. **全編集後に claim を最終生成する**: 索引・Frontmatter・Changelog・allowlist の更新と手順 5 のゲートが完了してから実行し、以後は対象文書を変更しない。各コマンドの失敗、`git diff --quiet` の検査不能、空・非 SemVer の version、書き込み失敗はすべて停止する。`.version-claims` と同じ filesystem 上の一時ファイルを完全生成し、既存 claim を退避してから上書き禁止 hard link で install し、最後に3行完全一致を検証する。競合時は rollback するか復旧用ファイルを保持して停止する。
+
+   ```bash
+   if [[ -d .version-claims ]]; then
+     [[ -n "${FF_DEV_TOOLKIT_ROOT:-}" && -x "$FF_DEV_TOOLKIT_ROOT/scripts/update-version-claim.sh" ]] || { echo "FF_DEV_TOOLKIT_ROOT の claim helper を解決できません" >&2; exit 1; }
+     default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || { echo "origin/HEAD を解決できません。git remote set-head origin --auto 後に再実行してください" >&2; exit 1; }
+     [[ "$default_ref" == origin/* ]] || { echo "origin/HEAD が不正です" >&2; exit 1; }
+     default_branch="${default_ref#origin/}"
+     for document in docs/08-knowledge/PLAYBOOK.md docs/03-implementation/PATTERNS.md; do
+       if git diff --quiet "origin/${default_branch}" -- "$document"; then diff_rc=0; else diff_rc=$?; fi
+       case "$diff_rc" in 0) continue ;; 1) ;; *) echo "文書差分を検査できません: $document" >&2; exit 1 ;; esac
+       "$FF_DEV_TOOLKIT_ROOT/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document "$document" || exit 1
+     done
+   fi
+   ```
+
 ### コミット
 
 **既定 — chore PR**: 本スキルは既存本文の書き換えを含むため、レビュー経路を既定とする。
 
 ```bash
 git checkout -b chore/ace-refine-<YYYYMMDD>
-git add docs/08-knowledge/ docs/03-implementation/PATTERNS.md
+git add docs/08-knowledge/ docs/03-implementation/PATTERNS.md || { echo "ACE 変更を stage できません" >&2; exit 1; }
+if [[ -d .version-claims ]]; then
+  if git diff --cached --quiet -- docs/08-knowledge/PLAYBOOK.md; then playbook_diff_rc=0; else playbook_diff_rc=$?; fi
+  case "$playbook_diff_rc" in
+    0) ;;
+    1) [[ -f .version-claims/docs/08-knowledge/PLAYBOOK.md.claim ]] || { echo "PR 経路に PLAYBOOK version claim がありません" >&2; exit 1; }; git add .version-claims/docs/08-knowledge/PLAYBOOK.md.claim || { echo "PLAYBOOK claim を stage できません" >&2; exit 1; } ;;
+    *) echo "PLAYBOOK の staged 差分を検査できません" >&2; exit 1 ;;
+  esac
+  if git diff --cached --quiet -- docs/03-implementation/PATTERNS.md; then patterns_diff_rc=0; else patterns_diff_rc=$?; fi
+  case "$patterns_diff_rc" in
+    0) ;;
+    1) [[ -f .version-claims/docs/03-implementation/PATTERNS.md.claim ]] || { echo "PATTERNS version claim がありません" >&2; exit 1; }; git add .version-claims/docs/03-implementation/PATTERNS.md.claim || { echo "PATTERNS claim を stage できません" >&2; exit 1; } ;;
+    *) echo "PATTERNS の staged 差分を検査できません" >&2; exit 1 ;;
+  esac
+fi
+[[ ! -d .version-claims ]] || "$FF_DEV_TOOLKIT_ROOT/scripts/check-version-claims.sh" --root "$(git rev-parse --show-toplevel)" || exit 1
 git status --short  # 意図したファイルのみが含まれるか確認
 git commit \
   -m "knowledge: ace-refine <YYYY-MM-DD> <要約（例: archive 12 件 / compact 5 件）>" \
@@ -247,6 +307,10 @@ gh pr create --base <default-branch> --title "knowledge: ace-refine <YYYY-MM-DD>
 ```
 
 **例外 — デフォルトブランチ直コミット**: 操作がアーカイブのみ・5 件以下の場合に限り、`/ace-curate` と同様に `<default-branch>` へ直接 commit + push してよい。
+
+直 push でも、上の PR block と同じ claim 生成を commit 前に実行する。`.version-claims` があるのに PLAYBOOK（および変更した PATTERNS）の claim が無い・stale のままなら commit せず停止する。
+
+直 push が non-fast-forward で拒否された場合は、remote の整理結果を保全して最新 tree からレポート・version・`ace_entry_count`・Changelog を再生成する。さらに**各再試行で**上の claim block と同じ claim 生成（既存 claim を退避し、上書き禁止 hard link で install）・3行完全一致検証を最新 base からやり直し、変更した文書の claim を stage してから、全ゲートを再実行して通常 push を**最大 3 回**再試行する。収束しなければ直列化を求めて停止し、force push で上書きしない。
 
 > **コミット件名と PR タイトルは `knowledge:` で始める**（squash 時は PR タイトルが件名になるため両方必須）。`ace-reuse-report` は `knowledge:` 件名のコミットを参照集計から除外する。refine コミットは大量の ACE ID を含むため、この接頭辞が無いと全エントリの git 参照カウントが汚染され、以後の stale 判定が壊れる。
 

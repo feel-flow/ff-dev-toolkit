@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+if [[ "${FAKE_FRAGMENT_SWAP_ON_HASH:-0}" == 1 && "$*" == *"hash-object ${FAKE_FRAGMENT_SWAP_PATH:?}"* && ! -e "${FAKE_FRAGMENT_SWAP_MARKER:?}" ]]; then
+  : > "$FAKE_FRAGMENT_SWAP_MARKER"
+  /bin/rm "$FAKE_FRAGMENT_SWAP_PATH"
+  /bin/ln -s "${FAKE_FRAGMENT_SWAP_TARGET:?}" "$FAKE_FRAGMENT_SWAP_PATH"
+fi
+exec "${FAKE_FRAGMENT_REAL_GIT:-/usr/bin/git}" "$@"

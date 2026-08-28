@@ -281,6 +281,12 @@ else
     # REQUIRED_SUITES に載せて明示許可を要求する。
     # 検査対象の直後に置くことを優先し、安価な順の例外として扱う。
     "$SCRIPT_DIR/changelog-contract-selftest/verify.sh"
+    # Issue 単位の CHANGELOG 断片 schema、materialize の冪等性、2 branch の
+    # 無競合直列マージを fixture で実測する（ADR-038 / Issue #764）。
+    "$SCRIPT_DIR/changelog-fragments/verify.sh"
+    # 文書 / PLAYBOOK の共有版を、non-fast-forward 後に merged tree から再生成して
+    # 収束させる手順と 2 clone 実測（ADR-038 / Issue #764）。
+    "$SCRIPT_DIR/shared-version-convergence/verify.sh"
     "$SCRIPT_DIR/docs-gates/verify.sh"
     "$SCRIPT_DIR/out-of-scope-routing/verify.sh"
     # out-of-scope 判定の実挙動検証（Issue #499）: SKILL.md から抽出した行数閾値と
@@ -746,6 +752,12 @@ REQUIRED_SUITES=(
   # 緑のままなので、検出パターンが弱っても本体だけでは分からない。perl・一時領域の
   # 都合で消えると「参照検出の退行が黙って通る」状態になる（Issue #610）。
   changelog-contract-selftest
+  # 一時領域 + git fixture が無いと、通常 PR が共有 CHANGELOG を編集しないことで
+  # 競合を除去する契約と materialize の冪等性が丸ごと未検証になる（Issue #764）。
+  changelog-fragments
+  # 一時領域 + bare remote + 2 clone が無いと、fresh read だけでは閉じない同時採番を
+  # non-fast-forward 後の再生成で収束させる検出力が丸ごと消える（Issue #764）。
+  shared-version-convergence
   # /retrospective 契約ゲートの検出力 selftest。代替の検査が無く、perl・一時領域の
   # 都合で消えるとチェーン記載の針と規定マーカーの検出力喪失が黙って通る（#540）。
   retrospective-contract-selftest
@@ -769,8 +781,8 @@ REQUIRED_SUITES=(
   # 「実リポジトリの docs/ をそのまま写す」設計で、baseline が実体と乖離しないことを
   # 優先している（同梱 fixture にすると baseline 自体が腐る）。したがって公開側では
   # sync-forbidden-patterns / release-required-selftest / docs-version-changelog（と
-  # その selftest）と合わせて 6 件の明示許可が要る:
-  #   FF_RUN_ALL_FULL=1 FF_RUN_ALL_ALLOW_SKIP="sync-forbidden-patterns release-required-selftest \
+  # その selftest）、root script を持たない changelog-fragments と合わせて 7 件の明示許可が要る:
+  #   FF_RUN_ALL_FULL=1 FF_RUN_ALL_ALLOW_SKIP="sync-forbidden-patterns release-required-selftest changelog-fragments \
   #     docs-frontmatter-repo-selftest docs-fact-drift-selftest docs-version-changelog \
   #     docs-version-changelog-selftest" bash tests/run-all.sh
   # 必須 skip で落ちたときは、この行と同じ内容をランナーが実際の skip 一覧から
@@ -778,8 +790,8 @@ REQUIRED_SUITES=(
   #
   # **既定（高速モード）では docs-frontmatter-repo-selftest / docs-fact-drift-selftest は
   # 除外される**（対の本体 suite が実在するため）。除外は SKIPPED に現れないので明示許可も
-  # 要らないが、**検証もされない**。上の 6 件を明示許可で通す形が成立するのは全件実行のとき
-  # だけで、既定では組み立てられるのも残り 3 件になる（ADR-034）。
+  # 要らないが、**検証もされない**。上の 7 件を明示許可で通す形が成立するのは全件実行のとき
+  # だけで、既定では組み立てられるのも残り 4 件になる（ADR-034）。
   docs-frontmatter-repo-selftest
   docs-fact-drift-selftest
   # frontmatter version ↔ 自 Changelog 最大版の一致は、PLAYBOOK.md（ACE 側ゲートが
@@ -806,7 +818,7 @@ REQUIRED_SUITES=(
   # 毎 sync リリース運用ゲートの検出力 selftest（#552）。代替の検査が無く、
   # 消えると「リリース漏れ・CHANGELOG 記載漏れを sync 前に止める」検出力の喪失が
   # 黙って通る。公開 checkout は root スクリプト不在で ○ skip するため、そちらでは
-  # FF_RUN_ALL_ALLOW_SKIP=release-required-selftest が要る（上の 6 件の列挙参照）。
+  # FF_RUN_ALL_ALLOW_SKIP=release-required-selftest が要る（上の 7 件の列挙参照）。
   release-required-selftest
 )
 

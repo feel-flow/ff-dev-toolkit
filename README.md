@@ -116,6 +116,7 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 ## 前提
 
 - [Claude Code](https://docs.claude.com/en/docs/claude-code)（プラグインの第一ターゲット。Codex CLI / Claude Cowork / grok CLI / GitHub Copilot CLI も Claude 形式 marketplace 互換で利用可。詳細は下記「他のツールで使う」）
+- Perl（共有版 claim と CHANGELOG の不可視 Unicode 検査・exact-path hard link に必要。macOS/多くの Linux に同梱）
 - Node.js >= 22（MCP サーバー spec-docs の実行に必要。18/20 は EOL のためサポート外）
 - マルチAI CLI オーケストレーション（`/multi-*`）を使う場合のみ: Codex CLI / Grok CLI / Copilot CLI のいずれか（オプション。Copilot CLI は `/multi-review` では従量課金のためオプトイン）
 

@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+src="${1:-}"
+[[ "$src" != -- ]] || src="${2:-}"
+last="${*: -1}"
+
+signal_main_shell() {
+  local parent
+  parent="$(ps -o ppid= -p "$PPID" | tr -d ' ')"
+  kill -TERM "$parent"
+}
+
+increment_counter() {
+  local counter_file="$1" count=0
+  [[ ! -f "$counter_file" ]] || count="$(cat "$counter_file")"
+  count=$((count + 1)); printf '%s\n' "$count" > "$counter_file"
+  [[ "$count" -ne 2 ]]
+}
+
+if [[ "${FAKE_MV_FAIL_SECOND_STAGE:-0}" == 1 && "$src" == */changelog.d/*.md && "$last" == */.ff-changelog.lock/*.md ]] && ! increment_counter "${FAKE_MV_STAGE_COUNT_FILE:?}"; then
+  echo "second staging move failure" >&2
+  exit 9
+fi
+if [[ "${FAKE_MV_FAIL_SECOND_CONSUME:-0}" == 1 && "$src" == */.ff-changelog.lock/*.md && "$last" == */.ff-changelog.lock/.consumed/*.md ]] && ! increment_counter "${FAKE_MV_CONSUME_COUNT_FILE:?}"; then
+  echo "second consume move failure" >&2
+  exit 9
+fi
+
+if [[ "${FAKE_MV_ATOMIC_RACE:-0}" == 1 && "$src" == */CHANGELOG.md && "$last" == */.ff-changelog-old.* ]]; then
+  race_tmp="${src}.external-race"
+  printf '%s\n' 'external pre-mv replacement' > "$race_tmp"
+  /bin/mv "$race_tmp" "$src"
+fi
+if [[ "${FAKE_MV_FOOTER_ATOMIC_RACE:-0}" == 1 && "$src" == */CHANGELOG.md && "$last" == */.ff-changelog-footer-old.* ]]; then
+  race_tmp="${src}.external-race"
+  printf '%s\n' 'external pre-mv replacement' > "$race_tmp"
+  /bin/mv "$race_tmp" "$src"
+fi
+if [[ "${FAKE_MV_CONSUME_RACE:-0}" == 1 && "$src" == */.ff-changelog.lock/*.md && "$last" == */.ff-changelog.lock/.consumed/*.md ]]; then
+  race_tmp="${FAKE_MV_CHANGELOG:?}.external-race"
+  printf '%s\n' 'external consume replacement' > "$race_tmp"
+  /bin/mv "$race_tmp" "$FAKE_MV_CHANGELOG"
+fi
+if [[ "${FAKE_MV_SYMLINK_RACE:-0}" == 1 && "$src" == */changelog.d/7.changed.symlink-race.md && "$last" == */.ff-changelog.lock/7.changed.symlink-race.md ]]; then
+  /bin/rm "$src"
+  /bin/ln -s "${FAKE_MV_LINK_TARGET:?}" "$src"
+fi
+if [[ "${FAKE_MV_STAGE_SIGNAL:-0}" == 1 && "$src" == */changelog.d/*.md && "$last" == */.ff-changelog.lock/*.md ]]; then
+  /bin/mv "$@"
+  if [[ "${FAKE_MV_DANGLING_RESTORE_RACE:-0}" == 1 ]]; then
+    /bin/ln -s "${FAKE_MV_DANGLING_TARGET:?}" "$src"
+  fi
+  signal_main_shell
+  exit 0
+fi
+if [[ "${FAKE_MV_CONSUME_SIGNAL:-0}" == 1 && "$src" == */.ff-changelog.lock/*.md && "$last" == */.ff-changelog.lock/.consumed/*.md ]]; then
+  /bin/mv "$@"
+  signal_main_shell
+  exit 0
+fi
+exec /bin/mv "$@"

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+result="$("${FAKE_CLAIM_REAL_MKTEMP:-/usr/bin/mktemp}" "$@")" || exit $?
+if [[ "${FAKE_CLAIM_SWAP_PARENT:-0}" == 1 && "$result" == */.version-claims/.version-claim.* ]]; then
+  /bin/rmdir "${FAKE_CLAIM_PARENT:?}"
+  /bin/ln -s "${FAKE_CLAIM_EXTERNAL_PARENT:?}" "$FAKE_CLAIM_PARENT"
+fi
+printf '%s\n' "$result"

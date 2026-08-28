@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+last="${*: -1}"
+if [[ "${FAKE_CP_SWAP_STAGED_SYMLINK:-0}" == 1 && "$last" == */fragments/*.md ]]; then
+  source_path="${@: -2:1}"
+  /bin/rm -f -- "$source_path"
+  /bin/ln -s -- "${FAKE_CP_SWAP_TARGET:?}" "$source_path"
+fi
+if [[ "${FAKE_CP_FAIL_SECOND_SNAPSHOT:-0}" == 1 && "$last" == */fragments/*.md ]]; then
+  count=0
+  [[ ! -f "${FAKE_CP_COUNT_FILE:?}" ]] || count="$(cat "$FAKE_CP_COUNT_FILE")"
+  count=$((count + 1)); printf '%s\n' "$count" > "$FAKE_CP_COUNT_FILE"
+  if [[ "$count" -eq 2 ]]; then echo "second snapshot copy failure" >&2; exit 9; fi
+fi
+exec /bin/cp "$@"

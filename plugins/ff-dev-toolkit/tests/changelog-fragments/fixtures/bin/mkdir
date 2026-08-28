@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+if [[ "${FAKE_MKDIR_FAIL:-0}" == 1 && "${*: -1}" == *.ff-changelog.lock ]]; then
+  echo "permission denied" >&2
+  exit 9
+fi
+if [[ "${FAKE_MKDIR_SIGNAL:-0}" == 1 && "${*: -1}" == *.ff-changelog.lock ]]; then
+  /bin/mkdir "$@"
+  rc=$?
+  parent="$(ps -o ppid= -p "$PPID" | tr -d ' ')"
+  kill -TERM "$parent"
+  sleep 0.1
+  exit "$rc"
+fi
+exec /bin/mkdir "$@"

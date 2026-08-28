@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+last="${*: -1}"
+if [[ "${FAKE_RMDIR_FAIL:-0}" == 1 && "$last" == *.ff-changelog.lock ]]; then
+  echo "device busy" >&2
+  exit 9
+fi
+if [[ "${FAKE_RMDIR_FAIL_CONSUMED:-0}" == 1 && "$last" == */.ff-changelog.lock/.consumed ]]; then
+  echo "consumed directory busy" >&2
+  exit 9
+fi
+exec /bin/rmdir "$@"
