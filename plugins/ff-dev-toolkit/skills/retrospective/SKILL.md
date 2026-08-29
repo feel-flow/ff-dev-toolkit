@@ -30,10 +30,10 @@ description: ワークフローチェーンの末尾（/merge-cleanup → /ace-c
 
 1. ユーザー依頼の作業がこの応答で完了する → 本文の観察チェックリストに沿って振り返りを実施し、最終応答へ結果を含める
 2. 質問・承認待ち・外部状態待ち・作業途中である → 提案を作らず `振り返り: 今回は作業完了前のため対象外` と報告する
-3. `hooks/retrospective-stop.sh` は実行漏れの fallback としてだけ働く。最終応答に振り返り結果があれば無音で停止を許可し、無ければ継続プロンプトを 1 回返す
-4. fallback による継続中の再停止は、ホストの `stop_hook_active` または最終応答の振り返り結果により許可される。自分で hook を再実行したり marker を作ったりしない
+3. `hooks/retrospective-stop.sh` は Claude Code 互換入力でだけ実行漏れの fallback として働く。最終応答に振り返り結果があれば無音で停止を許可し、無ければ継続プロンプトを 1 回返す
+4. Codex の Stop 入力（`model` フィールドあり）は常に無音で停止を許可し、UserPromptSubmit の事前注入だけに委ねる。Claude Code の fallback 継続中は、ホストの `stop_hook_active` または最終応答の振り返り結果により再停止を許可する。自分で hook を再実行したり marker を作ったりしない
 
-通常経路では Stop hook の `decision:block` を発生させないため、継続理由が利用者向け Feedback として露出しない。Feedback が表示された場合は、事前注入された契約をエージェントが取りこぼしたことを示す。改善提案の起票承認境界は変わらず、自動化されるのは read-only の振り返りと定型の観測記録までである。
+Codex では Stop hook の `decision:block` を返さないため、事前注入を取りこぼしても継続理由が利用者向け Feedback として露出しない。Claude Code では取りこぼし時の fallback を維持する。改善提案の起票承認境界は変わらず、自動化されるのは read-only の振り返りと定型の観測記録までである。
 
 ## 観察チェックリスト
 

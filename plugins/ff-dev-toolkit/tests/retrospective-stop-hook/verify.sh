@@ -59,8 +59,8 @@ run_hook() {
 }
 
 run_context_hook() {
-  local mode="${1-__unset__}"
-  local input='{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}'
+  local mode="${1-__unset__}" input
+  input="${2:-{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"s1\",\"turn_id\":\"t1\",\"prompt\":\"作業を完了して\"}}"
   local errfile="$TEST_TMP/context-stderr"
   RC=0
   if [ "$mode" = "__unset__" ]; then
@@ -103,6 +103,19 @@ else
   bad "UserPromptSubmit の事前注入契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
 
+run_context_hook __unset__ '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して","model":"gpt-5.6-sol"}'
+CODEX_CONTEXT="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
+  && [ -n "$CODEX_CONTEXT" ] \
+  && printf '%s' "$CODEX_CONTEXT" | grep -F 'ff-dev-toolkit:retrospective' >/dev/null \
+  && printf '%s' "$OUT" | jq -e 'has("decision") | not' >/dev/null 2>&1 \
+  && printf '%s' "$OUT" | jq -e 'has("reason") | not' >/dev/null 2>&1 \
+  && printf '%s' "$OUT" | jq -e 'has("systemMessage") | not' >/dev/null 2>&1; then
+  ok "Codex UserPromptSubmit も表示用 Feedback なしで事前注入"
+else
+  bad "Codex UserPromptSubmit の事前注入契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
 run_context_hook off
 assert_silent_success "context hook も RETROSPECTIVE_MODE=off なら無効"
 
@@ -134,6 +147,13 @@ fi
 FIRST_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","stop_hook_active":false}'
 ACTIVE_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","stop_hook_active":true}'
 DONE_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t2","stop_hook_active":false,"last_assistant_message":"振り返り: 改善候補なし"}'
+CODEX_FIRST_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","stop_hook_active":false,"model":"gpt-5.6-sol"}'
+
+run_hook "$CODEX_FIRST_INPUT"
+assert_silent_success "Codex Stop は Feedback を返さず事前注入に委ねる"
+
+run_hook "$CODEX_FIRST_INPUT" ask
+assert_silent_success "Codex Stop は ask モードでも Feedback を返さない"
 
 run_hook "$FIRST_INPUT"
 if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && [ -n "$OUT" ] \
@@ -322,8 +342,10 @@ if [ -n "$AUTOFIRE_SECTION" ] && [ -n "$AUTOFIRE_JUDGMENT" ] \
   && [[ $AUTOFIRE_JUDGMENT == *"$INCOMPLETE_REPORT"* ]] \
   && printf '%s' "$FIRST_INPUT" | /bin/bash "$TARGET" | jq -r '.reason // empty' | grep -F "$INCOMPLETE_REPORT" >/dev/null \
   && grep -F "$AUTOFIRE_HEADING" "$SKILL" >/dev/null \
+  && [[ $AUTOFIRE_JUDGMENT == *'Claude Code 互換入力でだけ実行漏れの fallback'* ]] \
+  && [[ $AUTOFIRE_JUDGMENT == *'Codex の Stop 入力（`model` フィールドあり）は常に無音'* ]] \
   && [[ $AUTOFIRE_JUDGMENT == *'自分で hook を再実行したり marker を作ったりしない'* ]]; then
-  ok "未完了報告と自動発火境界が hook / SKILL.md で一致"
+  ok "未完了報告・ホスト別 Stop・自動発火境界が hook / SKILL.md で一致"
 else
   bad "hook / SKILL.md の自動発火契約が drift"
 fi
@@ -344,7 +366,7 @@ else
   bad "hook が filesystem へ副作用を作成"
 fi
 
-EXPECTED_CHECKS=24
+EXPECTED_CHECKS=27
 if [ $((PASS + FAIL)) -ne "$EXPECTED_CHECKS" ]; then
   bad "検査総数が $((PASS + FAIL)) 件（期待 ${EXPECTED_CHECKS} 件）"
 fi

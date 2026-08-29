@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONSUMER="$PLUGIN_ROOT/tests/retrospective-stop-hook/verify.sh"
-EXPECTED_CONSUMER_CHECKS=24
+EXPECTED_CONSUMER_CHECKS=27
 
 command -v perl >/dev/null 2>&1 || { echo "○ skip: perl が無いため retrospective Stop hook self-test をスキップ"; exit 0; }
 if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/retrospective-stop-hook-selftest.XXXXXX" 2>&1)"; then
@@ -74,7 +74,9 @@ fi
 #   意味の錨へ限定: SKILL.md の定型文は自動発火節の番号付き判定リストへ範囲を閉じる。
 #     散文中の引用数は契約ではないため数えず、増減を良性変更として許容する（Issue #956）
 #   1 箇所のみ: `if [ "$HOOK_STATE" != "first" ]; then` / `input.stop_hook_active || retrospectiveDone` /
+#     `retrospectiveDone || codexStop` /
 #     `INPUT_TIMEOUT_SECONDS=2` / `Automatic retrospective check before stop` /
+#     `Codex の Stop 入力（\`model\` フィールドあり）は常に無音` /
 #     `if ! command -v node ...` / `"Stop": [` / `"UserPromptSubmit": [`
 #   `process.exit(2)` は 3 箇所あるが、変異は前後の行ごと指定して一意に当てている
 #
@@ -178,6 +180,11 @@ ROOT="$(make_fixture secondary-guard)"
 perl -0pi -e 's/input\.stop_hook_active \|\| retrospectiveDone/input.stop_hook_active/' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "secondary guard 削除" "secondary guard が終了を許可" "$ROOT"
 
+ROOT="$(make_fixture codex-host-guard)"
+expect_occurrences "$ROOT/hooks/retrospective-stop.sh" 'retrospectiveDone || codexStop' 1
+perl -0pi -e 's/retrospectiveDone \|\| codexStop/retrospectiveDone/' "$ROOT/hooks/retrospective-stop.sh"
+check_mutation "Codex Stop の表示抑止ガード削除" "Codex Stop は Feedback を返さず事前注入に委ねる" "$ROOT"
+
 ROOT="$(make_fixture ask-reentry)"
 perl -0pi -e 's/if \[ "\$HOOK_STATE" != "first" \]; then/if [ "\$HOOK_STATE" != "first" ] \&\& [ "\$MODE" != "ask" ] \&\& [ "\$MODE" != "ASK" ]; then/' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "ask 再入ガード削除" "ask モードの継続中も再入せず終了を許可" "$ROOT"
@@ -251,6 +258,12 @@ perl -0pi -e 's/振り返り: 今回は作業完了前のため対象外/振り�
   "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "hook 側 定型文 drift" "継続理由の必須境界が不足" "$ROOT"
 
+ROOT="$(make_fixture skill-codex-host-drift)"
+expect_occurrences "$ROOT/skills/retrospective/SKILL.md" 'Codex の Stop 入力（`model` フィールドあり）は常に無音' 1
+perl -0pi -e 's/Codex の Stop 入力（`model` フィールドあり）は常に無音/Codex の Stop 入力は fallback/' \
+  "$ROOT/skills/retrospective/SKILL.md"
+check_mutation "SKILL の Codex Stop 無音契約 drift" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
+
 ROOT="$(make_fixture context-incomplete-report)"
 perl -0pi -e 's/振り返り: 今回は作業完了前のため対象外/振り返り: 未完了/g' \
   "$ROOT/hooks/retrospective-context.sh"
@@ -281,7 +294,7 @@ perl -0pi -e 's{(対応ホストでは[^\n]*\n)}{$1\n```text\n## セッション
 check_no_regression "自動発火 節内へフェンス例示を追加" "$ROOT"
 
 # 件数は名前付き定数で持つ（このファイルは EXPECTED_CONSUMER_CHECKS で既にその慣習）。
-EXPECTED_MUTATIONS=23
+EXPECTED_MUTATIONS=25
 EXPECTED_BENIGN=2
 if [ "$MUTATIONS" -ne "$EXPECTED_MUTATIONS" ]; then
   echo "✗ mutation 実行数が不正: ${MUTATIONS}（期待 ${EXPECTED_MUTATIONS}）" >&2

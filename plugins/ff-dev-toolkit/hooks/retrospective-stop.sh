@@ -47,7 +47,11 @@ process.stdin.on("end", () => {
       ? input.last_assistant_message
       : "";
     const retrospectiveDone = /(^|\n)(振り返り:|## セッション振り返り)/m.test(message);
-    process.stdout.write(input.stop_hook_active || retrospectiveDone ? "active" : "first");
+    // Codex Stop decision:block renders reason as a visible HookPrompt. Codex
+    // inputs include model, so rely on UserPromptSubmit pre-injection there and
+    // keep this fallback only for hosts such as Claude Code.
+    const codexStop = typeof input.model === "string";
+    process.stdout.write(input.stop_hook_active || retrospectiveDone || codexStop ? "active" : "first");
   } catch (_) {
     process.exit(2);
   }

@@ -1,5 +1,5 @@
 {
-  "description": "ff-dev-toolkit の更新通知・スキル実体ドリフト検査と自動振り返り。SessionStart で新版、スキル集合の欠落、複数 version のインストール実体併存を通知し、UserPromptSubmit で振り返りを事前注入、Stop で実行漏れ時だけ 1 回継続する（fail-open）",
+  "description": "ff-dev-toolkit の更新通知・スキル実体ドリフト検査と自動振り返り。SessionStart で新版、スキル集合の欠落、複数 version のインストール実体併存を通知し、UserPromptSubmit で振り返りを事前注入、Claude Code の Stop で実行漏れ時だけ 1 回継続する。Codex の Stop は表示を作らず無音で終了する（fail-open）",
   "hooks": {
     "SessionStart": [
       {

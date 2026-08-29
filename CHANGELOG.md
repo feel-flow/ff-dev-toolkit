@@ -19,6 +19,12 @@
 
 ## [Unreleased]
 
+## [0.65.1] - 2026-08-29
+
+### 修正
+
+- Codex で自動振り返りの Stop fallback が内部指示を「フックからのフィードバック」として表示する問題を修正しました。Codex は UserPromptSubmit の事前注入を使い、Claude Code の実行漏れ fallback は維持します。
+
 ## [0.65.0] - 2026-08-29
 
 ### 変更

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Inject the automatic retrospective contract before response generation.
-# The Stop hook remains a fallback when the model misses this context.
+# Claude Code keeps a Stop fallback when the model misses this context. Codex
+# Stop is silent because its continuation reason is rendered as visible UI.
 
 MODE="${RETROSPECTIVE_MODE:-}"
 MODE="${MODE//[[:space:]]/}"
