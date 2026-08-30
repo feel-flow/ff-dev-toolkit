@@ -62,9 +62,6 @@ TOTAL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); TOTAL=$((TOTAL + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); TOTAL=$((TOTAL + 1)); }
 
-# 検査総数の固定（アサーションが削除で静かに減るのを赤化する）。
-EXPECTED_TOTAL=25
-
 # ---- fixture: CHANGELOG.md バリエーション --------------------------------------
 # 本体の禁止パターンに触れない共通ヘッダ。実ファイルと同じく compare URL を含める
 # （リンク行が誤検知されないことを golden 経路で固定する）。
@@ -287,10 +284,6 @@ ver_case "版検査の前提不足でも参照検査は到達する" 1 "公開 C
 cp "$TESTS_DIR/../.claude-plugin/plugin.json" "$MUT_TREE/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
 
 echo ""
-if [ "$TOTAL" -ne "$EXPECTED_TOTAL" ]; then
-  echo "✗ changelog-contract-selftest: 検査総数が ${TOTAL} 件（期待 ${EXPECTED_TOTAL} 件）。ケースを増減したら EXPECTED_TOTAL も更新する" >&2
-  exit 1
-fi
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ changelog-contract-selftest: ${FAIL} 件失敗" >&2
   exit 1

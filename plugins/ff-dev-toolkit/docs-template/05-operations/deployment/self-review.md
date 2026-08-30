@@ -129,13 +129,15 @@ AIがレビュー結果を返したら、指摘事項があればその場で修
 
 PR Review Toolkit（Claude系）でのセルフレビューに加え、Codex CLI（GPT系）でクロスモデルレビューを実行し、異なるAIモデルの観点からレビュー品質を向上させます。
 
+本書は [Multi-CLI Review Orchestration §ff-dev-toolkit plugin root の固定](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入します。実行前に同節の resolver + guard へ host の読み込み済み plugin 情報と `FF_DEV_TOOLKIT_PROJECT_ROOT` を渡し、fence 全体と下のコマンドを1回の Bash tool 呼び出し / shell script body で実行します。
+
 ### 実行方法
 
 ```bash
 # Toolkit レビュー後に実行（プラグイン同梱の multi-review 経由）
-bash scripts/multi-review.sh --mode cross-model --cli codex-cli
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
 # scripts/codex-review.sh は multi-agent.sh へ委譲するシムとして同梱される
-# （setup-multi-agent.sh が配置する。下の呼び出しと等価）
+# 生成シムはCodex-only互換入口であり、このcross-model実行とはmode・担当範囲が異なる
 ```
 
 ### レビュー結果の対応
@@ -183,7 +185,7 @@ pre-push hookで自動実行（`.husky/pre-push`）することも可能です�
 
 ```bash
 # 同梱: Multi-CLI オーケストレーターの依存確認・導入
-bash scripts/setup-multi-agent.sh
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
 # setup-multi-review.sh / setup-automated-review.sh は同梱されない（利用側で pre-commit 等を組む場合の別名例）
 ```
 

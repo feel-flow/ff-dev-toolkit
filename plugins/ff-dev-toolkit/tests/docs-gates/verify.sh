@@ -26,13 +26,15 @@
 #   - 文言 needle（散文アンカー）が red になった場合、文書の正当なリライトが
 #     原因なら本ファイルの needle も一緒に更新する。
 #
-# 追加の依存ツール不要（POSIX 標準ユーティリティのみ）。一時ファイルも作らない
-# ため、書き込み不可の環境でも完走する。
+# Bash と、本プロジェクトの対応環境に標準搭載される grep / awk / sed / find を使う。
+# 一時ファイルを作らない読み取り専用 suite とし、docs の複製を伴う動的 smoke / mutation は
+# docs-gates-runtime が担うため、書き込み不可の環境でも本 suite 単体は完走できる。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# 変異検査では docs だけを複製し、静的 suite の実装は同じものを使う。
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DOCS="$PLUGIN_ROOT/docs-template"
+DOCS="${FF_DOCS_GATE_DOCS:-$PLUGIN_ROOT/docs-template}"
 
 [ -d "$DOCS" ] || { echo "✗ docs-template が見つかりません: $DOCS" >&2; exit 1; }
 
@@ -40,6 +42,334 @@ PASS=0
 FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
+
+# --- 消費プロジェクトのレビュー入口（Issue #1011） ---
+# shellcheck source=consumer-review-entrypoint-scan.sh
+. "$SCRIPT_DIR/consumer-review-entrypoint-scan.sh"
+
+consumer_local_rc=0
+consumer_local_entries="$(find_consumer_local_review_entries "$DOCS" 2>&1)" || consumer_local_rc=$?
+case "$consumer_local_rc" in
+  0)
+    bad "docs-template が未配置の consumer-local review 入口を案内している"
+    printf '%s\n' "$consumer_local_entries" >&2
+    ;;
+  1)
+    ok "docs-template が未配置の consumer-local setup / multi-agent / multi-review を案内しない"
+    ;;
+  *)
+    bad "docs-template の consumer-local review 入口を走査できない (rc=${consumer_local_rc})"
+    printf '%s\n' "$consumer_local_entries" >&2
+    ;;
+esac
+
+# `bash` 形式の root-qualified 実行例を載せる文書は、固定 root の取得・失効時停止を定める正本へ
+# 自分から到達できなければならない。対象集合も固定し、文書単位のcommand消失や
+# 無関係な文書へのcommand追加で検査対象が入れ替わる退行を検出する。
+ROOT_PREREQUISITE_ANCHOR='ff-dev-toolkit-plugin-root-prerequisite'
+ROOT_PREREQUISITE_TAG='<a id="ff-dev-toolkit-plugin-root-prerequisite"></a>'
+ROOT_PREREQUISITE_DOC="$DOCS/05-operations/deployment/multi-cli-review-orchestration.md"
+CI_REVIEW_DOC="$DOCS/05-operations/deployment/multi-cli-review-ci.md"
+[ -f "$ROOT_PREREQUISITE_DOC" ] \
+  || { echo "✗ plugin root 前提の正本文書が見つかりません: $ROOT_PREREQUISITE_DOC" >&2; exit 1; }
+[ -f "$CI_REVIEW_DOC" ] \
+  || { echo "✗ Multi-CLI CI 文書が見つかりません: $CI_REVIEW_DOC" >&2; exit 1; }
+# shellcheck source=root-prerequisite-scan.sh
+. "$SCRIPT_DIR/root-prerequisite-scan.sh"
+root_command_docs=0
+root_command_doc_entries=""
+root_command_doc_rel_entries=""
+root_command_doc_rc=0
+root_command_doc_entries="$(
+  grep -R -lE --include='*.md' \
+    'bash[[:space:]]+"\$\{FF_DEV_TOOLKIT_ROOT\}/scripts/(setup-multi-agent|multi-agent|multi-review)\.sh"' \
+    "$DOCS" 2>&1
+)" || root_command_doc_rc=$?
+case "$root_command_doc_rc" in
+  0)
+    while IFS= read -r root_command_doc; do
+      root_command_docs=$((root_command_docs + 1))
+      rel_root_command_doc="${root_command_doc#"$DOCS"/}"
+      root_command_doc_rel_entries="${root_command_doc_rel_entries}${rel_root_command_doc}
+"
+      if root_prerequisite_reachable_before_command "$root_command_doc"; then
+        ok "${rel_root_command_doc}: 最初の実行例より前に固定 plugin root の前提へ到達できる"
+      else
+        bad "${rel_root_command_doc}: 最初の実行例より前に有効な plugin root 前提 link / anchor が無い"
+      fi
+    done < <(printf '%s\n' "$root_command_doc_entries")
+    ;;
+  1)
+    bad "固定 plugin root を使う実行例が 1 件も無い — 入口検査が空振りしている"
+    ;;
+  *)
+    bad "固定 plugin root を使う文書一覧を走査できない (rc=${root_command_doc_rc})"
+    printf '%s\n' "$root_command_doc_entries" >&2
+    ;;
+esac
+expected_root_command_docs='05-operations/deployment/automated-code-review.md
+05-operations/deployment/git-workflow.md
+05-operations/deployment/multi-cli-agent-orchestration.md
+05-operations/deployment/multi-cli-review-ci.md
+05-operations/deployment/multi-cli-review-orchestration.md
+05-operations/deployment/self-review.md
+06-reference/REVIEW_AGENT_CREATION_GUIDE.md'
+actual_root_command_docs="$(printf '%s' "$root_command_doc_rel_entries" | sed '/^$/d' | sort)"
+if [ "$actual_root_command_docs" = "$expected_root_command_docs" ]; then
+  ok "固定 plugin root の実行例を載せる文書集合が期待した7件と一致"
+else
+  bad "固定 plugin root の実行例を載せる文書集合が期待値と不一致（現在${root_command_docs}件）"
+  printf 'expected:\n%s\nactual:\n%s\n' \
+    "$expected_root_command_docs" "$actual_root_command_docs" >&2
+fi
+
+# 対話用の直接実行例は resolver fence と同じ Bash body でguardを再評価する。
+# 行頭だけを見ず、`if ! bash` / `cd && bash` / `run: bash` も拾う。永続pre-pushと
+# CIは同じ文書内の自己完結bootstrapをruntime suiteで検査するため、文書と節を限定して除外する。
+unguarded_direct_commands="$(find "$DOCS" -type f -name '*.md' -exec awk '
+  FNR == 1 { in_fence = 0; in_pre_push = 0 }
+  /^###[[:space:]]/ { in_pre_push = ($0 == "### Husky pre-push フックとの統合") }
+  /^```(bash|sh|zsh|yaml)[[:space:]]*$/ { in_fence = 1; next }
+  /^```/ { in_fence = 0; next }
+  in_fence && /"\$\{FF_DEV_TOOLKIT_ROOT\}\/scripts\/(setup-multi-agent|multi-agent|multi-review|check-closing-keywords)\.sh"/ {
+    if ($0 ~ /^[[:space:]]*ff_require_toolkit_root && ff_require_consumer_root && bash /) next
+    if (FILENAME ~ /\/multi-cli-review-ci\.md$/) next
+    if (FILENAME ~ /\/multi-cli-review-orchestration\.md$/ && in_pre_push) next
+    print FILENAME ":" FNR ":" $0
+    }
+' {} +)"
+if [ -z "$unguarded_direct_commands" ]; then
+  ok "対話用の直接実行例がtoolkit rootとconsumer rootを同じ行で再評価する"
+else
+  bad "guardなしのplugin root直接実行例がある"
+  printf '%s\n' "$unguarded_direct_commands" >&2
+fi
+# 実行コマンドは root-qualified な正準形だけを許可する。文書一覧を正しい prefix から
+# 導出する検査だけでは、絶対 cache path や CLAUDE_PLUGIN_ROOT へ丸ごと置換された文書が
+# 対象から脱落するため、resource 名から逆向きにも列挙して照合する。
+review_resource_commands=""
+review_resource_command_rc=0
+review_resource_commands="$(
+  find "$DOCS" -type f -name '*.md' -exec awk '
+    /(^|[^[:alnum:]_.-])(\/[^[:space:]]*\/)?(bash|sh|zsh|command|exec|env|source)([[:space:]]+[^[:space:]]+)*[[:space:]]+[^[:space:]]*\/(setup-multi-agent|multi-agent|multi-review)\.sh([^[:alnum:]_.-]|$)/ \
+      || /(^|[[:space:]|;])(test[[:space:]]+|\[[[:space:]]+)-[frsx][[:space:]]+[^[:space:]]*\/(setup-multi-agent|multi-agent|multi-review)\.sh([^[:alnum:]_.-]|$)/ \
+      || /^[[:space:]]*(([-+*]|[0-9]+[.)])[[:space:]]+)?"?(\$\{[^}]+\}|\/)[^[:space:]"`]*\/scripts\/(setup-multi-agent|multi-agent|multi-review)\.sh"?([^[:alnum:]_.-]|$)/ {
+        print FILENAME ":" FNR ":" $0
+    }
+  ' {} + 2>&1
+)" || review_resource_command_rc=$?
+case "$review_resource_command_rc" in
+  0)
+    if [ -n "$review_resource_commands" ]; then
+      while IFS= read -r review_resource_command; do
+        # 同じ行の後方やコメントへ正準形を足しても、前方の別rootを隠せないように
+        # 正準pathをすべて除いてからresource参照が残るかを判定する。
+        unquoted_review_resource="$(printf '%s\n' "$review_resource_command" | sed \
+          -e 's#"${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent\.sh"##g' \
+          -e 's#"${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent\.sh"##g' \
+          -e 's#"${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review\.sh"##g')"
+        residual_review_resource="$(printf '%s\n' "$review_resource_command" | sed \
+          -e 's#${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent\.sh##g' \
+          -e 's#${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent\.sh##g' \
+          -e 's#${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review\.sh##g')"
+        if printf '%s\n' "$unquoted_review_resource" | grep -Eq \
+          '\$\{FF_DEV_TOOLKIT_ROOT\}/scripts/(setup-multi-agent|multi-agent|multi-review)\.sh' \
+          || printf '%s\n' "$residual_review_resource" | grep -Eq \
+          '/(setup-multi-agent|multi-agent|multi-review)\.sh([^[:alnum:]_.-]|$)'; then
+          bad "review resource command が固定 root の引用付き正準形ではない: ${review_resource_command}"
+        fi
+      done < <(printf '%s\n' "$review_resource_commands")
+      ok "setup / multi-agent / multi-review の実行コマンドをresource名から逆引きして検査"
+    else
+      bad "setup / multi-agent / multi-review の実行コマンドが1件も無い"
+    fi
+    ;;
+  *)
+    bad "review resource command を走査できない (rc=${review_resource_command_rc})"
+    printf '%s\n' "$review_resource_commands" >&2
+    ;;
+esac
+
+# root-qualified command は1行の引用付き正準形だけを許可する。`bash \` の次行へ
+# 未引用 path を逃がすと、空白を含む plugin root で壊れるうえ上の行単位検査を抜ける。
+multiline_root_commands=""
+multiline_root_command_rc=0
+multiline_root_commands="$(find "$DOCS" -type f -name '*.md' -exec awk '
+  FNR == 1 { in_shell_continuation = 0 }
+  in_shell_continuation {
+    if ($0 ~ /\/(setup-multi-agent|multi-agent|multi-review)\.sh([^[:alnum:]_.-]|$)/) {
+      print FILENAME ":" FNR ":" $0
+    }
+    if ($0 !~ /\\[[:space:]]*$/) { in_shell_continuation = 0 }
+    next
+  }
+  /(^|[^[:alnum:]_.\/-])(bash|sh|zsh)([[:space:]]+[^[:space:]\\]+)*[[:space:]]*\\[[:space:]]*$/ {
+    in_shell_continuation = 1
+  }
+' {} + 2>&1)" || multiline_root_command_rc=$?
+if [ "$multiline_root_command_rc" -ne 0 ]; then
+  bad "複数行 review resource command を走査できない (rc=${multiline_root_command_rc})"
+  printf '%s\n' "$multiline_root_commands" >&2
+elif [ -n "$multiline_root_commands" ]; then
+  bad "review resource command を複数行に分割している — 引用付き1行の正準形を使う"
+  printf '%s\n' "$multiline_root_commands" >&2
+else
+  ok "review resource command に複数行へ分割した非正準形が無い"
+fi
+
+# skill側の handoff 文言統一は plugin-root-contract suite が全resource参照skillと
+# mutationで担う。host情報からrootを実際に解決する動作はdocs-gates-runtimeが担い、
+# ここでは配布文書が同じ2経路と再探索禁止を欠落させないことを照合する。
+if grep -qF 'ff_canonical_toolkit_root "$CLAUDE_PLUGIN_ROOT"' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'FF_DEV_TOOLKIT_SKILL_FILE' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'handoff の producer は skill を実行する AI host' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'FF_DEV_TOOLKIT_SKILL_FILE="<skill loader が返したこの SKILL.md の絶対パス>"; export FF_DEV_TOOLKIT_SKILL_FILE' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'FF_DEV_TOOLKIT_PROJECT_ROOT="<AI host の task workspace repository root>"; export FF_DEV_TOOLKIT_PROJECT_ROOT' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF '実際に読み込んだ ff-dev-toolkit skill の絶対 `SKILL.md` パス' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'skill_dir="$(dirname "$FF_DEV_TOOLKIT_SKILL_FILE")"' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF '$(basename "$skills_dir")" != skills' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'キャッシュ全体を探索したり、version 名を並べ替えて別版へ切り替えたりしない' "$ROOT_PREREQUISITE_DOC"; then
+  ok "配布文書がClaude/Codexの固定root解決と別version再探索禁止をskill契約に合わせている"
+else
+  bad "配布文書のhost別plugin root解決がskill契約からdriftしている"
+fi
+
+if grep -qF 'ff-dev-toolkitのhandoffを再構成してください' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'ff_require_toolkit_root()' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'for resource in setup-multi-agent.sh multi-agent.sh multi-review.sh check-closing-keywords.sh' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF '[ ! -f "$resource_path" ]' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF '[ ! -r "$resource_path" ]' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF '[ ! -s "$resource_path" ]' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF '[ -L "${host_root}/scripts" ]' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'ff_has_toolkit_manifest_marker()' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'return 2' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'FF_DEV_TOOLKIT_ROOT_SOURCE=host' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'export FF_DEV_TOOLKIT_ROOT' "$ROOT_PREREQUISITE_DOC"; then
+  ok "固定 plugin root の前提が相対path・未設定・resource 消失を案内付きで停止する"
+else
+  bad "固定 plugin root の前提に相対path・未設定・resource 消失の fail-closed guard が無い"
+fi
+
+if grep -qF 'sidecar は Git 管理せず' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'toolkit 更新後に setup を再実行' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'versioned cache を探索・選択する設定として手書きしない' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF '上の対話用 resolver fence は呼ばず' "$ROOT_PREREQUISITE_DOC"; then
+  ok "対話skillと永続hook/CIのroot固定ライフサイクルを区別している"
+else
+  bad "対話skillと永続hook/CIのroot固定ライフサイクルが曖昧"
+fi
+
+if grep -qF '消費プロジェクトの repository root' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'ff_require_consumer_root()' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'git rev-parse --show-toplevel' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'review対象がhostのtask workspace repository rootと一致しません' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF '別 repository や repository 外' "$ROOT_PREREQUISITE_DOC"; then
+  ok "絶対path実行でもレビュー対象CWDを消費project rootへ固定している"
+else
+  bad "plugin絶対path実行時のレビュー対象CWD契約が無い"
+fi
+
+if grep -qF 'ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-closing-keywords.sh"' \
+    "$DOCS/05-operations/deployment/git-workflow.md" \
+  && grep -qF 'check-closing-keywords.sh' "$ROOT_PREREQUISITE_DOC"; then
+  ok "Git Workflowのclosing keyword検査も同じroot guardで保護される"
+else
+  bad "Git Workflowのclosing keyword検査がroot guard契約から外れている"
+fi
+
+if grep -qF 'FF_DEV_TOOLKIT_REF: <REVIEWED_COMMIT_SHA>' "$CI_REVIEW_DOC" \
+  && grep -qF '^[0-9a-f]{40}$' "$CI_REVIEW_DOC" \
+  && grep -qF 'checkout_head="$(git -C .ff-dev-toolkit-source rev-parse HEAD)"' "$CI_REVIEW_DOC" \
+  && grep -qF '[ "$checkout_head" != "$FF_DEV_TOOLKIT_REF" ]' "$CI_REVIEW_DOC" \
+  && grep -qF '"$RUNNER_TEMP/ff-dev-toolkit" >> "$GITHUB_ENV"' "$CI_REVIEW_DOC" \
+  && grep -qF 'permissions:' "$CI_REVIEW_DOC" \
+  && grep -qF 'contents: read' "$CI_REVIEW_DOC" \
+  && grep -qF 'repository: feel-flow/ff-dev-toolkit' "$CI_REVIEW_DOC" \
+  && grep -qF 'ref: ${{ env.FF_DEV_TOOLKIT_REF }}' "$CI_REVIEW_DOC" \
+  && grep -qF 'path: .ff-dev-toolkit-source' "$CI_REVIEW_DOC" \
+  && grep -qF 'cp -R .ff-dev-toolkit-source/plugins/ff-dev-toolkit "$FF_DEV_TOOLKIT_ROOT"' "$CI_REVIEW_DOC" \
+  && grep -qF 'rm -rf -- .ff-dev-toolkit-source' "$CI_REVIEW_DOC" \
+  && grep -qF 'persist-credentials: false' "$CI_REVIEW_DOC" \
+  && grep -qF 'if: github.event.pull_request.head.repo.full_name == github.repository' "$CI_REVIEW_DOC" \
+  && grep -qF 'pull_request_target' "$CI_REVIEW_DOC" \
+  && grep -qF 'for resource in setup-multi-agent.sh multi-agent.sh multi-review.sh' "$CI_REVIEW_DOC" \
+  && grep -qF '[ -L "$resource_path" ]' "$CI_REVIEW_DOC" \
+  && grep -qF '[ -L "${FF_DEV_TOOLKIT_ROOT}/scripts" ]' "$CI_REVIEW_DOC" \
+  && grep -qF 'Pinned ff-dev-toolkit resource is invalid' "$CI_REVIEW_DOC" \
+  && grep -qF 'fetch-depth: 0' "$CI_REVIEW_DOC" \
+  && grep -qF -- '--config "${FF_DEV_TOOLKIT_ROOT}/scripts/agent-config.yaml"' "$CI_REVIEW_DOC" \
+  && grep -qF -- '--output-dir "$FF_REVIEW_OUTPUT"' "$CI_REVIEW_DOC" \
+  && grep -qF 'PR_BASE_REF: ${{ github.base_ref }}' "$CI_REVIEW_DOC" \
+  && grep -qF -- '--base "origin/${PR_BASE_REF}"' "$CI_REVIEW_DOC" \
+  && grep -qF 'Verify integrated review report' "$CI_REVIEW_DOC" \
+  && grep -qF '[ ! -f "$report" ] || [ -L "$report" ] || [ ! -s "$report" ]' "$CI_REVIEW_DOC" \
+  && grep -qF '<!-- CRITICAL_BLOCK -->' "$CI_REVIEW_DOC" \
+  && grep -qF 'if-no-files-found: error' "$CI_REVIEW_DOC" \
+  && grep -qF 'path: ${{ runner.temp }}/ff-review-results/' "$CI_REVIEW_DOC" \
+  && grep -qF 'environment: ai-review' "$CI_REVIEW_DOC" \
+  && ! grep -qF 'continue-on-error: true' "$CI_REVIEW_DOC" \
+  && ! grep -qF 'FF_DEV_TOOLKIT_ROOT: ${{ runner.temp }}' "$CI_REVIEW_DOC" \
+  && ! grep -qF 'FF_REVIEW_OUTPUT: ${{ runner.temp }}' "$CI_REVIEW_DOC" \
+  && ! grep -qF 'uses: actions/checkout@v4' "$CI_REVIEW_DOC" \
+  && ! grep -qF 'uses: actions/upload-artifact@v4' "$CI_REVIEW_DOC"; then
+  ok "CI例がreview済みrefを配置し全resourceをfail-closed検証する"
+else
+  bad "CI例のpin配置または全resource検証が不完全"
+fi
+
+ci_upload_condition_count="$(awk '
+  /^      - name: Upload results$/ { in_upload = 1; next }
+  in_upload && /^      - (name:|uses:)/ { in_upload = 0 }
+  in_upload && /if: \$\{\{ always\(\) && steps\.multi_cli_review\.conclusion != '\''skipped'\'' \}\}/ { count++ }
+  END { print count + 0 }
+' "$CI_REVIEW_DOC")"
+ci_review_always_count="$(awk '
+  /^      - name: Run Multi-CLI Review$/ { in_review = 1; next }
+  in_review && /^      - (name:|uses:)/ { in_review = 0 }
+  in_review && /always\(\)/ { count++ }
+  END { print count + 0 }
+' "$CI_REVIEW_DOC")"
+if grep -qE '^on:$' "$CI_REVIEW_DOC" \
+  && grep -qE '^  pull_request:$' "$CI_REVIEW_DOC" \
+  && ! grep -qE '^  pull_request_target:' "$CI_REVIEW_DOC" \
+  && grep -qE '^    if: github\.event\.pull_request\.head\.repo\.full_name == github\.repository$' "$CI_REVIEW_DOC" \
+  && grep -qE '^        id: multi_cli_review$' "$CI_REVIEW_DOC" \
+  && [ "$ci_upload_condition_count" -eq 1 ] \
+  && [ "$ci_review_always_count" -eq 0 ]; then
+  ok "CI例のtrigger・job fork境界・review/upload条件が正しいYAML階層にある"
+else
+  bad "CI例のtrigger・job fork境界・review/upload条件のYAML階層が不正"
+fi
+
+checkout_pin_count="$(grep -Ec 'uses: actions/checkout@[0-9a-f]{40}([[:space:]]|$)' \
+  "$CI_REVIEW_DOC" || true)"
+if [ "$checkout_pin_count" -eq 2 ] \
+  && grep -Eq 'uses: actions/upload-artifact@[0-9a-f]{40}([[:space:]]|$)' "$CI_REVIEW_DOC" \
+  && grep -qF 'npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"' "$CI_REVIEW_DOC" \
+  && grep -qF 'npm install -g "@openai/codex@${CODEX_CLI_VERSION}"' "$CI_REVIEW_DOC" \
+  && grep -qF 'npm install -g "@xai-official/grok@${GROK_CLI_VERSION}"' "$CI_REVIEW_DOC"; then
+  ok "CI例がActions commitとCLI versionをpinする"
+else
+  bad "CI例のActionsまたはCLI version pinが不完全"
+fi
+
+if ! grep -qF 'IFS= read -r FF_TOOLKIT_SCRIPTS < scripts/.ff-dev-toolkit-root || true' \
+    "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'sidecarを読み込めません' "$ROOT_PREREQUISITE_DOC"; then
+  ok "pre-push例がsidecar読込失敗を握りつぶさず停止する"
+else
+  bad "pre-push例がsidecar読込失敗または部分値を成功扱いする"
+fi
+
+COPILOT_AGENTS_DOC="$DOCS/06-reference/COPILOT_AGENTS.md"
+if grep -qF '<FF_DEV_TOOLKIT_ROOT>/scripts/' "$COPILOT_AGENTS_DOC" \
+  && grep -qF 'plugin root だけに存在し、消費プロジェクトの `scripts/` へはコピーされない' \
+    "$COPILOT_AGENTS_DOC" \
+  && ! grep -qF 'scripts/multi-agent.sh` を使えば' "$COPILOT_AGENTS_DOC"; then
+  ok "COPILOT_AGENTSの構成図がplugin同梱物とconsumer配置物を分離している"
+else
+  bad "COPILOT_AGENTSの構成図が未配置resourceをconsumer-localとして示している"
+fi
 
 # 固定文字列がファイルに存在することを要求する（修正パターンの実在検査）。
 # ファイル自体が無い場合も loud に落とす（対象消失を pass と読まない）。
@@ -111,16 +441,49 @@ echo "== docs-template ゲート例の fail-silent 退行検査 =="
 
 # --- multi-cli-review-orchestration.md（Issue #152 / PR #153 の修正本体） ---
 f="05-operations/deployment/multi-cli-review-orchestration.md"
-must_contain "$f" 'if ! bash scripts/multi-review.sh' \
+must_contain "$f" 'if ! bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"' \
   "pre-push 例がレビューの終了コードを検査している"
-must_contain "$f" '[ ! -s .review-results/integrated-report.md ]' \
+must_contain "$f" 'FF_REVIEW_OUTPUT="$(mktemp -d "${TMPDIR:-/tmp}/ff-pre-push-review.XXXXXX")"' \
+  "pre-push 例が実行ごとの専用出力先を作成している"
+must_contain "$f" '[ ! -s "$REVIEW_REPORT" ]' \
   "pre-push 例が統合レポートの存在を検査している（未生成を合格と読まない）"
-must_contain "$f" 'grep -q "INCOMPLETE" .review-results/integrated-report.md' \
+must_contain "$f" 'grep -q "INCOMPLETE" "$REVIEW_REPORT"' \
   "pre-push 例が INCOMPLETE マーカーを検査している"
+must_contain "$f" 'grep status ${grep_rc}' \
+  "pre-push 例がgrep異常を不一致と区別して停止する"
+must_contain "$f" 'IFS= read -r FF_TOOLKIT_SCRIPTS < "$FF_TOOLKIT_SIDECAR"' \
+  "pre-push 例が定義済みsidecar変数と同じpathを読み込む"
+must_not_contain "$f" 'rm -rf -- "$FF_REVIEW_OUTPUT"' \
+  "pre-push 例が成功時のWarning/Suggestion成果物を削除しない"
+must_contain "$f" 'echo "✅ レビュー完了。出力先: $FF_REVIEW_OUTPUT"' \
+  "pre-push 例が成功時の保全済み出力先を案内する"
 # 行頭アンカー必須: 直前の説明コメントに同じ文字列があるため、固定文字列検査だと
 # YAML の実 directive を消してもコメントで合格してしまう
-must_match "$f" '^[[:space:]]*if: always\(\)[[:space:]]*$' \
-  "CI 例が失敗回でも成果物を回収する（if: always() の実 directive）"
+f="05-operations/deployment/multi-cli-review-ci.md"
+must_contain "$f" 'if: ${{ always() && steps.multi_cli_review.conclusion != '\''skipped'\'' }}' \
+  "CI 例がreview実行後の失敗回だけ成果物を回収する"
+must_contain "$f" 'if-no-files-found: error' \
+  "CI 例がreview成果物の欠落をupload成功にしない"
+must_contain "$f" '--config "${FF_DEV_TOOLKIT_ROOT}/scripts/agent-config.yaml"' \
+  "CI 例がPR headのproject configではなくpin済みtoolkit configを使う"
+must_contain "$f" '--output-dir "$FF_REVIEW_OUTPUT"' \
+  "CI 例がreview出力先をrunner tempのartifact回収先へ固定する"
+must_not_contain "$f" '--output-dir "$GITHUB_WORKSPACE/.review-results"' \
+  "CI 例がPR管理下workspaceをreview出力先にしない"
+must_not_contain "$f" 'FF_REVIEW_OUTPUT: ${{ runner.temp }}' \
+  "CI 例がworkflow-level envで利用不能なrunner contextを参照しない"
+must_contain "$f" 'PR_BASE_REF: ${{ github.base_ref }}' \
+  "CI 例がPRのbase branchをenv経由でshellへ渡す"
+must_contain "$f" '--base "origin/${PR_BASE_REF}"' \
+  "CI 例がPRのbase branchを明示する"
+must_contain "$f" 'exact_semver=' \
+  "CI 例がCLIとyqの可変tag・version rangeを拒否する"
+must_contain "$f" 'YQ_SHA256 must be an exact reviewed sha256.' \
+  "CI 例がyq binaryのreview済みsha256を要求する"
+must_contain "$f" 'Verify integrated review report' \
+  "CI 例が統合レポートを独立stepで検証する"
+must_contain "$f" '[ ! -f "$report" ] || [ -L "$report" ] || [ ! -s "$report" ]' \
+  "CI 例が統合レポート欠落・symlink・空を拒否する"
 
 # --- ai-tools-integration.md: commit-msg フック例 ---
 f="05-operations/deployment/ai-tools-integration.md"
@@ -161,6 +524,16 @@ must_contain "$f" 'if ! {cli} -p "$PROMPT"' \
   "アダプター骨格が CLI の終了コードを握らず失敗経路へ分岐する"
 must_contain "$f" '[ ! -s "$OUTPUT_FILE" ]' \
   "アダプター骨格が exit 0 + 空出力を「完走」と読まない"
+must_contain "$f" '`multi-agent.sh` の `ALL_CLIS` と `get_cli_*` 関数を更新' \
+  "新CLI追加ガイドが実行時レジストリの正本を案内する"
+must_not_contain "$f" 'project `.claude/agent-config.yaml` または plugin 同梱 `agent-config.yaml` に新CLIエントリを追加' \
+  "新CLI追加ガイドが非実行設定を登録先として案内しない"
+must_contain "$f" '`FF_DEV_TOOLKIT_ROOT` 未指定時は、cache全体のSemVer最大版をsidecarより優先' \
+  "shimガイドが固定rootを含む実際の選択優先順位を説明する"
+
+f="05-operations/deployment/multi-cli-review-orchestration.md"
+must_contain "$f" '`version: "2.0"` のときだけ `tasks.<task>.{mode,cost_strategy,timeout,output_dir}`' \
+  "設定Noteがtasks.*のversion 2.0条件を明記する"
 
 # --- 04-quality/TESTING.md: CI 例 ---
 must_match "04-quality/TESTING.md" '^[[:space:]]*if: always\(\)[[:space:]]*$' \

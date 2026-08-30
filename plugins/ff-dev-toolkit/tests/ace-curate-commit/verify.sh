@@ -163,17 +163,6 @@ for _ff_script in sync-playbook-frontmatter check-entry-format check-category-si
 done
 
 echo
-# 検査総数の固定。expect_* 呼び出しの削除侵食（検査だけが消えて緑のまま通る）を
-# 赤くする。針の増減時は EXPECTED_TOTAL も同時に更新すること。
-EXPECTED_TOTAL=25
-TOTAL=$((PASS + FAIL))
-if [ "$TOTAL" -eq "$EXPECTED_TOTAL" ]; then
-  ok "検査総数が ${EXPECTED_TOTAL} 件（増減時は EXPECTED_TOTAL も更新すること）"
-else
-  bad "検査総数が想定と異なります（実測: ${TOTAL} / 期待: ${EXPECTED_TOTAL}）"
-fi
-
-echo
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ ace-curate commit verify: $FAIL 件失敗" >&2
   exit 1

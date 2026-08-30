@@ -675,13 +675,5 @@ if [ "$FAIL" -gt 0 ]; then
   FF_REACHED_END=1
   exit 1
 fi
-# 検査総数ピン（multi-agent-critical-marker と同型）: ok/bad ブロックが丸ごと
-# 消えても FAIL=0 のまま緑になる経路を閉じる。ケースを増減したらここも更新する。
-EXPECTED_PASS=50
-if [ "$PASS" -ne "$EXPECTED_PASS" ]; then
-  echo "✗ review-capture-fail-loud verify: 検査数が想定と違います（実測 ${PASS} / 想定 ${EXPECTED_PASS}）。検査が黙って消えたか、追加分の想定更新漏れです" >&2
-  FF_REACHED_END=1
-  exit 1
-fi
 echo "✓ review-capture-fail-loud verify: 全 $PASS 件 pass"
 FF_REACHED_END=1

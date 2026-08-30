@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# hooks/check-skill-drift.sh（スキル実体ドリフト検査、Issue #656）の回帰検証。
+# hooks/check-skill-drift.sh（スキル実体ドリフト検査、Issue #656 / #998）の回帰検証。
 #
 # 実 ~/.claude には触れない。FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT と
 # FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME で fixture を注入する。
@@ -12,9 +12,13 @@
 #     （1 つだけを見て「最新」と判定しない）
 #   - version とスキル集合が一致する 1 実体 → 無出力
 #   - インストール実体 0 件 → 「検出不能」を報告して exit 0
+#   - 更新案内は素の plugin 名に依存しない（掃除手順と検出不能の両方。
+#     marketplace update → plugin list → 確認した ID で plugin update）
 #   - hooks.json の SessionStart 配線・timeout・実行権限
-#   - スキル集合差分検出を落とす変異 / 併存列挙を 1 件に潰す変異が、それぞれ
-#     報告を消す（検出力の実測）
+#   - スキル集合差分検出を落とす変異 / 併存列挙を 1 件に潰す変異が、
+#     それぞれ報告を消す（検出力の実測）
+#   - 登録 ID 形式の案内を除く変異は形式説明だけを消し、欠落スキル /
+#     検出不能の報告は残す（単独で赤）
 #
 # すべての経路で exit 0 と stderr 無出力を検査する（fail-open 契約）。
 set -euo pipefail
@@ -113,6 +117,49 @@ addctx() {
   printf '%s' "$OUT" | jq -er '.hookSpecificOutput.additionalContext' 2>/dev/null || true
 }
 
+assert_update_guidance() {
+  # $1 = 経路ラベル。marketplace update → plugin list → 確認した ID で
+  # plugin update。素の名前と marketplace 名の固定を禁じる。
+  local ac missing frag
+  ac="$(addctx)"
+  missing=""
+  for frag in "claude plugin marketplace update" "claude plugin list" "claude plugin update"; do
+    printf '%s' "$ac" | grep -F "$frag" >/dev/null || missing="$missing [$frag]"
+  done
+  if [ -z "$missing" ]; then
+    ok "$1: additionalContext に更新手順 3 段を含む"
+  else
+    bad "$1: additionalContext に欠けている案内:$missing"
+  fi
+  if printf '%s' "$ac" | grep -F "claude plugin update に" >/dev/null \
+    && printf '%s' "$ac" | grep -F "確認した ID を渡す" >/dev/null; then
+    ok "$1: 確認した登録 ID を update に渡す手順を案内している"
+  else
+    bad "$1: 確認した登録 ID を update に渡す手順が無い"
+  fi
+  # 対照が経路へ届いていること（ACE-924-2）。空出力への否定は空振りする。
+  # grep -q は使わない（TESTING.md: パイプ下流の早期終了が SIGPIPE で反転する）。
+  if [ -z "$OUT" ]; then
+    bad "$1: 案内コマンド: 対照が経路へ届いていない（否定の主張が空振りする）"
+  elif printf '%s' "$OUT" | grep -E 'claude plugin update ff-dev-toolkit([^@]|$)' >/dev/null; then
+    bad "$1: 案内コマンド: 素の plugin 名で update を案内している（not found になる）"
+  else
+    ok "$1: 素の plugin 名での update を案内していない"
+  fi
+  if [ -z "$OUT" ]; then
+    :
+  elif printf '%s' "$OUT" | grep -F "marketplace update ff-dev-toolkit" >/dev/null; then
+    bad "$1: marketplace 名を固定した更新コマンドを案内している"
+  else
+    ok "$1: marketplace 名を固定していない"
+  fi
+  if printf '%s' "$ac" | grep -F 'プラグイン名@marketplace名' >/dev/null; then
+    ok "$1: 登録 ID が plugin@marketplace 形式であることを案内している"
+  else
+    bad "$1: 登録 ID の形式説明が無い"
+  fi
+}
+
 FIX="$TMP/plugin"
 mkdir -p "$FIX/hooks" "$FIX/.claude-plugin"
 cp "$TARGET" "$FIX/hooks/check-skill-drift.sh"
@@ -151,11 +198,7 @@ if [ "$(printf '%s' "$OUT" | jq -er '.hookSpecificOutput.hookEventName' 2>/dev/n
 else
   bad "スキル集合差分: hookEventName が不正"
 fi
-if addctx | grep -F "claude plugin update ff-dev-toolkit" >/dev/null; then
-  ok "スキル集合差分: additionalContext に更新コマンドを含む"
-else
-  bad "スキル集合差分: additionalContext に更新コマンドが無い"
-fi
+assert_update_guidance "スキル集合差分"
 # 実ホームの Claude 設定を見に行った退行。リテラルのホームパスは公開対象の
 # 禁止パターンに当たるので、実行時の HOME から組み立てて照合する。
 REAL_CLAUDE_HOME="${HOME}/.claude"
@@ -195,6 +238,7 @@ if [ -d "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0" ] \
 else
   bad "併存列挙: 検査後にインストール実体が消えている"
 fi
+assert_update_guidance "併存列挙"
 
 # 同一 version の cache + marketplace は Claude Code の通常構成 → 無音
 REPO="$TMP/repo-mp"
@@ -307,6 +351,7 @@ if sysmsg | grep -F "検出不能" >/dev/null; then
 else
   bad "検出不能: 文言が無い: $(sysmsg)"
 fi
+assert_update_guidance "検出不能"
 
 # リポジトリ skills/ が無い（配布先）は無音
 REPO="$TMP/repo-consumer"
@@ -411,8 +456,13 @@ fi
 # ---- 8. 検出力の変異注入 ------------------------------------------------------
 DIFF_NEEDLE='if [ -n "$missing_joined" ]; then'
 COEXIST_NEEDLE='cat "$work/installs" > "$work/installs.report"'
+# check-skill-drift.sh のコメント行に ID_NEEDLE と同一文字列を置かない
+# （ACE-156-1。この suite のコメントでは変数名で指す）。
+# 検出不能案内と掃除手順の 2 箇所。
+ID_NEEDLE='ID は プラグイン名@marketplace名 の形式で、素の名前を渡すと Plugin not found で失敗する'
 diff_hits="$(grep -cF "$DIFF_NEEDLE" "$TARGET" || true)"
 coexist_hits="$(grep -cF "$COEXIST_NEEDLE" "$TARGET" || true)"
+id_hits="$(grep -cF "$ID_NEEDLE" "$TARGET" || true)"
 if [ "$diff_hits" -eq 1 ]; then
   ok "変異対象: スキル集合差分の条件が 1 箇所"
 else
@@ -422,6 +472,18 @@ if [ "$coexist_hits" -eq 1 ]; then
   ok "変異対象: 併存列挙のコピーが 1 箇所"
 else
   bad "変異対象: 併存列挙のコピーが ${coexist_hits} 箇所（期待 1）"
+fi
+if [ "$id_hits" -eq 2 ]; then
+  ok "変異対象: 登録 ID 形式の案内が 2 箇所"
+else
+  bad "変異対象: 登録 ID 形式の案内が ${id_hits} 箇所（期待 2）"
+fi
+id_comment_hits="$(grep -E '^[[:space:]]*#' "$TARGET" | grep -cF "$ID_NEEDLE" || true)"
+id_comment_hits="${id_comment_hits:-0}"
+if [ "$id_comment_hits" -gt 0 ]; then
+  bad "変異対象: 登録 ID 案内の needle がコメント行にも居る（ACE-156-1 の空回り）"
+else
+  ok "変異対象: 登録 ID 案内の needle はコード行のみ"
 fi
 
 prepare_mut_plugin() {
@@ -518,6 +580,74 @@ if [ "$has_028" -eq 1 ] && [ "$has_019" -eq 1 ]; then
   bad "併存列挙を 1 件に潰す変異: 両方の version がまだ出る（検出力なし）"
 else
   ok "併存列挙を 1 件に潰す変異: 全件列挙が崩れる（検出力の実測）"
+fi
+
+# 登録 ID 形式の案内を除く変異。3 段コマンドの断片検査だけでは、形式説明だけを
+# 消した退行を通す。針は ID_NEEDLE（check-skill-drift.sh のコード行専用）。
+MUT_ROOT="$TMP/mut-id/plugin"
+prepare_mut_plugin "$MUT_ROOT"
+HOOK="$MUT_ROOT/hooks/check-skill-drift.sh"
+REPO="$TMP/repo-mut-id"
+CLAUDE="$TMP/claude-mut-id"
+make_plugin "$REPO/plugins/ff-dev-toolkit" "0.40.0" alpha extra-skill
+make_plugin "$CLAUDE/plugins/cache/mp/ff-dev-toolkit/0.28.0" "0.28.0" alpha
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+if printf '%s' "$OUT" | grep -F "$ID_NEEDLE" >/dev/null \
+  && printf '%s' "$OUT" | grep -F "extra-skill" >/dev/null; then
+  ok "変異対照: 未変異の隔離コピーは登録 ID 形式の案内と欠落スキルを出す"
+else
+  echo "✗ 変異対照: 未変異コピーが登録 ID 形式の案内または欠落スキルを出さない: output=[$OUT]" >&2
+  exit 1
+fi
+cat > "$TMP/mut-id.sed" << 'MUT_ID'
+s/ID は プラグイン名@marketplace名 の形式で、素の名前を渡すと Plugin not found で失敗する//
+MUT_ID
+sed_hits="$(grep -cF "$ID_NEEDLE" "$HOOK" || true)"
+if [ "$sed_hits" -ne 2 ]; then
+  echo "✗ 登録 ID 形式案内の変異対象が ${sed_hits} 件（期待 2）。適用せず終了" >&2
+  exit 1
+fi
+sed -f "$TMP/mut-id.sed" "$HOOK" > "$HOOK.mut"
+mv -f "$HOOK.mut" "$HOOK"
+after_hits="$(grep -cF "$ID_NEEDLE" "$HOOK" || true)"
+if [ "$after_hits" -ne 0 ]; then
+  echo "✗ 登録 ID 形式案内の変異が当たっていません" >&2
+  exit 1
+fi
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+if [ -z "$OUT" ]; then
+  bad "登録 ID 形式の案内を除く変異: 対照が経路へ届いていない（否定の主張が空振りする）"
+elif ! printf '%s' "$OUT" | grep -F "extra-skill" >/dev/null; then
+  bad "登録 ID 形式の案内を除く変異: スキル欠落の報告まで消えた（単独でない）"
+elif ! printf '%s' "$(addctx)" | grep -F "claude plugin list" >/dev/null; then
+  bad "登録 ID 形式の案内を除く変異: 3 段案内まで消えた（単独でない）"
+elif printf '%s' "$OUT" | grep -F "$ID_NEEDLE" >/dev/null; then
+  bad "登録 ID 形式の案内を除く変異: 形式説明がまだ出る（検出力なし）"
+else
+  ok "登録 ID 形式の案内を除く変異: 形式説明が消え、欠落報告と 3 段案内は残る（単独で赤）"
+fi
+# 検出不能経路も同じ針。掃除手順側だけ直して検出不能側を残す退行を通さない。
+REPO="$TMP/repo-mut-id-none"
+CLAUDE="$TMP/claude-mut-id-none"
+make_plugin "$REPO/plugins/ff-dev-toolkit" "0.40.0" alpha
+mkdir -p "$CLAUDE"
+run_hook \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$REPO" \
+  FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$CLAUDE"
+if [ -z "$OUT" ]; then
+  bad "登録 ID 形式の案内を除く変異（検出不能）: 対照が経路へ届いていない"
+elif ! sysmsg | grep -F "検出不能" >/dev/null; then
+  bad "登録 ID 形式の案内を除く変異（検出不能）: 検出不能の報告まで消えた"
+elif ! printf '%s' "$(addctx)" | grep -F "claude plugin list" >/dev/null; then
+  bad "登録 ID 形式の案内を除く変異（検出不能）: 3 段案内まで消えた"
+elif printf '%s' "$OUT" | grep -F "$ID_NEEDLE" >/dev/null; then
+  bad "登録 ID 形式の案内を除く変異（検出不能）: 形式説明がまだ出る"
+else
+  ok "登録 ID 形式の案内を除く変異（検出不能）: 形式説明が消え、検出不能と 3 段案内は残る"
 fi
 
 # ---- ロード中のコピーに無いスキル（Issue #881）---------------------------------

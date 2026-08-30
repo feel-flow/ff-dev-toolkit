@@ -317,12 +317,13 @@ if [ "$GOLDEN_MISMATCH" -ne 0 ]; then
 fi
 [ "$MISMATCH" -eq 0 ] && [ "$GOLDEN_MISMATCH" -eq 0 ] || exit 1
 
-# 検査総数のガード: ループが途中で飛んだり case が空振りしても、上の判定は 1 つも
-# 赤にならずに「✓」へ到達できる。実行した検査の本数を fixture 数から導出した期待値と
-# 突き合わせ、検査 0 件・部分実行の縮退を赤にする（ACE-542-1）。
+# 検査本数の照合（存続対象）: 期待値は固定リテラルではなく fixture 数からの**導出値**で、
+# 手動更新の固定費が無い。ループが途中で飛んだり case が空振りしても上の判定は赤に
+# ならないため、検査 0 件・部分実行の縮退をここで赤にする（廃止した検査総数ガード
+# 〔固定期待値の末尾会計〕とは別類型 — TESTING.md §検査総数ガードは廃止した）。
 EXPECTED_CHECKS=$((REQUIRED_COUNT + 2 + FIXTURE_COUNT * 8))
 [ "$CHECKS" -eq "$EXPECTED_CHECKS" ] \
-  || fail "実行した検査本数が期待値と一致しません（実測 ${CHECKS} / 期待 ${EXPECTED_CHECKS}）。ループの縮退を疑ってください"
+  || fail "実行した検査本数が導出期待値と一致しません（実測 ${CHECKS} / 期待 ${EXPECTED_CHECKS}）。ループの縮退を疑ってください"
 
 echo "✓ docs-scan-mirror: fixture ${FIXTURE_COUNT} 件で awk 版 / TS 版 / 期待値が一致（検査 ${CHECKS} 件）"
 FF_REACHED_END=1

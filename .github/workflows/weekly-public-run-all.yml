@@ -1,0 +1,245 @@
+# 週次 public run-all — 配布物が「公開リポジトリ単体で完結して動く」ことの機械検証
+#
+# 目的: 開発元（SSOT）にしか無いファイルへ依存した公開物を配布してしまう事故を、
+# 人間の注意力ではなくスケジュール実行のゲートで止める。開発元の週次 CI が
+# 「開発ツリーが壊れていないか」を見るのに対し、こちらは「公開側 checkout だけで
+# suite が完結して動くか」を見る（守る対象が異なる）。
+#
+# suite 集合は「全 suite − 除外名簿」で組み立てる（run-all.sh の明示引数の口を使う）。
+# 除外するのは開発元（SSOT）のリポジトリ構成を前提とする suite だけで、公開物自体を
+# 検査する suite は除外しない。除外名簿の stale 化（改名・削除で名簿の名前が実在しなく
+# なる）は、実行前の実在検査が exit 1 で止める。逆方向（SSOT 依存の新 suite の名簿漏れ）
+# は当該 suite が実行集合へ入り、失敗または名簿外 skip の検査で気付く。
+#
+# 明示引数の実行では run-all の必須 skip fail-closed（既定一覧限定）が掛からないため、
+# サマリー行の failed=0 / not-run=0 と「選定した件数 == run 件数」をこちらで要求し、
+# 許容名簿に無い suite の skip は失敗させる。実行対象が空・実行 0 件の回は成功として
+# 記録しない。
+#
+# 既知の沈黙モード: public リポジトリの schedule はリポジトリが 60 日不活性だと
+# GitHub が自動で無効化する。失敗は起票できるが「実行されなかった」ことは自分では
+# 通知できないため、長期の未発火は Actions の実行履歴で確認すること。
+name: weekly-public-run-all
+
+on:
+  schedule:
+    - cron: '0 22 * * 0' # 日曜 22:00 UTC = 月曜 07:00 JST
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: weekly-public-run-all
+  cancel-in-progress: false
+
+jobs:
+  run-public-suites:
+    runs-on: ubuntu-latest
+    # job の timeout は全 step の timeout 合計（先行 19 分 + 本体 40 分）より長く取る。
+    # job 側 timeout で cancel されると if: failure() の起票 step ごと殺され、
+    # 通知契約が破れる — ハングは各 step の timeout が先に失敗へ倒し、起票まで届く。
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: plugins/ff-dev-toolkit/mcp/package-lock.json
+
+      # vitest / typecheck 系 suite は mcp/node_modules を再利用する。ここが失敗すれば
+      # job ごと落ちるので、「依存不在で suite が静かに skip」は起点から塞がれる。
+      # 先行 step にも timeout を付ける — 先行処理のハングが job timeout へ届くと
+      # if: failure() の起票 step ごと cancel され、通知契約が破れる。
+      - name: Install mcp dependencies
+        timeout-minutes: 10
+        run: npm ci --no-audit --no-fund
+        working-directory: plugins/ff-dev-toolkit/mcp
+
+      # suite が一時リポジトリへ commit する経路のための最低限の git identity
+      - name: Configure git identity for temp repos
+        timeout-minutes: 2
+        run: |
+          git config --global user.name "weekly-public-run-all"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # yq は mikefarah 版（Go 実装）v4 を前提とする suite がある。python 版 yq が
+      # PATH にいる環境では「存在する」だけでは足りないため、フレーバーまで確認する。
+      - name: Ensure yq (mikefarah v4) is available
+        timeout-minutes: 5
+        run: |
+          if ! yq --version 2>/dev/null | grep -q 'mikefarah'; then
+            sudo wget -qO /usr/local/bin/yq \
+              https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+            sudo chmod +x /usr/local/bin/yq
+          fi
+          yq --version | grep -q 'mikefarah'
+
+      # suite が「ツール不在 → ○ skip」へ静かに倒れると、赤の理由がログから読みにくい。
+      - name: Preflight required tools
+        timeout-minutes: 2
+        run: |
+          missing=0
+          for c in node perl jq yq shellcheck git; do
+            if ! command -v "$c" >/dev/null 2>&1; then
+              echo "::error::required tool missing: $c"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Run public suite set
+        timeout-minutes: 40
+        # shell: bash を明示する — 既定の `bash -e {0}` は pipefail を含まず、
+        # tee を挟んだ run-all の非 0 が握りつぶされる。明示すると -eo pipefail になる。
+        shell: bash
+        working-directory: plugins/ff-dev-toolkit
+        run: |
+          # 除外名簿: 開発元（SSOT）のリポジトリ構成を前提とする suite（公開側では
+          # 検査の前提自体が成立しない）。公開物の欠陥を検査する suite は含めない。
+          # 各 selftest は対の本体が SSOT 前提でも、fixture 駆動で公開側完結なら残す。
+          #   - markdownlint(+selftest): ルートの .markdownlint.json（同期対象外）を要求
+          #   - skill-count-consistency: root と oss/ の marketplace 二重複製の同一性照合が
+          #     開発元の oss/ 配置を前提とする（公開側に oss/ 階層は無い）
+          #   - plugin-description-enumeration: 非列挙プラグインの名簿が開発元の複数
+          #     プラグイン構成を前提とし、単一プラグインの公開 marketplace では
+          #     「腐った名簿」として fail-closed する（公開 fixture で実測）
+          #   - ace-line-budget-docs / ace-scripts-mirror / ace-scripts-vitest: 開発元の
+          #     scripts/ace（ACE 運用スクリプト。同期対象外）を検査
+          #   - live-ace-gates(+selftest): 開発元の live な ACE Playbook（docs/、同期対象外）
+          #     を検査
+          #   - changelog-fragments: 開発元の scripts/materialize 等（同期対象外）と
+          #     changelog.d 断片運用を前提 / changelog-contract-selftest: fixture が
+          #     oss/ 配置（公開側では CHANGELOG.md がルート直下）を前提
+          #   - docs-frontmatter-repo(+selftest) / docs-version-changelog(+selftest) /
+          #     docs-fact-drift(+selftest) / roadmap-release-facts: 開発元の docs/
+          #     （同期対象外）を検査対象または fixture 種として要求
+          #   - shared-version-convergence: 開発元の .version-claims/ ライブ照合を含む
+          #   - claude-hooks-path / sync-forbidden-patterns / sync-sha-contract /
+          #     public-dependabot-health / release-required-selftest: 開発元の同期・
+          #     フック運用スクリプト（同期対象外）を検査
+          EXCLUDED_SSOT_SUITES="
+            markdownlint markdownlint-selftest
+            skill-count-consistency
+            plugin-description-enumeration
+            ace-line-budget-docs ace-scripts-mirror ace-scripts-vitest
+            live-ace-gates live-ace-gates-selftest
+            changelog-fragments changelog-contract-selftest
+            docs-frontmatter-repo docs-frontmatter-repo-selftest
+            docs-version-changelog docs-version-changelog-selftest
+            docs-fact-drift docs-fact-drift-selftest
+            roadmap-release-facts shared-version-convergence
+            claude-hooks-path sync-forbidden-patterns sync-sha-contract
+            public-dependabot-health release-required-selftest
+          "
+          # 除外名簿の実在検査: 改名・削除で名簿が腐ると、○ skip へ倒れる suite では
+          # 「空振り → 実行集合へ入る → 失敗」の fail-closed が成立しない（skip で緑の
+          # まま名簿だけが死ぬ）。名簿の更新を改名・削除と同時に強制する。
+          for e in $EXCLUDED_SSOT_SUITES; do
+            if [ ! -f "tests/$e/verify.sh" ]; then
+              echo "::error::除外名簿に実在しない suite がある（改名・削除に名簿が追従していない）: $e"
+              exit 1
+            fi
+          done
+          # glob 空振りを literal のまま run-all へ渡さない（0 件ガードを機構どおり発火させる）
+          shopt -s nullglob
+          SUITES=()
+          for v in tests/*/verify.sh; do
+            name="${v#tests/}"; name="${name%/verify.sh}"
+            excluded=0
+            for e in $EXCLUDED_SSOT_SUITES; do
+              if [ "$name" = "$e" ]; then excluded=1; break; fi
+            done
+            if [ "$excluded" -eq 0 ]; then SUITES+=("$v"); fi
+          done
+          # 実行対象が空のまま「成功」になる経路を塞ぐ（glob 空振り・除外名簿の暴走）
+          if [ "${#SUITES[@]}" -eq 0 ]; then
+            echo "::error::実行対象の suite が 0 件 — 集合の組み立てが壊れている"
+            exit 1
+          fi
+          echo "selected ${#SUITES[@]} suites"
+          bash tests/run-all.sh "${SUITES[@]}" 2>&1 | tee "$RUNNER_TEMP/public-run-all.log"
+          # 出口の検証: 明示引数の実行は必須 skip の fail-closed が掛からないため、
+          # サマリー行の failed=0 / not-run=0 をこちらで要求する（サマリー行が無い
+          # 実行は緑ではない）。
+          grep -qE '^suites: total=[0-9]+ run=[0-9]+ passed=[0-9]+ failed=0 skipped=[0-9]+ not-run=0$' \
+            "$RUNNER_TEMP/public-run-all.log" \
+            || { echo "::error::サマリー行が無いか failed/not-run が 0 でない — 終了コード 0 でも緑として扱わない"; exit 1; }
+          suite_summary="$(awk '/^suites: total=[0-9]+ run=[0-9]+ passed=[0-9]+ failed=0 skipped=[0-9]+ not-run=0$/ { value=$0 } END { print value }' "$RUNNER_TEMP/public-run-all.log")"
+          # 選定した件数がすべて実行会計に載ったか（run 件数の一致。0 件成功も同時に塞がる）
+          run_count="$(printf '%s\n' "$suite_summary" | sed -n 's/.* run=\([0-9]*\) .*/\1/p')"
+          if [ "$run_count" != "${#SUITES[@]}" ]; then
+            echo "::error::run 件数 ${run_count} が選定件数 ${#SUITES[@]} と一致しない — 集合の一部が実行会計から消えている"
+            exit 1
+          fi
+          skipped_count="$(printf '%s\n' "$suite_summary" | sed -n 's/.* skipped=\([0-9]*\) .*/\1/p')"
+          # 部分 skip（suite 内の per-check skip）のサマリーも存在を要求する — 公開側では
+          # 外部 CLI 不在の per-check skip が恒久発生するため、この観測点が消えると
+          # 「suite 内の検査が丸ごと skip へ倒れて緑」の退行を観測できない。
+          checks_summary="$(awk '/^checks-skipped: total=[0-9]+ suites=[0-9]+$/ { value=$0 } END { print value }' "$RUNNER_TEMP/public-run-all.log")"
+          [ -n "$checks_summary" ] \
+            || { echo "::error::checks-skipped サマリーが無い — 部分検査の未実行件数を観測できない"; exit 1; }
+          # skip の許容名簿: 明示引数実行では必須 skip の fail-closed が掛からないため、
+          # 名簿に無い suite の skip はここで失敗させる（配布物の欠落・依存不足で suite が
+          # 静かに skip へ倒れる経路を「偽の green」にしない）。許容するのは外部到達性で
+          # 正常 skip し得る系統だけ（公開タグを ls-remote で引く CHANGELOG 検査）。
+          ALLOWED_SKIP_SUITES="changelog-links changelog-attribution"
+          if [ "${skipped_count:-0}" != "0" ]; then
+            skipped_names="$(sed -n 's/^○ skipped (環境都合で検証本体が未実行): //p' "$RUNNER_TEMP/public-run-all.log" | tr ' ' '\n' | sed '/^$/d')"
+            unexpected=""
+            while IFS= read -r s; do
+              allowed=0
+              for a in $ALLOWED_SKIP_SUITES; do
+                if [ "$s" = "$a" ]; then allowed=1; break; fi
+              done
+              if [ "$allowed" -eq 0 ]; then unexpected="$unexpected $s"; fi
+            done <<< "$skipped_names"
+            if [ -n "$unexpected" ]; then
+              echo "::error::許容名簿に無い suite が skip した — 配布物の欠落・依存不足の疑い:${unexpected}"
+              exit 1
+            fi
+          fi
+          observed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          echo "::notice title=weekly public run-all green::observed_at=${observed_at}; event=${GITHUB_EVENT_NAME}; ${suite_summary}; ${checks_summary}; ${run_url}"
+          {
+            echo '## Weekly public run-all green'
+            echo
+            echo "- Observed: ${observed_at}"
+            echo "- Event: ${GITHUB_EVENT_NAME}"
+            echo "- ${suite_summary}"
+            if [ "${skipped_count:-0}" != "0" ]; then
+              echo "- skipped の内訳（許容名簿内の環境都合 skip。常態化していないか確認する）:"
+              grep -E '^○ skipped' "$RUNNER_TEMP/public-run-all.log" | sed 's/^/  - /' || true
+            fi
+            echo "- 部分 skip（suite 内の per-check skip。外部 CLI 不在などで恒久発生しうる）:"
+            grep -E '^(checks-skipped:|○ checks skipped)' "$RUNNER_TEMP/public-run-all.log" | sed 's/^/  - /' || true
+            echo "- Run: ${run_url}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # cancelled() も含める — 先行 step のハングが job timeout へ届いた回は failure()
+      # だけでは発火せず、通知契約が破れる（各 step の timeout が第一防衛、これは保険）。
+      - name: File or update failure issue
+        if: failure() || cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="ci: weekly public run-all red（自動起票）"
+          body="$(printf '週次 public run-all が失敗しました。ログ: %s\n\nこのワークフローは「配布物が公開リポジトリ単体で完結して動く」ことを検証します。失敗は (a) 公開物が開発元にしか無いファイルへ依存している、(b) 除外名簿が実態から乖離した、(c) ランナー環境・外部要因、のいずれかです。ログ末尾の「== summary ==」と「✗ failed:」の suite 名から切り分けてください。' "$RUN_URL")"
+          existing="$(gh issue list --state open --limit 200 --json number,title \
+            --jq "map(select(.title == \"$title\"))[0].number // empty")" \
+            || { echo "::error::既存 Issue の照会に失敗した（public run-all の赤は未通知）"; exit 1; }
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body" \
+              && echo "::notice::既存 Issue #${existing} へ追記した" \
+              || { echo "::error::失敗通知の投稿に失敗した（public run-all の赤は未通知）"; exit 1; }
+          else
+            gh issue create --title "$title" --body "$body" \
+              && echo "::notice::失敗 Issue を新規起票した" \
+              || { echo "::error::失敗 Issue の起票に失敗した（public run-all の赤は未通知）"; exit 1; }
+          fi

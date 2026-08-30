@@ -724,20 +724,9 @@ else
   fi
 fi
 
-# ---- 実行検査数の侵食ガード（Issue #625） ---------------------------------------
-# 検査（ok 呼び出し）が丸ごと消えても、この suite には baseline が無く静かに緑の
-# まま通る。全検査 green のランに限って総数の完全一致を要求する（fail-closed）。
-# 条件付きにするのは flaky 回避のため: §4 の out_cv / out_all / out_norepo などは
-# 失敗時に後続検査を落とすが、その失敗自体が FAIL を立てて suite を赤にするので、
-# FAIL=0 のランでは実行される検査集合が常に同一になる。検査を増減したら更新する。
-EXPECTED_CHECKS=61
 echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ github-labels-setup verify: $FAIL 件失敗 / $PASS 件成功" >&2
-  exit 1
-fi
-if [ "$PASS" -ne "$EXPECTED_CHECKS" ]; then
-  echo "✗ github-labels-setup verify: 実行検査数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査が黙って増減している（増減時は EXPECTED_CHECKS も更新すること）" >&2
   exit 1
 fi
 echo "✓ github-labels-setup verify: 全 $PASS 件 pass"

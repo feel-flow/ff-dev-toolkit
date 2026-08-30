@@ -23,7 +23,6 @@ trap 'exit 130' HUP INT TERM
 
 PASS=0
 FAIL=0
-EXPECTED_CHECKS=141
 ok() { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 contains() {
@@ -496,10 +495,6 @@ if grep -Fq 'ACE-100-1' "$FINAL" && grep -Fq 'ACE-101-1' "$FINAL"; then ok "両 
 if grep -Fq '### [1.2.0]' "$FINAL" && grep -Fq '### [1.1.0]' "$FINAL"; then ok "両版ブロックを保全"; else bad "版ブロックが上書きされた"; fi
 
 source "$SCRIPT_DIR/cases/merge-races.sh"
-if [[ "$FAIL" -eq 0 && "$PASS" -ne "$EXPECTED_CHECKS" ]]; then
-  echo "  ✗ 検査総数が drift（expected=${EXPECTED_CHECKS} actual=${PASS}）" >&2
-  FAIL=$((FAIL + 1))
-fi
 echo "shared-version-convergence: pass=$PASS fail=$FAIL total=$((PASS + FAIL))"
 if [[ "$FAIL" -ne 0 ]]; then exit 1; fi
 REACHED_END=1

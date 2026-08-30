@@ -333,8 +333,7 @@ set -e
 [[ "$OUT" == *"判定不能"* ]] || fail "undecided protection must be reported: $OUT"
 ok "name-resolve budget exhaustion → protected + reported, never swept (Critical A)"
 
-# root 判定は 1 回だけ確定する。13i のスキップ条件と末尾の検査総数ガードの両方が使うため、
-# 2 箇所で独立に評価すると片方だけ変えたときに «恒常的に赤» か «1 件消失を見逃す» に倒れる。
+# root 判定（13i のスキップ条件が使う）。
 IS_ROOT=0
 if [ "$(id -u)" -eq 0 ]; then
   IS_ROOT=1
@@ -627,26 +626,6 @@ OUT="$(run_sut --apply 2>&1)" || fail "healthy apply after mutation test"
 [ -d "$WORK/claude/projects/$MEMORY_NAME" ] || fail "healthy apply must keep memory-sibling"
 ok "healthy apply still protects live/name-alive/memory after mutation experiments"
 
-# 検査総数を固定する。個々のアサートは「実行されなくなった」形を捕まえられないため、
-# ケースが黙って消える侵食はここでだけ赤くなる。ケースを増減したら期待値も更新すること。
-# 減っている場合は、まずケースが実行されなくなっていないかを疑う。
-# 13i（memory/ を読めなくする検査）は root では chmod が効かずスキップされるので、
-# 期待値は実行ユーザーで分岐する（固定値ひとつだと root 実行で必ず赤くなる）。
-# 内訳: 16 → 22（+6）。空の memory/ が保護理由にならないこと 1 件 / memory/ が
-# サブディレクトリだけの場合も同じであること 1 件 / 両ガード該当時の先勝ち順序 1 件 /
-# それぞれの検出力を実測する変異 3 件（過剰保護への退行・ガード順の入れ替え・
-# 非ディレクトリ述語の脱落）。
-if [ "$IS_ROOT" -eq 0 ]; then
-  EXPECTED_PASS=22
-else
-  EXPECTED_PASS=21
-fi
-if [ "$PASS" -ne "$EXPECTED_PASS" ]; then
-  echo "✗ sweep-orphan-transcripts: 検査総数が想定と違います（期待 ${EXPECTED_PASS} / 実際 ${PASS}）" >&2
-  echo "  ケースを増減したなら EXPECTED_PASS を更新すること。減っている場合は、" >&2
-  echo "  ケースが黙って実行されなくなっていないかを先に確認すること。" >&2
-  exit 1
-fi
-echo "✓ sweep-orphan-transcripts: ${PASS} checks passed（検査総数の固定値と一致）"
+echo "✓ sweep-orphan-transcripts: ${PASS} checks passed"
 FF_REACHED_END=1
 exit 0

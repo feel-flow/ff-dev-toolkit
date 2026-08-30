@@ -184,7 +184,7 @@ emit_json() {
 if [ "$install_count" -eq 0 ]; then
   emit_json \
     "⚠️ ff-dev-toolkit のインストール実体を検出不能でした。スキル集合の照合をスキップします（セッションは継続します）。" \
-    "ff-dev-toolkit の SessionStart 検査がインストール実体を 1 つも見つけられませんでした。照合はスキップし、セッションは止めません。再インストールする場合は claude plugin marketplace update （引数なし）のあと claude plugin update ff-dev-toolkit を案内し、Claude Code の再起動が必要な旨を伝える。この通知を止めたい場合は FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1 を設定する。"
+    "ff-dev-toolkit の SessionStart 検査がインストール実体を 1 つも見つけられませんでした。照合はスキップし、セッションは止めません。再インストールする場合は次の手順を案内すること: (1) claude plugin marketplace update （引数なし。marketplace 名はユーザーの登録名に依存するため） (2) claude plugin list で登録 ID を確認する。ID は プラグイン名@marketplace名 の形式で、素の名前を渡すと Plugin not found で失敗する (3) claude plugin update に (2) で確認した ID を渡す (4) 適用には Claude Code の再起動が必要。この通知を止めたい場合は FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1 を設定する。"
   exit 0
 fi
 
@@ -304,7 +304,7 @@ if [ "$drift_coexist" -eq 1 ]; then
   ctx="${ctx}併存しているインストール実体（1 つだけを最新と見なさない）: ${install_lines}。リポジトリ version は v${repo_version}。"
 fi
 
-ctx="${ctx} 古いキャッシュは自動削除しない。掃除手順: (1) 通知のパスのうちリポジトリ version より古い ~/.claude/plugins/cache/<marketplace>/ff-dev-toolkit/<version>/ を手動で削除する (2) claude plugin marketplace update （引数なし。marketplace 名はユーザーの登録名に依存するため） (3) claude plugin update ff-dev-toolkit (4) 適用には Claude Code の再起動が必要。この通知を止めたい場合は FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1 を設定する。"
+ctx="${ctx} 古いキャッシュは自動削除しない。掃除手順: (1) 通知のパスのうちリポジトリ version より古い ~/.claude/plugins/cache/<marketplace>/ff-dev-toolkit/<version>/ を手動で削除する (2) claude plugin marketplace update （引数なし。marketplace 名はユーザーの登録名に依存するため） (3) claude plugin list で登録 ID を確認する。ID は プラグイン名@marketplace名 の形式で、素の名前を渡すと Plugin not found で失敗する (4) claude plugin update に (3) で確認した ID を渡す (5) 適用には Claude Code の再起動が必要。この通知を止めたい場合は FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1 を設定する。"
 
 emit_json "$sys" "$ctx"
 exit 0

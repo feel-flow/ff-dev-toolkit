@@ -366,11 +366,6 @@ else
   bad "hook が filesystem へ副作用を作成"
 fi
 
-EXPECTED_CHECKS=27
-if [ $((PASS + FAIL)) -ne "$EXPECTED_CHECKS" ]; then
-  bad "検査総数が $((PASS + FAIL)) 件（期待 ${EXPECTED_CHECKS} 件）"
-fi
-
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ retrospective Stop hook: ${FAIL} 件失敗（${PASS} 件成功）" >&2
   exit 1

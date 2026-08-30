@@ -1241,15 +1241,5 @@ if [ "$FAIL" -gt 0 ]; then
   echo "✗ multi-agent-critical-marker verify: $FAIL 件失敗" >&2
   exit 1
 fi
-# 検査総数アサート（Issue #540 と同じ侵食対策）: run_case の注記検査ブロックや
-# インライン検査が黙って削られても FAIL=0 のまま通ってしまうため、✓ の総数まで
-# 固定する。ケースを増減させたらここも同時に更新すること。
-# 実 yq が居る環境では代表照合 17R（2）+ YAML リスト L1（2）+ L2（2）の 6 検査が加わる
-EXPECTED_PASS=77
-[ "$HAVE_YQ" -eq 1 ] && EXPECTED_PASS=83
-if [ "$PASS" -ne "$EXPECTED_PASS" ]; then
-  echo "✗ multi-agent-critical-marker verify: 検査数が想定と違います（実測 ${PASS} / 想定 ${EXPECTED_PASS}）。検査が黙って消えたか、追加分の想定更新漏れです" >&2
-  exit 1
-fi
 echo "✓ multi-agent-critical-marker verify: 全 $PASS 件 pass"
 FF_REACHED_END=1

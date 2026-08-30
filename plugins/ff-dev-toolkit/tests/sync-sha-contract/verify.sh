@@ -43,7 +43,8 @@
 #
 # needle を追加・変更したら、対象行だけを削除・移動する変異を手で当てて red に
 # なることを確認する（docs-gates と同じ規則）。手順書の針型検査は read-only。
-# 全件 green 再利用判定だけは、一時 Git リポジトリで実挙動も固定する。bash 3.2 互換。
+# 同期元 SHA の受け渡しと footer-only 判定器だけは、一時 Git リポジトリで実挙動も
+# 固定する。bash 3.2 互換。
 
 set -euo pipefail
 
@@ -53,6 +54,9 @@ REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 
 SYNC_SCRIPT="$REPO_ROOT/scripts/sync-dev-toolkit-to-public.sh"
 DEFAULT_SKILL="$REPO_ROOT/.claude/skills/sync-dev-toolkit/SKILL.md"
+# 同期手順からは ADR-039 で退役したが、changelog-fragments（cases/footer.sh）が
+# footer-only PR の判定器として現役利用するため、スクリプトと挙動検査は残す
+# （整理は epic #857 の棚卸し #873 で扱う）。
 FULL_GATE_REUSE_SCRIPT="$REPO_ROOT/scripts/check-full-gate-reuse.sh"
 
 if [[ -n "${FF_SYNC_SHA_SKILL:-}" ]]; then
@@ -85,13 +89,6 @@ if [[ ! -f "$SYNC_SCRIPT_UNDER_TEST" ]]; then
   echo "✗ 検査対象の同期スクリプトがありません: $SYNC_SCRIPT_UNDER_TEST" >&2
   exit 1
 fi
-
-# 実行検査数の侵食ガード（TESTING.md の EXPECTED_CHECKS 方針）。針を 1 本消しても
-# 残りが緑のまま「全 N 件 pass」で通るため、総数を別途固定する。検査を増減したときの
-# 更新箇所は 2 つ: ok / bad を増減させた箇所と、この宣言。
-# 公開 checkout では上の skip 経路が 1 件も検査せずに exit 0 するため、ここには
-# 到達しない（配置による期待値の分岐は不要）。
-EXPECTED_CHECKS=42
 
 PASS=0
 FAIL=0
@@ -185,55 +182,63 @@ contains 'HEAD から再導出してはならない' \
 contains 'stale な origin/develop で続行しない' \
   "退避経路の fetch 失敗時に中断することが明記されている"
 
-# 全件実行ゲート（ADR-034 決定 2）。既定が高速モードになったため、素の run-all.sh は
-# REQUIRED_SUITES 掲載を含む selftest 群を除外して **exit 0** で返す。除外は SKIPPED に
-# 現れないので必須 skip の fail-closed にも掛からず、「検査が実行されないまま緑」がそのまま
-# 不可逆な公開同期へ接続する。開発元リポジトリの週次 CI（weekly-run-all。公開配布物には
-# 含まれない）はセーフティネットで、既定ブランチの最大 7 日古いツリーしか測らないため、
-# いま同期しようとしているツリーの直前保証にはならない。この手順がそれを担う。手順から
-# 消えたら赤くする（機械強制ではなく手順の固定が、静的検査の上限）。
-contains_exactly 'FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh' 2 \
-  "手順 0 が全件実行のゲートを踏む — 初回ブロックと fail-closed 分岐の 2 箇所（ADR-034 決定 2）"
+# 定期実行点ゲート（ADR-039。ADR-034 決定 2 の「全件ゲート充足」を置換）。既定が高速
+# モードのため、対を持つ selftest（REQUIRED_SUITES 掲載を含む）は既定実行では走らない。
+# その検出力の担保は週次 CI（weekly-run-all）で、手順 0 は (1) 週次 CI の状態を
+# check-weekly-run-all-health.sh で機械確認して HEALTH=healthy だけを高速モードへ受理し、
+# (2) healthy 以外の回は FF_RUN_ALL_FULL=1 の全件実行で代替したうえで、HEAD への
+# run-all green を要求する。どちらかが手順から消えると、selftest 層の担保を欠いたまま
+# （または HEAD を一度も検査しないまま）不可逆な公開同期へ接続する。手順から消えたら
+# 赤くする（機械強制ではなく手順の固定が、静的検査の上限。NG 文言と exit の対までは
+# 単行 grep で固定できない — 「NG を出して続行する」変異は静的検査の上限の外）。
+# 針はコマンド形の行全体に固定する — 裸のスクリプト名だと、散文の言及が 1 行増えた
+# 時点で contains も line_of の順序アンカーも散文側に吸われて空振りする（レビュー W2）。
+contains 'HEALTH_OUT="$(bash scripts/check-weekly-run-all-health.sh 2>&1)" || true' \
+  "手順 0 が週次 CI の状態確認を踏む（selftest 層の担保。ADR-039）"
+contains 'if [[ $'"'"'\n'"'"'"$HEALTH_OUT"$'"'"'\n'"'"' == *$'"'"'\n'"'"'"HEALTH=healthy"$'"'"'\n'"'"'* ]]; then' \
+  "高速モードへ受理するのは HEALTH=healthy だけ（warming-up / running を成功実績と読まない）"
+contains '⚠ 週次 CI の成功実績を確認できない（HEALTH が healthy 以外）— この回は全件実行で代替する' \
+  "healthy 以外の回に全件代替へ倒すことが明記されている"
+contains_exactly 'FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh' 1 \
+  "healthy 以外の回の全件代替コマンドが手順 0 の 1 箇所にある"
+contains 'if [ "$GATE_MODE" = fast ]; then' \
+  "ローカル実行のモードが週次 CI の状態から導出される"
+contains 'NG: run-all が失敗 — 同期しない' \
+  "run-all が非 0 のとき同期しないことが明記されている"
 contains '非 0 なら**同期しない**' \
-  "全件ゲートが非 0 のとき同期しないことが明記されている"
-contains 'FULL_GATE_SHA=$(git rev-parse HEAD)' \
-  "全件 green の実測 SHA を次の収束周回へ控える"
-contains 'scripts/check-full-gate-reuse.sh --green-sha "$FULL_GATE_SHA"' \
-  "収束周回で全件 green SHA と HEAD の tree 差分を機械判定する"
-contains 'FULL_GATE_REUSE=CHANGELOG_FOOTER_ONLY' \
-  "footer-only 判定だけを限定ゲートへ接続する"
-# 省略が起きる分岐そのものと、fail-closed の受け皿を針で固定する。件数ガードは「書かれた
-# 検査の削除」しか捕まえないので、書かれていない検査には保護が及ばない（Issue #830 レビュー）。
-contains '0:*FULL_GATE_REUSE=IDENTICAL*)' \
-  "tree 同一の受理条件が分岐として明示されている"
-contains '他差分・dirty・非祖先・判定不能・未知の出力はすべて全件へ倒す（fail-closed）' \
-  "未知・判定不能をすべて全件へ倒す受け皿がある"
-contains 'HEAD から「直前の値」を再導出してはならない' \
-  "全件 green SHA を HEAD から再導出する操作を禁じている"
-contains '検査した tree と HEAD の tree が一致しないため green を記録しない' \
-  "dirty なまま得た green を SHA として記録しない"
+  "ゲートが非 0 のとき同期しないことが明記されている"
+contains '同じ 2 点を無条件に回し直す' \
+  "収束周回でもゲートを省略しない（旧 green 再利用機構の復活を防ぐ）"
+contains 'footer 差分でも省略しない' \
+  "収束段落が footer 差分でのゲート省略を禁じている（旧 3 suite 充足への書き戻し検出。レビュー W1）"
+contains '検査した tree と HEAD の tree が一致しない' \
+  "dirty なまま得た green を「HEAD を検査済み」と扱わない"
+# 旧方式（ADR-034 決定 2 + Issue #830 の green 再利用機構）の復活禁止。針は散文を
+# 誤検出しない最小限の広さにする — 現 SKILL の散文言及は backtick 内の `FULL_GATE_SHA`
+# （代入の `=` を含まない）だけで、check-full-gate-reuse への言及は無い（実測）。
+not_contains 'FULL_GATE_SHA=' \
+  "全件 green SHA をシェル変数へ控える旧方式が復活していない"
+not_contains 'check-full-gate-reuse' \
+  "廃止した green 再利用判定の呼び出しが復活していない"
 
-# 限定ゲートの suite 呼び出し（3 suite / 4 観点。Issue #800 で changelog-contract へ統合）は **2 箇所**にある — 手順 0 の CHANGELOG_FOOTER_ONLY 分岐と、
-# 手順 8 の footer ブランチ先端での実行（Issue #892）。件数まで固定するのは、
-#   (a) 手順 8 のブロックを丸ごと削除する退行を捕まえるため。単なる `contains` では
-#       手順 0 の側に一致して緑のままになり、「削除しても全 suite が緑」という
-#       検出力ゼロの状態が残る（本 PR のレビュー指摘 W1）
-#   (b) 片方だけ suite を足し引きする退行を捕まえるため。両者は同じ 3 suite でなければ、
-#       footer PR の先端と回し直しとで別のものを検査することになる
+# 限定ゲートの suite 呼び出し（3 suite / 4 観点。Issue #800 で changelog-contract へ統合）は
+# 手順 8 の footer ブランチ先端での実行（Issue #892）**1 箇所だけ**にある（旧方式の
+# 手順 0 CHANGELOG_FOOTER_ONLY 分岐は ADR-039 で廃止。2 箇所へ戻る退行も、片方だけ
+# suite を足し引きする退行も、件数固定で捕まえる）。
 # needle に行末の継続（バックスラッシュ）を含めるのは、散文中の同名の言及を数えないため
 # （`changelog-links/verify.sh` は手順 8 の再実行の説明にも出る）。`contains_exactly` は
 # `grep -cF` で**行数**を数えるので、1 行に 2 回現れる needle には使えない。
-contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-links/verify.sh \' 2 \
-  "限定ゲートの CHANGELOG リンク検査が手順 0 と手順 8 の 2 箇所にある"
-contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-attribution/verify.sh \' 2 \
-  "限定ゲートの CHANGELOG 帰属検査が手順 0 と手順 8 の 2 箇所にある"
+contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-links/verify.sh \' 1 \
+  "限定ゲートの CHANGELOG リンク検査が手順 8 の 1 箇所にある"
+contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-attribution/verify.sh \' 1 \
+  "限定ゲートの CHANGELOG 帰属検査が手順 8 の 1 箇所にある"
 # 版の一致と公開参照の境界は Issue #800 で changelog-contract へ統合した（1 本で両方を見る）。
-contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-contract/verify.sh 2>&1)" \' 2 \
-  "限定ゲートの CHANGELOG 契約検査（版の一致 + 公開参照の境界）が手順 0 と手順 8 の 2 箇所にある"
-# skip / 未実行を成功と読まない要求も両方に要る。3 suite だけを走らせる分岐で
+contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-contract/verify.sh 2>&1)" \' 1 \
+  "限定ゲートの CHANGELOG 契約検査（版の一致 + 公開参照の境界）が手順 8 の 1 箇所にある"
+# skip / 未実行を成功と読まない要求。3 suite だけを走らせる限定ゲートで
 # `changelog-links` / `changelog-attribution` が無言の no-op になると代替物が何も残らない。
-contains_exactly "grep -F -- 'failed=0 skipped=0 not-run=0' >/dev/null; then" 2 \
-  "限定ゲートは skip / 未実行を成功と読まない — 手順 0 と手順 8 の 2 箇所"
+contains_exactly "grep -F -- 'failed=0 skipped=0 not-run=0' >/dev/null; then" 1 \
+  "限定ゲートは skip / 未実行を成功と読まない — 手順 8 の 1 箇所"
 
 # 手順 8 が「記録の COMMIT= を footer ブランチの先端にする」ことをブロックの中で読み戻す。
 # 目的そのものを確かめずに終わると、先端を動かす操作（develop 追従・fix commit）を
@@ -250,7 +255,8 @@ L_READ="$(line_of 'SYNC_SRC_SHA=$(cat "$(git -C "$PUBLIC" rev-parse --absolute-g
 L_SYNC="$(awk '$0 == "scripts/sync-dev-toolkit-to-public.sh --target \"$PUBLIC\"" { print NR; exit }' "$SKILL")"
 L_GUARD="$(line_of 'if [ -n "${SYNC_SRC_SHA:-}" ] && [ "$(git rev-parse HEAD)" = "$SYNC_SRC_SHA" ]; then')"
 L_COMMIT="$(line_of 'git -C "$PUBLIC" commit -m "sync: ')"
-L_FULLGATE="$(line_of 'FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh')"
+L_CIHEALTH="$(line_of 'HEALTH_OUT="$(bash scripts/check-weekly-run-all-health.sh 2>&1)" || true')"
+L_GATE="$(line_of 'if [ "$GATE_MODE" = fast ]; then')"
 
 # 記録の読み取りが同期実行より前にあると、前回の同期が残した記録を掴む（今回の
 # 同期内容とは無関係な SHA を「反映済み」と記録する退行）。
@@ -263,10 +269,23 @@ assert_order "${L_READ}" "${L_GUARD}" \
 assert_order "${L_GUARD}" "${L_COMMIT}" \
   "順序: HEAD 突合が commit より前" \
   "順序: HEAD 突合が commit より後ろにある — 突合前に記録が確定する退行"
-# 全件ゲートは同期実行より前になければ意味がない（同期後に回しても不可逆操作は済んでいる）。
-assert_order "${L_FULLGATE}" "${L_SYNC}" \
-  "順序: 全件実行ゲートが同期実行より前" \
-  "順序: 全件実行ゲートが同期実行より後ろにある — 不可逆操作の後で検査する退行"
+# 定期実行点ゲートは同期実行より前になければ意味がない（同期後に回しても不可逆操作は
+# 済んでいる）。週次 CI 生存確認 → run-all の並びも固定する（生存確認を後置すると、
+# run-all green の後に「担保なし」が判明する形になり、中断点が不可逆操作へ近づく）。
+assert_order "${L_CIHEALTH}" "${L_GATE}" \
+  "順序: 週次 CI の生存確認が run-all より前" \
+  "順序: 週次 CI の生存確認が run-all より後ろにある — 中断点が不可逆操作へ近づく退行"
+assert_order "${L_GATE}" "${L_SYNC}" \
+  "順序: 定期実行点ゲートが同期実行より前" \
+  "順序: 定期実行点ゲートが同期実行より後ろにある — 不可逆操作の後で検査する退行"
+# リリース準備（手順 R）の判定は手順 0 のゲートの後に置く。前へ動くと、リリース準備 PR
+# 〜タグ / Release の外向き操作が定期実行点ゲートを踏まずに始められる形になる
+# （定期実行点の 2 点目「リリース準備の前」の担保は、この順序が手順 0 を共有点にする
+# ことで成立している）。
+L_RELEASE="$(line_of 'scripts/check-release-required.sh --public "$PUBLIC" --fetch')"
+assert_order "${L_GATE}" "${L_RELEASE}" \
+  "順序: リリース準備の判定（手順 R）が定期実行点ゲートより後" \
+  "順序: リリース準備の判定がゲートより前にある — リリース準備前の定期実行点が外れる退行"
 
 # ── 3. 禁止（ブランチ ref からの採取の復活） ────────────────────────────────
 # コマンド置換の形に限定する（散文の説明や Common Mistakes 表への記載を誤検出
@@ -317,9 +336,9 @@ else
 fi
 
 if bash "$SCRIPT_DIR/reuse-runtime.sh" "$FULL_GATE_REUSE_SCRIPT"; then
-  ok "全件成功の再利用判定が同一 tree / footer-only / fail-closed を区別する"
+  ok "footer-only 判定器（changelog-fragments が使用）が同一 tree / footer-only / fail-closed を区別する"
 else
-  bad "全件成功の再利用判定の実行契約が壊れている"
+  bad "footer-only 判定器の実行契約が壊れている"
 fi
 
 # commit 行そのものに develop を含む SHA 式が無いこと（変数化などの迂回の検出）。
@@ -333,15 +352,8 @@ if [[ -n "${L_COMMIT}" ]]; then
 fi
 
 echo
-# 検査総数の侵食ガード。全検査成功ラン（FAIL=0）に限って完全一致を要求する — 行番号を
-# 引けない失敗経路は後続の case 検査を飛ばすため、そのランはこのガード無しですでに赤い。
-if [[ "$FAIL" -eq 0 && "$PASS" -ne "$EXPECTED_CHECKS" ]]; then
-  echo "✗ sync-sha-contract verify: 実行検査数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査が黙って増減している（増減時は EXPECTED_CHECKS も更新すること）" >&2
-  exit 1
-fi
-
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ sync-sha-contract verify: $FAIL 件失敗 / $PASS 件成功" >&2
   exit 1
 fi
-echo "✓ sync-sha-contract verify: 全 $PASS 件 pass（検査総数ガード ${EXPECTED_CHECKS} 件と一致）"
+echo "✓ sync-sha-contract verify: 全 $PASS 件 pass"

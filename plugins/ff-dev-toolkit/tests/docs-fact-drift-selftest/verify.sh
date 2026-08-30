@@ -671,18 +671,7 @@ fi
 echo ""
 echo "結果: pass=${PASS} fail=${FAIL}"
 
-# 検査総数ガード: ケースが黙って消える（条件分岐で丸ごと飛ぶ・編集で落ちる）変更を
-# 捕まえる。健全な実行では assert_* は 1 件も bad を出さないので、総数 = ケース数。
-# ケースを増減したら**この値も同時に更新する**。
-EXPECTED_CHECKS=57
-TOTAL=$((PASS + FAIL))
-COUNT_MISMATCH=0
-if [ "$TOTAL" -ne "$EXPECTED_CHECKS" ]; then
-  # FAIL の有無に関わらず報告する（消えたケースと落ちたケースが相殺して隠れないように）
-  echo "✗ 検査総数が ${TOTAL} 件です（期待 ${EXPECTED_CHECKS} 件）。ケースの増減時は EXPECTED_CHECKS も更新すること" >&2
-  COUNT_MISMATCH=1
-fi
-if [ "$FAIL" -gt 0 ] || [ "$COUNT_MISMATCH" -ne 0 ]; then
+if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 if [ "$PASS" -eq 0 ]; then

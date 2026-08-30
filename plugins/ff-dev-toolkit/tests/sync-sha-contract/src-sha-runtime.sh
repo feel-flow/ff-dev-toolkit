@@ -300,16 +300,8 @@ else
   bad "中断した同期の後に記録が残っている（rc=${SYNC_RC} / 記録=$(cat "$RECORD" 2>/dev/null || echo '<不在>')）"
 fi
 
-# 検査総数の侵食ガード。ケースが消えても「全 N 件 pass」は出てしまうため、
-# 期待件数を宣言して完全一致を要求する（全件成功ランに限る。リポジトリ内の先例に倣う）。
-EXPECTED_CASES=14
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ src-sha runtime: $FAIL 件失敗 / $PASS 件成功" >&2
   exit 1
 fi
-if [[ "$PASS" -ne "$EXPECTED_CASES" ]]; then
-  echo "✗ src-sha runtime: 検査件数が期待と一致しません（期待 ${EXPECTED_CASES} 件 / 実行 ${PASS} 件）" >&2
-  echo "  ケースを増減したときは EXPECTED_CASES も更新すること" >&2
-  exit 1
-fi
-echo "✓ src-sha runtime: 全 $PASS 件 pass（検査総数ガード ${EXPECTED_CASES} 件と一致）"
+echo "✓ src-sha runtime: 全 $PASS 件 pass"

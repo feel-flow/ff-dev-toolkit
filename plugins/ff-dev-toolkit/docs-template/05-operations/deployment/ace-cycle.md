@@ -1,7 +1,7 @@
 # ACE サイクル運用手順（Generate → Reflect → Curate ＋ 定期 Refine）
 
 > **Parent**: [DEPLOYMENT.md](../DEPLOYMENT.md) | **Workflow Step**: 10
-> **関連**: [knowledge-management.md](./knowledge-management.md) | [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) | [ACE フレームワーク概念](https://github.com/feel-flow/ai-spec-driven-development/blob/develop/docs/ACE_FRAMEWORK.md)
+> **関連**: [knowledge-management.md](./knowledge-management.md) | [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) | [ACE フレームワーク概念](https://github.com/feel-flow/ai-spec-driven-development/blob/HEAD/docs/ACE_FRAMEWORK.md)
 
 ## 概要
 
@@ -59,7 +59,7 @@ ACE 知見コミットのマージ方針は **[git-workflow.md ステップ10 §
 ## 出力形式
 各知見について以下を出力してください:
 - タイトル（簡潔で検索しやすい）
-- カテゴリ（coding/architecture/testing/security/performance/devops/process/tooling）
+- カテゴリ（正準一覧は [PLAYBOOK.md §カテゴリ一覧](../../08-knowledge/PLAYBOOK.md#カテゴリ一覧) を参照し、ここへ重複列挙しない）
 - Insight（知見の本質 1-2文）
 - Context（発見した状況）
 - Action（推奨アクション）
@@ -128,7 +128,7 @@ ACE 知見コミットのマージ方針は **[git-workflow.md ステップ10 §
 | ---------- | ---------------------------------- | ------------------------------------------------------------- |
 | **重複**   | 既存エントリの Helpful +1          | 「ACE-003 と同じ内容 → Helpful を 2 → 3 に更新」              |
 | **矛盾**   | 既存を deprecated → 新エントリ作成 | 「ACE-005 の推奨が古い → deprecated、ACE-012 として新規追記」 |
-| **新規**   | Phase 3 へ進む                     | 「既存に該当なし → PLAYBOOK.md に追記」                       |
+| **新規**   | Phase 3 へ進む                     | 「既存に該当なし → 該当カテゴリのサブファイルへ追記」         |
 | **低価値** | 記録しない                         | 「再現性低・影響度低 → スキップ」                             |
 
 ---
@@ -147,9 +147,9 @@ ID は **PRスコープ式**（`ACE-<PR番号>-<連番>`）。採番ルールの
 # 非PR由来は ACE-i<Issue番号>-<連番>（例: ACE-i425-1）
 ```
 
-**採番前ガード（自己修復）**: 採番の前に、対象 PLAYBOOK.md に「エントリID規則」セクションが存在するか確認する。存在しない場合（旧形式 PLAYBOOK、または plugin 非経由でセットアップされたプロジェクト）は、利用中 plugin 同梱の `docs-template/08-knowledge/PLAYBOOK.md`、または上流の [ai-spec-driven-development リポジトリの同ファイル](https://github.com/feel-flow/ai-spec-driven-development/blob/develop/docs-template/08-knowledge/PLAYBOOK.md#エントリid規則) から「エントリID規則」セクションをコピーして追加してから採番する（この状況では自プロジェクトの PLAYBOOK にセクション自体が無いため、自分自身はコピー元にできない。挿入位置は「運用ルール」セクションの直後、無ければ先頭見出し直後）。既存の ID なしエントリ・旧 3 桁エントリは改名・書き換えせず共存させる。旧形式のローカル ACE コマンド（ID なし採番の `.claude/commands/ace.md` 等）を検出した場合は、PRスコープ式コマンドへの一本化をユーザーに提案する。
+**採番前ガード（自己修復）**: 採番の前に、対象 PLAYBOOK.md に「エントリID規則」セクションが存在するか確認する。存在しない場合（旧形式 PLAYBOOK、または plugin 非経由でセットアップされたプロジェクト）は、利用中 plugin 同梱の `docs-template/08-knowledge/PLAYBOOK.md`、または上流の [ai-spec-driven-development リポジトリの同ファイル](https://github.com/feel-flow/ai-spec-driven-development/blob/HEAD/docs-template/08-knowledge/PLAYBOOK.md#エントリid規則) から「エントリID規則」セクションをコピーして追加してから採番する（この状況では自プロジェクトの PLAYBOOK にセクション自体が無いため、自分自身はコピー元にできない。挿入位置は「運用ルール」セクションの直後、無ければ先頭見出し直後）。既存の ID なしエントリ・旧 3 桁エントリは改名・書き換えせず共存させる。旧形式のローカル ACE コマンド（ID なし採番の `.claude/commands/ace.md` 等）を検出した場合は、PRスコープ式コマンドへの一本化をユーザーに提案する。
 
-#### 2. PLAYBOOK.md への追記
+#### 2. カテゴリ別サブファイルへの追記
 
 該当カテゴリファイルの末尾に、コンパクト正準フォーマットで追記（SSOT は [PLAYBOOK.md §エントリテンプレート](../../08-knowledge/PLAYBOOK.md#エントリテンプレート)）：
 
@@ -170,6 +170,8 @@ ID は **PRスコープ式**（`ACE-<PR番号>-<連番>`）。採番ルールの
 
 - 1 エントリの行数バジェットは **15 行**（anchor 行〜終端 `---`）。例外は `<!-- ace-line-budget-exception: 理由 -->` を添えて 30 行まで
 - 旧テーブル形式（`| フィールド | 値 |` + Insight/Context/Action）は読み取り互換として共存させる。新規追記には使わない
+- `playbook/<category>.md` が無ければ [PLAYBOOK.md §新規カテゴリファイルのテンプレート](../../08-knowledge/PLAYBOOK.md#新規カテゴリファイルのテンプレート) で作成する
+- エントリ本体を `PLAYBOOK.md` へ直接追記しない。`PLAYBOOK.md` には §エントリ一覧の索引行だけを追加する
 
 **anchor 命名規則**: 見出し直前に `<a id="ace-XXX"></a>` を 1 行付与（エントリ ID を小文字化、例 `ace-438-1`）。詳細・根拠は SSOT である [PLAYBOOK.md 記述ガイドライン](../../08-knowledge/PLAYBOOK.md#記述ガイドライン) を参照。
 
@@ -377,8 +379,8 @@ ACE_REUSE_STALE_DAYS=120 npm run ace:reuse-report
 
 ## 関連リソース
 
-- **概念説明**: [ACE フレームワーク](https://github.com/feel-flow/ai-spec-driven-development/blob/develop/docs/ACE_FRAMEWORK.md) - ACE の理論的背景
-- **Playbook テンプレート**: [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) - エントリの追記先
+- **概念説明**: [ACE フレームワーク](https://github.com/feel-flow/ai-spec-driven-development/blob/HEAD/docs/ACE_FRAMEWORK.md) - ACE の理論的背景
+- **Playbook テンプレート**: [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) - 運用ルールと索引の SSOT
 - **ナレッジ管理**: [knowledge-management.md](./knowledge-management.md) - GitHub Discussions ベースの管理
 - **autonomous 化**: [ace-autonomous.md](./ace-autonomous.md) - subagent + worktree（任意）
 - **Git ワークフロー**: [git-workflow.md](./git-workflow.md) - ワークフロー全体の中での位置づけ
@@ -387,6 +389,14 @@ ACE_REUSE_STALE_DAYS=120 npm run ace:reuse-report
 ---
 
 ## Changelog
+
+### [1.3.0] - 2026-08-30
+
+#### 変更
+
+- Phase 1 のカテゴリ列挙を PLAYBOOK.md のカテゴリ一覧参照へ置換し、分類 SSOT を一本化した
+- Phase 3 の追記先を `playbook/<category>.md` に明記し、PLAYBOOK.md へは索引行だけを追加する手順に統一した
+- 配布ツリー外の ACE フレームワーク参照を公開リポジトリの `HEAD` 絶対 URL に変更した
 
 ### [1.2.0] - 2026-07-17
 

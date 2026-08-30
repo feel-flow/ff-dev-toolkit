@@ -43,7 +43,8 @@
 #
 # **全件実行は明示指定する**: FF_RUN_ALL_FULL=1（値が 1 のときだけ有効。`0` と空値は
 # 「無効」、それ以外の非空値は解釈できない指定として 1 行警告のうえ全件実行で続行する）。
-# リリース前・公開同期前は全件実行が必須（docs/04-quality/TESTING.md）。
+# リリース前・公開同期前の定期実行点は「週次 CI の成功実績確認 + ローカル run-all green」
+# （healthy なら既定/高速で足り、確認できない回は全件で代替。ADR-039 / docs/04-quality/TESTING.md）。
 #
 # FF_RUN_ALL_FAST は後方互換のために残す。`1` は高速モード（既定と同じなので実質 no-op、
 # ただし明示引数への適用だけは下記のとおり変える）、`0` は「明示的に高速モードでない」=
@@ -74,10 +75,10 @@
 # 残るトレードオフ（意図的な選択）: 対を持つ selftest は既定で除外されるので、その検査対象
 # （tests/*/verify.sh・tests/lib/*.sh）を変更した回を既定のまま通すと、ゲートの検出力の退行は
 # 全件実行まで検出されない。**既定反転により、このトレードオフは毎回取られることになる。**
-# したがって定期実行点はリリース前・公開同期前の全件実行に置く（ADR-034 決定 2。これは変えない）。
-# 加えて開発元リポジトリでは週次 CI（.github/workflows/weekly-run-all.yml、Issue #598 / ADR-037）が
-# セーフティネットとして全件を回し、リリースが空いた期間の検出遅れに上限を付ける（定期実行点を
-# 置き換えるものではない。配布物には含まれない）。`tests/` 等の変更時に高速モードを拒否する
+# その全件実行は開発元リポジトリの週次 CI（.github/workflows/weekly-run-all.yml、Issue #598 /
+# ADR-037。配布物には含まれない）が担保し、リリース前・公開同期前の定期実行点は「週次 CI の
+# 成功実績確認 + ローカル run-all green」を要求する（ADR-039。healthy を確認できない回は
+# 全件で代替）。`tests/` 等の変更時に高速モードを拒否する
 # 安全弁は置かない — 条件分岐を増やさず、挙動を単純に保つ（ADR-034 で再確認した）。
 #
 # 実行方式のトレードオフ: 各 suite の出力は skip マーカー判定のため command
@@ -243,6 +244,16 @@ else
     # 上の gate の検出力を mktemp fixture への変異（スキル±1・補助物混入・root/oss
     # 片側更新・内訳合計不一致・抽出空振り）で実測する。一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/skill-count-consistency-selftest/verify.sh"
+    # 全プラグインの description が列挙するスキル名の集合整合（Issue #1004）。
+    # 上の suite は ff-dev-toolkit 1 件しか見ないため、他 8 プラグインは
+    # 「plugin.json だけ更新して marketplace.json を取り残す」drift が無検査だった
+    # （PR #1003 で実際に発生）。jq のみに依存する読み取り専用の静的検査。
+    "$SCRIPT_DIR/plugin-description-enumeration/verify.sh"
+    # 上の gate の検出力を mktemp fixture への変異（片側だけの更新・両側未更新・
+    # プラグイン集合の片側走査・実在しない名前・部分文字列の誤読・source 欠落・
+    # 同名エントリの重複・免除と非列挙の名簿の腐り・抽出失敗）で実測する。
+    # 一時領域不可なら丸ごと ○ skip。
+    "$SCRIPT_DIR/plugin-description-enumeration-selftest/verify.sh"
     # agent-config.yaml が multi-agent.sh の case 文のミラーとして正しいか
     # （command / cost_tier / perspectives / fallback の値を横断照合）。
     # 上の「外部コマンド不要」の例外で、yq に依存する。読み取り専用の静的検査なので
@@ -391,11 +402,16 @@ else
     # 拡張文書チェックはオプトイン設計なので、テンプレートの Frontmatter 欠落は
     # この gate だけが守る。外部コマンド不要の静的検査（Issue #509）。
     "$SCRIPT_DIR/docs-template-frontmatter/verify.sh"
+    # 配布先レイアウトで .github 配下のリンク・references・inline path が解決し、
+    # init-docs + ace-setup で露出したテンプレート 8 欠陥が戻らないことを固定する
+    # （Issue #981）。Node.js 組み込み API のみを使う静的検査。
+    "$SCRIPT_DIR/docs-template-portability/verify.sh"
     # 上の gate の検出力を mktemp fixture への変異（FM 除去・フィールド欠落・
     # 値域外・未閉鎖・ファイル削除・ツリー片側更新・抽出空振り・重複キー（引用符付き
     # キーを含む）・SemVer 先頭ゼロ・status の中間状態・日付プレースホルダー免除の
-    # 境界・created/updated の前後関係）で実測する。赤ケースは理由の文言まで照合し、
-    # ケース数は selftest 側の EXPECTED_G_CASES が固定する（Issue #526）。
+    # 境界・created/updated の前後関係）で実測する。赤ケースは理由の文言まで照合する
+    # （ケース消失の検出は週次 CI での selftest 実行とレビューが担う — Issue #873 で
+    # 検査総数ガードは廃止した）。
     # perl 不在または一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/docs-template-frontmatter-selftest/verify.sh"
     # 対象プロジェクトの docs/ 側 Frontmatter 付与規則の回帰ゲート。MASTER.md の
@@ -693,6 +709,10 @@ REQUIRED_SUITES=(
   # mktemp fixture が要る。収録スキル数ゲートの検出力 selftest は代替がなく、
   # 一時領域不足で消えると count-rot の検出力喪失が黙って通る（Issue #502）。
   skill-count-consistency-selftest
+  # mktemp fixture が要る。列挙型 description の drift ゲートの検出力 selftest は
+  # 代替がなく、一時領域不足で消えると「片側だけ更新した description」を緑で通す
+  # 退行が黙って戻る（Issue #1004）。
+  plugin-description-enumeration-selftest
   ace-scripts-vitest
   # node / npx / tsx 解決（初回はネットワーク）が要る。ace-curate-commit は案内パスの
   # 文字列と同梱スクリプトの実在までは見るが、**そのパスで実際に走って exit 0 になるか**を
@@ -996,7 +1016,7 @@ if [[ "$FAST_MODE" == "1" ]]; then
 fi
 
 # 全件実行であることを肯定的に 1 行で出す。「⚡ が出ていない」ことでしか全件を判別できないと、
-# リリース前・公開同期前の全件実行（ADR-034 決定 2）を実施したという報告が目視頼みになる。
+# 週次 CI や定期実行点の全件代替（ADR-037 / ADR-039）を実施したという報告が目視頼みになる。
 # 明示引数の実行も FAST_MODE=0 だが「全件」ではないので、既定一覧に限って出す。
 if [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$FAST_MODE" == "0" ]]; then
   echo "🔎 全件実行: 登録されている ${#SCRIPTS[@]} suite をすべて実行対象にします（高速モードの除外なし）"

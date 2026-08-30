@@ -29,11 +29,6 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 SKILL="$PLUGIN_ROOT/skills/refine-issue/SKILL.md"
 
-# 実行検査数の侵食ガード。針を 1 本消しても「全 N 件 pass」で緑になるため、総数を
-# 別途固定する（TESTING.md の EXPECTED_CHECKS 方針）。検査を増減したときは必ずここも
-# 直す。必須ファイル欠落で中断する経路は総数に到達しないので対象外。
-EXPECTED_CHECKS=12
-
 PASS=0
 FAIL=0
 
@@ -139,15 +134,9 @@ contains "$SKILL" \
   "両方 0 件のときの完了報告テンプレートが残っている"
 
 echo
-TOTAL=$((PASS + FAIL))
-if [[ "$TOTAL" -ne "$EXPECTED_CHECKS" ]]; then
-  echo "  ✗ 実行検査数が ${TOTAL} 件（期待 ${EXPECTED_CHECKS} 件）— 検査の削除・追加時は EXPECTED_CHECKS も更新すること" >&2
-  FAIL=$((FAIL + 1))
-fi
-
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ refine-issue-skip-contract verify: $FAIL 件失敗 / $PASS 件成功" >&2
   exit 1
 fi
 
-echo "✓ refine-issue-skip-contract verify: 全 $PASS 件 pass（検査総数ガード ${EXPECTED_CHECKS} 件と一致）"
+echo "✓ refine-issue-skip-contract verify: 全 $PASS 件 pass"

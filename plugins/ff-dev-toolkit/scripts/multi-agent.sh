@@ -696,13 +696,16 @@ DESCRIPTION=""
 INCLUDE_DIFF=false
 CONFIG_FILE="${MULTI_AGENT_CONFIG:-}"
 CONFIG_SOURCE="MULTI_AGENT_CONFIG env"
+CONFIG_PROVENANCE="env"
 if [[ -z "$CONFIG_FILE" ]]; then
   if [[ -f "${REPO_ROOT}/.claude/agent-config.yaml" ]]; then
     CONFIG_FILE="${REPO_ROOT}/.claude/agent-config.yaml"
     CONFIG_SOURCE="project override"
+    CONFIG_PROVENANCE="project"
   else
     CONFIG_FILE="${SCRIPT_DIR}/agent-config.yaml"
     CONFIG_SOURCE="plugin default"
+    CONFIG_PROVENANCE="plugin"
   fi
 fi
 MODE=""            # 未指定なら apply_task_defaults がタスク種別ごとに決める
@@ -837,7 +840,7 @@ parse_args() {
       --task)        TASK_TYPE="$2"; shift 2 ;;
       --description) DESCRIPTION="$2"; shift 2 ;;
       --include-diff) INCLUDE_DIFF=true; shift ;;
-      --config)      CONFIG_FILE="$2"; CONFIG_SOURCE="--config flag"; shift 2 ;;
+      --config)      CONFIG_FILE="$2"; CONFIG_SOURCE="--config flag"; CONFIG_PROVENANCE="flag"; shift 2 ;;
       --mode)        MODE="$2"; MODE_EXPLICIT=true; shift 2 ;;
       --strategy)    STRATEGY="$2"; shift 2 ;;
       --cli)         CLI_FILTER="${CLI_FILTER:+$CLI_FILTER }$2"; shift 2 ;;
@@ -899,12 +902,23 @@ parse_args() {
 }
 
 # ── Config Loading (v1/v2 compatible) ──
+config_is_explicit() {
+  case "$CONFIG_PROVENANCE" in
+    env|flag) return 0 ;;
+    project|plugin|legacy) return 1 ;;
+    *)
+      echo "ERROR: invalid config provenance: ${CONFIG_PROVENANCE}" >&2
+      exit 2
+      ;;
+  esac
+}
+
 load_config() {
   # Fall back to review-config.yaml if agent-config.yaml doesn't exist
   if [[ ! -f "$CONFIG_FILE" ]]; then
     # An explicitly requested config that is missing must fail loud — silently
     # substituting defaults would run with settings the user did not choose.
-    if [[ "$CONFIG_SOURCE" == "--config flag" || "$CONFIG_SOURCE" == "MULTI_AGENT_CONFIG env" ]]; then
+    if config_is_explicit; then
       echo "ERROR: config file not found: $CONFIG_FILE (from ${CONFIG_SOURCE})" >&2
       exit 1
     fi
@@ -913,6 +927,7 @@ load_config() {
       echo "ℹ️  Using legacy config: $fallback_config" >&2
       CONFIG_FILE="$fallback_config"
       CONFIG_SOURCE="legacy review-config.yaml"
+      CONFIG_PROVENANCE="legacy"
     else
       echo "⚠️  Config file not found: $CONFIG_FILE (using defaults)" >&2
       return 0
@@ -920,8 +935,15 @@ load_config() {
   fi
 
   if command -v yq &>/dev/null; then
-    if ! yq '.' "$CONFIG_FILE" >/dev/null 2>&1; then
+    local config_parse_error=""
+    if ! config_parse_error="$(yq '.' "$CONFIG_FILE" 2>&1)"; then
+      if config_is_explicit; then
+        echo "ERROR: explicit config could not be parsed by yq: $CONFIG_FILE (from ${CONFIG_SOURCE})" >&2
+        printf 'yq: %s\n' "$config_parse_error" >&2
+        exit 1
+      fi
       echo "⚠️  Config file could not be parsed by yq. Using defaults." >&2
+      printf 'yq: %s\n' "$config_parse_error" >&2
       return 0
     fi
 
@@ -965,6 +987,10 @@ load_config() {
       [[ -n "$cfg_val" && -z "$OUTPUT_DIR" ]] && OUTPUT_DIR="${REPO_ROOT}/${cfg_val}"
     fi
   else
+    if config_is_explicit; then
+      echo "ERROR: yq is required to read explicit config: $CONFIG_FILE (from ${CONFIG_SOURCE})" >&2
+      exit 1
+    fi
     echo "ℹ️  yq not found — using defaults. Install yq for config file support." >&2
   fi
   return 0  # last &&-list may legitimately be false — don't let set -e kill the script
@@ -3099,7 +3125,7 @@ print_failure_advice() {
     # not a retry of the one that failed.
     self="${self} --include-diff"
   fi
-  if [[ "$CONFIG_SOURCE" == "--config flag" || "$CONFIG_SOURCE" == "MULTI_AGENT_CONFIG env" ]]; then
+  if config_is_explicit; then
     self="${self} --config $(printf '%q' "$CONFIG_FILE")"
   fi
   if [[ "$OUTPUT_DIR_EXPLICIT" == "true" ]]; then
@@ -3680,6 +3706,7 @@ main() {
     if [[ "$prev_flag" == "--config" ]]; then
       CONFIG_FILE="$arg"
       CONFIG_SOURCE="--config flag"
+      CONFIG_PROVENANCE="flag"
       prev_flag=""
       continue
     fi

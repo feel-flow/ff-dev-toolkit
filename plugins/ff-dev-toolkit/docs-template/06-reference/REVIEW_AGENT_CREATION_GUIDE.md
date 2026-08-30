@@ -499,23 +499,25 @@ fallback:
 
 ## 8. Multi-Entry Point
 
-オーケストレーターはスタンドアロンbashスクリプトとして実装し、どこからでも呼び出せる設計です。
+オーケストレーターはスタンドアロンbashスクリプトであり、検証済みの絶対pathを持つ呼び出し元から実行できます。
+
+直接実行する場合、本書は [Multi-CLI Review Orchestration §ff-dev-toolkit plugin root の固定](../05-operations/deployment/multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入します。同節の resolver + guard fence 全体と実行コマンドを1回の Bash tool 呼び出し / shell script body で実行します。Claude Code は `${CLAUDE_PLUGIN_ROOT}`、Codex など他ホストは実際に読み込んだ `SKILL.md` の絶対パスを渡し、review resourceを呼ぶhostは `FF_DEV_TOOLKIT_PROJECT_ROOT` も渡します。単独ターミナル / Copilot の Codex-only 実行は setup が配置したシムを使い、固定版の pair / distributed review は Claude Code / Codex の skill から再呼び出します。sidecar の復元例は永続 hook 専用であり、対話 shell に source しません。
 
 ### エントリーポイント一覧
 
 | 呼び出し元      | 方法             | 例                                                             |
 | --------------- | ---------------- | -------------------------------------------------------------- |
-| **ターミナル**  | 直接実行         | `bash scripts/multi-review.sh`                                 |
-| **Claude Code** | Bash tool / hook | `bash scripts/multi-review.sh`                                 |
-| **Copilot CLI** | プロンプト経由   | `copilot -p "bash scripts/multi-review.sh を実行して"`         |
-| **CI/CD**       | GitHub Actions   | `- run: bash scripts/multi-review.sh --strategy minimize_cost` |
-| **Husky**       | pre-push hook    | `.husky/pre-push` から呼び出し                                 |
+| **ターミナル**  | Codex-only 互換シム | `bash scripts/codex-review.sh`。`FF_DEV_TOOLKIT_ROOT` 未指定時は、cache全体のSemVer最大版をsidecarより優先。固定版のpair / distributedはskillから再呼び出す |
+| **Claude Code** | Bash tool        | resolver + guard 後に `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"`          |
+| **Copilot CLI** | プロンプト経由   | `copilot -p 'bash scripts/codex-review.sh を実行して'`。固定root未指定時の選択順はターミナル欄と同じ |
+| **CI/CD**       | GitHub Actions   | pin済みtoolkit configとrunner temp上の専用出力先を明示する正本CI例を利用              |
+| **Claude/Husky hook** | sidecar 復元 | 正本文書の pre-push 例どおり、sidecar 復元 + resource guard 後に呼び出す                |
 
 ### CLI インターフェース
 
 ```bash
-bash scripts/multi-review.sh [options]
-  --config <path>         設定ファイル（デフォルト: scripts/review-config.yaml）
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" [options]
+  --config <path>         設定ファイル（既定: $MULTI_AGENT_CONFIG → project .claude/agent-config.yaml → plugin 同梱設定）
   --mode <distributed|cross-model>
   --strategy <balanced|minimize_cost|maximize_quality>
   --cli <name>            特定CLIのみ実行（複数指定可）
@@ -529,16 +531,16 @@ bash scripts/multi-review.sh [options]
 
 ```bash
 # デフォルト（全CLI、分散モード、balanced戦略）
-bash scripts/multi-review.sh
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"
 
 # コスト最小化モード
-bash scripts/multi-review.sh --strategy minimize_cost
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --strategy minimize_cost
 
 # 特定CLIのみ（標準の2本柱）
-bash scripts/multi-review.sh --cli claude-code --cli codex-cli
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli claude-code --cli codex-cli
 
 # クロスモデル比較
-bash scripts/multi-review.sh --mode cross-model --perspective code-review
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --perspective code-review
 ```
 
 ---
@@ -567,10 +569,9 @@ bash scripts/multi-review.sh --mode cross-model --perspective code-review
 
 ### Step 3: 設定追加
 
-- [ ] `scripts/review-config.yaml` に新CLIエントリを追加
-- [ ] `cost_tier` を設定
-- [ ] `default_perspectives` を設定
-- [ ] `fallback` マッピングを更新
+- [ ] `multi-agent.sh` の `ALL_CLIS` と `get_cli_*` 関数を更新し、実行時レジストリへCLI・コマンド・cost tier・perspectiveを登録
+- [ ] plugin 同梱 `agent-config.yaml` を、人が読む配布レジストリのmirrorとして同じ内容へ同期
+- [ ] project `.claude/agent-config.yaml` の `agents` / `fallback` は実行時に読まれないため、新CLIの登録先にしない
 
 ### Step 4: ドキュメント更新
 

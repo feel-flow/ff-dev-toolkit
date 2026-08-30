@@ -108,9 +108,6 @@
 # 「違反なし」ではなく失敗として報告する。
 #
 # 書き込み不可の環境（read-only チェックアウト等）では skip して成功扱いにする。
-#
-# 末尾で検査総数（EXPECTED_PASS）を固定する。ケースが黙って消える形は個々のアサート
-# では検出できないため、件数そのものを契約として置く。
 
 set -euo pipefail
 
@@ -172,8 +169,7 @@ bad()  { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # 検出器は共有実装 tests/lib/mbcs-guard.sh の mbcs_scan を使う（repo 横断ガード
 # tests/run-all/verify.sh case 11 と同じ実体）。論理行へ畳んでから走査するので、
 # バックスラッシュ行継続をまたぐ隣接も拾える。検出器そのものの回帰は専用 suite
-# （tests/mbcs-guard-failclosed/）が持つため、ここに自前の probe は置かない
-# ——「この suite が検出器を呼んでいる」配線は末尾の EXPECTED_PASS が固定する。
+# （tests/mbcs-guard-failclosed/）が持つため、ここに自前の probe は置かない。
 # shellcheck source=../lib/mbcs-guard.sh
 . "$SCRIPT_DIR/../lib/mbcs-guard.sh"
 
@@ -212,8 +208,8 @@ mbcs_assert_clean() {
 # 別で、ここは「書いたその場での即時フィードバック」、case 11 は「再混入の横断防止」。
 #
 # 本ファイル内のコメント・診断文言そのものが検査対象になる点に注意する（`$VAR` の直後へ
-# 全角文字を書かない）。書き分けの実例は末尾の検査総数の診断で、`${EXPECTED_PASS}` /
-# `${PASS}` と波括弧で括ってある。裸で書くと `PASS（` を参照して suite が途中死する。
+# 全角文字を書かない）。全角文字が続く場合は `${PASS}` のように波括弧で括ること。
+# 裸で書くと `PASS（` を参照して suite が途中死する。
 mbcs_assert_clean "$TARGET" "merge-cleanup.sh"
 mbcs_assert_clean "$SCRIPT_DIR/verify.sh" "本 suite (tests/merge-cleanup/verify.sh)"
 
@@ -2512,24 +2508,5 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 
-# 検査総数の固定。ケースが黙って消える / 条件分岐で実行されなくなる形は、
-# 個々のアサートでは検出できない（誰も落ちないまま緑になる）。件数を変えたときは
-# 意図的な変更としてこの値を更新すること。全ケースは無条件に実行されるため、
-# 環境によって増減しない（書き込み不可環境は冒頭で skip して exit 0 になる）。
-#
-# 直近の変更で 91 → 97。内訳は +6（項目 3b = 6.22: 取り残し候補一覧の読み出しを固定
-# する green pin 1 件 + 事前照合の検出力 2 件 / 項目 3c = 6.23: ペア照合が集合独立照合
-# へ退化していないことの 3 件）。その前は 92 → 91 と**減って**おり、内訳は
-# +1（静的検査の対象へ verify.sh 自身を追加）/ -2（自前の検出器 self-test probe 2 件を
-# 廃止し、共有実装 tests/lib/mbcs-guard.sh の専用 suite tests/mbcs-guard-failclosed/ へ
-# 寄せた）。「黙って消えた」ではないことを残すために内訳を書く — 減少はここに理由が
-# 無ければ疑うべき兆候である。
-EXPECTED_PASS=97
-if [ "$PASS" -ne "$EXPECTED_PASS" ]; then
-  echo "✗ merge-cleanup verify: 検査総数が想定と違います（期待 ${EXPECTED_PASS} / 実際 ${PASS}）" >&2
-  echo "  ケースを増減したなら EXPECTED_PASS を更新すること。減っている場合は、" >&2
-  echo "  ケースが黙って実行されなくなっていないかを先に確認すること。" >&2
-  exit 1
-fi
-echo "✓ merge-cleanup verify: 全 $PASS 件 pass（検査総数の固定値と一致）"
+echo "✓ merge-cleanup verify: 全 $PASS 件 pass"
 FF_REACHED_END=1

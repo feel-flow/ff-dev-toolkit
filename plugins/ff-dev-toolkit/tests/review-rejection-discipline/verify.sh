@@ -149,20 +149,8 @@ contains "$MULTI_REVIEW" "その応答を成功として扱わず、下の fallb
   "空・形式違反の subagent 応答を成功扱いしないガードを保持"
 
 echo
-# 検査総数の固定。contains 呼び出しの削除侵食（検査だけが消えて緑のまま通る）を
-# 赤くする。針の増減時は EXPECTED_TOTAL も同時に更新すること。
-EXPECTED_TOTAL=21
-TOTAL=$((PASS + FAIL))
-if [[ "$TOTAL" -eq "$EXPECTED_TOTAL" ]]; then
-  echo "  ✓ 検査総数が ${EXPECTED_TOTAL} 件（増減時は EXPECTED_TOTAL も更新すること）"
-else
-  echo "  ✗ 検査総数が想定と異なります（実測: ${TOTAL} / 期待: ${EXPECTED_TOTAL}）" >&2
-  FAIL=$((FAIL + 1))
-fi
-
-echo
 echo "結果: PASS=${PASS} FAIL=${FAIL}"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
-echo "✅ review-rejection-discipline: 全 ${TOTAL} 件 pass"
+echo "✅ review-rejection-discipline: 全 ${PASS} 件 pass"

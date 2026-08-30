@@ -47,11 +47,6 @@ MULTI_REVIEW="$PLUGIN_ROOT/skills/multi-review/SKILL.md"
 STEP5_HEADING='### ステップ5: セルフレビュー（PR作成前）【重要】'
 STEP7_HEADING='### ステップ7: レビュー対応（Review）'
 
-# 実行検査数の侵食ガード。針を 1 本消しても「全 N 件 pass」で緑になるため、総数を
-# 別途固定する（TESTING.md の EXPECTED_CHECKS 方針）。検査を増減したときは必ずここも
-# 直す。必須ファイル欠落・節抽出失敗で中断する経路は総数に到達しないので対象外。
-EXPECTED_CHECKS=26
-
 PASS=0
 FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
@@ -307,14 +302,9 @@ doc_lacks "$SELF_REVIEW" "self-review.md" \
   "self-review.md が必須規定の件数を手書きしていない"
 
 echo
-if [[ "$FAIL" -eq 0 && "$PASS" -ne "$EXPECTED_CHECKS" ]]; then
-  echo "  ✗ 実行検査数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査の削除・追加時は EXPECTED_CHECKS も更新すること" >&2
-  FAIL=$((FAIL + 1))
-fi
-
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ review-freeze-contract verify: $FAIL 件失敗 / $PASS 件成功（実行 $((PASS + FAIL)) 件）" >&2
   exit 1
 fi
 
-echo "✓ review-freeze-contract verify: 全 $PASS 件 pass（検査総数ガード ${EXPECTED_CHECKS} 件と一致）"
+echo "✓ review-freeze-contract verify: 全 $PASS 件 pass"

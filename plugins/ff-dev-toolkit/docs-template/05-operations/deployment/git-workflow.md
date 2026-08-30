@@ -443,9 +443,11 @@ Claude Codeのpr-review-toolkitサブエージェントを活用した包括的�
 Claude系（Toolkit）とGPT系（Codex CLI）で異なるモデルの観点からレビューし、品質を向上させます。
 詳細は [Multi-CLI Review Orchestration](./multi-cli-review-orchestration.md#クロスモデルレビュー推奨パターン) を参照してください。
 
+本書は [同文書の plugin root 前提](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入します。AI host は読み込み済みplugin情報と `FF_DEV_TOOLKIT_PROJECT_ROOT` を渡し、同節の resolver + guard fence 全体と下のコマンドを1回の Bash tool 呼び出し / shell script body で実行します。
+
 ```bash
 # Toolkit セルフレビュー後に実行（同梱の multi-review 経由で Codex 観点）
-bash scripts/multi-review.sh --mode cross-model --cli codex-cli
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
 ```
 
 > **レビュー結果の対応**: 全てのレビュー結果は [PRレビュー対応ポリシー](./review-response-policy.md) に従って対応します。Critical/Warning は確認不要で即対応。
@@ -588,13 +590,13 @@ gh pr view "${PR_NUMBER}" --json title,commits --jq '
     | "commit-body:" + .oid[0:7] + "\t" + (.messageBody | gsub("\n"; " ")))
 ' > "${SURFACE}" || { echo "❌ 検査面の取得に失敗（検査は成立していない）" >&2; exit 2; }
 
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-closing-keywords.sh" \
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-closing-keywords.sh" \
   --repo "${TARGET_REPO}" --refs-issue "${ISSUE_NUM}" < "${SURFACE}"
 # 終了コード 0=抵触なし / 1=抵触あり / 2=検査が成立しない。0 と 1 以外はすべて停止側へ倒す
 rm -f "${SURFACE}"
 ```
 
-`${FF_DEV_TOOLKIT_ROOT}` はプラグインの配置先。Claude Code では `${CLAUDE_PLUGIN_ROOT}` が同じ場所を指す。プラグイン未導入の環境ではこの手動確認は行えないため、ステップ8 のマージ直後 read-back を必ず実施すること。
+`${FF_DEV_TOOLKIT_ROOT}` は、ステップ5と同じ [plugin root固定契約](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) で host の読み込み済み実体から解決する。配置先の推測や `${CLAUDE_PLUGIN_ROOT}` の手動コピーでは作らない。プラグイン未導入の環境ではこの手動確認は行えないため、ステップ8 のマージ直後 read-back を必ず実施すること。
 
 コミット件名・本文はマージ時に書き換えられないため、そこに `#N` が残ってしまった場合はステップ8 で `--subject` と `--body` を**両方明示**して squash メッセージを差し替える。両方明示した squash メッセージはその 2 つだけで決まり、コミットメッセージは畳み込まれない。
 
@@ -619,9 +621,9 @@ rm -f "${SURFACE}"
 /pr-review-toolkit:review-pr
 
 # クロスモデルレビュー（GPT系の観点、read-only・同梱 multi-review）
-bash scripts/multi-review.sh --mode cross-model --cli codex-cli
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
 # scripts/codex-review.sh は multi-agent.sh へ委譲するシムとして同梱される
-# （setup-multi-agent.sh が配置する。下の呼び出しと等価）
+# 生成シムはCodex-only互換入口であり、このcross-model実行とはmode・担当範囲が異なる
 ```
 
 さらに多観点で確認したい場合は、Multi-CLI 分散レビュー（オプション）を併用します：
@@ -629,10 +631,10 @@ bash scripts/multi-review.sh --mode cross-model --cli codex-cli
 ```bash
 # 既定ラインナップ: Claude / Codex / Grok（Copilot は --cli copilot-cli でオプトイン）
 # multi-review.sh / multi-agent.sh / adapters/* はプラグイン同梱
-bash scripts/multi-review.sh
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"
 
 # 特定の観点のみ
-bash scripts/multi-review.sh --perspective test-analysis
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective test-analysis
 ```
 
 #### 統合レポートの確認

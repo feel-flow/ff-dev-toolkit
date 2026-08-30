@@ -87,12 +87,16 @@
 
 プロジェクトルートで、プラグイン同梱のセットアップを実行:
 
+> 本書は [Multi-CLI Review Orchestration §ff-dev-toolkit plugin root の固定](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入する。AI host は同節どおり読み込み済みplugin情報と `FF_DEV_TOOLKIT_PROJECT_ROOT` を渡し、resolver + guard fence 全体と下のセットアップを1回の Bash tool 呼び出し / shell script body で実行する。
+
 ```bash
 # Multi-CLI オーケストレーターの依存確認・導入（同梱）
-bash scripts/setup-multi-agent.sh
-
-# レビュー実行（同梱ラッパー → multi-agent.sh --task review）
-bash scripts/multi-review.sh
+run_ff_setup_and_review() {
+  ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh" || return "$?"
+  ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"
+}
+run_ff_setup_and_review
+# guard または setup が非0を返した場合は review を実行しない
 ```
 
 **同梱の `setup-multi-agent.sh`** は依存ツールの確認・導入と動作確認を行う。実行本体は `multi-agent.sh` / `multi-review.sh` と `adapters/*`。
@@ -102,13 +106,12 @@ bash scripts/multi-review.sh
 ### 手動セットアップ（同梱オーケストレーター）
 
 ```bash
-# 1. 同梱スクリプトに実行権限を付与（コピー先のパスに合わせる）
-chmod +x scripts/setup-multi-agent.sh scripts/multi-agent.sh scripts/multi-review.sh scripts/adapters/*.sh
+# 1. 正本の resolver + guard が成功した場合だけ依存確認へ進む
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
 
-# 2. 依存確認
-bash scripts/setup-multi-agent.sh
-
-# 3. （任意）pre-commit から multi-review.sh を呼ぶ hook を利用側で追加
+# 2. （任意）pre-commit から multi-review.sh を呼ぶ hook を利用側で追加
+# hook はskill呼び出しとは別のタイミング・プロセスで動くため、正本の
+# pre-push例と同じsidecar復元を使い、skillセッション中だけの環境変数に依存しない
 ```
 
 利用側で単体ラッパー構成を自作する場合の例（いずれも**同梱されない**ファイル名）:
@@ -128,7 +131,7 @@ chmod +x .husky/pre-commit scripts/review-common.sh scripts/review-prompts.sh \
 ### プラグイン同梱（配布物）
 
 ```
-scripts/
+<FF_DEV_TOOLKIT_ROOT>/scripts/
 ├── multi-agent.sh            # Multi-CLI オーケストレーター
 ├── multi-review.sh           # レビュー用ラッパー（→ multi-agent.sh --task review）
 ├── setup-multi-agent.sh      # 依存確認・導入

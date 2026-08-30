@@ -1,21 +1,21 @@
 ---
 title: "PLAYBOOK"
-version: "1.74.0"
+version: "1.75.0"
 status: "approved"
 created: "2026-03-10"
-updated: "2026-08-23"
+updated: "2026-08-30"
 changeImpact: medium
 owner: "@fffokazaki"
 ace_entry_count: 3
 tags: [ace, playbook, knowledge-management]
 references:
-  - docs/ACE_FRAMEWORK.md
-  - docs-template/05-operations/deployment/ace-cycle.md
+  - https://github.com/feel-flow/ai-spec-driven-development/blob/HEAD/docs/ACE_FRAMEWORK.md
+  - https://github.com/feel-flow/ai-spec-driven-development/blob/HEAD/docs-template/05-operations/deployment/ace-cycle.md
 ---
 
 # ACE Playbook
 
-> **Parent**: [BEST_PRACTICES.md](./BEST_PRACTICES.md) | **関連**: [ACE サイクル運用手順](../05-operations/deployment/ace-cycle.md) | [ACE フレームワーク概念](../../docs/ACE_FRAMEWORK.md)
+> **Parent**: [BEST_PRACTICES.md](./BEST_PRACTICES.md) | **関連**: [ACE サイクル運用手順](../05-operations/deployment/ace-cycle.md) | [ACE フレームワーク概念](https://github.com/feel-flow/ai-spec-driven-development/blob/HEAD/docs/ACE_FRAMEWORK.md)
 
 ## 概要
 
@@ -29,7 +29,7 @@ GitHub Discussions が「人間が読むためのナラティブ（物語的記�
 
 | ルール                             | 説明                                                                                                                           |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| **末尾追記のみ**                   | エントリは常にファイル末尾に追記。既存エントリの本文書き換えは禁止。カウンター更新・Status変更は許可。**例外1**: `/ace-refine` 実行中の意味保存要約のみ書き換え可（原文の `playbook/archive/` への verbatim 保全が必須条件）。**例外2**: **ID 衝突の修復**に限り、見出し行・anchor 行・索引の参照先・**過去の Changelog 記載**（旧 ID を含む bullet）の書き換えを許可（本文・カウンター・Date は無改変。改番の事実を本ファイルの Changelog に記録する。`check-entry-format` の ID 一意性ゲートは重複を赤にするため、衝突の解消には改番が要る） |
+| **末尾追記のみ**                   | エントリ本体は常に該当カテゴリの `playbook/<category>.md` 末尾へ追記し、本ファイルには索引行だけを追加する。カテゴリファイルが無ければ最初の追記時に作成する。既存エントリの本文書き換えは禁止。カウンター更新・Status変更は許可。**例外1**: `/ace-refine` 実行中の意味保存要約のみ書き換え可（原文の `playbook/archive/` への verbatim 保全が必須条件）。**例外2**: **ID 衝突の修復**に限り、見出し行・anchor 行・索引の参照先・**過去の Changelog 記載**（旧 ID を含む bullet）の書き換えを許可（本文・カウンター・Date は無改変。改番の事実を本ファイルの Changelog に記録する。`check-entry-format` の ID 一意性ゲートは重複を赤にするため、衝突の解消には改番が要る） |
 | **行数バジェット**                 | 1 エントリ 15 行以内（anchor 行〜終端 `---`）。反直感的な詳細が必要な場合のみ例外宣言を添えて 30 行以内。有効な宣言の判定は直下の「行数バジェット例外の有効条件」に従う |
 | **カウンターはインクリメントのみ** | Helpful/Harmful は +1 のみ。減算・リセットはしない（`/ace-refine` の重複統合時の合算は例外）                                   |
 | **削除禁止**                       | エントリを物理的に削除しない。不要な場合は `Status: deprecated` に変更、または `/ace-refine` で `playbook/archive/` へ原文保全のうえ移動 |
@@ -155,7 +155,7 @@ ACE エントリ ID は **PRスコープ式** を採用する（このセクシ�
 
 ## ファイル分割ルール
 
-Playbook が導出上限（`ヘッダ行数 + 件数 × 16`）を超え、正準化・`/ace-refine` でも再超過が常態化する場合は、以下のように分割する：
+エントリが 0 件の初期状態から、エントリ本体は `playbook/<category>.md` に置き、`PLAYBOOK.md` は索引 + 運用ルールとして使う。`/ace-setup` 直後はカテゴリファイルを作らず、最初の `/ace-curate` が該当ファイルを作成する：
 
 ```
 08-knowledge/
@@ -167,11 +167,11 @@ Playbook が導出上限（`ヘッダ行数 + 件数 × 16`）を超え、正準
         └── <category>.md
 ```
 
-分割時の手順：
+カテゴリ別ファイルの運用手順：
 
-1. カテゴリ別にエントリをサブファイルに移動
-2. PLAYBOOK.md に索引テーブルを残す（エントリID + タイトル + 参照先）
-3. 以降の新規追記は該当カテゴリのサブファイルに行う
+1. 該当カテゴリのサブファイルが無ければ、下記テンプレートで作成する
+2. エントリ本体をカテゴリファイル末尾に追記する
+3. PLAYBOOK.md の索引テーブルへエントリID + タイトル + 参照先を追加する
 4. Frontmatter の `ace_entry_count` は live エントリ（`playbook/` 直下）の合計を維持する。`playbook/archive/` 配下は数えない（集計スクリプトは `playbook/` 直下の `*.md` のみを非再帰で走査するため、archive は自動的に対象外になる）
 
 ### 新規カテゴリファイルのテンプレート
@@ -226,6 +226,13 @@ Playbook が導出上限（`ヘッダ行数 + 件数 × 16`）を超え、正準
 | ACE-000-3 | 【見本】行数バジェット例外の宣言 — 反直感的な詳細が 15 行に収まらないときだけ使う | testing | [playbook/testing.md#ace-000-3](./playbook/testing.md#ace-000-3) |
 
 ## Changelog
+
+### [1.75.0] - 2026-08-30
+
+#### 変更
+
+- ACE エントリ本体の追記先を、エントリ 0 件の初期状態から `playbook/<category>.md` に一本化した。PLAYBOOK.md は索引 + 運用ルールのみを持ち、最初の `/ace-curate` がカテゴリファイルを作る
+- `references` と ACE フレームワーク概念リンクを、展開先でも解決する公開リポジトリの絶対 URL に変更した
 
 ### [1.74.0] - 2026-08-23
 

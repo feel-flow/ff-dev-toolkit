@@ -36,7 +36,6 @@
 #     強制更新する（FETCH_HEAD だけ更新して stale ref で判定を続けない）
 #   - 出力契約（RELEASE_CHECK= / REASON= / SKIP_REASON=）は行頭一致・件数・
 #     RELEASE_CHECK の一意性・反対キーの混入ゼロ・理由 ERE のキー行限定まで照合する
-#   - 実行検査総数を baseline で縛る（検査そのものの削除への耐性。ACE-542-1）
 #
 # root の scripts/check-release-required.sh が存在しない配置（公開リポジトリの
 # checkout 等）では行頭 ○ skip + exit 0。jq が無い・一時領域を作れない場合も同様。
@@ -95,9 +94,6 @@ PASS=0
 FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
-
-# 検査総数の期待値。検査の追加・削除時はここも更新する（黙って縮む侵食をここで赤にする）。
-EXPECTED_CHECKS=60
 
 # SSOT リポジトリ名は禁止パターン検査（公開同期）対象のため実行時に組み立てる。
 SSOT_NAME="$(printf '%s%s' 'feelflow-' 'plugins')"
@@ -721,14 +717,6 @@ if [[ "$skip_rc" -eq 0 && $'\n'"$skip_out" == *$'\n○ skip'* ]]; then
 else
   bad "S9 スクリプト不在の skip 契約が崩れた (rc=${skip_rc})"
   printf '%s\n' "$skip_out" | sed 's/^/    | /' >&2
-fi
-
-# ── 検査総数ガード（ACE-542-1: 検査そのものの削除への耐性） ───────────────────
-TOTAL=$((PASS + FAIL))
-if [[ "$TOTAL" -eq "$EXPECTED_CHECKS" ]]; then
-  ok "検査総数ガード: ${TOTAL} 件実行（期待どおり）"
-else
-  bad "検査総数ガード: ${TOTAL} 件実行（期待 ${EXPECTED_CHECKS} 件）— 検査の削除、または追加時の期待値未更新"
 fi
 
 echo

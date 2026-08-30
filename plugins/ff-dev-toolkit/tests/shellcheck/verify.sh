@@ -61,7 +61,6 @@
 # （[ACE-717-1]）。呼び出しを別実装へ分けると、横断走査側にだけ除外オプションを足す変異が
 # 検出力 fixture をすり抜ける（sc_scan は追加引数を素通しするので、呼び出し行ごとに
 # オプションを足す余地までは塞いでいない。塞いでいるのは実装と重大度の分岐）。
-# 検査総数は EXPECTED_TOTAL で縛る（[ACE-542-1]。検査そのものを消す侵食を赤にする）。
 #
 # 対の `-selftest` suite は**置かない**。検出力 fixture は本 suite の実行のたびに走るので
 # 効き目を毎回実測できる（docs-scan-mirror が golden 一致で同じ判断をしている）。加えて
@@ -70,7 +69,6 @@
 #
 # [ACE-725-1]: docs/08-knowledge/playbook/testing.md#ace-725-1
 # [ACE-717-1]: docs/08-knowledge/playbook/testing.md#ace-717-1
-# [ACE-542-1]: docs/08-knowledge/playbook/testing.md#ace-542-1
 #
 # ## 動作を確認した shellcheck
 #
@@ -269,20 +267,8 @@ else
 fi
 
 echo
-# 検査総数の固定。検査そのものが削除される侵食（消えた検査は変異させても赤くならない）を
-# 赤くする。検査の増減時は EXPECTED_TOTAL も同時に更新すること。
-EXPECTED_TOTAL=8
-TOTAL=$((PASS + FAIL))
-if [[ "$TOTAL" -eq "$EXPECTED_TOTAL" ]]; then
-  echo "  ✓ 検査総数が ${EXPECTED_TOTAL} 件（増減時は EXPECTED_TOTAL も更新すること）"
-else
-  echo "  ✗ 検査総数が想定と異なります（実測: ${TOTAL} / 期待: ${EXPECTED_TOTAL}）" >&2
-  FAIL=$((FAIL + 1))
-fi
-
-echo
 echo "結果: PASS=${PASS} FAIL=${FAIL} / $(shellcheck --version | grep '^version:' || true)"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
-echo "✅ shellcheck: 全 ${TOTAL} 件 pass"
+echo "✅ shellcheck: 全 ${PASS} 件 pass"

@@ -13,7 +13,7 @@ metadata:
   version: "1.0.0"
   author: feel-flow
   tags: "testing, unit-test, integration-test, e2e, coverage, aaa-pattern, tdd, red-safety"
-  references: "docs-template/04-quality/TESTING.md"
+  references: "docs/04-quality/TESTING.md"
 ---
 
 # テストパターンガイド

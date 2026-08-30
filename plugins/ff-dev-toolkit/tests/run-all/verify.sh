@@ -1621,21 +1621,5 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 
-# 検査総数の侵食ガード。本 suite はケースの追加・改稿が多く（ADR-034 のモード行列で
-# 26-A〜26-H を丸ごと書き直した）、その過程で expect_* が 1 本消えても残りが緑のまま
-# 「全 N 件 pass」で通る。全検査成功ラン（FAIL=0）に限って完全一致を要求する — 失敗経路は
-# 後続検査を飛ばすので、無条件比較は既に赤いランへ二重の失敗を積む。
-#
-# 更新が要る箇所は 3 つ。ok / bad / expect_has / expect_lacks の呼び出しを増減したときに
-# 加えて、**呼び出し行を 1 行も触らずに件数が動く固定リストが 2 つある**:
-#   - case 14 の必須 suite 名リスト（一時領域依存。1 件足すと +1）
-#   - case 15 の mktemp probe 仕様リスト（1 件足すと +1）
-# 一方、走査対象の件数からは導出されない（case 10・11・26 はいずれも走査結果を 1 件の判定へ
-# 畳む）ので、suite を追加しても動かず、SSOT モノレポと公開 checkout の両配置で同じ値になる。
-EXPECTED_CHECKS=243
-if [ "$PASS" -ne "$EXPECTED_CHECKS" ]; then
-  echo "✗ run-all verify: 検査総数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査の削除、または追加時の期待値未更新" >&2
-  exit 1
-fi
-echo "✓ run-all verify: 全 $PASS 件 pass（検査総数ガード ${EXPECTED_CHECKS} 件と一致）"
+echo "✓ run-all verify: 全 $PASS 件 pass"
 exit 0

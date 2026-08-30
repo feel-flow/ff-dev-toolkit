@@ -48,23 +48,30 @@ your-project/
 │       ├── comment-analysis/SKILL.md
 │       └── code-simplification/SKILL.md
 └── scripts/
-    ├── multi-agent.sh                   ← 【同梱】マルチCLIオーケストレーター
-    ├── multi-review.sh                  ← 【同梱】review タスク用ラッパー（→ multi-agent.sh）
-    ├── setup-multi-agent.sh             ← 【同梱】依存確認・導入
-    ├── adapters/                        ← 【同梱】CLI アダプタ（*-adapter.sh）
+    ├── codex-review.sh                  ← 【setup配置】multi-agent.sh へ委譲する互換シム
+    ├── .ff-dev-toolkit-root             ← 【setup配置・Git対象外】plugin scripts/ の記録
     ├── copilot-review.sh                ← 【利用側】Copilot CLI 単体ラッパー（同梱されない）
     ├── claude-review.sh                 ← 【利用側】Claude Code 単体ラッパー（同梱されない）
-    ├── codex-review.sh                  ← 【同梱】multi-agent.sh へ委譲するシム（setup が配置）
     ├── grok-review.sh                   ← 【利用側】Grok 単体ラッパー（同梱されない）
     ├── review-common.sh                 ← 【利用側】共通レビューロジック（同梱されない）
     └── review-prompts.sh                ← 【利用側】レビュープロンプト定義（同梱されない）
+
+<FF_DEV_TOOLKIT_ROOT>/scripts/
+├── multi-agent.sh                       ← 【plugin同梱】マルチCLIオーケストレーター
+├── multi-review.sh                      ← 【plugin同梱】reviewタスク用ラッパー
+├── setup-multi-agent.sh                 ← 【plugin同梱】依存確認・導入
+└── adapters/                            ← 【plugin同梱】CLIアダプタ（*-adapter.sh）
 ```
 
-> **同梱 vs 利用側**: `multi-agent.sh` / `multi-review.sh` / `setup-multi-agent.sh` / `adapters/*` はプラグインが配布する。`codex-review.sh` は `multi-agent.sh` へ委譲するシムとして同梱され、**`setup-multi-agent.sh` が配置する**。それ以外の `*-review.sh`（`claude-review.sh` / `copilot-review.sh` / `grok-review.sh`）と `review-common.sh` / `review-prompts.sh` はセットアップ後に自動で現れるファイルではなく、**消費プロジェクトが自前で置く構成例**である。
+> **plugin同梱 vs setup配置 vs 利用側**: `multi-agent.sh` / `multi-review.sh` / `setup-multi-agent.sh` / `adapters/*` は plugin root だけに存在し、消費プロジェクトの `scripts/` へはコピーされない。`codex-review.sh` と `.ff-dev-toolkit-root` は `setup-multi-agent.sh` が消費プロジェクトへ配置する。それ以外の `*-review.sh`（`claude-review.sh` / `copilot-review.sh` / `grok-review.sh`）と `review-common.sh` / `review-prompts.sh` は、消費プロジェクトが自前で置く構成例である。
 
 ### モード1: Copilot CLI セッション分離（推奨）
 
-利用側で用意した `scripts/copilot-review.sh` が5つの専門レビュアーを並列で `copilot -p` 実行する想定。**同梱**の `scripts/multi-agent.sh` を使えば、Claude/Codex/Copilot/Grok の4つのCLIで同時にクロスモデルレビューが可能です。
+利用側で用意した `scripts/copilot-review.sh` が5つの専門レビュアーを並列で `copilot -p` 実行する想定。
+
+root解決は [Multi-CLI Review Orchestration](../05-operations/deployment/multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入します。
+
+plugin 同梱の `${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh` を固定rootから使えば、Claude/Codex/Copilot/Grok の4つのCLIで同時にクロスモデルレビューが可能です。
 
 ### モード2: 動的 `read_file` 読み込み（フォールバック）
 

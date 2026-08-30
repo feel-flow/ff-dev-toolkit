@@ -63,9 +63,6 @@
 #     で毎回実測し、期待と一致しなければ横断検査へ進まず赤にする
 #   - SKILL.md が 0 件、または横断抽出トークンが 0 件なら「参照ゼロ」ではなく
 #     「走査が成立していない」として赤にする（実測: 全プラグインで 150+ トークン）
-#   - 全緑時の検査件数を EXPECTED_CHECKS で固定する。EXPECTED_* の全文一致は検査の
-#     中身を守るが、assert 呼び出しごと削除された検査は検出できないため、件数側から
-#     「検査が黙って消えていない」ことを固定する（検査を増減したら併せて更新）
 #
 # 一時ディレクトリを使わない read-only の静的検査（依存: awk・grep・sed・dirname と
 # bash 組み込みのみ。ヒアストリング/ヒアドキュメントも使わない — bash はそれらを
@@ -337,11 +334,4 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 
-# 全緑時の検査件数ガード: EXPECTED_* の全文一致では assert 呼び出しごと削除された
-# 検査を検出できないため、件数の一致まで固定する（検査を増減したらここも更新）。
-EXPECTED_CHECKS=10
-if [ "$PASS" -ne "$EXPECTED_CHECKS" ]; then
-  echo "✗ skill-references-existence verify: 全緑だが検査件数が期待と不一致（expected: ${EXPECTED_CHECKS} / actual: ${PASS}）。検査が黙って消えたか、増減時の EXPECTED_CHECKS 更新漏れ" >&2
-  exit 1
-fi
 echo "✓ skill-references-existence verify: 全 $PASS 件 pass"

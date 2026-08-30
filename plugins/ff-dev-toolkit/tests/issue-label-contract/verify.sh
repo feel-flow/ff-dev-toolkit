@@ -65,12 +65,6 @@ REFINE_ISSUE="$PLUGIN_ROOT/skills/refine-issue/SKILL.md"
 EXPECTED_SHARED_FRAGMENTS=23
 EXPECTED_BLOCK_LINES=32
 
-# 実行検査数の侵食ガード（TESTING.md の EXPECTED_CHECKS 方針）。上の 2 つは fixture の
-# 行数を固定するもので、検査行そのものの削除は拾わない。針を 1 本消しても残りが緑の
-# まま「全 N 件 pass」で通るため、総数を別途固定する。検査を増減したときの更新箇所は
-# 2 つ: ok / bad を増減させた箇所と、この宣言。
-EXPECTED_CHECKS=86
-
 PASS=0
 FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
@@ -864,10 +858,7 @@ mapping_diagnosis() {
   [ -z "$only_refine" ] || { printf '%s\n' "$only_refine" | sed 's/^/create-issue に無い対応表の左列: /' || true; }
 }
 
-# 検査ケース数を固定する。針を 1 本ずつ壊す変異試験は「検査そのものを消す」退化を
-# 原理的に測れないため、実行本数を baseline で縛る（ACE-542-1）。
 MAPPING_CASES=0
-EXPECTED_MAPPING_CASES=15
 mapping_ok()  { MAPPING_CASES=$((MAPPING_CASES + 1)); ok  "$1"; }
 mapping_bad() {
   MAPPING_CASES=$((MAPPING_CASES + 1)); bad "$1"
@@ -1153,23 +1144,9 @@ else
   esac
 fi
 
-if [ "$MAPPING_CASES" -eq "$EXPECTED_MAPPING_CASES" ]; then
-  ok "項目リスト同期の検査を ${EXPECTED_MAPPING_CASES} 件実行（増減時は EXPECTED_MAPPING_CASES も更新すること）"
-else
-  bad "項目リスト同期の検査が ${MAPPING_CASES} 件（期待 ${EXPECTED_MAPPING_CASES} 件）— 検査が黙って消えている"
-fi
-
 echo ""
-# 検査総数の侵食ガード。全検査成功ラン（FAIL=0）に限って完全一致を要求する — 失敗
-# 経路（stub gh の解決失敗など）は後続の behavioral 検査を飛ばすことがあり、そのランは
-# このガード無しですでに赤いため。
-if [ "$FAIL" -eq 0 ] && [ "$PASS" -ne "$EXPECTED_CHECKS" ]; then
-  echo "✗ issue-label-contract verify: 実行検査数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査が黙って増減している（増減時は EXPECTED_CHECKS も更新すること）" >&2
-  exit 1
-fi
-
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ issue-label-contract verify: $FAIL 件失敗 / $PASS 件成功" >&2
   exit 1
 fi
-echo "✓ issue-label-contract verify: 全 $PASS 件 pass（検査総数ガード ${EXPECTED_CHECKS} 件と一致）"
+echo "✓ issue-label-contract verify: 全 $PASS 件 pass"

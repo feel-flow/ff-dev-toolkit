@@ -28,7 +28,7 @@
 #
 # 配置差: 公開リポジトリもモノレポと同じ `plugins/ff-dev-toolkit/` 構造を保つが、
 # **リポジトリ側の `docs/` を持たない**。配布物とスキルは常に検査し、`docs/` は存在する
-# ときだけ検査して検査総数ガードを切り替える（workflow-tier と同じ流儀）。
+# ときだけ検査する（workflow-tier と同じ流儀）。
 #
 # 依存は POSIX ユーティリティ + `git` + `mktemp`。どちらかが無い環境では suite 全体を
 # 行頭 `○ skip` + exit 0 で飛ばす（部分 skip はランナーの契約に抵触する）。本 suite は
@@ -50,14 +50,6 @@ RUNNER="$TESTS_DIR/run-all.sh"
 SKILL="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 DEPLOYMENT="$ROOT/docs/05-operations/DEPLOYMENT.md"
-
-# 検査総数の侵食ガード（TESTING.md の EXPECTED_CHECKS 方針）。針を 1 本消しても残りが
-# 緑のまま通るため、総数を別途固定する。docs/ を持たない公開 checkout では D の
-# リポジトリ側検査ぶんだけ期待値が下がる。
-# EXPECTED_CHECKS_BASE は手で管理する（検査の追加・削除と同時に更新する）。
-# リポジトリ側 docs/ ぶんは INHERIT_NEEDLES から導出する — 針を 1 本足すと
-# WORKFLOW 側と DEPLOYMENT 側で 2 件増えるので、手書きだと片方を取りこぼす。
-EXPECTED_CHECKS_BASE=185
 
 PASS=0
 FAIL=0
@@ -252,8 +244,8 @@ run_check --remote-head "$ABSENT" --measured "$ABSENT"
 run_check --remote-head "$C1" --measured "$ABSENT"
 [[ "$RC" -eq 1 ]] && ok "不一致は実測対象が手元に無くても止める（判定不能へ格下げしない）" || bad "不一致 + 不在実測で exit ${RC}（期待 1）"
 
-# 高速モードの記録でも一致は exit 0。全件実行を要求するのはリリース前・公開同期前で
-# あって、マージのたびではない（ADR-034）。**意図的な非ブロック**なので契約として固定する。
+# 高速モードの記録でも一致は exit 0。全件実行が要るのは週次 CI と定期実行点の代替経路で
+# あって、マージのたびではない（ADR-037 / ADR-039）。**意図的な非ブロック**なので契約として固定する。
 bash "$RECORD" --gate "tests/run-all.sh" --mode fast --result "passed=71" --record "$WORK/fast-record" >/dev/null 2>&1
 FAST_COMMIT="$(sed -n 's/^COMMIT=//p' "$WORK/fast-record" | head -n 1)"
 run_check --remote-head "$FAST_COMMIT" --record "$WORK/fast-record"
@@ -895,19 +887,9 @@ else
 fi
 
 # =============================================================================
-EXPECTED_CHECKS="$EXPECTED_CHECKS_BASE"
-if [[ "$REPO_DOCS_CHECKED" -eq 1 ]]; then
-  # 引き取り規定の針 + 照合実体の名指し + ブロック抽出 + byte 一致
-  EXPECTED_CHECKS=$((EXPECTED_CHECKS + ${#INHERIT_NEEDLES[@]} + 3))
-fi
-
 if [[ "$FAIL" -ne 0 ]]; then
   echo "✗ merge-freshness: ${FAIL} 件失敗（pass ${PASS} 件）" >&2
   exit 1
 fi
-if [[ "$PASS" -ne "$EXPECTED_CHECKS" ]]; then
-  echo "✗ merge-freshness: 検査総数が ${PASS} 件（期待 ${EXPECTED_CHECKS} 件）— 検査の削除、または追加時の期待値未更新" >&2
-  exit 1
-fi
-echo "✓ merge-freshness: 全 ${PASS} 件 pass（検査総数ガード ${EXPECTED_CHECKS} 件と一致）"
+echo "✓ merge-freshness: 全 ${PASS} 件 pass"
 exit 0

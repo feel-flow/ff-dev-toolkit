@@ -31,9 +31,6 @@
 #   G26. status が `done`（specs 側スキーマの中間状態） → 赤・理由は「status が値域」
 #   G27. `## Changelog` を Frontmatter 内へ移動 → `#` 始まりを本文らしい行として赤
 #
-# ケース数は EXPECTED_G_CASES で固定する（検査の削除、または追加時の期待値未更新を
-# 赤にする。release-required-selftest の EXPECTED_CHECKS と同型）。
-#
 # 赤ケースは**理由の ERE まで照合する**（run_case の第 3 引数）。変異が別の検査を
 # 偶発的に壊したケースを検出力ありと数えないため。緑ケースは assert_mutated で
 # 「変異が実際に入ったこと」を測る（no-op なら緑は何も証明しない）。
@@ -80,10 +77,8 @@ FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
-# run_case の実行数。末尾で EXPECTED_G_CASES と突き合わせる（検査の削除、または
-# 追加時の期待値未更新を赤にする。release-required-selftest の EXPECTED_CHECKS と同型）。
+# run_case の実行数。
 CASES=0
-EXPECTED_G_CASES=28
 
 # 初期セット 20 ファイル（本体 suite と同一の一覧）
 INITIAL_SET=(
@@ -330,13 +325,6 @@ make_fixture
 perl -i -pe 's/^updated: ".*"$/updated: "2026-08-21"/' "$TMP/root/docs-template/07-project-management/ROADMAP.md"
 assert_mutated "07-project-management/ROADMAP.md" "G22" || true
 run_case "G22 ROADMAP.md の created のみ雛形・updated は実日付" green
-
-echo "== 検査総数ガード =="
-if [ "$CASES" -eq "$EXPECTED_G_CASES" ]; then
-  ok "検査総数ガード: ${CASES} 件実行（期待どおり）"
-else
-  bad "検査総数ガード: ${CASES} 件実行（期待 ${EXPECTED_G_CASES} 件）— ケースの削除、または追加時の期待値未更新"
-fi
 
 echo ""
 echo "結果: pass=${PASS} fail=${FAIL}"

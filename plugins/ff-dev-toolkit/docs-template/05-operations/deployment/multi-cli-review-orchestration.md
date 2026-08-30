@@ -14,6 +14,7 @@
 
 ## 目次
 
+- [ff-dev-toolkit plugin root の固定（必須）](#ff-dev-toolkit-plugin-root-prerequisite)
 - [アーキテクチャ](#アーキテクチャ)
 - [前提条件](#前提条件)
 - [セットアップ](#セットアップ)
@@ -21,6 +22,197 @@
 - [ワークフロー統合](#ワークフロー統合)
 - [運用コマンド](#運用コマンド)
 - [トラブルシューティング](#トラブルシューティング)
+
+---
+
+<a id="ff-dev-toolkit-plugin-root-prerequisite"></a>
+
+## ff-dev-toolkit plugin root の固定（必須）
+
+この文書は消費プロジェクトへコピーされる一方、`setup-multi-agent.sh` / `multi-agent.sh` / `multi-review.sh` は plugin 同梱物のままで、消費プロジェクトの `scripts/` へはコピーされない。Claude Code ではその呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}`、Codex など他ホストでは実際に読み込んだ ff-dev-toolkit skill の絶対 `SKILL.md` パスを `FF_DEV_TOOLKIT_SKILL_FILE` として渡し、その `../..` を、1回の Bash tool 呼び出し / shell script body 中の `FF_DEV_TOOLKIT_ROOT` として一度だけ固定する。この変数名と handoff は各 ff-dev-toolkit skill の root 契約にも定義する。review / explore / implement のどの入口でも、別の skill を探さず、その呼び出しで読み込んだ実体を使う。
+
+handoff の producer は skill を実行する AI host である。Claude Code は plugin skill 呼び出しの `${CLAUDE_PLUGIN_ROOT}` を同じ Bash tool body へ渡す。Codex など、skill loader が読み込んだファイルの絶対パスを返す host は、Bash tool body の先頭で `FF_DEV_TOOLKIT_SKILL_FILE="<skill loader が返したこの SKILL.md の絶対パス>"; export FF_DEV_TOOLKIT_SKILL_FILE` の placeholder を実値へ置換する。review / explore / implement resource を直接呼ぶ host は、task の workspace repository root も `FF_DEV_TOOLKIT_PROJECT_ROOT="<AI host の task workspace repository root>"; export FF_DEV_TOOLKIT_PROJECT_ROOT` の実値として渡し、下の fence と後続コマンドを続ける。単独ターミナルの利用者が cache path や別 repository を推測してこれらの値を手書きしてはならない。
+
+キャッシュ全体を探索したり、version 名を並べ替えて別版へ切り替えたりしない。次の resolver + guard を、以下に続く直接実行例より前に同じ shell へ読み込む。Claude Code / Codex の host は、上記の値をこの fence の実行環境へ渡すこと。初回 setup は読み込み済み skill を持つ Claude Code / Codex の host セッションからだけ実行する。単独ターミナルで setup 前の状態から plugin を探索する手順は提供しない。setup 後の単独ターミナルは Codex-only 互換シムを使い、固定版の pair / distributed review は skill を再呼び出して実行する。machine-local sidecar の手動 source は対話ターミナル向けに提供せず、後述の永続 hook の handoff にだけ使う。root が未設定、または更新で resource が消えた場合は別版へフォールバックせず status 2 を返す。
+
+このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowの手動検査から呼ぶ `check-closing-keywords.sh` である。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は Codex cache → Claude cache の semantic version 最大を sidecar より先に選ぶ（Issue #623 の互換動作）。そのため plugin 更新直後は、端末の互換シムが新 cache、pre-push が更新前の sidecar を使う状態がある。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
+
+```bash
+ff_canonical_toolkit_root() {
+  local candidate="$1"
+  (cd -P -- "$candidate" 2>/dev/null && pwd -P)
+}
+
+ff_toolkit_handoff_error() {
+  unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE
+  printf 'ff-dev-toolkitのhandoffを再構成してください（%s）\n' "$1" >&2
+  return 2
+}
+
+ff_has_toolkit_manifest_marker() {
+  awk '
+    BEGIN { after_open = 0; matched = 0 }
+    !after_open && /^[[:space:]]*{[[:space:]]*$/ { after_open = 1; next }
+    after_open && /^[[:space:]]*$/ { next }
+    after_open && /^[[:space:]]*"name"[[:space:]]*:[[:space:]]*"ff-dev-toolkit"[[:space:]]*,[[:space:]]*$/ {
+      matched = 1
+      exit
+    }
+    after_open { exit }
+    END { if (!matched) exit 1 }
+  ' "$1"
+}
+
+ff_require_toolkit_root() {
+  local host_root="" skill_root="" fixed_root=""
+  local skill_dir="" skills_dir="" plugin_manifest=""
+  local resource resource_path resource_error
+  case "${CLAUDE_PLUGIN_ROOT:-}" in
+    /*)
+      host_root="$(ff_canonical_toolkit_root "$CLAUDE_PLUGIN_ROOT")" || {
+        ff_toolkit_handoff_error "Claude plugin rootを正規化できません"
+        return "$?"
+      }
+      ;;
+    "") ;;
+    *)
+      ff_toolkit_handoff_error "Claude plugin rootが絶対pathではありません"
+      return "$?"
+      ;;
+  esac
+  if [ -n "${FF_DEV_TOOLKIT_SKILL_FILE:-}" ]; then
+    case "$FF_DEV_TOOLKIT_SKILL_FILE" in
+      /*) ;;
+      *)
+        ff_toolkit_handoff_error "読み込み済みSKILL.mdが絶対pathではありません"
+        return "$?"
+        ;;
+    esac
+    if [ ! -f "$FF_DEV_TOOLKIT_SKILL_FILE" ] || [ -L "$FF_DEV_TOOLKIT_SKILL_FILE" ]; then
+      ff_toolkit_handoff_error "読み込み済みSKILL.mdが通常ファイルではないかsymlinkです"
+      return "$?"
+    fi
+    skill_dir="$(dirname "$FF_DEV_TOOLKIT_SKILL_FILE")"
+    skills_dir="$(dirname "$skill_dir")"
+    if [ "$(basename "$FF_DEV_TOOLKIT_SKILL_FILE")" != SKILL.md ] \
+      || [ "$(basename "$skills_dir")" != skills ]; then
+      ff_toolkit_handoff_error "読み込み済みファイルが<plugin-root>/skills/<skill>/SKILL.md形式ではありません"
+      return "$?"
+    fi
+    skill_root="$(cd "$skills_dir/.." && pwd -P)" || {
+      ff_toolkit_handoff_error "SKILL.mdからplugin rootを解決できません"
+      return "$?"
+    }
+    if [ -n "$host_root" ] && [ "$host_root" != "$skill_root" ]; then
+      ff_toolkit_handoff_error "hostのplugin rootが一致しません"
+      return "$?"
+    fi
+    host_root="$skill_root"
+  fi
+  if [ -n "${FF_DEV_TOOLKIT_ROOT:-}" ]; then
+    case "$FF_DEV_TOOLKIT_ROOT" in
+      /*) ;;
+      *)
+        ff_toolkit_handoff_error "固定rootが絶対pathではありません"
+        return "$?"
+        ;;
+    esac
+    fixed_root="$(ff_canonical_toolkit_root "$FF_DEV_TOOLKIT_ROOT")" || {
+      ff_toolkit_handoff_error "固定rootを正規化できません"
+      return "$?"
+    }
+  fi
+  if [ -z "$host_root" ]; then
+    ff_toolkit_handoff_error "読み込み元を解決できません"
+    return "$?"
+  fi
+  if [ -n "$fixed_root" ] && [ "$fixed_root" != "$host_root" ]; then
+    ff_toolkit_handoff_error "固定rootがhostの実体と一致しません"
+    return "$?"
+  fi
+  if [ ! -d "${host_root}/scripts" ] || [ -L "${host_root}/scripts" ]; then
+    ff_toolkit_handoff_error "scripts directoryが通常directoryではないかsymlinkです"
+    return "$?"
+  fi
+  plugin_manifest="${host_root}/.claude-plugin/plugin.json"
+  if [ -L "${host_root}/.claude-plugin" ] \
+    || [ ! -f "$plugin_manifest" ] || [ -L "$plugin_manifest" ] \
+    || [ ! -r "$plugin_manifest" ] || [ ! -s "$plugin_manifest" ] \
+    || ! ff_has_toolkit_manifest_marker "$plugin_manifest"; then
+    ff_toolkit_handoff_error "ff-dev-toolkitのmanifest name markerを確認できません"
+    return "$?"
+  fi
+  for resource in setup-multi-agent.sh multi-agent.sh multi-review.sh check-closing-keywords.sh; do
+    resource_path="${host_root}/scripts/${resource}"
+    resource_error=""
+    if [ ! -f "$resource_path" ]; then
+      resource_error="regular fileではありません"
+    elif [ -L "$resource_path" ]; then
+      resource_error="symlinkは許可されません"
+    elif [ ! -r "$resource_path" ]; then
+      resource_error="読み取れません"
+    elif [ ! -s "$resource_path" ]; then
+      resource_error="0バイトです"
+    fi
+    if [ -n "$resource_error" ]; then
+      ff_toolkit_handoff_error "resourceを解決できません: ${resource_path} (${resource_error})"
+      return "$?"
+    fi
+  done
+  # 候補とresourceが全て正常だと確定してから、rootと診断用の出自を同時に公開する。
+  # 失敗候補をsource元に残さず、更新後の再呼び出しで復旧できるようにする。
+  FF_DEV_TOOLKIT_ROOT="$host_root"
+  FF_DEV_TOOLKIT_ROOT_SOURCE=host
+  export FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE
+}
+
+ff_require_consumer_root() {
+  local expected_root actual_root git_root
+  case "${FF_DEV_TOOLKIT_PROJECT_ROOT:-}" in
+    /*) ;;
+    "")
+      printf 'AI hostからFF_DEV_TOOLKIT_PROJECT_ROOTを渡してreview入口を再実行してください（consumer repository root handoffが未設定です）\n' >&2
+      return 2
+      ;;
+    *)
+      printf 'AI hostからFF_DEV_TOOLKIT_PROJECT_ROOTを絶対pathで渡してreview入口を再実行してください（consumer repository root handoffが絶対pathではありません）\n' >&2
+      return 2
+      ;;
+  esac
+  expected_root="$(cd -P -- "$FF_DEV_TOOLKIT_PROJECT_ROOT" 2>/dev/null && pwd -P)" || {
+    printf 'review対象をtask workspace repository rootで再実行してください（consumer repository rootを正規化できません）\n' >&2
+    return 2
+  }
+  actual_root="$(pwd -P)" || {
+    printf 'review対象をtask workspace repository rootで再実行してください（現在の作業directoryを正規化できません）\n' >&2
+    return 2
+  }
+  git_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+    printf 'review対象をtask workspace repository rootで再実行してください（consumer repositoryを解決できません）\n' >&2
+    return 2
+  }
+  git_root="$(cd -P -- "$git_root" 2>/dev/null && pwd -P)" || {
+    printf 'review対象をtask workspace repository rootで再実行してください（consumer repositoryを正規化できません）\n' >&2
+    return 2
+  }
+  if [ "$actual_root" != "$expected_root" ] || [ "$git_root" != "$expected_root" ]; then
+    printf 'review対象をtask workspace repository rootで再実行してください（review対象がhostのtask workspace repository rootと一致しません）\n' >&2
+    return 2
+  fi
+}
+
+ff_require_toolkit_root
+```
+
+この fence 自体が resolver 本体であり、`./resolver.sh` という別ファイルは作らない。AI host は fence 全体と後続コマンドを同じ shell script body として実行する。fence 末尾の呼び出しは `exit` ではなく関数の status 2 を返す。`set -e` 下で実行する場合は fence の直前で一時的に `set +e`、直後に `ff_root_rc=$?` とし、元がerrexit有効だった場合だけ `set -e` へ戻す。status 0 を確認した同じ shell でのみ後続の直接実行例へ進む。
+
+すべての直接実行例は、レビュー対象である**消費プロジェクトの repository root**で実行する。`ff_require_consumer_root` は host が渡した task workspace repository root、現在の物理 CWD、`git rev-parse --show-toplevel` の3値が一致する場合だけ通す。plugin script は絶対 path で起動できるため、この照合が無いと別 repository や repository 外で実行しても path error にはならず、その CWD を対象にしてしまう。
+
+guard は bundled manifest の先頭 `name` marker、通常 directory の `scripts/`、各 resource の `-f/-r/-s` と非 symlink を要求する。manifest marker は誤った plugin root の混入を検出する配布構造チェックであり、JSON 全体の妥当性検証や暗号学的な真正性確認ではない。すべて `bash` へ明示的に渡す入口なので実行 bit は前提にしない。欠落・空ファイル・symlink・marker 不一致は cache を手修正せず、plugin を再導入してから skill / setup を再実行する。
+
+`FF_DEV_TOOLKIT_ROOT_SOURCE` は診断時にhandoff経路を識別するためのprovenanceであり、resource選択やfallbackの分岐には使わない。
+
+長期運用する hook / CI は skill 呼び出しとは別のタイミング・プロセスで動くため、skill セッション中だけの環境変数に依存しない。上の対話用 resolver fence は呼ばず、後述する各例の自己完結 bootstrap + resource guard を使う。hook では setup が生成した machine-local sidecar を handoff として使い、toolkit 更新後に setup を再実行して明示的に差し替える。sidecar は Git 管理せず、versioned cache を探索・選択する設定として手書きしない。対話ターミナルではこの sidecar スニペットを source せず、固定版レビューは skill から再実行する。CI は project が pin して配置した実体を `FF_DEV_TOOLKIT_ROOT_SOURCE=ci` とともに固定する。
 
 ---
 
@@ -42,15 +234,15 @@ PR Review Toolkit（Claude系）でのセルフレビュー後に続けて実行
 
 ```bash
 # Toolkit レビュー後に実行（プラグイン同梱 multi-review → multi-agent 経由）
-bash scripts/multi-review.sh --mode cross-model --cli codex-cli
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
 # scripts/codex-review.sh は multi-agent.sh へ委譲するシムとして同梱される
-# （setup-multi-agent.sh が配置する。下の呼び出しと等価）
+# 生成シムはCodex-only互換入口であり、このcross-model実行とはmode・担当範囲が異なる
 ```
 
-pre-commit で staged index だけをレビューする場合は次を使う。
+commit 前の対話実行で staged index だけをレビューする場合は次を使う。pre-commit hook に組み込む場合は、[Husky pre-push フックとの統合](#husky-pre-push-フックとの統合)と同じ sidecar 復元・resource guard を先に置く。
 
 ```bash
-bash scripts/multi-review.sh --staged
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --staged
 ```
 
 `--staged` は `git diff --cached` だけを各 prompt へ渡し、unstaged / branch 差分は
@@ -101,7 +293,7 @@ merge-base がずれ、他ブランチのマージ済みコミットがレビュ
                     │   (Orchestrator)            │
                     │                             │
                     │  ┌───────────────────────┐  │
-                    │  │  review-config.yaml   │  │
+                    │  │  agent-config.yaml    │  │
                     │  │  (設定)               │  │
                     │  └───────────────────────┘  │
                     └──────────┬──────────────────┘
@@ -132,7 +324,7 @@ merge-base がずれ、他ブランチのマージ済みコミットがレビュ
 ### データフロー
 
 1. **エントリーポイント** → `multi-review.sh` を呼び出し
-2. **設定読み込み** → `review-config.yaml` からCLI設定・戦略を取得
+2. **設定読み込み** → `--config`、`$MULTI_AGENT_CONFIG`、project `.claude/agent-config.yaml`、plugin `agent-config.yaml` の順で設定を取得。plugin `agent-config.yaml` が欠落した旧配布物だけは、同じplugin rootの非推奨 `review-config.yaml` を互換fallbackとして読む
 3. **CLI検出** → `command -v` で利用可能なCLIを検出
 4. **フォールバック** → 未インストールCLIのパースペクティブを再分配
 5. **並列実行** → 各CLIアダプターを並列で実行（flat-rate CLI に複数観点が乗る場合、その CLI 内はレート制限保護のため逐次実行。CLI 間の並列は維持）
@@ -171,7 +363,7 @@ Windows で使う場合は bash が動く環境を用意する:
 
 - Mike Farah `yq` v4（YAMLパーサー、設定ファイル読み込みに使用）
   - Homebrew がある場合（macOS / Linuxbrew）: `brew install yq`
-  - Homebrew が無い場合: 同梱の `bash scripts/setup-multi-agent.sh` が [mikefarah/yq](https://github.com/mikefarah/yq) の GitHub release から公式バイナリを導入する（`curl` または `wget` が必要。配置先は既定で `~/.local/bin`。PATH に無い場合は shell profile へ追加する）
+  - Homebrew が無い場合: 同梱の `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"` が [mikefarah/yq](https://github.com/mikefarah/yq) の GitHub release から公式バイナリを導入する（`curl` または `wget` が必要。配置先は既定で `~/.local/bin`。PATH に無い場合は shell profile へ追加する）
   - **注意**: Ubuntu 等の distro パッケージ（`apt install yq` / `yum install yq`）は別実装のことがあり、本ツールが使う `yq -r` 式や capability probe と互換にならない。パッケージ経由の導入は使わない
 - 3つ以上のAI CLIインストール（分散レビューの効果を最大化）
 
@@ -189,62 +381,39 @@ command -v grok    && echo "✅ Grok CLI"     || echo "❌ Grok CLI"
 
 ## セットアップ
 
-### Step 1: スクリプト配置
+### Step 1: plugin resource の確認
 
 ```bash
-# リポジトリルートから
-chmod +x scripts/multi-review.sh
-chmod +x scripts/adapters/*.sh
+# 上の resolver + guard を通した同じ shell で実行する。
+ff_require_toolkit_root && echo "ff-dev-toolkit plugin resources: OK"
 ```
 
 ### Step 2: 設定ファイルのカスタマイズ
 
-`scripts/review-config.yaml` を環境に合わせて編集します。
+消費プロジェクトの `.claude/agent-config.yaml` を環境に合わせて編集します。初期設定が必要な場合は `${FF_DEV_TOOLKIT_ROOT}/scripts/agent-config.yaml` を雛形として使います。
 
-> **Note**: 現行の `multi-agent.sh` が config から読み込むのは `mode` / `parallel` / `tasks.*`（cost_strategy / timeout / output_dir）のみで、**パースペクティブ割り当てとフォールバックはスクリプト内（`get_cli_perspectives_review()` 等）にハードコード**されています。割り当てを変更する場合は YAML とスクリプトの両方を同期して編集してください。
+> **Note**: 現行の `multi-agent.sh` が project config から読み込むのは `version` / `mode` / `parallel` / `review.*` と、`version: "2.0"` のときだけ `tasks.<task>.{mode,cost_strategy,timeout,output_dir}`。`version` が `2.0` でない場合は v1 形式としてトップレベルの `cost_strategy` / `timeout` / `output_dir` を読む。`agents` / `fallback` は配布側レジストリの写しであり、消費プロジェクトで変更しても実行へ反映されない。パースペクティブ割り当てを変える場合は plugin 側の変更として提案し、cache を直接編集しない。
 
 ```yaml
-version: "1.0"
+version: "2.0"
 mode: distributed
 parallel: true
-cost_strategy: balanced
 
-agents:
-  claude-code:
-    command: claude
-    cost_tier: premium
-    default_perspectives: [type-design-analysis, comment-analysis]
-
-  codex-cli:
-    command: codex
-    cost_tier: standard
-    default_perspectives: [code-review, test-analysis]
-
-  copilot-cli:
-    command: copilot
-    cost_tier: metered # 従量課金 — 既定プランには載らない（--cli copilot-cli 明示時のみ実行）
-    default_perspectives: [test-analysis, comment-analysis]
-
-  grok-cli:
-    command: grok
-    cost_tier: flat-rate
-    default_perspectives: [error-handler-hunt, security-analysis]
-
-fallback:
-  claude-code: codex-cli
-  codex-cli: claude-code
-  copilot-cli: codex-cli
-  grok-cli: codex-cli
+tasks:
+  review:
+    cost_strategy: balanced
 ```
+
+CLI名・cost tier・perspective・fallback の対応表は plugin 同梱設定を参照する。これらを変更する場合は `multi-agent.sh` の実行時レジストリと配布mirrorを同じ plugin PRで更新し、消費プロジェクト設定へは複製しない。
 
 ### Step 3: 動作確認
 
 ```bash
 # 利用可能なCLIと設定を表示
-bash scripts/multi-review.sh --dry-run
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run
 
 # 特定のCLIだけでテスト
-bash scripts/multi-review.sh --cli codex-cli --perspective test-analysis
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli codex-cli --perspective test-analysis
 ```
 
 ---
@@ -318,50 +487,141 @@ agents:
 
 ### Husky pre-push フックとの統合
 
-> **Note**: 以下は設定例です。`.husky/pre-push` ファイルを手動で作成してください。`scripts/multi-review.sh` の実装後に利用可能です。
+> **Note**: 以下は設定例です。先に読み込み済み skill の root から同梱 `setup-multi-agent.sh` を実行して `scripts/.ff-dev-toolkit-root` を生成し、`.husky/pre-push` ファイルを手動で作成してください。sidecar はマシン固有なので Git へコミットせず、消費プロジェクトの `.gitignore` へ `scripts/.ff-dev-toolkit-root` を追加して `git check-ignore scripts/.ff-dev-toolkit-root` で確認します。plugin 更新で記録先が消えた場合は、別 version を自動選択せず push を status 2 で止めるため、更新後の skill から setup を再実行します。
 
 ```bash
 # .husky/pre-push（手動作成が必要）
 #!/bin/sh
 . "$(dirname "$0")/_/husky.sh"
 
+# setup が記録した plugin の scripts/ 絶対pathから、別プロセスでも同じrootを復元する。
+# versioned cache を探索して「最新」へ切り替えない。
+FF_TOOLKIT_SCRIPTS=""
+FF_TOOLKIT_SIDECAR=scripts/.ff-dev-toolkit-root
+if [ -L "$FF_TOOLKIT_SIDECAR" ]; then
+  echo "ff-dev-toolkit更新後にsetup-multi-agent.shを再実行してください（sidecar symlinkは許可されません）" >&2
+  exit 2
+fi
+sidecar_tracked_rc=0
+git ls-files --error-unmatch -- "$FF_TOOLKIT_SIDECAR" >/dev/null 2>&1 || sidecar_tracked_rc=$?
+case "$sidecar_tracked_rc" in
+  0) echo "ff-dev-toolkitのsidecarをGit管理から外してsetup-multi-agent.shを再実行してください" >&2; exit 2 ;;
+  1) ;;
+  *) echo "ff-dev-toolkitのsidecarがGit管理下か検査できません" >&2; exit 2 ;;
+esac
+if [ ! -r "$FF_TOOLKIT_SIDECAR" ] \
+  || ! IFS= read -r FF_TOOLKIT_SCRIPTS < "$FF_TOOLKIT_SIDECAR"; then
+  echo "ff-dev-toolkit更新後にsetup-multi-agent.shを再実行してください（sidecarを読み込めません）" >&2
+  exit 2
+fi
+case "$FF_TOOLKIT_SCRIPTS" in
+  /*/scripts) FF_DEV_TOOLKIT_ROOT="${FF_TOOLKIT_SCRIPTS%/scripts}" ;;
+  *)
+    echo "ff-dev-toolkit更新後にsetup-multi-agent.shを再実行してください（固定rootを解決できません）" >&2
+    exit 2
+    ;;
+esac
+if [ -L "$FF_TOOLKIT_SCRIPTS" ]; then
+  echo "ff-dev-toolkit更新後にsetup-multi-agent.shを再実行してください（scripts symlinkは許可されません）" >&2
+  exit 2
+fi
+FF_TOOLKIT_MANIFEST="${FF_TOOLKIT_SCRIPTS%/scripts}/.claude-plugin/plugin.json"
+if [ -L "${FF_TOOLKIT_SCRIPTS%/scripts}/.claude-plugin" ] \
+  || [ ! -f "$FF_TOOLKIT_MANIFEST" ] || [ -L "$FF_TOOLKIT_MANIFEST" ] \
+  || [ ! -r "$FF_TOOLKIT_MANIFEST" ] || [ ! -s "$FF_TOOLKIT_MANIFEST" ] \
+  || ! awk '
+    BEGIN { after_open = 0; matched = 0 }
+    !after_open && /^[[:space:]]*{[[:space:]]*$/ { after_open = 1; next }
+    after_open && /^[[:space:]]*$/ { next }
+    after_open && /^[[:space:]]*"name"[[:space:]]*:[[:space:]]*"ff-dev-toolkit"[[:space:]]*,[[:space:]]*$/ { matched = 1; exit }
+    after_open { exit }
+    END { if (!matched) exit 1 }
+  ' "$FF_TOOLKIT_MANIFEST"; then
+  echo "ff-dev-toolkit更新後にsetup-multi-agent.shを再実行してください（manifest name markerを確認できません）" >&2
+  exit 2
+fi
+FF_DEV_TOOLKIT_ROOT_SOURCE=sidecar
+export FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE
+for resource in setup-multi-agent.sh multi-agent.sh multi-review.sh; do
+  if [ ! -f "${FF_DEV_TOOLKIT_ROOT}/scripts/${resource}" ] \
+    || [ -L "${FF_DEV_TOOLKIT_ROOT}/scripts/${resource}" ] \
+    || [ ! -r "${FF_DEV_TOOLKIT_ROOT}/scripts/${resource}" ] \
+    || [ ! -s "${FF_DEV_TOOLKIT_ROOT}/scripts/${resource}" ]; then
+    echo "ff-dev-toolkit更新後にsetup-multi-agent.shを再実行してください（resourceを解決できません）" >&2
+    exit 2
+  fi
+done
+
 # Multi-CLI レビュー（定額CLIのみ、高速）
 # 終了コードを捨てないこと: レビューが 1 本でも失敗・タイムアウトすると非 0 になる
-if ! bash scripts/multi-review.sh \
+if ! FF_REVIEW_OUTPUT="$(mktemp -d "${TMPDIR:-/tmp}/ff-pre-push-review.XXXXXX")"; then
+  echo "❌ 今回のレビュー専用出力先を作成できませんでした。" >&2
+  exit 1
+fi
+REVIEW_REPORT="${FF_REVIEW_OUTPUT}/integrated-report.md"
+if ! bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" \
+  --output-dir "$FF_REVIEW_OUTPUT" \
   --strategy minimize_cost \
   --cli grok-cli \
   --sequential; then
   echo "❌ レビューを完走できませんでした（失敗 or タイムアウト）。"
   echo "   未完了のレビューは「指摘なし」ではなく「未確認」です。ゲートとしては通せません。"
+  echo "   出力先: $FF_REVIEW_OUTPUT"
   exit 1
 fi
 
-# 統合レポート自体の存在を検査する。`grep ... 2>/dev/null` はファイル不在の
-# エラーも隠すため、レポートが生成されなかった実行（出力先の契約ドリフト等）
-# では以降の 2 つの grep が両方「不在 = 合格」で素通りしてしまう
-if [ ! -s .review-results/integrated-report.md ]; then
+# 今回の専用出力先にある統合レポートだけを検査する。固定pathを読むと、今回の
+# review が新しいレポートを生成しなかった場合に前回の成功レポートを誤読できる。
+if [ ! -s "$REVIEW_REPORT" ]; then
   echo "❌ 統合レポートがありません。未生成は「指摘なし」ではなく「未確認」です。"
+  echo "   出力先: $FF_REVIEW_OUTPUT"
   exit 1
 fi
 
 # 未完了の節が残っていればブロック（打ち切られたレビューは CRITICAL_BLOCK を
 # 出さないので、CRITICAL_BLOCK だけを見るゲートは「空振り」を pass と読む）
-if grep -q "INCOMPLETE" .review-results/integrated-report.md 2>/dev/null; then
-  echo "❌ 未完了のレビュー結果が含まれています。再実行するか、対象を絞ってください。"
-  exit 1
-fi
+grep_rc=0
+grep -q "INCOMPLETE" "$REVIEW_REPORT" || grep_rc=$?
+case "$grep_rc" in
+  0)
+    echo "❌ 未完了のレビュー結果が含まれています。再実行するか、対象を絞ってください。"
+    echo "   レポート: $REVIEW_REPORT"
+    exit 1
+    ;;
+  1) ;;
+  *)
+    echo "❌ 統合レポートのINCOMPLETE検査に失敗しました（grep status ${grep_rc}）。" >&2
+    echo "   出力先: $FF_REVIEW_OUTPUT" >&2
+    exit 1
+    ;;
+esac
 
 # Critical があればプッシュをブロック（マーカー**全文**の固定文字列一致にする。
 # 裸の CRITICAL_BLOCK への部分一致にしないこと — 連結されるレビュー本文が
 # Verdict 語彙やマーカーの引用として同じ文字列を含むと、非ブロック観点だけの
 # 実行でも誤発火し、観点別段階化が無効になる）
-if grep -qF -- '<!-- CRITICAL_BLOCK -->' .review-results/integrated-report.md 2>/dev/null; then
-  echo "❌ Critical issues found. Fix before pushing."
-  exit 1
-fi
+grep_rc=0
+grep -qF -- '<!-- CRITICAL_BLOCK -->' "$REVIEW_REPORT" || grep_rc=$?
+case "$grep_rc" in
+  0)
+    echo "❌ Critical issues found. Fix before pushing."
+    echo "   レポート: $REVIEW_REPORT"
+    exit 1
+    ;;
+  1) ;;
+  *)
+    echo "❌ 統合レポートのCritical検査に失敗しました（grep status ${grep_rc}）。" >&2
+    echo "   出力先: $FF_REVIEW_OUTPUT" >&2
+    exit 1
+    ;;
+esac
+# Warning / Suggestion も対応判断と監査に必要なので、成功時も今回の専用出力を保全する。
+echo "✅ レビュー完了。出力先: $FF_REVIEW_OUTPUT"
 ```
 
-> ⚠️ **ゲートを書くときの注意**: `bash scripts/multi-review.sh` の終了コードを捨てて `CRITICAL_BLOCK` の有無だけで判定すると、レビューが 1 件も完走しなかった実行が「Critical なし = 合格」として通ります。これは Issue #152 の失敗モードがそのまま一層外側に出た形です。**終了コードと `INCOMPLETE` の両方**を見てください。
+専用出力には差分やレビュー本文が含まれ得る。OS管理の一時領域なので永続保存は保証されず、確認後は表示された今回の絶対pathだけを削除する。別の一時directoryや固定pathをまとめて消さない。
+
+> ⚠️ **ゲートを書くときの注意**: `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"` の終了コードを捨てて `CRITICAL_BLOCK` の有無だけで判定すると、レビューが 1 件も完走しなかった実行が「Critical なし = 合格」として通ります。これは Issue #152 の失敗モードがそのまま一層外側に出た形です。**終了コードと `INCOMPLETE` の両方**を見てください。
 
 #### CRITICAL_BLOCK の観点別段階化
 
@@ -377,7 +637,7 @@ fi
 
 ```bash
 # 例: comment-analysis の指摘だけを直した fix の再検証
-bash scripts/multi-review.sh --perspective comment-analysis
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective comment-analysis
 
 # シム（codex-review.sh）経由では --reviewers で同じ限定ができる
 bash scripts/codex-review.sh --base develop --reviewers comment-analysis
@@ -404,39 +664,7 @@ bash scripts/codex-review.sh --base develop --reviewers comment-analysis
 
 ### CI/CD（GitHub Actions）での実行
 
-```yaml
-# .github/workflows/multi-cli-review.yml
-name: Multi-CLI Review
-on:
-  pull_request:
-    branches: [develop, main]
-
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install CLI tools
-        run: |
-          # 必要なCLIをインストール（各CLI公式ドキュメントで最新手順を確認）
-          # Claude Code: https://docs.anthropic.com/en/docs/claude-code
-          npm install -g @anthropic-ai/claude-code
-          # Codex CLI: https://github.com/openai/codex
-          npm install -g @openai/codex
-          # Grok CLI
-          npm install -g @xai-official/grok
-      - name: Run Multi-CLI Review
-        run: bash scripts/multi-review.sh --strategy minimize_cost
-      - name: Upload results
-        # if: always() が無いと、レビューが失敗・タイムアウトした回の成果物
-        # （打ち切り前の部分出力）がランナーから出てこない。原因調査に必要なのは
-        # まさに失敗した回なので、赤いときこそ回収する
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: review-results
-          path: .review-results/
-```
+commit pin、fork 境界、resource 検証を含む完全な workflow 例は、[Multi-CLI Review CI](./multi-cli-review-ci.md) を参照する。
 
 ---
 
@@ -446,26 +674,26 @@ jobs:
 
 ```bash
 # デフォルト実行（全CLI、分散モード）
-bash scripts/multi-review.sh
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"
 
 # コスト最小化
-bash scripts/multi-review.sh --strategy minimize_cost
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --strategy minimize_cost
 
 # 品質最大化（リリース前）
-bash scripts/multi-review.sh --strategy maximize_quality
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --strategy maximize_quality
 
 # クロスモデル比較
-bash scripts/multi-review.sh --mode cross-model --perspective code-review
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --perspective code-review
 ```
 
 ### 特定CLI/パースペクティブのみ
 
 ```bash
 # Claude + Codex だけ（標準の2本柱）
-bash scripts/multi-review.sh --cli claude-code --cli codex-cli
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli claude-code --cli codex-cli
 
 # セキュリティ分析だけ
-bash scripts/multi-review.sh --perspective security-analysis
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective security-analysis
 ```
 
 ### 結果の確認
@@ -501,7 +729,7 @@ ERROR: codex is not installed
 **対応**: フォールバック設定に従い、自動的に別のCLIに再分配されます。これは**未インストール時のプラン構築限定**の挙動です。手動で特定CLIをスキップするには：
 
 ```bash
-bash scripts/multi-review.sh --cli claude-code --cli grok-cli
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli claude-code --cli grok-cli
 ```
 
 ### タイムアウト
@@ -510,10 +738,10 @@ bash scripts/multi-review.sh --cli claude-code --cli grok-cli
 
 ```bash
 # 上限を延ばす（既定: 900秒）
-bash scripts/multi-review.sh --timeout 1800
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --timeout 1800
 
 # 短く切り上げる（例: 手早く様子を見たいとき）
-bash scripts/multi-review.sh --timeout 180
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --timeout 180
 ```
 
 > `REVIEW_TIMEOUT` 環境変数はアダプタを直叩きする場合の既定値にしか効きません。`multi-review.sh` / `multi-agent.sh` は常に `--timeout` をアダプタへ明示的に渡すため、この経路では無視されます。
@@ -530,10 +758,10 @@ bash scripts/multi-review.sh --timeout 180
 
 ```bash
 # 例: 同じ CLI に時間を足して再実行
-bash scripts/multi-agent.sh --task review --resume --timeout 1800
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --resume --timeout 1800
 
 # 例: 代替 CLI を自分の判断で明示実行
-bash scripts/multi-agent.sh --task review --cli claude-code --perspective code-review
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --cli claude-code --perspective code-review
 ```
 
 ### CLI が非インタラクティブモードでハングするとき

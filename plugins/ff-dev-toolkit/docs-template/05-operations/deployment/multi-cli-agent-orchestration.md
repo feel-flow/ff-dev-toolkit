@@ -71,23 +71,25 @@ multi-agent.sh --task review|explore|implement [options]
 
 ## 使い方
 
+本書は [Multi-CLI Review Orchestration §ff-dev-toolkit plugin root の固定](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入する。AI host は読み込み済みplugin情報と `FF_DEV_TOOLKIT_PROJECT_ROOT` を渡し、同節の resolver + guard fence 全体と下の直接実行コマンドを1回の Bash tool 呼び出し / shell script body で実行する。`multi-agent.sh` / `multi-review.sh` は消費プロジェクトの `scripts/` へコピーされない。
+
 ### CLI から
 
 ```bash
 # Review
-bash scripts/multi-agent.sh --task review --dry-run
-bash scripts/multi-agent.sh --task review
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --dry-run
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review
 
 # Explore
-bash scripts/multi-agent.sh --task explore --description "認証フローの調査" --dry-run
-bash scripts/multi-agent.sh --task explore --description "認証フローの調査"
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task explore --description "認証フローの調査" --dry-run
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task explore --description "認証フローの調査"
 
 # Implement
-bash scripts/multi-agent.sh --task implement --description "バリデーション追加" --dry-run
-bash scripts/multi-agent.sh --task implement --description "バリデーション追加"
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task implement --description "バリデーション追加" --dry-run
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task implement --description "バリデーション追加"
 
 # 後方互換
-bash scripts/multi-review.sh --dry-run
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run
 ```
 
 ### Claude Code スラッシュコマンド
