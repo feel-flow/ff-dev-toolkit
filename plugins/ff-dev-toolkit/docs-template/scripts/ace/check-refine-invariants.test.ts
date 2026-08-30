@@ -3,10 +3,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  archivedProvenance,
   compactProvenance,
   extractComparableBody,
   extractMetaFields,
   evaluateRefineInvariants,
+  isArchivedMergedIntoHref,
   isVariantBCompact,
   main,
   mergedIntoTarget,
@@ -105,6 +107,58 @@ const PATTERNS_LISTED = [
   "",
 ].join("\n");
 
+/**
+ * R3-a（stale アーカイブ）の fixture。
+ * 「過去に compact 済み → 後日 archive」は SKILL.md R3-0 が正規の遷移として手順化しており
+ * （保全済み ID には原文を再コピーせず provenance 行だけを追記して live を撤去する）、
+ * live に見出しが無いのが**正常な**着地である（Issue #1028）。
+ */
+const ARCHIVE_TESTING = "docs/08-knowledge/playbook/archive/testing.md";
+const ARCHIVE_PROCESS = "docs/08-knowledge/playbook/archive/process.md";
+
+const ARCHIVED_PROVENANCE =
+  "> Archived: 2026-08-30 / 理由: helpful=0・90日以上参照なし（原文は 2026-08-14 の圧縮で保全済み）";
+
+const ARCHIVE_COMPACTED_THEN_ARCHIVED = ARCHIVE_VARIANT_B.replace(
+  /^(> Compacted:.*)$/mu,
+  `$1\n${ARCHIVED_PROVENANCE}`,
+);
+
+const LIVE_INDEX_ROW_41_3 =
+  "| ACE-41-3   | 並列委任は完了報告だけでは足りない | process | [playbook/process.md#ace-41-3](./playbook/process.md#ace-41-3) |\n";
+
+const PLAYBOOK_WITH_ARCHIVED = PLAYBOOK_CHANGELOG.replace(
+  LIVE_INDEX_ROW_41_3,
+  "",
+).replace(
+  "- Compacted: process の旧テーブル形式 1 件: ACE-41-3（本文は逐語無改変）",
+  "- Compacted: process の旧テーブル形式 1 件: ACE-41-3（本文は逐語無改変）\n- Archived: ACE-41-3（helpful=0・stale。原文は圧縮で保全済みのため provenance のみ追記）",
+);
+
+const LIVE_INDEX_ROW_404_2 =
+  "| ACE-404-2  | trap EXIT の rc=0 化 | testing | [playbook/testing.md#ace-404-2](./playbook/testing.md#ace-404-2) |\n";
+
+/** 統合先 ACE-404-2 が後日アーカイブされた Changelog。 */
+const PLAYBOOK_MERGE_TARGET_ARCHIVED = PLAYBOOK_CHANGELOG.replace(
+  LIVE_INDEX_ROW_404_2,
+  "",
+).replace(
+  "- Merged: ACE-430-1 → ACE-404-2（Helpful 1 を合算）",
+  "- Merged: ACE-430-1 → ACE-404-2（Helpful 1 を合算）\n- Archived: ACE-404-2（helpful=0・stale）",
+);
+
+/** archive へ運ばれた統合先。R3-a は verbatim 保全なので Status は active のまま。 */
+const ARCHIVE_TARGET_ARCHIVED = LIVE_TARGET.replace(
+  "### ACE-404-2: trap EXIT の rc=0 化はセンチネルで判定する\n",
+  `### ACE-404-2: trap EXIT の rc=0 化はセンチネルで判定する\n\n${ARCHIVED_PROVENANCE}\n`,
+);
+
+/** 統合先が archive へ移ったので、統合元の Merged into も archive 内を指すよう付け替える。 */
+const ARCHIVE_MERGED_INTO_ARCHIVED = ARCHIVE_MERGED.replace(
+  "(../testing.md#ace-404-2)",
+  "(./testing.md#ace-404-2)",
+);
+
 function blocksOf(text: string, filePath = "memory.md") {
   return splitEntryBlocks(text, filePath);
 }
@@ -115,7 +169,9 @@ describe("parseChangelogOperations", () => {
     expect(ops.compactedIds).toEqual(["ACE-41-3"]);
     expect(ops.mergedPairs).toEqual([{ source: "ACE-430-1", target: "ACE-404-2" }]);
     expect(ops.promotedIds).toEqual(["ACE-72-2"]);
+    expect(ops.archivedIds).toEqual([]);
     expect(ops.malformedMerged).toEqual([]);
+    expect(ops.malformedArchived).toEqual([]);
   });
 
   it("矢印が壊れた Merged 行を malformed にする", () => {
@@ -568,6 +624,422 @@ describe("evaluateRefineInvariants", () => {
   });
 });
 
+describe("Archived（R3-a: stale アーカイブ / Issue #1028）", () => {
+  it("Changelog の Archived 行から ID を取る", () => {
+    const ops = parseChangelogOperations(PLAYBOOK_WITH_ARCHIVED);
+    expect(ops.archivedIds).toEqual(["ACE-41-3"]);
+    expect(ops.compactedIds).toEqual(["ACE-41-3"]);
+  });
+
+  it("ID を列挙していない Archived 行は空集合", () => {
+    const ops = parseChangelogOperations(
+      "- Archived: なし（`findRefineArchiveCandidates` の候補 0 件）\n",
+    );
+    expect(ops.archivedIds).toEqual([]);
+  });
+
+  it("archive の Archived: provenance を識別する", () => {
+    expect(archivedProvenance(ARCHIVE_COMPACTED_THEN_ARCHIVED)).toBe(ARCHIVED_PROVENANCE);
+    expect(archivedProvenance(ARCHIVE_VARIANT_B)).toBeNull();
+  });
+
+  // AC 1: compact 済み ID の live 存続要求は Archived 記録で解除される
+  it("compact 済み ID が Archived 記録付きで live から消えていれば違反 0", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_WITH_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_TARGET),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_COMPACTED_THEN_ARCHIVED),
+        ...blocksOf(ARCHIVE_MERGED),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations).toEqual([]);
+  });
+
+  // AC 2: 記録があるのに archive で一意でない（0 件 / 2 件以上）なら非 0
+  it("Archived 記録があるのに archive に無いと違反", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_WITH_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_TARGET),
+      archiveBlocks: blocksOf(ARCHIVE_MERGED),
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(
+      violations.some(
+        (v) => v.startsWith("archive ACE-41-3") && v.includes("archive に見出しが無い"),
+      ),
+    ).toBe(true);
+  });
+
+  it("Archived 記録の ID が archive に 2 件あると違反", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_WITH_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_TARGET),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_COMPACTED_THEN_ARCHIVED),
+        ...blocksOf(ARCHIVE_COMPACTED_THEN_ARCHIVED, "other.md"),
+        ...blocksOf(ARCHIVE_MERGED),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(
+      violations.some((v) => v.startsWith("archive ACE-41-3") && v.includes("一意でない")),
+    ).toBe(true);
+  });
+
+  // AC 4: 記録なき消失は引き続き拒否する（Archived パースが穴にならないこと）
+  it("Archived 記録が無いまま compact 済み ID が live から消えたら違反", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_CHANGELOG,
+      liveBlocks: blocksOf(LIVE_TARGET),
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(
+      violations.some(
+        (v) => v.startsWith("compact ACE-41-3") && v.includes("live に見出しが無い"),
+      ),
+    ).toBe(true);
+  });
+
+  it("Archived と記録された ID が live に残っていると違反", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_WITH_ARCHIVED,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_COMPACTED_THEN_ARCHIVED),
+        ...blocksOf(ARCHIVE_MERGED),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("live に残っている"))).toBe(true);
+  });
+
+  it("Archived と記録された ID が索引テーブルに残っていると違反", () => {
+    const withIndex = PLAYBOOK_WITH_ARCHIVED.replace(
+      "| ACE-404-2  |",
+      `${LIVE_INDEX_ROW_41_3}| ACE-404-2  |`,
+    );
+    const violations = evaluateRefineInvariants({
+      playbookContent: withIndex,
+      liveBlocks: blocksOf(LIVE_TARGET),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_COMPACTED_THEN_ARCHIVED),
+        ...blocksOf(ARCHIVE_MERGED),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("索引テーブルに残っている"))).toBe(true);
+  });
+
+  it("archive に Archived: provenance が無いと違反", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_WITH_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_TARGET),
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("Archived: provenance が無い"))).toBe(true);
+  });
+
+  // AC 3: 統合先の後日アーカイブは「許容」で固定する。
+  // 許容の条件は Archived 記録 + archive での一意 + 統合元の Merged into が archive を指すこと
+  // （chain の着地が live から archive へ移るので、ポインタも一緒に付け替える）。
+  it("統合先が Archived 記録付きで archive へ移っていれば違反 0", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_MERGE_TARGET_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_CANONICAL),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_VARIANT_B),
+        ...blocksOf(ARCHIVE_MERGED_INTO_ARCHIVED, ARCHIVE_TESTING),
+        ...blocksOf(ARCHIVE_TARGET_ARCHIVED, ARCHIVE_TESTING),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("統合先が archive 済みなのに Merged into が live を指したままだと違反", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_MERGE_TARGET_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_CANONICAL),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_VARIANT_B),
+        ...blocksOf(ARCHIVE_MERGED, ARCHIVE_TESTING),
+        ...blocksOf(ARCHIVE_TARGET_ARCHIVED, ARCHIVE_TESTING),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("へ解決しない"))).toBe(true);
+  });
+
+  it("archive 済み統合先への Merged into が別ファイルを指していると違反", () => {
+    const wrongFile = ARCHIVE_MERGED.replace(
+      "(../testing.md#ace-404-2)",
+      "(./process.md#ace-404-2)",
+    );
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_MERGE_TARGET_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_CANONICAL),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_VARIANT_B),
+        ...blocksOf(wrongFile, ARCHIVE_TESTING),
+        ...blocksOf(ARCHIVE_TARGET_ARCHIVED, ARCHIVE_TESTING),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("へ解決しない"))).toBe(true);
+  });
+
+  it("archive 済み統合先への裸アンカーが別ファイル間だと違反", () => {
+    const bareAnchor = ARCHIVE_MERGED.replace("(../testing.md#ace-404-2)", "(#ace-404-2)");
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_MERGE_TARGET_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_CANONICAL),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_VARIANT_B),
+        ...blocksOf(bareAnchor, ARCHIVE_PROCESS),
+        ...blocksOf(ARCHIVE_TARGET_ARCHIVED, ARCHIVE_TESTING),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("へ解決しない"))).toBe(true);
+  });
+
+  it("archive 済み統合先への裸アンカーは同一ファイルなら受ける", () => {
+    const bareAnchor = ARCHIVE_MERGED.replace("(../testing.md#ace-404-2)", "(#ace-404-2)");
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_MERGE_TARGET_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_CANONICAL),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_VARIANT_B),
+        ...blocksOf(bareAnchor, ARCHIVE_TESTING),
+        ...blocksOf(ARCHIVE_TARGET_ARCHIVED, ARCHIVE_TESTING),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations).toEqual([]);
+  });
+
+  // 統合の根拠だったカウンターが archive 側で 0 に落ちていたら緑にしない
+  it("archive 済み統合先でもカウンター合算下限を検証する", () => {
+    const zeroed = ARCHIVE_TARGET_ARCHIVED.replace(
+      "| Helpful | 2 | Harmful | 0 |",
+      "| Helpful | 0 | Harmful | 0 |",
+    );
+    const richSource = ARCHIVE_MERGED_INTO_ARCHIVED.replace(
+      "| Helpful | 1 | Harmful | 0 |",
+      "| Helpful | 5 | Harmful | 0 |",
+    );
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_MERGE_TARGET_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_CANONICAL),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_VARIANT_B),
+        ...blocksOf(richSource, ARCHIVE_TESTING),
+        ...blocksOf(zeroed, ARCHIVE_TESTING),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("Helpful 合算下限"))).toBe(true);
+  });
+
+  it("archive 済み統合先でも統合元カウンターの数値検査は飛ばさない", () => {
+    const unreadable = ARCHIVE_MERGED_INTO_ARCHIVED.replace(
+      "| Helpful | 1 | Harmful | 0 |",
+      "| Helpful | - | Harmful | n/a |",
+    );
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_MERGE_TARGET_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_CANONICAL),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_VARIANT_B),
+        ...blocksOf(unreadable, ARCHIVE_TESTING),
+        ...blocksOf(ARCHIVE_TARGET_ARCHIVED, ARCHIVE_TESTING),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("数値として読めない"))).toBe(true);
+  });
+
+  it("統合先が Archived 記録付きなのに archive に無いと違反", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_MERGE_TARGET_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_CANONICAL),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_VARIANT_B),
+        ...blocksOf(ARCHIVE_MERGED_INTO_ARCHIVED, ARCHIVE_TESTING),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("archive に無い"))).toBe(true);
+  });
+
+  it("統合先が Archived 記録なく live から消えていれば従来どおり違反", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_CHANGELOG,
+      liveBlocks: blocksOf(LIVE_CANONICAL),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_VARIANT_B),
+        ...blocksOf(ARCHIVE_MERGED),
+        ...blocksOf(ARCHIVE_TARGET_ARCHIVED),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("統合先（最終 ACE-404-2）が live に無い"))).toBe(
+      true,
+    );
+  });
+
+  // AC 4 の裏側: 解除のトリガは Changelog の記録であって archive 側の provenance ではない
+  it("archive に Archived: provenance だけあり Changelog の記録が無いと違反", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_CHANGELOG,
+      liveBlocks: blocksOf(LIVE_TARGET),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_COMPACTED_THEN_ARCHIVED),
+        ...blocksOf(ARCHIVE_MERGED),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(
+      violations.some(
+        (v) => v.startsWith("compact ACE-41-3") && v.includes("live に見出しが無い"),
+      ),
+    ).toBe(true);
+  });
+
+  // 実データの 50 件はすべてこの型（compact でも merge 統合先でもない素の R3-a）
+  it("compact でも統合先でもない素のアーカイブも検証対象になる", () => {
+    const changelog = PLAYBOOK_CHANGELOG.replace(
+      "- Promoted: ACE-72-2（PATTERNS.md へ蒸留）",
+      "- Promoted: ACE-72-2（PATTERNS.md へ蒸留）\n- Archived: ACE-900-1（helpful=0・stale）",
+    );
+    const violations = evaluateRefineInvariants({
+      playbookContent: changelog,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(
+      violations.some(
+        (v) => v.startsWith("archive ACE-900-1") && v.includes("archive に見出しが無い"),
+      ),
+    ).toBe(true);
+  });
+
+  it("統合元を Archived としても記録すると違反（終端状態の二重化）", () => {
+    const changelog = PLAYBOOK_CHANGELOG.replace(
+      "- Promoted: ACE-72-2（PATTERNS.md へ蒸留）",
+      "- Promoted: ACE-72-2（PATTERNS.md へ蒸留）\n- Archived: ACE-430-1",
+    );
+    const violations = evaluateRefineInvariants({
+      playbookContent: changelog,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("両立しない終端状態"))).toBe(true);
+  });
+
+  it("1 行に複数 ID を列挙した Archived 行を全件拾う", () => {
+    const ids = Array.from({ length: 32 }, (_, i) => `ACE-${String(700 + i)}-1`);
+    const ops = parseChangelogOperations(
+      `- Archived: ${ids.join(", ")}（helpful=0・stale。原文は archive へ保全）\n`,
+    );
+    expect(ops.archivedIds).toEqual([...ids].sort());
+  });
+
+  // archivedIds は検査を「外す」方向に効くので、理由の散文中の ID は拾わない
+  it("理由の散文に現れた ID は archived として拾わない", () => {
+    expect(
+      parseChangelogOperations("- Archived: なし（ACE-41-3 は次回持ち越し）\n").archivedIds,
+    ).toEqual([]);
+    expect(
+      parseChangelogOperations(
+        "- Archived: ACE-1-1, ACE-2-2（判断は ACE-3-3 に従った）\n",
+      ).archivedIds,
+    ).toEqual(["ACE-1-1", "ACE-2-2"]);
+  });
+
+  it("区切りが , / 、 でない Archived 行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Archived: ACE-1-1 / ACE-2-1（stale）\n");
+    expect(ops.archivedIds).toEqual([]);
+    expect(ops.malformedArchived).toEqual(["- Archived: ACE-1-1 / ACE-2-1（stale）"]);
+    const violations = evaluateRefineInvariants({
+      playbookContent: `${PLAYBOOK_CHANGELOG}- Archived: ACE-1-1 と ACE-2-1\n`,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("ID 列が途中で切れている"))).toBe(true);
+  });
+
+  it("理由の括弧書きが続く Archived 行は malformed にしない", () => {
+    const ops = parseChangelogOperations(
+      "- Archived: ACE-1-1, ACE-2-1（helpful=0・stale。原文は archive へ保全）\n",
+    );
+    expect(ops.archivedIds).toEqual(["ACE-1-1", "ACE-2-1"]);
+    expect(ops.malformedArchived).toEqual([]);
+    expect(
+      parseChangelogOperations("- Archived: なし（ACE-9-9 は次回持ち越し）\n").malformedArchived,
+    ).toEqual([]);
+  });
+
+  it("archive 済み統合先の Status が active でないと違反", () => {
+    const deprecated = ARCHIVE_TARGET_ARCHIVED.replace(
+      "| Status | active |",
+      "| Status | deprecated |",
+    );
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_MERGE_TARGET_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_CANONICAL),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_VARIANT_B),
+        ...blocksOf(ARCHIVE_MERGED_INTO_ARCHIVED, ARCHIVE_TESTING),
+        ...blocksOf(deprecated, ARCHIVE_TESTING),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("archive Status が active ではない"))).toBe(
+      true,
+    );
+  });
+
+  it("統合元カウンターが読めなくても統合先の構造検査は報告される", () => {
+    const unreadable = ARCHIVE_MERGED.replace(
+      "| Helpful | 1 | Harmful | 0 |",
+      "| Helpful | - | Harmful | n/a |",
+    );
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_CHANGELOG,
+      liveBlocks: blocksOf(LIVE_CANONICAL),
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(unreadable)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("数値として読めない"))).toBe(true);
+    expect(violations.some((v) => v.includes("統合先（最終 ACE-404-2）が live に無い"))).toBe(
+      true,
+    );
+  });
+
+  it("isArchivedMergedIntoHref は archive 内の実着地だけを受ける", () => {
+    const call = (href: string, from = ARCHIVE_TESTING, to = ARCHIVE_TESTING) =>
+      isArchivedMergedIntoHref(href, "ACE-404-2", from, to);
+    expect(call("./testing.md#ace-404-2")).toBe(true);
+    expect(call("testing.md#ace-404-2")).toBe(true);
+    expect(call("#ace-404-2")).toBe(true);
+    // live 基準（`../`）は受けない
+    expect(call("../testing.md#ace-404-2")).toBe(false);
+    // アンカー違い・別ファイル・実在しないファイルはいずれも着地しない
+    expect(call("./testing.md#ace-999-9")).toBe(false);
+    expect(call("#ace-404-2", ARCHIVE_PROCESS, ARCHIVE_TESTING)).toBe(false);
+    expect(call("./process.md#ace-404-2", ARCHIVE_PROCESS, ARCHIVE_TESTING)).toBe(false);
+    expect(call("./testing.md#ace-404-2", ARCHIVE_PROCESS, ARCHIVE_TESTING)).toBe(true);
+  });
+});
+
 describe("mergedIntoTarget", () => {
   it("ポインタから統合先 ID を取る", () => {
     expect(mergedIntoTarget(ARCHIVE_MERGED)).toBe("ACE-404-2");
@@ -587,7 +1059,7 @@ describe("main", () => {
     }
   });
 
-  function writeRepo(opts?: { mutateLiveBody?: boolean }): string {
+  function writeRepo(opts?: { mutateLiveBody?: boolean; archived?: boolean }): string {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-refine-inv-"));
     const knowledge = path.join(tmpDir, "docs", "08-knowledge");
     const playbookDir = path.join(knowledge, "playbook");
@@ -596,13 +1068,20 @@ describe("main", () => {
     fs.mkdirSync(archiveDir, { recursive: true });
     fs.mkdirSync(patternsDir, { recursive: true });
     const playbookPath = path.join(knowledge, "PLAYBOOK.md");
-    fs.writeFileSync(playbookPath, PLAYBOOK_CHANGELOG);
+    fs.writeFileSync(
+      playbookPath,
+      opts?.archived ? PLAYBOOK_WITH_ARCHIVED : PLAYBOOK_CHANGELOG,
+    );
     const liveBody = opts?.mutateLiveBody
       ? LIVE_CANONICAL.replace("一部だけ完了する。", "壊した。")
       : LIVE_CANONICAL;
-    fs.writeFileSync(path.join(playbookDir, "process.md"), liveBody);
+    // archived fixture では live 側から ACE-41-3 が撤去済み（R3-a step 4）
+    fs.writeFileSync(path.join(playbookDir, "process.md"), opts?.archived ? "" : liveBody);
     fs.writeFileSync(path.join(playbookDir, "testing.md"), LIVE_TARGET);
-    fs.writeFileSync(path.join(archiveDir, "process.md"), ARCHIVE_VARIANT_B);
+    fs.writeFileSync(
+      path.join(archiveDir, "process.md"),
+      opts?.archived ? ARCHIVE_COMPACTED_THEN_ARCHIVED : ARCHIVE_VARIANT_B,
+    );
     fs.writeFileSync(path.join(archiveDir, "testing.md"), ARCHIVE_MERGED);
     fs.writeFileSync(path.join(patternsDir, "PATTERNS.md"), PATTERNS_LISTED);
     return playbookPath;
@@ -616,6 +1095,15 @@ describe("main", () => {
     expect(main()).toBe(0);
   });
 
+  it("compact → 後日 archive の fixture も exit 0（Issue #1028）", () => {
+    const playbookPath = writeRepo({ archived: true });
+    process.argv = ["node", "check-refine-invariants.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(main()).toBe(0);
+    expect(err.mock.calls.flat().join("\n")).not.toContain("ACE-41-3");
+  });
+
   it("本文を変異させると exit 1（fail-closed）", () => {
     const playbookPath = writeRepo({ mutateLiveBody: true });
     process.argv = ["node", "check-refine-invariants.ts", playbookPath];
@@ -623,6 +1111,22 @@ describe("main", () => {
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     expect(main()).toBe(1);
     expect(err.mock.calls.flat().join("\n")).toContain("ACE-41-3");
+  });
+
+  it("Archived 記録の ID が archive に無ければ exit 1（archive ループ由来）", () => {
+    const playbookPath = writeRepo({ archived: true });
+    const archiveProcess = path.join(
+      path.dirname(playbookPath),
+      "playbook",
+      "archive",
+      "process.md",
+    );
+    fs.writeFileSync(archiveProcess, "");
+    process.argv = ["node", "check-refine-invariants.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(main()).toBe(1);
+    expect(err.mock.calls.flat().join("\n")).toContain("archive ACE-41-3");
   });
 
   it("引数が無ければ usage error", () => {

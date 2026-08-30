@@ -2,13 +2,20 @@
  * `/ace-refine` の結果不変条件を検証するゲート（Issue #492）。
  *
  * PR #490 の一回性スクリプトが実測した契約を恒久化する:
- * - compact: Changelog 記載 ID は archive にあり、後続 merge の統合元でなければ
- *   live にもある。第 2 変種は provenance・メタ表を除く本文が逐語一致
+ * - compact: Changelog 記載 ID は archive にあり、後続 merge の統合元でも `- Archived:` 記載でも
+ *   なければ live にもある。第 2 変種は provenance・メタ表を除く本文が逐語一致
  *   （統合先になった ID は本文 1 文追記があり得るので本文比較しない）。
  *   Category / Origin / Date / Status は一致、Helpful / Harmful は live >= archive
  * - merge: 統合元は live / 索引から消え、archive で一意、Status=merged、
  *   Merged into の着地が live の active、カウンターは合算下限を満たす
+ * - archive: Changelog の `- Archived:` 記載 ID は archive で一意・`> Archived:` provenance を持ち、
+ *   live 本体からも索引テーブルからも消えている（Issue #1028）
  * - promote: 収載判定は「パターン本文 + 出典リンク」の組（Changelog 内の ID 言及だけでは不可）
+ *
+ * compact と archive は排他ではない。R3-b（圧縮）は原文を archive に残したまま live へ要約を置くので、
+ * 後日 R3-a（stale アーカイブ）でその要約を撤去する遷移が SKILL.md R3-0 の正規手順にある。
+ * したがって **compact の live 存続要求は `- Archived:` の記録があれば解除する**。記録が無いまま
+ * live から消えていれば従来どおり違反（記録なき消失は引き続き拒否する）。
  *
  * 実行例: npx --yes tsx scripts/ace/check-refine-invariants.ts docs/08-knowledge/PLAYBOOK.md
  */
@@ -41,6 +48,18 @@ const META_FIELDS = [
   "Status",
 ] as const;
 const VARIANT_B_MARKER = "メタ表のみ正準フォーマットへ再整形";
+/**
+ * `- Archived:` は**直後から続く ID 列だけ**を読む（理由の散文へ入った時点で打ち切る）。
+ * archivedIds への収載は compact の live 存続要求を**解除する**方向に効くため、
+ * `- Archived: なし（ACE-X は次回再評価）` のような言及まで拾うと検査が緩む側へ倒れる。
+ * Compacted / Merged / Promoted の過剰採用は検査を**足す**方向なので行全体を見たままにする。
+ */
+const ARCHIVED_ID_RUN_PATTERN = new RegExp(
+  String.raw`^- Archived:\s*(${ACE_ENTRY_ID_SOURCE}(?:\s*[,、]\s*${ACE_ENTRY_ID_SOURCE})*)\s*(.*)$`,
+  "u",
+);
+/** ID 列の直後に来てよいのは行末か理由の括弧書きだけ。それ以外は列挙が途中で切れている。 */
+const ARCHIVED_REASON_HEAD_PATTERN = /^[（(。.]/u;
 const INDEX_ROW_PATTERN = (id: string): RegExp =>
   new RegExp(`^\\|\\s*${escapeRegExp(id)}\\s*\\|`, "mu");
 
@@ -50,7 +69,9 @@ export type ChangelogOperations = Readonly<{
   readonly compactedIds: readonly string[];
   readonly mergedPairs: readonly Readonly<{ source: string; target: string }>[];
   readonly promotedIds: readonly string[];
+  readonly archivedIds: readonly string[];
   readonly malformedMerged: readonly string[];
+  readonly malformedArchived: readonly string[];
 }>;
 
 export type EntryBlock = Readonly<{
@@ -80,12 +101,14 @@ function resolvePlaybookPath(argv: readonly string[]): string | undefined {
   return undefined;
 }
 
-/** Changelog の Compacted / Merged / Promoted 行から操作対象 ID を拾う。 */
+/** Changelog の Compacted / Merged / Promoted / Archived 行から操作対象 ID を拾う。 */
 export function parseChangelogOperations(playbookContent: string): ChangelogOperations {
   const compactedIds: string[] = [];
   const mergedPairs: { source: string; target: string }[] = [];
   const promotedIds: string[] = [];
+  const archivedIds: string[] = [];
   const malformedMerged: string[] = [];
+  const malformedArchived: string[] = [];
 
   for (const rawLine of playbookContent.split("\n")) {
     const line = rawLine.trim();
@@ -109,6 +132,20 @@ export function parseChangelogOperations(playbookContent: string): ChangelogOper
     }
     if (line.startsWith("- Promoted:")) {
       promotedIds.push(...[...line.matchAll(ACE_ID_PATTERN)].map((m) => m[0]));
+      continue;
+    }
+    if (line.startsWith("- Archived:")) {
+      const run = line.match(ARCHIVED_ID_RUN_PATTERN);
+      if (run) {
+        const rest = run[2].trim();
+        // 区切りが `,` / `、` でない列挙は先頭だけ拾って残りが無検証になる。
+        // 黙って切り詰めず、行そのものを違反として報告する。
+        if (rest !== "" && !ARCHIVED_REASON_HEAD_PATTERN.test(rest)) {
+          malformedArchived.push(line);
+          continue;
+        }
+        archivedIds.push(...[...run[1].matchAll(ACE_ID_PATTERN)].map((m) => m[0]));
+      }
     }
   }
 
@@ -116,7 +153,9 @@ export function parseChangelogOperations(playbookContent: string): ChangelogOper
     compactedIds: uniqueSorted(compactedIds),
     mergedPairs,
     promotedIds: uniqueSorted(promotedIds),
+    archivedIds: uniqueSorted(archivedIds),
     malformedMerged,
+    malformedArchived,
   };
 }
 
@@ -187,6 +226,11 @@ export function compactProvenance(block: string): string | null {
   return match ? match[0] : null;
 }
 
+export function archivedProvenance(block: string): string | null {
+  const match = block.match(/^>\s*Archived:.*$/mu);
+  return match ? match[0] : null;
+}
+
 export function isVariantBCompact(block: string): boolean {
   const line = compactProvenance(block);
   return line !== null && line.includes(VARIANT_B_MARKER);
@@ -219,6 +263,31 @@ export function isLiveMergedIntoHref(href: string, targetId: string): boolean {
     String.raw`^\.\./[\w-]+\.md#${escapeRegExp(anchor)}$`,
     "u",
   ).test(href);
+}
+
+/**
+ * 統合先が後日アーカイブされた場合の着地判定。**形ではなく解決先**を見る。
+ * archive ファイルは `playbook/archive/` 直下の非再帰なので、
+ * ファイル名なしの `#ace-xxx` は統合元と**同じファイル**のときだけ正しく、
+ * 別ファイルなら統合先の実ファイル名 `<category>.md#ace-xxx`（`./` は付けても良い）でなければ着地しない。
+ * `../` 始まりは live 基準なので受けない — 着地が archive へ移った後も live を指し続けると
+ * chain が切れる（Issue #1028）。形だけを見る判定にすると `#ace-x` の他ファイル参照や
+ * 実在しない `./wrong.md#ace-x` が緑で通るため、呼び出し側から双方の filePath を受け取る。
+ */
+export function isArchivedMergedIntoHref(
+  href: string,
+  targetId: string,
+  sourceFilePath: string,
+  targetFilePath: string,
+): boolean {
+  const anchor = `ace-${targetId.slice("ACE-".length).toLowerCase()}`;
+  const parsed = href.match(/^(?:\.\/)?([\w-]+\.md)?#(.+)$/u);
+  if (!parsed || parsed[2] !== anchor) return false;
+  const fileName = parsed[1];
+  if (fileName === undefined) {
+    return sourceFilePath === targetFilePath;
+  }
+  return fileName === path.basename(targetFilePath);
 }
 
 function resolveMergeSurvivor(
@@ -284,7 +353,13 @@ export function evaluateRefineInvariants(input: {
   const archiveIds = new Set(input.archiveBlocks.map((b) => b.id));
   const mergedSources = new Set(ops.mergedPairs.map((p) => p.source));
   const mergedTargets = new Set(ops.mergedPairs.map((p) => p.target));
+  const archivedIdSet = new Set(ops.archivedIds);
   const violations: string[] = [];
+  /** 最終統合先の正本ブロック。R3-a で後日アーカイブされた survivor は archive 側が正本になる。 */
+  const survivorBlockOf = (survivor: string): EntryBlock | undefined =>
+    archivedIdSet.has(survivor)
+      ? firstBlock(input.archiveBlocks, survivor)
+      : firstBlock(input.liveBlocks, survivor);
 
   for (const id of ops.compactedIds) {
     if (!archiveIds.has(id)) {
@@ -307,7 +382,12 @@ export function evaluateRefineInvariants(input: {
       continue;
     }
     if (!liveIds.has(id)) {
-      violations.push(`compact ${id}: Changelog に記載されているが live に見出しが無い`);
+      // 後日 R3-a でアーカイブされた compact 済みエントリは live に無いのが正常な着地。
+      // 解除するのは **live 存続要求だけ**で、archive 一意性・Archived provenance・索引撤去は
+      // 下の archive ループが検証する。記録なき消失は従来どおり違反（Issue #1028）。
+      if (!archivedIdSet.has(id)) {
+        violations.push(`compact ${id}: Changelog に記載されているが live に見出しが無い`);
+      }
       continue;
     }
     if (headingCount(input.liveBlocks, id) !== 1) {
@@ -350,6 +430,43 @@ export function evaluateRefineInvariants(input: {
     }
   }
 
+  for (const id of ops.archivedIds) {
+    if (mergedSources.has(id)) {
+      // 統合元は `> Merged into:` + `Status: merged` で終端しており、archive 済みでもある。
+      // そこへ `- Archived:` を重ねると終端状態が二重になり、どちらの契約で読むかが決まらない。
+      violations.push(
+        `archive ${id}: 統合元が Archived としても記録されている（merged と archived は両立しない終端状態）`,
+      );
+      continue;
+    }
+    const archiveCount = headingCount(input.archiveBlocks, id);
+    if (archiveCount === 0) {
+      violations.push(`archive ${id}: Changelog に記載されているが archive に見出しが無い`);
+      continue;
+    }
+    if (archiveCount !== 1) {
+      violations.push(
+        `archive ${id}: archive 見出しが ${String(archiveCount)} 件（一意でない）`,
+      );
+    }
+    const archived = firstBlock(input.archiveBlocks, id);
+    if (archived && archivedProvenance(archived.text) === null) {
+      violations.push(`archive ${id}: archive に Archived: provenance が無い`);
+    }
+    if (liveIds.has(id)) {
+      violations.push(`archive ${id}: Archived と記録されているのに live に残っている`);
+    }
+    if (INDEX_ROW_PATTERN(id).test(input.playbookContent)) {
+      violations.push(`archive ${id}: Archived と記録されているのに PLAYBOOK 索引テーブルに残っている`);
+    }
+  }
+
+  for (const line of ops.malformedArchived) {
+    violations.push(
+      `archive 行の ID 列が途中で切れている（区切りは , か 、 で、理由は ID 列の後ろの括弧書きに置く）: ${line}`,
+    );
+  }
+
   for (const line of ops.malformedMerged) {
     violations.push(`merge 行が解析できない: ${line}`);
   }
@@ -390,7 +507,20 @@ export function evaluateRefineInvariants(input: {
       );
     }
     const href = mergedIntoHref(archivedSource.text);
-    if (href === null || !isLiveMergedIntoHref(href, target)) {
+    if (archivedIdSet.has(target)) {
+      // 統合先が後日アーカイブされた chain。着地が archive へ移った以上、ポインタも
+      // archive 内の実ブロックへ解決しなければ chain が切れる（Issue #1028）。
+      const archivedTarget = firstBlock(input.archiveBlocks, target);
+      if (
+        href === null ||
+        archivedTarget === undefined ||
+        !isArchivedMergedIntoHref(href, target, archivedSource.filePath, archivedTarget.filePath)
+      ) {
+        violations.push(
+          `merge ${source} → ${target}: 統合先が archive 済みなのに Merged into の href が archive の ${target}（${archivedTarget?.filePath ?? "不在"}）へ解決しない（${href ?? "∅"}）`,
+        );
+      }
+    } else if (href === null || !isLiveMergedIntoHref(href, target)) {
       violations.push(
         `merge ${source} → ${target}: Merged into の href が live の ${target} を指していない（${href ?? "∅"}）`,
       );
@@ -400,32 +530,46 @@ export function evaluateRefineInvariants(input: {
       violations.push(`merge ${source} → ${target}: Merged into が循環している`);
       continue;
     }
-    const liveTarget = firstBlock(input.liveBlocks, survivor);
-    if (!liveTarget) {
-      violations.push(
-        `merge ${source} → ${target}: 統合先（最終 ${survivor}）が live に無い`,
-      );
-      continue;
-    }
-    if (headingCount(input.liveBlocks, survivor) !== 1) {
-      violations.push(
-        `merge ${source} → ${target}: 統合先 ${survivor} の live 見出しが ${String(headingCount(input.liveBlocks, survivor))} 件（一意でない）`,
-      );
-    }
-    const targetMeta = extractMetaFields(liveTarget.text);
-    if (targetMeta.Status !== "active") {
-      violations.push(
-        `merge ${source} → ${target}: 統合先 ${survivor} の live Status が active ではない（${targetMeta.Status ?? "∅"}）`,
-      );
-    }
+    // 統合元自身のカウンターが読めるかは survivor がどこに居るかと無関係なので、
+    // 分岐より先に確かめる（archive 済み survivor の経路で素通りさせない）。
     const sourceHelpful = parseIntegerField(sourceMeta.Helpful);
     const sourceHarmful = parseIntegerField(sourceMeta.Harmful);
     if (sourceHelpful === null || sourceHarmful === null) {
       violations.push(
         `merge ${source} → ${target}: archive の Helpful/Harmful が数値として読めない（Helpful=${sourceMeta.Helpful ?? "∅"} / Harmful=${sourceMeta.Harmful ?? "∅"}）`,
       );
+      // 合算だけを見送り、統合先の構造検査（存在・一意・Status）は続行する。
+    }
+    // 最終統合先（survivor）は R3-a で後日アーカイブされることがある。その場合の正本は
+    // archive 側のブロックで、live 固有の検査（見出し一意 / Status=active）だけが対象外になる。
+    // **カウンター合算の下限は survivor がどちらに居ても検証する** — ここを飛ばすと、
+    // 統合の根拠だったカウンターが archive で 0 に落ちていても緑で通る（Issue #1028）。
+    const survivorArchived = archivedIdSet.has(survivor);
+    const survivorBlock = survivorBlockOf(survivor);
+    if (!survivorBlock) {
+      violations.push(
+        survivorArchived
+          ? `merge ${source} → ${target}: 統合先（最終 ${survivor}）が Archived と記録されているのに archive に無い`
+          : `merge ${source} → ${target}: 統合先（最終 ${survivor}）が live に無い`,
+      );
       continue;
     }
+    const targetMeta = extractMetaFields(survivorBlock.text);
+    if (!survivorArchived && headingCount(input.liveBlocks, survivor) !== 1) {
+      violations.push(
+        `merge ${source} → ${target}: 統合先 ${survivor} の live 見出しが ${String(headingCount(input.liveBlocks, survivor))} 件（一意でない）`,
+      );
+    }
+    // R3-a は verbatim 保全なので Status は archive でも active のまま残る。
+    // 所在によらず active を要求する（merged / deprecated は統合先として成立しない）。
+    if (targetMeta.Status !== "active") {
+      violations.push(
+        survivorArchived
+          ? `merge ${source} → ${target}: 統合先 ${survivor} の archive Status が active ではない（${targetMeta.Status ?? "∅"}）`
+          : `merge ${source} → ${target}: 統合先 ${survivor} の live Status が active ではない（${targetMeta.Status ?? "∅"}）`,
+      );
+    }
+    if (sourceHelpful === null || sourceHarmful === null) continue;
     helpfulBySurvivor.set(
       survivor,
       (helpfulBySurvivor.get(survivor) ?? 0) + sourceHelpful,
@@ -434,37 +578,37 @@ export function evaluateRefineInvariants(input: {
       survivor,
       (harmfulBySurvivor.get(survivor) ?? 0) + sourceHarmful,
     );
-    const liveHelpful = parseIntegerField(targetMeta.Helpful);
-    const liveHarmful = parseIntegerField(targetMeta.Harmful);
-    if (liveHelpful === null || liveHelpful < sourceHelpful) {
+    const targetHelpful = parseIntegerField(targetMeta.Helpful);
+    const targetHarmful = parseIntegerField(targetMeta.Harmful);
+    if (targetHelpful === null || targetHelpful < sourceHelpful) {
       violations.push(
-        `merge ${source} → ${target}: Helpful 合算下限を満たさない（live=${targetMeta.Helpful ?? "∅"} / source=${String(sourceHelpful)}）`,
+        `merge ${source} → ${target}: Helpful 合算下限を満たさない（統合先=${targetMeta.Helpful ?? "∅"} / source=${String(sourceHelpful)}）`,
       );
     }
-    if (liveHarmful === null || liveHarmful < sourceHarmful) {
+    if (targetHarmful === null || targetHarmful < sourceHarmful) {
       violations.push(
-        `merge ${source} → ${target}: Harmful 合算下限を満たさない（live=${targetMeta.Harmful ?? "∅"} / source=${String(sourceHarmful)}）`,
+        `merge ${source} → ${target}: Harmful 合算下限を満たさない（統合先=${targetMeta.Harmful ?? "∅"} / source=${String(sourceHarmful)}）`,
       );
     }
   }
 
   for (const [survivor, required] of helpfulBySurvivor) {
-    const live = firstBlock(input.liveBlocks, survivor);
-    if (!live) continue;
-    const liveHelpful = parseIntegerField(extractMetaFields(live.text).Helpful);
-    if (liveHelpful !== null && liveHelpful < required) {
+    const block = survivorBlockOf(survivor);
+    if (!block) continue;
+    const helpful = parseIntegerField(extractMetaFields(block.text).Helpful);
+    if (helpful !== null && helpful < required) {
       violations.push(
-        `merge 先 ${survivor}: Helpful が統合元合計 ${String(required)} を下回る（live=${String(liveHelpful)}）`,
+        `merge 先 ${survivor}: Helpful が統合元合計 ${String(required)} を下回る（現在値=${String(helpful)}）`,
       );
     }
   }
   for (const [survivor, required] of harmfulBySurvivor) {
-    const live = firstBlock(input.liveBlocks, survivor);
-    if (!live) continue;
-    const liveHarmful = parseIntegerField(extractMetaFields(live.text).Harmful);
-    if (liveHarmful !== null && liveHarmful < required) {
+    const block = survivorBlockOf(survivor);
+    if (!block) continue;
+    const harmful = parseIntegerField(extractMetaFields(block.text).Harmful);
+    if (harmful !== null && harmful < required) {
       violations.push(
-        `merge 先 ${survivor}: Harmful が統合元合計 ${String(required)} を下回る（live=${String(liveHarmful)}）`,
+        `merge 先 ${survivor}: Harmful が統合元合計 ${String(required)} を下回る（現在値=${String(harmful)}）`,
       );
     }
   }
@@ -537,7 +681,7 @@ export function main(): number {
   const ops = parseChangelogOperations(playbookContent);
   console.log(`Playbook: ${playbookPath}`);
   console.log(
-    `Changelog 操作: Compacted ${String(ops.compactedIds.length)} / Merged ${String(ops.mergedPairs.length)} / Promoted ${String(ops.promotedIds.length)}`,
+    `Changelog 操作: Compacted ${String(ops.compactedIds.length)} / Merged ${String(ops.mergedPairs.length)} / Promoted ${String(ops.promotedIds.length)} / Archived ${String(ops.archivedIds.length)}`,
   );
 
   const violations = evaluateRefineInvariants({
@@ -555,7 +699,7 @@ export function main(): number {
   }
 
   console.log(
-    "✓ /ace-refine の結果不変条件（compact / merge / promote）を満たしています。",
+    "✓ /ace-refine の結果不変条件（compact / merge / archive / promote）を満たしています。",
   );
   return EXIT_OK;
 }

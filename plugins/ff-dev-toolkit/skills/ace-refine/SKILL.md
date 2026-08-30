@@ -160,7 +160,7 @@ R3-a / R3-b / R3-c はいずれも live のブロックを `playbook/archive/<ca
    0 件（書き込み失敗）でも 2 件以上（重複）でも live 側に触れず中断する。存在だけを見る形（`grep -q`）へ戻さない — 検証そのものが無いと書き込み失敗時に R3-e の全ゲートが green のままエントリが消失し（count は live 実数へ「修正」され、archive はゲート対象外のため）、存在だけの検証では重複が緑で通って着地が分裂したまま live が消える。
 
 4. live 側（`playbook/<category>.md`）から当該ブロックを削除し、`PLAYBOOK.md` の索引テーブルから当該行を削除する。
-5. `docs/` 配下をアーカイブした ID で grep し、`playbook/<category>.md#ace-x` 形式のリンクを `playbook/archive/<category>.md#ace-x` へ書き換える（アーカイブ先でも anchor は保持されるため着地は保たれる）。**書き換え対象は「archive されたエントリを指すリンク」だけで、「archive された本文の中にあるリンク」は step 1 のとおり触らない。**
+5. `docs/` 配下をアーカイブした ID で grep し、`playbook/<category>.md#ace-x` 形式のリンクを `playbook/archive/<category>.md#ace-x` へ書き換える（アーカイブ先でも anchor は保持されるため着地は保たれる）。**書き換え対象は「archive されたエントリを指すリンク」だけで、「archive された本文の中にあるリンク」は step 1 のとおり触らない。** 過去の統合先をアーカイブする場合、archive 側にある統合元の `> Merged into:` も「archive されたエントリを指すリンク」なので `../<category>.md#ace-x` → `<category>.md#ace-x`（同一ファイルなら `#ace-x`）へ付け替える。**`./` は付けない** — `check-archive-links` は `](./…)` を「保全本文内の live 基準リンク」として数え、冒頭注記を要求するが、この provenance リンクは live 基準ではないため注記の主張と食い違う（ゲート自体は `./` 付きも受理するので、食い違いを作らないための手順側の規定である）。これは保全した原文ではなく保全後に付与した provenance なので、verbatim 保全の契約に触れない。付け替えないと chain の着地が live 側の消えた anchor を指したままになる（`check-refine-invariants` が検出 / Issue #1028）。
 6. 既存のアーカイブファイルへ追記した場合、そのファイル冒頭に step 1 の「保全本文内の相対リンクは live 基準」注記があるか確認し、無ければ追加する（注記の導入前に作られたファイルが該当する）。
 
 #### R3-b. 長大エントリの圧縮
@@ -240,6 +240,14 @@ R3 開始前ガードで確定した default branch を基準にする。`.versi
    - Promoted: ACE-CCC（PATTERNS.md へ蒸留）
    ```
 
+   **`Archived:` 行の ID 列は機械ゲートの前提である。** `check-refine-invariants` は
+   この記録があってはじめて「過去に `Compacted:` した ID が live から消えている」ことを正規の
+   遷移として通す（記録なき消失は引き続き違反）。パーサは**コロン直後から続く ID 列だけ**を読み、
+   理由の散文に入った時点で打ち切るので、**ID はカンマ区切りで先頭にまとめ、理由は ID 列の後ろの
+   括弧書きに置く**。区切りは `,` か `、` で、`/` や `と` で並べると「列挙が途中で切れている」として
+   違反になる（黙って先頭だけ採用しない）。`- Archived: なし（ACE-X は次回持ち越し）` の ACE-X は
+   拾われないので、見送りの理由づけに ID を書いても誤検出にならない（Issue #1028）。
+
 5. 検証ゲートを exit 0 まで回す:
 
    ```bash
@@ -249,7 +257,7 @@ R3 開始前ガードで確定した default branch を基準にする。`.versi
    npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md
    # archive の保全本文内リンクが冒頭注記で担保されているか + <a id> 一意性（Issue #288 穴 2 / #492）
    npx --yes tsx scripts/ace/check-archive-links.ts docs/08-knowledge/PLAYBOOK.md
-   # compact 保全・merge 状態遷移・PATTERNS 収載（本文+出典）の結果不変条件（Issue #492）
+   # compact 保全・merge 状態遷移・archive 撤去・PATTERNS 収載（本文+出典）の結果不変条件（Issue #492 / #1028）
    npx --yes tsx scripts/ace/check-refine-invariants.ts docs/08-knowledge/PLAYBOOK.md
    # 新規追記が旧テーブル形式でないことの機械検証（Issue #286）
    npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md

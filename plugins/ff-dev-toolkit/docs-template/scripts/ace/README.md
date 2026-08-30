@@ -12,7 +12,7 @@ Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)
 | `ace-refine-report.ts`                        | `/ace-refine` 用の候補算出レポート（Archive 候補・行数バジェット超過・PATTERNS 昇格候補。読み取り専用の dry-run） |
 | `sync-playbook-frontmatter.ts`                | PLAYBOOK frontmatter（`ace_entry_count` / version↔Changelog / `changeImpact`）の同期・検証ゲート。`## Changelog` セクションが無い場合もドリフト扱い（版の一致を検証できないため）。frontmatter の読み書きは**トップレベルのキーのみ**を対象とし、`metadata:` 配下等へネストされた同名キーは記録として認めず、書き換えもしない。トップレベルの同名キー重複は usage error |
 | `check-archive-links.ts`                      | `playbook/archive/` の保全本文内に `./` 相対リンクがある場合、冒頭 Parent ブロック内の注記を強制し、同一ファイル内の `<a id>` 重複を拒否するゲート（違反で非ゼロ終了） |
-| `check-refine-invariants.ts`                  | `/ace-refine` の結果不変条件（compact 保全・merge 状態遷移・PATTERNS 収載）を検証するゲート（違反で非ゼロ終了） |
+| `check-refine-invariants.ts`                  | `/ace-refine` の結果不変条件（compact 保全・merge 状態遷移・archive 撤去・PATTERNS 収載）を検証するゲート（違反で非ゼロ終了） |
 | `check-entry-format.ts`                       | 新規エントリが旧テーブル形式でないこと + ID 形状が妥当（§エントリID規則）であること + ID が一意であること + 見出しが正準形へ一致することを検証するゲート（allowlist 外の旧形式・不正 ID・重複 ID・認識されない `### ACE-` 行で非ゼロ終了）。**正準構造の存在（anchor / メタ 4 行 / 終端 `---`）は検証しません** |
 | `docs-template/.claude/agents/ace-capture.md` | Subagent 用プロンプト（コピー先は `.claude/agents/`）                                     |
 
@@ -91,8 +91,10 @@ npx --yes tsx scripts/ace/check-archive-links.ts docs/08-knowledge/PLAYBOOK.md
 npx --yes tsx scripts/ace/check-refine-invariants.ts docs/08-knowledge/PLAYBOOK.md
 ```
 
-- **compact**: Changelog の `Compacted:` 行に載った ID が live と archive の両方にあり（後続 merge の統合元は live から消えてよい）、第 2 変種は provenance・メタ表を除く本文が逐語一致。Category / Origin / Date / Status は一致、Helpful / Harmful は live >= archive（後続のカウンター加算を許す）
-- **merge**: Changelog の `Merged: ACE-X → ACE-Y` について、X が live と索引から消え、archive で一意、`Status=merged`、`Merged into` が live の active な Y を指す。Y の Helpful / Harmful は X の値以上（合算下限）
+- **compact**: Changelog の `Compacted:` 行に載った ID が live と archive の両方にあり（後続 merge の統合元と `Archived:` 記載の ID は live から消えてよい）、第 2 変種は provenance・メタ表を除く本文が逐語一致。Category / Origin / Date / Status は一致、Helpful / Harmful は live >= archive（後続のカウンター加算を許す）
+- **merge**: Changelog の `Merged: ACE-X → ACE-Y` について、X が live と索引から消え、archive で一意、`Status=merged`、`Merged into` が live の active な Y を指す。Y の Helpful / Harmful は X の値以上（合算下限）。**Y が後日 `Archived:` された場合は許容**し、そのとき `Merged into` は archive 内の Y の**実ブロックへ解決**する必要がある — 別ファイルなら `<category>.md#ace-y`（`./` は付けても良い）、統合元と同じファイルなら `#ace-y`。形だけでなく `EntryBlock` のファイルパスと照合するので、`#ace-y` の別ファイル参照や実在しないファイル名は通らない。カウンター合算の下限は Y が live でも archive でも検証する。統合先の `Status` は live / archive のどちらに居ても `active` を要求する
+- **archive**: Changelog の `Archived:` 行に載った ID が archive で一意・`> Archived:` provenance を持ち、live 本体からも索引テーブルからも消えている。統合元（`Merged:` の左辺）を `Archived:` にも載せると終端状態が二重になるため違反。**`Archived:` の記録は compact の live 存続要求だけを解除する** — 「過去に圧縮 → 後日アーカイブ」は SKILL.md R3-0 が正規の遷移として手順化しているため（Issue #1028）。記録が無いまま compact 済み ID が live から消えていれば従来どおり違反
+- `Archived:` 行は**コロン直後から続く ID 列だけ**を読み、理由の散文に入った時点で打ち切る（`- Archived: なし（ACE-X は次回持ち越し）` の ACE-X は拾わない）。archive への収載は検査を外す方向に効くため、他の 3 行と違って過剰採用を許さない。区切りは `,` か `、` で、ID 列の直後は行末か理由の括弧書きでなければ「列挙が途中で切れている」として違反にする（黙って先頭だけ拾わない）
 - **promote**: Changelog の `Promoted:` ID が PATTERNS.md の「実証済みパターン（ACE 昇格）」節に **パターン本文 + 出典リンク** の組として載っている。Changelog 内の ID 言及だけでは収載と見なさない
 - Changelog に対象行が無いプロジェクトは正常終了する
 
