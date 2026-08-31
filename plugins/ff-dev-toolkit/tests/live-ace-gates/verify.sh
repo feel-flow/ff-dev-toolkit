@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 #
 # repository root の live ACE Playbook に、形式・frontmatter・archive リンク/アンカー・
-# refine 結果不変条件のゲートを適用する。
+# refine 結果不変条件・カテゴリ件数のゲートを適用する。
+#
+# 件数ゲート（check-category-size）は Issue #869 で追加した。それまで本 suite は
+# 共有 import のために transpile だけして**実行していなかった**ため、ブロック上限の
+# 超過が run-all に一度も現れず、唯一の発火点が `/ace-curate` の手動実行だった
+# （= 無関係な PR のワークフロー末尾で初めて赤くなる）。ADR-033 決定 4 は本 suite が
+# 既に実行している前提で「発火機構は新設しない」と書いていたので、その前提を実装側で
+# 満たす（ADR-041 決定 2）。
 # docs-template の fixture だけが緑でも live docs の drift は守れないため、run-all から
 # 実際の docs/08-knowledge/ を読み取る（Issue #441 / #492）。
 
@@ -22,6 +29,12 @@ if [[ ! -d "$KNOWLEDGE_DIR" ]]; then
   exit 0
 fi
 
+# 以下は**実在検査**であってゲートの一覧ではない。entry として起動するのは 5 本
+# （check-entry-format / sync-playbook-frontmatter / check-archive-links /
+# check-refine-invariants / check-category-size）で、ace-reuse-report と
+# ace-refine-report は他スクリプトの共有 import 専用である（どちらも閾値超過で
+# 非 0 を返す経路を持たないレポート器なので、実行しないのが正しい）。
+# 「リストに載っているから実行されている」という読み方が ADR-033 決定 4 の誤りを生んだ。
 for file in \
   "$PLAYBOOK" \
   "$ACE_SCRIPTS/check-category-size.ts" \
@@ -108,3 +121,11 @@ echo
 echo "== live ACE refine invariants =="
 node "$BUNDLE_REAL/check-refine-invariants.mjs" "$PLAYBOOK"
 echo "✓ live ACE の refine 結果不変条件"
+
+echo
+echo "== live ACE category size =="
+# 共有モジュールとして transpile 済みの extensionless 版をそのまま entry にする
+# （check-archive-links と同じ形）。entry として起動したときだけ direct-execution
+# guard が main() を回すので、import 経路の判定は変わらない。
+node "$BUNDLE_REAL/check-category-size" "$PLAYBOOK"
+echo "✓ live ACE のカテゴリ件数はブロック上限内"

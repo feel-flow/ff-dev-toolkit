@@ -8,6 +8,7 @@
 
 - 公開物（Skills / docs-template / scripts / MCP 等）を変えて `plugin.json` の version を bump するとき、**同じ変更で本ファイルの対応節を更新する**
 - 未公開の作業中変更は `[Unreleased]` に積み、version bump 時にバージョン節へ移す
+- `[Unreleased]` へ項目を追記するとき、編集アンカー（置換の old string 等）に隣接する日付付き版見出し行を含めない。`## [Unreleased]` から次版見出しまでを丸ごと置換すると隣接見出しを誤って消し、既存項目の版帰属が壊れる。誤って消した場合の安全網として `changelog-contract` ゲートが newest dated heading と `plugin.json` の不一致で検出する
 - 各 `## [x.y.z]` は **plugin.json の version 境界**を記録する。公開 Git タグは同期タイミングにより一部の版を飛ばすことがあるが、CHANGELOG は plugin version 単位で残す（飛ばされた版の変更は次に付く公開タグに含まれる）
 - 0.1.0〜0.4.0 は公開リポジトリ作成前の内部版の要約である
 - 公開同期の禁止パターン（private リポジトリ識別子・秘密情報など）を書かない
@@ -18,6 +19,35 @@
 - 最新の日付付き版節に書いた path-like の backtick（`skills/...` / `scripts/...` 等）は、その節の compare 範囲で実際に追加・変更された path だけにする。未変更 path の誤帰属は `tests/changelog-attribution/` が検出する（マーカーの無い bullet は対象外）
 
 ## [Unreleased]
+
+## [0.72.0] - 2026-09-01
+
+### 追加
+
+- SessionStart hook `hooks/auto-update-marketplace.sh` を同梱。登録済みマーケットプレイスの更新（引数なしの一括更新）と本プラグイン本体の更新（登録 ID を `claude plugin list` から解決）を async + fail-silent でバックグラウンド自動実行する（1 日 1 回に間引き。CLI 不在・オフラインでもセッション起動を妨げない。無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1`）。サードパーティマーケットプレイスは既定で自動更新されないため、この版へ一度更新すれば以降は各自の autoUpdate 設定に依存せず最新へ追従する。検査スイート auto-update-hook（stub での発行内容・間引き・fail-silent の実測）を同梱
+
+## [0.71.0] - 2026-09-01
+
+### 追加
+
+- バージョン区間の CHANGELOG 要約を出す `scripts/changelog-digest.sh` を同梱。`changelog-digest.sh 0.41.0 0.57.0` のように更新前後の版を渡すと、区間（from 排他・to 包含）の版見出しと bullet 先頭 N 文字（既定 95。`FF_CHANGELOG_DIGEST_WIDTH` で変更可、切り詰めは UTF-8 の文字境界）だけを 1 画面規模で出力する。to 省略時は最新の日付付き版が終端。存在しない版・逆区間は「差分なし」ではなくどちらの引数が解決できなかったかを示して非 0 で落ちる（fail-closed）。回帰テスト changelog-digest を同梱
+
+## [0.70.0] - 2026-09-01
+
+### 追加
+
+- リリース要否判定スクリプトの検査スイート release-required-selftest に、open なリリース準備 PR の検出（照会は fetch 指定時のみ発動し、該当 PR があれば判定不能で中断、照会失敗も素通りさせない fail-closed）の実測ケース 3 件を追加。並行セッションが進めているリリース準備との重複開始を判定段階で直列化する
+
+### 変更
+
+- ACE 件数ゲートのブロック上限の既定値を 180 件から 280 件へ更新した。refine 目安 130 件の警告段は据え置きで、`ACE_MAX_ENTRIES_PER_CATEGORY` による上書きも従来どおり動作する
+- ブロック上限は「詰めてよい容量」ではなく「サブカテゴリ分割を再判断する発火点」として運用する。発火したら PLAYBOOK.md のファイル分割ルールの判断手順（正準化、refine、検索語彙の分岐判定、分割または上限の取り直し）を実行する
+- `tests/live-ace-gates` が実 `docs/08-knowledge/` に対して `check-category-size` を実行するようになった。従来は他スクリプトの共有 import のために変換されるだけで一度も実行されておらず、カテゴリ件数の上限超過が `run-all.sh` に現れなかった
+
+### 修正
+
+- 公開同期の書き込み先が linked worktree（file 形式 `.git`）の場合、ミラー書き込みへ入る前に中断するガードを同期スクリプト側へ追加し、その実測ケース 2 件（本実行と dry-run）を検査スイート sync-sha-contract に追加。rsync の `--delete` ミラーは `--exclude '.git/'` がディレクトリ形式にしか一致せず、file 形式 `.git` を削除して書き込み先を git から切り離すため、書き込み先は通常 clone のみを受け付ける
+- インストール実体の併存を知らせる drift 通知の掃除手順を「marketplace update → plugin update → 再起動 → 再起動後に旧バージョン削除」の順へ改め、稼働中の別セッションがロードしているバージョンを削除対象から除外する注意を加えた。旧手順は削除を先頭に置いており、稼働中セッションの hook 実体（発火のたびに起動時スナップショットのディスク実体を読む）を消して SessionStart / Stop hook がそのセッションの残りの間ずっと壊れる事故が起きていた。公開 README の同手順も同じ順序へ追従した。検査スイート skill-drift-check へ手順の順序（中間手順の plugin list / plugin update を含む）と除外文言を固定する検査を追加
 
 ## [0.69.0] - 2026-08-31
 

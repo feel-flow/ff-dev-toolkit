@@ -22,6 +22,8 @@
 #        `昇格` 無しの `Helpful >= N`）は照合しない → 緑
 #   G22. `調査時点` を含む歴史スナップショット行（DECISIONS.md ADR-024）は照合しない → 緑
 #   G33. `調査時点` を含む歴史スナップショット行の suite 数（TESTING.md）は照合しない → 緑
+#   G34. ブロック上限 claim の除外列（`## ADR-029:` / `M4.4:`）が歴史記録行を外す → 緑
+#   G35. 同じ除外列が**現在形の記載**まで巻き込んでいない（過剰除外の検出）→ 赤
 #        （suite 数 claim の除外列が `後続;調査時点` の複数指定であることの実測。Issue #929）
 #   G17. 未閉鎖コメント開始行に書いた件数も走査対象 → 赤（契約の固定）
 #   G18. 散文中の `` `<!--` ``（インラインコードスパン内）は後続の `-->`（mermaid の
@@ -366,6 +368,32 @@ perl -i -pe 's/([0-9]+) suite/($1 + 1) . " suite"/ge if /調査時点/' \
 # 置換は no-op になり、このケースは何も測らずに緑になる（G22 と同じ歯止め）。
 assert_changed "$TMP/g33-before.md" "$TMP/root/docs/04-quality/TESTING.md" "G33" || true
 run_case "G33 調査時点 を含む歴史スナップショット行の suite 数は照合しない" green
+
+# ブロック上限 claim の除外列は `## ADR-029:`（ADR の見出し = その ADR が決めたことの
+# 記録）と `M4.4:`（完了済みマイルストーンの実績値）の 2 つ。どちらも決定時点の記録で
+# 現在値の主張ではない（ACE-539-3: 歴史行は表記回避でなく除外列で外す）。
+# 除外が**効いている**ことを、歴史記録行の数値だけを現在値からずらして測る。
+make_fixture
+cp "$TMP/root/docs/06-reference/DECISIONS.md" "$TMP/g34-decisions-before.md"
+cp "$TMP/root/docs/07-project-management/ROADMAP.md" "$TMP/g34-roadmap-before.md"
+perl -i -pe 's/ブロック上限 ([0-9]+)/"ブロック上限 " . ($1 + 1)/ge if /^## ADR-029:/' \
+  "$TMP/root/docs/06-reference/DECISIONS.md"
+perl -i -pe 's/ブロック上限 ([0-9]+)/"ブロック上限 " . ($1 + 1)/ge if /M4\.4:/' \
+  "$TMP/root/docs/07-project-management/ROADMAP.md"
+assert_changed "$TMP/g34-decisions-before.md" "$TMP/root/docs/06-reference/DECISIONS.md" "G34" || true
+assert_changed "$TMP/g34-roadmap-before.md" "$TMP/root/docs/07-project-management/ROADMAP.md" "G34" || true
+run_case "G34 ブロック上限 claim の除外列が歴史記録行を外す" green
+
+# 除外が**過剰でない**ことを対で測る。除外列は行単位の固定文字列一致なので、ニードルを
+# 広げすぎると現在形の記載まで無検査になる（`hits -eq 0` の fail-closed は「全滅」しか
+# 見ないので、1 行だけ誤って外れても緑のまま）。現在形の記載をずらして赤になることまで
+# 見て、はじめて除外の幅が固定される。
+make_fixture
+cp "$TMP/root/docs/08-knowledge/PLAYBOOK.md" "$TMP/g35-before.md"
+perl -i -pe 's/ブロック上限 ([0-9]+)/"ブロック上限 " . ($1 + 1)/ge unless /^## ADR-029:/ || /M4\.4:/' \
+  "$TMP/root/docs/08-knowledge/PLAYBOOK.md"
+assert_changed "$TMP/g35-before.md" "$TMP/root/docs/08-knowledge/PLAYBOOK.md" "G35" || true
+run_case "G35 除外列は現在形の ブロック上限 記載を巻き込まない" red "ACE ブロック上限"
 
 
 echo "== G17. 未閉鎖コメント開始行の記載も走査する（契約の固定）=="

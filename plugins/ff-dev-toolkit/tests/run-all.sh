@@ -295,6 +295,12 @@ else
     # Issue 単位の CHANGELOG 断片 schema、materialize の冪等性、2 branch の
     # 無競合直列マージを fixture で実測する（ADR-038 / Issue #764）。
     "$SCRIPT_DIR/changelog-fragments/verify.sh"
+    # バージョン区間の CHANGELOG 要約（changelog-digest.sh）の区間・fail-closed・
+    # 幅・UTF-8 文字境界・自動解決を隔離 fixture で実測する（Issue #947）。
+    "$SCRIPT_DIR/changelog-digest/verify.sh"
+    # マーケットプレイス自動更新 hook の発行内容・日次間引き・fail-silent・
+    # オプトアウト・hooks.json 登録（async）を stub claude で実測する（Issue #856）。
+    "$SCRIPT_DIR/auto-update-hook/verify.sh"
     # 文書 / PLAYBOOK の共有版を、non-fast-forward 後に merged tree から再生成して
     # 収束させる手順と 2 clone 実測（ADR-038 / Issue #764）。
     "$SCRIPT_DIR/shared-version-convergence/verify.sh"

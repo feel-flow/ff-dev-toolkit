@@ -202,6 +202,12 @@ run_case "G13 除外対象に Frontmatter 無しの文書を追加" green
 echo "== G15〜G17. レビュー指摘（PR #524）のケース =="
 make_fixture
 perl -i -pe 's/^changeImpact: "([a-z]+)"$/changeImpact: "$1/' "$TMP/root/$VICTIM"
+# 変異が入ったことを確かめてから測る。この置換は VICTIM の changeImpact が
+# **引用符付き**であることに依存しており、実 docs 側で引用符が外れると置換が no-op に
+# なって「赤を期待するケースが緑」へ静かに退化する（PR #1088 で実際に踏んだ）。
+# 値への依存は G16 のコメントが既に警戒していたが、引用符への依存は無防備だった。
+grep -q '^changeImpact: "[a-z]*$' "$TMP/root/$VICTIM" \
+  || bad "G15: 変異が入っていません（$VICTIM の changeImpact が引用符付きでない可能性）"
 run_case "G15 changeImpact の引用符が片側だけ" red "changeImpact が小文字"
 
 make_fixture

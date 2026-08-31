@@ -104,6 +104,15 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 - 通知の間隔は環境変数 `FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED`（秒・既定 86400）で変更できます。0 を指定すると毎セッション通知します
 - 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1` を設定してください
 
+### マーケットプレイス自動更新
+
+セッション開始時に、登録済みマーケットプレイスの更新（`claude plugin marketplace update` 引数なし）と本プラグイン本体の更新を、バックグラウンド（async）で自動実行します。サードパーティマーケットプレイスは既定では自動更新されないため、この hook を含む版へ一度更新すれば、以降は各自の `autoUpdate` 設定に依存せず最新へ追従します。
+
+- 実行は 1 日 1 回に間引かれます。`claude` CLI が無い環境・オフラインでもセッション起動を妨げません（fail-silent）
+- 本体更新の登録 ID（`プラグイン名@marketplace名` 形式）は `claude plugin list` から拾うため、導入経路によるマーケットプレイス登録名の違いを吸収します
+- 反映は次回以降のセッション起動時です（Claude Code の仕様）
+- 止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1` を設定してください
+
 ### スキル実体ドリフト検査
 
 `plugins/<plugin>/skills/` を持つチェックアウト（開発元の marketplace モノレポ）でセッションを開始すると、インストール済みの実体とリポジトリのスキル集合を照合します。公開リポジトリのルート直下 `skills/` レイアウトでは照合対象外として無音です。
@@ -111,7 +120,7 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 - リポジトリにあるスキルがどのインストール実体にも無い場合、またはユニーク version が 2 以上の cache が併存している場合に通知します
 - スキル集合が一致し version が 1 種類なら無音です。同一 version の cache と marketplace checkout が並ぶのは通常構成です。version 差だけの 1 実体は上の更新通知に任せます
 - インストール実体を 1 つも見つけられないときは「検出不能」と報告し、セッションは止めません
-- 古い cache は自動削除しません。通知の古い version ディレクトリだけを手動で削除し、`claude plugin marketplace update`（引数なし）→ `claude plugin list` で登録 ID（`プラグイン名@marketplace名` 形式）を確認 → `claude plugin update <確認した ID>` → Claude Code の再起動、の順で追従してください（素の名前を渡すと `Plugin not found` で失敗します）。再起動しても既存の会話を再開すると古いスナップショットへ再接続されるため、新しい会話を開始してください。marketplace checkout は消さないでください
+- 古い cache は自動削除しません。`claude plugin marketplace update`（引数なし）→ `claude plugin list` で登録 ID（`プラグイン名@marketplace名` 形式）を確認 → `claude plugin update <確認した ID>` → Claude Code の再起動、の順で追従し、**再起動の後に**通知の古い version ディレクトリだけを手動で削除してください（素の名前を渡すと `Plugin not found` で失敗します）。hook はセッション中ずっと起動時に読み込んだディスク実体を参照するため、再起動より前に削除すると稼働中セッションの hook が壊れます。稼働中の別セッションがロードしている version も削除しないでください。再起動しても既存の会話を再開すると古いスナップショットへ再接続されるため、新しい会話を開始してください。marketplace checkout は消さないでください
 - 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1` を設定してください
 
 ### 自動振り返り

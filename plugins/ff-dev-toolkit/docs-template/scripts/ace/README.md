@@ -34,7 +34,7 @@ Node 24+ を前提とします。TypeScript をそのまま実行する例:
 npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md
 ```
 
-環境変数 `ACE_MAX_ENTRIES_PER_CATEGORY`（省略時は `180`）でブロック上限を変更できます。値が **非数値または 1 未満**のときは既定値 `180` にフォールバックし、標準エラーに警告を出します。`ACE_WARN_ENTRIES_PER_CATEGORY`（省略時は `130`）は refine 目安の警告閾値で、件数を超えても終了コードは変えません。警告閾値がブロック上限以上のときは警告段を出さず、旧来どおりブロック上限だけで判定します（`ACE_MAX_ENTRIES_PER_CATEGORY=130` で 130 件 exit 1 の旧挙動に戻せます）。
+環境変数 `ACE_MAX_ENTRIES_PER_CATEGORY`（省略時は `280`）でブロック上限を変更できます。値が **非数値または 1 未満**のときは既定値 `280` にフォールバックし、標準エラーに警告を出します。`ACE_WARN_ENTRIES_PER_CATEGORY`（省略時は `130`）は refine 目安の警告閾値で、件数を超えても終了コードは変えません。警告閾値がブロック上限以上のときは警告段を出さず、旧来どおりブロック上限だけで判定します（`ACE_MAX_ENTRIES_PER_CATEGORY=130` で 130 件 exit 1 の旧挙動に戻せます）。
 
 行数の上限は**既定では件数から導出**します（Issue #285 / ADR-019）:
 

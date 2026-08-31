@@ -453,6 +453,56 @@ else
   bad "check-skill-drift.sh: 実行権限が無い"
 fi
 
+# ---- 7b. 掃除手順の順序（Issue #999） ------------------------------------------
+# 旧手順は削除を (1) に置いており、稼働中セッションがロードしているバージョンの
+# 実体まで削除対象に入った（hook は発火のたびに起動時スナップショットのディスク
+# 実体を読むため、削除後は SessionStart / Stop hook がそのセッションの残りの間
+# ずっと壊れる — 2026-08-29 実測）。「更新 → 再起動 → 再起動後に削除」の順序と
+# ロード中バージョンの除外文言を、案内文そのものに対して固定する。
+# needle は説明コメントではなくコード行（ctx への連結行）に一致させる（ACE-156-1）。
+CLEANUP_NEEDLE='古いキャッシュは自動削除しない。掃除手順'
+cleanup_line="$(grep -F "$CLEANUP_NEEDLE" "$TARGET" | grep -v '^#' | head -1)"
+if [ -n "$cleanup_line" ]; then
+  ok "掃除手順の案内文がコード行に存在する"
+else
+  bad "掃除手順の案内文が見つからない"
+fi
+cleanup_pos() { # $1: 部分文字列。見つからなければ 0
+  printf '%s\n' "$cleanup_line" | awk -v s="$1" '{ print index($0, s) }'
+}
+POS_UPDATE="$(cleanup_pos '(1) claude plugin marketplace update')"
+POS_LIST="$(cleanup_pos 'claude plugin list')"
+POS_PLUGIN_UPDATE="$(cleanup_pos 'claude plugin update')"
+POS_RESTART="$(cleanup_pos '再起動が必要')"
+POS_DELETE="$(cleanup_pos '手動で削除する')"
+POS_AFTER_RESTART="$(cleanup_pos '再起動後に')"
+if [ "$POS_UPDATE" -gt 0 ] && [ "$POS_DELETE" -gt 0 ] && [ "$POS_UPDATE" -lt "$POS_DELETE" ]; then
+  ok "掃除手順: 手順の先頭が削除ではなく marketplace update（削除は後段）"
+else
+  bad "掃除手順: 削除が marketplace update より前にある（update=${POS_UPDATE} delete=${POS_DELETE}）"
+fi
+# 中間手順（plugin list → plugin update）の存在と順序も固定する。ここが欠落・
+# 再起動後へ移動しても他検査は緑のままで、「更新せず古い実体だけ消させる」案内へ
+# 退行しうる（Codex test-analysis 指摘）
+if [ "$POS_LIST" -gt 0 ] && [ "$POS_PLUGIN_UPDATE" -gt 0 ] && [ "$POS_RESTART" -gt 0 ] \
+  && [ "$POS_UPDATE" -lt "$POS_LIST" ] && [ "$POS_LIST" -lt "$POS_PLUGIN_UPDATE" ] \
+  && [ "$POS_PLUGIN_UPDATE" -lt "$POS_RESTART" ]; then
+  ok "掃除手順: marketplace update → plugin list → plugin update → 再起動 の順序が保たれている"
+else
+  bad "掃除手順: 中間手順の欠落または順序退行（update=${POS_UPDATE} list=${POS_LIST} pupdate=${POS_PLUGIN_UPDATE} restart=${POS_RESTART}）"
+fi
+if [ "$POS_RESTART" -gt 0 ] && [ "$POS_AFTER_RESTART" -gt 0 ] && [ "$POS_DELETE" -gt 0 ] \
+  && [ "$POS_RESTART" -lt "$POS_DELETE" ] && [ "$POS_AFTER_RESTART" -lt "$POS_DELETE" ]; then
+  ok "掃除手順: 削除は再起動（と「再起動後に」の明示）の後に置かれている"
+else
+  bad "掃除手順: 削除が再起動の後に置かれていない（restart=${POS_RESTART} after=${POS_AFTER_RESTART} delete=${POS_DELETE}）"
+fi
+if printf '%s\n' "$cleanup_line" | grep -F 'そのセッションがロードしているバージョンは削除しない' >/dev/null; then
+  ok "掃除手順: ロード中バージョンの除外が案内文に含まれる"
+else
+  bad "掃除手順: ロード中バージョンの除外文言が無い"
+fi
+
 # ---- 8. 検出力の変異注入 ------------------------------------------------------
 DIFF_NEEDLE='if [ -n "$missing_joined" ]; then'
 COEXIST_NEEDLE='cat "$work/installs" > "$work/installs.report"'

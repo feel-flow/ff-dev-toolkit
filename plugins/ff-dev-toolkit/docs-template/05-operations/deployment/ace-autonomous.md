@@ -68,7 +68,7 @@ GUI の Git クライアントや一部の CI では、マージ実行時に **`
 | `ACE_SUBAGENT_AUTO_MERGE`      | ガード通過後に squash マージまで自動で行うか          | `0`（無効）                                                                                  |
 | `ACE_GARDEN_WALL_PATHS`        | 編集を許可するパス（カンマ区切り）                    | プロジェクト固有（必須で設定）                                                               |
 | `ACE_PLAYBOOK_PATH`            | `check-category-size.ts` が読む Playbook ファイル     | 例: `docs/08-knowledge/PLAYBOOK.md`                                                          |
-| `ACE_MAX_ENTRIES_PER_CATEGORY` | カテゴリあたりのブロック上限（exit 1）                 | 省略時は `180`。**非数値や 0 以下は無効**として既定値にフォールバックし、stderr に警告を出す |
+| `ACE_MAX_ENTRIES_PER_CATEGORY` | カテゴリあたりのブロック上限（exit 1）                 | 省略時は `280`。**非数値や 0 以下は無効**として既定値にフォールバックし、stderr に警告を出す |
 | `ACE_WARN_ENTRIES_PER_CATEGORY` | カテゴリあたりの refine 目安（警告のみ）              | 省略時は `130`。ブロック上限以上なら警告段は出さない |
 | `ACE_MAX_ENTRY_LINES`          | 1 エントリの行数バジェット（行数上限の導出元）         | 省略時は `15`。**非数値や 0 以下は無効**として既定値にフォールバックし、stderr に警告を出す   |
 | `ACE_MAX_PLAYBOOK_LINES`       | 行数上限を固定値で上書きする（**警告のみ・非ブロック**） | 省略時は**件数から導出**（`ヘッダ + 件数 × (ACE_MAX_ENTRY_LINES + 1)`）。明示指定時のみ固定上限。**非数値や 0 以下は無効**として既定値 `800` にフォールバックし、stderr に警告を出す |
@@ -102,6 +102,12 @@ docs-only の自動 PR で、構造検証（例: `ace:verify`）が CI で保証
 - 本フレームワークへのテンプレ追加: [GitHub #367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)
 
 ## Changelog
+
+### [1.1.0] - 2026-08-31
+
+#### 変更
+
+- `ACE_MAX_ENTRIES_PER_CATEGORY` の省略時の値を、`check-category-size` の既定値の更新に合わせて更新した
 
 ### [1.0.1] - 2026-04-27
 

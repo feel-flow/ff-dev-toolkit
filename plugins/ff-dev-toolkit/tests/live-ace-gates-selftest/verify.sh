@@ -113,9 +113,19 @@ PASS=0
 FAIL=0
 ok() { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
+# 閾値つまみは利用者の正規の設定なので、export された環境でこの suite を走らせるのは
+# 正しい使い方である。既定配線を測るケースが呼び出し元の値に乗ると、実装の退行が無くても
+# 赤くなる（ACE-379-1: 「env 未設定」を前提にする suite は前提を仮定せず `env -u` で**作る**）。
+# `env` は `-u` 除去を先に・`NAME=VALUE` 代入を後に適用するので、ケース固有の上書きと共存する。
+ACE_ENV_UNSET=(
+  -u ACE_MAX_ENTRIES_PER_CATEGORY
+  -u ACE_WARN_ENTRIES_PER_CATEGORY
+  -u ACE_MAX_ENTRY_LINES
+  -u ACE_MAX_PLAYBOOK_LINES
+)
 run_gate() {
   set +e
-  GATE_OUTPUT="$(bash "$FIXTURE_PLUGIN/tests/live-ace-gates/verify.sh" 2>&1)"
+  GATE_OUTPUT="$(env "${ACE_ENV_UNSET[@]}" bash "$FIXTURE_PLUGIN/tests/live-ace-gates/verify.sh" 2>&1)"
   GATE_RC=$?
   set -e
 }
@@ -123,12 +133,64 @@ run_gate() {
 echo "== live-ace-gates self-test =="
 
 run_gate
-if [[ "$GATE_RC" -eq 0 ]] && [[ "$GATE_OUTPUT" == *"live ACE の新規旧形式エントリは 0 件"* ]] && [[ "$GATE_OUTPUT" == *"live ACE の entry count / version / changeImpact は同期済み"* ]] && [[ "$GATE_OUTPUT" == *"live ACE の archive リンク注記と <a id> 一意性"* ]] && [[ "$GATE_OUTPUT" == *"live ACE の refine 結果不変条件"* ]]; then
-  ok "正常 fixture で形式・frontmatter・archive・refine の各ゲートが通る"
+if [[ "$GATE_RC" -eq 0 ]] && [[ "$GATE_OUTPUT" == *"live ACE の新規旧形式エントリは 0 件"* ]] && [[ "$GATE_OUTPUT" == *"live ACE の entry count / version / changeImpact は同期済み"* ]] && [[ "$GATE_OUTPUT" == *"live ACE の archive リンク注記と <a id> 一意性"* ]] && [[ "$GATE_OUTPUT" == *"live ACE の refine 結果不変条件"* ]] && [[ "$GATE_OUTPUT" == *"live ACE のカテゴリ件数はブロック上限内"* ]]; then
+  ok "正常 fixture で形式・frontmatter・archive・refine・件数の各ゲートが通る"
 else
   bad "正常 fixture が通らない（rc=${GATE_RC}）"
   printf '%s\n' "$GATE_OUTPUT" >&2
 fi
+
+# Issue #869: 件数ゲートは長らく transpile されるだけで実行されておらず、ブロック上限の
+# 超過が run-all に現れなかった。成功マーカーの追加だけでは「実行されている」ことしか
+# 示せない（rc を握り潰す配線でも緑のまま）ので、**赤に振れること**を対で測る。
+# 上限を env で 1 へ落とせば fixture を肥大させずに境界を越えられる。
+# **検出力はこの赤ケースだけに乗っている。** 成功マーカー `✓ live ACE のカテゴリ件数は…`
+# は node 起動とは別の echo なので、実行行を消しても正常系アサートと対照は緑のまま通る。
+# 「3 つとも同じマーカーを見ているから 1 つに畳める」と読んで赤ケースを外すと、本 PR が
+# 足した検出力が丸ごと消える。
+run_gate_max_one() {
+  set +e
+  GATE_OUTPUT="$(env "${ACE_ENV_UNSET[@]}" ACE_MAX_ENTRIES_PER_CATEGORY=1 bash "$FIXTURE_PLUGIN/tests/live-ace-gates/verify.sh" 2>&1)"
+  GATE_RC=$?
+  set -e
+}
+
+cp "$FIXTURE_ROOT/baseline-playbook.md" "$FIXTURE_PLAYBOOK"
+cat >>"$FIXTURE_PLAYBOOK" <<'EOF'
+
+### ACE-900-3: 件数ゲート用の 2 件目
+
+| Category | process | Origin | fixture |
+| Date | 2026-08-12 |
+| Helpful | 0 | Harmful | 0 |
+| Status | active |
+
+正準形式の本文。
+EOF
+perl -0pi -e 's/ace_entry_count: 1/ace_entry_count: 2/' "$FIXTURE_PLAYBOOK"
+if ! grep -q '^### ACE-900-3:' "$FIXTURE_PLAYBOOK"; then
+  bad "件数ゲート用の 2 件目を注入できていない（検査が成立しない）"
+else
+  # 「変化はあるが正しい」対照を先に置く。既定上限のままなら 2 件は超過ではないので
+  # 緑であるべきで、これが赤いと以降の赤は閾値ではなく別の理由（形式・frontmatter）に
+  # なる（ACE-725-1）。
+  run_gate
+  if [[ "$GATE_RC" -eq 0 ]] && [[ "$GATE_OUTPUT" == *"live ACE のカテゴリ件数はブロック上限内"* ]]; then
+    ok "既定上限では 2 件の fixture が件数ゲートを通る（対照）"
+  else
+    bad "対照が緑にならない（rc=${GATE_RC}）"
+    printf '%s\n' "$GATE_OUTPUT" >&2
+  fi
+
+  run_gate_max_one
+  if [[ "$GATE_RC" -ne 0 ]] && [[ "$GATE_OUTPUT" == *"閾値超過カテゴリ"* ]] && [[ "$GATE_OUTPUT" == *"process (2 > 1)"* ]]; then
+    ok "ブロック上限の超過を suite の rc へ伝播する（件数ゲートが実行されている証跡）"
+  else
+    bad "ブロック上限の超過が suite を赤にしない（rc=${GATE_RC}）"
+    printf '%s\n' "$GATE_OUTPUT" >&2
+  fi
+fi
+cp "$FIXTURE_ROOT/baseline-playbook.md" "$FIXTURE_PLAYBOOK"
 
 cat >>"$FIXTURE_PLAYBOOK" <<'EOF'
 

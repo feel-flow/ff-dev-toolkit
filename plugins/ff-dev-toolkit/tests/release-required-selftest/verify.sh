@@ -233,11 +233,38 @@ make_public "$PUB" "$SYNC_MSG" "v0.31.0"
 
 OUT=""
 RC=0
+# gh stub（Issue #836）。--fetch 時の open リリース準備 PR 照会を実 gh へ出さない
+# （fixture リポジトリの origin はローカル bare で gh が解決できず、実 gh だと
+# 全 --fetch ケースが照会失敗の UNAVAILABLE へ落ちる。ネットワーク不達も
+# 「一致」と誤読しない = 応答は FF_STUB_GH_MODE で決定的に制御する）。
+STUB_BIN="$TMP/stub-bin"
+mkdir -p "$STUB_BIN"
+cat > "$STUB_BIN/gh" <<'FF_GH_STUB'
+#!/usr/bin/env bash
+# 想定は `gh pr list --limit N ...` のみ。想定外の呼び出しは缶詰応答で静かに
+# 成功させず大声で落とす（将来の別用途 gh 呼び出しを stub が隠すのを防ぐ）。
+# --limit の明示も検証する: 既定 30 件の窓へ戻す退行は検出漏れ = fail-open。
+if [ "$1" != "pr" ] || [ "$2" != "list" ]; then
+  echo "stub: unexpected gh call: $*" >&2
+  exit 64
+fi
+case " $* " in
+  *" --limit "*) : ;;
+  *) echo "stub: gh pr list に --limit の明示がない（既定 30 件の窓は検出漏れになる）" >&2; exit 64 ;;
+esac
+case "${FF_STUB_GH_MODE:-empty}" in
+  empty) exit 0 ;;
+  found) printf '#4321(chore/#549-release-v9.9.9)\n' ;;
+  fail)  echo "stub: gh query failed" >&2; exit 1 ;;
+esac
+FF_GH_STUB
+chmod +x "$STUB_BIN/gh"
+
 run_check() { # $1=--public に渡すパス（省略時は正常な PUB）$2 以降=追加引数
   local pub="${1:-$PUB}"
   shift 2>/dev/null || true
   set +e
-  OUT="$(bash "$SSOT_FIX/scripts/check-release-required.sh" --public "$pub" "$@" 2>&1)"
+  OUT="$(PATH="$STUB_BIN:$PATH" bash "$SSOT_FIX/scripts/check-release-required.sh" --public "$pub" "$@" 2>&1)"
   RC=$?
   set -e
 }
@@ -617,6 +644,17 @@ git -C "$SSOT_FIX" remote set-url origin "$TMP/no-such-origin.git"
 run_check "$PUB_FETCH" --fetch
 expect_check "U8 SSOT の fetch 失敗は検査不能（exit 2）" 2 "UNAVAILABLE" "SSOT の fetch に失敗"
 git -C "$SSOT_FIX" remote set-url origin "$TMP/ssot-origin.git"
+
+# ── S19. open なリリース準備 PR の検出（Issue #836） ─────────────────────────
+# --fetch 時のみ gh（stub）で照会し、head が chore/#549-release-* の open PR が
+# あれば UNAVAILABLE で中断（重複準備の直列化）。照会失敗も fail-closed。
+# 非発動の対照は S15（stub 既定 = empty で OK のまま）が担う。
+FF_STUB_GH_MODE=found run_check "$PUB_FETCH" --fetch
+expect_check "S19 open なリリース準備 PR があれば検査不能（exit 2）で中断" 2 "UNAVAILABLE" "open なリリース準備 PR が存在する.*#4321"
+FF_STUB_GH_MODE=fail run_check "$PUB_FETCH" --fetch
+expect_check "S19 PR 照会の失敗は素通りさせず検査不能（exit 2）" 2 "UNAVAILABLE" "open なリリース準備 PR の照会に失敗"
+FF_STUB_GH_MODE=found run_check "$PUB_FETCH"
+expect_check "S19 --fetch なし（offline fixture）では本検出は発動しない" 0 "OK" "実変更なし"
 
 # ── U9. origin remote があるのに origin/main を解決できない公開 clone は検査不能 ──
 # default branch 改名・single-branch clone 等で HEAD へ静かに fallback すると、

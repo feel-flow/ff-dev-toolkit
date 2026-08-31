@@ -2203,9 +2203,9 @@ describe("main（行数警告のみ・exit code 不変）", () => {
     expect(code).toBe(1);
   });
 
-  it("既定は refine 目安 130・ブロック上限 180（ADR-029）", () => {
+  it("既定は refine 目安 130・ブロック上限 280（ADR-029 / ADR-041）", () => {
     expect(DEFAULT_WARN_ENTRIES_PER_CATEGORY).toBe(130);
-    expect(DEFAULT_MAX_ENTRIES_PER_CATEGORY).toBe(180);
+    expect(DEFAULT_MAX_ENTRIES_PER_CATEGORY).toBe(280);
     expect(DEFAULT_WARN_ENTRIES_PER_CATEGORY).toBeLessThan(
       DEFAULT_MAX_ENTRIES_PER_CATEGORY,
     );

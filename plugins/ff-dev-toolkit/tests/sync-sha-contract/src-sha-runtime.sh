@@ -275,6 +275,54 @@ else
   bad "--dry-run が記録を作った（rc=${SYNC_RC}）"
 fi
 
+# ---- A6. worktree target はミラー前にガードで中断する（Issue #901） ----------
+# `--exclude '.git/'` は末尾スラッシュのためディレクトリにしか一致せず、linked
+# worktree の file 形式 `.git` は `--delete` ミラーの削除対象になる（target が git
+# から切り離される）。書き込みへ入る前の fail-closed 中断と、--dry-run にも同じ
+# ガードが掛かること（dry-run が通って本実行だけ落ちる非対称を作らない）を実測で
+# 固定する。通常 clone（ディレクトリ形式 `.git`）の非退行は A1〜A4 の run_sync が
+# ${PUB}（通常 clone 相当）で成功していることが既に固定している。
+WT="$TMP_DIR/pub-worktree"
+git -C "$PUB" worktree add -q -b wt-target "$WT" main \
+  || { echo "✗ fixture の worktree を作成できません（以降のケースを空振りで緑にしない）" >&2; exit 1; }
+WT_RC=0
+WT_OUT="$("$SSOT/scripts/sync-dev-toolkit-to-public.sh" --target "$WT" 2>&1)" || WT_RC=$?
+if [[ "$WT_RC" -ne 0 && "$WT_OUT" == *"worktree target は使えません"* && -f "$WT/.git" ]]; then
+  ok "worktree target（file 形式 .git）は書き込み前にガードで中断し、.git も無傷で残る"
+else
+  bad "worktree target が中断しない（rc=${WT_RC} / .git=$([[ -e "$WT/.git" ]] && { [[ -d "$WT/.git" ]] && echo dir || echo file; } || echo '<消失>') / 出力: ${WT_OUT}）"
+fi
+WT_RC=0
+WT_OUT="$("$SSOT/scripts/sync-dev-toolkit-to-public.sh" --target "$WT" --dry-run 2>&1)" || WT_RC=$?
+if [[ "$WT_RC" -ne 0 && "$WT_OUT" == *"worktree target は使えません"* ]]; then
+  ok "worktree target は --dry-run でも同じガードで中断する"
+else
+  bad "worktree target の --dry-run が中断しない（rc=${WT_RC} / 出力: ${WT_OUT}）"
+fi
+# ガード退行時は worktree の .git がミラーに消され `worktree remove` 自体が失敗する。
+# クリーンアップの失敗で suite を即死させると、退行検出時に限って A5 以降と
+# サマリーが失われるため、fallback（実体削除 + prune）で必ず後続へ進む。
+git -C "$PUB" worktree remove --force "$WT" 2>/dev/null \
+  || { rm -rf "$WT"; git -C "$PUB" worktree prune; }
+git -C "$PUB" branch -q -D wt-target \
+  || { echo "✗ fixture の wt-target branch を削除できません" >&2; exit 1; }
+
+# symlink 形式 `.git`（.git -> 実 git ディレクトリ）もガードで弾く。`-d` は symlink を
+# 追跡して真になる一方、rsync の `--exclude '.git/'` は symlink に一致しないため、
+# `-d` 単独のガードでは「ガードは通るのにミラーが .git を消す」fail-open になる
+# （Codex / silent-failure-hunter が独立に指摘し実測で確認）。
+SYM="$TMP_DIR/pub-symlink"
+mkdir -p "$SYM"
+ln -s "$PUB/.git" "$SYM/.git"
+SYM_RC=0
+SYM_OUT="$("$SSOT/scripts/sync-dev-toolkit-to-public.sh" --target "$SYM" 2>&1)" || SYM_RC=$?
+if [[ "$SYM_RC" -ne 0 && "$SYM_OUT" == *"worktree target は使えません"* && -L "$SYM/.git" ]]; then
+  ok "symlink 形式 .git の target もガードで中断し、symlink も無傷で残る"
+else
+  bad "symlink 形式 .git の target が中断しない（rc=${SYM_RC} / .git=$([[ -L "$SYM/.git" ]] && echo symlink || { [[ -e "$SYM/.git" ]] && echo あり || echo '<消失>'; }) / 出力: ${SYM_OUT}）"
+fi
+rm -rf "$SYM"
+
 # ---- A5. 中断した同期は記録を残さない（書き込み前に必ず消す） ----------------
 # 前回の記録が残ったまま同期が途中で落ちると、手順 4 がそれを読んで部分同期を
 # commit する（fail-open）。禁止パターン検査で落ちる入力を与え、事前に置いた

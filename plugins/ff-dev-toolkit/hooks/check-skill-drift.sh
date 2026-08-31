@@ -304,7 +304,7 @@ if [ "$drift_coexist" -eq 1 ]; then
   ctx="${ctx}併存しているインストール実体（1 つだけを最新と見なさない）: ${install_lines}。リポジトリ version は v${repo_version}。"
 fi
 
-ctx="${ctx} 古いキャッシュは自動削除しない。掃除手順: (1) 通知のパスのうちリポジトリ version より古い ~/.claude/plugins/cache/<marketplace>/ff-dev-toolkit/<version>/ を手動で削除する (2) claude plugin marketplace update （引数なし。marketplace 名はユーザーの登録名に依存するため） (3) claude plugin list で登録 ID を確認する。ID は プラグイン名@marketplace名 の形式で、素の名前を渡すと Plugin not found で失敗する (4) claude plugin update に (3) で確認した ID を渡す (5) 適用には Claude Code の再起動が必要。この通知を止めたい場合は FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1 を設定する。"
+ctx="${ctx} 古いキャッシュは自動削除しない。掃除手順（削除は必ず再起動の後 — 稼働中セッションの hook は発火のたびに起動時スナップショットのディスク実体を読むため、先に削除するとそのセッションの SessionStart / Stop hook が残りの間ずっと壊れる）: (1) claude plugin marketplace update （引数なし。marketplace 名はユーザーの登録名に依存するため） (2) claude plugin list で登録 ID を確認する。ID は プラグイン名@marketplace名 の形式で、素の名前を渡すと Plugin not found で失敗する (3) claude plugin update に (2) で確認した ID を渡す (4) 適用には Claude Code の再起動が必要 (5) 再起動後に、通知のパスのうちリポジトリ version より古い ~/.claude/plugins/cache/<marketplace>/ff-dev-toolkit/<version>/ を手動で削除する。ただし稼働中の別セッションが残っている場合、そのセッションがロードしているバージョンは削除しない。この通知を止めたい場合は FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1 を設定する。"
 
 emit_json "$sys" "$ctx"
 exit 0

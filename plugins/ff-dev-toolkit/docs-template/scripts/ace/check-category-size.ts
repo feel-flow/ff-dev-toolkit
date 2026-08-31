@@ -39,8 +39,14 @@ const EXIT_USAGE_ERROR = 2;
  * 件数ゲートのハード上限（exit 1）。refine を使い切っても検索語彙が分岐しない
  * カテゴリが再超過したときの余裕（Issue #491 / ADR-029）。旧既定 130 は
  * `DEFAULT_WARN_ENTRIES_PER_CATEGORY` として refine 目安の警告に残す。
+ *
+ * 本値は「上限まで詰めてよい容量」ではなく**再判断の発火点**である。発火したときの
+ * 手順と、次の発火点までの余裕の取り方は ADR-041 決定 2（Issue #869）が正本で、
+ * ここには写さない（運用規則を定数の近傍へ再掲すると、次の発火時にどちらかが
+ * 取り残される）。**実測の現況件数（カテゴリごとの live 件数）は、本文にも
+ * この近傍にも書かない** — Playbook の成長とともに変わるため。
  */
-export const DEFAULT_MAX_ENTRIES_PER_CATEGORY = 180;
+export const DEFAULT_MAX_ENTRIES_PER_CATEGORY = 280;
 /**
  * 件数ゲートの refine 目安（警告のみ・exit 0）。`ACE_MAX_ENTRIES_PER_CATEGORY`
  * を 130 に戻すと警告段は発火せず、旧来の 130 件で exit 1 になる。
@@ -1398,6 +1404,9 @@ export function main(): number {
   // ここに `continue` を残すと「壊れた値を静かに読み飛ばす」経路が 2 系統に戻る（Issue #343）。
   for (const [categoryKey, count] of Object.entries(merged.histogram)) {
     if (count > maxAllowed) {
+      // この `<カテゴリ> (<件数> > <上限>)` の書式は tests/live-ace-gates-selftest が
+      // 照合する契約である（件数ゲートが実行され rc が suite へ伝播したことの証跡を、
+      // 終了コードだけでなくこの文言で確かめている）。整形を変えるときは同 suite も直す。
       overCategories.push(`${categoryKey} (${String(count)} > ${String(maxAllowed)})`);
     } else if (count > warnAllowed) {
       warnCategories.push(
