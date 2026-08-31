@@ -1743,7 +1743,9 @@ else
 fi
 
 # 十分大きい閾値を設定すると、委譲せずスキップし、理由を 1 行出す。
-run_shim CODEX_REVIEW_MIN_LINES=999999 --base develop --dry-run
+# 公開 checkout には develop が無い。上限側と同じ2コミットの fixture で測り、
+# 呼び出し元のブランチ構成・差分量に依存させない（Issue #1057）。
+RUN_SHIM_CWD="$DIFF_REPO" run_shim CODEX_REVIEW_MIN_LINES=999999 --base HEAD~1 --dry-run
 if [ "$RUN_RC" -eq 0 ] && [ ! -s "$WORK/argv.log" ]; then
   ok "diff が閾値未満ならスキップし、委譲しない"
 else
@@ -1787,7 +1789,7 @@ else
   sed 's/^/    | /' "$WORK/err.log" >&2
 fi
 # 小 diff スキップ（0）と終了コードで区別できること。
-run_shim CODEX_REVIEW_MIN_LINES=999999 --base develop --dry-run
+RUN_SHIM_CWD="$DIFF_REPO" run_shim CODEX_REVIEW_MIN_LINES=999999 --base HEAD~1 --dry-run
 if [ "$RUN_RC" -eq 0 ]; then
   ok "小 diff スキップは 0 のまま（上限超過の 3 と区別できる）"
 else
