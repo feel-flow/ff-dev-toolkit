@@ -161,7 +161,7 @@ SubAgent への指示テンプレート:
 - .review-results/{cli-name}/{perspective}.md（個別結果。統合レポートには各個別結果が全文で埋め込まれるため、通常は integrated-report.md だけで足りる。レポートが欠損・破損している場合のみ参照）
 
 以下を行い、分析結果の要約だけを返してください（ファイル全文を貼らない）:
-1. 指摘を Critical / Warning / Suggestion / Info に分類する
+1. 指摘を Critical / Warning / Suggestion / Info に分類する。対応表を適用する前に重大度インフレの抑止を適用する。新しいガード・抽象・フォールバック・防御コードの追加を求める指摘は、具体的な失敗シナリオ（再現する入力・状態と観測可能な誤動作）が無い限り Suggestion として扱う。Warning 表記であっても落とす。独立 Warning のパーキングはしない
 2. 同じファイル・同じ行番号・同じ種類の指摘は 1 つにまとめ、検出した CLI 名を併記する
 3. Status: incomplete / INCOMPLETE の観点は「未確認」として列挙する（「指摘なし」と書かない）
 
@@ -210,7 +210,7 @@ ls -la .review-results/
 
 #### 3-2. 重大度別の分類
 
-以下の分類基準は、3-1 で確定した実行主体が結果ファイルへ適用します（委譲時は subagent、fallback 時はメイン。委譲時に親が結果ファイルを再読して分類し直さない）。PR Review Response Policy に従って分類します:
+以下の分類基準は、3-1 で確定した実行主体が結果ファイルへ適用します（委譲時は subagent、fallback 時はメイン。委譲時に親が結果ファイルを再読して分類し直さない）。PR Review Response Policy に従って分類します。**対応表を適用する前に**重大度インフレの抑止を適用する: 新しいガード・抽象・フォールバック・防御コードの追加を求める指摘は、具体的な失敗シナリオの提示がない限り Suggestion として扱う（Warning 表記であっても Suggestion に落とす）。
 
 | 重大度 | 対応 |
 | ------ | ---- |
@@ -285,11 +285,21 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective <観点名>
 - `<!-- CRITICAL_BLOCK -->` / `<!-- CRITICAL_NONBLOCK -->` を立てた観点は、必ず再実行セットに含めてマーカー解消を実測する。レポートの手編集でマーカーを消さない
 - `--resume`（手順 2 の未完了観点の再開）とは別物 — `--resume` は**同一入力**の続行、部分再検証は **fix 後の新しいレビュー実行**
 
+#### 3-7. fix ループの収束判定と打ち切り
+
+レビュー→修正のループ上限と停止条件の正本は [multi-cli-review-orchestration.md の収束判定節](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#fix-ループの収束判定と打ち切り) である。ここでは実行時に守る要約だけを書く:
+
+- **上限は 3 回転**（1 回転 = レビュー実行 → fix commit → 再検証）
+- **停止条件は「既出の Critical / Warning を全解消し、かつ新規の Critical / Warning が無いこと」**。green（全指摘ゼロ）を待たない。解消は修正またはポリシーに従った記録付き棄却
+- **3 回転終了時点でも未解消または新規の Critical / Warning がある場合は、4 回転目の自動修正を開始しない。** 各指摘を patch せず設計を疑う。判断するのはこのスキルを実行しているオーケストレータ。成果物は PR への設計疑義メモ。残件は修正するかポリシーの却下手順で記録付き棄却する。未解消 Critical / Warning がある間はマージしない
+- 打ち切り時に残った Suggestion 以下は PR Review Response Policy の採否とスコープ外発見の三分岐に従う。独立 Warning のパーキングはしない
+
 ## 重要ルール
 
 - ステップ1の dry-run 確認なしにステップ2を実行しないこと
-- Critical/Warning の自動修正はユーザー確認不要で実行すること（PR Review Response Policy準拠）
+- Critical/Warning の自動修正はユーザー確認不要で実行すること（PR Review Response Policy準拠）。失敗シナリオのない「ガード追加」要求は Suggestion 扱い
 - 妥当な Suggestion も確認不要で対応すること
+- レビュー→修正ループは 3 回転を上限とし、停止条件は既出 Critical/Warning 全解消かつ新規不在（green を待たない）。3 回転終了時点でも未解消 Critical / Warning がある場合は 4 回転目を自動開始せず、未解消のままマージしない
 - Info は報告のみで修正しないこと
 - CLI **未インストール**の場合は fallback 設定に従って自動再分配されます（プラン構築時のみ）
 - distributed モードの `--perspective` は所有 CLI だけを残すため、単一 CLI に縮退しうる。dry-run の除外理由と単一 CLI 警告を確認し、クロスモデル比較が必要なら `--mode cross-model` を使う。pair モードでは副が `comprehensive-review` 専任なので、それを含まない `--perspective` を渡すと副が落ちて主だけになる（理由と単一 CLI 警告はプラン構築時 = dry-run でも実行でも出る）

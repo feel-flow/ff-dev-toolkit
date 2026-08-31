@@ -662,6 +662,17 @@ bash scripts/codex-review.sh --base develop --reviewers comment-analysis
 - 未解消観点の再実行は、その観点が正常完了し Critical が消えたときだけ解消とする。CLI 失敗または timeout の場合は前回の未解消分類を統合レポートに保持する。準備段階で中断した場合や、実行中のリビジョン変更で結果を破棄した場合は新レポートを作らず、前回の未解消レポートを保持する
 - push ゲート（上の Husky 例）は最新の統合レポートだけを判定するため、部分再検証の結果でもゲートは通過できる。これが健全なのは上の適用条件（フルパス通過済み + 単一観点の fix）が守られている場合だけ — 条件を満たさない部分再検証でゲートを緑にするのはレビューの空洞化であり、行わないこと
 
+### fix ループの収束判定と打ち切り
+
+レビュー→修正のループは**放っておくと収束しない**。AI レビュアーは回すたびに新しい低重要度の指摘を拾い、AI 実装者は指摘のたびにガードと抽象を積み増す。ループには次の打ち切り規範を適用する（harness-review の「無限改善ループ」への自己適用）:
+
+- **上限は 3 回転**（1 回転 = レビュー実行 → fix commit → 再検証）
+- **停止条件は「既出の Critical / Warning を全解消し、かつ新規の Critical / Warning が無いこと」であり、green（全指摘ゼロ）ではない。** 解消は修正、または [PR Review Response Policy](./review-response-policy.md) の却下手順に従った記録付き棄却を含む。大きな diff のクロスモデルレビューは nit だけの REJECTED が続くことがあり、Critical 不在 + 実 Warning 全対応で停止してよい
+- **3 回転終了時点でも未解消または新規の Critical / Warning がある場合は、4 回転目の自動修正を開始しない。** 各指摘を patch せず設計を疑う。判断するのはオーケストレータ（実装側エージェント）である。成果物は PR への設計疑義メモ（指摘が依頼範囲外の追加分に集中している場合はスコープ過剰のサインなので、追加分の別 Issue への切り出しを検討する）。残件は修正するかポリシーの却下手順で記録付き棄却する。未解消 Critical / Warning がある間はマージしない
+- 打ち切り時に残った Suggestion 以下は、[PR Review Response Policy](./review-response-policy.md) の採否と、スコープ外発見の三分岐に従って記録する（黙って捨てない。独立 Warning のパーキングは採用しない）
+
+`code-simplification` は既定の非ブロック観点のままにする。単純化の Critical は修正必須だが、それ単独では push ゲートを再発火させない。複雑性を増やす方向の指摘は、失敗シナリオが無い限り Finding Discipline が Suggestion へ落とすので、対称化は重大度の入口で行う。
+
 ### CI/CD（GitHub Actions）での実行
 
 commit pin、fork 境界、resource 検証を含む完全な workflow 例は、[Multi-CLI Review CI](./multi-cli-review-ci.md) を参照する。

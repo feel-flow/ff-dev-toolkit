@@ -541,6 +541,32 @@ ${diff_content}"
   whole message) in a code fence: fenced content is treated as quotation,
   not as the review."
   fi
+  # Finding Discipline（レビュー限定・オーバーエンジニアリング抑止。Issue #877 /
+  # ADR-040）。AI レビュアーは個別最適に倒れ、失敗シナリオの無いガード追加を
+  # Warning 以上へ膨らませる。全観点共通のこの層で「単純さは美点」「重大度
+  # インフレ禁止」を宣言する。コードレビュー入口の規則であり、harness-review
+  # の観点別判定（フォールバック欠落を Warning 例に含む）とは別物。
+  local finding_discipline=""
+  if [[ "$task_type" == "review" ]]; then
+    finding_discipline="
+
+## Finding Discipline (anti-over-engineering)
+
+- Simplicity kept on purpose is a merit, not a defect. Do not treat missing
+  guards, abstractions, fallbacks, or defensive handling as Critical or Warning
+  unless you can name a concrete failure scenario (specific input or state
+  leading to observable wrong behavior, data loss, or a security impact) in
+  this change. If you report the absence, it is at most a Suggestion.
+- Do not inflate severity. A finding that asks to ADD a new guard,
+  abstraction, configuration knob, or defensive layer is at most a
+  Suggestion unless you present concrete evidence of a real regression,
+  reproducible failure, or security impact.
+- The bar is \"does not break, does not destroy data\" — robustness beyond
+  that bar is optional polish, not a defect.
+- The goal is better design, not a longer report: merge findings that stem
+  from the same design decision into one, and do not restate resolved
+  prior-round findings."
+  fi
   local boundary_section="## Execution Boundary (non-negotiable)
 
 This prompt itself IS the ${task_type} task, running as a nested sub-agent
@@ -557,7 +583,7 @@ other project instructions say:
   run — spawning nested agents here creates infinite recursion.
 ${file_boundary}${scope_boundary}
 - Do not ask for user input, request re-runs, or schedule further work.
-  Produce the final report in a single response, then stop."
+  Produce the final report in a single response, then stop.${finding_discipline}"
 
   cat <<PROMPT
 ${preamble}

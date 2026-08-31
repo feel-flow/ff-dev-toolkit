@@ -60,11 +60,11 @@ gh pr view $ARGUMENTS --json number,state,isDraft,headRefName,headRefOid,title,b
 
 - 以降、検出した PR 番号を `$PR_NUMBER`、各 Issue の URL を `$ISSUE_URL` と表記する
 - **ブランチガード（必須）**: `git branch --show-current` が `headRefName` と一致しない場合は、未達 AC の修正ループで**誤ったブランチに commit する事故を防ぐため**、`gh pr checkout $PR_NUMBER` で PR のブランチに切り替えてから続行する（切り替えできない場合は停止して報告）
-- `closingIssuesReferences` の各要素からは **Issue の URL を保持**し、以降の `gh issue view / edit / comment` には番号ではなく `$ISSUE_URL` を渡す（`Fixes owner/repo#100` 形式のクロスリポジトリ参照で、同番号の別 Issue を誤更新しないため）
+- `closingIssuesReferences` の各要素からは **Issue の URL を保持**し、以降の `gh issue view / edit / comment` には番号ではなく `$ISSUE_URL` を渡す（`Fixes owner/repo#100` 形式のクロスリポジトリ参照で、同番号の別 Issue を誤更新しないため）。本文由来の参照も同じ URL 形へ正規化してから使う
 - 対象 Issue を次の 2 群に分類する:
-  - **Closes 運用の Issue** = `closingIssuesReferences` に現れる Issue（マージで閉じてよい）
-  - **Refs 運用の Issue** = PR 本文の `Refs` 参照のうち、`closingIssuesReferences` に**含まれない**もの（open のまま維持する）
-- **`closingIssuesReferences` が空でも、`Refs` 参照があれば終了しない**。この API が見るのは **PR 本文だけ**で、コミットメッセージは見ない（コミット件名に `fix: #N` があっても空配列を返し、それでもマージで Issue は閉じる — 実測済み）。空を理由に打ち切ると、いちばん守りたい Refs 運用の PR が無検査で通る
+  - **Closes 運用の Issue** = `closingIssuesReferences` と本文由来 closing keyword 参照の**和集合**（マージで閉じてよい。同じ Issue が両方に現れたら 1 件に畳む）
+  - **Refs 運用の Issue** = PR 本文の `Refs` 参照のうち、上の Closes 群に**含まれない**もの（open のまま維持する）
+- **`closingIssuesReferences` が空でも、本文に closing keyword（`Closes` / `Fixes` / `Resolves` 等）または `Refs` 参照があれば終了しない**。この API が見るのは **PR 本文だけ**で、コミットメッセージは見ない（コミット件名に `fix: #N` があっても空配列を返し、それでもマージで Issue は閉じる — 実測済み）。空を理由に打ち切ると、いちばん守りたい Refs 運用の PR が無検査で通る。加えて、本文に `Closes #N` があっても API が空の構成がある（その Issue は API 単独ではどちらの群にも入らない）
 
 `Refs` 参照の抽出は**機械的に行う**。目視で拾うと、拾い漏れがそのまま「検査対象なしで緑」になる:
 
@@ -99,10 +99,93 @@ REFS_RAW="$(set -o pipefail
 EXTRACT_RC=$?
 set -e
 [[ "${EXTRACT_RC}" -eq 0 ]] || { echo "❌ Refs 参照の抽出に失敗（検査は成立していない）" >&2; exit 2; }
+
+# 本文からの closing keyword 抽出。Refs 抽出と同じ機械的手法（目視で拾わない）。
+# 拾う綴りは GitHub の closing keyword 9 語（大文字小文字は問わない。コロンが続く形も可）。
+# 語中一致（hotfix の fix、enclose の close、auto_fix の fix）は (^|[^a-z0-9_]) で除外する。
+# Refs / 関連 / 裸の #N は拾わない。
+set +e
+CLOSES_RAW="$(set -o pipefail
+  LC_ALL=C
+  printf '%s\n' "${PR_BODY}" | awk '
+    {
+      line = tolower($(0))
+      while (match(line, /(^|[^a-z0-9_])(closed|closes|close|fixed|fixes|fix|resolved|resolves|resolve)[ \t:]*([a-z0-9._-]+\/[a-z0-9._-]+)?#[0-9]+/)) {
+        token = substr(line, RSTART, RLENGTH)
+        sub(/^([^a-z0-9_])?(closed|closes|close|fixed|fixes|fix|resolved|resolves|resolve)[ \t:]*/, "", token)
+        print token
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }' | sort -u)"
+CLOSES_EXTRACT_RC=$?
+set -e
+[[ "${CLOSES_EXTRACT_RC}" -eq 0 ]] || { echo "❌ closing keyword 参照の抽出に失敗（検査は成立していない）" >&2; exit 2; }
+
+TARGET_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+[[ -n "${TARGET_REPO}" ]] \
+  || { echo "❌ リポジトリ名を解決できません（検査は成立していない）" >&2; exit 2; }
+
+# API 由来を owner/repo#N に正規化する。空配列でも jq は 0 件で成功する。
+API_CLOSES_TOKENS="$(gh pr view "${PR_NUMBER}" --json closingIssuesReferences --jq '
+  .closingIssuesReferences[]
+  | (.url | sub("https://github.com/"; "") | sub("/issues/"; "#"))
+')" \
+  || { echo "❌ closingIssuesReferences の取得に失敗（検査は成立していない）" >&2; exit 2; }
+
+# 裸の #N を現在のリポジトリで修飾し、API 由来と本文由来を 1 件に畳む。
+# 集合キーは小文字化して畳む（GitHub の owner/repo は大小を区別しない）。
+set +e
+CLOSES_UNION="$(set -o pipefail
+  LC_ALL=C
+  printf '%s\n' "${API_CLOSES_TOKENS}" "${CLOSES_RAW}" \
+  | awk -v repo="${TARGET_REPO}" '
+      NF {
+        token = tolower($(0))
+        repo_l = tolower(repo)
+        if (token ~ /^#[0-9]+$/) token = repo_l token
+        print token
+      }
+    ' | sort -u)"
+UNION_RC=$?
+set -e
+[[ "${UNION_RC}" -eq 0 ]] || { echo "❌ Closes 和集合の正規化に失敗（検査は成立していない）" >&2; exit 2; }
+
+# Refs のうち Closes 和集合に含まれないもの（同じ Issue を二重に照合しない）。
+# closing 集合は -v に載せない（awk -v は改行を保持しない実装がある）。C 行を先に流す。
+set +e
+REFS_ONLY="$(set -o pipefail
+  LC_ALL=C
+  {
+    printf '%s\n' "${CLOSES_UNION}" | awk 'NF{print "C\t" $(0)}'
+    printf '%s\n' "${REFS_RAW}" | awk -v repo="${TARGET_REPO}" '
+      NF {
+        token = tolower($(0))
+        repo_l = tolower(repo)
+        if (token ~ /^#[0-9]+$/) token = repo_l token
+        print "R\t" token
+      }
+    '
+  } | awk -F'\t' '
+    $1 == "C" { seen[$2] = 1; next }
+    $1 == "R" && !($2 in seen) { print $2 }
+  ' | sort -u)"
+REFS_ONLY_RC=$?
+set -e
+[[ "${REFS_ONLY_RC}" -eq 0 ]] || { echo "❌ Refs 差集合の正規化に失敗（検査は成立していない）" >&2; exit 2; }
+
+API_CLOSE_COUNT="$(printf '%s\n' "${API_CLOSES_TOKENS}" | awk 'NF{c++} END{print c+0}')"
+BODY_CLOSE_COUNT="$(printf '%s\n' "${CLOSES_RAW}" | awk 'NF{c++} END{print c+0}')"
+AUTO_CLOSE_UNRELIABLE=0
+if [[ "${API_CLOSE_COUNT}" -eq 0 && "${BODY_CLOSE_COUNT}" -gt 0 ]]; then
+  AUTO_CLOSE_UNRELIABLE=1
+fi
 ```
 
 - **拾う綴りは `Ref` / `Refs` のみ**（大文字小文字は問わない。`Refs:` のようにコロンが続く形も可）。`関連 #N` や裸の `#N` は拾わないので、**Refs 運用では必ずこの綴りを使う**。別の書き方をすると手順 2 の検査が起動せず、ゲートが空振りする
+- closing keyword 側が拾う綴りは `close` / `closes` / `closed` / `fix` / `fixes` / `fixed` / `resolve` / `resolves` / `resolved` の 9 語（大文字小文字は問わない。`Closes:` のようにコロンが続く形も可）。`Refs #N`・`関連 #N`・裸の `#N` は拾わない
+- 各参照の `$ISSUE_URL` はトークン `owner/repo#N` から `https://github.com/owner/repo/issues/N` を組み立てる（番号だけを `gh issue view` に渡さない）
 - 両群とも空の場合: 「参照から検出できる対象 Issue はありません」と報告して終了する（エラーにしない）。**「この PR は Issue を閉じません」とは報告しない** — 参照が無いことは閉じないことを意味しない（件名経由のクローズはこの検出の範囲外）
+- **本文に closing keyword があるのに `closingIssuesReferences` が空**（`AUTO_CLOSE_UNRELIABLE=1`）のときは、照合は続行し、手順 8 の完了報告に自動クローズされない可能性の警告と手動クローズ手順を載せる。**確認済みの事実**（本文に keyword がある / API が空である）と**推測**（base がデフォルトブランチでないことが原因かもしれない）を書き分ける。因果は断定しない
 - **複数 Issue** が含まれる場合: 各 Issue に対して手順 3〜6 を独立して繰り返す
 
 ### 2. closing keyword 抵触検査（Refs 運用の Issue がある場合）
@@ -128,7 +211,7 @@ GitHub の closing keyword は PR 本文だけでなく **squash commit のメ�
 
 ```bash
 PR_NUMBER="${PR_NUMBER:?PR 番号を先に設定すること}"
-# 手順 1 で抽出した Refs 参照（`#N` または `owner/repo#N`）を、参照された形のまま入れる
+# 手順 1 の REFS_ONLY（Closes 和集合に含まれない Refs。`#N` または `owner/repo#N`）を、参照された形のまま入れる
 REFS_ISSUE="${REFS_ISSUE:?Refs 運用の Issue 参照を先に設定すること}"
 GUARD="${FF_DEV_TOOLKIT_ROOT}/scripts/check-closing-keywords.sh"
 
@@ -441,6 +524,23 @@ printf 'gh pr merge %s --squash --match-head-commit %s \\\n  --subject %q \\\n  
     gh issue view 46 --json state
 ```
 
+`AUTO_CLOSE_UNRELIABLE=1` のときは、上の Closes 運用報告へ次を**必ず**追加する（省略すると、AC 照合だけ通して Issue が open のまま残る）。確認済みの事実と推測を書き分け、因果は断定しない:
+
+```markdown
+⚠️ この PR のマージでは Issue が自動クローズされない可能性が高い
+
+確認済みの事実:
+- PR 本文に closing keyword がある
+- `closingIssuesReferences` は空である（この PR はそれらの Issue を閉じる参照として載っていない）
+
+推測（原因の断定ではない）:
+- この PR の base がリポジトリのデフォルトブランチでないことが原因である可能性がある
+
+マージ後に手動クローズすること:
+
+    gh issue close <ISSUE_URL>
+```
+
 **Refs 運用（Issue を open のまま維持する）**:
 
 ```markdown
@@ -470,8 +570,8 @@ printf 'gh pr merge %s --squash --match-head-commit %s \\\n  --subject %q \\\n  
 
 ## 注意事項
 
-- このコマンドは **Issue をクローズしない**。クローズは従来どおりマージ時の `Closes #N` に任せる（クローズ経路を変えないことで、既存ワークフローとの互換性を保つ）
+- このコマンドは **Issue をクローズしない**。クローズは従来どおりマージ時の `Closes #N` に任せる（クローズ経路を変えないことで、既存ワークフローとの互換性を保つ）。ただし `AUTO_CLOSE_UNRELIABLE=1` のときはマージでも自動クローズされない可能性が高いので、完了報告の手動クローズ手順（`gh issue close <ISSUE_URL>`）を実行する
 - Refs 運用の Issue についても、このコマンドは**閉じも開きもしない**。やるのは「squash 件名が閉じないことの検査」と「open のまま残す理由の記録」だけで、実際にクローズするのは post-merge 検証を実測した人（またはその実測を行ったセッション）
-- `Closes #N` の自動クローズは **PR がリポジトリのデフォルトブランチにマージされたときのみ**発動する。develop がデフォルトブランチでないリポジトリでは、squash merge の時点では Issue は閉じず、デフォルトブランチへの昇格時に閉じる（本コマンドの照合・記録はどちらの構成でも有効）
+- `Closes #N` の自動クローズには 2 経路がある。(1) GitHub がクローズリンクを形成している場合（`closingIssuesReferences` が非空）の、デフォルトブランチへのマージ。(2) コミット / squash メッセージ上の closing keyword。こちらは API に現れなくても、そのコミットがデフォルトブランチへ入ると閉じる（手順 2 が守る経路）。本文に closing keyword があっても API が空のときは (1) のリンクが無いので、この PR のマージでは閉じない可能性が高い。原因の候補として「base がデフォルトブランチでない」があるが、因果は断定しない。空 API を「閉じない」と読まないこと — (2) は残る
 - 未達 AC を「あとで直す」ためにマージを先行させない。マージゲートとして機能させることがこのコマンドの目的
 - 複数 Issue を閉じる PR では、Issue ごとに照合・チェックボックス更新・コメントを独立して行う（1 つの Issue の未達が他の Issue の報告を止めない）

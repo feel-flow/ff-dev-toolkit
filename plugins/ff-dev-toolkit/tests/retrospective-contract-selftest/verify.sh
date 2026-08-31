@@ -51,8 +51,8 @@ SRC_DEPLOYMENT="$PLUGIN_ROOT/docs-template/05-operations/DEPLOYMENT.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=115
-EXPECTED_GATE_CHECKS_PUBLIC=104
+EXPECTED_GATE_CHECKS_MONOREPO=134
+EXPECTED_GATE_CHECKS_PUBLIC=123
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -197,6 +197,49 @@ gate_number() { # $1=sed の抽出式
   printf '%s\n' "$GATE_OUT" | sed -n "$1" | sed -n '1p'
 }
 
+# 成否で変わる診断部分だけを除き、baseline と変異を同じ検査ラベルへ戻す。
+# contains のラベルは完全一致で扱う。任意の括弧や接頭辞を丸ごと落とさない。
+gate_labels() { # $1=✓ または ✗。stdin=ゲートの実出力
+  awk -v mark="$1" '
+    index($0, "  " mark " ") == 1 {
+      label = substr($0, length("  " mark " ") + 1)
+      sub(/（不足: .*$/, "", label)
+      if (label ~ /^チェーン記載の検査対象が /) label = "チェーン記載の検査対象数"
+      else if (label ~ /^チェーン記載の針が /) label = "チェーン記載の針数"
+      else if (label ~ /^フォールバック針が /) label = "フォールバック針数"
+      else if (label ~ /^提案上限を SKILL.md から導出: / || label ~ /^提案上限（最大 N 件）を SKILL.md から抽出できません/) label = "提案上限の導出"
+      else if (label ~ /^提案上限が SKILL.md 内で一意/) label = "提案上限の一意性"
+      else if (label ~ /^改善候補なしの 1 行報告を SKILL.md /) label = "1 行報告の導出"
+      print label
+    }
+  '
+}
+
+# 例外は設けない。baseline の全ラベルを実測した赤で覆う。
+# 空の observed でも FNR/NR の一致に依存せず、全 baseline を未実測にする。
+check_label_coverage() { # $1=baseline ラベル $2=成功した変異の失敗ラベル
+  local baseline="$1" observed="$2" missing duplicates
+  if [[ ! -s "$baseline" ]]; then
+    echo "ラベル被覆: baseline が空です" >&2
+    return 1
+  fi
+  duplicates="$(LC_ALL=C sort "$baseline" | uniq -d)" || return 1
+  if [[ -n "$duplicates" ]] || grep '^$' "$baseline" >/dev/null; then
+    printf 'ラベル被覆: baseline の空または重複ラベル: %s\n' "$duplicates" >&2
+    return 1
+  fi
+  missing="$(awk 'FILENAME == ARGV[1] { seen[$0] = 1; next } !($0 in seen) { print }' "$observed" "$baseline")" || return 1
+  if [[ -n "$missing" ]]; then
+    printf 'ラベル被覆: 未実測の検査名:\n%s\n' "$missing" >&2
+    return 1
+  fi
+  return 0
+}
+
+BASELINE_LABELS="$FIXTURE_ROOT/baseline-labels"
+OBSERVED_LABELS="$FIXTURE_ROOT/observed-labels"
+: >"$OBSERVED_LABELS"
+
 # 変異が実際にファイルへ適用されたことを確認する。針の空振り（対象文言の変更に
 # 追従できていない）を「ゲートの検出力喪失」と誤診しないための分離。
 assert_mutated() {
@@ -214,8 +257,8 @@ assert_mutated() {
 expect_red() {
   local label="$1" needle="$2" expected_fails="$3" gate="${4:-$GATE}" actual_fails
   run_gate "$gate"
-  if [[ "$GATE_RC" -eq 0 ]]; then
-    bad "${label}: 変異が検出されず緑のまま"
+  if [[ "$GATE_RC" -ne 1 ]]; then
+    bad "${label}: 期待する exit 1 ではありません（exit ${GATE_RC}）"
     return
   fi
   if [[ "$GATE_OUT" != *"$needle"* ]]; then
@@ -228,6 +271,9 @@ expect_red() {
   # `|| true` で無害化する（0 件は「巻き添え無し」であって実行時エラーではない）。
   actual_fails="$(printf '%s\n' "$GATE_OUT" | grep -c '^  ✗ ' || true)"
   if [[ "$actual_fails" -eq "$expected_fails" ]]; then
+    if [[ "$gate" == "$GATE" ]]; then
+      printf '%s\n' "$GATE_OUT" | gate_labels '✗' >>"$OBSERVED_LABELS"
+    fi
     ok "${label}: 狙った検査が赤化（✗ ${actual_fails} 件）"
   else
     bad "${label}: 赤化した検査が ${actual_fails} 件（期待 ${expected_fails} 件）— 巻き添えの範囲が変わった（検査対象の文書を整形して 1 行を分割・結合した場合は、期待件数を実測し直すこと）"
@@ -269,6 +315,8 @@ else
   bad "baseline: ゲートが fixture 上で赤（変異の実測は成立しない）"
   printf '%s\n' "$GATE_OUT" | sed -n '1,60p' >&2
 fi
+
+printf '%s\n' "$GATE_OUT" | gate_labels '✓' >"$BASELINE_LABELS"
 
 # 侵食ガード: ゲートが実行した検査の総数を縛る（上の EXPECTED_GATE_CHECKS_* 参照）。
 GATE_CHECKS_SEEN="$(gate_number 's/^✓ retrospective contract verify: 全 \([0-9]*\) 件 pass$/\1/p')"
@@ -376,6 +424,25 @@ fi
 # 同一行に複数の針が乗っているものは期待件数を 2 以上にしてある（例: 実測限定と
 # 一般論禁止は SKILL.md の同じ箇条書き行）。
 MARKER_MUTATIONS=(
+  "${FIX_SKILL}|retrospective-SKILL.md|gh repo view \"<SSOT owner/repo>\" --json defaultBranchRef --jq '.defaultBranchRef.name'|SSOT 照合: 既定ブランチ名を取得|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|git -C \"<SSOT clone>\" show \"<取得した SHA>:<対象 path>\"|SSOT 照合: clone は SHA と path を指定して読む|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|gh api \"repos/<SSOT owner/repo>/git/ref/heads/<既定ブランチ>\" --jq '.object.sha'|SSOT 照合: API は既定ブランチの SHA を取得|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|開発元が非公開・非開示で SSOT 関係を確認できない場合も、存在確認済みの配布元へ|起票先解決: 公開利用者の配布元 fallback を維持|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|git -C \"<marketplace checkout>\" remote get-url origin|起票先解決: marketplace の実在 remote を読む|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**作業対象リポジトリの owner から類推しない**|起票先解決: owner を類推しない|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**配布元と SSOT を区別する**|起票先解決: 開発元と配布ミラーの関係を確認|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|gh repo view \"<候補 owner/repo>\" --json nameWithOwner|起票先解決: repo の存在と正規名を確認|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|到達可能な SSOT。配布ミラーへ新規起票しない|起票先解決: 変更要求は SSOT へ|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|その公開 Issue へ返信。実装修正の管理先は SSOT|起票先解決: 公開報告への応答先を維持|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|そのプロジェクトで実測した remote の repo|起票先解決: プロジェクト固有課題の行先|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**解決不能なら起票しない**|起票先解決: 未確定なら推測で起票しない|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|SSOT の既定ブランチで当該記述を照合する|SSOT 照合: 既定ブランチの実体を確認|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|git -C \"<SSOT clone>\" fetch \"<確認済み remote>\" \"refs/heads/<既定ブランチ>\"|SSOT 照合: clone は fetch した実体を確認|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|gh api -H \"Accept: application/vnd.github.raw+json\" \"repos/<SSOT owner/repo>/contents/<対象 path>?ref=<取得した SHA>\"|SSOT 照合: clone 不在でも API で確認|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|「SSOT では対応済み（該当コミット/該当箇所）」として提案を取り下げる|SSOT 照合: 修正済みは起票せず取り下げ|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|未修正の残余だけに絞った提案を提示|SSOT 照合: 一部修正は残余だけ提案|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|「照合不能」と記録し、「修正済みでない」と扱わない|SSOT 照合: 確認不能を未対応と混同しない|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|\`既存確認:\` 行へ SSOT の repo・既定ブランチ・確認した SHA/path|SSOT 照合: 結果と参照先を既存確認へ記録|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**実測に限る**: このセッションで実測した手戻り・無駄時間、または台帳に実測として積まれた観測履歴|提案閾値: 実測したものに限定|2"
   "${FIX_SKILL}|retrospective-SKILL.md|該当する候補が無ければ、次の 1 行だけで終了する|提案閾値: 候補なしは 1 行で終了|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**機微情報を提案本文へ引用しない**|提案閾値: 機微情報を引用しない|1"
@@ -386,7 +453,7 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|   - 起票先: |出力形式: 起票先欄|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 付与予定ラベル: |出力形式: 付与予定ラベル欄|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 期待効果: |出力形式: 期待効果欄|1"
-  "${FIX_SKILL}|retrospective-SKILL.md|### 起票前の既存確認（必須）|起票前の既存確認: 節が存在する|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|### 起票前の既存確認（必須）|起票前の既存確認: 節が存在する|20"
   "${FIX_SKILL}|retrospective-SKILL.md|この行を書けない提案は提示しない|起票前の既存確認: 既存確認を書けない提案は提示しない|1"
   "${FIX_SKILL}|retrospective-SKILL.md|--state all --limit 200|起票前の既存確認: 既存 Issue 検索は state 非限定 + 取得上限を明示|1"
   # Issue #865: 確認の**タイミング**（閾値側）は単独の行に乗るため巻き添え無し。
@@ -459,6 +526,25 @@ for mutation in "${MARKER_MUTATIONS[@]}"; do
   drop_lines_containing "$m_file" "$m_needle"
   if assert_mutated "$m_file" "$PRISTINE/${m_pristine}" "契約行削除: ${m_label}"; then
     expect_red "契約行削除: ${m_label}" "✗ ${m_label}" "$m_fails"
+  fi
+  restore_all
+done
+
+# 見出しや行を残したまま実操作だけが消える退化を検出する（レビュー指摘）。
+# 行削除だけでは fetch/show と ref/contents の片方だけの欠落を実測できない。
+SSOT_OPERATION_MUTATIONS=(
+  "gh repo view \"<SSOT owner/repo>\" --json defaultBranchRef --jq '.defaultBranchRef.name'|SSOT 照合: 既定ブランチ名を取得"
+  "git -C \"<SSOT clone>\" fetch \"<確認済み remote>\" \"refs/heads/<既定ブランチ>\"|SSOT 照合: clone は fetch した実体を確認"
+  "git -C \"<SSOT clone>\" show \"<取得した SHA>:<対象 path>\"|SSOT 照合: clone は SHA と path を指定して読む"
+  "gh api \"repos/<SSOT owner/repo>/git/ref/heads/<既定ブランチ>\" --jq '.object.sha'|SSOT 照合: API は既定ブランチの SHA を取得"
+  "gh api -H \"Accept: application/vnd.github.raw+json\" \"repos/<SSOT owner/repo>/contents/<対象 path>?ref=<取得した SHA>\"|SSOT 照合: clone 不在でも API で確認"
+)
+for mutation in "${SSOT_OPERATION_MUTATIONS[@]}"; do
+  m_clause="${mutation%|*}"
+  m_label="${mutation##*|}"
+  FF_CLAUSE="$m_clause" perl -pi -e 's{\Q$ENV{FF_CLAUSE}\E}{}' "$FIX_SKILL"
+  if assert_mutated "$FIX_SKILL" "$PRISTINE/retrospective-SKILL.md" "SSOT 操作句削除: ${m_label}"; then
+    expect_red "SSOT 操作句削除: ${m_label}" "✗ ${m_label}" 1
   fi
   restore_all
 done
@@ -688,6 +774,105 @@ if [[ -n "$CHAIN_NEEDLES_DECLARED" ]]; then
 else
   bad "M-J: 針数を読めなかったため件数ガードの実測をスキップしました"
 fi
+
+# 件数宣言のガードも baseline のラベルなので、それぞれ実際に赤化させる。
+for guard in EXPECTED_CHAIN_FILES EXPECTED_FALLBACK_NEEDLES; do
+  FF_GUARD="$guard" perl -pi -e 's{^(\s*\Q$ENV{FF_GUARD}\E=)([0-9]+)$}{$1 . ($2 + 1)}e' "$GATE"
+  case "$guard" in
+    EXPECTED_CHAIN_FILES) guard_label="チェーン記載の検査対象が" ;;
+    *) guard_label="フォールバック針が" ;;
+  esac
+  if assert_mutated "$GATE" "$SRC_GATE" "件数宣言の変更: $guard"; then
+    expect_red "件数宣言の変更: $guard" "✗ $guard_label" 1
+  fi
+  cp "$SRC_GATE" "$GATE"
+done
+
+# この本番呼び出し自体を下の小さな probe にも読み込む。呼び出しを削除しても
+# 負の対照が緑へ倒れるため、関数だけを検査して配線が消える穴を残さない。
+# coverage-assertion:start
+if check_label_coverage "$BASELINE_LABELS" "$OBSERVED_LABELS"; then
+  ok "ラベル被覆: baseline の全検査を変異で実測"
+else
+  bad "ラベル被覆: 未実測または不正な baseline"
+fi
+# coverage-assertion:end
+
+# 自己検証は suite 全体を再帰実行せず、実際の本番呼び出しと判定関数を使う。
+run_coverage_probe() { # $1=baseline $2=observed $3=正常/アサート削除/無条件除外
+  local baseline="$1" observed="$2" mode="${3:-normal}" script="$FIXTURE_ROOT/coverage-probe.sh"
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'PASS=0' 'FAIL=0'
+    declare -f ok bad check_label_coverage
+    printf '%s\n' 'BASELINE_LABELS="$1"' 'OBSERVED_LABELS="$2"'
+    if [[ "$mode" == "exclude-all" ]]; then
+      # 全ラベルの allowlist 追加と等価な無条件除外。
+      printf '%s\n' 'check_label_coverage() { return 0; }'
+    fi
+    if [[ "$mode" != "drop-assertion" ]]; then
+      awk '/^# coverage-assertion:start$/ { active = 1; next }
+           /^# coverage-assertion:end$/ { active = 0 }
+           active { print }' "$SCRIPT_DIR/verify.sh"
+    fi
+    printf '%s\n' 'exit "$FAIL"'
+  } >"$script"
+  run_gate_probe_rc=0
+  bash "$script" "$baseline" "$observed" >"$FIXTURE_ROOT/coverage-probe.log" 2>&1 || run_gate_probe_rc=$?
+  COVERAGE_PROBE_OUT="$(cat "$FIXTURE_ROOT/coverage-probe.log")"
+  COVERAGE_PROBE_RC="$run_gate_probe_rc"
+}
+
+probe_rejected_missing_label() {
+  [[ "$COVERAGE_PROBE_RC" -eq 1 && "$COVERAGE_PROBE_OUT" == *"ラベル被覆: 未実測の検査名:"* && "$COVERAGE_PROBE_OUT" == *"$PROBE_LABEL"* ]]
+}
+
+PROBE_LABEL="網羅 probe: 追加したマーカー針"
+PROBE_NEEDLE="selftest-only-retrospective-marker"
+PROBE_BASELINE="$FIXTURE_ROOT/probe-baseline"
+PROBE_OBSERVED="$FIXTURE_ROOT/probe-observed"
+cp "$OBSERVED_LABELS" "$PROBE_OBSERVED"
+printf '\n%s\n' "$PROBE_NEEDLE" >>"$FIX_SKILL"
+FF_PROBE_LINE='contains "$SKILL" "selftest-only-retrospective-marker" "網羅 probe: 追加したマーカー針"' \
+  perl -pi -e 'print "$ENV{FF_PROBE_LINE}\n" if /^# ── D\./' "$GATE"
+run_gate "$GATE"
+PROBE_CHECKS="$(gate_number 's/^✓ retrospective contract verify: 全 \([0-9]*\) 件 pass$/\1/p')"
+# EXPECTED_GATE_CHECKS_* を +1 しても通る baseline であることを先に実測する。
+if [[ "$GATE_RC" -eq 0 && "$PROBE_CHECKS" == "$((EXPECTED_GATE_CHECKS + 1))" ]]; then
+  ok "被覆 probe: 針追加と期待総数 +1 の baseline は緑"
+  printf '%s\n' "$GATE_OUT" | gate_labels '✓' >"$PROBE_BASELINE"
+  run_coverage_probe "$PROBE_BASELINE" "$PROBE_OBSERVED"
+  if probe_rejected_missing_label; then
+    ok "被覆 probe: 変異なしの追加針を名前付きで拒否"
+  else
+    bad "被覆 probe: 変異なしの追加針を拒否できない（${PROBE_LABEL}）"
+    printf '%s\n' "$COVERAGE_PROBE_OUT" >&2
+  fi
+  # ガードが無効な実装でも自己検証の負の対照は成功してはならない。
+  for mode in drop-assertion exclude-all; do
+    run_coverage_probe "$PROBE_BASELINE" "$PROBE_OBSERVED" "$mode"
+    if [[ "$COVERAGE_PROBE_RC" -eq 0 ]] && ! probe_rejected_missing_label; then
+      ok "被覆 probe: $mode は負の対照で検出される"
+    else
+      bad "被覆 probe: $mode の注入が期待どおりに成立しない"
+    fi
+  done
+  drop_lines_containing "$FIX_SKILL" "$PROBE_NEEDLE"
+  expect_red "被覆 probe: 追加針の対応変異" "✗ $PROBE_LABEL" 1
+  if [[ "$GATE_RC" -eq 1 ]]; then
+    printf '%s\n' "$GATE_OUT" | gate_labels '✗' >>"$PROBE_OBSERVED"
+  fi
+  run_coverage_probe "$PROBE_BASELINE" "$PROBE_OBSERVED"
+  if [[ "$COVERAGE_PROBE_RC" -eq 0 && "$COVERAGE_PROBE_OUT" == *"ラベル被覆: baseline の全検査を変異で実測"* ]]; then
+    ok "被覆 probe: 対応変異の追加後は緑（同一行の複数針も集合で照合）"
+  else
+    bad "被覆 probe: 対応変異を追加しても緑にならない"
+    printf '%s\n' "$COVERAGE_PROBE_OUT" >&2
+  fi
+else
+  bad "被覆 probe: 針追加後の baseline が成立しない（exit ${GATE_RC} / 検査 ${PROBE_CHECKS}）"
+fi
+cp "$SRC_GATE" "$GATE"
+restore_all
 
 # ── 系統 5: 公開リポジトリ配置の分岐（モノレポ側でのみ実測） ─────────────────
 # 公開側では root README が oss README と同一ファイルになり、ゲートの期待値が

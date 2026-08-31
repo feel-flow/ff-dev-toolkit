@@ -29,8 +29,9 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 REVIEW_POLICY="$PLUGIN_ROOT/docs-template/05-operations/deployment/review-response-policy.md"
 MULTI_REVIEW="$PLUGIN_ROOT/skills/multi-review/SKILL.md"
+ORCHESTRATION="$PLUGIN_ROOT/docs-template/05-operations/deployment/multi-cli-review-orchestration.md"
 
-for f in "$REVIEW_POLICY" "$MULTI_REVIEW"; do
+for f in "$REVIEW_POLICY" "$MULTI_REVIEW" "$ORCHESTRATION"; do
   [[ -s "$f" ]] || { echo "✗ 対象ファイルが見つからないか空です: $f" >&2; exit 1; }
 done
 
@@ -127,6 +128,50 @@ echo "== 消費側スキルの委譲行 =="
 
 contains "$MULTI_REVIEW" "PR Review Response Policy に従い、Critical/Warning/妥当な Suggestion を自動修正します" \
   "multi-review が Suggestion の採否処理をポリシーへ委譲する行を保持"
+contains "$MULTI_REVIEW" "対応表を適用する前に重大度インフレの抑止を適用する。新しいガード・抽象・フォールバック・防御コードの追加を求める指摘は、具体的な失敗シナリオ（再現する入力・状態と観測可能な誤動作）が無い限り Suggestion として扱う。Warning 表記であっても落とす。独立 Warning のパーキングはしない" \
+  "委譲テンプレートが重大度インフレ抑止を分類前に適用する"
+
+echo
+echo "== 重大度インフレの抑止と Warning 必須修正（Issue #877 / ADR-040） =="
+
+contains "$REVIEW_POLICY" "**Warning**              | 必ず修正         | 不要（即対応）" \
+  "Warning の行は必ず修正のまま（パーキングへ緩和しない）"
+contains "$REVIEW_POLICY" "重大度インフレの抑止" \
+  "重大度インフレの抑止をポリシーに持つ"
+contains "$REVIEW_POLICY" "Warning 表記であっても本ポリシー上の扱いは Suggestion に落とす" \
+  "失敗シナリオのないガード追加要求を Suggestion へ落とす"
+contains "$REVIEW_POLICY" "独立した Warning を follow-up Issue へパーキングする運用は採用しない" \
+  "独立 Warning のパーキング不採用を明示"
+not_contains "$REVIEW_POLICY" "原則修正。棄却・パーキング可" \
+  "Warning 行の旧 90% 緩和文言への復元を検出"
+not_contains "$REVIEW_POLICY" "棚卸しパーキング" \
+  "棚卸しパーキング経路の再導入を検出"
+
+echo
+echo "== fix ループの収束判定（Issue #877 / ADR-040） =="
+
+contains "$ORCHESTRATION" "### fix ループの収束判定と打ち切り" \
+  "オーケストレーション文書が収束判定節を持つ"
+contains "$ORCHESTRATION" "上限は 3 回転" \
+  "fix ループ上限が 3 回転"
+contains "$ORCHESTRATION" "既出の Critical / Warning を全解消" \
+  "停止条件が既出 Critical / Warning の全解消を含む"
+contains "$ORCHESTRATION" "3 回転終了時点でも未解消または新規の Critical / Warning がある場合は、4 回転目の自動修正を開始しない" \
+  "上限到達時は 4 回転目を自動開始せず設計を疑う"
+contains "$ORCHESTRATION" "未解消 Critical / Warning がある間はマージしない" \
+  "打ち切り後も未解消 Critical / Warning ではマージしない"
+contains "$ORCHESTRATION" "green（全指摘ゼロ）ではない" \
+  "停止条件が green 待ちではない"
+contains "$MULTI_REVIEW" "既出の Critical / Warning を全解消" \
+  "multi-review が既出 Critical / Warning 全解消を停止条件に持つ"
+contains "$MULTI_REVIEW" "green（全指摘ゼロ）を待たない" \
+  "multi-review が green 待ちではないことを実行時要約に持つ"
+contains "$ORCHESTRATION" '`code-simplification` は既定の非ブロック観点のまま' \
+  "code-simplification の非ブロック維持を明示"
+contains "$MULTI_REVIEW" "上限は 3 回転" \
+  "multi-review が 3 回転上限を実行時要約として持つ"
+contains "$MULTI_REVIEW" "独立 Warning のパーキングはしない" \
+  "multi-review がパーキング不採用を実行時に持つ"
 
 echo
 echo "== multi-review 手順3 のサブエージェント委譲契約 =="

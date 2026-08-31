@@ -177,7 +177,7 @@ git checkout -b "feature/${ISSUE_NUM}-user-auth"
 cloud セッションなど**別のセッションが作ったブランチ**を引き取って作業する場合、**そのセッションはまだ動いている可能性がある**。実測では、引き取ってレビュー結果に基づく方針転換を実装しているあいだに、生成元のセッションが同じブランチへ別方向の修正を push していた（気付いたのは push が non-fast-forward で拒否されたときで、`--force` を付けていれば相手の作業を破棄していた）。
 
 - **生成元は識別できる**: cloud セッション由来の PR は本文と各コミットに `Claude-Session:` フッタを持つ。ブランチ名の `claude/` 接頭辞と併せて、引き取り対象かどうかを判定する
-- **push は `--force-with-lease`**（`--force` を使わない）。非 fast-forward の拒否は事故ではなく、並行作業の検出そのもの
+- **共有中の履歴は merge と通常の push で保つ**（`--force` を使わない）。`--force-with-lease` は単独利用を確認した未マージ PR のリベース後だけに限定する。非 fast-forward の拒否は事故ではなく、並行作業の検出そのもの
 - **方針が競合したら force-push で押し切らない**。相手のコミットの上に自分の変更を積む（履歴に両方が残り、判断の経緯が追える）
 - **マージ直前に鮮度を照合する**。ローカルのゲート結果は特定コミットに対する実測なので、リモートが先行していれば squash merge は未実測のコミットまで畳み込む
 <!-- ff-dev-toolkit-inherited-branch-contract:end -->
@@ -187,6 +187,16 @@ cloud セッションなど**別のセッションが作ったブランチ**を�
 ### ステップ3: AI駆動実装とコミット（Implement）
 
 **原則**: MASTER.md、PATTERNS.md、TESTING.mdの仕様に従いAIツールで実装
+
+#### 調査は分岐後に行う
+
+**編集の根拠にするコードと仕様の読み取りは、最新 base から分岐した後に行う。** Issue の受領や要件確認は先に行ってよいが、分岐前の読み取りをそのまま一括置換の根拠にしない。長命ブランチから移った場合は、分岐前の ref を使って対象範囲の乖離を測る:
+
+```bash
+git diff --stat <前のブランチ> <base ブランチ> -- <対象ディレクトリ>
+```
+
+新規モジュールや構造変更があれば、対象ファイルを分岐後の作業ツリーで読み直してから編集する。比較できない場合も古い読み取りが有効とはみなさず、現在のファイルを読む。仕様の前提まで変わっていたら `/spec-driven` の G1 へ戻る。
 
 #### 着手前の Playbook 参照（ACE Reuse）
 
@@ -314,6 +324,52 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 **目的**: 実装の品質を客観的な指標で確認する
 
+#### 検証・レビュー前の base 追随確認
+
+**検証スイートを回す前とレビュー起動前に、最新の base と HEAD の乖離を測る。** PR ブランチの upstream は通常その PR ブランチなので、`git status -sb` だけでは base への遅れを判定できない。`<base>` は PR の統合先ブランチ名へ置き換え、次を1回実行する（ローカルの base へ checkout する必要はない）:
+
+```bash
+(
+  base='<base>'
+  if git fetch origin "+refs/heads/${base}:refs/remotes/origin/${base}" &&
+     behind="$(git rev-list --count "HEAD..refs/remotes/origin/${base}")"; then
+    printf 'BASE_BEHIND=%s\n' "$behind"
+  else
+    printf 'BASE_FRESHNESS=UNKNOWN（fetch または比較に失敗）\n' >&2
+  fi
+)
+```
+
+`BASE_BEHIND=0` なら追加操作なしで進む。正数なら下の選択指針で base を取り込み、取り込み後のコード・仕様を読み直してからゲートを回す。これにより、base 側で進んだ公開タグなどに古いブランチの検査が反応する手戻りを減らす。`UNKNOWN` は追随済みとは数えず、確認できなかった理由を記録する。この事前確認だけでは進行を止めない（fail-open）が、必須ゲートや送信時の安全確認を免除するものではない。
+
+#### base の取り込みとリベース後の送信
+
+- **未 push のブランチ**: `git rebase origin/<base>` で追随し、通常の push を行う。
+- **共有中・別セッション由来・他者が使う可能性のあるブランチ**: `git merge origin/<base>` と通常の push を選び、公開済み履歴を保つ。
+- **自分だけが使う未マージ PR ブランチ**: 履歴を保つなら merge、履歴を整える必要があるなら rebase を選べる。rebase 前に「自分が直前に push したコミット」の SHA を固定し、以下の確認を満たす場合だけ明示 lease 付きで送信する。
+- **共有文書の version / claim を再調整する場合**: `/spec-driven` G4 の収束規則を優先する。push 済みなら reconciliation commit を追加して通常 push し、amend / rebase / force-with-lease で公開済み commit を上書きしない。
+
+```bash
+(
+  branch='<自分だけが使う未マージPRブランチ>'
+  expected='<自分が直前にpushしたコミットSHA>'
+  [ "$(git branch --show-current)" = "$branch" ] || exit 1
+  # rebase 前から固定した expected を、fetch で得た最新値へ置き換えない。
+  git fetch origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" || exit 1
+  remote_tip="$(git rev-parse --verify "refs/remotes/origin/${branch}")" || exit 1
+  [ "$remote_tip" = "$expected" ] || {
+    printf '他の push を検出: 上書きせず変更内容を確認してください\n' >&2
+    exit 1
+  }
+  git push --force-with-lease="refs/heads/${branch}:${expected}" \
+    origin "HEAD:refs/heads/${branch}"
+)
+```
+
+確認後に別の push が入っても、明示した SHA と違えばサーバー側で拒否される。拒否時は expected を更新して押し切らず、相手の変更を確認する。**lease は所有権を証明しない**ため、単独利用・未マージ・直前の自分の push を確認できない場合はこの経路を使わない。上の条件を満たす base 追随の送信はフルオートの通常手順で、無条件の `--force` とは区別する。`--force`・`reset --hard`・本番破壊は引き続き停止して確認する。実測では、単独 PR の rebase 後に通常 push が拒否され、force-push を一律に停止対象と読むことで不要な中断が生じたため、この区別を置いている。
+
+長時間ゲートの起動前には、ステップ5の「長時間の読み取りゲートにも凍結を適用する」を確認する。
+
 #### 自動テストの実行
 
 ```bash
@@ -346,6 +402,8 @@ npm audit --audit-level=moderate
 ### ステップ5: セルフレビュー（PR作成前）【重要】
 
 **目的**: PRレビュー時の単純な指摘を事前に防ぎ、レビュー品質を向上させる
+
+レビュー起動前にも、[検証・レビュー前の base 追随確認](#検証レビュー前の-base-追随確認) を行う。遅れていれば取り込んでから検証・レビューし、既に追随済みならそのまま進む。
 
 #### セルフレビューの5つの観点
 
@@ -407,6 +465,18 @@ npm audit --audit-level=moderate
 
 **どうしても並行したい場合**は、レビュー対象を起動時の commit SHA へ固定し、作業ツリーではなく `git diff <SHA>` / `git show <SHA>:<path>` を読ませる形にする。ただしこれは緩和であって凍結の代替ではない — エージェントがパス指定でファイルを読む限り作業ツリーの実体を見るため、プロンプトの diff を固定しても「エージェントが読んだファイル」までは守れない（`multi-agent.sh` が diff 固定とは別にリビジョン検証を持つのはこのため）。
 
+#### 長時間の読み取りゲートにも凍結を適用する
+
+レビューエージェントを起動していなくても、作業ツリーを読む長時間ゲート（`run-all.sh` などのテストランナー、静的解析、ビルド検証）の開始からプロセスの終了確認まで、親・別セッションとも入力を編集しない。バックグラウンド実行中も同じで、ファイル作成・別のビルドやテスト・checkout / commit / rebase など、入力を変えうる操作を並走させない。ゲート自身が所定のログ・一時領域・ビルド出力へ書くことは対象外だが、その出力を別処理が書き換えることや、入力ソースの自動修正は免除しない。タイムアウトや中断後も、子プロセスを含む終了を確認してから凍結を解除する。
+
+**実行中に入力が変わった結果は、緑でも証拠に使わず破棄し、変更を終えてから再実行する。** 途中で元へ戻した場合も同じで、開始・終了時の SHA 一致だけでは無変更を証明できない。長時間ゲートを background へ回すコマンドは、状態を変える短い検証・修正コマンドと連結しない。
+
+#### 凍結解除後、レビュー結果へ着手する前に base を取り直す
+
+**全レビューと長時間ゲートの終了を確認 → 最新 base を fetch して比較 → 必要なら rebase / merge → 指摘対象を読み直す → 修正を1つの fix commit へ束ねる**、の順に行う。具体的な fetch・乖離測定と取り込み方法は [検証・レビュー前の base 追随確認](#検証レビュー前の-base-追随確認) と [base の取り込みとリベース後の送信](#base-の取り込みとリベース後の送信) を使う。
+
+レビュー待ちの間に、同一アカウントの別セッションが同じ指摘を解消している場合がある。取り込み後にまだ残る指摘だけを修正し、変更したスナップショットに必要な検証を行う。マージ後に回したレビューの follow-up も同様に、最新 base から新しい作業ブランチを作り直してから着手する（マージ済みブランチや統合ブランチを直接書き換えない）。
+
 **AIツールによる対話的レビュー（推奨）**:
 
 ```
@@ -450,7 +520,7 @@ Claude系（Toolkit）とGPT系（Codex CLI）で異なるモデルの観点か�
 ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
 ```
 
-> **レビュー結果の対応**: 全てのレビュー結果は [PRレビュー対応ポリシー](./review-response-policy.md) に従って対応します。Critical/Warning は確認不要で即対応。
+> **レビュー結果の対応**: 全てのレビュー結果は [PRレビュー対応ポリシー](./review-response-policy.md) に従って対応します。Critical/Warning は確認不要で即対応。失敗シナリオのない「ガード追加」要求は同ポリシーの重大度インフレ抑止により Suggestion 扱い。レビュー→修正ループの上限と停止条件は [fix ループの収束判定と打ち切り](./multi-cli-review-orchestration.md#fix-ループの収束判定と打ち切り) を正とする。
 >
 > **スクリプトの出自**: `scripts/multi-review.sh` / `scripts/multi-agent.sh` / `scripts/adapters/*` はプラグイン同梱。`scripts/codex-review.sh` は **`multi-agent.sh` へ委譲する薄いシムとして同梱**され、`setup-multi-agent.sh` が消費プロジェクトへ配置する（Issue #406）。`review-common.sh` / `review-prompts.sh` / `claude-review.sh` などの自前ラッパー一式は引き続き**同梱されない**。
 
@@ -659,6 +729,8 @@ ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_RO
 fix 後の再検証を修正が影響する観点だけに限定できる条件（**部分再検証**）と、そのときの統合レポート・マーカーの整合ルールは [multi-cli-review-orchestration.md](./multi-cli-review-orchestration.md#fix-ループの部分再検証--reviewers-限定再実行) を参照。
 
 #### 7b. AI支援レビュー対応
+
+編集を始める前に、ステップ5の [凍結解除後、レビュー結果へ着手する前に base を取り直す](#凍結解除後レビュー結果へ着手する前に-base-を取り直す) を実施する。先に fetch と必要な rebase / merge を済ませ、取り込み後も残る指摘を修正する。
 
 **原則**: レビュー指摘には**必ずスレッド形式で返信**し、修正内容を明確にする
 

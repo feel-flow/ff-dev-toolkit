@@ -87,6 +87,20 @@ contains() {
   fi
 }
 
+# 起票前の手順の針は当該節だけを見る。別節へのコピーでは手順の欠落を埋められない。
+preflight_contains() {
+  local needle="$1" label="$2"
+  if awk '
+    /^### 起票前の既存確認（必須）$/ { active = 1; next }
+    active && /^###? / { exit }
+    active { print }
+  ' "$SKILL" | grep -F -- "$needle" >/dev/null; then
+    ok "$label"
+  else
+    bad "${label}（不足: ${needle}）"
+  fi
+}
+
 echo "== retrospective 契約検査 =="
 
 REQUIRED_FILES=("$SKILL" "$ACE_CURATE" "$GIT_WORKFLOW" "$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
@@ -289,6 +303,31 @@ contains "$SKILL" "本文を**全文**読み（先頭だけで切らない）" "
 # 増える」だけで原因へ辿れない。2 針とも同じ 1 行に乗る。
 contains "$SKILL" "提案を提示する**前**に、各提案について次を確認する" "起票前の既存確認: 確認は提示前に行う（正本側）"
 contains "$SKILL" "は「重複なし」と扱わない" "起票前の既存確認: 確認不能時は重複なしと扱わない"
+
+# SSOT の最新版との照合（既存 Issue 検索とは別の確認）。
+preflight_contains "SSOT の既定ブランチで当該記述を照合する" "SSOT 照合: 既定ブランチの実体を確認"
+preflight_contains "git -C \"<SSOT clone>\" fetch \"<確認済み remote>\" \"refs/heads/<既定ブランチ>\"" "SSOT 照合: clone は fetch した実体を確認"
+preflight_contains "gh api -H \"Accept: application/vnd.github.raw+json\" \"repos/<SSOT owner/repo>/contents/<対象 path>?ref=<取得した SHA>\"" "SSOT 照合: clone 不在でも API で確認"
+preflight_contains "「SSOT では対応済み（該当コミット/該当箇所）」として提案を取り下げる" "SSOT 照合: 修正済みは起票せず取り下げ"
+preflight_contains "未修正の残余だけに絞った提案を提示" "SSOT 照合: 一部修正は残余だけ提案"
+preflight_contains "「照合不能」と記録し、「修正済みでない」と扱わない" "SSOT 照合: 確認不能を未対応と混同しない"
+preflight_contains "\`既存確認:\` 行へ SSOT の repo・既定ブランチ・確認した SHA/path" "SSOT 照合: 結果と参照先を既存確認へ記録"
+
+preflight_contains "gh repo view \"<SSOT owner/repo>\" --json defaultBranchRef --jq '.defaultBranchRef.name'" "SSOT 照合: 既定ブランチ名を取得"
+preflight_contains "git -C \"<SSOT clone>\" show \"<取得した SHA>:<対象 path>\"" "SSOT 照合: clone は SHA と path を指定して読む"
+preflight_contains "gh api \"repos/<SSOT owner/repo>/git/ref/heads/<既定ブランチ>\" --jq '.object.sha'" "SSOT 照合: API は既定ブランチの SHA を取得"
+
+# 起票先の解決と変更要求/応答の振り分け。
+preflight_contains "git -C \"<marketplace checkout>\" remote get-url origin" "起票先解決: marketplace の実在 remote を読む"
+preflight_contains "**作業対象リポジトリの owner から類推しない**" "起票先解決: owner を類推しない"
+preflight_contains "**配布元と SSOT を区別する**" "起票先解決: 開発元と配布ミラーの関係を確認"
+preflight_contains "gh repo view \"<候補 owner/repo>\" --json nameWithOwner" "起票先解決: repo の存在と正規名を確認"
+preflight_contains "到達可能な SSOT。配布ミラーへ新規起票しない" "起票先解決: 変更要求は SSOT へ"
+preflight_contains "その公開 Issue へ返信。実装修正の管理先は SSOT" "起票先解決: 公開報告への応答先を維持"
+preflight_contains "そのプロジェクトで実測した remote の repo" "起票先解決: プロジェクト固有課題の行先"
+preflight_contains "**解決不能なら起票しない**" "起票先解決: 未確定なら推測で起票しない"
+
+preflight_contains "開発元が非公開・非開示で SSOT 関係を確認できない場合も、存在確認済みの配布元へ" "起票先解決: 公開利用者の配布元 fallback を維持"
 
 # 観測台帳（起票の前段バッファ・KPT 拡張）: Issue トラッカーを観測の蓄積に使うと
 # 一回性の観測まで Issue になり重複起票が構造化する（Issue #606 の実測が背景）。

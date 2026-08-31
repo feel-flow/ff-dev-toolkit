@@ -32,6 +32,8 @@ PR 番号は **必須**。`delete_branch_on_merge = false` のリポジトリで
 
 ## 実行方法
 
+マージ前の base 追随・リベース後の送信は [Git Workflow](../../docs-template/05-operations/deployment/git-workflow.md#base-の取り込みとリベース後の送信) に従う。単独利用の未マージ PR で確認済み SHA を明示する `--force-with-lease` と、停止対象の `--force` を区別する。本スキルが行うマージ済みブランチの削除とは別の手順である。
+
 以下を 1 回だけ実行する:
 
 ```bash

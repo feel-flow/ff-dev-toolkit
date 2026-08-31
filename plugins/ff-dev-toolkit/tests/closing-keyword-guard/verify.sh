@@ -310,24 +310,30 @@ contains "$SKILL" '拾う綴りは `Ref` / `Refs` のみ' "Refs 参照として�
 contains "$SKILL" "RSTART, RLENGTH" "Refs 参照の抽出を機械化している（目視に委ねない）"
 contains "$SKILL" 'EXTRACT_RC}" -eq 0' "抽出の失敗を rc の意味論に依存せず判定する"
 
-# ---- 手順 1 の awk を実体として実行する機能検査（Issue #776 AC） --------------
+# ---- 手順 1 の awk を実体として実行する機能検査（Issue #776 / #994 AC） ------
 # contains のテキスト照合では「awk が原文どおり存在する」ことしか言えず、引数展開
 # による意味破壊（line = $0 が line = <PR番号> へ化ける類）や正規表現の退行は検出
-# できない。SKILL.md のフェンスから awk プログラムを抽出し、Refs を含む本文へ実際
-# に適用して抽出結果を固定する。マーカー（"| awk" 開始行〜"sort -u" 終了行）が
-# 変わって抽出できなくなった場合は fail-closed でこの検査を赤にする。
+# できない。SKILL.md のフェンスから awk プログラムを抽出し、本文へ実際に適用して
+# 抽出結果を固定する。マーカー（"| awk" 開始行〜"sort -u" 終了行）が変わって抽出
+# できなくなった場合は fail-closed でこの検査を赤にする。
 # 終端行（`}' | sort -u ...`）はクォート以降を切り落として残りを出力する。固定文字列
 # "    }" を合成すると、終端行に実文が同居する形へ変わったときに黙って欠落する。
-SKILL_AWK_SRC="$(awk -v q="'" '
-  extracting == 1 && index($0, "sort -u") > 0 {
-    tail_pos = index($0, q)
-    if (tail_pos > 1) print substr($0, 1, tail_pos - 1)
-    found = 1; extracting = 0; next
-  }
-  extracting == 1 { print }
-  found == 0 && extracting == 0 && index($0, "| awk") > 0 { extracting = 1 }
-  END { exit found == 1 ? 0 : 1 }
-' "$SKILL")" || SKILL_AWK_SRC=""
+extract_skill_awk_after() {
+  local needle="$1"
+  awk -v q="'" -v needle="$needle" '
+    found == 0 && index($0, needle) > 0 { armed = 1 }
+    extracting == 1 && index($0, "sort -u") > 0 {
+      tail_pos = index($0, q)
+      if (tail_pos > 1) print substr($0, 1, tail_pos - 1)
+      found = 1; extracting = 0; next
+    }
+    extracting == 1 { print }
+    found == 0 && extracting == 0 && armed && index($0, "| awk") > 0 { extracting = 1 }
+    END { exit found == 1 ? 0 : 1 }
+  ' "$SKILL"
+}
+
+SKILL_AWK_SRC="$(extract_skill_awk_after 'REFS_RAW=')" || SKILL_AWK_SRC=""
 if [[ -n "$SKILL_AWK_SRC" ]]; then
   ok "手順 1 の awk プログラムを SKILL.md のフェンスから抽出できる"
 else
@@ -342,6 +348,170 @@ if [[ "$REFS_EXTRACTED" == "$REFS_EXPECTED" ]]; then
 else
   bad "抽出した awk の出力が期待と不一致（expected: $(printf '%s' "$REFS_EXPECTED" | tr '\n' ' ') / actual: $(printf '%s' "$REFS_EXTRACTED" | tr '\n' ' ')）"
 fi
+
+CLOSES_AWK_SRC="$(extract_skill_awk_after 'CLOSES_RAW=')" || CLOSES_AWK_SRC=""
+if [[ -n "$CLOSES_AWK_SRC" ]]; then
+  ok "closing keyword の awk プログラムを SKILL.md のフェンスから抽出できる"
+else
+  bad "closing keyword の awk プログラムを SKILL.md から抽出できない（マーカー行の変更時はこの検査を追随させる）"
+fi
+
+if [[ -n "$CLOSES_AWK_SRC" ]]; then
+  CLOSES_SAMPLE="$(printf '%s\n' \
+    'Closes #100' \
+    'Fixes #2' \
+    'RESOLVES owner/repo#42' \
+    'close #21' \
+    'Fixed #22' \
+    'Resolve #23' \
+    'resolved owner/other#24' \
+    'Closes #1, fixes owner/repo#3' \
+    'Refs #620' \
+    'related #3' \
+    'See #9' \
+    'hotfix #8' \
+    'enclose #7' \
+    'auto_fix #88' \
+    'v2fix #89' \
+    'Closed: #11' \
+    'fix owner/other#15')"
+  CLOSES_EXTRACTED="$(printf '%s\n' "$CLOSES_SAMPLE" \
+    | LC_ALL=C awk "$CLOSES_AWK_SRC" | LC_ALL=C sort -u)" || CLOSES_EXTRACTED="(awk 実行に失敗)"
+  CLOSES_EXPECTED="$(printf '%s\n' \
+    '#1' '#100' '#11' '#2' '#21' '#22' '#23' \
+    'owner/other#15' 'owner/other#24' 'owner/repo#3' 'owner/repo#42')"
+  if [[ "$CLOSES_EXTRACTED" == "$CLOSES_EXPECTED" ]]; then
+    ok "抽出した awk が closing keyword 9 語と 1 行複数参照を取り出し、Refs・裸番号・語中一致は拾わない"
+  else
+    bad "closing keyword awk の出力が期待と不一致（expected: $(printf '%s' "$CLOSES_EXPECTED" | tr '\n' ' ') / actual: $(printf '%s' "$CLOSES_EXTRACTED" | tr '\n' ' ')）"
+  fi
+
+  CLOSES_EMPTY="$(printf '%s\n' 'Refs #620' 'related #3' 'See #9' 'hotfix #8' 'auto_fix #88' 'v2fix #89' \
+    | LC_ALL=C awk "$CLOSES_AWK_SRC" | LC_ALL=C sort -u)" || CLOSES_EMPTY="(awk 実行に失敗)"
+  if [[ -z "$CLOSES_EMPTY" ]]; then
+    ok "closing keyword が無い本文では抽出 0 件（誤検出しない）"
+  else
+    bad "closing keyword が無い本文を誤検出した（actual: $(printf '%s' "$CLOSES_EMPTY" | tr '\n' ' ')）"
+  fi
+else
+  bad "closing keyword awk が空のため検出・誤検出の実測をスキップした（抽出失敗を緑にしない）"
+fi
+
+UNION_AWK_SRC="$(extract_skill_awk_after 'CLOSES_UNION=')" || UNION_AWK_SRC=""
+if [[ -n "$UNION_AWK_SRC" ]]; then
+  ok "Closes 和集合の awk プログラムを SKILL.md のフェンスから抽出できる"
+else
+  bad "Closes 和集合の awk プログラムを SKILL.md から抽出できない（マーカー行の変更時はこの検査を追随させる）"
+fi
+
+if [[ -n "$UNION_AWK_SRC" ]]; then
+  UNION_EXTRACTED="$(printf '%s\n' '#8' 'owner/repo#8' 'owner/other#9' \
+    | LC_ALL=C awk -v repo="owner/repo" "$UNION_AWK_SRC" | LC_ALL=C sort -u)" || UNION_EXTRACTED="(awk 実行に失敗)"
+  UNION_EXPECTED="$(printf '%s\n' 'owner/other#9' 'owner/repo#8')"
+  if [[ "$UNION_EXTRACTED" == "$UNION_EXPECTED" ]]; then
+    ok "和集合 awk が裸 #N と owner/repo#N を 1 件に畳む"
+  else
+    bad "和集合 awk の出力が期待と不一致（expected: $(printf '%s' "$UNION_EXPECTED" | tr '\n' ' ') / actual: $(printf '%s' "$UNION_EXTRACTED" | tr '\n' ' ')）"
+  fi
+
+  BARE_ONLY="$(printf '%s\n' '#8' \
+    | LC_ALL=C awk -v repo="owner/repo" "$UNION_AWK_SRC" | LC_ALL=C sort -u)" || BARE_ONLY="(awk 実行に失敗)"
+  if [[ "$BARE_ONLY" == "owner/repo#8" ]]; then
+    ok "API 空・本文の裸 #N だけでも和集合が owner/repo#N になる"
+  else
+    bad "裸 #N だけの和集合が期待と不一致（expected: owner/repo#8 / actual: $(printf '%s' "$BARE_ONLY" | tr '\n' ' ')）"
+  fi
+
+  CASE_FOLD="$(printf '%s\n' 'Owner/Hello-World#10' '#10' \
+    | LC_ALL=C awk -v repo="owner/hello-world" "$UNION_AWK_SRC" | LC_ALL=C sort -u)" || CASE_FOLD="(awk 実行に失敗)"
+  if [[ "$CASE_FOLD" == "owner/hello-world#10" ]]; then
+    ok "和集合キーが owner/repo の大小文字差を畳む"
+  else
+    bad "大小文字の和集合が期待と不一致（expected: owner/hello-world#10 / actual: $(printf '%s' "$CASE_FOLD" | tr '\n' ' ')）"
+  fi
+else
+  bad "和集合 awk が空のため畳み込みの実測をスキップした（抽出失敗を緑にしない）"
+fi
+
+JOIN_AWK_SRC="$(awk -v q="'" -v needle='$1 == "C"' '
+  found == 0 && index($0, needle) > 0 { extracting = 1 }
+  extracting == 1 && index($0, "sort -u") > 0 {
+    tail_pos = index($0, q)
+    if (tail_pos > 1) print substr($0, 1, tail_pos - 1)
+    found = 1; extracting = 0; next
+  }
+  extracting == 1 { print }
+  END { exit found == 1 ? 0 : 1 }
+' "$SKILL")" || JOIN_AWK_SRC=""
+if [[ -n "$JOIN_AWK_SRC" ]]; then
+  ok "Refs 差集合の join awk を SKILL.md から抽出できる"
+else
+  bad "Refs 差集合の join awk を SKILL.md から抽出できない（マーカー行の変更時はこの検査を追随させる）"
+fi
+
+if [[ -n "$JOIN_AWK_SRC" && -n "$UNION_AWK_SRC" ]]; then
+  REFS_DIFF="$(
+    {
+      printf '%s\n' 'owner/repo#8' | awk 'NF{print "C\t" $(0)}'
+      printf '%s\n' '#8' '#10' 'Owner/Repo#8' \
+        | LC_ALL=C awk -v repo="owner/repo" "$UNION_AWK_SRC" \
+        | awk 'NF{print "R\t" $(0)}'
+    } | awk -F'\t' "$JOIN_AWK_SRC" | LC_ALL=C sort -u
+  )" || REFS_DIFF="(awk 実行に失敗)"
+  if [[ "$REFS_DIFF" == "owner/repo#10" ]]; then
+    ok "同じ Issue の Closes∩Refs は Refs 側から除外され、別番号だけ残る"
+  else
+    bad "REFS_ONLY 差集合が期待と不一致（expected: owner/repo#10 / actual: $(printf '%s' "$REFS_DIFF" | tr '\n' ' ')）"
+  fi
+
+  REFS_KEPT="$(
+    {
+      printf '%s\n' 'other/repo#8' | awk 'NF{print "C\t" $(0)}'
+      printf '%s\n' '#8' \
+        | LC_ALL=C awk -v repo="owner/repo" "$UNION_AWK_SRC" \
+        | awk 'NF{print "R\t" $(0)}'
+    } | awk -F'\t' "$JOIN_AWK_SRC" | LC_ALL=C sort -u
+  )" || REFS_KEPT="(awk 実行に失敗)"
+  if [[ "$REFS_KEPT" == "owner/repo#8" ]]; then
+    ok "番号が同じ別リポジトリの Issue は Refs 側に残る"
+  else
+    bad "別リポジトリ Refs の保持が期待と不一致（expected: owner/repo#8 / actual: $(printf '%s' "$REFS_KEPT" | tr '\n' ' ')）"
+  fi
+else
+  bad "差集合 awk が空のため REFS_ONLY の実測をスキップした（抽出失敗を緑にしない）"
+fi
+
+count_tokens() { printf '%s\n' "$1" | awk 'NF{c++} END{print c+0}'; }
+flag_unreliable() {
+  local api_count="$1" body_count="$2"
+  if [[ "$api_count" -eq 0 && "$body_count" -gt 0 ]]; then printf '1\n'; else printf '0\n'; fi
+}
+API0="$(count_tokens "")"
+BODY1="$(count_tokens "#8")"
+BODY0="$(count_tokens "")"
+API1="$(count_tokens "owner/repo#8")"
+if [[ "$(flag_unreliable "$API0" "$BODY1")" == "1" \
+   && "$(flag_unreliable "$API1" "$BODY1")" == "0" \
+   && "$(flag_unreliable "$API0" "$BODY0")" == "0" ]]; then
+  ok "AUTO_CLOSE_UNRELIABLE は API 空かつ本文 1 件以上のときだけ 1"
+else
+  bad "AUTO_CLOSE_UNRELIABLE の状態表が崩れている"
+fi
+
+contains "$SKILL" 'closingIssuesReferences` と本文由来 closing keyword 参照の**和集合**' "Closes 群を API ∪ 本文由来の和集合で定義している"
+contains "$SKILL" 'API_CLOSE_COUNT}" -eq 0 && "${BODY_CLOSE_COUNT}" -gt 0' "警告フラグの条件が API 空 × 本文に keyword"
+contains "$SKILL" "この PR のマージでは Issue が自動クローズされない可能性が高い" "完了報告に自動クローズされない可能性の警告がある"
+contains "$SKILL" "確認済みの事実" "警告が確認済みの事実を書き分けている"
+contains "$SKILL" "推測（原因の断定ではない）" "警告が推測を事実と書き分けている"
+contains "$SKILL" "gh issue close <ISSUE_URL>" "警告に手動クローズ手順がある"
+contains "$SKILL" '本文に closing keyword（`Closes` / `Fixes` / `Resolves` 等）または `Refs` 参照があれば終了しない' "空 API ガードが Closes 本文も救う"
+contains "$SKILL" "同じ Issue を二重に照合しない" "Refs 群を Closes 和集合の差として機械的に取る"
+contains "$SKILL" 'tolower($(0))' "closing keyword 抽出が大文字小文字を問わない"
+contains "$SKILL" '-v repo="${TARGET_REPO}"' "和集合 awk が TARGET_REPO を -v repo で渡す"
+contains "$SKILL" "空 API を「閉じない」と読まない" "空 API をコミット経路の非クローズと誤読させない"
+contains "$SKILL" "UNION_RC" "和集合パイプの失敗を握り潰さない"
+contains "$SKILL" "REFS_ONLY_RC" "差集合パイプの失敗を握り潰さない"
+contains "$SKILL" "参照から検出できる対象 Issue はありません" "keyword も Refs も無い PR は従来どおり正常終了する"
 contains "$SKILL" "既定のマージ経路" "抵触時は既定のマージ経路が安全でないと宣言する"
 contains "$SKILL" "2b の結果をマージの条件にする" "コミット由来の抵触は 2b へ委ねる"
 contains "$SKILL" "2a の抵触で無条件に停止しない" "改題で消せない抵触で永久に赤にならない"

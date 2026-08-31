@@ -184,6 +184,9 @@ not_contains "$CLOSE_ISSUE" "別 Issue を起票（\`gh issue create\`）して�
 contains "$REVIEW_POLICY" "変更対象外という理由だけで一律に別 Issue へ送らない" "レビュー指摘も三分岐へ委譲"
 contains "$REVIEW_POLICY" "レビューで Critical / Warning と確定した指摘は現 PR で解消" "Critical / Warning は必ず現 PR で解消"
 not_contains "$REVIEW_POLICY" "既存ファイルの改善は別Issueで対応する" "変更対象外ファイルの一律 Issue 化を禁止"
+not_contains "$REVIEW_POLICY" "棚卸しパーキング" "独立 Warning のパーキングを導入しない（Issue #877）"
+contains "$WORKFLOW" "スコープ外発見の三分岐" "原則2の見出しが三分岐のまま（Issue #877）"
+not_contains "$WORKFLOW" "スコープ外発見の優先度ルーティング" "原則2を優先度ルーティングへ再編しない（Issue #877）"
 
 contains "$OSS_README" "YAGNI（対応も Issue 化もしない）→ 軽微ならインライン修正 → Issue 化" "公開 README が三分岐"
 not_contains "$OSS_README" "「同 PR でインライン修正」か「Issue 化して後送り」" "公開 README の旧二分岐を排除"

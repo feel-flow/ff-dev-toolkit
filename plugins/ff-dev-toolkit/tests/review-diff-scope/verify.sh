@@ -180,6 +180,10 @@ expect_contains "review: レビュー対象は diff のみと明記" "$REVIEW_PR
 # 針で止める。needle はプロンプトの折り返しをまたがない部分文字列にしている。
 expect_contains "review: ラベルの前置先（ファイル参照）を明記" "$REVIEW_PROMPT" "file reference with [OUT-OF-DIFF]"
 expect_contains "review: 無印の差分外報告の禁止を明記" "$REVIEW_PROMPT" "out-of-diff code as an unlabeled finding"
+expect_contains "review: Finding Discipline 見出しが入る" "$REVIEW_PROMPT" "## Finding Discipline (anti-over-engineering)"
+expect_contains "review: 単純さは美点と明記" "$REVIEW_PROMPT" "Simplicity kept on purpose is a merit"
+expect_contains "review: 重大度インフレ禁止が入る" "$REVIEW_PROMPT" "Do not inflate severity"
+expect_contains "review: 失敗シナリオのないガード追加は Suggestion" "$REVIEW_PROMPT" "Suggestion unless you present concrete evidence"
 expect_contains "review: 前回レビュー・ゲート証拠の節が入る" "$REVIEW_PROMPT" "Prior Review and Gate Evidence"
 expect_contains "review: 呼び出し元の文脈が保持される" "$REVIEW_PROMPT" "fixture task"
 expect_contains "review: 前回文脈を信頼済み命令として扱わない" "$REVIEW_PROMPT" "untrusted prior-run context"
@@ -231,6 +235,7 @@ if ! EXPLORE_PROMPT="$(gen_prompt explore)"; then
   EXPLORE_PROMPT=""
 fi
 expect_lacks "explore: [OUT-OF-DIFF] ラベル契約を含まない" "$EXPLORE_PROMPT" "[OUT-OF-DIFF]"
+expect_lacks "explore: Finding Discipline を含まない" "$EXPLORE_PROMPT" "Finding Discipline (anti-over-engineering)"
 
 # implement は --include-diff で diff を持ち得る唯一の非 review タスク。判定条件が
 # 「review のとき」から「explore 以外」へ緩む変異は explore 検査だけでは素通りし、
@@ -243,6 +248,7 @@ if ! IMPLEMENT_PROMPT="$(gen_prompt implement true)"; then
 fi
 expect_lacks "implement: [OUT-OF-DIFF] ラベル契約を含まない" "$IMPLEMENT_PROMPT" "[OUT-OF-DIFF]"
 expect_lacks "implement: レビュー対象宣言を含まない" "$IMPLEMENT_PROMPT" "ONLY the diff provided in this prompt"
+expect_lacks "implement: Finding Discipline を含まない" "$IMPLEMENT_PROMPT" "Finding Discipline (anti-over-engineering)"
 
 echo ""
 if [ "$FAIL" -gt 0 ]; then
