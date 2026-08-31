@@ -19,6 +19,12 @@
 
 ## [Unreleased]
 
+## [0.67.5] - 2026-08-31
+
+### 修正
+
+- leftover review results from another branch no longer block the default Codex review entry. A full review (no --perspective / --exclude-perspective / --mode cross-model; --cli is allowed, matching scripts/codex-review.sh) starts a new series without a manual archive. Narrowed reruns still stop with a non-zero status and name --fresh plus the full-review command. --fresh archives leftover files from the output dir into a sibling .prev-timestamp dir (the live lock stays in the original dir) and cannot be combined with --resume.
+
 ## [0.67.4] - 2026-08-31
 
 ### 追加
@@ -1545,7 +1551,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.67.2...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.67.4...HEAD
+[0.67.4]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.67.2...v0.67.4
 [0.67.2]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.67.1...v0.67.2
 [0.67.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.66.1...v0.67.1
 [0.66.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.66.0...v0.66.1

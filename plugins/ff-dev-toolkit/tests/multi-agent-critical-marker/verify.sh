@@ -14,6 +14,10 @@
 # 検査すると、呼び出し側の変化で検査が別物になる）。
 #
 # 書き込み不可の環境では skip して成功扱いにする。
+#
+# Issue #1025: 別系列に残った未解消レポートがあっても、--cli だけのフルレビュー
+# （codex-review.sh の既定入口）は新系列を開始する。絞り込みは非 0 で止まり
+# --fresh を案内する。--fresh は lock 以外を <output-dir>.prev-<ts>/ へ退避する。
 
 set -euo pipefail
 
@@ -960,7 +964,8 @@ fi
 git switch -q -c other-review-series
 run_sequence_step "$MULTI_AGENT" code-review "$TMP/other-series.log"
 if [[ "$SEQUENCE_RC" -ne 0 ]] \
-  && grep -qF 'belongs to another branch/base/scope' "$TMP/other-series.log"; then
+  && grep -qF 'belongs to another branch/base/scope' "$TMP/other-series.log" \
+  && grep -qF -- '--fresh' "$TMP/other-series.log"; then
   ok "別ブランチからの絞り込み付き再検証を拒否する"
 else
   bad "別ブランチの同名観点が元の未解消状態を通過した (rc=$SEQUENCE_RC)"
@@ -1235,6 +1240,178 @@ if [[ "$SEQUENCE_RC" -ne 0 ]] \
 else
   bad "旧形式レポートの未解消観点を復元できない"
 fi
+
+echo "== Issue #1025: 別系列の残存結果と --fresh =="
+
+rm -rf "$REPO/.review-results"
+# 退避先 glob が前回実行の残骸を拾わないよう、明示的に消す。
+for leftover_archive in "$REPO"/.review-results.prev-*; do
+  [[ -e "$leftover_archive" || -L "$leftover_archive" ]] || continue
+  rm -rf "$leftover_archive"
+done
+
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-1025-initial -->
+## Code Review Results
+### Critical Issues
+- [app.txt:2] leftover critical from previous PR
+### Summary
+- Critical: 1
+BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/issue-1025-initial.log"
+if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
+  && grep -qF "$MARKER" "$REPORT"; then
+  ok "#1025 前回 PR 相当の未解消レポートを用意できる"
+else
+  bad "#1025 初期未解消レポートを作れない (rc=$SEQUENCE_RC)"
+fi
+cp "$REPORT" "$TMP/issue-1025-report-before.md"
+
+git switch -q -c issue-1025-other-series
+
+run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/issue-1025-narrowed.log"
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'belongs to another branch/base/scope' "$TMP/issue-1025-narrowed.log" \
+  && grep -qF -- '--fresh' "$TMP/issue-1025-narrowed.log" \
+  && grep -qF 'bash scripts/codex-review.sh --base' "$TMP/issue-1025-narrowed.log" \
+  && cmp -s "$TMP/issue-1025-report-before.md" "$REPORT"; then
+  ok "別系列の絞り込みは非 0 で止まり --fresh とフルレビューコマンドを案内する"
+else
+  bad "別系列の絞り込み案内が不足 (rc=$SEQUENCE_RC)"
+  sed -n '1,40p' "$TMP/issue-1025-narrowed.log" >&2 || true
+fi
+
+EXCLUDE_RC=0
+set +e
+run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+  --task review --cli codex-cli --exclude-perspective code-review \
+  --base develop --timeout 60 \
+  >"$TMP/issue-1025-exclude.log" 2>&1
+EXCLUDE_RC=$?
+set -e
+if [[ "$EXCLUDE_RC" -ne 0 ]] \
+  && grep -qF 'belongs to another branch/base/scope' "$TMP/issue-1025-exclude.log" \
+  && cmp -s "$TMP/issue-1025-report-before.md" "$REPORT"; then
+  ok "別系列の --exclude-perspective も新系列を開始せず前回レポートを保持する"
+else
+  bad "別系列の --exclude-perspective が新系列として通った (rc=$EXCLUDE_RC)"
+  sed -n '1,40p' "$TMP/issue-1025-exclude.log" >&2 || true
+fi
+
+FRESH_RESUME_RC=0
+set +e
+run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+  --task review --cli codex-cli --perspective comment-analysis \
+  --base develop --timeout 60 --fresh --resume \
+  >"$TMP/issue-1025-fresh-resume.log" 2>&1
+FRESH_RESUME_RC=$?
+set -e
+fresh_resume_archive=""
+for cand in "$REPO"/.review-results.prev-*; do
+  [[ -d "$cand" ]] || continue
+  fresh_resume_archive="$cand"
+  break
+done
+if [[ "$FRESH_RESUME_RC" -eq 2 ]] \
+  && grep -qF -- '--fresh cannot be combined with --resume' "$TMP/issue-1025-fresh-resume.log" \
+  && cmp -s "$TMP/issue-1025-report-before.md" "$REPORT" \
+  && [[ -z "$fresh_resume_archive" ]]; then
+  ok "--fresh と --resume の併用を rc=2 で拒否し成果物を触らない"
+else
+  bad "--fresh --resume の拒否が成立しない (rc=$FRESH_RESUME_RC archive=${fresh_resume_archive:-none})"
+  sed -n '1,40p' "$TMP/issue-1025-fresh-resume.log" >&2 || true
+fi
+
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-1025-full-new-series -->
+## Review Results
+### Critical Issues
+- なし
+### Summary
+- Critical: 0
+BODY
+FULL_RC=0
+set +e
+run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+  --task review --cli codex-cli --base develop --timeout 60 \
+  >"$TMP/issue-1025-full.log" 2>&1
+FULL_RC=$?
+set -e
+if [[ "$FULL_RC" -eq 0 ]] \
+  && grep -qF 'this unfiltered full review starts a new series' "$TMP/issue-1025-full.log" \
+  && [[ -f "$REPORT" ]] \
+  && grep -qF 'sentinel-1025-full-new-series' "$REPORT" \
+  && ! grep -qF 'sentinel-1025-initial' "$REPORT"; then
+  ok "別系列でも --cli だけのフルレビューは手動退避なしで新系列を開始する"
+else
+  bad "--cli フルレビューが新系列を開始できない (rc=$FULL_RC)"
+  sed -n '1,80p' "$TMP/issue-1025-full.log" >&2 || true
+fi
+
+git switch -q feature/x
+rm -rf "$REPO/.review-results"
+for leftover_archive in "$REPO"/.review-results.prev-*; do
+  [[ -e "$leftover_archive" || -L "$leftover_archive" ]] || continue
+  rm -rf "$leftover_archive"
+done
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-1025-fresh-initial -->
+## Code Review Results
+### Critical Issues
+- [app.txt:2] leftover for --fresh
+### Summary
+- Critical: 1
+BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/issue-1025-fresh-initial.log"
+if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
+  && grep -qF "$MARKER" "$REPORT"; then
+  ok "#1025 --fresh 用の未解消レポートを用意できる"
+else
+  bad "#1025 --fresh 用の未解消レポートを作れない (rc=$SEQUENCE_RC)"
+fi
+git switch -q -c issue-1025-fresh-series
+
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-1025-fresh-run -->
+## Comment Analysis Results
+### Critical Issues
+- なし
+### Summary
+- Critical: 0
+BODY
+FRESH_RC=0
+set +e
+run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+  --task review --cli codex-cli --perspective comment-analysis \
+  --base develop --timeout 60 --fresh \
+  >"$TMP/issue-1025-fresh.log" 2>&1
+FRESH_RC=$?
+set -e
+
+archive_dir=""
+for cand in "$REPO"/.review-results.prev-*; do
+  [[ -d "$cand" ]] || continue
+  archive_dir="$cand"
+  break
+done
+
+if [[ "$FRESH_RC" -eq 0 ]] \
+  && [[ -n "$archive_dir" ]] \
+  && grep -qF "archived" "$TMP/issue-1025-fresh.log" \
+  && grep -qF -- '.review-results.prev-' "$TMP/issue-1025-fresh.log" \
+  && grep -qF 'sentinel-1025-fresh-initial' "${archive_dir}/integrated-report.md" \
+  && [[ -f "${archive_dir}/codex-cli/code-review.md" ]] \
+  && [[ ! -e "${archive_dir}/.multi-agent-run.lock" ]] \
+  && [[ -f "$REPORT" ]] \
+  && grep -qF 'sentinel-1025-fresh-run' "$REPORT" \
+  && ! grep -qF 'sentinel-1025-fresh-initial' "$REPORT"; then
+  ok "--fresh は前回結果を timestamp 付きへ退避して新しいレビューを生成する"
+else
+  bad "--fresh が前回結果を退避して再実行できない (rc=$FRESH_RC archive=${archive_dir:-none})"
+  sed -n '1,80p' "$TMP/issue-1025-fresh.log" >&2 || true
+fi
+
+git switch -q feature/x
 
 echo
 if [ "$FAIL" -gt 0 ]; then

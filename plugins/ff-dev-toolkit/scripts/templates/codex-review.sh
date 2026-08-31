@@ -46,7 +46,7 @@
 #   bash scripts/codex-review.sh [--base <branch> | --staged] [--reviewers a,b,c]
 #                                [--exclude-reviewers a,b,c] [--list-reviewers]
 #                                [--review-context-file <path>]
-#                                [--timeout <秒>] [--dry-run]
+#                                [--timeout <秒>] [--dry-run] [--fresh]
 #
 #   SKIP_CODEX_REVIEW=1  レビューを実行せず成功終了する（pre-commit の逃がし弁）
 #
@@ -400,6 +400,7 @@ ${SCRIPT_NAME} — Codex cross-model レビュー（multi-agent.sh への薄い�
   上記は --opt=value 形式でも渡せる。パッケージマネージャが挟む --
   （pnpm は透過、npm は除去）は位置を問わず読み飛ばす。
   --dry-run             実行せずプランだけ表示する
+  --fresh               前回の出力ディレクトリの中身を <dir>.prev-<timestamp>/ へ退避する（実行中 lock は残す）
   --help                このヘルプ
 
   SKIP_CODEX_REVIEW=1   レビューを実行せず成功終了する
@@ -554,6 +555,10 @@ while [ $# -gt 0 ]; do
       ;;
     --dry-run)
       ORCH_ARGS+=(--dry-run)
+      shift
+      ;;
+    --fresh)
+      ORCH_ARGS+=(--fresh)
       shift
       ;;
     --list-reviewers)

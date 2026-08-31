@@ -39,6 +39,9 @@
 #   --staged                Review only the staged index diff (review task only; mutually exclusive with --base)
 #   --resume                Reuse successful results from an identical prior input and
 #                           execute only failed, timed-out, missing, or corrupt tasks
+#   --fresh                 Archive leftover files in the output dir to a sibling
+#                           <dir>.prev-<timestamp>/ (the live lock stays) and start
+#                           clean. Cannot be combined with --resume.
 #   --include-diff          Include diff in implement prompts
 #   --dry-run               Show plan without executing
 #   --timeout <seconds>     Timeout per CLI (default: review 900 / explore 600 / implement 900)
@@ -753,6 +756,7 @@ fi
 BASE_BRANCH="$(resolve_base_branch_ref "$BASE_BRANCH")"
 DRY_RUN=false
 RESUME=false
+FRESH=false
 TIMEOUT=""
 
 # Space-separated filter lists (bash 3.2 compatible)
@@ -858,6 +862,7 @@ parse_args() {
       --base)        BASE_BRANCH="$2"; BASE_BRANCH_SOURCE="--base flag"; BASE_BRANCH_EXPLICIT=true; shift 2 ;;
       --staged)      STAGED_DIFF=true; shift ;;
       --resume)      RESUME=true; shift ;;
+      --fresh)       FRESH=true; shift ;;
       --dry-run)     DRY_RUN=true; shift ;;
       --print-reviewers) PRINT_REVIEWERS=true; shift ;;
       --set-reviewers)   SET_REVIEWERS="$2"; shift 2 ;;
@@ -887,6 +892,11 @@ parse_args() {
   if [[ "$STAGED_DIFF" == "true" && "$BASE_BRANCH_EXPLICIT" == "true" ]]; then
     echo "ERROR: --staged and an explicit base (--base / MULTI_AGENT_BASE_BRANCH) are mutually exclusive." >&2
     echo "       Choose the staged index or a base-branch diff; they are different review scopes." >&2
+    exit 2
+  fi
+  if [[ "$FRESH" == "true" && "$RESUME" == "true" ]]; then
+    echo "ERROR: --fresh cannot be combined with --resume." >&2
+    echo "       --fresh archives previous results; --resume reuses them." >&2
     exit 2
   fi
 
@@ -2473,6 +2483,54 @@ acquire_output_lock() {
   return 0
 }
 
+# ── Fresh start: archive leftover output (Issue #1025) ──
+# Run after the output lock is held so a concurrent run cannot have its files
+# moved out from under it. The lock directory itself stays; everything else
+# (reports, per-CLI results, resume cache) moves to a sibling of OUTPUT_DIR.
+# The unresolved-Critical guard then sees an empty output dir.
+archive_previous_outputs_if_fresh() {
+  [[ "$FRESH" == "true" ]] || return 0
+  [[ -n "${OUTPUT_DIR:-}" && -d "$OUTPUT_DIR" ]] || return 0
+
+  local item base ts archive moved=0
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  archive="${OUTPUT_DIR}.prev-${ts}"
+  if [[ -e "$archive" ]]; then
+    archive="${archive}-$$"
+  fi
+  if [[ -e "$archive" ]]; then
+    echo "ERROR: archive destination already exists: ${archive}" >&2
+    echo "       Previous results were left untouched: ${OUTPUT_DIR}" >&2
+    return 1
+  fi
+
+  for item in "$OUTPUT_DIR"/* "$OUTPUT_DIR"/.[!.]* "$OUTPUT_DIR"/..?*; do
+    [[ -e "$item" || -L "$item" ]] || continue
+    base="${item##*/}"
+    [[ "$base" == ".multi-agent-run.lock" ]] && continue
+    if [[ "$moved" -eq 0 ]]; then
+      if ! mkdir "$archive"; then
+        echo "ERROR: cannot create archive dir: ${archive}" >&2
+        echo "       Previous results were left untouched: ${OUTPUT_DIR}" >&2
+        return 1
+      fi
+    fi
+    if ! mv "$item" "${archive}/${base}"; then
+      echo "ERROR: cannot archive previous result: ${item}" >&2
+      echo "       --fresh left a partial archive at ${archive}" >&2
+      return 1
+    fi
+    moved=$((moved + 1))
+  done
+
+  if [[ "$moved" -eq 0 ]]; then
+    echo "ℹ️  --fresh: no previous results to archive in ${OUTPUT_DIR}" >&2
+    return 0
+  fi
+  echo "🧹 --fresh: archived ${moved} previous result(s) to ${archive}" >&2
+  return 0
+}
+
 # ── Unresolved Critical guard (Issue #843) ──
 # A narrowed review rebuilds integrated-report.md from only this run's plan. Read
 # the orchestrator-owned state before cleanup and reject a plan that omits a
@@ -2566,8 +2624,14 @@ execution_plan_has_perspective() { # <perspective>
 }
 
 is_unfiltered_full_review_plan() {
+  # A "full" review that may start a new series is: every default perspective
+  # for the selected CLI set. --cli is not a perspective filter —
+  # scripts/codex-review.sh always passes --cli codex-cli, and that is the
+  # Git Workflow's full Codex review (Issue #1025). --perspective,
+  # --exclude-perspective, and cross-model (typically one perspective across
+  # CLIs) still cannot start a new series, because they would drop unresolved
+  # perspectives from the previous series without reviewing them.
   [[ "$MODE" != "cross-model" \
-    && -z "$CLI_FILTER" \
     && -z "$PERSPECTIVE_FILTER" \
     && -z "$EXCLUDE_PERSPECTIVES" ]]
 }
@@ -2592,7 +2656,7 @@ capture_and_guard_unresolved_critical_state() {
       1) return 0 ;;
       0)
         echo "ERROR: the previous report has a Critical marker without a readable perspective list." >&2
-        echo "       Inspect the legacy report and move/delete it only if it is obsolete, then run a full review." >&2
+        echo "       Inspect the leftover report, then add --fresh, or move/delete it if it is obsolete and run a full review." >&2
         echo "       Previous results were left untouched: ${report_file}" >&2
         return 1
         ;;
@@ -2673,6 +2737,9 @@ capture_and_guard_unresolved_critical_state() {
       fi
       echo "ERROR: the previous Critical state belongs to another branch/base/scope." >&2
       echo "       Run an unfiltered full review to start a new review series." >&2
+      echo "       Full review = no --perspective / --exclude-perspective / --mode cross-model (--cli is allowed)." >&2
+      echo "       Example: bash scripts/codex-review.sh --base ${BASE_BRANCH}" >&2
+      echo "       Or archive leftover results and retry: add --fresh" >&2
       echo "       Previous results were left untouched: ${report_file}" >&2
       return 1
     fi
@@ -2773,6 +2840,9 @@ execute_tasks() {
   validate_implement_output_boundary || return 2
   validate_output_dir_boundary || return 2
   acquire_output_lock || return 2
+  # --fresh must run after the lock and before the unresolved-Critical guard,
+  # so leftover reports are no longer the guard's input.
+  archive_previous_outputs_if_fresh || return 2
   # The previous report is the evidence this guard validates. Run it before
   # clear_previous_integrated_report and before any result file is changed.
   capture_and_guard_unresolved_critical_state || return 2

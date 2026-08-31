@@ -40,6 +40,7 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
   - 例: `--strategy minimize_cost`（コスト最小化）
   - 例: `--perspective code-review`（特定パースペクティブのみ）
   - 例: `--mode cross-model --perspective code-review`（クロスモデル比較）
+  - 例: `--fresh`（前回の出力ディレクトリの中身を `<dir>.prev-<timestamp>/` へ退避。実行中 lock は残す。`--resume` と併用不可）
   - 全オプションは `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --help` で確認できます
 
 pre-commit で index に積んだ内容だけをレビューする場合は `--staged` を使う。

@@ -632,6 +632,20 @@ else
   sed 's/^/    | /' "$WORK/argv.log" >&2
 fi
 
+run_shim --fresh --base develop
+if [ "$RUN_RC" -ne 0 ]; then
+  bad "--fresh がシムに拒否された (rc=$RUN_RC) — 未対応オプション扱いになっている"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+else
+  ok "--fresh をシムが受け付ける"
+fi
+if argv_has --fresh && argv_has_seq "--base" "develop"; then
+  ok "--fresh が --base より前でも委譲先へ届く"
+else
+  bad "--fresh が委譲先へ届いていない（後続フラグと併用できていない）"
+  sed 's/^/    | /' "$WORK/argv.log" >&2
+fi
+
 printf '%s\n' 'PREVIOUS-REVIEW-MARKER' 'gate: unit tests passed' > "$WORK/review-context.txt"
 run_shim --review-context-file "$WORK/review-context.txt" --base develop
 if [ "$RUN_RC" -eq 0 ] \
@@ -1586,7 +1600,7 @@ else
   ok "--help がコマンド置換を実行しない"
 fi
 # ヘルプに書いた語が実際に出ていること（置換で消えると空白だけが残る）
-for _word in "--base" "--staged" "--reviewers" "--exclude-reviewers" "--list-reviewers" "--timeout" "--dry-run" "opt=value"; do
+for _word in "--base" "--staged" "--reviewers" "--exclude-reviewers" "--list-reviewers" "--timeout" "--dry-run" "--fresh" "opt=value"; do
   if grep -q -- "$_word" "$WORK/out.log"; then
     ok "--help に '${_word}' が出る"
   else
