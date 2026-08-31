@@ -77,6 +77,7 @@ echo "== CHANGELOG fragments contract =="
 
 if [[ -x "$TARGET" ]]; then ok "集約器が実行可能"; else bad "集約器が実行可能でない"; fi
 if grep -Fq 'changelog.d/README.md' "$REPO_ROOT/plugins/ff-dev-toolkit/skills/spec-driven/SKILL.md"; then ok "spec-driven は通常 PR を断片経路へ案内"; else bad "通常 PR の writer が断片経路へ未接続"; fi
+source "$SCRIPT_DIR/cases/identity.sh"
 source "$SCRIPT_DIR/cases/footer.sh"
 
 FIX="$TMP/fixture"
@@ -454,7 +455,7 @@ run_contract "$FIX" --write
 if [[ "$RC" -eq 0 && "$OUT" == *"MATERIALIZED=6"* && "$OUT" == *"CONSUMED=6"* ]]; then ok "全6種別を materialize"; else bad "materialize が失敗"; fi
 if [[ "$(tr '\n' ' ' < "$TMP/gh.log")" == "10 20 30 40 50 60 " ]]; then ok "--write は各断片の Issue 番号を検証"; else bad "--write が断片の Issue 番号を渡さない"; fi
 if [[ ! -e "$FRAGMENTS/.ff-changelog.lock" ]]; then ok "成功後に集約 lock を解放"; else bad "集約 lock が残存"; fi
-if changelog_mode="$(stat -f '%Lp' "$CHANGELOG" 2>/dev/null)"; then :; else changelog_mode="$(stat -c '%a' "$CHANGELOG")"; fi
+if changelog_mode="$(stat -c '%a' "$CHANGELOG" 2>/dev/null)"; then :; else changelog_mode="$(stat -f '%Lp' "$CHANGELOG")"; fi
 if [[ "$changelog_mode" == 640 ]]; then ok "materialize 前後で CHANGELOG の file mode を保全"; else bad "CHANGELOG の file mode が変化"; fi
 if grep -Fqx -- '- 既存の未公開項目' "$CHANGELOG"; then ok "既存 Unreleased を保全"; else bad "既存 Unreleased が欠落"; fi
 if grep -Fqx -- '- 追加された機能' "$CHANGELOG"; then ok "added bullet を保全"; else bad "added bullet が欠落"; fi

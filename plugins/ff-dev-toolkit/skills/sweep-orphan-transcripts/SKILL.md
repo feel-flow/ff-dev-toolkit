@@ -79,7 +79,7 @@ esac
 
 ## アーカイブ
 
-既定で `<config>/transcript-archives/<名前>-<日時>.tar.gz`。件数検証・アーカイブ中変更検出・削除直前の再確認は merge-cleanup と同じ。
+既定で `<config>/transcript-archives/<名前>-<日時>.tar.gz`。件数検証・アーカイブ中変更検出・削除直前の再確認は merge-cleanup と同じ。変更検出は作成済みアーカイブを隔離ディレクトリへ展開して元と再帰比較し、mtime の前後関係には依存しない。
 
 ## subagents/（Issue #281）
 

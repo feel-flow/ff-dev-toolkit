@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -ge 8 ] && [ "$1" = api ] && [ "$2" = --hostname ] && [ "$3" = github.com ] \
+  && [ "$4" = --method ] && [ "$5" = GET ] && [ "$6" = -H ] || exit 90
+endpoint="$8"
+shift 8
+if [ "$#" -gt 0 ]; then
+  [ "$#" -eq 2 ] && [ "$1" = -f ] && [[ "$2" == ref=* ]] || exit 91
+  endpoint="$endpoint|$2"
+fi
+printf '%s\n' "$endpoint" >> "$FF_VERSION_FIXTURE/calls"
+jq -e --arg endpoint "$endpoint" '.[$endpoint]' "$FF_VERSION_FIXTURE/responses.json"

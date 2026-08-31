@@ -492,6 +492,8 @@ else
     # 更新通知フック（hooks/check-update.sh）の回帰検証。ローカル bare リポジトリ
     # fixture のみ使用し、実ネットワークには触らない。
     "$SCRIPT_DIR/update-check/verify.sh"
+    # GitHub / ローカル登録 / Desktop の3層検査。実ネットワークを使わない。
+    "$SCRIPT_DIR/plugin-version-check/verify.sh"
     # スキル実体ドリフト検査（hooks/check-skill-drift.sh、Issue #656）。
     # リポジトリ skills/ とインストール実体の集合差分・ユニーク version 併存・検出不能
     # ・一致時無音（同一 version の cache+marketplace 含む）を fixture で固定し、

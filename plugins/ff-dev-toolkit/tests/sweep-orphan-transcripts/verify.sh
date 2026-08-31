@@ -303,6 +303,23 @@ ARCH_DD="$(find "$WORK/claude/transcript-archives" -name "${DOTDASH_NAME}-*.tar.
 [ "$ARCH_DK" -eq 0 ] && [ "$ARCH_DD" -eq 0 ] || fail "dotdir spellings must not be archived"
 ok "both dot spellings (-.config / --config) resolve to live and are protected (W1)"
 
+# --- 13e.1 未来 mtime は「アーカイブ中の変更」ではない（Issue #1050）---
+# marker より新しいかだけを見る実装は、時計補正や外部から持ち込まれた未来時刻を
+# 実際の内容変更と誤認する。内容が変わらない限り、安全に回収できることを固定する。
+setup_projects
+touch -t 203701010000 "$WORK/claude/projects/orphan-proj/session.jsonl"
+OUT="$(run_sut --apply 2>&1)" || fail "future-mtime apply should exit 0: $OUT"
+[ ! -d "$WORK/claude/projects/orphan-proj" ] || fail "unchanged future-mtime orphan must be swept"
+ok "unchanged future mtime does not trigger archive-change detection (#1050)"
+
+# 展開先との比較で壊れた symlink を辿ると、内容が同一でも比較不能になって回収を
+# 狭める。リンク文字列そのものを比較し、従来どおりアーカイブできることを固定する。
+setup_projects
+ln -s "$WORK/no-such-target" "$WORK/claude/projects/orphan-proj/broken-link"
+OUT="$(run_sut --apply 2>&1)" || fail "nested-symlink apply should exit 0: $OUT"
+[ ! -d "$WORK/claude/projects/orphan-proj" ] || fail "orphan with nested broken symlink must be swept"
+ok "archive comparison preserves nested symlinks without dereferencing"
+
 # --- 13f. 先頭 - 付きの現実的な孤児は名前解決本体を通って回収される（レビュー W3 / AC-3）---
 # orphan-proj は先頭 - 無しで case ガードで即 return 1 するため名前解決本体を通らない。
 # ここは encode(削除済み絶対パス) の名前で、ルートから辿って行き止まり → 従来回収。

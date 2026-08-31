@@ -268,9 +268,11 @@ else
   printf '%s\n' "$LIVE_OUT" | sed 's/^/    | /' >&2
 fi
 
-default_ref="$(git -C "$REPO_ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD)"
-default_branch="${default_ref#origin/}"
-if ! git -C "$REPO_ROOT" fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" >/dev/null 2>&1; then
+if ! default_ref="$(git -C "$REPO_ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD)"; then
+  bad "origin/HEAD が無く共有 CHANGELOG 判定を開始できない"
+elif [[ "$default_ref" != origin/* ]]; then
+  bad "origin/HEAD が origin/* ではない"
+elif ! git -C "$REPO_ROOT" fetch origin "+refs/heads/${default_ref#origin/}:refs/remotes/origin/${default_ref#origin/}" >/dev/null 2>&1; then
   bad "共有 CHANGELOG 判定前に latest default branch を fetch できない"
 elif ! git -C "$REPO_ROOT" rev-parse --verify "${default_ref}^{commit}" >/dev/null 2>&1; then
   bad "共有 CHANGELOG 判定の default branch を解決できない"

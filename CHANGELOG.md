@@ -19,6 +19,25 @@
 
 ## [Unreleased]
 
+## [0.67.4] - 2026-08-31
+
+### 追加
+
+- `check-plugin-versions` を追加。GitHub の参照版と Claude Code の登録・Claude Desktop のセッションスナップショットを照合し、更新あり・最新・ローカル先行・確認不可を報告する。版宣言のないプラグインはコミットの祖先関係で比較し、更新操作は行わない。
+
+### 修正
+
+- macOS の一時パスの表記差でレビュー結果の保全案内テストが誤失敗する問題を修正。
+- GNU stat の `-f` が filesystem 統計になる環境で、CHANGELOG 断片検査が空き容量の変動を検査中の置換と誤認しない
+- yq 不在テストが runner 付属の yq を PATH から除外して成立する
+- トランスクリプト回収の変更検出をアーカイブ内容との直接比較へ切り替え、時計補正や未来 mtime による誤検出と同一時刻境界での追記見逃しを防ぎました。
+
+## [0.67.3] - 2026-08-31
+
+### 修正
+
+- `/multi-review` がリポジトリ変更で実行結果を破棄した際、保全した個別結果のパスと再実行前に読み取り・退避が必要なことを表示し、利用ガイドにも同じ注意を追加した（https://github.com/feel-flow/ff-dev-toolkit/issues/46）。
+
 ## [0.67.2] - 2026-08-31
 
 ### 修正
@@ -1526,7 +1545,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.67.1...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.67.2...HEAD
+[0.67.2]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.67.1...v0.67.2
 [0.67.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.66.1...v0.67.1
 [0.66.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.66.0...v0.66.1
 [0.66.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.65.1...v0.66.0

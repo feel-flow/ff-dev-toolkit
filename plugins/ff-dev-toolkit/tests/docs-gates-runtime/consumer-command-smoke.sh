@@ -32,6 +32,33 @@ make_consumer_cli_stubs() {
   chmod +x "$bin_dir/yq"
 }
 
+# yq を含む directory を PATH から外し、他の実行ファイルだけ dest へ symlink する。
+# `/usr/bin:/bin` から /usr/local/bin を外すだけでは、GHA ubuntu の /usr/bin/yq が残る。
+hide_yq_from_path() {
+  local dest="$1" path_in="$2" path_out="$1" d name f saved_ifs
+  mkdir -p "$dest"
+  saved_ifs="$IFS"
+  IFS=':'
+  # shellcheck disable=SC2086
+  set -- $path_in
+  IFS="$saved_ifs"
+  for d in "$@"; do
+    [ -n "$d" ] && [ -d "$d" ] || continue
+    if [ -e "$d/yq" ]; then
+      for f in "$d"/*; do
+        name="${f##*/}"
+        [ "$name" = yq ] && continue
+        [ -e "$dest/$name" ] && continue
+        [ -x "$f" ] || continue
+        ln -s "$f" "$dest/$name" 2>/dev/null || true
+      done
+    else
+      path_out="$path_out:$d"
+    fi
+  done
+  printf '%s\n' "$path_out"
+}
+
 validate_extracted_consumer_command() {
   local command="$1" without_root
   case "$command" in
@@ -135,7 +162,7 @@ run_consumer_command_smoke() {
   local ENTRYPOINT_CONSUMER="$ENTRYPOINT_ROOT/consumer"
   local ENTRYPOINT_HOME="$ENTRYPOINT_ROOT/home"
   local ENTRYPOINT_TOOLKIT_ROOT="$ENTRYPOINT_ROOT/toolkit root"
-  local ENTRYPOINT_PATH ENTRYPOINT_NO_YQ_PATH setup_doc_command setup_log
+  local ENTRYPOINT_PATH ENTRYPOINT_NO_YQ_PATH hidden_yq_path setup_doc_command setup_log
   local expected_sidecar_root agent_doc skill_doc shim_log
   local explicit_config flag_config flag_command invalid_config_rc
   local broken_sidecar_rc safe_command unsafe_command unsafe_fail=0
@@ -146,10 +173,40 @@ run_consumer_command_smoke() {
   mkdir -p "$ENTRYPOINT_CONSUMER" "$ENTRYPOINT_HOME"
   make_consumer_cli_stubs "$ENTRYPOINT_ROOT/bin"
   ENTRYPOINT_PATH="$ENTRYPOINT_ROOT/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-  mkdir -p "$ENTRYPOINT_ROOT/bin-no-yq"
+  mkdir -p "$ENTRYPOINT_ROOT/bin-no-yq" "$ENTRYPOINT_ROOT/with-yq"
   printf '%s\n' '#!/bin/sh' 'exit 0' >"$ENTRYPOINT_ROOT/bin-no-yq/codex"
   chmod +x "$ENTRYPOINT_ROOT/bin-no-yq/codex"
-  ENTRYPOINT_NO_YQ_PATH="$ENTRYPOINT_ROOT/bin-no-yq:/usr/bin:/bin:/usr/sbin:/sbin"
+  printf '%s\n' '#!/bin/sh' 'echo planted' >"$ENTRYPOINT_ROOT/with-yq/yq"
+  chmod +x "$ENTRYPOINT_ROOT/with-yq/yq"
+  # 契約検査が使う PATH の入力に planted yq を含める。hide を呼ばず
+  # /usr/bin:/bin だけを直書きすると macOS では yq 不在のまま緑になり、
+  # GHA の /usr/bin/yq 漏れを検出できない。
+  ENTRYPOINT_NO_YQ_PATH="$(hide_yq_from_path \
+    "$ENTRYPOINT_ROOT/bin-no-yq" \
+    "$ENTRYPOINT_ROOT/with-yq:/usr/bin:/bin:/usr/sbin:/sbin")"
+  if grep -Fq 'with-yq:/usr/bin:/bin:/usr/sbin:/sbin' "${BASH_SOURCE[0]}"; then
+    ok "yq不在PATHの入力に planted yq directory を含める"
+  else
+    bad "yq不在PATHの入力から planted yq が外れている"
+  fi
+  # 親シェルの command hash を使わない（macOS bash は PATH= 付きでも hashed yq を返す）。
+  if env -i PATH="$ENTRYPOINT_NO_YQ_PATH" /bin/bash --noprofile --norc -c \
+      'command -v yq' >/dev/null 2>&1; then
+    bad "yq不在PATHから yq が解決できる（検査が成立していない）"
+  else
+    ok "yq不在PATHは yq を解決しない"
+  fi
+  hidden_yq_path="$(hide_yq_from_path \
+    "$ENTRYPOINT_ROOT/bin-hidden-yq" "$ENTRYPOINT_ROOT/with-yq:/bin")"
+  if env -i PATH="$hidden_yq_path" /bin/bash --noprofile --norc -c \
+      'command -v yq' >/dev/null 2>&1; then
+    bad "yq を含む directory を PATH から除外できない"
+  elif ! env -i PATH="$hidden_yq_path" /bin/bash --noprofile --norc -c \
+      'command -v sh' >/dev/null 2>&1; then
+    bad "yq 除外後の PATH から sh まで消えている"
+  else
+    ok "yq を含む directory を PATH から除外する"
+  fi
   # setup が chmod しても開発中の worktree を変えない。symlink では permission 退行を
   # smoke 自身が修復して隠すため、toolkit 一式を一時領域へ複製する。
   cp -R "$PLUGIN_ROOT" "$ENTRYPOINT_TOOLKIT_ROOT"
@@ -353,6 +410,7 @@ run_consumer_command_smoke() {
       ok "yq不在時の明示config(${explicit_source})を非0で拒否"
     else
       bad "yq不在時の明示config(${explicit_source})を拒否しない"
+      sed -n '1,80p' "$ENTRYPOINT_ROOT/multi-agent-no-yq-${explicit_source}.log" >&2 || true
     fi
   done
 
@@ -372,6 +430,7 @@ run_consumer_command_smoke() {
     ok "yq不在時の暗黙project configは従来どおり既定値へ戻る"
   else
     bad "yq不在時の暗黙config fallbackが従来契約と不一致"
+    sed -n '1,80p' "$ENTRYPOINT_ROOT/multi-agent-no-yq-implicit.log" >&2 || true
   fi
 
   shim_log="$ENTRYPOINT_ROOT/generated-shim.log"

@@ -67,6 +67,7 @@
 #  26. tar が exit 0 でも中身を検証できなければ元ディレクトリを消さない
 #  27. 同名のアーカイブが既にある場合、上書きせず別名で作る（リンク切れの symlink も含む）
 #  27b. アーカイブ中に元が変更されたら削除しない（追記分の消失を防ぐ）
+#  27c. 未変更ファイルの未来 mtime をアーカイブ中の変更と誤認しない
 #  28. アーカイブ先を作れないときは中断し、「対象なし」と矛盾する報告をしない
 #  29. CLAUDE_CONFIG_DIR 由来の既定パスでも回収できる（実ユーザーが通る経路）
 #  30. 削除しなかった dirty worktree のトランスクリプトには触れない
@@ -1958,6 +1959,25 @@ if [ "$EXIT_APPEND" -eq 2 ] \
   ok "アーカイブ中に元が変更されたら削除しない（追記分の消失を防ぐ）"
 else
   bad "アーカイブ中の変更検出が期待どおりでない (exit=$EXIT_APPEND)"
+fi
+
+# 16.655 内容が変わっていない未来 mtime は、アーカイブ中の変更ではない。
+# marker との時刻比較へ戻ると必ず誤検出する、Issue #1050 の決定的な回帰 fixture。
+add_clean_gone_worktree 'feature/#40-wt-future-mtime' "$TMP/wt-40"
+NAME_FUTURE_MTIME="$(transcript_name_of "$TMP/wt-40")"
+make_transcript_dir "$NAME_FUTURE_MTIME" "$(cd "$TMP/wt-40" && pwd -P)"
+touch -t 203701010000 "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_FUTURE_MTIME/session.jsonl"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-future-mtime.log" 2>&1
+EXIT_FUTURE_MTIME=$?
+set -e
+if { [ "$EXIT_FUTURE_MTIME" -eq 0 ] || [ "$EXIT_FUTURE_MTIME" -eq 2 ]; } \
+  && [ ! -d "$FF_MERGE_CLEANUP_PROJECTS_DIR/$NAME_FUTURE_MTIME" ] \
+  && [ -n "$(archive_of "$NAME_FUTURE_MTIME")" ] \
+  && ! grep -q "アーカイブ中に元が変更されました.*$NAME_FUTURE_MTIME" "$TMP/run-future-mtime.log"; then
+  ok "未変更の未来 mtime をアーカイブ中の変更と誤認しない"
+else
+  bad "未来 mtime の扱いが期待どおりでない (exit=$EXIT_FUTURE_MTIME)"
 fi
 
 # 16.66 アーカイブ名の位置に壊れた symlink があっても、辿らず上書きもしない

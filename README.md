@@ -41,6 +41,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `spec-driven` | 仕様駆動開発のゲート管理。5ゲート（G0〜G4: 要件→仕様→計画→実装→検証）の通過条件を管理し、ドキュメント先・コード後の開発順序を統制する |
 | `harness-review` | エージェントハーネス設計のレビュー。アンチパターンカタログと観点チェックリストに基づく設計評価 |
 | `out-of-scope-issue` | スコープ外の発見を `YAGNI（対応も Issue 化もしない）→ 軽微ならインライン修正 → Issue 化` の順で判定。Issue 化前に類似 Issue を検索し、同じ完了条件ならコメントで集約。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立する場合だけ関連 Issue を作成 |
+| `check-plugin-versions` | GitHub・Claude Code 登録・Desktop セッションの版を読み取り専用で照合。更新ありと確認不可を区別する |
 
 以下のワークフロースキルのうち 14 件は v0.15.0 で旧 Commands から Agent Skills 標準へ移行したもので、残りはその後に追加しました（`/ace-refine` は v0.18.0）。Claude Code では `/ff-dev-toolkit:<name>`、Codex では `$ff-dev-toolkit:<name>`、両方で自然文による自動発火を利用できます。
 
@@ -85,6 +86,14 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 - `docs-template/` — コア7文書 + 拡張フォルダのテンプレート一式
 - `scripts/` — マルチAI CLI オーケストレーション用スクリプト
 - `hooks/` — 更新通知・スキル実体ドリフト検査と自動振り返りのフック（下記）
+
+### プラグインバージョン検査（読み取り専用）
+
+`/ff-dev-toolkit:check-plugin-versions` で、GitHub の `plugin.json` と Claude Code の登録・Claude Desktop の保存済みセッションを比較する。bash 3.2 以降、jq、gh が必要。参照先は `known_marketplaces.json` から解決し、明示 ref/sha は尊重する（固定 ref は default branch の最新を意味しない）。版宣言がない場合は commit の祖先関係で判断し、アクセスできない対象は「確認不可」として残す。更新は実行しない。
+
+Desktop の旧版はローカルの自動更新では解消しないため、Desktop でプラグインを再登録し、新しいセッションで再検査する。保存されたセッションと現在実行中のセッションは区別する。**自己言及の限界**: 古い検査器は自分自身の最新性を保証できない。最新の検査器を使える外部 CLI セッションから Desktop スナップショットを調べる必要がある。既存のリリースタグ更新通知とは独立した検査である。
+
+直接実行する場合は、読み込んだプラグインの `scripts/check-plugin-versions.sh --json` を bash で実行する。終了コード 0 は更新ありを含む検査完了、2 は確認不可を含む部分結果、1 は起動エラー。Codex からも実行できるが、検査対象は Claude の登録形式であり Codex の登録は含まない。
 
 ### 更新通知
 

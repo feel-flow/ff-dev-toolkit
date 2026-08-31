@@ -1024,9 +1024,7 @@ else
           fi
           ARCHIVE_LIST="$WORK_TMP/archive_list"
           ARCHIVE_ERR="$WORK_TMP/archive_error"
-          # tar 実行中に元へ書き込みがあったかを見るための基準時刻
-          ARCHIVE_MARKER="$WORK_TMP/archive_marker"
-          : > "$ARCHIVE_MARKER"
+          ARCHIVE_VERIFY=""
           TAR_OUT=""
           ARCHIVE_FAIL=""
 
@@ -1046,11 +1044,25 @@ else
             if [ -z "$SRC_ENTRIES" ] || [ "$SRC_ENTRIES" != "$ARC_ENTRIES" ]; then
               TAR_OUT="元 ${SRC_ENTRIES:-?} 件 / アーカイブ ${ARC_ENTRIES} 件"
               ARCHIVE_FAIL="アーカイブの件数が元と一致しません"
-            elif [ -n "$(find "$CAND_REAL" ! -type d -newer "$ARCHIVE_MARKER" -print -quit 2>/dev/null)" ]; then
-              # 件数照合は「アーカイブ後に既存ファイルへ追記された」を検出できない。
-              # 生きたセッションが書き足している最中に消すと、その分だけ失われる。
-              TAR_OUT="アーカイブ中に更新されたファイルがあります"
-              ARCHIVE_FAIL="アーカイブ中に元が変更されました"
+            elif ! ARCHIVE_VERIFY="$(mktemp -d "$WORK_TMP/archive-verify-XXXXXX")"; then
+              TAR_OUT="検証用ディレクトリを作成できません"
+              ARCHIVE_FAIL="アーカイブと元を比較できませんでした"
+            elif ! tar -xzf "$ARCHIVE_TMP" -C "$ARCHIVE_VERIFY" > /dev/null 2> "$ARCHIVE_ERR"; then
+              TAR_OUT="$(cat "$ARCHIVE_ERR")"
+              ARCHIVE_FAIL="アーカイブを検証用に展開できませんでした"
+            else
+              # marker との mtime 比較は、時計補正や時刻分解能の境界で未変更ファイルを
+              # 誤検出し、同一 mtime の追記を見逃しうる。作成済みアーカイブを展開して
+              # バイト列を直接比較し、tar 実行後の追加・削除・内容変更を判定する。
+              DIFF_RC=0
+              diff -r --no-dereference "$CAND_REAL" "$ARCHIVE_VERIFY/$CAND_NAME" > "$ARCHIVE_ERR" 2>&1 || DIFF_RC=$?
+              if [ "$DIFF_RC" -eq 1 ]; then
+                TAR_OUT="$(cat "$ARCHIVE_ERR")"
+                ARCHIVE_FAIL="アーカイブ中に元が変更されました"
+              elif [ "$DIFF_RC" -ne 0 ]; then
+                TAR_OUT="$(cat "$ARCHIVE_ERR")"
+                ARCHIVE_FAIL="アーカイブと元を比較できませんでした"
+              fi
             fi
           fi
 

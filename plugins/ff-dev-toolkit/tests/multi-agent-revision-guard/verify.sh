@@ -49,6 +49,44 @@ else
 fi
 trap 'cd /; rm -rf "$TMP"' EXIT
 
+# ログに案内された実在ファイルの同一性を検査する。pwd -P による
+# /var → /private/var などの表記差は許容し、同名の別ファイルは拒否する。
+reported_result_matches() {
+  local expected="$1" log="$2" line candidate
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == "     "* ]] || continue
+    candidate="${line#     }"
+    if [[ -f "$candidate" && "$candidate" -ef "$expected" ]]; then
+      return 0
+    fi
+  done < "$log"
+  return 1
+}
+
+mkdir -p "$TMP/path check/real" "$TMP/path check/other"
+touch "$TMP/path check/real/result.md" "$TMP/path check/other/result.md"
+ln -s "$TMP/path check/real" "$TMP/path check/alias"
+printf '     %s\n' "$TMP/path check/alias/result.md" > "$TMP/path-check.log"
+if reported_result_matches "$TMP/path check/real/result.md" "$TMP/path-check.log"; then
+  ok "保全パス: symlink と空白を含む表記でも同じ実在ファイルなら通る"
+else
+  bad "保全パス: 同じ実在ファイルの別表記を拒否した"
+fi
+for path_case in other missing; do
+  printf '     %s\n' "$TMP/path check/$path_case/result.md" > "$TMP/path-check.log"
+  if reported_result_matches "$TMP/path check/real/result.md" "$TMP/path-check.log"; then
+    bad "保全パス: 同名の別ファイルまたは不在パスを受け入れた ($path_case)"
+  else
+    ok "保全パス: 同名の別ファイルまたは不在パスを拒否する ($path_case)"
+  fi
+done
+: > "$TMP/path-check.log"
+if reported_result_matches "$TMP/path check/real/result.md" "$TMP/path-check.log"; then
+  bad "保全パス: 案内が欠落していても通った"
+else
+  ok "保全パス: 案内が欠落していれば拒否する"
+fi
+
 # ── 被検体リポジトリ ──
 REPO="$TMP/repo"
 git init -q "$REPO"
@@ -697,6 +735,16 @@ if [[ -f "$DISCARDED_FILE" ]]; then
   else
     bad "破棄した個別結果に警告が入っていない"
   fi
+  if reported_result_matches "$DISCARDED_FILE" "$TMP/run.log"; then
+    ok "破棄メッセージが保全した個別結果のパスを名指しする"
+  else
+    bad "破棄メッセージに保全した個別結果のパスが出ない"
+  fi
+  if /usr/bin/grep -Fq -- "Re-running clears these files first, so read or copy them now." "$TMP/run.log"; then
+    ok "破棄メッセージが再実行前の読み取り・退避を促す"
+  else
+    bad "破棄メッセージが再実行による個別結果の消失を警告しない"
+  fi
 else
   bad "前提が崩れた: 個別結果が書かれていない"
 fi
@@ -790,6 +838,13 @@ if /usr/bin/grep -q "Cannot read the repository state after the run" "$TMP/run.l
 else
   bad "検証不能の診断が出ない"
   tail -8 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+if reported_result_matches "$REPO/.review-results/codex-cli/code-review.md" "$TMP/run.log" \
+   && /usr/bin/grep -Fq -- "Re-running clears these files first, so read or copy them now." "$TMP/run.log"; then
+  ok "検証不能の破棄でも保全パスと再実行前の退避を案内する"
+else
+  bad "検証不能の破棄で保全パスまたは再実行前の退避案内が欠ける"
+  tail -10 "$TMP/run.log" | sed 's/^/    | /' >&2
 fi
 clear_mutations
 if [[ ! -f "$REPO/.review-results/integrated-report.md" ]]; then

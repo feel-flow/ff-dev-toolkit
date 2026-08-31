@@ -3039,6 +3039,27 @@ mark_outputs_discarded() {
   done <<< "$EXECUTION_PLAN"
 }
 
+report_discarded_output_paths() {
+  local entry cli persp f reported=false
+  # Only name files that were actually written. A failed task can leave no file,
+  # and telling the user to preserve a path that does not exist hides that fact.
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
+    cli="${entry%%:*}"
+    persp="${entry#*:}"
+    f="${OUTPUT_DIR}/${cli}/${persp}.md"
+    [[ -f "$f" ]] || continue
+    if [[ "$reported" == "false" ]]; then
+      echo "   The discarded per-task results are kept as evidence — read them before anything else:" >&2
+      reported=true
+    fi
+    printf '     %s\n' "$f" >&2
+  done <<< "$EXECUTION_PLAN"
+  if [[ "$reported" == "true" ]]; then
+    echo "   Re-running clears these files first, so read or copy them now." >&2
+  fi
+}
+
 verify_repo_unchanged() {
   local after
   if ! after="$(capture_repo_snapshot "$(output_dir_repo_relative)")"; then
@@ -3049,6 +3070,8 @@ verify_repo_unchanged() {
     echo "   unverifiable run as valid is the exact failure this guard exists to prevent." >&2
     mark_outputs_discarded
     echo "   No report was generated; this run's per-task results are marked DISCARDED." >&2
+    report_discarded_output_paths
+    echo "   Re-run once the repository is settled." >&2
     return 1
   fi
   [[ "$after" == "$REPO_SNAPSHOT_BEFORE" ]] && return 0
@@ -3076,6 +3099,7 @@ verify_repo_unchanged() {
   mark_outputs_discarded
   echo "   No report was generated; this run's per-task results are marked DISCARDED" >&2
   echo "   so they cannot be mistaken for a finished ${TASK_TYPE}." >&2
+  report_discarded_output_paths
   echo "   Re-run once the repository is settled." >&2
   return 1
 }
