@@ -126,6 +126,53 @@ contains "$REFINE_FILE" \
   "コミット前の全 ID 保全 grep 検証"
 
 echo
+echo "== 同梱スクリプトへの到達可能性検査（Issue #694） =="
+
+# ゲートの実行例が `path/to/` 等のプレースホルダのままだと、scripts/ace/ 未導入の
+# プロジェクトでは「必須」と書かれたゲートが素通りする（Issue #614 と同一クラス）。
+# 同梱テンプレートへの解決可能なパスを fail-closed で固定する。
+if grep -Fq -- 'path/to/' "$REFINE_FILE"; then
+  bad "実行例に未解決のプレースホルダ path/to/ が残っています"
+else
+  ok "実行例に未解決のプレースホルダ path/to/ が無い"
+fi
+
+# 同梱テンプレート経路は ace-run-ts.sh 経由が正（Issue #879）。root package に tsx が
+# 無い workspace では npx 直書きが command not found で全ゲート到達不能になる。
+if grep -Fq -- 'npx --yes tsx "${FF_DEV_TOOLKIT_ROOT}' "$REFINE_FILE"; then
+  bad "同梱テンプレート経路が npx --yes tsx 直書きへ戻っています（Issue #879 の退行）"
+else
+  ok "同梱テンプレート経路に npx --yes tsx 直書きが無い（ace-run-ts.sh 経由）"
+fi
+
+# 検証ゲート 5 本 + R1 の dry-run レポートすべてに、未導入プロジェクト向け fallback
+#（同梱テンプレートの絶対パス）が実在するスクリプトへ向いていることを固定する。
+for gate in ace-refine-report sync-playbook-frontmatter check-category-size \
+  check-archive-links check-refine-invariants check-entry-format; do
+  contains "$REFINE_FILE" \
+    "\"\${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/${gate}.ts\"" \
+    "検証ゲート ${gate} の未導入 fallback パス"
+  if [ -f "$PLUGIN_ROOT/docs-template/scripts/ace/${gate}.ts" ]; then
+    ok "同梱テンプレート ${gate}.ts が実在する"
+  else
+    bad "同梱テンプレート ${gate}.ts が存在しません（fallback が到達不能）"
+  fi
+done
+
+# 配布テンプレート ace-cycle.md のチェックリスト側にも同系統の到達不能が居た（Issue #694
+# 発見 (3)）。fallback 導線と、変数解決の注記の両方を固定する。
+ACE_CYCLE_TEMPLATE="$PLUGIN_ROOT/docs-template/05-operations/deployment/ace-cycle.md"
+contains "$ACE_CYCLE_TEMPLATE" \
+  '"${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts"' \
+  "ace-cycle.md 同期検証チェック項目の未導入 fallback"
+contains "$ACE_CYCLE_TEMPLATE" \
+  '"${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-refine-report.ts"' \
+  "ace-cycle.md dry-run チェック項目の未導入 fallback"
+contains "$ACE_CYCLE_TEMPLATE" \
+  'この変数を実パスへ解決しておくこと' \
+  "ace-cycle.md に FF_DEV_TOOLKIT_ROOT の解決注記がある"
+
+echo
 echo "== archive / provenance 契約の 3 穴（Issue #288） =="
 
 # 穴 1: provenance 注記が「再整形のみ」を表現できず、実際にしていない要約を記録していた。

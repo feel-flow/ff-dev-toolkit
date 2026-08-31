@@ -28,7 +28,11 @@ post-merge からの呼び出し例は `docs-template/.claude/hooks/post-merge.a
 
 ## check-category-size.ts の実行
 
-Node 24+ を前提とします。TypeScript をそのまま実行する例:
+Node 24+ を前提とします。実行は **tsx などの TypeScript runner 経由**が前提です（推奨例は下記。ff-dev-toolkit プラグイン導入済み環境では同梱の `scripts/ace-run-ts.sh` 経由でも実行できます）。
+
+> **非対応の実行方法**: Node の型ストリップによる直接実行（`node --experimental-strip-types` 系や `node script.ts`）はサポートしません。本ディレクトリのスクリプトの相対 import は拡張子なしで書かれており、相対 import を持つスクリプト（sync-playbook-frontmatter / ace-reuse-report / ace-refine-report / check-entry-format / check-refine-invariants など）は runner・bundler を介さない素の Node ESM 解決では `ERR_MODULE_NOT_FOUND` になります。相対 import を持たない一部スクリプトは直接実行でも動きますが、それは保証されるサポート経路ではありません（import 追加で予告なく壊れます）。`.ts` 拡張子 import へ寄せる案は、esbuild の非 bundle transpile 経路（検査 suite が使用）が import 指定子を書き換えないため採用していません。tsx 経由で実行してください。
+
+TypeScript を実行する例:
 
 ```bash
 npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md

@@ -182,9 +182,10 @@ contains 'HEAD から再導出してはならない' \
 contains 'stale な origin/develop で続行しない' \
   "退避経路の fetch 失敗時に中断することが明記されている"
 
-# 定期実行点ゲート（ADR-039。ADR-034 決定 2 の「全件ゲート充足」を置換）。既定が高速
+# 定期実行点ゲート（要求内容は ADR-039 が ADR-034 決定 2 の「全件ゲート充足」を置換。
+# 位置は ADR-042 が 1 点目を「タグ / Release の作成前」へ縮小）。既定が高速
 # モードのため、対を持つ selftest（REQUIRED_SUITES 掲載を含む）は既定実行では走らない。
-# その検出力の担保は週次 CI（weekly-run-all）で、手順 0 は (1) 週次 CI の状態を
+# その検出力の担保は週次 CI（weekly-run-all）で、手順 0b は (1) 週次 CI の状態を
 # check-weekly-run-all-health.sh で機械確認して HEALTH=healthy だけを高速モードへ受理し、
 # (2) healthy 以外の回は FF_RUN_ALL_FULL=1 の全件実行で代替したうえで、HEAD への
 # run-all green を要求する。どちらかが手順から消えると、selftest 層の担保を欠いたまま
@@ -194,13 +195,13 @@ contains 'stale な origin/develop で続行しない' \
 # 針はコマンド形の行全体に固定する — 裸のスクリプト名だと、散文の言及が 1 行増えた
 # 時点で contains も line_of の順序アンカーも散文側に吸われて空振りする（レビュー W2）。
 contains 'HEALTH_OUT="$(bash scripts/check-weekly-run-all-health.sh 2>&1)" || true' \
-  "手順 0 が週次 CI の状態確認を踏む（selftest 層の担保。ADR-039）"
+  "手順 0b が週次 CI の状態確認を踏む（selftest 層の担保。ADR-039）"
 contains 'if [[ $'"'"'\n'"'"'"$HEALTH_OUT"$'"'"'\n'"'"' == *$'"'"'\n'"'"'"HEALTH=healthy"$'"'"'\n'"'"'* ]]; then' \
   "高速モードへ受理するのは HEALTH=healthy だけ（warming-up / running を成功実績と読まない）"
 contains '⚠ 週次 CI の成功実績を確認できない（HEALTH が healthy 以外）— この回は全件実行で代替する' \
   "healthy 以外の回に全件代替へ倒すことが明記されている"
 contains_exactly 'FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh' 1 \
-  "healthy 以外の回の全件代替コマンドが手順 0 の 1 箇所にある"
+  "healthy 以外の回の全件代替コマンドが手順 0b の 1 箇所にある"
 contains 'if [ "$GATE_MODE" = fast ]; then' \
   "ローカル実行のモードが週次 CI の状態から導出される"
 contains 'NG: run-all が失敗 — 同期しない' \
@@ -278,14 +279,36 @@ assert_order "${L_CIHEALTH}" "${L_GATE}" \
 assert_order "${L_GATE}" "${L_SYNC}" \
   "順序: 定期実行点ゲートが同期実行より前" \
   "順序: 定期実行点ゲートが同期実行より後ろにある — 不可逆操作の後で検査する退行"
-# リリース準備（手順 R）の判定は手順 0 のゲートの後に置く。前へ動くと、リリース準備 PR
-# 〜タグ / Release の外向き操作が定期実行点ゲートを踏まずに始められる形になる
-# （定期実行点の 2 点目「リリース準備の前」の担保は、この順序が手順 0 を共有点にする
-# ことで成立している）。
+# リリース準備（手順 R）の判定は定期実行点ゲート（手順 0b）の**前**に置く（ADR-042）。
+# R の判定材料は手順 0a が揃えた作業ツリーと公開側 clone の履歴 / タグで、**ゲート結果には
+# 依存しない**。後ろに置くと RELEASE_REQUIRED の回だけ「捨てられる 1 回目」が生まれる
+# （OBS-015 で 5 回実測）。ADR-042 は定期実行点「リリース準備の前」の範囲を bump / 版節
+# 昇格から外し、タグ / Release の前へ縮小した。
+# このアサートが守るのは「R が 0b より前」だけで、後ろへ戻る退行は削った 1 回を復活させる。
+# 縮小後の 1 点目そのもの（タグ = 手順 5 / Release = 手順 6 が 0b より後）に**アンカーは
+# 無い** — 上の L_GATE < L_SYNC が固定するのは同期実行（手順 3）までで、タグ / Release が
+# 0b より後にあることは現状では文書順序の帰結にすぎない。この穴は本アサートの反転が作った
+# ものではなく（反転前の L_GATE < L_RELEASE も固定していない）、埋めるかどうかは epic #857
+# の「検査の新設・拡張は原則行わない」との衝突判断を要するため Issue #1102 で扱う。
+# 針は行全体のコマンド形に固定し、出現 1 回を件数でも縛る — line_of は先頭一致なので、
+# 反転後は「前方の散文へアンカーが吸われる」空振りが fail-open 側（R が前に見える）へ倒れる
+# 向きになった（反転前は fail-closed 側だった）。
+contains_exactly 'scripts/check-release-required.sh --public "$PUBLIC" --fetch' 1 \
+  "手順 R の判定コマンドが 1 箇所だけにある（順序アンカーの一意性。反転で空振りが fail-open 側へ倒れるため）"
 L_RELEASE="$(line_of 'scripts/check-release-required.sh --public "$PUBLIC" --fetch')"
-assert_order "${L_GATE}" "${L_RELEASE}" \
-  "順序: リリース準備の判定（手順 R）が定期実行点ゲートより後" \
-  "順序: リリース準備の判定がゲートより前にある — リリース準備前の定期実行点が外れる退行"
+assert_order "${L_RELEASE}" "${L_GATE}" \
+  "順序: リリース準備の判定（手順 R）が定期実行点ゲートより前（ADR-042）" \
+  "順序: リリース準備の判定がゲートより後ろにある — リリースが必要な回に全件ゲートを 2 回払う退行"
+# 反転前は「R がゲートより後」で、ゲートが手順 0（0a の直後）にあったため「R が develop
+# 最新化より後」が**推移的に**固定されていた。反転でその辺が誰にも固定されなくなるので、
+# 明示アンカーで戻す（ADR-042 決定 2 が「前提は 0a が単独で満たす」を load-bearing にした）。
+# 針は完全一致にする — `git pull --ff-only origin develop` は手順 R のコメント内にも散文で
+# 出るため、部分一致だと 0a のコマンド行が消えた回にアンカーが R 自身の中へ吸われて無言で
+# 非識別になる（L_SYNC と同じ形）。
+L_DEVELOP_SYNC="$(awk '$0 == "git pull --ff-only origin develop" { print NR; exit }' "$SKILL")"
+assert_order "${L_DEVELOP_SYNC}" "${L_RELEASE}" \
+  "順序: リリース準備の判定（手順 R）が develop 最新化（手順 0a）より後" \
+  "順序: 手順 R が develop 最新化より前にある — 判定材料（HEAD = develop 最新・clean）の前提が崩れる退行"
 
 # ── 3. 禁止（ブランチ ref からの採取の復活） ────────────────────────────────
 # コマンド置換の形に限定する（散文の説明や Common Mistakes 表への記載を誤検出

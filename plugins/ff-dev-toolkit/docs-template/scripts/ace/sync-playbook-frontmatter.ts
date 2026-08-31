@@ -49,7 +49,7 @@ import {
   discoverPlaybookSubfiles,
   mergeAnalyses,
   type AnalyzeSuccess,
-} from "./check-category-size.js";
+} from "./check-category-size";
 
 const EXIT_OK = 0;
 const EXIT_DRIFT = 1;

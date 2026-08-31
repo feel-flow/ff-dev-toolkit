@@ -271,7 +271,7 @@ Generate → Reflect → Curate は「増やす」一方向のサイクルであ
 - [ ] 各エントリが行数バジェット内（15 行以内。例外宣言付きでも 30 行以内）
 - [ ] push 直前に remote を最新化し、Frontmatter 更新（version=minor+1 on 新規 / updated / changeImpact=medium / ace_entry_count=live 実数）
 - [ ] Changelog 更新（当該版の `#### 追加` / `#### カウンター更新`。version と最新見出し一致）
-- [ ] `npm run ace:check-playbook-frontmatter` が exit 0（count + version↔Changelog + changeImpact）
+- [ ] 同期検証が exit 0（count + version↔Changelog + changeImpact）— npm script 登録済みなら `npm run ace:check-playbook-frontmatter`、未登録で `scripts/ace/` 導入済みなら `npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check`、未導入なら `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check`（3 択から 1 本だけ実行）
 - [ ] コミット（件名 `knowledge: ACE-XXX <要約>`、カテゴリは body の `Categories:` 行）
 
 ### 並行作業（任意）
@@ -279,9 +279,11 @@ Generate → Reflect → Curate は「増やす」一方向のサイクルであ
 - [ ] Discussion 内に ACE-XXX ID を記載
 
 ### 定期 Refine（月次 or ゲート発火時）
-- [ ] `scripts/ace/ace-refine-report.ts` で dry-run レポートを確認
+- [ ] dry-run レポートを確認 — `scripts/ace/` 導入済みなら `npx --yes tsx scripts/ace/ace-refine-report.ts docs/08-knowledge/PLAYBOOK.md`、未導入なら `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-refine-report.ts" docs/08-knowledge/PLAYBOOK.md`（2 択から 1 本だけ実行）
 - [ ] 承認のうえ `/ace-refine` で アーカイブ / 圧縮 / 統合 / 昇格 を適用
 ```
+
+> チェックリスト内の `FF_DEV_TOOLKIT_ROOT` は ff-dev-toolkit プラグインのインストール先ルート（Claude Code では `${CLAUDE_PLUGIN_ROOT}` が渡る。他ホストでは読み込んだ SKILL.md の位置から解決する — 各 SKILL.md 冒頭の「プラグインルートの固定」契約を参照）。未導入プロジェクト向けの fallback 行を実行する前に、この変数を実パスへ解決しておくこと。
 
 ---
 

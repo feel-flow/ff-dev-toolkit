@@ -56,8 +56,8 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
    ```bash
    # プロジェクトに scripts/ace/ が導入済みの場合
    npx --yes tsx scripts/ace/ace-refine-report.ts docs/08-knowledge/PLAYBOOK.md
-   # 未導入の場合はプラグイン同梱のテンプレートを直接使う
-   npx --yes tsx "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-refine-report.ts" docs/08-knowledge/PLAYBOOK.md
+   # 未導入の場合はプラグイン同梱のテンプレートを直接使う（インストール不要）
+   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-refine-report.ts" docs/08-knowledge/PLAYBOOK.md
    ```
 
    レポートは (1) Archive 候補（helpful=0 かつ stale）、(2) 行数バジェット超過（行数降順 = 圧縮効果の大きい順）、(3) PATTERNS.md 昇格候補、を列挙する。
@@ -248,19 +248,29 @@ R3 開始前ガードで確定した default branch を基準にする。`.versi
    違反になる（黙って先頭だけ採用しない）。`- Archived: なし（ACE-X は次回持ち越し）` の ACE-X は
    拾われないので、見送りの理由づけに ID を書いても誤検出にならない（Issue #1028）。
 
-5. 検証ゲートを exit 0 まで回す:
+5. 検証ゲートを exit 0 まで回す。**各ゲートについて、プロジェクトの状態に合う 1 本だけを実行する**（下のブロックを一括実行しない。未導入プロジェクトでは導入済み向けの行が必ず失敗し、exit 0 判定と噛み合わなくなる）:
 
    ```bash
+   # 同期検証 — 次の 3 つのうち 1 本だけを実行する
+   # (1) npm script を登録済みの場合
    npm run ace:check-playbook-frontmatter
-   # npm script が無い場合:
-   # npx --yes tsx path/to/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
+   # (2) npm script は無いがプロジェクトに scripts/ace/ を導入済みの場合
+   npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
+   # (3) scripts/ace/ 未導入の場合はプラグイン同梱のテンプレートを直接使う（インストール不要）
+   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check
+
+   # 以下 4 ゲートは各 2 択（導入済み / 未導入）から 1 本だけを実行する
    npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md
+   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-category-size.ts" docs/08-knowledge/PLAYBOOK.md
    # archive の保全本文内リンクが冒頭注記で担保されているか + <a id> 一意性（Issue #288 穴 2 / #492）
    npx --yes tsx scripts/ace/check-archive-links.ts docs/08-knowledge/PLAYBOOK.md
+   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-archive-links.ts" docs/08-knowledge/PLAYBOOK.md
    # compact 保全・merge 状態遷移・archive 撤去・PATTERNS 収載（本文+出典）の結果不変条件（Issue #492 / #1028）
    npx --yes tsx scripts/ace/check-refine-invariants.ts docs/08-knowledge/PLAYBOOK.md
+   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-refine-invariants.ts" docs/08-knowledge/PLAYBOOK.md
    # 新規追記が旧テーブル形式でないことの機械検証（Issue #286）
    npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
+   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md
    ```
 
 6. **正準化後の allowlist 操作は変種で分岐する**（`check-entry-format` の旧形式判定は field-table-header / table-separator / insight-block の 3 マーカー OR。allowlist から外してよいのは live 本文に 3 マーカーが 1 つも残っていない ID だけ。第 1 変種＝本文要約でも、行頭の **Insight**/**Context**/**Action** が残れば legacy のまま）:
