@@ -1,6 +1,23 @@
 {
-  "description": "ff-dev-toolkit の更新通知・スキル実体ドリフト検査と自動振り返り。SessionStart で新版、スキル集合の欠落、複数 version のインストール実体併存を通知し、UserPromptSubmit で振り返りを事前注入、Claude Code の Stop で実行漏れ時だけ 1 回継続する。Codex の Stop は表示を作らず無音で終了する（fail-open）",
+  "description": "ff-dev-toolkit の更新通知・スキル実体ドリフト検査・自動振り返り・Bash ガード。SessionStart で新版、スキル集合の欠落、複数 version のインストール実体併存を通知し、UserPromptSubmit で振り返りを事前注入、Claude Code の Stop で実行漏れ時だけ 1 回継続する。Codex の Stop は表示を作らず無音で終了する（fail-open）。PreToolUse（Bash）は未コミット変更のあるファイルへの git checkout/restore と、Issue 参照の無いフォローアップ宣言付き gh pr create/edit を警告する（抜け道付き deny・fail-open）",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-checkout-restore.sh\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-pr-followup.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "*",

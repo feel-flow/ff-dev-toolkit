@@ -317,6 +317,12 @@ else
     # 戻すと上流ゲートの検出結果が後段へ届かず落ちる。外部コマンド・一時領域不要。
     # 同じ「スキルの契約文言」を扱う out-of-scope 系に続けて置く。
     "$SCRIPT_DIR/refine-issue-skip-contract/verify.sh"
+    # removal-sweep の 3 系統走査契約（Issue #991）: 撤去 PR の残存参照走査
+    # 3 系統（識別子 / 表示文言 / 構造セレクタ・モック応答）が SKILL.md から
+    # 個別に消えないこと、E2E / スナップショット / a11y の名指しと「デプロイ済み
+    # 成果物はブランチで検出できない」警告を literal 針で固定する。外部コマンド・
+    # 一時領域不要。同じ「スキルの契約文言」を扱う out-of-scope 系に続けて置く。
+    "$SCRIPT_DIR/removal-sweep/verify.sh"
     # /retrospective の規定（提案閾値・承認境界・read-only 境界・ask モード・trigger 語）
     # と、ワークフローチェーン記載の相互整合の静的検査（Issue #540）。モノレポでは
     # 7 ファイル / 13 針、公開配置では 6 ファイル / 11 針を見る。上限と 1 行報告の文面は
@@ -337,6 +343,15 @@ else
     # SKILL 同期・登録の変異を赤化し、consumer の検査総数も固定する。
     "$SCRIPT_DIR/retrospective-stop-hook/verify.sh"
     "$SCRIPT_DIR/retrospective-stop-hook-selftest/verify.sh"
+    # PreToolUse（Bash）の未コミット変更ガード（hooks/guard-checkout-restore.sh、
+    # Issue #673）。fixture の git リポジトリ + stdin JSON で発火（dirty への
+    # checkout/restore を deny + 代替案内）と非発火（ブランチ切り替え・clean/untracked・
+    # --staged 単独・バイパス・fail-open）の両側を固定する。実作業ツリーには触れない。
+    "$SCRIPT_DIR/guard-checkout-restore/verify.sh"
+    # PreToolUse（Bash）の PR フォローアップ宣言ガード（hooks/guard-pr-followup.sh、
+    # Issue #771）。宣言マーカーと Issue 参照の共起判定・no-followup 抜け道・
+    # --body-file / heredoc 経由・既知の限界の素通しを stdin JSON fixture で固定する。
+    "$SCRIPT_DIR/guard-pr-followup/verify.sh"
     # squash 件名の closing keyword が Refs 運用の Issue を閉じる経路のガード。
     # 検査ロジック（scripts/check-closing-keywords.sh）の振る舞いと、SKILL.md /
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド
@@ -362,9 +377,9 @@ else
     # closing-keyword-guard の直後に置く。
     "$SCRIPT_DIR/review-rejection-discipline/verify.sh"
     # 起票スキル 2 本（create-issue / out-of-scope-issue）に意図的に複製されている
-    # verify-then-skip ラベル契約の照合（bash は連続した行列として、散文は行単位で）と、
-    # 両者の意図的な非対称（候補の系統・アサイン方針）の固定。jq / gh / yq 不要の
-    # 静的検査（`bash -n` による構文検査だけは走らせるが、契約ブロックは実行しない）。
+    # verify-then-skip ラベル契約（body-file + 単純コマンド分割方式。Issue #715）の
+    # 散文照合と、起票フェンスが複合構文を含まないことの構造検査、
+    # 両者の意図的な非対称（候補の系統・アサイン方針）の固定。jq / gh / yq 不要の静的検査。
     # 検査対象の一方 out-of-scope-issue を共有するので、out-of-scope 系・retrospective 系の
     # 契約検査群に続けて置く。
     "$SCRIPT_DIR/issue-label-contract/verify.sh"

@@ -46,11 +46,11 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh" $ARGUMENTS
 
 ## スクリプトがやること
 
-1. **未コミット変更ガード** — あれば中断してユーザーに分類判断を仰ぐ（`git restore` / `git clean` は実行しない）。常駐ツールが書き続けるパスは `FF_MERGE_CLEANUP_IGNORE_PATHS` でガードの対象外にできる（下記）
+1. **未コミット変更ガード** — あれば中断してユーザーに分類判断を仰ぐ（`git restore` / `git clean` は実行しない）。常駐ツールが書き続けるパスは `FF_MERGE_CLEANUP_IGNORE_PATHS` でガードの対象外にできる（下記）。呼び出し元が base でも PR head でもないブランチにいる場合は中断せず、切り替えを伴わない掃除モードへ落とす（下記）
 2. **対象 PR の情報取得** — state / head / base / headRefOid / fork 判定。**MERGED でなければ破壊的処理の前に中断**（番号の打ち間違い対策）
-3. **base ブランチ復帰 + 最新化** — PR の `baseRefName` へ `git switch` し `fetch --prune` + `pull --ff-only`（develop 固定ではない）。別 worktree が base を保持している場合は、その worktree が clean のときだけ同じ HEAD の detached 状態へ退避して worktree 自体を残し、呼び出し元を base へ復帰する。保持側が dirty なら変更を触らず、リモート削除前に中断する。ここでの clean 判定にも `FF_MERGE_CLEANUP_IGNORE_PATHS` は効く（下記）
+3. **base ブランチ復帰 + 最新化** — PR の `baseRefName` へ `git switch` し `fetch --prune` + `pull --ff-only`（develop 固定ではない）。別 worktree が base を保持している場合は、その worktree が clean のときだけ同じ HEAD の detached 状態へ退避して worktree 自体を残し、呼び出し元を base へ復帰する。保持側が dirty なら変更を触らず、リモート削除前に中断する。ここでの clean 判定にも `FF_MERGE_CLEANUP_IGNORE_PATHS` は効く（下記）。呼び出し元が base でも PR head でもないブランチを保持している場合は base への復帰自体を行わない（下記の掃除モード）
 4. **対象 PR のリモートブランチ削除** — same-repo かつ open PR で head 再利用されていない場合に、`--force-with-lease=<ref>:<期待OID>` で削除（照合と削除の間に push が入った場合はサーバー側で原子的に拒否 = TOCTOU 対策）。削除 push に新しい lint/test 対象のコミットは無いため `SKIP_SIMPLE_GIT_HOOKS=1` を付け、consumer の simple-git-hooks フルゲートを起動しない。Git の hook 起動自体は止めない（Husky 等は対象外）。削除可否は本スクリプトの保護ブランチ / lease / open-PR ガードが担う。`core.hooksPath` の一時無効化は他の guard まで落とすので使わない
-5. **`[gone]` ローカルブランチ + 関連 worktree の削除** — worktree は **clean を確認してから**削除（dirty なら警告してスキップ）。squash merge 由来の "not fully merged" への `-D` エスカレーションは、**(名前, ローカル OID) が MERGED PR の head と一致する場合のみ**（`[gone]` は upstream 消失しか保証しないため、手動リモート削除された未マージ作業は保護される）
+5. **`[gone]` ローカルブランチ + 関連 worktree の削除** — worktree は **clean を確認してから**削除（dirty なら警告してスキップ）。squash merge 由来の "not fully merged" への `-D` エスカレーションは、**(名前, ローカル OID) が MERGED PR の head と一致する場合のみ**（`[gone]` は upstream 消失しか保証しないため、手動リモート削除された未マージ作業は保護される）。マージ済みと機械確認できたエージェント worktree（claude agent ロック + 使い捨てパスのみ）は unlock + 削除する（下記）
 5.5. **削除した worktree のトランスクリプト回収** — 消した worktree でだけ使われていた Claude Code の履歴を `tar.gz` へアーカイブして元ディレクトリを回収する（下記）。**すでに溜まっている孤児**の一括回収は本ステップの対象外で、`/sweep-orphan-transcripts` を使う
 6. **リモート取り残しのガード付き自動削除** — 過去のマージ漏れで累積したリモートブランチを掃除する（下記）
 7. **最終検証 + 結果サマリー** — 削除 / スキップ / 失敗を分類して報告
@@ -105,6 +105,52 @@ FF_MERGE_CLEANUP_IGNORE_PATHS='videos/**:.cache/**' bash "${FF_DEV_TOOLKIT_ROOT}
 - **`git status` が exit 0 でも stderr へ警告を出したら**、作業ツリーを完全には走査できていない可能性がある（`warning: could not open directory …: Permission denied` はその配下の未追跡ファイルを列挙できないまま exit 0 になる）。Step 3（base 所有 worktree）はここで**中断する** — 走査が不完全なまま detach → リモート削除 → worktree 削除へ進ませないため。Step 1 は判定を変えず、警告を実行ログへ出して可視化する
 - 対象外にした変更は**件数と一覧を必ずログに出す**。黙って無視すると、ガードが緩んだのか本当に clean なのかが実行ログから区別できない
 - **指定はあるのに 1 件も一致しない場合もその旨を出す**。黙って従来どおり中断すると、パターンの書き間違いが「設定したのに何も変わらない」としか見えない
+
+## 呼び出し元が base でも PR head でもないブランチにいる場合 — switch なし掃除モード
+
+並列セッション運用では、呼び出し元（主 checkout）が**他セッションの作業ブランチ**を保持したまま `/merge-cleanup` が呼ばれることがある。そのまま Step 3 が base へ `git switch` すると、他セッションの作業を勝手に切り替えることになる。呼び出し元の現在ブランチが **base でも PR head でもない名前付きブランチ**の場合、スクリプトは**ブランチ切り替えを伴わない掃除モード**で続行する:
+
+- **base への復帰・`pull --ff-only` は行わない**。base の最新化は checkout 不要な `git fetch origin <base>:<base>` を試み、base がどこかの worktree に checkout されていて git に拒否されたらスキップして報告する
+- **base を保持する worktree は detach も削除もしない**。保持者のパス・clean/dirty・最終コミット日時を報告し、処分はユーザー判断に委ねる
+- リモートブランチ削除（Step 4）・`[gone]` 掃除・worktree 削除（Step 5）・トランスクリプト回収（Step 5.5）・取り残し検証(Step 6) は通常どおり実施する。呼び出し元がチェックアウト中の `[gone]` ブランチだけは削除せず、名指しのスキップとして報告する
+- **呼び出し元が dirty でも中断しない**。このモードは呼び出し元のブランチにも作業ツリーにも一切触れないため、dirty を理由に止めると cleanup の実体（OID 照合・lease 削除・取り残し回収）を毎回手作業で再現することになる。変更には触れない旨と変更一覧をログに出して続行する
+- サマリーに **未実施項目（base への復帰・pull、base 最新化の成否）を名指しで載せる**。意図的な見送りなので PARTIAL には数えない
+- **`pre-merge-cleanup` hook が呼び出し元のブランチを切り替えた場合は中断する**。「呼び出し元に触れない」というこのモードの契約を以降のステップで守れなくなるため
+
+detached HEAD（ブランチ名なし）からの実行は従来どおり通常モード（base へ switch して復帰する）。
+
+## マージ実行時の注意 — base ブランチが他 worktree に保持されている場合
+
+これは本スクリプトではなく**その前段の `gh pr merge` 実行時**のガード。`gh pr merge --squash --delete-branch` はマージ成功後にローカルで base へ切り替えようとするため、base が他 worktree に保持されていると **PR はマージ済みなのにリモートブランチ削除まで到達せず失敗**する（エラーは worktree の話しかせず、リモートブランチが残ったことに気付けない）。マージを実行する AI / 人間は:
+
+1. マージ前に `git worktree list` で base（`develop` 等）が他 worktree に保持されていないか確認する
+2. 保持されていたら `--delete-branch` を使わず、`gh pr merge --squash` と `git push origin --delete <head>` に分割する。ローカル退避は `git switch --detach origin/<base>`（`git switch <base>` は必ず失敗する）
+3. **他セッションの worktree は削除しない**。保持者のパスと状態（clean/dirty・最終更新）を報告し、削除はユーザー確認後にする
+4. 完了報告に「リモートブランチを削除したか」を `gh pr merge` の成否とは別項目で明示する（本スクリプトのサマリーも同じ項目を必ず出す）
+
+その後の `/merge-cleanup` は上記の switch なし掃除モードで完走できる。
+
+## Step 5: マージ済みエージェント worktree の自動処理
+
+サブエージェント並列開発の worktree は、ハーネスのロック（lock reason: `claude agent` を含む文字列）と untracked の `.review-results`（マルチ AI レビューの使い捨て成果物）を残したままマージされることが多く、従来は毎回削除に失敗して PARTIAL になり、unlock → force remove の手動 3 手を要していた。
+
+**設計判断（Issue 914）: 明示スキップではなく、狭い条件での自動 unlock + 削除を採る。** 根拠:
+
+- 「(名前, ローカル OID) が MERGED PR の head と一致」は `-D` エスカレーションと同じ機械的証拠で、マージ済みであることが証明済み
+- `.review-results` はレビューツールが生成する再現可能な使い捨て成果物で、失って困る情報を含まない
+- 明示スキップでは worktree が無制限に溜まり続け（Issue 1056 と同じノイズ問題）、手動 3 手も残る
+
+自動処理の条件は **3 つすべて**を満たす場合のみ:
+
+1. **(名前, ローカル OID) が MERGED PR の head と一致**（ガード情報の取得に失敗していれば不成立 = fail-closed）
+2. **ロックされていて、ロック理由に `claude agent` を含む**（未ロックの worktree は残置物が使い捨てパスだけでも対象外。ロックはエージェント所有の証拠であり、`claude agent` 以外の理由のロックは unlock せず保護）
+3. **dirty の内訳が既知の使い捨てパス（`.review-results/`）の untracked だけ**（clean も可。追跡ファイルの変更・未知の untracked が 1 行でもあれば従来どおり保護）
+
+条件を満たした worktree の削除は **`--force` を使わない**。unlock → 使い捨てパス（`.review-results`）だけを個別に除去 → force なしの `git worktree remove` の順で行い、clean 確認・除去のあとに別の変更が入っていれば **git 自身が削除を拒否する**（TOCTOU の安全網を維持）。拒否された場合は解除した claude agent ロックを**元の理由で復元**してから失敗として報告する。成功時は**失敗ではなく補足行（手当て不要）として報告する**ので PARTIAL にならない。条件が 1 つでも欠ければ従来どおり削除せず PARTIAL で報告する。`FF_MERGE_CLEANUP_IGNORE_PATHS` はこの判定に**効かない**（Step 5 は従来どおり対象外。使い捨てと認めるパスはスクリプトに固定で、環境変数で広げられない）。
+
+### `[gone]` ブランチの `-D` 照合で MERGED 一覧側の OID が null の場合
+
+`gh pr list` が MERGED 一覧側の `headRefOid` を null で返すことがある（Issue 703。Step 4 の `gh pr view` 側の null と同型）。このとき (名前, OID) 照合は成立しないが、それは**照合材料が無い**だけで未マージの証拠ではない。スキップ理由は「一覧側の OID が null で照合材料がありません」と名指しし、「未マージの固有コミットの可能性」とは表示しない（利用者に存在しない未マージコミットを探させない）。削除しない点は従来どおり。
 
 ## Step 5.5: worktree トランスクリプトの回収
 
@@ -168,10 +214,27 @@ worktree 外を指す `cwd` が混ざっていた場合は、回収したうえ�
 
 1. **(名前, OID) が MERGED 済み PR の head と完全一致** — 名前再利用・マージ後 push されたブランチは OID が変わるため対象外になる
 2. **fork PR 由来でない** — origin 上の同名別ブランチを誤射しない
-3. **保護ブランチ名でない** — `develop` / `main` / `master` / `release/*` / `staging/*`
+3. **保護ブランチ名でない** — `develop` / `main` / `master` / `staging/*` はハードコード。`release/*` は既定で保護するが設定で変更できる（下記）
 4. **open PR の head として再利用されていない**
 
-削除自体も `--force-with-lease=<ref>:<照合済みOID>` で実行するため、照合の後に push されたブランチはサーバー側で拒否される（skip 扱い）。削除 push には `SKIP_SIMPLE_GIT_HOOKS=1` を付ける（Step 4 と同じ）。ガードの構成に必要な情報（MERGED 一覧 / open 一覧 / `ls-remote`）の**どれか 1 つでも取得に失敗したら、削除を一切行わずスキップ**する（fail-closed）。照合は直近 1000 件のマージ済み PR まで。
+削除自体も `--force-with-lease=<ref>:<照合済みOID>` で実行するため、照合の後に push されたブランチはサーバー側で拒否される（skip 扱い）。削除 push には `SKIP_SIMPLE_GIT_HOOKS=1` を付ける（Step 4 と同じ）。ガードの構成に必要な情報（MERGED 一覧 / open 一覧 / `ls-remote`）の**どれか 1 つでも取得に失敗したら、削除を一切行わずスキップ**する（fail-closed）。
+
+照合は既定で直近 1000 件のマージ済み PR まで。大きめのリポジトリではこの取得が数分かかりうるため、`FF_MERGE_CLEANUP_MERGED_PR_LIMIT` で上限を変更でき、取得の前後には進捗（照合上限・取得件数）を出力する（無出力のまま待たせて「ハング」と誤診させない。Issue 835）。取得件数が上限に達した場合は「上限で打ち切っており、これより古い MERGED PR は照合対象外」であることをログに明示する。fail-closed 特性（取得失敗時は削除を一切行わない）は上限の設定値によらず維持される。不正値（非数値・0 以下）は破壊的処理より前に中断する。
+
+### 保護ブランチの設定 — `FF_MERGE_CLEANUP_PROTECT_BRANCHES`（Issue 1056）
+
+`release/*` は運用によって「長命な統合ブランチ」（保護が正しい）と「リリース単位の作業ブランチ」（マージ後は用済み）に二分する。名前だけで前者と決めつけると、後者の運用ではマージ済み `release/*` が永久に取り残される。そこで**追加の保護パターンを設定可能**にする:
+
+| 値 | 意味 |
+|---|---|
+| （未設定 / 空文字列） | 既定 `release/*` を保護（従来どおり = 後方互換） |
+| `release/*:lts/*` など | `:` 区切りの glob で置き換える |
+| `none` | 追加の保護なし（ハードコード分だけが残る） |
+
+- **`develop` / `main` / `master` / `staging/*` はハードコードのまま**。`none` を含むどんな設定でも Step 4 / 5 / 6 のいずれからも削除されない（最終防壁）
+- 空要素（`release/*:` 等）・前後に空白の付いたパターンは中断する（fail-closed。IGNORE_PATHS と同じ扱い）
+- **文字クラス（`[...]`）は未対応で中断する**。`release/[[:digit:]]*` のようなパターンはクラス内の `:` が区切り文字と衝突して黙って分断され、エラーにならないまま保護が消える（fail-open）ため、パース時に検出して拒否する。プレフィックス glob（`release/*` など）を使うこと
+- 設定パターンに止められた Step 6 の skip は、**ハードコード保護と書き分けて**報告する。この候補は他の全ガード（MERGED head と (名前, OID) 一致 / fork 由来でない / open PR 未使用）を通過済み = 「マージ済みで安全に消せる」ことが証明済みなので、手動削除コマンド（照合済み OID を lease に載せた形）と恒久設定の案内を添える。毎回同じ skip が無言で積み上がって、本当に判断が要る skip がノイズに埋もれるのを防ぐ
 
 ## リモート削除の判定と失敗時の扱い（Step 4 / Step 6 共通）
 
@@ -257,8 +320,9 @@ lease 拒否の扱いが既知 OID 側と非対称なのは、**Step 4 が削除
 
 ## 安全原則（スクリプトが保証すること）
 
-- **保護ブランチはローカル・リモートとも絶対に削除しない**（Step 4 / 5 / 6 すべてにガードあり）
-- **未コミット変更を勝手に消さない** — メイン worktree は Step 1 で中断、別 worktree は削除前に clean 確認
+- **保護ブランチはローカル・リモートとも絶対に削除しない**（Step 4 / 5 / 6 すべてにガードあり）。`develop` / `main` / `master` / `staging/*` はハードコードで設定でも外せない。`release/*` は既定で保護し、`FF_MERGE_CLEANUP_PROTECT_BRANCHES` で変更できる
+- **未コミット変更を勝手に消さない** — メイン worktree は Step 1 で中断（switch なし掃除モードでは触れずに続行）、別 worktree は削除前に clean 確認。例外は「(名前, OID) が MERGED head と一致し、claude agent ロックがあり、残置物が既知の使い捨てパス（`.review-results`）の untracked だけ」のエージェント worktree で、これは使い捨てパスを個別除去してから force なしで削除する（`--force` は使わず、除去後に入った変更は git 自身が拒否する。上記の設計判断）
+- **他セッションの作業ブランチを切り替えない・worktree を消さない** — 呼び出し元が base でも PR head でもないブランチにいる場合は switch せずに掃除だけ完遂し、base を保持する worktree は報告のみ（detach も削除もしない）
 - **パス除外が効くのは「中断しても何も消えない」ガードだけ** — Step 1 / Step 3 は `FF_MERGE_CLEANUP_IGNORE_PATHS` を尊重するが、worktree 削除前の clean 確認（Step 5）は対象外。除外指定の不正（空パターン）と `git status` の失敗はどちらも中断（fail-closed）
 - **base を保持する別 worktree を削除しない** — clean（除外指定を適用した後に clean）の場合は同じ HEAD の detached 状態へ退避し、ignored ファイルを含む worktree は維持する。dirty の場合は fail-closed で中断
 - **upstream なしの孤児ブランチは削除しない** — 検出して警告のみ
@@ -273,7 +337,7 @@ lease 拒否の扱いが既知 OID 側と非対称なのは、**Step 4 が削除
 | code | 意味 |
 |------|------|
 | 0 | 完全成功 |
-| 1 | 致命的エラーで中断（引数不正 / `FF_MERGE_CLEANUP_IGNORE_PATHS` の指定不正 / 未コミット変更の確認自体の失敗 / 呼び出し元または base 所有 worktree の未コミット変更 / switch・pull 失敗 / gh 失敗 / Step 3 の `fetch --prune` 失敗 など）。**リモートブランチの削除失敗と、その直後の削除反映 `fetch --prune` の失敗はここに入らない**（PARTIAL 扱い） |
+| 1 | 致命的エラーで中断（引数不正 / `FF_MERGE_CLEANUP_IGNORE_PATHS`・`FF_MERGE_CLEANUP_PROTECT_BRANCHES`・`FF_MERGE_CLEANUP_MERGED_PR_LIMIT` の指定不正 / 未コミット変更の確認自体の失敗 / 呼び出し元または base 所有 worktree の未コミット変更 / switch・pull 失敗 / gh 失敗 / Step 3 の `fetch --prune` 失敗 など）。**リモートブランチの削除失敗と、その直後の削除反映 `fetch --prune` の失敗はここに入らない**（PARTIAL 扱い） |
 | 2 | 完了したが一部失敗あり（PARTIAL）。サマリーの「失敗した項目」を確認して手動対応 |
 
 終了コードが 0 以外の場合、Claude はサマリーの失敗項目・中断理由をユーザーに報告し、勝手にリトライや強制削除をしないこと。
@@ -291,6 +355,7 @@ DDEV / Next.js キャッシュ / Tauri ビルド成果物 など、プロジェ�
 ## 注意事項
 
 - `/merge-cleanup` は **自動で base ブランチを push しない**。pull のみ
+- サマリーは対象 PR について**「リモートブランチを削除したか」を必ず明示する**（`削除した` / `既に存在しない` / `削除していない（保護 / 要確認）`）。`gh pr merge` の成否と混同して取り残しを見逃さないための項目で、完了報告にはこの行をそのまま引用する
 - base を保持していた clean な別 worktree は、cleanup 後も同じ commit の detached 状態で残る。必要なら、その worktree で別ブランチを明示的に checkout して再利用する
 - worktree の削除は clean 確認後でも、**`.gitignore` 対象のファイル（`.env` 等）は clean 扱いのまま消える**。惜しいファイルを worktree の ignored 領域にだけ置く運用は避けること
 - `/ace-curate <PR番号>` の **前に** 実行する。ACE はナレッジ更新のみで cleanup はしない。cleanup が完了しないかぎり Git Workflow は終了していない

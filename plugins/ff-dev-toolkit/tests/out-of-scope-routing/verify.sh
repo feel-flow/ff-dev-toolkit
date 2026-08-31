@@ -150,6 +150,14 @@ contains "$SKILL" "終了コード 0 かつ結果が空配列の場合だけ" "�
 contains "$SKILL" "候補の詳細取得が 1 件でも失敗した場合も統合・新規作成を確定せず停止" "Issue 詳細取得失敗も fail-closed"
 contains "$SKILL" "Issue URL を取得できた場合だけ成功" "Issue 作成成功の事後条件"
 contains "$SKILL" "コメントだけを既定" "既存 Issue 統合はコメントが既定"
+# Issue #766: 統合元の本文は全文取得し、クローズ前に survivor への転記を実測確認する
+contains "$SKILL" "統合元・統合先の本文は全文取得する" "Issue 統合は本文を全文取得（head で切らない）"
+contains "$SKILL" '（`head` / `tail` で切った出力を統合の根拠にしない）' "head / tail 出力を統合根拠にしない"
+contains "$SKILL" "survivor への転記を機械的に確認する" "クローズ前に survivor 転記を実測確認"
+contains "$CLOSE_ISSUE" "Issue 本文は全文取得する" "close-issue も本文を全文取得（AC 照合の入力を切らない）"
+# Issue #756: 起票 → PR 作成の順序制約とプレースホルダ運用
+contains "$SKILL" "起票は PR 作成より前に行う" "起票が PR 作成に先行する順序制約"
+contains "$SKILL" '<!-- follow-up issue: TBD -->' "後回し時のプレースホルダ運用"
 contains "$SKILL" "本文の変更を明示的に許可" "Issue 本文更新は明示許可が必要"
 contains "$SKILL" '`body` と `updatedAt`' "Issue 本文更新前に競合を確認"
 contains "$SKILL" "read-only レビューでは書き込まない" "read-only レビューの非変更境界"

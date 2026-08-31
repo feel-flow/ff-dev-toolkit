@@ -19,6 +19,40 @@
 
 ## [Unreleased]
 
+## [0.69.0] - 2026-08-31
+
+### 追加
+
+- PreToolUse（Bash matcher）の未コミット変更ガード hook `hooks/guard-checkout-restore.sh` を追加。未コミット変更のあるファイルへの `git checkout [--] path` / `git restore path` を実行前に検出し、代替手段（cp バックアップ / `git stash push -- path` → `pop`）と意図的破棄のバイパス（コマンド先頭に `FF_DISCARD_UNCOMMITTED=1`）を案内する抜け道付き deny で止める。ブランチ切り替え（`git checkout branch` / `git switch`）、clean・untracked なファイルへの復元、`git restore --staged` 単独では発火しない。解析できないコマンド形や自身の不具合では黙って許可に倒れる（fail-open）。無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD=1`
+- merge-cleanup: 呼び出し元が base でも PR head でもないブランチ（他セッションの作業ブランチの可能性）を保持している場合、ブランチを切り替えずに掃除を完遂する「switch なし掃除モード」を追加。base を保持する worktree は detach せず保持者パス・clean/dirty・最終コミット日時を報告し、base の最新化は checkout 不要な `git fetch origin base:base` を試みて拒否されたらスキップとして報告する。dirty な呼び出し元でも中断せず、未実施項目（base 復帰・pull）はサマリーで名指しする
+- merge-cleanup: サマリーに「リモートブランチを削除したか」の明示（削除した / 既に存在しない / 削除していない）を追加。あわせてスキル文書に、base ブランチが他 worktree に保持されている場合のマージ手順（`gh pr merge --squash` とリモートブランチ削除の分割、`git switch --detach` での退避）を記載
+- PreToolUse（Bash matcher）の PR フォローアップ宣言ガード hook `hooks/guard-pr-followup.sh` を追加。`gh pr create` / `gh pr edit` の PR 本文に「スコープ外」「別Issue」「別対応」「後で対応」「別途」「follow-up」「out of scope」の宣言マーカーがあるのに Issue 参照（Issue 番号または Issue URL）が無い場合、先に起票すべきことを案内する抜け道付き deny で警告する。起票不要の正当な判断は本文の理由付き no-followup コメントマーカーで通せる。判定対象はコマンド文字列全体（heredoc 含む）と読み取り可能な `--body-file` の内容で、stdin・プロセス置換・`--fill` 経由は既知の限界として素通しする（fail-open）。無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1`
+- merge-cleanup: マージ済みエージェント worktree の自動処理を追加。「(名前, ローカル OID) が MERGED PR の head と一致 かつ 残置物が既知の使い捨てパス（.review-results）の untracked のみ かつ ロック理由が claude agent」の狭い条件を満たす worktree は unlock と削除を自動で行い、毎回 PARTIAL になっていた手動 3 手（unlock と force remove）を不要にした。条件が 1 つでも欠ける worktree（未知の untracked、OID 照合不成立、claude agent 以外のロック）は従来どおり削除せず保護する
+- removal-sweep スキルを追加。撤去（機能・設定・UI 要素の削除）PR の残存参照を 3 系統（識別子 / 表示文言 / 構造セレクタ・モック応答）で走査するチェックリストで、E2E・スナップショット・アクセシビリティテストを名指しの走査対象に含め、E2E がデプロイ済み成果物（埋め込みウィジェット・公開 SDK・CDN 配信バンドル）を指す構成ではブランチ上で破壊を検出できない旨の警告を含む。
+
+### 変更
+
+- merge-cleanup: 保護ブランチのうち release/ 配下のパターンを環境変数 `FF_MERGE_CLEANUP_PROTECT_BRANCHES` で設定可能にした（`:` 区切りの glob、`none` で追加保護なし）。既定は従来どおり release 配下を保護して後方互換。develop / main / master / staging 配下はハードコードのままで、どんな設定でも削除されない。設定パターンに止められた取り残し候補の skip は、ハードコード保護と書き分けて手動削除コマンド（照合済み OID を lease に載せた形）と恒久設定の案内付きで報告し、毎回同じ skip が無言で積み上がる問題を解消した
+- create-issue / out-of-scope-issue: 起票手順を「ラベル実在確認から gh issue create までの単一 bash ブロック」から body-file + 単純コマンド分割方式へ簡素化。本文は Write ツールで一時ファイルへ書いて --body-file で渡し、gh label list を単独実行してエージェントが出力を読んで実在照合し、gh issue create へ --label を直書きして単独実行する。シェル変数で状態を運ばないため、heredoc 組み立て・空本文ガード・bash 3.2 の空配列トリック・SIGPIPE 回避の照合ループ・fail-soft 分岐群が不要になり、複合コマンドを拒否する worktree 隔離セッションのコマンドガードとも衝突しない。ラベル「不在」と「照会失敗」の書き分け規則は本文の指示として維持
+- tests/issue-label-contract: 契約検査を新方式へ追従。bash ブロックの行列比較・gh stub による振る舞い実測を、起票フェンスが複合構文を含まないことの構造検査と散文契約の照合へ置き換え（create-issue 手順 4 と refine-issue 対応表の同期検査は従来どおり）
+- merge-cleanup: マージ済み PR の照合上限（従来 1000 件固定）を環境変数 `FF_MERGE_CLEANUP_MERGED_PR_LIMIT` で設定可能にし、取得の前後に進捗（照合上限・取得件数）を出力するようにした。上限に達した場合は打ち切りをログに明示する。既定は 1000 件のままで後方互換、fail-closed 特性（ガード情報の取得失敗時は削除を一切行わない）も維持。不正値は破壊的処理より前に中断する
+
+### 修正
+
+- merge-cleanup: `[gone]` ローカルブランチの `-D` 照合で、MERGED 一覧側の `headRefOid` が null の場合に「未マージの固有コミットの可能性」と誤帰属していたのを修正。スキップ理由が「一覧側の OID が null で照合材料が無い」ことを名指しするようになり、存在しない未マージコミットを探させない（削除しない安全側の挙動は従来どおり）
+
+### ドキュメント
+
+- git-workflow / review-response-policy / workflow-principles: レビュー指摘の対応が PR の宣言した前提（設計判断）を覆す場合は、重大度に関わらず別 Issue へ切り出し、現行 PR は元のスコープで収束させる判定基準を追加。重大度とスコープ判定は別軸であることを明記し、AC を実装に合わせて更新する既存ルールを「分離が不可能だった場合の事後処理」として位置づけた
+- create-issue: 完了報告に「DoD 実在確認: 済（対象 N 件）」または「DoD 実在確認: 対象なし」の 1 行を必須化。DoD が指す既存成果物の実在確認が非対話モードで省略されても、報告面で検出できるようにした
+- 新規 ADR の採番根拠を明文化。DECISIONS.md テンプレートの「新規 ADR の採番」を正本とし、assess-impact スキルと git-workflow から参照する。目視 grep を禁止し、採番検証スクリプトの出力、無ければ見出し行限定・数値順の最大値 +1 を根拠にする（数値限定パターンによりフェンス内の雛形を拾わない）
+- out-of-scope-issue / git-workflow: follow-up Issue の起票を PR 作成より前に行う順序制約を明記。GitHub は Issue と PR で採番列を共有するため、番号を推測して PR 本文へ書くと PR 自身がその番号を取る。後回しにする場合はプレースホルダを置き、起票直後に gh pr edit で埋める運用も記載
+- ace-curate / close-issue: 日本語とバックティックが混在する文字列パッチは python3 を既定にし、パッチ失敗時に commit へ到達させないこと、コミット直前に git status --short の結果とコミットメッセージの主張を突き合わせることを明記
+- out-of-scope-issue / close-issue: Issue の統合・AC 照合では本文を全文取得し（head / tail で切った出力を根拠にしない）、統合元をクローズする前に survivor への転記を機械的に実測確認する手順を追加。契約文言ゲートでも固定
+- git-workflow: 削除・改名系 sweep の grep を case-insensitive 既定にし、消し込み前に表記ゆれ（大文字・小文字、kebab-case / snake_case / CamelCase、別綴り、別プロダクト名との衝突）を列挙する指針を実装ステップへ追加
+- close-issue: マージ前に PR タイトルがプロジェクトの件名規約を満たすか確認する手順を追加。squash コミットの件名はマージ後に変更できないため、違反時は gh pr edit --title で修正してからマージへ進む
+- MASTER.md テンプレートの Frontmatter 更新規則へ、.version-claims contract を持つプロジェクトでは version を変更する文書の claim を同じ commit で更新する旨を追記（contract が無いプロジェクトでは不要。生成手順は .version-claims/README.md を参照し複製しない）
+
 ## [0.68.0] - 2026-08-31
 
 ### ドキュメント

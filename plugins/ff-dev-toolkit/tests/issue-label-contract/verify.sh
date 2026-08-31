@@ -2,9 +2,9 @@
 #
 # 起票・refine スキル間で複製されている契約の同期検査。2 系統を扱う:
 #   A. 起票スキル 2 本（create-issue / out-of-scope-issue）のラベル付与契約
-#      （verify-then-skip）の同期（Issue #292 / #297）… 検査 1〜9
+#      （verify-then-skip）の同期（Issue #292 / #297 / #715）… 検査 1〜7
 #   B. create-issue 手順 4 の粒度チェック項目リストと、refine-issue がそれを
-#      写した派生対応表の同期（Issue #591）… 検査 10
+#      写した派生対応表の同期（Issue #591）… 検査 10（番号は導入時のまま）
 #
 # `create-issue`（着手前の起票ゲート）と `out-of-scope-issue`（スコープ外発見の
 # follow-up 起票）は、どちらも「実在するラベルだけを付ける」同じ手順を持つ。
@@ -12,21 +12,41 @@
 # 直書きで固定できず、`gh label list` での実在確認 → 存在するものだけ付与 →
 # 省略分は理由付きで報告、という手順が両者に要る。
 #
-# なぜ共有ファイルに切り出さず複製するのか: 手順の途中で組み立てた `label_args` を
-# `gh issue create` がそのまま消費する。参照ファイルへ分断すると、エージェントが
-# 参照先を読まずにラベル手順ごと飛ばす経路ができる（progressive disclosure は
-# 「読まれないことがある」を前提にした仕組みで、必須手順の置き場所ではない）。
-# そこでドリフト対策は「共有」ではなく「照合」で行う。
+# 手順の形は Issue #715 で「単一の複合 bash ブロック」から「body-file + 単純コマンド
+# 分割」へ改めた。本文は Write ツールで一時ファイルへ書いて `--body-file` で渡し、
+# `gh label list` を単独実行してエージェントが出力を読んで実在照合し、`gh issue create`
+# へ `--label` を直書きして単独実行する。シェル変数で状態をコマンド間に運ばないため、
+# 旧方式を支えた装置（heredoc 組み立て・空ガード・bash 3.2 の空配列トリック・
+# SIGPIPE 回避の照合ループ・fail-soft 分岐群）は存在せず、worktree 隔離セッションの
+# 複合コマンド拒否ガードとも衝突しない。
 #
-# 検査は 2 層:
-#   1. fixtures/label-block.txt … bash の実行部分を**連続した行列**として固定する。
-#      行の存在だけを見る方式では then/else の入れ替え（実在するラベルを skip し、
-#      存在しないラベルを gh へ渡す = 契約の意味的反転）が素通りするため、順序と
-#      隣接まで比較する。両スキルで意図的に異なる 2 行（候補の系統）はプレース
-#      ホルダへ正規化し、その違い自体は下の個別検査で固定する。
-#   2. fixtures/shared-fragments.txt … 順序を固定する意味がない散文・表を行単位で
+# なぜ共有ファイルに切り出さず複製するのか: 照合と報告の判定規則は起票コマンドの
+# 直前で読まれる必要がある。参照ファイルへ分断すると、エージェントが参照先を読まずに
+# 実在確認ごと飛ばす経路ができる（progressive disclosure は「読まれないことがある」を
+# 前提にした仕組みで、必須手順の置き場所ではない）。そこでドリフト対策は「共有」では
+# なく「照合」で行う。
+#
+# 検査の層:
+#   1. 起票手順の形（検査 1）… 3 つの構造検査で worktree ガード拒否の再発
+#      （Issue #715 の受け入れ条件）を塞ぐ。(a) `gh label list` / `gh issue create` を
+#      含む bash フェンスを**全数**走査し、複合構文（if / for / while / until / case /
+#      heredoc / 関数定義）に加えて論理連結（&& / ||）・パイプ・コマンド区切り（;）・
+#      コマンド置換（$( / バッククォート）・サブシェルを赤にする（引用符内の文字は
+#      対象外 — `--jq '.[].name'` 等を誤検出しない）。(b) `$expected_repo` を参照する
+#      フェンスは同じフェンス内で宣言していること（フェンスは別シェルで走るため、
+#      後続フェンスからの参照は空になる）。(c) 起票フェンスに `--repo` / `--label` /
+#      `--body-file` が同居していること（散文の存在確認だけでは別の場所に散っても
+#      緑になる）。あわせて旧 1 ブロック方式の装置が復元されていないことを見る。
+#   2. fixtures/shared-fragments.txt … 複製された散文・表・コマンド行を行単位で
 #      照合する。既定は**行全体の完全一致**（部分一致だと片側の行末に文を継ぎ足す
-#      ドリフトが素通りする）。文の長さが意図的に違う箇所だけ `~ ` で部分一致にする。
+#      ドリフトが素通りする）。両ファイルで前後が意図的に違う箇所だけ `~ ` で
+#      部分一致にする。
+#
+# 旧方式にあった gh stub での behavioral 実測は撤去した。ラベル照合の判断が bash から
+# エージェント側へ移り、実行して検証できる bash ロジックそのものが存在しなくなった
+# ため（実行対象の無い stub 実測は空検査になる）。代替の検出力は上の構造検査（1）と
+# 散文契約（2）が持つ: 成功条件（終了コード 0 + Issue URL）と照会失敗時の fail-soft
+# 続行規則は fragment として両ファイルに固定される。
 #
 # 検出範囲の限界（過大に主張しない）:
 #   系統 A（ラベル契約）が赤くするのは fixtures に載せた契約テキストを片方だけ
@@ -41,7 +61,7 @@
 #   SKILL.md 側の「片方だけ直すと red になる」という注記も、この範囲に限定して書くこと。
 #
 # 一時ディレクトリも jq / gh / yq も要らない純粋なファイル検査なので、書き込み不可の
-# 環境でも完走する。契約を意図的に変えるときは fixtures/regenerate.sh を使う。
+# 環境でも完走する。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/issue-label-contract/verify.sh
 
@@ -52,7 +72,6 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 FIXTURES_DIR="$SCRIPT_DIR/fixtures"
 FRAGMENTS="$FIXTURES_DIR/shared-fragments.txt"
-LABEL_BLOCK="$FIXTURES_DIR/label-block.txt"
 
 CREATE_ISSUE="$PLUGIN_ROOT/skills/create-issue/SKILL.md"
 OUT_OF_SCOPE="$PLUGIN_ROOT/skills/out-of-scope-issue/SKILL.md"
@@ -60,10 +79,9 @@ OUT_OF_SCOPE="$PLUGIN_ROOT/skills/out-of-scope-issue/SKILL.md"
 # needs-spec を実際に作る）、(2) 検査 10 の同期対象そのもの（手順 4 の対応表）。
 REFINE_ISSUE="$PLUGIN_ROOT/skills/refine-issue/SKILL.md"
 
-# fixtures の実行対象行数。契約を増減したときは必ずここも直す。固定しないと、
+# fixtures の検査対象行数。契約を増減したときは必ずここも直す。固定しないと、
 # 抽出が壊れて 0 行になっても「全 fragment 一致」で緑になる。
-EXPECTED_SHARED_FRAGMENTS=23
-EXPECTED_BLOCK_LINES=32
+EXPECTED_SHARED_FRAGMENTS=36
 
 PASS=0
 FAIL=0
@@ -74,13 +92,9 @@ rel() { printf '%s' "${1#"$REPO_ROOT"/}"; }
 
 echo "== 起票スキルのラベル契約 + create-issue↔refine-issue 項目リストの同期検査 =="
 
-for file in "$CREATE_ISSUE" "$OUT_OF_SCOPE" "$REFINE_ISSUE" "$FRAGMENTS" "$LABEL_BLOCK" "$FIXTURES_DIR/extract.sh"; do
+for file in "$CREATE_ISSUE" "$OUT_OF_SCOPE" "$REFINE_ISSUE" "$FRAGMENTS"; do
   [ -s "$file" ] || { echo "✗ 必須ファイルが無いか空です: $file" >&2; exit 1; }
 done
-
-# 抽出は検査側と生成側で 1 実装を共有する（別実装だと両方が同じようにずれても気づけない）。
-# shellcheck source=./fixtures/extract.sh
-. "$FIXTURES_DIR/extract.sh"
 
 # ---- 照合プリミティブ ---------------------------------------------------------
 # ファイルを直接読む固定文字列検索。パイプ入力ではないので `grep -q` を使ってよい
@@ -91,6 +105,12 @@ has_substring() { grep -qF  -- "$2" "$1"; }  # 部分一致（`~ ` 指定の fra
 contains() {
   local file="$1" needle="$2" label="$3"
   if has_substring "$file" "$needle"; then ok "$label"; else bad "${label}（不足: ${needle}）"; fi
+}
+
+# 旧 1 ブロック方式の装置が復元されていないことの検査（負の主張）。
+lacks() {
+  local file="$1" needle="$2" label="$3"
+  if has_substring "$file" "$needle"; then bad "${label}（旧装置が残存/復元: ${needle}）"; else ok "$label"; fi
 }
 
 # 行頭（インデント可）から始まる引数行・コマンド行だけを見る検査群。
@@ -161,26 +181,95 @@ gh_issue_commands_bound() {
   if [ -z "$out" ]; then ok "$label"; else bad "$label"; printf '%s\n' "$out" >&2; fi
 }
 
-# ラベル決定（for ループ）と `gh issue create` が**同じ** ```bash フェンスに居ること。
-# 散文で「1 つのブロックで」と書いてあっても、実際に分割されていれば意味がない。
-# 分割すると label_args が次のシェルへ渡らず、`${label_args[@]+...}` が空へ展開して
-# 「ラベル 0 個で起票成功」が無言で起きる。
-label_loop_and_create_same_fence() {
-  local file="$1" label="$2"
-  if awk '
+# 指定した文字列を含む**最初の** bash フェンスを取り出す。
+extract_fence_containing() {
+  awk -v needle="$2" '
     { sub(/\r$/, "") }
-    /^[[:space:]]*```[[:space:]]*(bash|sh|shell|zsh)[[:space:]]*$/ { in_f = 1; loop = 0; create = 0; next }
-    in_f && /^[[:space:]]*```[[:space:]]*$/ { if (loop && create) found = 1; in_f = 0; next }
-    in_f {
-      if (index($0, "for candidate in ")) loop = 1
-      if (index($0, "gh issue create")) create = 1
-    }
-    END { exit !found }
-  ' "$file"; then
-    ok "$label"
-  else
-    bad "${label}（ラベル決定ループと gh issue create が別フェンスに分かれている）"
+    in_f == 0 { if ($0 ~ /^[[:space:]]*```[[:space:]]*(bash|sh|shell|zsh)[[:space:]]*$/) { in_f = 1; buf = ""; hit = 0 }; next }
+    /^[[:space:]]*```[[:space:]]*$/ { if (hit) { printf "%s", buf; exit } ; in_f = 0; next }
+    { buf = buf $0 "\n"; if (index($0, needle)) hit = 1 }
+  ' "$1"
+}
+
+# needle を含む bash フェンスの**全数**が単純コマンドだけで構成されていることを見る
+# （Issue #715 の受け入れ条件）。最初の 1 フェンスだけを見る方式では、同じ needle を
+# 含む 2 つ目のフェンスが複合化しても素通りする。複合構文（if / for / while / until /
+# case）・ヒアドキュメント・関数定義に加え、論理連結（&& / ||）・パイプ・コマンド
+# 区切り（;）・コマンド置換（$( とバッククォート）・サブシェルも、worktree 隔離
+# セッションの複合コマンド拒否ガードに衝突しうるため赤にする。演算子の判定は引用符
+# （' / "）内の文字列を除去してから行い、`--jq '.[].name'` のような引数内の記号を
+# 誤検出しない。フェンス件数も期待値で固定する（0 件へ退化したら赤 — 検査対象の
+# 消失を「違反ゼロ」と報告しない）。
+# シェルの単一引用で書けるよう、引用符の正規表現は文字コードから動的に組み立てる。
+SIMPLE_FENCE_SCAN='
+  function strip_quotes(s,    t, q, dq) {
+    t = s
+    q = sprintf("%c", 39); dq = sprintf("%c", 34)
+    gsub(q "[^" q "]*" q, "", t)
+    gsub(dq "[^" dq "]*" dq, "", t)
+    return t
+  }
+  function check(line, ln,    work) {
+    if (line ~ /^[[:space:]]*#/) return
+    if (line ~ /^[[:space:]]*(if|for|while|until|case)([[:space:](]|$)/) { print "  " ln " 行目: 複合構文 → " line; return }
+    if (line ~ /\(\)[[:space:]]*\{/) { print "  " ln " 行目: 関数定義 → " line; return }
+    work = strip_quotes(line)
+    if (index(work, "<<")) { print "  " ln " 行目: heredoc → " line; return }
+    if (index(work, "&&") || index(work, "||")) { print "  " ln " 行目: 論理連結 → " line; return }
+    if (index(work, ";")) { print "  " ln " 行目: コマンド区切り → " line; return }
+    if (index(work, "$(") || index(work, sprintf("%c", 96))) { print "  " ln " 行目: コマンド置換 → " line; return }
+    if (work ~ /^[[:space:]]*\(/) { print "  " ln " 行目: サブシェル → " line; return }
+    if (index(work, "|")) { print "  " ln " 行目: パイプ → " line; return }
+  }
+  { sub(/\r$/, "") }
+  in_f == 0 { if ($0 ~ /^[[:space:]]*```[[:space:]]*(bash|sh|shell|zsh)[[:space:]]*$/) { in_f = 1; n = 0; hit = 0; start = FNR }; next }
+  /^[[:space:]]*```[[:space:]]*$/ {
+    if (hit) { fences++; for (i = 1; i <= n; i++) check(buf[i], start + i) }
+    in_f = 0; next
+  }
+  { buf[++n] = $0; if (index($0, needle)) hit = 1 }
+  END { if (fences + 0 != expected + 0) print "  needle を含む bash フェンスが " fences + 0 " 件（期待 " expected " 件）— 検査対象が黙って増減している" }
+'
+all_needle_fences_simple() {
+  local file="$1" needle="$2" expected="$3" label="$4" out
+  out="$(awk -v needle="$needle" -v expected="$expected" "$SIMPLE_FENCE_SCAN" "$file")"
+  if [ -z "$out" ]; then ok "$label"; else bad "${label}（単純コマンドの契約に違反）"; printf '%s\n' "$out" >&2; fi
+}
+
+# `$expected_repo` を参照する bash フェンスは、**同じフェンス内で** `expected_repo=` を
+# 宣言していること。フェンスは呼び出しごとに別のシェルで走るため、前のフェンスの
+# 宣言に依存した参照は実行時に空へ展開し、--repo の値が壊れた gh 呼び出しになる
+# （本リファクタが潰した「ブロック間でシェル変数を運ぶ」失敗クラスの再発形）。
+DECLARE_SCAN='
+  { sub(/\r$/, "") }
+  in_f == 0 { if ($0 ~ /^[[:space:]]*```[[:space:]]*(bash|sh|shell|zsh)[[:space:]]*$/) { in_f = 1; uses = 0; decl = 0; start = FNR }; next }
+  /^[[:space:]]*```[[:space:]]*$/ { if (uses && !decl) print start; in_f = 0; next }
+  {
+    if (index($0, "$expected_repo")) uses = 1
+    if ($0 ~ /^[[:space:]]*expected_repo=/) decl = 1
+  }
+'
+fences_using_repo_declare_it() {
+  local file="$1" label="$2" violations
+  violations="$(awk "$DECLARE_SCAN" "$file")"
+  if [ -z "$violations" ]; then ok "$label"
+  else bad "${label}（宣言なしで \$expected_repo を参照するフェンス開始行: ${violations//$'\n'/, }）"; fi
+}
+
+# 起票フェンス（gh issue create を含むフェンス）に --repo / --label / --body-file が
+# 同居していること。散文 fragment の存在確認だけでは、これらが別々の場所（例示・
+# 別コマンド）に散っても緑になるため、同一フェンス内での同居を構造で固定する。
+create_fence_bundles_flags() {
+  local file="$1" label="$2" body missing=""
+  body="$(extract_fence_containing "$file" 'gh issue create')"
+  if [ -z "$body" ]; then
+    bad "${label}（gh issue create を含む bash フェンスが見つからない）"
+    return
   fi
+  case "$body" in *'--repo "$expected_repo"'*) ;; *) missing="$missing --repo" ;; esac
+  case "$body" in *'--label "'*) ;; *) missing="$missing --label" ;; esac
+  case "$body" in *'--body-file "'*) ;; *) missing="$missing --body-file" ;; esac
+  if [ -z "$missing" ]; then ok "$label"; else bad "${label}（起票フェンスに欠落:${missing}）"; fi
 }
 
 # frontmatter の description 行だけを取り出す（本文中の同名語で充足させない）。
@@ -209,8 +298,8 @@ fi
 # 変異対照は「実際に起こりうる劣化」を突く。空白差を吸収する実装（trim してから
 # 比較する等）へ静かに退化したときに赤くなるよう、インデントを剥いだ契約行が
 # **行全体一致では見つからない**ことを確かめる。fixture から機械的に導出するので、
-# 変数名を一括改名しても対照が空振りしない。
-SELF_INDENTED="$(awk '/^[[:space:]]+[[]/ { print; exit }' "$LABEL_BLOCK")"
+# 契約行を一括改稿しても対照が空振りしない。
+SELF_INDENTED="$(awk '!/^;;/ && /^[[:space:]]+[^[:space:]]/ { print; exit }' "$FRAGMENTS")"
 if [ -z "$SELF_INDENTED" ]; then
   bad "自己検証: 変異対照の素材（インデント付き契約行）を fixture から採れない"
 else
@@ -222,11 +311,36 @@ else
   fi
 fi
 
-# 抽出器の対照。アンカーを持たないファイルからは 1 行も採れないこと。
-if extract_label_block "$REFINE_ISSUE" >/dev/null 2>&1; then
-  bad "自己検証: アンカーの無いファイルから契約ブロックを抽出できてしまった"
+# フェンス抽出器の対照。needle を含む bash フェンスが無いファイルからは何も採れないこと。
+if [ -n "$(extract_fence_containing "$REFINE_ISSUE" 'gh label list --repo "$expected_repo" --limit 200')" ]; then
+  bad "自己検証: needle を含むフェンスの無いファイルから抽出できてしまった"
 else
-  ok "自己検証: アンカーの無いファイルからは契約ブロックを抽出しない"
+  ok "自己検証: needle を含むフェンスの無いファイルからは抽出しない"
+fi
+
+# 単純フェンス検出器の正の対照。out-of-scope-issue §3.5 のフェンスは `||` 連結と
+# リダイレクトを含む生きた複合行を持つので、これを名指しで検出できなければ
+# 検出器は常に「違反ゼロ」を返している。
+if [ -n "$(awk -v needle='gh pr diff --name-only' -v expected=1 "$SIMPLE_FENCE_SCAN" "$OUT_OF_SCOPE")" ]; then
+  ok "自己検証: 複合行を含む生きたフェンス（§3.5）を検出できる（正の対照）"
+else
+  bad "自己検証: 複合行を含むフェンスを検出できない — 単純フェンス検出器が壊れている"
+fi
+
+# 宣言同居検出器の対照。宣言なしで \$expected_repo を参照するフェンス（probe）を
+# 赤にでき、宣言付きの probe を赤にしないこと。probe はパイプで渡し一時ファイルを
+# 作らない。
+DECLARE_PROBE_BAD="$(printf '%s\n' '```bash' 'gh issue list --repo "$expected_repo"' '```' | awk "$DECLARE_SCAN")"
+DECLARE_PROBE_GOOD="$(printf '%s\n' '```bash' 'expected_repo="OWNER/REPO"' 'gh issue list --repo "$expected_repo"' '```' | awk "$DECLARE_SCAN")"
+if [ -n "$DECLARE_PROBE_BAD" ]; then
+  ok "自己検証: 宣言なしの \$expected_repo 参照フェンスを検出できる（正の対照）"
+else
+  bad "自己検証: 宣言なし参照を検出できない — 宣言同居検出器が壊れている"
+fi
+if [ -z "$DECLARE_PROBE_GOOD" ]; then
+  ok "自己検証: 宣言付きフェンスを誤検出しない（負の対照）"
+else
+  bad "自己検証: 宣言付きフェンスを誤検出した"
 fi
 
 if [ "$FAIL" -gt 0 ]; then
@@ -235,76 +349,40 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 
-# ---- 1. 契約ブロックの連続比較（順序・隣接まで） --------------------------------
-block_lines="$(awk 'END { print NR }' "$LABEL_BLOCK")"
-if [ "$block_lines" -eq "$EXPECTED_BLOCK_LINES" ]; then
-  ok "契約ブロックが ${EXPECTED_BLOCK_LINES} 行（増減時は EXPECTED_BLOCK_LINES も更新すること）"
-else
-  bad "契約ブロックが ${block_lines} 行（期待 ${EXPECTED_BLOCK_LINES} 行）— fixture が黙って縮んでいる"
-fi
+# ---- 1. 起票手順の形（Issue #715: body-file + 単純コマンド分割） -----------------
+# 実在確認と起票の各 bash フェンスが単純コマンドだけで構成されていること。
+# needle を含むフェンスを全数走査し、件数も固定する。
+all_needle_fences_simple "$CREATE_ISSUE" 'gh label list --repo "$expected_repo" --limit 200' 1 \
+  "create-issue: ラベル実在確認のフェンス（全数）が単純コマンドのみ"
+all_needle_fences_simple "$CREATE_ISSUE" 'gh issue create' 1 \
+  "create-issue: 起票のフェンス（全数）が単純コマンドのみ"
+all_needle_fences_simple "$OUT_OF_SCOPE" 'gh label list --repo "$expected_repo" --limit 200' 1 \
+  "out-of-scope-issue: ラベル実在確認のフェンス（全数）が単純コマンドのみ"
+all_needle_fences_simple "$OUT_OF_SCOPE" 'gh issue create' 1 \
+  "out-of-scope-issue: 起票のフェンス（全数）が単純コマンドのみ"
 
-# 比較に `diff` は使わない。BSD diff は標準入力側を一時ファイルへ写すため、
-# 書き込み不可の環境では `Operation not permitted` で落ちる（「read-only でも完走」
-# という本 suite の前提と食い違う）。awk で行番号付きの突き合わせを自前で行う。
-compare_block() {
-  local file="$1" name="$2" actual mismatch
-  if ! actual="$(extract_label_block "$file")"; then
-    bad "${name}: 契約ブロックを抽出できない（アンカー行または閉じの done が無い）"
-    return
-  fi
-  mismatch="$(printf '%s\n' "$actual" | awk '
-    NR == FNR { want[FNR] = $0; want_n = FNR; next }
-    { got[FNR] = $0; got_n = FNR }
-    END {
-      n = (want_n > got_n) ? want_n : got_n
-      for (i = 1; i <= n; i++) {
-        if (i > want_n)      { print i ": 正本に無い行 → " got[i]; continue }
-        if (i > got_n)       { print i ": 行が欠落 ← " want[i]; continue }
-        if (want[i] != got[i]) {
-          print i ": 不一致"
-          print "      正本: " want[i]
-          print "      実際: " got[i]
-        }
-      }
-    }
-  ' "$LABEL_BLOCK" -)"
-  if [ -z "$mismatch" ]; then
-    ok "${name}: 契約ブロックが正本と完全一致（順序・隣接・インデント込み）"
-  else
-    bad "${name}: 契約ブロックが正本と不一致"
-    printf '%s\n' "$mismatch" | sed 's/^/    | /' >&2
-  fi
-}
-compare_block "$CREATE_ISSUE" "create-issue"
-compare_block "$OUT_OF_SCOPE" "out-of-scope-issue"
+# $expected_repo を参照する全フェンスが同一フェンス内で宣言している（別シェルで走る
+# 後続フェンスからの参照 = 空展開の再発防止）。
+fences_using_repo_declare_it "$CREATE_ISSUE" "create-issue: \$expected_repo は参照フェンス内で宣言されている"
+fences_using_repo_declare_it "$OUT_OF_SCOPE" "out-of-scope-issue: \$expected_repo は参照フェンス内で宣言されている"
 
-# ---- 2. 契約ブロックが bash として構文的に妥当か --------------------------------
-# 行を比較しても、フェンス内の `done` が消えるような構文破壊は検出できない。
-# 抽出したブロックはプレースホルダを含むので、正規化前の実体を各ファイルから読む。
-syntax_check_block() {
-  local file="$1" name="$2" body
-  body="$(awk '
-    { sub(/\r$/, "") }
-    in_fence == 0 { if ($0 ~ /^[[:space:]]*```[[:space:]]*(bash|sh|shell|zsh)[[:space:]]*$/) in_fence = 1; next }
-    $0 ~ /^[[:space:]]*```[[:space:]]*$/ { in_fence = 0; capturing = 0; next }
-    capturing == 0 { if (index($0, "label_lookup_failed=0")) capturing = 1; else next }
-    { print; if ($0 == "done") exit }
-  ' "$file")"
-  if [ -z "$body" ]; then
-    bad "${name}: 構文検査用のブロックを取り出せない"
-    return
-  fi
-  # `available_labels` は if 内で代入されるので、-n（構文のみ）では実行しない。
-  if printf '%s\n' "$body" | bash -n 2>/dev/null; then
-    ok "${name}: 契約ブロックが bash として構文的に妥当（bash -n）"
-  else
-    bad "${name}: 契約ブロックが bash -n を通らない（done の欠落など構文破壊）"
-  fi
-}
-syntax_check_block "$CREATE_ISSUE" "create-issue"
-syntax_check_block "$OUT_OF_SCOPE" "out-of-scope-issue"
+# 起票フェンスに --repo / --label / --body-file が同居している（散文照合の補完）。
+create_fence_bundles_flags "$CREATE_ISSUE" "create-issue: 起票フェンスに --repo / --label / --body-file が同居"
+create_fence_bundles_flags "$OUT_OF_SCOPE" "out-of-scope-issue: 起票フェンスに --repo / --label / --body-file が同居"
 
-# ---- 3. 散文契約の照合（既定は行全体一致、`~ ` は部分一致） ----------------------
+# 旧 1 ブロック方式の装置が復元されていないこと。これらはシェル変数で状態を
+# コマンド間に運ぶ設計（= 単一の複合ブロックを要求する設計）の指紋であり、
+# 1 つでも戻れば worktree ガード拒否（Issue #715 の起点）が再発する。
+for target in "$CREATE_ISSUE" "$OUT_OF_SCOPE"; do
+  name="$(basename "$(dirname "$target")")"
+  lacks "$target" 'label_args' "${name}: label_args（配列組み立て）が無い"
+  lacks "$target" 'for candidate in ' "${name}: 照合の for ループが無い"
+  lacks "$target" 'issue_body' "${name}: issue_body（heredoc 組み立て）が無い"
+  lacks "$target" 'LABEL_LOOKUP_FAILED' "${name}: 状態出力プロトコルが無い"
+  lacks "$target" 'までを 1 つの bash ブロックで' "${name}: 単一ブロック要求の宣言が無い"
+done
+
+# ---- 2. 散文契約の照合（既定は行全体一致、`~ ` は部分一致） ----------------------
 fragment_count=0
 missing_create=0
 missing_scope=0
@@ -352,7 +430,7 @@ elif [ "$missing_scope" -gt 0 ]; then
   echo "  ✗ out-of-scope-issue に ${missing_scope} 行の欠落（$(rel "$FRAGMENTS") と突き合わせること）" >&2
 fi
 
-# ---- 4. create-issue 固有 ------------------------------------------------------
+# ---- 3. create-issue 固有 ------------------------------------------------------
 # Issue #292 原因1: description に発動トリガーが無いと、消費プロジェクトの
 # Git Workflow が規定する `gh issue create` の直接実行へ流れ、スキル自体が
 # 呼ばれない。本文中の同名語で充足しないよう description 行だけを見る。
@@ -391,36 +469,19 @@ gh_issue_commands_bound "$CREATE_ISSUE" create 1 yes "create-issue の gh issue 
 gh_issue_commands_bound "$OUT_OF_SCOPE" create 1 no  "out-of-scope-issue の gh issue create が --repo を持ち --assignee を持たない"
 gh_issue_commands_bound "$OUT_OF_SCOPE" list   1 no  "out-of-scope-issue の gh issue list が --repo を持つ"
 
-# ラベル決定と起票が同じシェルで走ること。分割すると label_args が失われ、
-# `${label_args[@]+...}` が空へ展開して「ラベル 0 個で起票成功」が静かに起きる。
-# 散文の宣言だけでは実体の分割を検出できないので、フェンス構造でも見る。
-label_loop_and_create_same_fence "$CREATE_ISSUE" "ラベル決定ループと起票が同一の bash フェンス"
+# 2 系統（type / priority）であって follow-up は付けない、という create-issue 側の境界。
+# 契約 fragment はこの違いを持てない（両ファイルに同一で在ることを見る仕組みのため）
+# ので、意図的な差分はここで実体として固定する。
 # needle は必ずシングルクォートで書く。ダブルクォートだと needle 内のバックティックが
 # コマンド置換され、検査スクリプトが検査対象のコマンド（`gh issue create` 等）を
 # 実際に実行してしまう。契約テキストはバッククォートを多く含むので現実的な事故。
-contains "$CREATE_ISSUE" 'ラベルの実在確認から `gh issue create` までを 1 つの bash ブロックで' "単一ブロックであることが本文にも書かれている"
-# 終了コード 0 + 空 URL を成功として通すと、Issue が実在しない状態と区別できない。
-contains "$CREATE_ISSUE" 'if [[ -z "$issue_url" ]]; then' "起票後に Issue URL の非空を確認する"
-contains "$CREATE_ISSUE" 'printf '"'"'LABEL_LOOKUP_FAILED=%s\n'"'"'' "照会状態を出力して報告へ渡す"
-contains "$CREATE_ISSUE" '手順 6 のブロックが出力した行をそのまま読む' "報告は記憶ではなく出力を写す"
-
-# 2 系統（type / priority）であって follow-up は付けない、という create-issue 側の境界。
-# 契約ブロック側ではプレースホルダへ正規化した違いを、ここで実体として固定する。
-contains "$CREATE_ISSUE" 'for candidate in "$type_label" "$priority_label"; do' "候補は type / priority の 2 系統"
+contains "$CREATE_ISSUE" '照合する候補は手順 5 で決めた type / priority の 2 系統' "候補は type / priority の 2 系統"
 contains "$CREATE_ISSUE" '`follow-up` 系のラベルは付けない' "着手前起票は follow-up を付けない"
 
-# ---- 5. out-of-scope-issue 固有 ------------------------------------------------
-contains "$OUT_OF_SCOPE" 'for candidate in "$type_label" "$priority_label" "$followup_label"; do' "候補は type / priority / follow-up の 3 系統"
-# Issue #297: 実在確認と起票が別フェンスに分かれていると、フェンスごとに別シェルで
-# 実行された時点で label_args が失われ、「ラベル 0 個で起票成功」が無言で起きる。
-# create-issue と同じ単一フェンス構造を out-of-scope-issue にも要求する。
-label_loop_and_create_same_fence "$OUT_OF_SCOPE" "ラベル決定ループと起票が同一の bash フェンス（out-of-scope-issue）"
-contains "$OUT_OF_SCOPE" 'ラベルの実在確認から `gh issue create` までを 1 つの bash ブロックで' "単一ブロックであることが本文にも書かれている（out-of-scope-issue）"
-contains "$OUT_OF_SCOPE" 'if [[ -z "$issue_url" ]]; then' "起票後に Issue URL の非空を確認する（out-of-scope-issue）"
-contains "$OUT_OF_SCOPE" 'printf '"'"'LABEL_LOOKUP_FAILED=%s\n'"'"'' "照会状態を出力して報告へ渡す（out-of-scope-issue）"
-contains "$OUT_OF_SCOPE" 'ブロックが出力した行をそのまま読む' "報告は記憶ではなく出力を写す（out-of-scope-issue）"
+# ---- 4. out-of-scope-issue 固有 ------------------------------------------------
+contains "$OUT_OF_SCOPE" '照合する候補は §3.2 で決めた type / priority / follow-up の 3 系統' "候補は type / priority / follow-up の 3 系統"
 
-# ---- 6. 意図的な非対称の固定（アサイン） ----------------------------------------
+# ---- 5. 意図的な非対称の固定（アサイン） ----------------------------------------
 # create-issue は着手前の起票ゲートなので同梱 Git Workflow に従い @me を付ける。
 # out-of-scope-issue の起票は backlog 化であって着手ではないのでアサインしない。
 # 「揃えよう」としてどちらかを崩す変更を検出する。
@@ -429,7 +490,7 @@ lacks_argument_line "$OUT_OF_SCOPE" "$ASSIGNEE_PATTERN" "follow-up 起票はア�
 contains "$CREATE_ISSUE" "この非対称は意図的で" "アサインの非対称が意図的だと本文に明記されている"
 contains "$OUT_OF_SCOPE" "アサインについて本スキルは中立" "follow-up 側のアサイン中立方針が残っている"
 
-# ---- 7. ラベル作成はしない（両スキル共通） --------------------------------------
+# ---- 6. ラベル作成はしない（両スキル共通） --------------------------------------
 # 起票ゲートが消費プロジェクトのラベル体系を増やすと分類が場当たりに膨らむ。
 # `refine-issue` の `needs-spec`（`gh label create --force`）とは役割が違う。
 # 検出器が空振りしていないことを、実際に作る refine-issue を対照にして確かめる。
@@ -437,7 +498,7 @@ has_argument_line "$REFINE_ISSUE" "$LABEL_CREATE_PATTERN" "自己検証: gh labe
 lacks_argument_line "$CREATE_ISSUE" "$LABEL_CREATE_PATTERN" "create-issue はラベルを作成しない"
 lacks_argument_line "$OUT_OF_SCOPE" "$LABEL_CREATE_PATTERN" "out-of-scope-issue はラベルを作成しない"
 
-# ---- 8. 手順番号の整合 ----------------------------------------------------------
+# ---- 7. 手順番号の整合 ----------------------------------------------------------
 # 手順を挿入したときに本文中の「手順 N」参照が置き去りになると、エージェントは
 # 存在しない節へ飛ぶ。見出しに存在しない番号を参照していないかを機械で見る。
 missing_steps="$(
@@ -460,289 +521,6 @@ else
   bad "存在しない手順番号への参照がある（番号:行）: ${missing_steps//$'\n'/, }"
 fi
 
-# ---- 9. 手順を実際に走らせる（Issue #292 の受け入れ条件そのもの） -----------------
-# 静的検査は「手順にそう書いてある」までしか言えない。ラベルが実際に付くか、
-# 照会が失敗したとき起票が続くか、省略理由が正しく分岐するかは走らせないと分からない。
-# create-issue 手順 6 のブロックを stub `gh` の下で実行して振る舞いを実測する。
-#
-# 安全弁: stub が PATH の先頭に来ていることを確認してからでないと実行しない。
-# 取り違えると**本物の Issue を作ってしまう**ので、疑わしければ実行せず赤にする。
-STUB_DIR="$FIXTURES_DIR/gh-stub"
-
-# 実行対象は create-issue 最初の ```bash フェンス（＝手順 6 の統合ブロック）。
-extract_first_bash_fence() {
-  awk '
-    { sub(/\r$/, "") }
-    started == 0 { if ($0 ~ /^[[:space:]]*```[[:space:]]*bash[[:space:]]*$/) { started = 1 } ; next }
-    /^[[:space:]]*```[[:space:]]*$/ { exit }
-    { print }
-  ' "$1"
-}
-
-# 指定した文字列を含む**最初の** bash フェンスを取り出す（Issue #297）。
-# out-of-scope-issue の統合ブロックはファイル先頭のフェンスではない（§3.1 の
-# 検索ブロックが先にある）ため、needle を含むフェンスで特定する。フェンス言語は
-# label_loop_and_create_same_fence と同じ集合を許容する（非対称だと、フェンスを
-# ```sh へ変えたとき構造検査と behavioral 検査が食い違った赤になり誤誘導する）。
-extract_fence_containing() {
-  awk -v needle="$2" '
-    { sub(/\r$/, "") }
-    in_f == 0 { if ($0 ~ /^[[:space:]]*```[[:space:]]*(bash|sh|shell|zsh)[[:space:]]*$/) { in_f = 1; buf = ""; hit = 0 }; next }
-    /^[[:space:]]*```[[:space:]]*$/ { if (hit) { printf "%s", buf; exit } ; in_f = 0; next }
-    { buf = buf $0 "\n"; if (index($0, needle)) hit = 1 }
-  ' "$1"
-}
-
-# out-of-scope-issue の統合ブロックを一意に特定する needle。素の `gh issue create` だと
-# 将来 §3.1 のコメントに同語が言及された時点で誤ったフェンスを先頭ヒットで掴む。
-SCOPE_FENCE_NEEDLE='issue_url="$(gh issue create'
-
-run_block() {
-  # $1: GH_STUB_MODE / $2: type_label / $3: priority_label / $4: merge_stderr(yes|no)
-  # プレースホルダを差し替えて標準入力から実行する。**一時ファイルを一切作らない**
-  # （作業ツリーへ書くと read-only 環境で落ち、かつリポジトリを汚す）。
-  local merged="${4:-no}"
-  if [ "$merged" = yes ]; then
-    extract_first_bash_fence "$CREATE_ISSUE" \
-      | sed -e 's|^expected_repo=.*|expected_repo="stub-owner/stub-repo"|' \
-            -e "s|^type_label=.*|type_label=\"$2\"|" \
-            -e "s|^priority_label=.*|priority_label=\"$3\"|" \
-            -e 's|^issue_body=.*|issue_body="stub body"|' \
-      | PATH="$STUB_DIR:$PATH" GH_STUB_MODE="$1" bash -euo pipefail -s 2>&1
-  else
-    extract_first_bash_fence "$CREATE_ISSUE" \
-      | sed -e 's|^expected_repo=.*|expected_repo="stub-owner/stub-repo"|' \
-            -e "s|^type_label=.*|type_label=\"$2\"|" \
-            -e "s|^priority_label=.*|priority_label=\"$3\"|" \
-            -e 's|^issue_body=.*|issue_body="stub body"|' \
-      | PATH="$STUB_DIR:$PATH" GH_STUB_MODE="$1" bash -euo pipefail -s 2>/dev/null
-  fi
-}
-
-run_scope_block() {
-  # $1: GH_STUB_MODE / $2: type_label / $3: priority_label / $4: followup_label /
-  # $5: merge_stderr(yes|no)
-  # out-of-scope-issue の統合ブロック（Issue #297）を実行する。issue_body の heredoc は
-  # **実行時に bash が一時ファイルを要求する**ため、read-only 環境では
-  # `cannot create temp file for here document` で必ず落ちる。「一時ファイルを
-  # 一切作らない」という本 suite の前提を守るため、heredoc の代入全体を
-  # `issue_body="stub body"` へ置き換えてから実行する。
-  local merged="${5:-no}"
-  if [ "$merged" = yes ]; then
-    extract_fence_containing "$OUT_OF_SCOPE" "$SCOPE_FENCE_NEEDLE" \
-      | sed -e 's|^expected_repo=.*|expected_repo="stub-owner/stub-repo"|' \
-            -e "s|^type_label=.*|type_label=\"$2\"|" \
-            -e "s|^priority_label=.*|priority_label=\"$3\"|" \
-            -e "s|^followup_label=.*|followup_label=\"$4\"|" \
-            -e '/^issue_body="\$(cat/,/^)"$/c\
-issue_body="stub body"' \
-      | PATH="$STUB_DIR:$PATH" GH_STUB_MODE="$1" bash -euo pipefail -s 2>&1
-  else
-    extract_fence_containing "$OUT_OF_SCOPE" "$SCOPE_FENCE_NEEDLE" \
-      | sed -e 's|^expected_repo=.*|expected_repo="stub-owner/stub-repo"|' \
-            -e "s|^type_label=.*|type_label=\"$2\"|" \
-            -e "s|^priority_label=.*|priority_label=\"$3\"|" \
-            -e "s|^followup_label=.*|followup_label=\"$4\"|" \
-            -e '/^issue_body="\$(cat/,/^)"$/c\
-issue_body="stub body"' \
-      | PATH="$STUB_DIR:$PATH" GH_STUB_MODE="$1" bash -euo pipefail -s 2>/dev/null
-  fi
-}
-
-behavioral_case() {
-  # $1: モード / $2: type / $3: priority / $4: 期待する出力の部分列 / $5: 検査名
-  # 出力は `|` 区切りへ畳んで部分列で照合するので、**行の順序も契約に含む**。
-  # 報告（手順 7）はこの出力を読む前提なので、並びが変われば読み手の手順も変わる。
-  local out
-  if ! out="$(run_block "$1" "$2" "$3")"; then
-    bad "${5}（ブロックが非 0 で終了した）"
-    return
-  fi
-  case "$(printf '%s' "$out" | tr '\n' '|')" in
-    *"$4"*) ok "$5" ;;
-    *) bad "${5}（期待: ${4} / 実際: $(printf '%s' "$out" | tr '\n' '|')）" ;;
-  esac
-}
-
-scope_behavioral_case() {
-  # $1: モード / $2: type / $3: priority / $4: follow-up / $5: 期待する出力の部分列 /
-  # $6: 検査名。behavioral_case と同じく出力を `|` 区切りへ畳んで部分列で照合する
-  # （行の順序も契約に含む — §3.6 の報告はこの出力を読む前提のため）。
-  local out diag
-  if ! out="$(run_scope_block "$1" "$2" "$3" "$4")"; then
-    # 理由（sed がスクリプトを壊した / ガード発火 / stub 未解決）が出ないと
-    # 赤くなったときに調査の起点が無い。merged で撮り直して末尾を添える。
-    diag="$(run_scope_block "$1" "$2" "$3" "$4" yes || true)"
-    bad "${6}（ブロックが非 0 で終了した: $(printf '%s' "$diag" | tail -3 | tr '\n' '|')）"
-    return
-  fi
-  case "$(printf '%s' "$out" | tr '\n' '|')" in
-    *"$5"*) ok "$6" ;;
-    *) bad "${6}（期待: ${5} / 実際: $(printf '%s' "$out" | tr '\n' '|')）" ;;
-  esac
-}
-
-block_body="$(extract_first_bash_fence "$CREATE_ISSUE")"
-resolved_gh="$(PATH="$STUB_DIR:$PATH" command -v gh || true)"
-if [ ! -x "$STUB_DIR/gh" ]; then
-  bad "behavioral 検査: stub gh が実行可能でない（$STUB_DIR/gh）"
-elif [ "$resolved_gh" != "$STUB_DIR/gh" ]; then
-  bad "behavioral 検査: gh が stub に解決されない（${resolved_gh}）— 実 gh を叩く危険があるので実行しない"
-elif [ -z "$block_body" ]; then
-  bad "behavioral 検査: create-issue の bash フェンスを取り出せない"
-else
-  ok "behavioral 検査: gh が stub に解決される（実 API を叩かない）"
-
-  # AC1: 実在するラベルは付与され、gh の argv に載る。期待部分列を ISSUE_URL 行から
-  # 始めることで「状態出力は起票成功後」という順序契約も同時に固定する
-  # （ISSUE_URL は URL ガード通過後にしか出ない — 状態行を前置する変異で赤になる）。
-  behavioral_case normal enhancement priority:high \
-    'ISSUE_URL=https://github.com/stub-owner/stub-repo/issues/1|LABEL_LOOKUP_FAILED=0|APPLIED_LABEL=enhancement|APPLIED_LABEL=priority:high' \
-    "AC1: 実在する種別・優先度ラベルが付与された状態で起票される"
-
-  # AC2: 不在の候補は起票を止めず、名前と理由が出力に残る
-  behavioral_case normal enhancement priority:nonexistent \
-    'LABEL_LOOKUP_FAILED=0|APPLIED_LABEL=enhancement|SKIPPED_LABEL=priority:nonexistent' \
-    "AC2: 不在ラベルは起票を止めず、省略理由が「不在」として出る"
-
-  # AC2: 照会そのものの失敗は「不在」と区別される（重複ラベルを生やさない側へ倒す）
-  behavioral_case fail enhancement priority:high \
-    'LABEL_LOOKUP_FAILED=1|SKIPPED_LABEL=enhancement|SKIPPED_LABEL=priority:high' \
-    "AC2: 照会失敗はラベル無しで起票を続け、「不在」と区別して報告される"
-
-  # 終了コード 0 でも信用できない 2 経路が「照会失敗」へ倒れる
-  behavioral_case empty enhancement priority:high 'LABEL_LOOKUP_FAILED=1' \
-    "空の一覧を「不在」と誤断定しない"
-  behavioral_case truncated enhancement priority:high 'LABEL_LOOKUP_FAILED=1' \
-    "取得上限に達した一覧を「不在」と誤断定しない"
-
-  # 系統が無い場合は候補ごと読み飛ばし、起票は成功する
-  behavioral_case normal '' '' \
-    'ISSUE_URL=https://github.com/stub-owner/stub-repo/issues/1|LABEL_LOOKUP_FAILED=0' \
-    "候補が空文字なら照合せず読み飛ばす"
-  # 部分列照合は「不在」を主張できないので、ラベル状態行が出ないことは別に見る
-  nolabel_out="$(run_block normal '' '' || true)"
-  case "$(printf '%s' "$nolabel_out" | tr '\n' '|')" in
-    *APPLIED_LABEL=*|*SKIPPED_LABEL=*) bad "候補が無いのにラベル状態行が出ている" ;;
-    *) ok "候補が無ければラベル状態行を出さない" ;;
-  esac
-
-  # 終了コード 0 + 空 URL を成功として通さない
-  if run_block emptyurl enhancement priority:high >/dev/null 2>&1; then
-    bad "URL を返さない起票を成功として扱っている（Issue が実在しない状態と区別できない）"
-  else
-    ok "URL を返さない起票は失敗として扱う"
-  fi
-  # 失敗経路で状態出力が残らないこと。exit code だけ見る検査では、printf 群を
-  # URL ガードの前へ移す変異（起票失敗でも APPLIED_LABEL= が残り、実在しない
-  # Issue のラベル付き成功報告が書ける）が緑のまま通る。
-  emptyurl_out="$(run_block emptyurl enhancement priority:high yes || true)"
-  case "$(printf '%s' "$emptyurl_out" | tr '\n' '|')" in
-    *ISSUE_URL=*|*APPLIED_LABEL=*|*SKIPPED_LABEL=*)
-      bad "起票失敗後に状態出力が残る（付いていないラベルが報告の材料になる）" ;;
-    *'Issue URL を返しませんでした'*)
-      ok "起票失敗は状態出力を残さず、ガードの診断だけを出す" ;;
-    *)
-      bad "起票失敗時にガードの診断が出ていない（別の理由で落ちた可能性）" ;;
-  esac
-
-  # 起票コマンド自体の非 0 終了も成功として通さない（|| true 等で握りつぶす退行の固定）
-  if run_block createfail enhancement priority:high >/dev/null 2>&1; then
-    bad "起票コマンドの非 0 終了を成功として扱っている"
-  else
-    ok "起票コマンドの非 0 終了は失敗として扱う"
-  fi
-  createfail_out="$(run_block createfail enhancement priority:high yes || true)"
-  case "$(printf '%s' "$createfail_out" | tr '\n' '|')" in
-    *ISSUE_URL=*|*APPLIED_LABEL=*|*SKIPPED_LABEL=*)
-      bad "起票コマンド失敗後に成功形式の状態出力が残る" ;;
-    *) ok "起票コマンド失敗後に状態出力を残さない" ;;
-  esac
-
-  # 実際に gh へ渡った argv を見る。出力の APPLIED_LABEL= だけを見ると、報告用の
-  # 文字列を作っただけでコマンドには渡っていない、という食い違いを見逃す。
-  # stub は argv を stderr へ書くので merged で受け、**GH_ISSUE_ARGV 行だけに絞って**
-  # 照合する。合流ストリーム全体を glob で見ると `*` が行をまたぎ、argv にラベルが
-  # 無くても後続の状態出力行で充足してしまう（変異試験で実証済みの偽陽性経路）。
-  argv_out="$(run_block normal enhancement priority:high yes | sed -n '/^GH_ISSUE_ARGV: /p' || true)"
-  case "$argv_out" in
-    *'--label enhancement --label priority:high'*)
-      ok "付与ラベルが報告用の文字列だけでなく gh の argv に載っている" ;;
-    *)
-      bad "gh へ渡った argv にラベルが載っていない（報告と実際の乖離）" ;;
-  esac
-
-  # ---- Issue #297: out-of-scope-issue の統合ブロック（§3.3）も実測する ----------
-  # 契約ブロック（実在確認〜for ループ）は create-issue と共有だが、宣言・起票・
-  # 状態出力の結合部はファイル固有にある。分割時代はここが別シェルに分かれ、
-  # 「ラベル 0 個で起票成功」が無言で起きていた。fail-soft の分岐自体は共有ブロック内
-  # だが、その結果 `label_lookup_failed` を消費するのは結合部なので、照会失敗系も
-  # ここで実測する（結合部だけを fail-closed へ反転する変異は共有部の照合では捕まらない）。
-  scope_body="$(extract_fence_containing "$OUT_OF_SCOPE" "$SCOPE_FENCE_NEEDLE")"
-  if [ -z "$scope_body" ]; then
-    bad "behavioral 検査: out-of-scope-issue の統合ブロックを取り出せない"
-  else
-    # AC1: 実在する type / priority / follow-up の 3 系統が付与され、出力に現れる。
-    # ISSUE_URL 行から始めて「状態出力は起票成功後」の順序契約も固定する。
-    scope_behavioral_case normal bug priority:high follow-up \
-      'ISSUE_URL=https://github.com/stub-owner/stub-repo/issues/1|LABEL_LOOKUP_FAILED=0|APPLIED_LABEL=bug|APPLIED_LABEL=priority:high|APPLIED_LABEL=follow-up' \
-      "out-of-scope: 実在する 3 系統が付与された状態で起票され、出力に現れる"
-
-    # AC2: 不在の候補は起票を止めず、名前と理由が出力に残る
-    scope_behavioral_case normal bug priority:nonexistent follow-up \
-      'LABEL_LOOKUP_FAILED=0|APPLIED_LABEL=bug|APPLIED_LABEL=follow-up|SKIPPED_LABEL=priority:nonexistent' \
-      "out-of-scope: 不在ラベルは起票を止めず、省略理由が「不在」として出る"
-
-    # 照会失敗はラベル無しで起票を**続ける**（fail-soft）。結合部が
-    # label_lookup_failed に条件づけられて起票を止める変異で赤になる。
-    scope_behavioral_case fail bug priority:high follow-up \
-      'LABEL_LOOKUP_FAILED=1|SKIPPED_LABEL=bug|SKIPPED_LABEL=priority:high|SKIPPED_LABEL=follow-up' \
-      "out-of-scope: 照会失敗はラベル無しで起票を続け、「不在」と区別して報告される"
-    scope_behavioral_case empty bug priority:high follow-up 'LABEL_LOOKUP_FAILED=1' \
-      "out-of-scope: 空の一覧を「不在」と誤断定しない"
-    scope_behavioral_case truncated bug priority:high follow-up 'LABEL_LOOKUP_FAILED=1' \
-      "out-of-scope: 取得上限に達した一覧を「不在」と誤断定しない"
-
-    # 終了コード 0 + 空 URL を成功として通さない
-    if run_scope_block emptyurl bug priority:high follow-up >/dev/null 2>&1; then
-      bad "out-of-scope: URL を返さない起票を成功として扱っている（Issue が実在しない状態と区別できない）"
-    else
-      ok "out-of-scope: URL を返さない起票は失敗として扱う"
-    fi
-    scope_emptyurl_out="$(run_scope_block emptyurl bug priority:high follow-up yes || true)"
-    case "$(printf '%s' "$scope_emptyurl_out" | tr '\n' '|')" in
-      *ISSUE_URL=*|*APPLIED_LABEL=*|*SKIPPED_LABEL=*)
-        bad "out-of-scope: 起票失敗後に状態出力が残る（付いていないラベルが報告の材料になる）" ;;
-      *'Issue URL を返しませんでした'*)
-        ok "out-of-scope: 起票失敗は状態出力を残さず、ガードの診断だけを出す" ;;
-      *)
-        bad "out-of-scope: 起票失敗時にガードの診断が出ていない（別の理由で落ちた可能性）" ;;
-    esac
-
-    # 起票コマンド自体の非 0 終了も成功として通さない
-    if run_scope_block createfail bug priority:high follow-up >/dev/null 2>&1; then
-      bad "out-of-scope: 起票コマンドの非 0 終了を成功として扱っている"
-    else
-      ok "out-of-scope: 起票コマンドの非 0 終了は失敗として扱う"
-    fi
-    scope_createfail_out="$(run_scope_block createfail bug priority:high follow-up yes || true)"
-    case "$(printf '%s' "$scope_createfail_out" | tr '\n' '|')" in
-      *ISSUE_URL=*|*APPLIED_LABEL=*|*SKIPPED_LABEL=*)
-        bad "out-of-scope: 起票コマンド失敗後に成功形式の状態出力が残る" ;;
-      *) ok "out-of-scope: 起票コマンド失敗後に状態出力を残さない" ;;
-    esac
-
-    # 実際に gh へ渡った argv を見る。GH_ISSUE_ARGV 行だけに絞る理由は
-    # create-issue 側の argv 検査と同じ（行またぎ glob の偽陽性防止）。
-    scope_argv="$(run_scope_block normal bug priority:high follow-up yes | sed -n '/^GH_ISSUE_ARGV: /p' || true)"
-    case "$scope_argv" in
-      *'--label bug --label priority:high --label follow-up'*)
-        ok "out-of-scope: 付与ラベルが gh の argv に載っている" ;;
-      *)
-        bad "out-of-scope: gh へ渡った argv にラベルが載っていない（報告と実際の乖離）" ;;
-    esac
-  fi
-fi
 
 # ---- 10. create-issue 手順 4 の項目リスト ↔ refine-issue の派生対応表（Issue #591） ----
 # PR #588 で create-issue 手順 4 を 6 → 7 項目にしたとき、その項目構成を写している

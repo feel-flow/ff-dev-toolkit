@@ -33,8 +33,9 @@
 # ## 検査対象（scope）
 #
 #   tracked な `*.sh` ∪ tracked な**実行ビット付き**ファイルのうち先頭行が
-#   sh 系 shebang のもの（symlink は除外）。実測（本 PR 時点）: 前者 144 件、後者 2 件
-#   （tests/*/fixtures/gh-stub/gh）。件数は毎回実体から数え、サマリーへ出す。
+#   sh 系 shebang のもの（symlink は除外）。実測（本 PR 時点）: 前者 202 件、後者 10 件
+#   （tests/*/fixtures/bin/* や tests/*/fixtures/gh-stub/gh 等のコマンド stub）。
+#   件数は毎回実体から数え、サマリーへ出す。
 #   実行ビットを見るのは、この suite の fixtures/*.bash（shebang を持つが実行しない
 #   検出力 fixture・意図的に mode 644）を横断走査から外すため。fixture には**拡張子 .sh を
 #   使わない**こと — `*.sh` は実行ビットを見るより先に対象集合へ入る。逆に言えば

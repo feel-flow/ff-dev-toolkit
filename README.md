@@ -42,6 +42,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `harness-review` | エージェントハーネス設計のレビュー。アンチパターンカタログと観点チェックリストに基づく設計評価 |
 | `out-of-scope-issue` | スコープ外の発見を `YAGNI（対応も Issue 化もしない）→ 軽微ならインライン修正 → Issue 化` の順で判定。Issue 化前に類似 Issue を検索し、同じ完了条件ならコメントで集約。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立する場合だけ関連 Issue を作成 |
 | `check-plugin-versions` | GitHub・Claude Code 登録・Desktop セッションの版を読み取り専用で照合。更新ありと確認不可を区別する |
+| `removal-sweep` | 撤去（機能・設定・UI 要素の削除）PR の残存参照を 3 系統（識別子 / 表示文言 / 構造セレクタ・モック応答）で走査するチェックリスト。E2E がデプロイ済み成果物を指す構成の警告を含む |
 
 以下のワークフロースキルのうち 14 件は v0.15.0 で旧 Commands から Agent Skills 標準へ移行したもので、残りはその後に追加しました（`/ace-refine` は v0.18.0）。Claude Code では `/ff-dev-toolkit:<name>`、Codex では `$ff-dev-toolkit:<name>`、両方で自然文による自動発火を利用できます。
 
@@ -85,7 +86,7 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 
 - `docs-template/` — コア7文書 + 拡張フォルダのテンプレート一式
 - `scripts/` — マルチAI CLI オーケストレーション用スクリプト
-- `hooks/` — 更新通知・スキル実体ドリフト検査と自動振り返りのフック（下記）
+- `hooks/` — 更新通知・スキル実体ドリフト検査・自動振り返り・Bash ガードのフック（下記）
 
 ### プラグインバージョン検査（読み取り専用）
 
@@ -121,6 +122,23 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 - `RETROSPECTIVE_MODE=off` で自動発火を無効にする。`0` / `false` / `no` / `none` / `disabled` も大文字小文字と空白を無視して受け付ける
 - Node.js 22 以上が見つからない場合は応答をブロックせず、手動実行と復旧方法を通知する
 - 改善提案の Issue 起票は自動化せず、従来どおりユーザー承認後に行う
+
+### Bash ガード（PreToolUse）
+
+プラグインをインストールすると、Bash ツールの実行前に 2 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。どちらも「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、**抜け道付きの deny（= その場で対処して再実行できる警告）**として実装している。自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。
+
+**未コミット変更ガード（`guard-checkout-restore.sh`）** — 未コミット変更のあるファイルへの `git checkout [--] <path>` / `git restore <path>` を検出し、変更消失の前に警告する。警告文は代替手段（`cp` バックアップ / `git stash push -- <file>` → `pop`）を案内する。ブランチ切り替え（`git checkout <branch>` / `git switch`）、clean・untracked なファイルへの復元、`git restore --staged`（worktree 非破壊）では発火しない。
+
+- 意図的に変更を破棄する場合はコマンド先頭に `FF_DISCARD_UNCOMMITTED=1` を付けて再実行する
+- 既知の限界: 複合コマンドで `cd` した先の相対パス・空白入りパス・`--pathspec-from-file` は判定できず素通しする（誤ブロックには倒れない）
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD=1`
+
+**PR フォローアップ宣言ガード（`guard-pr-followup.sh`）** — `gh pr create` / `gh pr edit` の PR 本文に「スコープ外」「別Issue」「別対応」「後で対応」「別途」「follow-up」「out of scope」の宣言マーカーがあるのに、Issue 参照（`#<数字>` または GitHub Issue URL）が無い場合に警告する。宣言だけ残して起票しない手戻りを機械的に検出するのが目的で、判定は共起ベースのため誤検出はありうる（だからブロックではなく抜け道付きの警告）。
+
+- 通し方: 先に `gh issue create` で起票して番号を本文へ書く／起票不要の正当な判断は本文に `<!-- no-followup: 理由 -->` を書く
+- 判定対象: コマンド文字列全体（heredoc・`--body "..."` を含む）と、hook 実行時点で読める `--body-file <path>` / `-F <path>` の内容
+- 既知の限界（判定できず素通しする渡し方）: `--body-file -`（stdin）・プロセス置換・同一コマンド内で生成する一時ファイル・`--fill`・インタラクティブ / web での本文入力
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1`
 
 ## 前提
 

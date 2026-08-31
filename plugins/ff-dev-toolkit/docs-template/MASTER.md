@@ -1,11 +1,11 @@
 ---
 title: "MASTER"
-version: "1.5.0"
+version: "1.6.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-08-24"
-changeImpact: "low"
+updated: "2026-08-31"
+changeImpact: "medium"
 ---
 
 # AI駆動開発マスタードキュメント
@@ -685,6 +685,8 @@ draft → review → approved
 
 変更時は Frontmatter の `version`、`updated`、`changeImpact` を同時に更新し、末尾の Changelog セクションにエントリを追加すること。`changeImpact` は小文字（`low` / `medium` / `high`）で記録する。`changeImpact` は初版では省略可。初回変更時に Frontmatter へ追加する。
 
+`.version-claims` contract を持つプロジェクト（リポジトリルートに `.version-claims/` ディレクトリがある場合）では、`version` を変更する文書の claim（`.version-claims/<document>.claim`）も**同じ commit で**更新すること（リポジトリ固有ルールが claim を要求する文書は version 不変の更新でも同様）。claim を落とすと `shared-version-convergence` 系のゲートが赤くなり、provisional commit → claim 生成 → amend の復旧を後追いで行うことになる。生成手順の正本は `.version-claims/README.md` — 手順はそちらを参照し、ここへ複製しない。contract を持たないプロジェクトではこの手順は不要。
+
 ### Changelog カテゴリ
 
 Changelog エントリには以下のカテゴリを使用する（[Keep a Changelog](https://keepachangelog.com/) 準拠）。
@@ -704,6 +706,12 @@ Changelog エントリには以下のカテゴリを使用する（[Keep a Chang
 - [ ] 定数の配置が層責務に沿っている（Domain/Application/Infrastructure）
 
 ## Changelog
+
+### [1.6.0] - 2026-08-31
+
+#### 追加
+
+- §バージョニングルール の Frontmatter 更新規則へ、`.version-claims` contract を持つプロジェクトでは対象文書の claim も同じ commit で更新する旨を追記（条件付き・生成手順は `.version-claims/README.md` を参照。Issue #997）
 
 ### [1.5.0] - 2026-08-24
 

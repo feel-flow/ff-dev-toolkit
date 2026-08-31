@@ -306,6 +306,8 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs
 
 コミット前に対象リポジトリの commitlint 設定（特に `header-max-length`）を確認し、件名を上限内に収める。カテゴリが複数でも件名には列挙せず、commit body に記録する。要約だけで上限を超える場合は、要約を短くするかコミットを分割する。
 
+**文字列パッチと commit の突き合わせ（必須）**: PLAYBOOK・文書への追記をヒアドキュメントの script で当てる場合、日本語とインラインコード（バックティック）が混在するパッチ文では **`python3 - <<'PY'` を既定にする**。Node のテンプレートリテラルはバックティックを構文として解釈するため SyntaxError で落ちる（実測: 同型のパッチで node 2 回失敗 / python3 全成功。しかも落ちた script と独立に後続の `git add` / `git commit` が走り、「記録した」と主張するコミットメッセージの下に記録の無いコミットができた）。パッチと commit を同じコマンドに連結せず、パッチ script が失敗したら commit へ到達させない。下の commit block の `git status --short` では、意図しないファイルの混入確認に加えて、**コミットメッセージの主張（「〜へ追記した」「〜を更新した」と書く対象ファイル）が staged に現れているか**を突き合わせてから commit する。
+
 ```bash
 # 1 回の curate で複数エントリ・複数カテゴリに触れることがあるため、
 # 変更した playbook/*.md を全て add する（PLAYBOOK.md の索引更新も対象）
@@ -319,7 +321,7 @@ fi
 git add docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md || { echo "PLAYBOOK 変更を stage できません" >&2; exit 1; }
 [[ ! -d .version-claims ]] || { [[ -f .version-claims/docs/08-knowledge/PLAYBOOK.md.claim ]] || { echo "PLAYBOOK claim がありません。上の update-version-claim.sh を再実行してください: .version-claims/docs/08-knowledge/PLAYBOOK.md.claim" >&2; exit 1; }; git add .version-claims/docs/08-knowledge/PLAYBOOK.md.claim || { echo "PLAYBOOK claim を stage できません" >&2; exit 1; }; }
 [[ ! -d .version-claims ]] || "$FF_DEV_TOOLKIT_ROOT/scripts/check-version-claims.sh" --root "$(git rev-parse --show-toplevel)" || exit 1
-git status --short  # 意図したファイルのみが含まれるか確認
+git status --short  # 意図したファイルのみが含まれ、コミットメッセージの主張と一致するか確認
 git commit \
   -m "knowledge: ACE-<PR番号>-<連番> <要約>" \
   -m "Categories: <category[, category...]>"
@@ -351,7 +353,7 @@ fi
 git add docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md || { echo "PLAYBOOK 変更を stage できません" >&2; exit 1; }
 [[ ! -d .version-claims ]] || git add .version-claims/docs/08-knowledge/PLAYBOOK.md.claim || { echo "PLAYBOOK claim を stage できません" >&2; exit 1; }
 [[ ! -d .version-claims ]] || "$FF_DEV_TOOLKIT_ROOT/scripts/check-version-claims.sh" --root "$(git rev-parse --show-toplevel)" || exit 1
-git status --short  # 意図したファイルのみが含まれるか確認
+git status --short  # 意図したファイルのみが含まれ、コミットメッセージの主張と一致するか確認
 git commit \
   -m "knowledge: ACE-<PR番号>-<連番> <要約>" \
   -m "Categories: <category[, category...]>"

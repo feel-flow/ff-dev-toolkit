@@ -21,7 +21,9 @@
 #   0 = 完全成功 / 1 = 致命的エラーで中断 / 2 = 完了したが一部失敗・要手動対応あり（PARTIAL）
 #
 # 安全原則:
-#   - 保護ブランチ（develop / main / master / release/* / staging/*）は絶対に削除しない
+#   - 保護ブランチは絶対に削除しない。develop / main / master / staging/* は
+#     ハードコードで、どんな設定でも外せない。release/* は既定で保護するが、
+#     FF_MERGE_CLEANUP_PROTECT_BRANCHES で運用に合わせて変更できる（Issue #1056）
 #   - リモート削除は --force-with-lease=<ref>:<期待OID> で行い、照合と削除の間の
 #     push 競合（TOCTOU）をサーバー側で原子的に拒否させる
 #   - 削除 push はコード変更を運ばないため SKIP_SIMPLE_GIT_HOOKS=1 を付ける
@@ -49,11 +51,33 @@ die() {
   exit 1
 }
 
-is_protected_branch() {
+# 長命な統合ブランチのハードコード保護。develop / main / master / staging/* は
+# Step 4 / 5 / 6 すべての最終防壁で、どんな設定でも外せない。
+is_hardcoded_protected_branch() {
   case "$1" in
-    develop|main|master|release/*|staging/*) return 0 ;;
+    develop|main|master|staging/*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# 設定可能な保護パターン（既定 release/*）との照合。一致したパターンを stdout へ
+# 返す（報告で「どの設定に止められたか」を名指しするため）。一致しなければ非 0。
+matched_extra_protect_pattern() {
+  local pat=""
+  [ "${#PROTECT_EXTRA_PATTERNS[@]}" -gt 0 ] || return 1
+  for pat in "${PROTECT_EXTRA_PATTERNS[@]}"; do
+    # 非引用はパターンとして glob を効かせる意図的な形（引用すると文字列一致に退化する）
+    # shellcheck disable=SC2254
+    case "$1" in
+      $pat) printf '%s\n' "$pat"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+is_protected_branch() {
+  is_hardcoded_protected_branch "$1" && return 0
+  matched_extra_protect_pattern "$1" >/dev/null
 }
 
 find_worktree_for_branch() {
@@ -75,6 +99,53 @@ find_worktree_for_branch() {
   done < <(git worktree list --porcelain)
 
   return 1
+}
+
+worktree_lock_reason() {
+  # $1: worktree path。ロックされていれば理由（理由なしロックは空行）を stdout へ
+  # 返して 0、未ロックなら非 0。porcelain 出力は 1 worktree = 1 ブロックで、
+  # ロック行は `locked` 単独または `locked <reason>`。
+  local line="" in_block=0
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "worktree $1") in_block=1 ;;
+      worktree\ *) in_block=0 ;;
+      locked)
+        if [ "$in_block" = "1" ]; then
+          printf '\n'
+          return 0
+        fi
+        ;;
+      locked\ *)
+        if [ "$in_block" = "1" ]; then
+          printf '%s\n' "${line#locked }"
+          return 0
+        fi
+        ;;
+    esac
+  done < <(git worktree list --porcelain)
+
+  return 1
+}
+
+agent_disposable_status_only() {
+  # $1: `git status --porcelain` の出力（非空前提）。全行が「既知の使い捨てパスの
+  # untracked」なら 0。追跡ファイルの変更・未知の untracked が 1 行でもあれば非 0。
+  #
+  # 使い捨てと認めるのは .review-results/ だけ（マルチ AI レビューの成果物置き場。
+  # Issue #914 の実測で毎回 PARTIAL の原因だったもの）。ここを広げるほど
+  # 「clean 確認してから消す」という Step 5 の原則が痩せるので、実測で困った
+  # パスだけを個別に足すこと。
+  local line=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      '?? .review-results/'*|'?? .review-results') ;;
+      *) return 1 ;;
+    esac
+  done <<< "$1"
+  return 0
 }
 
 run_git_status_porcelain() {
@@ -425,6 +496,62 @@ if [ -n "$IGNORE_RAW" ]; then
   done
 fi
 
+# ---- Step 0.6: 設定可能な保護ブランチパターン（Issue #1056） -------------------
+#
+# release/* は運用によって「長命な統合ブランチ」（保護が正しい）と「リリース単位の
+# 作業ブランチ」（マージ後は用済み）に二分する。名前だけで前者と決めつけると、
+# 後者の運用ではマージ済み release/* が永久に取り残される。既定は従来どおり
+# release/* を保護し（後方互換）、FF_MERGE_CLEANUP_PROTECT_BRANCHES で変更できる:
+#
+#   FF_MERGE_CLEANUP_PROTECT_BRANCHES='release/*:lts/*'  ← ':' 区切りの glob
+#   FF_MERGE_CLEANUP_PROTECT_BRANCHES='none'             ← 追加の保護なし
+#
+# develop / main / master / staging/* はハードコードのまま（設定でも外せない。
+# Step 4 / 5 / 6 すべての最終防壁のため）。空文字列は未設定と同じ（既定を使う）。
+
+PROTECT_EXTRA_PATTERNS=()
+PROTECT_RAW="${FF_MERGE_CLEANUP_PROTECT_BRANCHES:-}"
+if [ -z "$PROTECT_RAW" ]; then
+  PROTECT_EXTRA_PATTERNS=('release/*')
+elif [ "$PROTECT_RAW" = "none" ]; then
+  : # 追加の保護なし（ハードコード分だけが残る）
+else
+  PROTECT_REST="${PROTECT_RAW}:"
+  while [ -n "$PROTECT_REST" ]; do
+    PROTECT_ITEM="${PROTECT_REST%%:*}"
+    PROTECT_REST="${PROTECT_REST#*:}"
+    if [ -z "$PROTECT_ITEM" ]; then
+      # 空パターンを黙って落とすと「書いたのに保護されない」が起き、方向は逆でも
+      # IGNORE_PATHS と同じ「指定と実挙動の乖離」なので同じく中断する（fail-closed）
+      die "FF_MERGE_CLEANUP_PROTECT_BRANCHES に空のパターンがあります: '${PROTECT_RAW}'（先頭・末尾・連続する ':' を確認。追加の保護を無くす場合は 'none' を指定）"
+    fi
+    case "$PROTECT_ITEM" in
+      [[:space:]]*|*[[:space:]])
+        die "FF_MERGE_CLEANUP_PROTECT_BRANCHES のパターンに前後の空白があります: '${PROTECT_ITEM}' — ブランチ名は空白も含めて照合されるため、この指定は意図どおり保護しません"
+        ;;
+      *\[*|*\]*)
+        # release/[[:digit:]]* のような文字クラスは、クラス内の ':' が区切り文字と
+        # 衝突して黙って分断される（エラーにならないまま保護が消える fail-open）。
+        # 分断後の破片は往々にして「何にも一致しない」正当そうな見た目になるため、
+        # 検出できるここで明示的に拒否する。
+        die "FF_MERGE_CLEANUP_PROTECT_BRANCHES に文字クラス（[...]）を含むパターンがあります: '${PROTECT_ITEM}' — 文字クラスは ':' 区切りと衝突して黙って分断されるため未対応です。プレフィックス glob（release/* など）を使ってください"
+        ;;
+    esac
+    PROTECT_EXTRA_PATTERNS+=("$PROTECT_ITEM")
+  done
+fi
+
+# ---- Step 0.7: マージ済み PR 照合上限（Issue #835） ---------------------------
+#
+# Step 5 の -D エスカレーションと Step 6 の取り残し照合が使う MERGED 一覧の
+# 取得上限。大きめのリポジトリでは既定の 1000 件でも取得が長引くため設定可能に
+# する。既定は従来どおり 1000（後方互換）。不正値は破壊的処理より前に中断する。
+
+MERGED_PR_LIMIT="${FF_MERGE_CLEANUP_MERGED_PR_LIMIT:-1000}"
+if ! [[ "$MERGED_PR_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+  die "FF_MERGE_CLEANUP_MERGED_PR_LIMIT は正の整数で指定してください: '${MERGED_PR_LIMIT}'（既定 1000）"
+fi
+
 # ---- Step 1: 未コミット変更ガード -------------------------------------------
 
 # git の失敗を「変更なし」と読み替えない。ここが fail-open だと、dirty な作業ツリーで
@@ -447,34 +574,14 @@ fi
 
 report_ignored_changes "" ""
 
+# dirty での中断判定は Step 2 の後まで保留する（Issue #758 / #749）。呼び出し元が
+# base でも PR head でもないブランチ（= 他セッションの作業ブランチの可能性）を
+# 保持している場合、本スクリプトはブランチを一切切り替えないモードで続行するため、
+# dirty でも呼び出し元の作業ツリーには触れない。base / PR head を保持している
+# 場合は従来どおり中断する。どちらかは PR 情報（base / head 名）が無いと決まらない。
+CALLER_DIRTY=0
 if [ -n "$DIRTY_STATUS" ]; then
-  echo "❌ 未コミットの変更があります。cleanup を中断します。"
-  printf '%s\n' "$DIRTY_STATUS"
-  echo ""
-  echo "対応方針（ユーザーが分類して判断）:"
-  echo "  1. 作業ブランチで commit し損ねた変更 → 元ブランチに戻して commit / 別 PR 化"
-  echo "  2. ツール / 設定（.claude/, scripts/ 等） → chore PR or .gitignore 追記"
-  echo "  3. ビルド成果物（dist/, .next/, target/, node_modules/） → .gitignore 追記提案"
-  echo "勝手に git restore / git clean は実行しません。"
-  if [ -z "$IGNORE_RAW" ]; then
-    echo "常駐ツールが書き続けるパスなら FF_MERGE_CLEANUP_IGNORE_PATHS で対象外にできます。"
-  else
-    # 設定済みの利用者に「設定できます」と案内すると、効いていないのかと読める
-    echo "現在の FF_MERGE_CLEANUP_IGNORE_PATHS: '${IGNORE_RAW}' — 上の変更はこの指定に一致していません。"
-  fi
-  exit 1
-fi
-
-# ---- Step 1.5: optional pre-merge-cleanup hook -------------------------------
-
-HOOK="$REPO_ROOT/.claude/hooks/pre-merge-cleanup.sh"
-if [ -f "$HOOK" ]; then
-  if [ -x "$HOOK" ]; then
-    echo "▶ running $HOOK"
-    "$HOOK" || die "pre-merge-cleanup hook が失敗しました。cleanup を中断します。"
-  else
-    echo "⚠️ $HOOK は実行可能ではありません（chmod +x してください）。スキップします。"
-  fi
+  CALLER_DIRTY=1
 fi
 
 # ---- Step 2: 対象 PR の情報取得（MERGED でなければここで中断） -----------------
@@ -519,21 +626,122 @@ if is_protected_branch "$PR_HEAD"; then
   die "PR #$PR_NUM のヘッドブランチが保護対象です ($PR_HEAD)。誤操作防止のため中断します。"
 fi
 
+# ---- Step 2.5: 呼び出し元ブランチの判定（switch なし掃除モード。#758 / #749） ---
+#
+# 呼び出し元が base でも PR head でもない名前付きブランチにいる場合、そのブランチは
+# 他セッションの作業ブランチの可能性がある。Step 3 で base へ switch すると他人の
+# 作業を勝手に切り替えることになるため、**切り替えを伴わない掃除モード**へ落とす:
+#   - base への復帰・pull は行わない（base の最新化は checkout 不要な
+#     `git fetch origin <base>:<base>` を試み、拒否されたらスキップして報告）
+#   - リモート削除・[gone] 掃除・worktree 削除・取り残し検証は通常どおり実施
+#   - 未実施の項目はサマリーで名指しする
+# detached HEAD（空文字列）は従来どおり通常モード（switch して base へ復帰する）。
+
+CURRENT_BRANCH_BEFORE="$(git branch --show-current)"
+NO_SWITCH_MODE=0
+BASE_FF_NOTE=""
+if [ -n "$CURRENT_BRANCH_BEFORE" ] \
+  && [ "$CURRENT_BRANCH_BEFORE" != "$PR_BASE" ] \
+  && [ "$CURRENT_BRANCH_BEFORE" != "$PR_HEAD" ]; then
+  NO_SWITCH_MODE=1
+fi
+
+if [ "$CALLER_DIRTY" = "1" ]; then
+  if [ "$NO_SWITCH_MODE" = "1" ]; then
+    # このモードでは呼び出し元のブランチも作業ツリーも一切触らないため、dirty を
+    # 理由に全体を止めない（止めると cleanup の実体を毎回手作業で再現することになる。
+    # #749 の実測）。変更に触れないことと、base 復帰を行わないことだけ明示する。
+    echo "⚠️ 未コミットの変更がありますが、呼び出し元は base でも PR head でもない '${CURRENT_BRANCH_BEFORE}' を保持しています。"
+    echo "   ブランチ切り替えを伴わない掃除モードで続行します（下の変更には一切触れません）:"
+    printf '%s\n' "$DIRTY_STATUS" | sed 's/^/   /'
+  else
+    echo "❌ 未コミットの変更があります。cleanup を中断します。"
+    printf '%s\n' "$DIRTY_STATUS"
+    echo ""
+    echo "対応方針（ユーザーが分類して判断）:"
+    echo "  1. 作業ブランチで commit し損ねた変更 → 元ブランチに戻して commit / 別 PR 化"
+    echo "  2. ツール / 設定（.claude/, scripts/ 等） → chore PR or .gitignore 追記"
+    echo "  3. ビルド成果物（dist/, .next/, target/, node_modules/） → .gitignore 追記提案"
+    echo "勝手に git restore / git clean は実行しません。"
+    if [ -z "$IGNORE_RAW" ]; then
+      echo "常駐ツールが書き続けるパスなら FF_MERGE_CLEANUP_IGNORE_PATHS で対象外にできます。"
+    else
+      # 設定済みの利用者に「設定できます」と案内すると、効いていないのかと読める
+      echo "現在の FF_MERGE_CLEANUP_IGNORE_PATHS: '${IGNORE_RAW}' — 上の変更はこの指定に一致していません。"
+    fi
+    exit 1
+  fi
+fi
+
+# ---- Step 2.7: optional pre-merge-cleanup hook -------------------------------
+
+HOOK="$REPO_ROOT/.claude/hooks/pre-merge-cleanup.sh"
+if [ -f "$HOOK" ]; then
+  if [ -x "$HOOK" ]; then
+    echo "▶ running $HOOK"
+    "$HOOK" || die "pre-merge-cleanup hook が失敗しました。cleanup を中断します。"
+    if [ "$NO_SWITCH_MODE" = "1" ]; then
+      # switch なし掃除モードの契約は「呼び出し元のブランチに触れない」。hook が
+      # ブランチを切り替えていたら、この契約を以降のステップで守れないため中断する
+      HOOK_BRANCH_NOW="$(git branch --show-current)"
+      if [ "$HOOK_BRANCH_NOW" != "$CURRENT_BRANCH_BEFORE" ]; then
+        die "pre-merge-cleanup hook が呼び出し元のブランチを '${CURRENT_BRANCH_BEFORE}' から '${HOOK_BRANCH_NOW:-（detached）}' へ切り替えました。switch なし掃除モードの契約（呼び出し元のブランチに触れない）を守れないため中断します。hook を修正するか、base か PR head のブランチから再実行してください。"
+      fi
+    fi
+  else
+    echo "⚠️ $HOOK は実行可能ではありません（chmod +x してください）。スキップします。"
+  fi
+fi
+
 # ---- Step 3: base ブランチ復帰 + 最新化（prune 必須） -------------------------
 
 # リモートブランチ削除より先に base を最新化すること。
 # --prune が無いとリモート削除済みブランチに [gone] マーカーが付かず Step 5 で検出できない。
 
-CURRENT_BRANCH_BEFORE="$(git branch --show-current)"
 BASE_WORKTREE=""
 BASE_WORKTREE_OID=""
 BASE_WORKTREE_DETACHED=0
 
-if [ "$CURRENT_BRANCH_BEFORE" != "$PR_BASE" ]; then
+if [ "$NO_SWITCH_MODE" = "1" ]; then
+  echo "ℹ️ 呼び出し元は '${CURRENT_BRANCH_BEFORE}' を保持しています（base=${PR_BASE} / PR head=${PR_HEAD} のいずれでもありません）。"
+  echo "   他セッションの作業ブランチを切り替えないため、base への復帰・pull を行わない掃除モードで続行します。"
+
+  # base を保持する worktree があれば報告だけする（detach も削除もしない。#758:
+  # 他セッションの worktree は保持者パス・clean/dirty・最終更新を報告し、処分は
+  # ユーザー判断に委ねる）。
+  BASE_WORKTREE="$(find_worktree_for_branch "$PR_BASE" || true)"
+  if [ -n "$BASE_WORKTREE" ]; then
+    BASE_HOLDER_STATE="clean"
+    if [ -n "$(git -C "$BASE_WORKTREE" status --porcelain 2>/dev/null)" ]; then
+      BASE_HOLDER_STATE="dirty"
+    fi
+    BASE_HOLDER_LAST="$(git -C "$BASE_WORKTREE" log -1 --format='%cd' --date=iso 2>/dev/null || true)"
+    echo "ℹ️ ${PR_BASE} は別の worktree が保持しています（削除も切り替えもしません。処分はユーザー判断）:"
+    echo "   保持者: ${BASE_WORKTREE}（${BASE_HOLDER_STATE} / 最終コミット: ${BASE_HOLDER_LAST:-不明}）"
+  fi
+
+  git fetch --prune origin 2>&1 \
+    || die "git fetch --prune が失敗しました。ネットワーク / 認証を確認してください。"
+
+  # checkout せずに base を最新化できるなら行う。base がどこかの worktree に
+  # checkout されていると git 自身が拒否する（#749 の実測）ので、その場合は
+  # スキップして報告する（サマリーの未実施項目にも載せる）。
+  BASE_FF_OUT=""
+  if BASE_FF_OUT="$(git fetch origin "$PR_BASE:$PR_BASE" 2>&1)"; then
+    BASE_FF_NOTE="実施済み（git fetch origin ${PR_BASE}:${PR_BASE} で checkout せずに更新）"
+    echo "ℹ️ ${PR_BASE} は checkout せずに最新化しました（git fetch origin ${PR_BASE}:${PR_BASE}）。"
+  else
+    BASE_FF_NOTE="未実施（git fetch origin ${PR_BASE}:${PR_BASE} が拒否された。base を保持する worktree 側で pull すること）"
+    echo "ℹ️ ${PR_BASE} の checkout なし最新化はできませんでした（base を保持する worktree 側で pull してください）:"
+    printf '%s\n' "$BASE_FF_OUT" | sed 's/^/   /'
+  fi
+fi
+
+if [ "$NO_SWITCH_MODE" != "1" ] && [ "$CURRENT_BRANCH_BEFORE" != "$PR_BASE" ]; then
   BASE_WORKTREE="$(find_worktree_for_branch "$PR_BASE" || true)"
 fi
 
-if [ -n "$BASE_WORKTREE" ] && [ "$BASE_WORKTREE" != "$REPO_ROOT" ]; then
+if [ "$NO_SWITCH_MODE" != "1" ] && [ -n "$BASE_WORKTREE" ] && [ "$BASE_WORKTREE" != "$REPO_ROOT" ]; then
   # ここも Step 1 と同じ除外指定を効かせる。退避は同一 OID への detach なので
   # 作業ツリーの中身は変わらず、中断しても何も消えない側のガードにあたる。
   # 片方だけ緩めると、除外を設定したユーザーが別の dirty ガードで止まる。
@@ -573,24 +781,26 @@ if [ -n "$BASE_WORKTREE" ] && [ "$BASE_WORKTREE" != "$REPO_ROOT" ]; then
   BASE_WORKTREE_DETACHED=1
 fi
 
-SWITCH_OUT=""
-if ! SWITCH_OUT="$(git switch "$PR_BASE" 2>&1)"; then
-  if [ "$BASE_WORKTREE_DETACHED" = "1" ]; then
-    if git -C "$BASE_WORKTREE" switch "$PR_BASE" >/dev/null 2>&1; then
-      echo "ℹ️ 呼び出し元の切り替え失敗に伴い、退避した worktree を $PR_BASE へ復旧しました。" >&2
-    else
-      die "$PR_BASE への切り替えに失敗し、退避した worktree の復旧にも失敗しました: ${SWITCH_OUT}（要手動確認: ${BASE_WORKTREE}）"
+if [ "$NO_SWITCH_MODE" != "1" ]; then
+  SWITCH_OUT=""
+  if ! SWITCH_OUT="$(git switch "$PR_BASE" 2>&1)"; then
+    if [ "$BASE_WORKTREE_DETACHED" = "1" ]; then
+      if git -C "$BASE_WORKTREE" switch "$PR_BASE" >/dev/null 2>&1; then
+        echo "ℹ️ 呼び出し元の切り替え失敗に伴い、退避した worktree を $PR_BASE へ復旧しました。" >&2
+      else
+        die "$PR_BASE への切り替えに失敗し、退避した worktree の復旧にも失敗しました: ${SWITCH_OUT}（要手動確認: ${BASE_WORKTREE}）"
+      fi
     fi
+    die "$PR_BASE への切り替えに失敗しました: ${SWITCH_OUT}（'git worktree list' / 'git branch -a' を確認）。"
   fi
-  die "$PR_BASE への切り替えに失敗しました: ${SWITCH_OUT}（'git worktree list' / 'git branch -a' を確認）。"
+  printf '%s\n' "$SWITCH_OUT"
+
+  git fetch --prune origin 2>&1 \
+    || die "git fetch --prune が失敗しました。ネットワーク / 認証を確認してください。"
+
+  git pull --ff-only origin "$PR_BASE" 2>&1 \
+    || die "git pull --ff-only が失敗しました。$PR_BASE がローカルで分岐しているか、未コミット変更（FF_MERGE_CLEANUP_IGNORE_PATHS で除外したものを含む）が更新と競合しています（'git log $PR_BASE..origin/$PR_BASE' と 'git status' で確認し手動解消してください）。"
 fi
-printf '%s\n' "$SWITCH_OUT"
-
-git fetch --prune origin 2>&1 \
-  || die "git fetch --prune が失敗しました。ネットワーク / 認証を確認してください。"
-
-git pull --ff-only origin "$PR_BASE" 2>&1 \
-  || die "git pull --ff-only が失敗しました。$PR_BASE がローカルで分岐しているか、未コミット変更（FF_MERGE_CLEANUP_IGNORE_PATHS で除外したものを含む）が更新と競合しています（'git log $PR_BASE..origin/$PR_BASE' と 'git status' で確認し手動解消してください）。"
 
 # ---- Step 3.5: ガード情報の取得（Step 4/5/6 で共用、fail-closed） --------------
 
@@ -600,19 +810,32 @@ GUARDS_OK=1
 MERGED_LIST="$WORK_TMP/merged.list"   # "name<TAB>oid"（same-repo PR のみ）
 OPEN_LIST="$WORK_TMP/open.list"       # "name"
 
+# 大きめのリポジトリではこの取得が数分かかることがある（feelflow-website-2026 の
+# 実測。Issue #835）。無出力のまま待たせると「ハング」と誤診されるため、取得の
+# 前後で進捗を出す。上限は FF_MERGE_CLEANUP_MERGED_PR_LIMIT（Step 0.7、既定 1000）。
 GH_MERGED_JSON=""
 GH_OPEN_JSON=""
-if ! GH_MERGED_JSON="$(gh pr list --state merged --limit 1000 --json headRefName,headRefOid,isCrossRepository 2>&1)"; then
+echo "⏳ ガード情報を取得しています: マージ済み PR 一覧（照合上限: ${MERGED_PR_LIMIT} 件）..."
+if ! GH_MERGED_JSON="$(gh pr list --state merged --limit "$MERGED_PR_LIMIT" --json headRefName,headRefOid,isCrossRepository 2>&1)"; then
   echo "⚠️ マージ済み PR 一覧の取得に失敗しました（fail-closed で縮退）: $GH_MERGED_JSON"
   GUARDS_OK=0
-elif ! GH_OPEN_JSON="$(gh pr list --state open --limit 1000 --json headRefName 2>&1)"; then
-  echo "⚠️ open PR 一覧の取得に失敗しました（fail-closed で縮退）: $GH_OPEN_JSON"
-  GUARDS_OK=0
 else
-  printf '%s' "$GH_MERGED_JSON" \
-    | jq -r '.[] | select(.isCrossRepository | not) | "\(.headRefName)\t\(.headRefOid)"' \
-    | sort -u > "$MERGED_LIST"
-  printf '%s' "$GH_OPEN_JSON" | jq -r '.[].headRefName' | sort -u > "$OPEN_LIST"
+  MERGED_FETCHED_COUNT="$(printf '%s' "$GH_MERGED_JSON" | jq 'length' 2>/dev/null)" || MERGED_FETCHED_COUNT=""
+  echo "   … マージ済み PR 一覧を取得しました: ${MERGED_FETCHED_COUNT:-?} 件"
+  if [ -n "$MERGED_FETCHED_COUNT" ] && [ "$MERGED_FETCHED_COUNT" -ge "$MERGED_PR_LIMIT" ]; then
+    echo "ℹ️ マージ済み PR の照合は上限 ${MERGED_PR_LIMIT} 件で打ち切っています（これより古い MERGED PR は照合対象外。上限は FF_MERGE_CLEANUP_MERGED_PR_LIMIT で変更できます）"
+  fi
+  echo "⏳ ガード情報を取得しています: open PR 一覧..."
+  if ! GH_OPEN_JSON="$(gh pr list --state open --limit 1000 --json headRefName 2>&1)"; then
+    echo "⚠️ open PR 一覧の取得に失敗しました（fail-closed で縮退）: $GH_OPEN_JSON"
+    GUARDS_OK=0
+  else
+    echo "   … open PR 一覧を取得しました"
+    printf '%s' "$GH_MERGED_JSON" \
+      | jq -r '.[] | select(.isCrossRepository | not) | "\(.headRefName)\t\(.headRefOid)"' \
+      | sort -u > "$MERGED_LIST"
+    printf '%s' "$GH_OPEN_JSON" | jq -r '.[].headRefName' | sort -u > "$OPEN_LIST"
+  fi
 fi
 
 # ---- Step 4: 対象 PR のリモートブランチ削除 -----------------------------------
@@ -734,6 +957,10 @@ else
   echo "🧹 [gone] ブランチを処理します:"
   printf '%s\n' "$GONE_BRANCHES" | sed 's/^/  - /'
 
+  # switch なし掃除モードでは呼び出し元のブランチが [gone] のこともある。checkout 中の
+  # ブランチは git 自身が削除を拒否するが、失敗（PARTIAL）ではなく名指しのスキップにする
+  CURRENT_BRANCH_STEP5="$(git branch --show-current)"
+
   while IFS= read -r branch; do
     [ -z "$branch" ] && continue
     echo ""
@@ -743,6 +970,12 @@ else
     if is_protected_branch "$branch"; then
       echo "  ⚠️ skip (保護ブランチ): $branch"
       SKIPPED_LEFTOVERS+=("$branch: 保護ブランチ（ローカル [gone]）")
+      continue
+    fi
+
+    if [ -n "$CURRENT_BRANCH_STEP5" ] && [ "$branch" = "$CURRENT_BRANCH_STEP5" ]; then
+      echo "  ⚠️ skip (呼び出し元がチェックアウト中): $branch"
+      SKIPPED_LEFTOVERS+=("$branch: 呼び出し元がチェックアウト中のためローカル削除せず")
       continue
     fi
 
@@ -776,11 +1009,92 @@ else
         FAILED_ITEMS+=("$branch: worktree 状態確認失敗 ($WORKTREE_PATH)")
         continue
       }
-      if [ -n "$WT_STATUS" ]; then
+
+      # マージ済みエージェント worktree の自動処理（Issue #914）。
+      # サブエージェント並列開発の worktree はハーネスのロック（reason: claude agent）と
+      # untracked の .review-results で毎回削除に失敗し、unlock → force remove の手動
+      # 3 手を要して常に PARTIAL になっていた。次の **3 条件をすべて**満たす場合に限り
+      # unlock + 使い捨てパスの除去 + 削除を自動で行う:
+      #   1. (名前, ローカル OID) が MERGED PR の head と一致（-D エスカレーションと同じ証拠）
+      #   2. ロックされていて、ロック理由に claude agent を含む（未ロックは対象外）
+      #   3. dirty の内訳が既知の使い捨てパス（.review-results）の untracked だけ（clean も可）
+      # 証拠が欠ける・未知の残置物がある・ロックが無い/理由が異なる場合は
+      # 従来どおり削除せず保護する（fail-closed）。
+      WT_LOCAL_OID="$(git rev-parse "refs/heads/$branch" 2>/dev/null || true)"
+      WT_MERGED_MATCH=0
+      if [ "$GUARDS_OK" = "1" ] && [ -n "$WT_LOCAL_OID" ] \
+        && grep -qxF "$(printf '%s\t%s' "$branch" "$WT_LOCAL_OID")" "$MERGED_LIST"; then
+        WT_MERGED_MATCH=1
+      fi
+
+      WT_LOCK_REASON=""
+      WT_LOCKED=0
+      if WT_LOCK_REASON="$(worktree_lock_reason "$WORKTREE_PATH")"; then
+        WT_LOCKED=1
+      fi
+      WT_CLAUDE_LOCK=0
+      if [ "$WT_LOCKED" = "1" ] && printf '%s' "$WT_LOCK_REASON" | grep -qi 'claude agent'; then
+        WT_CLAUDE_LOCK=1
+      fi
+
+      WT_AGENT_PATH=0
+      if [ "$WT_MERGED_MATCH" = "1" ] && [ "$WT_CLAUDE_LOCK" = "1" ] \
+        && { [ -z "$WT_STATUS" ] || agent_disposable_status_only "$WT_STATUS"; }; then
+        WT_AGENT_PATH=1
+      fi
+
+      # claude agent 以外のロックは、dirty かどうかによらずロックを理由に保護する
+      # （ロックがある限り削除は成立せず、真の障害物はロックのため）
+      if [ "$WT_LOCKED" = "1" ] && [ "$WT_CLAUDE_LOCK" != "1" ]; then
+        echo "  ⚠️ worktree がロックされています（理由: ${WT_LOCK_REASON:-（記載なし）}）。削除をスキップします。"
+        echo "     自動 unlock するのは「ロック理由が claude agent かつ (名前, OID) が MERGED PR の head と一致」の場合だけです。"
+        FAILED_ITEMS+=("$branch: worktree がロックされており自動 unlock の条件外 ($WORKTREE_PATH)")
+        continue
+      fi
+
+      if [ -n "$WT_STATUS" ] && [ "$WT_AGENT_PATH" != "1" ]; then
         echo "  ⚠️ worktree に未コミット変更があります。削除をスキップします: $WORKTREE_PATH"
         git -C "$WORKTREE_PATH" status --short | sed 's/^/     /'
         FAILED_ITEMS+=("$branch: worktree に未コミット変更あり ($WORKTREE_PATH)")
         continue
+      fi
+
+      if [ "$WT_LOCKED" = "1" ] && [ "$WT_AGENT_PATH" != "1" ]; then
+        # claude agent ロックだが MERGED OID 照合が成立しない（clean だが unlock 条件外）
+        echo "  ⚠️ worktree がロックされています（理由: ${WT_LOCK_REASON:-（記載なし）}）。削除をスキップします。"
+        echo "     自動 unlock するのは「ロック理由が claude agent かつ (名前, OID) が MERGED PR の head と一致」の場合だけです。"
+        FAILED_ITEMS+=("$branch: worktree がロックされており自動 unlock の条件外 ($WORKTREE_PATH)")
+        continue
+      fi
+
+      WT_AGENT_NOTES=""
+      if [ "$WT_AGENT_PATH" = "1" ]; then
+        WT_UNLOCK_OUT=""
+        if WT_UNLOCK_OUT="$(git worktree unlock "$WORKTREE_PATH" 2>&1)"; then
+          echo "  ℹ️ claude agent ロックを解除しました（(名前, OID) が MERGED PR の head と一致）: ${WT_LOCK_REASON:-（理由の記載なし）}"
+          WT_AGENT_NOTES="claude agent ロックを解除"
+        else
+          echo "  ❌ worktree の unlock に失敗: $WT_UNLOCK_OUT"
+          FAILED_ITEMS+=("$branch: worktree unlock 失敗 ($WORKTREE_PATH)")
+          continue
+        fi
+        if [ -n "$WT_STATUS" ]; then
+          # --force での worktree ごと削除はしない。status 確認の後に入った変更まで
+          # 巻き込むため（TOCTOU）。既知の使い捨てパスだけを個別に除去し、削除自体は
+          # force なしの `git worktree remove` に委ねる — 確認後に別の変更が入っていれば
+          # git 自身が拒否して fail-closed に戻る。
+          echo "  ℹ️ worktree の残置物は既知の使い捨てパス（.review-results）だけで、(名前, OID) は MERGED PR の head と一致します。"
+          echo "     使い捨てパス（.review-results）を除去してから worktree を削除します:"
+          printf '%s\n' "$WT_STATUS" | sed 's/^/     /'
+          if ! rm -rf "$WORKTREE_PATH/.review-results"; then
+            echo "  ❌ 使い捨てパスの除去に失敗しました。ロックを元に戻して保護します: $WORKTREE_PATH"
+            git worktree lock --reason "$WT_LOCK_REASON" "$WORKTREE_PATH" 2>&1 \
+              || echo "  ⚠️ ロックの復元にも失敗しました（unlock されたまま残ります）: $WORKTREE_PATH"
+            FAILED_ITEMS+=("$branch: 使い捨てパスの除去失敗 ($WORKTREE_PATH)")
+            continue
+          fi
+          WT_AGENT_NOTES="${WT_AGENT_NOTES}、使い捨てパス（.review-results）を除去"
+        fi
       fi
 
       echo "  worktree: $WORKTREE_PATH"
@@ -792,18 +1106,30 @@ else
       if [ -z "$WORKTREE_REAL" ]; then
         echo "  ⚠️ worktree パスを正規化できませんでした。トランスクリプトを取りこぼす可能性があります: $WORKTREE_PATH"
       fi
-      # --force は付けない: 直前の clean 確認の後に変更が入った場合、
-      # git 自身が拒否するので TOCTOU の安全網になる。
+      # --force は付けない（エージェント経路を含む全経路）: 直前の clean 確認・
+      # 使い捨てパス除去の後に変更が入った場合、git 自身が拒否するので TOCTOU の
+      # 安全網になる。エージェント経路で拒否された場合は unlock 前の状態へ戻す
+      # （元の理由で再ロック）。
       # 注意: .gitignore 対象のファイル（.env 等）は clean 扱いのまま削除される。
       # 惜しいファイルを worktree の ignored 領域にだけ置く運用は避けること（コマンド doc にも明記）
       WORKTREE_RM_OUT=""
       if ! WORKTREE_RM_OUT="$(git worktree remove "$WORKTREE_PATH" 2>&1)"; then
         echo "  ❌ worktree 削除に失敗: $WORKTREE_RM_OUT"
         echo "     ブランチ削除もスキップします。手動対応してください。"
+        if [ "$WT_AGENT_PATH" = "1" ]; then
+          if git worktree lock --reason "$WT_LOCK_REASON" "$WORKTREE_PATH" 2>&1; then
+            echo "     解除していた claude agent ロックを元の理由で復元しました。"
+          else
+            echo "  ⚠️ ロックの復元にも失敗しました（unlock されたまま残ります）: $WORKTREE_PATH"
+          fi
+        fi
         FAILED_ITEMS+=("$branch: worktree 削除失敗 ($WORKTREE_PATH)")
         continue
       fi
       echo "  ✓ worktree removed: $WORKTREE_PATH"
+      if [ -n "$WT_AGENT_NOTES" ]; then
+        INFO_ITEMS+=("$branch: マージ済みエージェント worktree を自動処理（(名前, OID) が MERGED PR の head と一致。${WT_AGENT_NOTES}）")
+      fi
       DELETED_WORKTREES+=("$WORKTREE_PATH")
       DELETED_WORKTREE_REALS+=("${WORKTREE_REAL:-$WORKTREE_PATH}")
     fi
@@ -826,6 +1152,15 @@ else
           echo "  ❌ ブランチ削除に失敗: $BRANCH_DEL_OUT"
           FAILED_ITEMS+=("$branch: git branch -D 失敗")
         fi
+      elif [ "$GUARDS_OK" = "1" ] && grep -qxF "$(printf '%s\tnull' "$branch")" "$MERGED_LIST"; then
+        # MERGED 一覧に名前は載っているが、一覧側の headRefOid が null で返っている
+        # （#570 / #703 の root cause）。このとき実際に無いのは**照合材料**であって
+        # 未マージの証拠ではないため、「未マージの固有コミットの可能性」と誤帰属しない。
+        # 利用者に存在しない未マージコミットを探させないことが目的で、削除しない点は同じ。
+        echo "  ⚠️ $branch は MERGED PR の head 名として一覧に載っていますが、一覧側の OID が null で照合材料がありません。"
+        echo "     未マージの可能性ではなく OID 照合が成立しないため、削除をスキップします。"
+        echo "     マージ済みであることを PR ページで確認できた場合のみ、手動で 'git branch -D $branch' してください。"
+        FAILED_ITEMS+=("$branch: [gone] だが MERGED 一覧側の OID が null で照合材料が無い（要手動確認）")
       else
         echo "  ⚠️ $branch はマージ済み PR の head と OID 一致しません（未マージの固有コミットの可能性）。"
         echo "     削除をスキップします。内容確認のうえ手動で 'git branch -D $branch' してください。"
@@ -1139,6 +1474,7 @@ LEFTOVER_CHECK_DONE=0
 if [ "$GUARDS_OK" != "1" ]; then
   echo "⚠️ ガード情報（MERGED / open PR 一覧）が構成できていないため、取り残し検証をスキップします（fail-closed）。"
 else
+  echo "⏳ リモートブランチ一覧を取得しています（git ls-remote --heads origin）..."
   LS_REMOTE_OUT=""
   if ! LS_REMOTE_OUT="$(git ls-remote --heads origin 2>&1)"; then
     echo "⚠️ git ls-remote に失敗しました。取り残し検証をスキップします（fail-closed）: $LS_REMOTE_OUT"
@@ -1161,7 +1497,7 @@ else
       case "$PR_REMOTE_RESULT" in
         skipped*) LEFTOVER_NONE_NOTE="（今回スキップした ${PR_HEAD} を除く）" ;;
       esac
-      echo "✅ リモート取り残しなし（直近 1000 件のマージ済み PR と (名前, OID) 照合）${LEFTOVER_NONE_NOTE}"
+      echo "✅ リモート取り残しなし（直近 ${MERGED_PR_LIMIT} 件のマージ済み PR と (名前, OID) 照合）${LEFTOVER_NONE_NOTE}"
     else
       echo "🧹 リモート取り残しのマージ済みブランチを検出しました:"
       printf '%s\n' "$LEFTOVER" | cut -f1 | sed 's/^/  - /'
@@ -1170,7 +1506,7 @@ else
       while IFS="$(printf '\t')" read -r rbranch roid; do
         [ -z "$rbranch" ] && continue
 
-        if is_protected_branch "$rbranch"; then
+        if is_hardcoded_protected_branch "$rbranch"; then
           echo "  ⚠️ skip (保護ブランチ): $rbranch"
           SKIPPED_LEFTOVERS+=("$rbranch: 保護ブランチ")
           continue
@@ -1179,6 +1515,21 @@ else
         if grep -qxF "$rbranch" "$OPEN_LIST"; then
           echo "  ⚠️ skip (open PR で再利用中): $rbranch"
           SKIPPED_LEFTOVERS+=("$rbranch: open PR の head として再利用中")
+          continue
+        fi
+
+        # 設定可能な保護パターン（既定 release/*。Issue #1056）に止められたものは、
+        # ここまでの全ガード（MERGED head と (名前, OID) 一致 / fork 由来でない /
+        # open PR 未使用）を通過している = 「マージ済みで安全に消せる」ことが証明済みで、
+        # 止めているのは名前パターンだけ。毎回同じ skip が無言で積み上がると本当に
+        # 判断が要る skip がノイズに埋もれるため、手動判断の材料（削除コマンドと
+        # 恒久設定）を添えて報告する。
+        if PROTECT_HIT="$(matched_extra_protect_pattern "$rbranch")"; then
+          echo "  ⚠️ skip (設定保護パターン '${PROTECT_HIT}' に一致): $rbranch"
+          echo "     このブランチはマージ済みで他の全ガードを通過しています。長命ブランチでなければ手動で削除できます:"
+          echo "       git push origin --force-with-lease=refs/heads/$rbranch:$roid :refs/heads/$rbranch"
+          echo "     恒久対応は FF_MERGE_CLEANUP_PROTECT_BRANCHES の見直し（既定 'release/*'、'none' で追加保護なし。develop/main/master/staging/* は設定でも外れません）"
+          SKIPPED_LEFTOVERS+=("$rbranch: 設定保護パターン '${PROTECT_HIT}' に一致（マージ済み・手動削除コマンドは実行ログ参照）")
           continue
         fi
 
@@ -1276,7 +1627,11 @@ git status
 
 CURRENT_BRANCH="$(git branch --show-current)"
 if [ "$CURRENT_BRANCH" != "$PR_BASE" ]; then
-  echo "⚠️ 現在のブランチが $PR_BASE ではありません: $CURRENT_BRANCH"
+  if [ "$NO_SWITCH_MODE" = "1" ]; then
+    echo "ℹ️ 呼び出し元のブランチを保持したままです: ${CURRENT_BRANCH}（switch なし掃除モードのため base への復帰は行っていません）"
+  else
+    echo "⚠️ 現在のブランチが $PR_BASE ではありません: $CURRENT_BRANCH"
+  fi
 fi
 
 # upstream の存在を先に判定してから rev-list を無抑制で呼ぶ（エラーの丸め込みを避ける）
@@ -1332,7 +1687,16 @@ echo "## マージ後 Cleanup 結果"
 echo ""
 echo "**対象 PR**: #$PR_NUM"
 echo ""
-echo "- 対象 PR のリモートブランチ ($PR_HEAD): $PR_REMOTE_RESULT"
+# 「リモートブランチを削除したか」は完了報告で必ず明示する（Issue #758。`gh pr merge`
+# の成否と混同されると、delete_branch_on_merge=false のリポジトリで取り残しに気付けない）
+case "$PR_REMOTE_RESULT" in
+  deleted|deleted_by_leftover_retry) PR_REMOTE_HUMAN="削除した" ;;
+  already_missing|already_missing_at_leftover_retry) PR_REMOTE_HUMAN="既に存在しない（今回の削除は不要）" ;;
+  skipped_fork) PR_REMOTE_HUMAN="削除していない（fork PR のため origin 側は対象外）" ;;
+  skipped_open_reuse|skipped_lease_rejected|skipped_lease_rejected_at_leftover_retry) PR_REMOTE_HUMAN="削除していない（保護。上の警告を参照）" ;;
+  *) PR_REMOTE_HUMAN="削除していない（要確認。上の警告 / 失敗項目を参照）" ;;
+esac
+echo "- 対象 PR のリモートブランチ ($PR_HEAD): $PR_REMOTE_RESULT — リモートブランチの削除: ${PR_REMOTE_HUMAN}"
 echo "- 削除した [gone] ローカルブランチ: ${#DELETED_BRANCHES[@]} 本${DELETED_BRANCHES[*]+ (${DELETED_BRANCHES[*]})}"
 echo "- 削除した worktree: ${#DELETED_WORKTREES[@]} 個${DELETED_WORKTREES[*]+ (${DELETED_WORKTREES[*]})}"
 if [ -n "$TRANSCRIPT_STEP_NOTE" ]; then
@@ -1355,6 +1719,15 @@ else
   echo "- リモート取り残し検証: スキップ（ガード情報の取得失敗）"
 fi
 echo "- 現在のブランチ: $CURRENT_BRANCH"
+
+if [ "$NO_SWITCH_MODE" = "1" ]; then
+  # 掃除モードで意図的に見送った項目は、失敗（PARTIAL）ではなく名指しの未実施として
+  # 報告する（#749: 中断せず完遂しつつ、やらなかったことを報告から欠落させない）
+  echo ""
+  echo "**ℹ️ switch なし掃除モードでの未実施項目（呼び出し元が '${CURRENT_BRANCH_BEFORE}' を保持）**:"
+  echo "  - ${PR_BASE} への復帰と pull --ff-only（他セッションの作業ブランチを切り替えないため）"
+  echo "  - ${PR_BASE} の最新化: ${BASE_FF_NOTE:-未実施}"
+fi
 
 if [ "${#SKIPPED_LEFTOVERS[@]}" -gt 0 ]; then
   echo ""
