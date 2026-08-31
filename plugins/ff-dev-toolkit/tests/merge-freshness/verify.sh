@@ -135,9 +135,10 @@ echo "== A. check-merge-freshness.sh の振る舞い =="
 REPO="$(new_repo repo-a)"
 cd "$REPO"
 C1="$(git_q rev-parse HEAD)"
+BRANCH_A="$(git_q symbolic-ref --short HEAD)"
 bash "$RECORD" --gate "tests/run-all.sh" --mode full --result "passed=93" >/dev/null 2>&1
 
-# --- 一致（受け入れ条件: 何も報告せずマージへ進める） ---
+# --- 同一ブランチで一致（受け入れ条件: 何も報告せずマージへ進める） ---
 run_check --remote-head "$C1"
 [[ "$RC" -eq 0 ]] && ok "一致は exit 0" || bad "一致で exit ${RC}（期待 0）"
 [[ -z "$OUT" ]] && ok "一致時の stdout が空（常時ノイズにしない）" || bad "一致時に stdout へ出力があります: ${OUT}"
@@ -162,19 +163,62 @@ run_check --remote-head "$C1"
 [[ "$RC" -eq 1 ]] && ok "未 push の実測も exit 1" || bad "未 push の実測で exit ${RC}（期待 1）"
 out_has "$OUT" "RELATION=unpushed" "実測対象がリモートより先行なら unpushed と分類する"
 
-# --- 不一致: 実測対象とリモート先端が分岐した ---
-# 原因は 1 つではない（別セッションの push / 実測対象がマージ済み・削除済みのブランチ上
-# にある など）。固定するのは分類であって原因ではない。
+# --- 不一致: 同一ブランチの実測対象とリモート先端が分岐した ---
+# 別セッションの push を模擬するために other 上でリモート先端を作り、照合時には
+# 記録時のブランチへ戻す。--measured で記録の読み取りを迂回しない。
 git_q checkout -q -b other "$C1" >/dev/null 2>&1
 echo three > c.txt
 git_q add c.txt >/dev/null 2>&1
 git_q commit -qm "c3" >/dev/null 2>&1
 C3="$(git_q rev-parse HEAD)"
 git_q checkout -q - >/dev/null 2>&1
-run_check --remote-head "$C3" --measured "$C2"
+run_check --remote-head "$C3"
 [[ "$RC" -eq 1 ]] && ok "分岐した先端も exit 1" || bad "分岐した先端で exit ${RC}（期待 1）"
+out_has "$OUT" "FRESHNESS=MISMATCH" "同一ブランチの分岐は MISMATCH のまま"
 out_has "$OUT" "RELATION=divergent" "分岐は divergent と分類する（原因は 1 つに断定しない）"
 out_has "$OUT" "force-push" "分岐時の指示が force-push を禁じている"
+
+# --- 別ブランチの記録: コミット関係を競合 push と誤認しない ---
+git_q checkout -q other >/dev/null 2>&1
+run_check --remote-head "$C3" --fetch
+[[ "$RC" -eq 2 ]] && ok "別ブランチの古い記録は exit 2（マージを止めない）" || bad "別ブランチの記録で exit ${RC}（期待 2）"
+out_has "$OUT" "FRESHNESS=UNDETERMINED" "別ブランチの記録は UNDETERMINED"
+CROSS_REASON="$(printf '%s\n' "$OUT" | sed -n 's/^REASON=//p')"
+out_has "$CROSS_REASON" "別ブランチ" "REASON が別ブランチの記録であることを述べる"
+out_has "$CROSS_REASON" "$BRANCH_A" "REASON が記録側のブランチ名を述べる"
+out_has "$OUT" "ACTION=現在のブランチ" "復旧は相手の取り込みでなく現在のブランチでの再実測"
+case "$OUT" in
+  *RELATION=*) bad "別ブランチの記録にコミット関係の分類を付けています: ${OUT}" ;;
+  *) ok "別ブランチの記録を divergent などへ分類しない" ;;
+esac
+
+# 明示した実測 SHA は記録を読まない既存契約を維持する。
+run_check --remote-head "$C3" --measured "$C2"
+[[ "$RC" -eq 1 ]] && ok "--measured 明示時は別ブランチの記録に影響されない" || bad "明示実測で exit ${RC}（期待 1）"
+out_has "$OUT" "RELATION=divergent" "明示実測の分岐保護は維持される"
+git_q checkout -q -b same-sha "$C2" >/dev/null 2>&1
+run_check --remote-head "$C2"
+[[ "$RC" -eq 2 ]] && ok "SHA が同じでも別ブランチの記録を一致へ昇格しない" || bad "別ブランチ・同一 SHA で exit ${RC}（期待 2）"
+
+# detached checkout は名前付きブランチの不一致とは断定できない。
+git_q checkout -q --detach "$C2" >/dev/null 2>&1
+run_check --remote-head "$C3"
+[[ "$RC" -eq 1 ]] && ok "detached checkout でも既存の分岐保護を維持する" || bad "detached checkout で exit ${RC}（期待 1）"
+out_has "$OUT" "RELATION=divergent" "detached checkout を別ブランチ扱いしない"
+git_q checkout -q "$BRANCH_A" >/dev/null 2>&1
+
+# 古い/不明なブランチ情報も、別ブランチだと断定して不一致を格下げしない。
+BRANCH_REC="$WORK/branch-record"
+for _branch_value in '' HEAD '(unknown)'; do
+  printf 'RECORD_VERSION=1\nSTATUS=pass\nCOMMIT=%s\nDIRTY=no\nBRANCH=%s\n' "$C2" "$_branch_value" > "$BRANCH_REC"
+  run_check --remote-head "$C3" --record "$BRANCH_REC"
+  [[ "$RC" -eq 1 ]] && ok "BRANCH=${_branch_value:-空} でも分岐保護を維持する" || bad "BRANCH=${_branch_value:-空} で exit ${RC}（期待 1）"
+  out_has "$OUT" "RELATION=divergent" "BRANCH=${_branch_value:-空} を別ブランチと断定しない"
+done
+printf 'RECORD_VERSION=1\nSTATUS=pass\nCOMMIT=%s\nDIRTY=no\n' "$C2" > "$BRANCH_REC"
+run_check --remote-head "$C3" --record "$BRANCH_REC"
+[[ "$RC" -eq 1 ]] && ok "BRANCH 欠落でも分岐保護を維持する" || bad "BRANCH 欠落で exit ${RC}（期待 1）"
+out_has "$OUT" "RELATION=divergent" "BRANCH 欠落を別ブランチと断定しない"
 
 # --- 不一致: リモートのコミットが手元に無い ---
 ABSENT="0123456789abcdef0123456789abcdef01234567"
@@ -797,6 +841,10 @@ contains "$WORKFLOW" "同じコミットに全件緑の記録が既にあれば�
 # 前後を含めた形で拾わないと片方だけ古くなっても緑のままになる）。
 contains "$SKILL" "直近のゲートが赤い / 記録が部分実行である" \
   "close-issue の判定不能 原因列挙に部分実行が入っている"
+contains "$SKILL" "記録が無い / 別ブランチの記録 / 汚れた木で測った" \
+  "close-issue の判定不能 原因列挙に別ブランチの記録が入っている"
+contains "$SKILL" '記録の `BRANCH` が現在の名前付きブランチと異なる場合は、コミット照合より前に **`UNDETERMINED`（exit 2）**' \
+  "close-issue が別ブランチの記録をコミット比較前に分離することを述べている"
 # 実際に「マージを止める」のは SKILL の case 節である（スクリプトの exit 1 ではない）。
 # 散文の針だけだと `1)` から exit 1 を落としても全部緑のままなので、節を切り出して
 # 分岐の実体を見る。

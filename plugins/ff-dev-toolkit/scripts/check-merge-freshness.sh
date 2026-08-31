@@ -58,7 +58,7 @@
 # 終了コード（呼び出し側の扱いを分けるため 判定不能 と 検査不成立 を区別する）:
 #   0 = 一致（実測対象 == リモート先端）。**無出力**でマージへ進む
 #   1 = 不一致。マージを止め、取り込んで測り直す
-#   2 = 判定不能（記録が無い / 汚れた木で測った / **部分実行の記録である** /
+#   2 = 判定不能（記録が無い / 別ブランチの記録 / 汚れた木で測った / **部分実行の記録である** /
 #       記録の内容を信頼できない）。マージは止めないが、「実測対象を特定できないため
 #       マージ前の再実行を推奨」と **完了報告へ明示する**。静かに素通りさせないことが
 #       この終了コードの役割
@@ -229,6 +229,7 @@ if [[ -z "$MEASURED" ]]; then
   RECORD_STATUS="$(sed -n 's/^STATUS=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
   RECORD_DIRTY="$(sed -n 's/^DIRTY=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
   RECORD_COMMIT="$(sed -n 's/^COMMIT=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
+  RECORD_BRANCH="$(sed -n 's/^BRANCH=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
   RECORD_GATE="$(sed -n 's/^GATE=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
   RECORD_AT="$(sed -n 's/^RECORDED_AT=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
   # 部分実行の報告材料。**判定には使わない**（MODE を判定に混ぜない契約はヘッダ参照）。
@@ -277,6 +278,18 @@ if [[ -z "$MEASURED" ]]; then
   esac
 
   MEASURED="$RECORD_COMMIT"
+
+  # 別ブランチの古い記録は「同じブランチへの実測後の push」の証拠ではない。
+  # SHA の一致・関係分類より前に分離する（同じ SHA でも別ブランチなら判定不能）。
+  # 記録の HEAD / (unknown) や detached checkout は別ブランチと断定できないので、
+  # 従来のコミット照合を維持する。--measured 明示時はこの記録経路を通らない。
+  CURRENT_BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  if [[ -n "$CURRENT_BRANCH" && -n "$RECORD_BRANCH" \
+    && "$RECORD_BRANCH" != "HEAD" && "$RECORD_BRANCH" != "(unknown)" \
+    && "$RECORD_BRANCH" != "$CURRENT_BRANCH" ]]; then
+    undetermined "記録は別ブランチのものです（記録: ${RECORD_BRANCH} / 現在: ${CURRENT_BRANCH}）" \
+                 "現在のブランチでゲートを再実行して記録を更新すること。別ブランチの記録だけでは実測後の push を判定できないため、マージは止めないが判定不能として報告すること"
+  fi
 fi
 
 # ---- 一致判定 ---------------------------------------------------------------
