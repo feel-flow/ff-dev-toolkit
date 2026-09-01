@@ -35,7 +35,9 @@ multi-agent.sh --task review|explore|implement [options]
 
 コード変更を分析し、問題を検出する read-only タスク。
 
-| Perspective          | デフォルトCLI | 内容                   |
+下表の CLI は **distributed モードでの所有 CLI**（分散プランの割当）。review 既定の pair モードでは主レビュワーが全 review 観点を担当するため、この割当は distributed モードでのみ効く。
+
+| Perspective          | distributed 所有 CLI | 内容                   |
 | -------------------- | ------------- | ---------------------- |
 | type-design-analysis | claude-code   | 型設計分析             |
 | code-review          | codex-cli     | コードレビュー         |
@@ -44,6 +46,7 @@ multi-agent.sh --task review|explore|implement [options]
 | comment-analysis     | claude-code   | コメント分析           |
 | security-analysis    | grok-cli      | セキュリティ分析       |
 | code-simplification  | claude-code   | コード簡素化           |
+| acceptance-criteria  | codex-cli     | 受け入れ条件（GWT/DoD）照合 |
 
 ### Explore（探索）
 
@@ -108,7 +111,7 @@ ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_RO
 | `--description`           | タスク説明                              | (explore/implementで必須) |
 | `--cli <name>`            | 特定CLIのみ実行                         | 全CLI                     |
 | `--perspective <name>`    | 特定perspectiveのみ。distributed では所有CLIだけが残る | 全perspective             |
-| `--strategy`              | balanced/minimize_cost/maximize_quality（明示 `--cli` は置換しない） | タスク別                  |
+| `--strategy`              | balanced/minimize_cost/maximize_quality（明示 `--cli` は置換しない。minimize_cost の振替は分散プラン専用で、pair モードでは適用されず通知のみ。左記 3 値以外は typo とみなし dry-run でも非 0 で拒否 — フラグ・設定ファイルどちらの経路でも、値の出所付きでエラーになる） | タスク別                  |
 | `--mode`                  | distributed/cross-model                 | distributed               |
 | `--parallel/--sequential` | 実行方式                                | parallel                  |
 | `--include-diff`          | implementにdiffを含める                 | false                     |
@@ -186,7 +189,33 @@ cross-model コマンドを表示します。
 - **Implement**: ステージングディレクトリ出力（ワーキングツリー直接書き込み禁止）
 - **Fallback（プラン構築時のみ）**: CLI未インストール時は自動的に代替CLIへ再分配
 - **実行時 fallback は無し**: インストール済み CLI がエラー／タイムアウトしても別 CLI へ振り替えず、失敗として報告して非 0 終了する。クロスモデル性が黙って変わること・代替先のコスト帯が上がりうること・タイムアウト再試行が同じ制限時間を再消費することを避けるため。部分出力は `Status: incomplete` 付きで保存し、統合レポートに `INCOMPLETE` を明示する（未完了の節は「指摘なし」ではなく「未確認」）
-- **Cost Strategy**: minimize_cost で premium CLI を flat-rate CLI に自動振り替え
+- **Cost Strategy**: minimize_cost で premium CLI を flat-rate CLI に自動振り替え（分散プランのみ。pair モードのレビュワーは設定済みの主・副で固定のため振替は適用されず、適用されない旨と代替手段（`--set-reviewers` で安い CLI を選ぶ / `--mode distributed`）をプラン構築時に stderr へ通知する — プランは変えない）
+
+## 長時間タスクの委譲契約（こまめコミット）
+
+長時間・大規模なタスクを、ブランチ上で作業するエージェント（ホストの subagent /
+worktree 委譲など）へ委譲するときの契約。本節が正本で、他文書はここを参照する
+（複製しない）。
+
+背景（実測）: 大規模タスク（15 ファイル規模）を委譲したエージェントが 600 秒
+ストールし、ブランチはコミットゼロで成果全損した。再開時に「論理的なまとまり
+ごとに commit + push」を委譲プロンプトへ明記しフェーズ分割したところ、打ち切り
+時点までの成果がブランチに残るようになった。
+
+1. **委譲プロンプトに「論理的なまとまりごとに commit + push」を明記する**。
+   1 つの巨大 commit を目指させない — ストール・タイムアウトで打ち切られても、
+   そこまでの成果がブランチに残る形にする。
+2. **タスクが大きい場合はフェーズ分割する**。切り口は「後段が前段の決定に
+   依存する」順（例: 機構 → その機構が確定させた文言を写す文書）。フェーズ境界が
+   commit 境界の下限になる。
+3. **ストール再開時は、まずブランチにコミットが積まれているかを確認する**。
+   積まれていれば引き継ぐ。コミットゼロでも空ブランチとは限らない — 削除の前に
+   作業ツリーの未コミット変更・未追跡ファイルを確認し、残っていれば退避
+   （`git stash` またはパッチ保存）してから削除する。何も残っていなければ
+   空ブランチを削除してクリーンに再開する。
+
+なお `multi-agent.sh` の implement 経路は staging 出力で、委譲された CLI 自身は
+git を書かない。その経路では 1 と 3 は適用外だが、2 のフェーズ分割は同じく適用する。
 
 ## Perspective 作成ガイド
 

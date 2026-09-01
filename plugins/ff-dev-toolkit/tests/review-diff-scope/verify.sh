@@ -38,6 +38,11 @@ REVIEW_PERSPECTIVES_DIR="$PLUGIN_ROOT/scripts/perspectives/review"
   exit 1
 }
 
+# unset_prompt_env_vars（gen_prompt の環境分離）のために source する。本 suite は
+# サブプロセスを分離起動しないので build_isolate_env / run_isolated は使わない。
+# shellcheck source=../lib/adapter-env-isolation.sh
+. "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
+
 # mktemp の stderr を捨てない（read-only 以外の失敗理由を「書き込み不可」へ
 # 誤帰属させない）。失敗時は suite 全体を skip する。
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で
@@ -137,14 +142,13 @@ PERSPECTIVE="$TMP/perspective.md"
 printf '%s\n' '# Fixture Perspective' 'PERSPECTIVE-CONTENT-MARKER' > "$PERSPECTIVE"
 
 # adapter-prompt-guard と同じ経路で build_prompt をサブシェル直呼びする。
-# DIFF_FILE / STAGED_DIFF / INCLUDE_DIFF は利用者の環境から漏れると diff の取得元や有無が
-# 変わってしまうため明示的に unset する（本 suite は自前リポジトリの diff を前提にする）。
-# INCLUDE_DIFF は #564 のレビューで気付いた非対称の解消で、漏れると implement プロンプトへ
-# 本来無い diff 節が生える。CHANGED_FILES は build_prompt が位置引数から束縛しており環境からは
-# 読まれないが、将来環境を読む形へ戻ったときのための予防として併せて落とす。
+# プレフィックスを持たない build_prompt の入力（DIFF_FILE 等）は、lib の
+# unset_prompt_env_vars で落とす（名簿は lib の 1 箇所だけ。Issue #769）。漏れると
+# diff の取得元や有無が変わってしまう（本 suite は自前リポジトリの diff を前提にする。
+# INCLUDE_DIFF の漏れは implement プロンプトへ本来無い diff 節を生やす — #564）。
 gen_prompt() { # $1: task_type / $2: inline_output / $3: description / stdout: プロンプト
   (
-    unset DIFF_FILE STAGED_DIFF INCLUDE_DIFF CHANGED_FILES
+    unset_prompt_env_vars
     TASK_TYPE="$1"
     if [ "$#" -ge 3 ]; then DESCRIPTION="$3"; else DESCRIPTION="fixture task"; fi
     STAGING_DIR=""

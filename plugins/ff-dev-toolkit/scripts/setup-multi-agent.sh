@@ -754,6 +754,65 @@ print_summary() {
 #
 # INSTALL_WRAPPERS_TARGET を設定すると配置先を差し替えられる（テスト用の seam）。
 # 未設定なら CWD（= 消費プロジェクトのルート想定）。
+
+# 候補が「本当に使えるオーケストレータか」まで見る（Issue #658）。存在（-f）だけを
+# 見ると、0 バイトのファイルや無関係なスクリプトでもサイドカーへ記録され、解決不能は
+# シム実行時に初めて露見する。判定の語彙はシム（templates/codex-review.sh の
+# usable_orchestrator）の上位集合にする — setup 側が**厳しい**分には安全（記録しない
+# だけ）だが、逆（setup は記録するがシムは拒否する）は解決不能な値を配る。シム側を
+# 同時に強めると既存配置の解決を壊しうるため、あちらの語彙は変えない。
+setup_usable_orchestrator() {
+    local f="$1"
+    [ -f "$f" ] && [ -r "$f" ] && [ -s "$f" ] || return 1
+    # オーケストレータであることの印。--task / implement（シムと同じ 2 語）に加え、
+    # 観点フィルタの中核フラグ --perspective を要求する。2 語だけだと、両語を
+    # コメントに含むだけの無関係スクリプトを usable と誤認する（レビュー実測）。
+    grep -q -- "--task" "$f" && grep -q -- "implement" "$f" \
+        && grep -q -- "--perspective" "$f"
+}
+
+# 行末の CR **だけ**を落とす（stdin → stdout）。`tr -d '\r'` は行末以外の本文中 CR も
+# 消すため、CR をデータとして含む内容同士を「同一」と誤判定し、配置時にはデータを
+# 破壊する（実測: 'foo\rbar' と 'foobar' が一致判定になった）。sed の $ は最終行に
+# 改行が無くても行末に一致し、BSD/GNU とも末尾改行を付け足さない（実測）。
+setup_strip_cr() {
+    sed $'s/\r$//'
+}
+
+# 記録しようとしているパスが揮発領域（Temp）配下かを判定する（Issue #658）。
+# Temp 上の作業コピーから setup を実行すると、配置直後は動くが Temp 清掃で
+# サイドカーの参照先だけが消え、シムが後日静かに壊れる（実測インシデント:
+# サイドカーが %TEMP% 配下を指したまま清掃され、レビューが解決不能になった）。
+# 判定は既知の Temp ルート（macOS の /var/folders、/tmp、/private/tmp）と
+# 環境変数（TMPDIR / TEMP / TMP）への前方一致。実在するルートは物理パスへ
+# 正規化してから比べる（macOS の /tmp と /var は symlink のため）。
+toolkit_path_is_volatile() {
+    local path="$1" phys candidate candidate_phys
+    # 与えられた形と物理形の**両方**で照合する。パスが実在しないと物理化できず、
+    # 片側だけの比較は symlink（/tmp → /private/tmp 等）か非実在のどちらかを取りこぼす。
+    phys="$(cd "$path" 2>/dev/null && pwd -P)" || phys="$path"
+    local candidates=(/tmp /private/tmp /var/folders)
+    local raw
+    for raw in "${TMPDIR:-}" "${TEMP:-}" "${TMP:-}"; do
+        # 末尾スラッシュをすべて剥がし、空と「/」は候補にしない。空の候補は case
+        # パターンが "/*" に退化して**あらゆる絶対パスを揮発と誤判定**する
+        # （実測: TMPDIR=/ で /opt 配下が VOLATILE 判定になった）。
+        while [ "${raw%/}" != "$raw" ]; do raw="${raw%/}"; done
+        [ -n "$raw" ] || continue
+        candidates+=("$raw")
+    done
+    for candidate in "${candidates[@]}"; do
+        candidate_phys="$(cd "$candidate" 2>/dev/null && pwd -P)" || candidate_phys="$candidate"
+        case "$phys" in
+            "$candidate"|"$candidate"/*|"$candidate_phys"|"$candidate_phys"/*) return 0 ;;
+        esac
+        case "$path" in
+            "$candidate"|"$candidate"/*|"$candidate_phys"|"$candidate_phys"/*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
 install_review_wrappers() {
     # 配置先は git のトップレベルを優先する。$PWD をそのまま使うと、リポジトリの
     # サブディレクトリから setup を実行したときに <subdir>/scripts/ へ落とし、
@@ -767,17 +826,31 @@ install_review_wrappers() {
 
     print_step 5 "レビューラッパー（シム）を配置中..."
 
-    if [ ! -f "$src" ]; then
-        print_error "同梱シムが見つかりません: ${src}"
+    # -f だけでなく -r / -s まで関門する（sidecar 記録の関門と同じ語彙）。読めない・
+    # 空のテンプレートを後段の正規化比較へ通すと、正規化の失敗が「両側空 = 一致」に
+    # 化けて「最新です」と誤報告する（実測）。
+    if [ ! -f "$src" ] || [ ! -r "$src" ] || [ ! -s "$src" ]; then
+        print_error "同梱シムが見つからない・読めない・または空です: ${src}"
+        print_info "既存の codex-review.sh とサイドカーは変更していません。"
         return 1
     fi
-    if [ ! -f "${SCRIPT_DIR}/multi-agent.sh" ]; then
-        print_error "multi-agent.sh が見つかりません: ${SCRIPT_DIR}/multi-agent.sh"
+    # 実在だけでなく usable かまで検証してから記録する（Issue #658）。ここが通れば、
+    # 後段で常に行うサイドカーの書き直しは「使えるオーケストレータを指す値」で行われる。
+    if ! setup_usable_orchestrator "${SCRIPT_DIR}/multi-agent.sh"; then
+        print_error "使える multi-agent.sh がありません: ${SCRIPT_DIR}/multi-agent.sh"
+        print_info "0 バイト・読み取り不能・オーケストレータ以外のファイルはサイドカーへ記録しません。既存のサイドカーは変更していません。"
         return 1
     fi
     if ! mkdir -p "$dest_dir"; then
         print_error "配置先ディレクトリを作成できません: ${dest_dir}"
         return 1
+    fi
+    # 揮発パスは記録自体は行う（この場で動くことは確か）が、後日の静かな破壊を
+    # 予告する（Issue #658）。警告なしだと、Temp 清掃後に「配置直後は動いたのに」
+    # という形で原因から最も遠い時点で壊れる。
+    if toolkit_path_is_volatile "$SCRIPT_DIR"; then
+        print_warning "toolkit が一時領域（Temp）配下から実行されています: ${SCRIPT_DIR}"
+        print_info "この場所をサイドカーへ記録すると、Temp 清掃で参照先が消えて codex-review.sh が解決できなくなります。正規インストール（plugin cache 等）から setup を再実行してください。"
     fi
 
     # オーケストレータの場所はサイドカー（素のデータ 1 行）に書く。シムへ焼き込むと
@@ -785,12 +858,61 @@ install_review_wrappers() {
     # 環境や CI で壊れる、(2) toolkit 更新のたび内容が変わり冪等比較が毎回不一致に
     # なって利用者の .bak を上書きし続ける、(3) 生成物がシェルコードなのでパスの
     # & や $ や " が構文を壊す（実測）。データなら 3 つとも起きない。
-    local shim_changed=true
+    # skip はシムの**再配置だけ**を省略する。サイドカーの検証・書き直しは後段で常に
+    # 行う（Issue #658）— シムが同一バイトのとき早期 return すると、stale なサイドカーが
+    # 「最新です」の報告とともに残り、シムの解決失敗メッセージが案内する
+    # 「setup を再実行してください」が no-op になる。
+    #
+    # 比較は行末を正規化して行う（Issue #658）。Windows の plugin cache はテンプレートを
+    # CRLF で持つことがあり、byte 比較だと LF で配置済みの同一シムが毎回「変更あり」に
+    # なる — tracked な scripts/codex-review.sh が CRLF で上書きされて全行 diff になり、
+    # .bak / .bak.N が実行のたびに増える（実測）。
+    local shim_changed=true shim_normalize_only=false
     if [ -f "$dest" ]; then
-        if cmp -s "$src" "$dest"; then
-            shim_changed=false
-            print_info "codex-review.sh は最新です（スキップ）: ${dest}"
+        # dest の可読性も比較の前提として関門する。process substitution 内の失敗は
+        # cmp の rc に伝播せず、両側が読めないと「両側とも空 = 一致（rc=0）」となって
+        # 壊れた前提のまま「最新です」と誤報告する（実測: 読めない src vs 空 dest で
+        # cmp -s が 0 を返した）。
+        if [ ! -r "$dest" ]; then
+            print_error "既存の codex-review.sh を読めないため、テンプレートと比較できません: ${dest}"
+            print_info "権限を確認してから setup を再実行してください。既存の ${dest} とサイドカーは変更していません。"
+            return 1
         fi
+        # 正規化は一時ファイルへ書き、**書けたことを確認してから**比較する
+        # （procsub のままだと正規化の失敗を検出できない）。
+        local norm_src="${dest}.normsrc.$$" norm_dest="${dest}.normdest.$$"
+        trap 'rm -f "$norm_src" "$norm_dest"' EXIT INT TERM
+        if ! setup_strip_cr <"$src" >"$norm_src" \
+           || ! setup_strip_cr <"$dest" >"$norm_dest"; then
+            rm -f "$norm_src" "$norm_dest"
+            trap - EXIT INT TERM
+            print_error "行末正規化に失敗したため、テンプレートと比較できません: ${dest}"
+            print_info "既存の ${dest} とサイドカーは変更していません。"
+            return 1
+        fi
+        if cmp -s "$norm_src" "$norm_dest"; then
+            shim_changed=false
+            # 内容が同一でも dest 自体が CRLF なら LF へ書き直す（自己修復）。正規化
+            # 比較の導入で byte 比較が持っていた置き直し経路まで消すと、
+            # `set: pipefail: invalid option name`（rc=1）で壊れた CRLF 配置済みシムが
+            # 「最新です」のまま恒久放置される（実測）。判定は dest と dest の正規化
+            # 結果の比較で行う — src 側だけが CRLF（Windows cache + LF 配置済み）の
+            # 正規構成では書き直さない（毎回の再書き込みは mtime を汚すだけ）。
+            if cmp -s "$dest" "$norm_dest"; then
+                print_info "codex-review.sh は最新です（スキップ）: ${dest}"
+            else
+                shim_normalize_only=true
+                print_info "codex-review.sh の内容は最新ですが行末が CRLF のため、LF へ正規化して書き直します: ${dest}"
+            fi
+        fi
+        rm -f "$norm_src" "$norm_dest"
+        trap - EXIT INT TERM
+    fi
+    # 書き込みが要るのは「内容が変わった」か「行末だけ直す」のどちらか。後者は
+    # 内容同一なので .bak は作らない（退避すべき利用者の編集が存在しない）。
+    local shim_write=false
+    if [ "$shim_changed" = true ] || [ "$shim_normalize_only" = true ]; then
+        shim_write=true
     fi
     if [ "$shim_changed" = true ] && [ -f "$dest" ]; then
         # 退避先は使い回さない。固定の .bak だと 2 回目の上書きで利用者の元ファイルが
@@ -820,13 +942,16 @@ install_review_wrappers() {
     # 実測: cp の途中で SIGTERM を送ると codex-review.sh.tmp.<pid> が残り、
     # 再実行のたび PID 違いで増えていった。各失敗経路の rm だけでは信号を捕まえられない。
     trap 'rm -f "$tmp" "$sidecar_tmp"' EXIT INT TERM
-    if [ "$shim_changed" = true ] && ! cp "$src" "$tmp"; then
+    # 配置は LF へ正規化して書く（Issue #658、行末の CR のみ）。CRLF のまま置くと、
+    # git 管理下の scripts/ が CRLF バイトで汚れ、次回以降の LF テンプレートとの
+    # 比較も崩れる。
+    if [ "$shim_write" = true ] && ! setup_strip_cr <"$src" >"$tmp"; then
         rm -f "$tmp"
         print_error "配置用の一時ファイルを作成できません: ${tmp}"
         print_info "既存の ${dest} は変更していません。"
         return 1
     fi
-    if [ "$shim_changed" = true ] && ! chmod +x "$tmp"; then
+    if [ "$shim_write" = true ] && ! chmod +x "$tmp"; then
         rm -f "$tmp"
         print_error "実行権限を付与できません: ${tmp}"
         print_info "既存の ${dest} は変更していません。"
@@ -838,7 +963,7 @@ install_review_wrappers() {
         print_info "既存の ${sidecar} は変更していません。"
         return 1
     fi
-    if [ "$shim_changed" = true ] && ! mv "$tmp" "$dest"; then
+    if [ "$shim_write" = true ] && ! mv "$tmp" "$dest"; then
         rm -f "$tmp" "$sidecar_tmp"
         print_error "配置に失敗しました: ${dest}"
         print_info "既存の ${dest} は変更していません。"
@@ -857,6 +982,8 @@ install_review_wrappers() {
     trap - EXIT INT TERM
     if [ "$shim_changed" = true ]; then
         print_success "codex-review.sh を配置しました: ${dest}"
+    elif [ "$shim_normalize_only" = true ]; then
+        print_success "codex-review.sh の行末を LF へ正規化しました（内容は同一のため .bak は作りません）: ${dest}"
     fi
     print_info "toolkit パスを記録しました: ${sidecar}"
     print_info "${sidecar} はマシン固有です。git 管理下なら .gitignore へ追加してください。"
@@ -884,10 +1011,22 @@ main() {
     fi
     detect_ai_clis
     show_install_guides
-    install_review_wrappers || print_warning "レビューラッパーの配置に失敗しました（セットアップは続行します）"
+    # 失敗しても残りの検証・診断は流す（利用者が状況を一度に把握できるように）が、
+    # 最終 rc へは**必ず伝播させる**（Issue #658 レビュー）。warning に変換して rc=0
+    # 「セットアップ完了」で終えると、unusable な multi-agent.sh の検出（fail-closed）が
+    # main 経由の正規実行では無効化される。
+    local wrappers_rc=0
+    if ! install_review_wrappers; then
+        wrappers_rc=1
+        print_warning "レビューラッパーの配置に失敗しました（残りの検証は続行します）"
+    fi
     run_verification
     check_config
     print_summary
+    if [ "$wrappers_rc" -ne 0 ]; then
+        print_error "レビューラッパーの配置に失敗しているため、セットアップを失敗（非 0）として終了します。上記のエラーを解消して再実行してください。"
+        return 1
+    fi
 }
 
 # 直接実行時だけ main を走らせる（テストから関数を source できるようにする）

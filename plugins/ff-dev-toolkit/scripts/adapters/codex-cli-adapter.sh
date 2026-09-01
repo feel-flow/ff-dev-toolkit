@@ -96,9 +96,13 @@ fi
 # while keeping the network shut — which is what the old `network-off` value was
 # reaching for. On the **write axis** it is the direct counterpart of grok's
 # `workspace` profile. Do not read that as full parity: grok's `--help` says its
-# profiles govern "filesystem and network access", but grok's network behaviour
-# under `workspace` has never been measured here, so the two adapters are only
-# known to agree about writes.
+# profiles govern "filesystem and network access", but on the network axis the
+# two adapters MEASURABLY DIVERGE (Issue #897, measured 2026-09-01 on grok
+# 0.2.118 / macOS): grok's `workspace` runs with outbound network OPEN — and
+# even its read-only profile, which records restrict_network:true, does not
+# block outbound HTTPS there. The agreement between the adapters is about
+# writes only; see grok-cli-adapter.sh and tests/adapter-sandbox-contract's
+# README for the measurement record.
 #
 # The network default is not left to chance: implement also pins
 # `-c sandbox_workspace_write.network_access=false` (see sandbox_config_args).

@@ -41,12 +41,21 @@
 # 未対応のオプションは非 0 で拒否し、正規の経路を案内する。旧ラッパーの環境変数は、
 # 写せるものは写して 1 行通知し、写せないものだけ拒否する（下記）。
 #
+# 未知フラグの扱いは **allowlist 方式**（汎用パススルーにしない。Issue #970 の判断）。
+# 素通しにすると、シムが写像を持つ名前（--reviewers 等）と委譲先の生名が二重経路に
+# なって「どちらが解釈したか」が判別できなくなり、委譲先に無いフラグはオーケストレータ
+# 側の Unknown option（rc=1）で落ちる — 出るのは multi-agent.sh 自身の generic な
+# usage 案内だけで、シム経路への案内は出ない。ここで拒否して --help と
+# multi-agent.sh 直呼びを案内する方が、黙って既定で走るよりも汎用素通しよりも安全。
+# 委譲先がフラグを足したら、必要になった時点でこの allowlist に足す。
+#
 # ## 使い方
 #
 #   bash scripts/codex-review.sh [--base <branch> | --staged] [--reviewers a,b,c]
-#                                [--exclude-reviewers a,b,c] [--list-reviewers]
-#                                [--review-context-file <path>]
-#                                [--timeout <秒>] [--dry-run] [--fresh]
+#                                [--exclude-reviewers a,b,c] [--all-perspectives]
+#                                [--list-reviewers] [--review-context-file <path>]
+#                                [--timeout <秒>] [--mode <mode>] [--dry-run]
+#                                [--fresh] [--resume]
 #
 #   SKIP_CODEX_REVIEW=1  レビューを実行せず成功終了する（pre-commit の逃がし弁）
 #
@@ -114,6 +123,22 @@ SCRIPT_NAME="$(basename "$0")"
 # 診断はこの事実に合わせること — 「サイドカーには scripts/ を書く」のような
 # 片側だけの案内は事実に反し、利用者を存在しない設定ミスの修正へ誘導する。
 FF_ROOT_SIDECAR_NAME=".ff-dev-toolkit-root"
+# サイドカーの位置は 1 箇所で組む。$0 は実行中に変わらないので再計算する理由が無く、
+# 式を関数ごとに複製すると、配置規約を変えたとき片方だけ追従する形が生まれる
+# （Issue #769 項目 2）。
+FF_ROOT_SIDECAR_PATH="$(dirname "$0")/${FF_ROOT_SIDECAR_NAME}"
+
+# サイドカーの 1 行目を**生の値**で返す（既定値・表示用の置換は呼び出し側の責務）。
+# read は末尾に改行が無いファイルで「値を代入したうえで EOF により非 0」を返す。
+# その非 0 で `|| value=""` と空へ倒すと、手書きの使えるサイドカーを「使えない」と
+# 誤判定する（Issue #807 で 2 箇所直した当のバグ）。読み取りを 1 本に寄せるのは、
+# 同型の分岐が将来また片方だけ直る余地を消すため（Issue #769 項目 2）。
+# 空ファイル・読めないファイルでは空を出力する（存在・権限の検査は呼び出し側で行う）。
+read_sidecar_first_line() {
+  local value=""
+  IFS= read -r value < "$1" || true
+  printf '%s\n' "$value"
+}
 
 # 期待するパスの形を 1 か所で持つ。診断が「指す先に multi-agent.sh がありません」で
 # 止まると、利用者は scripts/ を足すのか外すのかが判らず、設定ミスの解消に何往復も
@@ -186,7 +211,13 @@ select_cache_toolkit() {
 verify_toolkit_identity() {
   local root="$1" version="$2" config_version template
   template="$root/scripts/templates/codex-review.sh"
-  if [ ! -r "$template" ] || ! cmp -s "$0" "$template"; then
+  # 比較は行末を正規化して行う（Issue #658）。Windows の plugin cache はテンプレートを
+  # CRLF で持つことがあり、setup は配置時に LF へ正規化する。byte 比較のままだと、
+  # 内容が同一の正規構成（CRLF cache + LF 配置済みシム）を「版が一致しません」で
+  # 拒否してレビューが 1 件も走らない。正規化は**行末の CR だけ**を落とす —
+  # `tr -d '\r'` は本文中の CR も消すため、CR の有無だけ違う別内容を同一版と
+  # 誤認する（setup 側 setup_strip_cr と同じ判定）。
+  if [ ! -r "$template" ] || ! cmp -s <(sed $'s/\r$//' "$0") <(sed $'s/\r$//' "$template"); then
     echo "ERROR: 解決した ff-dev-toolkit と配置済み shim の版が一致しません。" >&2
     echo "       toolkit=${root} version=${version}" >&2
     echo "       bash ${root}/scripts/setup-multi-agent.sh を再実行してください。" >&2
@@ -254,11 +285,9 @@ resolve_toolkit() {
     return $?
   fi
 
-  sidecar="$(dirname "$0")/${FF_ROOT_SIDECAR_NAME}"
+  sidecar="$FF_ROOT_SIDECAR_PATH"
   if [ -f "$sidecar" ]; then
-    # read は「値を代入したうえで EOF により非 0」を返す（末尾に改行が無いファイル）。
-    # その非 0 を「読めなかった」と同一視して空へ倒すと、手書きのサイドカーが解決できない。
-    IFS= read -r sidecar_value < "$sidecar" || true
+    sidecar_value="$(read_sidecar_first_line "$sidecar")"
     if [ -n "$sidecar_value" ] && root="$(canonical_toolkit_root "$sidecar_value")"; then
       version="$(toolkit_manifest_version "$root" 2>/dev/null || true)"
       [ -n "$version" ] || { echo "ERROR: sidecar が指す toolkit の version を読めません: $root" >&2; return 2; }
@@ -273,17 +302,16 @@ resolve_toolkit() {
 sidecar_recorded_value() {
   # 記録値そのものを診断へ出す。パスの形の違いは「何が書いてあるか」を見せないと
   # 判断できない。空行・欠落は空文字ではなく明示の印にする（診断が黙って欠ける形になるため）。
-  # read は最終行に改行が無い / 空ファイルで非 0 を返す。set -e 下でそのまま置くと診断の
-  # 途中で死ぬので非 0 は受け流すが、**値は捨てない** — 末尾に改行が無いだけのファイルを
-  # (empty) と報告すると、診断が最も要る手設定の場面で嘘をつくことになる。読めない場合は
-  # 空と区別する（cat も失敗する状況なので、利用者を chmod へ向ける必要がある）。
+  # 生の読み取りは read_sidecar_first_line に一本化し、ここは診断用の既定値
+  # （(empty) / 読み取り権限なし）の付与だけを担う。読めない場合は空と区別する
+  # （cat も失敗する状況なので、利用者を chmod へ向ける必要がある）。
   local sidecar="$1" value=""
   if [ -f "$sidecar" ]; then
     if [ ! -r "$sidecar" ]; then
       printf '%s\n' "(読み取り権限がありません)"
       return 0
     fi
-    IFS= read -r value < "$sidecar" || true
+    value="$(read_sidecar_first_line "$sidecar")"
   fi
   [ -n "$value" ] || value="(empty)"
   printf '%s\n' "$value"
@@ -307,22 +335,27 @@ warn_env_masked_sidecar() {
   # 両者が食い違うのが普通。鳴らすのは「env の無い次のシェルで確実に失敗する値」だけ。
   #
   # 判定は canonical_toolkit_root（= 使えるオーケストレータを指しているか）までで、版や
-  # 配置済みテンプレートの同一性（verify_toolkit_identity）は見ない。そこまで見ると、
-  # テンプレートを編集中の開発 clone を指すサイドカーで毎回鳴ることになり、上で避けたはずの
-  # «常時鳴る警告» を自分で作る。この境界の外（版不一致の覆い隠し）は告知の対象外である。
+  # 配置済みテンプレートの同一性（verify_toolkit_identity）は見ない。**据え置きの判断**
+  # （Issue #769 項目 4 で再確認。結論と根拠の正本は Issue #742 のレビューコメント）:
+  # そこまで見ると、テンプレートを編集中の開発 clone を指すサイドカーで毎回鳴ることになり、
+  # 上で避けたはずの «常時鳴る警告» を自分で作る。この境界の外（版不一致の覆い隠し）は
+  # 告知の対象外である。
   #
   # 告知であって上書きではないので rc は変えない。
-  local sidecar sidecar_value
+  local sidecar_value
   [ "$RESOLVED_TOOLKIT_SOURCE" = "explicit" ] || return 0
-  sidecar="$(dirname "$0")/${FF_ROOT_SIDECAR_NAME}"
-  [ -f "$sidecar" ] || return 0
-  IFS= read -r sidecar_value < "$sidecar" || sidecar_value=""
+  [ -f "$FF_ROOT_SIDECAR_PATH" ] || return 0
+  # 生の読み取りは read_sidecar_first_line に一本化（末尾改行なしの非 0 で値を捨てて
+  # いた Issue #807 の誤警告は、あちらのコメントを参照）。空ファイル・読み取り不能では
+  # 空が返るため、従来どおり警告になる。
+  sidecar_value="$(read_sidecar_first_line "$FF_ROOT_SIDECAR_PATH")"
   if [ -n "$sidecar_value" ] && canonical_toolkit_root "$sidecar_value" >/dev/null 2>&1; then
     return 0
   fi
   echo "WARNING: 今回は FF_DEV_TOOLKIT_ROOT で解決しましたが、サイドカーは使える toolkit を指していません。" >&2
-  echo "         サイドカー: ${sidecar}" >&2
-  echo "         記録値: $(sidecar_recorded_value "$sidecar")" >&2
+  echo "         サイドカー: ${FF_ROOT_SIDECAR_PATH}" >&2
+  echo "         記録値: $(sidecar_recorded_value "$FF_ROOT_SIDECAR_PATH")" >&2
+  echo "         サイドカーはマシン固有のファイルです。配置先が git 管理下なら ${FF_ROOT_SIDECAR_NAME} を .gitignore へ追加してください。" >&2
   print_toolkit_path_shapes "         "
   echo "         FF_DEV_TOOLKIT_ROOT はこのシェル限りなので、export していないシェルや CI では" >&2
   echo "         plugin cache が無いかぎり失敗します。" >&2
@@ -345,18 +378,17 @@ set_resolved_toolkit() {
 }
 
 load_resolved_toolkit() {
-  local resolve_rc=0 sidecar
+  local resolve_rc=0
   resolve_toolkit || resolve_rc=$?
   if [ "$resolve_rc" -eq 2 ]; then
     return 2
   fi
   if [ "$resolve_rc" -ne 0 ]; then
-    sidecar="$(dirname "$0")/${FF_ROOT_SIDECAR_NAME}"
     echo "ERROR: multi-agent.sh が見つかりません。" >&2
-    echo "       探索順: FF_DEV_TOOLKIT_ROOT → Codex/Claude cache の最大版（同版は Codex 優先）→ ${sidecar}" >&2
-    if [ -f "$sidecar" ]; then
+    echo "       探索順: FF_DEV_TOOLKIT_ROOT → Codex/Claude cache の最大版（同版は Codex 優先）→ ${FF_ROOT_SIDECAR_PATH}" >&2
+    if [ -f "$FF_ROOT_SIDECAR_PATH" ]; then
       echo "       サイドカーは在りますが、指す先に multi-agent.sh がありません" >&2
-      echo "       記録値: $(sidecar_recorded_value "$sidecar")" >&2
+      echo "       記録値: $(sidecar_recorded_value "$FF_ROOT_SIDECAR_PATH")" >&2
       echo "       （toolkit を更新・移動した場合は setup-multi-agent.sh を再実行してください）。" >&2
     else
       echo "       サイドカーがありません。setup-multi-agent.sh を実行して配置し直すか、" >&2
@@ -380,7 +412,10 @@ ${SCRIPT_NAME} — Codex cross-model レビュー（multi-agent.sh への薄い�
                         観点をカンマ区切りで除外（--exclude-perspective へ展開される）
   --list-reviewers      利用できる review 観点を一覧表示する
   --review-context-file <path>
-                        前回レビューと通過済みゲートの証拠を review prompt へ渡す
+                        前回レビューと通過済みゲートの証拠を review prompt へ渡す。
+                        acceptance-criteria 観点向けに Issue / PR 本文の AC 記載を
+                        事前投入する経路でもある（read-only 起動では gh を呼べない
+                        ため、投入があれば観点はそれを第一の照合ソースに使う）
 
     ⚠ --reviewers / --exclude-reviewers の観点名は toolkit の perspective 名であり、旧ラッパーが使っていた
       Claude エージェント名とは**別体系**。存在しない名前は multi-agent.sh が
@@ -391,17 +426,31 @@ ${SCRIPT_NAME} — Codex cross-model レビュー（multi-agent.sh への薄い�
         旧 comment-analyzer       → comment-analysis
         旧 pr-test-analyzer       → test-analysis
         旧 code-simplifier        → code-simplification
-      実在する review 観点: code-review / code-simplification / comment-analysis /
-      comprehensive-review / error-handler-hunt / security-analysis /
-      test-analysis / type-design-analysis
+      実在する review 観点: acceptance-criteria / code-review / code-simplification /
+      comment-analysis / comprehensive-review / error-handler-hunt /
+      security-analysis / test-analysis / type-design-analysis
 
+  --all-perspectives    観点を絞らず全観点で実行する（前回レビューの Critical state を
+                        復旧するときの明示手段。--reviewers / --exclude-reviewers /
+                        --mode cross-model と排他で、CODEX_DEFAULT_REVIEWERS も無視する。
+                        注意: 設定ファイルが mode: cross-model を指定しているリポジトリ
+                        では、このフラグだけでは full review にならない — その場合は
+                        --mode distributed を併用して設定を上書きする）
+  --mode <mode>         distributed | cross-model（委譲先へそのまま渡す。設定ファイル
+                        由来の mode をコマンドラインから上書きする用途）
   --timeout <秒>        CLI ごとの制限時間
 
   上記は --opt=value 形式でも渡せる。パッケージマネージャが挟む --
   （pnpm は透過、npm は除去）は位置を問わず読み飛ばす。
   --dry-run             実行せずプランだけ表示する
   --fresh               前回の出力ディレクトリの中身を <dir>.prev-<timestamp>/ へ退避する（実行中 lock は残す）
+  --resume              前回と同一入力の成功結果を再利用し、失敗・timeout 分だけ再実行する
+                        （--fresh と排他。排他検査は委譲先が行う）
   --help                このヘルプ
+
+  ここに無いフラグは受け付けない（allowlist 方式）。黙って素通しすると、委譲先に
+  無いフラグが案内なしで落ち、シム側写像との二重解釈も生まれるため、非 0 で拒否して
+  multi-agent.sh の直呼びを案内する。
 
   SKIP_CODEX_REVIEW=1   レビューを実行せず成功終了する
 
@@ -421,6 +470,11 @@ USAGE
 # ── 引数の解釈 ──────────────────────────────────────────────────────────────────
 ORCH_ARGS=(--task review --cli codex-cli)
 REVIEWERS_GIVEN=0
+EXCLUDE_REVIEWERS_GIVEN=0
+ALL_PERSPECTIVES_GIVEN=0
+# --mode は委譲先の実在フラグ（distributed | cross-model）。値は矛盾検査
+# （--all-perspectives × cross-model）にだけ使い、委譲は verbatim。
+MODE_VALUE=""
 TIMEOUT_GIVEN=0
 LIST_ONLY=0
 # diff サイズの歯止めを測るための基準。--base が明示されたときだけ埋まる。
@@ -504,7 +558,7 @@ while [ $# -gt 0 ]; do
       # 位置は pnpm の版や呼び出し方で変わりうるので、先頭に限定せず読み飛ばす。
       shift
       ;;
-    --base=*|--timeout=*)
+    --base=*|--timeout=*|--mode=*)
       # GNU 慣用の `--opt=value`。旧ラッパーが受けていたので手順書やスクリプトに残りうる。
       _opt="${1%%=*}"
       _val="${1#*=}"
@@ -516,6 +570,7 @@ while [ $# -gt 0 ]; do
       fi
       [ "$_opt" = "--base" ] && BASE_FOR_SIZE="$_val"
       [ "$_opt" = "--timeout" ] && TIMEOUT_GIVEN=1
+      [ "$_opt" = "--mode" ] && MODE_VALUE="$_val"
       ORCH_ARGS+=("$_opt" "$_val")
       shift
       ;;
@@ -529,7 +584,7 @@ while [ $# -gt 0 ]; do
       REVIEWERS_GIVEN=1
       shift
       ;;
-    --base|--timeout)
+    --base|--timeout|--mode)
       if [ $# -lt 2 ]; then
         echo "ERROR: ${1} には値が必要です。" >&2
         usage
@@ -537,6 +592,7 @@ while [ $# -gt 0 ]; do
       fi
       [ "$1" = "--base" ] && BASE_FOR_SIZE="$2"
       [ "$1" = "--timeout" ] && TIMEOUT_GIVEN=1
+      [ "$1" = "--mode" ] && MODE_VALUE="$2"
       ORCH_ARGS+=("$1" "$2")
       shift 2
       ;;
@@ -561,6 +617,25 @@ while [ $# -gt 0 ]; do
       ORCH_ARGS+=(--fresh)
       shift
       ;;
+    --resume)
+      # 失敗・timeout からの復旧経路（成功結果を再利用して残りだけ再実行する）。
+      # 委譲先のフラグをそのまま渡す。--fresh との排他は委譲先が明確なメッセージ付きで
+      # 拒否するので、ここに検査の 2 つ目のコピーは持たない。
+      ORCH_ARGS+=(--resume)
+      shift
+      ;;
+    --all-perspectives)
+      # 前回レビューの Critical state を復旧するための明示フラグ（Issue #970）。
+      # multi-agent.sh に同名のフラグは無い — あちらでは「全観点」は観点フィルタの
+      # **不在**（--perspective / --exclude-perspective / --mode cross-model を渡さない
+      # unfiltered full review）で表現され、それがそのまま「新しい review series を
+      # 開始する」正規の復旧手段になっている。そこでこのフラグは委譲 argv に何かを
+      # 足すのではなく、「観点を絞る指定が一切無いこと」をシムが保証する形で写す。
+      # verbatim に転送すると委譲先の Unknown option（rc=1）で落ちるだけで、案内どおりの
+      # コマンドが通らないという Issue #970 の形が残る。
+      ALL_PERSPECTIVES_GIVEN=1
+      shift
+      ;;
     --list-reviewers)
       # 一覧はレジストリ（perspectives/<task>/*.md）が持つ。シムが独自の表を持つと、
       # 観点ファイルを足したときにシムだけ古くなる。委譲して出させる。
@@ -576,10 +651,12 @@ while [ $# -gt 0 ]; do
         exit 2
       fi
       append_perspectives "$2" "--exclude-reviewers" "--exclude-perspective"
+      EXCLUDE_REVIEWERS_GIVEN=1
       shift 2
       ;;
     --exclude-reviewers=*)
       append_perspectives "${1#*=}" "--exclude-reviewers" "--exclude-perspective"
+      EXCLUDE_REVIEWERS_GIVEN=1
       shift
       ;;
     --workdir|--workdir=*)
@@ -627,6 +704,29 @@ done
 
 if [ "$STAGED_GIVEN" -eq 1 ] && [ -n "$BASE_FOR_SIZE" ]; then
   echo "ERROR: --staged と --base は同時に指定できません。レビュー範囲をどちらか一方にしてください。" >&2
+  exit 2
+fi
+
+# --all-perspectives は「観点を絞る指定が無い」ことの保証なので、絞る指定との併用は
+# 矛盾として拒否する。黙ってどちらかを勝たせると、絞った側は「復旧が始まらない」、
+# 全観点側は「指定した観点で走らない」のどちらかが無言で起き、成果物から判別できない。
+if [ "$ALL_PERSPECTIVES_GIVEN" -eq 1 ] \
+   && { [ "$REVIEWERS_GIVEN" -eq 1 ] || [ "$EXCLUDE_REVIEWERS_GIVEN" -eq 1 ]; }; then
+  echo "ERROR: --all-perspectives は --reviewers / --exclude-reviewers と同時に指定できません。" >&2
+  echo "       全観点で走らせる（Critical state の復旧を含む）か、観点を絞るかのどちらかにしてください。" >&2
+  exit 2
+fi
+
+# cross-model は「1 観点を複数 CLI で見る」モードで、委譲先の unfiltered full review
+# 判定（is_unfiltered_full_review_plan）が明示的に除外している = 復旧（新 series の
+# 開始）が始まらない。--all-perspectives と併用されたら黙ってどちらかを勝たせず拒否
+# する。設定ファイル側が mode: cross-model を持つリポジトリでは、--all-perspectives
+# だけでは full review にならないため --mode distributed の併用で上書きする（--help
+# 参照）。
+if [ "$ALL_PERSPECTIVES_GIVEN" -eq 1 ] && [ "$MODE_VALUE" = "cross-model" ]; then
+  echo "ERROR: --all-perspectives は --mode cross-model と同時に指定できません。" >&2
+  echo "       cross-model は観点を 1 つに絞るモードで、全観点の復旧レビューになりません。" >&2
+  echo "       復旧するなら --mode distributed を使うか、--mode を外してください。" >&2
   exit 2
 fi
 
@@ -689,6 +789,10 @@ if [ "${CODEX_DEFAULT_REVIEWERS+x}" = x ]; then
   if [ "$REVIEWERS_GIVEN" -eq 1 ]; then
     # 明示指定が env の既定に負けると、--reviewers を渡した意味が消える。
     echo "ℹ️  --reviewers が明示されているため、CODEX_DEFAULT_REVIEWERS は無視します。" >&2
+  elif [ "$ALL_PERSPECTIVES_GIVEN" -eq 1 ]; then
+    # env の既定観点を足すと unfiltered full review ではなくなり、--all-perspectives が
+    # 保証するはずの復旧（新しい review series の開始）が黙って始まらない。
+    echo "ℹ️  --all-perspectives が明示されているため、CODEX_DEFAULT_REVIEWERS は無視します。" >&2
   else
     # 通知は**検証を通ってから**出す。先に出すと「解釈しました」の直後に
     # 「値が空です」で落ち、解釈されたのかされていないのかが読み手に分からない。

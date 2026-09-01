@@ -7,6 +7,24 @@ description: ワークフローチェーンの末尾（/merge-cleanup → /ace-c
 
 作業セッションの締めに、そのセッションで**実際に起きた**ことを KPT の観点で振り返る — Problem（手戻り・無駄時間・過剰動作）と Keep（定着させる価値のある成功パターン）を観測として拾い、観測台帳へ記録する。Issue を起票するのは原則として台帳の閾値に到達した再発だけで、次回同じ作業が速く・正確になる改善を提案する。振り返り自体は read-only・低コストなので確認を挟まず毎回実施し、ノイズは台帳の閾値と提案側の閾値で絞る。
 
+## プラグインルートの固定（必須）
+
+<!-- ff-dev-toolkit-plugin-root-contract:start -->
+同梱resourceを参照する前に `FF_DEV_TOOLKIT_ROOT` を**一度だけ**解決し、実行中は変更しない。
+
+- Claude Codeでは、その呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}` を使う
+- Codexなど他ホストでは、実際に読み込んだこの `SKILL.md` の絶対パスを `FF_DEV_TOOLKIT_SKILL_FILE` として固定し、そこから `../..` を解決する
+
+このskillを実行するAI hostは、Bash tool呼び出しを組み立てるとき、skill loaderが返した実値で `FF_DEV_TOOLKIT_SKILL_FILE="<このSKILL.mdの絶対パス>"; export FF_DEV_TOOLKIT_SKILL_FILE` を実行し、同じshell script bodyでresourceを呼び出す。placeholderのまま実行したり、cache pathを推測して埋めたりしない。
+plugin内ドキュメントの正本は、読み込んだこの `SKILL.md` のdirectoryを基準にした [plugin root固定契約](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) である。consumerへコピーされた `docs/` や物理CWDを基準に解決しない。
+review系resource（`setup-multi-agent.sh` / `multi-agent.sh` / `multi-review.sh`）を直接呼ぶhostだけが、同節のresolver + guard fence全体を読み、handoff設定・guard・resource呼び出しを同じshell script bodyで実行する。そのhostはtask workspace repository rootも `FF_DEV_TOOLKIT_PROJECT_ROOT` として同じBash tool呼び出しへ渡し、現在の物理CWDおよび `git rev-parse --show-toplevel` と一致することを実行前に確認する。review以外のresourceはこのreview専用guardを実行せず、固定したroot配下で各skillが指定するresourceだけを呼出直前に検証する。以下のBash例は、同じtool bodyで固定済みrootを使うcommand断片として扱う。
+
+解決後は同じ絶対パスだけを使い、cache / marketplace / 旧インストール領域を走査して選ばない。
+version sortによる版の選び直しや、sidecarを使った別実体への切替も行わない。
+解決済みrootまたは必要resourceが消失・不整合になった場合は、別versionへfallbackせず
+「ff-dev-toolkit更新後にこのskillを再呼び出してください」と案内して停止する。
+<!-- ff-dev-toolkit-plugin-root-contract:end -->
+
 ## 位置づけ — ACE との責務分離
 
 | | 対象 | 出力先 |
@@ -32,6 +50,7 @@ description: ワークフローチェーンの末尾（/merge-cleanup → /ace-c
 2. 質問・承認待ち・外部状態待ち・作業途中である → 提案を作らず `振り返り: 今回は作業完了前のため対象外` と報告する
 3. `hooks/retrospective-stop.sh` は Claude Code 互換入力でだけ実行漏れの fallback として働く。最終応答に振り返り結果があれば無音で停止を許可し、無ければ継続プロンプトを 1 回返す
 4. Codex の Stop 入力（`model` フィールドあり）は常に無音で停止を許可し、UserPromptSubmit の事前注入だけに委ねる。Claude Code の fallback 継続中は、ホストの `stop_hook_active` または最終応答の振り返り結果により再停止を許可する。自分で hook を再実行したり marker を作ったりしない
+5. Codex の非対話の単発実行（UserPromptSubmit 入力に `model` があり `permission_mode` が `bypassPermissions` — codex exec は headless で承認を尋ねられないためこの組になる）には事前注入しない。レビュー等のツール的起動の stdout を振り返り出力が奪わないための抑止で、判別できない入力へは従来どおり注入する（fail-open。Claude Code の入力は `model` を含まないため、permission mode に関わらず常に注入側）
 
 Codex では Stop hook の `decision:block` を返さないため、事前注入を取りこぼしても継続理由が利用者向け Feedback として露出しない。Claude Code では取りこぼし時の fallback を維持する。改善提案の起票承認境界は変わらず、自動化されるのは read-only の振り返りと定型の観測記録までである。
 
@@ -46,6 +65,41 @@ Codex では Stop hook の `decision:block` を返さないため、事前注入
 5. **待ち時間の活用漏れ** — バックグラウンド実行中に並行で進められた作業を遊ばせなかったか
 6. **再現価値のある成功パターン（Keep）** — このセッションで実測して効いたプロセス/ツールの使い方のうち、スキル・テンプレ・hook へ定着させれば次回以降も再現するものはないか（プロジェクト固有のコード・設計知見はここで拾わず ACE 側へ回す）
 7. **過剰動作** — 不要なスキル発火・過剰な確認・同じ検証の回しすぎ・hook の重複動作・過剰な出力など、「足りない」ではなく「やりすぎ」で失った時間はないか（自動化は増える一方で削る力学が働きにくい。削減候補もここで拾う）
+
+8. **見積もりの当否** — `ff-effort` ブロックを持つ Issue がこのセッションでマージされた場合、予定と実績の乖離率を下の帯で判定し、**過小・当たり・過大の 3 方向すべて**を記録対象にする（記録しないのは、ブロックが無く乖離率を算出できない場合だけ）
+
+### 見積もり乖離の記録帯
+
+| 乖離率（AI 実績 ÷ AI 予定） | 判定 | 記録する種別 | 書く内容 |
+| ---- | ---- | ---- | ---- |
+| `1.30` 超 | 過小見積もり | `Kind: problem` | 何が予定に無かったか |
+| `0.77` 〜 `1.30` | **当たり** | `Kind: keep` | どの立て方が当たったか |
+| `0.77` 未満 | 過大見積もり | `Kind: problem` | 何を過剰に見込んだか |
+
+**当たりを必ず記録すること。** 過小だけを記録すると補正が「バッファを積む」方向へ一方向に偏り、今度は系統的な過大見積もりになる。しかも過大側は記録経路が無いので永久に訂正されない — **非対称なフィードバックは非対称なバイアスを作る**。3 方向すべてに記録先があって初めて、見積もりの精度が両側から締まる。
+
+記録先・エントリ形式・畳み込みの同一性判定・昇格閾値は、すべて下の観測台帳の規定に従う（新しい記録形式もファイルも作らない）。「当たり」を `Kind: keep` として扱うのは第 6 項（再現価値のある成功パターン）の適用対象を明示したものであり、機構の新設ではない。`keep` の昇格は Issue ではなく**定着提案**（`/create-issue` の人間工数の目安表・推定手順への文言反映）になる。
+
+### 集計レポートの実行（較正トリガの唯一の発火点）
+
+帯の判定には Issue 1 件の乖離率で足りるが、**閾値そのものの妥当性は分布を見ないと分からない**。振り返りの実行時に、`ff-effort` ブロックを持つ Issue が前回の集計から増えていれば集計器を回す:
+
+```bash
+bash "${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}/scripts/effort-report.sh" --repo "<owner/repo>"
+```
+
+出力の読み方と、そこから起きる行動:
+
+| 出力 | 行動 |
+| ---- | ---- |
+| `population` が 20 件に到達 | **閾値 `0.77` / `1.30` と、`/create-issue` の人間工数の目安表の較正を提案する**。どちらも「実データ 20 件で較正する」と暫定値である旨を明記して出荷しており、この提案が唯一の発火点である |
+| `suspect_marker` が 1 以上 | マーカーの綴りずれ・字下げ・行末空白。該当 Issue は書き戻し側でも集計側でも**永久に静かに落ちる**ので、本文を直す |
+| `excluded_malformed` が多い | 記入書式の周知不足。`/create-issue` のテンプレか目安表に問題がある可能性 |
+| `limit_reached=1` | 母集団が打ち切られている。`--limit` を上げて取り直す |
+
+集計結果そのものは観測台帳へ書かない（数値は Issue 本文が SSOT で、台帳は畳める主張だけを持つ）。較正の提案・綴りずれの修正といった**行動**だけが振り返りの出力になる。
+
+閾値 `0.77` / `1.30` の正本は `/close-issue` の工数実績セクションの規則（`0.77` は `1/1.30` の丸めで、帯は乗法的に対称。加法的な ±30% ではない）。**この値の複製先は 3 箇所**（`/close-issue`・本ファイル・`scripts/effort-report.sh`）で、変えるときは 3 箇所すべてを同時に直すこと。一部だけの更新は、完了報告コメントで「閾値超過」と書かれた Issue が振り返りでは「当たり」に分類される食い違いを生む。
 
 ## 観測の記録 — 観測台帳（起票の前段バッファ）
 

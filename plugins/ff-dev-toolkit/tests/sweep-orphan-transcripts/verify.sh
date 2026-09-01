@@ -192,6 +192,8 @@ add_both_guard_candidate() {
 # サマリー行から数値カウンタを取り出す。$1 はサマリー出力全文。
 # 行が無ければ空文字を返す（呼び出し側で非空を必ず確かめること。空のまま算術へ渡すと
 # `set -u` 相当の事故ではなく「0 として通る」形になり、ラベル改名を緑で見逃す）。
+# ラベル文字列は suite 内でこの 2 関数だけが持つ（13b / 13c / 13l / 変異 8 はすべて
+# ここを経由する）。実装側でラベルを改名したら、追随はこの 2 行だけ（Issue #769）。
 name_alive_count() { printf '%s\n' "$1" | sed -n 's/^スキップ 名前生存(名前→現存パス): //p'; }
 memory_skip_count() { printf '%s\n' "$1" | sed -n 's/^スキップ memory 保護(空でない memory\/): //p'; }
 
@@ -264,7 +266,7 @@ ok "name resolves to live (hyphenated) path → protected from apply (AC-1, AC-2
 # 具体的な下限値で固定する。
 setup_projects
 OUT="$(run_sut 2>&1)" || fail "summary dry-run should exit 0: $OUT"
-NAME_LINE="$(printf '%s\n' "$OUT" | sed -n 's/^スキップ 名前生存(名前→現存パス): //p')"
+NAME_LINE="$(name_alive_count "$OUT")"
 [ -n "$NAME_LINE" ] || fail "summary must show a distinct name-alive counter line: $OUT"
 [ "$NAME_LINE" -ge 3 ] || fail "name-alive counter must count all name-resolved candidates (>=3), got: $NAME_LINE"
 ok "summary shows name-alive counter with correct numeric value (AC-5)"
@@ -277,7 +279,7 @@ ARCH_MEM="$(find "$WORK/claude/transcript-archives" -name "${MEMORY_NAME}-*.tar.
 [ "$ARCH_MEM" -eq 0 ] || fail "memory-guarded candidate must not be archived"
 # サマリーに memory ガードの独立カウンタが数値で出ること（1 件以上）。
 OUT="$(run_sut 2>&1)" || fail "memory-guard dry-run should exit 0: $OUT"
-MEM_LINE="$(printf '%s\n' "$OUT" | sed -n 's/^スキップ memory 保護(空でない memory\/): //p')"
+MEM_LINE="$(memory_skip_count "$OUT")"
 [ -n "$MEM_LINE" ] || fail "summary must show a distinct memory-guard counter line: $OUT"
 [ "$MEM_LINE" -ge 1 ] || fail "memory-guard counter must be >=1, got: $MEM_LINE"
 ok "non-empty memory/ sibling → protected regardless of cwd, counter numeric (AC-4)"

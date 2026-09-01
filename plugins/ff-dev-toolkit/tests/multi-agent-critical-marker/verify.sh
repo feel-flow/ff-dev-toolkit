@@ -610,6 +610,51 @@ diff was reviewed in full.
 Critical: zero
 BODY
 
+# ── 共有パーサー（Issue #908）: 受理される全形式の Critical 指摘行で発火 ──
+# アダプタ側受理ゲートが認める bullet 3 種・** 強調・散文指摘行は、共有パーサー
+# 一本化（adapter-common.sh critical_findings_present）で集約側も検出する。
+# 旧実装（`-` bullet + [1-9] のみの独自 regex）へ戻る変異はここで赤になる
+# （受理と検出の全行対応表は tests/severity-parser-intersection が固定する）。
+
+# 24. `*` bullet の集計行 → 出る（旧実装は `-` bullet しか見ず素通り = fail-open）
+run_case "共有パーサー: * bullet の集計行" present "sentinel-case-24" <<'BODY'
+<!-- sentinel-case-24 -->
+## Review
+
+本文で重大な問題を説明する。
+
+### Summary
+* Critical: 1
+BODY
+
+# 25. 行頭 `**Critical**:` の散文指摘行 → 出る（旧実装は ** 強調形を検出しない）
+run_case "共有パーサー: ** 強調の散文指摘行" present "sentinel-case-25" <<'BODY'
+<!-- sentinel-case-25 -->
+## Review
+
+**Critical**: 認証チェックの欠落（app.txt:2）
+BODY
+
+# 26. bullet + 件数なしの散文指摘行 → 出る（旧実装は [1-9] の件数必須で素通り）
+run_case "共有パーサー: bullet + 件数なし指摘行" present "sentinel-case-26" <<'BODY'
+<!-- sentinel-case-26 -->
+## Review
+
+- Critical: 認証チェックの欠落（app.txt:2）
+BODY
+
+# 27. bullet 付きゼロ語（`- Critical: none`）→ 出ない（受理ゲート s1 が契約準拠
+#     ゼロ報告として受理する形。検出側の除外が bullet 形へ広がっていないと
+#     偽 BLOCK になる — ケース 22 / 23 の bullet 版）
+run_case "共有パーサー: bullet 付き Critical: none" absent "sentinel-case-27" <<'BODY'
+<!-- sentinel-case-27 -->
+## Review
+
+diff was reviewed in full.
+
+- Critical: none
+BODY
+
 # ── config 層（.claude/agent-config.yaml 経由）の実挙動 ──
 # yq の有無で config 契約が丸ごと未検証にならないよう、この suite が書く最小
 # config（printf の 2 行）だけを決定的に解釈する yq stub を用意して**常時**実行する。
@@ -748,13 +793,18 @@ else
 fi
 
 # ── 判定器（awk）自体の実行失敗（rc>2）の fail-closed ──
-# Critical 判定器のプログラム文字列（in_crit を含む）だけを選択的に失敗させる
-# awk stub。他の awk 呼び出し（Status: incomplete 検査など）は実物へ委譲する。
+# Critical 判定器（共有パーサー _ff_severity_scan の critical モード —
+# adapter-common.sh critical_findings_present）の awk 呼び出しだけを `-v
+# ff_mode=critical` 引数で選択して失敗させる stub。同じ共有プログラムを使う
+# アダプタ側の受理判定（ff_mode=accept）と他の awk 呼び出し（Status: incomplete
+# 検査など）は実物へ委譲する — プログラム文字列での選択に戻すと、受理側まで
+# 巻き添えで失敗してアダプタが本文なし扱いになり、このケースが検査したい
+# 「集約判定だけの失敗」を再現できない。
 REAL_AWK="$(command -v awk)"
 cat > "$STUB/awk" <<SH
 #!/usr/bin/env bash
 for a in "\$@"; do
-  case "\$a" in *in_crit*) exit 3 ;; esac
+  case "\$a" in ff_mode=critical) exit 3 ;; esac
 done
 exec "$REAL_AWK" "\$@"
 SH
@@ -824,8 +874,9 @@ BODY
 
 # 20. ブロック観点と非ブロック観点の Critical が同一レポートに混在する
 #     （--perspective を渡さず codex-cli の registry 所有 = code-review +
-#     test-analysis の 2 観点を実走。stub は同じ本文を返すので両観点が Critical）
-#     → 両マーカーが共存し、各行の観点名の帰属が正しい
+#     test-analysis + acceptance-criteria の 3 観点を実走。stub は同じ本文を
+#     返すので全観点が Critical） → 両マーカーが共存し、各行の観点名の帰属が正しい
+#     （ブロック側は code-review と acceptance-criteria の 2 観点が並ぶ）
 CASE_PERSPECTIVE="" CASE_EXPECT_NONBLOCK=present \
 run_case "ブロック + 非ブロックの混在" present "sentinel-case-20" <<'BODY'
 <!-- sentinel-case-20 -->
@@ -839,8 +890,8 @@ run_case "ブロック + 非ブロックの混在" present "sentinel-case-20" <<
 - Critical: 1
 BODY
 if [[ -f "$REPORT" ]] && grep -qF "sentinel-case-20" "$REPORT"; then
-  if grep -qF "Critical issues detected (code-review)" "$REPORT"; then
-    ok "ブロック行の観点名が code-review に帰属する"
+  if grep -qF "Critical issues detected (code-review, acceptance-criteria)" "$REPORT"; then
+    ok "ブロック行の観点名が code-review と acceptance-criteria に帰属する"
   else
     bad "ブロック行の観点名の帰属が崩れている"
     grep -n "Critical issues detected" "$REPORT" | sed 's/^/    | /' >&2

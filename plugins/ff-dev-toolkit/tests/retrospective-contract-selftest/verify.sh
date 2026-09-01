@@ -51,8 +51,8 @@ SRC_DEPLOYMENT="$PLUGIN_ROOT/docs-template/05-operations/DEPLOYMENT.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=134
-EXPECTED_GATE_CHECKS_PUBLIC=123
+EXPECTED_GATE_CHECKS_MONOREPO=135
+EXPECTED_GATE_CHECKS_PUBLIC=124
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -479,6 +479,8 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|ユーザー依頼の作業がこの応答で完了する|自動発火: 完了時は振り返りを実施|1"
   "${FIX_SKILL}|retrospective-SKILL.md|質問・承認待ち・外部状態待ち・作業途中である|自動発火: 未完了時は対象外|1"
   "${FIX_SKILL}|retrospective-SKILL.md|UserPromptSubmit の \`additionalContext\`|自動発火: 応答生成前に振り返り契約を注入|1"
+  # Issue #840: 非対話単発実行のスキップ規定は判定リスト項目 5 の単独行に乗る。
+  "${FIX_SKILL}|retrospective-SKILL.md|Codex の非対話の単発実行（UserPromptSubmit 入力に \`model\` があり|自動発火: 非対話の単発実行には事前注入しない|1"
   "${FIX_SKILL}|retrospective-SKILL.md|本スキルで扱わず、\`/ace-curate\`（または ACE Playbook への追記）へ回す|責務分離: retrospective 側からの送り先明示|1"
   # 観測台帳（起票の前段バッファ・KPT 拡張）の 9 針。いずれも SKILL.md 内で単独の行に
   # 乗せてあるため、行削除の期待 ✗ は各 1 件。

@@ -444,6 +444,20 @@ else
   bad "comprehensive-review の指摘形を本文なしと誤検知した（見出し単独拒否の巻き添え）"
 fi
 
+# 共有パーサー（Issue #908）の見出しスコープはレベル追跡: 重大度見出し配下の
+# サブ見出し（より深い見出し）を跨いだ bullet もスコープ内 = 実体行。集約側の
+# Critical 検出と同一のスコープ規則（サブ見出しごとにスコープが切れる旧・受理側
+# 実装へ戻ると、ここが赤になり両側の分類が再び割れる）。
+if check_body "### Critical
+
+#### 詳細
+
+- 停止条件が欠けている（scripts/foo.sh:10）"; then
+  ok "重大度見出し配下のサブ見出しを跨いだ bullet は本文あり（レベル追跡スコープ）"
+else
+  bad "サブ見出しでスコープが切れている（集約側と異なるスコープ規則への退行）"
+fi
+
 if check_body "$PROSE_ZERO_CONTRACT"; then
   ok "契約準拠の散文ゼロ報告（散文 + 独立行 Critical: 0 / Warning: 0 / Suggestion: 0）は本文あり"
 else
@@ -493,9 +507,11 @@ git commit -qm "change"
 PERSPECTIVE="$TMP/perspective.md"
 printf '%s\n' '# Fixture Perspective' 'PERSPECTIVE-CONTENT-MARKER' > "$PERSPECTIVE"
 
+# プレフィックスを持たない build_prompt の入力（DIFF_FILE 等）は lib の
+# unset_prompt_env_vars で落とす（名簿は lib の 1 箇所だけ。Issue #769）。
 gen_prompt() { # $1: task_type / stdout: プロンプト
   (
-    unset DIFF_FILE STAGED_DIFF INCLUDE_DIFF CHANGED_FILES
+    unset_prompt_env_vars
     TASK_TYPE="$1"
     DESCRIPTION="fixture task"
     export TASK_TYPE DESCRIPTION

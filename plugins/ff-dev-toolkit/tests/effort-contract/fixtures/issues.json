@@ -1,0 +1,54 @@
+[
+  {
+    "number": 101,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 3.0d\n- effort_ai_planned: 0.5d\n- effort_ai_actual: 0.5d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 102,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 6.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 2.0d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 103,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 2.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 0.5d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 104,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 8.0d\n- effort_ai_planned: 1.6d\n- effort_ai_actual: 2.0d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 108,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 5.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 1.3d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 109,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_ai_actual: 1.0d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 105,
+    "body": "## ジョブストーリー\n\nブロックが無い本文。\n"
+  },
+  {
+    "number": 107,
+    "body": ""
+  },
+  {
+    "number": 106,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 4.0d\n- effort_ai_planned: 0.8d\n- effort_ai_actual: (未記入)\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 110,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 0.6d\n- effort_ai_actual: 0.8d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 111,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 4h\n- effort_ai_actual: 0.5d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 112,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_ai_actual: 0.5 d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 113,
+    "body": "## 本文\n\n<!-- ff-effort:begin --> \n- effort_ai_actual: 9.9d\n<!-- ff-effort:end -->\n"
+  }
+]

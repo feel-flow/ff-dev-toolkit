@@ -368,6 +368,12 @@ else
     # 文言が drift していないこと。一時領域と git を要するが、closing-keyword-guard と
     # 同じ「マージ直前の窓」を守る契約なので、安価な順より主題の近さを優先して隣に置く。
     "$SCRIPT_DIR/merge-freshness/verify.sh"
+    # 工数 KPI の契約（Issue #1136）: ff-effort ブロックのマーカーとフィールド名が
+    # 書く側（create-issue）・書き戻す側（close-issue）・読む側（effort-report.sh）で
+    # 一致すること、緩めた本文差分の述語がマーカー外の編集を通さないこと、乖離の記録が
+    # 3 帯すべてを覆うこと。マージ直前の窓（Issue 本文の書き換え）を守る契約なので
+    # merge-freshness の隣に置く。jq と一時領域を要する。
+    "$SCRIPT_DIR/effort-contract/verify.sh"
     # Git Workflow の tier 判定（scripts/workflow-tier.sh）の振る舞いと、段の単一正本の
     # 契約（Issue #801）。判定は path 一覧を受ける入口を持つので git の状態を捏造せずに
     # 全ケースを回せる。段数・tier 件数・分布の手書きが無いことは否定の主張なので、
@@ -555,7 +561,7 @@ else
     # 実 CLI・ネットワーク・課金を伴わない。
     "$SCRIPT_DIR/multi-agent-plan/verify.sh"
     # 同一入力の成功済み観点を内容hash付きで再利用し、未完了だけを再実行する
-    # --resume 契約（Issue #586）。8観点中7成功・1失敗、HEAD/設定/観点定義/集合変更、
+    # --resume 契約（Issue #586）。9観点中8成功・1失敗、HEAD/設定/観点定義/集合変更、
     # 破損キャッシュ、統合レポートのreused/executedを逐次stub CLIで実測する。
     "$SCRIPT_DIR/multi-agent-resume/verify.sh"
     # 前回実行の観点ファイルが「今回の結果」として読まれないことの実挙動検査
@@ -582,16 +588,42 @@ else
     # 出力契約の一本化検査（review 限定）。一時 git リポジトリ + stub CLI
     # （〜3 秒）。実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/review-capture-fail-loud/verify.sh"
+    # 受理ゲートと集約 Critical 検出の積集合契約（Issue #908）: 同じ入力表を
+    # 両側の公開入口（review_body_present / critical_findings_present — どちらも
+    # adapter-common.sh の共有パーサー _ff_severity_scan へ委譲）に流し、
+    # 「受理される全形式の Critical 指摘行で検出が発火する」を行ごとに固定 +
+    # 委譲の静的 pin。一時領域のみ（〜2 秒）。実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/severity-parser-intersection/verify.sh"
     # レビュー指摘の差分スコープ契約（Issue #556）: 全 review perspective のスコープ
     # 言及 + build_prompt(review) の [OUT-OF-DIFF] ラベル契約。一時 git リポジトリのみ
     # （〜2 秒）。実 CLI・ネットワーク・課金は伴わない。一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/review-diff-scope/verify.sh"
+    # レビュー観点テンプレートの重大度スコープ契約（Issue #713 / #714）: 9 観点すべての
+    # Severity Classification に「diff が導入または悪化させた」配置規則ブロックが同一
+    # 本文で存在すること + test-analysis の Important 限定と Output Template の整合。
+    # build_prompt は perspective を 1 本しか読まないため規則は各ファイル持ちで、drift を
+    # この suite が縛る。純粋な静的検査で一時領域も git も要らず、skip 経路を持たない。
+    "$SCRIPT_DIR/review-severity-scope/verify.sh"
     # レビュー実行中の作業ツリー凍結の契約（Issue #818）: オーケストレータ（親）が
     # 読解中のツリーを書き換えない規定を、git-workflow.md ステップ5 の節スコープと
     # 消費側 2 文書で固定する。機械検査の無いホストのサブエージェント経路では手順書の
     # 文言だけが防御になるため、文言の消失を回帰として扱う。純粋な静的検査で一時領域も
     # git も要らず、skip 経路を持たない（部分 skip をマーカーで出さないため独立 suite）。
     "$SCRIPT_DIR/review-freeze-contract/verify.sh"
+    # toolkit 変更 PR でレビュー基盤が旧実装（インストール済み実体から読み込んだ場合）で
+    # 動く制約の明示と、worktree 実装への切替オプトを実装しない設計判断
+    # （Issue #915 / ADR-043）: multi-review/SKILL.md の制約・担保（変更対象に対応する
+    # suite の worktree 実走）の文言針 + ADR-043 決定文との相互照合 + scripts/ に
+    # オプトのフラグ（use[-_]worktree[-_]scripts 族）が現れない実体 pin。純粋な静的
+    # 検査で一時領域も git も要らず、suite-level の skip 経路を持たない（repository
+    # docs/ の無い配布先 checkout では ADR 照合だけをインデント付き部分 skip にする）。
+    "$SCRIPT_DIR/review-worktree-scripts-decision/verify.sh"
+    # 長時間タスク委譲のこまめコミット契約（Issue #913）: 正本
+    # multi-cli-agent-orchestration.md の契約節（こまめ commit + push・フェーズ分割・
+    # ストール再開時のコミット確認）を節スコープで固定し、消費側 multi-implement の
+    # 参照リンクも見る。文言だけが防御の文書契約なので、消失を回帰として扱う。
+    # 純粋な静的検査で一時領域も git も要らず、skip 経路を持たない。
+    "$SCRIPT_DIR/long-task-commit-contract/verify.sh"
     # flat-rate CLI への観点集中の制御（Issue #251、#783 で free-tier から付替）: プラン警告 + minimize_cost 限定の
     # 同一 CLI 内逐次化 + standard の並列維持 + 途中失敗の継続。一時 git リポジトリ +
     # stub CLI で orchestrator を 4 回実走（単独実測 約 20 秒。詳細は suite README。
@@ -602,6 +634,11 @@ else
     # リポジトリ + stub CLI で実走して確かめる。ミューテーション 5 件つき（詳細は
     # suite README）。実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/multi-agent-revision-guard/verify.sh"
+    # リビジョンガードのツリー変化判定パス除外（Issue #747）: FF_MULTI_AGENT_IGNORE_PATHS
+    # と既定 .superpowers/** の除外が効くこと・除外の外は従来どおり破棄すること・
+    # 空/空白パターンの fail-closed。一時 git リポジトリ + stub CLI で実走し、
+    # ミューテーション 2 件つき。実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/multi-agent-ignore-paths/verify.sh"
     # 同梱 MCP サーバーの実検査 4 本。node_modules が無い環境ではいずれも ○ skip
     # （型検査の 2 本は node が PATH に無い環境でも ○ skip。tsc の shebang が node を
     # 要求するため、環境都合の失敗を型エラーと混ぜないための分岐）。
@@ -692,6 +729,10 @@ fi
 # のときだけで、既定実行では「除外した selftest のうち何件が必須名簿掲載か」をサマリーが
 # 名指しする（意図した除外であることは変わらないが、重みが読めるようにする）。
 REQUIRED_SUITES=(
+  # 緩めた本文差分述語（チェックボックス + ff-effort ブロックだけを許可）の behavioral
+  # 検証を持つ唯一の suite。jq 不在で丸ごと skip されると、安全ゲートが本当に
+  # マーカー外の編集を弾くかを誰も見なくなる（Issue #1136）。
+  effort-contract
   # root契約のnegative controlは一時領域を使う。skipすると旧版誤選択を拒否する
   # 検出力が丸ごと消えるため、明示許可なしのskipを認めない（Issue #838）。
   plugin-root-contract
@@ -768,6 +809,11 @@ REQUIRED_SUITES=(
   # 一時領域が無い環境で mktemp skip すると「空振り結果が完了として並ぶ」退行が
   # 黙って通る。skip 条件は adapter-prompt-guard と同じく一時領域の有無だけ。
   review-capture-fail-loud
+  # 受理ゲートと集約 Critical 検出が同一の行分類を参照することの積集合契約
+  # （Issue #908）。片側だけが独自実装へ戻る drift はこの suite しか行単位で
+  # 見ておらず、一時領域不足で mktemp skip すると「受理される Critical 指摘行を
+  # 集約が素通りする」fail-open の再発が黙って通る。
+  severity-parser-intersection
   # 一時領域 + git が要る。マージ直前の鮮度ゲートの検出力（不一致で止まる / 一致で
   # 黙る / 判定不能を素通りさせない）を見るのはこの suite だけで、消えるとゲートの
   # 退行が squash merge に畳み込まれる形で表に出る（Issue #880）。
@@ -778,11 +824,28 @@ REQUIRED_SUITES=(
   # ディレクトリ名の改名・削除を今日すでに pin している。加えて将来 skip 経路が
   # 入ったときに「環境都合で契約検査が消えた」を黙って通さない。
   review-freeze-contract
+  # toolkit 変更 PR の制約明示と worktree 実行オプト不採用（Issue #915 / ADR-043）も
+  # 文言だけが防御（オプト不在の実体 pin を含む）。review-freeze-contract と同じ理由で
+  # 名簿に載せ、suite の改名・削除と将来の skip 経路を黙って通さない。
+  review-worktree-scripts-decision
+  # テンプレート本体の重大度スコープ契約（Issue #713 / #714）も文言だけが防御 —
+  # 注入層の [OUT-OF-DIFF] 契約（review-diff-scope）はテンプレートの severity 定義まで
+  # 見ない。静的検査で skip 経路を持たないが、review-freeze-contract と同じ理由で
+  # 名簿に載せ、suite の改名・削除と将来の skip 経路を黙って通さない。
+  review-severity-scope
+  # 長時間タスク委譲の「こまめコミット」契約（Issue #913）も文言だけが防御。
+  # review-freeze-contract と同じ理由で名簿に載せ、suite の改名・削除と将来の
+  # skip 経路を黙って通さない。
+  long-task-commit-contract
   review-wrapper-shim
   sweep-orphan-transcripts
   multi-agent-timeout
   # 実行中のリビジョン変化を検出する契約は、この suite 以外どこも守っていない。
   multi-agent-revision-guard
+  # そのガードのパス除外（FF_MULTI_AGENT_IGNORE_PATHS / 既定 .superpowers/**）の
+  # 契約も、この suite 以外どこも守っていない（除外が緩むと監視が黙って縮む側、
+  # 効かないと正常な実行が毎回破棄される側の両方）。
+  multi-agent-ignore-paths
   # 前回結果の退避契約（Issue #537 / #654）。他の suite は「今回のプランの結果が
   # 揃うか」しか見ないため、退避が丸ごと外れても緑のまま通る。加えて、この suite だけが
   # 「<cli> が外向き symlink のとき外部を消さない・書かない」を実測する（#722 で残りを

@@ -677,6 +677,184 @@ else
   bad "--mode pair + --cli が通った（rc=${RUN_RC}）"
 fi
 
+# ── --strategy との相互作用（Issue #691） ──────────────────────
+#
+# minimize_cost の振替（premium → 最安 tier）は分散プラン専用で、pair には対応する
+# 概念が無い。--cli（#255）は分散モード用フィルタなので分散へ落とせば意図を守れた
+# が、cost strategy で設定済みの主・副（誰が見たか）を入れ替えるのは別問題なので、
+# pair では「適用されない」を名乗るだけにし、プランは一切変えない。
+
+echo ""
+echo "-- --strategy との相互作用 --"
+run "$TMP/strategy.log" -- --strategy minimize_cost --dry-run
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q "cost strategy 'minimize_cost'" "$TMP/strategy.log" \
+  && grep -q 'does not apply in pair mode' "$TMP/strategy.log"; then
+  ok "--strategy minimize_cost を渡したら適用されない旨を通知する（黙って無視しない）"
+else
+  bad "--strategy minimize_cost が pair モードで黙って無視されている（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/strategy.log" >&2
+fi
+# 通知は値の出所まで名乗ること。config 由来でも発火するため、値だけだと利用者は
+# どこを直せばよいか辿れない。
+if grep -q 'from --strategy flag' "$TMP/strategy.log"; then
+  ok "通知が値の出所（--strategy flag）を名乗る"
+else
+  bad "通知に値の出所が無い"
+  sed 's/^/    /' "$TMP/strategy.log" >&2
+fi
+# 通知が「効かせる場所」まで指すこと。宣言だけだと利用者は次の一手を組み立てられない。
+if grep -q -- '--set-reviewers' "$TMP/strategy.log" \
+  && grep -q -- '--mode distributed' "$TMP/strategy.log"; then
+  ok "通知がコストを下げる代替手段（--set-reviewers / --mode distributed）を案内する"
+else
+  bad "通知に代替手段の案内が無い"
+  sed 's/^/    /' "$TMP/strategy.log" >&2
+fi
+# 通知のみでプランは通常の pair のまま（主の振替も分散への降格もしない）。
+# 「💰 minimize_cost: ... → ...」は分散プランの振替行で、pair では出ないこと。
+if grep -q 'Mode: pair' "$TMP/strategy.log" \
+  && grep -q 'claude-code \[premium\]:' "$TMP/strategy.log" \
+  && ! grep -q '💰 minimize_cost:' "$TMP/strategy.log" \
+  && ! grep -q 'using the distributed plan' "$TMP/strategy.log"; then
+  ok "通知のみでプランは pair のまま（振替・分散降格をしない）"
+else
+  bad "minimize_cost が pair のプランを変えている（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/strategy.log" >&2
+fi
+# プラン不変の完全比較。主の存在確認だけだと「副だけ落とす」「観点を 1 つ削る」
+# 変異が素通りする。CLI ヘッダ行と観点行の並び全体を、--strategy 無しの既定 pair
+# （pair.log）と突き合わせる。空同士の一致は vacuous pass なので非空も主張する。
+plan_lines() { grep -E '^   [a-z][a-z0-9-]+ \[[a-z-]+\]:$|^     - ' "$1"; }
+if [ -n "$(plan_lines "$TMP/strategy.log")" ] \
+  && [ "$(plan_lines "$TMP/pair.log")" = "$(plan_lines "$TMP/strategy.log")" ]; then
+  ok "主・副の CLI と観点の並びが既定 pair と完全一致する（プラン不変）"
+else
+  bad "minimize_cost 付き pair のプランが既定 pair と一致しない"
+  diff <(plan_lines "$TMP/pair.log") <(plan_lines "$TMP/strategy.log") | sed 's/^/    /' >&2 || true
+fi
+# --strategy 無しの既定 pair（上の pair.log）に通知が漏れないこと。既定 strategy は
+# balanced なので、常時表示になったら「既定実行の出力を変えない」契約に反する。
+if ! grep -q 'does not apply in pair mode' "$TMP/pair.log"; then
+  ok "--strategy 無しの pair では通知を出さない（既定実行の出力は従来のまま）"
+else
+  bad "既定の pair 実行へ minimize_cost の通知が漏れている"
+  sed 's/^/    /' "$TMP/pair.log" >&2
+fi
+
+# 通知は stderr のみに出ること。stdout は --print-reviewers 等の機械可読出力の
+# 面なので、混ざるとスキル層のパースを壊す。stdout / stderr を分離して実測する。
+set +e
+(
+  cd "$REPO"
+  run_isolated env PATH="$STUB:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
+    bash "$MULTI_AGENT" --task review --base develop --strategy minimize_cost --dry-run
+) >"$TMP/strategy-out.log" 2>"$TMP/strategy-err.log"
+rc=$?
+set -e
+if [ "$rc" -eq 0 ] \
+  && grep -q 'does not apply in pair mode' "$TMP/strategy-err.log" \
+  && ! grep -q 'does not apply in pair mode' "$TMP/strategy-out.log"; then
+  ok "通知は stderr のみに出る（stdout の機械可読出力を汚さない）"
+else
+  bad "通知の出力先が stderr に限定されていない（rc=${rc}）"
+  echo "      stdout:" >&2; sed 's/^/        /' "$TMP/strategy-out.log" >&2
+fi
+
+# ── strategy 値の whitelist（Issue #691） ──
+#
+# 通知は minimize_cost の完全一致ゲートなので、typo（minimize_costs 等）を黙って
+# 受けると振替も通知も無い完全な無音に戻る。未知の値は dry-run でも非 0 で拒否する。
+
+echo ""
+echo "-- strategy 値の whitelist --"
+run "$TMP/strategy-typo.log" -- --strategy minimize_costs --dry-run
+if [ "$RUN_RC" -ne 0 ] \
+  && grep -q "unknown strategy 'minimize_costs'" "$TMP/strategy-typo.log" \
+  && grep -q 'balanced, minimize_cost, maximize_quality' "$TMP/strategy-typo.log"; then
+  ok "typo の strategy 値を有効値の一覧付きで拒否する（無音に落とさない）"
+else
+  bad "typo の strategy 値が通った（rc=${RUN_RC}）— 振替も通知も無い無音に戻る"
+  sed 's/^/    /' "$TMP/strategy-typo.log" >&2
+fi
+# 拒否は出所を名乗ること（config 由来との切り分け）。
+if grep -q "from --strategy flag" "$TMP/strategy-typo.log"; then
+  ok "拒否メッセージが値の出所を名乗る"
+else
+  bad "拒否メッセージに値の出所が無い"
+  sed 's/^/    /' "$TMP/strategy-typo.log" >&2
+fi
+# 正当な値は通ること。拒否側だけ書くと「常に拒否する」実装でも緑になる。
+run "$TMP/strategy-maxq.log" -- --strategy maximize_quality --dry-run
+if [ "$RUN_RC" -eq 0 ] && ! grep -q 'unknown strategy' "$TMP/strategy-maxq.log"; then
+  ok "正当な値 maximize_quality は受理する（常時拒否ではない）"
+else
+  bad "正当な strategy 値が拒否された（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/strategy-maxq.log" >&2
+fi
+
+# ── config 由来の strategy（Issue #691） ──
+#
+# STRATEGY は CLI flag だけでなく設定ファイルからも入る。通知・whitelist が
+# flag 経路だけで実装されると、config 経由の typo / minimize_cost が再び無音になる。
+
+echo ""
+echo "-- config 由来の strategy --"
+if [ "$YQ_AVAILABLE" = "true" ]; then
+  mkdir -p "$REPO/.claude"
+  cat > "$REPO/.claude/agent-config.yaml" <<'YAML'
+version: "2.0"
+tasks:
+  review:
+    cost_strategy: minimize_cost
+YAML
+  run "$TMP/strategy-cfg2.log" -- --dry-run
+  if [ "$RUN_RC" -eq 0 ] \
+    && grep -q 'does not apply in pair mode' "$TMP/strategy-cfg2.log" \
+    && grep -q 'tasks.review.cost_strategy' "$TMP/strategy-cfg2.log" \
+    && grep -q 'Mode: pair' "$TMP/strategy-cfg2.log" \
+    && [ "$(plan_lines "$TMP/pair.log")" = "$(plan_lines "$TMP/strategy-cfg2.log")" ]; then
+    ok "v2 config の cost_strategy でも通知が出て（出所キー付き）プランは不変"
+  else
+    bad "v2 config 由来の minimize_cost が無音、またはプランを変えている（rc=${RUN_RC}）"
+    sed 's/^/    /' "$TMP/strategy-cfg2.log" >&2
+  fi
+
+  cat > "$REPO/.claude/agent-config.yaml" <<'YAML'
+version: "2.0"
+tasks:
+  review:
+    cost_strategy: minimise_cost
+YAML
+  run "$TMP/strategy-cfg2-typo.log" -- --dry-run
+  if [ "$RUN_RC" -ne 0 ] \
+    && grep -q "unknown strategy 'minimise_cost'" "$TMP/strategy-cfg2-typo.log" \
+    && grep -q 'tasks.review.cost_strategy' "$TMP/strategy-cfg2-typo.log"; then
+    ok "v2 config 経由の typo も出所キー付きで拒否する"
+  else
+    bad "v2 config 経由の typo が通った（rc=${RUN_RC}）"
+    sed 's/^/    /' "$TMP/strategy-cfg2-typo.log" >&2
+  fi
+
+  cat > "$REPO/.claude/agent-config.yaml" <<'YAML'
+cost_strategy: minimize_cost
+YAML
+  run "$TMP/strategy-cfg1.log" -- --dry-run
+  if [ "$RUN_RC" -eq 0 ] \
+    && grep -q 'does not apply in pair mode' "$TMP/strategy-cfg1.log" \
+    && grep -q 'config cost_strategy' "$TMP/strategy-cfg1.log" \
+    && grep -q 'Mode: pair' "$TMP/strategy-cfg1.log" \
+    && [ "$(plan_lines "$TMP/pair.log")" = "$(plan_lines "$TMP/strategy-cfg1.log")" ]; then
+    ok "v1 config の cost_strategy でも通知が出て（出所キー付き）プランは不変"
+  else
+    bad "v1 config 由来の minimize_cost が無音、またはプランを変えている（rc=${RUN_RC}）"
+    sed 's/^/    /' "$TMP/strategy-cfg1.log" >&2
+  fi
+  rm -rf "$REPO/.claude"
+else
+  ok "○ yq 不在のため config 由来の strategy 検査はスキップ（flag 経路は実行済み）"
+fi
+
 # ── 既存モードの温存 ───────────────────────────────────────────
 
 echo ""

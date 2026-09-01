@@ -111,7 +111,7 @@ codex の implement が `workspace-write` である理由: codex はこのモー
 
 この表の**write 軸は層 2 が再測する**（ローカル・無料）。network 軸は外向きの接続要求が要り、`run-all.sh` の並び（静的 → ネットワーク → 破壊的 → 低速）における本 suite の位置と衝突するので suite では測っていない — そちらは実測の記録に留まる（測り方は `codex sandbox --log-denials` で閉じたローカルポートへ接続を試み、denial の有無で判定する。外へは 1 バイトも出ない）。表の正本は `scripts/adapters/codex-cli-adapter.sh` の `get_sandbox_mode` 直前のコメントで、ここはその写し。**再測したら両方を更新すること。**
 
-なお grok の `workspace` は write 軸での対応物であって、network 軸は未測定。`grok --help` は「filesystem and network access」を司ると書いているが、その挙動はこのリポジトリのどこにも記録が無い。
+なお grok の `workspace` は write 軸での対応物にすぎない。network 軸は 2026-09-01 に実測し、**codex と乖離**（workspace は開放、read-only ですら macOS では実効遮断なし）と確定した — 記録は本 README の「ネットワーク境界の実測記録」節を参照。
 
 ### implement の書き込みルート（`codex exec -C`）
 
@@ -207,6 +207,65 @@ codex の stub は `exec --help` に応答する。返す内容は `FF_STUB_CODE
 - `PATH` 先頭に stub を置く方式では、stub を 1 つ置き忘れると**本物の CLI** に到達しうる
 
 `count` / `launches` は数値として検証してから使う。空・非数値のまま `[ "$i" -lt "$ARGC" ]` へ渡すと bash 3.2 は `integer expression expected` を出して**偽**に倒れ、「argv を 1 つも観測していないのに `--sandbox` を渡していない」という緑になる。
+
+## ネットワーク境界の実測記録（定常ゲート外・Issue #897）
+
+grok にはオフラインの probe サブコマンドが無く、境界測定には課金されるエージェント実走が要る。
+そのため本 suite の定常検査には載せず、**記録された測定**として扱う（書き込み境界の一部を
+記録扱いにしているのと同じ理由）。再測するときは下のコマンドをそのまま使うこと。
+
+- **測定日**: 2026-09-01 / **版**: grok 0.2.118 (1e1687c1cf6a) / **環境**: macOS seatbelt
+
+### 方法
+
+エージェント出力の捏造を排除するため、「オフラインでは知り得ない値」= HTTP レスポンスの
+Date ヘッダ（秒精度の現在時刻）を取得させ、呼び出し側のローカル時計と突き合わせた。
+
+```bash
+# probe.txt（プロンプト全文）:
+cat > probe.txt <<'PROBE'
+Run exactly this one command and report its raw output verbatim. No retries, no explanation, no file edits:
+curl -sS -m 8 -D - -o /dev/null https://example.com | grep -i '^date:'
+PROBE
+date -u '+LOCAL-BEFORE: %a, %d %b %Y %H:%M:%S GMT'
+grok --prompt-file probe.txt --sandbox workspace --output-format plain
+grok --prompt-file probe.txt --sandbox read-only --output-format plain
+date -u '+LOCAL-AFTER: %a, %d %b %Y %H:%M:%S GMT'
+# 適用確認: ${GROK_HOME:-~/.grok}/sandbox-events.jsonl の末尾に、この実行の
+# ProfileApplied 行が profile / restrict_network / enforced 付きで追記される
+```
+
+2026-09-01 の実出力（要点。HTTP 200 の確認は初回走行の
+`curl -sS -m 8 -o /dev/null -w "HTTP:%{http_code}"` で `HTTP:200 rc=0` を両プロファイルで取得）:
+
+```text
+# workspace 走行の ProfileApplied（sandbox-events.jsonl より）
+{"event_type":"ProfileApplied","profile":"workspace","platform":"macos/seatbelt",
+ "enforced":true,"restrict_network":false,...}
+# read-only 走行の ProfileApplied
+{"event_type":"ProfileApplied","profile":"read-only","enforced":true,"restrict_network":true,...}
+# read-only 走行のエージェント出力（Date ヘッダ）
+date: Tue, 01 Sep 2026 02:24:02 GMT
+```
+
+### 結果
+
+| profile | ProfileApplied（sandbox-events.jsonl） | 外部 HTTPS 実測 |
+|---|---|---|
+| workspace（implement 用） | `enforced: true, restrict_network: false` | HTTP 200 成功（開放） |
+| read-only（review 用） | `enforced: true, restrict_network: true` | **HTTP 200 成功（開放）** — 宣言と実効が乖離 |
+
+Date ヘッダ検証（read-only 走行）: LOCAL-BEFORE 02:23:41 GMT → 取得 Date **02:24:02 GMT** →
+LOCAL-AFTER 02:24:15 GMT（前後時刻の間に収まる = 実通信の証拠）。
+
+### 帰結
+
+1. codex implement（`network_access=false` ピン）との非対称は現行版で実在する
+2. `restrict_network: true` の記録は macOS では遮断の証拠にならない（review 経路も開放）
+3. grok に network を閉じる設定手段は無い（プロファイルは組み込みのみ）。アダプタは
+   dispatch のたびに開放の旨を stderr へ提示する（黙って開放のまま走らせない）。
+   この通知行の存在は verify.sh の静的針で固定している（定常ゲート外なのは実測
+   そのものであって、通知の存在検査は定常で走る）
 
 ## 実行
 

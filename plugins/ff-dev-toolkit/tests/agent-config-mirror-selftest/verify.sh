@@ -202,7 +202,7 @@ fi
 # grok-cli 所有観点を codex-cli にも注入し、重複専用ゲートだけで red になる形を撃つ。
 reset_completeness_fixture
 remember_file "$FIXTURE_MULTI"
-perl -0pi -e 's/codex-cli\)   echo "code-review test-analysis"/codex-cli)   echo "code-review test-analysis error-handler-hunt"/' "$FIXTURE_MULTI"
+perl -0pi -e 's/codex-cli\)   echo "code-review test-analysis acceptance-criteria"/codex-cli)   echo "code-review test-analysis acceptance-criteria error-handler-hunt"/' "$FIXTURE_MULTI"
 if assert_file_changed "既定 CLI 間の観点重複" "$FIXTURE_MULTI" \
   && run_fixture "既定 CLI 間の観点重複"; then
   assert_contains "重複観点と両 CLI を名指し" "$RUN_OUTPUT" \

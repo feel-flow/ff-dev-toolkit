@@ -76,13 +76,40 @@ fi
 # reports a false negative — the first attempt here did exactly that.
 #
 # Provenance is stale and cannot be refreshed for free. The table above was
-# measured on grok 0.2.118; the installed CLI is 1.0.5 (2026-08-26). Unlike codex
+# measured on grok 0.2.118; a 1.0.5 install was observed on another machine
+# (2026-08-26). Unlike codex
 # — which ships `codex sandbox`, a subcommand that runs an arbitrary command under
 # the same sandbox without invoking a model — grok has no offline probe
 # (`grok --help` lists no `sandbox` subcommand), and its positive confirmation
 # path is the `ProfileApplied` record that only a real, billed agent run writes.
-# So the rows above are NOT re-measured on 1.0.5, and this comment does not claim
-# they are.
+# So the WRITE rows above are NOT re-measured beyond 0.2.118, and this comment
+# does not claim they are.
+#
+# Network boundary (Issue #897, measured 2026-09-01 on grok 0.2.118, macOS
+# seatbelt, billed runs — commands and results in
+# tests/adapter-sandbox-contract/README.md):
+#   --sandbox workspace  → ProfileApplied restrict_network:false, and an
+#                          outbound HTTPS fetch to an external host SUCCEEDED.
+#   --sandbox read-only  → ProfileApplied records restrict_network:true,
+#                          enforced:true — and the same outbound HTTPS fetch
+#                          STILL SUCCEEDED. The declaration and the effective
+#                          boundary diverge on macOS; do not treat a
+#                          restrict_network:true record as proof of isolation.
+#   Fabrication was ruled out by having the sandboxed agent return the HTTP
+#   Date response header, which landed between wall-clock timestamps taken
+#   immediately before and after the read-only run.
+# grok has no VERIFIED way to close the network: there is no codex-style
+# `-c sandbox_workspace_write.network_access=false` equivalent, and while
+# ~/.grok/sandbox.toml can define custom profiles, the read-only measurement
+# above shows that a profile *recording* restrict_network:true still passes
+# outbound HTTPS on macOS — so a custom profile pinning the same knob cannot
+# be expected to hold either (custom-profile blocking itself is unmeasured).
+# The asymmetry with codex implement (network pinned off) is therefore a
+# measured, currently unfixable fact. The adapter therefore TELLS the user before every
+# dispatch (see the notice below get_sandbox_profile) instead of silently
+# running open — that notice is the "do not run open silently" half of the AC.
+# This cannot become a standing gate: measuring requires a billed agent run,
+# so it stays a recorded measurement, like the write rows above.
 #
 # Write-boundary narrowing (Issue #896): codex confines implement writes to the
 # staging dir alone via `codex exec -C <staging>`. The equivalent for grok is
@@ -128,6 +155,14 @@ echo "   Task type: ${TASK_TYPE:-review}" >&2
 echo "   Timeout: ${TIMEOUT}s" >&2
 
 sandbox_profile="$(get_sandbox_profile)"
+
+# grok のサンドボックスは outbound network を遮断しない（Issue #897 の実測
+# 2026-09-01 / grok 0.2.118 / macOS: workspace は宣言どおり開放、read-only は
+# restrict_network:true を記録しながら外部 HTTPS が通る）。閉じる設定手段が無い
+# ため、黙って開放のまま走らせず毎回提示する（codex implement は network を
+# 明示ピンで遮断しており、非対称）。Linux（Landlock）は未測定だが、保守側 =
+# 開放前提に倒して同じ通知を出す（意図的な過剰警告。測定したら文言を分岐する）。
+echo "   ⚠️ network: grok の '${sandbox_profile}' sandbox は外部ネットワークを遮断しません（macOS 実測 2026-09-01 / 0.2.118、Linux は未測定・開放前提。codex と非対称）" >&2
 
 # サンドボックス適用の肯定確認は、この実行で**追記された**イベントだけを見る。
 # 実行前の行数を控えておく。

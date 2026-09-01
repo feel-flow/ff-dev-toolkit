@@ -359,6 +359,9 @@ contains "$SKILL" "## 自動発火（事前注入 + Stop fallback）" "自動発
 contains "$SKILL" "ユーザー依頼の作業がこの応答で完了する" "自動発火: 完了時は振り返りを実施"
 contains "$SKILL" "質問・承認待ち・外部状態待ち・作業途中である" "自動発火: 未完了時は対象外"
 contains "$SKILL" "UserPromptSubmit の \`additionalContext\`" "自動発火: 応答生成前に振り返り契約を注入"
+# Issue #840: 非対話の単発実行（codex exec）には注入しない規定。判別条件（model +
+# bypassPermissions）が SKILL.md から落ちると、hook 実装だけが知る暗黙挙動になる。
+contains "$SKILL" "Codex の非対話の単発実行（UserPromptSubmit 入力に \`model\` があり \`permission_mode\` が \`bypassPermissions\`" "自動発火: 非対話の単発実行には事前注入しない"
 
 # ── C. 消費側文書への伝播 ────────────────────────────────────────────────────
 # 上限・1 行報告・承認境界が片側だけ書き換わるのを検出する。

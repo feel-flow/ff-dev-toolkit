@@ -625,7 +625,7 @@ echo "✅ レビュー完了。出力先: $FF_REVIEW_OUTPUT"
 
 #### CRITICAL_BLOCK の観点別段階化
 
-`<!-- CRITICAL_BLOCK -->` を立てるのは**ブロック観点**（既定では非ブロック名簿に載っていないすべての観点。同梱観点では code-review / security-analysis / error-handler-hunt / comprehensive-review）の Critical だけです。**非ブロック観点**（既定: comment-analysis / test-analysis / type-design-analysis / code-simplification）の Critical は、レポート本文には従来どおり Critical として現れますが、マーカーとしては `<!-- CRITICAL_NONBLOCK -->` の注記になり、それ単独では push ゲートを再発火させません（修正必須である点は変わりません — 次回の通常レビューまたは部分再検証で確認します）。
+`<!-- CRITICAL_BLOCK -->` を立てるのは**ブロック観点**（既定では非ブロック名簿に載っていないすべての観点。同梱観点では code-review / security-analysis / error-handler-hunt / acceptance-criteria / comprehensive-review）の Critical だけです。**非ブロック観点**（既定: comment-analysis / test-analysis / type-design-analysis / code-simplification）の Critical は、レポート本文には従来どおり Critical として現れますが、マーカーとしては `<!-- CRITICAL_NONBLOCK -->` の注記になり、それ単独では push ゲートを再発火させません（修正必須である点は変わりません — 次回の通常レビューまたは部分再検証で確認します）。
 
 - 名簿は「格下げする観点」の列挙（denylist）です。載っていない観点 — 将来追加される観点や名簿の typo を含む — は従来どおりブロックします（fail closed）
 - 上書きは env `MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES`（空白またはカンマ区切り。**空文字の明示指定 = 全観点ブロック（旧挙動）**）> プロジェクト設定 `.claude/agent-config.yaml` の `review.critical_nonblock_perspectives`（1 文字列）> 既定、の順で解決されます
@@ -647,7 +647,7 @@ bash scripts/codex-review.sh --base develop --reviewers comment-analysis
 
 1. 同じ PR で全観点のフルレビューを 1 度通過済みである（初回レビューは常にフル実行）
 2. fix が単一観点の指摘への対応に閉じている
-3. 修正対象がブロック観点（`<!-- CRITICAL_BLOCK -->` を立てる観点。同梱観点では code-review / security-analysis / error-handler-hunt / comprehensive-review）の Critical ではない
+3. 修正対象がブロック観点（`<!-- CRITICAL_BLOCK -->` を立てる観点。同梱観点では code-review / security-analysis / error-handler-hunt / acceptance-criteria / comprehensive-review）の Critical ではない
 
 **フル再実行が必要な条件（いずれか該当で全観点を回し直す）**:
 

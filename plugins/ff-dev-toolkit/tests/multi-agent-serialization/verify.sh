@@ -19,7 +19,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 CODEX_BARRIER_TIMEOUT_SECONDS=10
-CODEX_BARRIER_PARTIES=2
+# codex-cli の review 所有観点数と揃える（acceptance-criteria 追加で 2 → 3。
+# issue #1054）。プラン形が変わったらここを追随させる。
+CODEX_BARRIER_PARTIES=3
 
 [ -f "$MULTI_AGENT" ] || {
   echo "✗ 対象ファイルが見つかりません: $MULTI_AGENT" >&2
@@ -141,8 +143,8 @@ echo "- Suggestion: host-mock copilot (should never run)"
 SH
 chmod +x "$HOSTMOCK/copilot"
 export PATH="$HOSTMOCK:$PATH"
-# codex（standard tier）は 2-party の期限付きバリアで互いの開始を待つ。
-# 並列なら両者が通過し、standard まで逐次化すると先行タスクが期限切れになる。
+# codex（standard tier）は所有観点数と同数 party の期限付きバリアで互いの開始を待つ。
+# 並列なら全タスクが通過し、standard まで逐次化すると先行タスクが期限切れになる。
 # 時間窓内の start/end 交差ではなく、相手の開始という事象を期限内で待つため、短い
 # 滞留窓より大きな spawn スキューを許容する。期限は壊れた実装で suite を hang させない
 # 安全弁である（Issue #415）。
@@ -296,7 +298,7 @@ else
   sed 's/^/    | /' "$GROK_LOG" >&2
 fi
 
-# tier 限定の対称検査: codex（standard）の 2 タスクは並列のまま = 両方が期限付き
+# tier 限定の対称検査: codex（standard）の全タスクは並列のまま = 全部が期限付き
 # バリアを通過し、start/start/end/end の交差が記録されること。
 CODEX_STARTS="$(/usr/bin/grep -c '^start ' "$CODEX_LOG")" || CODEX_STARTS=0
 if [[ "$CODEX_STARTS" -eq "$CODEX_BARRIER_PARTIES" ]]; then

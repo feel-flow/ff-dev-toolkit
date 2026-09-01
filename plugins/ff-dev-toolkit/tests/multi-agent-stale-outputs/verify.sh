@@ -15,6 +15,14 @@
 #     （write_output の 1 行目マーカーを持つ）」の `*.md` を `<cli>/previous/` へ退避
 #   - 利用者が置いた `.md`・プラン外 CLI のディレクトリ・非 `.md`・サブディレクトリは
 #     動かさず、結果ファイルを持つものは stderr と統合レポートで名指しする
+#   - staging（`<cli>/files/<perspective>/`）は**退避せず名指しだけ**（Issue #724）。
+#     ファイルを持つ staging（implement ではプラン内タスクの分だけ除外。review /
+#     explore は staging を clear も write もしないため全て対象）・`files/` 直下の
+#     生ファイルや非ディレクトリ実体・symlink（`files/` 自体もエントリも追わず
+#     リンクとして名指し）・プラン外 CLI の files/ 残骸（直下 .md の有無とは独立に
+#     報告）が対象。空の staging は名指しせず、走査に失敗したものは 0 件でも
+#     「有り」でもなく「走査できなかった」として名指しする（rc は実行へ波及させない）
+#   - 退避は task type 非依存（implement のサマリ .md も同じ経路で previous/ へ）
 #   - `previous/` は毎回作り直し、捨てた件数を名乗る
 #   - 解決検査は resume 書き戻し・clear_planned_outputs より**前**に一括で行う。
 #     `<cli>` が出力先の外を指す symlink なら、外部を 1 バイトも触らずに中断する
@@ -88,8 +96,26 @@ printf '0\n' > "$COUNT_FILE"
 cat > "$STUB/codex" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
+# implement 経路の require_cd_capability は起動前に \`codex exec --help\` を読み、
+# "-C, --cd" の表記が無ければ中断する。help 応答は起動回数に数えない。
+for a in "\$@"; do
+  if [[ "\$a" == "--help" ]]; then
+    printf '%s\n' '  -C, --cd <DIR>  stub capability probe'
+    exit 0
+  fi
+done
 n="\$(cat "$COUNT_FILE")"
 printf '%s\n' "\$((n + 1))" > "$COUNT_FILE"
+# implement では -C <staging> が渡る。実 CLI と同じく staging へ 1 ファイル生成する
+# （観点を絞った再実行のあとに files/ 残骸が残る、という fixture の実体を作る）。
+prev=""
+for a in "\$@"; do
+  if [[ "\$prev" == "-C" ]]; then
+    mkdir -p "\$a"
+    printf 'GENERATED-BY-STUB\n' > "\$a/generated.txt"
+  fi
+  prev="\$a"
+done
 printf '%s\n' \
   "## Stub Review" \
   "" \
@@ -158,6 +184,27 @@ plant_result "$OUT/claude-code/comment-analysis.md" claude-code comment-analysis
 # 結果ファイルではないもの（触ってはいけない）
 printf '%s\n' "$STALE_MARK" > "$OUT/codex-cli/notes.txt"
 printf '%s\n' "$STALE_MARK" > "$OUT/codex-cli/files/keep/generated.txt"
+# staging の名指し対象と非対象（Issue #724）:
+#   keep         … ファイルを持つ staging = 名指しする（上で作成済み）
+#   empty-keep   … 空の staging = 名指ししない
+#   link-keep    … staging の symlink = 追わず symlink として名指しする
+#   dangling     … dangling symlink = 同じく symlink として名指しする
+#   stray.txt    … files/ 直下の生ファイル = 名指しする
+#   code-review  … プラン内観点だが **review 実行**なので名指しする
+#                  （staging は implement の概念。review はここを clear も write も
+#                  しないため、プラン内の観点名でも中身は前回の残骸でしかない）
+mkdir -p "$OUT/codex-cli/files/empty-keep" "$OUT/codex-cli/files/code-review"
+printf '%s\n' "$STALE_MARK" > "$OUT/codex-cli/files/code-review/planned.txt"
+ln -s keep "$OUT/codex-cli/files/link-keep"
+ln -s no-such-target "$OUT/codex-cli/files/dangling"
+printf '%s\n' "$STALE_MARK" > "$OUT/codex-cli/files/stray.txt"
+# 直下に .md を持たないが files/ に残骸を持つプラン外 CLI（fall-back の名指し対象）
+mkdir -p "$OUT/grok-cli/files/security-analysis"
+printf '%s\n' "$STALE_MARK" > "$OUT/grok-cli/files/security-analysis/leftover.txt"
+# 直下 .md と files/ 残骸の**両方**を持つプラン外 CLI（.md があっても staging を
+# 黙らせない独立報告の検査対象。claude-code は上で comment-analysis.md を植えてある）
+mkdir -p "$OUT/claude-code/files/comment-analysis"
+printf '%s\n' "$STALE_MARK" > "$OUT/claude-code/files/comment-analysis/leftover.txt"
 
 if run_review "$TMP/run-a.log"; then
   ok "退避を伴う実行が成功する"
@@ -271,6 +318,65 @@ if [[ -f "$OUT/codex-cli/files/keep/generated.txt" ]]; then
   ok "サブディレクトリ（implement の staging 等）には触れない"
 else
   bad "サブディレクトリの中身を動かした"
+fi
+
+if grep -qF "Not part of this run: codex-cli/files/keep/ (1 staging file(s) from an earlier run — left untouched, not this run's output)" "$TMP/run-a.log"; then
+  ok "ファイルを持つプラン外 staging を件数つきで名指しする（Issue #724）"
+else
+  bad "プラン外 staging の残骸が実行ログに出ない（ls files/ で今回の成果に見える）"
+fi
+
+if grep -qF '> - codex-cli/files/keep/' "$REPORT"; then
+  ok "staging 残骸の名指しが統合レポートにも載る"
+else
+  bad "レポート経由の消費者に staging 残骸の存在が届かない"
+fi
+
+if grep -qF 'Not part of this run: codex-cli/files/code-review/ (1 staging file(s) from an earlier run' "$TMP/run-a.log"; then
+  ok "review 実行ではプラン内観点の staging も名指しする（review は staging を clear も write もしない）"
+else
+  bad "観点名がプランに載っているだけの理由で staging 残骸が黙って素通りした"
+fi
+
+if ! grep -q 'codex-cli/files/empty-keep' "$TMP/run-a.log"; then
+  ok "空の staging は名指ししない（誤らせる中身が無い）"
+else
+  bad "空ディレクトリまで名指しした（ノイズで本物の残骸が埋まる）"
+fi
+
+if grep -qF 'Not part of this run: codex-cli/files/link-keep (symlink left from an earlier run — not followed' "$TMP/run-a.log" \
+   && [[ -L "$OUT/codex-cli/files/link-keep" ]]; then
+  ok "staging の symlink は追わず、symlink として名指しする"
+else
+  bad "staging の symlink を追った、または黙って素通しした"
+fi
+
+if grep -qF 'Not part of this run: codex-cli/files/dangling (symlink left from an earlier run — not followed' "$TMP/run-a.log" \
+   && [[ -L "$OUT/codex-cli/files/dangling" ]]; then
+  ok "dangling symlink も黙って落とさず、symlink として名指しする"
+else
+  bad "dangling symlink が glob から黙って抜け落ちた"
+fi
+
+if grep -qF 'Not part of this run: codex-cli/files/stray.txt (stray file from an earlier run' "$TMP/run-a.log" \
+   && [[ -f "$OUT/codex-cli/files/stray.txt" ]]; then
+  ok "files/ 直下の生ファイルも名指しする（触れない）"
+else
+  bad "files/ 直下の生ファイルが黙って残った"
+fi
+
+if grep -qF 'Not part of this run: grok-cli/ (staging file(s) under files/ from an earlier run' "$TMP/run-a.log" \
+   && [[ -f "$OUT/grok-cli/files/security-analysis/leftover.txt" ]]; then
+  ok "直下に .md が無いプラン外 CLI も files/ の残骸で名指しする（ファイルには触れない）"
+else
+  bad ".md を持たないプラン外 CLI の staging 残骸が黙って残る"
+fi
+
+if grep -qF 'Not part of this run: claude-code/ (1 result file(s) from an earlier run' "$TMP/run-a.log" \
+   && grep -qF 'Not part of this run: claude-code/ (staging file(s) under files/ from an earlier run' "$TMP/run-a.log"; then
+  ok "プラン外 CLI の直下 .md と files/ 残骸を**独立に**両方名指しする"
+else
+  bad "直下 .md が 1 件でもあると files/ の残骸が黙って素通りする（elif の束ね）"
 fi
 
 echo ""
@@ -426,6 +532,118 @@ else
 fi
 
 echo ""
+echo "== <cli>/files 自体が symlink なら追わず、リンクとして名指しする =="
+# 名指しのための読み取り走査でも、指し先が出力先の外なら他人のツリーを歩くことに
+# なる（巨大ツリーの walk・権限エラーの雪崩）。リンクはリンクとして名指しして終える。
+OUTSIDE_FILES="$TMP/outside-files"
+mkdir -p "$OUTSIDE_FILES/outside-persp"
+printf 'sentinel\n' > "$OUTSIDE_FILES/outside-persp/keep.txt"
+rm -rf "$OUT/codex-cli/files"
+ln -s "$OUTSIDE_FILES" "$OUT/codex-cli/files"
+if run_review "$TMP/run-g2.log"; then
+  ok "files/ が symlink でも実行は成功する"
+else
+  bad "files/ の symlink で実行が失敗した（ログ: $TMP/run-g2.log）"
+fi
+
+if grep -qF 'Not part of this run: codex-cli/files (symlink left from an earlier run — not followed' "$TMP/run-g2.log"; then
+  ok "files/ 自体の symlink をリンクとして名指しする"
+else
+  bad "files/ の symlink が黙って素通りした"
+fi
+
+if ! grep -q 'codex-cli/files/outside-persp' "$TMP/run-g2.log" \
+   && [[ -L "$OUT/codex-cli/files" && -f "$OUTSIDE_FILES/outside-persp/keep.txt" ]]; then
+  ok "symlink の指し先を走査しない（中身を perspective として名指ししない・触れない）"
+else
+  bad "files/ の symlink を追って指し先を走査した"
+fi
+
+echo ""
+echo "== implement: 絞った再実行がサマリ .md を退避し、staging 残骸を名指しする（Issue #724） =="
+# quarantine は execute_tasks 共通経路で task type 非依存のはずだが、これまで実走で
+# 固定していたのは review だけ。implement のサマリ .md が同じ経路で退避されること、
+# そして staging（files/<perspective>/）は退避せず名指しされることを 1 本で固定する。
+IMP_OUT="$REPO/.implement-results"
+IMP_REPORT="$IMP_OUT/integrated-report.md"
+
+run_implement() { # <log> [--perspective ...]
+  local log="$1" rc=0
+  shift
+  set +e
+  (
+    cd "$REPO"
+    run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+      --task implement --mode distributed --sequential --cli codex-cli \
+      --description "stale-outputs implement fixture" --base develop --timeout 60 "$@"
+  ) >"$log" 2>&1
+  rc=$?
+  set -e
+  return "$rc"
+}
+
+if run_implement "$TMP/run-imp-a.log" --perspective refactoring --perspective documentation; then
+  ok "2 観点の implement 実行が成功する"
+else
+  bad "2 観点の implement 実行が失敗した（ログ: $TMP/run-imp-a.log）"
+  sed -n '1,40p' "$TMP/run-imp-a.log" >&2 || true
+fi
+
+if [[ -f "$IMP_OUT/codex-cli/refactoring.md" && -f "$IMP_OUT/codex-cli/documentation.md" \
+      && -f "$IMP_OUT/codex-cli/files/documentation/generated.txt" ]]; then
+  ok "両観点のサマリ .md と staging 生成物が揃っている（fixture の前提）"
+else
+  bad "implement fixture の前提が崩れている（サマリまたは staging 生成物が無い）"
+fi
+
+if run_implement "$TMP/run-imp-b.log" --perspective refactoring; then
+  ok "観点を絞った implement 再実行が成功する"
+else
+  bad "絞った implement 再実行が失敗した（ログ: $TMP/run-imp-b.log）"
+  sed -n '1,40p' "$TMP/run-imp-b.log" >&2 || true
+fi
+
+if [[ ! -e "$IMP_OUT/codex-cli/documentation.md" \
+      && -f "$IMP_OUT/codex-cli/previous/documentation.md" ]] \
+   && grep -qF '<!-- Multi-CLI Implement Result -->' "$IMP_OUT/codex-cli/previous/documentation.md"; then
+  ok "implement のプラン外サマリ .md も previous/ へ退避される（review 以外の実走経路）"
+else
+  bad "implement のサマリ .md が退避されない（退避経路が review 専用に縮んでいる）"
+fi
+
+if grep -qF 'Moved 1 result(s) from a previous run' "$TMP/run-imp-b.log"; then
+  ok "implement でも退避したことと件数を実行ログで名乗る"
+else
+  bad "implement の退避通知が実行ログに出ない"
+fi
+
+if grep -qF 'Not part of this run: codex-cli/files/documentation/ (1 staging file(s) from an earlier run' "$TMP/run-imp-b.log"; then
+  ok "プランに入らなかったタスクの staging を実行ログで名指しする"
+else
+  bad "プラン外タスクの staging 残骸が実行ログに出ない"
+fi
+
+if [[ -f "$IMP_OUT/codex-cli/files/documentation/generated.txt" ]]; then
+  ok "名指しした staging のファイルには触れない"
+else
+  bad "プラン外 staging のファイルを動かした（名指しだけの契約破り）"
+fi
+
+if grep -qF '> - codex-cli/files/documentation/' "$IMP_REPORT"; then
+  ok "staging 残骸の名指しが implement 統合レポートにも載る"
+else
+  bad "implement レポート経由の消費者に staging 残骸の存在が届かない"
+fi
+
+# プラン内除外が働くのは implement のときだけ（review 側は run-a の code-review
+# fixture が「名指しする」向きで固定している）。
+if ! grep -q 'Not part of this run: codex-cli/files/refactoring/' "$TMP/run-imp-b.log"; then
+  ok "implement ではプラン内タスクの staging を名指ししない"
+else
+  bad "今回の実行対象の staging まで残骸扱いした"
+fi
+
+echo ""
 echo "== CLI ディレクトリが出力先の外を指すなら、何も書かず消さずに中断する =="
 # 検査は resume 書き戻し・clear_planned_outputs より**前**に行う。後ろに置くと、
 # 中断する前に (a) clear_planned_outputs の rm -f が外部の**プラン内**ファイルを消し、
@@ -501,6 +719,208 @@ if [[ -f "$OUT/claude-code/comment-analysis.md" ]] \
   ok "別名の指し先を退避も削除もせず、CLI を起動しない"
 else
   bad "別名の指し先へ退避・削除が及んだ（プラン外 CLI の結果が動く）"
+fi
+
+echo ""
+echo "== clear_planned_outputs 自体が削除前に symlink な <cli>/ を拒否する（Issue #722） =="
+# E2E 経路では Phase 1 の validate_planned_result_dirs が先に中断する（上の run-h /
+# run-i）ため、削除の実行点に置いた検査は関数を直接呼ばないと測れない — この
+# ブロックだけが、clear_planned_outputs 内の検査を外す変異で赤化する。
+# `main "$@"` の行だけを除いた写しを source する。$0 には実スクリプトのパスを渡し、
+# SCRIPT_DIR（= adapter-common の解決）を本物に向ける。
+FUNCS="$TMP/multi-agent-functions.sh"
+if grep -q '^main "\$@"$' "$MULTI_AGENT"; then
+  ok "写しの前提（末尾の main 呼び出し行）が実物に存在する"
+else
+  bad "multi-agent.sh の main 呼び出し行が想定の形ではない（写しに main 実行が残る）"
+fi
+sed '/^main "\$@"$/d' "$MULTI_AGENT" > "$FUNCS"
+
+run_clear_planned_outputs() { # <output-dir> — 物理パスで渡すこと
+  (
+    cd "$REPO"
+    run_isolated bash -c '
+      set -euo pipefail
+      source "$1"
+      OUTPUT_DIR="$2"
+      EXECUTION_PLAN="codex-cli:code-review"
+      TASK_TYPE=review
+      PRESERVE_PREVIOUS_CRITICAL_REPORT=false
+      clear_planned_outputs
+    ' "$MULTI_AGENT" "$FUNCS" "$1"
+  )
+}
+
+UNIT_OUT="$TMP/unit-out"
+UNIT_EXT="$TMP/unit-external"
+mkdir -p "$UNIT_OUT" "$UNIT_EXT"
+UNIT_OUT="$(cd "$UNIT_OUT" && pwd -P)"
+UNIT_EXT="$(cd "$UNIT_EXT" && pwd -P)"
+printf 'EXTERNAL-PLANNED-KEEP\n' > "$UNIT_EXT/code-review.md"
+ln -s "$UNIT_EXT" "$UNIT_OUT/codex-cli"
+
+set +e
+run_clear_planned_outputs "$UNIT_OUT" >"$TMP/unit-symlink.log" 2>&1
+UNIT_RC=$?
+set -e
+if [[ "$UNIT_RC" -ne 0 ]]; then
+  ok "外を指す symlink な <cli>/ で clear_planned_outputs が非 0 で落ちる"
+else
+  bad "symlink な <cli>/ でも clear_planned_outputs が成功した（外部を消しに行く）"
+fi
+
+if [[ -f "$UNIT_EXT/code-review.md" ]] \
+   && grep -qF 'EXTERNAL-PLANNED-KEEP' "$UNIT_EXT/code-review.md"; then
+  ok "出力ディレクトリ外の同名ファイルを消さない"
+else
+  bad "rm -f が symlink を辿って出力ディレクトリ外のファイルを消した"
+fi
+
+if grep -qF 'is a symlink to another location — refusing to touch it' "$TMP/unit-symlink.log"; then
+  ok "退避処理と同じトーンで fail-loud する（resolve_expected_dir の診断）"
+else
+  bad "中断の診断が出ない（黙って失敗している）"
+  sed -n '1,10p' "$TMP/unit-symlink.log" >&2 || true
+fi
+
+# 通常構成（symlink なし）: 今回のプラン対象だけを消し、同居ファイルには触れない。
+rm -f "$UNIT_OUT/codex-cli"
+mkdir -p "$UNIT_OUT/codex-cli"
+printf 'planned\n' > "$UNIT_OUT/codex-cli/code-review.md"
+printf 'unplanned\n' > "$UNIT_OUT/codex-cli/test-analysis.md"
+if run_clear_planned_outputs "$UNIT_OUT" >"$TMP/unit-normal.log" 2>&1; then
+  ok "通常構成では clear_planned_outputs が成功する"
+else
+  bad "通常構成で clear_planned_outputs が失敗した（symlink でない実体を拒否している）"
+  sed -n '1,10p' "$TMP/unit-normal.log" >&2 || true
+fi
+
+if [[ ! -e "$UNIT_OUT/codex-cli/code-review.md" ]] \
+   && [[ -f "$UNIT_OUT/codex-cli/test-analysis.md" ]]; then
+  ok "今回のプラン対象だけを消し、プラン外の同居ファイルには触れない"
+else
+  bad "削除範囲が今回のプラン対象と一致しない"
+fi
+
+# dangling symlink（指し先が無いリンク）: [[ -d ]] が偽になり resolve を通らないが、
+# 素通しすると rm -f が「何も消せないまま rc=0」で成功に見える。削除の実行点でも
+# validate_result_dir_paths と同じ「not a directory」の fail-loud に揃える。
+rm -rf "$UNIT_OUT/codex-cli"
+ln -s "$UNIT_OUT/no-such-target" "$UNIT_OUT/codex-cli"
+set +e
+run_clear_planned_outputs "$UNIT_OUT" >"$TMP/unit-dangling.log" 2>&1
+UNIT_RC=$?
+set -e
+if [[ "$UNIT_RC" -ne 0 ]]; then
+  ok "dangling symlink な <cli>/ で clear_planned_outputs が非 0 で落ちる"
+else
+  bad "dangling symlink な <cli>/ を素通しした（rc=0 の空振り削除）"
+fi
+if grep -qF 'exists but is not a directory' "$TMP/unit-dangling.log"; then
+  ok "validate 側と同じ「not a directory」の診断で fail-loud する"
+else
+  bad "dangling symlink の中断診断が出ない"
+  sed -n '1,10p' "$TMP/unit-dangling.log" >&2 || true
+fi
+
+echo ""
+echo "== staging の走査失敗は unknown として名指しし、実行は落とさない（Issue #724） =="
+# E2E では find を壊せない（orchestrator の他経路も find に依存しうる）ため、
+# clear_planned_outputs と同じ FUNCS 直呼びで、失敗する find を PATH 先頭に置いて測る。
+FAILFIND="$TMP/failfind"
+mkdir -p "$FAILFIND"
+cat > "$FAILFIND/find" <<'SH'
+#!/usr/bin/env bash
+echo "find: injected failure" >&2
+exit 1
+SH
+chmod +x "$FAILFIND/find"
+
+STG_OUT="$TMP/staging-unit-out"
+mkdir -p "$STG_OUT/codex-cli/files/keep" "$STG_OUT/claude-code/files/leftover-persp"
+printf 'payload\n' > "$STG_OUT/codex-cli/files/keep/generated.txt"
+printf 'payload\n' > "$STG_OUT/claude-code/files/leftover-persp/leftover.txt"
+STG_OUT="$(cd "$STG_OUT" && pwd -P)"
+
+run_staging_unit() { # <PATH に前置するディレクトリ（"" = なし）> <staging|dirs>
+  (
+    cd "$REPO"
+    run_isolated FF_TEST_PATH_PREFIX="$1" FF_TEST_MODE="$2" bash -c '
+      set -euo pipefail
+      if [[ -n "${FF_TEST_PATH_PREFIX:-}" ]]; then PATH="${FF_TEST_PATH_PREFIX}:${PATH}"; fi
+      source "$1"
+      OUTPUT_DIR="$2"
+      FULL_EXECUTION_PLAN="codex-cli:code-review"
+      TASK_TYPE=review
+      UNPLANNED_RESULT_NOTES=""
+      if [[ "$FF_TEST_MODE" == "staging" ]]; then
+        report_unplanned_staging_dirs codex-cli "${OUTPUT_DIR}/codex-cli"
+      else
+        report_unplanned_result_dirs
+      fi
+    ' "$MULTI_AGENT" "$FUNCS" "$STG_OUT"
+  )
+}
+
+# 正常経路: 名指しは stderr へ、stdout は汚さない（レポート生成等の stdout 消費と
+# 混ざらない契約）。
+if run_staging_unit "" staging >"$TMP/unit-stg-normal.out" 2>"$TMP/unit-stg-normal.err"; then
+  ok "staging 名指しの直呼びが成功する（正常経路）"
+else
+  bad "staging 名指しの直呼びが失敗した"
+  sed -n '1,10p' "$TMP/unit-stg-normal.err" >&2 || true
+fi
+if grep -qF 'Not part of this run: codex-cli/files/keep/ (1 staging file(s)' "$TMP/unit-stg-normal.err" \
+   && [[ ! -s "$TMP/unit-stg-normal.out" ]]; then
+  ok "名指しは stderr に出て、stdout を汚さない"
+else
+  bad "名指しの出力チャネルが契約（stderr）と違う"
+fi
+
+# find 失敗注入: rc=0 のまま unknown の別文言で名指しし、原因も握り潰さない。
+set +e
+run_staging_unit "$FAILFIND" staging >"$TMP/unit-stg-fail.out" 2>"$TMP/unit-stg-fail.err"
+UNIT_RC=$?
+set -e
+if [[ "$UNIT_RC" -eq 0 ]]; then
+  ok "find が失敗しても報告経路は rc=0（set -e で実行本体を落とさない）"
+else
+  bad "走査失敗が報告経路の rc に化けた（実行全体が落ちる）"
+  sed -n '1,10p' "$TMP/unit-stg-fail.err" >&2 || true
+fi
+if grep -qF 'Not part of this run: codex-cli/files/keep/ (could not scan this staging dir' "$TMP/unit-stg-fail.err"; then
+  ok "走査できなかったことを 0 件でも断定でもない別文言で名指しする"
+else
+  bad "unknown が黙殺されたか、「N 件ある」の断定に潰れた"
+fi
+if ! grep -qF '1 staging file(s)' "$TMP/unit-stg-fail.err"; then
+  ok "走査失敗時に件数を断定しない"
+else
+  bad "観測していない件数を観測したことにした"
+fi
+if grep -qF 'find: injected failure' "$TMP/unit-stg-fail.err"; then
+  ok "走査失敗の原因（find の stderr）を /dev/null に捨てない"
+else
+  bad "unknown の原因がどこにも残らない"
+fi
+if [[ -f "$STG_OUT/codex-cli/files/keep/generated.txt" ]]; then
+  ok "走査失敗時もファイルには触れない"
+else
+  bad "走査失敗の経路でファイルが動いた"
+fi
+
+# fall-back（プラン外 CLI の files/）も unknown を「有り」へ潰さない。
+set +e
+run_staging_unit "$FAILFIND" dirs >"$TMP/unit-dirs-fail.out" 2>"$TMP/unit-dirs-fail.err"
+UNIT_RC=$?
+set -e
+if [[ "$UNIT_RC" -eq 0 ]] \
+   && grep -qF 'Not part of this run: claude-code/ (could not scan files/' "$TMP/unit-dirs-fail.err" \
+   && ! grep -qF 'claude-code/ (staging file(s) under files/' "$TMP/unit-dirs-fail.err"; then
+  ok "プラン外 CLI の fall-back も走査失敗を rc=0 のまま別文言で名指しする"
+else
+  bad "fall-back 側で unknown が rc 化・黙殺・断定のいずれかに化けた"
+  sed -n '1,10p' "$TMP/unit-dirs-fail.err" >&2 || true
 fi
 
 echo ""

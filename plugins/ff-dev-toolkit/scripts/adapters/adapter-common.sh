@@ -77,6 +77,15 @@ detect_base_branch() {
 # 書き込む出力ディレクトリを数えると、正常な実行が毎回「変化した」になる — 利用者の
 # リポジトリが .review-results/ を gitignore しているとは限らない。
 #
+# 第 2 引数以降は**組み立て済みの除外 pathspec**（例: ':(exclude,glob,top).superpowers/**'）。
+# 常駐ツールが実行中に書き続けるパス（superpowers スキルの .superpowers/ 等）を
+# 作業ツリー判定から外すための口で、出力ディレクトリの除外と同じ経路（4 つの
+# 問い合わせすべて）に乗せる。HEAD / ブランチの検出は pathspec を読まないので、
+# ここの除外は**作業ツリーの指紋だけ**に効く（Issue #747 の要求どおり）。
+# `:(exclude` で始まらない引数は受け付けずに失敗する — 肯定形の pathspec が紛れると
+# 走査範囲が黙って「そのパスだけ」へ縮み、この機構が防ごうとしている監視の欠落を
+# 自分で作るため（fail-closed）。
+#
 # git のコマンドは**リポジトリ root へ cd してから**実行する。走査範囲そのものは
 # pathspec の ':/' が固定するので cd に依存しないが、**`:(exclude)` は CWD 相対**で、
 # cd を挟まないと除外がまったく効かない（実測: repo/src から
@@ -85,6 +94,18 @@ detect_base_branch() {
 # 落ちる — 静かに見逃すのではなく 100% 失敗する側へ倒れる。
 capture_repo_snapshot() {
   local exclude_rel="${1:-}"
+  if [[ $# -gt 0 ]]; then shift; fi
+  local extra
+  for extra in "$@"; do
+    case "$extra" in
+      ':(exclude'*) : ;;
+      *)
+        echo "ERROR: capture_repo_snapshot: extra pathspec must be an exclude pathspec, got: '${extra}'" >&2
+        echo "       A positive pathspec would silently shrink the watched range to that path alone." >&2
+        return 1
+        ;;
+    esac
+  done
   local root head branch worktree worktree_hash
 
   if ! root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
@@ -116,6 +137,9 @@ capture_repo_snapshot() {
     # a*/ と abc/ の両方を消し、':(exclude,literal)a*' は a*/ だけを消す）。監視範囲が
     # 黙って縮む形なので、この機構が防ごうとしている失敗と同じ種類になる。
     pathspec+=(":(exclude,literal)${exclude_rel}")
+  fi
+  if [[ $# -gt 0 ]]; then
+    pathspec+=("$@")
   fi
 
   # **`git status --porcelain` だけでは足りない。** 返るのは状態コードとパスであって
@@ -672,7 +696,7 @@ PROMPT
 # どの実体行も無ければ rc=1 = 本文なし。散文中の重大度語（「上記のレビューで
 # Critical 1 件…詳細は前述のとおり」等）は行頭アンカーと参照行 veto で落ちる。
 # バイト長は判定に使わない — 実体行を持たない出力は、長くても出力契約（各 perspective
-# の Output Template。件数サマリ節を持つ 7 観点 + comprehensive-review のゼロ件時
+# の Output Template。件数サマリ節を持つ 8 観点 + comprehensive-review のゼロ件時
 # 独立行契約）に反する未検証結果として不合格にする（長さは診断に併記する）。
 # なお perspective の Output Template と Execution Boundary の集約指示は、この受理
 # 条件を満たす形を CLI へ明示している（契約の一本化 — 指示なしにゲートだけで落とさない）。
@@ -683,67 +707,207 @@ PROMPT
 #   - bullet 無しの `CRITICAL: 説明` マーカー形は、同形の CLI エラー文と区別できない
 #     ため**受理しない**（集約側の CRITICAL 検出はこの形を引き続き検出する —
 #     受理と検出は別契約）
-review_body_present() { # $1: captured review body / rc0 = 上記の受理条件を満たす
-  local content="$1"
+#
+# ── 共有重大度行パーサー（Issue #908）──
+# 受理判定（review_body_present）と統合レポートの Critical 検出
+# （critical_findings_present — multi-agent.sh の CRITICAL_BLOCK 判定が呼ぶ）は、
+# 下の _ff_severity_scan が持つ**同一の行分類**（CommonMark フェンス追跡・
+# 重大度行文法 s1〜s4・数値ゼロ / ゼロ語のゼロ件文法・参照語 veto）を参照する。
+# 両者が独立実装だった間は、片側へ語彙・境界を足すたびにズレて fail-open /
+# 偽 BLOCK の両方向の非対称が再発した（Issue #893 の 7 巡レビューで実測）。
+# 語彙・境界の追加箇所は awk プログラムの BEGIN ブロック（正規表現の合成）だけ —
+# 判定側（accept / critical の方針分岐）は合成済みの分類フラグしか見ない。
+# 文法をここへ足すときは、受理と検出の両方へ同時に効くことを
+# tests/severity-parser-intersection（同じ入力表を両モードへ流す積集合テーブル）
+# が固定する。
+#
+# モードと終了コード:
+#   accept   — rc0: 上記受理条件を満たす実体行あり / rc1: なし。未閉フェンスは
+#              マスク放棄フォールバック（上記ヘッダ参照）
+#   critical — rc0: Critical の実所見あり / rc1: なし / rc20: 未閉フェンスで判定
+#              不能（ドメイン専用値 — awk 自身の異常終了 rc=2 と衝突させない。
+#              公開 rc への写像は critical_findings_present が行う）
+# critical モードの発火条件（行分類は accept と共有し、方針だけが異なる）:
+#   (c1) s1 件数行のうち、ラベルが critical で件数が 1 以上のもの（bullet 3 種・
+#        `**` 強調・先頭空白・全角コロン・Issues / Vulnerabilities / Gaps 修飾を
+#        受理側と同一に認める。明示ゼロ = 数値 0 とゼロ語 5 種は s1 と同じ境界で除外）
+#   (c2) s3 ラベル付き指摘行のうちラベルが critical のもの（参照語 veto の対象 —
+#        受理されない参照行は検出でも実所見に数えない）
+#   (c3) critical を含む見出し（no critical / non-critical を除く）のスコープ配下の
+#        bullet 行。ただし行分類の**ゼロ判定が優先** — s1/s2 に分類された明示ゼロ・
+#        ゼロ件報告行（`- Critical: none` / `- Critical: 0` / `- 指摘なし（注記
+#        つき）`）はスコープ内でも実所見に数えない。空所見語彙の裸 bullet
+#        （なし / 該当なし / 特になし / 指摘なし / 指摘事項なし / none / n/a /
+#        no issues）と参照語 veto 行も不算入
+#   (c4) 行頭（列 0）の `CRITICAL:` マーカー行（明示ゼロ行を除く）。bullet 無しの
+#        この形は受理側の実体行ではない（受理と検出は別契約 — 検出だけが広い唯一の形)
+_ff_severity_scan() { # $1: ff_mode (accept|critical) / 本文: stdin または $2 のファイル
   # awk は入力を読み切ってから終了する（早期 exit の SIGPIPE 反転を作らない）。
-  # awk 自体の失敗は rc 非 0 = 本文なし側へ倒れる（fail-loud）。
-  # 見出しの `#+` は interval（{1,6}）を使わない — BSD awk の interval 対応に
-  # 依存しないため。7 個以上の # は Markdown 見出しではないが、スコープ開始として
-  # 扱っても実体行の要求は変わらない。
+  # awk 自体の失敗は accept では rc 非 0 = 本文なし側（fail-loud）、critical では
+  # 0/1/20 以外 = 判定不能側（wrapper が写像し、呼び出し側が Critical ありへ倒す）。
+  # 見出しの `#+` と先頭スペースに interval（{0,3} 等）を使わない — BSD awk の
+  # interval 対応に依存しないため。7 個以上の # は Markdown 見出しではないが、
+  # スコープ開始として扱っても実体行の要求は変わらない。
   # found = フェンスマスク下の実体行 / found_any = 自己完結行（s1/s2/s3）をフェンスを
-  # 無視して数えたもの。未閉フェンスの分岐は found と found_any の**論理和**で判定する
-  # （フェンス外で見つけた実体行も、放棄したマスクの内側で見つけた自己完結行も、
-  # どちらも受理の根拠になる。s4 はスコープがフェンスと独立に定義できないため
-  # found_any には含めない）。
-  printf '%s\n' "$content" | awk '
+  # 無視して数えたもの（accept モードのみ使用）。accept の未閉フェンス分岐は found と
+  # found_any の**論理和**で判定する（フェンス外で見つけた実体行も、放棄したマスクの
+  # 内側で見つけた自己完結行も、どちらも受理の根拠になる。s4 はスコープがフェンスと
+  # 独立に定義できないため found_any には含めない）。
+  local ff_mode="$1"
+  shift
+  awk -v ff_mode="$ff_mode" '
+    BEGIN {
+      accept = (ff_mode == "accept")
+      # ── 行分類の正規表現（共有フラグメントからここで 1 回だけ合成する）──
+      # 語彙・境界（重大度ラベル・数値 / ゼロ語とその境界・bullet 種別・コロン形）の
+      # 追加箇所はこの BEGIN ブロックだけ。判定側は分類フラグ cls / cls_zero /
+      # cls_crit を参照する — 判定式に語彙を再複製すると、片側だけに語彙を足す
+      # 従来の非対称がこの関数の内側で再発する（Issue #908 セルフレビューで実測）。
+      sp    = "[[:space:]]"
+      lab   = "(critical|warning|suggestion)s?( issues| vulnerabilities| gaps)?"
+      colon = sp "*(:|：)" sp "*"
+      numv    = "[0-9]+" sp "*(\\/|件|（|$)"   # 件数と認める数値（境界つき）
+      numzero = "0+" sp "*(\\/|件|（|$)"       # 明示ゼロの数値形（同じ境界）
+      zerov   = "(なし|none|n\\/a|zero|ゼロ)" sp "*(\\/|。|（|$)"  # ゼロ語 5 種
+      b_opt = "^" sp "*[-*+]?" sp "*"          # bullet 任意（s1/s2）
+      b_req = "^" sp "*[-*+]" sp "+"           # bullet 必須（s3 の bullet 形）
+      s1_re      = b_opt "[*]*" lab "[*]*" colon "(" numv "|" zerov ")"
+      s1_zero_re = b_opt "[*]*" lab "[*]*" colon "(" numzero "|" zerov ")"
+      lab_crit_opt = b_opt "[*]*critical"      # s1 のラベルが critical か（前方一致）
+      s2a_re = b_opt "(指摘なし|該当なし|指摘事項なし)"
+      s2b_re = b_opt "指摘[^0-9]*0" sp "*件"
+      s3b_re = b_req "[*]*" lab "[*]*" colon "[^[:space:]]"
+      s3s_re = "^" sp "*\\*\\*" lab "\\*\\*" colon "[^[:space:]]"
+      lab_crit_breq   = b_req "[*]*critical"       # s3 bullet 形のラベルが critical か
+      lab_crit_strong = "^" sp "*\\*\\*critical"   # s3 強調形のラベルが critical か
+      s4_bullet_re = "^" sp "*[-*+]" sp
+      s4_empty_re  = "^" sp "*[-*+]" sp "*(なし|該当なし|特になし|指摘なし|指摘事項なし|none|n\\/a|no issues)[[:space:]。.]*$"
+      bare_re      = "^critical:"
+      bare_zero_re = "^critical:" sp "*(" numzero "|" zerov ")"
+      # ATX 見出し: 先頭の字下げはスペース 0〜3 個のみ（CommonMark — スペース 4 個
+      # 以上とタブ字下げは indented code であり見出しではない）
+      head_re = "^ ? ? ?#+" sp
+    }
     /^[[:space:]]*(```|~~~)/ {
       # CommonMark 準拠のフェンス追跡:
-      #   開始 — インデント 3 以下の ``` / ~~~（3 文字以上）。文字種と長さを記録
-      #   閉じ — 同種・同長以上・フェンス文字列の後が空白のみ・インデント 3 以下
+      #   開始 — スペース 0〜3 個の字下げ + 同種 3 文字以上。タブ字下げは 4 列扱い
+      #          = indented code なのでフェンスにしない。backtick フェンスは info
+      #          string に backtick を含む行を開始と認めない（CommonMark）
+      #   閉じ — 同種・同長以上・フェンス文字列の後が空白のみ・スペース 0〜3 個
       # 単純な反転トグルだとバッククォートフェンス内の ~~~ や 4 連フェンス内の
-      # 3 連を、後続検証なしだと ```not-a-closing-fence のような info string 付きの
-      # 行を「閉じ」と誤認し、引用中のテンプレート bullet が実体行として受理される。
-      # インデント 4 以上のフェンス様の行は indented code の一部（フェンスを開閉
-      # しない）として通常行へ落とす。
-      match($0, /^[[:space:]]*/)
+      # 3 連、```not-a-closing-fence のような info string 付きの行を「閉じ」と誤認し、
+      # 引用中のテンプレート bullet が実体行として扱われる。
+      match($0, /^ */)   # 字下げはスペースのみ数える（タブ混じりは ch 検査で落ちる）
       indent = RLENGTH
       rest = substr($0, RLENGTH + 1)
       ch = substr(rest, 1, 1)
       run = 0
       while (substr(rest, run + 1, 1) == ch) run++
       tail = substr(rest, run + 1)
-      if (fence == 0) {
-        if (indent <= 3) { fence = 1; fence_ch = ch; fence_len = run; next }
-      } else if (ch == fence_ch && run >= fence_len && indent <= 3 && tail ~ /^[[:space:]]*$/) {
-        fence = 0; next
+      if ((ch == "`" || ch == "~") && run >= 3) {
+        if (fence == 0) {
+          if (indent <= 3 && !(ch == "`" && index(tail, "`") > 0)) {
+            fence = 1; fence_ch = ch; fence_len = run; next
+          }
+        } else if (ch == fence_ch && run >= fence_len && indent <= 3 && tail ~ /^[[:space:]]*$/) {
+          fence = 0; next
+        }
       }
-      # 開閉いずれの条件も満たさないフェンス様の行は通常行 / 引用の中身。
-      # fall through — 下の実体行評価で扱う（フェンス内は !fence ガードで found が立たない）
+      # 開閉いずれの条件も満たさないフェンス様の行（タブ字下げ・スペース 4 個以上・
+      # info string 内 backtick 等）は通常行 / 引用の中身として fall through —
+      # 下の実体行評価で扱う（フェンス内は !fence ガードで found が立たない）
     }
     {
       l = tolower($0)
       isref = (l ~ /前のターン|前述|報告済み|上記で報告|上記で完了|earlier turn|previous turn|reported above|reported earlier|see above/)
-      if (!fence && l ~ /^[[:space:]]*#+[[:space:]]/) {
-        in_sev = (l ~ /critical|warning|suggestion/ || index($0, "重大度") > 0)
+      if (!fence && l ~ head_re) {
+        # 見出しスコープはレベル追跡で持つ: 開いたスコープより深い見出し
+        # （サブセクション）はスコープを維持し、同深度以浅の見出しで閉じて
+        # 再評価する（旧 Critical 検出側のモデル。受理側もこれに統一 —
+        # `### Critical` 配下の `#### 詳細` の bullet を両側が同じに扱う）。
+        match(l, /#+/)
+        lvl = RLENGTH
+        is_sev = (l ~ /critical|warning|suggestion/ || index($0, "重大度") > 0)
+        is_crit = (l ~ /critical/ && l !~ /no[[:space:]]+critical/ && l !~ /non-critical/)
+        if (!(in_sev && lvl > sev_lvl)) { in_sev = is_sev; sev_lvl = lvl }
+        if (!(in_crit && lvl > crit_lvl)) { in_crit = is_crit; crit_lvl = lvl }
         next
       }
-      self = 0
-      if (l ~ /^[[:space:]]*[-*+]?[[:space:]]*[*]*(critical|warning|suggestion)s?( issues| vulnerabilities| gaps)?[*]*[[:space:]]*(:|：)[[:space:]]*([0-9]+[[:space:]]*(\/|件|（|$)|(なし|none|n\/a|zero|ゼロ)[[:space:]]*(\/|。|（|$))/) self = 1
-      else if ($0 ~ /^[[:space:]]*[-*+]?[[:space:]]*(指摘なし|該当なし|指摘事項なし)/) self = 1
-      else if ($0 ~ /^[[:space:]]*[-*+]?[[:space:]]*指摘[^0-9]*0[[:space:]]*件/) self = 1
-      else if (!isref && l ~ /^[[:space:]]*[-*+][[:space:]]+[*]*(critical|warning|suggestion)s?( issues| vulnerabilities| gaps)?[*]*[[:space:]]*(:|：)[[:space:]]*[^[:space:]]/) self = 1
-      else if (!isref && l ~ /^[[:space:]]*\*\*(critical|warning|suggestion)s?( issues| vulnerabilities| gaps)?\*\*[[:space:]]*(:|：)[[:space:]]*[^[:space:]]/) self = 1
-      if (self) {
-        found_any = 1
-        if (!fence) found = 1
+      # ── 行分類（唯一の分類箇所 — 判定側はこのフラグだけを見る）──
+      # cls: 1 = s1 件数行 / 2 = s2 ゼロ件報告行 / 3 = s3 ラベル付き指摘行
+      # cls_zero: その行が明示ゼロ（数値ゼロ / ゼロ語 / ゼロ件報告）であること
+      # cls_crit: その行のラベルが critical であること
+      # 参照語 veto は s3/s4 のみ（s1/s2 は値を行内に持つ自己完結行 — ヘッダ参照）。
+      cls = 0; cls_zero = 0; cls_crit = 0
+      if (l ~ s1_re) {
+        cls = 1
+        cls_zero = (l ~ s1_zero_re)
+        cls_crit = (l ~ lab_crit_opt)
+      } else if ($0 ~ s2a_re || $0 ~ s2b_re) {
+        cls = 2
+        cls_zero = 1
+      } else if (!isref && l ~ s3b_re) {
+        cls = 3
+        cls_crit = (l ~ lab_crit_breq)
+      } else if (!isref && l ~ s3s_re) {
+        cls = 3
+        cls_crit = (l ~ lab_crit_strong)
       }
-      if (!fence && in_sev && !isref && l ~ /^[[:space:]]*[-*+][[:space:]]/) found = 1
+      if (accept) {
+        if (cls) {
+          found_any = 1
+          if (!fence) found = 1
+        }
+        if (!fence && in_sev && !isref && l ~ s4_bullet_re) found = 1
+      } else if (!fence) {
+        # (c1)(c2) ラベルが critical の実体行（s1 件数行 / s3 指摘行）のうち明示ゼロ
+        # でないもの。分類フラグだけで判定する — ここに語彙を書かないこと
+        if (cls && cls_crit && !cls_zero) found = 1
+        # (c3) critical 見出しスコープ配下の bullet。行分類のゼロ判定が優先 —
+        # cls_zero の行（`- Critical: none` / `- Critical: 0` / `- 指摘なし（注記
+        # つき）`）はスコープ内でも実所見に数えない。空所見語彙の裸 bullet と
+        # 参照語 veto 行も不算入
+        if (in_crit && !isref && !cls_zero && l ~ s4_bullet_re && l !~ s4_empty_re) found = 1
+        # (c4) 行頭の CRITICAL: マーカー（明示ゼロは s1 と同じ合成部品で除外。
+        # 受理側の実体行ではないが検出は維持 — 受理と検出は別契約）
+        if (l ~ bare_re && l !~ bare_zero_re) found = 1
+      }
     }
     END {
-      if (fence != 0) exit (found || found_any) ? 0 : 1
+      if (accept) {
+        if (fence != 0) exit (found || found_any) ? 0 : 1
+        exit found ? 0 : 1
+      }
+      # 未閉フェンスはドメイン専用値 20 で返す — awk 自身の異常終了（構文エラー等は
+      # rc=2）と衝突させない。公開 rc への写像は critical_findings_present が行う
+      if (fence != 0) exit 20
       exit found ? 0 : 1
     }
-  '
+  ' "$@"
+}
+
+review_body_present() { # $1: captured review body / rc0 = 上記の受理条件を満たす
+  # 本文は引数で受け取る（ファイル経路を持たないため、下の「不可読ファイルが
+  # rc=1 へ化ける」fail-open の同型経路は無い）
+  printf '%s\n' "$1" | _ff_severity_scan accept
+}
+
+# 統合レポートの Critical 検出（multi-agent.sh の CRITICAL_BLOCK 判定が呼ぶ）。
+# rc0: Critical の実所見あり / rc1: なし / rc2: 未閉フェンスで判定不能 /
+# rc3: 判定不能（不可読ファイル・awk 実行失敗）。rc2 以上の扱い（安全側 =
+# Critical ありへ倒す）は呼び出し側の方針。
+critical_findings_present() { # $1: result file
+  # 読めない・存在しないファイルを rc=1（Critical なし）に倒さない（fail-open
+  # 防止）。ファイルは awk 自身に開かせる — シェルの `< "$1"` は redirect 失敗が
+  # rc=1 に化けるが、awk の open 失敗は異常終了（下の * 分岐）= 判定不能側に落ちる。
+  [[ -r "$1" ]] || return 3
+  local rc=0
+  _ff_severity_scan critical "$1" || rc=$?
+  case "$rc" in
+    0 | 1) return "$rc" ;;
+    20)    return 2 ;;  # awk のドメイン値（未閉フェンス）→ 公開 rc 2
+    *)     return 3 ;;  # awk 異常終了（構文・シグナル・open 失敗）= 判定不能
+  esac
 }
 
 # Write review output with a standard header

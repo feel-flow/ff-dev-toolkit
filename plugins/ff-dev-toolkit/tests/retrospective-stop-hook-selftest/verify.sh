@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONSUMER="$PLUGIN_ROOT/tests/retrospective-stop-hook/verify.sh"
-EXPECTED_CONSUMER_CHECKS=27
+EXPECTED_CONSUMER_CHECKS=38
 
 command -v perl >/dev/null 2>&1 || { echo "○ skip: perl が無いため retrospective Stop hook self-test をスキップ"; exit 0; }
 if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/retrospective-stop-hook-selftest.XXXXXX" 2>&1)"; then
@@ -68,8 +68,8 @@ fi
 # 実測（PR #926 が SKILL.md へ定型文の 2 箇所目を足した回）: SKILL 定型文 drift の
 # 変異が空振りし、develop の全件ゲートが赤いまま残った。
 #
-# 棚卸し（2026-08-27 実測。対象ファイル内の出現数）:
-#   複数箇所 → `/g` 必須: `case "$MODE" in`（retrospective-stop.sh: 2）/
+# 棚卸し（2026-08-27 実測、2026-09-01 Issue #840 で更新。対象ファイル内の出現数）:
+#   複数箇所 → `/g` 必須: `case "$MODE" in`（retrospective-stop.sh: 2 / context.sh: 2）/
 #     `ff-dev-toolkit:retrospective`（context.sh: 2）/ `{"hookSpecificOutput"`（context.sh: 2）
 #   意味の錨へ限定: SKILL.md の定型文は自動発火節の番号付き判定リストへ範囲を閉じる。
 #     散文中の引用数は契約ではないため数えず、増減を良性変更として許容する（Issue #956）
@@ -77,7 +77,11 @@ fi
 #     `retrospectiveDone || codexStop` /
 #     `INPUT_TIMEOUT_SECONDS=2` / `Automatic retrospective check before stop` /
 #     `Codex の Stop 入力（\`model\` フィールドあり）は常に無音` /
-#     `if ! command -v node ...` / `"Stop": [` / `"UserPromptSubmit": [`
+#     `if ! command -v node ...` / `"Stop": [` / `"UserPromptSubmit": [` /
+#     `codexHost && nonInteractive`（context.sh: 1）/
+#     `(Number(process.argv[1]) || 2) * 1000`（context.sh: 1）/
+#     `|| HOST_STATE="inject"`（context.sh: 1）/ `[ "$HOST_STATE" = "skip" ]`（context.sh: 1）
+#   `finish("inject")` は context.sh に 3 箇所あるが、変異は前後の行ごと指定して一意に当てている
 #   `process.exit(2)` は 3 箇所あるが、変異は前後の行ごと指定して一意に当てている
 #
 # 変異対象の文字列を増やす変更を入れたら、この棚卸しを実測し直すこと。
@@ -152,8 +156,50 @@ perl -0pi -e 's/\{"hookSpecificOutput"/\{"systemMessage":"visible","hookSpecific
 check_mutation "事前注入への表示用 Warning 混入" "UserPromptSubmit の事前注入契約が不正" "$ROOT"
 
 ROOT="$(make_fixture context-off-guard)"
-perl -0pi -e 's/case "\$MODE" in/case "auto" in/' "$ROOT/hooks/retrospective-context.sh"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'case "$MODE" in' 2
+perl -0pi -e 's/case "\$MODE" in/case "auto" in/g' "$ROOT/hooks/retrospective-context.sh"
 check_mutation "事前注入の off ガード削除" "context hook も RETROSPECTIVE_MODE=off なら無効" "$ROOT"
+
+# Issue #840: 非対話 codex exec の判定そのもの。判定を外す（常に注入する）と消費側の
+# スキップ検査が赤くなること = 変異赤化の常設実測。
+ROOT="$(make_fixture noninteractive-skip-removed)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'codexHost && nonInteractive' 1
+perl -0pi -e 's/codexHost && nonInteractive/false/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "非対話スキップ判定の削除" "Codex 非対話（model + bypassPermissions）は事前注入をスキップ" "$ROOT"
+
+# 判定の過拡大（permission_mode を見ずに model だけでスキップ）は、Codex 対話セッション
+# の注入を失う向きの退行。既存の Codex 事前注入検査（permission_mode なし入力）が捕まえる。
+ROOT="$(make_fixture noninteractive-overreach)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'codexHost && nonInteractive' 1
+perl -0pi -e 's/codexHost && nonInteractive/codexHost/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "非対話判定の過拡大（model だけでスキップ）" "Codex UserPromptSubmit の事前注入契約が不正" "$ROOT"
+
+# Issue #840 レビュー指摘: 判別 node の入力上限を実質無効化（1 時間へ延長）すると、
+# stdin を閉じないホストの fixture が EOF まで待って skip し、fail-open が消える。
+ROOT="$(make_fixture context-input-bound-removed)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" '(Number(process.argv[1]) || 2) * 1000' 1
+perl -0pi -e 's/\(Number\(process\.argv\[1\]\) \|\| 2\) \* 1000/3600000/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "判別 node の入力上限を無効化" "stdin を閉じないホストでは入力上限で注入へ倒す（fail-open）" "$ROOT"
+
+# 異常終了 fallback（|| HOST_STATE="inject"）の削除: 非 0 終了の stub が途中まで出した
+# "skip" がそのまま採用され、fail-open が skip 方向へ反転する。
+ROOT="$(make_fixture context-exit-fallback-removed)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" '|| HOST_STATE="inject"' 1
+perl -0pi -e 's/ \|\| HOST_STATE="inject"//' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "判別 node 異常終了 fallback の削除" "判別 node が異常終了（skip 出力 + 非 0）でも注入へ倒す（fail-open）" "$ROOT"
+
+# skip の完全一致ガードを否定形（inject 以外は skip）へ緩めると、予期しない出力で
+# 注入が消える。
+ROOT="$(make_fixture context-hoststate-guard-loosened)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" '[ "$HOST_STATE" = "skip" ]' 1
+perl -0pi -e 's/\[ "\$HOST_STATE" = "skip" \]/[ "\$HOST_STATE" != "inject" ]/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "HOST_STATE ガードの緩和" "判別 node の予期しない出力は skip と扱わない（fail-open）" "$ROOT"
+
+# JSON parse 失敗を skip へ倒す退行（catch 側だけを狙う。finish("inject") は 3 箇所
+# あるため前行ごと指定して一意に当てる）。
+ROOT="$(make_fixture context-parse-failure-to-skip)"
+perl -0pi -e 's/\} catch \(_\) \{\n    finish\("inject"\);/} catch (_) {\n    finish("skip");/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "parse 失敗の fail-open 反転" "途中で切れた不正 JSON は注入へ倒す（fail-open）" "$ROOT"
 
 ROOT="$(make_fixture context-skill-routing)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'ff-dev-toolkit:retrospective' 2
@@ -264,6 +310,13 @@ perl -0pi -e 's/Codex の Stop 入力（`model` フィールドあり）は常�
   "$ROOT/skills/retrospective/SKILL.md"
 check_mutation "SKILL の Codex Stop 無音契約 drift" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
 
+# Issue #840: SKILL.md の非対話スキップ規定（判定リスト項目 5）の drift。
+ROOT="$(make_fixture skill-noninteractive-drift)"
+expect_occurrences "$ROOT/skills/retrospective/SKILL.md" 'Codex の非対話の単発実行（UserPromptSubmit 入力に `model` があり' 1
+perl -0pi -e 's/Codex の非対話の単発実行（UserPromptSubmit 入力に `model` があり/Codex の非対話の単発実行（入力に `model` があり/' \
+  "$ROOT/skills/retrospective/SKILL.md"
+check_mutation "SKILL の非対話スキップ規定 drift" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
+
 ROOT="$(make_fixture context-incomplete-report)"
 perl -0pi -e 's/振り返り: 今回は作業完了前のため対象外/振り返り: 未完了/g' \
   "$ROOT/hooks/retrospective-context.sh"
@@ -294,7 +347,7 @@ perl -0pi -e 's{(対応ホストでは[^\n]*\n)}{$1\n```text\n## セッション
 check_no_regression "自動発火 節内へフェンス例示を追加" "$ROOT"
 
 # 件数は名前付き定数で持つ（このファイルは EXPECTED_CONSUMER_CHECKS で既にその慣習）。
-EXPECTED_MUTATIONS=25
+EXPECTED_MUTATIONS=32
 EXPECTED_BENIGN=2
 if [ "$MUTATIONS" -ne "$EXPECTED_MUTATIONS" ]; then
   echo "✗ mutation 実行数が不正: ${MUTATIONS}（期待 ${EXPECTED_MUTATIONS}）" >&2

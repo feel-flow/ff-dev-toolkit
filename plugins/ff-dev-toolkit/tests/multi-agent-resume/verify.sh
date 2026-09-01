@@ -47,11 +47,11 @@ build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE" \
 REPO="$TMP/repo"
 STUB="$TMP/bin"
 COUNT_FILE="$TMP/invocations"
-FAIL_ON_EIGHTH="$TMP/fail-on-eighth"
+FAIL_ON_NINTH="$TMP/fail-on-ninth"
 CONFIG_FILE="$TMP/agent-config.yaml"
 mkdir -p "$REPO" "$STUB"
 printf '0\n' > "$COUNT_FILE"
-printf 'armed\n' > "$FAIL_ON_EIGHTH"
+printf 'armed\n' > "$FAIL_ON_NINTH"
 cat > "$CONFIG_FILE" <<'YAML'
 version: "2.0"
 parallel: false
@@ -80,8 +80,8 @@ set -euo pipefail
 n="\$(cat "$COUNT_FILE")"
 n=\$((n + 1))
 printf '%s\n' "\$n" > "$COUNT_FILE"
-if [[ -f "$FAIL_ON_EIGHTH" && "\$n" -eq 8 ]]; then
-  rm -f "$FAIL_ON_EIGHTH"
+if [[ -f "$FAIL_ON_NINTH" && "\$n" -eq 9 ]]; then
+  rm -f "$FAIL_ON_NINTH"
   echo "simulated timeout/failure" >&2
   exit 1
 fi
@@ -103,11 +103,12 @@ PERSPECTIVES=(
   test-analysis
   security-analysis
   comment-analysis
+  acceptance-criteria
   comprehensive-review
 )
 
 run_review() { # <log> <timeout> <resume:true|false> [perspective count] [base]
-  local log="$1" timeout="$2" resume="$3" perspective_count="${4:-8}" base="${5:-develop}"
+  local log="$1" timeout="$2" resume="$3" perspective_count="${4:-9}" base="${5:-develop}"
   local args=(
     --task review --mode distributed --sequential
     --cli codex-cli --base "$base" --config "$CONFIG_FILE" --timeout "$timeout"
@@ -126,38 +127,38 @@ run_review() { # <log> <timeout> <resume:true|false> [perspective count] [base]
 count_invocations() { tr -d '[:space:]' < "$COUNT_FILE"; }
 REPORT="$REPO/.review-results/integrated-report.md"
 
-echo "== 7成功・1失敗から未完了1観点だけを再実行 =="
+echo "== 8成功・1失敗から未完了1観点だけを再実行 =="
 if run_review "$TMP/first.log" 60 false; then
-  bad "初回の8観点目失敗が exit 0 になった"
+  bad "初回の9観点目失敗が exit 0 になった"
 else
-  ok "初回は7成功・1失敗として非0終了"
+  ok "初回は8成功・1失敗として非0終了"
 fi
-if [[ "$(count_invocations)" -eq 8 ]]; then
-  ok "初回は8観点すべてを起動"
+if [[ "$(count_invocations)" -eq 9 ]]; then
+  ok "初回は9観点すべてを起動"
 else
-  bad "初回の起動数が8ではない: $(count_invocations)"
+  bad "初回の起動数が9ではない: $(count_invocations)"
 fi
-if [[ "$(find "$REPO/.review-results/.resume-cache" -name '*.md' | wc -l | tr -d ' ')" -eq 7 ]]; then
-  ok "成功した7観点だけをキャッシュ"
+if [[ "$(find "$REPO/.review-results/.resume-cache" -name '*.md' | wc -l | tr -d ' ')" -eq 8 ]]; then
+  ok "成功した8観点だけをキャッシュ"
 else
-  bad "成功キャッシュ数が7ではない"
+  bad "成功キャッシュ数が8ではない"
 fi
 
-# timeout は identity 外。失敗後に延長しても成功7観点を再利用できる。
+# timeout は identity 外。失敗後に延長しても成功8観点を再利用できる。
 if run_review "$TMP/resume.log" 120 true; then
   ok "timeout延長付きresumeが成功"
 else
   bad "timeout延長付きresumeが失敗"
 fi
-if [[ "$(count_invocations)" -eq 9 ]]; then
+if [[ "$(count_invocations)" -eq 10 ]]; then
   ok "resumeは未完了1観点だけを起動"
 else
-  bad "resume後の累計起動数が9ではない: $(count_invocations)"
+  bad "resume後の累計起動数が10ではない: $(count_invocations)"
 fi
-if [[ "$(grep -c '^\*\*Result source:\*\* reused$' "$REPORT")" -eq 7 \
+if [[ "$(grep -c '^\*\*Result source:\*\* reused$' "$REPORT")" -eq 8 \
       && "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 1 \
-      && "$(grep -c '^## codex-cli — ' "$REPORT")" -eq 8 ]]; then
-  ok "統合レポートは全8観点とreused/executed由来を記録"
+      && "$(grep -c '^## codex-cli — ' "$REPORT")" -eq 9 ]]; then
+  ok "統合レポートは全9観点とreused/executed由来を記録"
 else
   bad "統合レポートの全観点または由来表示が不一致"
 fi
@@ -172,8 +173,8 @@ echo "== 欠落・破損キャッシュはfail closedで1観点だけ再実行 =
 CORRUPT_CACHE="$(find "$REPO/.review-results/.resume-cache" -path '*/codex-cli/code-review.md' | head -1)"
 rm -f "${CORRUPT_CACHE}.hash"
 if run_review "$TMP/missing-hash.log" 120 true \
-  && [[ "$(count_invocations)" -eq 10 ]] \
-  && [[ "$(grep -c '^\*\*Result source:\*\* reused$' "$REPORT")" -eq 7 ]] \
+  && [[ "$(count_invocations)" -eq 11 ]] \
+  && [[ "$(grep -c '^\*\*Result source:\*\* reused$' "$REPORT")" -eq 8 ]] \
   && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 1 ]]; then
   ok "hash欠落を再実行して回復"
 else
@@ -182,8 +183,8 @@ fi
 
 rm -f "$CORRUPT_CACHE"
 if run_review "$TMP/missing-result.log" 120 true \
-  && [[ "$(count_invocations)" -eq 11 ]] \
-  && [[ "$(grep -c '^\*\*Result source:\*\* reused$' "$REPORT")" -eq 7 ]] \
+  && [[ "$(count_invocations)" -eq 12 ]] \
+  && [[ "$(grep -c '^\*\*Result source:\*\* reused$' "$REPORT")" -eq 8 ]] \
   && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 1 ]]; then
   ok "結果本体の欠落を再実行して回復"
 else
@@ -196,8 +197,8 @@ if run_review "$TMP/corrupt.log" 120 true; then
 else
   bad "破損キャッシュの回復実行が失敗"
 fi
-if [[ "$(count_invocations)" -eq 12 \
-      && "$(grep -c '^\*\*Result source:\*\* reused$' "$REPORT")" -eq 7 \
+if [[ "$(count_invocations)" -eq 13 \
+      && "$(grep -c '^\*\*Result source:\*\* reused$' "$REPORT")" -eq 8 \
       && "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 1 ]]; then
   ok "破損した1観点だけをexecutedへ倒す"
 else
@@ -210,54 +211,54 @@ printf 'base\nreview change\nhead change\n' > "$REPO/app.txt"
 git -C "$REPO" add app.txt
 git -C "$REPO" commit -qm "head change"
 if run_review "$TMP/head-change.log" 120 true \
-  && [[ "$(count_invocations)" -eq 20 ]] \
-  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 8 ]]; then
-  ok "HEAD変更で8観点すべてを新規実行"
+  && [[ "$(count_invocations)" -eq 22 ]] \
+  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 9 ]]; then
+  ok "HEAD変更で9観点すべてを新規実行"
 else
   bad "HEAD変更時に古い結果を再利用した"
 fi
 
 git -C "$REPO" branch alternate-base develop
-if run_review "$TMP/base-change.log" 120 true 8 alternate-base \
-  && [[ "$(count_invocations)" -eq 28 ]] \
-  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 8 ]]; then
-  ok "base変更で8観点すべてを新規実行"
+if run_review "$TMP/base-change.log" 120 true 9 alternate-base \
+  && [[ "$(count_invocations)" -eq 31 ]] \
+  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 9 ]]; then
+  ok "base変更で9観点すべてを新規実行"
 else
   bad "base変更時に古い結果を再利用した"
 fi
 
 printf '\n# identity change\n' >> "$CONFIG_FILE"
 if run_review "$TMP/config-change.log" 120 true \
-  && [[ "$(count_invocations)" -eq 36 ]] \
-  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 8 ]]; then
-  ok "設定変更で8観点すべてを新規実行"
+  && [[ "$(count_invocations)" -eq 40 ]] \
+  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 9 ]]; then
+  ok "設定変更で9観点すべてを新規実行"
 else
   bad "設定変更時に古い結果を再利用した"
 fi
 
 printf '\n<!-- identity change -->\n' >> "$FIXTURE_PLUGIN/scripts/perspectives/review/code-review.md"
 if run_review "$TMP/perspective-definition-change.log" 120 true \
-  && [[ "$(count_invocations)" -eq 44 ]] \
-  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 8 ]]; then
-  ok "perspective定義変更で8観点すべてを新規実行"
+  && [[ "$(count_invocations)" -eq 49 ]] \
+  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 9 ]]; then
+  ok "perspective定義変更で9観点すべてを新規実行"
 else
   bad "perspective定義変更時に古い結果を再利用した"
 fi
 
 printf '\nworktree review input change\n' >> "$REPO/app.txt"
 if run_review "$TMP/review-input-change.log" 120 true \
-  && [[ "$(count_invocations)" -eq 52 ]] \
-  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 8 ]]; then
-  ok "review入力変更で8観点すべてを新規実行"
+  && [[ "$(count_invocations)" -eq 58 ]] \
+  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 9 ]]; then
+  ok "review入力変更で9観点すべてを新規実行"
 else
   bad "review入力変更時に古い結果を再利用した"
 fi
 
-if run_review "$TMP/perspective-set-change.log" 120 true 7 \
-  && [[ "$(count_invocations)" -eq 59 ]] \
-  && [[ "$(grep -c '^## codex-cli — ' "$REPORT")" -eq 7 ]] \
-  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 7 ]]; then
-  ok "perspective集合変更で新しい7観点計画をすべて実行"
+if run_review "$TMP/perspective-set-change.log" 120 true 8 \
+  && [[ "$(count_invocations)" -eq 66 ]] \
+  && [[ "$(grep -c '^## codex-cli — ' "$REPORT")" -eq 8 ]] \
+  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 8 ]]; then
+  ok "perspective集合変更で新しい8観点計画をすべて実行"
 else
   bad "perspective集合変更時に古い集合の結果を再利用した"
 fi

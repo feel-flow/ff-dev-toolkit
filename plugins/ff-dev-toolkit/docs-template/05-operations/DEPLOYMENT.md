@@ -87,7 +87,7 @@ Git Flowベースで、**テスト・セルフレビュー（PR前）** と **AC
 
 ステップ 10 の後、チェーン末尾として `/retrospective`（セッション振り返り）を毎回実行する。実測した手戻り・無駄時間・Keep・過剰動作を観測台帳へ記録し、閾値到達の再発からプロセス/ツール改善を最大 3 件提案し、起票はユーザー承認後のみ ← 詳細: `deployment/git-workflow.md` の「チェーン末尾: セッション振り返り」
 
-対応ホストでは `UserPromptSubmit` hook が応答前に注入し、`Stop` hook は実行漏れ時だけ自動継続する。`RETROSPECTIVE_MODE=ask` で実施前確認、`off` で自動発火を無効にできる。
+対応ホストでは `UserPromptSubmit` hook が応答前に注入し、`Stop` hook は実行漏れ時だけ自動継続する。ただし Codex の非対話単発実行（codex exec — hook 入力に `model` があり `permission_mode` が `bypassPermissions`）には注入されない（レビュー等のツール的起動の stdout を振り返り出力が奪わないため。判別できない入力へは従来どおり注入する）。`RETROSPECTIVE_MODE=ask` で実施前確認、`off` で自動発火を無効にできる。
 
 #### 変更規模による tier
 

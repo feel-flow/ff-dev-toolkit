@@ -1,0 +1,42 @@
+[
+  {
+    "number": 201,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 0.1d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 202,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 0.2d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 203,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 0.3d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 204,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 0.4d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 205,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 0.5d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 206,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 0.6d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 207,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 0.7d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 208,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 0.8d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 209,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 0.9d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 210,
+    "body": "## ジョブストーリー\n\nダミー本文。\n\n## 受け入れ条件（AC）\n\n- [x] 何か\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 5.0d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  }
+]

@@ -267,7 +267,9 @@ echo "== fallback チェーンの解決 =="
 # だけを見て名前にその一般化を書き、gemini/grok の欠落を見逃した。全 CLI を単独で
 # 回す。
 CHAIN_STUB="$TMP/chain-stub"
-REVIEW_PERSPECTIVE_TOTAL=7
+# distributed の所有レジストリ合計（comprehensive-review は pair 専用で含まない）。
+# acceptance-criteria 追加（issue #1054）で 7 → 8。
+REVIEW_PERSPECTIVE_TOTAL=8
 
 for solo_cmd in claude codex grok; do
   rm -rf "$CHAIN_STUB"
@@ -443,12 +445,13 @@ else
   sed 's/^/    | /' "$LIST_LOG" >&2
 fi
 _missing=""
-for _p in code-review code-simplification comment-analysis comprehensive-review \
-          error-handler-hunt security-analysis test-analysis type-design-analysis; do
+for _p in acceptance-criteria code-review code-simplification comment-analysis \
+          comprehensive-review error-handler-hunt security-analysis test-analysis \
+          type-design-analysis; do
   grep -qx -- "$_p" "$LIST_LOG" || _missing="${_missing} ${_p}"
 done
 if [ -z "$_missing" ]; then
-  ok "--list-perspectives が review 観点 8 件すべてを 1 行 1 件で出す"
+  ok "--list-perspectives が review 観点 9 件すべてを 1 行 1 件で出す"
 else
   bad "--list-perspectives の出力に欠けがある:${_missing}"
   sed 's/^/    | /' "$LIST_LOG" >&2

@@ -28,13 +28,22 @@
 #     ケースが既定 10 秒で走り、経過が 4 行 → 12 行へ伸びたまま pass した）。
 #     先頭で 1 回落としておけば前置代入は代入として subshell へ届くので、
 #     run_isolated と同じ意味論（ホストの値は除く / ケース固有の上書きは通す）になる。
+#   unset_prompt_env_vars
+#     build_prompt をサブシェルで直呼びする suite 向けに、プレフィックスを持たない
+#     名簿（DIFF_FILE / STAGED_DIFF / INCLUDE_DIFF / CHANGED_FILES）を現在のシェル
+#     （通常は gen_prompt のサブシェル内）で unset する。名簿は本 lib のこの関数
+#     だけが持つ（Issue #769）。上の unset_isolated_vars と違い ISOLATE_ENV に依存
+#     せず、呼ぶ場所も gen_prompt サブシェルの内側でよい（固定名簿の unset だけで、
+#     ケース固有の前置代入を消す副作用は無い）。
 #
 # 保証の境界（ここに書いていない保護は無い）:
-#   - **プレフィックスを持たないが呼び出し口で落としているものがある。** build_prompt を
-#     サブシェルで直呼びする suite（adapter-prompt-guard / review-diff-scope）は
-#     DIFF_FILE / STAGED_DIFF / INCLUDE_DIFF / CHANGED_FILES を各自の gen_prompt で unset
-#     する。本 lib はそれらに関与しないので、両 suite の名簿がずれても本 lib は何も言わない。
-#   - 対象は MULTI_AGENT_* と FF_TIMEOUT_* の 2 プレフィックスで、**先頭の
+#   - **プレフィックスを持たない build_prompt の入力は unset_prompt_env_vars が落とす。**
+#     build_prompt をサブシェルで直呼びする suite（adapter-prompt-guard /
+#     review-diff-scope / review-capture-fail-loud）は、各自の gen_prompt からこの
+#     関数を呼ぶ。名簿は本 lib の 1 箇所だけにあり、suite ごとには手書きしない
+#     （Issue #769 で一元化。以前は各 suite の手書き名簿で、ずれても本 lib は
+#     何も言えなかった）。
+#   - 対象は MULTI_AGENT_* / FF_MULTI_AGENT_* / FF_TIMEOUT_* の 3 プレフィックスで、**先頭の
 #     アンダースコア 1 つを含む形**（_FF_TIMEOUT_* / _MULTI_AGENT_*）まで。後者は
 #     adapter-common.sh の Test seam（FF_TIMEOUT_KILL_GRACE / FF_TIMEOUT_REASON_FILE /
 #     _FF_TIMEOUT_REASON_EXIT_TRAP）で、ホストが export していると timeout 判定が
@@ -98,9 +107,14 @@ build_isolate_env() {
   local sentinels="$1"; shift
   local IFS=$' \t\n'
   local raw var s seen grep_rc=0
-  raw="$(grep -hoE '_?(MULTI_AGENT|FF_TIMEOUT)_[A-Z0-9_]+' "$@")" || grep_rc=$?
+  # FF_MULTI_AGENT を独立の選択肢として先に並べる。MULTI_AGENT だけだと
+  # FF_MULTI_AGENT_IGNORE_PATHS から `_MULTI_AGENT_IGNORE_PATHS`（実在しない名前）を
+  # 切り出し、名簿には載るのに実体（FF_ 付き）が素通りする — ホストがこの変数を
+  # export していると revision-guard 系 suite の判定が変わり、env 汚染が製品退行として
+  # 誤報告される（Issue #747。_FF_TIMEOUT_* の取りこぼしと同じ形）。
+  raw="$(grep -hoE '_?(FF_MULTI_AGENT|MULTI_AGENT|FF_TIMEOUT)_[A-Z0-9_]+' "$@")" || grep_rc=$?
   if [ "$grep_rc" -gt 1 ]; then
-    echo "✗ 実装からの MULTI_AGENT_* / FF_TIMEOUT_* 抽出が失敗しました（grep rc=${grep_rc}）。部分的な読み取り失敗は分離リストの黙った欠落になるため続行しない" >&2
+    echo "✗ 実装からの MULTI_AGENT_* / FF_MULTI_AGENT_* / FF_TIMEOUT_* 抽出が失敗しました（grep rc=${grep_rc}）。部分的な読み取り失敗は分離リストの黙った欠落になるため続行しない" >&2
     exit 1
   fi
   # 重複除去は builtin のみで行う（設計メモ参照）。$raw の値は抽出パターン上
@@ -116,9 +130,9 @@ build_isolate_env() {
     # センチネル名自体の検査: 抽出パターン外の名前（typo・glob メタ文字）は
     # 原理的に一致しえず、case パターンでの無クォート展開も安全でなくなる。
     case "$s" in
-      MULTI_AGENT_*|FF_TIMEOUT_*|_MULTI_AGENT_*|_FF_TIMEOUT_*) : ;;
+      MULTI_AGENT_*|FF_MULTI_AGENT_*|FF_TIMEOUT_*|_MULTI_AGENT_*|_FF_MULTI_AGENT_*|_FF_TIMEOUT_*) : ;;
       *)
-        echo "✗ センチネル名 '${s}' が MULTI_AGENT_* / FF_TIMEOUT_*（先頭 _ 可）の形ではありません（呼び出し側の指定ミス）" >&2
+        echo "✗ センチネル名 '${s}' が MULTI_AGENT_* / FF_MULTI_AGENT_* / FF_TIMEOUT_*（先頭 _ 可）の形ではありません（呼び出し側の指定ミス）" >&2
         exit 1 ;;
     esac
     case "$s" in
@@ -175,4 +189,16 @@ unset_isolated_vars() {
     fi
     i=$((i + 1))
   done
+}
+
+# build_prompt が環境から読む・読みうる、プレフィックスを持たない変数の名簿。
+# DIFF_FILE / STAGED_DIFF / INCLUDE_DIFF はホストから漏れると diff の取得元・有無が
+# 変わる（Issue #564。症状は「そのマシンでだけ赤い suite」）。CHANGED_FILES は現在の
+# build_prompt が位置引数から束縛しており環境からは読まれないが、将来環境を読む形へ
+# 戻ったときのための予防として併せて落とす。
+# build_isolate_env とは独立に使える固定名簿（build_prompt の入力は汎用名で、
+# プレフィックスの動的抽出では拾えない）。名簿を増減するときはこの 1 箇所だけを
+# 直す — 呼び出し側 suite に手書きの複製を戻さないこと（Issue #769）。
+unset_prompt_env_vars() {
+  unset DIFF_FILE STAGED_DIFF INCLUDE_DIFF CHANGED_FILES
 }

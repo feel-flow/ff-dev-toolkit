@@ -51,11 +51,19 @@ build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_CLAUDE_CODE" \
 # 警告文が混入し、以後の git init が原因不明の失敗に化けるため。
 # skip 文言で read-only と断定しない（すぐ上のコメントのとおり原因は 1 つではない。
 # 断定すると、壊れた TMPDIR の調査が read-only の確認だけで打ち切られる）。
-if _ff_mktemp_out="$(mktemp -d 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
+_ff_mktemp_rc=0
+_ff_mktemp_out="$(mktemp -d 2>&1)" || _ff_mktemp_rc=$?
+if [ "$_ff_mktemp_rc" -eq 0 ] && [ -d "$_ff_mktemp_out" ]; then
   TMP="$_ff_mktemp_out"
 else
   echo "○ skip: 一時ディレクトリを作成できない環境のためスキップ"
   printf '  mktemp: %s\n' "$_ff_mktemp_out"
+  # rc=0 なのに -d が偽 = 出力へ警告文が混入した形。ディレクトリ自体は作られている
+  # 可能性が高いが、パスを警告文と機械的に分離できない（2>&1 の合流順は保証されない）
+  # ため自動削除はしない。次の一手だけを 1 行で示す（Issue #769 項目 5）。
+  if [ "$_ff_mktemp_rc" -eq 0 ]; then
+    echo "  次の一手: mktemp は成功(rc=0)しているため、上記出力中のパスに一時ディレクトリが未回収で残っている可能性があります。手動で確認・削除してください。"
+  fi
   exit 0
 fi
 # 途中死を沈黙させない。`set -u` 等で死んだとき、トラップ突入時の $? は **0** になるため、
@@ -140,16 +148,14 @@ printf '%s\n' '# Fixture Perspective' 'PERSPECTIVE-CONTENT-MARKER' > "$PERSPECTI
 # build_prompt をサブシェルで直接呼ぶ（multi-agent-timeout の D1/D2 と同じ経路）。
 # $2 を省略すると STAGING_DIR 未設定 = orchestrator を経由しない直叩き実行の再現。
 #
-# DIFF_FILE / STAGED_DIFF / INCLUDE_DIFF は build_prompt が環境から読む値なので、
-# 利用者の環境から漏れると diff の取得元や有無が変わる（本 suite は fixture リポジトリの
-# diff を前提にする）。アダプタを CLI として起動する経路では parse_adapter_args が
-# 毎回初期化するため、漏れるのはこの「source して関数を直呼び」経路だけ。
-# CHANGED_FILES は build_prompt が位置引数から束縛しており（adapter-common.sh の
-# `local changed_files="${3:-}"`）、環境からは読まれない。落としているのは将来 Changed Files 節が
-# 環境を読む形へ戻ったときのための予防で、現時点で塞いでいる漏洩経路があるわけではない。
+# プレフィックスを持たない build_prompt の入力（DIFF_FILE 等）は、lib の
+# unset_prompt_env_vars で落とす（名簿は lib の 1 箇所だけ。Issue #769）。漏れると
+# diff の取得元や有無が変わる（本 suite は fixture リポジトリの diff を前提にする）。
+# アダプタを CLI として起動する経路では parse_adapter_args が毎回初期化するため、
+# 漏れるのはこの「source して関数を直呼び」経路だけ。
 gen_prompt() { # $1: task_type / $2: staging_dir（省略可） / $3: inline_output（省略可） / stdout: プロンプト
   (
-    unset DIFF_FILE STAGED_DIFF INCLUDE_DIFF CHANGED_FILES
+    unset_prompt_env_vars
     TASK_TYPE="$1"
     DESCRIPTION="fixture task"
     STAGING_DIR="${2:-}"

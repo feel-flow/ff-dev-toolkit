@@ -59,17 +59,52 @@ run_hook() {
 }
 
 run_context_hook() {
-  local mode="${1-__unset__}" input
-  input="${2:-{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"s1\",\"turn_id\":\"t1\",\"prompt\":\"作業を完了して\"}}"
+  local mode="${1-__unset__}" input="${2-}"
+  # 既定入力は ${2:-...} の埋め込みで持たない: 展開の終端 } と JSON の閉じ } が衝突し、
+  # 明示引数へ余分な } が付いて JSON を壊す（Issue #840 で実測。hook が入力を parse
+  # しない間は無害だったため潜伏していた）。
+  if [ -z "$input" ]; then
+    input='{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}'
+  fi
+  local test_path="${3-$PATH}"
   local errfile="$TEST_TMP/context-stderr"
   RC=0
   if [ "$mode" = "__unset__" ]; then
-    OUT="$(printf '%s' "$input" | env -u RETROSPECTIVE_MODE /bin/bash "$CONTEXT_TARGET" 2>"$errfile")" || RC=$?
+    OUT="$(printf '%s' "$input" | env -u RETROSPECTIVE_MODE PATH="$test_path" /bin/bash "$CONTEXT_TARGET" 2>"$errfile")" || RC=$?
   else
-    OUT="$(printf '%s' "$input" | env RETROSPECTIVE_MODE="$mode" /bin/bash "$CONTEXT_TARGET" 2>"$errfile")" || RC=$?
+    OUT="$(printf '%s' "$input" | env RETROSPECTIVE_MODE="$mode" PATH="$test_path" /bin/bash "$CONTEXT_TARGET" 2>"$errfile")" || RC=$?
   fi
   ERR="$(cat "$errfile" 2>/dev/null || true)"
   rm -f "$errfile"
+}
+
+# 非対話スキップの breadcrumb（Issue #840 レビュー指摘）。スキップは完全無音にしない —
+# 誤分類やホスト契約の変更（Claude Code が model を渡し始める等）で機能が消えたとき、
+# stderr の 1 行が唯一の観測点になる。UserPromptSubmit の exit 0 では stderr は
+# モデルコンテキストへ入らない。
+SKIP_BREADCRUMB='retrospective-context: skip pre-injection (codex non-interactive: permission_mode=bypassPermissions)'
+
+# 非対話判別によるスキップ（出力なし exit 0 + stderr へ breadcrumb 1 行のみ）。
+assert_skips() {
+  local label="$1"
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ "$ERR" = "$SKIP_BREADCRUMB" ]; then
+    ok "$label"
+  else
+    bad "$label: exit=$RC output=[$OUT] stderr=[$ERR]"
+  fi
+}
+
+# 事前注入が行われたこと（additionalContext にスキル経路が入り、表示用 Feedback が無い）。
+assert_injects() {
+  local label="$1" ctx
+  ctx="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+  if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && [ -n "$ctx" ] \
+    && printf '%s' "$ctx" | grep -F 'ff-dev-toolkit:retrospective' >/dev/null \
+    && printf '%s' "$OUT" | jq -e 'has("systemMessage") | not' >/dev/null 2>&1; then
+    ok "$label"
+  else
+    bad "$label: exit=$RC output=[$OUT] stderr=[$ERR]"
+  fi
 }
 
 assert_silent_success() {
@@ -115,6 +150,79 @@ if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
 else
   bad "Codex UserPromptSubmit の事前注入契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
+
+# Issue #840: 非対話の単発実行（codex exec）の判別。codex exec は headless で承認を
+# 尋ねられないため approval policy が never に固定され、hook 入力へは
+# permission_mode="bypassPermissions" として現れる（対話 TUI は "default"）。
+# Claude Code の UserPromptSubmit 入力は model を含まないため、model の有無が
+# ホスト判別（既存の Stop hook と同じ規約）、permission_mode が対話性の判別。
+CODEX_EXEC_INPUT='{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"差分をレビューして","model":"gpt-5.6-sol","permission_mode":"bypassPermissions","transcript_path":"/tmp/rollout.jsonl","cwd":"/tmp"}'
+
+run_context_hook __unset__ "$CODEX_EXEC_INPUT"
+assert_skips "Codex 非対話（model + bypassPermissions）は事前注入をスキップ"
+
+run_context_hook ask "$CODEX_EXEC_INPUT"
+assert_skips "ask モードでも Codex 非対話には注入しない"
+
+run_context_hook __unset__ '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して","model":"gpt-5.6-sol","permission_mode":"default"}'
+assert_injects "Codex 対話（permission_mode=default）は従来どおり注入"
+
+run_context_hook __unset__ '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して","permission_mode":"bypassPermissions"}'
+assert_injects "Claude Code の bypassPermissions（model なし）は注入を維持"
+
+# prompt は利用者制御のテキストで、判定に使うフィールド名をそのまま引用できる。
+# 部分文字列 grep へ実装が縮退すると、この入力（model はトップレベルに無い）が
+# スキップされてしまう — 構造化 JSON として照合していることを固定する。
+run_context_hook __unset__ '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"例: \"model\":\"gpt-5.6-sol\",\"permission_mode\":\"bypassPermissions\" を説明して"}'
+assert_injects "prompt 内の判定フィールド引用ではスキップしない（構造化照合）"
+
+run_context_hook __unset__ "$CODEX_EXEC_INPUT" /definitely-no-node
+assert_injects "Node.js 不在では判別せず注入へ倒す（fail-open）"
+
+# 判別 node の異常系 3 経路（Issue #840 レビュー指摘）。fake node の決定的 fixture で、
+# (a) 非 0 終了は途中まで出た "skip" を採らない、(b) 予期しない出力は skip と扱わない、
+# (c) 途中で切れた不正 JSON は parse 失敗として注入へ倒す — をそれぞれ固定する。
+NODE_STUB_DIR="$TEST_TMP/node-stubs"
+mkdir -p "$NODE_STUB_DIR/fail" "$NODE_STUB_DIR/garbage"
+printf '#!/bin/sh\nprintf skip\nexit 3\n' >"$NODE_STUB_DIR/fail/node"
+printf '#!/bin/sh\nprintf unexpected-state\nexit 0\n' >"$NODE_STUB_DIR/garbage/node"
+chmod +x "$NODE_STUB_DIR/fail/node" "$NODE_STUB_DIR/garbage/node"
+
+run_context_hook __unset__ "$CODEX_EXEC_INPUT" "$NODE_STUB_DIR/fail:$PATH"
+assert_injects "判別 node が異常終了（skip 出力 + 非 0）でも注入へ倒す（fail-open）"
+
+run_context_hook __unset__ "$CODEX_EXEC_INPUT" "$NODE_STUB_DIR/garbage:$PATH"
+assert_injects "判別 node の予期しない出力は skip と扱わない（fail-open）"
+
+run_context_hook __unset__ '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","model":"gpt-5.6-sol","permission_mode":"bypassPermissions"'
+assert_injects "途中で切れた不正 JSON は注入へ倒す（fail-open）"
+
+# stdin を閉じないホスト: node 側の入力上限が働き、完全な JSON が届いていても EOF が
+# 来ない限り fail-open で注入へ倒す。決定的比較: 上限（2 秒）が消えると EOF（3 秒後）
+# まで待って skip になるため、注入/スキップの観測差で上限の実在を測る（壁時間の精密さ
+# には依存しない — 順序 2 秒 < 3 秒だけを使う）。
+RC=0
+OUT="$({ printf '%s' "$CODEX_EXEC_INPUT"; sleep 3; } | env -u RETROSPECTIVE_MODE /bin/bash "$CONTEXT_TARGET" 2>"$TEST_TMP/context-stderr")" || RC=$?
+ERR="$(cat "$TEST_TMP/context-stderr" 2>/dev/null || true)"
+rm -f "$TEST_TMP/context-stderr"
+assert_injects "stdin を閉じないホストでは入力上限で注入へ倒す（fail-open）"
+
+# 大入力（10MB 相当）: bash read のバイト単位読みなら上限超過で判別が消えるサイズ。
+# node のチャンク読みでは数十 ms で読み切れることを、skip 判定の成立そのもので実測する
+# （クロスモデルレビューは diff を prompt に埋め込むため現実的な入力サイズ。Issue #840）。
+LARGE_INPUT_FILE="$TEST_TMP/large-input.json"
+node -e '
+const prompt = "review diff: " + "x".repeat(10 * 1024 * 1024);
+process.stdout.write(JSON.stringify({
+  hook_event_name: "UserPromptSubmit", session_id: "s1", turn_id: "t1",
+  prompt, model: "gpt-5.6-sol", permission_mode: "bypassPermissions"
+}));
+' >"$LARGE_INPUT_FILE"
+RC=0
+OUT="$(env -u RETROSPECTIVE_MODE /bin/bash "$CONTEXT_TARGET" <"$LARGE_INPUT_FILE" 2>"$TEST_TMP/context-stderr")" || RC=$?
+ERR="$(cat "$TEST_TMP/context-stderr" 2>/dev/null || true)"
+rm -f "$TEST_TMP/context-stderr" "$LARGE_INPUT_FILE"
+assert_skips "10MB 入力でも入力上限に食われず非対話判別が働く"
 
 run_context_hook off
 assert_silent_success "context hook も RETROSPECTIVE_MODE=off なら無効"
@@ -344,7 +452,8 @@ if [ -n "$AUTOFIRE_SECTION" ] && [ -n "$AUTOFIRE_JUDGMENT" ] \
   && grep -F "$AUTOFIRE_HEADING" "$SKILL" >/dev/null \
   && [[ $AUTOFIRE_JUDGMENT == *'Claude Code 互換入力でだけ実行漏れの fallback'* ]] \
   && [[ $AUTOFIRE_JUDGMENT == *'Codex の Stop 入力（`model` フィールドあり）は常に無音'* ]] \
-  && [[ $AUTOFIRE_JUDGMENT == *'自分で hook を再実行したり marker を作ったりしない'* ]]; then
+  && [[ $AUTOFIRE_JUDGMENT == *'自分で hook を再実行したり marker を作ったりしない'* ]] \
+  && [[ $AUTOFIRE_JUDGMENT == *'Codex の非対話の単発実行（UserPromptSubmit 入力に `model` があり `permission_mode` が `bypassPermissions`'* ]]; then
   ok "未完了報告・ホスト別 Stop・自動発火境界が hook / SKILL.md で一致"
 else
   bad "hook / SKILL.md の自動発火契約が drift"

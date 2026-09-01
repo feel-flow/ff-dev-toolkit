@@ -65,7 +65,7 @@
 
 ## 2. Perspective Catalog
 
-7つの標準パースペクティブを定義します。各パースペクティブはツール非依存のプロンプトとして `scripts/perspectives/` に配置します。
+8つの標準パースペクティブを定義します。各パースペクティブはツール非依存のプロンプトとして `scripts/perspectives/` に配置します。
 
 ### 一覧
 
@@ -78,6 +78,7 @@
 | 5   | **Type Design Analysis** | 型設計、カプセル化、不変性             | Claude Code | 最も高度な判断力が必要           |
 | 6   | **Comment Analysis**     | コメント正確性、ドキュメント品質       | Claude Code | 判断に設計文脈が要る             |
 | 7   | **Code Simplification**  | 複雑性削減、リファクタリング提案       | Claude Code | 判断に設計文脈が要る             |
+| 8   | **Acceptance Criteria**  | Issue の受け入れ条件（GWT/DoD）と diff の照合 | Codex | 実装したモデルと別の目で AC 達成を検証 |
 
 ### パースペクティブファイル形式
 
@@ -98,10 +99,26 @@
 
 [このパースペクティブ固有の重大度基準]
 
+### 配置規則（severity スコープ契約）
+
+[全観点共通の配置規則ブロック — 既存観点から同一本文をコピーする]
+
 ## Output Template
 
-[結果の出力テンプレート]
+[結果の出力テンプレート — Suggestion 系の受け皿節を含める]
 ```
+
+> **必須**: `## Severity Classification` 節には全観点共通の「### 配置規則（severity スコープ契約）」ブロック（Critical / Important / Warning は今回の変更 diff が導入または悪化させた欠陥に限る、既存コード・上流ツールへの提案は Suggestion / Edge Case へ、settled-design / accepted-residual の格下げ規則）を**既存観点と同一本文**で含めること。ff-dev-toolkit 本体では `tests/review-severity-scope/verify.sh` が観点の名簿・ブロックの存在・9 ファイル間の本文一致を検査するため、新観点の追加は名簿への登録とセットで行う。`## Output Template` には配置規則で区分・格下げした指摘の受け皿（Suggestion 系の節）を必ず用意する。
+
+> **新観点追加時の更新箇所チェックリスト**（ff-dev-toolkit 本体。1 箇所でも漏れると対応する suite が赤になるか、名簿・列挙が黙って古くなる）:
+>
+> - [ ] `scripts/perspectives/review/<name>.md`（配置規則ブロックは既存観点と同一本文・Suggestion 受け皿・件数行を出す Output Template）
+> - [ ] `tests/review-severity-scope/verify.sh` の EXPECTED_PERSPECTIVES 名簿（+ 観点固有の針）
+> - [ ] `scripts/multi-agent.sh` の `get_cli_perspectives_review`（distributed の所有 CLI。所有させない場合は cli-registry-completeness の DYNAMIC_PERSPECTIVES へ）
+> - [ ] `scripts/agent-config.yaml` の対応表ミラー（agent-config-mirror が同期を検査）
+> - [ ] `scripts/templates/codex-review.sh` ヘルプの「実在する review 観点」列挙
+> - [ ] リポジトリ自身の観点名 SSOT（用語集・ドメイン定義の perspective 名列挙）
+> - [ ] 観点数・名簿を記載する運用文書（本ガイドの一覧表・オーケストレーション文書・ブロック観点名簿）
 
 ### Claude Code pr-review-toolkit との対応
 
@@ -114,6 +131,7 @@
 | Type Design Analysis | type-design-analyzer               | Claude Code（据置） |
 | Comment Analysis     | comment-analyzer                   | Claude Code         |
 | Code Simplification  | code-simplifier                    | Claude Code         |
+| Acceptance Criteria  | _(新規)_                           | Codex CLI           |
 
 ---
 
@@ -279,6 +297,8 @@ codex exec "$PROMPT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} < /dev/null
 | **Warning**    | バグの可能性、パフォーマンス問題、ベストプラクティス違反 | 必ず修正（確認不要で即対応）       |
 | **Suggestion** | コード品質改善、リファクタリング提案                     | 実装が妥当なものは対応（確認不要） |
 | **Info**       | 良いプラクティスの確認、参考情報                         | 確認のみ（対応不要）               |
+
+> **スコープ条件（配置規則）**: Critical / Warning に置けるのは**今回の変更 diff が導入または悪化させた**欠陥に限る。既存コードへの改善提案・カバレッジ拡充案・設計代替案・上流ツールへの提案は Suggestion 以下へ置く。詳細は各観点テンプレートの Severity Classification 節にある「配置規則（severity スコープ契約）」を参照。
 
 ### 信頼度スコア
 

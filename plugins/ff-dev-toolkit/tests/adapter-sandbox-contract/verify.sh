@@ -1247,6 +1247,30 @@ else
   fi
 fi
 
+# ── grok のネットワーク開放通知（Issue #897・静的針） ──
+# grok の sandbox は outbound network を遮断しない（実測 2026-09-01 / 0.2.118、
+# 詳細は README「ネットワーク境界の実測記録」）。閉じる設定手段が無いため、AC の
+# 「黙って開放のまま走らない」はアダプタの dispatch 前通知だけが担保している。
+# 実測そのものは課金を伴い定常化できないので、ここでは通知行の存在だけを固定する。
+# echo 行へアンカーする（コメント内に同句を書いただけでは緑にしない — 発明した
+# 文字列に針が同意する ACE-249-1 型の腐りを防ぐ）。
+if grep -Eq '^echo .*外部ネットワークを遮断しません.*>&2' "$ADAPTERS_DIR/grok-cli-adapter.sh"; then
+  ok "grok-cli: ネットワーク開放の dispatch 前通知（stderr）が残っている（Issue #897）"
+else
+  bad "grok-cli: ネットワーク開放の通知行が消えた — 開放のまま黙って走る（Issue #897 の AC 破れ）"
+fi
+# 「dispatch 前」であることも固定する。通知が run_with_timeout（CLI 起動）より
+# 後ろへ動くと、課金・実行が始まった後の通知になり AC の意味を失う。
+# grep の不一致（rc=1）が set -e / pipefail でここを途中死させないよう、
+# 失敗時は空へ倒して下の判定に届ける（空 = 赤、が正しい向き）。
+notice_line="$(grep -nE '^echo .*外部ネットワークを遮断しません' "$ADAPTERS_DIR/grok-cli-adapter.sh" | head -1 | cut -d: -f1)" || notice_line=""
+launch_line="$(grep -n 'run_with_timeout' "$ADAPTERS_DIR/grok-cli-adapter.sh" | head -1 | cut -d: -f1)" || launch_line=""
+if [ -n "$notice_line" ] && [ -n "$launch_line" ] && [ "$notice_line" -lt "$launch_line" ]; then
+  ok "grok-cli: 通知が CLI 起動（run_with_timeout）より前にある"
+else
+  bad "grok-cli: 通知が CLI 起動より前に無い（notice=${notice_line:-なし} / launch=${launch_line:-なし}）"
+fi
+
 echo
 echo "  PASS=${PASS} FAIL=${FAIL} SKIP=${SKIP}  層2: ${LAYER2_RUN}/${LAYER2_TOTAL} 照合実行"
 if [ "$LAYER2_RUN" -eq 0 ]; then

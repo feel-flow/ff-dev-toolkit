@@ -93,7 +93,14 @@
 #   files this orchestrator did not write (no `<!-- Multi-CLI ... Result -->` first
 #   line — a user's own notes are never moved or discarded), entries that are not
 #   `*.md` directly under <cli>/ (implement staging `files/` included), and anything
-#   reached through a symlink. A `<cli>/` that resolves anywhere other than itself
+#   reached through a symlink. Staging is not silent, though (Issue #724): under a
+#   planned CLI, a non-empty `files/<perspective>/` outside this implement run's
+#   plan (for review/explore runs: any non-empty one — those task types neither
+#   clear nor write staging), a stray file or non-directory entry under `files/`,
+#   and any symlink (`files/` itself or an entry below it — named as a link, never
+#   followed) are all named on stderr and in the report, exactly like unplanned
+#   CLI directories; a scan that fails is reported as such, not as "0 files".
+#   A `<cli>/` that resolves anywhere other than itself
 #   (a symlink, pointing inside or outside <output-dir>) aborts the run before
 #   anything is written, deleted, or restored from the resume cache; a
 #   `<cli>/previous` *symlink* is removed as a link, never followed.
@@ -207,11 +214,27 @@ get_cli_adapter() {
 #     is a Claude agent). Sharing with copilot-cli is harmless — copilot is
 #     metered and excluded by default.
 #   pattern-discovery → grok-cli, documentation → codex-cli (see notes above).
+#
+# acceptance-criteria → codex-cli (issue #1054): Issue の受け入れ条件（GWT / DoD）と
+# diff の照合。既定セットに入れる（8 → 9 観点）判断の根拠 — DoD の列挙充足では GWT の
+# 全称条件を満たさない非対称による取りこぼしが 2 PR 連続で実測され、観点をプロンプトへ
+# 足した回は 1 巡目で検出できた。pair モードの主は perspectives/review のディスク走査で
+# 全観点を担当するため、ディレクトリに置いた時点で既定に入る（opt-in にするには
+# comprehensive-review 型の除外機構を増やす必要があり、その複雑さに見合う根拠が無い）。
+# gh 呼び出しの増分コストは小さい: orchestrated 実行では大半のアダプタが gh を実行
+# できず（claude-code の review allowlist は Bash(git diff*) のみ、codex は read-only
+# sandbox）、観点内の分岐が PR 本文・diff 内の AC 記載からの照合へ fallback する。
+# 所有を codex-cli にするのは、実装主体（多くは Claude 側）と別モデルの目で AC を
+# 照合するクロスモデル価値と、DoD / カバレッジ照合系（test-analysis）の系譜が
+# codex にあるため。flat-rate（grok）は逐次実行制約で観点追加が実時間に直結し、
+# premium（claude-code）は既に 3 観点で最重負荷のため選ばない。
+# 非ブロック名簿（DEFAULT_CRITICAL_NONBLOCK_PERSPECTIVES）には載せない —
+# AC 未達の Critical はマージを止めるためにこの観点を足すので、ブロック側が既定。
 
 get_cli_perspectives_review() {
   case "$1" in
     claude-code) echo "type-design-analysis code-simplification comment-analysis" ;;
-    codex-cli)   echo "code-review test-analysis" ;;
+    codex-cli)   echo "code-review test-analysis acceptance-criteria" ;;
     copilot-cli) echo "test-analysis comment-analysis" ;;  # metered — every task requires explicit --cli copilot-cli (see build_distributed_plan)
     grok-cli)    echo "error-handler-hunt security-analysis" ;;
     *) echo "" ;;
@@ -719,6 +742,10 @@ MODE_EXPLICIT=false
 PRINT_REVIEWERS=false
 SET_REVIEWERS=""
 STRATEGY=""
+# STRATEGY の出所（--strategy flag / config のキー / task default）。pair モードの
+# 非適用通知と whitelist 拒否は config 由来でも発火するため、値だけ名指しすると
+# 利用者がどこを直せばよいか辿れない（Issue #691）。
+STRATEGY_SOURCE=""
 PARALLEL=true
 OUTPUT_DIR=""
 # Whether --output-dir was given, so the retry advice can carry it (the value
@@ -731,6 +758,25 @@ FIXED_DIFF_FILE=""
 # 実行開始時点のリビジョンスナップショット（capture_repo_snapshot の 1 行）。
 # 実行後に取り直した値と突き合わせる。git リポジトリ外では空のまま。
 REPO_SNAPSHOT_BEFORE=""
+# ── ツリー変化判定のパス除外（Issue #747） ──
+#
+# 常駐ツール（superpowers スキルが作る .superpowers/ 等）が実行中に書き続ける
+# リポジトリでは、リビジョンガードの作業ツリー判定が毎回発火し、全タスク成功後に
+# 結果が丸ごと破棄される。FF_MULTI_AGENT_IGNORE_PATHS（':' 区切り、pathspec の
+# glob magic として解釈）に一致するパスを判定から外す。除外が効くのは
+# **作業ツリーの指紋だけ**で、HEAD / ブランチの変化検出には影響しない
+# （capture_repo_snapshot の除外は worktree の問い合わせにしか掛からない）。
+# レビューは何も削除しないため、merge-cleanup と違い適用範囲を絞る必要は無い。
+#
+# .superpowers/** は**既定で除外**する。FF_MULTI_AGENT_IGNORE_PATHS は既定への
+# **追加**であって置き換えではない — 置き換えにすると、別のパスを 1 つ設定した
+# 瞬間に .superpowers 起因の全破棄が黙って再発する。
+# 検証・パターン分解は parse_ignore_paths（main の冒頭で必ず呼ぶ）。
+IGNORE_PATHS_DEFAULT='.superpowers/**'
+IGNORE_EXCLUDE_PATHSPECS=(":(exclude,glob,top)${IGNORE_PATHS_DEFAULT}")
+# 利用者指定パターンの肯定形（報告用）。既定パターンは含めない — 既定と利用者指定は
+# ログで別々に名乗る（どちらの指定が効いたのかを実行ログから区別できるように）。
+IGNORE_MATCH_PATHSPECS=()
 # 検出そのものは adapters/adapter-common.sh の関数へ委譲する（書き写しの人手同期を
 # やめるため）。ここに残すのは orchestrator 固有の方針だけ:
 #   1) MULTI_AGENT_BASE_BRANCH env を最優先する
@@ -846,7 +892,7 @@ parse_args() {
       --include-diff) INCLUDE_DIFF=true; shift ;;
       --config)      CONFIG_FILE="$2"; CONFIG_SOURCE="--config flag"; CONFIG_PROVENANCE="flag"; shift 2 ;;
       --mode)        MODE="$2"; MODE_EXPLICIT=true; shift 2 ;;
-      --strategy)    STRATEGY="$2"; shift 2 ;;
+      --strategy)    STRATEGY="$2"; STRATEGY_SOURCE="--strategy flag"; shift 2 ;;
       --cli)         CLI_FILTER="${CLI_FILTER:+$CLI_FILTER }$2"; shift 2 ;;
       --perspective) PERSPECTIVE_FILTER="${PERSPECTIVE_FILTER:+$PERSPECTIVE_FILTER }$2"; shift 2 ;;
       --exclude-perspective)
@@ -978,7 +1024,10 @@ load_config() {
       [[ -n "$cfg_val" ]] && MODE="$cfg_val"
 
       cfg_val=$(yq -r ".tasks.${TASK_TYPE}.cost_strategy // \"\"" "$CONFIG_FILE" 2>/dev/null || true)
-      [[ -n "$cfg_val" && -z "$STRATEGY" ]] && STRATEGY="$cfg_val"
+      if [[ -n "$cfg_val" && -z "$STRATEGY" ]]; then
+        STRATEGY="$cfg_val"
+        STRATEGY_SOURCE="config tasks.${TASK_TYPE}.cost_strategy (${CONFIG_SOURCE})"
+      fi
 
       cfg_val=$(yq -r ".tasks.${TASK_TYPE}.timeout // \"\"" "$CONFIG_FILE" 2>/dev/null || true)
       [[ -n "$cfg_val" && -z "$TIMEOUT" ]] && TIMEOUT="$cfg_val"
@@ -988,7 +1037,10 @@ load_config() {
     else
       # v1 compatibility
       cfg_val=$(yq -r '.cost_strategy // ""' "$CONFIG_FILE" 2>/dev/null || true)
-      [[ -n "$cfg_val" && -z "$STRATEGY" ]] && STRATEGY="$cfg_val"
+      if [[ -n "$cfg_val" && -z "$STRATEGY" ]]; then
+        STRATEGY="$cfg_val"
+        STRATEGY_SOURCE="config cost_strategy (${CONFIG_SOURCE})"
+      fi
 
       cfg_val=$(yq -r '.timeout // ""' "$CONFIG_FILE" 2>/dev/null || true)
       [[ -n "$cfg_val" && -z "$TIMEOUT" ]] && TIMEOUT="$cfg_val"
@@ -1023,7 +1075,22 @@ apply_task_defaults() {
   fi
   [[ -z "$OUTPUT_DIR" ]] && OUTPUT_DIR="$(get_default_output_dir "$TASK_TYPE")"
   [[ -z "$TIMEOUT" ]] && TIMEOUT="$(get_default_timeout "$TASK_TYPE")"
-  [[ -z "$STRATEGY" ]] && STRATEGY="$(get_default_strategy "$TASK_TYPE")"
+  if [[ -z "$STRATEGY" ]]; then
+    STRATEGY="$(get_default_strategy "$TASK_TYPE")"
+    STRATEGY_SOURCE="task default"
+  fi
+  # strategy の whitelist 検証（Issue #691）。未知の値を黙って受けると、どの分岐にも
+  # 一致せず balanced と同じ「何もしない」実行に落ちる — minimize_cost の typo
+  # （minimize_costs / minimise_cost 等）は振替も pair の非適用通知も出ない完全な
+  # 無音になり、この通知が守ろうとする利用者がまさに踏む穴になる。CLI・config の
+  # 両経路がここを通るので、dry-run でも実行でも同じく非 0 で拒否する。
+  case "$STRATEGY" in
+    balanced|minimize_cost|maximize_quality) ;;
+    *)
+      echo "ERROR: unknown strategy '${STRATEGY}' (from ${STRATEGY_SOURCE})." >&2
+      echo "       Valid values: balanced, minimize_cost, maximize_quality." >&2
+      exit 1 ;;
+  esac
   return 0  # last &&-list may legitimately be false — don't let set -e kill the script
 }
 
@@ -1195,6 +1262,22 @@ build_pair_plan() {
     echo "ERROR: main reviewer '${REVIEW_MAIN}' is not installed." >&2
     echo "       Install it, or pick another with --set-reviewers." >&2
     return 1
+  fi
+
+  # --strategy minimize_cost は分散プランの振替（premium 観点 → 最安 tier の CLI、
+  # build_distributed_plan 末尾）で、pair には対応する概念が無い（Issue #691）。
+  # 従来はここで黙って何も起きなかった（効かないつまみ）。#255 の --cli は
+  # 「分散モード用のフィルタ」だから分散へ落とすことで指定の意図を守れたが、
+  # minimize_cost を同じ形で分散へ落とすと、コストのつまみ一つで設定済みの
+  # 主・副（= 誰がレビューしたか）ごと入れ替わる。主を振替先へ差し替える案も
+  # 同じ理由で採らない（振替先が副と同一 CLI ならクロスモデル性も消える）。
+  # pair のコストは主・副の選定そのもので決まるので、「ここでは効かない」を
+  # 名乗り、効かせる場所（--set-reviewers / --mode distributed）を指す。
+  # balanced / maximize_quality はプランを変えない既定ラベルなので黙る
+  # （毎回の常時表示は雑音で、既定実行の出力を変えない、という契約も守る）。
+  if [[ "$STRATEGY" == "minimize_cost" ]]; then
+    echo "  ℹ️  cost strategy 'minimize_cost' (from ${STRATEGY_SOURCE}) does not apply in pair mode — reviewers are the configured main/sub pair, not tier-substituted." >&2
+    echo "     To lower cost: pick cheaper reviewers (--set-reviewers main=NAME,sub=NAME) or use --mode distributed, where minimize_cost applies." >&2
   fi
 
   # 副の縮退判定。どれも「主のみで続行」で、理由だけを変えて伝える。
@@ -1566,7 +1649,9 @@ resolve_perspective_file() {
 #
 # パスを組み立てるのはここ 1 箇所で、消費点は run_single_task（作成して渡す）と
 # clear_planned_outputs（前回実行の残骸を消す）。両者がずれると「消した先と書く先が
-# 違う」形の stale が静かに開く。
+# 違う」形の stale が静かに開く。report_unplanned_staging_dirs（プラン外タスクの
+# staging 残骸の名指し・Issue #724）も同じ `<cli>/files/<perspective>` レイアウトを
+# 前提に走査するので、ここを変えたらそちらも追随させること。
 # ここを変えたらレイアウトを literal で案内している次も追随させること:
 #   - append_plan_sections の "**Staging:**" 行 … 実パスを出すので tests/
 #     adapter-prompt-guard が照合する（追随漏れは赤になる）
@@ -1700,6 +1785,85 @@ output_dir_repo_relative() {
   esac
 }
 
+# ── ツリー変化判定のパス除外の検証・分解（Issue #747） ──
+#
+# FF_MULTI_AGENT_IGNORE_PATHS を ':' 区切りで分解し、IGNORE_EXCLUDE_PATHSPECS
+#（capture_repo_snapshot へ渡す除外形）と IGNORE_MATCH_PATHSPECS（報告用の肯定形）
+# を組み立てる。fail-closed の原則は merge-cleanup.sh の
+# FF_MERGE_CLEANUP_IGNORE_PATHS と揃える:
+#   - 空パターン（先頭・末尾・連続する ':'）は中断 — 空 pathspec は全パスに一致し、
+#     ガードを黙って無効化する（fail-open）ため
+#   - 前後に空白の付いたパターンは中断 — pathspec は空白も含めて照合するので
+#     何にも一致せず、「設定したのに効かない」が無言で続くため
+#   - 文字クラス（[...]）は中断 — クラス内の ':' が区切り文字と衝突して黙って分断され、
+#     破片は「何にも一致しない」正当そうな見た目になる（fail-open。
+#     FF_MERGE_CLEANUP_PROTECT_BRANCHES の先例と同じ扱い）
+#   - '.' / '/' 単体は中断 — glob magic では**何にも一致しない**（git 2.50.1 実測:
+#     :(exclude,glob,top). / :(exclude,glob,top)/ はどちらも除外 0 件。さらに '/' は
+#     肯定形 :(glob,top)/ が rc=128 "fatal: oops in prep_exclude" で落ち、verify 時の
+#     除外報告クエリごと道連れにする）。全部を除外したい意図なら '**' を明示させる
+#   - 全パス一致（'**' / '**/*'。git 2.50.1 実測でともに全除外）は明示的な選択でも
+#     ありうるので中断せず、ガードが事実上無効になる旨を実行ログへ出す。'*' は
+#     glob magic では '/' を跨がずリポジトリ直下しか除外しないため、警告対象ではない
+# タスクを 1 つも起動する前（main の冒頭）に呼ぶ — CLI に支払った後で設定不正に
+# 気づく形にしない。
+parse_ignore_paths() {
+  local raw="${FF_MULTI_AGENT_IGNORE_PATHS:-}" rest item
+  [[ -n "$raw" ]] || return 0
+  # 末尾の空要素も検出したいので、終端の ':' を足してから 1 要素ずつ剥がす
+  rest="${raw}:"
+  while [[ -n "$rest" ]]; do
+    item="${rest%%:*}"
+    rest="${rest#*:}"
+    if [[ -z "$item" ]]; then
+      echo "ERROR: FF_MULTI_AGENT_IGNORE_PATHS contains an empty pattern: '${raw}'" >&2
+      echo "       An empty pathspec matches every path, which would silently disable the" >&2
+      echo "       tree-change guard (check for a leading, trailing, or doubled ':')." >&2
+      echo "       ':' is the separator, so pathspec magic like ':(exclude)...' cannot be" >&2
+      echo "       written here (mid-pattern it is treated as literal text and matches nothing)." >&2
+      return 1
+    fi
+    case "$item" in
+      [[:space:]]*|*[[:space:]])
+        echo "ERROR: FF_MULTI_AGENT_IGNORE_PATHS pattern has leading/trailing whitespace: '${item}'" >&2
+        echo "       Pathspecs match whitespace literally, so this pattern matches nothing" >&2
+        echo "       (check for a space after a ':')." >&2
+        return 1
+        ;;
+    esac
+    case "$item" in
+      *\[*|*\]*)
+        # logs/[[:digit:]]*/** のような文字クラスは、クラス内の ':' が区切り文字と
+        # 衝突して黙って分断される（エラーにならないまま除外が消える fail-open）。
+        echo "ERROR: FF_MULTI_AGENT_IGNORE_PATHS pattern contains a character class ([...]): '${item}'" >&2
+        echo "       A ':' inside the class collides with the ':' separator and the pattern is" >&2
+        echo "       silently split into fragments that look valid but match nothing, so" >&2
+        echo "       character classes are unsupported (same as FF_MERGE_CLEANUP_PROTECT_BRANCHES)." >&2
+        echo "       Use a prefix glob instead (e.g. 'logs/**')." >&2
+        return 1
+        ;;
+    esac
+    case "$item" in
+      '.'|'/')
+        # glob magic では '.' も '/' も**何にも一致しない**（実測: 除外 0 件）。しかも
+        # '/' は肯定形 :(glob,top)/ を rc=128 で落とし、verify 時の除外報告ごと壊す。
+        echo "ERROR: FF_MULTI_AGENT_IGNORE_PATHS pattern '${item}' matches nothing under" >&2
+        echo "       pathspec glob magic — it would sit in the configuration excluding no path" >&2
+        echo "       ('/' additionally breaks the exclusion-report query outright)." >&2
+        echo "       To exclude every path, write '**' explicitly." >&2
+        return 1
+        ;;
+      '**'|'**/*')
+        echo "⚠️ FF_MULTI_AGENT_IGNORE_PATHS pattern '${item}' matches every path — the" >&2
+        echo "   tree-change guard is effectively disabled for the working tree." >&2
+        ;;
+    esac
+    IGNORE_EXCLUDE_PATHSPECS+=(":(exclude,glob,top)${item}")
+    IGNORE_MATCH_PATHSPECS+=(":(glob,top)${item}")
+  done
+  return 0
+}
+
 # ── 出力ディレクトリの境界検証 ──
 #
 # リビジョンガードは「出力ディレクトリ配下は orchestrator 自身が書くので数えない」
@@ -1797,7 +1961,7 @@ capture_baseline_and_fix_diff() {
   local exclude before after
   exclude="$(output_dir_repo_relative)"
 
-  if ! before="$(capture_repo_snapshot "$exclude")"; then
+  if ! before="$(capture_repo_snapshot "$exclude" "${IGNORE_EXCLUDE_PATHSPECS[@]}")"; then
     echo "ERROR: cannot read the repository state — refusing to start." >&2
     echo "       Without a baseline there is no way to tell afterwards whether the" >&2
     echo "       reviewed revision stayed put, and the result could not be trusted." >&2
@@ -1806,7 +1970,7 @@ capture_baseline_and_fix_diff() {
 
   create_fixed_diff || return 1
 
-  if ! after="$(capture_repo_snapshot "$exclude")"; then
+  if ! after="$(capture_repo_snapshot "$exclude" "${IGNORE_EXCLUDE_PATHSPECS[@]}")"; then
     echo "ERROR: cannot re-read the repository state while fixing this run's diff." >&2
     return 1
   fi
@@ -1960,7 +2124,7 @@ validate_execution_plan() {
 # 痕跡は rm 自身の stderr 1 行だけで、並列実行では他タスクの出力に紛れる。
 clear_planned_outputs() {
   [[ -n "${OUTPUT_DIR:-}" ]] || return 0
-  local entry cli_name persp_name staging_dir
+  local entry cli_name persp_name staging_dir cli_dir
   # 統合レポートは通常ここで消す。generate_report は成功時にしか書かないので、
   # 「タスクは走ったがレポート生成まで到達しなかった」実行のあとに無関係な前回結果を
   # 残さないためである。ただし未解消 Critical のレポートは、次回ガードが読む唯一の
@@ -1978,8 +2142,32 @@ clear_planned_outputs() {
     [[ -z "$entry" ]] && continue
     cli_name="${entry%%:*}"
     persp_name="${entry#*:}"
-    if ! rm -f "${OUTPUT_DIR}/${cli_name}/${persp_name}.md"; then
-      echo "ERROR: cannot clear previous result: ${OUTPUT_DIR}/${cli_name}/${persp_name}.md" >&2
+    # <cli> が symlink だと rm -f はリンクを辿り、指し先ディレクトリ内の同名ファイル
+    # （出力ディレクトリの外でありうる）を消す — OUTPUT_DIR 自体は物理解決済みでも
+    # 配下コンポーネントは別（Issue #722）。execute_tasks では Phase 1 の
+    # validate_planned_result_dirs が先に同じ検査で中断するが、削除の実行点として
+    # ここでも自前で検査し、検査した物理パスに対して消す（clear_staging_dir と同じ
+    # 「検査したものと消すものを一致させる」形。ヘルパも既存の resolve_expected_dir
+    # を再利用する）。
+    cli_dir="${OUTPUT_DIR}/${cli_name}"
+    if [[ -d "$cli_dir" ]]; then
+      cli_dir="$(resolve_expected_dir "$cli_dir" "the result dir for ${cli_name}")" || {
+        # ループ途中の中断は「先行エントリは削除済み・以降は未削除」の半端な状態で
+        # 抜ける（E2E では Phase 1 の validate が先に止めるため通常は到達しない）。
+        # 到達したときに読み手が状態を推測しなくて済むよう 1 行残す。
+        echo "       Some planned results may already be cleared before this abort." >&2
+        return 1
+      }
+    elif [[ -e "$cli_dir" || -L "$cli_dir" ]]; then
+      # 通常ファイル・dangling symlink は resolve できず [[ -d ]] も偽になるが、
+      # 素通しすると rm -f が「何も消せないまま rc=0」で成功に見える。削除の実行点
+      # としても validate_result_dir_paths と同じ fail-loud に揃える。
+      echo "ERROR: the result path for ${cli_name} exists but is not a directory: ${cli_dir}" >&2
+      echo "       Results are written under it, so this run cannot proceed." >&2
+      return 1
+    fi
+    if ! rm -f "${cli_dir}/${persp_name}.md"; then
+      echo "ERROR: cannot clear previous result: ${cli_dir}/${persp_name}.md" >&2
       return 1
     fi
     if [[ "${TASK_TYPE:-review}" == "implement" ]]; then
@@ -2022,7 +2210,8 @@ clear_previous_integrated_report() {
 # 対象は今回のプランに載っている CLI のディレクトリ**だけ**、その直下の `*.md`
 # **だけ**。プラン外の CLI のディレクトリ、`files/`（implement の staging）、
 # `.md` 以外のファイルには触れない（触れない代わりに、結果ファイルを持つプラン外
-# ディレクトリは report_unplanned_result_dirs が名指しする）。
+# ディレクトリは report_unplanned_result_dirs が、プラン外タスクの staging 残骸は
+# report_unplanned_staging_dirs が名指しする）。
 #
 # `previous/` は毎回作り直す（追記しない）。世代を溜めると previous/ 自体が
 # 「いつの実行のものか分からない」第二の stale になり、本 Issue と同じ誤読を
@@ -2153,8 +2342,10 @@ clear_quarantine_dir() { # <dir>
   # 追うと指し先を丸ごと消す — `previous -> ../claude-code` ならプラン外 CLI の結果
   # 一式、`previous -> .` なら自分の CLI ディレクトリ（staging の files/ を含む）。
   # 解決先が OUTPUT_DIR 配下でも消してはいけないので、配下判定ではなくリンク自体の
-  # 削除で塞ぐ。同型の追従は clear_staging_dir にも残るが、そちらは Issue #722 の
-  # スコープ（本 PR は診断文言を固定している既存 suite を壊さないため触らない）。
+  # 削除で塞ぐ。同型の内向き追従は clear_staging_dir にも残るが、そちらは Issue #1120
+  # のスコープ（診断文言を固定している既存 suite への追随を伴うため分離した。#722 の
+  # 対象は clear_planned_outputs の外向き symlink だが、そこで再利用した
+  # resolve_expected_dir は内外どちらの symlink も拒否する）。
   if [[ -L "$dir" ]]; then
     if ! rm -f "$dir"; then
       echo "ERROR: cannot remove the symlink at the quarantine path: ${dir}" >&2
@@ -2260,6 +2451,9 @@ quarantine_cli_results() { # <cli>
   if [[ "$foreign" -gt 0 ]]; then
     note_unplanned_results "${cli}/ (${foreign} .md file(s) this orchestrator did not write — left in place, not this run's output)"
   fi
+  # 報告専用（quarantine_unplanned_outputs の report_unplanned_result_dirs と同じ扱い）。
+  # 走査の rc で退避成功の実行ごと落とさない。
+  report_unplanned_staging_dirs "$cli" "$resolved_cli"
   return 0
 }
 
@@ -2282,7 +2476,138 @@ report_unplanned_result_dirs() {
     if [[ "$count" -gt 0 ]]; then
       note_unplanned_results "${cli}/ (${count} result file(s) from an earlier run — left untouched, not this run's output)"
     fi
+    # staging（files/）は直下の .md とは**独立に**名指しする。elif で束ねると、.md が
+    # 1 件でもあるプラン外 CLI の staging 残骸が黙って素通りする（.md の名指しは
+    # ディレクトリ直下の話で、files/ の中身の存在を伝えない）。プラン外 CLI は
+    # 1 バイトも動かさない契約なので、ここも名指しだけ。unknown（走査できなかった）は
+    # 「残骸あり」と断定せず、0 件とも言い切らない別文言で報告する。
+    case "$(staging_root_state "${dir}files")" in
+      symlink)
+        note_unplanned_results "${cli}/ (files/ is a symlink left from an earlier run — not followed, not this run's output)"
+        ;;
+      files)
+        note_unplanned_results "${cli}/ (staging file(s) under files/ from an earlier run — left untouched, not this run's output)"
+        ;;
+      unknown)
+        note_unplanned_results "${cli}/ (could not scan files/ — treat it as possibly holding an earlier run's staging output; left untouched)"
+        ;;
+    esac
   done
+}
+
+# ── プラン外タスクの staging（<cli>/files/<perspective>/）の名指し（Issue #724） ──
+#
+# clear_planned_outputs が消す staging は**今回のプランに載るタスク**の分だけなので、
+# 観点セットを絞った再実行のあとには、プランに入らなかったタスクの files/ に前回
+# 実行の生成物が残る。`.md` 結果で塞いだ誤読（「そこにある = 今回の成果」）が一段
+# 下で開いたままになる形（本 Issue）。
+#
+# `.md` と違い **退避はせず名指しだけ** にする（対称性を意図的に崩す）:
+#   - staging の中身は orchestrator 自筆ではなく各 CLI（またはその指示で動く
+#     エージェント）の生成物で、write_output の 1 行目マーカーによる「自筆かどうか」
+#     の判定が任意形式のファイルには使えない。判定なしで動かすと、利用者が staging へ
+#     置いたファイルまで「次の実行で捨てられる previous/」へ入れることになり、
+#     `.md` 側で「他人のファイルは動かさない」と決めた根拠が 1 実行遅れで嘘になる
+#   - 統合レポートの implement セクションは staging を実測して件数と実パスを書くので、
+#     レポート経由の消費者はプラン内の staging だけ読む。残る誤読経路は
+#     `ls <cli>/files/` の直接読みで、それは名指し（stderr + レポートの
+#     Not part of this run 節）で塞がる
+#
+# 報告専用: 走査に失敗しても実行は落とさない（report_unplanned_result_dirs と同じ
+# 扱い）。ただし数えられなかったことは隠さず「走査できなかった」として名指しする —
+# 0 件と言い切ると「観測できなかった」が「何も無い」に化けるし、「N 件ある」と
+# 断定すると観測していないものを観測したことにする（append_plan_sections の
+# staging 実測と同じ理由で、三値〔有 / 無 / unknown〕を文言まで保って伝える）。
+#
+# プラン内タスクの除外は **implement のときだけ**。staging は implement の概念で、
+# review / explore の実行は staging を clear もしなければ書きもしない — そこで
+# plan_has_entry を見て黙ると、「観点名が今回のプランに載っている」だけの理由で
+# 前回 implement の生成物が名指しから漏れる。
+#
+# symlink（files/ 自体・その配下のエントリとも）は**追わない**。名指しのための
+# 読み取り走査でも、指し先が OUTPUT_DIR の外なら他人のツリーを歩くことになり、
+# 「1 バイトも触れない」の精神（clear_quarantine_dir が rm で守っているもの）を
+# 読み取りで破ることになる。リンクはリンクとして名指しして終える。
+report_unplanned_staging_dirs() { # <cli> <resolved-cli-dir>
+  local cli="$1" files_root="$2/files" entry name count
+  if [[ -L "$files_root" ]]; then
+    note_unplanned_results "${cli}/files (symlink left from an earlier run — not followed, not this run's output)"
+    return 0
+  fi
+  [[ -d "$files_root" ]] || return 0
+  for entry in "$files_root"/*; do
+    # glob 不一致はパターンそのものへ展開されるので実体検査で弾く（dangling symlink
+    # は -e が偽になるため -L も見る）。
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    name="${entry##*/}"
+    if [[ -L "$entry" ]]; then
+      note_unplanned_results "${cli}/files/${name} (symlink left from an earlier run — not followed, not this run's output)"
+      continue
+    fi
+    if [[ -d "$entry" ]]; then
+      if [[ "${TASK_TYPE:-review}" == "implement" ]] && plan_has_entry "${cli}:${name}"; then
+        continue
+      fi
+      count="$(count_staging_files "$entry")"
+      case "$count" in
+        0) ;;  # 空ディレクトリは読み手を誤らせる中身が無い
+        unknown)
+          note_unplanned_results "${cli}/files/${name}/ (could not scan this staging dir — treat it as possibly holding an earlier run's output; left untouched)"
+          ;;
+        *)
+          note_unplanned_results "${cli}/files/${name}/ (${count} staging file(s) from an earlier run — left untouched, not this run's output)"
+          ;;
+      esac
+      continue
+    fi
+    if [[ -f "$entry" ]]; then
+      note_unplanned_results "${cli}/files/${name} (stray file from an earlier run — left untouched, not this run's output)"
+      continue
+    fi
+    # fifo / socket 等。レイアウト外の実体も黙って素通しはしない。
+    note_unplanned_results "${cli}/files/${name} (non-directory entry from an earlier run — left untouched, not this run's output)"
+  done
+  return 0
+}
+
+# staging 配下のファイル数を数える。走査失敗（権限・I/O、計数パイプの失敗）は
+# 0 件と区別して "unknown" を返す。rc は**常に 0** — 報告専用経路で使うため、
+# ここの失敗が set -e / 呼び出し元経由で実行本体を落としてはいけない。
+# symlink も数える（指し先がどこでも「残骸がある」ことに変わりはない。-P 既定
+# なので辿りはしない）。件数は -print0 の NUL を数える — 改行入りのファイル名を
+# 行数で数えると 1 件が複数件に化ける。find の stderr は捨てない（unknown に
+# なった原因が実行ログに残るように）。
+count_staging_files() { # <dir>
+  local count
+  if ! count="$(find "$1" \( -type f -o -type l \) -print0 | tr -cd '\0' | wc -c | tr -d '[:space:]')" \
+     || [[ ! "$count" =~ ^[0-9]+$ ]]; then
+    printf 'unknown\n'
+    return 0
+  fi
+  printf '%s\n' "$count"
+  return 0
+}
+
+# <cli>/files の状態を三値 + α で返す: absent | symlink | empty | files | unknown。
+# report_unplanned_result_dirs（プラン外 CLI の fall-back 名指し）用。unknown を
+# 「有り」へ潰さない — 呼び出し側が文言を分けて伝える。rc は常に 0。
+staging_root_state() { # <files-root>
+  if [[ -L "$1" ]]; then
+    printf 'symlink\n'
+    return 0
+  fi
+  if [[ ! -d "$1" ]]; then
+    printf 'absent\n'
+    return 0
+  fi
+  local count
+  count="$(count_staging_files "$1")"
+  case "$count" in
+    0) printf 'empty\n' ;;
+    unknown) printf 'unknown\n' ;;
+    *) printf 'files\n' ;;
+  esac
+  return 0
 }
 
 # ── Resume Identity And Cache（Issue #586） ──
@@ -2796,7 +3121,7 @@ run_task_recorded() { # $1: cli / $2: perspective / $3: status dir
 # CLI 専用 — レート制限は実行時失敗であり、本ツールは実行時 fallback を持たない
 # ため、throttle された観点はカバレッジゼロになる。同時 burst を作らないことが
 # 防御になる。premium / standard tier は従来どおりタスク単位で並列（一律逐次化は
-# pair モード既定の premium 7 観点で実行時間を観点数倍にする退行になる）。
+# pair モード既定の premium 8 観点で実行時間を観点数倍にする退行になる）。
 run_cli_group() { # $1: cli / $2: status dir
   local cli="$1" sdir="$2" entry gseen=""
   while IFS= read -r entry; do
@@ -3130,9 +3455,69 @@ report_discarded_output_paths() {
   fi
 }
 
+# ── 除外に一致した変化の報告（Issue #747） ──
+#
+# 除外パス配下の変化は判定から消えるが、**黙って消してはいけない** — 実行ログから
+# 「ガードが緩んだのか、本当に何も変わっていないのか」を区別できなくなる
+# （merge-cleanup の report_ignored_changes と同じ原則）。判定後に status を
+# 肯定形の同じパターンで引き直し、件数と一覧を出す:
+#   - 利用者指定（FF_MULTI_AGENT_IGNORE_PATHS）… 一致 0 件でもその旨を出す。
+#     「設定したのに何も変わらない」の原因がパターンの書き間違いだと分かるように
+#   - 既定（.superpowers/**）… 一致があるときだけ 1 行 + 一覧。無いのが通常なので
+#     毎回のログを占有しない
+# status の失敗は非 0 で返す — 呼び出し側（verify_repo_unchanged）が破棄へ倒す。
+# 「除外した中身を確認できない」は「除外が正しく効いたか分からない」と同じで、
+# 分からないまま成功を名乗るのはこのガードが塞いでいる silent failure そのもの。
+report_ignored_tree_changes() {
+  [[ "$IN_GIT_REPO" == "true" ]] || return 0
+  local root ignored count
+  if ! root="$(cd "$REPO_ROOT" 2>/dev/null && pwd -P)"; then
+    echo "ERROR: cannot resolve the repository root to list ignored tree changes." >&2
+    return 1
+  fi
+  if [[ "${#IGNORE_MATCH_PATHSPECS[@]}" -gt 0 ]]; then
+    # 全体一致の :(top) を先頭に置いてから肯定形を並べる意味は無い（こちらは除外では
+    # なく選択）。CWD 相対に縮まないよう root へ cd してから引く（capture_repo_snapshot
+    # と同じ理由）。
+    if ! ignored="$(cd "$root" && git status --porcelain -- "${IGNORE_MATCH_PATHSPECS[@]}")"; then
+      echo "ERROR: cannot list the changes matched by FF_MULTI_AGENT_IGNORE_PATHS." >&2
+      return 1
+    fi
+    if [[ -z "$ignored" ]]; then
+      echo "ℹ️ No uncommitted changes match FF_MULTI_AGENT_IGNORE_PATHS (patterns are repo-root-relative globs: '${FF_MULTI_AGENT_IGNORE_PATHS:-}')" >&2
+    else
+      count="$(printf '%s\n' "$ignored" | wc -l | tr -d ' ')" || {
+        echo "ERROR: cannot count the changes matched by FF_MULTI_AGENT_IGNORE_PATHS." >&2
+        return 1
+      }
+      echo "ℹ️ Excluded from the tree-change check: ${count} path(s) matched FF_MULTI_AGENT_IGNORE_PATHS" >&2
+      printf '%s\n' "$ignored" | sed 's/^/  - /' >&2 || {
+        echo "ERROR: cannot print the changes matched by FF_MULTI_AGENT_IGNORE_PATHS." >&2
+        return 1
+      }
+    fi
+  fi
+  if ! ignored="$(cd "$root" && git status --porcelain -- ":(glob,top)${IGNORE_PATHS_DEFAULT}")"; then
+    echo "ERROR: cannot list the changes matched by the default ignore pattern '${IGNORE_PATHS_DEFAULT}'." >&2
+    return 1
+  fi
+  if [[ -n "$ignored" ]]; then
+    count="$(printf '%s\n' "$ignored" | wc -l | tr -d ' ')" || {
+      echo "ERROR: cannot count the changes matched by the default ignore pattern '${IGNORE_PATHS_DEFAULT}'." >&2
+      return 1
+    }
+    echo "ℹ️ Default exclusion '${IGNORE_PATHS_DEFAULT}' kept ${count} changed path(s) out of the tree-change check" >&2
+    printf '%s\n' "$ignored" | sed 's/^/  - /' >&2 || {
+      echo "ERROR: cannot print the changes matched by the default ignore pattern '${IGNORE_PATHS_DEFAULT}'." >&2
+      return 1
+    }
+  fi
+  return 0
+}
+
 verify_repo_unchanged() {
   local after
-  if ! after="$(capture_repo_snapshot "$(output_dir_repo_relative)")"; then
+  if ! after="$(capture_repo_snapshot "$(output_dir_repo_relative)" "${IGNORE_EXCLUDE_PATHSPECS[@]}")"; then
     echo "" >&2
     echo "❌ Cannot read the repository state after the run — discarding the result." >&2
     echo "   The baseline was taken, so this is a failure to verify, not a clean run:" >&2
@@ -3144,6 +3529,22 @@ verify_repo_unchanged() {
     echo "   Re-run once the repository is settled." >&2
     return 1
   fi
+
+  # 除外に一致した変化を名指しする（黙って無視しない）。この一覧が取れないなら、
+  # 除外が正しく効いたかどうかも確認できていない — スナップショット不能と同じく
+  # fail-closed で破棄する（Issue #747）。
+  if ! report_ignored_tree_changes; then
+    echo "" >&2
+    echo "❌ Cannot list the changes excluded from the tree-change check — discarding the result." >&2
+    echo "   Without that listing there is no way to confirm the exclusion worked as" >&2
+    echo "   configured, so this run cannot be verified (same as an unreadable snapshot)." >&2
+    mark_outputs_discarded
+    echo "   No report was generated; this run's per-task results are marked DISCARDED." >&2
+    report_discarded_output_paths
+    echo "   Re-run once the repository is settled." >&2
+    return 1
+  fi
+
   [[ "$after" == "$REPO_SNAPSHOT_BEFORE" ]] && return 0
 
   # どこが動いたのかを名指しする。3 つのうちどれが変わったかで利用者の次の一手が
@@ -3519,32 +3920,23 @@ HEADER
   # 判定は連結後の統合レポートではなく**各 result file の本文**に掛ける — 連結後に
   # 掛けると (1) 1 本の CLI 出力の未閉フェンスが後続セクション全部を不可視にする
   # 越境マスク、(2) orchestrator 自身が書く節見出しの判定への混入、が構造的に生まれる。
-  # 判定の 3 経路（大文字小文字は tolower で吸収。perspective テンプレート群の
-  # CRITICAL Issues / Critical Vulnerabilities / Critical Gaps 表記を含む契約）:
-  #   (a) critical を含む見出しの配下の箇条書き。別の同深度以浅の見出しでスコープ
-  #       終了（サブ見出しでは維持）。no critical / non-critical 見出しと、
-  #       「- なし」「- none」等の空所見箇条書きは不算入
-  #   (b) 集計行 `- Critical[ Issues| Vulnerabilities| Gaps]: N`（N>=1。行頭アンカー
-  #       + 語彙固定で、散文の言及や「- critical path latency: 3ms」を拾わない）
-  #   (c) 行頭の `CRITICAL:` マーカー。ただし明示ゼロ行は除外 — Issue #893 で
-  #       comprehensive-review のゼロ件報告が独立行 `Critical: 0 / Warning: 0 /
-  #       Suggestion: 0` に契約化され、素の `^critical:` 判定だとこの正常系が
-  #       100% 偽 CRITICAL_BLOCK を発火する。除外は明示ゼロの数値形（`0` — 直後が
-  #       行末 / 空白+行末 / `/` 区切り / 「件」/ 全角開き括弧のみ）と、アダプタ側
-  #       受理ゲート s1 が同じ境界で受理するゼロ語形（なし / none / n/a / zero /
-  #       ゼロ — s1 の実列挙と完全一致させる）の
-  #       両方（片側だけだと `Critical: none` の契約準拠ゼロ報告が偽 BLOCK になる）。
-  #       境界を広げないこと（`0([^0-9]|$)` の
-  #       形は `CRITICAL: 0-day exploit` / `0x41` / `0 trust policy bypass` の
-  #       ような 0 始まりの実指摘まで明示ゼロとして飲み込む fail-open だった）。
-  #       bullet 版と同じ [1-9] 必須にもしない — `CRITICAL: 認証チェックの欠落` の
-  #       ような数字を含まない散文マーカー（このパス (c) の本来の対象）まで黙って
-  #       検出から外れるため
-  # コードフェンス内（先頭空白許容）は引用として数えない — 本ツールが自身のスクリプト
-  # や perspective 文書をレビューすると、テンプレートの Critical 見出しごと引用される。
+  #
+  # 判定本体は共有重大度行パーサー critical_findings_present
+  # （adapters/adapter-common.sh の _ff_severity_scan、Issue #908）へ委譲する —
+  # アダプタ側の受理ゲート review_body_present と**同一の行分類**（CommonMark
+  # フェンス追跡・重大度行文法 s1〜s4・数値ゼロ / ゼロ語のゼロ件文法・参照語 veto）
+  # を参照し、Critical 発火条件（c1〜c4: critical ラベルの件数行 / 指摘行、critical
+  # 見出しスコープ配下の bullet、行頭 CRITICAL: マーカー）は同ファイルのヘッダが
+  # 正。ここへ判定式を複製しないこと — 独立実装だった間は、片側へ語彙・境界を
+  # 足すたびにズレて fail-open / 偽 BLOCK の両方向の非対称が再発した（Issue #893
+  # の 7 巡レビューで実測。受理と検出の積集合は tests/severity-parser-intersection
+  # が同一入力表で固定する）。
+  #
   # フェンスが閉じないまま本文が終わる場合は判定不能（rc=2）として安全側（マーカー
-  # あり）へ倒す。awk 自体の失敗も同様に安全側へ倒し、診断を stderr へ残す。
-  # 検出力は tests/multi-agent-critical-marker/ が stub CLI の実走で固定する。
+  # あり）へ倒す。判定を実行できない場合（rc=3: 不可読ファイル / awk 実行失敗 —
+  # rc の写像は critical_findings_present が行う）も同様に安全側へ倒し、診断を
+  # stderr へ残す。検出力は tests/multi-agent-critical-marker/ が stub CLI の
+  # 実走で固定する。
   local crit_entry crit_seen="" crit_file crit_rc crit_found crit_persp
   local crit_block_hits="" crit_nonblock_hits="" crit_nonblock_set
   # 判定不能（未閉フェンス / awk 失敗）は実所見と別のリストに持つ。マーカーの
@@ -3581,36 +3973,11 @@ HEADER
     crit_file="${OUTPUT_DIR}/${crit_entry%%:*}/${crit_entry#*:}.md"
     [[ -f "$crit_file" ]] || continue
     set +e
-    awk '
-      /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
-      fence { next }
-      { l = tolower($0) }
-      /^#+[[:space:]]/ {
-        match($0, /^#+/); lvl = RLENGTH
-        if (in_crit && lvl > crit_lvl) next
-        in_crit = 0
-        if (l ~ /critical/ && l !~ /no[[:space:]]+critical/ && l !~ /non-critical/) {
-          in_crit = 1; crit_lvl = lvl
-        }
-        next
-      }
-      in_crit && l ~ /^[[:space:]]*-[[:space:]]/ {
-        # 空所見語彙はアダプタ側の受理ゲート s2（指摘なし・該当なし・指摘事項なし
-        # — adapter-common.sh review_body_present）と揃える。片側だけに語彙を足すと
-        # 「アダプタは受理するのに集約が実 Critical と数える」ドリフトになり、
-        # `- 指摘なし` が偽 CRITICAL_BLOCK を発火する（Issue #893 の 5 巡目で実測）。
-        if (l !~ /^[[:space:]]*-[[:space:]]*(なし|該当なし|特になし|指摘なし|指摘事項なし|none|n\/a|no issues)[[:space:]。.]*$/) found = 1
-      }
-      l ~ /^[[:space:]]*-[[:space:]]*critical( issues| vulnerabilities| gaps)?:[[:space:]]*[1-9]/ { found = 1 }
-      l ~ /^critical:/ && l !~ /^critical:[[:space:]]*(0[[:space:]]*(\/|件|（|$)|(なし|none|n\/a|zero|ゼロ)[[:space:]]*(\/|。|（|$))/ { found = 1 }
-      END {
-        if (fence != 0) exit 2
-        exit found ? 0 : 1
-      }
-    ' "$crit_file"
+    critical_findings_present "$crit_file"
     crit_rc=$?
     set -e
-    # 判定不能（rc=2: 未閉フェンス / rc>2: awk 失敗）は「Critical あり」へ倒す。
+    # 判定不能（rc=2: 未閉フェンス / rc=3 以上: 不可読ファイル・awk 失敗）は
+    # 「Critical あり」へ倒す。
     # 倒した先の重さ（ブロック / 非ブロック）はその観点の段階に従う — 非ブロック
     # 観点は Critical が実在してもブロックしない契約なので、判定不能をブロックまで
     # 格上げすると安全側を越えて旧挙動の誤ブロックが戻る。
@@ -3622,7 +3989,7 @@ HEADER
         echo "⚠️ CRITICAL_BLOCK 判定: ${crit_file} のコードフェンスが閉じておらず本文を判定しきれません。判定不能を Critical なしとして通さないため、安全側（Critical あり）に倒します" >&2
         crit_found=unparse ;;
       *)
-        echo "⚠️ CRITICAL_BLOCK 判定を実行できませんでした（awk rc=${crit_rc}: ${crit_file}）。判定不能を Critical なしとして通さないため、安全側（Critical あり）に倒します" >&2
+        echo "⚠️ CRITICAL_BLOCK 判定を実行できませんでした（判定 rc=${crit_rc}: ${crit_file} — 不可読ファイルまたは判定器の実行失敗）。判定不能を Critical なしとして通さないため、安全側（Critical あり）に倒します" >&2
         crit_found=unparse ;;
     esac
     if [[ -n "$crit_found" ]]; then
@@ -3764,6 +4131,8 @@ names its own path and the number of files actually found there.
 Only the tasks in **this** run's plan had their staging cleared beforehand. If you
 narrowed the run (\`--cli\` / \`--perspective\`), other tasks' \`files/\` directories may
 still hold output from an earlier run — read the sections below, not the whole tree.
+If any such leftovers exist, a "Not part of this run" list naming them appears
+below (and on stderr); they are left untouched and are NOT this run's output.
 
 ---
 
@@ -3818,6 +4187,10 @@ main() {
 
   load_config
   parse_args "$@"
+
+  # ツリー変化判定のパス除外の検証はタスクを 1 つも起動する前に済ませる — 不正な
+  # FF_MULTI_AGENT_IGNORE_PATHS で CLI に支払った後に落ちる形にしない（Issue #747）。
+  parse_ignore_paths || exit 1
 
   # 一覧は description 必須検査より前に返す（explore/implement で「一覧を見たいだけ」
   # なのに落ちるのを避ける）。ただし**引数の妥当性検査は通す** — ここを飛ばすと

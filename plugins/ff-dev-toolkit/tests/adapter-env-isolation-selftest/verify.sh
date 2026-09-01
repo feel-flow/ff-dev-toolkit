@@ -155,7 +155,7 @@ consumer_roster() {
     # 消える。共通APIの有効行も発見根拠にし、source構文の変更を黙って通さない。
     if awk '
       /^[[:space:]]*#/ { next }
-      /(build_isolate_env|run_isolated|unset_isolated_vars)/ { found = 1 }
+      /(build_isolate_env|run_isolated|unset_isolated_vars|unset_prompt_env_vars)/ { found = 1 }
       END { exit found ? 0 : 1 }
     ' "$verify"; then
       basename "$(dirname "$verify")"
@@ -171,6 +171,7 @@ check_consumer_roster() {
     adapter-prompt-guard \
     adapter-sandbox-contract \
     multi-agent-critical-marker \
+    multi-agent-ignore-paths \
     multi-agent-plan \
     multi-agent-resume \
     multi-agent-revision-guard \
@@ -178,10 +179,11 @@ check_consumer_roster() {
     multi-agent-stale-outputs \
     multi-agent-timeout \
     review-capture-fail-loud \
+    review-diff-scope \
     review-wrapper-shim \
     reviewer-pair | LC_ALL=C sort)"
   if [ "$actual" != "$expected" ]; then
-    echo "callsite名簿drift: 共通ライブラリconsumerが現行13 suiteと一致しない" >&2
+    echo "callsite名簿drift: 共通ライブラリconsumerが現行15 suiteと一致しない" >&2
     diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") >&2 || true
     return 1
   fi
@@ -289,7 +291,7 @@ expect_pass "未設定配列を専用診断でfail-closed" check_empty_state uns
 expect_pass "空配列を専用診断でfail-closed" check_empty_state empty
 expect_pass "不正文字を含むセンチネルを拒否" check_invalid_sentinel "MULTI_AGENT_BAD-NAME" "不正な文字"
 expect_pass "対象外prefixのセンチネルを拒否" check_invalid_sentinel "FF_RUN_ALL_NESTED" "形ではありません"
-expect_pass "現callsite名簿はreview-wrapper-shimを含む13 suite" check_consumer_roster
+expect_pass "現callsite名簿はreview-wrapper-shimを含む15 suite" check_consumer_roster
 expect_pass "全orchestrator/shim起動がrun_isolatedを通る" check_all_wiring
 expect_pass "multi-agent-timeoutの3センチネルが揃う" check_timeout_sentinels "$TIMEOUT_SUITE"
 expect_pass "unset_isolated_varsはprobeより前に1回だけ" check_unset_placement "$TIMEOUT_SUITE"
