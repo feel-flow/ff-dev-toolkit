@@ -881,6 +881,160 @@ else
   bad "explore のモードが変わっている（rc=${rc}）"
 fi
 
+# ── pair/plan の無言経路と観測性（Issue #699） ────────────────────
+#
+# #597 が潰した「無言の脱落」と同系統の残件 4 点。いずれも「起きたことが実行ログ /
+# レポートから復元できない」形で、プランは正しく見えるのに事実が伝わらない。
+echo ""
+echo "-- mode 値の whitelist（Issue #699） --"
+run "$TMP/mode-typo.log" -- --mode distribuited --dry-run
+if [ "$RUN_RC" -ne 0 ] \
+  && grep -q "unknown mode 'distribuited'" "$TMP/mode-typo.log" \
+  && grep -q 'pair, distributed, cross-model' "$TMP/mode-typo.log"; then
+  ok "typo の mode 値を有効値の一覧付きで拒否する（distributed へ黙って化けない）"
+else
+  bad "typo の mode 値が通った（rc=${RUN_RC}）— distributed 扱いで走り、受理ゲートの安全網も外れる"
+  sed 's/^/    /' "$TMP/mode-typo.log" >&2
+fi
+if grep -q "from --mode flag" "$TMP/mode-typo.log"; then
+  ok "mode の拒否メッセージが値の出所を名乗る"
+else
+  bad "mode の拒否メッセージに値の出所が無い（config 由来と切り分けられない）"
+  sed 's/^/    /' "$TMP/mode-typo.log" >&2
+fi
+# 正当な値は通ること（常時拒否する実装でも緑にならないように）。
+run "$TMP/mode-cross.log" -- --mode cross-model --perspective code-review --dry-run
+if [ "$RUN_RC" -eq 0 ] && ! grep -q 'unknown mode' "$TMP/mode-cross.log"; then
+  ok "正当な値 cross-model は受理する（常時拒否ではない）"
+else
+  bad "正当な mode 値が拒否された（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/mode-cross.log" >&2
+fi
+
+# mode も CLI flag だけでなく設定ファイルから入る。whitelist が flag 経路だけだと
+# config 由来の typo が黙って distributed として走る（STRATEGY と同型）。
+echo ""
+echo "-- config 由来の mode（Issue #699） --"
+if [ "$YQ_AVAILABLE" = "true" ]; then
+  mkdir -p "$REPO/.claude"
+  cat > "$REPO/.claude/agent-config.yaml" <<'YAML'
+version: "2.0"
+tasks:
+  review:
+    mode: distribuited
+YAML
+  run "$TMP/mode-cfg2-typo.log" -- --dry-run
+  if [ "$RUN_RC" -ne 0 ] \
+    && grep -q "unknown mode 'distribuited'" "$TMP/mode-cfg2-typo.log" \
+    && grep -q 'from config tasks.review.mode' "$TMP/mode-cfg2-typo.log"; then
+    ok "v2 config 由来の mode typo を出所キー付きで拒否する"
+  else
+    bad "v2 config 由来の mode typo が通った（rc=${RUN_RC}）"
+    sed 's/^/    /' "$TMP/mode-cfg2-typo.log" >&2
+  fi
+
+  cat > "$REPO/.claude/agent-config.yaml" <<'YAML'
+mode: cross_model
+YAML
+  run "$TMP/mode-cfg1-typo.log" -- --dry-run
+  if [ "$RUN_RC" -ne 0 ] \
+    && grep -q "unknown mode 'cross_model'" "$TMP/mode-cfg1-typo.log" \
+    && grep -q 'from config mode' "$TMP/mode-cfg1-typo.log"; then
+    ok "v1 config の古い mode 値（cross_model）を出所キー付きで拒否する"
+  else
+    bad "v1 config 由来の古い mode 値が通った（rc=${RUN_RC}）"
+    sed 's/^/    /' "$TMP/mode-cfg1-typo.log" >&2
+  fi
+  rm -rf "$REPO/.claude"
+else
+  echo "  ○ skip: yq が無いため config 由来の mode 検査を実行できません"
+fi
+
+# --list-perspectives は apply_task_defaults の手前で抜けるので、whitelist を
+# そちらにだけ置くと一覧経路で綴り間違いが rc=0 の「確認」になる。
+run "$TMP/mode-list.log" -- --mode distribuited --list-perspectives
+if [ "$RUN_RC" -ne 0 ] && grep -q "unknown mode 'distribuited'" "$TMP/mode-list.log"; then
+  ok "--list-perspectives 経路でも不正な mode を拒否する"
+else
+  bad "--list-perspectives で不正な mode が rc=0 の確認になった（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/mode-list.log" >&2
+fi
+run "$TMP/mode-list-ok.log" -- --list-perspectives
+if [ "$RUN_RC" -eq 0 ] && grep -q 'code-review' "$TMP/mode-list-ok.log"; then
+  ok "mode 未指定の --list-perspectives は従来どおり一覧を返す"
+else
+  bad "--list-perspectives が退行した（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/mode-list-ok.log" >&2
+fi
+
+echo ""
+echo "-- 副なし既定構成の未カバー観点（Issue #699） --"
+# 副が居ない既定構成では総合観点が誰にも割り当てられずプランが 1 件少なくなる。
+# 既定で主へ回さないのは同一モデル二重レビューの回避（設計判断）だが、走らない
+# ことは名乗る — 何も出ないと件数が少ない理由が実行ログから復元できない。
+run "$TMP/nosub-uncovered.log" MULTI_AGENT_REVIEW_SUB= -- --dry-run
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q "comprehensive-review — no reviewer; not covered in this run" "$TMP/nosub-uncovered.log"; then
+  ok "副なし既定構成で未カバーの総合観点を名指しする"
+else
+  bad "総合観点が無言で落ちている（rc=${RUN_RC}）— プランの件数差が説明されない"
+  sed 's/^/    /' "$TMP/nosub-uncovered.log" >&2
+fi
+# 名指しは「捨てた」だけで、主へ二重に載せないこと（設計判断の固定）。
+if [ "$(grep -c '^  - comprehensive-review$' "$TMP/nosub-uncovered.log" || true)" -eq 0 ]; then
+  ok "未カバーの総合観点をプランへ載せない（同一モデル二重レビューを避ける既定）"
+else
+  bad "総合観点がプランに載っている（副なしの既定では主へ回さない設計）"
+  sed 's/^/    /' "$TMP/nosub-uncovered.log" >&2
+fi
+# 副が居る通常構成では名指しが出ないこと（常時表示の雑音にしない）。
+run "$TMP/withsub-quiet.log" -- --dry-run
+# 否定 grep だけだと早期失敗・分岐未到達でも緑になる。rc と既定プランの一致も見る。
+if [ "$RUN_RC" -eq 0 ] \
+  && [ -n "$(plan_lines "$TMP/withsub-quiet.log")" ] \
+  && [ "$(plan_lines "$TMP/pair.log")" = "$(plan_lines "$TMP/withsub-quiet.log")" ] \
+  && ! grep -q "not covered in this run" "$TMP/withsub-quiet.log"; then
+  ok "副が居る構成では未カバー通知を出さない（既定実行の出力とプランを変えない）"
+else
+  bad "副が居るのに未カバー通知が出ている、または既定プランが変わった（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/withsub-quiet.log" >&2
+fi
+
+echo ""
+echo "-- 除外と ↪ 宣言の順序（Issue #699） --"
+# `--perspective X --exclude-perspective X`（副なし）で「主に回した」と宣言した
+# 直後に捨てる矛盾出力になっていた。除外判定を宣言より前に置く。
+run "$TMP/excl-order.log" MULTI_AGENT_REVIEW_SUB= -- \
+  --perspective comprehensive-review --exclude-perspective comprehensive-review --dry-run
+# 否定 grep だけにしない。この組合せは空プランで rc!=0 になるのが正しい挙動なので、
+# 「空プランで中断した」ことまで確かめて、別の失敗で緑になる経路を塞ぐ。
+if [ "$RUN_RC" -ne 0 ] \
+  && grep -q 'Execution plan is empty' "$TMP/excl-order.log" \
+  && ! grep -q '↪ comprehensive-review → ' "$TMP/excl-order.log"; then
+  ok "除外された観点に「主へ回した」の宣言行が出ない（空プランとして中断する）"
+else
+  bad "除外した観点を「主へ回した」と宣言している、または中断していない（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/excl-order.log" >&2
+fi
+# 矛盾した宣言を消したぶん、除外が原因のときは空プラン診断がそれを名指しすること。
+# 名指しが無いと、利用者は原因でないつまみ（--cli / --perspective / --mode）だけを
+# 示され、実際の原因である --exclude-perspective が候補に挙がらない。
+if grep -q -- '--exclude-perspective (comprehensive-review) removed perspective' "$TMP/excl-order.log" \
+  && grep -q -- 'Check --cli / --perspective / --exclude-perspective / --mode' "$TMP/excl-order.log"; then
+  ok "空プラン診断が原因の --exclude-perspective を名指しする"
+else
+  bad "空プラン診断が除外を名指ししない（原因でないつまみだけを指している）"
+  sed 's/^/    /' "$TMP/excl-order.log" >&2
+fi
+# 除外していなければ従来どおり宣言が出ること（宣言そのものを消していない）。
+run "$TMP/excl-none.log" MULTI_AGENT_REVIEW_SUB= -- --perspective comprehensive-review --dry-run
+if [ "$RUN_RC" -eq 0 ] && grep -q '↪ comprehensive-review → ' "$TMP/excl-none.log"; then
+  ok "除外していなければ「主へ回した」の宣言は従来どおり出る"
+else
+  bad "除外なしの明示指定で宣言行が消えた（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/excl-none.log" >&2
+fi
+
 echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ reviewer-pair verify: $FAIL 件失敗" >&2

@@ -739,6 +739,13 @@ REVIEW_MAIN=""
 REVIEW_SUB=""
 REVIEWERS_SOURCE=""
 MODE_EXPLICIT=false
+# MODE の出所（--mode flag / config のキー / task default）。whitelist 拒否は config
+# 由来でも発火するため、値だけ名指しすると利用者がどこを直せばよいか辿れない
+# （STRATEGY_SOURCE と同じ理由 — Issue #691 / #699）。
+# 有効なのは validate_mode / apply_task_defaults までで、その後 MODE は --cli 経路や
+# レビュワー不在の fallback で distributed へ書き換わりうる（MODE_SOURCE は追随しない）。
+# 後段でこの値を表示する読み手を足すなら、そこで出所を取り直すこと。
+MODE_SOURCE="task default"
 PRINT_REVIEWERS=false
 SET_REVIEWERS=""
 STRATEGY=""
@@ -826,6 +833,9 @@ EXECUTION_PLAN=""
 # 順序を入れ替えた瞬間に set -u で未定義参照になり、しかも壊れるのは pair 以外という
 # 遠い場所になる。
 PAIR_SUB_DROPPED=false
+# pair の実効レビュワー構成（統合レポートの Reviewers 行。Issue #699）。空のままなら
+# 行を出さない = pair 以外のモードでは何も足さない。build_pair_plan だけが埋める。
+PAIR_REVIEWERS_NOTE=""
 
 # Tasks that failed this run, as "cli/perspective:exit_code" (space-separated).
 # Drives the retry advice printed after execution — a bare count leaves the user to
@@ -891,7 +901,7 @@ parse_args() {
       --description) DESCRIPTION="$2"; shift 2 ;;
       --include-diff) INCLUDE_DIFF=true; shift ;;
       --config)      CONFIG_FILE="$2"; CONFIG_SOURCE="--config flag"; CONFIG_PROVENANCE="flag"; shift 2 ;;
-      --mode)        MODE="$2"; MODE_EXPLICIT=true; shift 2 ;;
+      --mode)        MODE="$2"; MODE_EXPLICIT=true; MODE_SOURCE="--mode flag"; shift 2 ;;
       --strategy)    STRATEGY="$2"; STRATEGY_SOURCE="--strategy flag"; shift 2 ;;
       --cli)         CLI_FILTER="${CLI_FILTER:+$CLI_FILTER }$2"; shift 2 ;;
       --perspective) PERSPECTIVE_FILTER="${PERSPECTIVE_FILTER:+$PERSPECTIVE_FILTER }$2"; shift 2 ;;
@@ -1005,7 +1015,10 @@ load_config() {
 
     local cfg_val
     cfg_val=$(yq -r '.mode // ""' "$CONFIG_FILE" 2>/dev/null || true)
-    [[ -n "$cfg_val" ]] && MODE="$cfg_val"
+    if [[ -n "$cfg_val" ]]; then
+      MODE="$cfg_val"
+      MODE_SOURCE="config mode (${CONFIG_SOURCE})"
+    fi
 
     cfg_val=$(yq -r '.parallel // ""' "$CONFIG_FILE" 2>/dev/null || true)
     [[ "$cfg_val" == "true" ]] && PARALLEL=true
@@ -1021,7 +1034,10 @@ load_config() {
       # review だけ pair にしたいといった指定ができなかった（v2.0 で cost_strategy /
       # timeout / output_dir がタスク単位なのと同じ扱いへ揃える）。
       cfg_val=$(yq -r ".tasks.${TASK_TYPE}.mode // \"\"" "$CONFIG_FILE" 2>/dev/null || true)
-      [[ -n "$cfg_val" ]] && MODE="$cfg_val"
+      if [[ -n "$cfg_val" ]]; then
+        MODE="$cfg_val"
+        MODE_SOURCE="config tasks.${TASK_TYPE}.mode (${CONFIG_SOURCE})"
+      fi
 
       cfg_val=$(yq -r ".tasks.${TASK_TYPE}.cost_strategy // \"\"" "$CONFIG_FILE" 2>/dev/null || true)
       if [[ -n "$cfg_val" && -z "$STRATEGY" ]]; then
@@ -1059,12 +1075,34 @@ load_config() {
 }
 
 # ── Apply task-type defaults (after config + CLI args) ──
+# mode の whitelist 検証（Issue #699）。未知の値は build_execution_plan の else 経路で
+# distributed として走り、プランヘッダは誤値をそのまま表示する — `--mode distribuited`
+# や設定ファイルの古い `mode: cross_model` が「指定どおり動いた」ように見える。さらに
+# #597 で入った受理ゲートは MODE 文字列に依存するので、誤設定ほど安全網が外れる。
+# STRATEGY の whitelist（Issue #691）と同じく CLI・config の両経路がここを通る。
+# apply_task_defaults と --list-perspectives の早期 exit の両方から呼ぶため関数にする
+# （片方だけに置くと、一覧経路で綴り間違いが rc=0 の「確認」になる）。
+validate_mode() {
+  # 既定解決前に呼ばれる経路（--list-perspectives）では空でありうる。空は「未指定」で、
+  # apply_task_defaults が task 既定を入れるので、ここでは拒否しない。
+  [[ -n "$MODE" ]] || return 0
+  case "$MODE" in
+    pair|distributed|cross-model) return 0 ;;
+    *)
+      echo "ERROR: unknown mode '${MODE}' (from ${MODE_SOURCE})." >&2
+      echo "       Valid values: pair, distributed, cross-model." >&2
+      exit 1 ;;
+  esac
+}
+
 apply_task_defaults() {
   # review だけ pair（主+副）を既定にする。explore / implement は従来の分散のまま。
   # 既存の分散モードは --mode distributed で引き続き使える。
   if [[ -z "$MODE" ]]; then
     if [[ "$TASK_TYPE" == "review" ]]; then MODE="pair"; else MODE="distributed"; fi
+    MODE_SOURCE="task default"
   fi
+  validate_mode
   # pair は review 専用。build_pair_plan は review の観点しか組まないので、他タスクで
   # 受け入れると dry-run だけ成功して実行時に「観点ファイルが無い」で全件失敗する
   # （プランは正しく見えるのに中身が存在しない、という一番たちの悪い形）。
@@ -1095,6 +1133,9 @@ apply_task_defaults() {
 }
 
 # ── CLI Detection ──
+# 検出は「PATH に在るか」だけを見る。認証・残高の状態はここでは probe しない —
+# 4 CLI の実提供機能を実測したうえでの判断で、根拠と代わりに何をしているかは
+# classify_cli_failure_cause のヘッダーに書いてある（Issue #659）。
 detect_available_clis() {
   AVAILABLE_CLIS=""
   local cli_name cmd
@@ -1256,6 +1297,7 @@ build_distributed_plan() {
 build_pair_plan() {
   EXECUTION_PLAN=""
   PAIR_SUB_DROPPED=false
+  PAIR_REVIEWERS_NOTE=""
   local p sub_effective=""
 
   if ! list_contains "$AVAILABLE_CLIS" "$REVIEW_MAIN"; then
@@ -1281,14 +1323,21 @@ build_pair_plan() {
   fi
 
   # 副の縮退判定。どれも「主のみで続行」で、理由だけを変えて伝える。
+  # 縮退した事実は stderr だけでなく統合レポートにも残す（Issue #699）。stderr は
+  # 実行を見ていた人しか読まないが、レポートは後から読まれる — `Mode: pair` だけが
+  # 残っていると、単一 CLI で走ったものをクロスモデル済みと誤読する。
   if [[ -z "$REVIEW_SUB" ]]; then
     echo "  ℹ️  No sub reviewer set — running single-reviewer. Set one for cross-model coverage." >&2
+    PAIR_REVIEWERS_NOTE="${REVIEW_MAIN} (single — no sub reviewer set)"
   elif [[ "$REVIEW_SUB" == "$REVIEW_MAIN" ]]; then
     echo "  ⏭  sub reviewer is the same CLI as main (${REVIEW_MAIN}) — skipping the duplicate." >&2
+    PAIR_REVIEWERS_NOTE="${REVIEW_MAIN} (single — sub '${REVIEW_SUB}' is the same CLI as main)"
   elif ! list_contains "$AVAILABLE_CLIS" "$REVIEW_SUB"; then
     echo "  ⚠️  sub reviewer '${REVIEW_SUB}' is not installed — running single-reviewer." >&2
+    PAIR_REVIEWERS_NOTE="${REVIEW_MAIN} (single — sub '${REVIEW_SUB}' not installed)"
   else
     sub_effective="$REVIEW_SUB"
+    PAIR_REVIEWERS_NOTE="${REVIEW_MAIN} + ${sub_effective}"
   fi
 
   for p in $(get_cli_perspectives_review "$REVIEW_MAIN"); do
@@ -1307,8 +1356,20 @@ build_pair_plan() {
       if [[ -n "$sub_effective" ]] \
         || [[ -z "$PERSPECTIVE_FILTER" ]] \
         || ! list_contains "$PERSPECTIVE_FILTER" "$COMPREHENSIVE_PERSPECTIVE"; then
+        # 副が居ない既定構成（--perspective 無指定）では、総合観点は誰にも割り当て
+        # られないままプランが 1 件少なくなる。既定で主へ回さないのは、主が既に
+        # 全観点を担当していて同一モデルの二重レビューになるため（pair の設計意図は
+        # 別モデルによる総合観点）。ただし「走らない」ことは名乗る — 出力に何も
+        # 出ないと、プランの件数が 1 少ない理由が実行ログから復元できない（Issue #699）。
+        if [[ -z "$sub_effective" && -z "$PERSPECTIVE_FILTER" ]] \
+          && ! perspective_excluded "$COMPREHENSIVE_PERSPECTIVE"; then
+          echo "  ⏭  ${COMPREHENSIVE_PERSPECTIVE} — no reviewer; not covered in this run." >&2
+        fi
         continue
       fi
+      # 除外判定は宣言より前に行う。逆順だと「主に回した」と宣言した直後に捨てる
+      # 矛盾出力になる（--perspective X --exclude-perspective X・副なしで再現。Issue #699）。
+      perspective_excluded "$p" && continue
       echo "  ↪ ${COMPREHENSIVE_PERSPECTIVE} → ${REVIEW_MAIN} (no sub reviewer available)" >&2
     fi
     perspective_excluded "$p" && continue
@@ -1343,6 +1404,27 @@ build_pair_plan() {
       echo "  ⏭  sub reviewer '${sub_effective}' runs only '${COMPREHENSIVE_PERSPECTIVE}', not in --perspective (${PERSPECTIVE_FILTER}) — running single-reviewer." >&2
     fi
   fi
+
+  # Reviewers 行は**組んだプラン**から導出する（Issue #699）。副の導入可否だけで
+  # 決めると、--perspective / --exclude-perspective で副が計画から落ちた回に
+  # 「main + sub」と記録され、単一 CLI で走ったものをクロスモデル済みと誤読させる
+  # — レポートへ事実を残すという当の目的を裏切る。上の 4 分岐が入れた縮退理由は、
+  # プランが実際に単一 CLI のときだけ活かす。
+  local planned_clis
+  planned_clis="$(printf '%s\n' "$EXECUTION_PLAN" | awk -F: 'NF { print $1 }' | sort -u | tr '\n' ' ')"
+  planned_clis="${planned_clis% }"
+  case "$planned_clis" in
+    "") PAIR_REVIEWERS_NOTE="" ;;                      # 空プラン。後段の gate が止める
+    *" "*) PAIR_REVIEWERS_NOTE="${planned_clis// / + }" ;;  # 実際に 2 CLI 以上
+    *)
+      # 単一 CLI。縮退理由が既にあるならそれを使い、無ければプラン側の事実だけ書く
+      # （--perspective で副だけが残った回など、縮退ではなく指定どおりのケース）。
+      if [[ "$PAIR_REVIEWERS_NOTE" == "${planned_clis} ("* ]]; then
+        : # 4 分岐が入れた理由つきの記録をそのまま使う
+      else
+        PAIR_REVIEWERS_NOTE="${planned_clis} (single — only this CLI is in the plan)"
+      fi ;;
+  esac
   return 0
 }
 
@@ -1670,34 +1752,51 @@ staging_dir_for() {
 }
 
 # 前回実行の staging を消す。`rm -rf` を素で撃たないのは、パスの**途中の**コンポーネント
-# が symlink だと再帰削除が OUTPUT_DIR の外へ抜けるため。例えば <cli>/files が
+# が symlink だと再帰削除が意図しない場所へ抜けるため。例えば <cli>/files が
 # /tmp/victim を指す symlink なら、rm -rf <cli>/files/<persp> は /tmp/victim/<persp> を
 # 消す。OUTPUT_DIR を pwd -P しても、文字列 prefix 判定では途中の symlink を見抜けない。
 # clear_planned_outputs は「プランの対象以外はディスク上の何にも触れない」と宣言して
 # いるので、その宣言を実際に成り立たせるための検査。
 #
-# 消す前に**解決後の物理パス**が OUTPUT_DIR 配下かを確認し、外なら消さずに落とす。
-# 削除自体も解決後のパスに対して行い、検査したものと消すものを一致させる。
-clear_staging_dir() {
-  local staging_dir="$1"
+# 判定は「解決先が OUTPUT_DIR 配下か」ではなく「symlink を追わない」で行う（Issue #1120）。
+# 配下判定だと**内向き**の symlink — 解決先が出力先の中にあるもの、例えば
+# `<cli>/files -> ../codex-cli/files` — が判定を通り、別 CLI / 別観点の staging 成果が
+# 丸ごと消える。指し先が出力先の内か外かは、消してよいかどうかと関係がない: どちらも
+# 「このタスクの staging ではないもの」を消す。clear_quarantine_dir（#723）と
+# clear_planned_outputs（#722）は既にこの方針で、内向き追従が残っていたのはここだけだった。
+#
+# 形は 2 つに分かれる:
+#   - staging パス**自体**が symlink … リンクだけを消して続行する（clear_quarantine_dir と
+#     同型。`rm -f` は指し先を追わない）。この後 run_single_task が実体を作り直す
+#   - パスの**途中**が symlink … resolve_expected_dir が「解決後 == 渡したパス」を要求して
+#     fail-loud（内向き・外向きのどちらも拒否する）。削除は検査した物理パスに対して行い、
+#     検査したものと消すものを一致させる
+clear_staging_dir() { # <dir> [label]
+  local staging_dir="$1" label="${2:-the staging dir}" resolved parent
 
-  if [[ -d "$staging_dir" ]]; then
-    local resolved
-    if ! resolved="$(cd "$staging_dir" && pwd -P)"; then
-      echo "ERROR: cannot resolve staging dir: ${staging_dir}" >&2
+  # 親（中間コンポーネント）を leaf の存在・種別より**先に**検査する。leaf が未作成の
+  # 回は -L / -d / -e がすべて偽で、そのまま素通りすると呼び出し側の `mkdir -p` が
+  # リンク先へ staging を作って書き込む（実測: <cli>/files が外を指す symlink で、
+  # 観点ディレクトリがまだ無い初回実行）。leaf の状態に関係なく経路を先に塞ぐ。
+  parent="$(dirname "$staging_dir")"
+  if [[ -e "$parent" || -L "$parent" ]]; then
+    resolve_expected_dir "$parent" "the staging parent for ${label}" \
+      "Deleting through it would erase another task's staging output." >/dev/null || return 1
+  fi
+
+  # symlink は**追わない**。`[[ -d ]]` は symlink→dir でも真になるので -L を先に見る。
+  if [[ -L "$staging_dir" ]]; then
+    if ! rm -f "$staging_dir"; then
+      echo "ERROR: cannot remove the symlink at the staging path: ${staging_dir}" >&2
       return 1
     fi
-    case "$resolved" in
-      "$OUTPUT_DIR"/*) ;;
-      *)
-        echo "ERROR: staging dir resolves outside the output dir — refusing to delete." >&2
-        echo "       path:     ${staging_dir}" >&2
-        echo "       resolves: ${resolved}" >&2
-        echo "       output:   ${OUTPUT_DIR}" >&2
-        echo "       A symlinked component would make this a recursive delete elsewhere." >&2
-        return 1
-        ;;
-    esac
+    echo "  ⚠️ Removed a symlink at the staging path (its target was left untouched): ${staging_dir}" >&2
+    return 0
+  fi
+
+  if [[ -d "$staging_dir" ]]; then
+    resolved="$(resolve_expected_dir "$staging_dir" "$label" \
+      "Deleting through it would erase another task's staging output.")" || return 1
     if ! rm -rf "$resolved"; then
       echo "ERROR: cannot clear staging dir: ${resolved}" >&2
       echo "       A previous run's files would be reported as this run's output." >&2
@@ -1706,9 +1805,8 @@ clear_staging_dir() {
     return 0
   fi
 
-  # ディレクトリでない残骸（ファイル・symlink・壊れた symlink）はリンク/ファイル
-  # 自体だけを消す。`rm -f` は symlink の指す先を追わないので、ここは安全。
-  if [[ -e "$staging_dir" || -L "$staging_dir" ]]; then
+  # ディレクトリでない残骸（通常ファイル等）はそれ自体を消す。symlink は上で処理済み。
+  if [[ -e "$staging_dir" ]]; then
     if ! rm -f "$staging_dir"; then
       echo "ERROR: cannot remove non-directory at staging path: ${staging_dir}" >&2
       return 1
@@ -2172,7 +2270,7 @@ clear_planned_outputs() {
     fi
     if [[ "${TASK_TYPE:-review}" == "implement" ]]; then
       staging_dir="$(staging_dir_for "$cli_name" "$persp_name")"
-      clear_staging_dir "$staging_dir" || return 1
+      clear_staging_dir "$staging_dir" "the staging dir for ${cli_name}/${persp_name}" || return 1
     fi
   done <<< "$EXECUTION_PLAN"
 }
@@ -2247,8 +2345,12 @@ is_orchestrator_result() { # <file>
 # 前提（呼び出し側の責務）: 渡すパスの**接頭部は既に物理**であること。現在の呼び出しは
 # すべて OUTPUT_DIR（execute_tasks が pwd -P 済み）から組み立てている。論理パスを
 # 渡すと、symlink でないディレクトリでも不一致になり「symlink だ」と誤って中断する。
-resolve_expected_dir() { # <path> <label>
-  local path="$1" label="$2" resolved
+# 第 3 引数は**内向き**（解決先が OUTPUT_DIR 配下）のときに出す 1 行の説明。既定は
+# 結果ディレクトリ／退避先の話なので、staging のように壊れ方が違う呼び出し（Issue #1120）
+# は自分の言葉で上書きする。外向きの説明は呼び出し側によらず同じ（出力先の外へ届く）
+# なので共有のままにする。
+resolve_expected_dir() { # <path> <label> [inward-note]
+  local path="$1" label="$2" inward_note="${3:-}" resolved
   if ! resolved="$(cd "$path" && pwd -P)"; then
     echo "ERROR: cannot resolve ${label}: ${path}" >&2
     return 1
@@ -2259,8 +2361,12 @@ resolve_expected_dir() { # <path> <label>
     echo "       resolves: ${resolved}" >&2
     case "$resolved" in
       "$OUTPUT_DIR"/*)
-        echo "       Results are keyed by CLI name; two names sharing one directory would" >&2
-        echo "       quarantine from a directory this run also reports as not its own." >&2
+        if [[ -n "$inward_note" ]]; then
+          echo "       ${inward_note}" >&2
+        else
+          echo "       Results are keyed by CLI name; two names sharing one directory would" >&2
+          echo "       quarantine from a directory this run also reports as not its own." >&2
+        fi
         ;;
       *)
         echo "       output:   ${OUTPUT_DIR}" >&2
@@ -2342,10 +2448,10 @@ clear_quarantine_dir() { # <dir>
   # 追うと指し先を丸ごと消す — `previous -> ../claude-code` ならプラン外 CLI の結果
   # 一式、`previous -> .` なら自分の CLI ディレクトリ（staging の files/ を含む）。
   # 解決先が OUTPUT_DIR 配下でも消してはいけないので、配下判定ではなくリンク自体の
-  # 削除で塞ぐ。同型の内向き追従は clear_staging_dir にも残るが、そちらは Issue #1120
-  # のスコープ（診断文言を固定している既存 suite への追随を伴うため分離した。#722 の
-  # 対象は clear_planned_outputs の外向き symlink だが、そこで再利用した
-  # resolve_expected_dir は内外どちらの symlink も拒否する）。
+  # 削除で塞ぐ。同型の内向き追従は clear_staging_dir にも残っていたが、Issue #1120 で
+  # 同じ方針（リンクは追わない）へ揃えた。#722 の対象は clear_planned_outputs の
+  # 外向き symlink だが、そこで再利用した resolve_expected_dir は内外どちらの
+  # symlink も拒否する。
   if [[ -L "$dir" ]]; then
     if ! rm -f "$dir"; then
       echo "ERROR: cannot remove the symlink at the quarantine path: ${dir}" >&2
@@ -3592,6 +3698,105 @@ report_task_failure() {
   fi
 }
 
+# ── CLI 側の失敗理由の切り分け（Issue #659） ──
+#
+# 実測（1 セッションで 3 回の失敗 dispatch）: codex の OAuth 切れ（401、websocket
+# 再接続 5 回のあと失敗）→ 再ログイン後にクレジット切れ（"Your workspace is out of
+# credits"）→ grok の 402（"Grok Build usage balance exhausted"）。どれも「時間を
+# 足しても直らない失敗」として同じ 1 行に丸められるため、**認証を直せば同じ CLI で
+# 続けられる**のか**この CLI では今日もう何も走らない**のかが読めず、代替 CLI へ
+# 切り替える判断が 3 往復ぶん遅れた。
+#
+# なぜ dispatch 前の preflight probe を採らなかったか（Issue #659 の提案そのもの）。
+# 4 CLI の実提供機能を実測して判断した:
+#   codex-cli   … `codex login status` あり。保存済み資格情報を読んで
+#                 "Logged in using ChatGPT" / "Not logged in"（rc=1）を返す
+#   claude-code … `claude auth status` あり。保存済み資格情報を JSON
+#                 （loggedIn / authMethod / subscriptionType）で返す
+#   grok-cli    … status 系サブコマンド無し（`login` / `logout` のみ）= probe 対象外
+#   copilot-cli … 同上（`login` のみ。`copilot help billing` は静的なヘルプ話題）
+# 決め手は 2 つ。(1) **残高・クレジットを報告する手段がどの CLI にも無い** —
+# 実測 3 件のうち 2 件（workspace out of credits / usage balance exhausted）は
+# 課金される API 呼び出しをしない限り観測できず、それを preflight でやるのは
+# 「レビュー 1 回ごとに余計な API 呼び出しをしない」という本 Issue の制約そのものを
+# 破る。(2) 残る 1 件（OAuth 切れ）も上の 2 コマンドでは陰性になる — どちらも
+# **保存されている**資格情報を読むだけで、サーバ側で失効した token を "logged in" と
+# 報告する（実測 0.16s / 0.23s。ネットワーク往復を含む所要ではない）。つまり probe が
+# 陽性を返せるのは「一度もログインしていない」という利用者が既に知っている状態だけで、
+# 実測した 3 件のどれも捕まえられない。4 CLI 中 2 つは probe 自体が無いので、いずれに
+# せよ失敗側の切り分けが必要になる。
+#
+# そこで preflight ではなく**失敗時の切り分け**で AC を満たす。判定材料は成果物に
+# 保全済みの CLI stderr（adapter-common.sh の fail_cli_task が `### CLI stderr` 節へ
+# 書く）だけで、追加のプロセスもネットワークも課金も発生しない。
+#
+# 走査は stderr 節に限る。ファイル全体を見ると、レビュー本文が引用した "401" や
+# "credits" で誤判定する（この成果物は失敗した実行の**部分出力**を保全している）。
+# **🔑 / 💳 が出ないことは「認証・課金の問題ではない」の証拠にはならない。** stderr の
+# 抜粋は末尾 4KB に頭打ちされる（adapter-common.sh の tail -c）ので、再接続リトライで
+# 末尾が埋まった回は先頭の 401 が抜粋外に落ちる。分類は「出たら手がかり」であって
+# 「出なければ無関係」ではない — 陰性を根拠に切り分けを打ち切らないこと。
+#
+# 判定不能は空文字を返す = 従来どおりの案内に落ちる fail-open。誤った断定は
+# 「認証を直しに行ったが実際はクラッシュだった」形の遠回りを生むので、
+# 迷ったら分類しない側へ倒す。
+classify_cli_failure_cause() { # <result-file> → "auth" | "billing" | ""
+  local file="$1" stderr_section=""
+  [[ -f "$file" ]] || return 0
+  # アダプタが**末尾へ**付ける stderr 節の、コードフェンスの中身だけを取る。
+  # 最初の `### CLI stderr` から EOF まで取ると、保全された部分出力がその見出しを
+  # 引用している回（このリポジトリのレビュー結果は現にこの文字列を書く）に、
+  # レビュー本文の "401" や "credits" を stderr と誤読して分類が化ける。
+  # 見出しは最後の一致を使い、その直後のフェンスで閉じた範囲だけを見る。
+  stderr_section="$(awk '
+    /^### CLI stderr/ { start = NR }
+    { line[NR] = $0 }
+    END {
+      if (!start) exit 0
+      infence = 0
+      for (i = start + 1; i <= NR; i++) {
+        if (line[i] ~ /^```/) { if (infence) break; infence = 1; continue }
+        if (infence) print line[i]
+      }
+    }' "$file" 2>/dev/null)" || return 0
+  [[ -n "$stderr_section" ]] || return 0
+
+  # 残高側を先に見る。クレジット切れの応答は認証の語（unauthorized 等）を含みうるが、
+  # 逆は起きない。取り違えると「再ログインすれば直る」と案内して、実際には同じ失敗を
+  # もう一度引かせることになる。
+  #
+  # 数値ステータスは単独では見ない（stderr 抜粋に現れる "402 files" のような無関係な
+  # 数字を拾う）。HTTP 文脈の語と同じ行に並んでいるときだけ採る。
+  # パイプにしないのは `set -o pipefail` 下で grep -q が先頭付近で早期終了すると
+  # printf が EPIPE で死に、パイプライン rc=141 が「不一致」に化けるため（実測: 先頭に
+  # unauthorized を置いた 640KB 入力が LOST）。真陽性が読み解けない形で落ちる。
+  if grep -qiE \
+    'out of credits|no credits|insufficient credit|credit balance|balance exhausted|insufficient_quota|payment required|(http|status|code)[^0-9]{0,10}402|402[^0-9]{0,12}(payment|http|status)' <<<"$stderr_section"; then
+    printf 'billing\n'
+    return 0
+  fi
+  if grep -qiE \
+    'unauthorized|not logged in|not signed in|authentication (failed|error)|invalid api key|invalid_api_key|expired (token|credential)|token (is |has )?expired|please (log ?in|sign in)|re-?authenticate|(http|status|code)[^0-9]{0,10}401|401[^0-9]{0,12}(unauthorized|http|status)' <<<"$stderr_section"; then
+    printf 'auth\n'
+    return 0
+  fi
+  return 0
+}
+
+# 再ログインの入口は CLI ごとに違う（実測: codex / grok / copilot は `<cmd> login`、
+# claude は `claude auth login`）。レジストリ（ALL_CLIS の lockstep lookup）には置かない
+# — 全 CLI が答えを持つ表ではなく、既定の空文字は「案内行を 1 本出さない」という
+# 無害な縮退だから。書き漏らしても診断そのものは出る。
+cli_login_command() { # <cli>
+  case "$1" in
+    claude-code) echo "claude auth login" ;;
+    codex-cli)   echo "codex login" ;;
+    copilot-cli) echo "copilot login" ;;
+    grok-cli)    echo "grok login" ;;
+    *) echo "" ;;
+  esac
+}
+
 # ── Retry Advice For Failed Tasks ──
 # A failed task is never re-dispatched to another CLI (see "Fallback semantics"
 # in the header). That is only a defensible default if the user is handed the
@@ -3635,13 +3840,45 @@ print_failure_advice() {
   echo "   what got reviewed, and the substitute may bill a costlier tier)." >&2
   echo "   Re-run the failed task(s) yourself:" >&2
 
-  local entry task rc cli persp fb fb_tier
+  local entry task rc cli persp fb fb_tier cause login_cmd
   for entry in $FAILED_TASKS; do
     task="${entry%:*}"
     rc="${entry##*:}"
     cli="${task%%/*}"
     persp="${task#*/}"
     echo "" >&2
+    # 認証切れ / 残高切れの切り分け（Issue #659）。retry コマンドの**前**に出す —
+    # 「どちらでもない」失敗と同じ 1 行に丸めると、再ログインで直るのか、この CLI
+    # では今日もう何も走らないのかが読めず、代替 CLI への切替判断が遅れる。
+    # timeout（124）でも分類は**する**が、断定はしない。実測 1 件目（401 → websocket
+    # 再接続 5 回 → 失敗）は短い --timeout なら容易に 124 側へ倒れ、そこで切り分けを
+    # 完全に抑止すると「時間を倍にせよ」だけが出る — 同じ失敗を倍待たせる案内で、
+    # まさに下の分岐が避けているものになる。補足として出し、判断は利用者に渡す。
+    cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${cli}/${persp}.md")"
+    if [[ "$rc" -eq 124 && -n "$cause" ]]; then
+      echo "     ⏱ ${cli} — hit the time limit, but its stderr also shows a ${cause} problem." >&2
+      echo "        Check that first: more time will not fix expired credentials or a spent balance." >&2
+      cause=""   # 断定はしない。下の 🔑 / 💳 は時間切れでない失敗のためのもの
+    fi
+    case "$cause" in
+      auth)
+        echo "     🔑 ${cli} — the CLI stderr says its credentials were rejected, not that it" >&2
+        echo "        ran out of time. Re-running as-is will fail identically." >&2
+        login_cmd="$(cli_login_command "$cli")"
+        if [[ -n "$login_cmd" ]]; then
+          echo "        Re-authenticate first: ${login_cmd}" >&2
+        else
+          # 表に無い CLI（新規追加で書き漏らした場合を含む）でも助言を行き止まりに
+          # しない。具体的な入口が無いことと、次に何を探せばよいかは別。
+          echo "        Re-authenticate with ${cli}'s own login command first." >&2
+        fi
+        ;;
+      billing)
+        echo "     💳 ${cli} — the CLI stderr says its credits / usage balance are exhausted." >&2
+        echo "        No amount of retrying or extra time changes that; either restore billing" >&2
+        echo "        for this CLI or use the substitute below." >&2
+        ;;
+    esac
     # Only a timeout is helped by a longer limit. Offering it for expired
     # credentials or a crash sends the user off to wait twice as long for the
     # identical failure.
@@ -3862,6 +4099,19 @@ resolve_critical_nonblock_perspectives() {
 }
 
 # ── Generate Report (review) ──
+# pair の実効レビュワー行（Issue #699）。pair 以外・未設定では 1 バイトも足さない
+# ので、他モードのレポート書式は不変。severity 行文法（`- Critical: N` 等）にも
+# ゼロ語文法にも一致しない `**Label:** value` 形なので、共有 severity パーサー
+# （adapter-common.sh の _ff_severity_scan）の受理判定・CRITICAL_BLOCK 検出とは
+# 干渉しない — 既存の Mode / Strategy 行と同じ形にしてあるのはそのため。
+# 先頭に改行を置くのは、コマンド置換が末尾改行を落とすため（`$(...)` の直後に
+# 改行を書くと、行が空のとき余分な空行が残る）。ヒアドキュメント側は
+# `**Mode:** ...$(pair_reviewers_report_line)` と続けて書く。
+pair_reviewers_report_line() {
+  [[ -n "$PAIR_REVIEWERS_NOTE" ]] || return 0
+  printf '\n**Reviewers:** %s' "$PAIR_REVIEWERS_NOTE"
+}
+
 generate_review_report() {
   local final_report_file="${OUTPUT_DIR}/integrated-report.md"
   local report_file="${final_report_file}.building.$$"
@@ -3876,7 +4126,7 @@ generate_review_report() {
 # Multi-CLI Review — Integrated Report
 
 **Generated:** $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-**Mode:** ${MODE}
+**Mode:** ${MODE}$(pair_reviewers_report_line)
 **Strategy:** ${STRATEGY}
 **Base Branch:** ${BASE_BRANCH}
 
@@ -4197,6 +4447,10 @@ main() {
   # `--list-perspectives --cli no-such-cli` が rc=0 になり、綴り間違いが成功として
   # 返る（実測で一度そう作ってしまった）。
   if [[ "$LIST_PERSPECTIVES" == "true" ]]; then
+    # mode の妥当性もここで見る（Issue #699）。apply_task_defaults の手前で抜けるので、
+    # ここを飛ばすと `--mode distribuited --list-perspectives` が rc=0 になり、
+    # 綴り間違いが「その mode は在る」という誤った確認になる（--cli と同じ形）。
+    validate_mode
     validate_requested_clis
     validate_requested_perspectives
     validate_excluded_perspectives
@@ -4302,7 +4556,13 @@ main() {
       echo "       Every installed CLI is metered and excluded from the default lineup." >&2
       echo "       Opt in explicitly (e.g. --cli copilot-cli), or install a non-metered CLI." >&2
     else
-      echo "       Check --cli / --perspective / --mode combinations." >&2
+      echo "       Check --cli / --perspective / --exclude-perspective / --mode combinations." >&2
+      # 矛盾した ↪ 宣言を消した（Issue #699 項目 4）ぶん、除外が原因のときは
+      # ここで名指しする。3 つのつまみだけを指すと、実際の原因である
+      # --exclude-perspective が候補にすら挙がらない。
+      if [[ -n "$EXCLUDE_PERSPECTIVES" ]]; then
+        echo "       --exclude-perspective (${EXCLUDE_PERSPECTIVES}) removed perspective(s) that would otherwise run." >&2
+      fi
     fi
     exit 1
   fi

@@ -711,8 +711,13 @@ if [ "$SYM_RC" -eq 0 ]; then
 else
   ok "symlink 脱出を検出して非 0 で終える (rc=$SYM_RC)"
 fi
-expect_contains "symlink 脱出を真因として名指しする" \
-  "$(cat "$TMP/orch-sym.log")" "resolves outside the output dir"
+# 真因の名指しは「symlink だから触らない」+「その先は出力先の外」の 2 段。Issue #1120 で
+# 判定が配下判定から resolve_expected_dir（解決後 == 渡したパス）へ移ったため、前者が
+# 一次の理由になった。片方だけを見ると、判定が緩んだ側の退行を素通しする。
+expect_contains "symlink を追わないことを真因として名指しする" \
+  "$(cat "$TMP/orch-sym.log")" "is a symlink to another location"
+expect_contains "指し先が出力先の外であることも示す" \
+  "$(cat "$TMP/orch-sym.log")" "reach outside the output dir"
 # 準備段階で落ちた実行はレポートを出さない。出すと、掃除できなかった前回の
 # 成果物を「今回の結果」として並べたうえで "Done! View results" と案内する。
 if [ -f "$SYM_OUT/integrated-report.md" ]; then
@@ -721,6 +726,159 @@ else
   ok "準備段階で落ちた実行はレポートを生成しない"
 fi
 rm -f "$SYM_OUT/codex-cli/files"
+
+echo "== 出力先の**内側**を指す symlink も追わない（Issue #1120） =="
+
+# 旧実装は「解決先が OUTPUT_DIR 配下なら消す」という配下判定だったので、内向きの
+# symlink は判定を通り、指し先（別 CLI の staging 成果一式）が丸ごと消えた。
+# 指し先が出力先の内か外かは、消してよいかどうかと関係がない。
+IN_OUT="$REPO/.inward-out"
+IN_VICTIM="$IN_OUT/claude-code/files/feature-implementation"
+mkdir -p "$IN_OUT/codex-cli" "$IN_VICTIM"
+printf 'must survive\n' > "$IN_VICTIM/precious.txt"
+ln -s ../claude-code/files "$IN_OUT/codex-cli/files"
+
+set +e
+( cd "$REPO" && run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
+  bash "$PLUGIN_ROOT/scripts/multi-agent.sh" \
+  --task implement --cli codex-cli --perspective feature-implementation \
+  --description "fixture implement task" --base develop --timeout 30 \
+  --output-dir "$IN_OUT" \
+  ) >"$TMP/orch-inward.log" 2>&1
+IN_RC=$?
+set -e
+
+if [ -f "$IN_VICTIM/precious.txt" ]; then
+  ok "出力先の内側にある別 CLI の staging 成果を消さない"
+else
+  bad "内向き symlink を追って別 CLI の staging 成果を消した"
+fi
+if [ "$IN_RC" -eq 0 ]; then
+  bad "内向き symlink を検出したのに実行が成功扱いになった"
+else
+  ok "内向き symlink を検出して非 0 で終える (rc=$IN_RC)"
+fi
+expect_contains "内向きでも symlink を真因として名指しする" \
+  "$(cat "$TMP/orch-inward.log")" "is a symlink to another location"
+
+echo "== 観点ディレクトリが未作成でも中間 symlink を素通ししない（Issue #1120） =="
+
+# leaf（<cli>/files/<perspective>）が未作成の回は -L / -d / -e がすべて偽になる。
+# leaf の状態だけを見る実装だと検査を素通りし、後続の mkdir -p がリンク先へ staging
+# を作って書き込む — 初回実行がまさにこの形（実測で再現）。親を先に検査する。
+NEW_OUT="$REPO/.inward-new-out"
+NEW_VICTIM="$REPO/.inward-new-victim"
+mkdir -p "$NEW_OUT/codex-cli" "$NEW_VICTIM"
+printf 'must survive\n' > "$NEW_VICTIM/precious.txt"
+ln -s "$NEW_VICTIM" "$NEW_OUT/codex-cli/files"   # leaf は作らない
+
+set +e
+( cd "$REPO" && run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
+  bash "$PLUGIN_ROOT/scripts/multi-agent.sh" \
+  --task implement --cli codex-cli --perspective feature-implementation \
+  --description "fixture implement task" --base develop --timeout 30 \
+  --output-dir "$NEW_OUT" \
+  ) >"$TMP/orch-inward-new.log" 2>&1
+NEW_RC=$?
+set -e
+
+if [ ! -e "$NEW_VICTIM/feature-implementation" ] \
+  && [ -f "$NEW_VICTIM/precious.txt" ]; then
+  ok "leaf 未作成でもリンク先へ staging を作らない"
+else
+  bad "leaf 未作成の回に中間 symlink を追ってリンク先へ staging を作った"
+  ls -la "$NEW_VICTIM" | sed 's/^/    /' >&2
+fi
+if [ "$NEW_RC" -eq 0 ]; then
+  bad "leaf 未作成の中間 symlink を検出したのに実行が成功扱いになった"
+else
+  ok "leaf 未作成でも中間 symlink を検出して非 0 で終える (rc=$NEW_RC)"
+fi
+
+echo "== 親も末端も symlink の組合せ（Issue #1120） =="
+
+# 親（<cli>/files）が外を指し、末端（<persp>）も symlink というケース。leaf の
+# 種別だけを見る実装では -L 分岐が先に当たり、親を一度も検査しないまま
+# 出力先の外の symlink を unlink して rc=0 で続行する（実測で再現した経路）。
+BOTH_OUT="$REPO/.both-sym-out"
+BOTH_VICTIM="$REPO/.both-sym-victim"
+BOTH_PRECIOUS="$REPO/.both-sym-precious"
+mkdir -p "$BOTH_OUT/codex-cli" "$BOTH_VICTIM" "$BOTH_PRECIOUS"
+printf 'must survive\n' > "$BOTH_PRECIOUS/precious.txt"
+ln -s "$BOTH_VICTIM" "$BOTH_OUT/codex-cli/files"
+ln -s "$BOTH_PRECIOUS" "$BOTH_VICTIM/feature-implementation"
+
+set +e
+( cd "$REPO" && run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
+  bash "$PLUGIN_ROOT/scripts/multi-agent.sh" \
+  --task implement --cli codex-cli --perspective feature-implementation \
+  --description "fixture implement task" --base develop --timeout 30 \
+  --output-dir "$BOTH_OUT" \
+  ) >"$TMP/orch-both-sym.log" 2>&1
+BOTH_RC=$?
+set -e
+
+if [ -L "$BOTH_VICTIM/feature-implementation" ] && [ -f "$BOTH_PRECIOUS/precious.txt" ]; then
+  ok "親も末端も symlink の組合せで、出力先の外の symlink を unlink しない"
+else
+  bad "親を検査せず末端 symlink を unlink した（出力先の外へ手を出している）"
+  ls -la "$BOTH_VICTIM" | sed 's/^/    /' >&2
+fi
+if [ "$BOTH_RC" -eq 0 ]; then
+  bad "親も末端も symlink の組合せを検出したのに実行が成功扱いになった"
+else
+  ok "親も末端も symlink の組合せを検出して非 0 で終える (rc=$BOTH_RC)"
+fi
+# 外向きの説明（出力先の外へ届く）をそのまま流用すると、内向きでは端的に嘘になる。
+expect_contains "内向き固有の被害（別タスクの staging を消す）を述べる" \
+  "$(cat "$TMP/orch-inward.log")" "erase another task's staging output"
+if grep -qF "reach outside the output dir" "$TMP/orch-inward.log"; then
+  bad "内向きなのに「出力先の外へ届く」と説明している"
+else
+  ok "内向きに外向きの説明を流用しない"
+fi
+rm -f "$IN_OUT/codex-cli/files"
+
+echo "== staging パス自体が symlink ならリンクだけを外して続行する =="
+
+# 途中のコンポーネントと違い、リンク末端そのものは実体を作り直せば実行を続けられる。
+# clear_quarantine_dir（previous/ が symlink のとき）と同じ扱いに揃える。
+LEAF_OUT="$REPO/.leaf-out"
+LEAF_VICTIM="$LEAF_OUT/claude-code/files/feature-implementation"
+mkdir -p "$LEAF_OUT/codex-cli/files" "$LEAF_VICTIM"
+printf 'must survive\n' > "$LEAF_VICTIM/precious.txt"
+ln -s ../../claude-code/files/feature-implementation \
+  "$LEAF_OUT/codex-cli/files/feature-implementation"
+
+set +e
+( cd "$REPO" && run_isolated PATH="$STUB:$PATH" CODEX_HOME="$TMP/codex-home" \
+  bash "$PLUGIN_ROOT/scripts/multi-agent.sh" \
+  --task implement --cli codex-cli --perspective feature-implementation \
+  --description "fixture implement task" --base develop --timeout 30 \
+  --output-dir "$LEAF_OUT" \
+  ) >"$TMP/orch-leaf.log" 2>&1
+LEAF_RC=$?
+set -e
+
+if [ -f "$LEAF_VICTIM/precious.txt" ]; then
+  ok "リンク末端の指し先を消さない"
+else
+  bad "staging パス自体の symlink を追って指し先を消した"
+fi
+if [ "$LEAF_RC" -eq 0 ]; then
+  ok "リンクを外して実行を続ける (rc=0)"
+else
+  bad "リンクを外せば続行できるのに実行が失敗した (rc=$LEAF_RC)"
+  tail -25 "$TMP/orch-leaf.log" | sed 's/^/    | /' >&2
+fi
+if [ -d "$LEAF_OUT/codex-cli/files/feature-implementation" ] \
+   && [ ! -L "$LEAF_OUT/codex-cli/files/feature-implementation" ]; then
+  ok "symlink を外して実体の staging を作り直す"
+else
+  bad "symlink 除去後の staging が実ディレクトリになっていない"
+fi
+expect_contains "リンクを外したことを名乗る" \
+  "$(cat "$TMP/orch-leaf.log")" "Removed a symlink at the staging path"
 
 echo "== 出力モードの排他 =="
 

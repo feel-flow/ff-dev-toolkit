@@ -1464,6 +1464,137 @@ fi
 
 git switch -q feature/x
 
+# ── pair 縮退の統合レポート記録（Issue #699） ──────────────────────
+#
+# 副が居ないまま単一 CLI で走った事実は stderr にしか出ておらず、レポートは
+# `Mode: pair` と主張したままだった。後からレポートだけ読む人・エージェントが
+# クロスモデル済みと誤読する。ここで検査するのは 2 点:
+#   (1) 縮退の事実が Reviewers 行としてレポートに残る
+#   (2) その行が共有 severity パーサー（Issue #908）の判定を動かさない
+#       — 受理ゲート・CRITICAL_BLOCK は行文法で判定するので、レポートへ足す行が
+#         severity 行に見えると偽 BLOCK になる。既存の Mode / Strategy 行と同じ
+#         `**Label:** value` 形にしてあることを、実走のマーカー不在で確かめる。
+echo
+echo "== pair 縮退のレポート記録（Issue #699） =="
+# 主レビュワーと HOME / XDG は明示固定する。クリーン環境では主が未設定になり
+# pair プランが組まれず Reviewers 行が出ないため、環境依存で赤くなる。
+ISSUE_699_HOME="$TMP/home-699"
+mkdir -p "$ISSUE_699_HOME"
+
+# (a) 副が未設定 → 縮退理由つきで記録される
+rm -rf "$REPO/.review-results" "$REPO/.claude"
+printf '%s\n' 'Summary' '' '- Critical: 0' '' 'sentinel-699-reviewers-line' > "$TMP/body.md"
+set +e
+run_isolated PATH="$STUB:/usr/bin:/bin" HOME="$ISSUE_699_HOME" XDG_CONFIG_HOME="$ISSUE_699_HOME/.config" \
+  MULTI_AGENT_REVIEW_MAIN=codex-cli MULTI_AGENT_REVIEW_SUB= bash "$MULTI_AGENT" \
+  --task review --perspective code-review \
+  --base develop --timeout 60 >"$TMP/issue-699-report.log" 2>&1
+ISSUE_699_RC=$?
+set -e
+if [ "$ISSUE_699_RC" -eq 0 ] && [ -f "$REPORT" ]; then
+  if grep -q '^\*\*Reviewers:\*\* codex-cli (single — no sub reviewer set)$' "$REPORT"; then
+    ok "副なしの縮退が統合レポートの Reviewers 行に残る"
+  else
+    bad "縮退がレポートに残らない（Mode: pair だけが残りクロスモデル済みと誤読される）"
+    sed -n '1,10p' "$REPORT" | sed 's/^/    | /' >&2
+  fi
+  # ヘッダ書式が壊れていないこと自体を見る。CRITICAL_BLOCK は result file を読むので
+  # ヘッダを壊しても立たず、マーカー不在は非干渉の証明にならない（Issue #699 レビュー）。
+  if grep -q '^\*\*Mode:\*\* pair$' "$REPORT" \
+    && grep -q '^\*\*Strategy:\*\* ' "$REPORT" \
+    && grep -q '^\*\*Base Branch:\*\* ' "$REPORT"; then
+    ok "Reviewers 行の挿入で既存ヘッダ行（Mode / Strategy / Base Branch）が壊れない"
+  else
+    bad "Reviewers 行の挿入でヘッダ書式が壊れた（コマンド置換の改行処理）"
+    sed -n '1,10p' "$REPORT" | sed 's/^/    | /' >&2
+  fi
+  if ! grep -qF "$MARKER" "$REPORT"; then
+    ok "ゼロ件本文で CRITICAL_BLOCK が立たない（Reviewers 行が判定を動かさない）"
+  else
+    bad "Reviewers 行の追加で CRITICAL_BLOCK が立った（共有 severity パーサーと干渉している）"
+    sed -n '1,10p' "$REPORT" | sed 's/^/    | /' >&2
+  fi
+else
+  bad "Issue #699 のレポート検査を実行できない (rc=${ISSUE_699_RC} report=${REPORT})"
+  tail -5 "$TMP/issue-699-report.log" | sed 's/^/    | /' >&2
+fi
+
+# (b) 副は導入済みだが --perspective で計画から外れる経路。副の導入可否だけで
+#     Reviewers 行を決めると、ここが「codex-cli + claude-code」と嘘をつく。
+#     副を「導入済み」にするため claude stub をこのケースの間だけ置く。
+cat > "$STUB/claude" <<SH
+#!/usr/bin/env bash
+cat "$TMP/body.md"
+SH
+chmod +x "$STUB/claude"
+rm -rf "$REPO/.review-results" "$REPO/.claude"
+printf '%s\n' 'Summary' '' '- Critical: 0' '' 'sentinel-699-filtered-sub' > "$TMP/body.md"
+set +e
+run_isolated PATH="$STUB:/usr/bin:/bin" HOME="$ISSUE_699_HOME" XDG_CONFIG_HOME="$ISSUE_699_HOME/.config" \
+  MULTI_AGENT_REVIEW_MAIN=codex-cli MULTI_AGENT_REVIEW_SUB=claude-code bash "$MULTI_AGENT" \
+  --task review --perspective code-review \
+  --base develop --timeout 60 >"$TMP/issue-699-filtered.log" 2>&1
+ISSUE_699_FILTERED_RC=$?
+set -e
+if [ "$ISSUE_699_FILTERED_RC" -eq 0 ] && [ -f "$REPORT" ]; then
+  # 副が導入済みでも計画に居ないので、2 CLI 形（`A + B`）にはならないこと。
+  # 縮退理由の文中に副の名が出るのは正しい（誰が落ちたかを名乗るため）。
+  if grep -q '^\*\*Reviewers:\*\* codex-cli (single' "$REPORT" \
+    && ! grep -q '^\*\*Reviewers:\*\* .* + ' "$REPORT"; then
+    ok "計画から外れた副を実効レビュワーとして記録しない（実効プランから導出）"
+  else
+    bad "走っていない副がレビュワーとして記録された（クロスモデル済みと誤読される）"
+    sed -n '1,10p' "$REPORT" | sed 's/^/    | /' >&2
+  fi
+else
+  bad "Issue #699 の filter 経路を実行できない (rc=${ISSUE_699_FILTERED_RC})"
+  tail -5 "$TMP/issue-699-filtered.log" | sed 's/^/    | /' >&2
+fi
+
+# (c) 正常系: 副が計画に入る既定構成は 2 CLI 形で記録される。縮退側だけを pin すると、
+#     健全系を壊す実装（固定文字列を返す等）が緑のまま通る（ACE-253-3/4）。
+rm -rf "$REPO/.review-results" "$REPO/.claude"
+printf '%s\n' 'Summary' '' '- Critical: 0' '' 'sentinel-699-pair-both' > "$TMP/body.md"
+set +e
+run_isolated PATH="$STUB:/usr/bin:/bin" HOME="$ISSUE_699_HOME" XDG_CONFIG_HOME="$ISSUE_699_HOME/.config" \
+  MULTI_AGENT_REVIEW_MAIN=codex-cli MULTI_AGENT_REVIEW_SUB=claude-code bash "$MULTI_AGENT" \
+  --task review --base develop --timeout 60 >"$TMP/issue-699-both.log" 2>&1
+ISSUE_699_BOTH_RC=$?
+set -e
+if [ "$ISSUE_699_BOTH_RC" -eq 0 ] && [ -f "$REPORT" ]; then
+  if grep -q '^\*\*Reviewers:\*\* claude-code + codex-cli$' "$REPORT"; then
+    ok "副が計画に入る既定構成は 2 CLI 形で記録される（正常系）"
+  else
+    bad "正常系の Reviewers 行が 2 CLI 形になっていない"
+    grep '^\*\*Reviewers:' "$REPORT" | sed 's/^/    | /' >&2
+  fi
+else
+  bad "Issue #699 の正常系を実行できない (rc=${ISSUE_699_BOTH_RC})"
+  tail -5 "$TMP/issue-699-both.log" | sed 's/^/    | /' >&2
+fi
+
+# (d) pair 以外では 1 バイトも足さない（レポート書式の不変を pin）。
+rm -rf "$REPO/.review-results" "$REPO/.claude"
+printf '%s\n' 'Summary' '' '- Critical: 0' '' 'sentinel-699-distributed' > "$TMP/body.md"
+set +e
+run_isolated PATH="$STUB:/usr/bin:/bin" HOME="$ISSUE_699_HOME" XDG_CONFIG_HOME="$ISSUE_699_HOME/.config" \
+  bash "$MULTI_AGENT" --task review --mode distributed --cli codex-cli \
+  --base develop --timeout 60 >"$TMP/issue-699-distributed.log" 2>&1
+ISSUE_699_DIST_RC=$?
+set -e
+if [ "$ISSUE_699_DIST_RC" -eq 0 ] && [ -f "$REPORT" ]; then
+  if ! grep -q '^\*\*Reviewers:' "$REPORT"; then
+    ok "pair 以外のモードではレポートへ Reviewers 行を足さない"
+  else
+    bad "distributed モードで Reviewers 行が出ている（他モードの書式を変えている）"
+    sed -n '1,10p' "$REPORT" | sed 's/^/    | /' >&2
+  fi
+else
+  bad "Issue #699 の distributed 経路を実行できない (rc=${ISSUE_699_DIST_RC})"
+  tail -5 "$TMP/issue-699-distributed.log" | sed 's/^/    | /' >&2
+fi
+rm -f "$STUB/claude"
+
 echo
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ multi-agent-critical-marker verify: $FAIL 件失敗" >&2

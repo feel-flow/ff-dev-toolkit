@@ -616,6 +616,33 @@ case "\$mode" in
     echo "boom: stub failure" >&2
     exit 1
     ;;
+  auth-expired)
+    # Issue #659 の実測 1 件目（codex の OAuth 切れ）と同じ形の stderr。
+    echo "stream error: unexpected status 401 Unauthorized" >&2
+    exit 1
+    ;;
+  out-of-credits)
+    # 同 2 件目（workspace のクレジット切れ）。文言は実測どおり。
+    echo "Your workspace is out of credits" >&2
+    exit 1
+    ;;
+  crash-quoting)
+    # レビュー**本文**が 401 / credits に言及したまま落ちるケース。本ツールが自身の
+    # スクリプトをレビューすると実際に起こる（この分類器のコードが対象になる）。
+    # 部分出力は成果物へ保全されるので、切り分けの走査範囲が stderr 節に限られて
+    # いないと、無関係なクラッシュが認証切れ・残高切れに化ける。
+    echo "- Warning: retry loop swallows 401 Unauthorized and out of credits errors"
+    # 本文が**見出しごと**引用するケース。走査が「最初の見出しから EOF」だと窓が
+    # ここから開き、レビュー本文全体が判定材料になる（この文字列は本リポジトリの
+    # ソース・docs・テストに実在する）。実 stderr 節は常に末尾なので、最後の見出しの
+    # フェンス内だけを見る実装でなければ auth と誤診する。
+    # フェンスの中身は成果物へ保全されないので（実測）、注入する 401 はフェンス外の
+    # 素の行に置く。これで「最初の見出しから EOF」の走査だと本文の 401 を拾う。
+    echo "### CLI stderr (last 4KB)"
+    echo "401 Unauthorized (これは本文の引用であって実際の stderr ではない)"
+    echo "boom: stub failure" >&2
+    exit 1
+    ;;
   ok)
     echo "## Findings"
     echo "- Suggestion: stub review completed"
@@ -947,6 +974,97 @@ if no_other_cli_invoked; then
   ok "crash: 実行時 fallback が起きていない（他 CLI は未起動）"
 else
   bad "crash: 設定 fallback が黙って実行された"
+fi
+
+# 陰性対照（Issue #659）。ただのクラッシュを認証切れ・残高切れと断定すると、
+# 利用者は再ログインや課金の確認へ回り道する。分類は「陽性のときだけ」出すこと。
+if ! grep -q '🔑' "$TMP/run.log" && ! grep -q '💳' "$TMP/run.log"; then
+  ok "crash: 認証切れ / 残高切れと誤って断定しない"
+else
+  bad "crash: 一般的なクラッシュを認証・課金の問題として誤診している"
+fi
+
+# --- ケース2c: 認証切れ / 残高切れの切り分け（Issue #659） ---
+# 実測では「時間を足しても直らない失敗」の 1 行に丸められ、再ログインで直るのか、
+# この CLI では今日もう何も走らないのかが読めなかった。切り分けと次の一手を出す。
+echo auth-expired > "$TMP/codex-mode"
+read -r RC EL <<<"$(run_orchestrator 60)"
+
+if [[ "$RC" -ne 0 ]]; then
+  ok "auth: orchestrator が非 0 終了 (rc=$RC)"
+else
+  bad "auth: 失敗したのに 0 終了した"
+fi
+
+if grep -q 'credentials were rejected' "$TMP/run.log"; then
+  ok "auth: 資格情報の拒否として切り分けて名指しする"
+else
+  bad "auth: 401 の失敗が一般的な失敗と同じ扱いのままになっている"
+  tail -20 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+if grep -qF 'Re-authenticate first: codex login' "$TMP/run.log"; then
+  ok "auth: その CLI の再ログインコマンドを提示する"
+else
+  bad "auth: 再ログインの入口が案内されない"
+fi
+
+if ! grep -q '💳' "$TMP/run.log"; then
+  ok "auth: 残高切れと取り違えない"
+else
+  bad "auth: 認証切れを残高切れとして案内している"
+fi
+
+# 切り分けが出ても代替 CLI の案内は消えない（切替判断の材料はここに揃う）。
+if grep -q 'or the configured substitute claude-code' "$TMP/run.log"; then
+  ok "auth: 代替 CLI の再実行コマンドも併記される"
+else
+  bad "auth: 切り分けを出す代わりに代替 CLI の案内が消えた"
+fi
+
+echo out-of-credits > "$TMP/codex-mode"
+read -r RC EL <<<"$(run_orchestrator 60)"
+
+if [[ "$RC" -ne 0 ]]; then
+  ok "billing: orchestrator が非 0 終了 (rc=$RC)"
+else
+  bad "billing: 失敗したのに 0 終了した"
+fi
+
+if grep -q 'credits / usage balance are exhausted' "$TMP/run.log"; then
+  ok "billing: 残高切れとして切り分けて名指しする"
+else
+  bad "billing: クレジット切れが一般的な失敗と同じ扱いのままになっている"
+  tail -20 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+# 再ログインを案内すると、実際には同じ失敗をもう一度引く。残高側は「代替へ」。
+if ! grep -q '🔑' "$TMP/run.log" && ! grep -qF 'Re-authenticate first' "$TMP/run.log"; then
+  ok "billing: 再ログインで直ると誤って案内しない"
+else
+  bad "billing: 残高切れに再ログインを案内している"
+fi
+
+if grep -q 'or the configured substitute claude-code' "$TMP/run.log"; then
+  ok "billing: 代替 CLI の再実行コマンドを併記する"
+else
+  bad "billing: 残高切れなのに代替 CLI の案内が無い"
+fi
+
+# 走査範囲の陰性対照。判定材料は CLI stderr であって、保全された部分出力ではない。
+echo crash-quoting > "$TMP/codex-mode"
+read -r RC EL <<<"$(run_orchestrator 60)"
+
+if [[ -f "$RESULT_FILE" ]] && grep -q '401 Unauthorized' "$RESULT_FILE"; then
+  ok "scope: 部分出力（401 に言及するレビュー本文）が成果物に保全されている"
+else
+  bad "scope: 前提が崩れている — 部分出力が成果物に残っていない"
+fi
+
+if ! grep -q '🔑' "$TMP/run.log" && ! grep -q '💳' "$TMP/run.log"; then
+  ok "scope: レビュー本文の言及では切り分けが発火しない（走査は stderr 節だけ）"
+else
+  bad "scope: 保全された部分出力の言及を CLI の失敗理由として誤診している"
 fi
 
 # --- ケース2b: CLI 自身が 124 / 125 を返した場合 ---
