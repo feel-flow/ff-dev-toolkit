@@ -846,6 +846,59 @@ PAIR_REVIEWERS_NOTE=""
 # cannot contain ':', so the suffix is unambiguous.
 FAILED_TASKS=""
 
+# 先行タスクと同じ理由で確実に失敗すると分かっているタスク（Issue #1143）。
+# 形式は "cli/perspective:cause" の空白区切りで、cause は auth | billing。
+# FAILED_TASKS とは別に持つ — これらは「失敗した」のではなく「実行していない」ので、
+# 失敗の助言（時間を足す / 原因を読む）をそのまま当てると存在しない実行を指す。
+# 到達範囲は execute_tasks と同じプロセス（並列ワーカーはステータス dir 経由で
+# 親へ渡す）なので、generate_report と print_failure_advice から読める。
+SKIPPED_TASKS=""
+
+# スキップしてよい失敗理由（Issue #1143）。classify_cli_failure_cause の 3 分類の
+# うち auth / billing だけを採る。
+#   - auth / billing … 資格情報・残高は CLI 単位の状態で、同じ実行内の同一 CLI の
+#                      他タスクも確実に同じ理由で落ちる
+#   - argv           … 採らない。E2BIG は**そのタスクの argv 長**で決まるため、
+#                      観点が違えば起動できる余地がある
+#   - ""（判定不能） … 採らない。fail-open で従来どおり全タスクを実行する
+# 推測でスキップすると、実際には走ったはずのレビューが観点ごと消える — 誤ってスキップ
+# する損失（カバレッジ 0）は、誤って実行する損失（setup 1 回分の待ち時間）より大きい。
+cli_failure_is_deterministic() { # <cause> → rc0 = 残りのタスクをスキップしてよい
+  case "$1" in
+    auth|billing) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# auth / billing で落ちた CLI とその理由（"cli:cause" の空白区切り。Issue #1143）。
+# 逐次ブランチ専用 — 並列ブランチのワーカーはサブシェルなのでこの変数を共有できず、
+# 判断はワーカー内で閉じる（親へはステータス dir の .skip 印で渡す）。
+POISONED_CLIS=""
+
+# <cli> が auth / billing で落ちていれば理由を返す（落ちていなければ空文字）。
+skipped_cli_cause() { # <cli> → cause | ""
+  local cli="$1" entry
+  for entry in $POISONED_CLIS; do
+    if [[ "${entry%:*}" == "$cli" ]]; then
+      printf '%s\n' "${entry##*:}"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# <cli/perspective> がスキップされていれば理由を返す（未スキップなら空文字）。
+skipped_task_cause() { # <cli/perspective> → cause | ""
+  local task="$1" entry
+  for entry in $SKIPPED_TASKS; do
+    if [[ "${entry%:*}" == "$task" ]]; then
+      printf '%s\n' "${entry##*:}"
+      return 0
+    fi
+  done
+  return 0
+}
+
 # Previous unresolved review state captured before result cleanup (Issue #843).
 # It is deliberately small: perspective names and their existing block/nonblock
 # classification only. A failed rerun keeps that classification; a successful
@@ -3190,10 +3243,17 @@ capture_and_guard_unresolved_critical_state() {
   return 0
 }
 
-task_failed_for_perspective() { # <cli> <perspective>
-  local failed_entry prefix="${1}/${2}:"
-  for failed_entry in $FAILED_TASKS; do
-    [[ "$failed_entry" == "$prefix"* ]] && return 0
+# 「この実行がその観点の判定を出していない」— 失敗（FAILED_TASKS）とスキップ
+# （SKIPPED_TASKS）の**両方**を見る。前回の未解消 Critical を保持するかどうかは
+# 「解消が証明されたか」で決まり、スキップは失敗以上に何も証明していない
+# （Issue #1143。分けたのは案内の文面であって、この述語の意味ではない）。
+# 片方だけを見ると、スキップされた観点は成果物も無いため判定ループの
+# `[[ -f "$crit_file" ]] || continue` で捨てられ、前回の CRITICAL_BLOCK が
+# 静かに消える — pre-push ゲートが素通りする fail-open。
+task_left_perspective_unproven() { # <cli> <perspective>
+  local entry prefix="${1}/${2}:"
+  for entry in $FAILED_TASKS $SKIPPED_TASKS; do
+    [[ "$entry" == "$prefix"* ]] && return 0
   done
   return 1
 }
@@ -3211,6 +3271,10 @@ task_failed_for_perspective() { # <cli> <perspective>
 run_task_recorded() { # $1: cli / $2: perspective / $3: status dir
   local rc=0
   run_single_task "$1" "$2" || rc=$?
+  # 逐次ワーカー（run_cli_group）が「この CLI はもう走らせない」を判断するために
+  # rc を必要とする。rc ファイル経由で読ませると、記録に失敗した回に判断材料ごと
+  # 消える（記録失敗はワーカーを殺すが、殺す前に判断は済ませたい）。
+  LAST_TASK_RC="$rc"
   mkdir -p "${3}/${1}"
   if ! { printf '%s\n' "$rc" > "${3}/${1}/${2}.rc.tmp" \
          && mv "${3}/${1}/${2}.rc.tmp" "${3}/${1}/${2}.rc"; }; then
@@ -3229,17 +3293,48 @@ run_task_recorded() { # $1: cli / $2: perspective / $3: status dir
 # 防御になる。premium / standard tier は従来どおりタスク単位で並列（一律逐次化は
 # pair モード既定の premium 8 観点で実行時間を観点数倍にする退行になる）。
 run_cli_group() { # $1: cli / $2: status dir
-  local cli="$1" sdir="$2" entry gseen=""
+  local cli="$1" sdir="$2" entry gseen="" persp poison="" cause=""
   while IFS= read -r entry; do
     [[ -z "$entry" ]] && continue
     [[ "${entry%%:*}" == "$cli" ]] || continue
     if [[ " $gseen " == *" $entry "* ]]; then continue; fi
     gseen="$gseen $entry"
+    persp="${entry#*:}"
+    # 先行タスクが auth / billing で落ちていたら、この CLI の残りは実行しない
+    # （Issue #1143）。フル setup（プロンプト構築・diff 読み込み・タイムアウト待ち）
+    # を払ってから同じ失敗を引くだけなので、払う前に落とす。
+    # 親プロセスは変数を見られない（このワーカーはバックグラウンドのサブシェル）ので、
+    # 理由はステータス dir へ書いて回収側に読ませる。
+    if [[ -n "$poison" ]]; then
+      record_task_skipped "$cli" "$persp" "$poison" "$sdir" || return 1
+      continue
+    fi
     # 進捗を名乗ってから実行する — ワーカーが途中で死んだとき、どのタスクの
     # 処理中だったかはこの行でしか相関できない（逐次ブランチの ▶ 表示と対）。
-    echo "▶ ${cli} → ${entry#*:} (serialized)" >&2
-    run_task_recorded "$cli" "${entry#*:}" "$sdir" || return 1
+    echo "▶ ${cli} → ${persp} (serialized)" >&2
+    run_task_recorded "$cli" "$persp" "$sdir" || return 1
+    if [[ "${LAST_TASK_RC:-0}" -ne 0 && "${LAST_TASK_RC:-0}" -ne 124 ]]; then
+      cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${cli}/${persp}.md")"
+      if cli_failure_is_deterministic "$cause"; then
+        poison="$cause"
+      fi
+    fi
   done <<< "$EXECUTION_PLAN"
+}
+
+# スキップを回収側へ伝える印。rc ファイルは書かない — rc の意味論（0 = 成功 /
+# 非 0 = その終了コードで失敗 / 不在 = ワーカーが記録前に死んだ）へ 4 つ目の値を
+# 混ぜると、既存の 3 分岐すべてが「この値は何を意味するか」を再解釈することになる。
+record_task_skipped() { # $1: cli / $2: perspective / $3: cause / $4: status dir
+  mkdir -p "${4}/${1}"
+  if ! { printf '%s\n' "$3" > "${4}/${1}/${2}.skip.tmp" \
+         && mv "${4}/${1}/${2}.skip.tmp" "${4}/${1}/${2}.skip"; }; then
+    # 印を書けなければスキップを黙って成立させない。回収側は rc ファイル不在を
+    # 「ワーカーが記録前に死んだ」= 失敗として拾うので、安全側には倒れる。
+    echo "  ⚠️ Failed to record the skip marker for ${1}/${2}: ${4} is not writable" >&2
+    return 1
+  fi
+  echo "  ⏭ Skipped ${1}/${2} — ${1} already failed in this run for a ${3} reason (not task-specific)." >&2
 }
 
 # ── Execute All Tasks ──
@@ -3317,6 +3412,8 @@ execute_tasks() {
   local count=0
   local seen=""
   FAILED_TASKS=""
+  SKIPPED_TASKS=""
+  POISONED_CLIS=""
 
   if [[ "$PARALLEL" == "true" ]]; then
     # ── 並列実行: CLI 間は並列、同一 CLI 内は逐次（Issue #251） ──
@@ -3416,7 +3513,26 @@ execute_tasks() {
       local persp="${entry#*:}"
       local task_name="${cli}/${persp}"
       local rc_file="${status_dir}/${cli}/${persp}.rc"
+      local skip_file="${status_dir}/${cli}/${persp}.skip"
       local exit_code
+      # スキップは rc の判定より**前**に見る（Issue #1143）。スキップしたタスクは
+      # rc ファイルを書かないので、順序を逆にすると「ワーカーが記録前に死んだ」へ
+      # 落ちて、理由が失われたうえに死因の追跡へ読み手を送る。
+      if [[ -f "$skip_file" ]]; then
+        local skip_cause
+        skip_cause="$(cat "$skip_file" 2>/dev/null)" || skip_cause=""
+        if ! cli_failure_is_deterministic "$skip_cause"; then
+          # 印が読めない / 想定外の値。スキップは実行の欠落なので、理由が確定
+          # できないものを「意図したスキップ」として通さない（失敗側へ倒す）。
+          failed=$((failed + 1))
+          FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:1"
+          echo "  ❌ Unreadable skip marker (content='${skip_cause}'): ${task_name}" >&2
+          continue
+        fi
+        failed=$((failed + 1))
+        SKIPPED_TASKS="${SKIPPED_TASKS:+$SKIPPED_TASKS }${task_name}:${skip_cause}"
+        continue
+      fi
       if [[ ! -f "$rc_file" ]]; then
         failed=$((failed + 1))
         FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:1"
@@ -3462,6 +3578,18 @@ execute_tasks() {
       local cli="${entry%%:*}"
       local persp="${entry#*:}"
 
+      # 先行タスクが auth / billing で落ちた CLI の残りは実行しない（Issue #1143）。
+      # 逐次ブランチはループ自体が親プロセスなので、ステータス dir を経由せず
+      # そのまま SKIPPED_TASKS へ記録する。
+      local seq_cause
+      seq_cause="$(skipped_cli_cause "$cli")"
+      if [[ -n "$seq_cause" ]]; then
+        failed=$((failed + 1))
+        SKIPPED_TASKS="${SKIPPED_TASKS:+$SKIPPED_TASKS }${cli}/${persp}:${seq_cause}"
+        echo "  ⏭ Skipped ${cli}/${persp} — ${cli} already failed in this run for a ${seq_cause} reason (not task-specific)." >&2
+        continue
+      fi
+
       echo "▶ ${cli} → ${persp}" >&2
       # Capture the status rather than testing it inline: the parallel branch
       # distinguishes a fired deadline from a crash, and this path has to give the
@@ -3472,6 +3600,16 @@ execute_tasks() {
         failed=$((failed + 1))
         FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${cli}/${persp}:${task_rc}"
         report_task_failure "${cli}/${persp}" "$task_rc"
+        # この CLI の残タスクを落とすかどうかは、失敗のたびに判定する（Issue #1143）。
+        # 124（timeout）は除く — 案内層と同じ規則（print_failure_advice は 124 の
+        # とき分類を断定材料にしない）。時間を足せば通る失敗でカバレッジを捨てない。
+        local seq_fail_cause
+        if [[ $task_rc -ne 124 ]]; then
+          seq_fail_cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${cli}/${persp}.md")"
+          if cli_failure_is_deterministic "$seq_fail_cause"; then
+            POISONED_CLIS="${POISONED_CLIS:+$POISONED_CLIS }${cli}:${seq_fail_cause}"
+          fi
+        fi
       elif [[ ! -f "${OUTPUT_DIR}/${cli}/${persp}.md" ]]; then
         # Adapter reported success but wrote no output — count it as a failure so
         # a silently-empty run shows up in the exit code, not only the report.
@@ -3487,8 +3625,18 @@ execute_tasks() {
   fi
 
   echo "" >&2
+  local skipped_count=0 entry_count
+  for entry_count in $SKIPPED_TASKS; do
+    skipped_count=$((skipped_count + 1))
+  done
+  local failed_only=$((failed - skipped_count))
+  [[ "$failed_only" -ge 0 ]] || failed_only=0
   if [[ $failed -gt 0 ]]; then
-    echo "⚠️  ${failed} ${TASK_TYPE} task(s) failed." >&2
+    if [[ $skipped_count -gt 0 ]]; then
+      echo "⚠️  ${failed_only} ${TASK_TYPE} task(s) failed, ${skipped_count} not executed (skipped)." >&2
+    else
+      echo "⚠️  ${failed} ${TASK_TYPE} task(s) failed." >&2
+    fi
     print_failure_advice
     return 1
   else
@@ -3700,6 +3848,15 @@ report_task_failure() {
 
 # ── CLI 側の失敗理由の切り分け（Issue #659） ──
 #
+# Issue #1148 で 3 つ目の分類 `argv` を足した。プロンプトは Issue #712 以降 argv に
+# 乗らない（materialize_prompt_file → stdin / --prompt-file）ので、E2BIG は
+# 「diff が大きいから」では起きなくなったが、起きたときの 1 行が
+# 「exit code: 126」だけだと、CLI 側のクラッシュと区別が付かない。実測（公開
+# feel-flow/ff-dev-toolkit#55、0.36.0 / macOS ARG_MAX 1,048,576 に 2,129,295 バイトの
+# diff）では 3 CLI が同じ行で落ち、利用者は --timeout を延ばす方向へ倒れた —
+# 起動前に失敗しているので時間では直らない。分類を持てば「起動できていない」と
+# 名指しできる。
+#
 # 実測（1 セッションで 3 回の失敗 dispatch）: codex の OAuth 切れ（401、websocket
 # 再接続 5 回のあと失敗）→ 再ログイン後にクレジット切れ（"Your workspace is out of
 # credits"）→ grok の 402（"Grok Build usage balance exhausted"）。どれも「時間を
@@ -3740,7 +3897,7 @@ report_task_failure() {
 # 判定不能は空文字を返す = 従来どおりの案内に落ちる fail-open。誤った断定は
 # 「認証を直しに行ったが実際はクラッシュだった」形の遠回りを生むので、
 # 迷ったら分類しない側へ倒す。
-classify_cli_failure_cause() { # <result-file> → "auth" | "billing" | ""
+classify_cli_failure_cause() { # <result-file> → "auth" | "billing" | "argv" | ""
   local file="$1" stderr_section=""
   [[ -f "$file" ]] || return 0
   # アダプタが**末尾へ**付ける stderr 節の、コードフェンスの中身だけを取る。
@@ -3760,6 +3917,18 @@ classify_cli_failure_cause() { # <result-file> → "auth" | "billing" | ""
       }
     }' "$file" 2>/dev/null)" || return 0
   [[ -n "$stderr_section" ]] || return 0
+
+  # exec 段の失敗を最初に見る（Issue #1148）。E2BIG は CLI が**起動する前**に
+  # execve が返す失敗なので、そのとき stderr にはモデルの応答が 1 バイトも無い。
+  # auth / billing の語彙と競合しないが、順序で意味を固定する — 起動できなかった
+  # 実行を「認証が拒否された」と読ませないため。
+  # 語は execve の失敗をシェル / libc が訳したもので、ロケールで揺れる。実測した
+  # 英語形（bash / zsh の "Argument list too long"）に加えて E2BIG も拾う。
+  # 拾えなかった回は空文字 = 従来の案内に落ちるだけで、断定はしない。
+  if grep -qiE 'argument list too long|\bE2BIG\b' <<<"$stderr_section"; then
+    printf 'argv\n'
+    return 0
+  fi
 
   # 残高側を先に見る。クレジット切れの応答は認証の語（unauthorized 等）を含みうるが、
   # 逆は起きない。取り違えると「再ログインすれば直る」と案内して、実際には同じ失敗を
@@ -3783,6 +3952,19 @@ classify_cli_failure_cause() { # <result-file> → "auth" | "billing" | ""
   return 0
 }
 
+# 分類値を英文へ差し込む名詞句。分類値をそのまま埋めると "a auth problem" /
+# "a argv problem" になる。分類を足すたびに文面が壊れるのを避けるため、語形は
+# ここに 1 箇所だけ置く。未知の値でも文として成立する既定を返す（分類の追加漏れが
+# 案内行の消失や壊れた英文にならないように）。
+cause_phrase() { # <cause> → 英文へ差し込む名詞句
+  case "$1" in
+    auth)    echo "an authentication problem" ;;
+    billing) echo "a credits / usage balance problem" ;;
+    argv)    echo "an argument-list-too-long (E2BIG) failure, i.e. the CLI never started" ;;
+    *)       echo "a problem it names itself" ;;
+  esac
+}
+
 # 再ログインの入口は CLI ごとに違う（実測: codex / grok / copilot は `<cmd> login`、
 # claude は `claude auth login`）。レジストリ（ALL_CLIS の lockstep lookup）には置かない
 # — 全 CLI が答えを持つ表ではなく、既定の空文字は「案内行を 1 本出さない」という
@@ -3804,7 +3986,10 @@ cli_login_command() { # <cli>
 # so print them: same CLI with more time, or the configured substitute — named
 # explicitly, with its cost tier, as a choice rather than a surprise.
 print_failure_advice() {
-  [[ -n "$FAILED_TASKS" ]] || return 0
+  # スキップは FAILED_TASKS に載せない（実行していないものを「終了コード付きの失敗」
+  # として記録すると、rc を読む全分岐が 4 つ目の意味を持つことになる）。案内は必要
+  # なので、両方の一覧を走査対象にする（Issue #1143）。
+  [[ -n "${FAILED_TASKS}${SKIPPED_TASKS}" ]] || return 0
 
   # Absolute path, not basename: this script normally lives inside an installed
   # plugin and is invoked from the target project, where no same-named file
@@ -3840,8 +4025,8 @@ print_failure_advice() {
   echo "   what got reviewed, and the substitute may bill a costlier tier)." >&2
   echo "   Re-run the failed task(s) yourself:" >&2
 
-  local entry task rc cli persp fb fb_tier cause login_cmd
-  for entry in $FAILED_TASKS; do
+  local entry task rc cli persp fb fb_tier cause login_cmd skip_cause
+  for entry in $FAILED_TASKS $SKIPPED_TASKS; do
     task="${entry%:*}"
     rc="${entry##*:}"
     cli="${task%%/*}"
@@ -3854,11 +4039,26 @@ print_failure_advice() {
     # 再接続 5 回 → 失敗）は短い --timeout なら容易に 124 側へ倒れ、そこで切り分けを
     # 完全に抑止すると「時間を倍にせよ」だけが出る — 同じ失敗を倍待たせる案内で、
     # まさに下の分岐が避けているものになる。補足として出し、判断は利用者に渡す。
+    # スキップしたタスクは「失敗」ではなく「実行していない」。下の分岐は成果物の
+    # stderr を判定材料にするが、スキップには成果物が無いので、そのまま流すと
+    # 「結果ファイルが書かれていない（orchestrator 起因）」という別の失敗として
+    # 案内され、読み手は存在しないクラッシュを追う（Issue #1143）。
+    skip_cause="$(skipped_task_cause "$task")"
+    # スキップは失敗の分類・rc 由来の案内を一切通さない。cause も明示的に空へ倒す
+    # （前の反復の値が残ると、実行していないタスクに 🔑 / 💳 / 📏 が付く）。
+    if [[ -n "$skip_cause" ]]; then
+      cause=""
+      echo "     ⏭ ${task} — not executed. ${cli} had already failed in this run with" >&2
+      echo "        $(cause_phrase "$skip_cause"), which is a property of the CLI and not of" >&2
+      echo "        the task: every remaining task on ${cli} would have failed identically." >&2
+      echo "        Fix that first (see the ${cli} entry above), then re-run:" >&2
+      echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp}" >&2
+    else
     cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${cli}/${persp}.md")"
     if [[ "$rc" -eq 124 && -n "$cause" ]]; then
-      echo "     ⏱ ${cli} — hit the time limit, but its stderr also shows a ${cause} problem." >&2
-      echo "        Check that first: more time will not fix expired credentials or a spent balance." >&2
-      cause=""   # 断定はしない。下の 🔑 / 💳 は時間切れでない失敗のためのもの
+      echo "     ⏱ ${cli} — hit the time limit, but its stderr also shows $(cause_phrase "$cause")." >&2
+      echo "        Check that first: more time does not fix what the stderr is reporting." >&2
+      cause=""   # 断定はしない。下の 🔑 / 💳 / 📏 は時間切れでない失敗のためのもの
     fi
     case "$cause" in
       auth)
@@ -3878,6 +4078,16 @@ print_failure_advice() {
         echo "        No amount of retrying or extra time changes that; either restore billing" >&2
         echo "        for this CLI or use the substitute below." >&2
         ;;
+      argv)
+        echo "     📏 ${cli} — the CLI never started: the OS rejected its argument list as too" >&2
+        echo "        long (E2BIG). This is not a model failure and not a timeout — nothing ran." >&2
+        echo "        The prompt does not travel on argv (it goes to the CLI on stdin or via a" >&2
+        echo "        prompt file), so what is left on argv is only the CLI's own flags: the" >&2
+        echo "        model selection from MULTI_AGENT_MODEL_<CLI>, sandbox / permission flags," >&2
+        echo "        and (grok) the prompt-file path. Look at an oversized MULTI_AGENT_MODEL_*" >&2
+        echo "        value, or an environment whose limit is far below \`getconf ARG_MAX\`" >&2
+        echo "        (Git Bash on Windows caps CreateProcess near 32KB)." >&2
+        ;;
     esac
     # Only a timeout is helped by a longer limit. Offering it for expired
     # credentials or a crash sends the user off to wait twice as long for the
@@ -3896,6 +4106,10 @@ print_failure_advice() {
       echo "       see the ⚠️ worker line above). Re-run:" >&2
       echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp}" >&2
     fi
+    fi
+    # 代替 CLI の案内はスキップにも出す（Issue #1143）。資格情報・残高が死んで
+    # いる CLI では「代替で今すぐ回す」が最も実行可能な次の一手であり、同じ理由で
+    # 落とされた観点こそその案内を必要とする。
     # プラン構築と同じ解決を使う。ここだけ get_cli_fallback を直接呼ぶと、
     # 「設定上の代替は未導入だが、その先には導入済みがある」場合に代替案が出ない。
     fb="$(resolve_available_fallback "$cli")"
@@ -3974,6 +4188,10 @@ append_plan_sections() {
       echo ""
       if list_contains "$REUSED_TASKS" "${cli_name}/${perspective_name}"; then
         echo "**Result source:** reused"
+      elif [[ -n "$(skipped_task_cause "${cli_name}/${perspective_name}")" ]]; then
+        # スキップした節へ executed と書くと、数行下の「this task was not executed」と
+        # 同じ節の中で矛盾する（Issue #1143）。
+        echo "**Result source:** skipped"
       else
         echo "**Result source:** executed"
       fi
@@ -4036,6 +4254,16 @@ append_plan_sections() {
           echo ""
         fi
         cat "$result_file"
+      elif [[ -n "$(skipped_task_cause "${cli_name}/${perspective_name}")" ]]; then
+        # スキップは「失敗して何も書けなかった」とは別の状態（Issue #1143）。
+        # 同じ 1 行に丸めると、読み手は起きていないクラッシュの原因を探しに行く。
+        # 名指しするのは (a) 実行していないこと (b) その理由が CLI 単位であること
+        # (c) この節の沈黙が「所見なし」ではないこと の 3 点。
+        echo "⏭ **SKIPPED** — this task was not executed, so it counts as **INCOMPLETE**."
+        echo "${cli_name} had already failed in this run for a $(skipped_task_cause "${cli_name}/${perspective_name}") reason, which is a"
+        echo "property of the CLI and not of the task, so every remaining ${cli_name} task was"
+        echo "dropped before paying for its setup."
+        echo "Absence of a finding here means unchecked, not clean."
       else
         echo "⚠️ No output produced by this task — the CLI failed before writing any"
         echo "result. See the orchestrator log for the reason and the retry command."
@@ -4208,9 +4436,9 @@ HEADER
     if [[ " $crit_seen " == *" $crit_entry "* ]]; then continue; fi
     crit_seen="$crit_seen $crit_entry"
     crit_persp="${crit_entry#*:}"
-    # A failed/timeout rerun did not prove resolution. Preserve that
+    # A failed/timeout/skipped rerun did not prove resolution. Preserve that
     # perspective's prior classification instead of judging incomplete output.
-    if task_failed_for_perspective "${crit_entry%%:*}" "$crit_persp"; then
+    if task_left_perspective_unproven "${crit_entry%%:*}" "$crit_persp"; then
       if list_contains "$PREVIOUS_UNRESOLVED_BLOCK" "$crit_persp"; then
         crit_block_retained="${crit_block_retained:+$crit_block_retained }$crit_persp"
         continue
@@ -4271,7 +4499,7 @@ HEADER
         echo "Unparseable result treated as critical (${crit_block_unparse// /, }): the body could not be fully judged — see the run diagnostics."
       fi
       if [[ -n "$crit_block_retained" ]]; then
-        echo "Previous Critical remains unresolved because its rerun failed (${crit_block_retained// /, })."
+        echo "Previous Critical remains unresolved because its rerun failed or was skipped (${crit_block_retained// /, })."
       fi
     } >> "$report_file"; then
       echo "ERROR: cannot write blocking Critical state to the integrated review report." >&2
@@ -4291,7 +4519,7 @@ HEADER
         echo "Unparseable result treated as critical, in non-blocking perspectives (${crit_nonblock_unparse// /, })."
       fi
       if [[ -n "$crit_nonblock_retained" ]]; then
-        echo "Previous non-blocking Critical remains unresolved because its rerun failed (${crit_nonblock_retained// /, })."
+        echo "Previous non-blocking Critical remains unresolved because its rerun failed or was skipped (${crit_nonblock_retained// /, })."
       fi
       echo "Fix them per the review response policy; on their own they do not re-trigger the full gate."
     } >> "$report_file"; then

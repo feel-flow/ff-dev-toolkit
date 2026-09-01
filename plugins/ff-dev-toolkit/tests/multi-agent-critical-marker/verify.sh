@@ -1101,7 +1101,7 @@ else
   bad "未解消観点の CLI 失敗が成功扱いになった"
 fi
 if [[ -f "$REPORT" ]] \
-  && grep -qF 'Previous Critical remains unresolved because its rerun failed (code-review).' "$REPORT" \
+  && grep -qF 'Previous Critical remains unresolved because its rerun failed or was skipped (code-review).' "$REPORT" \
   && grep -qF "$MARKER" "$REPORT"; then
   ok "再実行失敗時は前回の未解消マーカーを保持する"
 else
@@ -1117,7 +1117,7 @@ else
   bad "未解消観点の実 timeout 経路を作れない (rc=$SEQUENCE_RC)"
 fi
 if [[ -f "$REPORT" ]] \
-  && grep -qF 'Previous Critical remains unresolved because its rerun failed (code-review).' "$REPORT" \
+  && grep -qF 'Previous Critical remains unresolved because its rerun failed or was skipped (code-review).' "$REPORT" \
   && grep -qF "$MARKER" "$REPORT"; then
   ok "実 timeout 時も前回の未解消マーカーを保持する"
 else
@@ -1200,7 +1200,7 @@ printf '17\n' > "$TMP/stub-exit"
 run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/nonblock-failed.log"
 rm -f "$TMP/stub-exit"
 if [[ "$SEQUENCE_RC" -ne 0 && -f "$REPORT" ]] \
-  && grep -qF 'Previous non-blocking Critical remains unresolved because its rerun failed (comment-analysis).' "$REPORT"; then
+  && grep -qF 'Previous non-blocking Critical remains unresolved because its rerun failed or was skipped (comment-analysis).' "$REPORT"; then
   ok "非ブロック観点も再実行失敗時に分類を保持する"
 else
   bad "非ブロック観点の失敗時保持が機能しない"

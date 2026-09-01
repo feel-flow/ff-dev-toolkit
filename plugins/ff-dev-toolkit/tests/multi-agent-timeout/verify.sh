@@ -643,6 +643,14 @@ case "\$mode" in
     echo "boom: stub failure" >&2
     exit 1
     ;;
+  argv-too-long)
+    # Issue #1148 / 公開 feel-flow/ff-dev-toolkit#55 の実測形。execve が E2BIG を
+    # 返した回は CLI が 1 バイトも動いていない — 落としたのはシェルで、この 1 行を
+    # stderr へ書いて 126 を返す。stub 自身は起動できてしまうので、その 1 行と
+    # status を再現して分類器へ同じ材料を渡す。
+    echo "\$0: Argument list too long" >&2
+    exit 126
+    ;;
   ok)
     echo "## Findings"
     echo "- Suggestion: stub review completed"
@@ -978,10 +986,11 @@ fi
 
 # 陰性対照（Issue #659）。ただのクラッシュを認証切れ・残高切れと断定すると、
 # 利用者は再ログインや課金の確認へ回り道する。分類は「陽性のときだけ」出すこと。
-if ! grep -q '🔑' "$TMP/run.log" && ! grep -q '💳' "$TMP/run.log"; then
-  ok "crash: 認証切れ / 残高切れと誤って断定しない"
+if ! grep -q '🔑' "$TMP/run.log" && ! grep -q '💳' "$TMP/run.log" \
+  && ! grep -q '📏' "$TMP/run.log"; then
+  ok "crash: 認証切れ / 残高切れ / 起動失敗と誤って断定しない"
 else
-  bad "crash: 一般的なクラッシュを認証・課金の問題として誤診している"
+  bad "crash: 一般的なクラッシュを認証・課金・argv 超過の問題として誤診している"
 fi
 
 # --- ケース2c: 認証切れ / 残高切れの切り分け（Issue #659） ---
@@ -1061,10 +1070,54 @@ else
   bad "scope: 前提が崩れている — 部分出力が成果物に残っていない"
 fi
 
-if ! grep -q '🔑' "$TMP/run.log" && ! grep -q '💳' "$TMP/run.log"; then
+if ! grep -q '🔑' "$TMP/run.log" && ! grep -q '💳' "$TMP/run.log" \
+  && ! grep -q '📏' "$TMP/run.log"; then
   ok "scope: レビュー本文の言及では切り分けが発火しない（走査は stderr 節だけ）"
 else
   bad "scope: 保全された部分出力の言及を CLI の失敗理由として誤診している"
+fi
+
+# --- ケース2d: 起動できなかった失敗の切り分け（Issue #1148 / 公開 #55） ---
+# 実測（0.36.0 / macOS ARG_MAX 1,048,576 に 2,129,295 バイトの diff）では 3 CLI が
+# 同じ行で落ち、出力は「exit code: 126」だけだった。利用者は --timeout を延ばす方向へ
+# 倒れたが、execve が失敗しているので時間では直らない。プロンプト経路は Issue #712 で
+# argv から外れたので同じ再現条件は塞がっている（tests/adapter-argv-limit が実測で
+# 固定する）が、E2BIG そのものは別経路で起こりうる。起きたときに「起動していない」と
+# 名指しできることをここで固定する。
+echo argv-too-long > "$TMP/codex-mode"
+read -r RC EL <<<"$(run_orchestrator 60)"
+
+if [[ "$RC" -ne 0 ]]; then
+  ok "argv: orchestrator が非 0 終了 (rc=$RC)"
+else
+  bad "argv: 失敗したのに 0 終了した"
+fi
+
+if grep -q '📏' "$TMP/run.log" && grep -qF 'the CLI never started' "$TMP/run.log"; then
+  ok "argv: E2BIG を「起動していない」と名指しする"
+else
+  bad "argv: E2BIG が exit code だけの一般的な失敗に丸められている"
+  tail -20 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+# 再ログインも課金確認も的外れ。どちらへ回り道させても実測の失敗が再現する。
+if ! grep -q '🔑' "$TMP/run.log" && ! grep -q '💳' "$TMP/run.log"; then
+  ok "argv: 認証切れ / 残高切れと取り違えない"
+else
+  bad "argv: 起動失敗を認証・課金の問題として案内している"
+fi
+
+# 実測の回り道そのもの。時間を足す案内が出たら、同じ失敗をもう一度待たせる。
+if ! grep -q -- '--timeout 120' "$TMP/run.log"; then
+  ok "argv: 時間延長を案内しない（起動前の失敗は時間で直らない）"
+else
+  bad "argv: 起動できなかった実行に時間延長を案内している"
+fi
+
+if grep -q 'or the configured substitute claude-code' "$TMP/run.log"; then
+  ok "argv: 代替 CLI の再実行コマンドも併記される"
+else
+  bad "argv: 切り分けを出す代わりに代替 CLI の案内が消えた"
 fi
 
 # --- ケース2b: CLI 自身が 124 / 125 を返した場合 ---

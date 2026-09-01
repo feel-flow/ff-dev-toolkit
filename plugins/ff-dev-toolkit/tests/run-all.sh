@@ -581,6 +581,16 @@ else
     # build_prompt の実行境界（再帰防止ガード）の回帰検査（Issue #263）。一時 git
     # リポジトリ + stub CLI（〜3 秒）。実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/adapter-prompt-guard/verify.sh"
+    # diff が実寸の ARG_MAX を超えても 4 アダプタが完走することの実測（Issue #1148 /
+    # 公開 feel-flow/ff-dev-toolkit#55）。adapter-prompt-guard の受け渡し形検査は
+    # 240KB fixture なので、報告された再現条件（ARG_MAX 超え）自体は跨がない。
+    # 一時 git リポジトリ + stub CLI（〜3 秒）。実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/adapter-argv-limit/verify.sh"
+    # auth / billing で落ちた CLI の残タスクを同一実行内でスキップする契約
+    # （Issue #1143）。逐次ワーカー経路・--sequential 経路・fail-open の陰性対照を
+    # stub CLI の起動回数で実測する。一時 git リポジトリ + stub CLI（〜10 秒）。
+    # 実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/multi-agent-skip-poisoned-cli/verify.sh"
     # レビュー本文を含まない捕捉結果の fail-loud 契約（Issue #893）: 受理条件
     # （正は scripts/adapters/adapter-common.sh の review_body_present ヘッダ —
     # ここに列挙を複製しない）の両方向 + アダプタ実走での INCOMPLETE 降格 +
@@ -803,6 +813,15 @@ REQUIRED_SUITES=(
   # 実体は同梱されるため、skip 条件は一時領域の有無だけ = 公開側の
   # FF_RUN_ALL_ALLOW_SKIP 案内に追加は要らない。
   adapter-prompt-guard
+  # ARG_MAX 超えの diff でレビューが完走することを見るのはこの suite だけで、
+  # 一時領域不足で skip すると「大きい PR ほどレビューされない」退行（公開
+  # feel-flow/ff-dev-toolkit#55 の実測形）が黙って戻る。skip 条件は 3 つ — 一時領域の
+  # 有無、getconf ARG_MAX が数値を答えるか、その値が fixture 上限（16MB）に収まるか。
+  adapter-argv-limit
+  # 「確実に失敗すると分かっている実行に時間を払わない」契約はこの suite だけが
+  # 見ており、一時領域不足で skip すると、観点数ぶんの無駄な待ち時間の再発と、
+  # スキップを通常の失敗として案内する退行が黙って戻る（Issue #1143）。
+  multi-agent-skip-poisoned-cli
   review-diff-scope
   # レビュー本文を含まない捕捉結果を complete にしない fail-loud 契約（Issue #893）。
   # 判定関数・4 アダプタのゲート常在・INCOMPLETE 降格はこの suite しか見ておらず、

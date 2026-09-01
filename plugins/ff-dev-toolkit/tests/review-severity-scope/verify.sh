@@ -368,6 +368,97 @@ else
     else
       bad "code-review — Verification のファイルサイズ閾値根拠（出典パス / 既定値）の記録行が消えています"
     fi
+    if in_section "$cr_output" '### Important Issues (信頼度 80-90 / テスト有効性の例外は 50 以上)'; then
+      ok "code-review — Output Template の Important 見出しに例外の帯域あり"
+    else
+      bad "code-review — Important 見出しがスコア帯 80-90 のみへ戻っています（例外で報告した指摘の置き場が消える）"
+    fi
+    if in_section "$cr_output" '`[TEST-VALIDITY]` を前置し、該当する形を明記'; then
+      ok "code-review — Output Template に [TEST-VALIDITY] ラベル要求あり"
+    else
+      bad "code-review — 例外で報告した指摘の [TEST-VALIDITY] ラベル要求が消えています"
+    fi
+  fi
+
+  # Issue #1149 / 公開 feel-flow/ff-dev-toolkit#54: 信頼度の単軸が「テストが存在するのに
+  # 検証していない」種類の指摘を構造的に落とす。実測 2 件はいずれも閾値未満の補足に
+  # 置かれていたが本物だった（補足の列挙は contract ではないため、モデルや実行によっては
+  # 出ない）。閾値全体は下げず、カテゴリ限定の例外で扱う。
+  #
+  # 針は 3 つの軸に分ける — (a) 例外そのもの、(b) 適用範囲 3 形の各々、(c) 例外を
+  # 広げない側の宣言。1 本にまとめると、範囲だけを空文字へ縮める drift が緑で通る。
+  if in_section "$cr_analysis" '**テストの有効性そのものに関する指摘は、信頼度 50 以上で報告する。**'; then
+    ok "code-review — テスト有効性のカテゴリ例外（信頼度 50 以上）あり"
+  else
+    bad "code-review — テスト有効性のカテゴリ例外（信頼度 50 以上で報告）が消えています"
+  fi
+  if in_section "$cr_analysis" '判定は「そのテストが守っているはずの実装を壊す変更を当てたとき、そのテストが赤になるか」で行う'; then
+    ok "code-review — 例外の適用可否が判定可能な粒度で書かれている"
+  else
+    bad "code-review — 例外の判定基準（壊す変更でそのテストが赤になるか）が消えています"
+  fi
+  for _cr_form in \
+    '**対象の機構を通らない** — テストが実際に通る経路に、検証対象の機構が含まれていない' \
+    '**別経路で条件を満たす** — アサーションは真になるが、真になった理由が検証対象と無関係' \
+    '**片方向しか固定していない** — 対になる 2 つの実体の一方だけを固定し、他方の変更を検出できない'
+  do
+    if in_section "$cr_analysis" "$_cr_form"; then
+      ok "code-review — 例外の適用範囲: ${_cr_form%% —*}"
+    else
+      bad "code-review — 例外の適用範囲から ${_cr_form%% —*} が消えています"
+    fi
+  done
+  # ノイズ側の対称。例外だけ残して「3 形以外は対象外」を削ると、テスト関連の低信頼度
+  # 指摘が全部通るようになり、閾値 80 を選んでいる理由と衝突する。
+  if in_section "$cr_analysis" '**この 3 形以外のテスト関連指摘には例外を適用しない。**'; then
+    ok "code-review — 例外を 3 形の外へ広げない宣言あり"
+  else
+    bad "code-review — 「3 形以外のテスト関連指摘には例外を適用しない」の非拡大宣言が消えています"
+  fi
+  if in_section "$cr_analysis" '**例外も配置規則に従う**'; then
+    ok "code-review — 例外が配置規則（diff スコープ）に従う宣言あり"
+  else
+    bad "code-review — 例外と配置規則の接続（Important は diff が追加・変更したテストに限る）が消えています"
+  fi
+
+  # 例外は Analysis Focus の 1 節では完結しない。同じファイルの信頼度スコア表・
+  # Severity Classification・Notes が一般則（51-79 は報告しない / 0-59 は報告対象外）の
+  # ままだと、表の帯域だけを引く読み方で 50-79 の指摘が消える — 例外が最も効くはずの
+  # 経路だけが閉じる。節ごとに独立した針を張り、片側 drift を赤にする。
+  cr_severity="$(extract_h2_section '## Severity Classification' "$CODE_REVIEW")" || cr_severity=""
+  cr_notes="$(extract_h2_section '## Notes' "$CODE_REVIEW")" || cr_notes=""
+  [ -n "$cr_severity" ] || bad "code-review — Severity Classification 節を取り出せません"
+  [ -n "$cr_notes" ] || bad "code-review — Notes 節を取り出せません"
+
+  if in_section "$cr_analysis" '| 51-79 | 有効だが低影響 | 報告しない（テスト有効性の 3 形は報告 — 同上） |'; then
+    ok "code-review — 信頼度スコア表 51-79 行に例外注記あり"
+  else
+    bad "code-review — 信頼度スコア表 51-79 行が一般則へ戻っています（表の帯域だけを引く読み方で例外が消える）"
+  fi
+  if in_section "$cr_analysis" '| 26-50 | マイナーな指摘（ガイドラインに明記なし） | 報告しない（テスト有効性の 3 形は 50 で報告 — 報告閾値のカテゴリ例外を参照） |'; then
+    ok "code-review — 信頼度スコア表 26-50 行に例外の下限注記あり"
+  else
+    bad "code-review — 信頼度スコア表 26-50 行の例外下限（信頼度 50 ちょうど）が消えています"
+  fi
+  if in_section "$cr_severity" 'テスト有効性の 3 形は 50 以上でここへ置く'; then
+    ok "code-review — Severity 表 Warning 行に例外の帯域注記あり"
+  else
+    bad "code-review — Severity 表 Warning 行の例外注記が消えています"
+  fi
+  if in_section "$cr_severity" '既存テストへのテスト有効性の 3 形は信頼度 50-79 でもここへ置く'; then
+    ok "code-review — Severity 表 Suggestion 行に既存テスト経路の帯域注記あり"
+  else
+    bad "code-review — Severity 表 Suggestion 行の帯域注記（既存テストの 50-79）が消えています"
+  fi
+  if in_section "$cr_severity" 'ただしテスト有効性の 3 形は信頼度 50 以上を報告する'; then
+    ok "code-review — Severity 表 Info 行が例外を「報告対象外」から除外している"
+  else
+    bad "code-review — Severity 表 Info 行（0-59 = 報告対象外）が例外を飲み込む形へ戻っています"
+  fi
+  if in_section "$cr_notes" '例外は 2 つだけ — テスト有効性の 3 形（信頼度 50 以上で報告'; then
+    ok "code-review — Notes の報告閾値行に例外あり"
+  else
+    bad "code-review — Notes の「信頼度80未満は報告しない」が例外なしへ戻っています"
   fi
 fi
 
