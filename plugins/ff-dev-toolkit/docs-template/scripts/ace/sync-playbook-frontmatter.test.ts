@@ -403,6 +403,155 @@ describe("computeSync (write)", () => {
     }
   });
 
+  it("本体に Changelog が無くても splitChangelogContent で見つかれば found（Issue #949）", () => {
+    const content = `---\nversion: "1.2.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n`;
+    const split = `## Changelog\n\n### [1.2.0] - 2026-09-01\n\n- 追加\n`;
+    const result = computeSync(content, 1, { splitChangelogContent: split });
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogState).toBe("found");
+      expect(result.changelogSource).toBe("split");
+      expect(result.changelogVersion).toBe("1.2.0");
+      expect(result.versionChangelogInSync).toBe(true);
+    }
+  });
+
+  it("本体・分割のどちらにも Changelog が無ければ absent のままドリフト扱い（Issue #949）", () => {
+    const content = `---\nversion: "1.0.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n`;
+    const result = computeSync(content, 1, { splitChangelogContent: "# 索引だけ\n" });
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogState).toBe("absent");
+      expect(result.changelogSource).toBeNull();
+      expect(result.versionChangelogInSync).toBe(false);
+    }
+  });
+
+  it("本体が空の Changelog スタブでも分割側で見つかれば found（Issue #949: 切り出し誘導スタブの実在構成）", () => {
+    const content = `---\nversion: "1.4.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n`;
+    const split = `## Changelog\n\n### [1.4.0] - 2026-09-01\n\n- 追加\n`;
+    const result = computeSync(content, 1, { splitChangelogContent: split });
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogState).toBe("found");
+      expect(result.changelogSource).toBe("split");
+      expect(result.versionChangelogInSync).toBe(true);
+    }
+  });
+
+  it("本体が空スタブで分割側に Changelog セクションが無ければ empty のまま（Issue #949）", () => {
+    const content = `---\nversion: "1.0.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n`;
+    const result = computeSync(content, 1, { splitChangelogContent: "# 別物\n" });
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogState).toBe("empty");
+      expect(result.changelogSource).toBe("main");
+      expect(result.versionChangelogInSync).toBe(false);
+    }
+  });
+
+  it("frontmatter 内に行全体の '## Changelog' があっても節と誤認しない（Issue #701 発見 1: 変異可視 fixture）", () => {
+    const content = `---\nversion: "1.0.0"\nace_entry_count: 1\n## Changelog\n### [9.9.9] - 2026-01-01\n---\n### ACE-1-1: a\n| Category | coding |\n`;
+    const result = computeSync(content, 1, {});
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogState).toBe("absent");
+      expect(result.changelogVersion).toBeNull();
+    }
+  });
+
+  it("値がコメントだけの行内コメント（'key: # メモ'）も fail-loud で拒否する（Issue #701 発見 2）", () => {
+    const content = `---\nversion: "1.0.0"\nace_entry_count: # メモ\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n### [1.0.0] - 2026-09-01\n\n- 追加\n`;
+    const result = computeSync(content, 1, {});
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("行内コメント");
+    }
+  });
+
+  it("分割 CHANGELOG.md 自身の frontmatter 内の例示を節と誤認しない（Issue #701）", () => {
+    const content = `---\nversion: "1.0.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n`;
+    const split = `---\ntitle: "changelog"\n## Changelog\n### [9.9.9] - 2026-01-01\n---\n本文に節は無い\n`;
+    const result = computeSync(content, 1, { splitChangelogContent: split });
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogState).toBe("absent");
+      expect(result.versionChangelogInSync).toBe(false);
+    }
+  });
+
+  it("フェンス内で自己完結する HTML コメントは実 Changelog の認識を妨げない（Issue #701: マスク順序）", () => {
+    const content = `---\nversion: "1.0.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n\n\u0060\u0060\u0060html\n<!-- 例示 -->\n## Changelog\n### [9.9.9] - 2026-01-01\n\u0060\u0060\u0060\n\n## Changelog\n\n### [1.0.0] - 2026-09-01\n\n- 追加\n`;
+    const result = computeSync(content, 1, {});
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogVersion).toBe("1.0.0");
+      expect(result.versionChangelogInSync).toBe(true);
+    }
+  });
+
+  it("フェンス内の開きだけの '<!--' が実 '-->' と対になる敵対形は fail-closed（absent）へ倒れ、例示版を採用しない（Issue #701 の残存限界の固定）", () => {
+    const content = `---\nversion: "1.0.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n\n\u0060\u0060\u0060html\n<!--\n\u0060\u0060\u0060\n\n## Changelog\n\n### [1.0.0] - 2026-09-01\n\n- 追加 <!-- 注記 -->\n`;
+    const result = computeSync(content, 1, {});
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      // 実節が読めなくなる方向（ドリフト報告）は許容し、偽版の採用（fail-open）だけを禁じる
+      expect(result.changelogState).toBe("absent");
+      expect(result.versionChangelogInSync).toBe(false);
+    }
+  });
+
+  it("未閉の HTML コメント配下の偽 Changelog を採用しない（Issue #701: fail-closed）", () => {
+    const content = `---\nversion: "9.9.9"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n\n<!-- 閉じ忘れ\n## Changelog\n\n### [9.9.9] - 2026-01-01\n`;
+    const result = computeSync(content, 1, {});
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogState).toBe("absent");
+      expect(result.versionChangelogInSync).toBe(false);
+    }
+  });
+
+  it("コードフェンス内の Changelog 例示を本物と誤認しない（Issue #701 発見 1: fail-open 方向）", () => {
+    const content = `---\nversion: "1.0.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n\n\u0060\u0060\u0060markdown\n## Changelog\n\n### [9.9.9] - 2026-01-01\n\u0060\u0060\u0060\n\n## Changelog\n\n### [1.0.0] - 2026-09-01\n\n- 追加\n`;
+    const result = computeSync(content, 1, {});
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogVersion).toBe("1.0.0");
+      expect(result.versionChangelogInSync).toBe(true);
+    }
+  });
+
+  it("HTML コメント内の Changelog 例示を本物と誤認しない（Issue #701 発見 1）", () => {
+    const content = `---\nversion: "1.0.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n\n<!--\n## Changelog\n\n### [9.9.9] - 2026-01-01\n-->\n`;
+    const result = computeSync(content, 1, {});
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogState).toBe("absent");
+    }
+  });
+
+  it("管理フィールドの行内コメントは fail-loud で拒否する（Issue #701 発見 2）", () => {
+    const content = `---\nversion: "1.0.0"\nace_entry_count: 1 # 全エントリ数\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n### [1.0.0] - 2026-09-01\n\n- 追加\n`;
+    const result = computeSync(content, 1, {});
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("行内コメント");
+      expect(result.message).toContain("ace_entry_count");
+    }
+  });
+
+  it("本体に Changelog があれば分割側は見ない（本体優先。Issue #949）", () => {
+    const content = `---\nversion: "1.1.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n### [1.1.0] - 2026-09-01\n\n- 本体側\n`;
+    const split = `## Changelog\n\n### [9.9.9] - 2026-09-01\n\n- 分割側\n`;
+    const result = computeSync(content, 1, { splitChangelogContent: split });
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.changelogSource).toBe("main");
+      expect(result.changelogVersion).toBe("1.1.0");
+      expect(result.versionChangelogInSync).toBe(true);
+    }
+  });
+
   it("frontmatter version と Changelog 最新版が一致すれば versionChangelogInSync=true", () => {
     const content = `---\nversion: "1.60.0"\nace_entry_count: 1\n---\n### ACE-1-1: a\n| Category | coding |\n\n## Changelog\n\n### [1.60.0] - 2026-07-22\n`;
     const result = computeSync(content, 1, {});
@@ -1069,6 +1218,40 @@ describe("main (CLI contract)", () => {
 
     expect(status).toBe(2);
     expect(output).toContain("ACE エントリ見出し");
+  });
+
+  it("CLI は playbook/CHANGELOG.md へ切り出した Changelog を探索して exit 0 を返す（Issue #949）", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const subDir = path.join(dir, "playbook");
+    fs.mkdirSync(subDir);
+    fs.writeFileSync(playbook, `---\nace_entry_count: 1\nupdated: "2026-01-01"\nversion: "1.3.0"\nchangeImpact: medium\n---\n索引のみ\n`);
+    fs.writeFileSync(path.join(subDir, "coding.md"), `### ACE-3-1: a\n| Category | coding |\n`);
+    fs.writeFileSync(
+      path.join(subDir, "CHANGELOG.md"),
+      `## Changelog\n\n### [1.3.0] - 2026-09-01\n\n- 追加\n\n### [1.2.0] - 2026-08-01\n\n- 初版以後\n`,
+    );
+
+    const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--check"]));
+
+    expect(status).toBe(0);
+    expect(output).toContain("（playbook/CHANGELOG.md）");
+    expect(output).toContain("version: frontmatter=1.3.0 / Changelog最新=1.3.0");
+  });
+
+  it("CLI は本体・分割のどちらにも Changelog が無いとき切り出し案内付きで exit 1 を返す（Issue #949）", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const subDir = path.join(dir, "playbook");
+    fs.mkdirSync(subDir);
+    fs.writeFileSync(playbook, `---\nace_entry_count: 1\nupdated: "2026-01-01"\nversion: "1.0.0"\n---\n索引のみ\n`);
+    fs.writeFileSync(path.join(subDir, "coding.md"), `### ACE-3-1: a\n| Category | coding |\n`);
+
+    const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--check"]));
+
+    expect(status).toBe(1);
+    expect(output).toContain("`## Changelog` セクションがありません");
+    expect(output).toContain("切り出している場合はそちらも探索します");
   });
 });
 

@@ -271,22 +271,24 @@ remote が先行していた場合は**追記前に** `git pull --ff-only`（直
 
 #### 4-f. 同期検証（必須）
 
+検証コマンドの SSOT はプロジェクトの ACE 運用文書（例 `docs/05-operations/deployment/ace-cycle.md`）である。運用文書が検証コマンドを定めている場合（validator の統合・改名を含む）はそれを優先し、以下の既定コマンドは運用文書が無い場合の fallback とする。
+
 4-c / 4-d のあと、コミット前に必ず検証する。**同期検証・形式ゲートそれぞれについて、プロジェクトの状態に合う 1 本だけを実行する**（下のブロックを一括実行しない。未導入プロジェクトでは導入済み向けの行が必ず失敗し、直後の「exit 0 になるまで直す」判定と噛み合わなくなる）:
 
 ```bash
 # 同期検証 — 次の 3 つのうち 1 本だけを実行する
 # (1) npm script を登録済みの場合
 npm run ace:check-playbook-frontmatter
-# (2) npm script は無いがプロジェクトに scripts/ace/ を導入済みの場合
+# (2) npm script は無いが scripts/ace/sync-playbook-frontmatter.ts が存在する場合（ディレクトリの有無ではなく当該ファイルの有無で選ぶ — 部分導入のプロジェクトがある）
 npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
-# (3) scripts/ace/ 未導入の場合はプラグイン同梱のテンプレートを直接使う（インストール不要）
+# (3) 上のファイルが無い場合はプラグイン同梱のテンプレートを直接使う（インストール不要）
 bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check
 
 # 形式ゲート: 新規追記が旧テーブル形式でないことを機械検証する（Issue #286）
 # 次の 2 つのうち 1 本だけを実行する
-# (1) プロジェクトに scripts/ace/ を導入済みの場合
+# (1) scripts/ace/check-entry-format.ts が存在する場合
 npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
-# (2) 未導入の場合はプラグイン同梱のテンプレートを直接使う
+# (2) 上のファイルが無い場合はプラグイン同梱のテンプレートを直接使う
 bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md
 ```
 
@@ -299,6 +301,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs
 
 - exit 0 になるまで 4-c / 4-d を直す（`ace_entry_count` 不一致・version↔Changelog 不一致・`changeImpact` 違反（変更済みなのに未記録 / 小文字 low・medium・high 以外）の三点をゲートする）
 - **形式ゲートが赤なら、追記したエントリをコンパクト正準フォーマットへ書き直す**。`legacy-format-allowlist.txt` に新規 ID を足して通すことはしない（allowlist は既存エントリの読み取り互換のためのものであり、新規追記の抜け道ではない）
+- 旧形式エントリを抱えた既存プロジェクトへ形式ゲートを**初めて**導入する回に限り、導入時点の旧形式 ID を一括で記録する `--init-allowlist` がある（手順は `/ace-setup` Step 3-b）。**通常の curate では実行しない** — 記録されるのは導入時点で旧形式だった ID だけで、その後の新規追記は自動追加されず（初期化を再実行しても和集合を取らない）、上の「新規 ID を足さない」原則はそのまま保たれる
 - 通ってから手順 5 のコミットへ進む
 
 ### 5. コミット
@@ -314,11 +317,23 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs
 ```bash
 # 1 回の curate で複数エントリ・複数カテゴリに触れることがあるため、
 # 変更した playbook/*.md を全て add する（PLAYBOOK.md の索引更新も対象）
+default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || { echo "origin/HEAD を解決できません。git remote set-head origin --auto 後に再実行してください" >&2; exit 1; }
+[[ "$default_ref" == origin/* ]] || { echo "origin/HEAD が不正です" >&2; exit 1; }
+default_branch="${default_ref#origin/}"
+# コミット先ブランチの実測ガード（Issue #739）: merge-cleanup の退避などで detached HEAD の
+# まま `git push origin <branch>` を打つと、ローカル branch ref が送られ「Everything up-to-date」
+# で成功に見えたまま手元の knowledge コミットが届かない
+current_branch="$(git symbolic-ref -q --short HEAD)" || current_branch=""
+if [[ -z "${current_branch}" ]]; then
+  echo "detached HEAD のため push refspec を HEAD:${default_branch} 形式にします" >&2
+  push_refspec="HEAD:${default_branch}"
+elif [[ "${current_branch}" != "${default_branch}" ]]; then
+  echo "現在のブランチ ${current_branch} は ${default_branch} ではありません（直 push の前提と不一致）" >&2; exit 1
+else
+  push_refspec="${default_branch}"
+fi
 if [[ -d .version-claims ]]; then
   [[ -n "${FF_DEV_TOOLKIT_ROOT:-}" && -x "$FF_DEV_TOOLKIT_ROOT/scripts/update-version-claim.sh" ]] || { echo "FF_DEV_TOOLKIT_ROOT の claim helper を解決できません" >&2; exit 1; }
-  default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || { echo "origin/HEAD を解決できません。git remote set-head origin --auto 後に再実行してください" >&2; exit 1; }
-  [[ "$default_ref" == origin/* ]] || { echo "origin/HEAD が不正です" >&2; exit 1; }
-  default_branch="${default_ref#origin/}"
   "$FF_DEV_TOOLKIT_ROOT/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document docs/08-knowledge/PLAYBOOK.md || exit 1
 fi
 git add docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md || { echo "PLAYBOOK 変更を stage できません" >&2; exit 1; }
@@ -328,8 +343,28 @@ git status --short  # 意図したファイルのみが含まれ、コミット�
 git commit \
   -m "knowledge: ACE-<PR番号>-<連番> <要約>" \
   -m "Categories: <category[, category...]>"
-git push origin <default-branch>
+# push 出力を実測する（Issue #739）: 終了コードと出力の両方を見る。パイプで tee へ流すと
+# push の終了コードが失われ、non-fast-forward の rejected 出力（`-> branch` を含む）を
+# 成功と誤読するため、ファイルへ落としてから照合する。
+# 「Everything up-to-date」は失敗の兆候（何も送っていない）
+push_log="$(mktemp)"
+if ! git push origin "${push_refspec}" >"${push_log}" 2>&1; then
+  cat "${push_log}"; rm -f "${push_log}"
+  echo "push が失敗しました（non-fast-forward なら下の再試行手順へ）" >&2
+  exit 1
+fi
+cat "${push_log}"
+grep -F -- "-> ${default_branch}" "${push_log}" >/dev/null || { echo "push 出力に -> ${default_branch} が無く、コミットが届いていません（detached HEAD や参照ずれを疑う）" >&2; rm -f "${push_log}"; exit 1; }
+rm -f "${push_log}"
+# push した CI の結果を確認する（Issue #739 / 統合元 #754: 直 push は PR 画面に出ないため、
+# 見に行かないと誰も気づけない）。判定は「今 push した SHA の run」に対して行う —
+# branch 最新 3 件の表示だけでは過去の成功 run を今回の成功と誤読する。
+pushed_sha="$(git rev-parse HEAD)"
+echo "pushed_sha=${pushed_sha}"
+gh run list --branch "${default_branch}" --limit 5 --json status,conclusion,workflowName,headSha
 ```
+
+CI 確認の読み方: 一覧から `headSha` が `pushed_sha` に一致する run を探す。`in_progress` / `queued` は完了を待って再確認し、`failure` なら revert ではなく ACE コミットを前進で直して push し直す。一致する run が無い場合、CI の無いリポジトリ（一覧自体が空）はそのまま進んでよいが、他 branch の run が並ぶリポジトリでは登録遅延の可能性があるため少し待って再確認する。
 
 push が non-fast-forward で拒否された場合は、別セッションの更新を検出した正常な競合経路として次を**最大 3 回**繰り返す。
 
@@ -394,4 +429,4 @@ gh pr create --base <default-branch> --title "knowledge: ACE-<PR番号>-<連番>
 - 既存エントリの Helpful/Harmful カウンター更新と Status 変更（active → deprecated）は許可
 - カウンターの更新は **インクリメントのみ**（減算しない）
 - 知見が抽出されない場合（typo修正のみ等）は「知見なし」と報告して終了（ただし Reuse 記録の反映〔手順 3〕は候補 0 件でも実施してから終了する）
-- PLAYBOOK.md はカテゴリ別に `playbook/*.md` へ分割済み。肥大化チェックは `scripts/ace/` テンプレート導入済みプロジェクトの場合 `npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md` で実行できる（npm script として登録してもよい）。未導入のプロジェクトでは同梱テンプレートを直接叩く（インストール不要）: `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-category-size.ts" docs/08-knowledge/PLAYBOOK.md`（runner 解決は手順 4-f を参照）。このチェックは `playbook/` サブディレクトリを自動検出して索引 + 全サブファイルの総行数・カテゴリ別件数を集計する（`playbook/archive/` 配下は対象外）。行数上限は**件数から導出**される（`ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1)`。`ACE_MAX_PLAYBOOK_LINES` を明示指定したときだけ固定上限。ADR-019）。超過すると警告が出る（**警告のみ・追記はブロックしない**）。導出上限の超過は「ファイルが大きい」ではなく「**1 エントリが太い**」の意味なので、第一対応は旧テーブル形式の正準化。密度警告・カテゴリ件数の refine 目安超過（既定 130 件・警告）またはブロック上限超過（既定 280 件・exit 1）が出た場合は `/ace-refine` で正準化・stale アーカイブ・圧縮・統合を実行する。分割は検索語彙が明確に分岐するときだけ（分割だけで凌がない）
+- PLAYBOOK.md はカテゴリ別に `playbook/*.md` へ分割済み。肥大化チェックは `scripts/ace/check-category-size.ts` が存在するプロジェクトの場合 `npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md` で実行できる（npm script として登録してもよい）。当該ファイルが無いプロジェクトでは同梱テンプレートを直接叩く（インストール不要）: `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-category-size.ts" docs/08-knowledge/PLAYBOOK.md`（runner 解決は手順 4-f を参照）。このチェックは `playbook/` サブディレクトリを自動検出して索引 + 全サブファイルの総行数・カテゴリ別件数を集計する（`playbook/archive/` 配下は対象外）。行数上限は**件数から導出**される（`ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1)`。`ACE_MAX_PLAYBOOK_LINES` を明示指定したときだけ固定上限。ADR-019）。超過すると警告が出る（**警告のみ・追記はブロックしない**）。導出上限の超過は「ファイルが大きい」ではなく「**1 エントリが太い**」の意味なので、第一対応は旧テーブル形式の正準化。密度警告・カテゴリ件数の refine 目安超過（既定 130 件・警告）またはブロック上限超過（既定 280 件・exit 1）が出た場合は `/ace-refine` で正準化・stale アーカイブ・圧縮・統合を実行する。分割は検索語彙が明確に分岐するときだけ（分割だけで凌がない）

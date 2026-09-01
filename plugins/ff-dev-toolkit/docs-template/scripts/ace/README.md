@@ -10,10 +10,10 @@ Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)
 | `check-category-size.ts`                      | Playbook の Category 件数（refine 目安超過は警告 / ブロック上限超過で非ゼロ終了）と総行数（超過は警告のみ）をチェック。集計の前提が崩れる形（Category 行が 1 ブロックに 2 本以上・閉じていないコードフェンス・Category 行が無い / 値が空）は usage error で停止 |
 | `ace-reuse-report.ts`                         | ACE 知見の再利用計測レポート（git 参照・相互参照・Archive 候補。読み取り専用）            |
 | `ace-refine-report.ts`                        | `/ace-refine` 用の候補算出レポート（Archive 候補・行数バジェット超過・PATTERNS 昇格候補。読み取り専用の dry-run） |
-| `sync-playbook-frontmatter.ts`                | PLAYBOOK frontmatter（`ace_entry_count` / version↔Changelog / `changeImpact`）の同期・検証ゲート。`## Changelog` セクションが無い場合もドリフト扱い（版の一致を検証できないため）。frontmatter の読み書きは**トップレベルのキーのみ**を対象とし、`metadata:` 配下等へネストされた同名キーは記録として認めず、書き換えもしない。トップレベルの同名キー重複は usage error |
+| `sync-playbook-frontmatter.ts`                | PLAYBOOK frontmatter（`ace_entry_count` / version↔Changelog / `changeImpact`）の同期・検証ゲート。`## Changelog` は本体を優先し、無ければ分割 `playbook/CHANGELOG.md` を探索する。どちらにも無い場合はドリフト扱い（版の一致を検証できないため）。frontmatter の読み書きは**トップレベルのキーのみ**を対象とし、`metadata:` 配下等へネストされた同名キーは記録として認めず、書き換えもしない。トップレベルの同名キー重複は usage error |
 | `check-archive-links.ts`                      | `playbook/archive/` の保全本文内に `./` 相対リンクがある場合、冒頭 Parent ブロック内の注記を強制し、同一ファイル内の `<a id>` 重複を拒否するゲート（違反で非ゼロ終了） |
 | `check-refine-invariants.ts`                  | `/ace-refine` の結果不変条件（compact 保全・merge 状態遷移・archive 撤去・PATTERNS 収載）を検証するゲート（違反で非ゼロ終了） |
-| `check-entry-format.ts`                       | 新規エントリが旧テーブル形式でないこと + ID 形状が妥当（§エントリID規則）であること + ID が一意であること + 見出しが正準形へ一致することを検証するゲート（allowlist 外の旧形式・不正 ID・重複 ID・認識されない `### ACE-` 行で非ゼロ終了）。**正準構造の存在（anchor / メタ 4 行 / 終端 `---`）は検証しません** |
+| `check-entry-format.ts`                       | 新規エントリが旧テーブル形式でないこと + ID 形状が妥当（§エントリID規則）であること + ID が一意であること + 見出しが正準形へ一致すること + live アンカーの健全性（横断重複・見出し不一致・非正準形）を検証するゲート（allowlist 外の旧形式・不正 ID・重複 ID・認識されない `### ACE-` 行・アンカー違反で非ゼロ終了）。**正準構造の存在（anchor / メタ 4 行 / 終端 `---`）は要求しません** |
 | `docs-template/.claude/agents/ace-capture.md` | Subagent 用プロンプト（コピー先は `.claude/agents/`）                                     |
 
 post-merge からの呼び出し例は `docs-template/.claude/hooks/post-merge.ace.sample.sh` を参照してください。
@@ -98,7 +98,7 @@ npx --yes tsx scripts/ace/check-refine-invariants.ts docs/08-knowledge/PLAYBOOK.
 - **compact**: Changelog の `Compacted:` 行に載った ID が live と archive の両方にあり（後続 merge の統合元と `Archived:` 記載の ID は live から消えてよい）、第 2 変種は provenance・メタ表を除く本文が逐語一致。Category / Origin / Date / Status は一致、Helpful / Harmful は live >= archive（後続のカウンター加算を許す）
 - **merge**: Changelog の `Merged: ACE-X → ACE-Y` について、X が live と索引から消え、archive で一意、`Status=merged`、`Merged into` が live の active な Y を指す。Y の Helpful / Harmful は X の値以上（合算下限）。**Y が後日 `Archived:` された場合は許容**し、そのとき `Merged into` は archive 内の Y の**実ブロックへ解決**する必要がある — 別ファイルなら `<category>.md#ace-y`（`./` は付けても良い）、統合元と同じファイルなら `#ace-y`。形だけでなく `EntryBlock` のファイルパスと照合するので、`#ace-y` の別ファイル参照や実在しないファイル名は通らない。カウンター合算の下限は Y が live でも archive でも検証する。統合先の `Status` は live / archive のどちらに居ても `active` を要求する
 - **archive**: Changelog の `Archived:` 行に載った ID が archive で一意・`> Archived:` provenance を持ち、live 本体からも索引テーブルからも消えている。統合元（`Merged:` の左辺）を `Archived:` にも載せると終端状態が二重になるため違反。**`Archived:` の記録は compact の live 存続要求だけを解除する** — 「過去に圧縮 → 後日アーカイブ」は SKILL.md R3-0 が正規の遷移として手順化しているため（Issue #1028）。記録が無いまま compact 済み ID が live から消えていれば従来どおり違反
-- `Archived:` 行は**コロン直後から続く ID 列だけ**を読み、理由の散文に入った時点で打ち切る（`- Archived: なし（ACE-X は次回持ち越し）` の ACE-X は拾わない）。archive への収載は検査を外す方向に効くため、他の 3 行と違って過剰採用を許さない。区切りは `,` か `、` で、ID 列の直後は行末か理由の括弧書きでなければ「列挙が途中で切れている」として違反にする（黙って先頭だけ拾わない）
+- `Archived:` と `Promoted:` の行は**コロン直後から続く ID 列だけ**を読み、理由の散文に入った時点で打ち切る（`- Archived: なし（ACE-X は次回持ち越し）` の ACE-X は拾わない）。区切りは `,` か `、` で、ID 列の直後は行末か理由の括弧書きでなければ「列挙が途中で切れている」として違反にする（黙って先頭だけ拾わない）。`Compacted:` は前置き散文・ID ごとの注記を許すため括弧内を除いた全体から ID を読み、括弧の閉じ忘れは部分採用せず違反にする。4 行の走査は `## Changelog` 節に限定され、フェンス / HTML コメント内の例示は採用されない（Issue #1030）
 - **promote**: Changelog の `Promoted:` ID が PATTERNS.md の「実証済みパターン（ACE 昇格）」節に **パターン本文 + 出典リンク** の組として載っている。Changelog 内の ID 言及だけでは収載と見なさない
 - Changelog に対象行が無いプロジェクトは正常終了する
 
@@ -119,7 +119,23 @@ npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
 - `### ACE-` で始まるのに正準の見出し形（`### <ID>: <タイトル>`）へ一致しない行も**非ゼロ終了**です（Issue #617）。`### ACE-1.:` のような行はエントリの境界にならず、本文が直前のエントリへ吸収されて件数からも消えるうえ、直前が allowlist 済みなら旧形式マーカー入りでも通ってしまいます。テンプレートのプレースホルダ（`### ACE-XXX:`）はコードフェンスで囲んでください（フェンス内は走査対象外）
   - 候補の判定だけは**行頭の空白と `###` 直後の空白の省略を許します**（`   ### ACE-1-1:` / `###ACE-1-1:` も赤）。どちらも書き手はエントリ見出しのつもりですが認識器は取らず、実際に吸収を起こす形だからです。**認識器（`ACE_ENTRY_HEADER_LINE`）の側は生の行のまま**にしてください — こちらまで空白に寛容にすると吸収を起こす形が「正常なエントリ」として通り、件数ゲートとの境界だけが食い違って沈黙します。`####` 以上は候補にしません（本文中の小見出しを巻き込むと偽陽性になります）
 - 同じエントリ ID が走査対象に 2 つ以上あるときも**非ゼロ終了**です（Issue #617）。ID はアンカー・索引の参照先・allowlist・再利用カウンタのキーなので、重複すると allowlist 済み ID を再利用した旧形式の新規追記が通ります。報告は同一ファイル内でも場所を特定できるよう、ファイル名 + 行番号（`coding.md: 10 行目 / 30 行目`）で出します。なお**重複 ID は allowlist 掃除警告の抑制対象ではありません**（重複しても `seenIds` は欠けず、掃除案内は正しいままなので、抑制すると本来出るべき案内が消えます）
-- **検証しないこと**: コンパクト正準フォーマットの**構造そのもの**（anchor 行 `<a id="ace-…"></a>`・メタ 4 行・終端 `---`）は存在を要求しません。判定軸が旧形式マーカーの**不在**であるため、それらを 1 つも持たない「本文だけ」のエントリはこのゲートを通ります（Issue #617）。本ゲートの保証は「旧テーブル形式の新規追記を止める」までです
+- live のエントリアンカーは**存在は要求しない**（旧形式の読み取り互換と整合させるため）が、存在する場合は健全性を検査して**非ゼロ終了**します（Issue #730）: ファイル横断の `<a id>` 重複、アンカー ID と直前見出し ID の不一致、エントリ ID 形状なのに正準形（ダブルクォート・単独行・属性なし）でないアンカー行。一般アンカー（エントリ ID 形状でない `<a id>`）は対象外です
+- **検証しないこと**: コンパクト正準フォーマットの**構造そのもの**（メタ 4 行・終端 `---`、および anchor 行の存在）は要求しません。判定軸が旧形式マーカーの**不在**であるため、それらを 1 つも持たない「本文だけ」のエントリはこのゲートを通ります（Issue #617）
+
+### 導入時の allowlist 初期化（`--init-allowlist`）
+
+旧形式エントリを抱えた**既存プロジェクト**へ本ゲートを後から入れる場合だけ、導入時に 1 回実行します。ID 抽出と allowlist 作成を手作業でやらないためのコマンドです（新規プロジェクトでは実行しても何も作られません）:
+
+```bash
+npx --yes tsx scripts/ace/check-entry-format.ts --init-allowlist docs/08-knowledge/PLAYBOOK.md
+```
+
+- 走査範囲は形式ゲートと**同一**（索引 `PLAYBOOK.md` + `playbook/*.md` 直下。`playbook/archive/` は対象外）。範囲が食い違うと、初期化が数えなかった旧形式をゲートが拒否する形で導入直後に必ず踏みます
+- 出力先は形式ゲートと同じ解決規則（既定は PLAYBOOK.md と同階層の `legacy-format-allowlist.txt`。`ACE_LEGACY_FORMAT_ALLOWLIST` で上書き可）
+- **旧形式 0 件ならファイルを作りません**（不在 = strict が正しい既定であり、空ファイルは「allowlist を運用している」という誤った外観だけを残します）
+- **既存 allowlist は上書きしません**。旧形式 ID 集合と一致すれば書き込まず exit 0（冪等 — 再実行の差分はゼロ）、一致しなければ差分を出して exit 1 です。和集合で吸収しないのは、それが「旧形式を新規追記してから初期化を回せば通る」抜け道そのものだからです
+- 未閉フェンス・`### ACE-` で始まるのに認識されない見出しがあるときは、集合がずれるため**何も書かずに** exit 2 で止まります（前者は分割が EOF まで壊れ、後者は本文が直前のエントリへ吸収されて旧形式マーカーが別 ID に付け替わります）
+- 導入時の 1 回だけのコマンドで、CI ゲートとして常時実行するものではありません（アーカイブ済み・正準化済み ID の掃除は形式ゲート側の警告が案内します）
 
 ## ace-refine-report.ts の実行
 
@@ -134,6 +150,7 @@ npx --yes tsx scripts/ace/ace-refine-report.ts docs/08-knowledge/PLAYBOOK.md
 | 候補 | 判定 | 環境変数（既定） |
 | --- | --- | --- |
 | Archive 候補 | `helpful == 0` かつ stale（active・作成から一定日数・git 参照なし） | `ACE_REUSE_STALE_DAYS`（30） |
+| Archive 候補から除外（他エントリの統合先） | 上の条件を満たしても、archive の provenance（`> Merged into:`）が指す ID は候補本体から外し、統合元 ID 付きの別枠に理由表示する（0 件でも節を出す。live から外すと着地が切れ `check-refine-invariants` が拒否するため） | — |
 | 行数バジェット超過 | エントリブロック（anchor 行〜終端 `---`。`---` 欠落時は原文の最後の非空行まで）の行数が上限超過。`ace-line-budget-exception` コメント付きは上限 2 倍で判定。行数降順で列挙 | `ACE_MAX_ENTRY_LINES`（15） |
 | PATTERNS 昇格候補 | `Helpful >= 閾値` かつ昇格先未収載 | `ACE_PROMOTE_HELPFUL_MIN`（5）、昇格先は `ACE_PATTERNS_PATH`（`docs/03-implementation/PATTERNS.md`） |
 
@@ -142,6 +159,8 @@ npx --yes tsx scripts/ace/ace-refine-report.ts docs/08-knowledge/PLAYBOOK.md
 レポートが不完全になる形は、候補を 1 行も出さずに中断します。ACE エントリ 0 件（誤パスの疑い）は usage error（終了コード 2）、**閉じていないコードフェンス**と行数計測で見失ったエントリは実行時エラー（終了コード 1）です。ほかに git 不在・非 git リポジトリ・ファイル読み込み失敗も、同じくレポートなしで終了コード 1 になります。stderr は対象（ファイル、またはエントリ ID）を名指しします。
 
 コード領域の空白化は fail-open（閉じないフェンス以降は空白化しない）なので、そこから先の例外判定は緩む方向（フェンス内で例示しただけのマーカーが宣言として残り、そのエントリの上限が 2 倍になる）にも厳しい方向（閉じ忘れの後ろで最初に現れる**記号だけのフェンス行**——多くは後続コードブロックの閉じ行——が終端として消費され、間にある正当な宣言が落ちる）にも倒れます。どちらも「候補に出る / 出ない」という形でしか表に出ないため、警告だけでは正常なレポートと区別できません。
+
+統合先の収集（archive の `> Merged into:` 走査）は**原文**に対して行い、フェンス内も対象にします（`check-refine-invariants` の未加工ブロック走査と入力集合を揃えるため。フェンス内の例示による過剰採用は除外枠に理由付きの 1 件が余計に出るだけで安全側）。この走査は未閉フェンスによる中断の対象ではありません。
 
 **保証の範囲**: 未閉フェンスの判定は本スクリプトと `check-category-size.ts` が**同じ合成走査**を通します（ファイル全体走査と、ヘッダ + 各エントリのセグメント単位走査の OR）。したがって**未閉フェンスを理由とする拒否については両者の入力集合が一致します**（check は Category 行の不備など他の理由でも拒否します）。セグメント単位を足しているのは、ヘッダで開いたフェンスがエントリ本文の裸の ``` と対になる形をファイル全体走査が「閉じている」と見るためで、この非対称はかつて本スクリプトだけが素通ししていました（Issue #353 で解消）。エントリ見出しのタイトルに ``` を含むだけのファイルは、どちらも拒否しません（Issue #357 で解消。分割がセグメントに見出し行を残すようになったため、`###` 始まりの行はどちらの走査でもフェンス開始になりません）。停止時はどちらもフェンス開始行を名指しします（本スクリプトは `path:line`、`check-category-size.ts` はメッセージ内の「N 行目」）。
 

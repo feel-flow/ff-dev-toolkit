@@ -531,6 +531,20 @@ if [ -f "$SPEC_SKILL" ]; then
   else
     bad "spec-driven: 扱いが書かれていない tier があります: ${_spec_missing}（追従漏れは全件標準モードへ倒れる）"
   fi
+  # Step 1 の同じ位置（tier 判定の直後）に置いた ACE Reuse の起動点。tier 判定と同様、
+  # 「散文で求められているのに起動点が無い」形へ戻ると誰も実行しないまま緑になるので、
+  # 起動点そのものと、Playbook 不在時の扱い（fail-open で黙って飛ばさない）を針で持つ。
+  # 本 suite に置くのは、ここが spec-driven Step 1 の契約を機械で持つ唯一の場所だから。
+  if grep -q "docs/08-knowledge/PLAYBOOK.md" "$SPEC_SKILL"; then
+    ok "spec-driven: Step 1 に Playbook 索引の検索先が書かれている"
+  else
+    bad "spec-driven: Playbook 索引（docs/08-knowledge/PLAYBOOK.md）の参照がありません（着手前の ACE Reuse の起動点が消えている）"
+  fi
+  if grep -q "Playbook なし" "$SPEC_SKILL" && grep -q '`0 件`' "$SPEC_SKILL"; then
+    ok "spec-driven: 検索結果の記録値（ヒット / 0 件 / Playbook なし）が区別されている"
+  else
+    bad "spec-driven: 「0 件」「Playbook なし」の記録指示がありません（未検索と区別できず、記録が黙って省かれる）"
+  fi
 else
   bad "spec-driven の SKILL.md がありません: $SPEC_SKILL"
 fi
@@ -540,7 +554,7 @@ fi
 # 「検査総数アサートが侵食対策の要」と結論済みのパターン）。
 B_SSOT=1; B_REF=2
 if [ "$REPO_MODE" -eq 1 ]; then B_SSOT=2; B_REF=4; fi
-B_EXPECT=$((1 + REPO_MODE * 3 + B_SSOT * 2 + B_REF * 3 + 3))
+B_EXPECT=$((1 + REPO_MODE * 3 + B_SSOT * 2 + B_REF * 3 + 5))
 B_ACTUAL=$(( (PASS + FAIL) - B_START ))
 if [ "$B_ACTUAL" -eq "$B_EXPECT" ]; then
   ok "B の検査件数が期待どおり（${B_ACTUAL} 件。検査そのものの削除を検出する）"

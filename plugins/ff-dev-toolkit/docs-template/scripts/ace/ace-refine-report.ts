@@ -1,6 +1,8 @@
 /**
  * ACE Playbook の refine 候補レポート（grow-and-refine の dry-run 入力）。
- * - Archive 候補: 既存の findArchiveCandidates（active・stale）に helpful === 0 の積集合を取る
+ * - Archive 候補: 既存の findArchiveCandidates（active・stale）に helpful === 0 の積集合を取る。
+ *   ただし archive 内の別エントリが `> Merged into:` で指す **統合先 ID** は本体一覧から外し、
+ *   「統合先のため除外」の別枠へ理由付きで回す（Issue #917）
  * - 行数バジェット超過: エントリブロック（anchor 行〜終端 `---`）の行数を計測し、
  *   ACE_MAX_ENTRY_LINES（既定 15）超過を列挙する。`ace-line-budget-exception` コメントを
  *   持つエントリは例外上限（既定 30 = ACE_MAX_ENTRY_LINES の 2 倍）で判定する
@@ -15,6 +17,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+  ACE_ENTRY_ID_SOURCE,
   BUDGET_EXCEPTION_MARKER,
   DEFAULT_MAX_ENTRY_LINES,
   ENTRY_ANCHOR_LINE_PATTERN,
@@ -42,6 +45,11 @@ import {
   type PlaybookEntry,
   type ReuseStats,
 } from "./ace-reuse-report";
+// archive 走査は check-archive-links の単一源を使う（check-refine-invariants と同じ向き）。
+// 依存は check-archive-links → （なし）なので循環しない。逆向き（check-refine-invariants →
+// ace-refine-report）の辺が既にあるため、統合先の判定を check-refine-invariants から
+// import することはできない。
+import { discoverArchiveFiles } from "./check-archive-links";
 
 const EXIT_OK = 0;
 const EXIT_RUNTIME_ERROR = 1;
@@ -389,6 +397,101 @@ export function findRefineArchiveCandidates(
   );
 }
 
+/**
+ * archive の統合元が着地先を指す provenance 行。書式は check-refine-invariants の
+ * `mergedIntoTarget` と同じ `> Merged into: [ACE-x-y](href)`（実物は
+ * docs/08-knowledge/playbook/archive/*.md）。
+ *
+ * ID の認識源は `ACE_ENTRY_ID_SOURCE` に揃える — 書き写すと、片方だけ広げたときに
+ * 「不変条件ゲートは統合先と見なすのに、レポートは候補として出す」分裂に戻る。
+ */
+const MERGED_INTO_LINE_PATTERN = new RegExp(
+  String.raw`^>\s*Merged into:\s*\[(${ACE_ENTRY_ID_SOURCE})\]`,
+  "u",
+);
+
+/** 統合先 ID → その統合先を指す統合元 ID（archive 側）の一覧。 */
+export type MergeTargetIndex = ReadonlyMap<string, readonly string[]>;
+
+/**
+ * archive 本文から「他エントリの統合先になっている ID」を集める（Issue #917）。
+ *
+ * live から統合先を外すと、統合元の `> Merged into:` の着地が live から消える。
+ * check-refine-invariants はその状態を violation（統合先が live に無い / archive 済みなら
+ * href が archive へ解決しない）として exit 1 で拒否するため、統合先を Archive 候補として
+ * 提示すると「承認 → 適用 → ゲート赤 → 巻き戻し」の手戻りが必ず起きる（PR #916 で実測:
+ * ACE-153-4 は ACE-279-7 の統合先だった）。
+ *
+ * 走査は**原文**に対して行い、フェンス内も対象にする。`check-refine-invariants` の
+ * `Merged into` 認識は未加工ブロックを読むため、フェンスを除外すると「ゲートだけが
+ * 有効扱いする行」が生まれ、統合先を候補に残して適用後の赤化を防げない（Codex
+ * レビュー指摘）。フェンス内の例示による過剰採用は「除外枠に理由付きの 1 件が余計に
+ * 出る」だけで、採用漏れは巻き戻しの手戻りを生む — 安全側は過剰採用。
+ */
+export function collectMergeTargets(archiveContents: readonly string[]): MergeTargetIndex {
+  const sourcesByTarget = new Map<string, string[]>();
+  for (const content of archiveContents) {
+    const scannable = content;
+    let currentId: string | null = null;
+    for (const line of scannable.split("\n")) {
+      const heading = line.match(ENTRY_HEADER_LINE_PATTERN);
+      if (heading) {
+        currentId = heading[1];
+        continue;
+      }
+      const merged = line.match(MERGED_INTO_LINE_PATTERN);
+      if (!merged) {
+        continue;
+      }
+      const sources = sourcesByTarget.get(merged[1]) ?? [];
+      // 見出しの前に現れた provenance（想定外の並び）でも統合先としては採用する。
+      // 統合元が特定できないだけで、live から外せない事実は変わらない。
+      if (currentId !== null && !sources.includes(currentId)) {
+        sources.push(currentId);
+      }
+      sourcesByTarget.set(merged[1], sources);
+    }
+  }
+  return sourcesByTarget;
+}
+
+/** Archive 候補から外した統合先エントリと、その理由（どの統合元が指しているか）。 */
+export type MergeTargetExclusion = Readonly<{
+  readonly entry: PlaybookEntry;
+  /** この統合先を指している archive 側の統合元 ID（昇順。特定できなければ空） */
+  readonly mergeSources: readonly string[];
+}>;
+
+export type ArchiveCandidatePartition = Readonly<{
+  readonly kept: readonly PlaybookEntry[];
+  readonly excluded: readonly MergeTargetExclusion[];
+}>;
+
+/**
+ * Archive 候補を「そのまま出す分」と「統合先のため除外する分」に分ける。
+ *
+ * 黙って落とさず別枠へ回すのは、`candidates.length === 0` が「整理対象なし」と
+ * 「除外して 0 件」のどちらなのかをレポート読者（/ace-refine の R2 承認ゲート）が
+ * 区別できるようにするため。除外側は統合元も併記するので、統合先ごと整理したいときに
+ * どの `Merged into` を張り替えればよいかが同じ行から読める。
+ */
+export function partitionArchiveCandidates(
+  candidates: readonly PlaybookEntry[],
+  mergeTargets: MergeTargetIndex,
+): ArchiveCandidatePartition {
+  const kept: PlaybookEntry[] = [];
+  const excluded: MergeTargetExclusion[] = [];
+  for (const entry of candidates) {
+    const sources = mergeTargets.get(entry.id);
+    if (sources === undefined) {
+      kept.push(entry);
+    } else {
+      excluded.push({ entry, mergeSources: [...sources].sort() });
+    }
+  }
+  return { kept, excluded };
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
@@ -486,6 +589,8 @@ export function resolvePatternsPath(playbookPath: string, envValue: string | und
 
 export type RefineReportInput = Readonly<{
   readonly archiveCandidates: readonly PlaybookEntry[];
+  /** 統合先のため Archive 候補から外したエントリ（Issue #917。0 件でも節ごと出す） */
+  readonly mergeTargetExclusions: readonly MergeTargetExclusion[];
   readonly overBudget: readonly OverBudgetEntry[];
   readonly promotionCandidates: readonly PlaybookEntry[];
   readonly patternsPath: string;
@@ -518,6 +623,28 @@ export function formatRefineReport(input: RefineReportInput): string {
     for (const entry of input.archiveCandidates) {
       lines.push(
         `- ${entry.id}: ${entry.title}（Category: ${entry.category ?? "不明"} / Date: ${entry.date ?? "不明"} / Helpful: ${entry.helpful}）`,
+      );
+    }
+  }
+  lines.push("");
+
+  // 除外は 0 件でも節ごと出す。節を条件付きにすると「候補 0 件」と「除外して 0 件」が
+  // 同じ見た目になり、除外ロジックが効いているかどうかがレポートから判別できない。
+  lines.push(
+    `## Archive 候補から除外（他エントリの統合先、${input.mergeTargetExclusions.length} 件）`,
+  );
+  lines.push("");
+  if (input.mergeTargetExclusions.length === 0) {
+    lines.push("なし");
+  } else {
+    lines.push(
+      "> archive の統合元が `> Merged into:` で指している着地先です。live から外すと統合の着地が切れ、check-refine-invariants が違反として拒否します（アーカイブするなら統合元の Merged into リンクを archive 基準へ張り替えるところまで同一 refine で行うこと）。",
+    );
+    lines.push("");
+    for (const { entry, mergeSources } of input.mergeTargetExclusions) {
+      const sources = mergeSources.length > 0 ? mergeSources.join(", ") : "不明";
+      lines.push(
+        `- ${entry.id}: ${entry.title}（Category: ${entry.category ?? "不明"} / Date: ${entry.date ?? "不明"} / Helpful: ${entry.helpful} / 統合元: ${sources}）`,
       );
     }
   }
@@ -718,7 +845,15 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
     const stats = computeReuseStats(entries, logResult.commits, combinedContent);
     const now = deps.now();
 
-    const archiveCandidates = findRefineArchiveCandidates(entries, stats, now, staleDays);
+    // 統合先の除外（Issue #917）。archive が無いプロジェクトでは discoverArchiveFiles が
+    // 空配列を返すので、除外 0 件で従来どおりの候補一覧になる。
+    const archiveContents = discoverArchiveFiles(playbookPath).map(readFileOrThrow);
+    const mergeTargets = collectMergeTargets(archiveContents);
+    const { kept: archiveCandidates, excluded: mergeTargetExclusions } =
+      partitionArchiveCandidates(
+        findRefineArchiveCandidates(entries, stats, now, staleDays),
+        mergeTargets,
+      );
 
     // エントリ照合（fail-loud）: パースされた全 ID が行数計測にも現れることを保証する。
     // ここが欠けると、コメント走査の意味論が乖離したときに over-budget 一覧だけが
@@ -747,6 +882,7 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
     console.log(
       formatRefineReport({
         archiveCandidates,
+        mergeTargetExclusions,
         overBudget,
         promotionCandidates,
         patternsPath,

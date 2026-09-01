@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  collectMergeTargets,
   findOverBudgetEntries,
   findPromotionCandidates,
   findRefineArchiveCandidates,
@@ -10,6 +11,7 @@ import {
   isListedInPatterns,
   main,
   measureEntryLines,
+  partitionArchiveCandidates,
   resolvePatternsPath,
   type EntryLineMeasurement,
   type EntryLineMeasurementResult,
@@ -466,6 +468,95 @@ describe("findRefineArchiveCandidates", () => {
   });
 });
 
+/**
+ * 統合先の除外（Issue #917）。archive の `> Merged into:` が指す ID を live から外すと
+ * check-refine-invariants が違反として拒否するため、候補一覧に載せてはならない。
+ * 黙って落とさず別枠へ回すので、単体では「本体から消える」と「除外側に理由付きで出る」の
+ * 両方を測る（片方だけだと、候補を無条件に捨てる変異が緑で通る）。
+ */
+describe("collectMergeTargets / partitionArchiveCandidates（Issue #917）", () => {
+  const archiveMd = [
+    "# PLAYBOOK archive — コーディング (coding)",
+    "",
+    '<a id="ace-279-7"></a>',
+    "",
+    "### ACE-279-7: 統合された側の原文",
+    "",
+    "| Category | coding | Origin | PR #279 |",
+    "| Date | 2026-01-01 |",
+    "| Helpful | 0 | Harmful | 0 |",
+    "| Status | merged |",
+    "",
+    "> Merged into: [ACE-153-4](../coding.md#ace-153-4)（2026-08-14 /ace-refine）",
+    "",
+    "本文。",
+    "",
+    "---",
+  ].join("\n");
+
+  it("archive の Merged into から統合先 ID と統合元 ID を集める", () => {
+    const targets = collectMergeTargets([archiveMd]);
+    expect([...targets.keys()]).toEqual(["ACE-153-4"]);
+    expect(targets.get("ACE-153-4")).toEqual(["ACE-279-7"]);
+  });
+
+  it("フェンス内の Merged into も統合先に数える（invariants ゲートと同じ入力集合・過剰採用は安全側）", () => {
+    const fenced = [
+      "# PLAYBOOK archive — コーディング (coding)",
+      "",
+      "```markdown",
+      "> Merged into: [ACE-999-9](../coding.md#ace-999-9)",
+      "```",
+      "",
+    ].join("\n");
+    expect([...collectMergeTargets([fenced]).keys()]).toEqual(["ACE-999-9"]);
+  });
+
+  it("統合先は Archive 候補本体から外れ、理由（統合元）付きの別枠へ回る", () => {
+    const entries = parsePlaybookEntries(
+      [
+        '<a id="ace-153-4"></a>',
+        "",
+        "### ACE-153-4: 統合先になっているエントリ",
+        "",
+        "| Category | coding | Origin | PR #153 |",
+        "| Date | 2026-01-01 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | active |",
+        "",
+        "---",
+        "",
+        '<a id="ace-154-1"></a>',
+        "",
+        "### ACE-154-1: 統合先ではない通常の候補",
+        "",
+        "| Category | coding | Origin | PR #154 |",
+        "| Date | 2026-01-01 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | active |",
+        "",
+        "---",
+      ].join("\n"),
+      () => {},
+    );
+    const candidates = findRefineArchiveCandidates(
+      entries,
+      statsOf([
+        ["ACE-153-4", {}],
+        ["ACE-154-1", {}],
+      ]),
+      NOW,
+      90,
+    );
+    expect(candidates.map((c) => c.id)).toEqual(["ACE-153-4", "ACE-154-1"]);
+
+    const partition = partitionArchiveCandidates(candidates, collectMergeTargets([archiveMd]));
+    expect(partition.kept.map((c) => c.id)).toEqual(["ACE-154-1"]);
+    expect(partition.excluded.map((e) => e.entry.id)).toEqual(["ACE-153-4"]);
+    expect(partition.excluded[0].mergeSources).toEqual(["ACE-279-7"]);
+  });
+});
+
 describe("findPromotionCandidates", () => {
   const entries = parsePlaybookEntries(
     [
@@ -640,6 +731,7 @@ describe("formatRefineReport", () => {
   it("候補ゼロでも各セクションと read-only 注記を出力する", () => {
     const report = formatRefineReport({
       archiveCandidates: [],
+      mergeTargetExclusions: [],
       overBudget: [],
       promotionCandidates: [],
       patternsPath: "/repo/docs/03-implementation/PATTERNS.md",
@@ -652,9 +744,45 @@ describe("formatRefineReport", () => {
     });
     expect(report).toContain("# ACE refine 候補レポート（dry-run）");
     expect(report).toContain("## Archive 候補（helpful=0 かつ stale、0 件）");
+    // 除外節は 0 件でも出す（「候補 0 件」と「除外して 0 件」を読者が区別できるように）
+    expect(report).toContain("## Archive 候補から除外（他エントリの統合先、0 件）");
     expect(report).toContain("## 行数バジェット超過（0 件）");
     expect(report).toContain("## PATTERNS.md 昇格候補（Helpful >= 5、0 件）");
     expect(report).toContain("/ace-refine の承認ゲート");
+  });
+
+  it("除外があるときは統合元と理由（着地が切れる）を添えて別枠に出す", () => {
+    const [entry] = parsePlaybookEntries(
+      [
+        "### ACE-153-4: 統合先になっているエントリ",
+        "",
+        "| Category | coding | Origin | PR #153 |",
+        "| Date | 2026-01-01 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | active |",
+        "",
+        "---",
+      ].join("\n"),
+      () => {},
+    );
+    const report = formatRefineReport({
+      archiveCandidates: [],
+      mergeTargetExclusions: [{ entry, mergeSources: ["ACE-279-7"] }],
+      overBudget: [],
+      promotionCandidates: [],
+      patternsPath: "/repo/docs/03-implementation/PATTERNS.md",
+      patternsExists: true,
+      totalEntries: 3,
+      now: NOW,
+      staleDays: 90,
+      maxEntryLines: 15,
+      promoteMin: 5,
+    });
+    expect(report).toContain("## Archive 候補から除外（他エントリの統合先、1 件）");
+    expect(report).toContain(
+      "- ACE-153-4: 統合先になっているエントリ（Category: coding / Date: 2026-01-01 / Helpful: 0 / 統合元: ACE-279-7）",
+    );
+    expect(report).toContain("check-refine-invariants");
   });
 });
 
@@ -885,6 +1013,87 @@ describe("main（fixture E2E）", () => {
     expect(stderr).toContain("coding.md");
     expect(stderr).toContain("testing.md");
     expect(stderr).not.toContain("レポート生成に失敗しました");
+  });
+
+  /**
+   * 統合先の除外（Issue #917）。archive の `> Merged into:` が指す ID を Archive 候補に
+   * 載せると、承認 → 適用 → check-refine-invariants が exit 1 → 巻き戻し、の手戻りになる
+   * （PR #916 で実測: ACE-153-4 は ACE-279-7 の統合先だった）。
+   *
+   * 節を切り出して照合するのは、本体一覧と除外枠に**同じ ID が別書式で並ぶ**ため。
+   * レポート全文の toContain だけでは「本体から消えた」ことを固定できない。
+   */
+  it("統合先は Archive 候補に出ず、別枠へ理由付きで回る（通常候補はそのまま残る）", () => {
+    const { playbookPath } = makeFixture();
+    const playbookDir = path.join(path.dirname(playbookPath), "playbook");
+    fs.appendFileSync(
+      path.join(playbookDir, "coding.md"),
+      [
+        "",
+        '<a id="ace-92-1"></a>',
+        "",
+        "### ACE-92-1: 統合先ではない stale エントリ",
+        "",
+        "| Category | coding | Origin | PR #92 |",
+        "| Date | 2026-01-01 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | active |",
+        "",
+        "本文 1 文。",
+        "",
+        "---",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    fs.mkdirSync(path.join(playbookDir, "archive"), { recursive: true });
+    fs.writeFileSync(
+      path.join(playbookDir, "archive", "coding.md"),
+      [
+        "# PLAYBOOK archive — コーディング (coding)",
+        "",
+        '<a id="ace-279-7"></a>',
+        "",
+        "### ACE-279-7: 統合された側の原文",
+        "",
+        "| Category | coding | Origin | PR #279 |",
+        "| Date | 2026-01-01 |",
+        "| Helpful | 0 | Harmful | 0 |",
+        "| Status | merged |",
+        "",
+        "> Merged into: [ACE-90-1](../coding.md#ace-90-1)（2026-08-14 /ace-refine）",
+        "",
+        "本文。",
+        "",
+        "---",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(main([playbookPath], { readLog: emptyLog, now: () => NOW })).toBe(0);
+    const report = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    const sectionOf = (heading: string): string => {
+      const start = report.indexOf(heading);
+      expect(start).toBeGreaterThanOrEqual(0);
+      const rest = report.slice(start + heading.length);
+      const next = rest.indexOf("\n## ");
+      return next < 0 ? rest : rest.slice(0, next);
+    };
+
+    const candidates = sectionOf("## Archive 候補（helpful=0 かつ stale、1 件）");
+    expect(candidates).toContain("- ACE-92-1: 統合先ではない stale エントリ");
+    expect(candidates).not.toContain("ACE-90-1");
+
+    const excluded = sectionOf("## Archive 候補から除外（他エントリの統合先、1 件）");
+    expect(excluded).toContain(
+      "- ACE-90-1: 旧テーブル形式の stale エントリ（Category: coding / Date: 2026-01-01 / Helpful: 0 / 統合元: ACE-279-7）",
+    );
+    expect(excluded).toContain("check-refine-invariants");
+    // archive のエントリ自体は live 扱いしない（discoverPlaybookSubfiles は非再帰）
+    expect(report).not.toContain("ACE-279-7: 統合された側の原文");
   });
 });
 

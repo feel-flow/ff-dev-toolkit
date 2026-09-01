@@ -1040,6 +1040,131 @@ describe("Archived（R3-a: stale アーカイブ / Issue #1028）", () => {
   });
 });
 
+describe("Changelog 節限定 / ID 列限定 / 重複除去（Issue #1030）", () => {
+  // 欠陥 1: 走査を `## Changelog` 節に限定する。
+  // エントリ本文が refine 運用を解説して同形 bullet を書くと操作として誤採用されていた。
+  it("Changelog 節の外の Compacted / Promoted / Merged / Archived 行は採用しない", () => {
+    const outside = [
+      "## エントリ一覧",
+      "",
+      "### ACE-900-1: Changelog の書き方",
+      "",
+      "整理の記録は次の形で書く。",
+      "",
+      "- Compacted: ACE-777-1",
+      "- Promoted: ACE-777-2",
+      "- Merged: ACE-777-3 → ACE-777-4",
+      "- Archived: ACE-777-5",
+      "",
+      "## Changelog",
+      "",
+      "- Compacted: ACE-41-3（本文は逐語無改変）",
+      "",
+    ].join("\n");
+    const ops = parseChangelogOperations(outside);
+    expect(ops.compactedIds).toEqual(["ACE-41-3"]);
+    expect(ops.promotedIds).toEqual([]);
+    expect(ops.mergedPairs).toEqual([]);
+    expect(ops.archivedIds).toEqual([]);
+  });
+
+  it("Changelog 節より後ろのレベル 2 節に戻った行も採用しない", () => {
+    const after = [
+      "## Changelog",
+      "",
+      "- Compacted: ACE-41-3",
+      "",
+      "## 付録",
+      "",
+      "- Compacted: ACE-777-1",
+      "",
+    ].join("\n");
+    expect(parseChangelogOperations(after).compactedIds).toEqual(["ACE-41-3"]);
+  });
+
+  it("レベル 2 見出しがあるのに Changelog 節が無ければ操作 0 件", () => {
+    const noChangelog = ["## エントリ一覧", "", "- Compacted: ACE-777-1", ""].join("\n");
+    expect(parseChangelogOperations(noChangelog).compactedIds).toEqual([]);
+  });
+
+  // 欠陥 2: Promoted も `Archived:` と同じ ID 列限定にする。
+  it("Promoted の理由の散文に現れた ID は採用しない", () => {
+    const ops = parseChangelogOperations(
+      "- Promoted: なし（Helpful>=5 の ACE-47-1 / ACE-47-2 は PATTERNS.md へ収載済みで冪等スキップ）\n",
+    );
+    expect(ops.promotedIds).toEqual([]);
+    expect(ops.malformedPromoted).toEqual([]);
+  });
+
+  it("Promoted の ID 列は理由の括弧書きで打ち切る", () => {
+    const ops = parseChangelogOperations(
+      "- Promoted: ACE-1-1, ACE-2-1（判断は ACE-3-3 に従った）\n",
+    );
+    expect(ops.promotedIds).toEqual(["ACE-1-1", "ACE-2-1"]);
+    expect(ops.malformedPromoted).toEqual([]);
+  });
+
+  it("区切りが , / 、 でない Promoted 行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Promoted: ACE-1-1 / ACE-2-1（蒸留）\n");
+    expect(ops.promotedIds).toEqual([]);
+    expect(ops.malformedPromoted).toEqual(["- Promoted: ACE-1-1 / ACE-2-1（蒸留）"]);
+    const violations = evaluateRefineInvariants({
+      playbookContent: `${PLAYBOOK_CHANGELOG}- Promoted: ACE-1-1 と ACE-2-1\n`,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("promote 行の ID 列が途中で切れている"))).toBe(
+      true,
+    );
+  });
+
+  // Compacted は前置きの散文と ID ごとの注記を持つ実例があるため、
+  // コロン直後アンカーではなく「括弧書きの外」を ID 列とする。
+  it("Compacted の括弧書きに現れた ID は採用しない", () => {
+    expect(
+      parseChangelogOperations("- Compacted: なし（ACE-9-9 は次回に持ち越し）\n").compactedIds,
+    ).toEqual([]);
+  });
+
+  it("Compacted は前置きの散文と ID ごとの注記があっても全件拾う", () => {
+    const ops = parseChangelogOperations(
+      "- Compacted: process の旧テーブル形式 3 件を再整形（本文は逐語無改変）: ACE-1-1（18 → 12 行）, ACE-2-1, ACE-3-1（16 → 12 行）\n",
+    );
+    expect(ops.compactedIds).toEqual(["ACE-1-1", "ACE-2-1", "ACE-3-1"]);
+  });
+
+  // 欠陥 3: 同一の Merged 行が 2 行あっても合算下限は 1 回分。
+  it("同一の Merged 行が 2 行あっても合算は 1 回分", () => {
+    const duplicated = `${PLAYBOOK_CHANGELOG}- Merged: ACE-430-1 → ACE-404-2（重複記載）\n`;
+    expect(parseChangelogOperations(duplicated).mergedPairs).toEqual([
+      { source: "ACE-430-1", target: "ACE-404-2" },
+    ]);
+    // 統合先 Helpful=1 / 統合元 Helpful=1。二重加算されると下限 2 を要求して落ちる。
+    const targetHelpfulOne = LIVE_TARGET.replace(
+      "| Helpful | 2 | Harmful | 0 |",
+      "| Helpful | 1 | Harmful | 0 |",
+    );
+    const violations = evaluateRefineInvariants({
+      playbookContent: duplicated,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(targetHelpfulOne)],
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("統合先が違う Merged 行は重複除去でまとめない", () => {
+    const ops = parseChangelogOperations(
+      "- Merged: ACE-1-1 → ACE-2-1\n- Merged: ACE-1-1 → ACE-3-1\n",
+    );
+    expect(ops.mergedPairs).toEqual([
+      { source: "ACE-1-1", target: "ACE-2-1" },
+      { source: "ACE-1-1", target: "ACE-3-1" },
+    ]);
+  });
+});
+
 describe("mergedIntoTarget", () => {
   it("ポインタから統合先 ID を取る", () => {
     expect(mergedIntoTarget(ARCHIVE_MERGED)).toBe("ACE-404-2");
@@ -1134,5 +1259,53 @@ describe("main", () => {
     delete process.env.ACE_PLAYBOOK_PATH;
     vi.spyOn(console, "error").mockImplementation(() => {});
     expect(main()).toBe(2);
+  });
+});
+
+describe("parseChangelogOperations — Codex レビュー追補（Issue #1030）", () => {
+  it("コードフェンス内の偽 `## Changelog` を節境界として採用しない", () => {
+    const content = [
+      "# PLAYBOOK",
+      "",
+      "```markdown",
+      "## Changelog",
+      "- Compacted: ACE-9-9",
+      "```",
+      "",
+      "## Changelog",
+      "",
+      "### [1.1.0] - 2026-09-01",
+      "",
+      "- Compacted: ACE-1-1",
+      "",
+    ].join("\n");
+    const ops = parseChangelogOperations(content);
+    expect(ops.compactedIds).toEqual(["ACE-1-1"]);
+  });
+
+  it("HTML コメント内の Compacted 例示を操作として採用しない", () => {
+    const content = [
+      "## Changelog",
+      "",
+      "<!--",
+      "- Compacted: ACE-9-9",
+      "-->",
+      "- Compacted: ACE-1-1",
+      "",
+    ].join("\n");
+    const ops = parseChangelogOperations(content);
+    expect(ops.compactedIds).toEqual(["ACE-1-1"]);
+  });
+
+  it("Compacted 行の括弧閉じ忘れは部分採用せず違反へ回す", () => {
+    const content = [
+      "## Changelog",
+      "",
+      "- Compacted: ACE-1-1（注記, ACE-2-1",
+      "",
+    ].join("\n");
+    const ops = parseChangelogOperations(content);
+    expect(ops.compactedIds).toEqual([]);
+    expect(ops.malformedCompacted).toHaveLength(1);
   });
 });

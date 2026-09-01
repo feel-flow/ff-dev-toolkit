@@ -188,10 +188,14 @@ ID は **PRスコープ式**（`ACE-<PR番号>-<連番>`）。採番ルールの
 | **パッチ上げは使わない**         | ACE curate では patch を上げない          | —                   |
 
 ```yaml
-version: "1.X.0" # 新規エントリ時のみ minor +1（patch は 0）
+# version: 新規エントリ時のみ minor +1（patch は 0）
+# changeImpact: minor 上げ = medium（欠落時は --write が自動追記）
+# ace_entry_count: merged tree の live 実数（archive 除外）。ローカル値へ +N しない
+# （管理フィールドの行内コメントは sync-playbook-frontmatter が拒否するため独立行に書く）
+version: "1.X.0"
 updated: "YYYY-MM-DD"
-changeImpact: medium # minor 上げ = medium（欠落時は --write が自動追記）
-ace_entry_count: N # merged tree の live 実数（archive 除外）。ローカル値へ +N しない
+changeImpact: medium
+ace_entry_count: N
 ```
 
 #### 3b. Changelog の更新
@@ -271,7 +275,7 @@ Generate → Reflect → Curate は「増やす」一方向のサイクルであ
 - [ ] 各エントリが行数バジェット内（15 行以内。例外宣言付きでも 30 行以内）
 - [ ] push 直前に remote を最新化し、Frontmatter 更新（version=minor+1 on 新規 / updated / changeImpact=medium / ace_entry_count=live 実数）
 - [ ] Changelog 更新（当該版の `#### 追加` / `#### カウンター更新`。version と最新見出し一致）
-- [ ] 同期検証が exit 0（count + version↔Changelog + changeImpact）— npm script 登録済みなら `npm run ace:check-playbook-frontmatter`、未登録で `scripts/ace/` 導入済みなら `npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check`、未導入なら `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check`（3 択から 1 本だけ実行）
+- [ ] 同期検証が exit 0（count + version↔Changelog + changeImpact）— npm script 登録済みなら `npm run ace:check-playbook-frontmatter`、未登録で `scripts/ace/sync-playbook-frontmatter.ts` が存在するなら `npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check`、未導入なら `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check`（3 択から 1 本だけ実行）
 - [ ] コミット（件名 `knowledge: ACE-XXX <要約>`、カテゴリは body の `Categories:` 行）
 
 ### 並行作業（任意）
@@ -279,7 +283,7 @@ Generate → Reflect → Curate は「増やす」一方向のサイクルであ
 - [ ] Discussion 内に ACE-XXX ID を記載
 
 ### 定期 Refine（月次 or ゲート発火時）
-- [ ] dry-run レポートを確認 — `scripts/ace/` 導入済みなら `npx --yes tsx scripts/ace/ace-refine-report.ts docs/08-knowledge/PLAYBOOK.md`、未導入なら `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-refine-report.ts" docs/08-knowledge/PLAYBOOK.md`（2 択から 1 本だけ実行）
+- [ ] dry-run レポートを確認 — `scripts/ace/ace-refine-report.ts` が存在するなら `npx --yes tsx scripts/ace/ace-refine-report.ts docs/08-knowledge/PLAYBOOK.md`、未導入なら `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-refine-report.ts" docs/08-knowledge/PLAYBOOK.md`（2 択から 1 本だけ実行）
 - [ ] 承認のうえ `/ace-refine` で アーカイブ / 圧縮 / 統合 / 昇格 を適用
 ```
 

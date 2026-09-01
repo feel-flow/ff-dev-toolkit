@@ -12,6 +12,11 @@
  *   live 本体からも索引テーブルからも消えている（Issue #1028）
  * - promote: 収載判定は「パターン本文 + 出典リンク」の組（Changelog 内の ID 言及だけでは不可）
  *
+ * 走査対象は **`## Changelog` 節だけ**（次のレベル 2 見出し直前まで）。エントリ本文が
+ * refine 運用を解説して同形 bullet を書いても操作として採用しない（Issue #1030）。
+ * 同節の中では `- Compacted:` は括弧書きの外、`- Promoted:` / `- Archived:` はコロン直後の
+ * ID 列だけを読み、同一の `- Merged: X → Y` が複数行あっても 1 操作として数える。
+ *
  * compact と archive は排他ではない。R3-b（圧縮）は原文を archive に残したまま live へ要約を置くので、
  * 後日 R3-a（stale アーカイブ）でその要約を撤去する遷移が SKILL.md R3-0 の正規手順にある。
  * したがって **compact の live 存続要求は `- Archived:` の記録があれば解除する**。記録が無いまま
@@ -23,6 +28,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   ACE_ENTRY_ID_SOURCE,
+  blankCodeRegions,
+  blankHtmlBlockComments,
   discoverPlaybookSubfiles,
   entryHeadingSource,
   isDirectExecution,
@@ -49,17 +56,33 @@ const META_FIELDS = [
 ] as const;
 const VARIANT_B_MARKER = "メタ表のみ正準フォーマットへ再整形";
 /**
- * `- Archived:` は**直後から続く ID 列だけ**を読む（理由の散文へ入った時点で打ち切る）。
- * archivedIds への収載は compact の live 存続要求を**解除する**方向に効くため、
- * `- Archived: なし（ACE-X は次回再評価）` のような言及まで拾うと検査が緩む側へ倒れる。
- * Compacted / Merged / Promoted の過剰採用は検査を**足す**方向なので行全体を見たままにする。
+ * `- Archived:` / `- Promoted:` は**コロン直後から続く ID 列だけ**を読む
+ * （理由の散文へ入った時点で打ち切る）。
+ *
+ * - archivedIds は compact の live 存続要求を**解除する**方向に効くので、
+ *   `- Archived: なし（ACE-X は次回再評価）` の言及まで拾うと検査が緩む（Issue #1028）。
+ * - promotedIds は PATTERNS.md 収載を**要求する**方向だが、
+ *   `- Promoted: なし（ACE-X は収載済み）` を昇格と読むと「この refine で昇格した ID」が
+ *   実態とずれる。散文由来の ID が偶然収載済みである間は緑のままなので、
+ *   誤採用が検査結果に表れない（Issue #1030）。
+ *
+ * 打ち切りを黙って行うと列挙の後半が無検証になるため、
+ * ID 列の直後が理由の括弧書きでも行末でもない行は malformed として拒否する
+ * （`/` や `と` 区切りは「列挙が途中で切れている」扱い）。
  */
-const ARCHIVED_ID_RUN_PATTERN = new RegExp(
-  String.raw`^- Archived:\s*(${ACE_ENTRY_ID_SOURCE}(?:\s*[,、]\s*${ACE_ENTRY_ID_SOURCE})*)\s*(.*)$`,
-  "u",
-);
+function idRunPattern(label: string): RegExp {
+  return new RegExp(
+    String.raw`^- ${label}:\s*(${ACE_ENTRY_ID_SOURCE}(?:\s*[,、]\s*${ACE_ENTRY_ID_SOURCE})*)\s*(.*)$`,
+    "u",
+  );
+}
+const ARCHIVED_ID_RUN_PATTERN = idRunPattern("Archived");
+const PROMOTED_ID_RUN_PATTERN = idRunPattern("Promoted");
 /** ID 列の直後に来てよいのは行末か理由の括弧書きだけ。それ以外は列挙が途中で切れている。 */
 const ARCHIVED_REASON_HEAD_PATTERN = /^[（(。.]/u;
+const CHANGELOG_HEADING_PATTERN = /^##\s+Changelog\s*$/u;
+const LEVEL2_HEADING_LINE_PATTERN = /^##\s+/u;
+const HAS_LEVEL2_HEADING_PATTERN = /^##\s+/mu;
 const INDEX_ROW_PATTERN = (id: string): RegExp =>
   new RegExp(`^\\|\\s*${escapeRegExp(id)}\\s*\\|`, "mu");
 
@@ -71,7 +94,9 @@ export type ChangelogOperations = Readonly<{
   readonly promotedIds: readonly string[];
   readonly archivedIds: readonly string[];
   readonly malformedMerged: readonly string[];
+  readonly malformedCompacted: readonly string[];
   readonly malformedArchived: readonly string[];
+  readonly malformedPromoted: readonly string[];
 }>;
 
 export type EntryBlock = Readonly<{
@@ -101,7 +126,93 @@ function resolvePlaybookPath(argv: readonly string[]): string | undefined {
   return undefined;
 }
 
-/** Changelog の Compacted / Merged / Promoted / Archived 行から操作対象 ID を拾う。 */
+/**
+ * `## Changelog` 見出しから次のレベル 2 見出し直前までを切り出す（Issue #1030）。
+ *
+ * 整理操作の記録は Changelog 節にしか無い。全文を走査すると、エントリ本文が refine 運用を
+ * 解説して書いた同形 bullet（`- Compacted: ACE-X` など）まで操作として採用してしまう。
+ * レベル 2 見出しを持つのに Changelog 節が無い文書は「記録された操作が無い」= 空とし、
+ * 見出しがまったく無い断片（単体テストの 1 行入力）は従来どおり全文を見る
+ * — `extractPromotionSection`（ace-refine-report）と同じ切り出し規約に揃えてある。
+ */
+export function extractChangelogSection(playbookContent: string): string {
+  const lines = playbookContent.split("\n");
+  const start = lines.findIndex((line) => CHANGELOG_HEADING_PATTERN.test(line));
+  if (start < 0) {
+    return HAS_LEVEL2_HEADING_PATTERN.test(playbookContent) ? "" : playbookContent;
+  }
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (LEVEL2_HEADING_LINE_PATTERN.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(start + 1, end).join("\n");
+}
+
+/**
+ * 括弧（全角・半角）で囲まれた注記を落とす。入れ子は深さで数える。
+ *
+ * `- Compacted:` は「前置きの散文 → コロン → ID 列」や「ID ごとに `（18 → 12 行）` の注記」
+ * という実例があり、`- Archived:` 式のコロン直後アンカーだと記録済み ID を黙って取りこぼす。
+ * 理由・注記は括弧書きに置くのが Changelog の書式（Issue #1028 が `- Archived:` に敷いた
+ * 「理由は ID 列の後ろの括弧書き」と同じ）なので、括弧の外に残る部分を ID 列として読む。
+ */
+/**
+ * 括弧（全角・半角）の対応が行末で閉じているか。閉じ忘れがあると stripParentheticals は
+ * 開き括弧以降をすべて落とし、後続 ID が違反にもならず黙って消える（Issue #1030 の
+ * Codex レビュー指摘）。呼び出し側はこの検出時に malformed として違反へ回す。
+ */
+export function hasUnbalancedParentheses(line: string): boolean {
+  let depth = 0;
+  for (const ch of line) {
+    if (ch === "（" || ch === "(") depth += 1;
+    else if (ch === "）" || ch === ")") depth = Math.max(0, depth - 1);
+  }
+  return depth > 0;
+}
+
+export function stripParentheticals(line: string): string {
+  let depth = 0;
+  let stripped = "";
+  for (const ch of line) {
+    if (ch === "（" || ch === "(") {
+      depth += 1;
+      continue;
+    }
+    if (ch === "）" || ch === ")") {
+      if (depth > 0) depth -= 1;
+      continue;
+    }
+    if (depth === 0) stripped += ch;
+  }
+  return stripped;
+}
+
+/**
+ * コロン直後の ID 列だけを `ids` へ入れる。ID 列を持たない行（`なし（…）` 等）は無視し、
+ * ID 列が理由の括弧書き以外の散文で切れている行は `malformed` へ回す。
+ */
+function collectIdRun(
+  line: string,
+  pattern: RegExp,
+  ids: string[],
+  malformed: string[],
+): void {
+  const run = line.match(pattern);
+  if (!run) return;
+  const rest = run[2].trim();
+  // 区切りが `,` / `、` でない列挙は先頭だけ拾って残りが無検証になる。
+  // 黙って切り詰めず、行そのものを違反として報告する。
+  if (rest !== "" && !ARCHIVED_REASON_HEAD_PATTERN.test(rest)) {
+    malformed.push(line);
+    return;
+  }
+  ids.push(...[...run[1].matchAll(ACE_ID_PATTERN)].map((m) => m[0]));
+}
+
+/** Changelog 節の Compacted / Merged / Promoted / Archived 行から操作対象 ID を拾う。 */
 export function parseChangelogOperations(playbookContent: string): ChangelogOperations {
   const compactedIds: string[] = [];
   const mergedPairs: { source: string; target: string }[] = [];
@@ -109,11 +220,27 @@ export function parseChangelogOperations(playbookContent: string): ChangelogOper
   const archivedIds: string[] = [];
   const malformedMerged: string[] = [];
   const malformedArchived: string[] = [];
+  const malformedPromoted: string[] = [];
+  const malformedCompacted: string[] = [];
+  /** 同一の `- Merged: X → Y` が 2 行あっても 1 操作として数える（Issue #1030）。 */
+  const seenMergedPairs = new Set<string>();
 
-  for (const rawLine of playbookContent.split("\n")) {
+  // 節境界の検出と行走査はフェンス / HTML コメントを空白化した内容で行う（Codex レビュー
+  // 指摘: フェンス内の偽 `## Changelog` が先にあると本物の節が終端扱いされ、実操作が
+  // 全件未検証になる）。順序は sync-playbook-frontmatter の maskChangelogScanNoise と同じ
+  // 理由で blankCodeRegions（probe 方式）→ コメント空白化。
+  const maskedContent = blankHtmlBlockComments(blankCodeRegions(playbookContent).text);
+  for (const rawLine of extractChangelogSection(maskedContent).split("\n")) {
     const line = rawLine.trim();
     if (line.startsWith("- Compacted:")) {
-      compactedIds.push(...[...line.matchAll(ACE_ID_PATTERN)].map((m) => m[0]));
+      if (hasUnbalancedParentheses(line)) {
+        // 閉じ忘れは開き括弧以降の ID を黙って落とすため、部分採用せず違反へ回す
+        malformedCompacted.push(line);
+        continue;
+      }
+      compactedIds.push(
+        ...[...stripParentheticals(line).matchAll(ACE_ID_PATTERN)].map((m) => m[0]),
+      );
       continue;
     }
     if (line.startsWith("- Merged:")) {
@@ -124,28 +251,22 @@ export function parseChangelogOperations(playbookContent: string): ChangelogOper
         ),
       );
       if (pair) {
-        mergedPairs.push({ source: pair[1], target: pair[2] });
+        const key = `${pair[1]} -> ${pair[2]}`;
+        if (!seenMergedPairs.has(key)) {
+          seenMergedPairs.add(key);
+          mergedPairs.push({ source: pair[1], target: pair[2] });
+        }
       } else {
         malformedMerged.push(line);
       }
       continue;
     }
     if (line.startsWith("- Promoted:")) {
-      promotedIds.push(...[...line.matchAll(ACE_ID_PATTERN)].map((m) => m[0]));
+      collectIdRun(line, PROMOTED_ID_RUN_PATTERN, promotedIds, malformedPromoted);
       continue;
     }
     if (line.startsWith("- Archived:")) {
-      const run = line.match(ARCHIVED_ID_RUN_PATTERN);
-      if (run) {
-        const rest = run[2].trim();
-        // 区切りが `,` / `、` でない列挙は先頭だけ拾って残りが無検証になる。
-        // 黙って切り詰めず、行そのものを違反として報告する。
-        if (rest !== "" && !ARCHIVED_REASON_HEAD_PATTERN.test(rest)) {
-          malformedArchived.push(line);
-          continue;
-        }
-        archivedIds.push(...[...run[1].matchAll(ACE_ID_PATTERN)].map((m) => m[0]));
-      }
+      collectIdRun(line, ARCHIVED_ID_RUN_PATTERN, archivedIds, malformedArchived);
     }
   }
 
@@ -156,6 +277,8 @@ export function parseChangelogOperations(playbookContent: string): ChangelogOper
     archivedIds: uniqueSorted(archivedIds),
     malformedMerged,
     malformedArchived,
+    malformedPromoted,
+    malformedCompacted,
   };
 }
 
@@ -467,8 +590,20 @@ export function evaluateRefineInvariants(input: {
     );
   }
 
+  for (const line of ops.malformedPromoted) {
+    violations.push(
+      `promote 行の ID 列が途中で切れている（区切りは , か 、 で、理由は ID 列の後ろの括弧書きに置く）: ${line}`,
+    );
+  }
+
   for (const line of ops.malformedMerged) {
     violations.push(`merge 行が解析できない: ${line}`);
+  }
+
+  for (const line of ops.malformedCompacted) {
+    violations.push(
+      `compact 行の括弧が閉じていない（閉じ忘れは括弧以降の ID を黙って落とすため部分採用しない）: ${line}`,
+    );
   }
 
   const helpfulBySurvivor = new Map<string, number>();

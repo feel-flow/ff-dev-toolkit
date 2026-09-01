@@ -328,6 +328,18 @@ contains "$REFINE_REPORT_SCRIPT" \
 contains "$REFINE_REPORT_SCRIPT" \
   "ACE_PROMOTE_HELPFUL_MIN" \
   "ace-refine-report の昇格閾値環境変数"
+# 統合先（archive の `> Merged into:` の着地先）を Archive 候補として出すと、承認 →
+# 適用 → check-refine-invariants が exit 1 → 巻き戻し、の手戻りになる（Issue #917）。
+# 除外は黙って落とすのではなく理由付きの別枠にする、という設計まで固定する。
+contains "$REFINE_REPORT_SCRIPT" \
+  "## Archive 候補から除外（他エントリの統合先、" \
+  "ace-refine-report が統合先を理由付きの別枠へ回す"
+contains "$REFINE_REPORT_SCRIPT" \
+  "Merged into:" \
+  "ace-refine-report が archive の Merged into を統合先の判定源にしている"
+contains "$REFINE_FILE" \
+  "除外枠は R3-a の対象にしない" \
+  "SKILL.md R1: 統合先の除外枠を R3-a の対象にしない案内"
 
 echo
 echo "== エントリ形式ゲート（Issue #286） =="

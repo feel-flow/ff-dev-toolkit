@@ -46,6 +46,8 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   analyzePlaybookMarkdown,
+  blankCodeRegions,
+  blankHtmlBlockComments,
   discoverPlaybookSubfiles,
   mergeAnalyses,
   type AnalyzeSuccess,
@@ -131,12 +133,21 @@ export type FieldChange = Readonly<{
 /**
  * `## Changelog` セクション不在をドリフト扱いにしない緩和（Issue #615）。
  * **Changelog を持たない最小 fixture を組むユニットテスト専用**で、CLI からは設定
- * できない。実運用の PLAYBOOK.md は `/ace-setup` が配るテンプレートの時点で
- * `## Changelog` を持つため、不在は「消された」以外の意味を持たない — そこへ
- * CLI フラグを生やすと、fail-open を潰す修正に fail-open の逃げ道を付けることになる。
+ * できない。実運用の PLAYBOOK.md は `/ace-setup` が配るテンプレートの時点で本体に
+ * `## Changelog` を持つ。本体に無い場合は分割レイアウト（`playbook/CHANGELOG.md` への
+ * 切り出し。Issue #949）を splitChangelogContent 経由で探索し、**本体・分割のどちらにも
+ * 無い**ときだけ「消された」と診断する — そこへ CLI フラグを生やすと、fail-open を
+ * 潰す修正に fail-open の逃げ道を付けることになる。
  */
 type AllowMissingChangelogOption = Readonly<{
   readonly allowMissingChangelog?: boolean;
+  /**
+   * 本体に `## Changelog` が無いときに代わりに探索する分割 Changelog
+   * （`playbook/CHANGELOG.md`）の内容。CLI では main() が playbook/ 走査結果から
+   * 自動で渡す（Issue #949: エントリ集計は分割を合算するのに Changelog だけ
+   * 本体固定だった非対称の解消）。
+   */
+  readonly splitChangelogContent?: string;
 }>;
 
 export type SyncCheckOptions = AllowMissingChangelogOption &
@@ -179,6 +190,12 @@ export type SyncOk = Readonly<{
    * `empty`（あるが版見出しが無い）は診断文が異なるため呼び出し側で区別する。
    */
   readonly changelogState: "absent" | "empty" | "found";
+  /**
+   * Changelog をどこで見つけたか。`main` = PLAYBOOK.md 本体、`split` = 分割
+   * `playbook/CHANGELOG.md`（本体に無く splitChangelogContent 側で見つけた／
+   * 判定した）、null = どちらにも `## Changelog` セクションが無い。
+   */
+  readonly changelogSource: "main" | "split" | null;
   /**
    * frontmatter version と Changelog 最新版が一致しているか。
    * Changelog セクションが無い場合も false（Issue #615: セクションを消すだけで
@@ -229,12 +246,45 @@ export function splitFrontmatter(
 }
 
 /**
+ * Changelog 走査用の前処理（Issue #701 発見 1）。コードフェンスと HTML コメントを
+ * 空白化してから `## Changelog` / 版見出しを探す — 生の全文走査だと、フェンス /
+ * コメント内の書き方例示を本物の節・版と誤認して例示側の版と比較する（fail-open）。
+ *
+ * 順序が本質（blankCodeRegions と同じ probe 方式の理由）: フェンス範囲の検出は
+ * blankCodeRegions がコメント空白化済みコピーで行い、空白化は原文へ当てる。これにより
+ * フェンス内のリテラル `<!--` は先に消え、後段のコメント空白化が本文の実 `-->` と
+ * 誤って対になって間の実 Changelog を落とすことがない。コメント空白化を先に走らせる
+ * 素朴な実装はこの形で正しい Playbook を absent と誤判定する。
+ *
+ * 未閉の `<!--` が残った場合はそこから EOF まで空白化する（判定不能領域を採用しない側 =
+ * absent / empty のドリフト報告へ倒す fail-closed）。残存限界: フェンス内の開きだけの
+ * `<!--` が本文の実 `-->` と対になる敵対形は、probe 上でフェンス閉じが飲み込まれて
+ * unclosed 扱いになり、実節も absent へ落ちる — 落ちる先は常にドリフト報告（fail-closed）で
+ * あり、例示版の採用（fail-open）には決してならない。この性質をテストで固定している。未閉フェンスは blankCodeRegions が
+ * fail-open で残すが、CLI 経路では先行するエントリ集計が未閉フェンスを fail-loud で
+ * 拒否するためここへは到達しない。
+ */
+function maskChangelogScanNoise(text: string): string {
+  const fencesBlanked = blankCodeRegions(text).text;
+  const masked = blankHtmlBlockComments(fencesBlanked);
+  const unclosedComment = masked.indexOf("<!--");
+  if (unclosedComment === -1) {
+    return masked;
+  }
+  return masked.slice(0, unclosedComment) + masked.slice(unclosedComment).replace(/[^\n]/gu, " ");
+}
+
+/**
  * frontmatter の**トップレベル** key の生値（クォート除去済み）を取り出す。無ければ null。
  * インデント（`metadata:` 等の配下にネストされたキー）は一切許容しない。ネストされた
  * 同名キーをトップレベル記録と誤認すると、必須項目が欠落したまま check が通る
  * （Issue #615）。本スクリプトの読み取りはすべてこの関数を通す。
  */
 export function readTopLevelField(frontmatter: string, key: string): string | null {
+  // トップレベル判定は行頭アンカーの字句照合であり、`"version":` のようなクォートキーは
+  // 読み・数え・書きのすべてから外れる（Issue #701 発見 3）。テンプレートと ACE スキルが
+  // 書く frontmatter にクォートキーは現れないため**非対応と判断**し、YAML パーサ導入は
+  // 依存追加と挙動差リスクに見合わないため見送った（対応する場合はテストで固定すること）。
   const re = new RegExp(`^${escapeRegExp(key)}:[ \\t]*(.*)$`, "mu");
   const match = frontmatter.match(re);
   if (!match) return null;
@@ -402,7 +452,9 @@ export function formatChangelogAbsent(frontmatterVersion: string | null): string
     "`## Changelog` を復元し `### [x.y.z] - YYYY-MM-DD` を記載してください" +
     "（`/ace-curate` の 4-d 参照）。\n" +
     "  受理する見出しは行頭の `## Changelog` のみです（レベル 2・大文字小文字は完全一致。" +
-    "`### Changelog` や `## changelog` は認識しません）。"
+    "`### Changelog` や `## changelog` は認識しません）。\n" +
+    "  Changelog を `playbook/CHANGELOG.md` へ切り出している場合はそちらも探索します" +
+    "（この診断は本体・分割のどちらにも無いときだけ出ます）。"
   );
 }
 
@@ -533,13 +585,46 @@ export function computeSync(
     }
   }
 
+  // 管理フィールドの行内コメントは fail-loud で拒否する（Issue #701 発見 2）。
+  // `ace_entry_count: N # メモ` の形は値が "N # メモ" と読まれて非数値 → 記録なし扱いに
+  // 化け、--write はコメントごと落とす。黙って壊す代わりに雛形の修正を促す。
+  for (const key of MANAGED_TOP_LEVEL_FIELDS) {
+    const rawValue = readTopLevelField(split.frontmatter, key);
+    if (rawValue !== null && /(?:^|\s)#/u.test(rawValue)) {
+      return {
+        kind: "error",
+        message: `${key} の値に行内コメント（' #' 以降）が含まれています: "${rawValue}"。本スクリプトは行内コメント付きの管理フィールドを扱えません（読みが壊れ、--write がコメントを落とします）。コメントは前行の独立コメント行へ移してください。`,
+      };
+    }
+  }
+
   const recordedRaw = readTopLevelField(split.frontmatter, COUNT_FIELD);
   const recordedCount = recordedRaw !== null && /^[0-9]+$/u.test(recordedRaw) ? Number.parseInt(recordedRaw, 10) : null;
   const inSync = recordedCount === actualCount;
 
   // Changelog 情報は本文側なので frontmatter 編集の前に一度だけ抽出する
-  // （version↔Changelog 一致と「変更済み文書」判定の両方で使う）
-  const changelogExtract = extractLatestChangelogVersion(content);
+  // （version↔Changelog 一致と「変更済み文書」判定の両方で使う）。
+  // 本体で版見出しが見つかった（found）場合のみ本体を正とし、absent だけでなく
+  // empty（切り出し先への誘導として空の `## Changelog` スタブが本体に残る実在構成）でも
+  // 分割 playbook/CHANGELOG.md へ fallback する（Issue #949）。分割側にセクションが
+  // 無ければ本体の判定（absent / empty）をそのまま保つ。
+  // 走査は frontmatter を除いた本文（split.rest）に対して、フェンス / HTML コメントを
+  // 空白化してから行う（Issue #701 発見 1: frontmatter 内の YAML コメントやフェンス内の
+  // 例示を本物の節と誤認しない）。
+  const mainChangelogExtract = extractLatestChangelogVersion(maskChangelogScanNoise(split.rest));
+  const splitChangelogContent = options.splitChangelogContent;
+  let changelogExtract = mainChangelogExtract;
+  let changelogSource: "main" | "split" | null =
+    mainChangelogExtract.kind === "absent" ? null : "main";
+  if (mainChangelogExtract.kind !== "found" && splitChangelogContent !== undefined) {
+    // 分割ファイル自身の frontmatter も走査から除く（YAML コメントの例示を節と誤認しない）
+    const splitBody = splitFrontmatter(splitChangelogContent)?.rest ?? splitChangelogContent;
+    const splitExtract = extractLatestChangelogVersion(maskChangelogScanNoise(splitBody));
+    if (splitExtract.kind !== "absent") {
+      changelogExtract = splitExtract;
+      changelogSource = "split";
+    }
+  }
   const changelogVersionCount = changelogExtract.kind === "found" ? changelogExtract.count : 0;
 
   const changes: FieldChange[] = [];
@@ -662,6 +747,7 @@ export function computeSync(
     frontmatterVersion,
     changelogVersion,
     changelogState: changelogExtract.kind,
+    changelogSource,
     versionChangelogInSync,
     changeImpactValue,
     changeImpactValid,
@@ -799,14 +885,21 @@ export function main(argv: readonly string[] = process.argv): number {
     return EXIT_USAGE_ERROR;
   }
 
+  // 分割レイアウト（Issue #949）: playbook/CHANGELOG.md があれば Changelog 探索の
+  // fallback として渡す（エントリ集計側は従来どおり全 subfile を合算する）。
+  const splitChangelogIndex = subfiles.findIndex((p) => path.basename(p) === "CHANGELOG.md");
+  const splitChangelogContent =
+    splitChangelogIndex >= 0 ? subfileContents[splitChangelogIndex] : undefined;
+
   const updatedDate = process.env.ACE_UPDATED_DATE;
   const syncOptions: SyncOptions = write
     ? {
         write: true,
         bumpVersion,
         ...(updatedDate === undefined ? {} : { updatedDate }),
+        ...(splitChangelogContent === undefined ? {} : { splitChangelogContent }),
       }
-    : {};
+    : { ...(splitChangelogContent === undefined ? {} : { splitChangelogContent }) };
   const result = computeSync(mainContent, counted.total, syncOptions);
   if (result.kind === "error") {
     console.error(`${playbookPath}: ${result.message}`);
@@ -816,11 +909,13 @@ export function main(argv: readonly string[] = process.argv): number {
   console.log(`Playbook: ${playbookPath}`);
   console.log(`実エントリ数: ${String(result.actualCount)} / frontmatter 記録値: ${String(result.recordedCount ?? "なし")}`);
   // 「なし」の理由（セクション不在 / 版見出し不在）を出し分ける。両者は対処が違う。
+  const splitSuffix = result.changelogSource === "split" ? "（playbook/CHANGELOG.md）" : "";
   const changelogSummary =
-    result.changelogVersion ??
-    (result.changelogState === "absent"
-      ? "なし（## Changelog セクションが無い）"
-      : "なし（セクションはあるが版見出しが無い）");
+    result.changelogVersion !== null
+      ? `${result.changelogVersion}${splitSuffix}`
+      : result.changelogState === "absent"
+        ? "なし（## Changelog セクションが無い）"
+        : `なし（セクションはあるが版見出しが無い）${splitSuffix}`;
   console.log(
     `version: frontmatter=${String(result.frontmatterVersion ?? "なし")} / Changelog最新=${changelogSummary}`,
   );

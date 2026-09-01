@@ -64,6 +64,26 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
    - エントリ本体のカテゴリ別分割ファイル（`playbook/<category>.md`）は最初のエントリ追記時に `/ace-curate` が作成するため、この時点では作らなくてよい
 2. **ace-cycle.md** — `${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/ace-cycle.md` をそのままコピーする
 
+### Step 3-b: 形式ゲートの allowlist 初期化（既存プロジェクトのみ）
+
+**新規プロジェクト（Step 3 で同梱テンプレートから PLAYBOOK.md を作成した場合）はこの手順を飛ばす。** エントリが 0 件なので `legacy-format-allowlist.txt` は不要で、「allowlist 不在 = strict」が正しい既定である。
+
+既存の PLAYBOOK.md を引き継ぐプロジェクト（Step 1 で (a) 中止を選び、形式ゲートだけを後から導入する場合を含む）に旧テーブル形式（`| フィールド | 値 |` ヘッダ + Insight/Context/Action ブロック）のエントリが残っているときは、**導入時に 1 回だけ**次を実行して allowlist を初期化する。手作業で ID を抽出して列挙しない:
+
+```bash
+# 次の 2 つのうち 1 本だけを実行する
+# (1) scripts/ace/check-entry-format.ts を配置済みの場合
+npx --yes tsx scripts/ace/check-entry-format.ts --init-allowlist docs/08-knowledge/PLAYBOOK.md
+# (2) 配置していない場合はプラグイン同梱のテンプレートを直接叩く（インストール不要）
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" --init-allowlist docs/08-knowledge/PLAYBOOK.md
+```
+
+- 記録されるのは**導入時点で旧形式だったエントリの ID だけ**（正準フォーマットのエントリは記録しない）。旧形式が 0 件ならファイル自体を作らない
+- 既存 allowlist は上書きしない。ID 集合が一致すれば書き込まず成功し（冪等 — 再実行の差分はゼロ）、一致しなければ差分を表示して exit 1 で止まる
+- **初期化後に足した旧形式の新規追記は自動追加されない**（形式ゲートが exit 1 で拒否する）。allowlist は既存エントリの読み取り互換のためのものであり、新規追記の抜け道ではない
+- exit 2（未閉コードフェンス・エントリ見出しとして認識されない `### ACE-` 行）は**何も書き込まずに**止まる。ID 集合がずれるためで、指摘された箇所を直してから再実行する
+- 初期化後は形式ゲート本体（`--init-allowlist` なしの実行）が exit 0 になることを確認する
+
 ### Step 4: AIツール固有の設定
 
 ユーザーに対象 AI ツールを確認する（複数選択可）:

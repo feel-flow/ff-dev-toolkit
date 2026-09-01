@@ -7,6 +7,7 @@ import {
   listLegacyEntryIds,
   main,
   parseAllowlist,
+  scanEntryAnchors,
   splitEntries,
 } from "./check-entry-format";
 import * as fs from "node:fs";
@@ -1154,6 +1155,453 @@ describe("エントリ ID の重複検出（Issue #617）", () => {
 
     expect(code).toBe(0);
     expect(err).toBe("");
+  });
+});
+
+describe("scanEntryAnchors（Issue #730）", () => {
+  it("正準レイアウトのアンカーを列挙し、不一致は 1 件も返さない（正値の固定）", () => {
+    const scan = scanEntryAnchors(CATEGORY_HEADER + compactEntry("41-1") + compactEntry("41-2"));
+
+    expect(scan.anchors.map((anchor) => anchor.id)).toEqual(["ace-41-1", "ace-41-2"]);
+    expect(scan.mismatches).toEqual([]);
+  });
+
+  it("見出しとアンカーの間に空行が無くても組として認識する（形式ではなく ID を見る）", () => {
+    const scan = scanEntryAnchors(
+      ['<a id="ace-9-9"></a>', "### ACE-9-9: 空行なしのエントリ", ""].join("\n"),
+    );
+
+    expect(scan.mismatches).toEqual([]);
+  });
+
+  it("接頭辞が二重になったアンカーを見出し ID・期待値つきで返す（live 実測形）", () => {
+    // docs/08-knowledge に 6 件実在した形（ACE-471-1〜6）。索引側のリンクも同じ二重
+    // 接頭辞だったため、リンクチェッカーには映らないまま規約から外れていた。
+    const scan = scanEntryAnchors(
+      ['<a id="ace-ace-471-3"></a>', "", "### ACE-471-3: 二重接頭辞のエントリ", ""].join("\n"),
+    );
+
+    expect(scan.mismatches).toEqual([
+      { anchorId: "ace-ace-471-3", entryId: "ACE-471-3", expected: "ace-471-3", line: 0 },
+    ]);
+  });
+
+  it("大文字のままのアンカーも不一致にする（URL フラグメントは大小文字を区別する）", () => {
+    const scan = scanEntryAnchors(
+      ['<a id="ACE-9-9"></a>', "", "### ACE-9-9: 大文字アンカー", ""].join("\n"),
+    );
+
+    expect(scan.mismatches.map((mismatch) => mismatch.anchorId)).toEqual(["ACE-9-9"]);
+  });
+
+  it("アンカーを持たないエントリは不一致にしない（旧形式との読み取り互換）", () => {
+    const scan = scanEntryAnchors(["### ACE-9-9: アンカー無しのエントリ", ""].join("\n"));
+
+    expect(scan.anchors).toEqual([]);
+    expect(scan.mismatches).toEqual([]);
+  });
+
+  it("行内のコードスパンで説明されたアンカーは数えない（記述ガイドラインの解説文）", () => {
+    // PLAYBOOK.md §記述ガイドラインはアンカー書式をコードスパンで説明している。
+    // 行全体の照合をやめると、この解説文が 2 件目のアンカーとして重複違反になる。
+    const scan = scanEntryAnchors(
+      ['- **anchor**: 見出し直前に `<a id="ace-XXX"></a>` を 1 行付与する。', ""].join("\n"),
+    );
+
+    expect(scan.anchors).toEqual([]);
+  });
+
+  it("節見出し用の一般アンカーは一意性検査の対象にしない（ACE アンカーだけを集める）", () => {
+    const scan = scanEntryAnchors(['<a id="notes"></a>', "", "## 補足", ""].join("\n"));
+
+    expect(scan.anchors).toEqual([]);
+  });
+
+  it("エントリ見出しの直前にある一般アンカーは不一致として拾う", () => {
+    const scan = scanEntryAnchors(
+      ['<a id="notes"></a>', "", "### ACE-9-9: 別物のアンカー", ""].join("\n"),
+    );
+
+    expect(scan.mismatches.map((mismatch) => mismatch.anchorId)).toEqual(["notes"]);
+  });
+});
+
+describe("live アンカーの重複・見出し不一致（Issue #730）", () => {
+  const originalArgv = process.argv;
+  let tmpDir = "";
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  /** アンカー ID と見出し ID を独立に指定できるエントリ（正準フォーマット）。 */
+  function anchoredEntry(anchorId: string, entryId: string): string {
+    return [
+      `<a id="${anchorId}"></a>`,
+      "",
+      `### ACE-${entryId}: アンカー検査用のエントリ`,
+      "",
+      "| Category | coding | Origin | PR #1 |",
+      "| Date | 2026-08-07 |",
+      "| Helpful | 0 | Harmful | 0 |",
+      "| Status | active |",
+      "",
+      "知見の本質を 1 文で述べる。適用条件を 1 文。推奨アクションで締める。",
+      "",
+      "---",
+      "",
+    ].join("\n");
+  }
+
+  function run(options: {
+    readonly index?: string;
+    readonly subfiles: Record<string, string>;
+    readonly archive?: Record<string, string>;
+  }): { code: number; err: string } {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-anchor-"));
+    const playbookPath = path.join(tmpDir, "PLAYBOOK.md");
+    fs.writeFileSync(playbookPath, options.index ?? "# 索引\n");
+    const subDir = path.join(tmpDir, "playbook");
+    fs.mkdirSync(subDir);
+    for (const [name, content] of Object.entries(options.subfiles)) {
+      fs.writeFileSync(path.join(subDir, name), content);
+    }
+    if (options.archive) {
+      const archiveDir = path.join(subDir, "archive");
+      fs.mkdirSync(archiveDir);
+      for (const [name, content] of Object.entries(options.archive)) {
+        fs.writeFileSync(path.join(archiveDir, name), content);
+      }
+    }
+    fs.writeFileSync(path.join(tmpDir, "legacy-format-allowlist.txt"), "");
+    process.argv = ["node", "check-entry-format.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const code = main();
+    return { code, err: err.mock.calls.flat().join("\n") };
+  }
+
+  it("ファイルをまたいだアンカー重複を exit 1 で出現箇所つきに名指しする", () => {
+    // ACE-524-1 の三重採番の縮小形。ID 側の重複ゲート（#617）と独立に、アンカーの
+    // 重複だけでも赤にする（見出し ID がずれていてもアンカーは衝突しうる）。
+    const { code, err } = run({
+      subfiles: {
+        "coding.md": CATEGORY_HEADER + anchoredEntry("ace-524-1", "524-1"),
+        "process.md": CATEGORY_HEADER + anchoredEntry("ace-524-1", "524-2"),
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(err).toContain("同じ `<a id>` アンカー");
+    expect(err).toContain("ace-524-1");
+    // アンカー行は見出し行（10 行目）の 2 行上。見出し ID の重複ゲート（#617）とは
+    // 別の行を指すことが、両者が独立に走っていることの実測でもある。
+    expect(err).toContain("coding.md: 8 行目");
+    expect(err).toContain("process.md: 8 行目");
+  });
+
+  it("同一ファイル内のアンカー重複も行番号で場所を分けて示す", () => {
+    const { code, err } = run({
+      subfiles: {
+        "coding.md":
+          CATEGORY_HEADER + anchoredEntry("ace-524-1", "524-1") + anchoredEntry("ace-524-1", "524-2"),
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(err).toContain("ace-524-1（2 箇所: coding.md: 8 行目 / 20 行目）");
+  });
+
+  it("アンカー ID と見出し ID の不一致を exit 1 で期待値つきに名指しする", () => {
+    const { code, err } = run({
+      subfiles: { "coding.md": CATEGORY_HEADER + anchoredEntry("ace-ace-471-3", "471-3") },
+    });
+
+    expect(code).toBe(1);
+    expect(err).toContain("一致していません");
+    expect(err).toContain("coding.md: 8 行目");
+    expect(err).toContain("期待: ace-471-3");
+  });
+
+  it("索引 PLAYBOOK.md 側のアンカーも走査対象に含む（部分移行中の穴）", () => {
+    const { code, err } = run({
+      index: "# 索引\n\n" + anchoredEntry("ace-ace-1-1", "1-1"),
+      subfiles: { "coding.md": CATEGORY_HEADER + compactEntry("2-1") },
+    });
+
+    expect(code).toBe(1);
+    expect(err).toContain("PLAYBOOK.md");
+    expect(err).toContain("期待: ace-1-1");
+  });
+
+  it("正しいアンカーが 1 件ずつなら緑のまま通る（正値の固定）", () => {
+    const { code, err } = run({
+      subfiles: {
+        "coding.md": CATEGORY_HEADER + compactEntry("524-1") + compactEntry("524-2"),
+        "process.md": CATEGORY_HEADER + compactEntry("524-3"),
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+  });
+
+  it("アンカーを持たないエントリだけの Playbook も緑のまま通る（存在は要求しない）", () => {
+    const { code, err } = run({
+      subfiles: {
+        "coding.md": CATEGORY_HEADER + ["### ACE-9-9: アンカー無しのエントリ", "", "本文。", "", "---", ""].join("\n"),
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+  });
+
+  it("archive に同じアンカーの原文があっても重複扱いしない（走査対象外の維持）", () => {
+    const { code, err } = run({
+      subfiles: { "coding.md": CATEGORY_HEADER + compactEntry("41-3") },
+      archive: { "coding.md": legacyEntry("41-3") },
+    });
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+  });
+
+  it("フェンス内のテンプレートのアンカーは重複に数えない（例示の巻き込み防止）", () => {
+    const template = [
+      "```markdown",
+      '<a id="ace-XXX"></a>',
+      "",
+      "### ACE-XXX: [タイトル]",
+      "```",
+      "",
+    ].join("\n");
+    const { code, err } = run({
+      index: "# 索引\n\n" + template + template,
+      subfiles: { "coding.md": CATEGORY_HEADER + compactEntry("41-3") },
+    });
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+  });
+});
+
+describe("--init-allowlist（Issue #839）", () => {
+  const originalArgv = process.argv;
+  let tmpDir = "";
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    delete process.env.ACE_LEGACY_FORMAT_ALLOWLIST;
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  function writeLayout(options: {
+    readonly index?: string;
+    readonly subfiles: Readonly<Record<string, string>>;
+    readonly allowlist?: string;
+  }): string {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-init-allowlist-"));
+    const playbookPath = path.join(tmpDir, "PLAYBOOK.md");
+    fs.writeFileSync(playbookPath, options.index ?? "# 索引\n");
+    const subDir = path.join(tmpDir, "playbook");
+    fs.mkdirSync(subDir);
+    for (const [name, content] of Object.entries(options.subfiles)) {
+      fs.writeFileSync(path.join(subDir, name), content);
+    }
+    if (options.allowlist !== undefined) {
+      fs.writeFileSync(path.join(tmpDir, "legacy-format-allowlist.txt"), options.allowlist);
+    }
+    return playbookPath;
+  }
+
+  function allowlistPathOf(playbookPath: string): string {
+    return path.join(path.dirname(playbookPath), "legacy-format-allowlist.txt");
+  }
+
+  function runInit(playbookPath: string): { code: number; out: string; err: string } {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const code = main(["node", "check-entry-format.ts", "--init-allowlist", playbookPath]);
+    return {
+      code,
+      out: log.mock.calls.flat().join("\n"),
+      err: err.mock.calls.flat().join("\n"),
+    };
+  }
+
+  /** 初期化後の状態を通常の形式ゲートで測る（初期化が実際にゲートを満たすか）。 */
+  function runGate(playbookPath: string): { code: number; err: string } {
+    process.argv = ["node", "check-entry-format.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const code = main();
+    return { code, err: err.mock.calls.flat().join("\n") };
+  }
+
+  it("allowlist 未作成なら導入時点の旧形式 ID だけを記録し、形式ゲートが緑になる", () => {
+    const playbookPath = writeLayout({
+      subfiles: {
+        "coding.md": CATEGORY_HEADER + compactEntry("1-1") + legacyEntry("9-9"),
+        "process.md": CATEGORY_HEADER + hybridEntry("2-1"),
+      },
+    });
+
+    const { code, out } = runInit(playbookPath);
+
+    expect(code).toBe(0);
+    expect(out).toContain("2 件");
+    const content = fs.readFileSync(allowlistPathOf(playbookPath), "utf8");
+    // 正準フォーマットの ACE-1-1 は記録しない（「不要な legacy ID を作らない」）。
+    expect(parseAllowlist(content)).toEqual(["ACE-2-1", "ACE-9-9"]);
+    expect(content.startsWith("# ACE 旧テーブル形式エントリの allowlist")).toBe(true);
+    expect(runGate(playbookPath).code).toBe(0);
+  });
+
+  it("索引 PLAYBOOK.md 自身の旧形式も記録する（形式ゲートと同じ走査範囲）", () => {
+    // 走査範囲が一覧モード（playbook/ 直下のみ）だと、索引に残った部分移行中の
+    // 旧形式が allowlist から漏れ、初期化直後にゲートが赤になる。
+    const playbookPath = writeLayout({
+      index: "# 索引\n\n" + legacyEntry("3-1"),
+      subfiles: { "coding.md": CATEGORY_HEADER + compactEntry("1-1") },
+    });
+
+    expect(runInit(playbookPath).code).toBe(0);
+
+    expect(parseAllowlist(fs.readFileSync(allowlistPathOf(playbookPath), "utf8"))).toEqual([
+      "ACE-3-1",
+    ]);
+    expect(runGate(playbookPath).code).toBe(0);
+  });
+
+  it("コンパクト正準だけの Playbook では allowlist を作らない（不在 = strict の維持）", () => {
+    const playbookPath = writeLayout({
+      subfiles: { "coding.md": CATEGORY_HEADER + compactEntry("1-1") + compactEntry("1-2") },
+    });
+
+    const { code, out } = runInit(playbookPath);
+
+    expect(code).toBe(0);
+    expect(out).toContain("0 件");
+    expect(fs.existsSync(allowlistPathOf(playbookPath))).toBe(false);
+    expect(runGate(playbookPath).code).toBe(0);
+  });
+
+  it("旧形式 ID 集合が不変なら再実行は差分ゼロで成功する（冪等）", () => {
+    const playbookPath = writeLayout({
+      subfiles: { "coding.md": CATEGORY_HEADER + legacyEntry("9-9") },
+    });
+    expect(runInit(playbookPath).code).toBe(0);
+    const first = fs.readFileSync(allowlistPathOf(playbookPath), "utf8");
+
+    const { code, out } = runInit(playbookPath);
+
+    expect(code).toBe(0);
+    expect(out).toContain("変更なし");
+    expect(fs.readFileSync(allowlistPathOf(playbookPath), "utf8")).toBe(first);
+  });
+
+  it("初期化後に足した旧形式は自動追加されず、形式ゲートも初期化も拒否する（negative control）", () => {
+    const codingPath = (playbook: string) => path.join(path.dirname(playbook), "playbook", "coding.md");
+    const playbookPath = writeLayout({
+      subfiles: { "coding.md": CATEGORY_HEADER + legacyEntry("9-9") },
+    });
+    expect(runInit(playbookPath).code).toBe(0);
+    const initialized = fs.readFileSync(allowlistPathOf(playbookPath), "utf8");
+
+    fs.writeFileSync(
+      codingPath(playbookPath),
+      fs.readFileSync(codingPath(playbookPath), "utf8") + legacyEntry("10-1"),
+    );
+
+    // 形式ゲートは新規の旧形式を名指しして赤にする。
+    const gate = runGate(playbookPath);
+    expect(gate.code).toBe(1);
+    expect(gate.err).toContain("ACE-10-1");
+    // 初期化を再実行しても和集合で取り込まない（allowlist は新規追記の抜け道ではない）。
+    const reinit = runInit(playbookPath);
+    expect(reinit.code).toBe(1);
+    expect(reinit.err).toContain("ACE-10-1");
+    expect(fs.readFileSync(allowlistPathOf(playbookPath), "utf8")).toBe(initialized);
+  });
+
+  it("正準化済み ID が allowlist に残っていても上書きせず差分を報告する", () => {
+    const playbookPath = writeLayout({
+      subfiles: { "coding.md": CATEGORY_HEADER + compactEntry("1-1") },
+      allowlist: "ACE-1-1\n",
+    });
+
+    const { code, err } = runInit(playbookPath);
+
+    expect(code).toBe(1);
+    expect(err).toContain("ACE-1-1");
+    expect(err).toContain("削除");
+    expect(fs.readFileSync(allowlistPathOf(playbookPath), "utf8")).toBe("ACE-1-1\n");
+  });
+
+  it("未閉コードフェンスは allowlist を作らず exit 2（不完全な集合を書き込まない）", () => {
+    const playbookPath = writeLayout({
+      subfiles: {
+        "coding.md": CATEGORY_HEADER + legacyEntry("9-9"),
+        "process.md": CATEGORY_HEADER + "```markdown\n",
+      },
+    });
+
+    const { code, err } = runInit(playbookPath);
+
+    expect(code).toBe(2);
+    expect(err).toContain("閉じていません");
+    expect(fs.existsSync(allowlistPathOf(playbookPath))).toBe(false);
+  });
+
+  it("認識されない `### ACE-` 見出しがあれば allowlist を作らず exit 2（吸収でずれる）", () => {
+    const playbookPath = writeLayout({
+      subfiles: {
+        "coding.md":
+          CATEGORY_HEADER +
+          compactEntry("1-1") +
+          ["### ACE-1.: 吸収される見出し", "", "**Insight**: 旧形式の本文。", "", "---", ""].join("\n"),
+      },
+    });
+
+    const { code, err } = runInit(playbookPath);
+
+    expect(code).toBe(2);
+    expect(err).toContain("吸収");
+    expect(fs.existsSync(allowlistPathOf(playbookPath))).toBe(false);
+  });
+
+  it("ACE_LEGACY_FORMAT_ALLOWLIST で出力先を上書きできる", () => {
+    const playbookPath = writeLayout({
+      subfiles: { "coding.md": CATEGORY_HEADER + legacyEntry("9-9") },
+    });
+    const custom = path.join(path.dirname(playbookPath), "custom-allowlist.txt");
+    process.env.ACE_LEGACY_FORMAT_ALLOWLIST = custom;
+
+    expect(runInit(playbookPath).code).toBe(0);
+
+    expect(parseAllowlist(fs.readFileSync(custom, "utf8"))).toEqual(["ACE-9-9"]);
+    expect(fs.existsSync(allowlistPathOf(playbookPath))).toBe(false);
+  });
+
+  it("引数不備と未知の --init- オプションは通常ゲートへ落とさず exit 2", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    expect(main(["node", "check-entry-format.ts", "--init-allowlist"])).toBe(2);
+    expect(main(["node", "check-entry-format.ts", "--init-allowlst", "PLAYBOOK.md"])).toBe(2);
+    expect(err.mock.calls.flat().join("\n")).toContain("Usage:");
   });
 });
 

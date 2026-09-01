@@ -109,6 +109,35 @@ expect_contains \
   '（無ければ「Reuse 記録なし」）' \
   "Reuse 記録欄を候補件数と独立の必須出力として保持"
 
+echo "== 手順 5 直 push 経路の実測ガード検査（Issue #739） =="
+# detached HEAD のまま push すると「Everything up-to-date」で成功に見えたまま
+# knowledge コミットが届かない。ブランチの実測・push 出力の照合・push 後 CI 確認の
+# 3 点が手順から侵食されないよう固定する。
+
+expect_contains \
+  'current_branch="$(git symbolic-ref -q --short HEAD)" || current_branch=""' \
+  "コミット先ブランチを git symbolic-ref で実測するガード"
+
+expect_contains \
+  'push_refspec="HEAD:${default_branch}"' \
+  "detached HEAD 時は push refspec を HEAD:default-branch 形式へ切替"
+
+expect_contains \
+  'git push origin "${push_refspec}"' \
+  "push が実測済み refspec を使う"
+
+expect_contains \
+  'push 出力に -> ${default_branch} が無く、コミットが届いていません' \
+  "push 出力の -> default-branch 照合（Everything up-to-date を成功扱いしない）"
+
+expect_contains \
+  'gh run list --branch "${default_branch}"' \
+  "直 push 後の CI 結果確認手順"
+
+expect_contains \
+  'revert ではなく ACE コミットを前進で直して push し直す' \
+  "CI 赤時のアクション（前進で直す）"
+
 echo "== 同梱スクリプトへの到達可能性検査 =="
 # ゲートの実行例が `path/to/` 等のプレースホルダのままだと、scripts/ace/ 未導入の
 # プロジェクトでは「必須」と書かれたゲートが素通りする（Issue #614）。同梱テンプレート
