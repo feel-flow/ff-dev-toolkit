@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 args=("$@")
+if [[ "$*" == *"ls-remote --get-url"* && "$*" == *"https://github.com/feel-flow/ff-dev-toolkit.git"* ]]; then
+  # 実 git は test 用 insteadOf（bare へ向く）を適用するため、helper の rewrite 検査には公開 URL をそのまま返す
+  [[ "${FAKE_FOOTER_INSTEADOF_REWRITE:-0}" == 1 ]] && { echo "git@github.com:feel-flow/ff-dev-toolkit.git"; exit 0; }
+  echo "https://github.com/feel-flow/ff-dev-toolkit.git"; exit 0
+fi
 if [[ -n "${FF_CHANGELOG_TEST_REMOTE:-}" && "$*" == *"ls-remote --refs --tags"* ]]; then
   isolated_dir=""
   for ((i=0; i<${#args[@]}; i++)); do
@@ -7,6 +12,12 @@ if [[ -n "${FF_CHANGELOG_TEST_REMOTE:-}" && "$*" == *"ls-remote --refs --tags"* 
   done
   if [[ -z "$isolated_dir" || -e "$isolated_dir/.git" || "${GIT_CEILING_DIRECTORIES:-}" != "$isolated_dir" || -n "${GIT_DIR:-}${GIT_WORK_TREE:-}${GIT_COMMON_DIR:-}${GIT_CONFIG_PARAMETERS:-}${GIT_CONFIG_COUNT:-}" ]]; then
     echo "tag fetch did not isolate repository-local Git configuration" >&2
+    exit 8
+  fi
+  # 配布リポジトリは Private（ADR-049）: global の credential.helper を helper 側が
+  # 無効化していないこと（GIT_CONFIG_GLOBAL=/dev/null や -c credential.helper= の復活）を検査する
+  if [[ "${GIT_CONFIG_GLOBAL:-}" == /dev/null || " $* " == *" credential.helper= "* ]]; then
+    echo "tag fetch disabled the global credential helper (Private repository needs it)" >&2
     exit 8
   fi
   [[ -z "${FAKE_FOOTER_ISOLATION_MARKER:-}" ]] || : > "$FAKE_FOOTER_ISOLATION_MARKER"
@@ -18,6 +29,15 @@ fi
 if [[ "$*" == *"ls-remote --refs --tags"* && -n "${FAKE_FOOTER_LOCK_MARKER:-}" ]]; then
   : > "$FAKE_FOOTER_LOCK_MARKER"
   while [[ ! -e "${FAKE_FOOTER_RELEASE_MARKER:?}" ]]; do sleep 0.05; done
+fi
+if [[ "$*" == *"ls-remote --refs --tags"* && "${FAKE_FOOTER_LS_REMOTE_DENIED:-0}" == 1 ]]; then
+  echo "remote: Repository not found." >&2
+  echo "fatal: repository 'https://github.com/feel-flow/ff-dev-toolkit.git/' not found" >&2
+  exit 128
+fi
+if [[ "$*" == *"ls-remote --refs --tags"* && "${FAKE_FOOTER_LS_REMOTE_AUTH_FAIL:-0}" == 1 ]]; then
+  echo "fatal: unable to get password from user" >&2
+  exit 128
 fi
 if [[ "$*" == *"ls-remote --refs --tags"* && "${FAKE_FOOTER_LS_REMOTE_FAIL:-0}" == 1 ]]; then
   echo "simulated tag fetch failure" >&2

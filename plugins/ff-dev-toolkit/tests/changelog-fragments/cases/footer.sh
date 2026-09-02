@@ -230,6 +230,30 @@ footer_fetch_out="$(PATH="$FOOTER_FAKE_BIN:$PATH" FAKE_FOOTER_REAL_GIT="$(comman
 footer_fetch_rc=$?
 set -e
 if [[ "$footer_fetch_rc" -eq 2 && "$footer_fetch_out" == *"公開タグ一覧を取得できません"* ]]; then ok "footer tag fetch 障害を検査不能として伝播"; else bad "footer tag fetch 障害を握り潰す"; fi
+if [[ "$footer_fetch_out" != *"認証ヘルパーが必要"* ]]; then ok "認証以外の tag fetch 障害では認証案内を出さない"; else bad "認証以外の障害に認証案内を出した: $footer_fetch_out"; fi
+
+# 認証失敗（Private 配布リポジトリで credential helper が無い）: ハングせず exit 2 + 認証案内 + CHANGELOG 不変
+footer_auth_before="$(cat "$FOOTER_CHANGELOG")"
+set +e
+footer_auth_out="$(PATH="$FOOTER_FAKE_BIN:$PATH" FAKE_FOOTER_REAL_GIT="$(command -v git)" FAKE_FOOTER_LS_REMOTE_AUTH_FAIL=1 bash "$FOOTER_ROOT/scripts/update-dev-toolkit-changelog-footer.sh" --public-checkout "$FOOTER_PUBLIC" 2>&1)"
+footer_auth_rc=$?
+set -e
+if [[ "$footer_auth_rc" -eq 2 && "$footer_auth_out" == *"公開タグ一覧を取得できません"* && "$footer_auth_out" == *"認証ヘルパーが必要"* && "$footer_auth_out" == *"gh auth setup-git"* ]]; then ok "認証失敗は exit 2 で止まり、Private 向けの認証案内を出す"; else bad "認証失敗の診断が不正: rc=$footer_auth_rc out=$footer_auth_out"; fi
+if [[ "$(cat "$FOOTER_CHANGELOG")" == "$footer_auth_before" ]]; then ok "認証失敗時に CHANGELOG を変更しない"; else bad "認証失敗時に CHANGELOG が変わった"; fi
+
+# 認証は通るがアクセス権が無い（Private では 404 "Repository not found"）: 認証案内ではなくアクセス権の案内
+set +e
+footer_denied_out="$(PATH="$FOOTER_FAKE_BIN:$PATH" FAKE_FOOTER_REAL_GIT="$(command -v git)" FAKE_FOOTER_LS_REMOTE_DENIED=1 bash "$FOOTER_ROOT/scripts/update-dev-toolkit-changelog-footer.sh" --public-checkout "$FOOTER_PUBLIC" 2>&1)"
+footer_denied_rc=$?
+set -e
+if [[ "$footer_denied_rc" -eq 2 && "$footer_denied_out" == *"アクセス権がありません"* && "$footer_denied_out" != *"認証ヘルパーが必要"* ]]; then ok "アクセス権不足は認証案内ではなく org 所属・SSO の確認を促す"; else bad "アクセス権不足の診断が不正: rc=$footer_denied_rc out=$footer_denied_out"; fi
+
+# global の url.*.insteadOf が公開 URL を SSH へ書き換えている: ネットワークへ出る前に診断して停止
+set +e
+footer_rewrite_out="$(PATH="$FOOTER_FAKE_BIN:$PATH" FAKE_FOOTER_REAL_GIT="$(command -v git)" FAKE_FOOTER_INSTEADOF_REWRITE=1 bash "$FOOTER_ROOT/scripts/update-dev-toolkit-changelog-footer.sh" --public-checkout "$FOOTER_PUBLIC" 2>&1)"
+footer_rewrite_rc=$?
+set -e
+if [[ "$footer_rewrite_rc" -eq 2 && "$footer_rewrite_out" == *"insteadOf が公開 URL を書き換えています"* ]]; then ok "global insteadOf の書き換えを送信前に検出して停止"; else bad "insteadOf の書き換えを検出できない: rc=$footer_rewrite_rc out=$footer_rewrite_out"; fi
 
 write_changelog "$FOOTER_CHANGELOG"
 if footer_lock_change_out="$(PATH="$FOOTER_FAKE_BIN:$TEST_BIN:$PATH" FAKE_FOOTER_REAL_GIT="$(command -v git)" FAKE_RMDIR_FAIL=1 bash "$FOOTER_ROOT/scripts/update-dev-toolkit-changelog-footer.sh" --public-checkout "$FOOTER_PUBLIC" 2>&1)"; then footer_lock_change_rc=0; else footer_lock_change_rc=$?; fi

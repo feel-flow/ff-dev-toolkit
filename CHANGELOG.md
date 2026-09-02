@@ -20,6 +20,12 @@
 
 ## [Unreleased]
 
+## [0.80.1] - 2026-09-03
+
+### 修正
+
+- 同梱テスト `tests/changelog-fragments/` の footer ケースと fake git fixture を、配布リポジトリが Private になった前提（HTTPS の認証ヘルパーを global 設定から読む・認証不在とアクセス権不足を別々に診断する・global の `url.*.insteadOf` による書き換えを送信前に検出する）へ追従させた。認証ヘルパーを切り離す旧設定へ戻す変更は fixture が非 0 で検出する
+
 ## [0.80.0] - 2026-09-03
 
 ### 追加
@@ -1845,7 +1851,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.79.1...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.80.0...HEAD
+[0.80.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.79.1...v0.80.0
 [0.79.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.79.0...v0.79.1
 [0.79.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.78.0...v0.79.0
 [0.78.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.77.0...v0.78.0
