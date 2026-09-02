@@ -14,10 +14,11 @@ if [[ -n "${FF_CHANGELOG_TEST_REMOTE:-}" && "$*" == *"ls-remote --refs --tags"* 
     echo "tag fetch did not isolate repository-local Git configuration" >&2
     exit 8
   fi
-  # 配布リポジトリは Private（ADR-049）: global の credential.helper を helper 側が
+  # 配布リポジトリが Private のとき（ADR-049 で一時的にそうだった。ADR-050 で Public へ戻した後も
+  # 再 Private 化の前提として残す）global の credential.helper を helper 側が
   # 無効化していないこと（GIT_CONFIG_GLOBAL=/dev/null や -c credential.helper= の復活）を検査する
   if [[ "${GIT_CONFIG_GLOBAL:-}" == /dev/null || " $* " == *" credential.helper= "* ]]; then
-    echo "tag fetch disabled the global credential helper (Private repository needs it)" >&2
+    echo "tag fetch disabled the global credential helper (needed when the repository is Private)" >&2
     exit 8
   fi
   [[ -z "${FAKE_FOOTER_ISOLATION_MARKER:-}" ]] || : > "$FAKE_FOOTER_ISOLATION_MARKER"

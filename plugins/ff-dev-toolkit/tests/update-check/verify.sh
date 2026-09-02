@@ -498,9 +498,10 @@ else
   bad "オフライン: fail キャッシュが不正: $(cat "$CACHE/update-check" 2>/dev/null || echo '<missing>')"
 fi
 
-# ---- 8b. 認証失敗（Private 配布リポジトリ、ADR-049）: 無出力 + exit 0 + fail 記録 --
-# 配布リポジトリが Private になり、HTTPS の認証ヘルパーが無い環境では ls-remote が
-# 「terminal prompts disabled」で即失敗する経路が通常系になった。stub git でその
+# ---- 8b. 認証失敗（配布リポジトリが Private のとき）: 無出力 + exit 0 + fail 記録 ----
+# 配布リポジトリが Private のとき（ADR-049 で一時的にそうだった。ADR-050 で Public へ
+# 戻したが回帰ガードとして残す）、HTTPS の認証ヘルパーが無い環境では ls-remote が
+# 「terminal prompts disabled」で即失敗する。stub git でその
 # 失敗を再現し、(a) 無出力・exit 0、(b) プロンプト封じの env（GIT_TERMINAL_PROMPT /
 # GIT_ASKPASS / GIT_SSH_COMMAND）が渡っている、(c) fail キャッシュが残り TTL 内は
 # 再試行しない、を固定する。case 8 の「存在しないローカル path」では GitHub 側の
