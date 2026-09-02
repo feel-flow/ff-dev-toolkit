@@ -124,8 +124,15 @@ Phase 2 以降（評価・既存エントリ照合・追記・commit/push）は*
 - [ ] 影響度が「中」以上か？（低→スキップ）
 - [ ] 汎用的すぎないか？（プロジェクト固有の文脈が含まれているか？）
 - [ ] **新規性があるか？**（既存エントリを読んだ人が同じ行動を取れるなら新規追加しない → `Helpful` +1 のみ）
+- [ ] **抽象度の下限を満たすか？**（適用条件が固有名なしで書けているか。書けるのに固有名で書いていたら 1 段上げてから、上げた形で改めて新規性を判定する → 既存と同一になれば `Helpful` +1）
 
 **新規性バー（件数の入口制御・ADR-033 / Issue #652）**: 判定は「**読者が取る実行可能なアクションが既存エントリと同一か**」で行う（`/ace-refine` の統合判定と同じ基準）。文言や事例が違っても導かれる行動が同じなら、それは新規知見ではなく既存エントリの再確認であり、`Helpful` +1 が正しい記録先である。**追記件数の上限は設けない** — 同一性で落ちなかった候補はそのまま新規として扱う。
+
+**抽象度の下限（第 2 の関門・ADR-047 / Issue #1135）**: 同一性で落ちなかった候補には、**書く前に**抽象度の下限を当てる。判定は「**適用条件が固有名なしで書けるか**」。本文（タイトル・適用条件・アクション）の固有名（Issue/PR 番号・ファイルパス・特定コマンド/API/スクリプト名）を 1 つずつ「別の名前へ置き換えても主張とアクションが成立するか」で試し、成立するものは 1 段上の性質へ書き直す（固有名は**例示として**残してよい）。1 段上げた形で既存エントリと同一のアクションになるなら、そこで `Helpful` +1 へ落ちる — このバーが無いと、同じ性質の次の事象が「取るアクションが違う」と判定されて新規追加され続ける。
+
+**上げすぎたら棄却する**: 新規性バーを逆向きに使い、上位主張から**元の候補と既存エントリそれぞれのアクションが再導出できるか**を確かめる。できないなら抽象化を棄却して元の粒度で書く。固有名がアクションの本体である類型（プラットフォーム実装差 / 特定 CLI の usage と実挙動の乖離 / 言語ランタイム仕様 / 診断メッセージと原因の対応表 / 既に 1 段上の主張）は抽象化しない。判定材料と類型の詳細は PLAYBOOK §運用ルール「抽象度の下限と棄却基準」を見ること。
+
+**機械では止まらない**: 抽象度の下限は `/ace-curate` を exit 1 で止めるゲートではない（機械シグナル単独の精度は 47%）。候補の提示は `ace-abstraction-report.ts` が行い（**候補が何件出ても exit 0**。非 0 は入力が測れないときだけ）、判定はこのチェックリストで行う。
 
 このバーが必要な理由: 件数を減らせるのは archive と統合の 2 つだが（圧縮は行数のみ、PATTERNS 昇格は元エントリを live に残すため件数は動かない）、**archive の供給は「作成から閾値日数の経過 かつ（git 参照が無い または 最終参照から閾値日数の経過）かつ `helpful === 0`」に限られる**のに対し、流入は curate のたびに発生する。出口の述語が狭い以上、入口で絞らなければブロック上限到達は時間の問題になる。
 
@@ -308,9 +315,60 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs
 
 マージ方針の SSOT は [git-workflow.md ステップ10 §運用パターン（マージ方針）](docs/05-operations/deployment/git-workflow.md#ace-merge-policy)（`docs-template/` 全体を導入している場合の参照。無ければ以下の既定に従う）。
 
-**既定（推奨）— デフォルトブランチ直マージ**: `<default-branch>` に直接 commit + push する。
+**保護判定（必須・直 push を試す前に行う）**: default branch が保護されているかを確認する。保護されている場合は下の既定フロー（直 push）を試みず、そのまま「PR 経由」（後述）へ進む。
 
-コミット前に対象リポジトリの commitlint 設定（特に `header-max-length`）を確認し、件名を上限内に収める。カテゴリが複数でも件名には列挙せず、commit body に記録する。要約だけで上限を超える場合は、要約を短くするかコミットを分割する。
+```bash
+# ff-ace-protection-probe:start
+default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || { echo "origin/HEAD を解決できません。git remote set-head origin --auto 後に再実行してください" >&2; exit 1; }
+[[ "$default_ref" == origin/* ]] || { echo "origin/HEAD が不正です" >&2; exit 1; }
+default_branch="${default_ref#origin/}"
+owner_repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || owner_repo=""
+protection="unknown"
+if [[ -n "$owner_repo" ]]; then
+  # classic branch protection API: 404 は「classic ルールが無い」を意味するだけで、
+  # Rulesets のみで保護されたブランチでもここは 404 を返す。404 だけで unprotected を
+  # 確定させず、必ず rulesets API も確認してから最終判定する。
+  # 代入行を単独の simple command にすると set -e 下で失敗時に次行の $? 取得へ
+  # 到達できず無音で中断するため（実測）、代入自体を && / || で分岐させて安全にする。
+  classic="unknown"
+  classic_out="$(gh api "repos/${owner_repo}/branches/${default_branch}/protection" 2>&1 >/dev/null)" && classic_rc=0 || classic_rc=$?
+  if [[ "$classic_rc" -eq 0 ]]; then
+    classic="protected"
+  elif [[ "$classic_out" == *404* ]]; then
+    classic="none"
+  fi
+  rulesets="unknown"
+  if [[ "$classic" != "protected" ]]; then
+    # rulesets は non_fast_forward（force push 禁止）・required_signatures 等、直 push
+    # 自体は禁止しない type も返す。実際に直 push を PR 必須にする pull_request type の
+    # 有無だけを見る（そうしないと force-push 禁止だけの一般的なリポジトリで既定の
+    # 直 push が黙って PR 経由へ落ち、AC3「既定フロー不変」に反する）。
+    rules_pr_required="$(gh api "repos/${owner_repo}/rules/branches/${default_branch}" --jq 'any(.[]; .type == "pull_request")' 2>/dev/null)" && rules_rc=0 || rules_rc=$?
+    if [[ "$rules_rc" -eq 0 ]]; then
+      if [[ "$rules_pr_required" == "true" ]]; then
+        rulesets="protected"
+      else
+        rulesets="none"
+      fi
+    fi
+  fi
+  if [[ "$classic" == "protected" || "$rulesets" == "protected" ]]; then
+    protection="protected"
+  elif [[ "$classic" == "none" && "$rulesets" == "none" ]]; then
+    protection="unprotected"
+  fi
+fi
+echo "protection=${protection} (default_branch=${default_branch}, classic=${classic:-n/a}, rulesets=${rulesets:-n/a})"
+# ff-ace-protection-probe:end
+```
+
+- `protection=protected` → 下の「PR 経由」（必須）へ進む
+- `protection=unprotected`（classic が 404 かつ rulesets に `pull_request` type が無いことの両方が確認できた場合のみ。`non_fast_forward` 等 direct push を禁止しない type だけの場合も unprotected） → 下の「既定（推奨）」へ進む
+- `protection=unknown`（`gh` 不在・classic/rulesets いずれかで 401/403 やネットワーク失敗などにより判定できない場合。保護判定後に設定が変わる TOCTOU の受け皿にもなる） → 既定を試し、push が `Changes must be made through a pull request` または `push declined due to repository rule violations` で拒否されたら PR 経由へ切り替える（下の commit block の push 失敗分岐が同じ文言で自動的に検知する）
+
+**既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。`<default-branch>` に直接 commit + push する。
+
+コミット前に対象リポジトリのコミットメッセージ規約を確認する。確認対象は (1) commitlint の `header-max-length` — 件名を上限内に収め、カテゴリが複数でも件名には列挙せず、commit body に記録する。要約だけで上限を超える場合は要約を短くするかコミットを分割する — に加え、(2) **type の許容リスト**。参照先: `commitlint.config.*` / `.commitlintrc*` / `package.json` の `commitlint` キー / husky・simple-git-hooks の `commit-msg` hook。`knowledge` が許容 type に含まれない場合は、プロジェクト規約の type（例 `chore`）へ件名の prefix だけを置き換える（件名の要約・body の `Categories:` 記録はそのまま維持する。例: `chore: ACE-<PR番号>-<連番> <要約>`）。
 
 **文字列パッチと commit の突き合わせ（必須）**: PLAYBOOK・文書への追記をヒアドキュメントの script で当てる場合、日本語とインラインコード（バックティック）が混在するパッチ文では **`python3 - <<'PY'` を既定にする**。Node のテンプレートリテラルはバックティックを構文として解釈するため SyntaxError で落ちる（実測: 同型のパッチで node 2 回失敗 / python3 全成功。しかも落ちた script と独立に後続の `git add` / `git commit` が走り、「記録した」と主張するコミットメッセージの下に記録の無いコミットができた）。パッチと commit を同じコマンドに連結せず、パッチ script が失敗したら commit へ到達させない。下の commit block の `git status --short` では、意図しないファイルの混入確認に加えて、**コミットメッセージの主張（「〜へ追記した」「〜を更新した」と書く対象ファイル）が staged に現れているか**を突き合わせてから commit する。
 
@@ -340,8 +398,11 @@ git add docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md || { echo 
 [[ ! -d .version-claims ]] || { [[ -f .version-claims/docs/08-knowledge/PLAYBOOK.md.claim ]] || { echo "PLAYBOOK claim がありません。上の update-version-claim.sh を再実行してください: .version-claims/docs/08-knowledge/PLAYBOOK.md.claim" >&2; exit 1; }; git add .version-claims/docs/08-knowledge/PLAYBOOK.md.claim || { echo "PLAYBOOK claim を stage できません" >&2; exit 1; }; }
 [[ ! -d .version-claims ]] || "$FF_DEV_TOOLKIT_ROOT/scripts/check-version-claims.sh" --root "$(git rev-parse --show-toplevel)" || exit 1
 git status --short  # 意図したファイルのみが含まれ、コミットメッセージの主張と一致するか確認
+# commit type: 上の commitlint type 許容リスト確認で knowledge が非許容なら chore 等
+# プロジェクト規約の type へ上書きする（件名の要約・Categories: body は不変）。
+commit_type="knowledge"
 git commit \
-  -m "knowledge: ACE-<PR番号>-<連番> <要約>" \
+  -m "${commit_type}: ACE-<PR番号>-<連番> <要約>" \
   -m "Categories: <category[, category...]>"
 # push 出力を実測する（Issue #739）: 終了コードと出力の両方を見る。パイプで tee へ流すと
 # push の終了コードが失われ、non-fast-forward の rejected 出力（`-> branch` を含む）を
@@ -349,7 +410,43 @@ git commit \
 # 「Everything up-to-date」は失敗の兆候（何も送っていない）
 push_log="$(mktemp)"
 if ! git push origin "${push_refspec}" >"${push_log}" 2>&1; then
-  cat "${push_log}"; rm -f "${push_log}"
+  cat "${push_log}"
+  # 保護判定が unknown だった、または判定後に設定が変わった TOCTOU の受け皿。拒否理由が
+  # 保護ルールなら non-fast-forward の再試行ループへ進まず、既にできているローカル commit を
+  # そのまま PR 経由へ引き継ぐ（再 stage・再 commit はしない。commit は上で完了済み）。
+  if grep -qF -- "Changes must be made through a pull request" "${push_log}" || grep -qF -- "push declined due to repository rule violations" "${push_log}"; then
+    rm -f "${push_log}"
+    echo "push が保護ルールで拒否されました（default branch が保護されています）。PR 経由へ切り替えます" >&2
+    # git switch -c が失敗した場合はまだ default branch 上にいるため、下の branch -f は
+    # 行わない（自分自身を強制更新することになり git に拒否される。commit は
+    # default branch 上にそのまま残る）。
+    git switch -c chore/ace-from-pr-<PR番号> || { echo "PR 経由ブランチの作成に失敗しました（commit は ${default_branch} 上のまま残っています）" >&2; exit 1; }
+    # ここから下は default branch を離れているため、失敗時も commit は chore ブランチに
+    # 残る。誤って再 push しないよう、いずれの失敗経路でも local default branch は
+    # origin へ戻してから exit する。
+    if ! git push -u origin HEAD; then
+      echo "PR 経由ブランチの push に失敗しました（commit は chore/ace-from-pr-<PR番号> に残っています）" >&2
+      git branch -f "${default_branch}" "origin/${default_branch}"
+      exit 1
+    fi
+    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name @{u})"
+    if [[ "$upstream" != "origin/chore/ace-from-pr-<PR番号>" ]]; then
+      echo "upstream が想定と異なります（期待: origin/chore/ace-from-pr-<PR番号> / 実際: ${upstream}）" >&2
+      git branch -f "${default_branch}" "origin/${default_branch}"
+      exit 1
+    fi
+    if ! gh pr create --base "${default_branch}" --title "${commit_type}: ACE-<PR番号>-<連番> <要約>" --body "PR #<PR番号> から知見抽出"; then
+      echo "PR 作成に失敗しました（commit は push 済みの chore/ace-from-pr-<PR番号> に残っています）" >&2
+      git branch -f "${default_branch}" "origin/${default_branch}"
+      exit 1
+    fi
+    # ローカル default branch は origin へ戻す（未 push の commit を残したまま誤って
+    # 再 push しないため。commit の実体は上で push 済みの chore ブランチにある）
+    git branch -f "${default_branch}" "origin/${default_branch}"
+    echo "PR 経由へ切り替えました。レビュー後 squash merge → /merge-cleanup" >&2
+    exit 0
+  fi
+  rm -f "${push_log}"
   echo "push が失敗しました（non-fast-forward なら下の再試行手順へ）" >&2
   exit 1
 fi
@@ -366,7 +463,7 @@ gh run list --branch "${default_branch}" --limit 5 --json status,conclusion,work
 
 CI 確認の読み方: 一覧から `headSha` が `pushed_sha` に一致する run を探す。`in_progress` / `queued` は完了を待って再確認し、`failure` なら revert ではなく ACE コミットを前進で直して push し直す。一致する run が無い場合、CI の無いリポジトリ（一覧自体が空）はそのまま進んでよいが、他 branch の run が並ぶリポジトリでは登録遅延の可能性があるため少し待って再確認する。
 
-push が non-fast-forward で拒否された場合は、別セッションの更新を検出した正常な競合経路として次を**最大 3 回**繰り返す。
+push が non-fast-forward で拒否された場合（保護ルールによる拒否は上の commit block 内で PR 経由へ自動的に切り替わるため対象外）は、別セッションの更新を検出した正常な競合経路として次を**最大 3 回**繰り返す。
 
 1. 同じ明示 refspec で `origin/<default-branch>` を再取得する（失敗時は停止）
 2. remote の版ブロック・エントリ・索引を保全して rebase し、自分のエントリを残す。同じ版番号へ内容を混ぜず、自分の版を remote 最新の次へ繰り上げる
@@ -376,7 +473,7 @@ push が non-fast-forward で拒否された場合は、別セッションの更
 
 3 回で収束しなければ「共有版境界が高頻度更新中」と報告して直列化を求める。`--force` / `--force-with-lease` で先行セッションを上書きしない。
 
-**任意エスカレーション — chore PR**: 大人数チーム / 知見レビューを残したい場合のみ `chore/ace-from-pr-<PR番号>` ブランチで小さい PR を作成。
+**任意エスカレーション — chore PR**: 大人数チーム / 知見レビューを残したい場合のみ、というのが既定の位置づけだが、**default branch が保護されている場合はこの経路が必須**になる。`chore/ace-from-pr-<PR番号>` ブランチで小さい PR を作成する。コミット type は上の許容リスト確認に従う（`knowledge` が許容されない場合は `chore` 等プロジェクト規約の type へ置き換える）。
 
 ```bash
 git checkout -b chore/ace-from-pr-<PR番号>
@@ -392,15 +489,23 @@ git add docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md || { echo 
 [[ ! -d .version-claims ]] || git add .version-claims/docs/08-knowledge/PLAYBOOK.md.claim || { echo "PLAYBOOK claim を stage できません" >&2; exit 1; }
 [[ ! -d .version-claims ]] || "$FF_DEV_TOOLKIT_ROOT/scripts/check-version-claims.sh" --root "$(git rev-parse --show-toplevel)" || exit 1
 git status --short  # 意図したファイルのみが含まれ、コミットメッセージの主張と一致するか確認
+# commit type: 上の commitlint type 許容リスト確認で knowledge が非許容なら chore 等
+# プロジェクト規約の type へ上書きする（件名の要約・Categories: body は不変）。
+commit_type="knowledge"
 git commit \
-  -m "knowledge: ACE-<PR番号>-<連番> <要約>" \
+  -m "${commit_type}: ACE-<PR番号>-<連番> <要約>" \
   -m "Categories: <category[, category...]>"
-git push -u origin chore/ace-from-pr-<PR番号>
-gh pr create --base <default-branch> --title "knowledge: ACE-<PR番号>-<連番> <要約>" --body "PR #<PR番号> から知見抽出"
+if ! git push -u origin chore/ace-from-pr-<PR番号>; then
+  echo "PR 経由ブランチの push に失敗しました" >&2
+  exit 1
+fi
+upstream="$(git rev-parse --abbrev-ref --symbolic-full-name @{u})"
+[[ "$upstream" == "origin/chore/ace-from-pr-<PR番号>" ]] || { echo "upstream が想定と異なります（期待: origin/chore/ace-from-pr-<PR番号> / 実際: ${upstream}）" >&2; exit 1; }
+gh pr create --base <default-branch> --title "${commit_type}: ACE-<PR番号>-<連番> <要約>" --body "PR #<PR番号> から知見抽出" || { echo "PR 作成に失敗しました" >&2; exit 1; }
 # レビュー後 squash merge → /merge-cleanup
 ```
 
-> `knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、通常のコード変更に対する「統合ブランチへの直 push 禁止」ルールとは別物として扱う。
+> `knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、通常のコード変更に対する「統合ブランチへの直 push 禁止」ルールとは別物として扱う。ただし default branch が保護されているリポジトリではこの経路に到達できない — その場合は上の保護判定に従い「PR 経由」（必須）を使う。
 
 ### 6. 結果レポートと次のステップ
 

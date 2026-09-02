@@ -987,6 +987,55 @@ describe("Archived（R3-a: stale アーカイブ / Issue #1028）", () => {
     ).toEqual([]);
   });
 
+  // Issue #1115: 句点・括弧書きの後ろに ID が続く形は、前半だけ採用されて後続 ID が無検証になる。
+  it("句点の後に ID が続く Archived 行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Archived: ACE-1-1。ACE-2-1\n");
+    expect(ops.archivedIds).toEqual([]);
+    expect(ops.malformedArchived).toEqual(["- Archived: ACE-1-1。ACE-2-1"]);
+  });
+
+  it("理由の括弧書きの後に ID が続く Archived 行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Archived: ACE-1-1（注記） / ACE-2-1\n");
+    expect(ops.archivedIds).toEqual([]);
+    expect(ops.malformedArchived).toEqual(["- Archived: ACE-1-1（注記） / ACE-2-1"]);
+    const violations = evaluateRefineInvariants({
+      playbookContent: `${PLAYBOOK_CHANGELOG}- Archived: ACE-1-1（注記） / ACE-2-1\n`,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("archive 行の ID 列が途中で切れている"))).toBe(
+      true,
+    );
+  });
+
+  it("理由の括弧を閉じ忘れた Archived 行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Archived: ACE-1-1（stale, ACE-2-1\n");
+    expect(ops.archivedIds).toEqual([]);
+    expect(ops.malformedArchived).toEqual(["- Archived: ACE-1-1（stale, ACE-2-1"]);
+  });
+
+  it("括弧で包んだ後続 ID が続く Archived 行も malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Archived: ACE-1-1（注記） / （ACE-2-1）\n");
+    expect(ops.archivedIds).toEqual([]);
+    expect(ops.malformedArchived).toEqual(["- Archived: ACE-1-1（注記） / （ACE-2-1）"]);
+  });
+
+  it("括弧書きでない散文で理由を書いた Archived 行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Archived: ACE-1-1。stale だったため撤去\n");
+    expect(ops.archivedIds).toEqual([]);
+    expect(ops.malformedArchived).toEqual(["- Archived: ACE-1-1。stale だったため撤去"]);
+  });
+
+  // live PLAYBOOK の実例（括弧書きの後ろに ID を含まない補足が続く形）は受理し続ける。
+  it("理由の括弧書きの後に ID を含まない散文・注記が続く Archived 行は受理する", () => {
+    const ops = parseChangelogOperations(
+      "- Archived: ACE-1-1, ACE-2-1（helpful=0・stale）。**原文は圧縮で保全済み**（再コピーはしない）\n",
+    );
+    expect(ops.archivedIds).toEqual(["ACE-1-1", "ACE-2-1"]);
+    expect(ops.malformedArchived).toEqual([]);
+  });
+
   it("archive 済み統合先の Status が active でないと違反", () => {
     const deprecated = ARCHIVE_TARGET_ARCHIVED.replace(
       "| Status | active |",
@@ -1117,6 +1166,54 @@ describe("Changelog 節限定 / ID 列限定 / 重複除去（Issue #1030）", (
     expect(violations.some((v) => v.includes("promote 行の ID 列が途中で切れている"))).toBe(
       true,
     );
+  });
+
+  // Issue #1115: Archived と共有実装なので、同じ取りこぼしを Promoted でも拒否する。
+  it("句点の後に ID が続く Promoted 行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Promoted: ACE-1-1。ACE-2-1\n");
+    expect(ops.promotedIds).toEqual([]);
+    expect(ops.malformedPromoted).toEqual(["- Promoted: ACE-1-1。ACE-2-1"]);
+  });
+
+  it("理由の括弧書きの後に ID が続く Promoted 行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Promoted: ACE-1-1（注記） / ACE-2-1\n");
+    expect(ops.promotedIds).toEqual([]);
+    expect(ops.malformedPromoted).toEqual(["- Promoted: ACE-1-1（注記） / ACE-2-1"]);
+    const violations = evaluateRefineInvariants({
+      playbookContent: `${PLAYBOOK_CHANGELOG}- Promoted: ACE-1-1（注記） / ACE-2-1\n`,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("promote 行の ID 列が途中で切れている"))).toBe(
+      true,
+    );
+  });
+
+  it("理由の括弧を閉じ忘れた Promoted 行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Promoted: ACE-1-1（蒸留, ACE-2-1\n");
+    expect(ops.promotedIds).toEqual([]);
+    expect(ops.malformedPromoted).toEqual(["- Promoted: ACE-1-1（蒸留, ACE-2-1"]);
+  });
+
+  it("括弧で包んだ後続 ID が続く Promoted 行も malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Promoted: ACE-1-1（注記） / （ACE-2-1）\n");
+    expect(ops.promotedIds).toEqual([]);
+    expect(ops.malformedPromoted).toEqual(["- Promoted: ACE-1-1（注記） / （ACE-2-1）"]);
+  });
+
+  it("括弧書きでない散文で理由を書いた Promoted 行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Promoted: ACE-1-1。PATTERNS.md へ蒸留\n");
+    expect(ops.promotedIds).toEqual([]);
+    expect(ops.malformedPromoted).toEqual(["- Promoted: ACE-1-1。PATTERNS.md へ蒸留"]);
+  });
+
+  it("理由の括弧書きの後に ID を含まない散文・注記が続く Promoted 行は受理する", () => {
+    const ops = parseChangelogOperations(
+      "- Promoted: ACE-1-1, ACE-2-1（[PATTERNS.md](../03-implementation/PATTERNS.md) へ蒸留）。元エントリは live に残す\n",
+    );
+    expect(ops.promotedIds).toEqual(["ACE-1-1", "ACE-2-1"]);
+    expect(ops.malformedPromoted).toEqual([]);
   });
 
   // Compacted は前置きの散文と ID ごとの注記を持つ実例があるため、

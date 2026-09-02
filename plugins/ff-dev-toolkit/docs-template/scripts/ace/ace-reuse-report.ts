@@ -76,6 +76,19 @@ const ENTRY_HEADER_PATTERN = new RegExp(
 
 /** キュレーションコミット（エントリ追加・カウンター更新）は「再利用」に数えない */
 const CURATION_COMMIT_PREFIX = "knowledge:";
+/**
+ * commitlint の type 許容リスト確認により commit type を `chore` 等へ置換した
+ * キュレーションコミットも「再利用」から除外するための、type に依存しない識別子
+ * （Issue #1147）。手順5の commit body は type に関わらず必ず `Categories:` 行を
+ * 書く契約になっている（SKILL.md 手順5参照）ため、これを安定した目印にする。
+ * ただし `Categories:` という語のみを目印にすると、たまたま同名の行を持つ
+ * 通常の開発コミットまで除外してしまう（再現例: `fix: ... / Categories: 認証`
+ * のような無関係コミット）。件名が `<type>: ACE-<数字>...` の形（このスキルが
+ * 生成する commit のみが持つ形）であることも同時に要求し、両方が揃った commit
+ * だけをキュレーションコミットとみなす。
+ */
+const CURATION_COMMIT_SUBJECT_PATTERN = /^\w+(?:\([^)]*\))?:\s*ACE-\d/u;
+const CURATION_COMMIT_BODY_MARKER_PATTERN = /^Categories:\s/mu;
 
 /** ace-refine-report.ts の昇格候補フィルタからも参照するため export する */
 export const STATUS_ACTIVE = "active";
@@ -282,7 +295,10 @@ export function computeReuseStats(
   const lastGitRefDate = new Map<string, string>();
 
   for (const commit of commits) {
-    if (commit.subject.startsWith(CURATION_COMMIT_PREFIX)) {
+    const isCurationCommit =
+      commit.subject.startsWith(CURATION_COMMIT_PREFIX) ||
+      (CURATION_COMMIT_SUBJECT_PATTERN.test(commit.subject) && CURATION_COMMIT_BODY_MARKER_PATTERN.test(commit.body));
+    if (isCurationCommit) {
       continue;
     }
     const text = `${commit.subject}\n${commit.body}`;

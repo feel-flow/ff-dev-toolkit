@@ -1,10 +1,10 @@
 ---
 title: "MASTER"
-version: "1.6.0"
+version: "1.7.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-08-31"
+updated: "2026-09-02"
 changeImpact: "medium"
 ---
 
@@ -545,6 +545,7 @@ metrics:
 - 08-knowledge/BEST_PRACTICES.md — ベストプラクティス集
 - 08-knowledge/FAQ.md — よくある質問と回答
 - 08-knowledge/PLAYBOOK.md — ACE Playbook（AIツール向け構造化知見）
+- 08-knowledge/OBSERVATIONS.md — `/retrospective` の観測台帳（機械管理の蓄積バッファ。無ければ振り返り時にテンプレートから自動作成。Frontmatter は付与しない）
 
 ### 開発プロセスガイド（初期セット外・必要時にコピー）
 
@@ -631,6 +632,8 @@ AI: DEPLOYMENT.md（索引）→ deployment/self-review.md を読み込み
 コア7文書（MASTER/PROJECT/ARCHITECTURE/DOMAIN/PATTERNS/TESTING/DEPLOYMENT）およびプロジェクトで追加した文書に以下の YAML Frontmatter を付与する。Frontmatter が文書のメタデータの正式なソースとなる。
 
 > **注**: `docs/specs/` 配下の仕様ファイルには Spec Kit 運用ガイドの Front Matter スキーマ（6ステータス: draft/review/approved/implementing/done/deprecated）を適用すること。上記 Frontmatter ルールはコア7文書および拡張文書に適用される。
+>
+> **例外**: `08-knowledge/OBSERVATIONS.md`（`/retrospective` の観測台帳）と `08-knowledge/playbook/**`（ACE Playbook の分割ファイル）は機械管理の蓄積ファイルであり、Frontmatter を付与しない（文書レベルのメタデータは索引側または運用スキル側が持つ）。
 
 必須フィールド:
 
@@ -706,6 +709,12 @@ Changelog エントリには以下のカテゴリを使用する（[Keep a Chang
 - [ ] 定数の配置が層責務に沿っている（Domain/Application/Infrastructure）
 
 ## Changelog
+
+### [1.7.0] - 2026-09-02
+
+#### 追加
+
+- §ナレッジベース へ `08-knowledge/OBSERVATIONS.md`（`/retrospective` の観測台帳。無ければ振り返り時に自動作成）を追加し、§Frontmatter へ機械管理の蓄積ファイル（観測台帳・Playbook 分割ファイル）は Frontmatter を付与しない例外注記を追加（Issue #1146）
 
 ### [1.6.0] - 2026-08-31
 

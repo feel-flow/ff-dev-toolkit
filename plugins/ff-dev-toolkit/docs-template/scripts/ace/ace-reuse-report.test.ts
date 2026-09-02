@@ -210,6 +210,30 @@ describe("computeReuseStats", () => {
     expect(stats.get("ACE-449-1")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
   });
 
+  it("commit type を chore 等へ置換したキュレーションコミットも Categories: body 行で除外する（Issue #1147）", () => {
+    // commitlint の type 許容リストに knowledge が無いプロジェクトでは手順5に従い
+    // commit type を chore 等へ置換するが、body の Categories: 行は type に関わらず
+    // 必ず書く契約になっている。subject prefix ではなくこの行を目印に除外できることを確認する。
+    const log = [
+      `${RS}2026-08-01${FS}chore: ACE-449-2 追加（キュレーション）${FS}ACE-005 と ACE-449-1 を含むが除外されるべき\nCategories: process`,
+    ].join("\n");
+    const localStats = statsFor(PLAYBOOK_FIXTURE, log);
+    expect(localStats.get("ACE-005")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
+    expect(localStats.get("ACE-449-1")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
+  });
+
+  it("Categories: 行を持つ通常コミットは subject が ACE ID 形でなければ除外しない（Issue #1147 レビュー対応）", () => {
+    // Categories: という語だけを目印にすると、たまたま同名の行を含む無関係な開発コミット
+    // まで再利用計測から除外してしまう。subject が `type: ACE-<番号>...`（このスキルが
+    // 生成する commit だけが持つ形）でない限り、body に Categories: 行があっても
+    // キュレーションコミット扱いしない。
+    const log = [
+      `${RS}2026-08-02${FS}fix: 認証まわりの調整${FS}ACE-005 の教訓を適用\nCategories: 無関係な行`,
+    ].join("\n");
+    const localStats = statsFor(PLAYBOOK_FIXTURE, log);
+    expect(localStats.get("ACE-005")).toMatchObject({ gitRefCount: 1, lastGitRefDate: "2026-08-02" });
+  });
+
   it("PLAYBOOK 内の相互参照を数える（自己参照は除外）", () => {
     expect(stats.get("ACE-005")?.crossRefCount).toBe(1);
     expect(stats.get("ACE-449-1")?.crossRefCount).toBe(0);

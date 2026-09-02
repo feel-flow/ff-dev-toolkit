@@ -29,10 +29,10 @@
 # 契約**文言**も針として持つ: 表現を変えたら本 suite も同時に更新する運用で、
 # 更新漏れは空振り = 赤として現れる（docs-fact-drift のヘッダと同じ方針）。
 #
-# 検出範囲の限界（意図的）: 本ゲートは `contains` だけで構成され、**契約行を残した
-# まま矛盾する文を追記する**変更は検出できない。out-of-scope-routing が使う
-# `not_contains` は「退役した旧規則の逐語復元」を塞ぐためのもので、本スキルには
-# 退役した規則文言が存在しないため同じ手が使えない（禁止すべき固定文字列が無い）。
+# 検出範囲の限界（意図的）: 本ゲートはほぼ `contains` で構成され、**契約行を残した
+# まま矛盾する文を追記する**変更は検出できない。`not_contains` は out-of-scope-routing
+# と同じく「退役した旧規則の逐語復元」を塞ぐ用途に限る（対象は ADR-046 で退役した 2 規則 —
+# observation 受け渡し便の起票規則〔SKILL.md〕と、SSOT 中央台帳の所在〔消費側文書〕）。
 # 追記型の矛盾はレビューで見る前提とし、ここでは主張しない。
 #
 # 検出力の実測は tests/retrospective-contract-selftest/（同 Issue）が変異注入で行う。
@@ -64,6 +64,10 @@ WORKFLOW_PRINCIPLES="$PLUGIN_ROOT/docs-template/05-operations/deployment/workflo
 DEPLOYMENT="$PLUGIN_ROOT/docs-template/05-operations/DEPLOYMENT.md"
 ROOT_README="$REPO_ROOT/README.md"
 OSS_README="$OSS_ROOT/README.md"
+# 観測台帳の配布テンプレート（記録手順 0 のコピー元）と、このリポジトリ自身の台帳。
+# 後者はリポジトリごとに持つ運用（ADR-046）なので、存在する配置でだけ照合する。
+LEDGER_TEMPLATE="$PLUGIN_ROOT/docs-template/08-knowledge/OBSERVATIONS.md"
+LEDGER_REPO="$REPO_ROOT/docs/08-knowledge/OBSERVATIONS.md"
 
 PASS=0
 FAIL=0
@@ -84,6 +88,16 @@ contains() {
     ok "$label"
   else
     bad "${label}（不足: ${needle}）"
+  fi
+}
+
+# 退役した旧規則（ADR-046: observation 受け渡し便の起票規則 / SSOT 中央台帳の所在）の逐語復元を塞ぐ。
+not_contains() {
+  local file="$1" needle="$2" label="$3"
+  if grep -qF -- "$needle" "$file"; then
+    bad "${label}（旧ルールが残存: ${needle}）"
+  else
+    ok "$label"
   fi
 }
 
@@ -266,7 +280,7 @@ contains "$SKILL" "- **提示する前に**下の「起票前の既存確認」�
 contains "$SKILL" "**ユーザー承認を待つ**（承認なしに起票しない" "承認境界: 起票前にユーザー承認を待つ"
 contains "$SKILL" "フルオート運用でもこの確認は省略しない" "承認境界: フルオートの例外であることを明示"
 contains "$SKILL" "振り返り工程ではファイル編集・コミット・Issue 作成を行わない" "承認境界: 振り返り工程は read-only"
-# 観測台帳の導入で書き込みは 2 系統に分かれた: 定型記録（SSOT 内・承認不要）と
+# 観測台帳の導入で書き込みは 2 系統に分かれた: 定型記録（作業中リポジトリ内・承認不要）と
 # Issue 起票（承認後）。どちらか一方だけが残る退化を両針で検出する（同一行に乗る）。
 contains "$SKILL" "書き込みが発生するのは、観測台帳への定型記録" "承認境界: 定型記録の書き込み範囲を明示"
 contains "$SKILL" "と、提案をユーザーが承認して起票する段だけ" "承認境界: Issue 起票の書き込みは承認後のみ"
@@ -309,6 +323,11 @@ preflight_contains "SSOT の既定ブランチで当該記述を照合する" "S
 preflight_contains "git -C \"<SSOT clone>\" fetch \"<確認済み remote>\" \"refs/heads/<既定ブランチ>\"" "SSOT 照合: clone は fetch した実体を確認"
 preflight_contains "gh api -H \"Accept: application/vnd.github.raw+json\" \"repos/<SSOT owner/repo>/contents/<対象 path>?ref=<取得した SHA>\"" "SSOT 照合: clone 不在でも API で確認"
 preflight_contains "「SSOT では対応済み（該当コミット/該当箇所）」として提案を取り下げる" "SSOT 照合: 修正済みは起票せず取り下げ"
+# 見送りが実際に決まるのは既存確認の取り下げ分岐で、そこは「承認と起票」手順 5 を
+# 通らない。書き戻しの相互参照が落ちるとエントリが active のまま残り、本 Issue が
+# 止めたい再演がそのまま起きる。
+preflight_contains "**取り下げても台帳は書き戻す**" "SSOT 照合: 取り下げた閾値到達エントリは mitigated へ書き戻す"
+preflight_contains "**恒久対策の Issue を指していて新規起票を見送った**" "知見ストア: 起票を見送った閾値到達エントリは mitigated へ書き戻す"
 preflight_contains "未修正の残余だけに絞った提案を提示" "SSOT 照合: 一部修正は残余だけ提案"
 preflight_contains "「照合不能」と記録し、「修正済みでない」と扱わない" "SSOT 照合: 確認不能を未対応と混同しない"
 preflight_contains "\`既存確認:\` 行へ SSOT の repo・既定ブランチ・確認した SHA/path" "SSOT 照合: 結果と参照先を既存確認へ記録"
@@ -339,8 +358,107 @@ contains "$SKILL" "まず**観測台帳**へ記録する" "観測台帳: 起票�
 contains "$SKILL" "**累計 3 回**に到達し、対応 Issue が未リンク" "観測台帳: Issue 昇格の閾値"
 contains "$SKILL" "**特急レーン**" "観測台帳: 重大観測の特急レーン"
 contains "$SKILL" "アクションに繋がらない Keep は記録しない" "観測台帳: Keep はアクションに繋がるものだけ記録"
-contains "$SKILL" "\`[observation]\` 接頭辞の Issue として受け渡す" "観測台帳: 導入先からは observation Issue で受け渡す"
-contains "$SKILL" "open な \`observation\` Issue" "観測台帳: SSOT での inbox 取り込み"
+# 分散台帳（ADR-046 / Issue #1146）: 台帳は作業中リポジトリごとに持ち、無ければテンプレートから
+# 作成する。導入先から SSOT へ observation Issue で 1 件ずつ受け渡す旧経路は廃止した
+# （2 日で 23 件が滞留した実測）。旧経路の残件だけは SSOT での実行時に両リポジトリを
+# 検索して取り込む。廃止文言は「退役した旧規則の逐語復元」を塞ぐ固定文字列でもある。
+contains "$SKILL" "台帳は**作業中のリポジトリ**の \`docs/08-knowledge/OBSERVATIONS.md\`" "観測台帳: 作業中リポジトリの台帳へ記録"
+contains "$SKILL" "\`\${FF_DEV_TOOLKIT_ROOT}/docs-template/08-knowledge/OBSERVATIONS.md\` をコピーして作成する" "観測台帳: 不在時はテンプレートから作成"
+contains "$SKILL" "受け渡し便）は**廃止**した" "観測台帳: 受け渡し便の廃止を明記"
+contains "$SKILL" "**昇格の起票先は改善対象で分岐する**" "観測台帳: 起票先は改善対象で分岐"
+contains "$SKILL" "作業中プロジェクト固有のプロセス・手順なら**作業中リポジトリ自身**の Issue" "観測台帳: プロジェクト固有はそのリポジトリへ"
+contains "$SKILL" "検索対象は **SSOT と配布ミラーの両方**で" "観測台帳: 旧経路残件は両リポジトリを検索"
+contains "$SKILL" "\`（owner/repo#N より取り込み）\` マーカー" "観測台帳: 取り込みマーカーはリポジトリ修飾"
+not_contains "$SKILL" "SSOT リポジトリへ \`[observation]\` 接頭辞の Issue として受け渡す" "観測台帳: 旧受け渡し便の起票規則が復元されていない"
+contains "$SKILL" "そのリポジトリで ACE Playbook の直コミットに使っている経路（PR 化等）に揃える" "観測台帳: 直 push 不可のリポジトリは Playbook 直コミットの経路に揃える"
+contains "$SKILL" "**台帳へ書き込めないリポジトリ**" "観測台帳: 書き込めないリポジトリの扱いを定義"
+contains "$SKILL" "台帳へ書き込めないリポジトリだけがこの限定の対象外" "提案閾値: 書き込めないリポジトリだけが閾値限定の対象外"
+contains "$SKILL" "**SSOT リポジトリで本スキルを実行するとき**に SSOT の台帳へ取り込む" "観測台帳: 旧経路残件の取り込みは SSOT 実行時に限る"
+contains "$SKILL" "昇格の判定と提案は、台帳を更新したリポジトリで" "観測台帳: 昇格判定は台帳を更新したリポジトリで行う"
+# mitigated（対策済み）の終端状態（Issue #1138）。閾値に到達したのに「対策は別の場所に
+# 定義済み」で見送った判断は、状態として書き戻さないと次の再発で一から再演される
+# （実測: OBS-025 が Count 5 / active のまま 2 回続けて見送りを再演した）。値域だけを
+# 足して判定側の限定が落ちると、状態はあるのに提案は再演されるという最悪の中間形に
+# なるため、**値域・所在の書式・判定からの除外・復帰条件**を個別の針で対にして固定する。
+contains "$SKILL" "**昇格閾値の判定対象は \`Status\` が \`active\` のエントリに限る**" "観測台帳: 閾値判定の対象は active に限る"
+contains "$SKILL" "**\`mitigated\`（対策済み）**" "観測台帳: mitigated（対策済み）の定義"
+contains "$SKILL" "\`skill:<スキル名>\`、文書なら \`doc:<path>#<アンカー>\`" "観測台帳: 対策の所在は接頭辞付きの書式で書く"
+contains "$SKILL" "**昇格提案は再演しない**" "観測台帳: mitigated の再発で昇格提案を再演しない"
+contains "$SKILL" "**\`active\` への復帰条件**" "観測台帳: mitigated から active への復帰条件"
+contains "$SKILL" "(a) **対策が失われた**" "観測台帳: 復帰条件 (a) 対策の消失"
+contains "$SKILL" "(b) **対策が効いていない**" "観測台帳: 復帰条件 (b) 対策が効いていない"
+# 復帰は `Status` だけでは成立しない。`Issue` 列に所在が残ると昇格条件の未リンク判定に
+# 掛からず、`active` へ戻しても提案が出ない（AC 3 が空振りする）。
+contains "$SKILL" "戻すときは **\`Issue\` 列も \`なし\` へ戻す**" "観測台帳: 復帰時は Issue 列も なし へ戻す"
+# 閾値判定から外した分、参照先の生死を読む経路は再発記録時のこの確認しか残らない。
+contains "$SKILL" "**\`mitigated\` の再発を記録するときは \`Issue\` 列の参照先を確認する**" "観測台帳: mitigated の再発時に参照先を確認する"
+contains "$SKILL" "\`archived\` との違いは**再発しているか**" "観測台帳: archived / promoted との違いを併記"
+contains "$SKILL" "代わりに \`Status\` を \`mitigated\`、\`Issue\` を対策の所在へ更新する" "承認と起票: 見送りは mitigated へ書き戻す"
+# #1135（ACE の件数上限）と共通の原則。片方の設計だけが残ると、次に同型の形骸化が
+# 起きたときに「閾値を緩める」対処へ倒れる。
+contains "$SKILL" "**閾値は発火点であり、発火時に取った判断は状態として台帳へ書き戻す。**" "提案閾値: 閾値到達時の判断を状態として書き戻す"
+# 記録手順 0 が依存するテンプレートの実在。SKILL.md の文字列だけを固定すると、テンプレートの
+# 移動・削除で導入先の初回振り返りが cp で止まるのに全 suite が緑のまま残る。
+if [[ -f "$LEDGER_TEMPLATE" ]]; then
+  ok "観測台帳: テンプレート docs-template/08-knowledge/OBSERVATIONS.md が実在する"
+else
+  bad "観測台帳: テンプレート docs-template/08-knowledge/OBSERVATIONS.md が実在する（不足: ファイル不在）"
+fi
+# `Status` の値域は台帳ファイル冒頭のエントリ形式が複製先（正本は SKILL.md）。値域行は
+# **配布テンプレから導出**し、本文の針を直書きしない（表現を変えたときに片側だけ古くなる
+# のを避ける）。抽出できない形へ変わったら「値域が無い」ではなく赤にする（fail-closed）。
+STATUS_DOMAIN_LINE="$(grep -m1 -F -- '- `Status` の値域: ' "$LEDGER_TEMPLATE" || true)"
+if [[ -n "$STATUS_DOMAIN_LINE" ]]; then
+  ok "観測台帳: Status 値域行を配布テンプレから導出"
+else
+  bad "観測台帳: Status 値域行を配布テンプレから導出（不足: 値域行を抽出できません）"
+fi
+if [[ -n "$STATUS_DOMAIN_LINE" ]]; then
+  case "$STATUS_DOMAIN_LINE" in
+    *'`mitigated`（対策済み'*)
+      ok "観測台帳: 配布テンプレの Status 値域に mitigated がある" ;;
+    *)
+      bad "観測台帳: 配布テンプレの Status 値域に mitigated がある（不足: \`mitigated\`）" ;;
+  esac
+  # 所在の接頭辞（`skill:` / `doc:`）は値域行と SKILL.md の書式規定の両方に現れる。
+  # 片側だけ変えると台帳の書式と正本の書式が静かに分かれるので、値域行から接頭辞
+  # トークンを抜き出し、同じトークンが SKILL.md にもあることを見る（抜けなければ赤）。
+  STATUS_PREFIX_TOKENS="$(printf '%s\n' "$STATUS_DOMAIN_LINE" | grep -oE '`[a-z]+:' | sort -u | tr '\n' ' ')"
+  if [[ -z "$STATUS_PREFIX_TOKENS" ]]; then
+    bad "観測台帳: 所在の接頭辞が値域行と SKILL.md で一致（不足: 値域行に接頭辞トークンがありません）"
+  else
+    STATUS_PREFIX_MISSING=""
+    for token in $STATUS_PREFIX_TOKENS; do
+      grep -qF -- "$token" "$SKILL" || STATUS_PREFIX_MISSING="${STATUS_PREFIX_MISSING}${token} "
+    done
+    if [[ -z "$STATUS_PREFIX_MISSING" ]]; then
+      ok "観測台帳: 所在の接頭辞が値域行と SKILL.md で一致"
+    else
+      bad "観測台帳: 所在の接頭辞が値域行と SKILL.md で一致（不足: ${STATUS_PREFIX_MISSING%% })"
+    fi
+  fi
+  # 本体台帳は導入先ごとに持つ（ADR-046）ため、存在する配置でだけ照合する。公開ミラーの
+  # ように台帳を持たないリポジトリでは比較対象が無く、そこでの不在は drift ではない
+  # （実測: feel-flow/ff-dev-toolkit には docs/ 自体が無い）。
+  if [[ -f "$LEDGER_REPO" ]]; then
+    if grep -qxF -- "$STATUS_DOMAIN_LINE" "$LEDGER_REPO"; then
+      ok "観測台帳: 本体台帳の Status 値域行が配布テンプレと一致"
+    else
+      bad "観測台帳: 本体台帳の Status 値域行が配布テンプレと一致（不足: テンプレと同一の値域行）"
+    fi
+  fi
+fi
+# 消費側文書（導入先が読む側）にも分散台帳の所在を写し、旧規則（SSOT 台帳 / observation Issue 起票）の
+# 逐語復元を塞ぐ。PR #1187 のレビューで、SKILL.md だけ更新して消費側 3 文書に旧規則が残る形が実測された。
+contains "$GIT_WORKFLOW" "観測は起票の前に**作業中リポジトリ**の観測台帳" "分散台帳が git-workflow へ伝播"
+contains "$WORKFLOW_PRINCIPLES" "観測記録は作業中リポジトリの観測台帳への定型書き込み" "分散台帳が workflow-principles へ伝播"
+not_contains "$WORKFLOW_PRINCIPLES" "SSOT 以外のリポジトリからの observation Issue 起票" "workflow-principles: 旧受け渡し便の記述が復元されていない"
+contains "$OSS_README" "作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し" "分散台帳が公開 README へ伝播"
+not_contains "$OSS_README" "SSOT の観測台帳へ記録し" "公開 README: 旧 SSOT 台帳の記述が復元されていない"
+if [[ "$IS_MONOREPO" -eq 1 ]]; then
+  contains "$ROOT_README" "作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し" "分散台帳がルート README へ伝播"
+  not_contains "$ROOT_README" "SSOT の観測台帳へ記録し" "ルート README: 旧 SSOT 台帳の記述が復元されていない"
+fi
 contains "$SKILL" "**再現価値のある成功パターン（Keep）**" "観察チェックリスト: Keep レンズ"
 contains "$SKILL" "**過剰動作**" "観察チェックリスト: 過剰動作レンズ"
 

@@ -45,9 +45,14 @@ expect_contains() {
 echo "== ace-curate knowledge commit 契約検査 =="
 
 expect_fixed_count \
-  '-m "knowledge: ACE-<PR番号>-<連番> <要約>"' \
+  '-m "${commit_type}: ACE-<PR番号>-<連番> <要約>"' \
   2 \
-  "既定・PR 両経路の件名がカテゴリ列挙を含まない短い形式"
+  "既定・PR 両経路の commit が commit_type 変数を使い、カテゴリ列挙を含まない短い形式（Issue #1147）"
+
+expect_fixed_count \
+  'commit_type="knowledge"' \
+  2 \
+  "既定・PR 両経路それぞれで commit_type の既定値が knowledge（AC3: 既定フロー不変。Issue #1147）"
 
 expect_fixed_count \
   '-m "Categories: <category[, category...]>"' \
@@ -61,7 +66,7 @@ else
 fi
 
 expect_contains \
-  "対象リポジトリの commitlint 設定（特に \`header-max-length\`）を確認" \
+  '確認対象は (1) commitlint の `header-max-length`' \
   "対象リポジトリの commitlint 件名長制約を確認する案内"
 
 expect_contains \
@@ -73,9 +78,67 @@ expect_contains \
   "要約だけで上限を超える場合の是正案"
 
 expect_fixed_count \
-  '--title "knowledge: ACE-<PR番号>-<連番> <要約>"' \
-  1 \
-  "squash 件名になり得る PR title もカテゴリ列挙を含まない形式"
+  '--title "${commit_type}: ACE-<PR番号>-<連番> <要約>"' \
+  2 \
+  "squash 件名になり得る PR title（既定 push 失敗時の自動切替 / PR 経由の両方）も commit_type 変数を使い、カテゴリ列挙を含まない形式（Issue #1147）"
+
+echo "== 手順 5 commitlint type 許容リスト確認検査（Issue #1147） =="
+# knowledge: prefix が commitlint の type 許容リストに無い導入先で commit-msg hook に
+# 毎回弾かれる実測（feel-flow/ff-dev-toolkit#67）を踏まえ、header-max-length だけでなく
+# type 許容リストの確認・参照先の列挙・置換方針が手順に残ることを固定する。
+
+expect_contains \
+  '(2) **type の許容リスト**' \
+  "commitlint 確認対象に header-max-length だけでなく type 許容リストが含まれる"
+
+expect_contains \
+  '`commitlint.config.*` / `.commitlintrc*` / `package.json` の `commitlint` キー / husky・simple-git-hooks の `commit-msg` hook' \
+  "type 許容リストの確認先（commitlint.config.* / .commitlintrc* / package.json / commit-msg hook）が列挙されている"
+
+expect_contains \
+  '`knowledge` が許容 type に含まれない場合は、プロジェクト規約の type（例 `chore`）へ件名の prefix だけを置き換える' \
+  "knowledge が非許容 type の場合の置換方針（chore 等へ prefix のみ置換）"
+
+expect_contains \
+  '件名の要約・body の `Categories:` 記録はそのまま維持する' \
+  "type 置換時も要約・Categories 記録が維持される明示"
+
+echo "== 手順 5 保護判定 → PR 経路分岐検査（Issue #1147） =="
+# default branch 保護時に直 push が `Changes must be made through a pull request` で
+# 必ず 1 回失敗する実測（feel-flow/ff-dev-toolkit#67）を踏まえ、直 push を試す前に
+# 保護判定へ分岐する契約と、判定不能時の二段構えフォールバックを固定する。
+
+expect_contains \
+  '**保護判定（必須・直 push を試す前に行う）**' \
+  "保護判定が直 push より前の必須手順として明記されている"
+
+expect_contains \
+  'gh api "repos/${owner_repo}/branches/${default_branch}/protection"' \
+  "branch protection API での保護判定コマンドが手順に含まれる"
+
+expect_contains \
+  'gh api "repos/${owner_repo}/rules/branches/${default_branch}"' \
+  "rulesets API でのフォールバック判定コマンドが手順に含まれる"
+
+expect_contains \
+  '既定を試し、push が `Changes must be made through a pull request` または `push declined due to repository rule violations` で拒否されたら PR 経由へ切り替える' \
+  "gh 不在・権限不足で判定不能な場合の二段構えフォールバック（拒否メッセージでの切替）"
+
+expect_contains \
+  '**default branch が保護されている場合はこの経路が必須**' \
+  "保護リポジトリで PR 経由が任意ではなく必須になる明示"
+
+echo "== 手順 5 既定フロー維持検査（Issue #1147） =="
+# 保護判定・commitlint type 確認を足しても、commitlint もブランチ保護も無いプロジェクト
+# では従来どおり既定（knowledge: 単独コミットの直 push）が通ることを固定する。
+
+expect_contains \
+  '**既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用' \
+  "既定フロー（デフォルトブランチ直マージ）の見出しと適用条件が維持されている"
+
+expect_contains \
+  '`knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり' \
+  "「knowledge: 単独コミットの直 push は意図的フロー」という既定の位置づけが維持されている"
 
 echo "== Phase 1 サブエージェント委譲契約検査 =="
 # 委譲時に情報が黙って失われる経路（read-only 逸脱・再委譲・PR 由来指示への追従・
@@ -190,6 +253,104 @@ for _ff_script in sync-playbook-frontmatter check-entry-format check-category-si
     bad "同梱スクリプトが存在しないか空です: docs-template/scripts/ace/${_ff_script}.ts"
   fi
 done
+
+echo "== 手順 5 保護判定ロジックの実測検査（stub gh。Issue #1147） =="
+# 文言 grep だけでは「404 の後 rulesets へ到達しない」ような分岐バグを検出できない
+# （実際に PR #1182 のレビューで指摘された欠陥）。SKILL.md から保護判定 block を
+# `# ff-ace-protection-probe:start/end` マーカーで実際に抽出し、stub gh を PATH に
+# 挟んで 4 シナリオを実行し、最終的な protection= 判定を実測する。
+
+PROBE_DIR="$(mktemp -d)"
+
+awk '/# ff-ace-protection-probe:start/{flag=1; next} /# ff-ace-protection-probe:end/{flag=0} flag' "$COMMAND_FILE" > "$PROBE_DIR/probe.sh"
+
+if [ -s "$PROBE_DIR/probe.sh" ]; then
+  ok "保護判定 block を ff-ace-protection-probe マーカーで SKILL.md から抽出できた"
+else
+  bad "保護判定 block の抽出に失敗しました（marker が見つからない？）"
+fi
+
+cat > "$PROBE_DIR/gh" <<'GH_STUB'
+#!/usr/bin/env bash
+# テスト用 stub gh。MOCK_CLASSIC / MOCK_RULESETS で classic protection API /
+# rulesets API それぞれの応答を切り替える。rulesets 側は実コマンドが
+# `--jq 'any(.[]; .type == "pull_request")'` で bool を直接引くため、
+# stub もその呼び出し形（--jq 引数の有無）を見て true/false を返す。
+set -euo pipefail
+if [[ "${1:-}" == "repo" && "${2:-}" == "view" ]]; then
+  echo "acme/widgets"
+  exit 0
+fi
+if [[ "${1:-}" == "api" ]]; then
+  path="${2:-}"
+  if [[ "$path" == */branches/*/protection ]]; then
+    if [[ "${MOCK_CLASSIC:-404}" == "200" ]]; then
+      echo '{}'
+      exit 0
+    fi
+    echo "gh: HTTP ${MOCK_CLASSIC:-404}: not found" >&2
+    exit 1
+  fi
+  if [[ "$path" == */rules/branches/* ]]; then
+    case "${MOCK_RULESETS:-empty}" in
+      empty)
+        echo "false"
+        exit 0
+        ;;
+      nonempty)
+        echo "true"
+        exit 0
+        ;;
+      non_fast_forward)
+        # force-push 禁止だけの一般的なリポジトリ: pull_request type は無いので false。
+        echo "false"
+        exit 0
+        ;;
+      *)
+        echo "gh: HTTP ${MOCK_RULESETS:-403}: forbidden" >&2
+        exit 1
+        ;;
+    esac
+  fi
+  echo "unhandled gh api path: $path" >&2
+  exit 1
+fi
+echo "unhandled gh invocation: $*" >&2
+exit 1
+GH_STUB
+chmod +x "$PROBE_DIR/gh"
+
+run_probe() {
+  local mock_classic="$1" mock_rulesets="$2"
+  # 抽出した block を set -euo pipefail 下で実行する（Issue #1147 再レビュー対応）。
+  # 代入行を単独の simple command のまま $? を取る形へ退行すると、set -e 下では
+  # 失敗時に次行へ到達できず無音で中断する（実測）。probe.sh 自体は他の SKILL.md
+  # 手順と同じく set -e 有無どちらでも安全な書き方が要求されるため、ここで
+  # set -e を有効にして実行することでその退行を検出する。
+  MOCK_CLASSIC="$mock_classic" MOCK_RULESETS="$mock_rulesets" PATH="$PROBE_DIR:$PATH" \
+    bash -c 'set -euo pipefail; . "$1"' -- "$PROBE_DIR/probe.sh" 2>&1 || true
+}
+
+assert_probe() {
+  local label="$1" mock_classic="$2" mock_rulesets="$3" expected="$4" output
+  output="$(run_probe "$mock_classic" "$mock_rulesets")"
+  case "$output" in
+    *"protection=${expected}"*)
+      ok "$label"
+      ;;
+    *)
+      bad "$label — 期待 protection=${expected}、実際の出力: ${output}"
+      ;;
+  esac
+}
+
+assert_probe "classic 404 + rulesets 非該当（pull_request 無し） → unprotected" 404 empty unprotected
+assert_probe "classic 404 + rulesets に pull_request あり → protected（rulesets のみで保護されたブランチを見逃さない）" 404 nonempty protected
+assert_probe "classic 200 → protected" 200 empty protected
+assert_probe "classic 403 かつ rulesets 403 → unknown（判定不能。既定を試して push 拒否メッセージで切替）" 403 403 unknown
+assert_probe "classic 404 + rulesets が non_fast_forward のみ（pull_request 無し） → unprotected（force-push 禁止だけでは既定フローを変えない。AC3）" 404 non_fast_forward unprotected
+
+rm -rf "$PROBE_DIR"
 
 echo
 if [ "$FAIL" -gt 0 ]; then

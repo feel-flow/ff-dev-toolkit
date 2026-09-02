@@ -66,9 +66,20 @@ const VARIANT_B_MARKER = "メタ表のみ正準フォーマットへ再整形";
  *   実態とずれる。散文由来の ID が偶然収載済みである間は緑のままなので、
  *   誤採用が検査結果に表れない（Issue #1030）。
  *
- * 打ち切りを黙って行うと列挙の後半が無検証になるため、
- * ID 列の直後が理由の括弧書きでも行末でもない行は malformed として拒否する
- * （`/` や `と` 区切りは「列挙が途中で切れている」扱い）。
+ * 打ち切りを黙って行うと列挙の後半が無検証になるため、ID 列の終端は
+ * **行末か、理由の括弧書き 1 つだけ**とし、それ以外は malformed として拒否する（Issue #1115）。
+ * 理由の括弧書きの**中**は散文なので ID 言及を許すが（`（判断は ACE-3-3 に従った）`）、
+ * その括弧書きを閉じた後ろに ACE ID が現れる行は、括弧で包んであっても列挙の続きとみなす。
+ * したがって次はいずれも「列挙が途中で切れている」扱いになる:
+ *
+ * - `ACE-1-1 / ACE-2-1`・`ACE-1-1 と ACE-2-1`（`,` `、` 以外の区切り）
+ * - `ACE-1-1。ACE-2-1`・`ACE-1-1。stale だったため撤去`（括弧書きでない散文理由）
+ * - `ACE-1-1（注記） / ACE-2-1`・`ACE-1-1（注記） / （ACE-2-1）`（括弧書きの後に継続）
+ * - `ACE-1-1（stale, ACE-2-1`（括弧の閉じ忘れ。閉じ忘れは以降を丸ごと注記扱いにして
+ *   後続 ID を黙って落とすので、検出をすり抜けさせない）
+ *
+ * 閉じた括弧書きの後ろに ID を含まない散文・注記が続く形
+ * （`ACE-1-1（helpful=0・stale）。原文は archive へ保全（再コピーはしない）`）は受理する。
  */
 function idRunPattern(label: string): RegExp {
   return new RegExp(
@@ -79,7 +90,9 @@ function idRunPattern(label: string): RegExp {
 const ARCHIVED_ID_RUN_PATTERN = idRunPattern("Archived");
 const PROMOTED_ID_RUN_PATTERN = idRunPattern("Promoted");
 /** ID 列の直後に来てよいのは行末か理由の括弧書きだけ。それ以外は列挙が途中で切れている。 */
-const ARCHIVED_REASON_HEAD_PATTERN = /^[（(。.]/u;
+const ARCHIVED_REASON_HEAD_PATTERN = /^[（(]/u;
+/** 理由の散文に ID が残っていないかの判定用（`ACE_ID_PATTERN` は g 付きで lastIndex を持つ）。 */
+const ACE_ID_ANYWHERE_PATTERN = new RegExp(ACE_ID_PATTERN.source, "u");
 const CHANGELOG_HEADING_PATTERN = /^##\s+Changelog\s*$/u;
 const LEVEL2_HEADING_LINE_PATTERN = /^##\s+/u;
 const HAS_LEVEL2_HEADING_PATTERN = /^##\s+/mu;
@@ -191,6 +204,27 @@ export function stripParentheticals(line: string): string {
 }
 
 /**
+ * 括弧書きで始まる理由部から、**最初の括弧書きを閉じた後ろ**を返す。
+ * 対応が閉じないまま行が終わる／閉じ括弧が余る場合は `null`（呼び出し側は違反として扱う）。
+ */
+export function restAfterFirstParenthetical(reason: string): string | null {
+  let depth = 0;
+  for (let i = 0; i < reason.length; i++) {
+    const ch = reason[i];
+    if (ch === "（" || ch === "(") {
+      depth += 1;
+      continue;
+    }
+    if (ch === "）" || ch === ")") {
+      depth -= 1;
+      if (depth === 0) return reason.slice(i + 1);
+      if (depth < 0) return null;
+    }
+  }
+  return depth === 0 ? reason : null;
+}
+
+/**
  * コロン直後の ID 列だけを `ids` へ入れる。ID 列を持たない行（`なし（…）` 等）は無視し、
  * ID 列が理由の括弧書き以外の散文で切れている行は `malformed` へ回す。
  */
@@ -203,11 +237,21 @@ function collectIdRun(
   const run = line.match(pattern);
   if (!run) return;
   const rest = run[2].trim();
-  // 区切りが `,` / `、` でない列挙は先頭だけ拾って残りが無検証になる。
-  // 黙って切り詰めず、行そのものを違反として報告する。
-  if (rest !== "" && !ARCHIVED_REASON_HEAD_PATTERN.test(rest)) {
-    malformed.push(line);
-    return;
+  if (rest !== "") {
+    // 区切りが `,` / `、` でない列挙や括弧書きでない理由は、先頭だけ拾って残りが無検証になる。
+    // 黙って切り詰めず、行そのものを違反として報告する。
+    if (!ARCHIVED_REASON_HEAD_PATTERN.test(rest)) {
+      malformed.push(line);
+      return;
+    }
+    // 理由として許すのは最初の括弧書き 1 つだけ。その後ろに ACE ID が現れる行は、
+    // 括弧で包んであっても列挙の続きとして違反にする（`ACE-1-1（注記） / （ACE-2-1）`）。
+    // 閉じ忘れ（tail === null）は以降を丸ごと注記扱いにして後続 ID を消すので同じく違反。
+    const tail = restAfterFirstParenthetical(rest);
+    if (tail === null || ACE_ID_ANYWHERE_PATTERN.test(tail)) {
+      malformed.push(line);
+      return;
+    }
   }
   ids.push(...[...run[1].matchAll(ACE_ID_PATTERN)].map((m) => m[0]));
 }

@@ -46,13 +46,14 @@ SRC_ACE_CURATE="$PLUGIN_ROOT/skills/ace-curate/SKILL.md"
 SRC_GIT_WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 SRC_WORKFLOW_PRINCIPLES="$PLUGIN_ROOT/docs-template/05-operations/deployment/workflow-principles.md"
 SRC_DEPLOYMENT="$PLUGIN_ROOT/docs-template/05-operations/DEPLOYMENT.md"
+SRC_LEDGER_TEMPLATE="$PLUGIN_ROOT/docs-template/08-knowledge/OBSERVATIONS.md"
 
 # ゲートが検査を何件実行するかの期待値。**検査そのものが削除される侵食**（文言変更で
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=135
-EXPECTED_GATE_CHECKS_PUBLIC=124
+EXPECTED_GATE_CHECKS_MONOREPO=172
+EXPECTED_GATE_CHECKS_PUBLIC=158
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -130,6 +131,8 @@ FIX_ACE_CURATE="$FIX_PLUGIN/skills/ace-curate/SKILL.md"
 FIX_GIT_WORKFLOW="$FIX_PLUGIN/docs-template/05-operations/deployment/git-workflow.md"
 FIX_WORKFLOW_PRINCIPLES="$FIX_PLUGIN/docs-template/05-operations/deployment/workflow-principles.md"
 FIX_DEPLOYMENT="$FIX_PLUGIN/docs-template/05-operations/DEPLOYMENT.md"
+FIX_LEDGER_TEMPLATE="$FIX_PLUGIN/docs-template/08-knowledge/OBSERVATIONS.md"
+FIX_LEDGER_REPO="$FIX_REPO/docs/08-knowledge/OBSERVATIONS.md"
 
 cp "$SRC_GATE" "$GATE"
 chmod +x "$GATE"
@@ -138,6 +141,9 @@ cp "$SRC_ACE_CURATE" "$FIX_ACE_CURATE"
 cp "$SRC_GIT_WORKFLOW" "$FIX_GIT_WORKFLOW"
 cp "$SRC_WORKFLOW_PRINCIPLES" "$FIX_WORKFLOW_PRINCIPLES"
 cp "$SRC_DEPLOYMENT" "$FIX_DEPLOYMENT"
+mkdir -p "$(dirname "$FIX_LEDGER_TEMPLATE")" "$(dirname "$FIX_LEDGER_REPO")"
+cp "$SRC_LEDGER_TEMPLATE" "$FIX_LEDGER_TEMPLATE"
+cp "$SRC_LEDGER_TEMPLATE" "$FIX_LEDGER_REPO"
 
 # 公開配置では oss/ を作らない（作るとゲートがモノレポと誤認する）。
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
@@ -159,6 +165,8 @@ cp "$FIX_ACE_CURATE" "$PRISTINE/ace-curate-SKILL.md"
 cp "$FIX_GIT_WORKFLOW" "$PRISTINE/git-workflow.md"
 cp "$FIX_WORKFLOW_PRINCIPLES" "$PRISTINE/workflow-principles.md"
 cp "$FIX_DEPLOYMENT" "$PRISTINE/DEPLOYMENT.md"
+cp "$FIX_LEDGER_TEMPLATE" "$PRISTINE/observations-template.md"
+cp "$FIX_LEDGER_REPO" "$PRISTINE/observations-repo.md"
 cp "$FIX_OSS_README" "$PRISTINE/oss-README.md"
 [[ "$IS_MONOREPO" -eq 0 ]] || cp "$FIX_ROOT_README" "$PRISTINE/root-README.md"
 
@@ -168,6 +176,8 @@ restore_all() {
   cp "$PRISTINE/git-workflow.md" "$FIX_GIT_WORKFLOW"
   cp "$PRISTINE/workflow-principles.md" "$FIX_WORKFLOW_PRINCIPLES"
   cp "$PRISTINE/DEPLOYMENT.md" "$FIX_DEPLOYMENT"
+  cp "$SRC_LEDGER_TEMPLATE" "$FIX_LEDGER_TEMPLATE"
+  cp "$SRC_LEDGER_TEMPLATE" "$FIX_LEDGER_REPO"
   cp "$PRISTINE/oss-README.md" "$FIX_OSS_README"
   [[ "$IS_MONOREPO" -eq 0 ]] || cp "$PRISTINE/root-README.md" "$FIX_ROOT_README"
 }
@@ -204,6 +214,7 @@ gate_labels() { # $1=✓ または ✗。stdin=ゲートの実出力
     index($0, "  " mark " ") == 1 {
       label = substr($0, length("  " mark " ") + 1)
       sub(/（不足: .*$/, "", label)
+      sub(/（旧ルールが残存: .*$/, "", label)
       if (label ~ /^チェーン記載の検査対象が /) label = "チェーン記載の検査対象数"
       else if (label ~ /^チェーン記載の針が /) label = "チェーン記載の針数"
       else if (label ~ /^フォールバック針が /) label = "フォールバック針数"
@@ -453,7 +464,7 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|   - 起票先: |出力形式: 起票先欄|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 付与予定ラベル: |出力形式: 付与予定ラベル欄|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 期待効果: |出力形式: 期待効果欄|1"
-  "${FIX_SKILL}|retrospective-SKILL.md|### 起票前の既存確認（必須）|起票前の既存確認: 節が存在する|20"
+  "${FIX_SKILL}|retrospective-SKILL.md|### 起票前の既存確認（必須）|起票前の既存確認: 節が存在する|22"
   "${FIX_SKILL}|retrospective-SKILL.md|この行を書けない提案は提示しない|起票前の既存確認: 既存確認を書けない提案は提示しない|1"
   "${FIX_SKILL}|retrospective-SKILL.md|--state all --limit 200|起票前の既存確認: 既存 Issue 検索は state 非限定 + 取得上限を明示|1"
   # Issue #865: 確認の**タイミング**（閾値側）は単独の行に乗るため巻き添え無し。
@@ -482,23 +493,62 @@ MARKER_MUTATIONS=(
   # Issue #840: 非対話単発実行のスキップ規定は判定リスト項目 5 の単独行に乗る。
   "${FIX_SKILL}|retrospective-SKILL.md|Codex の非対話の単発実行（UserPromptSubmit 入力に \`model\` があり|自動発火: 非対話の単発実行には事前注入しない|1"
   "${FIX_SKILL}|retrospective-SKILL.md|本スキルで扱わず、\`/ace-curate\`（または ACE Playbook への追記）へ回す|責務分離: retrospective 側からの送り先明示|1"
-  # 観測台帳（起票の前段バッファ・KPT 拡張）の 9 針。いずれも SKILL.md 内で単独の行に
-  # 乗せてあるため、行削除の期待 ✗ は各 1 件。
+  # 観測台帳（起票の前段バッファ・KPT 拡張・ADR-046 の分散台帳）の針。同一行に 2 針が乗る
+  # 箇所（節冒頭の段落・起票先分岐の bullet）だけ期待 ✗ を 2 にしてある（下の注記）。
   "${FIX_SKILL}|retrospective-SKILL.md|## 観測の記録 — 観測台帳（起票の前段バッファ）|観測台帳: 節が存在する|1"
-  "${FIX_SKILL}|retrospective-SKILL.md|まず**観測台帳**へ記録する|観測台帳: 起票前にまず台帳へ記録|1"
+  # 節冒頭の段落には「まず台帳へ記録」と「作業中リポジトリの台帳」の 2 針が乗る（ADR-046）。
+  "${FIX_SKILL}|retrospective-SKILL.md|まず**観測台帳**へ記録する|観測台帳: 起票前にまず台帳へ記録|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|台帳は**作業中のリポジトリ**の \`docs/08-knowledge/OBSERVATIONS.md\`|観測台帳: 作業中リポジトリの台帳へ記録|2"
   "${FIX_SKILL}|retrospective-SKILL.md|**累計 3 回**に到達し、対応 Issue が未リンク|観測台帳: Issue 昇格の閾値|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**特急レーン**|観測台帳: 重大観測の特急レーン|1"
   "${FIX_SKILL}|retrospective-SKILL.md|アクションに繋がらない Keep は記録しない|観測台帳: Keep はアクションに繋がるものだけ記録|1"
-  "${FIX_SKILL}|retrospective-SKILL.md|\`[observation]\` 接頭辞の Issue として受け渡す|観測台帳: 導入先からは observation Issue で受け渡す|1"
-  "${FIX_SKILL}|retrospective-SKILL.md|open な \`observation\` Issue|観測台帳: SSOT での inbox 取り込み|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|\`\${FF_DEV_TOOLKIT_ROOT}/docs-template/08-knowledge/OBSERVATIONS.md\` をコピーして作成する|観測台帳: 不在時はテンプレートから作成|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|受け渡し便）は**廃止**した|観測台帳: 受け渡し便の廃止を明記|1"
+  # 起票先分岐の bullet には「改善対象で分岐」と「プロジェクト固有はそのリポジトリへ」の 2 針が乗る。
+  "${FIX_SKILL}|retrospective-SKILL.md|**昇格の起票先は改善対象で分岐する**|観測台帳: 起票先は改善対象で分岐|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|作業中プロジェクト固有のプロセス・手順なら**作業中リポジトリ自身**の Issue|観測台帳: プロジェクト固有はそのリポジトリへ|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|検索対象は **SSOT と配布ミラーの両方**で|観測台帳: 旧経路残件は両リポジトリを検索|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|\`（owner/repo#N より取り込み）\` マーカー|観測台帳: 取り込みマーカーはリポジトリ修飾|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|そのリポジトリで ACE Playbook の直コミットに使っている経路（PR 化等）に揃える|観測台帳: 直 push 不可のリポジトリは Playbook 直コミットの経路に揃える|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**台帳へ書き込めないリポジトリ**|観測台帳: 書き込めないリポジトリの扱いを定義|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|台帳へ書き込めないリポジトリだけがこの限定の対象外|提案閾値: 書き込めないリポジトリだけが閾値限定の対象外|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**SSOT リポジトリで本スキルを実行するとき**に SSOT の台帳へ取り込む|観測台帳: 旧経路残件の取り込みは SSOT 実行時に限る|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|昇格の判定と提案は、台帳を更新したリポジトリで|観測台帳: 昇格判定は台帳を更新したリポジトリで行う|1"
+  # mitigated（対策済み）の終端状態（Issue #1138）。値域・所在の書式・判定からの除外・
+  # 復帰条件はそれぞれ独立の bullet に乗るので、期待 ✗ はいずれも 1 件。
+  "${FIX_SKILL}|retrospective-SKILL.md|**昇格閾値の判定対象は \`Status\` が \`active\` のエントリに限る**|観測台帳: 閾値判定の対象は active に限る|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**\`mitigated\`（対策済み）**|観測台帳: mitigated（対策済み）の定義|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|\`skill:<スキル名>\`、文書なら \`doc:<path>#<アンカー>\`|観測台帳: 対策の所在は接頭辞付きの書式で書く|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**昇格提案は再演しない**|観測台帳: mitigated の再発で昇格提案を再演しない|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**\`active\` への復帰条件**|観測台帳: mitigated から active への復帰条件|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|(a) **対策が失われた**|観測台帳: 復帰条件 (a) 対策の消失|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|(b) **対策が効いていない**|観測台帳: 復帰条件 (b) 対策が効いていない|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|\`archived\` との違いは**再発しているか**|観測台帳: archived / promoted との違いを併記|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|代わりに \`Status\` を \`mitigated\`、\`Issue\` を対策の所在へ更新する|承認と起票: 見送りは mitigated へ書き戻す|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**閾値は発火点であり、発火時に取った判断は状態として台帳へ書き戻す。**|提案閾値: 閾値到達時の判断を状態として書き戻す|1"
+  # レビュー指摘 1〜3（復帰の完全性・参照先の確認・取り下げ経路からの書き戻し）の針。
+  # いずれも独立の行に乗るので期待 ✗ は 1 件。
+  "${FIX_SKILL}|retrospective-SKILL.md|戻すときは **\`Issue\` 列も \`なし\` へ戻す**|観測台帳: 復帰時は Issue 列も なし へ戻す|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**\`mitigated\` の再発を記録するときは \`Issue\` 列の参照先を確認する**|観測台帳: mitigated の再発時に参照先を確認する|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**取り下げても台帳は書き戻す**|SSOT 照合: 取り下げた閾値到達エントリは mitigated へ書き戻す|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**恒久対策の Issue を指していて新規起票を見送った**|知見ストア: 起票を見送った閾値到達エントリは mitigated へ書き戻す|1"
+  # 本体台帳側の値域行を落とす。テンプレは無傷なので、照合分岐だけが赤化する
+  # （公開 fixture では実行されない分岐を、モノレポ fixture の変異で担保する）。
+  "${FIX_LEDGER_REPO}|observations-repo.md|- \`Status\` の値域: |観測台帳: 本体台帳の Status 値域行が配布テンプレと一致|1"
+  # 値域行そのものの削除は導出の fail-closed 経路（下流 3 針は導出できず実行されない）。
+  "${FIX_LEDGER_TEMPLATE}|observations-template.md|- \`Status\` の値域: |観測台帳: Status 値域行を配布テンプレから導出|1"
+  "${FIX_GIT_WORKFLOW}|git-workflow.md|観測は起票の前に**作業中リポジトリ**の観測台帳|分散台帳が git-workflow へ伝播|1"
+  # workflow-principles の承認境界行には「承認待ち」「実施まで」「分散台帳」の 3 針が乗る。
+  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|観測記録は作業中リポジトリの観測台帳への定型書き込み|分散台帳が workflow-principles へ伝播|3"
   "${FIX_SKILL}|retrospective-SKILL.md|**再現価値のある成功パターン（Keep）**|観察チェックリスト: Keep レンズ|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**過剰動作**|観察チェックリスト: 過剰動作レンズ|1"
   "${FIX_ACE_CURATE}|ace-curate-SKILL.md|ACE Playbook ではなく \`/retrospective\` の提案経路で扱う|責務分離: ACE 側からの送り先明示|3"
   "${FIX_GIT_WORKFLOW}|git-workflow.md|承認なしには起票しない|承認境界が git-workflow へ伝播|4"
-  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|ユーザー承認を待ってから行う|承認境界が workflow-principles へ伝播|2"
+  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|ユーザー承認を待ってから行う|承認境界が workflow-principles へ伝播|3"
   "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|\`/retrospective\` の起票のみ承認待ち|承認境界が適用タイミング表へ伝播|1"
   "${FIX_DEPLOYMENT}|DEPLOYMENT.md|起票はユーザー承認後のみ|承認境界が DEPLOYMENT へ伝播|3"
-  "${FIX_OSS_README}|oss-README.md|起票はユーザー承認後のみ|承認境界が公開 README へ伝播|3"
+  "${FIX_OSS_README}|oss-README.md|起票はユーザー承認後のみ|承認境界が公開 README へ伝播|4"
+  "${FIX_OSS_README}|oss-README.md|作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し|分散台帳が公開 README へ伝播|4"
   # フォールバック行には 7 針（フォールバック本体・スキル名の確認手順・プレフィックス
   # 両試行・別レジストリの区別・分割インストールの原因/実体突き合わせ/結論ガード、
   # Issue #574 / #607 / #630）が同一行に乗るため、行削除で 7 件赤化する。
@@ -511,7 +561,8 @@ MARKER_MUTATIONS=(
 )
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   MARKER_MUTATIONS+=(
-    "${FIX_ROOT_README}|root-README.md|起票はユーザー承認後のみ|承認境界がルート README へ伝播|3"
+    "${FIX_ROOT_README}|root-README.md|起票はユーザー承認後のみ|承認境界がルート README へ伝播|4"
+    "${FIX_ROOT_README}|root-README.md|作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し|分散台帳がルート README へ伝播|4"
     "${FIX_ROOT_README}|root-README.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: README.md|7"
   )
 fi
@@ -589,6 +640,61 @@ if assert_mutated "$FIX_SKILL" "$PRISTINE/retrospective-SKILL.md" "M-E 上限の
   expect_red "M-E 上限の併存（3 と 5 が同居）" "✗ 提案上限が SKILL.md 内で一意でありません" 1
 fi
 restore_all
+
+# M-T: 退役した observation 受け渡し便の起票規則（ADR-046）を逐語復元する — not_contains
+# 針の実測。契約行は全て無傷のまま、旧規則の 1 文だけを末尾へ追記する。
+printf '\n%s\n' '- **SSOT 以外のリポジトリで作業中**: 台帳へ直接書かず、観測を SSOT リポジトリへ `[observation]` 接頭辞の Issue として受け渡す' >>"$FIX_SKILL"
+if assert_mutated "$FIX_SKILL" "$PRISTINE/retrospective-SKILL.md" "M-T 旧受け渡し便の逐語復元"; then
+  expect_red "M-T 旧受け渡し便の逐語復元（not_contains）" "✗ 観測台帳: 旧受け渡し便の起票規則が復元されていない" 1
+fi
+restore_all
+
+# M-U: テンプレートの削除 — 記録手順 0 のコピー元が消えたことを実在検査が捕まえる。
+# 値域行の導出元でもあるため、実在検査と導出の fail-closed が同時に赤化する（✗ 2 件）。
+rm -f "$FIX_LEDGER_TEMPLATE"
+if [[ ! -f "$FIX_LEDGER_TEMPLATE" ]]; then
+  expect_red "M-U 台帳テンプレートの削除" "✗ 観測台帳: テンプレート docs-template/08-knowledge/OBSERVATIONS.md が実在する" 2
+else
+  bad "M-U 台帳テンプレートの削除: 変異が適用されていない"
+fi
+restore_all
+
+# M-Y: 配布テンプレの Status 値域から mitigated を落とす。値域の欠落（下流の針）と、
+# 本体台帳との片側 drift（一致の針）が同時に赤化する = 期待 ✗ は 2 件。
+perl -pi -e 's/\Q`mitigated`（対策済み\E/`deprecated`（対策済み/' "$FIX_LEDGER_TEMPLATE"
+if assert_mutated "$FIX_LEDGER_TEMPLATE" "$PRISTINE/observations-template.md" "M-Y テンプレ値域から mitigated を落とす"; then
+  expect_red "M-Y 配布テンプレの Status 値域から mitigated を落とす" "✗ 観測台帳: 配布テンプレの Status 値域に mitigated がある" 2
+fi
+restore_all
+
+# M-Z: 配布テンプレの値域行の所在接頭辞だけを SKILL.md に無いものへ差し替える。
+# 接頭辞の一致（片側 drift）と本体台帳との一致が同時に赤化する = 期待 ✗ は 2 件。
+perl -pi -e 's/\Q`skill:\E/`plugin:/' "$FIX_LEDGER_TEMPLATE"
+if assert_mutated "$FIX_LEDGER_TEMPLATE" "$PRISTINE/observations-template.md" "M-Z 値域行の所在接頭辞の差し替え"; then
+  expect_red "M-Z 値域行の所在接頭辞を SKILL.md に無いものへ差し替え" "✗ 観測台帳: 所在の接頭辞が値域行と SKILL.md で一致" 2
+fi
+restore_all
+
+# M-V〜M-X: 消費側文書へ旧規則（SSOT 台帳 / observation Issue 起票）を逐語復元する — not_contains 針の実測。
+printf '\n%s\n' '> 観測記録は SSOT の観測台帳への定型書き込み（SSOT 以外のリポジトリからの observation Issue 起票は観測記録に含まれず、承認後に行う）。' >>"$FIX_WORKFLOW_PRINCIPLES"
+if assert_mutated "$FIX_WORKFLOW_PRINCIPLES" "$PRISTINE/workflow-principles.md" "M-V workflow-principles の旧受け渡し便復元"; then
+  expect_red "M-V workflow-principles の旧受け渡し便復元（not_contains）" "✗ workflow-principles: 旧受け渡し便の記述が復元されていない" 1
+fi
+restore_all
+
+printf '\n%s\n' '実測した手戻りを SSOT の観測台帳へ記録し、閾値到達で提案する。' >>"$FIX_OSS_README"
+if assert_mutated "$FIX_OSS_README" "$PRISTINE/oss-README.md" "M-W 公開 README の旧 SSOT 台帳復元"; then
+  expect_red "M-W 公開 README の旧 SSOT 台帳復元（not_contains）" "✗ 公開 README: 旧 SSOT 台帳の記述が復元されていない" 1
+fi
+restore_all
+
+if [[ "$IS_MONOREPO" -eq 1 ]]; then
+  printf '\n%s\n' '実測した手戻りを SSOT の観測台帳へ記録し、閾値到達で提案する。' >>"$FIX_ROOT_README"
+  if assert_mutated "$FIX_ROOT_README" "$PRISTINE/root-README.md" "M-X ルート README の旧 SSOT 台帳復元"; then
+    expect_red "M-X ルート README の旧 SSOT 台帳復元（not_contains）" "✗ ルート README: 旧 SSOT 台帳の記述が復元されていない" 1
+  fi
+  restore_all
+fi
 
 # M-F: 消費側（DEPLOYMENT）の上限だけを書き換える
 perl -pi -e 's/最大 3 件/最大 5 件/g' "$FIX_DEPLOYMENT"
@@ -887,7 +993,8 @@ if [[ "$IS_MONOREPO" -eq 1 ]]; then
     "$PUB_PLUGIN/tests/retrospective-contract" \
     "$PUB_PLUGIN/skills/retrospective" \
     "$PUB_PLUGIN/skills/ace-curate" \
-    "$PUB_PLUGIN/docs-template/05-operations/deployment"
+    "$PUB_PLUGIN/docs-template/05-operations/deployment" \
+    "$PUB_PLUGIN/docs-template/08-knowledge"
   PUB_GATE="$PUB_PLUGIN/tests/retrospective-contract/verify.sh"
   PUB_README="$PUB_REPO/README.md"
   cp "$SRC_GATE" "$PUB_GATE"
@@ -898,6 +1005,11 @@ if [[ "$IS_MONOREPO" -eq 1 ]]; then
   cp "$SRC_WORKFLOW_PRINCIPLES" "$PUB_PLUGIN/docs-template/05-operations/deployment/workflow-principles.md"
   cp "$SRC_DEPLOYMENT" "$PUB_PLUGIN/docs-template/05-operations/DEPLOYMENT.md"
   cp "$SRC_OSS_README" "$PUB_README"
+  cp "$SRC_LEDGER_TEMPLATE" "$PUB_PLUGIN/docs-template/08-knowledge/OBSERVATIONS.md"
+  # 公開リポジトリには本体台帳が無い（台帳はリポジトリごとの成果物。実測:
+  # feel-flow/ff-dev-toolkit に docs/ が存在しない）。fixture へ置くと、実リポジトリでは
+  # 通らない照合分岐を期待値に含めてしまう。ここに置かないことで「台帳を持たない配置では
+  # 照合をスキップする」経路そのものを公開 fixture が実測する。
 
   run_gate "$PUB_GATE"
   if [[ "$GATE_RC" -eq 0 ]]; then

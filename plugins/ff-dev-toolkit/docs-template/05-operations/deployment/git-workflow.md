@@ -1220,19 +1220,21 @@ GitHub Discussions への記録に加え、ACE Playbook への構造化記録を
 
 #### 運用パターン（マージ方針）
 
-> このセクションが ACE 知見コミットのマージ方針の **SSOT**。ace-cycle.md / ace-curate.md はここを参照する。
+> このセクションが ACE 知見コミットのマージ方針の **SSOT**。ace-cycle.md / `/ace-curate` 手順5 はここを参照する。
 
-**既定（推奨）— develop 直マージ**: マージ・cleanup 後の develop で `/ace-curate <PR番号>` を実行し、PLAYBOOK.md 追記を **develop に直接 commit + push** する。PLAYBOOK.md は append-only で構造化されており、ID も PRスコープ式（[エントリID規則](../../08-knowledge/PLAYBOOK.md#エントリid規則)）で衝突しないため、ACE 1 サイクル分の小さな知見追加を毎回 PR 化するのは過剰なオーバーヘッド。
+**保護判定（必須・直 push を試す前に行う）**: `<default-branch>` が保護されているかを確認する（branch protection API → rulesets API → いずれも判定不能なら既定を試して拒否メッセージで PR 経路へ切替。手順の詳細は `/ace-curate` 手順5）。保護されている場合は下の既定（直 push）を試みず、chore PR 経路（必須）を使う。
 
-**任意エスカレーション — chore PR**: 大人数チーム、または知見内容自体をレビューに残したい場合のみ、develop から `chore/ace-from-pr-<PR番号>` ブランチを切り、PLAYBOOK.md 追記を小さい chore PR として PR レビュー → squash merge する。
+**既定（推奨）— `<default-branch>` 直マージ**: 保護されていない `<default-branch>` にのみ適用。マージ・cleanup 後の `<default-branch>` で `/ace-curate <PR番号>` を実行し、PLAYBOOK.md 追記を **`<default-branch>` に直接 commit + push** する。PLAYBOOK.md は append-only で構造化されており、ID も PRスコープ式（[エントリID規則](../../08-knowledge/PLAYBOOK.md#エントリid規則)）で衝突しないため、ACE 1 サイクル分の小さな知見追加を毎回 PR 化するのは過剰なオーバーヘッド。
 
-> **ACE-012 との関係（混同しないこと）**: ACE-012 は _うっかり_ feature 作業を develop に直接 push してしまう事故（ブランチ切り替わりの見落とし）を防ぐルール。一方、本セクションの「develop 直マージ」は `knowledge:` プレフィックス付きの **PLAYBOOK 単独コミット** に限定した _意図的・承認済み_ のフローであり、両者は別物。ACE-012 は引き続き有効（deprecated にしない）。
+**chore PR 経路**: 大人数チーム、または知見内容自体をレビューに残したい場合は任意エスカレーション、**`<default-branch>` が保護されている場合は必須経路**。`<default-branch>` から `chore/ace-from-pr-<PR番号>` ブランチを切り、PLAYBOOK.md 追記を小さい chore PR として PR レビュー → squash merge する（保護判定・commitlint type 置換の詳細は `/ace-curate` 手順5）。
+
+> **ACE-012 との関係（混同しないこと）**: ACE-012 は _うっかり_ feature 作業を `<default-branch>` に直接 push してしまう事故（ブランチ切り替わりの見落とし）を防ぐルール。一方、本セクションの「`<default-branch>` 直マージ」は `knowledge:`（または commitlint type 許容リストにより置換された type）プレフィックス付きの **PLAYBOOK 単独コミット** に限定した _意図的・承認済み_ のフローであり、両者は別物。ACE-012 は引き続き有効（deprecated にしない）。
 
 ### チェーン末尾: セッション振り返り（/retrospective）
 
 ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行する（`/merge-cleanup` → `/ace-curate` → `/retrospective`）。ACE がコード・設計のプロジェクト知見を Playbook へ蓄積するのに対し、`/retrospective` はプロセス/ツール/スキルのメタ知見（そのセッションで**実測した**手戻り・無駄時間）から改善提案を最大 3 件出す（該当なしなら「振り返り: 改善候補なし」の 1 行で終了）。起票は既存確認 → 提案 → ユーザー承認 → 対象 repo へ Issue 作成の順で、承認なしには起票しない。提案の提示前に既存知見・既存 Issue との重複を確認し、重複していた提案は新規起票ではなく既存への追記へ切り替える（確認手順の詳細はスキルの「起票前の既存確認」。手順そのものはここへ複製せず参照する）。
 
-観測は起票の前に SSOT リポジトリの観測台帳（`docs/08-knowledge/OBSERVATIONS.md`）へ蓄積し、同じ観測の再発はエントリの Count +1 に畳む。Issue 起票を提案するのは原則として Count が累計 3 回に到達した再発（または一回でも重大な特急レーン）だけで、SSOT 以外のリポジトリからは `[observation]` 接頭辞の受け渡し Issue（承認後）で SSOT へ送る。台帳への定型記録と、SSOT 側での observation Issue の取り込み（コメント + close）は承認不要、Issue の新規起票は従来どおり承認後のみ（詳細はスキルの「観測の記録」。手順そのものはここへ複製せず参照する）。
+観測は起票の前に**作業中リポジトリ**の観測台帳（`docs/08-knowledge/OBSERVATIONS.md`。無ければスキルがテンプレートから作成する）へ蓄積し、同じ観測の再発はエントリの Count +1 に畳む。Issue 起票を提案するのは原則として Count が累計 3 回に到達した再発（または一回でも重大な特急レーン）だけで、起票先は改善対象で分岐する — ツール群（スキル・hook・スクリプト）の改善は到達可能な SSOT（不能なら配布元）、プロジェクト固有のプロセス改善はこのリポジトリ自身。台帳の作成・定型記録は承認不要、Issue の新規起票は従来どおり承認後のみ（詳細はスキルの「観測の記録」。手順そのものはここへ複製せず参照する）。
 
 対応ホストでは UserPromptSubmit で応答前に注入し、Stop hook は実行漏れ時だけ自動継続する。`RETROSPECTIVE_MODE=ask` で実施前確認、`off` で自動発火を無効にできる。
 
