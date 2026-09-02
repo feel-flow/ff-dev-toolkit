@@ -3,8 +3,9 @@
 # docs/ に手書きした件数・閾値と実体のドリフト検査（Issue #519）。
 #
 # #512 で docs/ を実体で書き下ろした際、プラグイン数・スキル数・suite 数・MCP ツール数
-# などを本文へ手書きした。既存の `skill-count-consistency` は marketplace.json と
-# plugin.json だけを見ており **docs/ は 1 文字も読まない**（同 suite のヘッダ自身が
+# などを本文へ手書きした。既存の `skill-count-consistency` は marketplace.json・
+# plugin.json と oss README の見出し件数（#1085）を見るだけで **docs/ は 1 文字も
+# 読まない**（同 suite のヘッダ自身が
 # 「件数そのものをこのファイルに書かない」と述べているとおり、手書きの件数は腐る）。
 # 実際に #501 では marketplace の「18」が実体 20 と乖離し、59 suite のどれも検出せず
 # Codex のクロスレビューが拾った。

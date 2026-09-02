@@ -5,8 +5,8 @@
 # fixture のリポジトリルートを mktemp に組み立て、FF_SKILL_COUNT_ROOT で本体を
 # 駆動して以下を実測する（AC は Issue #502）:
 #   G1. 整合した baseline が緑
-#   G2. スキルを 1 つ増やして説明文を更新しない → 赤
-#   G3. スキルを 1 つ減らして説明文を更新しない → 赤
+#   G2. スキルを 1 つ増やして説明文・README を更新しない → 赤（README > 実数 の側も含む）
+#   G3. スキルを 1 つ減らして説明文・README を更新しない → 赤（README < 実数 の側も含む）
 #   G4. 補助ファイル（skills/README.md）と SKILL.md を持たないディレクトリを
 #       スキルとして数えない（追加しても緑のまま）
 #   G5. root だけ更新して oss が古い → 赤（同一性検査が捕まえる）
@@ -19,6 +19,10 @@
 #   G11. 末尾が ASCII 数字のスキル名を数値グループと誤読しない（緑を維持）
 #   G12. 末尾数字名の誤読で合計が偶然一致する false-green ケースを赤にできる
 #   G13. 件数パターンの複数一致 → 赤（fail-closed の ≥2 側）
+#   G14. 公開 README の見出し「### Skills（N）」だけが実数より大きい → 赤（#1085 の針。
+#        marketplace / plugin.json を整合させたまま README 単独の乖離を測る）
+#   G15. 公開 README に件数見出しが無い → 赤（fail-closed の 0 件側）
+#   G16. 公開 README に件数見出しが 2 つある → 赤（fail-closed の ≥2 側）
 #
 # baseline の内訳は「・区切りの個別列挙（2 件）+ 数値グループ（1 件）」を含み、
 # 実リポジトリの説明文が依存する ・分割の名前数カウントを G1 で常時実測する。
@@ -66,9 +70,24 @@ ROOT_DESC_3='テスト用。収録: Agent Skills 3、docs 検索 MCP。'
 ROOT_DESC_4='テスト用。収録: Agent Skills 4、docs 検索 MCP。'
 PLUGIN_DESC_3='テスト用。収録: スキル3（alpha・beta + グループ1）と一式。'
 
+# 公開 README（oss/ff-dev-toolkit/README.md）の最小再現。$1=見出しの件数。
+# 見出し以外に「### Skills（N）」に似た行を混ぜ、行頭 anchor が効いていることを
+# baseline から常時実測する（anchor を外す変異は G16 と同じ ≥2 側で赤になる）。
+readme_body() {
+  printf '# ff-dev-toolkit\n\n## 収録内容\n\n### Skills（%s）\n\n| スキル | 用途 |\n|---|---|\n| `alpha` | 参考: ### Skills（99）という表記を本文に含む |\n' "$1"
+}
+README_BODY_NONE='# ff-dev-toolkit
+
+## 収録内容
+
+件数の記載なし。
+'
+
 build_fixture() {
   # $1=root $2=root marketplace の desc $3=oss marketplace の desc $4=plugin.json の desc
+  # $5=oss README の本文（省略時は件数 3 の整合した見出し）
   local root="$1" rdesc="$2" odesc="$3" pdesc="$4"
+  local rbody="${5:-$(readme_body 3)}"
   rm -rf "$root"
   mkdir -p "$root/plugins/ff-dev-toolkit/skills/alpha" \
            "$root/plugins/ff-dev-toolkit/skills/beta" \
@@ -85,6 +104,7 @@ build_fixture() {
     > "$root/.claude-plugin/marketplace.json"
   jq -n --arg d "$odesc" '{plugins: [{name: "ff-dev-toolkit", description: $d}]}' \
     > "$root/oss/ff-dev-toolkit/.claude-plugin/marketplace.json"
+  printf '%s\n' "$rbody" > "$root/oss/ff-dev-toolkit/README.md"
 }
 
 run_target() {
@@ -100,10 +120,12 @@ FIX="$TMP/fixture"
 # G1: baseline 緑
 build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3"
 run_target "$FIX"
-if [ "$RC" -eq 0 ]; then
-  ok "G1: 整合した baseline が緑"
+# README の検査行まで要求する — 検査 G の呼び出しごと削る変異を baseline でも捕まえる
+# （本文中の「### Skills（99）」を拾わない行頭 anchor もここで常時実測する）
+if [ "$RC" -eq 0 ] && [[ "$OUT" == *"oss README: Skills（3） = 実数 3"* ]]; then
+  ok "G1: 整合した baseline が緑（README の件数検査を含む）"
 else
-  bad "G1: baseline が赤になりました: $OUT"
+  bad "G1: baseline が赤 / README 検査が走っていません（rc=${RC}）: $OUT"
 fi
 
 # G2: スキル追加・説明文未更新 → 赤
@@ -111,25 +133,35 @@ build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3"
 mkdir -p "$FIX/plugins/ff-dev-toolkit/skills/delta"
 printf '# skill\n' > "$FIX/plugins/ff-dev-toolkit/skills/delta/SKILL.md"
 run_target "$FIX"
-# B / C / D の 3 検査すべての不一致メッセージを要求する — どれか 1 つの check 呼び出しを
-# 削る変異でこの case が赤になる（rc だけの照合では他検査経由の赤で素通りする）
+# B / C / D / G の 4 検査すべての不一致メッセージを「件数まで含む完全一致」で要求する。
+# 検査名だけの部分文字列（例 "plugin.json: スキル"）は OK 行 "plugin.json: スキル3 = 実数 3"
+# にも一致するため、`-eq` を `-ge` へ弱める比較変異が素通りする（実測）。期待文面を
+# 丸ごと固定すれば、check 呼び出しの削除・比較演算子の弱体化の両方がこの case で赤になる。
 if [ "$RC" -ne 0 ] \
-   && [[ "$OUT" == *"root marketplace.json: Agent Skills"*"≠ 実数"* ]] \
-   && [[ "$OUT" == *"oss marketplace.json: Agent Skills"* ]] \
-   && [[ "$OUT" == *"plugin.json: スキル"* ]]; then
-  ok "G2: スキル +1（説明文未更新）を B/C/D すべてで赤にできる"
+   && [[ "$OUT" == *"root marketplace.json: Agent Skills 3 ≠ 実数 4"* ]] \
+   && [[ "$OUT" == *"oss marketplace.json: Agent Skills 3 ≠ 実数 4"* ]] \
+   && [[ "$OUT" == *"plugin.json: スキル3 ≠ 実数 4"* ]] \
+   && [[ "$OUT" == *"oss README: Skills（3） ≠ 実数 4"* ]]; then
+  ok "G2: スキル +1（説明文・README 未更新）を B/C/D/G すべてで赤にできる"
 else
-  bad "G2: スキル +1 が B/C/D の全検査で赤になりません（rc=${RC}）"
+  bad "G2: スキル +1 が B/C/D/G の全検査で赤になりません（rc=${RC}）"
 fi
 
 # G3: スキル削除・説明文未更新 → 赤
 build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3"
 rm -rf "$FIX/plugins/ff-dev-toolkit/skills/gamma"
 run_target "$FIX"
-if [ "$RC" -ne 0 ] && [[ "$OUT" == *"≠ 実数"* ]]; then
-  ok "G3: スキル -1（説明文未更新）を赤にできる"
+# G2 と対の -1 側。検査 G の赤も「≠ 実数」を含むため部分文字列照合では B/C/D の
+# 変異が README 経由の赤で素通りする。ここも件数まで含む完全文面で 4 検査を固定し、
+# 併せて「実数 > README」（#1085 の実バグ方向）を検査 G が赤にできることを実測する。
+if [ "$RC" -ne 0 ] \
+   && [[ "$OUT" == *"root marketplace.json: Agent Skills 3 ≠ 実数 2"* ]] \
+   && [[ "$OUT" == *"oss marketplace.json: Agent Skills 3 ≠ 実数 2"* ]] \
+   && [[ "$OUT" == *"plugin.json: スキル3 ≠ 実数 2"* ]] \
+   && [[ "$OUT" == *"oss README: Skills（3） ≠ 実数 2"* ]]; then
+  ok "G3: スキル -1（説明文・README 未更新）を B/C/D/G すべてで赤にできる"
 else
-  bad "G3: スキル -1 が緑のまま素通りしました（rc=${RC}。件数不一致以外の赤は fixture 破損の疑い）"
+  bad "G3: スキル -1 が B/C/D/G の全検査で赤になりません（rc=${RC}。件数不一致以外の赤は fixture 破損の疑い）"
 fi
 
 # G4: 補助ファイル・SKILL.md 無しディレクトリは数えない（緑のまま）
@@ -236,6 +268,40 @@ if [ "$RC" -ne 0 ] && [[ "$OUT" == *"一致 2 件"* ]]; then
   ok "G13: 件数パターンの複数一致を赤にできる（fail-closed）"
 else
   bad "G13: 複数一致が緑のまま素通りしました（rc=${RC}）"
+fi
+
+# G14: 公開 README の見出し件数が実数より大きい → 赤（#1085 の針。marketplace /
+# plugin.json は整合させたままにして、README 単独の乖離を検出できることを固定する。
+# 逆方向（README < 実数 = #1085 の実バグ方向。`-eq` を `-le` へ弱める変異が生き残る）は
+# G3 が B/C/D と同じ fixture で実測する）
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" "$(readme_body 4)"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"oss README: Skills（4） ≠ 実数 3"* ]]; then
+  ok "G14: README 見出しの件数乖離を赤にできる"
+else
+  bad "G14: README 見出しの件数乖離が緑のまま素通りしました（rc=${RC}）"
+fi
+
+# G15: 公開 README に件数見出しが無い → 赤（fail-closed の 0 件側。見出し書式を
+# 変えたときに検査が空振りして緑無効化するのを防ぐ）
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" "$README_BODY_NONE"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"「### Skills（N）」を一意に抽出できません"* ]]; then
+  ok "G15: README 見出しの抽出空振りを赤にできる（fail-closed）"
+else
+  bad "G15: README 見出しの抽出空振りが緑のまま素通りしました（rc=${RC}）"
+fi
+
+# G16: 公開 README に件数見出しが 2 つある → 赤（fail-closed の ≥2 側）
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" \
+  "$(readme_body 3)
+### Skills（3）
+"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"「### Skills（N）」を一意に抽出できません（一致 2 件"* ]]; then
+  ok "G16: README 見出しの複数一致を赤にできる（fail-closed）"
+else
+  bad "G16: README 見出しの複数一致が緑のまま素通りしました（rc=${RC}）"
 fi
 
 echo

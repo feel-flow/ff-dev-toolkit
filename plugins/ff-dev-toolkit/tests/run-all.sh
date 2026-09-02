@@ -553,6 +553,14 @@ else
     # sync-forbidden-patterns の直後に置く。スクリプト不在の checkout・jq 不在・
     # 一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/release-required-selftest/verify.sh"
+    # 週次 CI 健全性判定 scripts/check-weekly-run-all-health.sh の挙動検査
+    # （Issue #1086 / #1017 統合。ADR-045）。cron 生存と成功実績の分離・既定ブランチ上の
+    # workflow_dispatch 成功の受理と非受理の境界・三値の exit 契約・緩和の逃げ道が無いこと
+    # （負テスト）を、PATH 差し替えのモック gh で実測する。定期実行点ゲートの入口を守る
+    # 検査なので、同じ定期実行点の契約を見る sync-sha-contract / release-required-selftest の
+    # 並びに置く。実ネットワーク・実 CLI は伴わない（〜3 秒）。スクリプト不在の checkout・
+    # jq 不在・一時領域不可なら丸ごと ○ skip。
+    "$SCRIPT_DIR/weekly-health-contract/verify.sh"
     "$SCRIPT_DIR/merge-cleanup/verify.sh"
     # 既存の孤児トランスクリプト sweep（実 ~/.claude は触らず隔離 tmp のみ）。
     # merge-cleanup の Step 5.5 と同じアーカイブ思想の別口。直後に置く。
@@ -905,18 +913,19 @@ REQUIRED_SUITES=(
   # **公開 checkout では root に docs/ が無いため両方 ○ skip する。** fixture は
   # 「実リポジトリの docs/ をそのまま写す」設計で、baseline が実体と乖離しないことを
   # 優先している（同梱 fixture にすると baseline 自体が腐る）。したがって公開側では
-  # sync-forbidden-patterns / release-required-selftest / docs-version-changelog（と
-  # その selftest）、root script を持たない changelog-fragments と合わせて 7 件の明示許可が要る:
+  # sync-forbidden-patterns / release-required-selftest / weekly-health-contract /
+  # docs-version-changelog（とその selftest）、root script を持たない changelog-fragments と
+  # 合わせて 8 件の明示許可が要る:
   #   FF_RUN_ALL_FULL=1 FF_RUN_ALL_ALLOW_SKIP="sync-forbidden-patterns release-required-selftest changelog-fragments \
-  #     docs-frontmatter-repo-selftest docs-fact-drift-selftest docs-version-changelog \
-  #     docs-version-changelog-selftest" bash tests/run-all.sh
+  #     weekly-health-contract docs-frontmatter-repo-selftest docs-fact-drift-selftest \
+  #     docs-version-changelog docs-version-changelog-selftest" bash tests/run-all.sh
   # 必須 skip で落ちたときは、この行と同じ内容をランナーが実際の skip 一覧から
   # 組み立てて表示する（下の REQUIRED_SKIPPED の案内）。
   #
   # **既定（高速モード）では docs-frontmatter-repo-selftest / docs-fact-drift-selftest は
   # 除外される**（対の本体 suite が実在するため）。除外は SKIPPED に現れないので明示許可も
-  # 要らないが、**検証もされない**。上の 7 件を明示許可で通す形が成立するのは全件実行のとき
-  # だけで、既定では組み立てられるのも残り 4 件になる（ADR-034）。
+  # 要らないが、**検証もされない**。上の 8 件を明示許可で通す形が成立するのは全件実行のとき
+  # だけで、既定では組み立てられるのも残り 5 件になる（ADR-034）。
   docs-frontmatter-repo-selftest
   docs-fact-drift-selftest
   # frontmatter version ↔ 自 Changelog 最大版の一致は、PLAYBOOK.md（ACE 側ゲートが
@@ -943,8 +952,14 @@ REQUIRED_SUITES=(
   # 毎 sync リリース運用ゲートの検出力 selftest（#552）。代替の検査が無く、
   # 消えると「リリース漏れ・CHANGELOG 記載漏れを sync 前に止める」検出力の喪失が
   # 黙って通る。公開 checkout は root スクリプト不在で ○ skip するため、そちらでは
-  # FF_RUN_ALL_ALLOW_SKIP=release-required-selftest が要る（上の 7 件の列挙参照）。
+  # FF_RUN_ALL_ALLOW_SKIP=release-required-selftest が要る（上の 8 件の列挙参照）。
   release-required-selftest
+  # 週次 CI 健全性判定の挙動検査（#1086 / #1017）。定期実行点ゲートが高速モードを
+  # 受理してよいかの入口そのもので、判定を緩める変異（既定ブランチ外の受理・cron 異常の
+  # 握り潰し・判定不能の healthy への転落）を測る手段は他に無い。公開 checkout は root
+  # スクリプト不在で ○ skip するため、そちらでは
+  # FF_RUN_ALL_ALLOW_SKIP=weekly-health-contract が要る（上の 8 件の列挙参照）。
+  weekly-health-contract
 )
 
 # ── 既定 suite 一覧の登録漏れ検査 ──────────────────────────────────────────────

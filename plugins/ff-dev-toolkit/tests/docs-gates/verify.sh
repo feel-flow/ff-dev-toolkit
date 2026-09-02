@@ -652,6 +652,53 @@ must_match "05-operations/deployment/multi-cli-review-orchestration.md" \
   '^#{2,4} 対応プラットフォーム$' \
   "リンク先の見出し『対応プラットフォーム』が実在する"
 
+# --- Git Workflow ステップ1: 起票参考例は body-file + 単純コマンド分割方式（Issue #1079）---
+# 旧 1 ブロック方式（label_args 配列・bash 3.2 の空配列展開・fail-soft 分岐）は worktree 隔離
+# セッションの複合コマンド拒否ガードに当たる。コード行の針は行頭アンカーで固定し、旧方式の
+# 指紋は tests/issue-label-contract と同じ集合を不在検査する（散文での名指しも拒否する）。
+# 書き分け規則は散文のまま、規則本文（断定禁止）を固定する。
+f="05-operations/deployment/git-workflow.md"
+must_match "$f" '^gh label list --repo "\$expected_repo" --limit 200 --json name --jq' \
+  "Git Workflow ステップ1 がラベル照会を単独コマンドで行う"
+must_match "$f" '^  --body-file "\{本文ファイルのパス\}"\)"$' \
+  "Git Workflow ステップ1 の起票例が --body-file で本文を渡す（パスはプレースホルダ）"
+must_match "$f" '^  --label "\{実在を確認したラベル\}" \\$' \
+  "Git Workflow ステップ1 の起票例がラベル名を直書きしない"
+for fp in 'label_args' 'for candidate in ' 'issue_body' 'LABEL_LOOKUP_FAILED' 'までを 1 つの bash ブロックで'; do
+  must_not_contain "$f" "$fp" \
+    "Git Workflow ステップ1 に旧 1 ブロック方式の指紋『${fp}』が復活していない"
+done
+# 照会と起票が別フェンスにあること。行の存在検査だけでは同一フェンスへ戻す退行を通す（実測）。
+mixed="$(awk '/^```/{ if (f) { if (l && c) print "MIXED"; f=0 } else { f=1; l=0; c=0 }; next }
+  f && /^gh label list / { l=1 }  f && /gh issue create / { c=1 }' "$DOCS/$f")"
+if [ -z "$mixed" ]; then
+  ok "Git Workflow ステップ1 がラベル照会と起票を別フェンスに分けている"
+else
+  bad "Git Workflow ステップ1 でラベル照会と起票が同一フェンスに戻っている"
+fi
+must_contain "$f" '「不在」と「照会失敗」を書き分ける' \
+  "Git Workflow ステップ1 がラベル不在と照会失敗の書き分け規則を持つ"
+must_contain "$f" '後者を「存在しない」と断定しない' \
+  "Git Workflow ステップ1 が照会失敗を『存在しない』と断定しない規則を維持している"
+
+# --- Git Workflow: Epic の一括対応手順（Issue #1145。観測台帳 OBS-038 から昇格）---
+# 契約文は番号付き太字の行頭から句点までをアンカーする。部分一致だけでは
+# 「…組む必要はない」のような否定の後置で反転しても緑のまま通る（実測）。
+must_match "$f" '^## Epic の一括対応（バッチ分割・worktree 並列・直列マージ）$' \
+  "Git Workflow に Epic 一括対応の節が実在する"
+must_match "$f" '^1\. \*\*バッチは対象ファイル集合が互いに素になるように組む。\*\*' \
+  "Epic 一括対応: バッチ分割の基準（対象ファイル集合が互いに素）"
+must_contain "$f" '同一ファイルを触る Issue は同一バッチに入れず、依存として先行バッチのマージ後に開始する。' \
+  "Epic 一括対応: 同一ファイルを触る Issue は先行バッチのマージ後に開始する"
+must_match "$f" '^2\. \*\*実装は worktree 隔離のサブエージェントで並列に行い、レビュー・マージは親が直列に行う。\*\*' \
+  "Epic 一括対応: 実装は worktree 並列・レビューとマージは親が直列"
+must_match "$f" '^3\. \*\*Issue 本文が順序制約を持つ場合（[^）]*）は、それをバッチ境界として採用する。\*\*' \
+  "Epic 一括対応: Issue 本文の順序制約をバッチ境界に採用する"
+must_match "$f" '^4\. \*\*changelog は fragment 方式（`changelog\.d/` への 1 断片追加）にする。\*\*' \
+  "Epic 一括対応: changelog は fragment 方式"
+must_contain "$f" 'claim（`.version-claims/`）が stale になり再生成が要る' \
+  "Epic 一括対応: 並列マージ後の version claim 再生成"
+
 echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ docs-gates verify: $FAIL 件失敗" >&2

@@ -465,8 +465,8 @@ fi
 # Issue #436 / #440 で判断した一時領域依存 suite の名簿を固定する（Issue #564 で
 # adapter-prompt-guard / review-diff-scope、Issue #893 で review-capture-fail-loud、
 # Issue #879 で ace-run-ts、Issue #1148 で adapter-argv-limit、Issue #1143 で
-# multi-agent-skip-poisoned-cli を追加）。名前を 1 行ずつ
-# 照合し、コメント内の言及を実登録と誤認しない。
+# multi-agent-skip-poisoned-cli、Issue #1086 で weekly-health-contract を追加）。
+# 名前を 1 行ずつ照合し、コメント内の言及を実登録と誤認しない。
 _required_block="$(awk '
   /^REQUIRED_SUITES=\(/ { inside=1; next }
   inside && /^\)/ { exit }
@@ -480,6 +480,7 @@ for _required_tmp_suite in \
   adapter-prompt-guard \
   adapter-argv-limit \
   multi-agent-skip-poisoned-cli \
+  weekly-health-contract \
   review-diff-scope \
   review-capture-fail-loud \
   ace-run-ts \

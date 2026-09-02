@@ -17,16 +17,21 @@
 #   D. plugin.json 説明文の「スキルN」の N = 実スキル数
 #   E. plugin.json の内訳（個別列挙 + 「…M」数値グループ）の合計 = 総数 N
 #   F. root と oss の ff-dev-toolkit 説明文が同一（片側更新の検出）
+#   G. 公開 README（oss/ff-dev-toolkit/README.md）の見出し「### Skills（N）」の
+#      N = 実スキル数（#1085: v0.66.0 以降のスキル追加 2 回が見出しに反映されず、
+#      針が無いため 21 のまま公開された）
 #
 # 数値の抽出は fail-closed: パターンが 0 件・2 件以上の一致なら赤にする。説明文の
 # 書式変更で抽出が空振りし、緑のまま検査が無効化するのを防ぐ。件数そのものは
 # このファイルに書かない（count-rot 防止 suite に件数を直書きすると真っ先に腐る。
 # cli-registry-completeness と同じ方針）。
 #
-# 実装ノート: 括弧内の抽出は正規表現ではなく bash の固定文字列展開で行う。
-# BSD ツールの正規表現は locale 次第で `[^）]` のような多バイト否定クラスを
+# 実装ノート: 内訳（検査 E）の括弧内の抽出は正規表現ではなく bash の固定文字列展開で
+# 行う。BSD ツールの正規表現は locale 次第で `[^）]` のような多バイト否定クラスを
 # バイト単位に解釈し、「ー」(0xE3 0x83 0xBC) が「）」(0xEF 0xBC 0x89) と 0xBC を
 # 共有するため途中で誤マッチする。literal の多バイト列 + ASCII クラスのみ使う。
+# 検査 G の見出し抽出は grep -oE だが、パターンが literal の全角括弧 + `[0-9]+` だけで
+# 多バイト否定クラスを含まないため、この禁止には当たらない。
 #
 # FF_SKILL_COUNT_ROOT でリポジトリルートを差し替えられる（selftest 用）。
 
@@ -40,10 +45,11 @@ SKILLS_DIR="$ROOT/plugins/ff-dev-toolkit/skills"
 PLUGIN_JSON="$ROOT/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
 ROOT_MARKET="$ROOT/.claude-plugin/marketplace.json"
 OSS_MARKET="$ROOT/oss/ff-dev-toolkit/.claude-plugin/marketplace.json"
+OSS_README="$ROOT/oss/ff-dev-toolkit/README.md"
 
 command -v jq >/dev/null 2>&1 || { echo "✗ jq is required" >&2; exit 1; }
 
-for path in "$SKILLS_DIR" "$PLUGIN_JSON" "$ROOT_MARKET" "$OSS_MARKET"; do
+for path in "$SKILLS_DIR" "$PLUGIN_JSON" "$ROOT_MARKET" "$OSS_MARKET" "$OSS_README"; do
   [ -e "$path" ] || { echo "✗ 対象が見つかりません: $path" >&2; exit 1; }
 done
 
@@ -66,7 +72,8 @@ echo "実スキル数（SKILL.md を持つディレクトリ）: $ACTUAL"
 
 # 説明文から数値 1 個を抽出する。一致 0 件 / 2 件以上は EXTRACT_FAIL:<件数> を返す
 # （fail-closed）。$1=説明文 $2=grep -oE パターン（literal 多バイト + ASCII クラスのみ）
-# $3=数値以外を落とす sed パターン（literal のみ）
+# $3=数値以外を落とす sed -E パターン。数字に一致しない literal のみを渡す規約
+# （`|` 区切りの列挙は可。検査 G は前後 2 箇所を落とすため `### Skills（|）` を渡す）
 extract_count() {
   local text="$1" pattern="$2" strip="$3" matches n_matches
   matches="$(printf '%s' "$text" | grep -oE "$pattern" || true)"
@@ -79,7 +86,10 @@ extract_count() {
     printf 'EXTRACT_FAIL:%s' "$n_matches"
     return 0
   fi
-  printf '%s' "$matches" | sed -E "s/$strip//"
+  # 置換は global（見出し「### Skills（N）」のように前後 2 箇所を落とす検査があるため）。
+  # g を安全にしている性質は「$3 のパターンが数字に一致し得ないこと」で、literal の
+  # `|` 区切り列挙もその条件を満たす限り可（数字に一致し得るパターンを渡さないこと）。
+  printf '%s' "$matches" | sed -E "s/$strip//g"
 }
 
 ff_description() {
@@ -183,6 +193,20 @@ elif [ "$root_desc" = "$oss_desc" ]; then
   ok "root と oss の ff-dev-toolkit description が同一"
 else
   bad "root と oss の ff-dev-toolkit description が食い違っています（片側だけの更新）"
+fi
+
+# --- G. 公開 README の見出し「### Skills（N）」 ---
+# marketplace / plugin.json とは別系統の手入力複製。#1085 でスキル追加 2 回ぶんの
+# 更新漏れがそのまま公開された（B〜F は description しか見ないため緑のまま）。
+# 抽出は行頭 anchor + 固定文字列の全角括弧で、表の行や本文中の別記述を拾わない。
+readme_text="$(cat "$OSS_README")"
+got="$(extract_count "$readme_text" '^### Skills（[0-9]+）' '### Skills（|）')"
+if [ "${got#EXTRACT_FAIL:}" != "$got" ]; then
+  bad "oss README: 見出し「### Skills（N）」を一意に抽出できません（一致 ${got#EXTRACT_FAIL:} 件。書式を変えた場合は本 suite も更新すること）"
+elif [ "$got" -eq "$ACTUAL" ]; then
+  ok "oss README: Skills（${got}） = 実数 $ACTUAL"
+else
+  bad "oss README: Skills（${got}） ≠ 実数 $ACTUAL"
 fi
 
 echo

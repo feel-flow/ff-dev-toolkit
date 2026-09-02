@@ -80,78 +80,53 @@ release/*     ← リリース準備ブランチ（developから分岐）
 
 **原則**: 全ての作業は必ずIssueから開始する
 
-```bash
-# GitHub CLI で Issue を作成（ラベルは verify-then-skip: 実在するものだけ付与）
-# 存在しないラベル名を --label に直書きすると gh issue create 自体が失敗する。
-# ラベル一覧の照会に失敗した場合は「不在」と断定せず「確認できなかった」と報告し、起票は継続する。
-# bash 3.2 + set -u では空配列を "${arr[@]}" と展開すると unbound variable になるため、
-# 付与 0 件の経路では ${label_args[@]+"${label_args[@]}"} を使う。
-expected_repo="OWNER/REPO" # 現在の対象リポジトリから確定
-type_label="enhancement"   # 候補。消費プロジェクトに無い名前なら空文字にする
-priority_label=""          # 使う場合のみ（例: priority:high）。未使用でも宣言する
+起票は **body-file + 単純コマンド分割**で行う（`/create-issue` スキルと同じ契約。Issue #715 / #1079）。1 つの複合 bash ブロック（配列でラベル引数を組み立て、照会と起票を同じフェンスで分岐させる形）は使わない — worktree 隔離セッションの複合コマンド拒否ガードに当たり、起票そのものが止まる。
 
-issue_body="## 概要
+**1. 本文を一時ファイルへ書く。** Write ツール（無ければエディタ）で作業ツリー**外**の一時ファイル（セッションの scratchpad 等）へ本文を書く。ファイル名は Issue ごとに一意にする（`mktemp` か Issue の slug を含める — 共有一時領域の汎用名は並列セッションが相互上書きし、別 Issue の本文で起票する）。heredoc でシェル変数へ組み立てない。空のファイルを渡さない（空の本文は「作成済みだが中身の無い」Issue を黙って生む）。
+
+```markdown
+## 概要
 [実装内容の説明]
 
 ## 受入基準
 - [ ] [基準1]
-- [ ] [基準2]"
+- [ ] [基準2]
+```
 
-label_limit=200
-label_lookup_failed=0
-if ! available_labels="$(gh label list --repo "$expected_repo" --limit "$label_limit" --json name --jq '.[].name')"; then
-  available_labels=""
-  label_lookup_failed=1
-fi
-if [[ -z "$available_labels" ]] || (( $(printf '%s\n' "$available_labels" | wc -l) >= label_limit )); then
-  label_lookup_failed=1
-fi
+**2. ラベルの実在確認（単独コマンド）。** 存在しないラベル名を `--label` に直書きすると `gh issue create` 自体が失敗するため、付与候補は実在するものだけに絞る（verify-then-skip）。
 
-label_args=()
-skipped_labels=()
-for candidate in "$type_label" "$priority_label"; do
-  [[ -n "$candidate" ]] || continue
-  if [[ $'\n'"$available_labels"$'\n' == *$'\n'"$candidate"$'\n'* ]]; then
-    label_args+=(--label "$candidate")
-  else
-    skipped_labels+=("$candidate")
-  fi
-done
+```bash
+# 対象リポジトリは起票対象から確定する（GH_REPO や cwd の暗黙値に任せない）。
+# --limit 200 は必須（既定 30 件では作成順で 31 個目以降のラベルが「不在」に見える）。
+expected_repo="OWNER/REPO"
+gh label list --repo "$expected_repo" --limit 200 --json name --jq '.[].name'
+```
 
+出力の行と候補名（種別 `enhancement` / `bug` 等、優先度 `priority:high` 等）を**行単位の完全一致**で照合し、一致したものだけを付与する（部分一致・前方一致で判定しない。ラベル名は空白を含みうる）。次のいずれかに当たる場合は**「照会失敗」**として候補を全件省略し、ラベル無しで起票を続ける（起票自体は止めない）: 終了コードが非 0 / 出力が空 / 出力が 200 行に達している（打ち切られた可能性があり、その先にあるラベルの不在を主張できない）。
+
+**3. 起票（単独コマンド）。** bash フェンスは呼び出しごとに別のシェルで走るので、`expected_repo` は使うフェンスごとに宣言し直す（前のフェンスの値は残っていない）。
+
+```bash
+expected_repo="OWNER/REPO"
 ISSUE_URL="$(gh issue create \
   --repo "$expected_repo" \
-  ${label_args[@]+"${label_args[@]}"} \
+  --label "{実在を確認したラベル}" \
   --assignee "@me" \
   --title "feat: ユーザー認証機能を実装" \
-  --body "$issue_body")"
-if [[ -z "$ISSUE_URL" ]]; then
-  echo "gh issue create が Issue URL を返しませんでした" >&2
-  exit 1
-fi
-
-printf 'ISSUE_URL=%s\n' "$ISSUE_URL"
-printf 'LABEL_LOOKUP_FAILED=%s\n' "$label_lookup_failed"
-for lbl in ${label_args[@]+"${label_args[@]}"}; do
-  [[ "$lbl" != "--label" ]] || continue
-  printf 'APPLIED_LABEL=%s\n' "$lbl"
-done
-for lbl in ${skipped_labels[@]+"${skipped_labels[@]}"}; do
-  if [[ "$label_lookup_failed" -eq 1 ]]; then
-    printf 'SKIPPED_LABEL=%s reason=lookup-failed\n' "$lbl"
-  else
-    printf 'SKIPPED_LABEL=%s reason=not-found\n' "$lbl"
-  fi
-done
-
-# Issue番号を抽出
-ISSUE_NUM=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
+  --body-file "{本文ファイルのパス}")"
+[[ -n "$ISSUE_URL" ]] || { echo "gh issue create が Issue URL を返しませんでした" >&2; exit 1; }
+# Issue番号を抽出（番号は手で決めず URL から取る）
+ISSUE_NUM="$(printf '%s\n' "$ISSUE_URL" | grep -oE '[0-9]+$')"
+printf 'ISSUE_URL=%s ISSUE_NUM=%s\n' "$ISSUE_URL" "$ISSUE_NUM"
 ```
+
+`--label` は手順 2 の照合を通った候補の数だけ繰り返す（0 件なら行ごと削る。候補名を直書きしない — 不在のラベルを渡すと手順 2 の警告どおり起票自体が失敗する）。`{本文ファイルのパス}` は手順 1 で書いたファイル。付与するラベルは `gh issue create` 自体の argv に載るので、実行ログがそのまま証跡になる。`gh issue create` の終了コードが 0 で Issue URL を取得できた場合だけ成功として扱う。
 
 **ポイント**:
 
 - Issue番号は自動抽出（競合回避）
 - 受入基準を明確にする
-- ラベルは実在確認後にだけ付与する（verify-then-skip）。不在と照会失敗を書き分ける
+- ラベルは実在確認後にだけ付与する（verify-then-skip）。**「不在」と「照会失敗」を書き分ける** — 照合を通らなかった候補は、`gh label list` が正常に返した一覧に無ければ「不在」、手順 2 の照会失敗条件に当たれば「確認できなかった」と報告し、後者を「存在しない」と断定しない（断定すると運用者が実在するラベルを再作成して重複ラベルが生える）。不在のラベルは `/setup-github-labels` で整備できる旨を添え、照会失敗のときは添えない
 - スキル経由の起票（`/create-issue`）は同じ契約を持つ。本例はワークフロー正本の直接コマンド向け
 - `tests/issue-label-contract` は起票・refine スキル間で複製された契約テキストの同期（ラベル付与手順・粒度チェック項目リスト）を照合するものであり、本テンプレート例は fixture 対象外（消費者が貼る参考例であり、スキル間ドリフト検出の対象ではない）
 
@@ -395,6 +370,16 @@ npm audit --audit-level=moderate
 ```
 
 > **注**: 上記は汎用例です。プロジェクトに短い検証の統合エイリアスがある場合は、個別コマンドの代わりにそれを実行してください。全件・ビルドを含む統合ゲートはステップ4では回さず、ステップ5の重い検証ゲートに回す。
+
+**frontmatter に `version` を持つ文書を `docs/` 配下へ追加した回・その `version` を変えた回・PLAYBOOK / PATTERNS を変更した回は、短い検証に claim 照合を含める。** 次の 2 コマンドは固定 root を使うので、ステップ5と同じ [plugin root固定契約](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) で host の読み込み済み実体から root を解決してから回す（配置先の推測や `${CLAUDE_PLUGIN_ROOT}` の手動コピーでは作らない）。
+
+`.version-claims/` を持つプロジェクトでは、まず `git fetch origin "+refs/heads/<default branch>:refs/remotes/origin/<default branch>"` と `git merge-base --is-ancestor origin/<default branch> HEAD` を通す — helper は fetch せずローカルの `origin/<default branch>` をそのまま `--base` に使うので、ref が stale なまま生成した claim は、自分で fetch して最新 commit を pin する validator から byte 不一致（exit 1）で弾かれ、遅れではなく stale claim に見える（契約の正は `.version-claims/README.md`）。そのうえで claim を要求される文書ごとに（frontmatter `version` を持つ文書の新規追加・その `version` の変更・PLAYBOOK / PATTERNS の版不変の内容更新。frontmatter に `version` が無い文書は対象外で、要求条件の正は `.version-claims/README.md`）`bash "${FF_DEV_TOOLKIT_ROOT}/scripts/update-version-claim.sh" --base "origin/<default branch>" --document <文書 path>` で claim を再生成し、`docs/` 配下の変更と claim を**まとめて** stage してから `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-version-claims.sh"` を回す。validator はこれらの文書に限らず、`docs/**/*.md` と `.version-claims/**/*.claim` に未 stage / 未追跡が 1 件でも残っていれば拒否するので、stage が部分的だと claim 自体は正しくても赤になる。helper は `--root` を取らず CWD の `git rev-parse --show-toplevel` で対象を解決するので、作業ツリー内ならどこで実行してもよいが、別リポジトリの CWD から起動すると文書不在・base 解決不能・`.version-claims/` 不在のいずれかで非 0 になる。**validator が通ったら claim を同じ commit へ含める**（stage したまま次へ進まない — push は HEAD しか送らないので、claim の入らない PR になる）。
+
+この照合は数秒で終わる（`origin/<default branch>` の fetch を含むのでネットワークに依存する。実測 1.3〜2.2 秒）。非 0 は 2 種類に分かれ、**exit 1 が contract 違反**（claim の不足・stale・orphan に加え、対象 path の未 stage / 未追跡も含む）、**exit 2 は検査不能**（主に `origin/HEAD` を解決できない / default branch を fetch できない / HEAD が default branch の子孫でない）で、後者は claim の不整合ではない。`.version-claims/` を持たないプロジェクトでは「未導入」として exit 0 で明示 skip するが、`origin` remote があるときは skip 判定より先に default branch の解決を通るため、オフラインなどでは exit 2 になりうる。
+
+`/spec-driven` の G4（手順 5）・`/ace-curate`・`/ace-refine` を通った回は、同じ 2 コマンドがそれらの手順の中で既に走っている。ステップ4 の照合は、それらを経由しない編集（手動の `version` bump など）向けの案内である。
+
+再生成漏れは重い検証ゲート側でも検出できるが、そちらは分オーダーである。ステップ5で赤を受けてから fix commit → 重いゲート再実行へ戻ると、数秒で済む照合の代わりに、分オーダーの追加コストを 1 周ぶん払うことになる（実測例がある）。ステップ4に置く理由はこの差だけであり、新しい検査を足すものではない。
 
 **新規ファイルを追加した回は、これから回すゲートの直前に commit する。** `git ls-files` / `git ls-tree` を走査面に持つ静的ガードは untracked なファイルを見ない。`git add` だけでは `git ls-tree HEAD` には現れない。commit 前の緑は「新規ファイルを検査していない緑」であり、しかも未実施ではなく緑として現れる。既存ファイルの変更のみなら、この追加コミットは不要。この規則は短いテストにも重いゲートにも適用する。ステップ4で重いゲートを前倒しするものではない。
 
@@ -1272,6 +1257,26 @@ ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行�
 10. [ ] /close-issue（AC 照合ゲート: チェックボックス - [x] 更新 + 完了報告コメント）
 11. [ ] マージ（Squash merge、--match-head-commit 付き）
 ```
+
+## Epic の一括対応（バッチ分割・worktree 並列・直列マージ）
+
+tracking Issue / Epic 配下に多数の sub-issue がぶら下がっていて 1 セッションでまとめて消化するときは、Issue 単位のコアサイクルをそのまま並列に走らせず、次の 4 点で束ねる。実測 4 回（19 / 15 / 24 / 5 sub-issue をいずれも 1 セッションで完遂、意味的競合ゼロ。出典は本テンプレートのソースリポジトリの観測台帳 OBS-038）に基づく手順で、衝突は「起きたら解消する」ではなく**構造的に起こさない**側へ倒す。
+
+1. **バッチは対象ファイル集合が互いに素になるように組む。** 着手前に sub-issue ごとの対象ファイルを列挙し、同一ファイルを触る Issue は同一バッチに入れず、依存として先行バッチのマージ後に開始する。対象が重なる Issue 同士を並列 PR に割ると、rebase で解消できる textual conflict ではなく、同じ節を別々に書き換えた意味的競合になる
+2. **実装は worktree 隔離のサブエージェントで並列に行い、レビュー・マージは親が直列に行う。** 並列側が触るのは自分の worktree だけなので、マージ順を親が制御すれば衝突が構造的に起きない。親は PR ごとにセルフレビュー（ステップ5）→ `/close-issue` → マージ（ステップ8）を 1 本ずつ進め、次の PR は直前のマージ後の base へ rebase してから同じ手順に入れる。委譲先の作法は [Multi-CLI Agent Orchestration の「長時間タスクの委譲契約（こまめコミット）」](./multi-cli-agent-orchestration.md#長時間タスクの委譲契約こまめコミット) に従う
+3. **Issue 本文が順序制約を持つ場合（Epic の「順序制約」節、「A の完了が B の前提」等）は、それをバッチ境界として採用する。** 制約を無視して並列化すると、同じ節を触る PR 同士が意味的に競合する。順序制約が書かれていない Epic では、1 の列挙で見つけた重なりを Epic 本文へ制約として追記しておくとよい（次に同じ Epic を扱うセッションが同じ列挙をやり直さずに済む）
+4. **changelog は fragment 方式（`changelog.d/` への 1 断片追加）にする。** 本体ファイルを直接編集する方式だと、並列マージのたびに同じ箇所で衝突する。断片の集約はリリース準備の側で 1 回だけ行う
+
+**並列マージで残る定型作業**: 先行 PR のマージ後に後続 PR を rebase すると、frontmatter `version` を持つ文書の claim（`.version-claims/`）が stale になり再生成が要る（記録のある 3 回で合計 5 回発生。意味的競合を除けばこれが手戻りのほぼ全部）。再生成はステップ4の [自動テストの実行](#自動テストの実行) にある claim 照合の手順そのもので、rebase 直後・重いゲートの前に回す。`.version-claims/` を持たないプロジェクトではこの作業は無い。
+
+**役割分担の要約**:
+
+| 役割 | 並列 / 直列 | 触るもの |
+| ---- | ----------- | -------- |
+| 実装（サブエージェント） | 並列（同一バッチ内） | 自分の worktree のみ |
+| レビュー・AC 照合・マージ（親） | 直列 | PR を 1 本ずつ。次の PR は直前のマージ後の base へ rebase してから |
+| バッチ間 | 直列 | 先行バッチのマージ完了を後続バッチの開始条件にする |
+| マージ後の ACE ナレッジ体系化（親） | 直列 | PR ごとの `/ace-curate` は PLAYBOOK の frontmatter / claim を共有するため並列にしない（4 回目の実測で直列化） |
 
 ## ワークフロー全体のベストプラクティス
 

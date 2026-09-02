@@ -12,7 +12,8 @@
 #   A. 同期スクリプトの記録契約 — 成功時だけ書く / 40 桁で同期実行開始時の同期元
 #      HEAD と一致 / dry-run では書かず既存の記録も壊さない / 書き込み前に必ず消す
 #      （中断した同期の記録を残さない）/ **dirty ガードで止まった再実行では消さない**
-#      / `--delete` ミラーでも消えない / 公開リポジトリの追跡内容に出ない
+#      / `--delete` ミラーでも消えない / 公開リポジトリの追跡内容に出ない /
+#      **worktree ガードが止めた実行は target 配下も記録も一切書き換えない**（Issue #1090）
 #   B. SKILL.md 手順 4 のコードブロックを**そのまま切り出して実行**し、Issue #895 の
 #      GWT 3 ケースを固定する — 別プロセスでも commit まで進む / SSOT の HEAD が
 #      動いていたら commit しない / 記録が無ければ commit しない
@@ -67,6 +68,52 @@ git_setup() {
   git -C "$repo" config user.email "sync-sha-test@example.invalid"
   git -C "$repo" config commit.gpgsign false
   git -C "$repo" config core.hooksPath /dev/null
+}
+
+# ---- 非変更スナップショット（Issue #1090） ----------------------------------
+# 「ガードが**書き込みの前に**止まる」を、終了コード・診断メッセージ・`.git` の
+# 存続だけでなく「それ以外が一切変わっていない」まで見るための道具立て。
+# ハッシュは shasum -a 256 を第一候補にする（BSD ツールでも coreutils でもなく
+# perl 同梱 Digest::SHA のスクリプト。macOS の /usr/bin/shasum がこれ）。perl の
+# 無い環境向けに coreutils の sha256sum、どちらも無ければ POSIX の cksum へ落とす。
+# GNU 専用フラグは使わない。
+if command -v shasum >/dev/null 2>&1; then
+  hash_file() { shasum -a 256 "$1" | awk '{ print $1 }'; }
+elif command -v sha256sum >/dev/null 2>&1; then
+  hash_file() { sha256sum "$1" | awk '{ print $1 }'; }
+else
+  # cksum は CRC なので衝突耐性は劣るが、テスト内で作る既知の 2 値を見分ける用途
+  # には足りる（暗号強度を要求される場面ではない）。
+  hash_file() { cksum < "$1" | awk '{ print $1 "-" $2 }'; }
+fi
+
+# ディレクトリ配下の「型 + 相対パス + 内容ハッシュ」一覧を決定順で出す。
+# `.git` は形式（dir / file / symlink）ごと除外する。WT の `.git` の存続と file 形式は
+# 本実行ケースの中断アサーションが `-f "$WT/.git"` で見ており、--dry-run で書き込みが
+# 起きる変異は sentinel / tree の差分が捕まえる。ここへ混ぜると差分の読みが 1 段悪くなる。
+#
+# ハッシュ・リンク先は **printf の引数内コマンド置換にしない**。置換の中の失敗は
+# printf の引数評価に吸われて exit status が消え、`f ./x ` のような**空ハッシュ行**が
+# before / after で一致して緑になる（読めないファイル・hash ツールの異常が
+# 「変化なし」に化ける fail-open）。代入へ分けると set -e + pipefail が効き、
+# 呼び出し元（wt_capture_before / wt_assert_no_write）まで非 0 が伝播して suite が落ちる。
+snapshot_tree() {
+  local dir="$1" rel abs h link_target
+  ( cd "$dir" && find . -path ./.git -prune -o -print ) | LC_ALL=C sort | while IFS= read -r rel; do
+    [[ -n "$rel" ]] || continue
+    abs="$dir/${rel#./}"
+    if [[ -L "$abs" ]]; then
+      link_target="$(readlink "$abs")"
+      printf 'l %s %s\n' "$rel" "$link_target"
+    elif [[ -d "$abs" ]]; then
+      printf 'd %s -\n' "$rel"
+    elif [[ -f "$abs" ]]; then
+      h="$(hash_file "$abs")"
+      printf 'f %s %s\n' "$rel" "$h"
+    else
+      printf 'o %s -\n' "$rel"
+    fi
+  done
 }
 
 # ---- fixture SSOT --------------------------------------------------------
@@ -275,30 +322,157 @@ else
   bad "--dry-run が記録を作った（rc=${SYNC_RC}）"
 fi
 
-# ---- A6. worktree target はミラー前にガードで中断する（Issue #901） ----------
+# ---- A6. worktree target はミラー前にガードで中断する（Issue #901 / #1090） --
 # `--exclude '.git/'` は末尾スラッシュのためディレクトリにしか一致せず、linked
 # worktree の file 形式 `.git` は `--delete` ミラーの削除対象になる（target が git
 # から切り離される）。書き込みへ入る前の fail-closed 中断と、--dry-run にも同じ
 # ガードが掛かること（dry-run が通って本実行だけ落ちる非対称を作らない）を実測で
 # 固定する。通常 clone（ディレクトリ形式 `.git`）の非退行は A1〜A4 の run_sync が
 # ${PUB}（通常 clone 相当）で成功していることが既に固定している。
+#
+# Issue #1090: 上記 3 点（終了コード / 診断メッセージ / `.git` の存続）だけでは
+# 「ガードが書き込みの**前**にある」を固定できない。ガードがミラー処理や記録削除
+# より後ろへ移動しても、内容を上書きしたうえで `.git` を保存する実装なら緑になる。
+# 「それ以外が一切変わっていない」を次の 3 本で明示的に見る:
+#   (1) sentinel（同期元と内容が異なる被上書きファイル）の内容とハッシュが不変
+#   (2) 同期元 SHA 記録が削除も更新もされない
+#   (3) target 配下（`.git` を除く全ファイル・ディレクトリ）の一覧とハッシュが不変
+# 本実行と --dry-run の双方で同じ 3 本を見る。ただし 3 本を測れるのは**ガードの中断が
+# 成立した回だけ**なので、中断しなかった回は 3 本を実行せず「測定不能」として赤にする
+# （dry-run は書き込みが構造的に無いため、中断しなくても 3 本が緑になってしまう）。
+#
+# **--dry-run を先に回す。** 本実行を先に置くと、ガード退行時は本実行が先に `.git` と
+# 内容を壊してしまい、続く dry-run は「既に壊れた状態」を before として測る — 非変更
+# アサーションが空振りで緑になり、中断アサーションの診断も（`.git` 不在に起因する別の
+# エラーへ化けて）誤読を招く。壊さない側を先に測る。
 WT="$TMP_DIR/pub-worktree"
 git -C "$PUB" worktree add -q -b wt-target "$WT" main \
   || { echo "✗ fixture の worktree を作成できません（以降のケースを空振りで緑にしない）" >&2; exit 1; }
-WT_RC=0
-WT_OUT="$("$SSOT/scripts/sync-dev-toolkit-to-public.sh" --target "$WT" 2>&1)" || WT_RC=$?
-if [[ "$WT_RC" -ne 0 && "$WT_OUT" == *"worktree target は使えません"* && -f "$WT/.git" ]]; then
-  ok "worktree target（file 形式 .git）は書き込み前にガードで中断し、.git も無傷で残る"
-else
-  bad "worktree target が中断しない（rc=${WT_RC} / .git=$([[ -e "$WT/.git" ]] && { [[ -d "$WT/.git" ]] && echo dir || echo file; } || echo '<消失>') / 出力: ${WT_OUT}）"
+
+# sentinel は「同期元にも同じパスで存在し、内容だけが違う」ファイルにする。ミラー
+# が走れば上書きされてハッシュが変わる（存在しないパスを置く形だと --delete の
+# 削除だけを見ることになり、上書き経路を素通りさせる）。
+#
+# **commit して target を clean に保つ**のが要点。untracked のまま置くと、ガードを
+# ミラーの後ろへ動かす変異を当てたときに手前の dirty ガード（本実行のみ）が先に
+# 止めてしまい、変異が検出できない（テストが自分で検出力を潰す形になる）。
+WT_SENTINEL_REL="plugins/ff-dev-toolkit/README.md"
+WT_SENTINEL="$WT/$WT_SENTINEL_REL"
+printf '# sentinel: worktree target must not be written by a guarded run\n' > "$WT_SENTINEL"
+# target にしか無いファイル。ミラーは `--delete` なので、書き込みへ入れば**削除**され
+# 上書きとは別経路で差分が出る。seed.txt は A1 のミラーで既に消えているため、削除経路を
+# 独立に見る針が他に無い（`.git` の存続チェックだけが削除に依存している状態だった）。
+WT_ONLY_REL="wt-only.txt"
+printf 'only in target\n' > "$WT/$WT_ONLY_REL"
+git -C "$WT" add -A
+git -C "$WT" commit -q -m "worktree sentinel"
+[[ -z "$(git -C "$WT" status --porcelain)" ]] \
+  || { echo "✗ fixture の worktree が clean になりません（dirty ガードが先に止まり検出力が落ちる）" >&2; exit 1; }
+
+# ---- fixture 前提のアサート（破れたら空振り緑になるので exit 1 で止める） --------
+# (a) sentinel が同期元と**内容で違う**こと。同一だとミラーが走っても上書き差分が出ず、
+#     sentinel / tree アサーションが素通りする。
+if cmp -s "$WT_SENTINEL" "$SSOT/$WT_SENTINEL_REL"; then
+  echo "✗ fixture: sentinel が同期元 ${WT_SENTINEL_REL} と同一内容です（上書き差分が出ず空振り緑になる）" >&2
+  exit 1
 fi
+# (b) この時点の SSOT が禁止パターン検査を通ること。A5 の違反注入が A6 より後にある
+#     ことへ暗黙に依存しており、順序が入れ替わるとガード退行時に rsync の手前（scan）で
+#     止まって「書き込みが起きない」ため、非変更アサーションが空振り緑になる。
+if ! "$SSOT/scripts/sync-dev-toolkit-to-public.sh" --check-only >/dev/null 2>&1; then
+  echo "✗ fixture: SSOT が禁止パターン検査を通りません（ガード退行時に scan で止まり非変更アサーションが空振りする）" >&2
+  exit 1
+fi
+
+# 記録先はテスト側で解決する。現行スクリプトはガードで中断するため記録先の解決に
+# すら到達せず、スクリプトの出力からは読めない。linked worktree の
+# `--absolute-git-dir` は per-worktree の git ディレクトリ（.git/worktrees/<name>）。
+WT_RECORD="$(git -C "$WT" rev-parse --absolute-git-dir)/ff-sync-src-sha"
+WT_RECORD_SENTINEL="89abcdef0123456789abcdef0123456789abcdef"
+
+WT_TREE_BEFORE="$TMP_DIR/wt-tree.before"
+WT_TREE_AFTER="$TMP_DIR/wt-tree.after"
+
+# 実行前の状態を採る。ハッシュは snapshot_tree の中でも採るが、sentinel だけは
+# Issue #1090 の AC が名指しで要求しているので独立した針として持つ。
+# 記録もここで置き直す — 前のケースが壊した記録を引き継ぐと、後続ケースが「自分は
+# 壊していないのに赤」になり、本実行と --dry-run のどちらが破壊したのかが読めない。
+wt_capture_before() {
+  printf '%s\n' "$WT_RECORD_SENTINEL" > "$WT_RECORD"
+  WT_SENTINEL_HASH_BEFORE="$(hash_file "$WT_SENTINEL")"
+  snapshot_tree "$WT" > "$WT_TREE_BEFORE"
+  # スナップショット自身の自己検査。find 式を壊す変異（`-o -print` 欠落など）を当てると
+  # before / after が同じ縮退出力（空・`o ./.git -` だけ など）で一致し、tree アサーションが
+  # 空振りで緑になる。sentinel の行が「型 f・当該パス・非空ハッシュ」で在ることを要求して
+  # fail-closed にする（空ハッシュ = hash_file の失敗もここで止まる）。
+  awk -v want="./$WT_SENTINEL_REL" \
+    '$1 == "f" && $2 == want && $3 != "" { found = 1 } END { exit found ? 0 : 1 }' \
+    "$WT_TREE_BEFORE" \
+    || { echo "✗ fixture: スナップショットに sentinel 行（f ./${WT_SENTINEL_REL} <hash>）がありません（tree アサーションが空振りします）" >&2; exit 1; }
+}
+
+# ガードが止めた実行が何も書き換えていないことを 3 本の名前付きアサーションで見る。
+#   $1: ケース名（本実行 / --dry-run）
+#   $2: ガードの中断が成立したか（1 = 成立）。0 のときは 3 本を実行せず「測定不能」で赤に
+#       する — dry-run 経路は書き込みが構造的に無いため、中断しなくても 3 本が緑になり、
+#       検証していない中断を検証したかのように主張してしまう。
+wt_assert_no_write() {
+  local case_label="$1" guard_stopped="$2" sentinel_after tree_diff record_after
+  if [[ "$guard_stopped" != "1" ]]; then
+    bad "ガード中断（${case_label}）が成立しなかったため非変更契約を測定できない（3 本は実行していない）"
+    return 0
+  fi
+  sentinel_after="$([[ -f "$WT_SENTINEL" ]] && hash_file "$WT_SENTINEL" || echo '<不在>')"
+  if [[ "$sentinel_after" == "$WT_SENTINEL_HASH_BEFORE" ]]; then
+    ok "ガード中断（${case_label}）は sentinel の内容とハッシュを変えない"
+  else
+    bad "ガード中断（${case_label}）で sentinel が書き換わった（${WT_SENTINEL_REL} / 前=${WT_SENTINEL_HASH_BEFORE} / 後=${sentinel_after}）"
+  fi
+  record_after="$(cat "$WT_RECORD" 2>/dev/null || echo '<不在>')"
+  if [[ "$record_after" == "$WT_RECORD_SENTINEL" ]]; then
+    ok "ガード中断（${case_label}）は同期元 SHA 記録を削除も更新もしない"
+  else
+    bad "ガード中断（${case_label}）が同期元 SHA 記録を壊した（前=${WT_RECORD_SENTINEL} / 後=${record_after}）"
+  fi
+  snapshot_tree "$WT" > "$WT_TREE_AFTER"
+  if tree_diff="$(diff "$WT_TREE_BEFORE" "$WT_TREE_AFTER")"; then
+    ok "ガード中断（${case_label}）は target 配下（.git を除く）を一切変更しない"
+  else
+    bad "ガード中断（${case_label}）が target 配下を変更した（差分: $(printf '%s' "$tree_diff" | tr '\n' '|')）"
+  fi
+}
+
+# --dry-run を先に測る（順序の理由は本節冒頭のコメント）。
+wt_capture_before
 WT_RC=0
+WT_STOPPED=0
 WT_OUT="$("$SSOT/scripts/sync-dev-toolkit-to-public.sh" --target "$WT" --dry-run 2>&1)" || WT_RC=$?
 if [[ "$WT_RC" -ne 0 && "$WT_OUT" == *"worktree target は使えません"* ]]; then
+  WT_STOPPED=1
   ok "worktree target は --dry-run でも同じガードで中断する"
 else
   bad "worktree target の --dry-run が中断しない（rc=${WT_RC} / 出力: ${WT_OUT}）"
 fi
+wt_assert_no_write "--dry-run" "$WT_STOPPED"
+
+wt_capture_before
+WT_RC=0
+WT_STOPPED=0
+WT_OUT="$("$SSOT/scripts/sync-dev-toolkit-to-public.sh" --target "$WT" 2>&1)" || WT_RC=$?
+if [[ "$WT_RC" -ne 0 && "$WT_OUT" == *"worktree target は使えません"* && -f "$WT/.git" ]]; then
+  WT_STOPPED=1
+  ok "worktree target（file 形式 .git）は書き込み前にガードで中断し、.git も無傷で残る"
+else
+  # 中断そのものは成立しているが `.git` が消えている場合も含めて赤にする。非変更
+  # アサーションは「中断が成立した回」だけ測るので、ここでの成立判定は中断（rc と
+  # 診断文言）に限る — `.git` の消失は書き込みが起きた証拠であり、3 本でも捕まえたい。
+  if [[ "$WT_RC" -ne 0 && "$WT_OUT" == *"worktree target は使えません"* ]]; then
+    WT_STOPPED=1
+  fi
+  bad "worktree target が中断しない（rc=${WT_RC} / .git=$([[ -e "$WT/.git" ]] && { [[ -d "$WT/.git" ]] && echo dir || echo file; } || echo '<消失>') / 出力: ${WT_OUT}）"
+fi
+wt_assert_no_write "本実行" "$WT_STOPPED"
+rm -f "$WT_RECORD"
 # ガード退行時は worktree の .git がミラーに消され `worktree remove` 自体が失敗する。
 # クリーンアップの失敗で suite を即死させると、退行検出時に限って A5 以降と
 # サマリーが失われるため、fallback（実体削除 + prune）で必ず後続へ進む。

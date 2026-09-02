@@ -20,6 +20,27 @@
 
 ## [Unreleased]
 
+## [0.78.0] - 2026-09-02
+
+### 追加
+
+- 週次フル run-all の健全性判定スクリプトの挙動を固定するテスト suite `tests/weekly-health-contract/` を追加した。モックした GitHub CLI で、cron の生存確認と成功実績の判定が別々の出力行に分かれること、既定ブランチ上で完了した手動実行 run が成功実績として受理されること、success 以外の完了 run は採用されたうえで不合格として扱われ古い成功へ遡らないこと、既定ブランチ以外の run と鮮度上限を超えた run が成功実績にならないこと、API 不達や壊れた応答が「健全」へ倒れず判定不能として扱われること、判定を緩める CLI オプションや環境変数が存在しないことを実測する
+
+### 変更
+
+- 同期スクリプトの worktree target ガードを検証する回帰テストに、「ガードが中断した実行は target を一切書き換えない」ことを見るアサーションを追加した。sentinel ファイルの内容ハッシュ・target にしか無いファイルの存続・同期元 SHA 記録・target 配下（`.git` を除く）のファイル一覧とハッシュを実行前後で突き合わせる。書き込みを伴う本実行で上書き・削除・記録破壊を検出し、`--dry-run` では同じ契約をガードの中断が成立した回にかぎって確認する。ガードがミラー処理や記録削除より後ろへ移動する退行を、終了コードと `.git` の存続だけに頼らず検出できるようにした
+
+### 修正
+
+- README「収録内容」の Skills 見出しに書かれた件数が実際の収録スキル数より少ないままだったのを修正しました
+- 収録スキル数の整合検査に、README の Skills 見出しの数字を実スキル数と照合する検査を追加しました。見出しの書式が変わって数字を一意に取り出せない場合も検査は赤になります
+
+### ドキュメント
+
+- Git Workflow 手順書のステップ1「Issue作成」の起票参考例を、`/create-issue` スキルと同じ body-file + 単純コマンド分割方式（本文を一時ファイルへ書く、`gh label list --limit 200` の単独実行で実在照合、`gh issue create --label ... --body-file ...` の単独実行）へ差し替えた。旧 1 ブロック方式（`label_args` 配列・bash 3.2 の空配列展開・fail-soft 分岐）は worktree 隔離セッションの複合コマンド拒否ガードに当たるため撤去し、ラベル「不在」と「照会失敗」の書き分け規則は説明に維持した。`tests/docs-gates` が照会と起票が別フェンスにあること・`--body-file` とラベルのプレースホルダ・旧方式の指紋の不在を固定する
+- Git Workflow 手順書のステップ4「自動テストの実行」に、claim を要求される文書を触った回の claim 照合を短い検証として明記した。`.version-claims/` を導入したプロジェクトでは、default branch を fetch して祖先検査を通したうえで、frontmatter version を持つ文書の新規追加・その version の変更・PLAYBOOK / PATTERNS の版不変更新について `scripts/update-version-claim.sh` で claim を再生成し、`docs/` 配下の変更と claim をまとめて stage して `scripts/check-version-claims.sh` で確認してから、同じ commit へ含める。helper は fetch しないため、この前段を飛ばすと stale base の claim が byte 不一致で弾かれる。非 0 は exit 1（claim の不足・stale・orphan、対象 path の未 stage / 未追跡）と exit 2（default branch を解決・取得できない検査不能）に分かれる。`.version-claims/` を導入していないプロジェクトでは validator が「未導入」として skip するので、この手順自体を省く
+- Git Workflow 手順書へ「Epic の一括対応（バッチ分割・worktree 並列・直列マージ）」節を追加した。対象ファイル集合が互いに素になるようバッチを組む、実装は worktree 隔離のサブエージェントで並列・レビューとマージは親が直列、Issue 本文の順序制約をバッチ境界に採用する、changelog は断片方式にする、の 4 点と、並列マージ後の rebase で必要になる version claim 再生成の位置を規定した。契約文は `tests/docs-gates` が固定する
+
 ## [0.77.0] - 2026-09-02
 
 ### 変更
