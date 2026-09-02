@@ -1231,6 +1231,138 @@ describe("Changelog 節限定 / ID 列限定 / 重複除去（Issue #1030）", (
     expect(ops.compactedIds).toEqual(["ACE-1-1", "ACE-2-1", "ACE-3-1"]);
   });
 
+  // Issue #1184: 注記と前置き散文は許すが、**ID どうしの区切り**は `Archived:` /
+  // `Promoted:` と同じ厳密さにする（`,` / `、` 以外は列挙として読まない）。
+  it("Compacted の ID を `/` で並べた行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Compacted: ACE-1-1 / ACE-2-1\n");
+    expect(ops.compactedIds).toEqual([]);
+    expect(ops.malformedCompacted).toEqual(["- Compacted: ACE-1-1 / ACE-2-1"]);
+  });
+
+  it("Compacted の ID を句点で区切った行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Compacted: ACE-1-1。ACE-2-1\n");
+    expect(ops.compactedIds).toEqual([]);
+    expect(ops.malformedCompacted).toEqual(["- Compacted: ACE-1-1。ACE-2-1"]);
+  });
+
+  it("Compacted の注記の後ろが `,` / `、` 以外で続く行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Compacted: ACE-1-1（18 → 12 行） / ACE-2-1\n");
+    expect(ops.compactedIds).toEqual([]);
+    expect(ops.malformedCompacted).toEqual(["- Compacted: ACE-1-1（18 → 12 行） / ACE-2-1"]);
+  });
+
+  it("Compacted の注記の直後に区切り無しで ID が続く行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Compacted: ACE-1-1（18 → 12 行）ACE-2-1\n");
+    expect(ops.compactedIds).toEqual([]);
+    expect(ops.malformedCompacted).toEqual(["- Compacted: ACE-1-1（18 → 12 行）ACE-2-1"]);
+  });
+
+  it("Compacted の ID 列の後ろに ID を含まない散文が続く行は受理する", () => {
+    const ops = parseChangelogOperations(
+      "- Compacted: ACE-1-1（18 → 12 行）, ACE-2-1（16 → 12 行）— 行数は anchor 行〜終端を含む。原文は archive へ保全\n",
+    );
+    expect(ops.compactedIds).toEqual(["ACE-1-1", "ACE-2-1"]);
+    expect(ops.malformedCompacted).toEqual([]);
+  });
+
+  it("Compacted の後続散文の括弧内に現れた ID は列挙の続きとみなさない", () => {
+    const ops = parseChangelogOperations(
+      "- Compacted: ACE-1-1（18 → 12 行）。本文は逐語同一（ACE-1-1 のみ 3 段落を 1 行へ連結）\n",
+    );
+    expect(ops.compactedIds).toEqual(["ACE-1-1"]);
+    expect(ops.malformedCompacted).toEqual([]);
+  });
+
+  it("前置きと後続の両方に ID が裸で現れる Compacted 行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Compacted: ACE-1-1 は据え置き。圧縮したのは ACE-2-1\n");
+    expect(ops.compactedIds).toEqual([]);
+    expect(ops.malformedCompacted).toEqual([
+      "- Compacted: ACE-1-1 は据え置き。圧縮したのは ACE-2-1",
+    ]);
+  });
+
+  // 注記の**位置**は Compacted の自由度として残す（狭めると develop で通っていた行が落ちる）。
+  // 厳密にするのは ID どうしの区切りが `,` / `、` かどうかだけ。
+  it("注記の前に空白がある Compacted 行は受理する", () => {
+    const ops = parseChangelogOperations("- Compacted: ACE-1-1 （18 → 12 行）, ACE-2-1\n");
+    expect(ops.compactedIds).toEqual(["ACE-1-1", "ACE-2-1"]);
+    expect(ops.malformedCompacted).toEqual([]);
+  });
+
+  it("注記が連続する Compacted 行は受理する", () => {
+    const ops = parseChangelogOperations("- Compacted: ACE-1-1（18 → 12 行）（逐語同一）, ACE-2-1\n");
+    expect(ops.compactedIds).toEqual(["ACE-1-1", "ACE-2-1"]);
+    expect(ops.malformedCompacted).toEqual([]);
+  });
+
+  it("区切りの後ろに注記がある Compacted 行は受理する", () => {
+    const ops = parseChangelogOperations("- Compacted: ACE-1-1（18 → 12 行）, （再整形のみ）ACE-2-1\n");
+    expect(ops.compactedIds).toEqual(["ACE-1-1", "ACE-2-1"]);
+    expect(ops.malformedCompacted).toEqual([]);
+  });
+
+  // 閉じ括弧の**余り**は、括弧書きが 1 つも無い行として ID を隣接させ、
+  // `ACE-1-1ACE-2-1` という実在しない ID 1 件へ融合させる（実在 2 件は無検証になる）。
+  it("閉じ括弧が余る Compacted 行は malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Compacted: ACE-1-1）ACE-2-1\n");
+    expect(ops.compactedIds).toEqual([]);
+    expect(ops.malformedCompacted).toEqual(["- Compacted: ACE-1-1）ACE-2-1"]);
+  });
+
+  it("半角の閉じ括弧が余る Compacted 行も malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Compacted: ACE-1-1)ACE-2-1\n");
+    expect(ops.compactedIds).toEqual([]);
+    expect(ops.malformedCompacted).toEqual(["- Compacted: ACE-1-1)ACE-2-1"]);
+  });
+
+  // parseChangelogOperations の戻り値だけを見ていると、malformedCompacted を violations へ
+  // 積む配線（evaluateRefineInvariants）を消してもテストが緑のままになる。
+  it("区切りが不正な Compacted 行はゲートの違反として報告される", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: `${PLAYBOOK_CHANGELOG}- Compacted: ACE-1-1 / ACE-2-1\n`,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("compact 行の ID 列が読めない"))).toBe(true);
+    expect(violations.some((v) => v.includes("- Compacted: ACE-1-1 / ACE-2-1"))).toBe(true);
+  });
+
+  it("括弧を閉じ忘れた Compacted 行もゲートの違反として報告される", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: `${PLAYBOOK_CHANGELOG}- Compacted: ACE-1-1（注記, ACE-2-1\n`,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("compact 行の ID 列が読めない"))).toBe(true);
+  });
+
+  // 規則の適用範囲は **ID どうしの間**だけ。ID が 1 件の行に散文が付いていても、
+  // 区切りが存在しないので違反にはならない（`Compacted:` に許した補足散文と区別できない）。
+  it("ID が 1 件だけの Compacted 行は散文が付いていても受理する", () => {
+    const ops = parseChangelogOperations("- Compacted: ACE-1-1 は据え置き。圧縮は次回\n");
+    expect(ops.compactedIds).toEqual(["ACE-1-1"]);
+    expect(ops.malformedCompacted).toEqual([]);
+  });
+
+  it("Compacted の区切りは `,` / `、` / 空白の有無を問わず受理する", () => {
+    const ops = parseChangelogOperations("- Compacted: ACE-1-1,ACE-2-1、　ACE-3-1, ACE-4-1\n");
+    expect(ops.compactedIds).toEqual(["ACE-1-1", "ACE-2-1", "ACE-3-1", "ACE-4-1"]);
+    expect(ops.malformedCompacted).toEqual([]);
+  });
+
+  // 番兵 U+FFFC が入力に直接書かれても、区切り（`,` / `、`）の要求は外れない。
+  // 注記 1 つと同じ扱いになるだけで、ID が検査から漏れる経路は生まれない。
+  it("入力に直接書かれた U+FFFC は区切りの要求を外さない", () => {
+    expect(
+      parseChangelogOperations("- Compacted: ACE-1-1\uFFFC ACE-2-1\n").malformedCompacted,
+    ).toEqual(["- Compacted: ACE-1-1\uFFFC ACE-2-1"]);
+    const separated = parseChangelogOperations("- Compacted: ACE-1-1\uFFFC, ACE-2-1\n");
+    expect(separated.compactedIds).toEqual(["ACE-1-1", "ACE-2-1"]);
+    expect(separated.malformedCompacted).toEqual([]);
+  });
+
   // 欠陥 3: 同一の Merged 行が 2 行あっても合算下限は 1 回分。
   it("同一の Merged 行が 2 行あっても合算は 1 回分", () => {
     const duplicated = `${PLAYBOOK_CHANGELOG}- Merged: ACE-430-1 → ACE-404-2（重複記載）\n`;

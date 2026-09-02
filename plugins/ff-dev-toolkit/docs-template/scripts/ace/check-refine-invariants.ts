@@ -15,7 +15,8 @@
  * 走査対象は **`## Changelog` 節だけ**（次のレベル 2 見出し直前まで）。エントリ本文が
  * refine 運用を解説して同形 bullet を書いても操作として採用しない（Issue #1030）。
  * 同節の中では `- Compacted:` は括弧書きの外、`- Promoted:` / `- Archived:` はコロン直後の
- * ID 列だけを読み、同一の `- Merged: X → Y` が複数行あっても 1 操作として数える。
+ * ID 列だけを読む。どのラベルも ID どうしの区切りは `,` / `、` に限り、それ以外で並べた行は
+ * malformed として拒否する（Issue #1184）。同一の `- Merged: X → Y` が複数行あっても 1 操作として数える。
  *
  * compact と archive は排他ではない。R3-b（圧縮）は原文を archive に残したまま live へ要約を置くので、
  * 後日 R3-a（stale アーカイブ）でその要約を撤去する遷移が SKILL.md R3-0 の正規手順にある。
@@ -56,6 +57,11 @@ const META_FIELDS = [
 ] as const;
 const VARIANT_B_MARKER = "メタ表のみ正準フォーマットへ再整形";
 /**
+ * ID 列の区切りとして許す並び。`Archived:` / `Promoted:` / `Compacted:` の 3 ラベルが
+ * この 1 箇所を共有する（Issue #1184。`/` や `と` で並べた列挙はどのラベルでも違反）。
+ */
+const ID_RUN_SEPARATOR_SOURCE = String.raw`\s*[,、]\s*`;
+/**
  * `- Archived:` / `- Promoted:` は**コロン直後から続く ID 列だけ**を読む
  * （理由の散文へ入った時点で打ち切る）。
  *
@@ -83,14 +89,30 @@ const VARIANT_B_MARKER = "メタ表のみ正準フォーマットへ再整形";
  */
 function idRunPattern(label: string): RegExp {
   return new RegExp(
-    String.raw`^- ${label}:\s*(${ACE_ENTRY_ID_SOURCE}(?:\s*[,、]\s*${ACE_ENTRY_ID_SOURCE})*)\s*(.*)$`,
+    String.raw`^- ${label}:\s*(${ACE_ENTRY_ID_SOURCE}(?:${ID_RUN_SEPARATOR_SOURCE}${ACE_ENTRY_ID_SOURCE})*)\s*(.*)$`,
     "u",
   );
 }
 const ARCHIVED_ID_RUN_PATTERN = idRunPattern("Archived");
 const PROMOTED_ID_RUN_PATTERN = idRunPattern("Promoted");
-/** ID 列の直後に来てよいのは行末か理由の括弧書きだけ。それ以外は列挙が途中で切れている。 */
-const ARCHIVED_REASON_HEAD_PATTERN = /^[（(]/u;
+/**
+ * `Archived:` / `Promoted:` の ID 列の直後に来てよいのは行末か理由の括弧書きだけで、
+ * それ以外は列挙が途中で切れている。`Compacted:` は ID 列の後ろに括弧書きでない補足を
+ * 許すため（`— 行数は …`）、この判定は使わない。
+ */
+const REASON_HEAD_PATTERN = /^[（(]/u;
+/** 括弧書きを 1 文字へ潰す番兵。ID にも Changelog の散文にも現れない（U+FFFC）。 */
+const PARENTHETICAL_SENTINEL = "\uFFFC";
+/**
+ * `- Compacted:` の ID どうしの間に来てよい並び。ID ごとの注記は**区切りの前後どちらにも
+ * 何個でも**置いてよく（`ACE-1-1 （18 → 12 行）, ACE-2-1`・`ACE-1-1（a）, （b）ACE-2-1`）、
+ * 縛るのは区切りそのものが `Archived:` / `Promoted:` と同じ `,` / `、` であることだけ
+ * （Issue #1184）。注記の位置まで狭めると、これまで通っていた書き方が新たに違反になる。
+ */
+const COMPACTED_ID_SEPARATOR_PATTERN = new RegExp(
+  String.raw`^(?:\s*${PARENTHETICAL_SENTINEL})*${ID_RUN_SEPARATOR_SOURCE}(?:${PARENTHETICAL_SENTINEL}\s*)*$`,
+  "u",
+);
 /** 理由の散文に ID が残っていないかの判定用（`ACE_ID_PATTERN` は g 付きで lastIndex を持つ）。 */
 const ACE_ID_ANYWHERE_PATTERN = new RegExp(ACE_ID_PATTERN.source, "u");
 const CHANGELOG_HEADING_PATTERN = /^##\s+Changelog\s*$/u;
@@ -165,42 +187,60 @@ export function extractChangelogSection(playbookContent: string): string {
 }
 
 /**
- * 括弧（全角・半角）で囲まれた注記を落とす。入れ子は深さで数える。
+ * 括弧（全角・半角）の対応が行末で閉じているか。**閉じ忘れと閉じ括弧の余りの両方**を見る。
  *
- * `- Compacted:` は「前置きの散文 → コロン → ID 列」や「ID ごとに `（18 → 12 行）` の注記」
- * という実例があり、`- Archived:` 式のコロン直後アンカーだと記録済み ID を黙って取りこぼす。
- * 理由・注記は括弧書きに置くのが Changelog の書式（Issue #1028 が `- Archived:` に敷いた
- * 「理由は ID 列の後ろの括弧書き」と同じ）なので、括弧の外に残る部分を ID 列として読む。
- */
-/**
- * 括弧（全角・半角）の対応が行末で閉じているか。閉じ忘れがあると stripParentheticals は
- * 開き括弧以降をすべて落とし、後続 ID が違反にもならず黙って消える（Issue #1030 の
- * Codex レビュー指摘）。呼び出し側はこの検出時に malformed として違反へ回す。
+ * - 閉じ忘れがあると maskParentheticals は開き括弧以降をすべて注記として潰し、
+ *   後続 ID が違反にもならず黙って消える（Issue #1030 の Codex レビュー指摘）。
+ * - 余った閉じ括弧は注記の境界にならないので、その前後の ID が隣接して
+ *   `ACE-1-1）ACE-2-1` → `ACE-1-1ACE-2-1` という実在しない ID 1 件へ融合し、
+ *   実在する 2 件が丸ごと未検証になる（Issue #1184）。`restAfterFirstParenthetical` が
+ *   `depth < 0` で null を返すのと同じ扱いに揃える。
+ *
+ * 呼び出し側はこの検出時に malformed として違反へ回す。
  */
 export function hasUnbalancedParentheses(line: string): boolean {
   let depth = 0;
   for (const ch of line) {
     if (ch === "（" || ch === "(") depth += 1;
-    else if (ch === "）" || ch === ")") depth = Math.max(0, depth - 1);
+    else if (ch === "）" || ch === ")") {
+      if (depth === 0) return true;
+      depth -= 1;
+    }
   }
   return depth > 0;
 }
 
-export function stripParentheticals(line: string): string {
+/**
+ * 括弧（全角・半角）で囲まれた注記を、番兵 1 文字へ潰す。入れ子は深さで数える。
+ *
+ * `- Compacted:` は「前置きの散文 → コロン → ID 列」や「ID ごとに `（18 → 12 行）` の注記」
+ * という実例があり、`- Archived:` 式のコロン直後アンカーだと記録済み ID を黙って取りこぼす。
+ * 理由・注記は括弧書きに置くのが Changelog の書式（Issue #1028 が `- Archived:` に敷いた
+ * 「理由は ID 列の後ろの括弧書き」と同じ）なので、括弧の外に残る部分を ID 列として読む。
+ *
+ * 注記を**消さずに番兵へ潰す**のは、括弧の前後を詰めると隣接した ID が 1 つの偽 ID へ
+ * 融合し（`ACE-1-1（18 → 12 行）ACE-2-1` → `ACE-1-1ACE-2-1`）、区切りの検査自体が
+ * 成立しなくなるためである（Issue #1184）。
+ */
+export function maskParentheticals(line: string): string {
   let depth = 0;
-  let stripped = "";
+  let masked = "";
   for (const ch of line) {
     if (ch === "（" || ch === "(") {
+      if (depth === 0) masked += PARENTHETICAL_SENTINEL;
       depth += 1;
       continue;
     }
     if (ch === "）" || ch === ")") {
+      // 余った閉じ括弧は呼び出し側が hasUnbalancedParentheses で先に弾くが、
+      // この関数単体でも ID を隣接させないよう番兵を残す（融合を作らない）。
       if (depth > 0) depth -= 1;
+      else masked += PARENTHETICAL_SENTINEL;
       continue;
     }
-    if (depth === 0) stripped += ch;
+    if (depth === 0) masked += ch;
   }
-  return stripped;
+  return masked;
 }
 
 /**
@@ -225,6 +265,38 @@ export function restAfterFirstParenthetical(reason: string): string | null {
 }
 
 /**
+ * `- Compacted:` の ID を `ids` へ入れる。ID を持たない行（`なし（…）` 等）は無視し、
+ * 括弧の外に並ぶ ID が `,` / `、` 以外で隔てられている行は `malformed` へ回す。
+ *
+ * `Archived:` / `Promoted:` と違って**コロン直後にアンカーしない**のは、
+ * `- Compacted: process の旧テーブル形式 22 件…: ACE-41-3, …` のように前置き散文を挟む実例と、
+ * `ACE-238-1（18 → 12 行）` のように ID ごとに注記を付ける実例がどちらも PLAYBOOK にあるためで、
+ * ID 列の後ろに括弧書きでない補足（`— 行数は …`）が続く実例もある。よって
+ * **前置き・注記・後続の補足は許したまま、ID どうしの区切りだけを 3 ラベル共通にする**
+ * （Issue #1184）。注記は区切りの前後どちらへ何個置いてもよい。ただし前置きにも後続の補足にも
+ * ID を**裸で**書くと「列挙の続き」と区別できないので違反にする（`（ACE-238-1 のみ …）` と
+ * 括弧の中へ入れれば従来どおり受理する）。
+ */
+function collectCompactedIdRun(line: string, ids: string[], malformed: string[]): void {
+  if (hasUnbalancedParentheses(line)) {
+    // 閉じ忘れは開き括弧以降の ID を黙って落とすため、部分採用せず違反へ回す
+    malformed.push(line);
+    return;
+  }
+  const masked = maskParentheticals(line);
+  const found = [...masked.matchAll(ACE_ID_PATTERN)];
+  for (let i = 1; i < found.length; i++) {
+    const previous = found[i - 1];
+    const gap = masked.slice((previous.index ?? 0) + previous[0].length, found[i].index);
+    if (!COMPACTED_ID_SEPARATOR_PATTERN.test(gap)) {
+      malformed.push(line);
+      return;
+    }
+  }
+  ids.push(...found.map((m) => m[0]));
+}
+
+/**
  * コロン直後の ID 列だけを `ids` へ入れる。ID 列を持たない行（`なし（…）` 等）は無視し、
  * ID 列が理由の括弧書き以外の散文で切れている行は `malformed` へ回す。
  */
@@ -240,7 +312,7 @@ function collectIdRun(
   if (rest !== "") {
     // 区切りが `,` / `、` でない列挙や括弧書きでない理由は、先頭だけ拾って残りが無検証になる。
     // 黙って切り詰めず、行そのものを違反として報告する。
-    if (!ARCHIVED_REASON_HEAD_PATTERN.test(rest)) {
+    if (!REASON_HEAD_PATTERN.test(rest)) {
       malformed.push(line);
       return;
     }
@@ -277,14 +349,7 @@ export function parseChangelogOperations(playbookContent: string): ChangelogOper
   for (const rawLine of extractChangelogSection(maskedContent).split("\n")) {
     const line = rawLine.trim();
     if (line.startsWith("- Compacted:")) {
-      if (hasUnbalancedParentheses(line)) {
-        // 閉じ忘れは開き括弧以降の ID を黙って落とすため、部分採用せず違反へ回す
-        malformedCompacted.push(line);
-        continue;
-      }
-      compactedIds.push(
-        ...[...stripParentheticals(line).matchAll(ACE_ID_PATTERN)].map((m) => m[0]),
-      );
+      collectCompactedIdRun(line, compactedIds, malformedCompacted);
       continue;
     }
     if (line.startsWith("- Merged:")) {
@@ -646,7 +711,7 @@ export function evaluateRefineInvariants(input: {
 
   for (const line of ops.malformedCompacted) {
     violations.push(
-      `compact 行の括弧が閉じていない（閉じ忘れは括弧以降の ID を黙って落とすため部分採用しない）: ${line}`,
+      `compact 行の ID 列が読めない（区切りは , か 、 で、注記は括弧書きに置く。括弧の閉じ忘れ・余りと、散文に裸で書いた ID は部分採用しない）: ${line}`,
     );
   }
 
