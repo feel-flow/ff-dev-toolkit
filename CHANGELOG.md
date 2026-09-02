@@ -38,7 +38,7 @@
 ### ドキュメント
 
 - Git Workflow 手順書のステップ1「Issue作成」の起票参考例を、`/create-issue` スキルと同じ body-file + 単純コマンド分割方式（本文を一時ファイルへ書く、`gh label list --limit 200` の単独実行で実在照合、`gh issue create --label ... --body-file ...` の単独実行）へ差し替えた。旧 1 ブロック方式（`label_args` 配列・bash 3.2 の空配列展開・fail-soft 分岐）は worktree 隔離セッションの複合コマンド拒否ガードに当たるため撤去し、ラベル「不在」と「照会失敗」の書き分け規則は説明に維持した。`tests/docs-gates` が照会と起票が別フェンスにあること・`--body-file` とラベルのプレースホルダ・旧方式の指紋の不在を固定する
-- Git Workflow 手順書のステップ4「自動テストの実行」に、claim を要求される文書を触った回の claim 照合を短い検証として明記した。`.version-claims/` を導入したプロジェクトでは、default branch を fetch して祖先検査を通したうえで、frontmatter version を持つ文書の新規追加・その version の変更・PLAYBOOK / PATTERNS の版不変更新について `scripts/update-version-claim.sh` で claim を再生成し、`docs/` 配下の変更と claim をまとめて stage して `scripts/check-version-claims.sh` で確認してから、同じ commit へ含める。helper は fetch しないため、この前段を飛ばすと stale base の claim が byte 不一致で弾かれる。非 0 は exit 1（claim の不足・stale・orphan、対象 path の未 stage / 未追跡）と exit 2（default branch を解決・取得できない検査不能）に分かれる。`.version-claims/` を導入していないプロジェクトでは validator が「未導入」として skip するので、この手順自体を省く
+- Git Workflow 手順書のステップ4「自動テストの実行」に、claim を要求される文書を触った回の claim 照合を短い検証として明記した。`.version-claims/` を導入したプロジェクトでは、default branch を fetch して祖先検査を通したうえで、frontmatter version を持つ文書の新規追加・その version の変更・PLAYBOOK / PATTERNS の版不変更新について 同梱の `update-version-claim.sh` で claim を再生成し、`docs/` 配下の変更と claim をまとめて stage して 同梱の `check-version-claims.sh` で確認してから、同じ commit へ含める。helper は fetch しないため、この前段を飛ばすと stale base の claim が byte 不一致で弾かれる。非 0 は exit 1（claim の不足・stale・orphan、対象 path の未 stage / 未追跡）と exit 2（default branch を解決・取得できない検査不能）に分かれる。`.version-claims/` を導入していないプロジェクトでは validator が「未導入」として skip するので、この手順自体を省く
 - Git Workflow 手順書へ「Epic の一括対応（バッチ分割・worktree 並列・直列マージ）」節を追加した。対象ファイル集合が互いに素になるようバッチを組む、実装は worktree 隔離のサブエージェントで並列・レビューとマージは親が直列、Issue 本文の順序制約をバッチ境界に採用する、changelog は断片方式にする、の 4 点と、並列マージ後の rebase で必要になる version claim 再生成の位置を規定した。契約文は `tests/docs-gates` が固定する
 
 ## [0.77.0] - 2026-09-02
@@ -1773,7 +1773,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.77.0...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.78.0...HEAD
+[0.78.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.77.0...v0.78.0
 [0.77.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.76.0...v0.77.0
 [0.76.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.75.0...v0.76.0
 [0.75.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.74.0...v0.75.0
