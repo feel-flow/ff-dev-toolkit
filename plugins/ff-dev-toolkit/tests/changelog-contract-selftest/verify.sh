@@ -58,9 +58,8 @@ trap _ff_exit_guard EXIT
 
 PASS=0
 FAIL=0
-TOTAL=0
-ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); TOTAL=$((TOTAL + 1)); }
-bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); TOTAL=$((TOTAL + 1)); }
+ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
+bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # ---- fixture: CHANGELOG.md バリエーション --------------------------------------
 # 本体の禁止パターンに触れない共通ヘッダ。実ファイルと同じく compare URL を含める

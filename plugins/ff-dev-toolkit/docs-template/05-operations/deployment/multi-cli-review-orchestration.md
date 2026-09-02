@@ -35,7 +35,7 @@ handoff の producer は skill を実行する AI host である。Claude Code �
 
 キャッシュ全体を探索したり、version 名を並べ替えて別版へ切り替えたりしない。次の resolver + guard を、以下に続く直接実行例より前に同じ shell へ読み込む。Claude Code / Codex の host は、上記の値をこの fence の実行環境へ渡すこと。初回 setup は読み込み済み skill を持つ Claude Code / Codex の host セッションからだけ実行する。単独ターミナルで setup 前の状態から plugin を探索する手順は提供しない。setup 後の単独ターミナルは Codex-only 互換シムを使い、固定版の pair / distributed review は skill を再呼び出して実行する。machine-local sidecar の手動 source は対話ターミナル向けに提供せず、後述の永続 hook の handoff にだけ使う。root が未設定、または更新で resource が消えた場合は別版へフォールバックせず status 2 を返す。
 
-このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowの手動検査から呼ぶ `check-closing-keywords.sh` である。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は Codex cache → Claude cache の semantic version 最大を sidecar より先に選ぶ（Issue #623 の互換動作）。そのため plugin 更新直後は、端末の互換シムが新 cache、pre-push が更新前の sidecar を使う状態がある。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
+このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowが `FF_DEV_TOOLKIT_ROOT` 経由で起動する同梱scriptである。後者は `check-closing-keywords.sh`（Issueクローズキーワードの手動検査）に加え、`check-merge-freshness.sh`（マージ前の鮮度検査）・`update-version-claim.sh` / `check-version-claims.sh`（version claimの生成と検証）を含む。呼び出す側の案内だけが増えて対象の列挙が追従しない状態を作らないため、Git Workflowから同梱scriptを新たに呼ぶときはこの列挙も同時に更新する。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は Codex cache → Claude cache の semantic version 最大を sidecar より先に選ぶ（Issue #623 の互換動作）。そのため plugin 更新直後は、端末の互換シムが新 cache、pre-push が更新前の sidecar を使う状態がある。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
 
 ```bash
 ff_canonical_toolkit_root() {
@@ -142,7 +142,8 @@ ff_require_toolkit_root() {
     ff_toolkit_handoff_error "ff-dev-toolkitのmanifest name markerを確認できません"
     return "$?"
   fi
-  for resource in setup-multi-agent.sh multi-agent.sh multi-review.sh check-closing-keywords.sh; do
+  for resource in setup-multi-agent.sh multi-agent.sh multi-review.sh check-closing-keywords.sh \
+    check-merge-freshness.sh update-version-claim.sh check-version-claims.sh; do
     resource_path="${host_root}/scripts/${resource}"
     resource_error=""
     if [ ! -f "$resource_path" ]; then

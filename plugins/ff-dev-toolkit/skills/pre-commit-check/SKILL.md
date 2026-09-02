@@ -7,6 +7,36 @@ description: コミット前に MASTER.md ルール準拠・マジックナン�
 
 コミット前に、変更内容が MASTER.md のルールおよびプロジェクト仕様に準拠しているか確認します。
 
+## プラグインルートの固定（必須）
+
+<!-- ff-dev-toolkit-plugin-root-contract:start -->
+同梱resourceを参照する前に `FF_DEV_TOOLKIT_ROOT` を**一度だけ**解決し、実行中は変更しない。
+
+- Claude Codeでは、その呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}` を使う
+- Codexなど他ホストでは、実際に読み込んだこの `SKILL.md` の絶対パスを `FF_DEV_TOOLKIT_SKILL_FILE` として固定し、そこから `../..` を解決する
+
+このskillを実行するAI hostは、Bash tool呼び出しを組み立てるとき、skill loaderが返した実値で `FF_DEV_TOOLKIT_SKILL_FILE="<このSKILL.mdの絶対パス>"; export FF_DEV_TOOLKIT_SKILL_FILE` を実行し、同じshell script bodyでresourceを呼び出す。placeholderのまま実行したり、cache pathを推測して埋めたりしない。
+plugin内ドキュメントの正本は、読み込んだこの `SKILL.md` のdirectoryを基準にした [plugin root固定契約](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) である。consumerへコピーされた `docs/` や物理CWDを基準に解決しない。
+review系resource（`setup-multi-agent.sh` / `multi-agent.sh` / `multi-review.sh`）を直接呼ぶhostだけが、同節のresolver + guard fence全体を読み、handoff設定・guard・resource呼び出しを同じshell script bodyで実行する。そのhostはtask workspace repository rootも `FF_DEV_TOOLKIT_PROJECT_ROOT` として同じBash tool呼び出しへ渡し、現在の物理CWDおよび `git rev-parse --show-toplevel` と一致することを実行前に確認する。review以外のresourceはこのreview専用guardを実行せず、固定したroot配下で各skillが指定するresourceだけを呼出直前に検証する。以下のBash例は、同じtool bodyで固定済みrootを使うcommand断片として扱う。
+
+解決後は同じ絶対パスだけを使い、cache / marketplace / 旧インストール領域を走査して選ばない。
+version sortによる版の選び直しや、sidecarを使った別実体への切替も行わない。
+解決済みrootまたは必要resourceが消失・不整合になった場合は、別versionへfallbackせず
+「ff-dev-toolkit更新後にこのskillを再呼び出してください」と案内して停止する。
+<!-- ff-dev-toolkit-plugin-root-contract:end -->
+
+<!-- ff-dev-toolkit-plugin-root-guard:start -->
+固定したrootが消えた状態で手順を先へ進めないため、同梱resourceを呼ぶBash tool呼び出しの本文冒頭で次のguardを実行する。手順書のguardは実行環境の `set -e` を仮定できないので、`||` の右辺で `false` を返す形ではなくifで構造的に停止する。
+
+```bash
+if [ -z "${FF_DEV_TOOLKIT_ROOT:-}" ] || [ ! -d "${FF_DEV_TOOLKIT_ROOT}" ]; then
+  echo "ff-dev-toolkit更新後にこのskillを再呼び出してください（plugin rootが解決できません）" >&2
+  exit 2
+fi
+```
+
+<!-- ff-dev-toolkit-plugin-root-guard:end -->
+
 ## 前提
 
 - git リポジトリで作業中であること

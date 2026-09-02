@@ -2,7 +2,7 @@
 #
 # hooks/check-update.sh（更新通知フック、Issue #165）の回帰検証。
 #
-# 実ネットワークには触れない。tests/changelog-links-selftest と同じ手法で、
+# 実ネットワークには触れない。tests/changelog-public-tags-selftest と同じ手法で、
 # ローカルのタグ付き bare git リポジトリを FF_DEV_TOOLKIT_UPDATE_REPO_URL で
 # フックに渡し、キャッシュディレクトリも FF_DEV_TOOLKIT_UPDATE_CACHE_DIR で
 # 一時領域へ隔離する。フック本体は fixture のプラグイン構造
@@ -53,10 +53,12 @@ command -v jq >/dev/null 2>&1 || { echo "✗ jq が必要です（通知 JSON �
 # パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に誤帰属し、
 # 恒常的に壊れた TMPDIR が suite を exit 0 で無効化し続ける。2>&1 で受けると
 # 成功時はパス・失敗時は理由が同じ変数に入る。
-if _ff_mktemp_out="$(mktemp -d 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if _ff_mktemp_out="$(mktemp -d 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   TMP="$_ff_mktemp_out"
 else
-  echo "○ skip: 一時ディレクトリを作成できない環境（read-only）のためスキップ"
+  echo "○ skip: 一時ディレクトリを作成できない環境のためスキップ"
   printf '  mktemp: %s\n' "$_ff_mktemp_out"
   FF_REACHED_END=1
   exit 0
@@ -494,6 +496,61 @@ if [ -f "$CACHE/update-check" ] && grep -q "^fail - " "$CACHE/update-check"; the
   ok "オフライン: fail キャッシュを記録した"
 else
   bad "オフライン: fail キャッシュが不正: $(cat "$CACHE/update-check" 2>/dev/null || echo '<missing>')"
+fi
+
+# ---- 8b. 認証失敗（Private 配布リポジトリ、ADR-049）: 無出力 + exit 0 + fail 記録 --
+# 配布リポジトリが Private になり、HTTPS の認証ヘルパーが無い環境では ls-remote が
+# 「terminal prompts disabled」で即失敗する経路が通常系になった。stub git でその
+# 失敗を再現し、(a) 無出力・exit 0、(b) プロンプト封じの env（GIT_TERMINAL_PROMPT /
+# GIT_ASKPASS / GIT_SSH_COMMAND）が渡っている、(c) fail キャッシュが残り TTL 内は
+# 再試行しない、を固定する。case 8 の「存在しないローカル path」では GitHub 側の
+# 認証要求を模せず、プロンプト抑止の env が落ちても素通りするため別ケースにする。
+mkdir -p "$TMP/authstub"
+cat > "$TMP/authstub/git" <<'STUB'
+#!/bin/sh
+# ls-remote だけ認証失敗を模す。env の記録は検査用（実 git は呼ばない）
+case "$1" in
+  ls-remote)
+    printf 'GIT_TERMINAL_PROMPT=%s\nGIT_ASKPASS=%s\nGIT_SSH_COMMAND=%s\n' \
+      "${GIT_TERMINAL_PROMPT-<unset>}" "${GIT_ASKPASS-<unset>}" "${GIT_SSH_COMMAND-<unset>}" \
+      >> "$AUTHSTUB_ENV_LOG"
+    echo "fatal: could not read Username for 'https://github.com': terminal prompts disabled" >&2
+    exit 128 ;;
+esac
+exit 0
+STUB
+chmod +x "$TMP/authstub/git"
+CACHE="$TMP/cache8b"
+AUTHSTUB_ENV_LOG="$TMP/authstub.env"
+: > "$AUTHSTUB_ENV_LOG"
+run_hook "https://github.com/feel-flow/ff-dev-toolkit.git" "$CACHE" \
+  PATH="$TMP/authstub:$PATH" AUTHSTUB_ENV_LOG="$AUTHSTUB_ENV_LOG"
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ]; then
+  ok "認証失敗: 無出力 + exit 0 + stderr 無出力（ハングせず無音で抜ける）"
+else
+  bad "認証失敗: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+if [ -s "$AUTHSTUB_ENV_LOG" ] \
+  && grep -q '^GIT_TERMINAL_PROMPT=0$' "$AUTHSTUB_ENV_LOG" \
+  && grep -q '^GIT_ASKPASS=/usr/bin/false$' "$AUTHSTUB_ENV_LOG" \
+  && grep -q '^GIT_SSH_COMMAND=ssh -oBatchMode=yes$' "$AUTHSTUB_ENV_LOG"; then
+  ok "認証失敗: プロンプト封じの env（GIT_TERMINAL_PROMPT / GIT_ASKPASS / GIT_SSH_COMMAND）が ls-remote へ渡る"
+else
+  bad "認証失敗: プロンプト封じの env が欠けている: $(cat "$AUTHSTUB_ENV_LOG" 2>/dev/null || echo '<missing>')"
+fi
+if [ -f "$CACHE/update-check" ] && grep -q "^fail - " "$CACHE/update-check"; then
+  ok "認証失敗: fail キャッシュを記録した"
+else
+  bad "認証失敗: fail キャッシュが不正: $(cat "$CACHE/update-check" 2>/dev/null || echo '<missing>')"
+fi
+calls_before="$(grep -c '^GIT_TERMINAL_PROMPT=' "$AUTHSTUB_ENV_LOG")"
+run_hook "https://github.com/feel-flow/ff-dev-toolkit.git" "$CACHE" \
+  PATH="$TMP/authstub:$PATH" AUTHSTUB_ENV_LOG="$AUTHSTUB_ENV_LOG"
+calls_after="$(grep -c '^GIT_TERMINAL_PROMPT=' "$AUTHSTUB_ENV_LOG")"
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && [ "$calls_after" -eq "$calls_before" ]; then
+  ok "認証失敗: TTL 内の再実行は ls-remote を呼ばない（毎セッション認証失敗を払わない）"
+else
+  bad "認証失敗: TTL 内に再取得した: calls=${calls_before}→${calls_after} exit=$RC output=[$OUT]"
 fi
 
 # ---- 9. 到達可能だが SemVer タグ 0 件: 通知せず fail が残る ------------------

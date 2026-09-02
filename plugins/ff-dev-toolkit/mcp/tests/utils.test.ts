@@ -570,3 +570,9 @@ describe('buildGlossary: 引用マーカーが用語索引を落とさない（I
 //
 // 上の describe は TS 側単体の意味論（Issue #527 の narrowing）を固定するもので、
 // mirror ゲートとは関心事が違うのでここに残す。
+//
+// Issue #706 が問うた「lib 不在で照合が静かに skip される経路」は、この移設で
+// 既に消えている（`it.skipIf(!hasLib)` はこのファイルに存在しない）。移設先の
+// tests/docs-scan-mirror は run-all.sh の REQUIRED_SUITES に載っているので、
+// node / mcp/node_modules 不在で `○ skip` になった場合は run-all が赤になる
+// （FF_RUN_ALL_ALLOW_SKIP の明示許可が要る）= skip は可視化されている。

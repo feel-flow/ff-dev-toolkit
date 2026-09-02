@@ -17,7 +17,8 @@
 # 記録しない。
 #
 # 既知の沈黙モード: public リポジトリの schedule はリポジトリが 60 日不活性だと
-# GitHub が自動で無効化する。失敗は起票できるが「実行されなかった」ことは自分では
+# GitHub が自動で無効化する（本リポジトリは 2026-09-02 の Private 化以降は非該当 —
+# SSOT の ADR-049。コメントは Public へ戻した場合の注意として残す）。失敗は起票できるが「実行されなかった」ことは自分では
 # 通知できないため、長期の未発火は Actions の実行履歴で確認すること。
 name: weekly-public-run-all
 
@@ -42,9 +43,18 @@ jobs:
     # 通知契約が破れる — ハングは各 step の timeout が先に失敗へ倒し、起票まで届く。
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v4
+      # SHA ピン（ADR-048）: 可変タグ（@v4）は付け替え可能で、上流乗っ取り時に
+      # 検証結果へ静かに混入しうる。コミット SHA は解決時点で actions/checkout の
+      # v4 タグが指していたもの（gh api repos/actions/checkout/git/ref/tags/v4）。
+      # 更新導線は開発元（SSOT）側の Dependabot（github-actions エコシステム）が担い、
+      # 更新された SHA は公開同期でこのファイルへ届く。**このリポジトリに
+      # .github/dependabot.yml を置いてはいけない** — 公開側は SSOT からの
+      # 一方向ミラー（rsync --delete）で、公開側で作られた更新はミラー時に消える。
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      # SHA ピン（ADR-048）。SHA は resolve 時点の actions/setup-node v4 タグの参照先
+      # （gh api repos/actions/setup-node/git/ref/tags/v4）。
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -66,16 +76,34 @@ jobs:
           git config --global user.name "weekly-public-run-all"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      # yq は mikefarah 版（Go 実装）v4 を前提とする suite がある。python 版 yq が
-      # PATH にいる環境では「存在する」だけでは足りないため、フレーバーまで確認する。
+      # yq は mikefarah 版（Go 実装）v4 を前提とする suite がある。
+      #
+      # **既存バイナリの有無で分岐しない。** ubuntu-latest は mikefarah/yq を同梱している
+      # ため、「mikefarah 版が無ければ取得」の分岐は実際には常に偽になり、チェックサム
+      # 未照合のランナー同梱版がそのまま検証を走らせる（照合コードは一度も実行されない）。
+      # 固定版を毎回取得して sha256 照合し、通ったものだけを install する。
+      #
+      # チェックサム検証: 取得物が意図したものであることを sha256sum -c で確認する。
+      # 照合は実行可能化（install の 0755 付与）より前に行い、不一致なら非 0 で落として
+      # 使用前に止める。値は
+      # https://github.com/mikefarah/yq/releases/download/v4.44.3/checksums の
+      # `yq_linux_amd64` 行・SHA-256 列（checksums_hashes_order の 18 番目）から取得。
+      # yq バージョン更新時はこの sha256 も手動で合わせて更新する（Dependabot は
+      # バイナリ取得の version 文字列を追跡できないため対象外）。
       - name: Ensure yq (mikefarah v4) is available
         timeout-minutes: 5
         run: |
-          if ! yq --version 2>/dev/null | grep -q 'mikefarah'; then
-            sudo wget -qO /usr/local/bin/yq \
-              https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
-            sudo chmod +x /usr/local/bin/yq
-          fi
+          set -euo pipefail
+          YQ_VERSION="v4.44.3"
+          YQ_SHA256="a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7"
+          yq_download="$(mktemp -d)/yq_linux_amd64"
+          wget -qO "$yq_download" \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  ${yq_download}" | sha256sum -c -
+          # 照合を通った物だけを実行可能として配置する。/usr/local/bin は PATH 上
+          # /usr/bin（ランナー同梱 yq の位置）より先に来るので、これで解決先が確定する。
+          sudo install -m 0755 "$yq_download" /usr/local/bin/yq
+          test "$(command -v yq)" = /usr/local/bin/yq
           yq --version | grep -q 'mikefarah'
 
       # suite が「ツール不在 → ○ skip」へ静かに倒れると、赤の理由がログから読みにくい。
@@ -186,7 +214,7 @@ jobs:
           # 名簿に無い suite の skip はここで失敗させる（配布物の欠落・依存不足で suite が
           # 静かに skip へ倒れる経路を「偽の green」にしない）。許容するのは外部到達性で
           # 正常 skip し得る系統だけ（公開タグを ls-remote で引く CHANGELOG 検査）。
-          ALLOWED_SKIP_SUITES="changelog-links changelog-attribution"
+          ALLOWED_SKIP_SUITES="changelog-public-tags"
           if [ "${skipped_count:-0}" != "0" ]; then
             skipped_names="$(sed -n 's/^○ skipped (環境都合で検証本体が未実行): //p' "$RUNNER_TEMP/public-run-all.log" | tr ' ' '\n' | sed '/^$/d')"
             unexpected=""

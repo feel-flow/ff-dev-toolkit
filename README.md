@@ -25,12 +25,16 @@ claude plugin install ff-dev-toolkit@ff-dev-toolkit
 >
 > Codex CLI / Cowork で利用している場合も同様に、旧プラグインの削除と marketplace の再登録が必要です（手順は各プラットフォームのプラグイン管理 UI / CLI に読み替え）。
 
+### 前提: Private リポジトリの認証
+
+本リポジトリは feel-flow 組織メンバー（および招待された collaborator）限定の **Private リポジトリ**です（2026-09-02 に Public から変更）。CLI からの `marketplace add` は HTTPS で git clone するため、事前に **HTTPS の認証ヘルパー**を用意してください。`gh auth login` の後に `gh auth setup-git` を実行します。SSH 鍵だけでは足りません — 同梱の更新通知 hook（`hooks/check-update.sh`）は HTTPS URL を固定で照会するため、SSH 鍵しかない環境ではタグ取得が毎回失敗して通知が出なくなります。認証ヘルパーがない環境では `marketplace add` は clone が通らず失敗するか認証を求められ、更新通知 hook は無音でスキップします（ハングはしません）。
+
 ### 組織のプラグインディレクトリ（GitHubから同期）で配布する場合
 
-Claude（Web / デスクトップ）の管理画面にある「GitHubから同期」は、**Private / Internal リポジトリのみ**が同期対象です（2026年7月時点。最新の挙動は同ダイアログの注意書きを確認してください）。本リポジトリは Public のため、組織のプラグインディレクトリの同期元として登録できません。
+Claude（Web / デスクトップ）の管理画面にある「GitHubから同期」は、**Private / Internal リポジトリ**を同期対象とします（2026年7月時点。最新の挙動は同ダイアログの注意書きを確認してください）。本リポジトリは Private のため、そのまま組織のプラグインディレクトリの同期元として登録できます。ミラー複製は不要です。
 
-- **個人利用**: 上記の CLI インストールをそのまま使ってください（Public リポジトリでも問題ありません）
-- **組織配布**: 本リポジトリを組織の Private リポジトリとして複製（ミラー）し、そのリポジトリを「GitHubから同期」に指定してください。GitHub では Public リポジトリを Private にフォークできないため、フォークではなく [Import repository](https://github.com/new/import) や `git clone --bare` + `git push --mirror` で複製します。複製後は、本リポジトリの更新を随時ミラーへ反映してください
+- **個人利用**: 上記の CLI インストールをそのまま使ってください（認証の前提は上記のとおり）
+- **組織配布**: 「GitHubから同期」に本リポジトリ（`feel-flow/ff-dev-toolkit`、ブランチ `main`）を指定してください
 
 ## 収録内容
 
@@ -115,7 +119,7 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 
 ### スキル実体ドリフト検査
 
-`plugins/<plugin>/skills/` を持つチェックアウト（開発元の marketplace モノレポ）でセッションを開始すると、インストール済みの実体とリポジトリのスキル集合を照合します。公開リポジトリのルート直下 `skills/` レイアウトでは照合対象外として無音です。
+`plugins/<plugin>/skills/` を持つチェックアウト（開発元の marketplace モノレポ）でセッションを開始すると、インストール済みの実体とリポジトリのスキル集合を照合します。配布リポジトリのルート直下 `skills/` レイアウトでは照合対象外として無音です。
 
 - リポジトリにあるスキルがどのインストール実体にも無い場合、またはユニーク version が 2 以上の cache が併存している場合に通知します
 - スキル集合が一致し version が 1 種類なら無音です。同一 version の cache と marketplace checkout が並ぶのは通常構成です。version 差だけの 1 実体は上の更新通知に任せます

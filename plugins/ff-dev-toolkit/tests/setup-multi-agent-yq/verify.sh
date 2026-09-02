@@ -24,10 +24,12 @@ SETUP="$PLUGIN_ROOT/scripts/setup-multi-agent.sh"
 # BSD mktemp はテンプレート無しだと、指定した TMPDIR が使えなくてもシステムの
 # 一時領域へフォールバックし得る。そこで成功すると後段の被検体だけが TMPDIR で落ち、
 # 環境都合が suite の失敗に化けるため、検査対象の TMPDIR をテンプレートで固定する。
-if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-setup-yq.XXXXXX" 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-setup-yq.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   TMP="$_ff_mktemp_out"
 else
-  echo "○ skip: 一時ディレクトリを作成できない環境（read-only）のためスキップ"
+  echo "○ skip: 一時ディレクトリを作成できない環境のためスキップ"
   printf '  mktemp: %s\n' "$_ff_mktemp_out"
   FF_REACHED_END=1
   exit 0

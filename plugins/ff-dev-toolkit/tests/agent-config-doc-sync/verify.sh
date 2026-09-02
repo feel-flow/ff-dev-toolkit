@@ -1,34 +1,37 @@
 #!/usr/bin/env bash
 #
-# agent-config-doc-sync — 4 スキル（multi-review / multi-explore /
-# multi-implement / setup-ai-config）の SKILL.md に複製されている
-# `.claude/agent-config.yaml` の説明文（「- 設定のカスタマイズ:」bullet）の
-# 同期・正確性検査（Issue #244）。
+# agent-config-doc-sync — `.claude/agent-config.yaml` の「実際に読まれるキー」の
+# 説明が単一正本であり、その内容が実装と連動していることの検査（Issue #244 / #1023）。
 #
-# 4 スキルは同じ scripts/multi-agent.sh を叩くため説明も同一であるべきだが、
-# 複製された文は「片方だけ訂正される」形で必ずドリフトする。実際に
-# multi-review だけが訂正され、残るスキルには「`agents:` を書き換えると
-# 挙動が変わる」と誤読させる旧文が残った。さらにその訂正文自体にも
-# 「実際に読まれるキー」の列挙漏れがあった（review.main/sub、tasks.<task>.mode）。
-# doc↔doc の一致検査は「全員で同じ嘘をつく」状態を検出できないため、
-# doc↔code の連動検査を併置する。
+# 経緯: 元はこの説明文が 4 スキル（multi-review / multi-explore / multi-implement /
+# setup-ai-config）の SKILL.md へ**複製**されており、本 suite は複製同士の byte 一致を
+# 見張っていた（複製は「片方だけ訂正される」形で必ずドリフトする。実際に multi-review
+# だけが訂正され、残るスキルには「`agents:` を書き換えると挙動が変わる」と誤読させる
+# 旧文が残った）。Issue #1023 で複製そのものを畳み、正本を
+# docs-template/05-operations/deployment/multi-cli-agent-orchestration.md の
+# 「実際に読まれるキー」節へ移して 4 スキルは参照だけを持つ形にした。
+# 複製が無くなったので、複製間の一致検査（byte 比較・各ファイルからの bullet 抽出）と
+# 「ピンに載っていない複製が増えたら赤」の名簿管理は消えている。
 #
-# 検査は 4 層:
-#   1) 4 ファイルの bullet が byte 単位で一致すること（ドリフト検出）
-#   2) その文が「実際に読まれるキー」を正しく述べていること（anchor 検査）。
-#      一致検査だけだと「全ファイルまとめて旧文へ戻す」変更が緑になるため
-#   3) 説明の主張と multi-agent.sh の実装が連動していること（yq 読み取り式に、
-#      読まれると主張するキーが実在し、読まれないと主張する agents / fallback
-#      が現れないこと）。実装だけが変わって説明が嘘になる退行を捕まえる
-#   4) ピン外複製の横断スキャン（skills/*/SKILL.md 全体から同じ説明文の複製を
-#      探し、検査対象に居ない複製が増えたら赤にする）。bullet 形式でない複製も
-#      「設定のカスタマイズ:」の部分文字列で捕まえる
+# 残す主張は 3 つ:
+#   1) 正本節が存在し、「実際に読まれるキー」を正しく述べていること（anchor 検査）。
+#      正本が 1 箇所になっても「正本が黙って旧文へ戻る」経路は残るため
+#   2) その主張と multi-agent.sh の実装が連動していること（doc↔code）。実装だけが
+#      変わって説明が嘘になる退行を捕まえる。doc↔doc の一致検査では原理的に
+#      「全員で同じ嘘をつく」状態を検出できないので、こちらが本命
+#   3) 消費側 4 スキルが正本への参照を 1 行持ち、説明を複製し直していないこと。
+#      参照が消えれば規定は読者へ届かず、複製が復活すればドリフトが戻る
+#      （先例: long-task-commit-contract の「正本節 ↔ 消費側参照」）
 #
 # anchor 検査自体の検出力は 2 種の陰性サンプルで毎回確かめてから本検査へ進む
 # （検出器の空振り対策）:
 #   - 訂正前の旧文: 全 anchor が**個別に**欠けること（anchor 1 本だけの弱体化も検出）
 #   - 列挙漏れのあった旧訂正文: 検査全体が赤くなること
 # 正常系（実ファイルが緑になること）も本検査そのものとして常に走る。
+#
+# 正本節の抽出は fail-closed: 見出しは完全一致で開き、2 度現れたら中断、次の見出しへ
+# 到達しないまま EOF へ抜けたら中断する（review-freeze-contract / ACE-810-1 と同じ理由 —
+# 節が隣の段まで広がったまま緑になるのを防ぐ）。
 #
 # 実 CLI・ネットワークを使わない読み取り専用の静的検査。行の抽出・照合は
 # 外部コマンドに依らず bash の文字列比較だけで行う。
@@ -39,18 +42,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
+SSOT_DOC="$PLUGIN_ROOT/docs-template/05-operations/deployment/multi-cli-agent-orchestration.md"
 
 SKILLS=(multi-review multi-explore multi-implement setup-ai-config)
 MARKER='- 設定のカスタマイズ:'
-# ピン外スキャン用（bullet 前置なし。段落形式の複製もこれで捕まえる）
-PHRASE='設定のカスタマイズ:'
+# 消費側が持つべき正本へのリンク（アンカーは SSOT_HEADING から導かれる）
+SSOT_HEADING='### 実際に読まれるキー'
+SSOT_LINK='../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#実際に読まれるキー'
 
 PASS=0
 FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
-echo "== agent-config.yaml 説明文の ${#SKILLS[@]} スキル同期 =="
+echo "== agent-config.yaml 説明文の単一正本 =="
 
 # ---- anchor 検査: 説明が述べるべき内容（実際に読まれるキーと読まれないキー）----
 ANCHORS=(
@@ -60,6 +65,9 @@ ANCHORS=(
   '`scripts/multi-agent.sh` の `get_cli_*` 関数'
   '読み取りは `yq` 依存'
 )
+# 複製検出の needle。正本本文にしか現れない一文を使う（消費側の参照行は
+# 「どのキーが実際に読まれるか」という別表現なので当たらない）
+DUP_NEEDLE="${ANCHORS[0]}"
 
 # 引数のテキストが全 anchor を含めば 0。欠けていれば MISSING_ANCHORS に列挙して 1
 check_anchors() {
@@ -103,64 +111,56 @@ if [ "$SELFTEST_FAIL" -ne 0 ]; then
   exit 1
 fi
 
-# ---- 各 SKILL.md から bullet を抽出（各ファイルにちょうど 1 行あること）----
-BULLETS=()
-EXTRACT_FAIL=0
-for skill in "${SKILLS[@]}"; do
-  file="$PLUGIN_ROOT/skills/$skill/SKILL.md"
-  if [ ! -f "$file" ]; then
-    bad "$skill/SKILL.md が見つからない: $file"
-    EXTRACT_FAIL=1
-    continue
-  fi
-  if [ ! -r "$file" ]; then
-    bad "$skill/SKILL.md を読み取れない（権限を確認してください）: $file"
-    EXTRACT_FAIL=1
-    continue
-  fi
-  count=0
-  found=""
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      "$MARKER"*) count=$((count + 1)); found="$line" ;;
-    esac
-  done < "$file"
-  if [ "$count" -eq 1 ]; then
-    ok "$skill/SKILL.md に「設定のカスタマイズ」bullet がちょうど 1 行ある"
-    BULLETS+=("$found")
-  elif [ "$count" -eq 0 ]; then
-    bad "$skill/SKILL.md に「設定のカスタマイズ」bullet が無い（説明ごと消えた、行頭の文言が変わった、または 1 物理行でなくなった — 本検査は bullet が 1 物理行である前提）"
-    EXTRACT_FAIL=1
-  else
-    bad "$skill/SKILL.md に「設定のカスタマイズ」bullet が ${count} 行ある（1 行のみを想定。byte 比較が多義になる）"
-    EXTRACT_FAIL=1
-  fi
-done
-
-if [ "$EXTRACT_FAIL" -ne 0 ]; then
-  echo "  検査済み ${PASS} 件 / 失敗 ${FAIL} 件"
-  echo "✗ 抽出に失敗したため一致・内容検査へ進めません" >&2
+# ---- 1) 正本節の抽出（fail-closed）----
+if [ ! -r "$SSOT_DOC" ]; then
+  bad "正本文書を読み取れない: $SSOT_DOC"
+  echo "✗ 正本を読めないため以降の検査へ進めません" >&2
   exit 1
 fi
 
-# ---- 1) 全ファイルの bullet が byte 単位で一致 ----
-REF="${BULLETS[0]}"
-DRIFT=0
-for ((i = 1; i < ${#BULLETS[@]}; i++)); do
-  if [ "${BULLETS[$i]}" != "$REF" ]; then
-    bad "${SKILLS[$i]}/SKILL.md の bullet が ${SKILLS[0]} と一致しない（複製がドリフトしている）"
-    DRIFT=1
+SSOT_TEXT=""
+SSOT_OPENED=0
+SSOT_CLOSED=0
+SSOT_REOPENED=0
+IN_SECTION=0
+while IFS= read -r line || [ -n "$line" ]; do
+  if [ "$line" = "$SSOT_HEADING" ]; then
+    if [ "$SSOT_OPENED" -eq 1 ]; then
+      SSOT_REOPENED=1
+    fi
+    SSOT_OPENED=1
+    IN_SECTION=1
+    continue
   fi
-done
-if [ "$DRIFT" -eq 0 ]; then
-  ok "${#SKILLS[@]} スキルの bullet が byte 単位で一致する"
+  if [ "$IN_SECTION" -eq 1 ]; then
+    case "$line" in
+      '## '*|'### '*) IN_SECTION=0; SSOT_CLOSED=1; continue ;;
+    esac
+    SSOT_TEXT="${SSOT_TEXT}${line}"$'\n'
+  fi
+done < "$SSOT_DOC"
+
+if [ "$SSOT_OPENED" -ne 1 ]; then
+  bad "正本節が見つからない（見出しは完全一致で探します）: ${SSOT_HEADING} — ${SSOT_DOC}"
+elif [ "$SSOT_REOPENED" -eq 1 ]; then
+  bad "正本の見出しが 2 度以上現れる（節の切り出しが多義になる）: ${SSOT_HEADING}"
+elif [ "$SSOT_CLOSED" -ne 1 ]; then
+  bad "正本節が次の見出しへ到達せず EOF まで広がっている（節スコープが壊れています）: ${SSOT_HEADING}"
+else
+  ok "正本節「${SSOT_HEADING}」を ${SSOT_DOC##*/} から切り出せる"
 fi
 
-# ---- 2) 共通の bullet が実際の挙動を正しく述べている（anchor 検査）----
-if check_anchors "$REF"; then
-  ok "bullet が実際に読まれるキー（version / mode / parallel / review.main / review.sub / review.critical_nonblock_perspectives / tasks.*）と読まれないキー（agents / fallback）を正しく述べている"
+if [ "$SSOT_OPENED" -ne 1 ] || [ "$SSOT_REOPENED" -eq 1 ] || [ "$SSOT_CLOSED" -ne 1 ]; then
+  echo "  検査済み ${PASS} 件 / 失敗 ${FAIL} 件"
+  echo "✗ 正本節を切り出せないため内容検査へ進めません" >&2
+  exit 1
+fi
+
+# ---- 2) 正本が実際の挙動を正しく述べている（anchor 検査）----
+if check_anchors "$SSOT_TEXT"; then
+  ok "正本節が実際に読まれるキー（version / mode / parallel / review.main / review.sub / review.critical_nonblock_perspectives / tasks.*）と読まれないキー（agents / fallback）を正しく述べている"
 else
-  bad "bullet に述べるべき内容が欠けている（bullet は 1 物理行である前提 — 折り返した場合も欠落扱いになる）:"
+  bad "正本節に述べるべき内容が欠けている（説明は 1 物理行である前提 — 折り返した場合も欠落扱いになる）:"
   for a in "${MISSING_ANCHORS[@]}"; do
     echo "    | 欠落 anchor: $a" >&2
   done
@@ -200,7 +200,7 @@ else
   LINK_FAIL=0
   for pat in "${REQUIRED_READS[@]}"; do
     if [[ "$YQ_LINES" != *"$pat"* ]]; then
-      bad "説明が「読まれる」と主張するキーの yq 読み取り式が multi-agent.sh に見当たらない: ${pat}（実装が変わったなら 4 スキルの説明と本検査を同時に更新すること）"
+      bad "説明が「読まれる」と主張するキーの yq 読み取り式が multi-agent.sh に見当たらない: ${pat}（実装が変わったなら正本節と本検査を同時に更新すること）"
       LINK_FAIL=1
     fi
   done
@@ -211,7 +211,7 @@ else
   FORBIDDEN_FAIL=0
   for pat in '.agents' '.fallback'; do
     if [[ "$YQ_LINES" == *"$pat"* ]]; then
-      bad "multi-agent.sh の yq 行に $pat への参照がある — 説明の「agents: と fallback: は読まれない」が嘘になる。実装を変えたなら 4 スキルの説明と本検査を同時に更新すること"
+      bad "multi-agent.sh の yq 行に $pat への参照がある — 説明の「agents: と fallback: は読まれない」が嘘になる。実装を変えたなら正本節と本検査を同時に更新すること"
       FORBIDDEN_FAIL=1
     fi
   done
@@ -220,50 +220,72 @@ else
   fi
 fi
 
-# ---- 4) ピン外複製の横断スキャン ----
-# skills/*/SKILL.md 全体から「設定のカスタマイズ:」を含むファイルを探し、
-# 検査対象（SKILLS）に居ない複製を赤にする。旧文が段落形式（bullet 前置なし）で
-# 複製されて MARKER をすり抜けた実例があるため、部分文字列で探す。
-# ピン済みファイルのヒット数がピン数と一致することも要求する — この一致が
-# スキャン自体の検出力の証明になる（部分文字列判定が壊れればヒット 0 で赤くなる）
-PINNED_HITS=0
-UNPINNED_FILES=""
-for f in "$PLUGIN_ROOT"/skills/*/SKILL.md; do
-  [ -f "$f" ] || continue
-  has_phrase=0
+# ---- 4) 消費側 4 スキルが正本を参照している（複製ではなく参照）----
+REF_FAIL=0
+for skill in "${SKILLS[@]}"; do
+  file="$PLUGIN_ROOT/skills/$skill/SKILL.md"
+  if [ ! -r "$file" ]; then
+    bad "$skill/SKILL.md を読み取れない: $file"
+    REF_FAIL=1
+    continue
+  fi
+  count=0
+  linked=0
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
-      *"$PHRASE"*) has_phrase=1; break ;;
+      "$MARKER"*)
+        count=$((count + 1))
+        # Markdown リンクの閉じ括弧まで含めて照合する（部分一致だと
+        # `#実際に読まれるキー-broken` のような存在しないアンカーへ差し替えられても
+        # 「$SSOT_LINK を含む」で緑になってしまう）。
+        case "$line" in
+          *"]($SSOT_LINK)"*) linked=1 ;;
+        esac
+        ;;
     esac
-  done < "$f"
-  [ "$has_phrase" -eq 1 ] || continue
-  base="$(basename "$(dirname "$f")")"
-  pinned=0
-  for skill in "${SKILLS[@]}"; do
-    [ "$base" = "$skill" ] && { pinned=1; break; }
-  done
-  if [ "$pinned" -eq 1 ]; then
-    PINNED_HITS=$((PINNED_HITS + 1))
-  else
-    UNPINNED_FILES="${UNPINNED_FILES}    | $f"$'\n'
+  done < "$file"
+  if [ "$count" -ne 1 ]; then
+    bad "$skill/SKILL.md の「設定のカスタマイズ」行が ${count} 行（1 行のみを想定 — 参照ごと消えた、行頭の文言が変わった、または 1 物理行でなくなった）"
+    REF_FAIL=1
+  elif [ "$linked" -ne 1 ]; then
+    bad "$skill/SKILL.md の「設定のカスタマイズ」行が正本を参照していない（期待するリンク: ${SSOT_LINK}）"
+    REF_FAIL=1
   fi
 done
-
-if [ -n "$UNPINNED_FILES" ]; then
-  bad "検査対象外のスキルに「設定のカスタマイズ」の複製がある — SKILLS へ追加して同一文へ揃えるか、複製をやめて対象スキルへの参照にすること:"
-  printf '%s' "$UNPINNED_FILES" >&2
+if [ "$REF_FAIL" -eq 0 ]; then
+  ok "消費側 ${#SKILLS[@]} スキルが正本への参照行をちょうど 1 行ずつ持つ"
 fi
-if [ "$PINNED_HITS" -ne "${#SKILLS[@]}" ]; then
-  bad "ピン済みファイルのスキャンヒット数が ${PINNED_HITS}（期待 ${#SKILLS[@]}）— 横断スキャン自体が壊れている可能性"
-elif [ -z "$UNPINNED_FILES" ]; then
-  ok "skills/*/SKILL.md 全体で「設定のカスタマイズ」の複製は検査対象の ${#SKILLS[@]} ファイルだけ"
+
+# ---- 5) 説明の複製が復活していない ----
+# 正本本文にしか現れない一文を skills/*/SKILL.md 全体から探す。1 件でも見つかれば
+# 説明が再び複製された（= ドリフトの土台が戻った）ということなので赤にする。
+# 照合前に改行・タブ・連続空白を単一空白へ正規化する（needle 側・ファイル側の両方）。
+# 行単位の生テキスト一致だと、正本の一文を改行で折り返して再複製されても
+# 1 行としては一致せず「複製が無い」と緑になってしまう。
+normalize_ws() {
+  printf '%s' "$1" | tr '\n\t' '  ' | tr -s ' '
+}
+DUP_NEEDLE_NORM="$(normalize_ws "$DUP_NEEDLE")"
+DUP_FILES=""
+for f in "$PLUGIN_ROOT"/skills/*/SKILL.md; do
+  [ -f "$f" ] || continue
+  FILE_NORM="$(normalize_ws "$(cat "$f")")"
+  case "$FILE_NORM" in
+    *"$DUP_NEEDLE_NORM"*) DUP_FILES="${DUP_FILES}    | $f"$'\n' ;;
+  esac
+done
+if [ -n "$DUP_FILES" ]; then
+  bad "正本の説明文が SKILL.md へ複製されている — 参照だけを残して本文は正本へ寄せること:"
+  printf '%s' "$DUP_FILES" >&2
+else
+  ok "skills/*/SKILL.md に正本説明文の複製が無い"
 fi
 
 echo
 echo "検査済み ${PASS} 件 / 失敗 ${FAIL} 件"
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ agent-config-doc-sync: 失敗があります" >&2
-  echo "  訂正の正本は skills/multi-review/SKILL.md の bullet。${#SKILLS[@]} ファイルへ同一文を複製してください" >&2
+  echo "  説明の正本は ${SSOT_DOC} の「${SSOT_HEADING}」節。スキル側は参照だけを持ちます" >&2
   exit 1
 fi
 echo "✓ agent-config-doc-sync: すべて通過"

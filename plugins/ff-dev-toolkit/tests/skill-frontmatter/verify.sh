@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Skill frontmatter と単一正本のポリシー検査（Issue #141 / #145 / ACE-147-1）。
+# Skill frontmatter と単一正本のポリシー検査（Issue #141 / #145 / #996 / ACE-147-1）。
 #
 # `disable-model-invocation: true` はモデルからの呼び出しを塞ぐ。
 # しかし実体を同梱スクリプトへ抽出した skill（SKILL.md が
@@ -10,46 +10,70 @@
 # `05-operations/deployment/workflow-principles.md` はフルオート運用のチェーンに
 # `/merge-cleanup` を置いており、フラグは必須ステップの可用性だけを削る。
 #
-# 本 suite は全 skill が Agent Skills 標準の構造・name を持ち、frontmatter に
-# 同フラグ（`false` 以外の値）が無いことを fail-closed で検証する。真に任意の skill
-# （人間が発火タイミングを決めるべき
-# もの）で必要になった場合は下の ALLOWLIST へ理由付きで追加する。黙って付けるのを
-# 防ぐのが目的で、禁止そのものが目的ではない。
+# 本 suite は **リポジトリ全プラグイン**の全 skill が Agent Skills 標準の
+# frontmatter 構造（name = ディレクトリ名、description の存在と安全性、標準外キー
+# の不在、disable-model-invocation の既定 false）を持つことを fail-closed で検証する
+# （Issue #996。旧版は `plugins/ff-dev-toolkit/skills/` のみを走査しており、他 8
+# プラグイン・108 スキルが無検査だった）。
 #
-# 一時ディレクトリも jq も要らない純粋なファイル検査なので、書き込み不可の環境でも
-# 完走する。`run-all.sh` では最も安価な本 suite を先頭に置く（Issue #146 でランナーは
+# description に未クォートの「: 」（コロン+半角スペース）を含めると frontmatter が
+# 実行時に全欠落する事故クラスも同じ理由で全プラグイン対象にする（ACE-57-1。
+# story-spine-abt の実例で `claude plugin validate` が検出したが、本 suite にはこの
+# 検査自体が無く、grep 系の機械照合をすり抜けていた）。
+#
+# 一方、次の 4 検査は ff-dev-toolkit 固有のアーキテクチャ判断（他ホスト（Codex CLI 等）
+# からもスクリプト実体を直接叩ける形にする移植性方針、Issue #141 の
+# commands/*.md → skills/*/SKILL.md 単一正本移行）に紐づくポリシーであり、
+# 他プラグイン（純粋なコンテンツ・スキルパック）には適用しない。適用すると
+# frontmatter とは無関係な本文の書き換えを強制することになる（scope 外）:
+#   - Issue #141 移行対象 14 skill の欠落検査（MIGRATED_SKILLS）
+#   - legacy `commands/*.md` の再追加検査
+#   - バージョン固定 cache パスの検査
+#   - AskUserQuestion 等ホスト固有ツール名の必須手順使用検査
+# これら 4 検査は ${PLUGIN_ROOT}（ff-dev-toolkit）のスキルにのみ適用する。
+#
+# 一時ディレクトリも jq 以外の外部コマンドも要らない純粋なファイル検査なので、
+# 書き込み不可の環境でも完走する（marketplace.json の名簿照合にのみ jq を使う）。
+# `run-all.sh` では最も安価な本 suite を先頭に置く（Issue #146 でランナーは
 # 全 suite を実行する集約方式になったので、並び順は報告の読みやすさの問題）。
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SKILLS_DIR="$PLUGIN_ROOT/skills"
+REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
+PLUGINS_DIR="$REPO_ROOT/plugins"
+MARKET="$REPO_ROOT/.claude-plugin/marketplace.json"
+FF_SKILLS_DIR="$PLUGIN_ROOT/skills"
 
-[ -d "$SKILLS_DIR" ] || { echo "✗ skills ディレクトリが見つかりません: $SKILLS_DIR" >&2; exit 1; }
+[ -d "$PLUGINS_DIR" ] || { echo "✗ plugins ディレクトリが見つかりません: $PLUGINS_DIR" >&2; exit 1; }
+[ -d "$FF_SKILLS_DIR" ] || { echo "✗ ff-dev-toolkit の skills ディレクトリが見つかりません: $FF_SKILLS_DIR" >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "✗ jq is required" >&2; exit 1; }
+[ -f "$MARKET" ] || { echo "✗ marketplace.json が見つかりません: $MARKET" >&2; exit 1; }
 
 # Issue #141 で移行した14手順。将来 skill が増えてもよいが、この14件の欠落は
-# Codex 対応範囲の後退なので fail-closed で拒否する。
+# Codex 対応範囲の後退なので fail-closed で拒否する（ff-dev-toolkit 固有）。
 MIGRATED_SKILLS=(
   ace-curate ace-setup assess-impact close-issue create-issue init-docs
   merge-cleanup multi-explore multi-implement multi-review pre-commit-check
   refine-issue setup-ai-config validate-docs
 )
 for migrated in "${MIGRATED_SKILLS[@]}"; do
-  [ -s "$SKILLS_DIR/$migrated/SKILL.md" ] || {
+  [ -s "$FF_SKILLS_DIR/$migrated/SKILL.md" ] || {
     echo "✗ Issue #141 の移行対象 skill が見つからないか空です: $migrated" >&2
     exit 1
   }
 done
 
 # Issue #141 で commands/*.md は同名 skills/*/SKILL.md へ正本移行した。
-# legacy command を再追加すると Codex から見えない第2正本が復活するため拒否する。
+# legacy command を再追加すると Codex から見えない第2正本が復活するため拒否する
+# （ff-dev-toolkit 固有）。
 if [ -d "$PLUGIN_ROOT/commands" ] && find "$PLUGIN_ROOT/commands" -type f -name '*.md' -print -quit | grep . >/dev/null; then
   echo "✗ legacy commands/*.md が残っています。skills/<name>/SKILL.md を単一正本にしてください" >&2
   exit 1
 fi
 
-# `disable-model-invocation` を意図的に許容する skill 名。
+# `disable-model-invocation` を意図的に許容する skill 名（"<plugin>/<skill>" 形式）。
 # 追加するときは必ず理由をコメントで残す（例: 人間が発火タイミングを決めるべき
 # 対話専用コマンドで、ワークフロー正本が自動実行を要求していない）。
 ALLOWLIST=()
@@ -73,19 +97,83 @@ extract_frontmatter() {
   awk '{ sub(/\r$/, "") } /^---$/{ n++; next } n==1{ print } n==2{ exit }' "$1"
 }
 
-echo "== Skill frontmatter・単一正本ポリシー検査 =="
+echo "== Skill frontmatter・単一正本ポリシー検査（全プラグイン） =="
 
 shopt -s nullglob
-SKILL_FILES=("$SKILLS_DIR"/*/SKILL.md)
+SKILL_FILES=("$PLUGINS_DIR"/*/skills/*/SKILL.md)
 shopt -u nullglob
 
 if [ "${#SKILL_FILES[@]}" -eq 0 ]; then
-  echo "✗ skills/*/SKILL.md が 1 件も見つかりません（検査対象ゼロは異常）" >&2
+  echo "✗ plugins/*/skills/*/SKILL.md が 1 件も見つかりません（検査対象ゼロは異常）" >&2
   exit 1
 fi
 
+# 走査対象の下限ガード（固定リテラルではなく marketplace.json の名簿と、実際に
+# $SKILL_FILES へ寄与したプラグイン名の集合から導出）。
+# marketplace.json に載る各プラグインのうち skills/ を持つものは、$SKILL_FILES に
+# 1 件以上寄与していることを要求する。再 glob ではなく $SKILL_FILES の中身そのもの
+# から集合を作るので、走査パスが誤って特定プラグイン（過去実績: ff-dev-toolkit
+# のみ）へ縮んだ場合も確実に検出できる（fail-closed）。
+MARKET_PLUGIN_NAMES="$(jq -r '.plugins[].name' "$MARKET")"
+if [ -z "$MARKET_PLUGIN_NAMES" ]; then
+  echo "✗ marketplace.json の plugins[] が空です: $MARKET" >&2
+  exit 1
+fi
+
+# skills/ を持たないプラグインの明示除外リスト（"理由" 付きで追加する）。
+# 現状は marketplace.json 掲載の全 9 プラグインが skills/ を持つため空。
+NO_SKILLS_PLUGINS=()
+
+# $SKILL_FILES から実際に走査されたプラグイン名の集合を作る（bash 3.2 に連想配列が
+# 無いため、改行区切り文字列 + case 前方一致で「含まれるか」を照合する）。
+SCANNED_PLUGIN_NAMES=""
 for file in "${SKILL_FILES[@]}"; do
-  name="$(basename "$(dirname "$file")")"
+  scanned_plugin="$(basename "$(dirname "$(dirname "$(dirname "$file")")")")"
+  case $'\n'"$SCANNED_PLUGIN_NAMES"$'\n' in
+    *$'\n'"$scanned_plugin"$'\n'*) ;;
+    *) SCANNED_PLUGIN_NAMES="${SCANNED_PLUGIN_NAMES}${SCANNED_PLUGIN_NAMES:+$'\n'}${scanned_plugin}" ;;
+  esac
+done
+
+while IFS= read -r plugin_name; do
+  [ -n "$plugin_name" ] || continue
+
+  is_excluded=0
+  for excluded in ${NO_SKILLS_PLUGINS[@]+"${NO_SKILLS_PLUGINS[@]}"}; do
+    if [ "$excluded" = "$plugin_name" ]; then
+      is_excluded=1
+      break
+    fi
+  done
+  if [ "$is_excluded" -eq 1 ]; then
+    echo "  ○ ${plugin_name}: NO_SKILLS_PLUGINS により skills/ 不在を許容"
+    continue
+  fi
+
+  plugin_skills_dir="$PLUGINS_DIR/$plugin_name/skills"
+  if [ ! -d "$plugin_skills_dir" ]; then
+    echo "✗ ${plugin_name}: marketplace.json に掲載されていますが skills/ がありません（skills/ を持たないなら理由付きで NO_SKILLS_PLUGINS へ追加してください）" >&2
+    exit 1
+  fi
+
+  case $'\n'"$SCANNED_PLUGIN_NAMES"$'\n' in
+    *$'\n'"$plugin_name"$'\n'*) ;;
+    *)
+      echo "✗ ${plugin_name}: skills/ はあるのに走査対象（変数 SKILL_FILES）に含まれていません（走査範囲が縮んでいる可能性）" >&2
+      exit 1
+      ;;
+  esac
+done <<< "$MARKET_PLUGIN_NAMES"
+echo "  ○ marketplace.json の全プラグインが走査対象に 1 件以上寄与（下限ガード）"
+
+for file in "${SKILL_FILES[@]}"; do
+  skill_dir_name="$(basename "$(dirname "$file")")"
+  plugin_name="$(basename "$(dirname "$(dirname "$(dirname "$file")")")")"
+  name="${plugin_name}/${skill_dir_name}"
+  case "$file" in
+    "$PLUGIN_ROOT"/*) is_ff_dev_toolkit=1 ;;
+    *) is_ff_dev_toolkit=0 ;;
+  esac
 
   # 先頭行が正確に `---` であることを要求する。BOM 付き・先頭空行・別形式のときは
   # frontmatter を特定できないので、黙って pass させず loud に落とす
@@ -113,7 +201,8 @@ for file in "${SKILL_FILES[@]}"; do
     bad "$name — frontmatter が空です（抽出範囲を特定できていない可能性）"
     continue
   fi
-  if ! printf '%s\n' "$frontmatter" | grep -Eq '^[[:space:]]*description:'; then
+  description_line="$(printf '%s\n' "$frontmatter" | grep -E '^[[:space:]]*description:' | head -n 1 || true)"
+  if [ -z "$description_line" ]; then
     bad "$name — frontmatter に description: がありません（抽出範囲が誤っている可能性）"
     continue
   fi
@@ -122,10 +211,25 @@ for file in "${SKILL_FILES[@]}"; do
     continue
   fi
   declared_name="$(printf '%s' "$declared_name" | tr -d "\"'[:space:]")"
-  if [ "$declared_name" != "$name" ]; then
+  if [ "$declared_name" != "$skill_dir_name" ]; then
     bad "$name — frontmatter name がディレクトリ名と一致しません: $(printf '%q' "$declared_name")"
     continue
   fi
+
+  # description の値が未クォートで「: 」（コロン+半角スペース）を含むと、YAML
+  # frontmatter の解析が壊れて name/description ごと実行時に全欠落する（ACE-57-1）。
+  # ダブル/シングルクォートで囲われた値はエスケープされるため対象外にする。
+  description_value="$(printf '%s' "$description_line" | sed -E 's/^[[:space:]]*description:[[:space:]]*//')"
+  first_char="${description_value:0:1}"
+  if [ "$first_char" != '"' ] && [ "$first_char" != "'" ]; then
+    case "$description_value" in
+      *": "*)
+        bad "$name — description の値が未クォートで「: 」(コロン+半角スペース) を含みます（frontmatter 全欠落の実害。ACE-57-1）"
+        continue
+        ;;
+    esac
+  fi
+
   unsupported_keys="$(printf '%s\n' "$frontmatter" | awk -F: '
     /^[A-Za-z0-9_-]+:/ {
       key=$1
@@ -137,13 +241,18 @@ for file in "${SKILL_FILES[@]}"; do
     bad "$name — Agent Skills 標準外の frontmatter key があります: $(printf '%s' "$unsupported_keys" | paste -sd, -)"
     continue
   fi
-  if grep -Eq '(/cache/|plugins/cache)[^`[:space:]]*/[0-9]+\.[0-9]+' "$file"; then
-    bad "$name — バージョン固定 cache パスが含まれています"
-    continue
-  fi
-  if grep -Eq 'AskUserQuestion|`(Task|Write|Edit)` ツール' "$file"; then
-    bad "$name — 特定ホスト固有のツール名を必須手順に使用しています"
-    continue
+
+  # 以下 2 検査は ff-dev-toolkit 固有の移植性ポリシー（ヘッダー参照）。他プラグインは
+  # 対象外（frontmatter とは無関係な本文の書き換えを強制しないため）。
+  if [ "$is_ff_dev_toolkit" -eq 1 ]; then
+    if grep -Eq '(/cache/|plugins/cache)[^`[:space:]]*/[0-9]+\.[0-9]+' "$file"; then
+      bad "$name — バージョン固定 cache パスが含まれています"
+      continue
+    fi
+    if grep -Eq 'AskUserQuestion|`(Task|Write|Edit)` ツール' "$file"; then
+      bad "$name — 特定ホスト固有のツール名を必須手順に使用しています"
+      continue
+    fi
   fi
 
   # フラグ行を集める。grep の終了コード 1（不一致）は正常、2 以上は検査自体の失敗。

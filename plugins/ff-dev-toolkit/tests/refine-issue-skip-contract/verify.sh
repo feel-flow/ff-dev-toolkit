@@ -29,6 +29,15 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 SKILL="$PLUGIN_ROOT/skills/refine-issue/SKILL.md"
 
+# 手順 5 / 6 / 9 の 3 箇所は「その節に在ること」自体が要件なので、文書全体 grep では
+# なく節スコープで照合する（Issue #812）。判断基準は tests/lib/section-scope.sh。
+# shellcheck source=../lib/section-scope.sh
+. "$SCRIPT_DIR/../lib/section-scope.sh"
+
+STEP5_HEADING='### 5. コードベース探索'
+STEP6_HEADING='### 6. 階層化判定'
+STEP9_HEADING='### 9. 完了報告'
+
 PASS=0
 FAIL=0
 
@@ -42,12 +51,12 @@ bad() {
   FAIL=$((FAIL + 1))
 }
 
-contains() {
-  local file="$1" needle="$2" label="$3"
-  if grep -qF -- "$needle" "$file"; then
+section_contains() {
+  local file="$1" heading="$2" needle="$3" label="$4" reason
+  if reason="$(section_scope_contains "$file" "$heading" "$needle")"; then
     ok "$label"
   else
-    bad "${label}（不足: ${needle}）"
+    bad "${label} — ${reason}"
   fi
 }
 
@@ -86,16 +95,16 @@ echo "-- 手順 5: skip 条件 --"
 
 # 連結詞「かつ」を条件文そのものの中で固定する。ここが緩いと、両条件を並べて
 # 書いただけで OR 解釈が復活する書き換えが素通りする。
-contains "$SKILL" \
+section_contains "$SKILL" "$STEP5_HEADING" \
   '**手順 4 の 6 観点違反が 0 件 かつ 手順 5 の SubAgent 探索論点が 0 件**' \
   "skip 条件が 2 ステップの AND として書かれている"
-contains "$SKILL" \
+section_contains "$SKILL" "$STEP5_HEADING" \
   'どちらか一方でも 1 件以上あれば skip せず手順 6 へ進みます' \
   "片方が非 0 のときは skip しないと明記している"
-contains "$SKILL" \
+section_contains "$SKILL" "$STEP5_HEADING" \
   'SubAgent 論点が 0 件でも手順 4 で検出済みの 6 観点違反は握りつぶさず、階層化判定・反映まで必ず届けます' \
   "GWT 1（6 観点違反あり × SubAgent 論点 0 件）の帰結を明記している"
-contains "$SKILL" \
+section_contains "$SKILL" "$STEP5_HEADING" \
   '上流ゲートの検出結果が後段へ届かず落ちる' \
   "AND にする理由（上流ゲートの取りこぼし）が残っている"
 
@@ -108,13 +117,13 @@ lacks "$SKILL" \
 echo
 echo "-- 手順 6: 入口宣言 --"
 
-contains "$SKILL" \
+section_contains "$SKILL" "$STEP6_HEADING" \
   '**6 観点違反と SubAgent 論点のいずれかが 1 件以上**あれば入ります' \
   "階層化判定の入口条件が OR（いずれか 1 件以上）として書かれている"
-contains "$SKILL" \
+section_contains "$SKILL" "$STEP6_HEADING" \
   'SubAgent 論点 0 件でも、6 観点違反が 1 件以上あれば入る' \
   "SubAgent 論点 0 件でも入る経路を名指ししている"
-contains "$SKILL" \
+section_contains "$SKILL" "$STEP6_HEADING" \
   '6 観点違反 + SubAgent 発見の論点を統合' \
   "統合対象が 2 系統であることが残っている（skip 条件との整合の根拠）"
 
@@ -122,14 +131,14 @@ contains "$SKILL" \
 echo
 echo "-- 手順 9: skip 時の報告テンプレート --"
 
-contains "$SKILL" \
+section_contains "$SKILL" "$STEP9_HEADING" \
   '6 観点違反 0 件かつ SubAgent 論点 0 件の場合（手順 5 で skip 済み）' \
   "skip 済み報告の見出しが skip 条件と同じ 2 条件を述べている"
 lacks_line "$SKILL" \
   '論点 0 件の場合（手順 5 で skip 済み）:' \
   "旧見出し（SubAgent 論点だけを条件にした表現）が残っていない"
 # GWT 2 の出力（従来どおり完了報告へ直行する）が消えていないこと
-contains "$SKILL" \
+section_contains "$SKILL" "$STEP9_HEADING" \
   '/refine-issue 完了 (Issue #<num>) — refine の必要なし' \
   "両方 0 件のときの完了報告テンプレートが残っている"
 

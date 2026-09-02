@@ -2,8 +2,9 @@
 #
 # ff-dev-toolkit 更新通知フック（SessionStart、Issue #165）。
 #
-# インストール済み plugin.json の version と、公開リポジトリ
-# https://github.com/feel-flow/ff-dev-toolkit の最新 SemVer タグを比較し、
+# インストール済み plugin.json の version と、配布リポジトリ（Private。HTTPS の
+# 認証ヘルパーが前提 — ADR-049）https://github.com/feel-flow/ff-dev-toolkit の
+# 最新 SemVer タグを比較し、
 # 新版があるときだけ通知 JSON を stdout に出力する。最新版なら完全に無出力。
 # 同じ (現在版, 最新版) の組み合わせについては TTL 内で一度だけ通知する（notified
 # ファイルに記録し、compact 等で SessionStart が再発火しても同じ通知を context へ
@@ -26,7 +27,7 @@
 #     TTL が効かず毎セッション timeout 秒を払う」逆転を防ぐ。代償として、取得中に
 #     プロセスが死んだ場合も次の 1h は再試行しない（意図した取引）。
 #   - ハング対策: GIT_TERMINAL_PROMPT=0 + GIT_ASKPASS 無効化 + BatchMode で
-#     認証プロンプト待ちを封じる（tests/changelog-links で確立した対策と同じ）。
+#     認証プロンプト待ちを封じる（tests/changelog-public-tags で確立した対策と同じ）。
 #     ls-remote 自体が長引く場合は hooks.json の timeout がフックごと打ち切る。
 #   - 互換性: bash 3.2（stock macOS）互換。jq / timeout(1) / sort -V に依存しない。
 #   - 出力の安全: タグ・キャッシュから得た version 文字列は、経路を問わず
@@ -173,8 +174,9 @@ if [ -z "$latest" ]; then
   # kill されても fail が残り、次セッションは 1h スキップされる
   write_cache fail -
 
-  # 認証プロンプト封じ: 対象は public リポジトリなので、認証を求められる状況は
-  # すべて異常系。プロンプトで固まるくらいなら即失敗させる。
+  # 認証プロンプト封じ: 対象は Private リポジトリで、HTTPS の認証ヘルパーが無い
+  # 環境では認証を求められる（ADR-049）。プロンプトで固まるくらいなら即失敗させ、
+  # 無音で抜ける（fail マーカーは上で書いてあるので TTL 内は再試行しない）。
   tags="$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/bin/false \
     GIT_SSH_COMMAND='ssh -oBatchMode=yes' \
     git ls-remote --tags "$repo_url" 2>/dev/null)" || tags=""

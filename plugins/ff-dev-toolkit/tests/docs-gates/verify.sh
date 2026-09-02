@@ -237,6 +237,7 @@ fi
 if grep -qF 'ff-dev-toolkitのhandoffを再構成してください' "$ROOT_PREREQUISITE_DOC" \
   && grep -qF 'ff_require_toolkit_root()' "$ROOT_PREREQUISITE_DOC" \
   && grep -qF 'for resource in setup-multi-agent.sh multi-agent.sh multi-review.sh check-closing-keywords.sh' "$ROOT_PREREQUISITE_DOC" \
+  && grep -qF 'check-merge-freshness.sh update-version-claim.sh check-version-claims.sh; do' "$ROOT_PREREQUISITE_DOC" \
   && grep -qF '[ ! -f "$resource_path" ]' "$ROOT_PREREQUISITE_DOC" \
   && grep -qF '[ ! -r "$resource_path" ]' "$ROOT_PREREQUISITE_DOC" \
   && grep -qF '[ ! -s "$resource_path" ]' "$ROOT_PREREQUISITE_DOC" \

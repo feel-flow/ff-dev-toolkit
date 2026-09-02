@@ -57,9 +57,8 @@ green」。healthy を確認できない回は全件で代替 — ADR-039）。`
 | ケース | 渡す疑似 suite | 主な期待 |
 |---|---|---|
 | case 1 | fail, pass, skip, not-executable, missing | 落ちた suite の**後続が実行される**（fail-fast 回帰の本体）／終了コード非 0／サマリーの内訳が完全一致／未実行の理由が出る／全体 pass を名乗らない |
-| case 2 | pass, skip | skip は失敗として数えない（rc=0）が、無条件の全体 pass も名乗らない |
-| case 3 | pass | 全 pass のときだけ `All ff-dev-toolkit fixture checks passed.` を出す |
-| case 4 | pass, skip-large | 出力がパイプ容量を超えても skip 判定が反転しない（下記 SIGPIPE 反転） |
+| case 2b | partial-skip | suite 内の一部検査だけを skip した場合、rc=0・suite は passed のまま `checks-skipped` へ別集計され（suite-level skipped へ混ぜない）、`All ff-dev-toolkit fixture checks passed.` も従来どおり出す |
+| case 4 | pass, skip-large | skip は失敗として数えない（rc=0）が無条件の全体 pass も名乗らない。出力がパイプ容量を超えても skip 判定が反転しない（下記 SIGPIPE 反転） |
 | case 5 | pass, missing | **not-run 単独**でも非 0 で終わる（failed=0 でもゲートが効く） |
 | case 6 | skip | **skip だけで pass が 0** なら非 0 で終わる |
 | case 7 | pass, fail-skip-marker | 非 0 終了の suite は、`○ skip` を出していても failed に計上される |
@@ -67,12 +66,37 @@ green」。healthy を確認できない回は全件で代替 — ADR-039）。`
 | case 9 | （疑似 suite なし） | `merge-cleanup/verify.sh` が行頭 `○ skip` マーカーを今も出力する（契約の両端の drift 検出） |
 | case 10 | （全 `tests/**/*.sh` の静的監査） | 非コメント行のパイプ入力に `grep -q*` が再混入していないこと |
 | case 11 | （tracked shell の静的監査 + `tests/lib/mbcs-guard.sh`） | `$VAR` 直後マルチバイト展開の再混入が無いこと。検出器 self-test 付き。fail-closed 経路の自動回帰は別 suite `mbcs-guard-failclosed`（Issue #312）。SKILL.md bash ブロック側の MBCS は `skill-bash-blocks`（Issue #311） |
+| case 12 | （`tests/*/verify.sh` の `trap ... EXIT` 静的監査 + `fixtures/exit-guard/bare-trap.sh`） | 途中死した suite を素の `trap 'rm -rf ...' EXIT` で握り潰す形が無いこと。検出器自体が fixture へ効くことも確認する |
+| case 13 | （run-all.sh の登録照合。一時複製 tree で実測） | 既定 suite 一覧に登録漏れが無いこと。登録照合が必須名簿の件数も報告すること。高速モード指定下でも照合は除外前の全一覧へ掛かること。未登録 suite を 1 本足すと非 0 で名指しされる |
+| case 14 | （run-all.sh の `REQUIRED_SUITES` 名簿の静的監査） | 一時領域依存の必須 suite 名簿が保持され、skip が終了コード判定（`REQUIRED_SKIPPED`）へ配線されていること |
+| case 15 | （`tests/*/verify.sh` の `mktemp` 呼び出し静的監査） | `mktemp -d ... 2>/dev/null` で失敗理由を握り潰す形が無いこと。主要 suite の一時領域 probe が `TMPDIR` を明示していること |
+| case 16 | pass, pass-selftest ／ pass, skip, pass-selftest（`FF_RUN_ALL_FAST=1`） | 対を持つ `-selftest` は高速モードで除外される。除外件数・除外 suite 名・高速モード専用の完了文言がサマリーに出る。全体 pass は名乗らない。明示引数で名指しした suite が除外されたら警告する。除外と環境都合の skip は別勘定で報告され、必須 skip 判定（`REQUIRED_SKIPPED`）は `SKIPPED` だけを走査して除外（`FAST_EXCLUDED`）と合流しない |
+| case 18 | pass, pass-selftest（明示引数・環境変数なし／`FF_RUN_ALL_FULL=1`） | 明示引数は名指しした `-selftest` も実行する（ADR-034）。除外が掛かっていない全 pass 実行は全体 pass を名乗り、部分 skip が無い実行は `checks-skipped: total=0 suites=0` を明示する |
+| case 19 | pass-selftest 単独（`FF_RUN_ALL_FAST=1`） | 高速モードの除外で実行対象が 0 件になったら非 0。名指しが全件除外された旨の警告も出る |
+| case 22 | pass-selftest-extra, pass-selftest（`FF_RUN_ALL_FAST=1`） | 除外は `-selftest` の**終端一致のみ**。名前の途中に含むだけの suite は除外されない |
+| case 26 | （run-all.sh を一時複製 tree へコピーし引数なしで実行。26-A〜26-H） | 既定一覧の統合動作とモード行列（既定＝高速モード除外／`FF_RUN_ALL_FULL=1`／`FF_RUN_ALL_FAST=0`／矛盾する同時指定／不正値／必須 suite の skip が fail-closed のまま）を実測する |
+| case 27 | pass, pass-selftest, orphan-selftest（`FF_RUN_ALL_FAST=1`） | 対になる本体 suite を持たない `-selftest` は高速モードでも実行される。単独実行でも「0 件実行」の経路には落ちず、除外 0 件のサマリー文言が出て、名指しが 1 件も除外されなければ警告しない |
+| case 29 | （run-all.sh を一時複製し、走行中に末尾を書き換える疑似 suite） | 走行中にランナー自身が書き換えられた実行はサマリー行を出さず非 0 で終わる（証拠に使えない旨も報告）。指紋照合とサマリー出力が同一関数に同居することも静的に固定する |
+| case 30 | fail, pass, skip, not-executable, missing（`FF_RUN_ALL_JOBS=1` と `4` を比較）／slow-a〜d（`FF_RUN_ALL_JOBS=2`、同時実行数より多い 4 本） | 並列実行でも終了コードと出力（告知行・空行を除く全文）が逐次実行と一致する。出力は suite 単位でまとまり、見出しは完了順ではなく登録順に並び、逐次より短く終わる（スロット再充填の経路も通す） |
+| case 32 | pass, skip（`FF_RUN_ALL_JOBS=` 1 / zero / 未指定 / 上限超過値） | `FF_RUN_ALL_JOBS` の解決を実測する。`1` は逐次へ復帰、解釈できない値は 1 行警告して継続。未指定時は CPU 由来の値へ解決される（上限 8）。入れ子実行は明示指定が無ければ逐次。上限を超える値は警告のうえ既定へ倒す |
+| case 34 | pass, kill-wrapper, skip（`FF_RUN_ALL_JOBS=2`） | rc を残さず子プロセスが消えた suite は passed でも failed でもなく **not-run** に数えられる。後続 suite の実行も止まらない |
+| case 35 | （tracked shell・SKILL.md・docs-template の静的監査 + `tests/lib/exit-code-guard.sh`） | 出力整形フィルタ（head / tail / less / more / cat / tee / wc、`sudo` / `command` / `env` / `VAR=` の前置き 1 段を含む）で終わるパイプラインの直後で `$?` を読む形（代入・`echo` のほか `if [ $? -ne 0 ]` などの制御構文、コメント行を跨いだ次の行も）と、zsh では機能しない `PIPESTATUS` 参照が無いこと。検出器 self-test 付き（誤検出しない形・Markdown フェンスの走査境界も含む） |
+
+ケース番号には欠番があります。Issue #1022 でランナー契約の核心 4 領域（集計 / skip 判定 / fail-closed 経路 /
+選択モード）へ絞り、同じ検出対象を別の疑似 suite で二重に踏んでいたケースを**検出力単位で統合**したためです。
+削除したケースの検出対象はすべて残るケースが引き継いでいます（対応表は PR #1219（Issue #1022）の本文）。番号は履歴の
+追跡性のため振り直していません。
+
+case 2b の `fixtures/partial-skip` は suite 内の**一部の検査だけ**を skip する形（外部 AI CLI 不在などを模す）で、
+suite 自体は passed のまま `checks-skipped` という別の会計で件数を報告します。suite 単位の `skipped` へ混ぜると
+`REQUIRED_SUITES` の意味（環境都合で本体ごと skip した suite の名簿）が変わってしまうため、両者を同時に固定します。
 
 case 5 が独立して必要なのは、case 1 が not-run と同時に fail も渡しているためです。終了コード判定から
 `|| ${#NOT_RUN[@]} -gt 0` を落としても `FAILED` 経路で非 0 が保たれてしまい、その削除を検出できません
 （アサーションが通っていても、その値が結果に効いているかは別問題）。
 
-case 4 は **SIGPIPE 反転**の回帰テストです。詳細は `run-all.sh` のヘッダーコメントにありますが、要は
+case 4 は「skip があっても失敗として数えないが全体 pass も名乗らない」形（read-only 環境の形）と
+**SIGPIPE 反転**の回帰テストを兼ねます。詳細は `run-all.sh` のヘッダーコメントにありますが、要は
 `printf ... | grep -q` だと `grep` の早期終了で上流の `printf` が SIGPIPE (141) で死に、`pipefail` の
 もとで**マッチが「不一致」へ反転**します。ランナーは判定をシェル内の文字列マッチで行い、本 suite の
 照合ヘルパー `out_matches` は入力を読み切る `grep -c` を使うことでこれを避けています。
@@ -88,23 +112,37 @@ case 10 は Issue #150 の再混入ガードです。ファイルを直接読む
 `grep ... >/dev/null` のように入力を最後まで読むか、パイプを介さないシェル内マッチを使います。
 同一行だけでなく、バックスラッシュ継続や行末 `|` で分割された論理行も監査対象です。
 
+case 12 は振る舞いでなく**構造**で固定します。`trap 'rm -rf ...' EXIT` は途中死の終了コードを握り潰しますが、
+その挙動は Bash の版で揺れるため実行結果では回帰ガードになりません（実測では 23 suite 中 20 本が偽の緑）。
+検出器自体が効くことは `fixtures/exit-guard/bare-trap.sh` を同じ静的条件へ通して別途確かめています。
+
+case 29 は Issue #885 の再現です。bash はスクリプトを一括で読まず実行しながら読み進めるため、走行中の
+自己書き換えはサマリー行を一切出さないまま exit 0 で終わり、「静かに終わった緑」として観測されました。
+指紋照合をサマリー出力と同一関数に同居させているのは、両者が分離すると照合が効いていてもサマリー側の
+迂回で偽の緑が復活し得るためです。
+
 ## ディレクトリ構成
 
 ```
 tests/run-all/
 ├── README.md                        # このファイル
-├── verify.sh                        # ランナーの挙動検証（28 ケース）
+├── verify.sh                        # ランナーの挙動検証（case 1〜34 のうち 24 ケース。Issue #1022 の
+│                                    #   縮小で欠番あり — 番号は履歴の追跡性のため振り直さない）
 └── fixtures/
     ├── pass/verify.sh               # 常に成功（後続実行の目印を出力）
     ├── fail/verify.sh               # 常に失敗（stderr へ診断を出力）
     ├── fail-skip-marker/verify.sh   # 非 0 終了 + 行頭 `○ skip`（判定順序の固定用）
     ├── skip/verify.sh               # exit 0 + 行頭 `○ skip`
     ├── skip-large/verify.sh         # 行頭 `○ skip` + パイプ容量超の出力（SIGPIPE 反転の検出用）
+    ├── partial-skip/verify.sh       # suite 自体は passed のまま検査 2 件だけを `checks-skipped` として skip
     ├── pass-selftest/verify.sh      # `-selftest` 終端名の成功 suite（対 = pass があるので除外側）
     ├── pass-selftest-extra/verify.sh # `-selftest` を途中に含む成功 suite（終端一致の境界固定用）
     ├── orphan-selftest/verify.sh    # 対になる本体 suite を持たない `-selftest`（除外しない側。
     │                                #   `fixtures/orphan/` を作ると検査が裏返るので作らないこと）
-    └── not-executable/verify.sh     # mode 644（実行ビットなしでコミット）
+    ├── not-executable/verify.sh     # mode 644（実行ビットなしでコミット）
+    ├── exit-guard/bare-trap.sh      # 素の `trap 'rm -rf ...' EXIT`（case 12 の検出器 self-test 用対照）
+    ├── kill-wrapper/verify.sh       # 並列ラッパー subshell を SIGKILL し、rc を残さず消える経路を作る
+    └── slow-a/ … slow-d/verify.sh   # 1 秒かけて HEAD/TAIL 2 行を出す（並列実行の隣接・所要時間の検証用）
 ```
 
 `fixtures/missing/verify.sh` は**意図的に存在しません**。`verify.sh` がそのパスを渡すことで、
@@ -156,7 +194,7 @@ FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh
   | 変異 | red になるケース |
   |---|---|
   | `FAILED+=(...)` の直後に `exit 1` を足す（fail-fast へ戻す） | case 1 の後続実行・サマリー内訳 |
-  | skip 判定を潰して skip を pass に数えさせる | case 2 / case 4 / case 6 |
+  | skip 判定を潰して skip を pass に数えさせる | case 4 / case 6 |
   | skip 判定を `printf \| grep -q` へ戻す | case 4 |
   | `out_matches` を `grep -q` へ戻す | case 4（照合が反転。件数はタイミング依存で 1〜2 件に揺れる） |
   | 終了コード判定から `\|\| ${#NOT_RUN[@]} -gt 0` を落とす | case 5 |
@@ -165,3 +203,4 @@ FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh
   | 入れ子の引数なし実行ガードを外す | case 8（※ ガードを完全に削ると無限再帰するので、`exit 1` を `exit 0` にする形で試すこと） |
   | 任意の非コメント行へ `printf ... \| grep -q` を再追加する | case 10 |
   | 走行中の自己書き換え検査（起動時の指紋照合）を外す・サマリー行の出力と別の関数へ分ける | case 29 |
+  | `tests/lib/exit-code-guard.sh` の `is_pipe` を常に 0 へ倒す（パイプ終端を認識しなくする） | case 35 |

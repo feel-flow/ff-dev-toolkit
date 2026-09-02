@@ -21225,11 +21225,11 @@ var maskNonGlossaryLines = (lines) => {
   return masked;
 };
 var fenceOpenerOf = (l) => {
-  const m = l.match(/^\s*(`{3,}|~{3,})/);
+  const m = l.match(/^[ \t]*(`{3,}|~{3,})/);
   return m ? { char: m[1][0], len: m[1].length } : null;
 };
 var closesFence = (l, open) => {
-  const m = l.match(/^\s*(`{3,}|~{3,})\s*$/);
+  const m = l.match(/^[ \t]*(`{3,}|~{3,})[ \t\r]*$/);
   return !!m && m[1][0] === open.char && m[1].length >= open.len;
 };
 var blankCodeSpans = (l) => l.replace(/`[^`]*`/g, (m) => " ".repeat(m.length));
@@ -21254,14 +21254,14 @@ var maskClosedSpans = (lines) => {
   return out;
 };
 var maskCommentAt = (out, i, at) => {
-  const sameLineEnd = out[i].indexOf("-->", at);
+  const sameLineEnd = blankCodeSpans(out[i]).indexOf("-->", at);
   if (sameLineEnd !== -1) {
     out[i] = out[i].slice(0, at) + out[i].slice(sameLineEnd + 3);
     return i;
   }
-  const close = out.findIndex((l, j) => j > i && l.includes("-->"));
+  const close = out.findIndex((l, j) => j > i && blankCodeSpans(l).includes("-->"));
   if (close === -1) return i + 1;
-  const tail = out[close].slice(out[close].indexOf("-->") + 3);
+  const tail = out[close].slice(blankCodeSpans(out[close]).indexOf("-->") + 3);
   out[i] = out[i].slice(0, at);
   for (let k = i + 1; k < close; k++) out[k] = "";
   out[close] = tail;

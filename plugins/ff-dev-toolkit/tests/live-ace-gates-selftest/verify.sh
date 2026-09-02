@@ -455,6 +455,180 @@ else
   printf '%s\n' "$GATE_OUTPUT" >&2
 fi
 
+# Issue #1031: #1028 が足した archive 分岐（compact 済み → 後日 archive / 統合先が後日
+# archive され着地が archive 内へ移る chain）は、live PLAYBOOK に該当形状が 0 件のあいだ
+# e2e で一度も実行されない。実データ（docs/08-knowledge/playbook/archive/*.md）の形状 —
+# append 型 archive で、保全済み ID には原文を再コピーせず provenance 行だけを重ねる並び
+# （ace-refine SKILL.md R3-0 の「1 件（保全済み）」分岐）— を写した fixture をここに置く。
+write_archive_chain_fixture() {
+  local knowledge="$FIXTURE_KNOWLEDGE"
+  mkdir -p "$knowledge/playbook/archive"
+  cat >"$FIXTURE_PLAYBOOK" <<'EOF'
+---
+title: "PLAYBOOK"
+version: "1.1.0"
+status: "draft"
+owner: "@fixture"
+created: "2026-08-12"
+updated: "2026-08-30"
+changeImpact: low
+ace_entry_count: 2
+---
+
+# ACE Playbook
+
+## エントリ一覧
+
+| エントリID | タイトル | Category | 参照先 |
+| ---------- | -------- | -------- | ------ |
+| ACE-501-1  | live 残存 | process | [playbook/process.md#ace-501-1](./playbook/process.md#ace-501-1) |
+| ACE-502-1  | live 残存 | testing | [playbook/testing.md#ace-502-1](./playbook/testing.md#ace-502-1) |
+
+## Changelog
+
+### [1.1.0] - 2026-08-30
+
+#### 整理（/ace-refine）
+
+- Archived: ACE-500-1（原文は 2026-08-14 の圧縮で保全済み）
+- Archived: ACE-404-2（30日以上参照なし）
+
+### [1.0.0] - 2026-08-14
+
+#### 整理（/ace-refine）
+
+- Compacted: ACE-500-1
+- Merged: ACE-430-1 → ACE-404-2
+EOF
+  cat >"$knowledge/playbook/process.md" <<'EOF'
+### ACE-501-1: live 残存
+
+| Category | process | Origin | PR #501 |
+| Date | 2026-08-12 |
+| Helpful | 0 | Harmful | 0 |
+| Status | active |
+
+archive 分岐の対照として live に残すエントリ。
+EOF
+  cat >"$knowledge/playbook/testing.md" <<'EOF'
+### ACE-502-1: live 残存
+
+| Category | testing | Origin | PR #502 |
+| Date | 2026-08-12 |
+| Helpful | 0 | Harmful | 0 |
+| Status | active |
+
+archive 分岐の対照として live に残すエントリ。
+EOF
+  cat >"$knowledge/playbook/archive/process.md" <<'EOF'
+# PLAYBOOK Archive — process (process)
+
+> **Parent**: [PLAYBOOK.md](../../PLAYBOOK.md) — 保管場所。
+> **保全本文内の相対リンクは live 基準**: 読み替え。
+
+---
+
+<a id="ace-500-1"></a>
+
+### ACE-500-1: 圧縮後に stale となったエントリ
+
+> Compacted: 2026-08-14（live 側を要約済み。本文の原文は本エントリが正）
+> Archived: 2026-08-30 / 理由: 30日以上参照なし（原文は 2026-08-14 の圧縮で保全済み。/ace-refine）
+
+| Category | process | Origin | PR #500 |
+| Date | 2026-07-07 |
+| Helpful | 0 | Harmful | 0 |
+| Status | active |
+
+圧縮で live に要約を置いたあと、後日 stale として live 側を撤去した原文。
+
+---
+EOF
+  cat >"$knowledge/playbook/archive/testing.md" <<'EOF'
+# PLAYBOOK Archive — testing (testing)
+
+> **Parent**: [PLAYBOOK.md](../../PLAYBOOK.md) — 保管場所。
+> **保全本文内の相対リンクは live 基準**: 読み替え。
+
+---
+
+<a id="ace-430-1"></a>
+
+### ACE-430-1: trap source
+
+> Merged into: [ACE-404-2](#ace-404-2)（2026-08-14 /ace-refine。統合先の後日アーカイブに伴い着地を archive 内へ付け替え）
+
+| Category | testing | Origin | PR #430 |
+| Date | 2026-08-12 |
+| Helpful | 1 | Harmful | 0 |
+| Status | merged |
+
+トラップ最終コマンドの成功が rc を上書きする。
+
+---
+
+<a id="ace-404-2"></a>
+
+### ACE-404-2: trap
+
+> Archived: 2026-08-30 / 理由: 30日以上参照なし（/ace-refine）
+
+| Category | testing | Origin | PR #404 |
+| Date | 2026-08-12 |
+| Helpful | 1 | Harmful | 0 |
+| Status | active |
+
+終了ステータスの保存では直らない。
+
+---
+EOF
+}
+
+echo
+echo "== archive chain（compact 済み → 後日 archive / 統合先の後日 archive）=="
+
+write_archive_chain_fixture
+run_gate
+if [[ "$GATE_RC" -eq 0 ]] && [[ "$GATE_OUTPUT" == *"live ACE の refine 結果不変条件"* ]] && [[ "$GATE_OUTPUT" == *"Archived 2"* ]]; then
+  ok "compact 済み → 後日 archive と、着地が archive 内へ移った merge chain が通る"
+else
+  bad "archive chain fixture が通らない（rc=${GATE_RC}）"
+  printf '%s\n' "$GATE_OUTPUT" >&2
+fi
+
+# Changelog の `- Archived:` は compact の live 存続要求を**解除する**記録なので、これを
+# 消すと「記録なき消失」に戻って赤くなるべき。緑のままなら解除が無条件に効いている。
+write_archive_chain_fixture
+perl -0pi -e 's/^- Archived: ACE-500-1[^\n]*\n//m' "$FIXTURE_PLAYBOOK"
+if grep -q '^- Archived: ACE-500-1' "$FIXTURE_PLAYBOOK"; then
+  bad "Archived 行の削除 mutation が適用できていない（検査が成立しない）"
+else
+  run_gate
+  if [[ "$GATE_RC" -ne 0 ]] && [[ "$GATE_OUTPUT" == *"ACE-500-1"* ]] && [[ "$GATE_OUTPUT" == *"live に見出しが無い"* ]]; then
+    ok "Archived 記録を消すと compact の live 消失が再び赤くなる"
+  else
+    bad "Archived 行削除 mutation を拒否できない（rc=${GATE_RC}）"
+    printf '%s\n' "$GATE_OUTPUT" >&2
+  fi
+fi
+
+# 統合先が archive へ移った後も `Merged into` が live 基準 `../` を指し続けると chain の
+# 着地が消えた anchor になる。形だけ正しい live 向け href が赤くなることを実測する。
+write_archive_chain_fixture
+perl -0pi -e 's{> Merged into: \[ACE-404-2\]\(#ace-404-2\)}{> Merged into: [ACE-404-2](../testing.md#ace-404-2)}' \
+  "$FIXTURE_KNOWLEDGE/playbook/archive/testing.md"
+if ! grep -q '](\.\./testing\.md#ace-404-2)' "$FIXTURE_KNOWLEDGE/playbook/archive/testing.md"; then
+  bad "Merged into href の live 復帰 mutation が適用できていない（検査が成立しない）"
+else
+  run_gate
+  if [[ "$GATE_RC" -ne 0 ]] && [[ "$GATE_OUTPUT" == *"ACE-430-1 → ACE-404-2"* ]] && [[ "$GATE_OUTPUT" == *"統合先が archive 済み"* ]]; then
+    ok "archive 済み統合先への href を live 基準へ戻すと赤くなる"
+  else
+    bad "Merged into href mutation を拒否できない（rc=${GATE_RC}）"
+    printf '%s\n' "$GATE_OUTPUT" >&2
+  fi
+fi
+
 mv "$FIXTURE_KNOWLEDGE" "$FIXTURE_REPO/docs/08-knowledge.absent"
 run_gate
 if [[ "$GATE_RC" -eq 0 ]] && [[ "$GATE_OUTPUT" == ○\ skip:* ]]; then

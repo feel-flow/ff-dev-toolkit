@@ -25,6 +25,18 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 「ff-dev-toolkit更新後にこのskillを再呼び出してください」と案内して停止する。
 <!-- ff-dev-toolkit-plugin-root-contract:end -->
 
+<!-- ff-dev-toolkit-plugin-root-guard:start -->
+固定したrootが消えた状態で手順を先へ進めないため、同梱resourceを呼ぶBash tool呼び出しの本文冒頭で次のguardを実行する。手順書のguardは実行環境の `set -e` を仮定できないので、`||` の右辺で `false` を返す形ではなくifで構造的に停止する。
+
+```bash
+if [ -z "${FF_DEV_TOOLKIT_ROOT:-}" ] || [ ! -d "${FF_DEV_TOOLKIT_ROOT}" ]; then
+  echo "ff-dev-toolkit更新後にこのskillを再呼び出してください（plugin rootが解決できません）" >&2
+  exit 2
+fi
+```
+
+<!-- ff-dev-toolkit-plugin-root-guard:end -->
+
 > 本コマンドの検証規則（必須3文書と条件付き4文書の N/A 判定・兆候検出・同義見出しの内容判定・空セクションの状態明記・Frontmatter スキーマ・スコア算出・プレースホルダー免除区分）が drift しないことは、`plugins/ff-dev-toolkit/tests/validate-docs/verify.sh`（節スコープの条文ピン）と `plugins/ff-dev-toolkit/tests/validate-docs-placeholders/verify.sh`（境界の機械照合）で検証する。規則の文言・節番号を変えたら `tests/validate-docs/verify.sh` を追随させること。
 
 ## 検証項目

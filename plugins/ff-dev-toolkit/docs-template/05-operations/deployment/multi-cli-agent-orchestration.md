@@ -146,6 +146,12 @@ write / shell deny へ狭め、作業ツリーへ書かない契約を機械的�
 v2.0 形式で、タスクタイプ別・エージェント別に設定可能。
 v1.0 (review-config.yaml) との後方互換あり。
 
+### 実際に読まれるキー
+
+本節が正本で、スキル（multi-review / multi-explore / multi-implement / setup-ai-config）はここを参照する（説明をスキル側へ複製しない）。
+
+プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される（環境変数 `MULTI_AGENT_CONFIG=<path>` または `--config <path>` でも上書き可。読み取りは `yq` 依存で、無い環境では設定ファイルは読まれず既定値で動く）。ただし**実際に読まれるのは `version` / `mode` / `parallel` / `review.main` / `review.sub` / `review.critical_nonblock_perspectives` と、`version: "2.0"` のときだけ `tasks.<task>.{mode,cost_strategy,timeout,output_dir}` である**（`version` が `2.0` でない場合は v1 形式とみなされ、トップレベルの `cost_strategy` / `timeout` / `output_dir` が読まれる — `version` を書き忘れると `tasks.*` が黙って無視されるので注意）。`agents:` と `fallback:` はどのバージョンでも読まれず、人が読むための対応表にすぎない。実行時のレジストリの正本は `scripts/multi-agent.sh` の `get_cli_*` 関数。
+
 ## Perspective フィルタと単一 CLI 縮退
 
 distributed モードの perspective は CLI ごとの固定レジストリから解決されます。

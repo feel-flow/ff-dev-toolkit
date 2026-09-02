@@ -86,9 +86,21 @@ export const maskNonGlossaryLines = (lines: string[]): string[] => {
   return masked;
 };
 
-/** A code fence opener: the run character and its length (CommonMark: >= 3). */
+/**
+ * A code fence opener: the run character and its length (CommonMark: >= 3).
+ *
+ * The indent class is `[ \t]*`, **not** `\s*` (Issue #706). `\s` also accepts
+ * NBSP (U+00A0), a vertical tab and a form feed, none of which the awk side can
+ * match without leaving its ASCII-class constraint (docs-scan.sh design notes /
+ * run-all case 11) — `[ \t]*` keeps the two implementations on the same indent
+ * class. It does not cap the indent width, so 4+ columns of spaces/tabs still
+ * open a fence here even though CommonMark caps fence indentation at 0-3
+ * spaces (see the known-limitation note in docs-scan.sh's `ff_docs_mask_spans`
+ * header — the awk side has the same gap). A trailing `\r` stays accepted so
+ * CRLF input behaves identically on both sides.
+ */
 const fenceOpenerOf = (l: string): { char: string; len: number } | null => {
-  const m = l.match(/^\s*(`{3,}|~{3,})/);
+  const m = l.match(/^[ \t]*(`{3,}|~{3,})/);
   return m ? { char: m[1][0], len: m[1].length } : null;
 };
 
@@ -98,7 +110,7 @@ const fenceOpenerOf = (l: string): { char: string; len: number } | null => {
  * inside a ```` ```markdown ```` block is content, not a closing marker.
  */
 const closesFence = (l: string, open: { char: string; len: number }): boolean => {
-  const m = l.match(/^\s*(`{3,}|~{3,})\s*$/);
+  const m = l.match(/^[ \t]*(`{3,}|~{3,})[ \t\r]*$/);
   return !!m && m[1][0] === open.char && m[1].length >= open.len;
 };
 
@@ -130,13 +142,24 @@ const blankCodeSpans = (l: string): string => l.replace(/`[^`]*`/g, (m) => ' '.r
  *   - a `<!--` inside a paired inline code span does **not** open a comment
  *     (Issue #527): prose quoting the marker would otherwise pair with the next
  *     `-->` in the file — a mermaid arrow (`A --> B`) is enough — and silently
- *     swallow everything in between. The closing search is deliberately left
- *     alone; only the opener is narrowed.
+ *     swallow everything in between
+ *   - the **closing** search applies the same code-span rule (Issue #706), so
+ *     prose quoting `` `-->` `` no longer terminates a comment early
  *
- * Known limitation: the closing search still **crosses fence spans**. A bare
- * `<!--` outside any code span still pairs with a `-->` that lives inside a
- * later fence. Narrowing the opener closed the Issue #527 path, not this rule.
- * Tracked as Issue #706 (kept identical to the awk side in docs-scan.sh).
+ * Chosen behaviour, not an oversight: the closing search still **crosses fence
+ * spans**, so a stray `<!--` in prose pairs with a `-->` inside a later fence (a
+ * mermaid arrow is enough). Issue #706 implemented both alternatives — step over
+ * fence bodies, and stop at the fence boundary — and rejected both: a comment
+ * holding a fence *opener* reads as unclosed either way (stopping at the
+ * boundary fails even when the matching closer lives inside the comment;
+ * stepping over fence bodies fails when it lives outside), and everything
+ * after it is swallowed as fence content instead — confirmed by
+ * docs-frontmatter-repo-selftest case G19 going red under both alternatives.
+ * Not examining markers inside an already-open comment follows from the
+ * single-pass rule above, and matches CommonMark, where an HTML block opened
+ * by `<!--` runs to the line containing `-->` and does not parse fences in
+ * between. Pinned by tests/docs-scan-mirror/fixtures/comment-wraps-fence.md
+ * and tests/docs-scan-mirror/fixtures/unclosed-comment-before-fence.md.
  */
 export const maskClosedSpans = (lines: string[]): string[] => {
   const out = [...lines];
@@ -165,14 +188,17 @@ export const maskClosedSpans = (lines: string[]): string[] => {
  * second comment or a fence after it is still seen).
  */
 const maskCommentAt = (out: string[], i: number, at: number): number => {
-  const sameLineEnd = out[i].indexOf('-->', at);
+  // The closer is located in the code-span-blanked copy, exactly like the opener
+  // (Issue #706). Blanking preserves length, so the index maps back unchanged.
+  const sameLineEnd = blankCodeSpans(out[i]).indexOf('-->', at);
   if (sameLineEnd !== -1) {
     out[i] = out[i].slice(0, at) + out[i].slice(sameLineEnd + 3);
     return i;
   }
-  const close = out.findIndex((l, j) => j > i && l.includes('-->'));
+  // The multi-line search deliberately ignores fences (see maskClosedSpans).
+  const close = out.findIndex((l, j) => j > i && blankCodeSpans(l).includes('-->'));
   if (close === -1) return i + 1; // unclosed: skip this opener only
-  const tail = out[close].slice(out[close].indexOf('-->') + 3);
+  const tail = out[close].slice(blankCodeSpans(out[close]).indexOf('-->') + 3);
   out[i] = out[i].slice(0, at);
   for (let k = i + 1; k < close; k++) out[k] = '';
   out[close] = tail;

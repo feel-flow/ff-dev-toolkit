@@ -222,24 +222,28 @@ not_contains 'FULL_GATE_SHA=' \
 not_contains 'check-full-gate-reuse' \
   "廃止した green 再利用判定の呼び出しが復活していない"
 
-# 限定ゲートの suite 呼び出し（3 suite / 4 観点。Issue #800 で changelog-contract へ統合）は
+# 限定ゲートの suite 呼び出し（2 suite / 4 観点。Issue #800 で changelog-contract へ、
+# Issue #1021 で changelog-links + changelog-attribution が changelog-public-tags へ統合）は
 # 手順 8 の footer ブランチ先端での実行（Issue #892）**1 箇所だけ**にある（旧方式の
 # 手順 0 CHANGELOG_FOOTER_ONLY 分岐は ADR-039 で廃止。2 箇所へ戻る退行も、片方だけ
 # suite を足し引きする退行も、件数固定で捕まえる）。
 # needle に行末の継続（バックスラッシュ）を含めるのは、散文中の同名の言及を数えないため
-# （`changelog-links/verify.sh` は手順 8 の再実行の説明にも出る）。`contains_exactly` は
+# （`changelog-public-tags/verify.sh` は手順 8 の再実行の説明にも出る）。`contains_exactly` は
 # `grep -cF` で**行数**を数えるので、1 行に 2 回現れる needle には使えない。
-contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-links/verify.sh \' 1 \
-  "限定ゲートの CHANGELOG リンク検査が手順 8 の 1 箇所にある"
-contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-attribution/verify.sh \' 1 \
-  "限定ゲートの CHANGELOG 帰属検査が手順 8 の 1 箇所にある"
+contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-public-tags/verify.sh \' 1 \
+  "限定ゲートの CHANGELOG 公開タグ検査（リンク追従 + 版節の帰属）が手順 8 の 1 箇所にある"
 # 版の一致と公開参照の境界は Issue #800 で changelog-contract へ統合した（1 本で両方を見る）。
 contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-contract/verify.sh 2>&1)" \' 1 \
   "限定ゲートの CHANGELOG 契約検査（版の一致 + 公開参照の境界）が手順 8 の 1 箇所にある"
-# skip / 未実行を成功と読まない要求。3 suite だけを走らせる限定ゲートで
-# `changelog-links` / `changelog-attribution` が無言の no-op になると代替物が何も残らない。
-contains_exactly "grep -F -- 'failed=0 skipped=0 not-run=0' >/dev/null; then" 1 \
+# skip / 未実行を成功と読まない要求。2 suite だけを走らせる限定ゲートで
+# `changelog-public-tags` が無言の no-op になると代替物が何も残らない。
+contains_exactly "grep -F -- 'failed=0 skipped=0 not-run=0' >/dev/null &&" 1 \
   "限定ゲートは skip / 未実行を成功と読まない — 手順 8 の 1 箇所"
+# suite 単位の skipped=0 だけでは、changelog-public-tags の帰属検査が
+# インデント付き部分 skip のまま「2 suite とも緑」に見える（Issue #1021 で
+# compare リンク不在 / mktemp 不可が suite 全体 skip から部分 skip へ降格した）。
+contains_exactly "grep -F -- 'checks-skipped: total=0' >/dev/null; then" 1 \
+  "限定ゲートは suite 内の部分 skip も成功と読まない — 手順 8 の 1 箇所"
 
 # 手順 8 が「記録の COMMIT= を footer ブランチの先端にする」ことをブロックの中で読み戻す。
 # 目的そのものを確かめずに終わると、先端を動かす操作（develop 追従・fix commit）を

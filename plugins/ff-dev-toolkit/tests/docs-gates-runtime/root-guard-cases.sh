@@ -6,7 +6,8 @@ make_guard_root() {
   mkdir -p "$root/scripts" "$root/.claude-plugin"
   printf '%s\n' '{' '  "name": "ff-dev-toolkit",' '  "version": "fixture"' '}' \
     >"$root/.claude-plugin/plugin.json"
-  for resource in setup-multi-agent.sh multi-agent.sh multi-review.sh check-closing-keywords.sh; do
+  for resource in setup-multi-agent.sh multi-agent.sh multi-review.sh check-closing-keywords.sh \
+    check-merge-freshness.sh update-version-claim.sh check-version-claims.sh; do
     if [ "$resource" != "$missing" ]; then
       printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$root/scripts/$resource"
       chmod +x "$root/scripts/$resource"
@@ -57,7 +58,7 @@ run_root_guard_cases() {
   echo "== plugin root guard の fixture 実行 =="
   valid_root="$GUARD_ROOT/valid root"
   make_guard_root "$valid_root"
-  run_guard_case "必須4 resourceが実在すれば通過" "$valid_root" 0 "$GUARD_ROOT/valid.log"
+  run_guard_case "必須resourceが実在すれば通過" "$valid_root" 0 "$GUARD_ROOT/valid.log"
   run_guard_case "root未設定を案内付きで拒否" __UNSET__ 2 "$GUARD_ROOT/unset.log"
   fallback_rc=0
   (unset CLAUDE_PLUGIN_ROOT FF_DEV_TOOLKIT_SKILL_FILE FF_DEV_TOOLKIT_ROOT_SOURCE
@@ -248,7 +249,8 @@ run_root_guard_cases() {
   make_guard_root "$relative_root"
   run_guard_case "resourceが実在しても相対rootは案内付きで拒否" \
     relative 2 "$GUARD_ROOT/relative.log" "$GUARD_ROOT"
-  for missing_resource in setup-multi-agent.sh multi-agent.sh multi-review.sh check-closing-keywords.sh; do
+  for missing_resource in setup-multi-agent.sh multi-agent.sh multi-review.sh check-closing-keywords.sh \
+    check-merge-freshness.sh update-version-claim.sh check-version-claims.sh; do
     missing_root="$GUARD_ROOT/missing-${missing_resource%.sh}"
     make_guard_root "$missing_root" "$missing_resource"
     run_guard_case "${missing_resource}欠落を案内付きで拒否" \

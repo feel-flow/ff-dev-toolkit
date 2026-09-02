@@ -506,16 +506,14 @@ else
     # ○ skip、それ以外は fail）。静的検査より後、破壊的操作を伴う
     # merge-cleanup より前に置く。他の suite を network-dependent 化する場合も
     # この位置関係（静的 → ネットワーク → 破壊的操作 → 低速）を保つこと。
-    "$SCRIPT_DIR/changelog-links/verify.sh"
-    # changelog-links の回帰検証（ローカル bare リポジトリ fixture のみ使用、
-    # 実ネットワークには触らない）。本体の直後に置く。
-    "$SCRIPT_DIR/changelog-links-selftest/verify.sh"
-    # 最新版節の path-like マーカーが compare 範囲で実際に追加・変更されたかを
-    # 公開タグ tree で限定検査（Issue #332 / ADR-020）。ネットワーク依存は
-    # changelog-links と同じ（接続不可のみ skip）。直後に selftest。
-    "$SCRIPT_DIR/changelog-attribution/verify.sh"
-    # changelog-attribution の回帰検証（ローカル bare fixture のみ、ネット非依存）。
-    "$SCRIPT_DIR/changelog-attribution-selftest/verify.sh"
+    # footer の比較リンクの実タグ追従（Issue #161）と、最新版節の path-like マーカーが
+    # compare 範囲で実際に追加・変更されたかの限定検査（Issue #332 / ADR-020）を
+    # 1 本にまとめた suite（Issue #1021 で changelog-links + changelog-attribution を統合）。
+    # ネットワーク到達の判定は suite 内 1 箇所で、接続不可のみ丸ごと ○ skip。
+    "$SCRIPT_DIR/changelog-public-tags/verify.sh"
+    # 上の回帰検証（ローカル bare リポジトリ fixture のみ使用、実ネットワークには
+    # 触らない）。本体の直後に置く。
+    "$SCRIPT_DIR/changelog-public-tags-selftest/verify.sh"
     # 更新通知フック（hooks/check-update.sh）の回帰検証。ローカル bare リポジトリ
     # fixture のみ使用し、実ネットワークには触らない。
     "$SCRIPT_DIR/update-check/verify.sh"

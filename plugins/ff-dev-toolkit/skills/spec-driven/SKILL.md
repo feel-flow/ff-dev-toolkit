@@ -26,6 +26,18 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 「ff-dev-toolkit更新後にこのskillを再呼び出してください」と案内して停止する。
 <!-- ff-dev-toolkit-plugin-root-contract:end -->
 
+<!-- ff-dev-toolkit-plugin-root-guard:start -->
+固定したrootが消えた状態で手順を先へ進めないため、同梱resourceを呼ぶBash tool呼び出しの本文冒頭で次のguardを実行する。手順書のguardは実行環境の `set -e` を仮定できないので、`||` の右辺で `false` を返す形ではなくifで構造的に停止する。
+
+```bash
+if [ -z "${FF_DEV_TOOLKIT_ROOT:-}" ] || [ ! -d "${FF_DEV_TOOLKIT_ROOT}" ]; then
+  echo "ff-dev-toolkit更新後にこのskillを再呼び出してください（plugin rootが解決できません）" >&2
+  exit 2
+fi
+```
+
+<!-- ff-dev-toolkit-plugin-root-guard:end -->
+
 ## 成果物
 
 **ゲート進行表** `spec-driven-gates-{タスクslug}-{YYYYMMDD}.md`（YYYYMMDD は**開始日＝初回実行日**〔実行環境のローカルタイムゾーン〕。タスク中は同一ファイルを更新し続ける）— 以下の構成:

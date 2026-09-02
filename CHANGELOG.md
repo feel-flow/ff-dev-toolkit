@@ -15,10 +15,55 @@
 - 各変更説明は公開読者が単独で理解できる内容にし、SSOT 側の Issue / PR 識別子や番号は記載しない。変更の追跡には公開版の見出しと、文末の公開タグ・比較リンクを使う
 - 外部の報告・Issue から動機や背景の文言を借りるときは、公開物（`plugins/ff-dev-toolkit/` / `oss/ff-dev-toolkit/`）の文書を grep して帰属が成立するか確認し、成立しなければ「報告元の運用では…」のように帰属を明示して書く（存在しないガイド記述を読者に探させない。SSOT 側にしか無い手順書へのヒットは公開読者に届かないため帰属成立と数えない）
 - 文末の比較リンクは、公開リポジトリに存在するタグ同士のみを記載する
-- `[Unreleased]` を次版へ昇格する前に、前の公開タグ tree へ代表マーカーが既に無いかを実測する（出荷済み項目を次版へ誤帰属させない）。`changelog-links` / `changelog-version` は項目の帰属を見ない
-- 最新の日付付き版節に書いた path-like の backtick（`skills/...` / `scripts/...` 等）は、その節の compare 範囲で実際に追加・変更された path だけにする。未変更 path の誤帰属は `tests/changelog-attribution/` が検出する（マーカーの無い bullet は対象外）
+- `[Unreleased]` を次版へ昇格する前に、前の公開タグ tree へ代表マーカーが既に無いかを実測する（出荷済み項目を次版へ誤帰属させない）。`changelog-contract`（版見出しと version の一致）と `changelog-public-tags` の footer リンク検査は項目の帰属を見ない（帰属検査は同 suite の第 2 部で、版節を新設した直後の compare リンクが無い間は走らない）
+- 最新の日付付き版節に書いた path-like の backtick（`skills/...` / `scripts/...` 等）は、その節の compare 範囲で実際に追加・変更された path だけにする。未変更 path の誤帰属は `tests/changelog-public-tags/` の帰属検査が検出する（マーカーの無い bullet は対象外）
 
 ## [Unreleased]
+
+## [0.80.0] - 2026-09-03
+
+### 追加
+
+- 開発リポジトリ向けの隔離セルフテスト（`tests/live-ace-gates-selftest/`。ACE スクリプトの mirror を要するため配布物単体では実行対象外）に、圧縮済みエントリを後日アーカイブした形と、統合先が後日アーカイブされて統合元のポインタがアーカイブ内へ着地する形の fixture を追加した。どちらも実際のアーカイブ（追記型・provenance 行を重ねる並び）を写しており、Changelog のアーカイブ記録を消した場合とポインタを live 基準へ戻した場合に、docs-template 同梱のアーカイブリンク検査（check-archive-links）が非 0 で落ちることを併せて実測する
+- 検証コマンドの終了コード誤読を静的に検出するガードを追加した。`cmd | head -20; echo "EXIT=$?"` のように出力整形フィルタ（head / tail / less / more / cat / tee / wc。`| sudo tee x` のような前置き 1 段も同じ）で終わるパイプラインの直後で `$?` を読む書き方と、zsh では空へ展開されて機能しない `PIPESTATUS` の参照を、tracked の shell スクリプトと SKILL.md / docs-template の bash フェンス本文から行番号つきで報告する。読む形は代入・`echo` のほか `if [ $? -ne 0 ]` などの制御構文も含み、`$?` を変えない空行・コメント行を跨いだ次の行も追う。パイプを挟まずログをファイルへ落として `$?` を読む形、終端そのものが測定対象の入力供給パイプ、コマンド置換・プロセス置換の内側のパイプ、引用符やコメントの中の記述は検出しない
+- 同梱 resource を参照する skill の SKILL.md へ、plugin root が解決できない場合に案内付きで停止する実行時ガードを追加した。ガードは plugin root 固定契約の fence 直後に専用 marker で囲んだ byte 一致の複製で、シェルの `set -e` に依存せず `if` で構造的に停止する（status 2）
+- `tests/plugin-root-contract/verify.sh` へ、この実行時ガードの削除と `set -e` 依存形への弱体化をそれぞれ赤にする negative control と、ガードが契約 fence の直後にあり resource 呼び出しより前で走ることを見る配置検査を追加した。review 系 resource を直接呼ぶ skill は root を解決するのが正本の resolver 側なのでガードの対象外とし、理由付き allowlist と対象数の絶対下限で黙って外れないようにした
+- docs Frontmatter の回帰ゲート（`tests/docs-frontmatter-repo/`）へ、version の bump 幅（major / minor / patch）と `changeImpact`（high / medium / low）の対応検査を追加した。対応表は開発リポジトリの `docs/MASTER.md` のバージョニングルール節から導出し、suite へ複製しない（同文書が無いチェックアウトでは suite 全体を skip する）。比較 base は既定ブランチと HEAD の merge-base で、base 側に文書が無い初版と version 据え置きは緑、base 側に文書が在るのに blob を読めない場合は検査不能として赤、対応表を導出できないツリーは fail-closed で赤、base ref を解決できないチェックアウトではこの検査だけを部分 skip する
+
+### 変更
+
+- CHANGELOG の公開タグ検査 2 本（footer 比較リンクの追従検査と、最新版節の path-like マーカーの帰属検査）を `tests/changelog-public-tags/` へ統合し、対の selftest も `tests/changelog-public-tags-selftest/` へ 1 本化した。検査内容は統合前と同じで、ネットワーク到達不可による suite 全体の `○ skip` 判定だけを suite 内 1 箇所へ集約している
+- 統合にともない、最新版節に compare リンクが無い場合と一時ディレクトリを作れない場合は、suite 全体ではなく帰属検査だけをインデント付きの部分 skip にした。同じ入力で成立する footer リンクの検査結果が、丸ごと skip に巻き込まれて報告から消えることがなくなる
+- 検査対象を差し替えるテスト用 env は `FF_CHANGELOG_PUBLIC_TAGS_FILE` / `FF_CHANGELOG_PUBLIC_TAGS_REPO_URL` へ統合した（旧 `FF_CHANGELOG_LINKS_*` / `FF_CHANGELOG_ATTRIBUTION_*` は廃止）
+- テストランナーの回帰検証 suite（`tests/run-all/`）をランナー契約の核心 4 領域（集計 / skip 判定 / fail-closed 経路 / 選択モード）へ縮小した。同じ検出対象を別の疑似 suite で二重に踏んでいたケースを検出力単位で統合した（削除したケースの検出対象は残るケースが引き継ぐ）
+- `.claude/agent-config.yaml` で実際に読まれるキーの説明を Multi-CLI Agent Orchestration ガイド（`docs-template/05-operations/deployment/multi-cli-agent-orchestration.md`）の「実際に読まれるキー」節へ単一化し、multi-review / multi-explore / multi-implement / setup-ai-config の各スキルは同節への参照だけを持つようにした。同じ説明文を各スキルへ複製する運用をやめたので、複製同士のドリフト検査も不要になり削除した
+- `agent-config-doc-sync` の照合を強化した。正本リンクの一致は閉じ括弧まで含む完全な Markdown リンク単位で見るようにし、複製の再検出は改行・連続空白を正規化してから照合するようにした
+- 検査総数ガード廃止後に write-only 化していた会計変数（TOTAL / CASES / MAPPING_CASES / REPO_DOCS_CHECKED）と、`ok`/`bad` を素通しするだけのラッパー（`mapping_ok`/`mapping_bad`）を tests 配下の4 suite から除去した
+- 配布リポジトリを Public から Private に変更し、feel-flow 組織メンバー（および招待された collaborator）限定の配布へ切り替えた。CLI からの導入には HTTPS の git 認証ヘルパー（`gh auth setup-git`）が前提になる。SSH 鍵だけでは同梱の更新通知 hook が HTTPS URL を固定で照会するため通知が出ない。認証ヘルパーがない環境では hook はハングせず無音でスキップする。README の「組織のプラグインディレクトリ（GitHubから同期）」節を、ミラー複製の案内から本リポジトリの直接登録へ改めた。LICENSE（Apache-2.0）は変えない
+- Markdown 契約検査の節スコープ照合を `tests/lib/section-scope.sh` へ切り出した。見出しの一致本数が 1 本でなければ fail-closed とし、見出しから次の見出しまでを切り出してから固定文言を照合する。`ace-refine` suite のローカル実装だった同関数を置き換え、検査内容と結果は据え置き
+- `refine-issue-skip-contract` と `issue-label-contract` の SKILL.md 検査のうち、「その節に在ること」自体が要件だった針を節スコープ照合へ移した。規定を別の節へ書き写しただけで手順側から消える退行が、文書全体の固定文言検索では緑のまま通っていた
+- どの検査を節スコープへ寄せ、どれを文書全体のままにするかの判断基準を `tests/lib/section-scope.sh` のヘッダーコメントに置いた
+- 見出し数を数える awk が失敗し `heading_hits` が空になるケースを検査不能として名指しし、fail-closed で赤くする分岐を追加した
+- `skill-frontmatter` テストが全プラグインの SKILL.md を検査するようになった（旧: ff-dev-toolkit 内のスキルのみ）。description への未クォートのコロン+半角スペース混入も新たに検出する
+
+### 修正
+
+- docs 走査マスクの awk 実装と同梱 MCP の TypeScript 実装で、コードフェンス行頭のインデントとして受理する空白を半角空白とタブに統一した。TypeScript 側は正規表現の空白クラスに NBSP（U+00A0）や垂直タブも含めていたため、それらでインデントされたフェンスを片側だけがマスクしていた
+- HTML コメントの閉じマーカー探索でもインラインコードスパンを区別するようにした。散文がコードスパンで閉じマーカーを引用しているだけの箇所でコメントが閉じ、本来コメント内の記述が走査対象へ漏れていた（開始マーカー側は既に区別していた非対称の解消）
+- 閉じマーカーの探索がフェンスを跨ぐ現挙動は、CommonMark の HTML ブロックと同じ判定として維持することを明示的に選択し、両実装の照合ゲートに fixture を追加して固定した
+- テストスイートの一時ディレクトリ確保で、`mktemp -d` が警告を stderr へ出しながら成功する環境でも実体を検査するようにした。以前は警告文がパスへ混入し、以後の処理が原因不明のエラーで落ちて「一時領域を用意できなかった」ことが読み取れなかった
+- plugin root 固定契約の検査対象を、root 変数（`FF_DEV_TOOLKIT_ROOT` / `${CLAUDE_PLUGIN_ROOT}`）の出現ではなく同梱 resource への参照から導出するようにした。同梱物を相対パスや散文で参照していた `harness-review` / `create-issue` / `assess-impact` / `out-of-scope-issue` / `pre-commit-check` が契約対象へ入り、5 スキルへ既存と同一の root 固定契約を追加した。sibling スキルの同梱 resource を、別スキル配下の `references/` へ向く相対パスで参照する形も導出できるようにした
+- 契約対象外にするスキルは理由付きの明示 allowlist へ登録する形にし、その項目を毎回の検査報告へ出すようにした。検査対象が空振り（母集団 0 件・root 変数 0 件・allowlist による全件除外）した場合と、母集団が絶対下限を下回った場合は fail-closed で失敗する
+- Git Workflow が plugin root 経由で起動する `check-merge-freshness.sh` / `update-version-claim.sh` / `check-version-claims.sh` を、Multi-CLI Review Orchestration ガイドの plugin root 固定契約の対象列挙と、同じ fence 内の resource 検証ループへ追加した（列挙だけが増えて検証が追従せず、0 バイト化したスクリプトが guard を通る経路を塞いだ）
+
+### ドキュメント
+
+- `docs-template/04-quality/TESTING.md` の「変異注入の適用確認」節に、変異の復元手順（sed 往復、または変異前にコミットしてから `git checkout`）を追記した。未コミット変更が残る状態での `git checkout --` は対象ファイルの本修正まで巻き戻すため
+- `tests/run-all/README.md` の検証ケース表を実装（case 1〜35 + 2b）へ追随させ、fixtures 一覧の乖離を解消した
+
+### セキュリティ
+
+- 週次 public run-all ワークフロー（`weekly-public-run-all.yml`）の外部取得にサプライチェーン検証を追加した。yq バイナリは既存バイナリの有無で分岐せず毎回固定版を取得し、リリース同梱チェックサムの SHA-256 で照合してから実行可能として配置する（不一致時は使用前に止まる）。`actions/checkout` / `actions/setup-node` は可変タグ参照から SHA ピン（+ バージョンコメント）へ変更した。SHA の更新は開発元（SSOT）側の Dependabot が担い、公開同期で本ワークフローへ届く
 
 ## [0.79.1] - 2026-09-02
 

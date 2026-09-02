@@ -51,10 +51,17 @@
 # ── 対象外 ────────────────────────────────────────────────────────────────────
 #   - ff_docs_mask_spans の `keep-fences` 引数には TS 側の対応物が無い。照合は既定
 #     モードのみ（keep-fences のフェンス内保持は docs-fact-drift 側の関心事）。
-#   - コーパスの行頭インデントは ASCII 空白に限る。awk 側は `[ \t]*`、TS 側は `\s*`
-#     で、NBSP や垂直タブでは判定が割れる（実測済み。Issue #726）。**既知の未修正の
-#     乖離**をこのコーパスへ入れると suite が常時赤になりゲートとして機能しないため、
-#     #726 の修正と同時に fixture を足す前提で今は対象外にしている。
+#   - 行頭インデントの空白クラスは両側とも `[ \t]*` に揃えた（Issue #706 / #726）。
+#     TS 側が `\s*` で NBSP・垂直タブを受理していた乖離は non-ascii-space-fence.md
+#     で固定してある（awk 側は ASCII クラス制約 = run-all case 11 を維持する）。
+#
+# ── 赤 pin（現状固定）─────────────────────────────────────────────────────────
+# unclosed-comment-before-fence.md は「散文の閉じ忘れ `<!--` が後続フェンス内の
+# `-->`（mermaid の矢印）と対になり、間の本文が落ちる」挙動を**仕様として**固定する。
+# Issue #706 で閉じ探索をフェンス対応にする 2 案（本体を飛ばす / 境界で打ち切る）を
+# 実装して棄却した — コメントの中にフェンス開始を書く記法が未閉鎖扱いへ倒れ、
+# docs-frontmatter-repo-selftest G19 が赤になる（実測）。
+# 理由は tests/lib/docs-scan.sh の ff_docs_mask_spans ヘッダー「既知の制限」を参照。
 #
 # ── 実行環境（AC-4） ─────────────────────────────────────────────────────────
 # node / mcp/node_modules / 書き込み可能な一時領域のいずれかが無いと TS 側を 1 件も
@@ -99,6 +106,9 @@ inline-code-span-quote.md
 trailing-comment-opener.md
 trailing-fence-opener.md
 crlf.md
+non-ascii-space-fence.md
+unclosed-comment-before-fence.md
+closer-in-code-span.md
 "
 
 # 「閉じた span を 1 つも含まない」fixture の名簿。ここに載るものは masked == raw が

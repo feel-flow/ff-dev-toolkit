@@ -329,7 +329,7 @@ ff_docs_fm_verdict() {
 # 検査しない規則も同じなので、フェンス内の `<!--` が新たにコメントとして
 # 対になることはない。用途は ff_docs_claim_body（図に手書きした件数の走査）。
 #
-# 4 つの narrowing（同梱 MCP の maskClosedSpans と同一の規則。Issue #517 / #519 / #527）:
+# 5 つの narrowing（同梱 MCP の maskClosedSpans と同一の規則。Issue #517 / #519 / #527 / #706）:
 #   1. 単一パスで左から処理する — 先に開いたマーカーが勝ち、その区間内のマーカーは
 #      検査しない（コメント内の ``` が外側のフェンスと対にならない）
 #   2. 閉じていない opener はその行だけ飛ばす — 走査を打ち切ると、後続の閉じた span が
@@ -345,14 +345,30 @@ ff_docs_fm_verdict() {
 #      区別しないと、散文中の `` `<!--` `` が後続の `-->`（mermaid の矢印 `A --> B` を
 #      含む）と対になり、間の本文が丸ごと走査から落ちる。現挙動は
 #      docs-fact-drift-selftest G18 / G26 で固定している
+#   5. コメント**閉じ**の探索も同じくインラインコードスパンを区別する（Issue #706） —
+#      開始側だけ区別する非対称を残すと、散文に書いた `` `-->` `` がコメントを閉じ、
+#      本来の閉じ位置より手前で切れてコメント本文が走査対象へ漏れる。開始側と同じ
+#      blank_code_spans を通すだけなので、規則を 2 つ覚える必要も無くなる
 #
 # 既知の制限（同梱 MCP の maskClosedSpans / maskCommentAt と同一挙動。片側だけ
 # 直すと乖離する。機械照合は Issue #528）:
-#   - 閉じ側 `-->` の探索はインラインコードスパンを区別しない（開始側のみの narrowing）
-#   - 閉じ側 `-->` の探索は**フェンス span を跨ぐ** — 開始側が narrowing された結果
-#     Issue #527 の再現経路は塞がったが、コードスパン外の裸の `<!--` が閉じないまま
-#     置かれると、後続のフェンス内にある `-->`（mermaid の矢印など）が閉じとして
-#     採用され、間の本文が落ちる規則自体は残っている。閉じ側の非対称は Issue #706
+#   - 行をまたぐ閉じ探索は**フェンスを跨ぐ**。散文の閉じ忘れ `<!--` は後続フェンス内の
+#     `-->`（mermaid の矢印 A --> B など）と対になり、間の本文が落ちる。Issue #706 で
+#     「閉じ探索でフェンス本体を飛ばす / フェンス境界で打ち切る」の 2 案を実装して
+#     **どちらも棄却した** — コメント内にフェンス開始がある形（境界で打ち切る案では、
+#     対になる閉じフェンスがコメント内にあっても、その境界で閉じ探索が打ち切られて
+#     倒れる）で、フェンス本体を飛ばす案は対になる閉じフェンスがコメントの外にあると
+#     閉じ探索がそこまで飛ばされてコメントが未閉鎖扱いになり、以降の本文が
+#     フェンスとして丸ごと除外へ倒れる（docs-frontmatter-repo-selftest G19 が
+#     赤になることで実測）。開いたコメントの中に
+#     フェンス開始があっても検査しないのは narrowing 1 の素直な帰結で、CommonMark の
+#     HTML ブロック（`<!--` で開き `-->` を含む行で閉じ、その間はフェンスを解釈しない）
+#     とも一致する。**現挙動は選択された仕様**として docs-scan-mirror の
+#     fixtures/comment-wraps-fence.md と fixtures/unclosed-comment-before-fence.md で
+#     固定する
+#   - フェンス行頭の空白は `[ \t]*`（半角空白・タブのみ）で、NBSP U+00A0 や垂直タブは
+#     インデントとして受理しない。ASCII クラス制約（run-all case 11）を守るための正本で、
+#     TS 側（`\s*` だった）を Issue #706 でこちらへ寄せた
 #   - フェンスの**インデント上限を見ていない** — CommonMark はフェンスの字下げを 3 桁まで
 #     とし、4 桁以上はインデントコードブロックだが、`^[ \t]*` は無制限に許す。現在の
 #     docs に 4 桁以上のフェンス行は無い（実測）ため実害は出ていない
@@ -401,17 +417,23 @@ ff_docs_mask_spans() {
     # コメント部分だけを消すので `68 suite <!-- 注 -->` の本文は残る。
     # 変数名に close を使わない: BSD awk は組み込み関数 close() と衝突して
     # syntax error になる（GNU awk では通るため macOS だけ壊れる形）
-    function mask_comment(i, at,   rel, abs_end, j, close_at, tail) {
-      rel = index(substr(line[i], at), "-->")
+    function mask_comment(i, at,   rel, abs_end, j, close_at, tail, pos) {
+      # 閉じ側 `-->` の探索もインラインコードスパンを区別する（Issue #706）。
+      # 開始側だけ区別する非対称だと、散文に書いた `` `-->` `` がコメントを閉じ、
+      # 本来の閉じ位置より手前で切れてコメント本文が走査対象へ漏れる。
+      rel = index(substr(blank_code_spans(line[i]), at), "-->")
       if (rel > 0) {
         abs_end = at + rel - 1
         line[i] = substr(line[i], 1, at - 1) substr(line[i], abs_end + 3)
         return i
       }
+      # 行をまたぐ閉じ探索は**フェンスを見ない**（規則 1 の帰結。Issue #706 で
+      # 「フェンス内の -->（mermaid の矢印）を閉じに採らない」案を検討し、棄却した）。
       close_at = 0
-      for (j = i + 1; j <= n; j++) if (index(line[j], "-->") > 0) { close_at = j; break }
+      for (j = i + 1; j <= n; j++) if (index(blank_code_spans(line[j]), "-->") > 0) { close_at = j; break }
       if (close_at == 0) return i + 1     # 未閉鎖: この行だけ飛ばして走査を続ける
-      tail = substr(line[close_at], index(line[close_at], "-->") + 3)
+      pos = index(blank_code_spans(line[close_at]), "-->")
+      tail = substr(line[close_at], pos + 3)
       line[i] = substr(line[i], 1, at - 1)
       for (j = i + 1; j < close_at; j++) line[j] = ""
       line[close_at] = tail

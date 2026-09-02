@@ -25,6 +25,9 @@ INVARIANTS_GATE_SCRIPT="$PLUGIN_ROOT/docs-template/scripts/ace/check-refine-inva
 LEGACY_ALLOWLIST_TEMPLATE="$PLUGIN_ROOT/docs-template/08-knowledge/legacy-format-allowlist.txt"
 ESBUILD_BIN="$PLUGIN_ROOT/mcp/node_modules/.bin/esbuild"
 
+# shellcheck source=../lib/section-scope.sh
+. "$SCRIPT_DIR/../lib/section-scope.sh"
+
 for f in "$REFINE_FILE" "$CURATE_FILE" "$PLAYBOOK_TEMPLATE" "$PATTERNS_TEMPLATE" \
          "$ACE_CYCLE_TEMPLATE" "$CHECK_SIZE_SCRIPT" "$REFINE_REPORT_SCRIPT" \
          "$FORMAT_GATE_SCRIPT" "$INVARIANTS_GATE_SCRIPT"; do
@@ -66,33 +69,15 @@ contains() {
 # 書き写した時点で手順側から消えても緑のままになる（本 suite で実測: R3-0 の
 # 一意性の一文を存在検証へ戻してもハードルールの写しに一致し、全件 pass だった）。
 # 手順の分岐は「その節に在ること」自体が要件なので、節を切り出してから照合する。
-# 節は見出し行の次行から、次の見出し行（行頭 `#`）の直前まで。SKILL.md の入れ子
-# コードフェンスは字下げされているため、フェンス内の `#` 見出しでは切れない。
-# 照合に grep は使わない（パイプ入力の grep -q* は set -euo pipefail 下で
-# SIGPIPE 事故になる。tests/run-all/verify.sh case 10 が横断検査している）。
-# 見出しが 2 本ある文書では、要件が別々の節へ散っていても抽出は先頭 1 本だけを見て
-# 緑になる（節を分割した瞬間に検出力が落ちる）。一致本数を先に数え、1 本でなければ
-# fail-closed で名指しする。
+# 実装の正本は tests/lib/section-scope.sh（Issue #812 で本 suite から切り出した）。
+# 判断基準（どの検査を節スコープへ寄せるか）はそのヘッダーコメントを見ること。
 section_contains() {
-  local file="$1" heading="$2" needle="$3" label="$4" section heading_hits
-  heading_hits="$(awk -v h="$heading" 'index($(0), h) == 1 { n++ } END { print n + 0 }' "$file")"
-  if [ "$heading_hits" -ne 1 ]; then
-    bad "${label} — 節 '$heading' の見出しが ${heading_hits} 本あります（1 本であること。$(basename "$file")）"
-    return
+  local file="$1" heading="$2" needle="$3" label="$4" reason
+  if reason="$(section_scope_contains "$file" "$heading" "$needle")"; then
+    ok "$label"
+  else
+    bad "${label} — ${reason}"
   fi
-  section="$(awk -v h="$heading" '
-    index($(0), h) == 1 { inside = 1; next }
-    inside && /^#+ / { inside = 0 }
-    inside { print }
-  ' "$file")"
-  if [ -z "$section" ]; then
-    bad "${label} — 節 '$heading' が空です（$(basename "$file")）"
-    return
-  fi
-  case "$section" in
-    *"$needle"*) ok "$label" ;;
-    *) bad "${label} — 節 '$heading' に '$needle' がありません（$(basename "$file")）" ;;
-  esac
 }
 
 echo "== ace-refine ハードルール（安全弁の固定文言） =="

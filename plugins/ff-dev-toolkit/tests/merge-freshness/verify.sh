@@ -308,7 +308,7 @@ run_check --print-record --record "$WORK/does-not-exist"
 # 一致していても判定不能（exit 2）へ倒す。マージは止めない（Issue #892）。
 PART_REC="$WORK/partial-record"
 bash "$RECORD" --gate "tests/run-all.sh" --status partial --mode explicit \
-  --suites "changelog-links changelog-contract" \
+  --suites "changelog-public-tags changelog-contract" \
   --result "passed=2 failed=0 skipped=0 not-run=0" --record "$PART_REC" >/dev/null 2>&1
 PART_COMMIT="$(sed -n 's/^COMMIT=//p' "$PART_REC" | head -n 1)"
 PART_AT="$(sed -n 's/^RECORDED_AT=//p' "$PART_REC" | head -n 1)"
@@ -318,7 +318,7 @@ run_check --remote-head "$PART_COMMIT" --record "$PART_REC"
 out_has "$OUT" "FRESHNESS=UNDETERMINED" "部分実行も判定行は UNDETERMINED"
 # REASON は「何を検証したのか」を名指しする。赤で止まるゲートを毎回同じ黄色い警告へ
 # 替えただけでは、そのうち常時黄色いゲートとして読まれなくなる（#163 の劣化経路）。
-out_has "$OUT" "changelog-links changelog-contract" "REASON が何を検証したのか（SUITES の中身）を名指しする"
+out_has "$OUT" "changelog-public-tags changelog-contract" "REASON が何を検証したのか（SUITES の中身）を名指しする"
 out_has "$OUT" "tests/run-all.sh" "REASON がどのゲートの記録かを述べる"
 out_has "$OUT" "explicit" "REASON が記録のモードを報告材料として載せる（判定には使わない）"
 out_has "$OUT" "$PART_AT" "REASON が実測時刻を載せる"
@@ -336,7 +336,7 @@ out_has "$OUT" "RELATION=divergent" "部分記録でも関係の分類は行わ�
 
 run_check --print-record --record "$PART_REC"
 out_has "$OUT" "STATUS=partial" "--print-record が部分実行であることを出す"
-out_has "$OUT" "SUITES=changelog-links changelog-contract" "--print-record が通った suite 一覧を出す"
+out_has "$OUT" "SUITES=changelog-public-tags changelog-contract" "--print-record が通った suite 一覧を出す"
 
 # 部分性の判定は **STATUS だけ**で行う。MODE は allowlist を持たない自由文字列なので、
 # 判定に混ぜると「未知の MODE は全件扱い」という fail-open が入口として残る。加えて
@@ -484,7 +484,7 @@ cp "$DOWN_REC" "$DOWN_COPY"
 # 記録の RECORDED_AT は秒精度なので、同じ秒に書き換わると差分が出ない。1 秒ずらす。
 sleep 1
 run_record --gate "tests/run-all.sh" --status partial --mode explicit \
-  --suites "changelog-links" --record "$DOWN_REC"
+  --suites "changelog-public-tags" --record "$DOWN_REC"
 [[ "$RC" -eq 0 ]] && ok "同じコミットの pass へ partial を書いても exit 0（呼び出し側は警告を出さない）" \
   || bad "pass@X への partial 記録で exit ${RC}（期待 0）"
 # STATUS だけを見る針では、RECORDED_AT / MODE / SUITES の書き換えを見逃す。
@@ -898,9 +898,7 @@ for _n in "${INHERIT_NEEDLES[@]}"; do
   contains "$WORKFLOW" "$_n" "配布 git-workflow の引き取り規定: ${_n}"
 done
 
-REPO_DOCS_CHECKED=0
 if [[ -f "$DEPLOYMENT" ]]; then
-  REPO_DOCS_CHECKED=1
   for _n in "${INHERIT_NEEDLES[@]}"; do
     contains "$DEPLOYMENT" "$_n" "リポジトリ側 DEPLOYMENT の引き取り規定: ${_n}"
   done
