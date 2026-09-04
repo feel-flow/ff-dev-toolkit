@@ -20,6 +20,12 @@
 
 ## [Unreleased]
 
+## [0.81.1] - 2026-09-04
+
+### セキュリティ
+
+- 同梱 MCP サーバー（spec-docs）の推移的依存を更新した: fast-uri を 3.1.5 から 3.1.7 へ（high 4 件の advisory、修正版 3.1.6 以上）、qs を 6.15.3 から 6.16.0 へ（moderate 2 件の advisory、修正版 6.16.0 以上）。fast-uri は配布バンドル `mcp/dist/index.js` に同梱されるため dist を再ビルドして更新した（qs は stdio-only の配布物に含まれない）。あわせて lockfile から vite 8 の optional peer である入れ子の esbuild 0.28.2 が除かれ、`npm install` を実行しても lockfile に差分が出なくなった
+
 ## [0.81.0] - 2026-09-03
 
 ### 変更
