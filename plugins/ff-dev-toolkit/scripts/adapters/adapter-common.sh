@@ -34,11 +34,59 @@ default_base_branch_name() {
   git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true
 }
 
-# `git diff <ref>...HEAD` に渡せる形へ解決する。ローカルブランチを優先し、無ければ
+# `git diff <ref>...HEAD` に渡せる形へ解決する。ローカルブランチと remote-tracking ref の
+# 両方がある場合は「古くない方」を選び、ローカルしか無ければローカル、ローカルが無ければ
 # remote-tracking ref へ倒す（clone 直後はローカルブランチが存在しない）。
+#
+# 背景: ローカル base を無条件に優先していたため、PR ブランチを origin/<base> へ rebase した
+# 直後にローカル <base> を pull し忘れると、rebase で取り込んだ他ブランチのコミットが
+# `<base>...HEAD` の三点比較に混入し、レビューが自分の差分に無いファイルを指摘していた。
+#
+# 判定（fetch はしない = ネットワークに触らない。手元にある origin ref だけで見る）:
+#   - ローカルが origin の**真の祖先**（SHA 不一致 かつ is-ancestor 成立）= stale
+#     → origin/<base> を採る。ローカルには origin に無いコミットが 1 つも無いので、
+#       origin 側を基準にしても利用者のローカル作業を取りこぼさない
+#   - 一致 → ローカル（どちらでも diff は同一。名乗りだけの差なので従来どおり）
+#   - ローカルが先行（未 push の base 更新）→ ローカル。ローカルで積んだ統合ブランチを
+#     base にするのは別の意図的運用で、それを origin へ差し替えると自分の差分が消える
+#   - 分岐（双方に固有コミット）→ ローカル。どちらが正しいかを機械的に決められず、
+#     origin へ倒すと未 push のローカルコミットが差分から落ちる。現状維持で保守的に扱う
+#   - 祖先関係を**確認できなかった**（`git merge-base --is-ancestor` が 0/1 以外で
+#     終了。shallow clone で共通祖先まで履歴が無い場合など）→ ローカル。ただし
+#     「stale ではない」と断言せず、「判定できなかった」と名乗る。断言してしまうと
+#     shallow clone の利用者は混入が起きたときに原因へ辿り着けない
+#
+# 選択結果は stderr へ 1 行残す（両者の short SHA 付き）。ただし 2 つの ref が**同じ
+# コミット**を指すときは何も出さない — 選択が結果に影響しておらず、毎回出すと
+# 「base が動いている」ときの 1 行が常設ノイズに埋もれる。
+# stdout は解決した ref だけ（呼び出しは全部コマンド置換なので、混ぜると base が壊れる）。
+# 冪等: すでに origin/<name> の形へ解決済みの値を再度渡しても（refs/heads に同名が
+# 無い限り）そのまま返り、選択行も増えない。
 resolve_base_branch_ref() {
-  local b="$1"
+  local b="$1" local_sha origin_sha ancestor_rc
   if git rev-parse --verify --quiet "refs/heads/${b}" >/dev/null; then
+    if git rev-parse --verify --quiet "refs/remotes/origin/${b}" >/dev/null \
+      && local_sha="$(git rev-parse --verify --quiet "refs/heads/${b}" 2>/dev/null)" \
+      && origin_sha="$(git rev-parse --verify --quiet "refs/remotes/origin/${b}" 2>/dev/null)" \
+      && [[ "$local_sha" != "$origin_sha" ]]; then
+      # rc は 3 値。0=祖先 / 1=祖先でない / それ以外=判定できなかった。`|| true` で
+      # 潰すと 3 つ目が 1 と同じ「stale ではない」に化ける（shallow clone で実際に起きる）。
+      ancestor_rc=0
+      git merge-base --is-ancestor "$local_sha" "$origin_sha" 2>/dev/null || ancestor_rc=$?
+      case "$ancestor_rc" in
+        0)
+          echo "ℹ️  base ref: origin/${b} を採用（local ${b} は stale: local=${local_sha:0:7} origin=${origin_sha:0:7}）" >&2
+          echo "origin/${b}"
+          return 0
+          ;;
+        1)
+          echo "ℹ️  base ref: local ${b} を採用（origin より stale ではない: local=${local_sha:0:7} origin=${origin_sha:0:7}）" >&2
+          ;;
+        *)
+          echo "⚠️  base ref: local ${b} を採用（鮮度を判定できませんでした: git merge-base --is-ancestor rc=${ancestor_rc}。shallow clone などで共通祖先を辿れない場合、origin 側のコミットが diff に混入することがあります: local=${local_sha:0:7} origin=${origin_sha:0:7}）" >&2
+          ;;
+      esac
+    fi
     echo "$b"
   elif git rev-parse --verify --quiet "refs/remotes/origin/${b}" >/dev/null; then
     echo "origin/${b}"
@@ -1051,6 +1099,62 @@ if [[ -z "${_FF_TIMEOUT_REASON_EXIT_TRAP:-}" ]]; then
   trap '_ff_adapter_exit_cleanup; exit 129' HUP
 fi
 
+# ── Prompt Encoding Guard ──
+#
+# プロンプトを CLI へ渡す直前に「バイト列として valid UTF-8 か」を検査する。
+# codex-cli は stdin が不正な UTF-8 だと
+#   Failed to read prompt from stdin: input is not valid UTF-8 (invalid byte at offset N)
+# で**プロンプト全体**を拒否する。観点ごとに同じ description を載せるので、壊れた
+# バイトが 1 つ混ざるだけで全観点が incomplete になり、レビュー結果は 1 件も出ない。
+# 検査が無いと、その原因（呼び出し側のロケール）はエラー文からは辿れない。
+#
+# 混入経路として実測されているのは、非 UTF-8 ロケール（Windows / Git Bash の
+# codepage 932、LANG 未設定の C ロケール）で `printf '%q'` を通った日本語テキストが
+# 生バイトと $'\NNN' の混在になる形（orchestrator 側は shell_quote で塞いだ）。
+# ただし --description は呼び出し元のスクリプトが作る任意のテキストで、混入経路を
+# こちらで数え上げることはできない。だから「送る前に見る」ことをここで固定する。
+#
+# 検査器が無い環境では**黙って通さず**、検査していないことを 1 行残す。
+assert_prompt_utf8() { # $1: プロンプトファイル / rc0 = valid（または検査不能）
+  local f="$1" err="" sink="" rc=0
+  if ! command -v iconv >/dev/null 2>&1; then
+    echo "WARNING: iconv not found — the prompt was NOT checked for valid UTF-8." >&2
+    echo "         A CLI that requires UTF-8 input may reject it as a whole." >&2
+    return 0
+  fi
+  # -f/-t を明示するので変換自体はロケール非依存。LC_ALL=C は iconv 自身の
+  # メッセージを環境ごとに揺らさないため。
+  #
+  # 変換結果は捨てるが、捨てる先を /dev/null にはしない。BSD iconv（macOS）は
+  # stdout が /dev/null だと errno が上書きされ、stderr が原因と無関係な
+  # "iconv(): Inappropriate ioctl for device" になる（実測）。通常ファイルへ
+  # 向けると "Illegal byte sequence"、GNU iconv では不正バイトの位置まで残る。
+  # 一時ファイルが取れない環境では診断行を諦めて判定だけ行う（周辺の文言が
+  # 原因と回避策を名指ししているので、判定さえ生きていれば案内は成立する）。
+  sink="$(mktemp 2>/dev/null)" || sink=""
+  if [[ -n "$sink" ]]; then
+    err="$(LC_ALL=C iconv -f UTF-8 -t UTF-8 <"$f" 2>&1 >"$sink")" || rc=$?
+    rm -f "$sink"
+  else
+    LC_ALL=C iconv -f UTF-8 -t UTF-8 <"$f" >/dev/null 2>&1 || rc=$?
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    return 0
+  fi
+  echo "ERROR: the assembled prompt is not valid UTF-8 — refusing to send it to the CLI." >&2
+  [[ -n "$err" ]] && echo "       ${err}" >&2
+  echo "       Sending it would make the CLI reject the whole prompt (codex-cli:" >&2
+  echo "       \"input is not valid UTF-8\"), so every perspective would end with no review." >&2
+  echo "       Most likely cause: this shell runs under a non-UTF-8 locale, so text that" >&2
+  echo "       passed through a locale-sensitive quoting step became a mix of raw bytes" >&2
+  echo "       and \$'\\\\NNN' escapes." >&2
+  echo "       Re-run from a UTF-8 shell:" >&2
+  echo "         Windows / Git Bash: chcp 65001 && export LANG=C.UTF-8 LC_ALL=C.UTF-8" >&2
+  echo "         POSIX:              export LC_ALL=C.UTF-8   (or en_US.UTF-8)" >&2
+  echo "       Also check the text passed via --description: it must be valid UTF-8." >&2
+  return 1
+}
+
 # プロンプト本文を一時ファイルへ実体化し、そのパスを echo する（失敗時は非 0）。
 # 全アダプタ共通の受け渡し口。プロンプト（diff 込みで数百 KB になりうる）を argv に
 # 乗せると Windows / Git Bash の CreateProcess 上限（約 32KB）で exit 126 になる
@@ -1073,6 +1177,12 @@ materialize_prompt_file() {
   # 末尾に改行を 1 つ付ける。stdin の末尾へ別テキストを連結する型の CLI で、
   # diff の最終行と後続テキストが同一行へ癒着するのを防ぐ（連結しない CLI には無害）。
   if ! printf '%s\n' "$content" >"$f"; then
+    rm -f "$f"
+    return 1
+  fi
+  # 検査は「書いたバイト列そのもの」に対して行う。組み立て途中の変数ではなく、
+  # CLI の stdin になるファイルを見ることで、経路のどこで壊れても捕まる。
+  if ! assert_prompt_utf8 "$f"; then
     rm -f "$f"
     return 1
   fi
@@ -1605,7 +1715,11 @@ parse_adapter_args() {
         shift 2
         ;;
       --base)
-        BASE_BRANCH="$2"
+        # 既定値（detect_base_branch）と同じ鮮度解決を通す。verbatim 代入だと、
+        # アダプタを直接起動したときだけ stale なローカル ref のまま diff を取る。
+        # orchestrator から渡ってくる値はすでに解決済みだが、この関数は冪等なので
+        # 二重解決にはならない（選択行も増えない）。
+        BASE_BRANCH="$(resolve_base_branch_ref "$2")"
         BASE_BRANCH_EXPLICIT="true"
         shift 2
         ;;

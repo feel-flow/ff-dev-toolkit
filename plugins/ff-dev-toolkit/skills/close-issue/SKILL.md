@@ -602,16 +602,26 @@ esac
 
 ```bash
 # Refs 運用: 手順 2b が検査した MERGE_SUBJECT / MERGE_BODY を使う
-# %q はシェルで安全な引用形へ変換する
-printf 'gh pr merge %s --squash --match-head-commit %s \\\n  --subject %q \\\n  --body %q\n' \
-  "${PR_NUMBER}" "${REMOTE_HEAD}" "${MERGE_SUBJECT}" "${MERGE_BODY}"
+# 単引用で包み、内側の単引用だけを '\'' へ逃がす（バイト透過なので日本語が壊れない）。
+# printf '%q' は使わない — 現在のロケールで文字境界を解釈するため、非 UTF-8 ロケール
+# （コンソール codepage 932 / LC_ALL=C）では日本語が生バイトと $'\NNN' の混在になり、
+# 出力全体が不正な UTF-8 になる（実測）。末尾の X は $(...) が落とす末尾改行の保全用。
+# sed が使えない環境（PATH 破損など）では `|| return 1` で失敗を伝播する。これが無いと
+# 空の '' を返して rc=0 で成功し、件名・本文を失った merge コマンドを黙って出す（実測）。
+q() { local s; s="$(printf '%sX' "$1" | sed "s/'/'\\\\''/g")" || return 1; printf "'%s'" "${s%X}"; }
+# 引数位置の $(...) の失敗は set -e に拾われない（終了ステータスが捨てられる）ため、
+# 生成前に件名・本文の両方を一度通し、q が失敗したらコマンドを出さずに停止する。
+q "${MERGE_SUBJECT}" > /dev/null && q "${MERGE_BODY}" > /dev/null \
+  || { echo "❌ 引用に失敗（sed が使えない）。merge コマンドを生成しない" >&2; exit 2; }
+printf 'gh pr merge %s --squash --match-head-commit %s \\\n  --subject %s \\\n  --body %s\n' \
+  "${PR_NUMBER}" "${REMOTE_HEAD}" "$(q "${MERGE_SUBJECT}")" "$(q "${MERGE_BODY}")"
 
 # Closes 運用（Refs 対象が 0 件）: 件名・本文の明示は要らない
 # printf 'gh pr merge %s --squash --match-head-commit %s\n' "${PR_NUMBER}" "${REMOTE_HEAD}"
 ```
 
 - **この出力をそのまま手順 8 の報告へ貼る**。報告に載る merge コマンドは、2b が検査した文字列とこの手順が照合した先端から機械的に導出されたものでなければならない。人手で書き写した時点で、検査は何も保証しなくなる
-- `%q` の出力はエスケープが入って読みにくいが、**シェルが解釈した結果は検査した文字列と同一**（多行の本文は `$'\n'` として現れる）。読みやすさのために引用を書き換えないこと — 書き換えた時点で「検査した文字列」ではなくなる
+- `q` の出力は単引用で包まれて読みにくいが、**シェルが解釈した結果は検査した文字列とバイト同一**で、**ロケールに依存しない**（多行の本文は単引用の中に改行がそのまま入る）。読みやすさのために引用を書き換えないこと — 書き換えた時点で「検査した文字列」ではなくなる
 
 ### 8. 完了報告
 

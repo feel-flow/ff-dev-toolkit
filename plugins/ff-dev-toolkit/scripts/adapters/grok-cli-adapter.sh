@@ -220,7 +220,7 @@ echo_model_args
 prompt_file="$(materialize_prompt_file "$prompt")" || prompt_file=""
 if [[ -z "$prompt_file" ]]; then
   fail_orchestrator_error "$perspective_name" \
-    "cannot write the prompt to a temp file (check TMPDIR)."
+    "cannot hand the prompt to the CLI (temp-file write failed, or the prompt is not valid UTF-8 — see the error above)."
 fi
 _FF_PROMPT_FILE="$prompt_file"
 

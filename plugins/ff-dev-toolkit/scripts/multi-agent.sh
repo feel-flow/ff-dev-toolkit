@@ -32,10 +32,19 @@
 #   --sequential            Sequential execution
 #   --output-dir <dir>      Output directory (auto-detected by task type)
 #   --base <branch>         Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop).
-#                           A bare branch name resolves to the LOCAL ref first. If the branch was cut
-#                           from a newer origin/<branch> while the local ref lags, merged commits from
-#                           other branches leak into the three-dot diff — review / --include-diff runs
-#                           print a warning before the plan (pass origin/<branch> or pull to resolve)
+#                           A bare branch name resolves to whichever of the local ref and
+#                           origin/<branch> is not stale, without fetching: when the local ref is a
+#                           strict ancestor of origin/<branch> (base not pulled yet) the run uses
+#                           origin/<branch>, so commits other branches merged into the base cannot
+#                           leak into the three-dot diff. Identical / ahead / diverged local refs are
+#                           kept as-is. The chosen ref is announced on stderr once, with both short
+#                           SHAs (silent when both refs point at the same commit; the line says
+#                           "鮮度を判定できませんでした" when git cannot decide, e.g. a shallow clone).
+#                           A diverged local ref can still leak, and review / --include-diff runs keep
+#                           printing the leak warning before the plan for that case. Pass
+#                           origin/<branch> to opt out of the local ref entirely. Review-series
+#                           identity and --resume identity use the requested name, not the resolved
+#                           one, so pulling the base does not restart the series.
 #   --staged                Review only the staged index diff (review task only; mutually exclusive with --base)
 #   --resume                Reuse successful results from an identical prior input and
 #                           execute only failed, timed-out, missing, or corrupt tasks
@@ -372,6 +381,40 @@ resolve_available_fallback() {
   echo ""
 }
 
+# ── Locale-Independent Shell Quoting ──
+#
+# 貼り付け用コマンドの引用に `printf '%q'` は使わない。%q は**現在のロケールで
+# 文字境界を解釈する**ため、非 UTF-8 ロケール（Windows / Git Bash のコンソール
+# codepage 932、LANG 未設定の C ロケールなど）では UTF-8 の日本語がバイト単位に
+# 分解され、しかも一部のバイトだけが $'\NNN' へ、残りは生バイトのまま出力される。
+# 実測（LC_ALL=C）:
+#
+#     printf '%q' 'なし'   →   <e3> $'\201' <aa> <e3> $'\201' $'\227'
+#
+# 生の 0xE3 の直後に ASCII の `$` が続くので、**出力全体が不正な UTF-8 になる**
+# （iconv -f UTF-8 -t UTF-8 が Illegal byte sequence で落ちることを実測）。この
+# 文字列は失敗時の再実行案内や統合レポートへ載り、それを次回実行の --description
+# （prior review evidence）として渡すと prompt 全体が不正な UTF-8 になる。codex-cli
+# は "input is not valid UTF-8" で prompt 全体を拒否するため、全観点が incomplete
+# で終わる（Windows の既定環境からの導入先報告として実測されている）。
+#
+# 単引用エスケープはバイト透過なので、入力が valid UTF-8 なら出力も valid UTF-8 で、
+# ロケールに依存しない。素で貼っても安全な語はそのまま返す（%q と同じ見た目を保つ）。
+# 許可集合は ASCII の英数字と記号だけを意図している。多バイト文字がロケールの照合
+# 順で範囲に入って裸のまま返っても、シェルのメタ文字はこの集合に入らないため引用
+# としての安全性は変わらない（生バイトのまま = valid UTF-8 のまま）。
+shell_quote() {
+  local s="$1"
+  if [[ -n "$s" && "$s" != *[!A-Za-z0-9._/:=@%+-]* ]]; then
+    printf '%s' "$s"
+    return
+  fi
+  # 置換文字列は変数に置く。`${s//\'/...}` のリテラル記法はバックスラッシュの
+  # 解釈が bash 3.2（macOS 既定）と 5.x で食い違い、3.2 では壊れた引用を出す（実測）。
+  local sq="'" esc="'\\''"
+  printf "'%s'" "${s//$sq/$esc}"
+}
+
 # ── Model-Selection Env Passthrough ──
 # モデル選択の env は「インラインで前置して 1 回だけ効かせる」形（multi-review の
 # SKILL.md の例もそれ）なので、元コマンドが終わると消える。再実行コマンドをそのまま
@@ -391,7 +434,7 @@ model_env_prefix() {
   local cli="$1" var prefix=""
   for var in $(get_cli_model_env_vars "$cli"); do
     if [[ -n "${!var:-}" ]]; then
-      prefix="${prefix}${var}=$(printf '%q' "${!var}") "
+      prefix="${prefix}${var}=$(shell_quote "${!var}") "
     fi
   done
   printf '%s' "$prefix"
@@ -805,8 +848,17 @@ if [[ -z "$BASE_BRANCH" ]]; then
   BASE_BRANCH="develop"
   BASE_BRANCH_SOURCE="fallback — origin/HEAD not set"
 fi
-# Prefer the local branch; fall back to the remote-tracking ref when absent (clones)
-BASE_BRANCH="$(resolve_base_branch_ref "$BASE_BRANCH")"
+# 鮮度解決（ローカル / remote-tracking のどちらが古くないか）は**ここではやらない**。
+# parse_args の最後の finalize_base_branch で、最終的な base に対して 1 回だけ行う。
+# ここで解決すると、--base を渡した実行でも「使われない既定 base」の選択行が 1 行出て、
+# 最終 base の選択行と合わせて 2 行になる（別の base を指定したときは無関係な名前の行）。
+#
+# 呼び出し側が指定した base の**名前**（origin/ を落とした形）。レビュー系列 ID と
+# --resume の identity はこちらを使う。解決結果（BASE_BRANCH）を使うと、ローカルの
+# 鮮度が変わっただけで develop ↔ origin/develop が入れ替わり、同じレビュー文脈が
+# 別系列と判定される（stale のまま 1 回目 → git pull 後の 2 回目が「another
+# branch/base/scope」となり、強制的にフルレビューへ落ちる）。
+BASE_BRANCH_IDENTITY="${BASE_BRANCH#origin/}"
 DRY_RUN=false
 RESUME=false
 FRESH=false
@@ -947,6 +999,18 @@ show_help() {
 }
 
 # ── Argument Parsing ──
+# 最終的な base（env / 自動検出 / フォールバック / --base のいずれか）へ鮮度解決を
+# **1 回だけ**掛ける。呼び出しは parse_args の末尾 1 箇所だけに保つこと — 解決を
+# 複数箇所に置くと選択行が重複し、しかも「実際には使わなかった base」の行が混ざる。
+#
+# BASE_BRANCH_IDENTITY は解決**前**の名前（origin/ 前置は落とす）。レビュー系列 ID と
+# --resume の identity 用で、`--base develop` と `--base origin/develop` と
+# 「stale なので origin へ倒した develop」を同じ文脈として扱うためにある。
+finalize_base_branch() {
+  BASE_BRANCH_IDENTITY="${BASE_BRANCH#origin/}"
+  BASE_BRANCH="$(resolve_base_branch_ref "$BASE_BRANCH")"
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -968,6 +1032,9 @@ parse_args() {
       --parallel)    PARALLEL=true; shift ;;
       --sequential)  PARALLEL=false; shift ;;
       --output-dir)  OUTPUT_DIR="$2"; OUTPUT_DIR_EXPLICIT=true; shift 2 ;;
+      # 名前をそのまま受ける。鮮度解決は parse_args の最後で最終 base に 1 回だけ
+      # 掛ける（finalize_base_branch）。ここで解決すると、init 側の既定 base の解決と
+      # 合わせて選択行が 2 行出る。
       --base)        BASE_BRANCH="$2"; BASE_BRANCH_SOURCE="--base flag"; BASE_BRANCH_EXPLICIT=true; shift 2 ;;
       --staged)      STAGED_DIFF=true; shift ;;
       --resume)      RESUME=true; shift ;;
@@ -1018,6 +1085,9 @@ parse_args() {
     echo "ERROR: --description is required for ${TASK_TYPE} tasks." >&2
     exit 1
   fi
+
+  # 引数がすべて確定してから最終 base を 1 回だけ解決する（選択行も 1 行だけ）。
+  finalize_base_branch
 }
 
 # ── Config Loading (v1/v2 compatible) ──
@@ -1608,6 +1678,12 @@ validate_requested_perspectives() {
 #     「pull していないだけ」の形で毎回誤警告する（セルフレビューで実測反証）。
 #     混入が起きるのは merge-base(local, HEAD) と merge-base(origin, HEAD) が
 #     食い違うときで、その差分コミット数がまさに混入する件数になる
+#
+# 現在は base 解決（resolve_base_branch_ref）が「ローカルが origin の真の祖先」の場合に
+# origin/<base> を採るため、その形はここへ到達する前に origin/* へ倒れて早期 return する。
+# ここに残る実効ケースは**分岐**（双方に固有コミット）で、解決側が保守的にローカルを
+# 維持する形。混入は起こりうるが自動で差し替えると未 push のコミットが差分から落ちるため、
+# 警告に留めるという役割分担にしてある。
 warn_if_stale_local_base() {
   [[ "$STAGED_DIFF" == "true" ]] && return 0
   [[ "$IN_GIT_REPO" == "true" ]] || return 0
@@ -1626,9 +1702,9 @@ warn_if_stale_local_base() {
   [[ "$leaked" =~ ^[0-9]+$ ]] || return 0
   if [[ "$leaked" -gt 0 ]]; then
     # 貼り付け実行される案内コマンドに branch 名を素で埋めない（; や $( ) を含む
-    # branch 名は git 的に合法で、%q ならシェル安全な引用になる。通常名は素のまま）
-    base_q="$(printf '%q' "$base")"
-    origin_q="$(printf '%q' "origin/${base}")"
+    # branch 名は git 的に合法で、shell_quote ならシェル安全な引用になる。通常名は素のまま）
+    base_q="$(shell_quote "$base")"
+    origin_q="$(shell_quote "origin/${base}")"
     echo "" >&2
     echo "⚠️  base '${base}' はローカル ref で、このブランチの分岐点（origin/${base} 基準）より古い状態です。" >&2
     echo "    他ブランチのマージ済みコミット ${leaked} 件が diff に混入します。" >&2
@@ -2807,7 +2883,10 @@ compute_resume_identity() {
   {
     printf 'identity-version=%s\n' "$RESUME_IDENTITY_VERSION"
     printf 'task=%s\nmode=%s\nstrategy=%s\n' "$TASK_TYPE" "$MODE" "$STRATEGY"
-    printf 'base-ref=%s\nbase-oid=%s\nhead=%s\n' "$BASE_BRANCH" "$base_oid" "$head_oid"
+    # 解決結果ではなく指定された名前を使う。解決結果を混ぜると、ローカル base を
+    # pull しただけで origin/develop → develop と名乗りが変わり、同じ入力の再実行が
+    # 「別の入力」に見えて resume が丸ごと無効化される（base-oid が実体の変化を見る）。
+    printf 'base-ref=%s\nbase-oid=%s\nhead=%s\n' "$BASE_BRANCH_IDENTITY" "$base_oid" "$head_oid"
     printf 'staged=%s\ninclude-diff=%s\n' "$STAGED_DIFF" "$INCLUDE_DIFF"
     hash_text_value description "$DESCRIPTION"
     printf '%s\n' "$plan_sorted" | sed 's/^/plan=/'
@@ -3041,7 +3120,13 @@ current_review_series_id() {
   if [[ "$STAGED_DIFF" == "true" ]]; then scope="staged"; else scope="branch"; fi
   # This is an accidental-mixing guard, not an authentication boundary. POSIX
   # cksum keeps the persisted token portable across macOS and Linux.
-  printf 'repo=%s\nbranch=%s\nbase=%s\nscope=%s\n' "$repo" "$branch" "$BASE_BRANCH" "$scope" \
+  #
+  # base は**解決前の名前**（BASE_BRANCH_IDENTITY）を使う。解決結果を混ぜると、
+  # ローカル base の鮮度だけで develop ↔ origin/develop が入れ替わり、同じレビュー
+  # 文脈が別系列になる（stale のまま 1 回目 → git pull 後の 2 回目が
+  # "another branch/base/scope" と判定され、未解決 Critical を引き継げずに
+  # 強制フルレビューへ落ちる偽陽性）。
+  printf 'repo=%s\nbranch=%s\nbase=%s\nscope=%s\n' "$repo" "$branch" "$BASE_BRANCH_IDENTITY" "$scope" \
     | cksum | awk '{ print $1 "-" $2 }'
 }
 
@@ -3123,7 +3208,7 @@ is_unfiltered_full_review_plan() {
 capture_and_guard_unresolved_critical_state() {
   [[ "$TASK_TYPE" == "review" ]] || return 0
   local report_file="${OUTPUT_DIR}/integrated-report.md" parsed tagged tag perspective missing="" marker_rc=0
-  local previous_series="" current_series=""
+  local previous_series="" current_series="" base_q
   [[ -f "$report_file" ]] || return 0
   if ! parsed="$(extract_unresolved_critical_perspectives "$report_file")"; then
     echo "ERROR: cannot inspect unresolved Critical perspectives in the previous report." >&2
@@ -3207,18 +3292,35 @@ capture_and_guard_unresolved_critical_state() {
     esac
   fi
 
+  # A legacy report (written before the machine state carried series:) has no
+  # series identity at all. That is not a fail-open case: an unreadable series
+  # cannot prove the leftover belongs to *this* series, so it is treated as
+  # another series. An unfiltered full review re-runs every default perspective
+  # anyway, so it may start a new series — otherwise the first review after a
+  # toolkit upgrade always aborts and forces a manual move of the leftover.
+  # Narrowed runs keep falling through to the perspective check below, so they
+  # still pass only when the plan covers every unresolved perspective.
+  local previous_series_is_current=false
   if [[ -n "$previous_series" ]]; then
     current_series="$(current_review_series_id)" || {
       echo "ERROR: cannot identify the current review series." >&2
       return 1
     }
-    if [[ "$previous_series" != "$current_series" ]]; then
-      if is_unfiltered_full_review_plan; then
-        PREVIOUS_UNRESOLVED_BLOCK=""
-        PREVIOUS_UNRESOLVED_NONBLOCK=""
+    [[ "$previous_series" == "$current_series" ]] && previous_series_is_current=true
+  fi
+
+  if [[ "$previous_series_is_current" != "true" ]]; then
+    if is_unfiltered_full_review_plan; then
+      PREVIOUS_UNRESOLVED_BLOCK=""
+      PREVIOUS_UNRESOLVED_NONBLOCK=""
+      if [[ -n "$previous_series" ]]; then
         echo "ℹ️  Previous Critical state belongs to another branch/base/scope; this unfiltered full review starts a new series." >&2
-        return 0
+      else
+        echo "ℹ️  Previous Critical state predates review-series tracking; this unfiltered full review starts a new series." >&2
       fi
+      return 0
+    fi
+    if [[ -n "$previous_series" ]]; then
       echo "ERROR: the previous Critical state belongs to another branch/base/scope." >&2
       echo "       Run an unfiltered full review to start a new review series." >&2
       echo "       Full review = no --perspective / --exclude-perspective / --mode cross-model (--cli is allowed)." >&2
@@ -3235,8 +3337,27 @@ capture_and_guard_unresolved_critical_state() {
   done
 
   if [[ -n "$missing" ]]; then
+    # The recovery routes must be spelled out here too. A leftover report can
+    # list perspectives that no narrowed plan can cover (a distributed plan owns
+    # only a subset), so "include every listed perspective" alone leaves the
+    # caller with no way forward but a manual move of the previous results.
     echo "ERROR: narrowed review omits unresolved Critical perspective(s): ${missing}" >&2
     echo "       Include every listed perspective and verify its marker is resolved before narrowing." >&2
+    # The full-review route is offered only when the leftover is NOT from this
+    # series. Within the same series a full review starts no new series, and the
+    # suggested entry point runs a distributed plan whose single CLI owns only a
+    # subset of the perspectives — a perspective owned by another CLI stays
+    # missing and reproduces this very error. Advertising it there would send the
+    # caller around a loop that cannot succeed; --fresh remains the way out.
+    if [[ "$previous_series_is_current" != "true" ]]; then
+      echo "       Or run a full review, which covers every default perspective:" >&2
+      # 貼り付け実行される案内なので branch 名を素で埋めない（既存の base_q と同じ流儀。
+      # printf '%q' は使わない — 現在のロケールでマルチバイトを分解して壊すため。
+      # shell_quote は valid UTF-8 のまま安全に引用する）
+      base_q="$(shell_quote "$BASE_BRANCH")"
+      echo "       bash scripts/codex-review.sh --base ${base_q}" >&2
+    fi
+    echo "       Or archive leftover results and retry: add --fresh" >&2
     echo "       Previous results were left untouched: ${report_file}" >&2
     return 1
   fi
@@ -3414,6 +3535,33 @@ execute_tasks() {
   FAILED_TASKS=""
   SKIPPED_TASKS=""
   POISONED_CLIS=""
+
+  # review だけ: タスクを 1 つでも起動する前に「完了までツリーを触らない」バナーを
+  # 1 回出す。ツリーが動いた実行の破棄（verify_repo_unchanged）は**事後検出**で、
+  # 着手前に注意を促さないと数分のレビューが丸ごと無駄になる再発が起きていた。
+  # 破棄ロジックは並列・逐次のどちらの経路でも同じように走るので、バナーもこの
+  # 分岐の**外**で出す（片方の経路にしか置かないと、出ないほうで同じ事故が再発する）。
+  # explore / implement では出さない（review 限定）。破棄ロジック・終了コードは変えない。
+  if [[ "$TASK_TYPE" == "review" ]]; then
+    # HEAD は起動時に固定した基準（REPO_SNAPSHOT_BEFORE の第 1 フィールド＝フル SHA）
+    # から作る。ここで HEAD を引き直すと、baseline を取ってからバナーを出すまでの間に
+    # HEAD が動いた場合に、破棄診断の「HEAD: <前> → <後>」の <前> と食い違う値を
+    # 見せてしまう。短縮は記録済みの SHA を引くだけなので HEAD の移動に影響されない。
+    local banner_head="n/a"
+    if [[ -n "$REPO_SNAPSHOT_BEFORE" ]]; then
+      local banner_head_full="${REPO_SNAPSHOT_BEFORE%% *}"
+      case "$banner_head_full" in
+        unborn) banner_head="unborn" ;;
+        *)
+          banner_head="$(git rev-parse --short "$banner_head_full" 2>/dev/null || printf '%s' "${banner_head_full:0:12}")"
+          [[ -n "$banner_head" ]] || banner_head="n/a"
+          ;;
+      esac
+    fi
+    # 進行表示はこのスクリプトでは一貫して stderr（直後の "⏳ Waiting for" と同じ）。
+    # stdout は結果を受け取る側のものなので、注意喚起をそちらへ混ぜない。
+    echo "⚠️  完了まで worktree を変更しないでください（commit / push / checkout / 編集）。変更を検出すると結果は全破棄されます（HEAD: ${banner_head}）" >&2
+  fi
 
   if [[ "$PARALLEL" == "true" ]]; then
     # ── 並列実行: CLI 間は並列、同一 CLI 内は逐次（Issue #251） ──
@@ -3994,16 +4142,18 @@ print_failure_advice() {
   # Absolute path, not basename: this script normally lives inside an installed
   # plugin and is invoked from the target project, where no same-named file
   # exists. A bare `bash multi-agent.sh ...` would fail the moment it is pasted.
-  # printf %q keeps a path with spaces runnable.
+  # shell_quote keeps a path with spaces runnable, and unlike printf %q it is
+  # byte-transparent, so a non-ASCII --description survives a non-UTF-8 locale as
+  # valid UTF-8 (see the shell_quote header for the measurement).
   local self
-  self="bash $(printf '%q' "${SCRIPT_DIR}/multi-agent.sh") --task ${TASK_TYPE}"
+  self="bash $(shell_quote "${SCRIPT_DIR}/multi-agent.sh") --task ${TASK_TYPE}"
   # Carry the flags that decide WHAT gets looked at. Dropping --base would retry
   # against a different diff than the run that just failed, which makes the
   # suggested command quietly not-a-retry.
   if [[ "$STAGED_DIFF" == "true" ]]; then
     self="${self} --staged"
   elif [[ "$TASK_TYPE" == "review" || "$INCLUDE_DIFF" == "true" ]]; then
-    self="${self} --base $(printf '%q' "$BASE_BRANCH")"
+    self="${self} --base $(shell_quote "$BASE_BRANCH")"
   fi
   if [[ "$INCLUDE_DIFF" == "true" ]]; then
     # Without this the retry builds a prompt with no diff in it — a different task,
@@ -4011,13 +4161,13 @@ print_failure_advice() {
     self="${self} --include-diff"
   fi
   if config_is_explicit; then
-    self="${self} --config $(printf '%q' "$CONFIG_FILE")"
+    self="${self} --config $(shell_quote "$CONFIG_FILE")"
   fi
   if [[ "$OUTPUT_DIR_EXPLICIT" == "true" ]]; then
-    self="${self} --output-dir $(printf '%q' "$OUTPUT_DIR")"
+    self="${self} --output-dir $(shell_quote "$OUTPUT_DIR")"
   fi
   if [[ -n "$DESCRIPTION" ]]; then
-    self="${self} --description $(printf '%q' "$DESCRIPTION")"
+    self="${self} --description $(shell_quote "$DESCRIPTION")"
   fi
 
   echo "" >&2
@@ -4731,7 +4881,7 @@ main() {
   # 従来の分散プランへ落とす（今日までと同じ挙動）。
   if [[ "$MODE" == "pair" && -z "$REVIEW_MAIN" ]]; then
     echo "ℹ️  No reviewers configured — falling back to the distributed plan." >&2
-    echo "   Set them once with: bash $(printf '%q' "${SCRIPT_DIR}/multi-agent.sh") --task review --set-reviewers main=<cli>,sub=<cli>" >&2
+    echo "   Set them once with: bash $(shell_quote "${SCRIPT_DIR}/multi-agent.sh") --task review --set-reviewers main=<cli>,sub=<cli>" >&2
     MODE="distributed"
   fi
 

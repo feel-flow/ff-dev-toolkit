@@ -38,6 +38,11 @@
 #     clean 確認（Step 5）は対象外で、除外指定があっても dirty なら削除しない
 #   - base を保持する別 worktree は clean の場合だけ detached へ退避し、
 #     worktree と ignored ファイルを維持する。dirty なら変更せず中断する
+#   - 対象 PR のブランチを保持する linked worktree を cwd にして起動された場合は、
+#     破壊的処理の前に中断する。その cwd では掃除対象である worktree 自身を削除できず、
+#     base を別の worktree が保持していれば、その worktree を detached HEAD へ退避する
+#     ことになる。main tree のパスが取れれば再実行コマンドを、取れない構成（bare
+#     リポジトリ）では原因と対処を示す
 #   - トランスクリプトの回収は「今回削除に成功した worktree の分」だけを対象にし、
 #     jsonl の cwd がその worktree を指すことを照合してから処理する。既定は削除では
 #     なく tar.gz へのアーカイブで、アーカイブに失敗したら元ディレクトリを残す
@@ -99,6 +104,63 @@ find_worktree_for_branch() {
   done < <(git worktree list --porcelain)
 
   return 1
+}
+
+resolved_dir() {
+  # $1: ディレクトリ。symlink を解決した絶対パスを stdout へ返す。比較する両辺を
+  # 同じ方法で正規化するために使う（片側だけ生のパスだと /var と /private/var の
+  # ような symlink の差でパス比較が誤判定する）。
+  local dir=""
+  dir="$(cd -- "$1" 2>/dev/null && pwd -P)" || return 1
+  printf '%s\n' "$dir"
+}
+
+is_linked_worktree() {
+  # cwd が linked worktree（`git worktree add` で作った側）なら 0、main worktree
+  # なら非 0。linked worktree では --git-dir が <common>/worktrees/<name> を指し、
+  # --git-common-dir と一致しない。判定できなければ「linked ではない」に倒す
+  # （案内のためのガードであり、削除可否を決める安全ガードではない）。
+  local git_dir="" common_dir=""
+  git_dir="$(git rev-parse --git-dir 2>/dev/null)" || return 1
+  common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
+  git_dir="$(resolved_dir "$git_dir")" || return 1
+  common_dir="$(resolved_dir "$common_dir")" || return 1
+  [ "$git_dir" != "$common_dir" ]
+}
+
+main_worktree_path() {
+  # main worktree のパスを stdout へ返す。`git worktree list --porcelain` の
+  # **先頭レコード**が main worktree で、linked worktree はそのあとに並ぶ。
+  # bare リポジトリ（先頭レコードに `bare` 行が付く）は cd 先として案内できない
+  # ので非 0 を返し、呼び出し元に「案内しない」を選ばせる。
+  local line="" path="" seen=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      worktree\ *)
+        [ "$seen" = "0" ] || break
+        path="${line#worktree }"
+        seen=1
+        ;;
+      bare)
+        [ "$seen" = "1" ] || continue
+        return 1
+        ;;
+    esac
+  done < <(git worktree list --porcelain)
+
+  [ -n "$path" ] || return 1
+  printf '%s\n' "$path"
+}
+
+script_self_path() {
+  # 再実行コマンドへ載せる自分自身のパス。相対起動でも main tree へ cd したあとで
+  # 通用するよう絶対パスへ直す（解決できなければ起動時の値をそのまま使う）。
+  local src="${BASH_SOURCE[0]}" dir=""
+  case "$src" in
+    /*) printf '%s\n' "$src"; return 0 ;;
+  esac
+  dir="$(resolved_dir "$(dirname -- "$src")")" || { printf '%s\n' "$src"; return 0; }
+  printf '%s/%s\n' "$dir" "$(basename -- "$src")"
 }
 
 worktree_lock_reason() {
@@ -644,6 +706,58 @@ if [ -n "$CURRENT_BRANCH_BEFORE" ] \
   && [ "$CURRENT_BRANCH_BEFORE" != "$PR_BASE" ] \
   && [ "$CURRENT_BRANCH_BEFORE" != "$PR_HEAD" ]; then
   NO_SWITCH_MODE=1
+fi
+
+# ---- Step 2.6: 対象 PR の worktree を cwd にした起動の検出 --------------------
+#
+# マージ直後に PR の worktree のまま cleanup を呼ぶ動線がある。この cwd では
+# 本スクリプトの主目的が 2 つとも達成できない:
+#   - 掃除対象であるこの worktree 自身は、そこに立っている以上 Step 5 で削除できない
+#   - base を別の worktree（多くは main tree）が保持していれば、Step 3 が base を
+#     取り戻すにはその worktree を detached HEAD へ退避することになる（呼び出し元を
+#     優先して他方の checkout を崩す）。base を誰も保持していなければこちらは起きない
+#     ので、案内では実際に保持している worktree を見つけたときだけ言及する
+# 前者だけでも「気付きにくい未完了」に化けるため、破壊的処理へ入る前に止める。
+# 案内は main tree のパスが取れれば再実行コマンド、取れない構成（bare リポジトリ）
+# では原因と対処を出す。パスが取れないことを理由に素通しはしない。
+#
+# 検出は「cwd が linked worktree」かつ「その worktree が対象 PR の head を保持」に
+# 限る。linked worktree からの実行そのものは正当な運用で、
+#   - base でも PR head でもないブランチ = 切り替えを伴わない掃除モード（下記）
+#   - detached / base 保持 = 従来どおり通常モード
+# はいずれも完走できる。ここを「linked worktree なら一律中断」へ広げると、
+# それらの経路まで巻き添えで止まる。
+IN_PR_WORKTREE=0
+MAIN_WORKTREE=""
+PR_BASE_WORKTREE=""
+if [ "$CURRENT_BRANCH_BEFORE" = "$PR_HEAD" ] && is_linked_worktree; then
+  IN_PR_WORKTREE=1
+  # main tree のパスは「どこでやり直せばよいか」の案内にだけ使う。取れなくても
+  # （bare リポジトリの main レコードは cd 先にできない）中断は取り消さない。
+  # ここを素通しさせると、下の 2 つの未完了を黙ったまま破壊的処理へ進むことになる。
+  MAIN_WORKTREE="$(main_worktree_path || true)"
+  PR_BASE_WORKTREE="$(find_worktree_for_branch "$PR_BASE" || true)"
+fi
+if [ "$IN_PR_WORKTREE" = "1" ]; then
+  echo "❌ 対象 PR のワークツリーを cwd にして実行しています: ${REPO_ROOT}"
+  echo "   このまま続けると、掃除対象であるこのワークツリー自身は削除できません。"
+  if [ -n "$PR_BASE_WORKTREE" ]; then
+    echo "   さらに base (${PR_BASE}) を別のワークツリー (${PR_BASE_WORKTREE}) が保持しているため、"
+    echo "   base へ復帰するにはそのワークツリーを detached HEAD へ退避することになります。"
+  fi
+  echo "   破壊的処理の前に中断します（リモートブランチ・ローカルブランチ・worktree は何も削除していません）。"
+  echo ""
+  if [ -n "$MAIN_WORKTREE" ]; then
+    echo "main tree で実行し直してください:"
+    # パスに空白等が含まれていてもそのまま貼って実行できるよう %q で引用する。
+    printf '  cd %q && bash %q %s\n' "$MAIN_WORKTREE" "$(script_self_path)" "$PR_NUM"
+  else
+    echo "別のワークツリーで実行し直してください（main tree のパスを特定できませんでした）:"
+    echo "  原因: cwd が対象 PR のブランチ (${PR_HEAD}) を保持するリンクされたワークツリーです。"
+    echo "  対処: bare リポジトリなど main tree が checkout を持たない構成のため、"
+    echo "        'git worktree list' で対象 PR のブランチを保持しない作業ツリーを選び、そこで実行してください。"
+  fi
+  exit 1
 fi
 
 if [ "$CALLER_DIRTY" = "1" ]; then

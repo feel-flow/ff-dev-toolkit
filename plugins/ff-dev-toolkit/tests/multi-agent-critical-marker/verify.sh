@@ -1465,6 +1465,159 @@ else
 fi
 
 git switch -q feature/x
+# ── series タグを持たない旧形式レポート ────────────────────────────
+#
+# --fresh / 「別 series なら新シリーズ」導入より前に生成された
+# `.review-results/integrated-report.md` には機械状態行が無く、series を読めない。
+# 「今回の series である」ことは証明できないので、既定観点を全て回し直す
+# unfiltered full review は新シリーズを開始できなければならない（さもないと
+# アップグレード直後の最初のレビューが必ず止まり、手動退避を強いる）。
+# 絞り込みは従来どおり止めるが、案内に復旧手段（--fresh と具体コマンド）が要る。
+echo
+echo "== 旧形式（series タグ無し）レポートの扱い =="
+
+reset_review_results() {
+  rm -rf "$REPO/.review-results"
+  for leftover_archive in "$REPO"/.review-results.prev-*; do
+    [[ -e "$leftover_archive" || -L "$leftover_archive" ]] || continue
+    rm -rf "$leftover_archive"
+  done
+}
+
+# 案内は「貼ればそのまま走る 1 行」であることに意味がある。前方一致で見ていると
+# base 名が落ちた・引用が壊れた退行を通してしまうので、fixture の base（develop）
+# まで含めた行全体を固定する。
+LEGACY_FULL_REVIEW_HINT='       bash scripts/codex-review.sh --base develop'
+
+# 旧形式の未解消 Critical レポートを置く。観点は codex-cli の distributed 実行計画
+# （code-review / test-analysis / acceptance-criteria）に**無い** comprehensive-review
+# にする — 実測の障害はまさに「計画に無い観点」で起きており、計画内の観点だと
+# 観点照合を素通りして退行を検出できない。
+write_legacy_report() {
+  mkdir -p "$REPO/.review-results"
+  cat > "$REPORT" <<'REPORT_BODY'
+# Legacy integrated report (pre-series-tag format)
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (comprehensive-review). Review before proceeding.
+REPORT_BODY
+}
+
+# run_legacy_narrowed <log> <絞り込みフラグ...> — 旧形式レポートを残したまま走らせる
+run_legacy_narrowed() {
+  local log="$1"
+  shift
+  LEGACY_NARROWED_RC=0
+  set +e
+  run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    --task review --cli codex-cli --base develop --timeout 60 "$@" \
+    >"$log" 2>&1
+  LEGACY_NARROWED_RC=$?
+  set -e
+}
+
+# check_legacy_narrowed_guidance <ラベル> <rc> <log> <実行前レポート>
+check_legacy_narrowed_guidance() {
+  local label="$1" rc="$2" log="$3" before="$4"
+  if [[ "$rc" -ne 0 ]] \
+    && grep -qF 'omits unresolved Critical perspective(s): comprehensive-review' "$log" \
+    && grep -qF -- '--fresh' "$log" \
+    && grep -qxF "$LEGACY_FULL_REVIEW_HINT" "$log" \
+    && cmp -s "$before" "$REPORT"; then
+    ok "旧形式レポートの絞り込み（${label}）は非 0 で止まり --fresh と具体コマンドを案内する"
+  else
+    bad "旧形式レポートの絞り込み（${label}）で案内が不足 (rc=${rc})"
+    sed -n '1,40p' "$log" >&2 || true
+  fi
+}
+
+# (1) 旧形式 + 絞り込み → 非 0 で止まり、--fresh と具体コマンドを案内する。
+# 絞り込みの 3 経路（--perspective / --exclude-perspective / --mode cross-model）を
+# 同じ fixture で回す。1 経路だけ見ていると、残り 2 つが案内を落としても気づけない
+# （どれも「新シリーズを開始できない実行」として同じ扱いを受ける必要がある）。
+for legacy_narrowing in "perspective:--perspective comment-analysis" \
+                        "exclude-perspective:--exclude-perspective code-review" \
+                        "mode-cross-model:--mode cross-model"; do
+  legacy_label="${legacy_narrowing%%:*}"
+  legacy_flags="${legacy_narrowing#*:}"
+  reset_review_results
+  write_legacy_report
+  cp "$REPORT" "$TMP/legacy-narrowed-${legacy_label}-before.md"
+  # shellcheck disable=SC2086 # フラグ列は語分割させる（この配列は当ファイル内の定数）
+  run_legacy_narrowed "$TMP/legacy-narrowed-${legacy_label}.log" $legacy_flags
+  check_legacy_narrowed_guidance "$legacy_label" "$LEGACY_NARROWED_RC" \
+    "$TMP/legacy-narrowed-${legacy_label}.log" "$TMP/legacy-narrowed-${legacy_label}-before.md"
+done
+
+# (2) 旧形式 + unfiltered full review → 手動退避なしで新シリーズを開始する
+reset_review_results
+write_legacy_report
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-legacy-full-review -->
+## Review Results
+### Critical Issues
+- なし
+### Summary
+- Critical: 0
+BODY
+LEGACY_FULL_RC=0
+set +e
+run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+  --task review --cli codex-cli --base develop --timeout 60 \
+  >"$TMP/legacy-full-review.log" 2>&1
+LEGACY_FULL_RC=$?
+set -e
+if [[ "$LEGACY_FULL_RC" -eq 0 ]] \
+  && grep -qF 'this unfiltered full review starts a new series' "$TMP/legacy-full-review.log" \
+  && [[ -f "$REPORT" ]] \
+  && grep -qF 'sentinel-legacy-full-review' "$REPORT" \
+  && ! grep -qF 'pre-series-tag format' "$REPORT"; then
+  ok "series タグ無しでも unfiltered full review は手動退避なしで新系列を開始する"
+else
+  bad "旧形式レポートで unfiltered full review が止まる (rc=$LEGACY_FULL_RC)"
+  sed -n '1,80p' "$TMP/legacy-full-review.log" >&2 || true
+fi
+
+# (3) 回帰: series タグを持つ同一 series の未解消 Critical は従来どおりブロックする。
+# 併せて、フルレビュー案内が**出ない**ことも固定する — 同一 series ではフルレビューを
+# 回しても新シリーズにはならず、案内先の入口は distributed 実行計画なので、担当 CLI が
+# 持たない観点は missing のまま同じエラーを再現する（案内が無限ループになる）。
+reset_review_results
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-same-series-unresolved -->
+## Code Review Results
+### Critical Issues
+- [app.txt:2] unresolved critical in the current series
+### Summary
+- Critical: 1
+BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/same-series-initial.log"
+if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
+  && grep -qF "$MARKER" "$REPORT" \
+  && tail -n 1 "$REPORT" | grep -F 'MULTI_CLI_UNRESOLVED_CRITICAL series:' >/dev/null; then
+  ok "同一 series の未解消レポート（series タグ付き）を用意できる"
+else
+  bad "同一 series の未解消レポートを作れない (rc=$SEQUENCE_RC)"
+fi
+cp "$REPORT" "$TMP/same-series-before.md"
+run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/same-series-narrowed.log"
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'omits unresolved Critical perspective(s): code-review' "$TMP/same-series-narrowed.log" \
+  && cmp -s "$TMP/same-series-before.md" "$REPORT"; then
+  ok "同一 series の絞り込みは従来どおりブロックする（回帰なし）"
+else
+  bad "同一 series の絞り込みブロックが退行した (rc=$SEQUENCE_RC)"
+  sed -n '1,40p' "$TMP/same-series-narrowed.log" >&2 || true
+fi
+if ! grep -qF 'Or run a full review, which covers every default perspective:' "$TMP/same-series-narrowed.log" \
+  && ! grep -qxF "$LEGACY_FULL_REVIEW_HINT" "$TMP/same-series-narrowed.log"; then
+  ok "同一 series では成立しないフルレビュー案内を出さない"
+else
+  bad "同一 series の絞り込みで成立しないフルレビュー案内が出ている"
+  sed -n '1,40p' "$TMP/same-series-narrowed.log" >&2 || true
+fi
+
+reset_review_results
+
 
 # ── pair 縮退の統合レポート記録（Issue #699） ──────────────────────
 #

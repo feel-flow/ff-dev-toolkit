@@ -527,7 +527,10 @@ contains "$SKILL" "post-merge 検証待ち" "post-merge 検証待ちの判定を
 contains "$SKILL" 'MERGE_BODY="Refs #${REFS_ISSUE}' "Refs 運用の merge 本文が Refs 参照から組み立てられる"
 # 2b が検査した文字列とマージで渡す文字列の間に「人が書き写す」継ぎ目を作らない。
 # ここが literal の例示に戻ると、実際の再発経路（--subject のコピペ）が復活する。
-contains "$SKILL" '--subject %q' "merge コマンドを検査済み変数から組み立てる"
+# 引用は %q ではなく単引用エスケープ関数 q（ロケール非依存）。%q は非 UTF-8 ロケールで
+# 日本語を壊すため置換した（回帰は tests/close-issue-shell-quote が見る）。ここが見るのは
+# 「literal ではなく変数展開で組み立てる」という契約なので、引用方式が変わっても変わらない。
+contains "$SKILL" '--subject %s' "merge コマンドを検査済み変数から組み立てる"
 contains "$SKILL" '"${MERGE_SUBJECT}" "${MERGE_BODY}"' "生成に 2b で検査した変数をそのまま展開する"
 # merge コマンドの生成は手順 7（鮮度照合の後）へ移した。`--match-head-commit` へ渡して
 # よい先端は照合を通った値だけで、2b の時点では確定しないため（Issue #880）。ここが

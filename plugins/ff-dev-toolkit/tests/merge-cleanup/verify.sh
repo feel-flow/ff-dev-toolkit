@@ -119,6 +119,10 @@
 #  37. (44.x / Issue 758 / 749) 呼び出し元が base でも PR head でもないブランチにいる
 #      場合は switch せずに掃除を完遂し、base 保持 worktree は報告のみ（detach しない）。
 #      dirty でも中断せず、未実施項目（base 復帰・pull）をサマリーで名指しする
+#  38. (45.x) 対象 PR のブランチを保持する linked worktree を cwd にして起動した場合は、
+#      破壊的処理の前に中断する。main tree のパスが取れれば再実行コマンドを引用付きで
+#      示し（空白を含むパスでも貼って実行できる）、bare リポジトリのようにパスが
+#      取れない構成でも素通しせず原因と対処を示す。main tree からの起動は完走する
 #
 # あわせて静的検査として、bash 3.2 で変数名にマルチバイト文字が取り込まれる書き方
 # （"$VAR" の直後に全角文字を直付けする形）が merge-cleanup.sh と本 suite 自身に無いことを
@@ -969,6 +973,9 @@ case "\$args" in
   "pr view 44 --json"*)   cat "$MOCK/pr_view_44.json" ;;
   "pr view 45 --json"*)   cat "$MOCK/pr_view_45.json" ;;
   "pr view 46 --json"*)   cat "$MOCK/pr_view_46.json" ;;
+  "pr view 60 --json"*)   cat "$MOCK/pr_view_60.json" ;;
+  "pr view 61 --json"*)   cat "$MOCK/pr_view_61.json" ;;
+  "pr view 62 --json"*)   cat "$MOCK/pr_view_62.json" ;;
   "pr view 99 --json"*)   cat "$MOCK/pr_view_99.json" ;;
   *"--state merged"*)
     # 実物の gh と同じく --limit を尊重する（#835 の照合上限が実際に gh へ渡り、
@@ -3028,6 +3035,181 @@ else
   bad "除外パスが妨げになる場合の中断が期待どおりでない (exit=$EXIT_IGNORE_PULLBLOCK)"
 fi
 git -C "$CALLER" checkout -- videos/tracked/spec.md
+
+# ---- 45. (Issue: linked worktree cwd) 対象 PR 自身の worktree からの起動 -------
+#
+# gh pr merge を PR の worktree で実行した直後、同じシェルで cleanup を呼ぶ動線。
+# この cwd では掃除対象の worktree 自身を削除できず、base 復帰のために main tree を
+# detached HEAD へ退避することになるため、破壊的処理の前に案内して中断する。
+
+echo ""
+echo "== (linked worktree cwd) 対象 PR 自身の worktree からの起動 =="
+
+# 前段の状態に依存しないよう、呼び出し元 worktree を detach して develop を空ける
+git -C "$CALLER" switch -q --detach
+git -C "$BASE_OWNER" switch -q develop
+git -C "$BASE_OWNER" fetch -q --prune origin
+git -C "$BASE_OWNER" pull -q --ff-only origin develop
+
+OWN_BRANCH='feature/#60-own-worktree'
+OWN_WT="$TMP/wt-60"
+git -C "$BASE_OWNER" branch -q "$OWN_BRANCH" develop
+OID_OWN60="$(git -C "$BASE_OWNER" rev-parse "$OWN_BRANCH")"
+git -C "$BASE_OWNER" push -q --no-verify -u origin "$OWN_BRANCH"
+git -C "$BASE_OWNER" worktree add -q "$OWN_WT" "$OWN_BRANCH"
+
+cat > "$MOCK/pr_view_60.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "$OWN_BRANCH",
+  "headRefOid": "$OID_OWN60",
+  "baseRefName": "develop",
+  "title": "started from the PR own worktree",
+  "isCrossRepository": false
+}
+JSON
+
+jq --arg oid "$OID_OWN60" --arg name "$OWN_BRANCH" \
+  '. + [{"headRefName": $name, "headRefOid": $oid, "isCrossRepository": false}]' \
+  "$MOCK/pr_list_merged.json" > "$TMP/pr_list_merged.60.json"
+mv "$TMP/pr_list_merged.60.json" "$MOCK/pr_list_merged.json"
+
+# 45.1 対象 PR の worktree を cwd にした起動は、破壊的処理の前に案内して中断する
+set +e
+( cd "$OWN_WT" && PATH="$MOCK:$PATH" bash "$TARGET" 60 ) > "$TMP/run-own-wt.log" 2>&1
+EXIT_OWN_WT=$?
+set -e
+if [ "$EXIT_OWN_WT" -eq 1 ] \
+  && grep -qF "cd $BASE_OWNER && bash $TARGET 60" "$TMP/run-own-wt.log" \
+  && grep -qF "$OWN_WT" "$TMP/run-own-wt.log" \
+  && ! grep -q "マージ後 Cleanup 結果" "$TMP/run-own-wt.log" \
+  && remote_has "$OWN_BRANCH" \
+  && git -C "$BASE_OWNER" show-ref -q "refs/heads/$OWN_BRANCH" \
+  && [ -d "$OWN_WT" ] \
+  && [ "$(git -C "$OWN_WT" branch --show-current)" = "$OWN_BRANCH" ] \
+  && [ "$(git -C "$BASE_OWNER" branch --show-current)" = "develop" ]; then
+  ok "対象 PR の worktree からの起動は main tree を案内して中断し、何も削除しない"
+else
+  bad "対象 PR の worktree からの起動が期待どおりでない (exit=${EXIT_OWN_WT})"
+fi
+
+# 45.2 main tree からの起動は従来どおり完走し、対象 worktree ごと掃除する
+set +e
+( cd "$BASE_OWNER" && PATH="$MOCK:$PATH" bash "$TARGET" 60 ) > "$TMP/run-own-main.log" 2>&1
+EXIT_OWN_MAIN=$?
+set -e
+if exit_is_complete "$EXIT_OWN_MAIN" \
+  && grep -q "マージ後 Cleanup 結果" "$TMP/run-own-main.log" \
+  && ! grep -q "対象 PR のワークツリーを cwd にして実行しています" "$TMP/run-own-main.log" \
+  && ! remote_has "$OWN_BRANCH" \
+  && ! git -C "$BASE_OWNER" show-ref -q "refs/heads/$OWN_BRANCH" \
+  && [ ! -d "$OWN_WT" ]; then
+  ok "main tree からの起動は従来どおり完走し、対象 worktree とブランチを削除する"
+else
+  bad "main tree からの起動が期待どおりでない (exit=${EXIT_OWN_MAIN})"
+fi
+
+# 45.3 main tree が bare で、cd 先として案内できるパスが取れない構成
+#
+# `git worktree list --porcelain` の先頭レコードが `bare` の場合、main tree のパスは
+# cd 先にできない。ここで「案内できない = 検出しなかったことにする」と、掃除対象の
+# worktree 自身を消せないまま黙って破壊的処理へ進む。案内の有無と中断の可否は別。
+BARE_BRANCH='feature/#61-bare-main'
+BARE_MAIN="$TMP/bare-main.git"
+BARE_WT="$TMP/wt-61"
+git -C "$BASE_OWNER" branch -q "$BARE_BRANCH" develop
+OID_BARE61="$(git -C "$BASE_OWNER" rev-parse "$BARE_BRANCH")"
+git -C "$BASE_OWNER" push -q --no-verify -u origin "$BARE_BRANCH"
+git clone -q --bare "$TMP/origin.git" "$BARE_MAIN"
+git -C "$BARE_MAIN" worktree add -q "$BARE_WT" "$BARE_BRANCH"
+
+cat > "$MOCK/pr_view_61.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "$BARE_BRANCH",
+  "headRefOid": "$OID_BARE61",
+  "baseRefName": "develop",
+  "title": "started from a linked worktree of a bare main repository",
+  "isCrossRepository": false
+}
+JSON
+
+set +e
+( cd "$BARE_WT" && PATH="$MOCK:$PATH" bash "$TARGET" 61 ) > "$TMP/run-bare-main.log" 2>&1
+EXIT_BARE_MAIN=$?
+set -e
+if [ "$EXIT_BARE_MAIN" -eq 1 ] \
+  && grep -q "対象 PR のワークツリーを cwd にして実行しています" "$TMP/run-bare-main.log" \
+  && grep -q "原因:" "$TMP/run-bare-main.log" \
+  && grep -q "対処:" "$TMP/run-bare-main.log" \
+  && ! grep -q " && bash " "$TMP/run-bare-main.log" \
+  && ! grep -q "マージ後 Cleanup 結果" "$TMP/run-bare-main.log" \
+  && remote_has "$BARE_BRANCH" \
+  && [ -d "$BARE_WT" ] \
+  && [ "$(git -C "$BARE_WT" branch --show-current)" = "$BARE_BRANCH" ]; then
+  ok "main tree が bare でパスを案内できない場合も、素通しせず原因と対処を示して中断する"
+else
+  bad "bare main + linked worktree からの起動が期待どおりでない (exit=${EXIT_BARE_MAIN})"
+fi
+
+# 45.4 空白を含む main tree のパスを、そのまま貼って実行できる形で案内する
+#
+# 案内文の目視一致だけだと未引用でも「読める」ので回帰を素通しする。実際に shell へ
+# 解釈させ、cd 先とスクリプトパスが元の値へ復元されることまで見る。
+SPACE_MAIN="$TMP/main tree with space"
+SPACE_BRANCH='feature/#62-space-path'
+SPACE_WT="$TMP/wt-62"
+git -C "$BASE_OWNER" branch -q "$SPACE_BRANCH" develop
+OID_SPACE62="$(git -C "$BASE_OWNER" rev-parse "$SPACE_BRANCH")"
+git -C "$BASE_OWNER" push -q --no-verify -u origin "$SPACE_BRANCH"
+git clone -q "$TMP/origin.git" "$SPACE_MAIN"
+git -C "$SPACE_MAIN" branch -q "$SPACE_BRANCH" "origin/$SPACE_BRANCH"
+git -C "$SPACE_MAIN" worktree add -q "$SPACE_WT" "$SPACE_BRANCH"
+
+cat > "$MOCK/pr_view_62.json" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "$SPACE_BRANCH",
+  "headRefOid": "$OID_SPACE62",
+  "baseRefName": "develop",
+  "title": "the main worktree path contains spaces",
+  "isCrossRepository": false
+}
+JSON
+
+set +e
+( cd "$SPACE_WT" && PATH="$MOCK:$PATH" bash "$TARGET" 62 ) > "$TMP/run-space-main.log" 2>&1
+EXIT_SPACE_MAIN=$?
+set -e
+
+RERUN_LINE="$(sed -n 's/^  cd //p' "$TMP/run-space-main.log" | head -1)"
+: > "$TMP/rerun-argv.txt"
+set +e
+(
+  # eval 経由でのみ呼ばれるため shellcheck からは未使用に見える
+  # shellcheck disable=SC2329
+  cd()   { printf 'cd=%s\n'     "$1" >> "$TMP/rerun-argv.txt"; }
+  # shellcheck disable=SC2329
+  bash() { printf 'script=%s\n' "$1" >> "$TMP/rerun-argv.txt"
+           printf 'arg=%s\n'    "$2" >> "$TMP/rerun-argv.txt"; }
+  eval "cd ${RERUN_LINE}"
+) >/dev/null 2>&1
+set -e
+# 期待値の cd 先は symlink 解決後のパスで持つ（macOS の $TMPDIR は /var -> /private/var
+# の symlink で、git worktree list が返すのは解決後の側）。ここを生の $TMP のままに
+# すると、引用の有無と関係なく毎回落ちる。
+SPACE_MAIN_REAL="$(cd "$SPACE_MAIN" && pwd -P)"
+printf 'cd=%s\nscript=%s\narg=%s\n' "$SPACE_MAIN_REAL" "$TARGET" 62 > "$TMP/rerun-argv.expected"
+
+if [ "$EXIT_SPACE_MAIN" -eq 1 ] \
+  && [ -n "$RERUN_LINE" ] \
+  && cmp -s "$TMP/rerun-argv.txt" "$TMP/rerun-argv.expected" \
+  && remote_has "$SPACE_BRANCH" \
+  && [ -d "$SPACE_WT" ]; then
+  ok "空白を含む main tree のパスも、貼って実行すれば同じパスへ解決する形で案内する"
+else
+  bad "空白入り main tree パスの案内が期待どおりでない (exit=${EXIT_SPACE_MAIN})"
+fi
 
 echo ""
 if [ "$FAIL" -gt 0 ]; then

@@ -870,7 +870,11 @@ contains "$CASE_BLOCK" "FRESH_REPORT=" "各分岐が報告用の文字列を残�
 contains "$CASE_BLOCK" 'FRESH_REPORT="⚠️ 判定不能 — ${FRESH_REASON}' \
   "判定不能の報告が ACTION だけでなく REASON も載せる"
 contains "$SKILL" '「全件実行で通した」と読ませないため' "高速モードの記録を全件実行と読ませない意図が書かれている"
-contains "$SKILL" '"${PR_NUMBER}" "${REMOTE_HEAD}" "${MERGE_SUBJECT}"' "merge コマンドの生成が照合した先端を使う"
+# 件名・本文はロケール非依存の単引用エスケープ関数 q を通す（printf %q は非 UTF-8
+# ロケールで日本語を壊すため置換した。回帰は tests/close-issue-shell-quote が見る）。
+# ここが見ているのは「生成が照合した先端 REMOTE_HEAD を使う」ことなので、引用方式が
+# 変わっても契約は変わらない。
+contains "$SKILL" '"${PR_NUMBER}" "${REMOTE_HEAD}" "$(q "${MERGE_SUBJECT}")"' "merge コマンドの生成が照合した先端を使う"
 
 contains "$WORKFLOW" "ff-dev-toolkit-merge-freshness-contract:start" "git-workflow に鮮度ゲートの契約ブロックがある"
 contains "$WORKFLOW" "check-merge-freshness.sh" "git-workflow が検査スクリプトを名指ししている"

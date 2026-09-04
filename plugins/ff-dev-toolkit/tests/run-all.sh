@@ -363,6 +363,12 @@ else
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド
     # 不要・一時ディレクトリ不要なので静的検査群に置く。
     "$SCRIPT_DIR/closing-keyword-guard/verify.sh"
+    # close-issue が組み立てる merge コマンドの引用がロケールに依存しないこと。
+    # printf %q は現在のロケールで文字境界を解釈するため、非 UTF-8 ロケールでは
+    # 日本語の件名・本文が生バイトと $'\NNN' の混在になり、貼って実行する手順が壊れる。
+    # SKILL.md から引用関数を抽出して LC_ALL=C で round-trip を実測する。
+    # 同じ SKILL.md の同じ窓（マージ直前）を守るので closing-keyword-guard の隣に置く。
+    "$SCRIPT_DIR/close-issue-shell-quote/verify.sh"
     # マージ直前の鮮度ゲート（Issue #880）: 「リモート先端 == ゲート実測対象」の照合と、
     # 記録側（scripts/record-gate-head.sh）・本ランナーの配線・SKILL / ワークフロー文書の
     # 文言が drift していないこと。一時領域と git を要するが、closing-keyword-guard と
@@ -409,6 +415,12 @@ else
     # 供給されない参照は「起票成功のままラベルだけ黙って落ちる」ため）。
     # gh / jq / yq・一時ファイル不要の静的検査。
     "$SCRIPT_DIR/issue-label-supply/verify.sh"
+    # create-issue 手順5の ISSUE_TEMPLATE 節 pre-flight（テンプレートの `## ` 見出しを
+    # 本文と照合し、無い節を fail-soft で報告する）が実装から消えないことの固定。
+    # 手順6ステップ1の実行指示、手順7の完了報告への報告義務、git-workflow.md
+    # ステップ1の raw `gh issue create` 前の確認手順も見る。jq / gh 不要の静的検査。
+    # ラベル契約つながりで issue-label-supply の直後に置く。
+    "$SCRIPT_DIR/create-issue-template-preflight/verify.sh"
     # setup-multi-agent.sh の yq 導入が Mike Farah v4 を明示取得し、非互換 yq
     # （distro パッケージ / Python / v3）を利用可能と誤認しないこと（Issue #271）。
     # install の exit 0 を信用せず post-install で flavor/capability を再検証する。
@@ -592,6 +604,11 @@ else
     # 240KB fixture なので、報告された再現条件（ARG_MAX 超え）自体は跨がない。
     # 一時 git リポジトリ + stub CLI（〜3 秒）。実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/adapter-argv-limit/verify.sh"
+    # 呼び出し側のロケールに依存せずプロンプトが valid UTF-8 で CLI へ届くこと、
+    # 不正な UTF-8 は CLI 起動前に fail-loud で止まること、再実行案内の引用が
+    # ロケール非依存であることの回帰検査。一時 git リポジトリ + stub CLI（〜5 秒）。
+    # 実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/adapter-prompt-utf8/verify.sh"
     # auth / billing で落ちた CLI の残タスクを同一実行内でスキップする契約
     # （Issue #1143）。逐次ワーカー経路・--sequential 経路・fail-open の陰性対照を
     # stub CLI の起動回数で実測する。一時 git リポジトリ + stub CLI（〜10 秒）。
@@ -614,6 +631,11 @@ else
     # 言及 + build_prompt(review) の [OUT-OF-DIFF] ラベル契約。一時 git リポジトリのみ
     # （〜2 秒）。実 CLI・ネットワーク・課金は伴わない。一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/review-diff-scope/verify.sh"
+    # base ブランチ解決の鮮度契約: ローカル base が remote-tracking ref の真の祖先
+    # （= pull し忘れ）なら origin 側を採り、一致・先行・分岐ではローカルを維持する。
+    # bare origin + clone の一時 git リポジトリのみ（〜2 秒）。実 CLI・ネットワーク・
+    # 課金は伴わない。一時領域不可なら丸ごと ○ skip。
+    "$SCRIPT_DIR/adapter-base-ref-freshness/verify.sh"
     # レビュー観点テンプレートの重大度スコープ契約（Issue #713 / #714）: 9 観点すべての
     # Severity Classification に「diff が導入または悪化させた」配置規則ブロックが同一
     # 本文で存在すること + test-analysis の Important 限定と Output Template の整合。
@@ -655,6 +677,13 @@ else
     # 空/空白パターンの fail-closed。一時 git リポジトリ + stub CLI で実走し、
     # ミューテーション 2 件つき。実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/multi-agent-ignore-paths/verify.sh"
+    # review タスク起動時の「完了まで worktree を触らない」バナー: 並列でも
+    # --sequential でもタスク実行前に 1 回だけ・起動時 HEAD の short-sha 付きで
+    # stderr へ出ること（stdout には出ないこと）、explore では出ないこと。一時 git
+    # リポジトリ + stub CLI で実走し、ミューテーション 1 件つき。実 CLI・ネット
+    # ワーク・課金は伴わない。破棄ロジック自体は multi-agent-revision-guard の
+    # 担当で、ここでは触れない。
+    "$SCRIPT_DIR/multi-agent-review-banner/verify.sh"
     # 同梱 MCP サーバーの実検査 4 本。node_modules が無い環境ではいずれも ○ skip
     # （型検査の 2 本は node が PATH に無い環境でも ○ skip。tsc の shebang が node を
     # 要求するため、環境都合の失敗を型エラーと混ぜないための分岐）。
@@ -824,11 +853,27 @@ REQUIRED_SUITES=(
   # feel-flow/ff-dev-toolkit#55 の実測形）が黙って戻る。skip 条件は 3 つ — 一時領域の
   # 有無、getconf ARG_MAX が数値を答えるか、その値が fixture 上限（16MB）に収まるか。
   adapter-argv-limit
+  # プロンプトのロケール非依存性（非 UTF-8 ロケールでも valid UTF-8 で届く / 不正な
+  # バイトは CLI 起動前に止まる）を見るのはこの suite だけで、消えると「日本語
+  # Windows の既定環境でレビューが 1 件も出ない」退行が黙って戻る。skip 条件は
+  # 一時領域の有無と、UTF-8 妥当性を判定する iconv の有無の 2 つ。
+  # iconv 未導入環境では FF_RUN_ALL_ALLOW_SKIP=adapter-prompt-utf8 が要る
+  # （glibc / macOS には同梱。最小コンテナでは apk add gnu-libiconv 等で導入可）。
+  adapter-prompt-utf8
+  # close-issue の merge コマンド生成がロケール非依存であることを見るのはこの suite
+  # だけで、消えると「日本語の PR 件名・本文で貼って実行する手順が壊れる」退行が
+  # 黙って戻る。skip 条件は一時領域の有無だけ（iconv 不在は該当検査だけを名指しで
+  # skip し、round-trip と形の pin は残す）。
+  close-issue-shell-quote
   # 「確実に失敗すると分かっている実行に時間を払わない」契約はこの suite だけが
   # 見ており、一時領域不足で skip すると、観点数ぶんの無駄な待ち時間の再発と、
   # スキップを通常の失敗として案内する退行が黙って戻る（Issue #1143）。
   multi-agent-skip-poisoned-cli
   review-diff-scope
+  # base 解決が「古くないほうの ref」を採る契約はこの suite だけが見ており、一時領域
+  # 不足で消えると、stale なローカル base 経由で他ブランチの差分がレビュー対象へ混入
+  # する退行が黙って戻る。skip 条件は一時領域の有無だけ。
+  adapter-base-ref-freshness
   # レビュー本文を含まない捕捉結果を complete にしない fail-loud 契約（Issue #893）。
   # 判定関数・4 アダプタのゲート常在・INCOMPLETE 降格はこの suite しか見ておらず、
   # 一時領域が無い環境で mktemp skip すると「空振り結果が完了として並ぶ」退行が

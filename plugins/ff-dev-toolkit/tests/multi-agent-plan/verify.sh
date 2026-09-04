@@ -620,45 +620,72 @@ STALE_LOG="$TMP/stale-base.log"
 if run_stale_plan "$STALE_LOG" --base develop; then
   ok "behind なローカル base でも dry-run は従来どおり成功する（中断しない）"
 else
-  bad "behind 警告が実行を中断した（警告のみの契約に違反）"
+  bad "鮮度対処が実行を中断した（中断しない契約に違反）"
   tail -5 "$STALE_LOG" | sed 's/^/    | /' >&2
 fi
-if grep -q "他ブランチのマージ済みコミット 2 件が diff に混入します" "$STALE_LOG"; then
-  ok "混入 2 件の警告が件数つきで出る"
+# ローカルが origin の真の祖先（= この真陽性の形）は base 解決の側で origin/<base> へ
+# 倒れる。警告して混入したまま走るのではなく、混入そのものが起きない状態にする。
+# 判定の詳細と他 3 分岐（一致・先行・分岐）は tests/adapter-base-ref-freshness が持つ。
+if grep -q "base ref: origin/develop を採用" "$STALE_LOG"; then
+  ok "stale なローカル base は origin/develop へ解決され、その選択を 1 行名乗る"
 else
-  bad "behind なローカル base の警告が出ていない"
-  grep -n "ローカル ref\|⚠️" "$STALE_LOG" | head -3 | sed 's/^/    | /' >&2
+  bad "stale なローカル base の解決行が出ていない"
+  grep -n "base ref:\|ローカル ref\|⚠️" "$STALE_LOG" | head -3 | sed 's/^/    | /' >&2
 fi
-if grep -q -- "--base origin/develop を検討してください" "$STALE_LOG"; then
-  ok "警告が origin/develop の明示指定という解消手段を案内する"
+if grep -q "Base branch: origin/develop" "$STALE_LOG"; then
+  ok "実行計画が origin/develop を base として名乗る（他ブランチのコミットが混入しない）"
 else
-  bad "警告に解消手段の案内が無い"
+  bad "実行計画の base が origin/develop になっていない"
+  grep -n "Base branch:" "$STALE_LOG" | head -2 | sed 's/^/    | /' >&2
 fi
-# 警告がプラン表示（Base branch: 行）より前にあること
-WARN_LINE="$(grep -n "はローカル ref で" "$STALE_LOG" | head -1 | cut -d: -f1)"
+if grep -q "他ブランチのマージ済みコミット" "$STALE_LOG"; then
+  bad "混入しない状態になったのに混入警告を出している（虚偽の警告）"
+else
+  ok "解決済みなので混入警告は出さない"
+fi
+# 解決行がプラン表示（Base branch: 行）より前にあること
+RESOLVE_LINE="$(grep -n "base ref: origin/develop を採用" "$STALE_LOG" | head -1 | cut -d: -f1)"
 PLAN_LINE="$(grep -n "Base branch:" "$STALE_LOG" | head -1 | cut -d: -f1)"
-if [[ -n "$WARN_LINE" && -n "$PLAN_LINE" && "$WARN_LINE" -lt "$PLAN_LINE" ]]; then
-  ok "警告はプラン表示より前に出る（行 ${WARN_LINE} < ${PLAN_LINE}）"
+if [[ -n "$RESOLVE_LINE" && -n "$PLAN_LINE" && "$RESOLVE_LINE" -lt "$PLAN_LINE" ]]; then
+  ok "解決行はプラン表示より前に出る（行 ${RESOLVE_LINE} < ${PLAN_LINE}）"
 else
-  bad "警告の位置がプラン表示より前でない（warn=${WARN_LINE:-なし} plan=${PLAN_LINE:-なし}）"
+  bad "解決行の位置がプラン表示より前でない（resolve=${RESOLVE_LINE:-なし} plan=${PLAN_LINE:-なし}）"
 fi
 
-# 偽陽性の反証: **古いローカル base から**切ったブランチは、ローカルが behind でも
-# merge-base が一致し diff に混入は無い — behind 数を述語にする実装への退行を検出する
-# （セルフレビューで実測反証された形そのもの）
-git -C "$STALE_REPO" switch -q -c feature/from-stale develop
+# 偽陽性の反証: 混入ゼロなのに behind 件数を述語にすると誤警告する形を固定する。
+#
+# ローカルが origin の**真の祖先**（純粋な behind）だと、base 解決が origin/<base> へ
+# 倒し warn_if_stale_local_base は origin/* で即 return するため、この述語には
+# 一切触れずに通ってしまう（＝検出力ゼロの空振り）。警告経路が生きたまま
+# behind 件数 vs merge-base 比較を識別できるのは**分岐**の形なので、そちらで作る:
+#   - ローカル develop に未 push の固有コミットを積む → 解決はローカルを維持する
+#   - feature は分岐点（= 現在のローカル develop = origin との共通祖先）から切る
+#     → merge-base(local, HEAD) == merge-base(origin, HEAD) で混入は 0 件
+#   - それでも origin は 2 件先行している → behind 件数を見る実装なら「2 件混入」と誤警告
+STALE_MERGE_BASE="$(git -C "$STALE_REPO" rev-parse refs/heads/develop)"
+git -C "$STALE_REPO" switch -q -c feature/from-stale "$STALE_MERGE_BASE"
 echo from-stale-change > "$STALE_REPO/from-stale.txt"
 git -C "$STALE_REPO" add from-stale.txt
-git -C "$STALE_REPO" commit -qm "cut from stale local base"
+git -C "$STALE_REPO" commit -qm "cut from the common ancestor of local/origin develop"
+git -C "$STALE_REPO" switch -q develop
+echo local-only > "$STALE_REPO/local-only.txt"
+git -C "$STALE_REPO" add local-only.txt
+git -C "$STALE_REPO" commit -qm "unpushed local base commit (diverges from origin)"
+git -C "$STALE_REPO" switch -q feature/from-stale
 FROMSTALE_LOG="$TMP/from-stale-base.log"
 if run_stale_plan "$FROMSTALE_LOG" --base develop \
+   && grep -q "Base branch: develop" "$FROMSTALE_LOG" \
    && ! grep -q "はローカル ref で" "$FROMSTALE_LOG"; then
-  ok "古いローカル base から切ったブランチ（混入ゼロ）では警告を出さない（behind 数でなく merge-base 比較）"
+  ok "分岐したローカル base（警告経路が生きる形）で混入ゼロなら警告を出さない（behind 数でなく merge-base 比較）"
 else
-  bad "混入が起きない形なのに警告が出た（behind 数を述語にする退行）"
-  grep -n "はローカル ref で" "$FROMSTALE_LOG" | head -2 | sed 's/^/    | /' >&2
+  bad "混入が起きない形なのに警告が出た/base がローカルに留まらなかった（behind 数を述語にする退行）"
+  grep -n "はローカル ref で\|Base branch:" "$FROMSTALE_LOG" | head -3 | sed 's/^/    | /' >&2
 fi
+# fixture を元の「純粋に behind なローカル develop」へ戻す — 後続ケースは
+# `git merge --ff-only origin/develop` が通ることを前提にしている（分岐のままだと落ちる）
 git -C "$STALE_REPO" switch -q feature/stale
+git -C "$STALE_REPO" branch -qf develop "$STALE_MERGE_BASE"
+git -C "$STALE_REPO" branch -q -D feature/from-stale
 
 # origin/<branch> の明示指定は対象外 — **behind のまま**確認する（同期後に確認すると
 # 「stale でも誤警告しない」の検出力が無い。Codex レビュー指摘）

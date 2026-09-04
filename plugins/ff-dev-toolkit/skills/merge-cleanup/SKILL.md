@@ -54,6 +54,8 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh" $ARGUMENTS
 
 **前提ツール**: 認証済み `gh` CLI と `jq`（不足していればスクリプトが冒頭で中断して案内する）
 
+**実行する cwd**: 対象 PR のブランチを保持する**リンクされた**ワークツリー（`git worktree add` で作った側）を cwd にしたまま実行した場合は、破壊的処理の前に中断する（その cwd では掃除対象のワークツリー自身を削除できず、base を別のワークツリーが保持していれば base 復帰のためにそれを detached HEAD へ退避することになるため）。案内には main worktree（`git worktree list` の先頭）のパスと再実行コマンドを出す。bare リポジトリのように main worktree が checkout を持たない構成ではパスを案内できないため、代わりに原因と対処を示して中断する。それ以外の実行 — main worktree から（PR head を保持している場合を含む）・他セッションの作業ブランチ（下記の掃除モード）・detached HEAD・base 保持 — は従来どおり完走する。
+
 **`disable-model-invocation` は意図的に付けない。** 上の実行部が 1 行なのでフラグはスクリプト直叩きで迂回でき破壊的操作を防げない一方、[git-workflow](../../docs-template/05-operations/deployment/git-workflow.md) のステップ9 と [workflow-principles](../../docs-template/05-operations/deployment/workflow-principles.md) のフルオートチェーンが本スキルの実行を求めているため、可用性だけが落ちる。判断の全文は ACE Playbook の ACE-147-1、回帰防止は `tests/skill-frontmatter/verify.sh`。
 
 ## スクリプトがやること
