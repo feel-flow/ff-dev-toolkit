@@ -42,18 +42,22 @@ jobs:
     # 通知契約が破れる — ハングは各 step の timeout が先に失敗へ倒し、起票まで届く。
     timeout-minutes: 75
     steps:
-      # SHA ピン（ADR-048）: 可変タグ（@v4）は付け替え可能で、上流乗っ取り時に
-      # 検証結果へ静かに混入しうる。コミット SHA は解決時点で actions/checkout の
-      # v4 タグが指していたもの（gh api repos/actions/checkout/git/ref/tags/v4）。
+      # SHA ピン（ADR-048）: タグ参照（メジャー・版タグを問わずタグは付け替え可能）
+      # は上流乗っ取り時に検証結果へ静かに混入しうる。コミット SHA は解決時点で
+      # actions/checkout の「同 step の uses: 行末コメントが示す版」のタグが
+      # 指していたもの（gh api repos/actions/checkout/git/ref/tags/<uses: 行末コメントの版>）。
+      # 説明側に版を直書きしないのは、Dependabot が書き換えるのが uses 行と行末
+      # コメントだけで、直書きした版は昇格のたび取り残されるため。
       # 更新導線は開発元（SSOT）側の Dependabot（github-actions エコシステム）が担い、
       # 更新された SHA は公開同期でこのファイルへ届く。**このリポジトリに
       # .github/dependabot.yml を置いてはいけない** — 公開側は SSOT からの
       # 一方向ミラー（rsync --delete）で、公開側で作られた更新はミラー時に消える。
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # SHA ピン（ADR-048）。SHA は resolve 時点の actions/setup-node v4 タグの参照先
-      # （gh api repos/actions/setup-node/git/ref/tags/v4）。
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      # SHA ピン（ADR-048）。SHA は resolve 時点で actions/setup-node の
+      # 「同 step の uses: 行末コメントが示す版」のタグが指していたもの
+      # （gh api repos/actions/setup-node/git/ref/tags/<uses: 行末コメントの版>）。
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
