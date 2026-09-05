@@ -21503,7 +21503,7 @@ var parseFrontMatter = (raw) => {
 };
 var maskNonGlossaryLines = (lines) => {
   const masked = maskClosedSpans(lines);
-  const changelog = masked.findIndex((l) => /^##\s+Changelog\s*$/.test(l));
+  const changelog = masked.findIndex((l) => /^##[ \t]+Changelog[ \t]*$/.test(l));
   if (changelog !== -1) for (let i = changelog; i < masked.length; i++) masked[i] = "";
   return masked;
 };

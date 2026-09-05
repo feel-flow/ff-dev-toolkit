@@ -12,8 +12,10 @@
 #   docs-template-frontmatter: docs-template/ 側の Frontmatter / Changelog 構造を検査する
 #   validate-docs-placeholders（#518）+ その selftest: マスクだけを使いプレースホルダー
 #   免除を固定する（docs/ 走査と Frontmatter 判定はしない）
-#   docs-scan-mirror（#528）: ff_docs_mask_spans と同梱 MCP の maskClosedSpans が
-#   共有 fixture で同じ出力を返すことを機械照合する（片側ドリフトの常設ゲート）
+#   docs-scan-mirror（#528）: ff_docs_mask_spans と同梱 MCP の maskClosedSpans、
+#   および ff_docs_mask_changelog と同 maskNonGlossaryLines が、共有 fixture で
+#   同じ出力を返すことを機械照合する（片側ドリフトの常設ゲート。2 モード目は
+#   `## Changelog` 見出し判定の空白クラス・空白数を両側で固定する）
 #
 # 提供する関数:
 #   ff_docs_rule_targets <master_md>   規則側の対象一覧（MASTER.md から導出）
@@ -28,6 +30,9 @@
 #                                      閉じたフェンスは空行化・閉じたコメントは該当文字を除去。
 #                                      keep-fences はフェンスの中身を残す（対応探索・優先順位は同一）
 #   ff_docs_mask_inline_spans          同一行内で対になったインラインコードスパンを空白化（stdin→stdout）
+#   ff_docs_mask_changelog <file>      ff_docs_mask_spans に加えて `## Changelog` 見出し以降を
+#                                      空行化する（同梱 MCP の maskNonGlossaryLines と同一の意味論。
+#                                      現在の消費者は docs-scan-mirror の 2 モード目のみ）
 #   ff_docs_body <file>                走査用の本文（Frontmatter・マスク済み・Changelog 節を除く）。
 #                                      数値 claim の走査には使わない（そちらは ff_docs_claim_body。
 #                                      こちらを使うとフェンス内の図の件数が走査から落ちる —
@@ -215,10 +220,19 @@ ff_docs_fm_verdict() {
   # 探索は Frontmatter の閉じ行より後ろに限る — `## Changelog` は YAML コメントとしても
   # 成立する（`#` 始まり）ので、Frontmatter 内に 1 行置くだけで本文の節が無くても
   # 通ってしまう。マスクは行数を保つので原文と行番号が一致する。
+  #
+  # 見出しの空白クラスは `[ \t]`（ASCII のスペース・タブのみ、run-all case 11
+  # の制約）、`##` と `Changelog` の間は 1 個以上・行末は 0 個以上を許す
+  # （2026-09 に整合）。この正規表現は本ファイル内の他 2 箇所（ff_docs_body /
+  # ff_docs_claim_body）と ff_docs_mask_changelog、および同梱 MCP の
+  # maskNonGlossaryLines（mcp/src/utils.ts）と**意味を完全に一致させること**。
+  # 以前は awk 側だけ「空白ちょうど 1 個・末尾空白なし」に固定されていて、
+  # `##  Changelog`（空白 2 個）や末尾空白付きの見出しで TS 側とだけ判定が割れた
+  # （tests/docs-scan-mirror の fixtures/changelog-heading-*.md で固定）。
   local has_changelog=0
   # ここも exit しない（上流の SIGPIPE を避ける）
   if [ -n "$(ff_docs_mask_spans "$f" | awk -v fm_end="$close_line" \
-       'NR > fm_end && /^## Changelog$/ { found = 1 } END { if (found) print "1" }')" ]; then
+       'NR > fm_end && /^##[ \t]+Changelog[ \t]*$/ { found = 1 } END { if (found) print "1" }')" ]; then
     has_changelog=1
   fi
   local flags
@@ -504,6 +518,29 @@ ff_docs_mask_inline_spans() {
   '
 }
 
+# `## Changelog` 見出し以降 EOF までを空行化して stdout へ（フェンス / コメントは
+# ff_docs_mask_spans で先にマスク済みの行に対して判定する — フェンス内の例示を
+# 本物の節と誤認しない）。同梱 MCP の maskNonGlossaryLines（GLOSSARY.md 用。
+# mcp/src/utils.ts）と**同一の意味論**にした mirror 用の実装 — 行を消さず空行化
+# する点・Frontmatter を関知しない点も揃えている。tests/docs-scan-mirror が
+# 両者の出力を照合する（2026-09 に整合）。
+#
+# 見出し判定の正規表現 `/^##[ \t]+Changelog[ \t]*$/` は空白クラスを ASCII の
+# スペース・タブだけに絞り（run-all case 11 の制約）、`##` と `Changelog` の
+# 間は 1 個以上・行末は 0 個以上の空白を許す。ff_docs_fm_verdict / ff_docs_body /
+# ff_docs_claim_body に埋め込まれた同型の正規表現、および TS 側の
+# maskNonGlossaryLines と**正規表現の意味を完全に一致させること** — 片方だけ
+# 緩めると、空白 2 個や末尾空白付きの見出しで判定が割れる（2026-09 実測。以前は
+# awk 側が空白ちょうど 1 個・末尾空白なし固定、TS 側が `\s+`/`\s*` で NBSP まで
+# 受理していて乖離していた）。
+ff_docs_mask_changelog() {
+  ff_docs_mask_spans "$1" | awk '
+    /^##[ \t]+Changelog[ \t]*$/ { cut = 1 }
+    cut { $0 = "" }
+    { print }
+  '
+}
+
 # 走査用の本文を stdout へ。Frontmatter とフェンス / コメント内、および
 # `## Changelog` 節（以降 EOF まで）を除く。
 #
@@ -513,12 +550,15 @@ ff_docs_body() {
   # 下流の awk で `exit` しない: パイプの上流（ff_docs_mask_spans）が SIGPIPE で死に、
   # `set -o pipefail` + `set -e` の呼び出し側を無言で殺す（run-all case 10 と同型の罠。
   # 実測: read-only 環境の検証中に「== C == の直後で出力が止まる」形で踏んだ）
+  #
+  # 見出し正規表現は ff_docs_mask_changelog / ff_docs_fm_verdict / ff_docs_claim_body
+  # と同一にすること（詳細は ff_docs_mask_changelog のコメント）。
   ff_docs_mask_spans "$1" | awk '
-    NR == 1 && /^---$/ { in_fm = 1; next }
-    in_fm && /^---$/   { in_fm = 0; next }
-    in_fm              { next }
-    /^## Changelog$/   { after_changelog = 1 }
-    !after_changelog   { print }
+    NR == 1 && /^---$/          { in_fm = 1; next }
+    in_fm && /^---$/            { in_fm = 0; next }
+    in_fm                       { next }
+    /^##[ \t]+Changelog[ \t]*$/ { after_changelog = 1 }
+    !after_changelog            { print }
   '
 }
 
@@ -553,8 +593,10 @@ ff_docs_claim_body() {
     # （ff_docs_body の in_fm が下りない挙動と同じ）
     [ -n "$fm_end" ] || { return 0; }
   fi
+  # 見出し正規表現は ff_docs_mask_changelog / ff_docs_fm_verdict / ff_docs_body
+  # と同一にすること（詳細は ff_docs_mask_changelog のコメント）。
   cl_line="$(printf '%s\n' "$masked" | awk -v fe="$fm_end" \
-    'NR > fe && /^## Changelog$/ && !c { c = NR } END { if (c) print c }')"
+    'NR > fe && /^##[ \t]+Changelog[ \t]*$/ && !c { c = NR } END { if (c) print c }')"
   [ -n "$cl_line" ] || cl_line=0
   ff_docs_mask_spans "$f" keep-fences | awk -v fe="$fm_end" -v cl="$cl_line" '
     NR <= fe            { next }

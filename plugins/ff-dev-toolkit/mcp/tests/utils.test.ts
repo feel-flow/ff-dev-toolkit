@@ -287,6 +287,30 @@ describe('buildGlossary', () => {
     expect(buildGlossary(md)['ACE']).toBe('Agentic Context Engineering');
   });
 
+  // `## Changelog` 見出しの空白クラス・空白数は tests/lib/docs-scan.sh の awk 側
+  // 実装（ff_docs_fm_verdict / ff_docs_body / ff_docs_claim_body /
+  // ff_docs_mask_changelog）と一致させる（2026-09 に整合）。
+  // tests/docs-scan-mirror が awk 版 / TS 版の出力そのものを機械照合する。
+  // 下の 3 件は 2 方向を押さえる: 空白数の緩和（陽性 2 件）と、空白クラスが
+  // `[ \t]` であって `\s` ではないこと（NBSP の負 1 件）。負のケースが無いと
+  // `\s` へ戻す変異が緑のまま通る（`\s ⊃ [ \t]`）。
+  it('見出しの空白が 2 個の "##  Changelog" も本物の節として切る', () => {
+    const md = `### ACE\n\n定義\n\n##  Changelog\n\n- 何か: 説明`;
+    expect(Object.keys(buildGlossary(md))).toEqual(['ACE']);
+  });
+
+  it('見出し末尾に空白が付く "## Changelog " も本物の節として切る', () => {
+    const md = `### ACE\n\n定義\n\n## Changelog \n\n- 何か: 説明`;
+    expect(Object.keys(buildGlossary(md))).toEqual(['ACE']);
+  });
+
+  it('区切りが NBSP の "## Changelog" は節として切らない（awk 側の ASCII クラス制約に揃える）', () => {
+    // 区切りは NBSP をエスケープ (U+00A0) で書く — 生の NBSP をソースへ置くと
+    // 見た目が空白と区別できず、判別点が黙って消える編集を招く。
+    const md = `### ACE\n\n定義\n\n##\u00A0Changelog\n\n- 何か: 説明`;
+    expect(Object.keys(buildGlossary(md)).sort()).toEqual(['ACE', '何か']);
+  });
+
   it('4 連バッククォートのフェンス内に 3 連の例を置いても外側が閉じない', () => {
     const md = [
       '````markdown',

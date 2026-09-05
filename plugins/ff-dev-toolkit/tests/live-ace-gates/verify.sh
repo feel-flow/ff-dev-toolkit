@@ -11,6 +11,8 @@
 # 満たす（ADR-041 決定 2）。
 # docs-template の fixture だけが緑でも live docs の drift は守れないため、run-all から
 # 実際の docs/08-knowledge/ を読み取る（Issue #441 / #492）。
+#
+# run-all-required: no — live docs 不在は正当な適用外。ゲートの検出力は live-ace-gates-selftest が必須名簿側で担保する
 
 set -euo pipefail
 
@@ -62,7 +64,9 @@ fi
 
 # mktemp の診断を捨てると不正 TMPDIR と read-only を区別できないため、成功時のパスと
 # 失敗時の理由を同じ変数へ受ける。
-if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/live-ace-gates.XXXXXX" 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/live-ace-gates.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   BUNDLE_DIR="$_ff_mktemp_out"
 else
   echo "✗ docs/08-knowledge は存在しますが、一時ディレクトリを作成できず live ACE ゲートを実行できません" >&2

@@ -15,7 +15,9 @@ SKILL="$PLUGIN_ROOT/skills/retrospective/SKILL.md"
 [ -f "$SKILL" ] || { echo "✗ retrospective/SKILL.md が見つかりません: $SKILL" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "✗ jq が必要です" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "✗ node が必要です（継続 JSON の生成に使用）" >&2; exit 1; }
-if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-retrospective-stop.XXXXXX" 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-retrospective-stop.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   TEST_TMP="$_ff_mktemp_out"
 else
   echo "✗ 一時ディレクトリを作成できません: $_ff_mktemp_out" >&2

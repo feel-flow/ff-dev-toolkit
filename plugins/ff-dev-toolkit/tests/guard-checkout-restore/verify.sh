@@ -5,6 +5,8 @@
 # 直接駆動し、発火（deny + 代替手段の案内）と非発火（ブランチ切り替え・clean/untracked・
 # --staged 単独・バイパス・opt-out・fail-open 経路)の両側を固定する。あわせて
 # hooks.json の PreToolUse 登録を静的照合する。
+#
+# run-all-required: no — jq / git 不在での skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,7 +25,9 @@ if ! command -v git >/dev/null 2>&1; then
   exit 0
 fi
 
-if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-guard-checkout.XXXXXX" 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-guard-checkout.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   TEST_TMP="$_ff_mktemp_out"
 else
   echo "✗ 一時ディレクトリを作成できません: $_ff_mktemp_out" >&2

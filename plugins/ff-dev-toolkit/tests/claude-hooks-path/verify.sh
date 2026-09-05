@@ -25,6 +25,8 @@
 # 対象は SSOT リポジトリの .claude/settings.json（公開配布物ではない）。skip の判定軸は
 # settings.json の存在と対象 hook の定義数のみ（公開リポジトリ等では ○ skip）。定義が
 # あるのに hook 実体や drift checker が無いのは SSOT 側の事故なので fail-closed で名指しする。
+#
+# run-all-required: no — SSOT リポジトリ専用の検査で、.claude/settings.json を持たない配布先 checkout での skip は正当な適用外
 
 set -euo pipefail
 

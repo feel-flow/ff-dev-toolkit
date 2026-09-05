@@ -81,7 +81,21 @@ export const maskNonGlossaryLines = (lines: string[]): string[] => {
   // The Changelog cut is searched in the already-masked lines: a `## Changelog`
   // shown inside a fence or comment is an example, and must not blank every
   // real term that follows it.
-  const changelog = masked.findIndex((l) => /^##\s+Changelog\s*$/.test(l));
+  //
+  // The whitespace class is `[ \t]`, **not** `\s` (aligned 2026-09). `\s` also
+  // accepts NBSP (U+00A0) and other non-ASCII space characters that the awk
+  // side (tests/lib/docs-scan.sh's `ff_docs_fm_verdict` / `ff_docs_body` /
+  // `ff_docs_claim_body` / `ff_docs_mask_changelog`) cannot match without
+  // leaving its ASCII-class constraint (run-all case 11 — the same reasoning
+  // that pinned `fenceOpenerOf` below to `[ \t]*`). Before the alignment awk
+  // additionally required exactly one space and no trailing whitespace
+  // (`/^## Changelog$/`), so `##  Changelog` (2 spaces) or a trailing-space
+  // heading masked here but stayed as body text on the awk side — this regex
+  // and all awk-side occurrences must be changed together, or the two
+  // implementations diverge again. tests/docs-scan-mirror pins both directions:
+  // the relaxed spacing via positive fixtures, and the ASCII-class constraint
+  // via an NBSP negative fixture that goes red if this widens back to `\s`.
+  const changelog = masked.findIndex((l) => /^##[ \t]+Changelog[ \t]*$/.test(l));
   if (changelog !== -1) for (let i = changelog; i < masked.length; i++) masked[i] = '';
   return masked;
 };

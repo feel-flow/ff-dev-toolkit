@@ -40,7 +40,9 @@ done
 # 後半の check-entry-format 統合検査は一時領域を必要とする。静的検査だけを先に
 # pass として数えてから環境都合で落ちると本物の回帰と区別できないため、suite 全体の
 # 開始前に同じ TMPDIR を probe し、使えない場合は検査 0 件の明示 skip にする。
-if _ff_tmp_probe="$(mktemp -d "${TMPDIR:-/tmp}/ace-refine-preflight.XXXXXX" 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if _ff_tmp_probe="$(mktemp -d "${TMPDIR:-/tmp}/ace-refine-preflight.XXXXXX" 2>&1)" && [ -d "$_ff_tmp_probe" ]; then
   rmdir "$_ff_tmp_probe" || {
     echo "✗ ace-refine: 一時領域 probe を後片付けできません: $_ff_tmp_probe" >&2
     exit 1

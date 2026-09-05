@@ -148,7 +148,9 @@ else
   bad "幅変更の挙動が不正（rc=${RC}）: ${OUT}"
 fi
 # 文字境界: 出力を UTF-8 として再解釈して不正バイトが無いこと
-if printf '%s\n' "$OUT" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+# （捨て先を /dev/null にしない — macOS 26 の BSD iconv は /dev/null 宛てだと
+#   多バイト文字が 1024 バイト境界をまたぐ valid な入力で rc=1 を返す）
+if printf '%s\n' "$OUT" | iconv -f UTF-8 -t UTF-8 >"$TMP/iconv-sink.bin" 2>&1; then
   ok "切り詰めが UTF-8 の文字境界を壊さない（iconv 再解釈が通る）"
 else
   bad "切り詰めで不正な UTF-8 バイト列が生じている"

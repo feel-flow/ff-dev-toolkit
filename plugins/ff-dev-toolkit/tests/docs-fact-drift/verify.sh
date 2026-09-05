@@ -47,6 +47,8 @@
 # docs/MASTER.md が無いチェックアウト（公開リポジトリ側など）では行頭 `○ skip`。
 #
 # FF_DOCS_REPO_ROOT で対象リポジトリのルートを差し替えられる（selftest 用）。
+#
+# run-all-required: no — live docs 不在は正当な適用外。ゲートの検出力は対の selftest が必須名簿側で担保する
 
 set -euo pipefail
 

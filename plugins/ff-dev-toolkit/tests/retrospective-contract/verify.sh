@@ -45,6 +45,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 
+# 「その節に在ること」自体が要件の針は、文書全体 grep ではなく節スコープで照合する。
+# 判断基準と契約は tests/lib/section-scope.sh のヘッダーが正本。
+# shellcheck source=../lib/section-scope.sh
+. "$SCRIPT_DIR/../lib/section-scope.sh"
+
+PREFLIGHT_HEADING='### 起票前の既存確認（必須）'
+OUTPUT_FORMAT_HEADING='## 出力形式（提案がある場合）'
+
 # SSOT モノレポでは公開文書は oss/ff-dev-toolkit/、公開リポジトリへ同期した後は
 # リポジトリルートへ展開される。両配置で同じ suite を実行する。
 # ルート README はモノレポ側だけの成果物（公開側では oss/ の README がルートに来て
@@ -101,18 +109,21 @@ not_contains() {
   fi
 }
 
-# 起票前の手順の針は当該節だけを見る。別節へのコピーでは手順の欠落を埋められない。
-preflight_contains() {
-  local needle="$1" label="$2"
-  if awk '
-    /^### 起票前の既存確認（必須）$/ { active = 1; next }
-    active && /^###? / { exit }
-    active { print }
-  ' "$SKILL" | grep -F -- "$needle" >/dev/null; then
+# 節スコープ照合の共通ラッパ。診断は `（不足: …）` の形へ揃える
+# （selftest の gate_labels がこの接頭辞でラベルを正規化する）。
+section_contains() {
+  local file="$1" heading="$2" needle="$3" label="$4" reason
+  if reason="$(section_scope_contains "$file" "$heading" "$needle")"; then
     ok "$label"
   else
-    bad "${label}（不足: ${needle}）"
+    bad "${label}（不足: ${reason}）"
   fi
+}
+
+# 起票前の手順の針は当該節だけを見る。別節へのコピーでは手順の欠落を埋められない。
+# 節の切り出しは共通ヘルパへ寄せた（自前 awk はコードフェンス内の `#` 行で早期終端する）。
+preflight_contains() {
+  section_contains "$SKILL" "$PREFLIGHT_HEADING" "$1" "$2"
 }
 
 echo "== retrospective 契約検査 =="
@@ -288,35 +299,39 @@ contains "$SKILL" "と、提案をユーザーが承認して起票する段だ�
 # 提案 1 件の構造。実測欄が出力形式から消えれば、閾値の文言が残っていても
 # 「実測を添えずに一般論を提案する」退化が起きる（閾値と出力形式は対で効く）。
 contains "$SKILL" "各提案に **起票先 repo** と **期待効果**（何が速く/正確になるか）に加え、**既存確認**（重複していないことの根拠）と **付与予定ラベル** を添える" "提案の構造: 必須 4 欄を列挙する"
-contains "$SKILL" "- 実測: " "出力形式: 実測欄"
-contains "$SKILL" "- 既存確認: " "出力形式: 既存確認欄"
+# 出力形式の欄は「出力形式節のテンプレートに在ること」が要件そのもの（別節の散文へ
+# 同じ接頭辞を書いても、報告テンプレートからは落ちたまま）。節はテンプレートを収めた
+# `text` フェンスで、その中に `## セッション振り返り` があるため、フェンス追跡を持つ
+# 共通ヘルパでしか切り出せない。
+section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "- 実測: " "出力形式: 実測欄"
+section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "- 既存確認: " "出力形式: 既存確認欄"
 # 欄の接頭辞だけだと `- 既存確認: [なし]` へ縮めても緑になる。角括弧の中身は出力形式側で
 # 「方針矛盾」に言及する唯一の箇所でもあるので、判定軸（重複 + 方針矛盾）まで固定する。
-contains "$SKILL" "重複・方針矛盾なしと判断したか" "出力形式: 既存確認欄は重複と方針矛盾の両方を判定して書く"
-contains "$SKILL" "- 起票先: " "出力形式: 起票先欄"
-contains "$SKILL" "- 付与予定ラベル: " "出力形式: 付与予定ラベル欄"
-contains "$SKILL" "- 期待効果: " "出力形式: 期待効果欄"
+section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "重複・方針矛盾なしと判断したか" "出力形式: 既存確認欄は重複と方針矛盾の両方を判定して書く"
+section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "- 起票先: " "出力形式: 起票先欄"
+section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "- 付与予定ラベル: " "出力形式: 付与予定ラベル欄"
+section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "- 期待効果: " "出力形式: 期待効果欄"
 
 # Issue #606: 起票前の既存確認。欄（`- 既存確認: `）だけ残って節が消えると、書く場所は
 # あるのに何を確認するかが消えるため、節の見出し・記入を強制する一文・検索の取得上限を
 # 対で持つ。特に `--limit` は、消えても症状が「重複 Issue が増える」だけで原因へ辿れない
 # （既定 30 件の打ち切りをその先の不在と誤判定する fail-open）ので針の価値が高い。
 contains "$SKILL" "### 起票前の既存確認（必須）" "起票前の既存確認: 節が存在する"
-contains "$SKILL" "この行を書けない提案は提示しない" "起票前の既存確認: 既存確認を書けない提案は提示しない"
-contains "$SKILL" "--state all --limit 200" "起票前の既存確認: 既存 Issue 検索は state 非限定 + 取得上限を明示"
+preflight_contains "この行を書けない提案は提示しない" "起票前の既存確認: 既存確認を書けない提案は提示しない"
+preflight_contains "--state all --limit 200" "起票前の既存確認: 既存 Issue 検索は state 非限定 + 取得上限を明示"
 # Issue #865: 重複していなくても、既存 Issue が提案の方針を否定・制約していることがある
 # （実測: 別プロジェクトで、並列レビュー不可を実測付きで結論した Issue が既にあるのに並列化を
 # 提案していた。出典は同 Issue の本文）。この分岐が落ちると「重複なし = 提示してよい」に縮退する
 # ため、明示か取り下げの一文を独立の針で持つ。前半の「全文読み」はその前提条件で、先頭だけで
 # 打ち切れば矛盾は見つからず、分岐は実行されたまま空回りする（同一行なので巻き添えは正常）。
-contains "$SKILL" "矛盾する提案はそのまま出さず、方針側の変更提案であることを明示するか取り下げる" "起票前の既存確認: 方針に矛盾する提案は明示か取り下げ"
-contains "$SKILL" "本文を**全文**読み（先頭だけで切らない）" "起票前の既存確認: ヒットした Issue の本文を全文読む"
+preflight_contains "矛盾する提案はそのまま出さず、方針側の変更提案であることを明示するか取り下げる" "起票前の既存確認: 方針に矛盾する提案は明示か取り下げ"
+preflight_contains "本文を**全文**読み（先頭だけで切らない）" "起票前の既存確認: ヒットした Issue の本文を全文読む"
 # 節の冒頭にある 2 規定。Issue #865 の争点そのものが「確認のタイミング」なので、閾値側
 # （上の針）だけでなく正本側の順序も固定する。もう 1 本は確認自体が実行できなかったときの
 # 向きで、これが落ちると「検索できなかった = 重複なし」へ倒れ（fail-open）、症状は「重複 Issue が
 # 増える」だけで原因へ辿れない。2 針とも同じ 1 行に乗る。
-contains "$SKILL" "提案を提示する**前**に、各提案について次を確認する" "起票前の既存確認: 確認は提示前に行う（正本側）"
-contains "$SKILL" "は「重複なし」と扱わない" "起票前の既存確認: 確認不能時は重複なしと扱わない"
+preflight_contains "提案を提示する**前**に、各提案について次を確認する" "起票前の既存確認: 確認は提示前に行う（正本側）"
+preflight_contains "は「重複なし」と扱わない" "起票前の既存確認: 確認不能時は重複なしと扱わない"
 
 # SSOT の最新版との照合（既存 Issue 検索とは別の確認）。
 preflight_contains "SSOT の既定ブランチで当該記述を照合する" "SSOT 照合: 既定ブランチの実体を確認"

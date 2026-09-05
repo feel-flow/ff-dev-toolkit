@@ -23,6 +23,8 @@
 # FF_DOCS_REPO_ROOT で対象リポジトリのルートを差し替えられる（selftest 用）。
 #
 # read-only 環境で動かせるよう一時ファイルを作らない。
+#
+# run-all-required: no — live docs 不在は正当な適用外。ゲートの検出力は対の selftest が必須名簿側で担保する
 
 set -euo pipefail
 

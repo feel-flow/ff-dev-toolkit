@@ -8,8 +8,9 @@
 #   model env / cost tier
 # 数は書かない。この suite 自身が count-rot を防ぐためのものなので、ここに件数を
 # 直書きすると真っ先に腐る（初版は「7 つ」と書いて実際は 8 つだった）。
-# さらにレジストリの写しが 3 箇所ある（agent-config.yaml の人間向け対応表、
-# setup-multi-agent.sh の検出一覧、no-hardcoded-model の期待アダプタ数）。
+# さらにレジストリの写しが 2 箇所ある（setup-multi-agent.sh の検出一覧、
+# no-hardcoded-model の期待アダプタ数）。agent-config.yaml が持っていた人間向け
+# 対応表は参照コメントへ畳んだので、本 suite はそれが復活していないことだけを見る。
 #
 # 潰している事故: **手で維持する並行リストの片側だけが動くこと**。どの lookup も
 # 既定が `echo ""` なので、書き漏らしはエラーにならないまま該当 CLI がプランから
@@ -22,6 +23,14 @@
 #   - レジストリ → ファイルの向きが無く、実体の無い観点名が通った
 #   - 観点を review から explore へ付け替える取り違えを見なかった
 # いずれも実測で緑になることが確認されている。現在は集合一致（両方向）で閉じている。
+#
+# agent-config.yaml については、対応表の復活検知に加えて **YAML の構造**（単一
+# ドキュメント性・全 map 横断の重複キー無し）も見る。yq はどちらもパースエラーにせず
+# last-wins / 2 つ目以降を無視の形で黙って飲むので、設定が読まれないまま緑になれる。
+# 削除したミラー 2 suite が持っていた検査で、agent-config.yaml を yq で読む suite は
+# 他に無いため引き継ぎ先はここ。yq に依存するのはこの部分だけだが、部分 skip は
+# 契約違反なので yq 不在は suite 全体の ○ skip とし、run-all 側の REQUIRED_SUITES で
+# 明示許可を要求する。
 #
 # 実 CLI は 1 つも起動しない。multi-agent.sh の registry は shell として実行せず、
 # 共有の制限文法 parser（tests/lib/cli-registry-parser.sh）でデータ化するだけなので、
@@ -44,6 +53,106 @@ for path in "$MULTI_AGENT" "$ADAPTERS_DIR" "$PERSPECTIVES_DIR" \
   [ -e "$path" ] || { echo "✗ 対象が見つかりません: $path" >&2; exit 1; }
 done
 
+# ── yq（Mike Farah v4）ゲートと agent-config.yaml の構造検査 ──────────────
+#
+# 値の照合だけでは非典型な YAML（重複キー・複数ドキュメント）を素通しする。yq は
+# パースを拒まず last-wins で読むので、古い値が黙って隠れ、第 2 ドキュメントは丸ごと
+# 読まれない。この構造検査は削除したミラー 2 suite が持っていたもので、agent-config.yaml を
+# yq で読む suite は他に無いため、引き継ぎ先はここしかない。
+#
+# 値だけ違う timeout の重複は multi-agent-timeout が last-wins 後の値で拾うが、同値重複と
+# mode / cost_strategy / output_dir / parallel の後勝ち、および第 2 ドキュメントは無人になる。
+#
+# yq 不在は「YAML 側を 1 件も読めない」= 構造検査が丸ごと成立しないケース。run-all.sh の
+# 契約どおり行頭 `○ skip` + exit 0 で **suite 全体**をスキップする（部分 skip はしない）。
+# 黙って緑にならないよう、run-all 側は REQUIRED_SUITES 掲載で明示許可を要求する。
+# （トレードオフ: yq 不在環境では yq を使わないレジストリ検査も一緒に消えるが、
+#  部分 skip 禁止の契約を曲げるよりも、明示許可を要求する fail-closed を優先する。）
+if ! command -v yq >/dev/null 2>&1; then
+  echo "○ skip: yq が見つからないためスキップ（本 suite の検査は1件も実行されていません。brew install yq などで有効化）"
+  exit 0
+fi
+
+# 同名の Python yq や v3 は tag / documentIndex / JSON 出力の契約が異なる。
+# 「存在するが非互換」は検査不能なので skip ではなく fail-closed にする。
+if ! YQ_VERSION="$(yq --version 2>&1)"; then
+  echo "✗ yq --version の実行に失敗しました: ${YQ_VERSION}" >&2
+  exit 1
+fi
+case "$YQ_VERSION" in
+  *github.com/mikefarah/yq*'version v4.'*) ;;
+  *)
+    echo "✗ Mike Farah yq v4 が必要です（検出: ${YQ_VERSION}）" >&2
+    exit 1
+    ;;
+esac
+
+# version 文字列だけを偽装した非互換 shim を本番 YAML へ通さない。本 suite が実際に
+# 使う operator だけを probe する（documentIndex / tag / keys / compact JSON 出力）。
+YQ_PROBE_EXPECTED='{"doc":0,"root":"!!map","keys":["a"]}'
+if ! YQ_PROBE="$(printf '%s\n' 'a: [x]' | yq -o=json -I=0 \
+  '{"doc": documentIndex, "root": (. | tag), "keys": (. | keys | sort)}' 2>&1)"; then
+  echo "✗ yq v4 capability probe の実行に失敗しました: ${YQ_PROBE}" >&2
+  exit 1
+fi
+if [ "$YQ_PROBE" != "$YQ_PROBE_EXPECTED" ]; then
+  echo "✗ yq v4 capability probe の結果が非互換です" >&2
+  echo "  期待=${YQ_PROBE_EXPECTED}" >&2
+  echo "  実際=${YQ_PROBE}" >&2
+  exit 1
+fi
+
+# 下の重複キー検査は「yq が重複キーを保持したまま keys に並べる」ことに乗っている。
+# 将来 keys が暗黙に dedup する実装／shim を通すと、重複を注入しても差が 0 になり
+# 検査が黙って無力化する。乗っているセマンティクスは probe で固定する。
+YQ_DUP_PROBE_EXPECTED='{"dupes":1,"kept":["a","a"]}'
+if ! YQ_DUP_PROBE="$(printf '%s\n' 'a: 1' 'a: 2' | yq -o=json -I=0 \
+  '{"dupes": ((keys | length) - (keys | unique | length)), "kept": (. | keys)}' 2>&1)"; then
+  echo "✗ yq v4 重複キー probe の実行に失敗しました: ${YQ_DUP_PROBE}" >&2
+  exit 1
+fi
+if [ "$YQ_DUP_PROBE" != "$YQ_DUP_PROBE_EXPECTED" ]; then
+  echo "✗ yq が重複キーを保持しません。重複キー検査が成立しない環境です" >&2
+  echo "  期待=${YQ_DUP_PROBE_EXPECTED}" >&2
+  echo "  実際=${YQ_DUP_PROBE}" >&2
+  exit 1
+fi
+
+# パース不能な YAML を空値で素通しさせない。
+if ! yq '.' "$AGENT_CONFIG" >/dev/null 2>&1; then
+  echo "✗ agent-config.yaml を yq でパースできません（YAML 構文エラー）" >&2
+  exit 1
+fi
+
+# 単一ドキュメントであること。pipeline 全体を checked assignment で受け、producer の
+# 非 0 を「0 件」へ畳まない。
+if ! doc_count="$(yq -r 'documentIndex' "$AGENT_CONFIG" | awk 'END { print NR + 0 }')"; then
+  echo "✗ agent-config.yaml の document 数を取得できません" >&2
+  exit 1
+fi
+if [ "$doc_count" != "1" ]; then
+  echo "✗ agent-config.yaml が単一ドキュメントではありません（documentIndex 行数=${doc_count}）" >&2
+  echo "  複数ドキュメントだと 2 つ目以降を yq が読まず、そこの設定が丸ごと無視されます" >&2
+  exit 1
+fi
+
+# 重複キーの検出。yq はパースを拒まず last-wins で読むので、全 map 横断で
+# 「キー数 − ユニークキー数」を合算する。yq/awk いずれの失敗も fail-closed。
+#
+# `sum + 0` は空入力に対しても 0 を印字する。yq が黙って何も返さなくなった世界と
+# 「重複ゼロ」が区別できないので、1 行も届かなかったら明示的に失敗させる
+# （root が map である以上、健全なら必ず 1 行以上出る）。
+if ! dup_total="$(yq -r '[.. | select(tag == "!!map") | (keys | length) - (keys | unique | length)] | .[]' "$AGENT_CONFIG" |
+  awk '{ sum += $1 } END { if (NR == 0) exit 1; print sum + 0 }')"; then
+  echo "✗ agent-config.yaml の重複キー検査を実行できません（producer が 1 行も返さない場合を含む）" >&2
+  exit 1
+fi
+if [ "$dup_total" != "0" ]; then
+  echo "✗ agent-config.yaml に重複キーがあります（マップ横断の重複数=${dup_total}）" >&2
+  echo "  yq は重複を last-wins で読むため、古い値が黙って隠れます" >&2
+  exit 1
+fi
+
 PASS=0
 FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
@@ -58,7 +167,6 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # arm がちょうど 1 件」を強制するので lookup は必ず値を返す）。つまり実害はまだ無い。
 # しかしその不変条件に依存した fail-closed なので、default arm 要求を緩めた瞬間に
 # 「診断不能な red」へ変わる。壊れたときに原因が読める形にしておく。
-# agent-config-mirror/verify.sh の lookup_checked と同じ扱いに揃える。
 # 呼び出しは `x="$(lookup_checked ...)"` の形になる = **サブシェル**。この中で
 # カウンタを増やしても親には残らない（実測: ✗ 行だけ出て FAIL は 0 のまま = suite は
 # pass を名乗れる）。ここでは診断を stderr へ出すだけにして、**カウントは親で**上げる。
@@ -92,7 +200,7 @@ DYNAMIC_PERSPECTIVES="review/code-review review/comprehensive-review"
 
 # ── multi-agent.sh の registry を shell として実行せず静的に読む ─────────────
 #
-# agent-config-mirror と同じ共有 parser で sentinel 間の全行を制限文法として検証し、
+# 共有 parser（tests/lib/cli-registry-parser.sh）で sentinel 間の全行を制限文法として検証し、
 # case arm をデータ化する。ファイル全体で registry symbol の境界外再定義も拒否する。
 # mutable な本番 source を eval/source しないので、境界内に副作用を注入されても
 # テストプロセスから実行される経路が無い。
@@ -327,51 +435,36 @@ fi
 echo
 echo "== レジストリの写し（人が手で維持している並行リスト） =="
 
-# agent-config.yaml の agents: / fallback: は実行時に読まれない対応表。だからこそ
-# 黙って嘘になれる（ACE-70-2 の一段上の形）。読まれないものほど機械で縛る。
-yaml_block_keys() { # <ブロック名>
+# agent-config.yaml は写しを持たない。かつては `agents:` / `fallback:` に実行時へ
+# 読まれない人間向け対応表があり、専用のミラー検査 2 suite で縛っていたが、対応表ごと
+# 参照コメントへ畳んだ（読まれない複製を機械で縛るより、複製を消すほうが安い）。
+# 残す主張は「畳んだ状態が黙って戻らないこと」。データとして復活すると、実行時に
+# 読まれないまま実装とドリフトする土台が戻り、守る検査はもう存在しない。
+# コメント行（`#` 始まり）は対象外 — 参照コメント本文が `agents:` に言及するため。
+#
+# 一致は「行全体が `agents:`」ではなく **キーとして書かれた形すべて**を拾う。初版は
+# `$0 == block ":"` の完全一致で、YAML として有効な復活形を素通しした（2026-09 実測）:
+#   `agents: # 対応表を戻す` / 行末空白 / `agents: {}` / `"agents":` の 4 形すべてで
+#   `yq -r '.agents | keys'` は値を返すのに、検査は全件 pass のまま緑だった。
+# キー位置（行頭 + 任意のインデント + 任意の引用符）だけを見て、`:` の右にある値・
+# 行内コメント・空白は一切問わない形へ広げる。
+yaml_has_data_block() { # <ブロック名>: データ行として存在すれば 0
   awk -v block="$1" '
-    $0 == block ":" { inside = 1; next }
-    inside && /^[a-zA-Z]/ { exit }
-    inside && match($0, /^  [a-z0-9-]+:/) {
-      key = substr($0, RSTART + 2, RLENGTH - 3)
-      print key
-    }
+    /^[[:space:]]*#/ { next }
+    $0 ~ "^[[:space:]]*[\"'"'"']?" block "[\"'"'"']?[[:space:]]*:" { found = 1; exit }
+    END { exit !found }
   ' "$AGENT_CONFIG"
 }
 
-compare_sets "agent-config.yaml の agents: が ALL_CLIS と一致" \
-  "$ALL_CLIS" "$(yaml_block_keys agents | tr '\n' ' ')" "ALL_CLIS" "agents:"
-compare_sets "agent-config.yaml の fallback: が ALL_CLIS と一致" \
-  "$ALL_CLIS" "$(yaml_block_keys fallback | tr '\n' ' ')" "ALL_CLIS" "fallback:"
-
-# キー集合が一致していても、**値**が実装とずれていれば対応表は嘘になる。実際に
-# 実装が grok-cli → gemini-cli に変わったのに YAML は codex-cli のままだった
-# （キー比較だけの検査は 55 件 green のまま素通しした）。
-yaml_fallback_value() { # <cli>
-  awk -v key="  $1:" '
-    $0 == "fallback:" { inside = 1; next }
-    inside && /^[a-zA-Z]/ { exit }
-    inside && index($0, key) == 1 {
-      rest = substr($0, length(key) + 1)
-      sub(/#.*$/, "", rest)
-      gsub(/[[:space:]]/, "", rest)
-      print rest
-      exit
-    }
-  ' "$AGENT_CONFIG"
-}
-
-fallback_value_mismatch=0
-for cli in $ALL_CLIS; do
-  want="$(lookup_checked "get_cli_fallback($cli)" get_cli_fallback "$cli")" || { FAIL=$((FAIL + 1)); continue; }
-  got="$(yaml_fallback_value "$cli")"
-  if [ "$want" != "$got" ]; then
-    bad "agent-config.yaml の fallback.${cli} が実装と不一致: YAML=${got:-（空）} / 実装=${want}"
-    fallback_value_mismatch=1
+folded_mirror_resurrected=0
+for block in agents fallback; do
+  if yaml_has_data_block "$block"; then
+    bad "agent-config.yaml に ${block}: ブロックが復活している — CLI レジストリの正本は multi-agent.sh の get_cli_*。実行時に読まれない写しを設定ファイルへ戻さないこと"
+    folded_mirror_resurrected=1
   fi
 done
-[ "$fallback_value_mismatch" -eq 0 ] && ok "agent-config.yaml の fallback の値が実装と一致"
+[ "$folded_mirror_resurrected" -eq 0 ] \
+  && ok "agent-config.yaml が agents: / fallback: の写しを持たない（参照コメントへ畳んだまま）"
 
 # setup-multi-agent.sh の検出一覧（`name:command:tier` の行）。ここが漏れると
 # 「N/M 利用可能」の分母がずれ、未導入 CLI の案内も出ない。

@@ -12,6 +12,8 @@
 #
 # 共有実装 tests/lib/mbcs-guard.sh の FF_MBCS_GIT / FF_MBCS_AWK シームで固定する。
 # 書き込み不可環境では ○ skip（mktemp 必須）。
+#
+# run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
 
 set -euo pipefail
 

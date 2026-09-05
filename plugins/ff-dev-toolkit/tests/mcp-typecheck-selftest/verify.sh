@@ -71,7 +71,9 @@ set +e
 MKTEMP_OUT="$(mktemp -d "${TMPDIR:-/tmp}/mcp-typecheck-selftest.XXXXXX" 2>&1)"
 MKTEMP_RC=$?
 set -e
-if [ "$MKTEMP_RC" -ne 0 ]; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if [ "$MKTEMP_RC" -ne 0 ] || [ ! -d "$MKTEMP_OUT" ]; then
   echo "○ skip: 書き込み可能な一時領域を作れないため mutation self-test をスキップ（tests/mcp-typecheck の検出力は未測定のままです）${MKTEMP_OUT:+ / mktemp: $MKTEMP_OUT}"
   FF_REACHED_END=1
   exit 0

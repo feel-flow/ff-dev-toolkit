@@ -41,6 +41,8 @@
 # 対象外としてインデント付き部分 skip を出す（run-all は checks-skipped へ別集計）。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/review-worktree-scripts-decision/verify.sh
+#
+# run-all-required: yes — 制約明示とオプト不採用の pin も文言だけが防御。suite 全体の skip 経路は持たない（部分 skip のみ）ので明示宣言で必須名簿へ載せる
 
 set -euo pipefail
 

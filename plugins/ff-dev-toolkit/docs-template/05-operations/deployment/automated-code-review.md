@@ -135,7 +135,7 @@ chmod +x .husky/pre-commit scripts/review-common.sh scripts/review-prompts.sh \
 ├── multi-agent.sh            # Multi-CLI オーケストレーター
 ├── multi-review.sh           # レビュー用ラッパー（→ multi-agent.sh --task review）
 ├── setup-multi-agent.sh      # 依存確認・導入
-├── agent-config.yaml         # CLI・タスク設定（agents: 対応表は実行時非読込）
+├── agent-config.yaml         # タスク設定（CLI レジストリは multi-agent.sh が正本）
 ├── adapters/                 # CLI アダプター（*-adapter.sh）
 └── perspectives/             # 観点定義
 ```

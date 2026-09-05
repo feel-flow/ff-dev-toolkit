@@ -2,6 +2,8 @@
 #
 # multi-agent の perspective フィルタ解決・縮退表示の回帰テスト（Issue #183）。
 # 実 CLI は起動せず、stub の存在だけを command -v で検出させた dry-run を使う。
+#
+# run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
 
 set -euo pipefail
 

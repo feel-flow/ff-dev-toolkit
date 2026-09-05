@@ -20,6 +20,10 @@
 #     あると suite 全体が skip 扱いになり、実際に走った検査が報告から消える）。部分
 #     skip は1文字以上インデントした `○ skip` を出す。ランナーは検査件数を
 #     `checks-skipped` へ別集計し、suite-level の skipped / REQUIRED_SUITES 判定へは混ぜない
+#     **suite 全体の skip 経路を新しく足した suite は既定で必須になる**（fail-closed）。
+#     `REQUIRED_SUITES` へ 1 行足すか、verify.sh へ `# run-all-required: no — 理由`
+#     （理由は必須。無いと赤）を書くまで登録照合が赤になる。導出規則は下の
+#     check_suite_registration 直前のコメント「必須名簿の逆向き導出」を参照。
 #   - 終了コード: 失敗 or 未実行が 1 件でもあれば 1、それ以外は 0。ただし passed が
 #     0 で skipped だけの場合も 1（検証が 1 件も成立していない状態を緑にしない）
 #
@@ -236,6 +240,9 @@ else
     # skill-bash-blocks の直後: 同欠陥クラスの SKILL.md 側ガードと並べて報告する。
     "$SCRIPT_DIR/mbcs-guard-failclosed/verify.sh"
     "$SCRIPT_DIR/no-hardcoded-model/verify.sh"
+    # 上の「外部コマンド不要」の例外で、yq に依存する（agent-config.yaml の構造検査 —
+    # 単一ドキュメント性と全 map 横断の重複キー — を削除したミラー 2 suite から引き継いだ）。
+    # 読み取り専用の静的検査。yq 不在なら丸ごと ○ skip（REQUIRED_SUITES 掲載）。
     "$SCRIPT_DIR/cli-registry-completeness/verify.sh"
     # 収録スキル数の手入力メタデータ（marketplace.json root/oss・plugin.json）と
     # skills/*/SKILL.md の実数の整合検査（Issue #502）。jq のみに依存する読み取り
@@ -254,20 +261,10 @@ else
     # 同名エントリの重複・免除と非列挙の名簿の腐り・抽出失敗）で実測する。
     # 一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/plugin-description-enumeration-selftest/verify.sh"
-    # agent-config.yaml が multi-agent.sh の case 文のミラーとして正しいか
-    # （command / cost_tier / perspectives / fallback の値を横断照合）。
-    # 上の「外部コマンド不要」の例外で、yq に依存する。読み取り専用の静的検査なので
-    # 関連する cli-registry-completeness の直後に置く（yq 不在なら丸ごと ○ skip）。
-    "$SCRIPT_DIR/agent-config-mirror/verify.sh"
-    # 上の gate の検出力を隔離コピーへの mutation で実測する。yq / perl / mktemp -d を
-    # 使い単体で〜15 秒かかる（数字を更新するときは実測してから直すこと）。検査対象の
-    # 直後に置くことを優先し、安価な順の例外として扱う。
-    # yq / perl 不在、または一時領域不可なら丸ごと ○ skip。
-    "$SCRIPT_DIR/agent-config-mirror-selftest/verify.sh"
-    # 4 スキル（multi-* 3 本 + setup-ai-config）に複製されている agent-config.yaml の
-    # 説明文が一致し、実際に読まれるキーを正しく述べ、multi-agent.sh の yq 読み取りと
-    # 連動しているかの静的検査。外部コマンド不要だが、同じ設定ファイルを扱う
-    # agent-config-mirror 系の直後に置く。
+    # agent-config.yaml の「実際に読まれるキー」の説明が単一正本で、その主張が
+    # multi-agent.sh の yq 読み取りと連動し、消費側 4 スキル（multi-* 3 本 +
+    # setup-ai-config）が複製ではなく参照 1 行を持つことの静的検査。外部コマンド不要だが、
+    # 同じ設定ファイルを扱う cli-registry-completeness の直後に置く。
     "$SCRIPT_DIR/agent-config-doc-sync/verify.sh"
     "$SCRIPT_DIR/ace-curate-commit/verify.sh"
     # 行数バジェット例外の運用 SSOT（PLAYBOOK）と live、README の参照、見本
@@ -766,7 +763,7 @@ fi
 # *誰が許容を宣言するか*。黙って消えるのをやめ、**環境側が明示的に宣言**する形にする。
 #
 # 回せない環境では、理由を添えて明示的に外す:
-#   FF_RUN_ALL_ALLOW_SKIP="agent-config-mirror agent-config-mirror-selftest" bash tests/run-all.sh
+#   FF_RUN_ALL_ALLOW_SKIP="markdownlint markdownlint-selftest" bash tests/run-all.sh
 #   FF_RUN_ALL_ALLOW_SKIP=all   # 全部許す（旧来の挙動。1 行の警告つき）
 # **対の本体 suite を持つ `-selftest` をここへ載せても、既定（高速モード）では
 # fail-closed 保護は働かない**（ADR-034）。除外された suite は SKIPPED に現れず、下の
@@ -789,9 +786,11 @@ REQUIRED_SUITES=(
   # 実行環境分離のselftestは、クリーン環境だと退行してもconsumerが緑になり得る。
   # 一時領域不足で検出力ごと消える場合は明示許可を要求する（Issue #439）。
   adapter-env-isolation-selftest
-  # yq（Mike Farah v4）が要る。ミラー不変条件は他に代替する検査が無い（#274）
-  agent-config-mirror
-  agent-config-mirror-selftest
+  # yq（Mike Farah v4）が要る。agent-config.yaml の構造検査（単一ドキュメント性・
+  # 全 map 横断の重複キー）と「畳んだ対応表が復活していないこと」を見るのはこの suite
+  # だけで、yq 不在で丸ごと skip すると代替する検査が無い（Issue #1227。旧
+  # agent-config-mirror の掲載を引き継ぐ）。
+  cli-registry-completeness
   # mcp/node_modules が無いと repository Markdown lint の検証イベントが消える（#295）
   markdownlint
   markdownlint-selftest
@@ -1005,6 +1004,59 @@ REQUIRED_SUITES=(
   weekly-health-contract
 )
 
+# 渡された verify.sh を走査し、1 行 1 suite で `<名前>:<skip>:<yes>:<no>:<bad>` を返す。
+#
+# `<skip>` は **suite 全体の** skip 経路の有無。ランナーの実行時判定（出力の列 0 に
+# `○ skip` が現れた行）と同じ境界を静的側でも取る:
+#   - 出力文（`echo` / `printf`）が、**開き引用符の直後**＝出力行の列 0 に `○ skip` を
+#     置く形。引用符の種別は問わない（`"○ skip` / `'○ skip` / printf の書式文字列）。
+#     ここを二重引用符だけに絞ると、単一引用符や printf で skip を出す suite が導出から
+#     落ち、名簿に載っていなくても緑のまま通る（静的側だけが緩い非対称になる）。
+#   - heredoc 本文で列 0 から `○ skip` を出す形（引用符を伴わない行頭一致）。
+#   - **出力文でない行は拾わない** — アサートや期待値照合の中の `"○ skip"` は skip 経路
+#     ではないので、それを材料にすると必須へ誤って引き上げる。
+#   - インデント付きの部分 skip（`"  ○ skip`）も拾わない — 部分 skip しか持たない suite を
+#     「環境都合で丸ごと消えうる」と誤って必須へ引き上げないため。
+#
+# `<yes>` / `<no>` は宣言コメントの有無で、両方 1 なら矛盾。`<bad>` は `run-all-required:`
+# を名乗りながら理由（yes / no の直後の非空白）を欠く宣言の有無。理由なしの `no` を素通り
+# させると、判断の記録なしに必須から外れてしまう。
+#
+# ファイルごとに awk を起動する形は suite 数ぶんのプロセス生成で実測 3 秒近く伸びた
+# （run-all は毎回この照合を通る）。FILENAME を使った 1 パスにまとめる。
+suite_declaration_scan() {
+  awk '
+    function emit() {
+      if (name != "") { printf "%s:%d:%d:%d:%d\n", name, skip, yes, no, bad }
+    }
+    FNR == 1 {
+      emit()
+      path = FILENAME
+      sub(/\/verify\.sh$/, "", path)
+      sub(/^.*\//, "", path)
+      name = path
+      skip = 0; yes = 0; no = 0; bad = 0
+    }
+    # 宣言は「yes / no + 理由」で 1 つの形。理由を欠く宣言は読み飛ばさず bad で印を付ける。
+    /^[[:space:]]*#[[:space:]]*run-all-required:/ {
+      decl = $0
+      sub(/^[[:space:]]*#[[:space:]]*run-all-required:[[:space:]]*/, "", decl)
+      if (decl ~ /^yes[[:space:]]+[^[:space:]]/) { yes = 1 }
+      else if (decl ~ /^no[[:space:]]+[^[:space:]]/) { no = 1 }
+      else { bad = 1 }
+      next
+    }
+    /^[[:space:]]*#/ { next }
+    # heredoc 本文（引用符を伴わず列 0 から始まる skip 行）
+    /^○ skip/ { skip = 1; next }
+    # 出力文が、開き引用符の直後＝出力行の列 0 に `○ skip` を置く形（引用符種別を問わない）
+    /(^|[^[:alnum:]_.-])(echo|printf)([[:space:]]|$)/ {
+      if (index($0, "\"○ skip") || index($0, "'\''○ skip")) { skip = 1 }
+    }
+    END { emit() }
+  ' "$@"
+}
+
 # ── 既定 suite 一覧の登録漏れ検査 ──────────────────────────────────────────────
 # SCRIPTS 配列は手で維持されており、**一覧から 1 行消しても誰も気づかない**。
 # 消した suite は走らず、残り全部が緑のまま「All ... passed」を出す。
@@ -1014,6 +1066,30 @@ REQUIRED_SUITES=(
 #
 # 走査は tests/ の直下 1 階層だけ。run-all 自身の fixture は tests/run-all/fixtures/
 # の下にあり、この深さには現れないので誤検出しない。
+#
+# ── 必須名簿の逆向き導出 ─────────────────────────────────────────────────────
+# 上の 2 つの照合はどちらも「名簿に書かれた名前が実在するか」の向きしか見ない。
+# **REQUIRED_SUITES から 1 行消しても、その suite は走り続けるので全体は緑のまま**で、
+# 消えたのは「環境都合の skip を赤にする保護」だけ — 最も気づきにくい形で検出力が減る。
+# そこで実体側から「必須であるべき suite」を導出し、名簿と双方向で突き合わせる。
+#
+# 導出規則（実体 = tests/<name>/verify.sh を読む）:
+#   必須 = { suite 全体の skip 経路を持つ } ∪ { yes 宣言 } − { no 宣言 }
+#
+#   - **suite 全体の skip 経路**: 出力文（echo / printf / heredoc 本文）が出力行の列 0 へ
+#     `○ skip` を置く形。引用符の種別は問わず、インデント付きの部分 skip とアサート行の
+#     文字列は含めない（ランナー自身の集計と同じ境界。詳細は suite_declaration_scan）。
+#     suite ごと消えうる = 環境都合で検証が丸ごと落ちうる、が必須判定の既定の材料。
+#   - **宣言コメント**: verify.sh の任意のコメント行に置く。**理由は必須**（理由なしの
+#     宣言は赤。判断の記録なしに必須から外れる形を残さない）
+#       # run-all-required: yes — <理由>   … skip 経路が無くても名簿へ載せる
+#       # run-all-required: no  — <理由>   … skip 経路はあるが環境都合の skip を許容する
+#     判断そのもの（代替の検査があるか／その skip で何が消えるか）は導出できないので、
+#     **判断は suite 側に宣言として置き、名簿はその集約**という関係にする。skip 経路の
+#     隣に宣言があるので、skip を足す人・外す人の目に入る位置に判断が残る。
+#
+# この形は「新しく skip 経路を足した suite は既定で必須」= fail-closed でもある。
+# 名簿にも宣言にも無い skip 経路は赤になり、追加者に yes / no の明示を要求する。
 check_suite_registration() {
   local disk_names=() registered=() missing=() name script
   for script in "$SCRIPT_DIR"/*/verify.sh; do
@@ -1042,6 +1118,7 @@ check_suite_registration() {
     echo "✗ run-all.sh の既定 suite 一覧に未登録の suite があります:" >&2
     printf '    %s\n' "${missing[@]}" >&2
     echo "  tests/<name>/verify.sh を追加したら SCRIPTS 配列にも 1 行足してください。" >&2
+    echo "  他の追随先（REQUIRED_SUITES 宣言・docs の suite 数・npm ci 一覧など）は docs/04-quality/TESTING.md §新規 suite 追加の随伴先 を参照してください。" >&2
     return 1
   fi
   # 名簿に実在しない suite 名が残ると、その行は永久に何も守らない（改名・削除に
@@ -1060,9 +1137,112 @@ check_suite_registration() {
     echo "  改名・削除に追従できていません（その行は何も守っていません）。" >&2
     return 1
   fi
-  echo "ℹ️  既定 suite 一覧の登録漏れなし（実体 ${#disk_names[@]} 件 / 必須 ${#REQUIRED_SUITES[@]} 件）"
+  # ── 逆向き導出: 実体から必須集合を組み立て、名簿と双方向で突き合わせる ──────
+  # 走査は awk 1 プロセス。**終了コードを捨てない** — BSD awk は開けないファイルを警告
+  # して次へ進み最後に非 0 を返すので、`for entry in $(...)` の形だと 1 本だけ読めない
+  # verify.sh がその suite を黙って導出から落とす（名簿にも無ければ緑のまま）。
+  local entry sname flags scan_out derived=() conflicts=() dead_optout=() malformed=()
+  if ! scan_out="$(suite_declaration_scan "$SCRIPT_DIR"/*/verify.sh)"; then
+    echo "✗ verify.sh の走査が失敗しました（読めない verify.sh がある可能性。逆向き照合が成立していません）" >&2
+    return 1
+  fi
+  for entry in $scan_out; do
+    sname="${entry%%:*}"
+    flags="${entry#*:}"
+    case "$flags" in
+      *:1)
+        # 理由を欠く run-all-required 宣言（yes / no の判定より前に落とす）
+        malformed+=("$sname")
+        continue
+        ;;
+    esac
+    flags="${flags%:*}"
+    case "$flags" in
+      *:1:1)
+        conflicts+=("$sname")
+        ;;
+      1:*:0)
+        # skip 経路がある（yes 宣言の有無に関わらず必須）
+        derived+=("$sname")
+        ;;
+      1:*:1)
+        # skip 経路はあるが no 宣言で明示的に許容されている
+        ;;
+      0:1:0)
+        derived+=("$sname")
+        ;;
+      0:0:1)
+        # skip 経路が無いのに no 宣言だけが残っている = 何も許可していない死んだ宣言。
+        # 「その行は何も守っていない」を上の unknown 検査と同じ理由で赤にする。
+        dead_optout+=("$sname")
+        ;;
+    esac
+  done
+  if [[ "${#malformed[@]}" -gt 0 ]]; then
+    echo "✗ 理由の無い run-all-required 宣言があります:" >&2
+    printf '    %s\n' "${malformed[@]}" >&2
+    echo "  '# run-all-required: yes — 理由' / '# run-all-required: no — 理由' の形で理由を書いてください（理由なしの no は判断の記録なしに必須から外れます）。" >&2
+    return 1
+  fi
+  if [[ "${#conflicts[@]}" -gt 0 ]]; then
+    echo "✗ run-all-required の yes / no を同時に宣言している suite があります:" >&2
+    printf '    %s\n' "${conflicts[@]}" >&2
+    echo "  どちらか一方だけを残してください（必須名簿への昇格判断は 1 つに決まります）。" >&2
+    return 1
+  fi
+  if [[ "${#dead_optout[@]}" -gt 0 ]]; then
+    echo "✗ suite 全体の skip 経路が無いのに run-all-required: no が残っています:" >&2
+    printf '    %s\n' "${dead_optout[@]}" >&2
+    echo "  許可する対象の skip が消えています（その宣言は何も守っていません）。宣言を削除するか、必須なら yes へ変えて REQUIRED_SUITES へ載せてください。" >&2
+    return 1
+  fi
+  # 導出が空なら「必須なし」ではなく「逆向き照合が成立していない」（skip 経路の
+  # 検出そのものが壊れた形。走査が空のときと同じ理由で fail-closed にする）。
+  if [[ "${#derived[@]}" -eq 0 ]]; then
+    echo "✗ 実体から必須 suite を 1 件も導出できませんでした（逆向き照合が成立していません）" >&2
+    return 1
+  fi
+  local unlisted=() unbacked=()
+  for d in "${derived[@]}"; do
+    found=0
+    for req in "${REQUIRED_SUITES[@]}"; do
+      [[ "$d" == "$req" ]] && { found=1; break; }
+    done
+    [[ "$found" -eq 1 ]] || unlisted+=("$d")
+  done
+  if [[ "${#unlisted[@]}" -gt 0 ]]; then
+    echo "✗ REQUIRED_SUITES に載っていない必須 suite があります:" >&2
+    printf '    %s\n' "${unlisted[@]}" >&2
+    echo "  suite 全体の skip 経路を持つ suite と 'run-all-required: yes' を宣言した suite は必須です。名簿へ 1 行足すか、環境都合の skip を許容するなら verify.sh へ '# run-all-required: no — 理由' を書いてください（yes 宣言側は宣言の削除でも解けます）。" >&2
+    echo "  他の追随先（docs の suite 数・npm ci 一覧など）は docs/04-quality/TESTING.md §新規 suite 追加の随伴先 を参照してください。" >&2
+    return 1
+  fi
+  for req in "${REQUIRED_SUITES[@]}"; do
+    found=0
+    for d in "${derived[@]}"; do
+      [[ "$req" == "$d" ]] && { found=1; break; }
+    done
+    [[ "$found" -eq 1 ]] || unbacked+=("$req")
+  done
+  if [[ "${#unbacked[@]}" -gt 0 ]]; then
+    echo "✗ REQUIRED_SUITES の掲載に実体側の根拠がない suite 名があります:" >&2
+    printf '    %s\n' "${unbacked[@]}" >&2
+    echo "  suite 全体の skip 経路も yes 宣言も無い（または no 宣言と同居しています）。skip 経路が無いまま名簿へ残すなら verify.sh へ '# run-all-required: yes — 理由' を書いてください。" >&2
+    return 1
+  fi
+  echo "ℹ️  既定 suite 一覧の登録漏れなし（実体 ${#disk_names[@]} 件 / 必須 ${#REQUIRED_SUITES[@]} 件 — 実体からの導出と一致）"
   return 0
 }
+
+# --dump-declarations: 実体から読んだ導出材料（`<名前>:<skip>:<yes>:<no>:<bad>`）を
+# そのまま出して終わる。tests/run-all/verify.sh は既定一覧の統合検査（case 26）のために
+# 実在 suite を写した複製木を作るが、そこで判定述語を書き写すと「述語を変えるときは
+# 2 箇所同時」の結合が生まれ、片方だけ直すと複製木の導出集合がずれて原因の読めない赤に
+# なる。導出述語の単一定義を保つため、材料はランナー自身に出させる。
+if [[ "${FF_RUN_ALL_DUMP_DECLARATIONS:-0}" == "1" ]]; then
+  suite_declaration_scan "$SCRIPT_DIR"/*/verify.sh || exit 1
+  exit 0
+fi
 
 # --check-registration: 登録照合だけを行って終わる。全 suite を走らせずに
 # この検査だけを回せるようにしておく（自己テストから安価に叩くため）。
@@ -1576,6 +1756,17 @@ if [[ ${#NOT_RUN[@]} -gt 0 ]]; then
 fi
 if [[ ${#FAILED[@]} -gt 0 ]]; then
   echo "✗ failed: ${FAILED[*]}" >&2
+fi
+
+# node_modules 不在に起因する必須 skip / FULL での fail は、markdownlint 系 / mcp-* 系 /
+# ace-* 系 / docs-scan-mirror / live-ace-gates 系にまたがる（各 suite のコメント参照）。
+# 個々の skip/fail 理由を suite ごとに読み解かなくても、原因は
+# 「plugins/ff-dev-toolkit/mcp/node_modules の実在」1点に単純化できるため、判定はそこだけを
+# 見る（既存の ○ skip 行に埋もれないための可視化。検査の新設ではない）。テスト用の上書きは
+# FF_RUN_ALL_MCP_NODE_MODULES（既定は run-all.sh から見た相対パス）。
+MCP_NODE_MODULES="${FF_RUN_ALL_MCP_NODE_MODULES:-$SCRIPT_DIR/../mcp/node_modules}"
+if [[ ! -d "$MCP_NODE_MODULES" && ( ${#SKIPPED[@]} -gt 0 || ${#FAILED[@]} -gt 0 ) ]]; then
+  echo "○ 案内: mcp/node_modules が無いため一部 suite が skip / fail した可能性があります。全件ゲート前に次を実行してください: npm ci --prefix plugins/ff-dev-toolkit/mcp"
 fi
 
 # >>> ff-gate-record-block（tests/merge-freshness/verify.sh がこの関数定義を抽出して

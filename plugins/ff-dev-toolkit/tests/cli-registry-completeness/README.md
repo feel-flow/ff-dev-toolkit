@@ -5,7 +5,7 @@ CLI レジストリ（`scripts/multi-agent.sh`）と、それを手で写した�
 ## 何を潰しているか
 
 `multi-agent.sh` は bash 3.2 互換のため連想配列を使えず、**1 CLI につき複数の `case` 文**を
-lockstep で書く構造になっている。さらにレジストリの写しがリポジトリ内に 3 箇所ある。
+lockstep で書く構造になっている。さらにレジストリの写しがリポジトリ内に 2 箇所ある。
 
 | lookup | 書き漏らすとどうなるか |
 |---|---|
@@ -18,7 +18,6 @@ lockstep で書く構造になっている。さらにレジストリの写し�
 
 | 写し | 書き漏らすとどうなるか |
 |---|---|
-| `scripts/agent-config.yaml` の `agents:` / `fallback:` | 実行時に読まれない対応表なので、黙って嘘になる |
 | `scripts/setup-multi-agent.sh` の検出一覧 | 「N/M 利用可能」の分母がずれ、未導入 CLI の案内が出ない |
 | `tests/no-hardcoded-model/verify.sh` の `EXPECTED_ADAPTER_COUNT` | アダプタ配線検査の対象数が実態とずれる |
 
@@ -35,10 +34,14 @@ lockstep で書く構造になっている。さらにレジストリの写し�
 6. `adapters/*-adapter.sh` の実ファイル集合が `ALL_CLIS` から導いた集合と一致する
 7. **観点の集合が「レジストリが名指しするもの」と「`perspectives/` に実在するもの」で一致**する
 8. **`cost_tier != metered` の既定有効 CLI 間で、task ごとの観点集合が重複しない**
-9. `agent-config.yaml` の `agents:` / `fallback:` のキーが `ALL_CLIS` と一致する
+9. `agent-config.yaml` に `agents:` / `fallback:` の**データブロックが無い**（実行時に読まれない写しが復活していない。参照コメント本文の言及は対象外。一致はキー位置だけを見るので、行内コメント・行末空白・`{}`・引用キーのいずれでも発火する）
 10. `setup-multi-agent.sh` の CLI 一覧が `ALL_CLIS` と一致する
 11. `no-hardcoded-model` の `EXPECTED_ADAPTER_COUNT` が `ALL_CLIS` の件数と一致する
 12. `ALL_CLIS` と観点ファイルがそれぞれ 1 件以上ある（検査の空振り検出）
+13. `agent-config.yaml` が**単一ドキュメント**で、**全 map 横断で重複キーが無い**（yq はどちらもパースエラーにせず、last-wins / 2 つ目以降を無視の形で黙って飲む）
+
+項目 13 と、その前提になる yq フレーバーゲートは、削除した `agent-config-mirror` から
+引き継いだもの。`agent-config.yaml` を yq で読む suite は他に無い。
 
 件数は本文に書かない。**この suite 自身が count-rot を防ぐためのもの**なので、ここに
 「7 つの lookup」のような数を直書きすると真っ先に腐る（初版がまさにそれで、7 と書いて
@@ -92,6 +95,21 @@ needle を足したら、対応する変異を手で当てて red を確認す�
 | sentinel を重複・削除・逆順にする | 一意性/正順違反で exit 1（source は実行しない） |
 | 終了 sentinel 後で `ALL_CLIS` または lookup を再定義する | 境界外再定義として exit 1（後続定義だけが実行時に勝つ false-green を防ぐ） |
 | `}; touch <marker>` または lookup 本体へ `touch` を混ぜる | 制限文法違反で exit 1、marker は作られない |
+| `agents:` を行内コメント付き / 行末空白付き / `{}` / 引用キー（`"agents":`）で復活させる | 4 形すべて「ブロックが復活している」で red（コメント行での言及だけなら緑） |
+| `tasks.review.timeout` を二重に書く | 「重複キーがあります（マップ横断の重複数=1）」で exit 1 |
+| 末尾へ `---` + 第 2 ドキュメントを足す | 「単一ドキュメントではありません（documentIndex 行数=2）」で exit 1 |
+| Python yq / v3 を PATH 先頭へ置く | 「Mike Farah yq v4 が必要です」で exit 1（skip ではない） |
+| version 文字列だけ v4 を騙る shim | capability probe 失敗で exit 1 |
+
+この suite は**恒久 selftest を持たない**（TESTING.md §新設ゲートは恒久 selftest を要求しない）。
+検査に手を入れたら上表の変異を手で 1 回撃ち、`✗` 行と rc を PR 本文へ貼ること。
+
+## 依存
+
+`yq`（Mike Farah v4）が要る。不在なら行頭 `○ skip` + exit 0 で **suite 全体**をスキップし
+（部分 skip はしない）、`run-all.sh` の `REQUIRED_SUITES` 掲載により明示許可
+（`FF_RUN_ALL_ALLOW_SKIP=cli-registry-completeness`）が無い限り全体が非 0 になる。
+Python yq / v3 のような「存在するが非互換」は検査不能なので skip ではなく exit 1 にする。
 
 ## 実行方法
 
@@ -99,5 +117,5 @@ needle を足したら、対応する変異を手で当てて red を確認す�
 bash plugins/ff-dev-toolkit/tests/cli-registry-completeness/verify.sh
 ```
 
-実 CLI は起動しない。`multi-agent.sh` の registry を静的 parser でデータ化するだけなので、
-課金もネットワークも一時ファイルも要らない。
+実 CLI は起動しない。`multi-agent.sh` の registry を静的 parser でデータ化し、
+`agent-config.yaml` は yq で読むだけなので、課金もネットワークも一時ファイルも要らない。

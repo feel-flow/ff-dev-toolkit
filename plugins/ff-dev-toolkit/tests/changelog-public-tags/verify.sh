@@ -120,6 +120,8 @@
 #   FF_CHANGELOG_PUBLIC_TAGS_REPO_URL  公開リポジトリの clone URL 上書き
 #                                      （ローカルパスも可。tests/changelog-public-tags-selftest/
 #                                      が bare リポジトリ fixture で本 suite 自体を検証する）
+#
+# run-all-required: no — 公開リポジトリへのネットワーク到達に依存する。到達不能は環境の外側の事情なので必須の赤にしない
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

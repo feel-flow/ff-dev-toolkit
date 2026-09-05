@@ -150,7 +150,7 @@ v1.0 (review-config.yaml) との後方互換あり。
 
 本節が正本で、スキル（multi-review / multi-explore / multi-implement / setup-ai-config）はここを参照する（説明をスキル側へ複製しない）。
 
-プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される（環境変数 `MULTI_AGENT_CONFIG=<path>` または `--config <path>` でも上書き可。読み取りは `yq` 依存で、無い環境では設定ファイルは読まれず既定値で動く）。ただし**実際に読まれるのは `version` / `mode` / `parallel` / `review.main` / `review.sub` / `review.critical_nonblock_perspectives` と、`version: "2.0"` のときだけ `tasks.<task>.{mode,cost_strategy,timeout,output_dir}` である**（`version` が `2.0` でない場合は v1 形式とみなされ、トップレベルの `cost_strategy` / `timeout` / `output_dir` が読まれる — `version` を書き忘れると `tasks.*` が黙って無視されるので注意）。`agents:` と `fallback:` はどのバージョンでも読まれず、人が読むための対応表にすぎない。実行時のレジストリの正本は `scripts/multi-agent.sh` の `get_cli_*` 関数。
+プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される（環境変数 `MULTI_AGENT_CONFIG=<path>` または `--config <path>` でも上書き可。読み取りは `yq` 依存で、無い環境では設定ファイルは読まれず既定値で動く）。ただし**実際に読まれるのは `version` / `mode` / `parallel` / `review.main` / `review.sub` / `review.critical_nonblock_perspectives` と、`version: "2.0"` のときだけ `tasks.<task>.{mode,cost_strategy,timeout,output_dir}` である**（`version` が `2.0` でない場合は v1 形式とみなされ、トップレベルの `cost_strategy` / `timeout` / `output_dir` が読まれる — `version` を書き忘れると `tasks.*` が黙って無視されるので注意）。`agents:` と `fallback:` はどのバージョンでも読まれず、書いても挙動は変わらない（同梱の既定設定はこの 2 ブロックを持たない）。実行時のレジストリの正本は `scripts/multi-agent.sh` の `get_cli_*` 関数。
 
 ## Perspective フィルタと単一 CLI 縮退
 
@@ -227,7 +227,7 @@ git を書かない。その経路では 1 と 3 は適用外だが、2 のフ�
 
 ### 新しい Perspective を追加するには
 
-実行時に効く変更と、対応表の追随（任意）を分けて書く。`agent-config.yaml` の `agents:` / `fallback:` ブロックは**実行時には読まれない**（正本は `multi-agent.sh` の case 文。値を書き換えても挙動は変わらない）。
+CLI レジストリ（CLI 名・起動コマンド・コスト帯・観点割当・代替）の正本は `multi-agent.sh` の `get_cli_*` case 文だけ。`agent-config.yaml` は写しを持たない（かつて置いていた `agents:` / `fallback:` の人間向け対応表は、実行時に読まれないまま実装とドリフトするため参照コメントへ畳んだ）。`agent-config.yaml` へ `agents:` / `fallback:` を書き足しても挙動は変わらないので、書かないこと。
 
 1. **（実行時・必須）** `scripts/perspectives/{task_type}/` に `.md` ファイルを作成
 2. 以下のセクション構造に従う:
@@ -237,7 +237,7 @@ git を書かない。その経路では 1 と 3 は適用外だが、2 のフ�
    - `## Output Template` — 出力フォーマット
    - `## Notes` — 注意事項
 3. **（実行時・必須）** `multi-agent.sh` の `get_cli_perspectives_{task_type}()` にマッピングを追加する（CLI レジストリの正本。ここを直さないとプランに載らない）
-4. **（任意・非実行時）** `agent-config.yaml` の該当 agent に perspective を追記する — **対応表のミラー追随のみ**。実行時には読まれない。書き換えても挙動は変わらない。ミラー検査（`tests/agent-config-mirror`）を通すため、case 文と揃えるときだけ更新する
+4. **（実行時・必須）** 追加した観点が実際にプランへ載ることを、`--dry-run` または `--list-perspectives` を付けた `--task {task_type}` の実行で確認する（コマンドの正準形は本文書の実行例を参照）。`agent-config.yaml` 側に追記するものは無い
 
 ### Perspective 設計原則
 

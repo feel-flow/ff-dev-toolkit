@@ -30,7 +30,9 @@ if [ ! -f "$TARGET" ]; then
 fi
 
 # mktemp の診断を捨てない（run-all case 15）。
-if _mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/roadmap-release-facts-selftest.XXXXXX" 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if _mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/roadmap-release-facts-selftest.XXXXXX" 2>&1)" && [ -d "$_mktemp_out" ]; then
   TMP="$_mktemp_out"
 else
   echo "○ skip: 一時ディレクトリを作成できないため実行できません（検査は1件も実行されていません）"

@@ -38,6 +38,8 @@
 # 要らず、skip 経路を持たない。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/review-severity-scope/verify.sh
+#
+# run-all-required: yes — テンプレート本体の重大度スコープ契約は文言だけが防御で、静的検査には skip 経路が無い。改名・削除と将来の skip 経路を黙って通さないため必須名簿へ載せる
 
 set -euo pipefail
 

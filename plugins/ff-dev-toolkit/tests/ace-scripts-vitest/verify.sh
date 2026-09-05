@@ -46,7 +46,9 @@ fi
 # パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に
 # 誤帰属し、恒常的に壊れた TMPDIR が suite を exit 0 で無効化し続ける。
 # 2>&1 で受けると、成功時はパス・失敗時は理由が同じ変数に入る。
-if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ace-scripts-vitest.XXXXXX" 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ace-scripts-vitest.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   PROBE_DIR="$_ff_mktemp_out"
 else
   echo "○ skip: 一時ディレクトリを作成できないためスキップ（本 suite の検査は1件も実行されていません。書き込み可能な環境で再実行してください）"

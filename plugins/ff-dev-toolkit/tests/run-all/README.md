@@ -67,19 +67,22 @@ green」。healthy を確認できない回は全件で代替 — ADR-039）。`
 | case 10 | （全 `tests/**/*.sh` の静的監査） | 非コメント行のパイプ入力に `grep -q*` が再混入していないこと |
 | case 11 | （tracked shell の静的監査 + `tests/lib/mbcs-guard.sh`） | `$VAR` 直後マルチバイト展開の再混入が無いこと。検出器 self-test 付き。fail-closed 経路の自動回帰は別 suite `mbcs-guard-failclosed`（Issue #312）。SKILL.md bash ブロック側の MBCS は `skill-bash-blocks`（Issue #311） |
 | case 12 | （`tests/*/verify.sh` の `trap ... EXIT` 静的監査 + `fixtures/exit-guard/bare-trap.sh`） | 途中死した suite を素の `trap 'rm -rf ...' EXIT` で握り潰す形が無いこと。検出器自体が fixture へ効くことも確認する |
-| case 13 | （run-all.sh の登録照合。一時複製 tree で実測） | 既定 suite 一覧に登録漏れが無いこと。登録照合が必須名簿の件数も報告すること。高速モード指定下でも照合は除外前の全一覧へ掛かること。未登録 suite を 1 本足すと非 0 で名指しされる |
-| case 14 | （run-all.sh の `REQUIRED_SUITES` 名簿の静的監査） | 一時領域依存の必須 suite 名簿が保持され、skip が終了コード判定（`REQUIRED_SKIPPED`）へ配線されていること |
+| case 13 | （run-all.sh の登録照合。一時複製 tree で実測） | 既定 suite 一覧に登録漏れが無いこと。登録照合が必須名簿の件数も報告すること。高速モード指定下でも照合は除外前の全一覧へ掛かること。未登録 suite を 1 本足すと非 0 で名指しされ（AC3）、随伴先文書 `docs/04-quality/TESTING.md` のパス・節名「新規 suite 追加の随伴先」も案内に含む |
+| case 14 | （run-all.sh の登録照合を `FF_RUN_ALL_CHECK_REGISTRATION=1` で実行 + `REQUIRED_SUITES` 配線の静的監査） | 必須名簿が定義され、**実体（各 verify.sh の suite 全体 skip 経路と `run-all-required:` 宣言）から導出した必須集合と双方向で一致**すること。両方向の失敗経路が実装に在ること。skip が終了コード判定（`REQUIRED_SKIPPED`）へ配線されていること。走査の失敗と理由を欠く宣言が fail-closed であること。導出述語の正負の対照（単一引用符・`printf` の行頭 skip は拾い、アサート行の期待値文字列とインデント付き部分 skip は拾わない。理由なしの宣言は `bad` として印が付く）を `FF_RUN_ALL_DUMP_DECLARATIONS=1` の probe tree で実測する。名簿の 17 名ハードコード・ミラーは逆向き導出の導入で削除した |
 | case 15 | （`tests/*/verify.sh` の `mktemp` 呼び出し静的監査） | `mktemp -d ... 2>/dev/null` で失敗理由を握り潰す形が無いこと。主要 suite の一時領域 probe が `TMPDIR` を明示していること |
 | case 16 | pass, pass-selftest ／ pass, skip, pass-selftest（`FF_RUN_ALL_FAST=1`） | 対を持つ `-selftest` は高速モードで除外される。除外件数・除外 suite 名・高速モード専用の完了文言がサマリーに出る。全体 pass は名乗らない。明示引数で名指しした suite が除外されたら警告する。除外と環境都合の skip は別勘定で報告され、必須 skip 判定（`REQUIRED_SKIPPED`）は `SKIPPED` だけを走査して除外（`FAST_EXCLUDED`）と合流しない |
 | case 18 | pass, pass-selftest（明示引数・環境変数なし／`FF_RUN_ALL_FULL=1`） | 明示引数は名指しした `-selftest` も実行する（ADR-034）。除外が掛かっていない全 pass 実行は全体 pass を名乗り、部分 skip が無い実行は `checks-skipped: total=0 suites=0` を明示する |
 | case 19 | pass-selftest 単独（`FF_RUN_ALL_FAST=1`） | 高速モードの除外で実行対象が 0 件になったら非 0。名指しが全件除外された旨の警告も出る |
 | case 22 | pass-selftest-extra, pass-selftest（`FF_RUN_ALL_FAST=1`） | 除外は `-selftest` の**終端一致のみ**。名前の途中に含むだけの suite は除外されない |
-| case 26 | （run-all.sh を一時複製 tree へコピーし引数なしで実行。26-A〜26-H） | 既定一覧の統合動作とモード行列（既定＝高速モード除外／`FF_RUN_ALL_FULL=1`／`FF_RUN_ALL_FAST=0`／矛盾する同時指定／不正値／必須 suite の skip が fail-closed のまま）を実測する |
+| case 26 | （run-all.sh を一時複製 tree へコピーし引数なしで実行。stub の導出材料は `FF_RUN_ALL_DUMP_DECLARATIONS=1` から受け取る。26-A〜26-H） | 既定一覧の統合動作とモード行列（既定＝高速モード除外／`FF_RUN_ALL_FULL=1`／`FF_RUN_ALL_FAST=0`／矛盾する同時指定／不正値／必須 suite の skip が fail-closed のまま）を実測する |
 | case 27 | pass, pass-selftest, orphan-selftest（`FF_RUN_ALL_FAST=1`） | 対になる本体 suite を持たない `-selftest` は高速モードでも実行される。単独実行でも「0 件実行」の経路には落ちず、除外 0 件のサマリー文言が出て、名指しが 1 件も除外されなければ警告しない |
 | case 29 | （run-all.sh を一時複製し、走行中に末尾を書き換える疑似 suite） | 走行中にランナー自身が書き換えられた実行はサマリー行を出さず非 0 で終わる（証拠に使えない旨も報告）。指紋照合とサマリー出力が同一関数に同居することも静的に固定する |
 | case 30 | fail, pass, skip, not-executable, missing（`FF_RUN_ALL_JOBS=1` と `4` を比較）／slow-a〜d（`FF_RUN_ALL_JOBS=2`、同時実行数より多い 4 本） | 並列実行でも終了コードと出力（告知行・空行を除く全文）が逐次実行と一致する。出力は suite 単位でまとまり、見出しは完了順ではなく登録順に並び、逐次より短く終わる（スロット再充填の経路も通す） |
 | case 32 | pass, skip（`FF_RUN_ALL_JOBS=` 1 / zero / 未指定 / 上限超過値） | `FF_RUN_ALL_JOBS` の解決を実測する。`1` は逐次へ復帰、解釈できない値は 1 行警告して継続。未指定時は CPU 由来の値へ解決される（上限 8）。入れ子実行は明示指定が無ければ逐次。上限を超える値は警告のうえ既定へ倒す |
 | case 34 | pass, kill-wrapper, skip（`FF_RUN_ALL_JOBS=2`） | rc を残さず子プロセスが消えた suite は passed でも failed でもなく **not-run** に数えられる。後続 suite の実行も止まらない |
+| case 36 | （tests 直下の verify.sh とリポジトリ直下の scripts/*.sh の静的監査 + 変異 fixture） | テンプレート付き `mktemp -d ... 2>&1` が成功経路で実体（`-d`）を検査しない形の再混入ガード。同一行・代入直後 8 行以内の多行形も検査済みに含める。走査 30 件未満はこの検査自体が不成立。成功経路の `-d` 検査を落とした複製を未検査として検出することも実測する |
+| case 37 | pass, skip, fail（`FF_RUN_ALL_MCP_NODE_MODULES` でテスト専用に差し替え） | `mcp/node_modules` 不在の案内は実在有無だけの単純な述語（AC2）で出し分ける。skip 混在・fail 単独どちらも案内条件（`SKIPPED` または `FAILED` が 1 件以上）を満たす。実在する回・pass のみの回は案内を出さない |
+| case 38 | normal-probe, unlisted-required-probe（`SCRIPTS` へ登録済み・`REQUIRED_SUITES` は normal-probe のみ掲載の一時複製 run-all.sh） | SCRIPTS へ登録済みだが他の随伴先（`REQUIRED_SUITES`）に触れていない suite を逆向き導出で名指しし、随伴先文書 `docs/04-quality/TESTING.md` のパス・節名も案内する（AC2）。名指しと案内文言の3点だけでは登録漏れ分岐（case 13）と見分けが付かないため、未掲載分岐固有の文言 `REQUIRED_SUITES に載っていない必須 suite` を含み、登録漏れ分岐固有の文言 `未登録の suite があります` を含まないことまで縛る |
 | case 35 | （tracked shell・SKILL.md・docs-template の静的監査 + `tests/lib/exit-code-guard.sh`） | 出力整形フィルタ（head / tail / less / more / cat / tee / wc、`sudo` / `command` / `env` / `VAR=` の前置き 1 段を含む）で終わるパイプラインの直後で `$?` を読む形（代入・`echo` のほか `if [ $? -ne 0 ]` などの制御構文、コメント行を跨いだ次の行も）と、zsh では機能しない `PIPESTATUS` 参照が無いこと。検出器 self-test 付き（誤検出しない形・Markdown フェンスの走査境界も含む） |
 
 ケース番号には欠番があります。Issue #1022 でランナー契約の核心 4 領域（集計 / skip 判定 / fail-closed 経路 /

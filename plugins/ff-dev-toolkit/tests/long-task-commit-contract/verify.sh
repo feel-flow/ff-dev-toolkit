@@ -21,6 +21,8 @@
 # 一時領域も git も要らない静的検査で、skip 経路を持たない。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/long-task-commit-contract/verify.sh
+#
+# run-all-required: yes — 長時間タスク委譲の「こまめコミット」契約も文言だけが防御。静的検査で skip 経路を持たないので明示宣言で必須名簿へ載せる
 
 set -euo pipefail
 

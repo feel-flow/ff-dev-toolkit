@@ -96,7 +96,11 @@ if [[ ! -f "$MASTER" ]]; then
   echo "  ℹ docs/MASTER.md が無いため SSOT 参照ピンはスキップ（公開 checkout）"
 else
   # Changelog は当時の記録なので、負のピン（旧文言の残存）は本文だけを見る。
-  master_body="$(awk '/^## Changelog$/{exit} {print}' "$MASTER")"
+  # 見出しの正規表現は共有 helper（tests/lib/docs-scan.sh）と同一にする。ここだけ
+  # 厳密（空白ちょうど 1 個・末尾空白なし）に留めると、`##  Changelog` 等の文書で
+  # 本文カットが効かず Changelog 節が本文として混入する（負のピンが旧文言を
+  # Changelog の記録で誤検出しうる）。
+  master_body="$(awk '/^##[ \t]+Changelog[ \t]*$/{exit} {print}' "$MASTER")"
   case "$master_body" in
     *'検出対象と免除区分の正本は `/validate-docs` §4'*) ok "MASTER.md が §4 を正本として参照する" ;;
     *) bad "MASTER.md が §4 を正本として参照する — 本文に見つかりません" ;;

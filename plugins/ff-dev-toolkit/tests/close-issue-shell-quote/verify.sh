@@ -115,7 +115,9 @@ run_roundtrip() {
   fi
   if [ "$HAVE_ICONV" -eq 0 ]; then
     echo "  ○ skip: iconv が無いため valid UTF-8 の直接検査をスキップ（${label}）"
-  elif iconv -f UTF-8 -t UTF-8 < "$TMP/quoted" > /dev/null 2>&1; then
+  elif iconv -f UTF-8 -t UTF-8 < "$TMP/quoted" > "$TMP/iconv-sink.bin" 2>&1; then
+    # 捨て先を /dev/null にしない（macOS 26 の BSD iconv は /dev/null 宛てだと
+    # 多バイト文字が 1024 バイト境界をまたぐ valid な入力で rc=1 を返す）
     ok "$label — 生成された引用文字列が valid UTF-8"
   else
     bad "$label — 生成された引用文字列が valid UTF-8 ではありません（%q 相当の退行）"

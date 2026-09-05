@@ -2,6 +2,8 @@
 #
 # multi-agent --resume の入力 identity・成功結果キャッシュ・全観点レポート契約
 # （Issue #586）。実 CLI は使わず、逐次実行する codex stub の起動回数で再利用を測る。
+#
+# run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
 
 set -euo pipefail
 

@@ -31,6 +31,12 @@ REVIEW_POLICY="$PLUGIN_ROOT/docs-template/05-operations/deployment/review-respon
 MULTI_REVIEW="$PLUGIN_ROOT/skills/multi-review/SKILL.md"
 ORCHESTRATION="$PLUGIN_ROOT/docs-template/05-operations/deployment/multi-cli-review-orchestration.md"
 
+# 節スコープ照合は共通ヘルパへ寄せた（判断基準と契約は tests/lib/section-scope.sh）。
+# shellcheck source=../lib/section-scope.sh
+. "$SCRIPT_DIR/../lib/section-scope.sh"
+
+REJECT_HEADING='### 指摘を却下（スキップ）するとき'
+
 for f in "$REVIEW_POLICY" "$MULTI_REVIEW" "$ORCHESTRATION"; do
   [[ -s "$f" ]] || { echo "✗ 対象ファイルが見つからないか空です: $f" >&2; exit 1; }
 done
@@ -65,28 +71,27 @@ echo "== 却下時の検証規律（review-response-policy.md・節スコープ�
 contains "$REVIEW_POLICY" "# PRレビュー対応ポリシー（Review Response Policy）" \
   "ポリシーの H1 が表示名 Review Response Policy を保持"
 
-# 対象節を抽出し、以降の要件検査は節スコープで行う。ファイル全体への固定文字列
-# 検索だと、要件文が別節やコメントへ散っても偶然一致で緑になるため。
-SECTION="$(awk '
-  index($0, "### 指摘を却下（スキップ）するとき") == 1 { insec = 1; next }
-  insec && (/^## / || /^### / || /^---/) { exit }
-  insec { print }
-' "$REVIEW_POLICY")"
-
-if [[ -n "$SECTION" ]]; then
-  ok "「指摘を却下（スキップ）するとき」節を抽出できた（抽出の空振りを緑にしない）"
+# 番号列の順序検査（下の NUM_SEQ）は節本文そのものを要求する。以前はここだけ自前の
+# awk で切り出していたが、同一ファイル内に節の定義が 2 つ並存し（自前は `---` で終端・
+# フェンス非追跡、ヘルパは次の見出しで終端・フェンス追跡）、`---` と次の見出しの間に
+# 散文が入った時点で「針は緑・番号列は非検出」という食い違いが起きる。節の定義は
+# ヘルパ 1 つに寄せ、本文が要る検査は section_scope_extract を通す。
+SECTION=""
+if ! SECTION="$(section_scope_extract "$REVIEW_POLICY" "$REJECT_HEADING")"; then
+  bad "「指摘を却下（スキップ）するとき」節を抽出できません（${SECTION}）"
+  SECTION=""
 else
-  bad "「指摘を却下（スキップ）するとき」節を抽出できません（見出しの削除・改名）"
+  ok "「指摘を却下（スキップ）するとき」節を抽出できた（抽出の空振りを緑にしない）"
 fi
 
 # 節スコープの固定文字列検査。義務文は句点まで含めて針にし、「〜する。」→
 # 「〜することが望ましい。」のようなサフィックス弱体化も赤くする。
 section_contains() {
-  local needle="$1" label="$2"
-  if [[ "$SECTION" == *"$needle"* ]]; then
+  local needle="$1" label="$2" reason
+  if reason="$(section_scope_contains "$REVIEW_POLICY" "$REJECT_HEADING" "$needle")"; then
     ok "$label"
   else
-    bad "${label}（節内に不足: ${needle}）"
+    bad "${label}（節内に不足: ${reason}）"
   fi
 }
 

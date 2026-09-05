@@ -5,7 +5,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 
-if ! tmp_out="$(mktemp -d "${TMPDIR:-/tmp}/shared-version-convergence.XXXXXX" 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if ! tmp_out="$(mktemp -d "${TMPDIR:-/tmp}/shared-version-convergence.XXXXXX" 2>&1)" || [ ! -d "$tmp_out" ]; then
   echo "○ skip: 一時ディレクトリを作成できないため shared-version-convergence を実行できません（検査は1件も実行されていません）"
   printf '  mktemp: %s\n' "$tmp_out"
   exit 0

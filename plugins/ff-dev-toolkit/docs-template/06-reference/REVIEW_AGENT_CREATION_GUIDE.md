@@ -115,7 +115,6 @@
 > - [ ] `scripts/perspectives/review/<name>.md`（配置規則ブロックは既存観点と同一本文・Suggestion 受け皿・件数行を出す Output Template）
 > - [ ] `tests/review-severity-scope/verify.sh` の EXPECTED_PERSPECTIVES 名簿（+ 観点固有の針）
 > - [ ] `scripts/multi-agent.sh` の `get_cli_perspectives_review`（distributed の所有 CLI。所有させない場合は cli-registry-completeness の DYNAMIC_PERSPECTIVES へ）
-> - [ ] `scripts/agent-config.yaml` の対応表ミラー（agent-config-mirror が同期を検査）
 > - [ ] `scripts/templates/codex-review.sh` ヘルプの「実在する review 観点」列挙
 > - [ ] リポジトリ自身の観点名 SSOT（用語集・ドメイン定義の perspective 名列挙）
 > - [ ] 観点数・名簿を記載する運用文書（本ガイドの一覧表・オーケストレーション文書・ブロック観点名簿）

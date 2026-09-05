@@ -35,6 +35,10 @@
 #   G18. Changelog 節の**後続**に置いた別節（## Appendix）配下の ### [9.9.9] を
 #        エントリと数えない → 緑（節終端の境界が効いていること）
 #   G19. 実在する `## Changelog` 節を2件にする → 赤（後続節を無視しない）
+#   G20. 見出しを `##  Changelog`（空白 2 個）にして frontmatter のみ bump → 赤
+#        （共有 helper が受理する空白ゆれを本体 suite が対象外へ落とさないこと。
+#        見出し正規表現が厳密なままだと changelog_n=0 で黙って対象外になり緑）
+#   G21. 見出しを末尾空白付きにして frontmatter のみ bump → 赤（G20 の対）
 #
 # 変異はすべて ASCII 行への perl / ファイル操作で行う（多バイト文字クラス不使用）。
 # 一時ディレクトリを作成できない環境では skip して成功扱いにする
@@ -291,6 +295,25 @@ make_fixture
 printf '\n## Changelog\n\n### [9.9.9] - 2099-01-01\n\n- 重複節へ隠した版エントリ\n' >> "$TMP/root/$VICTIM"
 assert_mutated "$VICTIM" "G19" || true
 run_case "G19 実在する ## Changelog 節が2件" red "## Changelog 節が 2 件あります"
+
+echo "== G20〜G21. 見出しの空白ゆれでも対象から外れない =="
+# 共有 helper（tests/lib/docs-scan.sh）は `##  Changelog`（空白 2 個）と末尾空白付き
+# を正規の Changelog 見出しとして受理する。本体 suite の見出し正規表現だけが
+# 「空白ちょうど 1 個・末尾空白なし」に留まると、これらの文書は changelog_n=0 で
+# TARGETS に数えられず、version 照合が**黙って**消える（fail-open）。変異は
+# 「見出しの空白ゆれ + frontmatter のみ bump」の 2 段で、正規表現が厳密なままだと
+# 緑（検出力なし）に落ちることでしか区別できない。
+make_fixture
+perl -i -pe 's/^## Changelog$/##  Changelog/' "$TMP/root/$VICTIM"
+perl -i -pe 's/^version: "[0-9.]+"$/version: "9.9.8"/ if $. < 10' "$TMP/root/$VICTIM"
+assert_mutated "$VICTIM" "G20" || true
+run_case "G20 見出しが '##  Changelog'（空白 2 個）でも version 乖離を検出" red 'version=9\.9\.8 が Changelog 内の最大版'
+
+make_fixture
+perl -i -pe 's/^## Changelog$/## Changelog /' "$TMP/root/$VICTIM"
+perl -i -pe 's/^version: "[0-9.]+"$/version: "9.9.8"/ if $. < 10' "$TMP/root/$VICTIM"
+assert_mutated "$VICTIM" "G21" || true
+run_case "G21 見出しが末尾空白付きでも version 乖離を検出" red 'version=9\.9\.8 が Changelog 内の最大版'
 
 echo ""
 echo "結果: pass=${PASS} fail=${FAIL} env-skip=${ENV_SKIPPED}"

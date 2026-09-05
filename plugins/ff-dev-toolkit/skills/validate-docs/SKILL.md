@@ -73,6 +73,10 @@ fi
 | `docs/01-context/CONSTRAINTS.md` | 任意 | 制約条件 |
 | `docs/03-implementation/CONVENTIONS.md` | 任意 | 命名・コーディング規約 |
 
+`docs/06-reference/DECISIONS.md` が存在する場合は、ADR 番号の重複と見出し ↔ 決定ログ表の不一致を
+`bash "${FF_DEV_TOOLKIT_ROOT}/tests/docs-gates/adr-number-scan.sh" docs/06-reference/DECISIONS.md`
+で追加検査する（rc=0 のみ合格。rc=1 は見出し・表の不整合、rc=2 は抽出不能として報告する）。
+
 ### 2. 文書別必須セクションチェック
 
 **存在する各コア文書**について、標準が定める必須セクションに対応する内容があるか確認します（未作成の条件付き文書はスキップ = N/A）。

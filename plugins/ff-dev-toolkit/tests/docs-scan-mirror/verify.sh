@@ -11,8 +11,26 @@
 # docs/08-knowledge/playbook/coding.md はこの形を既に禁じている —
 # 「両者の出力集合を照合して不一致なら非ゼロ終了する fail-loud ゲートを main に置く」。
 #
-# 本 suite はその常設ゲート。同型の先例は tests/ace-scripts-mirror /
-# tests/agent-config-mirror（読まれない対応表を「検証されたミラー」へ格上げする型）。
+# 本 suite はその常設ゲート。同型の先例は tests/ace-scripts-mirror（配布物と実行用
+# ミラーの byte 一致を機械照合する型）。
+#
+# 2 モード目（2026-09 追加）: `## Changelog` 見出し判定
+# （awk の ff_docs_mask_changelog / TS の maskNonGlossaryLines）も同じ枠組みで
+# 照合する。mask spans の相互一致だけでは、GLOSSARY.md 消費者の
+# maskNonGlossaryLines が追加で行う Changelog 節のカットに触れられず、見出し
+# 正規表現の空白クラス・空白数が awk 側と TS 側で割れていても検出できなかった。
+# fixtures/changelog-heading-*.md と expected/*.changelog.masked が該当する
+# （新 suite は作らず、本 suite の fixture を追加しただけ）。
+# 検出力は 2 方向に分かれる:
+#   - 空白数の緩和（`##  Changelog` / 末尾空白）は陽性 fixture の 2 件が固定する
+#   - ASCII クラス制約（`[ \t]` であって `\s` ではない）は負 fixture
+#     changelog-heading-nbsp.md が固定する。`\s` は NBSP を受理するので、TS 側
+#     だけを `\s` へ戻すとこの fixture で awk / TS が割れる（陽性 fixture だけ
+#     では ASCII クラス方向の検出力がゼロになる）
+# さらに、本 suite が照合するのは mirror 用の ff_docs_mask_changelog だけなので、
+# 実消費経路（ff_docs_fm_verdict / ff_docs_body / ff_docs_claim_body）が単独で
+# ドリフトしても相互比較は緑のままになる。それを塞ぐ静的同一性ゲートを末尾に
+# 置いている（同一リテラルの出現数を awk 側 / TS 側で固定する）。
 #
 # ── 方式 ──────────────────────────────────────────────────────────────────────
 # fixtures/ の Markdown を **両実装が同じファイルから読む**（コーパスを 2 箇所へ
@@ -29,6 +47,10 @@
 #     ff_docs_mask_spans tests/docs-scan-mirror/fixtures/$f \
 #       | awk '{ sub(/\r$/, ""); print }' \
 #       > tests/docs-scan-mirror/fixtures/expected/${f%.md}.masked
+#   Changelog モード（changelog-heading-*.md のみ）の期待値はこちら:
+#     ff_docs_mask_changelog tests/docs-scan-mirror/fixtures/$f \
+#       | awk '{ sub(/\r$/, ""); print }' \
+#       > tests/docs-scan-mirror/fixtures/expected/${f%.md}.changelog.masked
 #   生成物は必ず目視で確認する（実装の出力をそのまま祝福すると期待値の意味が消える）。
 #
 # ts-mask.ts は mcp/tsconfig.json の include（src / tests）の外にあり、**tsc の型検査
@@ -37,7 +59,7 @@
 # すること、(2) 出力が expected と一致すること の 2 つで担保する。maskClosedSpans の
 # シグネチャが変わればドライバは bundle で落ちるか golden 差分として現れる。
 #
-# 姉妹の mirror ゲート（ace-scripts-mirror / agent-config-mirror）と違い、対になる
+# 姉妹の mirror ゲート（ace-scripts-mirror）と違い、対になる
 # `-selftest` suite は置かない。あちらの selftest が測る「ゲートの効き目」は、本 suite
 # では expected 一致の検査そのものが毎回実測している（実装が変われば golden がずれる）。
 # Issue #528 AC-3 の片側変異 8 種の実測結果は PR #729 に記録した。
@@ -139,7 +161,9 @@ fi
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正なパス・
 # quota 超過など）まで「書き込み可能な環境で再実行してください」に誤帰属し、恒常的に
 # 壊れた TMPDIR が suite を exit 0 で無効化し続ける。
-if _mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/docs-scan-mirror.XXXXXX" 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if _mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/docs-scan-mirror.XXXXXX" 2>&1)" && [ -d "$_mktemp_out" ]; then
   TMP="$_mktemp_out"
 else
   echo "○ skip: 一時ディレクトリを作成できないためスキップ（本 suite の検査は1件も実行されていません。書き込み可能な環境で再実行してください）"
@@ -316,6 +340,108 @@ done <<EOF
 $FIXTURES
 EOF
 
+# ── Changelog 見出し判定 ────────────────────────────────────────────────────
+# awk 側 ff_docs_mask_changelog / TS 側 maskNonGlossaryLines（GLOSSARY.md の実
+# 消費者）を同じ枠組み（相互一致 + golden 一致）で追加照合する。上の主ループが
+# 見ているのは maskClosedSpans / ff_docs_mask_spans（フェンス・コメントのみ）
+# なので、`## Changelog` 見出しの判定はここまで一度も比較されていなかった。
+#
+# 名簿は陽性 2 件（空白数の緩和）+ 負 1 件（ASCII クラス制約）。負 fixture が
+# 無いと `[ \t]` → `\s` の片側変更が緑のまま通る（`\s ⊃ [ \t]` なので、ASCII
+# 空白だけの fixture では両版の判定が一致してしまう）。
+CHANGELOG_FIXTURES="
+changelog-heading-double-space.md
+changelog-heading-trailing-space.md
+changelog-heading-nbsp.md
+"
+for name in $CHANGELOG_FIXTURES; do
+  [ -f "$FIXTURE_DIR/$name" ] || fail "Changelog 見出し判定の fixture がありません: $FIXTURE_DIR/$name"
+  CHECKS=$((CHECKS + 1))
+done
+CHANGELOG_COUNT="$(printf '%s\n' $CHANGELOG_FIXTURES | wc -l | tr -d ' ')"
+
+for name in $CHANGELOG_FIXTURES; do
+  fixture="$FIXTURE_DIR/$name"
+
+  if ! ff_docs_mask_changelog "$fixture" > "$TMP/awk-cl.raw" 2> "$TMP/awk-cl.err"; then
+    echo "✗ ${name}: awk 版 (ff_docs_mask_changelog) が非 0 で終了しました" >&2
+    { tail -20 "$TMP/awk-cl.err" || true; } >&2
+    exit 1
+  fi
+  CHECKS=$((CHECKS + 1))
+
+  if ! node "$TMP/ts-mask.mjs" "$fixture" changelog > "$TMP/ts-cl.raw" 2> "$TMP/ts-cl.err"; then
+    echo "✗ ${name}: TS 版 (maskNonGlossaryLines ドライバ) が非 0 で終了しました" >&2
+    { tail -20 "$TMP/ts-cl.err" || true; } >&2
+    exit 1
+  fi
+  CHECKS=$((CHECKS + 1))
+
+  strip_trailing_cr "$TMP/awk-cl.raw" > "$TMP/awk-cl.norm"
+  strip_trailing_cr "$TMP/ts-cl.raw" > "$TMP/ts-cl.norm"
+
+  if ! cmp -s "$TMP/awk-cl.norm" "$TMP/ts-cl.norm"; then
+    MISMATCH=$((MISMATCH + 1))
+    echo "✗ ${name}: Changelog 見出し判定（awk 版 / TS 版）が一致しません" >&2
+    line_diff_report "$name" awk ts "$TMP/awk-cl.norm" "$TMP/ts-cl.norm"
+  fi
+  CHECKS=$((CHECKS + 1))
+
+  expected_cl="$EXPECTED_DIR/${name%.md}.changelog.masked"
+  [ -f "$expected_cl" ] || fail "${name}: Changelog 判定の期待出力がありません: ${expected_cl}"
+  CHECKS=$((CHECKS + 1))
+
+  if ! cmp -s "$TMP/awk-cl.norm" "$expected_cl"; then
+    GOLDEN_MISMATCH=$((GOLDEN_MISMATCH + 1))
+    echo "✗ ${name}: awk 版の Changelog 判定出力が期待値と一致しません" >&2
+    line_diff_report "$name" want awk "$expected_cl" "$TMP/awk-cl.norm"
+  fi
+  CHECKS=$((CHECKS + 1))
+
+  if ! cmp -s "$TMP/ts-cl.norm" "$expected_cl"; then
+    GOLDEN_MISMATCH=$((GOLDEN_MISMATCH + 1))
+    echo "✗ ${name}: TS 版の Changelog 判定出力が期待値と一致しません" >&2
+    line_diff_report "$name" want ts "$expected_cl" "$TMP/ts-cl.norm"
+  fi
+  CHECKS=$((CHECKS + 1))
+done
+
+# ── 実消費経路の静的同一性ゲート ────────────────────────────────────────────
+# 上の照合が触るのは mirror 用の ff_docs_mask_changelog と TS の
+# maskNonGlossaryLines だけで、awk 側の**実消費 3 箇所**（ff_docs_fm_verdict /
+# ff_docs_body / ff_docs_claim_body）が単独でドリフトしても緑のまま通る。
+# 「同一にすること」をコメントの宣言に留めない（読まれない対応表を検証された
+# ミラーへ格上げする、本 suite の設計原則そのもの）ため、同一リテラルの出現数を
+# 両側で固定する。動的照合の代替ではなく、動的照合が届かない範囲の補完。
+#
+# 数え方: 行頭コメント（`#` / TS のブロックコメント継続 `*` / `//`）を除いた
+# 実効行だけを数える。件数は実体から確定した固定値で、regex を持つ箇所を
+# 増減させたときだけ更新する（増減自体が「両側を同時に見直す」合図になる）。
+CHANGELOG_RE_LITERAL='^##[ \t]+Changelog[ \t]*$'
+CHANGELOG_RE_LIB_COUNT=4   # ff_docs_fm_verdict / ff_docs_mask_changelog / ff_docs_body / ff_docs_claim_body
+CHANGELOG_RE_TS_COUNT=1    # maskNonGlossaryLines
+
+lib_re_hits="$(grep -v '^[[:space:]]*#' "$LIB" | grep -cF "$CHANGELOG_RE_LITERAL" || true)"
+if [ "$lib_re_hits" -ne "$CHANGELOG_RE_LIB_COUNT" ]; then
+  echo "✗ ${LIB} の Changelog 見出し正規表現が ${lib_re_hits} 箇所です（期待 ${CHANGELOG_RE_LIB_COUNT}）" >&2
+  echo "  期待箇所: ff_docs_fm_verdict / ff_docs_mask_changelog / ff_docs_body / ff_docs_claim_body" >&2
+  echo "  1 箇所だけ変えた（あるいは箇所を増やした）状態は片側ドリフトです。TS 側 maskNonGlossaryLines と揃えてから本ゲートの期待件数を更新してください" >&2
+  exit 1
+fi
+CHECKS=$((CHECKS + 1))
+
+TS_UTILS="$MCP_DIR/src/utils.ts"
+[ -f "$TS_UTILS" ] || fail "TS 側の実装が見つかりません: $TS_UTILS"
+CHECKS=$((CHECKS + 1))
+
+ts_re_hits="$(grep -v '^[[:space:]]*\(\*\|//\)' "$TS_UTILS" | grep -cF "$CHANGELOG_RE_LITERAL" || true)"
+if [ "$ts_re_hits" -ne "$CHANGELOG_RE_TS_COUNT" ]; then
+  echo "✗ ${TS_UTILS} の Changelog 見出し正規表現が ${ts_re_hits} 箇所です（期待 ${CHANGELOG_RE_TS_COUNT}）" >&2
+  echo "  期待箇所: maskNonGlossaryLines。awk 側 4 箇所と同一リテラルであることが本ゲートの不変条件です" >&2
+  exit 1
+fi
+CHECKS=$((CHECKS + 1))
+
 if [ "$MISMATCH" -ne 0 ]; then
   echo "✗ docs 走査マスクの awk 版 / TS 版が ${MISMATCH} 件の fixture で乖離しています" >&2
   echo "  awk: $LIB の ff_docs_mask_spans / TS: $MCP_DIR/src/utils.ts の maskClosedSpans" >&2
@@ -331,9 +457,12 @@ fi
 # 手動更新の固定費が無い。ループが途中で飛んだり case が空振りしても上の判定は赤に
 # ならないため、検査 0 件・部分実行の縮退をここで赤にする（廃止した検査総数ガード
 # 〔固定期待値の末尾会計〕とは別類型 — TESTING.md §検査総数ガードは廃止した）。
-EXPECTED_CHECKS=$((REQUIRED_COUNT + 2 + FIXTURE_COUNT * 8))
+# Changelog モードの導出項: 実在ガード 1 件 + 本体 6 件（awk 実行・ts 実行・相互
+# 一致・golden 実在・awk golden 一致・ts golden 一致）を fixture ごとに数える。
+# 末尾の +3 は静的同一性ゲート（awk 側の出現数・TS 実装の実在・TS 側の出現数）。
+EXPECTED_CHECKS=$((REQUIRED_COUNT + 2 + FIXTURE_COUNT * 8 + CHANGELOG_COUNT * 7 + 3))
 [ "$CHECKS" -eq "$EXPECTED_CHECKS" ] \
   || fail "実行した検査本数が導出期待値と一致しません（実測 ${CHECKS} / 期待 ${EXPECTED_CHECKS}）。ループの縮退を疑ってください"
 
-echo "✓ docs-scan-mirror: fixture ${FIXTURE_COUNT} 件で awk 版 / TS 版 / 期待値が一致（検査 ${CHECKS} 件）"
+echo "✓ docs-scan-mirror: fixture ${FIXTURE_COUNT} 件 + Changelog fixture ${CHANGELOG_COUNT} 件で awk 版 / TS 版 / 期待値が一致（検査 ${CHECKS} 件）"
 FF_REACHED_END=1

@@ -43,7 +43,9 @@ done
 
 [ -f "$RUNNER" ] || { echo "✗ run-all.sh が見つかりません: $RUNNER" >&2; exit 1; }
 
-if _ff_tmp_probe="$(mktemp -d "${TMPDIR:-/tmp}/run-all-preflight.XXXXXX" 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if _ff_tmp_probe="$(mktemp -d "${TMPDIR:-/tmp}/run-all-preflight.XXXXXX" 2>&1)" && [ -d "$_ff_tmp_probe" ]; then
   rmdir "$_ff_tmp_probe" || {
     echo "✗ run-all self-test: 一時領域 probe を後片付けできません: $_ff_tmp_probe" >&2
     exit 1
@@ -369,6 +371,12 @@ _reg_expect_re '必須 [0-9]+ 件' "登録照合が必須名簿の件数も報�
 
 _reg_check -u FF_RUN_ALL_FULL FF_RUN_ALL_FAST=1
 _reg_expect "登録漏れなし" "高速モード指定下でも登録照合はフィルタ前の全一覧で通る"
+# 随伴先すべてに追随済み（実体そのもの）の正常系では、随伴先文書への
+# 案内を出し続けない（毎回ノイズになる警告を正常系で出さない）。
+case "$_reg_out" in
+  *"docs/04-quality/TESTING.md"*) bad "登録漏れなしの正常系で随伴先文書への案内が混入している（正常系ではノイズを出さない）" ;;
+  *) ok "登録漏れなしの正常系では随伴先文書への案内を出さない" ;;
+esac
 
 # 未登録の suite を検出できること。実体側に 1 本足して照合を回す（run-all.sh 本体は触らない —
 # 走査先は $SCRIPT_DIR なので、複製した木で試す）。複製先は tests/ の外: tests/ 直下に置くと
@@ -386,16 +394,27 @@ case "$_reg_out" in
   *"unregistered-probe"*) _reg_named=1 ;;
   *) _reg_named=0 ;;
 esac
-if [ "$_reg_rc" -ne 0 ] && [ "$_reg_named" -eq 1 ]; then
-  ok "未登録の suite を名指しして非 0 で終わる"
+# 名指しと rc だけでは「案内文言そのものが出ているか」を固定できない（1 行目だけ
+# 消しても _reg_named / rc は変わらず赤にならない）。案内文言の path / 節名の
+# 含有まで見る（case 38 の未掲載分岐と同じ観点）。
+case "$_reg_out" in
+  *"docs/04-quality/TESTING.md"*) _reg_doc_path=1 ;;
+  *) _reg_doc_path=0 ;;
+esac
+case "$_reg_out" in
+  *"新規 suite 追加の随伴先"*) _reg_doc_section=1 ;;
+  *) _reg_doc_section=0 ;;
+esac
+if [ "$_reg_rc" -ne 0 ] && [ "$_reg_named" -eq 1 ] && [ "$_reg_doc_path" -eq 1 ] && [ "$_reg_doc_section" -eq 1 ]; then
+  ok "未登録の suite を名指しして非 0 で終わり、随伴先文書のパス・節名も案内する"
 else
-  bad "未登録の suite を検出できなかった (rc=${_reg_rc})"
+  bad "未登録の suite を検出できなかった、または随伴先文書の案内が欠けている (rc=${_reg_rc} named=${_reg_named} doc_path=${_reg_doc_path} doc_section=${_reg_doc_section})"
   printf '%s\n' "$_reg_out" | sed 's/^/    | /' >&2
 fi
 rm -rf "$_reg_fx"
 
 echo ""
-echo "== case 14: 必須 suite の skip が終了コードに現れる配線 =="
+echo "== case 14: 必須 suite の名簿が実体から導出され、skip が終了コードに現れる配線 =="
 
 # yq / node_modules が無い環境では該当 suite が丸ごと skip され、それでも全体は緑になっていた
 # （実測。#274 / #372）。必須名簿を持たせ、名簿の suite が skip したら失敗として扱う（環境都合で
@@ -411,31 +430,96 @@ if [ "$_has_roster" -eq 1 ]; then
 else
   bad "必須 suite 名簿が消えた（環境都合の skip が黙って通る）"
 fi
-# Issue #436 / #440 で判断した一時領域依存 suite の名簿を固定する。名前を 1 行ずつ照合し、
-# コメント内の言及を実登録と誤認しない。
-_required_block="$(awk '
-  /^REQUIRED_SUITES=\(/ { inside=1; next }
-  inside && /^\)/ { exit }
-  inside { print }
-' "$_ra_src")"
-for _required_tmp_suite in \
-  setup-multi-agent-yq docs-gates-runtime adapter-model-args adapter-sandbox-contract \
-  adapter-prompt-guard adapter-argv-limit multi-agent-skip-poisoned-cli weekly-health-contract \
-  review-diff-scope review-capture-fail-loud ace-run-ts review-wrapper-shim \
-  sweep-orphan-transcripts multi-agent-timeout ace-scripts-mirror-selftest mcp-state-selftest \
-  run-all; do
-  if printf '%s\n' "$_required_block" | awk -v target="$_required_tmp_suite" '$1 == target { found=1 } END { exit !found }'; then
-    ok "一時領域依存の必須 suite を名簿に保持: $_required_tmp_suite"
-  else
-    bad "一時領域依存の必須 suite が名簿から消えた: $_required_tmp_suite"
-  fi
-done
+# かつてここには一時領域依存の必須 suite 17 名のハードコード・ミラーがあった。名簿から名前が
+# 消えた側を実装（run-all.sh）が検出できず、複製でしか押さえられなかったためである。
+# 現在は run-all.sh 自身が**実体から必須集合を導出して名簿と双方向で突き合わせる**ので、
+# 名簿から 1 名消せば run-all がその場で赤くなる（複製は削除した）。
+#
+# ここでは照合が**実際に走って一致した**ことを実行で確かめる。構造検査（grep）だけだと、
+# 導出関数を書いたまま呼ばない形・info 行だけ残して比較を落とした形が素通りする。
+_reg_live_rc=0
+# case 13 と同じ流儀で呼ぶ: 照合の入口は引数なし実行を要求するので入れ子ガードを落とし、
+# モード変数は外側から漏らさない（照合はモードに依らないが、漏れると観測が回ごとに変わる）。
+if _reg_live_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL \
+  FF_RUN_ALL_CHECK_REGISTRATION=1 FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$_ra_src" 2>&1)"; then _reg_live_rc=0; else _reg_live_rc=$?; fi
+if [ "$_reg_live_rc" -eq 0 ] && printf '%s\n' "$_reg_live_out" | awk '
+  index($0, "実体からの導出と一致") { found=1 } END { exit !found }
+'; then
+  ok "実体から導出した必須集合が REQUIRED_SUITES と一致する（照合が実際に走っている）"
+else
+  bad "実体からの逆向き照合が走っていない / 一致しなかった (rc=${_reg_live_rc})"
+  printf '%s\n' "$_reg_live_out" | sed 's/^/    | /' >&2
+fi
+# 双方向のどちらか一方だけを落とす変異は上の live 照合では緑のままなので、両方向の
+# 失敗経路が実装に在ることを固定する（片方向へ戻す退行がこの suite の唯一の防御）。
+expect_src 'REQUIRED_SUITES に載っていない必須 suite' "$_ra_src" \
+  "実体 → 名簿の向き（名簿から消えた必須 suite）の検出が在る" \
+  "名簿から名前を消しても緑になる（逆向き導出が消えた）"
+expect_src 'REQUIRED_SUITES の掲載に実体側の根拠がない' "$_ra_src" \
+  "名簿 → 実体の向き（根拠のない掲載）の検出が在る" \
+  "実体側の根拠を持たない名簿掲載が素通りする"
 # 終了条件に REQUIRED_SKIPPED が含まれること。名簿だけあって配線が無い形を弾く。**エラー表示側の
 # 条件と取り違えない** — 表示だけ残して終了条件から外す変異は「REQUIRED_SKIPPED を含む if 行」を
 # 数えるだけでは素通りする（実測）。終了条件は FAILED / NOT_RUN と同じ行に並ぶので共起で特定する。
 expect_src '^\s*if \[\[ .*FAILED\[@\].*REQUIRED_SKIPPED\[@\].*\]\]; then' "$_ra_src" \
   "必須 suite の skip が終了コードの判定に含まれている" \
   "名簿はあるが終了コードへ効いていない（skip しても緑のまま）"
+# 走査の終了コードを捨てる形（`for entry in $(suite_declaration_scan …)`）は、BSD awk が
+# 「開けない verify.sh を警告して次へ進み最後に非 0 を返す」ため、1 本だけ読めない suite を
+# 黙って導出から落とす（名簿にも無ければ緑のまま）。受けて fail-closed にした形を固定する。
+expect_src 'verify.sh の走査が失敗しました' "$_ra_src" \
+  "走査の失敗を fail-closed にする経路が在る" \
+  "awk の終了コードを捨てている（読めない verify.sh が黙って導出から落ちる）"
+expect_src '理由の無い run-all-required 宣言があります' "$_ra_src" \
+  "理由を欠く run-all-required 宣言の検出が在る" \
+  "理由なしの no 宣言で判断の記録なしに必須から外れる"
+
+# ── 導出述語の対照（引用符種別と「出力文の行頭 skip」の境界）────────────────────
+# 述語は run-all.sh の内部関数なので、**複製木へ run-all.sh を置いて宣言ダンプだけを回す**
+# （登録照合は名簿と実体の全件一致を要求するため、probe 数本の木では回せない）。
+# 二重引用符しか拾わない述語は、単一引用符・printf で skip を出す suite を導出から落とし、
+# 名簿に載っていなくても緑のまま通す（静的側だけが緩い非対称）。逆に「出力文であること」を
+# 落とすと、アサート行の期待値文字列まで skip 経路と誤認して必須へ引き上げる。
+_pred_fx="${TMPDIR:-/tmp}/ff-skip-predicate-probe.$$"
+rm -rf "$_pred_fx"
+mkdir -p "$_pred_fx"
+cp "$_ra_src" "$_pred_fx/run-all.sh"
+_pred_add() { # <suite 名> <printf 書式（verify.sh 本文）>
+  mkdir -p "$_pred_fx/$1"
+  # shellcheck disable=SC2059  # 書式そのものを呼び出し側が組み立てる（\047 で単一引用符を置く）
+  printf "$2" > "$_pred_fx/$1/verify.sh"
+  chmod +x "$_pred_fx/$1/verify.sh"
+}
+# 負の対照 1: アサート行にだけ `"○ skip` を含む（出力文ではない）
+_pred_add pred-neg-assert '#!/usr/bin/env bash\nif [ "$OUT" = "○ skip: 期待値照合" ]; then :; fi\nexit 0\n'
+# 負の対照 2: インデント付きの部分 skip（suite 全体 skip ではない）
+_pred_add pred-neg-partial '#!/usr/bin/env bash\necho "  ○ skip: 一部の検査だけ飛ばした"\nexit 0\n'
+# 正の対照 1: 単一引用符で行頭 skip を出す
+_pred_add pred-pos-single '#!/usr/bin/env bash\necho \047○ skip: 単一引用符で行頭 skip を出す\047\nexit 0\n'
+# 正の対照 2: printf の書式文字列で行頭 skip を出す
+_pred_add pred-pos-printf '#!/usr/bin/env bash\nprintf \047○ skip: printf で行頭 skip を出す\\n\047\nexit 0\n'
+# 負の対照 3: 理由を欠く宣言（yes / no のどちらでもなく bad として印が付く）
+_pred_add pred-neg-noreason '#!/usr/bin/env bash\n# run-all-required: no\nexit 0\n'
+_pred_rc=0
+if ! _pred_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL \
+  FF_RUN_ALL_DUMP_DECLARATIONS=1 FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" \
+  bash "$_pred_fx/run-all.sh" 2>&1)"; then _pred_rc=$?; fi
+_pred_expect() { # <期待する 1 行> <検査名>
+  if [ "$_pred_rc" -eq 0 ] && printf '%s\n' "$_pred_out" | awk -v want="$1" '
+    $0 == want { found = 1 } END { exit !found }
+  '; then
+    ok "$2"
+  else
+    bad "$2 (rc=${_pred_rc})"
+    printf '%s\n' "$_pred_out" | sed 's/^/    | /' >&2
+  fi
+}
+_pred_expect 'pred-neg-assert:0:0:0:0' "アサート行の期待値文字列を suite 全体 skip に数えない（負の対照）"
+_pred_expect 'pred-neg-partial:0:0:0:0' "インデント付き部分 skip を suite 全体 skip に数えない（負の対照）"
+_pred_expect 'pred-pos-single:1:0:0:0' "単一引用符の行頭 skip を suite 全体 skip として拾う（正の対照）"
+_pred_expect 'pred-pos-printf:1:0:0:0' "printf の書式文字列の行頭 skip を拾う（正の対照）"
+_pred_expect 'pred-neg-noreason:0:0:0:1' "理由を欠く run-all-required 宣言に bad の印が付く（負の対照）"
+rm -rf "$_pred_fx"
 
 echo ""
 echo "== case 15: mktemp skip ゲートが失敗理由を捨てる形の再混入ガード =="
@@ -883,11 +967,52 @@ _fast_fx="${TMPDIR:-/tmp}/ff-fast-integration.$$"
 rm -rf "$_fast_fx"
 mkdir -p "$_fast_fx"
 cp "$TESTS_DIR/run-all.sh" "$_fast_fx/run-all.sh"
-for _fast_d in "$TESTS_DIR"/*/verify.sh; do
-  [ -f "$_fast_d" ] || continue
-  _fast_n="$(basename "$(dirname "$_fast_d")")"
+# stub は即終了するが、**必須名簿の逆向き導出の材料だけは実体から写す** — run-all.sh は
+# 「suite 全体の skip 経路の有無」と `run-all-required:` 宣言から必須集合を導出して名簿と
+# 突き合わせるので、材料を落とすと複製木では必須集合が空になり、モード行列の観測より前に
+# 登録照合が落ちる。
+#
+# 材料の判定は **run-all.sh 自身に出させる**（`FF_RUN_ALL_DUMP_DECLARATIONS=1` が
+# `<名前>:<skip>:<yes>:<no>:<bad>` を返す）。ここへ判定述語を書き写すと「述語を変えるときは
+# 2 箇所同時」の結合が生まれ、片方だけ直すと複製木の導出集合がずれて case 26 が原因の
+# 読めない赤になる（実測。導出述語は run-all.sh 側の単一定義に保つ）。
+_fast_decl_rc=0
+if ! _fast_decl="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL \
+  FF_RUN_ALL_DUMP_DECLARATIONS=1 FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" \
+  bash "$TESTS_DIR/run-all.sh" 2>&1)"; then _fast_decl_rc=$?; fi
+_fast_decl_n="$(printf '%s\n' "$_fast_decl" \
+  | awk '/^[A-Za-z0-9._-]+:[01]:[01]:[01]:[01]$/ { n++ } END { print n + 0 }')"
+if [ "$_fast_decl_rc" -eq 0 ] && [ "$_fast_decl_n" -ge 1 ]; then
+  ok "宣言ダンプが ${_fast_decl_n} 件の導出材料を返す（複製木は実装側の述語を使う）"
+else
+  bad "宣言ダンプ (FF_RUN_ALL_DUMP_DECLARATIONS=1) が材料を返さない (rc=${_fast_decl_rc})"
+  printf '%s\n' "$_fast_decl" | sed 's/^/    | /' >&2
+fi
+for _fast_entry in $_fast_decl; do
+  _fast_n="${_fast_entry%%:*}"
+  _fast_flags="${_fast_entry#*:}"
+  _fast_skip="${_fast_flags%%:*}"
+  _fast_rest="${_fast_flags#*:}"
+  _fast_yes="${_fast_rest%%:*}"
+  _fast_rest="${_fast_rest#*:}"
+  _fast_no="${_fast_rest%%:*}"
   mkdir -p "$_fast_fx/$_fast_n"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$_fast_fx/$_fast_n/verify.sh"
+  # skip の材料は **実行されない分岐**（`if false; then ... fi`）として置く。出力文の形は
+  # 保つ（導出はそこを見る）が実行しても何も出ないので、複製木の集計が skip 側へ倒れて
+  # 26-A 以降の期待値を壊すことがない。
+  {
+    printf '#!/usr/bin/env bash\n'
+    if [ "$_fast_yes" = "1" ]; then
+      printf '# run-all-required: yes — 複製木 stub（実体の宣言を写した導出材料）\n'
+    fi
+    if [ "$_fast_no" = "1" ]; then
+      printf '# run-all-required: no — 複製木 stub（実体の宣言を写した導出材料）\n'
+    fi
+    if [ "$_fast_skip" = "1" ]; then
+      printf 'if false; then echo "○ skip: 逆向き導出の材料（この stub は skip を出力しない）"; fi\n'
+    fi
+    printf 'exit 0\n'
+  } > "$_fast_fx/$_fast_n/verify.sh"
   chmod +x "$_fast_fx/$_fast_n/verify.sh"
 done
 # 分類は複製木の**実体**から導出する（名簿を持たない = 実装と同じ導出規則）。コピーが終わってから
@@ -1336,6 +1461,207 @@ expect_has 'kill-wrapper (process gone)' "未実行の一覧で名指しされ�
 expect_has '^suites: total=3 run=2 passed=1 failed=0 skipped=1 not-run=1$' "消えた suite は passed でも failed でもなく not-run に数えられる"
 expect_has '^== skip ==$' "子が消えても後続 suite の実行は止まらない"
 
+echo ""
+echo "== case 36: テンプレート付き mktemp -d が成功経路で実体を検査しない形の再混入ガード =="
+
+# stdout と stderr を同じ変数へ合流させる形は、mktemp が rc=0 で成功しつつ stderr へ警告を出す
+# 環境で変数が「警告文 + 改行 + パス」になる。以後の処理は存在しないパスを掴んで落ちるので、
+# 読み手には「一時領域を用意できなかった」ではなく無関係な失敗に見える（実測）。case 15 は
+# (a) 失敗理由を捨てる形 と (b) probe のテンプレート明示 しか見ないため、この形は誰も赤にしない。
+#
+# 判定は 1 行 grep では足りない — 代入の次行以降で実体を見る多行形や、rc を別変数へ退避してから
+# 判定する形も「検査済み」に含まれる。同一行に加えて、代入直後 8 行以内の同変数 -d 検査も
+# 検査済みと数える。走査対象は tests 直下の verify.sh とリポジトリ直下の scripts/*.sh
+# （後者には materialize-dev-toolkit-changelog.sh の同型が含まれる）。
+_mkchk_repo_root="$(cd "$TESTS_DIR/../../.." && pwd -P)"
+
+# 走査本体。引数のファイルを読み、未検査を「UNCHECKED <path>:<行>」、総数を「TOTAL <n>」で出す。
+_mkchk_scan() {
+  awk '
+    function report(  i, j, line, var, checked) {
+      for (i = 1; i <= n; i++) {
+        line = L[i]
+        if (line ~ /^[[:space:]]*#/) continue
+        if (line !~ /mktemp -d "/) continue
+        if (line !~ /2>&1/) continue
+        total++
+        if (line ~ /\[[[:space:]]*!?[[:space:]]*-d[[:space:]]/) continue
+        var = ""
+        if (match(line, /[A-Za-z_][A-Za-z_0-9]*="\$\(mktemp -d/)) {
+          var = substr(line, RSTART, RLENGTH)
+          sub(/="\$\(mktemp -d$/, "", var)
+        }
+        checked = 0
+        if (var != "") {
+          for (j = i + 1; j <= i + 8 && j <= n; j++) {
+            if (index(L[j], "-d \"$" var "\"") > 0 || index(L[j], "-d \"${" var "}\"") > 0) {
+              checked = 1
+              break
+            }
+          }
+        }
+        if (checked == 0) printf "UNCHECKED %s:%d\n", fname, i
+      }
+    }
+    FNR == 1 { if (n > 0) report(); n = 0; fname = FILENAME }
+    { L[++n] = $0 }
+    END { if (n > 0) report(); printf "TOTAL %d\n", total }
+  ' "$@"
+}
+# 件数だけを取り出す（grep -c は 0 件で rc=1 になり set -e に触れるので awk で数える）。
+_mkchk_count() { printf '%s\n' "$1" | awk '$1 == "UNCHECKED" { n++ } END { print n + 0 }'; }
+
+_mkchk_out="$(_mkchk_scan "$TESTS_DIR"/*/verify.sh "$_mkchk_repo_root"/scripts/*.sh)"
+_mkchk_total="$(printf '%s\n' "$_mkchk_out" | awk '$1 == "TOTAL" { print $2 + 0 }')"
+_mkchk_bad="$(_mkchk_count "$_mkchk_out")"
+if [ "${_mkchk_total:-0}" -lt 30 ]; then
+  bad "テンプレート付き mktemp -d を ${_mkchk_total:-0} 件しか走査できなかった（この検査は成立していない）"
+elif [ "$_mkchk_bad" -eq 0 ]; then
+  ok "成功経路で実体を検査しない mktemp -d が無い（${_mkchk_total} 件走査）"
+else
+  bad "成功経路で実体（-d）を検査しない mktemp -d が再混入した"
+  printf '%s\n' "$_mkchk_out" | awk '$1 == "UNCHECKED" { print "    | " $2 }' >&2
+fi
+
+# 検出器そのものが効くことを変異 fixture で実測する（構造検査が空振りしていないこと）。この
+# verify.sh の複製から成功経路の -d 検査だけを落とし、複製を走査して赤くなることを見る。
+_mkchk_fx="${TMPDIR:-/tmp}/ff-mktemp-template-check.$$"
+rm -rf "$_mkchk_fx"
+mkdir -p "$_mkchk_fx"
+cp "$SCRIPT_DIR/verify.sh" "$_mkchk_fx/control.sh"
+sed -E 's/ && \[ -d "\$[A-Za-z_][A-Za-z_0-9]*" \]//' "$_mkchk_fx/control.sh" > "$_mkchk_fx/mutated.sh"
+if cmp -s "$_mkchk_fx/control.sh" "$_mkchk_fx/mutated.sh"; then
+  bad "変異 fixture を生成できなかった（検出力を測れていないので 0 件は主張できない）"
+else
+  _mkchk_ctl_bad="$(_mkchk_count "$(_mkchk_scan "$_mkchk_fx/control.sh")")"
+  _mkchk_mut_bad="$(_mkchk_count "$(_mkchk_scan "$_mkchk_fx/mutated.sh")")"
+  if [ "$_mkchk_ctl_bad" -eq 0 ]; then
+    ok "変異前の複製は 0 件（赤くなる理由が変異そのものであることの対照）"
+  else
+    bad "変異前の複製が既に ${_mkchk_ctl_bad} 件（対照が成立していない）"
+  fi
+  if [ "$_mkchk_mut_bad" -gt 0 ]; then
+    ok "成功経路の -d 検査を落とした複製を未検査として検出する（検出力の実測）"
+  else
+    bad "-d 検査を落としても検出できない（この検査は空振りする）"
+  fi
+fi
+rm -rf "$_mkchk_fx"
+
+echo ""
+echo "== case 37: node_modules 不在の案内は mcp/node_modules の実在だけで出し分ける =="
+# 実リポジトリの plugins/ff-dev-toolkit/mcp/node_modules は動かさず、テスト専用の上書き
+# FF_RUN_ALL_MCP_NODE_MODULES でランナーの判定対象を差し替える（他suiteと並列実行しても
+# 共有資源を壊さない）。判定は「そのパスが実在するか」だけの単純な述語（AC2）。
+_ff_missing_nm="${TMPDIR:-/tmp}/ff-run-all-verify-missing-node_modules.$$"
+rm -rf "$_ff_missing_nm"
+
+FF_RUN_ALL_MCP_NODE_MODULES="$_ff_missing_nm" run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/skip/verify.sh"
+expect_rc 0 "pass + skip の混在は従来どおり rc=0（skip は失敗として数えない）"
+expect_has '^○ 案内: mcp/node_modules が無いため' "node_modules 不在 + skip ありの回は案内行を出す"
+expect_has 'npm ci --prefix plugins/ff-dev-toolkit/mcp' "案内行に npm ci コマンドを含む"
+
+FF_RUN_ALL_MCP_NODE_MODULES="$FIXTURES" run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/skip/verify.sh"
+expect_rc 0 "node_modules が実在する回も rc=0"
+expect_lacks '^○ 案内: mcp/node_modules が無いため' "node_modules が実在する回は案内行を出さない（正常系で警告し続けない）"
+
+FF_RUN_ALL_MCP_NODE_MODULES="$_ff_missing_nm" run_runner "$FIXTURES/pass/verify.sh"
+expect_rc 0 "pass のみ（skip/fail 0 件）は rc=0"
+expect_lacks '^○ 案内: mcp/node_modules が無いため' "node_modules 不在でも skip/fail が 0 件の回は案内行を出さない"
+
+# SKIPPED が 0 件でも FAILED だけで案内条件が満たされることを実測する（run-all.sh:1588 の
+# `${#SKIPPED[@]} -gt 0 || ${#FAILED[@]} -gt 0` の OR 右辺）。skip を混ぜた上のケースだけでは
+# 左辺しか通らず、右辺の検出力が無検査になる。
+FF_RUN_ALL_MCP_NODE_MODULES="$_ff_missing_nm" run_runner "$FIXTURES/fail/verify.sh"
+expect_rc nz "fail のみ（skip 0 件）は従来どおり rc が非 0"
+expect_has '^○ 案内: mcp/node_modules が無いため' "node_modules 不在 + fail のみ（skip 0 件）の回も案内行を出す"
+
+rm -rf "$_ff_missing_nm"
+
+echo ""
+echo "== case 38: 登録のみで他の随伴先に触れていない suite は逆向き導出で名指しし、随伴先文書のパスも出す =="
+
+# run-all.sh を複製し、SCRIPTS と REQUIRED_SUITES の配列本体だけを最小内容へ差し替える
+# （関数定義や他ロジックはそのまま）。複製先の $SCRIPT_DIR にはこの 2 suite しか実在しない
+# ため、未改変の巨大な REQUIRED_SUITES を残すと「実在しない名前」検査（case 13 と同じ関数の
+# 別分岐）が先に落ちて本題（逆向き導出の unlisted 検出）まで届かない。normal-probe は
+# skip 経路を持ちつつ REQUIRED_SUITES にも載せた「追随済み」の対照、
+# unlisted-required-probe は skip 経路を持つのに REQUIRED_SUITES へは触れていない —
+# 「SCRIPTS 配列（追随先 #1）へは登録したが他の追随先には一切触れていない」という
+# AC2 の Given そのものを表す。
+_fu_fx="${TMPDIR:-/tmp}/ff-followup-unlisted-probe.$$"
+rm -rf "$_fu_fx"
+mkdir -p "$_fu_fx/normal-probe" "$_fu_fx/unlisted-required-probe"
+cat > "$_fu_fx/normal-probe/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+echo "○ skip: 随伴先チェックリスト fixture（追随済みの対照）"
+exit 0
+PROBE
+cat > "$_fu_fx/unlisted-required-probe/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+echo "○ skip: 随伴先チェックリスト fixture（SCRIPTS へは登録したが他の随伴先には触れていない）"
+exit 0
+PROBE
+chmod +x "$_fu_fx/normal-probe/verify.sh" "$_fu_fx/unlisted-required-probe/verify.sh"
+awk '
+  /^  SCRIPTS=\($/ {
+    print
+    print "    \"$SCRIPT_DIR/normal-probe/verify.sh\""
+    print "    \"$SCRIPT_DIR/unlisted-required-probe/verify.sh\""
+    in_scripts = 1
+    next
+  }
+  in_scripts && /^  \)$/ { in_scripts = 0; print; next }
+  in_scripts { next }
+  /^REQUIRED_SUITES=\($/ {
+    print
+    print "  normal-probe"
+    in_required = 1
+    next
+  }
+  in_required && /^\)$/ { in_required = 0; print; next }
+  in_required { next }
+  { print }
+' "$RUNNER" > "$_fu_fx/run-all.sh"
+chmod +x "$_fu_fx/run-all.sh"
+
+_fu_rc=0
+if _fu_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL FF_RUN_ALL_CHECK_REGISTRATION=1 \
+  FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$_fu_fx/run-all.sh" 2>&1)"; then _fu_rc=0; else _fu_rc=$?; fi
+case "$_fu_out" in
+  *"unlisted-required-probe"*) _fu_named=1 ;;
+  *) _fu_named=0 ;;
+esac
+case "$_fu_out" in
+  *"docs/04-quality/TESTING.md"*) _fu_doc_path=1 ;;
+  *) _fu_doc_path=0 ;;
+esac
+case "$_fu_out" in
+  *"新規 suite 追加の随伴先"*) _fu_doc_section=1 ;;
+  *) _fu_doc_section=0 ;;
+esac
+# unlisted-required-probe は SCRIPTS へ登録済みなので、登録漏れ分岐（run-all.sh:1118
+# 付近）とここ（未掲載分岐・run-all.sh:1214 付近）は "unlisted-required-probe" /
+# docs パス / 節名の3点とも共通して出す（両分岐が同じ案内文言を再利用しているため）。
+# この3点だけでは AC2 の Given（登録済み・REQUIRED_SUITES 未掲載）を固定できず、
+# SCRIPTS 側の登録付与だけを外した複製でも「未登録の suite があります」経由で
+# 同じ3点が揃って偽の緑になる（実測）。未掲載側だけが出す固有文言の有無で分岐を縛る。
+case "$_fu_out" in
+  *"REQUIRED_SUITES に載っていない必須 suite"*) _fu_unlisted_branch=1 ;;
+  *) _fu_unlisted_branch=0 ;;
+esac
+case "$_fu_out" in
+  *"未登録の suite があります"*) _fu_unregistered_branch=1 ;;
+  *) _fu_unregistered_branch=0 ;;
+esac
+if [ "$_fu_rc" -ne 0 ] && [ "$_fu_named" -eq 1 ] && [ "$_fu_doc_path" -eq 1 ] && [ "$_fu_doc_section" -eq 1 ] \
+  && [ "$_fu_unlisted_branch" -eq 1 ] && [ "$_fu_unregistered_branch" -eq 0 ]; then
+  ok "登録のみで随伴先未対応の suite を名指しし、随伴先一覧を持つ文書のパスも出す（AC2）"
+else
+  bad "未追随の名指し、または随伴先文書パスの案内が欠けている、もしくは未掲載分岐に縛れていない (rc=${_fu_rc} named=${_fu_named} doc_path=${_fu_doc_path} doc_section=${_fu_doc_section} unlisted_branch=${_fu_unlisted_branch} unregistered_branch=${_fu_unregistered_branch})"
+  printf '%s\n' "$_fu_out" | sed 's/^/    | /' >&2
+fi
+rm -rf "$_fu_fx"
 
 rm -f "$RUN_GATE_RECORD"
 

@@ -88,7 +88,12 @@ ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 is_utf8() { # $1: ファイル / rc0 = valid UTF-8
-  LC_ALL=C iconv -f UTF-8 -t UTF-8 <"$1" >/dev/null 2>&1
+  # 変換結果の捨て先を /dev/null にしない。macOS 26 の BSD iconv は stdout が
+  # /dev/null だと、多バイト文字が出力の 1024 バイト境界をまたぐ入力で valid な
+  # UTF-8 でも rc=1（"Inappropriate ioctl for device"）を返す（2026-09 実測。
+  # 発生はバイト位置依存で、同じ内容でも絶対パスの長さで緑・赤が入れ替わる）。
+  # 通常ファイルへ向けると判定も診断も本来のものになる。
+  LC_ALL=C iconv -f UTF-8 -t UTF-8 <"$1" >"$TMP/iconv-sink.bin" 2>&1
 }
 
 # 日本語の fixture 値。**空白を含めない**こと: bash の printf %q は空白を含む文字列を
@@ -277,6 +282,66 @@ else
 fi
 
 echo ""
+echo "== UTF-8 検査の捨て先が /dev/null でない（macOS 26 の BSD iconv の境界不具合） =="
+
+# macOS 26 の BSD iconv は stdout が /dev/null だと、多バイト文字が出力の 1024 バイト
+# 境界をまたぐ valid な入力で rc=1 を返す（"Inappropriate ioctl for device"）。
+# is_utf8 自身がその形へ戻っていないことを、境界を踏む合成入力で直接固定する
+# （ASCII 1019 バイト + 多バイト文字 = 実測で再現した最小形）。
+head -c 1019 /dev/zero | tr '\0' 'x' > "$TMP/boundary.txt"
+printf '日本\n' >> "$TMP/boundary.txt"
+if is_utf8 "$TMP/boundary.txt"; then
+  ok "1024 バイト境界を多バイト文字がまたぐ valid な入力を valid と判定する"
+else
+  bad "1024 バイト境界を多バイト文字がまたぐ valid な入力が invalid 扱いになる（捨て先が /dev/null に戻った疑い）"
+fi
+printf '\xff\n' >> "$TMP/boundary.txt"
+if is_utf8 "$TMP/boundary.txt"; then
+  bad "不正バイトを含む入力が valid 扱いになる（判定が壊れている）"
+else
+  ok "不正バイトを含む入力は引き続き invalid と判定する"
+fi
+
+# 静的な再混入ガード: プラグイン配下の tracked shell で、iconv の UTF-8 再解釈を
+# 同じ行で /dev/null へ捨てている箇所が無いこと（コメント行は除く）。
+# git grep はリポジトリ内で走るので cwd に依存しない（ls-files | xargs grep は
+# cwd が plugin root でないと相対 path を開けず、空振りして緑になる）。
+# 見るのは iconv 自身の stdout（`>` / `1>` / `&>` / `>&`、引用付き "/dev/null" も含む）。
+# `2>/dev/null`（stderr）は対象外。パイプ消費側の `>(cat 1>/dev/null)` はこの
+# idiom だけを行から取り除いてから照合する（iconv 自身の `1>/dev/null` は拾う）。
+DEVNULL_RE="[^0-9&](1?>|&>|>&)[[:space:]]*\"?/dev"
+DEVNULL_RE="${DEVNULL_RE}/null"
+DEVNULL_CONSUMER='>(cat 1>/dev/null)'
+# 走査できないことを「指摘 0 件」と同一視しない（git 管理外の plugin root では
+# 理由付き skip、走査できても対象が 0 件なら 0 件の主張はできないので赤、
+# git grep の rc=1 だけを「一致なし」と読み、それ以外の非 0 は赤）。
+if ! git -C "$PLUGIN_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  echo "  ○ skip: plugin root が git 管理外のため /dev/null 宛て再混入の静的検査をスキップ"
+else
+  if DEVNULL_TARGETS="$(git -C "$PLUGIN_ROOT" grep -nE 'iconv -f UTF-8 -t UTF-8' -- '*.sh' 2>"$TMP/gitgrep.err")"; then
+    DEVNULL_GREP_RC=0
+  else
+    DEVNULL_GREP_RC=$?
+  fi
+  if [ "$DEVNULL_GREP_RC" -ne 0 ]; then
+    bad "静的検査の走査に失敗（git grep rc=${DEVNULL_GREP_RC}）— 0 件の主張はできない"
+    sed 's/^/    | /' "$TMP/gitgrep.err" >&2
+  elif [ -z "$DEVNULL_TARGETS" ]; then
+    bad "静的検査の対象（iconv の UTF-8 再解釈を持つ tracked shell）が 0 件 — 0 件の主張はできない"
+  else
+    DEVNULL_HITS="$(printf '%s\n' "$DEVNULL_TARGETS" \
+      | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' \
+      | sed "s|$DEVNULL_CONSUMER||g" \
+      | grep -E "$DEVNULL_RE" || true)"
+    if [ -z "$DEVNULL_HITS" ]; then
+      ok "tracked shell に iconv の UTF-8 再解釈を /dev/null へ捨てる行が無い（対象 $(printf '%s\n' "$DEVNULL_TARGETS" | wc -l | tr -d ' ') 行）"
+    else
+      bad "iconv の UTF-8 再解釈を /dev/null へ捨てる行が残っている（sink ファイルかパイプへ向けること）"
+      printf '    | %s\n' "$DEVNULL_HITS" >&2
+    fi
+  fi
+fi
+
 echo "  PASS: $PASS / FAIL: $FAIL"
 FF_REACHED_END=1
 [ "$FAIL" -eq 0 ]

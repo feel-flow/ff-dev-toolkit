@@ -16,11 +16,14 @@ if ! command -v perl >/dev/null 2>&1; then
   exit 0
 fi
 
-if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ace-scripts-mirror-selftest.XXXXXX" 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ace-scripts-mirror-selftest.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   TMP="$(cd "$_ff_mktemp_out" && pwd)"
   TMP_PARENT="$(cd "${TMPDIR:-/tmp}" && pwd)"
 else
   echo "○ skip: 書き込み可能な一時領域を作れないため ace-scripts-mirror の mutation self-test をスキップ（検査は1件も実行されていません）"
+  printf '  mktemp: %s\n' "$_ff_mktemp_out"
   exit 0
 fi
 

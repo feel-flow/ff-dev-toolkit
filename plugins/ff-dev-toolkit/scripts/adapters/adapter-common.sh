@@ -1127,16 +1127,19 @@ assert_prompt_utf8() { # $1: プロンプトファイル / rc0 = valid（また�
   #
   # 変換結果は捨てるが、捨てる先を /dev/null にはしない。BSD iconv（macOS）は
   # stdout が /dev/null だと errno が上書きされ、stderr が原因と無関係な
-  # "iconv(): Inappropriate ioctl for device" になる（実測）。通常ファイルへ
-  # 向けると "Illegal byte sequence"、GNU iconv では不正バイトの位置まで残る。
-  # 一時ファイルが取れない環境では診断行を諦めて判定だけ行う（周辺の文言が
-  # 原因と回避策を名指ししているので、判定さえ生きていれば案内は成立する）。
+  # "iconv(): Inappropriate ioctl for device" になる（実測）だけでなく、macOS 26 では
+  # **valid な UTF-8 でも rc=1 を返す**（多バイト文字が出力の 1024 バイト境界を
+  # またぐ入力で再現。バイト位置依存なので同じ内容でもパス長で緑・赤が入れ替わる。
+  # 2026-09 実測）。通常ファイルへ向けると判定も診断も本来のものになる（不正バイトは
+  # "Illegal byte sequence"、GNU iconv では位置まで残る）。
+  # 一時ファイルが取れない環境では診断行を諦めて判定だけ行うが、そのときも
+  # /dev/null へは向けず、プロセス置換のパイプへ捨てる（パイプ宛てなら rc は正しい）。
   sink="$(mktemp 2>/dev/null)" || sink=""
   if [[ -n "$sink" ]]; then
     err="$(LC_ALL=C iconv -f UTF-8 -t UTF-8 <"$f" 2>&1 >"$sink")" || rc=$?
     rm -f "$sink"
   else
-    LC_ALL=C iconv -f UTF-8 -t UTF-8 <"$f" >/dev/null 2>&1 || rc=$?
+    LC_ALL=C iconv -f UTF-8 -t UTF-8 <"$f" 2>/dev/null > >(cat 1>/dev/null) || rc=$?
   fi
   if [[ "$rc" -eq 0 ]]; then
     return 0

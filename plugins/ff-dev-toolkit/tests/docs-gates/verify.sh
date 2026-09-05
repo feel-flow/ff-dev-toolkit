@@ -536,6 +536,91 @@ f="05-operations/deployment/multi-cli-review-orchestration.md"
 must_contain "$f" '`version: "2.0"` のときだけ `tasks.<task>.{mode,cost_strategy,timeout,output_dir}`' \
   "設定Noteがtasks.*のversion 2.0条件を明記する"
 
+# --- 06-reference/DECISIONS.md: ADR 番号の重複と見出し ↔ 決定ログ表の不一致（OBS-066 昇格）---
+# ADR 番号は共有台帳のグローバル連番なので、並行セッションが同日に採番すると衝突する。
+# rebase 競合で気付けるのは挿入位置がたまたま重なったときだけで、別位置へ挿入されていれば
+# 機械マージが通り同番号の ADR が 2 本並ぶ。判定本体は adr-number-scan.sh に置き、
+# 配布テンプレート（${DOCS}。導入先へ配られる雛形）と正本（リポジトリ docs/）の両方へ当てる。
+# 対象 2 文書が緑なだけでは「検査が効いている」の証明にならないので、検出器が空振りして
+# いないことを fixture で先に固定する（重複・両方向の不一致・抽出不能）。
+# shellcheck source=adr-number-scan.sh
+. "$SCRIPT_DIR/adr-number-scan.sh"
+
+ADR_FIXTURES="$SCRIPT_DIR/fixtures/adr-numbers"
+
+adr_scan_case() { # $1: fixture 名 / $2: 期待 rc / $3: 出力に要る文字列（空なら不問）/ $4: 説明
+  local fixture="$ADR_FIXTURES/$1.md" expected_rc="$2" needle="$3" label="$4"
+  local out
+  local rc=0
+  if [ ! -f "$fixture" ]; then
+    bad "${label} — fixture が見つかりません: ${fixture}"
+    return
+  fi
+  out="$(ff_adr_number_scan "$fixture")" || rc=$?
+  if [ "$rc" -ne "$expected_rc" ]; then
+    bad "${label} — rc=${rc}（期待 ${expected_rc}）"
+    printf '%s\n' "$out" >&2
+    return
+  fi
+  if [ -n "$needle" ]; then
+    case "$out" in
+      *"$needle"*) : ;;
+      *)
+        bad "${label} — 出力が ${needle} を名指ししていません"
+        printf '%s\n' "$out" >&2
+        return
+        ;;
+    esac
+  fi
+  ok "$label"
+}
+
+adr_scan_case clean 0 "" \
+  "ADR 番号検査: 整合した DECISIONS を通す（フェンス内の雛形・例示を名簿へ入れない。見出し側・表側の双方）"
+adr_scan_case duplicate-heading 1 "duplicate-heading: ADR-002" \
+  "ADR 番号検査: 同番号の見出し 2 本を非 0 で名指しする"
+adr_scan_case duplicate-table 1 "duplicate-table: ADR-002" \
+  "ADR 番号検査: 決定ログ表の同番号 2 行を非 0 で名指しする"
+adr_scan_case heading-only 1 "heading-only: ADR-002" \
+  "ADR 番号検査: 見出しにあって決定ログ表に無い番号を列挙する"
+adr_scan_case table-only 1 "table-only: ADR-002" \
+  "ADR 番号検査: 決定ログ表にあって見出しが無い番号を列挙する"
+adr_scan_case no-log-section 2 "決定ログ表" \
+  "ADR 番号検査: 決定ログ節を失った文書を fail-closed で落とす（表側の抽出不能を名指しする）"
+adr_scan_case no-headings 2 "ADR 見出し" \
+  "ADR 番号検査: 見出しが無く決定ログ表だけの文書を fail-closed で落とす（見出し側の抽出不能を名指しする）"
+adr_scan_case table-outside-log-section 0 "" \
+  "ADR 番号検査: 決定ログ節の外にある比較表の番号を走査対象に含めない"
+adr_scan_case zero-pad-match 0 "" \
+  "ADR 番号検査: 見出しのゼロ埋め表記と表の非ゼロ埋め表記を同一番号として一致させる"
+adr_scan_case zero-pad-duplicate 1 "duplicate-table: ADR-048" \
+  "ADR 番号検査: 決定ログ表のゼロ埋め有無違いの表記を正規化後の重複として名指しする"
+
+adr_scan_doc() { # $1: 表示名 / $2: DECISIONS.md のパス
+  local label="$1" doc="$2"
+  local out
+  local rc=0
+  out="$(ff_adr_number_scan "$doc")" || rc=$?
+  case "$rc" in
+    0) ok "${label} の ADR 番号が重複無し・見出しと決定ログ表で一致" ;;
+    1)
+      bad "${label} の ADR 番号が整合していません（並行採番の衝突か表の追随漏れ）"
+      printf '%s\n' "$out" >&2
+      ;;
+    *)
+      bad "${label} の ADR 番号を照合できません (rc=${rc})"
+      printf '%s\n' "$out" >&2
+      ;;
+  esac
+}
+
+adr_scan_doc "docs-template/06-reference/DECISIONS.md" "$DOCS/06-reference/DECISIONS.md"
+# 正本（リポジトリ docs/）は公開 checkout には無いので、存在するときだけ当てる。
+REPO_DECISIONS="$PLUGIN_ROOT/../../docs/06-reference/DECISIONS.md"
+if [ -f "$REPO_DECISIONS" ]; then
+  adr_scan_doc "docs/06-reference/DECISIONS.md" "$REPO_DECISIONS"
+fi
+
 # --- 04-quality/TESTING.md: CI 例 ---
 must_match "04-quality/TESTING.md" '^[[:space:]]*if: always\(\)[[:space:]]*$' \
   "TESTING.md の CI 例が失敗回でもカバレッジを回収する（if: always() の実 directive）"
@@ -577,6 +662,116 @@ if [ -f "$REPO_TESTING" ]; then
     ok "「変異注入の適用確認」節が正本（docs/）と配布テンプレートで一致"
   else
     bad "「変異注入の適用確認」節が正本（docs/04-quality/TESTING.md）と配布テンプレートで乖離している"
+  fi
+fi
+
+# --- 04-quality/TESTING.md: 節スコープ照合の consumer 名簿 ↔ 実体 ---
+# TESTING.md は「移行済みの consumer suite は次の N 件」と表で名簿を持つが、これを
+# 強制するゲートが無いと、次に tests/lib/section-scope.sh を source する suite を
+# 足した時点で黙って drift する（`adapter-env-isolation-selftest` の consumer_roster に
+# 相当するものが section-scope 側には無い。2026-09 のレビュー指摘）。実体は
+# **source 行そのもの**で数える — 文字列一致だけだと、lib を fixture へ写すだけの
+# selftest（cp するパス文字列を持つ）まで consumer に数えてしまう。
+if [ -f "$REPO_TESTING" ]; then
+  ss_actual="$(
+    for _ss_v in "$PLUGIN_ROOT"/tests/*/verify.sh; do
+      [ -f "$_ss_v" ] || continue
+      if awk '/^\.[[:space:]].*lib\/section-scope\.sh/ { found = 1 } END { exit found ? 0 : 1 }' "$_ss_v"; then
+        _ss_d="${_ss_v%/verify.sh}"
+        printf '%s\n' "${_ss_d##*/}"
+      fi
+    done | LC_ALL=C sort
+  )"
+  ss_listed="$(awk '
+    index($0, "移行済みの consumer suite は次の") == 1 { f = 1; next }
+    f == 0 { next }
+    /^\|/ {
+      intab = 1
+      if ($0 ~ /^\|[[:space:]]*suite[[:space:]]*\|/) next
+      if ($0 ~ /^\|[[:space:]]*-/) next
+      name = $0
+      sub(/^\|[[:space:]]*`/, "", name)
+      sub(/`.*/, "", name)
+      if (name != "") print name
+      next
+    }
+    intab == 1 { exit }
+  ' "$REPO_TESTING" | LC_ALL=C sort)"
+  ss_declared="$(awk '
+    index($0, "移行済みの consumer suite は次の") == 1 {
+      n = $0
+      sub(/^.*次の /, "", n)
+      sub(/ 件.*/, "", n)
+      print n
+      exit
+    }
+  ' "$REPO_TESTING")"
+
+  if [ -z "$ss_actual" ] || [ -z "$ss_listed" ]; then
+    bad "節スコープ照合の consumer 名簿を突き合わせられません（実体 or 表の抽出が空。見出し・表書式の変更。fail-closed）"
+  elif [ "$ss_actual" = "$ss_listed" ]; then
+    ok "TESTING.md の節スコープ consumer 一覧が実体（section-scope.sh を source する suite）と一致"
+  else
+    bad "TESTING.md の節スコープ consumer 一覧が実体と乖離しています（表を更新すること）"
+    printf '      表のみ: %s\n' "$(comm -13 <(printf '%s\n' "$ss_actual") <(printf '%s\n' "$ss_listed") | tr '\n' ' ')" >&2
+    printf '      実体のみ: %s\n' "$(comm -23 <(printf '%s\n' "$ss_actual") <(printf '%s\n' "$ss_listed") | tr '\n' ' ')" >&2
+  fi
+
+  ss_actual_n=0
+  [ -z "$ss_actual" ] || ss_actual_n="$(printf '%s\n' "$ss_actual" | wc -l | tr -d ' ')"
+  case "$ss_declared" in
+    ''|*[!0-9]*)
+      bad "TESTING.md の節スコープ consumer 件数を読み取れません（「次の N 件」の書式変更。fail-closed）"
+      ;;
+    *)
+      if [ "$ss_declared" -eq "$ss_actual_n" ]; then
+        ok "TESTING.md の節スコープ consumer 件数が実体と一致（${ss_actual_n} 件）"
+      else
+        bad "TESTING.md の節スコープ consumer 件数 ${ss_declared} が実体 ${ss_actual_n} と一致しません"
+      fi
+      ;;
+  esac
+fi
+
+# --- 04-quality/TESTING.md: 新規 suite 追加の随伴先一覧（suite 追加の追随漏れ対策） ---
+# 随伴先を1箇所へ集約した一覧が、追随先の行を保っていることを固定する。表の行と
+# 実体（各追随先の識別子）を突き合わせる術が無いため、行ごとに散文の言い換えでは
+# 消えない固有語（配列名・宣言文言・suite名・ファイルパス）を針として持つ。一覧から
+# 1行を落とす退行を検出するのが目的で、針が1つでも欠ければ「何かの行が消えた」と
+# 読める（実測は PR 本文へ記録する）。
+if [ -f "$REPO_TESTING" ]; then
+  extract_followups_section() {
+    awk '/^### 新規 suite 追加の随伴先$/ { f = 1 }
+         f && !/^### 新規 suite 追加の随伴先$/ && (/^## / || /^### /) { exit }
+         f { print }' "$1"
+  }
+  followups_section="$(extract_followups_section "$REPO_TESTING")"
+  if [ -z "$followups_section" ]; then
+    bad "「新規 suite 追加の随伴先」節が見つかりません（見出しの改名か節の削除。fail-closed）"
+  else
+    followups_missing=()
+    while IFS= read -r _fu_needle; do
+      [ -n "$_fu_needle" ] || continue
+      case "$followups_section" in
+        *"$_fu_needle"*) : ;;
+        *) followups_missing+=("$_fu_needle") ;;
+      esac
+    done <<'FOLLOWUP_NEEDLES'
+SCRIPTS` 配列
+run-all-required: yes/no
+adapter-env-isolation-selftest
+section-scope.sh
+docs-fact-drift
+npm ci の前提
+8 件の明示許可
+weekly-run-all.yml
+FOLLOWUP_NEEDLES
+    if [ "${#followups_missing[@]}" -eq 0 ]; then
+      ok "「新規 suite 追加の随伴先」節が随伴先 8 件をすべて保持"
+    else
+      bad "「新規 suite 追加の随伴先」節から随伴先が欠落しています:"
+      printf '    %s\n' "${followups_missing[@]}" >&2
+    fi
   fi
 fi
 

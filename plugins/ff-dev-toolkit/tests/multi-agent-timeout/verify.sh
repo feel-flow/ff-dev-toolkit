@@ -306,7 +306,9 @@ _ff_tmpdir="${TMPDIR:-/tmp}"
 # **しない** — 書けない TMPDIR では失敗する。つまり「安全に作る」と「TMPDIR の書き込み
 # 可否を測る」が同じ 1 呼び出しで両立する。失敗理由は 2>&1 で同じ変数に受ける
 # （捨てると read-only 以外の失敗まで「書き込み不可」へ誤帰属する）。
-if _ff_probe="$(mktemp "${_ff_tmpdir%/}/.ff-timeout-writable.XXXXXX" 2>&1)"; then
+# rc=0 でも -f を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、`rm -f` が存在しないパスを黙って無視して probe が残るため。
+if _ff_probe="$(mktemp "${_ff_tmpdir%/}/.ff-timeout-writable.XXXXXX" 2>&1)" && [ -f "$_ff_probe" ]; then
   rm -f "$_ff_probe"
 else
   # 文言は「ここから先が成立しない」までに留める。直前の静的検査（Part C）は既に

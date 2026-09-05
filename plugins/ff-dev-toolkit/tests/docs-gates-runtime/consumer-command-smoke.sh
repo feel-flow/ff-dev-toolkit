@@ -23,9 +23,15 @@ make_consumer_cli_stubs() {
     'case "$*" in' \
     '  *".version //"*) echo "2.0" ;;' \
     '  *".mode // \"\""*) echo "distributed" ;;' \
-    '  *".tasks.review.timeout"*) sed -n "s/^# fixture-timeout: //p" "$config" ;;' \
+    '  *".tasks.review.timeout"*)' \
+    '    # 設定ファイル引数つきなら fixture の pin を返す。引数が無い呼び出しは' \
+    '    # setup の capability probe（YAML を stdin で渡す）なので stdin から拾う。' \
+    '    if [[ -f "$config" ]]; then' \
+    '      sed -n "s/^# fixture-timeout: //p" "$config"' \
+    '    else' \
+    '      sed -n "s/^[[:space:]]*timeout: //p"' \
+    '    fi ;;' \
     '  *".tasks | keys | .[]"*) echo "review" ;;' \
-    '  *".agents | keys | length"*) echo "1" ;;' \
     '  *) exit 0 ;;' \
     'esac' \
     >"$bin_dir/yq"

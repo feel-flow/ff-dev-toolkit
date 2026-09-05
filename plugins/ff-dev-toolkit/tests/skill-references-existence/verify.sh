@@ -67,6 +67,8 @@
 # 一時ディレクトリを使わない read-only の静的検査（依存: awk・grep・sed・dirname と
 # bash 組み込みのみ。ヒアストリング/ヒアドキュメントも使わない — bash はそれらを
 # 一時ファイルで実装するため、書き込み不可の環境で suite ごと落ちる）。
+#
+# run-all-required: yes — 静的検査で skip 経路を持たないが、references 参照の実在は他のどの suite も見ていない。将来 skip 経路が生えたとき黙って消えないよう必須名簿へ載せる
 
 set -euo pipefail
 

@@ -17,6 +17,8 @@
 #     体感遅延を作らない — AC）
 #
 # bash 3.2 互換。ネットワークには触らない（claude は記録 stub）。
+#
+# run-all-required: no — jq 不在での skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側）
 
 set -euo pipefail
 

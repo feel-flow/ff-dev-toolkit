@@ -179,7 +179,7 @@ check_prerequisites() {
 #
 # yq は Mike Farah 実装の v4 が必須。Ubuntu 等の distro パッケージ `yq` は別実装
 # （または非互換）であることがあり、`apt install yq` / `yum install yq` では
-# agent-config-mirror の capability gate や multi-agent の `yq -r` 式と合わない。
+# 本スクリプトの capability probe や multi-agent の `yq -r` 式と合わない。
 # Linux では GitHub release の公式バイナリを明示取得し、導入直後に version と
 # capability probe で fail-loud 検証する（ACE-66-1 / Issue #271）。
 
@@ -202,7 +202,7 @@ detect_package_manager() {
     fi
 }
 
-# Mike Farah yq v4 の version 文字列か（agent-config-mirror と同じ契約）
+# Mike Farah yq v4 の version 文字列か（下の capability probe と対の契約）
 yq_version_is_mikefarah_v4() {
     local version="${1:-}"
     case "$version" in
@@ -214,7 +214,7 @@ yq_version_is_mikefarah_v4() {
 # multi-agent.sh / setup が使う式が動くか。version 文字列の偽装だけを通さない。
 yq_capability_probe() {
     local sample out
-    sample=$'version: "2.0"\nmode: distributed\ntasks:\n  review: {}\nagents:\n  a: 1\n'
+    sample=$'version: "2.0"\nmode: distributed\ntasks:\n  review:\n    timeout: 900\n'
 
     if ! out="$(printf '%s' "$sample" | yq -r '.version // "unknown"' 2>&1)"; then
         return 1
@@ -231,10 +231,11 @@ yq_capability_probe() {
     fi
     [[ "$out" == "review" ]] || return 1
 
-    if ! out="$(printf '%s' "$sample" | yq -r '.agents | keys | length' 2>&1)"; then
+    # multi-agent.sh が実際に使うネストしたパス読み取りの形（tasks.<task>.<key>）
+    if ! out="$(printf '%s' "$sample" | yq -r '.tasks.review.timeout' 2>&1)"; then
         return 1
     fi
-    [[ "$out" == "1" ]] || return 1
+    [[ "$out" == "900" ]] || return 1
 
     # パース可否チェック（multi-agent.sh load_config と同じ形）
     if ! printf '%s' "$sample" | yq '.' >/dev/null 2>&1; then
@@ -265,7 +266,7 @@ yq_is_compatible() {
     fi
 
     if ! yq_capability_probe; then
-        REPLY="yq v4 の capability probe に失敗しました（path=${path} / version=${version}）。必要な式（-r / // / keys / length）が使えません"
+        REPLY="yq v4 の capability probe に失敗しました（path=${path} / version=${version}）。必要な式（-r / // / keys / ネストしたパス読み取り）が使えません"
         return 1
     fi
 
@@ -688,9 +689,10 @@ check_config() {
             print_success "タスクタイプ: $(echo "$task_types" | tr '\n' ', ' | sed 's/,$//')"
         fi
 
-        local agent_count
-        agent_count=$(yq -r '.agents | keys | length' "$effective_config" 2>/dev/null || echo "0")
-        print_success "エージェント定義: ${agent_count}"
+        # CLI レジストリ（名前・コマンド・コスト帯・観点割当・代替）は設定ファイルに
+        # 持たない。正本は multi-agent.sh の get_cli_* で、設定ファイルから件数を
+        # 数えると常に 0 になる（読まれない対応表を畳んだため）。
+        print_info "CLI レジストリの正本: ${SCRIPT_DIR}/multi-agent.sh の get_cli_*（--dry-run で実際の割当を確認できます）"
     else
         print_warning "設定ファイルの詳細確認をスキップ（yq未インストールまたはファイル未存在）"
     fi

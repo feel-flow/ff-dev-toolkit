@@ -14,6 +14,8 @@
 #   - explore タスクでは出さない（review 限定）
 #
 # 実 CLI は 1 つも起動しない（stub で覆う）。書き込み不可の環境では skip。
+#
+# run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
 
 set -euo pipefail
 

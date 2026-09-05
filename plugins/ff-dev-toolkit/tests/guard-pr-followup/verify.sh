@@ -6,6 +6,8 @@
 # 通常本文 / gh pr edit / --body-file・heredoc 経由 / 既知の限界の素通し）を固定する。
 # 警告文自体が抜け道（no-followup マーカー）と gh issue create を案内する契約も検査し、
 # hooks.json の PreToolUse 登録を静的照合する。
+#
+# run-all-required: no — jq 不在での skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,7 +22,9 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
-if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-guard-pr.XXXXXX" 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-guard-pr.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   TEST_TMP="$_ff_mktemp_out"
 else
   echo "✗ 一時ディレクトリを作成できません: $_ff_mktemp_out" >&2

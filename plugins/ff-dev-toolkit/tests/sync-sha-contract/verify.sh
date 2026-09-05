@@ -45,6 +45,8 @@
 # なることを確認する（docs-gates と同じ規則）。手順書の針型検査は read-only。
 # 同期元 SHA の受け渡しと footer-only 判定器だけは、一時 Git リポジトリで実挙動も
 # 固定する。bash 3.2 互換。
+#
+# run-all-required: no — 同期スクリプトを持たない公開 checkout での skip は正当な適用外（SSOT 専用の検査）
 
 set -euo pipefail
 

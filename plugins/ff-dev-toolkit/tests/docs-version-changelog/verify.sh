@@ -147,6 +147,12 @@ while IFS= read -r f; do
   # 版エントリは `### [x.y.z]` の直後が行末か空白のもののみ（`]garbage` は不正）。
   # SemVer は各要素の先頭ゼロを認めない（`01.0.0` は不正見出し。docs-frontmatter-repo
   # と同じ規則）。
+  # `## Changelog` 見出しの正規表現は共有 helper（tests/lib/docs-scan.sh の
+  # ff_docs_fm_verdict ほか）と同一にする。ここだけ「空白ちょうど 1 個・末尾空白
+  # なし」に固定していると、helper が正規の見出しとして受理する `##  Changelog` /
+  # 末尾空白付きの文書で ncl=0 になり、下の `-gt 0 || continue` が TARGETS にも
+  # 数えず**黙って対象外**にする（version と最大版の照合が丸ごと消える fail-open。
+  # 検出力は docs-version-changelog-selftest の G20 / G21 で固定）。
   info="$(ff_docs_mask_spans "$f" | awk -v fe="${fm_end:-0}" '
     # 各要素を awk の数値（IEEE 754 double）として比較する。整数が正確に表せる
     # のは 2^53（約 9.0e15 = 15 桁）までで、これが比較可能域の契約。エントリの
@@ -162,7 +168,7 @@ while IFS= read -r f; do
       return 0
     }
     NR <= fe { next }
-    /^## Changelog$/ { ncl++; if (!cl) { cl = 1; next } }
+    /^##[ \t]+Changelog[ \t]*$/ { ncl++; if (!cl) { cl = 1; next } }
     cl && !done && /^## / { done = 1 }
     cl && !done && /^### / {
       if ($0 ~ /^### \[(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\]( .*)?$/) {

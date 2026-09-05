@@ -422,7 +422,7 @@ tasks:
     cost_strategy: balanced
 ```
 
-CLI名・cost tier・perspective・fallback の対応表は plugin 同梱設定を参照する。これらを変更する場合は `multi-agent.sh` の実行時レジストリと配布mirrorを同じ plugin PRで更新し、消費プロジェクト設定へは複製しない。
+CLI名・cost tier・perspective・fallback は plugin 同梱の `multi-agent.sh`（`get_cli_*`）が唯一の正本で、設定ファイル側には写しを置かない。これらを変更する場合は plugin PR で実行時レジストリを直す（消費プロジェクト設定へ複製しても読まれない）。現在の割当は `multi-review.sh --dry-run` / `multi-agent.sh --task review --list-perspectives` が出力する（実行例は「動作確認」節の正準形を使う）。
 
 ### Step 3: 動作確認
 
@@ -455,31 +455,38 @@ ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_RO
 
 ### よくあるカスタマイズ例
 
+設定ファイルで指定できるのは**どう走らせるか**だけで、**どの CLI がどの観点を持つか**は指定できない（CLI レジストリは `multi-agent.sh` が正本）。CLI や観点を絞るのはコマンドラインの `--cli` / `--perspective` の役目。
+
 #### 例1: Grok のみで運用（定額）
 
+設定ファイルではなく実行時に CLI を明示する:
+
+```bash
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli grok-cli
+```
+
+コスト戦略だけを既定として寄せたい場合は設定ファイル側へ:
+
 ```yaml
-cost_strategy: minimize_cost
-agents:
-  grok-cli:
-    command: grok
-    cost_tier: flat-rate
-    default_perspectives:
-      [security-analysis, code-simplification, type-design-analysis]
+version: "2.0"
+tasks:
+  review:
+    cost_strategy: minimize_cost
 ```
 
 #### 例2: Claude + Codex のクロスモデル比較
 
 ```yaml
-mode: cross-model
-agents:
-  claude-code:
-    command: claude
-    cost_tier: premium
-    default_perspectives: [code-review]
-  codex-cli:
-    command: codex
-    cost_tier: standard
-    default_perspectives: [code-review]
+version: "2.0"
+tasks:
+  review:
+    mode: cross-model
+```
+
+比較対象の CLI を 2 つへ絞るのは実行時に指定する:
+
+```bash
+ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli claude-code --cli codex-cli
 ```
 
 ---

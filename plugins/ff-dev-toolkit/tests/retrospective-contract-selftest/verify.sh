@@ -41,6 +41,9 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 
 SRC_GATE="$PLUGIN_ROOT/tests/retrospective-contract/verify.sh"
+# ゲートが source する共通ライブラリ。fixture は実行環境と同じ相対配置を再現するので、
+# tests/lib/ ごと写さないとゲートが起動時に落ちる（変異の実測が成立しない）。
+SRC_SECTION_SCOPE="$PLUGIN_ROOT/tests/lib/section-scope.sh"
 SRC_SKILL="$PLUGIN_ROOT/skills/retrospective/SKILL.md"
 SRC_ACE_CURATE="$PLUGIN_ROOT/skills/ace-curate/SKILL.md"
 SRC_GIT_WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
@@ -70,6 +73,7 @@ fi
 
 REQUIRED_SRC=(
   "$SRC_GATE"
+  "$SRC_SECTION_SCOPE"
   "$SRC_SKILL"
   "$SRC_ACE_CURATE"
   "$SRC_GIT_WORKFLOW"
@@ -93,7 +97,9 @@ if ! command -v perl >/dev/null 2>&1; then
 fi
 # mktemp の診断を捨てると不正 TMPDIR と read-only を区別できないため、成功時のパスと
 # 失敗時の理由を同じ変数へ受ける。
-if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/retrospective-contract-selftest.XXXXXX" 2>&1)"; then
+# rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
+# 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/retrospective-contract-selftest.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   FIXTURE_ROOT="$_ff_mktemp_out"
 else
   echo "○ skip: 一時ディレクトリを作成できないため retrospective-contract-selftest を実行できません（検査は1件も実行されていません）"
@@ -121,6 +127,7 @@ FIX_REPO="$FIXTURE_ROOT/repo"
 FIX_PLUGIN="$FIX_REPO/plugins/ff-dev-toolkit"
 mkdir -p \
   "$FIX_PLUGIN/tests/retrospective-contract" \
+  "$FIX_PLUGIN/tests/lib" \
   "$FIX_PLUGIN/skills/retrospective" \
   "$FIX_PLUGIN/skills/ace-curate" \
   "$FIX_PLUGIN/docs-template/05-operations/deployment"
@@ -136,6 +143,7 @@ FIX_LEDGER_REPO="$FIX_REPO/docs/08-knowledge/OBSERVATIONS.md"
 
 cp "$SRC_GATE" "$GATE"
 chmod +x "$GATE"
+cp "$SRC_SECTION_SCOPE" "$FIX_PLUGIN/tests/lib/section-scope.sh"
 cp "$SRC_SKILL" "$FIX_SKILL"
 cp "$SRC_ACE_CURATE" "$FIX_ACE_CURATE"
 cp "$SRC_GIT_WORKFLOW" "$FIX_GIT_WORKFLOW"
@@ -464,7 +472,9 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|   - 起票先: |出力形式: 起票先欄|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 付与予定ラベル: |出力形式: 付与予定ラベル欄|1"
   "${FIX_SKILL}|retrospective-SKILL.md|   - 期待効果: |出力形式: 期待効果欄|1"
-  "${FIX_SKILL}|retrospective-SKILL.md|### 起票前の既存確認（必須）|起票前の既存確認: 節が存在する|22"
+  # 節見出しの削除は、節スコープで照合している針（preflight_contains 21 件 + 節へ
+  # 寄せた 6 件）をまとめて落とす。節が存在する針と合わせて 28 件。
+  "${FIX_SKILL}|retrospective-SKILL.md|### 起票前の既存確認（必須）|起票前の既存確認: 節が存在する|28"
   "${FIX_SKILL}|retrospective-SKILL.md|この行を書けない提案は提示しない|起票前の既存確認: 既存確認を書けない提案は提示しない|1"
   "${FIX_SKILL}|retrospective-SKILL.md|--state all --limit 200|起票前の既存確認: 既存 Issue 検索は state 非限定 + 取得上限を明示|1"
   # Issue #865: 確認の**タイミング**（閾値側）は単独の行に乗るため巻き添え無し。
@@ -991,6 +1001,7 @@ if [[ "$IS_MONOREPO" -eq 1 ]]; then
   PUB_PLUGIN="$PUB_REPO/plugins/ff-dev-toolkit"
   mkdir -p \
     "$PUB_PLUGIN/tests/retrospective-contract" \
+    "$PUB_PLUGIN/tests/lib" \
     "$PUB_PLUGIN/skills/retrospective" \
     "$PUB_PLUGIN/skills/ace-curate" \
     "$PUB_PLUGIN/docs-template/05-operations/deployment" \
@@ -999,6 +1010,7 @@ if [[ "$IS_MONOREPO" -eq 1 ]]; then
   PUB_README="$PUB_REPO/README.md"
   cp "$SRC_GATE" "$PUB_GATE"
   chmod +x "$PUB_GATE"
+  cp "$SRC_SECTION_SCOPE" "$PUB_PLUGIN/tests/lib/section-scope.sh"
   cp "$SRC_SKILL" "$PUB_PLUGIN/skills/retrospective/SKILL.md"
   cp "$SRC_ACE_CURATE" "$PUB_PLUGIN/skills/ace-curate/SKILL.md"
   cp "$SRC_GIT_WORKFLOW" "$PUB_PLUGIN/docs-template/05-operations/deployment/git-workflow.md"
@@ -1039,6 +1051,140 @@ if [[ "$IS_MONOREPO" -eq 1 ]]; then
     expect_red "公開配置: 公開 README からのチェーン削除" "✗ チェーン記載: 公開 README のスキル表" 1 "$PUB_GATE"
   fi
 fi
+
+# ── 系統 6: 共通ライブラリ tests/lib/section-scope.sh の状態機械 ───────────────
+# 本 suite は既にゲートの依存として lib を fixture へ写している。その lib の
+# フェンス状態機械は、consumer 文書では「字下げなし 3 連バッククォート」しか
+# 踏まない（対象 7 文書に `~~~` / 字下げフェンス / 4 連以上 / 未閉じは 0 件。
+# 2026-09 実測）。残りの分岐は実文書経由では一度も実行されず、退行しても
+# consumer suite は緑のままになるので、ここで直接の fixture として固定する。
+# 変異は写した lib のコピーにだけ当て、実作業ツリーには触れない。
+SS_LIB="$FIX_PLUGIN/tests/lib/section-scope.sh"
+cp "$SRC_SECTION_SCOPE" "$SS_LIB"
+SS_FENCED="$FIXTURE_ROOT/section-scope-fenced.md"
+SS_UNCLOSED_AFTER="$FIXTURE_ROOT/section-scope-unclosed-after.md"
+SS_UNCLOSED_BEFORE="$FIXTURE_ROOT/section-scope-unclosed-before.md"
+SS_PROBE="$FIXTURE_ROOT/section-scope-probe.sh"
+
+cat >"$SS_FENCED" <<'SS_FENCED_DOC'
+## 節A
+
+- 針A
+
+```bash
+## フェンス内の見出し例示
+# フェンス内のコメント
+fenced-backtick
+```
+
+    ~~~
+    ## 字下げチルダの内側
+    fenced-tilde
+    ~~~
+
+````text
+```
+## 4 連の内側（3 連では閉じない）
+```
+fenced-quad
+````
+
+## 節B
+
+- 針B
+SS_FENCED_DOC
+
+cat >"$SS_UNCLOSED_AFTER" <<'SS_UNCLOSED_AFTER_DOC'
+## 節A
+
+- 針A
+
+```bash
+echo "閉じフェンスを 1 本落とした形"
+
+## 節B
+
+- 針B
+SS_UNCLOSED_AFTER_DOC
+
+cat >"$SS_UNCLOSED_BEFORE" <<'SS_UNCLOSED_BEFORE_DOC'
+```bash
+echo "見出しより前で開いたまま"
+
+## 節A
+
+- 針A
+SS_UNCLOSED_BEFORE_DOC
+
+cat >"$SS_PROBE" <<'SS_PROBE_SH'
+#!/usr/bin/env bash
+# $1=lib $2=文書 $3=見出し $4=needle。rc と理由行をそのまま返す。
+set -euo pipefail
+. "$1"
+section_scope_contains "$2" "$3" "$4"
+SS_PROBE_SH
+
+SS_OUT=""
+SS_RC=0
+run_section_scope() { # $1=文書 $2=見出し $3=needle
+  set +e
+  SS_OUT="$(bash "$SS_PROBE" "$SS_LIB" "$1" "$2" "$3" 2>&1)"
+  SS_RC=$?
+  set -e
+}
+
+expect_section_scope() { # $1=文書 $2=見出し $3=needle $4=期待 rc $5=ラベル $6=期待する理由の断片（任意）
+  run_section_scope "$1" "$2" "$3"
+  if [[ "$SS_RC" -ne "$4" ]]; then
+    bad "${5}（rc=${SS_RC} / 期待 ${4}: ${SS_OUT}）"
+    return
+  fi
+  if [[ -n "${6:-}" && "$SS_OUT" != *"${6}"* ]]; then
+    bad "${5}（理由が期待と異なる: ${SS_OUT}）"
+    return
+  fi
+  ok "$5"
+}
+
+echo
+echo "== 系統 6: section-scope lib の状態機械（fixture 直叩き） =="
+
+expect_section_scope "$SS_FENCED" "## 節A" "fenced-backtick" 0 \
+  "lib 回帰: フェンス内の見出し例示・コメントで節が切れない"
+expect_section_scope "$SS_FENCED" "## 節A" "fenced-tilde" 0 \
+  "lib 回帰: 字下げ + チルダフェンスを追跡する"
+expect_section_scope "$SS_FENCED" "## 節A" "fenced-quad" 0 \
+  "lib 回帰: 4 連バッククォートは内側の 3 連で閉じない"
+expect_section_scope "$SS_FENCED" "## 節A" "針B" 1 \
+  "lib 回帰: 閉じたフェンスの後は次の見出しで節が終わる" "がありません"
+expect_section_scope "$SS_UNCLOSED_AFTER" "## 節A" "針B" 1 \
+  "lib 回帰: 見出しより後の未閉じフェンスは検査不能（節が文書末尾まで伸びない）" "検査不能"
+expect_section_scope "$SS_UNCLOSED_BEFORE" "## 節A" "針A" 1 \
+  "lib 回帰: 見出しより前の未閉じフェンスも検査不能" "検査不能"
+
+# 変異 1: フェンス開始で状態を立てない（状態機械を 1 箇所だけ壊す）。
+perl -pi -e 's{^(\s*)in_fence = 1$}{$1 . "in_fence = 0"}e' "$SS_LIB"
+if assert_mutated "$SS_LIB" "$SRC_SECTION_SCOPE" "lib 変異: フェンス開始の無効化"; then
+  run_section_scope "$SS_FENCED" "## 節A" "fenced-backtick"
+  if [[ "$SS_RC" -eq 1 ]]; then
+    ok "lib 変異: フェンス追跡を壊すとフェンス内の見出し例示で節が切れて赤（rc=1）"
+  else
+    bad "lib 変異: フェンス追跡を壊しても緑のまま（rc=${SS_RC}）— 状態機械の回帰が効いていない"
+  fi
+fi
+cp "$SRC_SECTION_SCOPE" "$SS_LIB"
+
+# 変異 2: EOF の未閉じフェンス検査を落とす（fail-open への復帰）。
+drop_lines_containing "$SS_LIB" 'print "UNCLOSED_FENCE"'
+if assert_mutated "$SS_LIB" "$SRC_SECTION_SCOPE" "lib 変異: 未閉じフェンス検査の削除"; then
+  run_section_scope "$SS_UNCLOSED_AFTER" "## 節A" "針B"
+  if [[ "$SS_RC" -eq 0 ]]; then
+    ok "lib 変異: 未閉じフェンス検査を外すと別節の針を拾って緑になる（fail-open の再現。rc=0）"
+  else
+    bad "lib 変異: 未閉じフェンス検査を外しても rc=${SS_RC}（期待 0）— 変異が意図した経路に当たっていない"
+  fi
+fi
+cp "$SRC_SECTION_SCOPE" "$SS_LIB"
 
 echo
 if [[ "$FAIL" -gt 0 ]]; then

@@ -2,7 +2,7 @@
 # See: docs-template/05-operations/deployment/multi-cli-review-orchestration.md
 
 version: "2.0"
-toolkit_version: "0.83.0"
+toolkit_version: "0.84.0"
 
 # ── Global Defaults ──
 # mode はタスク単位でも指定できる（tasks.<task>.mode）。ここはその既定。
@@ -36,12 +36,14 @@ tasks:
     timeout: 900
 
 # ── Review Reviewers（主 + 副） ──
-# ⚠️ 下の agents: / fallback: と違い、**このブロックは実行時に読まれる**。
+# ⚠️ **このブロックは実行時に読まれる**（本ファイルで読まれるキーの一覧は
+# docs-template/05-operations/deployment/multi-cli-agent-orchestration.md の
+# 「実際に読まれるキー」節が正本）。
 # 解決順は env（MULTI_AGENT_REVIEW_MAIN / _SUB）> 本ファイル > ユーザーグローバル
 # （${XDG_CONFIG_HOME:-~/.config}/ff-dev-toolkit/reviewers）。
 #
 # 書けるのは **CLI 名だけ**。どのモデルを使うかは各 CLI 自身の設定へ委譲する
-# （issue #239 の不変条件）。CLI 名以外の値は実行前に非 0 で拒否される。
+# （多重指定を作らないための不変条件）。CLI 名以外の値は実行前に非 0 で拒否される。
 #review:
 #  main: claude-code
 #  sub: codex-cli
@@ -51,99 +53,37 @@ tasks:
 #  # MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES が設定されていればそちらが優先
 #  critical_nonblock_perspectives: "comment-analysis test-analysis type-design-analysis code-simplification"
 
-# ── Agent Definitions ──
-# ⚠️ このブロックは**実行時には読まれない**。CLI レジストリの正本は
+# ── Agent Definitions（CLI レジストリ）── ※ 本ファイルには置かない
+# CLI 名・実行コマンド・コスト帯・観点割当（review / explore / implement）の正本は
 # scripts/multi-agent.sh の get_cli_command / get_cli_cost_tier /
-# get_cli_perspectives_* / get_cli_fallback（bash 3.2 互換のため case 文）である。
-# ここは人が読むための対応表として維持している。値を書き換えても挙動は変わらないので、
-# 実際の割当を変えるときは multi-agent.sh を直すこと。
-#
-# 読まれないのは agents: と下の fallback: だけで、本ファイル全体ではない。
-# version / mode / parallel、上の review:、tasks.<task>.{mode,cost_strategy,timeout,
-# output_dir} は実行時に yq で読まれる。読まれるキーをここに列挙すると設定追加のたびに
-# 腐るので書かない（この対応表が読まれないことだけが、下のミラー検査の前提）。
-#
-# この対応表は「検証されたミラー」である（issue #242）。command / cost_tier /
-# perspectives（review/explore/implement）/ fallback の値が multi-agent.sh の case 文と
-# 一致していることを tests/agent-config-mirror/verify.sh が検査する。片方だけ直すと
-# red になるので、ここと multi-agent.sh は必ず両方揃えて更新すること。
+# get_cli_perspectives_review / get_cli_perspectives_explore /
+# get_cli_perspectives_implement（bash 3.2 互換のため case 文）である。
+# 以前はここに `agents:` の対応表を持っていたが、実行時に読まれない複製で、片側だけ
+# 直されると黙って嘘になるため参照へ畳んだ。**この YAML に `agents:` を書いても
+# 挙動は変わらない**（読まれるキーは上記の正本節が列挙する）。
+# 現在の割当を確認するときは実装を読むか、プランを出力させる:
+#   bash scripts/multi-agent.sh --task review --dry-run
+#   bash scripts/multi-agent.sh --task review --list-perspectives
 #
 # モデル指定はここでは行わない。ラッパーは既定のモデル slug を持たず、各 CLI 自身の
 # 設定（~/.codex/config.toml、Claude Code のモデル設定など）へ委譲する。明示指定が
 # 要るときは環境変数を使う（MULTI_AGENT_MODEL_<CLI> / MULTI_AGENT_CODEX_PROFILE /
 # MULTI_AGENT_CODEX_REASONING_EFFORT）。
 # 理由は ACE-70-2（本リポジトリの ACE Playbook）を参照。
-agents:
-  claude-code:
-    command: claude
-    cost_tier: premium
-    perspectives:
-      review:
-        - type-design-analysis
-        - code-simplification  # cursor-cli 削除（issue #240）に伴い移設
-        - comment-analysis  # gemini-cli 削除（issue #783）に伴い移設。copilot との共有は無害（copilot は既定除外）
-      explore:
-        - architecture-analysis
-      implement:
-        - feature-implementation
-
-  codex-cli:
-    command: codex
-    cost_tier: standard
-    perspectives:
-      review:
-        - code-review
-        - test-analysis
-        - acceptance-criteria  # issue #1054 で追加。既定セット入りの判断根拠は multi-agent.sh の同観点コメント参照
-      explore:
-        - dependency-mapping
-      implement:
-        - refactoring
-        - documentation  # gemini-cli 削除（issue #783）に伴い移設
-
-  copilot-cli:
-    command: copilot
-    cost_tier: metered  # 従量課金（premium requests）— review 既定ラインナップから除外
-    perspectives:
-      review:  # 既定プランには載らない。--cli copilot-cli 明示時のみ実行（オプトイン）
-        - test-analysis
-        - comment-analysis
-      explore:
-        - api-surface-analysis
-      implement:
-        - test-writing
-
-  grok-cli:
-    command: grok
-    cost_tier: flat-rate
-    perspectives:
-      review:
-        - error-handler-hunt  # grok-cli 追加（issue #252）に伴い codex-cli から移設
-        - security-analysis  # gemini-cli 削除（issue #783）に伴い移設
-      explore:
-        - tech-debt-assessment  # grok-cli 追加（issue #252）に伴い gemini-cli から移設
-        - pattern-discovery  # gemini-cli 削除（issue #783）に伴い移設
-      implement:
-        - migration  # 同上（codex-cli から移設）
 
 # ── Graceful Degradation（プラン構築時のみ／実行時失敗には適用しない） ──
-# ⚠️ agents: と同じく、このブロックも**実行時には読まれない**。正本は
-# scripts/multi-agent.sh の get_cli_fallback。ここは人が読むための対応表で、
-# 値が case 文と一致していることを tests/agent-config-mirror/verify.sh が検査する
-# （issue #242。片方だけ直すと red）。
+# ※ 代替 CLI の対応表も本ファイルには置かない。正本は scripts/multi-agent.sh の
+# get_cli_fallback（同じ理由で `fallback:` の対応表を参照へ畳んだ。ここに書いても
+# 挙動は変わらない）。未インストール時にどこへ再分配されるかは
+# `--dry-run` のプラン出力が実際の解決結果として示す。
 #
-# この対応表が**適用**されるのは「CLI が未インストールでプランを組めないとき」だけ。
+# 代替が**適用**されるのは「CLI が未インストールでプランを組めないとき」だけ。
 # 実行時失敗のあとにも参照はされるが、それは失敗サマリーで代替 CLI の名前とコスト帯を
 # 示すためで、自動実行はしない。
 # インストール済みの CLI が実行時にエラー／タイムアウトした場合、代替 CLI での
-# 再実行は行わず、そのタスクを失敗として報告して非 0 終了する（Issue #152）。
+# 再実行は行わず、そのタスクを失敗として報告して非 0 終了する。
 # 理由: 本ツールの価値は同じ差分を**別のモデル**に見せることなので、黙って差し替えると
 # 「実際に何がレビューされたか」が変わるのにレポート上は観点が埋まって見える。
 # また代替先はコスト帯が上がる場合がある（codex-cli → claude-code は standard →
 # premium）。タイムアウト後の再試行は同じ制限時間をもう一度消費するだけになりやすい。
 # 代替を使いたいときは失敗サマリーが出力するコマンドで `--cli` 明示して実行する。
-fallback:
-  claude-code: codex-cli
-  codex-cli: claude-code
-  copilot-cli: codex-cli
-  grok-cli: codex-cli  # gemini-cli 削除（issue #783）に伴い付け替え

@@ -28,6 +28,18 @@ GUARD="$PLUGIN_ROOT/scripts/check-closing-keywords.sh"
 SKILL="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 
+# 2a（供給源のスキャン）と 2b（マージへ渡す文字列の検査）は役割が違い、片方の規定を
+# もう片方へ書き写しても穴は塞がらない。どちらの節に在るかが要件そのものなので、
+# 文書全体 grep ではなく節スコープで照合する。判断基準は tests/lib/section-scope.sh。
+# 対象節はいずれも `#` で始まるコメント行を含む bash フェンスを持つため、フェンス
+# 追跡を持つ共通ヘルパでなければ節が途中で切れる。
+# shellcheck source=../lib/section-scope.sh
+. "$SCRIPT_DIR/../lib/section-scope.sh"
+
+STEP2_HEADING='### 2. closing keyword 抵触検査（Refs 運用の Issue がある場合）'
+STEP2A_HEADING='#### 2a. 供給源のスキャン'
+STEP2B_HEADING='#### 2b. 実際に渡す squash メッセージの検査（マージの条件）'
+
 PASS=0
 FAIL=0
 
@@ -47,6 +59,15 @@ contains() {
     ok "$label"
   else
     bad "${label}（不足: ${needle}）"
+  fi
+}
+
+section_contains() {
+  local file="$1" heading="$2" needle="$3" label="$4" reason
+  if reason="$(section_scope_contains "$file" "$heading" "$needle")"; then
+    ok "$label"
+  else
+    bad "${label}（不足: ${reason}）"
   fi
 }
 
@@ -300,9 +321,9 @@ echo
 echo "-- SKILL.md の契約 --"
 
 contains "$SKILL" "closing keyword 抵触検査" "検査手順が独立した手順として存在する"
-contains "$SKILL" "PR タイトル + 全コミットの件名と本文" "2a の検査面を明記している"
-contains "$SKILL" '実際に `gh pr merge` へ渡す `--subject` と `--body`' "2b の検査面を明記している"
-contains "$SKILL" "コロンが挟まる形も一致します" "コロン混入形も一致することを明記"
+section_contains "$SKILL" "$STEP2_HEADING" "PR タイトル + 全コミットの件名と本文" "2a の検査面を明記している"
+section_contains "$SKILL" "$STEP2_HEADING" '実際に `gh pr merge` へ渡す `--subject` と `--body`' "2b の検査面を明記している"
+section_contains "$SKILL" "$STEP2_HEADING" "コロンが挟まる形も一致します" "コロン混入形も一致することを明記"
 contains "$SKILL" "scripts/check-closing-keywords.sh" "検査ロジックを共有スクリプトへ委譲している"
 contains "$SKILL" "PR 本文だけ" "closingIssuesReferences の実際の走査範囲を正しく述べている"
 contains "$SKILL" "空を理由に打ち切ると" "closingIssuesReferences が空でも Refs 運用を検査対象にする"
@@ -512,10 +533,10 @@ contains "$SKILL" "空 API を「閉じない」と読まない" "空 API をコ
 contains "$SKILL" "UNION_RC" "和集合パイプの失敗を握り潰さない"
 contains "$SKILL" "REFS_ONLY_RC" "差集合パイプの失敗を握り潰さない"
 contains "$SKILL" "参照から検出できる対象 Issue はありません" "keyword も Refs も無い PR は従来どおり正常終了する"
-contains "$SKILL" "既定のマージ経路" "抵触時は既定のマージ経路が安全でないと宣言する"
-contains "$SKILL" "2b の結果をマージの条件にする" "コミット由来の抵触は 2b へ委ねる"
-contains "$SKILL" "2a の抵触で無条件に停止しない" "改題で消せない抵触で永久に赤にならない"
-contains "$SKILL" "NON_TITLE_CONFLICTS" "origin 別の分岐を実行可能な形で書いている"
+section_contains "$SKILL" "$STEP2A_HEADING" "既定のマージ経路" "抵触時は既定のマージ経路が安全でないと宣言する"
+section_contains "$SKILL" "$STEP2A_HEADING" "2b の結果をマージの条件にする" "コミット由来の抵触は 2b へ委ねる"
+section_contains "$SKILL" "$STEP2A_HEADING" "2a の抵触で無条件に停止しない" "改題で消せない抵触で永久に赤にならない"
+section_contains "$SKILL" "$STEP2A_HEADING" "NON_TITLE_CONFLICTS" "origin 別の分岐を実行可能な形で書いている"
 contains "$SKILL" "set -o pipefail" "参照抽出パイプの上流失敗を握り潰さない"
 contains "$SKILL" "SUGGEST" "改題案を報告に含める"
 contains "$SKILL" "抵触なしとして扱わず停止する" "検査不成立を fail-closed で扱う"
@@ -537,7 +558,7 @@ contains "$SKILL" '"${MERGE_SUBJECT}" "${MERGE_BODY}"' "生成に 2b で検査�
 # 見ているのは「報告へ貼るのは生成物であって書き写しではない」という契約で、
 # 生成の位置が変わってもその契約は変わらない。
 contains "$SKILL" "手順 7 の printf が出力した gh pr merge コマンドをそのまま貼る" "報告テンプレートが生成物を貼る形になっている"
-contains "$SKILL" '文字列を打ち直さずそのまま手順 7 へ持ち越す' "2b が検査した文字列が打ち直されずに生成側へ渡る"
+section_contains "$SKILL" "$STEP2B_HEADING" '文字列を打ち直さずそのまま手順 7 へ持ち越す' "2b が検査した文字列が打ち直されずに生成側へ渡る"
 contains "$SKILL" "書き写さない" "報告の merge コマンドを書き写させない"
 contains "$SKILL" "gh issue view 46 --json state" "マージ直後の read-back を手順として残す"
 contains "$SKILL" "read-back は検査を追加しても省略しない" "検査追加を理由に実測を省かせない"

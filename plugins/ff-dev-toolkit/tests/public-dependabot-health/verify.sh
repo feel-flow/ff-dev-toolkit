@@ -32,6 +32,8 @@
 #
 # gh は DEPENDABOT_HEALTH_GH のスタブへ差し替えるため、本 suite はネットワークに
 # 触れない。
+#
+# run-all-required: no — SSOT リポジトリ専用の検知スクリプト / hook が対象で、それらを持たない checkout での skip は正当な適用外
 
 set -euo pipefail
 
