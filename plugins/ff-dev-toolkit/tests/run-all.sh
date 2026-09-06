@@ -26,6 +26,8 @@
 #     check_suite_registration 直前のコメント「必須名簿の逆向き導出」を参照。
 #   - 終了コード: 失敗 or 未実行が 1 件でもあれば 1、それ以外は 0。ただし passed が
 #     0 で skipped だけの場合も 1（検証が 1 件も成立していない状態を緑にしない）
+#     起動ガード（後述の dirty tree 検査など）で suite を 1 件も実行せずに終わる回も 1
+#     を返す（サマリー行は出ない。「非 0 = 失敗」だけを見て緑と誤読しないこと）
 #
 # 引数に suite のパスを渡すと、既定の一覧ではなくその一覧だけを実行する。
 # tests/run-all/verify.sh が疑似 suite を渡して本ランナー自身の挙動を検証するための
@@ -116,6 +118,23 @@
 # 読めるようにするため。rc を残さず子が消えた場合は pass にも fail にも倒さず未実行
 # として数える。spool の後片付けに EXIT トラップは置かない（理由は該当箇所のコメント。
 # 終了コードの正しさを一時ディレクトリの残骸より優先する）。
+#
+# ── 起動ガード: dirty tree では既定一覧を走らせない ──────────────────────────
+# 引数なしの既定一覧は、作業ツリーに未コミットの変更（未追跡ファイルを含む）があると
+# suite を 1 つも実行せずに非 0 で終わる。汚れた木の実行結果は特定のコミットに対する
+# 実測ではなく、鮮度記録が `DIRTY=yes` になってマージ直前の照合が「判定不能」に落ちる
+# ため、数分〜十数分をかけた実行がまるごと証拠にならないからである。
+#
+#   オプトアウト: FF_RUN_ALL_ALLOW_DIRTY=1（値が 1 のときだけ有効。`0` と空値は quiet で
+#                 無効、それ以外の非空値は 1 行警告のうえガード有効のまま続行する）。
+#                 記録は従来どおり `DIRTY=yes` で書かれる = 証拠にはならない。汚れの
+#                 確認自体ができずに停止する回（下記）も同じ変数で解除する
+#
+# 汚れているかを確認できない場合（git が無い / リポジトリの外）も clean と断定せずに
+# 停止する（fail-closed）。判定は記録側 scripts/record-gate-head.sh と同じ述語
+# （`git status --porcelain` の stdout が非空）で、ずれると「ガードは通ったのに
+# DIRTY=yes」が起きる。明示引数の実行と検査専用モード（宣言ダンプ・登録照合のみ）は
+# 対象外。詳細は docs/04-quality/TESTING.md。
 #
 # Keep this read-only friendly: do not create temporary files and avoid here-doc / here-string.
 
@@ -355,6 +374,11 @@ else
     # Issue #771）。宣言マーカーと Issue 参照の共起判定・no-followup 抜け道・
     # --body-file / heredoc 経由・既知の限界の素通しを stdin JSON fixture で固定する。
     "$SCRIPT_DIR/guard-pr-followup/verify.sh"
+    # PreToolUse（Bash）の background cwd ガード（hooks/guard-background-cwd.sh）。
+    # モノレポ判定・background 判定・先頭コマンドの絶対 cd 判定の 3 条件と、警告が
+    # ブロックでない（systemMessage のみ）ことを stdin JSON fixture で固定する。
+    # 絶対化イディオム（コマンド置換・変数展開）を誤警告しない線引きも併せて見る。
+    "$SCRIPT_DIR/guard-background-cwd/verify.sh"
     # squash 件名の closing keyword が Refs 運用の Issue を閉じる経路のガード。
     # 検査ロジック（scripts/check-closing-keywords.sh）の振る舞いと、SKILL.md /
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド
@@ -366,6 +390,12 @@ else
     # SKILL.md から引用関数を抽出して LC_ALL=C で round-trip を実測する。
     # 同じ SKILL.md の同じ窓（マージ直前）を守るので closing-keyword-guard の隣に置く。
     "$SCRIPT_DIR/close-issue-shell-quote/verify.sh"
+    # PR トリガーの CI を持たない repo（本リポジトリを含む）で checks を待たず
+    # ローカル全件ゲート + 鮮度照合をマージ根拠にする分岐（OBS-070 Count 3 昇格）。
+    # close-issue/SKILL.md 手順 7 と git-workflow.md マージ節の 2 文言を節スコープで
+    # 固定する。同じ「マージ直前の窓」を守る契約なので close-issue-shell-quote の
+    # 隣に置く。外部コマンド・一時領域不要。
+    "$SCRIPT_DIR/no-checks-merge-basis-contract/verify.sh"
     # マージ直前の鮮度ゲート（Issue #880）: 「リモート先端 == ゲート実測対象」の照合と、
     # 記録側（scripts/record-gate-head.sh）・本ランナーの配線・SKILL / ワークフロー文書の
     # 文言が drift していないこと。一時領域と git を要するが、closing-keyword-guard と
@@ -1253,6 +1283,72 @@ if [[ "${FF_RUN_ALL_CHECK_REGISTRATION:-0}" == "1" ]]; then
   fi
   check_suite_registration
   exit $?
+fi
+
+# ── 作業ツリーの汚れで既定一覧の起動を止める（fail-closed）───────────────────
+# 既定一覧の実行は「このコミットを実測した」という記録（scripts/record-gate-head.sh）を
+# 残すためのゲートである。未コミットの編集が残った木で回した結果は**どのコミットに対する
+# 実測でもない**ので、記録は `DIRTY=yes` で書かれ、マージ直前の鮮度照合は「判定不能」に
+# なる。つまり数分〜十数分かけた実行がまるごと証拠にならない。記録側は実行の**後**に
+# しか汚れを知らせないため、無駄が確定してから分かる — その無駄を起動時点で止める。
+#
+# 散文の規定（docs-template の git-workflow「重い検証ゲートは fix commit へ束ねてから
+# 1 回だけ回す」「新規ファイルを追加した回は commit してからゲートを回す」）は既に在るが、
+# 発動しない規定は無い規定と同じで、規定の追加後も同型の再発が観測台帳に積まれ続けた。
+#
+# **判定は記録側と同じ述語で行う**（`git status --porcelain` の stdout が非空 = 汚れ。
+# 未追跡ファイルも数える）。ガードと記録で述語がずれると「ガードは通ったのに DIRTY=yes」
+# という、いちばん避けたい形が残る。stderr を畳み込まないのも記録側と同じ理由で、
+# clean な木でも git が警告を出す環境（submodule の rmdir 警告など。いずれも exit 0）を
+# 汚れと誤診断させない。
+#
+# 対象は**引数なしの既定一覧だけ**。明示引数の実行は元から `partial` として記録されて
+# 全件緑へ昇格しないうえ、名指しの部分実行はレビュー対応中の正当な用途である
+# （tests/run-all/verify.sh が疑似 suite を渡す口もここに含まれる）。
+#
+# 置き場所は「suite を 1 つも実行せず、記録も書かない」ことが構造的に成り立つ位置 —
+# 登録照合より前で、かつ suite を走らせない検査専用モード（宣言ダンプ・登録照合のみ）の
+# 早期 exit より後。検査専用モードは実行も記録もしないので、汚れた木で止める理由が無い。
+# `FF_GATE_RECORD=0`（記録を止める指定。後述）の回にもこのガードは掛ける — 記録の
+# 有無に関わらず、汚れた木での全件実行はレビュー規定違反で証拠にならない。記録を
+# 捨てる試し実行は下の `FF_RUN_ALL_ALLOW_DIRTY=1` を明示すること。
+ALLOW_DIRTY=0
+case "${FF_RUN_ALL_ALLOW_DIRTY:-}" in
+  1) ALLOW_DIRTY=1 ;;
+  ""|0) ;;
+  *)
+    echo "⚠️  FF_RUN_ALL_ALLOW_DIRTY=\"${FF_RUN_ALL_ALLOW_DIRTY}\" は解釈できない値です（オプトアウトになるのは 1 のときだけ）。fail-closed 側のガード有効で続行します" >&2
+    ;;
+esac
+
+if [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$ALLOW_DIRTY" != "1" ]]; then
+  # 汚れの判定は**このランナーが在るリポジトリ**へ掛ける（記録側の基準と同じ。呼び出し元の
+  # cwd を基準にすると、別リポジトリから起動した回に無関係な木の状態で自分の実行を止める）。
+  DIRTY_RC=0
+  DIRTY_OUT="$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null)" || DIRTY_RC=$?
+  if [[ "$DIRTY_RC" -ne 0 ]]; then
+    # 失敗した回だけ理由を取りにもう一度呼ぶ（成功経路に余計な実行を足さない）。
+    DIRTY_ERR="$(git -C "$SCRIPT_DIR" status --porcelain 2>&1 >/dev/null || true)"
+    echo "✗ 作業ツリーが clean かどうかを確認できません（git が無い、またはリポジトリの外）" >&2
+    [[ -z "$DIRTY_ERR" ]] || printf '%s\n' "$DIRTY_ERR" | sed 's/^/    /' >&2
+    echo "  確認できない木での実行は、鮮度記録が何を実測したのかを言えません。clean と断定せずに停止します。" >&2
+    echo "  意図した実行なら FF_RUN_ALL_ALLOW_DIRTY=1 を付けて再実行してください（記録は判定不能になります）。" >&2
+    exit 1
+  fi
+  if [[ -n "$DIRTY_OUT" ]]; then
+    echo "✗ 未コミットの変更がある作業ツリーでは既定一覧のゲートを実行しません（suite は 1 つも実行していません）" >&2
+    # 一覧は先頭 20 行で打ち切る。数百件の未追跡ファイルで案内文が流れると、
+    # 「なぜ止まったか」より「何が汚れているか」の羅列だけが残る。
+    printf '%s\n' "$DIRTY_OUT" | sed -n '1,20p' | sed 's/^/    /' >&2
+    DIRTY_N="$(printf '%s\n' "$DIRTY_OUT" | sed -n '$=')"
+    if [[ "${DIRTY_N:-0}" -gt 20 ]]; then
+      echo "    … 他 $(( DIRTY_N - 20 )) 件" >&2
+    fi
+    echo "  汚れた木で測った結果はどのコミットに対する実測でもなく、鮮度記録は DIRTY=yes で書かれます（マージ直前の照合は「判定不能」）。" >&2
+    echo "  変更をコミットしてから再実行してください。" >&2
+    echo "  記録を捨ててよい試し実行なら FF_RUN_ALL_ALLOW_DIRTY=1 を付けて再実行できます。" >&2
+    exit 1
+  fi
 fi
 
 # 既定一覧で走らせるときだけ照合する（明示引数の実行は部分実行が正当な用途）。

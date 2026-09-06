@@ -321,15 +321,7 @@ fi
 # reasoning effort はモデルやプロファイルを作らず単発指定できる。Codex が受ける
 # 設定 enum を adapter 側でも検証し、typo を base config への黙った fallback に
 # しない。profile との併用は許可し、後段の -c が profile の値を明示上書きする。
-if [[ "${MULTI_AGENT_CODEX_REASONING_EFFORT+x}" == "x" ]]; then
-  case "${MULTI_AGENT_CODEX_REASONING_EFFORT:-}" in
-    none|minimal|low|medium|high|xhigh|max|ultra) ;;
-    *)
-      fail_orchestrator_error "$perspective_name" \
-        "MULTI_AGENT_CODEX_REASONING_EFFORT=${MULTI_AGENT_CODEX_REASONING_EFFORT:-} は不正です。none / minimal / low / medium / high / xhigh / max / ultra のいずれかを指定してください。"
-      ;;
-  esac
-fi
+validate_effort_env codex-cli || fail_orchestrator_error "$perspective_name" "invalid Codex effort"
 
 # codex は**存在しないプロファイル名を黙って無視し、base config のまま完走する**
 # （0.144.5 で実測）。**版数は 0.144.5 のまま（意図）。** 「完走する」の確認は
@@ -358,13 +350,7 @@ if [[ -n "${MULTI_AGENT_CODEX_REASONING_EFFORT:-}" ]]; then
   MODEL_ARGS+=(-c "model_reasoning_effort=${MULTI_AGENT_CODEX_REASONING_EFFORT}")
 fi
 echo_model_args
-if [[ -n "${MULTI_AGENT_CODEX_REASONING_EFFORT:-}" ]]; then
-  if [[ -n "${MULTI_AGENT_CODEX_PROFILE:-}" ]]; then
-    echo "   Reasoning effort: ${MULTI_AGENT_CODEX_REASONING_EFFORT} (explicit -c override; profile value is overridden)" >&2
-  else
-    echo "   Reasoning effort: ${MULTI_AGENT_CODEX_REASONING_EFFORT} (explicit -c override)" >&2
-  fi
-fi
+echo_effort_setting codex-cli
 
 # プロンプトは argv ではなく stdin で渡す（Issue #712: argv 渡しは Windows の
 # CreateProcess 上限 ~32KB で exit 126 になる）。`codex exec -` は PROMPT を

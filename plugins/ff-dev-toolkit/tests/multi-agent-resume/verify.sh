@@ -268,6 +268,20 @@ else
 fi
 
 echo ""
+# Claude effort belongs to resume identity, just like model/profile.
+cp "$STUB/codex" "$STUB/claude"
+for effort in medium medium high; do
+  before="$(count_invocations)"
+  if ( cd "$REPO" && run_isolated PATH="$STUB:$PATH" MULTI_AGENT_CLAUDE_EFFORT="$effort" \
+    bash "$MULTI_AGENT" --task review --cli claude-code --perspective code-review --base develop \
+    --config "$CONFIG_FILE" --output-dir "$TMP/claude-results" --resume --sequential ); then
+    after="$(count_invocations)"
+    if [[ "${previous_effort:-}" == "$effort" ]]; then expected="$before"; else expected=$((before + 1)); fi
+    if [[ "$after" -eq "$expected" ]]; then ok "Claude effort $effort: resume invocation count"; else bad "Claude effort $effort: stale reuse or unnecessary execution"; fi
+  else bad "Claude effort resume failed"; fi
+  previous_effort="$effort"
+done
+
 echo "== 結果 =="
 echo "PASS: $PASS"
 echo "FAIL: $FAIL"

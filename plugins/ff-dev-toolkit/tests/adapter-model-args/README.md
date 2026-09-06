@@ -88,3 +88,5 @@ stub は各引数を `<arg>` で囲んで記録する。
 ```bash
 bash plugins/ff-dev-toolkit/tests/adapter-model-args/verify.sh
 ```
+
+Claude effort は全5値×3タスクの argv、空文字・不正値の起動前拒否、継承表示と実 orchestrator の dry-run を検査する。resume の同一値再利用・変更時再実行は `multi-agent-resume` が実 CLI stub の起動数で検査する。

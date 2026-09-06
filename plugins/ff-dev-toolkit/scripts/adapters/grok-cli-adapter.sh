@@ -18,6 +18,17 @@
 #                             this nor --staging-dir is rejected (a dropped path must not
 #                             silently degrade into inline mode)
 #
+# Plan-time probe (no perspective / output file):
+#   ./grok-cli-adapter.sh --probe-sandbox [task-type]
+#     Reports whether this environment can apply the sandbox profile this adapter
+#     would request for <task-type> (default: review). Exit 3 = the sandbox this
+#     adapter asks for will not be in effect here; exit 0 = nothing was determined.
+#     The probe does NOT take --inline-output: it measures the profile for the
+#     task-type the orchestrator passes, which is what the plan is about (for
+#     implement, `workspace`). --inline-output would make the real run ask for
+#     `read-only` instead; the probe does not model that, and no option is added
+#     for it — the plan does not know that flag either. See run_sandbox_probe.
+#
 # Requires: grok (npm i -g @xai-official/grok)
 # Cost tier: Flat-rate (subscription)
 # ────────────────────────────────────────────────────────────
@@ -40,18 +51,29 @@ fi
 
 # ── Parse Arguments ──
 
-parse_adapter_args "$@"
+# --probe-sandbox はタスクを走らせない別入口なので、観点ファイルも出力先も取らない。
+# parse_adapter_args は両方を必須にしている（無ければ usage で rc=1）ため、この分岐は
+# パーサーより前に置く。プロンプト構築も行わない — probe が見るのは
+# 「この環境でサンドボックスを適用できるか」だけで、diff も観点も要らない。
+PROBE_SANDBOX="false"
+if [[ "${1:-}" == "--probe-sandbox" ]]; then
+  PROBE_SANDBOX="true"
+  TASK_TYPE="${2:-review}"
+  INLINE_OUTPUT="false"
+else
+  parse_adapter_args "$@"
 
-# perspective_name は build_prompt 失敗時の fail_orchestrator_error にも要る。
-# build_prompt を mktemp ガードより前に素で呼ぶと set -e が bare exit し、
-# INCOMPLETE 成果物が残らない（Issue #267）。
-perspective_name="$(basename "$PERSPECTIVE_FILE" .md)"
+  # perspective_name は build_prompt 失敗時の fail_orchestrator_error にも要る。
+  # build_prompt を mktemp ガードより前に素で呼ぶと set -e が bare exit し、
+  # INCOMPLETE 成果物が残らない（プロンプト構築の失敗を無言の欠落にしないための順序）。
+  perspective_name="$(basename "$PERSPECTIVE_FILE" .md)"
 
-# ── Build Prompt ──
+  # ── Build Prompt ──
 
-if ! prompt="$(build_prompt "$PERSPECTIVE_FILE" "$BASE_BRANCH" "$CHANGED_FILES")"; then
-  fail_orchestrator_error "$perspective_name" \
-    "cannot build the ${TASK_TYPE:-review} prompt (perspective missing, empty diff, or load failure)."
+  if ! prompt="$(build_prompt "$PERSPECTIVE_FILE" "$BASE_BRANCH" "$CHANGED_FILES")"; then
+    fail_orchestrator_error "$perspective_name" \
+      "cannot build the ${TASK_TYPE:-review} prompt (perspective missing, empty diff, or load failure)."
+  fi
 fi
 
 # ── Task-type specific sandbox ──
@@ -77,13 +99,17 @@ fi
 #
 # Provenance is stale and cannot be refreshed for free. The table above was
 # measured on grok 0.2.118; a 1.0.5 install was observed on another machine
-# (2026-08-26). Unlike codex
-# — which ships `codex sandbox`, a subcommand that runs an arbitrary command under
-# the same sandbox without invoking a model — grok has no offline probe
-# (`grok --help` lists no `sandbox` subcommand), and its positive confirmation
-# path is the `ProfileApplied` record that only a real, billed agent run writes.
-# So the WRITE rows above are NOT re-measured beyond 0.2.118, and this comment
-# does not claim they are.
+# (2026-08-26). Unlike codex — which ships `codex sandbox`, a subcommand that runs
+# an arbitrary command under the same sandbox without invoking a model — grok has
+# no way to exercise the WRITE rows offline: proving that a write is blocked needs
+# an agent that attempts one, and that is a billed run. So the WRITE rows above are
+# NOT re-measured beyond 0.2.118, and this comment does not claim they are.
+#
+# What IS available offline is narrower and is used by run_sandbox_probe below:
+# whether the profile can be **applied at all** in this environment. That question
+# is decided at startup, before any model call, so a non-agent subcommand answers
+# it for free. Do not read the probe as reviving the write rows — it says nothing
+# about what the applied profile then blocks.
 #
 # Network boundary (Issue #897, measured 2026-09-01 on grok 0.2.118, macOS
 # seatbelt, billed runs — commands and results in
@@ -146,6 +172,123 @@ get_sandbox_profile() {
     *)         echo "read-only" ;;
   esac
 }
+
+# ── Sandbox applicability probe（--probe-sandbox） ──
+#
+# 潰す事故: **プランには載るのに一度も走らない CLI**。サンドボックスを適用できない
+# 環境では grok はモデルを呼ぶ前に起動を拒否する（status 1、stdout 空）。実行時の
+# 検出は既にあるが、それが分かるのはタスクを 1 つ丸ごと失ったあとで、dry-run は
+# 毎回「載る」としか言わない。起動前に決まっている失敗は起動前に言う。
+#
+# 課金しない probe が成立する理由（本実装の要点）。サンドボックスの適用は起動時に
+# 済み、失敗すればそこで拒否される — つまり**エージェントを走らせないサブコマンド**
+# でも同じ適用経路を踏む。実測（grok 0.2.118 / macOS seatbelt、2026-09-06）:
+#   grok --sandbox read-only inspect  → rc=0。sandbox-events.jsonl へ
+#                                       ProfileApplied / enforced:true が 1 行増える。
+#                                       モデル呼び出し・ネットワーク往復は無し
+#   grok --sandbox workspace inspect  → rc=0（同上）
+#   grok --sandbox <適用できない値> inspect
+#                                     → rc=1、stderr に
+#                                       "warning: sandbox could not be applied: ..." と
+#                                       "... refusing to start." — 観測台帳が記録した
+#                                       実環境の失敗（runtime-socket の deny path が
+#                                       symlink）と同じ形
+# `inspect` を選ぶのは、設定探索を表示するだけでローカル完結だから。`models` は
+# 同じくサンドボックスを適用するが認証済みアカウントへ問い合わせるので使わない。
+# **`inspect` の存在は grok 0.2.118 で実測したもの**で、ベンダーの互換保証ではない。
+# 将来のバージョンで消える・改名されると probe は「目印が出ない」経路へ落ちて
+# fail-open で黙る（= 警告が消えるだけで、赤くはならない）。probe が常に無言に
+# なったらまずこのサブコマンドの現存を疑うこと。
+#
+# **副作用**: probe も本物の起動なので、適用に成功したときは
+# ${GROK_HOME:-~/.grok}/sandbox-events.jsonl へ ProfileApplied を 1 行足す。
+# GROK_HOME を一時領域へ逃がして避けることはしない — 逃がすと ~/.grok/sandbox.toml
+# の探索先まで変わり、**本番とは別の条件**を測ることになるため。この追記が下の
+# ProfileApplied ゲートに与える影響は、そのゲート側のコメント（残る限界）に書く。
+#
+# 判定は**片側だけ**。拒否を確定できたときにだけ非 0 を返し、それ以外は 0 を返す
+# （= 呼び出し側は黙る）。「適用できる」と断定はしない — probe が rc=0 で返っても、
+# 本番の実行が別の理由で拒否される可能性は消えないし、実際にサンドボックスが効いた
+# かどうかの肯定確認は下の ProfileApplied ゲートが実行のたびに取り直す。誤った断定
+# （「この環境では動く」）は、動かなかったときに読み手を無関係な原因へ送る。
+#
+# 認証・残高は probe の対象外。オーケストレータ側が dispatch 前の preflight probe を
+# 採らなかった判断（classify_cli_failure_cause のヘッダー）は生きている — あちらの
+# 理由は「残高・認証は課金される API 呼び出しをしないと分からない」で、ここで見るのは
+# 環境固有・決定的・起動前に確定する別種の性質なので、その判断とは衝突しない。
+readonly SANDBOX_PROBE_REFUSED_STATUS=3
+# probe はローカル完結なので長い猶予は要らない。刺さったまま dry-run を止めない
+# ための上限で、公開つまみにはしない（延ばして直る種類の失敗ではない）。
+readonly SANDBOX_PROBE_TIMEOUT=30
+
+# 目印は **stderr の行頭**にアンカーして見る。stdout を混ぜた部分一致で拾うと、
+# `inspect` が設定ダンプとして同じ語を素通しで出しただけ・別のエラーが文中で
+# 引用しただけで「拒否」と読み、存在しない環境問題を毎回警告することになる。
+#
+# 区別する形は 2 つ:
+#   REFUSED — 起動を拒否する側。warning 行と error 行が対で出て、rc も非 0 になる
+#             （実測 rc=1）。rc≠0 と目印の両方が揃ったときだけ拒否と読む
+#   UNSANDBOXED — サンドボックス**無しで続行する**側。こちらは rc=0 で走りうるので
+#             rc は条件にしない。走ってもレビュー結果は下の ProfileApplied ゲートが
+#             refuse するので、プラン時点で言うべきことは同じ（ただし理由が違う）
+readonly SANDBOX_MARKER_REFUSED_WARNING='^warning: sandbox could not be applied'
+readonly SANDBOX_MARKER_REFUSED_ERROR='^error: could not apply the .* sandbox profile'
+readonly SANDBOX_MARKER_UNSANDBOXED='^Sandbox could not be applied, continuing without sandbox'
+
+# 出力契約: 拒否を確定できたときだけ stdout に 2 行を書き、
+# SANDBOX_PROBE_REFUSED_STATUS を返す。
+#   1 行目 = 種別（refused-to-start / unsandboxed-start）— 呼び出し側の帰結文の出し分け用
+#   2 行目 = CLI 自身が出した理由の行（そのまま）
+# それ以外（rc=0 / timeout / 想定外の rc / 目印なし）は無出力で rc=0（fail-open）。
+run_sandbox_probe() { # $1: profile
+  local profile="$1" stderr_file="" probe_stdout="" probe_rc=0 marker=""
+  if ! stderr_file="$(mktemp)"; then
+    # probe の足回りすら用意できない環境では何も確定できない。fail-open。
+    return 0
+  fi
+  # 起動形は他のアダプタ呼び出しと同じ「コマンド置換で受ける」形に揃える
+  # （run_with_timeout はこの形を前提に stdin の EOF を保証している）。判定に
+  # 使うのは stderr だけなので、stdout はファイルへ分けずに置換で捨てる。
+  probe_stdout="$(run_with_timeout "$SANDBOX_PROBE_TIMEOUT" \
+    "$CLI_COMMAND" --sandbox "$profile" inspect 2>"$stderr_file")" || probe_rc=$?
+  : "${probe_stdout:-}"
+
+  # timeout は「拒否」ではない。刺さった probe を環境の欠陥として警告すると、
+  # 一時的な負荷が恒久的な環境問題として表示され続ける。
+  if [[ "$probe_rc" -eq "$TIMEOUT_EXIT_CODE" ]]; then
+    rm -f "$stderr_file"
+    return 0
+  fi
+
+  marker="$(grep -m1 -E "$SANDBOX_MARKER_UNSANDBOXED" "$stderr_file" || true)"
+  if [[ -n "$marker" ]]; then
+    printf 'unsandboxed-start\n%s\n' "$marker"
+    rm -f "$stderr_file"
+    return "$SANDBOX_PROBE_REFUSED_STATUS"
+  fi
+
+  if [[ "$probe_rc" -ne 0 ]]; then
+    marker="$(grep -m1 -E "$SANDBOX_MARKER_REFUSED_WARNING" "$stderr_file" || true)"
+    if [[ -z "$marker" ]]; then
+      marker="$(grep -m1 -E "$SANDBOX_MARKER_REFUSED_ERROR" "$stderr_file" || true)"
+    fi
+    if [[ -n "$marker" ]]; then
+      printf 'refused-to-start\n%s\n' "$marker"
+      rm -f "$stderr_file"
+      return "$SANDBOX_PROBE_REFUSED_STATUS"
+    fi
+  fi
+
+  # 想定外の rc（未ログイン・サブコマンド消失・CLI 不在）は拒否と読まない。
+  rm -f "$stderr_file"
+  return 0
+}
+
+if [[ "$PROBE_SANDBOX" == "true" ]]; then
+  probe_rc=0
+  run_sandbox_probe "$(get_sandbox_profile)" || probe_rc=$?
+  exit "$probe_rc"
+fi
 
 # ── Execute Task ──
 
@@ -281,7 +424,15 @@ fi
 #
 # 残る限界: 同一ディレクトリ・同一プロファイルでの並行実行は相関しきれない。
 # オーケストレータはタスクごとに grok を 1 つしか計画しないので露出は小さいが、
-# ゼロではない。完全な相関には実行 ID かログ単位の排他が要る。
+# ゼロではない。完全な相関には実行 ID かログ単位の排他が要る（未実装）。
+#
+# **この限界には dry-run の sandbox probe も乗る。** probe（run_sandbox_probe）も
+# 本物の起動なので、成功時は同じ sandbox-events.jsonl へ ProfileApplied を 1 行足す。
+# 同一 worktree で dry-run と実行が並行すると、probe が書いた行がこちらの窓に入り、
+# プロファイルが違えば other_profile として**偽陰性**（実際には効いていたのに
+# 「確認できない」）になりうる。probe を GROK_HOME ごと一時領域へ逃がす回避は
+# 採らない — 逃がすと ~/.grok/sandbox.toml の探索先まで変わり、probe が本番とは
+# 別の条件を測ることになるため。解消も上と同じ実行 ID / ログ排他が要る。
 #
 # 判定は awk で「1 行が全条件を含む」を見る。正規表現で `.*` を挟んで繋ぐと JSON の
 # フィールド順に依存し、並びが変わっただけで確認が取れなくなる（実測: 実際の行は

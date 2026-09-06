@@ -1259,16 +1259,41 @@ if grep -Eq '^echo .*外部ネットワークを遮断しません.*>&2' "$ADAPT
 else
   bad "grok-cli: ネットワーク開放の通知行が消えた — 開放のまま黙って走る（Issue #897 の AC 破れ）"
 fi
-# 「dispatch 前」であることも固定する。通知が run_with_timeout（CLI 起動）より
-# 後ろへ動くと、課金・実行が始まった後の通知になり AC の意味を失う。
+# 「dispatch 前」であることも固定する。通知が**タスクの dispatch**（result を受ける
+# run_with_timeout）より後ろへ動くと、課金・実行が始まった後の通知になり AC の意味を失う。
+#
+# アンカーは最初の run_with_timeout ではなく `result=$(run_with_timeout` にする。
+# 同じアダプタには sandbox 適用可否の probe（モデルを呼ばない `grok --sandbox <profile>
+# inspect`）があり、そちらの run_with_timeout の方が先に現れる。probe はエージェントを
+# 走らせず課金もしないので、ネットワーク開放の通知はそこでは意味を持たない — 最初の
+# 一致を見ると、通知が本来の位置にあるのに赤になる。
 # grep の不一致（rc=1）が set -e / pipefail でここを途中死させないよう、
 # 失敗時は空へ倒して下の判定に届ける（空 = 赤、が正しい向き）。
 notice_line="$(grep -nE '^echo .*外部ネットワークを遮断しません' "$ADAPTERS_DIR/grok-cli-adapter.sh" | head -1 | cut -d: -f1)" || notice_line=""
-launch_line="$(grep -n 'run_with_timeout' "$ADAPTERS_DIR/grok-cli-adapter.sh" | head -1 | cut -d: -f1)" || launch_line=""
+launch_line="$(grep -n '^result=\$(run_with_timeout' "$ADAPTERS_DIR/grok-cli-adapter.sh" | head -1 | cut -d: -f1)" || launch_line=""
 if [ -n "$notice_line" ] && [ -n "$launch_line" ] && [ "$notice_line" -lt "$launch_line" ]; then
-  ok "grok-cli: 通知が CLI 起動（run_with_timeout）より前にある"
+  ok "grok-cli: 通知がタスク dispatch（result=\$(run_with_timeout）より前にある"
 else
-  bad "grok-cli: 通知が CLI 起動より前に無い（notice=${notice_line:-なし} / launch=${launch_line:-なし}）"
+  bad "grok-cli: 通知がタスク dispatch より前に無い（notice=${notice_line:-なし} / dispatch=${launch_line:-なし}）"
+fi
+
+
+# ── grok の sandbox 適用可否 probe（静的針） ──
+# プラン時の警告は orchestrator がアダプタの `--probe-sandbox` 入口を叩き、
+# 拒否時の終了ステータス 3 を読んで出している。入口が消えたり別のステータスへ
+# 変わったりすると、警告は**赤くならずに黙って消える**（呼び出し側は fail-open）。
+# 実挙動は multi-agent-plan の fixture 側で固定済みなので、ここでは
+# 「アダプタが契約の側を持ち続けている」ことだけを 2 本の針で押さえる。
+if grep -q '^  PROBE_SANDBOX="true"' "$ADAPTERS_DIR/grok-cli-adapter.sh" \
+  && grep -q '^if \[\[ "\${1:-}" == "--probe-sandbox" \]\]; then' "$ADAPTERS_DIR/grok-cli-adapter.sh"; then
+  ok "grok-cli: --probe-sandbox の入口がパーサーより前に残っている"
+else
+  bad "grok-cli: --probe-sandbox の入口が消えた — プラン時の sandbox 警告が黙って出なくなる"
+fi
+if grep -q '^readonly SANDBOX_PROBE_REFUSED_STATUS=3$' "$ADAPTERS_DIR/grok-cli-adapter.sh"; then
+  ok "grok-cli: probe の拒否ステータスが 3 のまま（orchestrator 側の判定値と一致）"
+else
+  bad "grok-cli: probe の拒否ステータスが 3 でない — 呼び出し側が拒否を読めず黙る"
 fi
 
 echo

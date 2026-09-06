@@ -13,6 +13,11 @@
 # Usage:
 #   bash scripts/multi-agent.sh --task <type> [options]
 #
+# Effort env (optional, unset = CLI settings):
+#   MULTI_AGENT_CLAUDE_EFFORT -> --effort (low/medium/high/xhigh/max)
+#   MULTI_AGENT_CODEX_REASONING_EFFORT -> -c model_reasoning_effort
+# Models and existing Codex profiles are unchanged; runtime values remain unverified.
+#
 # Options:
 #   --task <type>           review | explore | implement (default: review)
 #   --description <text>    Task description (required for explore/implement)
@@ -295,7 +300,7 @@ get_cli_cost_tier() {
 
 get_cli_model_env_vars() {
   case "$1" in
-    claude-code) echo "MULTI_AGENT_MODEL_CLAUDE_CODE" ;;
+    claude-code) echo "MULTI_AGENT_MODEL_CLAUDE_CODE MULTI_AGENT_CLAUDE_EFFORT" ;;
     codex-cli)   echo "MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CODEX_REASONING_EFFORT" ;;
     copilot-cli) echo "MULTI_AGENT_MODEL_COPILOT_CLI" ;;
     grok-cli)    echo "MULTI_AGENT_MODEL_GROK_CLI" ;;
@@ -315,6 +320,24 @@ get_cli_model_env_vars() {
 #   - どちらの制約も行全体コメントには適用しない。ただし**行末**コメントで裸の
 #     ALL_CLIS や `get_cli_foo()` に言及すると検出に引っかかるので、そこでは
 #     `$ALL_CLIS` と書くか括弧を外すこと
+
+# プラン時に「この環境でサンドボックスを適用できるか」を尋ねられるアダプタ。
+# 対応アダプタは `--probe-sandbox <task-type>` を受け、拒否を確定できたときだけ
+# SANDBOX_PROBE_REFUSED_STATUS を返す（それ以外は 0 = 黙る）。
+#
+# 名前で分岐するのは、これが CLI 固有の性質そのものだから — grok は起動時に
+# サンドボックスを適用してから走る唯一の CLI で、codex は sandbox サブコマンドを
+# 持つが起動拒否の形にはならず、claude-code / copilot-cli には --sandbox の概念が無い。
+# コスト帯のような横断属性へ畳めない。probe を持つアダプタが増えたらここへ足す。
+#
+# registry の境界（上の sentinel）の外に置く: この関数は固定値を返す case lookup では
+# なく述語で、静的解析側の制限文法に載らない。
+cli_sandbox_probe_supported() {
+  case "$1" in
+    grok-cli) return 0 ;;
+    *)        return 1 ;;
+  esac
+}
 
 perspective_excluded() {
   [[ -n "$EXCLUDE_PERSPECTIVES" ]] && list_contains "$EXCLUDE_PERSPECTIVES" "$1"
@@ -1714,7 +1737,79 @@ warn_if_stale_local_base() {
   return 0
 }
 
+# ── Sandbox applicability warning（プラン時 probe） ──
+#
+# 潰す事故: **プランには載るのに一度も走らない CLI**。grok はサンドボックスを
+# 適用できない環境でモデルを呼ぶ前に起動を拒否する（観測台帳の実測: macOS で
+# /var/run/docker.sock が symlink の環境。runtime-socket の deny path を解決できず
+# status 1）。実行時の検出（アダプタの refuse → 結果 INCOMPLETE）は既にあるが、
+# それが分かるのはタスクを丸ごと失ったあとで、dry-run は毎回「載る」としか言わない。
+# 「3 本のクロスモデル」のつもりが常に 2 本で走る、という形が見えないまま続く。
+#
+# 認証・残高を probe しないという方針（detect_available_clis のヘッダー、および
+# classify_cli_failure_cause の「なぜ preflight probe を採らなかったか」）は
+# **そのまま維持する**。あちらを退けた理由は「残高・認証は課金される API 呼び出しを
+# しないと分からない」で、ここで見るのは性質が違う:
+#   - 環境固有（このマシンでは毎回失敗する）
+#   - 決定的（同じ環境なら同じ答え）
+#   - モデルを呼ぶ前に確定する（= 課金されない手段で観測できる）
+# probe の実体はアダプタ側（grok-cli-adapter.sh の run_sandbox_probe）にあり、
+# 課金されないことの実測根拠もそこに書いてある。
+#
+# プランからは**外さない**。実行時の失敗を別モデルへ振り替えない方針（Runtime
+# fallback: none）と同じ理由で、走らせる対象を勝手に間引くと「頼んだ CLI が黙って
+# 消えた」形になる。表示を足すだけにして、外す判断は利用者へ残す。
+#
+# fail-open: probe が拒否を確定できなかった場合（probe 自体が失敗した・アダプタが
+# 無い・CLI が別の理由で非 0）は何も出さない。「この環境では動く」と断定はしない
+# ので、警告が出ないことは成功の保証ではない。
+readonly SANDBOX_PROBE_REFUSED_STATUS=3
+
+# 表示位置は**その CLI の項目の直下**（プラン一覧の後ろへまとめない）。CLI が 3 つ
+# 並ぶプランで末尾にまとめると、どの行の話かを読み手が数え直すことになる。呼び出し側
+# （show_plan のループ）は 1 CLI 分を出し終えた時点でこれを呼ぶ。
+warn_unappliable_sandbox() {
+  # dry-run のときだけ probe する。実行時は数秒後に本物の dispatch が同じことを
+  # 確かめるので、そこへ CLI プロセスをもう 1 つ足す価値が無い（起動回数を数えている
+  # 検査もある）。本スキルの手順は dry-run でプランを確認してから実行する形なので、
+  # 「起動前に分かる」という目的はこちらだけで満たせる。
+  [[ "$DRY_RUN" == "true" ]] || return 0
+  local cli="$1" adapter probe_out probe_rc kind reason
+  cli_sandbox_probe_supported "$cli" || return 0
+  adapter="$(get_cli_adapter "$cli")"
+  [[ -n "$adapter" && -f "$adapter" ]] || return 0
+  probe_rc=0
+  probe_out="$(bash "$adapter" --probe-sandbox "$TASK_TYPE" 2>/dev/null)" || probe_rc=$?
+  [[ "$probe_rc" -eq "$SANDBOX_PROBE_REFUSED_STATUS" ]] || return 0
+  # アダプタの出力契約: 1 行目 = 種別、2 行目 = CLI 自身が出した理由。
+  kind="$(printf '%s\n' "$probe_out" | sed -n '1p')"
+  reason="$(printf '%s\n' "$probe_out" | sed -n '2p')"
+  echo "     ⚠️  ${cli}: この環境では sandbox を適用できません（起動前に判明）。" >&2
+  if [[ -n "$reason" ]]; then
+    echo "         ${reason}" >&2
+  fi
+  # 帰結は種別で分ける。「起動を拒否する」と「sandbox 無しで起動する」は、利用者が
+  # 見るログの形も、疑うべき箇所も違う（後者は CLI が正常終了したように見える）。
+  if [[ "$kind" == "unsandboxed-start" ]]; then
+    echo "         CLI は sandbox 無しで起動するため、このアダプタが要求した保護が" >&2
+    echo "         効かないまま走ります。実行時のゲートがその結果を採用しないので、" >&2
+    echo "         プランには載っていても成果は得られず、INCOMPLETE として報告されます。" >&2
+  else
+    echo "         プランには載りますが CLI が起動を拒否するため未実行になり、" >&2
+    echo "         結果は INCOMPLETE として報告されます。" >&2
+  fi
+  echo "         プランからは外しません（実行時の失敗を別モデルへ振り替えない方針のため）。" >&2
+  echo "         この実行から外すなら、走らせたい CLI を --cli で明示してください。" >&2
+  echo "         検査対象は sandbox の適用可否だけです（認証・残高は probe しません）。" >&2
+  return 0
+}
+
 show_plan() {
+  local effort_cli
+  while IFS= read -r effort_cli; do
+    [[ -n "$effort_cli" ]] || continue
+    validate_effort_env "$effort_cli" || return 1
+  done < <(printf '%s\n' "$EXECUTION_PLAN" | cut -d: -f1 | sort -u)
   local emoji
   emoji="$(get_task_emoji "$TASK_TYPE")"
 
@@ -1757,13 +1852,21 @@ show_plan() {
       planned_cli_count=$((planned_cli_count + 1))
     fi
     if [[ "$cli" != "$current_cli" ]]; then
+      # 直前の CLI の項目を閉じる位置で、その CLI 宛の sandbox 警告を出す。
+      if [[ -n "$current_cli" ]]; then
+        warn_unappliable_sandbox "$current_cli"
+      fi
       current_cli="$cli"
       local tier
       tier="$(get_cli_cost_tier "$cli")"
       echo "   ${cli} [${tier}]:" >&2
+      echo_effort_setting "$cli"
     fi
     echo "     - ${persp}" >&2
   done <<< "$EXECUTION_PLAN"
+  if [[ -n "$current_cli" ]]; then
+    warn_unappliable_sandbox "$current_cli"
+  fi
 
   # 同一 CLI への観点集中の可視化（Issue #251）。minimize_cost の振替で、振替先の
   # CLI（cursor → gemini [free-tier] → issue #783 以降は grok [flat-rate]）に複数

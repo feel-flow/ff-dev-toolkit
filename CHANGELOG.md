@@ -20,6 +20,29 @@
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-09-06
+
+### 追加
+
+- multi-agent: `--dry-run` の実行プラン表示時に Grok CLI のサンドボックス適用可否を probe し、適用できない環境ではその CLI の行に「sandbox を適用できません」「プランに載っていても未実行になる」と CLI 自身が出した理由つきで表示するようにした。probe はモデルを呼ばないローカルサブコマンドで行うため課金されない。判定は片側で、拒否を確定できたときだけ警告し、確定できなければ黙る（警告が出ないことは実行成功の保証ではない）。検査対象はサンドボックスの適用可否だけで、認証・残高は従来どおり probe しない。警告が出た CLI も実行プランからは外さない
+- `tests/run-all.sh` に起動ガードを追加した。引数なしの既定一覧を未コミットの変更（未追跡ファイルを含む）がある作業ツリーで起動すると、suite を 1 つも実行せず、未コミットのパスと「コミットしてから再実行する」旨を stderr へ出して非 0 で終わる。ゲート実測の鮮度記録も作成・更新しない
+- 汚れているかを確認できない場合（`git` が無い、リポジトリの外）も clean と断定せずに停止する（fail-closed）。汚れの判定は記録側 `scripts/record-gate-head.sh` と同じ述語（`git status --porcelain` の stdout が非空）を使う
+- オプトアウトは `FF_RUN_ALL_ALLOW_DIRTY=1`。従来どおり実行されるが、鮮度記録は従来どおり `DIRTY=yes` で書かれる。対象は引数なしの既定一覧だけで、明示引数の実行と検査専用モード（宣言ダンプ・登録照合のみ）には掛からない
+- PreToolUse（Bash）に background 実行の cwd ガードを追加した。モノレポ（リポジトリ直下に packages/ がある、または子ディレクトリに package.json が 2 つ以上）で `run_in_background` が真の Bash を、先頭コマンドが絶対パスの `cd` でないまま起動しようとしたとき、`systemMessage` で「background の Bash はセッション cwd（worktree root）から始まる。パッケージ配下で実行するなら先頭で絶対パスの `cd` を書く」旨を警告する。
+- この警告は実行をブロックしない（exit 0）。`cd "$(git rev-parse --show-toplevel)"` のようにその場で絶対化するイディオムや変数展開は評価できないため無音側へ倒し、foreground・単一パッケージのリポジトリ・`run_in_background` を渡さないハーネス・git リポジトリ外・jq 不在・壊れた入力も無音で通す（fail-open）。opt-out は環境変数 `FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1`。
+- Claude の呼び出し単位の effort 指定と起動前検証、Claude/Codex の要求値・継承元の表示を追加。レビュー・調査・実装とネイティブ委譲に共通の作業別選択手順を整備。
+
+### 変更
+
+- `multi-implement` / `multi-explore` / `multi-review` の起動手順と Git Workflow の background 実行の規定に、background 完了を待つ場合は foreground の `sleep` や自作の待機ループで空回りせず Monitor（無ければ `until` ループの background bash）を armed してから停止し、完了通知で再開する旨を明記した
+- create-issue の工数見積もり手順で、AI 工数を「実装分」と「レビュー対応分」に分けて積み、レビュー対応分は直前にマージした同種 Issue の乖離実績で補正するよう明文化した（補正元が無い場合の既定値も併記）
+- レビュー往復は回数だけでなく作り直しうる中身を書き、読めない部分には不確実性の幅を理由付きで積む手順を追加した
+
+### ドキュメント
+
+- close-issue のマージ直前手順に、PR に登録された checks が無い場合は完了を待たずローカル全件ゲート + 鮮度照合をマージ根拠にする分岐を追加した
+- git-workflow のマージ手順に、`no checks reported` を CI 通過とみなさない旨と、待機とマージを 1 つのコマンドチェーンに繋がない旨を明記した
+
 ## [0.85.0] - 2026-09-06
 
 ### 変更

@@ -22,7 +22,19 @@ MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 # 「multi-agent.sh が見つかりません」が隠れる（既存の存在検査が事実上デッドコードになる）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 source "$PLUGIN_ROOT/tests/lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG" "$MULTI_AGENT"
+# 抽出源には**アダプタ実装も渡す**。この suite の dry-run は sandbox probe 経由で
+# grok アダプタを実際に起動する（アダプタは adapter-common.sh を source する）ので、
+# orchestrator だけを渡すと MULTI_AGENT_MODEL_GROK_CLI / FF_TIMEOUT_* がホストから
+# 素通りし、probe の起動条件が実行環境次第で変わる（lib ヘッダーの「保護されるのは
+# 渡した FILE... の中に現れる名前だけ」）。センチネルは抽出源ごとに 1 本ずつ:
+#   MULTI_AGENT_CONFIG          → multi-agent.sh
+#   MULTI_AGENT_MODEL_GROK_CLI  → grok-cli-adapter.sh
+#   FF_TIMEOUT_KILL_GRACE       → adapter-common.sh
+ADAPTERS_DIR="$PLUGIN_ROOT/scripts/adapters"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_GROK_CLI FF_TIMEOUT_KILL_GRACE" \
+  "$MULTI_AGENT" \
+  "$ADAPTERS_DIR/grok-cli-adapter.sh" \
+  "$ADAPTERS_DIR/adapter-common.sh"
 
 PASS=0
 FAIL=0
@@ -772,6 +784,191 @@ if ! grep -q "はローカル ref で" "$NOORIGIN_LOG"; then
 else
   bad "origin 不在なのに鮮度警告が出た"
 fi
+
+echo "== sandbox 適用不可のプラン時表示 =="
+# 潰す事故: **プランには載るのに一度も走らない CLI**。grok はサンドボックスを適用
+# できない環境でモデルを呼ぶ前に起動を拒否するため、dry-run が毎回 ✅ で載せていると
+# 「3 本のクロスモデル」のつもりが常に 2 本で走る。
+#
+# 拒否側は fixture で固定する。SSOT 環境では再現しない（この Mac の grok は同じ
+# コマンドで正常に起動する）ので、実 CLI に依存させると検査が環境次第で消える。
+# stderr 文言は観測台帳が記録した実環境のものをそのまま使う。
+SANDBOX_STUB="$TMP/sandbox-stub"
+SANDBOX_ARGV_LOG="$TMP/sandbox-argv.log"
+SANDBOX_STDIN_LOG="$TMP/sandbox-stdin.log"
+mkdir -p "$SANDBOX_STUB"
+for name in claude codex copilot; do
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 99' > "$SANDBOX_STUB/$name"
+  chmod +x "$SANDBOX_STUB/$name"
+done
+
+# probe が CLI に渡すものを固定する。probe は「起動できるか」だけを見る入口なので、
+# 観点もプロンプトも diff も渡ってはいけない — 渡っていれば dry-run が黙って
+# レビュー本文を外部プロセスへ流していることになる（課金も起こしうる）。
+# stub は argv と stdin を記録し、下でその 3 点を固定する。
+# `cat` は stdin が EOF でなければ返らないので、EOF の保証も同時に測っている
+# （返らなければ probe の timeout まで刺さり、この suite は赤くなる）。
+write_sandbox_stub() { # $1: stub 本体（記録の後に実行される部分）
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf 'printf "%%s\\n" "$*" >> "%s"\n' "$SANDBOX_ARGV_LOG"
+    printf 'cat >> "%s"\n' "$SANDBOX_STDIN_LOG"
+    printf '%s\n' "$1"
+  } > "$SANDBOX_STUB/grok"
+  chmod +x "$SANDBOX_STUB/grok"
+}
+
+REFUSE_STUB='echo "warning: sandbox could not be applied: runtime-socket deny resolution failed: could not resolve runtime-socket deny path /var/run/docker.sock: endpoint is a symlink" >&2
+echo "error: could not apply the '"'"'read-only'"'"' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing." >&2
+exit 1'
+write_sandbox_stub "$REFUSE_STUB"
+
+# diff に見分けのつく文字列を置く。probe の argv / stdin にこれが現れたら、
+# probe が「起動できるか」ではなくレビュー本体を渡していることになる。
+SANDBOX_SENTINEL="FFSANDBOXPROBESENTINEL"
+printf '%s\n' "$SANDBOX_SENTINEL" > "$REPO/probe-sentinel.txt"
+git -C "$REPO" add probe-sentinel.txt
+git -C "$REPO" commit -qm "probe sentinel"
+
+run_sandbox_plan() { # $1: 出力先
+  local output="$1"
+  shift
+  : > "$SANDBOX_ARGV_LOG"
+  : > "$SANDBOX_STDIN_LOG"
+  (
+    cd "$REPO"
+    run_isolated PATH="$SANDBOX_STUB:$PATH" bash "$MULTI_AGENT" \
+      --task review --mode cross-model --base develop --dry-run "$@"
+  ) >"$output" 2>&1
+}
+
+SANDBOX_LOG="$TMP/sandbox-refused.log"
+if run_sandbox_plan "$SANDBOX_LOG"; then
+  ok "sandbox 適用不可でも dry-run 自体は成功する"
+else
+  bad "sandbox 適用不可の dry-run が非 0 で終了した"
+  tail -5 "$SANDBOX_LOG" | sed 's/^/    | /' >&2
+fi
+
+if grep -q 'grok-cli: この環境では sandbox を適用できません' "$SANDBOX_LOG" \
+  && grep -q 'sandbox could not be applied: runtime-socket deny resolution failed' "$SANDBOX_LOG" \
+  && grep -q '未実行になり' "$SANDBOX_LOG"; then
+  ok "grok-cli の適用不可を CLI 名・CLI 自身の理由・「未実行になる」帰結つきで表示"
+else
+  bad "sandbox 適用不可の表示が不足（CLI 名／理由／未実行の帰結のいずれか）"
+  tail -20 "$SANDBOX_LOG" | sed 's/^/    | /' >&2
+fi
+
+# 表示位置は「CLI 一覧の後ろのブロック」ではなく**その CLI の行の直下**。
+# grok-cli の項目より前に警告が出ていたり、別 CLI の項目を挟んだ後ろに出ていたら
+# 「どの行の話か」が読み手に伝わらない。行番号で固定する。
+SANDBOX_CLI_LINE="$(grep -n 'grok-cli \[flat-rate\]:' "$SANDBOX_LOG" | head -1 | cut -d: -f1)" || SANDBOX_CLI_LINE=""
+SANDBOX_WARN_LINE="$(grep -n 'grok-cli: この環境では sandbox を適用できません' "$SANDBOX_LOG" | head -1 | cut -d: -f1)" || SANDBOX_WARN_LINE=""
+SANDBOX_NEXT_CLI_LINE="$(awk -v start="${SANDBOX_CLI_LINE:-0}" '
+  NR > start && /^   [a-z0-9-]+ \[[a-z-]+\]:/ { print NR; exit }
+' "$SANDBOX_LOG")" || SANDBOX_NEXT_CLI_LINE=""
+if [ -n "$SANDBOX_CLI_LINE" ] && [ -n "$SANDBOX_WARN_LINE" ] \
+  && [ "$SANDBOX_WARN_LINE" -gt "$SANDBOX_CLI_LINE" ] \
+  && { [ -z "$SANDBOX_NEXT_CLI_LINE" ] || [ "$SANDBOX_WARN_LINE" -lt "$SANDBOX_NEXT_CLI_LINE" ]; }; then
+  ok "警告は grok-cli の項目内（次の CLI 行より前）に出る"
+else
+  bad "警告が grok-cli の項目内に無い（cli=${SANDBOX_CLI_LINE:-なし} / warn=${SANDBOX_WARN_LINE:-なし} / next=${SANDBOX_NEXT_CLI_LINE:-なし}）"
+  sed 's/^/    | /' "$SANDBOX_LOG" >&2
+fi
+
+# プランからは外さない（実行時の失敗を別モデルへ振り替えない方針の維持）
+if grep -q 'grok-cli \[flat-rate\]:' "$SANDBOX_LOG"; then
+  ok "適用不可でも grok-cli は実行プランに残る（黙って間引かない）"
+else
+  bad "適用不可の grok-cli がプランから消えた"
+fi
+
+# probe が CLI に渡す argv は「--sandbox <profile> inspect」の 3 引数だけ
+if [ "$(cat "$SANDBOX_ARGV_LOG")" = "--sandbox read-only inspect" ]; then
+  ok "probe の argv は --sandbox read-only inspect の 3 引数だけ"
+else
+  bad "probe の argv が想定外: $(cat "$SANDBOX_ARGV_LOG")"
+fi
+
+# stdin は EOF（プロンプトを流し込まない）。cat が即終了して空ログになる。
+if [ ! -s "$SANDBOX_STDIN_LOG" ]; then
+  ok "probe の stdin は EOF（プロンプトを流さない）"
+else
+  bad "probe の stdin に入力が渡っている: $(head -c 200 "$SANDBOX_STDIN_LOG")"
+fi
+
+# 観点・diff の中身は argv にも stdin にも現れない
+if ! grep -q "$SANDBOX_SENTINEL" "$SANDBOX_ARGV_LOG" \
+  && ! grep -q "$SANDBOX_SENTINEL" "$SANDBOX_STDIN_LOG"; then
+  ok "diff / プロンプトの内容は probe の argv・stdin に現れない"
+else
+  bad "probe が diff / プロンプトの内容を CLI へ渡している"
+fi
+
+# 「sandbox 無しで続行する」側は rc=0 でも拒否として扱い、帰結の文言を分ける。
+# 起動拒否と違って CLI は正常終了したように見えるので、同じ文を出すと読み手を
+# 「CLI が落ちた」原因探しへ送ってしまう。
+write_sandbox_stub 'echo "Sandbox could not be applied, continuing without sandbox" >&2
+exit 0'
+SANDBOX_UNSANDBOXED_LOG="$TMP/sandbox-unsandboxed.log"
+if run_sandbox_plan "$SANDBOX_UNSANDBOXED_LOG" \
+  && grep -q 'grok-cli: この環境では sandbox を適用できません' "$SANDBOX_UNSANDBOXED_LOG" \
+  && grep -q 'Sandbox could not be applied, continuing without sandbox' "$SANDBOX_UNSANDBOXED_LOG" \
+  && grep -q 'sandbox 無しで起動するため' "$SANDBOX_UNSANDBOXED_LOG"; then
+  ok "rc=0 の「sandbox 無しで続行」も警告し、理由を起動拒否と分けて出す"
+else
+  bad "「sandbox 無しで続行」の扱いが期待と違う"
+  tail -20 "$SANDBOX_UNSANDBOXED_LOG" | sed 's/^/    | /' >&2
+fi
+
+# 適用できる環境では表示も挙動も変わらない
+write_sandbox_stub 'exit 0'
+SANDBOX_OK_LOG="$TMP/sandbox-ok.log"
+if run_sandbox_plan "$SANDBOX_OK_LOG" \
+  && ! grep -q 'sandbox を適用できません' "$SANDBOX_OK_LOG" \
+  && grep -q 'grok-cli \[flat-rate\]:' "$SANDBOX_OK_LOG"; then
+  ok "適用できる環境では警告を出さずプランも変わらない"
+else
+  bad "適用できる環境で表示または終了ステータスが変わった"
+  tail -20 "$SANDBOX_OK_LOG" | sed 's/^/    | /' >&2
+fi
+
+# fail-open の 4 形。probe が拒否を確定できない失敗で毎回警告すると、存在しない
+# 環境問題を恒常表示することになる（そして本物の警告が読み飛ばされる）。
+#   1) 拒否と無関係な非 0（未ログイン）
+#   2) 目印を**本文中に引用しただけ**の非 0 — 行頭アンカーの意味
+#   3) 想定外の rc（サブコマンド消失などの雑多な失敗）
+#   4) grok が PATH に無い（アダプタが preflight で rc=1 になる）
+sandbox_fail_open_case() { # $1: ケース名, $2: ログ名
+  local label="$1" log="$TMP/$2"
+  if run_sandbox_plan "$log" && ! grep -q 'sandbox を適用できません' "$log"; then
+    ok "fail-open: ${label}では警告を出さない"
+  else
+    bad "fail-open 破れ: ${label}で警告が出た（誤警告）"
+    tail -20 "$log" | sed 's/^/    | /' >&2
+  fi
+}
+
+write_sandbox_stub 'echo "error: not logged in" >&2
+exit 1'
+sandbox_fail_open_case "拒否と無関係な probe 失敗（未ログイン）" "sandbox-unknown.log"
+
+write_sandbox_stub 'echo "error: config parse failed (hint: a sandbox could not be applied message may follow)" >&2
+exit 1'
+sandbox_fail_open_case "目印を行中に引用しただけの失敗" "sandbox-quoted.log"
+
+write_sandbox_stub 'echo "error: unknown subcommand '"'"'inspect'"'"'" >&2
+exit 42'
+sandbox_fail_open_case "想定外の rc=42" "sandbox-rc42.log"
+
+# grok 不在: PATH から除いてアダプタの preflight を踏ませる
+rm -f "$SANDBOX_STUB/grok"
+sandbox_fail_open_case "grok が PATH に無い" "sandbox-missing.log"
+
+# timeout の seam は無い（見送り）。probe の上限 SANDBOX_PROBE_TIMEOUT は公開つまみに
+# しない方針で固定値なので、30 秒の実待ちなしに timeout 経路へ入れる入口が現状無い。
+# fail-open の実装（TIMEOUT_EXIT_CODE を拒否と読まない）はコード側のガードとして
+# 残し、検査は上の 4 形に留める。
 
 echo ""
 if [[ "$FAIL" -gt 0 ]]; then

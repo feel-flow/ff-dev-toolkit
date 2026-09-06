@@ -1052,8 +1052,14 @@ _fast_all=$((_fast_run + _fast_excl))
 
 # 複製木を引数なしで実行する。入れ子ガードと ALLOW_SKIP は常に落とす（外側から漏れるとモード行列の
 # 観測がその回だけ別物になる）。**モードは呼び出し側が env 引数で明示する。**
+#
+# 複製木は git リポジトリの外に在るので、dirty tree の起動ガードから見ると「汚れているか確認できない」
+# = fail-closed で停止する対象になる。ここで測りたいのはモード解決であってガードではないので明示的に
+# オプトアウトする（ガード自身の 4 ケースは case 39 が隔離した一時リポジトリで測る）。
 run_tree() {
-  if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP "$@" \
+  # 代入は "$@"（-u オプション列）の**後ろ**へ置く。env は最初の非オプション語より後を
+  # コマンド引数として扱うため、代入を先頭に置くと以降の -u が env へ届かない。
+  if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP "$@" FF_RUN_ALL_ALLOW_DIRTY=1 \
     bash "$_fast_fx/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
 }
 # 「全件が走った」「既定（高速モード）ぶんだけ走った」のサマリー行は 26-B 以降で繰り返し使う。
@@ -1662,6 +1668,138 @@ else
   printf '%s\n' "$_fu_out" | sed 's/^/    | /' >&2
 fi
 rm -rf "$_fu_fx"
+
+echo ""
+echo "== case 39: dirty tree では既定一覧を起動せず、鮮度記録も作らない（起動ガード）=="
+
+# ガードの対象は「引数なしの既定一覧」なので、疑似 suite を明示引数で渡す本 suite の通常経路では
+# 一度も踏まれない。既定一覧の形を作るために、case 26 / case 38 と同じ awk で SCRIPTS と
+# REQUIRED_SUITES を最小内容へ差し替えた複製ランナーを、**隔離した一時 git リポジトリ**の中へ置く
+# （汚れ判定はランナー自身が在るリポジトリへ掛かるため、本リポジトリの作業ツリーを汚さずに
+# dirty / clean の両方を作れる唯一の形）。記録器も同じ木へ写し、記録の中身まで観測する。
+if ! command -v git >/dev/null 2>&1; then
+  echo "  ○ skip: git が無いため dirty tree 起動ガードの実測をスキップ（case 39 の検査は 1 件も実行していません）"
+else
+_dg_fx="${TMPDIR:-/tmp}/ff-run-all-dirty-guard.$$"
+rm -rf "$_dg_fx"
+mkdir -p "$_dg_fx/repo/tests/dirty-guard-probe" "$_dg_fx/repo/tests/dirty-guard-required-probe" "$_dg_fx/repo/scripts"
+_dg_rec="$_dg_fx/gate-record"   # 記録先はリポジトリの外（記録の生成自体が木を汚さないように）
+cat > "$_dg_fx/repo/tests/dirty-guard-probe/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+echo "FIXTURE-DIRTY-GUARD-EXECUTED"
+exit 0
+PROBE
+# REQUIRED_SUITES を空配列にすると bash 3.2 の `${REQUIRED_SUITES[@]}` が set -u で unbound に
+# なるため、名簿には 1 件残す。載せる以上は「suite 全体の skip 経路を持つ」必要があるので、
+# case 26 と同じく**実行されない分岐**として材料だけ置く（実行時は skip せず pass する）。
+cat > "$_dg_fx/repo/tests/dirty-guard-required-probe/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+if false; then
+  echo "○ skip: 名簿掲載の材料（この分岐は実行されない）"
+  exit 0
+fi
+exit 0
+PROBE
+chmod +x "$_dg_fx/repo/tests/dirty-guard-probe/verify.sh" "$_dg_fx/repo/tests/dirty-guard-required-probe/verify.sh"
+awk '
+  /^  SCRIPTS=\($/ {
+    print
+    print "    \"$SCRIPT_DIR/dirty-guard-probe/verify.sh\""
+    print "    \"$SCRIPT_DIR/dirty-guard-required-probe/verify.sh\""
+    in_scripts = 1
+    next
+  }
+  in_scripts && /^  \)$/ { in_scripts = 0; print; next }
+  in_scripts { next }
+  /^REQUIRED_SUITES=\($/ {
+    print
+    print "  dirty-guard-required-probe"
+    in_required = 1
+    next
+  }
+  in_required && /^\)$/ { in_required = 0; print; next }
+  in_required { next }
+  { print }
+' "$RUNNER" > "$_dg_fx/repo/tests/run-all.sh"
+cp "$TESTS_DIR/../scripts/record-gate-head.sh" "$_dg_fx/repo/scripts/record-gate-head.sh"
+
+# 利用者のグローバル設定（署名・テンプレート）から独立させる。
+_dg_git() { git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -c init.defaultBranch=main "$@"; }
+_dg_setup_rc=0
+_dg_git -C "$_dg_fx/repo" init -q . >/dev/null 2>&1 || _dg_setup_rc=1
+_dg_git -C "$_dg_fx/repo" add -A >/dev/null 2>&1 || _dg_setup_rc=1
+_dg_git -C "$_dg_fx/repo" commit -qm "fixture" >/dev/null 2>&1 || _dg_setup_rc=1
+
+_dg_runner="$_dg_fx/repo/tests/run-all.sh"
+# 引数なしで複製ランナーを回す。モード変数と ALLOW_SKIP は常に落とす（外側から漏れるとその回だけ
+# 別モードになる）。オプトアウトの有無だけを呼び出し側が "$@" で与える。
+_dg_run() { # <env のオプション or 代入>...
+  if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP "$@" \
+    FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_dg_rec" bash "$_dg_runner" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+}
+
+if [ "$_dg_setup_rc" -ne 0 ]; then
+  bad "case 39: 一時 git リポジトリの fixture を作れない（ガードの実測ができていない）"
+else
+  # 39-A: clean tree ではガードが無音で、従来どおり既定一覧が走る。
+  rm -f "$_dg_rec"
+  _dg_run -u FF_RUN_ALL_ALLOW_DIRTY
+  expect_rc 0 "clean tree の引数なし実行は従来どおり rc=0"
+  expect_has '^FIXTURE-DIRTY-GUARD-EXECUTED$' "clean tree では suite が実際に走る"
+  expect_has "^suites: total=2 run=2 passed=2 failed=0 skipped=0 not-run=0$" "clean tree では従来どおりサマリーが出る"
+  expect_lacks '未コミットの変更がある作業ツリー' "clean tree ではガードが無音（誤検知しない）"
+  expect_lacks 'clean かどうかを確認できません' "clean tree では確認不能の分岐へ落ちない"
+
+  # 39-B: 未追跡ファイル 1 件だけで止まること。判定を `git diff` 系（未追跡を見ない）へ退行させると
+  # ここだけが赤くなる — 記録側 record-gate-head.sh は未追跡も汚れに数えるので、述語がずれると
+  # 「ガードは通ったのに DIRTY=yes」が残る。
+  rm -f "$_dg_rec"
+  : > "$_dg_fx/repo/tests/dirty-guard-probe/scratch.txt"
+  _dg_run -u FF_RUN_ALL_ALLOW_DIRTY
+  expect_rc nz "未コミットの変更がある木では非 0 で終わる"
+  expect_has '^✗ 未コミットの変更がある作業ツリーでは既定一覧のゲートを実行しません' "停止理由を出す"
+  expect_has 'dirty-guard-probe/scratch.txt' "未コミットのパスを名指しする（未追跡ファイルも汚れに数える）"
+  expect_has '変更をコミットしてから再実行してください' "コミットしてから再実行する旨を出す"
+  expect_has 'FF_RUN_ALL_ALLOW_DIRTY=1' "オプトアウトの名前を案内する"
+  expect_lacks '^FIXTURE-DIRTY-GUARD-EXECUTED$' "suite を 1 つも実行しない"
+  expect_lacks '^suites: total=' "サマリー行を出さない（実行が成立していない）"
+  if [ -e "$_dg_rec" ]; then
+    bad "停止した実行が鮮度記録を作っている（記録より手前で止まっていない）"
+  else
+    ok "停止した実行は鮮度記録を作成・更新しない"
+  fi
+
+  # 39-C: 明示のオプトアウトなら従来どおり実行され、記録は従来どおり DIRTY=yes で書かれる。
+  rm -f "$_dg_rec"
+  _dg_run FF_RUN_ALL_ALLOW_DIRTY=1
+  expect_rc 0 "オプトアウト付きなら dirty tree でも従来どおり rc=0"
+  expect_has '^FIXTURE-DIRTY-GUARD-EXECUTED$' "オプトアウト付きなら suite が走る"
+  expect_lacks '未コミットの変更がある作業ツリー' "オプトアウト付きではガードが停止しない"
+  if [ -f "$_dg_rec" ] && grep -qF 'DIRTY=yes' "$_dg_rec"; then
+    ok "オプトアウトの実行では鮮度記録が従来どおり DIRTY=yes で書かれる"
+  else
+    bad "オプトアウトの実行で DIRTY=yes の鮮度記録が書かれていない"
+  fi
+
+  # 39-D: 汚れているかを確認できない場合（リポジトリの外）は clean と断定せずに止める（fail-closed）。
+  rm -f "$_dg_rec"
+  mkdir -p "$_dg_fx/nogit"
+  cp -R "$_dg_fx/repo/tests" "$_dg_fx/nogit/tests"
+  cp -R "$_dg_fx/repo/scripts" "$_dg_fx/nogit/scripts"
+  _dg_runner="$_dg_fx/nogit/tests/run-all.sh"
+  _dg_run -u FF_RUN_ALL_ALLOW_DIRTY
+  expect_rc nz "汚れを確認できない木（リポジトリの外）では非 0 で終わる"
+  expect_has '^✗ 作業ツリーが clean かどうかを確認できません' "確認不能であることを明示する"
+  expect_lacks '^FIXTURE-DIRTY-GUARD-EXECUTED$' "確認不能の回も suite を 1 つも実行しない"
+  expect_lacks '^suites: total=' "確認不能の回はサマリー行を出さない"
+  if [ -e "$_dg_rec" ]; then
+    bad "確認不能で停止した実行が鮮度記録を作っている"
+  else
+    ok "確認不能で停止した実行は鮮度記録を作成・更新しない"
+  fi
+fi
+rm -rf "$_dg_fx"
+fi
 
 rm -f "$RUN_GATE_RECORD"
 

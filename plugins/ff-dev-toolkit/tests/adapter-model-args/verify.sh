@@ -303,6 +303,37 @@ expect_argv_has "grok-cli: MULTI_AGENT_MODEL_GROK_CLI が -m に届く" "<-m><so
 run_adapter grok-cli-adapter.sh "MULTI_AGENT_MODEL_GROK_CLI=model with spaces"
 expect_argv_has "grok-cli: 空白を含むモデル名が 1 引数に保たれる" "<-m><model with spaces>"
 
+# Claude effort: all task types, valid values, empty/invalid fail before launch.
+for effort in low medium high xhigh max; do
+  for task in review explore implement; do
+    RUN_TASK_TYPE="$task" run_adapter claude-code-adapter.sh MULTI_AGENT_CLAUDE_EFFORT="$effort"
+    expect_launched "Claude effort $effort / $task: launched"
+    expect_argv_has "Claude effort $effort / $task: argv" "<--effort><$effort>"
+    if grep -qF "Effort requested: $effort" "$WORK/stderr.log"; then ok "Claude effort requested log"; else bad "Claude effort log missing"; fi
+  done
+done
+for effort in '' invalid ultra 'medium high'; do
+  run_adapter claude-code-adapter.sh MULTI_AGENT_CLAUDE_EFFORT="$effort"
+  if [ "$RUN_RC" -ne 0 ] && [ ! -s "$WORK/argv.log" ]; then ok "Claude rejects '$effort' before launch"; else bad "Claude launched invalid effort '$effort'"; fi
+done
+run_adapter claude-code-adapter.sh
+expect_argv_lacks "Claude unset effort: no override" "<--effort>"
+if grep -qF '継承・実値未確認' "$WORK/stderr.log"; then ok "Claude unset: honest inheritance log"; else bad "Claude unset log"; fi
+
+# Real orchestrator dry-run uses the same validation/display, with no model call.
+for effort in medium ''; do
+  : > "$WORK/argv.log"
+  if run_isolated PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" MULTI_AGENT_CLAUDE_EFFORT="$effort" \
+    bash "$PLUGIN_ROOT/scripts/multi-agent.sh" --task explore --description fixture --cli claude-code \
+    --config "$PLUGIN_ROOT/scripts/agent-config.yaml" --output-dir "$WORK/plan" --dry-run > "$WORK/plan.log" 2>&1; then plan_rc=0; else plan_rc=$?; fi
+  if [ -n "$effort" ]; then
+    if [ "$plan_rc" -eq 0 ] && grep -qF 'Effort requested: medium' "$WORK/plan.log"; then ok "dry-run shows requested effort"; else bad "dry-run effort display"; cat "$WORK/plan.log"; fi
+  else
+    if [ "$plan_rc" -ne 0 ]; then ok "dry-run rejects empty effort"; else bad "dry-run accepts empty effort"; fi
+  fi
+  if [ ! -s "$WORK/argv.log" ]; then ok "dry-run never calls model"; else bad "dry-run called model"; fi
+done
+
 # ---- codex のプロファイル経路 -----------------------------------------------------
 mkdir -p "$WORK/codex"
 : > "$WORK/codex/review.config.toml"

@@ -1783,3 +1783,42 @@ parse_adapter_args() {
     return 1
   fi
 }
+
+# Effort is a requested CLI setting, not an observation of runtime reasoning.
+validate_effort_env() {
+  local cli="$1" value
+  case "$cli" in
+    claude-code)
+      [[ "${MULTI_AGENT_CLAUDE_EFFORT+x}" == x ]] || return 0
+      value="${MULTI_AGENT_CLAUDE_EFFORT}"
+      case "$value" in low|medium|high|xhigh|max) return 0 ;; esac
+      echo "ERROR: MULTI_AGENT_CLAUDE_EFFORT='$value' は不正です (low / medium / high / xhigh / max)" >&2 ;;
+    codex-cli)
+      [[ "${MULTI_AGENT_CODEX_REASONING_EFFORT+x}" == x ]] || return 0
+      value="${MULTI_AGENT_CODEX_REASONING_EFFORT}"
+      case "$value" in none|minimal|low|medium|high|xhigh|max|ultra) return 0 ;; esac
+      echo "ERROR: MULTI_AGENT_CODEX_REASONING_EFFORT='$value' は不正です (none / minimal / low / medium / high / xhigh / max / ultra)" >&2 ;;
+    *) return 0 ;;
+  esac
+  return 1
+}
+
+echo_effort_setting() {
+  case "$1" in
+    claude-code)
+      if [[ "${MULTI_AGENT_CLAUDE_EFFORT+x}" == x ]]; then
+        echo "   Effort requested: ${MULTI_AGENT_CLAUDE_EFFORT} (MULTI_AGENT_CLAUDE_EFFORT -> --effort; 実値未確認)" >&2
+      else
+        echo "   Effort: 継承・実値未確認 (Claude CLI settings)" >&2
+      fi ;;
+    codex-cli)
+      if [[ "${MULTI_AGENT_CODEX_REASONING_EFFORT+x}" == x ]]; then
+        echo "   Effort requested: ${MULTI_AGENT_CODEX_REASONING_EFFORT} (MULTI_AGENT_CODEX_REASONING_EFFORT -> -c; 実値未確認)" >&2
+        if [[ -n "${MULTI_AGENT_CODEX_PROFILE:-}" ]]; then
+          echo "   Reasoning effort: explicit -c override; profile value is overridden" >&2
+        fi
+      else
+        echo "   Effort: 継承・実値未確認 (Codex CLI settings; profile=${MULTI_AGENT_CODEX_PROFILE:-未指定})" >&2
+      fi ;;
+  esac
+}

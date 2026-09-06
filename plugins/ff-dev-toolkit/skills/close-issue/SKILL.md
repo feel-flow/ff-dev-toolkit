@@ -525,6 +525,41 @@ gh issue comment "$ISSUE_URL" --body-file "/tmp/close-issue-report-${ISSUE_NUMBE
 
 ### 7. ゲート実測鮮度の照合（マージ直前）
 
+#### CI checks の有無による分岐（待つか、ローカルゲートを根拠にするか）
+
+マージ前に、対象 PR に checks が登録されているかを先に確認します。PR トリガーの CI を持たない
+リポジトリ（本リポジトリを含む）では、`gh pr checks --watch` は `no checks reported` を返して
+即終了するため、これを CI 通過と早合点してはいけません。また `statusCheckRollup` の登録を待つ
+自作の待機ループは、checks が存在しない repo では永遠に終わりません。
+
+```bash
+PR_NUMBER="${PR_NUMBER:?PR 番号を先に設定すること}"
+ROLLUP_COUNT="$(gh pr view "${PR_NUMBER}" --json statusCheckRollup --jq '(.statusCheckRollup // []) | length')" \
+  || { echo "❌ statusCheckRollup を取得できません（検査は成立していない）" >&2; exit 2; }
+if [ "${ROLLUP_COUNT}" = "0" ]; then
+  CHECKS_REPORT="この PR に登録された checks は無い。マージ可否はローカル全件ゲート + 鮮度照合で判定する"
+else
+  # checks が在るときだけ待つ（存在するので --watch は必ず終わる）。待機とマージは繋がない
+  if CHECKS_OUT="$(gh pr checks "${PR_NUMBER}" --watch --fail-fast 2>&1)"; then
+    CHECKS_REPORT="全 checks の完了と成功を確認済み"
+  else
+    printf '%s\n' "${CHECKS_OUT}" >&2
+    echo "❌ checks が未完了または失敗。マージへ進まない" >&2
+    exit 1
+  fi
+fi
+```
+
+- `statusCheckRollup` が**空配列**（`null` も同じ扱い）の場合、checks の完了を待たずに次へ進み、
+  `CHECKS_REPORT` の文言をそのまま手順 8 の完了報告へ明記します。マージ可否はこの後のローカル
+  全件ゲート実行結果と鮮度照合（下記）だけを根拠にします
+- `statusCheckRollup` が**非空**の場合は、従来どおり全 checks の完了と成功を確認してからマージへ
+  進みます。`--watch --fail-fast` で完了を待ち、失敗（rc 非 0）ならそこで止まります
+- `gh pr view` 自体が失敗した場合は、分岐を決められない＝検査が成立していないため停止します
+  （取得失敗を「checks 無し」へ倒さない）
+
+#### ゲート実測鮮度そのものの照合
+
 ローカルで回した検証スイートの結果は、**その時点の特定コミットに対する実測**です。実測とマージのあいだにリモートが進んでいると、squash merge は**未実測のコミットまで畳み込む**ため、ゲートを回した意味が消えます。実測では、cloud セッションが作成した PR をローカルの worktree で引き取って作業しているあいだに、**同じセッションが同じブランチへ別方向の修正を push していた**（気付いたのは push が non-fast-forward で拒否されたとき）。
 
 手順 8 で渡す `--match-head-commit` とは**守る窓が違います**:
@@ -591,6 +626,7 @@ esac
 - 終了コード **0 = 一致（無出力）**、**1 = 不一致（マージを止める）**、**2 = 判定不能（止めないが報告する）**、**3 = 検査不成立（停止する）**。部分実行の記録（`STATUS=partial`）は、リモート先端と**一致していても** 2 へ倒れる — 名指しした suite だけを回した記録を全件緑へ昇格させないため
 - 判定不能に当たる原因は増えうる（記録が無い / 別ブランチの記録 / 汚れた木で測った / 直近のゲートが赤い / 記録が部分実行である / 記録の版や内容を解釈できない / 実測対象のコミットが手元に無い）。**個別の原因ではなく `FRESH_STATUS` で分岐する**
 - **2 で止めないのは意図的**です。記録の仕組みを持たないプロジェクトでは判定不能が常態で、そこで無条件にマージを止めると検査ごと迂回されます。**この窓は静かに外れると squash merge に畳み込まれるので、ノイズより見逃しのコストが高い** — だから「黙って緑を返さない」ことを最低線として守り、判定不能は手順 8 の完了報告に必ず載せる
+- 鮮度照合が判定不能（`FRESH_STATUS=2`）で、かつ `FRESH_REASON` が「汚れた木で測った / 記録が無い / 記録が部分実行である」のいずれかなら、clean な作業ツリーで全件ゲートを再実行してから改めて照合します（記録の仕組みを持たないプロジェクトではこの限りではなく、2 でマージを止めない既存規定も変わりません）
 - マージ対象 PR のブランチを checkout して照合する。記録の `BRANCH` が現在の名前付きブランチと異なる場合は、コミット照合より前に **`UNDETERMINED`（exit 2）** を返す。別ブランチの古い記録は同一ブランチへの追加 push の証拠ではないため、`RELATION=divergent` で止めず、記録側のブランチ名を含む `REASON` と現在のブランチでの再実測を勧める `ACTION` を報告する。SHA が同一でも別ブランチの記録を一致へ昇格させない
 - `BRANCH` が欠落・空・`HEAD`・`(unknown)`、または現在が detached HEAD などで名前付きブランチを取得できない場合は、別ブランチと断定せず従来のコミット照合を行う。`--measured` 明示時も従来どおり記録を読まない
 - 不一致の `RELATION` で次の一手が変わる:
@@ -645,6 +681,7 @@ printf 'gh pr merge %s --squash --match-head-commit %s \\\n  --subject %s \\\n  
 - 完了報告コメント: ✅
 - 工数記録: ✅ AI 予定 0.6d → 実績 1.4d（乖離率 2.33・閾値超過）／ブロック不在の場合は「ブロック不在のためスキップ」
 - closing keyword 抵触検査: 対象なし（Closes 運用）
+- CI checks: <手順 7 の CHECKS_REPORT をそのまま貼る>
 - ゲート実測鮮度: <手順 7 の FRESH_REPORT をそのまま貼る>
 - 照合時の head SHA: <headRefOid>
 
@@ -684,6 +721,7 @@ printf 'gh pr merge %s --squash --match-head-commit %s \\\n  --subject %s \\\n  
 - 完了報告コメント: ✅
 - 工数記録: ✅ AI 予定 0.6d → 実績 1.4d（乖離率 2.33・閾値超過）／ブロック不在の場合は「ブロック不在のためスキップ」
 - closing keyword 抵触検査: ✅ 2a 抵触なし（INSPECTED 7 行）/ 2b 抵触なし（INSPECTED 2 行）
+- CI checks: <手順 7 の CHECKS_REPORT をそのまま貼る>
 - ゲート実測鮮度: <手順 7 の FRESH_REPORT をそのまま貼る>
 - 照合時の head SHA: <headRefOid>
 

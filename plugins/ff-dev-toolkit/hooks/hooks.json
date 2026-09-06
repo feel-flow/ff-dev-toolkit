@@ -1,5 +1,5 @@
 {
-  "description": "ff-dev-toolkit の更新通知・スキル実体ドリフト検査・マーケットプレイス自動更新・自動振り返り・Bash ガード。SessionStart で新版、スキル集合の欠落、複数 version のインストール実体併存を通知し、登録済みマーケットプレイス全体の更新と本プラグイン本体の更新を async + fail-silent で自動実行（名前に依存しない引数なし更新のため本プラグイン以外の登録マーケットプレイスも更新される。1 日 1 回、FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1 で無効化）、UserPromptSubmit で振り返りを事前注入（Codex の非対話単発実行 — model あり + permission_mode=bypassPermissions — には注入しない）、Claude Code の Stop で実行漏れ時だけ 1 回継続する。Codex の Stop は表示を作らず無音で終了する（fail-open）。PreToolUse（Bash）は未コミット変更のあるファイルへの git checkout/restore と、Issue 参照の無いフォローアップ宣言付き gh pr create/edit を警告する（抜け道付き deny・fail-open）",
+  "description": "ff-dev-toolkit の更新通知・スキル実体ドリフト検査・マーケットプレイス自動更新・自動振り返り・Bash ガード。SessionStart で新版、スキル集合の欠落、複数 version のインストール実体併存を通知し、登録済みマーケットプレイス全体の更新と本プラグイン本体の更新を async + fail-silent で自動実行（名前に依存しない引数なし更新のため本プラグイン以外の登録マーケットプレイスも更新される。1 日 1 回、FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1 で無効化）、UserPromptSubmit で振り返りを事前注入（Codex の非対話単発実行 — model あり + permission_mode=bypassPermissions — には注入しない）、Claude Code の Stop で実行漏れ時だけ 1 回継続する。Codex の Stop は表示を作らず無音で終了する（fail-open）。PreToolUse（Bash）は未コミット変更のあるファイルへの git checkout/restore と、Issue 参照の無いフォローアップ宣言付き gh pr create/edit を警告し（抜け道付き deny・fail-open）、モノレポで先頭が絶対パスの cd でない background 実行を systemMessage で警告する（ブロックしない・fail-open）",
   "hooks": {
     "PreToolUse": [
       {
@@ -13,6 +13,11 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-pr-followup.sh\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-background-cwd.sh\"",
             "timeout": 10
           }
         ]

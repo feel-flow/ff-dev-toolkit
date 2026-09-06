@@ -96,7 +96,12 @@ fi
 reset_model_args
 add_model_arg --model MULTI_AGENT_MODEL_CLAUDE_CODE \
   || fail_orchestrator_error "$perspective_name" "add_model_arg の呼び出しが不正です（アダプタ側のバグ）。"
+validate_effort_env claude-code || fail_orchestrator_error "$perspective_name" "invalid Claude effort"
+if [[ "${MULTI_AGENT_CLAUDE_EFFORT+x}" == x ]]; then
+  MODEL_ARGS+=(--effort "$MULTI_AGENT_CLAUDE_EFFORT")
+fi
 echo_model_args
+echo_effort_setting claude-code
 
 # プロンプトは argv ではなく stdin で渡す（Issue #712: argv 渡しは Windows の
 # CreateProcess 上限 ~32KB で exit 126 になる）。`claude -p` は位置引数が無い

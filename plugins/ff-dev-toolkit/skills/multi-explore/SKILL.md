@@ -7,6 +7,10 @@ description: 複数の AI CLI を並列実行し、異なる観点からコー�
 
 4つのAI CLI（Claude Code / Codex / Copilot / Grok）を並列実行し、異なる観点からコードベースを探索・分析します。
 
+## 実行前の effort 選択
+
+[作業別 effort の選択](../../docs-template/05-operations/deployment/effort-selection.md) を読み、明示設定を維持したうえで、その呼び出しの effort と理由を決める。CLI 起動とネイティブ委譲の指定手段・確認境界も同文書を正本とする。
+
 ## プラグインルートの固定（必須）
 
 <!-- ff-dev-toolkit-plugin-root-contract:start -->
@@ -63,6 +67,8 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task explore --descriptio
 
 ユーザーに「このプランで実行してよいか」を確認してください。
 
+**注意**: サンドボックスを適用できない環境では、Grok の行に「この環境では sandbox を適用できません」という警告が出ることがあります（プランからは外れませんが、その CLI は未実行になります）。判定の範囲と限界は multi-review スキルの「プラン確認（--dry-run）」節を参照してください。
+
 ### 3. 探索実行
 
 ユーザーが承認したら、実際の探索を実行します:
@@ -73,7 +79,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task explore --descriptio
 
 **注意**: explore タスクは read-only です。コードの変更は行いません。
 
-実行中は進捗状況を監視し、完了を待ちます。
+実行中は進捗状況を監視し、完了を待ちます。background で起動して完了を待つ場合は、foreground の `sleep` や自作の待機ループで空回りせず、Monitor（無ければ `until` ループの background bash）を armed してから停止し、完了通知で再開します。
 
 ### 4. 結果分析と統合レポート
 
