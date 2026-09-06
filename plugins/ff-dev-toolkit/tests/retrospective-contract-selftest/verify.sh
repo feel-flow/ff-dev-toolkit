@@ -55,8 +55,8 @@ SRC_LEDGER_TEMPLATE="$PLUGIN_ROOT/docs-template/08-knowledge/OBSERVATIONS.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=172
-EXPECTED_GATE_CHECKS_PUBLIC=158
+EXPECTED_GATE_CHECKS_MONOREPO=175
+EXPECTED_GATE_CHECKS_PUBLIC=161
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -487,6 +487,9 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|は「重複なし」と扱わない|起票前の既存確認: 確認不能時は重複なしと扱わない|2"
   "${FIX_SKILL}|retrospective-SKILL.md|「振り返り」「retrospective」「セッション振り返り」「プロセス改善の提案」と言われたとき|frontmatter: trigger 語|2"
   "${FIX_SKILL}|retrospective-SKILL.md|**ユーザー承認を待つ**（承認なしに起票しない|承認境界: 起票前にユーザー承認を待つ|2"
+  # Issue #1293: 包括指示の例外と特急レーン除外はそれぞれ独立した sub-bullet 行に乗る。
+  "${FIX_SKILL}|retrospective-SKILL.md|利用者がそのセッションで当該作業を含む**包括的な実行指示**|承認境界: 包括的な実行指示の下では改めて確認しない|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|この例外は特急レーン（データ破壊・広範な作業停止・セキュリティの重大起票）には及ばない|承認境界: 包括指示の例外は特急レーンに及ばない|1"
   # read-only 行には read-only 針 + 定型記録針 + 起票承認針の 3 本が乗る（観測台帳の導入で
   # 書き込み境界が 2 系統へ分かれたため。行削除で 3 件赤化する）。
   "${FIX_SKILL}|retrospective-SKILL.md|振り返り工程ではファイル編集・コミット・Issue 作成を行わない|承認境界: 振り返り工程は read-only|3"
@@ -548,13 +551,14 @@ MARKER_MUTATIONS=(
   # 値域行そのものの削除は導出の fail-closed 経路（下流 3 針は導出できず実行されない）。
   "${FIX_LEDGER_TEMPLATE}|observations-template.md|- \`Status\` の値域: |観測台帳: Status 値域行を配布テンプレから導出|1"
   "${FIX_GIT_WORKFLOW}|git-workflow.md|観測は起票の前に**作業中リポジトリ**の観測台帳|分散台帳が git-workflow へ伝播|1"
-  # workflow-principles の承認境界行には「承認待ち」「実施まで」「分散台帳」の 3 針が乗る。
-  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|観測記録は作業中リポジトリの観測台帳への定型書き込み|分散台帳が workflow-principles へ伝播|3"
+  # workflow-principles の承認境界行には「承認待ち」「実施まで」「分散台帳」「包括指示の例外」の 4 針が乗る。
+  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|観測記録は作業中リポジトリの観測台帳への定型書き込み|分散台帳が workflow-principles へ伝播|4"
   "${FIX_SKILL}|retrospective-SKILL.md|**再現価値のある成功パターン（Keep）**|観察チェックリスト: Keep レンズ|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**過剰動作**|観察チェックリスト: 過剰動作レンズ|1"
   "${FIX_ACE_CURATE}|ace-curate-SKILL.md|ACE Playbook ではなく \`/retrospective\` の提案経路で扱う|責務分離: ACE 側からの送り先明示|3"
   "${FIX_GIT_WORKFLOW}|git-workflow.md|承認なしには起票しない|承認境界が git-workflow へ伝播|4"
-  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|ユーザー承認を待ってから行う|承認境界が workflow-principles へ伝播|3"
+  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|ユーザー承認を待ってから行う|承認境界が workflow-principles へ伝播|4"
+  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|包括的な実行指示（「最後までやって」等）を直接出している場合は|包括指示の例外が workflow-principles へ伝播|4"
   "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|\`/retrospective\` の起票のみ承認待ち|承認境界が適用タイミング表へ伝播|1"
   "${FIX_DEPLOYMENT}|DEPLOYMENT.md|起票はユーザー承認後のみ|承認境界が DEPLOYMENT へ伝播|3"
   "${FIX_OSS_README}|oss-README.md|起票はユーザー承認後のみ|承認境界が公開 README へ伝播|4"

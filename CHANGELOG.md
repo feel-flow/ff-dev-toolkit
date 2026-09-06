@@ -20,6 +20,21 @@
 
 ## [Unreleased]
 
+## [0.85.0] - 2026-09-06
+
+### 変更
+
+- ace-curate / close-issue の文字列パッチ手順の既定を、`python3` ヒアドキュメントから、1 行目に `# -*- coding: utf-8 -*-` を置いた script file を書き出して `python3` で実行する形へ変更した。ヒアドキュメント形は環境により `SyntaxError: Non-UTF-8 code starting with '\xe5' ... but no encoding declared` で 1 行も実行されずに落ち、`PYTHONUTF8=1` だけでは不足する実測が https://github.com/feel-flow/ff-dev-toolkit/issues/87 で複数回報告された。
+
+### ドキュメント
+
+- close-issue スキルの Refs 運用ガイドに、`Closes` を一度でも書いた PR はマージ直前に `Refs` へ切り替えてもクローズリンク残存で自動クローズされうる旨と、切替は PR 作成時点までに行う注記を追加した
+- テスト suite を追加・強化する PR のセルフレビュー節に、pr-test-analyzer / silent-failure-hunter へ「隔離 worktree 内で自作の変異を 2〜3 種当てて suite が赤になるかを実測し、生存した変異を報告する」定型プロンプトを追加した
+- multi-implement スキルの委譲プロンプトへ、指示からの逸脱を根拠つきで報告してよい旨の標準文言を常置した
+- git-workflow.md に、全件ゲートや公開同期の長時間ゲートを開始する前に並行マージが静止しているかを確認し、静止していなければ逐次化を依頼する手順を追加した
+- 並行 SubAgent 運用では、SubAgent の全件ゲートを親のマージ完了後またはマージを止めている窓で回す旨を明記した
+- retrospective スキルの「承認と起票」に、利用者がそのセッションで「最後までやって」等の包括的な実行指示を直接出している場合は、その範囲内の観測 Issue の起票・再発コメント追記・台帳 Count 更新を改めて確認せずに実施して結果を振り返りで報告する例外を追加した（特急レーンの重大起票は従来どおり提示してから実施）。workflow-principles テンプレートにも同じ例外を伝播し、契約テストに針と変異ケースを追加した
+
 ## [0.84.0] - 2026-09-06
 
 ### 追加

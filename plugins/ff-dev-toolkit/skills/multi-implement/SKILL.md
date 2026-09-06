@@ -71,6 +71,8 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task implement --descript
 bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task implement --description "<タスク説明>" $OPTIONS
 ```
 
+**`<タスク説明>` の標準文言**: `--description` はそのまま各 CLI への `## Task Description` に載る（`scripts/adapters/adapter-common.sh` の `build_prompt`）。ここに「指示からの逸脱は根拠（実測・grep・一次情報）つきで報告してよい。盲従して欠陥を作り込まない」に相当する一文を常置する。オーケストレータ（このスキルを実行する側）が混入させた設計仕様の誤りを実装 agent が実測で検出・自己訂正できるようにするため（OBS-056）。
+
 **重要**: 実装結果は `.implement-results/` ステージングディレクトリに出力されます。
 ワーキングツリーには直接書き込みません。内訳は 2 種類です:
 
