@@ -20,13 +20,19 @@
 
 ## [Unreleased]
 
+## [0.86.1] - 2026-09-06
+
+### 修正
+
+- 変更履歴の既存ゲート記録器への参照を明確化し、新版で変更したファイルとして誤って判定される表記を修正。
+
 ## [0.86.0] - 2026-09-06
 
 ### 追加
 
 - multi-agent: `--dry-run` の実行プラン表示時に Grok CLI のサンドボックス適用可否を probe し、適用できない環境ではその CLI の行に「sandbox を適用できません」「プランに載っていても未実行になる」と CLI 自身が出した理由つきで表示するようにした。probe はモデルを呼ばないローカルサブコマンドで行うため課金されない。判定は片側で、拒否を確定できたときだけ警告し、確定できなければ黙る（警告が出ないことは実行成功の保証ではない）。検査対象はサンドボックスの適用可否だけで、認証・残高は従来どおり probe しない。警告が出た CLI も実行プランからは外さない
 - `tests/run-all.sh` に起動ガードを追加した。引数なしの既定一覧を未コミットの変更（未追跡ファイルを含む）がある作業ツリーで起動すると、suite を 1 つも実行せず、未コミットのパスと「コミットしてから再実行する」旨を stderr へ出して非 0 で終わる。ゲート実測の鮮度記録も作成・更新しない
-- 汚れているかを確認できない場合（`git` が無い、リポジトリの外）も clean と断定せずに停止する（fail-closed）。汚れの判定は記録側 `scripts/record-gate-head.sh` と同じ述語（`git status --porcelain` の stdout が非空）を使う
+- 汚れているかを確認できない場合（`git` が無い、リポジトリの外）も clean と断定せずに停止する（fail-closed）。汚れの判定は既存のゲート記録器と同じ述語（`git status --porcelain` の stdout が非空）を使う
 - オプトアウトは `FF_RUN_ALL_ALLOW_DIRTY=1`。従来どおり実行されるが、鮮度記録は従来どおり `DIRTY=yes` で書かれる。対象は引数なしの既定一覧だけで、明示引数の実行と検査専用モード（宣言ダンプ・登録照合のみ）には掛からない
 - PreToolUse（Bash）に background 実行の cwd ガードを追加した。モノレポ（リポジトリ直下に packages/ がある、または子ディレクトリに package.json が 2 つ以上）で `run_in_background` が真の Bash を、先頭コマンドが絶対パスの `cd` でないまま起動しようとしたとき、`systemMessage` で「background の Bash はセッション cwd（worktree root）から始まる。パッケージ配下で実行するなら先頭で絶対パスの `cd` を書く」旨を警告する。
 - この警告は実行をブロックしない（exit 0）。`cd "$(git rev-parse --show-toplevel)"` のようにその場で絶対化するイディオムや変数展開は評価できないため無音側へ倒し、foreground・単一パッケージのリポジトリ・`run_in_background` を渡さないハーネス・git リポジトリ外・jq 不在・壊れた入力も無音で通す（fail-open）。opt-out は環境変数 `FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1`。
@@ -1981,7 +1987,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.85.0...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.86.0...HEAD
+[0.86.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.85.0...v0.86.0
 [0.85.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.84.0...v0.85.0
 [0.84.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.83.0...v0.84.0
 [0.83.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.82.0...v0.83.0
