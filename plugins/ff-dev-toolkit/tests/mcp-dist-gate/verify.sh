@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# mcp-dist-gate: コミット済み dist/index.js が現在の src + 依存から再現できること、
-# および stdio-only 不変条件を fail-closed で検査する。
+# mcp-dist-gate: lockfile が全依存 edge を満たすこと、コミット済み dist/index.js が
+# 現在の src + 依存から再現できること、および stdio-only 不変条件を fail-closed で検査する。
 #
 # 背景 (Issue #211): 利用者の Claude Code で実際に動くのはコミット済み
 # dist/index.js だが、lockfile だけ更新して再ビルドを忘れた変更は「脆弱性を
@@ -9,6 +9,10 @@
 # のみで、この対応を自動で保証するゲートが無かった。
 #
 # 検査:
+#   A0. package-lock.json とルートの依存宣言から依存木を組み（`npm ls --package-lock-only
+#      --all`）、invalid / missing edge を node_modules に依存せず検出する。node_modules 不在の丸ごと skip より
+#      前に走るので clean checkout でも赤になる。npm 不在では A0 だけ部分 skip。
+#      node_modules が lockfile より古い状態は対象外（それは A の前提のまま）。
 #   A. 一時 outfile へフレッシュビルドし、コミット済み dist とバイト比較する。
 #      作業ツリーの dist/ には書き込まない（run-all.sh の read-only 契約）。
 #      前提: node_modules が現在の lockfile を反映していること（npm install 済み）。
@@ -33,6 +37,64 @@ MCP_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)/mcp"
 DIST="$MCP_DIR/dist/index.js"
 # shellcheck source=../lib/tree-state.sh
 . "$SCRIPT_DIR/../lib/tree-state.sh"
+
+# --- A0. lockfile が全依存 edge を満たす ------------------------------------
+# `npm ls --package-lock-only --all` は node_modules を見ず、package-lock.json とルートの
+# 依存宣言（package.json）から依存木を組み、満たされない edge（invalid / missing）が
+# あれば非 0 で終わる（ネットワーク不要）。
+# 不変条件: lockfile 内部の不整合は、それを許容する npm 版と `npm ci` で拒否する版が
+# 混在すると「ローカル緑・CI 赤」の環境差になる。`npm ls --package-lock-only` は許容側の
+# 版でも非 0 を返す（npm 10.9.8 / 11.16.0 で実測）ので、node_modules に依存せず早期に
+# 検査するゲートにする。全 npm 版の `npm ci` 結果を保証するものではなく、npm 10 系の
+# `npm ci` そのものは週次 CI（weekly-run-all の install step）が最終防衛線として担う。
+# 発見経緯 (Issue #1325 / #1251): npm 11 の `npm install` が vitest 4 同梱 vite 8 の
+# optional peer（esbuild ^0.27 || ^0.28）の入れ子 esbuild@0.28.2 を prune し、peer が
+# root の esbuild 0.25.12 へ解決されて invalid になった。npm 11 では `npm ci` も vitest も
+# 通るが、Node 22 同梱の npm 10.9 は edge を満たそうと再解決し「Missing: esbuild@0.28.2
+# from lock file」(EUSAGE) で止まり、週次 CI で初めて赤になった。
+# node_modules が lockfile より古い状態は対象外（それは A の前提のまま）。
+# node_modules 不在の丸ごと skip より前に置く: lock だけを読む検査なので clean checkout
+# でも走らせ、赤なら即 exit 1（後段が環境都合で skip する回でも lock の破れを緑にしない）。
+# A のビルドは node と node_modules/.bin/esbuild、B は grep だけで完走できるため、npm
+# 不在では A0 だけを部分 skip（インデントした `○ skip`。ランナーは checks-skipped へ
+# 別集計し、suite 全体の skip とは区別する）にして A / B へ進む。
+if ! command -v npm >/dev/null 2>&1; then
+  echo "  ○ skip: npm が PATH に無いため lockfile 整合検査（A0）のみスキップ（A / B は実行する）"
+elif [[ ! -f "$MCP_DIR/package-lock.json" ]]; then
+  # npm ls は lockfile 不在も破損 JSON も ENOLOCK に畳む。不在はここで名指しし、
+  # 後段の ENOLOCK を「lockfile はあるが読めない」に限定する。
+  echo "✗ package-lock.json が無い: $MCP_DIR/package-lock.json（lockfile 整合を検査できない）" >&2
+  exit 1
+else
+  # omit / depth は env・.npmrc で上書きされる（NODE_ENV=production は暗黙の omit=dev、
+  # npm_config_depth=0 は --all を無効化）。どちらも dev 配下の invalid edge を見ずに
+  # rc=0 を返す（実測）ので、CLI フラグで全 edge・全深さを固定する。--include=peer は
+  # 付けない: 未充足の optional peer（vitest の browser/coverage 系など）まで UNMET として
+  # 非 0 になり、整合した lockfile を赤にする（実測）。vite → esbuild のような peer edge は
+  # --include=peer 無しでも invalid として検出される（実測）。
+  set +e
+  LS_OUT="$(cd "$MCP_DIR" && npm ls --package-lock-only --all --depth=Infinity --include=dev --include=optional 2>&1)"
+  LS_RC=$?
+  set -e
+  if [[ $LS_RC -eq 0 ]]; then
+    echo "✓ lockfile は全依存 edge を満たす（npm ls --package-lock-only --all）"
+  elif [[ "$LS_OUT" == *ELSPROBLEMS* ]]; then
+    echo "✗ lockfile が満たしていない依存 edge がある（npm ls --package-lock-only rc=${LS_RC}）— 旧 npm の npm ci は EUSAGE で止まる" >&2
+    # 診断は invalid / missing / エラーコード行の先頭 20 行に絞る（依存木全体は長く原因行が
+    # 埋もれる。`npm error A complete log ...` のログパス案内は除外）。抽出側が早期終了
+    # すると上流 printf が SIGPIPE(141) で pipefail に落ちるため、行末の `|| true` は必須
+    # （診断表示の失敗で対処案内まで失わせない）。
+    printf '%s\n' "$LS_OUT" | awk '/ invalid: | missing: |ELSPROBLEMS|npm error (invalid|missing|code)/ { print; if (++n == 20) exit }' >&2 || true
+    echo "  対処: root の devDependency 範囲を peer 範囲へ揃える等で不整合の元を消し、npm install → npm run build → dist をコミットする" >&2
+    exit 1
+  else
+    # ENOLOCK（破損 JSON）・npm 自体の起動失敗など。edge 不整合と誤帰属すると「lockfile を
+    # 直せ」と案内されて lockfile は正しい、という切り分け不能に陥るので別文言で止める。
+    echo "✗ npm ls 自体が失敗し lockfile 整合を判定できない（rc=${LS_RC}、末尾 20 行）:" >&2
+    printf '%s\n' "$LS_OUT" | tail -20 >&2
+    exit 1
+  fi
+fi
 
 if [[ ! -d "$MCP_DIR/node_modules" ]]; then
   echo "○ skip: $MCP_DIR/node_modules が無いためスキップ（本 suite の検査は1件も実行されていません。cd mcp && npm install で有効化）"

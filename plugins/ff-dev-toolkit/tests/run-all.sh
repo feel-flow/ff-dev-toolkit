@@ -468,7 +468,11 @@ else
     # 拡張文書チェックはオプトイン設計なので、テンプレートの Frontmatter 欠落は
     # この gate だけが守る。外部コマンド不要の静的検査（Issue #509）。
     "$SCRIPT_DIR/docs-template-frontmatter/verify.sh"
-    # 配布先レイアウトで .github 配下のリンク・references・inline path が解決し、
+    # init-docs/SKILL.md 置換ポリシーの「ステップ1で埋まるプレースホルダー一覧」が
+    # 同梱テンプレートの実体から乖離していないことを固定する（Issue #1317）。
+    "$SCRIPT_DIR/init-docs-placeholder-list/verify.sh"
+    # 配布先レイアウトで .github 配下と初期セット 20 文書のリンク・references・inline path
+    # が解決し、初期セット内文書が初期セット外へ角括弧リンクを張っていないこと（Issue #1319）、
     # init-docs + ace-setup で露出したテンプレート 8 欠陥が戻らないことを固定する
     # （Issue #981）。Node.js 組み込み API のみを使う静的検査。
     "$SCRIPT_DIR/docs-template-portability/verify.sh"

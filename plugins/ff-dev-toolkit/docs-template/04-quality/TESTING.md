@@ -1,10 +1,10 @@
 ---
 title: "TESTING"
-version: "1.1.0"
+version: "1.1.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-08-21"
+updated: "2026-09-06"
 changeImpact: "medium"
 ---
 
@@ -34,7 +34,7 @@ changeImpact: "medium"
 | 統合テスト     | **20%**  | DB・メッセージ・外部API境界を含む結合の検証          |
 | E2Eテスト      | **10%**  | クリティカルなユーザージャーニー・契約に近い経路     |
 
-比率はプロジェクトの性質（レガシー比率、リリース頻度）で調整してよいが、E2Eのみに偏重しないこと。品質ゲート全体の枠組みは [GUARDRAILS_THREE_LAYERS.md](./GUARDRAILS_THREE_LAYERS.md) を参照。
+比率はプロジェクトの性質（レガシー比率、リリース頻度）で調整してよいが、E2Eのみに偏重しないこと。品質ゲート全体の枠組みは `docs/04-quality/GUARDRAILS_THREE_LAYERS.md`（初期セット外。必要になった時点で `${CLAUDE_PLUGIN_ROOT}/docs-template/` の同一相対パスからコピーする）を参照。
 
 ### カバレッジ目標
 
@@ -686,6 +686,12 @@ echo "変異適用: OK"       # 報告には検査結果と並べてこの成否
 ```
 
 ## Changelog
+
+### [1.1.1] - 2026-09-06
+
+#### 変更
+
+- 初期セット外（`GUARDRAILS_THREE_LAYERS.md`）への Markdown リンクを、コピー元付きの案内テキスト（inline code）に変更
 
 ### [1.1.0] - 2026-08-21
 

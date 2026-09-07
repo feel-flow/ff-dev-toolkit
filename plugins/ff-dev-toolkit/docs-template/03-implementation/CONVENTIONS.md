@@ -1,10 +1,11 @@
 ---
 title: "CONVENTIONS"
-version: "1.0.0"
+version: "1.1.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "YYYY-MM-DD"
+updated: "2026-09-06"
+changeImpact: "medium"
 ---
 
 # CONVENTIONS.md - コーディング規約
@@ -16,7 +17,7 @@ updated: "YYYY-MM-DD"
 ### ディレクトリ構造
 
 ```
-docs-template/
+docs/
 ├── 00-planning/              # 数字-英語小文字（ハイフン区切り）
 │   └── PLANNING_TEMPLATE.md  # 英語大文字.md
 ├── 01-context/
@@ -139,7 +140,7 @@ my-project/
 ├── .github/
 │   └── copilot-instructions.md  # ツール固有の命名
 ├── .cursorrules                  # ツール固有の命名
-├── docs-template/                # ドキュメントテンプレート
+├── docs/                         # 仕様文書（/init-docs が展開）
 │   ├── 00-planning/
 │   │   └── PLANNING_TEMPLATE.md
 │   ├── 01-context/
@@ -304,7 +305,9 @@ async function fetchUser(id: string): Promise<User> {
     }
     return user;
   } catch (error) {
-    logger.error("Failed to fetch user", { id, error });
+    // Logger 規約（PATTERNS.md §9）: error(message, error: Error, meta?)
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.error("Failed to fetch user", err, { id });
     throw error;
   }
 }
@@ -338,10 +341,15 @@ try {
     // バリデーションエラーの処理
     return { success: false, errors: error.details };
   }
+  // その他の AppError は分類（category）を保ったまま伝播させる
+  if (error instanceof AppError) {
+    throw error;
+  }
 
-  // 予期しないエラー
-  logger.error("Unexpected error", error);
-  throw new InternalError("Processing failed");
+  // 予期しないエラー（cause で元エラーを保持する）
+  const err = error instanceof Error ? error : new Error(String(error));
+  logger.error("Unexpected error", err);
+  throw new InternalError("Processing failed", { cause: err });
 }
 ```
 
@@ -699,6 +707,18 @@ function processUserInput(input: unknown): void {
 ```
 
 ## Changelog
+
+### [1.1.0] - 2026-09-06
+
+#### 変更
+
+- エラーハンドリング例を PATTERNS.md の Logger 規約（`error(message, error, meta?)`）に揃え、AppError はそのまま伝播・未知のエラーは `cause` 付きで InternalError に包む形に変更
+
+### [1.0.1] - 2026-09-06
+
+#### 変更
+
+- ディレクトリ構造例のルートを展開前の名称から展開先の `docs/` に修正
 
 ### [1.0.0] - YYYY-MM-DD
 

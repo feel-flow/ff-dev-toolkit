@@ -1,10 +1,11 @@
 ---
 title: "VALIDATION"
-version: "1.0.0"
+version: "1.1.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "YYYY-MM-DD"
+updated: "2026-09-06"
+changeImpact: "medium"
 ---
 
 # VALIDATION.md - 検証・品質保証ガイド
@@ -70,13 +71,13 @@ function validateUserRegistration(data: unknown) {
     return { success: true, data: validatedData };
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return {
-        success: false,
-        errors: error.errors.map((e) => ({
-          field: e.path.join("."),
-          message: e.message,
-        })),
-      };
+      // ValidationDetail は PATTERNS.md「エラーハンドリング」の定義を import する（`./errors`）
+      const details: ValidationDetail[] = error.errors.map((e) => ({
+        field: e.path.join("."),
+        message: e.message,
+        constraint: e.code,
+      }));
+      return { success: false, errors: details };
     }
     throw error;
   }
@@ -532,7 +533,16 @@ interface ValidationReport {
     failed: number;
     warnings: number;
   };
-  details: ValidationDetail[];
+  // 運用チェック結果の型。入力検証の ValidationDetail（PATTERNS.md「エラーハンドリング」、
+  // field / message / constraint）とは別物で、名前も分ける（同名・別形状の並立を避ける）
+  details: ValidationCheckDetail[];
+}
+
+interface ValidationCheckDetail {
+  check: string;
+  status: ValidationResult["status"];
+  message: string;
+  metadata?: Record<string, unknown>;
 }
 
 class ValidationReporter {
@@ -577,6 +587,12 @@ class ValidationReporter {
 ```
 
 ## Changelog
+
+### [1.1.0] - 2026-09-06
+
+#### 変更
+
+- zod のエラー変換を PATTERNS.md の `ValidationDetail` 形状に揃え、運用チェック結果の型を `ValidationCheckDetail` として分離
 
 ### [1.0.0] - YYYY-MM-DD
 

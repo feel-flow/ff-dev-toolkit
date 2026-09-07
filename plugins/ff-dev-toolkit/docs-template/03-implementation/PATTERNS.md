@@ -1,10 +1,10 @@
 ---
 title: "PATTERNS"
-version: "1.3.0"
+version: "1.4.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-07-31"
+updated: "2026-09-06"
 changeImpact: "medium"
 ---
 
@@ -118,17 +118,47 @@ class ConfigManager {
 ### カスタムエラークラス
 
 ```typescript
-// エラー基底クラス
+// 前提: tsconfig の lib に ES2022 を含める（Error.cause / new Error(message, { cause })）。
+// options.cause で元エラー（外部 SDK のエラー等）を保持する。元エラーの status / code /
+// レスポンス本文が消えると、呼び出し元は「利用者が対処できる失敗（カード拒否）」と
+// 「再試行すべき障害（API 障害）」を区別できない。ラップするときは必ず cause を渡す。
+type AppErrorOptions = { cause?: unknown };
+
+// エラー分類。フォールバック可否・再試行可否は statusCode から推測せず、各サブクラスが
+// 宣言する（抽象メンバなので、サブクラスを追加した瞬間にコンパイルが宣言を要求する）。
+//   never-fallback: 認証・認可・バリデーション・データ整合性・セキュリティ・上流の恒久拒否
+//                   （自コードの要求誤り）— 環境を問わずスロー、再試行しない（FALLBACK.md Section 1）
+//   transient:      外部サービスの一時障害 — 再試行可、本番ではフォールバック可
+//   permanent:      再試行しても結果が変わらない失敗（未検出・自コードのバグ）
+//                   — 再試行しない、本番ではフォールバック可
+type ErrorCategory = "never-fallback" | "transient" | "permanent";
+
+// エラー基底クラス。code / statusCode は readonly（分類の判定入力を後から書き換えさせない）
 abstract class AppError extends Error {
+  abstract readonly category: ErrorCategory;
+
   constructor(
-    public message: string,
-    public code: string,
-    public statusCode: number,
+    message: string,
+    public readonly code: string,
+    public readonly statusCode: number,
+    options?: AppErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = this.constructor.name;
   }
 }
+
+// HTTP ステータス（マジックナンバー禁止 / MASTER.md）。エラー階層と正規化で共用する
+const HTTP_STATUS = {
+  BAD_REQUEST: 400,
+  UNAUTHORIZED: 401,
+  FORBIDDEN: 403,
+  NOT_FOUND: 404,
+  CONFLICT: 409,
+  TOO_MANY_REQUESTS: 429,
+  INTERNAL_SERVER_ERROR: 500,
+  BAD_GATEWAY: 502,
+} as const;
 
 // バリデーション詳細の型定義（any[] の代わりに明示的な型を使用し型安全性を確保）
 interface ValidationDetail {
@@ -139,29 +169,191 @@ interface ValidationDetail {
 
 // 具体的なエラークラス
 class ValidationError extends AppError {
+  readonly category: ErrorCategory = "never-fallback";
   constructor(
     message: string,
-    public details: ValidationDetail[],
+    // readonly: 呼び出し元へ返した配列を書き換えられないようにする
+    public readonly details: readonly ValidationDetail[],
+    options?: AppErrorOptions,
   ) {
-    super(message, "VALIDATION_ERROR", 400);
+    super(message, "VALIDATION_ERROR", HTTP_STATUS.BAD_REQUEST, options);
   }
 }
 
 class NotFoundError extends AppError {
-  constructor(message: string) {
-    super(message, "NOT_FOUND", 404);
+  readonly category: ErrorCategory = "permanent";
+  constructor(message: string, options?: AppErrorOptions) {
+    super(message, "NOT_FOUND", HTTP_STATUS.NOT_FOUND, options);
   }
 }
 
 class ForbiddenError extends AppError {
-  constructor(message: string) {
-    super(message, "FORBIDDEN", 403);
+  readonly category: ErrorCategory = "never-fallback";
+  constructor(message: string, options?: AppErrorOptions) {
+    super(message, "FORBIDDEN", HTTP_STATUS.FORBIDDEN, options);
   }
 }
 
 class ConflictError extends AppError {
-  constructor(message: string) {
-    super(message, "CONFLICT", 409);
+  readonly category: ErrorCategory = "never-fallback";
+  constructor(message: string, options?: AppErrorOptions) {
+    super(message, "CONFLICT", HTTP_STATUS.CONFLICT, options);
+  }
+}
+
+// 認証エラー（未認証）。認可エラー(ForbiddenError)と合わせて
+// FALLBACK.md のフォールバック禁止カテゴリを構成する
+class UnauthorizedError extends AppError {
+  readonly category: ErrorCategory = "never-fallback";
+  constructor(message: string, options?: AppErrorOptions) {
+    super(message, "UNAUTHORIZED", HTTP_STATUS.UNAUTHORIZED, options);
+  }
+}
+
+// セキュリティ違反（改ざん検知・署名不一致・レート制限違反など）
+class SecurityError extends AppError {
+  readonly category: ErrorCategory = "never-fallback";
+  constructor(message: string, options?: AppErrorOptions) {
+    super(message, "SECURITY_VIOLATION", HTTP_STATUS.FORBIDDEN, options);
+  }
+}
+
+// 予期しない内部エラー（詳細はログに残し、利用者には露出しない）。自コードのバグは
+// 再試行しても直らないので permanent
+class InternalError extends AppError {
+  readonly category: ErrorCategory = "permanent";
+  constructor(message: string, options?: AppErrorOptions) {
+    super(
+      message,
+      "INTERNAL_ERROR",
+      HTTP_STATUS.INTERNAL_SERVER_ERROR,
+      options,
+    );
+  }
+}
+
+// 外部サービス（決済・メール・API）の一時的な障害。transient を宣言する既定の型で、
+// サービス固有の型（INTEGRATIONS.md の PaymentError 等）も transient を宣言すれば再試行対象になる
+class UpstreamError extends AppError {
+  readonly category: ErrorCategory = "transient";
+  constructor(message: string, options?: AppErrorOptions) {
+    super(message, "UPSTREAM_UNAVAILABLE", HTTP_STATUS.BAD_GATEWAY, options);
+  }
+}
+
+// 外部サービスがこちらの要求を恒久的に拒否した（4xx）。利用者の入力検証エラー
+// （ValidationError）とは別物として扱う — 上流の拒否をローカルの入力エラーとして
+// 名乗ると、details をフィールドエラーとして描画するハンドラが誤動作し、
+// 上流の失敗理由（cause）も details からは辿れなくなる。
+// 上流に拒否されたのは自コードの要求が誤っているサインなので、本番で黙って
+// フォールバックすると欠陥が隠れる — never-fallback（再試行もしない）
+class UpstreamRejectedError extends AppError {
+  readonly category: ErrorCategory = "never-fallback";
+  constructor(
+    message: string,
+    public readonly upstreamStatus: number,
+    options?: AppErrorOptions,
+  ) {
+    super(message, "UPSTREAM_REJECTED", HTTP_STATUS.BAD_GATEWAY, options);
+  }
+}
+```
+
+### 外部境界のエラー正規化
+
+```typescript
+// SDK ごとに status の置き場所が違う（axios: response.status / Stripe: statusCode / fetch: status）
+function readHttpStatus(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const e = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    code?: unknown;
+    response?: { status?: unknown };
+  };
+  // SendGrid の ResponseError は HTTP ステータスを数値の `code` に入れる。他 SDK の数値 code
+  // （独自エラー番号）を拾わないよう、HTTP ステータスの範囲にある数値だけを採用する
+  const candidate =
+    e.statusCode ??
+    e.status ??
+    e.response?.status ??
+    (typeof e.code === "number" && isHttpStatusRange(e.code) ? e.code : undefined);
+  return typeof candidate === "number" ? candidate : undefined;
+}
+
+const HTTP_STATUS_MIN = 100;
+const HTTP_STATUS_MAX = 599;
+function isHttpStatusRange(value: number): boolean {
+  return Number.isInteger(value) && value >= HTTP_STATUS_MIN && value <= HTTP_STATUS_MAX;
+}
+
+// Node のシステムエラーコード（ECONNREFUSED / ENOTFOUND / ETIMEDOUT 等）を cause に持つか
+function hasSystemErrorCode(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  // 形式は照合しない（ECONNREFUSED / EAI_AGAIN / UND_ERR_CONNECT_TIMEOUT 等、
+  // Node と undici で表記が揃わない）。素のプログラミング TypeError は cause を持たない
+  const code = (error.cause as { code?: unknown } | undefined)?.code;
+  return typeof code === "string" && code.length > 0;
+}
+
+// 自コードのバグ。HTTP ステータスを持たないので、放置すると「ステータス無し = 一時障害」
+// と誤分類され、本番でフォールバック・再試行される。
+// 例外: WHATWG fetch / undici はネットワーク障害を `TypeError: fetch failed`
+// （cause に ECONNREFUSED 等）で reject する。これはバグではなく一時障害
+function isProgrammingError(error: unknown): boolean {
+  if (error instanceof TypeError && hasSystemErrorCode(error)) return false;
+  return (
+    error instanceof TypeError ||
+    error instanceof RangeError ||
+    error instanceof ReferenceError ||
+    error instanceof SyntaxError
+  );
+}
+
+/**
+ * HTTP クライアント / 外部 SDK の境界で、生のエラーを AppError に正規化する。
+ *
+ * 汎用 Error / AxiosError のままだと category の判定がすべて素通りし、外部 API の
+ * 401/403 がフォールバックや再試行の対象になる（FALLBACK.md §4）。
+ * cause には元の値をそのまま保持する（Error でない値も String() に潰さない —
+ * 上流のステータスやレスポンス本文は cause からしか辿れない）。
+ *
+ * 対象は HTTP ステータスを持つ境界のみ。DB ドライバ・キュー・ファイル I/O のエラーは
+ * ステータスを持たないため、リポジトリ層に専用のマッパー（driver code →
+ * ConflictError / NotFoundError / UpstreamError）を置き、この関数には通さない。
+ * `fetch` の `!res.ok` を `throw new Error(...)` で表す書き方も status を失う —
+ * 境界では `{ status: res.status }` を持つエラーを投げるか、この関数に
+ * `{ status: res.status, body }` を直接渡す。
+ */
+function normalizeExternalError(
+  error: unknown,
+  message = "External service call failed",
+): AppError {
+  if (error instanceof AppError) return error;
+  if (isProgrammingError(error)) {
+    return new InternalError(message, { cause: error });
+  }
+  const cause = error;
+  const status = readHttpStatus(error);
+
+  switch (status) {
+    case HTTP_STATUS.UNAUTHORIZED:
+      return new UnauthorizedError(message, { cause });
+    case HTTP_STATUS.FORBIDDEN:
+      return new ForbiddenError(message, { cause });
+    case HTTP_STATUS.NOT_FOUND:
+      return new NotFoundError(message, { cause });
+    case HTTP_STATUS.CONFLICT:
+      return new ConflictError(message, { cause });
+    case undefined:
+    case HTTP_STATUS.TOO_MANY_REQUESTS:
+      // ステータスを取り出せなかった（接続断・タイムアウト、または status を添えない
+      // HTTP ラッパ）。429 とともに一時障害として扱う
+      return new UpstreamError(message, { cause });
+    default:
+      return status >= HTTP_STATUS.INTERNAL_SERVER_ERROR
+        ? new UpstreamError(message, { cause })
+        : new UpstreamRejectedError(message, status, { cause });
   }
 }
 ```
@@ -184,11 +376,16 @@ async function processUser(userId: string): Promise<Result<User>> {
       error instanceof Error ? error : new Error(String(error));
     logger.error("Failed to process user", normalizedError, { userId });
 
-    if (normalizedError instanceof ValidationError) {
+    // AppError はそのまま返す。ValidationError だけ通して残りを InternalError に
+    // 降格させると、UnauthorizedError 等の never-fallback が permanent に化け、
+    // 上位の fallbackInProdOnly が本番で握りつぶす
+    if (normalizedError instanceof AppError) {
       return Result.fail(normalizedError);
     }
 
-    return Result.fail(new InternalError("Processing failed"));
+    return Result.fail(
+      new InternalError("Processing failed", { cause: normalizedError }),
+    );
   }
 }
 ```
@@ -214,7 +411,9 @@ function fetchUserWithPosts(userId: string): Promise<UserWithPosts> {
       const normalizedError =
         error instanceof Error ? error : new Error(String(error));
       logger.error("Failed to fetch user with posts", normalizedError);
-      throw new DataFetchError("Could not load user data");
+      throw new DataFetchError("Could not load user data", {
+        cause: normalizedError,
+      });
     });
 }
 ```
@@ -232,7 +431,9 @@ async function fetchUserWithPosts(userId: string): Promise<UserWithPosts> {
     const normalizedError =
       error instanceof Error ? error : new Error(String(error));
     logger.error("Failed to fetch user with posts", normalizedError);
-    throw new DataFetchError("Could not load user data");
+    throw new DataFetchError("Could not load user data", {
+      cause: normalizedError,
+    });
   }
 }
 ```
@@ -519,8 +720,116 @@ class BatchProcessor<T> {
 ### 構造化ログ
 
 ```typescript
-// 構造化ログパターン
-class Logger {
+// Logger の呼び出し規約（テンプレート全体の正典。他文書のコード例もこの署名に従う）:
+//   error(message, error, meta?) — 第 2 引数は Error 型。catch 変数（unknown）は
+//     `error instanceof Error ? error : new Error(String(error))` で正規化してから渡す
+//   warn / info(message, meta?) — meta は構造化コンテキスト。Error 実体は入れない
+//     （JSON.stringify で message / stack が落ちる）。必要なら name / code だけ載せる
+// 2 引数版 error(message, error) のみだと構造化コンテキストを渡す口が無く、
+// FALLBACK.md「フォールバック発動時は必ず構造化ログ」を満たせない。
+interface Logger {
+  error(message: string, error: Error, meta?: Record<string, unknown>): void;
+  warn(message: string, meta?: Record<string, unknown>): void;
+  info(message: string, meta?: Record<string, unknown>): void;
+}
+
+// メトリクスクライアントの最小契約（実装は MONITORING.md の監視基盤に接続する）。
+// エラー処理経路から呼ぶため、実装は例外を投げない — 送信失敗は内部で記録して黙って戻る
+interface Metrics {
+  increment(name: string, tags?: Record<string, string>): void;
+}
+
+// cause 鎖の展開深さの上限（マジックナンバー禁止）。無限の cause ループを防ぐ
+const ERROR_CAUSE_MAX_DEPTH = 5;
+
+// ログに載せる上流レスポンス本文の上限（マジックナンバー禁止）。巨大な本文で行を潰さない
+const ERROR_LOG_BODY_MAX_CHARS = 2000;
+
+// HTTP 由来のエラー（AxiosError / fetch のレスポンス / { status, body }）から
+// 診断に要るフィールドだけを抜く。cause に保持した上流のステータス・本文は
+// ここで出さないとどこにも現れない
+function pickHttpDiagnostics(value: object): Record<string, unknown> {
+  const v = value as {
+    status?: unknown;
+    statusCode?: unknown;
+    code?: unknown;
+    body?: unknown;
+    response?: { status?: unknown; data?: unknown };
+  };
+  const body = v.body ?? v.response?.data;
+  const diagnostics: Record<string, unknown> = {};
+  const status = v.statusCode ?? v.status ?? v.response?.status;
+  if (status !== undefined) diagnostics.status = status;
+  if (v.code !== undefined) diagnostics.code = v.code;
+  if (body !== undefined) {
+    // ログ経路で投げない: 本文が循環参照（stream の response.data 等）や BigInt を
+    // 含むと JSON.stringify が TypeError を投げ、記録しようとしていた元エラーを覆い隠す
+    let text: string;
+    try {
+      text =
+        typeof body === "string"
+          ? body
+          : (JSON.stringify(body) ?? String(body));
+    } catch {
+      text = "[unserializable body]";
+    }
+    diagnostics.body = text.slice(0, ERROR_LOG_BODY_MAX_CHARS);
+  }
+  return diagnostics;
+}
+
+// 任意の値を、投げずに上限つきの文字列へ落とす（循環参照・BigInt でも TypeError にしない）
+function describeValue(value: unknown): string {
+  try {
+    const text = JSON.stringify(value, (_key, v) =>
+      typeof v === "bigint" ? v.toString() : v,
+    );
+    return (text ?? String(value)).slice(0, ERROR_LOG_BODY_MAX_CHARS);
+  } catch {
+    return `[unserializable ${Object.prototype.toString.call(value)}]`;
+  }
+}
+
+// Error を構造化する。cause を保持する規約（§3）と対で、cause をログに出す実装が要る —
+// name / message / stack しか出さないと、ラップ時に保持した上流の失敗理由が
+// どこにも現れない
+function serializeError(error: unknown, depth = 0): Record<string, unknown> {
+  if (!(error instanceof Error)) {
+    // Error でない cause（{ status, body } 等）は String() に潰さず構造化する。
+    // HTTP 形状でない値（GA4 のレスポンス等）は pickHttpDiagnostics が空になるので、
+    // 上限つきの文字列表現に落として「形状の情報」自体を残す
+    if (typeof error === "object" && error !== null) {
+      const diagnostics = pickHttpDiagnostics(error);
+      return Object.keys(diagnostics).length > 0
+        ? diagnostics
+        : { value: describeValue(error) };
+    }
+    return { value: String(error) };
+  }
+  const serialized: Record<string, unknown> = {
+    name: error.name,
+    message: error.message,
+    stack: error.stack,
+    // AxiosError 等の status / response.data。AppError 自身には走らせない
+    // （自分の statusCode を上流ステータスと誤読させない）
+    ...(error instanceof AppError ? {} : pickHttpDiagnostics(error)),
+  };
+  if (error instanceof AppError) {
+    serialized.code = error.code;
+    serialized.statusCode = error.statusCode;
+    serialized.category = error.category;
+  }
+  if (error instanceof UpstreamRejectedError) {
+    serialized.upstreamStatus = error.upstreamStatus;
+  }
+  if (error.cause !== undefined && depth < ERROR_CAUSE_MAX_DEPTH) {
+    serialized.cause = serializeError(error.cause, depth + 1);
+  }
+  return serialized;
+}
+
+// 構造化ログパターン（Logger の実装例）
+class JsonLogger implements Logger {
   private context: Record<string, unknown> = {};
 
   setContext(context: Record<string, unknown>): void {
@@ -528,9 +837,21 @@ class Logger {
   }
 
   info(message: string, meta?: Record<string, unknown>): void {
+    this.write("info", message, meta);
+  }
+
+  warn(message: string, meta?: Record<string, unknown>): void {
+    this.write("warn", message, meta);
+  }
+
+  private write(
+    level: "info" | "warn",
+    message: string,
+    meta?: Record<string, unknown>,
+  ): void {
     console.log(
       JSON.stringify({
-        level: "info",
+        level,
         message,
         timestamp: new Date().toISOString(),
         ...this.context,
@@ -544,11 +865,7 @@ class Logger {
       JSON.stringify({
         level: "error",
         message,
-        error: {
-          name: error.name,
-          message: error.message,
-          stack: error.stack,
-        },
+        error: serializeError(error),
         timestamp: new Date().toISOString(),
         ...this.context,
         ...meta,
@@ -624,7 +941,7 @@ Decision Tree は 7 分岐（Q0〜Q6）で構成される：
 
 詳細な分岐内容とチェックリストは [DECISION_TREE.md](./DECISION_TREE.md) を参照。
 
-新規ファイルの雛形（SKELETON テンプレ）は [templates/README.md](./templates/README.md) に集約する。言語非依存の運用ルールと、TypeScript 等のコピー元パスを必ず確認すること。
+新規ファイルの雛形（SKELETON テンプレ）は `docs/03-implementation/templates/README.md`（初期セット外。必要になった時点で `${CLAUDE_PLUGIN_ROOT}/docs-template/` の同一相対パスからコピーする）に集約する。言語非依存の運用ルールと、TypeScript 等のコピー元パスを必ず確認すること。
 
 ## 12. 依存方向 lint（Layer 3）
 
@@ -634,7 +951,7 @@ Layer 1（[DECISION_TREE.md](./DECISION_TREE.md)）で決めた配置を、言�
 - 注意: Layer 3 は **言語依存**（Python/TypeScript/Go/Rust など）
 - 運用: `ignore_imports` などを使って既知負債を可視化し、削除ではなく追跡する
 
-詳細は [DEPENDENCY_LINT.md](./DEPENDENCY_LINT.md) を参照。
+詳細は `docs/03-implementation/DEPENDENCY_LINT.md`（初期セット外。必要になった時点で `${CLAUDE_PLUGIN_ROOT}/docs-template/` の同一相対パスからコピーする）を参照。
 
 ## 13. アンチパターン
 
@@ -675,6 +992,19 @@ ACE Playbook で `Helpful >= 5` に達した知見を、`/ace-refine` が蒸留�
 - 該当なし（昇格発生後に追記）
 
 ## Changelog
+
+### [1.4.0] - 2026-09-06
+
+#### 変更
+
+- AppError 階層に `cause` と分類 `category`（never-fallback / transient / permanent）を追加し、`UpstreamError` / `UpstreamRejectedError`、`HTTP_STATUS`、外部境界のエラー正規化 `normalizeExternalError()` を追加（Issue #1320。公開リポ側 https://github.com/feel-flow/ai-spec-driven-development/issues/486 の移植）
+- Logger の呼び出し規約を `interface Logger` として明文化（error は `(message, error, meta?)`、warn / info は `(message, meta?)`）。`JsonLogger` が `cause` 鎖を出力するよう `serializeError()` を追加。`Metrics` の最小契約を追加
+
+### [1.3.1] - 2026-09-06
+
+#### 変更
+
+- 初期セット外（`templates/README.md`・`DEPENDENCY_LINT.md`）への Markdown リンクを、コピー元付きの案内テキスト（inline code）に変更
 
 ### [1.3.0] - 2026-07-31
 

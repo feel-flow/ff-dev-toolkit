@@ -20,6 +20,19 @@
 
 ## [Unreleased]
 
+## [0.86.2] - 2026-09-07
+
+### 修正
+
+- docs-template のエラーハンドリング例を修正: `AppError` に `cause` と分類 `category`（never-fallback / transient / permanent）を追加し、外部境界の正規化 `normalizeExternalError()`、deny-by-default の `fallbackInProdOnly()`、再試行可否判定・Jitter・試行ログ付きの `retryWithBackoff()`、`Logger` / `Metrics` の単一契約を PATTERNS.md / FALLBACK.md に置き、決済・メール・Slack・Webhook・分析の例（サイレント障害・冪等キー・部分送信の記録）と SKILL.md / CONVENTIONS.md / VALIDATION.md をそれに揃えた
+- spec-docs MCP サーバーのビルドツール esbuild を ^0.28.0 へ更新し、`package-lock.json` を全依存が整合する状態へ再生成した。従来は vitest 4 が同梱する vite 8 の optional peer（esbuild ^0.27 || ^0.28）と root の esbuild ^0.25 が食い違い、Node 22 同梱の npm 10 系で `npm ci` を実行すると「Missing: esbuild@0.28.2 from lock file」で失敗していた（npm 11 系では再現しない）。`dist/index.js` は更新後の esbuild で再ビルドしてコミットしている
+- `mcp-dist-gate` suite に lockfile 整合検査（`npm ls --package-lock-only --all`）を追加し、lockfile が満たさない依存 edge を npm の版に依らず fail-closed で検出する
+
+### ドキュメント
+
+- `/init-docs` の置換ポリシーに、ステップ1の情報で埋まるプレースホルダーの一覧（ファイル別）と、番号を持つ例示（ADR 記述例）を実採番へ書き換えない規則を追加。docs-template の ARCHITECTURE.md の ADR 記述例を非実在番号に変更
+- docs-template の初期セット文書（PATTERNS.md / DECISION_TREE.md / TESTING.md）に残っていた初期セット外ファイルへの角括弧リンク（雛形 `.skeleton.ts` / `.sql` を含む）を案内テキストに変更し、`/init-docs` 展開直後のリンク切れを解消。DECISION_TREE.md / CONVENTIONS.md に残っていた展開前のディレクトリ名を展開先の `docs/` に修正。配布物の可搬性検査を `.github/` 配下から初期セット 20 文書へ拡張
+
 ## [0.86.1] - 2026-09-06
 
 ### 修正
