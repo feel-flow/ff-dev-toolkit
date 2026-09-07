@@ -31,7 +31,7 @@
 ### ドキュメント
 
 - `/init-docs` の置換ポリシーに、ステップ1の情報で埋まるプレースホルダーの一覧（ファイル別）と、番号を持つ例示（ADR 記述例）を実採番へ書き換えない規則を追加。docs-template の ARCHITECTURE.md の ADR 記述例を非実在番号に変更
-- docs-template の初期セット文書（PATTERNS.md / DECISION_TREE.md / TESTING.md）に残っていた初期セット外ファイルへの角括弧リンク（雛形 `.skeleton.ts` / `.sql` を含む）を案内テキストに変更し、`/init-docs` 展開直後のリンク切れを解消。DECISION_TREE.md / CONVENTIONS.md に残っていた展開前のディレクトリ名を展開先の `docs/` に修正。配布物の可搬性検査を `.github/` 配下から初期セット 20 文書へ拡張
+- docs-template の初期セット文書（PATTERNS.md / DECISION_TREE.md / TESTING.md）に残っていた初期セット外ファイルへの角括弧リンク（雛形 `.skeleton.ts` / `.sql` を含む）を案内テキストに変更し、`/init-docs` 展開直後のリンク切れを解消。DECISION_TREE.md / CONVENTIONS.md に残っていた展開前のディレクトリ名を展開先の `docs/` に修正。配布物の可搬性検査を .github ディレクトリ配下の文書から初期セット 20 文書へ拡張
 
 ## [0.86.1] - 2026-09-06
 
@@ -2000,7 +2000,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.86.1...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.86.2...HEAD
+[0.86.2]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.86.1...v0.86.2
 [0.86.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.86.0...v0.86.1
 [0.86.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.85.0...v0.86.0
 [0.85.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.84.0...v0.85.0
