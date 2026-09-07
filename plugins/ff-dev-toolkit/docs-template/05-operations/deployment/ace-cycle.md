@@ -3,6 +3,10 @@
 > **Parent**: [DEPLOYMENT.md](../DEPLOYMENT.md) | **Workflow Step**: 10
 > **関連**: [knowledge-management.md](./knowledge-management.md) | [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) | [ACE フレームワーク概念](https://github.com/feel-flow/ai-spec-driven-development/blob/HEAD/docs/ACE_FRAMEWORK.md)
 
+## ドメイン知識と指定資料
+
+[ACE ドメイン知識契約](./ace-domain.md)をGenerate前に読む。PR経路と `--source` / `--issue` の資料単独経路は同じ7観点を使う。資料の取得失敗は未確認と報告する。業務知識はdomainで根拠・確認状態・反映先を保持し、設計書変更案はace-refineの別PRへ分離する。
+
 ## 概要
 
 ACE (Agentic Context Engineering) サイクルは、マージ後・cleanup 後に AIツールと協力して知見を抽出・評価・記録する運用手順です。
@@ -41,7 +45,7 @@ ACE 知見コミットのマージ方針は **[git-workflow.md ステップ10 §
 ### AIプロンプトテンプレート
 
 ```
-以下のPR情報を分析し、将来の開発で役立つ知見を抽出してください。
+以下のPR情報または明示指定資料（資料単独ならIssue必須）を分析し、将来の開発で役立つ知見を抽出してください。
 
 ## PR情報
 - PR: #${PR_NUMBER}
@@ -55,7 +59,9 @@ ACE 知見コミットのマージ方針は **[git-workflow.md ステップ10 §
 4. **パフォーマンス**: 最適化のヒント
 5. **アーキテクチャ**: 構造上の決定事項
 6. **プロセス**: ワークフロー・ツール活用の改善点
-7. **判断ログ**: spec にない判断 / spec から変更した点 / 捨てた選択肢（#1「採用した判断」を補完するレイヤ。データソースは上記表「PR description」行、ACE-034。カテゴリは `process` または `architecture` を推奨。試行中: [Issue #421](https://github.com/feel-flow/ai-spec-driven-development/issues/421)、5 PR で評価）
+7. **ドメイン**: 業務用語・主体別の制約・状態遷移・データ整合条件・仕様の理由。Evidence / Verification / Distill-Toを返し、実装観測だけはunverified、矛盾はconflicting、根拠なしは登録しない。
+
+補助の**判断ログ**: spec にない判断 / spec から変更した点 / 捨てた選択肢（#1「採用した判断」を補完するレイヤ。データソースは上記表「PR description」行、ACE-034。カテゴリは `process` または `architecture` を推奨。試行中: [Issue #421](https://github.com/feel-flow/ai-spec-driven-development/issues/421)、5 PR で評価）
 
 ## 出力形式
 各知見について以下を出力してください:
@@ -101,7 +107,9 @@ ACE 知見コミットのマージ方針は **[git-workflow.md ステップ10 §
 □ 既存 Playbook エントリと重複しないか？
   → 重複する場合は既存エントリの Helpful +1
 
-□ 既存 Playbook エントリと矛盾しないか？
+□ domainは既存仕様を先に確認し、記載済みなら正本へ案内する。矛盾は根拠を両側残しconflictingとして扱い、既存仕様を上書きしない。
+
+□ 非domainの既存 Playbook エントリと矛盾しないか？
   → 矛盾する場合は既存エントリを deprecated → 新エントリ作成
 
 □ プロジェクト固有の文脈が十分に記述されているか？
@@ -238,6 +246,8 @@ push が non-fast-forward なら、remote のエントリと版ブロックを�
 
 ## 定期 Refine（grow-and-refine）
 
+domainはHelpfulに依存せず5状態に分類し、未反映は自動archiveしない。別PRへの反映とDistilled-To記録は[ドメイン知識契約](./ace-domain.md)に従う。
+
 Generate → Reflect → Curate は「増やす」一方向のサイクルであり、放置すると Playbook は肥大化して検索面が劣化する。**`/ace-refine`** が「整える」側を担う：
 
 | 操作 | 対象 | 結果 |
@@ -245,7 +255,7 @@ Generate → Reflect → Curate は「増やす」一方向のサイクルであ
 | アーカイブ | helpful=0 かつ stale（既定 30 日。作成からの経過と最終参照からの経過の両方に適用） | `playbook/archive/<category>.md` へ verbatim 移動 |
 | 圧縮 | 行数バジェット超過エントリ | 原文をアーカイブへ保全 → live 側をコンパクト正準形式へ意味保存要約 |
 | 統合 | 近似重複ペア | カウンター合算で 1 本化、敗者はアーカイブ + ポインタ |
-| 昇格 | Helpful >= 5 | `docs/03-implementation/PATTERNS.md` へ蒸留追記（元エントリは残す） |
+| 昇格（非domain） | Helpful >= 5 | `docs/03-implementation/PATTERNS.md` へ蒸留追記（元エントリは残す） |
 
 - **実行タイミング**: 月次、または `check-category-size` の件数ゲートがブロックしたとき・refine 目安（既定 130 件）の警告・エントリ密度の警告（導出上限超過）が出たとき
 - **安全設計**: dry-run レポート（`scripts/ace/ace-refine-report.ts`）→ ユーザー承認 → 適用。承認前にファイルを書き換えない。原文は必ずアーカイブへ保全する

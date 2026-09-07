@@ -45,7 +45,7 @@ expect_contains() {
 echo "== ace-curate knowledge commit 契約検査 =="
 
 expect_fixed_count \
-  '-m "${commit_type}: ACE-<PR番号>-<連番> <要約>"' \
+  '-m "${commit_type}: ${ACE_ID} ${ACE_SUMMARY}"' \
   2 \
   "既定・PR 両経路の commit が commit_type 変数を使い、カテゴリ列挙を含まない短い形式（Issue #1147）"
 
@@ -78,9 +78,23 @@ expect_contains \
   "要約だけで上限を超える場合の是正案"
 
 expect_fixed_count \
-  '--title "${commit_type}: ACE-<PR番号>-<連番> <要約>"' \
+  '--title "${commit_type}: ${ACE_ID} ${ACE_SUMMARY}"' \
   2 \
   "squash 件名になり得る PR title（既定 push 失敗時の自動切替 / PR 経由の両方）も commit_type 変数を使い、カテゴリ列挙を含まない形式（Issue #1147）"
+
+# domain / source 契約は実行経路ごとに検査する。抽出品質自体の証明ではない。
+for token in '--source' '--issue' '資料単独' 'Distilled-Toは収集時には付けない' '既存仕様や既存ACEを自動deprecatedにしない'; do
+  expect_contains "$token" "domain / source 契約: $token"
+done
+for doc in "$COMMAND_FILE" "$PLUGIN_ROOT/docs-template/05-operations/deployment/ace-cycle.md" "$PLUGIN_ROOT/docs-template/.claude/agents/ace-capture.md"; do
+  for token in '業務用語' '主体別の制約' '状態遷移' 'データ整合条件' '仕様の理由' 'unverified' 'conflicting'; do
+    if grep -Fq -- "$token" "$doc"; then
+      ok "domain観点: $(basename "$doc") / $token"
+    else
+      bad "domain観点欠落: $doc / $token"
+    fi
+  done
+done
 
 echo "== 手順 5 commitlint type 許容リスト確認検査（Issue #1147） =="
 # knowledge: prefix が commitlint の type 許容リストに無い導入先で commit-msg hook に

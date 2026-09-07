@@ -37,6 +37,11 @@ fi
 
 <!-- ff-dev-toolkit-plugin-root-guard:end -->
 
+## 配置先の解決（最初に実施）
+
+既存AGENTS.md / CLAUDE.md / docs索引のACE配置記録とACE_PLAYBOOK_PATHから、実在するPLAYBOOKを解決する。明示環境変数があればそれを優先し、なければ記録済み配置、記録がない場合だけdocs/08-knowledge/PLAYBOOK.mdを使う。記録が矛盾する場合は変更前に報告する。repo外・symlinkでrepo外へ出る配置は編集しない。
+以降の `docs/08-knowledge/PLAYBOOK.md`、`docs/08-knowledge/playbook/` は**既定配置の例**である。独自配置では前提確認・検索・採番・全ゲート引数・git add・frontmatter・version claimのdocumentとclaimパス・索引相対リンクをすべて解決した配置へ置換してから実行する。固定パスをそのまま実行して第二のPlaybookを作らない。ゲート引数は明示した実配置を使い、環境変数を既定引数で上書きしない。
+
 ## 前提
 
 - `docs/08-knowledge/PLAYBOOK.md` が存在すること（`/ace-setup` で作成済み）
@@ -46,7 +51,7 @@ fi
 
 ## 引数
 
-- `$ARGUMENTS` — 対象カテゴリ名（例 `tooling`）または `--all`。省略時は Phase R1 のレポートから候補件数の多いカテゴリを提示してユーザーに選んでもらう
+- `$ARGUMENTS` — `domain [--confirm-pr <PR番号> --entry <ACE ID>]` または対象カテゴリ名（例 `tooling`）または `--all`。省略時は Phase R1 のレポートから候補件数の多いカテゴリを提示してユーザーに選んでもらう
 
 ## 閾値（環境変数）
 
@@ -56,6 +61,25 @@ fi
 | `ACE_MAX_ENTRY_LINES` | 15 | 1 エントリの行数バジェット（anchor 行〜終端 `---`）。例外宣言付きは 2 倍（30）。`check-category-size` のファイル行数上限もこの値から導出される（`ヘッダ行数 + 件数 × (本値 + 1)` — ADR-019） |
 | `ACE_PROMOTE_HELPFUL_MIN` | 5 | この Helpful 以上で PATTERNS.md への昇格候補 |
 | `ACE_PATTERNS_PATH` | `docs/03-implementation/PATTERNS.md` | 昇格先（レイアウトが異なる場合のみ上書き） |
+
+## domain の反映経路
+
+`domain` 指定は [ACE ドメイン知識契約](../../docs-template/05-operations/deployment/ace-domain.md)に従う。以下を通常のPATTERNS昇格より優先する。`--confirm-pr` と `--entry` は両方必須、他カテゴリでは拒否する。
+
+1. R1のレポートからdomainの5区分（未確認・矛盾・反映先未解決・反映候補・反映済み）を読む。これはローカル記録の分類であり外部状態の証明ではない。Helpfulの閾値は適用しない。欠落メタは未確認として診断し、推測で補完しない。
+2. 未反映domainはstale/helpful=0による自動archive対象外。圧縮・統合は主体・条件・例外・根拠・確認状態を保持し、domainと非domainを混ぜない。domainの状態差や反映先差を平均化して統合しない。
+3. confirmedかつ反映先解決済みの候補について、Evidenceの正式資料/確認者の承認を読み、現行設計書との意味的な整合を照合する。本文が同一なら既存の出典と反映PRを確認し、新しいPRは作らない。矛盾や許可範囲外の反映先は文案と理由を提示して当該反映を保留する。自律収集のgarden wallを拡張しない。
+4. 既存PRを全状態でACE IDと対象文書により検索し、本文・変更ファイルで同一候補か確認する。openならそのPRを提示、closed未マージなら自動再作成せず理由を報告、mergedなら手順6へ進む。タイトルの部分一致だけで同一視しない。
+5. 反映文案には業務ルール・適用条件・根拠と `出典: [ACE-ID](Playbookの当該anchorへの相対リンク)` を含め、同じ節に当該ACE IDの出典を一意に記載する。文書に既存見出しが適切なら再利用し、なければ見出しを追加する。反映先節には明示的な `<a id="ace-domain-..." ></a>` のanchorを設ける（実際の記法は `<a id="anchor"></a>`。既存の明示anchorがあれば再利用）。Distill-Toにその#anchorを含める。反映予定内容を提示し、ユーザーから既に実装の委任があれば重ねて許可を求めず、なければ通常のR2で具体的な変更案を確認する。default branchから `chore/ace-domain-<ACE ID小文字>` を別worktreeに作り、対象設計書と必要なversion/claimだけを変更する。対象リポジトリの検証を実施して設計書用PRを作成する。通常refineのPLAYBOOK/PATTERNS更新と同じPRに混ぜず、Distilled-Toを先行記録しない。マージは対象リポジトリの既存レビュー規則とユーザーからの委任に従う。
+6. 設計書PRのマージ後、または `--confirm-pr <PR番号> --entry <ACE ID>` で再開したとき、対象がconfirmedかつDistill-To解決済みか再確認する。`check-domain-distillation.ts` にrepository、PR、ACE ID、Distill-To、設計書に反映した業務ルール本文を渡す。現行baseとmerge commitの本文・出典、変更ファイル、検証結果とMERGED状態を確認できなければDistilled-Toを記録しない。API/権限エラーも未確認として止める。GitHubチェックが存在しない場合に限り、同じPR headで対象プロジェクトの全件ゲート（ff-dev-toolkitでは `FF_RUN_ALL_FULL=1`）が機械生成した記録を `--local-gate <記録path>` で渡せる。v1・STATUS=pass・DIRTY=no・head一致・SUITES空・passed正数・失敗/skip/未実行/除外0を要求する。GATEは非空のプロジェクト固有ゲート名を許可し、MODEは空でもよい補足情報とする。チェッカーは記録の生成元を認証しないため、親は実際の全件ゲートが機械生成した記録であることを確認し、記録を手作成しない。GitHubチェックが失敗/保留なら代替不可。チェックは構造的証明であり、ルールとEvidenceの意味的一致は親が別途照合する。
+7. チェッカー成功後に、最新default branchで独立したACE更新としてStatus行へDistilled-Toを追加する。元Statusはactive、同じ記録ならno-op。新しいDistilled-Toを持つこの更新のPR/commit本文へ検証receipt（元設計書PR、merge SHA、対象、ACE ID）を残す。採用した反映先が変わった場合は先にDistill-Toを根拠付きで整合させる。既存マーカーだけを根拠に更新しない。
+8. 最終報告は収集済み・設計書PR作成・設計書マージ済み・ACEへの反映済み記録を区別する。未確認・矛盾・未解決の残件も報告する。
+
+チェッカーはコピー済みのものが最新でない場合、同梱runnerを使う（plugin root guardを先に実行する）。引数は個別に引用し、資料本文をシェルコードへ埋め込まない:
+
+```bash
+bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-domain-distillation.ts" "$REPOSITORY" "$DISTILL_PR" "$ACE_ID" "$DISTILL_TARGET" "$RULE_TEXT"
+```
 
 ## 手順
 
@@ -257,6 +281,8 @@ R3-a / R3-b / R3-c はいずれも live のブロックを `playbook/archive/<ca
    6. R3-e 手順 4 の Changelog に、統合の記録（`- Merged: …`）に加えて**残す側の ID を `- Compacted:` へ記録**する。`check-refine-invariants` は `- Compacted: <ID>` に対して「archive に `> Compacted:` provenance があり、かつ live に残っている」ことを要求するので、1. の保全とこの記録が対で契約を満たす
 
 #### R3-d. PATTERNS.md への昇格（蒸留オーバーレイ）
+
+domainはこの操作の対象外。「domain の反映経路」の別PR処理を使用する。
 
 1. 昇格先 `docs/03-implementation/PATTERNS.md` の「実証済みパターン（ACE 昇格）」節へ、以下の形式で追記する。**節見出しは「実証済みパターン（ACE 昇格）」の部分一致で探す**（テンプレートでは `## 14. 実証済みパターン（ACE 昇格）` のように節番号付き — 番号は文書によって異なるため、完全一致で探して重複節を作らない）。節が無ければ節ごと追加する。初回昇格時はプレースホルダ行 `- 該当なし（昇格発生後に追記）` を削除する:
 

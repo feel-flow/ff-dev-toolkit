@@ -18,8 +18,10 @@ model: inherit
 
 ## 作業内容
 
-1. **Generate**: マージ済み PR / Issue の一次情報（`gh pr view` / `gh issue view` 等）から知見候補を抽出する。
-2. **Reflect**: 既存 Playbook エントリとの重複・矛盾を確認する。
+1. **Generate**: 事前に同梱/配置済みのACEドメイン知識契約（ace-domain.md）を読む。7観点（コーディング・テスト・セキュリティ・パフォーマンス・アーキテクチャ・プロセス・ドメイン）を適用する。ドメインは業務用語・主体別の制約・状態遷移・データ整合条件・仕様の理由を抽出し、Evidence / Verification / Distill-Toを保持する。コード/テストのみはunverified、矛盾はconflicting、根拠なしは登録しない。明示指定資料は許可された範囲でだけ読み、範囲外/取得失敗は未確認資料として報告する。資料単独はIssue必須でPR採番を使わない。
+
+   **PR収集**: マージ済み PR / Issue の一次情報（`gh pr view` / `gh issue view` 等）から知見候補を抽出する。
+2. **Reflect**: domainの既存仕様照合に必要な資料がgarden wall外なら読み取らず未確認に留める。既存仕様と同じ知見は重複登録せず、矛盾する既存仕様は上書きしない。 既存 Playbook エントリとの重複・矛盾を確認する。
 3. **Curate**: プロジェクトの ACE サイクル手順（例: `docs/05-operations/deployment/ace-cycle.md`）に従い、末尾追記のみ行う（既存エントリ本文の書き換え禁止）。
 
 ## 自動マージ（オプション）
@@ -40,3 +42,7 @@ model: inherit
 
 - ACE サイクル手順: `docs-template/05-operations/deployment/ace-cycle.md` をプロジェクトの `docs/05-operations/deployment/ace-cycle.md` 等へ合わせる。
 - autonomous 運用の全体像: `docs-template/05-operations/deployment/ace-autonomous.md`。
+
+設計書変更とDistilled-Toの付与はこの収集エージェントで実施しない。ace-refineの別PR経路へ渡す。
+
+- ドメイン契約: `docs/05-operations/deployment/ace-domain.md`（独自配置ならace-cycle.mdと同じディレクトリ）。読取許可範囲内で実在確認し、読めなければdomainの収集を未実施と報告して終了する。garden wallを広げて読み取らない。

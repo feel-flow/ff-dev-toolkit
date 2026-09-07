@@ -33,7 +33,7 @@
  * 新規追記の抜け道ではない）。初期化は導入時に 1 回だけ回すコマンドであり、CI ゲートとして
  * 常時実行するものではない（アーカイブ済み ID の掃除は形式ゲート側の警告が案内する）。
  *
- * **検証範囲（Issue #617 / #730）**。本ゲートが赤にするのは次の 7 つだけである:
+ * **検証範囲（Issue #617 / #730 / #1338）**。本ゲートが赤にするのは次の 8 つである:
  * (1) allowlist に無いエントリに旧テーブル形式のマーカーが残っていること、
  * (2) 認識した ID の形状が `ACE_ENTRY_ID_SHAPE` を外れること、
  * (3) `###` + `ACE-` で始まる（行頭と `###` 直後の空白は問わない）のに、正準の見出し形
@@ -41,7 +41,8 @@
  * (4) 同じ ID のエントリ見出しが走査対象に 2 つ以上あること、
  * (5) 未閉フェンス・フェンス内の正準形見出し（分割の前提が壊れる形）、
  * (6) 同じ `<a id="ace-…">` アンカーが live 内に 2 つ以上あること（Issue #730 形 a）、
- * (7) エントリ見出しの直前アンカーの ID が見出しの ID と食い違うこと（同 形 b）。
+ * (7) エントリ見出しの直前アンカーの ID が見出しの ID と食い違うこと（同 形 b）、
+ * (8) domain の根拠・確認状態・反映先メタデータが不正なこと（#1338。旧形式 allowlist は新しい必須フィールドの欠落だけを免除）。
  *
  * (6)(7) は **ID をキーにした参照網が壊れる形**を止める。アンカーは索引テーブルの
  * 参照先（`[ACE-x](./playbook/<category>.md#ace-x)`）・allowlist・再利用カウンタの
@@ -52,7 +53,7 @@
  * archive 配下は本ゲートの対象外のままである（あちらの管轄。原文 verbatim 保全の
  * 都合で live と同じ ID が残るのが正常）。
  *
- * 逆に、**コンパクト正準フォーマットの構造そのものは検証しない** — anchor 行
+ * domain の追加メタデータを除き、**コンパクト正準フォーマットの構造そのものは検証しない** — anchor 行
  * （`<a id="ace-…"></a>`）・メタ 4 行・終端 `---` のいずれも**存在を要求しない**ので、
  * それらを 1 つも持たない「本文だけ」のエントリは本ゲートを通る（(7) は
  * 「アンカーがあるなら一致していること」であって、アンカーの**存在**は要求しない）。
@@ -77,6 +78,8 @@ import {
   entryHeadingSource,
   findFencedCanonicalHeadings,
 } from "./check-category-size";
+
+import { parseDomainMetadata, validateDomainMetadata } from "./ace-domain";
 
 const EXIT_OK = 0;
 const EXIT_VIOLATION = 1;
@@ -836,6 +839,7 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
   console.log(`走査対象: ${String(filesToScan.length)} ファイル（playbook/archive/ は対象外）`);
 
   const violations: string[] = [];
+  const domainViolations: string[] = [];
   const shapeViolations: string[] = [];
   const unclosedFenceFiles: string[] = [];
   const fencedHeadingViolations: string[] = [];
@@ -937,6 +941,11 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
       seenIds.add(entry.id);
       if (!ACE_ENTRY_ID_SHAPE.test(entry.id)) {
         shapeViolations.push(`${entry.id}（${path.basename(filePath)}）`);
+      }
+      const domain = parseDomainMetadata(entry.body);
+      const domainErrors = validateDomainMetadata(domain, { allowLegacyMissing: allowed.has(entry.id) });
+      if (domainErrors.length > 0) {
+        domainViolations.push(`${entry.id}（${path.basename(filePath)}）: ${domainErrors.join(" / ")}`);
       }
       const markers = detectLegacyMarkers(entry.body);
       if (markers.length === 0) {
@@ -1079,6 +1088,10 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
     );
   }
 
+  if (domainViolations.length > 0) {
+    console.error("✗ domain メタデータが不正です（ace-domain.md を参照）:\n- " + domainViolations.join("\n- "));
+  }
+
   // 未閉フェンスは「入力が検査可能な形になっていない」ので USAGE、それ以外は VIOLATION。
   // 両方あるときは USAGE を優先する（スキップしたファイルがある = 違反の列挙が不完全で、
   // 上の一覧を直しても再実行で新しい違反が出うることを終了コードでも表す）。
@@ -1092,7 +1105,8 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
     duplicateAnchorViolations.length > 0 ||
     anchorMismatchViolations.length > 0 ||
     shapeViolations.length > 0 ||
-    violations.length > 0
+    violations.length > 0 ||
+    domainViolations.length > 0
   ) {
     return EXIT_VIOLATION;
   }

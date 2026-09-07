@@ -941,7 +941,8 @@ fi
 #   4) grok が PATH に無い（アダプタが preflight で rc=1 になる）
 sandbox_fail_open_case() { # $1: ケース名, $2: ログ名
   local label="$1" log="$TMP/$2"
-  if run_sandbox_plan "$log" && ! grep -q 'sandbox を適用できません' "$log"; then
+  shift 2
+  if run_sandbox_plan "$log" "$@" && ! grep -q 'sandbox を適用できません' "$log"; then
     ok "fail-open: ${label}では警告を出さない"
   else
     bad "fail-open 破れ: ${label}で警告が出た（誤警告）"
@@ -963,7 +964,28 @@ sandbox_fail_open_case "想定外の rc=42" "sandbox-rc42.log"
 
 # grok 不在: PATH から除いてアダプタの preflight を踏ませる
 rm -f "$SANDBOX_STUB/grok"
-sandbox_fail_open_case "grok が PATH に無い" "sandbox-missing.log"
+# #1341: stubの削除だけではホストの実grokへfallbackするためPATHを隔離する。
+if SANDBOX_YQ="$(command -v yq)" && [ -x "$SANDBOX_YQ" ]; then
+  ln -s "$SANDBOX_YQ" "$SANDBOX_STUB/yq"
+  SANDBOX_MISSING_RC=0
+  run_isolated PATH="$SANDBOX_STUB:/usr/bin:/bin" bash "$ADAPTERS_DIR/grok-cli-adapter.sh" \
+    --probe-sandbox review > "$TMP/sandbox-missing-preflight.log" 2>&1 || SANDBOX_MISSING_RC=$?
+  if [ "$SANDBOX_MISSING_RC" -eq 1 ] && grep -Fq 'is not installed.' "$TMP/sandbox-missing-preflight.log"; then
+    ok "隔離 PATH の grok 不在を adapter preflight の rc=1 と診断で確認"
+  else
+    bad "grok 不在の preflight を確認できない"
+  fi
+  sed 's/timeout: 900/timeout: 913/' "$PLUGIN_ROOT/scripts/agent-config.yaml" > "$TMP/sandbox-missing-config.yaml"
+  PATH="$SANDBOX_STUB:/usr/bin:/bin" sandbox_fail_open_case "grok が PATH に無い" "sandbox-missing.log" --config "$TMP/sandbox-missing-config.yaml"
+  if grep -Fq 'grok-cli (grok) — not installed' "$TMP/sandbox-missing.log" && grep -Fq "Config: $TMP/sandbox-missing-config.yaml" "$TMP/sandbox-missing.log" && grep -Fq "Timeout: 913s per CLI" "$TMP/sandbox-missing.log"; then
+    ok "grok 不在をCLI一覧に表示し plugin config を読んだプランを検査している"
+  else
+    bad "grok 不在ケースが config 未読で空振りした"
+    cat "$TMP/sandbox-missing.log"
+  fi
+else
+  bad "grok 不在ケースに必要な実行可能 yq が無い"
+fi
 
 # timeout の seam は無い（見送り）。probe の上限 SANDBOX_PROBE_TIMEOUT は公開つまみに
 # しない方針で固定値なので、30 秒の実待ちなしに timeout 経路へ入れる入口が現状無い。

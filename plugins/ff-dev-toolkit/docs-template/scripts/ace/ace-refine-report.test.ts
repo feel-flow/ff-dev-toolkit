@@ -4,6 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   collectMergeTargets,
+  collectDomainEntries,
+  collectRawEntryBlocks,
   findOverBudgetEntries,
   findPromotionCandidates,
   findRefineArchiveCandidates,
@@ -474,6 +476,111 @@ describe("findRefineArchiveCandidates", () => {
  * 黙って落とさず別枠へ回すので、単体では「本体から消える」と「除外側に理由付きで出る」の
  * 両方を測る（片方だけだと、候補を無条件に捨てる変異が緑で通る）。
  */
+describe("domain の分類と候補保護（Issue #1338）", () => {
+  const tempDirs: string[] = [];
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function domainBlock(id: number, verification: string, target = "docs/02-design/orders.md#approval", distilled = ""): string {
+    return [
+      `### ACE-1338-${id}: 法人発注者は承認待ち状態でのみ変更できる ${id}`,
+      "",
+      "| Category | domain | Origin | Issue #1338 | Evidence | docs/source/meeting.md#decision 担当者確認 |",
+      `| Date | 2026-01-01 | Verification | ${verification} |`,
+      "| Helpful | 0 | Harmful | 0 |",
+      `| Status | active | Distill-To | ${target} |${distilled ? ` Distilled-To | ${distilled} |` : ""}`,
+      "",
+      "法人発注者が承認待ち状態のとき変更できる。承認済み状態は対象外。",
+      "",
+      "---",
+    ].join("\n");
+  }
+
+  function fixtureContent(): string {
+    return [
+      domainBlock(1, "unverified"),
+      domainBlock(2, "conflicting"),
+      domainBlock(3, "confirmed", "unresolved"),
+      domainBlock(4, "confirmed"),
+      domainBlock(5, "confirmed", "docs/02-design/orders.md#approval", "docs/02-design/orders.md#approval"),
+      domainBlock(6, "confirmed").replace(" Verification | confirmed |", ""),
+      domainBlock(7, "confirmed").replace("| Helpful | 0 |", "| Helpful | 8 |"),
+      domainBlock(8, "confirmed").replace("| Status | active |", "| Status | deprecated |"),
+      domainBlock(9, "confirmed").replace("| Category | domain |", "| Category | coding |").replace("| Helpful | 0 |", "| Helpful | 8 |"),
+      domainBlock(10, "confirmed").replace("| Category | domain |", "| Category | coding |"),
+      domainBlock(11, "confirmed").replace("| Category | domain |", "| Category | coding | Category | domain |").replace("| Helpful | 0 |", "| Helpful | 8 |"),
+    ].join("\n\n");
+  }
+
+  it("原文メタを用いて active な domain を分類し、旧メタ欠落と重複を診断付き未確認に残す", () => {
+    const content = fixtureContent();
+    const entries = parsePlaybookEntries(content, () => {});
+    // reuse の型は追加のドメインメタを保持しないため、原文から分類する。
+    expect(entries[3]).not.toHaveProperty("verification");
+    const domain = collectDomainEntries(entries, collectRawEntryBlocks([content]));
+    expect(domain.map(({ entry, state }) => [entry.id, state])).toEqual([
+      ["ACE-1338-1", "unverified"], ["ACE-1338-2", "conflicting"],
+      ["ACE-1338-3", "unresolved"], ["ACE-1338-4", "candidate"],
+      ["ACE-1338-5", "distilled"], ["ACE-1338-6", "unverified"],
+      ["ACE-1338-7", "candidate"], ["ACE-1338-11", "unverified"],
+    ]);
+    expect(domain.find(({ entry }) => entry.id === "ACE-1338-6")?.diagnostics.join(" ")).toContain("Verification");
+    expect(domain.find(({ entry }) => entry.id === "ACE-1338-11")?.diagnostics.join(" ")).toContain("Category");
+  });
+
+  it("未反映 domain は stale/helpful=0 でも保全し、全 domain を Helpful 昇格から外す", () => {
+    const content = fixtureContent();
+    const entries = parsePlaybookEntries(content, () => {});
+    const raw = collectRawEntryBlocks([content]);
+    const stats = statsOf(entries.map((entry) => [entry.id, {}] as const));
+    expect(findRefineArchiveCandidates(entries, stats, NOW, 90, raw).map((entry) => entry.id)).toEqual([
+      "ACE-1338-5", "ACE-1338-10",
+    ]);
+    expect(findPromotionCandidates(entries, null, 5, raw).map((entry) => entry.id)).toEqual(["ACE-1338-9"]);
+    // メタ原文を渡さない既存の直接呼出でも domain を誤って archive しない。
+    expect(findRefineArchiveCandidates(entries.filter((entry) => entry.category === "domain"), stats, NOW, 90)).toEqual([]);
+    expect(findPromotionCandidates(entries.filter((entry) => entry.category === "domain"), null, 5)).toEqual([]);
+  });
+
+  it("CLI レポートは5区分・根拠・対象条件・診断・ローカル分類の留保を出し、入力を変更しない", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-refine-domain-"));
+    tempDirs.push(dir);
+    const playbookPath = path.join(dir, "PLAYBOOK.md");
+    const domainPath = path.join(dir, "playbook", "domain.md");
+    fs.mkdirSync(path.dirname(domainPath));
+    fs.writeFileSync(playbookPath, "# ACE Playbook\n");
+    const content = fixtureContent();
+    fs.writeFileSync(domainPath, content);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(main([playbookPath], { readLog: () => ({ commits: [], malformedCount: 0 }), now: () => NOW })).toBe(0);
+    const report = logSpy.mock.calls.flat().join("\n");
+    expect(report).toContain("## ドメイン知識（active、8 件）");
+    for (const heading of ["未確認（3 件）", "矛盾（1 件）", "反映先未解決（1 件）", "反映候補（2 件）", "反映済み（1 件）"]) {
+      expect(report).toContain(`### ${heading}`);
+    }
+    expect(report).toContain("Evidence: docs/source/meeting.md#decision 担当者確認");
+    expect(report).toContain("法人発注者は承認待ち状態でのみ変更できる");
+    expect(report).toContain("Distill-To: docs/02-design/orders.md#approval");
+    expect(report).toContain("診断: Verification");
+    expect(report).toContain("ローカル記録上の分類");
+    expect(report).toContain("## Archive 候補（helpful=0 かつ stale、2 件）");
+    expect(report).toContain("## PATTERNS.md 昇格候補（Helpful >= 5、1 件）");
+    const archive = report.split("## Archive 候補（")[1].split("\n## ")[0];
+    const promotion = report.split("## PATTERNS.md 昇格候補（")[1].split("\n## ")[0];
+    expect(archive).toContain("ACE-1338-5:");
+    expect(archive).toContain("ACE-1338-10:");
+    expect(archive).not.toContain("ACE-1338-4:");
+    expect(promotion).toContain("ACE-1338-9:");
+    expect(promotion).not.toContain("ACE-1338-7:");
+    expect(fs.readFileSync(domainPath, "utf8")).toBe(content);
+    expect(fs.readFileSync(playbookPath, "utf8")).toBe("# ACE Playbook\n");
+  });
+});
+
 describe("collectMergeTargets / partitionArchiveCandidates（Issue #917）", () => {
   const archiveMd = [
     "# PLAYBOOK archive — コーディング (coding)",
@@ -730,6 +837,7 @@ describe("resolvePatternsPath", () => {
 describe("formatRefineReport", () => {
   it("候補ゼロでも各セクションと read-only 注記を出力する", () => {
     const report = formatRefineReport({
+      domainEntries: [],
       archiveCandidates: [],
       mergeTargetExclusions: [],
       overBudget: [],
@@ -748,6 +856,10 @@ describe("formatRefineReport", () => {
     expect(report).toContain("## Archive 候補から除外（他エントリの統合先、0 件）");
     expect(report).toContain("## 行数バジェット超過（0 件）");
     expect(report).toContain("## PATTERNS.md 昇格候補（Helpful >= 5、0 件）");
+    expect(report).toContain("## ドメイン知識（active、0 件）");
+    for (const state of ["未確認", "矛盾", "反映先未解決", "反映候補", "反映済み"]) {
+      expect(report).toContain(`### ${state}（0 件）`);
+    }
     expect(report).toContain("/ace-refine の承認ゲート");
   });
 
@@ -766,6 +878,7 @@ describe("formatRefineReport", () => {
       () => {},
     );
     const report = formatRefineReport({
+      domainEntries: [],
       archiveCandidates: [],
       mergeTargetExclusions: [{ entry, mergeSources: ["ACE-279-7"] }],
       overBudget: [],

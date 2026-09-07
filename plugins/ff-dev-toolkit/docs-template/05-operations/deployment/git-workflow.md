@@ -177,6 +177,8 @@ git diff --stat <前のブランチ> <base ブランチ> -- <対象ディレク�
 
 #### 着手前の Playbook 参照（ACE Reuse）
 
+業務変更では索引を業務用語・主体・状態でも検索し、domain本文のEvidence / Verification / Distill-Toを読む。unverifiedやconflictingを正式仕様として実装しない。Distilled-Toがある場合は反映先の現行仕様も照合する。
+
 実装に入る前に [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) の索引（エントリ一覧）を変更対象領域のキーワードで検索し、関連する ACE エントリを読む。Issue 本文に「関連 ACE エントリ」が添付されている場合（`/create-issue` が生成）はそれを起点にする。参照して役立ったエントリは ACE ID で記録する。記録先ごとに届く仕組みが異なる: **コミット件名・本文**への記録は再利用計測 `ace-reuse-report` の入力になり（計測対象は git log の件名・本文のみ。squash merge 後は squash コミットの件名・本文に ACE ID が残るようにする）、**`implementation-notes.md`** への記録（ACE-034 により PR description へ転記される）は `/ace-curate` での `Helpful` カウンター更新の入力になる。ACE サイクルは「書く」（ステップ10）だけでは完結せず、この「読む」導線があって初めて知見が循環する。
 
 この節が手順の正本である。記録の契約: 検索結果は必ず記録し（ヒットした ACE ID / `0 件` / `Playbook なし` / `読み取り失敗（理由）` の 4 種。いずれも「検索を実施した」記録）、空欄のまま先へ進まない。Playbook 不在・読み取り失敗は該当を記録して標準手順を続行する（探索の失敗でタスクを止めない）。`/spec-driven` を使う場合は Step 1（tier 判定の直後）が本節の起動点となり、結果をゲート進行表のタスクサマリー「参照 ACE エントリ」欄へ記録する。スキル側は別手順を定義せず、本節を実行して結果を記録するだけとする。

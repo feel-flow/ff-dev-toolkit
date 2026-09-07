@@ -40,6 +40,7 @@ fi
 for file in \
   "$PLAYBOOK" \
   "$ACE_SCRIPTS/check-category-size.ts" \
+  "$ACE_SCRIPTS/ace-domain.ts" \
   "$ACE_SCRIPTS/check-entry-format.ts" \
   "$ACE_SCRIPTS/sync-playbook-frontmatter.ts" \
   "$ACE_SCRIPTS/check-archive-links.ts" \
@@ -94,6 +95,7 @@ transpile_shared() {
   cp "$dest" "$dest.js"
 }
 transpile_shared "$ACE_SCRIPTS/check-category-size.ts"
+transpile_shared "$ACE_SCRIPTS/ace-domain.ts"
 transpile_shared "$ACE_SCRIPTS/ace-reuse-report.ts"
 transpile_shared "$ACE_SCRIPTS/ace-refine-report.ts"
 transpile_shared "$ACE_SCRIPTS/check-archive-links.ts"

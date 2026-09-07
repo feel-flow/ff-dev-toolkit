@@ -210,16 +210,22 @@ describe("computeReuseStats", () => {
     expect(stats.get("ACE-449-1")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
   });
 
-  it("commit type を chore 等へ置換したキュレーションコミットも Categories: body 行で除外する（Issue #1147）", () => {
+  it.each(["ACE-449-2", "ACE-i425-1"])("commit type を chore 等へ置換した %s キュレーションも Categories: body 行で除外する", (id) => {
     // commitlint の type 許容リストに knowledge が無いプロジェクトでは手順5に従い
     // commit type を chore 等へ置換するが、body の Categories: 行は type に関わらず
     // 必ず書く契約になっている。subject prefix ではなくこの行を目印に除外できることを確認する。
     const log = [
-      `${RS}2026-08-01${FS}chore: ACE-449-2 追加（キュレーション）${FS}ACE-005 と ACE-449-1 を含むが除外されるべき\nCategories: process`,
+      `${RS}2026-08-01${FS}chore: ${id} 追加（キュレーション）${FS}ACE-005 と ACE-449-1 と ACE-i425-1 を含むが除外されるべき\nCategories: process`,
     ].join("\n");
     const localStats = statsFor(PLAYBOOK_FIXTURE, log);
     expect(localStats.get("ACE-005")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
     expect(localStats.get("ACE-449-1")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
+    expect(localStats.get("ACE-i425-1")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
+  });
+
+  it("Issue-scoped references without the curation marker still count as reuse", () => {
+    const log = `${RS}2026-08-02${FS}chore: ACE-i425-1 の知見を運用へ適用${FS}通常の作業`;
+    expect(statsFor(PLAYBOOK_FIXTURE, log).get("ACE-i425-1")).toMatchObject({ gitRefCount: 1, lastGitRefDate: "2026-08-02" });
   });
 
   it("Categories: 行を持つ通常コミットは subject が ACE ID 形でなければ除外しない（Issue #1147 レビュー対応）", () => {

@@ -83,11 +83,11 @@ const CURATION_COMMIT_PREFIX = "knowledge:";
  * 書く契約になっている（SKILL.md 手順5参照）ため、これを安定した目印にする。
  * ただし `Categories:` という語のみを目印にすると、たまたま同名の行を持つ
  * 通常の開発コミットまで除外してしまう（再現例: `fix: ... / Categories: 認証`
- * のような無関係コミット）。件名が `<type>: ACE-<数字>...` の形（このスキルが
+ * のような無関係コミット）。件名が `<type>: ACE-<数字>... / ACE-i<Issue番号>...` の形（このスキルが
  * 生成する commit のみが持つ形）であることも同時に要求し、両方が揃った commit
  * だけをキュレーションコミットとみなす。
  */
-const CURATION_COMMIT_SUBJECT_PATTERN = /^\w+(?:\([^)]*\))?:\s*ACE-\d/u;
+const CURATION_COMMIT_SUBJECT_PATTERN = /^\w+(?:\([^)]*\))?:\s*ACE-i?\d/u;
 const CURATION_COMMIT_BODY_MARKER_PATTERN = /^Categories:\s/mu;
 
 /** ace-refine-report.ts の昇格候補フィルタからも参照するため export する */

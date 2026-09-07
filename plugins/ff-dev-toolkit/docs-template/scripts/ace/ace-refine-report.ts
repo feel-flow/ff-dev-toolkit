@@ -6,7 +6,8 @@
  * - 行数バジェット超過: エントリブロック（anchor 行〜終端 `---`）の行数を計測し、
  *   ACE_MAX_ENTRY_LINES（既定 15）超過を列挙する。`ace-line-budget-exception` コメントを
  *   持つエントリは例外上限（既定 30 = ACE_MAX_ENTRY_LINES の 2 倍）で判定する
- * - 昇格候補: Helpful >= ACE_PROMOTE_HELPFUL_MIN（既定 5）かつ PATTERNS.md 未収載のエントリ
+ * - 昇格候補: domain 以外で Helpful >= ACE_PROMOTE_HELPFUL_MIN（既定 5）かつ PATTERNS.md 未収載
+ * - domain: active な知識を根拠・確認状態・設計書反映先で5区分。未反映は自動 Archive から保全
  * - 参考情報: カテゴリ別件数 vs ACE_MAX_ENTRIES_PER_CATEGORY
  *
  * 読み取り専用 — PLAYBOOK もリポジトリ履歴も変更しない。近似重複の検出は意味照合が
@@ -33,6 +34,7 @@ import {
   isDirectExecution,
   parsePositiveIntEnv,
   scanUnclosedFence,
+  splitEntrySegments,
 } from "./check-category-size";
 import {
   computeReuseStats,
@@ -50,6 +52,7 @@ import {
 // ace-refine-report）の辺が既にあるため、統合先の判定を check-refine-invariants から
 // import することはできない。
 import { discoverArchiveFiles } from "./check-archive-links";
+import { classifyDomainEntry, isDomainAutoArchiveSafe } from "./ace-domain";
 
 const EXIT_OK = 0;
 const EXIT_RUNTIME_ERROR = 1;
@@ -391,10 +394,44 @@ export function findRefineArchiveCandidates(
   stats: ReadonlyMap<string, ReuseStats>,
   now: Date,
   staleDays: number,
+  rawEntries: ReadonlyMap<string, string> = new Map(),
 ): PlaybookEntry[] {
   return findArchiveCandidates(entries, stats, now, staleDays).filter(
-    (entry) => entry.helpfulParsed && entry.helpful === 0,
+    (entry) => {
+      return entry.helpfulParsed && entry.helpful === 0 &&
+        isDomainAutoArchiveSafe(rawEntries.get(entry.id) ?? "", entry.category);
+    },
   );
+}
+
+/** 追加メタを保持しない PlaybookEntry に頼らず、ファイル単位のブロックから読む。 */
+export function collectRawEntryBlocks(contents: readonly string[]): ReadonlyMap<string, string> {
+  const blocks = new Map<string, string>();
+  for (const content of contents) {
+    const cleaned = blankFencedCodeBlocks(blankHtmlBlockComments(content)).text;
+    for (const segment of splitEntrySegments(cleaned).entries) {
+      const id = segment.text.split("\n", 1)[0].match(ENTRY_HEADER_LINE_PATTERN)?.[1];
+      if (id) blocks.set(id, segment.text);
+    }
+  }
+  return blocks;
+}
+
+export type DomainReportEntry = Readonly<{
+  readonly entry: PlaybookEntry;
+}> & ReturnType<typeof classifyDomainEntry>;
+
+export function collectDomainEntries(
+  entries: readonly PlaybookEntry[],
+  rawEntries: ReadonlyMap<string, string>,
+): DomainReportEntry[] {
+  return entries.flatMap((entry) => {
+    const classified = classifyDomainEntry(rawEntries.get(entry.id) ?? "");
+    if (entry.status !== STATUS_ACTIVE || (entry.category !== "domain" && !classified.metadata.isDomain)) {
+      return [];
+    }
+    return [{ entry, ...classified }];
+  });
 }
 
 /**
@@ -561,14 +598,17 @@ export function isListedInPatterns(patternsContent: string, id: string): boolean
  * パターン本文 + 出典リンクの組として未収載のもの。deprecated 等の非 active エントリは Helpful が
  * 高くても昇格させない（「実証済みパターン」に反証済みの知見が混入するため）。
  * patternsContent が null（ファイル不在）の場合は収載チェックをスキップする。
+ * domain は Helpful にかかわらず対象外とし、設計書への反映候補として別途扱う。
  */
 export function findPromotionCandidates(
   entries: readonly PlaybookEntry[],
   patternsContent: string | null,
   promoteMin: number,
+  rawEntries: ReadonlyMap<string, string> = new Map(),
 ): PlaybookEntry[] {
   return entries.filter((entry) => {
-    if (entry.status !== STATUS_ACTIVE || entry.helpful < promoteMin) {
+    if (entry.status !== STATUS_ACTIVE || entry.helpful < promoteMin || entry.category === "domain" ||
+      classifyDomainEntry(rawEntries.get(entry.id) ?? "").metadata.isDomain) {
       return false;
     }
     return patternsContent === null || !isListedInPatterns(patternsContent, entry.id);
@@ -588,6 +628,7 @@ export function resolvePatternsPath(playbookPath: string, envValue: string | und
 }
 
 export type RefineReportInput = Readonly<{
+  readonly domainEntries: readonly DomainReportEntry[];
   readonly archiveCandidates: readonly PlaybookEntry[];
   /** 統合先のため Archive 候補から外したエントリ（Issue #917。0 件でも節ごと出す） */
   readonly mergeTargetExclusions: readonly MergeTargetExclusion[];
@@ -680,6 +721,31 @@ export function formatRefineReport(input: RefineReportInput): string {
     }
   }
   lines.push("");
+  lines.push(`## ドメイン知識（active、${input.domainEntries.length} 件）`);
+  lines.push("");
+  lines.push(
+    "> 反映済みはローカル記録上の分類です。設計書 PR のマージ・検証結果・本文と出典は反映時に再確認してください。未反映 domain は自動 Archive 候補から除外し、domain は Helpful による PATTERNS.md 昇格の対象外です。",
+  );
+  lines.push("");
+  const domainStates = [
+    ["unverified", "未確認"],
+    ["conflicting", "矛盾"],
+    ["unresolved", "反映先未解決"],
+    ["candidate", "反映候補"],
+    ["distilled", "反映済み"],
+  ] as const;
+  for (const [state, label] of domainStates) {
+    const group = input.domainEntries.filter((item) => item.state === state);
+    lines.push(`### ${label}（${group.length} 件）`, "");
+    if (group.length === 0) lines.push("なし");
+    for (const { entry, metadata, diagnostics } of group) {
+      lines.push(
+        `- ${entry.id}: ${entry.title}（Evidence: ${metadata.evidence ?? "未記録"} / Verification: ${metadata.verification ?? "未記録"} / Distill-To: ${metadata.distillTo ?? "未記録"}${metadata.distilledTo ? ` / Distilled-To: ${metadata.distilledTo}` : ""}）`,
+      );
+      for (const diagnostic of diagnostics) lines.push(`  - 診断: ${diagnostic}`);
+    }
+    lines.push("");
+  }
   lines.push(
     "> 本レポートは読み取り専用の候補列挙です。適用（アーカイブ・圧縮・統合・昇格）は /ace-refine の承認ゲートを経て行ってください。近似重複の検出は /ace-refine の手順（索引タイトルの意味照合）で行います。",
   );
@@ -827,6 +893,8 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
     }
 
     const entries = parsePlaybookEntries(combinedContent);
+    const rawEntries = collectRawEntryBlocks([...contentsByFile.values()]);
+    const domainEntries = collectDomainEntries(entries, rawEntries);
     if (entries.length === 0) {
       // check-category-size と同様に 0 件は fail-loud にする。誤パスの空レポートを
       // 「整理対象なし」と読み違えて refine を完了扱いする事故を防ぐ。
@@ -851,7 +919,7 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
     const mergeTargets = collectMergeTargets(archiveContents);
     const { kept: archiveCandidates, excluded: mergeTargetExclusions } =
       partitionArchiveCandidates(
-        findRefineArchiveCandidates(entries, stats, now, staleDays),
+        findRefineArchiveCandidates(entries, stats, now, staleDays, rawEntries),
         mergeTargets,
       );
 
@@ -877,10 +945,11 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Main
     const patternsPath = resolvePatternsPath(playbookPath, process.env.ACE_PATTERNS_PATH);
     const patternsExists = fs.existsSync(patternsPath) && fs.statSync(patternsPath).isFile();
     const patternsContent = patternsExists ? readFileOrThrow(patternsPath) : null;
-    const promotionCandidates = findPromotionCandidates(entries, patternsContent, promoteMin);
+    const promotionCandidates = findPromotionCandidates(entries, patternsContent, promoteMin, rawEntries);
 
     console.log(
       formatRefineReport({
+        domainEntries,
         archiveCandidates,
         mergeTargetExclusions,
         overBudget,

@@ -14,6 +14,7 @@ SOURCE_NODE_MODULES="$PLUGIN_ROOT/mcp/node_modules"
 for file in \
   "$SOURCE_VERIFY" \
   "$SOURCE_SCRIPTS/check-category-size.ts" \
+  "$SOURCE_SCRIPTS/ace-domain.ts" \
   "$SOURCE_SCRIPTS/check-entry-format.ts" \
   "$SOURCE_SCRIPTS/sync-playbook-frontmatter.ts" \
   "$SOURCE_SCRIPTS/check-archive-links.ts" \
@@ -75,6 +76,7 @@ cp "$SOURCE_VERIFY" "$FIXTURE_PLUGIN/tests/live-ace-gates/verify.sh"
 chmod +x "$FIXTURE_PLUGIN/tests/live-ace-gates/verify.sh"
 ln -s "$SOURCE_NODE_MODULES" "$FIXTURE_PLUGIN/mcp/node_modules"
 cp "$SOURCE_SCRIPTS/check-category-size.ts" "$FIXTURE_REPO/scripts/ace/"
+cp "$SOURCE_SCRIPTS/ace-domain.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/check-entry-format.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/sync-playbook-frontmatter.ts" "$FIXTURE_REPO/scripts/ace/"
 cp "$SOURCE_SCRIPTS/check-archive-links.ts" "$FIXTURE_REPO/scripts/ace/"

@@ -435,6 +435,8 @@ else
       printf '%s\n' '{"type":"module"}' > "$BUNDLE_DIR/package.json"
       "$ESBUILD_BIN" "$CHECK_SIZE_SCRIPT" --platform=node --format=esm \
         --log-level=error --outfile="$BUNDLE_DIR/check-category-size"
+      "$ESBUILD_BIN" "$PLUGIN_ROOT/docs-template/scripts/ace/ace-domain.ts" --platform=node --format=esm \
+        --log-level=error --outfile="$BUNDLE_DIR/ace-domain"
       "$ESBUILD_BIN" "$FORMAT_GATE_SCRIPT" --platform=node --format=esm \
         --log-level=error --outfile="$BUNDLE_PATH"
     2>&1)"

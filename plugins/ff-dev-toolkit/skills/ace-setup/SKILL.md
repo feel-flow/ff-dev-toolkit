@@ -53,6 +53,7 @@ fi
 2. **`docs/MASTER.md` の存在確認** — 存在しない場合: 同様に `/init-docs` の実行を推奨し、**セットアップを中止**する
 3. **PLAYBOOK.md の既存チェック** — `docs/08-knowledge/PLAYBOOK.md` が既に存在する場合、ユーザーに選択肢を提示:
    - **(a) セットアップを中止** — 既存の PLAYBOOK.md を維持する
+   - **(c) 既存内容を保持して更新** — 下の「既存環境のdomain更新」へ進む。既存利用者への推奨。
    - **(b) バックアップして続行** — 既存ファイルを `PLAYBOOK.md.bak` にリネームして新規作成する
 
 ### Step 2: 配置先の確認
@@ -63,6 +64,7 @@ fi
 | ------------ | -------------------------------------------- |
 | PLAYBOOK.md  | `docs/08-knowledge/PLAYBOOK.md`              |
 | ace-cycle.md | `docs/05-operations/deployment/ace-cycle.md` |
+| ace-domain.md | ace-cycle.md と同じディレクトリ |
 
 ### Step 3: ファイル配置（同梱テンプレートから）
 
@@ -74,7 +76,7 @@ fi
    - Frontmatter の `created` / `updated` を今日の日付、`ace_entry_count` を `0`、`version` を `1.0.0` にする
    - Changelog セクションは `[1.0.0]` の初版のみ残す
    - エントリ本体のカテゴリ別分割ファイル（`playbook/<category>.md`）は最初のエントリ追記時に `/ace-curate` が作成するため、この時点では作らなくてよい
-2. **ace-cycle.md** — `${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/ace-cycle.md` をそのままコピーする
+2. **ace-cycle.md** — `${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/ace-cycle.md` をコピーし、同じディレクトリに `ace-domain.md` も配置する（同梱契約への相対参照を保持）。独自配置ではPLAYBOOKと各文書間の相対リンクを実配置に合わせる
 
 ### Step 3-b: 形式ゲートの allowlist 初期化（既存プロジェクトのみ）
 
@@ -107,8 +109,8 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs
 (b)〜(c) の指示ファイルへ追記する ACE 運用ルールは、配置済みの `docs/05-operations/deployment/ace-cycle.md`（3フェーズ手順）と PLAYBOOK.md の「運用ルール」「エントリID規則」セクションを要約して生成する。最低限含めるもの:
 
 - PLAYBOOK.md の配置場所（Step 2 で確定したパス）
-- PRマージ後に Generate（知見抽出）→ Reflect（評価・分類・既存照合）→ Curate（増分追記）を実行すること
-- 採番は **PRスコープ式**（`ACE-<PR番号>-<連番>`）、末尾追記のみ・既存本文の書き換え禁止、カウンターはインクリメントのみ
+- PRマージ後、または明示指定資料とIssueから Generate（知見抽出）→ Reflect（評価・分類・既存照合）→ Curate（増分追記）を実行すること。domainはace-domain.mdの根拠・確認状態・反映先契約に従い、設計書反映はace-refineの別PRとする
+- 採番はPR由来なら **PRスコープ式**（`ACE-<PR番号>-<連番>`）、資料単独ならIssueスコープ式（`ACE-i<Issue番号>-<連番>`）。末尾追記のみ・既存本文の書き換え禁止、カウンターはインクリメントのみ
 - 詳細手順は `docs/05-operations/deployment/ace-cycle.md` を参照すること
 
 既存ファイルの場合は追記前に内容を確認し、`## ACE` 等の ACE 関連セクションが既に存在する場合は**スキップ**する。ファイルが存在しない場合は新規作成する。
@@ -126,6 +128,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs
 | -------------------------- | ---------------------------------------------------------- | -------- |
 | PLAYBOOK.md                | docs/08-knowledge/PLAYBOOK.md                              | 新規作成 |
 | ace-cycle.md               | docs/05-operations/deployment/ace-cycle.md                 | 新規作成 |
+| ace-domain.md              | docs/05-operations/deployment/ace-domain.md                | 新規作成 |
 | 指示ファイル（選択ツール） | .github/copilot-instructions.md / AGENTS.md | 追記     |
 
 ## 次のステップ
@@ -148,3 +151,12 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs
 - 既存ファイルがある場合は上書きせず、ユーザーに確認すること
 - 配置先ディレクトリが存在しない場合は自動作成すること
 - `/ace-curate` は本プラグインが提供するため、コマンドのコピーは不要（Playbook はプロジェクトの `docs/08-knowledge/PLAYBOOK.md` に配置する）
+
+## 既存環境のdomain更新
+
+1. AGENTS.md / CLAUDE.md / docs索引から既存PLAYBOOKとace-cycleの実配置を確認する。`docs/08-knowledge`に固定しない。候補が複数なら選択理由を提示する。
+2. `.claude/commands/ace*`、`.github/prompts/ace*`、既存指示のACE節を確認し、pluginのace-curateと独自入口の競合・差分・使用する入口を報告する。独自入口や本文を勝手に削除しない。古い手順が優先される場合、domain収集が有効になったと報告しない。
+3. 実配置へace-domain.mdを追加し、既存PLAYBOOKのカテゴリ・形式規則とace-cycleに契約参照を追加する。既存本文・ID・索引・カウンターは保持し、新しいdomain本文は最初の収集まで作らない。スキルのコピーは作らない。
+4. プロジェクトにscripts/aceがある場合、同梱スクリプト群と比較し、形式検査・refine・domain共有module・反映チェッカーと依存の差分を更新する。独自改変は保全し、競合箇所を解決する。未配置なら同梱runnerを使う運用を記録する。古いcheck-entry-formatのままdomain対応済みとしない。
+5. 旧形式がある場合のみStep 3-bのallowlist初期化を行う。既存allowlistの手動拡張やdomainへの一括再分類をしない。形式検査と既存プロジェクトの検証を実行する。既存の不整合は検出結果を報告し、修復と更新を混同しない。
+6. 再実行時は同一契約・参照・カテゴリを重複追加しない。既存指示にACE節がある場合も全体スキップせず、domain契約への参照差分だけ確認する。更新結果、使用入口、未適用差分、検証結果を報告する。

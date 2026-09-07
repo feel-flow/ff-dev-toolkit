@@ -2,11 +2,18 @@
 
 Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367) で追加された **推奨パターン** のファイル群です。プロジェクトルートを基準にコピーして利用してください。
 
+## ドメイン知識
+
+`ace-curate-input.ts` はPR/資料単独入力を検証する。`ace-domain.ts` は形式検査とrefineで共有するdomainメタ契約、`check-domain-distillation.ts` は反映PRの読み取り専用確認を担う。手順と対応範囲は[ACE ドメイン知識契約](../../05-operations/deployment/ace-domain.md)を参照。
+
 ## 含まれるファイル
 
 | ファイル                                      | 説明                                                                                      |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | `run-subagent.sh`                             | ロック取得、`git worktree` 作成、`claude -p` 起動、後片付けの骨子                         |
+| `ace-curate-input.ts` | PRと指定資料の入力を検証（資料単独はIssue必須） |
+| `ace-domain.ts` | domainの根拠・確認状態・反映先・4メタ行を検証し5状態へ分類 |
+| `check-domain-distillation.ts` | 設計書PRのマージ・検証と本文/実在するACE出典を照合する読み取り専用チェッカー |
 | `check-category-size.ts`                      | Playbook の Category 件数（refine 目安超過は警告 / ブロック上限超過で非ゼロ終了）と総行数（超過は警告のみ）をチェック。集計の前提が崩れる形（Category 行が 1 ブロックに 2 本以上・閉じていないコードフェンス・Category 行が無い / 値が空）は usage error で停止 |
 | `ace-reuse-report.ts`                         | ACE 知見の再利用計測レポート（git 参照・相互参照・Archive 候補。読み取り専用）            |
 | `ace-refine-report.ts`                        | `/ace-refine` 用の候補算出レポート（Archive 候補・行数バジェット超過・PATTERNS 昇格候補。読み取り専用の dry-run） |
@@ -14,7 +21,7 @@ Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)
 | `sync-playbook-frontmatter.ts`                | PLAYBOOK frontmatter（`ace_entry_count` / version↔Changelog / `changeImpact`）の同期・検証ゲート。`## Changelog` は本体を優先し、無ければ分割 `playbook/CHANGELOG.md` を探索する。どちらにも無い場合はドリフト扱い（版の一致を検証できないため）。frontmatter の読み書きは**トップレベルのキーのみ**を対象とし、`metadata:` 配下等へネストされた同名キーは記録として認めず、書き換えもしない。トップレベルの同名キー重複は usage error |
 | `check-archive-links.ts`                      | `playbook/archive/` の保全本文内に `./` 相対リンクがある場合、冒頭 Parent ブロック内の注記を強制し、同一ファイル内の `<a id>` 重複を拒否するゲート（違反で非ゼロ終了） |
 | `check-refine-invariants.ts`                  | `/ace-refine` の結果不変条件（compact 保全・merge 状態遷移・archive 撤去・PATTERNS 収載）を検証するゲート（違反で非ゼロ終了） |
-| `check-entry-format.ts`                       | 新規エントリが旧テーブル形式でないこと + ID 形状が妥当（§エントリID規則）であること + ID が一意であること + 見出しが正準形へ一致すること + live アンカーの健全性（横断重複・見出し不一致・非正準形）を検証するゲート（allowlist 外の旧形式・不正 ID・重複 ID・認識されない `### ACE-` 行・アンカー違反で非ゼロ終了）。**正準構造の存在（anchor / メタ 4 行 / 終端 `---`）は要求しません** |
+| `check-entry-format.ts`                       | 新規エントリが旧テーブル形式でないこと + ID 形状が妥当（§エントリID規則）であること + ID が一意であること + 見出しが正準形へ一致すること + live アンカーの健全性（横断重複・見出し不一致・非正準形）を検証するゲート（allowlist 外の旧形式・不正 ID・重複 ID・認識されない `### ACE-` 行・アンカー違反で非ゼロ終了）。非domainでは正準構造の存在（anchor / メタ4行 / 終端）は要求しません。新規domainは4メタ行とEvidence / Verification / Distill-Toの配置・値を検証します（Related補助行は別表として許容） |
 | `docs-template/.claude/agents/ace-capture.md` | Subagent 用プロンプト（コピー先は `.claude/agents/`）                                     |
 
 post-merge からの呼び出し例は `docs-template/.claude/hooks/post-merge.ace.sample.sh` を参照してください。

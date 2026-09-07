@@ -383,6 +383,92 @@ describe("main", () => {
     return playbookPath;
   }
 
+  it("new domain entries require evidence, verification and target metadata", () => {
+    const playbookPath = writeLayout({
+      subfiles: { "domain.md": compactEntry("1338-1").replace("| coding |", "| domain |") },
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(main(["node", "check-entry-format.ts", playbookPath])).toBe(1);
+    const errors = err.mock.calls.flat().join("\n");
+    expect(errors).toContain("ACE-1338-1");
+    expect(errors).toContain("Evidence が必要です");
+    expect(errors).toContain("Verification が必要です");
+    expect(errors).toContain("Distill-To が必要です");
+  });
+
+  it("rejects new domain metadata spread into extra rows within the total line budget", () => {
+    const raw = [
+      "### ACE-1338-1: 法人の条件",
+      "| Category | domain | Origin | Issue #1338 |",
+      "| Evidence | docs/source.md 正式資料 |",
+      "| Date | 2026-09-08 | Verification | confirmed |",
+      "| Helpful | 0 | Harmful | 0 |",
+      "| Status | active | Distill-To | docs/design.md |",
+      "法人の場合に確認する。",
+      "---",
+    ].join("\n");
+    const playbookPath = writeLayout({ subfiles: { "domain.md": raw } });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(main(["node", "check-entry-format.ts", playbookPath])).toBe(1);
+    expect(err.mock.calls.flat().join("\n")).toContain("4行");
+  });
+
+  it("rejects missing domain metadata even when prose is inserted before Category", () => {
+    const raw = compactEntry("1338-1").replace("| Category | coding |", "補足\n| Category | domain |");
+    const playbookPath = writeLayout({ subfiles: { "domain.md": raw } });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(main(["node", "check-entry-format.ts", playbookPath])).toBe(1);
+    expect(err.mock.calls.flat().join("\n")).toContain("Evidence が必要です");
+  });
+
+  it("ignores a body domain comparison table after a non-domain first Category", () => {
+    const raw = compactEntry("1338-1") + "\n| Category | domain |\n";
+    const playbookPath = writeLayout({ subfiles: { "coding.md": raw } });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(main(["node", "check-entry-format.ts", playbookPath])).toBe(0);
+  });
+
+  it("allowlisted legacy domain remains readable without waiving invalid supplied metadata", () => {
+    const old = legacyEntry("1338-1").replace("| coding  |", "| domain  |");
+    const playbookPath = writeLayout({ subfiles: { "domain.md": old }, allowlist: "ACE-1338-1\n" });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(main(["node", "check-entry-format.ts", playbookPath])).toBe(0);
+    fs.writeFileSync(path.join(tmpDir, "playbook", "domain.md"), old.replace("| Status     | active  |", "| Status | active | Distill-To | ../outside.md |"));
+    expect(main(["node", "check-entry-format.ts", playbookPath])).toBe(1);
+  });
+
+  it("allows legacy prose before metadata without waiving supplied invalid domain fields", () => {
+    const raw = legacyEntry("1338-1").replace("| フィールド", "補足\n| フィールド").replace("| coding  |", "| domain  |");
+    const playbookPath = writeLayout({ subfiles: { "domain.md": raw }, allowlist: "ACE-1338-1\n" });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(main(["node", "check-entry-format.ts", playbookPath])).toBe(0);
+    for (const metadata of ["Verification | invalid", "Evidence | ", "Distill-To | ../outside.md"]) {
+      fs.writeFileSync(path.join(tmpDir, "playbook", "domain.md"), raw.replace("| Status     | active  |", `| Status | active | ${metadata} |`));
+      expect(main(["node", "check-entry-format.ts", playbookPath])).toBe(1);
+    }
+    expect(err.mock.calls.flat().join("\n")).toContain("Verification");
+  });
+
+  it("accepts valid four-row domain metadata and rejects forged reflected state", () => {
+    const valid = compactEntry("1338-1")
+      .replace("| Category | coding | Origin | PR #1 |", "| Category | domain | Origin | Issue #1338 | Evidence | docs/source.md 正式資料 |")
+      .replace("| Date | 2026-08-07 |", "| Date | 2026-08-07 | Verification | confirmed |")
+      .replace("| Status | active |", "| Status | active | Distill-To | `docs/design.md#orders` | Distilled-To | docs/design.md#orders |");
+    const playbookPath = writeLayout({ subfiles: { "domain.md": valid } });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(main(["node", "check-entry-format.ts", playbookPath])).toBe(0);
+    fs.writeFileSync(path.join(tmpDir, "playbook", "domain.md"), valid.replace("Verification | confirmed", "Verification | unverified"));
+    expect(main(["node", "check-entry-format.ts", playbookPath])).toBe(1);
+    expect(err.mock.calls.flat().join("\n")).toContain("Distilled-To");
+  });
+
   it("allowlist に無い旧形式エントリは exit 1 で ID を名指しする", () => {
     const playbookPath = writeLayout({
       subfiles: { "coding.md": CATEGORY_HEADER + compactEntry("1-1") + legacyEntry("9-9") },
