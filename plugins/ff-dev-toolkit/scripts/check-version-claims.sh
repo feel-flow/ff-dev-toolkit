@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
 # 最新 origin/default branch の固定 commit と index の差分を検査し、対象の未stage・未追跡変更を拒否する。
+#
+# 比較基準（origin/<default>）の取り方は実行環境で切り替える:
+#   - ローカル（GITHUB_ACTIONS 未設定）: origin/<default> を fetch で最新化し、それが HEAD より
+#     先行していれば「rebase 後に再実行」で exit 2。作業者には rebase という対処が存在するため、
+#     stale な remote-tracking ref のまま測って古い base で緑を出す誤りを fail-closed で防ぐ
+#   - GitHub Actions（GITHUB_ACTIONS=true）: fetch せず、job 開始時点で fetch 済みの remote-tracking
+#     ref をそのまま基準にする。CI の checkout は特定 SHA に固定されており rebase という対処が
+#     存在しないので、走行中に origin/<default> が先へ進んだ（並行セッションの knowledge 直 push・
+#     リリース準備 PR のマージ）ことを理由に赤にしても実害と対応しない。検査入力を checkout SHA と
+#     job 開始時点の ref に閉じ、走行中の外向き操作に左右されないようにする（週次 run-all の
+#     shared-version-convergence suite が本スクリプトを呼ぶ）。先行ガード自体は残す — checkout が
+#     job 開始時点の origin/<default> より古い場合（既定ブランチ以外からの dispatch、checkout〜fetch
+#     step の間に入った push）は従来どおり exit 2 にする（fetch を省くだけで判定は緩めない）
 set -euo pipefail
 
 root=""
@@ -42,6 +55,13 @@ resolve_fresh_base() {
   default_ref="$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || { echo "✗ origin/HEAD を解決できません" >&2; return 2; }
   [[ "$default_ref" == origin/* ]] || { echo "✗ origin/HEAD が不正です" >&2; return 2; }
   default_branch="${default_ref#origin/}"
+  if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+    # CI: job 開始時点の remote-tracking ref を基準に固定する（ヘッダコメント参照）。fetch すると
+    # 走行中に進んだ live の origin/<default> を取り込み、checkout SHA に閉じた検査でなくなる。
+    default_base="$(git -C "$root" rev-parse --verify "${default_ref}^{commit}")" || { echo "✗ $default_ref の commit を固定できません（CI では job 開始時点に fetch 済みの remote-tracking ref が必要です）" >&2; return 2; }
+    git -C "$root" merge-base --is-ancestor "$default_base" HEAD || { echo "✗ ${default_ref}（job 開始時点の remote-tracking ref）が checkout より先行しています。既定ブランチの最新 SHA で dispatch し直してください" >&2; return 2; }
+    return 0
+  fi
   git -C "$root" fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" >/dev/null 2>&1 || { echo "✗ $default_ref を最新化できません" >&2; return 2; }
   default_base="$(git -C "$root" rev-parse --verify "${default_ref}^{commit}")" || { echo "✗ $default_ref の commit を固定できません" >&2; return 2; }
   git -C "$root" merge-base --is-ancestor "$default_base" HEAD || { echo "✗ $default_ref が HEAD より先行しています。rebase 後に再実行してください" >&2; return 2; }

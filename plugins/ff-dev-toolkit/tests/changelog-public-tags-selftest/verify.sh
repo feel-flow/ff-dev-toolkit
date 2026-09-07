@@ -98,6 +98,39 @@ git clone -q "$TMP/origin.git" "$TMP/work" 2>/dev/null
 )
 REPO="$TMP/origin.git"
 
+# ---- fixture: footer より新しい公開タグを 1 つ持つ bare リポジトリ（Issue #1336） ---
+# 同期手順「タグ push → footer 追従 PR」の窓を再現する。golden.md の footer は v0.3.0 までしか
+# 知らないが、公開側には v0.4.0 が push 済み。
+git clone -q --bare "$TMP/origin.git" "$TMP/newer-origin.git"
+git clone -q "$TMP/newer-origin.git" "$TMP/newer-work" 2>/dev/null
+(
+  cd "$TMP/newer-work"
+  git config user.email "test@example.com"
+  git config user.name "changelog-public-tags-test"
+  git config commit.gpgsign false
+  printf '%s\n' "base" "second" "third" "fourth" > README.md
+  git add README.md
+  git commit -qm "v0.4.0"
+  git tag v0.4.0
+  git push -q origin HEAD --tags
+)
+NEWER_REPO="$TMP/newer-origin.git"
+# footer より 2 版新しい（v0.4.0 + v0.5.0）: 窓ではなく drift として CI でも赤にする
+git clone -q --bare "$TMP/newer-origin.git" "$TMP/newer2-origin.git"
+git clone -q "$TMP/newer2-origin.git" "$TMP/newer2-work" 2>/dev/null
+(
+  cd "$TMP/newer2-work"
+  git config user.email "test@example.com"
+  git config user.name "changelog-public-tags-test"
+  git config commit.gpgsign false
+  printf '%s\n' "base" "second" "third" "fourth" "fifth" > README.md
+  git add README.md
+  git commit -qm "v0.5.0"
+  git tag v0.5.0
+  git push -q origin HEAD --tags
+)
+NEWER2_REPO="$TMP/newer2-origin.git"
+
 # ---- fixture: 帰属検査用のタグ付き bare リポジトリ -----------------------------
 # v0.1.0: skills/old/SKILL.md と skills/stable/SKILL.md
 # v0.2.0: skills/new/SKILL.md を追加、skills/old を変更、skills/stable は同一のまま
@@ -202,6 +235,26 @@ write_changelog "$TMP/bad_from.md" \
   "[Unreleased]: https://example.com/repo/compare/v0.3.0...HEAD" \
   "[0.3.0]: https://example.com/repo/compare/v0.2.0...v0.3.0" \
   "[0.2.0]: https://example.com/repo/compare/v9.9.9...v0.2.0" \
+  "[0.1.0]: https://example.com/repo/releases/tag/v0.1.0"
+
+# footer より新しいタグの窓: リリース準備 PR で見出し [0.4.0] は入ったが、footer 追従 PR が
+# まだ（[Unreleased] 起点は v0.3.0・[0.4.0] のリンク行なし）。NEWER_REPO と組む。
+write_changelog "$TMP/newer_heading.md" \
+  "## [Unreleased]" "" "## [0.4.0] - 2026-01-04" "" "## [0.3.0] - 2026-01-03" "" \
+  "## [0.2.0] - 2026-01-02" "" "## [0.1.0] - 2026-01-01" "" \
+  "[Unreleased]: https://example.com/repo/compare/v0.3.0...HEAD" \
+  "[0.3.0]: https://example.com/repo/compare/v0.2.0...v0.3.0" \
+  "[0.2.0]: https://example.com/repo/compare/v0.1.0...v0.2.0" \
+  "[0.1.0]: https://example.com/repo/releases/tag/v0.1.0"
+
+# footer 修正レシピの手順 1 だけ適用済み（[Unreleased] 起点は v0.4.0、[0.4.0] のリンク行と見出しは
+# まだ無い）。変更前は緑だった状態なので CI でも緑のまま（skip 行も出ない）。NEWER_REPO と組む。
+write_changelog "$TMP/unreleased_at_real_max.md" \
+  "## [Unreleased]" "" "## [0.3.0] - 2026-01-03" "" "## [0.2.0] - 2026-01-02" "" \
+  "## [0.1.0] - 2026-01-01" "" \
+  "[Unreleased]: https://example.com/repo/compare/v0.4.0...HEAD" \
+  "[0.3.0]: https://example.com/repo/compare/v0.2.0...v0.3.0" \
+  "[0.2.0]: https://example.com/repo/compare/v0.1.0...v0.2.0" \
   "[0.1.0]: https://example.com/repo/releases/tag/v0.1.0"
 
 write_changelog "$TMP/no_headings.md" \
@@ -457,6 +510,34 @@ expect_exit "$REPO" "$TMP/bad_from.md" 1 "検査B: compare元タグが実在し�
 # で同じ rc=1 になり、変異を検出できない。第 1 部固有の診断文まで要求する。
 run_case "検査C: 見出しが1件も無い場合に fail（vacuous pass 回帰防止）" "$TMP/no_headings.md" "$REPO" fail \
   'リリース見出しを1件も抽出できませんでした'
+
+# ---- footer より新しい公開タグは CI でのみ部分 skip、footer が知る範囲の drift は従来どおり赤（Issue #1336）
+# 本 selftest 自体が CI で走るときも走らないときも同じ判定になるよう、GITHUB_ACTIONS を明示して
+# から元の値へ戻す。
+_ff_prev_github_actions="${GITHUB_ACTIONS-__unset__}"
+export GITHUB_ACTIONS=
+run_case "ローカル条件では footer より新しい公開タグでも従来どおり live 照合で fail" "$TMP/golden.md" "$NEWER_REPO" fail \
+  '\[Unreleased\] の起点 \(v0\.3\.0\) が公開リポジトリの最新タグ \(v0\.4\.0\) と不一致'
+export GITHUB_ACTIONS=true
+run_case "CI 条件で footer より 2 版新しい公開タグは窓ではなく drift として fail" "$TMP/golden.md" "$NEWER2_REPO" fail \
+  '公開タグが 2 版先行' \
+  '\[Unreleased\] の起点 \(v0\.3\.0\) が公開リポジトリの最新タグ \(v0\.5\.0\) と不一致'
+run_case "CI 条件で footer より新しい公開タグは部分 skip（footer だけの checkout）" "$TMP/golden.md" "$NEWER_REPO" partial-skip \
+  'checkout より新しい公開タグ v0\.4\.0 は照合対象外' \
+  '\[Unreleased\] の起点 \(v0\.3\.0\) が footer が知る最新版と一致'
+run_case "CI 条件で footer より新しい公開タグは部分 skip（見出しあり・リンク行なしの窓）" "$TMP/newer_heading.md" "$NEWER_REPO" partial-skip \
+  'checkout より新しい公開タグ v0\.4\.0 は照合対象外' \
+  '実タグを持つ全版にリンク行がある'
+run_case "CI 条件でも [Unreleased] 起点が footer の最新版と違えば fail" "$TMP/bad_unreleased.md" "$NEWER_REPO" fail \
+  'footer が知る最新版 \(v0\.3\.0\) と不一致'
+run_case "CI 条件で [Unreleased] 起点だけ新タグへ進んだ checkout は変更前どおり pass（skip 行なし）" "$TMP/unreleased_at_real_max.md" "$NEWER_REPO" pass \
+  '\[Unreleased\] の起点 \(v0\.4\.0\) が公開リポジトリの最新タグと一致'
+run_case "CI 条件でも footer が知る版のリンク行欠落は fail" "$TMP/missing_row.md" "$NEWER_REPO" fail \
+  '実タグは存在するがリンク行が無い版:.*v0\.2\.0'
+# 部分 skip の窓で検査 C が「見出し [0.4.0] のリンク行なし」を赤にしないこと（skip 行に載る）
+expect_output_has "$NEWER_REPO" "$TMP/newer_heading.md" '^[[:space:]][[:space:]]*○ skip: checkout より新しい公開タグ v0\.4\.0' \
+  "新タグの skip 行はインデント付き（行頭マーカーだと suite 全体 skip に化ける）"
+if [[ "$_ff_prev_github_actions" == "__unset__" ]]; then unset GITHUB_ACTIONS; else export GITHUB_ACTIONS="$_ff_prev_github_actions"; fi
 
 # ---- ネットワーク到達不可は skip、分類不能エラーは fail（統合後は判定が 1 箇所）----
 expect_output_has "git://127.0.0.1:1/nonexistent" "$TMP/golden.md" '^○ skip' \

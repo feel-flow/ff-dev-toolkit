@@ -20,6 +20,16 @@
 
 ## [Unreleased]
 
+## [0.87.0] - 2026-09-08
+
+### 変更
+
+- リリース準備時にも版節のパスを最新公開タグと機械照合し、出荷済みの内容の誤帰属を公開前に検出する。
+
+### 修正
+
+- run-all の全件実行（CI の scheduled run）が走行中の並行操作（default ブランチへの push・公開タグの push）と競合して赤になる問題を修正。`scripts/check-version-claims.sh` は `GITHUB_ACTIONS=true` のとき origin/default を fetch せず job 開始時点の remote-tracking ref を基準にし（ローカルでは従来どおり fetch して先行なら「rebase 後に再実行」で非 0）、`tests/changelog-public-tags/verify.sh` は同じ条件のときだけ checkout 時点の CHANGELOG footer が知る最新版より 1 版新しい公開タグを「照合対象外」のインデント付き部分 skip として報告し、footer が知る範囲の整合（起点不一致・リンク行の不整合・欠落）は従来どおり赤にする（2 版以上新しければ drift として赤。ローカル実行は従来どおり live のタグ列全体と照合する）。selftest に「footer より新しいタグ」の fixture と 8 ケースを追加した
+
 ## [0.86.3] - 2026-09-07
 
 ### 修正

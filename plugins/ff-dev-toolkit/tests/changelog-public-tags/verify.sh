@@ -22,6 +22,23 @@
 #   C. 実タグを持つ版（## [X.Y.Z] 見出し）に対応するラベルのリンク行が存在する
 #      （行の中身が壊れていても「存在」自体は満たせば C は通る。中身の妥当性は B の担当）
 #
+# GitHub Actions（GITHUB_ACTIONS=true）では照合対象を「checkout 時点の footer が知る版まで」に
+# 閉じる（Issue #1336）:
+#   公開同期の手順は「タグ push → footer 追従 PR → 収束 sync」の順なので、タグ push から
+#   footer マージまでの窓に走った CI run（週次 run-all と同期サイクルの重なり）は、live の
+#   タグ列と checkout 時点の footer を突き合わせる限り構造的に赤になる。これはリポジトリの
+#   実害ではなく走行中の並行操作との競合なので、CI では footer のリンク行ラベルの最大値
+#   （FOOTER_MAX）より新しい公開タグ 1 つを「checkout より新しい公開タグ」としてインデント
+#   付き部分 skip で報告し、検査 A の期待起点と検査 C の対象から外す。footer が知る版までの
+#   整合（起点不一致・リンク行の不整合・欠落）は従来どおり赤にする。
+#   2 つ以上新しいタグがあれば CI でも赤にする — 同期手順は 1 サイクルにタグ 1 つを push し
+#   次のサイクル前に footer を追従させるので、2 版以上の遅れは窓ではなく drift（旧 Issue #161
+#   の形）である。
+#   ローカル（GITHUB_ACTIONS 未設定）ではこの skip を入れない。同期手順 8 はタグ push 直後に
+#   本 suite を走らせ、赤の内容で footer 追従を判定する（消費側: sync-dev-toolkit SKILL.md）。
+#   ローカルで skip にすると「✓ を含む = 追従済み」の分岐が誤って成立し footer 追従が永久に
+#   走らない。切替条件を check-version-claims.sh と同じ GITHUB_ACTIONS=true に揃えている。
+#
 # バージョン表記は changelog-contract/verify.sh と同じ受理範囲
 # （[0-9]+.[0-9]+.[0-9]+ + 任意の接尾辞）を見出し・ラベル側で使う。ここを
 # CHANGELOG.md の実際の受理範囲より狭くすると、接尾辞付きの見出し/ラベルが
@@ -93,7 +110,8 @@
 # に来る）の両方から実行され得るため。
 #
 # 第 1 部が drift を報告して red になったときの直し方（Issue #163 で手順化）:
-# 新規タグが公開された直後は [Unreleased] 起点とリンク行が実タグに追従していない。
+# 新規タグが公開された直後は [Unreleased] 起点とリンク行が実タグに追従していない
+# （ローカル実行で赤になる。CI ではこの窓を上記の部分 skip にしている）。
 # footer（CHANGELOG 末尾のリンク行群）に次の 2 点を反映すれば green に戻る:
 #   1. [Unreleased] の compare 起点を、実タグの最大値へ更新する
 #   2. リンク行が欠けている実タグごとに
@@ -196,8 +214,65 @@ skip_one() { echo "  · skip: $1"; SKIPPED=$((SKIPPED + 1)); }
 # （run-all.sh 冒頭ヘッダーの契約。ランナーは checks-skipped へ別集計する）。
 skip_part() { echo "  ○ skip: $1"; }
 
+# ---- checkout 時点の footer が知る最新版（照合の上限。ヘッダコメント参照） ------------
+# 接尾辞付きラベルは順序を定義できないため上限の算出からは外す（検査 B の対象には残る。検査 C は元々 SemVer 厳密の実タグだけを見る）。
+ver_lt() {
+  # $1 < $2 （X.Y.Z の数値比較。here-string 禁止のため parameter expansion で分解する）
+  local a1 a2 a3 b1 b2 b3 ra rb
+  a1="${1%%.*}"; ra="${1#*.}"; a2="${ra%%.*}"; a3="${ra#*.}"
+  b1="${2%%.*}"; rb="${2#*.}"; b2="${rb%%.*}"; b3="${rb#*.}"
+  # 10# 接頭辞: 先頭 0 の成分を 8 進として読ませない（SemVer は先頭 0 を禁じるが fail-closed に）
+  [[ "10#$a1" -lt "10#$b1" ]] && return 0
+  [[ "10#$a1" -gt "10#$b1" ]] && return 1
+  [[ "10#$a2" -lt "10#$b2" ]] && return 0
+  [[ "10#$a2" -gt "10#$b2" ]] && return 1
+  [[ "10#$a3" -lt "10#$b3" ]]
+}
+
+# [Unreleased] の compare 起点も「footer が知る版」に含める。footer 修正レシピの手順 1（起点更新）
+# だけ先に入った checkout で、起点が指す新タグを「footer より新しい」扱いにすると検査 A が
+# 起点不一致で赤になる（変更前は緑だった状態）。
+FOOTER_MAX="$( { grep -E '^\[[0-9]+\.[0-9]+\.[0-9]+\]:' "$CHANGELOG" \
+      | sed -E 's/^\[([0-9]+\.[0-9]+\.[0-9]+)\]:.*/\1/';
+    grep -E '^\[Unreleased\]:.*/compare/v[0-9]+\.[0-9]+\.[0-9]+\.\.\.HEAD' "$CHANGELOG" \
+      | sed -E 's#.*/compare/v([0-9]+\.[0-9]+\.[0-9]+)\.\.\.HEAD.*#\1#'; } \
+  | sort -t. -k1,1n -k2,2n -k3,3n \
+  | tail -n 1 || true)"
+
+# footer より新しい公開タグ（CI でのみ照合対象外）。footer が無い・footer が公開タグ以上・
+# ローカル実行なら空のまま = 従来どおり live のタグ列全体と照合する。
+NEWER_TAGS=""
+NEWER_COUNT=0
+if [[ "${GITHUB_ACTIONS:-}" == true && -n "$FOOTER_MAX" ]]; then
+  for t in $REAL_TAGS; do
+    if ver_lt "$FOOTER_MAX" "$t"; then
+      NEWER_TAGS="$NEWER_TAGS v$t"
+      NEWER_COUNT=$((NEWER_COUNT + 1))
+    fi
+  done
+fi
+if [[ "$NEWER_COUNT" -gt 1 ]]; then
+  # 窓ではなく drift。skip にせず live 照合へ戻す（検査 A/C が赤にする）
+  NEWER_TAGS=""
+fi
+if [[ -n "$NEWER_TAGS" ]]; then
+  EXPECTED_UNRELEASED_BASE="$FOOTER_MAX"
+else
+  EXPECTED_UNRELEASED_BASE="$MAX_REAL_TAG"
+fi
+
+is_newer_than_footer() {
+  [[ " $NEWER_TAGS " == *" v$1 "* ]]
+}
+
 echo "公開タグ最新: v${MAX_REAL_TAG}（${REMOTE_URL}、${TAG_COUNT} 件取得）"
 echo "CHANGELOG: $CHANGELOG"
+if [[ -n "$NEWER_TAGS" ]]; then
+  echo "footer が知る最新版: v${FOOTER_MAX}"
+  skip_part "checkout より新しい公開タグ${NEWER_TAGS} は照合対象外（CI 限定。タグ push から footer 追従までの窓。footer が知る v${FOOTER_MAX} までを検査する）"
+elif [[ "$NEWER_COUNT" -gt 1 ]]; then
+  echo "footer が知る最新版: v${FOOTER_MAX}（公開タグが ${NEWER_COUNT} 版先行 = 窓ではなく drift。CI でも live 照合で赤にする）"
+fi
 
 # ================================ 第 1 部 =====================================
 # ---- 検査A: [Unreleased] の起点 = 実タグの最大値 ------------------------------
@@ -209,8 +284,14 @@ else
     | sed -E 's#.*/compare/v([0-9]+\.[0-9]+\.[0-9]+)\.\.\.HEAD.*#\1#')"
   if [[ "$UNRELEASED_BASE" == "$UNRELEASED_LINE" ]]; then
     bad "[Unreleased] の行が compare/vX.Y.Z...HEAD 形式ではありません: $UNRELEASED_LINE"
-  elif [[ "$UNRELEASED_BASE" == "$MAX_REAL_TAG" ]]; then
-    ok "[Unreleased] の起点 (v$UNRELEASED_BASE) が公開リポジトリの最新タグと一致"
+  elif [[ "$UNRELEASED_BASE" == "$EXPECTED_UNRELEASED_BASE" ]]; then
+    if [[ -n "$NEWER_TAGS" ]]; then
+      ok "[Unreleased] の起点 (v$UNRELEASED_BASE) が footer が知る最新版と一致（公開タグ最新 v$MAX_REAL_TAG は照合対象外）"
+    else
+      ok "[Unreleased] の起点 (v$UNRELEASED_BASE) が公開リポジトリの最新タグと一致"
+    fi
+  elif [[ -n "$NEWER_TAGS" ]]; then
+    bad "[Unreleased] の起点 (v$UNRELEASED_BASE) が footer が知る最新版 (v$EXPECTED_UNRELEASED_BASE) と不一致"
   else
     bad "[Unreleased] の起点 (v$UNRELEASED_BASE) が公開リポジトリの最新タグ (v$MAX_REAL_TAG) と不一致"
   fi
@@ -286,6 +367,7 @@ else
   MISSING_ROWS=""
   for ver in $HEADING_VERSIONS; do
     is_real_tag "$ver" || continue
+    is_newer_than_footer "$ver" && continue  # 冒頭の部分 skip で報告済み
     if ! has_link_row "$ver"; then
       MISSING_ROWS="$MISSING_ROWS v$ver"
     fi
@@ -437,16 +519,12 @@ attribution_part() {
     # $1=changelog path token. stdout=resolved repo path or empty.
     local token="$1"
     local cand
-    for cand in \
-      "$token" \
-      "plugins/ff-dev-toolkit/${token}" \
-      "plugins/ff-dev-toolkit/${token#./}"
-    do
+    while IFS= read -r cand; do
       if path_in_tag "$TO_TAG" "$cand" || path_in_tag "$FROM_TAG" "$cand"; then
         printf '%s\n' "$cand"
         return 0
       fi
-    done
+    done < <(changelog_path_candidates "$token")
     return 1
   }
 
@@ -503,30 +581,7 @@ attribution_part() {
 
 # backtick トークンのうち、スラッシュを含み path らしいものだけ。
 # 除外: 先頭 -（フラグ）、先頭 /（スキル slash-command）、http、空白、<> を含むもの。
-extract_paths() {
-  # $1 = body text. stdout = one path per line, unique order-preserving.
-  # awk の /.../ 区切りは class 内の / を終端と誤認するため、文字列マッチを使う。
-  printf '%s' "$1" | awk '
-    {
-      s = $0
-      while (match(s, /`[^`]+`/)) {
-        tok = substr(s, RSTART + 1, RLENGTH - 2)
-        s = substr(s, RSTART + RLENGTH)
-        if (tok ~ /[[:space:]]/) continue
-        if (tok ~ /^-/) continue
-        if (tok ~ /^\//) continue
-        if (tok ~ /^https?:/) continue
-        if (tok ~ /[<>]/) continue
-        if (index(tok, "/") == 0) continue
-        if (tok !~ "^[A-Za-z0-9_./@+-]+$") continue
-        if (!(tok in seen)) {
-          seen[tok] = 1
-          print tok
-        }
-      }
-    }
-  '
-}
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/lib" && pwd -P)/changelog-attribution-functions.sh"
 
 attribution_part
 

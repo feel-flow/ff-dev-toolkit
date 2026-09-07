@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # 共有版境界の optimistic retry 契約と 2 clone 実測（ADR-038 / Issue #764）。
 set -euo pipefail
+# check-version-claims.sh は GITHUB_ACTIONS=true で「fetch せず job 開始時点の remote-tracking ref を
+# 基準にする」CI 分岐へ入る（Issue #1336）。fixture ベースの検査はランナーの環境変数に左右されず
+# ローカル分岐（fetch あり）を測るべきなので、ここで空へ固定し、CI 分岐を測るケースだけ
+# GITHUB_ACTIONS=true を明示する。本リポジトリ自身の live 検査だけは環境の値を引き継ぐ
+# （週次 CI では checkout SHA に閉じた判定が必要 = まさにこの Issue の修正対象）。
+FF_AMBIENT_GITHUB_ACTIONS="${GITHUB_ACTIONS-}"
+export GITHUB_ACTIONS=
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
@@ -166,7 +173,7 @@ validate_live_claims() {
 }
 source "$SCRIPT_DIR/cases/claim-helper-failures.sh"
 REPO_ROOT="$(git -C "$PLUGIN_ROOT" rev-parse --show-toplevel)"
-if validate_live_claims; then
+if GITHUB_ACTIONS="$FF_AMBIENT_GITHUB_ACTIONS" validate_live_claims; then
   ok "変更した version 文書の claim が差分と一致"
   ok "変更した claim は version 変更文書へ逆参照できる"
 else
@@ -198,15 +205,58 @@ printf '%s\n' '' 'remote advance' >> "$STALE_WRITER/docs/04-quality/TESTING.md"
 git -C "$STALE_WRITER" add -A
 git -C "$STALE_WRITER" commit -qm advance
 git -C "$STALE_WRITER" push -q origin develop
+# ローカル条件（GITHUB_ACTIONS 空）とCI 条件（GITHUB_ACTIONS=true）で先行ガードの挙動が分かれる
+# （Issue #1336）。CI 条件を先に測る — ローカル条件の検証は fetch で remote-tracking ref を
+# 進めるため、順序を逆にすると CI 条件で「job 開始時点の ref」が既に先行後の値になり、
+# 「fetch しない」ことを検証できなくなる。
+STALE_BASELINE="$(git -C "$STALE_CHECKER" rev-parse origin/develop)"
 set +e
-stale_out="$(validate_live_claims "$STALE_CHECKER" 2>&1)"
+stale_ci_out="$(GITHUB_ACTIONS=true validate_live_claims "$STALE_CHECKER" 2>&1)"
+stale_ci_rc=$?
+set -e
+if [[ "$stale_ci_rc" -eq 0 ]] &&
+   [[ "$(git -C "$STALE_CHECKER" rev-parse origin/develop)" == "$STALE_BASELINE" ]]; then
+  ok "CI 条件では走行中に先行した origin/<default> を fetch せず job 開始時点の ref で検査を完了"
+else
+  bad "CI 条件で走行中の origin/<default> 先行が赤になる、または fetch で ref が動いた（rc=${stale_ci_rc}）"
+  printf '%s\n' "$stale_ci_out" | sed 's/^/    | /' >&2
+fi
+set +e
+stale_out="$(GITHUB_ACTIONS= validate_live_claims "$STALE_CHECKER" 2>&1)"
 stale_rc=$?
 set -e
 if [[ "$stale_rc" -ne 0 && "$stale_out" == *"HEAD より先行"* ]] &&
    [[ "$(git -C "$STALE_CHECKER" rev-parse origin/develop)" == "$(git -C "$STALE_WRITER" rev-parse HEAD)" ]]; then
-  ok "stale な remote-tracking ref でも fetch 後の先行 default branch を検出"
+  ok "ローカル条件では stale な remote-tracking ref でも fetch 後の先行 default branch を検出"
 else
   bad "差分空の stale ref が live claim 検証を素通り"
+fi
+# ローカル条件の fetch で remote-tracking ref が checkout より先へ進んだ状態 = CI で「job 開始時点の
+# ref が checkout より先行」に相当する。CI 条件でも先行ガードは残る（fetch を省くだけで緩めない）。
+set +e
+stale_ci_ahead_out="$(GITHUB_ACTIONS=true validate_live_claims "$STALE_CHECKER" 2>&1)"
+stale_ci_ahead_rc=$?
+set -e
+if [[ "$stale_ci_ahead_rc" -eq 2 && "$stale_ci_ahead_out" == *"job 開始時点の remote-tracking ref）が checkout より先行"* ]]; then
+  ok "CI 条件でも job 開始時点の ref が checkout より先行していれば exit 2（先行ガードは緩めない）"
+else
+  bad "CI 条件で先行した remote-tracking ref を素通り、または診断文が違う（rc=${stale_ci_ahead_rc}）"
+  printf '%s\n' "$stale_ci_ahead_out" | sed 's/^/    | /' >&2
+fi
+# CI 条件で remote-tracking ref が無い（workflow の fetch step が抜けた）: fetch で補完せず exit 2
+STALE_NOREF="$TMP/stale-noref"
+git clone -q "$STALE_BARE" "$STALE_NOREF"
+git -C "$STALE_NOREF" update-ref -d refs/remotes/origin/develop
+set +e
+stale_ci_noref_out="$(GITHUB_ACTIONS=true validate_live_claims "$STALE_NOREF" 2>&1)"
+stale_ci_noref_rc=$?
+set -e
+if [[ "$stale_ci_noref_rc" -eq 2 && "$stale_ci_noref_out" == *"job 開始時点に fetch 済み"* ]] &&
+   ! git -C "$STALE_NOREF" rev-parse --verify --quiet refs/remotes/origin/develop >/dev/null; then
+  ok "CI 条件で remote-tracking ref が無ければ fetch で補完せず exit 2"
+else
+  bad "CI 条件で remote-tracking ref 不在を fetch で補完した、または診断文が違う（rc=${stale_ci_noref_rc}）"
+  printf '%s\n' "$stale_ci_noref_out" | sed 's/^/    | /' >&2
 fi
 
 echo "== ordinary versioned documents require exact helper claims =="
