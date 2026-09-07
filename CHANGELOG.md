@@ -2016,7 +2016,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.86.3...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.87.0...HEAD
+[0.87.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.86.3...v0.87.0
 [0.86.3]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.86.2...v0.86.3
 [0.86.2]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.86.1...v0.86.2
 [0.86.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.86.0...v0.86.1
