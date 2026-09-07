@@ -70,9 +70,17 @@
 
 # fail-open のため set -e / set -u は使わない。
 
-[ "${FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD:-0}" = "1" ] && exit 0
+# stdin は bash 組み込みの read で読み切る（外部コマンドに依存しない）。`cat` だと PATH が
+# 空・壊れた環境で command not found → stdin 未読のまま exit 0 となり、書き手（ホスト /
+# テストの printf）が EPIPE / SIGPIPE を受ける（Issue #1329。pipefail 下の suite では
+# hook の exit 0 ではなく書き手の rc=141 が観測される）。fail-open の「黙って許可」は
+# 「stdin を読み切ったうえで」成立させる。-d '' は NUL まで（JSON には無いので EOF まで）
+# 読み、EOF では非 0 を返すが input には内容が入っている。
+input=""
+IFS= read -r -d '' input || true
 
-input="$(cat 2>/dev/null)" || exit 0
+# opt-out も stdin を読み切ってから抜ける（drain 前に exit すると同じ EPIPE を書き手へ返す）。
+[ "${FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD:-0}" = "1" ] && exit 0
 
 # 安価な前置フィルタ: 判定キーを持たない入力は即終了
 case "$input" in

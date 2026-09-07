@@ -221,13 +221,28 @@ if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
 else
   bad "AC3: 空の stdin: exit=$RC out=[$OUT]"
 fi
+# PATH 空の環境では jq だけでなく外部コマンド全般（cat 含む）が無い。hook が stdin を
+# 読まずに exit すると書き手（ここでは printf、実運用ではホスト）が EPIPE / SIGPIPE を受け、
+# 本 suite の pipefail 下では hook の exit 0 ではなく書き手の rc=141 が観測される
+# （Issue #1329: ubuntu ランナーで小さい payload でも再現した。macOS では小さい payload
+# だと pipe buffer に収まり競合が起きない）。payload をパイプバッファ（64 KiB）より大きく
+# して、stdin を drain しない実装がどの OS でも決定的に赤になるようにする。末尾の空白は
+# JSON として有効なので判定結果は変わらない。
+BIG_PAYLOAD="$(jq -n --arg d "$MONO" '{tool_name: "Bash", tool_input: {command: "npm test", run_in_background: true}, cwd: $d}')$(printf '%*s' 200000 '')"
 RC=0
-OUT="$(printf '%s' "$(jq -n --arg d "$MONO" '{tool_name: "Bash", tool_input: {command: "npm test", run_in_background: true}, cwd: $d}')" |
-  PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
+OUT="$(printf '%s' "$BIG_PAYLOAD" | PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
-  ok "AC3: jq が PATH に無い環境は無出力 exit 0"
+  ok "AC3: jq が PATH に無い環境は stdin を読み切ったうえで無出力 exit 0（書き手に EPIPE を返さない）"
 else
-  bad "AC3: jq 不在: exit=$RC out=[$OUT]"
+  bad "AC3: jq 不在: exit=$RC out=[$OUT]（rc=141 なら hook が stdin を drain せずに exit している）"
+fi
+
+RC=0
+OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1 PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
+  ok "AC3: opt-out（SKIP=1）でも stdin を読み切ってから無出力 exit 0"
+else
+  bad "AC3: opt-out の drain: exit=$RC out=[$OUT]（rc=141 なら opt-out の早期 exit が read より前にある）"
 fi
 
 echo "guard-background-cwd: hooks.json 登録の静的照合"

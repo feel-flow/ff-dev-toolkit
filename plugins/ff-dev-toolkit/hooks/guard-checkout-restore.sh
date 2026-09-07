@@ -37,9 +37,14 @@
 
 # fail-open のため set -e / set -u は使わない。
 
-[ "${FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD:-0}" = "1" ] && exit 0
+# stdin は bash 組み込みの read で読み切る（外部コマンドに依存しない）。`cat` だと PATH が
+# 空・壊れた環境で command not found → stdin 未読のまま exit 0 となり、書き手（ホスト）が
+# EPIPE / SIGPIPE を受ける（Issue #1329。guard-background-cwd と同じ修正）。opt-out も
+# stdin を読み切ってから抜ける。-d '' は EOF で非 0 を返すが input には内容が入っている。
+input=""
+IFS= read -r -d '' input || true
 
-input="$(cat 2>/dev/null)" || exit 0
+[ "${FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD:-0}" = "1" ] && exit 0
 
 # 安価な前置フィルタ: git かつ checkout/restore を含まない入力は即終了
 case "$input" in

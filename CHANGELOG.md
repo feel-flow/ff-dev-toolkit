@@ -20,6 +20,12 @@
 
 ## [Unreleased]
 
+## [0.86.3] - 2026-09-07
+
+### 修正
+
+- PreToolUse hook 3 本（`guard-background-cwd` / `guard-checkout-restore` / `guard-pr-followup`）が stdin を外部コマンド `cat` で読んでいたため、PATH が空・壊れた環境では stdin を読まずに exit し、書き手（ホスト）が EPIPE を受ける問題を修正。bash 組み込みの `read` で読み切ってから fail-open / opt-out するようにし、各 suite にパイプバッファより大きい入力で drain 漏れをどの OS でも決定的に検出するケースを追加した
+
 ## [0.86.2] - 2026-09-07
 
 ### 修正

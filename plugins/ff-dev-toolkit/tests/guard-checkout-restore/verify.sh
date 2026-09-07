@@ -208,6 +208,27 @@ else
   bad "空 stdin: exit=$RC out=[$OUT]"
 fi
 
+echo "guard-checkout-restore: stdin の drain（fail-open でも書き手に EPIPE を返さない）"
+# PATH 空の環境では外部コマンド（cat 含む）が無い。hook が stdin を読まずに exit すると
+# 書き手（printf / 実運用ではホスト）が SIGPIPE を受け、pipefail 下では rc=141 が観測される
+# （Issue #1329）。payload をパイプバッファ（64 KiB）より大きくして drain 漏れを OS に
+# 依らず決定的に検出する（末尾の空白は JSON として有効）。
+BIG_PAYLOAD="$(jq -n '{tool_name: "Bash", tool_input: {command: "echo ok"}, cwd: "/tmp"}')$(printf '%*s' 200000 '')"
+RC=0
+OUT="$(printf '%s' "$BIG_PAYLOAD" | PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
+  ok "PATH 空の環境でも stdin を読み切ってから無出力 exit 0"
+else
+  bad "PATH 空の drain: exit=$RC out=[$OUT]（rc=141 なら hook が stdin を drain せずに exit している）"
+fi
+RC=0
+OUT="$(printf '%s' "$BIG_PAYLOAD" | FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD=1 PATH="/nonexistent" /bin/bash "$TARGET" 2>/dev/null)" || RC=$?
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
+  ok "opt-out（FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD=1）でも stdin を読み切ってから無出力 exit 0"
+else
+  bad "opt-out の drain: exit=$RC out=[$OUT]（rc=141 なら opt-out の早期 exit が read より前にある）"
+fi
+
 echo "guard-checkout-restore: hooks.json 登録の静的照合"
 if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
     | select(.command | contains("guard-checkout-restore.sh"))' "$HOOKS_JSON" >/dev/null 2>&1; then
