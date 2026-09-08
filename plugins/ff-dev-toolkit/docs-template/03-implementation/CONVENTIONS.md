@@ -1,14 +1,16 @@
 ---
 title: "CONVENTIONS"
-version: "1.1.0"
+version: "1.2.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-06"
+updated: "2026-09-08"
 changeImpact: "medium"
 ---
 
 # CONVENTIONS.md - コーディング規約
+
+> 本文の言語・設計・レビュー・テスト設定は候補例。プロジェクトの目的・リスク・既存構成に合わせて推奨理由を示し、合意済みのものだけを採用する。ASDD 2.0では `.asdd/config.json` の文書・機能選択を優先し、ACE・振り返り・複数AIレビューを無効時に追加しない。
 
 ## 0. ドキュメント命名規則
 
@@ -173,7 +175,7 @@ my-project/
 - **シンプルさ**: 複雑さより簡潔さを選ぶ
 - **明示性**: 暗黙より明示的に
 
-### マジックナンバー禁止
+### 意味のある値の定数化（採用時）
 
 ```typescript
 // ❌ 悪い例
@@ -707,6 +709,10 @@ function processUserInput(input: unknown): void {
 ```
 
 ## Changelog
+
+### [1.2.0] - 2026-09-08
+
+- ASDD 2.0: project-specific recommendations and explicitly agreed optional features (Issues #1372 / #1374).
 
 ### [1.1.0] - 2026-09-06
 

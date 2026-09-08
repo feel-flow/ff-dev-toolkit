@@ -35,12 +35,12 @@ GUARD_EXEMPT=(
 # （実測: skills を 1 件へ削った tree が緑のまま通った）。名簿が丸ごと縮む変異を赤に
 # するには、入力から独立した絶対値が要る。値は現時点で契約 fence を持つ skill の実数。
 # fence 付き skill を減らす変更（skill の統合・撤去）は、意図的ならこの値も同時に下げる。
-MIN_SKILLS=21
+MIN_SKILLS=23
 
 # 実行時ガードを持つ skill の絶対下限。MIN_SKILLS と同じ理由で、母集団から導いた量
 # （母集団 - 除外数）を床にしても崩壊を検出できない。値は現時点でガードを持つ skill の
 # 実数（母集団のうち GUARD_EXEMPT に載らないもの）。
-MIN_GUARD_SKILLS=17
+MIN_GUARD_SKILLS=19
 
 SCANNED_COUNT=0
 

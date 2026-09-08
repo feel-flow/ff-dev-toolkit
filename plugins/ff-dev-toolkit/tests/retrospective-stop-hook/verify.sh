@@ -376,6 +376,7 @@ fi
 
 TIMEOUT_READ_COUNT="$(grep -Fc -- '-t "$INPUT_TIMEOUT_SECONDS"' "$TARGET")"
 MUTANT="$TEST_TMP/retrospective-stop-no-read-timeout.sh"
+cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$TEST_TMP/asdd-hook-gate.sh"
 if [ "$TIMEOUT_READ_COUNT" -eq 1 ]; then
   sed 's/ -t "$INPUT_TIMEOUT_SECONDS"//' "$TARGET" >"$MUTANT"
   run_input_limit_fixture "$MUTANT"
@@ -476,6 +477,8 @@ if [ "$FS_BEFORE" = "$FS_AFTER" ]; then
 else
   bad "hook が filesystem へ副作用を作成"
 fi
+
+node --test "$SCRIPT_DIR/asdd.test.mjs"
 
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ retrospective Stop hook: ${FAIL} 件失敗（${PASS} 件成功）" >&2

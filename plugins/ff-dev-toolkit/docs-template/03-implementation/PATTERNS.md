@@ -1,14 +1,16 @@
 ---
 title: "PATTERNS"
-version: "1.4.0"
+version: "1.5.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-06"
+updated: "2026-09-08"
 changeImpact: "medium"
 ---
 
 # PATTERNS.md - 実装パターンガイド
+
+> 本文の言語・設計・レビュー・テスト設定は候補例。プロジェクトの目的・リスク・既存構成に合わせて推奨理由を示し、合意済みのものだけを採用する。ASDD 2.0では `.asdd/config.json` の文書・機能選択を優先し、ACE・振り返り・複数AIレビューを無効時に追加しない。
 
 ## 1. コーディング規約
 
@@ -148,7 +150,7 @@ abstract class AppError extends Error {
   }
 }
 
-// HTTP ステータス（マジックナンバー禁止 / MASTER.md）。エラー階層と正規化で共用する
+// HTTP ステータス（意味のある値の定数化（採用時） / MASTER.md）。エラー階層と正規化で共用する
 const HTTP_STATUS = {
   BAD_REQUEST: 400,
   UNAUTHORIZED: 401,
@@ -271,20 +273,32 @@ function readHttpStatus(error: unknown): number | undefined {
     code?: unknown;
     response?: { status?: unknown };
   };
-  // SendGrid の ResponseError は HTTP ステータスを数値の `code` に入れる。他 SDK の数値 code
-  // （独自エラー番号）を拾わないよう、HTTP ステータスの範囲にある数値だけを採用する
+  // SendGrid の ResponseError は HTTP ステータスを数値の `code` に入れる（`response` に
+  // headers / body を持つ）。範囲チェックだけでは MongoDB の WriteConflict(112) のような
+  // 100〜599 に収まる独自エラー番号を弾けないので、HTTP レスポンスの形（`response` が
+  // オブジェクト）を伴う場合に限って数値 `code` を採用する
+  const looksLikeHttpResponseError =
+    typeof e.response === "object" && e.response !== null;
   const candidate =
     e.statusCode ??
     e.status ??
     e.response?.status ??
-    (typeof e.code === "number" && isHttpStatusRange(e.code) ? e.code : undefined);
+    (looksLikeHttpResponseError &&
+    typeof e.code === "number" &&
+    isHttpStatusRange(e.code)
+      ? e.code
+      : undefined);
   return typeof candidate === "number" ? candidate : undefined;
 }
 
 const HTTP_STATUS_MIN = 100;
 const HTTP_STATUS_MAX = 599;
 function isHttpStatusRange(value: number): boolean {
-  return Number.isInteger(value) && value >= HTTP_STATUS_MIN && value <= HTTP_STATUS_MAX;
+  return (
+    Number.isInteger(value) &&
+    value >= HTTP_STATUS_MIN &&
+    value <= HTTP_STATUS_MAX
+  );
 }
 
 // Node のシステムエラーコード（ECONNREFUSED / ENOTFOUND / ETIMEDOUT 等）を cause に持つか
@@ -315,6 +329,14 @@ function isProgrammingError(error: unknown): boolean {
  *
  * 汎用 Error / AxiosError のままだと category の判定がすべて素通りし、外部 API の
  * 401/403 がフォールバックや再試行の対象になる（FALLBACK.md §4）。
+ * ステータスは `status` / `statusCode` / `response.status` に加え、SendGrid の
+ * ResponseError のように数値の `code` に入っている場合も読む（`response` を伴い、
+ * HTTP ステータスの範囲にある数値のみ）。読めないとすべて transient に化ける。
+ * 写像: 401 / 403 → 認証・認可（never-fallback）、404 → NotFoundError（permanent）、
+ * 409 → ConflictError（never-fallback）、429 / 5xx / ステータス不明 → UpstreamError
+ * （transient）、専用クラスを持たないその他の 4xx（400 / 422 等）→ UpstreamRejectedError
+ * （never-fallback。こちらの要求誤りなので本番でも握りつぶさない）。
+ * 1xx〜3xx をエラーとして投げる HTTP ラッパは想定外なので UpstreamError に寄せる。
  * cause には元の値をそのまま保持する（Error でない値も String() に潰さない —
  * 上流のステータスやレスポンス本文は cause からしか辿れない）。
  *
@@ -351,9 +373,12 @@ function normalizeExternalError(
       // HTTP ラッパ）。429 とともに一時障害として扱う
       return new UpstreamError(message, { cause });
     default:
-      return status >= HTTP_STATUS.INTERNAL_SERVER_ERROR
-        ? new UpstreamError(message, { cause })
-        : new UpstreamRejectedError(message, status, { cause });
+      // 4xx（専用クラスを持たないもの）だけが「こちらの要求誤り」。5xx と、エラーとして
+      // 投げられた 1xx〜3xx（リダイレクト等）は上流側の事情として transient に寄せる
+      return status >= HTTP_STATUS.BAD_REQUEST &&
+        status < HTTP_STATUS.INTERNAL_SERVER_ERROR
+        ? new UpstreamRejectedError(message, status, { cause })
+        : new UpstreamError(message, { cause });
   }
 }
 ```
@@ -739,10 +764,10 @@ interface Metrics {
   increment(name: string, tags?: Record<string, string>): void;
 }
 
-// cause 鎖の展開深さの上限（マジックナンバー禁止）。無限の cause ループを防ぐ
+// cause 鎖の展開深さの上限（意味のある値の定数化（採用時））。無限の cause ループを防ぐ
 const ERROR_CAUSE_MAX_DEPTH = 5;
 
-// ログに載せる上流レスポンス本文の上限（マジックナンバー禁止）。巨大な本文で行を潰さない
+// ログに載せる上流レスポンス本文の上限（意味のある値の定数化（採用時））。巨大な本文で行を潰さない
 const ERROR_LOG_BODY_MAX_CHARS = 2000;
 
 // HTTP 由来のエラー（AxiosError / fetch のレスポンス / { status, body }）から
@@ -754,9 +779,10 @@ function pickHttpDiagnostics(value: object): Record<string, unknown> {
     statusCode?: unknown;
     code?: unknown;
     body?: unknown;
-    response?: { status?: unknown; data?: unknown };
+    // axios は response.data、SendGrid の ResponseError は response.body に本文を持つ
+    response?: { status?: unknown; data?: unknown; body?: unknown };
   };
-  const body = v.body ?? v.response?.data;
+  const body = v.body ?? v.response?.data ?? v.response?.body;
   const diagnostics: Record<string, unknown> = {};
   const status = v.statusCode ?? v.status ?? v.response?.status;
   if (status !== undefined) diagnostics.status = status;
@@ -778,15 +804,25 @@ function pickHttpDiagnostics(value: object): Record<string, unknown> {
   return diagnostics;
 }
 
-// 任意の値を、投げずに上限つきの文字列へ落とす（循環参照・BigInt でも TypeError にしない）
-function describeValue(value: unknown): string {
+// ログに載せる非 HTTP 形状 cause の上位キー数の上限（意味のある値の定数化（採用時））
+const ERROR_LOG_SHAPE_MAX_KEYS = 20;
+
+// HTTP 形状でないオブジェクトの「形」だけを残す。値は一切出さない — 任意オブジェクトを
+// JSON 化すると、境界で赤入れされていない cause（{ requestBody: { email, apiSecret } } 等）
+// の個人情報・秘密がそのままログに載る（SKILL.md「個人情報をログに含めない」）。
+// 型名と上位キー名があれば「何が来たか」は追える。Object.keys / constructor 参照は
+// Proxy 等で投げうるので、ログ経路として投げない。catch 内では value に再度触らない
+// （Object.prototype.toString も Symbol.toStringTag の getter を呼ぶため投げうる）
+function describeShape(value: object): Record<string, unknown> {
   try {
-    const text = JSON.stringify(value, (_key, v) =>
-      typeof v === "bigint" ? v.toString() : v,
-    );
-    return (text ?? String(value)).slice(0, ERROR_LOG_BODY_MAX_CHARS);
+    const keys = Object.keys(value);
+    return {
+      type: value.constructor?.name ?? Object.prototype.toString.call(value),
+      keys: keys.slice(0, ERROR_LOG_SHAPE_MAX_KEYS),
+      keyCount: keys.length,
+    };
   } catch {
-    return `[unserializable ${Object.prototype.toString.call(value)}]`;
+    return { type: "unknown" };
   }
 }
 
@@ -797,12 +833,12 @@ function serializeError(error: unknown, depth = 0): Record<string, unknown> {
   if (!(error instanceof Error)) {
     // Error でない cause（{ status, body } 等）は String() に潰さず構造化する。
     // HTTP 形状でない値（GA4 のレスポンス等）は pickHttpDiagnostics が空になるので、
-    // 上限つきの文字列表現に落として「形状の情報」自体を残す
+    // 型名と上位キー名（値は含めない）で「形状の情報」自体を残す
     if (typeof error === "object" && error !== null) {
       const diagnostics = pickHttpDiagnostics(error);
       return Object.keys(diagnostics).length > 0
         ? diagnostics
-        : { value: describeValue(error) };
+        : { shape: describeShape(error) };
     }
     return { value: String(error) };
   }
@@ -875,7 +911,7 @@ class JsonLogger implements Logger {
 }
 ```
 
-## 10. マジックナンバー禁止
+## 10. 意味のある値の定数化（採用時）
 
 ### 定数の定義
 
@@ -959,12 +995,12 @@ Layer 1（[DECISION_TREE.md](./DECISION_TREE.md)）で決めた配置を、言�
 
 ### 共通アンチパターン
 
-| アンチパターン                 | 理由                     | 代わりにやること                                       |
-| ------------------------------ | ------------------------ | ------------------------------------------------------ |
-| マジックナンバー・ハードコード | 変更漏れ・意図不明の原因 | 名前付き定数へ抽出（→ 10. マジックナンバー禁止）       |
-| エラーの握りつぶし（空 catch） | 障害の検知が遅れる       | ログ記録 + 呼び出し元へ伝播（→ 3. エラーハンドリング） |
-| 境界を越えた直接 import        | レイヤー違反・循環依存   | 依存方向 lint に従う（→ 12. 依存方向 lint）            |
-| ビジネスルールのコード内散在   | 仕様と実装の乖離         | DOMAIN.md に集約し、コードから参照                     |
+| アンチパターン                 | 理由                     | 代わりにやること                                           |
+| ------------------------------ | ------------------------ | ---------------------------------------------------------- |
+| マジックナンバー・ハードコード | 変更漏れ・意図不明の原因 | 名前付き定数へ抽出（→ 10. 意味のある値の定数化（採用時）） |
+| エラーの握りつぶし（空 catch） | 障害の検知が遅れる       | ログ記録 + 呼び出し元へ伝播（→ 3. エラーハンドリング）     |
+| 境界を越えた直接 import        | レイヤー違反・循環依存   | 依存方向 lint に従う（→ 12. 依存方向 lint）                |
+| ビジネスルールのコード内散在   | 仕様と実装の乖離         | DOMAIN.md に集約し、コードから参照                         |
 
 ### プロジェクト固有のアンチパターン
 
@@ -993,11 +1029,19 @@ ACE Playbook で `Helpful >= 5` に達した知見を、`/ace-refine` が蒸留�
 
 ## Changelog
 
+### [1.5.1] - 2026-09-08
+
+- 方法論側のエラー境界・診断ログの修正を正本へ統合（AI仕様駆動開発2.0: #1372、直接配布: ai-spec-driven-development#525）。numeric codeのHTTP形状確認、1xx〜3xx分類、SendGrid本文、非HTTP causeの値の非出力を保持。
+
+### [1.5.0] - 2026-09-08
+
+- ASDD 2.0: project-specific recommendations and explicitly agreed optional features (Issues #1372 / #1374).
+
 ### [1.4.0] - 2026-09-06
 
 #### 変更
 
-- AppError 階層に `cause` と分類 `category`（never-fallback / transient / permanent）を追加し、`UpstreamError` / `UpstreamRejectedError`、`HTTP_STATUS`、外部境界のエラー正規化 `normalizeExternalError()` を追加（Issue #1320。公開リポ側 https://github.com/feel-flow/ai-spec-driven-development/issues/486 の移植）
+- AppError 階層に `cause` と分類 `category`（never-fallback / transient / permanent）を追加し、`UpstreamError` / `UpstreamRejectedError`、`HTTP_STATUS`、外部境界のエラー正規化 `normalizeExternalError()` を追加（Issue #1320。[公開側Issue #486](https://github.com/feel-flow/ai-spec-driven-development/issues/486) の移植）
 - Logger の呼び出し規約を `interface Logger` として明文化（error は `(message, error, meta?)`、warn / info は `(message, meta?)`）。`JsonLogger` が `cause` 鎖を出力するよう `serializeError()` を追加。`Metrics` の最小契約を追加
 
 ### [1.3.1] - 2026-09-06

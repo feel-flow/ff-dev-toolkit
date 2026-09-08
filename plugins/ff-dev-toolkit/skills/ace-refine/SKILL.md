@@ -5,6 +5,12 @@ description: ACE Playbook を定期整理する（stale エントリのアーカ
 
 # /ace-refine — ACE Playbook の grow-and-refine（定期整理）
 
+## ASDD 2.0 設定がある場合
+
+最初に[共通設定契約](../asdd-init/references/configuration.md)を読み、`scripts/asdd/config.mjs` の `loadConfig(root)` で対象プロジェクトの `.asdd/config.json` を検証する。以下の従来手順より、合意済みの文書構成・機能スイッチ・ワークフローを優先する。設定なしは従来互換、不正設定は自動処理を止めて診断する。
+
+`features.ace=false` のとき、ワークフローからの自動実行・Playbook作成・収集・整理を行わない。ユーザーがACEを明示依頼した場合は依頼範囲で実行するが、永続設定を勝手に変更しない。完了後の振り返りも `features.retrospective` が有効な場合だけ自動実行する。
+
 `/ace-curate` が「増やす（grow）」を担うのに対し、本スキルは「整える（refine）」を担います。肥大化した Playbook から検索ノイズを取り除き、実証済みの知見を蒸留します。**通常の curate は append-only のまま**であり、既存エントリ本文の書き換えは本スキル実行中のみ許可されます（原文アーカイブ保全が条件）。
 
 ## プラグインルートの固定（必須）

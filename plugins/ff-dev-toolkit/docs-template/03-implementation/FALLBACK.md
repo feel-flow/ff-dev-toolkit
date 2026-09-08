@@ -1,14 +1,16 @@
 ---
 title: "FALLBACK"
-version: "1.1.0"
+version: "1.2.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-06"
+updated: "2026-09-08"
 changeImpact: "medium"
 ---
 
 # フォールバック戦略（Fail-Fast in Dev, Graceful in Prod）
+
+> 本文の言語・設計・レビュー・テスト設定は候補例。プロジェクトの目的・リスク・既存構成に合わせて推奨理由を示し、合意済みのものだけを採用する。ASDD 2.0では `.asdd/config.json` の文書・機能選択を優先し、ACE・振り返り・複数AIレビューを無効時に追加しない。
 
 > **Origin**: [PATTERNS.md](./PATTERNS.md) セクション 3（エラーハンドリング） | **Related**: [DEPLOYMENT.md](../05-operations/DEPLOYMENT.md)
 
@@ -89,7 +91,7 @@ changeImpact: "medium"
 | セカンダリサービス | プライマリ障害時にバックアップサービスへ切替              | `HEALTH_CHECK_INTERVAL_MS`                                                          |
 | タイムアウト       | レスポンス待ち上限を設定                                  | `API_TIMEOUT_MS`, `BATCH_TIMEOUT_MS`                                                |
 
-> これらの値は名前付き定数として定義すること（マジックナンバー禁止。詳細は [PATTERNS.md](./PATTERNS.md) Section 10 参照）。
+> これらの値は名前付き定数として定義すること（意味のある値の定数化（採用時）。詳細は [PATTERNS.md](./PATTERNS.md) Section 10 参照）。
 
 ### 3.3 フィーチャーレイヤー
 
@@ -248,7 +250,7 @@ async function getConfig(key: string): Promise<string> {
 Section 3.2 の「リトライ」パターンのコードレベル実装。外部サービス呼び出し（INTEGRATIONS.md）から共通で使う。
 
 ```typescript
-// 再試行の既定値（マジックナンバー禁止 / MASTER.md）
+// 再試行の既定値（意味のある値の定数化（採用時） / MASTER.md）
 const DEFAULT_MAX_ATTEMPTS = 3; // 回。初回を含む試行回数の上限（再試行は最大 2 回）
 const DEFAULT_RETRY_BASE_DELAY_MS = 1000; // ms。2^(attempt-1) 倍で伸びる基準値
 const DEFAULT_RETRY_MAX_DELAY_MS = 10_000; // ms。待機時間の上限
@@ -393,6 +395,10 @@ async function retryWithBackoff<T>(
 - [ ] Feature Flag による機能無効化が可能な構成か
 
 ## Changelog
+
+### [1.2.0] - 2026-09-08
+
+- ASDD 2.0: project-specific recommendations and explicitly agreed optional features (Issues #1372 / #1374).
 
 ### [1.1.0] - 2026-09-06
 

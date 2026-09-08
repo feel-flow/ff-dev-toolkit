@@ -1,14 +1,16 @@
 ---
 title: "TESTING"
-version: "1.1.1"
+version: "1.2.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-06"
+updated: "2026-09-08"
 changeImpact: "medium"
 ---
 
 # TESTING.md - テスト戦略ガイド
+
+> **テンプレート直接利用**: `${CLAUDE_PLUGIN_ROOT}` がない環境では、この変数をシェルで展開しません。本文でプラグイン配下のテンプレートを参照する箇所は、同じ相対パスを [公開テンプレート配布元](https://github.com/feel-flow/ff-dev-toolkit/tree/HEAD/plugins/ff-dev-toolkit/docs-template) から参照・取得してください。利用する配布版に合わせたタグのファイルを選び、ローカルにある同名ファイルを無条件で上書きしないでください。
 
 ## 1. テスト戦略概要
 
@@ -38,11 +40,13 @@ changeImpact: "medium"
 
 ### カバレッジ目標
 
-| テスト種別     | カバレッジ目標       | 優先度 |
-| -------------- | -------------------- | ------ |
-| ユニットテスト | 80%以上              | 高     |
-| 統合テスト     | 60%以上              | 中     |
-| E2Eテスト      | クリティカルパス100% | 高     |
+重要な業務、主要動作、失敗時の影響から検証対象を決める。件数比率や一律80%を合格条件にしない。数値目標が有効な場合は、対象範囲・指標・例外・理由をユーザーと合意する。未採用なら「数値目標なし」と記録し、完成条件に対応する検証を示す。
+
+| 対象       | 推奨する判断                                   |
+| ---------- | ---------------------------------------------- |
+| 業務ルール | 正常系・境界・失敗が完成条件を満たすか         |
+| 外部連携   | 契約・認証・データ・通信失敗への対応が妥当か   |
+| 利用経路   | 主要な操作と利用者に影響する失敗を確認できるか |
 
 ## 2. ユニットテスト
 
@@ -589,26 +593,19 @@ jobs:
 
 ### カバレッジレポート設定
 
-```json
+```javascript
 // jest.config.js
 module.exports = {
   collectCoverage: true,
-  coverageDirectory: 'coverage',
-  coverageReporters: ['text', 'lcov', 'html'],
-  coverageThreshold: {
-    global: {
-      branches: 70,
-      functions: 80,
-      lines: 80,
-      statements: 80
-    }
-  },
+  coverageDirectory: "coverage",
+  coverageReporters: ["text", "lcov", "html"],
+  // coverageThreshold は数値目標の採用を合意した場合だけ追加する。
   collectCoverageFrom: [
-    'src/**/*.{ts,tsx}',
-    '!src/**/*.spec.{ts,tsx}',
-    '!src/**/*.interface.ts',
-    '!src/**/index.ts'
-  ]
+    "src/**/*.{ts,tsx}",
+    "!src/**/*.spec.{ts,tsx}",
+    "!src/**/*.interface.ts",
+    "!src/**/index.ts",
+  ],
 };
 ```
 
@@ -686,6 +683,12 @@ echo "変異適用: OK"       # 報告には検査結果と並べてこの成否
 ```
 
 ## Changelog
+
+- 2026-09-08 追記: プラグイン変数がない直接利用でも取得できる公開配布元を明記（ai-spec-driven-development#525）。
+
+### [1.2.0] - 2026-09-08
+
+- ASDD 2.0: project-specific recommendations and explicitly agreed optional features (Issues #1372 / #1374).
 
 ### [1.1.1] - 2026-09-06
 

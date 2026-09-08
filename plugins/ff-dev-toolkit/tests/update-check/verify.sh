@@ -148,6 +148,7 @@ REPO_NOSEMVER="$TMP/origin-nosemver.git"
 FIX="$TMP/plugin"
 mkdir -p "$FIX/hooks" "$FIX/.claude-plugin"
 cp "$TARGET" "$FIX/hooks/check-update.sh"
+cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$FIX/hooks/asdd-hook-gate.sh"
 HOOK="$FIX/hooks/check-update.sh"
 
 set_version() {
@@ -652,6 +653,7 @@ fi
 # 実際に使われている証明（スクリプト相対 fallback では version が読めず沈黙する）。
 mkdir -p "$TMP/detached"
 cp "$TARGET" "$TMP/detached/check-update.sh"
+cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$TMP/detached/asdd-hook-gate.sh"
 CACHE="$TMP/cache15"
 RC=0
 OUT="$(env -u FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK \

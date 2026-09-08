@@ -24,7 +24,7 @@ metadata:
 
 - 命名規則の準拠（PascalCase / camelCase / UPPER_SNAKE_CASE / kebab-case）
 - ファイル構造の標準パターン（imports → constants → types → main → exports）
-- マジックナンバー禁止ポリシーの遵守
+- 合意した対象の定数化ポリシーの遵守
 - ファイルサイズ制限（ソフト: 500行、ハード: 800行）
 - セキュリティパターンの適用（入力サニタイゼーション、パラメタライズドクエリ）
 - デザインパターンの適切な使用
@@ -42,7 +42,7 @@ metadata:
 | 定数             | UPPER_SNAKE_CASE      | `MAX_RETRY_COUNT` |
 | ファイル         | kebab-case            | `user-service.ts` |
 
-### 2. マジックナンバー禁止
+### 2. 合意した対象の定数化
 
 すべての意味のある数値・文字列は名前付き定数に抽出されているか確認する。
 

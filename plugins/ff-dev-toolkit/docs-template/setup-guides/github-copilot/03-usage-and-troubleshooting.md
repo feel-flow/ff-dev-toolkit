@@ -98,7 +98,7 @@ interface User {
 
 3. **確認ポイント**:
    - MASTER.mdが参照されている
-   - マジックナンバー禁止が守られている
+   - 合意した対象の定数化が守られている
    - 型安全性が確保されている
 
 ### 4-3: .copilotignoreの設定（オプション）
@@ -150,7 +150,7 @@ private/
 
 ```
 【タスク】ユーザー登録APIエンドポイントを作成
-【制約】MASTER.mdのルール、マジックナンバー禁止、TypeScript strict mode、単体テストも生成
+【制約】MASTER.mdのルール、合意した対象の定数化、TypeScript strict mode、単体テストも生成
 【成果物】APIエンドポイント、バリデーション、エラーハンドリング、テスト
 ```
 
@@ -244,7 +244,7 @@ git push
 | **MASTER.mdのルールが反映されない** | copilot-instructions.mdの設定不足        | 1. `.github/copilot-instructions.md`のパス確認<br>2. Copilot Chatで明示的に指示<br>3. VS Code再起動                                    |
 | **提案される速度が遅い**            | ネットワーク・プロジェクトサイズ         | 1. ネットワーク接続確認<br>2. Copilotのステータス確認（右下アイコン）<br>3. `.copilotignore`で不要ファイル除外                         |
 | **提案される内容が期待と違う**      | コメントの曖昧さ・コンテキスト不足       | 1. コメントをより具体的に書く<br>2. Copilot Chatを使用<br>3. `.copilotignore`で除外設定                                                |
-| **マジックナンバーが生成される**    | ルールが反映されていない                 | 1. copilot-instructions.mdにマジックナンバー禁止を明記<br>2. Copilot Chatで「マジックナンバー禁止」を明示<br>3. 生成後に手動でレビュー |
+| **マジックナンバーが生成される**    | ルールが反映されていない                 | 1. copilot-instructions.mdに合意した対象の定数化を明記<br>2. Copilot Chatで「合意した対象の定数化」を明示<br>3. 生成後に手動でレビュー |
 
 ### 詳細な対処法
 
@@ -280,7 +280,7 @@ git push
    ```
    必ず docs-template/MASTER.md のルールに従ってください。
    特に以下を遵守：
-   - マジックナンバー禁止
+   - 合意した対象の定数化
    - any型禁止
    - Result patternでのエラーハンドリング
    ```

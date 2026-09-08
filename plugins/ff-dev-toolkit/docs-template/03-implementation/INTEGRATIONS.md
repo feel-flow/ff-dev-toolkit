@@ -1,14 +1,16 @@
 ---
 title: "INTEGRATIONS"
-version: "1.1.0"
+version: "1.2.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-06"
+updated: "2026-09-08"
 changeImpact: "medium"
 ---
 
 # INTEGRATIONS.md - 統合・連携ガイド
+
+> 本文の言語・設計・レビュー・テスト設定は候補例。プロジェクトの目的・リスク・既存構成に合わせて推奨理由を示し、合意済みのものだけを採用する。ASDD 2.0では `.asdd/config.json` の文書・機能選択を優先し、ACE・振り返り・複数AIレビューを無効時に追加しない。
 
 ## 1. AI開発ツール統合
 
@@ -130,7 +132,7 @@ GitHub Copilotを使用する場合は、MASTER.mdをワークスペースルー
 
 ## コード生成ルール
 
-- マジックナンバー禁止（定数化または設定注入）
+- 意味のある値の定数化（採用時）（定数化または設定注入）
 - 型安全性の徹底
 - エラーハンドリングパターンの適用
 - テストコードの同時生成
@@ -165,7 +167,7 @@ alwaysApply: true
 
 ## コード生成制約
 
-- マジックナンバー/ハードコード禁止
+- 合意した対象の定数化
 - 型安全性の徹底
 - PATTERNS.mdのエラーハンドリングパターンを適用
 - テストコードを同時生成
@@ -357,7 +359,7 @@ import sgMail from "@sendgrid/mail";
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-// マジックナンバー禁止: 意味のある値は名前付き定数に切り出す（MASTER.md）
+// 意味のある値の定数化（採用時）: 意味のある値は名前付き定数に切り出す（MASTER.md）
 const SENDGRID_MAX_MESSAGES_PER_BATCH = 1000; // 件。SendGrid の 1 リクエスト上限
 const SENDGRID_BATCH_INTERVAL_MS = 1000; // ms。レート制限を避けるバッチ間の待機
 
@@ -612,7 +614,7 @@ function safeStringify(value: unknown): string {
   }
 }
 
-// ログに残す通知本文のプレビュー長（マジックナンバー禁止）。ログ行を潰さない範囲で通知を識別する
+// ログに残す通知本文のプレビュー長（意味のある値の定数化（採用時））。ログ行を潰さない範囲で通知を識別する
 const SLACK_TEXT_PREVIEW_MAX_CHARS = 80; // 文字
 
 // 通知サービス
@@ -984,6 +986,10 @@ describe("Payment Integration", () => {
 - **ログ**: [PATTERNS.md](./PATTERNS.md)「ログパターン」の `Logger` 規約 — `error(message, error, meta?)` / `warn|info(message, meta?)`
 
 ## Changelog
+
+### [1.2.0] - 2026-09-08
+
+- ASDD 2.0: project-specific recommendations and explicitly agreed optional features (Issues #1372 / #1374).
 
 ### [1.1.0] - 2026-09-06
 

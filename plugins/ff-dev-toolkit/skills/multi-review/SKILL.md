@@ -5,6 +5,12 @@ description: Claude / Codex / Grok / Copilot で主担当以外のクロスレ�
 
 # /multi-review — 複数AIによるクロスモデルレビュー実行
 
+## ASDD 2.0 設定がある場合
+
+最初に[共通設定契約](../asdd-init/references/configuration.md)を読み、`scripts/asdd/config.mjs` の `loadConfig(root)` で対象プロジェクトの `.asdd/config.json` を検証する。以下の従来手順より、合意済みの文書構成・機能スイッチ・ワークフローを優先する。設定なしは従来互換、不正設定は自動処理を止めて診断する。
+
+`features.multiReview=false` のとき自動起動しない。ユーザーが複数AIレビューを明示依頼した単発実行は可能だが、永続設定を変更しない。簡易レビューで合意している場合は単独の差分・主要動作の確認を行い、CLI追加導入やレビュー回数を必須化しない。
+
 複数のAI CLI（Claude Code / Codex / Grok）を並列実行し、異なる観点からコードレビューを実行します（flat-rate CLI に複数観点が乗る場合、その CLI 内はレート制限保護のため逐次実行）。Copilot CLI は従量課金のため既定ラインナップ外です（`--cli copilot-cli` でオプトイン）。
 
 ## 実行前の effort 選択

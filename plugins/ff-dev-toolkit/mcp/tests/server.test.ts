@@ -7,6 +7,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import url from 'url';
 import fs from 'fs';
+import os from 'os';
+import { execFileSync } from 'child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -129,6 +131,30 @@ describe('spec-docs server on a project without docs/', () => {
       expect(body.hint).toContain('/init-docs');
     } finally {
       await client.close();
+    }
+  });
+});
+
+describe('ASDD minimal generated project', () => {
+  it('searches MASTER without requiring the other six documents', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'asdd-mcp-'));
+    let client: Client | undefined;
+    try {
+      const configuration = path.join(root, 'confirmed.json');
+      fs.writeFileSync(configuration, JSON.stringify({
+        schemaVersion: 1, project: { name: '月次集計', purpose: '元データとの合計照合', owner: '@example' },
+        style: 'citizen', stage: 'poc', tools: ['claude', 'codex'], documents: ['MASTER'], workflow: 'simple',
+        features: { ace: false, retrospective: false, multiReview: false, hooks: false, ci: false },
+        decisions: [], github: null,
+      }));
+      execFileSync(process.execPath, [path.resolve(__dirname, '../../scripts/asdd/cli.mjs'), '--root', root, '--config', configuration, '--apply']);
+      client = await connect(root);
+      const result = await client.callTool({ name: 'search', arguments: { query: '元データとの合計照合' } });
+      expect(result.isError).toBeFalsy();
+      expect(parseText(result).some((hit: { file: string }) => hit.file === 'docs/MASTER.md')).toBe(true);
+      expect(fs.readdirSync(path.join(root, 'docs'))).toEqual(['MASTER.md']);
+    } finally {
+      await client?.close(); fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });

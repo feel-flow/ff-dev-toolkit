@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "ff-dev-toolkit",
-      "description": "AI仕様駆動開発（AI-SDD）の公式実装。仕様のゲート管理からドキュメント運用・レビュー・ナレッジ蓄積までを統制する。収録: Agent Skills 23、docs 検索 MCP（spec-docs・6ツール）、docs-template と multi-agent スクリプト。FeelFlow の書籍群から蒸留した方法論ベース。",
+      "description": "AI仕様駆動開発（AI-SDD）の公式実装。対話型の初期構築・市民開発の作業記録から、選択したレビュー・テスト・ナレッジ蓄積までを支援する。収録: Agent Skills 25、docs 検索 MCP（spec-docs・6ツール）、docs-template と multi-agent スクリプト。FeelFlow の書籍群から蒸留した方法論ベース。",
       "author": {
         "name": "FeelFlow Inc."
       },

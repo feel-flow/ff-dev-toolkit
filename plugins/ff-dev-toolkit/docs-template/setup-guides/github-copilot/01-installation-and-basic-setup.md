@@ -150,7 +150,7 @@ Generate Markdown with these sections:
 - Explicitly state: No magic numbers
 - Explicitly state: No `any` type
 - Explicitly state: Result pattern for error handling
-- Explicitly state: 80%+ test coverage target
+- Record the agreed test scope and any explicitly adopted coverage target
 
 # Information Verification Protocol
 If information is missing, DO NOT assume - request confirmation.
@@ -278,7 +278,7 @@ Before generating code suggestions, read and understand `docs-template/MASTER.md
 
 ### Testing
 
-- Generate unit tests for all functions (80%+ coverage target)
+- Generate tests for agreed critical paths and failure behavior; add a coverage threshold only if agreed
 - Use AAA pattern (Arrange-Act-Assert)
 - Mock dependencies appropriately
 

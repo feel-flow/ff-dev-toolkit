@@ -4,6 +4,12 @@ AI仕様駆動開発（AI-SDD）の公式実装となる Claude Code / Codex プ
 
 書籍『AI仕様駆動開発 公式ガイド』第2部（公式実装リファレンス）の対象実装です。方法論そのもの（コア7文書スキーマ・原則）は [ai-spec-driven-development](https://github.com/feel-flow/ai-spec-driven-development) を参照してください。
 
+## AI仕様駆動開発2.0の入口
+
+`asdd-init` で目的・完成条件・市民開発／開発者向けの進め方を合意する。必要な文書だけを生成し、共通MASTERからCLAUDE.md・AGENTS.mdを薄く接続する。日常作業は `asdd-work`、再設定や整合確認は `asdd-init` を使う。
+
+`.asdd/config.json` を正本とし、新規構成はACE・自動振り返りを初期無効にする。複数AIレビュー・Hook・CIも個別に選ぶ。設定のない既存プロジェクトは従来動作を維持する。無効な機能は催促せず、初期構築・実装準備・公開準備を区別して報告する。
+
 ## インストール
 
 ```bash
@@ -34,7 +40,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 
 ## 収録内容
 
-### Skills（23）
+### Skills（25）
 
 | スキル | 用途 |
 |---|---|
@@ -127,7 +133,7 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 
 対応ホストでは、`UserPromptSubmit` hook が `/retrospective` の実行契約を応答前に注入し、通常時は最初の応答内で振り返りを完了する。応答終了時の `Stop` hook は結果が無い実行漏れ時だけ 1 回継続する。継続後はホストの `stop_hook_active` と最終応答の振り返り結果で再入を止めるため、永続 marker は作らない。
 
-- 既定は自動実行。`RETROSPECTIVE_MODE=ask` で実施前確認へ切り替える
+- ASDD 2.0では `hooks` と `retrospective` の両方がtrueの場合だけ動く。設定なしの従来環境では既定は自動実行。`RETROSPECTIVE_MODE=ask` で実施前確認へ切り替える
 - `RETROSPECTIVE_MODE=off` で自動発火を無効にする。`0` / `false` / `no` / `none` / `disabled` も大文字小文字と空白を無視して受け付ける
 - Node.js 22 以上が見つからない場合は応答をブロックせず、手動実行と復旧方法を通知する
 - 改善提案の Issue 起票は自動化せず、従来どおりユーザー承認後に行う

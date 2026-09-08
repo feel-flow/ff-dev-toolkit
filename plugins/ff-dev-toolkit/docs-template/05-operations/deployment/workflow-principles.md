@@ -1,5 +1,7 @@
 # ワークフロー運用原則
 
+> **ASDD 2.0**: `.asdd/config.json` がある場合は合意したworkflowとfeaturesを優先する。以下の標準チェーンは従来環境または採用済み機能に適用する。ACE・振り返り・複数AIレビューは無効なら実行・催促せず、Hook・CIも選択したものだけ使う。既存の組織ルールやブランチ保護は維持する。
+
 > **Parent**: [DEPLOYMENT.md](../DEPLOYMENT.md) | **Related**: [git-workflow.md](./git-workflow.md)
 
 ## 概要

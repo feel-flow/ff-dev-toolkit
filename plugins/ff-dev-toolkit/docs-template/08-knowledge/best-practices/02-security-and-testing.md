@@ -382,9 +382,9 @@ describe("User API Integration", () => {
 
 **推奨**:
 
-- 全体カバレッジ: 80%以上
-- 重要な機能: 90%以上
-- ユーティリティ関数: 100%
+- カバレッジの数値目標: 対象範囲とリスクに応じて採用を合意した場合だけ設定
+- 重要な機能: 業務の境界・失敗時の影響を優先して確認
+- ユーティリティ関数: 再利用先に影響する入出力を確認
 
 #### カバレッジ設定
 
@@ -397,20 +397,7 @@ module.exports = {
     "!src/**/*.test.{js,ts}",
     "!src/index.ts",
   ],
-  coverageThreshold: {
-    global: {
-      branches: 80,
-      functions: 80,
-      lines: 80,
-      statements: 80,
-    },
-    "./src/services/": {
-      branches: 90,
-      functions: 90,
-      lines: 90,
-      statements: 90,
-    },
-  },
+  // coverageThreshold は対象範囲・数値目標を合意した場合だけ追加する。
 };
 ```
 

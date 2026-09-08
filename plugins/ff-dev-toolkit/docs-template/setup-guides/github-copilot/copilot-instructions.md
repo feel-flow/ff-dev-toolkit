@@ -1,5 +1,7 @@
 # STEP 2: copilot-instructions.md の設定
 
+> 本文の言語・設計・レビュー・テスト設定は候補例。プロジェクトの目的・リスク・既存構成に合わせて推奨理由を示し、合意済みのものだけを採用する。ASDD 2.0では `.asdd/config.json` の文書・機能選択を優先し、ACE・振り返り・複数AIレビューを無効時に追加しない。
+
 **所要時間**: 5-30分（方法による）
 
 このドキュメントでは、`.github/copilot-instructions.md`の作成方法を説明します。
@@ -87,10 +89,10 @@ mkdir -p .github
 
 # 制約
 - MASTER.mdの内容を必ず反映すること
-- マジックナンバー禁止を明記
+- 意味のある値の定数化（採用時）を明記
 - any型禁止を明記
 - エラーハンドリング（Result pattern）を明記
-- テストカバレッジ80%以上を明記
+- テスト合意した検証対象を確認を明記
 
 # 🚨 重要: 情報不足時の確認ルール
 情報が不足している場合、推論で埋めずに必ず確認を求めること。
@@ -160,7 +162,7 @@ EOF
 - JWT認証
 - Prisma ORM使用
 - バージョニング: /api/v1/...
-- エラーハンドリング: Result pattern必須
+- エラーハンドリング: 例外／Result型などを比較し、採用した方針を記録
 ```
 
 #### Next.jsプロジェクトの場合
@@ -254,7 +256,7 @@ Before generating any code suggestions, you MUST read and understand `docs-templ
 
 ### Testing
 
-- Generate unit tests for all functions (80%+ coverage target)
+- Generate tests for agreed critical paths and failure behavior; add a coverage threshold only if agreed
 - Use AAA pattern (Arrange-Act-Assert)
 - Mock dependencies appropriately
 
@@ -299,7 +301,7 @@ Before generating any code suggestions, you MUST read and understand `docs-templ
 
 3. **コード生成ルール**
    - 型安全性のルール
-   - マジックナンバー禁止
+   - 意味のある値の定数化（採用時）
    - エラーハンドリングパターン
    - テストカバレッジ目標
 
@@ -310,7 +312,7 @@ Before generating any code suggestions, you MUST read and understand `docs-templ
 
 ### Type Safety (from MASTER.md)
 
-- TypeScript strict mode必須
+- TypeScript strict modeは新規では推奨。既存では段階導入も比較して合意
 - any型禁止（unknownまたは適切な型を使用）
 - 全ての変数・関数・APIレスポンスに明示的な型定義
 

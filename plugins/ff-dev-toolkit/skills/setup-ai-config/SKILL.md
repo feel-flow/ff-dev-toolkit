@@ -5,6 +5,12 @@ description: プロジェクトの docs/ を基に AI 開発ツール向け設�
 
 # /setup-ai-config — AI開発ツール設定ファイル生成
 
+## ASDD 2.0 設定がある場合
+
+最初に[共通設定契約](../asdd-init/references/configuration.md)を読み、`scripts/asdd/config.mjs` の `loadConfig(root)` で対象プロジェクトの `.asdd/config.json` を検証する。以下の従来手順より、合意済みの文書構成・機能スイッチ・ワークフローを優先する。設定なしは従来互換、不正設定は自動処理を止めて診断する。
+
+2.0導入済みの場合は [asdd-init](../asdd-init/SKILL.md) の差分再設定経路を使う。合意済みの情報を再質問せず、選択した文書とツールの薄い入口だけを生成する。以下の20ファイル一括展開やMulti-CLIの自動配置は実行しない。Copilotなど設定形式の対象外ツールを明示依頼された場合は、共通MASTERへの薄い入口を別途提案し、対応済みツールと混同しない。
+
 プロジェクトの `docs/` を基に、各AI開発ツール向けの設定ファイルを生成します。
 
 ## プラグインルートの固定（必須）
@@ -90,13 +96,13 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 [docs/03-implementation/PATTERNS.md から抽出]
 - 命名規則
 - エラーハンドリング方針
-- マジックナンバー禁止ルール
+- 合意した定数化の対象と判断基準
 
 ## Build Commands
 [プロジェクトの package.json / Makefile 等から検出]
 
 ## Development Workflow
-[docs/05-operations/ から抽出、なければデフォルト]
+[docs/05-operations/ から採用済み方針を抽出。なければ推奨案を提示して合意]
 
 ## Out-of-Scope Finding Routing
 - 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する

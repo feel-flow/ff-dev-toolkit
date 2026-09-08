@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+
+# ASDD 2.0: disabled optional hooks do not prompt, block, or mutate.
+if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
+  echo 'ff-dev-toolkit: ASDD Hook helper is unavailable; optional hook skipped' >&2
+  exit 0
+fi
+asdd_hook_enabled hooks || exit 0
 #
 # PR フォローアップ宣言ガード（PreToolUse / Bash、Issue #771）。
 #

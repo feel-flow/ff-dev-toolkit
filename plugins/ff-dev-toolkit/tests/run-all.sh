@@ -454,6 +454,7 @@ else
     # 一時ディレクトリと PATH 上の shim を使うが、ネットワーク・実インストールは伴わない。
     "$SCRIPT_DIR/setup-multi-agent-yq/verify.sh"
     "$SCRIPT_DIR/setup-ai-config/verify.sh"
+    "$SCRIPT_DIR/asdd-runtime/verify.sh"
     "$SCRIPT_DIR/assess-impact/verify.sh"
     "$SCRIPT_DIR/validate-docs/verify.sh"
     # /validate-docs §4 のプレースホルダー免除（閉じたフェンス / コメント /

@@ -165,6 +165,7 @@ assert_update_guidance() {
 FIX="$TMP/plugin"
 mkdir -p "$FIX/hooks" "$FIX/.claude-plugin"
 cp "$TARGET" "$FIX/hooks/check-skill-drift.sh"
+cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$FIX/hooks/asdd-hook-gate.sh"
 printf '{\n  "name": "ff-dev-toolkit",\n  "version": "0.40.0"\n}\n' > "$FIX/.claude-plugin/plugin.json"
 HOOK="$FIX/hooks/check-skill-drift.sh"
 chmod +x "$HOOK"
@@ -542,6 +543,7 @@ prepare_mut_plugin() {
   # $1 dest plugin root
   mkdir -p "$1/hooks" "$1/.claude-plugin"
   cp "$TARGET" "$1/hooks/check-skill-drift.sh"
+cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$1/hooks/asdd-hook-gate.sh"
   printf '{\n  "name": "ff-dev-toolkit",\n  "version": "0.40.0"\n}\n' > "$1/.claude-plugin/plugin.json"
   chmod +x "$1/hooks/check-skill-drift.sh"
 }
@@ -714,6 +716,7 @@ LOADED="$TMP/loaded-old"
 mkdir -p "$LOADED/hooks"
 make_plugin "$LOADED" "0.14.0" alpha
 cp "$TARGET" "$LOADED/hooks/check-skill-drift.sh"
+cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$LOADED/hooks/asdd-hook-gate.sh"
 chmod +x "$LOADED/hooks/check-skill-drift.sh"
 
 REPO="$TMP/repo-loaded"

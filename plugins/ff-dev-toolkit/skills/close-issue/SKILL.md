@@ -5,6 +5,12 @@ description: マージ直前に PR が閉じる Issue の受け入れ条件（AC
 
 # /close-issue — Issue クローズ前の AC 照合ゲート
 
+## ASDD 2.0 設定がある場合
+
+最初に[共通設定契約](../asdd-init/references/configuration.md)を読み、`scripts/asdd/config.mjs` の `loadConfig(root)` で対象プロジェクトの `.asdd/config.json` を検証する。以下の従来手順より、合意済みの文書構成・機能スイッチ・ワークフローを優先する。設定なしは従来互換、不正設定は自動処理を止めて診断する。
+
+合意した確認方法だけを適用する。カバレッジ80%、Result pattern、strict、定数化などの推奨を未合意のゲートにしない。ACE・振り返り・複数AIレビューの無効設定を尊重し、チェーン末尾にも追加しない。市民開発のIssue中心運用では、既存の組織ルールを保ちつつ、未採用のPR・7文書を必須化しない。
+
 `gh pr ready` の後・`gh pr merge` の**前**に実行し、PR が閉じる Issue の受け入れ条件（AC）を照合します。Issue がまだ open のうちに検証記録を残すことで、「AC 未検証のまま無言で自動クローズされる」問題を防ぎます。
 
 対象は 2 種類あります:

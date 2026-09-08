@@ -1,13 +1,16 @@
 ---
 title: "TASKS"
-version: "1.0.0"
+version: "1.1.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "YYYY-MM-DD"
+updated: "2026-09-08"
+changeImpact: "medium"
 ---
 
 # TASKS.md - タスク管理
+
+> 本文の言語・設計・レビュー・テスト設定は候補例。プロジェクトの目的・リスク・既存構成に合わせて推奨理由を示し、合意済みのものだけを採用する。ASDD 2.0では `.asdd/config.json` の文書・機能選択を優先し、ACE・振り返り・複数AIレビューを無効時に追加しない。
 
 ## 1. 現在のスプリント
 
@@ -140,7 +143,7 @@ Sprint 4: ███████████████████████�
 ### 開発タスク
 
 - [ ] コード実装完了
-- [ ] ユニットテスト作成（カバレッジ80%以上）
+- [ ] ユニットテスト作成（合意した検証対象を確認）
 - [ ] コードレビュー承認
 - [ ] ドキュメント更新
 - [ ] 統合テスト合格
@@ -234,6 +237,10 @@ graph TD
 | [@dev4]  | ⭐⭐       | ⭐⭐⭐⭐⭐ | ⭐       | ⭐⭐     |
 
 ## Changelog
+
+### [1.1.0] - 2026-09-08
+
+- ASDD 2.0: project-specific recommendations and explicitly agreed optional features (Issues #1372 / #1374).
 
 ### [1.0.0] - YYYY-MM-DD
 

@@ -38,6 +38,14 @@ make_fixture() {
   cp "$PLUGIN_ROOT/hooks/hooks.json" "$root/hooks/hooks.json"
   cp "$PLUGIN_ROOT/skills/retrospective/SKILL.md" "$root/skills/retrospective/SKILL.md"
   cp "$CONSUMER" "$root/tests/retrospective-stop-hook/verify.sh"
+  cp "$PLUGIN_ROOT/tests/retrospective-stop-hook/asdd.test.mjs" "$root/tests/retrospective-stop-hook/asdd.test.mjs"
+  cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$root/hooks/"
+  for hook in check-update check-skill-drift auto-update-marketplace guard-checkout-restore guard-pr-followup guard-background-cwd; do
+    cp "$PLUGIN_ROOT/hooks/$hook.sh" "$root/hooks/$hook.sh"
+  done
+  mkdir -p "$root/scripts/asdd"
+  cp "$PLUGIN_ROOT/scripts/asdd/config.mjs" "$root/scripts/asdd/config.mjs"
+
   printf '%s' "$root"
 }
 

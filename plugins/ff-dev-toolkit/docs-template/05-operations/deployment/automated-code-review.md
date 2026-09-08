@@ -267,7 +267,7 @@ None found
 
 ### Frontend (React)
 
-- TypeScript strict mode必須
+- TypeScript strict modeは新規では推奨。既存では段階導入も比較して合意
 - styled-componentsの命名規則に従う
 - アクセシビリティ属性を確認
 
