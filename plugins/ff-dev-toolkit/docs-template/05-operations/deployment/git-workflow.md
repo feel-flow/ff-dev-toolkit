@@ -1310,14 +1310,14 @@ tracking Issue / Epic 配下に多数の sub-issue がぶら下がっていて 1
 3. **Issue 本文が順序制約を持つ場合（Epic の「順序制約」節、「A の完了が B の前提」等）は、それをバッチ境界として採用する。** 制約を無視して並列化すると、同じ節を触る PR 同士が意味的に競合する。順序制約が書かれていない Epic では、1 の列挙で見つけた重なりを Epic 本文へ制約として追記しておくとよい（次に同じ Epic を扱うセッションが同じ列挙をやり直さずに済む）
 4. **changelog は fragment 方式（`changelog.d/` への 1 断片追加）にする。** 本体ファイルを直接編集する方式だと、並列マージのたびに同じ箇所で衝突する。断片の集約はリリース準備の側で 1 回だけ行う
 
-**並列マージで残る定型作業**: 先行 PR のマージ後に後続 PR を rebase すると、frontmatter `version` を持つ文書の claim（`.version-claims/`）が stale になり再生成が要る（記録のある 3 回で合計 5 回発生。意味的競合を除けばこれが手戻りのほぼ全部）。再生成はステップ4の [自動テストの実行](#自動テストの実行) にある claim 照合の手順そのもので、rebase 直後・重いゲートの前に回す。`.version-claims/` を持たないプロジェクトではこの作業は無い。
+**並列マージで残る定型作業**: 先行 PR のマージ後に後続 PR を rebase すると、frontmatter `version` を持つ文書の claim（`.version-claims/`）が stale になり再生成が要る（記録のある 3 回で合計 5 回発生。意味的競合を除けばこれが手戻りのほぼ全部）。**並列側は frontmatter `version` と suite 数の確定値を書かない。** 同じ文書を触る PR 同士が同じ次番号・同じ件数を先取りし、後着側が必ず振り直しになるためで、**仕上げ側が rebase 後に version を `origin/develop` の現在値 +1、suite 数を `tests/run-all.sh` の登録実体から数え直して作り直し、両側の Changelog エントリを保持したうえで claim を再生成する。** 再生成はステップ4の [自動テストの実行](#自動テストの実行) にある claim 照合の手順そのもので、rebase 直後・重いゲートの前に回す。`.version-claims/` を持たないプロジェクトではこの作業は無い。この振り直しは Epic のバッチ運用に限らず、**同じ文書を触る単発 PR が同時に開いているとき**（suite を 1 本足す PR は必ず docs 側の version を触る）にも同じ手順で適用する。
 
 **役割分担の要約**:
 
 | 役割 | 並列 / 直列 | 触るもの |
 | ---- | ----------- | -------- |
 | 実装（サブエージェント） | 並列（同一バッチ内） | 自分の worktree のみ |
-| レビュー・AC 照合・マージ（親） | 直列 | PR を 1 本ずつ。次の PR は直前のマージ後の base へ rebase してから |
+| レビュー・AC 照合・マージ（親） | 直列 | PR を 1 本ずつ。次の PR は直前のマージ後の base へ rebase してから。PR ブランチは `git switch --detach origin/<branch>` で扱い（並列側の worktree が同名ブランチを保持していて `git checkout` / `git checkout -B` が失敗する）、push は `HEAD:<branch>` を使う。マージは `--delete-branch` を使わず `gh pr merge <PR番号> --squash` と `git push origin --delete <head>` に分割する（detached HEAD では `--delete-branch` のローカル branch 解決も、PR 番号を省略したときの PR 解決も失敗する。`--match-head-commit` の渡し方を含む全文はステップ8の「base が他 worktree に保持されている場合の分割手順」と同じで、保持されているのが base ではなく PR の head ブランチという違いだけ） |
 | バッチ間 | 直列 | 先行バッチのマージ完了を後続バッチの開始条件にする |
 | マージ後の ACE ナレッジ体系化（親） | 直列 | PR ごとの `/ace-curate` は PLAYBOOK の frontmatter / claim を共有するため並列にしない（4 回目の実測で直列化） |
 

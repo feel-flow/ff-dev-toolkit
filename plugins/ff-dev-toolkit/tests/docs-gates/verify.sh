@@ -961,6 +961,17 @@ must_match "$f" '^4\. \*\*changelog は fragment 方式（`changelog\.d/` への
 must_contain "$f" 'claim（`.version-claims/`）が stale になり再生成が要る' \
   "Epic 一括対応: 並列マージ後の version claim 再生成"
 
+# --- Git Workflow: 仕上げ側の detached 運用と version / suite 数の振り直し（Issue #1312。観測台帳 OBS-094 / OBS-095 から昇格）---
+# 役割表の行も定型作業の段落も 1 行に収まるため、行頭から末尾のコマンド／文言までを
+# 順序付きでアンカーする。コマンド単体の部分一致では、別の役割の行に同じ文字列が
+# 現れた場合や手順の順序が入れ替わった場合に緑のまま通る。
+must_match "$f" '^\| レビュー・AC 照合・マージ（親） \| 直列 \|.*`git switch --detach origin/<branch>`.*`HEAD:<branch>`.*`gh pr merge <PR番号> --squash` と `git push origin --delete <head>` に分割する' \
+  "Epic 一括対応: 仕上げ担当は PR ブランチを detached で扱い --delete-branch を分割する"
+must_match "$f" '^\*\*並列マージで残る定型作業\*\*:.*並列側は frontmatter `version` と suite 数の確定値を書かない。.*`origin/develop` の現在値 \+1、suite 数を `tests/run-all\.sh` の登録実体から数え直して作り直し、両側の Changelog エントリを保持したうえで claim を再生成する。' \
+  "Epic 一括対応: version / suite 数は仕上げ側が rebase 後に作り直す"
+must_contain "$f" '同じ文書を触る単発 PR が同時に開いているとき' \
+  "Epic 一括対応: 振り直しの定型はバッチ外の単発 PR 並行にも適用する"
+
 echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ docs-gates verify: $FAIL 件失敗" >&2
