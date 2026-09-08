@@ -21,6 +21,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
+
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 
 [ -f "$MULTI_AGENT" ] || { echo "✗ multi-agent.sh が見つかりません" >&2; exit 1; }
@@ -59,10 +64,8 @@ trap 'cd /; rm -rf "$TMP"' EXIT
 
 # ── 被検体リポジトリ ──
 REPO="$TMP/repo"
-git init -q "$REPO"
+ff_git_fixture_init "$REPO" "multi-agent-review-banner-test" "test@example.com"
 cd "$REPO"
-git config user.email "test@example.com"
-git config user.name "multi-agent-review-banner-test"
 git config commit.gpgsign false
 git switch -q -c develop
 mkdir -p src

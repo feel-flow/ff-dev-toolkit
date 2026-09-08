@@ -34,6 +34,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 ADAPTERS_DIR="$PLUGIN_ROOT/scripts/adapters"
 ADAPTER_COMMON="$ADAPTERS_DIR/adapter-common.sh"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
+
 ORCHESTRATOR="$PLUGIN_ROOT/scripts/multi-agent.sh"
 
 for f in "$ADAPTER_COMMON" "$ORCHESTRATOR"; do
@@ -104,10 +109,8 @@ JP_DESC='前回レビュー:未解決の指摘はなし'
 # --- diff を持つ一時リポジトリ（review の build_prompt は diff 必須） ---
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 REPO="$TMP/repo"
-git init -q "$REPO"
+ff_git_fixture_init "$REPO" "adapter-prompt-utf8-test" "test@example.com"
 cd "$REPO"
-git config user.email "test@example.com"
-git config user.name "adapter-prompt-utf8-test"
 git config commit.gpgsign false
 git switch -q -c develop
 echo base > app.txt

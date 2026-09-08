@@ -33,6 +33,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 ADAPTERS_DIR="$PLUGIN_ROOT/scripts/adapters"
 ADAPTER_COMMON="$ADAPTERS_DIR/adapter-common.sh"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
 
 [ -f "$ADAPTER_COMMON" ] || {
   echo "✗ 対象ファイルが見つかりません: $ADAPTER_COMMON" >&2
@@ -104,9 +108,7 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # 利用者の hook を実行し、失敗が文脈なしの git エラーになる）。
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 REPO="$TMP/repo"
-git init -q "$REPO"
-git -C "$REPO" config user.email "test@example.com"
-git -C "$REPO" config user.name "adapter-argv-limit-test"
+ff_git_fixture_init "$REPO" "adapter-argv-limit-test" "test@example.com"
 git -C "$REPO" config commit.gpgsign false
 git -C "$REPO" switch -q -c develop
 echo base > "$REPO/app.txt"

@@ -20,6 +20,17 @@
 
 ## [Unreleased]
 
+## [0.91.0] - 2026-09-08
+
+### 変更
+
+- grok CLI を plugin root のホストとして名指しし、Bash tool 環境の `${GROK_PLUGIN_ROOT}` があればそれを使い、未設定なら読み込んだ SKILL.md の `FF_DEV_TOOLKIT_SKILL_FILE` から root を固定するようにした。Claude Code の root と実体が食い違うときは停止する。plugin hooks は grok では発火しないため、振り返りは `/retrospective` の明示起動が必要であることと、Claude Code 併用時に Claude 互換スキャンが同名プラグインを影にしうることを導入文書に書いた
+
+### 修正
+
+- テスト suite が作る fixture Git リポジトリの初期化を共通ヘルパー `tests/lib/git-fixture.sh`（`ff_git_fixture_init`）へ集約。`GIT_DIR` 等が継承された環境や fixture が自前の `.git` を持たない状況で、合成 identity（fixture@example.invalid）が呼び出し元リポジトリの `.git/config` へ漏れて以後のコミットが fixture 名義になる不具合を修正。lib の source 時に `GIT_DIR` 系環境変数を unset して fixture 自身へ書かせ、それでも git dir が fixture 自身へ解決されない場合は identity を書かずに非 0 で止める（fail-closed）。回帰 suite `git-fixture-isolation` を追加
+- テスト suite が fixture Git リポジトリへ書く合成 identity を、値に依らず隔離ヘルパー `tests/lib/git-fixture.sh`（`ff_git_fixture_init`）へ集約。残っていた自前の `git init` と `git config user.name` / `user.email` を置き換え、静的照合を identity 非依存の正規表現へ広げて未移行ファイルを allowlist 以外で拒否する
+
 ## [0.90.0] - 2026-09-08
 
 ### 変更

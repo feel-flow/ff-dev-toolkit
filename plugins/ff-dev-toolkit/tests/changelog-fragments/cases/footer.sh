@@ -2,9 +2,7 @@
 FOOTER_FIX="$TMP/footer-policy"
 mkdir -p "$FOOTER_FIX/scripts" "$FOOTER_FIX/oss/ff-dev-toolkit"
 cp "$REPO_ROOT/scripts/check-full-gate-reuse.sh" "$FOOTER_FIX/scripts/check-full-gate-reuse.sh"
-git -C "$FOOTER_FIX" init -q
-git -C "$FOOTER_FIX" config user.email footer@example.com
-git -C "$FOOTER_FIX" config user.name footer-test
+ff_git_fixture_init "$FOOTER_FIX" "footer-test" "footer@example.com"
 printf '%s\n' '# Changelog' '' '## [Unreleased]' '' '[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v1.0.0...HEAD' > "$FOOTER_FIX/oss/ff-dev-toolkit/CHANGELOG.md"
 git -C "$FOOTER_FIX" add -A && git -C "$FOOTER_FIX" commit -qm baseline
 footer_base="$(git -C "$FOOTER_FIX" rev-parse HEAD)"
@@ -33,9 +31,7 @@ cp "$FOOTER_HELPER" "$FOOTER_ROOT/scripts/update-dev-toolkit-changelog-footer.sh
 chmod +x "$FOOTER_ROOT/scripts/"*.sh
 printf '%s\n' '# fragments' > "$FOOTER_ROOT/changelog.d/README.md"
 write_changelog "$FOOTER_ROOT/oss/ff-dev-toolkit/CHANGELOG.md"
-git -C "$FOOTER_PUBLIC_SEED" init -q
-git -C "$FOOTER_PUBLIC_SEED" config user.email footer@example.com
-git -C "$FOOTER_PUBLIC_SEED" config user.name footer-test
+ff_git_fixture_init "$FOOTER_PUBLIC_SEED" "footer-test" "footer@example.com"
 printf '%s\n' '# public' > "$FOOTER_PUBLIC_SEED/README.md"
 git -C "$FOOTER_PUBLIC_SEED" add -A
 git -C "$FOOTER_PUBLIC_SEED" commit -qm v1
@@ -268,9 +264,7 @@ FOOTER_NO_STABLE_SEED="$TMP/footer-no-stable-seed"
 FOOTER_NO_STABLE_BARE="$TMP/footer-no-stable-origin.git"
 FOOTER_NO_STABLE="$TMP/footer-no-stable"
 mkdir -p "$FOOTER_NO_STABLE_SEED"
-git -C "$FOOTER_NO_STABLE_SEED" init -q
-git -C "$FOOTER_NO_STABLE_SEED" config user.email footer@example.com
-git -C "$FOOTER_NO_STABLE_SEED" config user.name footer-test
+ff_git_fixture_init "$FOOTER_NO_STABLE_SEED" "footer-test" "footer@example.com"
 printf '%s\n' '# prerelease only' > "$FOOTER_NO_STABLE_SEED/README.md"
 git -C "$FOOTER_NO_STABLE_SEED" add -A && git -C "$FOOTER_NO_STABLE_SEED" commit -qm prerelease
 git -C "$FOOTER_NO_STABLE_SEED" tag v1.0.0-rc.1

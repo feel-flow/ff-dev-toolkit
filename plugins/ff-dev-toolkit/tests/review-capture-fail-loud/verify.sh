@@ -40,6 +40,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 ADAPTER_COMMON="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
 ADAPTERS_DIR="$PLUGIN_ROOT/scripts/adapters"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
 
 [ -f "$ADAPTER_COMMON" ] || {
   echo "✗ 対象ファイルが見つかりません: $ADAPTER_COMMON" >&2
@@ -490,10 +494,8 @@ echo "== AC 2: 最終メッセージ集約指示（build_prompt、review 限定�
 # ── diff を持つ一時リポジトリ（review の build_prompt は diff 必須） ──
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 REPO="$TMP/repo"
-git init -q "$REPO"
+ff_git_fixture_init "$REPO" "review-capture-fail-loud-test" "test@example.com"
 cd "$REPO"
-git config user.email "test@example.com"
-git config user.name "review-capture-fail-loud-test"
 git config commit.gpgsign false
 git switch -q -c develop
 echo base > app.txt

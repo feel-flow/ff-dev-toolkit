@@ -545,6 +545,11 @@ else
     # mutation（run_isolated除去 / センチネル部分欠落 / probe内unset / シム素起動）で
     # 常設する（Issue #439）。一時領域のみ使い、実CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/adapter-env-isolation-selftest/verify.sh"
+    # fixture リポジトリの隔離初期化（tests/lib/git-fixture.sh）の回帰（Issue #1348 / #1368）:
+    # GIT_DIR export 下や .git 不在の fixture で identity が呼び出し元の .git/config へ
+    # 漏れないこと（fail-closed）と、user.name / user.email の設定が隔離ヘルパー
+    # 経由であること（直書きは allowlist 以外拒否）。一時領域のみ使い、実 CLI・ネットワーク・課金は伴わない（〜1 秒）。
+    "$SCRIPT_DIR/git-fixture-isolation/verify.sh"
     # 公開リポジトリへの実ネットワーク到達を試みる suite（接続不可のみ丸ごと
     # ○ skip、それ以外は fail）。静的検査より後、破壊的操作を伴う
     # merge-cleanup より前に置く。他の suite を network-dependent 化する場合も

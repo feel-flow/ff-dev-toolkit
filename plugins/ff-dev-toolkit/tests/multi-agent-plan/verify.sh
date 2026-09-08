@@ -9,6 +9,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
+
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 
 [ -f "$MULTI_AGENT" ] || { echo "✗ multi-agent.sh が見つかりません" >&2; exit 1; }
@@ -72,9 +77,7 @@ REPO="$TMP/repo"
 STUB="$TMP/stub-bin"
 mkdir -p "$REPO" "$STUB"
 
-git init -q "$REPO"
-git -C "$REPO" config user.email "test@example.com"
-git -C "$REPO" config user.name "multi-agent-plan-test"
+ff_git_fixture_init "$REPO" "multi-agent-plan-test" "test@example.com"
 git -C "$REPO" config commit.gpgsign false
 git -C "$REPO" switch -q -c develop
 printf '%s\n' base > "$REPO/app.txt"
@@ -591,9 +594,7 @@ echo "== ローカル base の鮮度警告（Issue #759） =="
 STALE_ORIGIN="$TMP/stale-origin.git"
 STALE_REPO="$TMP/stale-repo"
 git init -q --bare "$STALE_ORIGIN"
-git init -q "$STALE_REPO"
-git -C "$STALE_REPO" config user.email "test@example.com"
-git -C "$STALE_REPO" config user.name "multi-agent-plan-test"
+ff_git_fixture_init "$STALE_REPO" "multi-agent-plan-test" "test@example.com"
 git -C "$STALE_REPO" config commit.gpgsign false
 git -C "$STALE_REPO" switch -q -c develop
 echo base > "$STALE_REPO/app.txt"

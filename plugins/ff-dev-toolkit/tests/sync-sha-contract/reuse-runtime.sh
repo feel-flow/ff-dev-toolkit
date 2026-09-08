@@ -4,6 +4,10 @@
 
 set -euo pipefail
 
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$(cd "$(dirname "$0")" && pwd)/../lib/git-fixture.sh"
+
 SOURCE_HELPER="${1:-}"
 if [[ -z "$SOURCE_HELPER" || ! -f "$SOURCE_HELPER" ]]; then
   echo "✗ full-gate reuse helper がありません: ${SOURCE_HELPER:-<未指定>}" >&2
@@ -27,9 +31,7 @@ chmod +x "$REPO/scripts/check-full-gate-reuse.sh"
 # core.hooksPath が設定された環境では、対象機能と無関係に fixture の git commit が落ち、
 # set -e で suite 全体が偽 red になる（リポジトリ内の既存 fixture と同じ隔離）。
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-git -C "$REPO" init -q
-git -C "$REPO" config user.name "Full Gate Test"
-git -C "$REPO" config user.email "full-gate-test@example.invalid"
+ff_git_fixture_init "$REPO" "Full Gate Test" "full-gate-test@example.invalid"
 git -C "$REPO" config commit.gpgsign false
 git -C "$REPO" config core.hooksPath /dev/null
 printf '# Fixture\n' > "$REPO/README.md"

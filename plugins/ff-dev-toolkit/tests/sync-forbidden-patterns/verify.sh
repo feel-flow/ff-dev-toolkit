@@ -38,6 +38,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# 本 suite は公開 checkout へ verify.sh だけをコピーする。lib 不在なら source せず、対象スクリプト不在の既存 skip へ到達する
+# shellcheck source=../lib/git-fixture.sh
+if [ -f "$SCRIPT_DIR/../lib/git-fixture.sh" ]; then
+  . "$SCRIPT_DIR/../lib/git-fixture.sh"
+fi
+
 SYNC="${REPO_ROOT:+$REPO_ROOT/scripts/sync-dev-toolkit-to-public.sh}"
 
 if [[ -z "$REPO_ROOT" || ! -f "$SYNC" ]]; then
@@ -508,9 +515,7 @@ cp "$SYNC" "$STG/scripts/sync-dev-toolkit-to-public.sh"
 printf '%s\n' 'MIT' > "$STG/plugins/ff-dev-toolkit/LICENSE"
 printf '%s\n' 'ok' > "$STG/plugins/ff-dev-toolkit/ok.md"
 printf '%s\n' 'ok' > "$STG/oss/ff-dev-toolkit/ok.md"
-git -C "$STG" init -q
-git -C "$STG" config user.email selftest@example.com
-git -C "$STG" config user.name sync-forbidden-selftest
+ff_git_fixture_init "$STG" "sync-forbidden-selftest" "selftest@example.com"
 git -C "$STG" add -A
 git -C "$STG" commit -qm "staging fixture"
 
@@ -554,9 +559,7 @@ expect_hit_reason "staging 走査（prune=0）も改行を含むパスで止ま�
 PUB="$TMP/public-checkout"
 mkdir -p "$PUB/plugins/ff-dev-toolkit/tests/sync-forbidden-patterns"
 cp "$SCRIPT_DIR/verify.sh" "$PUB/plugins/ff-dev-toolkit/tests/sync-forbidden-patterns/verify.sh"
-git -C "$PUB" init -q
-git -C "$PUB" config user.email selftest@example.com
-git -C "$PUB" config user.name sync-forbidden-selftest
+ff_git_fixture_init "$PUB" "sync-forbidden-selftest" "selftest@example.com"
 set +e
 skip_out="$(bash "$PUB/plugins/ff-dev-toolkit/tests/sync-forbidden-patterns/verify.sh" 2>&1)"
 skip_rc=$?

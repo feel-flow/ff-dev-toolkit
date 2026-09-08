@@ -5,9 +5,7 @@ echo "== parallel branches use distinct paths =="
 SEED="$TMP/seed"
 BARE="$TMP/origin.git"
 mkdir -p "$SEED/changelog.d"
-git -C "$SEED" init -q
-git -C "$SEED" config user.email fragments@example.com
-git -C "$SEED" config user.name fragments-test
+ff_git_fixture_init "$SEED" "fragments-test" "fragments@example.com"
 printf '%s\n' '# fragments' > "$SEED/changelog.d/README.md"
 git -C "$SEED" add -A
 git -C "$SEED" commit -qm baseline
@@ -16,8 +14,7 @@ git clone -q --bare "$SEED" "$BARE"
 
 for name in a b; do
   git clone -q "$BARE" "$TMP/$name"
-  git -C "$TMP/$name" config user.email fragments@example.com
-  git -C "$TMP/$name" config user.name fragments-test
+  ff_git_fixture_init "$TMP/$name" "fragments-test" "fragments@example.com"
   git -C "$TMP/$name" switch -qc "branch-$name"
 done
 printf '%s\n' '- first branch' > "$TMP/a/changelog.d/101.changed.feature-a.md"
@@ -30,8 +27,7 @@ git -C "$TMP/b" commit -qm branch-b
 git -C "$TMP/b" push -q origin HEAD:branch-b
 
 git clone -q "$BARE" "$TMP/integration"
-git -C "$TMP/integration" config user.email fragments@example.com
-git -C "$TMP/integration" config user.name fragments-test
+ff_git_fixture_init "$TMP/integration" "fragments-test" "fragments@example.com"
 git -C "$TMP/integration" switch -q develop
 git -C "$TMP/integration" fetch -q origin branch-a branch-b
 if git -C "$TMP/integration" merge -q --no-edit origin/branch-a; then ok "1本目を直列マージ"; else bad "1本目のマージに失敗"; fi

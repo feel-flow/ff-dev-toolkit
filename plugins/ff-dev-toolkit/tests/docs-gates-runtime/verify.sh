@@ -22,6 +22,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DOCS="${FF_DOCS_GATE_RUNTIME_DOCS:-$PLUGIN_ROOT/docs-template}"
 FIXTURES="$SCRIPT_DIR/fixtures"
+# cases が作る fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
 
 [ -d "$DOCS" ] || { echo "✗ docs-template が見つかりません: $DOCS" >&2; exit 1; }
 [ -d "$FIXTURES" ] || { echo "✗ fixtures が見つかりません: $FIXTURES" >&2; exit 1; }

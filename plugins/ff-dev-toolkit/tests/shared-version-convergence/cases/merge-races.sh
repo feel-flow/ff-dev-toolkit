@@ -3,9 +3,7 @@ echo "== PR merge race uses a document claim sentinel =="
 PR_SEED="$TMP/pr-seed"
 PR_BARE="$TMP/pr-origin.git"
 mkdir -p "$PR_SEED/docs" "$PR_SEED/.version-claims/docs"
-git -C "$PR_SEED" init -q
-git -C "$PR_SEED" config user.email version@example.com
-git -C "$PR_SEED" config user.name version-test
+ff_git_fixture_init "$PR_SEED" "version-test" "version@example.com"
 printf '%s\n' '---' 'version: "1.0.0"' '---' '# Doc' '' '## A' '' '- base-a' '' '## B' '' '- base-b' > "$PR_SEED/docs/TEST.md"
 printf '%s\n' '# claims' > "$PR_SEED/.version-claims/README.md"
 printf '%s\n' 'document=docs/TEST.md' 'version=1.0.0' 'change=baseline' > "$PR_SEED/.version-claims/docs/TEST.md.claim"
@@ -16,8 +14,7 @@ git clone -q --bare "$PR_SEED" "$PR_BARE"
 
 for name in pr-a pr-b; do
   git clone -q "$PR_BARE" "$TMP/$name"
-  git -C "$TMP/$name" config user.email version@example.com
-  git -C "$TMP/$name" config user.name version-test
+  ff_git_fixture_init "$TMP/$name" "version-test" "version@example.com"
   git -C "$TMP/$name" switch -qc "$name"
 done
 sed -i.bak '/- base-a/a\
@@ -40,8 +37,7 @@ git -C "$TMP/pr-b" add -A
 git -C "$TMP/pr-b" commit -qm pr-b
 
 git clone -q "$PR_BARE" "$TMP/pr-integration"
-git -C "$TMP/pr-integration" config user.email version@example.com
-git -C "$TMP/pr-integration" config user.name version-test
+ff_git_fixture_init "$TMP/pr-integration" "version-test" "version@example.com"
 git -C "$TMP/pr-integration" fetch -q "$TMP/pr-a" HEAD:refs/remotes/test/pr-a
 git -C "$TMP/pr-integration" fetch -q "$TMP/pr-b" HEAD:refs/remotes/test/pr-b
 if git -C "$TMP/pr-integration" merge -q --no-edit refs/remotes/test/pr-a; then ok "先行 PR をマージ"; else bad "先行 PR のマージに失敗"; fi
@@ -72,9 +68,7 @@ echo "== direct push and PR race share the same claim sentinel =="
 CROSS_SEED="$TMP/cross-seed"
 CROSS_BARE="$TMP/cross-origin.git"
 mkdir -p "$CROSS_SEED/docs" "$CROSS_SEED/.version-claims/docs"
-git -C "$CROSS_SEED" init -q
-git -C "$CROSS_SEED" config user.email version@example.com
-git -C "$CROSS_SEED" config user.name version-test
+ff_git_fixture_init "$CROSS_SEED" "version-test" "version@example.com"
 printf '%s\n' '---' 'version: "1.0.0"' '---' '# Doc' '' '## Direct' '' '- base-direct' '' '## PR' '' '- base-pr' > "$CROSS_SEED/docs/TEST.md"
 printf '%s\n' '# claims' > "$CROSS_SEED/.version-claims/README.md"
 printf '%s\n' 'document=docs/TEST.md' 'version=1.0.0' 'change=baseline' > "$CROSS_SEED/.version-claims/docs/TEST.md.claim"
@@ -84,8 +78,7 @@ git -C "$CROSS_SEED" branch -M develop
 git clone -q --bare "$CROSS_SEED" "$CROSS_BARE"
 for name in cross-direct cross-pr; do
   git clone -q "$CROSS_BARE" "$TMP/$name"
-  git -C "$TMP/$name" config user.email version@example.com
-  git -C "$TMP/$name" config user.name version-test
+  ff_git_fixture_init "$TMP/$name" "version-test" "version@example.com"
 done
 
 sed -i.bak 's/version: "1.0.0"/version: "1.1.0"/' "$TMP/cross-pr/docs/TEST.md" && rm "$TMP/cross-pr/docs/TEST.md.bak"
@@ -104,8 +97,7 @@ if git -C "$TMP/cross-direct" push -q origin HEAD:develop; then ok "version 不�
 if [[ "$(git --git-dir="$CROSS_BARE" show develop:.version-claims/docs/TEST.md.claim)" == *"change=$cross_direct_change"* ]]; then ok "直 push 後の default branch claim は blob-pair hash と一致"; else bad "直 push が claim を更新しない"; fi
 
 git clone -q "$CROSS_BARE" "$TMP/cross-integration"
-git -C "$TMP/cross-integration" config user.email version@example.com
-git -C "$TMP/cross-integration" config user.name version-test
+ff_git_fixture_init "$TMP/cross-integration" "version-test" "version@example.com"
 git -C "$TMP/cross-integration" fetch -q "$TMP/cross-pr" HEAD:refs/remotes/test/cross-pr
 set +e
 CROSS_MERGE_OUT="$(git -C "$TMP/cross-integration" merge --no-edit refs/remotes/test/cross-pr 2>&1)"
@@ -119,9 +111,7 @@ FEATURE_BARE="$TMP/feature-origin.git"
 FEATURE_WORK="$TMP/feature-work"
 FEATURE_RIVAL="$TMP/feature-rival"
 mkdir -p "$FEATURE_SEED/docs" "$FEATURE_SEED/.version-claims/docs"
-git -C "$FEATURE_SEED" init -q
-git -C "$FEATURE_SEED" config user.email version@example.com
-git -C "$FEATURE_SEED" config user.name version-test
+ff_git_fixture_init "$FEATURE_SEED" "version-test" "version@example.com"
 printf '%s\n' '---' 'version: "1.0.0"' '---' '# Feature reconciliation' '' '- baseline' > "$FEATURE_SEED/docs/TEST.md"
 printf '%s\n' '# claims' > "$FEATURE_SEED/.version-claims/README.md"
 printf '%s\n' 'document=docs/TEST.md' 'version=1.0.0' 'change=baseline' > "$FEATURE_SEED/.version-claims/docs/TEST.md.claim"
@@ -131,8 +121,7 @@ git clone -q --bare "$FEATURE_SEED" "$FEATURE_BARE"
 git -C "$FEATURE_BARE" symbolic-ref HEAD refs/heads/develop
 for feature_clone in "$FEATURE_WORK" "$FEATURE_RIVAL"; do
   git clone -q "$FEATURE_BARE" "$feature_clone"
-  git -C "$feature_clone" config user.email version@example.com
-  git -C "$feature_clone" config user.name version-test
+  ff_git_fixture_init "$feature_clone" "version-test" "version@example.com"
 done
 git -C "$FEATURE_WORK" switch -qc feature
 sed -i.bak 's/version: "1.0.0"/version: "1.1.0"/' "$FEATURE_WORK/docs/TEST.md" && rm "$FEATURE_WORK/docs/TEST.md.bak"
@@ -175,9 +164,7 @@ RETRY_BARE="$TMP/retry-origin.git"
 RETRY_WORK="$TMP/retry-work"
 RETRY_RIVAL="$TMP/retry-rival"
 mkdir -p "$RETRY_SEED/docs" "$RETRY_SEED/.version-claims/docs"
-git -C "$RETRY_SEED" init -q
-git -C "$RETRY_SEED" config user.email version@example.com
-git -C "$RETRY_SEED" config user.name version-test
+ff_git_fixture_init "$RETRY_SEED" "version-test" "version@example.com"
 printf '%s\n' '---' 'version: "1.0.0"' '---' '# Retry' '' '- baseline' > "$RETRY_SEED/docs/TEST.md"
 printf '%s\n' '# claims' > "$RETRY_SEED/.version-claims/README.md"
 printf '%s\n' 'document=docs/TEST.md' 'version=1.0.0' 'change=baseline' > "$RETRY_SEED/.version-claims/docs/TEST.md.claim"
@@ -188,8 +175,7 @@ git clone -q --bare "$RETRY_SEED" "$RETRY_BARE"
 git -C "$RETRY_BARE" symbolic-ref HEAD refs/heads/develop
 for retry_clone in "$RETRY_WORK" "$RETRY_RIVAL"; do
   git clone -q "$RETRY_BARE" "$retry_clone"
-  git -C "$retry_clone" config user.email version@example.com
-  git -C "$retry_clone" config user.name version-test
+  ff_git_fixture_init "$retry_clone" "version-test" "version@example.com"
 done
 
 retry_attempts=0

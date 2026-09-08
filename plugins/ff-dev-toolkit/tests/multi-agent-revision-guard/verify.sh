@@ -19,6 +19,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
+
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 ADAPTER_COMMON="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
 
@@ -91,10 +96,8 @@ fi
 
 # ── 被検体リポジトリ ──
 REPO="$TMP/repo"
-git init -q "$REPO"
+ff_git_fixture_init "$REPO" "multi-agent-revision-guard-test" "test@example.com"
 cd "$REPO"
-git config user.email "test@example.com"
-git config user.name "multi-agent-revision-guard-test"
 git config commit.gpgsign false
 git switch -q -c develop
 mkdir -p src
@@ -231,9 +234,7 @@ reset_repo
 # unborn では git diff HEAD だけが失敗し、--cached は空ツリー相手に成立する。
 # 両方まとめて飛ばすと `A  path` のまま stage 内容だけを差し替える変化を取りこぼす。
 UNBORN="$TMP/unborn"
-git init -q "$UNBORN"
-git -C "$UNBORN" config user.email t@t
-git -C "$UNBORN" config user.name t
+ff_git_fixture_init "$UNBORN" "t" "t@t"
 printf 'v1\n' > "$UNBORN/f.txt"
 git -C "$UNBORN" add f.txt
 UNBORN_A="$(cd "$UNBORN" && capture_repo_snapshot)"

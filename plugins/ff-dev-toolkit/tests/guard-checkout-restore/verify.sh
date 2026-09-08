@@ -13,6 +13,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/hooks/guard-checkout-restore.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
 
 [ -f "$TARGET" ] || { echo "✗ guard-checkout-restore.sh が見つかりません: $TARGET" >&2; exit 1; }
 [ -f "$HOOKS_JSON" ] || { echo "✗ hooks.json が見つかりません: $HOOKS_JSON" >&2; exit 1; }
@@ -53,10 +57,8 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # ---- fixture: dirty / clean / untracked / staged を持つ git リポジトリ ----
 REPO="$TEST_TMP/repo"
-mkdir -p "$REPO"
-git -C "$REPO" init -q -b main 2>/dev/null || git -C "$REPO" init -q
-git -C "$REPO" config user.email guard@test
-git -C "$REPO" config user.name guard-test
+ff_git_fixture_init "$REPO" "guard-test" "guard@test"
+git -C "$REPO" symbolic-ref HEAD refs/heads/main
 printf 'a\n' > "$REPO/dirty.txt"
 printf 'b\n' > "$REPO/clean.txt"
 mkdir -p "$REPO/sub"

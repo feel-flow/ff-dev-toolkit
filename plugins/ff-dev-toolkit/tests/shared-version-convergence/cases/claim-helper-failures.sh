@@ -9,9 +9,7 @@ CLAIM_REAL_MKTEMP="$(command -v mktemp)"
 mkdir -p "$CLAIM_FAILURE/docs" "$CLAIM_FAILURE/.version-claims" "$CLAIM_FAKE_BIN"
 cp "$SCRIPT_DIR/fixtures/bin/mv" "$SCRIPT_DIR/fixtures/bin/ln" "$SCRIPT_DIR/fixtures/bin/perl" "$SCRIPT_DIR/fixtures/bin/rm" "$SCRIPT_DIR/fixtures/bin/mktemp" "$CLAIM_FAKE_BIN/"
 chmod +x "$CLAIM_FAKE_BIN/mv" "$CLAIM_FAKE_BIN/ln" "$CLAIM_FAKE_BIN/perl" "$CLAIM_FAKE_BIN/rm" "$CLAIM_FAKE_BIN/mktemp"
-git -C "$CLAIM_FAILURE" init -q
-git -C "$CLAIM_FAILURE" config user.email claims@example.com
-git -C "$CLAIM_FAILURE" config user.name claims-test
+ff_git_fixture_init "$CLAIM_FAILURE" "claims-test" "claims@example.com"
 printf '%s\n' '---' 'version: "1.0.0"' '---' '# Claim failure' > "$CLAIM_FAILURE/docs/TEST.md"
 printf '%s\n' '# claims' > "$CLAIM_FAILURE/.version-claims/README.md"
 git -C "$CLAIM_FAILURE" add -A && git -C "$CLAIM_FAILURE" commit -qm baseline
@@ -97,9 +95,7 @@ if [[ "$claim_cleanup_rc" -eq 2 && "$claim_cleanup_out" == *"一時ファイル�
 PARENT_RACE="$TMP/claim-parent-race"
 PARENT_EXTERNAL="$TMP/claim-parent-external"
 mkdir -p "$PARENT_RACE/docs" "$PARENT_RACE/.version-claims" "$PARENT_EXTERNAL"
-git -C "$PARENT_RACE" init -q
-git -C "$PARENT_RACE" config user.email claims@example.com
-git -C "$PARENT_RACE" config user.name claims-test
+ff_git_fixture_init "$PARENT_RACE" "claims-test" "claims@example.com"
 printf '%s\n' '---' 'version: "1.0.0"' '---' '# Parent race' > "$PARENT_RACE/docs/RACE.md"
 printf '%s\n' '# claims' > "$PARENT_RACE/.version-claims/README.md"
 git -C "$PARENT_RACE" add -A && git -C "$PARENT_RACE" commit -qm baseline

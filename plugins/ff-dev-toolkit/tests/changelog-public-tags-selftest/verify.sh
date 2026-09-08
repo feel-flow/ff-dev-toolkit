@@ -36,6 +36,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TESTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET="$TESTS_DIR/changelog-public-tags/verify.sh"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
 
 [ -f "$TARGET" ] || { echo "✗ changelog-public-tags/verify.sh が見つかりません: $TARGET" >&2; exit 1; }
 command -v git >/dev/null 2>&1 || { echo "✗ git が必要です" >&2; exit 1; }
@@ -78,9 +82,8 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 git init --bare -q "$TMP/origin.git"
 git clone -q "$TMP/origin.git" "$TMP/work" 2>/dev/null
 (
+  ff_git_fixture_init "$TMP/work" "changelog-public-tags-test" "test@example.com"
   cd "$TMP/work"
-  git config user.email "test@example.com"
-  git config user.name "changelog-public-tags-test"
   git config commit.gpgsign false
   printf '%s\n' "base" > README.md
   git add README.md
@@ -104,9 +107,8 @@ REPO="$TMP/origin.git"
 git clone -q --bare "$TMP/origin.git" "$TMP/newer-origin.git"
 git clone -q "$TMP/newer-origin.git" "$TMP/newer-work" 2>/dev/null
 (
+  ff_git_fixture_init "$TMP/newer-work" "changelog-public-tags-test" "test@example.com"
   cd "$TMP/newer-work"
-  git config user.email "test@example.com"
-  git config user.name "changelog-public-tags-test"
   git config commit.gpgsign false
   printf '%s\n' "base" "second" "third" "fourth" > README.md
   git add README.md
@@ -119,9 +121,8 @@ NEWER_REPO="$TMP/newer-origin.git"
 git clone -q --bare "$TMP/newer-origin.git" "$TMP/newer2-origin.git"
 git clone -q "$TMP/newer2-origin.git" "$TMP/newer2-work" 2>/dev/null
 (
+  ff_git_fixture_init "$TMP/newer2-work" "changelog-public-tags-test" "test@example.com"
   cd "$TMP/newer2-work"
-  git config user.email "test@example.com"
-  git config user.name "changelog-public-tags-test"
   git config commit.gpgsign false
   printf '%s\n' "base" "second" "third" "fourth" "fifth" > README.md
   git add README.md
@@ -137,9 +138,8 @@ NEWER2_REPO="$TMP/newer2-origin.git"
 git init --bare -q "$TMP/attr-origin.git"
 git clone -q "$TMP/attr-origin.git" "$TMP/attr-work" 2>/dev/null
 (
+  ff_git_fixture_init "$TMP/attr-work" "changelog-public-tags-test" "test@example.com"
   cd "$TMP/attr-work"
-  git config user.email "test@example.com"
-  git config user.name "changelog-public-tags-test"
   git config commit.gpgsign false
   mkdir -p skills/old skills/stable
   printf '%s\n' "old-v1" > skills/old/SKILL.md
@@ -163,9 +163,8 @@ ATTR_REPO="$TMP/attr-origin.git"
 git init --bare -q "$TMP/no-tags.git"
 git clone -q "$TMP/no-tags.git" "$TMP/no-tags-work" 2>/dev/null
 (
+  ff_git_fixture_init "$TMP/no-tags-work" "changelog-public-tags-test" "test@example.com"
   cd "$TMP/no-tags-work"
-  git config user.email "test@example.com"
-  git config user.name "changelog-public-tags-test"
   git config commit.gpgsign false
   printf '%s\n' "base" > README.md
   git add README.md

@@ -136,9 +136,7 @@ run_ci_example_cases() {
   printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$@" >"${CI_REVIEW_SENTINEL:?}"' \
     >"$source_root/scripts/multi-review.sh"
   chmod +x "$source_root/scripts/multi-review.sh"
-  git -C "$workspace/.ff-dev-toolkit-source" init -q
-  git -C "$workspace/.ff-dev-toolkit-source" config user.name fixture
-  git -C "$workspace/.ff-dev-toolkit-source" config user.email fixture@example.invalid
+  ff_git_fixture_init "$workspace/.ff-dev-toolkit-source"
   git -C "$workspace/.ff-dev-toolkit-source" add plugins/ff-dev-toolkit
   git -C "$workspace/.ff-dev-toolkit-source" commit -qm fixture
   pin_ref="$(git -C "$workspace/.ff-dev-toolkit-source" rev-parse HEAD)"

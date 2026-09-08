@@ -13,6 +13,7 @@ description: ワークフローチェーンの末尾（/merge-cleanup → /ace-c
 同梱resourceを参照する前に `FF_DEV_TOOLKIT_ROOT` を**一度だけ**解決し、実行中は変更しない。
 
 - Claude Codeでは、その呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}` を使う
+- grok CLIでは、Bash tool 環境の `${GROK_PLUGIN_ROOT}` があればそれを使う（skill 経路では未設定が普通なので、次項の `FF_DEV_TOOLKIT_SKILL_FILE` を渡す）
 - Codexなど他ホストでは、実際に読み込んだこの `SKILL.md` の絶対パスを `FF_DEV_TOOLKIT_SKILL_FILE` として固定し、そこから `../..` を解決する
 
 このskillを実行するAI hostは、Bash tool呼び出しを組み立てるとき、skill loaderが返した実値で `FF_DEV_TOOLKIT_SKILL_FILE="<このSKILL.mdの絶対パス>"; export FF_DEV_TOOLKIT_SKILL_FILE` を実行し、同じshell script bodyでresourceを呼び出す。placeholderのまま実行したり、cache pathを推測して埋めたりしない。
@@ -57,6 +58,8 @@ fi
 ## 自動発火（事前注入 + Stop fallback）
 
 対応ホストでは `hooks/retrospective-context.sh` が UserPromptSubmit の `additionalContext` として本スキルの実行契約を応答生成前に注入する。利用者が本スキルを明示指定しなくても、最初の応答で次の順に判定する。
+
+grok CLI は plugin の `hooks/hooks.json` をコンポーネントとして認識するが、hook discovery が plugin source を実行対象に取り込まない（1.0.0 と 1.0.13 で実測。正本は README のプラットフォーム表）。したがって UserPromptSubmit の事前注入も Stop fallback も grok では走らない。チェーン末尾では `/retrospective` を明示起動する。
 
 1. ユーザー依頼の作業がこの応答で完了する → 本文の観察チェックリストに沿って振り返りを実施し、最終応答へ結果を含める
 2. 質問・承認待ち・外部状態待ち・作業途中である → 提案を作らず `振り返り: 今回は作業完了前のため対象外` と報告する

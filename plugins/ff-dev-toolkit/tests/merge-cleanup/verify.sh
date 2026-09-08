@@ -138,6 +138,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/scripts/merge-cleanup.sh"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
 
 [ -f "$TARGET" ] || { echo "✗ merge-cleanup.sh が見つかりません: $TARGET" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "✗ jq が必要です" >&2; exit 1; }
@@ -321,9 +325,8 @@ fi
 
 git init --bare -q "$TMP/origin.git"
 git clone -q "$TMP/origin.git" "$TMP/work"
+ff_git_fixture_init "$TMP/work" "merge-cleanup-test" "test@example.com"
 cd "$TMP/work"
-git config user.email "test@example.com"
-git config user.name "merge-cleanup-test"
 git config commit.gpgsign false
 
 git switch -q -c develop
@@ -3014,8 +3017,7 @@ git -C "$CALLER" branch -q -D work-branch-41
 #       Step 1 を緩めてよい根拠そのものを実測する。除外パス内の追跡ファイルが
 #       base 側でも進んでいれば pull --ff-only が拒否し、cleanup は中断する
 git clone -q "$TMP/origin.git" "$TMP/pusher"
-git -C "$TMP/pusher" config user.email "test@example.com"
-git -C "$TMP/pusher" config user.name "merge-cleanup-test"
+ff_git_fixture_init "$TMP/pusher" "merge-cleanup-test" "test@example.com"
 git -C "$TMP/pusher" config commit.gpgsign false
 git -C "$TMP/pusher" switch -q develop
 echo "upstream edit" >> "$TMP/pusher/videos/tracked/spec.md"

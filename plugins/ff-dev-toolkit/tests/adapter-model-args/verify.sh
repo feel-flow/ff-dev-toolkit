@@ -29,6 +29,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ADAPTERS_DIR="$PLUGIN_ROOT/scripts/adapters"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
 PERSPECTIVE="$PLUGIN_ROOT/scripts/perspectives/review/code-review.md"
 
 echo "== アダプタが渡す argv の検証 =="
@@ -75,10 +79,8 @@ trap _ff_exit_guard EXIT
 # 変更中に実行すると、期待文字列（例: `<-m>`）がその diff 経由で prompt 引数へ入り、
 # 実フラグが無いのに argv 検査が拾う自己汚染になる。空の専用 repo から起動して、
 # テスト対象の argv とテスト実装の作業ツリーを分離する。
-mkdir -p "$WORK/repo"
-git -C "$WORK/repo" init -q
-git -C "$WORK/repo" -c user.name=fixture -c user.email=fixture@example.invalid \
-  commit --allow-empty -q -m fixture
+ff_git_fixture_init "$WORK/repo"
+git -C "$WORK/repo" commit --allow-empty -q -m fixture
 
 PASS=0
 FAIL=0

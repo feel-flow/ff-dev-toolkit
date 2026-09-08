@@ -46,6 +46,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/hooks/check-update.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
 
 [ -f "$TARGET" ] || { echo "✗ hooks/check-update.sh が見つかりません: $TARGET" >&2; exit 1; }
 command -v git >/dev/null 2>&1 || { echo "✗ git が必要です" >&2; exit 1; }
@@ -93,9 +97,8 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 git init --bare -q "$TMP/origin.git"
 git clone -q "$TMP/origin.git" "$TMP/work" 2>/dev/null
 (
+  ff_git_fixture_init "$TMP/work" "update-check-test" "test@example.com"
   cd "$TMP/work"
-  git config user.email "test@example.com"
-  git config user.name "update-check-test"
   git config commit.gpgsign false
   printf '%s\n' "base" > README.md
   git add README.md
@@ -113,9 +116,8 @@ REPO="$TMP/origin.git"
 git init --bare -q "$TMP/origin-0100.git"
 git clone -q "$TMP/origin-0100.git" "$TMP/work-0100" 2>/dev/null
 (
+  ff_git_fixture_init "$TMP/work-0100" "update-check-test" "test@example.com"
   cd "$TMP/work-0100"
-  git config user.email "test@example.com"
-  git config user.name "update-check-test"
   git config commit.gpgsign false
   printf '%s\n' "base" > README.md
   git add README.md
@@ -130,9 +132,8 @@ REPO_0100="$TMP/origin-0100.git"
 git init --bare -q "$TMP/origin-nosemver.git"
 git clone -q "$TMP/origin-nosemver.git" "$TMP/work-nosemver" 2>/dev/null
 (
+  ff_git_fixture_init "$TMP/work-nosemver" "update-check-test" "test@example.com"
   cd "$TMP/work-nosemver"
-  git config user.email "test@example.com"
-  git config user.name "update-check-test"
   git config commit.gpgsign false
   printf '%s\n' "base" > README.md
   git add README.md

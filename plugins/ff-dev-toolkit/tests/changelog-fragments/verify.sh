@@ -8,6 +8,10 @@ TARGET="${REPO_ROOT:+$REPO_ROOT/scripts/materialize-dev-toolkit-changelog.sh}"
 TARGET_LIB="${REPO_ROOT:+$REPO_ROOT/scripts/lib/changelog-fragment-functions.sh}"
 TARGET_TX_LIB="${REPO_ROOT:+$REPO_ROOT/scripts/lib/changelog-transaction-functions.sh}"
 TARGET_EXACT_LINK_LIB="${REPO_ROOT:+$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/exact-link-functions.sh}"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
 
 if [[ -z "$REPO_ROOT" || ! -x "$TARGET" ]]; then
   echo "○ skip: CHANGELOG 断片集約器が無い checkout のためスキップ"

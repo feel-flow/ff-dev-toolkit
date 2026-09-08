@@ -9,6 +9,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
 
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
@@ -65,9 +69,7 @@ tasks:
     timeout: 60
 YAML
 
-git init -q "$REPO"
-git -C "$REPO" config user.email "test@example.com"
-git -C "$REPO" config user.name "multi-agent-resume-test"
+ff_git_fixture_init "$REPO" "multi-agent-resume-test" "test@example.com"
 git -C "$REPO" config commit.gpgsign false
 git -C "$REPO" switch -q -c develop
 printf 'base\n' > "$REPO/app.txt"

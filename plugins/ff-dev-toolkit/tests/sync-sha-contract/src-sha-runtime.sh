@@ -27,6 +27,10 @@
 
 set -euo pipefail
 
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$(cd "$(dirname "$0")" && pwd)/../lib/git-fixture.sh"
+
 SYNC_SCRIPT="${1:-}"
 SKILL="${2:-}"
 if [[ -z "$SYNC_SCRIPT" || ! -f "$SYNC_SCRIPT" ]]; then
@@ -64,8 +68,7 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 git_setup() {
   local repo="$1"
-  git -C "$repo" config user.name "Sync SHA Test"
-  git -C "$repo" config user.email "sync-sha-test@example.invalid"
+  ff_git_fixture_init "$repo" "Sync SHA Test" "sync-sha-test@example.invalid"
   git -C "$repo" config commit.gpgsign false
   git -C "$repo" config core.hooksPath /dev/null
 }

@@ -22,6 +22,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
+
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 
 PERSPECTIVES_DIR="$PLUGIN_ROOT/scripts/perspectives/review"
@@ -80,9 +85,7 @@ STUB="$TMP/stub"
 CFG="$TMP/config"
 mkdir -p "$REPO" "$STUB" "$CFG"
 
-git init -q "$REPO"
-git -C "$REPO" config user.email "test@example.com"
-git -C "$REPO" config user.name "reviewer-pair-test"
+ff_git_fixture_init "$REPO" "reviewer-pair-test" "test@example.com"
 git -C "$REPO" config commit.gpgsign false
 git -C "$REPO" switch -q -c develop
 printf '%s\n' base > "$REPO/app.txt"

@@ -33,6 +33,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
+
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 ADAPTER_COMMON="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
 AGENT_CONFIG="$PLUGIN_ROOT/scripts/agent-config.yaml"
@@ -546,10 +551,8 @@ echo "== orchestrator の実行時失敗 =="
 
 # --- レビュー対象の差分を持つ一時リポジトリ ---
 REPO="$TMP/repo"
-git init -q "$REPO"
+ff_git_fixture_init "$REPO" "multi-agent-timeout-test" "test@example.com"
 cd "$REPO"
-git config user.email "test@example.com"
-git config user.name "multi-agent-timeout-test"
 git config commit.gpgsign false
 git switch -q -c develop
 echo base > app.txt
@@ -730,9 +733,7 @@ no_other_cli_invoked() {
 # prompt builder のどちらか一方だけが BASE...HEAD に戻る変異を、起動 rc と実際に
 # stub CLI へ渡ったプロンプトの両方で検出する。
 WORKTREE_ONLY_REPO="$TMP/worktree-only-repo"
-git init -q "$WORKTREE_ONLY_REPO"
-git -C "$WORKTREE_ONLY_REPO" config user.email "test@example.com"
-git -C "$WORKTREE_ONLY_REPO" config user.name "multi-agent-timeout-test"
+ff_git_fixture_init "$WORKTREE_ONLY_REPO" "multi-agent-timeout-test" "test@example.com"
 git -C "$WORKTREE_ONLY_REPO" config commit.gpgsign false
 git -C "$WORKTREE_ONLY_REPO" switch -q -c develop
 echo base > "$WORKTREE_ONLY_REPO/app.txt"
@@ -813,9 +814,7 @@ fi
 # のみにしても緑になる。コミット済み・staged・unstaged の3層を同居させ、どれかを
 # 落とす変異をプロンプト実体で検出する。
 UNION_REPO="$TMP/union-repo"
-git init -q "$UNION_REPO"
-git -C "$UNION_REPO" config user.email "test@example.com"
-git -C "$UNION_REPO" config user.name "multi-agent-timeout-test"
+ff_git_fixture_init "$UNION_REPO" "multi-agent-timeout-test" "test@example.com"
 git -C "$UNION_REPO" config commit.gpgsign false
 git -C "$UNION_REPO" switch -q -c develop
 echo base > "$UNION_REPO/base.txt"

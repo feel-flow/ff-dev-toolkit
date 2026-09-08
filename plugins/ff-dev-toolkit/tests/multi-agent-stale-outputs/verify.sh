@@ -35,6 +35,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
+
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 
 [ -f "$MULTI_AGENT" ] || {
@@ -77,9 +82,7 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # --- レビュー対象の差分を持つ一時リポジトリ ---
 REPO="$TMP/repo"
-git init -q "$REPO"
-git -C "$REPO" config user.email "test@example.com"
-git -C "$REPO" config user.name "multi-agent-stale-outputs-test"
+ff_git_fixture_init "$REPO" "multi-agent-stale-outputs-test" "test@example.com"
 git -C "$REPO" config commit.gpgsign false
 git -C "$REPO" switch -q -c develop
 printf 'base\n' > "$REPO/app.txt"

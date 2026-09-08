@@ -11,6 +11,10 @@ export GITHUB_ACTIONS=
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
 
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
 # 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
@@ -135,9 +139,7 @@ contains "$ACE_CYCLE" '直 push / PR のどちらでも' "配布 ace-cycle も�
 HELPER_FIX="$TMP/claim-helper"
 HELPER_EXTERNAL="$TMP/claim-helper-external"
 mkdir -p "$HELPER_FIX/docs/04-quality" "$HELPER_FIX/.version-claims" "$HELPER_EXTERNAL"
-git -C "$HELPER_FIX" init -q
-git -C "$HELPER_FIX" config user.email claims@example.com
-git -C "$HELPER_FIX" config user.name claims-test
+ff_git_fixture_init "$HELPER_FIX" "claims-test" "claims@example.com"
 printf '%s\n' '---' 'version: "1.1.0"' '---' '# Testing' > "$HELPER_FIX/docs/04-quality/TESTING.md"
 printf '%s\n' '# claims' > "$HELPER_FIX/.version-claims/README.md"
 git -C "$HELPER_FIX" add -A && git -C "$HELPER_FIX" commit -qm baseline
@@ -186,9 +188,7 @@ STALE_BARE="$TMP/stale-origin.git"
 STALE_CHECKER="$TMP/stale-checker"
 STALE_WRITER="$TMP/stale-writer"
 mkdir -p "$STALE_SEED/docs/04-quality" "$STALE_SEED/.version-claims/docs/04-quality"
-git -C "$STALE_SEED" init -q
-git -C "$STALE_SEED" config user.email claims@example.com
-git -C "$STALE_SEED" config user.name claims-test
+ff_git_fixture_init "$STALE_SEED" "claims-test" "claims@example.com"
 printf '%s\n' '---' 'version: "1.0.0"' '---' '# Testing' > "$STALE_SEED/docs/04-quality/TESTING.md"
 printf '%s\n' '# claims' > "$STALE_SEED/.version-claims/README.md"
 printf '%s\n' 'document=docs/04-quality/TESTING.md' 'version=1.0.0' 'change=baseline' > "$STALE_SEED/.version-claims/docs/04-quality/TESTING.md.claim"
@@ -199,8 +199,7 @@ git clone -q --bare "$STALE_SEED" "$STALE_BARE"
 git -C "$STALE_BARE" symbolic-ref HEAD refs/heads/develop
 git clone -q "$STALE_BARE" "$STALE_CHECKER"
 git clone -q "$STALE_BARE" "$STALE_WRITER"
-git -C "$STALE_WRITER" config user.email claims@example.com
-git -C "$STALE_WRITER" config user.name claims-test
+ff_git_fixture_init "$STALE_WRITER" "claims-test" "claims@example.com"
 printf '%s\n' '' 'remote advance' >> "$STALE_WRITER/docs/04-quality/TESTING.md"
 git -C "$STALE_WRITER" add -A
 git -C "$STALE_WRITER" commit -qm advance
@@ -265,9 +264,7 @@ NORMAL_BARE="$TMP/normal-origin.git"
 NORMAL_WORK="$TMP/normal-work"
 NORMAL_NEW="$TMP/normal-new"
 mkdir -p "$NORMAL_SEED/docs" "$NORMAL_SEED/.version-claims"
-git -C "$NORMAL_SEED" init -q
-git -C "$NORMAL_SEED" config user.email claims@example.com
-git -C "$NORMAL_SEED" config user.name claims-test
+ff_git_fixture_init "$NORMAL_SEED" "claims-test" "claims@example.com"
 printf '%s\n' '---' 'version: "1.0.0"' '---' '# Ordinary' > "$NORMAL_SEED/docs/TEST.md"
 printf '%s\n' '# claims' > "$NORMAL_SEED/.version-claims/README.md"
 git -C "$NORMAL_SEED" add -A && git -C "$NORMAL_SEED" commit -qm baseline
@@ -275,8 +272,7 @@ git -C "$NORMAL_SEED" branch -M develop
 git clone -q --bare "$NORMAL_SEED" "$NORMAL_BARE"
 git -C "$NORMAL_BARE" symbolic-ref HEAD refs/heads/develop
 git clone -q "$NORMAL_BARE" "$NORMAL_WORK"
-git -C "$NORMAL_WORK" config user.email claims@example.com
-git -C "$NORMAL_WORK" config user.name claims-test
+ff_git_fixture_init "$NORMAL_WORK" "claims-test" "claims@example.com"
 CONTRACT_DELETE="$TMP/contract-delete"
 git clone -q "$NORMAL_BARE" "$CONTRACT_DELETE"
 rm -rf "$CONTRACT_DELETE/.version-claims"
@@ -348,8 +344,7 @@ if claim_lookup_out="$(PATH="$claim_git_bin:$PATH" FAKE_CLAIM_GIT_FAIL_INDEX_LOO
 if [[ "$claim_lookup_rc" -eq 2 && "$claim_lookup_out" == *"index entry を検査できません"* ]]; then ok "index 読み取り障害を path 不在と誤認せず検査不能"; else bad "index 障害を文書・claim 同時削除として成功扱い"; printf '%s\n' "$claim_lookup_out" | sed 's/^/    | /' >&2; fi
 BASE_PIN_WORK="$TMP/base-pin-work"
 git clone -q "$NORMAL_BARE" "$BASE_PIN_WORK"
-git -C "$BASE_PIN_WORK" config user.email claims@example.com
-git -C "$BASE_PIN_WORK" config user.name claims-test
+ff_git_fixture_init "$BASE_PIN_WORK" "claims-test" "claims@example.com"
 sed -i.bak 's/version: "1.0.0"/version: "1.1.0"/' "$BASE_PIN_WORK/docs/TEST.md" && rm "$BASE_PIN_WORK/docs/TEST.md.bak"
 (cd "$BASE_PIN_WORK" && "$CLAIM_HELPER" --base origin/develop --document docs/TEST.md) >/dev/null
 git -C "$BASE_PIN_WORK" add -A
@@ -394,9 +389,7 @@ OPT_OUT_SEED="$TMP/opt-out-seed"
 OPT_OUT_BARE="$TMP/opt-out-origin.git"
 OPT_OUT_WORK="$TMP/opt-out-work"
 mkdir -p "$OPT_OUT_SEED/docs"
-git -C "$OPT_OUT_SEED" init -q
-git -C "$OPT_OUT_SEED" config user.email claims@example.com
-git -C "$OPT_OUT_SEED" config user.name claims-test
+ff_git_fixture_init "$OPT_OUT_SEED" "claims-test" "claims@example.com"
 printf '%s\n' '---' 'version: "1.0.0"' '---' '# Optional claim contract' > "$OPT_OUT_SEED/docs/TEST.md"
 git -C "$OPT_OUT_SEED" add -A && git -C "$OPT_OUT_SEED" commit -qm baseline
 git -C "$OPT_OUT_SEED" branch -M develop
@@ -418,9 +411,7 @@ REQUIRED_SEED="$TMP/required-seed"
 REQUIRED_BARE="$TMP/required-origin.git"
 REQUIRED_WORK="$TMP/required-work"
 mkdir -p "$REQUIRED_SEED/docs/08-knowledge" "$REQUIRED_SEED/docs/03-implementation" "$REQUIRED_SEED/.version-claims"
-git -C "$REQUIRED_SEED" init -q
-git -C "$REQUIRED_SEED" config user.email claims@example.com
-git -C "$REQUIRED_SEED" config user.name claims-test
+ff_git_fixture_init "$REQUIRED_SEED" "claims-test" "claims@example.com"
 printf '%s\n' '---' 'version: "1.0.0"' '---' '# PLAYBOOK' > "$REQUIRED_SEED/docs/08-knowledge/PLAYBOOK.md"
 printf '%s\n' '---' 'version: "1.0.0"' '---' '# PATTERNS' > "$REQUIRED_SEED/docs/03-implementation/PATTERNS.md"
 printf '%s\n' '# claims' > "$REQUIRED_SEED/.version-claims/README.md"
@@ -451,9 +442,7 @@ DELETE_DOC_ONLY="$TMP/delete-doc-only"
 DELETE_CLAIM_ONLY="$TMP/delete-claim-only"
 CHANGE_CLAIM_ONLY="$TMP/change-claim-only"
 mkdir -p "$DELETE_SEED/docs/04-quality" "$DELETE_SEED/.version-claims/docs/04-quality"
-git -C "$DELETE_SEED" init -q
-git -C "$DELETE_SEED" config user.email claims@example.com
-git -C "$DELETE_SEED" config user.name claims-test
+ff_git_fixture_init "$DELETE_SEED" "claims-test" "claims@example.com"
 printf '%s\n' '---' 'version: "1.0.0"' '---' '# Legacy' > "$DELETE_SEED/docs/04-quality/LEGACY.md"
 printf '%s\n' '# claims' > "$DELETE_SEED/.version-claims/README.md"
 printf '%s\n' 'document=docs/04-quality/LEGACY.md' 'version=1.0.0' 'change=baseline' > "$DELETE_SEED/.version-claims/docs/04-quality/LEGACY.md.claim"
@@ -496,9 +485,7 @@ write_playbook() { # $1=path $2=version $3=count $4=index lines $5=latest change
 SEED="$TMP/seed"
 BARE="$TMP/origin.git"
 mkdir -p "$SEED/docs/08-knowledge/playbook"
-git -C "$SEED" init -q
-git -C "$SEED" config user.email version@example.com
-git -C "$SEED" config user.name version-test
+ff_git_fixture_init "$SEED" "version-test" "version@example.com"
 write_playbook "$SEED/docs/08-knowledge/PLAYBOOK.md" '1.0.0' 0 '' ''
 git -C "$SEED" add -A
 git -C "$SEED" commit -qm baseline
@@ -507,8 +494,7 @@ git clone -q --bare "$SEED" "$BARE"
 
 for name in a b; do
   git clone -q "$BARE" "$TMP/$name"
-  git -C "$TMP/$name" config user.email version@example.com
-  git -C "$TMP/$name" config user.name version-test
+  ff_git_fixture_init "$TMP/$name" "version-test" "version@example.com"
 done
 
 mkdir -p "$TMP/a/docs/08-knowledge/playbook" "$TMP/b/docs/08-knowledge/playbook"

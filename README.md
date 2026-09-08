@@ -162,11 +162,13 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 |------|----------|
 | Claude Code | 上記「インストール」（第一ターゲット） |
 | Codex CLI / Claude Cowork | Claude 形式 marketplace を登録して install（CLI / UI は各製品の手順に読み替え） |
-| grok CLI | Claude 形式 marketplace を登録して install（v0.2.118 で実機検証済み）:<br>`grok plugin marketplace add feel-flow/ff-dev-toolkit`<br>`grok plugin install ff-dev-toolkit@feel-flow/ff-dev-toolkit` |
+| grok CLI | Claude 形式 marketplace を登録して install（v0.2.118 で導入実測。スキルと spec-docs の実行実測は 1.0.0 / 1.0.13。Claude Code 併用時は inspect が Claude 側コピーを優先しうる）:<br>`grok plugin marketplace add feel-flow/ff-dev-toolkit`<br>`grok plugin install ff-dev-toolkit@feel-flow/ff-dev-toolkit` |
 | GitHub Copilot CLI | Claude 形式 marketplace を登録して install（v1.0.75 で実機検証済み）:<br>`copilot plugin marketplace add feel-flow/ff-dev-toolkit`<br>`copilot plugin install ff-dev-toolkit@ff-dev-toolkit`<br>導入したスキルは `copilot skill list` の Plugin skills に並ぶ |
 | **VS Code + GitHub Copilot** | marketplace の plugin install は不可（IDE 拡張。上記 Copilot **CLI** とは別経路）。`.github/copilot-instructions.md` と `docs/` で方法論を効かせる → **[USING_WITH_VSCODE_COPILOT.md](./USING_WITH_VSCODE_COPILOT.md)** |
 
-grok / Copilot CLI で確認したのは marketplace 登録 → インストール → コンポーネントの認識まで（2026-08-02 実測。上記コマンドのとおり本リポジトリ `feel-flow/ff-dev-toolkit` から直接導入して確認）。スキルの実行・hooks の発火・MCP サーバーの起動は未検証。
+grok CLI は marketplace 登録 → インストールに加え、スキルの実行と spec-docs MCP の応答まで確認済み（1.0.0 / 1.0.13）。plugin hooks は認識するが発火しない。Claude Code も同じマシンにあると、Grok の実行時 discovery が Claude 互換スキャンのコピーを優先して `grok plugin install` 実体を影にすることがある。確認は `grok plugin details` と `grok inspect` の path を突き合わせる。ワークフロースキルは SKILL.md（`/pre-commit-check` など）であり、Grok の Rhai `/workflow` ではない。
+
+Copilot CLI で確認したのは marketplace 登録 → インストール → コンポーネントの認識まで（2026-08-02 実測。上記コマンドのとおり本リポジトリ `feel-flow/ff-dev-toolkit` から直接導入して確認）。スキルの明示発火と spec-docs は後続の実行再検証で確認し、自然文は条件付き。
 
 ## バージョンと書籍からの参照
 

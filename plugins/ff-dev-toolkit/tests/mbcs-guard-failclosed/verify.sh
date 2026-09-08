@@ -19,6 +19,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TESTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
+
 # shellcheck source=../lib/mbcs-guard.sh
 . "$TESTS_DIR/lib/mbcs-guard.sh"
 
@@ -107,9 +112,7 @@ STUB
 
 # ---- fixture: 正常ミニリポジトリ ---------------------------------------------
 GOOD_REPO="$TMP/good"
-git init -q "$GOOD_REPO"
-git -C "$GOOD_REPO" config user.email "test@example.com"
-git -C "$GOOD_REPO" config user.name "mbcs-test"
+ff_git_fixture_init "$GOOD_REPO" "mbcs-test" "test@example.com"
 git -C "$GOOD_REPO" config commit.gpgsign false
 printf '%s\n' '#!/usr/bin/env bash' 'echo "ok: ${name}（safe）"' > "$GOOD_REPO/ok.sh"
 chmod +x "$GOOD_REPO/ok.sh"
@@ -118,9 +121,7 @@ git -C "$GOOD_REPO" commit -qm "init"
 
 # ---- fixture: 読み取り不能 .sh を含むリポジトリ -------------------------------
 UNREAD_REPO="$TMP/unread"
-git init -q "$UNREAD_REPO"
-git -C "$UNREAD_REPO" config user.email "test@example.com"
-git -C "$UNREAD_REPO" config user.name "mbcs-test"
+ff_git_fixture_init "$UNREAD_REPO" "mbcs-test" "test@example.com"
 git -C "$UNREAD_REPO" config commit.gpgsign false
 printf '%s\n' '#!/usr/bin/env bash' 'echo safe' > "$UNREAD_REPO/locked.sh"
 git -C "$UNREAD_REPO" add locked.sh
@@ -199,9 +200,7 @@ esac
 
 # ---- 7. 違反ファイル → hits --------------------------------------------------
 HIT_REPO="$TMP/hits"
-git init -q "$HIT_REPO"
-git -C "$HIT_REPO" config user.email "test@example.com"
-git -C "$HIT_REPO" config user.name "mbcs-test"
+ff_git_fixture_init "$HIT_REPO" "mbcs-test" "test@example.com"
 git -C "$HIT_REPO" config commit.gpgsign false
 # 違反行を 2 分割で書いて、本 suite ファイル自体が case 11 の対象に違反を直書きしない
 {

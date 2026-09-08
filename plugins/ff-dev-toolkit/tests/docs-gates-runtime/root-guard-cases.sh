@@ -19,15 +19,15 @@ run_guard_case() {
   local label="$1" root="$2" expected="$3" output="$4" cwd="${5:-}" rc=0
   if [ "$root" = __UNSET__ ]; then
     (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE
-     unset CLAUDE_PLUGIN_ROOT FF_DEV_TOOLKIT_SKILL_FILE
+     unset CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT FF_DEV_TOOLKIT_SKILL_FILE
      bash "$ROOT_GUARD_SCRIPT") >"$output" 2>&1 || rc=$?
   elif [ -n "$cwd" ]; then
-    (cd "$cwd" && unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE FF_DEV_TOOLKIT_SKILL_FILE
+    (cd "$cwd" && unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE FF_DEV_TOOLKIT_SKILL_FILE GROK_PLUGIN_ROOT
      CLAUDE_PLUGIN_ROOT="$root" \
        bash "$ROOT_GUARD_SCRIPT") \
       >"$output" 2>&1 || rc=$?
   else
-    (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE FF_DEV_TOOLKIT_SKILL_FILE
+    (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE FF_DEV_TOOLKIT_SKILL_FILE GROK_PLUGIN_ROOT
      CLAUDE_PLUGIN_ROOT="$root" \
        bash "$ROOT_GUARD_SCRIPT") >"$output" 2>&1 || rc=$?
   fi
@@ -45,6 +45,7 @@ run_guard_case() {
 }
 
 run_root_guard_cases() {
+  unset GROK_PLUGIN_ROOT
   local GUARD_ROOT="$TMP_ROOT/root-guard"
   local valid_root relative_root missing_resource missing_root
   local nonexec_root empty_root unreadable_root directory_root dangling_root
@@ -52,7 +53,7 @@ run_root_guard_cases() {
   local missing_skill_root mismatch_root mismatch_marker invalid_skill_case=0 recovery_rc
   local target_repo other_repo outside_dir target_rc
   local preserve_rc symlink_skill_root symlink_resource_root symlink_scripts_root
-  local invalid_identity_root
+  local invalid_identity_root grok_mismatch_root
 
   echo
   echo "== plugin root guard の fixture 実行 =="
@@ -61,7 +62,7 @@ run_root_guard_cases() {
   run_guard_case "必須resourceが実在すれば通過" "$valid_root" 0 "$GUARD_ROOT/valid.log"
   run_guard_case "root未設定を案内付きで拒否" __UNSET__ 2 "$GUARD_ROOT/unset.log"
   fallback_rc=0
-  (unset CLAUDE_PLUGIN_ROOT FF_DEV_TOOLKIT_SKILL_FILE FF_DEV_TOOLKIT_ROOT_SOURCE
+  (unset CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT FF_DEV_TOOLKIT_SKILL_FILE FF_DEV_TOOLKIT_ROOT_SOURCE
    FF_DEV_TOOLKIT_ROOT="$valid_root" bash "$ROOT_GUARD_SCRIPT") \
     >"$GUARD_ROOT/source-missing.log" 2>&1 || fallback_rc=$?
   if [ "$fallback_rc" -eq 2 ]; then
@@ -73,7 +74,7 @@ run_root_guard_cases() {
   if FF_DEV_TOOLKIT_GUARD="$ROOT_GUARD_SCRIPT" bash -c '
       set -u
       unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE
-      unset CLAUDE_PLUGIN_ROOT FF_DEV_TOOLKIT_SKILL_FILE
+      unset CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT FF_DEV_TOOLKIT_SKILL_FILE
       . "$FF_DEV_TOOLKIT_GUARD"
       guard_rc=$?
       printf "after-source:%s\n" "$guard_rc"
@@ -92,7 +93,7 @@ run_root_guard_cases() {
   if FF_DEV_TOOLKIT_GUARD="$ROOT_GUARD_SCRIPT" bash -c '
       set -eu
       unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE
-      unset CLAUDE_PLUGIN_ROOT FF_DEV_TOOLKIT_SKILL_FILE
+      unset CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT FF_DEV_TOOLKIT_SKILL_FILE
       set +e
       . "$FF_DEV_TOOLKIT_GUARD"
       guard_rc=$?
@@ -111,13 +112,61 @@ run_root_guard_cases() {
   fi
 
   fallback_rc=0
-  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE FF_DEV_TOOLKIT_SKILL_FILE
+  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE FF_DEV_TOOLKIT_SKILL_FILE GROK_PLUGIN_ROOT
    CLAUDE_PLUGIN_ROOT="$valid_root" bash "$ROOT_GUARD_SCRIPT") \
     >"$GUARD_ROOT/claude-root.log" 2>&1 || fallback_rc=$?
   if [ "$fallback_rc" -eq 0 ]; then
     ok "CLAUDE_PLUGIN_ROOTから未設定rootを固定できる"
   else
     bad "CLAUDE_PLUGIN_ROOTから未設定rootを固定できない (rc=${fallback_rc})"
+  fi
+
+  fallback_rc=0
+  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE FF_DEV_TOOLKIT_SKILL_FILE CLAUDE_PLUGIN_ROOT
+   GROK_PLUGIN_ROOT="$valid_root" bash "$ROOT_GUARD_SCRIPT") \
+    >"$GUARD_ROOT/grok-root.log" 2>&1 || fallback_rc=$?
+  if [ "$fallback_rc" -eq 0 ]; then
+    ok "GROK_PLUGIN_ROOTから未設定rootを固定できる"
+  else
+    bad "GROK_PLUGIN_ROOTから未設定rootを固定できない (rc=${fallback_rc})"
+  fi
+
+  fallback_rc=0
+  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE FF_DEV_TOOLKIT_SKILL_FILE
+   CLAUDE_PLUGIN_ROOT="$valid_root" GROK_PLUGIN_ROOT="$valid_root/" \
+     bash "$ROOT_GUARD_SCRIPT") \
+    >"$GUARD_ROOT/host-same.log" 2>&1 || fallback_rc=$?
+  if [ "$fallback_rc" -eq 0 ]; then
+    ok "同じ実体のCLAUDE_PLUGIN_ROOTとGROK_PLUGIN_ROOTを受理"
+  else
+    bad "同じ実体のhost plugin rootを拒否した (rc=${fallback_rc})"
+  fi
+
+  fallback_rc=0
+  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE FF_DEV_TOOLKIT_SKILL_FILE CLAUDE_PLUGIN_ROOT
+   GROK_PLUGIN_ROOT=relative bash "$ROOT_GUARD_SCRIPT") \
+    >"$GUARD_ROOT/grok-relative.log" 2>&1 || fallback_rc=$?
+  if [ "$fallback_rc" -eq 2 ] \
+    && grep -qF 'Grok plugin rootが絶対pathではありません' "$GUARD_ROOT/grok-relative.log"; then
+    ok "GROK_PLUGIN_ROOTの相対pathを案内付きで拒否"
+  else
+    bad "GROK_PLUGIN_ROOTの相対pathを拒否できない (rc=${fallback_rc})"
+    sed -n '1,80p' "$GUARD_ROOT/grok-relative.log" >&2 || true
+  fi
+
+  grok_mismatch_root="$GUARD_ROOT/grok mismatch root"
+  make_guard_root "$grok_mismatch_root"
+  fallback_rc=0
+  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE FF_DEV_TOOLKIT_SKILL_FILE
+   CLAUDE_PLUGIN_ROOT="$valid_root" GROK_PLUGIN_ROOT="$grok_mismatch_root" \
+     bash "$ROOT_GUARD_SCRIPT") \
+    >"$GUARD_ROOT/host-claude-grok-mismatch.log" 2>&1 || fallback_rc=$?
+  if [ "$fallback_rc" -eq 2 ] \
+    && grep -qF 'hostのplugin rootが一致しません' "$GUARD_ROOT/host-claude-grok-mismatch.log"; then
+    ok "CLAUDE_PLUGIN_ROOTとGROK_PLUGIN_ROOTの実体不一致を拒否"
+  else
+    bad "host plugin rootの実体不一致を拒否できない (rc=${fallback_rc})"
+    sed -n '1,80p' "$GUARD_ROOT/host-claude-grok-mismatch.log" >&2 || true
   fi
 
   mkdir -p "$valid_root/skills/group/multi-review"
@@ -130,7 +179,7 @@ run_root_guard_cases() {
     "$valid_root/skills/group/multi-review/SKILL.md"; do
     invalid_skill_case=$((invalid_skill_case + 1))
     fallback_rc=0
-    (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE CLAUDE_PLUGIN_ROOT
+    (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT
      FF_DEV_TOOLKIT_SKILL_FILE="$skill_file" bash "$ROOT_GUARD_SCRIPT") \
       >"$GUARD_ROOT/invalid-skill-$invalid_skill_case.log" 2>&1 || fallback_rc=$?
     if [ "$fallback_rc" -eq 2 ] \
@@ -147,7 +196,7 @@ run_root_guard_cases() {
   printf '%s\n' '# fixture skill' >"$skill_file"
   # skill契約に記載したhost producerの代入を実値へ置換した場合の成功経路。
   fallback_rc=0
-  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE CLAUDE_PLUGIN_ROOT
+  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT
    FF_DEV_TOOLKIT_SKILL_FILE="$skill_file" bash "$ROOT_GUARD_SCRIPT") \
     >"$GUARD_ROOT/skill-file.log" 2>&1 || fallback_rc=$?
   if [ "$fallback_rc" -eq 0 ]; then
@@ -263,7 +312,7 @@ run_root_guard_cases() {
   skill_file="$missing_skill_root/skills/multi-review/SKILL.md"
   printf '%s\n' '# fixture skill' >"$skill_file"
   fallback_rc=0
-  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE CLAUDE_PLUGIN_ROOT
+  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT
    FF_DEV_TOOLKIT_SKILL_FILE="$skill_file" bash "$ROOT_GUARD_SCRIPT") \
     >"$GUARD_ROOT/skill-missing-resource.log" 2>&1 || fallback_rc=$?
   if [ "$fallback_rc" -eq 2 ]; then
@@ -366,7 +415,7 @@ run_root_guard_cases() {
   ln -s "$symlink_skill_root/skills/multi-review/real.md" \
     "$symlink_skill_root/skills/multi-review/SKILL.md"
   fallback_rc=0
-  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE CLAUDE_PLUGIN_ROOT
+  (unset FF_DEV_TOOLKIT_ROOT FF_DEV_TOOLKIT_ROOT_SOURCE CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT
    FF_DEV_TOOLKIT_SKILL_FILE="$symlink_skill_root/skills/multi-review/SKILL.md" \
      bash "$ROOT_GUARD_SCRIPT") >"$GUARD_ROOT/symlink-skill.log" 2>&1 || fallback_rc=$?
   if [ "$fallback_rc" -eq 2 ]; then

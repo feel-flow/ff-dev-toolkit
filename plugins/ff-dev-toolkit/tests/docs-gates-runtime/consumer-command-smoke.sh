@@ -139,9 +139,10 @@ run_resolved_consumer_command() {
   fi
   if (
     cd "$consumer"
-    unset FF_DEV_TOOLKIT_ROOT CLAUDE_PLUGIN_ROOT FF_DEV_TOOLKIT_SKILL_FILE
+    unset FF_DEV_TOOLKIT_ROOT CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT FF_DEV_TOOLKIT_SKILL_FILE
     case "$mode" in
       claude) CLAUDE_PLUGIN_ROOT="$toolkit_root"; export CLAUDE_PLUGIN_ROOT ;;
+      grok) GROK_PLUGIN_ROOT="$toolkit_root"; export GROK_PLUGIN_ROOT ;;
       skill)
         FF_DEV_TOOLKIT_SKILL_FILE="$toolkit_root/skills/multi-review/SKILL.md"
         export FF_DEV_TOOLKIT_SKILL_FILE
@@ -289,6 +290,11 @@ run_consumer_command_smoke() {
     claude "$(extract_guarded_root_quoted_command \
       "$DOCS/05-operations/deployment/multi-cli-review-orchestration.md" multi-review.sh '--dry-run')" \
     "$ENTRYPOINT_ROOT/multi-review-resolved-claude.log" "$ENTRYPOINT_CONSUMER" \
+    "$ENTRYPOINT_PATH" "$ENTRYPOINT_HOME" "$ENTRYPOINT_TOOLKIT_ROOT"
+  run_resolved_consumer_command "GROK_PLUGIN_ROOTからguard→文書commandを同じshellで完走" \
+    grok "$(extract_guarded_root_quoted_command \
+      "$DOCS/05-operations/deployment/multi-cli-review-orchestration.md" multi-review.sh '--dry-run')" \
+    "$ENTRYPOINT_ROOT/multi-review-resolved-grok.log" "$ENTRYPOINT_CONSUMER" \
     "$ENTRYPOINT_PATH" "$ENTRYPOINT_HOME" "$ENTRYPOINT_TOOLKIT_ROOT"
   skill_doc="$ENTRYPOINT_TOOLKIT_ROOT/skills/multi-review/SKILL.md"
   if grep -qF '読み込んだこの `SKILL.md` のdirectoryを基準にした [plugin root固定契約](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite)' \

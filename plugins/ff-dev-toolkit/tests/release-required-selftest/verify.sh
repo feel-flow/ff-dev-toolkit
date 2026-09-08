@@ -47,6 +47,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# 本 suite は公開 checkout へ verify.sh だけをコピーする。lib 不在なら source せず、対象スクリプト不在の既存 skip へ到達する
+# shellcheck source=../lib/git-fixture.sh
+if [ -f "$SCRIPT_DIR/../lib/git-fixture.sh" ]; then
+  . "$SCRIPT_DIR/../lib/git-fixture.sh"
+fi
+
 CHECK="${REPO_ROOT:+$REPO_ROOT/scripts/check-release-required.sh}"
 SYNC="${REPO_ROOT:+$REPO_ROOT/scripts/sync-dev-toolkit-to-public.sh}"
 MATERIALIZE="${REPO_ROOT:+$REPO_ROOT/scripts/materialize-dev-toolkit-changelog.sh}"
@@ -196,9 +203,7 @@ printf '%s\n' '# demo skill' > "$SSOT_FIX/plugins/ff-dev-toolkit/skills/demo/SKI
 printf '%s\n' '# public readme' > "$SSOT_FIX/oss/ff-dev-toolkit/README.md"
 printf '%s\n' '# copilot guide' > "$SSOT_FIX/oss/ff-dev-toolkit/USING_WITH_VSCODE_COPILOT.md"
 
-git -C "$SSOT_FIX" init -q
-git -C "$SSOT_FIX" config user.email selftest@example.com
-git -C "$SSOT_FIX" config user.name release-required-selftest
+ff_git_fixture_init "$SSOT_FIX" "release-required-selftest" "selftest@example.com"
 git -C "$SSOT_FIX" add -A
 git -C "$SSOT_FIX" commit -qm "baseline"
 BASE_FULL="$(git -C "$SSOT_FIX" rev-parse HEAD)"
@@ -216,9 +221,7 @@ git -C "$SSOT_FIX" fetch -q origin
 
 make_public() { # $1=dir $2=commit message $3=tag（空なら打たない）
   mkdir -p "$1"
-  git -C "$1" init -q
-  git -C "$1" config user.email selftest@example.com
-  git -C "$1" config user.name release-required-selftest
+  ff_git_fixture_init "$1" "release-required-selftest" "selftest@example.com"
   printf '%s\n' 'public mirror' > "$1/README.md"
   git -C "$1" add -A
   git -C "$1" commit -qm "$2"
@@ -593,8 +596,7 @@ if assert_committed "S16" "plugins/ff-dev-toolkit/skills/demo/SKILL.md"; then
   make_public "$PUB_STALE_ORIGIN" "$SYNC_MSG" "v0.31.0"
   PUB_STALE="$TMP/public-stale"
   git clone -q "$PUB_STALE_ORIGIN" "$PUB_STALE"
-  git -C "$PUB_STALE" config user.email selftest@example.com
-  git -C "$PUB_STALE" config user.name release-required-selftest
+  ff_git_fixture_init "$PUB_STALE" "release-required-selftest" "selftest@example.com"
   # clone 後に origin 側だけ進める = 並行セッションの push（clone は stale のまま）。
   # タグも clone 後に origin へ打つ — --fetch を明示 refspec 化してタグ追従が消える
   # 退行（LATEST_TAG が古いまま）をここで検出する。
@@ -747,9 +749,7 @@ mv "$TMP/materialize-backup.sh" "$SSOT_FIX/scripts/materialize-dev-toolkit-chang
 PUBCO="$TMP/public-checkout"
 mkdir -p "$PUBCO/plugins/ff-dev-toolkit/tests/release-required-selftest"
 cp "$SCRIPT_DIR/verify.sh" "$PUBCO/plugins/ff-dev-toolkit/tests/release-required-selftest/verify.sh"
-git -C "$PUBCO" init -q
-git -C "$PUBCO" config user.email selftest@example.com
-git -C "$PUBCO" config user.name release-required-selftest
+ff_git_fixture_init "$PUBCO" "release-required-selftest" "selftest@example.com"
 set +e
 skip_out="$(bash "$PUBCO/plugins/ff-dev-toolkit/tests/release-required-selftest/verify.sh" 2>&1)"
 skip_rc=$?

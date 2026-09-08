@@ -29,11 +29,11 @@
 
 ## ff-dev-toolkit plugin root の固定（必須）
 
-この文書は消費プロジェクトへコピーされる一方、`setup-multi-agent.sh` / `multi-agent.sh` / `multi-review.sh` は plugin 同梱物のままで、消費プロジェクトの `scripts/` へはコピーされない。Claude Code ではその呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}`、Codex など他ホストでは実際に読み込んだ ff-dev-toolkit skill の絶対 `SKILL.md` パスを `FF_DEV_TOOLKIT_SKILL_FILE` として渡し、その `../..` を、1回の Bash tool 呼び出し / shell script body 中の `FF_DEV_TOOLKIT_ROOT` として一度だけ固定する。この変数名と handoff は各 ff-dev-toolkit skill の root 契約にも定義する。review / explore / implement のどの入口でも、別の skill を探さず、その呼び出しで読み込んだ実体を使う。
+この文書は消費プロジェクトへコピーされる一方、`setup-multi-agent.sh` / `multi-agent.sh` / `multi-review.sh` は plugin 同梱物のままで、消費プロジェクトの `scripts/` へはコピーされない。Claude Code ではその呼び出しでホストが渡した `${CLAUDE_PLUGIN_ROOT}`、grok CLI では Bash tool 環境の `${GROK_PLUGIN_ROOT}`（1.0.13 の skill 経路では未設定が普通。そのときは `FF_DEV_TOOLKIT_SKILL_FILE`）、Codex など他ホストでは実際に読み込んだ ff-dev-toolkit skill の絶対 `SKILL.md` パスを `FF_DEV_TOOLKIT_SKILL_FILE` として渡し、その `../..` を、1回の Bash tool 呼び出し / shell script body 中の `FF_DEV_TOOLKIT_ROOT` として一度だけ固定する。この変数名と handoff は各 ff-dev-toolkit skill の root 契約にも定義する。review / explore / implement のどの入口でも、別の skill を探さず、その呼び出しで読み込んだ実体を使う。
 
-handoff の producer は skill を実行する AI host である。Claude Code は plugin skill 呼び出しの `${CLAUDE_PLUGIN_ROOT}` を同じ Bash tool body へ渡す。Codex など、skill loader が読み込んだファイルの絶対パスを返す host は、Bash tool body の先頭で `FF_DEV_TOOLKIT_SKILL_FILE="<skill loader が返したこの SKILL.md の絶対パス>"; export FF_DEV_TOOLKIT_SKILL_FILE` の placeholder を実値へ置換する。review / explore / implement resource を直接呼ぶ host は、task の workspace repository root も `FF_DEV_TOOLKIT_PROJECT_ROOT="<AI host の task workspace repository root>"; export FF_DEV_TOOLKIT_PROJECT_ROOT` の実値として渡し、下の fence と後続コマンドを続ける。単独ターミナルの利用者が cache path や別 repository を推測してこれらの値を手書きしてはならない。
+handoff の producer は skill を実行する AI host である。Claude Code は plugin skill 呼び出しの `${CLAUDE_PLUGIN_ROOT}` を同じ Bash tool body へ渡す。grok CLI の `${GROK_PLUGIN_ROOT}` は plugin hook 環境向けであり、1.0.13 では plugin hooks が実行対象に入らないため skill の Bash tool には通常渡らない。grok の skill 経路では、skill loader が返した絶対パスを `FF_DEV_TOOLKIT_SKILL_FILE` として同じ Bash tool body へ渡す。Codex など、skill loader が読み込んだファイルの絶対パスを返す host も同じ `FF_DEV_TOOLKIT_SKILL_FILE="<skill loader が返したこの SKILL.md の絶対パス>"; export FF_DEV_TOOLKIT_SKILL_FILE` の placeholder を実値へ置換する。review / explore / implement resource を直接呼ぶ host は、task の workspace repository root も `FF_DEV_TOOLKIT_PROJECT_ROOT="<AI host の task workspace repository root>"; export FF_DEV_TOOLKIT_PROJECT_ROOT` の実値として渡し、下の fence と後続コマンドを続ける。単独ターミナルの利用者が cache path や別 repository を推測してこれらの値を手書きしてはならない。
 
-キャッシュ全体を探索したり、version 名を並べ替えて別版へ切り替えたりしない。次の resolver + guard を、以下に続く直接実行例より前に同じ shell へ読み込む。Claude Code / Codex の host は、上記の値をこの fence の実行環境へ渡すこと。初回 setup は読み込み済み skill を持つ Claude Code / Codex の host セッションからだけ実行する。単独ターミナルで setup 前の状態から plugin を探索する手順は提供しない。setup 後の単独ターミナルは Codex-only 互換シムを使い、固定版の pair / distributed review は skill を再呼び出して実行する。machine-local sidecar の手動 source は対話ターミナル向けに提供せず、後述の永続 hook の handoff にだけ使う。root が未設定、または更新で resource が消えた場合は別版へフォールバックせず status 2 を返す。
+キャッシュ全体を探索したり、version 名を並べ替えて別版へ切り替えたりしない。次の resolver + guard を、以下に続く直接実行例より前に同じ shell へ読み込む。Claude Code / Codex / grok CLI の host は、上記の値をこの fence の実行環境へ渡すこと。初回 setup は読み込み済み skill を持つ Claude Code / Codex / grok CLI の host セッションからだけ実行する。単独ターミナルで setup 前の状態から plugin を探索する手順は提供しない。setup 後の単独ターミナルは Codex-only 互換シムを使い、固定版の pair / distributed review は skill を再呼び出して実行する。machine-local sidecar の手動 source は対話ターミナル向けに提供せず、後述の永続 hook の handoff にだけ使う。root が未設定、または更新で resource が消えた場合は別版へフォールバックせず status 2 を返す。
 
 このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowが `FF_DEV_TOOLKIT_ROOT` 経由で起動する同梱scriptである。後者は `check-closing-keywords.sh`（Issueクローズキーワードの手動検査）に加え、`check-merge-freshness.sh`（マージ前の鮮度検査）・`update-version-claim.sh` / `check-version-claims.sh`（version claimの生成と検証）を含む。呼び出す側の案内だけが増えて対象の列挙が追従しない状態を作らないため、Git Workflowから同梱scriptを新たに呼ぶときはこの列挙も同時に更新する。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は Codex cache → Claude cache の semantic version 最大を sidecar より先に選ぶ（Issue #623 の互換動作）。そのため plugin 更新直後は、端末の互換シムが新 cache、pre-push が更新前の sidecar を使う状態がある。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
 
@@ -67,9 +67,10 @@ ff_require_toolkit_root() {
   local host_root="" skill_root="" fixed_root=""
   local skill_dir="" skills_dir="" plugin_manifest=""
   local resource resource_path resource_error
+  local claude_root="" grok_root=""
   case "${CLAUDE_PLUGIN_ROOT:-}" in
     /*)
-      host_root="$(ff_canonical_toolkit_root "$CLAUDE_PLUGIN_ROOT")" || {
+      claude_root="$(ff_canonical_toolkit_root "$CLAUDE_PLUGIN_ROOT")" || {
         ff_toolkit_handoff_error "Claude plugin rootを正規化できません"
         return "$?"
       }
@@ -80,6 +81,28 @@ ff_require_toolkit_root() {
       return "$?"
       ;;
   esac
+  case "${GROK_PLUGIN_ROOT:-}" in
+    /*)
+      grok_root="$(ff_canonical_toolkit_root "$GROK_PLUGIN_ROOT")" || {
+        ff_toolkit_handoff_error "Grok plugin rootを正規化できません"
+        return "$?"
+      }
+      ;;
+    "") ;;
+    *)
+      ff_toolkit_handoff_error "Grok plugin rootが絶対pathではありません"
+      return "$?"
+      ;;
+  esac
+  if [ -n "$claude_root" ] && [ -n "$grok_root" ] && [ "$claude_root" != "$grok_root" ]; then
+    ff_toolkit_handoff_error "hostのplugin rootが一致しません"
+    return "$?"
+  fi
+  if [ -n "$claude_root" ]; then
+    host_root="$claude_root"
+  else
+    host_root="$grok_root"
+  fi
   if [ -n "${FF_DEV_TOOLKIT_SKILL_FILE:-}" ]; then
     case "$FF_DEV_TOOLKIT_SKILL_FILE" in
       /*) ;;

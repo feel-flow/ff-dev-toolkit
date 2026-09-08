@@ -86,7 +86,8 @@ uses_bundled_resource() {
       return 0
     fi
   done
-  if grep -Fq 'FF_DEV_TOOLKIT_ROOT' "$file" || grep -Fq '${CLAUDE_PLUGIN_ROOT}' "$file"; then
+  if grep -Fq 'FF_DEV_TOOLKIT_ROOT' "$file" || grep -Fq '${CLAUDE_PLUGIN_ROOT}' "$file" \
+    || grep -Fq '${GROK_PLUGIN_ROOT}' "$file"; then
     return 0
   fi
   # 直前の文字クラスから `/` を外す。`/` を境界から除くと、sibling skill の同梱物を
@@ -116,7 +117,8 @@ check_tree() {
     name="$(basename "$(dirname "$file")")"
     # 旧導出キー（root 変数）の件数を独立に数える。新導出はこれを包含するはずなので、
     # 下回ったら「拡張した導出が旧キーを取りこぼした」ことになり赤にする。
-    if grep -Fq 'FF_DEV_TOOLKIT_ROOT' "$file" || grep -Fq '${CLAUDE_PLUGIN_ROOT}' "$file"; then
+    if grep -Fq 'FF_DEV_TOOLKIT_ROOT' "$file" || grep -Fq '${CLAUDE_PLUGIN_ROOT}' "$file" \
+    || grep -Fq '${GROK_PLUGIN_ROOT}' "$file"; then
       root_count=$((root_count + 1))
     fi
     uses_bundled_resource "$file" || continue
@@ -146,6 +148,7 @@ check_tree() {
 
     for required in \
       'FF_DEV_TOOLKIT_ROOT` を**一度だけ**解決し、実行中は変更しない' \
+      'grok CLIでは、Bash tool 環境の `${GROK_PLUGIN_ROOT}` があればそれを使う' \
       '実際に読み込んだこの `SKILL.md` の絶対パス' \
       '`FF_DEV_TOOLKIT_SKILL_FILE` として固定' \
       'skill loaderが返した実値で `FF_DEV_TOOLKIT_SKILL_FILE="<このSKILL.mdの絶対パス>"; export FF_DEV_TOOLKIT_SKILL_FILE` を実行' \

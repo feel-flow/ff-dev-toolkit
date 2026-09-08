@@ -7,6 +7,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd -P)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
+
 SOURCE_VERIFY="$PLUGIN_ROOT/tests/markdownlint/verify.sh"
 SOURCE_CONFIG="$REPO_ROOT/.markdownlint.json"
 SOURCE_PACKAGE_JSON="$PLUGIN_ROOT/mcp/package.json"
@@ -50,9 +55,7 @@ cp "$SOURCE_PACKAGE_JSON" "$FIXTURE/plugins/ff-dev-toolkit/mcp/package.json"
 cp "$SOURCE_PACKAGE_LOCK" "$FIXTURE/plugins/ff-dev-toolkit/mcp/package-lock.json"
 ln -s "$SOURCE_NODE_MODULES" "$FIXTURE/plugins/ff-dev-toolkit/mcp/node_modules"
 
-git -C "$FIXTURE" init -q
-git -C "$FIXTURE" config user.email selftest@example.com
-git -C "$FIXTURE" config user.name markdownlint-selftest
+ff_git_fixture_init "$FIXTURE" "markdownlint-selftest" "selftest@example.com"
 printf '# Fixture\n' > "$FIXTURE/README.md"
 git -C "$FIXTURE" add .
 git -C "$FIXTURE" commit -qm baseline

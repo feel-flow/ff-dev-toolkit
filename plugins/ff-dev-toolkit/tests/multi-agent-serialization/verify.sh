@@ -19,6 +19,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
+
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 CODEX_BARRIER_TIMEOUT_SECONDS=10
 # codex-cli の review 所有観点数と揃える（acceptance-criteria 追加で 2 → 3。
@@ -71,10 +76,8 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # --- レビュー対象の差分を持つ一時リポジトリ ---
 REPO="$TMP/repo"
-git init -q "$REPO"
+ff_git_fixture_init "$REPO" "multi-agent-serialization-test" "test@example.com"
 cd "$REPO"
-git config user.email "test@example.com"
-git config user.name "multi-agent-serialization-test"
 git config commit.gpgsign false
 git switch -q -c develop
 echo base > app.txt

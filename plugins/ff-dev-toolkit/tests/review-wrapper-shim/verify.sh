@@ -34,6 +34,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
 SHIM="$PLUGIN_ROOT/scripts/templates/codex-review.sh"
 # 覆い隠し告知の needle は実体（シム）から導出する。リテラルを書き写すと、文言を変えたときに
 # 肯定側の針だけが赤くなり、不在側（「鳴らないこと」）の 2 本は «何も検証しない緑» へ静かに
@@ -829,9 +833,7 @@ else
 fi
 
 STAGED_REPO="$WORK/staged-repo"
-git init -q "$STAGED_REPO"
-git -C "$STAGED_REPO" config user.email fixture@example.invalid
-git -C "$STAGED_REPO" config user.name fixture
+ff_git_fixture_init "$STAGED_REPO"
 printf 'base\n' > "$STAGED_REPO/app.txt"
 git -C "$STAGED_REPO" add app.txt
 git -C "$STAGED_REPO" commit -qm init
@@ -849,9 +851,7 @@ fi
 # 履歴差分を使う検査は、checkout 側の fetch-depth や直近コミットが空かどうかに
 # 依存させない。2つの非空コミットを持つ専用 fixture で HEAD~1 を必ず成立させる。
 DIFF_REPO="$WORK/diff-repo"
-git init -q "$DIFF_REPO"
-git -C "$DIFF_REPO" config user.email fixture@example.invalid
-git -C "$DIFF_REPO" config user.name fixture
+ff_git_fixture_init "$DIFF_REPO"
 printf 'base\n' > "$DIFF_REPO/app.txt"
 git -C "$DIFF_REPO" add app.txt
 git -C "$DIFF_REPO" commit -qm base

@@ -27,6 +27,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 ADAPTER_COMMON="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
+
 REVIEW_PERSPECTIVES_DIR="$PLUGIN_ROOT/scripts/perspectives/review"
 
 [ -f "$ADAPTER_COMMON" ] || {
@@ -124,10 +129,8 @@ echo "== (2) プロンプト層: [OUT-OF-DIFF] ラベル契約 =="
 # git commit で実行され、失敗時に suite の文脈なしの git エラーで abort する。
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 REPO="$TMP/repo"
-git init -q "$REPO"
+ff_git_fixture_init "$REPO" "review-diff-scope-test" "test@example.com"
 cd "$REPO"
-git config user.email "test@example.com"
-git config user.name "review-diff-scope-test"
 git config commit.gpgsign false
 git switch -q -c develop
 echo base > app.txt

@@ -28,6 +28,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ADAPTER_COMMON="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
+# shellcheck source=../lib/git-fixture.sh
+. "$SCRIPT_DIR/../lib/git-fixture.sh"
+
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 
 [ -f "$ADAPTER_COMMON" ] || { echo "✗ adapter-common.sh が見つかりません" >&2; exit 1; }
@@ -90,9 +95,8 @@ resolve() {
 git init --bare -q "$TMP/origin.git"
 # 空リポジトリの clone 警告は仕様どおりなので捨てる（suite の出力を汚さない）
 git clone -q "$TMP/origin.git" "$TMP/work" 2>/dev/null
+ff_git_fixture_init "$TMP/work" "base-ref-freshness-test" "test@example.com"
 cd "$TMP/work"
-git config user.email "test@example.com"
-git config user.name "base-ref-freshness-test"
 git config commit.gpgsign false
 
 git switch -q -c develop
@@ -388,9 +392,8 @@ fi
 
 git init --bare -q "$TMP/origin-b.git"
 git clone -q "$TMP/origin-b.git" "$TMP/work-b" 2>/dev/null
+ff_git_fixture_init "$TMP/work-b" "base-ref-freshness-test" "test@example.com"
 cd "$TMP/work-b"
-git config user.email "test@example.com"
-git config user.name "base-ref-freshness-test"
 git config commit.gpgsign false
 
 git switch -q -c develop

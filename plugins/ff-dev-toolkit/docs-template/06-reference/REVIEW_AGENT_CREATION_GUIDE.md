@@ -522,7 +522,7 @@ fallback:
 
 オーケストレーターはスタンドアロンbashスクリプトであり、検証済みの絶対pathを持つ呼び出し元から実行できます。
 
-直接実行する場合、本書は [Multi-CLI Review Orchestration §ff-dev-toolkit plugin root の固定](../05-operations/deployment/multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入します。同節の resolver + guard fence 全体と実行コマンドを1回の Bash tool 呼び出し / shell script body で実行します。Claude Code は `${CLAUDE_PLUGIN_ROOT}`、Codex など他ホストは実際に読み込んだ `SKILL.md` の絶対パスを渡し、review resourceを呼ぶhostは `FF_DEV_TOOLKIT_PROJECT_ROOT` も渡します。単独ターミナル / Copilot の Codex-only 実行は setup が配置したシムを使い、固定版の pair / distributed review は Claude Code / Codex の skill から再呼び出します。sidecar の復元例は永続 hook 専用であり、対話 shell に source しません。
+直接実行する場合、本書は [Multi-CLI Review Orchestration §ff-dev-toolkit plugin root の固定](../05-operations/deployment/multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入します。同節の resolver + guard fence 全体と実行コマンドを1回の Bash tool 呼び出し / shell script body で実行します。Claude Code は `${CLAUDE_PLUGIN_ROOT}`、grok CLI は読み込んだ `SKILL.md` の絶対パスを `FF_DEV_TOOLKIT_SKILL_FILE` として渡す（`${GROK_PLUGIN_ROOT}` は hook 環境向けで、skill 経路では未設定が普通）、Codex など他ホストも実際に読み込んだ `SKILL.md` の絶対パスを渡し、review resourceを呼ぶhostは `FF_DEV_TOOLKIT_PROJECT_ROOT` も渡します。単独ターミナル / Copilot の Codex-only 実行は setup が配置したシムを使い、固定版の pair / distributed review は Claude Code / Codex / grok CLI の skill から再呼び出します。sidecar の復元例は永続 hook 専用であり、対話 shell に source しません。
 
 ### エントリーポイント一覧
 
