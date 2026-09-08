@@ -16,7 +16,7 @@ AI駆動Git Workflowを効率的に運用するための基本原則を定義し
 
 ```
 Issue作成 → ブランチ作成 → 実装 → テスト → セルフレビュー
-  → Commit/push → Draft PR → Toolkit+Codex レビュー → 1 fix commit
+  → Commit/push → Draft PR → 主担当＋別担当のレビュー（利用不可時は選択ルールに従う） → 1 fix commit
   → gh pr ready → /close-issue（AC照合ゲート） → gh pr merge --squash
   → /merge-cleanup → ACE → /retrospective（セッション振り返り）
                     ↑ この一連の流れを中断しない（フルオート） ↑
@@ -139,8 +139,8 @@ Issue #123 の作業中に発見。UserService.createUser() が150行を超え�
 3. [ ] 実装
 4. [ ] テスト実行・合格確認
 5. [ ] Push + Draft PR 作成
-6. [ ] セルフレビュー: PR Review Toolkit
-7. [ ] セルフレビュー: Codex CLI クロスモデルレビュー
+6. [ ] セルフレビュー: 主担当による必要観点の確認
+7. [ ] クロスレビュー: 主担当以外で完了、または全候補の利用不可理由と主担当のみでの継続を記録（[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)）
 8. [ ] レビュー指摘修正（1 fix commit）
 9. [ ] gh pr ready → /close-issue（AC照合ゲート） → gh pr merge --squash
 10. [ ] /merge-cleanup

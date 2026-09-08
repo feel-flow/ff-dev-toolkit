@@ -446,6 +446,10 @@ npm audit --audit-level=moderate
 
 最後の 1 件を**この段（PR 作成前）で確認する**のが要点。記載漏れは実装にも検査にも現れないため PR をそのまま通り抜け、見つかるのはリリース準備や公開同期の直前 — その時点では PR のスコープ外になっている。判定を機械化できるプロジェクトでは、公開物の変更に対する有効な `changelog.d` 断片（リリース準備では集約済み `[Unreleased]`）の有無を PR 作成前に一度だけ問い合わせ、**警告として扱う**（PR 作成は止めない）。ゲートにしてはいけない: 通常開発では「公開物の変更 + 有効な断片 + version 据え置き」が正常で、リリース準備では「集約済み `[Unreleased]` + version bump」が正常であるため、単一の中間状態だけを常時ゲートにすると開発経路が恒常的に赤くなる。
 
+#### レビュー担当
+
+[レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続)を適用する。主担当は実装中の Claude / Codex / Grok / Copilot、クロスレビューはそれ以外の利用可能な最低1つ。他の候補がすべて利用不可なら理由を記録して主担当のみで継続する。以下の Toolkit / Codex は実行例であり固定の必須ペアではない。
+
 #### セルフレビューの実行方法
 
 **レビュー用サブエージェントは read-only で起動する（必須）**: 起動プロンプトに、編集・ファイル作成・ビルド・テスト実行・git 書き込み（checkout / commit / push / reset / stash）の禁止を明示的に列挙する（「気をつけて」ではなく禁止事項を列挙する）。理由: (1) 複数エージェントが同じ worktree でビルドすると成果物ディレクトリを奪い合い、失敗するファイルが実行ごとに変わる形で壊れる、(2) read-only 指示の無いレビューエージェントは working tree・ブランチを書き換えうる（変異テストによる巻き戻し・checkout でのブランチ切り替えの実測あり）。read-only にしても指摘の質は落ちない。ビルドを伴う検証（変異テスト等）はオーケストレータが 1 つだけ実行する — 並列化するのは読解であって実行ではない。
@@ -531,9 +535,9 @@ Claude Codeのpr-review-toolkitサブエージェントを活用した包括的�
 
 **テスト suite を追加・強化する PR の起動プロンプト定型文（変異実測）**: 対象 PR がテスト suite を追加・強化するものであれば、`pr-test-analyzer`（および `silent-failure-hunter`）の起動プロンプトへ次を定型で含める — 「隔離 worktree（`isolation: "worktree"`）の中で、追加・強化した suite に対して自作の変異を 2〜3 種当て（例: アサートの条件を反転 / fixture を単一要素に退化 / 検査対象の 1 行を削除）、suite が赤になるかを実測する。生き残った変異（緑のままだったもの）を指摘として報告する。親の作業ツリーと repo ファイルは編集しない（変異は worktree 内で当てて `git checkout --` で戻す）」。diff を読むだけのクロスモデルレビューは空振りアサート・退化 fixture を 0〜1 件しか拾わないが、変異実測を指示すると毎回複数の生存変異が出た（導入元で 3 PR 連続）。この定型文は上の[セルフレビューの実行方法](#セルフレビューの実行方法)の read-only 起動規定・worktree 隔離規定と矛盾しない — 変異は**隔離 worktree 内でのみ**当てる前提を明記している。この定型文は read-only 起動規定に対する例外を**隔離 worktree の内側に限って**与えるものであり、親の作業ツリー・共有ツリーでは従来どおり read-only を維持する。隔離を提供しないホスト・経路ではこの定型文を使わない（変異実測を省く）。
 
-**Codex CLI クロスモデルレビュー（推奨）**:
+**主担当以外によるクロスレビュー**:
 
-Claude系（Toolkit）とGPT系（Codex CLI）で異なるモデルの観点からレビューし、品質を向上させます。
+主担当以外を選び、可能なら異なるモデル系統の観点からレビューします。下は Claude が主担当で Codex を選んだ場合の例です。
 詳細は [Multi-CLI Review Orchestration](./multi-cli-review-orchestration.md#クロスモデルレビュー推奨パターン) を参照してください。
 
 本書は [同文書の plugin root 前提](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入します。AI host は読み込み済みplugin情報と `FF_DEV_TOOLKIT_PROJECT_ROOT` を渡し、同節の resolver + guard fence 全体と下のコマンドを1回の Bash tool 呼び出し / shell script body で実行します。
@@ -698,9 +702,9 @@ rm -f "${SURFACE}"
 
 #### 7a. クロスモデルレビュー（PR作成後）
 
-**原則**: PR作成後、マージ前に **Claude Code（pr-review-toolkit）+ Codex CLI** のクロスモデルレビューを実施する
+**原則**: PR作成後、マージ前にも[レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続)を適用する。主担当以外の最低1つを選び、他がすべて利用不可なら主担当のみで継続した理由を記録する。
 
-> **レビュー深度（Risk-Based Workflow）**: `bash scripts/review-level.sh --base develop` で変更の規模・種別からレビュー深度（1: 軽量 = docs のみ ≤50行は Toolkit のみ / 2: 標準 = Toolkit + Codex / 3: 重点 = 400 行超・実行系ディレクトリ・`*.sh`・`package.json`・ルート直下設定ファイルは multi-review 併用推奨）を判定し、深度を変更のリスクに釣り合わせる。判定は推奨でありブロックしない。**これは [DEPLOYMENT.md](../DEPLOYMENT.md#主要ステップ) の tier とは別の軸である** — tier が決めるのは段の重さで、こちらが決めるのはレビューの深さ。tier はレビューの本数を減らさない。PR 説明に貼れる形式は `--format pr`（レベル＋PR Size Check の `[x]` 判定＋センシティブパス一覧）。
+> **レビュー深度（Risk-Based Workflow）**: `bash scripts/review-level.sh --base develop` で変更の規模・種別からレビュー深度（1: 軽量 = docs のみ ≤50行は簡潔なレビュー / 2: 標準 = 通常のレビュー観点 / 3: 重点 = 400 行超・実行系ディレクトリ・`*.sh`・`package.json`・ルート直下設定ファイルは multi-review 併用推奨）を判定し、深度を変更のリスクに釣り合わせる。判定は推奨でありブロックしない。**これは [DEPLOYMENT.md](../DEPLOYMENT.md#主要ステップ) の tier とは別の軸である** — tier が決めるのは段の重さで、こちらが決めるのはレビューの深さ。tier はレビューの本数を減らさない。担当数の例外は上記の利用不可時の規定に従う。PR 説明に貼れる形式は `--format pr`（レベル＋PR Size Check の `[x]` 判定＋センシティブパス一覧）。
 >
 > **push 時の可視化**: `.husky/pre-push` は品質ゲート実行前に review-level 判定を表示し、Level 3 では重点レビューを促す（既定は advisory・非ブロック）。`REVIEW_LEVEL_BLOCK=1 git push` のときだけ Level 3 を push ブロックに昇格できる（opt-in）。変更行数・パスの機械判定は review-level.sh に一本化し、`/assess-impact` はその結果を入力として互換性・アーキテクチャ影響（LOW/MEDIUM/HIGH）を評価する。
 >
@@ -1286,8 +1290,8 @@ ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行�
 2. [ ] feature ブランチ作成
 3. [ ] 実装
 4. [ ] テスト実行・合格確認
-5. [ ] セルフレビュー: PR Review Toolkit
-6. [ ] セルフレビュー: Codex CLI クロスモデルレビュー
+5. [ ] セルフレビュー: 主担当による必要観点の確認
+6. [ ] クロスレビュー: 主担当以外で完了、または全候補の利用不可理由と主担当のみでの継続を記録（[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)）
 7. [ ] レビュー指摘修正・コミット
 8. [ ] 全件/ビルドの重いゲート（指摘 0 件でもレビュー終端後に 1 回）
 9. [ ] Push + PR 作成

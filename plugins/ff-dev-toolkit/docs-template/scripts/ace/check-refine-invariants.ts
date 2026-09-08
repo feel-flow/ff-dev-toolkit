@@ -203,30 +203,6 @@ export function extractChangelogSection(playbookContent: string): string {
 }
 
 /**
- * 括弧（全角・半角）の対応が行末で閉じているか。**閉じ忘れと閉じ括弧の余りの両方**を見る。
- *
- * - 閉じ忘れがあると maskParentheticals は開き括弧以降をすべて注記として潰し、
- *   後続 ID が違反にもならず黙って消える（Issue #1030 の Codex レビュー指摘）。
- * - 余った閉じ括弧は注記の境界にならないので、その前後の ID が隣接して
- *   `ACE-1-1）ACE-2-1` → `ACE-1-1ACE-2-1` という実在しない ID 1 件へ融合し、
- *   実在する 2 件が丸ごと未検証になる（Issue #1184）。`restAfterFirstParenthetical` が
- *   `depth < 0` で null を返すのと同じ扱いに揃える。
- *
- * 呼び出し側はこの検出時に malformed として違反へ回す。
- */
-export function hasUnbalancedParentheses(line: string): boolean {
-  let depth = 0;
-  for (const ch of line) {
-    if (ch === "（" || ch === "(") depth += 1;
-    else if (ch === "）" || ch === ")") {
-      if (depth === 0) return true;
-      depth -= 1;
-    }
-  }
-  return depth > 0;
-}
-
-/**
  * 括弧（全角・半角）で囲まれた注記を、番兵 1 文字へ潰す。入れ子は深さで数える。
  *
  * `- Compacted:` は「前置きの散文 → コロン → ID 列」や「ID ごとに `（18 → 12 行）` の注記」
@@ -248,7 +224,7 @@ export function maskParentheticals(line: string): string {
       continue;
     }
     if (ch === "）" || ch === ")") {
-      // 余った閉じ括弧は呼び出し側が hasUnbalancedParentheses で先に弾くが、
+      // 余った閉じ括弧は呼び出し側が hasUnmatchedParenthesis で先に弾くが、
       // この関数単体でも ID を隣接させないよう番兵を残す（融合を作らない）。
       if (depth > 0) depth -= 1;
       else masked += PARENTHETICAL_SENTINEL;
@@ -283,7 +259,7 @@ export function restAfterFirstParenthetical(reason: string): string | null {
 /**
  * 開き括弧と閉じ括弧の**種類**（全角どうし / 半角どうし）が食い違う行か。
  *
- * `hasUnbalancedParentheses` は個数しか見ないため、`ACE-1-1（注記), ACE-2-1` のように
+ * 開閉の**個数**だけを見ると `ACE-1-1（注記), ACE-2-1` のように
  * IME 切り替えで種類が混ざった行は「注記が正しく閉じている」と読まれ、書き手が意図した
  * 注記の範囲とパーサが読む範囲がずれたまま受理される。
  *
@@ -296,8 +272,7 @@ export function restAfterFirstParenthetical(reason: string): string | null {
  *   種類の食い違いではないので**ここでは違反にせず**、対応相手の無い括弧の担当へ戻す
  * - `（注記 (詳細) ここまで）` → 全角 0 / 半角 0 で違反ではない
  *
- * 対応相手の無い括弧は本検査の対象外（`Compacted:` は既存の unbalanced 検査が拒否する。
- * 他ラベルの非対称は別 Issue）。
+ * 対応相手の無い括弧は本検査の対象外で、`hasUnmatchedParenthesis` が 4 ラベル共通に拒否する。
  */
 export function hasMismatchedParenthesisKind(line: string): boolean {
   let fullWidthDepth = 0;
@@ -310,6 +285,53 @@ export function hasMismatchedParenthesisKind(line: string): boolean {
   }
   if (fullWidthDepth === 0 || halfWidthDepth === 0) return false;
   return fullWidthDepth > 0 !== halfWidthDepth > 0; // 逆符号 = 種類をまたいだ対応
+}
+
+/**
+ * 対応相手の無い括弧（閉じ忘れ・閉じ括弧の余り）を含む行か。**4 ラベル共通の前提検査**。
+ *
+ * 全角と半角の深さを同時に追う **1 パスの位置依存走査**で判定する:
+ *
+ * - **全角の開き括弧が閉じないまま行が終わる**（`（注記`）→ 違反
+ * - **全角の閉じ括弧が対応する開きを持たない**（`ACE-1-1）ACE-2-1`）→ 違反
+ * - **半角の開き括弧が閉じないまま行が終わる**（`(注記`）→ 違反
+ * - **半角の閉じ括弧が対応する開きを持たない**とき、その時点で**全角括弧書きの内側**なら
+ *   （`（理由: a) 速い）`・`（笑 :-) ）`）散文として無視し、**外側**なら
+ *   （`ACE-1-1 → ACE-2-1)`・`- Compacted: ACE-1-1)`）違反
+ *
+ * 半角の閉じ余りを全角括弧書きの中に限って許すのは、`hasMismatchedParenthesisKind` が
+ * 「全角括弧書きの中の孤立した半角閉じは種類の食い違いではない」として許容した書き方
+ * （`a)` 箇条・顔文字）と一貫させるため。**括弧書きの外の裸の `)` は許さない**。
+ * 外でも許すと `- Merged: ACE-1-1 → ACE-2-1)` のような行が受理され、閉じ余りが
+ * 注記の境界にならないまま前後の ID を偽 ID へ融合させる害（Issue #1184）が残る。
+ * 種類をまたいで対応させた行（全角と半角が逆符号）は先に `hasMismatchedParenthesisKind` が拾う。
+ *
+ * この検査を 4 ラベル共通の位置へ置くまでは、`Compacted:` だけが直接、`Archived:` / `Promoted:` は
+ * 理由部（`restAfterFirstParenthetical`）経由でしか見ず、`Merged:` は括弧を一切見なかった。
+ * そのため `- Archived: なし（未閉じ` や `- Merged: ACE-1-1 → ACE-2-1（未閉じ` が黙って無視され、
+ * 閉じ忘れ以降に書いた ID が検査から丸ごと外れていた。
+ */
+export function hasUnmatchedParenthesis(line: string): boolean {
+  let fullWidthDepth = 0;
+  let halfWidthDepth = 0;
+  for (const ch of line) {
+    if (ch === "（") {
+      fullWidthDepth += 1;
+    } else if (ch === "）") {
+      if (fullWidthDepth === 0) return true; // 対応する全角の開きが無い
+      fullWidthDepth -= 1;
+    } else if (ch === "(") {
+      halfWidthDepth += 1;
+    } else if (ch === ")") {
+      if (halfWidthDepth > 0) {
+        halfWidthDepth -= 1;
+      } else if (fullWidthDepth === 0) {
+        return true; // 全角括弧書きの外に現れた裸の半角閉じ
+      }
+      // 全角括弧書きの内側の孤立した半角閉じは散文として無視する
+    }
+  }
+  return fullWidthDepth > 0 || halfWidthDepth > 0;
 }
 
 /** 行内のトップレベル括弧書きの中身を、開いた順に返す（入れ子は外側 1 つへまとめる）。 */
@@ -359,11 +381,10 @@ function isIdEnumerationOnly(inner: string): boolean {
  *
  * 一方 `- Archived: なし（ACE-X は次回再評価）` は括弧の中が散文なので注記と判別できる。
  * `なし` のような特定語をハードコードせずに、無操作宣言の注記は無視し続ける。
- * 対応相手の無い括弧は本検査の対象外（`Compacted:` は既存の unbalanced 検査が拒否する。
- * 他ラベルの非対称は別 Issue）。
+ * 対応相手の無い括弧は本検査の対象外で、`hasUnmatchedParenthesis` が 4 ラベル共通に拒否する。
  */
 export function hasOnlyParentheticalIds(line: string): boolean {
-  if (hasUnbalancedParentheses(line)) return false;
+  if (hasUnmatchedParenthesis(line)) return false;
   if (ACE_ID_ANYWHERE_PATTERN.test(maskParentheticals(line))) return false;
   return topLevelParentheticals(line).some(isIdEnumerationOnly);
 }
@@ -382,11 +403,8 @@ export function hasOnlyParentheticalIds(line: string): boolean {
  * 括弧の中へ入れれば従来どおり受理する）。
  */
 function collectCompactedIdRun(line: string, ids: string[], malformed: string[]): void {
-  if (hasUnbalancedParentheses(line)) {
-    // 閉じ忘れは開き括弧以降の ID を黙って落とすため、部分採用せず違反へ回す
-    malformed.push(line);
-    return;
-  }
+  // 対応相手の無い括弧は呼び出し側（4 ラベル共通の前提検査 `hasUnmatchedParenthesis`）が
+  // 先に違反へ回すので、ここでは残った行だけを読む。
   const masked = maskParentheticals(line);
   const found = [...masked.matchAll(ACE_ID_PATTERN)];
   for (let i = 1; i < found.length; i++) {
@@ -444,6 +462,13 @@ export function parseChangelogOperations(playbookContent: string): ChangelogOper
   const malformedCompacted: string[] = [];
   const malformedParenthesisKind: string[] = [];
   const malformedParentheticalIds: string[] = [];
+  /** 対応相手の無い括弧はラベルごとの「この行が読めない」バケットへ回す（原因別の指示は各メッセージ）。 */
+  const malformedByLabel: Readonly<Record<(typeof CHANGELOG_LABEL_PREFIXES)[number], string[]>> = {
+    "- Compacted:": malformedCompacted,
+    "- Merged:": malformedMerged,
+    "- Promoted:": malformedPromoted,
+    "- Archived:": malformedArchived,
+  };
   /** 同一の `- Merged: X → Y` が 2 行あっても 1 操作として数える（Issue #1030）。 */
   const seenMergedPairs = new Set<string>();
 
@@ -454,11 +479,17 @@ export function parseChangelogOperations(playbookContent: string): ChangelogOper
   const maskedContent = blankHtmlBlockComments(blankCodeRegions(playbookContent).text);
   for (const rawLine of extractChangelogSection(maskedContent).split("\n")) {
     const line = rawLine.trim();
-    // 括弧の対応種と「括弧の中にしか無い ID」は 4 ラベル共通の前提なので、ラベルごとの
-    // ID 列パーサへ渡す前に 1 箇所で見る（ラベル別に書くと片方だけ抜ける）。
-    if (CHANGELOG_LABEL_PREFIXES.some((prefix) => line.startsWith(prefix))) {
+    // 括弧の対応種・対応相手の無い括弧・「括弧の中にしか無い ID」は 4 ラベル共通の前提なので、
+    // ラベルごとの ID 列パーサへ渡す前に 1 箇所で見る（ラベル別に書くと片方だけ抜ける）。
+    const label = CHANGELOG_LABEL_PREFIXES.find((prefix) => line.startsWith(prefix));
+    if (label) {
       if (hasMismatchedParenthesisKind(line)) {
         malformedParenthesisKind.push(line);
+        continue;
+      }
+      if (hasUnmatchedParenthesis(line)) {
+        // 閉じ忘れ・閉じ余りは開き括弧以降の ID を黙って落とすため、部分採用せず違反へ回す。
+        malformedByLabel[label].push(line);
         continue;
       }
       if (hasOnlyParentheticalIds(line)) {

@@ -1667,4 +1667,134 @@ describe("parseChangelogOperations — Codex レビュー追補（Issue #1030）
     expect(merged.malformedMerged).toEqual([]);
     expect(merged.mergedPairs).toEqual([{ source: "ACE-1-1", target: "ACE-2-1" }]);
   });
+
+  // 対応相手の無い括弧は 4 ラベル共通の前提検査で拒否する。以前は `Compacted:` だけが直接見て、
+  // `Archived:` / `Promoted:` は理由部経由、`Merged:` は括弧を一切見なかったため、
+  // `- Merged: ACE-1-1 → ACE-2-1（注記` や `- Archived: なし（注記` が黙って無視されていた。
+  it("括弧を閉じ忘れた行は 4 ラベルとも malformed として拒否する", () => {
+    for (const open of ["（", "("]) {
+      const compacted = parseChangelogOperations(`- Compacted: ACE-1-1${open}注記\n`);
+      expect(compacted.compactedIds).toEqual([]);
+      expect(compacted.malformedCompacted).toEqual([`- Compacted: ACE-1-1${open}注記`]);
+
+      const archived = parseChangelogOperations(`- Archived: ACE-1-1${open}注記\n`);
+      expect(archived.archivedIds).toEqual([]);
+      expect(archived.malformedArchived).toEqual([`- Archived: ACE-1-1${open}注記`]);
+
+      const promoted = parseChangelogOperations(`- Promoted: ACE-1-1${open}注記\n`);
+      expect(promoted.promotedIds).toEqual([]);
+      expect(promoted.malformedPromoted).toEqual([`- Promoted: ACE-1-1${open}注記`]);
+
+      const merged = parseChangelogOperations(`- Merged: ACE-1-1 → ACE-2-1${open}注記\n`);
+      expect(merged.mergedPairs).toEqual([]);
+      expect(merged.malformedMerged).toEqual([`- Merged: ACE-1-1 → ACE-2-1${open}注記`]);
+    }
+  });
+
+  // ID 列を持たない無操作宣言の行は、閉じ忘れがあっても以前は素通りしていた
+  // （`Archived:` / `Promoted:` は理由部の走査に入らないため）。
+  it("無操作宣言の行でも括弧を閉じ忘れていれば malformed として拒否する", () => {
+    const archived = parseChangelogOperations("- Archived: なし（未閉じ\n");
+    expect(archived.malformedArchived).toEqual(["- Archived: なし（未閉じ"]);
+
+    const promoted = parseChangelogOperations("- Promoted: なし（未閉じ\n");
+    expect(promoted.malformedPromoted).toEqual(["- Promoted: なし（未閉じ"]);
+  });
+
+  // 全角括弧書きの中の孤立した半角閉じは、対応種違反にしないのと同じ理由で
+  // 「対応相手の無い括弧」としても違反にしない（4 ラベルで一貫させる）。
+  it("全角括弧書きの中の孤立した半角閉じは 4 ラベルとも違反にしない", () => {
+    const compacted = parseChangelogOperations(
+      "- Compacted: ACE-1-1, ACE-2-1（理由: a) 速い）\n",
+    );
+    expect(compacted.compactedIds).toEqual(["ACE-1-1", "ACE-2-1"]);
+    expect(compacted.malformedCompacted).toEqual([]);
+
+    const archived = parseChangelogOperations("- Archived: ACE-1-1（理由: a) 速い）\n");
+    expect(archived.archivedIds).toEqual(["ACE-1-1"]);
+    expect(archived.malformedArchived).toEqual([]);
+
+    const promoted = parseChangelogOperations("- Promoted: ACE-1-1（理由: a) 速い）\n");
+    expect(promoted.promotedIds).toEqual(["ACE-1-1"]);
+    expect(promoted.malformedPromoted).toEqual([]);
+
+    const merged = parseChangelogOperations("- Merged: ACE-1-1 → ACE-2-1（理由: a) 速い）\n");
+    expect(merged.mergedPairs).toEqual([{ source: "ACE-1-1", target: "ACE-2-1" }]);
+    expect(merged.malformedMerged).toEqual([]);
+  });
+  // 半角の閉じ余りを許すのは**全角括弧書きの中**に限る。括弧書きの外の裸の `)` まで許すと、
+  // 閉じ余りが注記の境界にならないまま前後の ID を偽 ID へ融合させる害が残る。
+  it("全角括弧書きの外に現れた半角閉じの余りは 4 ラベルとも malformed として拒否する", () => {
+    const compacted = parseChangelogOperations("- Compacted: ACE-1-1)\n");
+    expect(compacted.compactedIds).toEqual([]);
+    expect(compacted.malformedCompacted).toEqual(["- Compacted: ACE-1-1)"]);
+
+    const archived = parseChangelogOperations("- Archived: ACE-1-1)\n");
+    expect(archived.archivedIds).toEqual([]);
+    expect(archived.malformedArchived).toEqual(["- Archived: ACE-1-1)"]);
+
+    const promoted = parseChangelogOperations("- Promoted: ACE-1-1)\n");
+    expect(promoted.promotedIds).toEqual([]);
+    expect(promoted.malformedPromoted).toEqual(["- Promoted: ACE-1-1)"]);
+
+    const merged = parseChangelogOperations("- Merged: ACE-1-1 → ACE-2-1)\n");
+    expect(merged.mergedPairs).toEqual([]);
+    expect(merged.malformedMerged).toEqual(["- Merged: ACE-1-1 → ACE-2-1)"]);
+  });
+
+  // 全角の閉じ括弧の余りは、対応する開きが無い時点で違反（前後の ID を融合させる）。
+  it("全角の閉じ括弧の余りは 4 ラベルとも malformed として拒否する", () => {
+    const compacted = parseChangelogOperations("- Compacted: ACE-1-1）ACE-2-1\n");
+    expect(compacted.compactedIds).toEqual([]);
+    expect(compacted.malformedCompacted).toEqual(["- Compacted: ACE-1-1）ACE-2-1"]);
+
+    const archived = parseChangelogOperations("- Archived: ACE-1-1）ACE-2-1\n");
+    expect(archived.archivedIds).toEqual([]);
+    expect(archived.malformedArchived).toEqual(["- Archived: ACE-1-1）ACE-2-1"]);
+
+    const promoted = parseChangelogOperations("- Promoted: ACE-1-1）ACE-2-1\n");
+    expect(promoted.promotedIds).toEqual([]);
+    expect(promoted.malformedPromoted).toEqual(["- Promoted: ACE-1-1）ACE-2-1"]);
+
+    const merged = parseChangelogOperations("- Merged: ACE-1-1 → ACE-2-1）注記\n");
+    expect(merged.mergedPairs).toEqual([]);
+    expect(merged.malformedMerged).toEqual(["- Merged: ACE-1-1 → ACE-2-1）注記"]);
+  });
+
+  // `hasOnlyParentheticalIds` の内部ガードが「全角と半角を 1 本の深さで数える」旧述語のままだと、
+  // 括弧の中にしか ID が無い行へ全角括弧書きの中の半角閉じ（`（笑 :-) ）`）が付いただけで
+  // ガードが真になり、括弧内 ID 列挙の検査を素通りして操作 0 件・違反 0 件で黙って通る。
+  it("全角括弧書きの中に半角閉じを含む行でも括弧内 ID 列挙は malformed として拒否する", () => {
+    const compacted = parseChangelogOperations(
+      "- Compacted: 3 件（ACE-1-1, ACE-2-1）をまとめて圧縮（笑 :-) ）\n",
+    );
+    expect(compacted.compactedIds).toEqual([]);
+    expect(compacted.malformedParentheticalIds).toEqual([
+      "- Compacted: 3 件（ACE-1-1, ACE-2-1）をまとめて圧縮（笑 :-) ）",
+    ]);
+
+    const promoted = parseChangelogOperations(
+      "- Promoted: なし（ACE-1-1, ACE-2-1）（笑 :-) ）\n",
+    );
+    expect(promoted.promotedIds).toEqual([]);
+    expect(promoted.malformedParentheticalIds).toEqual([
+      "- Promoted: なし（ACE-1-1, ACE-2-1）（笑 :-) ）",
+    ]);
+  });
+
+  // 同じ形で顔文字が括弧書きの外に出た場合は、裸の半角閉じ余りとして
+  // ラベル別の malformed バケットが先に拾う（どちらの経路でも違反であることを固定する）。
+  it("括弧内 ID 列挙の行に括弧書きの外の顔文字が付く形も malformed として拒否する", () => {
+    const compacted = parseChangelogOperations(
+      "- Compacted: 3 件（ACE-1-1, ACE-2-1）をまとめて圧縮 :-)\n",
+    );
+    expect(compacted.compactedIds).toEqual([]);
+    expect(compacted.malformedCompacted).toEqual([
+      "- Compacted: 3 件（ACE-1-1, ACE-2-1）をまとめて圧縮 :-)",
+    ]);
+
+    const promoted = parseChangelogOperations("- Promoted: なし（ACE-1-1, ACE-2-1） :-)\n");
+    expect(promoted.promotedIds).toEqual([]);
+    expect(promoted.malformedPromoted).toEqual(["- Promoted: なし（ACE-1-1, ACE-2-1） :-)"]);
+  });
 });
