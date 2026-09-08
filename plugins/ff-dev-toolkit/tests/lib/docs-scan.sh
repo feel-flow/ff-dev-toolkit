@@ -49,6 +49,35 @@
 #   - **一覧をこのファイルに直書きしない**。両側を導出して比較するのが目的なので、
 #     ここに件数や対象名を持つと最初に腐る（`skill-count-consistency` と同じ方針）
 
+# 全 awk 走査の共通前処理: 各行の**末尾 CR 1 個**だけを落とす。
+#
+# awk は RS="\n" で読むため、CRLF 改行の Markdown では全行の末尾に \r が残る。
+# その状態では `^---$` も `^##[ \t]+Changelog[ \t]*$` も一致せず、Frontmatter 判定
+# （ff_docs_fm_verdict）と Changelog 節の切り出し（ff_docs_body /
+# ff_docs_claim_body / ff_docs_mask_changelog）が丸ごと倒れる。同梱 MCP の TS 側は
+# 実消費者が `split(/\r?\n/)` で行へ割ってから maskClosedSpans /
+# maskNonGlossaryLines を呼ぶので CR を見ることが無く、**CRLF 文書でだけ両者の
+# 判定が割れていた**（Windows チェックアウト / core.autocrlf で現実に起こる経路）。
+# 許容側（CR を判定前に除去する）へ揃えたのは、TS 側が既に許容しているため。
+#
+# **この定義 1 か所だけを持ち、各 awk プログラムの先頭へ差し込む**（関数ごとに
+# `sub(/\r$/, "")` を散らすと、次に追加された関数が黙って CR 非許容へ戻る）。
+# 行末空白の除去や CR 以外の正規化はしない — 問うているのは「判定が改行様式で
+# 変わらないこと」だけで、それ以上は入力の改変になる。
+#
+# 実装上の注意:
+#   - CR は sprintf("%c", 13) で実バイトから作る（正規表現リテラル `\r` の解釈は
+#     awk 実装差がある。tests/docs-scan-mirror/verify.sh の strip_trailing_cr も
+#     同じ理由で実バイト比較にしている）
+#   - パターン無しの規則なので、後続の全規則が置換後の $0 を見る。BEGIN は複数
+#     あっても順に実行されるため、既に BEGIN を持つプログラムへも差し込める
+#   - パイプを増やさない（上流 SIGPIPE で呼び出し側を無言で殺す罠を作らない。
+#     `exit` を持つ awk プログラムがこのライブラリに複数ある）
+FF_DOCS_AWK_STRIP_CR='
+  BEGIN { FF_CR = sprintf("%c", 13) }
+  { if (length($0) > 0 && substr($0, length($0)) == FF_CR) $0 = substr($0, 1, length($0) - 1) }
+'
+
 # 規則側の対象一覧を MASTER.md から導出して stdout へ 1 行 1 件で出す。
 #
 # 内訳（いずれも MASTER.md 内の記述から導出。ハードコードしない）:
@@ -59,7 +88,7 @@ ff_docs_rule_targets() {
   local master="$1"
   {
     # 1. §関連ドキュメント の ](./path.md) 形式のリンク
-    awk '
+    awk "$FF_DOCS_AWK_STRIP_CR"'
       /^## 関連ドキュメント/ { in_sec = 1; next }
       in_sec && /^## / { exit }
       in_sec { print }
@@ -67,7 +96,7 @@ ff_docs_rule_targets() {
     # 2. MASTER.md 自身
     echo "MASTER.md"
     # 3. 付与対象表の ACE Playbook 索引 行の 1 つ目のバッククォート
-    awk -F'`' '/^\| ACE Playbook 索引/ { print $2; exit }' "$master"
+    awk -F'`' "$FF_DOCS_AWK_STRIP_CR"'/^\| ACE Playbook 索引/ { print $2; exit }' "$master"
   } | LC_ALL=C sort -u
 }
 
@@ -112,7 +141,7 @@ ff_docs_exclusion_patterns() {
   # 表は「付与しない」見出しの直後に現れ、最初の非テーブル行で終わる。
   # 別見出しで打ち切る形（例: 付与する）は、文書内の出現順が入れ替わると
   # 区間が末尾まで伸びて無関係な表の行まで拾うため使わない。
-  out="$(awk -F'`' '
+  out="$(awk -F'`' "$FF_DOCS_AWK_STRIP_CR"'
     /^\*\*付与しない/ { in_sec = 1; next }
     in_sec && /^\| `/ { rows = 1; print $2; next }
     in_sec && /^\|/   { next }          # ヘッダ・区切り行
@@ -143,7 +172,7 @@ ff_docs_exclusion_patterns() {
 # 消費者: tests/docs-version-changelog/ と ff_docs_fm_verdict
 # （docs-frontmatter-repo / docs-template-frontmatter）の Frontmatter 閉じ判定。
 ff_docs_fm_close_line() {
-  awk '
+  awk "$FF_DOCS_AWK_STRIP_CR"'
     NR == 1 { if ($0 != "---") { print "none"; done = 1; exit }; next }
     /^---$/ { print (bad ? "malformed:" NR : NR); done = 1; exit }
     $0 ~ /^[ \t]*$/ { next }                                    # 空行
@@ -187,7 +216,12 @@ ff_docs_fm_verdict() {
   local allow_ph=0
   [ "${2:-}" = "allow-date-placeholder" ] && allow_ph=1
   [ -f "$f" ] || { echo "NG:ファイルが存在しません"; return 0; }
-  if [ "$(head -1 "$f")" != "---" ]; then
+  # ここだけ awk を通らない読み取りなので、FF_DOCS_AWK_STRIP_CR と同じ「末尾 CR
+  # 1 個だけ落とす」を shell 側で行う（CRLF 文書が先頭行の時点で NG になるのを防ぐ）。
+  local first_line
+  first_line="$(head -1 "$f")"
+  first_line="${first_line%$'\r'}"
+  if [ "$first_line" != "---" ]; then
     echo "NG:先頭行が Frontmatter 開始（---）ではありません"
     return 0
   fi
@@ -236,7 +270,7 @@ ff_docs_fm_verdict() {
     has_changelog=1
   fi
   local flags
-  flags="$(awk -v fm_end="$close_line" -v allow_ph="$allow_ph" '
+  flags="$(awk -v fm_end="$close_line" -v allow_ph="$allow_ph" "$FF_DOCS_AWK_STRIP_CR"'
     BEGIN { nkeys = split("title version status owner created updated changeImpact", KEYS, " ") }
     NR >= 2 && NR < fm_end {
       # キーの出現回数を数える。重複キーは YAML として不正で、実効値はパーサ依存
@@ -315,8 +349,8 @@ ff_docs_fm_verdict() {
   # 後ろになるため、created だけ雛形のままの docs-template が偽陽性で赤くなる）。
   # allow-date-placeholder を渡していなければ、この綴りは cfmt / ufmt で先に赤くなる。
   local cval uval
-  cval="$(awk -v fm_end="$close_line" 'NR >= 2 && NR < fm_end && /^created: "/ { gsub(/^created: "|"$/, ""); print; exit }' "$f")"
-  uval="$(awk -v fm_end="$close_line" 'NR >= 2 && NR < fm_end && /^updated: "/ { gsub(/^updated: "|"$/, ""); print; exit }' "$f")"
+  cval="$(awk -v fm_end="$close_line" "$FF_DOCS_AWK_STRIP_CR"'NR >= 2 && NR < fm_end && /^created: "/ { gsub(/^created: "|"$/, ""); print; exit }' "$f")"
+  uval="$(awk -v fm_end="$close_line" "$FF_DOCS_AWK_STRIP_CR"'NR >= 2 && NR < fm_end && /^updated: "/ { gsub(/^updated: "|"$/, ""); print; exit }' "$f")"
   [ "$cval" = "YYYY-MM-DD" ] && cval=""
   [ "$uval" = "YYYY-MM-DD" ] && uval=""
   if [[ -n "$cval" && -n "$uval" && "$uval" < "$cval" ]]; then
@@ -389,7 +423,7 @@ ff_docs_fm_verdict() {
 ff_docs_mask_spans() {
   local keep=0
   [ "${2:-}" = "keep-fences" ] && keep=1
-  awk -v keep_fences="$keep" '
+  awk -v keep_fences="$keep" "$FF_DOCS_AWK_STRIP_CR"'
     # --- フェンス判定 ---------------------------------------------------------
     # 開始マーカーを見つけたら FC（記号）と FL（長さ）へ入れ、開始桁を返す。
     function fence_open(s,   m) {
@@ -400,9 +434,9 @@ ff_docs_mask_spans() {
     }
     # 閉じマーカーか。CommonMark に合わせ「同記号・同長以上・後続は空白のみ」を要求
     # する（```markdown の中の ```ts は content なので閉じない）。
-    # 末尾の CR も空白として許す — awk は RS="\n" で読むため CRLF 改行のファイルでは
-    # 行末に \r が残る。ここで弾くと CRLF ファイルだけフェンスが 1 つも閉じられず、
-    # `/\r?\n/` で分割する同梱 MCP 側（maskClosedSpans）と結果が食い違う（Issue #527）。
+    # 末尾の CR も空白として許す。行末 CR は FF_DOCS_AWK_STRIP_CR が先に落とすので
+    # 現在は到達しないが、TS 側 closesFence の `[ \t\r]*` と**同一の意味論**を保つため
+    # 残す（片側だけ狭めると、CR を含む行を直接渡す将来の消費者で判定が割れる）。
     function fence_closes(s, c, l,   t) {
       if (s !~ /^[ \t]*(```+|~~~+)[ \t\r]*$/) return 0
       t = s; sub(/^[ \t]*/, "", t); sub(/[ \t\r]*$/, "", t)
@@ -502,7 +536,7 @@ ff_docs_mask_spans() {
 # 探索用。awk 関数から shell 関数は呼べないための第 2 実装）。**正規表現を変えるときは
 # 両方同時に変えること** — 片方だけだと「散文の引用がコメント扱いになる」形で乖離する。
 ff_docs_mask_inline_spans() {
-  awk '
+  awk "$FF_DOCS_AWK_STRIP_CR"'
     {
       s = $0
       out = ""

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   classifyDomainEntry,
   isDomainAutoArchiveSafe,
@@ -164,5 +165,22 @@ describe("domain workflow states and auto-archive", () => {
 
   it("leaves non-domain archive eligibility unchanged", () => {
     expect(isDomainAutoArchiveSafe(entry().replace("| domain |", "| coding |"))).toBe(true);
+  });
+});
+
+// Both distributed instructions must produce metadata accepted by the actual gate.
+// Exercise the docs-template and repository mirror layouts without copying fixture rows.
+describe("published domain metadata examples", () => {
+  const templateRoot = new URL(import.meta.url.includes("/docs-template/")
+    ? "../../" : "../../plugins/ff-dev-toolkit/docs-template/", import.meta.url);
+  it.each([".claude/agents/ace-capture.md", "05-operations/deployment/ace-domain.md"])("validates %s against the production contract", (relative) => {
+    const document = readFileSync(new URL(relative, templateRoot), "utf8");
+    const examples = [...document.matchAll(/```text\r?\n(\| Category \| domain \|[\s\S]*?)\r?\n```/gu)];
+    expect(examples).toHaveLength(1);
+    const metadata = parseDomainMetadata(examples[0][1]);
+    expect(metadata.isDomain).toBe(true);
+    expect(metadata.verification).toBe("unverified");
+    expect(metadata.distillTo).toBe("unresolved");
+    expect(validateDomainMetadata(metadata)).toEqual([]);
   });
 });

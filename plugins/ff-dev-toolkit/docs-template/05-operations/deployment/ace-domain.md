@@ -4,6 +4,8 @@ ACE は根拠付きの業務上の発見を設計書へ橋渡しする。正式�
 
 ## 収集
 
+domainは通常curateの標準収集対象です。引数なし・PR番号のみでも毎回評価し、`--source`やdomain専用のopt-inは不要です。既存の自動収集タイミングで他カテゴリと一緒に蓄積します。domain確認は評価済み（候補N件）と未実施（理由）を区別し、未実施を0件と扱いません。設計書への反映は引き続き別PRです。
+
 `/ace-curate [PR番号] [--source <資料パスまたはURL>]... [--issue <番号>]`。
 PR指定なし・sourceなしは従来どおり最新マージ済みPR。資料単独はsourceとissueの両方が必須。PRとissueの併記は関連Issueとして扱い採番はPR優先。正整数以外の番号、値欠落、未知オプションは変更前に拒否する。
 7観点: コーディング、テスト、セキュリティ、パフォーマンス、アーキテクチャ、プロセス、ドメイン（業務用語・主体別の制約・状態遷移・データ整合条件・仕様の理由）。
@@ -15,7 +17,7 @@ PR指定なし・sourceなしは従来どおり最新マージ済みPR。資料�
 
 ```text
 | Category | domain | Origin | Issue #NNN | Evidence | 資料パス#節またはURL と確認者/観測種別 |
-| Date | YYYY-MM-DD | Verification | unverified | 
+| Date | YYYY-MM-DD | Verification | unverified |
 | Helpful | 0 | Harmful | 0 |
 | Status | active | Distill-To | unresolved |
 ```

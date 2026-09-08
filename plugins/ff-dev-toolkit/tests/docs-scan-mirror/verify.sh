@@ -128,9 +128,18 @@ inline-code-span-quote.md
 trailing-comment-opener.md
 trailing-fence-opener.md
 crlf.md
+crlf-document.md
 non-ascii-space-fence.md
 unclosed-comment-before-fence.md
 closer-in-code-span.md
+"
+
+# CRLF 改行の fixture 名簿。チェックアウトの行末変換で \r が落ちると CRLF ケースの
+# 検出力だけが黙って消えるため、実バイトに CR があることを毎回確かめる
+# （fixtures/.gitattributes の `* -text` が効いていることの実測でもある）。
+CRLF_FIXTURES="
+crlf.md
+crlf-document.md
 "
 
 # 「閉じた span を 1 つも含まない」fixture の名簿。ここに載るものは masked == raw が
@@ -244,13 +253,16 @@ EOF
   || fail "fixture の実体が名簿より少ない（実体 ${FIXTURE_COUNT} 件 / 名簿 ${REQUIRED_COUNT} 件）"
 CHECKS=$((CHECKS + 1))
 
-# CRLF fixture が本当に CR を持っているか（チェックアウトの行末変換で \r が落ちると、
-# CRLF ケースだけが黙って消える。fixtures/.gitattributes の `* -text` が効いている
-# ことの実測でもある）。
-if LC_ALL=C tr -d '\r' < "$FIXTURE_DIR/crlf.md" | cmp -s - "$FIXTURE_DIR/crlf.md"; then
-  fail "crlf.md に CR がありません（行末変換で CRLF ケースの検出力が失われています）"
-fi
-CHECKS=$((CHECKS + 1))
+# CRLF fixture が本当に CR を持っているか。件数は名簿から独立に導出する
+# （ループ内で数えると EXPECTED_CHECKS の導出が同語反復になり、ループが縮退しても検出できない）。
+CRLF_COUNT="$(printf '%s\n' $CRLF_FIXTURES | wc -l | tr -d ' ')"
+for name in $CRLF_FIXTURES; do
+  [ -f "$FIXTURE_DIR/$name" ] || fail "CRLF fixture がありません: $FIXTURE_DIR/$name"
+  if LC_ALL=C tr -d '\r' < "$FIXTURE_DIR/$name" | cmp -s - "$FIXTURE_DIR/$name"; then
+    fail "${name} に CR がありません（行末変換で CRLF ケースの検出力が失われています）"
+  fi
+  CHECKS=$((CHECKS + 1))
+done
 
 # ── 本体: fixture ごとに awk 版 / TS 版 / 期待値をバイト比較する ─────────────
 MISMATCH=0
@@ -349,10 +361,16 @@ EOF
 # 名簿は陽性 2 件（空白数の緩和）+ 負 1 件（ASCII クラス制約）。負 fixture が
 # 無いと `[ \t]` → `\s` の片側変更が緑のまま通る（`\s ⊃ [ \t]` なので、ASCII
 # 空白だけの fixture では両版の判定が一致してしまう）。
+#
+# crlf-document.md は CRLF 改行の陽性 fixture。awk は RS="\n" で読むので行末に \r が
+# 残り、以前は `^##[ \t]+Changelog[ \t]*$` に一致せず Changelog 節が切られなかった
+# 一方、TS 側は実消費者が `split(/\r?\n/)` 済みの行を渡すので切っていた。CR を落とす
+# 共通前処理（tests/lib/docs-scan.sh の FF_DOCS_AWK_STRIP_CR）が消えるとここが赤くなる。
 CHANGELOG_FIXTURES="
 changelog-heading-double-space.md
 changelog-heading-trailing-space.md
 changelog-heading-nbsp.md
+crlf-document.md
 "
 for name in $CHANGELOG_FIXTURES; do
   [ -f "$FIXTURE_DIR/$name" ] || fail "Changelog 見出し判定の fixture がありません: $FIXTURE_DIR/$name"
@@ -403,6 +421,43 @@ for name in $CHANGELOG_FIXTURES; do
     echo "✗ ${name}: TS 版の Changelog 判定出力が期待値と一致しません" >&2
     line_diff_report "$name" want ts "$expected_cl" "$TMP/ts-cl.norm"
   fi
+  CHECKS=$((CHECKS + 1))
+done
+
+# ── CRLF / LF 等価性（TS 側に対応物が無い awk 専用関数） ────────────────────
+# ff_docs_fm_verdict / ff_docs_body / ff_docs_claim_body は awk 側だけの関数で、
+# TS 側と直接照合できない。ただし TS 側の実消費者は本文を `split(/\r?\n/)` で行へ
+# 割ってから渡す＝ CR を一切見ないので、awk 側が「改行様式で判定を変えない」ことが
+# そのまま両者の一致条件になる。同じ内容の CRLF 版と LF 版で出力がバイト一致する
+# ことを固定する（以前は CRLF 側だけ Frontmatter 開始判定から倒れ、本文も
+# Changelog も切られずに全行が素通りしていた）。
+#
+# LF 版は CRLF fixture から一時領域で導出する（同じ内容のコーパスを 2 つ持つと
+# 片方だけ直される。作業ツリーへは 1 バイトも書かない）。
+CRLF_DOC="$FIXTURE_DIR/crlf-document.md"
+strip_trailing_cr "$CRLF_DOC" > "$TMP/lf-twin.md"
+
+# 一致だけを見ると「両方が同じ NG / 空出力へ退化した」形を素通しするので、
+# 期待値（OK / 非空）も対で押さえる。
+verdict_crlf="$(ff_docs_fm_verdict "$CRLF_DOC")"
+verdict_lf="$(ff_docs_fm_verdict "$TMP/lf-twin.md")"
+[ "$verdict_crlf" = "$verdict_lf" ] \
+  || fail "ff_docs_fm_verdict が改行様式で割れています（CRLF: ${verdict_crlf} / LF: ${verdict_lf}）"
+[ "$verdict_crlf" = "OK" ] \
+  || fail "ff_docs_fm_verdict が CRLF / LF の双方で OK になりません（${verdict_crlf}）。両側同時の退化を疑ってください"
+CHECKS=$((CHECKS + 1))
+
+for fn in ff_docs_body ff_docs_claim_body; do
+  "$fn" "$CRLF_DOC" > "$TMP/crlf-fn.out"
+  "$fn" "$TMP/lf-twin.md" > "$TMP/lf-fn.out"
+  if ! cmp -s "$TMP/crlf-fn.out" "$TMP/lf-fn.out"; then
+    echo "✗ ${fn} が改行様式で割れています（CRLF 版と LF 版の出力が不一致）" >&2
+    line_diff_report "crlf-document.md (${fn})" crlf lf "$TMP/crlf-fn.out" "$TMP/lf-fn.out"
+    exit 1
+  fi
+  # 空出力どうしの一致で緑にしない（本文を 1 行も返さない退化の検出）
+  [ -s "$TMP/crlf-fn.out" ] \
+    || fail "${fn} が CRLF / LF の双方で空を返しました（本文抽出の退化を疑ってください）"
   CHECKS=$((CHECKS + 1))
 done
 
@@ -460,7 +515,9 @@ fi
 # Changelog モードの導出項: 実在ガード 1 件 + 本体 6 件（awk 実行・ts 実行・相互
 # 一致・golden 実在・awk golden 一致・ts golden 一致）を fixture ごとに数える。
 # 末尾の +3 は静的同一性ゲート（awk 側の出現数・TS 実装の実在・TS 側の出現数）。
-EXPECTED_CHECKS=$((REQUIRED_COUNT + 2 + FIXTURE_COUNT * 8 + CHANGELOG_COUNT * 7 + 3))
+# CRLF_COUNT は CR 実在ガード（fixture 1 件につき 1 件）、+3 は CRLF / LF 等価性
+# （ff_docs_fm_verdict / ff_docs_body / ff_docs_claim_body の 3 関数）。
+EXPECTED_CHECKS=$((REQUIRED_COUNT + 1 + CRLF_COUNT + FIXTURE_COUNT * 8 + CHANGELOG_COUNT * 7 + 3 + 3))
 [ "$CHECKS" -eq "$EXPECTED_CHECKS" ] \
   || fail "実行した検査本数が導出期待値と一致しません（実測 ${CHECKS} / 期待 ${EXPECTED_CHECKS}）。ループの縮退を疑ってください"
 

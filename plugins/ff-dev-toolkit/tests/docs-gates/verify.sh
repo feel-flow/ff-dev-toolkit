@@ -775,6 +775,72 @@ FOLLOWUP_NEEDLES
   fi
 fi
 
+# --- 04-quality/TESTING.md: 必須 suite 名簿 ↔ run-all.sh の REQUIRED_SUITES ---
+# TESTING.md「一時領域依存 suite の skip 方針」の bullet 名簿は REQUIRED_SUITES の
+# 人手の写しで、これまで機械ゲートが無かった。実際に片側だけ更新した drift が起きて
+# いる（同文書 1.x の Changelog）。名簿から 1 行落としても suite は走り続けるので、
+# 見た目には何も起きない = 最も気づきにくい形で文書だけが腐る。
+#
+# 実体は `run-all.sh` の `REQUIRED_SUITES` 配列を **静的に読む**。run-all.sh は
+# `FF_RUN_ALL_DUMP_DECLARATIONS=1` で導出材料をダンプする口を持つが、docs-gates は
+# 一時ファイルを作らない読み取り専用 suite なので、外部プロセスを起こさない静的読みを
+# 採る。名簿が写しているのは `REQUIRED_SUITES` そのもので、導出集合との整合は
+# run-all.sh 自身が毎回照合しているため、docs 側は配列と一致すれば十分。
+if [ -f "$REPO_TESTING" ]; then
+  # 配列内の各行を分類する。裸名 / "裸名" / '裸名'（前後空白・末尾 # コメント許容）を
+  # OK、コメント行・空行は無視、それ以外（1 行複数要素・書式崩れ等）は BAD として
+  # 拾う。BAD が 1 件でもあれば黙って読み飛ばさず fail-closed にする。
+  rq_awk_out="$(awk '
+    /^REQUIRED_SUITES=\($/ { f = 1; next }
+    f && /^\)[[:space:]]*$/ { exit }
+    f {
+      line = $0
+      gsub(/^[[:space:]]+/, "", line)
+      gsub(/[[:space:]]+$/, "", line)
+      if (line == "") next
+      if (line ~ /^#/) next
+      sub(/[[:space:]]+#.*$/, "", line)
+      gsub(/[[:space:]]+$/, "", line)
+      if (line == "") next
+      if (match(line, /^"[a-z0-9][a-z0-9-]*"$/)) {
+        print "OK\t" substr(line, RSTART + 1, RLENGTH - 2)
+        next
+      }
+      if (match(line, /^'"'"'[a-z0-9][a-z0-9-]*'"'"'$/)) {
+        print "OK\t" substr(line, RSTART + 1, RLENGTH - 2)
+        next
+      }
+      if (match(line, /^[a-z0-9][a-z0-9-]*$/)) {
+        print "OK\t" line
+        next
+      }
+      print "BAD\t" line
+    }
+  ' "$PLUGIN_ROOT/tests/run-all.sh")"
+  rq_bad="$(printf '%s\n' "$rq_awk_out" | awk -F'\t' '$1 == "BAD" { print $2 }')"
+  rq_actual="$(printf '%s\n' "$rq_awk_out" | awk -F'\t' '$1 == "OK" { print $2 }' | LC_ALL=C sort)"
+  rq_listed="$(awk '
+    /^### 一時領域依存 suite の skip 方針$/ { f = 1; next }
+    f && /^#+[[:space:]]/ { exit }
+    f && match($0, /^- `[a-z0-9][a-z0-9-]*`/) {
+      print substr($0, RSTART + 3, RLENGTH - 4)
+    }
+  ' "$REPO_TESTING" | LC_ALL=C sort)"
+
+  if [ -n "$rq_bad" ]; then
+    bad "run-all.sh の REQUIRED_SUITES 配列内に想定外の形式の行があります（fail-closed）:"
+    printf '      %s\n' "$rq_bad" >&2
+  elif [ -z "$rq_actual" ] || [ -z "$rq_listed" ]; then
+    bad "必須 suite 名簿を突き合わせられません（REQUIRED_SUITES 配列 or 名簿の抽出が空。書式・見出しの変更。fail-closed）"
+  elif [ "$rq_actual" = "$rq_listed" ]; then
+    ok "TESTING.md の必須 suite 名簿が run-all.sh の REQUIRED_SUITES と一致"
+  else
+    bad "TESTING.md の必須 suite 名簿が run-all.sh の REQUIRED_SUITES と乖離しています（名簿を更新すること）"
+    printf '      名簿のみ: %s\n' "$(comm -13 <(printf '%s\n' "$rq_actual") <(printf '%s\n' "$rq_listed") | tr '\n' ' ')" >&2
+    printf '      実体のみ: %s\n' "$(comm -23 <(printf '%s\n' "$rq_actual") <(printf '%s\n' "$rq_listed") | tr '\n' ' ')" >&2
+  fi
+fi
+
 # --- CLI 別 reviewer ページ: timeout(1) ラッパーの取り残し（PR #153 の残骸） ---
 # stock macOS に timeout(1) は無いので、コマンド例が直接それを呼ぶと利用者の手元で
 # 動かない。散文中の言及（「timeout 120 ... は使えない」）は許容し、コマンド例と

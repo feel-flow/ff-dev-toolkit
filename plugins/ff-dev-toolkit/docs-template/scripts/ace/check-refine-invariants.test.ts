@@ -1537,4 +1537,134 @@ describe("parseChangelogOperations — Codex レビュー追補（Issue #1030）
     expect(ops.compactedIds).toEqual([]);
     expect(ops.malformedCompacted).toHaveLength(1);
   });
+
+  // 括弧の対応種（全角 / 半角）が食い違う行は、書き手が意図した注記の範囲と
+  // パーサが読む範囲がずれたまま受理されるため 4 ラベル共通で違反にする。
+  it("括弧の対応種が食い違う Compacted / Archived 行は malformed として拒否する", () => {
+    const compacted = parseChangelogOperations("- Compacted: ACE-1-1（注記), ACE-2-1\n");
+    expect(compacted.compactedIds).toEqual([]);
+    expect(compacted.malformedParenthesisKind).toEqual([
+      "- Compacted: ACE-1-1（注記), ACE-2-1",
+    ]);
+    const archived = parseChangelogOperations("- Archived: ACE-1-1(注記）\n");
+    expect(archived.archivedIds).toEqual([]);
+    expect(archived.malformedParenthesisKind).toEqual(["- Archived: ACE-1-1(注記）"]);
+    const violations = evaluateRefineInvariants({
+      playbookContent: `${PLAYBOOK_CHANGELOG}- Archived: ACE-1-1(注記）\n`,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("括弧の対応種が食い違っている"))).toBe(true);
+  });
+
+  it("同じ種類で入れ子にした括弧書きは対応種の違反にしない", () => {
+    const ops = parseChangelogOperations("- Archived: ACE-1-1（注記 (詳細) ここまで）\n");
+    expect(ops.archivedIds).toEqual(["ACE-1-1"]);
+    expect(ops.malformedParenthesisKind).toEqual([]);
+    expect(ops.malformedArchived).toEqual([]);
+  });
+
+  // 括弧の中にしか ID が無い行は、括弧の外の ID 列が空になるので「無操作」に化け、
+  // 宣言された ID が archive 存在・provenance・逐語一致の検査から丸ごと外れる。
+  it("括弧の中だけに ID を列挙した行は 4 ラベルとも malformed として拒否する", () => {
+    const compacted = parseChangelogOperations(
+      "- Compacted: 3 件（ACE-1-1, ACE-2-1, ACE-3-1）をまとめて圧縮\n",
+    );
+    expect(compacted.compactedIds).toEqual([]);
+    expect(compacted.malformedParentheticalIds).toEqual([
+      "- Compacted: 3 件（ACE-1-1, ACE-2-1, ACE-3-1）をまとめて圧縮",
+    ]);
+
+    const archived = parseChangelogOperations("- Archived: 2 件（ACE-1-1, ACE-2-1）を撤去\n");
+    expect(archived.archivedIds).toEqual([]);
+    expect(archived.malformedParentheticalIds).toEqual([
+      "- Archived: 2 件（ACE-1-1, ACE-2-1）を撤去",
+    ]);
+
+    const promoted = parseChangelogOperations("- Promoted: 2 件（ACE-1-1, ACE-2-1）を昇格\n");
+    expect(promoted.promotedIds).toEqual([]);
+    expect(promoted.malformedParentheticalIds).toEqual([
+      "- Promoted: 2 件（ACE-1-1, ACE-2-1）を昇格",
+    ]);
+
+    const merged = parseChangelogOperations("- Merged: 2 件（ACE-1-1, ACE-2-1）を統合\n");
+    expect(merged.mergedPairs).toEqual([]);
+    expect(merged.malformedMerged).toEqual([]);
+    expect(merged.malformedParentheticalIds).toEqual([
+      "- Merged: 2 件（ACE-1-1, ACE-2-1）を統合",
+    ]);
+
+    const violations = evaluateRefineInvariants({
+      playbookContent: `${PLAYBOOK_CHANGELOG}- Compacted: 3 件（ACE-1-1, ACE-2-1, ACE-3-1）をまとめて圧縮\n`,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_VARIANT_B), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("ID が括弧の中の列挙にしかない"))).toBe(true);
+  });
+
+  // 括弧の中身が散文の注記（無操作宣言の理由）は従来どおり無視し続ける。
+  // 判別は「中身が ID の列挙だけか」で行い、`なし` のような語はハードコードしない。
+  it("無操作宣言の注記に ID が現れる行は引き続き無視する", () => {
+    const withoutId = parseChangelogOperations("- Archived: なし（ACE-X は次回再評価）\n");
+    expect(withoutId.archivedIds).toEqual([]);
+    expect(withoutId.malformedParentheticalIds).toEqual([]);
+    const withId = parseChangelogOperations("- Archived: なし（ACE-9-9 は次回再評価）\n");
+    expect(withId.archivedIds).toEqual([]);
+    expect(withId.malformedParentheticalIds).toEqual([]);
+    expect(withId.malformedArchived).toEqual([]);
+    const promoted = parseChangelogOperations(
+      "- Promoted: なし（Helpful>=5 の ACE-9-9 は PATTERNS.md へ収載済みで冪等スキップ）\n",
+    );
+    expect(promoted.promotedIds).toEqual([]);
+    expect(promoted.malformedParentheticalIds).toEqual([]);
+  });
+
+  // 判定軸は「ID を除いた残りに文字が無いか」なので、区切りが `,` / `、` 以外でも、
+  // 括弧が入れ子でも同じ 1 つの判定で拾う。
+  it("括弧内の ID 列挙は区切りが / でも入れ子でも malformed として拒否する", () => {
+    const nested = parseChangelogOperations("- Compacted: 2 件（（ACE-1-1, ACE-2-1））を圧縮\n");
+    expect(nested.compactedIds).toEqual([]);
+    expect(nested.malformedParentheticalIds).toEqual([
+      "- Compacted: 2 件（（ACE-1-1, ACE-2-1））を圧縮",
+    ]);
+
+    const slashSeparated = parseChangelogOperations("- Archived: 2 件（ACE-1-1 / ACE-2-1）を撤去\n");
+    expect(slashSeparated.archivedIds).toEqual([]);
+    expect(slashSeparated.malformedParentheticalIds).toEqual([
+      "- Archived: 2 件（ACE-1-1 / ACE-2-1）を撤去",
+    ]);
+  });
+
+  // 無操作を宣言していても、括弧の中が ID の列挙だけなら「理由の散文」ではないので違反。
+  it("無操作宣言でも括弧の中が ID の列挙だけなら malformed として拒否する", () => {
+    const ops = parseChangelogOperations("- Promoted: なし（ACE-1-1, ACE-2-1）\n");
+    expect(ops.promotedIds).toEqual([]);
+    expect(ops.malformedParentheticalIds).toEqual(["- Promoted: なし（ACE-1-1, ACE-2-1）"]);
+  });
+
+  it("括弧の対応種が食い違う Promoted / Merged 行も malformed として拒否する", () => {
+    const promoted = parseChangelogOperations("- Promoted: ACE-1-1（注記)\n");
+    expect(promoted.promotedIds).toEqual([]);
+    expect(promoted.malformedParenthesisKind).toEqual(["- Promoted: ACE-1-1（注記)"]);
+
+    const merged = parseChangelogOperations("- Merged: ACE-1-1 → ACE-2-1(注記）\n");
+    expect(merged.mergedPairs).toEqual([]);
+    expect(merged.malformedParenthesisKind).toEqual(["- Merged: ACE-1-1 → ACE-2-1(注記）"]);
+  });
+
+  // 全角括弧書きの中に半角の閉じだけが現れる書き方（`a) b)` の箇条・顔文字）は、
+  // 全角の開閉差が 0 で種類をまたいだ対応ではないため対応種違反にしない。
+  it("全角括弧書きの中の孤立した半角閉じは対応種違反にしない", () => {
+    const archived = parseChangelogOperations("- Archived: ACE-1-1（理由: a) 速い）\n");
+    expect(archived.malformedParenthesisKind).toEqual([]);
+    expect(archived.malformedArchived).toEqual([]);
+    expect(archived.archivedIds).toEqual(["ACE-1-1"]);
+
+    const merged = parseChangelogOperations("- Merged: ACE-1-1 → ACE-2-1（理由 a) ）\n");
+    expect(merged.malformedParenthesisKind).toEqual([]);
+    expect(merged.malformedMerged).toEqual([]);
+    expect(merged.mergedPairs).toEqual([{ source: "ACE-1-1", target: "ACE-2-1" }]);
+  });
 });

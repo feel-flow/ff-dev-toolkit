@@ -109,7 +109,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs
 (b)〜(c) の指示ファイルへ追記する ACE 運用ルールは、配置済みの `docs/05-operations/deployment/ace-cycle.md`（3フェーズ手順）と PLAYBOOK.md の「運用ルール」「エントリID規則」セクションを要約して生成する。最低限含めるもの:
 
 - PLAYBOOK.md の配置場所（Step 2 で確定したパス）
-- PRマージ後、または明示指定資料とIssueから Generate（知見抽出）→ Reflect（評価・分類・既存照合）→ Curate（増分追記）を実行すること。domainはace-domain.mdの根拠・確認状態・反映先契約に従い、設計書反映はace-refineの別PRとする
+- PRマージ後、または明示指定資料とIssueから Generate（知見抽出）→ Reflect（評価・分類・既存照合）→ Curate（増分追記）を実行すること。PRからの通常収集でもdomainを標準対象とし、資料指定や追加opt-inは不要。domainはace-domain.mdの根拠・確認状態・反映先契約に従い、設計書反映はace-refineの別PRとする
 - 採番はPR由来なら **PRスコープ式**（`ACE-<PR番号>-<連番>`）、資料単独ならIssueスコープ式（`ACE-i<Issue番号>-<連番>`）。末尾追記のみ・既存本文の書き換え禁止、カウンターはインクリメントのみ
 - 詳細手順は `docs/05-operations/deployment/ace-cycle.md` を参照すること
 

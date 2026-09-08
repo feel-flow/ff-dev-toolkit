@@ -96,6 +96,29 @@ for doc in "$COMMAND_FILE" "$PLUGIN_ROOT/docs-template/05-operations/deployment/
   done
 done
 
+# #1350: sourceなしの通常経路でdomainを省略しないための手順契約。
+for doc in "$COMMAND_FILE" "$PLUGIN_ROOT/docs-template/05-operations/deployment/ace-cycle.md" "$PLUGIN_ROOT/docs-template/.claude/agents/ace-capture.md"; do
+  for token in 'domainは通常curateの標準収集対象です' '評価済み（候補N件）' '未実施（理由）'; do
+    if grep -Fq -- "$token" "$doc"; then
+      ok "通常domain収集: $(basename "$doc") / $token"
+    else
+      bad "通常domain収集契約欠落: $doc / $token"
+    fi
+  done
+done
+expect_contains 'domain確認の欠落・未実施もfallback対象です' "domain確認のない委譲応答を成功扱いしない"
+expect_contains 'domainが評価済みで必須欄が揃っている場合だけ' "確認済み0件だけを正常として受理"
+expect_contains 'fallbackでもdomain確認を必ず記録する' "fallbackにも同じdomain確認を要求"
+expect_contains '確認済みになるまで収集自体を待たせません' "未確認の根拠付き知識も通常収集する"
+CAPTURE_FILE="$PLUGIN_ROOT/docs-template/.claude/agents/ace-capture.md"
+for token in '補足文書の不在だけではdomain収集を停止しない' '| Category | domain |' '| Verification | unverified |' '| Distill-To | unresolved |' '検証を省略してPRを成功扱いしない'; do
+  if grep -Fq -- "$token" "$CAPTURE_FILE"; then
+    ok "自律domain契約: $token"
+  else
+    bad "自律domain契約欠落: $token"
+  fi
+done
+
 echo "== 手順 5 commitlint type 許容リスト確認検査（Issue #1147） =="
 # knowledge: prefix が commitlint の type 許容リストに無い導入先で commit-msg hook に
 # 毎回弾かれる実測（feel-flow/ff-dev-toolkit#67）を踏まえ、header-max-length だけでなく

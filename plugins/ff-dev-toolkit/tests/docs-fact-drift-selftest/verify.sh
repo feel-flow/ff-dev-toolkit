@@ -38,7 +38,8 @@
 #        同一行再検査で、引用のマーカーが開始にならないこと）
 #   G27. CRLF 改行でも閉じたフェンスをマスクする（Issue #527 AC-3）。awk は RS="\n" で
 #        読むため行末に \r が残り、`[ \t]*$` の閉じ判定だけが CRLF で空振りしていた
-#        （`/\r?\n/` で分割する同梱 MCP 側とは結果が食い違う非対称）
+#        （`/\r?\n/` で分割する同梱 MCP 側とは結果が食い違う非対称）。現在は共有 lib の
+#        共通前処理が判定前に末尾 CR を落とすので、マスクしない行の \r も残らない
 #   G19. 導出元（`tests/` / `skills/`）を削除 → 赤、しかも理由が「導出できません」で
 #        あること。`find | wc -l` は 0 を出すため、0 を実体値として受理すると導出元の
 #        消失が「実体は 0 件」に化ける（終了コードだけでは区別できない = 実測で確認）
@@ -614,14 +615,15 @@ else
 fi
 
 echo "== G27. CRLF 改行でも閉じたフェンスをマスクする（Issue #527 AC-3）=="
-# awk は RS="\n" で読むため行末に \r が残る。閉じ判定が \r を空白として許さないと、
-# CRLF ファイルだけフェンスが 1 つも閉じられず、`/\r?\n/` で分割する同梱 MCP 側
-# （maskClosedSpans）と結果が食い違う。マスクしない行の \r は保持する。
+# awk は RS="\n" で読むため行末に \r が残る。共有 lib の共通前処理
+# （FF_DOCS_AWK_STRIP_CR）が判定前に末尾 CR 1 個を落とすので、フェンスは CRLF でも
+# 閉じ、**マスクしない行の \r も落ちる**（`/\r?\n/` で行へ割ってから渡す同梱 MCP 側
+# ＝ CR を一度も見ない実装と出力が一致する）。CR を残す実装へ戻すと期待値がずれる。
 printf '```text\r\n' > "$TMP/mask-crlf.md"
 printf '%s\r\n' '中身' >> "$TMP/mask-crlf.md"
 printf '```\r\n' >> "$TMP/mask-crlf.md"
 printf 'KEEP\r\n' >> "$TMP/mask-crlf.md"
-printf '\n\n\nKEEP\r\n' > "$TMP/mask-crlf.expected"
+printf '\n\n\nKEEP\n' > "$TMP/mask-crlf.expected"
 rc=0
 ff_docs_mask_spans "$TMP/mask-crlf.md" > "$TMP/mask-crlf.actual" || rc=$?
 if [ "$rc" -eq 0 ] && cmp -s "$TMP/mask-crlf.expected" "$TMP/mask-crlf.actual"; then

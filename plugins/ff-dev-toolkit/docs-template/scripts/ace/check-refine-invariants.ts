@@ -17,6 +17,8 @@
  * 同節の中では `- Compacted:` は括弧書きの外、`- Promoted:` / `- Archived:` はコロン直後の
  * ID 列だけを読む。どのラベルも ID どうしの区切りは `,` / `、` に限り、それ以外で並べた行は
  * malformed として拒否する（Issue #1184）。同一の `- Merged: X → Y` が複数行あっても 1 操作として数える。
+ * どのラベルも、括弧の対応種（`（`↔`）` / `(`↔`)`）が食い違う行と、操作を宣言しているのに
+ * ID が括弧の中の列挙にしかない行は malformed として拒否する。
  *
  * compact と archive は排他ではない。R3-b（圧縮）は原文を archive に残したまま live へ要約を置くので、
  * 後日 R3-a（stale アーカイブ）でその要約を撤去する遷移が SKILL.md R3-0 の正規手順にある。
@@ -115,6 +117,18 @@ const COMPACTED_ID_SEPARATOR_PATTERN = new RegExp(
 );
 /** 理由の散文に ID が残っていないかの判定用（`ACE_ID_PATTERN` は g 付きで lastIndex を持つ）。 */
 const ACE_ID_ANYWHERE_PATTERN = new RegExp(ACE_ID_PATTERN.source, "u");
+/**
+ * 単語構成文字（英数字・かな・漢字など）。ID を取り除いた残りがこれを 1 文字も含まなければ、
+ * その括弧書きは散文の注記ではなく「ID の列挙だけ」とみなす。
+ */
+const WORD_CONSTITUENT_PATTERN = /[\p{L}\p{N}\p{M}_]/u;
+/** Changelog 節で操作として読む 4 ラベル。共通の前提検査はこの集合へまとめて掛ける。 */
+const CHANGELOG_LABEL_PREFIXES = [
+  "- Compacted:",
+  "- Merged:",
+  "- Promoted:",
+  "- Archived:",
+] as const;
 const CHANGELOG_HEADING_PATTERN = /^##\s+Changelog\s*$/u;
 const LEVEL2_HEADING_LINE_PATTERN = /^##\s+/u;
 const HAS_LEVEL2_HEADING_PATTERN = /^##\s+/mu;
@@ -132,6 +146,8 @@ export type ChangelogOperations = Readonly<{
   readonly malformedCompacted: readonly string[];
   readonly malformedArchived: readonly string[];
   readonly malformedPromoted: readonly string[];
+  readonly malformedParenthesisKind: readonly string[];
+  readonly malformedParentheticalIds: readonly string[];
 }>;
 
 export type EntryBlock = Readonly<{
@@ -265,6 +281,94 @@ export function restAfterFirstParenthetical(reason: string): string | null {
 }
 
 /**
+ * 開き括弧と閉じ括弧の**種類**（全角どうし / 半角どうし）が食い違う行か。
+ *
+ * `hasUnbalancedParentheses` は個数しか見ないため、`ACE-1-1（注記), ACE-2-1` のように
+ * IME 切り替えで種類が混ざった行は「注記が正しく閉じている」と読まれ、書き手が意図した
+ * 注記の範囲とパーサが読む範囲がずれたまま受理される。
+ *
+ * 判定は**全角の開閉差と半角の開閉差が逆符号でどちらも 0 でない**こと。片方の種類が
+ * 過剰でもう片方が不足している＝種類をまたいで対応させた行だけを拾う:
+ *
+ * - `ACE-1-1（注記)` → 全角 +1 / 半角 −1 で違反
+ * - `ACE-1-1(注記）` → 半角 +1 / 全角 −1 で違反
+ * - `ACE-1-1（理由: a) 速い）` → 全角 0 / 半角 −1。散文中の孤立した半角閉じは
+ *   種類の食い違いではないので**ここでは違反にせず**、対応相手の無い括弧の担当へ戻す
+ * - `（注記 (詳細) ここまで）` → 全角 0 / 半角 0 で違反ではない
+ *
+ * 対応相手の無い括弧は本検査の対象外（`Compacted:` は既存の unbalanced 検査が拒否する。
+ * 他ラベルの非対称は別 Issue）。
+ */
+export function hasMismatchedParenthesisKind(line: string): boolean {
+  let fullWidthDepth = 0;
+  let halfWidthDepth = 0;
+  for (const ch of line) {
+    if (ch === "（") fullWidthDepth += 1;
+    else if (ch === "）") fullWidthDepth -= 1;
+    else if (ch === "(") halfWidthDepth += 1;
+    else if (ch === ")") halfWidthDepth -= 1;
+  }
+  if (fullWidthDepth === 0 || halfWidthDepth === 0) return false;
+  return fullWidthDepth > 0 !== halfWidthDepth > 0; // 逆符号 = 種類をまたいだ対応
+}
+
+/** 行内のトップレベル括弧書きの中身を、開いた順に返す（入れ子は外側 1 つへまとめる）。 */
+function topLevelParentheticals(line: string): string[] {
+  const contents: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of line) {
+    if (ch === "（" || ch === "(") {
+      depth += 1;
+      if (depth === 1) current = "";
+      else current += ch;
+      continue;
+    }
+    if (ch === "）" || ch === ")") {
+      if (depth === 0) continue;
+      depth -= 1;
+      if (depth === 0) contents.push(current);
+      else current += ch;
+      continue;
+    }
+    if (depth > 0) current += ch;
+  }
+  return contents;
+}
+
+/**
+ * 括弧書きの中身が「ID の列挙だけ」か。ID を取り除いた残りに単語構成文字が無ければ列挙とみなす。
+ *
+ * 区切りを `,` / `、` に限定せず残りの文字種で見るので、`（ACE-1-1, ACE-2-1）` だけでなく
+ * `（ACE-1-1 / ACE-2-1）`・`（ACE-1-1・ACE-2-1）`・入れ子の `（（ACE-1-1, ACE-2-1））` も同じ 1 つの
+ * 判定で拾える。散文が混じる注記（`（ACE-9-9 は次回再評価）`）は残りに文字があるため列挙ではない。
+ */
+function isIdEnumerationOnly(inner: string): boolean {
+  if (!ACE_ID_ANYWHERE_PATTERN.test(inner)) return false;
+  return !WORD_CONSTITUENT_PATTERN.test(inner.replace(ACE_ID_PATTERN, ""));
+}
+
+/**
+ * 操作を宣言しているのに、ID が括弧の中の**列挙**にしか無い行か。
+ *
+ * `- Compacted: 3 件（ACE-1-1, ACE-2-1, ACE-3-1）をまとめて圧縮` は括弧の外に ID が無いので
+ * `compactedIds` も malformed も空になり、`- Compacted: なし` と同じ「無操作」に化ける。
+ * 宣言された 3 件は archive 存在・provenance・逐語一致の検査から丸ごと外れる。
+ * `- Promoted: なし（ACE-1-1, ACE-2-1）` のように無操作を宣言していても同じなので、
+ * 「無操作」という語ではなく**括弧の中身が ID の列挙だけか**で判定する。
+ *
+ * 一方 `- Archived: なし（ACE-X は次回再評価）` は括弧の中が散文なので注記と判別できる。
+ * `なし` のような特定語をハードコードせずに、無操作宣言の注記は無視し続ける。
+ * 対応相手の無い括弧は本検査の対象外（`Compacted:` は既存の unbalanced 検査が拒否する。
+ * 他ラベルの非対称は別 Issue）。
+ */
+export function hasOnlyParentheticalIds(line: string): boolean {
+  if (hasUnbalancedParentheses(line)) return false;
+  if (ACE_ID_ANYWHERE_PATTERN.test(maskParentheticals(line))) return false;
+  return topLevelParentheticals(line).some(isIdEnumerationOnly);
+}
+
+/**
  * `- Compacted:` の ID を `ids` へ入れる。ID を持たない行（`なし（…）` 等）は無視し、
  * 括弧の外に並ぶ ID が `,` / `、` 以外で隔てられている行は `malformed` へ回す。
  *
@@ -338,6 +442,8 @@ export function parseChangelogOperations(playbookContent: string): ChangelogOper
   const malformedArchived: string[] = [];
   const malformedPromoted: string[] = [];
   const malformedCompacted: string[] = [];
+  const malformedParenthesisKind: string[] = [];
+  const malformedParentheticalIds: string[] = [];
   /** 同一の `- Merged: X → Y` が 2 行あっても 1 操作として数える（Issue #1030）。 */
   const seenMergedPairs = new Set<string>();
 
@@ -348,6 +454,18 @@ export function parseChangelogOperations(playbookContent: string): ChangelogOper
   const maskedContent = blankHtmlBlockComments(blankCodeRegions(playbookContent).text);
   for (const rawLine of extractChangelogSection(maskedContent).split("\n")) {
     const line = rawLine.trim();
+    // 括弧の対応種と「括弧の中にしか無い ID」は 4 ラベル共通の前提なので、ラベルごとの
+    // ID 列パーサへ渡す前に 1 箇所で見る（ラベル別に書くと片方だけ抜ける）。
+    if (CHANGELOG_LABEL_PREFIXES.some((prefix) => line.startsWith(prefix))) {
+      if (hasMismatchedParenthesisKind(line)) {
+        malformedParenthesisKind.push(line);
+        continue;
+      }
+      if (hasOnlyParentheticalIds(line)) {
+        malformedParentheticalIds.push(line);
+        continue;
+      }
+    }
     if (line.startsWith("- Compacted:")) {
       collectCompactedIdRun(line, compactedIds, malformedCompacted);
       continue;
@@ -388,6 +506,8 @@ export function parseChangelogOperations(playbookContent: string): ChangelogOper
     malformedArchived,
     malformedPromoted,
     malformedCompacted,
+    malformedParenthesisKind,
+    malformedParentheticalIds,
   };
 }
 
@@ -712,6 +832,18 @@ export function evaluateRefineInvariants(input: {
   for (const line of ops.malformedCompacted) {
     violations.push(
       `compact 行の ID 列が読めない（区切りは , か 、 で、注記は括弧書きに置く。括弧の閉じ忘れ・余りと、散文に裸で書いた ID は部分採用しない）: ${line}`,
+    );
+  }
+
+  for (const line of ops.malformedParenthesisKind) {
+    violations.push(
+      `Changelog 行の括弧の対応種が食い違っている（開きと閉じを （…） か (…) のどちらかで揃える）: ${line}`,
+    );
+  }
+
+  for (const line of ops.malformedParentheticalIds) {
+    violations.push(
+      `Changelog 行が操作を宣言しているのに ID が括弧の中の列挙にしかない（操作対象の ID は括弧の外に書く。括弧書きは理由・注記のためのもの）: ${line}`,
     );
   }
 
