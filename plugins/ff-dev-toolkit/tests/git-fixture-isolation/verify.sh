@@ -378,6 +378,7 @@ changelog-fragments/cases/parallel-branches.sh
 changelog-public-tags-selftest/verify.sh
 docs-gates-runtime/ci-example-cases.sh
 guard-checkout-restore/verify.sh
+guard-review-in-flight/verify.sh
 markdownlint-selftest/verify.sh
 mbcs-guard-failclosed/verify.sh
 merge-cleanup/verify.sh

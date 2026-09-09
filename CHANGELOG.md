@@ -20,6 +20,40 @@
 
 ## [Unreleased]
 
+## [0.94.0] - 2026-09-10
+
+### 追加
+
+- multi-agent review が走行中であることを出力ディレクトリの `.review-in-flight` ファイルで宣言するようにした。対象 HEAD・開始時刻（UTC）・観点一覧・PID を持ち、正常終了・破棄（DISCARDED）・タイムアウト・トラップ可能なシグナル（HUP / INT / TERM）で削除される。SIGKILL やホストのクラッシュではファイルが残るため、hook 側の stale 判定（PID の生存と、既定 4 時間の経過時間上限）が緩和策になる
+- 新しい PreToolUse hook `guard-review-in-flight.sh` を追加した。上記のロックが在り、それを書いたプロセスが生存している間は、編集系ツール（Edit / Write / MultiEdit / NotebookEdit）と git の書き込み系コマンド（commit / rebase / checkout / switch / merge / stash / reset / apply など）を、開始 SHA と経過時間を添えて止める。ロックの実体パスを添えた `rm` がツール非依存の復旧手順で、Bash ツールなら対象 git コマンド先頭の `FF_REVIEW_LOCK_OVERRIDE=1` でも解除できる。プロセスが既に終了している残存ロックと、`FF_REVIEW_LOCK_MAX_AGE_SECONDS`（既定 4 時間）より古いロックは警告だけを出して通す。heredoc 本文の中の git、別リポジトリを指す `git -C`、read-only な `git stash list` / `git stash show` / `git restore --staged` では発火しない。走行中の作業ツリー変更でレビュー結果が丸ごと破棄される事故に対する追加の防御層で、既存のリビジョン検査・起動バナーの挙動は変えていない
+- 統合レポートの「今回の実行が書いていない結果ファイル」の名指しに、前回の実行が破棄済みと印を付けたファイルの件数を併記するようにした
+- multi-agent.sh: モデル側のプロンプト超過で CLI が落ちた場合を新しい失敗分類として切り分け、レビュー対象 diff のバイト数と変更ファイル数を実行ログ・統合レポート・失敗した観点の成果物に添えるようにした。語彙照合は誤診を避けるため 2 段構成（拒否文そのものは CLI stderr なら単独で採り、`context length` / `token limit` のような一般語は API エラーの文脈語との同一行共起を要求。保全された部分出力側は行頭がエラーの体裁である行だけを見る）。この実行が同じ理由で全滅した場合は、個別の再実行コマンドより先に「まず diff を確認せよ。CLI の再実行では直らない」の集約案内を出す（巨大 diff の既知の混入元として、退避済みの過去結果ディレクトリを名指しする）。原因を特定できなかったタスクは全滅判定を阻害せず、タイムアウトしたタスクがあれば全滅とは言わない。実行前の diff サイズ警告は行わない
+- `scripts/multi-agent.sh` に `--exclude-cli NAME`（繰り返し可）を追加した。指定した CLI は「未インストール」と同じ扱いになり、担当観点は既存の fallback 経路へ回る。除外したことと出所は実行プランに 1 行出る
+- 設定ファイル（同梱既定の `agent-config.yaml` と、それを上書きするプロジェクト側 `.claude/agent-config.yaml`）の新しいキー `exclude_clis`（空白またはカンマ区切りの 1 文字列）で環境ごとの既定除外を置ける。CLI 引数の除外と設定の除外は和集合で、プラン表示にはどちらの由来かが出る。その 1 回だけ戻したいときは `--cli NAME` を明示すると設定の除外より優先される
+- 除外の結果 `--mode cross-model` の実行対象が 1 本になった場合、クロスモデルが成立していないことをプランが警告する
+- 存在しない CLI 名の `--exclude-cli` 指定、空文字の値、`--cli` と `--exclude-cli` が同じ CLI を名指しする矛盾指定は、プランを組む前に非 0 で拒否する。設定 `exclude_clis` 側の未知名（retire 済み CLI 名など）は実行を止めず、その名前だけを警告つきで読み飛ばす
+- `--mode pair` で主・副が除外された場合、「未インストール」ではなく除外と出所を名乗る。副が除外で落ちた回は単一レビューへ縮退したことを警告し、主が除外された回は解除方法（除外を外す / 別の主を選ぶ）を案内して非 0 で止まる
+- 委譲シム `codex-review.sh` も `--exclude-cli` を受け取り、委譲先へそのまま渡す
+
+### 修正
+
+- codex-review.sh: diff サイズの歯止め（CODEX_REVIEW_MIN_LINES / CODEX_REVIEW_MAX_DIFF_BYTES）の計測基準を、委譲先 multi-agent.sh がレビューに使う base ref と同じ解決（ローカル base が無い / stale なら origin/BASE）に揃えた。ローカルに base ブランチが無いクローン（clone --branch / CI）でレビューが起動せず終了していた問題と、stale なローカル base で測って新しい基準でレビューしていた不一致を解消する。
+- 自動振り返りの UserPromptSubmit 事前注入が、入れ子で起動された非対話の `claude -p` の stdout にも振り返り行を混ぜ、レビューラッパーの exact 一致 ping（`Return exactly: ok`）を落としていた問題に対処した。hook 入力を実測したところ print / headless / `output_format` に相当するフィールドが無く（`permission_mode` は `--permission-mode` の写しで対話セッションと同形）hook 側では判別できないため、フィールドの不在を根拠にした推測判定は入れず fail-open を維持し、抑止の正本を「起動側のスクリプトが子プロセスの環境へ `RETROSPECTIVE_MODE=off` を載せる」と定めて実測結果とともに文書化した
+- retrospective スキルの自動発火節・自動コードレビュー運用手順・レビューエージェント作成ガイドに、stdout が成果物になる入れ子起動での `RETROSPECTIVE_MODE=off` 前置きを追記した
+- 同梱の Claude Code アダプタ（`scripts/adapters/claude-code-adapter.sh`）が起動する入れ子の非対話 `claude -p` へ `RETROSPECTIVE_MODE=off` を載せるようにした。このアダプタは CLI の stdout をレビュー成果物としてそのまま捕捉するため、前置きが無いと振り返り行がレビュー本文へ混ざる。子プロセスの環境に実際に載ることは argv ではなく環境を実測する検査で固定した
+- multi-agent `--fresh` now archives the previous run inside the output directory (`.review-results/.prev-TIMESTAMP/`) instead of the sibling `.review-results.prev-TIMESTAMP/`. The sibling name did not match the `.review-results/` ignore pattern that consuming repositories are told to use, so the archived results showed up as untracked files and were swept into commits (measured: 521 files, about 8MB, which then overflowed the prompt of the next cross-model review). Consumers need no gitignore change. The same fix applies to `.explore-results` and `.implement-results`.
+- Because the archive is now ignored along with the output directory, it no longer shows up as an untracked path, so `--fresh` prints the current archive count and total size after each archiving run. Clean them up with `rm -rf .review-results/.prev-*` (and the matching `.explore-results` / `.implement-results` patterns) once you no longer need them.
+- Archives left by earlier versions used the sibling name and are not collected automatically: remove those with `rm -rf .review-results.prev-*`.
+- レビューエージェント（`pr-review-toolkit` の subagent）を未コミットの変更がある作業ツリーで起動しようとしたとき、起動前に確認を出すようにした。エージェントは base からの差分（コミット済みの内容）を見るため、未コミットの修正は存在しないものとして扱われ、対応済みの指摘が「未解消」と判定される。確認はブロックではなく、コミットしてから起動するか、意図してそのまま続行するかを選べる
+- 判定は `git status --porcelain` の出力有無で行うため、gitignore 済みのビルド成果物だけがある状態では発火しない。作業ツリーが clean なら何も表示しない
+- multi-review スキルの前提を、cross-model CLI 経路（未コミットでも可）とレビューエージェント経路（コミット済みのみ）で分けて記述した
+
+### ドキュメント
+
+- セルフレビューの「レビュー担当の選択と利用制限時の継続」に、ホストと別モデルによるクロスレビューの完走が 0 本のとき、主担当のみへ落ちる前に Toolkit のレビューエージェントを read-only で並列起動する段を追加した。エージェントはホストと同じモデルで動くためモデル独立性は回復せず、位置づけは「別モデルの代替」ではなく「主担当のみで継続する前に、既存の利用・課金許可の範囲で観点を増やす段」であることと、記録を「クロスレビュー未実施（同一モデルの追加観点で代替）」とすることを明記している。ホスト非対応 / Toolkit 未導入なら理由を記録して従来どおり主担当のみで継続できる
+- 同じ規則を要約していた Git Workflow・Multi-CLI Review Orchestration・Workflow Principles の各記述と、multi-review スキルの 2 箇所を同じ順序へ揃えた（片方だけ直すと消費側が新しい段を飛ばす指示を出すため）
+- `/multi-review` の SKILL.md に「レビュー待ち時間の使い方」の項を追加し、`gh` 経由の GitHub 側作業（Issue/PR 本文の更新・follow-up の起票・完了報告の下書き）は許可、ファイルの編集を溜めて次の回転を未コミットの作業ツリーで起動することは禁止と、同じ 1 項に対で明記した
+
 ## [0.93.0] - 2026-09-08
 
 ### ドキュメント

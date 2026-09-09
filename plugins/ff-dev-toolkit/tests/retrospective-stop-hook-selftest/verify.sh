@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONSUMER="$PLUGIN_ROOT/tests/retrospective-stop-hook/verify.sh"
-EXPECTED_CONSUMER_CHECKS=38
+EXPECTED_CONSUMER_CHECKS=39
 
 command -v perl >/dev/null 2>&1 || { echo "○ skip: perl が無いため retrospective Stop hook self-test をスキップ"; exit 0; }
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
@@ -40,7 +40,7 @@ make_fixture() {
   cp "$CONSUMER" "$root/tests/retrospective-stop-hook/verify.sh"
   cp "$PLUGIN_ROOT/tests/retrospective-stop-hook/asdd.test.mjs" "$root/tests/retrospective-stop-hook/asdd.test.mjs"
   cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$root/hooks/"
-  for hook in check-update check-skill-drift auto-update-marketplace guard-checkout-restore guard-pr-followup guard-background-cwd; do
+  for hook in check-update check-skill-drift auto-update-marketplace guard-checkout-restore guard-pr-followup guard-background-cwd guard-review-in-flight; do
     cp "$PLUGIN_ROOT/hooks/$hook.sh" "$root/hooks/$hook.sh"
   done
   mkdir -p "$root/scripts/asdd"

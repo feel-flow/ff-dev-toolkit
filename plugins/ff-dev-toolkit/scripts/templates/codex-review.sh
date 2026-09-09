@@ -401,6 +401,65 @@ load_resolved_toolkit() {
   warn_env_masked_sidecar
 }
 
+# ── diff サイズを測る基準 ref の解決 ──────────────────────────────────────────
+#
+# 委譲先（multi-agent.sh）はレビュー対象の base を `resolve_base_branch_ref` に通し、
+# ローカル `<base>` が無い / stale なときは `origin/<base>` を使う。歯止め
+# （CODEX_REVIEW_MIN_LINES / CODEX_REVIEW_MAX_DIFF_BYTES）を**生の `--base` の値**で
+# 測ると、レビューされる範囲と測る範囲が別物になる:
+#   - ローカル `<base>` の無いクローン（`git clone --branch <feature>` / CI / 使い捨て
+#     クローン）では `git diff develop...HEAD` 自体が失敗し、「diff を測れませんでした」で
+#     exit 2 になる。委譲先は origin/develop で普通にレビューできるのに、1 つも届かない
+#   - ローカル `<base>` が stale なときは、古い基準で測って新しい基準でレビューする
+#     （課金を抑えている前提が静かに崩れる）
+#
+# 解決は**委譲先と同じ実装をそのまま呼ぶ**。ここに写しを持つと必ず drift し、
+# 「測る基準とレビューする基準が違う」という今直している事故をもう一度作る。
+# toolkit の解決は委譲直前まで遅らせる設計（歯止めによる skip は toolkit 無しでも
+# 成立する）なので、ここでは**見つかったときだけ**使い、見つからないときは生の値のまま
+# 測る。toolkit が無いことの名乗りと rc=2 は従来どおり末尾の委譲段が担う（順序を変えない）。
+resolve_base_ref_for_size() {
+  local base="$1" adapter resolved raw_resolved base_rc
+  if [ -z "${RESOLVED_TOOLKIT_ROOT:-}" ]; then
+    # 診断は委譲段が出す。ここでの失敗は「解決できなかった」以上の意味を持たないので
+    # 黙って落とす（同じ ERROR を 2 回出すと、どちらが本番の判定か分からなくなる）。
+    resolve_toolkit >/dev/null 2>&1 || true
+  fi
+  if [ -n "${RESOLVED_TOOLKIT_ROOT:-}" ]; then
+    adapter="${RESOLVED_TOOLKIT_ROOT}/scripts/adapters/adapter-common.sh"
+    if [ -r "$adapter" ]; then
+      # サブシェルで source する。1800 行のユーティリティをシムの名前空間へ持ち込むと、
+      # 以降の実装が「シムに無い関数」に気づかず依存できてしまう。
+      # 今の adapter-common.sh は関数定義だけなので stdout は汚さないが、シムは単体で
+      # 配布され、実行時にどの版の adapter が source されるかは分からない。将来 source が
+      # stdout へ 1 行でも出せば解決値が複数行になり、`git diff <2 行>...HEAD` が落ちて
+      # exit 2 —— まさにこの関数が直している事故と同じ形になる。最終行だけを採る。
+      # rc と tail は分ける（`|` の途中に置くと pipefail 下でも resolve の非 0 が
+      # tail の 0 に消える）。
+      base_rc=0
+      raw_resolved="$( . "$adapter" && resolve_base_branch_ref "$base" )" || base_rc=$?
+      if [ "$base_rc" -eq 0 ]; then
+        resolved="$(printf '%s\n' "$raw_resolved" | tail -n 1)"
+        if [ -n "$resolved" ]; then
+          printf '%s\n' "$resolved"
+          return 0
+        fi
+      fi
+      echo "WARNING: base ref を委譲先と同じ実装で解決できませんでした: ${adapter}" >&2
+      echo "         生の値 ${base} で diff サイズを測ります（委譲先が origin/${base} を使う場合、測る範囲がレビュー範囲とずれます）。" >&2
+    else
+      # adapter が無い / 読めない toolkit（`resolve_base_branch_ref` を持たない旧版など）。
+      # ここで生の値へ落とすのは正しい —— 委譲先にも解決実装が無いのだから、生の値で測る方が
+      # 委譲先のレビュー範囲と一致する。ただし**黙って**落とすと、歯止めの基準がどちらだったか
+      # 後から分からない。上の「解決に失敗」と同型の WARNING を出してから落とす（ハードエラーには
+      # しない —— 測れること自体は toolkit 無しでも成立する）。
+      echo "WARNING: base ref の解決実装が見つかりませんでした: ${adapter}" >&2
+      echo "         生の値 ${base} で diff サイズを測ります（委譲先が origin/${base} を使う場合、測る範囲がレビュー範囲とずれます）。" >&2
+    fi
+  fi
+  printf '%s\n' "$base"
+}
+
 usage() {
   cat >&2 <<USAGE
 ${SCRIPT_NAME} — Codex cross-model レビュー（multi-agent.sh への薄いシム）
@@ -410,6 +469,7 @@ ${SCRIPT_NAME} — Codex cross-model レビュー（multi-agent.sh への薄い�
   --reviewers a,b,c     観点をカンマ区切りで指定（--perspective へ展開される）
   --exclude-reviewers a,b,c
                         観点をカンマ区切りで除外（--exclude-perspective へ展開される）
+  --exclude-cli <name>  その CLI をプランから外す（繰り返し可。--exclude-cli へ透過）
   --list-reviewers      利用できる review 観点を一覧表示する
   --review-context-file <path>
                         前回レビューと通過済みゲートの証拠を review prompt へ渡す。
@@ -443,7 +503,7 @@ ${SCRIPT_NAME} — Codex cross-model レビュー（multi-agent.sh への薄い�
   上記は --opt=value 形式でも渡せる。パッケージマネージャが挟む --
   （pnpm は透過、npm は除去）は位置を問わず読み飛ばす。
   --dry-run             実行せずプランだけ表示する
-  --fresh               前回の出力ディレクトリの中身を <dir>.prev-<timestamp>/ へ退避する（実行中 lock は残す）
+  --fresh               前回の出力ディレクトリの中身を <dir>/.prev-<timestamp>/ へ退避する（実行中 lock は残す）
   --resume              前回と同一入力の成功結果を再利用し、失敗・timeout 分だけ再実行する
                         （--fresh と排他。排他検査は委譲先が行う）
   --help                このヘルプ
@@ -643,6 +703,27 @@ while [ $# -gt 0 ]; do
       # なのに「--base が無い」で落ちたり、閾値次第で一覧が出ないまま成功終了したりする
       # のを避ける。
       LIST_ONLY=1
+      shift
+      ;;
+    --exclude-cli)
+      # 委譲先の同名オプションへそのまま渡す（観点ではなく CLI 名なので写像表は不要）。
+      # このシムは `--cli codex-cli` を固定で足すため、`--exclude-cli codex-cli` は
+      # multi-agent.sh 側の矛盾検査で非 0 になる — それが正しい帰結なので、ここで
+      # 先回りして別のメッセージを出すことはしない（判定の正本を 2 つにしない）。
+      if [ $# -lt 2 ] || [ -z "$2" ]; then
+        echo "ERROR: --exclude-cli には CLI 名が必要です（例: --exclude-cli grok-cli）。" >&2
+        exit 2
+      fi
+      ORCH_ARGS+=(--exclude-cli "$2")
+      shift 2
+      ;;
+    --exclude-cli=*)
+      _val="${1#*=}"
+      if [ -z "$_val" ]; then
+        echo "ERROR: --exclude-cli には CLI 名が必要です（例: --exclude-cli grok-cli）。" >&2
+        exit 2
+      fi
+      ORCH_ARGS+=(--exclude-cli "$_val")
       shift
       ;;
     --exclude-reviewers)
@@ -889,9 +970,12 @@ if [ "$_min_lines" != "0" ] || [ "$_max_bytes" != "0" ]; then
       exit 2
     }
   else
-    _diff_label="base ${BASE_FOR_SIZE}"
-    _numstat="$( { git diff --numstat "${BASE_FOR_SIZE}...HEAD" && git diff --numstat HEAD; } 2>"$_errf" )" || {
-      echo "ERROR: diff を測れませんでした（基準: ${BASE_FOR_SIZE}）。" >&2
+    # 生の `--base` の値ではなく、**委譲先が実際にレビューに使う ref** で測る
+    # （resolve_base_ref_for_size の頭のコメント参照）。
+    _base_ref="$(resolve_base_ref_for_size "$BASE_FOR_SIZE")"
+    _diff_label="base ${_base_ref}"
+    _numstat="$( { git diff --numstat "${_base_ref}...HEAD" && git diff --numstat HEAD; } 2>"$_errf" )" || {
+      echo "ERROR: diff を測れませんでした（基準: ${_base_ref}）。" >&2
       sed 's/^/       git: /' "$_errf" >&2
       rm -f "$_errf"
       exit 2
@@ -908,7 +992,7 @@ if [ "$_min_lines" != "0" ] || [ "$_max_bytes" != "0" ]; then
   if [ "$STAGED_GIVEN" -eq 1 ]; then
     _bytes="$(git diff --cached 2>>"$_errf" | wc -c | tr -d ' ')"
   else
-    _bytes="$( { git diff "${BASE_FOR_SIZE}...HEAD"; git diff HEAD; } 2>>"$_errf" | wc -c | tr -d ' ')"
+    _bytes="$( { git diff "${_base_ref}...HEAD"; git diff HEAD; } 2>>"$_errf" | wc -c | tr -d ' ')"
   fi
   rm -f "$_errf"
   if [ -z "$_lines" ] || [ -z "$_bytes" ]; then

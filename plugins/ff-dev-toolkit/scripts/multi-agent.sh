@@ -25,6 +25,15 @@
 #   --mode <mode>           distributed | cross-model
 #   --strategy <strategy>   balanced | minimize_cost | maximize_quality
 #   --cli <name>            Run only this CLI (repeatable)
+#   --exclude-cli <name>    Drop this CLI from the plan (repeatable). The CLI is
+#                           treated exactly as if it were not installed, so its
+#                           perspectives follow the same fallback path. A name
+#                           that does not exist, and excluding a CLI that --cli
+#                           also selects, are rejected — not ignored. The config
+#                           key `exclude_clis` (space/comma-separated string) sets
+#                           defaults for the environment; flag and config exclusions
+#                           are unioned, and the plan names which source excluded
+#                           each CLI.
 #   --exclude-perspective <name>
 #                           Drop this perspective from the plan (repeatable).
 #                           A name that does not exist is rejected, not ignored.
@@ -53,9 +62,12 @@
 #   --staged                Review only the staged index diff (review task only; mutually exclusive with --base)
 #   --resume                Reuse successful results from an identical prior input and
 #                           execute only failed, timed-out, missing, or corrupt tasks
-#   --fresh                 Archive leftover files in the output dir to a sibling
-#                           <dir>.prev-<timestamp>/ (the live lock stays) and start
-#                           clean. Cannot be combined with --resume.
+#   --fresh                 Archive leftover files in the output dir to
+#                           <dir>/.prev-<timestamp>/ (the live lock stays) and start
+#                           clean. The archive lives INSIDE the output dir so a
+#                           consumer that ignores <dir>/ ignores the archive too — a
+#                           sibling <dir>.prev-* did not match that ignore pattern and
+#                           got swept into commits. Cannot be combined with --resume.
 #   --include-diff          Include diff in implement prompts
 #   --dry-run               Show plan without executing
 #   --timeout <seconds>     Timeout per CLI (default: review 900 / explore 600 / implement 900)
@@ -893,6 +905,12 @@ PERSPECTIVE_FILTER=""
 # 除外は包含フィルタへ畳み込まない。PERSPECTIVE_FILTER を埋めると、--cli と併用したとき
 # 「明示ペアリング」経路（所有レジストリを迂回する）を意図せず踏む。独立に保つ。
 EXCLUDE_PERSPECTIVES=""
+# CLI の除外は 2 経路（--exclude-cli と config の exclude_clis）を**別々に**保つ。
+# 和集合だけを持つと、プランの 1 行に出す出所（引数由来 / 設定由来）が復元できない —
+# 「設定に書いた覚えのない CLI が消えている」を追えることが本機能の目的そのもの。
+EXCLUDE_CLIS_FLAG=""
+EXCLUDE_CLIS_CONFIG=""
+EXCLUDE_CLIS_CONFIG_SOURCE=""
 LIST_PERSPECTIVES=false
 
 # Detected available CLIs (space-separated)
@@ -929,12 +947,16 @@ FAILED_TASKS=""
 # 親へ渡す）なので、generate_report と print_failure_advice から読める。
 SKIPPED_TASKS=""
 
-# スキップしてよい失敗理由（Issue #1143）。classify_cli_failure_cause の 3 分類の
+# スキップしてよい失敗理由（Issue #1143）。classify_cli_failure_cause の 4 分類の
 # うち auth / billing だけを採る。
 #   - auth / billing … 資格情報・残高は CLI 単位の状態で、同じ実行内の同一 CLI の
 #                      他タスクも確実に同じ理由で落ちる
 #   - argv           … 採らない。E2BIG は**そのタスクの argv 長**で決まるため、
 #                      観点が違えば起動できる余地がある
+#   - prompt-too-long … 採らない。超過量は観点ごとのプロンプト長で決まり、
+#                      短い観点なら通る余地がある。全滅した回は下の集約案内が
+#                      「diff を見よ」と 1 度だけ言うので、実行を先回りで
+#                      止めなくても遠回りは塞がる
 #   - ""（判定不能） … 採らない。fail-open で従来どおり全タスクを実行する
 # 推測でスキップすると、実際には走ったはずのレビューが観点ごと消える — 誤ってスキップ
 # する損失（カバレッジ 0）は、誤って実行する損失（setup 1 回分の待ち時間）より大きい。
@@ -1005,6 +1027,11 @@ RESUME_CACHE_PENDING=""
 OUTPUT_LOCK_DIR=""
 OUTPUT_LOCK_HELD=false
 
+# 走行中であることを外部（PreToolUse hook）へ知らせる在庫ファイル。上の
+# OUTPUT_LOCK_DIR とは目的が違う — あちらは orchestrator 同士の排他、こちらは
+# 「今このツリーを触ると結果が壊れる」を hook が読むための宣言。
+REVIEW_IN_FLIGHT_FILE=""
+
 # ── Utility ──
 
 list_contains() {
@@ -1044,6 +1071,16 @@ parse_args() {
       --mode)        MODE="$2"; MODE_EXPLICIT=true; MODE_SOURCE="--mode flag"; shift 2 ;;
       --strategy)    STRATEGY="$2"; STRATEGY_SOURCE="--strategy flag"; shift 2 ;;
       --cli)         CLI_FILTER="${CLI_FILTER:+$CLI_FILTER }$2"; shift 2 ;;
+      --exclude-cli)
+        # 空文字は「値を渡したつもりで渡せていない」形（`--exclude-cli "$CLI"` で
+        # 変数が空、等）。黙って no-op にすると、外したはずの CLI が毎回プランに
+        # 載り続ける — この機能が消そうとしている状態そのものになる。シム
+        # （templates/codex-review.sh）の同名オプションと同じ文言・同じ rc で拒否する。
+        if [[ $# -lt 2 || -z "$2" ]]; then
+          echo "ERROR: --exclude-cli には CLI 名が必要です（例: --exclude-cli grok-cli）。" >&2
+          exit 2
+        fi
+        EXCLUDE_CLIS_FLAG="${EXCLUDE_CLIS_FLAG:+$EXCLUDE_CLIS_FLAG }$2"; shift 2 ;;
       --perspective) PERSPECTIVE_FILTER="${PERSPECTIVE_FILTER:+$PERSPECTIVE_FILTER }$2"; shift 2 ;;
       --exclude-perspective)
         if [[ $# -lt 2 ]]; then
@@ -1170,6 +1207,25 @@ load_config() {
     [[ "$cfg_val" == "true" ]] && PARALLEL=true
     [[ "$cfg_val" == "false" ]] && PARALLEL=false
 
+    # 環境ごとの既定除外（例: この機械では grok が起動できない）。version に依らず
+    # トップレベルで読む — 除外の理由は「その機械の環境」であってタスク種別ではない。
+    # 書式は review.critical_nonblock_perspectives と同じ **1 文字列**（空白または
+    # カンマ区切り）。YAML リストで書くと yq -r が複数行を返し、名前が CLI 名に
+    # 一致しなくなるので、黙って無視せず警告して読み飛ばす。
+    cfg_val=$(yq -r '.exclude_clis // ""' "$CONFIG_FILE" 2>/dev/null || true)
+    if [[ "$cfg_val" == *$'\n'* || "$cfg_val" == -* ]]; then
+      echo "⚠️  exclude_clis は YAML リストではなく 1 文字列（空白またはカンマ区切り）で指定してください。読み飛ばします" >&2
+    elif [[ -n "$cfg_val" && "$cfg_val" != "null" ]]; then
+      cfg_val="${cfg_val//,/ }"
+      cfg_val="${cfg_val//$'\t'/ }"
+      # 連続空白と前後空白を潰す。表示にそのまま出る値なので "a,  b" が
+      # "a  b" のまま出ると設定の書き方の差が出力の差に見える。
+      # shellcheck disable=SC2086 # 意図的な単語分割による正規化
+      cfg_val="$(echo $cfg_val)"
+      EXCLUDE_CLIS_CONFIG="$cfg_val"
+      EXCLUDE_CLIS_CONFIG_SOURCE="$CONFIG_SOURCE"
+    fi
+
     # v2: task-specific config
     local version
     version=$(yq -r '.version // "1.0"' "$CONFIG_FILE" 2>/dev/null || true)
@@ -1284,11 +1340,39 @@ apply_task_defaults() {
 # classify_cli_failure_cause のヘッダーに書いてある（Issue #659）。
 detect_available_clis() {
   AVAILABLE_CLIS=""
-  local cli_name cmd
+  local cli_name cmd exclusion
+  # 除外を掛ける**前**の導入済み本数。空プランの診断で「1 本も入っていない」と
+  # 「入っているが全部外した」を分けるのに要る（除外指定の有無だけで分けると、
+  # CLI が 1 つも入っていない環境で除外を書いただけの回に install 案内が消える）。
+  local installed_before_exclusion=0
 
   for cli_name in $ALL_CLIS; do
     cmd="$(get_cli_command "$cli_name")"
+    local cli_installed=false
     if command -v "$cmd" &>/dev/null; then
+      cli_installed=true
+      installed_before_exclusion=$((installed_before_exclusion + 1))
+    fi
+    # 除外は**検出の段**で効かせる。プラン構築側（distributed / cross-model / pair）
+    # それぞれに除外条件を配ると、片方だけ直された形でドリフトする。ここで
+    # AVAILABLE_CLIS から落とせば、未インストール CLI と同じ 1 本の経路
+    # （観点の fallback 再配分・pair の主不在エラー・空プラン検査）をそのまま通る。
+    # sandbox probe（warn_unappliable_sandbox）は「起動できないと分かっていても
+    # プランからは外さない」側の機構で、こちらはその判断を利用者が明示したときの
+    # 受け皿になる。
+    exclusion="$(cli_exclusion_source "$cli_name")"
+    case "$exclusion" in
+      flag)
+        echo "  ⏭  ${cli_name} excluded (--exclude-cli). Its perspectives follow the not-installed fallback path." >&2
+        continue ;;
+      config)
+        echo "  ⏭  ${cli_name} excluded (config exclude_clis — ${EXCLUDE_CLIS_CONFIG_SOURCE}). Opt back in for one run with --cli ${cli_name}." >&2
+        continue ;;
+      config-overridden)
+        echo "  ℹ️  ${cli_name} is in config exclude_clis (${EXCLUDE_CLIS_CONFIG_SOURCE}) but --cli named it — running it this time." >&2
+        ;;
+    esac
+    if [[ "$cli_installed" == "true" ]]; then
       AVAILABLE_CLIS="${AVAILABLE_CLIS:+$AVAILABLE_CLIS }$cli_name"
       echo "  ✅ ${cli_name} (${cmd})" >&2
     else
@@ -1297,6 +1381,18 @@ detect_available_clis() {
   done
 
   if [[ -z "$AVAILABLE_CLIS" ]]; then
+    # 「1 本も入っていない」と「入っているが全部外した」は利用者の次の一手が違う。
+    # 除外で空になった回に install を案内しても指し先が誤っている。逆に、除外を
+    # 書いただけで**元から 1 本も入っていない**回に「全部外した」と言うと、唯一
+    # 打てる手（install）を隠す。判定は指定の有無ではなく実測した導入本数で行う。
+    if [[ "$installed_before_exclusion" -gt 0 ]] \
+      && [[ -n "$EXCLUDE_CLIS_FLAG" || -n "$EXCLUDE_CLIS_CONFIG" ]]; then
+      echo "" >&2
+      echo "ERROR: every installed CLI was excluded — nothing would run." >&2
+      [[ -n "$EXCLUDE_CLIS_FLAG" ]] && echo "       --exclude-cli: ${EXCLUDE_CLIS_FLAG}" >&2
+      [[ -n "$EXCLUDE_CLIS_CONFIG" ]] && echo "       config exclude_clis (${EXCLUDE_CLIS_CONFIG_SOURCE}): ${EXCLUDE_CLIS_CONFIG}" >&2
+      exit 1
+    fi
     echo "" >&2
     echo "ERROR: No AI CLIs are installed. Install at least one:" >&2
     echo "  npm install -g @anthropic-ai/claude-code" >&2
@@ -1386,8 +1482,17 @@ build_distributed_plan() {
         # 「対応表どおりの代替」と「対応表が尽きて選び直した先」は利用者にとって
         # 別の話。後者は設定していない CLI が担当することになるので、そう読める
         # 表示にする。コスト帯も出す（最後の砦は課金先が変わりうる）。
+        # 「入っていない」と「入っているが外した」は別の事実。除外で AVAILABLE_CLIS
+        # から落ちた CLI にも not installed と書くと、install 済みの機械で偽の診断に
+        # なる（利用者は入れ直そうとして、原因である除外へ辿り着けない）。
+        local absent_reason
+        case "$(cli_exclusion_source "$cli_name")" in
+          flag)   absent_reason="${cli_name} excluded by --exclude-cli" ;;
+          config) absent_reason="${cli_name} excluded by config exclude_clis (${EXCLUDE_CLIS_CONFIG_SOURCE})" ;;
+          *)      absent_reason="${cli_name} not installed" ;;
+        esac
         if [[ "$fallback_target" == "$(get_cli_fallback "$cli_name")" ]]; then
-          echo "  ↪ ${cli_name} → ${fallback_target} (fallback — ${cli_name} not installed)" >&2
+          echo "  ↪ ${cli_name} → ${fallback_target} (fallback — ${absent_reason})" >&2
         else
           echo "  ↪ ${cli_name} → ${fallback_target} [$(get_cli_cost_tier "$fallback_target")] (last-resort — configured chain exhausted)" >&2
         fi
@@ -1447,8 +1552,28 @@ build_pair_plan() {
   local p sub_effective=""
 
   if ! list_contains "$AVAILABLE_CLIS" "$REVIEW_MAIN"; then
-    echo "ERROR: main reviewer '${REVIEW_MAIN}' is not installed." >&2
-    echo "       Install it, or pick another with --set-reviewers." >&2
+    # 主が居ない理由は「未導入」と「除外した」の 2 つあり、次の一手が違う。
+    # 除外した回に「Install it」と言うと、install 済みの機械で偽の診断になる。
+    # pair モードでは --cli による一回限りの復帰が使えない（--mode pair の明示と
+    # 併用すれば非 0、暗黙なら distributed へ落ちてそもそも pair ではなくなる）ので、
+    # 解除は「除外を外す」か「別の主を選ぶ」の 2 つだけだと名乗る。
+    case "$(cli_exclusion_source "$REVIEW_MAIN")" in
+      flag)
+        echo "ERROR: main reviewer '${REVIEW_MAIN}' was excluded by --exclude-cli." >&2
+        echo "       Drop '${REVIEW_MAIN}' from --exclude-cli, or pick another main with" >&2
+        echo "       --set-reviewers main=<cli> / MULTI_AGENT_REVIEW_MAIN=<cli>." >&2
+        echo "       (--cli does not opt it back in here: it is a distributed-mode filter" >&2
+        echo "        and cannot be combined with --mode pair.)" >&2 ;;
+      config)
+        echo "ERROR: main reviewer '${REVIEW_MAIN}' was excluded by config exclude_clis (${EXCLUDE_CLIS_CONFIG_SOURCE})." >&2
+        echo "       Remove '${REVIEW_MAIN}' from exclude_clis, or pick another main with" >&2
+        echo "       --set-reviewers main=<cli> / MULTI_AGENT_REVIEW_MAIN=<cli>." >&2
+        echo "       (--cli does not opt it back in here: it is a distributed-mode filter" >&2
+        echo "        and cannot be combined with --mode pair.)" >&2 ;;
+      *)
+        echo "ERROR: main reviewer '${REVIEW_MAIN}' is not installed." >&2
+        echo "       Install it, or pick another with --set-reviewers." >&2 ;;
+    esac
     return 1
   fi
 
@@ -1478,6 +1603,22 @@ build_pair_plan() {
   elif [[ "$REVIEW_SUB" == "$REVIEW_MAIN" ]]; then
     echo "  ⏭  sub reviewer is the same CLI as main (${REVIEW_MAIN}) — skipping the duplicate." >&2
     PAIR_REVIEWERS_NOTE="${REVIEW_MAIN} (single — sub '${REVIEW_SUB}' is the same CLI as main)"
+  elif cli_excluded "$REVIEW_SUB"; then
+    # 除外は未導入と別の事実。ここを not-installed の枝へ落とすと、install 済みの
+    # 機械に「not installed」と記録され（レポートへも残る）、しかも
+    # PAIR_SUB_DROPPED が立たないので単一 CLI 縮退の警告まで消える。
+    # 除外はクロスモデルにできたのに単一へ落ちた経路なので、--perspective で副が
+    # 落ちた場合と同じくフラグを立てる（--exclude-perspective の「その観点を走らせ
+    # るな」とは違い、外したのは CLI であって総合観点の要否ではない）。
+    local sub_excl_desc
+    if [[ "$(cli_exclusion_source "$REVIEW_SUB")" == "flag" ]]; then
+      sub_excl_desc="--exclude-cli"
+    else
+      sub_excl_desc="config exclude_clis (${EXCLUDE_CLIS_CONFIG_SOURCE})"
+    fi
+    PAIR_SUB_DROPPED=true
+    echo "  ⚠️  sub reviewer '${REVIEW_SUB}' excluded by ${sub_excl_desc} — running single-reviewer." >&2
+    PAIR_REVIEWERS_NOTE="${REVIEW_MAIN} (single — sub '${REVIEW_SUB}' excluded by ${sub_excl_desc})"
   elif ! list_contains "$AVAILABLE_CLIS" "$REVIEW_SUB"; then
     echo "  ⚠️  sub reviewer '${REVIEW_SUB}' is not installed — running single-reviewer." >&2
     PAIR_REVIEWERS_NOTE="${REVIEW_MAIN} (single — sub '${REVIEW_SUB}' not installed)"
@@ -1655,6 +1796,90 @@ validate_requested_clis() {
   done
 }
 
+# ── Excluded CLIs ──
+# 除外の出所を返す。引数と設定の両方に載っている CLI は引数側を名乗る — 利用者が
+# その実行で明示した意図が上位だから。
+#   flag              --exclude-cli による除外
+#   config            設定ファイルの exclude_clis による除外
+#   config-overridden 設定は外しているが、その実行で --cli が明示的に選んだ
+#                     （環境の既定より、その 1 回の明示指定を上に置く。設定を書き換え
+#                      なくても「今日は動くか試す」ができる形にしておく）
+#   空文字列          除外されていない
+cli_exclusion_source() {
+  if [[ -n "$EXCLUDE_CLIS_FLAG" ]] && list_contains "$EXCLUDE_CLIS_FLAG" "$1"; then
+    echo "flag"
+  elif [[ -n "$EXCLUDE_CLIS_CONFIG" ]] && list_contains "$EXCLUDE_CLIS_CONFIG" "$1"; then
+    if [[ -n "$CLI_FILTER" ]] && list_contains "$CLI_FILTER" "$1"; then
+      echo "config-overridden"
+    else
+      echo "config"
+    fi
+  else
+    echo ""
+  fi
+}
+
+cli_excluded() {
+  local origin
+  origin="$(cli_exclusion_source "$1")"
+  [[ "$origin" == "flag" || "$origin" == "config" ]]
+}
+
+# 存在しない CLI 名の除外を黙って受けると、typo が「外したつもり」で素通りし、
+# 起動できないと分かっている CLI が毎回プランに載り続ける（この機能が消そうとして
+# いる状態そのもの）。--cli と同じく、プランを組む前に名指しで拒否する。設定由来の
+# 名前も同じ扱い — 設定側だけ緩めると、typo が一度書かれたきり誰にも気づかれない。
+#
+# --cli X と --exclude-cli X の同時指定も拒否する。片方を優先する規則を置くと、
+# 「選んだのに走らない」か「外したのに走る」のどちらかが黙って起きる。
+#
+# 未知名の扱いは出所で分ける（PR #1410 レビュー項目 12）。
+#   引数由来: 非 0 で拒否。その 1 回のためにいま打った指定なので、typo は即座に
+#             直せるし、直さないと「外したつもり」の CLI が走る。
+#   設定由来: WARNING を出して**その名前だけ**落とし、実行は続ける。設定は複数の
+#             機械・複数のリポジトリで共有され、CLI が retire されると（cursor-cli /
+#             gemini-cli の前例がある）過去に妥当だった設定が全実行を落とす。
+#             「レビューが 1 本も走らない」は「除外が 1 つ効かない」より重い故障で、
+#             しかも設定を書いた人と踏む人が違いうる。名前は警告で名指しするので
+#             黙って消えることはない。
+# 不正トークン（is_safe_token 不一致）は出所に依らず非 0 のまま — こちらは typo で
+# はなく注入の形で、警告して読み飛ばす対象ではない。
+validate_excluded_clis() {
+  local cli_name
+  for cli_name in $EXCLUDE_CLIS_FLAG $EXCLUDE_CLIS_CONFIG; do
+    if ! is_safe_token "$cli_name"; then
+      echo "ERROR: unsafe CLI name in exclusion: '${cli_name}'" >&2
+      return 1
+    fi
+  done
+  for cli_name in $EXCLUDE_CLIS_FLAG; do
+    if ! list_contains "$ALL_CLIS" "$cli_name"; then
+      echo "ERROR: unknown CLI in --exclude-cli: '${cli_name}'" >&2
+      echo "       Known CLIs: ${ALL_CLIS}" >&2
+      return 1
+    fi
+  done
+  local kept_config=""
+  for cli_name in $EXCLUDE_CLIS_CONFIG; do
+    if ! list_contains "$ALL_CLIS" "$cli_name"; then
+      echo "⚠️  unknown CLI in config exclude_clis (${EXCLUDE_CLIS_CONFIG_SOURCE}): '${cli_name}' — ignoring it." >&2
+      echo "    Known CLIs: ${ALL_CLIS}. Remove the stale name from the config." >&2
+      continue
+    fi
+    kept_config="${kept_config:+$kept_config }$cli_name"
+  done
+  EXCLUDE_CLIS_CONFIG="$kept_config"
+  [[ -z "$EXCLUDE_CLIS_CONFIG" ]] && EXCLUDE_CLIS_CONFIG_SOURCE=""
+  for cli_name in $CLI_FILTER; do
+    if [[ -n "$EXCLUDE_CLIS_FLAG" ]] && list_contains "$EXCLUDE_CLIS_FLAG" "$cli_name"; then
+      echo "ERROR: --cli and --exclude-cli both name '${cli_name}'." >&2
+      echo "       Drop one: --cli selects what runs, --exclude-cli removes it." >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
 # ── Validate Requested Perspectives ──
 # A dry-run is a plan validation boundary, not only a pretty-printer. Reject an
 # unsafe, unknown, or other-task perspective before showing a successful plan;
@@ -1826,6 +2051,25 @@ show_plan() {
     echo "   Base branch: ${BASE_BRANCH} (${BASE_BRANCH_SOURCE})" >&2
   fi
   echo "   Config: ${CONFIG_FILE} (${CONFIG_SOURCE})" >&2
+  # 除外はプラン本体にも 1 行出す。検出ブロックの ⏭ 行は CLI 検出の文脈にあり、
+  # あとから成果物と一緒に読み返されるのはこちらのヘッダー（Mode / Strategy と
+  # 同じ段）。出所（引数由来 / 設定由来）まで書かないと「設定に書いた覚えのない
+  # CLI が消えている」を追えない。
+  # 名簿の生値ではなく**実際に効いた除外**を出す。--cli が設定の除外を上書きした
+  # CLI を「除外した」と書くと、走った CLI が除外済みに見える（実測でそうなった）。
+  local excl_cli excl_by_flag="" excl_by_config=""
+  for excl_cli in $ALL_CLIS; do
+    case "$(cli_exclusion_source "$excl_cli")" in
+      flag)   excl_by_flag="${excl_by_flag:+$excl_by_flag }$excl_cli" ;;
+      config) excl_by_config="${excl_by_config:+$excl_by_config }$excl_cli" ;;
+    esac
+  done
+  if [[ -n "$excl_by_flag" ]]; then
+    echo "   Excluded CLIs: ${excl_by_flag} (--exclude-cli)" >&2
+  fi
+  if [[ -n "$excl_by_config" ]]; then
+    echo "   Excluded CLIs: ${excl_by_config} (config exclude_clis — ${EXCLUDE_CLIS_CONFIG_SOURCE})" >&2
+  fi
   echo "   Timeout: ${TIMEOUT}s per CLI" >&2
   echo "   Resume: ${RESUME}" >&2
   echo "   Runtime fallback: none — a CLI that fails or times out is reported as" >&2
@@ -1914,6 +2158,27 @@ show_plan() {
   # で 1 CLI へ絞った場合でも警告する。あちらは観点と CLI の対応がレジストリ次第で、
   # 「1 つに絞った」のか「絞った結果たまたま 1 つになった」のかを区別できないため。
   # pair は副の担当が comprehensive-review 固定なので、その区別がつく。
+  #
+  # cross-model も対象に含める（本 Issue）。このモードは「同じ観点を複数モデルに
+  # 見せる」ことだけが存在理由なので、除外の結果 1 本になった回はクロスモデルが
+  # 成立していない — --mode の表示だけが残ると、単一モデルの結果をクロスモデル済みと
+  # 誤読する（pair の PAIR_REVIEWERS_NOTE と同じ失敗の形）。発火条件は
+  # 「除外があった」ことに限る: 除外なしで 1 本なら CLI が 1 つしか入っていない環境で、
+  # そこへ毎回出しても打てる手が無い（インストール以外に無く、検出一覧が既に言っている）。
+  # 明示 `--cli` は意図的な単一モデルなので黙る（L2052 の規約・隣の単一 CLI ゲートと
+  # 同じ条件）。--cli で 1 本に絞った回にまで「クロスモデルではない」と言うのは、
+  # 利用者が自分で書いたことを読み上げているだけで、打てる手も無い。
+  if [[ "$MODE" == "cross-model" && "$planned_cli_count" -eq 1 && -z "$CLI_FILTER" ]] \
+     && [[ -n "$excl_by_flag" || -n "$excl_by_config" ]]; then
+    echo "" >&2
+    echo "   ⚠️  Cross-model plan resolved to a single CLI (${planned_clis}) after exclusion —" >&2
+    echo "       this run is NOT cross-model. A failure or timeout here means zero coverage;" >&2
+    echo "       runtime fallback is deliberately absent." >&2
+    [[ -n "$excl_by_flag" ]] && echo "       Excluded by --exclude-cli: ${excl_by_flag}" >&2
+    [[ -n "$excl_by_config" ]] && echo "       Excluded by config exclude_clis (${EXCLUDE_CLIS_CONFIG_SOURCE}): ${excl_by_config}" >&2
+    echo "       Drop an exclusion, or install another CLI, to compare models." >&2
+  fi
+
   if [[ "$TASK_TYPE" == "review" && -z "$CLI_FILTER" && "$planned_cli_count" -eq 1 ]] \
      && { [[ "$MODE" == "distributed" ]] \
           || [[ "$MODE" == "pair" && "$PAIR_SUB_DROPPED" == "true" ]]; }; then
@@ -2799,20 +3064,43 @@ quarantine_cli_results() { # <cli>
 # `ls .review-results/` が前回実行の結果一式を今回の結果のように見せるので、
 # 結果ファイルを持つものを名指しする（本 Issue が塞いだ誤読の、ディレクトリ単位版）。
 report_unplanned_result_dirs() {
-  local dir cli count file
+  local dir cli count discarded file
   for dir in "$OUTPUT_DIR"/*/; do
     [[ -d "$dir" ]] || continue
     cli="${dir%/}"
     cli="${cli##*/}"
+    # `*` は通常ドット始まりを外すが、**呼び出し元の環境に GLOBIGNORE があると
+    # bash は dotglob を暗黙に有効化する**（`GLOBIGNORE` 非空 = dotglob 相当）。
+    # そのまま通すと `--fresh` の退避先 `.prev-<ts>/` や `.resume-cache/` が
+    # 「Not part of this run」として名指しされ、利用者は自分の出力ディレクトリの
+    # 内部構造を残骸と読み違える。CLI 名がドットで始まることは無いので明示的に外す。
+    case "$cli" in .*) continue ;; esac
     plan_has_cli "$cli" && continue
     count=0
+    discarded=0
     for file in "${dir}"*.md; do
       if [[ -f "$file" || -L "$file" ]]; then
         count=$((count + 1))
+        # 前回走が破棄された結果は mark_outputs_discarded が 1 行目へ
+        # `> DISCARDED` バナーを書く。「今回の結果ではない」
+        # に加えて「そもそも完成した結果ではない」まで言えるので、内訳を出す。
+        # 読めないファイルは discarded と断定しない（数えないだけ）。
+        # symlink は **通常ファイルのときだけ** 読む。プラン外ディレクトリは 1 バイトも
+        # 動かさない契約で、その読み取りも同じ線引きに揃える（FIFO を head すると
+        # 書き手が現れるまで固まり、出力先の外を指すリンクは辿ること自体が契約違反）。
+        if [[ -f "$file" && ! -L "$file" ]]; then
+          case "$(head -n 1 "$file" 2>/dev/null)" in
+            '> DISCARDED'*) discarded=$((discarded + 1)) ;;
+          esac
+        fi
       fi
     done
     if [[ "$count" -gt 0 ]]; then
-      note_unplanned_results "${cli}/ (${count} result file(s) from an earlier run — left untouched, not this run's output)"
+      if [[ "$discarded" -gt 0 ]]; then
+        note_unplanned_results "${cli}/ (${count} result file(s) from an earlier run, ${discarded} of them marked DISCARDED by that run — left untouched, not this run's output)"
+      else
+        note_unplanned_results "${cli}/ (${count} result file(s) from an earlier run — left untouched, not this run's output)"
+      fi
     fi
     # staging（files/）は直下の .md とは**独立に**名指しする。elif で束ねると、.md が
     # 1 件でもあるプラン外 CLI の staging 残骸が黙って素通りする（.md の名指しは
@@ -3119,8 +3407,58 @@ release_output_lock() {
   return 0
 }
 
+# ── 走行中ロック ──
+# 起動バナー（execute_tasks の「完了まで worktree を変更しないでください」）は stdout /
+# stderr を読む人間にしか届かない。background 起動ではそれを誰も読まないまま編集が
+# 始まり、数分ぶんのレビューが revision guard で丸ごと破棄される再発が観測されている。
+# ロックは**機械が読む宣言**で、PreToolUse hook（hooks/guard-review-in-flight.sh）が
+# これを見て編集系ツールを止める。orchestrator 側は「置く / 必ず消す」だけを担い、
+# 何を止めるかは hook が決める（破棄ロジック・終了コードはこの機構で変えない）。
+#
+# 置き場所は OUTPUT_DIR 直下の `.review-in-flight`。hook は既定の出力先
+# （<repo root>/.review-results）しか探さないので、--output-dir で既定から動かした
+# 実行は hook から見えない（hook 側ヘッダーに明記。fail-open）。
+#
+# task 名を引数に取るのは explore / implement へ広げる余地を残すため。現状の呼び出しは
+# review だけで、他の task では呼ばない（バナーと同じ線引き）。
+write_run_in_flight() { # <task> <head-sha> <perspectives-csv>
+  local task="$1" head_sha="$2" perspectives="$3" f
+  [[ -n "${OUTPUT_DIR:-}" && -d "$OUTPUT_DIR" ]] || return 0
+  f="${OUTPUT_DIR}/.review-in-flight"
+  # 書けなくても実行は止めない。これは追加の防御層で、これが無い状態は
+  # 「この機構を入れる前」と同じ（revision guard は従来どおり効く）。
+  if printf 'pid=%s\ntask=%s\nhead=%s\nstarted=%s\nstarted_epoch=%s\nperspectives=%s\n' \
+      "$$" "$task" "$head_sha" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%s)" \
+      "$perspectives" > "$f" 2>/dev/null; then
+    REVIEW_IN_FLIGHT_FILE="$f"
+  else
+    echo "WARNING: could not write the in-flight marker: ${f}" >&2
+    echo "         The tree-edit guard hook will not fire for this run." >&2
+  fi
+  return 0
+}
+
+# 正常終了・DISCARDED・タイムアウト・トラップ可能なシグナル（HUP / INT / TERM）のどれでも
+# 消える必要がある。消し漏らすと以後の全編集が hook に止められるので、EXIT trap
+# （output_lock_exit）から呼ぶ。個々の失敗経路へ後始末を配らないのは、経路が増えるたびに
+# 1 つ書き忘れるクラスの事故を構造で消すため。
+# 限界: SIGKILL（kill -9）とホストのクラッシュでは trap が走らずロックが残る。その残骸への
+# 緩和は hook 側にあり、PID 生存判定と経過時間の上限
+# （FF_REVIEW_LOCK_MAX_AGE_SECONDS、既定 4 時間）を超えたロックは stale として
+# 警告だけで通す。手で消す場合は `rm <OUTPUT_DIR>/.review-in-flight`。
+remove_run_in_flight() {
+  [[ -n "$REVIEW_IN_FLIGHT_FILE" ]] || return 0
+  if ! rm -f "$REVIEW_IN_FLIGHT_FILE" 2>/dev/null; then
+    echo "WARNING: could not remove the in-flight marker: ${REVIEW_IN_FLIGHT_FILE}" >&2
+    echo "         Remove it by hand, or the edit guard keeps firing." >&2
+  fi
+  REVIEW_IN_FLIGHT_FILE=""
+  return 0
+}
+
 output_lock_exit() {
   local rc=$?
+  remove_run_in_flight
   release_output_lock || {
     [[ "$rc" -ne 0 ]] || rc=1
   }
@@ -3152,17 +3490,38 @@ acquire_output_lock() {
 # ── Fresh start: archive leftover output (Issue #1025) ──
 # Run after the output lock is held so a concurrent run cannot have its files
 # moved out from under it. The lock directory itself stays; everything else
-# (reports, per-CLI results, resume cache) moves to a sibling of OUTPUT_DIR.
+# (reports, per-CLI results, resume cache) moves to `${OUTPUT_DIR}/.prev-<ts>/`.
 # The unresolved-Critical guard then sees an empty output dir.
+#
+# 退避先は OUTPUT_DIR の**内側**（https://github.com/feel-flow/ff-dev-toolkit/issues/96）。
+# 以前は兄弟の `<dir>.prev-<ts>/` で、
+# 消費側が規約どおり `.review-results/` だけを gitignore していると一致せず、退避一式
+# （実測 521 ファイル / 約 8MB）が丸ごとコミットへ巻き込まれた。規約を配っている側が
+# 規約から外れる名前を実行時に生やしていたのが原因なので、名前の方を規約へ戻す。
+#
+# 結果ファイルの走査が `.prev-*` を拾わないことの確認（本 Issue の AC）:
+#   - プラン外の結果ディレクトリ / staging の走査は `"$OUTPUT_DIR"/*/` の glob。
+#     このスクリプトは dotglob を有効化していないが、**呼び出し元の環境に
+#     `GLOBIGNORE` が設定されていると bash は dotglob を暗黙に有効化する**ので
+#     `*` だけでは `.` 始まりを排除できない。report_unplanned_result_dirs は
+#     ループ内で `.` 始まりを明示 skip して、退避先を「今回のプラン外」として
+#     名指ししないようにしている。
+#   - integrated-report / resume-cache / series タグ / 未解消 Critical guard /
+#     各タスクの結果判定は固定パス（`${OUTPUT_DIR}/integrated-report.md`,
+#     `${OUTPUT_DIR}/.resume-cache/<identity>`, `${OUTPUT_DIR}/<cli>/<persp>.md`）
+#     だけを読む。退避後はそれらが `.prev-<ts>/` の下へ移るので今回の走査に入らない。
+# ドットを含めて走査するのはこの関数だけなので、退避先と既存の `.prev-*` はここで外す。
 archive_previous_outputs_if_fresh() {
   [[ "$FRESH" == "true" ]] || return 0
   [[ -n "${OUTPUT_DIR:-}" && -d "$OUTPUT_DIR" ]] || return 0
 
-  local item base ts archive moved=0
+  local item base ts archive archive_base moved=0
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
-  archive="${OUTPUT_DIR}.prev-${ts}"
+  archive_base=".prev-${ts}"
+  archive="${OUTPUT_DIR}/${archive_base}"
   if [[ -e "$archive" ]]; then
-    archive="${archive}-$$"
+    archive_base="${archive_base}-$$"
+    archive="${OUTPUT_DIR}/${archive_base}"
   fi
   if [[ -e "$archive" ]]; then
     echo "ERROR: archive destination already exists: ${archive}" >&2
@@ -3174,6 +3533,11 @@ archive_previous_outputs_if_fresh() {
     [[ -e "$item" || -L "$item" ]] || continue
     base="${item##*/}"
     [[ "$base" == ".multi-agent-run.lock" ]] && continue
+    # 退避先を自分自身の中へ入れない。加えて過去の実行が残した `.prev-*` も動かさない
+    # （`.[!.]*` はこれらを拾う）。動かすと退避が入れ子に積み上がり、`--fresh` のたびに
+    # 同じバイト列を 1 段深くコピーし直すことになる。
+    [[ "$base" == "$archive_base" ]] && continue
+    case "$base" in .prev-*) continue ;; esac
     if [[ "$moved" -eq 0 ]]; then
       if ! mkdir "$archive"; then
         echo "ERROR: cannot create archive dir: ${archive}" >&2
@@ -3191,9 +3555,34 @@ archive_previous_outputs_if_fresh() {
 
   if [[ "$moved" -eq 0 ]]; then
     echo "ℹ️  --fresh: no previous results to archive in ${OUTPUT_DIR}" >&2
+    report_archive_accumulation
     return 0
   fi
   echo "🧹 --fresh: archived ${moved} previous result(s) to ${archive}" >&2
+  report_archive_accumulation
+  return 0
+}
+
+# 退避先は出力ディレクトリの内側なので gitignore に乗り、`git status` にも `ls` にも
+# 現れない。コミットへ巻き込まれないのが狙いだが、見えない分だけ `--fresh` のたびに
+# 黙って積み上がる（旧形式の兄弟は少なくとも untracked として見えていた）。退避完了の
+# 直後に件数と合計サイズを 1 行出し、掛け目で気づけるようにする。
+# 報告専用: `du` が無い / 失敗しても件数だけ出して実行は落とさない。
+report_archive_accumulation() {
+  local cand count=0 total=""
+  local archives=()
+  for cand in "$OUTPUT_DIR"/.prev-*; do
+    [[ -d "$cand" ]] || continue
+    archives+=("$cand")
+    count=$((count + 1))
+  done
+  [[ "$count" -gt 0 ]] || return 0
+  if total="$(du -shc "${archives[@]}" 2>/dev/null | tail -n 1 | awk '{print $1}')" \
+    && [[ -n "$total" ]]; then
+    echo "   ↳ ${count} archive(s) now under ${OUTPUT_DIR}/.prev-* (${total} total) — remove with: rm -rf ${OUTPUT_DIR}/.prev-*" >&2
+  else
+    echo "   ↳ ${count} archive(s) now under ${OUTPUT_DIR}/.prev-* — remove with: rm -rf ${OUTPUT_DIR}/.prev-*" >&2
+  fi
   return 0
 }
 
@@ -3664,6 +4053,19 @@ execute_tasks() {
     # 進行表示はこのスクリプトでは一貫して stderr（直後の "⏳ Waiting for" と同じ）。
     # stdout は結果を受け取る側のものなので、注意喚起をそちらへ混ぜない。
     echo "⚠️  完了まで worktree を変更しないでください（commit / push / checkout / 編集）。変更を検出すると結果は全破棄されます（HEAD: ${banner_head}）" >&2
+    # バナーと同じ地点で機械可読の宣言も置く。読まれないバナーの
+    # 代わりに hook が読む。観点一覧は今回のプラン**全体**（resume で再利用へ倒れた
+    # 観点を含む FULL_EXECUTION_PLAN）から作る — 利用者から見て「走っているレビュー」
+    # はレポートに載る観点の集合であって、実行したタスクだけではない。
+    local in_flight_perspectives="" in_flight_seen="" plan_entry plan_persp
+    while IFS= read -r plan_entry; do
+      [[ -n "$plan_entry" ]] || continue
+      plan_persp="${plan_entry#*:}"
+      list_contains "$in_flight_seen" "$plan_persp" && continue
+      in_flight_seen="${in_flight_seen:+${in_flight_seen} }${plan_persp}"
+      in_flight_perspectives="${in_flight_perspectives:+${in_flight_perspectives},}${plan_persp}"
+    done <<< "$FULL_EXECUTION_PLAN"
+    write_run_in_flight "$TASK_TYPE" "${REPO_SNAPSHOT_BEFORE%% *}" "$in_flight_perspectives"
   fi
 
   if [[ "$PARALLEL" == "true" ]]; then
@@ -4148,8 +4550,78 @@ report_task_failure() {
 # 判定不能は空文字を返す = 従来どおりの案内に落ちる fail-open。誤った断定は
 # 「認証を直しに行ったが実際はクラッシュだった」形の遠回りを生むので、
 # 迷ったら分類しない側へ倒す。
-classify_cli_failure_cause() { # <result-file> → "auth" | "billing" | "argv" | ""
-  local file="$1" stderr_section=""
+## ── モデル側のプロンプト超過（公開 feel-flow/ff-dev-toolkit#95）──
+#
+# 5 つ目の分類 `prompt-too-long`。E2BIG（`argv`）が「OS が起動を拒んだ」なのに対し、
+# こちらは「CLI は起動してモデルへ送ったが、モデルがリクエストごと拒否した」形で、
+# 実測（公開 #95、`git diff origin/develop | wc -c` = 8,048,710 / 525 files）では
+# 3 CLI が同時に落ちた。auth / billing / argv と違うのは**原因が CLI 側ではなく
+# レビュー対象側にある**点で、同じ CLI を再実行しても代替 CLI へ振っても直らない。
+#
+# 出力先と文言が CLI ごとに違うので、走査面を 2 つ持つ:
+#   codex-cli   … stderr。API 由来の拒否をそのまま stderr へ流す（実測: stdout が
+#                 空で stderr にだけ材料が出た）。stderr 節は CLI 自身のチャネル
+#                 なので、auth / billing と同じく無条件の語彙照合でよい。
+#   claude-code … stdout。`API Error: 400 {"type":"error","error":
+#                 {"type":"invalid_request_error","message":"Prompt is too long…"}}`
+#                 の形で出て、成果物では「部分出力」として保全される（実測: 公開
+#                 #95 の 3 CLI のうち claude-code はこの形だった）。
+#   grok-cli / copilot-cli … 本 Issue の時点で超過の実測を再現できていない。両者とも
+#                 上流 API のエラーメッセージを素通しするので、同じ語彙表
+#                 （context length / token limit / too long）で拾える見込みだが、
+#                 **見込みであって実測ではない**。外れた回は空文字＝従来案内へ落ちる。
+#
+# **語彙だけでは判定しない。** どちらの走査面にも、その語を「話題として」書いた行が
+# 混ざる — 保全されるのはレビュー本文であり（このリポジトリのソース・docs・テストは
+# 現にその語を含む）、stderr にも進捗・デバッグ行が流れる。そこで語彙を 2 段に割り、
+# 面ごとに要求を変える:
+#
+#   canonical … `prompt is too long` / `prompt too long`。モデルの拒否文そのもので、
+#               他の意味で書かれることが実質ない。stderr 側では単独で採る。
+#   broad     … context length / input too large / token limit 等。単独では日常語に
+#               近いので、**同じ行に API エラーらしさの語**が並ぶことを要求する。
+#
+# `token limit` はとくに危険で、`monthly token limit`（= プラン・残高の上限）が同じ語を
+# 使う。プロンプト長の話であることを示す `context` / `prompt` / `input` が同じ行に
+# 並ぶことを追加で要求し、billing の材料を奪わない。
+#
+# 部分出力（stdout）側はさらに**行の形**でも絞る。実測の claude-code 形は
+# `API Error: 400 {...}` のように行頭がエラーの体裁になっており、レビュー本文の
+# 箇条書き（`- Suggestion: … prompt is too long …`）はそうならない。行頭アンカーを
+# 掛けてから語彙と文脈語を見ることで、この suite 自身の fixture のような「生きた
+# 誤診源」を構造で外す。閉じた側の代償は偽陰性 = 従来案内で、これは今日の挙動と同じ。
+_PROMPT_TOO_LONG_CANONICAL_RE='prompt is too long|prompt too long'
+_PROMPT_TOO_LONG_RE='prompt is too long|prompt too long|input is too long|input too large|request too large|too many tokens|context_length_exceeded|request_too_large|(maximum|max) context (length|window)|context (length|window) (exceeded|limit)|exceeds? the ((model|models|model.s) )?context (window|length)|(context|prompt|input).*token limit|token limit.*(context|prompt|input)'
+# 「その行が API のエラーとして出た」ことの目印。canonical 以外の語彙は、これと同じ行に
+# 並ぶことを要求する（stderr 側・部分出力側の共通条件）。
+_PROMPT_TOO_LONG_CONTEXT_RE='api error|invalid_request_error|request_too_large|context_length_exceeded|invalid request|bad request|refused|rejected|too large|\berror\b|error[^a-z0-9]{0,4}(400|413)|(http|status|code)[^0-9]{0,10}(400|413)'
+# 部分出力側でだけ掛ける行頭アンカー。CLI / API が吐いたエラー行の体裁を列挙する。
+# レビュー本文の箇条書き・散文・引用（`- `, `> `, `  1. ` 等）はここで落ちる。
+_PROMPT_TOO_LONG_ERRLINE_RE='^[[:space:]]{0,4}(api error|stream error|error|fatal|request failed|unhandled|\{"(type|error)"|\[error\])'
+
+# 語彙照合の本体。面によって要求を変える。
+#   stderr  … canonical は単独可（CLI 自身のチャネルで、そこに拒否文がそのまま出る）。
+#             それ以外の語彙は文脈語との同一行共起を要求する。
+#   partial … 行頭がエラーの体裁である行だけに絞ってから、**canonical も含めて**
+#             文脈語との同一行共起を要求する。保全されるのはレビュー本文なので、
+#             canonical をそのまま引用した行が来うるため。
+# grep を 2 段のパイプにしないのは、前段が早期終了で EPIPE を受けて pipefail 下の
+# rc=141 が「不一致」に化けるため（argv / billing の項と同じ理由）。
+prompt_too_long_matches() { # <text> <stderr|partial> → rc 0 で一致
+  local text="$1" surface="$2" both err_lines
+  both="((${_PROMPT_TOO_LONG_RE}).*(${_PROMPT_TOO_LONG_CONTEXT_RE}))|((${_PROMPT_TOO_LONG_CONTEXT_RE}).*(${_PROMPT_TOO_LONG_RE}))"
+  if [[ "$surface" == "stderr" ]]; then
+    grep -qiE "$_PROMPT_TOO_LONG_CANONICAL_RE" <<<"$text" && return 0
+    grep -qiE "$both" <<<"$text" && return 0
+    return 1
+  fi
+  err_lines="$(grep -iE "$_PROMPT_TOO_LONG_ERRLINE_RE" <<<"$text")" || return 1
+  [[ -n "$err_lines" ]] || return 1
+  grep -qiE "$both" <<<"$err_lines" && return 0
+  return 1
+}
+classify_cli_failure_cause() { # <result-file> → "auth" | "billing" | "argv" | "prompt-too-long" | ""
+  local file="$1" stderr_section="" partial_section=""
   [[ -f "$file" ]] || return 0
   # アダプタが**末尾へ**付ける stderr 節の、コードフェンスの中身だけを取る。
   # 最初の `### CLI stderr` から EOF まで取ると、保全された部分出力がその見出しを
@@ -4167,39 +4639,232 @@ classify_cli_failure_cause() { # <result-file> → "auth" | "billing" | "argv" |
         if (infence) print line[i]
       }
     }' "$file" 2>/dev/null)" || return 0
-  [[ -n "$stderr_section" ]] || return 0
 
-  # exec 段の失敗を最初に見る（Issue #1148）。E2BIG は CLI が**起動する前**に
-  # execve が返す失敗なので、そのとき stderr にはモデルの応答が 1 バイトも無い。
-  # auth / billing の語彙と競合しないが、順序で意味を固定する — 起動できなかった
-  # 実行を「認証が拒否された」と読ませないため。
-  # 語は execve の失敗をシェル / libc が訳したもので、ロケールで揺れる。実測した
-  # 英語形（bash / zsh の "Argument list too long"）に加えて E2BIG も拾う。
-  # 拾えなかった回は空文字 = 従来の案内に落ちるだけで、断定はしない。
-  if grep -qiE 'argument list too long|\bE2BIG\b' <<<"$stderr_section"; then
-    printf 'argv\n'
-    return 0
+  # stderr 節が無くても打ち切らない。プロンプト超過は stdout 側にだけ出る CLI 形
+  # （claude-code）があり、ここで return すると実測 2 形のうち片方を構造的に拾えない。
+  if [[ -n "$stderr_section" ]]; then
+    # exec 段の失敗を最初に見る（Issue #1148）。E2BIG は CLI が**起動する前**に
+    # execve が返す失敗なので、そのとき stderr にはモデルの応答が 1 バイトも無い。
+    # auth / billing の語彙と競合しないが、順序で意味を固定する — 起動できなかった
+    # 実行を「認証が拒否された」と読ませないため。
+    # 語は execve の失敗をシェル / libc が訳したもので、ロケールで揺れる。実測した
+    # 英語形（bash / zsh の "Argument list too long"）に加えて E2BIG も拾う。
+    # 拾えなかった回は空文字 = 従来の案内に落ちるだけで、断定はしない。
+    if grep -qiE 'argument list too long|\bE2BIG\b' <<<"$stderr_section"; then
+      printf 'argv\n'
+      return 0
+    fi
+
+    # プロンプト超過は残高・認証より**先**に見る。順序を決めた根拠は 3 つ:
+    #   1. 語彙が重ならない。canonical は拒否文そのもので、broad 側は 400 / 413 系の
+    #      文脈語を要求する。billing（402 / credits）・auth（401 / credentials）とは
+    #      交わらず、`monthly token limit` は文脈語の要求で ptl 側へ落ちない。
+    #   2. 狭めた語彙を**検査の効く位置**に残せる。billing を先に評価すると、語彙が
+    #      緩む退行が起きても billing が先に当たって症状が隠れ、テストが緑のまま通る
+    #      （実測: `token limit` を素の語へ戻す変異は、この順序でのみ赤になる）。
+    #   3. 意味の順序としても「そもそも受け付けられたか」が「誰の資格で送ったか」より先。
+    if prompt_too_long_matches "$stderr_section" stderr; then
+      printf 'prompt-too-long\n'
+      return 0
+    fi
+
+    # 残高側を先に見る。クレジット切れの応答は認証の語（unauthorized 等）を含みうるが、
+    # 逆は起きない。取り違えると「再ログインすれば直る」と案内して、実際には同じ失敗を
+    # もう一度引かせることになる。
+    #
+    # 数値ステータスは単独では見ない（stderr 抜粋に現れる "402 files" のような無関係な
+    # 数字を拾う）。HTTP 文脈の語と同じ行に並んでいるときだけ採る。
+    # パイプにしないのは `set -o pipefail` 下で grep -q が先頭付近で早期終了すると
+    # printf が EPIPE で死に、パイプライン rc=141 が「不一致」に化けるため（実測: 先頭に
+    # unauthorized を置いた 640KB 入力が LOST）。真陽性が読み解けない形で落ちる。
+    if grep -qiE \
+      'out of credits|no credits|insufficient credit|credit balance|balance exhausted|insufficient_quota|payment required|(http|status|code)[^0-9]{0,10}402|402[^0-9]{0,12}(payment|http|status)' <<<"$stderr_section"; then
+      printf 'billing\n'
+      return 0
+    fi
+    if grep -qiE \
+      'unauthorized|not logged in|not signed in|authentication (failed|error)|invalid api key|invalid_api_key|expired (token|credential)|token (is |has )?expired|please (log ?in|sign in)|re-?authenticate|(http|status|code)[^0-9]{0,10}401|401[^0-9]{0,12}(unauthorized|http|status)' <<<"$stderr_section"; then
+      printf 'auth\n'
+      return 0
+    fi
   fi
 
-  # 残高側を先に見る。クレジット切れの応答は認証の語（unauthorized 等）を含みうるが、
-  # 逆は起きない。取り違えると「再ログインすれば直る」と案内して、実際には同じ失敗を
-  # もう一度引かせることになる。
-  #
-  # 数値ステータスは単独では見ない（stderr 抜粋に現れる "402 files" のような無関係な
-  # 数字を拾う）。HTTP 文脈の語と同じ行に並んでいるときだけ採る。
-  # パイプにしないのは `set -o pipefail` 下で grep -q が先頭付近で早期終了すると
-  # printf が EPIPE で死に、パイプライン rc=141 が「不一致」に化けるため（実測: 先頭に
-  # unauthorized を置いた 640KB 入力が LOST）。真陽性が読み解けない形で落ちる。
-  if grep -qiE \
-    'out of credits|no credits|insufficient credit|credit balance|balance exhausted|insufficient_quota|payment required|(http|status|code)[^0-9]{0,10}402|402[^0-9]{0,12}(payment|http|status)' <<<"$stderr_section"; then
-    printf 'billing\n'
+  # ── 部分出力側（claude-code 形）──
+  # 走査範囲は最後の `### CLI stderr` 見出しより**手前**、つまりバナーと保全された
+  # 部分出力。stderr 節を含めないのは二重走査を避けるためで、そちらは既に上で見た。
+  partial_section="$(awk '
+    { line[NR] = $0; if ($0 ~ /^### CLI stderr/) last = NR }
+    END {
+      end = last ? last - 1 : NR
+      for (i = 1; i <= end; i++) print line[i]
+    }' "$file" 2>/dev/null)" || return 0
+  [[ -n "$partial_section" ]] || return 0
+  # エラー行の体裁を持つ行に絞ってから、語彙と文脈語が**同じ行**に並ぶことを要求する。
+  # 語彙の位置関係は決め打ちしない（`API Error: 400 … "Prompt is too long"` も
+  # `prompt is too long (invalid_request_error)` も同じ事実）。
+  if prompt_too_long_matches "$partial_section" partial; then
+    printf 'prompt-too-long\n'
     return 0
   fi
-  if grep -qiE \
-    'unauthorized|not logged in|not signed in|authentication (failed|error)|invalid api key|invalid_api_key|expired (token|credential)|token (is |has )?expired|please (log ?in|sign in)|re-?authenticate|(http|status|code)[^0-9]{0,10}401|401[^0-9]{0,12}(unauthorized|http|status)' <<<"$stderr_section"; then
-    printf 'auth\n'
-    return 0
+  return 0
+}
+
+# ── レビュー対象 diff の実測値（公開 feel-flow/ff-dev-toolkit#95）──
+#
+# プロンプト超過の案内に添える材料。オーケストレータは既にこの実行の diff を
+# 1 ファイルへ固定している（create_fixed_diff）ので、そのバイト列を数えるのが
+# **実際にプロンプトへ載ったもの**の唯一正しい実測になる。実行後に diff を
+# 取り直すと、レビュー中に作業ツリーが動いた回に別の数字を報告する。
+#
+# **固定 diff が無い経路（--include-diff なしの explore / implement）では測らない。**
+# numstat へ落ちると「送っていない diff」のファイル数を、送ったものとして名指しする
+# ことになる。空文字を返し、呼び出し側の「no fixed diff for this task type」分岐へ渡す。
+#
+# **計測は親シェルで 1 回だけ。** 値を返す関数を `$(...)` で呼ぶと、command
+# substitution は subshell なのでキャッシュが親へ残らず、失敗タスクごとに固定 diff を
+# 舐め直す（実測の diff は 8,048,710 bytes）。出力側は ensure_diff_size_summary を
+# 呼んでから **$DIFF_SIZE_SUMMARY を直接読む**。
+DIFF_SIZE_SUMMARY=""
+DIFF_SIZE_SUMMARY_COMPUTED=false
+ensure_diff_size_summary() { # DIFF_SIZE_SUMMARY を "N bytes across M changed file(s)" | "" にする
+  [[ "$DIFF_SIZE_SUMMARY_COMPUTED" == "true" ]] && return 0
+  DIFF_SIZE_SUMMARY_COMPUTED=true
+  local bytes="" files=""
+  [[ -n "$FIXED_DIFF_FILE" && -r "$FIXED_DIFF_FILE" ]] || return 0
+  bytes="$(wc -c < "$FIXED_DIFF_FILE" 2>/dev/null | tr -d '[:space:]')" || bytes=""
+  # 読めなかった回に 0 と書くと、観測していないものを観測したことにする。
+  [[ "$bytes" =~ ^[0-9]+$ ]] || return 0
+  # 固定 diff は `BASE...HEAD` と作業ツリー分の**連結**（get_diff_content）なので、
+  # 両方に現れたファイルはヘッダー行が 2 度出る。素の件数だとそれを 2 個と数え、
+  # 案内が実際より大きなファイル数を名指しする。ヘッダー行はパス対ごとに一意なので、
+  # 行を dedup してから数えれば distinct なファイル数になる。
+  # `grep` は 0 件で rc=1 を返す（= 変更 0 件という正当な観測）ので rc は見ない。
+  files="$( { grep '^diff --git ' "$FIXED_DIFF_FILE" 2>/dev/null || true; } | sort -u | wc -l | tr -d '[:space:]')" || files=""
+  if [[ "$files" =~ ^[0-9]+$ ]]; then
+    DIFF_SIZE_SUMMARY="${bytes} bytes across ${files} changed file(s)"
+  else
+    DIFF_SIZE_SUMMARY="${bytes} bytes (changed-file count not measured)"
   fi
+  return 0
+}
+# この実行が「プロンプト超過で全滅した」と言ってよいか（公開 feel-flow/ff-dev-toolkit#95）。
+#
+# 全滅は個別の失敗の集合ではなく 1 つの事実 —「レビュー対象が大きすぎる」。個別の
+# 再実行コマンドだけを並べると、利用者は CLI を 1 つずつ試す方向へ倒れる（実測では
+# 原因に辿り着くまで 3 回分の実行を空費した）。全滅を検出できたときだけ、再実行
+# コマンドより**先に**対象側を見よと言う。
+#
+# 条件は「全 executed task が prompt-too-long に分類された」ではない。それだと、
+# 動機になった事故（codex が stdout 空 + stderr に diff 断片だけを残した回）で
+# 案内が出ない — 分類器が材料不足で空文字を返した 1 タスクが、他の全タスクが
+# 名指しで超過を言っていても案内を丸ごと消してしまう。そこで:
+#
+#   - prompt-too-long が 1 件以上（言うべき事実が実在する）
+#   - **別原因**に分類された task が 0（auth / billing / argv が混ざっていれば全滅ではない）
+#   - 成功 0 / skip 0（走って通った観点、走らなかった観点があれば全滅ではない）
+#   - 分類不能（空文字）は阻害しない。**別原因ではない** — 材料が無いだけで、
+#     それを「違う原因だった」と読むのは観測していないことの断定になる
+#   - rc=124（時間切れ）の task は集計から外し、かつ全滅とは言わない。個別層は
+#     124 に対して原因を断定しない（print_failure_advice は cause を空へ倒す）ので、
+#     run-wide が代わりに断定してはいけない。時間切れた観点は「送る前に断られた」
+#     とは限らず、途中まで走っていた可能性が残る
+#
+# 分母は「この実行が走らせたタスク」。前回結果を再利用したタスク（REUSED_TASKS）は
+# 除く — 走っていないものの成否で全滅判定を左右させない。
+prompt_too_long_run_wide() {
+  [[ -n "$FAILED_TASKS" ]] || return 1
+  # スキップは実行の欠落。今日はスキップの理由が auth / billing に限られるため下の
+  # 別原因判定でも落ちるが、条件としては独立に持つ（スキップ可能な原因が増えたとき、
+  # 「走らなかった観点があるのに全滅と言う」形が静かに開かないように）。
+  [[ -z "$SKIPPED_TASKS" ]] || return 1
+  [[ -n "$EXECUTION_PLAN" ]] || return 1
+  local entry cli persp seen="" hits=0 cause rc
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    if [[ " $seen " == *" $entry "* ]]; then continue; fi
+    seen="$seen $entry"
+    cli="${entry%%:*}"
+    persp="${entry#*:}"
+    if list_contains "$REUSED_TASKS" "${cli}/${persp}"; then continue; fi
+    # 成功したタスクが 1 つでもあれば全滅ではない
+    task_left_perspective_unproven "$cli" "$persp" || return 1
+    rc="$(failed_task_rc "$cli" "$persp")"
+    [[ "$rc" == "124" ]] && return 1
+    cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${cli}/${persp}.md")"
+    case "$cause" in
+      prompt-too-long) hits=$((hits + 1)) ;;
+      "") : ;;   # 分類不能。別原因ではないので阻害しない
+      *) return 1 ;;
+    esac
+  done <<< "$EXECUTION_PLAN"
+  [[ "$hits" -gt 0 ]]
+}
+
+# 失敗として記録された rc（FAILED_TASKS は `<cli>/<persp>:<rc>` 形）。記録が無ければ空。
+failed_task_rc() { # <cli> <perspective>
+  local entry prefix="${1}/${2}:"
+  for entry in $FAILED_TASKS; do
+    if [[ "$entry" == "$prefix"* ]]; then
+      printf '%s\n' "${entry##*:}"
+      return 0
+    fi
+  done
+  return 0
+}
+# 全滅時の案内本文。stdout（stderr ストリーム）と統合レポートの両方が同じ文面を使う
+# — 片方だけに置くと、レポート経由で結果を読む消費者か、端末を見ている利用者の
+# どちらかがこの 1 事実を受け取り損ねる。
+prompt_too_long_advice_lines() {
+  # 呼び出し側（親シェル）が ensure_diff_size_summary を済ませている前提。この関数は
+  # process substitution 越しに呼ばれるので、ここで計測してもキャッシュが親へ残らない。
+  local size="$DIFF_SIZE_SUMMARY"
+  echo "Every task in this run was refused by the model for the same reason: the prompt"
+  echo "was too long. Look at the reviewed diff first — re-running a CLI, giving it more"
+  echo "time, or switching to the substitute CLI does not change what is being sent."
+  if [[ -n "$size" ]]; then
+    echo "Reviewed diff: ${size}."
+  else
+    echo "Reviewed diff: size could not be measured (no fixed diff for this task type)."
+  fi
+  echo "A diff that size is usually an accident rather than a change set: check whether"
+  echo "large untracked files or build artifacts were swept into it — an earlier run's"
+  echo "archived results under ${OUTPUT_DIR}/.prev-<timestamp>/ are a known source — and"
+  echo "that .gitignore covers them. Shrink what is reviewed (or pass a different"
+  echo "--base), then re-run."
+}
+
+# 失敗した観点の**成果物**へ実測値を書き足す（公開 feel-flow/ff-dev-toolkit#95 の AC）。
+#
+# アダプタは自分が拒否された理由（プロンプト超過）を保全するが、**何バイト送ったのか**
+# は知らない — diff を固定したのはオーケストレータ側だから。成果物を単体で開いた
+# 読み手（レポートではなく `.review-results/<cli>/<persp>.md` を見る側）が、そこで
+# `git diff | wc -c` を手で打たずに済むように、持っている実測値をここで添える。
+#
+# 追記位置は末尾。ヘッダーの `Status: incomplete` 判定は空行までの窓しか見ないので
+# 影響せず、保全された部分出力と CLI stderr 節も書き換えない（観測の改変はしない）。
+# 書けなかった場合は警告して続行する — 案内が 1 行減るだけで、stdout とレポートの
+# 同じ材料は残る。
+annotate_result_prompt_too_long() { # <result-file>
+  local file="$1" size
+  [[ -f "$file" && -w "$file" ]] || return 0
+  # 二重追記を避ける（同じ実行内で 2 回呼ばれることは無い想定だが、追記は冪等に）。
+  grep -qF -- '<!-- prompt-too-long-diagnosis -->' "$file" && return 0
+  ensure_diff_size_summary
+  size="$DIFF_SIZE_SUMMARY"
+  [[ -n "$size" ]] || return 0
+  {
+    echo ""
+    echo "<!-- prompt-too-long-diagnosis -->"
+    echo "### Why this failed: the prompt was too long"
+    echo ""
+    echo "The model refused the request itself, so nothing was looked at. The size of what"
+    echo "this run sent for review, measured from the diff this run fixed for every task:"
+    echo ""
+    echo "- reviewed diff: ${size}"
+    echo ""
+    echo "Re-running this CLI, giving it more time, or switching to the substitute CLI"
+    echo "sends the same bytes. Shrink what is under review instead."
+  } >> "$file" || echo "WARNING: could not annotate the result file with the diff size: ${file}" >&2
   return 0
 }
 
@@ -4212,6 +4877,8 @@ cause_phrase() { # <cause> → 英文へ差し込む名詞句
     auth)    echo "an authentication problem" ;;
     billing) echo "a credits / usage balance problem" ;;
     argv)    echo "an argument-list-too-long (E2BIG) failure, i.e. the CLI never started" ;;
+    prompt-too-long)
+             echo "a prompt-too-long rejection from the model, i.e. the request was refused before any ${TASK_TYPE:-review} happened" ;;
     *)       echo "a problem it names itself" ;;
   esac
 }
@@ -4271,6 +4938,19 @@ print_failure_advice() {
   fi
   if [[ -n "$DESCRIPTION" ]]; then
     self="${self} --description $(shell_quote "$DESCRIPTION")"
+  fi
+
+  # 全滅した prompt-too-long は、個別の再実行コマンドより**先に**出す（公開
+  # feel-flow/ff-dev-toolkit#95）。順序が案内そのもの — 後ろに置くと、読み手は先頭の
+  # 再実行コマンドを打ってから原因に辿り着く。
+  if prompt_too_long_run_wide; then
+    local ptl_line ptl_prefix="   📐 "
+    ensure_diff_size_summary
+    echo "" >&2
+    while IFS= read -r ptl_line; do
+      echo "${ptl_prefix}${ptl_line}" >&2
+      ptl_prefix="      "
+    done < <(prompt_too_long_advice_lines)
   fi
 
   echo "" >&2
@@ -4340,6 +5020,21 @@ print_failure_advice() {
         echo "        and (grok) the prompt-file path. Look at an oversized MULTI_AGENT_MODEL_*" >&2
         echo "        value, or an environment whose limit is far below \`getconf ARG_MAX\`" >&2
         echo "        (Git Bash on Windows caps CreateProcess near 32KB)." >&2
+        ;;
+      prompt-too-long)
+        # 全滅していれば上の集約案内が既に対象側を名指ししているので、ここは
+        # 「この CLI も同じ理由」であることと、実測値だけを繰り返さずに置く。
+        echo "     📐 ${cli} — the model refused the request itself: the prompt was too long." >&2
+        echo "        Nothing was looked at, and neither more time nor a different CLI changes" >&2
+        echo "        the bytes being sent — the diff under review is what has to shrink." >&2
+        ensure_diff_size_summary
+        if [[ -n "$DIFF_SIZE_SUMMARY" ]]; then
+          echo "        Reviewed diff: ${DIFF_SIZE_SUMMARY}." >&2
+        fi
+        # 成果物を単体で開く読み手にも同じ実測値を残す。ここで書くのは、この関数が
+        # レポート生成より前に 1 度だけ走り、分類済みの cause を既に持っているため
+        # （分類をもう 1 周させないための同居であって、助言の副作用ではない）。
+        annotate_result_prompt_too_long "${OUTPUT_DIR}/${cli}/${persp}.md"
         ;;
     esac
     # Only a timeout is helped by a longer limit. Offering it for expired
@@ -4416,6 +5111,23 @@ append_plan_sections() {
         [[ -n "$note" ]] || continue
         echo "> - ${note}"
       done <<< "$UNPLANNED_RESULT_NOTES"
+    } >> "$report_file"
+  fi
+
+  # 全滅した prompt-too-long は個別セクションより**手前**に置く（公開
+  # feel-flow/ff-dev-toolkit#95）。各セクションの INCOMPLETE を 1 本ずつ読んでから
+  # 「実は全部同じ 1 つの原因だった」と気付く順序では、実測の遠回り（CLI を 1 つずつ
+  # 再実行する）がレポート経由でもそのまま再現する。
+  if prompt_too_long_run_wide; then
+    local ptl_line
+    ensure_diff_size_summary
+    {
+      echo ""
+      echo "> **📐 PROMPT TOO LONG — read this before the per-task sections.**"
+      while IFS= read -r ptl_line; do
+        echo "> ${ptl_line}"
+      done < <(prompt_too_long_advice_lines)
+      echo ""
     } >> "$report_file"
   fi
 
@@ -4933,6 +5645,7 @@ main() {
     # 綴り間違いが「その mode は在る」という誤った確認になる（--cli と同じ形）。
     validate_mode
     validate_requested_clis
+    validate_excluded_clis
     validate_requested_perspectives
     validate_excluded_perspectives
     all_task_perspectives
@@ -4940,6 +5653,7 @@ main() {
   fi
   apply_task_defaults
   validate_requested_clis
+  validate_excluded_clis
   validate_requested_perspectives
   validate_excluded_perspectives
 
@@ -5044,6 +5758,13 @@ main() {
       if [[ -n "$EXCLUDE_PERSPECTIVES" ]]; then
         echo "       --exclude-perspective (${EXCLUDE_PERSPECTIVES}) removed perspective(s) that would otherwise run." >&2
       fi
+    fi
+    # CLI 除外はフィルタの有無に依らず原因になりうるので、上の 2 分岐の外で名指しする。
+    if [[ -n "$EXCLUDE_CLIS_FLAG" ]]; then
+      echo "       --exclude-cli (${EXCLUDE_CLIS_FLAG}) removed CLI(s) that would otherwise run." >&2
+    fi
+    if [[ -n "$EXCLUDE_CLIS_CONFIG" ]]; then
+      echo "       config exclude_clis (${EXCLUDE_CLIS_CONFIG_SOURCE}: ${EXCLUDE_CLIS_CONFIG}) removed CLI(s) that would otherwise run." >&2
     fi
     exit 1
   fi

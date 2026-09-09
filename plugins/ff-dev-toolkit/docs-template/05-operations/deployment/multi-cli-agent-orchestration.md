@@ -150,7 +150,7 @@ v1.0 (review-config.yaml) との後方互換あり。
 
 本節が正本で、スキル（multi-review / multi-explore / multi-implement / setup-ai-config）はここを参照する（説明をスキル側へ複製しない）。
 
-プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される（環境変数 `MULTI_AGENT_CONFIG=<path>` または `--config <path>` でも上書き可。読み取りは `yq` 依存で、無い環境では設定ファイルは読まれず既定値で動く）。ただし**実際に読まれるのは `version` / `mode` / `parallel` / `review.main` / `review.sub` / `review.critical_nonblock_perspectives` と、`version: "2.0"` のときだけ `tasks.<task>.{mode,cost_strategy,timeout,output_dir}` である**（`version` が `2.0` でない場合は v1 形式とみなされ、トップレベルの `cost_strategy` / `timeout` / `output_dir` が読まれる — `version` を書き忘れると `tasks.*` が黙って無視されるので注意）。`agents:` と `fallback:` はどのバージョンでも読まれず、書いても挙動は変わらない（同梱の既定設定はこの 2 ブロックを持たない）。実行時のレジストリの正本は `scripts/multi-agent.sh` の `get_cli_*` 関数。
+プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される（環境変数 `MULTI_AGENT_CONFIG=<path>` または `--config <path>` でも上書き可。読み取りは `yq` 依存で、無い環境では設定ファイルは読まれず既定値で動く）。ただし**実際に読まれるのは `version` / `mode` / `parallel` / `review.main` / `review.sub` / `review.critical_nonblock_perspectives` / `exclude_clis` と、`version: "2.0"` のときだけ `tasks.<task>.{mode,cost_strategy,timeout,output_dir}` である**（`version` が `2.0` でない場合は v1 形式とみなされ、トップレベルの `cost_strategy` / `timeout` / `output_dir` が読まれる — `version` を書き忘れると `tasks.*` が黙って無視されるので注意）。`agents:` と `fallback:` はどのバージョンでも読まれず、書いても挙動は変わらない（同梱の既定設定はこの 2 ブロックを持たない）。実行時のレジストリの正本は `scripts/multi-agent.sh` の `get_cli_*` 関数。 `exclude_clis` は空白またはカンマ区切りの **1 文字列**で、そこに挙げた CLI をプランから外す（`--exclude-cli` と和集合。プラン表示に出所が出る）。
 
 ## Perspective フィルタと単一 CLI 縮退
 

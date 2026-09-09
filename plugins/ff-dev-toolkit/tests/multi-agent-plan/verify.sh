@@ -102,6 +102,22 @@ run_plan() { # $1: output file, $2..: multi-agent args
   ) >"$output" 2>&1
 }
 
+# pair モード用。主・副は env で名指しする（--set-reviewers は設定ファイルを書き換える）。
+# run_plan と別関数にするのは、あちらが --mode distributed 固定で、pair の縮退経路
+# （主不在 / 副の脱落）が一切通っていなかったため（PR #1410 レビュー項目 4）。
+run_plan_pair() { # $1: output file, $2: main, $3: sub, $4..: multi-agent args
+  local output="$1" main="$2" sub="$3"
+  shift 3
+  (
+    cd "$REPO"
+    run_isolated PATH="$STUB:$PATH" \
+      MULTI_AGENT_REVIEW_MAIN="$main" MULTI_AGENT_REVIEW_SUB="$sub" \
+      bash "$MULTI_AGENT" \
+      --task review --mode pair --strategy balanced --base develop \
+      --dry-run "$@"
+  ) >"$output" 2>&1
+}
+
 echo "== perspective フィルタの縮退可視化 =="
 FILTER_LOG="$TMP/filter.log"
 if run_plan "$FILTER_LOG" --perspective code-review; then
@@ -992,6 +1008,214 @@ fi
 # しない方針で固定値なので、30 秒の実待ちなしに timeout 経路へ入れる入口が現状無い。
 # fail-open の実装（TIMEOUT_EXIT_CODE を拒否と読まない）はコード側のガードとして
 # 残し、検査は上の 4 形に留める。
+
+echo ""
+echo "== CLI の除外（--exclude-cli / config exclude_clis） =="
+
+# 引数由来の除外: 実行対象から外れ、プランに 1 行出る（metered skip と同じ扱い）。
+# 除外した CLI は「未インストール」と同じ経路を通るので、観点は fallback へ回る。
+EXCL_FLAG_LOG="$TMP/exclude-cli-flag.log"
+if run_plan "$EXCL_FLAG_LOG" --exclude-cli grok-cli; then
+  ok "--exclude-cli の dry-run が成功"
+else
+  bad "--exclude-cli の dry-run が失敗"
+fi
+if grep -Fq 'grok-cli excluded (--exclude-cli)' "$EXCL_FLAG_LOG" \
+  && grep -Fq 'Excluded CLIs: grok-cli (--exclude-cli)' "$EXCL_FLAG_LOG"; then
+  ok "除外した CLI と出所（引数由来）がプランに 1 行ずつ出る"
+else
+  bad "--exclude-cli の除外表示が不足"
+fi
+# 除外の実効: grok-cli 名義のタスクがプランに 1 件も無い（表示だけで実体が残る退行を捕まえる）
+if ! grep -qE '^   grok-cli \[' "$EXCL_FLAG_LOG"; then
+  ok "除外した CLI がプランの実行対象から消えている"
+else
+  bad "除外したはずの grok-cli がプランに残っている"
+fi
+
+# --cli と --exclude-cli が同じ CLI を名指ししたら非 0。片方を優先すると
+# 「選んだのに走らない」か「外したのに走る」が黙って起きる。
+EXCL_CONFLICT_LOG="$TMP/exclude-cli-conflict.log"
+if run_plan "$EXCL_CONFLICT_LOG" --cli grok-cli --exclude-cli grok-cli; then
+  bad "--cli と --exclude-cli の同時指定が成功している"
+else
+  ok "--cli と --exclude-cli の矛盾を非 0 で拒否"
+fi
+if grep -Fq -e "--cli and --exclude-cli both name 'grok-cli'" "$EXCL_CONFLICT_LOG"; then
+  ok "矛盾のエラーが該当 CLI 名を明示"
+else
+  bad "矛盾のエラーに CLI 名が出ていない"
+fi
+
+# 存在しない CLI 名の除外は「外したつもり」で素通りさせない（--cli と同じ扱い）
+EXCL_UNKNOWN_LOG="$TMP/exclude-cli-unknown.log"
+if run_plan "$EXCL_UNKNOWN_LOG" --exclude-cli cursor-cli; then
+  bad "存在しない CLI の除外が成功している"
+else
+  ok "存在しない CLI の除外を非 0 で拒否"
+fi
+if grep -Fq "unknown CLI in --exclude-cli: 'cursor-cli'" "$EXCL_UNKNOWN_LOG"; then
+  ok "未知 CLI 除外のエラーが入力名を明示"
+else
+  bad "未知 CLI 除外のエラーに入力名が出ていない"
+fi
+
+# 空文字の値は「渡したつもりで渡せていない」形。黙って no-op にすると、外したはずの
+# CLI が毎回プランに載り続ける（この機能が消そうとしている状態そのもの）。
+EXCL_EMPTY_LOG="$TMP/exclude-cli-empty.log"
+EXCL_EMPTY_RC=0
+run_plan "$EXCL_EMPTY_LOG" --exclude-cli "" || EXCL_EMPTY_RC=$?
+if [[ "$EXCL_EMPTY_RC" -eq 2 ]]; then
+  ok "--exclude-cli の空文字を rc=2 で拒否"
+else
+  bad "--exclude-cli の空文字が rc=${EXCL_EMPTY_RC} で通っている（無言の no-op）"
+fi
+if grep -Fq -e "ERROR: --exclude-cli には CLI 名が必要です（例: --exclude-cli grok-cli）。" "$EXCL_EMPTY_LOG"; then
+  ok "空文字のエラー文がシム（codex-review.sh）と揃っている"
+else
+  bad "空文字のエラー文がシムと揃っていない"
+fi
+
+# 除外の結果 cross-model が 1 本へ縮退したら、クロスモデルが成立していないと分かる形で警告する
+EXCL_CROSS_LOG="$TMP/exclude-cli-cross.log"
+if run_plan "$EXCL_CROSS_LOG" --mode cross-model --exclude-cli grok-cli --exclude-cli claude-code; then
+  ok "cross-model + 除外の dry-run が成功"
+else
+  bad "cross-model + 除外の dry-run が失敗"
+fi
+if grep -Fq 'Cross-model plan resolved to a single CLI (codex-cli) after exclusion' "$EXCL_CROSS_LOG" \
+  && grep -Fq 'this run is NOT cross-model' "$EXCL_CROSS_LOG" \
+  && grep -Fq 'Excluded by --exclude-cli: claude-code grok-cli' "$EXCL_CROSS_LOG"; then
+  ok "cross-model の単一 CLI 縮退を除外の名指しつきで警告"
+else
+  bad "cross-model の単一 CLI 縮退警告が不足"
+fi
+
+echo ""
+echo "== pair モードの除外（主 / 副） =="
+
+# 副が除外された回: 未インストールと同じ文言に落とすと、install 済みの機械へ偽の
+# 理由がレポートまで残り、しかも単一 CLI 縮退の警告が消える（PR #1410 レビュー項目 1）。
+PAIR_SUB_EXCL_LOG="$TMP/pair-sub-excluded.log"
+if run_plan_pair "$PAIR_SUB_EXCL_LOG" claude-code codex-cli --exclude-cli codex-cli; then
+  ok "pair + 副の除外の dry-run が成功（主のみで続行）"
+else
+  bad "pair + 副の除外の dry-run が失敗"
+  cat "$PAIR_SUB_EXCL_LOG"
+fi
+if grep -Fq "sub reviewer 'codex-cli' excluded by --exclude-cli — running single-reviewer" "$PAIR_SUB_EXCL_LOG" \
+  && ! grep -Fq "sub reviewer 'codex-cli' is not installed" "$PAIR_SUB_EXCL_LOG"; then
+  ok "副の脱落理由が「除外」で記録される（not installed の偽診断ではない）"
+else
+  bad "副の除外が not installed として扱われている"
+  cat "$PAIR_SUB_EXCL_LOG"
+fi
+if grep -Fq 'Plan resolved to a single CLI (claude-code)' "$PAIR_SUB_EXCL_LOG"; then
+  ok "副が除外で落ちた回に単一 CLI 縮退の警告が出る"
+else
+  bad "副の除外で単一 CLI 縮退の警告が出ていない"
+  cat "$PAIR_SUB_EXCL_LOG"
+fi
+
+# 主が除外された回: 非 0 で止まり、理由（除外・出所）と解除方法を名指しする。
+# 「Install it」は install 済みの機械で偽の診断になる（レビュー項目 2）。
+PAIR_MAIN_EXCL_LOG="$TMP/pair-main-excluded.log"
+if run_plan_pair "$PAIR_MAIN_EXCL_LOG" claude-code codex-cli --exclude-cli claude-code; then
+  bad "pair + 主の除外が成功している（止まるべき）"
+else
+  ok "pair + 主の除外を非 0 で拒否"
+fi
+if grep -Fq "main reviewer 'claude-code' was excluded by --exclude-cli." "$PAIR_MAIN_EXCL_LOG" \
+  && grep -Fq "Drop 'claude-code' from --exclude-cli" "$PAIR_MAIN_EXCL_LOG" \
+  && ! grep -Fq "main reviewer 'claude-code' is not installed" "$PAIR_MAIN_EXCL_LOG"; then
+  ok "主の除外エラーが除外を名指しし、解除方法を案内する"
+else
+  bad "主の除外エラーが not installed の偽診断のまま"
+  cat "$PAIR_MAIN_EXCL_LOG"
+fi
+
+echo ""
+echo "== 設定由来の除外 =="
+
+# yq は run-all の前提なので、無い環境は skip ではなく fail にする（同 suite の
+# grok 不在ケースと同じ扱い）。skip にすると、設定経路の検査が黙って消える。
+if ! command -v yq >/dev/null 2>&1; then
+  bad "設定由来の除外の検査に必要な yq が無い"
+else
+  EXCL_CFG="$TMP/exclude-cli-config.yaml"
+  sed 's/^#exclude_clis: .*/exclude_clis: "grok-cli, claude-code"/' \
+    "$PLUGIN_ROOT/scripts/agent-config.yaml" > "$EXCL_CFG"
+  EXCL_CFG_LOG="$TMP/exclude-cli-config.log"
+  if run_plan "$EXCL_CFG_LOG" --mode cross-model --config "$EXCL_CFG"; then
+    ok "設定由来の除外の dry-run が成功"
+  else
+    bad "設定由来の除外の dry-run が失敗"
+  fi
+  if grep -Fq "grok-cli excluded (config exclude_clis" "$EXCL_CFG_LOG" \
+    && grep -Fq "Excluded CLIs: claude-code grok-cli (config exclude_clis — --config flag)" "$EXCL_CFG_LOG"; then
+    ok "引数なしでも設定の除外が効き、出所（設定由来）がプランに出る"
+  else
+    bad "設定由来の除外の表示または適用が不足"
+  fi
+  if ! grep -qE '^   grok-cli \[' "$EXCL_CFG_LOG" && ! grep -qE '^   claude-code \[' "$EXCL_CFG_LOG"; then
+    ok "設定由来の除外がプランの実行対象から消えている"
+  else
+    bad "設定で除外したはずの CLI がプランに残っている"
+  fi
+  # --cli はその 1 回だけ設定の除外を上回る。ヘッダーは「実際に効いた除外」だけを出す
+  EXCL_OVERRIDE_LOG="$TMP/exclude-cli-override.log"
+  if run_plan "$EXCL_OVERRIDE_LOG" --config "$EXCL_CFG" --cli grok-cli \
+    && grep -Fq 'but --cli named it — running it this time' "$EXCL_OVERRIDE_LOG" \
+    && grep -Fq 'Excluded CLIs: claude-code (config exclude_clis' "$EXCL_OVERRIDE_LOG" \
+    && grep -qE '^   grok-cli \[' "$EXCL_OVERRIDE_LOG"; then
+    ok "--cli が設定の除外をその実行だけ上書きし、ヘッダーは実効除外のみを出す"
+  else
+    bad "設定除外の --cli 上書きが期待どおりでない"
+  fi
+
+  # 消費側サイドカー `<repo>/.claude/agent-config.yaml` の自動選択経路（--config なし）。
+  # ここまでの設定ケースは全部 --config 明示で、実際に利用者が踏む経路が一度も
+  # 通っていなかった（PR #1410 レビュー項目 6）。
+  mkdir -p "$REPO/.claude"
+  sed 's/^#exclude_clis: .*/exclude_clis: "grok-cli"/' \
+    "$PLUGIN_ROOT/scripts/agent-config.yaml" > "$REPO/.claude/agent-config.yaml"
+  EXCL_SIDECAR_LOG="$TMP/exclude-cli-sidecar.log"
+  if run_plan "$EXCL_SIDECAR_LOG"; then
+    ok "サイドカー設定（引数なし）の dry-run が成功"
+  else
+    bad "サイドカー設定（引数なし）の dry-run が失敗"
+    cat "$EXCL_SIDECAR_LOG"
+  fi
+  if grep -Fq 'Excluded CLIs: grok-cli (config exclude_clis — project override)' "$EXCL_SIDECAR_LOG" \
+    && grep -Fq 'grok-cli excluded (config exclude_clis — project override)' "$EXCL_SIDECAR_LOG" \
+    && ! grep -qE '^   grok-cli \[' "$EXCL_SIDECAR_LOG"; then
+    ok "引数なしでサイドカーの除外が効き、出所が「project override」と出る"
+  else
+    bad "サイドカー設定の自動選択経路で除外が効いていない"
+    cat "$EXCL_SIDECAR_LOG"
+  fi
+
+  # retire 済み CLI 名が設定に残っていても実行は止めない（引数由来は従来どおり非 0）。
+  # 設定は複数の機械・リポジトリで共有され、hard-fail だと「レビューが 1 本も走らない」
+  # という重い故障を、設定を書いた人でない誰かが踏む（PR #1410 レビュー項目 12）。
+  sed 's/^#exclude_clis: .*/exclude_clis: "cursor-cli grok-cli"/' \
+    "$PLUGIN_ROOT/scripts/agent-config.yaml" > "$REPO/.claude/agent-config.yaml"
+  EXCL_STALE_LOG="$TMP/exclude-cli-stale.log"
+  if run_plan "$EXCL_STALE_LOG"; then
+    ok "設定の未知 CLI 名で実行を止めない"
+  else
+    bad "設定の未知 CLI 名で実行が止まった"
+    cat "$EXCL_STALE_LOG"
+  fi
+  if grep -Fq "unknown CLI in config exclude_clis (project override): 'cursor-cli' — ignoring it." "$EXCL_STALE_LOG" \
+    && grep -Fq 'Excluded CLIs: grok-cli (config exclude_clis' "$EXCL_STALE_LOG"; then
+    ok "未知名を警告で名指ししたうえで、妥当な除外はそのまま効く"
+  else
+    bad "設定の未知 CLI 名の警告または残りの除外が期待どおりでない"
+    cat "$EXCL_STALE_LOG"
+  fi
+  rm -rf "$REPO/.claude"
+fi
 
 echo ""
 if [[ "$FAIL" -gt 0 ]]; then

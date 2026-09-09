@@ -611,8 +611,22 @@ done
 cat > "$STUB/codex" <<SH
 #!/usr/bin/env bash
 touch "$TMP/invoked-codex"
-{ printf '%s\n' "\$@"; cat; } > "$TMP/codex-argv"
+capture="$TMP/codex-argv.\$\$"
+{ printf '%s\n' "\$@"; cat; } > "\$capture"
+cp "\$capture" "$TMP/codex-argv"
 mode="\$(cat "$TMP/codex-mode")"
+# 2 観点の run で観点ごとに違う結果を返すためのフック。プロンプトには観点ファイルの
+# 見出し（"# Perspective: Security Analysis"）がそのまま載るので、それで振り分ける。
+# 混在した run（成功 + 超過 / 超過 + 時間切れ）を作れないと、「全滅」判定のゲートは
+# どれも実測できない。
+# 判定材料は**自分の呼び出しの**キャプチャ。共有の codex-argv を見ると、同一 CLI の
+# 2 観点がタスク並列で spawn される（balanced 既定）ため、片方の書き込み途中をもう
+# 片方が読む競合になる（実測: 2 観点とも同じモードへ倒れた）。
+if [[ -f "$TMP/codex-mode-persp2" ]] \\
+  && grep -qiF 'Perspective: Security Analysis' "\$capture"; then
+  mode="\$(cat "$TMP/codex-mode-persp2")"
+fi
+rm -f "\$capture"
 case "\$mode" in
   hang)
     echo "PARTIAL FINDING: started analysing"
@@ -657,6 +671,48 @@ case "\$mode" in
     # status を再現して分類器へ同じ材料を渡す。
     echo "\$0: Argument list too long" >&2
     exit 126
+    ;;
+  prompt-too-long-stdout)
+    # claude-code の実測形（公開 feel-flow/ff-dev-toolkit#95）。API のエラーは
+    # **stdout** に出て、成果物では部分出力として保全される。stderr は空のまま。
+    echo 'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 1500000 tokens > 200000 maximum"}}'
+    exit 1
+    ;;
+  prompt-too-long-stderr)
+    # codex-cli の実測形（同 #95）。stdout は空で、拒否は stderr にだけ出る。
+    echo 'stream error: unexpected status 400 Bad Request: {"error":{"message":"Your input exceeds the context window of this model"}}' >&2
+    exit 1
+    ;;
+  prompt-too-long-quoted)
+    # 無関係な理由（クラッシュ）で落ちるが、保全されるレビュー**本文**がプロンプト
+    # 超過を話題として書いている形。本ツールが自身のスクリプトをレビューすると実際に
+    # 起こる。語彙の言及だけで診断が発火してはいけない。
+    # 2 行目は本文が API エラー**そのもの**を引用する形（この suite の fixture が
+    # まさにそれで、レビュー対象になれば生きた誤診源になる）。文脈語が揃っていても、
+    # 行頭がエラーの体裁でなければ拾ってはいけない。
+    echo "- Suggestion: document what happens when the prompt is too long for the model"
+    echo "  e.g. API Error: 400 {\"type\":\"invalid_request_error\"} prompt is too long <- これは本文の引用"
+    echo "boom: stub failure" >&2
+    exit 1
+    ;;
+  monthly-token-limit)
+    # 課金側の上限。「token limit」という語を共有するが、これは残高の話であって
+    # プロンプト長の話ではない（Claude 1 / Codex 1）。billing の材料を奪わないこと。
+    echo "Error: your workspace has reached its monthly token limit. Payment required to continue." >&2
+    exit 1
+    ;;
+  stderr-topic-mention)
+    # stderr に流れる非エラー行がプロンプト長を話題にしている形。stderr は CLI 自身の
+    # チャネルだが、そこに出た語がすべて API の拒否だとは限らない（Claude 8）。
+    echo "debug: token limit for the input prompt is tracked per request" >&2
+    echo "boom: stub failure" >&2
+    exit 1
+    ;;
+  crash-silent)
+    # stdout も stderr も空のまま非 0 で落ちる。分類器は材料が無いので空文字を返す
+    # — これは「別の原因だった」ではなく「分からない」。動機になった事故（codex が
+    # stdout 空で落ちた回）と同じ形で、他タスクの超過診断を消してはいけない。
+    exit 1
     ;;
   ok)
     echo "## Findings"
@@ -715,6 +771,24 @@ run_orchestrator() { # $1: timeout 秒 / 出力: "rc elapsed"
   run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
     --task review --cli codex-cli --perspective code-review \
     --base develop --timeout "$to" >"$TMP/run.log" 2>&1
+  rc=$?
+  set -e
+  end="$(date +%s)"
+  echo "$rc $((end - start))"
+}
+
+# 2 観点を 1 度に走らせる run。run-wide（全滅）判定のゲートは、混在した run で
+# しか観測できない（1 タスクの run では「全滅」と「その 1 件が超過」が区別できない）。
+run_orchestrator_2p() { # $1: timeout 秒 / $2: 追加フラグ（任意） / 出力: "rc elapsed"
+  local to="$1" extra="${2:-}" start end rc=0
+  rm -f "$TMP/invoked-"*
+  start="$(date +%s)"
+  set +e
+  # shellcheck disable=SC2086 # $extra は単一フラグ。分割させたい
+  run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+    --task review --cli codex-cli \
+    --perspective code-review --perspective security-analysis \
+    --base develop --timeout "$to" $extra >"$TMP/run.log" 2>&1
   rc=$?
   set -e
   end="$(date +%s)"
@@ -1121,6 +1195,219 @@ if grep -q 'or the configured substitute claude-code' "$TMP/run.log"; then
   ok "argv: 代替 CLI の再実行コマンドも併記される"
 else
   bad "argv: 切り分けを出す代わりに代替 CLI の案内が消えた"
+fi
+
+# --- ケース2e: モデル側のプロンプト超過（公開 feel-flow/ff-dev-toolkit#95）---
+# 実測（`git diff origin/develop | wc -c` = 8,048,710 / 525 files）では 3 CLI が同時に
+# 落ち、レポートは「Prompt is too long」か「stdout 空」としか言わなかった。原因は
+# レビュー**対象**にあり CLI の再実行では直らないのに、材料（diff のバイト数・
+# ファイル数）は利用者が手で測るしかなく、原因に辿り着くまで 3 回分の実行を空費した。
+# 文言も出力先も CLI ごとに違うので、実測した 2 形をそれぞれ固定する。
+
+# 形 1: claude-code — API エラーが **stdout** に出て部分出力として保全される。
+echo prompt-too-long-stdout > "$TMP/codex-mode"
+read -r RC EL <<<"$(run_orchestrator 60)"
+
+if grep -q '📐' "$TMP/run.log" && grep -qF 'the prompt was too long' "$TMP/run.log"; then
+  ok "ptl(stdout): 部分出力の API エラーをプロンプト超過として名指しする"
+else
+  bad "ptl(stdout): stdout 形のプロンプト超過が一般的な失敗に丸められている"
+  tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+if grep -qE 'Reviewed diff: [0-9]+ bytes across [0-9]+ changed file' "$TMP/run.log"; then
+  ok "ptl(stdout): stdout にレビュー対象 diff のバイト数と変更ファイル数が出る"
+else
+  bad "ptl(stdout): diff の実測値が出ない（利用者が手で wc -c を打つことになる）"
+fi
+
+# 案内の**順序**そのものが要件。個別の再実行コマンドを先に読ませると、実測の遠回り
+# （CLI を 1 つずつ再実行する）がそのまま再現する。
+# 照合は集約案内の固有文言に当てる。絵文字だけを見ると、同じ絵文字を使う**個別**の
+# 切り分け行（ループ内なので当然その CLI の retry コマンドより前にある）に当たり、
+# 集約案内を丸ごとループの後ろへ動かしても緑のままになる（変異注入で実測）。
+PTL_BANNER_LINE="$(grep -n 'Every task in this run was refused' "$TMP/run.log" | head -1 | cut -d: -f1)"
+PTL_RETRY_LINE="$(grep -n -- '--cli codex-cli --perspective code-review' "$TMP/run.log" | head -1 | cut -d: -f1)"
+if [[ -n "$PTL_BANNER_LINE" && -n "$PTL_RETRY_LINE" && "$PTL_BANNER_LINE" -lt "$PTL_RETRY_LINE" ]]; then
+  ok "ptl(stdout): 「まず diff を見よ」が個別の再実行コマンドより先に出る"
+else
+  bad "ptl(stdout): 案内順が逆（banner=${PTL_BANNER_LINE} retry=${PTL_RETRY_LINE}）"
+fi
+
+if grep -qF 'does not change what is being sent' "$TMP/run.log"; then
+  ok "ptl(stdout): CLI の再実行では直らないと明示する"
+else
+  bad "ptl(stdout): 再実行で直らないことが読み取れない"
+fi
+
+if grep -qF '.prev-<timestamp>' "$TMP/run.log"; then
+  ok "ptl(stdout): 巨大 diff の既知の混入元（退避済み成果物）を名指しする"
+else
+  bad "ptl(stdout): 何を疑えばよいかの手掛かりが無い"
+fi
+
+if grep -qF 'PROMPT TOO LONG' "$REPORT_FILE" \
+  && grep -qE 'Reviewed diff: [0-9]+ bytes across [0-9]+ changed file' "$REPORT_FILE"; then
+  ok "ptl(stdout): 統合レポートにも同じ診断と実測値が載る"
+else
+  bad "ptl(stdout): 統合レポートに診断が載らない（レポート経由の読み手に届かない）"
+fi
+
+if grep -qE '^- reviewed diff: [0-9]+ bytes across [0-9]+ changed file' "$RESULT_FILE"; then
+  ok "ptl(stdout): 失敗した観点の成果物にも実測値が添えられる"
+else
+  bad "ptl(stdout): 成果物単体では diff サイズが分からない"
+fi
+
+if ! grep -q '🔑' "$TMP/run.log" && ! grep -q '💳' "$TMP/run.log" \
+  && ! grep -q '📏' "$TMP/run.log"; then
+  ok "ptl(stdout): 認証 / 残高 / E2BIG と取り違えない"
+else
+  bad "ptl(stdout): プロンプト超過を別の分類として案内している"
+fi
+
+# 形 2: codex-cli — stdout は空で、拒否は stderr にだけ出る。
+echo prompt-too-long-stderr > "$TMP/codex-mode"
+read -r RC EL <<<"$(run_orchestrator 60)"
+
+if grep -q '📐' "$TMP/run.log" && grep -qF 'the prompt was too long' "$TMP/run.log"; then
+  ok "ptl(stderr): stderr だけに出た拒否もプロンプト超過として名指しする"
+else
+  bad "ptl(stderr): stderr 形のプロンプト超過が一般的な失敗に丸められている"
+  tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+if grep -qE 'Reviewed diff: [0-9]+ bytes across [0-9]+ changed file' "$TMP/run.log" \
+  && grep -qF 'PROMPT TOO LONG' "$REPORT_FILE"; then
+  ok "ptl(stderr): stdout とレポートの両方に実測値つきの診断が出る"
+else
+  bad "ptl(stderr): 診断または実測値が欠ける"
+fi
+
+# 形 3（陰性対照）: 無関係な理由での失敗。diff サイズの話を足してはいけない。
+echo prompt-too-long-quoted > "$TMP/codex-mode"
+read -r RC EL <<<"$(run_orchestrator 60)"
+
+if [[ -f "$RESULT_FILE" ]] && grep -qF 'the prompt is too long for the model' "$RESULT_FILE"; then
+  ok "ptl(陰性): 前提 — プロンプト超過に言及するレビュー本文が成果物に残っている"
+else
+  bad "ptl(陰性): 前提が崩れている（本文が保全されていない）"
+fi
+
+if ! grep -q '📐' "$TMP/run.log" \
+  && ! grep -qE 'Reviewed diff: [0-9]+ bytes' "$TMP/run.log" \
+  && ! grep -qF 'PROMPT TOO LONG' "$REPORT_FILE"; then
+  ok "ptl(陰性): 無関係な失敗に diff サイズの話を足さない"
+else
+  bad "ptl(陰性): レビュー本文の言及だけでプロンプト超過と誤診している"
+  tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+if grep -qF 'failed for a reason more time will not fix' "$TMP/run.log"; then
+  ok "ptl(陰性): 従来どおりの再実行案内は出る"
+else
+  bad "ptl(陰性): 診断の追加で従来の案内が消えた"
+fi
+
+# --- ケース2f: 「全滅」を主張してよい条件（Claude 3 / 5 / 6、Codex 3）---
+# 集約案内は「レビュー対象が大きすぎる」という 1 つの事実を、個別の再実行コマンドより
+# 先に出す強い案内なので、主張してよい条件そのものを固定する。1 タスクだけの run では
+# 「全滅」と「その 1 件が超過」が区別できないため、2 観点の混在 run で観測する。
+
+# (a) 1 観点は成功、1 観点が超過 — 個別の切り分けは出すが、全滅とは言わない。
+echo prompt-too-long-stdout > "$TMP/codex-mode"
+echo ok > "$TMP/codex-mode-persp2"
+read -r RC EL <<<"$(run_orchestrator_2p 60)"
+
+if grep -qF 'the model refused the request itself' "$TMP/run.log"; then
+  ok "ptl(混在): 成功が混ざっても、超過した観点の個別切り分けは出る"
+else
+  bad "ptl(混在): 超過した観点の切り分けが消えた"
+  tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+if ! grep -qF 'Every task in this run was refused' "$TMP/run.log" \
+  && ! grep -qF 'PROMPT TOO LONG' "$REPORT_FILE"; then
+  ok "ptl(混在): 成功した観点がある run を「全滅」とは言わない"
+else
+  bad "ptl(混在): 通った観点があるのに全滅の集約案内を出している"
+fi
+
+# (b) 1 観点が超過、1 観点は材料なしで落ちる（stdout / stderr とも空）— 空出力は
+# 「別の原因」ではないので、全滅の案内を消してはいけない。動機になった事故そのもの。
+echo prompt-too-long-stdout > "$TMP/codex-mode"
+echo crash-silent > "$TMP/codex-mode-persp2"
+read -r RC EL <<<"$(run_orchestrator_2p 60)"
+
+if grep -qF 'Every task in this run was refused' "$TMP/run.log" \
+  && grep -qF 'PROMPT TOO LONG' "$REPORT_FILE"; then
+  ok "ptl(空出力混在): 分類不能な失敗が混ざっても全滅の案内は出る"
+else
+  bad "ptl(空出力混在): 材料の無い 1 件が集約案内を消している"
+  tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+# (c) 1 観点が超過、1 観点は時間切れ（rc=124）— 個別層は 124 に原因を断定しない
+# （🔑 / 💳 / 📏 / 📐 を出さない）ので、run-wide も断定しない。
+echo prompt-too-long-stdout > "$TMP/codex-mode"
+echo hang > "$TMP/codex-mode-persp2"
+read -r RC EL <<<"$(run_orchestrator_2p 3)"
+
+if grep -qF 'the model refused the request itself' "$TMP/run.log" \
+  && ! grep -qF 'Every task in this run was refused' "$TMP/run.log" \
+  && ! grep -qF 'PROMPT TOO LONG' "$REPORT_FILE"; then
+  ok "ptl(時間切れ混在): 124 が混ざる run を「全滅」とは言わない"
+else
+  bad "ptl(時間切れ混在): 時間切れの観点まで超過だったと断定している"
+  tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+# (d) 1 観点が auth で落ち、残りがスキップされる run — 走らなかった観点がある以上
+# 全滅ではない（陰性対照。今日はスキップ理由が auth / billing に限られるので別原因
+# 判定でも落ちるが、条件としては独立に持っている）。
+# --sequential なのは、スキップが「先行タスクの失敗が確定してから次を起動する」経路に
+# しか無いため（並列経路では 2 観点が同時に走り出す）。
+echo auth-expired > "$TMP/codex-mode"
+echo ok > "$TMP/codex-mode-persp2"
+read -r RC EL <<<"$(run_orchestrator_2p 60 --sequential)"
+
+if grep -q '⏭' "$TMP/run.log"; then
+  ok "ptl(skip): 前提 — 2 観点目がスキップされている"
+else
+  bad "ptl(skip): 前提が崩れている（スキップが発生していない）"
+fi
+if ! grep -q '📐' "$TMP/run.log" \
+  && ! grep -qF 'PROMPT TOO LONG' "$REPORT_FILE"; then
+  ok "ptl(skip): 走らなかった観点がある run を「全滅」とは言わない"
+else
+  bad "ptl(skip): スキップを含む run で全滅の案内を出している"
+fi
+
+rm -f "$TMP/codex-mode-persp2" "$REPO/.review-results/codex-cli/security-analysis.md"
+
+# --- ケース2g: 語彙の偽陽性（Claude 1 / 8、Codex 1）---
+# 「token limit」は残高・プラン上限と語を共有し、stderr には API の拒否でない行も
+# 流れる。どちらもプロンプト超過として拾ってはいけない。
+
+echo monthly-token-limit > "$TMP/codex-mode"
+read -r RC EL <<<"$(run_orchestrator 60)"
+
+if grep -q '💳' "$TMP/run.log" && ! grep -q '📐' "$TMP/run.log"; then
+  ok "ptl(偽陽性): 「monthly token limit」は billing のまま（超過へ奪われない）"
+else
+  bad "ptl(偽陽性): 残高上限をプロンプト超過と誤診している"
+  tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+echo stderr-topic-mention > "$TMP/codex-mode"
+read -r RC EL <<<"$(run_orchestrator 60)"
+
+if ! grep -q '📐' "$TMP/run.log" \
+  && ! grep -qE 'Reviewed diff: [0-9]+ bytes' "$TMP/run.log"; then
+  ok "ptl(偽陽性): stderr の非エラー行がプロンプト長に触れただけでは診断しない"
+else
+  bad "ptl(偽陽性): stderr の話題行だけでプロンプト超過と誤診している"
+  tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
 fi
 
 # --- ケース2b: CLI 自身が 124 / 125 を返した場合 ---

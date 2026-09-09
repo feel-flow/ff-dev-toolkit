@@ -500,6 +500,13 @@ if [ -f "$TMP/mutate-roundtrip" ]; then
   git -C "$REPO" switch -q develop 2>/dev/null && git -C "$REPO" switch -q feature/x 2>/dev/null \
     || echo "stub: round-trip failed" >&2
 fi
+if [ -f "$TMP/observe-lock" ] && [ -f "$REPO/.review-results/.review-in-flight" ]; then
+  # 走行中ロックの実在をタスク内側から記録する（外から覗くと race になる）
+  cp "$REPO/.review-results/.review-in-flight" "$TMP/lock-seen"
+fi
+if [ -f "$TMP/mutate-sleep" ]; then
+  sleep 5
+fi
 echo "## Findings"
 echo "- Suggestion: stub review"
 SH
@@ -518,7 +525,8 @@ run_orchestrator() {
 
 clear_mutations() {
   rm -f "$TMP/mutate-commit" "$TMP/mutate-untracked" "$TMP/mutate-worktree" \
-        "$TMP/mutate-branch" "$TMP/mutate-roundtrip" "$TMP/mutate-unverifiable"
+        "$TMP/mutate-branch" "$TMP/mutate-roundtrip" "$TMP/mutate-unverifiable" \
+        "$TMP/mutate-sleep" "$TMP/observe-lock" "$TMP/lock-seen"
   # .git を退避するケースの後始末。戻さないと以降の全ケースが git 無しで走る。
   [[ -d "$REPO/.git-hidden" && ! -d "$REPO/.git" ]] && mv "$REPO/.git-hidden" "$REPO/.git"
   return 0
@@ -613,6 +621,84 @@ if [[ -f "$REPO/.review-results/.fixed-diff" ]] \
   ok "E4 統合: 往復中でもプロンプトは固定した diff を載せている"
 else
   bad "E4 統合: 往復中に固定 diff が失われている"
+fi
+clear_mutations
+
+# --- 走行中ロック: 置かれること / 3 経路のどれでも残らないこと ---
+# ロックは PreToolUse hook（hooks/guard-review-in-flight.sh）が読む宣言で、消し漏らすと
+# 以後の全編集が止まる。orchestrator の終了経路は 3 通り（正常終了・DISCARDED・
+# タイムアウト）あるので、経路ごとに後始末を書く形では 1 つ書き忘れる。EXIT trap 1 箇所へ
+# 寄せた実装であることを、経路の実走で固定する。
+LOCK_FILE="$REPO/.review-results/.review-in-flight"
+
+reset_repo
+clear_mutations
+: > "$TMP/observe-lock"
+rm -rf "$REPO/.review-results" "$PROMPT_DIR"/*
+if run_orchestrator; then
+  ok "ロック: 正常系は rc=0 のまま完走する（ロック導入で誤発火しない）"
+else
+  bad "ロック: 正常系が非 0 終了した"
+  tail -15 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+if [[ -f "$TMP/lock-seen" ]]; then
+  ok "ロック: タスク実行中は .review-in-flight が存在する"
+else
+  bad "ロック: 走行中に .review-in-flight が置かれていない"
+fi
+if /usr/bin/grep -q "^pid=[0-9][0-9]*$" "$TMP/lock-seen" 2>/dev/null \
+   && /usr/bin/grep -q "^head=" "$TMP/lock-seen" 2>/dev/null \
+   && /usr/bin/grep -q "^started=" "$TMP/lock-seen" 2>/dev/null \
+   && /usr/bin/grep -q "^perspectives=code-review$" "$TMP/lock-seen" 2>/dev/null; then
+  ok "ロック: 対象 HEAD・開始時刻・観点一覧・PID を持つ"
+else
+  bad "ロック: 内容が契約どおりでない"
+  sed 's/^/    | /' "$TMP/lock-seen" >&2 2>/dev/null || true
+fi
+if [[ ! -e "$LOCK_FILE" ]]; then
+  ok "ロック: 正常終了で残らない"
+else
+  bad "ロック: 正常終了後も .review-in-flight が残っている"
+fi
+clear_mutations
+
+reset_repo
+clear_mutations
+: > "$TMP/mutate-commit"
+rm -rf "$REPO/.review-results" "$PROMPT_DIR"/*
+if run_orchestrator; then
+  bad "ロック: DISCARDED 経路が rc=0 になった（前提が崩れている）"
+else
+  ok "ロック: DISCARDED 経路は従来どおり非 0 終了する"
+fi
+if [[ ! -e "$LOCK_FILE" ]]; then
+  ok "ロック: DISCARDED（実行中の commit）でも残らない"
+else
+  bad "ロック: DISCARDED 後も .review-in-flight が残っている"
+fi
+clear_mutations
+
+reset_repo
+clear_mutations
+: > "$TMP/mutate-sleep"
+# 「タイムアウト後に不在」だけを測ると、ロックを一度も置かない実装でも緑になる。
+# 走行中の実在（stub 内側で観測）と終了後の不在の両方を、この経路で固定する。
+: > "$TMP/observe-lock"
+rm -rf "$REPO/.review-results" "$PROMPT_DIR"/*
+# stub は 5 秒眠る。--timeout 1 で必ずタイムアウト側へ入る（run_orchestrator の
+# 既定 --timeout 60 は後勝ちで上書きされる）。
+run_orchestrator --timeout 1 || true
+if [[ -f "$TMP/lock-seen" ]]; then
+  ok "ロック: タイムアウトする実行でも、走行中は .review-in-flight が存在する"
+else
+  bad "ロック: タイムアウト経路で走行中に .review-in-flight が置かれていない"
+  tail -15 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+if [[ ! -e "$LOCK_FILE" ]]; then
+  ok "ロック: タイムアウトでも残らない"
+else
+  bad "ロック: タイムアウト後も .review-in-flight が残っている"
+  tail -15 "$TMP/run.log" | sed 's/^/    | /' >&2
 fi
 clear_mutations
 

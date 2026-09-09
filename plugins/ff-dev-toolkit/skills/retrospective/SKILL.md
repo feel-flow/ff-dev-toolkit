@@ -72,6 +72,7 @@ grok CLI は plugin の `hooks/hooks.json` をコンポーネントとして認�
 3. `hooks/retrospective-stop.sh` は Claude Code 互換入力でだけ実行漏れの fallback として働く。最終応答に振り返り結果があれば無音で停止を許可し、無ければ継続プロンプトを 1 回返す
 4. Codex の Stop 入力（`model` フィールドあり）は常に無音で停止を許可し、UserPromptSubmit の事前注入だけに委ねる。Claude Code の fallback 継続中は、ホストの `stop_hook_active` または最終応答の振り返り結果により再停止を許可する。自分で hook を再実行したり marker を作ったりしない
 5. Codex の非対話の単発実行（UserPromptSubmit 入力に `model` があり `permission_mode` が `bypassPermissions` — codex exec は headless で承認を尋ねられないためこの組になる）には事前注入しない。レビュー等のツール的起動の stdout を振り返り出力が奪わないための抑止で、判別できない入力へは従来どおり注入する（fail-open。Claude Code の入力は `model` を含まないため、permission mode に関わらず常に注入側）
+6. 入れ子で起動された非対話の `claude -p` は **hook 側では判別できない**（2026-09-10 実測 / claude 2.1.245: UserPromptSubmit の入力は `session_id` / `transcript_path` / `cwd` / `prompt_id` / `permission_mode` / `hook_event_name` / `prompt` だけで、print・headless・`output_format` に相当するフィールドが無い。`permission_mode` は `--permission-mode` の写しなので対話セッションと区別できない）。したがって fail-open のまま注入される。**stdout が成果物になる入れ子起動は、起動側が子プロセスの環境へ `RETROSPECTIVE_MODE=off` を載せて抑止する**のが正本（例: `RETROSPECTIVE_MODE=off claude -p "..." --output-format text`）。ping の exact-一致判定を持つレビューラッパー（利用側の `scripts/claude-review.sh` 等）はこの前置きが無いと、振り返り行が stdout に混ざって判定に落ちる
 
 Codex では Stop hook の `decision:block` を返さないため、事前注入を取りこぼしても継続理由が利用者向け Feedback として露出しない。Claude Code では取りこぼし時の fallback を維持する。改善提案の起票承認境界は変わらず、自動化されるのは read-only の振り返りと定型の観測記録までである。
 

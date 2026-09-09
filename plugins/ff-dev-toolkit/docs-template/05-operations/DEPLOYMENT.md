@@ -1,10 +1,10 @@
 ---
 title: "DEPLOYMENT"
-version: "1.4.0"
+version: "1.4.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-08"
+updated: "2026-09-10"
 changeImpact: "medium"
 ---
 
@@ -91,7 +91,7 @@ Git Flowベースで、**テスト・セルフレビュー（PR前）** と **AC
 
 ステップ 10 の後、チェーン末尾として `/retrospective`（セッション振り返り）を毎回実行する。実測した手戻り・無駄時間・Keep・過剰動作を観測台帳へ記録し、閾値到達の再発からプロセス/ツール改善を最大 3 件提案し、起票はユーザー承認後のみ（利用者の包括的な実行指示がある場合はその範囲内で確認を省く。特急レーンは除く） ← 詳細: `deployment/git-workflow.md` の「チェーン末尾: セッション振り返り」
 
-対応ホストでは `UserPromptSubmit` hook が応答前に注入し、`Stop` hook は実行漏れ時だけ自動継続する。ただし Codex の非対話単発実行（codex exec — hook 入力に `model` があり `permission_mode` が `bypassPermissions`）には注入されない（レビュー等のツール的起動の stdout を振り返り出力が奪わないため。判別できない入力へは従来どおり注入する）。`RETROSPECTIVE_MODE=ask` で実施前確認、`off` で自動発火を無効にできる。
+対応ホストでは `UserPromptSubmit` hook が応答前に注入し、`Stop` hook は実行漏れ時だけ自動継続する。ただし Codex の非対話単発実行（codex exec — hook 入力に `model` があり `permission_mode` が `bypassPermissions`）には注入されない（レビュー等のツール的起動の stdout を振り返り出力が奪わないため。判別できない入力へは従来どおり注入する）。入れ子で起動された非対話の `claude -p` は hook 入力に print/headless 相当のフィールドが無く判別できないため、**起動側のスクリプトが子プロセスの環境へ `RETROSPECTIVE_MODE=off` を載せて**抑止する。`RETROSPECTIVE_MODE=ask` で実施前確認、`off` で自動発火を無効にできる。
 
 #### 変更規模による tier
 
@@ -302,6 +302,15 @@ PRマージ後のブランチ切り替え忘れを防ぐため、セッション
 ## Changelog
 
 - 2026-09-08 追記: プラグイン変数がない直接利用でも取得できる公開配布元を明記（ai-spec-driven-development#525）。
+
+### [1.4.1] - 2026-09-10
+
+#### 変更
+
+- §自動振り返り に、入れ子で起動された非対話の `claude -p` は hook 入力に print / headless 相当の
+  フィールドが無く hook 側で判別できないため、**起動側が子プロセスの環境へ `RETROSPECTIVE_MODE=off` を
+  載せて**抑止する、という利用者向けの契約を追記した
+  （https://github.com/feel-flow/ff-dev-toolkit/issues/94）。
 
 ### [1.4.0] - 2026-09-08
 

@@ -2,12 +2,27 @@
 # See: docs-template/05-operations/deployment/multi-cli-review-orchestration.md
 
 version: "2.0"
-toolkit_version: "0.93.0"
+toolkit_version: "0.94.0"
 
 # ── Global Defaults ──
 # mode はタスク単位でも指定できる（tasks.<task>.mode）。ここはその既定。
 mode: distributed  # distributed | cross-model | pair
 parallel: true
+
+# ── Excluded CLIs（この環境ではプランに載せない CLI）──
+# 空白またはカンマ区切りの **1 文字列**（YAML リストは不可 — 読み飛ばして警告する）。
+# 挙げた CLI は「未インストール」と同じ扱いになり、担当観点は既存の fallback 経路へ
+# 回る。用途は「その機械では構造的に起動できない CLI」を毎回書かずに外すこと
+# （例: Docker Desktop が /var/run/docker.sock を symlink にしていて grok-cli の
+# read-only sandbox が起動を拒否する環境）。CLI 引数 --exclude-cli との**和集合**で、
+# プラン表示にはどちらの由来かが出る。1 回だけ戻したいときは --cli <name> を明示する
+# （その実行に限り設定の除外より優先される）。
+# ⚠ 除外はカバレッジを減らす。cross-model が 1 本へ縮退した回はプランが警告する。
+# 知らない CLI 名（retire 済みなど）がここに残っていても実行は止めず、その名前だけを
+# 警告つきで読み飛ばす（設定は複数の機械・リポジトリで共有され、止めると「レビューが
+# 1 本も走らない」を設定を書いた人でない誰かが踏む）。--exclude-cli の未知名は従来
+# どおり非 0 — その 1 回のために打った指定なので、typo はその場で直せる。
+#exclude_clis: "grok-cli"
 
 # ── Task-specific Settings ──
 # timeout は「1 CLI あたりの壁時計上限（秒）」。既定値は scripts/multi-agent.sh の

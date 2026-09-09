@@ -1,7 +1,17 @@
 {
-  "description": "ff-dev-toolkit の更新通知・スキル実体ドリフト検査・マーケットプレイス自動更新・自動振り返り・Bash ガード。SessionStart で新版、スキル集合の欠落、複数 version のインストール実体併存を通知し、登録済みマーケットプレイス全体の更新と本プラグイン本体の更新を async + fail-silent で自動実行（名前に依存しない引数なし更新のため本プラグイン以外の登録マーケットプレイスも更新される。1 日 1 回、FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1 で無効化）、UserPromptSubmit で振り返りを事前注入（Codex の非対話単発実行 — model あり + permission_mode=bypassPermissions — には注入しない）、Claude Code の Stop で実行漏れ時だけ 1 回継続する。Codex の Stop は表示を作らず無音で終了する（fail-open）。PreToolUse（Bash）は未コミット変更のあるファイルへの git checkout/restore と、Issue 参照の無いフォローアップ宣言付き gh pr create/edit を警告し（抜け道付き deny・fail-open）、モノレポで先頭が絶対パスの cd でない background 実行を systemMessage で警告する（ブロックしない・fail-open）",
+  "description": "ff-dev-toolkit の更新通知・スキル実体ドリフト検査・マーケットプレイス自動更新・自動振り返り・Bash ガード。SessionStart で新版、スキル集合の欠落、複数 version のインストール実体併存を通知し、登録済みマーケットプレイス全体の更新と本プラグイン本体の更新を async + fail-silent で自動実行（名前に依存しない引数なし更新のため本プラグイン以外の登録マーケットプレイスも更新される。1 日 1 回、FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1 で無効化）、UserPromptSubmit で振り返りを事前注入（Codex の非対話単発実行 — model あり + permission_mode=bypassPermissions — には注入しない。入れ子の非対話 claude -p は入力に判別材料が無く hook 側では判別できないため、stdout が成果物になる起動は起動側が子プロセスへ RETROSPECTIVE_MODE=off を載せて抑止する）、Claude Code の Stop で実行漏れ時だけ 1 回継続する。Codex の Stop は表示を作らず無音で終了する（fail-open）。PreToolUse（Bash）は未コミット変更のあるファイルへの git checkout/restore と、Issue 参照の無いフォローアップ宣言付き gh pr create/edit を警告し（抜け道付き deny・fail-open）、モノレポで先頭が絶対パスの cd でない background 実行を systemMessage で警告する（ブロックしない・fail-open）。PreToolUse（Edit / Write / MultiEdit / NotebookEdit / Bash / Agent）は、multi-agent review の走行中ロック（.review-results/.review-in-flight）が生きている間の編集系ツールと git 書き込みコマンドを抜け道付き deny（FF_REVIEW_LOCK_OVERRIDE=1 で解除。ロックの PID が死んでいれば警告のみ）、pr-review-toolkit のレビューエージェント起動時に作業ツリーが dirty なら permissionDecision ask で確認する（いずれも fail-open）",
   "hooks": {
     "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-review-in-flight.sh\"",
+            "timeout": 10
+          }
+        ]
+      },
       {
         "matcher": "Bash",
         "hooks": [

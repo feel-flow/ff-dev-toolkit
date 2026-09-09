@@ -17,7 +17,13 @@
 #
 # Issue #1025: 別系列に残った未解消レポートがあっても、--cli だけのフルレビュー
 # （codex-review.sh の既定入口）は新系列を開始する。絞り込みは非 0 で止まり
-# --fresh を案内する。--fresh は lock 以外を <output-dir>.prev-<ts>/ へ退避する。
+# --fresh を案内する。--fresh は lock 以外を <output-dir>/.prev-<ts>/ へ退避する。
+#
+# https://github.com/feel-flow/ff-dev-toolkit/issues/96 : その退避先は出力
+# ディレクトリの**内側**でなければならない。兄弟
+# （<output-dir>.prev-<ts>/）だと消費側の `.review-results/` という ignore 規約に
+# 一致せず、退避一式がコミットへ巻き込まれる。ignore 済みであること（check-ignore /
+# git status）と、退避先が今回の集計・残骸名指しに現れないことを併せて固定する。
 #
 # run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
 
@@ -105,6 +111,16 @@ if [[ -f "$TMP/stub-sleep" ]]; then
 fi
 if [[ -f "$TMP/stub-mutate-repo" ]]; then
   printf 'mutation during review\n' >> "$REPO/app.txt"
+fi
+# --fresh の退避はタスク実行の前に終わるので、ここから見るのは「退避後の
+# ライブな出力ディレクトリ」。lock は実行終了時に解放されるので、実行後の
+# 検査では「動かされていない」と「解放済み」を区別できない。
+if [[ -f "$TMP/stub-probe-lock" ]]; then
+  if [[ -d "$REPO/.review-results/.multi-agent-run.lock" ]]; then
+    printf 'live-lock-present\n' > "$TMP/stub-lock-probe"
+  else
+    printf 'live-lock-missing\n' > "$TMP/stub-lock-probe"
+  fi
 fi
 cat "$TMP/body.md"
 SH
@@ -1301,12 +1317,8 @@ fi
 
 echo "== Issue #1025: 別系列の残存結果と --fresh =="
 
+# 退避先は出力ディレクトリの内側（<dir>/.prev-<ts>/）なので、この 1 行で残骸も消える。
 rm -rf "$REPO/.review-results"
-# 退避先 glob が前回実行の残骸を拾わないよう、明示的に消す。
-for leftover_archive in "$REPO"/.review-results.prev-*; do
-  [[ -e "$leftover_archive" || -L "$leftover_archive" ]] || continue
-  rm -rf "$leftover_archive"
-done
 
 cat > "$TMP/body.md" <<'BODY'
 <!-- sentinel-1025-initial -->
@@ -1365,7 +1377,7 @@ run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
 FRESH_RESUME_RC=$?
 set -e
 fresh_resume_archive=""
-for cand in "$REPO"/.review-results.prev-*; do
+for cand in "$REPO"/.review-results/.prev-*; do
   [[ -d "$cand" ]] || continue
   fresh_resume_archive="$cand"
   break
@@ -1408,10 +1420,13 @@ fi
 
 git switch -q feature/x
 rm -rf "$REPO/.review-results"
-for leftover_archive in "$REPO"/.review-results.prev-*; do
-  [[ -e "$leftover_archive" || -L "$leftover_archive" ]] || continue
-  rm -rf "$leftover_archive"
-done
+# 消費側の規約どおり「ライブ出力ディレクトリだけ」を ignore した状態を作る。
+# 退避先が兄弟（`.review-results.prev-*`）だとこのパターンに一致せず、
+# untracked のまま追跡候補として現れ、コミットへ巻き込まれる
+# （https://github.com/feel-flow/ff-dev-toolkit/issues/96 ）。
+printf '.review-results/\n' > "$REPO/.gitignore"
+git add .gitignore
+git commit -qm "ignore live review output dir only"
 cat > "$TMP/body.md" <<'BODY'
 <!-- sentinel-1025-fresh-initial -->
 ## Code Review Results
@@ -1438,6 +1453,8 @@ cat > "$TMP/body.md" <<'BODY'
 - Critical: 0
 BODY
 FRESH_RC=0
+rm -f "$TMP/stub-lock-probe"
+: > "$TMP/stub-probe-lock"
 set +e
 run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
   --task review --cli codex-cli --perspective comment-analysis \
@@ -1445,18 +1462,28 @@ run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
   >"$TMP/issue-1025-fresh.log" 2>&1
 FRESH_RC=$?
 set -e
+rm -f "$TMP/stub-probe-lock"
 
 archive_dir=""
-for cand in "$REPO"/.review-results.prev-*; do
+for cand in "$REPO"/.review-results/.prev-*; do
   [[ -d "$cand" ]] || continue
   archive_dir="$cand"
+  break
+done
+# 旧形式（兄弟）の退避先が作られていないことも同時に見る。ここを見ないと、
+# 内側の退避先を追加しつつ兄弟も作る実装が両方の検査を通ってしまう。
+sibling_archive=""
+for cand in "$REPO"/.review-results.prev-*; do
+  [[ -e "$cand" || -L "$cand" ]] || continue
+  sibling_archive="$cand"
   break
 done
 
 if [[ "$FRESH_RC" -eq 0 ]] \
   && [[ -n "$archive_dir" ]] \
+  && [[ -z "$sibling_archive" ]] \
   && grep -qF "archived" "$TMP/issue-1025-fresh.log" \
-  && grep -qF -- '.review-results.prev-' "$TMP/issue-1025-fresh.log" \
+  && grep -qF -- '.review-results/.prev-' "$TMP/issue-1025-fresh.log" \
   && grep -qF 'sentinel-1025-fresh-initial' "${archive_dir}/integrated-report.md" \
   && [[ -f "${archive_dir}/codex-cli/code-review.md" ]] \
   && [[ ! -e "${archive_dir}/.multi-agent-run.lock" ]] \
@@ -1465,8 +1492,144 @@ if [[ "$FRESH_RC" -eq 0 ]] \
   && ! grep -qF 'sentinel-1025-fresh-initial' "$REPORT"; then
   ok "--fresh は前回結果を timestamp 付きへ退避して新しいレビューを生成する"
 else
-  bad "--fresh が前回結果を退避して再実行できない (rc=$FRESH_RC archive=${archive_dir:-none})"
+  bad "--fresh が前回結果を退避して再実行できない (rc=$FRESH_RC archive=${archive_dir:-none} sibling=${sibling_archive:-none})"
   sed -n '1,80p' "$TMP/issue-1025-fresh.log" >&2 || true
+fi
+
+# 退避先に lock が無いこと（上）だけでは「lock を退避もせず削除した」実装も通る。
+# lock は実行終了時に解放されて消えるので、実行後には確かめられない。
+# 退避の後に走る stub CLI から、ライブの `.multi-agent-run.lock` が OUTPUT_DIR
+# 直下に居座ったままかを実測する（同時実行の相互排除が退避で外れないこと）。
+fresh_lock_probe=""
+[[ -f "$TMP/stub-lock-probe" ]] && fresh_lock_probe="$(cat "$TMP/stub-lock-probe")"
+if [[ "$fresh_lock_probe" == "live-lock-present" ]]; then
+  ok "--fresh の退避後もライブの lock は出力ディレクトリ直下に残る"
+else
+  bad "--fresh がライブの lock を動かしている (probe=${fresh_lock_probe:-none})"
+fi
+
+# ── 退避先が消費側の gitignore に載る / 集計に混ざらない ──
+# （https://github.com/feel-flow/ff-dev-toolkit/issues/96 ）
+#
+# (a) `.review-results/` だけを ignore した消費側で、退避先も無視されること。
+#     `git check-ignore` の rc（0=無視される）と `git status --porcelain` の
+#     両方で見る。前者だけだと ignore ルールの一致は取れても、実際に追跡候補として
+#     現れないことまでは言えない。
+FRESH_IGNORE_RC=0
+set +e
+git -C "$REPO" check-ignore -q "${archive_dir#"$REPO/"}"
+FRESH_IGNORE_RC=$?
+set -e
+git -C "$REPO" status --porcelain > "$TMP/issue-1400-fresh-status.txt"
+fresh_status="$(cat "$TMP/issue-1400-fresh-status.txt")"
+if [[ "$FRESH_IGNORE_RC" -eq 0 ]] \
+  && ! grep -qF '.review-results' "$TMP/issue-1400-fresh-status.txt"; then
+  ok "退避先は .review-results/ の ignore に載り、git status に現れない"
+else
+  bad "退避先が消費側の gitignore から漏れる (check-ignore rc=$FRESH_IGNORE_RC)"
+  printf '%s\n' "$fresh_status" >&2 || true
+fi
+
+# 退避先は ignore 済み = 目に入らないまま溢れるので、退避完了行の直後に現在の
+# 退避件数と掃除コマンドを 1 行出す。
+if grep -qE 'archive\(s\) now under .*/\.prev-\*' "$TMP/issue-1025-fresh.log" \
+  && grep -qF -- 'rm -rf' "$TMP/issue-1025-fresh.log"; then
+  ok "--fresh は退避完了後に退避件数と掃除コマンドを出す"
+else
+  bad "--fresh の退避件数行が出ていない"
+  grep -nF -- '.prev-' "$TMP/issue-1025-fresh.log" >&2 || true
+fi
+
+# (b) 退避した結果が今回の集計へ混ざらないこと。統合レポートの sentinel 検査
+#     （上のケース）に加えて、退避先が「プラン外の残骸」としても名指しされない
+#     ことまで見る。`.prev-*` を拾う走査が生えたら、Not part of this run 節か
+#     本文のどちらかに `.prev-` が漏れる。
+if ! grep -qF -- '.prev-' "$REPORT" \
+  && ! grep -qF 'Not part of this run' "$REPORT" \
+  && ! grep -qF -- '⚠️ Not part of this run' "$TMP/issue-1025-fresh.log"; then
+  ok "退避した前回結果は今回の集計にも残骸の名指しにも現れない"
+else
+  bad "退避先が今回の走査に拾われている"
+  grep -nF -- '.prev-' "$REPORT" >&2 || true
+  grep -nF 'Not part of this run' "$REPORT" >&2 || true
+fi
+
+# (c) 退避先が出力ディレクトリの内側にある以上、2 回目の --fresh は 1 回目の退避先を
+#     拾いうる（走査は `.[!.]*` でドットも見る）。拾うと退避が入れ子に積み上がり、
+#     `--fresh` のたびに同じバイト列を 1 段深くコピーし直す。既存の `.prev-*` を
+#     退避対象から外していることを 2 回目の実走で固定する。
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-1400-fresh-twice -->
+## Comment Analysis Results
+### Critical Issues
+- なし
+### Summary
+- Critical: 0
+BODY
+FRESH2_RC=0
+set +e
+run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+  --task review --cli codex-cli --perspective comment-analysis \
+  --base develop --timeout 60 --fresh \
+  >"$TMP/issue-1400-fresh-twice.log" 2>&1
+FRESH2_RC=$?
+set -e
+fresh_archive_count=0
+nested_archive=""
+for cand in "$REPO"/.review-results/.prev-*; do
+  [[ -d "$cand" ]] || continue
+  fresh_archive_count=$((fresh_archive_count + 1))
+  for nested in "$cand"/.prev-*; do
+    [[ -e "$nested" || -L "$nested" ]] || continue
+    nested_archive="$nested"
+  done
+done
+if [[ "$FRESH2_RC" -eq 0 ]] \
+  && [[ "$fresh_archive_count" -eq 2 ]] \
+  && [[ -z "$nested_archive" ]] \
+  && grep -qF 'sentinel-1400-fresh-twice' "$REPORT"; then
+  ok "2 回目の --fresh は既存の退避先を入れ子に取り込まない"
+else
+  bad "--fresh の再実行で退避が入れ子になる (rc=$FRESH2_RC archives=$fresh_archive_count nested=${nested_archive:-none})"
+  sed -n '1,40p' "$TMP/issue-1400-fresh-twice.log" >&2 || true
+fi
+
+# (d) 呼び出し元の環境に `GLOBIGNORE` があると bash は dotglob を**暗黙に有効化**
+#     する。プラン外の結果ディレクトリの走査は `"$OUTPUT_DIR"/*/` なので、
+#     そのままだと退避先 `.prev-<ts>/`（中に integrated-report.md を持つ）を
+#     「Not part of this run」として名指しし、利用者は自分の出力ディレクトリの
+#     内部構造を残骸と読み違える。退避先が 2 件残っているこの位置で実走する。
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-1400-globignore -->
+## Comment Analysis Results
+### Critical Issues
+- なし
+### Summary
+- Critical: 0
+BODY
+# `GLOBIGNORE` を env で渡すだけで dotglob が付くのは bash 4 以降で、bash 3.2
+# （macOS 同梱）は環境からの取り込みで特殊変数のフックを呼ばない（実測）。版に
+# よらず「呼び出し元由来の GLOBIGNORE 代入」を再現するため、BASH_ENV でシェル内の
+# 代入も併せて与える（非対話 bash は起動時に BASH_ENV を読む）。
+printf 'GLOBIGNORE=x\n' > "$TMP/globignore-env.sh"
+GLOBIGNORE_RC=0
+set +e
+run_isolated GLOBIGNORE=x BASH_ENV="$TMP/globignore-env.sh" PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+  --task review --cli codex-cli --perspective comment-analysis \
+  --base develop --timeout 60 --fresh \
+  >"$TMP/issue-1400-globignore.log" 2>&1
+GLOBIGNORE_RC=$?
+set -e
+grep -F 'Not part of this run' "$TMP/issue-1400-globignore.log" > "$TMP/issue-1400-globignore-notpart.txt" || true
+if [[ "$GLOBIGNORE_RC" -eq 0 ]] \
+  && grep -qF 'sentinel-1400-globignore' "$REPORT" \
+  && ! grep -qF -- '.prev-' "$TMP/issue-1400-globignore-notpart.txt" \
+  && ! grep -qF -- '.prev-' "$REPORT"; then
+  ok "GLOBIGNORE 付きの環境でも退避先をプラン外の残骸として名指ししない"
+else
+  bad "GLOBIGNORE 環境で退避先が名指しされる (rc=$GLOBIGNORE_RC)"
+  grep -nF 'Not part of this run' "$TMP/issue-1400-globignore.log" >&2 || true
+  grep -nF -- '.prev-' "$REPORT" >&2 || true
 fi
 
 git switch -q feature/x
@@ -1482,11 +1645,8 @@ echo
 echo "== 旧形式（series タグ無し）レポートの扱い =="
 
 reset_review_results() {
+  # 退避先は出力ディレクトリの内側なので、これだけで `.prev-*` も一緒に消える。
   rm -rf "$REPO/.review-results"
-  for leftover_archive in "$REPO"/.review-results.prev-*; do
-    [[ -e "$leftover_archive" || -L "$leftover_archive" ]] || continue
-    rm -rf "$leftover_archive"
-  done
 }
 
 # 案内は「貼ればそのまま走る 1 行」であることに意味がある。前方一致で見ていると

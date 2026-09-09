@@ -115,8 +115,21 @@ _FF_PROMPT_FILE="$prompt_file"
 
 # MODEL_ARGS は空になりうる。bash 3.2 では set -u 下で空配列を "${a[@]}" と
 # 展開すると unbound variable で落ちるため ${a[@]+"${a[@]}"} を使う。
+#
+# `env RETROSPECTIVE_MODE=off` を前置する。自動振り返りの UserPromptSubmit hook は
+# ユーザーレベル設定（~/.claude/settings.json）に入るため、ここで起動する入れ子の
+# 非対話 `claude -p` にも注入され、**stdout そのものが成果物**であるこの経路では
+# 振り返り行がレビュー本文に混ざる（利用側ラッパーの exact 一致 ping が落ちた実測が
+# https://github.com/feel-flow/ff-dev-toolkit/issues/94）。hook 側の入力には
+# print / headless / output_format 相当のフィールドが無く判別できない（`permission_mode`
+# は `--permission-mode` の写しで対話セッションと同形）ので、抑止は起動側の責務になる。
+# `env` は exec で自身を置き換えるためプロセスは増えず、run_with_timeout の
+# プロセスグループ制御（cmd_pid = グループリーダー）もそのまま働く。
+# 前置代入（`RETROSPECTIVE_MODE=off "$CLI_COMMAND"`）ではなく env(1) を使うのは、
+# run_with_timeout が `"$@" &` で起動するため、配列要素の `NAME=VALUE` が代入では
+# なくコマンド名として扱われるから。
 result=$(run_with_timeout --stdin-file "$prompt_file" "$TIMEOUT" \
-  "$CLI_COMMAND" -p \
+  env RETROSPECTIVE_MODE=off "$CLI_COMMAND" -p \
     --allowed-tools "$allowed_tools" \
     ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   2>"$stderr_log") || {

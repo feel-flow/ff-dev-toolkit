@@ -500,6 +500,11 @@ contains "$SKILL" "UserPromptSubmit の \`additionalContext\`" "自動発火: �
 # Issue #840: 非対話の単発実行（codex exec）には注入しない規定。判別条件（model +
 # bypassPermissions）が SKILL.md から落ちると、hook 実装だけが知る暗黙挙動になる。
 contains "$SKILL" "Codex の非対話の単発実行（UserPromptSubmit 入力に \`model\` があり \`permission_mode\` が \`bypassPermissions\`" "自動発火: 非対話の単発実行には事前注入しない"
+# https://github.com/feel-flow/ff-dev-toolkit/issues/94: 入れ子の非対話 `claude -p` は
+# hook 側で判別できず、抑止の正本は起動側の環境変数。この一文が落ちると、利用側は
+# 「hook がいつか判別してくれる」と読んでラッパーに前置きを書かず、ping の exact 一致が
+# 再び落ちる。
+contains "$SKILL" "起動側が子プロセスの環境へ \`RETROSPECTIVE_MODE=off\` を載せて抑止する" "自動発火: 入れ子の claude 非対話起動は起動側で抑止する"
 
 # ── C. 消費側文書への伝播 ────────────────────────────────────────────────────
 # 上限・1 行報告・承認境界が片側だけ書き換わるのを検出する。

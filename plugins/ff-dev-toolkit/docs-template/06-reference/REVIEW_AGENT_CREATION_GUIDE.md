@@ -211,6 +211,15 @@ Output in the standard review format."
 #   なお同梱の multi-agent.sh 経由なら、アダプタ側が閉じているので考えなくてよい —
 #   自前ラッパーを書く場合だけの注意点。
 #
+# ⚠ **`RETROSPECTIVE_MODE=off` を子プロセスの環境へ載せる。** 自動振り返りの
+#   UserPromptSubmit hook はユーザーレベル設定に入るため、入れ子で起動した非対話の
+#   `claude -p` にも注入され、stdout の先頭・末尾に振り返り行が混ざる。hook 入力には
+#   print / headless / output_format 相当のフィールドが無く hook 側では判別できない
+#   （`permission_mode` は `--permission-mode` の写しで対話セッションと同形）ので、
+#   抑止は起動側の責務になる。CLI 生存確認の ping が exact 一致（`[ "$out" = ok ]`）
+#   なら、この前置きが無いと必ず落ちる。ラッパー冒頭で `export RETROSPECTIVE_MODE=off`
+#   すれば ping とレビュー本体の両方に効く。
+#
 # 失敗・タイムアウト時は、部分出力の先頭に未完了マーカーを付けて保存してから、
 # CLI の終了コードそのままで非 0 終了する。マーカーが無いと、統合レポートの
 # INCOMPLETE 検査（pre-push ゲート等）が空回りし、打ち切られたレビューが

@@ -362,6 +362,15 @@ doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
 doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
   "凍結の代わりになる機構ではない" \
   "multi-review が DISCARDED 機構を凍結の代替として売り込んでいない"
+# 別 CLI 全滅時、主担当のみへ落ちる前に Toolkit エージェントを挟む段（Issue #1394）。
+# 正本（self-review.md step 4）だけ直して消費側スキルを放置すると、実行経路は
+# 新しい段を飛ばして「主担当のみ」へ落ちる。両者を 1 本の針で固定する。
+doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
+  "主担当のみへ落ちる前に Toolkit のレビューエージェント" \
+  "multi-review が主担当のみへ落ちる前の Toolkit エージェント段を指示している"
+doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
+  "同一モデルの追加観点で代替" \
+  "multi-review が Toolkit 段でモデル独立性が回復しないことを伝えている"
 # worktree 隔離既定（Issue #950）はサブエージェント経路の凍結の例外。消費側が
 # 例外に触れないと「サブエージェント経路も常に凍結」という逆の指示になる。
 # ただし SKILL.md は導線のみ（規定本体を再掲しない — 再掲すると片方だけ直る

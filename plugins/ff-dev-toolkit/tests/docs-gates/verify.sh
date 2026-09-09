@@ -972,6 +972,38 @@ must_match "$f" '^\*\*並列マージで残る定型作業\*\*:.*並列側は fr
 must_contain "$f" '同じ文書を触る単発 PR が同時に開いているとき' \
   "Epic 一括対応: 振り直しの定型はバッチ外の単発 PR 並行にも適用する"
 
+# --- multi-review SKILL.md: レビュー待ち時間の使い方（https://github.com/feel-flow/ff-dev-toolkit/issues/99）---
+# SKILL.md は ${DOCS}（docs-template）の外（plugin 直下の skills/）にあるため、
+# must_contain の $DOCS 前提には乗せられない。ここだけ絶対パスへ直接 grep する。
+MULTI_REVIEW_SKILL="$PLUGIN_ROOT/skills/multi-review/SKILL.md"
+if [ ! -f "$MULTI_REVIEW_SKILL" ]; then
+  bad "multi-review SKILL.md が見つかりません: $MULTI_REVIEW_SKILL"
+else
+  if grep -qF '### レビュー待ち時間の使い方' "$MULTI_REVIEW_SKILL"; then
+    ok "multi-review SKILL.md に「レビュー待ち時間の使い方」の項が実在する"
+  else
+    bad "multi-review SKILL.md に「レビュー待ち時間の使い方」の項が見つかりません"
+  fi
+  if grep -qF 'Issue 本文の AC 更新・PR 本文の更新・follow-up の起票・完了報告の下書き）は作業ツリーを触らないので' \
+      "$MULTI_REVIEW_SKILL"; then
+    ok "レビュー待ち時間の使い方が許可側（gh 経由の GitHub 側作業）を明記している"
+  else
+    bad "レビュー待ち時間の使い方の許可側（gh 経由の GitHub 側作業）が見つかりません"
+  fi
+  if grep -qF 'レビュー終端後に直したらすぐ commit し、次の回転を dirty な作業ツリーで起動しない' \
+      "$MULTI_REVIEW_SKILL"; then
+    ok "レビュー待ち時間の使い方が禁止側（ファイルの編集を溜めない）を明記している"
+  else
+    bad "レビュー待ち時間の使い方の禁止側（ファイルの編集を溜めない）が見つかりません"
+  fi
+  if grep -qF 'レビューエージェント（`git diff <base>...HEAD` を見る）は PR の内容としては未解消のままと判定する' \
+      "$MULTI_REVIEW_SKILL"; then
+    ok "レビュー待ち時間の使い方が禁止側の理由（DISCARDED・未解消判定）を明記している"
+  else
+    bad "レビュー待ち時間の使い方の禁止側の理由が見つかりません"
+  fi
+fi
+
 echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ docs-gates verify: $FAIL 件失敗" >&2

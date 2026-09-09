@@ -91,11 +91,17 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # argv を <arg> 区切りで記録する。単純な空白連結だと "gpt 5x" が 2 引数へ割れても
 # 記録が同じに見えてしまい、語分割の退化を検出できない（ACE-36-1）。
 mkdir -p "$WORK/bin"
+#
+# ENV_LOG が設定されているときだけ、子プロセスに届いた環境変数も記録する。argv とは
+# 別ファイルに出すのは、常時記録すると全 argv ケースの期待文字列に混ざるため。
 for cli in claude codex copilot grok; do
   {
     echo '#!/usr/bin/env bash'
     echo 'for a in "$@"; do printf "<%s>" "$a" >> "$ARGV_LOG"; done'
     echo 'printf "\n" >> "$ARGV_LOG"'
+    echo 'if [ -n "${ENV_LOG:-}" ]; then'
+    echo '  printf "RETROSPECTIVE_MODE=%s\n" "${RETROSPECTIVE_MODE-__unset__}" >> "$ENV_LOG"'
+    echo 'fi'
     echo 'echo "- Suggestion: stub review output"'
   } > "$WORK/bin/$cli"
   chmod +x "$WORK/bin/$cli"
@@ -282,6 +288,25 @@ expect_argv_has "grok-cli: review では --sandbox read-only を渡す" "<--sand
 MULTI_AGENT_MODEL_CLAUDE_CODE=polluted-from-host run_adapter claude-code-adapter.sh
 expect_launched "isolation: 自己汚染ケースで CLI が起動している"
 expect_argv_lacks "isolation: 継承環境の MULTI_AGENT_* が除去される" "<--model>"
+
+# ---- 子プロセスへ載せる環境（自動振り返りの抑止） --------------------------------
+# claude-code アダプタは stdout そのものを成果物として捕捉するため、入れ子で起動する
+# 非対話 `claude -p` に自動振り返りが注入されると、レビュー本文に振り返り行が混ざる
+# （https://github.com/feel-flow/ff-dev-toolkit/issues/94）。hook 側の入力には
+# print / headless 相当のフィールドが無く判別できないので、抑止は起動側 = このアダプタの
+# 責務になる。argv ではなく**子プロセスの環境**に載るかを実測する — 前置きが落ちても
+# argv は変わらないため、argv 検査では検出できない。
+# ホストが同変数を export していても検査が真空 PASS しないよう、意図的に別値で汚染して
+# から起動し、アダプタが off で上書きすることを固定する。
+: > "$WORK/env.log"
+RETROSPECTIVE_MODE=host-sentinel run_adapter claude-code-adapter.sh ENV_LOG="$WORK/env.log"
+expect_launched "claude-code: 振り返り抑止ケースで CLI が起動している"
+if grep -qx 'RETROSPECTIVE_MODE=off' "$WORK/env.log"; then
+  ok "claude-code: 子プロセスの環境に RETROSPECTIVE_MODE=off が載る（ホストの値を上書き）"
+else
+  bad "claude-code: 子プロセスの環境に RETROSPECTIVE_MODE=off が無い"
+  sed 's/^/    | /' "$WORK/env.log" >&2
+fi
 
 # ---- env による上書き ------------------------------------------------------------
 run_adapter claude-code-adapter.sh MULTI_AGENT_MODEL_CLAUDE_CODE=opus

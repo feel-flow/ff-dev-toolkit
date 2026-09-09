@@ -24,6 +24,24 @@ asdd_hook_enabled retrospective || exit 0
 # retrospective. A skip is not silent: one stderr breadcrumb line records it
 # so a future misclassification or host contract change stays observable
 # (UserPromptSubmit stderr on exit 0 is not injected into model context).
+#
+# Nested non-interactive `claude -p` (public ff-dev-toolkit issue 94) is NOT
+# detectable here. Measured 2026-09-10, claude 2.1.245 / macOS, by dumping the
+# raw UserPromptSubmit stdin of `claude -p "..." --output-format text
+# --permission-mode plan --settings <temp>`: the input carries exactly
+# session_id, transcript_path, cwd, prompt_id, permission_mode,
+# hook_event_name, prompt — no `model`, and no print/headless/output_format
+# field of any kind. `permission_mode` only mirrors --permission-mode (measured
+# "plan" when passed, and the inherited "bypassPermissions" when omitted), so it
+# cannot separate `claude -p` from an interactive session in the same mode. The
+# published hooks reference lists no such field either. Absence-based guesses
+# (e.g. treating a missing `effort` as headless) would invert the fail-open
+# stance and silently kill the retrospective for interactive sessions, so this
+# hook keeps injecting. The launcher owns the contract instead: any script that
+# shells out to a nested non-interactive `claude -p` whose stdout is the
+# deliverable must export RETROSPECTIVE_MODE=off for that child process (see
+# skills/retrospective/SKILL.md "自動発火"). Re-measure and revisit this branch
+# if a future host adds a headless marker to the input.
 
 MODE="${RETROSPECTIVE_MODE:-}"
 MODE="${MODE//[[:space:]]/}"

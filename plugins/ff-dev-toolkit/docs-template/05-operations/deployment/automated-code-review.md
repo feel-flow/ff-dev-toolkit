@@ -395,6 +395,24 @@ npx husky init
 - 不要なファイルを `.gitignore` に追加
 - `--no-verify` で一時的にスキップ
 
+### `claude -p` の stdout に振り返り行が混ざる（ping の exact 一致が落ちる）
+
+利用側の単体ラッパー（`scripts/claude-review.sh` 等）が `claude -p "Return exactly: ok" --output-format text` のような **exact 一致の ping** で CLI 生存確認をしている場合、出力が `ok` だけにならず `振り返り: 今回は作業完了前のため対象外` などの行が付いて判定に落ちることがある。
+
+原因は **ユーザーレベル**（`~/.claude/settings.json`）に入った自動振り返りの `UserPromptSubmit` hook で、入れ子で起動された非対話の `claude -p` にも注入される。hook 入力には print / headless / `output_format` に相当するフィールドが無く、hook 側から「これはツール的起動だ」と判別できない（`permission_mode` は `--permission-mode` の写しなので対話セッションと同形）。プロジェクトの `.claude/settings.json` では止められず、リポジトリ外（`cd /tmp`）でも再現する。
+
+**対処（起動側で環境変数を載せる）**: stdout が成果物になる入れ子起動には、必ず `RETROSPECTIVE_MODE=off` を子プロセスの環境へ渡す。
+
+```bash
+# ping / レビュー本体のどちらにも前置きする
+RETROSPECTIVE_MODE=off claude -p "Return exactly: ok" --output-format text
+
+# ラッパー冒頭でまとめて立てるなら
+export RETROSPECTIVE_MODE=off
+```
+
+`off` の別名として `0` / `false` / `no` / `none` / `disabled` も受け付ける（大文字小文字・空白は無視）。この抑止は子プロセスにだけ効き、利用者の対話セッションの自動振り返りには影響しない。
+
 ### 誤検出が多い
 
 1. `.claude/commands/code-review.md` のルールを調整

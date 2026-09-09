@@ -75,7 +75,8 @@ if [[ -n "${ACE_CLAUDE_CMD:-}" ]]; then
   )
 else
   echo 'ace-capture: ACE_CLAUDE_CMD が未設定のため、コマンドはスキップされました。'
-  echo '  例: export ACE_CLAUDE_CMD='\''claude -p --agent ace-capture --permission-mode bypassPermissions "..."'\'''
+  echo '  例: export ACE_CLAUDE_CMD='\''RETROSPECTIVE_MODE=off claude -p --agent ace-capture --permission-mode bypassPermissions "..."'\'''
+  echo '  （入れ子の非対話 claude -p は hook 側で判別できないため、起動側で RETROSPECTIVE_MODE=off を前置する）'
 fi
 
 if [[ "${ACE_KEEP_WORKTREE:-0}" == "1" ]]; then

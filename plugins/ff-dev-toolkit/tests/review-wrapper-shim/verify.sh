@@ -564,7 +564,10 @@ echo "-- 振る舞い（stub オーケストレータで実測） --"
 # stub の multi-agent.sh: 受け取った argv を 1 引数 1 行で記録する。
 PROJ="$WORK/proj"
 TOOLKIT="$PROJ/toolkit"
-mkdir -p "$PROJ/scripts" "$TOOLKIT/scripts/templates" "$TOOLKIT/.claude-plugin"
+mkdir -p "$PROJ/scripts" "$TOOLKIT/scripts/templates" "$TOOLKIT/scripts/adapters" "$TOOLKIT/.claude-plugin"
+# シムは diff サイズの計測基準を委譲先と同じ実装（resolve_base_branch_ref）で解決する。
+# stub 側にも**実体**を置く（写しを書くと、本体が変わっても stub だけ古いまま緑になる）。
+cp "$PLUGIN_ROOT/scripts/adapters/adapter-common.sh" "$TOOLKIT/scripts/adapters/adapter-common.sh"
 cp "$SHIM" "$PROJ/scripts/codex-review.sh"
 cp "$SHIM" "$TOOLKIT/scripts/templates/codex-review.sh"
 chmod +x "$PROJ/scripts/codex-review.sh"
@@ -613,6 +616,9 @@ run_shim() {
   done
   : > "$WORK/env.log"
   local run_cwd="${RUN_SHIM_CWD:-$PWD}"
+  # 既定は完全な stub toolkit。adapter が欠けている toolkit を測るケースだけが
+  # RUN_SHIM_TOOLKIT で別の root を指す（既定を書き換えないので他ケースに波及しない）。
+  local run_toolkit="${RUN_SHIM_TOOLKIT:-$TOOLKIT}"
   # stdout と stderr を**分けて**記録する。合流させてから grep すると、通知が
   # stdout へ移っても検査が通ってしまう（pre-commit 等で stdout だけ捨てる構成では
   # 通知が消える）。既存の検査のために合流版も残す。
@@ -620,7 +626,7 @@ run_shim() {
   # NAME=VALUE の代入を後に適用するので、ケース固有の指定（下の ${envs}）はそのまま効く
   # — 「ホストの値は除く / ケースの上書きは通す」という順序契約に乗っている。
   ( cd "$run_cwd" && \
-    run_isolated env FF_DEV_TOOLKIT_ROOT="$TOOLKIT" ARGV_LOG="$WORK/argv.log" ENV_LOG="$WORK/env.log" \
+    run_isolated env FF_DEV_TOOLKIT_ROOT="$run_toolkit" ARGV_LOG="$WORK/argv.log" ENV_LOG="$WORK/env.log" \
       ${envs[@]+"${envs[@]}"} \
       bash "$PROJ/scripts/codex-review.sh" "$@" \
       >"$WORK/stdout.log" 2>"$WORK/err.log" </dev/null ) || RUN_RC=$?
@@ -845,6 +851,127 @@ if [ "$RUN_RC" -eq 0 ] && [ ! -s "$WORK/argv.log" ] \
   ok "staged 指定時の diff サイズ歯止めも index だけを測って skip する"
 else
   bad "staged diff のサイズ歯止めが委譲範囲と一致しない (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+
+# ── 計測基準の ref は委譲先が解決する ref と同じにする ──────────────────────────
+#
+# 委譲先（multi-agent.sh → resolve_base_branch_ref）は、ローカル `<base>` が無い
+# クローンや stale なローカル `<base>` では `origin/<base>` をレビュー対象にする。
+# 歯止めを**生の `--base` の値**で測ると 2 つの形で壊れる:
+#   1. ローカル `<base>` の無いクローン（`git clone --branch <feature>` / CI）では
+#      `git diff develop...HEAD` 自体が失敗し、「diff を測れませんでした」で exit 2 —
+#      委譲先なら origin/develop で普通にレビューできるのに 1 つも届かない
+#   2. ローカル `<base>` が stale なときは、古い基準で測って新しい基準でレビューする
+#      （CODEX_REVIEW_MAX_DIFF_BYTES で課金を抑えている前提が静かに崩れる）
+# fixture は remote-tracking ref を直接置いて作る（ネットワークに触らない）。
+
+# (1) ローカル develop が無く、origin/develop だけがある
+NOBASE_REPO="$WORK/nobase-repo"
+ff_git_fixture_init "$NOBASE_REPO"
+git -C "$NOBASE_REPO" checkout -q -b feature
+printf 'base\n' > "$NOBASE_REPO/app.txt"
+git -C "$NOBASE_REPO" add app.txt
+git -C "$NOBASE_REPO" commit -qm base
+NOBASE_BASE_SHA="$(git -C "$NOBASE_REPO" rev-parse HEAD)"
+printf 'changed\n' >> "$NOBASE_REPO/app.txt"
+git -C "$NOBASE_REPO" add app.txt
+git -C "$NOBASE_REPO" commit -qm changed
+git -C "$NOBASE_REPO" update-ref refs/remotes/origin/develop "$NOBASE_BASE_SHA"
+if [ -z "$(git -C "$NOBASE_REPO" branch --list develop)" ]; then
+  ok "fixture: ローカル develop が無く origin/develop だけがある"
+else
+  bad "fixture: ローカル develop が残っている（ローカル base 無しのケースが成立しない）"
+fi
+RUN_SHIM_CWD="$NOBASE_REPO" run_shim CODEX_REVIEW_MAX_DIFF_BYTES=1000000 --base develop --dry-run
+if [ "$RUN_RC" -eq 0 ] && [ -s "$WORK/argv.log" ]; then
+  ok "ローカル base の無いクローンでも origin/<base> で測り、委譲先まで届く"
+else
+  bad "ローカル base の無いクローンで diff サイズを測れず委譲が止まった (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+
+# (2) ローカル develop が origin/develop より stale（真の祖先）
+STALE_REPO="$WORK/stale-base-repo"
+ff_git_fixture_init "$STALE_REPO"
+git -C "$STALE_REPO" checkout -q -b develop
+printf 'base\n' > "$STALE_REPO/app.txt"
+git -C "$STALE_REPO" add app.txt
+git -C "$STALE_REPO" commit -qm base
+git -C "$STALE_REPO" checkout -q -b feature
+# origin/develop はローカル develop の 1 コミット先。差分が両基準で明確に違うよう、
+# origin 側だけに大きめのファイルを入れる。
+awk 'BEGIN { for (i = 0; i < 400; i++) print "filler line " i }' > "$STALE_REPO/filler.txt"
+git -C "$STALE_REPO" add filler.txt
+git -C "$STALE_REPO" commit -qm "origin advance"
+git -C "$STALE_REPO" update-ref refs/remotes/origin/develop "$(git -C "$STALE_REPO" rev-parse HEAD)"
+printf 'changed\n' >> "$STALE_REPO/app.txt"
+git -C "$STALE_REPO" add app.txt
+git -C "$STALE_REPO" commit -qm changed
+# 委譲先が使う基準（origin/develop）での実測バイト数。シムは BASE...HEAD に加えて
+# 作業ツリーの変更も測るので、同じ 2 本を足して比べる。
+STALE_ORIGIN_BYTES="$( { git -C "$STALE_REPO" diff origin/develop...HEAD; git -C "$STALE_REPO" diff HEAD; } | wc -c | tr -d ' ')"
+STALE_LOCAL_BYTES="$( { git -C "$STALE_REPO" diff develop...HEAD; git -C "$STALE_REPO" diff HEAD; } | wc -c | tr -d ' ')"
+if [ "$STALE_LOCAL_BYTES" -gt "$STALE_ORIGIN_BYTES" ]; then
+  ok "fixture: stale なローカル base の方が大きく測れる（両基準を判別できる）"
+else
+  bad "fixture: 2 つの基準の diff サイズが判別できない（local=${STALE_LOCAL_BYTES} origin=${STALE_ORIGIN_BYTES}）"
+fi
+# 上限をちょうど origin 基準のバイト数に置く。委譲先と同じ基準で測っていれば超えず、
+# 生の develop（stale）で測ると超えて rc=3 になる。
+RUN_SHIM_CWD="$STALE_REPO" run_shim "CODEX_REVIEW_MAX_DIFF_BYTES=$STALE_ORIGIN_BYTES" --base develop --dry-run
+if [ "$RUN_RC" -eq 0 ] && [ -s "$WORK/argv.log" ]; then
+  ok "ローカル base が stale でも委譲先と同じ ref で測る（上限判定が一致する）"
+else
+  bad "stale なローカル base で測っており、レビュー範囲と歯止めの基準がずれている (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+
+# (3) 解決できない名前は素通し。従来どおり「測れない」で非 0 のまま（歯止めを
+#     要求されたのに測れないまま課金される実行を始めない）。
+RUN_SHIM_CWD="$NOBASE_REPO" run_shim CODEX_REVIEW_MAX_DIFF_BYTES=1000000 --base nosuchbase --dry-run
+if [ "$RUN_RC" -ne 0 ] && [ ! -s "$WORK/argv.log" ] \
+   && grep -q 'diff を測れませんでした' "$WORK/out.log"; then
+  ok "解決できない base 名は素通しのまま「測れない」で非 0"
+else
+  bad "解決できない base 名の扱いが退行した (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+
+# (4)(5) 解決実装に届かない toolkit では、生の値へ落ちること自体は正しい（委譲先にも
+#        resolve_base_branch_ref が無いので、生の値の方が委譲先のレビュー範囲と一致する）。
+#        ただし**黙って**落ちると、歯止めがどちらの基準で測ったのか後から分からない。
+#        WARNING が stderr に出ることを実測する（rc は従来どおり——ハードエラーにしない）。
+NOADAPTER_TOOLKIT="$WORK/toolkit-no-adapter"
+cp -R "$TOOLKIT" "$NOADAPTER_TOOLKIT"
+rm -f "$NOADAPTER_TOOLKIT/scripts/adapters/adapter-common.sh"
+RUN_SHIM_CWD="$NOBASE_REPO" RUN_SHIM_TOOLKIT="$NOADAPTER_TOOLKIT" \
+  run_shim CODEX_REVIEW_MAX_DIFF_BYTES=1000000 --base develop --dry-run
+unset RUN_SHIM_TOOLKIT  # bash では関数呼び出し前置の代入が呼び出し後も残る（後続ケースへ漏らさない）
+if grep -q 'WARNING: base ref の解決実装が見つかりませんでした' "$WORK/err.log" \
+   && grep -q '生の値 develop で diff サイズを測ります' "$WORK/err.log"; then
+  ok "adapter-common.sh が無い toolkit では WARNING を出してから生の値へ落ちる"
+else
+  bad "adapter-common.sh が無い toolkit で無警告のまま生の値へ落ちている"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+
+STUBADAPTER_TOOLKIT="$WORK/toolkit-stub-adapter"
+cp -R "$TOOLKIT" "$STUBADAPTER_TOOLKIT"
+# adapter は読めるが resolve_base_branch_ref を持たない（解決実装より前の版）。
+cat > "$STUBADAPTER_TOOLKIT/scripts/adapters/adapter-common.sh" <<'SH'
+#!/usr/bin/env bash
+# resolve_base_branch_ref を持たない旧 adapter を模す
+ff_adapter_common_loaded=1
+SH
+RUN_SHIM_CWD="$NOBASE_REPO" RUN_SHIM_TOOLKIT="$STUBADAPTER_TOOLKIT" \
+  run_shim CODEX_REVIEW_MAX_DIFF_BYTES=1000000 --base develop --dry-run
+unset RUN_SHIM_TOOLKIT  # bash では関数呼び出し前置の代入が呼び出し後も残る（後続ケースへ漏らさない）
+if grep -q 'WARNING: base ref を委譲先と同じ実装で解決できませんでした' "$WORK/err.log" \
+   && grep -q '生の値 develop で diff サイズを測ります' "$WORK/err.log"; then
+  ok "解決関数を持たない adapter でも WARNING を出してから生の値へ落ちる"
+else
+  bad "解決関数を持たない adapter で無警告のまま生の値へ落ちている"
   sed 's/^/    | /' "$WORK/out.log" >&2
 fi
 
@@ -2049,7 +2176,7 @@ else
   ok "--help がコマンド置換を実行しない"
 fi
 # ヘルプに書いた語が実際に出ていること（置換で消えると空白だけが残る）
-for _word in "--base" "--staged" "--reviewers" "--exclude-reviewers" "--list-reviewers" "--timeout" "--dry-run" "--fresh" "opt=value"; do
+for _word in "--base" "--staged" "--reviewers" "--exclude-reviewers" "--exclude-cli" "--list-reviewers" "--timeout" "--dry-run" "--fresh" "opt=value"; do
   if grep -q -- "$_word" "$WORK/out.log"; then
     ok "--help に '${_word}' が出る"
   else
@@ -2178,6 +2305,29 @@ if [ "$RUN_RC" -eq 2 ] && [ ! -s "$WORK/argv.log" ]; then
   ok "--exclude-reviewers の空値を拒否し、委譲しない"
 else
   bad "--exclude-reviewers の空値が rc=$RUN_RC で通った"
+fi
+
+# --exclude-cli は観点ではなく CLI 名なので写像は挟まず、委譲先の同名オプションへ
+# そのまま渡す（繰り返し可）。ここが落ちると「外したつもりの CLI が毎回走る」に戻る。
+run_shim --exclude-cli grok-cli --exclude-cli claude-code --dry-run
+if argv_has_seq "--exclude-cli" "grok-cli" && argv_has_seq "--exclude-cli" "claude-code"; then
+  ok "--exclude-cli が委譲先へ繰り返しのまま透過する"
+else
+  bad "--exclude-cli が委譲されていない"
+  sed 's/^/    | /' "$WORK/argv.log" >&2
+fi
+run_shim --exclude-cli=grok-cli --dry-run
+if argv_has_seq "--exclude-cli" "grok-cli"; then
+  ok "--exclude-cli=<name> 形も委譲先へ透過する"
+else
+  bad "--exclude-cli=<name> が委譲されていない"
+  sed 's/^/    | /' "$WORK/argv.log" >&2
+fi
+run_shim --exclude-cli "" --dry-run
+if [ "$RUN_RC" -eq 2 ] && [ ! -s "$WORK/argv.log" ]; then
+  ok "--exclude-cli の空値を拒否し、委譲しない"
+else
+  bad "--exclude-cli の空値が rc=$RUN_RC で通った"
 fi
 
 # --- diff サイズ閾値（消費側の課金の歯止め） ---

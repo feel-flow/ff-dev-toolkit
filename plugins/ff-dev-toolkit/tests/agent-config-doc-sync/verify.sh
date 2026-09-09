@@ -61,6 +61,7 @@ echo "== agent-config.yaml 説明文の単一正本 =="
 ANCHORS=(
   '実際に読まれるのは `version` / `mode` / `parallel` / `review.main` / `review.sub` / `review.critical_nonblock_perspectives`'
   '`version: "2.0"` のときだけ `tasks.<task>.{mode,cost_strategy,timeout,output_dir}`'
+  '`exclude_clis` は空白またはカンマ区切りの **1 文字列**で、そこに挙げた CLI をプランから外す'
   '`agents:` と `fallback:` はどのバージョンでも読まれず'
   '`scripts/multi-agent.sh` の `get_cli_*` 関数'
   '読み取りは `yq` 依存'
@@ -158,7 +159,7 @@ fi
 
 # ---- 2) 正本が実際の挙動を正しく述べている（anchor 検査）----
 if check_anchors "$SSOT_TEXT"; then
-  ok "正本節が実際に読まれるキー（version / mode / parallel / review.main / review.sub / review.critical_nonblock_perspectives / tasks.*）と読まれないキー（agents / fallback）を正しく述べている"
+  ok "正本節が実際に読まれるキー（version / mode / parallel / review.main / review.sub / review.critical_nonblock_perspectives / exclude_clis / tasks.*）と読まれないキー（agents / fallback）を正しく述べている"
 else
   bad "正本節に述べるべき内容が欠けている（説明は 1 物理行である前提 — 折り返した場合も欠落扱いになる）:"
   for a in "${MISSING_ANCHORS[@]}"; do
@@ -189,6 +190,7 @@ else
     "'.review.main"
     "'.review.sub"
     "'.review.critical_nonblock_perspectives"
+    "'.exclude_clis"
     '.tasks.${TASK_TYPE}.mode'
     '.tasks.${TASK_TYPE}.cost_strategy'
     '.tasks.${TASK_TYPE}.timeout'

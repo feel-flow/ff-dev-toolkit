@@ -379,6 +379,13 @@ else
     # ブロックでない（systemMessage のみ）ことを stdin JSON fixture で固定する。
     # 絶対化イディオム（コマンド置換・変数展開）を誤警告しない線引きも併せて見る。
     "$SCRIPT_DIR/guard-background-cwd/verify.sh"
+    # PreToolUse（Edit/Write/MultiEdit/NotebookEdit/Bash/Agent）のレビュー走行中ロック +
+    # 起動時 dirty ガード（hooks/guard-review-in-flight.sh）。ロック生存中の編集・git 書き込みの
+    # deny、FF_REVIEW_LOCK_OVERRIDE での解除、ロック不在・stale PID の非 deny、
+    # pr-review-toolkit エージェント起動時の dirty 確認（ask）と clean / ignored のみの非発火を
+    # stdin JSON fixture で固定する。orchestrator 側のロック 3 経路は
+    # multi-agent-revision-guard が実走で見る。
+    "$SCRIPT_DIR/guard-review-in-flight/verify.sh"
     # squash 件名の closing keyword が Refs 運用の Issue を閉じる経路のガード。
     # 検査ロジック（scripts/check-closing-keywords.sh）の振る舞いと、SKILL.md /
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド

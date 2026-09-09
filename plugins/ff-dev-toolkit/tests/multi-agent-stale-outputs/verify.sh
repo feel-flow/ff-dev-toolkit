@@ -929,6 +929,55 @@ else
 fi
 
 echo ""
+echo "== プラン外 CLI の名指しは DISCARDED の内訳まで出す =="
+# 前回走が破棄された結果は 1 行目に `> DISCARDED` バナーを持つ。「今回の結果ではない」
+# だけだと、読み手は残骸を完成した前回のレビューとして扱ってしまう。
+DISC_OUT="$TMP/discarded-unit-out"
+mkdir -p "$DISC_OUT/claude-code"
+printf '> DISCARDED — the repository changed while this run was in flight.\n\n## Findings\n' \
+  > "$DISC_OUT/claude-code/code-review.md"
+printf '## Findings\n- ok\n' > "$DISC_OUT/claude-code/test-analysis.md"
+# symlink は count には入るが head しない（FIFO で固まらない・出力先の外を辿らない）
+ln -s "$DISC_OUT/claude-code/code-review.md" "$DISC_OUT/claude-code/linked.md"
+DISC_OUT="$(cd "$DISC_OUT" && pwd -P)"
+
+run_dirs_unit() { # <OUTPUT_DIR>
+  (
+    cd "$REPO"
+    run_isolated bash -c '
+      set -euo pipefail
+      source "$1"
+      OUTPUT_DIR="$2"
+      FULL_EXECUTION_PLAN="codex-cli:code-review"
+      TASK_TYPE=review
+      UNPLANNED_RESULT_NOTES=""
+      report_unplanned_result_dirs
+    ' "$MULTI_AGENT" "$FUNCS" "$1"
+  )
+}
+
+if run_dirs_unit "$DISC_OUT" >"$TMP/unit-disc.out" 2>"$TMP/unit-disc.err"; then
+  ok "DISCARDED 内訳つきの名指しが rc=0 で通る"
+else
+  bad "DISCARDED 内訳つきの名指しが失敗した"
+  sed -n '1,10p' "$TMP/unit-disc.err" >&2 || true
+fi
+if grep -qF 'claude-code/ (3 result file(s) from an earlier run, 1 of them marked DISCARDED by that run' "$TMP/unit-disc.err"; then
+  ok "件数と DISCARDED 件数の内訳を出す（symlink は数えるが読まない）"
+else
+  bad "DISCARDED の内訳が出ない（件数が 0 に潰れたか、symlink を辿って数えた）"
+  sed -n '1,10p' "$TMP/unit-disc.err" >&2 || true
+fi
+rm -f "$DISC_OUT/claude-code/code-review.md" "$DISC_OUT/claude-code/linked.md"
+if run_dirs_unit "$DISC_OUT" 2>"$TMP/unit-disc2.err" >/dev/null \
+   && grep -qF 'claude-code/ (1 result file(s) from an earlier run — left untouched' "$TMP/unit-disc2.err"; then
+  ok "DISCARDED が 0 件なら内訳を足さない（従来文言のまま）"
+else
+  bad "DISCARDED 0 件のときの文言が変わった"
+  sed -n '1,10p' "$TMP/unit-disc2.err" >&2 || true
+fi
+
+echo ""
 echo "== 結果 =="
 echo "PASS: $PASS"
 echo "FAIL: $FAIL"

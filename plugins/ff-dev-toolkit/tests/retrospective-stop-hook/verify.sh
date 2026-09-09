@@ -226,6 +226,23 @@ ERR="$(cat "$TEST_TMP/context-stderr" 2>/dev/null || true)"
 rm -f "$TEST_TMP/context-stderr" "$LARGE_INPUT_FILE"
 assert_skips "10MB 入力でも入力上限に食われず非対話判別が働く"
 
+# 入れ子で起動された非対話の `claude -p`（レビューラッパーの CLI 生存確認 ping など、
+# stdout そのものが成果物になる起動。https://github.com/feel-flow/ff-dev-toolkit/issues/94）。
+# 2026-09-10 実測（claude 2.1.245）の UserPromptSubmit 入力をそのまま fixture にして
+# いる — フィールドは 7 つだけで、`model` も print / headless / output_format 相当の
+# フィールドも無い。対話セッションの入力も同形で届く（`permission_mode` は
+# `--permission-mode` の写しにすぎず、対話/非対話を分けない）ので、この入力に対する
+# 判定は 1 本で足りる。
+CLAUDE_PRINT_INPUT='{"session_id":"9ddfb014-dbcf-42c1-a871-6f26c76a24a9","transcript_path":"/tmp/9ddfb014.jsonl","cwd":"/tmp","prompt_id":"a316d829-0249-4838-a175-283024bf1bb4","permission_mode":"plan","hook_event_name":"UserPromptSubmit","prompt":"Return exactly: ok"}'
+
+# 実測の pin: `claude -p` の入力だけでは判別材料が無いので、環境変数が無ければ
+# fail-open で注入される。ここが skip に変わったら、それはフィールドの不在を根拠に
+# した推測判定が入った合図で、対話セッションの自動振り返りが黙って消える側の退行
+# （同形の入力しか届かない以上、対話セッションも巻き添えで消える）。抑止の正本は
+# hook 側の判別ではなく、起動側が子プロセスへ載せる `RETROSPECTIVE_MODE=off`。
+run_context_hook __unset__ "$CLAUDE_PRINT_INPUT"
+assert_injects "claude 非対話の入力に判別材料は無く、環境変数が無ければ注入へ倒す（fail-open）"
+
 run_context_hook off
 assert_silent_success "context hook も RETROSPECTIVE_MODE=off なら無効"
 

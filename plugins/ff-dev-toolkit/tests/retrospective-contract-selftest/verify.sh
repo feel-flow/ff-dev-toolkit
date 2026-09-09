@@ -55,8 +55,8 @@ SRC_LEDGER_TEMPLATE="$PLUGIN_ROOT/docs-template/08-knowledge/OBSERVATIONS.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=175
-EXPECTED_GATE_CHECKS_PUBLIC=161
+EXPECTED_GATE_CHECKS_MONOREPO=176
+EXPECTED_GATE_CHECKS_PUBLIC=162
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -505,6 +505,10 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|UserPromptSubmit の \`additionalContext\`|自動発火: 応答生成前に振り返り契約を注入|1"
   # Issue #840: 非対話単発実行のスキップ規定は判定リスト項目 5 の単独行に乗る。
   "${FIX_SKILL}|retrospective-SKILL.md|Codex の非対話の単発実行（UserPromptSubmit 入力に \`model\` があり|自動発火: 非対話の単発実行には事前注入しない|1"
+  # 入れ子の非対話 `claude -p` は hook 側で判別できず、抑止の正本は起動側の環境変数、
+  # という規定は判定リスト項目 6 の単独行に乗る
+  # （https://github.com/feel-flow/ff-dev-toolkit/issues/94）。
+  "${FIX_SKILL}|retrospective-SKILL.md|起動側が子プロセスの環境へ \`RETROSPECTIVE_MODE=off\` を載せて抑止する|自動発火: 入れ子の claude 非対話起動は起動側で抑止する|1"
   "${FIX_SKILL}|retrospective-SKILL.md|本スキルで扱わず、\`/ace-curate\`（または ACE Playbook への追記）へ回す|責務分離: retrospective 側からの送り先明示|1"
   # 観測台帳（起票の前段バッファ・KPT 拡張・ADR-046 の分散台帳）の針。同一行に 2 針が乗る
   # 箇所（節冒頭の段落・起票先分岐の bullet）だけ期待 ✗ を 2 にしてある（下の注記）。

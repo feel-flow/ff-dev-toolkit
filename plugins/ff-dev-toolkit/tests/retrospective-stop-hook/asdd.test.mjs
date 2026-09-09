@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 const plugin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const hooks = ['retrospective-context.sh', 'retrospective-stop.sh', 'check-update.sh', 'check-skill-drift.sh', 'auto-update-marketplace.sh', 'guard-checkout-restore.sh', 'guard-pr-followup.sh', 'guard-background-cwd.sh'];
+const hooks = ['retrospective-context.sh', 'retrospective-stop.sh', 'check-update.sh', 'check-skill-drift.sh', 'auto-update-marketplace.sh', 'guard-checkout-restore.sh', 'guard-pr-followup.sh', 'guard-background-cwd.sh', 'guard-review-in-flight.sh'];
 const configuration = () => ({ schemaVersion: 1, project: { name: 'Example', purpose: 'Verify hooks', owner: 'tester' }, style: 'citizen', stage: 'poc', tools: ['claude', 'codex'], documents: ['MASTER'], features: { ace: false, retrospective: false, multiReview: false, hooks: true, ci: false }, workflow: 'simple', decisions: [], github: null });
 function fixture(t) {
   const root = mkdtempSync(path.join(tmpdir(), 'asdd-hook-'));
