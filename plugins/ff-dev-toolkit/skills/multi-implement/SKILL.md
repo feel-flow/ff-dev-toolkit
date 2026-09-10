@@ -80,6 +80,8 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task implement --descript
 
 **`<タスク説明>` の標準文言**: `--description` はそのまま各 CLI への `## Task Description` に載る（`scripts/adapters/adapter-common.sh` の `build_prompt`）。ここに「指示からの逸脱は根拠（実測・grep・一次情報）つきで報告してよい。盲従して欠陥を作り込まない」に相当する一文を常置する。オーケストレータ（このスキルを実行する側）が混入させた設計仕様の誤りを実装 agent が実測で検出・自己訂正できるようにするため（OBS-056）。
 
+**依存プリフライトはこの経路では委譲先に任せない**: この経路は委譲先が worktree を作らず、起動元の作業ツリーをそのまま使う（CLI の CWD はリポジトリの物理ルートへ固定される）。さらに implement のプロンプト契約は staging 配下だけへの書き込みを課すため、作業ツリーの `node_modules` を作る依存インストールは委譲先が実行できない（[Implement の書き込み境界](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#implement-の書き込み境界)）。起動元が依存未インストールの新規 worktree なら、**CLI を起動する前にオーケストレータが依存インストール（例: `npm ci --prefix <この作業ツリー>/<パッケージ定義のあるディレクトリ>`）を済ませる**。済ませずに起動すると、CLI が回すテストも、staging を適用したあとに回すゲートも環境都合で崩れる。委譲プロンプトへ常置する形が要るのは worktree 隔離で起動するホストの subagent 経路で、そちらは下の「重要ルール」が持つ。規定と背景の正本は [Multi-CLI Agent Orchestration の「worktree 委譲の依存プリフライト」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#worktree-委譲の依存プリフライト)（規定はここへ複製しない）。
+
 **重要**: 実装結果は `.implement-results/` ステージングディレクトリに出力されます。
 ワーキングツリーには直接書き込みません。内訳は 2 種類です:
 
@@ -154,6 +156,7 @@ git diff  # 適用内容の確認
 
 - ステップ2の dry-run 確認なしにステップ3を実行しないこと
 - 長時間・大規模タスクをブランチ上で作業するエージェント（ホストの subagent / worktree 委譲など）へ委譲する場合は、[Multi-CLI Agent Orchestration の「長時間タスクの委譲契約（こまめコミット）」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#長時間タスクの委譲契約こまめコミット) に従う（契約 3 項目の規定はここへ複製しない）
+- ホストの subagent を worktree 隔離で起動して委譲し、その委譲先がゲート・テストを回す場合は、[Multi-CLI Agent Orchestration の「worktree 委譲の依存プリフライト」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#worktree-委譲の依存プリフライト) に従い、起動プロンプトへ依存インストールのコマンドを実値で常置する。リンクではなくコマンドの実値を書く（起動プロンプトは貼られた先で読まれるので相対リンクは解決しない）（規定はここへ複製しない）
 - 実装結果はステージングディレクトリに出力 — ワーキングツリーに直接書き込まない
 - ワーキングツリーへの適用前にユーザー承認を得ること
 - 結果は `.implement-results/` に保存され、後から参照できます（生成ファイル本体は `<cli>/files/<perspective>/`）

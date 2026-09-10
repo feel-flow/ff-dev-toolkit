@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONSUMER="$PLUGIN_ROOT/tests/retrospective-stop-hook/verify.sh"
-EXPECTED_CONSUMER_CHECKS=39
+EXPECTED_CONSUMER_CHECKS=47
 
 command -v perl >/dev/null 2>&1 || { echo "○ skip: perl が無いため retrospective Stop hook self-test をスキップ"; exit 0; }
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
@@ -340,6 +340,19 @@ ROOT="$(make_fixture ask-system-message)"
 perl -0pi -e 's/Automatic retrospective check before stop/Automatic retrospective before stop/' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "ask systemMessage drift" "ask モードの出力契約が不正" "$ROOT"
 
+# Issue #1451: FILING の ask 判定を大文字小文字・空白無視から厳密一致へ狭める退化。
+# 空白・大文字混在の別名検査（Stop 側）が赤になること。
+ROOT="$(make_fixture filing-ask-strict)"
+perl -0pi -e 's/\[Aa\]\[Ss\]\[Kk\]\)\n    FILING_CLAUSE/ask)\n    FILING_CLAUSE/' "$ROOT/hooks/retrospective-stop.sh"
+check_mutation "FILING の ask 別名判定の厳密化" "FILING の値の判定が不正" "$ROOT"
+
+# 既定分岐の「承認を待たない」文言が承認待ちへ退化する変異。既定モードの positive grep が赤になること。
+# 同じ句は hook 冒頭のコメントにもあるため /g で全出現を置換する（先頭 1 件だけだとコメントが
+# 変わって注入文は無傷のまま、変異が空振りする）。
+ROOT="$(make_fixture filing-default-approval)"
+perl -0pi -e 's/without waiting for approval/after asking the user for approval/g' "$ROOT/hooks/retrospective-stop.sh"
+check_mutation "既定の起票文言が承認待ちへ退化" "継続理由の必須境界が不足" "$ROOT"
+
 # 節の外（散文）へ定型文を足すだけの変更は、意味を担う出現を壊していないので緑のまま
 # であること。ここが赤くなる実装は「出現数の増加そのもの」を検出しているだけで、
 # Issue #931 の欠陥（意味を担う側の破壊を見逃す）は直っていない。
@@ -357,7 +370,7 @@ perl -0pi -e 's{(対応ホストでは[^\n]*\n)}{$1\n```text\n## セッション
 check_no_regression "自動発火 節内へフェンス例示を追加" "$ROOT"
 
 # 件数は名前付き定数で持つ（このファイルは EXPECTED_CONSUMER_CHECKS で既にその慣習）。
-EXPECTED_MUTATIONS=32
+EXPECTED_MUTATIONS=34
 EXPECTED_BENIGN=2
 if [ "$MUTATIONS" -ne "$EXPECTED_MUTATIONS" ]; then
   echo "✗ mutation 実行数が不正: ${MUTATIONS}（期待 ${EXPECTED_MUTATIONS}）" >&2

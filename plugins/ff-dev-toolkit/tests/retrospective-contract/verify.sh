@@ -288,18 +288,30 @@ contains "$SKILL" "**機微情報を提案本文へ引用しない**" "提案閾
 # ような文中へのモダリティ差し替えが部分一致で素通りし、義務が推奨へ緑のまま落ちる。
 contains "$SKILL" "- **提示する前に**下の「起票前の既存確認」を実施し、起票先 repo の既存 Issue 検索まで済ませてから提示する。" "提案閾値: 提示前に既存 Issue 検索を済ませる"
 
-contains "$SKILL" "**ユーザー承認を待つ**（承認なしに起票しない" "承認境界: 起票前にユーザー承認を待つ"
-contains "$SKILL" "フルオート運用でもこの確認は省略しない" "承認境界: フルオートの例外であることを明示"
+# Issue #1451: 起票の既定を承認待ちから自動起票へ変更。承認待ち式は RETROSPECTIVE_FILING=ask の
+# 保険だけに残す。既定の針・保険の針・env の観測手順（ACE-539-2）・構造的に起票できない場合の
+# 提示止まり・出力形式の起票結果行を対で持つ（どれか 1 つが落ちると「自動起票」が「勝手に起票」
+# か「結局承認待ち」のどちらかへ退化する）。
+contains "$SKILL" "既定は**承認を待たずに起票する**（自動起票）" "起票境界: 既定は承認を待たずに起票"
+contains "$SKILL" "承認待ち式は保険 \`RETROSPECTIVE_FILING=ask\` でだけ有効になる" "起票境界: 承認待ちは RETROSPECTIVE_FILING=ask の保険"
+contains "$SKILL" "printenv RETROSPECTIVE_FILING" "起票境界: RETROSPECTIVE_FILING の観測手順（printenv）"
+contains "$SKILL" "**既定モードでも起票せず提示に留めるもの**" "起票境界: 起票先・内容を確定できない提案は提示止まり"
+contains "$SKILL" "起票: [owner/repo#N（新規）" "出力形式: 起票結果の行"
+# ask モードの出力形状も対で pin する（既定側だけ固定すると ask 側の文言が自由落下する）。
+contains "$SKILL" "\`RETROSPECTIVE_FILING=ask\` のときは \`起票:\` 行の代わりに \`承認いただければ起票します。\` で終え" "出力形式: ask モードは承認待ちの文で終える"
+contains "$SKILL" "**ask モード（\`RETROSPECTIVE_FILING=ask\`）**: 提案を提示して**ユーザー承認を待つ**（承認なしに起票しない）" "起票境界: ask モードは起票前にユーザー承認を待つ"
 # Issue #1293: 包括的な実行指示（「最後までやって」等）が出ている場合の例外。利用者指示は
 # skill に優先する（using-superpowers）ため、承認ゲートと衝突したときの向きを明文化する。
+# Issue #1451 以降この例外は ask モード（RETROSPECTIVE_FILING=ask）に限る — 既定は承認を
+# 待たないので包括指示の判定自体が要らない。
 # 例外が特急レーンを飲み込む退化（重大起票まで無確認になる）を対の針で塞ぐ。
 contains "$SKILL" "利用者がそのセッションで当該作業を含む**包括的な実行指示**" "承認境界: 包括的な実行指示の下では改めて確認しない"
-contains "$SKILL" "この例外は特急レーン（データ破壊・広範な作業停止・セキュリティの重大起票）には及ばない" "承認境界: 包括指示の例外は特急レーンに及ばない"
+contains "$SKILL" "ask モードの包括指示例外は特急レーン（データ破壊・広範な作業停止・セキュリティの重大起票）には及ばない" "承認境界: 包括指示の例外は特急レーンに及ばない"
 contains "$SKILL" "振り返り工程ではファイル編集・コミット・Issue 作成を行わない" "承認境界: 振り返り工程は read-only"
 # 観測台帳の導入で書き込みは 2 系統に分かれた: 定型記録（作業中リポジトリ内・承認不要）と
-# Issue 起票（承認後）。どちらか一方だけが残る退化を両針で検出する（同一行に乗る）。
+# Issue 起票（既存確認の完了後。既定は承認を待たない）。どちらか一方だけが残る退化を両針で検出する（同一行に乗る）。
 contains "$SKILL" "書き込みが発生するのは、観測台帳への定型記録" "承認境界: 定型記録の書き込み範囲を明示"
-contains "$SKILL" "と、提案をユーザーが承認して起票する段だけ" "承認境界: Issue 起票の書き込みは承認後のみ"
+contains "$SKILL" "と、既存確認を完了した提案を起票する段（既定は承認を待たない" "承認境界: Issue 起票の書き込みは既存確認の完了後"
 
 # 提案 1 件の構造。実測欄が出力形式から消えれば、閾値の文言が残っていても
 # 「実測を添えずに一般論を提案する」退化が起きる（閾値と出力形式は対で効く）。
@@ -525,17 +537,23 @@ if [[ -n "$REPORT_TEXT" ]]; then
   contains "$GIT_WORKFLOW" "$REPORT_TEXT" "1 行報告の文面が git-workflow へ伝播"
 fi
 
-contains "$GIT_WORKFLOW" "承認なしには起票しない" "承認境界が git-workflow へ伝播"
-contains "$WORKFLOW_PRINCIPLES" "ユーザー承認を待ってから行う" "承認境界が workflow-principles へ伝播"
-contains "$WORKFLOW_PRINCIPLES" "包括的な実行指示（「最後までやって」等）を直接出している場合は" "包括指示の例外が workflow-principles へ伝播"
+contains "$GIT_WORKFLOW" "既定では承認を待たずに起票して発行番号を振り返り結果で報告する" "起票境界が git-workflow へ伝播"
+# git-workflow は `RETROSPECTIVE_FILING=ask` を 3 行に持つため、行固有の文を針にする（文字列だけだと専用文が消えても緑のまま）。
+contains "$GIT_WORKFLOW" "起票のスイッチは別で、\`RETROSPECTIVE_FILING=ask\` が承認待ち式へ戻す" "起票の保険スイッチが git-workflow へ伝播"
+contains "$WORKFLOW_PRINCIPLES" "改善提案の Issue 起票も既定では承認を待たずに行い" "起票境界が workflow-principles へ伝播"
+contains "$WORKFLOW_PRINCIPLES" "包括的な実行指示（「最後までやって」等）を直接出している場合だけ" "包括指示の例外（ask モード）が workflow-principles へ伝播"
 # 適用タイミング表は「どこまでがノンストップか」を読む 3 つ目の導線。ここだけ
-# 落ちると「振り返りも起票までノンストップ」と読める表が残る。
-contains "$WORKFLOW_PRINCIPLES" "\`/retrospective\` の起票のみ承認待ち" "承認境界が適用タイミング表へ伝播"
-contains "$WORKFLOW_PRINCIPLES" "ノンストップの範囲が**実施（振り返り + 観測記録 + 提案の提示）まで**" "ノンストップ範囲の終端が明示"
-contains "$DEPLOYMENT" "起票はユーザー承認後のみ" "承認境界が DEPLOYMENT へ伝播"
-contains "$OSS_README" "起票はユーザー承認後のみ" "承認境界が公開 README へ伝播"
+# 落ちると「起票は承認待ち」と読める旧規定の表が残る（Issue #1451 で既定が自動起票になった）。
+contains "$WORKFLOW_PRINCIPLES" "\`/retrospective\` の起票も既定では承認待ちにしない" "起票境界が適用タイミング表へ伝播"
+contains "$WORKFLOW_PRINCIPLES" "ノンストップの範囲が**実施と起票（振り返り + 観測記録 + 提案の提示 + 既存確認を完了した提案の起票）まで**" "ノンストップ範囲の終端が明示"
+contains "$DEPLOYMENT" "起票は既定では承認を待たずに実行して発行番号を報告する" "起票境界が DEPLOYMENT へ伝播"
+# DEPLOYMENT / README は Changelog や別節にも同じ文字列を持つため、本文行に固有の文脈を針に含める。
+contains "$DEPLOYMENT" "発行番号を報告する（\`RETROSPECTIVE_FILING=ask\` で承認待ち式） ← 詳細" "起票の保険スイッチが DEPLOYMENT へ伝播"
+contains "$OSS_README" "起票は既定では承認を待たずに実行して発行番号を報告する" "起票境界が公開 README へ伝播"
+contains "$OSS_README" "（\`RETROSPECTIVE_FILING=ask\` で承認待ち式へ戻せる） |" "起票の保険スイッチが公開 README へ伝播"
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
-  contains "$ROOT_README" "起票はユーザー承認後のみ" "承認境界がルート README へ伝播"
+  contains "$ROOT_README" "起票は既定では承認を待たずに実行して発行番号を報告する" "起票境界がルート README へ伝播"
+  contains "$ROOT_README" "（\`RETROSPECTIVE_FILING=ask\` で承認待ち式へ戻せる） |" "起票の保険スイッチがルート README へ伝播"
 fi
 
 # スキル未解決時のフォールバック（Issue #574）。チェーン手順は文書側がプラグインより

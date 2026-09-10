@@ -55,8 +55,8 @@ SRC_LEDGER_TEMPLATE="$PLUGIN_ROOT/docs-template/08-knowledge/OBSERVATIONS.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=176
-EXPECTED_GATE_CHECKS_PUBLIC=162
+EXPECTED_GATE_CHECKS_MONOREPO=185
+EXPECTED_GATE_CHECKS_PUBLIC=170
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -486,11 +486,16 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|提案を提示する**前**に、各提案について次を確認する|起票前の既存確認: 確認は提示前に行う（正本側）|2"
   "${FIX_SKILL}|retrospective-SKILL.md|は「重複なし」と扱わない|起票前の既存確認: 確認不能時は重複なしと扱わない|2"
   "${FIX_SKILL}|retrospective-SKILL.md|「振り返り」「retrospective」「セッション振り返り」「プロセス改善の提案」と言われたとき|frontmatter: trigger 語|2"
-  "${FIX_SKILL}|retrospective-SKILL.md|**ユーザー承認を待つ**（承認なしに起票しない|承認境界: 起票前にユーザー承認を待つ|2"
-  # Issue #1293: 包括指示の例外と特急レーン除外はそれぞれ独立した sub-bullet 行に乗る。
-  "${FIX_SKILL}|retrospective-SKILL.md|利用者がそのセッションで当該作業を含む**包括的な実行指示**|承認境界: 包括的な実行指示の下では改めて確認しない|1"
-  "${FIX_SKILL}|retrospective-SKILL.md|この例外は特急レーン（データ破壊・広範な作業停止・セキュリティの重大起票）には及ばない|承認境界: 包括指示の例外は特急レーンに及ばない|1"
-  # read-only 行には read-only 針 + 定型記録針 + 起票承認針の 3 本が乗る（観測台帳の導入で
+  # Issue #1451: 手順 2 の見出し行には「既定は自動起票」と「保険は FILING=ask」の 2 針が乗る。
+  "${FIX_SKILL}|retrospective-SKILL.md|既定は**承認を待たずに起票する**（自動起票）|起票境界: 既定は承認を待たずに起票|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|printenv RETROSPECTIVE_FILING|起票境界: RETROSPECTIVE_FILING の観測手順（printenv）|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**既定モードでも起票せず提示に留めるもの**|起票境界: 起票先・内容を確定できない提案は提示止まり|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|起票: [owner/repo#N（新規）|出力形式: 起票結果の行|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|のときは \`起票:\` 行の代わりに|出力形式: ask モードは承認待ちの文で終える|1"
+  # ask モードの bullet には「承認を待つ」と「包括指示の例外」の 2 針が同一行に乗る。
+  "${FIX_SKILL}|retrospective-SKILL.md|**ask モード（\`RETROSPECTIVE_FILING=ask\`）**: 提案を提示して**ユーザー承認を待つ**|起票境界: ask モードは起票前にユーザー承認を待つ|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|ask モードの包括指示例外は特急レーン（データ破壊・広範な作業停止・セキュリティの重大起票）には及ばない|承認境界: 包括指示の例外は特急レーンに及ばない|1"
+  # read-only 行には read-only 針 + 定型記録針 + 起票境界（既存確認完了後）針の 3 本が乗る（観測台帳の導入で
   # 書き込み境界が 2 系統へ分かれたため。行削除で 3 件赤化する）。
   "${FIX_SKILL}|retrospective-SKILL.md|振り返り工程ではファイル編集・コミット・Issue 作成を行わない|承認境界: 振り返り工程は read-only|3"
   "${FIX_SKILL}|retrospective-SKILL.md|**振り返りに入る前に、必ず最初にモードを判定する**|ask モード: 判定を先頭で行う|1"
@@ -560,13 +565,15 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|**再現価値のある成功パターン（Keep）**|観察チェックリスト: Keep レンズ|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**過剰動作**|観察チェックリスト: 過剰動作レンズ|1"
   "${FIX_ACE_CURATE}|ace-curate-SKILL.md|ACE Playbook ではなく \`/retrospective\` の提案経路で扱う|責務分離: ACE 側からの送り先明示|3"
-  "${FIX_GIT_WORKFLOW}|git-workflow.md|承認なしには起票しない|承認境界が git-workflow へ伝播|4"
-  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|ユーザー承認を待ってから行う|承認境界が workflow-principles へ伝播|4"
-  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|包括的な実行指示（「最後までやって」等）を直接出している場合は|包括指示の例外が workflow-principles へ伝播|4"
-  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|\`/retrospective\` の起票のみ承認待ち|承認境界が適用タイミング表へ伝播|1"
-  "${FIX_DEPLOYMENT}|DEPLOYMENT.md|起票はユーザー承認後のみ|承認境界が DEPLOYMENT へ伝播|3"
-  "${FIX_OSS_README}|oss-README.md|起票はユーザー承認後のみ|承認境界が公開 README へ伝播|4"
-  "${FIX_OSS_README}|oss-README.md|作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し|分散台帳が公開 README へ伝播|4"
+  "${FIX_GIT_WORKFLOW}|git-workflow.md|既定では承認を待たずに起票して発行番号を振り返り結果で報告する|起票境界が git-workflow へ伝播|4"
+  # RETROSPECTIVE_FILING の保険スイッチは MODE の行（実施前確認 / off）と同じ行に乗る。
+  "${FIX_GIT_WORKFLOW}|git-workflow.md|起票のスイッチは別で、\`RETROSPECTIVE_FILING=ask\` が承認待ち式へ戻す|起票の保険スイッチが git-workflow へ伝播|1"
+  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|改善提案の Issue 起票も既定では承認を待たずに行い|起票境界が workflow-principles へ伝播|4"
+  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|包括的な実行指示（「最後までやって」等）を直接出している場合だけ|包括指示の例外（ask モード）が workflow-principles へ伝播|4"
+  "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|\`/retrospective\` の起票も既定では承認待ちにしない|起票境界が適用タイミング表へ伝播|1"
+  "${FIX_DEPLOYMENT}|DEPLOYMENT.md|起票は既定では承認を待たずに実行して発行番号を報告する|起票境界が DEPLOYMENT へ伝播|4"
+  "${FIX_OSS_README}|oss-README.md|起票は既定では承認を待たずに実行して発行番号を報告する|起票境界が公開 README へ伝播|5"
+  "${FIX_OSS_README}|oss-README.md|作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し|分散台帳が公開 README へ伝播|5"
   # フォールバック行には 7 針（フォールバック本体・スキル名の確認手順・プレフィックス
   # 両試行・別レジストリの区別・分割インストールの原因/実体突き合わせ/結論ガード、
   # Issue #574 / #607 / #630）が同一行に乗るため、行削除で 7 件赤化する。
@@ -579,8 +586,8 @@ MARKER_MUTATIONS=(
 )
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   MARKER_MUTATIONS+=(
-    "${FIX_ROOT_README}|root-README.md|起票はユーザー承認後のみ|承認境界がルート README へ伝播|4"
-    "${FIX_ROOT_README}|root-README.md|作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し|分散台帳がルート README へ伝播|4"
+    "${FIX_ROOT_README}|root-README.md|起票は既定では承認を待たずに実行して発行番号を報告する|起票境界がルート README へ伝播|5"
+    "${FIX_ROOT_README}|root-README.md|作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し|分散台帳がルート README へ伝播|5"
     "${FIX_ROOT_README}|root-README.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: README.md|7"
   )
 fi

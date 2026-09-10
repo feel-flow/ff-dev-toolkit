@@ -67,7 +67,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `/ace-setup` | ACE（Agentic Context Engineering）フレームワークのセットアップ |
 | `/ace-curate` | マージ済み PR からの知見抽出・プレイブック追記 |
 | `/ace-refine` | ACE Playbook の定期整理（stale アーカイブ・長大エントリ圧縮・重複統合）。dry-run → 承認 → 適用の 3 フェーズで原文を保全する |
-| `/retrospective` | ワークフローチェーン末尾（`/merge-cleanup` → `/ace-curate` → `/retrospective`）のセッション振り返り。対応ホストでは UserPromptSubmit で応答前に注入し、Stop hook は実行漏れ時だけ継続する（`RETROSPECTIVE_MODE=ask\|off` で制御）。実測した手戻り・無駄時間・Keep・過剰動作を作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し、閾値に到達した再発からプロセス/ツール改善を最大 3 件提案（該当なしなら 1 行報告）。起票はユーザー承認後のみ（利用者が「最後までやって」等の包括的な実行指示を出している場合はその範囲内で確認を省く。特急レーンは除く） |
+| `/retrospective` | ワークフローチェーン末尾（`/merge-cleanup` → `/ace-curate` → `/retrospective`）のセッション振り返り。対応ホストでは UserPromptSubmit で応答前に注入し、Stop hook は実行漏れ時だけ継続する（`RETROSPECTIVE_MODE=ask\|off` で制御）。実測した手戻り・無駄時間・Keep・過剰動作を作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し、閾値に到達した再発からプロセス/ツール改善を最大 3 件提案（該当なしなら 1 行報告）。起票は既定では承認を待たずに実行して発行番号を報告する（`RETROSPECTIVE_FILING=ask` で承認待ち式へ戻せる） |
 | `/setup-ai-config` | AI 開発ツール設定の初期化 |
 | `/multi-explore` | マルチAI CLI による並列探索 |
 | `/multi-implement` | マルチAI CLI による並列実装 |
@@ -136,7 +136,7 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 - ASDD 2.0では `hooks` と `retrospective` の両方がtrueの場合だけ動く。設定なしの従来環境では既定は自動実行。`RETROSPECTIVE_MODE=ask` で実施前確認へ切り替える
 - `RETROSPECTIVE_MODE=off` で自動発火を無効にする。`0` / `false` / `no` / `none` / `disabled` も大文字小文字と空白を無視して受け付ける
 - Node.js 22 以上が見つからない場合は応答をブロックせず、手動実行と復旧方法を通知する
-- 改善提案の Issue 起票は自動化せず、従来どおりユーザー承認後に行う
+- 改善提案の Issue 起票は既定では承認を待たずに実行し、発行番号を振り返り結果で報告する。`RETROSPECTIVE_FILING=ask` で承認待ち式へ戻せる（`RETROSPECTIVE_MODE` とは独立した起票側のスイッチで、hook は `ask` のときだけ承認文言を注入する）
 
 ### Bash ガード（PreToolUse）
 

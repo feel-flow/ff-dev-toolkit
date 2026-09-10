@@ -69,13 +69,29 @@ if [ "$HOOK_STATE" != "first" ]; then
   exit 0
 fi
 
+# Issue #1451: issue filing is governed by the skill section 承認と起票. The default
+# files proposals that passed the pre-filing checks without waiting for approval;
+# RETROSPECTIVE_FILING=ask restores the approval wait; every other value (unset,
+# empty, or anything else) is the default. The injected text says which of the
+# two branches is active so the agent does not have to observe the environment.
+FILING="${RETROSPECTIVE_FILING:-}"
+FILING="${FILING//[[:space:]]/}"
+case "$FILING" in
+  [Aa][Ss][Kk])
+    FILING_CLAUSE='RETROSPECTIVE_FILING=ask: apart from the observation-ledger recording defined by the skill, do not edit files, create issues, or post issue comments without user approval.'
+    ;;
+  *)
+    FILING_CLAUSE='Apart from the observation-ledger recording defined by the skill, do not edit files. Issue filing follows the skill section 承認と起票 (RETROSPECTIVE_FILING is not ask): file the proposals that passed the pre-filing checks without waiting for approval, and report the issue numbers in the retrospective result.'
+    ;;
+esac
+
 case "$MODE" in
   [Aa][Ss][Kk])
-  printf '%s\n' '{"decision":"block","reason":"RETROSPECTIVE_MODE=ask. Before stopping, check whether the user already approved the retrospective for this completed task. If approved, run the ff-dev-toolkit:retrospective skill now; otherwise ask whether to run it. Do not ask again after the retrospective result is already present. If this turn is not a task closeout, report: 振り返り: 今回は作業完了前のため対象外","systemMessage":"Automatic retrospective check before stop"}'
+  printf '{"decision":"block","reason":"RETROSPECTIVE_MODE=ask. Before stopping, check whether the user already approved the retrospective for this completed task. If approved, run the ff-dev-toolkit:retrospective skill now; otherwise ask whether to run it. Do not ask again after the retrospective result is already present. If this turn is not a task closeout, report: 振り返り: 今回は作業完了前のため対象外. %s","systemMessage":"Automatic retrospective check before stop"}\n' "$FILING_CLAUSE"
   exit 0
   ;;
 esac
 
-printf '%s\n' '{"decision":"block","reason":"Before stopping, run the ff-dev-toolkit:retrospective skill now. If this turn completes the user requested work, inspect only events measured in this session and include the retrospective result in the final response. If this is a clarification, approval wait, external-state wait, or unfinished work, do not invent proposals; report exactly: 振り返り: 今回は作業完了前のため対象外. The retrospective inspection is read-only: apart from the observation-ledger recording defined by the skill, do not edit files or create issues without user approval.","systemMessage":"Automatic retrospective before stop"}'
+printf '{"decision":"block","reason":"Before stopping, run the ff-dev-toolkit:retrospective skill now. If this turn completes the user requested work, inspect only events measured in this session and include the retrospective result in the final response. If this is a clarification, approval wait, external-state wait, or unfinished work, do not invent proposals; report exactly: 振り返り: 今回は作業完了前のため対象外. The retrospective inspection is read-only. %s","systemMessage":"Automatic retrospective before stop"}\n' "$FILING_CLAUSE"
 
 exit 0

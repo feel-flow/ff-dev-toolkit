@@ -728,6 +728,13 @@ else
     # 参照リンクも見る。文言だけが防御の文書契約なので、消失を回帰として扱う。
     # 純粋な静的検査で一時領域も git も要らず、skip 経路を持たない。
     "$SCRIPT_DIR/long-task-commit-contract/verify.sh"
+    # worktree 委譲の依存プリフライト契約（Issue #1444）: 正本
+    # multi-cli-agent-orchestration.md の契約節（委譲プロンプトへの常置・コマンドを実値で
+    # 書く・対象はゲートを回す委譲すべて・lockfile 変更時の入れ直し）を節スコープで固定し、
+    # 消費側 multi-implement / 配布 git-workflow の参照と、貼り付け定型文がコマンドの実値を
+    # 保っていること（リンクへ退化していないこと）も見る。文言だけが防御の文書契約。
+    # 純粋な静的検査で一時領域も git も要らず、skip 経路を持たない。
+    "$SCRIPT_DIR/worktree-preflight-contract/verify.sh"
     # flat-rate CLI への観点集中の制御（Issue #251、#783 で free-tier から付替）: プラン警告 + minimize_cost 限定の
     # 同一 CLI 内逐次化 + standard の並列維持 + 途中失敗の継続。一時 git リポジトリ +
     # stub CLI で orchestrator を 4 回実走（単独実測 約 20 秒。詳細は suite README。
@@ -975,6 +982,10 @@ REQUIRED_SUITES=(
   # review-freeze-contract と同じ理由で名簿に載せ、suite の改名・削除と将来の
   # skip 経路を黙って通さない。
   long-task-commit-contract
+  # worktree 委譲の依存プリフライト契約（Issue #1444）も文言だけが防御。委譲プロンプトへ
+  # 常置する文言が消えると、対策は文書に在るのに委譲先へ届かない状態（OBS-013 が 5 回
+  # 再発した状態）へ戻る。同じ理由で名簿に載せ、改名・削除と将来の skip 経路を通さない。
+  worktree-preflight-contract
   review-wrapper-shim
   sweep-orphan-transcripts
   multi-agent-timeout

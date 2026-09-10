@@ -51,9 +51,9 @@ run_hook() {
   local errfile="$TEST_TMP/stderr"
   RC=0
   if [ "$mode" = "__unset__" ]; then
-    OUT="$(printf '%s' "$input" | env -u RETROSPECTIVE_MODE PATH="$test_path" /bin/bash "$TARGET" 2>"$errfile")" || RC=$?
+    OUT="$(printf '%s' "$input" | env -u RETROSPECTIVE_MODE -u RETROSPECTIVE_FILING PATH="$test_path" /bin/bash "$TARGET" 2>"$errfile")" || RC=$?
   else
-    OUT="$(printf '%s' "$input" | env RETROSPECTIVE_MODE="$mode" PATH="$test_path" /bin/bash "$TARGET" 2>"$errfile")" || RC=$?
+    OUT="$(printf '%s' "$input" | env -u RETROSPECTIVE_FILING RETROSPECTIVE_MODE="$mode" PATH="$test_path" /bin/bash "$TARGET" 2>"$errfile")" || RC=$?
   fi
   ERR="$(cat "$errfile" 2>/dev/null || true)"
   REASON="$(printf '%s' "$OUT" | jq -r '.reason // empty' 2>/dev/null || true)"
@@ -72,9 +72,9 @@ run_context_hook() {
   local errfile="$TEST_TMP/context-stderr"
   RC=0
   if [ "$mode" = "__unset__" ]; then
-    OUT="$(printf '%s' "$input" | env -u RETROSPECTIVE_MODE PATH="$test_path" /bin/bash "$CONTEXT_TARGET" 2>"$errfile")" || RC=$?
+    OUT="$(printf '%s' "$input" | env -u RETROSPECTIVE_MODE -u RETROSPECTIVE_FILING PATH="$test_path" /bin/bash "$CONTEXT_TARGET" 2>"$errfile")" || RC=$?
   else
-    OUT="$(printf '%s' "$input" | env RETROSPECTIVE_MODE="$mode" PATH="$test_path" /bin/bash "$CONTEXT_TARGET" 2>"$errfile")" || RC=$?
+    OUT="$(printf '%s' "$input" | env -u RETROSPECTIVE_FILING RETROSPECTIVE_MODE="$mode" PATH="$test_path" /bin/bash "$CONTEXT_TARGET" 2>"$errfile")" || RC=$?
   fi
   ERR="$(cat "$errfile" 2>/dev/null || true)"
   rm -f "$errfile"
@@ -271,6 +271,56 @@ else
   bad "ask モードの事前注入契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
 
+# Issue #1451: 事前注入も Stop と同じ起票境界を持つ（既定は承認と起票の規定を指し、
+# 承認文言は RETROSPECTIVE_FILING=ask のときだけ）。
+run_context_hook
+DEFAULT_CONTEXT="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
+  && printf '%s' "$DEFAULT_CONTEXT" | grep -F 'RETROSPECTIVE_FILING is not ask' >/dev/null \
+  && printf '%s' "$DEFAULT_CONTEXT" | grep -F '承認と起票' >/dev/null \
+  && printf '%s' "$DEFAULT_CONTEXT" | grep -F 'without waiting for approval' >/dev/null \
+  && printf '%s' "$DEFAULT_CONTEXT" | grep -F 'do not edit files' >/dev/null \
+  && ! printf '%s' "$DEFAULT_CONTEXT" | grep -F 'without user approval' >/dev/null; then
+  ok "既定の事前注入は承認待ちを注入せずスキルの起票規定を指す"
+else
+  bad "既定の事前注入の起票境界が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
+RC=0
+OUT="$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}' | env -u RETROSPECTIVE_MODE RETROSPECTIVE_FILING=" Ask " /bin/bash "$CONTEXT_TARGET" 2>"$TEST_TMP/context-stderr")" || RC=$?
+ERR="$(cat "$TEST_TMP/context-stderr" 2>/dev/null || true)"
+rm -f "$TEST_TMP/context-stderr"
+FILING_CONTEXT="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
+  && printf '%s' "$FILING_CONTEXT" | grep -F 'RETROSPECTIVE_FILING=ask' >/dev/null \
+  && printf '%s' "$FILING_CONTEXT" | grep -F 'without user approval' >/dev/null \
+  && printf '%s' "$FILING_CONTEXT" | grep -F 'ff-dev-toolkit:retrospective' >/dev/null; then
+  ok "RETROSPECTIVE_FILING=ask（空白・大文字混在）は事前注入に承認待ちを注入"
+else
+  bad "FILING=ask の事前注入契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
+# MODE と FILING の相互作用は Stop 側だけでなく事前注入側にも置く（TESTING.md の
+# 「MODE=off は FILING=ask より優先して両 hook を止める」を両 hook で固定する）。
+RC=0
+OUT="$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}' | env RETROSPECTIVE_MODE=ask RETROSPECTIVE_FILING=ask /bin/bash "$CONTEXT_TARGET" 2>"$TEST_TMP/context-stderr")" || RC=$?
+ERR="$(cat "$TEST_TMP/context-stderr" 2>/dev/null || true)"
+rm -f "$TEST_TMP/context-stderr"
+BOTH_CONTEXT="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
+  && printf '%s' "$BOTH_CONTEXT" | grep -F 'RETROSPECTIVE_MODE=ask' >/dev/null \
+  && printf '%s' "$BOTH_CONTEXT" | grep -F 'RETROSPECTIVE_FILING=ask' >/dev/null; then
+  ok "事前注入でも MODE=ask と FILING=ask は独立して両方の文言を注入"
+else
+  bad "事前注入の MODE=ask + FILING=ask 契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
+RC=0
+OUT="$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}' | env RETROSPECTIVE_MODE=off RETROSPECTIVE_FILING=ask /bin/bash "$CONTEXT_TARGET" 2>"$TEST_TMP/context-stderr")" || RC=$?
+ERR="$(cat "$TEST_TMP/context-stderr" 2>/dev/null || true)"
+rm -f "$TEST_TMP/context-stderr"
+assert_silent_success "事前注入も FILING=ask より MODE=off が優先して無効"
+
 FIRST_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","stop_hook_active":false}'
 ACTIVE_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","stop_hook_active":true}'
 DONE_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t2","stop_hook_active":false,"last_assistant_message":"振り返り: 改善候補なし"}'
@@ -294,11 +344,72 @@ else
 fi
 if printf '%s' "$REASON" | grep -F 'ff-dev-toolkit:retrospective' >/dev/null \
   && printf '%s' "$REASON" | grep -F "$INCOMPLETE_REPORT" >/dev/null \
-  && printf '%s' "$REASON" | grep -F 'do not edit files or create issues' >/dev/null; then
-  ok "継続理由がスキル・未完了境界・read-only 境界を含む"
+  && printf '%s' "$REASON" | grep -F 'read-only' >/dev/null \
+  && printf '%s' "$REASON" | grep -F 'RETROSPECTIVE_FILING is not ask' >/dev/null \
+  && printf '%s' "$REASON" | grep -F '承認と起票' >/dev/null \
+  && printf '%s' "$REASON" | grep -F 'without waiting for approval' >/dev/null \
+  && printf '%s' "$REASON" | grep -F 'do not edit files' >/dev/null \
+  && ! printf '%s' "$REASON" | grep -F 'without user approval' >/dev/null; then
+  ok "継続理由がスキル・未完了境界・read-only 境界・既定の自動起票を含む"
 else
   bad "継続理由の必須境界が不足: $OUT"
 fi
+
+# Issue #1451: 起票の承認待ちは RETROSPECTIVE_FILING=ask の保険だけ。既定の注入文は
+# スキルの規定（承認と起票）を指し、承認文言は ask のときだけ現れる。ask の判定は
+# RETROSPECTIVE_MODE と同じく大文字小文字と空白を無視する。
+run_stop_hook_filing() {
+  local input="$1" filing="$2" mode="${3-__unset__}" errfile="$TEST_TMP/filing-stderr"
+  RC=0
+  if [ "$mode" = "__unset__" ]; then
+    OUT="$(printf '%s' "$input" | env -u RETROSPECTIVE_MODE RETROSPECTIVE_FILING="$filing" /bin/bash "$TARGET" 2>"$errfile")" || RC=$?
+  else
+    OUT="$(printf '%s' "$input" | env RETROSPECTIVE_MODE="$mode" RETROSPECTIVE_FILING="$filing" /bin/bash "$TARGET" 2>"$errfile")" || RC=$?
+  fi
+  ERR="$(cat "$errfile" 2>/dev/null || true)"
+  REASON="$(printf '%s' "$OUT" | jq -r '.reason // empty' 2>/dev/null || true)"
+  rm -f "$errfile"
+}
+
+run_stop_hook_filing "$FIRST_INPUT" ask
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && printf '%s' "$OUT" | jq -e '.decision == "block"' >/dev/null 2>&1 \
+  && printf '%s' "$REASON" | grep -F 'RETROSPECTIVE_FILING=ask' >/dev/null \
+  && printf '%s' "$REASON" | grep -F 'without user approval' >/dev/null \
+  && ! printf '%s' "$REASON" | grep -F 'without waiting for approval' >/dev/null \
+  && ! printf '%s' "$REASON" | grep -F 'RETROSPECTIVE_FILING is not ask' >/dev/null; then
+  ok "RETROSPECTIVE_FILING=ask は Stop の継続理由に承認待ちを注入"
+else
+  bad "FILING=ask の Stop 出力契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
+FILING_ALIASES_OK=1
+for filing_alias in ASK " Ask "; do
+  run_stop_hook_filing "$FIRST_INPUT" "$filing_alias"
+  if [ "$RC" -ne 0 ] || [ -n "$ERR" ] || ! printf '%s' "$REASON" | grep -F 'RETROSPECTIVE_FILING=ask' >/dev/null; then
+    FILING_ALIASES_OK=0
+  fi
+done
+run_stop_hook_filing "$FIRST_INPUT" "auto"
+if [ "$RC" -ne 0 ] || [ -n "$ERR" ] || printf '%s' "$REASON" | grep -F 'without user approval' >/dev/null; then
+  FILING_ALIASES_OK=0
+fi
+if [ "$FILING_ALIASES_OK" -eq 1 ]; then
+  ok "FILING の ask 判定は大文字小文字と空白を無視し、それ以外の値は既定（自動起票）"
+else
+  bad "FILING の値の判定が不正: output=[$OUT] stderr=[$ERR]"
+fi
+
+run_stop_hook_filing "$FIRST_INPUT" ask ask
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && printf '%s' "$OUT" | jq -e '.decision == "block"' >/dev/null 2>&1 \
+  && printf '%s' "$REASON" | grep -F 'RETROSPECTIVE_MODE=ask' >/dev/null \
+  && printf '%s' "$REASON" | grep -F 'RETROSPECTIVE_FILING=ask' >/dev/null; then
+  ok "MODE=ask と FILING=ask は独立して両方の文言を注入"
+else
+  bad "MODE=ask + FILING=ask の出力契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
+run_stop_hook_filing "$FIRST_INPUT" ask off
+assert_silent_success "FILING=ask でも MODE=off なら自動振り返り自体が無効"
 
 run_hook "$ACTIVE_INPUT"
 assert_silent_success "stop_hook_active=true は再継続せず終了を許可"
@@ -468,7 +579,7 @@ AUTOFIRE_JUDGMENT="$(printf '%s\n' "$AUTOFIRE_SECTION" | awk '/^[0-9]+\. /')"
 # パイプを挟む理由がない）。
 if [ -n "$AUTOFIRE_SECTION" ] && [ -n "$AUTOFIRE_JUDGMENT" ] \
   && [[ $AUTOFIRE_JUDGMENT == *"$INCOMPLETE_REPORT"* ]] \
-  && printf '%s' "$FIRST_INPUT" | /bin/bash "$TARGET" | jq -r '.reason // empty' | grep -F "$INCOMPLETE_REPORT" >/dev/null \
+  && printf '%s' "$FIRST_INPUT" | env -u RETROSPECTIVE_MODE -u RETROSPECTIVE_FILING /bin/bash "$TARGET" | jq -r '.reason // empty' | grep -F "$INCOMPLETE_REPORT" >/dev/null \
   && grep -F "$AUTOFIRE_HEADING" "$SKILL" >/dev/null \
   && [[ $AUTOFIRE_JUDGMENT == *'Claude Code 互換入力でだけ実行漏れの fallback'* ]] \
   && [[ $AUTOFIRE_JUDGMENT == *'Codex の Stop 入力（`model` フィールドあり）は常に無音'* ]] \
