@@ -665,6 +665,57 @@ else
   fi
 fi
 
+# 16. gh 不在（Claude Code cloud の実測: GH_TOKEN はあるが gh CLI が PATH に無い）→ 両 SessionStart
+#     hook は実物の checker を通して「gh 不在のため検査をスキップ」を通知に載せ、exit 0 で
+#     セッション開始を止めない（gh 不在は環境都合で、hook はそれを理由に止めない契約）。
+#     `gh: command not found` を通知へ漏らさない。
+#     PATH は必要最小限の実体（bash / git / jq / coreutils 等）だけを symlink した dir に絞り、
+#     gh を意図的に含めない（stub の前置では「不在」を作れない）。
+echo
+echo "== gh 不在時の SessionStart hook =="
+NOGH_BIN="$TMP/nogh-bin"
+mkdir -p "$NOGH_BIN"
+NOGH_MISSING=""
+for tool in bash sh env git jq grep sed head cut tr cat dirname basename mktemp rm wc sort awk uname date; do
+  if p="$(command -v "$tool" 2>/dev/null)" && [ -n "$p" ]; then
+    ln -sf "$p" "$NOGH_BIN/$tool"
+  else
+    NOGH_MISSING="${NOGH_MISSING} ${tool}"
+  fi
+done
+if [ -n "$NOGH_MISSING" ]; then
+  bad "gh 不在 fixture: 必要な実体が PATH に無い（${NOGH_MISSING}）"
+elif PATH="$NOGH_BIN" command -v gh >/dev/null 2>&1; then
+  bad "gh 不在 fixture: 絞った PATH でも gh が見つかる（fixture が成立しない）"
+else
+  RG="$TMP/real-nogh"
+  mkdir -p "$RG/.claude/hooks" "$RG/scripts"
+  for n in session-start-sync-drift.sh session-start-dependabot-health.sh; do
+    cp "$REAL_HOOK_DIR/$n" "$RG/.claude/hooks/$n"
+    chmod +x "$RG/.claude/hooks/$n"
+  done
+  # checker は実物を置く（gh 不在の分岐は checker 側にある）。sync-drift の checker は
+  # sync スクリプトの実在を先に見るので stub を置く
+  cp "$REPO_ROOT/scripts/check-dev-toolkit-sync-drift.sh" "$RG/scripts/"
+  cp "$REPO_ROOT/scripts/check-public-dependabot-health.sh" "$RG/scripts/"
+  make_stub "$RG/scripts/sync-dev-toolkit-to-public.sh" "plugins/ff-dev-toolkit"
+  git init -q "$RG"
+  for n in session-start-sync-drift.sh session-start-dependabot-health.sh; do
+    rc=0
+    (cd "$RG" && env -u CLAUDE_PROJECT_DIR -u GIT_DIR -u GIT_WORK_TREE -u SYNC_DRIFT_BASE_OVERRIDE -u DEPENDABOT_HEALTH_GH \
+      GIT_CEILING_DIRECTORIES="$TMP" PATH="$NOGH_BIN" bash "$RG/.claude/hooks/$n") \
+      >"$TMP/out.log" 2>"$TMP/err.log" || rc=$?
+    ctx="$(jq -r '.hookSpecificOutput.additionalContext // empty' "$TMP/out.log" 2>/dev/null || true)"
+    if [ "$rc" -eq 0 ] && /usr/bin/grep -q 'gh 不在のため検査をスキップ' <<<"$ctx" \
+      && ! /usr/bin/grep -q 'command not found' <<<"$ctx"; then
+      ok "${n}: gh 不在では「gh 不在のため検査をスキップ」を通知に載せ exit 0 で継続する"
+    else
+      bad "${n}: gh 不在の通知が契約と違う（rc=${rc} ctx=${ctx:-<empty>}）"
+      cat "$TMP/out.log" "$TMP/err.log" | sed 's/^/    | /' >&2
+    fi
+  done
+fi
+
 echo
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ claude-hooks-path verify: $FAIL 件失敗" >&2

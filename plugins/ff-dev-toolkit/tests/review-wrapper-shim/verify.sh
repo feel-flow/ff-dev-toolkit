@@ -486,13 +486,20 @@ expect_detector_clean "$WORK/fx/comment-mention.sh" \
 # 走査できないファイルを「clean」と同じ答えにしない（fail-closed）。
 printf '#!/usr/bin/env bash\ncodex exec "$p"\n' > "$WORK/fx/unreadable.sh"
 chmod 000 "$WORK/fx/unreadable.sh"
-_det_rc=0
-detects_direct_cli "$WORK/fx/unreadable.sh" >/dev/null 2>&1 || _det_rc=$?
-chmod 644 "$WORK/fx/unreadable.sh"
-if [ "$_det_rc" -eq 2 ]; then
-  ok "検出器: 読めないファイルを clean と報告せず走査失敗として区別する"
+if [ -r "$WORK/fx/unreadable.sh" ]; then
+  # root 実行（Claude Code cloud など）では chmod 000 でも読めるため fixture が成立しない。
+  # 下の (7) と同じ扱いで部分 skip（root 実行では読み取り不能 fixture が成立しない。suite 全体の skip ではない）
+  echo "  ○ skip: chmod 000 でも読める実行環境（root）のため、検出器の読み取り不能検査をスキップ"
+  chmod 644 "$WORK/fx/unreadable.sh"
 else
-  bad "検出器: 読めないファイルの扱いが「一致なし」と同じ (rc=${_det_rc}) — 走査ゼロで緑になる"
+  _det_rc=0
+  detects_direct_cli "$WORK/fx/unreadable.sh" >/dev/null 2>&1 || _det_rc=$?
+  chmod 644 "$WORK/fx/unreadable.sh"
+  if [ "$_det_rc" -eq 2 ]; then
+    ok "検出器: 読めないファイルを clean と報告せず走査失敗として区別する"
+  else
+    bad "検出器: 読めないファイルの扱いが「一致なし」と同じ (rc=${_det_rc}) — 走査ゼロで緑になる"
+  fi
 fi
 
 expect_detector_clean "$WORK/fx/delegating.sh" \
@@ -625,13 +632,23 @@ run_shim() {
   # run_isolated を先頭に付けて実行環境のつまみを落とす。env は -u の除去を先に、
   # NAME=VALUE の代入を後に適用するので、ケース固有の指定（下の ${envs}）はそのまま効く
   # — 「ホストの値は除く / ケースの上書きは通す」という順序契約に乗っている。
+  # codex の実体は stub を既定にする（CODEX_REVIEW_CODEX_BIN シーム）。ホストに codex が
+  # 無くても既定用法のケースが「codex 不在の降格」へ落ちないようにし、降格経路は
+  # 不在を名指しするケースだけが実測する。ケース固有の env 指定が後ろに来るので上書きできる。
   ( cd "$run_cwd" && \
     run_isolated env FF_DEV_TOOLKIT_ROOT="$run_toolkit" ARGV_LOG="$WORK/argv.log" ENV_LOG="$WORK/env.log" \
+      CODEX_REVIEW_CODEX_BIN="$STUB_CODEX" \
       ${envs[@]+"${envs[@]}"} \
       bash "$PROJ/scripts/codex-review.sh" "$@" \
       >"$WORK/stdout.log" 2>"$WORK/err.log" </dev/null ) || RUN_RC=$?
   cat "$WORK/stdout.log" "$WORK/err.log" > "$WORK/out.log"
 }
+# codex の stub 実体。シムは `command -v` で存在だけを見る（起動はしない — 起動するなら
+# 直接起動禁止の検出器が赤にする）。
+STUB_CODEX="$WORK/stub-codex/codex"
+mkdir -p "$WORK/stub-codex"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "stub codex must not be invoked by the shim" >&2' 'exit 99' > "$STUB_CODEX"
+chmod +x "$STUB_CODEX"
 env_log_has() {
   grep -qxF "$1" "$WORK/env.log"
 }
@@ -663,6 +680,34 @@ if argv_has_seq "--base" "develop"; then
 else
   bad "--base の値が委譲先へ届いていない"
   sed 's/^/    | /' "$WORK/argv.log" >&2
+fi
+
+# codex 不在 → Claude セルフレビューへの降格を名指しし、レビュー未実施として非 0（4）で終わる
+# （クラウド開発環境では codex が PATH に無いことがある）。委譲先は起動しない。
+run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent --base develop
+if [ "$RUN_RC" -eq 4 ] && grep -q 'Codex 不在のため Claude セルフレビュー（別コンテキストの reviewer サブエージェント）へ降格' "$WORK/err.log" \
+  && grep -q 'reviewer サブエージェントを read-only で起動' "$WORK/err.log" \
+  && [ ! -s "$WORK/argv.log" ] && [ ! -s "$WORK/stdout.log" ]; then
+  ok "codex 不在: Claude セルフレビューへの降格を stderr に明示し、委譲せず rc=4 で終わる"
+else
+  bad "codex 不在: 降格の明示 / 非委譲 / rc=4 のいずれかが崩れている (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+# 先頭の終了コード表に 4 が載っていること。載っていないと「その他 = 委譲先の終了コード」が
+# 嘘になり、呼び出し側が 4 を委譲先の rc と読む
+if grep -qE '^#[[:space:]]+4 = ' "$SHIM"; then
+  ok "終了コード表に 4（codex 不在）が載っている"
+else
+  bad "終了コード表に 4 が無い（「その他 = 委譲先の終了コードをそのまま返す」が嘘になる）"
+fi
+# toolkit 未解決（sidecar も FF_DEV_TOOLKIT_ROOT も使えない）でも同じ降格案内を出す
+RUN_SHIM_TOOLKIT="$WORK/no-such-toolkit" run_shim --base develop
+if [ "$RUN_RC" -ne 0 ] && grep -q 'multi-agent.sh がありません\|multi-agent.sh が見つかりません' "$WORK/err.log" \
+  && grep -q 'Codex 不在のため Claude セルフレビュー' "$WORK/err.log" && [ ! -s "$WORK/argv.log" ]; then
+  ok "toolkit 未解決: 従来の ERROR に加えて Claude セルフレビューへの降格案内を出し、非 0 で終わる"
+else
+  bad "toolkit 未解決: 降格案内が出ない、または委譲された (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
 fi
 
 run_shim --fresh --base develop

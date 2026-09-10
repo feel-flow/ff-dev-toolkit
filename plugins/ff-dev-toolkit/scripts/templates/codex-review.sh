@@ -62,6 +62,7 @@
 #   終了コード: 0 = 完走 or 意図的なスキップ（小 diff / SKIP_CODEX_REVIEW）
 #               2 = 入力の誤り（未対応オプション・不正な env）
 #               3 = diff が大きすぎてレビューできない（成功と区別する）
+#               4 = codex CLI が PATH に無い（レビュー未実施。Claude セルフレビューへ降格）
 #               その他 = 委譲先の終了コードをそのまま返す
 #     **リテラル `1` のみ**を見る。`true` / `yes` では走る。既存の各プロジェクト実装と
 #     同じ挙動で、値の解釈を広げると「どの値なら効くのか」が実装ごとに分かれるため、
@@ -1018,9 +1019,40 @@ if [ "$_min_lines" != "0" ] || [ "$_max_bytes" != "0" ]; then
   fi
 fi
 
+# ── Codex 不在 / toolkit 未解決時の降格案内 ─────────────────────────────────────
+# Claude Code cloud の実測（2026-09-08）: codex CLI が PATH に無く、sidecar も ~/.claude の
+# plugin cache も持ち込まれないため、このシムは toolkit 解決で exit=1 して止まっていた。
+# 止まること自体は正しい（黙って 0 で抜けるとレビュー済みと誤読される）が、次に何をすべきかが
+# 出力に無かった。self-review.md「レビュー担当の選択と利用制限時の継続」の契約
+# （3. 利用不可なら別候補へ → 4. 別モデルの完走が 0 本なら Toolkit のレビューエージェントを
+# read-only で並列起動 → 5. それでも足りなければ主担当だけで継続し理由を記録）へ降格する旨を
+# 明示する。**このシムはレビューを実行していない**ので終了コードは非 0 のまま
+# （codex 不在は 4、toolkit 未解決は従来どおり解決側の rc）。
+print_claude_fallback_notice() { # $1: 理由
+  echo "⚠️  Codex 不在のため Claude セルフレビュー（別コンテキストの reviewer サブエージェント）へ降格します: ${1}" >&2
+  echo "   降格先（self-review.md §レビュー担当の選択と利用制限時の継続 3〜5）:" >&2
+  echo "     1. 別 CLI（grok-cli / copilot-cli / claude-code）が使えるなら multi-agent.sh --task review --cli <cli> で再配分する" >&2
+  echo "     2. 別モデルの完走が 0 本なら pr-review-toolkit:code-reviewer 等の reviewer サブエージェントを read-only で起動する" >&2
+  echo "     3. それも不可なら主担当のみで継続し、PR / 最終報告に「クロスレビュー未実施」と候補別の利用不可理由を残す" >&2
+  echo "   このシムはレビューを実行していません（非 0 終了。レビュー済みと読まないこと）。" >&2
+}
+
 # ── 委譲 ────────────────────────────────────────────────────────────────────────
 _resolve_rc=0
 load_resolved_toolkit || _resolve_rc=$?
-[ "$_resolve_rc" -eq 0 ] || exit "$_resolve_rc"
+if [ "$_resolve_rc" -ne 0 ]; then
+  print_claude_fallback_notice "toolkit（multi-agent.sh）を解決できない（rc=${_resolve_rc}）"
+  exit "$_resolve_rc"
+fi
+
+# codex CLI の実体を委譲前に確認する。委譲先（multi-agent.sh）は `--cli codex-cli` を固定された
+# まま「主が未インストール」で止まるので、ここで降格先を名指しした方が次の一手が早い。
+# 実体名は CODEX_REVIEW_CODEX_BIN で差し替えられる（tests/review-wrapper-shim が codex の
+# 有無を PATH 操作なしに実測するためのシーム。通常運用で設定する必要はない）。
+_codex_bin="${CODEX_REVIEW_CODEX_BIN:-codex}"
+if ! command -v -- "$_codex_bin" >/dev/null 2>&1; then
+  print_claude_fallback_notice "codex CLI（${_codex_bin}）が PATH に無い"
+  exit 4
+fi
 
 exec bash "$RESOLVED_ORCHESTRATOR" "${ORCH_ARGS[@]}"

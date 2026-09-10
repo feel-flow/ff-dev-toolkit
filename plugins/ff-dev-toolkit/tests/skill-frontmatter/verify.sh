@@ -21,16 +21,19 @@
 # story-spine-abt の実例で `claude plugin validate` が検出したが、本 suite にはこの
 # 検査自体が無く、grep 系の機械照合をすり抜けていた）。
 #
-# 一方、次の 4 検査は ff-dev-toolkit 固有のアーキテクチャ判断（他ホスト（Codex CLI 等）
+# 一方、次の 5 検査は ff-dev-toolkit 固有のアーキテクチャ判断（他ホスト（Codex CLI 等）
 # からもスクリプト実体を直接叩ける形にする移植性方針、Issue #141 の
-# commands/*.md → skills/*/SKILL.md 単一正本移行）に紐づくポリシーであり、
-# 他プラグイン（純粋なコンテンツ・スキルパック）には適用しない。適用すると
-# frontmatter とは無関係な本文の書き換えを強制することになる（scope 外）:
+# commands/*.md → skills/*/SKILL.md 単一正本移行、観測台帳 OBS-042 発の
+# pre-commit-check 新節 pin）に紐づくポリシーであり、他プラグイン（純粋なコンテンツ・
+# スキルパック）には適用しない。適用すると frontmatter とは無関係な本文の書き換えを
+# 強制することになる（scope 外）:
 #   - Issue #141 移行対象 14 skill の欠落検査（MIGRATED_SKILLS）
 #   - legacy `commands/*.md` の再追加検査
 #   - バージョン固定 cache パスの検査
 #   - AskUserQuestion 等ホスト固有ツール名の必須手順使用検査
-# これら 4 検査は ${PLUGIN_ROOT}（ff-dev-toolkit）のスキルにのみ適用する。
+#   - 観測台帳 OBS-042 発: pre-commit-check の shell 単体チェック節（手順 6 /
+#     出力テンプレート）の固定文言 pin（check_pre_commit_shell_step）
+# これら 5 検査は ${PLUGIN_ROOT}（ff-dev-toolkit）のスキルにのみ適用する。
 #
 # 一時ディレクトリも jq 以外の外部コマンドも要らない純粋なファイル検査なので、
 # 書き込み不可の環境でも完走する（marketplace.json の名簿照合にのみ jq を使う）。
@@ -90,6 +93,34 @@ is_allowlisted() {
   done
   return 1
 }
+
+# 観測台帳 OBS-042 発: pre-commit-check の手順 6「staged shell ファイルの単体チェック」と
+# 手順 7 の出力テンプレート「shell 単体チェック」節が消えないことを pin する
+# （節を変更したのに固定文言検査が無い状態を作らない規定。ff-dev-toolkit 固有）。
+# shellcheck source=../lib/section-scope.sh
+. "$SCRIPT_DIR/../lib/section-scope.sh"
+
+PRE_COMMIT_SKILL="$PLUGIN_ROOT/skills/pre-commit-check/SKILL.md"
+[ -s "$PRE_COMMIT_SKILL" ] || { echo "✗ pre-commit-check/SKILL.md が見つかりません: $PRE_COMMIT_SKILL" >&2; exit 1; }
+
+check_pre_commit_shell_step() {
+  local heading="$1" needle="$2" label="$3" reason
+  if reason="$(section_scope_contains "$PRE_COMMIT_SKILL" "$heading" "$needle")"; then
+    ok "pre-commit-check — $label"
+  else
+    bad "pre-commit-check — ${label}（${reason}）"
+  fi
+}
+
+check_pre_commit_shell_step '### 6. staged shell ファイルの単体チェック' 'mbcs_scan' 'mbcs_scan の呼び出し記述'
+check_pre_commit_shell_step '### 6. staged shell ファイルの単体チェック' 'exit_code_scan' 'exit_code_scan の呼び出し記述'
+check_pre_commit_shell_step '### 6. staged shell ファイルの単体チェック' '1 ファイルずつ' 'mbcs_scan/exit_code_scan を 1 ファイルずつ呼ぶ規定（バッチ呼び出しはファイル境界をまたいで行番号・内容が破損する）'
+check_pre_commit_shell_step '### 6. staged shell ファイルの単体チェック' '検査不能' '検査不能→commit へ進まない fail-closed の記述'
+check_pre_commit_shell_step '### 7. 結果の出力' 'shell 単体チェック' '出力テンプレートの shell 単体チェック節'
+check_pre_commit_shell_step '### 7. 結果の出力' '✅ 違反なし' '出力テンプレート4状態: 違反なし'
+check_pre_commit_shell_step '### 7. 結果の出力' '❌ 違反あり' '出力テンプレート4状態: 違反あり'
+check_pre_commit_shell_step '### 7. 結果の出力' '○ 対象なし' '出力テンプレート4状態: 対象なし'
+check_pre_commit_shell_step '### 7. 結果の出力' '❌ 検査不能' '出力テンプレート4状態: 検査不能'
 
 # frontmatter（先頭 `---` から 2 つ目の `---` まで）を stdout へ出す。
 # CR は落とす（CRLF ファイルで `/^---$/` が一致せず、抽出が静かに空になるのを防ぐ）。

@@ -124,6 +124,29 @@ expect_lacks() {
   fi
 }
 
+# stdout / stderr を**分けて**捕まえた回のための対（RUN_STDOUT / RUN_ERR は分離実行のヘルパーが
+# 置く）。統合ストリーム（`2>&1`）だけを見る検査は「警告を stdout へ出す」変異を素通しする —
+# 機械が読むサマリー（stdout）へ混ざらないことが要件の出力は、こちらで縛る。
+stream_matches() { # $1: grep BRE / $2: 対象ストリームの中身
+  [ "$(printf '%s\n' "$2" | grep -c "$1")" -gt 0 ]
+}
+
+expect_err_has() {
+  if stream_matches "$1" "${RUN_ERR:-}"; then ok "$2"; else bad "$2 — stderr に /$1/ が無い"; fi
+}
+
+expect_err_lacks() {
+  if stream_matches "$1" "${RUN_ERR:-}"; then bad "$2 — stderr に /$1/ がある"; else ok "$2"; fi
+}
+
+expect_stdout_has() {
+  if stream_matches "$1" "${RUN_STDOUT:-}"; then ok "$2"; else bad "$2 — stdout に /$1/ が無い"; fi
+}
+
+expect_stdout_lacks() {
+  if stream_matches "$1" "${RUN_STDOUT:-}"; then bad "$2 — stdout に /$1/ がある"; else ok "$2"; fi
+}
+
 dump_out() { printf '%s\n' "$RUN_OUT" | sed 's/^/    | /' >&2; }
 
 # 静的検査の定型（ランナー本体の形を縛る側）。$1: grep -E パターン / $2: 対象 / $3: 成立時の名 /
@@ -1738,6 +1761,20 @@ _dg_run() { # <env のオプション or 代入>...
     FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_dg_rec" bash "$_dg_runner" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
 }
 
+# 同じ実行を stdout / stderr を**分けて**捕まえる版。統合してしまうと「警告を stdout へ出す」
+# 変異が素通りするため、ストリームの別まで主張したいケース（case 40）はこちらを使う。捕捉先は
+# 隔離リポジトリの**外**に置く（捕捉そのものが fixture の木を汚さないように）。
+_dg_run_split() { # <env のオプション or 代入>...
+  if env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP "$@" \
+    FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$_dg_rec" bash "$_dg_runner" \
+    >"$_dg_fx/run.out" 2>"$_dg_fx/run.err"; then RUN_RC=0; else RUN_RC=$?; fi
+  RUN_STDOUT="$(cat "$_dg_fx/run.out")"
+  RUN_ERR="$(cat "$_dg_fx/run.err")"
+  # 既存の expect_has / expect_lacks（統合ストリームを見る側）もそのまま使えるようにしておく。
+  RUN_OUT="${RUN_STDOUT}
+${RUN_ERR}"
+}
+
 if [ "$_dg_setup_rc" -ne 0 ]; then
   bad "case 39: 一時 git リポジトリの fixture を作れない（ガードの実測ができていない）"
 else
@@ -1796,6 +1833,151 @@ else
     bad "確認不能で停止した実行が鮮度記録を作っている"
   else
     ok "確認不能で停止した実行は鮮度記録を作成・更新しない"
+  fi
+
+
+  echo ""
+  echo "== case 40: 走行中に汚れた実行は終了時に fail-loud する（終了コードは suite の結果のみ）=="
+  # 起動ガード（case 39）が見るのは起動時点だけなので、clean で起動して**走行中に**汚れる回を
+  # 作る必要がある。case 39 の隔離リポジトリをそのまま使い、疑似 suite 自身に走行中の書き込みを
+  # させる（実行順の制御が要らず、汚れる瞬間が確実に「起動ガードの後・終了時再評価の前」に入る
+  # 唯一の形）。差し替えた疑似 suite は commit して、起動時点は clean に戻しておく。
+  #
+  # 出力の検査は stdout / stderr を**分けて**捕まえる（_dg_run_split）。統合（`2>&1`）して見ると
+  # 「警告を stdout へ出す」変異が素通りする — この警告の要件は「目に入る」ことだけでなく、
+  # 機械が読むサマリー（stdout）へ混ざらないことでもある。
+  _dg_runner="$_dg_fx/repo/tests/run-all.sh"   # 39-D で nogit 側を向いているので戻す
+  rm -f "$_dg_fx/repo/tests/dirty-guard-probe/scratch.txt"   # 39-B が置いた汚れを片付ける
+  cat > "$_dg_fx/repo/tests/dirty-guard-probe/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+# 走行中に作業ツリーを汚す疑似 suite。20 行の打ち切りと残件数まで実測するため未追跡ファイルを
+# 21 件作る（`git status --porcelain` はパス順に並ぶので、打ち切られる 1 件は必ず
+# midrun-21.txt になる）。
+_d="$(dirname "$0")"
+for _i in 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21; do
+  : > "${_d}/midrun-${_i}.txt"
+done
+echo "FIXTURE-DIRTY-GUARD-EXECUTED"
+exit 0
+PROBE
+  chmod +x "$_dg_fx/repo/tests/dirty-guard-probe/verify.sh"
+  rm -f "$_dg_fx"/repo/tests/dirty-guard-probe/midrun-*.txt
+  _dg_commit_rc=0
+  _dg_git -C "$_dg_fx/repo" add -A >/dev/null 2>&1 || _dg_commit_rc=1
+  _dg_git -C "$_dg_fx/repo" commit -qm "midrun probe" >/dev/null 2>&1 || _dg_commit_rc=1
+  if [ "$_dg_commit_rc" -ne 0 ]; then
+    bad "case 40: 走行中に汚れる fixture を commit できない（終了時再評価の実測ができていない）"
+  else
+    # 40-A: clean で起動 → 走行中に汚れる → サマリーの後に警告が **stderr へ** 出る。汚れたパスの
+    # 一覧は 20 行で打ち切り、残件数を出す。記録は従来どおり DIRTY=yes。
+    rm -f "$_dg_rec"
+    _dg_run_split -u FF_RUN_ALL_ALLOW_DIRTY
+    expect_rc 0 "走行中に汚れても終了コードは suite の結果だけで決まる（汚れで非 0 にしない）"
+    expect_stdout_has '^FIXTURE-DIRTY-GUARD-EXECUTED$' "起動時は clean なので suite は実際に走る"
+    expect_stdout_has "^suites: total=2 run=2 passed=2 failed=0 skipped=0 not-run=0$" "サマリーは従来どおり stdout に出る（実行結果は捨てない）"
+    expect_err_has '作業ツリーが走行中に汚れたため、この実行は鮮度記録の証拠になりません' "終了時に stderr で fail-loud する"
+    expect_stdout_lacks '作業ツリーが走行中に汚れたため' "警告を stdout へ混ぜない（サマリーを機械で読む側を壊さない）"
+    expect_err_has 'dirty-guard-probe/midrun-01\.txt' "走行中に汚れたパスを stderr で名指しする"
+    expect_stdout_lacks 'dirty-guard-probe/midrun-01\.txt' "汚れたパスの一覧も stdout へ混ぜない"
+    expect_err_has 'dirty-guard-probe/midrun-20\.txt' "20 件目までは一覧に出す"
+    expect_err_lacks 'dirty-guard-probe/midrun-21\.txt' "21 件目は 20 行の打ち切りで出さない"
+    expect_err_has '… 他 1 件' "打ち切った残件数を出す（21 件中 20 件を出したので 1 件）"
+    expect_lacks '未コミットの変更がある作業ツリー' "起動ガードの停止文言は出ない（起動時点は clean だった）"
+    if [ -f "$_dg_rec" ] && grep -qF 'DIRTY=yes' "$_dg_rec"; then
+      ok "走行中に汚れた実行の鮮度記録は従来どおり DIRTY=yes で書かれる"
+    else
+      bad "走行中に汚れた実行で DIRTY=yes の鮮度記録が書かれていない"
+    fi
+
+    # 40-B: clean のまま完走した回に追加の出力を出さない（誤検知しない側）。
+    rm -f "$_dg_rec"
+    cat > "$_dg_fx/repo/tests/dirty-guard-probe/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+echo "FIXTURE-DIRTY-GUARD-EXECUTED"
+exit 0
+PROBE
+    chmod +x "$_dg_fx/repo/tests/dirty-guard-probe/verify.sh"
+    rm -f "$_dg_fx"/repo/tests/dirty-guard-probe/midrun-*.txt
+    _dg_commit_rc=0
+    _dg_git -C "$_dg_fx/repo" add -A >/dev/null 2>&1 || _dg_commit_rc=1
+    _dg_git -C "$_dg_fx/repo" commit -qm "clean probe" >/dev/null 2>&1 || _dg_commit_rc=1
+    if [ "$_dg_commit_rc" -ne 0 ]; then
+      bad "case 40: clean 完走の fixture を commit できない"
+    else
+      _dg_run -u FF_RUN_ALL_ALLOW_DIRTY
+      expect_rc 0 "clean のまま完走した回は従来どおり rc=0"
+      expect_has '^FIXTURE-DIRTY-GUARD-EXECUTED$' "clean 完走でも suite は走る"
+      expect_lacks '走行中に汚れた' "clean のまま完走した回は追加の出力を出さない"
+      expect_lacks '終了時に作業ツリーの状態を確認できませんでした' "clean 完走で確認不能の分岐へ落ちない"
+    fi
+
+    # 40-C: 起動時は clean だったのに終了時は汚れを**確認できない**回（確認不能の分岐）。
+    # 39-D は起動ガード側の確認不能（リポジトリの外から起動）を縛るが、終了時の分岐は起動を
+    # 通り抜けた回にしか入らないので、走行中に `.git` を退避する疑似 suite で作る。退避先は
+    # リポジトリの外に置き、実行後に戻して 40-D の足場を壊さない。
+    rm -f "$_dg_rec"
+    cat > "$_dg_fx/repo/tests/dirty-guard-probe/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+# 走行中にリポジトリを読めなくする疑似 suite（.git を隔離リポジトリの外へ退避する）。起動
+# ガードは通過済みなので、終了時の再評価だけが「確認不能」へ落ちる。
+_repo="$(cd "$(dirname "$0")/../.." && pwd)"
+mv "$_repo/.git" "$_repo/../git-off"
+echo "FIXTURE-DIRTY-GUARD-EXECUTED"
+exit 0
+PROBE
+    chmod +x "$_dg_fx/repo/tests/dirty-guard-probe/verify.sh"
+    _dg_commit_rc=0
+    _dg_git -C "$_dg_fx/repo" add -A >/dev/null 2>&1 || _dg_commit_rc=1
+    _dg_git -C "$_dg_fx/repo" commit -qm "unreadable probe" >/dev/null 2>&1 || _dg_commit_rc=1
+    if [ "$_dg_commit_rc" -ne 0 ]; then
+      bad "case 40: 走行中に確認不能になる fixture を commit できない"
+    else
+      _dg_run_split -u FF_RUN_ALL_ALLOW_DIRTY
+      # 退避した .git は結果を主張する前に戻す（以降のケースの足場）。
+      if [ -d "$_dg_fx/git-off" ]; then mv "$_dg_fx/git-off" "$_dg_fx/repo/.git"; fi
+      expect_rc 0 "確認不能でも終了コードは suite の結果だけで決まる"
+      expect_stdout_has '^FIXTURE-DIRTY-GUARD-EXECUTED$' "確認不能になる回でも suite は走り切る"
+      expect_stdout_has "^suites: total=2 run=2 passed=2 failed=0 skipped=0 not-run=0$" "確認不能でもサマリーは従来どおり出る"
+      expect_err_has '終了時に作業ツリーの状態を確認できませんでした' "確認不能を黙って clean 扱いにせず stderr で言い切る"
+      expect_err_lacks '走行中に汚れた' "確認不能の回に「汚れた」と断定しない（読めていない）"
+      if [ -d "$_dg_fx/repo/.git" ]; then
+        ok "case 40-C: 退避した .git を戻せた（後続ケースの足場が残る）"
+      else
+        bad "case 40-C: 退避した .git を戻せない（後続ケースの前提が壊れている）"
+      fi
+    fi
+
+    # 40-D: 警告は**鮮度記録より前**に出る（AC「サマリーの直後・記録の前」の後半）。記録が実際に
+    # 書かれる回は記録側が無言なので順序を観測できない。`FF_GATE_RECORD=0` の回だけ記録段が
+    # stderr へ 1 行出すので、同じストリーム上の行番号で前後を主張できる。
+    rm -f "$_dg_rec"
+    cat > "$_dg_fx/repo/tests/dirty-guard-probe/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+: > "$(dirname "$0")/midrun.txt"
+echo "FIXTURE-DIRTY-GUARD-EXECUTED"
+exit 0
+PROBE
+    chmod +x "$_dg_fx/repo/tests/dirty-guard-probe/verify.sh"
+    rm -f "$_dg_fx/repo/tests/dirty-guard-probe/midrun.txt"
+    _dg_commit_rc=0
+    _dg_git -C "$_dg_fx/repo" add -A >/dev/null 2>&1 || _dg_commit_rc=1
+    _dg_git -C "$_dg_fx/repo" commit -qm "order probe" >/dev/null 2>&1 || _dg_commit_rc=1
+    if [ "$_dg_commit_rc" -ne 0 ]; then
+      bad "case 40: 出力順序を測る fixture を commit できない"
+    else
+      _dg_run_split -u FF_RUN_ALL_ALLOW_DIRTY FF_GATE_RECORD=0
+      expect_rc 0 "FF_GATE_RECORD=0 の回も終了コードは suite の結果だけで決まる"
+      expect_err_has '作業ツリーが走行中に汚れたため' "記録を止めた回でも走行中の汚れは fail-loud する"
+      expect_err_has 'ゲート実測対象を記録しません' "FF_GATE_RECORD=0 の回は記録段が 1 行出す（順序の目印）"
+      _dg_warn_ln="$(printf '%s\n' "$RUN_ERR" | grep -n '作業ツリーが走行中に汚れたため' | sed -n '1s/:.*//p' || true)"
+      _dg_rec_ln="$(printf '%s\n' "$RUN_ERR" | grep -n 'ゲート実測対象を記録しません' | sed -n '1s/:.*//p' || true)"
+      if [ -n "${_dg_warn_ln:-}" ] && [ -n "${_dg_rec_ln:-}" ] && [ "$_dg_warn_ln" -lt "$_dg_rec_ln" ]; then
+        ok "警告は鮮度記録の段より前に出る（stderr 上の行番号 ${_dg_warn_ln} < ${_dg_rec_ln}）"
+      else
+        bad "警告が鮮度記録の段より前に出ていない (warn=${_dg_warn_ln:-none} record=${_dg_rec_ln:-none})"
+        printf '%s\n' "$RUN_ERR" | sed 's/^/    | /' >&2
+      fi
+    fi
   fi
 fi
 rm -rf "$_dg_fx"

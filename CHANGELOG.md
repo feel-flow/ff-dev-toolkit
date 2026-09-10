@@ -20,6 +20,30 @@
 
 ## [Unreleased]
 
+## [0.95.0] - 2026-09-10
+
+### 追加
+
+- `tests/run-all.sh`: clean な作業ツリーで起動した既定一覧の実行は、サマリー出力の直後・ゲート実測記録を書く前に作業ツリーの汚れを再評価するようになった。走行中に汚れていれば「この実行は鮮度記録の証拠にならない」旨と汚れたパスを stderr へ出す。終了コードは suite の結果だけで決まり（汚れでは非 0 にしない）、記録は従来どおり `DIRTY=yes` で書かれる。clean のまま完走した実行に追加の出力は無い。
+- `tests/run-all.sh` / `tests/docs-gates` / `tests/docs-gates-runtime` が入口で UTF-8 ロケールを固定するようになった（`tests/lib/utf8-locale.sh`）。`LANG` / `LC_ALL` / `LC_CTYPE` が未設定の環境（Claude Code cloud の既定）ではマルチバイト正規表現を持つ検査が docs の内容と無関係に赤になっていた。実効 `LC_CTYPE` が UTF-8 なら何もせず、`locale -a` に `C.UTF-8` / `C.utf8` / `en_US.UTF-8` があればそれを `LC_ALL` に export し、無ければ 1 行警告して続行する
+- `scripts/templates/codex-review.sh` は codex CLI が PATH に無いとき、または toolkit（`multi-agent.sh`）を解決できないとき、「Codex 不在のため Claude セルフレビュー（別コンテキストの reviewer サブエージェント）へ降格する」旨と self-review.md の継続手順（別 CLI へ再配分 → reviewer サブエージェントを read-only で起動 → 主担当のみで継続）を stderr に明示して非 0 で終了する（codex 不在は exit 4。レビューは実行していない）。実体名は `CODEX_REVIEW_CODEX_BIN` で差し替えられる
+- `tests/mbcs-guard-failclosed` / `tests/review-wrapper-shim` は root 実行（`chmod 000` でも読める環境）で読み取り不能 fixture が成立しない検査を部分 skip として名指しするようになった（従来は fail）
+- 新規 suite `tests/cloud-env-setup` を追加した。クラウド環境セットアップスクリプトの「導入不能でも exit 0 / 項目ごとに 1 行報告 / `--dry-run` は導入を実行しない」契約、`utf8-locale.sh` の分岐、環境プローブのロケール行を stub（apt-get / npm / curl / locale）と絞った PATH で実測する
+
+### 変更
+
+- `/pre-commit-check` に、staged した shell ファイル（`*.sh`）へ mbcs-guard / exit-code-guard の単体チェックを当てる手順を追加した。違反があれば commit へ進まない側の判定にし、検出器を実行できない場合も fail-closed で止める
+- `.claude/skills/sync-dev-toolkit/SKILL.md` の手順 0a（静止確認）に、`gh pr list` の open PR・マージ間隔に加えて `git status --porcelain --untracked-files=all` / `git worktree list --porcelain` / `git branch --show-current` で同じ作業ツリーで動く並行セッションを実測する手順を追加した。判定は `git branch --show-current` が `develop`、`git worktree list --porcelain` の本ツリー行の `branch` フィールドが develop ブランチを指している、`git status --porcelain --untracked-files=all` が空という期待値との照合で行い、いずれかが異なれば検出とみなす。検出しても削除せず、パス・clean/dirty・最終更新を報告して着手を見送る運用にし、手順 0b / R / 1〜6 の各手順に入る直前にも再測して、変わっていればそのフェーズの結果を破棄して中断することを明記した。同期対象の統合ブランチ（公開側 `main`）への直 push は `-q` を付けず main への反映行が出力に含まれることを実測し、`Everything up-to-date` のみで反映行が無いときは `git rev-parse HEAD` と `git ls-remote origin main` の SHA を照合して不一致なら中断する旨も追記した
+- Git Workflow ドキュメントの「長時間ゲートの開始前に並行マージの静止を確認する」節に、同じ作業ツリーで動く並行セッションの実測（未追跡ファイル・別ブランチへの checkout の検出）を並行マージの静止確認と並べて明記した
+- PreToolUse の Bash cwd ガードが、linked worktree のあるリポジトリでは foreground の Bash も警告するようになりました。git worktree list が 2 本以上のツリーを返す状態でコマンドが絶対パスの cd で始まらないとき、どのツリーで走るかを固定するよう 1 行で促します。相対パスの編集や npm run が稼働中の別ツリーへ着弾する事故を、実行前に気づける形にするためです。
+- 誤警告を減らしました。heredoc で複数行の手順を渡す形は本文の最初の実効行で判定し、本文が絶対パスの cd で始まっていれば鳴りません。echo / ls / cat / jq / grep / sed -n のような読み取り専用のコマンドも鳴りません。ただし allowlist はコマンド全体ではなくセグメント単位で見るため、git status に続けてテストを走らせるような複合コマンドは引き続き警告します。
+- 実体の消えた worktree 登録（ディレクトリを消しただけで prune していない状態）は live なツリーとして数えません。判定に使う git の起動もファイルシステムで先に絞るようにして、1 回あたりの所要時間を実測で 74 ms から 8 ms（読み取り専用コマンド）・43 ms から 20 ms（linked worktree の無いリポジトリ）に短縮しました。
+- 従来のモノレポ + background の警告は変わりません。警告は引き続き実行をブロックせず、git worktree list が使えない環境では無音のままです。無効化する環境変数名も変更していません。
+
+### ドキュメント
+
+- Git Workflow: 状態を変える複数行の手順は quoted heredoc で bash に渡し、プロンプト等の特殊文字（バッククォート・`$VAR`・条件展開）を含む文字列はヒアドキュメントで一時ファイルに書いてから渡す旨を明記した。対話シェルが zsh だと `$VAR` 展開や `set -e` の停止が bash と異なる挙動になり、無言に欠落・空振りするため。
+
 ## [0.94.0] - 2026-09-10
 
 ### 追加

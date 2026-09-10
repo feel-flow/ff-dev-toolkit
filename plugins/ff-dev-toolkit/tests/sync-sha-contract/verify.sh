@@ -384,6 +384,24 @@ if [[ -n "${L_COMMIT}" ]]; then
   esac
 fi
 
+# ── 5. 並行セッションの実測（ソースリポジトリの観測台帳 OBS-014 の昇格 / OBS-138）─
+# 手順 0a の静止確認は `gh pr list` の open PR とマージ間隔しか見ず、同じ作業ツリーで
+# 動く別セッション（untracked ファイル・別ブランチへの checkout）を検出しない
+# （OBS-014）。検出の判定基準（期待値との照合）とフェーズ境界での再測・破棄・中断が
+# 骨抜きにされていないかも併せて検出する。手順 4 の統合ブランチ直 push は `-q` を
+# 付けると `Everything up-to-date` の無音成功を見逃す（OBS-138）。いずれも文言の
+# 消失を検出する針。
+contains 'git worktree list --porcelain' \
+  "手順 0a が並行セッション実測に git worktree list --porcelain を使う"
+contains '期待値は `git branch --show-current` が `develop`、`git worktree list --porcelain` の本ツリー行の `branch` フィールドが develop ブランチを指している、`git status --porcelain --untracked-files=all` が空の 3 点で、いずれかが異なれば検出とみなす' \
+  "手順 0a が検出の判定基準（期待値との照合）を明記している"
+contains '手順 0b / R / 1〜6 の各手順に入る直前にも `git branch --show-current` と `git worktree list` を再測し、ブランチ・worktree・status のいずれかが着手時と変わっていたら、そのフェーズの結果を破棄して中断し' \
+  "手順 0a がフェーズ境界での再測と破棄・中断の対応を明記している"
+contains '統合ブランチ（公開側 `main`）への直 push は `-q` を付けず、出力の `-> main` を実測してから次へ進む' \
+  "手順 4 の統合ブランチ直 push が -q 不使用と -> main の実測を明記している"
+contains 'push 出力に `-> main` が無く `Everything up-to-date` のみのときは、`git rev-parse HEAD` と `git ls-remote origin main` の SHA を照合し' \
+  "手順 4 の Everything up-to-date 分岐が SHA 照合による不一致判定を明記している"
+
 echo
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ sync-sha-contract verify: $FAIL 件失敗 / $PASS 件成功" >&2

@@ -178,11 +178,17 @@ case "$SUM" in
 esac
 
 # ---- 4. 読み取り不能ファイル → error_scan ------------------------------------
-SUM="$(summary_of "$UNREAD_REPO")"
-case "$SUM" in
-  MBCS_RESULT=error_scan\ *) ok "読み取り不能 *.sh → error_scan" ;;
-  *) bad "読み取り不能が error_scan にならない: $SUM" ;;
-esac
+# root 実行（Claude Code cloud など）では chmod a-r でも読めるため fixture が成立しない。
+# review-wrapper-shim (7) と同じく、その場合だけ部分 skip する（suite 全体の skip ではない）
+if [ -r "$UNREAD_REPO/locked.sh" ]; then
+  echo "  ○ skip: chmod a-r でも読める実行環境（root）のため、読み取り不能 → error_scan の検査をスキップ"
+else
+  SUM="$(summary_of "$UNREAD_REPO")"
+  case "$SUM" in
+    MBCS_RESULT=error_scan\ *) ok "読み取り不能 *.sh → error_scan" ;;
+    *) bad "読み取り不能が error_scan にならない: $SUM" ;;
+  esac
+fi
 
 # ---- 5. awk 非 0 → error_scan ------------------------------------------------
 SUM="$(FF_MBCS_AWK="$BAD_AWK" summary_of "$GOOD_REPO")"

@@ -26,6 +26,14 @@ FIXTURES="$SCRIPT_DIR/fixtures"
 # fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
 # shellcheck source=../lib/git-fixture.sh
 . "$SCRIPT_DIR/../lib/git-fixture.sh"
+# 本 suite は docs-gates の needle を複製 docs に対して再実行するため、同じロケール依存を持つ。
+# POSIX ロケール（cloud 既定）で赤にならないよう入口で UTF-8 へ固定する（docs-gates と同じ処理）。
+# verify.sh だけを複製する selftest fixture では lib が無いので素通しする。
+if [ -f "$SCRIPT_DIR/../lib/utf8-locale.sh" ]; then
+  # shellcheck source=../lib/utf8-locale.sh
+  . "$SCRIPT_DIR/../lib/utf8-locale.sh"
+  ff_ensure_utf8_locale
+fi
 
 [ -d "$DOCS" ] || { echo "✗ docs-template が見つかりません: $DOCS" >&2; exit 1; }
 [ -d "$FIXTURES" ] || { echo "✗ fixtures が見つかりません: $FIXTURES" >&2; exit 1; }

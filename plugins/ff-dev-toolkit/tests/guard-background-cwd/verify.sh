@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# Runtime contract for the background Bash cwd guard hook.
+# Runtime contract for the Bash cwd guard hook.
 #
 # 配布物 hooks/guard-background-cwd.sh を stdin JSON で直接駆動し、受け入れ条件の
-# 各ケース（モノレポ + background + 非絶対 cd → systemMessage 警告 / 先頭が絶対パスの
-# cd・foreground・単一パッケージ repo → 無音 / 壊れた stdin → fail-open）を固定する。
+# 各ケース（モノレポ + background + 非絶対 cd → systemMessage 警告 / linked worktree の
+# ある repo は foreground でも警告 / 先頭が絶対パスの cd・linked worktree 無しの単一
+# パッケージ repo → 無音 / git worktree list が失敗する環境 → fail-open /
+# 壊れた stdin → fail-open）を固定する。
 # あわせて「絶対化イディオムをどう扱うか」（コマンド置換・変数展開・サブシェル前置は
 # 沈黙側、明らかに相対な cd は警告側）、先頭前置の剥がし（改行・グループ・環境変数前置・env）と
-# cwd 非依存 allowlist（gh / until / sleep 等）の無音化、そして残る既知の誤警告
+# cwd 非依存 allowlist（gh / until / sleep / 読み取り専用 head）の無音化、heredoc は本文の
+# 最初の実効行で判定すること（本文はセグメント分割の対象外）、allowlist をセグメント単位で
+# 見ること（`&&` / `||` / `|` / `;` / 改行のいずれで連結しても、また `then` / `elif` /
+# `else` 前置のセグメントでも素通りしない）、実体の消えた（prunable）worktree 登録を live と数えないこと、そして残る既知の誤警告
 # （npm --prefix /abs のようにオプション側で絶対化する形）を固定する。あわせて警告が
 # ブロックでないこと（permissionDecision を出さない）を固定し、hooks.json の
 # PreToolUse 登録を静的照合する。
@@ -72,11 +77,49 @@ printf '{}\n' > "$MULTI/web/package.json"
 printf '{}\n' > "$MULTI/mobile/package.json"
 printf '{}\n' > "$MULTI/web/node_modules/dep/package.json"
 
-# fixture 3: 単一パッケージ repo（root の package.json 1 つだけ）
+# fixture 3: 単一パッケージ repo（root の package.json 1 つだけ・linked worktree 無し）
 SINGLE="$TEST_TMP/single"
 mkdir -p "$SINGLE/src"
 git -C "$SINGLE" init --quiet >/dev/null 2>&1 || { echo "○ skip: git init に失敗（guard-background-cwd は未検査のままです）"; REACHED_END=1; exit 0; }
 printf '{}\n' > "$SINGLE/package.json"
+
+# fixture 4 / 5: linked worktree を 1 本持つ repo。
+# 4 = 単一パッケージ（経路 B のみ）、5 = モノレポ（経路 A と B が同時に立つ）。
+# `git worktree add` には最低 1 コミットが要る。作れない環境では該当ブロックだけ skip する。
+make_worktree_repo() { # <repo dir> <linked worktree dir>
+  local repo="$1" linked="$2"
+  mkdir -p "$repo" || return 1
+  git -c init.defaultBranch=main -C "$repo" init --quiet >/dev/null 2>&1 || return 1
+  printf '{}\n' > "$repo/package.json" || return 1
+  git -C "$repo" add -A >/dev/null 2>&1 || return 1
+  git -C "$repo" -c user.email=guard@example.invalid -c user.name=guard \
+    commit --quiet -m init >/dev/null 2>&1 || return 1
+  git -C "$repo" worktree add --quiet -b linked-branch "$linked" >/dev/null 2>&1 || return 1
+  return 0
+}
+
+WTMAIN="$TEST_TMP/wtmain"
+WTLINKED="$TEST_TMP/wt-linked"
+WT_READY=1
+make_worktree_repo "$WTMAIN" "$WTLINKED" || WT_READY=0
+
+MONOWT="$TEST_TMP/monowt"
+MONOWT_LINKED="$TEST_TMP/monowt-linked"
+MONOWT_READY=1
+make_worktree_repo "$MONOWT" "$MONOWT_LINKED" || MONOWT_READY=0
+if [ "$MONOWT_READY" -eq 1 ]; then
+  mkdir -p "$MONOWT/packages/app" || MONOWT_READY=0
+fi
+
+# fixture 6: 登録は残っているが実体が消えている（prunable）worktree だけを持つ repo。
+# `rm -rf` しただけで `git worktree prune` を打っていない状態を再現する。
+PRUNEMAIN="$TEST_TMP/prunemain"
+PRUNELINKED="$TEST_TMP/prune-linked"
+PRUNE_READY=1
+make_worktree_repo "$PRUNEMAIN" "$PRUNELINKED" || PRUNE_READY=0
+if [ "$PRUNE_READY" -eq 1 ]; then
+  rm -rf "$PRUNELINKED" || PRUNE_READY=0
+fi
 
 OUT=""
 RC=0
@@ -160,6 +203,90 @@ run_hook 'npm test' "$MONO" absent
 assert_silent "AC2: run_in_background キーが無い入力（別ハーネス）は無音"
 run_hook 'npm test' "$SINGLE"
 assert_silent "AC2: 単一パッケージ repo は無音"
+run_hook 'npm test' "$SINGLE" false
+assert_silent "AC2: linked worktree が無く非モノレポなら foreground も無音（現行の静けさを壊さない）"
+run_hook 'npm test' "$SINGLE" absent
+assert_silent "AC2: linked worktree が無く非モノレポなら run_in_background キー無しも無音"
+
+echo "guard-background-cwd: 経路 B（linked worktree のある repo は foreground でも警告）"
+if [ "$WT_READY" -eq 1 ]; then
+  run_hook 'npm test' "$WTMAIN" false
+  assert_warn "経路 B: linked worktree があれば foreground（run_in_background: false）でも警告する"
+  run_hook 'npm test' "$WTMAIN" absent
+  assert_warn "経路 B: run_in_background キーが無い入力（別ハーネス）でも警告する"
+  run_hook 'bash scripts/patch.sh' "$WTMAIN" false
+  assert_warn "経路 B: 相対パスの編集スクリプト実行を警告する"
+  run_hook 'npm test' "$WTLINKED" false
+  assert_warn "経路 B: cwd が linked worktree 側でも警告する"
+
+  run_hook 'npm test' "$WTMAIN" false
+  case "$MESSAGE" in
+    *"linked worktree"*) ok "経路 B: 警告文が linked worktree の存在を名指しする" ;;
+    *) bad "経路 B: 警告文に linked worktree が無い: [$MESSAGE]" ;;
+  esac
+  case "$MESSAGE" in
+    *"絶対パス"*"cd"*) ok "経路 B: 警告文が先頭に絶対パスの cd を書くことを案内する" ;;
+    *) bad "経路 B: 警告文に絶対パスの cd の案内が無い: [$MESSAGE]" ;;
+  esac
+  case "$MESSAGE" in
+    *"$WTMAIN"*) ok "経路 B: 警告文が現在の repo root を名指しする" ;;
+    *) bad "経路 B: 警告文に repo root が無い: [$MESSAGE]" ;;
+  esac
+  case "$MESSAGE" in
+    *FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD*) ok "経路 B: 警告文が opt-out を案内する" ;;
+    *) bad "経路 B: 警告文に opt-out の案内が無い: [$MESSAGE]" ;;
+  esac
+
+  run_hook "cd $WTMAIN/src && npm test" "$WTMAIN" false
+  assert_silent "経路 B: 先頭が絶対パスの cd なら無音"
+  run_hook 'cd "$(git rev-parse --show-toplevel)" && npm test' "$WTMAIN" false
+  assert_silent "経路 B: 絶対化イディオムの線引きは経路 A と同じ判定を使う"
+  run_hook 'gh pr checks --watch' "$WTMAIN" false
+  assert_silent "経路 B: cwd 非依存の allowlist（gh）も経路 A と同じく無音"
+
+  echo "guard-background-cwd: AC5（git worktree list が失敗する環境は fail-open）"
+  GIT_BIN="$(command -v git)"
+  GIT_SHIM_DIR="$TEST_TMP/shim"
+  mkdir -p "$GIT_SHIM_DIR"
+  {
+    printf '#!/bin/sh\n'
+    printf 'for a in "$@"; do\n'
+    printf '  [ "$a" = "worktree" ] && exit 128\n'
+    printf 'done\n'
+    printf 'exec %s "$@"\n' "$GIT_BIN"
+  } > "$GIT_SHIM_DIR/git"
+  chmod +x "$GIT_SHIM_DIR/git"
+  run_hook 'npm test' "$WTMAIN" false "PATH=$GIT_SHIM_DIR:$PATH"
+  assert_silent "AC5: git worktree list が失敗する環境では黙って許可する（0 本として扱う）"
+else
+  # fixture を作れないまま skip すると経路 B のケースが全部消えたまま緑になる。
+  # git が無い環境は suite 冒頭で skip 済みなので、ここに来るのは実装かテストの異常。
+  bad "経路 B の fixture（git worktree add）を作れませんでした（経路 B が未検査のまま緑になるのを防ぐため失敗にします）"
+fi
+
+echo "guard-background-cwd: prunable な登録は live と数えない"
+if [ "$PRUNE_READY" -eq 1 ]; then
+  run_hook 'npm test' "$PRUNEMAIN" false
+  assert_silent "実体の消えた（prunable）登録しか無い repo は無音（git worktree prune 前でも鳴らさない）"
+else
+  bad "prunable fixture を作れませんでした（prunable 除外が未検査のまま緑になるのを防ぐため失敗にします）"
+fi
+
+echo "guard-background-cwd: 経路 A と B が同時に立つ場合（モノレポ + linked worktree）"
+if [ "$MONOWT_READY" -eq 1 ]; then
+  run_hook 'npm test' "$MONOWT" true
+  assert_warn "両経路: モノレポ + linked worktree + background でも警告は 1 本"
+  case "$MESSAGE" in
+    *"linked worktree"*) ok "両経路: 警告文が linked worktree に触れる" ;;
+    *) bad "両経路: 警告文に linked worktree が無い: [$MESSAGE]" ;;
+  esac
+  case "$MESSAGE" in
+    *background*) ok "両経路: 警告文が background の cd 引き継ぎにも触れる" ;;
+    *) bad "両経路: 警告文に background の補足が無い: [$MESSAGE]" ;;
+  esac
+else
+  bad "モノレポ + worktree fixture を作れませんでした（両経路が未検査のまま緑になるのを防ぐため失敗にします）"
+fi
 
 echo "guard-background-cwd: 絶対化イディオムの扱い（誤警告を出さない線引き）"
 run_hook 'cd "$(git rev-parse --show-toplevel)"/packages/app && npm test' "$MONO"
@@ -192,6 +319,61 @@ run_hook 'until gh pr view --json state; do sleep 30; done' "$MONO"
 assert_silent "CI 待ちの until ループ（until / sleep / gh）は無音"
 run_hook "npm --prefix $MONO/packages/app test" "$MONO"
 assert_warn "オプション側で絶対化する形は警告側に残る（既知の誤警告として固定）"
+
+echo "guard-background-cwd: heredoc は本文の最初の実効行で判定する"
+run_hook "$(printf "bash -e <<'EOF'\ncd %s/packages/app\nnpm test\nEOF" "$MONO")" "$MONO"
+assert_silent "heredoc: 本文 1 行目が絶対パスの cd なら無音（規約どおりの複数行手順）"
+run_hook "$(printf "bash -e <<'EOF'\nROOT=\"\$(git rev-parse --show-toplevel)\"\ncd \"\$ROOT\"\nnpm test\nEOF")" "$MONO"
+assert_silent "heredoc: 変数代入の次の行が cd \"\$ROOT\" でも無音（代入行は cwd を変えない）"
+run_hook "$(printf "bash -e <<'EOF'\ncd packages/app\nnpm test\nEOF")" "$MONO"
+assert_warn "heredoc: 本文が相対パスの cd なら警告する"
+run_hook "$(printf "bash -e <<'EOF'\nnpm test\nEOF")" "$MONO"
+assert_warn "heredoc: 本文が cd で始まらなければ警告する"
+# 本文はセグメント分割の対象外（判定 2 で決着する）。本文に `&&` があっても、
+# 1 行目が絶対パスの cd なら以降のセグメントは同じツリーで走るので無音のまま。
+run_hook "$(printf "bash -e <<'EOF'\ncd %s/packages/app && npm test\nnpm run build\nEOF" "$MONO")" "$MONO"
+assert_silent "heredoc: 本文 1 行目が絶対 cd なら本文中の && で分割せず無音（本文は判定 3 の対象外）"
+
+echo "guard-background-cwd: 読み取り専用 head の無音化（誤警告の主因だった側）"
+run_hook 'echo hello' "$MONO"
+assert_silent "echo は相対パスでも壊れないので無音"
+run_hook 'ls -la' "$MONO"
+assert_silent "ls は無音"
+run_hook 'jq . package.json' "$MONO"
+assert_silent "jq は無音"
+run_hook 'cat package.json' "$MONO"
+assert_silent "cat は無音"
+run_hook 'grep -rn foo .' "$MONO"
+assert_silent "grep は無音"
+run_hook 'sed -n 1,5p package.json' "$MONO"
+assert_silent "sed -n（読み取り専用）は無音"
+run_hook 'sed -i.bak s/a/b/ package.json' "$MONO"
+assert_warn "sed -i は書き込むので警告する"
+
+echo "guard-background-cwd: 複合コマンドは全セグメントを見る"
+run_hook 'git status && npm test' "$MONO"
+assert_warn "allowlist の head で始まっても、後続に cwd 依存のセグメントがあれば警告する"
+run_hook 'gh pr view && gh pr list' "$MONO"
+assert_silent "全セグメントが cwd 非依存なら無音"
+run_hook 'gh pr view | npm test' "$MONO"
+assert_warn "パイプの右側が cwd 依存なら警告する"
+run_hook 'gh pr view || npm test' "$MONO"
+assert_warn "|| の右側が cwd 依存なら警告する"
+run_hook 'gh pr view; npm test' "$MONO"
+assert_warn "; の右側が cwd 依存なら警告する"
+run_hook "$(printf 'gh pr view\nnpm test')" "$MONO"
+assert_warn "改行区切りの後続セグメントが cwd 依存なら警告する"
+run_hook 'gh pr view || gh pr list' "$MONO"
+assert_silent "|| で連結しても全セグメントが cwd 非依存なら無音"
+run_hook "cd $MONO/packages/app && npm test && npm run build" "$MONO"
+assert_silent "先頭が絶対パスの cd なら以降のセグメントは同じツリーで走るので無音"
+# 制御構文を `;` / 改行で分割すると各セグメントの先頭に `then` / `else` / `elif` が残る。
+# 剥がした先が cwd 依存なら警告側に落ちること（allowlist を素通りしないこと）を固定する。
+# なお `if` 自体は allowlist に無いので、これらは条件節のセグメントでも警告側に落ちる。
+run_hook 'if true; then npm test; fi' "$MONO"
+assert_warn "then 前置のセグメントが cwd 依存なら警告する"
+run_hook 'if gh pr view; then gh pr list; elif npm run lint; then :; else npm test; fi' "$MONO"
+assert_warn "elif / else 前置のセグメントが cwd 依存なら警告する"
 
 echo "guard-background-cwd: 対象外と opt-out"
 run_hook 'npm test' "$MONO" true 'FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1'
@@ -252,10 +434,12 @@ if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
 else
   bad "hooks.json の PreToolUse（Bash matcher）に guard-background-cwd.sh が無い"
 fi
-if jq -e '.description | test("background")' "$HOOKS_JSON" >/dev/null 2>&1; then
-  ok "hooks.json の description が PreToolUse の background 警告に言及する"
+# 変更前の description にも "background" は含まれていたため、その語では本 PR の主張
+# （linked worktree のある repo は foreground でも鳴る）を pin できない。新しい主張で照合する。
+if jq -e '.description | test("linked worktree")' "$HOOKS_JSON" >/dev/null 2>&1; then
+  ok "hooks.json の description が linked worktree での foreground 警告に言及する"
 else
-  bad "hooks.json の description に background 警告の記述が無い"
+  bad "hooks.json の description に linked worktree の記述が無い"
 fi
 
 echo

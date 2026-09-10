@@ -136,11 +136,27 @@
 # DIRTY=yes」が起きる。明示引数の実行と検査専用モード（宣言ダンプ・登録照合のみ）は
 # 対象外。詳細は docs/04-quality/TESTING.md。
 #
+# **この述語を当てるのは起動時の 1 回だけではない**。起動ガードが clean と断定できた回は、
+# サマリー出力の直後・鮮度記録を書く前に同じ述語をもう一度当てて、走行中に汚れていれば
+# fail-loud する（終了コードは変えない。実装は下方の「走行中に汚れなかったかを終了時に
+# 再評価する」節、規約側は docs/04-quality/TESTING.md）。
+#
 # Keep this read-only friendly: do not create temporary files and avoid here-doc / here-string.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# ロケールが POSIX（LANG / LC_ALL / LC_CTYPE 未設定。Claude Code cloud の既定）だと、
+# マルチバイト正規表現を持つ suite（docs-gates / docs-gates-runtime ほか）が docs の内容と
+# 無関係に赤になる。子 suite へ継承させるため、ここで 1 回だけ UTF-8 ロケールへ固定する
+# （既に UTF-8 なら何もしない。無ければ 1 行警告して続行）。lib が無い fixture コピー
+# （tests/run-all/verify.sh は本ファイルだけを複製する）では素通しする。
+if [ -f "$SCRIPT_DIR/lib/utf8-locale.sh" ]; then
+  # shellcheck source=lib/utf8-locale.sh
+  . "$SCRIPT_DIR/lib/utf8-locale.sh"
+  ff_ensure_utf8_locale
+fi
 
 # 入れ子で既定 suite 一覧を走らせると、自己テスト → 本ランナー → 自己テスト … と
 # 無限再帰する（merge-cleanup の一時 git リポジトリ生成まで巻き込んで暴走する）。
@@ -585,6 +601,12 @@ else
     # （Issue #273）。settings.json が無いチェックアウト（公開リポジトリ等）では
     # ○ skip。一時ディレクトリ + stub hook のみ（〜2 秒）。
     "$SCRIPT_DIR/claude-hooks-path/verify.sh"
+    # クラウド環境セットアップ: scripts/setup-cloud-env.sh の「導入不能でも
+    # exit 0 / 1 行報告 / --dry-run は導入を実行しない」契約、tests/lib/utf8-locale.sh の
+    # UTF-8 ロケール固定（run-all.sh / docs-gates / docs-gates-runtime の入口）、
+    # scripts/probe-env-capabilities.sh のロケール行。apt-get / npm / curl は stub、gh の
+    # 不在は絞った PATH で作る。root scripts/ を持たない配布先 checkout では ○ skip。
+    "$SCRIPT_DIR/cloud-env-setup/verify.sh"
     # 公開リポジトリの Dependabot 健全性検知（Issue #472）。依存グラフ無効の再発と
     # 実在しない manifest パスに紐づく幽霊 alert を分けて捕捉する。検知スクリプト／
     # hook が無いチェックアウト（公開リポジトリ等）では ○ skip。gh はスタブへ
@@ -1329,6 +1351,11 @@ fi
 # `FF_GATE_RECORD=0`（記録を止める指定。後述）の回にもこのガードは掛ける — 記録の
 # 有無に関わらず、汚れた木での全件実行はレビュー規定違反で証拠にならない。記録を
 # 捨てる試し実行は下の `FF_RUN_ALL_ALLOW_DIRTY=1` を明示すること。
+#
+# このガードが「起動時点で clean だった」と断定できた回だけ 1 を立てる。終了時の再評価
+# （後述）はこの旗が立った回にしか意味を持たない — 起動時から汚れていた回（オプトアウト）で
+# 「走行中に汚れた」と言うと嘘になる。
+STARTED_CLEAN=0
 ALLOW_DIRTY=0
 case "${FF_RUN_ALL_ALLOW_DIRTY:-}" in
   1) ALLOW_DIRTY=1 ;;
@@ -1366,6 +1393,7 @@ if [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$ALLOW_DIRTY" != "1" ]]; then
     echo "  記録を捨ててよい試し実行なら FF_RUN_ALL_ALLOW_DIRTY=1 を付けて再実行できます。" >&2
     exit 1
   fi
+  STARTED_CLEAN=1
 fi
 
 # 既定一覧で走らせるときだけ照合する（明示引数の実行は部分実行が正当な用途）。
@@ -1880,6 +1908,43 @@ fi
 MCP_NODE_MODULES="${FF_RUN_ALL_MCP_NODE_MODULES:-$SCRIPT_DIR/../mcp/node_modules}"
 if [[ ! -d "$MCP_NODE_MODULES" && ( ${#SKIPPED[@]} -gt 0 || ${#FAILED[@]} -gt 0 ) ]]; then
   echo "○ 案内: mcp/node_modules が無いため一部 suite が skip / fail した可能性があります。全件ゲート前に次を実行してください: npm ci --prefix plugins/ff-dev-toolkit/mcp"
+fi
+
+# ── 走行中に汚れなかったかを終了時に再評価する（fail-loud。終了コードは変えない）─────
+# 起動ガード（上流）が見るのは**起動時点**の汚れだけである。clean で起動した後、走行中
+# （数分〜十数分）にレビュー指摘の編集を当てた回は最後まで回りきり、鮮度記録が `DIRTY=yes`
+# になって、マージ直前の照合（scripts/check-merge-freshness.sh）が「判定不能」を返して初めて
+# 「その実行は証拠にならなかった」と分かる。記録側は実行の後にしか汚れを知らせないので、
+# 気づくのはいつも手遅れの側である（OBS-005）。ここで記録を書く**前**に 1 行言い切る。
+#
+# **終了コードは suite の結果だけで決める**。汚れは検証結果の失敗ではないし、実行結果その
+# ものは捨てない（どの suite が緑だったかはサマリーに残る）。記録も従来どおり `DIRTY=yes`
+# で書かれ、照合側が判定不能として報告する — 黙って緑にはならない。
+#
+# 述語は起動ガード・記録側と同じ（`git status --porcelain` の stdout が非空。未追跡も数える）。
+# 記録側 scripts/record-gate-head.sh は述語を関数として公開していないので、共有 API を新設
+# せずここで最小の再評価に留める（起動ガードの述語も同じ理由でこのファイルに直書きされている）。
+#
+# 旗が立つのは「起動ガードが clean と断定できた既定一覧の回」だけ。明示引数の実行と
+# `FF_RUN_ALL_ALLOW_DIRTY=1` の回は元から証拠にならず、後者で「走行中に汚れた」と言うのは
+# 端的に嘘になる。
+if [[ "$STARTED_CLEAN" == "1" ]]; then
+  END_DIRTY_RC=0
+  END_DIRTY_OUT="$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null)" || END_DIRTY_RC=$?
+  if [[ "$END_DIRTY_RC" -ne 0 ]]; then
+    # 起動時は読めた木が終了時に読めない（リポジトリごと消えた等）。clean と断定できない
+    # 以上、無言で済ませない。
+    echo "⚠️  終了時に作業ツリーの状態を確認できませんでした（起動時は clean でした）。この実行が鮮度記録の証拠になるかは判定できません。" >&2
+  elif [[ -n "$END_DIRTY_OUT" ]]; then
+    echo "⚠️  作業ツリーが走行中に汚れたため、この実行は鮮度記録の証拠になりません（鮮度記録が書かれる回は DIRTY=yes になり、マージ直前の照合は「判定不能」になります）" >&2
+    # 一覧の打ち切りは起動ガードと同じ 20 行（案内文が羅列で流れないように）。
+    printf '%s\n' "$END_DIRTY_OUT" | sed -n '1,20p' | sed 's/^/    /' >&2
+    END_DIRTY_N="$(printf '%s\n' "$END_DIRTY_OUT" | sed -n '$=')"
+    if [[ "${END_DIRTY_N:-0}" -gt 20 ]]; then
+      echo "    … 他 $(( END_DIRTY_N - 20 )) 件" >&2
+    fi
+    echo "  この実行の結果自体は上のサマリーのとおりです（終了コードは suite の結果だけで決まります）。証拠が要るなら変更をコミットしてから回し直してください。" >&2
+  fi
 fi
 
 # >>> ff-gate-record-block（tests/merge-freshness/verify.sh がこの関数定義を抽出して

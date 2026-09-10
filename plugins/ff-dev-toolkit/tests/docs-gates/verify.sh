@@ -32,6 +32,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# needle にマルチバイト文字（`[^）]*` 等）を含むため、POSIX ロケールでは docs の内容と無関係に
+# 赤になる（Claude Code cloud の既定。2026-09-08 実測）。単体実行でも同じ結果になるよう
+# suite の入口で UTF-8 ロケールへ固定する（run-all.sh 経由でも同じ処理が先に走る）。
+# verify.sh だけを複製する selftest fixture では lib が無いので素通しする。
+if [ -f "$SCRIPT_DIR/../lib/utf8-locale.sh" ]; then
+  # shellcheck source=../lib/utf8-locale.sh
+  . "$SCRIPT_DIR/../lib/utf8-locale.sh"
+  ff_ensure_utf8_locale
+fi
 # 変異検査では docs だけを複製し、静的 suite の実装は同じものを使う。
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DOCS="${FF_DOCS_GATE_DOCS:-$PLUGIN_ROOT/docs-template}"
@@ -971,6 +980,21 @@ must_match "$f" '^\*\*並列マージで残る定型作業\*\*:.*並列側は fr
   "Epic 一括対応: version / suite 数は仕上げ側が rebase 後に作り直す"
 must_contain "$f" '同じ文書を触る単発 PR が同時に開いているとき' \
   "Epic 一括対応: 振り直しの定型はバッチ外の単発 PR 並行にも適用する"
+
+# --- Git Workflow: 状態を変える複数行の手順とプロンプト特殊文字は heredoc / ファイル経由（観測台帳 OBS-092 から昇格）---
+must_contain "$f" 'プロンプト等の特殊文字（バッククォート・`$VAR`・条件展開）を含む文字列はヒアドキュメントで一時ファイルに書いてから渡す' \
+  "Git Workflow が特殊文字を含む文字列をヒアドキュメント経由で渡す規則を持つ"
+must_contain "$f" '状態を変える複数行の手順は `bash -e <<'\''EOF'\'' … EOF` の形で Bash ツールへ渡し' \
+  "Git Workflow が状態を変える複数行の手順を quoted heredoc で bash に渡す規則を持つ"
+
+# --- Git Workflow: 長時間ゲート開始前の並行セッション実測（ソースリポジトリの観測台帳 OBS-014 から昇格）---
+# `gh pr list` による並行マージの静止確認は、同じ作業ツリーで動く別セッション
+# （untracked ファイル・別ブランチへの checkout）を検出しない。節の消失・要求の
+# 骨抜き（実測コマンドを削って散文だけ残す等）を固定文字列で検出する。
+must_contain "$f" '並行マージの静止確認と並べて、同じ作業ツリーで動く並行セッションの実測も行う' \
+  "長時間ゲート開始前の節が並行セッション実測を並行マージの静止確認と並べて要求する"
+must_contain "$f" 'git worktree list --porcelain`、`git branch --show-current` で、別セッションが同じ作業ツリーへ untracked ファイルを書き込んでいないか・別ブランチへ checkout していないかを確認する' \
+  "長時間ゲート開始前の節が具体的な実測コマンドと検出対象を明記している"
 
 # --- multi-review SKILL.md: レビュー待ち時間の使い方（https://github.com/feel-flow/ff-dev-toolkit/issues/99）---
 # SKILL.md は ${DOCS}（docs-template）の外（plugin 直下の skills/）にあるため、
