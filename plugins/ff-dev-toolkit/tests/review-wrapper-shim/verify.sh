@@ -636,8 +636,7 @@ run_shim() {
   # 無くても既定用法のケースが「codex 不在の降格」へ落ちないようにし、降格経路は
   # 不在を名指しするケースだけが実測する。ケース固有の env 指定が後ろに来るので上書きできる。
   ( cd "$run_cwd" && \
-    run_isolated env FF_DEV_TOOLKIT_ROOT="$run_toolkit" ARGV_LOG="$WORK/argv.log" ENV_LOG="$WORK/env.log" \
-      CODEX_REVIEW_CODEX_BIN="$STUB_CODEX" \
+    run_isolated_shim FF_DEV_TOOLKIT_ROOT="$run_toolkit" ARGV_LOG="$WORK/argv.log" ENV_LOG="$WORK/env.log" \
       ${envs[@]+"${envs[@]}"} \
       bash "$PROJ/scripts/codex-review.sh" "$@" \
       >"$WORK/stdout.log" 2>"$WORK/err.log" </dev/null ) || RUN_RC=$?
@@ -649,6 +648,78 @@ STUB_CODEX="$WORK/stub-codex/codex"
 mkdir -p "$WORK/stub-codex"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "stub codex must not be invoked by the shim" >&2' 'exit 99' > "$STUB_CODEX"
 chmod +x "$STUB_CODEX"
+# シムを起動するケースの共通入口。シムは委譲の直前で codex の実体を確認し、無ければ降格を
+# 名指しして exit 4 で終わる（Issue #1393）。toolkit root の解決経路（sidecar / cache / env）
+# を測るケースは委譲まで到達しないと判定できないので、codex の実体をホストから切り離して
+# stub に固定する。
+#
+# ここで **export は使えない**。上の抽出はシム本体に現れる CODEX_* を機械的に分離リストへ
+# 入れるため、ISOLATE_ENV には -u CODEX_REVIEW_CODEX_BIN が必ず含まれ、export した値は
+# run_isolated の時点で落ちる（実測）。env の代入は -u より後に適用されるので、run_isolated
+# の**後ろ**で渡す。これを怠ると、codex の無いホスト（クラウド）で 13 件が rc=4 で落ちる
+# （Issue #1427 で実測）。codex 不在そのものを測るケースは、この後ろに自分の代入を置いて
+# 上書きする（env は後の代入が勝つ）。
+#
+# 引数は env と同じ形（-u NAME … / NAME=VALUE … / コマンド）。env はオプションを代入より
+# 先に要求するため、先頭の -u 群だけを取り分けて stub 代入の前へ戻す。
+run_isolated_shim() {
+  local -a _opts=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -u)
+        # 値の無い -u を env へ渡すと、次に来る代入をオプション名として食う。黙って
+        # 進めると rc=127 になり、負の判定しか持たないケースでは ✓ に化ける。
+        if [ "$#" -lt 2 ]; then
+          echo "✗ run_isolated_shim: -u に値がありません（呼び出し側の指定ミス）" >&2
+          exit 1
+        fi
+        _opts+=(-u "$2"); shift 2 ;;
+      *) break ;;
+    esac
+  done
+  # 代入より後ろの -u も env は解釈しない（同じく rc=127）。先頭へまとめるよう名指しする。
+  local _arg
+  for _arg in "$@"; do
+    if [ "$_arg" = "-u" ]; then
+      echo "✗ run_isolated_shim: -u は先頭にまとめて渡してください（代入の後ろでは env が解釈しません）" >&2
+      exit 1
+    fi
+  done
+  run_isolated env ${_opts[@]+"${_opts[@]}"} CODEX_REVIEW_CODEX_BIN="$STUB_CODEX" "$@" # ff-shim-launch-helper
+}
+
+# 起動口の単一化を機械で守る（Issue #1427）。run_isolated を素で使ってシムを起動すると、
+# 分離リストが CODEX_REVIEW_CODEX_BIN を -u で落とし、そのケースだけホストの codex 有無で
+# 結果が変わる。ローカル（codex あり）では緑のまま、クラウド（codex なし）で 13 件が rc=4 で
+# 落ちる形の環境依存で、実測するまで見えなかった。
+#
+# 対象は `run_isolated` に `env` / `bash` が続く形すべて（継続行で改行していても
+# `run_isolated env` は同じ行に残る）。以前は「直後が -u か NAME=」に絞っていたが、
+# それだと行末が `\` の形・空白 2 個・`run_isolated env bash …`・`run_isolated bash …` が
+# 素通りする（レビューで実測）。ヘルパ本体の 1 行は行末マーカーで除外する。
+#
+# fail-open にしない: 対象が読めない / 改名された回に grep が rc=2 を返し、それを `|| true`
+# で空にすると「違反ゼロ」と同じ緑になる。読めることと、ヘルパ経由の呼び出しが現に存在する
+# ことを先に確かめてから空判定する。
+_guard_file="$SCRIPT_DIR/verify.sh"
+_guard_uses=0
+_guard_scan=""
+_guard_ok=1
+if [ -r "$_guard_file" ]; then
+  _guard_uses="$(grep -cE '(^|[^_[:alnum:]])run_isolated_shim[[:space:]]' "$_guard_file" || true)"
+  _guard_scan="$( { grep -nE '(^|[^_[:alnum:]])run_isolated[[:space:]]+(env|bash)([[:space:]]|$)' "$_guard_file" \
+    || [ "$?" -eq 1 ]; } | grep -vE '^[0-9]+:[[:space:]]*#' | grep -vF 'ff-shim-launch-helper' || true)"
+else
+  _guard_ok=0
+fi
+if [ "$_guard_ok" -eq 0 ] || [ "${_guard_uses:-0}" -eq 0 ]; then
+  bad "起動口検査が対象を読めない、または run_isolated_shim の呼び出しを 1 件も見つけられない（検査が空振りしている）: readable=${_guard_ok} uses=${_guard_uses}"
+elif [ -z "$_guard_scan" ]; then
+  ok "シムの起動が run_isolated_shim に一本化されている（codex 実体の stub がホスト非依存で届く。ヘルパ経由 ${_guard_uses} 箇所）"
+else
+  bad "run_isolated を素で使ってシムを起動している行がある（stub が -u で落ち、ホストの codex 有無で結果が変わる）"
+  printf '%s\n' "$_guard_scan" | sed 's/^/    | /' >&2
+fi
 env_log_has() {
   grep -qxF "$1" "$WORK/env.log"
 }
@@ -1084,7 +1155,7 @@ fi
 for _bad_root_arg in "--base develop --dry-run" "--list-reviewers"; do
   set -- $_bad_root_arg
   _bad_root_rc=0
-  run_isolated env FF_DEV_TOOLKIT_ROOT="$WORK/does-not-exist" \
+  run_isolated_shim FF_DEV_TOOLKIT_ROOT="$WORK/does-not-exist" \
     bash "$PROJ/scripts/codex-review.sh" "$@" \
     >"$WORK/bad-root.out" 2>&1 </dev/null || _bad_root_rc=$?
   if [ "$_bad_root_rc" -eq 2 ]; then
@@ -1346,7 +1417,7 @@ fi
 if [ -f "$PLACED" ]; then
   : > "$WORK/argv.log"
   PROD_RC=0
-  run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
+  run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
     CLAUDE_CONFIG_DIR="$WORK/no-claude-home" ARGV_LOG="$WORK/argv.log" \
     bash "$PLACED" --base develop >"$WORK/prod.log" 2>&1 || PROD_RC=$?
   if [ "$PROD_RC" -eq 0 ]; then
@@ -1383,7 +1454,7 @@ if [ -f "$PLACED" ]; then
   cp "$FAKE/scripts/agent-config.yaml" "$ALT/scripts/agent-config.yaml"
   cp "$FAKE/.claude-plugin/plugin.json" "$ALT/.claude-plugin/plugin.json"
   : > "$WORK/argv-alt.log"
-  run_isolated env FF_DEV_TOOLKIT_ROOT="$ALT" ARGV_LOG="$WORK/argv-alt.log" \
+  run_isolated_shim FF_DEV_TOOLKIT_ROOT="$ALT" ARGV_LOG="$WORK/argv-alt.log" \
     bash "$PLACED" --base develop >/dev/null 2>&1 || true
   if [ -s "$WORK/argv-alt.log" ]; then
     ok "env と サイドカーが両方あるとき env が勝つ"
@@ -1400,7 +1471,7 @@ if [ -f "$PLACED" ]; then
   # 触れていなかった（サイドカー=scripts/ と env=プラグインルートしか通っていない）。
   : > "$WORK/argv.log"
   printf '%s\n' "$FAKE" > "$SIDECAR"
-  run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
+  run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
     CLAUDE_CONFIG_DIR="$WORK/no-claude-home" ARGV_LOG="$WORK/argv.log" \
     bash "$PLACED" --base develop >"$WORK/shape.log" 2>&1 || true
   if argv_has_seq "--cli" "codex-cli"; then
@@ -1417,7 +1488,7 @@ if [ -f "$PLACED" ]; then
   : > "$WORK/argv.log"
   printf '%s\n' "$WORK/nonexistent-toolkit" > "$SIDECAR"
   MASK_RC=0
-  run_isolated env FF_DEV_TOOLKIT_ROOT="$ALT" ARGV_LOG="$WORK/argv.log" \
+  run_isolated_shim FF_DEV_TOOLKIT_ROOT="$ALT" ARGV_LOG="$WORK/argv.log" \
     bash "$PLACED" --base develop >"$WORK/mask.log" 2>&1 || MASK_RC=$?
   if [ "$MASK_RC" -eq 0 ] && [ -s "$WORK/argv.log" ] \
      && grep -qF "$MASK_NEEDLE" "$WORK/mask.log"; then
@@ -1431,12 +1502,18 @@ if [ -f "$PLACED" ]; then
   # 勝つのは正規の上書き手段で、開発 clone と cache を併用する構成では食い違うのが
   # 普通。そこで鳴らすと毎回出て、上の本物の告知ごと読み飛ばされる。
   printf '%s\n' "$_sidecar_want" > "$SIDECAR"
-  run_isolated env FF_DEV_TOOLKIT_ROOT="$ALT" ARGV_LOG="$WORK/argv.log" \
-    bash "$PLACED" --base develop >"$WORK/nomask.log" 2>&1 || true
-  if grep -qF "$MASK_NEEDLE" "$WORK/nomask.log"; then
-    bad "使えるサイドカーにまで警告が出る（毎回鳴って本物の告知が読み飛ばされる）"
-  else
+  : > "$WORK/argv.log"
+  NOMASK_RC=0
+  run_isolated_shim FF_DEV_TOOLKIT_ROOT="$ALT" ARGV_LOG="$WORK/argv.log" \
+    bash "$PLACED" --base develop >"$WORK/nomask.log" 2>&1 || NOMASK_RC=$?
+  # 「警告が出ない」だけを見ると、起動そのものが失敗した回（ログが空・別の理由で非 0）も
+  # ✓ になる。実際このケースは、13 件が rc=4 で赤くなったクラウドの回でも ✓ を出していた。
+  # 委譲まで届いたこと（rc=0 と argv の記録）を先に確かめる。
+  if [ "$NOMASK_RC" -eq 0 ] && [ -s "$WORK/argv.log" ] && ! grep -qF "$MASK_NEEDLE" "$WORK/nomask.log"; then
     ok "使えるサイドカーが env と食い違うだけでは警告しない"
+  else
+    bad "使えるサイドカーにまで警告が出る、または委譲まで届いていない (rc=$NOMASK_RC)"
+    sed 's/^/    | /' "$WORK/nomask.log" >&2
   fi
 
   # 末尾に改行が無い**使える**サイドカーでも鳴らさないこと（Issue #807）。read は
@@ -1446,7 +1523,7 @@ if [ -f "$PLACED" ]; then
   printf '%s' "$_sidecar_want" > "$SIDECAR"
   : > "$WORK/argv.log"
   MASK_NONL_RC=0
-  run_isolated env FF_DEV_TOOLKIT_ROOT="$ALT" ARGV_LOG="$WORK/argv.log" \
+  run_isolated_shim FF_DEV_TOOLKIT_ROOT="$ALT" ARGV_LOG="$WORK/argv.log" \
     bash "$PLACED" --base develop >"$WORK/nomask-nonl.log" 2>&1 || MASK_NONL_RC=$?
   if [ "$MASK_NONL_RC" -eq 0 ] && [ -s "$WORK/argv.log" ] \
      && ! grep -qF "$MASK_NEEDLE" "$WORK/nomask-nonl.log"; then
@@ -1465,7 +1542,7 @@ if [ -f "$PLACED" ]; then
   printf '%s\n' "$WORK/nonexistent-toolkit" > "$SIDECAR"
   : > "$WORK/argv-shape.log"
   SHAPE_RC=0
-  run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
+  run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
     CLAUDE_CONFIG_DIR="$WORK/no-claude-home" ARGV_LOG="$WORK/argv-shape.log" \
     bash "$PLACED" --base develop >"$WORK/nohint.log" 2>&1 || SHAPE_RC=$?
   if [ "$SHAPE_RC" -ne 0 ] && [ ! -s "$WORK/argv-shape.log" ] \
@@ -1483,7 +1560,7 @@ if [ -f "$PLACED" ]; then
   : > "$SIDECAR"
   : > "$WORK/argv-empty.log"
   EMPTY_REC_RC=0
-  run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
+  run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
     CLAUDE_CONFIG_DIR="$WORK/no-claude-home" ARGV_LOG="$WORK/argv-empty.log" \
     bash "$PLACED" --base develop >"$WORK/emptyrec.log" 2>&1 || EMPTY_REC_RC=$?
   if [ "$EMPTY_REC_RC" -ne 0 ] && [ ! -s "$WORK/argv-empty.log" ] \
@@ -1500,7 +1577,7 @@ if [ -f "$PLACED" ]; then
   : > "$WORK/argv-nonl.log"
   printf '%s' "$_sidecar_want" > "$SIDECAR"
   NONL_RC=0
-  run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
+  run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/no-codex-home" \
     CLAUDE_CONFIG_DIR="$WORK/no-claude-home" ARGV_LOG="$WORK/argv-nonl.log" \
     bash "$PLACED" --base develop >"$WORK/nonl.log" 2>&1 || NONL_RC=$?
   if [ "$NONL_RC" -eq 0 ] && [ -s "$WORK/argv-nonl.log" ] \
@@ -1626,7 +1703,7 @@ fi
 # （rc=2）でレビューが 1 件も走らない。
 : > "$WORK/argv-crlf.log"
 CRLF_ID_RC=0
-run_isolated env FF_DEV_TOOLKIT_ROOT="$CRLF_KIT" ARGV_LOG="$WORK/argv-crlf.log" \
+run_isolated_shim FF_DEV_TOOLKIT_ROOT="$CRLF_KIT" ARGV_LOG="$WORK/argv-crlf.log" \
   bash "$CRLF_PLACED" --base develop >"$WORK/crlf-id.log" 2>&1 || CRLF_ID_RC=$?
 if [ "$CRLF_ID_RC" -eq 0 ] && [ -s "$WORK/argv-crlf.log" ]; then
   ok "シム: CRLF テンプレートと LF 配置済みシムを別版と誤判定しない（行末正規化）"
@@ -1798,7 +1875,7 @@ cp "$FAKE/.claude-plugin/plugin.json" "$MIDCR_KIT/.claude-plugin/plugin.json"
 awk 'NR==2 { printf "\r%s\n", $0; next } { print }' "$SHIM" > "$MIDCR_KIT/scripts/templates/codex-review.sh"
 : > "$WORK/argv-midcr.log"
 MIDCR_ID_RC=0
-run_isolated env FF_DEV_TOOLKIT_ROOT="$MIDCR_KIT" ARGV_LOG="$WORK/argv-midcr.log" \
+run_isolated_shim FF_DEV_TOOLKIT_ROOT="$MIDCR_KIT" ARGV_LOG="$WORK/argv-midcr.log" \
   bash "$CRLF_PLACED" --base develop >"$WORK/midcr-id.log" 2>&1 || MIDCR_ID_RC=$?
 if [ "$MIDCR_ID_RC" -eq 2 ] && [ ! -s "$WORK/argv-midcr.log" ] \
    && grep -q '配置済み shim の版が一致しません' "$WORK/midcr-id.log"; then
@@ -1852,7 +1929,7 @@ make_cache_toolkit "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/0.10.0
 make_cache_toolkit "$CLAUDE_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0" "9.0.0"
 : > "$WORK/argv-cache.log"
 CACHE_RC=0
-run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CODEX_CACHE_HOME" \
+run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CODEX_CACHE_HOME" \
   CLAUDE_CONFIG_DIR="$CLAUDE_CACHE_HOME" ARGV_LOG="$WORK/argv-cache.log" \
   bash "$PLACED" --base develop >"$WORK/cache.log" 2>&1 || CACHE_RC=$?
 if [ "$CACHE_RC" -eq 0 ] \
@@ -1866,7 +1943,7 @@ fi
 make_cache_toolkit "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0" "9.0.0"
 : > "$WORK/argv-cache.log"
 CACHE_RC=0
-run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CODEX_CACHE_HOME" \
+run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CODEX_CACHE_HOME" \
   CLAUDE_CONFIG_DIR="$CLAUDE_CACHE_HOME" ARGV_LOG="$WORK/argv-cache.log" \
   bash "$PLACED" --base develop >"$WORK/cache.log" 2>&1 || CACHE_RC=$?
 if [ "$CACHE_RC" -eq 0 ] \
@@ -1878,7 +1955,7 @@ fi
 
 : > "$WORK/argv-cache.log"
 CACHE_RC=0
-run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/empty-codex-home" \
+run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$WORK/empty-codex-home" \
   CLAUDE_CONFIG_DIR="$CLAUDE_CACHE_HOME" ARGV_LOG="$WORK/argv-cache.log" \
   bash "$PLACED" --base develop >"$WORK/cache.log" 2>&1 || CACHE_RC=$?
 if [ "$CACHE_RC" -eq 0 ] \
@@ -1893,7 +1970,7 @@ printf '\n# mismatch\n' >> "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolki
 printf '%s\n' "$FAKE/scripts" > "$SIDECAR"
 : > "$WORK/argv-cache.log"
 CACHE_RC=0
-run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CODEX_CACHE_HOME" \
+run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CODEX_CACHE_HOME" \
   CLAUDE_CONFIG_DIR="$WORK/empty-claude-home" ARGV_LOG="$WORK/argv-cache.log" \
   bash "$PLACED" --base develop >"$WORK/cache.log" 2>&1 || CACHE_RC=$?
 mv "$WORK/cache-template.good" "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0/scripts/templates/codex-review.sh"
@@ -1916,7 +1993,7 @@ CACHE_QUIET_HOME="$WORK/cache-quiet-home"
 make_cache_toolkit "$CACHE_QUIET_HOME/plugins/cache/market/ff-dev-toolkit/0.38.0" "0.38.0"
 printf '%s\n' "$WORK/nonexistent-toolkit" > "$SIDECAR"
 CACHE_QUIET_RC=0
-run_isolated env -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CACHE_QUIET_HOME" \
+run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CACHE_QUIET_HOME" \
   CLAUDE_CONFIG_DIR="$WORK/no-claude-home" ARGV_LOG="$WORK/argv-cache.log" \
   bash "$PLACED" --base develop >"$WORK/cachequiet.log" 2>&1 || CACHE_QUIET_RC=$?
 printf '%s\n' "$FAKE/scripts" > "$SIDECAR"
@@ -1932,7 +2009,7 @@ cp "$TOOLKIT/scripts/agent-config.yaml" "$WORK/agent-config.good"
 printf '%s\n' 'version: "2.0"' 'toolkit_version: "0.37.0"' > "$TOOLKIT/scripts/agent-config.yaml"
 : > "$WORK/argv.log"
 MISMATCH_RC=0
-run_isolated env FF_DEV_TOOLKIT_ROOT="$TOOLKIT" ARGV_LOG="$WORK/argv.log" \
+run_isolated_shim FF_DEV_TOOLKIT_ROOT="$TOOLKIT" ARGV_LOG="$WORK/argv.log" \
   bash "$PROJ/scripts/codex-review.sh" --base develop >"$WORK/mismatch.log" 2>&1 || MISMATCH_RC=$?
 mv "$WORK/agent-config.good" "$TOOLKIT/scripts/agent-config.yaml"
 if [ "$MISMATCH_RC" -eq 2 ] && [ ! -s "$WORK/argv.log" ] \
@@ -1946,7 +2023,7 @@ cp "$TOOLKIT/scripts/templates/codex-review.sh" "$WORK/template.good"
 printf '\n# mismatched template\n' >> "$TOOLKIT/scripts/templates/codex-review.sh"
 : > "$WORK/argv.log"
 MISMATCH_RC=0
-run_isolated env FF_DEV_TOOLKIT_ROOT="$TOOLKIT" ARGV_LOG="$WORK/argv.log" \
+run_isolated_shim FF_DEV_TOOLKIT_ROOT="$TOOLKIT" ARGV_LOG="$WORK/argv.log" \
   bash "$PROJ/scripts/codex-review.sh" --base develop >"$WORK/mismatch.log" 2>&1 || MISMATCH_RC=$?
 mv "$WORK/template.good" "$TOOLKIT/scripts/templates/codex-review.sh"
 if [ "$MISMATCH_RC" -eq 2 ] && [ ! -s "$WORK/argv.log" ] \
@@ -1958,7 +2035,7 @@ fi
 
 # skill 群が使う正規形（プラグインルート指定）で解決できること。
 : > "$WORK/argv.log"
-run_isolated env FF_DEV_TOOLKIT_ROOT="$FAKE" ARGV_LOG="$WORK/argv.log" \
+run_isolated_shim FF_DEV_TOOLKIT_ROOT="$FAKE" ARGV_LOG="$WORK/argv.log" \
   bash "$PLACED" --base develop >/dev/null 2>&1 || true
 if argv_has_seq "--cli" "codex-cli"; then
   ok "FF_DEV_TOOLKIT_ROOT にプラグインルートを渡す正規形で解決できる"

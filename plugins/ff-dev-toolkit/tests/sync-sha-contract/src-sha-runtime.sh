@@ -41,7 +41,18 @@ if [[ -z "$SKILL" || ! -f "$SKILL" ]]; then
   echo "✗ SKILL.md がありません: ${SKILL:-<未指定>}" >&2
   exit 1
 fi
-command -v rsync >/dev/null 2>&1 || { echo "✗ rsync がありません（同期の実挙動を検証できない）" >&2; exit 1; }
+# rsync 不在は「実装が壊れている」ではなく「この環境では実挙動を測れない」。同じ非 0 に
+# 潰すと、呼び出し元が退行と環境都合を区別できず、環境の都合で赤い suite が常態化する
+# （Issue #1427: クラウドの apt ミラーに届かず rsync を導入できなかった回で顕在化）。
+# 専用の終了コード 3 で返し、呼び出し元は部分 skip（○ skip）として計上する。
+# cp -R での代替は採らない — rsync 固有の挙動（--itemize-changes / --delete）を測らないまま
+# 緑にすることになり、無言で検証を失う。
+# 実体名は SYNC_SHA_RSYNC_BIN で差し替えられる（呼び出し側が PATH を操作せずに不在を作る
+# ためのシーム。codex-review.sh の CODEX_REVIEW_CODEX_BIN と同じ設計で、通常運用で設定する
+# 必要はない）。PATH を絞る形だと、fixture が必要とする実体の取りこぼしが rsync 不在と
+# 区別できない別の失敗になり、検査が不安定になる。
+_sync_sha_rsync_bin="${SYNC_SHA_RSYNC_BIN:-rsync}"
+command -v -- "$_sync_sha_rsync_bin" >/dev/null 2>&1 || { echo "rsync がありません（同期の実挙動を検証できない）" >&2; exit 3; }
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sync-src-sha.XXXXXX")"
 cleanup() {

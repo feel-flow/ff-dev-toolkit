@@ -87,6 +87,8 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # 実 gh の呼び分けを引数で再現する。fixture は env で与える:
 #   STUB_MANIFESTS       GraphQL の totalCount（`none` なら totalCount を含まない応答）
 #   STUB_GRAPH_FAIL=1    GraphQL 呼び出しを非 0 で失敗させる
+#   STUB_GRAPH_FAIL=403  GraphQL を「この session では有効化されていない」403 で失敗させる
+#                        （クラウド開発環境の proxy の形。gh 不在・認証切れとは別分類）
 #   STUB_ALERT_PATHS     open alert の manifest_path（改行区切り。空なら 0 件）
 #   STUB_ALERTS_FAIL=1   alert 取得を非 0 で失敗させる
 #   STUB_TREE_PATHS      リポジトリに実在する blob パス（改行区切り）
@@ -101,6 +103,11 @@ args="$*"
 [ -n "${STUB_MARKER:-}" ] && : > "$STUB_MARKER"
 case "$args" in
   *graphql*)
+    if [ "${STUB_GRAPH_FAIL:-0}" = 403 ]; then
+      # クラウド開発環境の GitHub proxy が固定クエリ以外の GraphQL を拒む形（Issue #1427 の実測）
+      echo "gh: HTTP 403: This GraphQL query is not enabled for this session — only the pinned set of PR-review operations is served." >&2
+      exit 1
+    fi
     if [ "${STUB_GRAPH_FAIL:-0}" = 1 ]; then
       echo "gh: stubbed graphql failure" >&2
       exit 1
@@ -314,10 +321,26 @@ fi
 if out="$(STUB_GRAPH_FAIL=1 run_checker)"; then
   bad "GraphQL 失敗時に checker が exit 0 を返した: $(tr '\n' ' ' <<<"$out")"
 else
-  if grep -q '^SKIP_REASON=' <<<"$out" && grep -q 'stubbed graphql failure' <<<"$out"; then
-    ok "GraphQL 失敗: SKIP_REASON に gh の stderr を診断として載せる"
+  if grep -q '^SKIP_REASON=' <<<"$out" && grep -q 'stubbed graphql failure' <<<"$out" \
+    && ! grep -q '到達性の制限' <<<"$out"; then
+    ok "GraphQL 失敗: SKIP_REASON に gh の stderr を診断として載せる（403 の分類へ寄せない）"
   else
     bad "GraphQL 失敗時の SKIP_REASON が診断情報を持たない: $(tr '\n' ' ' <<<"$out")"
+  fi
+fi
+
+# --- ケース 9b: GraphQL 到達性の制限（クラウドの proxy が固定クエリ以外を 403 で拒む）----
+# gh 不在（command not found）とも認証切れとも別物で、gh を入れ直しても直らない。同じ
+# 「取得に失敗」へ潰すと、次の一手（環境の許可を上げる / この環境では検査しない）が読めない。
+if out="$(STUB_GRAPH_FAIL=403 run_checker)"; then
+  bad "GraphQL 403 時に checker が exit 0 を返した: $(tr '\n' ' ' <<<"$out")"
+else
+  if grep -q '^SKIP_REASON=.*GraphQL 到達性の制限' <<<"$out" \
+    && grep -q '依存グラフ取得に失敗' <<<"$out" \
+    && ! grep -q 'gh 不在' <<<"$out" && ! grep -qi 'command not found' <<<"$out"; then
+    ok "GraphQL 403: 到達性の制限として名指しし、どの呼び出しが弾かれたかを残し、gh 不在の文言に混ぜない"
+  else
+    bad "GraphQL 403 の SKIP_REASON が想定と違う: $(tr '\n' ' ' <<<"$out")"
   fi
 fi
 

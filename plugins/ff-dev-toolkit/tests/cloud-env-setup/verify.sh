@@ -115,7 +115,18 @@ if [ "${STUB_APT_INSTALLS:-0}" = 1 ]; then
   chmod +x "${STUB_APT_BIN:?}/$pkg"
   exit 0
 fi
-echo "E: Unable to locate package" >&2
+# 失敗の出方を切り替えるシーム。setup 側は apt の出力から「パッケージ不在」と
+# 「ミラーへ到達できない」を分けて報告する契約（Issue #1427）で、その分岐を実測する。
+case "${STUB_APT_FAIL_MODE:-missing}" in
+  network)
+    echo "E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/r/rsync.deb  Could not resolve 'archive.ubuntu.com'" >&2 ;;
+  both)
+    # 実際のミラー障害の出方。リストが空のままなので Unable to locate package も同時に出る
+    echo "E: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/noble/InRelease  Could not resolve 'archive.ubuntu.com'" >&2
+    echo "E: Unable to locate package rsync" >&2 ;;
+  *)
+    echo "E: Unable to locate package" >&2 ;;
+esac
 exit 100
 STUB
 chmod +x "$APT_STUB"
@@ -208,9 +219,43 @@ run_setup FF_SETUP_OS=Linux FF_SETUP_IS_ROOT=1 STUB_LOCALES='C\nPOSIX\n' --
 if [ "$RC" -eq 0 ]; then ok "実行: 全項目が導入不能でも exit 0"; else bad "実行: exit ${RC}"; sed 's/^/    | /' "$TMP/out.log" >&2; fi
 if grep -qF "install -y gh" "$TMP/apt.log" && grep -qF "install -y shellcheck" "$TMP/apt.log"; then ok "実行: gh / shellcheck の apt-get install を試みる"; else bad "実行: apt-get が呼ばれていない: $(cat "$TMP/apt.log")"; fi
 if line_has gh "❌" && line_has gh "apt-get install gh に失敗"; then ok "実行: apt-get 失敗を ❌ で 1 行報告する"; else bad "実行: apt-get 失敗の報告が違う: $(line_of gh)"; fi
+# 失敗理由の分類（Issue #1427）。「今回だけのミラー障害」と「この環境に無いパッケージ」を
+# 同じ 1 行へ潰すと、再実行すべきか環境都合の skip 側で扱うべきかが決められない。
+if line_has gh "パッケージ不在" && ! line_has gh "ミラーへ到達できない"; then
+  ok "実行: apt の Unable to locate package を「パッケージ不在」と分類して報告する"
+else
+  bad "実行: apt 失敗の分類（パッケージ不在）が出ていない: $(line_of gh)"
+fi
 if line_has yq "❌" && grep -qF "yq_linux" "$TMP/net.log"; then ok "実行: yq は release 取得を試み、失敗（go 無し）を ❌ で報告する"; else bad "実行: yq の失敗報告が違う: $(line_of yq) / $(cat "$TMP/net.log")"; fi
 if line_has ロケール "❌" && ! out_has "export LC_ALL="; then ok "ロケール: UTF-8 ロケール無し → ❌ の 1 行警告、export 行なし"; else bad "ロケール: missing 分岐が契約と違う: $(line_of ロケール)"; fi
 if line_has origin/HEAD "❌" && line_has origin/HEAD "remote origin が無い"; then ok "実行: origin 無しは ❌ で報告し止まらない"; else bad "実行: origin 無しの報告が違う: $(line_of origin/HEAD)"; fi
+
+run_setup FF_SETUP_OS=Linux FF_SETUP_IS_ROOT=1 STUB_APT_FAIL_MODE=network --
+if line_has gh "ミラーへ到達できない" && ! line_has gh "パッケージ不在"; then
+  ok "実行: apt の Could not resolve / Failed to fetch を「ミラーへ到達できない」と分類して報告する"
+else
+  bad "実行: apt 失敗の分類（ミラー不達）が出ていない: $(line_of gh)"
+fi
+
+# 実際のミラー障害では両方の文言が同時に出る。パッケージ名の側を先に見ると「この環境には
+# 無い」と誤って断定し、「再実行すれば入る」のか「環境都合として扱う」のかが逆になる。
+run_setup FF_SETUP_OS=Linux FF_SETUP_IS_ROOT=1 STUB_APT_FAIL_MODE=both --
+if line_has gh "ミラーへ到達できない" && ! line_has gh "パッケージ不在"; then
+  ok "実行: ミラー不達と不在の文言が同時に出る回はミラー側を採る（判断が逆にならない）"
+else
+  bad "実行: 両方の文言が出る回の分類が逆: $(line_of gh)"
+fi
+
+# mktemp が使えないホスト（read-only な TMPDIR 等。本 PR が対象にしているクラウドの一種）でも
+# 「導入できなかった項目があっても exit 0」の契約を守り、分類できなかったことを言う。
+mv "$BIN/mktemp" "$TMP/mktemp.hidden"
+run_setup FF_SETUP_OS=Linux FF_SETUP_IS_ROOT=1 --
+mv "$TMP/mktemp.hidden" "$BIN/mktemp"
+if [ "$RC" -eq 0 ] && line_has gh "apt-get install gh に失敗" && out_has "[setup] " ; then
+  ok "実行: mktemp が使えない回でも exit 0 を保ち、以降の項目まで報告し切る"
+else
+  bad "実行: mktemp 不在で setup が中断した (rc=$RC): $(line_of gh)"
+fi
 
 run_setup FF_SETUP_OS=Linux FF_SETUP_IS_ROOT=1 STUB_APT_INSTALLS=1 --
 if [ "$RC" -eq 0 ] && line_has gh "✅" && line_has gh "apt-get install gh で導入"; then ok "実行: apt-get 成功後に PATH で実体を再確認して ✅"; else bad "実行: apt-get 成功の報告が違う (rc=$RC): $(line_of gh)"; fi
@@ -385,6 +430,45 @@ if [ "$HAVE_JQ" -eq 1 ]; then
   row="$(probe_row C.UTF-8 'C\nPOSIX\nC.UTF-8\n')" || row=""
   if [ "$(printf '%s' "$row" | jq -r .status)" = "ok" ] && row_has .detail "LANG=" ; then ok "probe: 実効 LC_CTYPE=UTF-8 → ok（LANG / LC_ALL / LC_CTYPE の設定値を観測値に含む）"; else bad "probe: ok 行が契約と違う: ${row}"; fi
 fi
+# installed_plugins.json 行（Issue #1427）。「宣言済み」と「導入済み」を分けて見るための行で、
+# 観測したいのはまさに「導入 0 件」の状態。ここで probe 自体が落ちると、クラウドで一番知りたい
+# 回だけ結果表が出ない（実際 grep -o 版はそうなっていた: 一致なしの exit 1 が set -euo pipefail
+# で代入ごとスクリプトを終わらせる）。0 件でも表を出し切ることを含めて固定する。
+probe_plugins_row() { # $1: installed_plugins.json の中身（空文字ならファイルを置かない）
+  rm -rf "$TMP/.claude/plugins"
+  if [ -n "$1" ]; then
+    mkdir -p "$TMP/.claude/plugins"
+    printf '%s' "$1" > "$TMP/.claude/plugins/installed_plugins.json"
+  fi
+  PROBE_RC=0
+  (cd "$FX" && env -i PATH="$BIN" HOME="$TMP" STUB_CTYPE=C.UTF-8 STUB_LOCALES='C\nC.UTF-8\n' \
+    FF_PROBE_LOCALE_CMD="$LOCALE_STUB" bash "$PROBE" --json 2>/dev/null) > "$TMP/probe.json" || PROBE_RC=$?
+  [ "$PROBE_RC" -eq 0 ] || return 1
+  jq -c '.rows[] | select(.category=="path" and .name=="installed_plugins.json")' "$TMP/probe.json"
+}
+if [ "$HAVE_JQ" -eq 1 ]; then
+  row="$(probe_plugins_row '{"version":2,"plugins":{}}')" || row=""
+  if [ "$(printf '%s' "$row" | jq -r .status)" = "fail" ] && row_has .detail "導入 0 件"; then
+    ok "probe: 導入 0 件でも probe は exit 0 で結果表を出し切り、その行を fail として報告する"
+  else
+    bad "probe: 導入 0 件の行が契約と違う（probe が途中で落ちた可能性）: ${row}"
+  fi
+  # メタデータのパスに @ が入っていても、数えるのは plugins 直下のキーだけ
+  row="$(probe_plugins_row '{"version":2,"plugins":{"ff-dev-toolkit@ff-dev-toolkit":{"path":"/opt/plugins/@scoped/cache/0.1.0"}}}')" || row=""
+  if [ "$(printf '%s' "$row" | jq -r .status)" = "ok" ] && row_has .detail "1 件が導入済み"; then
+    ok "probe: 件数は plugins 直下のキー数（メタデータの @ を数えない）"
+  else
+    bad "probe: 導入件数の数え方が契約と違う: ${row}"
+  fi
+  row="$(probe_plugins_row '')" || row=""
+  if [ "$(printf '%s' "$row" | jq -r .status)" = "missing" ]; then
+    ok "probe: installed_plugins.json 不在は missing"
+  else
+    bad "probe: ファイル不在の行が契約と違う: ${row}"
+  fi
+  rm -rf "$TMP/.claude/plugins"
+fi
+
 md="$( (cd "$FX" && env -i PATH="$BIN" HOME="$TMP" STUB_CTYPE=POSIX STUB_LOCALES='C\nPOSIX\nC.utf8\n' FF_PROBE_LOCALE_CMD="$LOCALE_STUB" bash "$PROBE" 2>/dev/null) | grep -F '| env | ロケール |' || true)"
 if [[ "$md" == *"⚠️ warn"* ]]; then ok "probe: Markdown 表にも同じロケール行が出る"; else bad "probe: Markdown 表にロケール行が無い"; fi
 

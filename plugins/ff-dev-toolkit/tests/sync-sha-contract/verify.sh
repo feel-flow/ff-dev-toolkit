@@ -362,11 +362,85 @@ assert_order "${L_RSYNC}" "${L_WRITE}" \
   "順序: 記録の書き込みがミラー成功より後" \
   "順序: 記録の書き込みがミラー成功より前にある — 失敗した同期を「同期済み」にする退行"
 
-if bash "$SCRIPT_DIR/src-sha-runtime.sh" "$SYNC_SCRIPT_UNDER_TEST" "$SKILL"; then
-  ok "同期元 SHA の記録と手順 4 の実行が、別プロセス・HEAD 移動・記録不在を区別する"
+# runtime の終了コードと stderr から「環境都合の未検証」と「退行」を決める規則。本番経路と
+# 下の検査が同じ関数を通るようにする — rsync のあるホストでは本番経路が skip 分岐を通らない
+# ため、関数を分けると「rc=3 を通常の失敗へ落とす」退行を誰も検出できない。
+# stdout: 部分 skip の理由（空なら skip ではない）/ 戻り値: 0=想定内, 1=退行として扱う
+classify_src_sha_result() { # $1: runtime の rc / $2: stderr のファイル
+  local rc="$1" err="$2"
+  [[ "$rc" -eq 0 ]] && return 0
+  # rc だけで skip に振り分けない: runtime は set -euo pipefail + trap で内側の rc を
+  # そのまま返すので、将来別の検査が 3 で落ちたときに緑の skip へ化ける。
+  if [[ "$rc" -eq 3 ]] && grep -q 'rsync がありません' "$err"; then
+    printf '%s\n' 'rsync が無いため同期の実挙動（記録と手順 4 の実行）を検証していない — apt 等で rsync を導入して再実行する'
+    return 0
+  fi
+  return 1
+}
+
+_src_sha_rc=0
+_src_sha_err="$(mktemp "${TMPDIR:-/tmp}/sync-sha-err.XXXXXX")"
+bash "$SCRIPT_DIR/src-sha-runtime.sh" "$SYNC_SCRIPT_UNDER_TEST" "$SKILL" 2>"$_src_sha_err" || _src_sha_rc=$?
+_src_sha_skip=""
+_src_sha_cls=0
+_src_sha_skip="$(classify_src_sha_result "$_src_sha_rc" "$_src_sha_err")" || _src_sha_cls=$?
+if [[ "$_src_sha_cls" -ne 0 ]]; then
+  bad "同期元 SHA の受け渡しの実行契約が壊れている (rc=${_src_sha_rc})"
+  sed 's/^/    | /' "$_src_sha_err" >&2
+elif [[ -n "$_src_sha_skip" ]]; then
+  # インデント付きの ○ skip は run-all が checks-skipped へ別勘定する印。suite 全体の
+  # skip とは別で、何を測っていないかが summary に名前で残る（Issue #1427）。
+  echo "  ○ skip: ${_src_sha_skip}"
 else
-  bad "同期元 SHA の受け渡しの実行契約が壊れている"
+  ok "同期元 SHA の記録と手順 4 の実行が、別プロセス・HEAD 移動・記録不在を区別する"
 fi
+rm -f "$_src_sha_err"
+
+# 振り分けの規則そのものを固定する。rsync のあるホストでは本番経路が skip 分岐を通らない
+# ので、ここが無いと「rc=3 を通常の失敗へ落とす」「理由を問わず skip にする」のどちらの
+# 退行も検出されないまま緑になる。
+_cls_err="$(mktemp "${TMPDIR:-/tmp}/sync-sha-cls.XXXXXX")"
+printf 'rsync がありません（同期の実挙動を検証できない）\n' >"$_cls_err"
+_cls_out=""; _cls_rc=0
+_cls_out="$(classify_src_sha_result 3 "$_cls_err")" || _cls_rc=$?
+if [[ "$_cls_rc" -eq 0 && "$_cls_out" == *"rsync が無いため"* ]]; then
+  ok "振り分け: 理由が rsync 不在の rc=3 は部分 skip の理由を返す（呼び出し元が ○ skip を出せる）"
+else
+  bad "振り分け: rsync 不在の rc=3 が部分 skip にならない (rc=${_cls_rc} out=${_cls_out})"
+fi
+printf '記録された SHA が同期内容と一致しない（退行）\n' >"$_cls_err"
+_cls_rc=0
+classify_src_sha_result 3 "$_cls_err" >/dev/null || _cls_rc=$?
+if [[ "$_cls_rc" -ne 0 ]]; then
+  ok "振り分け: 理由の一致しない rc=3 は退行として扱う（環境都合の skip に化けない）"
+else
+  bad "振り分け: 理由を問わず rc=3 を skip にしている（退行が緑で通る）"
+fi
+_cls_rc=0
+_cls_out="$(classify_src_sha_result 0 "$_cls_err")" || _cls_rc=$?
+if [[ "$_cls_rc" -eq 0 && -z "$_cls_out" ]]; then
+  ok "振り分け: rc=0 は skip でも失敗でもない"
+else
+  bad "振り分け: 成功が skip / 失敗に化けている (rc=${_cls_rc} out=${_cls_out})"
+fi
+rm -f "$_cls_err"
+
+# 環境都合（rsync 不在）と退行を runtime が終了コードで区別し続けること。ここが 1 に
+# 戻ると、rsync の無いホストで「実装が壊れている」と読める赤が出る。不在は PATH を
+# 絞らずシーム（SYNC_SHA_RSYNC_BIN）で作る — PATH を絞る形は fixture が要る実体の
+# 取りこぼしが rsync 不在と区別できない別の失敗に化け、検査が不安定になる。
+_no_rsync_err="$(mktemp "${TMPDIR:-/tmp}/sync-sha-norsync.XXXXXX")"
+_no_rsync_rc=0
+SYNC_SHA_RSYNC_BIN=/nonexistent/ff-rsync-absent \
+  bash "$SCRIPT_DIR/src-sha-runtime.sh" "$SYNC_SCRIPT_UNDER_TEST" "$SKILL" \
+  >/dev/null 2>"$_no_rsync_err" || _no_rsync_rc=$?
+if [[ "$_no_rsync_rc" -eq 3 ]] && grep -q 'rsync がありません' "$_no_rsync_err"; then
+  ok "rsync 不在を専用の終了コード 3 と理由の名指しで返す（退行の非 0 と区別でき、部分 skip へ振り分けられる）"
+else
+  bad "rsync 不在が終了コード 3 + 理由で返らない (rc=${_no_rsync_rc}) — 環境都合と退行が同じ赤に潰れる"
+  sed 's/^/    | /' "$_no_rsync_err" >&2
+fi
+rm -f "$_no_rsync_err"
 
 if bash "$SCRIPT_DIR/reuse-runtime.sh" "$FULL_GATE_REUSE_SCRIPT"; then
   ok "footer-only 判定器（changelog-fragments が使用）が同一 tree / footer-only / fail-closed を区別する"
