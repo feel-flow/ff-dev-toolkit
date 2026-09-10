@@ -1,0 +1,18 @@
+[
+  {
+    "number": 301,
+    "body": "## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 0.71d\n- effort_basis: 下限ちょうど（帯内）\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 302,
+    "body": "## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 1.40d\n- effort_basis: 上限ちょうど（帯内）\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 303,
+    "body": "## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 0.70d\n- effort_basis: 下限のすぐ外\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 304,
+    "body": "## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 1.0d\n- effort_ai_actual: 1.41d\n- effort_basis: 上限のすぐ外\n<!-- ff-effort:end -->\n"
+  }
+]

@@ -1,0 +1,30 @@
+[
+  {
+    "number": 201,
+    "body": "## ジョブストーリー\n\n工数の予定と実績がどこにも残っていない。\n\n### 設計の核心 — データ / パターン / 知見の 3 層分離\n\n| 層 | 置き場所 | 持つもの |\n| --- | --- | --- |\n| データ | GitHub Issue 本文の `ff-effort` ブロック | Issue ごとの予定・実績・根拠 |\n\n## 受け入れ条件（AC）\n\n- [x] **Given** 工数見積もりの材料がある状態 **When** 起票する **Then** 本文に `ff-effort` ブロックが含まれること\n- [x] **Given** `ff-effort` ブロックを持たない Issue **When** クローズ手順を実行する **Then** スキップした旨が報告されること\n- [x] **Given** `ff-effort` のマーカー行より外を変更する本文差分 **When** 差分検査にかける **Then** 拒否されること\n\n### Definition of Done\n\n- [x] 本文テンプレへの `ff-effort` ブロックを追加する\n\n## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 8.0d\n- effort_ai_planned: 1.5d\n- effort_ai_actual: 3.5d\n- effort_basis: ダミー根拠\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 202,
+    "body": "## 本文\n\n<!-- ff-effort:begn -->\n- effort_ai_actual: 1.0d\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 203,
+    "body": "## 本文\n\n  <!-- ff-effort:begin -->\n  - effort_ai_actual: 1.0d\n  <!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 204,
+    "body": "## 本文\n\n<!-- ff-effort:begin --> \n- effort_ai_actual: 9.9d\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 205,
+    "body": "## 本文\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 2.0d\n- effort_ai_planned: 0.5d\n- effort_ai_actual: 0.5d\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 206,
+    "body": "## 本文\n\n<!--ff-effort:begin-->\n- effort_ai_actual: 1.0d\n<!--ff-effort:end-->\n"
+  },
+  {
+    "number": 207,
+    "body": "## 本文\n\n<!-- 注 --> ff-effort ブロックの説明 <!-- /注 -->\n"
+  }
+]

@@ -168,52 +168,51 @@ class RateLimiter {
 **解決策**:
 
 ```typescript
-// リトライ機能付きHTTPクライアント
-class ResilientHttpClient {
-  private async requestWithRetry(
-    url: string,
-    options: RequestInit,
-    maxRetries: number = 3,
-  ): Promise<Response> {
-    for (let i = 0; i < maxRetries; i++) {
-      try {
-        const response = await fetch(url, {
-          ...options,
-          timeout: 5000, // 5秒タイムアウト
+// 再試行は 03-implementation/FALLBACK.md §4 の retryWithBackoff(fn, { operation })
+// に委譲する（実装を複製しない）。再試行可否の判定（transient のみ）・Full Jitter・
+// 試行ごとのログはユーティリティ側が持つ
+const ORDER_SERVICE_TIMEOUT_MS = 5_000;
+
+interface OrderSummary {
+  readonly orderId: string;
+  readonly totalAmount: number;
+}
+
+// baseUrl は設定モジュール / 環境変数から注入する（ここでハードコードしない）
+async function fetchOrderSummary(
+  baseUrl: string,
+  orderId: string,
+): Promise<OrderSummary> {
+  return retryWithBackoff(
+    async () => {
+      const response = await fetch(`${baseUrl}/orders/${orderId}`, {
+        signal: AbortSignal.timeout(ORDER_SERVICE_TIMEOUT_MS),
+      });
+
+      // 4xx / 5xx の切り分けは normalizeExternalError の category に委ねる。
+      // ステータスを落として Error を投げる（あるいは何も投げずに抜ける）と、
+      // すべて transient に化けて 401 / 404 まで再試行される（03-implementation/PATTERNS.md）
+      if (!response.ok) {
+        throw normalizeExternalError({
+          status: response.status,
+          body: await response.text(),
         });
-
-        if (response.ok) {
-          return response;
-        }
-
-        // 4xxエラーはリトライしない
-        if (response.status >= 400 && response.status < 500) {
-          throw new Error(`Client error: ${response.status}`);
-        }
-      } catch (error) {
-        if (i === maxRetries - 1) {
-          throw error;
-        }
-
-        // 指数バックオフでリトライ間隔を調整
-        await this.sleep(Math.pow(2, i) * 1000);
       }
-    }
 
-    throw new Error("Max retries exceeded");
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
+      // TODO: 実装時は Zod 等でランタイム検証する（as は形状を保証しない）
+      return (await response.json()) as OrderSummary;
+    },
+    { operation: "orderService.fetchOrderSummary" },
+  );
 }
 ```
 
 **学んだ教訓**:
 
-- マイクロサービス間通信にはリトライ機能が必須
-- 指数バックオフでリトライ間隔を調整する
-- 4xxエラーはリトライしない
+- マイクロサービス間通信にはリトライ機能が必須。ただし実装は 1 か所（FALLBACK.md §4 の `retryWithBackoff`）に置き、呼び出し側で複製しない
+- 指数バックオフには Jitter を入れる（同時に失敗したクライアントが同じ間隔で再送する thundering herd を避ける）
+- 再試行してよいのは transient（429 / 5xx / 接続断）だけ。401 / 403 / 404 やその他の 4xx 拒否は何度送っても結果が変わらない
+- 失敗経路では必ず正規化済みのエラーを投げる（暗黙に `undefined` を返さない）
 - サーキットブレーカーパターンの導入を検討
 
 ---
@@ -254,7 +253,7 @@ async function processLargeDataset(filePath: string) {
 }
 
 // バッチ処理でメモリ使用量を制御
-async function processInBatches(data: any[], batchSize: number = 1000) {
+async function processInBatches<T>(data: readonly T[], batchSize: number = 1000) {
   for (let i = 0; i < data.length; i += batchSize) {
     const batch = data.slice(i, i + batchSize);
     await processBatch(batch);

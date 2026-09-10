@@ -29,8 +29,11 @@ set -euo pipefail
 # 閾値の正本は skills/close-issue/SKILL.md（工数実績セクションの規則）。
 # ここと skills/retrospective/SKILL.md が複製で、tests/effort-contract が 3 箇所の
 # 一致を機械照合する。変えるときは 3 箇所すべてを同時に直すこと。
-VARIANCE_LOWER="0.77"
-VARIANCE_UPPER="1.30"
+#
+# 2026-09-10 に 3 リポジトリ 78 件で較正した値（旧 0.77 / 1.30 は暫定値）。
+# 上限は母集団の p75 = 1.40、下限はその逆数 1/1.40 = 0.71。導出手順は正本側にある。
+VARIANCE_LOWER="0.71"
+VARIANCE_UPPER="1.40"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -125,6 +128,21 @@ function as_days(s,   v) {
   return v
 }
 
+# マーカー形の行か: 前後の空白を除いた行【全体】が 1 個の HTML コメントで、その中身が
+# ff-effort に言及しているもの。begin / end の綴りは条件に入れない — 綴りずれこそが
+# 検出したい対象で、正しい綴りを要求すると検出力が消える。
+function is_marker_shaped(s,   t) {
+  t = trim(s)
+  if (t !~ /^<!--.*-->$/) return 0
+  # 中身に閉じ区切りが残っていたら、その行にはコメントが 2 個以上ある。
+  # `.*` は貪欲なので `<!-- 注 --> ff-effort の説明 <!-- /注 -->` のような行も
+  # 上の 1 行だけでは通り、コメントの【外】にある散文を疑ってしまう。
+  # 「行全体が 1 個の HTML コメント」まで見る。
+  t = substr(t, 5, length(t) - 7)   # 前後の <!-- と --> を外した中身
+  if (index(t, "-->") > 0) return 0
+  return (t ~ /ff-effort/)
+}
+
 function sort_asc(arr, n,   i, j, t) {
   for (i = 2; i <= n; i++) { t = arr[i]; j = i - 1
     while (j >= 1 && arr[j] > t) { arr[j+1] = arr[j]; j-- }
@@ -135,11 +153,15 @@ function median(arr, n) {
   if (n % 2 == 1) return arr[(n+1)/2]
   return (arr[n/2] + arr[n/2+1]) / 2
 }
-# nearest-rank 方式。小さい N でも定義が一意に定まる
-function p90(arr, n,   idx) {
+# nearest-rank 方式（q は 0〜1、補間しない）。小さい N でも定義が一意に定まる。
+# p10 / p25 / p75 / p90 はすべてこの 1 つの規則で出す。上の median() だけが偶数件で
+# 「上下 2 値の平均」という別の慣習を残しているのは、既存の出力を動かさないため。
+# 帯の較正はこれらを並べて読むので、どの値がどの規則で出たのかを説明できないと
+# 「どの統計量から帯を引いたか」が後から再現できない。
+function pctl(arr, n, q,   idx) {
   sort_asc(arr, n)
-  idx = int(0.9 * n)
-  if (idx < 0.9 * n) idx++
+  idx = int(q * n)
+  if (idx < q * n) idx++
   if (idx < 1) idx = 1
   if (idx > n) idx = n
   return arr[idx]
@@ -168,7 +190,13 @@ FNR == NR { if ($0 != "") { order[++total] = $0 + 0 } ; next }
   # マーカーの綴りずれ・字下げ・行末空白を近傍検出する。両側（書く側・読む側）が
   # 完全一致でしか認識しないため、綴りが 1 文字ずれた Issue は永久に静かに落ちる。
   # 「本当は書いてあるのに読めていない」を名指しできるようにする。
-  if (line ~ /ff-effort/ && inblock[num] != 1) suspect[num] = 1
+  #
+  # 判定はマーカー形の行に限る。ff-effort を含む行をすべて疑うと、ブロックの【外】で
+  # その語そのものを説明している散文・AC・表まで疑われる。そうなると警告を消す唯一の
+  # 手段が「正しい原文からその語を削る」になり、検出器に合わせて本文を劣化させる —
+  # 実測でこの誤検出を 3 回連続で受け取った。マーカー形に限れば、綴りずれ・字下げ・
+  # 行末空白という本来の検出対象は落ちない（いずれも行全体は HTML コメントのままだから）。
+  if (inblock[num] != 1 && is_marker_shaped(line)) suspect[num] = 1
 
   if (inblock[num] != 1) next
 
@@ -197,13 +225,23 @@ END {
   }
 
   noblock = 0; planned_only = 0; malformed = 0; no_hp = 0
-  population = 0; suspect_n = 0
+  population = 0; suspect_n = 0; suspect_kv = ""; suspect_txt = ""
   hp_total = 0; ap_total = 0; aa_total = 0
   pair_n = 0; pair_denom = 0; vn = 0; out_of_band = 0
 
   for (i = 1; i <= total; i++) {
     n = order[i]
-    if (suspect[n]) suspect_n++
+    # 件数だけの警告は読み手が直す対象を特定できない（実測: 同じ 1 行を 3 回受け取り、
+    # 3 回目に全 Issue 本文を総当たりして該当を特定した）。番号を必ず添える。
+    # 件数が多くても切り詰めない — 省略した分は「件数だけの警告」に戻り、落ちた Issue が
+    # そのまま持ち越される。番号は %d で文字列化する（CONVFMT の既定 %.6g は 7 桁以上の
+    # Issue 番号を 1.23457e+06 に化けさせ、名指しが名指しでなくなる）。
+    if (suspect[n]) {
+      suspect_n++
+      ns = sprintf("%d", n)
+      suspect_kv = (suspect_kv == "") ? ns : (suspect_kv "," ns)
+      suspect_txt = (suspect_txt == "") ? ("#" ns) : (suspect_txt ", #" ns)
+    }
 
     if (!hasblock[n]) { noblock++; continue }
     if (broken[n])    { malformed++; continue }
@@ -232,7 +270,12 @@ END {
 
   compression = (pair_n > 0 && pair_denom > 0) ? hp_total / pair_denom : 0
   vmed = (vn > 0) ? median(variances, vn) : 0
-  vp90 = (vn > 0) ? p90(variances, vn) : 0
+  # 帯の較正は p25〜p75（または p10〜p90）を包む乗法対称帯として引く。中央値と p90
+  # だけでは「どこまで広げれば運用上の誤差を帯に入れられるか」が読めない
+  vp10 = (vn > 0) ? pctl(variances, vn, 0.10) : 0
+  vp25 = (vn > 0) ? pctl(variances, vn, 0.25) : 0
+  vp75 = (vn > 0) ? pctl(variances, vn, 0.75) : 0
+  vp90 = (vn > 0) ? pctl(variances, vn, 0.90) : 0
   truncated = (from_gh == 1 && total >= limit + 0) ? 1 : 0
 
   if (format == "kv") {
@@ -249,10 +292,15 @@ END {
     printf "ai_planned_total=%.1f\n", ap_total
     printf "ai_actual_total=%.1f\n", aa_total
     printf "variance_population=%d\n", vn
+    printf "variance_p10=%.2f\n", vp10
+    printf "variance_p25=%.2f\n", vp25
     printf "variance_median=%.2f\n", vmed
+    printf "variance_p75=%.2f\n", vp75
     printf "variance_p90=%.2f\n", vp90
     printf "variance_out_of_band=%d\n", out_of_band
     printf "suspect_marker=%d\n", suspect_n
+    # 0 件でもキーは出す。存在しないキーと空値を消費側に区別させる
+    printf "suspect_marker_issues=%s\n", suspect_kv
     printf "limit_reached=%d\n", truncated
     exit 0
   }
@@ -263,7 +311,7 @@ END {
   printf "除外:           ブロック不在 %d 件 / 予定のみ・実績なし %d 件 / 書式不正 %d 件\n",
          noblock, planned_only, malformed
   if (suspect_n > 0)
-    printf "  ⚠️ ff-effort に似た行があるのにマーカーとして認識されなかった Issue が %d 件あります（綴り・字下げ・行末空白を確認すること）\n", suspect_n
+    printf "  ⚠️ ff-effort に似た行があるのにマーカーとして認識されなかった Issue が %d 件あります: %s（綴り・字下げ・行末空白を確認すること）\n", suspect_n, suspect_txt
   if (truncated)
     printf "  ⚠️ 取得件数が --limit（%d）に達しています。母集団が打ち切られている可能性があります\n", limit
   if (total > 0 && (noblock + planned_only + malformed) * 2 > total)
@@ -283,7 +331,10 @@ END {
   printf "AI 予定合計:    %.1fd\n", ap_total
   printf "AI 実績合計:    %.1fd（母集団全体）\n", aa_total
   if (vn > 0) {
+    printf "p10:            %.2f\n", vp10
+    printf "p25:            %.2f\n", vp25
     printf "中央値:         %.2f\n", vmed
+    printf "p75:            %.2f\n", vp75
     printf "p90:            %.2f\n", vp90
     printf "閾値外（<%s または >%s）: %d 件 / %d 件\n", lower, upper, out_of_band, vn
   } else {

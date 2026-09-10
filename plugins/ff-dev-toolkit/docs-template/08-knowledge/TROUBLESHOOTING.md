@@ -196,7 +196,7 @@
    }
 
    // バッチ処理でメモリ使用量を制御
-   async function processInBatches(data: any[], batchSize: number = 1000) {
+   async function processInBatches<T>(data: readonly T[], batchSize: number = 1000) {
      for (let i = 0; i < data.length; i += batchSize) {
        const batch = data.slice(i, i + batchSize);
        await processBatch(batch);
@@ -243,32 +243,38 @@
 2. **アプリケーション側の対応**:
 
    ```typescript
-   // リトライ機能付きHTTPクライアント
-   class ResilientHttpClient {
-     private async requestWithRetry(
-       url: string,
-       options: RequestInit,
-       maxRetries: number = 3,
-     ): Promise<Response> {
-       for (let i = 0; i < maxRetries; i++) {
-         try {
-           const response = await fetch(url, {
-             ...options,
-             timeout: 5000,
+   // 再試行は 03-implementation/FALLBACK.md §4 の retryWithBackoff(fn, { operation })
+   // に委譲する（実装を複製しない）。再試行可否の判定（transient のみ）・Full Jitter・
+   // 試行ごとのログはユーティリティ側が持つ
+   const EXTERNAL_API_TIMEOUT_MS = 5_000;
+
+   interface ExternalUser {
+     readonly id: string;
+     readonly name: string;
+   }
+
+   async function fetchExternalUser(url: string): Promise<ExternalUser> {
+     return retryWithBackoff(
+       async () => {
+         const response = await fetch(url, {
+           signal: AbortSignal.timeout(EXTERNAL_API_TIMEOUT_MS),
+         });
+
+         // ステータスを落として Error を投げる（あるいは何も投げずに抜ける）と、
+         // normalizeExternalError がすべて transient に化けて 401 / 404 まで
+         // 再試行される。境界では status を持たせて投げる（03-implementation/PATTERNS.md）
+         if (!response.ok) {
+           throw normalizeExternalError({
+             status: response.status,
+             body: await response.text(),
            });
-
-           if (response.ok) {
-             return response;
-           }
-         } catch (error) {
-           if (i === maxRetries - 1) {
-             throw error;
-           }
-
-           await this.sleep(Math.pow(2, i) * 1000);
          }
-       }
-     }
+
+         // TODO: 実装時は Zod 等でランタイム検証する（as は形状を保証しない）
+         return (await response.json()) as ExternalUser;
+       },
+       { operation: "externalApi.fetchUser" },
+     );
    }
    ```
 

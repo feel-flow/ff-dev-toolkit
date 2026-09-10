@@ -71,7 +71,9 @@ sed_i "$CREATE" -e 's/effort_ai_planned/ai_planned/g'
 probe "フィールド名の改名（検査 1）" "$CREATE" "git checkout -- '$CREATE'"
 
 echo "変異 2: close-issue 側だけ閾値を変える"
-sed_i "$CLOSE" -e 's/1\.30/1.50/g'
+# 較正で帯を動かしたらこのアンカーも動かす（旧値のままだと空振りして
+# 「変異が適用されていない」で止まる）
+sed_i "$CLOSE" -e 's/1\.40/1.50/g'
 probe "閾値の片側変更（検査 3）" "$CLOSE" "git checkout -- '$CLOSE'"
 
 echo "変異 3: close-issue の fail-open 記述を削除"
@@ -94,6 +96,14 @@ echo "変異 7: 集計器の p90 を単なる最大値へ置き換える"
 python3 "$MUTDIR/mut-p90.py"
 probe "nearest-rank の退化（検査 4b）" "$REPORT" "git checkout -- '$REPORT'"
 
+echo "変異 7b: 集計器の分位点の切り上げを切り捨てへ戻す"
+python3 "$MUTDIR/mut-percentile-floor.py"
+probe "分位点の切り捨て化（検査 4b の p25 / p75）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 7c: 帯の判定を閉区間から開区間へ変える"
+python3 "$MUTDIR/mut-band-edge.py"
+probe "帯の端の取りこぼし（検査 4e）" "$REPORT" "git checkout -- '$REPORT'"
+
 echo "変異 8: 集計器の単位検査を緩めて時間単位を受理させる"
 python3 "$MUTDIR/mut-unit.py"
 probe "単位契約の緩和（検査 2/4）" "$REPORT" "git checkout -- '$REPORT'"
@@ -101,6 +111,18 @@ probe "単位契約の緩和（検査 2/4）" "$REPORT" "git checkout -- '$REPOR
 echo "変異 9: 集計器の重複キー検出を外す"
 python3 "$MUTDIR/mut-dupkey.py"
 probe "重複キーの last-wins 復活（検査 4）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9b: 集計器の近傍判定をマーカー形の限定から ff-effort を含む全行へ戻す"
+python3 "$MUTDIR/mut-suspect-shape.py"
+probe "散文の誤検出の復活（検査 4d）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9c: 集計器の警告を「件数だけ」へ戻す（名指しを落とす）"
+python3 "$MUTDIR/mut-suspect-names.py"
+probe "該当 Issue の名指しの消失（検査 4d）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9d: 「行全体が 1 個の HTML コメント」の内側ガードを外す"
+python3 "$MUTDIR/mut-suspect-multi.py"
+probe "1 行 2 コメントの取りこぼし（検査 4d）" "$REPORT" "git checkout -- '$REPORT'"
 
 echo "変異 10: 配布テンプレ側の estimation 行だけ削除"
 sed_i "$TMPL" -e '/^| `estimation`/d'

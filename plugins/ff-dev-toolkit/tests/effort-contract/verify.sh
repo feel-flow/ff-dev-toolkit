@@ -84,6 +84,15 @@ out_has() { # <haystack> <needle> <label>
   esac
 }
 
+# 出力の否定側。absent() と同じ理由で外部コマンドを介さない（パイプ下流の grep は
+# SIGPIPE で結果が反転しうるうえ、rc>=2 を ok へ流す形になりやすい）
+out_lacks() { # <haystack> <needle> <label>
+  case "$1" in
+    *"$2"*) bad "$3（混入: $2）" ;;
+    *) ok "$3" ;;
+  esac
+}
+
 for _dep in jq mktemp awk diff cmp; do
   command -v "$_dep" >/dev/null 2>&1 || {
     echo "○ skip: ${_dep} が無いため工数契約の実測ができません"
@@ -97,7 +106,7 @@ done
 
 # fixture の消失を「検査が通った」に化けさせない。判定器は exit 2 を「ファイル不在」と
 # 「マーカー構成の破損」の両方に使うため、期待値 2 の検査は fixture が消えても通る。
-for _x in issues.json percentile.json body-base.md body-checkbox.md body-block.md \
+for _x in issues.json percentile.json suspect.json band-edge.json body-base.md body-checkbox.md body-block.md \
           body-both.md body-outside.md body-marker-removed.md body-collision-base.md \
           body-collision-new.md body-reversed-base.md body-reversed-new.md body-unclosed.md; do
   [ -f "$FIX/$_x" ] || { echo "✗ fixture が見つかりません: $FIX/$_x" >&2; exit 1; }
@@ -147,13 +156,23 @@ contains "$REPORT" '^[0-9]+(\.[0-9]+)?d$' "effort-report.sh: 単位 d のみを�
 # 文字列の存在だけでなく、実際に h が拒否されることを behavioral に見る（検査 4 の fixture）
 
 echo "検査 3: 閾値定数が 3 箇所で一致する"
+# 値は 2026-09-10 に 3 リポジトリ 78 件で較正したもの（旧 0.77 / 1.30 は暫定値）。
+# 較正のたびにここも動く。動かし忘れると 3 箇所一致が崩れて赤になる（それが狙い）。
 for _f in "$CLOSE" "$RETRO" "$REPORT"; do
   _n="$(basename "$(dirname "$_f")")"
-  contains "$_f" "0.77" "${_n}: 下限 0.77"
-  contains "$_f" "1.30" "${_n}: 上限 1.30"
+  contains "$_f" "0.71" "${_n}: 下限 0.71"
+  contains "$_f" "1.40" "${_n}: 上限 1.40"
 done
-contains "$CLOSE" '1/1.30' "close-issue: 0.77 が 1/1.30 の丸め（乗法的対称）である導出"
+contains "$CLOSE" '1/1.40' "close-issue: 0.71 が 1/1.40 の丸め（乗法的対称）である導出"
 contains "$RETRO" "3 箇所" "retrospective: 複製先が 3 箇所であることを明示"
+
+echo "検査 3c: 較正手順が再現できる形で書かれている"
+# 帯を「実測分布から導出した」と書くだけでは、次の較正で同じ値が引けない。
+# どの統計量から引くか・母集団の条件・次の発火条件の 3 つが揃って初めて手順になる。
+contains "$CLOSE" "p25" "close-issue: 帯の導出に使う分位点（p25）を名指ししている"
+contains "$CLOSE" "p75" "close-issue: 帯の導出に使う分位点（p75）を名指ししている"
+contains "$CLOSE" "variance_population" "close-issue: 較正母集団を集計器のキーで定義している"
+contains "$RETRO" "再較正" "retrospective: 次の再較正の発火条件がある"
 
 echo "検査 3b: 集計器に到達できる経路がある"
 # 呼び出し元が無ければ「記録するだけで参照されない層」になる。実行手順を持つ
@@ -179,20 +198,57 @@ else
   out_has "$KV" "compression_denominator=6.3"  "対の AI 実績 6.3d"
   out_has "$KV" "compression_ratio=3.81"       "圧縮率 24.0/6.3 = 3.81"
   out_has "$KV" "variance_median=1.25"         "乖離率 中央値 1.25（奇数件・丸めのタイに乗らない）"
-  out_has "$KV" "variance_out_of_band=2"       "閾値外 2 件（1.30 ちょうどは帯内）"
+  out_has "$KV" "variance_out_of_band=2"       "閾値外 2 件（0.50 と 2.00 のみ）"
   out_has "$KV" "suspect_marker=1"             "マーカー綴りずれの近傍検出 1 件"
 fi
 
-echo "検査 4b: nearest-rank の p90 が最大値と区別される（behavioral）"
+echo "検査 4b: nearest-rank の分位点が最大値・中央値と区別される（behavioral）"
 # n=4 や n=5 では ceil(0.9n) == n となり、p90 を単なる max に置き換えても通る。
 # n=10（idx=9）でのみ、nearest-rank であることが実証できる。
+#
+# p10 / p25 / p75 は帯の較正に使う統計量（close-issue の較正手順が名指ししている）。
+# 出力が消えると較正手順が「実行できない手順」になるが、帯の 3 箇所一致（検査 3）は
+# 緑のままなので気づけない。分位点の【存在】と【切り上げ規則】の両方をここで固定する。
+# fixture は 0.1〜0.9 + 外れ値 5.0 の 10 件で、切り上げを落とすと p25 が 0.20、
+# p75 が 0.70 へずれる（p10 / p90 は ceil と floor が一致するのでずれない）。
 PKV="$(bash "$REPORT" --input "$FIX/percentile.json" --format kv 2>&1)"
 if [ $? -ne 0 ]; then
   bad "percentile fixture で集計器が異常終了した: ${PKV}"
 else
   out_has "$PKV" "variance_population=10" "percentile fixture は 10 件"
-  out_has "$PKV" "variance_p90=0.90"      "p90 は 9 番目の 0.90（最大値 5.00 ではない）"
+  out_has "$PKV" "variance_p10=0.10"      "p10 は 1 番目の 0.10"
+  out_has "$PKV" "variance_p25=0.30"      "p25 は ceil(2.5)=3 番目の 0.30（切り捨ての 0.20 ではない）"
   out_has "$PKV" "variance_median=0.55"   "中央値 (0.5+0.6)/2 = 0.55"
+  out_has "$PKV" "variance_p75=0.80"      "p75 は ceil(7.5)=8 番目の 0.80（切り捨ての 0.70 ではない）"
+  out_has "$PKV" "variance_p90=0.90"      "p90 は 9 番目の 0.90（最大値 5.00 ではない）"
+fi
+PTXT="$(bash "$REPORT" --input "$FIX/percentile.json" 2>&1)"
+if [ $? -ne 0 ]; then
+  bad "percentile fixture の text 形式で集計器が異常終了した: ${PTXT}"
+else
+  # 較正手順を実行する人が読むのは既定の text 形式。kv だけに出しても手順は回らない。
+  # ラベルの存在だけを見ると、printf の引数を取り違えて p25 の位置へ p75 の値を出しても
+  # 通ってしまう（kv 側は正しいままなので検査 4b の kv 検査でも気づけない）。値まで見る。
+  # 桁揃えの空白幅に依存しないよう、連続する空白を 1 個へ潰してから照合する。
+  PTXT_1="$(printf '%s' "$PTXT" | tr -s ' ')"
+  out_has "$PTXT_1" "p10: 0.10"    "text 形式の p10 が 0.10"
+  out_has "$PTXT_1" "p25: 0.30"    "text 形式の p25 が 0.30"
+  out_has "$PTXT_1" "中央値: 0.55" "text 形式の中央値が 0.55"
+  out_has "$PTXT_1" "p75: 0.80"    "text 形式の p75 が 0.80"
+  out_has "$PTXT_1" "p90: 0.90"    "text 形式の p90 が 0.90"
+fi
+
+echo "検査 4e: 帯の端ちょうどは帯内に数える（behavioral）"
+# 帯の端が開区間になると、較正で決めた下限・上限そのものを持つ Issue が「閾値外」と
+# 報告される。fixture は下限ちょうど 0.71 / 上限ちょうど 1.40 / そのすぐ外 0.70 / 1.41 の
+# 4 件で、閾値外は 2 件でなければならない。較正で帯を動かしたらこの fixture も動かす
+# （動かし忘れは赤で出る — 端の値が帯の外へ落ちるため）。
+BKV="$(bash "$REPORT" --input "$FIX/band-edge.json" --format kv 2>&1)"
+if [ $? -ne 0 ]; then
+  bad "band-edge fixture で集計器が異常終了した: ${BKV}"
+else
+  out_has "$BKV" "variance_population=4"  "band-edge fixture は 4 件"
+  out_has "$BKV" "variance_out_of_band=2" "端ちょうど（0.71 / 1.40）は帯内、そのすぐ外（0.70 / 1.41）だけが閾値外"
 fi
 
 echo "検査 4c: 既定の出力形式（text）が実行できる"
@@ -203,6 +259,36 @@ else
   out_has "$TXT" "圧縮率:         3.81 倍" "text 形式の圧縮率が kv と一致"
   out_has "$TXT" "除外が過半を占めます"     "除外が過半のときの警告が出る"
   out_has "$TXT" "綴り・字下げ・行末空白"   "マーカー綴りずれの警告が出る"
+fi
+
+echo "検査 4d: suspect の近傍検出がマーカー形の行に限る + 該当 Issue を名指しする（behavioral）"
+# 件数だけの警告は「読み手が直す対象を特定できない」ため、実測で 3 回連続同じ警告を
+# 受け取っても直せなかった。逆に ff-effort を含む行をすべて疑うと、ブロックの外で
+# その語を説明している散文・AC・表を持つ Issue（工数 KPI 計測基盤そのものの Issue が
+# 実例）が疑われ、警告を消す唯一の手段が「正しい原文からその語を削る」になる。
+# 両側を 1 つの fixture で同時に固定する: 名指しが出ること / 散文だけの言及は数えないこと。
+SKV="$(bash "$REPORT" --input "$FIX/suspect.json" --format kv 2>&1)"
+if [ $? -ne 0 ]; then
+  bad "suspect fixture で集計器が異常終了した: ${SKV}"
+else
+  out_has  "$SKV" "suspect_marker=4"     "マーカー形の 4 件だけを疑う（綴りずれ・字下げ・行末空白・空白落ち）"
+  # 末尾の改行まで含めて照合する。改行が無いと `…,206` は `…,206,207` にも一致し、
+  # 疑いが 1 件増える退行を「列挙が正しい」と読んでしまう
+  out_has  "$SKV" $'suspect_marker_issues=202,203,204,206\n' "疑わしい Issue 番号を機械可読に列挙する（列挙はこの 4 件で終わる）"
+  out_lacks "$SKV" "suspect_marker=5"    "散文・AC・表での言及を suspect に数えない"
+  # 誤検出を消すために block の解釈まで壊していないこと。散文で言及している Issue も
+  # 正しいブロックを持つなら通常どおり母集団に入る（#201 + #205 の 2 件）
+  out_has  "$SKV" "population=2"         "散文で言及している Issue のブロックは通常どおり集計される"
+fi
+STXT="$(bash "$REPORT" --input "$FIX/suspect.json" 2>&1)"
+if [ $? -ne 0 ]; then
+  bad "suspect fixture の text 形式で集計器が異常終了した: ${STXT}"
+else
+  # 閉じ括弧まで含めて照合する（列挙がこの 4 件で終わることを固定する）
+  out_has   "$STXT" "4 件あります: #202, #203, #204, #206（" "警告が件数だけでなく該当 Issue 番号を列挙する"
+  out_lacks "$STXT" "#201" "散文で ff-effort に言及しているだけの Issue が名指しに現れない"
+  out_lacks "$STXT" "#205" "正しく書けている Issue が名指しに現れない"
+  out_lacks "$STXT" "#207" "1 行に 2 個以上のコメントがある行（間の散文の言及）を名指ししない"
 fi
 
 echo "検査 5: close-issue はブロック不在で fail-open する"
