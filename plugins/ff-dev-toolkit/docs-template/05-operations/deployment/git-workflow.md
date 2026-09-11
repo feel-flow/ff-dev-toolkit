@@ -972,6 +972,11 @@ checks が無いと判った場合はローカル全件ゲート + 鮮度照合�
 ```bash
 # 実測対象は自己申告ではなく記録から取る。記録はゲートの通過時に書かれる
 # （プロジェクトの検証スイートから scripts/record-gate-head.sh を呼ぶ）
+# 消費側の hook / スイートが record-gate-head.sh を解決するときは sidecar を直接読まず、
+# 配置済みシムの `bash scripts/codex-review.sh --print-toolkit-root` を使う
+# （multi-cli-review-orchestration.md「消費側の hook / ゲートから toolkit のスクリプトを解決する」）。
+# 直下の check-merge-freshness.sh は root 照合ガードの対象なので、こちらは従来どおり
+# FF_DEV_TOOLKIT_ROOT の同一行 handoff で呼ぶ（別経路であって置き換えではない）
 FRESH_OUT="$(FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-merge-freshness.sh" \
   --remote-head "$(gh pr view "${PR_NUMBER}" --json headRefOid --jq .headRefOid)" \
   --fetch)"

@@ -876,6 +876,18 @@ else
   tail -20 "$SANDBOX_LOG" | sed 's/^/    | /' >&2
 fi
 
+# 固定するのは「今回だけ（--cli / --exclude-cli）」と「恒久（config の exclude_clis）」の
+# 両導線、CLI 名を埋めた設定行、既存キーへの追記案内（キーを増やさない）の 4 点。
+if grep -q -- '今回だけ: 走らせたい CLI を --cli で明示するか、外す方を --exclude-cli grok-cli で名指しする' "$SANDBOX_LOG" \
+  && grep -q '\.claude/agent-config\.yaml' "$SANDBOX_LOG" \
+  && grep -q 'exclude_clis: "grok-cli"' "$SANDBOX_LOG" \
+  && grep -q 'キーを増やさず、同じ 1 文字列へ空白区切りで足す' "$SANDBOX_LOG"; then
+  ok "警告が今回だけ（--cli / --exclude-cli）/ 恒久（exclude_clis の設定行 + 既存キーへの追記案内）の両導線を出す"
+else
+  bad "警告の導線が不足（--exclude-cli grok-cli / exclude_clis: \"grok-cli\" / .claude/agent-config.yaml / 追記案内のいずれか）"
+  tail -20 "$SANDBOX_LOG" | sed 's/^/    | /' >&2
+fi
+
 # 表示位置は「CLI 一覧の後ろのブロック」ではなく**その CLI の行の直下**。
 # grok-cli の項目より前に警告が出ていたり、別 CLI の項目を挟んだ後ろに出ていたら
 # 「どの行の話か」が読み手に伝わらない。行番号で固定する。

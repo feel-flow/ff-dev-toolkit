@@ -2189,7 +2189,23 @@ warn_unappliable_sandbox() {
     echo "         結果は INCOMPLETE として報告されます。" >&2
   fi
   echo "         プランからは外しません（実行時の失敗を別モデルへ振り替えない方針のため）。" >&2
-  echo "         この実行から外すなら、走らせたい CLI を --cli で明示してください。" >&2
+  # 外す手段は「今回だけ」と「恒久」の 2 択を**ここで**示す。--cli の明示だけを案内すると、
+  # probe が「時間で復帰しない」と判定した失敗に対して毎回同じ手動除外を要求することになり、
+  # 既存の恒久策（config の exclude_clis）に利用者が到達できない。--exclude-cli はその 1 回の
+  # 引数なので「今回だけ」側（--cli と --exclude-cli の同時指定は拒否されるため、設定由来の
+  # 除外だけが --cli で 1 回だけ戻せる）。設定行は CLI 名を埋めた形で印字し、コピーで済ませる。
+  # exclude_clis は 1 文字列 1 キーなので、既にある場合は「行を足す」ではなく「値へ足す」。
+  echo "         この実行から外すなら 2 択です:" >&2
+  echo "           今回だけ: 走らせたい CLI を --cli で明示するか、外す方を --exclude-cli ${cli} で名指しする" >&2
+  echo "                     （どちらもその 1 回の引数。次回省けば同じ警告が出ます）" >&2
+  echo "           恒久:     この機械で毎回同じなら、上の Config: に表示された設定ファイル" >&2
+  echo "                     （通常はプロジェクトの .claude/agent-config.yaml。plugin default と出ているなら" >&2
+  echo "                     同梱の agent-config.yaml をそこへ写して作る。読み取りに yq が必要）に" >&2
+  echo "                     次の 1 行を置く（以後の実行すべてから外れる。--cli ${cli} で 1 回だけ戻せる）:" >&2
+  echo "                       exclude_clis: \"${cli}\"" >&2
+  echo "                     既に exclude_clis があるならキーを増やさず、同じ 1 文字列へ空白区切りで足す" >&2
+  echo "                     （例: exclude_clis: \"codex-cli ${cli}\"）。リポジトリへ commit すると" >&2
+  echo "                     プロジェクト全員に効くので、この機械だけなら MULTI_AGENT_CONFIG で別ファイルを指す。" >&2
   echo "         検査対象は sandbox の適用可否だけです（認証・残高は probe しません）。" >&2
   return 0
 }

@@ -56,6 +56,7 @@
 #                                [--list-reviewers] [--review-context-file <path>]
 #                                [--timeout <秒>] [--mode <mode>] [--dry-run]
 #                                [--fresh] [--resume]
+#   bash scripts/codex-review.sh --print-toolkit-root[=root|kv]
 #
 #   SKIP_CODEX_REVIEW=1  レビューを実行せず成功終了する（pre-commit の逃がし弁）
 #
@@ -86,6 +87,28 @@
 #     CODEX_MODEL             → MULTI_AGENT_MODEL_CODEX_CLI
 #     CODEX_DEFAULT_REVIEWERS → 既定の観点（--reviewers 明示時はそちらが優先）
 #     CODEX_REASONING_EFFORT  → MULTI_AGENT_CODEX_REASONING_EFFORT
+#
+# ## 解決結果だけを出す契約（--print-toolkit-root）
+#
+#   消費側の hook / ゲートが toolkit の**別のスクリプト**（record-gate-head.sh 等）を
+#   呼ぶとき、以前はサイドカー（scripts/.ff-dev-toolkit-root）を自前で読むしかなかった。
+#   サイドカーは版ディレクトリの絶対パスを焼き込むので plugin 更新のたびに stale になり、
+#   導入先では「ゲートは緑・記録だけが黙って止まる」形で 2 回観測された。このモードは
+#   下の resolve_toolkit を load_resolved_toolkit 経由で**そのまま**使い（解決順も診断も
+#   fail closed も同じ。別実装を持たない）、
+#   解決したプラグインルートを stdout へ 1 行だけ出す。
+#
+#     root="$(bash scripts/codex-review.sh --print-toolkit-root)"   # 既定（=root と同じ）
+#     bash scripts/codex-review.sh --print-toolkit-root=kv          # root= / version= / source= の 3 行
+#
+#   終了コード: 0 = 解決 / 1 = どこにも無い（stdout 空）/ 2 = 解決を拒否（stdout 空）。
+#   2 は「FF_DEV_TOOLKIT_ROOT が不正」だけではない — 配置済みシムと解決先テンプレートの
+#   版不整合、plugin version と agent-config.yaml の不一致、sidecar が指す先の version が
+#   読めない場合も 2 で、env を設定していない cache 経路でも起きる（理由は stderr に出る）。
+#   どれも別候補へ落ちない（既存の fail closed と同じ）。
+#   stdout は契約、stderr（ℹ️ の診断行を含む）は契約ではない — 消費側は stdout だけを読む。
+#   レビュー系オプションとの併用は拒否する（黙って片方を捨てない）。SKIP_CODEX_REVIEW は
+#   レビューの逃がし弁であって解決の逃がし弁ではないので、このモードには効かない。
 # ============================================================================
 
 set -euo pipefail
@@ -472,6 +495,14 @@ ${SCRIPT_NAME} — Codex cross-model レビュー（multi-agent.sh への薄い�
                         観点をカンマ区切りで除外（--exclude-perspective へ展開される）
   --exclude-cli <name>  その CLI をプランから外す（繰り返し可。--exclude-cli へ透過）
   --list-reviewers      利用できる review 観点を一覧表示する
+  --print-toolkit-root[=root|kv]
+                        レビューせず、解決した ff-dev-toolkit のプラグインルートを
+                        stdout へ 1 行で出して終わる（消費側の hook / ゲートが
+                        サイドカーを直接読まずに toolkit の任意スクリプトを解決する
+                        ための契約。解決順・fail closed はレビュー時と同じ）。
+                        =kv は root= / version= / source= の 3 行。レビュー系オプションと排他。
+                        終了コード: 0=解決 / 1=見つからない（stdout 空）/ 2=解決を拒否
+                        （FF_DEV_TOOLKIT_ROOT が不正・配置済みシムとの版不整合など。stdout 空）
   --review-context-file <path>
                         前回レビューと通過済みゲートの証拠を review prompt へ渡す。
                         acceptance-criteria 観点向けに Issue / PR 本文の AC 記載を
@@ -538,6 +569,8 @@ ALL_PERSPECTIVES_GIVEN=0
 MODE_VALUE=""
 TIMEOUT_GIVEN=0
 LIST_ONLY=0
+# --print-toolkit-root。値は出力形式（root | kv）。空 = 指定なし。
+PRINT_ROOT_FORMAT=""
 # diff サイズの歯止めを測るための基準。--base が明示されたときだけ埋まる。
 BASE_FOR_SIZE=""
 STAGED_GIVEN=0
@@ -697,6 +730,24 @@ while [ $# -gt 0 ]; do
       ALL_PERSPECTIVES_GIVEN=1
       shift
       ;;
+    --print-toolkit-root|--print-toolkit-root=*)
+      # 解決結果だけを出す契約（ヘッダの「解決結果だけを出す契約」参照）。形式は
+      # root（既定）と kv の 2 つだけ。未知の形式を既定へ落とすと、消費側は
+      # 「kv を指定したつもり」のまま 1 行を受け取り、パースが黙って空振りする。
+      if [ "$1" = "--print-toolkit-root" ]; then
+        _val="root"
+      else
+        _val="${1#*=}"
+      fi
+      case "$_val" in
+        root|kv) PRINT_ROOT_FORMAT="$_val" ;;
+        *)
+          echo "ERROR: --print-toolkit-root の形式 '${_val}' は受け付けません（root | kv）。" >&2
+          exit 2
+          ;;
+      esac
+      shift
+      ;;
     --list-reviewers)
       # 一覧はレジストリ（perspectives/<task>/*.md）が持つ。シムが独自の表を持つと、
       # 観点ファイルを足したときにシムだけ古くなる。委譲して出させる。
@@ -771,6 +822,14 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     --help|-h)
+      # --print-toolkit-root の後ろに --help が来た形は拒否する。素通しすると usage を
+      # stderr へ出して exit 0・stdout 空になり、`root="$(... --print-toolkit-root)"` の
+      # 消費側が「解決に成功して root が空」と読む唯一の経路になる。--help が先に来た形は
+      # 従来どおり usage で終わる（--help は最初に見えた時点で他を見ずに終わる契約）。
+      if [ -n "$PRINT_ROOT_FORMAT" ]; then
+        echo "ERROR: --print-toolkit-root は --help と同時に指定できません。" >&2
+        exit 2
+      fi
       usage
       exit 0
       ;;
@@ -810,6 +869,38 @@ if [ "$ALL_PERSPECTIVES_GIVEN" -eq 1 ] && [ "$MODE_VALUE" = "cross-model" ]; the
   echo "       cross-model は観点を 1 つに絞るモードで、全観点の復旧レビューになりません。" >&2
   echo "       復旧するなら --mode distributed を使うか、--mode を外してください。" >&2
   exit 2
+fi
+
+# ── 解決結果だけを出す経路（--print-toolkit-root） ─────────────────────────────
+# レビュー系の指定と同時に来たら拒否する。黙ってレビューを捨てると「--base を渡した
+# のにレビューが走らない」、黙って出力を捨てると「root を受け取れない」のどちらかが
+# 無言で起き、消費側の hook はどちらも成果物から判別できない。
+# 判定は「委譲 argv が固定の 4 要素（--task review --cli codex-cli）から増えていない
+# こと」と、委譲 argv を経由しないフラグ（--list-reviewers / --all-perspectives）の
+# 不在で行う。**委譲 argv を経由しないフラグを足したら、この条件へも列挙すること** —
+# 忘れると新フラグとの併用が黙って素通りし、テストも緑のまま通る（tests/review-wrapper-shim
+# の併用ケースは既知のフラグしか回さない）。
+if [ -n "$PRINT_ROOT_FORMAT" ]; then
+  if [ "${#ORCH_ARGS[@]}" -ne 4 ] || [ "$LIST_ONLY" -eq 1 ] || [ "$ALL_PERSPECTIVES_GIVEN" -eq 1 ]; then
+    echo "ERROR: --print-toolkit-root はレビュー系のオプションと同時に指定できません。" >&2
+    echo "       解決結果を得るときは単独で実行してください: bash ${SCRIPT_NAME} --print-toolkit-root" >&2
+    exit 2
+  fi
+  # 解決は委譲時と同じ関数（診断も同じ。ERROR / ℹ️ はすべて stderr）。rc は
+  # 0 = 解決 / 1 = 無い / 2 = 明示指定が不正 をそのまま返す。stdout は解決したときだけ書く。
+  _resolve_rc=0
+  load_resolved_toolkit || _resolve_rc=$?
+  [ "$_resolve_rc" -eq 0 ] || exit "$_resolve_rc"
+  case "$PRINT_ROOT_FORMAT" in
+    kv)
+      printf 'root=%s\nversion=%s\nsource=%s\n' \
+        "$RESOLVED_TOOLKIT_ROOT" "$RESOLVED_TOOLKIT_VERSION" "$RESOLVED_TOOLKIT_SOURCE"
+      ;;
+    *)
+      printf '%s\n' "$RESOLVED_TOOLKIT_ROOT"
+      ;;
+  esac
+  exit 0
 fi
 
 # ── 逃がし弁 ────────────────────────────────────────────────────────────────────

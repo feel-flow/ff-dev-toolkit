@@ -37,6 +37,8 @@ handoff の producer は skill を実行する AI host である。Claude Code �
 
 このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowが `FF_DEV_TOOLKIT_ROOT` 経由で起動する同梱scriptである。後者は `check-closing-keywords.sh`（Issueクローズキーワードの手動検査）に加え、`check-merge-freshness.sh`（マージ前の鮮度検査）・`update-version-claim.sh` / `check-version-claims.sh`（version claimの生成と検証）を含む。呼び出す側の案内だけが増えて対象の列挙が追従しない状態を作らないため、Git Workflowから同梱scriptを新たに呼ぶときはこの列挙も同時に更新する。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は Codex cache → Claude cache の semantic version 最大を sidecar より先に選ぶ（Issue #623 の互換動作）。そのため plugin 更新直後は、端末の互換シムが新 cache、pre-push が更新前の sidecar を使う状態がある。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
 
+消費側の hook / ゲートが toolkit の**別のスクリプト**（`record-gate-head.sh` など）を呼ぶときは、sidecar を自前で読まず、シムの `--print-toolkit-root` で同じ解決器を使う（下の「消費側の hook / ゲートから toolkit のスクリプトを解決する」）。
+
 固定 root 経由で同梱 script を起動する実行部は、`FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh"` のように **handoff の代入を実行部と同じ 1 行へ載せる**。host は plugin root を Bash tool の環境変数として渡さず、実行部のテキストへ解決済みの絶対 path を差し込むだけなので、handoff を運ぶのが上の resolver 本文だけだと、「本文が劣化して届かなかった」ちょうどそのときに handoff も一緒に消える。script 側の root ガードは 「handoff が 1 つも無い直接起動」を不一致とみなさない（みなすと端末・テスト・pin した CI の正規な直接起動が全部止まる）ので、その経路では素通しになる。代入が同じ行に居れば、**実行するスクリプトの path だけを別のインストール領域へ書き換える**操作が、その行の中の不一致として検出される。固定 root 経由の path を変数へ受けてから起動する形（`JUDGE="${FF_DEV_TOOLKIT_ROOT}/scripts/…"` → `bash "$JUDGE"`）も、起動する行の側へ代入を置く。この形と、script 側ガードの複製・配置・中断コード・実際の停止は `tests/plugin-root-contract` が固定する。
 
 ```bash
@@ -682,6 +684,34 @@ echo "✅ レビュー完了。出力先: $FF_REVIEW_OUTPUT"
 - 名簿は「格下げする観点」の列挙（denylist）です。載っていない観点 — 将来追加される観点や名簿の typo を含む — は従来どおりブロックします（fail closed）
 - 上書きは env `MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES`（空白またはカンマ区切り。**空文字の明示指定 = 全観点ブロック（旧挙動）**）> プロジェクト設定 `.claude/agent-config.yaml` の `review.critical_nonblock_perspectives`（1 文字列）> 既定、の順で解決されます
 - ゲート側の判定は**マーカー全文**の固定文字列一致（`grep -qF -- '<!-- CRITICAL_BLOCK -->'`、上のゲート例）が正です。裸の `CRITICAL_BLOCK` への部分一致は使わないでください — 連結されるレビュー本文には Verdict 語彙やマーカーの引用として同じ文字列が現れうるため、非ブロック観点だけの実行でも誤発火します。なお本文がマーカー行そのものを逐語で引用した場合は全文一致でも発火します（誤ブロック側 = 安全側の残余）。`CRITICAL_NONBLOCK` のマーカー名・注記本文はどちらの判定式にも掛からない形が保たれており、`tests/multi-agent-critical-marker/` が固定しています
+
+### 消費側の hook / ゲートから toolkit のスクリプトを解決する（`--print-toolkit-root`）
+
+上の pre-push 例は review 系 3 resource だけを固定版で呼ぶ、無人の厳格なゲートである。これとは別に、消費プロジェクトの hook / 検証スイートが toolkit の**別のスクリプト**（鮮度ゲートの記録を書く `record-gate-head.sh` など）を呼ぶ場面がある。そこで上の例の sidecar 読み込みブロックをコピーしてはならない。sidecar（`scripts/.ff-dev-toolkit-root`）は版ディレクトリの絶対 path を焼き込むため、plugin 更新で旧版のディレクトリが消えると、hook は消えた版を指したまま起動を続ける。呼び出し先が無いので記録だけが黙って止まり、ゲートは緑のまま `/close-issue` の鮮度照合が判定不能になる（実際に 2 回観測された事象）。setup の再実行で直るが、**plugin 更新のたびに再実行が要る構造**そのものは残る。
+
+配置済みの `scripts/codex-review.sh`（シム）は `--print-toolkit-root` で解決結果だけを返す。解決順と fail closed はレビュー時と**完全に同じ**（`FF_DEV_TOOLKIT_ROOT` → Codex / Claude plugin cache の semantic version 最大 → sidecar。別実装ではなく同じ関数を通る）で、stdout には解決したプラグインルートが 1 行だけ出る。`ℹ️ ff-dev-toolkit version=… source=… root=…` は stderr の診断行であり、消費側がパースする契約ではない。
+
+```sh
+# 消費プロジェクトの hook / 検証スイートから toolkit のスクリプトを解決する例
+# （sidecar を直接読まない。解決はシムに委ね、stdout の 1 行だけを使う）
+# シムは $0 の位置で sidecar と配置済みテンプレートを突き合わせるため、配置先（リポジトリ
+# ルート）基準の path で起動する。cwd がサブディレクトリの検証スイートから相対 path で呼ぶと
+# 「版が一致しません」（rc=2）という cwd 問題とは読めない形で落ちる。
+if ! toolkit_root="$(bash "$(git rev-parse --show-toplevel)/scripts/codex-review.sh" --print-toolkit-root)"; then
+  # 1 = どこにも無い / 2 = 解決を拒否（FF_DEV_TOOLKIT_ROOT が不正、配置済みシムとの版不整合 など）。
+  # どちらも「解決できたことにして進む」経路を持たない（fail closed）。診断は stderr に出ている。
+  echo "ff-dev-toolkit を解決できません。setup-multi-agent.sh を再実行してください" >&2
+  exit 2
+fi
+bash "${toolkit_root}/scripts/record-gate-head.sh" "$@"
+```
+
+- **終了コードを必ず見る。** 0 = 解決（stdout 1 行）/ 1 = どこにも無い（stdout 空）/ 2 = 解決を拒否（stdout 空。`FF_DEV_TOOLKIT_ROOT` が不正のほか、配置済みシムと解決先テンプレートの版不整合や plugin version と `agent-config.yaml` の不一致でも 2 になり、env を設定していない cache 経路でも起きる。理由は stderr に出る）。どれも別候補へ落ちない（既存の fail closed と同じ）。stdout は非 0 のとき常に空なので、値の有無だけでも「進んでしまう」ことはないが、rc を見るのは原因（不在 / 拒否）を分けて案内するため — 2 を「env の指定ミス」と決め打ちした案内は、plugin 更新後の版不整合で利用者を存在しない設定ミスへ誘導する
+- version / source も要る場合は `--print-toolkit-root=kv`（`root=` / `version=` / `source=` の 3 行）を使う。形式はこの 2 つだけで、未知の形式は既定へ落ちず exit 2 になる
+- レビュー系のオプション（`--base` / `--reviewers` / `--dry-run` など）および `--help` とは排他で、併用は exit 2（`--help` を先に置いた形は従来どおり usage で終わる）。`SKIP_CODEX_REVIEW=1` はレビューの逃がし弁であって解決の逃がし弁ではないので、このモードには効かない
+- `FF_DEV_TOOLKIT_ROOT` が既に環境にある呼び出し（skill 経由の handoff など）では、シムもその値を明示指定として使う。hook 側で別の値を上書きする必要はない
+- 例が解決結果を `toolkit_root` というローカル変数で受けているのは意図的である。`FF_DEV_TOOLKIT_ROOT` は host が skill へ渡す handoff の名前で、その名前で `${FF_DEV_TOOLKIT_ROOT}/scripts/<名>.sh` と書いた script は script 側の root 照合ガードを持つ母集団に入る（`tests/plugin-root-contract` が固定する）。この節が扱うのは、その母集団に入っていない補助スクリプトを消費側の hook が呼ぶ経路であり、handoff の契約を別名で迂回する意図ではない。同じ hook から review 系 resource も呼ぶなら、その呼び出しは上の pre-push 例と同じ正準形（`FF_DEV_TOOLKIT_ROOT` の同一行 handoff）で書く
+- pre-push 例の「別 version を自動選択せず status 2 で止める」固定版運用は、review 系 3 resource に対する意図的な選択であり、この節で置き換えるものではない。上の例をコピーして別スクリプトへ流用する — sidecar の版固定を hook の外へ広げる — ことだけを避ける
 
 ### fix ループの部分再検証（--reviewers 限定再実行）
 

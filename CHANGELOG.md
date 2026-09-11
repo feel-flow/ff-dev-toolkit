@@ -20,6 +20,16 @@
 
 ## [Unreleased]
 
+## [0.102.0] - 2026-09-11
+
+### 追加
+
+- `scripts/templates/codex-review.sh`（配置済みシム）に `--print-toolkit-root[=root|kv]` を追加。レビューを実行せず、レビュー時と同じ解決順（`FF_DEV_TOOLKIT_ROOT` → Codex / Claude plugin cache の semantic version 最大 → sidecar）と fail closed で解決した ff-dev-toolkit のプラグインルートを stdout へ 1 行だけ出す（`=kv` は `root=` / `version=` / `source=` の 3 行）。終了コードは 0 = 解決 / 1 = どこにも無い（stdout 空）/ 2 = 解決を拒否（stdout 空。`FF_DEV_TOOLKIT_ROOT` が不正のほか、配置済みシムとの版不整合や plugin version と `agent-config.yaml` の不一致でも 2。どれも別候補へ落ちない）。消費側の hook / ゲートは sidecar（`scripts/.ff-dev-toolkit-root`）を自前で読まずに `root="$(bash scripts/codex-review.sh --print-toolkit-root)"` で toolkit の任意スクリプトを解決でき、plugin 更新のたびに sidecar が消えた版を指したまま記録だけが黙って止まる事象を構造的に避けられる。`docs-template` の Multi-CLI Review Orchestration に消費側向けの手順を追加し、`tests/review-wrapper-shim` が stale sidecar + cache 最大版の同居・不正な明示指定・未解決の 3 経路に加え、`=kv` 形式・未知形式の拒否・レビュー系オプションおよび `--help` との排他・`SKIP_CODEX_REVIEW` 非適用・`--` 透過・版不整合の拒否・明示指定時の `source=explicit` を固定する。
+
+### 修正
+
+- `multi-review` の sandbox 不可警告（dry-run の probe が「起動前に判明」と出す節）と `skills/multi-review/SKILL.md` の同じ箇所が、除外の手段として `--cli` の明示だけを案内していたのを、「今回だけ（`--cli` または `--exclude-cli`。どちらもその 1 回の引数）/ 恒久（プランに表示された設定ファイル、通常はプロジェクトの `.claude/agent-config.yaml` の `exclude_clis`）」の 2 択に改める。probe が「時間で復帰しない」と判定した失敗に対して毎回同じ手動除外を再演していた（導入先の観測台帳で Count 3）のは、既存の恒久策への導線が失敗を検知した当の場所に無かったため。警告は CLI 名を埋めた設定行（`exclude_clis: "grok-cli"`）をそのまま印字し、既に `exclude_clis` がある場合はキーを増やさず同じ 1 文字列へ空白区切りで足すこと、設定由来の除外は `--cli` で 1 回だけ戻せることも併記する。`tests/multi-agent-plan` が両導線・設定行・追記案内の印字を固定する。
+
 ## [0.101.0] - 2026-09-11
 
 ### 変更
