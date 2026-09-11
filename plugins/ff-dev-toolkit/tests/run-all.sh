@@ -279,6 +279,13 @@ else
     # 単一ドキュメント性と全 map 横断の重複キー — を削除したミラー 2 suite から引き継いだ）。
     # 読み取り専用の静的検査。yq 不在なら丸ごと ○ skip（REQUIRED_SUITES 掲載）。
     "$SCRIPT_DIR/cli-registry-completeness/verify.sh"
+    # ホスト経路パリティ。ホスト間非対称の正本表（開発元の
+    # docs/06-reference/HOST-PARITY.md）と実体を双方向で突き合わせ、規定が 1 ホスト
+    # 経路だけに入っている状態を検出する。ALL_CLIS を静的 parser で読む点で
+    # cli-registry-completeness の直後に置く。外部コマンド不要の読み取り専用検査で、
+    # 正本表を持たない配布先 checkout では丸ごと ○ skip（適用外なので必須名簿には
+    # 載せず、verify.sh の `# run-all-required: no` 宣言で明示する）。
+    "$SCRIPT_DIR/host-route-parity/verify.sh"
     # 収録スキル数の手入力メタデータ（marketplace.json root/oss・plugin.json）と
     # skills/*/SKILL.md の実数の整合検査（Issue #502）。jq のみに依存する読み取り
     # 専用の静的検査。件数の複製を扱う点で cli-registry-completeness の直後に置く。

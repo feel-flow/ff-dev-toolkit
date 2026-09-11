@@ -294,6 +294,53 @@ async function processInBatches<T>(data: readonly T[], batchSize: number = 1000)
 // 安全なJWT検証実装
 import jwt from "jsonwebtoken";
 
+interface VerifiedTokenPayload {
+  readonly sub: string;
+  readonly exp: number;
+  readonly iat: number;
+}
+
+// jwt.verify() の戻り値は string | JwtPayload で、ペイロードの形状を保証しない
+// （alg: none 等クライアント側の設定ミスでも型エラーにならない）。sub / exp / iat
+// の有無・型をここで検証してから返す。exp / iat は NumericDate なので
+// NaN / Infinity を弾く（typeof は number として通す）
+function isVerifiedTokenPayload(
+  value: unknown,
+): value is VerifiedTokenPayload {
+  const candidate = value as Record<string, unknown> | null;
+  return (
+    typeof candidate === "object" &&
+    candidate !== null &&
+    typeof candidate.sub === "string" &&
+    Number.isFinite(candidate.exp) &&
+    Number.isFinite(candidate.iat)
+  );
+}
+
+// JWT 検証のエラーは HTTP ステータスを持たないため normalizeExternalError には
+// 通さない。あの関数はステータスを読めないエラーを UpstreamError（transient）へ
+// 倒すので、署名不正や期限切れのトークンが再試行と本番フォールバックの対象になる。
+// ステータスを持たない境界は専用マッパーで写す（03-implementation/PATTERNS.md
+// 「外部境界のエラー正規化」）。写す先はすべて never-fallback カテゴリにする
+function toTokenVerificationError(error: unknown): AppError {
+  if (error instanceof AppError) return error;
+  if (
+    error instanceof jwt.TokenExpiredError ||
+    error instanceof jwt.NotBeforeError
+  ) {
+    // 時刻条件を満たさないだけ。再認証で解決するので認証エラーへ写す
+    return new UnauthorizedError("Token is not valid at this time", {
+      cause: error,
+    });
+  }
+  if (error instanceof jwt.JsonWebTokenError) {
+    // 署名不一致・不正な形式。改ざんの可能性があるので SecurityError
+    return new SecurityError("Token verification failed", { cause: error });
+  }
+  // 想定外も never-fallback 側へ倒す（fail-closed）
+  return new UnauthorizedError("Token verification failed", { cause: error });
+}
+
 class SecureJWTValidator {
   private readonly secretKey: string;
 
@@ -301,31 +348,39 @@ class SecureJWTValidator {
     this.secretKey = secretKey;
   }
 
-  verifyToken(token: string): any {
+  verifyToken(token: string): VerifiedTokenPayload {
+    let decoded: unknown;
     try {
       // アルゴリズムを明示的に指定
-      const decoded = jwt.verify(token, this.secretKey, {
+      decoded = jwt.verify(token, this.secretKey, {
         algorithms: ["HS256"], // 使用するアルゴリズムを明示
         clockTolerance: 30, // 時刻の許容誤差（秒）
       });
-
-      return decoded;
     } catch (error) {
-      throw new Error(`Token verification failed: ${error.message}`);
+      // unknown な error から直接 .message を読まず、専用マッパーで正典の
+      // AppError 階層へ写す
+      throw toTokenVerificationError(error);
     }
+
+    // 署名は通ったが必須クレームが無い。受け入れないので認証エラー
+    if (!isVerifiedTokenPayload(decoded)) {
+      throw new UnauthorizedError("JWT payload is missing required claims");
+    }
+
+    return decoded;
   }
 
   // トークンの有効性を追加チェック
-  validateTokenPayload(payload: any): boolean {
+  validateTokenPayload(payload: VerifiedTokenPayload): boolean {
     const now = Math.floor(Date.now() / 1000);
 
     // 有効期限チェック
-    if (payload.exp && payload.exp < now) {
+    if (payload.exp < now) {
       return false;
     }
 
     // 発行時刻チェック
-    if (payload.iat && payload.iat > now) {
+    if (payload.iat > now) {
       return false;
     }
 

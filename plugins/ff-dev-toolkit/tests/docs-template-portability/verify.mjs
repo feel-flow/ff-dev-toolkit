@@ -330,6 +330,61 @@ for (const pattern of [
   check(!integrations.includes(pattern), `INTEGRATIONS から ${pattern} を除去`);
 }
 
+// 08-knowledge の JWT 検証例。検査は**例のコードブロックだけ**を対象にする。
+// ファイル全体に掛けると、同じ文書の別の例にある正当な記述（HTTP 境界での
+// normalizeExternalError、Error へ絞り込んだ後の error.message）まで縛ってしまい、
+// 検査が契約より広くなる。
+function jwtExample(rel) {
+  const content = text(rel);
+  const start = content.indexOf("// 安全なJWT検証");
+  if (start === -1) return "";
+  const end = content.indexOf("```", start);
+  return end === -1 ? content.slice(start) : content.slice(start, end);
+}
+
+for (const [label, rel] of [
+  ["TROUBLESHOOTING", "08-knowledge/TROUBLESHOOTING.md"],
+  ["LESSONS_LEARNED", "08-knowledge/LESSONS_LEARNED.md"],
+]) {
+  const block = jwtExample(rel);
+  // アンカーを失うと以降の否定形検査が全部素通りするので、実在を先に固定する
+  check(block !== "", `08-knowledge/${label} に JWT 検証例のアンカーが実在する`);
+  check(
+    !/:\s*any\b/.test(block),
+    `08-knowledge/${label} の JWT 例に any 注釈が無い`,
+  );
+  check(
+    /verifyToken\(token: string\): VerifiedTokenPayload/.test(block),
+    `08-knowledge/${label} の verifyToken が検証済みペイロード型を返す`,
+  );
+  check(
+    /\): value is VerifiedTokenPayload/.test(block) &&
+      /if \(!isVerifiedTokenPayload\(decoded\)\)/.test(block),
+    `08-knowledge/${label} が型ガードを通してから検証済みペイロードを返す`,
+  );
+  check(
+    !/\berror\.message\b/.test(block),
+    `08-knowledge/${label} の catch 節が unknown な error から直接 .message を読まない`,
+  );
+  // normalizeExternalError は HTTP ステータスを持つ境界専用（PATTERNS.md）。
+  // ステータスを読めないエラーは UpstreamError（transient）へ倒れるため、
+  // JWT 検証失敗をここへ通すと署名不正のトークンが再試行・本番フォールバックの
+  // 対象になる。専用マッパー経由であることを両方向で固定する
+  check(
+    !/normalizeExternalError\(/.test(block),
+    `08-knowledge/${label} の JWT 例が HTTP 境界専用の normalizeExternalError を通さない`,
+  );
+  check(
+    /function toTokenVerificationError\(error: unknown\): AppError/.test(block) &&
+      /throw toTokenVerificationError\(error\);/.test(block),
+    `08-knowledge/${label} の JWT 検証 catch 節が専用マッパーを経由する`,
+  );
+  check(
+    /new UnauthorizedError\(/.test(block) && /new SecurityError\(/.test(block),
+    `08-knowledge/${label} の JWT 検証エラーが never-fallback カテゴリへ写る`,
+  );
+}
+
 const pullRequest = text(".github/pull_request_template.md");
 check(!/^- \[ \].*scripts\//m.test(pullRequest), "PR チェック項目が未配置スクリプトを必須にしない");
 

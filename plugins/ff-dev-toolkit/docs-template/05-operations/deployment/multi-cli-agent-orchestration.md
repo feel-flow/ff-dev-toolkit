@@ -136,8 +136,14 @@ orchestrator は CLI を対象リポジトリの物理ルートから起動し�
 
 CLI ごとの機械境界は意図的に非対称である。Codex は `workspace-write`（network off）、
 Grok は `workspace`、Claude Code は Write/Edit/Bash tools、
-Copilot は既定 permission を使う。いずれも repository root より外へは広げず、staging
-だけへの限定はプロンプト契約である。アダプタ直叩きの `--inline-output` は別で、Codex /
+Copilot は既定 permission を使う。いずれも repository root より外へは広げない。
+**staging だけへの限定が機械的に効くのは Codex の implement だけ**である。Codex は
+`codex exec -C <staging>` で作業根を staging へ移し、`workspace-write` の書き込み境界も
+staging 一箇所に閉じる（`-C/--cd` を持たない旧版は、黙って広い境界で走らせずに起動前へ
+停止する）。Grok / Claude Code / Copilot では境界は repository root のままで、staging
+だけへの限定はプロンプト契約である。Grok の `--cwd` が sandbox の書き込み根まで動かすか
+は未実測なので、Codex 側の実測を根拠に同じ絞り込みを写さない。
+アダプタ直叩きの `--inline-output` は別で、Codex /
 Grok を read-only、Claude Code を読み取り tools、Copilot を
 write / shell deny へ狭め、作業ツリーへ書かない契約を機械的に裏付ける（Issue #398）。
 
