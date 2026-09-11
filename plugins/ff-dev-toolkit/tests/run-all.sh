@@ -749,6 +749,14 @@ else
     # 保っていること（リンクへ退化していないこと）も見る。文言だけが防御の文書契約。
     # 純粋な静的検査で一時領域も git も要らず、skip 経路を持たない。
     "$SCRIPT_DIR/worktree-preflight-contract/verify.sh"
+    # 委譲先の完了後に残る background 子プロセスの回収契約: 正本
+    # multi-cli-agent-orchestration.md の契約節（完了報告を受けたら確認・探し方は内容では
+    # なく経過時間・待機ループに限定しない・子孫ごと段階的に回収・稼働中の子は落とさない）を
+    # 節スコープで固定し、検出コマンドの 4 要素（経過時間 / ps でホスト PID / marker /
+    # 自分自身の除外）を個別に見る。どれか 1 つが消えると「動くが効かない」状態になるため。
+    # フェンス内のコマンドは bash -n まで掛ける（読者が貼って初めて壊れに気付く形を避ける）。
+    # 文言だけが防御の文書契約。純粋な静的検査で一時領域も git も要らず、skip 経路を持たない。
+    "$SCRIPT_DIR/background-child-reclaim-contract/verify.sh"
     # flat-rate CLI への観点集中の制御（Issue #251、#783 で free-tier から付替）: プラン警告 + minimize_cost 限定の
     # 同一 CLI 内逐次化 + standard の並列維持 + 途中失敗の継続。一時 git リポジトリ +
     # stub CLI で orchestrator を 4 回実走（単独実測 約 20 秒。詳細は suite README。
@@ -1000,6 +1008,10 @@ REQUIRED_SUITES=(
   # 常置する文言が消えると、対策は文書に在るのに委譲先へ届かない状態（OBS-013 が 5 回
   # 再発した状態）へ戻る。同じ理由で名簿に載せ、改名・削除と将来の skip 経路を通さない。
   worktree-preflight-contract
+  # 委譲先の完了後に残る background 子プロセスの回収契約も文言だけが防御。検出コマンドが
+  # 消えると、エージェントの子プロセスが何時間も走り続ける状態（OBS-112 が 3 回再発した
+  # 状態）へ戻る。同じ理由で名簿に載せ、改名・削除と将来の skip 経路を通さない。
+  background-child-reclaim-contract
   review-wrapper-shim
   sweep-orphan-transcripts
   multi-agent-timeout

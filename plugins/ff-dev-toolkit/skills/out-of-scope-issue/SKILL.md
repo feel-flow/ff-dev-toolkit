@@ -1,6 +1,6 @@
 ---
 name: out-of-scope-issue
-description: Use when finding improvements, bugs, or refactoring opportunities outside the current task's scope during implementation or code review. Routes each finding through YAGNI (no action and no Issue), inline repair in the current PR, or consolidation into an existing or new follow-up GitHub Issue, then takes the selected action. When uncertainty is only about size, locality, or verification weight, defaults to inline repair rather than filing an Issue; thematically adjacent findings from the same PR are batched into one follow-up Issue by default. Triggers on phrases like "スコープ外", "別Issueで", "out of scope", "別対応", "後で対応", or when review tools flag suggestions for future work.
+description: Use when finding improvements, bugs, or refactoring opportunities outside the current task's scope during implementation or code review. Routes each finding through YAGNI (no action and no Issue), inline repair in the current PR, or consolidation into an existing or new follow-up GitHub Issue, then takes the selected action. When uncertainty is only about size, locality, or verification weight, defaults to inline repair rather than filing an Issue; thematically adjacent findings from the same PR are batched into one follow-up Issue by default. Separately, when a finding was caused by the previous round's own fix or is the second occurrence of the same class, also classifies findings by class rather than location, names the cause in one line, and decides whether a structural Issue is needed. Triggers on phrases like "スコープ外", "別Issueで", "out of scope", "別対応", "後で対応", when review tools flag suggestions for future work, or when a review round produces a finding whose target file or line is contained in the previous round's fix commit.
 ---
 
 # Out-of-Scope Finding Router
@@ -42,9 +42,28 @@ fi
 
 ユーザーの依頼が「レビュー・分析・報告のみ」の場合、本スキルは **判定結果の提案まで**に留める（Issue 作成・インライン修正はしない）。実際に `gh issue create` や修正コミットまで進むのは、実装・レビュー対応など**変更を伴うワークフローの中で発見が出た場合**か、ユーザーが対応を依頼した場合のみ。
 
-**この境界は自分の発言では解除できない。** read-only 依頼中は「別 Issue にする」と表明せず「Issue 化を推奨」までに留める。§2 / §3.3 の「言うだけで終わらせない」（表明したら必ず起票まで完了させる）は、**書き込みが許される文脈に入ってから**適用される規則であって、read-only 依頼中に表明することで起票を正当化する経路ではない。誤って表明した場合は、起票して辻褄を合わせるのではなく表明のほうを訂正する。
+**この境界は自分の発言では解除できない。** read-only 依頼中は「別 Issue にする」と表明せず「Issue 化を推奨」までに留める。§1.0 / §2 / §3.3 の「言うだけで終わらせない」（表明したら必ず起票まで完了させる。§1.0 の構造 Issue の起票を含む）は、**書き込みが許される文脈に入ってから**適用される規則であって、read-only 依頼中に表明することで起票を正当化する経路ではない。誤って表明した場合は、起票して辻褄を合わせるのではなく表明のほうを訂正する。
 
 ## 1. 判定（順序を変えない）
+
+### 1.0 原因の軸（トリガー成立時のみ。§1.1 以降とは別物）
+
+§1.1〜§1.3 は**この 1 件をどう処理するか**（必須修正か / 必要か / どの大きさか）を決める軸で、「発見がなぜ生まれたか」には答えない。原因を問わないまま個別処理を続けると、**同じ原因から出る次の発見も同じように処理され、fix が次の指摘を生む形でループが伸びる**。
+
+毎回問うのは過剰なので、次のどちらかに当たったときだけ通す:
+
+1. **直前の fix が次の発見を生んだ** — 機械判定できる形にする: **発見の対象ファイル / 行が、前巡の fix commit の差分に含まれる**（`git diff <前巡の fix commit>^..<同 commit> --name-only` で確かめる）
+2. **同型の発見が 2 回目** — 系統の分類はこのトリガーが起動する動作なので、判定には**分類に先立って観測できる事象**を使う: 同じ指摘文言・同じ確認を 2 回求められた、同じファイルの別箇所が 2 巡続けて指摘された、など
+
+当たったら、**その 1 件の処理（§1.1〜§1.3）は通常どおり進めたうえで**、次を追加で行う:
+
+- 発見を「箇所」でなく**「系統」で分類**する
+- その系統の**原因を 1 行で書く**（例:「裏取りが要る主張を正本の境界を越えて書いた」「同じ規範を複数文書へ逐語複製した」）
+- 原因に対する**構造的対策を別 Issue にすべきか**を判断する。要るならその turn で起票し、番号を PR 本文へ残す
+
+この Issue は個々の発見の follow-up とは**別物**。束ねる単位は「同じ系統の発見」であって「同じ PR の発見」ではないので、**§3.1b の「同一 PR からの複数発見は 1 Issue に束ねる（既定）」は本 Issue へ適用しない**。§3.1 の類似 Issue 検索も系統単位で 1 回行う。
+
+**知識として持っているだけでは発火しない。** 実装中のエージェントは「適用すべき瞬間に来たこと」を検知できないので、上の 2 つは**観測できる事象**で書いてある。通したかどうかの確認面は PR テンプレートの `Cross-Model Review Results` にある条件付きの記入欄。**読み手の位置で解決先が変わる** — 配布先では `.github/pull_request_template.md`、本プラグインリポジトリでは雛形 [`../../docs-template/.github/pull_request_template.md`](../../docs-template/.github/pull_request_template.md)。
 
 ### 1.1 現 PR の必須修正か
 

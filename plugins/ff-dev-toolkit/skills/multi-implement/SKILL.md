@@ -159,6 +159,7 @@ git diff  # 適用内容の確認
 - ステップ2の dry-run 確認なしにステップ3を実行しないこと
 - 長時間・大規模タスクをブランチ上で作業するエージェント（ホストの subagent / worktree 委譲など）へ委譲する場合は、[Multi-CLI Agent Orchestration の「長時間タスクの委譲契約（こまめコミット）」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#長時間タスクの委譲契約こまめコミット) に従う（契約 3 項目の規定はここへ複製しない）
 - ホストの subagent を worktree 隔離で起動して委譲し、その委譲先がゲート・テストを回す場合は、[Multi-CLI Agent Orchestration の「worktree 委譲の依存プリフライト」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#worktree-委譲の依存プリフライト) に従い、起動プロンプトへ依存インストールのコマンドを実値で常置する。リンクではなくコマンドの実値を書く（起動プロンプトは貼られた先で読まれるので相対リンクは解決しない）（規定はここへ複製しない）
+- 委譲先のエージェントが完了報告を返したら、そのエージェントが background で起こした子プロセスの取り残しを確認して回収する。[Multi-CLI Agent Orchestration の「委譲先の完了後に残る background 子プロセス」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#委譲先の完了後に残る-background-子プロセス) に従う（探し方・検出コマンド・回収手順の正本はすべて同節。規定と検出コマンドの正本はここへ複製しない）
 - 実装結果はステージングディレクトリに出力 — ワーキングツリーに直接書き込まない
 - ワーキングツリーへの適用前にユーザー承認を得ること
 - 結果は `.implement-results/` に保存され、後から参照できます（生成ファイル本体は `<cli>/files/<perspective>/`）

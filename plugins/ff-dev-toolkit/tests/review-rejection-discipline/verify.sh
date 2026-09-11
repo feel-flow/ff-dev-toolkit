@@ -163,6 +163,10 @@ contains "$ORCHESTRATION" "既出の Critical / Warning を全解消" \
   "停止条件が既出 Critical / Warning の全解消を含む"
 contains "$ORCHESTRATION" "3 回転終了時点でも未解消または新規の Critical / Warning がある場合は、4 回転目の自動修正を開始しない" \
   "上限到達時は 4 回転目を自動開始せず設計を疑う"
+contains "$ORCHESTRATION" "上限に達する前に、ループが伸びている原因を問う" \
+  "収束判定の正本に、上限到達前に原因を問うトリガーがある"
+contains "$ORCHESTRATION" "追加上限は Critical / Warning の解消義務を免除しない" \
+  "収束判定の正本に、追加上限が解消義務を免除しないことが書いてある"
 contains "$ORCHESTRATION" "未解消 Critical / Warning がある間はマージしない" \
   "打ち切り後も未解消 Critical / Warning ではマージしない"
 contains "$ORCHESTRATION" "green（全指摘ゼロ）ではない" \
@@ -173,6 +177,10 @@ contains "$MULTI_REVIEW" "green（全指摘ゼロ）を待たない" \
   "multi-review が green 待ちではないことを実行時要約に持つ"
 contains "$ORCHESTRATION" '`code-simplification` は既定の非ブロック観点のまま' \
   "code-simplification の非ブロック維持を明示"
+contains "$MULTI_REVIEW" "上限に達する前に、ループが伸びている原因を問う" \
+  "multi-review の要約に、上限到達前に原因を問うトリガーがある"
+contains "$MULTI_REVIEW" "追加上限は Critical / Warning の解消義務を免除しない" \
+  "multi-review の要約に、追加上限が解消義務を免除しないことが書いてある"
 contains "$MULTI_REVIEW" "上限は 3 回転" \
   "multi-review が 3 回転上限を実行時要約として持つ"
 contains "$MULTI_REVIEW" "独立 Warning のパーキングはしない" \
