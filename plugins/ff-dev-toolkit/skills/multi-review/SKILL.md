@@ -62,12 +62,12 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
   - 例: `--fresh`（前回の出力ディレクトリの中身を `<dir>/.prev-<timestamp>/` へ退避。実行中 lock は残す。`--resume` と併用不可）
     - 退避先は出力ディレクトリの**内側**なので、`.review-results/` を ignore していればそのまま無視される。ignore 済み = 目に入らないまま溜まるので、退避完了行に現在の退避件数と合計サイズが出る。不要になったら `rm -rf .review-results/.prev-*` で消す（`.explore-results` / `.implement-results` も同様）
     - 旧版が作った兄弟形式（`.review-results.prev-*`）の残骸は自動回収しないので、`rm -rf .review-results.prev-*` で別途消す
-  - 全オプションは `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --help` で確認できます
+  - 全オプションは `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --help` で確認できます
 
 pre-commit で index に積んだ内容だけをレビューする場合は `--staged` を使う。
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --staged
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --staged
 ```
 
 `--staged` は review 専用で、`--base` / `MULTI_AGENT_BASE_BRANCH` と排他。staged 変更が
@@ -125,7 +125,7 @@ pair で指定した場合は黙って無視せず、適用されない旨（値
 まず現在の設定を確認します。
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
 ```
 
 **終了コードで分岐します**（出力のマーカー行を `grep -q` で拾う形にしないこと。パイプ入力の `grep -q` は SIGPIPE + `pipefail` で判定が反転します）。
@@ -142,7 +142,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-revie
 選んでもらったら保存します。以降は聞きません。
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review \
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review \
   --set-reviewers main=<cli>,sub=<cli>
 ```
 
@@ -155,7 +155,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review \
 まず選択済みの担当・対象範囲で実行プランを表示します:
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run $ARGUMENTS
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run $ARGUMENTS
 ```
 
 出力を確認し、以下をユーザーに報告:
@@ -181,7 +181,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run $ARGUMENTS
 選択したプランで、実際のレビューを実行します:
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" $ARGUMENTS
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" $ARGUMENTS
 ```
 
 **注意**: 実行には各CLIの利用コストが発生します（特に premium/standard ティアのCLI）。`--strategy minimize_cost` で定額（flat-rate）CLIを優先できます。タイムアウトはデフォルト **900秒/CLI** です（旧既定の 5 分では中規模差分の Codex レビューが完走しなかったため引き上げ。`--timeout <秒>` で上書き可）。CLI が早く応答すればその時点で次に進むので、上限を大きく取っても待ち時間は増えません。
@@ -199,7 +199,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" $ARGUMENTS
 同じ CLI・base・HEAD・perspective 集合・設定・レビュー diff のまま未完了観点だけを再実行する場合は `--resume` を付ける。成功済み観点は内容 hash を検証して再利用され、統合レポートには各観点が `reused` / `executed` のどちらか表示される。timeout は延長して再開できるが、それ以外の入力変更やキャッシュ破損では安全側に全該当観点を再実行する。
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --resume --timeout 1800
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --resume --timeout 1800
 ```
 
 ### 3. 結果分析と修正提案
@@ -346,7 +346,7 @@ git diff  # 修正内容の確認
 **同じ PR で**全観点のフルレビューを 1 度通過した後の fix commit は、それが**単一観点の指摘に閉じている**場合に限り、その観点だけを限定して再検証してよい:
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective <観点名>
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective <観点名>
 ```
 
 - 次のいずれかに該当する場合はフル再実行する: ブロック観点（既定の同梱観点では code-review / security-analysis / error-handler-hunt / acceptance-criteria / comprehensive-review。名簿は `review.critical_nonblock_perspectives` で上書きされる）の Critical を修正した / 修正が複数観点にまたがる / レビュー対象 diff の土台が変わった（base への追随・rebase を含む）
@@ -390,7 +390,7 @@ orchestrator は実行の前後でリポジトリのスナップショットを�
 
 ```bash
 FF_MULTI_AGENT_IGNORE_PATHS='videos/**:.cache/**' \
-  bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" $ARGUMENTS
+  FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" $ARGUMENTS
 ```
 
 - **`.superpowers/**` は env 未設定でも既定で除外される**（superpowers スキルの常駐書き込みがレビュー結果を破棄させる実測があったため）。`FF_MULTI_AGENT_IGNORE_PATHS` は既定への**追加**であって置き換えではない
@@ -429,7 +429,7 @@ FF_MULTI_AGENT_IGNORE_PATHS='videos/**:.cache/**' \
 # Codex を専用プロファイルでレビューさせる（推奨）
 #   事前に ~/.codex/review.config.toml へ model と model_reasoning_effort を書いておく
 MULTI_AGENT_CODEX_PROFILE=review \
-  bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" $ARGUMENTS
+  FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" $ARGUMENTS
 ```
 
 Codex は `-m`（単発 slug）より **`--profile` が推奨**。プロファイルはモデルと `model_reasoning_effort` を1つのファイルで束ねられるため、「古いモデル + 新しい reasoning effort」という誰も意図していない組み合わせを避けられる。

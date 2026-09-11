@@ -30,6 +30,20 @@
 #     ファイルもそれと分かる診断で止める
 #   - クリア表示に走査したファイル数を出す（空の走査と本物の通過を見分ける）
 #
+# 同じ「公開対象へ非公開の識別子を混ぜない」系として、**追加行限定**の検査
+# （scripts/check-added-bare-refs.sh）も本 suite が固定する。全文検査にできない
+# （既存行に同型が多数ある）ため対象が差分の追加行に限られる点だけが上と違う:
+#   - 公開対象の追加行に番号短縮形があれば file:line で名指しして非 0 にする
+#   - 同型が既存行にだけある木は通す（差分限定であることの実測）
+#   - 公開 URL 形式・fence / inline code / markdown リンク内の追加行は通す。
+#     許可規則の真実源は scripts/scan-bare-issue-refs.sh で、検査側も本 suite も
+#     規則を複製しない（走査器を素朴な全件検出へ差し替える変異で実測する）
+#   - ローカル develop が無く origin/develop だけの clone でも成立する
+#   - 公開対象が無い checkout は skip ではなく「対象 0 件で pass」（判定は base ref の
+#     解決より前に置く）。base ref を解決できない木は fail-closed
+#   - fence が閉じていないファイル（意図的な fixture が実在する）は走査を諦めず、
+#     fence 記号を潰した写しで走査し直す（閉じない fence の素通しを作らない）
+#
 # 本ファイルは公開同期対象。禁止パターンのリテラルを隣接して書かないこと
 # （隔離 fixture へ実行時に組み立てて流す。再現性のために実パスを戻すと
 # 公開同期が止まる）。
@@ -580,6 +594,306 @@ expect_fail "--check-only と --target は同時に使えない" "--target" \
   bash "$SYNC" --check-only --target "$TMP/clean"
 expect_fail "存在しない --scan-dir は拒否する" "存在しません" \
   bash "$SYNC" --check-only --scan-dir "$TMP/does-not-exist"
+
+# --- 11. 公開対象の追加行に bare な番号短縮形を書かせない（差分限定） --------
+# 対象は scripts/check-added-bare-refs.sh。既存行に同型が多数あるため全文検査は
+# 成立せず、base ref との差分の**追加行**だけを見る。許可規則（公開 URL 形式・
+# fence / inline code / markdown リンク内）は scripts/scan-bare-issue-refs.sh が
+# 真実源で、本 suite も検査側も規則を複製しない（変異注入でそれを実測する）。
+ADDED_REFS="$REPO_ROOT/scripts/check-added-bare-refs.sh"
+SCANNER_SRC="$REPO_ROOT/scripts/scan-bare-issue-refs.sh"
+
+# 番号短縮形のリテラルを本ファイルへ隣接して書かない（本ファイルは公開同期対象で、
+# 上記の検査自身の対象でもある）。fixture へは実行時に組み立てて流す。
+HASH="$(printf '%s' '#')"
+
+if [[ ! -f "$ADDED_REFS" || ! -f "$SCANNER_SRC" ]]; then
+  bad "追加行の bare 参照検査（または走査器）が見つかりません"
+else
+  expect_refs_rc() { # label want_rc needle cmd...
+    local label="$1" want="$2" needle="$3" out rc
+    shift 3
+    set +e
+    out="$("$@" 2>&1)"
+    rc=$?
+    set -e
+    if [[ "$rc" -eq "$want" && "$out" == *"$needle"* ]]; then
+      ok "$label"
+    else
+      bad "$label (rc=${rc} / 期待 ${want})"
+      printf '%s\n' "$out" | sed 's/^/    | /' >&2
+    fi
+  }
+
+  # 「1 行当たれば緑」にしない。列挙した needle が**すべて**出ることを見る
+  # （形ごと・行ごとの検出力を区別するため）。
+  expect_refs_all() { # label want_rc needles(改行区切り) cmd...
+    local label="$1" want="$2" needles="$3" out rc missing="" nd
+    shift 3
+    set +e
+    out="$("$@" 2>&1)"
+    rc=$?
+    set -e
+    while IFS= read -r nd; do
+      [[ -n "$nd" ]] || continue
+      case "$out" in
+        *"$nd"*) ;;
+        *) missing="${missing} ${nd}" ;;
+      esac
+    done <<<"$needles"
+    if [[ "$rc" -eq "$want" && -z "$missing" ]]; then
+      ok "$label"
+    else
+      bad "$label (rc=${rc} / 期待 ${want}${missing:+ / 不足:${missing}})"
+      printf '%s\n' "$out" | sed 's/^/    | /' >&2
+    fi
+  }
+
+  # 出るべき行と**出てはいけない行**を対で見る（片側だけだと、許容側が違反側へ
+  # 滑っても緑のまま通る）。
+  expect_refs_only() { # label want_rc needle absent cmd...
+    local label="$1" want="$2" needle="$3" absent="$4" out rc
+    shift 4
+    set +e
+    out="$("$@" 2>&1)"
+    rc=$?
+    set -e
+    if [[ "$rc" -eq "$want" && "$out" == *"$needle"* && "$out" != *"$absent"* ]]; then
+      ok "$label"
+    else
+      bad "$label (rc=${rc} / 期待 ${want} / ${absent} は出ないこと)"
+      printf '%s\n' "$out" | sed 's/^/    | /' >&2
+    fi
+  }
+
+  # 偽 SSOT repo: 公開対象 2 つ・検査スクリプト一式・origin/develop だけを持ち、
+  # ローカル develop は作らない（AC の「develop が無い clone」を模す）。
+  refs_fixture_prepare() {
+    local dir="$1"
+    mkdir -p "$dir/scripts" "$dir/plugins/ff-dev-toolkit" "$dir/oss/ff-dev-toolkit"
+    cp "$SYNC" "$dir/scripts/sync-dev-toolkit-to-public.sh"
+    cp "$SCANNER_SRC" "$dir/scripts/scan-bare-issue-refs.sh"
+    cp "$ADDED_REFS" "$dir/scripts/check-added-bare-refs.sh"
+    printf '%s\n' 'baseline' > "$dir/oss/ff-dev-toolkit/doc.md"
+  }
+  refs_fixture_commit() {
+    local dir="$1"
+    ff_git_fixture_init "$dir" "sync-forbidden-selftest" "selftest@example.com" || return 1
+    git -C "$dir" symbolic-ref HEAD refs/heads/work
+    git -C "$dir" add -A
+    git -C "$dir" commit -qm "baseline"
+    git -C "$dir" update-ref refs/remotes/origin/develop HEAD
+  }
+  refs_run() { bash "$1/scripts/check-added-bare-refs.sh"; }
+
+  # 11-1. 追加行の混入をファイルと行で名指しする。3 つの形（`Issue <番号>` /
+  # `PR <番号>` / 文頭の番号）と、公開対象 2 つの**どちらの配下でも**検出することを
+  # 対で固定する（1 形・1 ディレクトリだけの針は、残りが外れても緑のまま通る）。
+  F_DETECT="$TMP/refs-detect"
+  refs_fixture_prepare "$F_DETECT"
+  printf '%s\n' 'baseline' > "$F_DETECT/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_DETECT"
+  {
+    printf '%s\n' "detail: Issue ${HASH}123 を参照"
+    printf '%s\n' "follow-up: PR ${HASH}124 を参照"
+    printf '%s\n' "${HASH}125 の対応をここに書く"
+  } >> "$F_DETECT/plugins/ff-dev-toolkit/doc.md"
+  printf '%s\n' "oss 側の追加行: PR ${HASH}126" >> "$F_DETECT/oss/ff-dev-toolkit/doc.md"
+  expect_refs_all "3 つの形を公開対象 2 つの配下でファイルと行まで名指しする" 1 \
+    'plugins/ff-dev-toolkit/doc.md:2
+plugins/ff-dev-toolkit/doc.md:3
+plugins/ff-dev-toolkit/doc.md:4
+oss/ff-dev-toolkit/doc.md:2' refs_run "$F_DETECT"
+
+  # 11-2. ローカル develop が無く origin/develop だけの clone でも成立する
+  if git -C "$F_DETECT" rev-parse --verify --quiet develop >/dev/null 2>&1; then
+    bad "fixture にローカル develop が出来ている（origin/develop だけの clone を模せていない）"
+  else
+    expect_refs_rc "ローカル develop が無い clone は origin/develop を基準に検査する" 1 \
+      "base=origin/develop" refs_run "$F_DETECT"
+  fi
+
+  # 11-3. 既存行にだけ同型がある木は通す（全文検査にしない）
+  F_EXISTING="$TMP/refs-existing"
+  refs_fixture_prepare "$F_EXISTING"
+  printf '%s\n' "既存行: Issue ${HASH}123" 'baseline' > "$F_EXISTING/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_EXISTING"
+  printf '%s\n' 'clean added line' >> "$F_EXISTING/plugins/ff-dev-toolkit/doc.md"
+  expect_refs_rc "既存行の同型は許容する（差分の追加行だけを見る）" 0 "クリア" \
+    refs_run "$F_EXISTING"
+
+  # 11-4. 許可規則（公開 URL 形式 / inline code / markdown リンク / fence 内）
+  F_ALLOWED="$TMP/refs-allowed"
+  refs_fixture_prepare "$F_ALLOWED"
+  printf '%s\n' 'baseline' > "$F_ALLOWED/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_ALLOWED"
+  {
+    printf '%s\n' 'public url: https://github.com/feel-flow/ff-dev-toolkit/issues/123'
+    printf '%s\n' "inline code: \`${HASH}123\`"
+    printf '%s\n' "link: [PR ${HASH}123](https://github.com/feel-flow/ff-dev-toolkit/pull/123)"
+    printf '%s\n' '```'
+    printf '%s\n' "fence 内: ${HASH}123"
+    printf '%s\n' '```'
+  } >> "$F_ALLOWED/plugins/ff-dev-toolkit/doc.md"
+  expect_refs_rc "公開 URL / inline code / リンク / fence 内の追加行は通す" 0 "クリア" \
+    refs_run "$F_ALLOWED"
+
+  # 11-5. 公開対象が無い checkout は skip ではなく「対象 0 件で pass」
+  # （公開対象の判定は base ref の解決より前。commit も origin/develop も無い木で通る）
+  F_NOTARGET="$TMP/refs-no-targets"
+  mkdir -p "$F_NOTARGET/scripts"
+  cp "$SYNC" "$F_NOTARGET/scripts/sync-dev-toolkit-to-public.sh"
+  cp "$SCANNER_SRC" "$F_NOTARGET/scripts/scan-bare-issue-refs.sh"
+  cp "$ADDED_REFS" "$F_NOTARGET/scripts/check-added-bare-refs.sh"
+  ff_git_fixture_init "$F_NOTARGET" "sync-forbidden-selftest" "selftest@example.com"
+  expect_refs_rc "公開対象が無い checkout は対象 0 件で pass する（skip にしない）" 0 \
+    "対象 0 件" refs_run "$F_NOTARGET"
+
+  # 11-6. base ref を解決できない木は fail-closed（クリアにしない）
+  F_NOBASE="$TMP/refs-no-base"
+  refs_fixture_prepare "$F_NOBASE"
+  printf '%s\n' 'baseline' > "$F_NOBASE/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_NOBASE"
+  git -C "$F_NOBASE" update-ref -d refs/remotes/origin/develop
+  printf '%s\n' "detail: Issue ${HASH}123 を参照" >> "$F_NOBASE/plugins/ff-dev-toolkit/doc.md"
+  expect_refs_rc "base ref を解決できない木は fail-closed で止まる" 2 \
+    "base ref を解決できません" refs_run "$F_NOBASE"
+
+  # 11-7. fence が閉じていないファイル（意図的な fixture が実在する）でも諦めない。
+  # 閉じない fence は「以降が走査対象外」= fail-open なので、閉じられなかった開始行を
+  # 潰して走査し直す
+  F_FENCE="$TMP/refs-unclosed-fence"
+  refs_fixture_prepare "$F_FENCE"
+  printf '%s\n' 'intro' '```' 'unclosed body' > "$F_FENCE/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_FENCE"
+  printf '%s\n' "detail: Issue ${HASH}123 を参照" >> "$F_FENCE/plugins/ff-dev-toolkit/doc.md"
+  expect_refs_rc "fence が閉じていないファイルの追加行も検出する" 1 \
+    "plugins/ff-dev-toolkit/doc.md:4" refs_run "$F_FENCE"
+
+  # 11-8. 11-7 の対。同じファイルに未閉 fence があっても、**正しく閉じた fence の
+  # 内側**の追加行は通す。潰す対象を「閉じられなかった開始行だけ」に絞らず fence
+  # 記号行を一律に潰すと、この 3 行目が違反になる（fixture を持つ現役 suite へ
+  # ケースを足す将来の PR が誤って赤くなる）。
+  F_FENCE_MIX="$TMP/refs-fence-mixed"
+  refs_fixture_prepare "$F_FENCE_MIX"
+  printf '%s\n' 'intro' > "$F_FENCE_MIX/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_FENCE_MIX"
+  {
+    printf '%s\n' '```'                                  # 2: 閉じる fence の開始
+    printf '%s\n' "閉じた fence の内側: ${HASH}123"        # 3: 通す
+    printf '%s\n' '```'                                  # 4: 閉じる
+    printf '%s\n' '~~~'                                  # 5: 閉じない fence の開始
+    printf '%s\n' "未閉 fence の後: Issue ${HASH}456"      # 6: 検出する
+  } >> "$F_FENCE_MIX/plugins/ff-dev-toolkit/doc.md"
+  expect_refs_only "未閉 fence の後は検出し、閉じた fence の内側は通す" 1 \
+    "plugins/ff-dev-toolkit/doc.md:6" "plugins/ff-dev-toolkit/doc.md:3" \
+    refs_run "$F_FENCE_MIX"
+
+  # 11-9. 未追跡の新規ファイルは差分に出ない。ファイル全体が新規＝全行が追加行なので
+  # 全行を走査する（新規 suite のヘッダが再発源なので、ここを素通しにしない）。
+  F_UNTRACKED="$TMP/refs-untracked"
+  refs_fixture_prepare "$F_UNTRACKED"
+  printf '%s\n' 'baseline' > "$F_UNTRACKED/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_UNTRACKED"
+  printf '%s\n' "新規ファイルの見出し: Issue ${HASH}777" \
+    > "$F_UNTRACKED/plugins/ff-dev-toolkit/new.md"
+  expect_refs_rc "未追跡の新規ファイルも全行を追加行として検出する" 1 \
+    "plugins/ff-dev-toolkit/new.md:1" refs_run "$F_UNTRACKED"
+
+  # 11-10. 11-9 の対。未追跡ファイルでも許可規則は同じで、走査したことが件数に出る
+  # （0 件走査の緑と本物の通過を見分ける）。
+  F_UNTRACKED_OK="$TMP/refs-untracked-clean"
+  refs_fixture_prepare "$F_UNTRACKED_OK"
+  printf '%s\n' 'baseline' > "$F_UNTRACKED_OK/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_UNTRACKED_OK"
+  printf '%s\n' "新規ファイル: inline code の \`${HASH}777\` は通す" \
+    > "$F_UNTRACKED_OK/plugins/ff-dev-toolkit/new.md"
+  expect_refs_rc "未追跡の新規ファイルを走査した件数がクリア表示に出る" 0 \
+    "未追跡 1 ファイル" refs_run "$F_UNTRACKED_OK"
+
+  # 11-11. 変異: 走査器を「許可規則を持たない素朴な全件検出」へ差し替えると、
+  # 11-4 と同じ木が赤になる（許可規則が走査器側にあり、検査側が複製していない実測）。
+  # 許可規則は inline code / markdown リンク / fence の 3 つあるので、行番号を
+  # すべて名指しして「どれか 1 行が当たれば緑」にしない
+  M_ALLOW="$TMP/refs-mutate-allow"
+  cp -R "$F_ALLOWED" "$M_ALLOW"
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' '# 変異: fence / inline code / リンクを見ない素朴な走査'
+    printf 'hits="$(LC_ALL=C grep -n -E "%s[0-9]+" -)" || exit 0\n' "$HASH"
+    printf '%s\n' 'printf "%s\n" "$hits" | LC_ALL=C sed "s/$/:ref/"'
+    printf '%s\n' 'exit 1'
+  } > "$M_ALLOW/scripts/scan-bare-issue-refs.sh"
+  # 3=inline code / 4=markdown リンク / 6=fence の内側（2=公開 URL 形式は番号短縮形を
+  # 含まないので素朴な走査でも当たらない）
+  expect_refs_all "許可規則を外すと inline code / リンク / fence の追加行が行ごとに赤になる（変異）" 1 \
+    'plugins/ff-dev-toolkit/doc.md:3
+plugins/ff-dev-toolkit/doc.md:4
+plugins/ff-dev-toolkit/doc.md:6' refs_run "$M_ALLOW"
+
+  # 11-12. 変異: 差分限定を外す（文脈行数を無限大にして全行を追加行扱いにする）と、
+  # 11-3 の「既存行にだけ同型がある木」が赤になる
+  M_DIFF="$TMP/refs-mutate-diff"
+  cp -R "$F_EXISTING" "$M_DIFF"
+  LC_ALL=C sed 's/--unified=0/--unified=1000000/' \
+    "$F_EXISTING/scripts/check-added-bare-refs.sh" > "$M_DIFF/scripts/check-added-bare-refs.sh"
+  expect_refs_rc "差分限定を外すと既存行の同型で赤になる（変異）" 1 \
+    "plugins/ff-dev-toolkit/doc.md:1" refs_run "$M_DIFF"
+
+  # 11-13. 変異: fence 不整合時の再走査を外すと、11-7 が検出ではなく走査不成立になる
+  # （素通し = クリアにはならないことも同時に固定する）
+  M_FENCE="$TMP/refs-mutate-fence"
+  cp -R "$F_FENCE" "$M_FENCE"
+  LC_ALL=C sed 's/2) ;;/99) ;;/' \
+    "$F_FENCE/scripts/check-added-bare-refs.sh" > "$M_FENCE/scripts/check-added-bare-refs.sh"
+  expect_refs_rc "fence 不整合時の再走査を外すと走査不成立で止まる（変異）" 2 \
+    "走査が成立しませんでした" refs_run "$M_FENCE"
+
+  # 11-14. 変異: 走査器が「閉じられなかった開始行」を名指ししなくなると、潰す行を
+  # 決められず再走査が前進しない。素通しではなく走査不成立で止まることを固定する
+  M_NOLINE="$TMP/refs-mutate-no-lineno"
+  cp -R "$F_FENCE_MIX" "$M_NOLINE"
+  LC_ALL=C sed 's/unclosed-fence:%d:/unclosed-fence:1:/' \
+    "$F_FENCE_MIX/scripts/scan-bare-issue-refs.sh" > "$M_NOLINE/scripts/scan-bare-issue-refs.sh"
+  expect_refs_rc "未閉 fence の開始行が名指しされないと走査不成立で止まる（変異）" 2 \
+    "走査が成立しませんでした" refs_run "$M_NOLINE"
+
+  # 11-15. 変異: 走査器が「1 件以上検出」を意味する rc=1 を出力なしで返す（起動自体の
+  # 失敗など）と、ヒット 0 件として通さず走査不成立で止まる
+  M_EMPTY="$TMP/refs-mutate-empty-hit"
+  cp -R "$F_DETECT" "$M_EMPTY"
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' '# 変異: 契約を満たさない走査器（出力なしで rc=1）'
+    printf '%s\n' 'cat >/dev/null'
+    printf '%s\n' 'exit 1'
+  } > "$M_EMPTY/scripts/scan-bare-issue-refs.sh"
+  expect_refs_rc "出力なしの rc=1 はヒット 0 件にせず走査不成立で止まる（変異）" 2 \
+    "走査が成立しませんでした" refs_run "$M_EMPTY"
+
+  # 11-16. 外部 diff ドライバが設定された環境でも成立する。自前のハンクヘッダが
+  # 出ない差分では追加行が空になり、**診断なしで全ファイル素通し**になるため
+  refs_run_extdiff() { GIT_EXTERNAL_DIFF=/usr/bin/true bash "$1/scripts/check-added-bare-refs.sh"; }
+  expect_refs_rc "外部 diff ドライバ下でも追加行を取り違えず検出する" 1 \
+    "plugins/ff-dev-toolkit/doc.md:2" refs_run_extdiff "$F_DETECT"
+
+  # 11-17. live: この作業ツリーの追加行がクリアであること（ゲート本体）。
+  # rc=2（検査不成立）を skip へ降格しない — 唯一の常設呼び出し側でそれをやると、
+  # origin/develop を持たない clone / worktree でゲートが一度も発火せずに緑になる
+  set +e
+  live_refs_out="$(bash "$ADDED_REFS" 2>&1)"
+  live_refs_rc=$?
+  set -e
+  if [[ "$live_refs_rc" -eq 0 ]]; then
+    ok "現在の作業ツリーの追加行に番号短縮形は無い（live）"
+  elif [[ "$live_refs_rc" -eq 2 ]]; then
+    bad "追加行の検査が成立しなかった（live / fail-closed）"
+    printf '%s\n' "$live_refs_out" | sed 's/^/    | /' >&2
+  else
+    bad "現在の作業ツリーの追加行に番号短縮形がある（live）"
+    printf '%s\n' "$live_refs_out" | sed 's/^/    | /' >&2
+  fi
+fi
 
 echo
 if [[ "$FAIL" -gt 0 ]]; then

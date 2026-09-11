@@ -132,7 +132,10 @@ else
     "$expected_root_command_docs" "$actual_root_command_docs" >&2
 fi
 
-# 対話用の直接実行例は resolver fence と同じ Bash body でguardを再評価する。
+# 対話用の直接実行例は resolver fence と同じ Bash body でguardを再評価し、さらに
+# `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}"` を同じ行へ置いて handoff を実行部と一緒に運ぶ
+# （host は plugin root を環境変数として渡さず実行部テキストへ絶対 path を差し込むだけなので、
+#  handoff を本文の resolver だけが運ぶと、本文が落ちた経路で script 側ガードが素通しになる）。
 # 行頭だけを見ず、`if ! bash` / `cd && bash` / `run: bash` も拾う。永続pre-pushと
 # CIは同じ文書内の自己完結bootstrapをruntime suiteで検査するため、文書と節を限定して除外する。
 unguarded_direct_commands="$(find "$DOCS" -type f -name '*.md' -exec awk '
@@ -141,7 +144,7 @@ unguarded_direct_commands="$(find "$DOCS" -type f -name '*.md' -exec awk '
   /^```(bash|sh|zsh|yaml)[[:space:]]*$/ { in_fence = 1; next }
   /^```/ { in_fence = 0; next }
   in_fence && /"\$\{FF_DEV_TOOLKIT_ROOT\}\/scripts\/(setup-multi-agent|multi-agent|multi-review|check-closing-keywords)\.sh"/ {
-    if ($0 ~ /^[[:space:]]*ff_require_toolkit_root && ff_require_consumer_root && bash /) next
+    if ($0 ~ /^[[:space:]]*ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="\$\{FF_DEV_TOOLKIT_ROOT\}" bash /) next
     if (FILENAME ~ /\/multi-cli-review-ci\.md$/) next
     if (FILENAME ~ /\/multi-cli-review-orchestration\.md$/ && in_pre_push) next
     print FILENAME ":" FNR ":" $0
@@ -279,7 +282,7 @@ else
   bad "plugin絶対path実行時のレビュー対象CWD契約が無い"
 fi
 
-if grep -qF 'ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-closing-keywords.sh"' \
+if grep -qF 'ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-closing-keywords.sh"' \
     "$DOCS/05-operations/deployment/git-workflow.md" \
   && grep -qF 'check-closing-keywords.sh' "$ROOT_PREREQUISITE_DOC"; then
   ok "Git Workflowのclosing keyword検査も同じroot guardで保護される"
@@ -451,7 +454,7 @@ echo "== docs-template ゲート例の fail-silent 退行検査 =="
 
 # --- multi-cli-review-orchestration.md（Issue #152 / PR #153 の修正本体） ---
 f="05-operations/deployment/multi-cli-review-orchestration.md"
-must_contain "$f" 'if ! bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"' \
+must_contain "$f" 'if ! FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"' \
   "pre-push 例がレビューの終了コードを検査している"
 must_contain "$f" 'FF_REVIEW_OUTPUT="$(mktemp -d "${TMPDIR:-/tmp}/ff-pre-push-review.XXXXXX")"' \
   "pre-push 例が実行ごとの専用出力先を作成している"
@@ -952,6 +955,18 @@ must_contain "$f" '「不在」と「照会失敗」を書き分ける' \
 must_contain "$f" '後者を「存在しない」と断定しない' \
   "Git Workflow ステップ1 が照会失敗を『存在しない』と断定しない規則を維持している"
 
+# --- Git Workflow: コミット手順の staged shell 単体チェック（OBS-042 到達性ギャップ）---
+# 対策（mbcs-guard / exit-code-guard の単体チェック）はスキル側に実装済みだったが、
+# それを呼ぶ手順が git-workflow.md のどこにも無く、4 回再発した。コード行の針は
+# フェンス内で単独行になる呼び出しそのものへ行頭アンカーを張る。散文の言及
+# （「`/pre-commit-check`（または同等の…」）にも同じ文字列が現れるため、
+# must_contain だけでは実行例の行を消しても散文が残れば合格になってしまう
+# （needle 設計規則）。
+must_match "$f" '^/pre-commit-check$' \
+  "Git Workflow のコミット手順が commit 前に /pre-commit-check（staged shell 単体チェック）を呼んでいる"
+must_contain "$f" 'commit 前の staged 状態でしか見えない違反' \
+  "Git Workflow のコミット手順がステップ5レビューでは staged shell を検出できない理由を明記している"
+
 # --- Git Workflow: Epic の一括対応手順（Issue #1145。観測台帳 OBS-038 から昇格）---
 # 契約文は番号付き太字の行頭から句点までをアンカーする。部分一致だけでは
 # 「…組む必要はない」のような否定の後置で反転しても緑のまま通る（実測）。
@@ -1025,6 +1040,35 @@ else
     ok "レビュー待ち時間の使い方が禁止側の理由（DISCARDED・未解消判定）を明記している"
   else
     bad "レビュー待ち時間の使い方の禁止側の理由が見つかりません"
+  fi
+fi
+
+# --- multi-implement SKILL.md: 委譲プロンプトの事実確認義務（親側 / 子側の 2 規定）---
+# 親側（委譲プロンプトへ載せる事実主張を一次情報で確認する）と子側（指示からの逸脱を
+# 根拠つきで報告してよい）は別の規定で、どちらも文言だけが防御である。片方だけが残ると
+# 「子が訂正するから親は確認しなくてよい」という読み方が復活するので、併存を固定する。
+# SKILL.md は ${DOCS}（docs-template）の外にあるため絶対パスへ直接 grep する。
+MULTI_IMPLEMENT_SKILL="$PLUGIN_ROOT/skills/multi-implement/SKILL.md"
+if [ ! -f "$MULTI_IMPLEMENT_SKILL" ]; then
+  bad "multi-implement SKILL.md が見つかりません: $MULTI_IMPLEMENT_SKILL"
+else
+  if grep -qF '「指示からの逸脱は根拠（実測・grep・一次情報）つきで報告してよい。盲従して欠陥を作り込まない」に相当する一文を常置する' \
+      "$MULTI_IMPLEMENT_SKILL"; then
+    ok "multi-implement SKILL.md に子側の逸脱報告規定が常置されている"
+  else
+    bad "multi-implement SKILL.md の子側の逸脱報告規定が見つかりません"
+  fi
+  if grep -qF '出所がレビュー指摘でもオーケストレータ自身の観察でも、一次情報' \
+      "$MULTI_IMPLEMENT_SKILL"; then
+    ok "multi-implement SKILL.md に親側の事実確認義務が出所を問わない形で常置されている"
+  else
+    bad "multi-implement SKILL.md の親側の事実確認義務（出所を問わない）が見つかりません"
+  fi
+  if grep -qF '子側の規定であり、親（このスキルを実行するオーケストレータ）が事実主張を確認せずに委譲プロンプトへ載せてよい理由にはならない' \
+      "$MULTI_IMPLEMENT_SKILL"; then
+    ok "親側の確認義務と子側の逸脱報告が別規定である旨が明記されている"
+  else
+    bad "親側の確認義務と子側の逸脱報告の分離が見つかりません（子の機構で親の確認を代替できると読める）"
   fi
 fi
 

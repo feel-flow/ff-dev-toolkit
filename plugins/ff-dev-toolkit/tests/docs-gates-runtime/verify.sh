@@ -134,7 +134,7 @@ extract_root_quoted_command() {
 extract_guarded_root_quoted_command() {
   local doc="$1" resource="$2" marker="${3:-}"
   awk -v resource="$resource" -v marker="$marker" '
-    index($0, "ff_require_toolkit_root && ff_require_consumer_root && bash \"${FF_DEV_TOOLKIT_ROOT}/scripts/" resource "\"") \
+    index($0, "ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT=\"${FF_DEV_TOOLKIT_ROOT}\" bash \"${FF_DEV_TOOLKIT_ROOT}/scripts/" resource "\"") \
       && (marker == "" || index($0, marker)) {
         command = $0
         sub(/^[[:space:]]*/, "", command)
@@ -350,7 +350,7 @@ run_docs_gate_mutation() {
     unguarded-env-direct)
       target="$docs_copy/05-operations/deployment/multi-cli-agent-orchestration.md"
       awk '
-        !changed && sub(/^ff_require_toolkit_root && ff_require_consumer_root && bash /, "  env REVIEW=1 bash ") { changed = 1 }
+        !changed && sub(/^ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="[$][{]FF_DEV_TOOLKIT_ROOT[}]" bash /, "  env REVIEW=1 FF_DEV_TOOLKIT_ROOT=\"${FF_DEV_TOOLKIT_ROOT}\" bash ") { changed = 1 }
         { print }
       ' "$target" >"$target.tmp"
       mv "$target.tmp" "$target"
@@ -390,7 +390,7 @@ run_docs_gate_mutation() {
     consumer-guard-missing)
       target="$docs_copy/05-operations/deployment/multi-cli-agent-orchestration.md"
       awk '
-        !changed && sub(/ && ff_require_consumer_root && bash /, " && bash ") { changed = 1 }
+        !changed && sub(/ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="[$][{]FF_DEV_TOOLKIT_ROOT[}]" bash /, "FF_DEV_TOOLKIT_ROOT=\"${FF_DEV_TOOLKIT_ROOT}\" bash ") { changed = 1 }
         { print }
       ' "$target" >"$target.tmp"
       mv "$target.tmp" "$target"

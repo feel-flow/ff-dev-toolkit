@@ -43,10 +43,10 @@ fi
 
 ```bash
 # 既定: dry-run（削除しない。候補と見込み容量だけ表示）
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/sweep-orphan-transcripts.sh"
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/sweep-orphan-transcripts.sh"
 
 # 回収を実行（tar.gz アーカイブ → 検証 → 元ディレクトリ削除）
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/sweep-orphan-transcripts.sh" --apply
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/sweep-orphan-transcripts.sh" --apply
 ```
 
 `$ARGUMENTS` に `--apply` が含まれるときだけ apply を付ける。それ以外は dry-run。
@@ -54,10 +54,10 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/sweep-orphan-transcripts.sh" --apply
 ```bash
 case " $ARGUMENTS " in
   *" --apply "*)
-    bash "${FF_DEV_TOOLKIT_ROOT}/scripts/sweep-orphan-transcripts.sh" --apply
+    FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/sweep-orphan-transcripts.sh" --apply
     ;;
   *)
-    bash "${FF_DEV_TOOLKIT_ROOT}/scripts/sweep-orphan-transcripts.sh"
+    FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/sweep-orphan-transcripts.sh"
     ;;
 esac
 ```

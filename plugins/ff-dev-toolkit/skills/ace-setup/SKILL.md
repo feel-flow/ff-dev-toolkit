@@ -96,7 +96,7 @@ fi
 # (1) scripts/ace/check-entry-format.ts を配置済みの場合
 npx --yes tsx scripts/ace/check-entry-format.ts --init-allowlist docs/08-knowledge/PLAYBOOK.md
 # (2) 配置していない場合はプラグイン同梱のテンプレートを直接叩く（インストール不要）
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" --init-allowlist docs/08-knowledge/PLAYBOOK.md
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" --init-allowlist docs/08-knowledge/PLAYBOOK.md
 ```
 
 - 記録されるのは**導入時点で旧形式だったエントリの ID だけ**（正準フォーマットのエントリは記録しない）。旧形式が 0 件ならファイル自体を作らない

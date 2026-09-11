@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# `gh label list` の stub。suite から PATH の先頭に置いて hook を駆動する。
+#
+# 本物の gh を呼ばないための安全弁: 受け付けるのは `label list` だけで、それ以外の
+# サブコマンドは非 0 で落とす（hook が想定外の gh 呼び出しを足したら赤になる）。
+#
+# FF_STUB_LABELS_MODE:
+#   ok（既定） 推奨ラベル構成が揃っているリポジトリ
+#   notype     優先度と follow-up はあるが種別に使える名前が 1 件も無い
+#   nopriority 種別はあるが priority 系が 1 件も無い
+#   nofollowup follow-up だけが無い
+#   custom     FF_STUB_LABELS（改行区切り）をそのまま返す
+#   fail       照会失敗（非 0 終了）
+#   empty      出力が空
+#   limit      取得上限（--limit の値）に達している
+set -u
+
+sub1="${1:-}"
+sub2="${2:-}"
+if [ "$sub1" != "label" ] || [ "$sub2" != "list" ]; then
+  echo "gh stub: unsupported invocation: $*" >&2
+  exit 2
+fi
+
+limit=200
+prev=""
+for arg in "$@"; do
+  case "$prev" in
+    --limit) limit="$arg" ;;
+  esac
+  case "$arg" in
+    --limit=*) limit="${arg#--limit=}" ;;
+  esac
+  prev="$arg"
+done
+
+case "${FF_STUB_LABELS_MODE:-ok}" in
+  fail)
+    echo "gh stub: could not resolve repository" >&2
+    exit 1
+    ;;
+  empty) exit 0 ;;
+  custom)
+    printf '%s\n' "${FF_STUB_LABELS:-}"
+    exit 0
+    ;;
+  limit)
+    i=1
+    while [ "$i" -le "$limit" ]; do
+      echo "filler-$i"
+      i=$((i + 1))
+    done
+    exit 0
+    ;;
+  notype)
+    printf '%s\n' 'major' 'minor' 'patch' 'hotfix' 'urgent' \
+      'priority:critical' 'priority:high' 'priority:medium' 'priority:low' 'follow-up'
+    exit 0
+    ;;
+  nopriority)
+    printf '%s\n' 'bug' 'enhancement' 'documentation' 'chore' 'refactor' 'testing' \
+      'epic' 'major' 'minor' 'patch' 'hotfix' 'urgent' 'follow-up'
+    exit 0
+    ;;
+  nofollowup)
+    printf '%s\n' 'bug' 'enhancement' 'documentation' 'chore' 'refactor' 'testing' \
+      'epic' 'major' 'minor' 'patch' 'hotfix' 'urgent' \
+      'priority:critical' 'priority:high' 'priority:medium' 'priority:low'
+    exit 0
+    ;;
+  *)
+    printf '%s\n' 'bug' 'enhancement' 'documentation' 'chore' 'refactor' 'testing' \
+      'epic' 'follow-up' 'major' 'minor' 'patch' 'hotfix' 'urgent' \
+      'priority:critical' 'priority:high' 'priority:medium' 'priority:low'
+    exit 0
+    ;;
+esac

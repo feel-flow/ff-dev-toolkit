@@ -395,6 +395,12 @@ else
     # ブロックでない（systemMessage のみ）ことを stdin JSON fixture で固定する。
     # 絶対化イディオム（コマンド置換・変数展開）を誤警告しない線引きも併せて見る。
     "$SCRIPT_DIR/guard-background-cwd/verify.sh"
+    # PreToolUse（Bash）の工数実績 未記入マージガード（hooks/guard-effort-actual.sh）。
+    # ff-effort ブロックがあるのに effort_ai_actual が未記入の Issue を閉じる
+    # gh pr merge を止める側と、ブロック不在・記入済み・非該当コマンド・gh/jq 不在で
+    # 止めない側を stdin JSON fixture + gh スタブで固定する。close-issue 手順 5a の
+    # fail-open 契約（ブロック不在は素通し）と矛盾しないことも併せて見る。
+    "$SCRIPT_DIR/guard-effort-actual/verify.sh"
     # PreToolUse（Edit/Write/MultiEdit/NotebookEdit/Bash/Agent）のレビュー走行中ロック +
     # 起動時 dirty ガード（hooks/guard-review-in-flight.sh）。ロック生存中の編集・git 書き込みの
     # deny、FF_REVIEW_LOCK_OVERRIDE での解除、ロック不在・stale PID の非 deny、
@@ -402,6 +408,14 @@ else
     # stdin JSON fixture で固定する。orchestrator 側のロック 3 経路は
     # multi-agent-revision-guard が実走で見る。
     "$SCRIPT_DIR/guard-review-in-flight/verify.sh"
+    # PreToolUse（Bash）の起票ラベル契約ガード（hooks/guard-issue-labels.sh）。
+    # 起票スキルを経由しない gh issue create に対し、種別 / 優先度の欠落は抜け道付き
+    # deny、follow-up の欠落は systemMessage の案内だけ、という二段を stdin JSON
+    # fixture で固定する。ラベル一覧を信用できないとき（照会失敗 / 空 / 上限到達）に
+    # 止めないこと、heredoc 本文の素通しと終端行直後の実コマンド検出の対、
+    # ラベル名の正本が setup-github-labels の軸別表であることを隔離コピーへの
+    # 変異注入で実測する。gh は fixture の stub に解決させ、実リポジトリは照会しない。
+    "$SCRIPT_DIR/guard-issue-labels/verify.sh"
     # squash 件名の closing keyword が Refs 運用の Issue を閉じる経路のガード。
     # 検査ロジック（scripts/check-closing-keywords.sh）の振る舞いと、SKILL.md /
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド

@@ -45,6 +45,8 @@ fi
 
 <!-- ff-dev-toolkit-plugin-root-guard:end -->
 
+同じ停止は `scripts/merge-cleanup.sh` 自身にも複製してある。スクリプトは起動時に、自分の実体位置（`<plugin root>/scripts/`）とホストが渡した root が同じ実体を指すことを確認し、食い違えば案内を出して中断する。上の手順が本文ごと届かなかった呼び出し元でも、この層だけは効く。中断コードは 1 で、PARTIAL の 2 とは区別する。スクリプト側のガードは候補を探索せず、渡された値と自分の位置を比べるだけで判定する。
+
 **引数**: `$ARGUMENTS`（マージされた PR 番号、例: `1234`）
 
 PR 番号は **必須**。`delete_branch_on_merge = false` のリポジトリではリモートブランチが残るため、PR 番号から head ref を引いて明示削除する。
@@ -56,7 +58,7 @@ PR 番号は **必須**。`delete_branch_on_merge = false` のリポジトリで
 以下を 1 回だけ実行する:
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh" $ARGUMENTS
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh" $ARGUMENTS
 ```
 
 **前提ツール**: 認証済み `gh` CLI と `jq`（不足していればスクリプトが冒頭で中断して案内する）
@@ -91,7 +93,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh" $ARGUMENTS
 | `FF_MERGE_CLEANUP_IGNORE_PATHS` | （空）| 未コミット変更ガードの対象外にするパス。`:` 区切りの glob。空文字列は未設定と同じ |
 
 ```bash
-FF_MERGE_CLEANUP_IGNORE_PATHS='videos/**:.cache/**' bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh" 1234
+FF_MERGE_CLEANUP_IGNORE_PATHS='videos/**:.cache/**' FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh" 1234
 ```
 
 パターンは git の pathspec（`glob` magic、リポジトリルート基準）として解釈する。`**` はディレクトリを跨ぐが `*` は跨がない — `videos/**` は `videos/a/b/spec.md` にも未追跡ディレクトリ `videos/a/` にも一致するが、`videos/*` は直下しか見ない。

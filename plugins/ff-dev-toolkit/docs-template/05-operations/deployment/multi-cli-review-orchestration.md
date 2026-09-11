@@ -37,6 +37,8 @@ handoff の producer は skill を実行する AI host である。Claude Code �
 
 このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowが `FF_DEV_TOOLKIT_ROOT` 経由で起動する同梱scriptである。後者は `check-closing-keywords.sh`（Issueクローズキーワードの手動検査）に加え、`check-merge-freshness.sh`（マージ前の鮮度検査）・`update-version-claim.sh` / `check-version-claims.sh`（version claimの生成と検証）を含む。呼び出す側の案内だけが増えて対象の列挙が追従しない状態を作らないため、Git Workflowから同梱scriptを新たに呼ぶときはこの列挙も同時に更新する。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は Codex cache → Claude cache の semantic version 最大を sidecar より先に選ぶ（Issue #623 の互換動作）。そのため plugin 更新直後は、端末の互換シムが新 cache、pre-push が更新前の sidecar を使う状態がある。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
 
+固定 root 経由で同梱 script を起動する実行部は、`FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh"` のように **handoff の代入を実行部と同じ 1 行へ載せる**。host は plugin root を Bash tool の環境変数として渡さず、実行部のテキストへ解決済みの絶対 path を差し込むだけなので、handoff を運ぶのが上の resolver 本文だけだと、「本文が劣化して届かなかった」ちょうどそのときに handoff も一緒に消える。script 側の root ガードは 「handoff が 1 つも無い直接起動」を不一致とみなさない（みなすと端末・テスト・pin した CI の正規な直接起動が全部止まる）ので、その経路では素通しになる。代入が同じ行に居れば、**実行するスクリプトの path だけを別のインストール領域へ書き換える**操作が、その行の中の不一致として検出される。固定 root 経由の path を変数へ受けてから起動する形（`JUDGE="${FF_DEV_TOOLKIT_ROOT}/scripts/…"` → `bash "$JUDGE"`）も、起動する行の側へ代入を置く。この形と、script 側ガードの複製・配置・中断コード・実際の停止は `tests/plugin-root-contract` が固定する。
+
 ```bash
 ff_canonical_toolkit_root() {
   local candidate="$1"
@@ -258,7 +260,7 @@ guard は bundled manifest の先頭 `name` marker、通常 directory の `scrip
 
 ```bash
 # Toolkit レビュー後に実行（プラグイン同梱 multi-review → multi-agent 経由）
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
 # scripts/codex-review.sh は multi-agent.sh へ委譲するシムとして同梱される
 # 生成シムはCodex-only互換入口であり、このcross-model実行とはmode・担当範囲が異なる
 ```
@@ -266,7 +268,7 @@ ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_RO
 commit 前の対話実行で staged index だけをレビューする場合は次を使う。pre-commit hook に組み込む場合は、[Husky pre-push フックとの統合](#husky-pre-push-フックとの統合)と同じ sidecar 復元・resource guard を先に置く。
 
 ```bash
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --staged
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --staged
 ```
 
 `--staged` は `git diff --cached` だけを各 prompt へ渡し、unstaged / branch 差分は
@@ -404,7 +406,7 @@ export LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 - Mike Farah `yq` v4（YAMLパーサー、設定ファイル読み込みに使用）
   - Homebrew がある場合（macOS / Linuxbrew）: `brew install yq`
-  - Homebrew が無い場合: 同梱の `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"` が [mikefarah/yq](https://github.com/mikefarah/yq) の GitHub release から公式バイナリを導入する（`curl` または `wget` が必要。配置先は既定で `~/.local/bin`。PATH に無い場合は shell profile へ追加する）
+  - Homebrew が無い場合: 同梱の `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"` が [mikefarah/yq](https://github.com/mikefarah/yq) の GitHub release から公式バイナリを導入する（`curl` または `wget` が必要。配置先は既定で `~/.local/bin`。PATH に無い場合は shell profile へ追加する）
   - **注意**: Ubuntu 等の distro パッケージ（`apt install yq` / `yum install yq`）は別実装のことがあり、本ツールが使う `yq -r` 式や capability probe と互換にならない。パッケージ経由の導入は使わない
 - 3つ以上のAI CLIインストール（分散レビューの効果を最大化）
 
@@ -451,10 +453,10 @@ CLI名・cost tier・perspective・fallback は plugin 同梱の `multi-agent.sh
 
 ```bash
 # 利用可能なCLIと設定を表示
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run
 
 # 特定のCLIだけでテスト
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli codex-cli --perspective test-analysis
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli codex-cli --perspective test-analysis
 ```
 
 ---
@@ -485,7 +487,7 @@ ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_RO
 設定ファイルではなく実行時に CLI を明示する:
 
 ```bash
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli grok-cli
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli grok-cli
 ```
 
 コスト戦略だけを既定として寄せたい場合は設定ファイル側へ:
@@ -509,7 +511,7 @@ tasks:
 比較対象の CLI を 2 つへ絞るのは実行時に指定する:
 
 ```bash
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli claude-code --cli codex-cli
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli claude-code --cli codex-cli
 ```
 
 ---
@@ -607,7 +609,7 @@ if ! FF_REVIEW_OUTPUT="$(mktemp -d "${TMPDIR:-/tmp}/ff-pre-push-review.XXXXXX")"
   exit 1
 fi
 REVIEW_REPORT="${FF_REVIEW_OUTPUT}/integrated-report.md"
-if ! bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" \
+if ! FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" \
   --output-dir "$FF_REVIEW_OUTPUT" \
   --strategy minimize_cost \
   --cli grok-cli \
@@ -671,7 +673,7 @@ echo "✅ レビュー完了。出力先: $FF_REVIEW_OUTPUT"
 
 このフックは無人の厳格なゲート例です。対話ホストが利用不可の根拠と主担当レビューを確認して継続する運用とは区別します。利用制限を理由にフックの非0終了を一律に成功へ置き換えないでください。
 
-> ⚠️ **ゲートを書くときの注意**: `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"` の終了コードを捨てて `CRITICAL_BLOCK` の有無だけで判定すると、レビューが 1 件も完走しなかった実行が「Critical なし = 合格」として通ります。これは Issue #152 の失敗モードがそのまま一層外側に出た形です。**終了コードと `INCOMPLETE` の両方**を見てください。
+> ⚠️ **ゲートを書くときの注意**: `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"` の終了コードを捨てて `CRITICAL_BLOCK` の有無だけで判定すると、レビューが 1 件も完走しなかった実行が「Critical なし = 合格」として通ります。これは、レビューの終了コードを捨てたために失敗が合格へ化けた既知の失敗モードが、そのまま一層外側に出た形です。**終了コードと `INCOMPLETE` の両方**を見てください。
 
 #### CRITICAL_BLOCK の観点別段階化
 
@@ -687,7 +689,7 @@ echo "✅ レビュー完了。出力先: $FF_REVIEW_OUTPUT"
 
 ```bash
 # 例: comment-analysis の指摘だけを直した fix の再検証
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective comment-analysis
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective comment-analysis
 
 # シム（codex-review.sh）経由では --reviewers で同じ限定ができる
 bash scripts/codex-review.sh --base develop --reviewers comment-analysis
@@ -735,26 +737,26 @@ commit pin、fork 境界、resource 検証を含む完全な workflow 例は、[
 
 ```bash
 # デフォルト実行（全CLI、分散モード）
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"
 
 # コスト最小化
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --strategy minimize_cost
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --strategy minimize_cost
 
 # 品質最大化（リリース前）
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --strategy maximize_quality
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --strategy maximize_quality
 
 # クロスモデル比較
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --perspective code-review
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --perspective code-review
 ```
 
 ### 特定CLI/パースペクティブのみ
 
 ```bash
 # Claude + Codex だけ（標準の2本柱）
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli claude-code --cli codex-cli
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli claude-code --cli codex-cli
 
 # セキュリティ分析だけ
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective security-analysis
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective security-analysis
 ```
 
 ### 結果の確認
@@ -790,7 +792,7 @@ ERROR: codex is not installed
 **対応**: フォールバック設定に従い、自動的に別のCLIに再分配されます。これは**未インストール時のプラン構築限定**の挙動です。手動で特定CLIをスキップするには：
 
 ```bash
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli claude-code --cli grok-cli
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli claude-code --cli grok-cli
 ```
 
 ### タイムアウト
@@ -799,10 +801,10 @@ ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_RO
 
 ```bash
 # 上限を延ばす（既定: 900秒）
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --timeout 1800
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --timeout 1800
 
 # 短く切り上げる（例: 手早く様子を見たいとき）
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --timeout 180
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --timeout 180
 ```
 
 > `REVIEW_TIMEOUT` 環境変数はアダプタを直叩きする場合の既定値にしか効きません。`multi-review.sh` / `multi-agent.sh` は常に `--timeout` をアダプタへ明示的に渡すため、この経路では無視されます。
@@ -824,10 +826,10 @@ ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_RO
 
 ```bash
 # 例: 同じ CLI に時間を足して再実行
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --resume --timeout 1800
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --resume --timeout 1800
 
 # 例: 代替 CLI を自分の判断で明示実行
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --cli claude-code --perspective code-review
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --cli claude-code --perspective code-review
 ```
 
 ### CLI が非インタラクティブモードでハングするとき

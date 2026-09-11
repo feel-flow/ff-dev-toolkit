@@ -66,8 +66,15 @@ hide_yq_from_path() {
 }
 
 validate_extracted_consumer_command() {
-  local command="$1" without_root
-  case "$command" in
+  local command="$1" without_root resource_command
+  # 実行部は handoff を同じ 1 行で運ぶ形だけを許可する（文書側の契約と同じ）。host は
+  # plugin root を環境変数として渡さず実行部テキストへ絶対 path を差し込むだけなので、
+  # handoff が本文の resolver にしか無いと、本文が落ちた経路で script 側ガードが素通しになる。
+  local handoff='FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" '
+  local handoff_plain='FF_DEV_TOOLKIT_ROOT="FF_DEV_TOOLKIT_ROOT" '
+  resource_command="${command#"$handoff"}"
+  [ "$resource_command" != "$command" ] || return 1
+  case "$resource_command" in
     'bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"'|\
     'bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh" '*|\
     'bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh"'|\
@@ -77,6 +84,7 @@ validate_extracted_consumer_command() {
     *) return 1 ;;
   esac
   without_root="${command//'${FF_DEV_TOOLKIT_ROOT}'/FF_DEV_TOOLKIT_ROOT}"
+  without_root="${without_root#"$handoff_plain"}"
   case "$without_root" in
     *'$'*|*'`'*|*';'*|*'&'*|*'|'*|*'<'*|*'>'*|*'\'*|*$'\n'*|*' #'*) return 1 ;;
   esac
@@ -87,7 +95,7 @@ validate_guarded_consumer_command() {
   local command="$1" resource_command
   local prefix='ff_require_toolkit_root && ff_require_consumer_root && '
   case "$command" in
-    'ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/'*) ;;
+    'ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/'*) ;;
     *) return 1 ;;
   esac
   resource_command="${command#"$prefix"}"
@@ -219,7 +227,7 @@ run_consumer_command_smoke() {
   cp -R "$PLUGIN_ROOT" "$ENTRYPOINT_TOOLKIT_ROOT"
   (cd "$ENTRYPOINT_CONSUMER" && git init -q)
 
-  safe_command='bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run'
+  safe_command='FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run'
   unsafe_commands=(
     "${safe_command}; touch '$ENTRYPOINT_ROOT/markdown-command-ran'"
     "${safe_command} && true"

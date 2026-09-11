@@ -75,7 +75,7 @@ fi
 2. **モード判定**: Git Workflow の tier 判定に従う（**自己申告で宣言しない**。宣言制は申告漏れがそのまま「全部標準」または「全部軽量」へ倒れる）。着手時点はまだ差分が無いので、予定している変更対象の path を渡した**暫定判定**を使う:
 
    ```bash
-   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/workflow-tier.sh" docs/MASTER.md README.md
+   FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/workflow-tier.sh" docs/MASTER.md README.md
    ```
 
    引数は「これから変更する予定の path」を並べる（上は例）。出力の `WORKFLOW_TIER=light` なら**軽量モード**（G1〜G2 を簡略化。ただし受け入れ基準1個と影響度 LOW の確認は必須）、`standard` / `full` と、判定材料が取れなかった `unknown` は標準モード。**判定パターンの実効値は `workflow-tier.sh --list-rules` が持ち、各 tier で何をするかの正本は `docs-template/05-operations/DEPLOYMENT.md` §主要ステップ が持つ**（文書は判定パターンを書き写さないので、上書きされた環境でも嘘にならない）。スクリプトが無い環境では標準モードで進める。

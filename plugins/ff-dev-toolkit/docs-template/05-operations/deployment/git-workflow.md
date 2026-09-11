@@ -280,9 +280,17 @@ grep -n "return " src/render.ts
 
 #### コミット
 
+**`git add` の後・`git commit` の前に staged shell の単体チェックを通す**: 下のステップ5「セルフレビュー」の `/pr-review-toolkit:review-pr` や Codex CLI クロスレビューは commit 済みの diff を対象にするため、commit 前の staged 状態でしか見えない違反（例: 日本語コメント中の `$VAR` 直付けマルチバイト展開）を検出する経路がステップ5には無い。ここで `/pre-commit-check`（ff-dev-toolkit スキル。**AI エージェントへのスラッシュコマンドで、シェルコマンドではない点に注意**。または同等の staged shell 単体チェック）を実行し、staged された `*.sh` に対する mbcs-guard / exit-code-guard の単体チェックを通してから commit する。これを飛ばすと、同じ違反が全件ゲート（`run-all.sh` の sync-forbidden-patterns 等）まで到達して初めて赤になる。
+
 ```bash
 # AIツール（Claude Code等）で実装後、コミット
 git add .
+
+# commit 前に staged shell の単体チェック（ブロッカーがあればここで止めて修正する）
+# 次の行は AI エージェントへのスラッシュコマンドで、シェルコマンドではない
+# （ff-dev-toolkit プラグイン提供。シェルに渡しても実行できない）
+/pre-commit-check
+
 git commit -m "feat: ユーザー認証機能を実装
 
 - JWTベースの認証ミドルウェアを追加
@@ -379,7 +387,7 @@ npm audit --audit-level=moderate
 
 **frontmatter に `version` を持つ文書を `docs/` 配下へ追加した回・その `version` を変えた回・PLAYBOOK / PATTERNS を変更した回は、短い検証に claim 照合を含める。** 次の 2 コマンドは固定 root を使うので、ステップ5と同じ [plugin root固定契約](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) で host の読み込み済み実体から root を解決してから回す（配置先の推測や `${CLAUDE_PLUGIN_ROOT}` の手動コピーでは作らない）。
 
-`.version-claims/` を持つプロジェクトでは、まず `git fetch origin "+refs/heads/<default branch>:refs/remotes/origin/<default branch>"` と `git merge-base --is-ancestor origin/<default branch> HEAD` を通す — helper は fetch せずローカルの `origin/<default branch>` をそのまま `--base` に使うので、ref が stale なまま生成した claim は、自分で fetch して最新 commit を pin する validator から byte 不一致（exit 1）で弾かれ、遅れではなく stale claim に見える（契約の正は `.version-claims/README.md`）。そのうえで claim を要求される文書ごとに（frontmatter `version` を持つ文書の新規追加・その `version` の変更・PLAYBOOK / PATTERNS の版不変の内容更新。frontmatter に `version` が無い文書は対象外で、要求条件の正は `.version-claims/README.md`）`bash "${FF_DEV_TOOLKIT_ROOT}/scripts/update-version-claim.sh" --base "origin/<default branch>" --document <文書 path>` で claim を再生成し、`docs/` 配下の変更と claim を**まとめて** stage してから `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-version-claims.sh"` を回す。validator はこれらの文書に限らず、`docs/**/*.md` と `.version-claims/**/*.claim` に未 stage / 未追跡が 1 件でも残っていれば拒否するので、stage が部分的だと claim 自体は正しくても赤になる。helper は `--root` を取らず CWD の `git rev-parse --show-toplevel` で対象を解決するので、作業ツリー内ならどこで実行してもよいが、別リポジトリの CWD から起動すると文書不在・base 解決不能・`.version-claims/` 不在のいずれかで非 0 になる。**validator が通ったら claim を同じ commit へ含める**（stage したまま次へ進まない — push は HEAD しか送らないので、claim の入らない PR になる）。
+`.version-claims/` を持つプロジェクトでは、まず `git fetch origin "+refs/heads/<default branch>:refs/remotes/origin/<default branch>"` と `git merge-base --is-ancestor origin/<default branch> HEAD` を通す — helper は fetch せずローカルの `origin/<default branch>` をそのまま `--base` に使うので、ref が stale なまま生成した claim は、自分で fetch して最新 commit を pin する validator から byte 不一致（exit 1）で弾かれ、遅れではなく stale claim に見える（契約の正は `.version-claims/README.md`）。そのうえで claim を要求される文書ごとに（frontmatter `version` を持つ文書の新規追加・その `version` の変更・PLAYBOOK / PATTERNS の版不変の内容更新。frontmatter に `version` が無い文書は対象外で、要求条件の正は `.version-claims/README.md`）`FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/update-version-claim.sh" --base "origin/<default branch>" --document <文書 path>` で claim を再生成し、`docs/` 配下の変更と claim を**まとめて** stage してから `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-version-claims.sh"` を回す。validator はこれらの文書に限らず、`docs/**/*.md` と `.version-claims/**/*.claim` に未 stage / 未追跡が 1 件でも残っていれば拒否するので、stage が部分的だと claim 自体は正しくても赤になる。helper は `--root` を取らず CWD の `git rev-parse --show-toplevel` で対象を解決するので、作業ツリー内ならどこで実行してもよいが、別リポジトリの CWD から起動すると文書不在・base 解決不能・`.version-claims/` 不在のいずれかで非 0 になる。**validator が通ったら claim を同じ commit へ含める**（stage したまま次へ進まない — push は HEAD しか送らないので、claim の入らない PR になる）。
 
 この照合は数秒で終わる（`origin/<default branch>` の fetch を含むのでネットワークに依存する。実測 1.3〜2.2 秒）。非 0 は 2 種類に分かれ、**exit 1 が contract 違反**（claim の不足・stale・orphan に加え、対象 path の未 stage / 未追跡も含む）、**exit 2 は検査不能**（主に `origin/HEAD` を解決できない / default branch を fetch できない / HEAD が default branch の子孫でない）で、後者は claim の不整合ではない。`.version-claims/` を持たないプロジェクトでは「未導入」として exit 0 で明示 skip するが、`origin` remote があるときは skip 判定より先に default branch の解決を通るため、オフラインなどでは exit 2 になりうる。
 
@@ -548,7 +556,7 @@ Claude Codeのpr-review-toolkitサブエージェントを活用した包括的�
 
 ```bash
 # Toolkit セルフレビュー後に実行（同梱の multi-review 経由で Codex 観点）
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
 ```
 
 > **レビュー結果の対応**: 全てのレビュー結果は [PRレビュー対応ポリシー](./review-response-policy.md) に従って対応します。Critical/Warning は確認不要で即対応。失敗シナリオのない「ガード追加」要求は同ポリシーの重大度インフレ抑止により Suggestion 扱い。レビュー→修正ループの上限と停止条件は [fix ループの収束判定と打ち切り](./multi-cli-review-orchestration.md#fix-ループの収束判定と打ち切り) を正とする。
@@ -692,7 +700,7 @@ gh pr view "${PR_NUMBER}" --json title,commits --jq '
     | "commit-body:" + .oid[0:7] + "\t" + (.messageBody | gsub("\n"; " ")))
 ' > "${SURFACE}" || { echo "❌ 検査面の取得に失敗（検査は成立していない）" >&2; exit 2; }
 
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-closing-keywords.sh" \
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-closing-keywords.sh" \
   --repo "${TARGET_REPO}" --refs-issue "${ISSUE_NUM}" < "${SURFACE}"
 # 終了コード 0=抵触なし / 1=抵触あり / 2=検査が成立しない。0 と 1 以外はすべて停止側へ倒す
 rm -f "${SURFACE}"
@@ -723,7 +731,7 @@ rm -f "${SURFACE}"
 /pr-review-toolkit:review-pr
 
 # クロスモデルレビュー（GPT系の観点、read-only・同梱 multi-review）
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
 # scripts/codex-review.sh は multi-agent.sh へ委譲するシムとして同梱される
 # 生成シムはCodex-only互換入口であり、このcross-model実行とはmode・担当範囲が異なる
 ```
@@ -733,10 +741,10 @@ ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_RO
 ```bash
 # 既定ラインナップ: Claude / Codex / Grok（Copilot は --cli copilot-cli でオプトイン）
 # multi-review.sh / multi-agent.sh / adapters/* はプラグイン同梱
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"
 
 # 特定の観点のみ
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective test-analysis
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective test-analysis
 ```
 
 #### 統合レポートの確認
@@ -964,7 +972,7 @@ checks が無いと判った場合はローカル全件ゲート + 鮮度照合�
 ```bash
 # 実測対象は自己申告ではなく記録から取る。記録はゲートの通過時に書かれる
 # （プロジェクトの検証スイートから scripts/record-gate-head.sh を呼ぶ）
-FRESH_OUT="$(bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-merge-freshness.sh" \
+FRESH_OUT="$(FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-merge-freshness.sh" \
   --remote-head "$(gh pr view "${PR_NUMBER}" --json headRefOid --jq .headRefOid)" \
   --fetch)"
 FRESH_STATUS=$?
@@ -1302,6 +1310,8 @@ ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行�
 10. [ ] /close-issue（AC 照合ゲート: チェックボックス - [x] 更新 + 完了報告コメント）
 11. [ ] マージ（Squash merge、--match-head-commit 付き）
 ```
+
+ステップ10 を飛ばして 11 へ進もうとした場合、閉じる Issue の `ff-effort` ブロックに `effort_ai_actual` が未記入なら PreToolUse ガード（ff-dev-toolkit の `hooks/guard-effort-actual.sh`）が `gh pr merge` の実行前に停止する。ブロックが無い Issue と、既に閉じている Issue は対象外。closing keyword で閉じる Issue が取れる PR では本文の `Refs` を見ないので、長命の tracking / Epic Issue を `Refs` で参照する sub-PR は止まらない。実績を書き戻さずに進める判断をしたときは案内どおり対象コマンドの先頭へ `FF_EFFORT_ACTUAL_ACK=1` を付けて再実行する。
 
 ## Epic の一括対応（バッチ分割・worktree 並列・直列マージ）
 

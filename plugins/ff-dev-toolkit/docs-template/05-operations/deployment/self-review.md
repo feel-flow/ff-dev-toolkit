@@ -150,7 +150,7 @@ CLI の失敗・タイムアウトと `INCOMPLETE` は「未確認」であり�
 
 ```bash
 # Toolkit レビュー後に実行（プラグイン同梱の multi-review 経由）
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
 # scripts/codex-review.sh は multi-agent.sh へ委譲するシムとして同梱される
 # 生成シムはCodex-only互換入口であり、このcross-model実行とはmode・担当範囲が異なる
 ```
@@ -200,7 +200,7 @@ pre-push hookで自動実行（`.husky/pre-push`）することも可能です�
 
 ```bash
 # 同梱: Multi-CLI オーケストレーターの依存確認・導入
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
 # setup-multi-review.sh / setup-automated-review.sh は同梱されない（利用側で pre-commit 等を組む場合の別名例）
 ```
 

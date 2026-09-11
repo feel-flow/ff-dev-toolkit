@@ -45,7 +45,7 @@ fi
 固定した root の `scripts/check-plugin-versions.sh` と `scripts/lib/plugin-versions.jq` の実在を確認して実行する。
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-plugin-versions.sh" --json
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-plugin-versions.sh" --json
 ```
 
 既定では `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/` の登録ファイルと

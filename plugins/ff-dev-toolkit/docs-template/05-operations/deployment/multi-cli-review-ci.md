@@ -135,7 +135,7 @@ jobs:
           PR_BASE_REF: ${{ github.base_ref }}
         run: |
           env -u GITHUB_TOKEN -u GH_TOKEN \
-            bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" \
+            FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" \
               --config "${FF_DEV_TOOLKIT_ROOT}/scripts/agent-config.yaml" \
               --output-dir "$FF_REVIEW_OUTPUT" \
               --base "origin/${PR_BASE_REF}" \

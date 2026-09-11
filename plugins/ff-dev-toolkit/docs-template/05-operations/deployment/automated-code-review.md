@@ -92,8 +92,8 @@
 ```bash
 # Multi-CLI オーケストレーターの依存確認・導入（同梱）
 run_ff_setup_and_review() {
-  ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh" || return "$?"
-  ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"
+  ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh" || return "$?"
+  ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"
 }
 run_ff_setup_and_review
 # guard または setup が非0を返した場合は review を実行しない
@@ -107,7 +107,7 @@ run_ff_setup_and_review
 
 ```bash
 # 1. 正本の resolver + guard が成功した場合だけ依存確認へ進む
-ff_require_toolkit_root && ff_require_consumer_root && bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
 
 # 2. （任意）pre-commit から multi-review.sh を呼ぶ hook を利用側で追加
 # hook はskill呼び出しとは別のタイミング・プロセスで動くため、正本の

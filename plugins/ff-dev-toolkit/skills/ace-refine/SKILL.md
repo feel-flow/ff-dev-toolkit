@@ -85,7 +85,7 @@ fi
 チェッカーはコピー済みのものが最新でない場合、同梱runnerを使う（plugin root guardを先に実行する）。引数は個別に引用し、資料本文をシェルコードへ埋め込まない:
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-domain-distillation.ts" "$REPOSITORY" "$DISTILL_PR" "$ACE_ID" "$DISTILL_TARGET" "$RULE_TEXT"
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-domain-distillation.ts" "$REPOSITORY" "$DISTILL_PR" "$ACE_ID" "$DISTILL_TARGET" "$RULE_TEXT"
 ```
 
 ## 手順
@@ -100,7 +100,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs
    # プロジェクトに scripts/ace/ が導入済みの場合
    npx --yes tsx scripts/ace/ace-refine-report.ts docs/08-knowledge/PLAYBOOK.md
    # 未導入の場合はプラグイン同梱のテンプレートを直接使う（インストール不要）
-   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-refine-report.ts" docs/08-knowledge/PLAYBOOK.md
+   FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-refine-report.ts" docs/08-knowledge/PLAYBOOK.md
    ```
 
    レポートは (1) Archive 候補（helpful=0 かつ stale）、(2) Archive 候補から除外（他エントリの統合先）、(3) 行数バジェット超過（行数降順 = 圧縮効果の大きい順）、(4) PATTERNS.md 昇格候補、を列挙する。
@@ -115,7 +115,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs
    # プロジェクトに scripts/ace/ が導入済みの場合
    npx --yes tsx scripts/ace/ace-abstraction-report.ts docs/08-knowledge/PLAYBOOK.md
    # 未導入の場合はプラグイン同梱のテンプレートを直接使う（インストール不要）
-   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-abstraction-report.ts" docs/08-knowledge/PLAYBOOK.md
+   FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-abstraction-report.ts" docs/08-knowledge/PLAYBOOK.md
    ```
 
    読み取り専用・dry-run 既定で、**候補が何件出ても終了コードは 0**（ゲートではない）。非 0 で止まるのは入力が測れないときだけ（パス不備・**ACE エントリ 0 件**・**未閉フェンス** = 2 / 読み込み失敗 = 1）で、そのときはレポートが 1 行も出ない。**「候補 0 件の正常レポート」と「レポートが出ていない」を取り違えない** — 後者はまだ何も測れていない状態である。
@@ -372,20 +372,20 @@ R3 開始前ガードで確定した default branch を基準にする。`.versi
    # (2) npm script は無いがプロジェクトに scripts/ace/ を導入済みの場合
    npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
    # (3) scripts/ace/ 未導入の場合はプラグイン同梱のテンプレートを直接使う（インストール不要）
-   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check
+   FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check
 
    # 以下 4 ゲートは各 2 択（導入済み / 未導入）から 1 本だけを実行する
    npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md
-   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-category-size.ts" docs/08-knowledge/PLAYBOOK.md
+   FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-category-size.ts" docs/08-knowledge/PLAYBOOK.md
    # archive の保全本文内リンクが冒頭注記で担保されているか + <a id> 一意性（Issue #288 穴 2 / #492）
    npx --yes tsx scripts/ace/check-archive-links.ts docs/08-knowledge/PLAYBOOK.md
-   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-archive-links.ts" docs/08-knowledge/PLAYBOOK.md
+   FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-archive-links.ts" docs/08-knowledge/PLAYBOOK.md
    # compact 保全・merge 状態遷移・archive 撤去・PATTERNS 収載（本文+出典）の結果不変条件（Issue #492 / #1028）
    npx --yes tsx scripts/ace/check-refine-invariants.ts docs/08-knowledge/PLAYBOOK.md
-   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-refine-invariants.ts" docs/08-knowledge/PLAYBOOK.md
+   FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-refine-invariants.ts" docs/08-knowledge/PLAYBOOK.md
    # 新規追記が旧テーブル形式でないことの機械検証（Issue #286）
    npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
-   bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md
+   FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md
    ```
 
 6. **正準化後の allowlist 操作は変種で分岐する**（`check-entry-format` の旧形式判定は field-table-header / table-separator / insight-block の 3 マーカー OR。allowlist から外してよいのは live 本文に 3 マーカーが 1 つも残っていない ID だけ。第 1 変種＝本文要約でも、行頭の **Insight**/**Context**/**Action** が残れば legacy のまま）:
@@ -405,7 +405,7 @@ R3 開始前ガードで確定した default branch を基準にする。`.versi
      for document in docs/08-knowledge/PLAYBOOK.md docs/03-implementation/PATTERNS.md; do
        if git diff --quiet "origin/${default_branch}" -- "$document"; then diff_rc=0; else diff_rc=$?; fi
        case "$diff_rc" in 0) continue ;; 1) ;; *) echo "文書差分を検査できません: $document" >&2; exit 1 ;; esac
-       "$FF_DEV_TOOLKIT_ROOT/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document "$document" || exit 1
+       FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" "${FF_DEV_TOOLKIT_ROOT}/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document "$document" || exit 1
      done
    fi
    ```
@@ -431,7 +431,7 @@ if [[ -d .version-claims ]]; then
     *) echo "PATTERNS の staged 差分を検査できません" >&2; exit 1 ;;
   esac
 fi
-[[ ! -d .version-claims ]] || "$FF_DEV_TOOLKIT_ROOT/scripts/check-version-claims.sh" --root "$(git rev-parse --show-toplevel)" || exit 1
+[[ ! -d .version-claims ]] || FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" "${FF_DEV_TOOLKIT_ROOT}/scripts/check-version-claims.sh" --root "$(git rev-parse --show-toplevel)" || exit 1
 git status --short  # 意図したファイルのみが含まれるか確認
 git commit \
   -m "knowledge: ace-refine <YYYY-MM-DD> <要約（例: archive 12 件 / compact 5 件）>" \

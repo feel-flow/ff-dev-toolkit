@@ -72,7 +72,7 @@ fi
 入力検証は同梱 `ace-curate-input.ts` をrunnerで実行する。パース済み引数を個別のshell引数として渡し（shell配列の `"${ACE_ARGS[@]}"`）、`$ARGUMENTS` をevalしない。出力JSONのmode/pr/issue/sourcesを以降の分岐に使う。exit 2なら収集・変更しない。
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-curate-input.ts" "${ACE_ARGS[@]}"
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-curate-input.ts" "${ACE_ARGS[@]}"
 ```
 
 ## 手順
@@ -362,14 +362,14 @@ npm run ace:check-playbook-frontmatter
 # (2) npm script は無いが scripts/ace/sync-playbook-frontmatter.ts が存在する場合（ディレクトリの有無ではなく当該ファイルの有無で選ぶ — 部分導入のプロジェクトがある）
 npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
 # (3) 上のファイルが無い場合はプラグイン同梱のテンプレートを直接使う（インストール不要）
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check
 
 # 形式ゲート: 新規追記が旧テーブル形式でないことを機械検証する（Issue #286）
 # 次の 2 つのうち 1 本だけを実行する
 # (1) scripts/ace/check-entry-format.ts が存在する場合
 npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
 # (2) 上のファイルが無い場合はプラグイン同梱のテンプレートを直接使う
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md
 ```
 
 **同梱テンプレートを叩く経路で `npx --yes tsx` を直接書かないこと**（Issue #879）。root package に `tsx` binary が無い workspace 環境では `tsx: command not found` で 3 ゲートとも到達不能になり、実測ではそこから手作業照合へ戻る動きが起きた。`ace-run-ts.sh` は候補を**実際に起動して**確かめながら次の順で解決する — `FF_ACE_TS_RUNNER`（明示指定。`pnpm --filter <pkg> exec tsx` のような複数語も可） → PATH の `tsx` → 上位ディレクトリを含む `node_modules/.bin/tsx` → `pnpm` / `yarn` の `exec` → `npx --yes tsx`。
@@ -465,11 +465,11 @@ else
 fi
 if [[ -d .version-claims ]]; then
   [[ -n "${FF_DEV_TOOLKIT_ROOT:-}" && -x "$FF_DEV_TOOLKIT_ROOT/scripts/update-version-claim.sh" ]] || { echo "FF_DEV_TOOLKIT_ROOT の claim helper を解決できません" >&2; exit 1; }
-  "$FF_DEV_TOOLKIT_ROOT/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document docs/08-knowledge/PLAYBOOK.md || exit 1
+  FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" "${FF_DEV_TOOLKIT_ROOT}/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document docs/08-knowledge/PLAYBOOK.md || exit 1
 fi
 git add docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md || { echo "PLAYBOOK 変更を stage できません" >&2; exit 1; }
 [[ ! -d .version-claims ]] || { [[ -f .version-claims/docs/08-knowledge/PLAYBOOK.md.claim ]] || { echo "PLAYBOOK claim がありません。上の update-version-claim.sh を再実行してください: .version-claims/docs/08-knowledge/PLAYBOOK.md.claim" >&2; exit 1; }; git add .version-claims/docs/08-knowledge/PLAYBOOK.md.claim || { echo "PLAYBOOK claim を stage できません" >&2; exit 1; }; }
-[[ ! -d .version-claims ]] || "$FF_DEV_TOOLKIT_ROOT/scripts/check-version-claims.sh" --root "$(git rev-parse --show-toplevel)" || exit 1
+[[ ! -d .version-claims ]] || FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" "${FF_DEV_TOOLKIT_ROOT}/scripts/check-version-claims.sh" --root "$(git rev-parse --show-toplevel)" || exit 1
 git status --short  # 意図したファイルのみが含まれ、コミットメッセージの主張と一致するか確認
 # commit type: 上の commitlint type 許容リスト確認で knowledge が非許容なら chore 等
 # プロジェクト規約の type へ上書きする（件名の要約・Categories: body は不変）。
@@ -555,12 +555,12 @@ if [[ -d .version-claims ]]; then
   default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || { echo "origin/HEAD を解決できません。git remote set-head origin --auto 後に再実行してください" >&2; exit 1; }
   [[ "$default_ref" == origin/* ]] || { echo "origin/HEAD が不正です" >&2; exit 1; }
   default_branch="${default_ref#origin/}"
-  "$FF_DEV_TOOLKIT_ROOT/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document docs/08-knowledge/PLAYBOOK.md || exit 1
+  FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" "${FF_DEV_TOOLKIT_ROOT}/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document docs/08-knowledge/PLAYBOOK.md || exit 1
   [[ -f .version-claims/docs/08-knowledge/PLAYBOOK.md.claim ]] || { echo "PR 経路に PLAYBOOK version claim がありません" >&2; exit 1; }
 fi
 git add docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md || { echo "PLAYBOOK 変更を stage できません" >&2; exit 1; }
 [[ ! -d .version-claims ]] || git add .version-claims/docs/08-knowledge/PLAYBOOK.md.claim || { echo "PLAYBOOK claim を stage できません" >&2; exit 1; }
-[[ ! -d .version-claims ]] || "$FF_DEV_TOOLKIT_ROOT/scripts/check-version-claims.sh" --root "$(git rev-parse --show-toplevel)" || exit 1
+[[ ! -d .version-claims ]] || FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" "${FF_DEV_TOOLKIT_ROOT}/scripts/check-version-claims.sh" --root "$(git rev-parse --show-toplevel)" || exit 1
 git status --short  # 意図したファイルのみが含まれ、コミットメッセージの主張と一致するか確認
 # commit type: 上の commitlint type 許容リスト確認で knowledge が非許容なら chore 等
 # プロジェクト規約の type へ上書きする（件名の要約・Categories: body は不変）。
@@ -607,6 +607,6 @@ gh pr create --base <default-branch> --title "${commit_type}: ${ACE_ID} ${ACE_SU
 - 既存エントリの Helpful/Harmful カウンター更新と Status 変更（active → deprecated）は許可
 - カウンターの更新は **インクリメントのみ**（減算しない）
 - 知見が抽出されない場合（typo修正のみ等）は「知見なし」と報告して終了（ただし Reuse 記録の反映〔手順 3〕は候補 0 件でも実施してから終了する）
-- PLAYBOOK.md はカテゴリ別に `playbook/*.md` へ分割済み。肥大化チェックは `scripts/ace/check-category-size.ts` が存在するプロジェクトの場合 `npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md` で実行できる（npm script として登録してもよい）。当該ファイルが無いプロジェクトでは同梱テンプレートを直接叩く（インストール不要）: `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-category-size.ts" docs/08-knowledge/PLAYBOOK.md`（runner 解決は手順 4-f を参照）。このチェックは `playbook/` サブディレクトリを自動検出して索引 + 全サブファイルの総行数・カテゴリ別件数を集計する（`playbook/archive/` 配下は対象外）。行数上限は**件数から導出**される（`ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1)`。`ACE_MAX_PLAYBOOK_LINES` を明示指定したときだけ固定上限。ADR-019）。超過すると警告が出る（**警告のみ・追記はブロックしない**）。導出上限の超過は「ファイルが大きい」ではなく「**1 エントリが太い**」の意味なので、第一対応は旧テーブル形式の正準化。密度警告・カテゴリ件数の refine 目安超過（既定 130 件・警告）またはブロック上限超過（既定 280 件・exit 1）が出た場合は `/ace-refine` で正準化・stale アーカイブ・圧縮・統合を実行する。分割は検索語彙が明確に分岐するときだけ（分割だけで凌がない）
+- PLAYBOOK.md はカテゴリ別に `playbook/*.md` へ分割済み。肥大化チェックは `scripts/ace/check-category-size.ts` が存在するプロジェクトの場合 `npx --yes tsx scripts/ace/check-category-size.ts docs/08-knowledge/PLAYBOOK.md` で実行できる（npm script として登録してもよい）。当該ファイルが無いプロジェクトでは同梱テンプレートを直接叩く（インストール不要）: `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-category-size.ts" docs/08-knowledge/PLAYBOOK.md`（runner 解決は手順 4-f を参照）。このチェックは `playbook/` サブディレクトリを自動検出して索引 + 全サブファイルの総行数・カテゴリ別件数を集計する（`playbook/archive/` 配下は対象外）。行数上限は**件数から導出**される（`ヘッダ行数 + 件数 × (ACE_MAX_ENTRY_LINES + 1)`。`ACE_MAX_PLAYBOOK_LINES` を明示指定したときだけ固定上限。ADR-019）。超過すると警告が出る（**警告のみ・追記はブロックしない**）。導出上限の超過は「ファイルが大きい」ではなく「**1 エントリが太い**」の意味なので、第一対応は旧テーブル形式の正準化。密度警告・カテゴリ件数の refine 目安超過（既定 130 件・警告）またはブロック上限超過（既定 280 件・exit 1）が出た場合は `/ace-refine` で正準化・stale アーカイブ・圧縮・統合を実行する。分割は検索語彙が明確に分岐するときだけ（分割だけで凌がない）
 
 最終報告にはdomainの評価済み/未実施と理由・候補数/登録数（重複等で採用しなかった理由を含む）、sourceの取得済み/未確認、domainの確認状態と反映先未解決、資料単独時のIssueと採番IDを含める。登録成功・設計書PR作成・マージ済み反映を別々に報告する。

@@ -107,7 +107,7 @@ Codex では Stop hook の `decision:block` を返さないため、事前注入
 帯の判定には Issue 1 件の乖離率で足りるが、**閾値そのものの妥当性は分布を見ないと分からない**。振り返りの実行時に、`ff-effort` ブロックを持つ Issue が前回の集計から増えていれば集計器を回す:
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}/scripts/effort-report.sh" --repo "<owner/repo>"
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/effort-report.sh" --repo "<owner/repo>"
 ```
 
 出力の読み方と、そこから起きる行動:

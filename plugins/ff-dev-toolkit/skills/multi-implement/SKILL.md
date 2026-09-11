@@ -43,7 +43,7 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
   - 例: `新しいバリデーション関数を追加`
   - 例: `ユーザー認証ミドルウェアのリファクタリング --cli claude-code --cli codex-cli`
   - 例: `テストコードの拡充 --include-diff`（現在の差分も含める）
-  - 全オプションは `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --help` で確認できます
+  - 全オプションは `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --help` で確認できます
 
 ## 手順
 
@@ -57,7 +57,7 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 まず実行プランを表示し、ユーザーに確認を求めます:
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task implement --description "<タスク説明>" --dry-run $OPTIONS
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task implement --description "<タスク説明>" --dry-run $OPTIONS
 ```
 
 出力を確認し、以下をユーザーに報告:
@@ -75,10 +75,12 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task implement --descript
 ユーザーが承認したら、実装を実行します:
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task implement --description "<タスク説明>" $OPTIONS
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task implement --description "<タスク説明>" $OPTIONS
 ```
 
 **`<タスク説明>` の標準文言**: `--description` はそのまま各 CLI への `## Task Description` に載る（`scripts/adapters/adapter-common.sh` の `build_prompt`）。ここに「指示からの逸脱は根拠（実測・grep・一次情報）つきで報告してよい。盲従して欠陥を作り込まない」に相当する一文を常置する。オーケストレータ（このスキルを実行する側）が混入させた設計仕様の誤りを実装 agent が実測で検出・自己訂正できるようにするため（OBS-056）。
+
+**`<タスク説明>` を組み立てる前のオーケストレータ側の確認義務**: 上記は委譲先（子）が逸脱を報告してよいという子側の規定であり、親（このスキルを実行するオーケストレータ）が事実主張を確認せずに委譲プロンプトへ載せてよい理由にはならない。委譲プロンプトへ載せる事実主張は、出所がレビュー指摘でもオーケストレータ自身の観察でも、一次情報（実体の grep / スクリプトの終了コード契約 / `git show origin/<branch>:<path>`）で確認してから渡す。子が実測で訂正しなければ、確認していない前提がそのまま実装や知見化に流れ込む（OBS-121）。
 
 **依存プリフライトはこの経路では委譲先に任せない**: この経路は委譲先が worktree を作らず、起動元の作業ツリーをそのまま使う（CLI の CWD はリポジトリの物理ルートへ固定される）。さらに implement のプロンプト契約は staging 配下だけへの書き込みを課すため、作業ツリーの `node_modules` を作る依存インストールは委譲先が実行できない（[Implement の書き込み境界](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#implement-の書き込み境界)）。起動元が依存未インストールの新規 worktree なら、**CLI を起動する前にオーケストレータが依存インストール（例: `npm ci --prefix <この作業ツリー>/<パッケージ定義のあるディレクトリ>`）を済ませる**。済ませずに起動すると、CLI が回すテストも、staging を適用したあとに回すゲートも環境都合で崩れる。委譲プロンプトへ常置する形が要るのは worktree 隔離で起動するホストの subagent 経路で、そちらは下の「重要ルール」が持つ。規定と背景の正本は [Multi-CLI Agent Orchestration の「worktree 委譲の依存プリフライト」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#worktree-委譲の依存プリフライト)（規定はここへ複製しない）。
 

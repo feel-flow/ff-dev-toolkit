@@ -261,7 +261,7 @@ ACTUAL_COMMITS="$(gh pr view "${PR_NUMBER}" --json commits --jq '.commits | leng
 # クロスリポジトリの Issue は `owner/repo#N` の形のまま渡すこと。
 GATE_OUT="$(mktemp)"
 set +e
-bash "${GUARD}" --repo "${TARGET_REPO}" --refs-issue "${REFS_ISSUE}" < "${SURFACE}" > "${GATE_OUT}"
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${GUARD}" --repo "${TARGET_REPO}" --refs-issue "${REFS_ISSUE}" < "${SURFACE}" > "${GATE_OUT}"
 GATE_STATUS=$?
 set -e
 rm -f "${SURFACE}"
@@ -310,7 +310,7 @@ post-merge 検証が残るため Issue は open のまま維持する。"
 
 set +e
 printf 'merge-subject\t%s\nmerge-body\t%s\n' "${MERGE_SUBJECT}" "${MERGE_BODY}" \
-  | bash "${GUARD}" --repo "${TARGET_REPO}" --refs-issue "${REFS_ISSUE}"
+  | FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${GUARD}" --repo "${TARGET_REPO}" --refs-issue "${REFS_ISSUE}"
 FINAL_STATUS=$?
 set -e
 [[ "${FINAL_STATUS}" -eq 0 ]] \
@@ -451,7 +451,7 @@ gh issue view $ISSUE_URL --json body,updatedAt
 #    直前の Issue の残骸が baseline になる（どちらも「検査したつもり」で送信へ進む）
 JUDGE="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}/scripts/check-issue-body-diff.sh"
 ISSUE_NUMBER="${ISSUE_NUMBER:?Issue 番号を先に設定すること}"
-bash "$JUDGE" "/tmp/issue-body-${ISSUE_NUMBER}.orig.md" "/tmp/issue-body-${ISSUE_NUMBER}.md"
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "$JUDGE" "/tmp/issue-body-${ISSUE_NUMBER}.orig.md" "/tmp/issue-body-${ISSUE_NUMBER}.md"
 case $? in
   0) : ;;  # 許可範囲内。4) の送信へ進む
   1) echo "✗ 許可範囲外の変更。送信せず 2) の書き換えをやり直す" >&2; exit 1 ;;
@@ -604,7 +604,7 @@ REMOTE_HEAD="$(gh pr view "${PR_NUMBER}" --json headRefOid --jq .headRefOid)" \
 FRESHNESS="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}/scripts/check-merge-freshness.sh"
 
 set +e
-FRESH_OUT="$(bash "${FRESHNESS}" --remote-head "${REMOTE_HEAD}" --fetch)"
+FRESH_OUT="$(FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FRESHNESS}" --remote-head "${REMOTE_HEAD}" --fetch)"
 FRESH_STATUS=$?
 set -e
 
@@ -613,7 +613,7 @@ case "${FRESH_STATUS}" in
     # 一致。無出力のままマージへ進む（常時ノイズにしない）。
     # 報告には実測の素性（ゲート名・モード）も載せる — 高速モードの記録を
     # 「全件実行で通した」と読ませないため（モードは合否には使わない）
-    FRESH_RECORD="$(bash "${FRESHNESS}" --print-record || true)"
+    FRESH_RECORD="$(FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FRESHNESS}" --print-record || true)"
     FRESH_GATE="$(printf '%s\n' "${FRESH_RECORD}" | sed -n 's/^GATE=//p')"
     FRESH_MODE="$(printf '%s\n' "${FRESH_RECORD}" | sed -n 's/^MODE=//p')"
     FRESH_RESULT="$(printf '%s\n' "${FRESH_RECORD}" | sed -n 's/^RESULT=//p')"

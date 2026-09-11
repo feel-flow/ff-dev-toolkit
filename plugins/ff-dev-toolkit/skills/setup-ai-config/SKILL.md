@@ -239,7 +239,7 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 セットアップスクリプトを実行して、Multi-CLI Agent Orchestrator（review / explore / implement の3タスク）を構成します:
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
 ```
 
 このスクリプトが行うこと:
@@ -252,7 +252,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
 セットアップ完了後、以下で利用できます（いずれも本プラグイン同梱）:
 
 - Claude Code: `/multi-review` / `/multi-explore` / `/multi-implement`
-- ターミナル: `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task <review|explore|implement>`
+- ターミナル: `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task <review|explore|implement>`
 
 - 設定のカスタマイズ: プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される。**どのキーが実際に読まれるか**の正本は [Multi-CLI Agent Orchestration の「実際に読まれるキー」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#実際に読まれるキー)（説明をここへ複製しない）
 

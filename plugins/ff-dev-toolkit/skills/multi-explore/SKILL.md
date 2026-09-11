@@ -43,7 +43,7 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
   - 例: `認証フローの仕組みを調査`
   - 例: `プロジェクト構造の概要 --cli codex-cli`（特定CLIのみ）
   - 例: `API エンドポイントの一覧 --strategy minimize_cost`（コスト最小化）
-  - 全オプションは `bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --help` で確認できます
+  - 全オプションは `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --help` で確認できます
 
 ## 手順
 
@@ -57,7 +57,7 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 まず実行プランを表示し、ユーザーに確認を求めます:
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task explore --description "<探索対象>" --dry-run $OPTIONS
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task explore --description "<探索対象>" --dry-run $OPTIONS
 ```
 
 出力を確認し、以下をユーザーに報告:
@@ -75,7 +75,7 @@ bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task explore --descriptio
 ユーザーが承認したら、実際の探索を実行します:
 
 ```bash
-bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task explore --description "<探索対象>" $OPTIONS
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task explore --description "<探索対象>" $OPTIONS
 ```
 
 **注意**: explore タスクは read-only です。コードの変更は行いません。
