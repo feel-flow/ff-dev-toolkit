@@ -122,6 +122,8 @@ mkdir -p \
 
 cp "$CHECK" "$SSOT_FIX/scripts/check-release-required.sh"
 cp "$SYNC" "$SSOT_FIX/scripts/sync-dev-toolkit-to-public.sh"
+# 同期スクリプトは隣接する到達不能参照の走査器を要る（不在は fail-closed）
+cp "$REPO_ROOT/scripts/scan-unreachable-repo-refs.sh" "$SSOT_FIX/scripts/scan-unreachable-repo-refs.sh"
 cp "$MATERIALIZE" "$SSOT_FIX/scripts/materialize-dev-toolkit-changelog.sh"
 mkdir -p "$SSOT_FIX/scripts/lib"
 mkdir -p "$SSOT_FIX/plugins/ff-dev-toolkit/scripts/lib"

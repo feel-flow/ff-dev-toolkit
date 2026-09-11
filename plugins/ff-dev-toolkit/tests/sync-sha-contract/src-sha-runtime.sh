@@ -41,6 +41,13 @@ if [[ -z "$SKILL" || ! -f "$SKILL" ]]; then
   echo "✗ SKILL.md がありません: ${SKILL:-<未指定>}" >&2
   exit 1
 fi
+# 同期スクリプトは隣接する到達不能参照の走査器を要る（不在は fail-closed）。
+# 検査対象のスクリプトと同じ場所から取る — 差し替え運用でも組が食い違わない。
+UNREACHABLE_SCANNER="$(cd "$(dirname "$SYNC_SCRIPT")" && pwd)/scan-unreachable-repo-refs.sh"
+if [[ ! -f "$UNREACHABLE_SCANNER" ]]; then
+  echo "✗ 到達不能参照の走査器がありません: $UNREACHABLE_SCANNER" >&2
+  exit 1
+fi
 # rsync 不在は「実装が壊れている」ではなく「この環境では実挙動を測れない」。同じ非 0 に
 # 潰すと、呼び出し元が退行と環境都合を区別できず、環境の都合で赤い suite が常態化する
 # （Issue #1427: クラウドの apt ミラーに届かず rsync を導入できなかった回で顕在化）。
@@ -134,6 +141,7 @@ snapshot_tree() {
 mkdir -p "$SSOT/scripts" "$SSOT/plugins/ff-dev-toolkit" "$SSOT/oss/ff-dev-toolkit"
 cp "$SYNC_SCRIPT" "$SSOT/scripts/sync-dev-toolkit-to-public.sh"
 chmod +x "$SSOT/scripts/sync-dev-toolkit-to-public.sh"
+cp "$UNREACHABLE_SCANNER" "$SSOT/scripts/scan-unreachable-repo-refs.sh"
 printf 'MIT-ish fixture license\n' > "$SSOT/plugins/ff-dev-toolkit/LICENSE"
 printf '# Fixture plugin\n' > "$SSOT/plugins/ff-dev-toolkit/README.md"
 printf '# Fixture changelog\n' > "$SSOT/oss/ff-dev-toolkit/CHANGELOG.md"

@@ -60,6 +60,9 @@ if [ -f "$SCRIPT_DIR/../lib/git-fixture.sh" ]; then
 fi
 
 SYNC="${REPO_ROOT:+$REPO_ROOT/scripts/sync-dev-toolkit-to-public.sh}"
+# 到達不能参照の走査器。同期スクリプトを写す fixture はこれも要る
+# （不在は fail-closed で exit 非 0 になる = 検査が成立しない）。
+UNREACHABLE_SRC="${REPO_ROOT:+$REPO_ROOT/scripts/scan-unreachable-repo-refs.sh}"
 
 if [[ -z "$REPO_ROOT" || ! -f "$SYNC" ]]; then
   echo "○ skip: 同期スクリプトが無いチェックアウトのためスキップ（本 suite は SSOT リポジトリ専用の検査です）"
@@ -232,6 +235,7 @@ expect_clear "元スクリプトは未登録のセンチネルを検出しない
 FAKE="$TMP/fake"
 mkdir -p "$FAKE/scripts" "$FAKE/plugins/ff-dev-toolkit" "$FAKE/oss/ff-dev-toolkit"
 cp "$SYNC" "$FAKE/scripts/sync-dev-toolkit-to-public.sh"
+cp "$UNREACHABLE_SRC" "$FAKE/scripts/scan-unreachable-repo-refs.sh"
 printf '%s\n' 'ok' > "$FAKE/plugins/ff-dev-toolkit/ok.md"
 printf '%s\n' 'ok' > "$FAKE/oss/ff-dev-toolkit/ok.md"
 expect_clear "偽リポジトリの live --check-only は健全ならクリアする" \
@@ -526,6 +530,7 @@ expect_clear "node_modules 配下の禁止文字列と binary は作業ツリー
 STG="$TMP/stage-repo"
 mkdir -p "$STG/scripts" "$STG/plugins/ff-dev-toolkit" "$STG/oss/ff-dev-toolkit"
 cp "$SYNC" "$STG/scripts/sync-dev-toolkit-to-public.sh"
+cp "$UNREACHABLE_SRC" "$STG/scripts/scan-unreachable-repo-refs.sh"
 printf '%s\n' 'MIT' > "$STG/plugins/ff-dev-toolkit/LICENSE"
 printf '%s\n' 'ok' > "$STG/plugins/ff-dev-toolkit/ok.md"
 printf '%s\n' 'ok' > "$STG/oss/ff-dev-toolkit/ok.md"
@@ -607,7 +612,7 @@ SCANNER_SRC="$REPO_ROOT/scripts/scan-bare-issue-refs.sh"
 # 上記の検査自身の対象でもある）。fixture へは実行時に組み立てて流す。
 HASH="$(printf '%s' '#')"
 
-if [[ ! -f "$ADDED_REFS" || ! -f "$SCANNER_SRC" ]]; then
+if [[ ! -f "$ADDED_REFS" || ! -f "$SCANNER_SRC" || ! -f "$UNREACHABLE_SRC" ]]; then
   bad "追加行の bare 参照検査（または走査器）が見つかりません"
 else
   expect_refs_rc() { # label want_rc needle cmd...
@@ -674,6 +679,7 @@ else
     cp "$SYNC" "$dir/scripts/sync-dev-toolkit-to-public.sh"
     cp "$SCANNER_SRC" "$dir/scripts/scan-bare-issue-refs.sh"
     cp "$ADDED_REFS" "$dir/scripts/check-added-bare-refs.sh"
+    cp "$UNREACHABLE_SRC" "$dir/scripts/scan-unreachable-repo-refs.sh"
     printf '%s\n' 'baseline' > "$dir/oss/ff-dev-toolkit/doc.md"
   }
   refs_fixture_commit() {
@@ -745,6 +751,7 @@ oss/ff-dev-toolkit/doc.md:2' refs_run "$F_DETECT"
   cp "$SYNC" "$F_NOTARGET/scripts/sync-dev-toolkit-to-public.sh"
   cp "$SCANNER_SRC" "$F_NOTARGET/scripts/scan-bare-issue-refs.sh"
   cp "$ADDED_REFS" "$F_NOTARGET/scripts/check-added-bare-refs.sh"
+  cp "$UNREACHABLE_SRC" "$F_NOTARGET/scripts/scan-unreachable-repo-refs.sh"
   ff_git_fixture_init "$F_NOTARGET" "sync-forbidden-selftest" "selftest@example.com"
   expect_refs_rc "公開対象が無い checkout は対象 0 件で pass する（skip にしない）" 0 \
     "対象 0 件" refs_run "$F_NOTARGET"
@@ -893,6 +900,208 @@ plugins/ff-dev-toolkit/doc.md:6' refs_run "$M_ALLOW"
     bad "現在の作業ツリーの追加行に番号短縮形がある（live）"
     printf '%s\n' "$live_refs_out" | sed 's/^/    | /' >&2
   fi
+fi
+
+# --- 12. 公開側から到達できない owner/repo#N を止める（allowlist 側） ---------
+# 対象は scripts/scan-unreachable-repo-refs.sh と、それを呼ぶ 2 つの入口
+# （同期前の全文検査 --check-only / 追加行限定の check-added-bare-refs.sh）。
+#
+# 11 との違いは**許可規則の向き**にある。11（bare `#N`）は「ミラー先の文脈で
+# GitHub がリンク化するか」が論点なので fence / inline code / リンクの中を除外する。
+# 12（修飾形 `owner/repo#N`）は「非公開リポジトリの識別子が公開物へ出るか」が論点で、
+# それは fence の中でも同じだけ出るため除外しない。11 の修正（bare → 修飾形）が
+# 12 の違反を作る関係なので、片方だけでは往復が閉じない。
+#
+# 本ファイルは公開同期対象＝ 12 の検査対象そのものなので、**allowlist に無い
+# owner/repo のリテラルを隣接して書かないこと**（fixture へは実行時に組み立てて流す）。
+if [[ ! -f "$UNREACHABLE_SRC" ]]; then
+  bad "到達不能参照の走査器が見つかりません"
+else
+  # 未登録の owner/repo を実行時に組み立てる（リテラルで置くと本ファイル自身が
+  # 検査に当たる）。allowlist の owner とも例示 owner とも一致しない名前にする。
+  UNLISTED="$(printf '%s-%s/%s' 'unlisted' 'org' 'internal-project')"
+
+  # 12-1. 走査器の self-test（走査規則そのものの検出力。ゲート側の配線とは別に固定する）
+  scanner_rc=0
+  scanner_out="$(bash "$UNREACHABLE_SRC" --self-test 2>&1)" || scanner_rc=$?
+  if [[ "$scanner_rc" -eq 0 ]]; then
+    ok "到達不能参照の走査器の self-test が通る"
+  else
+    bad "到達不能参照の走査器の self-test が失敗した (rc=${scanner_rc})"
+    printf '%s\n' "$scanner_out" | sed 's/^/    | /' >&2
+  fi
+
+  # 12-2. 同期前の全文検査が、未登録の owner/repo を file:line で名指しして止める
+  # （AC: denylist に載っていない非公開リポジトリ名でも非 0 になること）
+  U_HIT="$TMP/unreachable-hit"
+  mkdir -p "$U_HIT"
+  printf '%s\n' "詳細は ${UNLISTED}${HASH}2640 を参照。" > "$U_HIT/doc.md"
+  expect_hit_reason "未登録の owner/repo を file:line で名指しして止める" \
+    "doc.md:1" "到達できない" run_check --scan-dir "$U_HIT"
+
+  # 12-3. 12-2 の対。allowlist 掲載の公開リポジトリ・例示 owner・URL 内のアンカーは
+  # 通す（止める側だけを固定すると、許可側が違反側へ滑っても緑のまま通る）
+  U_OK="$TMP/unreachable-ok"
+  mkdir -p "$U_OK"
+  {
+    printf '%s\n' "公開ミラー自身への参照 feel-flow/ff-dev-toolkit${HASH}55 は通す。"
+    printf '%s\n' "例示 owner の owner/repo${HASH}1 は通す。"
+    printf '%s\n' "URL 内のアンカー https://github.com/feel-flow/ff-dev-toolkit/blob/HEAD/CHANGELOG.md${HASH}0440 は参照ではない。"
+    printf '%s\n' "パスの途中 a/b/c${HASH}9 は参照として数えない。"
+  } > "$U_OK/doc.md"
+  expect_clear "allowlist 掲載・例示 owner・URL アンカー・パス途中は通す" \
+    run_check --scan-dir "$U_OK"
+
+  # 12-4. fence / inline code の中でも止める（11 との許可規則の非対称を実測する。
+  # ここを 11 と同じ規則にすると、コードブロックへ書いた非公開識別子が素通りする）
+  U_FENCE="$TMP/unreachable-fence"
+  mkdir -p "$U_FENCE"
+  {
+    printf '%s\n' '```'
+    printf '%s\n' "${UNLISTED}${HASH}7"
+    printf '%s\n' '```'
+    printf '%s\n' "inline code の \`${UNLISTED}${HASH}8\` も止める。"
+  } > "$U_FENCE/doc.md"
+  expect_hit "fence / inline code の中の未登録参照も止める" "doc.md:2" \
+    run_check --scan-dir "$U_FENCE"
+  expect_hit "inline code の中の未登録参照も止める" "doc.md:4" \
+    run_check --scan-dir "$U_FENCE"
+
+  # 12-5. 変異: allowlist から掲載リポジトリを外したコピーだけが 12-3 を赤にする
+  # （allowlist が実際に読まれていることの実測。本 suite は allowlist を複製しない）
+  M_ALLOWLIST="$TMP/unreachable-mutate-repo"
+  mkdir -p "$M_ALLOWLIST/scripts"
+  LC_ALL=C sed "/^  'feel-flow\/ff-dev-toolkit'\$/d" "$SYNC" \
+    > "$M_ALLOWLIST/scripts/sync-dev-toolkit-to-public.sh"
+  cp "$UNREACHABLE_SRC" "$M_ALLOWLIST/scripts/scan-unreachable-repo-refs.sh"
+  expect_hit "allowlist から掲載リポジトリを外すと通っていた参照が赤になる（変異）" \
+    "doc.md:1" bash "$M_ALLOWLIST/scripts/sync-dev-toolkit-to-public.sh" \
+    --check-only --scan-dir "$U_OK"
+
+  # 12-6. 12-5 の対。例示 owner の許可も同じ allowlist から来ている
+  M_OWNER="$TMP/unreachable-mutate-owner"
+  mkdir -p "$M_OWNER/scripts"
+  LC_ALL=C sed "/^  'owner'\$/d" "$SYNC" \
+    > "$M_OWNER/scripts/sync-dev-toolkit-to-public.sh"
+  cp "$UNREACHABLE_SRC" "$M_OWNER/scripts/scan-unreachable-repo-refs.sh"
+  expect_hit "例示 owner を外すと fixture の例示参照が赤になる（変異）" \
+    "doc.md:2" bash "$M_OWNER/scripts/sync-dev-toolkit-to-public.sh" \
+    --check-only --scan-dir "$U_OK"
+
+  # 12-7. 走査器が無い checkout は素通しにしない（fail-closed）。
+  # 「走査器が消えても検査はクリアを出す」状態は、ゲートが 1 件も発火しないまま
+  # 規約が守られているように見える本 Issue の欠陥そのもの
+  M_NOSCAN="$TMP/unreachable-no-scanner"
+  mkdir -p "$M_NOSCAN/scripts"
+  cp "$SYNC" "$M_NOSCAN/scripts/sync-dev-toolkit-to-public.sh"
+  expect_fail "走査器が無いと素通しにせず止まる（fail-closed）" "走査器が見つかりません" \
+    bash "$M_NOSCAN/scripts/sync-dev-toolkit-to-public.sh" --check-only --scan-dir "$U_OK"
+
+  # 12-8. 追加行限定の入口でも同じ規則が効く。既存行の同型は通し、追加行だけ止める
+  # （全文検査と差分限定の 2 入口があり、後者だけ規則が抜ける経路を作らない）
+  F_UNREACH="$TMP/refs-unreachable"
+  refs_fixture_prepare "$F_UNREACH"
+  printf '%s\n' "既存行: ${UNLISTED}${HASH}1" 'baseline' \
+    > "$F_UNREACH/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_UNREACH"
+  printf '%s\n' "追加行: ${UNLISTED}${HASH}2" >> "$F_UNREACH/plugins/ff-dev-toolkit/doc.md"
+  expect_refs_only "追加行の未登録参照だけを止め、既存行の同型は通す" 1 \
+    "plugins/ff-dev-toolkit/doc.md:3" "plugins/ff-dev-toolkit/doc.md:1" \
+    refs_run "$F_UNREACH"
+
+  # 12-9. 追加行限定の入口で allowlist を取得できないときは fail-closed。
+  # 空の allowlist で通すと、全参照が許可された状態と区別が付かない
+  M_NOALLOW="$TMP/refs-empty-allowlist"
+  cp -R "$F_UNREACH" "$M_NOALLOW"
+  LC_ALL=C sed 's/^      emit_reachable_allowlist; exit 0 ;;$/      exit 0 ;;/' \
+    "$F_UNREACH/scripts/sync-dev-toolkit-to-public.sh" \
+    > "$M_NOALLOW/scripts/sync-dev-toolkit-to-public.sh"
+  expect_refs_rc "allowlist が空なら追加行の検査も fail-closed で止まる（変異）" 2 \
+    "allowlist が空です" refs_run "$M_NOALLOW"
+
+  # 12-11. 診断のパス短縮は正規表現ではなくリテラル一致で行う。走査 root の絶対パスに
+  # 正規表現メタ文字（+ 等）が含まれると、regex 剥がしでは前方一致が外れて開発機の
+  # 絶対パスがそのまま診断へ出る（他の診断はリテラル置換なので、ここだけ規則が違うと
+  # 出力が環境依存で揺れる）。メタ文字入りの root で相対パスになることを固定する。
+  U_META="$TMP/meta+dir"
+  mkdir -p "$U_META"
+  printf '%s\n' "詳細は ${UNLISTED}${HASH}2640 を参照。" > "$U_META/doc.md"
+  expect_hit_reason "走査 root に正規表現メタ文字があっても診断は相対パスで出す" \
+    "  doc.md:1:" "到達できない" run_check --scan-dir "$U_META"
+  # 針は検査側と同じ正規化を通したパスで作る。mktemp の /var/... は検査側で
+  # /private/var/... へ解決されるため、正規化前の値で照合すると絶対パスが漏れていても
+  # 一致せず、変異下でも緑のまま通る（この対で実測して確かめてある）。
+  U_META_REAL="$(cd "$U_META" && pwd)"
+  meta_out="$(run_check --scan-dir "$U_META" 2>&1 || true)"
+  case "$meta_out" in
+    *"$U_META_REAL/doc.md"*) bad "診断に走査 root の絶対パスが漏れている（メタ文字入り root）"
+      printf '%s\n' "$meta_out" | sed 's/^/    | /' >&2 ;;
+    *) ok "メタ文字入り root でも絶対パスを診断へ漏らさない" ;;
+  esac
+
+  # 12-12. 相対パス + 番号アンカー（`docs/RUNBOOK.md#404`）は参照ではない。
+  # 参照と同じ形をしているため、切り分けを外すと公開対象に既にある `path/file.md#断片`
+  # 形（実測 161 件）の番号版が出た瞬間に、「RUNBOOK.md を REACHABLE_REPOS へ足せ」
+  # という誤った案内で同期が止まる
+  U_ANCHOR="$TMP/unreachable-anchor"
+  mkdir -p "$U_ANCHOR"
+  {
+    printf '%s\n' "ops/RUNBOOK.md${HASH}404 は参照ではない"
+    printf '%s\n' "[details](guide/setup.md${HASH}123) も参照ではない"
+    printf '%s\n' "theme/dark.css${HASH}1 も参照ではない"
+    printf '%s\n' "2026/12${HASH}1 のような日付断片も参照ではない"
+  } > "$U_ANCHOR/doc.md"
+  expect_clear "相対パス + 番号アンカー・日付断片は参照として数えない" \
+    run_check --scan-dir "$U_ANCHOR"
+
+  # 12-13. URL 除去が日本語の直後で止まること。除外文字の否定クラスで書くと
+  # 「…/issues/46）。」の全角句読点を URL の一部として飲み込み、その後ろにある
+  # 本物の参照ごと消える（検出 0 件の緑になる = fail-open）
+  U_CJK="$TMP/unreachable-cjk"
+  mkdir -p "$U_CJK"
+  printf '%s\n' "詳細は https://github.com/feel-flow/ff-dev-toolkit/issues/46）。${UNLISTED}${HASH}3 も参照。" \
+    > "$U_CJK/doc.md"
+  expect_hit "URL の直後が全角文字でも、その先の未登録参照を飲み込まない" "doc.md:1" \
+    run_check --scan-dir "$U_CJK"
+
+  # 12-14. 内容が無害でも、ファイル名に未登録参照があれば止める
+  # （denylist 側は内容とファイル名の両方を見ており、こちらだけ内容限定だと
+  # 「無害な本文 + 未登録参照を含むファイル名」が両ゲートを通る）
+  U_NAME="$TMP/unreachable-name"
+  mkdir -p "$U_NAME"
+  printf '%s\n' 'harmless content' > "$U_NAME/notes-${UNLISTED##*/}${HASH}12.md"
+  printf '%s\n' 'harmless content' > "$U_NAME/ok.md"
+  name_probe="$TMP/unreachable-name-probe"
+  mkdir -p "$name_probe/${UNLISTED%%/*}"
+  printf '%s\n' 'harmless content' > "$name_probe/${UNLISTED%%/*}/${UNLISTED##*/}${HASH}12.md"
+  expect_hit_reason "本文が無害でもファイル名の未登録参照で止める" \
+    "ファイル名" "到達できない" run_check --scan-dir "$name_probe"
+
+  # 12-15. ヒットが多くても exit 1 の契約と案内文を保つ。打ち切りを
+  # `awk ... | head -10` で書くと head が先に閉じて awk が SIGPIPE で死に、
+  # pipefail + errexit が exit 141 させて案内文へ到達しない
+  U_MANY="$TMP/unreachable-many"
+  mkdir -p "$U_MANY"
+  awk -v n=4000 -v ref="${UNLISTED}${HASH}" 'BEGIN { for (i = 1; i <= n; i++) printf "line %d: %s%d\n", i, ref, i }' \
+    > "$U_MANY/doc.md"
+  expect_refs_rc "ヒットが数千件でも exit 1 と案内文を保つ（SIGPIPE で 141 にしない）" 1 \
+    "REACHABLE_REPOS へ足し" run_check --scan-dir "$U_MANY"
+
+  # 12-16. 追加行限定の入口でも、走査器が契約を満たさない rc=1（出力なし）を
+  # ヒット 0 件として通さない（bare 参照側と同じ扱い。片方だけ緩いと素通し経路になる）
+  M_EMPTYHIT="$TMP/refs-unreachable-empty-hit"
+  cp -R "$F_UNREACH" "$M_EMPTYHIT"
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' '# 変異: 契約を満たさない走査器（出力なしで rc=1）'
+    printf '%s\n' 'exit 1'
+  } > "$M_EMPTYHIT/scripts/scan-unreachable-repo-refs.sh"
+  expect_refs_rc "到達不能参照の走査器が出力なしの rc=1 を返したら走査不成立で止まる（変異）" 2 \
+    "走査が成立しませんでした" refs_run "$M_EMPTYHIT"
+
+  # 12-10. live: この作業ツリーの公開対象に未登録の owner/repo が無いこと。
+  # 12-2〜12-9 は隔離 fixture の検査で、ゲート本体が現ツリーへ当たっているかは別
+  expect_clear "現在の公開対象作業ツリーに未登録の owner/repo は無い（live）" run_check
 fi
 
 echo

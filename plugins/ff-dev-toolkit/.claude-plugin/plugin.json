@@ -1,6 +1,6 @@
 {
   "name": "ff-dev-toolkit",
-  "version": "0.100.0",
+  "version": "0.101.0",
   "description": "AI仕様駆動開発（AI-SDD）の公式実装。対話型の初期構築・市民開発の作業記録から、選択したレビュー・テスト・ナレッジ蓄積までを Agent Skills / MCP で支援する。収録: スキル25（asdd-init・asdd-work・removal-sweep・check-plugin-versions・spec-driven・harness-review・out-of-scope-issue + ドキュメント運用7 + ナレッジ・設定5 + Git運用3 + マルチAI CLI 3）／MCP（spec-docs、docs 検索6ツール）と docs-template・スクリプト一式。FeelFlow の書籍群から蒸留した方法論ベース。",
   "author": {
     "name": "FeelFlow Inc.",
