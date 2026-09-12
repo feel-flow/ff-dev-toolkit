@@ -357,8 +357,18 @@ doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
   "全 CLI が終端（応答・失敗・タイムアウトのいずれか）に達するまで、オーケストレータ側で作業ツリーを変更しないこと" \
   "multi-review が同じ終端条件で凍結を指示している"
 doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
-  "そちらは DISCARDED にする機構が無く、手順だけが防御になる" \
-  "multi-review がサブエージェント経路の無防備さを伝えている"
+  "そちらは結果を DISCARDED にする機構が無い" \
+  "multi-review がサブエージェント経路に DISCARDED 機構が無いことを伝えている"
+# サブエージェント経路にも機械的判定（走行中レーン）が入ったので、「手順だけが防御」を
+# 残すと消費側が実態より弱い前提で動く。機械側の存在と、それでも手順だけが防御になる
+# 残りの範囲（非適用ケース）の両方を 1 本ずつ針で固定する — 片方だけだと「常に止まる」
+# か「何も止まらない」のどちらかへ読み違える。
+doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
+  "全レーンが終端するまで編集系ツールと git 書き込みを deny する" \
+  "multi-review がサブエージェント経路の機械的な凍結（全レーン終端まで解けない）を伝えている"
+doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
+  "機械的に止まらないのは次の場合だけ" \
+  "multi-review が機械的に止まらない範囲（非適用ケース）を限定列挙している"
 doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
   "凍結の代わりになる機構ではない" \
   "multi-review が DISCARDED 機構を凍結の代替として売り込んでいない"

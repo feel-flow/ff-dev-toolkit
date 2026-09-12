@@ -383,6 +383,7 @@ markdownlint-selftest/verify.sh
 mbcs-guard-failclosed/verify.sh
 merge-cleanup/verify.sh
 multi-agent-critical-marker/verify.sh
+multi-agent-host-delegation/verify.sh
 multi-agent-ignore-paths/verify.sh
 multi-agent-plan/verify.sh
 multi-agent-resume/verify.sh

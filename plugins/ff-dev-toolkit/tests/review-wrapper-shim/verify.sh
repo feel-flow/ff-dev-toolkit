@@ -777,9 +777,10 @@ else
   sed 's/^/    | /' "$WORK/out.log" >&2
 fi
 
-# --dry-run は委譲先でもプランを出すだけで CLI を 1 本も起動しない。codex 実在検査をここへ
-# 掛けると、「主 CLI が使えないときにプランを確認する」というまさに確認したい状況で確認手段が
-# 消える（導入先の運用手順はプランに載る CLI の事前確認を求めている）。警告に留めて委譲すること。
+# --dry-run は CLI を 1 本も起動しないので、codex 実在検査でシムが握りつぶさず委譲すること
+# （rc=4 で止めない）。**固定するのはここまで**で、委譲先がプランを出すことは含まない。
+# codex 不在では委譲先が rc=1 で止まりプランは出ない（その実態は下の実オーケストレータの
+# 2 ケースが固定する）。この stub ケースの緑を「プランが確認できる」と読まないこと。
 #
 # 判定は **委譲が現に起きたところ**まで見る。rc=0 と `--dry-run` の 1 行だけだと、stub が
 # 無条件に rc=0 を返す以上「シムが rc=4 で止めなかった」ことしか言えず、委譲先を exec せずに
@@ -792,9 +793,9 @@ if [ "$RUN_RC" -eq 0 ] && grep -q 'stub orchestrator ran' "$WORK/stdout.log" \
   && argv_has_seq "--base" "develop" && argv_has --dry-run \
   && grep -q 'WARNING: codex CLI（/nonexistent/ff-codex-absent）が PATH にありませんが、--dry-run' "$WORK/err.log" \
   && ! grep -q 'へ降格します' "$WORK/err.log"; then
-  ok "codex 不在でも --dry-run は委譲先を exec してプラン確認を続行する（委譲引数が保たれ、警告に留めて rc=0）"
+  ok "codex 不在でも --dry-run は rc=4 で止めず委譲先を exec する（委譲引数が保たれ、警告に留める）"
 else
-  bad "codex 不在の --dry-run がプラン確認を塞いでいる、委譲先を起動していない、または委譲引数が欠けた (rc=$RUN_RC)"
+  bad "codex 不在の --dry-run がシム側で rc=4 に落ちている、委譲先を起動していない、または委譲引数が欠けた (rc=$RUN_RC)"
   sed 's/^/    | /' "$WORK/out.log" >&2
   sed 's/^/    argv| /' "$WORK/argv.log" >&2
 fi
@@ -805,6 +806,121 @@ if grep -qE '^#[[:space:]]+4 = ' "$SHIM"; then
 else
   bad "終了コード表に 4 が無い（「その他 = 委譲先の終了コードをそのまま返す」が嘘になる）"
 fi
+# codex 不在環境の --dry-run が終了コード表に載っていること。**帰結は同じ rc=1 だが
+# 原因が 2 通りある**ので、両方が載っていることを別々に固定する:
+#   ・AI CLI が 1 本も PATH に無い → 委譲先の CLI 検出が No AI CLIs are installed で止まる
+#   ・codex だけが不在            → シムが固定で足す --cli codex-cli が fallback 再割り当てを
+#                                    除外して実行対象 0 件になり Execution plan is empty で止まる
+# 片方だけを書くと、もう片方を踏んだ利用者が原因を取り違える（「他の CLI を入れれば
+# プランが出る」と読んで入れても、--cli フィルタが固定なので結果は変わらない）。
+# 抽出は終了コード表の区間だけに閉じる。ファイル全体を grep すると、下の実行時 WARNING
+# （codex 不在時に出す文言）にも同じ語句が現れるため、そちらだけが残っていても
+# ヘッダーの記載漏れを見逃す（実測: ヘッダーを旧文言へ戻す変異が緑のまま通った）。
+# 照合は case で行う。`printf | grep -q` は grep が先に閉じるので pipefail 下で
+# SIGPIPE により rc が反転しうる（このリポジトリの run-all case 10 が禁止している形）。
+_exitcode_doc="$(awk '/^#[[:space:]]+終了コード: 0 = /{f=1} f{print} /^#[[:space:]]+\*\*リテラル/{exit}' "$SHIM")"
+case "$_exitcode_doc" in
+  *'その他 = '*'rc=1 で停止し'*'No AI CLIs are installed'*)
+    ok "終了コード表に AI CLI ゼロ時の rc=1（No AI CLIs are installed）が載っている" ;;
+  *)
+    bad "終了コード表が AI CLI ゼロ時の rc=1 を案内していない" ;;
+esac
+case "$_exitcode_doc" in
+  *'その他 = '*'rc=1 で停止し'*'Execution plan is empty'*)
+    ok "終了コード表に codex だけ不在時の rc=1（Execution plan is empty）が載っている" ;;
+  *)
+    bad "終了コード表が codex だけ不在時の rc=1 を案内していない（「他の CLI があればプランが出る」と読める案内は実態と食い違う）" ;;
+esac
+
+# ── 実オーケストレータでの codex 不在経路の固定 ────────────────────────────────
+#
+# 上のケースは stub オーケストレータ（常に rc=0 で "stub orchestrator ran" とだけ返す）を
+# 使っているため、委譲先が実際に何本の AI CLI を検出したかには関与しない。シムの WARNING は
+# 「--dry-run はこの検査を素通りして委譲する」としか約束しておらず、委譲先
+# （multi-agent.sh）が実際にプランを表示することまでは保証しない。実体を通すと、codex が
+# PATH に無い --dry-run は**他の AI CLI の有無に関わらず** rc=1 で止まりプランは出ない:
+#   ・AI CLI が 1 本も無い → 委譲先の CLI 検出が `ERROR: No AI CLIs are installed`
+#                            （新規セットアップ直後・CI の最小イメージで踏む — 本 Issue の発端）
+#   ・codex だけが不在      → このシムは委譲 argv に `--cli codex-cli` を固定で足すので、
+#                            codex-cli の fallback 再割り当て（claude-code 等）が --cli
+#                            フィルタで除外され、実行対象 0 件で
+#                            `ERROR: Execution plan is empty`
+# 後者は「他の CLI があればプランまで到達する」という誤った案内を緑のまま通していた経路
+# なので、stub ではなく実体の multi-agent.sh を toolkit へ置いて両方を固定する。
+REAL_ORCH_TOOLKIT="$WORK/toolkit-real-orchestrator"
+cp -R "$TOOLKIT" "$REAL_ORCH_TOOLKIT"
+cp "$PLUGIN_ROOT/scripts/multi-agent.sh" "$REAL_ORCH_TOOLKIT/scripts/multi-agent.sh"
+chmod +x "$REAL_ORCH_TOOLKIT/scripts/multi-agent.sh"
+
+# 「プランが出ていない」の針は **行頭アンカー付き**で持つ。委譲先の完了行は行頭の
+# `🏁 Dry run complete. No tasks executed.`、シムの警告はインデント付きの案内文なので、
+# 無アンカーだと案内文が自分の不在検査を満たして «常に緑» になる（実測: 警告文へ完了行の
+# 文言を引用した版で本ケースが 2 件とも赤 → アンカーで解消）。
+#
+# CLI ゼロ環境は PATH を絞った fixture で再現する（stub CLI を一切置かない。ホストに
+# claude/codex/copilot/grok が入っていても /usr/bin:/bin には無い）。
+RUN_SHIM_TOOLKIT="$REAL_ORCH_TOOLKIT" \
+  run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent PATH=/usr/bin:/bin \
+  --base develop --dry-run
+unset RUN_SHIM_TOOLKIT
+if [ "$RUN_RC" -eq 1 ] \
+  && grep -q 'codex CLI（/nonexistent/ff-codex-absent）が PATH にありませんが、--dry-run' "$WORK/err.log" \
+  && grep -q 'AI CLI が 1 本も PATH に無い場合: 委譲先の CLI 検出が「No AI CLIs are installed」で止まります' "$WORK/err.log" \
+  && grep -q 'ERROR: No AI CLIs are installed' "$WORK/err.log" \
+  && ! grep -q '^🏁 Dry run complete' "$WORK/out.log"; then
+  ok "AI CLI ゼロ + --dry-run（実オーケストレータ）: rc=1 で停止し、シムの警告文が実態（プラン非表示）と一致する"
+else
+  bad "AI CLI ゼロ + --dry-run（実オーケストレータ）: rc / 警告文 / 実際の委譲先エラーのいずれかが実態と食い違う (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+
+# codex だけが不在（他の AI CLI はある）経路。PATH に claude だけを置いた fixture で
+# 再現する。委譲先の CLI 検出は通過するが、シム固定の --cli codex-cli が fallback
+# 再割り当てを除外するので実行対象が 0 件になり、`Execution plan is empty` で rc=1。
+# 委譲先へ実際に届く CLI 集合を測りたいので、ここも stub オーケストレータではなく
+# 実体を通す（stub は常に rc=0 を返すため、この食い違いを永久に緑にする）。
+OTHER_CLI_ONLY="$WORK/other-cli-only"
+mkdir -p "$OTHER_CLI_ONLY"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "stub claude must not be invoked by dry-run" >&2' 'exit 99' \
+  > "$OTHER_CLI_ONLY/claude"
+chmod +x "$OTHER_CLI_ONLY/claude"
+RUN_SHIM_TOOLKIT="$REAL_ORCH_TOOLKIT" \
+  run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent "PATH=$OTHER_CLI_ONLY:/usr/bin:/bin" \
+  --base develop --dry-run
+unset RUN_SHIM_TOOLKIT
+if [ "$RUN_RC" -eq 1 ] \
+  && grep -q 'codex CLI（/nonexistent/ff-codex-absent）が PATH にありませんが、--dry-run' "$WORK/err.log" \
+  && grep -q 'codex だけが不在で他の AI CLI がある場合' "$WORK/err.log" \
+  && grep -q '「Execution plan is empty」で止まります' "$WORK/err.log" \
+  && grep -q 'ERROR: Execution plan is empty' "$WORK/err.log" \
+  && grep -q 'fallback claude-code excluded by --cli filter' "$WORK/err.log" \
+  && ! grep -q '^🏁 Dry run complete' "$WORK/out.log"; then
+  ok "codex だけ不在（claude あり）+ --dry-run（実オーケストレータ）: 空プランで rc=1 停止し、シムの警告文が実態と一致する"
+else
+  bad "codex だけ不在（claude あり）+ --dry-run（実オーケストレータ）: rc / 警告文 / 委譲先の空プランエラーのいずれかが実態と食い違う (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+
+# 通常環境（codex 本人が居る）では挙動・終了コードが変わらないこと。上の stub ベースの
+# 検査は「シムが委譲したこと」だけを見ており、委譲先が実際にプランを出すことまでは
+# 保証しない。実オーケストレータで確認する。
+NORMAL_ENV_STUB="$WORK/normal-env-stub"
+mkdir -p "$NORMAL_ENV_STUB"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "stub codex must not be invoked by dry-run" >&2' 'exit 99' \
+  > "$NORMAL_ENV_STUB/codex"
+chmod +x "$NORMAL_ENV_STUB/codex"
+RUN_SHIM_TOOLKIT="$REAL_ORCH_TOOLKIT" \
+  run_shim "CODEX_REVIEW_CODEX_BIN=$NORMAL_ENV_STUB/codex" "PATH=$NORMAL_ENV_STUB:/usr/bin:/bin" \
+  --base develop --dry-run
+unset RUN_SHIM_TOOLKIT
+if [ "$RUN_RC" -eq 0 ] && grep -q '^🏁 Dry run complete' "$WORK/out.log" \
+  && ! grep -q 'WARNING: codex CLI' "$WORK/err.log"; then
+  ok "AI CLI が居る通常環境（codex 本人）+ --dry-run（実オーケストレータ）: 従来どおり rc=0 でプランを出す"
+else
+  bad "通常環境（実オーケストレータ）の --dry-run が rc=0 でプランを出さない、または不要な警告が出た (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+
 # toolkit 未解決（sidecar も FF_DEV_TOOLKIT_ROOT も使えない）でも同じ降格案内を出す
 RUN_SHIM_TOOLKIT="$WORK/no-such-toolkit" run_shim --base develop
 unset RUN_SHIM_TOOLKIT

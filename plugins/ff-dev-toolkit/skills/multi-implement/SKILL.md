@@ -160,6 +160,8 @@ git diff  # 適用内容の確認
 - 長時間・大規模タスクをブランチ上で作業するエージェント（ホストの subagent / worktree 委譲など）へ委譲する場合は、[Multi-CLI Agent Orchestration の「長時間タスクの委譲契約（こまめコミット）」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#長時間タスクの委譲契約こまめコミット) に従う（契約 3 項目の規定はここへ複製しない）
 - ホストの subagent を worktree 隔離で起動して委譲し、その委譲先がゲート・テストを回す場合は、[Multi-CLI Agent Orchestration の「worktree 委譲の依存プリフライト」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#worktree-委譲の依存プリフライト) に従い、起動プロンプトへ依存インストールのコマンドを実値で常置する。リンクではなくコマンドの実値を書く（起動プロンプトは貼られた先で読まれるので相対リンクは解決しない）（規定はここへ複製しない）
 - 委譲先のエージェントが完了報告を返したら、そのエージェントが background で起こした子プロセスの取り残しを確認して回収する。[Multi-CLI Agent Orchestration の「委譲先の完了後に残る background 子プロセス」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#委譲先の完了後に残る-background-子プロセス) に従う（探し方・検出コマンド・回収手順の正本はすべて同節。規定と検出コマンドの正本はここへ複製しない）
+- 委譲先に全件ゲート・依存インストール等の長時間コマンドを回させる場合は、[Multi-CLI Agent Orchestration の「委譲先に長時間コマンドを foreground で待たせる契約」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#委譲先に長時間コマンドを-foreground-で待たせる契約) に従い、起動プロンプトへ「長時間コマンドは Bash ツールの `timeout` へ `600000`（ミリ秒）を明示して foreground で待つ / background 実行オプション（`run_in_background` 等）を使わない」を実値ごと常置する。実値はリンクで代替しない — 貼られたプロンプトの中では相対リンクが解決せず、正本を読まない委譲先には値が届かない（規定はここへ複製しない。この経路に限らず、ホストの Agent / Task ツールで直接起こす委譲を含むエージェントへの委譲すべてが対象）
+- 委譲先へ渡した worktree を回収するときは、[Multi-CLI Agent Orchestration の「生存中の委譲先の worktree を回収しない」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#生存中の委譲先の-worktree-を回収しない) に従う。未コミット差分 0 件を回収の根拠にせず、成果の確認と生存判定の実測が揃ってから回収する（判定手順の正本は同節。ここへ複製しない）
 - 実装結果はステージングディレクトリに出力 — ワーキングツリーに直接書き込まない
 - ワーキングツリーへの適用前にユーザー承認を得ること
 - 結果は `.implement-results/` に保存され、後から参照できます（生成ファイル本体は `<cli>/files/<perspective>/`）

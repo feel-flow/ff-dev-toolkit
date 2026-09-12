@@ -17,6 +17,11 @@
 #                             inline instead of writing them. An implement run with neither
 #                             this nor --staging-dir is rejected (a dropped path must not
 #                             silently degrade into inline mode)
+#   --delegate-dir <dir>      Host delegation (review only): start no CLI at all.
+#                             Build the prompt as usual and hand it to the host through <dir>,
+#                             or adopt the host-written result if it is already there. Exits
+#                             DELEGATION_PENDING_EXIT_CODE (123) while the result is pending.
+#                             `claude` does NOT have to be installed on this path.
 #
 # Requires: claude (npm i -g @anthropic-ai/claude-code)
 # Cost tier: Premium (token-based billing)
@@ -29,18 +34,28 @@ source "${SCRIPT_DIR}/adapter-common.sh"
 
 readonly CLI_NAME="Claude Code"
 readonly CLI_COMMAND="claude"
+# オーケストレータ側のレーン識別子。委譲の handoff はこちらを名乗る（表示名
+# "Claude Code" は成果物ヘッダー用で、--cli へ渡せる綴りではない）。
+readonly CLI_LANE="claude-code"
+
+# ── Parse Arguments ──
+
+# 委譲の受理を opt-in する（adapter-common.sh の parse_adapter_args が検査する）。
+# 委譲はホストが Claude であることに依存するので、このアダプタだけが立てる。
+ADAPTER_SUPPORTS_DELEGATION=true
+
+parse_adapter_args "$@"
 
 # ── Preflight ──
-
-if ! cli_available "$CLI_COMMAND"; then
+#
+# 導入検査は引数解析の**後**に置く。委譲経路（--delegate-dir）は `claude` を 1 回も
+# 起動しないので、CLI の導入を要求すると「CLI が使えないから委譲する」という本来の
+# 用途がそのまま塞がる。
+if [[ -z "${DELEGATE_DIR:-}" ]] && ! cli_available "$CLI_COMMAND"; then
   echo "ERROR: ${CLI_NAME} (${CLI_COMMAND}) is not installed." >&2
   echo "Install: npm install -g @anthropic-ai/claude-code" >&2
   exit 1
 fi
-
-# ── Parse Arguments ──
-
-parse_adapter_args "$@"
 
 # perspective_name は build_prompt 失敗時の fail_orchestrator_error にも要る。
 # build_prompt を mktemp ガードより前に素で呼ぶと set -e が bare exit し、
@@ -68,6 +83,34 @@ get_allowed_tools() {
     *)         echo 'Read,Grep,Glob,Bash(git diff*)' ;;
   esac
 }
+
+# ── Host Delegation ──
+#
+# CLI を 1 つも起動しない経路。プロンプト構築とツール許可の決定までは起動経路と共通で、
+# 実行だけをホストへ返す。ここで分岐するのは "🔍 Running" の進捗表示より**前** —
+# 起動していないのに起動したと名乗るログを残さないため。
+if [[ -n "${DELEGATE_DIR:-}" ]]; then
+  delegate_rc=0
+  delegate_task "$CLI_LANE" "$CLI_NAME" "$perspective_name" "$prompt" "$(get_allowed_tools)" \
+    || delegate_rc=$?
+  case "$delegate_rc" in
+    0) exit 0 ;;
+    "$DELEGATION_PENDING_EXIT_CODE") exit "$DELEGATION_PENDING_EXIT_CODE" ;;
+    # 壊れているのは委譲の受け渡しではなく成果物の出力先。ここを汎用の
+    # orchestrator エラーへ流すと、(1) 壊れている対象を名指しせず「ホストへ渡せな
+    # かった」という誤った理由が残り、(2) fail_cli_task 経由で write_output を踏み
+    # 直す（書けない先へ INCOMPLETE 成果物を書きに行く）。ENOSPC の部分書き込みなら
+    # その誤った理由の短い成果物が実際に書けてしまい、ホストの実結果が response
+    # ファイルに在るまま統合レポートへ載る。
+    "$DELEGATION_OUTPUT_WRITE_EXIT_CODE")
+      fail_output_write "$perspective_name" "$OUTPUT_FILE"
+      ;;
+    *)
+      fail_orchestrator_error "$perspective_name" \
+        "cannot hand the ${TASK_TYPE:-review} to the host through ${DELEGATE_DIR} (see the error above)."
+      ;;
+  esac
+fi
 
 # ── Execute Task ──
 
@@ -165,4 +208,7 @@ rm -f "$stderr_log"
 
 # ── Write Output ──
 
-write_output "$OUTPUT_FILE" "$CLI_NAME" "$perspective_name" "$result"
+# 書き込み失敗は rc に載る（adapter-common.sh の write_output）。ここで受け止めないと
+# `set -e` が素の 1 で落とし、CLI 側のクラッシュと同じ番号に混ざる。
+write_output "$OUTPUT_FILE" "$CLI_NAME" "$perspective_name" "$result" \
+  || fail_output_write "$perspective_name" "$OUTPUT_FILE"

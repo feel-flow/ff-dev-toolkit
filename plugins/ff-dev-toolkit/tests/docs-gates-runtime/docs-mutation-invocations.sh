@@ -69,6 +69,12 @@ run_docs_gate_mutations() {
   run_docs_gate_mutation consumer-test-probe \
     "test probeのconsumer-local multi-review入口を拒否する" \
     "未配置の consumer-local review 入口"
+  run_docs_gate_mutation deleg-link-moved-out-of-section \
+    "並列委譲手順から委譲の待機・回収規定のリンクを外し同一文書内の別節へ移す退行を拒否する" \
+    "git-workflow.md の並列委譲手順から子側（foreground 待機）の正本節へ到達できる —"
+  run_docs_gate_mutation deleg-timeout-value-dropped \
+    "並列委譲手順からタイムアウトの実値が消える退行を拒否する" \
+    "git-workflow.md の並列委譲手順がタイムアウトの実値を持つ"
   run_docs_gate_mutation late-prerequisite \
     "最初の実行例より後ろにあるplugin root前提を拒否する" \
     "最初の実行例より前に有効な plugin root 前提"

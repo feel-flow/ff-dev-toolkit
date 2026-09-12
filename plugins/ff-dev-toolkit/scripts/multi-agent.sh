@@ -69,6 +69,13 @@
 #                           sibling <dir>.prev-* did not match that ignore pattern and
 #                           got swept into commits. Cannot be combined with --resume.
 #   --include-diff          Include diff in implement prompts
+#   --delegate-to-host      Review only. Start NO claude CLI for the claude-code lane:
+#                           build its prompts as usual and hand execution back to the host,
+#                           which runs them in its own session and writes each result to
+#                           <output-dir>/claude-code/<perspective>.md. Re-run the SAME
+#                           command to adopt those results and finish the report. Every
+#                           other lane runs unchanged, and the default (no flag) still
+#                           spawns the CLI. See "Host delegation" below.
 #   --dry-run               Show plan without executing
 #   --timeout <seconds>     Timeout per CLI (default: review 900 / explore 600 / implement 900)
 #   --help                  Show this help
@@ -91,6 +98,30 @@
 #   Re-run the substitute yourself with --cli when you want it — the failure
 #   summary prints a ready-to-run command for each failed task, matched to why it
 #   failed (a longer limit is only offered when a limit is what ran out).
+#
+# Host delegation (--delegate-to-host, review only):
+#   Why: the claude-code lane spawns the `claude` CLI, which uses whatever account that
+#   CLI is logged into. When only that account is out of quota, the lane cannot run even
+#   though the host session is still working on a different account, and `claude auth`
+#   has no per-invocation account selection — so the CLI side cannot fix it.
+#   What changes: for claude-code only, no CLI is started. The prompt this run would have
+#   sent is written to <output-dir>/claude-code/.delegated/<perspective>.prompt.md together
+#   with a request record, and the orchestrator prints a handoff block on STDOUT naming the
+#   prompt file and the result path. The task is reported as DELEGATED (pending) — never as
+#   a failure, and never as a covered perspective.
+#   What does NOT change: plan construction, prompt construction, every other lane, the
+#   integrated report, and the default behaviour without the flag.
+#   Finishing the round trip: the host writes its result to
+#   <output-dir>/claude-code/<perspective>.md and RE-RUNS THE SAME COMMAND (add --resume to
+#   keep the other lanes' results). A result is adopted only when it answers THIS run's
+#   prompt — the request record holds the prompt digest and a response built from a different
+#   input is set aside under .delegated/ with a named path instead of being adopted or
+#   deleted. An adopted result is rewritten with the same header the spawned path writes and
+#   passes the same review-body acceptance gate, so the report cannot tell the two apart.
+#   Exit status: 3 while any delegated task is still pending (distinct from 1 = a task
+#   failed, so "waiting for the host" is never read as "the review failed").
+#   Scope: claude-code only. The host is Claude, so routing another lane through it would
+#   silently collapse the cross-model independence this tool exists to provide.
 #
 # Perspective resolution:
 #   --perspective alone filters the distributed ownership registry and can shrink
@@ -497,6 +528,39 @@ get_cli_model_env_vars() {
 #   - どちらの制約も行全体コメントには適用しない。ただし**行末**コメントで裸の
 #     ALL_CLIS や `get_cli_foo()` に言及すると検出に引っかかるので、そこでは
 #     `$ALL_CLIS` と書くか括弧を外すこと
+
+# ── ホスト委譲の対象レーン ──
+# ホストは Claude なので、委譲できるのは claude-code レーンだけ。他レーンを同じ経路へ
+# 流すと「複数の *違う* モデルを同じ diff に当てる」という本ツールの目的が黙って消える
+# （レポート上は観点が埋まったまま、実体はホスト 1 モデルの多重実行になる）。
+# 一覧ではなく単一値にしてあるのは、拡張の余地を残すと「どのレーンなら委譲してよいか」の
+# 判断がレジストリ側へ逃げて、上の理由が書かれていない場所で緩むため。
+#
+# registry の境界（上の sentinel）の**外**に置く: 境界内は $ALL_CLIS と固定値を返す
+# case lookup だけに保つ契約で、tests/lib/cli-registry-parser.sh が制限文法として
+# 静的解析する（cli_sandbox_probe_supported と同じ理由）。
+readonly DELEGATION_LANE="claude-code"
+
+task_is_delegated() { # <cli> → rc0 = この実行でホストへ委譲するレーン
+  [[ "$DELEGATE_TO_HOST" == "true" && "$1" == "$DELEGATION_LANE" ]]
+}
+
+# 委譲の受け渡しディレクトリ。<cli>/ 直下のドット始まりなので、結果ファイルの退避
+# （quarantine_cli_results は <cli>/*.md だけを見る）にも「今回の結果ではない」報告
+# （report_unplanned_result_dirs はドット始まりを外す）にも掛からない。
+delegate_dir_for() { # <cli>
+  printf '%s\n' "${OUTPUT_DIR}/${1}/.delegated"
+}
+
+# 回収済み（= ホストが今回書いた）応答が待っている観点か。
+# resume のキャッシュ再利用より**新しい応答を優先**するために要る。逆にすると、
+# 古いキャッシュを書き戻して `♻️ Reused` と名乗り、ホストが今回払った実行の成果物は
+# .delegated/ に置き去りのまま一度も名指しされない（stale / rejected の退避と違い、
+# こちらには報告経路が無い）。
+delegated_response_waiting() { # <cli> <perspective>
+  task_is_delegated "$1" || return 1
+  [[ -f "$(delegate_dir_for "$1")/${2}.response.md" ]]
+}
 
 # プラン時に「この環境でサンドボックスを適用できるか」を尋ねられるアダプタ。
 # 対応アダプタは `--probe-sandbox <task-type>` を受け、拒否を確定できたときだけ
@@ -1062,6 +1126,9 @@ BASE_BRANCH_IDENTITY="${BASE_BRANCH#origin/}"
 DRY_RUN=false
 RESUME=false
 FRESH=false
+# ホスト委譲。true のとき claude-code レーンは CLI を起動せず、実行を
+# ホストへ返す。既定は false = 従来どおり spawn。
+DELEGATE_TO_HOST=false
 TIMEOUT=""
 
 # Space-separated filter lists (bash 3.2 compatible)
@@ -1111,6 +1178,17 @@ FAILED_TASKS=""
 # 到達範囲は execute_tasks と同じプロセス（並列ワーカーはステータス dir 経由で
 # 親へ渡す）なので、generate_report と print_failure_advice から読める。
 SKIPPED_TASKS=""
+
+# ホストへ委譲したまま結果を受け取っていないタスク。"cli/perspective" の
+# 空白区切り。FAILED_TASKS とも SKIPPED_TASKS とも別に持つ —
+#   - 失敗ではない: CLI は 1 つも起動しておらず、調べるべきクラッシュが存在しない
+#   - スキップでもない: 実行を捨てたのではなく、別の実行主体へ渡して待っている
+# 混ぜると、レポートと助言がどちらも実在しない事象（クラッシュ / 打ち切り）を指す。
+DELEGATED_TASKS=""
+
+delegated_task_pending() { # <cli/perspective> → rc0 = 委譲済みで結果待ち
+  list_contains "$DELEGATED_TASKS" "$1"
+}
 
 # スキップしてよい失敗理由（Issue #1143）。classify_cli_failure_cause の 4 分類の
 # うち auth / billing だけを採る。
@@ -1265,6 +1343,7 @@ parse_args() {
       --resume)      RESUME=true; shift ;;
       --fresh)       FRESH=true; shift ;;
       --dry-run)     DRY_RUN=true; shift ;;
+      --delegate-to-host) DELEGATE_TO_HOST=true; shift ;;
       --print-reviewers) PRINT_REVIEWERS=true; shift ;;
       --set-reviewers)   SET_REVIEWERS="$2"; shift 2 ;;
       --timeout)     TIMEOUT="$2"; shift 2 ;;
@@ -1298,6 +1377,27 @@ parse_args() {
   if [[ "$FRESH" == "true" && "$RESUME" == "true" ]]; then
     echo "ERROR: --fresh cannot be combined with --resume." >&2
     echo "       --fresh archives previous results; --resume reuses them." >&2
+    exit 2
+  fi
+  # 委譲は review 専用。explore / implement を通すと、implement の
+  # staging 契約（どこへ書いてよいか・誰が mkdir するか）をホスト側の実行主体に対して
+  # 定義し直すことになり、その契約はまだ存在しない。黙って review 相当で動かさない。
+  if [[ "$DELEGATE_TO_HOST" == "true" && "$TASK_TYPE" != "review" ]]; then
+    echo "ERROR: --delegate-to-host is only valid for review tasks (got '${TASK_TYPE}')." >&2
+    exit 2
+  fi
+  # --fresh との併用は拒否する。委譲は「同じコマンドをもう一度」で完了する契約だが、
+  # --fresh は出力ディレクトリの中身（ホストが書いた結果と受け渡しファイルの両方）を
+  # 回収より前に退避するので、2 回目が毎回新しい handoff になり**収束しない**。しかも
+  # ホストが完了させたレビューが一度も読まれないまま .prev-<ts>/ へ入る（黙って失われる）。
+  # --fresh + --resume を拒否しているのと同じ形で、矛盾する 2 つの意図をここで止める。
+  if [[ "$FRESH" == "true" && "$DELEGATE_TO_HOST" == "true" ]]; then
+    echo "ERROR: --fresh cannot be combined with --delegate-to-host." >&2
+    echo "       --fresh archives the output dir (including the host's written results and the" >&2
+    echo "       handoff files) before they can be collected, so the delegation never converges." >&2
+    echo "       Clean once without delegating, then delegate:" >&2
+    echo "         1) run with --fresh and --exclude-cli ${DELEGATION_LANE} (or --dry-run) to clear" >&2
+    echo "         2) re-run with --delegate-to-host and no --fresh" >&2
     exit 2
   fi
 
@@ -1537,7 +1637,17 @@ detect_available_clis() {
         echo "  ℹ️  ${cli_name} is in config exclude_clis (${EXCLUDE_CLIS_CONFIG_SOURCE}) but --cli named it — running it this time." >&2
         ;;
     esac
-    if [[ "$cli_installed" == "true" ]]; then
+    # 委譲レーンは CLI を 1 つも起動しないので、導入の有無で可用性を決めない
+    # ここで未導入扱いにすると、観点が fallback CLI へ再配分され、
+    # 「CLI が使えないからホストで走らせる」という指定がちょうどそのとき無効になる。
+    if task_is_delegated "$cli_name"; then
+      AVAILABLE_CLIS="${AVAILABLE_CLIS:+$AVAILABLE_CLIS }$cli_name"
+      if [[ "$cli_installed" == "true" ]]; then
+        echo "  🤝 ${cli_name} — delegated to the host (--delegate-to-host); ${cmd} is installed but will not be started" >&2
+      else
+        echo "  🤝 ${cli_name} — delegated to the host (--delegate-to-host); ${cmd} is not needed on this path" >&2
+      fi
+    elif [[ "$cli_installed" == "true" ]]; then
       AVAILABLE_CLIS="${AVAILABLE_CLIS:+$AVAILABLE_CLIS }$cli_name"
       echo "  ✅ ${cli_name} (${cmd})" >&2
     else
@@ -2285,6 +2395,11 @@ show_plan() {
       local tier
       tier="$(get_cli_cost_tier "$cli")"
       echo "   ${cli} [${tier}]:" >&2
+      if task_is_delegated "$cli"; then
+        echo "     🤝 delegated to the host — no CLI is started; prompts are handed back and" >&2
+        echo "        this run reports these perspectives as pending (exit 3) until the host" >&2
+        echo "        writes each result and the same command is re-run" >&2
+      fi
       echo_effort_setting "$cli"
     fi
     echo "     - ${persp}" >&2
@@ -2796,6 +2911,11 @@ run_single_task() {
   if [[ "$INCLUDE_DIFF" == "true" ]]; then
     extra_args+=(--include-diff)
   fi
+  # 委譲レーンはここでだけ経路が分かれる。プロンプト構築・diff の固定・
+  # タイムアウトの受け渡しは他レーンと同一のまま、アダプタが CLI を起動しなくなる。
+  if task_is_delegated "$cli_name"; then
+    extra_args+=(--delegate-dir "$(delegate_dir_for "$cli_name")")
+  fi
   if [[ "$TASK_TYPE" == "implement" ]]; then
     local staging_dir
     staging_dir="$(staging_dir_for "$cli_name" "$perspective")"
@@ -3174,6 +3294,18 @@ plan_has_entry() { # <cli:perspective>
   return 1
 }
 
+# plan_has_cli の EXECUTION_PLAN 版。プラン構築直後（FULL_EXECUTION_PLAN はまだ空）に
+# 使うのでこちらが要る。両者を 1 つにまとめないのは、参照するプランが違うことが
+# 呼び出し地点の意味そのものだから（実行前の計画 / 実行後の「今回のもの」の定義）。
+plan_lists_cli() { # <cli>
+  local target="$1" entry
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    [[ "${entry%%:*}" == "$target" ]] && return 0
+  done <<< "$EXECUTION_PLAN"
+  return 1
+}
+
 plan_has_cli() { # <cli>
   local target="$1" entry
   while IFS= read -r entry; do
@@ -3537,7 +3669,8 @@ prepare_resume_execution_plan() {
     [[ -n "$entry" ]] || continue
     cli="${entry%%:*}"
     persp="${entry#*:}"
-    if [[ "$RESUME" == "true" ]] && restore_cached_result "$cli" "$persp"; then
+    if [[ "$RESUME" == "true" ]] && ! delegated_response_waiting "$cli" "$persp" \
+       && restore_cached_result "$cli" "$persp"; then
       REUSED_TASKS="${REUSED_TASKS:+$REUSED_TASKS }${cli}/${persp}"
       echo "  ♻️  Reused: ${cli}/${persp}" >&2
     else
@@ -3772,12 +3905,21 @@ report_archive_accumulation() {
 # the orchestrator-owned state before cleanup and reject a plan that omits a
 # still-unresolved perspective. The machine line is always the report's last line;
 # legacy reports fall back to the final marker summary lines only.
+# rc: 0 = a Critical marker is present, 1 = none is, 2 = the report file could
+# not be read. Callers turn rc 2 into "the report file could not be read", so
+# the grep rc is normalized instead of returned raw: grep's own error rc (2) and
+# a grep missing from PATH (127) would otherwise reach the caller as that same
+# claim and misattribute a broken toolchain to an unreadable report.
 previous_report_has_critical_marker() { # <report-file>
   local summary
   summary="$(tail -n 12 "$1")" || return 2
-  printf '%s\n' "$summary" \
+  if printf '%s\n' "$summary" \
     | grep -Fx -e '<!-- CRITICAL_BLOCK -->' \
-      -e '<!-- CRITICAL_NONBLOCK -->' >/dev/null
+      -e '<!-- CRITICAL_NONBLOCK -->' >/dev/null; then
+    return 0
+  else
+    return 1
+  fi
 }
 
 current_review_series_id() {
@@ -3803,10 +3945,18 @@ current_review_series_id() {
     | cksum | awk '{ print $1 "-" $2 }'
 }
 
+# rc: 0 = the unresolved-Critical state was read (it may legitimately be empty),
+# 1 = the report is readable but its machine state is not, 2 = the report file
+# could not be read at all. The caller needs those two failures apart: a
+# readable leftover can be archived with --fresh, an unreadable one must not be
+# (archiving would discard a Critical state nobody has read). Every non-read
+# failure below is normalized to 1 so that rc 2 stays exclusive to a read
+# failure — awk's own `exit 2` for a malformed state line would otherwise be
+# reported to the caller as an unreadable file.
 extract_unresolved_critical_perspectives() { # <report-file>
   local last_line report_tail
-  report_tail="$(tail -n 12 "$1")" || return 1
-  last_line="$(printf '%s\n' "$report_tail" | tail -n 1)" || return 1
+  report_tail="$(tail -n 12 "$1")" || return 2
+  last_line="$(printf '%s\n' "$report_tail" | tail -n 1)" || return 2
   case "$last_line" in
     '<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:'*' block:'*' nonblock:'*' -->')
       printf '%s\n' "$last_line" | awk '
@@ -3827,8 +3977,8 @@ extract_unresolved_critical_perspectives() { # <report-file>
             for (i = 1; i <= n; i++) if (names[i] != "") print "nonblock:" names[i]
           }
         }
-      '
-      return $?
+      ' || return 1
+      return 0
       ;;
   esac
 
@@ -3881,23 +4031,45 @@ is_unfiltered_full_review_plan() {
 capture_and_guard_unresolved_critical_state() {
   [[ "$TASK_TYPE" == "review" ]] || return 0
   local report_file="${OUTPUT_DIR}/integrated-report.md" parsed tagged tag perspective missing="" marker_rc=0
-  local previous_series="" current_series="" base_q
+  local previous_series="" current_series="" base_q extract_rc=0
   [[ -f "$report_file" ]] || return 0
-  if ! parsed="$(extract_unresolved_critical_perspectives "$report_file")"; then
-    echo "ERROR: cannot inspect unresolved Critical perspectives in the previous report." >&2
-    # An abort that names no recovery route sends the caller back to --help. The
-    # three leftover-state branches that this one belongs with — unreadable
-    # perspective list, state from another branch/base/scope, and narrowed review
-    # omitting unresolved perspectives — all spell --fresh out here; this branch
-    # was the only one of the four that did not. (Other aborts in this function
-    # report malformed or unidentifiable state rather than a usable leftover, and
-    # deliberately say nothing about --fresh.) This one is reached by a leftover
-    # whose machine state cannot be read at all — the case where re-reading the
-    # report helps least.
-    echo "       Or archive leftover results and retry: add --fresh" >&2
-    echo "       Previous results were left untouched: ${report_file}" >&2
-    return 1
-  fi
+  # An abort that names no recovery route sends the caller back to --help, so
+  # every abort in this function names one. The route is NOT the same
+  # everywhere — a blanket "add --fresh" would tell the caller to archive state
+  # nobody has read. Three kinds, decided by what is actually broken:
+  #   1. the leftover report is readable → archive it and retry (--fresh);
+  #      when its machine state cannot be trusted (unparseable, corrupt entry,
+  #      marker/state contradiction) the guidance says to read the report's
+  #      Critical section by hand first;
+  #   2. the report file cannot be read at all → fix readability first, because
+  #      archiving discards a Critical state nobody has read; --fresh is ruled
+  #      out in the message rather than left unmentioned;
+  #   3. the current review series cannot be computed → the leftover is fine
+  #      and the repository state is what needs fixing, so --fresh is ruled out.
+  # Kind 1 and kind 2 both surface here, so the two are told apart by rc rather
+  # than merged: an unreadable report (chmod 000, I/O error) is the failure that
+  # actually happens in the field, and it used to be answered with "add --fresh".
+  parsed="$(extract_unresolved_critical_perspectives "$report_file")" || extract_rc=$?
+  case "$extract_rc" in
+    0) ;;
+    2)
+      # Kind 2: the file could not be read, so nobody has seen what is Critical in it.
+      echo "ERROR: cannot inspect unresolved Critical perspectives in the previous report." >&2
+      echo "       The report file could not be read; check its permissions and the filesystem, then retry." >&2
+      echo "       Read its Critical section before archiving the leftover — --fresh would discard a Critical state nobody has read." >&2
+      echo "       Previous results were left untouched: ${report_file}" >&2
+      return 1
+      ;;
+    *)
+      # Kind 1: the machine state cannot be parsed, but the report itself is
+      # still there to read — so the recovery route reads it before archiving.
+      echo "ERROR: cannot inspect unresolved Critical perspectives in the previous report." >&2
+      echo "       The machine state in the report could not be parsed, so it cannot name the unresolved perspectives." >&2
+      echo "       Read the Critical section of the report by hand first, then archive leftover results and retry: add --fresh" >&2
+      echo "       Previous results were left untouched: ${report_file}" >&2
+      return 1
+      ;;
+  esac
   if [[ -z "$parsed" ]]; then
     if previous_report_has_critical_marker "$report_file"; then
       marker_rc=0
@@ -3913,7 +4085,14 @@ capture_and_guard_unresolved_critical_state() {
         return 1
         ;;
       *)
-        echo "ERROR: cannot inspect Critical markers in the previous report." >&2
+        # Kind 2: previous_report_has_critical_marker only fails this way when
+        # the report file itself could not be read.
+        # The same failure is reported from two call sites, reached by different
+        # leftovers. Naming the route keeps the two apart in a log — and keeps a
+        # test from covering one while believing it covers both.
+        echo "ERROR: cannot inspect Critical markers in the previous report (no machine-readable Critical state)." >&2
+        echo "       The report file could not be read; check its permissions and the filesystem, then retry." >&2
+        echo "       Read its Critical section before archiving the leftover — --fresh would discard a Critical state nobody has read." >&2
         echo "       Previous results were left untouched: ${report_file}" >&2
         return 1
         ;;
@@ -3926,7 +4105,11 @@ capture_and_guard_unresolved_critical_state() {
     perspective="${tagged#*:}"
     if [[ "$tag" == "series" ]]; then
       if [[ -n "$previous_series" ]] || ! [[ "$perspective" =~ ^[0-9]+-[0-9]+$ ]]; then
+        # Kind 1 with an untrusted state line: the report body is still readable,
+        # so the caller can see what is unresolved — but not from this line.
         echo "ERROR: invalid review-series entry in previous Critical state: '${tagged}'" >&2
+        echo "       The machine state on the last line of the report is corrupt, so it cannot name the unresolved perspectives." >&2
+        echo "       Read the Critical section of the report by hand first, then archive leftover results and retry: add --fresh" >&2
         echo "       Previous results were left untouched: ${report_file}" >&2
         return 1
       fi
@@ -3934,7 +4117,10 @@ capture_and_guard_unresolved_critical_state() {
       continue
     fi
     if [[ "$tag" != "block" && "$tag" != "nonblock" ]] || ! is_safe_token "$perspective"; then
+      # Kind 1 with an untrusted state line (see the invalid-series branch above).
       echo "ERROR: invalid perspective entry in previous Critical state: '${tagged}'" >&2
+      echo "       The machine state on the last line of the report is corrupt, so it cannot name the unresolved perspectives." >&2
+      echo "       Read the Critical section of the report by hand first, then archive leftover results and retry: add --fresh" >&2
       echo "       Previous results were left untouched: ${report_file}" >&2
       return 1
     fi
@@ -3959,7 +4145,10 @@ capture_and_guard_unresolved_critical_state() {
   # later base/branch/scope change must not block an otherwise valid run.
   if [[ -z "$PREVIOUS_UNRESOLVED_BLOCK" && -z "$PREVIOUS_UNRESOLVED_NONBLOCK" ]]; then
     if previous_report_has_critical_marker "$report_file"; then
+      # Kind 1: the marker and the state contradict each other, but the report
+      # is readable, so the caller can settle it by reading the Critical section.
       echo "ERROR: the previous report has a Critical marker but its machine state is empty." >&2
+      echo "       Inspect the Critical section of the leftover report, then add --fresh, or move/delete it if it is obsolete and run a full review." >&2
       echo "       Previous results were left untouched: ${report_file}" >&2
       return 1
     else
@@ -3968,7 +4157,11 @@ capture_and_guard_unresolved_critical_state() {
     case "$marker_rc" in
       1) return 0 ;;
       *)
-        echo "ERROR: cannot inspect Critical markers in the previous report." >&2
+        # Kind 2 (see the same message above): the report file could not be read.
+        # This is the other call site; the parenthetical names which one.
+        echo "ERROR: cannot inspect Critical markers in the previous report (Critical state lists no unresolved perspectives)." >&2
+        echo "       The report file could not be read; check its permissions and the filesystem, then retry." >&2
+        echo "       Read its Critical section before archiving the leftover — --fresh would discard a Critical state nobody has read." >&2
         echo "       Previous results were left untouched: ${report_file}" >&2
         return 1
         ;;
@@ -3986,7 +4179,16 @@ capture_and_guard_unresolved_critical_state() {
   local previous_series_is_current=false
   if [[ -n "$previous_series" ]]; then
     current_series="$(current_review_series_id)" || {
+      # Kind 3: nothing is wrong with the leftover — the repository state this
+      # run is standing in cannot be resolved into a series identity.
+      # The measured causes are: the run is outside a git worktree, HEAD cannot
+      # be resolved (a corrupt .git/HEAD), or the project root is gone or
+      # unreadable. A repository with no commits is NOT one of them — HEAD is an
+      # unborn branch there and symbolic-ref still resolves it.
       echo "ERROR: cannot identify the current review series." >&2
+      echo "       Run from inside the repository worktree, with the project root still present and HEAD resolvable, then retry." >&2
+      echo "       --fresh does not help here: the failure is in the current repository state, not in the leftover report." >&2
+      echo "       Previous results were left untouched: ${report_file}" >&2
       return 1
     }
     [[ "$previous_series" == "$current_series" ]] && previous_series_is_current=true
@@ -4059,6 +4261,11 @@ task_left_perspective_unproven() { # <cli> <perspective>
   for entry in $FAILED_TASKS $SKIPPED_TASKS; do
     [[ "$entry" == "$prefix"* ]] && return 0
   done
+  # 委譲待ちも「この実行がその観点の判定を出していない」側。成果物が
+  # 無い点はスキップと同じなので、ここを抜かすと前回の CRITICAL_BLOCK が判定ループの
+  # `[[ -f "$crit_file" ]] || continue` で静かに消え、pre-push ゲートが素通りする。
+  # DELEGATED_TASKS は接尾辞を持たない（"cli/perspective" のみ）ので完全一致で見る。
+  delegated_task_pending "${1}/${2}" && return 0
   return 1
 }
 
@@ -4117,6 +4324,11 @@ run_cli_group() { # $1: cli / $2: status dir
     # 処理中だったかはこの行でしか相関できない（逐次ブランチの ▶ 表示と対）。
     echo "▶ ${cli} → ${persp} (serialized)" >&2
     run_task_recorded "$cli" "$persp" "$sdir" || return 1
+    # 委譲レーンの rc（DELEGATION_PENDING_EXIT_CODE）がここへ来ない前提は、claude-code が
+    # premium tier で、このワーカーが minimize_cost × flat-rate のときしか使われないこと
+    # （get_cli_cost_tier / execute_tasks の serialized_clis 判定）に依っている。tier を
+    # 変えると委譲待ちが「CLI 単位の決定的失敗」と分類され、そのレーンの残り観点が
+    # まとめてスキップされる — 暗黙の依存なので明示しておく。
     if [[ "${LAST_TASK_RC:-0}" -ne 0 && "${LAST_TASK_RC:-0}" -ne 124 ]]; then
       cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${cli}/${persp}.md")"
       if cli_failure_is_deterministic "$cause"; then
@@ -4139,6 +4351,97 @@ record_task_skipped() { # $1: cli / $2: perspective / $3: cause / $4: status dir
     return 1
   fi
   echo "  ⏭ Skipped ${1}/${2} — ${1} already failed in this run for a ${3} reason (not task-specific)." >&2
+}
+
+
+
+# ── 委譲を残したまま指定を落とした実行の停止 ──
+#
+# 委譲の受け渡し先（<cli>/<perspective>.md）は、同じ実行の clear_planned_outputs が
+# 「今回のプランの対象」として消す場所そのもの。回収（collect_delegated_responses）は
+# --delegate-to-host が**再度**渡されたときだけ走るので、2 段階の手順で 2 回目のフラグを
+# 落とすと、ホストが書いた結果が 1 行の通知も無く消え、そのうえ枯渇していて動かない
+# CLI が起動される。フラグの取り違えはこの手順で最も起きやすい操作なので、消す前に止める。
+#
+# 「委譲が未完了である」ことの印は request ファイル（受理時に消える）。これが残っている
+# 観点が今回のプランに居て、かつ委譲が指定されていなければ中断する。
+guard_outstanding_delegations() {
+  [[ "$DELEGATE_TO_HOST" != "true" ]] || return 0
+  [[ -n "${OUTPUT_DIR:-}" ]] || return 0
+  local entry cli persp req outstanding=""
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    cli="${entry%%:*}"
+    persp="${entry#*:}"
+    req="$(delegate_dir_for "$cli")/${persp}.request"
+    [[ -f "$req" ]] || continue
+    outstanding="${outstanding:+${outstanding} }${cli}/${persp}"
+  done <<< "$EXECUTION_PLAN"
+  [[ -n "$outstanding" ]] || return 0
+  echo "ERROR: an unfinished host delegation exists for: ${outstanding}" >&2
+  echo "       This run was started WITHOUT --delegate-to-host, so it would clear those result" >&2
+  echo "       paths (destroying anything the host wrote there) and start the CLI instead." >&2
+  echo "       Either re-run with --delegate-to-host to finish the round trip, or abandon the" >&2
+  echo "       delegation by removing its handoff files:" >&2
+  local abandon_entry abandon_cli abandon_persp
+  for abandon_entry in $outstanding; do
+    abandon_cli="${abandon_entry%%/*}"
+    abandon_persp="${abandon_entry#*/}"
+    echo "         rm -f $(shell_quote "$(delegate_dir_for "$abandon_cli")/${abandon_persp}.request") $(shell_quote "$(delegate_dir_for "$abandon_cli")/${abandon_persp}.prompt.md")" >&2
+  done
+  return 1
+}
+
+# ── ホストが書き戻した結果の回収 ──
+#
+# 委譲したレーンの結果は、ホストが <output-dir>/<cli>/<perspective>.md へ**直接**書く
+# （Issue の指定どおり、レビュー結果の所定の場所そのもの）。その場所は
+# clear_planned_outputs が「今回のプランの対象」として消す場所でもあるので、消される前に
+# アダプタが読む位置（.delegated/<perspective>.response.md）へ移しておく。
+#
+# ここは運ぶだけで**内容を見ない**。「このプロンプトへの応答か」「レビュー本文として
+# 成立しているか」の判定はアダプタ側（delegate_task）に 1 箇所だけ置く — 同じ判定を
+# 2 箇所に置くと、片方だけ緩めた回に受理条件が静かにずれる。
+collect_delegated_responses() {
+  [[ "$DELEGATE_TO_HOST" == "true" ]] || return 0
+  local entry cli persp dir src dst collected=0 names=""
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    cli="${entry%%:*}"
+    persp="${entry#*:}"
+    task_is_delegated "$cli" || continue
+    # 回収するのは「未応答の handoff がある観点」だけ。印は request ファイルで、
+    # 受理した時点で消える。これを見ないと、**前の巡で受理済みの成果物**まで応答として
+    # 回収してしまい、request が無いので digest 照合に落ちて stale 退避 → 再委譲となる。
+    # 複数観点のレーンでは 1 観点ずつ答える通常の進み方が収束しなくなる（実測）。
+    [[ -f "$(delegate_dir_for "$cli")/${persp}.request" ]] || continue
+    src="${OUTPUT_DIR}/${cli}/${persp}.md"
+    # symlink は運ばない（指し先は出力先の外でもありうる）。動かさないと
+    # clear_planned_outputs が**リンクだけ**を消す（指し先は残る）ので、握り潰さず名指しする。
+    if [[ -L "$src" ]]; then
+      echo "  ⚠️ Not collecting a symlink at a delegated result path (left for the normal clear): ${src}" >&2
+      continue
+    fi
+    [[ -f "$src" ]] || continue
+    dir="$(delegate_dir_for "$cli")"
+    if ! mkdir -p "$dir"; then
+      echo "ERROR: cannot create the delegation dir: ${dir}" >&2
+      return 1
+    fi
+    dst="${dir}/${persp}.response.md"
+    if ! mv "$src" "$dst"; then
+      echo "ERROR: cannot collect the host-written result: ${src}" >&2
+      echo "       It sits where this run clears its own targets, so leaving it there would" >&2
+      echo "       delete the host's work a moment later." >&2
+      return 1
+    fi
+    collected=$((collected + 1))
+    names="${names:+${names}, }${cli}/${persp}"
+  done <<< "$EXECUTION_PLAN"
+  if [[ "$collected" -gt 0 ]]; then
+    echo "  🤝 Collected ${collected} host-written result(s) for adoption: ${names}" >&2
+  fi
+  return 0
 }
 
 # ── Execute All Tasks ──
@@ -4187,6 +4490,12 @@ execute_tasks() {
   # 済んでしまう。all-clear の統合レポート削除より後に置く。未解消レポートは次回
   # ガードの状態なので、この検査が落ちても保持する（上の例外規則）。
   validate_planned_result_dirs || return 2
+  # 未完了の委譲を残したままフラグを落とした実行は、ここで止める（消す前に）。
+  guard_outstanding_delegations || return 2
+  # 回収は「今回のプランの対象を消す」より前でなければならない。<cli>/ の解決検査
+  # （validate_planned_result_dirs）の直後に置くのは、symlink 越しの <cli>/ に対して
+  # mv を撃たないため。
+  collect_delegated_responses || return 2
   # A task without prompt diff must not inherit the previous review's fixed diff.
   # Diff-bearing tasks overwrite the file in create_fixed_diff below; removing it
   # here for all tasks would erase the bytes before resume identity can hash them.
@@ -4217,6 +4526,7 @@ execute_tasks() {
   local seen=""
   FAILED_TASKS=""
   SKIPPED_TASKS=""
+  DELEGATED_TASKS=""
   POISONED_CLIS=""
 
   # review だけ: タスクを 1 つでも起動する前に「完了までツリーを触らない」バナーを
@@ -4400,12 +4710,22 @@ execute_tasks() {
           FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:1"
           echo "  ❌ Cannot persist completed resume cache: ${task_name}" >&2
         fi
+      elif [[ "$exit_code" -eq "$DELEGATION_PENDING_EXIT_CODE" ]] && task_is_delegated "$cli"; then
+        # 委譲済み・結果待ち。失敗にも成果物なしにも数えない — CLI は
+        # 1 つも起動しておらず、調べるべきクラッシュも、再実行で埋まる打ち切りも無い。
+        # レーン束縛を条件へ入れてあるので、委譲していない CLI が偶然 123 を返した場合は
+        # 従来どおり失敗として扱う（fail-safe 側）。
+        DELEGATED_TASKS="${DELEGATED_TASKS:+$DELEGATED_TASKS }${task_name}"
+        echo "  🤝 Delegated (pending host): ${task_name}" >&2
       elif [[ "$exit_code" -ne 0 ]]; then
         failed=$((failed + 1))
         FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:${exit_code}"
         report_task_failure "$task_name" "$exit_code"
       else
         # Success exit but no output file — surface as a failure, not silent OK.
+        # 書き込み失敗はもうここへ来ない（write_output が rc へ載せ、アダプタが 125 で
+        # 落ちる）。この分岐はそれ以外の「0 を返したのに成果物が無い」退行のための砦
+        # として残す — 埋めてしまうと、次に同型が生えたとき静かに成功として通る。
         failed=$((failed + 1))
         FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${task_name}:0"
         echo "  ❌ No output file: ${task_name}" >&2
@@ -4440,7 +4760,12 @@ execute_tasks() {
       # same diagnosis or the reason depends on which mode you happened to run.
       local task_rc=0
       run_single_task "$cli" "$persp" || task_rc=$?
-      if [[ $task_rc -ne 0 ]]; then
+      if [[ $task_rc -eq "$DELEGATION_PENDING_EXIT_CODE" ]] && task_is_delegated "$cli"; then
+        # 並列経路と同じ扱い。片方の経路にだけ置くと、実行モードを
+        # 変えただけで「委譲待ち」が「失敗」に化ける。
+        DELEGATED_TASKS="${DELEGATED_TASKS:+$DELEGATED_TASKS }${cli}/${persp}"
+        echo "  🤝 Delegated (pending host): ${cli}/${persp}" >&2
+      elif [[ $task_rc -ne 0 ]]; then
         failed=$((failed + 1))
         FAILED_TASKS="${FAILED_TASKS:+$FAILED_TASKS }${cli}/${persp}:${task_rc}"
         report_task_failure "${cli}/${persp}" "$task_rc"
@@ -4455,6 +4780,7 @@ execute_tasks() {
           fi
         fi
       elif [[ ! -f "${OUTPUT_DIR}/${cli}/${persp}.md" ]]; then
+        # 並列側と同じ砦（write_output の失敗は 125 で来るので、ここは別経路用）。
         # Adapter reported success but wrote no output — count it as a failure so
         # a silently-empty run shows up in the exit code, not only the report.
         failed=$((failed + 1))
@@ -4475,6 +4801,10 @@ execute_tasks() {
   done
   local failed_only=$((failed - skipped_count))
   [[ "$failed_only" -ge 0 ]] || failed_only=0
+  local delegated_count=0 delegated_entry
+  for delegated_entry in $DELEGATED_TASKS; do
+    delegated_count=$((delegated_count + 1))
+  done
   if [[ $failed -gt 0 ]]; then
     if [[ $skipped_count -gt 0 ]]; then
       echo "⚠️  ${failed_only} ${TASK_TYPE} task(s) failed, ${skipped_count} not executed (skipped)." >&2
@@ -4483,6 +4813,10 @@ execute_tasks() {
     fi
     print_failure_advice
     return 1
+  elif [[ $delegated_count -gt 0 ]]; then
+    # 「全部成功」と名乗らない。委譲したタスクはまだ結果を持っておらず、
+    # 統合レポートにもその観点は pending として載る。
+    echo "🤝 ${delegated_count} ${TASK_TYPE} task(s) delegated to the host and still pending; every other task completed." >&2
   else
     echo "✅ All ${TASK_TYPE} tasks completed successfully." >&2
   fi
@@ -4681,10 +5015,16 @@ verify_repo_unchanged() {
 # than the run-wide one: naming a deadline that never existed sends the user
 # after the wrong remedy.
 # 124 is run_with_timeout's timeout status (see adapters/adapter-common.sh).
+# 125 は ORCHESTRATOR_ERROR_EXIT_CODE（adapters/adapter-common.sh）。CLI が返しうる
+# 番号とは重ならない位置に置いてあり、意味は「壊れているのは CLI ではなくこちら側」
+# （成果物の出力先が書けない・ラッパー自身が起動に失敗した）。素の
+# `Failed (exit code: 125)` に丸めると、読み手は CLI のクラッシュを追い始める。
 report_task_failure() {
   local task_name="$1" rc="$2"
   if [[ "$rc" -eq 124 ]]; then
     echo "  ❌ Timed out after ${TIMEOUT}s: ${task_name}" >&2
+  elif [[ "$rc" -eq 125 ]]; then
+    echo "  ❌ Orchestrator-side failure, not the CLI's: ${task_name} (exit code: ${rc} — see the adapter's ERROR above)" >&2
   else
     echo "  ❌ Failed: ${task_name} (exit code: ${rc})" >&2
   fi
@@ -5344,6 +5684,10 @@ append_plan_sections() {
       echo ""
       if list_contains "$REUSED_TASKS" "${cli_name}/${perspective_name}"; then
         echo "**Result source:** reused"
+      elif delegated_task_pending "${cli_name}/${perspective_name}"; then
+        # 「executed」と書くと、CLI を 1 つも起動していない節が実行済みに見える
+        # （skipped と同じ理由で、節の中で数行下の本文と矛盾する）。
+        echo "**Result source:** delegated to the host (pending)"
       elif [[ -n "$(skipped_task_cause "${cli_name}/${perspective_name}")" ]]; then
         # スキップした節へ executed と書くと、数行下の「this task was not executed」と
         # 同じ節の中で矛盾する（Issue #1143）。
@@ -5382,7 +5726,25 @@ append_plan_sections() {
         fi
         echo ""
       fi
-      if [[ -f "$result_file" ]]; then
+      # 委譲待ちの判定は `-f "$result_file"` より**前**に置く。委譲タスクは CLI を
+      # 起動しないので数ミリ秒で終わり、他レーンが走っている数分のあいだにホストが
+      # 結果パスへ書くと、-f が先に真になってその生テキストがレポートへそのまま載る —
+      # プロンプト digest の照合も本文の受理ゲートも通らないまま、しかも節見出しは
+      # 「pending」と名乗る。同じ未検証ファイルが CRITICAL_BLOCK 判定の入力にもなる。
+      if delegated_task_pending "${cli_name}/${perspective_name}"; then
+        # 委譲待ちは「失敗」でも「スキップ」でもない第 3 の状態。
+        # それでも **INCOMPLETE を名乗る** — 消費側ゲートはこの語でレビューの未完了を
+        # 判定しており、ここで名乗らないと「委譲したまま誰も実行していないレビュー」が
+        # 未完了なしとして通る。次の一手（ホストが書く場所・締め方）まで書くのは、
+        # この節がそれを読む唯一の場所になりうるため。
+        echo "🤝 **DELEGATED — pending host execution**, so this perspective counts as **INCOMPLETE**."
+        echo "No CLI was started for it. The prompt this run built is at"
+        echo "\`$(delegate_dir_for "$cli_name")/${perspective_name}.prompt.md\`."
+        echo "The host runs it in its own session and writes the result to"
+        echo "\`${result_file}\`, then re-runs the same command **with \`--resume\`** to have it"
+        echo "adopted and this report regenerated."
+        echo "Absence of a finding here means unchecked, not clean."
+      elif [[ -f "$result_file" ]]; then
         # An adapter marks salvaged partial output with `Status: incomplete`
         # (adapters/adapter-common.sh). Repeat that in the report: without it the
         # section looks like any other and its silence reads as "found nothing"
@@ -5480,6 +5842,41 @@ resolve_critical_nonblock_perspectives() {
   v="${v//,/ }"
   v="${v//$'\t'/ }"
   printf '%s\n' "$v"
+}
+
+
+# ── 委譲した実行のホストへの引き渡し ──
+#
+# **stdout へ出す唯一のブロック**。このスクリプトの進行表示・警告・診断はすべて stderr
+# なので、委譲を指定したホストは stdout をそのまま読めばよい（Issue の案 1 の形）。
+# 中身は各タスクの request レコード（アダプタが書いたもの）をそのまま連結したもので、
+# ここで再構成はしない — 2 箇所で組み立てると、片方だけ鍵が増えた回に食い違う。
+print_delegation_handoff() {
+  [[ -n "$DELEGATED_TASKS" ]] || return 0
+  local task cli persp req count=0
+  for task in $DELEGATED_TASKS; do
+    count=$((count + 1))
+  done
+  printf '%s\n' '<<<FF-DELEGATED-TASKS>>>'
+  printf 'count=%s\n' "$count"
+  printf 'task-type=%s\n' "$TASK_TYPE"
+  printf 'output-dir=%s\n' "$OUTPUT_DIR"
+  for task in $DELEGATED_TASKS; do
+    cli="${task%%/*}"
+    persp="${task#*/}"
+    req="$(delegate_dir_for "$cli")/${persp}.request"
+    printf '%s\n' '--- task ---'
+    if [[ -r "$req" ]]; then
+      cat "$req"
+    else
+      # レコードが読めないのは想定外（直前にアダプタが書いている）。ブロックの形は
+      # 保ったまま、欠落を機械可読の鍵で名乗る — 黙って短いブロックを返すと、
+      # ホストは「委譲されなかった」と読む。
+      printf 'cli=%s\nperspective=%s\nerror=request-record-unreadable:%s\n' "$cli" "$persp" "$req"
+      echo "⚠️  Delegation request record is unreadable: ${req}" >&2
+    fi
+  done
+  printf '%s\n' '<<<END-FF-DELEGATED-TASKS>>>'
 }
 
 # ── Generate Report (review) ──
@@ -5604,6 +6001,15 @@ HEADER
         continue
       fi
     fi
+    # 委譲待ちの観点は、この実行の判定を出していない。結果パスにファイルがあっても
+    # それは受理ゲート（プロンプト digest / レビュー本文）を 1 つも通っていない —
+    # 委譲タスクは CLI を起動しないので数ミリ秒で終わり、他レーンが走っている数分の
+    # あいだにホストがそこへ書けば -f は真になる。レポート本文側は同じ理由で
+    # delegated_task_pending を -f より前に置いてあり、こちらだけ読むと 2 つの消費者が
+    # 同じパスについて別の判断をする。
+    if delegated_task_pending "${crit_entry%%:*}/${crit_entry#*:}"; then
+      continue
+    fi
     crit_file="${OUTPUT_DIR}/${crit_entry%%:*}/${crit_entry#*:}.md"
     [[ -f "$crit_file" ]] || continue
     set +e
@@ -5655,7 +6061,7 @@ HEADER
         echo "Unparseable result treated as critical (${crit_block_unparse// /, }): the body could not be fully judged — see the run diagnostics."
       fi
       if [[ -n "$crit_block_retained" ]]; then
-        echo "Previous Critical remains unresolved because its rerun failed or was skipped (${crit_block_retained// /, })."
+        echo "Previous Critical remains unresolved because its rerun produced no verdict — it failed, was skipped, or is still delegated to the host (${crit_block_retained// /, })."
       fi
     } >> "$report_file"; then
       echo "ERROR: cannot write blocking Critical state to the integrated review report." >&2
@@ -5675,7 +6081,7 @@ HEADER
         echo "Unparseable result treated as critical, in non-blocking perspectives (${crit_nonblock_unparse// /, })."
       fi
       if [[ -n "$crit_nonblock_retained" ]]; then
-        echo "Previous non-blocking Critical remains unresolved because its rerun failed or was skipped (${crit_nonblock_retained// /, })."
+        echo "Previous non-blocking Critical remains unresolved because its rerun produced no verdict — it failed, was skipped, or is still delegated to the host (${crit_nonblock_retained// /, })."
       fi
       echo "Fix them per the review response policy; on their own they do not re-trigger the full gate."
     } >> "$report_file"; then
@@ -5960,6 +6366,17 @@ main() {
     exit 1
   fi
 
+  # 委譲を指定したのに対象レーンがプランに居ない実行は、利用者の意図が黙って落ちた
+  # 状態（--exclude-cli / --cli / --perspective / --mode の組み合わせで消えうる）。
+  # 他レーンだけ走らせて「委譲したはずの観点」をレポートから落とさない。
+  # dry-run でも同じ判定にする — プラン検証の境界で通ったものが実行で落ちる形にしない。
+  if [[ "$DELEGATE_TO_HOST" == "true" ]] && ! plan_lists_cli "$DELEGATION_LANE"; then
+    echo "ERROR: --delegate-to-host was given but ${DELEGATION_LANE} is not in this plan." >&2
+    echo "       Delegation exists for the ${DELEGATION_LANE} lane only, so there is nothing to delegate." >&2
+    echo "       Check --cli / --exclude-cli / --perspective / --mode, or drop --delegate-to-host." >&2
+    exit 1
+  fi
+
   if [[ "$DRY_RUN" == "true" ]]; then
     echo "🏁 Dry run complete. No tasks executed." >&2
     exit 0
@@ -5998,6 +6415,7 @@ main() {
   local task_failed=false
   local setup_failed=false
   local exec_rc=0
+  local delegated_entry
   execute_tasks || exec_rc=$?
   if [[ -n "$FULL_EXECUTION_PLAN" ]]; then
     EXECUTION_PLAN="$FULL_EXECUTION_PLAN"
@@ -6029,11 +6447,34 @@ main() {
   generate_report || exit 1
 
   echo "" >&2
-  echo "🏁 Done! View results:" >&2
-  echo "   cat ${OUTPUT_DIR}/integrated-report.md" >&2
+  if [[ -n "$DELEGATED_TASKS" ]]; then
+    # 「Done」と名乗らない。委譲したレーンはまだ結果を持っていない。
+    echo "🤝 Not finished — perspective(s) delegated to the host are still pending:" >&2
+    for delegated_entry in $DELEGATED_TASKS; do
+      echo "     ${delegated_entry}" >&2
+    done
+    echo "   1) Run each prompt below in this host's own session (read-only; do not touch the worktree)." >&2
+    echo "   2) Write each result to the output-file path named with it." >&2
+    echo "   3) Re-run this command WITH --resume to adopt them and regenerate the report." >&2
+    echo "      --resume is not optional here beyond saving the other lanes' work: without it this" >&2
+    echo "      run clears every planned result first, so perspectives already adopted in an earlier" >&2
+    echo "      round are cleared too and handed back out again — a lane with several perspectives" >&2
+    echo "      never converges." >&2
+    echo "   Report so far (delegated perspectives are marked INCOMPLETE): ${OUTPUT_DIR}/integrated-report.md" >&2
+    echo "" >&2
+    print_delegation_handoff
+  else
+    echo "🏁 Done! View results:" >&2
+    echo "   cat ${OUTPUT_DIR}/integrated-report.md" >&2
+  fi
 
+  # 失敗は委譲待ちより重い。両方ある実行で 3 を返すと、消費側は「ホストを待てばよい」と
+  # 読んで失敗したタスクの再実行を落とす。順序はこの 1 箇所でだけ決める。
   if [[ "$task_failed" == "true" ]]; then
     exit 1
+  fi
+  if [[ -n "$DELEGATED_TASKS" ]]; then
+    exit 3
   fi
 }
 

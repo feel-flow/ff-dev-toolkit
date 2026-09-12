@@ -6,6 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/hooks/retrospective-stop.sh"
 CONTEXT_TARGET="$PLUGIN_ROOT/hooks/retrospective-context.sh"
+# ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
+# shellcheck source=../lib/asdd-gate-drain.sh
+. "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 SKILL="$PLUGIN_ROOT/skills/retrospective/SKILL.md"
 
@@ -606,7 +609,158 @@ else
   bad "hook が filesystem へ副作用を作成"
 fi
 
-node --test "$SCRIPT_DIR/asdd.test.mjs"
+echo "retrospective hooks: ASDD ゲートの早期終了経路でも stdin を読み切る"
+# 任意 Hook を止めるゲート（hooks/asdd-hook-gate.sh）は stdin を消費しない設計なので、
+# 前置きが drain より前にあると「読まずに exit 0」する経路ができ、書き手がその場で
+# EPIPE / SIGPIPE を受ける。PreToolUse ガードと違い、この 2 本は**応答ごと / プロンプト
+# ごと**に発火するので、ASDD プロジェクトではその経路が毎回通る。
+# 共有 fixture の features は retrospective=false なので、node がある経路ではゲートが
+# 「この feature は無効」で停止し、PATH から node を外した経路では設定を読めずに停止する。
+ASDD_GATE_DIR="$TEST_TMP/asdd-gate"
+mkdir -p "$ASDD_GATE_DIR"
+ff_asdd_fixture "$ASDD_GATE_DIR" true
+STOP_DRAIN_PAYLOAD="$(ff_asdd_big_payload '{"hook_event_name":"Stop","stop_hook_active":false}')"
+CONTEXT_DRAIN_PAYLOAD="$(ff_asdd_big_payload '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"work"}')"
+for drain_target in "$TARGET" "$CONTEXT_TARGET"; do
+  drain_name="$(basename "$drain_target")"
+  if [ "$drain_target" = "$CONTEXT_TARGET" ]; then
+    drain_payload="$CONTEXT_DRAIN_PAYLOAD"
+  else
+    drain_payload="$STOP_DRAIN_PAYLOAD"
+  fi
+  ff_asdd_drain_probe "$drain_target" "$drain_payload" "$ASDD_GATE_DIR" RETROSPECTIVE_MODE= PATH=/nonexistent
+  if [ "$FF_ASDD_DRAIN_RC" -eq 0 ] && [ -z "$FF_ASDD_DRAIN_OUT" ]; then
+    ok "$drain_name: .asdd 設定あり + node 不在（ゲートが停止）でも stdin を読み切ってから無出力 exit 0"
+  else
+    bad "$drain_name の drain（node 不在）: exit=$FF_ASDD_DRAIN_RC out=[$FF_ASDD_DRAIN_OUT]（非 0 なら前置きが drain より前にある）"
+  fi
+  ff_asdd_drain_probe "$drain_target" "$drain_payload" "$ASDD_GATE_DIR" RETROSPECTIVE_MODE=
+  if [ "$FF_ASDD_DRAIN_RC" -eq 0 ] && [ -z "$FF_ASDD_DRAIN_OUT" ]; then
+    ok "$drain_name: features.retrospective=false（ゲートが無効と判定）でも stdin を読み切ってから無出力 exit 0"
+  else
+    bad "$drain_name の drain（feature 無効）: exit=$FF_ASDD_DRAIN_RC out=[$FF_ASDD_DRAIN_OUT]（非 0 なら前置きが drain より前にある）"
+  fi
+done
+
+echo "retrospective hooks: 天井（数 MB）と遅延 producer でも書き手を殺さない"
+# 上の 200,000 バイトは bash 組み込み read の速度（2026-09-12 実測 bash 3.2.57 /
+# macOS で約 2.9 MB/s）でも入力上限 2 秒に収まるため、「上限で諦めて部分入力を捨てる」
+# 実装でも緑になる = 天井を測っていない（クロスモデルレビュー指摘）。天井は上限の外側
+# （約 6 MB 以上）、遅延 producer は上限の外側（時間軸。入力上限を過ぎてから書き始める
+# 書き手）にある。どちらも書き手を含むパイプライン全体の rc を見る — drain 漏れは hook
+# の exit 0 ではなく書き手の SIGPIPE（141）として現れる。
+# サイズは境界（2.9 MB/s × 2 秒 ≒ 6 MB）の 3 倍以上を取る。境界ちょうどだと同じ入力で
+# rc=0 と rc=141 が両方出て probe が揺れる（実測済み）。
+DRAIN_CEILING_BYTES=20000000
+DRAIN_DELAY_SECONDS=2.5
+STOP_HUGE_FILE="$TEST_TMP/drain-huge-stop.json"
+CONTEXT_HUGE_FILE="$TEST_TMP/drain-huge-context.json"
+STOP_SMALL_FILE="$TEST_TMP/drain-small-stop.json"
+CONTEXT_SMALL_FILE="$TEST_TMP/drain-small-context.json"
+ff_asdd_write_payload "$STOP_HUGE_FILE" '{"hook_event_name":"Stop","stop_hook_active":false}' "$DRAIN_CEILING_BYTES"
+ff_asdd_write_payload "$CONTEXT_HUGE_FILE" '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"work"}' "$DRAIN_CEILING_BYTES"
+ff_asdd_write_payload "$STOP_SMALL_FILE" '{"hook_event_name":"Stop","stop_hook_active":false}' 0
+ff_asdd_write_payload "$CONTEXT_SMALL_FILE" '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"work"}' 0
+# RETROSPECTIVE_MODE=off 用の作業ディレクトリ。ASDD 設定を置かない（ゲートは素通しし、
+# kill switch だけが効く経路 = 判別 node を起動しないことになっている側）。
+DRAIN_OFF_DIR="$TEST_TMP/drain-off"
+mkdir -p "$DRAIN_OFF_DIR"
+for drain_target in "$TARGET" "$CONTEXT_TARGET"; do
+  drain_name="$(basename "$drain_target")"
+  if [ "$drain_target" = "$CONTEXT_TARGET" ]; then
+    huge_file="$CONTEXT_HUGE_FILE"
+    small_file="$CONTEXT_SMALL_FILE"
+  else
+    huge_file="$STOP_HUGE_FILE"
+    small_file="$STOP_SMALL_FILE"
+  fi
+
+  ff_asdd_drain_probe_stream "$drain_target" "$huge_file" "$ASDD_GATE_DIR" RETROSPECTIVE_MODE=
+  if [ "$FF_ASDD_DRAIN_RC" -eq 0 ] && [ -z "$FF_ASDD_DRAIN_OUT" ]; then
+    ok "$drain_name: ゲート早期終了 + ${DRAIN_CEILING_BYTES} バイトでも書き手が SIGPIPE を受けない"
+  else
+    bad "$drain_name の天井 drain（ゲート早期終了）: exit=$FF_ASDD_DRAIN_RC out=[$FF_ASDD_DRAIN_OUT]（141 なら入力上限で捨てて抜けている）"
+  fi
+
+  ff_asdd_drain_probe_stream "$drain_target" "$huge_file" "$DRAIN_OFF_DIR" RETROSPECTIVE_MODE=off
+  if [ "$FF_ASDD_DRAIN_RC" -eq 0 ] && [ -z "$FF_ASDD_DRAIN_OUT" ]; then
+    ok "$drain_name: RETROSPECTIVE_MODE=off + ${DRAIN_CEILING_BYTES} バイトでも書き手が SIGPIPE を受けない"
+  else
+    bad "$drain_name の天井 drain（off）: exit=$FF_ASDD_DRAIN_RC out=[$FF_ASDD_DRAIN_OUT]（141 なら kill switch が読まずに抜けている）"
+  fi
+
+  ff_asdd_drain_probe_delayed "$drain_target" "$small_file" "$DRAIN_DELAY_SECONDS" "$ASDD_GATE_DIR" RETROSPECTIVE_MODE=
+  if [ "$FF_ASDD_DRAIN_RC" -eq 0 ] && [ -z "$FF_ASDD_DRAIN_OUT" ]; then
+    ok "$drain_name: 入力上限を過ぎて（${DRAIN_DELAY_SECONDS} 秒後）書き始める書き手でも SIGPIPE を受けない"
+  else
+    bad "$drain_name の遅延 producer drain: exit=$FF_ASDD_DRAIN_RC out=[$FF_ASDD_DRAIN_OUT]（141 なら上限で諦めて抜けている）"
+  fi
+done
+rm -f "$STOP_HUGE_FILE" "$CONTEXT_HUGE_FILE" "$STOP_SMALL_FILE" "$CONTEXT_SMALL_FILE"
+
+echo "retrospective hooks: RETROSPECTIVE_MODE=off は判別 node を起動しない"
+# kill switch が判別 node より後ろにあると、off でも毎プロンプト node が起動する
+# （2026-09-12 実測、stdin を閉じるホストで 0.28 秒 → 0.67 秒）。off は入れ子の
+# 非対話 claude -p を抑止する正本なので、その分がレビュー実行のたびに乗る。
+# 「起動しない」は壁時間ではなく node の起動そのもので測る: 実 node へ exec する
+# tracer を PATH の先頭に置き、呼ばれたら痕跡ファイルを残す。
+NODE_TRACE_DIR="$TEST_TMP/node-trace"
+NODE_TRACE_FILE="$TEST_TMP/node-invoked"
+mkdir -p "$NODE_TRACE_DIR"
+printf '#!/bin/sh\n: >"%s"\nexec "%s" "$@"\n' "$NODE_TRACE_FILE" "$(command -v node)" >"$NODE_TRACE_DIR/node"
+chmod +x "$NODE_TRACE_DIR/node"
+STOP_SMALL_JSON='{"hook_event_name":"Stop","stop_hook_active":false}'
+CONTEXT_SMALL_JSON='{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"work"}'
+for trace_target in "$TARGET" "$CONTEXT_TARGET"; do
+  trace_name="$(basename "$trace_target")"
+  if [ "$trace_target" = "$CONTEXT_TARGET" ]; then
+    trace_input="$CONTEXT_SMALL_JSON"
+  else
+    trace_input="$STOP_SMALL_JSON"
+  fi
+  rm -f "$NODE_TRACE_FILE"
+  ( cd "$DRAIN_OFF_DIR" && printf '%s' "$trace_input" \
+    | env RETROSPECTIVE_MODE=off PATH="$NODE_TRACE_DIR:$PATH" /bin/bash "$trace_target" ) >/dev/null 2>&1 || true
+  if [ ! -e "$NODE_TRACE_FILE" ]; then
+    ok "$trace_name: RETROSPECTIVE_MODE=off では node を 1 度も起動しない"
+  else
+    bad "$trace_name: off なのに node が起動した（kill switch が判別 node より後ろにある）"
+  fi
+  # 対照。off でなければ起動する — でなければ上の検査は tracer が壊れているだけで緑になる。
+  rm -f "$NODE_TRACE_FILE"
+  ( cd "$DRAIN_OFF_DIR" && printf '%s' "$trace_input" \
+    | env -u RETROSPECTIVE_MODE PATH="$NODE_TRACE_DIR:$PATH" /bin/bash "$trace_target" ) >/dev/null 2>&1 || true
+  if [ -e "$NODE_TRACE_FILE" ]; then
+    ok "$trace_name: off でなければ node を起動する（tracer の対照）"
+  else
+    bad "$trace_name: off でない経路でも node が起動しない（tracer が機能していない）"
+  fi
+done
+rm -f "$NODE_TRACE_FILE"
+
+echo "retrospective hooks: 空 stdin でも ASDD ゲートの診断が出る"
+# drain を先頭へ出したとき、空 stdin を「読めなかった」と見て drain のすぐ隣で exit 0
+# すると、ゲートの stderr 診断（ASDD 設定はあるが検証できない）が消える。ペイロード必須
+# の判定はゲートの後ろに置くこと。
+for gate_target in "$TARGET" "$CONTEXT_TARGET"; do
+  gate_name="$(basename "$gate_target")"
+  RC=0
+  OUT="$( ( cd "$ASDD_GATE_DIR" && printf '' \
+    | env RETROSPECTIVE_MODE= PATH=/nonexistent /bin/bash "$gate_target" ) 2>"$TEST_TMP/gate-empty-stderr")" || RC=$?
+  ERR="$(cat "$TEST_TMP/gate-empty-stderr" 2>/dev/null || true)"
+  rm -f "$TEST_TMP/gate-empty-stderr"
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && printf '%s' "$ERR" | grep -F '検証できない' >/dev/null; then
+    ok "$gate_name: 空 stdin でも ASDD ゲートの診断が出る"
+  else
+    bad "$gate_name: 空 stdin でゲートの診断が消えた: exit=$RC output=[$OUT] stderr=[$ERR]"
+  fi
+done
+
+# reporter を spec へ固定する。既定の reporter は Node のバージョンと stdout が TTY か
+# で変わる（実測 2026-09-12: v22.20.0 は非 TTY で TAP、v24.18.0 は spec）。self-test は
+# この出力を `$()` で捕捉する = 非 TTY なので、固定しないと「✖ <テスト名>」を期待する
+# 変異検出が Node 22 の CI だけで空振りし、ローカル緑 / CI 赤になる。
+node --test --test-reporter=spec "$SCRIPT_DIR/asdd.test.mjs"
 
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ retrospective Stop hook: ${FAIL} 件失敗（${PASS} 件成功）" >&2

@@ -39,6 +39,12 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 - コミットは `<type>: #<issue> <subject>`
 - PR に Issue リンク（例: `Closes #123`）を含める
 
+## 実測の記録先
+
+実体数・版の一覧・時刻表・スコープ差の注記のような**時間で腐る記述**は、このファイルなどの正本へ書き足さず、`docs/08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く。
+
+正本に残してよい範囲と証跡文書の追記規律は、`docs/MASTER.md` の「実測の記録先」を参照する（このファイルへ複製しない）。
+
 ## Out-of-Scope Finding Routing
 
 - 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する

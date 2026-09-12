@@ -962,6 +962,25 @@ critical_findings_present() { # $1: result file
 # Usage: write_output "output.md" "Claude Code" "code-review" "review content..." [status]
 # status: complete (default) | incomplete — recorded in the header so a consumer
 # can tell a finished result from one salvaged off a failed run.
+#
+# rc は「所定のパスに完成した成果物が置けたか」だけを表す（0 = 置けた / 非 0 = 置けて
+# いない）。旧実装は関数の最後の command が `echo` だったため、`cat > "$output_file"`
+# が Permission denied / ENOSPC で失敗しても rc=0 を返し、しかも「✅ saved」と名乗って
+# いた（実測: 書き込み不可の出力先で rc=0・ファイル不在・`✅ Review saved` の 3 つが
+# 同時に出る）。呼び出し側は全員 `set -e` 下にいるので、rc へ載せれば失敗はその場で
+# 止まる。
+#
+# 書き込みは同じディレクトリの一時ファイルへ行い、**完成を確かめてから** rename で
+# 所定のパスへ移す。直接書くと、ENOSPC が本文の途中で起きた回に切り詰められた
+# 成果物が所定のパスに残る — orchestrator の検査は `-f`（`No output file`）なので
+# それを通過し、`✅ Done` → resume キャッシュ → 統合レポートへ INCOMPLETE の印
+# なしで連結される。rename は同一ディレクトリ内なので原子的で、失敗した回は所定の
+# パスに**何も置かない**（既存の成果物があればそれも壊さない）。
+#
+# 完成の確認はバイト数で行う。書く内容は変数に確定しているので、同じ変数から数えた
+# 期待バイト数と一致すれば全量が届いている。`printf` の rc だけに頼らないのは、
+# RLIMIT_FSIZE / ENOSPC の短絡書き込みが実装によっては「短い write の成功」として
+# 返りうるため — 「rc は 0 だが本文が切れている」形をここで落とす。
 write_output() {
   local output_file="$1"
   local cli_name="$2"
@@ -969,29 +988,436 @@ write_output() {
   local content="$4"
   local status="${5:-complete}"
 
-  mkdir -p "$(dirname "$output_file")"
-
   local task_type="${TASK_TYPE:-review}"
   # bash 3.2 compatible capitalization (no ${var^} operator)
   local task_label
   task_label="$(echo "$task_type" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
 
-  cat > "$output_file" <<OUTPUT
-<!-- Multi-CLI ${task_label} Result -->
+  local dir
+  dir="$(dirname "$output_file")"
+  if ! mkdir -p "$dir"; then
+    echo "ERROR: cannot create the output directory: ${dir}" >&2
+    return 1
+  fi
+
+  # 宛先がディレクトリだと下の `mv` は一時ファイルを**その中へ**移して 0 を返す。
+  # 所定のパスには通常ファイルが無いのに rc=0 +「saved」が出る形で、この関数が
+  # 塞ごうとしている主症状そのものになる。publish 後の `-f` 検査（下）でも捕まるが、
+  # 早期に名指しで落とすほうが読み手の手数が少ない。
+  if [ -d "$output_file" ]; then
+    echo "ERROR: the ${task_type} result cannot be written to ${output_file} — a directory already occupies that path." >&2
+    echo "       Remove it or choose another output path; re-running as-is will fail identically." >&2
+    return 1
+  fi
+
+  # 一時ファイルは成果物と同じディレクトリに置く（rename が同一ファイルシステム内で
+  # 完結する条件）。名前を `.` 始まりにするのは、orchestrator 側の stale 成果物退避が
+  # `<cli>/*.md` を走査するため — 中断で取り残された断片をその glob に拾わせない。
+  #
+  # 名前は mktemp があればそれで作る。pid 由来の固定名は予測可能で、先に置かれた
+  # symlink を `>` が追跡して**指し先を truncate する**余地を残すため（atomic publish
+  # の前提もそこで崩れる）。
+  local base tmp
+  base="$(basename "$output_file")"
+  tmp="$(mktemp "${dir}/.${base}.partial.XXXXXX" 2>/dev/null)" || tmp=""
+  if [ -z "$tmp" ]; then
+    # mktemp が使えない環境（TMPDIR の破損・mktemp 自体の不在）でも成果物は書けな
+    # ければならない — fail_cli_task の INCOMPLETE 成果物はまさにその状況を記録する
+    # ためのもので、ここが mktemp に依存すると「一時ファイルを作れなかった」という
+    # 失敗だけが手ぶらで終わる（その経路は multi-agent-timeout の tmpdir ケースが
+    # 実走で押さえている）。パスは 1 プロセス 1 成果物に閉じるので pid で衝突しない。
+    tmp="${dir}/.${base}.partial.$$"
+    # 固定名へ落ちた回だけは、その名前が symlink / 非通常ファイルでないことを自分で
+    # 確かめる。確かめずに `>` で書くと、先置きされた symlink の指し先を truncate する。
+    if [ -L "$tmp" ] || { [ -e "$tmp" ] && [ ! -f "$tmp" ]; }; then
+      echo "ERROR: refusing to stage the ${task_type} result through ${tmp}" >&2
+      echo "       (mktemp is unavailable here, and that fixed-name temp path is a symlink or a non-regular file)." >&2
+      echo "       Remove it and re-run; writing through it would truncate whatever it points at." >&2
+      return 1
+    fi
+  fi
+
+  local generated
+  generated="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  # ヘッダー + 空行 + 本文 + 末尾改行。旧実装の heredoc と 1 バイトも変えないため、
+  # 本文の末尾改行を落とすコマンド置換を挟まず、リテラルの複数行文字列で組む。
+  local document="<!-- Multi-CLI ${task_label} Result -->
 <!-- CLI: ${cli_name} -->
 <!-- Perspective: ${perspective_name} -->
 <!-- Task Type: ${task_type} -->
 <!-- Status: ${status} -->
-<!-- Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ") -->
+<!-- Generated: ${generated} -->
 
-${content}
-OUTPUT
+${content}"
+
+  local write_rc=0
+  # 書き込みは subshell の中でやり、その stdout を /dev/null へ倒す。上限・容量に
+  # 当たって失敗した printf は、**書けなかった分をシェルの stdout バッファへ残したまま**
+  # 返る回があり（bash 3.2 / RLIMIT_FSIZE で実測）、次に来るコマンド置換がそれを
+  # 取り込んで「期待バイト数」の値そのものが本文の断片で汚れる。捨て先を固定して
+  # 関数の外へも下の計測へも漏らさない（stderr はそのまま通す — シェル自身が言う
+  # 失敗理由が唯一の一次情報になる）。
+  ( printf '%s\n' "$document" > "$tmp" ) >/dev/null || write_rc=$?
+
+  local expected actual
+  expected="$(printf '%s\n' "$document" | wc -c | tr -d '[:space:]')"
+  actual="$(wc -c < "$tmp" 2>/dev/null | tr -d '[:space:]')" || actual=""
+
+  # 一時ファイルを作れなかった回（書き込み不可のディレクトリ・read-only mount）は
+  # write_rc が非 0 で、actual は空になる。全量書けなかった回（ENOSPC・上限）は
+  # バイト数が合わない。どちらも成果物は所定のパスへ出さず、断片も残さない。
+  if [ "$write_rc" -ne 0 ] || [ -z "$actual" ] || [ "$actual" != "$expected" ]; then
+    rm -f "$tmp" 2>/dev/null || true
+    echo "ERROR: the ${task_type} result could not be written to ${output_file}" >&2
+    echo "       (wrote ${actual:-0} of ${expected} bytes, status ${write_rc})." >&2
+    echo "       The new result was NOT published to that path; whatever was already there is untouched." >&2
+    echo "       Check free space, the directory's permissions and whether the mount is read-only: ${dir}" >&2
+    return 1
+  fi
+
+  if ! mv "$tmp" "$output_file"; then
+    rm -f "$tmp" 2>/dev/null || true
+    echo "ERROR: the ${task_type} result was written but could not be moved into place: ${output_file}" >&2
+    echo "       The new result was NOT published to that path; whatever was already there is untouched." >&2
+    echo "       Check the directory's permissions and whether the mount is read-only: ${dir}" >&2
+    return 1
+  fi
+
+  # publish 後の砦。`mv` の rc=0 は「所定のパスに通常ファイルが在る」を意味しない
+  # （宛先がディレクトリなら一時ファイルはその**中**へ入る）。上の早期検査を素通りする
+  # 形が生えても、成功と名乗る前にここで rc へ載せる。
+  if [ ! -f "$output_file" ]; then
+    if [ -d "$output_file" ]; then
+      rm -f "${output_file}/${tmp##*/}" 2>/dev/null || true
+    fi
+    echo "ERROR: the ${task_type} result is not at ${output_file} after publishing it (no regular file at that path)." >&2
+    echo "       Nothing usable was left there; check what occupies that path." >&2
+    return 1
+  fi
 
   if [[ "$status" == "complete" ]]; then
     echo "✅ ${task_label} saved: ${output_file}" >&2
   else
     echo "⚠️  Incomplete ${task_type} saved: ${output_file}" >&2
   fi
+}
+
+# 成果物を書けなかったときの終了。
+#
+# ここから fail_cli_task / fail_orchestrator_error へは行かない — どちらも失敗の記録を
+# write_output で**書く**ので、書けないことが原因の失敗をそこへ流すと同じ失敗を踏み直す
+# だけになる。成果物は残せないので、残せるのは stderr の 1 ブロックと終了コードだけ。
+#
+# 終了コードは ORCHESTRATOR_ERROR_EXIT_CODE（125）。CLI は完走しており、壊れているのは
+# こちらが選んだ出力先なので、CLI 側の失敗（auth / billing / crash）と同じ番号へ混ぜない。
+# orchestrator から見た分類の移動はこの 1 点:
+#   旧: アダプタ rc=0 / 成果物なし → `No output file`（成功と名乗ったのに何も無い、の意）
+#   新: アダプタ rc=125            → `Orchestrator-side failure`（出力先が書けない、の意）
+# `No output file` は「rc=0 なのに成果物が無い」ための最後の砦として残す（write_output
+# 経由ではもう到達しないが、別経路の退行を捕まえる位置は空けておく）。
+fail_output_write() { # <perspective_name> <output_file>
+  local perspective_name="$1" output_file="$2"
+  echo "ERROR: ${CLI_NAME} finished its ${TASK_TYPE:-review} of ${perspective_name}, but the result could not be written to ${output_file} (see the error above)." >&2
+  echo "       No artifact was left there, so this task is reported as failed — the CLI is not at fault, and re-running it without fixing the output path will fail identically." >&2
+  exit "$ORCHESTRATOR_ERROR_EXIT_CODE"
+}
+
+# ── ホスト委譲 ──
+#
+# 背景: claude-code レーンは `claude` CLI を**別プロセス**として起動するため、その CLI が
+# ログインしているアカウントの利用枠が尽きると、ホスト側のセッションが別アカウントで
+# 動き続けていてもこのレーンだけ走らない。`claude auth` には呼び出し単位のアカウント
+# 選択が無く（実測 / claude 2.1.263）、logout → login はグローバルな切り替えなので
+# 「このレビューだけ別アカウント」ができない。CLI 側では解決できない。
+#
+# 形: CLI を起動せず、プロンプトと書き戻し先をホストへ返す。ホストは自分のセッション内
+# サブエージェントでそれを実行し、結果を所定のパス（<output-dir>/<cli>/<perspective>.md）
+# へ書く。**同じコマンドをもう一度実行する**と、その書き戻しが「このプロンプトへの応答」
+# として受理され、正規ヘッダー付きの成果物へ正規化される。プラン構築・プロンプト生成・
+# 統合レポート生成は従来どおりで、変わるのは実行主体だけ。
+#
+# 受理の条件は「**同じプロンプト**に対する応答であること」— handoff 時にプロンプト本文の
+# digest を記録し、受理時に再計算して突き合わせる。diff の digest ではなくプロンプト全体を
+# 見るのは、観点ファイル・base・description・固定 diff の変化を 1 つの条件で捕まえるため
+# （個別に条件を足す形は、足し忘れた 1 つが「別の入力への応答を今回の結果として採用する」
+# 静かな誤りになる）。一致しない応答は**捨てず**に名前を変えて残し、handoff をやり直す。
+#
+# 委譲は claude-code レーン専用（オーケストレータ側で束縛する）。ホストは Claude なので、
+# 他レーンを同じ経路へ流すとモデル独立性が黙って失われる — 「別モデルのクロスレビュー」
+# という本ツールの目的そのものを裏切る。
+
+# プロンプト本文の digest。git は本ツールの前提（diff を取るのに要る）で、
+# `git hash-object --stdin` はリポジトリ外でも動く（実測）。
+# stderr は捨てない — この失敗は委譲そのものを中断させるので、git 自身が言う理由
+# （GIT_DIR の破損・binary 不在・object db の権限）が唯一の手掛かりになる。
+delegation_digest() { # stdin → digest（失敗時は理由を stderr へ出して rc=1）
+  local out rc=0
+  out="$(git hash-object --stdin 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
+    printf 'delegation_digest: git hash-object failed: %s\n' "$out" >&2
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+
+# `key=value` 形式の request ファイルから 1 キーを読む。値に `=` を含んでよいよう
+# 最初の `=` だけで切る。存在しないキー・読めないファイルは rc=1。
+delegation_request_field() { # <file> <key>
+  local file="$1" key="$2" line
+  [ -r "$file" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "${key}="*) printf '%s\n' "${line#*=}"; return 0 ;;
+    esac
+  done < "$file"
+  return 1
+}
+
+# ホストが write_output と同じヘッダーごと貼った場合に、ヘッダーを 1 つだけ剥がす。
+# 剥がすのは**先頭が `<!-- Multi-CLI ... Result -->` のときだけ** — レビュー本文が
+# 先頭で別のコメントを書いている場合まで削ると本文を改変することになる。
+# 先頭に無いヘッダーは剥がさず、そのまま本文に残す（残ったことは呼び出し側の
+# delegation_body_carries_result_header が拒否の根拠に使う）。
+delegation_strip_result_header() { # <file> → 本文を stdout へ
+  awk '
+    NR == 1 && $0 ~ /^<!-- Multi-CLI .* Result -->$/ { stripping = 1; next }
+    stripping && /^<!-- .* -->$/ { next }
+    stripping && /^$/ { stripping = 0; next }
+    { stripping = 0; print }
+  ' "$1"
+}
+
+# 完成していないと**自分で名乗っている**応答を検出する。ファイル全体を見る。
+#
+# 先頭 1 段落だけを見る形にしてはいけない: この経路が受け取るのは外部（ホスト）が
+# 書いたファイルで、ヘッダーが 1 行目にある保証が無い。実在の反例が本ツール自身の
+# 生成物にある — mark_outputs_discarded は `> DISCARDED — ...` バナー + 空行を
+# **前置**してから元のヘッダーを続けるので、1 段落で打ち切ると `Status: discarded`
+# を一度も見ないまま通過し、レビュー本文（重大度行は原文のまま残る）が
+# `Status: complete` として書き直される。この関数が塞ぐと宣言しているのは
+# まさにその格上げ経路なので、走査範囲を本文全体にする。
+delegation_response_declares_incomplete() { # <file>
+  awk '
+    /^<!-- Status: (incomplete|discarded) -->$/ { found = 1 }
+    /^> DISCARDED —/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$1"
+}
+
+# ヘッダー剥がしの後にまだ `<!-- Multi-CLI ... Result -->` が残っている本文は受理
+# しない。残っている = ヘッダーが 1 行目に無かった（前置きが付いている / 複数の結果を
+# 連結した）ということで、そのまま write_output へ渡すと**入れ子のヘッダー**を持つ
+# 成果物ができる。外側は complete を名乗り、内側は別の status を名乗りうる。
+delegation_body_carries_result_header() { # <body>
+  printf '%s\n' "$1" | awk '
+    /^<!-- Multi-CLI .* Result -->$/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  '
+}
+
+# 受理しなかった応答の退避先。秒精度の時刻だけだと同一秒の 2 回目が 1 回目を mv で
+# 上書きする（「捨てない」という契約が静かに破れる）ので pid と連番を足す。
+delegation_setaside_path() { # <dir> <perspective> <kind> → 未使用のパス
+  local dir="$1" persp="$2" kind="$3" stamp base n=0 candidate
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  base="${dir}/${persp}.response.${kind}.${stamp}.$$"
+  candidate="${base}.md"
+  while [ -e "$candidate" ]; do
+    n=$((n + 1))
+    candidate="${base}-${n}.md"
+  done
+  printf '%s\n' "$candidate"
+}
+
+# 受理しなかった応答を退避する。mv の rc は捨てない — 4 つある拒否分岐のうち 2 つで
+# 握り潰していたため、退避に失敗した回は「kept at: <adoption slot>」と案内しつつ実体は
+# 次の round trip の mv で上書きされて消えていた（「捨てない」契約と正面から矛盾する）。
+delegation_set_aside_response() { # <dir> <perspective> <kind> <response-file> <lane> <理由>
+  local dir="$1" persp="$2" kind="$3" response_file="$4" lane="$5" reason="$6" target
+  target="$(delegation_setaside_path "$dir" "$persp" "$kind")"
+  if ! mv "$response_file" "$target"; then
+    echo "ERROR: the delegated response could not be set aside and is still in the adoption slot: ${response_file}" >&2
+    echo "       Move it somewhere safe by hand before re-running — the next round trip overwrites that path." >&2
+    return 1
+  fi
+  echo "⚠️  ${lane}/${persp}: ${reason}" >&2
+  echo "    kept at: ${target}" >&2
+  return 0
+}
+
+# write_output が実際に成果物を書けたかを、書いたファイル自身で確かめる。
+#
+# write_output 自身が書き込み失敗を rc へ載せるようになった今も、この検査は残す。
+# 見ているものが違うからで、こちらは「**受理した本文が、ヘッダーを剥がすと同じ本文
+# として読み戻せるか**」— 書き込みの成否ではなくヘッダー書式とその除去（
+# delegation_strip_result_header）が互いの逆であることを、委譲経路のラウンドトリップで
+# 確かめる。ここが崩れると、次回の受理判定が本文を別物として扱う。
+# 委譲経路だけがこの検査を持つのは、ここだけが検査の直後に**ホストの唯一の写しを
+# 消す**ため（書き込みが成立していない状態でそれをやると復旧手段が無くなる）。
+#
+# 検査は「先頭行がヘッダーか」では足りない。ヘッダーまで書けて本文の途中で失敗した
+# 部分書き込みも、既存ファイルが残ったまま上書きに失敗した回も、先頭行だけなら通る。
+# 受理した本文と**書けた本文が同一であること**まで確かめる（比較はコマンド置換同士
+# なので、両辺とも末尾改行が同じ扱いになる）。
+delegation_output_written() { # <output-file> <受理した本文>
+  local file="$1" expected="$2" written
+  [ -f "$file" ] && [ -s "$file" ] || return 1
+  # 判定はフラグへ入れて END で 1 回だけ決める。`NR == 1 { exit 0 }` の形は使えない —
+  # awk の exit は END を**実行してから**終わるので、END 側の exit が最終ステータスを
+  # 上書きする（実測: 常に偽へ倒れて受理が全滅した）。
+  awk 'NR == 1 { ok = ($0 ~ /^<!-- Multi-CLI .* Result -->$/); exit } END { exit ok ? 0 : 1 }' "$file" || return 1
+  written="$(delegation_strip_result_header "$file")" || return 1
+  [ "$written" = "$expected" ]
+}
+
+delegate_task() { # <lane-id> <cli-display-name> <perspective> <prompt> <allowed-tools>
+  # lane-id はオーケストレータが使う識別子（claude-code）、cli-display-name は成果物
+  # ヘッダーへ載る表示名（Claude Code）。委譲経路の成果物が CLI 起動経路のそれと
+  # 1 バイトも変わらないよう、write_output へ渡すのは後者にする。
+  local lane="$1" cli_name="$2" persp="$3" prompt="$4" allowed="$5"
+  local dir="$DELEGATE_DIR"
+  local prompt_file="${dir}/${persp}.prompt.md"
+  local request_file="${dir}/${persp}.request"
+  local response_file="${dir}/${persp}.response.md"
+  local digest recorded superseded body body_rc
+  # 直前の handoff の状態は、応答処理より**前**に 1 回だけ読む。応答があってもなくても
+  # 下の handoff 更新でこの値が要るため。
+  local prev_digest prev_superseded consumed=0
+
+  if ! mkdir -p "$dir"; then
+    echo "ERROR: cannot create the delegation dir: ${dir}" >&2
+    return 1
+  fi
+  digest="$(printf '%s\n' "$prompt" | delegation_digest)" || digest=""
+  if [ -z "$digest" ]; then
+    echo "ERROR: cannot digest the delegated prompt (see the error above)." >&2
+    return 1
+  fi
+
+  prev_digest="$(delegation_request_field "$request_file" prompt-digest)" || prev_digest=""
+  prev_superseded="$(delegation_request_field "$request_file" superseded)" || prev_superseded=""
+
+  # ── ホストの応答があれば受理を試みる ──
+  # どの分岐へ落ちても「未応答だった handoff を 1 つ消費した」ことは変わらないので、
+  # 曖昧さの印はここで解消する（consumed）。解消しないと、拒否のたびに印が残り続けて
+  # 正当な応答まで拒否し続ける。
+  if [ -f "$response_file" ]; then
+    consumed=1
+    recorded="$prev_digest"
+    superseded="$prev_superseded"
+    if [ "$recorded" != "$digest" ]; then
+      # 入力が変わっている（diff が動いた・観点が変わった等）。前回のプロンプトへの
+      # 応答を今回の結果として採用しない。捨てもしない — ホストが払った実行の
+      # 成果物なので、名前を変えて残し、パスを名指しする。
+      delegation_set_aside_response "$dir" "$persp" stale "$response_file" "$lane" \
+        "the delegated response was written for a different input; not adopting it." || return 1
+    elif [ "$superseded" = "1" ]; then
+      # digest は一致しているが、**その応答がどちらの handoff に対するものかを決められない**。
+      # 前の handoff が未応答のまま入力が変わって新しい handoff を出した回があると、
+      # 遅れて届いた旧入力への応答が新しい digest と突き合わされて通ってしまう（digest は
+      # 「今のプロンプト」と「最後に出した handoff」しか比べていない）。曖昧さを検出した
+      # 時点で 1 度だけ拒否し、handoff を出し直して対応を 1 対 1 へ戻す。
+      delegation_set_aside_response "$dir" "$persp" ambiguous "$response_file" "$lane" \
+        "the input changed while an earlier handoff was still outstanding, so this response cannot be attributed to one prompt; not adopting it." || return 1
+    elif delegation_response_declares_incomplete "$response_file"; then
+      delegation_set_aside_response "$dir" "$persp" rejected "$response_file" "$lane" \
+        "the delegated response declares itself incomplete/discarded; not adopting it." || return 1
+    else
+      body_rc=0
+      body="$(delegation_strip_result_header "$response_file")" || body_rc=$?
+      if [ "$body_rc" -ne 0 ]; then
+        # 「読めなかった」を「空だった」と報告しない（critical_findings_present が
+        # 同じ種類の失敗を判定不能として分けているのと同じ理由）。ホストへ「結果が
+        # 空だった」と伝えると、ディスク上に無事にある成果物を作り直しに行く。
+        delegation_set_aside_response "$dir" "$persp" unreadable "$response_file" "$lane" \
+          "the delegated response could not be read (its content is intact on disk; this is a read failure, not an empty result); not adopting it." || return 1
+      elif [ -z "$body" ]; then
+        delegation_set_aside_response "$dir" "$persp" rejected "$response_file" "$lane" \
+          "the delegated response is empty; not adopting it." || return 1
+      elif delegation_body_carries_result_header "$body"; then
+        delegation_set_aside_response "$dir" "$persp" rejected "$response_file" "$lane" \
+          "the delegated response still carries a result header after the leading one was stripped (a preamble before the header, or several results concatenated); not adopting it." || return 1
+      elif [ "${TASK_TYPE:-review}" = "review" ] && ! review_body_present "$body"; then
+        # アダプタが CLI の出力へ掛けているのと**同じ**受理ゲート。委譲経路だけ
+        # 緩めると、前置きだけの応答が「レビュー完了」として統合レポートへ載る。
+        delegation_set_aside_response "$dir" "$persp" rejected "$response_file" "$lane" \
+          "the delegated response contains no severity count/zero line, no severity-labeled finding line, and no finding bullet under a severity heading — refusing it as a review result." || return 1
+      else
+        # 書き込みの成否は write_output の rc が答える（ENOSPC / read-only / 権限変更）。
+        # `set -e` 下なので受け止めないと素の 1 で落ち、下の案内（ホストの応答がどこに
+        # 残っているか）が出ないまま終わる。
+        #
+        # 返す番号は専用のもの。素の 1 だと呼び出し側が「ホストへ渡せなかった」側の
+        # 失敗として扱い、壊れている対象（出力先）を名指ししないうえ、その記録をまた
+        # write_output で書きに行く。
+        if ! write_output "$OUTPUT_FILE" "$cli_name" "$persp" "$body"; then
+          echo "ERROR: ${lane}/${persp}: the adopted result could not be written to ${OUTPUT_FILE} (see the error above)." >&2
+          echo "       The host's response was NOT removed and is still at: ${response_file}" >&2
+          echo "       Fix the output path (space, permissions, mount) and re-run the same command." >&2
+          return "$DELEGATION_OUTPUT_WRITE_EXIT_CODE"
+        fi
+        # ヘッダーを剥がすと受理した本文へ戻ることまで、書いたファイル自身で確かめて
+        # から応答を消す（delegation_output_written のヘッダー参照）。
+        if ! delegation_output_written "$OUTPUT_FILE" "$body"; then
+          echo "ERROR: ${lane}/${persp}: ${OUTPUT_FILE} does not read back as the response that was adopted." >&2
+          echo "       The host's response was NOT removed and is still at: ${response_file}" >&2
+          echo "       Fix the output path (space, permissions, mount) and re-run the same command." >&2
+          return 1
+        fi
+        # 受理した応答は消費する。残すと、次回同じ digest のまま再実行したときに
+        # 「ホストが今回書いたもの」と区別できない滞留物になる。
+        rm -f "$response_file" "$request_file" "$prompt_file" 2>/dev/null || true
+        echo "🤝 Adopted the host-executed ${TASK_TYPE:-review} for ${lane}/${persp}." >&2
+        return 0
+      fi
+    fi
+  fi
+
+  # ── handoff を出す（実行はしない） ──
+  # 直前の handoff が未応答のまま入力が変わっていたら、その事実を request へ残す。
+  # 次に届く応答がどちらの handoff に対するものか決められない、という印で、上の受理側が
+  # これを見て 1 回だけ拒否する。
+  #
+  # 印は**応答を 1 つ消費するまで持ち越す**。「入力が変わったか」だけで立て直すと、
+  # 応答が届かないまま同じ入力で再実行した回に prev_digest == digest となって 0 へ戻り、
+  # そのあと届いた旧入力への応答が受理される（実測経路: A → B で 1 が立つ → 未応答のまま
+  # B で再実行して 0 へ戻る → A の応答が B の結果として通る）。
+  superseded=0
+  if [ "$consumed" -eq 1 ]; then
+    # 応答を 1 つ受け取った（受理・退避のいずれでも）。未応答の handoff は清算された。
+    superseded=0
+  elif [ -n "$prev_digest" ] && [ "$prev_digest" != "$digest" ]; then
+    superseded=1
+  elif [ "$prev_superseded" = "1" ]; then
+    superseded=1
+  fi
+  if ! printf '%s\n' "$prompt" > "$prompt_file"; then
+    echo "ERROR: cannot write the delegated prompt: ${prompt_file}" >&2
+    return 1
+  fi
+  if ! {
+    printf 'cli=%s\n' "$lane"
+    printf 'cli-name=%s\n' "$cli_name"
+    printf 'perspective=%s\n' "$persp"
+    printf 'task-type=%s\n' "${TASK_TYPE:-review}"
+    printf 'timeout=%s\n' "${TIMEOUT:-}"
+    printf 'allowed-tools=%s\n' "$allowed"
+    printf 'prompt-file=%s\n' "$prompt_file"
+    printf 'output-file=%s\n' "$OUTPUT_FILE"
+    printf 'prompt-digest=%s\n' "$digest"
+    printf 'superseded=%s\n' "$superseded"
+  } > "$request_file"; then
+    echo "ERROR: cannot write the delegation request: ${request_file}" >&2
+    return 1
+  fi
+  echo "🤝 Delegated to the host (no CLI started): ${lane}/${persp}" >&2
+  echo "   prompt: ${prompt_file}" >&2
+  echo "   write the result to: ${OUTPUT_FILE}" >&2
+  if [ "$superseded" = "1" ]; then
+    echo "   note: the input changed while the previous handoff was outstanding — a response to that" >&2
+    echo "         older prompt will be refused once, so run THIS prompt file." >&2
+  fi
+  return "$DELEGATION_PENDING_EXIT_CODE"
 }
 
 # ── Timeout Wrapper ──
@@ -1004,6 +1430,19 @@ readonly SIGKILL_EXIT_CODE=137
 # Distinct from any status the command could return, so an orchestrator fault is
 # never filed against the CLI.
 readonly ORCHESTRATOR_ERROR_EXIT_CODE=125
+# ホストへ委譲したタスクが「まだ結果を受け取っていない」ことを表す終了コード
+# 124 / 125 / 137 と同じく、CLI 自身が返しうる値と衝突しない位置に
+# 置く必要がある — 失敗として集計されると、走らせていないタスクにクラッシュの調査
+# 案内が付く。委譲経路では CLI プロセスを 1 つも起動しないので、この値が CLI 由来で
+# 返ることは無い。
+readonly DELEGATION_PENDING_EXIT_CODE=123
+# 委譲経路で「ホストの応答は受理できたが、成果物を所定のパスへ書けなかった」ことを
+# 表す戻り値。素の 1 で返すと呼び出し側は fail_orchestrator_error（→ fail_cli_task →
+# write_output）へ落ちる: 書けないことが原因の失敗を**同じ書き込みで記録しに行く**うえ、
+# 壊れている対象（出力先）ではなく「ホストへ渡せなかった」という誤った理由が成果物へ
+# 残る。番号を分けて fail_output_write へ分岐させる。124 / 125 / 137 / 123 と同じく
+# CLI 自身が返しうる値とは衝突しない位置に置く（委譲経路では CLI を 1 つも起動しない）。
+readonly DELEGATION_OUTPUT_WRITE_EXIT_CODE=122
 # Seconds between the deadline's SIGTERM and the SIGKILL that follows it.
 # Overridable so the regression suite can exercise the escalation quickly.
 TIMEOUT_KILL_GRACE="${FF_TIMEOUT_KILL_GRACE:-10}"
@@ -1564,11 +2003,19 @@ ${stderr_excerpt}
       ;;
   esac
 
-  write_output "$OUTPUT_FILE" "$CLI_NAME" "$perspective_name" \
+  # INCOMPLETE 成果物すら書けなかった回は、失敗の**理由**を持ち帰る先が無い。
+  # 元の exit_rc（例 124）ではなく 125 で終えるのは、次に直すべきものが出力先だから
+  # — 出力先が書けないうちは、どのタスクも同じ形で失敗し、時間を足しても直らない。
+  # CLI 側の理由（timeout / crash）は上の ERROR 行に残してあるので失われない。
+  if ! write_output "$OUTPUT_FILE" "$CLI_NAME" "$perspective_name" \
     "> ⚠️ **INCOMPLETE — ${CLI_NAME} ${reason}.** This is not a finished ${TASK_TYPE:-review}: ${banner_detail}.
 
 ${body}" \
-    "incomplete"
+    "incomplete"; then
+    echo "ERROR: the INCOMPLETE ${TASK_TYPE:-review} artifact could not be written either, so nothing about this failure was saved to ${OUTPUT_FILE} (see the error above)." >&2
+    echo "       Reporting it as an orchestrator-side failure (exit ${ORCHESTRATOR_ERROR_EXIT_CODE}): fix the output path first — every task writes to the same place." >&2
+    exit "$ORCHESTRATOR_ERROR_EXIT_CODE"
+  fi
 
   exit "$exit_rc"
 }
@@ -1688,6 +2135,9 @@ parse_adapter_args() {
   # orchestrator が固定した diff のパス。直叩き実行では空のままで、その場合は
   # 従来どおりアダプタ自身が git から取る（prompt_diff_content を参照）。
   DIFF_FILE=""
+  # ホスト委譲の受け渡しディレクトリ。空 = 従来どおり CLI を起動する。
+  # 非空のとき、そのアダプタは CLI を 1 つも起動せず delegate_task へ委ねる。
+  DELEGATE_DIR=""
 
   while [[ $# -gt 0 ]]; do
     # 値付きフラグを末尾に置いた場合、各 arm でいきなり "$2" を読むと set -u が
@@ -1695,7 +2145,7 @@ parse_adapter_args() {
     # あり、「成功・成果物なし」へ反転する。値付きフラグの集合をここで一括して守り、
     # どれか1つだけ直して残りが同じ silent exit を持ち続ける形を作らない。
     case "$1" in
-      --changed-files|--base|--timeout|--task-type|--description|--staging-dir|--diff-file)
+      --changed-files|--base|--timeout|--task-type|--description|--staging-dir|--diff-file|--delegate-dir)
         if [[ $# -lt 2 ]]; then
           echo "ERROR: ${1} requires a value." >&2
           return 2
@@ -1705,7 +2155,7 @@ parse_adapter_args() {
         # inline-output は黙って消える。未知の `--foo` まで一律拒否はしない（説明文等の
         # 実値であり得るため）。このパーサー自身が知るフラグだけを欠落の証拠にする。
         case "$2" in
-          --changed-files|--base|--timeout|--task-type|--description|--include-diff|--staged|--staging-dir|--inline-output|--diff-file)
+          --changed-files|--base|--timeout|--task-type|--description|--include-diff|--staged|--staging-dir|--inline-output|--diff-file|--delegate-dir)
             echo "ERROR: ${1} requires a value; got option '${2}'." >&2
             return 2
             ;;
@@ -1754,6 +2204,10 @@ parse_adapter_args() {
         DIFF_FILE="$2"
         shift 2
         ;;
+      --delegate-dir)
+        DELEGATE_DIR="$2"
+        shift 2
+        ;;
       --inline-output)
         INLINE_OUTPUT="true"
         shift
@@ -1778,8 +2232,24 @@ parse_adapter_args() {
     return 2
   fi
 
+  # 委譲に対応していないアダプタが --delegate-dir を**黙って無視**すると、委譲した
+  # つもりのレーンで CLI が起動し、枯渇したアカウントで同じ失敗を引く。効かないつまみを
+  # 受理しない（対応アダプタは parse_adapter_args より前に opt-in を立てる）。
+  if [[ -n "$DELEGATE_DIR" ]]; then
+    if [[ "${ADAPTER_SUPPORTS_DELEGATION:-false}" != "true" ]]; then
+      echo "ERROR: --delegate-dir is not supported by $(basename "$0")." >&2
+      echo "       Host delegation exists for the claude-code lane only (the host is Claude);" >&2
+      echo "       routing another lane through it would silently lose model independence." >&2
+      return 2
+    fi
+    if [[ "$TASK_TYPE" != "review" ]]; then
+      echo "ERROR: --delegate-dir is only valid for review tasks (got '${TASK_TYPE}')." >&2
+      return 2
+    fi
+  fi
+
   if [[ -z "$PERSPECTIVE_FILE" || -z "$OUTPUT_FILE" ]]; then
-    echo "Usage: $(basename "$0") <perspective-file> <output-file> [--changed-files <files>] [--base <branch> | --staged] [--diff-file <path>] [--timeout <seconds>] [--task-type <review|explore|implement>] [--description <text>] [--staging-dir <dir>] [--inline-output]" >&2
+    echo "Usage: $(basename "$0") <perspective-file> <output-file> [--changed-files <files>] [--base <branch> | --staged] [--diff-file <path>] [--timeout <seconds>] [--task-type <review|explore|implement>] [--description <text>] [--staging-dir <dir>] [--inline-output] [--delegate-dir <dir>]" >&2
     return 1
   fi
 }

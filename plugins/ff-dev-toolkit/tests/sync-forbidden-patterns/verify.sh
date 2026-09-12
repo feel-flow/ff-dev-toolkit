@@ -46,10 +46,12 @@
 #
 # 到達可能参照の allowlist（scripts/scan-unreachable-repo-refs.sh）は 2 つの形を見る。
 # `owner/repo#N` は owner を問わず全件、URL 形（`https://github.com/<org>/<repo>/...`
-# と SCP 形）は SSOT の org 配下だけ。後者を org へ絞るのは、公開対象に外部の公開
-# リポジトリ URL と、そもそもリポジトリでない GitHub のパスが多数あり、owner を
-# 問わない allowlist が成立しないため。本 suite は許可側（外部 owner・非リポジトリ
-# パス・サブドメイン）と禁止側を対で固定する。
+# と SCP 形、および API 形 `https://api.github.com/repos/<org>/<repo>`）は SSOT の
+# org 配下だけ。後者を org へ絞るのは、公開対象に外部の公開リポジトリ URL と、
+# そもそもリポジトリでない GitHub のパスが多数あり、owner を問わない allowlist が
+# 成立しないため。API 形はホスト判定を緩めるのではなく `api.` だけを明示的に足した
+# もので、パスの文法が違う（`/repos/<owner>/<repo>` 以外は見ない）。本 suite は
+# 許可側（外部 owner・非リポジトリパス・サブドメイン）と禁止側を対で固定する。
 #
 # 本ファイルは公開同期対象。禁止パターンのリテラルを隣接して書かないこと
 # （隔離 fixture へ実行時に組み立てて流す。再現性のために実パスを戻すと
@@ -913,11 +915,14 @@ fi
 # 対象は scripts/scan-unreachable-repo-refs.sh と、それを呼ぶ 2 つの入口
 # （同期前の全文検査 --check-only / 追加行限定の check-added-bare-refs.sh）。
 # 見る形は 2 つ: `owner/repo#N`（owner を問わず全件）と、SSOT の org 配下の URL
-# （`https://github.com/<org>/<repo>/...` と SCP 形 `git@github.com:<org>/<repo>.git`）。
+# （`https://github.com/<org>/<repo>/...` と SCP 形 `git@github.com:<org>/<repo>.git`、
+# および API 形 `https://api.github.com/repos/<org>/<repo>`）。
 # 後者は 12-17 以降で固定する — owner を問わない allowlist は成立しないため、
 # 判定対象を org へ絞って外部 owner と GitHub の自前パスには触れない。ホスト名の
 # 大小文字違いと明示ポート（`https://GitHub.com/...` / `github.com:443/...`）は
-# 同じ URL なので同じ規則で見る（書き方を変えるだけの回避形を作らない）。
+# 同じ URL なので同じ規則で見る（書き方を変えるだけの回避形を作らない）。API 形も
+# 同じ理由で 12-24 以降に足してある（`gh api` の手順で自然に出る綴りで、見ないと
+# 同じ識別子を別の綴りで書くだけで迂回できる）。
 #
 # 11 との違いは**許可規則の向き**にある。11（bare `#N`）は「ミラー先の文脈で
 # GitHub がリンク化するか」が論点なので fence / inline code / リンクの中を除外する。
@@ -1228,6 +1233,95 @@ else
     *) bad "走査器の self-test に URL 形の対が無い"
        printf '%s\n' "$selftest_out" | sed 's/^/    | /' >&2 ;;
   esac
+
+  # 12-24〜12-28. api.github.com 形（`https://api.github.com/repos/<org>/<repo>`）。
+  # 同じ識別子を `gh api` の綴りで書いただけの形で、見ないと「綴りを変えるだけで
+  # 迂回できる」。ホスト判定を緩めて全サブドメインを org 判定へ回すのではなく、
+  # api. だけを明示的に扱う（docs. / gist. / cli. はパスの第 1 セグメントが org では
+  # ないので巻き込むと誤検出になる）。api. はパスの文法も違うため、リポジトリ識別子を
+  # 含む `/repos/<owner>/<repo>` だけを見て、`/user` `/rate_limit` のような
+  # エンドポイントには一切触らない。
+
+  # 12-24. 未登録の org スコープ API URL を file:line で名指しして止める
+  U_API_HIT="$TMP/unreachable-api-hit"
+  mkdir -p "$U_API_HIT"
+  {
+    printf '%s\n' "詳細は https://api.github.com/repos/${SCOPED_UNLISTED}/issues/1 を参照。"
+    # 同じ URL の別表記。ホスト名は大小文字を区別せず、明示ポートは権威部の一部
+    printf '%s\n' "大小文字違いの https://API.GitHub.com/repos/${SCOPED_UNLISTED} も同じ URL。"
+    printf '%s\n' "明示ポートの https://api.github.com:443/repos/${SCOPED_UNLISTED} も同じ URL。"
+  } > "$U_API_HIT/doc.md"
+  expect_hit_reason "org スコープの未登録 API URL を file:line で名指しして止める" \
+    "doc.md:1" "到達できない" run_check --scan-dir "$U_API_HIT"
+  expect_hit "API 形でもホスト名の大小文字違いを同じ規則で止める" "doc.md:2" \
+    run_check --scan-dir "$U_API_HIT"
+  expect_hit "API 形でも明示ポートをポート番号ごと org と読み違えず止める" "doc.md:3" \
+    run_check --scan-dir "$U_API_HIT"
+
+  # 12-25. 12-24 の対。許可名・外部 owner・リポジトリを指さない API のパス・
+  # api. 以外のサブドメインは 1 件も誤検出しない（AC の 3 項目め）。
+  # `/repos/` の限定（`substr(pair, 1, 6) != "repos/"` で落とす行）を守るのは、
+  # この fixture の中では `https://api.github.com/users/feel-flow/repos` 1 行だけ。
+  # 限定を外すと第 1 セグメントは先頭 6 バイトを無条件に切り落とされるので、
+  # 6 バイト以外の第 1 セグメントは非マッチへ潰れて何も起きない（`/user` は ""、
+  # `/rate_limit` は "imit"、`orgs/feel-flow/repos` は "eel-flow/repos" で org 不一致、
+  # `repositories/123` は "itories/123" で org 不一致、外部 owner は org 不一致）。
+  # `users/` はちょうど 6 バイトで、その先が SSOT org なので "feel-flow/repos" と
+  # 読まれて誤検出になる — 実在エンドポイント（ユーザーの公開リポジトリ一覧）で
+  # ありながら変異を露出させる唯一の形なので、この行を落とさないこと
+  U_API_OK="$TMP/unreachable-api-ok"
+  mkdir -p "$U_API_OK"
+  {
+    printf '%s\n' "公開ミラー自身の https://api.github.com/repos/feel-flow/ff-dev-toolkit/issues は通す。"
+    printf '%s\n' "外部 owner の https://api.github.com/repos/mikefarah/yq/releases/latest には触らない。"
+    printf '%s\n' "認証確認の https://api.github.com/user にも触らない。"
+    printf '%s\n' "残量確認の https://api.github.com/rate_limit にも触らない。"
+    printf '%s\n' "org のエンドポイント https://api.github.com/orgs/feel-flow/repos にも触らない。"
+    # 第 1 セグメントが `repos/` と同じ 6 バイトで、その先が SSOT org の実在
+    # エンドポイント。`/repos/` の限定を外した変異はこの行だけを誤検出にする
+    printf '%s\n' "所属 org の公開リポジトリ一覧 https://api.github.com/users/feel-flow/repos にも触らない。"
+    printf '%s\n' "数値 id の https://api.github.com/repositories/123 にも触らない。"
+    printf '%s\n' "別ホストの https://notapi.github.com/repos/${SCOPED_UNLISTED} にも触らない。"
+    printf '%s\n' "さらに上のサブドメイン https://x.api.github.com/repos/${SCOPED_UNLISTED} にも触らない。"
+    printf '%s\n' "大小文字違いでも許可名は通す https://API.GitHub.com/repos/Feel-Flow/FF-Dev-Toolkit。"
+  } > "$U_API_OK/doc.md"
+  expect_clear "API 形の許可名・外部 owner・リポジトリでないパス・api. 以外のサブドメインは誤検出しない" \
+    run_check --scan-dir "$U_API_OK"
+
+  # 12-26. 変異: allowlist から掲載リポジトリを外したコピーだけが 12-25 を赤にする
+  # （API 形の判定も同じ allowlist を読んでいることの実測。allowlist を複製していれば
+  # ここが緑のまま通る）
+  M_API_REPO="$TMP/unreachable-api-mutate-repo"
+  mkdir -p "$M_API_REPO/scripts"
+  LC_ALL=C sed "/^  'feel-flow\/ff-dev-toolkit'\$/d" "$SYNC" \
+    > "$M_API_REPO/scripts/sync-dev-toolkit-to-public.sh"
+  cp "$UNREACHABLE_SRC" "$M_API_REPO/scripts/scan-unreachable-repo-refs.sh"
+  expect_hit "allowlist から掲載リポジトリを外すと通っていた API URL が赤になる（変異）" \
+    "doc.md:1" bash "$M_API_REPO/scripts/sync-dev-toolkit-to-public.sh" \
+    --check-only --scan-dir "$U_API_OK"
+
+  # 12-27. 走査器の self-test が API 形の許可・禁止も対で固定していること
+  # （走査規則そのものの検出力。ゲート側の配線とは別に走査器側でも対を持つ）
+  case "$selftest_out" in
+    *"api.github.com は /repos/<owner>/<repo> だけを org スコープで止める"*)
+      ok "走査器の self-test が API 形の対を固定している" ;;
+    *) bad "走査器の self-test に API 形の対が無い"
+       printf '%s\n' "$selftest_out" | sed 's/^/    | /' >&2 ;;
+  esac
+
+  # 12-28. 追加行限定の入口でも API 形の規則が効く。既存行の同型は通し、追加行だけ
+  # 止める（全文検査と差分限定の 2 入口があり、後者だけ規則が抜ける経路を作らない。
+  # URL 形は 12-21 で同じ契約を持つ）
+  F_API="$TMP/refs-api"
+  refs_fixture_prepare "$F_API"
+  printf '%s\n' "既存行: https://api.github.com/repos/${SCOPED_UNLISTED}/issues/1" 'baseline' \
+    > "$F_API/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_API"
+  printf '%s\n' "追加行: https://api.github.com/repos/${SCOPED_UNLISTED}/issues/2" \
+    >> "$F_API/plugins/ff-dev-toolkit/doc.md"
+  expect_refs_only "追加行の org スコープ API URL だけを止め、既存行の同型は通す" 1 \
+    "plugins/ff-dev-toolkit/doc.md:3" "plugins/ff-dev-toolkit/doc.md:1" \
+    refs_run "$F_API"
 
   # 12-10. live: この作業ツリーの公開対象に未登録の owner/repo が無いこと。
   # 12-2〜12-9 は隔離 fixture の検査で、ゲート本体が現ツリーへ当たっているかは別

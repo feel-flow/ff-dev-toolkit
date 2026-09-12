@@ -139,4 +139,7 @@ rm -f "$stderr_log"
 
 # ── Write Output ──
 
-write_output "$OUTPUT_FILE" "$CLI_NAME" "$perspective_name" "$result"
+# 書き込み失敗は rc に載る（adapter-common.sh の write_output）。ここで受け止めないと
+# `set -e` が素の 1 で落とし、CLI 側のクラッシュと同じ番号に混ざる。
+write_output "$OUTPUT_FILE" "$CLI_NAME" "$perspective_name" "$result" \
+  || fail_output_write "$perspective_name" "$OUTPUT_FILE"

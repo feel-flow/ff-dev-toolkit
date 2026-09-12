@@ -176,7 +176,66 @@ else
 fi
 echo
 
-# --- (4) 入力↔期待の紐付け（期待が入力から乖離していないか）---
+# --- (4) 実測の記録先の規範（3ツール等価。正本は docs/MASTER.md §実測の記録先）---
+# 5境界とは別枠だが、「正本へ実測を書き足さず証跡文書へ逃がす」規律はホストを問わず要る。
+# CLAUDE.md だけへ載せると Codex（AGENTS.md）/ Copilot では規定が存在しないのと同じになる。
+# 本文は複製せず正本を参照する薄い入口なので、置き場と正本参照の 2 点だけを固定する。
+EVIDENCE_ANCHORS=(
+  "証跡文書の置き場|\`docs/08-knowledge/\` の日付付き証跡文書（\`YYYY-MM-DD-<slug>-evidence.md\`）へ置く"
+  "正本参照|\`docs/MASTER.md\` の「実測の記録先」を参照する"
+)
+for entry in "${EVIDENCE_ANCHORS[@]}"; do
+  [[ "$entry" == *"|"* ]] || { echo "malformed entry (no '|'): $entry" >&2; exit 2; }
+done
+
+echo "## 実測の記録先の規範（fixture + 生成器テンプレ）"
+for rel in "${FILES[@]}"; do
+  f="$EXPECTED/$rel"
+  echo "--- $rel ---"
+  if [[ ! -f "$f" ]]; then
+    echo "  ✗ ファイルが存在しない: $f"
+    fail=1
+    continue
+  fi
+  for entry in "${EVIDENCE_ANCHORS[@]}"; do
+    label="${entry%%|*}"
+    needle="${entry#*|}"
+    if grep -qF -- "$needle" "$f"; then
+      echo "  ✓ $label"
+    else
+      echo "  ✗ ${label}（\"${needle}\" が見つからない）"
+      fail=1
+    fi
+  done
+done
+if [[ -f "$CMD" ]]; then
+  for spec in "${BLOCKS[@]}"; do
+    label="${spec%%|*}"
+    rest="${spec#*|}"
+    start="${rest%%|*}"
+    end="${rest#*|}"
+    fence="$(section_fence "$start" "$end")"
+    echo "--- $label ---"
+    if [[ -z "$fence" ]]; then
+      echo "  ✗ コードフェンスが抽出できない（節見出しが変わった可能性: ${start}）"
+      fail=1
+      continue
+    fi
+    for entry in "${EVIDENCE_ANCHORS[@]}"; do
+      blabel="${entry%%|*}"
+      needle="${entry#*|}"
+      if printf '%s\n' "$fence" | grep -F -- "$needle" >/dev/null; then
+        echo "  ✓ $blabel"
+      else
+        echo "  ✗ ${blabel}（テンプレのコードフェンスに \"${needle}\" が無い）"
+        fail=1
+      fi
+    done
+  done
+fi
+echo
+
+# --- (5) 入力↔期待の紐付け（期待が入力から乖離していないか）---
 echo "## 入力↔期待の紐付け"
 TOKEN="TaskFlow"
 if [[ -f "$INPUT" ]] && grep -qF -- "$TOKEN" "$INPUT"; then

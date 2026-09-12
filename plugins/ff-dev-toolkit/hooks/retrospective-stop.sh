@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-
-# ASDD 2.0: disabled optional hooks do not prompt, block, or mutate.
-if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
-  echo 'ff-dev-toolkit: ASDD Hook helper is unavailable; optional hook skipped' >&2
-  exit 0
-fi
-asdd_hook_enabled retrospective || exit 0
 #
 # ff-dev-toolkit automatic retrospective Stop hook (Issue #583).
 #
@@ -19,12 +12,69 @@ asdd_hook_enabled retrospective || exit 0
 # persistent installation problem, so it emits a non-blocking recovery hint.
 
 INPUT_TIMEOUT_SECONDS=2
+# Bound for the discard stage below, derived from the hook's own budget:
+# hooks.json registers this hook with timeout 5, so the host kills it at 5 s
+# whatever it is doing, and a kill mid-write hands the host the EPIPE this drain
+# exists to prevent. Reserve 1 s for process startup and the work after the
+# drain, which leaves 4 s for stdin; the content read below may spend
+# INPUT_TIMEOUT_SECONDS (2) of it, so the discard gets the other 2. Measured
+# worst case 2026-09-12 (a host that opens the pipe and never writes, so both
+# stages run to their bound): 4.18-4.31 s across runs, against the host's 5.
+DRAIN_TIMEOUT_SECONDS=2
 HOOK_INPUT=""
 # Stop hook hosts normally close stdin after writing one JSON object. Bound the
 # read anyway so a non-conforming host cannot hang every assistant response.
-IFS= read -r -t "$INPUT_TIMEOUT_SECONDS" -d '' HOOK_INPUT || {
-  [ -n "$HOOK_INPUT" ] || exit 0
-}
+#
+# The bound alone does not satisfy "read stdin to EOF so the writer never takes
+# EPIPE / SIGPIPE": the builtin moves a pipe at about 2.9 MB/s (measured
+# 2026-09-12, bash 3.2.57 / macOS: 6 MiB in 2.14 s, 20 MiB in 7.17 s, 40 MiB in
+# 14.31 s), so a payload past roughly 6 MB outlives the bound and the writer
+# dies on the unread remainder — and a writer that only starts after the bound
+# is never read at all. When the bound is what ended the read, keep reading to
+# EOF, but discard instead of accumulating so the drain costs no memory. node is
+# the reader there because it moves the same payload in milliseconds and brings
+# its own timer; with no node there is no bounded fast reader, and the hook is
+# already degraded on that path (it only emits the recovery hint below), so the
+# builtin bound is where it stops.
+#
+# SECONDS (whole seconds, a bash builtin) is what separates "the bound ended the
+# read" from "EOF ended it". The return code cannot: bash 3.2 reports a timeout
+# as rc 1 and drops the partial input — the same rc EOF produces (bash 5 reports
+# rc > 128 and keeps it, so neither rc nor the variable is portable evidence).
+DRAIN_STARTED=$SECONDS
+IFS= read -r -t "$INPUT_TIMEOUT_SECONDS" -d '' HOOK_INPUT
+READ_RC=$?
+if [ "$READ_RC" -ne 0 ] && [ "$((SECONDS - DRAIN_STARTED))" -ge "$INPUT_TIMEOUT_SECONDS" ] \
+  && command -v node >/dev/null 2>&1; then
+  node -e '
+const stop = () => process.exit(0);
+const timer = setTimeout(stop, Number(process.argv[1]) * 1000 || 2000);
+process.stdin.on("data", () => {});
+process.stdin.on("error", stop);
+process.stdin.on("end", () => { clearTimeout(timer); stop(); });
+' "$DRAIN_TIMEOUT_SECONDS" >/dev/null 2>&1 || true
+fi
+
+# The ASDD gate goes AFTER the drain above. Every early exit the gate produces
+# (.asdd config present but node missing / this feature disabled / the helper
+# itself unreadable) is an exit 0, so placing the gate first creates a path that
+# leaves without reading stdin and hands the writing host EPIPE / SIGPIPE — the
+# very thing the drain exists to prevent. A Stop host writes one JSON object per
+# assistant response, so that path is taken on every response, not occasionally.
+# The gate never consumes stdin (asdd-hook-gate.sh), so reading first does not
+# change what the gate sees.
+# ASDD 2.0: disabled optional hooks do not prompt, block, or mutate.
+if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
+  echo 'ff-dev-toolkit: ASDD Hook helper is unavailable; optional hook skipped' >&2
+  exit 0
+fi
+asdd_hook_enabled retrospective || exit 0
+
+# The payload is required from here on. This check sits after the gate, where
+# it has always been, and not beside the read above: an exit placed there would
+# swallow the gate's own diagnostics (for example "ASDD 設定を検証できない") on
+# a host that closes stdin without writing anything.
+[ -n "$HOOK_INPUT" ] || exit 0
 
 MODE="${RETROSPECTIVE_MODE:-}"
 # Bash 3.2 has no ${var,,}; remove whitespace and use explicit case-insensitive

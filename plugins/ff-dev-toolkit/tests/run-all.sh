@@ -701,12 +701,25 @@ else
     # stub CLI の起動回数で実測する。一時 git リポジトリ + stub CLI（〜10 秒）。
     # 実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/multi-agent-skip-poisoned-cli/verify.sh"
+    # claude-code レーンを CLI spawn ではなくホストのセッション内エージェントで走らせる
+    # 選択肢。CLI 起動回数 0・handoff の stdout 契約・委譲待ちの終了コード 3・
+    # レポートの DELEGATED / INCOMPLETE・書き戻しの受理と拒否（別入力 / 本文不成立）・
+    # 既定の挙動が変わっていないことを stub CLI の起動回数で実測する。
+    # 一時 git リポジトリ + stub CLI（〜20 秒）。実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/multi-agent-host-delegation/verify.sh"
     # レビュー本文を含まない捕捉結果の fail-loud 契約（Issue #893）: 受理条件
     # （正は scripts/adapters/adapter-common.sh の review_body_present ヘッダ —
     # ここに列挙を複製しない）の両方向 + アダプタ実走での INCOMPLETE 降格 +
     # 4 アダプタへのゲート常在の静的 pin + build_prompt の集約指示と perspective
-    # 出力契約の一本化検査（review 限定）。一時 git リポジトリ + stub CLI
-    # （〜3 秒）。実 CLI・ネットワーク・課金は伴わない。
+    # 出力契約の一本化検査（review 限定）。
+    # 併せて**成果物書き込みの fail-loud 契約**もここが唯一の持ち場になった:
+    # write_output の rc（書き込み失敗・完成バイト数の不一致・rename 失敗・宛先が
+    # ディレクトリ・publish 後の存在確認）、一時ファイル + rename による publish と
+    # 一時ファイル名の予測不能性、委譲経路の書き込み失敗が出力先を名指しすること、
+    # orchestrator が 125 を「CLI ではなくこちら側の失敗」として分類すること
+    # （並列・逐次の両回収経路）、4 アダプタの `|| fail_output_write` 行順 pin。
+    # 一時 git リポジトリ + stub CLI + orchestrator 2 回（〜15 秒）。
+    # 実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/review-capture-fail-loud/verify.sh"
     # 受理ゲートと集約 Critical 検出の積集合契約（Issue #908）: 同じ入力表を
     # 両側の公開入口（review_body_present / critical_findings_present — どちらも
@@ -973,6 +986,10 @@ REQUIRED_SUITES=(
   # 見ており、一時領域不足で skip すると、観点数ぶんの無駄な待ち時間の再発と、
   # スキップを通常の失敗として案内する退行が黙って戻る（Issue #1143）。
   multi-agent-skip-poisoned-cli
+  # ホスト委譲の契約を見るのはこの suite だけ。一時領域不足で skip すると、
+  # (a) 委譲指定なのに CLI を起動する (b) 委譲待ちを成功として返す (c) 別入力への応答を
+  # 今回の結果として受理する、のどれが退行しても緑で通る。skip 条件は一時領域の有無だけ。
+  multi-agent-host-delegation
   review-diff-scope
   # base 解決が「古くないほうの ref」を採る契約はこの suite だけが見ており、一時領域
   # 不足で消えると、stale なローカル base 経由で他ブランチの差分がレビュー対象へ混入
@@ -982,6 +999,10 @@ REQUIRED_SUITES=(
   # 判定関数・4 アダプタのゲート常在・INCOMPLETE 降格はこの suite しか見ておらず、
   # 一時領域が無い環境で mktemp skip すると「空振り結果が完了として並ぶ」退行が
   # 黙って通る。skip 条件は adapter-prompt-guard と同じく一時領域の有無だけ。
+  # 成果物書き込みの fail-loud 契約も同じくここだけの持ち場 — write_output が
+  # 書き込み失敗を rc へ載せること、publish が一時ファイル + rename であること、
+  # 125（CLI ではなくこちら側の失敗）の分類、4 アダプタの受け止めの行順。
+  # skip すると「rc=0 + saved と名乗って成果物が無い」退行が黙って戻る。
   review-capture-fail-loud
   # 受理ゲートと集約 Critical 検出が同一の行分類を参照することの積集合契約
   # （Issue #908）。片側だけが独自実装へ戻る drift はこの suite しか行単位で

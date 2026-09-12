@@ -126,6 +126,42 @@ cat "$TMP/body.md"
 SH
 chmod +x "$STUB/codex"
 
+# --- stub: tail / git（既定は素通し。センチネルが在るときだけ失敗させる） ---
+# 未解消 Critical ガードの残り 3 分岐は「レポートを読めない」「現在の系列を
+# 特定できない」という環境側の故障で、レポート本文の細工では到達できない
+# （本文で作れるのは機械状態の破損まで）。失敗そのものを注入して実経路を通す。
+# 素通しを既定にしているので、センチネルを置かないケースは一切影響を受けない。
+# 「レポートを読めない」のうち**実運用で起きる形**（権限）は chmod 000 で直接
+# 作るので、tail のセンチネルは chmod が効かない環境の代替と、抽出だけ成功した
+# 状態（マーカー検査だけが落ちる）の生成に使う。
+REAL_TAIL="$(command -v tail)"
+REAL_GIT="$(command -v git)"
+cat > "$STUB/tail" <<SH
+#!/usr/bin/env bash
+# multi-agent.sh がレポートを読む形は \`tail -n 12 <report>\` の 2 箇所だけ
+# （機械状態の抽出 → Critical マーカー検査）。N 回目**以降を全部**落とすので、
+# N=2 なら抽出を成功させたままマーカー検査だけを落とせ、N=1 なら両方落ちて
+# 「ファイルが読めない」（chmod 000 と同じ形）になる。
+if [[ -f "$TMP/tail-fail-nth" && "\$*" == "-n 12 "*"integrated-report.md" ]]; then
+  printf 'x\n' >> "$TMP/tail-calls"
+  if [[ "\$(wc -l < "$TMP/tail-calls")" -ge "\$(cat "$TMP/tail-fail-nth")" ]]; then
+    exit 9
+  fi
+fi
+exec "$REAL_TAIL" "\$@"
+SH
+chmod +x "$STUB/tail"
+cat > "$STUB/git" <<SH
+#!/usr/bin/env bash
+# current_review_series_id() の \`git symbolic-ref --quiet HEAD\` だけを落とす。
+# rc=1（detached）は正常系なので、rc!=1 のエラーを注入する。
+if [[ -f "$TMP/git-symbolic-ref-fail" && "\$*" == "symbolic-ref --quiet HEAD" ]]; then
+  exit 128
+fi
+exec "$REAL_GIT" "\$@"
+SH
+chmod +x "$STUB/git"
+
 REPORT="$REPO/.review-results/integrated-report.md"
 MARKER='<!-- CRITICAL_BLOCK -->'
 NONBLOCK_MARKER='<!-- CRITICAL_NONBLOCK -->'
@@ -1124,7 +1160,7 @@ else
   bad "未解消観点の CLI 失敗が成功扱いになった"
 fi
 if [[ -f "$REPORT" ]] \
-  && grep -qF 'Previous Critical remains unresolved because its rerun failed or was skipped (code-review).' "$REPORT" \
+  && grep -qF 'Previous Critical remains unresolved because its rerun produced no verdict — it failed, was skipped, or is still delegated to the host (code-review).' "$REPORT" \
   && grep -qF "$MARKER" "$REPORT"; then
   ok "再実行失敗時は前回の未解消マーカーを保持する"
 else
@@ -1140,7 +1176,7 @@ else
   bad "未解消観点の実 timeout 経路を作れない (rc=$SEQUENCE_RC)"
 fi
 if [[ -f "$REPORT" ]] \
-  && grep -qF 'Previous Critical remains unresolved because its rerun failed or was skipped (code-review).' "$REPORT" \
+  && grep -qF 'Previous Critical remains unresolved because its rerun produced no verdict — it failed, was skipped, or is still delegated to the host (code-review).' "$REPORT" \
   && grep -qF "$MARKER" "$REPORT"; then
   ok "実 timeout 時も前回の未解消マーカーを保持する"
 else
@@ -1223,7 +1259,7 @@ printf '17\n' > "$TMP/stub-exit"
 run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/nonblock-failed.log"
 rm -f "$TMP/stub-exit"
 if [[ "$SEQUENCE_RC" -ne 0 && -f "$REPORT" ]] \
-  && grep -qF 'Previous non-blocking Critical remains unresolved because its rerun failed or was skipped (comment-analysis).' "$REPORT"; then
+  && grep -qF 'Previous non-blocking Critical remains unresolved because its rerun produced no verdict — it failed, was skipped, or is still delegated to the host (comment-analysis).' "$REPORT"; then
   ok "非ブロック観点も再実行失敗時に分類を保持する"
 else
   bad "非ブロック観点の失敗時保持が機能しない"
@@ -1315,24 +1351,68 @@ else
   bad "旧形式レポートの未解消観点を復元できない"
 fi
 
-echo "== 残存レポートによる中断は 4 分岐すべてで復帰手段を案内する =="
+echo "== 残存レポートによる中断は 11 分岐すべてで復帰手段を案内する =="
 
 # 中断そのものは fail-closed の設計で、変えるのは案内だけ。abort した人が読むのは
-# stderr の数行なので、復帰手段（--fresh）がそこに無い分岐は「次に何をすればよいか」
-# を --help から再発見させる。1 分岐だけ欠けていた実績があるため、4 分岐すべてを
-# 実際に発火させて案内の有無を固定する（文面ではなく復帰手段の名指しを見る）。
-assert_recovery_hint() { # $1: log / $2: 分岐を名指しする文言 / $3: ラベル
+# stderr の数行なので、復帰手段がそこに無い分岐は「次に何をすればよいか」を --help
+# から再発見させる。1 分岐だけ欠けていた実績（→ 6 分岐が欠けていた実測）があるため、
+# 同関数の abort 11 分岐すべてを実際に発火させ、分岐固有の ERROR 文言と復帰案内を
+# 対で固定する。
+#
+# 復帰手段は分岐ごとに違う。一律 `--fresh` は「誰も読んでいない Critical 状態を
+# 退避しろ」と言うのと同じなので、次の 3 種を分けて固定する:
+#   1. 残骸を読める          → `add --fresh`（機械状態が信用できない分岐は「先に
+#                              本文を読め」を前置き）
+#   2. レポートを読めない    → 可読性を先に直す。`add --fresh` は出さない
+#   3. 現在の系列を作れない  → 直すのはリポジトリ側。`add --fresh` は出さない
+#
+# 分類 2 は**実運用で起きる唯一の読み取り故障**（レポートが chmod 000 / I/O
+# エラー）を含む。そこは機械状態の抽出そのものが落ちる経路で、分類 1 と同じ
+# 入口を通る。rc で分けていないと実在する故障が全部「add --fresh」に落ちるので、
+# 入口の 2 分岐（抽出が読めない / 抽出は読めたが解釈できない）を別ケースで固定する。
+assert_recovery_hint() { # $1: log / $2: 分岐を名指しする ERROR 文言 / $3: 期待する復帰案内 / $4: ラベル
   if [[ "$SEQUENCE_RC" -ne 0 ]] \
     && grep -qF "$2" "$1" \
-    && grep -qF -- 'add --fresh' "$1"; then
-    ok "$3"
+    && grep -qF -- "$3" "$1"; then
+    ok "$4"
   else
-    bad "$3 (rc=$SEQUENCE_RC)"
+    bad "$4 (rc=$SEQUENCE_RC)"
     sed -n '1,20p' "$1" >&2 || true
   fi
 }
 
-# 分岐 1: 機械状態そのものを読めない（awk が構文破損で非 0）。
+# 「一律で --fresh を貼らない」は不在でしか固定できない。`add --fresh` という
+# **提示形だけ**を禁じると、`retry with --fresh` のような別表記へ書き換えられた
+# ときに黙って通る。`--fresh` の出現そのものを見て、既知の打ち消し文（下の
+# FRESH_RULED_OUT_*）だけを明示的に除外する。
+FRESH_RULED_OUT_UNREADABLE='--fresh would discard a Critical state nobody has read'
+FRESH_RULED_OUT_NO_SERIES='--fresh does not help here: the failure is in the current repository state, not in the leftover report.'
+assert_no_fresh_offer() { # $1: log / $2: ラベル
+  local stray
+  stray="$(grep -F -- '--fresh' "$1" \
+    | grep -vF -- "$FRESH_RULED_OUT_UNREADABLE" \
+    | grep -vF -- "$FRESH_RULED_OUT_NO_SERIES" || true)"
+  if [[ -n "$stray" ]]; then
+    bad "$2"
+    printf '    | %s\n' "$stray" >&2
+  else
+    ok "$2"
+  fi
+}
+
+# `--fresh` を出さない分岐は、出さない**理由**も案内する。理由行が消えても
+# 「提示していない」は成立したままなので、不在の検査だけでは落ちない。
+assert_fresh_ruled_out() { # $1: log / $2: 期待する打ち消し文 / $3: ラベル
+  if grep -qF -- "$2" "$1"; then
+    ok "$3"
+  else
+    bad "$3"
+    sed -n '1,20p' "$1" >&2 || true
+  fi
+}
+
+# 分岐 1: 機械状態そのものを読めない（awk が構文破損で非 0）。レポート本文は
+# 読めているので、`--fresh` の前に Critical セクションの手読みを案内する。
 cat > "$REPORT" <<'REPORT_BODY'
 <!-- CRITICAL_BLOCK -->
 Critical issues detected (code-review). Review before proceeding.
@@ -1341,6 +1421,7 @@ REPORT_BODY
 run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-parse-failure.log"
 assert_recovery_hint "$TMP/recovery-parse-failure.log" \
   'cannot inspect unresolved Critical perspectives' \
+  'Read the Critical section of the report by hand first, then archive leftover results and retry: add --fresh' \
   "機械状態を読めない中断も復帰手段を案内する"
 
 # 分岐 2: Critical マーカーはあるが観点一覧を復元できない（機械状態行も旧形式の
@@ -1353,6 +1434,7 @@ REPORT_BODY
 run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-unreadable-list.log"
 assert_recovery_hint "$TMP/recovery-unreadable-list.log" \
   'Critical marker without a readable perspective list' \
+  'Inspect the leftover report, then add --fresh' \
   "観点一覧を復元できない中断も復帰手段を案内する"
 
 # 分岐 3: 残骸が別ブランチ / base / scope の系列（series が現在の識別子と一致しない）。
@@ -1364,6 +1446,7 @@ REPORT_BODY
 run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-other-series.log"
 assert_recovery_hint "$TMP/recovery-other-series.log" \
   'belongs to another branch/base/scope' \
+  'Or archive leftover results and retry: add --fresh' \
   "別系列の残骸による中断も復帰手段を案内する"
 
 # 分岐 4: 同一系列で、絞り込みが未解消観点を落とす。
@@ -1385,7 +1468,181 @@ fi
 run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/recovery-omitted.log"
 assert_recovery_hint "$TMP/recovery-omitted.log" \
   'omits unresolved Critical perspective(s): code-review' \
+  'Or archive leftover results and retry: add --fresh' \
   "未解消観点を落とす絞り込みの中断も復帰手段を案内する"
+
+# 分岐 5: 機械状態の series フィールドが系列 ID の形をしていない。
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:bogus block:code-review nonblock:- -->
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-invalid-series.log"
+assert_recovery_hint "$TMP/recovery-invalid-series.log" \
+  'invalid review-series entry in previous Critical state' \
+  'Read the Critical section of the report by hand first, then archive leftover results and retry: add --fresh' \
+  "不正な series エントリの中断も復帰手段を案内する"
+
+# 分岐 6: 機械状態の観点エントリが安全なトークンでない。
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:code@review nonblock:- -->
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-invalid-perspective.log"
+assert_recovery_hint "$TMP/recovery-invalid-perspective.log" \
+  'invalid perspective entry in previous Critical state' \
+  'Read the Critical section of the report by hand first, then archive leftover results and retry: add --fresh' \
+  "不正な観点エントリの中断も復帰手段を案内する"
+
+# 分岐 7: Critical マーカーと空の機械状態が矛盾する。
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:- nonblock:- -->
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-empty-state.log"
+assert_recovery_hint "$TMP/recovery-empty-state.log" \
+  'Critical marker but its machine state is empty' \
+  'Inspect the Critical section of the leftover report, then add --fresh' \
+  "マーカーと空状態の矛盾による中断も復帰手段を案内する"
+
+# 分岐 8: レポートファイルそのものを読めない（**実運用で起きる形**）。権限を
+# 落としただけの残骸は機械状態の抽出そのものが落ちるので、分岐 1（機械状態を
+# 解釈できない）と同じ入口に来る。ここが `add --fresh` を出すと、誰も読んでいない
+# Critical 状態の退避を案内することになる。
+#
+# chmod が効かない環境（root 実行など）では同じ故障をセンチネルで注入して、
+# 検査を空振りさせない。
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:code-review nonblock:- -->
+REPORT_BODY
+chmod 000 "$REPORT"
+if cat "$REPORT" >/dev/null 2>&1; then
+  chmod 644 "$REPORT"
+  rm -f "$TMP/tail-calls"
+  printf '1\n' > "$TMP/tail-fail-nth"
+fi
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-unreadable-extract.log"
+chmod 644 "$REPORT" 2>/dev/null || true
+rm -f "$TMP/tail-fail-nth" "$TMP/tail-calls"
+assert_recovery_hint "$TMP/recovery-unreadable-extract.log" \
+  'cannot inspect unresolved Critical perspectives' \
+  'The report file could not be read; check its permissions and the filesystem, then retry.' \
+  "読めないレポート（権限）の中断も復帰手段を案内する"
+assert_no_fresh_offer "$TMP/recovery-unreadable-extract.log" \
+  "読めないレポート（権限）には --fresh を提示しない"
+assert_fresh_ruled_out "$TMP/recovery-unreadable-extract.log" \
+  "$FRESH_RULED_OUT_UNREADABLE" \
+  "読めないレポート（権限）は --fresh を出さない理由も案内する"
+
+# 分岐 9 / 10: レポートファイルを読めないが、抽出だけは終わっている（マーカー
+# 検査で落ちる）。レポート本文では作れない故障なので tail を 2 回目以降で
+# 失敗させて注入する。1 回目（機械状態の抽出）は成功するため、上の分岐 8 ではなく
+# マーカー検査の 2 分岐に落ちる。
+#
+# この 2 分岐は同じ文面を別の呼び出し元から出す。ERROR 行の括弧で経路を名指し
+# させ、ケースごとにその語を見る（同じ文字列しか見ないと、両 fixture が片方の
+# 分岐へ寄っても緑のまま片側の被覆が消える）。
+printf '2\n' > "$TMP/tail-fail-nth"
+
+rm -f "$TMP/tail-calls"
+cat > "$REPORT" <<'REPORT_BODY'
+# Legacy integrated report
+<!-- CRITICAL_BLOCK -->
+Critical issues were found, but this line is not a machine readable summary.
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-unreadable-report.log"
+assert_recovery_hint "$TMP/recovery-unreadable-report.log" \
+  'cannot inspect Critical markers in the previous report (no machine-readable Critical state).' \
+  'The report file could not be read; check its permissions and the filesystem, then retry.' \
+  "レポートを読めない中断も復帰手段を案内する（観点一覧の復元経路）"
+assert_no_fresh_offer "$TMP/recovery-unreadable-report.log" \
+  "読めないレポートには --fresh を提示しない（観点一覧の復元経路）"
+assert_fresh_ruled_out "$TMP/recovery-unreadable-report.log" \
+  "$FRESH_RULED_OUT_UNREADABLE" \
+  "読めないレポートは --fresh を出さない理由も案内する（観点一覧の復元経路）"
+
+rm -f "$TMP/tail-calls"
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:- nonblock:- -->
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-unreadable-report-empty.log"
+assert_recovery_hint "$TMP/recovery-unreadable-report-empty.log" \
+  'cannot inspect Critical markers in the previous report (Critical state lists no unresolved perspectives).' \
+  'The report file could not be read; check its permissions and the filesystem, then retry.' \
+  "レポートを読めない中断も復帰手段を案内する（空状態の経路）"
+assert_no_fresh_offer "$TMP/recovery-unreadable-report-empty.log" \
+  "読めないレポートには --fresh を提示しない（空状態の経路）"
+assert_fresh_ruled_out "$TMP/recovery-unreadable-report-empty.log" \
+  "$FRESH_RULED_OUT_UNREADABLE" \
+  "読めないレポートは --fresh を出さない理由も案内する（空状態の経路）"
+
+rm -f "$TMP/tail-fail-nth" "$TMP/tail-calls"
+
+# 「レポートを読めない」と断定してよいのは tail が落ちたときだけ。マーカー検査の
+# grep 自体が失敗しても（grep のエラー rc=2 / PATH 上の grep 不在 rc=127）、戻り値
+# を素通しすると同じ「The report file could not be read」に化ける。壊れている
+# ツールチェーンを可読性の問題として名指しするのは誤診断なので、grep の失敗が
+# その断定を出さないことを固定する。
+# stub は 1 ケース分だけ置く（全 grep を wrapper 経由にする負荷を持ち回らない）。
+REAL_GREP="$(command -v grep)"
+cat > "$STUB/grep" <<SH
+#!/usr/bin/env bash
+# previous_report_has_critical_marker() の Critical マーカー検査だけを
+# grep 自身のエラー（rc=2）にする。それ以外の grep は素通し。
+if [[ "\$*" == "-Fx -e <!-- CRITICAL_BLOCK --> -e <!-- CRITICAL_NONBLOCK -->" ]]; then
+  printf 'x\n' >> "$TMP/grep-marker-calls"
+  exit 2
+fi
+exec "$REAL_GREP" "\$@"
+SH
+chmod +x "$STUB/grep"
+rm -f "$TMP/grep-marker-calls"
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:- nonblock:- -->
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-grep-error.log"
+rm -f "$STUB/grep"
+if [[ -s "$TMP/grep-marker-calls" ]]; then
+  ok "マーカー検査の grep 失敗を実際に注入できている"
+else
+  bad "マーカー検査の grep 失敗が注入できていない（次の検査は空振り）"
+fi
+if grep -qF 'The report file could not be read' "$TMP/recovery-grep-error.log"; then
+  bad "grep の失敗を「レポートを読めない」と誤って断定する"
+  sed -n '1,20p' "$TMP/recovery-grep-error.log" >&2 || true
+else
+  ok "grep の失敗を「レポートを読めない」と断定しない"
+fi
+
+# 分岐 11: 現在のレビュー系列を特定できない（残骸ではなくリポジトリ側の故障）。
+: > "$TMP/git-symbolic-ref-fail"
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:code-review nonblock:- -->
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-no-series.log"
+rm -f "$TMP/git-symbolic-ref-fail"
+# 案内が挙げる原因は実測したものだけ（worktree の外 / HEAD が解決不能 /
+# プロジェクトルートが消えている）。コミット 0 件のリポジトリは原因にならない
+# ——`git symbolic-ref --quiet HEAD` は unborn branch を rc=0 で返す（実測）。
+assert_recovery_hint "$TMP/recovery-no-series.log" \
+  'cannot identify the current review series' \
+  'Run from inside the repository worktree, with the project root still present and HEAD resolvable, then retry.' \
+  "系列を特定できない中断も復帰手段を案内する"
+assert_no_fresh_offer "$TMP/recovery-no-series.log" \
+  "系列を特定できない中断には --fresh を提示しない"
+assert_fresh_ruled_out "$TMP/recovery-no-series.log" \
+  "$FRESH_RULED_OUT_NO_SERIES" \
+  "系列を特定できない中断は --fresh を出さない理由も案内する"
 
 echo "== Issue #1025: 別系列の残存結果と --fresh =="
 

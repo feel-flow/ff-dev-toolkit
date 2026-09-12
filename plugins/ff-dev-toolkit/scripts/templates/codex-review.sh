@@ -64,8 +64,18 @@
 #               2 = 入力の誤り（未対応オプション・不正な env）
 #               3 = diff が大きすぎてレビューできない（成功と区別する）
 #               4 = codex CLI が PATH に無い（レビュー未実施。Claude セルフレビューへ降格）
-#                   ただし --dry-run は CLI を 1 本も起動しないので警告に留めて続行する
-#               その他 = 委譲先の終了コードをそのまま返す
+#                   ただし --dry-run はこのシムの codex 実在検査を素通りして常に委譲する
+#                   （--dry-run がこの rc=4 で止まることは無い）
+#               その他 = 委譲先の終了コードをそのまま返す。codex が PATH に無い環境の
+#                   --dry-run は、他の AI CLI の有無に関わらず委譲先（multi-agent.sh）が
+#                   rc=1 で停止し `🏁 Dry run complete.` には到達しない。帰結は同じ rc=1
+#                   でも原因は 2 通りあり、委譲先のメッセージで読み分ける:
+#                     ・AI CLI が 1 本も PATH に無い
+#                       → `ERROR: No AI CLIs are installed`（CLI の導入前に止まる）
+#                     ・codex だけが不在で他の AI CLI は PATH にある
+#                       → `ERROR: Execution plan is empty — nothing would be reviewed`
+#                          （このシムが固定で足す `--cli codex-cli` が codex-cli の
+#                          fallback 再割り当てを除外するため実行対象が 0 件になる）
 #     **リテラル `1` のみ**を見る。`true` / `yes` では走る。既存の各プロジェクト実装と
 #     同じ挙動で、値の解釈を広げると「どの値なら効くのか」が実装ごとに分かれるため、
 #     互換のまま狭く保つ。判断の記録であって、うっかりではない。
@@ -1240,11 +1250,25 @@ fi
 # 起動しないため、ここで止めると「主 CLI が使えないときにプランを確認する」という、まさに
 # 確認したい状況で確認手段そのものが消える（導入先の運用手順はプランに載る CLI の事前確認を
 # 求めている）。非実行モードでは警告に留め、実行モードでは従来どおり降格して rc=4 で止める。
+# （この判断は「シムが握りつぶさない」ことまでで、委譲先までプランが届くかは別。下記の実測を見る）
+#
+# 「続行する」の範囲はこのシムの codex 実在検査を通過することだけであり、委譲先
+# （multi-agent.sh）が実際にプランを表示することまでは保証しない。実測（--dry-run・
+# codex 不在）では、他の AI CLI の有無に関わらず委譲先が rc=1 で止まりプランは出ない:
+#   ・AI CLI が 1 本も無い  → 委譲先の CLI 検出が `ERROR: No AI CLIs are installed`
+#   ・codex だけが不在      → このシムが固定で足す `--cli codex-cli` が codex-cli の
+#                              fallback 再割り当て（claude-code 等）を除外するので
+#                              実行対象が 0 件になり `ERROR: Execution plan is empty`
+# 以下の警告文は、この 2 つを「同じ rc=1・原因違い」として読み分けられる書き方に
+# すること（片方だけを書くと、もう片方の利用者が原因を取り違える）。
 _codex_bin="${CODEX_REVIEW_CODEX_BIN:-codex}"
 if ! command -v -- "$_codex_bin" >/dev/null 2>&1; then
   if [ "$DRY_RUN_GIVEN" -eq 1 ]; then
-    echo "WARNING: codex CLI（${_codex_bin}）が PATH にありませんが、--dry-run は CLI を起動しないためプラン表示を続行します。" >&2
-    echo "         このプランをそのまま実行するには codex の導入（または CODEX_REVIEW_CODEX_BIN の修正）が要ります。" >&2
+    echo "WARNING: codex CLI（${_codex_bin}）が PATH にありませんが、--dry-run はこの検査を素通りしてそのまま委譲します。" >&2
+    echo "         ただし委譲先（multi-agent.sh）は rc=1 で停止し、レビュー対象の載ったプランは表示されません（完了行まで到達しません）。原因は 2 通りです。" >&2
+    echo "         ・AI CLI が 1 本も PATH に無い場合: 委譲先の CLI 検出が「No AI CLIs are installed」で止まります。" >&2
+    echo "         ・codex だけが不在で他の AI CLI がある場合: このシムが固定で足す --cli codex-cli が codex-cli の fallback 再割り当てを除外するため、実行対象 0 件で「Execution plan is empty」で止まります。" >&2
+    echo "         プランの表示にもレビューの実行にも codex の導入（または CODEX_REVIEW_CODEX_BIN の修正）が要ります。別 CLI のプランを見るだけなら multi-agent.sh を直接呼んで --cli を指定してください。" >&2
   else
     print_claude_fallback_notice "codex CLI（${_codex_bin}）が PATH に無い" 1
     exit 4

@@ -26,6 +26,23 @@
 #   - 文言 needle（散文アンカー）が red になった場合、文書の正当なリライトが
 #     原因なら本ファイルの needle も一緒に更新する。
 #
+# 固定するもの（リポジトリ正本 docs/04-quality/TESTING.md「新規検査を書いた直後の
+# 変異注入バッテリー」節。開発元 checkout のみ）:
+#   (1) 変異は検査 1 つにつき 1 つの粒度で並べる
+#   (2) 退避 → 変異 → suite 実行 → 復元を 1 コマンドにまとめる
+#   (3) 赤転しなかった変異は検査追加の TODO にする
+#   (4) 結果を当該 suite の verify.sh ヘッダ「変異検出:」節へ書き戻す
+#   (5) 正本が不在なら赤にする（`-f` だけで括ると検査が黙って skip する fail-open）
+#
+# 変異検出（2026-09-12 実測。検査 1 つにつき 1 変異で注入し、赤転しなかった変異は無し）:
+#   節から (1)〜(4) の bullet 行を 1 本ずつ落とすと、落とした 1 点だけが赤になる。
+#   節見出しを落とすと「節が見つかりません」が赤になる。
+#   REPO_TESTING のパスを実在しない名前へ変えると (5) が赤になる（旧実装では (1)〜(4) が
+#   `-f` ガードで黙って skip され、緑のまま通った）。
+#   上の検査ブロック自体を無効化する変異は本 suite では測れない（静的 suite は自分の不在を
+#   測れない）。その層は tests/docs-gates-runtime/repo-testing-gate-cases.sh が担い、
+#   ブロックを `if false` へ倒すと docs-gates-runtime が 5 件赤になることを実測済み。
+#
 # Bash と、本プロジェクトの対応環境に標準搭載される grep / awk / sed / find を使う。
 # 一時ファイルを作らない読み取り専用 suite とし、docs の複製を伴う動的 smoke / mutation は
 # docs-gates-runtime が担うため、書き込み不可の環境でも本 suite 単体は完走できる。
@@ -685,6 +702,20 @@ must_match "$f" '^[[:space:]]*python3 "\$MUT" \|\| exit 1' \
 # 公開 checkout には正本（docs/04-quality/TESTING.md）が無いので、存在するときだけ
 # 突き合わせる（不在は skip であって欠陥ではない）。
 REPO_TESTING="$PLUGIN_ROOT/../../docs/04-quality/TESTING.md"
+# 以降の `-f "$REPO_TESTING"` ブロック群は、正本が無い公開 checkout では丸ごと skip する。
+# その skip を**正本の有無そのもの**で決めると fail-open になる — 正本のパス・ファイル名が
+# 変わった瞬間に TESTING.md 側の検査が 1 件も走らないまま緑になり、検査が消えたことに
+# 誰も気付けない。「開発元 checkout か」はリポジトリ正本 docs/ ディレクトリの有無で判定する
+# （公開ミラーへ同期されるのは plugins/ff-dev-toolkit と oss/ff-dev-toolkit だけなので、
+# 公開 checkout に docs/ は存在しない。下の AGENTS.md 到達点検査と同じ軸）。開発元では
+# 正本の不在自体を赤にし、「適用外（公開 checkout）」は別の行として報告する。
+REPO_ROOT_DIR="$(cd "$PLUGIN_ROOT/../.." && pwd)"
+REPO_DOCS_DIR="$REPO_ROOT_DIR/docs"
+if [ ! -d "$REPO_DOCS_DIR" ]; then
+  ok "リポジトリ正本 TESTING.md の検査は適用外（リポジトリ正本 docs/ を持たない checkout。公開ミラー等）"
+elif [ ! -f "$REPO_TESTING" ]; then
+  bad "リポジトリ正本が見つかりません: ${REPO_TESTING}（正本 docs/ を持つ開発元 checkout では必須 — TESTING.md 側の検査が丸ごと skip されます）"
+fi
 if [ -f "$REPO_TESTING" ]; then
   extract_mutation_section() {
     awk '/^### 変異注入の適用確認$/ { f = 1 }
@@ -809,6 +840,80 @@ FOLLOWUP_NEEDLES
       bad "「新規 suite 追加の随伴先」節から随伴先が欠落しています:"
       printf '    %s\n' "${followups_missing[@]}" >&2
     fi
+  fi
+fi
+
+# --- 04-quality/TESTING.md: 新規検査を書いた直後の変異注入バッテリー節（OBS-016） ---
+# 新規ゲートを書いた直後に変異注入で測ると検出力ゼロの検査が実際に出る、が累計 3 回
+# 実測されたことを受けて新設した節。「新規 suite 追加の随伴先」の直後に置いた手順が
+# 要求する 4 点（変異の粒度・退避復元の一体化・TODO 化・verify.sh ヘッダへの書き戻し）
+# を、散文の言い換えでは消えない固有語で固定する。
+#
+# needle は**要求ごとに 1 本の bullet 行へまとめて当てる**（節全体への固定文字列検査に
+# しない）。節スコープで足りるのは「節が在ること」までで、節全体に当てると (a) 要求の
+# 一部語句しか見ていない needle は条件を削っても生き残り、(b) 4 本の needle を別々の行へ
+# 散らしても緑になる。同一 bullet 行に共起することを要求すれば、要求 1 点を削る変異が
+# その 1 点だけを赤にする（= 検査 1 つにつき 1 変異で検出力を実測できる）。
+if [ -f "$REPO_TESTING" ]; then
+  extract_mutation_battery_section() {
+    awk '/^### 新規検査を書いた直後の変異注入バッテリー$/ { f = 1 }
+         f && !/^### 新規検査を書いた直後の変異注入バッテリー$/ && (/^## / || /^### /) { exit }
+         f { print }' "$1"
+  }
+  mutation_battery_section="$(extract_mutation_battery_section "$REPO_TESTING")"
+  if [ -z "$mutation_battery_section" ]; then
+    bad "「新規検査を書いた直後の変異注入バッテリー」節が見つかりません（見出しの改名か節の削除。fail-closed）"
+  else
+    # $1: 行, $2..: needle。すべて含む行だけを一致とみなす。
+    mutation_battery_line_has_all() {
+      local _mb_line="$1" _mb_needle
+      shift
+      for _mb_needle in "$@"; do
+        case "$_mb_line" in
+          *"$_mb_needle"*) : ;;
+          *) return 1 ;;
+        esac
+      done
+      return 0
+    }
+    # $1: 要求のラベル, $2..: 同一 bullet 行に共起していなければならない needle。
+    # set -e 下で呼び出し側を落とさないよう、失敗は bad() に計上して 0 で返す。
+    check_mutation_battery_requirement() {
+      local _mb_label="$1" _mb_line
+      shift
+      while IFS= read -r _mb_line; do
+        case "$_mb_line" in
+          '- '*) : ;;
+          *) continue ;;
+        esac
+        if mutation_battery_line_has_all "$_mb_line" "$@"; then
+          ok "「新規検査を書いた直後の変異注入バッテリー」節: ${_mb_label}"
+          return 0
+        fi
+      done <<MUTATION_BATTERY_SECTION
+$mutation_battery_section
+MUTATION_BATTERY_SECTION
+      bad "「新規検査を書いた直後の変異注入バッテリー」節に「${_mb_label}」を述べた bullet 行がありません（要求の削除・分割・言い換え）"
+      printf '    同一 bullet 行に必要: %s\n' "$*" >&2
+      return 0
+    }
+
+    check_mutation_battery_requirement '変異は検査 1 つにつき 1 つの粒度で並べる' \
+      '検査 1 つにつき 1 つの粒度' \
+      'まとめて複数箇所を同時に壊す' \
+      'どの検査がどの不変条件を守っているか判別できない'
+    check_mutation_battery_requirement '退避 → 変異 → suite 実行 → 復元を 1 コマンドにまとめる' \
+      '退避 → 変異 → suite 実行 → 復元' \
+      '1 コマンドにまとめる' \
+      '変異注入の適用確認'
+    check_mutation_battery_requirement '赤転しなかった変異は検査追加の TODO にする' \
+      '赤転しなかった変異' \
+      '検査追加の TODO' \
+      'TODO を残したまま新設 suite をマージしない'
+    check_mutation_battery_requirement '結果を当該 suite の verify.sh ヘッダ「変異検出:」節へ書き戻す' \
+      '`verify.sh` ヘッダの「変異検出:」節へ書き戻す' \
+      '# 変異検出: ' \
+      '変異ごとに 1 行'
   fi
 fi
 
@@ -1163,7 +1268,6 @@ fi
 # いたため、AGENTS.md を消すと assertion が 1 件も走らないまま緑になり、ホスト直接委譲の
 # 経路が丸ごと消えてもゲートが気付かなかった（fail-open）。「適用外（公開 checkout）」と
 # 「違反なし」は別の行として出す。
-REPO_ROOT_DIR="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 REPO_AGENTS="$REPO_ROOT_DIR/AGENTS.md"
 if [ ! -f "$REPO_AGENTS" ] && [ ! -f "$REPO_TESTING" ]; then
   ok "AGENTS.md の到達点検査は適用外（リポジトリ正本 docs/ を持たない checkout。公開ミラー等）"
@@ -1279,6 +1383,286 @@ else
     ok "merge-cleanup SKILL.md が # エンコードの理由（素の # は 422）を明記している"
   else
     bad "merge-cleanup SKILL.md の # エンコードの理由（素の # は 422）が見つかりません"
+  fi
+fi
+
+# --- SETUP_CLAUDE_CODE.md: CLAUDE.md テンプレート（heredoc）の実測記録先規範 ---
+# 「測定の詳細は正本に置かず証跡へ逃がす」規範（正本は MASTER.md §実測の記録先）を、
+# consumer へ配布する CLAUDE.md テンプレートへも 1 項目として反映した。
+#
+# 検査の範囲: 文書全体ではなく `cat > CLAUDE.md << 'EOF'` 〜 `EOF` の heredoc 本文だけを
+# 見る。全体 grep だと節を heredoc の外（セットアップ手順の解説側）へ移しても緑のままで、
+# consumer の CLAUDE.md へ載ることを何も検証していない（実測で確認）。
+#
+# 検査の形: 本節は「要点 1 文 + 正本へのリンク」に留める設計なので、複製の禁止は文言
+# 一致ではなく構造（節内に箇条書きが無いこと / 正本参照行を除く本文行数の上限）で見る。
+# `- 判断手順（どう判断するか）` のようなリテラル不在検査は、同じ内容を言い換えて
+# 箇条書きで再掲する変異を素通しする（実測で確認）。
+#
+# パス表記: heredoc が生成するのは consumer の CLAUDE.md なので、参照先は consumer 側に
+# 実在する `docs/` 系で書く（`docs-template/` は consumer には無い）。
+f="SETUP_CLAUDE_CODE.md"
+
+# CLAUDE.md テンプレートの heredoc 本文だけを stdout に出す。
+setup_claude_code_template() {
+  awk '
+    /^cat > CLAUDE\.md << .EOF.$/ { inside = 1; next }
+    inside && /^EOF$/ { inside = 0; next }
+    inside { print }
+  ' "$DOCS/$f"
+}
+
+if [ ! -f "$DOCS/$f" ]; then
+  bad "CLAUDE.md テンプレートの実測記録先規範 — 対象ファイルがありません: $f"
+else
+  scc_template="$(setup_claude_code_template)"
+  if [ -z "$scc_template" ]; then
+    bad "CLAUDE.md テンプレートの heredoc を切り出せない（cat > CLAUDE.md << 'EOF' … EOF が壊れている）"
+  else
+    scc_section="$(printf '%s\n' "$scc_template" | awk '
+      /^## 実測の記録先$/ { inside = 1; next }
+      inside && /^#+ / { inside = 0 }
+      inside { print }
+    ')"
+    if [ -z "$scc_section" ]; then
+      bad "CLAUDE.md テンプレート（heredoc 内）に「## 実測の記録先」節が無い"
+    else
+      case "$scc_section" in
+        *'`docs/08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く'*)
+          ok "CLAUDE.md テンプレートが証跡文書の置き場（consumer 側の docs/08-knowledge/）を明記している" ;;
+        *)
+          bad "CLAUDE.md テンプレートの実測の記録先節に証跡文書の置き場（\`docs/08-knowledge/\` の \`YYYY-MM-DD-<slug>-evidence.md\`）が無い" ;;
+      esac
+      case "$scc_section" in
+        *'`docs/MASTER.md` の「実測の記録先」を参照する'*)
+          ok "CLAUDE.md テンプレートが規範の正本として consumer 側の docs/MASTER.md を参照している" ;;
+        *)
+          bad "CLAUDE.md テンプレートの実測の記録先節が正本（\`docs/MASTER.md\` の「実測の記録先」）を参照していない" ;;
+      esac
+      # 構造検査(1): 節内に箇条書きを置かない（正本の列挙を言い換えて再掲する経路を塞ぐ）
+      scc_bullets="$(printf '%s\n' "$scc_section" | awk '
+        /^[[:space:]]*([-*+][[:space:]]|[0-9]+\.[[:space:]])/ { n++ }
+        END { print n + 0 }
+      ')"
+      if [ "$scc_bullets" -eq 0 ]; then
+        ok "CLAUDE.md テンプレートの実測の記録先節に箇条書きが無い（正本の列挙を再掲していない）"
+      else
+        bad "CLAUDE.md テンプレートの実測の記録先節に箇条書きが ${scc_bullets} 行ある（正本 MASTER.md の列挙を複製せず、要点 1 文 + 正本へのリンクに留めること）"
+      fi
+      # 構造検査(2): 正本参照行を除く本文行数の上限（言い換えた散文での複製を塞ぐ）
+      scc_body="$(printf '%s\n' "$scc_section" | awk '
+        /^[[:space:]]*$/ { next }
+        index($0, "docs/MASTER.md") > 0 { next }
+        { n++ }
+        END { print n + 0 }
+      ')"
+      if [ "$scc_body" -le 2 ]; then
+        ok "CLAUDE.md テンプレートの実測の記録先節が要点 1 文 + 正本へのリンクに収まっている（本文 ${scc_body} 行）"
+      else
+        bad "CLAUDE.md テンプレートの実測の記録先節の本文が ${scc_body} 行ある（上限 2 行。正本 MASTER.md の本文を複製せず要点だけ書くこと）"
+      fi
+    fi
+  fi
+fi
+
+# --- 委譲先に長時間コマンドを foreground で待たせる契約（子側）と、生存中の委譲先の
+# worktree を回収しない契約（親側）の到達性（観測台帳 OBS-036 から昇格）。
+#
+# どちらも文言だけが防御である。対策は multi-implement / multi-explore / multi-review の
+# 起動プロンプトと git-workflow.md の凍結節にしか無く、ホストが提供する Agent / Task ツールで
+# 直接サブエージェントを起こす経路（同梱スキルも配布文書も読まない）へは 1 行も届かなかった。
+# 親側の「生存中の子の worktree を回収しない」に至っては正本となる節が無く、観測台帳の
+# メモにしか存在しなかった。正本は multi-cli-agent-orchestration.md の 2 節に置き、各委譲
+# 経路からの到達点を個別に固定する — どれか 1 つの所在が消えたら赤にするため、参照側の針は
+# 節アンカーまで含めた link 断片で持つ（本文の言い換えでは素通りする）。
+DELEG_DOC='05-operations/deployment/multi-cli-agent-orchestration.md'
+
+DELEG_FG_HEADING='## 委譲先に長時間コマンドを foreground で待たせる契約'
+DELEG_FG_SECTION_NAME='委譲先に長時間コマンドを foreground で待たせる契約'
+DELEG_FG_ANCHOR='#委譲先に長時間コマンドを-foreground-で待たせる契約'
+
+DELEG_WT_HEADING='## 生存中の委譲先の worktree を回収しない'
+DELEG_WT_SECTION_NAME='生存中の委譲先の worktree を回収しない'
+DELEG_WT_ANCHOR='#生存中の委譲先の-worktree-を回収しない'
+
+# 正本: 見出しから次の見出しまでの節が一意に切り出せる（= 見出しがちょうど 1 本ある）。
+# 各到達点のアンカーはこの見出しから導出されるので、0 本でも 2 本以上でも赤にする。
+deleg_fg_body=""
+if deleg_fg_body="$(section_scope_extract "$DOCS/$DELEG_DOC" "$DELEG_FG_HEADING")"; then
+  ok "子側（長時間コマンドの foreground 待機）の正本節を multi-cli-agent-orchestration.md から一意に切り出せる"
+else
+  bad "子側（長時間コマンドの foreground 待機）の正本節を切り出せません — ${deleg_fg_body}（到達点 3 経路のアンカーが壊れます）"
+fi
+
+deleg_wt_body=""
+if deleg_wt_body="$(section_scope_extract "$DOCS/$DELEG_DOC" "$DELEG_WT_HEADING")"; then
+  ok "親側（生存中の worktree を回収しない）の正本節を multi-cli-agent-orchestration.md から一意に切り出せる"
+else
+  bad "親側（生存中の worktree を回収しない）の正本節を切り出せません — ${deleg_wt_body}（到達点 3 経路のアンカーが壊れます）"
+fi
+
+# 規定の針は**正本節スコープ**で当てる。文書全体の grep だと、規定を正本節から別節へ
+# 移すだけで見出しも needle も残り緑のまま通るが、各到達点のリンク先（= この節）は
+# 空になり、到達性そのものが壊れる。
+must_contain_section "$DELEG_DOC" "$DELEG_FG_HEADING" 'ホストが提供する Agent / Task ツールで直接起こしたサブエージェントも含む' \
+  "子側の正本節が同梱スクリプト経由以外の委譲（ホストの Agent / Task ツール）も対象だと明記している"
+must_contain_section "$DELEG_DOC" "$DELEG_FG_HEADING" 'どのスキル・どの文書から委譲の手順に入ったかで適用範囲は変わらない' \
+  "子側の正本節が入口（スキル・文書）によらず適用範囲が同じだと明記している（経路ごとの別正本を防ぐ）"
+must_contain_section "$DELEG_DOC" "$DELEG_FG_HEADING" '「background 実行オプションを使わない」を明記する' \
+  "子側の正本節が background 実行の禁止を委譲プロンプトの常置文言として持つ"
+must_contain_section "$DELEG_DOC" "$DELEG_FG_HEADING" 'タイムアウトの実値を委譲プロンプトの中へ直接書く' \
+  "子側の正本節がタイムアウトの実値を委譲プロンプトへ直接書くことを要求している（リンクでの代替を禁じる）"
+
+must_contain_section "$DELEG_DOC" "$DELEG_WT_HEADING" 'ホストが提供する Agent / Task ツールで worktree 隔離により起こしたサブエージェントも含む' \
+  "親側の正本節が同梱スクリプト経由以外の委譲（ホストの Agent / Task ツール）も対象だと明記している"
+must_contain_section "$DELEG_DOC" "$DELEG_WT_HEADING" '未コミット差分の有無（clean / dirty）を回収の根拠にしない' \
+  "親側の正本節が dirty 状態を回収の根拠にしないことを明記している"
+must_contain_section "$DELEG_DOC" "$DELEG_WT_HEADING" 'git worktree list --porcelain' \
+  "親側の正本節が生存判定の第 1 段（lock の読み取り）を実行可能なコマンドで持つ"
+must_contain_section "$DELEG_DOC" "$DELEG_WT_HEADING" '理由行の PID をエージェント個体の PID と読まない' \
+  "親側の正本節が lock 理由の PID をホストのものと読み分ける判定を持つ（kill -0 で個体の生死を測れない）"
+must_contain_section "$DELEG_DOC" "$DELEG_WT_HEADING" 'ps -ww -eo pid,ppid,etime,command' \
+  "親側の正本節が生存判定の第 2 段（プロセスの実測）を実行可能なコマンドで持つ"
+must_contain_section "$DELEG_DOC" "$DELEG_WT_HEADING" '完了通知は「そのエージェントの終了」ではない' \
+  "親側の正本節が完了通知の直後に回収しない理由（background 完了での自動再開）を持つ"
+
+# 委譲プロンプトへ実値で常置させるタイムアウト（ホストの foreground 上限）。
+# 正本は規定を述べるだけで、**実値は消費地点それぞれに要る** — 起動プロンプトは貼られた
+# 先で読まれるので相対リンクが解決せず、正本を読まない消費地点には値が届かない
+# （正本節の 2 がこの複製を明示的に許している）。3 到達点ぶん同じ針を当てる。
+DELEG_TIMEOUT_VALUE='`timeout` へ `600000`'
+
+# 到達点 1: 配布 git-workflow.md。ホストのサブエージェントへ並列委譲する手順の中から張る。
+# 針は**その手順の節スコープ**で当てる。文書全体の grep だと、手順からリンクを外して同じ
+# 文書内の無関係な位置（別節の解説・注記）へ移すだけで緑のまま通り、手順を読む委譲元には
+# 何も届かない（1400 行超の文書なので「文書内に在る」は「手順に在る」を意味しない）。
+DELEG_WF_DOC='05-operations/deployment/git-workflow.md'
+DELEG_WF_HEADING='## Epic の一括対応（バッチ分割・worktree 並列・直列マージ）'
+must_contain_section "$DELEG_WF_DOC" "$DELEG_WF_HEADING" "](./multi-cli-agent-orchestration.md${DELEG_FG_ANCHOR})" \
+  "git-workflow.md の並列委譲手順から子側（foreground 待機）の正本節へ到達できる"
+must_contain_section "$DELEG_WF_DOC" "$DELEG_WF_HEADING" "](./multi-cli-agent-orchestration.md${DELEG_WT_ANCHOR})" \
+  "git-workflow.md の並列委譲手順から親側（生存中の worktree を回収しない）の正本節へ到達できる"
+must_contain_section "$DELEG_WF_DOC" "$DELEG_WF_HEADING" "$DELEG_TIMEOUT_VALUE" \
+  "git-workflow.md の並列委譲手順がタイムアウトの実値を持つ（リンクだけだと消費地点に届かない）"
+
+# ${DOCS}（docs-template）の外にあるファイルに対する節スコープ検査。must_contain_section は
+# パスを $DOCS 起点で解決するので、SKILL.md / AGENTS.md にはこちらを使う（節の切り出しは
+# 同じ tests/lib/section-scope.sh を通す — 節の定義を本 suite へ書き直さない）。
+deleg_must_contain_section_file() {
+  local file="$1" heading="$2" needle="$3" label="$4" reason=""
+  if [ ! -f "$file" ]; then
+    bad "$label — 対象ファイルがありません: $file"
+    return
+  fi
+  if reason="$(section_scope_contains "$file" "$heading" "$needle")"; then
+    ok "$label"
+  else
+    bad "$label — $reason"
+  fi
+}
+
+# 到達点 2: multi-implement SKILL.md（同梱スクリプト経由の委譲手順）。
+# SKILL.md は ${DOCS}（docs-template）の外にあるため絶対パスで渡す。
+# 針は「重要ルール」節スコープで当てる（到達点 1 と同じ理由 — 同一ファイル内で手順の外へ
+# 移されると、参照は文書に残るのに委譲手順を読む側には届かない）。
+DELEG_SKILL="$PLUGIN_ROOT/skills/multi-implement/SKILL.md"
+DELEG_SKILL_HEADING='## 重要ルール'
+deleg_must_contain_section_file "$DELEG_SKILL" "$DELEG_SKILL_HEADING" \
+  "](../../docs-template/${DELEG_DOC}${DELEG_FG_ANCHOR})" \
+  "multi-implement SKILL.md の委譲手順から子側（foreground 待機）の正本節へ到達できる"
+deleg_must_contain_section_file "$DELEG_SKILL" "$DELEG_SKILL_HEADING" \
+  "](../../docs-template/${DELEG_DOC}${DELEG_WT_ANCHOR})" \
+  "multi-implement SKILL.md の委譲手順から親側（生存中の worktree を回収しない）の正本節へ到達できる"
+deleg_must_contain_section_file "$DELEG_SKILL" "$DELEG_SKILL_HEADING" "$DELEG_TIMEOUT_VALUE" \
+  "multi-implement SKILL.md の委譲手順がタイムアウトの実値を持つ（リンクだけだと消費地点に届かない）"
+
+# 到達点 3: リポジトリ入口の AGENTS.md。スキルも配布文書も読まずにホストの Agent / Task
+# ツールで直接委譲するオーケストレータへ届く唯一の経路。節名だけを見ると、正本パスを
+# 誤記・削除しても節名さえ残れば緑になるため、参照行 1 行の中で「正本パス + 節名 + 義務の
+# 識別句」を同時に固定し、さらに**書かれたパスを実測**する（実在すること・その中に正本節が
+# あること）。2 節ぶん同じ検査を行うので手続きを関数へ畳む。
+# 参照行の探索範囲は**開発ルール節の中だけ**にする（到達点 1・2 と同じ理由。文書全体を見ると、
+# 規定をルール一覧から外して同じ文書の別節 — 冒頭の位置付け説明など — へ移しても緑のまま
+# 通り、ルールとして読まれる位置からは消える）。
+DELEG_AGENTS_HEADING='## このリポジトリを開発する場合のルール'
+
+deleg_agents_reference_check() {
+  local rules="$1" section_name="$2" heading="$3" duty_needle="$4" label="$5"
+  local line path target
+  line="$(printf '%s\n' "$rules" | awk -v key="「${section_name}」節" '
+    index($0, key) > 0 { n++; line = $0 }
+    END { if (n == 1) print line; else printf "FF_AGENTS_HITS=%d\n", n + 0 }
+  ')"
+  case "$line" in
+    FF_AGENTS_HITS=*)
+      bad "${label}: AGENTS.md の開発ルール節にある参照行が ${line#FF_AGENTS_HITS=} 行（期待 1 行）— ホスト直接委譲の経路へ届かなくなります"
+      return
+      ;;
+  esac
+  case "$line" in
+    *"$duty_needle"*)
+      ok "${label}: AGENTS.md の参照行が義務本文そのものを述べている"
+      ;;
+    *)
+      bad "${label}: AGENTS.md の参照行に義務本文がありません（節名だけが残ると、義務そのものが消えても気付けません）"
+      ;;
+  esac
+  # code span の直後が「の「<節名>」節」である code span を正本パスとみなす。
+  path="$(
+    printf '%s\n' "$line" | awk -v marker="の「${section_name}」節" '
+      BEGIN { FS = "`" }
+      {
+        for (i = 2; i <= NF; i += 2) {
+          tail = $(i + 1)
+          sub(/^[[:space:]]+/, "", tail)
+          if (index(tail, marker) == 1) { print $i; exit }
+        }
+      }
+    '
+  )"
+  if [ -z "$path" ]; then
+    bad "${label}: AGENTS.md の参照行に正本パスがありません（\`<path>\` の「${section_name}」節 の形で書くこと）"
+  elif [ "$path" = "${path%"$DELEG_DOC"}" ]; then
+    bad "${label}: AGENTS.md の参照先が正本文書ではありません: ${path}（期待は …/${DELEG_DOC}）"
+  elif [ ! -f "$REPO_ROOT_DIR/$path" ]; then
+    bad "${label}: AGENTS.md が指す正本パスが実在しません: ${path}（リポジトリルート起点で解決）"
+  else
+    target=""
+    if target="$(section_scope_extract "$REPO_ROOT_DIR/$path" "$heading")"; then
+      ok "${label}: AGENTS.md が指す正本パスが実在し、その中に正本節がちょうど 1 つある（パスと節を実測）"
+    else
+      bad "${label}: AGENTS.md が指す正本パス ${path} に正本節がありません — ${target}"
+    fi
+  fi
+}
+
+# 適用範囲の判定は上の事実確認義務の到達点検査と同じ軸へ揃える（リポジトリ正本 docs/ を
+# 持たない公開 checkout は適用外。開発元 checkout では AGENTS.md の不在自体を赤にする）。
+if [ ! -f "$REPO_AGENTS" ] && [ ! -f "$REPO_TESTING" ]; then
+  ok "委譲の待機・回収規定の AGENTS.md 到達点検査は適用外（リポジトリ正本 docs/ を持たない checkout。公開ミラー等）"
+elif [ ! -f "$REPO_AGENTS" ]; then
+  bad "AGENTS.md がありません: ${REPO_AGENTS}（リポジトリ正本 docs/ を持つ開発元 checkout では必須 — ホスト直接委譲の経路が丸ごと消えます）"
+else
+  deleg_agents_rules=""
+  if ! deleg_agents_rules="$(section_scope_extract "$REPO_AGENTS" "$DELEG_AGENTS_HEADING")"; then
+    bad "AGENTS.md の開発ルール節を切り出せません — ${deleg_agents_rules}（ホスト直接委譲の到達点を測れません）"
+  else
+    deleg_agents_reference_check "$deleg_agents_rules" "$DELEG_FG_SECTION_NAME" "$DELEG_FG_HEADING" \
+      '委譲プロンプトへ「タイムアウトを明示して foreground で待つ」「background 実行オプションを使わない」とタイムアウトの実値を書く' \
+      "子側（foreground 待機）"
+    deleg_agents_reference_check "$deleg_agents_rules" "$DELEG_WT_SECTION_NAME" "$DELEG_WT_HEADING" \
+      '未コミット差分 0 件（clean）を回収の根拠にせず' \
+      "親側（生存中の worktree を回収しない）"
+    # 「タイムアウトの実値を書く」と述べるだけでは、その実値がここには無い。到達点 1・2 と
+    # 同じ針で、入口にも値そのものが残ることを固定する。
+    deleg_must_contain_section_file "$REPO_AGENTS" "$DELEG_AGENTS_HEADING" "$DELEG_TIMEOUT_VALUE" \
+      "AGENTS.md の開発ルール節がタイムアウトの実値を持つ（リンクだけだと消費地点に届かない）"
+    # 生存判定は「回収しない」だけでは実行できない。判定コマンドの実値が入口にも残ることを
+    # 固定する。2 段は別々の検査にする（片方だけ消えたときにどちらが消えたか出るように）。
+    deleg_must_contain_section_file "$REPO_AGENTS" "$DELEG_AGENTS_HEADING" 'git worktree list --porcelain' \
+      "AGENTS.md の開発ルール節が生存判定の第 1 段（lock の読み取り）をコマンドの実値で持つ"
+    deleg_must_contain_section_file "$REPO_AGENTS" "$DELEG_AGENTS_HEADING" 'ps -ww -eo pid,ppid,etime,command' \
+      "AGENTS.md の開発ルール節が生存判定の第 2 段（プロセスの実測）をコマンドの実値で持つ"
   fi
 fi
 

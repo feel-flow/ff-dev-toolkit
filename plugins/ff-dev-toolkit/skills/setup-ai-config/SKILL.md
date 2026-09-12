@@ -104,6 +104,10 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 ## Development Workflow
 [docs/05-operations/ から採用済み方針を抽出。なければ推奨案を提示して合意]
 
+## 実測の記録先
+実体数・版の一覧・時刻表・スコープ差の注記のような**時間で腐る記述**は、このファイルなどの正本へ書き足さず、`docs/08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く。
+正本に残してよい範囲と証跡文書の追記規律は、`docs/MASTER.md` の「実測の記録先」を参照する（このファイルへ複製しない）。
+
 ## Out-of-Scope Finding Routing
 - 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
 - 判定順は `YAGNI → インライン修正 → Issue 化`
@@ -148,6 +152,10 @@ Use the MASTER.md index to reach the relevant specification for your task（境�
 
 ## Key Architecture Decisions
 [ARCHITECTURE.md からの要約]
+
+## 実測の記録先
+実体数・版の一覧・時刻表・スコープ差の注記のような**時間で腐る記述**は、このファイルなどの正本へ書き足さず、`docs/08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く。
+正本に残してよい範囲と証跡文書の追記規律は、`docs/MASTER.md` の「実測の記録先」を参照する（このファイルへ複製しない）。
 
 ## Out-of-Scope Finding Routing
 - 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
@@ -207,6 +215,10 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 ## Commit & PR Guidelines
 - Issue 起票 → ブランチ → 実装 → セルフレビュー → PR → マージ
 - コミットは `<type>: #<issue> <subject>`
+
+## 実測の記録先
+実体数・版の一覧・時刻表・スコープ差の注記のような**時間で腐る記述**は、このファイルなどの正本へ書き足さず、`docs/08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く。
+正本に残してよい範囲と証跡文書の追記規律は、`docs/MASTER.md` の「実測の記録先」を参照する（このファイルへ複製しない）。
 
 ## Out-of-Scope Finding Routing
 - 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する

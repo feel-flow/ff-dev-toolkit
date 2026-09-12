@@ -378,6 +378,12 @@ gh issue create --repo "$expected_repo" --title "fix: 問題の説明" --body "�
 優先度: Critical / High / Medium / Low
 ```
 
+## 実測の記録先
+
+実体数・版の一覧・時刻表・スコープ差の注記のような**時間で腐る記述**は、このファイルなどの正本へ書き足さず、`docs/08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く。
+
+正本に残してよい範囲と証跡文書の追記規律は、`docs/MASTER.md` の「実測の記録先」を参照する（このファイルへ複製しない）。
+
 ## よくある問題
 
 | 問題        | 解決方法                             |

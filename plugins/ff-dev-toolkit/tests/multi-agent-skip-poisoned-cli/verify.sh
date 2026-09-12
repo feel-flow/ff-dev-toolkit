@@ -328,8 +328,9 @@ else
   tail -20 "$TMP/run.log" | sed 's/^/    | /' >&2
 fi
 if [ -f "$REPORT" ] \
-  && /usr/bin/grep -qF 'remains unresolved because its rerun failed or was skipped' "$REPORT"; then
-  ok "retain: レポートが「失敗またはスキップで未解消のまま」と名指しする"
+  && /usr/bin/grep -qF 'remains unresolved because its rerun produced no verdict' "$REPORT" \
+  && /usr/bin/grep -qF 'was skipped' "$REPORT"; then
+  ok "retain: レポートが「判定が出ていないまま未解消」と名指しし、スキップも列挙する"
 else
   bad "retain: 保持の名指しがレポートに無い、または文面がスキップを含んでいない"
   [ -f "$REPORT" ] && /usr/bin/grep -n 'Critical' "$REPORT" | head -5 | sed 's/^/    | /' >&2

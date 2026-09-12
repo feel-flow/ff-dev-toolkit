@@ -21,6 +21,7 @@
 - [設定カスタマイズ](#設定カスタマイズ)
 - [ワークフロー統合](#ワークフロー統合)
 - [運用コマンド](#運用コマンド)
+- [claude-code レーンのホスト委譲（`--delegate-to-host`）](#host-delegation)
 - [トラブルシューティング](#トラブルシューティング)
 
 ---
@@ -814,6 +815,96 @@ grep -A 5 "Critical" .review-results/integrated-report.md
 - 退避しないもの（意図的な境界）: 今回の実行プランに載っていない CLI のディレクトリ、orchestrator が書いていない `.md`（1 行目が `<!-- Multi-CLI ... Result -->` でないファイル = 利用者のメモ等。退避物は次の実行で捨てられるため他人のファイルは動かさない）、`{cli}/` 直下の `*.md` 以外、サブディレクトリ（implement の `files/` など）
 - 動かさなかった残骸のうち結果ファイルを持つものは、実行ログと統合レポートの「**Not part of this run**」節で名指しする。そこに挙がったものは今回の結果ではない
 - `{cli}/` が自分以外を指す（symlink が挟まっている）場合は、指し先が出力ディレクトリの内外どちらでも、**resume の書き戻しも前回結果の削除も行わずに**中断する（検査は破壊操作より前に一括で走る）。内側を指す別名を許すと、2 つの CLI 名が同じ実ディレクトリを共有し、同じ場所から退避しつつ「今回のプラン外」と名指しする矛盾が起きるため。`{cli}/previous` が symlink の場合は指し先を追わず、リンク自体だけを外す
+
+---
+
+<a id="host-delegation"></a>
+
+## claude-code レーンのホスト委譲（`--delegate-to-host`）
+
+review 専用。`claude-code` レーンだけ **CLI を起動せず**、実行をホスト（このスキルを動かしている Claude のセッション）へ返す選択肢。既定（フラグなし）は従来どおり `claude` を spawn するので、指定しなければ何も変わらない。
+
+### いつ使うか
+
+`claude-code` レーンは `claude` CLI を**別プロセス**として起動するため、**その CLI がログインしているアカウント**の利用枠だけが尽きると、ホスト側のセッションが別アカウントで動き続けていてもこのレーンが実行できない。実測（2026-09-10）:
+
+```
+$ cat .review-results/claude-code/code-review.md
+<!-- Status: incomplete -->
+> ⚠️ INCOMPLETE — Claude Code exited with status 1.
+You've hit your individual spend limit · your session limit resets 10:10pm (Asia/Tokyo)
+```
+
+同じ実行で `codex-cli` は完走し、ホストのセッションも問題なく動作していた。`claude auth` には**呼び出し単位のアカウント選択が無い**（実測 / claude 2.1.263。`login` / `logout` / `status` のみ）ので、`logout` → `login` というグローバルな切り替え以外に手段が無く、CLI 側では解決できない。`MULTI_AGENT_MODEL_CLAUDE_CODE` はモデル指定であってアカウント指定ではない。
+
+このフラグは**既存の案内（`codex-cli` を substitute として実行し直す / `claude auth login`）を置き換えるものではなく、選択肢を 1 つ足すもの**。
+
+### 何が変わり、何が変わらないか
+
+| | 委譲経路 |
+| --- | --- |
+| 変わる | `claude-code` レーンで CLI プロセスを 1 つも起動しない。そのレーンのタスクは「委譲待ち（pending）」として報告される |
+| 変わらない | プラン構築・プロンプト生成・固定 diff・タイムアウトの受け渡し・他レーンの実行・統合レポートの生成・既定の挙動（フラグなし） |
+
+対象は `claude-code` レーンだけ。ホストが Claude である前提に依存するので、他レーンを同じ経路へ流すと「複数の**違う**モデルを同じ diff に当てる」という本ツールの目的が黙って失われる（レポート上は観点が埋まったまま、実体はホスト 1 モデルの多重実行になる）。`codex-cli` / `grok-cli` をホストにして動かしている場合は、委譲先が存在しないのでこのフラグは使えない（`--exclude-cli claude-code` か、従来どおりの CLI 起動を使う）。
+
+### 手順（同じコマンドを 2 回）
+
+1. **1 回目**: 通常のレビュー引数に `--delegate-to-host` を足して実行する。他レーンはそのまま走り、`claude-code` レーンはプロンプトが書き出されて **stdout に handoff ブロック**が出る。終了コードは **3**（委譲待ち。失敗の 1 とは別の値）
+
+   ```bash
+   ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --delegate-to-host
+   ```
+
+   ```
+   <<<FF-DELEGATED-TASKS>>>
+   count=1
+   task-type=review
+   output-dir=/abs/path/.review-results
+   --- task ---
+   cli=claude-code
+   cli-name=Claude Code
+   perspective=code-review
+   task-type=review
+   timeout=900
+   allowed-tools=Read,Grep,Glob,Bash(git diff*)
+   prompt-file=/abs/path/.review-results/claude-code/.delegated/code-review.prompt.md
+   output-file=/abs/path/.review-results/claude-code/code-review.md
+   prompt-digest=<sha1>
+   <<<END-FF-DELEGATED-TASKS>>>
+   ```
+
+2. **ホストが実行する**: `prompt-file` の中身をそのままホストのサブエージェントへ渡し（read-only。`allowed-tools` が CLI 起動経路で与えていた許可と同じ）、結果を `output-file` のパスへ書く。**worktree は触らない** — 1 回目と 2 回目のあいだにツリーが動くと、2 回目のリビジョンガードが結果を破棄する
+
+3. **2 回目**: **1 回目のコマンドに `--resume` を足して**再実行する。書き戻した結果が受理され、統合レポートが生成される。終了コードは通常どおり
+
+   `--resume` は「他レーンの結果を使い回す」ためだけのものではない。付けないと今回のプラン対象がすべてクリアされ、**前の巡で受理済みの観点まで受け渡しファイルごと消えて再委譲される** — `claude-code` レーンは分散プランで既定 3 観点を持つので、1 観点ずつ答える通常の進み方が収束しなくなる。`--fresh` は併用不可（下記）
+
+### 併用できないもの・止まるところ
+
+- **`--fresh` とは併用できない**（起動時に拒否する）。`--fresh` は出力ディレクトリの中身をホストの結果も受け渡しファイルもまとめて `.prev-<時刻>/` へ退避するので、2 回目が毎回新しい handoff になって収束せず、しかも完了済みのレビューが一度も読まれないまま退避される。掃除したいときは先に委譲なしで `--fresh` を 1 回走らせる
+- **委譲を指定したまま結果を残した状態で、フラグを落として再実行すると中断する**。その結果パスはこの実行がクリアする対象そのものなので、素通しにするとホストの成果物が 1 行の通知も無く消え、そのうえ枯渇していて動かない CLI が起動される。再実行するか、案内される `rm` で委譲を明示的に放棄する
+- **入力が変わったまま古い handoff の応答が届くと、1 回だけ拒否する**。前の handoff が未応答のうちに入力が変わって新しい handoff を出していた場合、遅れて届いた応答がどちらのプロンプトに対するものか決められない（digest は「今のプロンプト」と「最後に出した handoff」しか比べていない）。この曖昧さを検出した回は受理せず退避し、handoff を出し直して対応を 1 対 1 へ戻す
+
+### 受理の条件（ここは緩めない）
+
+- **同じプロンプトへの応答であること**: handoff 時にプロンプト本文の digest を `.delegated/<観点>.request` へ記録し、受理時に再計算して突き合わせる。diff・base・観点ファイル・`--description` のどれが動いても digest が変わるので、**前回の入力を見た結果が今回の結果として載ることはない**
+- **レビュー本文として成立していること**: CLI 起動経路と**同じ**受理ゲート（重大度の件数行 / 重大度ラベル付きの指摘行 / 重大度見出し配下の指摘 bullet のいずれか）を通す
+- `<!-- Status: incomplete -->` / `discarded` を名乗る応答は受理しない（失敗した実行のサルベージをホスト経由で「完成した結果」へ格上げしない）。判定は**本文全体**に掛ける — リビジョンガードが破棄した成果物は `> DISCARDED — …` バナーを前置してからヘッダーを続けるので、先頭 1 段落だけを見る形では素通りする
+- ヘッダーを剥がした後もまだ結果ヘッダーが残っている応答（前置きの後にヘッダーがある / 複数の結果を連結した）は受理しない。入れ子のヘッダーを持つ成果物になり、外側が complete を名乗りながら内側が別の status を名乗りうる
+- 受理は**書けたことを書いたファイル自身で確認してから**確定する。確認が取れなければホストの応答を消さずに残し、パスを名指しして止まる
+
+受理しなかった応答は**捨てずに** `.delegated/<観点>.response.{stale,rejected}.<時刻>.md` へ退避し、パスを名指ししたうえで handoff をやり直す。受理した結果は `write_output` と同じヘッダー（`<!-- CLI: Claude Code -->` / `<!-- Status: complete -->`）で書き直されるので、レポートからは CLI 起動経路の結果と区別がつかない。
+
+### 委譲待ちの見え方
+
+- 統合レポート: 当該観点の節が `**Result source:** delegated to the host (pending)` と `🤝 **DELEGATED — pending host execution** ... **INCOMPLETE**` を持つ。消費側ゲートが見る `INCOMPLETE` を名乗るので、**委譲したまま誰も実行していないレビューが「未完了なし」として通ることはない**
+- 前回の未解消 Critical は、委譲待ちの観点については**保持される**（失敗・スキップと同じく「解消が証明されていない」側）
+- 終了コード: 委譲待ちがあり他に失敗が無ければ **3**。失敗が 1 件でもあればそちらが優先で **1**（「ホストを待てばよい」と「レビューが失敗した」を取り違えさせない）
+
+### 受け渡しファイルの置き場所
+
+`<output-dir>/claude-code/.delegated/` 配下（`<観点>.prompt.md` / `<観点>.request` / 受理しなかった応答の退避）。ドット始まりなので、前回結果の退避（`<cli>/*.md` だけを見る）にも「Not part of this run」の名指し（ドット始まりを外す）にも掛からない。`--fresh` を付けた実行では出力ディレクトリの他の中身と一緒に退避される。
 
 ---
 

@@ -1,5 +1,5 @@
 {
-  "description": "ff-dev-toolkit の更新通知・スキル実体ドリフト検査・マーケットプレイス自動更新・自動振り返り・Bash ガード。SessionStart で新版、スキル集合の欠落、複数 version のインストール実体併存を通知し、登録済みマーケットプレイス全体の更新と本プラグイン本体の更新を async + fail-silent で自動実行（名前に依存しない引数なし更新のため本プラグイン以外の登録マーケットプレイスも更新される。1 日 1 回、FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1 で無効化）、UserPromptSubmit で振り返りを事前注入（Codex の非対話単発実行 — model あり + permission_mode=bypassPermissions — には注入しない。入れ子の非対話 claude -p は入力に判別材料が無く hook 側では判別できないため、stdout が成果物になる起動は起動側が子プロセスへ RETROSPECTIVE_MODE=off を載せて抑止する）、Claude Code の Stop で実行漏れ時だけ 1 回継続する。Codex の Stop は表示を作らず無音で終了する（fail-open）。PreToolUse（Bash）は未コミット変更のあるファイルへの git checkout/restore と、Issue 参照の無いフォローアップ宣言付き gh pr create/edit を警告し（抜け道付き deny・fail-open）、モノレポで先頭が絶対パスの cd でない background 実行と、linked worktree があるリポジトリでの foreground を含む同形の実行を systemMessage で警告する（ブロックしない・fail-open）。あわせて、閉じる Issue の ff-effort ブロックに実績が未記入のままの gh pr merge を抜け道付き deny で止める（ブロック不在の Issue は対象外・fail-open）。起票スキルを経由しない gh issue create は、種別 / 優先度のラベル欠落を抜け道付き deny で止め、follow-up の欠落は systemMessage の案内だけに留める（ラベル名の正本は setup-github-labels の軸別表。対象リポジトリのラベル一覧を信用できないときは止めない・fail-open）。PreToolUse（Edit / Write / MultiEdit / NotebookEdit / Bash / Agent）は、multi-agent review の走行中ロック（.review-results/.review-in-flight）が生きている間の編集系ツールと git 書き込みコマンドを抜け道付き deny（FF_REVIEW_LOCK_OVERRIDE=1 で解除。ロックの PID が死んでいれば警告のみ）、pr-review-toolkit のレビューエージェント起動時に作業ツリーが dirty なら permissionDecision ask で確認する（いずれも fail-open）",
+  "description": "ff-dev-toolkit の更新通知・スキル実体ドリフト検査・マーケットプレイス自動更新・自動振り返り・Bash ガード。SessionStart で新版、スキル集合の欠落、複数 version のインストール実体併存を通知し、登録済みマーケットプレイス全体の更新と本プラグイン本体の更新を async + fail-silent で自動実行（名前に依存しない引数なし更新のため本プラグイン以外の登録マーケットプレイスも更新される。1 日 1 回、FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE=1 で無効化）、UserPromptSubmit で振り返りを事前注入（Codex の非対話単発実行 — model あり + permission_mode=bypassPermissions — には注入しない。入れ子の非対話 claude -p は入力に判別材料が無く hook 側では判別できないため、stdout が成果物になる起動は起動側が子プロセスへ RETROSPECTIVE_MODE=off を載せて抑止する）、Claude Code の Stop で実行漏れ時だけ 1 回継続する。Codex の Stop は表示を作らず無音で終了する（fail-open）。PreToolUse（Bash）は未コミット変更のあるファイルへの git checkout/restore と、Issue 参照の無いフォローアップ宣言付き gh pr create/edit を警告し（抜け道付き deny・fail-open）、モノレポで先頭が絶対パスの cd でない background 実行と、linked worktree があるリポジトリでの foreground を含む同形の実行を systemMessage で警告する（ブロックしない・fail-open）。あわせて、閉じる Issue の ff-effort ブロックに実績が未記入のままの gh pr merge を抜け道付き deny で止める（ブロック不在の Issue は対象外・fail-open）。起票スキルを経由しない gh issue create は、種別 / 優先度のラベル欠落を抜け道付き deny で止め、follow-up の欠落は systemMessage の案内だけに留める（ラベル名の正本は setup-github-labels の軸別表。対象リポジトリのラベル一覧を信用できないときは止めない・fail-open）。PreToolUse（Edit / Write / MultiEdit / NotebookEdit / Bash / Agent）は、multi-agent review の走行中ロック（.review-results/.review-in-flight）が生きている間の編集系ツールと git 書き込みコマンドを抜け道付き deny（FF_REVIEW_LOCK_OVERRIDE=1 で解除。ロックの PID が死んでいれば警告のみ）、pr-review-toolkit のレビューエージェント起動時に作業ツリーが dirty なら permissionDecision ask で確認する（いずれも fail-open）。同じ hook がホストのサブエージェント経路も覆う: レビュー用サブエージェント（既定は pr-review-toolkit の read-only なレビュアー。isolation=worktree の隔離起動は対象外）の起動ごとに .review-results/.review-in-flight.d/ へレーンを 1 本（tool_use_id に対して冪等に）置き、SubagentStart でそのレーンへ agent_id を書き込み、SubagentStop はその agent_id が一致するレーンだけを閉じる（同じ agent_id の 2 回目以降は no-op）。PermissionDenied は auto mode の拒否でしか発火しないため、未起動レーンを閉じる best-effort の追加経路として残してある。レーンが 1 本でも残っている間は同じ deny が続くので、一部のレビュアーが終わっただけでは凍結が解けない。取りこぼしたレーンは対応づけ済みで FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS（既定 14400 秒 = 走行中ロックと同値）、未対応づけで FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS（既定 1800 秒）を過ぎると走査時に自動回収され、回収したことは systemMessage で必ず通知する。レーン置き場が symlink だったり物理パスがリポジトリ外を指す場合はレーンを一切扱わない（素通し）",
   "hooks": {
     "PreToolUse": [
       {
@@ -38,6 +38,39 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-issue-labels.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-review-in-flight.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-review-in-flight.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-review-in-flight.sh\"",
             "timeout": 10
           }
         ]

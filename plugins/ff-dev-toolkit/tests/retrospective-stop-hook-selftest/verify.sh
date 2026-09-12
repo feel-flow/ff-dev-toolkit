@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONSUMER="$PLUGIN_ROOT/tests/retrospective-stop-hook/verify.sh"
-EXPECTED_CONSUMER_CHECKS=47
+EXPECTED_CONSUMER_CHECKS=63
 
 command -v perl >/dev/null 2>&1 || { echo "○ skip: perl が無いため retrospective Stop hook self-test をスキップ"; exit 0; }
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
@@ -40,8 +40,23 @@ make_fixture() {
   cp "$CONSUMER" "$root/tests/retrospective-stop-hook/verify.sh"
   cp "$PLUGIN_ROOT/tests/retrospective-stop-hook/asdd.test.mjs" "$root/tests/retrospective-stop-hook/asdd.test.mjs"
   cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$root/hooks/"
-  for hook in check-update check-skill-drift auto-update-marketplace guard-checkout-restore guard-pr-followup guard-background-cwd guard-review-in-flight; do
-    cp "$PLUGIN_ROOT/hooks/$hook.sh" "$root/hooks/$hook.sh"
+  mkdir -p "$root/tests/lib"
+  cp "$PLUGIN_ROOT/tests/lib/asdd-gate-drain.sh" "$root/tests/lib/asdd-gate-drain.sh"
+  # sandbox へ入れる hook 集合も hooks.json から導出する。消費側（asdd.test.mjs）は
+  # 静音契約の名簿を hooks.json から導出するので、ここで列挙を持つと**同じ名簿を 2 か所**
+  # で持つことになり、ガードを 1 本足したときに「sandbox に実体が無い」という偽の赤で
+  # 止まる。導出できなければ（登録の書式が変わった）そこで落とす — 空の名簿で fixture を
+  # 作ると、消費側が spawn に失敗して原因の分からない赤になる。
+  #
+  # 導出規則は消費側の HOOK_COMMAND_PATTERN と同じ 1 つ:
+  # `$CLAUDE_PLUGIN_ROOT/hooks/<name>.sh`、**波括弧は任意**。ここだけが波括弧を必須に
+  # していると、`"$CLAUDE_PLUGIN_ROOT/hooks/x.sh"` と書いた登録が消費側の名簿には入る
+  # のに sandbox へ copy されず、spawn 失敗という原因の読めない赤になる。
+  local registered hook
+  registered="$(grep -oE '\$\{?CLAUDE_PLUGIN_ROOT\}?/hooks/[A-Za-z0-9._-]+\.sh' "$PLUGIN_ROOT/hooks/hooks.json" | sed 's#.*/##' | sort -u)"
+  [ -n "$registered" ] || { echo "✗ hooks.json から hook 名簿を導出できません" >&2; return 1; }
+  for hook in $registered; do
+    cp "$PLUGIN_ROOT/hooks/$hook" "$root/hooks/$hook"
   done
   mkdir -p "$root/scripts/asdd"
   cp "$PLUGIN_ROOT/scripts/asdd/config.mjs" "$root/scripts/asdd/config.mjs"
@@ -71,6 +86,21 @@ else
   exit 1
 fi
 
+# 変異検出の期待文字列（`✖ <テスト名>`）は node --test の reporter に依存する。既定の
+# reporter は Node のバージョンと stdout が TTY かで変わり（実測 2026-09-12: v22.20.0 は
+# 非 TTY で TAP、v24.18.0 は spec）、この self-test は consumer の出力を `$()` で捕捉する
+# = 非 TTY。固定が外れると Node 24 のローカルだけ緑で Node 22 の CI が赤になるので、
+# 変異ではなく静的検査で押さえる（変異にすると Node 24 では既定が spec なので空振りする）。
+NODE_TEST_LINES="$(grep -cE '(^|[^[:alnum:]_-])node --test( |$)' "$CONSUMER" || true)"
+NODE_TEST_PINNED="$(grep -cE '(^|[^[:alnum:]_-])node --test .*--test-reporter=' "$CONSUMER" || true)"
+if [ "$NODE_TEST_LINES" -lt 1 ] || [ "$NODE_TEST_LINES" -ne "$NODE_TEST_PINNED" ]; then
+  echo "✗ consumer の node --test に reporter 固定（--test-reporter=spec）がありません" >&2
+  echo "  node --test の行数 ${NODE_TEST_LINES} / うち reporter 固定 ${NODE_TEST_PINNED}" >&2
+  echo "  reporter を固定しないと、変異検出の期待文字列が Node のバージョンで一致しなくなります" >&2
+  exit 1
+fi
+echo "  ✓ consumer は node --test の reporter を固定している"
+
 # ---- 変異を書くときの規則（Issue #936）--------------------------------------
 # **意味の錨を持たず、対象が複数箇所に現れうる変異には `/g` を付ける。** 単発置換だと、
 # 後から同じ文字列が増えた時点で「1 箇所だけ変異 → 残りが契約を満たすので消費側は緑」
@@ -89,10 +119,16 @@ fi
 #     `Codex の Stop 入力（\`model\` フィールドあり）は常に無音` /
 #     `if ! command -v node ...` / `"Stop": [` / `"UserPromptSubmit": [` /
 #     `codexHost && nonInteractive`（context.sh: 1）/
-#     `(Number(process.argv[1]) || 2) * 1000`（context.sh: 1）/
-#     `|| HOST_STATE="inject"`（context.sh: 1）/ `[ "$HOST_STATE" = "skip" ]`（context.sh: 1）
+#     `(Number(process.argv[1]) || 2) * 1000`（context.sh: 1。discard 段の bound は
+#       `Number(process.argv[1]) * 1000 || 2000` と別形にしてあり、この数え方に入らない）/
+#     `|| HOST_STATE="inject"`（context.sh: 1）/ `[ "$HOST_STATE" = "skip" ]`（context.sh: 1）/
+#     `IFS= read -r -t "$INPUT_TIMEOUT_SECONDS" -d '' _`（context.sh: 1）/
+#     `[ "$READ_RC" -ne 0 ]`（stop.sh: 1 / context.sh: 1）/ `READ_RC=$?`（stop.sh: 1）/
+#     `setTimeout(latch,`（context.sh: 1）/ `[ "$RETROSPECTIVE_OFF" -eq 0 ]`（context.sh: 1）/
+#     `...registeredHooks()`（asdd.test.mjs: 1）
 #   `finish("inject")` は context.sh に 3 箇所あるが、変異は前後の行ごと指定して一意に当てている
 #   `process.exit(2)` は 3 箇所あるが、変異は前後の行ごと指定して一意に当てている
+#   shebang 直後への 1 行挿入（ASDD ゲートを drain より前へ戻す変異）は `\A` 固定なので一意
 #
 # 変異対象の文字列を増やす変更を入れたら、この棚卸しを実測し直すこと。
 
@@ -340,6 +376,82 @@ ROOT="$(make_fixture ask-system-message)"
 perl -0pi -e 's/Automatic retrospective check before stop/Automatic retrospective before stop/' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "ask systemMessage drift" "ask モードの出力契約が不正" "$ROOT"
 
+# ASDD ゲートの前置きを drain より前へ戻す退行。ゲートの早期終了はすべて exit 0 なので、
+# 前置きが先にあると stdin 未読のまま抜け、書き手（ホスト）が EPIPE / SIGPIPE を受ける。
+# 変異は「drain より前で ASDD ゲートが止めうる」状態を shebang 直後の 1 行で作る
+# （行を動かす変異は regex で一意に書けないため、同じ失敗を最小形で再現する）。
+ROOT="$(make_fixture stop-gate-before-drain)"
+perl -0pi -e 's{\A(\#![^\n]*\n)}{$1source "\${BASH_SOURCE[0]\%/*}/asdd-hook-gate.sh"; asdd_hook_enabled retrospective || exit 0\n}' \
+  "$ROOT/hooks/retrospective-stop.sh"
+check_mutation "Stop hook の ASDD ゲートを drain より前へ戻す" "retrospective-stop.sh の drain（node 不在）" "$ROOT"
+
+ROOT="$(make_fixture context-gate-before-drain)"
+perl -0pi -e 's{\A(\#![^\n]*\n)}{$1source "\${BASH_SOURCE[0]\%/*}/asdd-hook-gate.sh"; asdd_hook_enabled retrospective || exit 0\n}' \
+  "$ROOT/hooks/retrospective-context.sh"
+check_mutation "事前注入 hook の ASDD ゲートを drain より前へ戻す" "retrospective-context.sh の drain（node 不在）" "$ROOT"
+
+# 事前注入 hook の stdin 読み取りを node へ委譲したまま、判別を走らせない経路
+# （kill switch が off / node 不在）の shell drain を外す退行（この hook が他の hook と
+# 契約を揃える前の形）。判別 node が読む経路は無傷なので、赤くなるのは node 不在の probe。
+ROOT="$(make_fixture context-no-node-drain-removed)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" "IFS= read -r -t \"\$INPUT_TIMEOUT_SECONDS\" -d '' _" 1
+perl -0pi -e 's/IFS= read -r -t "\$INPUT_TIMEOUT_SECONDS" -d \x27\x27 _/:/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "node 不在時の shell drain 削除" "retrospective-context.sh の drain（node 不在）" "$ROOT"
+
+# ここから 5 件はクロスモデルレビューの裁定に対応する常設実測。
+#
+# (1) 天井: bounded read で諦める形へ戻す退行。入力上限（2 秒）を過ぎたあとの discard
+# 段を殺すと、bash の逐次読み（~265 KB/s）では数 MB を読み切れず書き手が SIGPIPE で
+# 死ぬ。200,000 バイトの probe だけでは上限内に収まるため緑のまま = 天井を測れない。
+ROOT="$(make_fixture stop-drain-escalation-removed)"
+expect_occurrences "$ROOT/hooks/retrospective-stop.sh" '[ "$READ_RC" -ne 0 ]' 1
+perl -0pi -e 's/\[ "\$READ_RC" -ne 0 \]/false/' "$ROOT/hooks/retrospective-stop.sh"
+check_mutation "Stop hook の discard 段を削除（bounded read へ戻す）" \
+  "retrospective-stop.sh の天井 drain（ゲート早期終了）" "$ROOT"
+
+ROOT="$(make_fixture context-drain-escalation-removed)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" '[ "$READ_RC" -ne 0 ]' 1
+perl -0pi -e 's/\[ "\$READ_RC" -ne 0 \]/false/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "事前注入 hook の discard 段を削除（bounded read へ戻す）" \
+  "retrospective-context.sh の天井 drain（off）" "$ROOT"
+
+# (2) 遅延 producer: 判別 node が入力上限で「答えを確定してから EOF まで捨てる」のを
+# やめ、上限でそのまま終了する形へ戻す退行。上限を過ぎてから書き始めるホストの書き手が
+# SIGPIPE を受ける。
+ROOT="$(make_fixture context-latch-removed)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'setTimeout(latch,' 1
+perl -0pi -e 's/setTimeout\(latch,/setTimeout(() => finish("inject"),/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "判別 node が入力上限で drain を打ち切る" \
+  "retrospective-context.sh の遅延 producer drain" "$ROOT"
+
+# (3) kill switch（RETROSPECTIVE_MODE=off）の判定を判別 node より後ろへ戻す退行。
+# off でも毎プロンプト node が起動する（drain は残るので SIGPIPE は出ず、壁時間だけが
+# 増える）。tracer stub が「off で node が起動した」ことを見て赤になる。
+ROOT="$(make_fixture context-off-after-detector)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" '[ "$RETROSPECTIVE_OFF" -eq 0 ]' 1
+perl -0pi -e 's/\[ "\$RETROSPECTIVE_OFF" -eq 0 \] && command -v node/command -v node/' \
+  "$ROOT/hooks/retrospective-context.sh"
+check_mutation "kill switch の判定を判別 node より後ろへ戻す" \
+  "retrospective-context.sh: off なのに node が起動した" "$ROOT"
+
+# (4) 空 stdin の早期 exit を drain の隣へ戻す退行。ASDD ゲートより前に抜けるので、
+# ゲートの stderr 診断（設定はあるが検証できない）が無検査のまま消える。
+ROOT="$(make_fixture stop-empty-input-exit-before-gate)"
+expect_occurrences "$ROOT/hooks/retrospective-stop.sh" 'READ_RC=$?' 1
+perl -0pi -e 's/READ_RC=\$\?\n/READ_RC=\$?\n[ -n "\$HOOK_INPUT" ] || exit 0\n/' \
+  "$ROOT/hooks/retrospective-stop.sh"
+check_mutation "空 stdin の早期 exit を ASDD ゲートより前へ戻す" \
+  "retrospective-stop.sh: 空 stdin でゲートの診断が消えた" "$ROOT"
+
+# 静音契約の名簿が縮む変異（崩壊床の検出力）。名簿は hooks.json から導出するので、
+# 縮めるには導出へ filter を足すしかない。hooks.json の登録と hooks/*.sh のゲート呼び出し
+# という 2 つの実体との突き合わせが赤になる = 名簿が縮んだまま緑にならないことの実測。
+ROOT="$(make_fixture roster-shrunk)"
+expect_occurrences "$ROOT/tests/retrospective-stop-hook/asdd.test.mjs" '...registeredHooks()' 1
+perl -0pi -e 's/\.\.\.registeredHooks\(\)/...registeredHooks().filter(dropped => dropped !== "guard-effort-actual.sh")/' \
+  "$ROOT/tests/retrospective-stop-hook/asdd.test.mjs"
+check_mutation "静音契約の名簿を 1 本減らす" "✖ roster is derived from hooks.json" "$ROOT"
+
 # Issue #1451: FILING の ask 判定を大文字小文字・空白無視から厳密一致へ狭める退化。
 # 空白・大文字混在の別名検査（Stop 側）が赤になること。
 ROOT="$(make_fixture filing-ask-strict)"
@@ -370,7 +482,7 @@ perl -0pi -e 's{(対応ホストでは[^\n]*\n)}{$1\n```text\n## セッション
 check_no_regression "自動発火 節内へフェンス例示を追加" "$ROOT"
 
 # 件数は名前付き定数で持つ（このファイルは EXPECTED_CONSUMER_CHECKS で既にその慣習）。
-EXPECTED_MUTATIONS=34
+EXPECTED_MUTATIONS=43
 EXPECTED_BENIGN=2
 if [ "$MUTATIONS" -ne "$EXPECTED_MUTATIONS" ]; then
   echo "✗ mutation 実行数が不正: ${MUTATIONS}（期待 ${EXPECTED_MUTATIONS}）" >&2

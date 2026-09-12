@@ -13,6 +13,12 @@
 #   - 全ケースが期待 exit code なら 0、違反があれば非 0。
 #   - 一時作業領域を作れず検証本体を1件も実行できない場合のみ、行頭 `○ skip` + 0。
 #
+# 変異検出（リポジトリ正本 TESTING.md ゲートの層 = repo-testing-gate-cases.sh。
+# 2026-09-12 実測。検査 1 つにつき 1 変異で注入し、赤転しなかった変異は無し）:
+#   docs-gates 側の「新規検査を書いた直後の変異注入バッテリー」検査ブロックを `if false` へ
+#   倒すと drop-granularity / drop-one-command / drop-todo / drop-writeback / rename-heading の
+#   5 件が赤になる。正本不在の fail-closed ガードを bad → ok へ倒すと missing-testing が赤になる。
+#
 # macOS 標準 bash 3.2 + POSIX 標準ユーティリティで動かす。テスト対象の差し替えは
 # FF_DOCS_GATE_RUNTIME_DOCS=<docs-template root> で行い、変異テストに利用できる。
 
@@ -602,6 +608,37 @@ run_docs_gate_mutation() {
         'bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run' \
         >"$target"
       ;;
+    deleg-link-moved-out-of-section)
+      # 委譲の待機・回収規定の到達点（子側 / 親側の正本節へのリンクとタイムアウトの実値）を
+      # 並列委譲手順から取り除き、**同じ文書の末尾**へそのまま移す。文書全体の grep だけで
+      # 見ている検査はこの変異を素通しする（リンクも実値も文書内には残っている）。
+      target="$docs_copy/05-operations/deployment/git-workflow.md"
+      awk '
+        index($0, "2. **実装は worktree 隔離のサブエージェントで並列に行い") == 1 {
+          moved = $0
+          print "2. **実装は worktree 隔離のサブエージェントで並列に行い、レビュー・マージは親が直列に行う。** 詳細は文末の付記を参照。"
+          next
+        }
+        { print }
+        END {
+          if (moved != "") {
+            print ""
+            print "## 付記（手順の外へ移した解説）"
+            print ""
+            print moved
+          }
+        }
+      ' "$target" >"$target.tmp"
+      mv "$target.tmp" "$target"
+      ;;
+    deleg-timeout-value-dropped)
+      # 並列委譲手順からタイムアウトの実値だけを落とす（リンクは残す）。正本を読まない
+      # 消費地点には値が届かなくなるので、実値の針が赤になること自体を固定する。
+      target="$docs_copy/05-operations/deployment/git-workflow.md"
+      sed 's/`timeout` へ `600000`（ミリ秒）を明示して/タイムアウトを明示して/' \
+        "$target" >"$target.tmp"
+      mv "$target.tmp" "$target"
+      ;;
     *)
       bad "未知の docs gate mutation: $mutation"
       return
@@ -621,6 +658,12 @@ run_docs_gate_mutation() {
 # shellcheck source=docs-mutation-invocations.sh
 . "$SCRIPT_DIR/docs-mutation-invocations.sh"
 run_docs_gate_mutations
+
+# docs-gates 側の「リポジトリ正本 TESTING.md」検出器を、隔離した偽リポジトリ root で実測する。
+# 静的 suite は自分の検査が消えたことを測れないので、その層を本 suite が担う。
+# shellcheck source=repo-testing-gate-cases.sh
+. "$SCRIPT_DIR/repo-testing-gate-cases.sh"
+run_repo_testing_gate_cases
 
 # shellcheck source=setup-review-flow-cases.sh
 . "$SCRIPT_DIR/setup-review-flow-cases.sh"
