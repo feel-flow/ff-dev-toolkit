@@ -1315,6 +1315,78 @@ else
   bad "旧形式レポートの未解消観点を復元できない"
 fi
 
+echo "== 残存レポートによる中断は 4 分岐すべてで復帰手段を案内する =="
+
+# 中断そのものは fail-closed の設計で、変えるのは案内だけ。abort した人が読むのは
+# stderr の数行なので、復帰手段（--fresh）がそこに無い分岐は「次に何をすればよいか」
+# を --help から再発見させる。1 分岐だけ欠けていた実績があるため、4 分岐すべてを
+# 実際に発火させて案内の有無を固定する（文面ではなく復帰手段の名指しを見る）。
+assert_recovery_hint() { # $1: log / $2: 分岐を名指しする文言 / $3: ラベル
+  if [[ "$SEQUENCE_RC" -ne 0 ]] \
+    && grep -qF "$2" "$1" \
+    && grep -qF -- 'add --fresh' "$1"; then
+    ok "$3"
+  else
+    bad "$3 (rc=$SEQUENCE_RC)"
+    sed -n '1,20p' "$1" >&2 || true
+  fi
+}
+
+# 分岐 1: 機械状態そのものを読めない（awk が構文破損で非 0）。
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block: nonblock:- -->
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-parse-failure.log"
+assert_recovery_hint "$TMP/recovery-parse-failure.log" \
+  'cannot inspect unresolved Critical perspectives' \
+  "機械状態を読めない中断も復帰手段を案内する"
+
+# 分岐 2: Critical マーカーはあるが観点一覧を復元できない（機械状態行も旧形式の
+# 要約行も無い残骸）。
+cat > "$REPORT" <<'REPORT_BODY'
+# Legacy integrated report
+<!-- CRITICAL_BLOCK -->
+Critical issues were found, but this line is not a machine readable summary.
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-unreadable-list.log"
+assert_recovery_hint "$TMP/recovery-unreadable-list.log" \
+  'Critical marker without a readable perspective list' \
+  "観点一覧を復元できない中断も復帰手段を案内する"
+
+# 分岐 3: 残骸が別ブランチ / base / scope の系列（series が現在の識別子と一致しない）。
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:code-review nonblock:- -->
+REPORT_BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-other-series.log"
+assert_recovery_hint "$TMP/recovery-other-series.log" \
+  'belongs to another branch/base/scope' \
+  "別系列の残骸による中断も復帰手段を案内する"
+
+# 分岐 4: 同一系列で、絞り込みが未解消観点を落とす。
+rm -rf "$REPO/.review-results"
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-recovery-unresolved -->
+## Code Review Results
+### Critical Issues
+- [app.txt:2] 認可チェックの欠落
+### Summary
+- Critical: 1
+BODY
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-omitted-initial.log"
+if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] && grep -qF "$MARKER" "$REPORT"; then
+  ok "同一系列の未解消レポートを用意できる"
+else
+  bad "同一系列の未解消レポートを作れない (rc=$SEQUENCE_RC)"
+fi
+run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/recovery-omitted.log"
+assert_recovery_hint "$TMP/recovery-omitted.log" \
+  'omits unresolved Critical perspective(s): code-review' \
+  "未解消観点を落とす絞り込みの中断も復帰手段を案内する"
+
 echo "== Issue #1025: 別系列の残存結果と --fresh =="
 
 # 退避先は出力ディレクトリの内側（<dir>/.prev-<ts>/）なので、この 1 行で残骸も消える。

@@ -626,6 +626,14 @@ run_shim() {
   # 既定は完全な stub toolkit。adapter が欠けている toolkit を測るケースだけが
   # RUN_SHIM_TOOLKIT で別の root を指す（既定を書き換えないので他ケースに波及しない）。
   local run_toolkit="${RUN_SHIM_TOOLKIT:-$TOOLKIT}"
+  # 既定は FF_DEV_TOOLKIT_ROOT で解決させる。RUN_SHIM_NO_ROOT を立てたケースだけは明示指定を
+  # 落とし、cache も空へ向けて「toolkit がどこにも無い」経路（解決 rc=1）を測る。既定指定が
+  # 残っていると rc=2（明示指定が在るのに使えない）にしかならず、rc ごとの案内を分けられない。
+  local -a root_unset=() root_env=(FF_DEV_TOOLKIT_ROOT="$run_toolkit")
+  if [ -n "${RUN_SHIM_NO_ROOT:-}" ]; then
+    root_unset=(-u FF_DEV_TOOLKIT_ROOT)
+    root_env=(CODEX_HOME="$WORK/no-codex-home" CLAUDE_CONFIG_DIR="$WORK/no-claude-home")
+  fi
   # stdout と stderr を**分けて**記録する。合流させてから grep すると、通知が
   # stdout へ移っても検査が通ってしまう（pre-commit 等で stdout だけ捨てる構成では
   # 通知が消える）。既存の検査のために合流版も残す。
@@ -636,7 +644,8 @@ run_shim() {
   # 無くても既定用法のケースが「codex 不在の降格」へ落ちないようにし、降格経路は
   # 不在を名指しするケースだけが実測する。ケース固有の env 指定が後ろに来るので上書きできる。
   ( cd "$run_cwd" && \
-    run_isolated_shim FF_DEV_TOOLKIT_ROOT="$run_toolkit" ARGV_LOG="$WORK/argv.log" ENV_LOG="$WORK/env.log" \
+    run_isolated_shim ${root_unset[@]+"${root_unset[@]}"} "${root_env[@]}" \
+      ARGV_LOG="$WORK/argv.log" ENV_LOG="$WORK/env.log" \
       ${envs[@]+"${envs[@]}"} \
       bash "$PROJ/scripts/codex-review.sh" "$@" \
       >"$WORK/stdout.log" 2>"$WORK/err.log" </dev/null ) || RUN_RC=$?
@@ -755,14 +764,39 @@ fi
 
 # codex 不在 → Claude セルフレビューへの降格を名指しし、レビュー未実施として非 0（4）で終わる
 # （クラウド開発環境では codex が PATH に無いことがある）。委譲先は起動しない。
+# 見出しは**理由に依存しない**文言であること。呼び出しは 2 経路あり、片方（toolkit 未解決）は
+# codex とは無関係なので、「Codex 不在のため」と決め打つと原因の誤指名になる（導入先で実測）。
 run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent --base develop
-if [ "$RUN_RC" -eq 4 ] && grep -q 'Codex 不在のため Claude セルフレビュー（別コンテキストの reviewer サブエージェント）へ降格' "$WORK/err.log" \
+if [ "$RUN_RC" -eq 4 ] && grep -q 'クロスレビューを実行できないため Claude セルフレビュー（別コンテキストの reviewer サブエージェント）へ降格' "$WORK/err.log" \
+  && grep -q 'codex CLI（/nonexistent/ff-codex-absent）が PATH に無い' "$WORK/err.log" \
   && grep -q 'reviewer サブエージェントを read-only で起動' "$WORK/err.log" \
   && [ ! -s "$WORK/argv.log" ] && [ ! -s "$WORK/stdout.log" ]; then
   ok "codex 不在: Claude セルフレビューへの降格を stderr に明示し、委譲せず rc=4 で終わる"
 else
   bad "codex 不在: 降格の明示 / 非委譲 / rc=4 のいずれかが崩れている (rc=$RUN_RC)"
   sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+
+# --dry-run は委譲先でもプランを出すだけで CLI を 1 本も起動しない。codex 実在検査をここへ
+# 掛けると、「主 CLI が使えないときにプランを確認する」というまさに確認したい状況で確認手段が
+# 消える（導入先の運用手順はプランに載る CLI の事前確認を求めている）。警告に留めて委譲すること。
+#
+# 判定は **委譲が現に起きたところ**まで見る。rc=0 と `--dry-run` の 1 行だけだと、stub が
+# 無条件に rc=0 を返す以上「シムが rc=4 で止めなかった」ことしか言えず、委譲先を exec せずに
+# 自前で rc=0 を返す実装も同じく緑になる。stub の標準出力（委譲先が現に走った印）と、
+# 委譲の中核契約（--task review / --cli codex-cli）・利用者が渡した引数（--base develop /
+# --dry-run）が引数列に保たれていることを揃えて見る。
+run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent --base develop --dry-run
+if [ "$RUN_RC" -eq 0 ] && grep -q 'stub orchestrator ran' "$WORK/stdout.log" \
+  && argv_has_seq "--task" "review" && argv_has_seq "--cli" "codex-cli" \
+  && argv_has_seq "--base" "develop" && argv_has --dry-run \
+  && grep -q 'WARNING: codex CLI（/nonexistent/ff-codex-absent）が PATH にありませんが、--dry-run' "$WORK/err.log" \
+  && ! grep -q 'へ降格します' "$WORK/err.log"; then
+  ok "codex 不在でも --dry-run は委譲先を exec してプラン確認を続行する（委譲引数が保たれ、警告に留めて rc=0）"
+else
+  bad "codex 不在の --dry-run がプラン確認を塞いでいる、委譲先を起動していない、または委譲引数が欠けた (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+  sed 's/^/    argv| /' "$WORK/argv.log" >&2
 fi
 # 先頭の終了コード表に 4 が載っていること。載っていないと「その他 = 委譲先の終了コード」が
 # 嘘になり、呼び出し側が 4 を委譲先の rc と読む
@@ -773,12 +807,130 @@ else
 fi
 # toolkit 未解決（sidecar も FF_DEV_TOOLKIT_ROOT も使えない）でも同じ降格案内を出す
 RUN_SHIM_TOOLKIT="$WORK/no-such-toolkit" run_shim --base develop
+unset RUN_SHIM_TOOLKIT
 if [ "$RUN_RC" -ne 0 ] && grep -q 'multi-agent.sh がありません\|multi-agent.sh が見つかりません' "$WORK/err.log" \
-  && grep -q 'Codex 不在のため Claude セルフレビュー' "$WORK/err.log" && [ ! -s "$WORK/argv.log" ]; then
+  && grep -q 'クロスレビューを実行できないため Claude セルフレビュー' "$WORK/err.log" && [ ! -s "$WORK/argv.log" ]; then
   ok "toolkit 未解決: 従来の ERROR に加えて Claude セルフレビューへの降格案内を出し、非 0 で終わる"
 else
   bad "toolkit 未解決: 降格案内が出ない、または委譲された (rc=$RUN_RC)"
   sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+# この経路の codex は在る（stub が PATH 相当で届いている）。見出しが「Codex 不在」と
+# 決め打つと、**codex が入っている環境で codex を疑わせる**ことになり、切り分けを遅らせる
+# だけでなく存在しない問題への起票を生む。
+if grep -q 'Codex 不在' "$WORK/err.log"; then
+  bad "toolkit 未解決の降格案内が原因を「Codex 不在」と誤って名指ししている"
+  sed 's/^/    | /' "$WORK/err.log" >&2
+else
+  ok "toolkit 未解決: 降格案内の見出しが原因（Codex 不在）を誤指名しない"
+fi
+# 手順 1 は経路ごとに実行可能なものを出す。multi-agent.sh が見つからなかった経路で
+# `multi-agent.sh --task review` を案内すると、**見つからなかったファイルの実行**を指示する
+# ことになる（1 つの診断ブロックに検証済みの誤りが 2 件入る形）。
+if grep -q 'multi-agent.sh --task review' "$WORK/err.log"; then
+  bad "toolkit 未解決の案内が multi-agent.sh の実行を指示している（その経路では実行不能）"
+  sed 's/^/    | /' "$WORK/err.log" >&2
+else
+  ok "toolkit 未解決: 実行不能な multi-agent.sh の手順を案内しない"
+fi
+# 手順 1 は **解決の rc ごと**に分ける。rc=2 は「FF_DEV_TOOLKIT_ROOT が在るのに使えない」で、
+# 探索順は環境変数 → cache → サイドカーと**環境変数が最優先**。setup-multi-agent.sh が直すのは
+# サイドカー側なので、rc=2 で setup を案内しても不正な環境変数が次回も先に勝ち、同じ rc=2 で
+# 止まる。効かない手順を次の一手として渡すのは、この診断ブロックが直している欠陥
+# （案内が次の一手にならない）と同じ形になる。上の run は RUN_SHIM_TOOLKIT で使えない root を
+# FF_DEV_TOOLKIT_ROOT へ渡しているので rc=2 の経路。
+if [ "$RUN_RC" -eq 2 ] && grep -q 'FF_DEV_TOOLKIT_ROOT を修正するか unset する' "$WORK/err.log" \
+  && grep -qF "現在値: $WORK/no-such-toolkit" "$WORK/err.log" \
+  && ! grep -q 'setup-multi-agent.sh を再実行して toolkit を配置し直す' "$WORK/err.log"; then
+  ok "rc=2（FF_DEV_TOOLKIT_ROOT が不正）: 環境変数の修正 / 解除を案内し、効かない setup 再実行は出さない"
+else
+  bad "rc=2 の案内が環境変数を名指ししない、または効かない setup 再実行を案内している (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/err.log" >&2
+fi
+# rc=1（どこにも配置されていない）では setup-multi-agent.sh の再実行が唯一効く手順なので、
+# 従来どおり案内すること。rc=2 側の針（上）と対で持つことで、「rc を見ずに一律案内へ戻す」
+# 変異が必ずどちらかを赤にする。
+RUN_SHIM_NO_ROOT=1 run_shim --base develop
+unset RUN_SHIM_NO_ROOT
+if [ "$RUN_RC" -eq 1 ] && [ ! -s "$WORK/argv.log" ] \
+  && grep -q 'クロスレビューを実行できないため Claude セルフレビュー' "$WORK/err.log" \
+  && grep -q 'setup-multi-agent.sh を再実行して toolkit を配置し直す' "$WORK/err.log" \
+  && ! grep -q 'FF_DEV_TOOLKIT_ROOT を修正するか unset する' "$WORK/err.log"; then
+  ok "rc=1（toolkit がどこにも無い）: 従来どおり setup-multi-agent.sh の再実行を案内する"
+else
+  bad "rc=1 の案内が setup 再実行を出していない、または環境変数の案内へ入れ替わっている (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/err.log" >&2
+fi
+
+# 降格案内が挙げる代替 CLI 候補は、委譲先（multi-agent.sh）の CLI registry から引くこと。
+# 案内側へ候補名を直書きすると、既定ラインナップが変わっても案内だけが古いまま残り、
+# 既定から外れている metered な CLI を勧め続ける（導入先の規約は課金系 reviewer への
+# フォールバックを禁じている）。stub には**実体の registry 区間**を載せる — 写しを書くと
+# 本体が変わっても stub だけ古いまま緑になる。
+REGISTRY_TOOLKIT="$WORK/toolkit-with-registry"
+cp -R "$TOOLKIT" "$REGISTRY_TOOLKIT"
+_registry_block="$(awk '
+  $0 == "# ── All known CLI names ──" { inside = 1 }
+  inside { print }
+  $0 == "# ── CLI Registry End ──" { exit }
+' "$PLUGIN_ROOT/scripts/multi-agent.sh")"
+# 抽出の健全性はパラメータ展開で見る（パイプ入力の grep -q は SIGPIPE で判定が反転する）
+if [ -z "$_registry_block" ] || [ "${_registry_block#*ALL_CLIS=}" = "$_registry_block" ]; then
+  bad "multi-agent.sh から CLI registry 区間を抽出できない（案内の候補導出が空振りする）"
+else
+  printf '%s\n' "$_registry_block" >> "$REGISTRY_TOOLKIT/scripts/multi-agent.sh"
+  RUN_SHIM_TOOLKIT="$REGISTRY_TOOLKIT" \
+    run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent --base develop
+  unset RUN_SHIM_TOOLKIT
+  # 期待値は suite 側で**別実装**（registry parser）から組む。シムと同じ awk を書き写すと、
+  # 両方が同じようにずれたときに緑のままになる。
+  # shellcheck disable=SC1090,SC1091 # runtime-checked repo-local shared helper
+  . "$SCRIPT_DIR/../lib/cli-registry-parser.sh"
+  if ! cli_registry_load "$PLUGIN_ROOT/scripts/multi-agent.sh"; then
+    bad "multi-agent.sh の registry を静的解析できない（候補の突き合わせが成立しない）: ${CLI_REGISTRY_ERROR}"
+  else
+    # 照合は**候補行だけ**に閉じる。err.log 全体を見ると、解決ログや別の案内文に同じ名前が
+    # 現れただけで「候補に載っている」と読んでしまう。
+    _cand_line="$(grep -m1 '別 CLI（' "$WORK/err.log" || true)"
+    _cand_missing=""
+    _cand_unexpected=""
+    _cand_checked=0
+    for _cli in $ALL_CLIS; do
+      # codex-cli は降格の原因そのもの。候補には出さない
+      if [ "$_cli" = "codex-cli" ]; then
+        continue
+      fi
+      if ! cli_registry_lookup get_cli_cost_tier "$_cli"; then
+        bad "registry から ${_cli} の cost tier を引けない"
+        continue
+      fi
+      _cand_checked=$((_cand_checked + 1))
+      case "$_cand_line" in
+        *"$_cli"*) _listed=1 ;;
+        *)         _listed=0 ;;
+      esac
+      if [ "$REPLY" = "metered" ] && [ "$_listed" -eq 1 ]; then
+        _cand_unexpected="${_cand_unexpected} ${_cli}"
+      fi
+      if [ "$REPLY" != "metered" ] && [ "$_listed" -eq 0 ]; then
+        _cand_missing="${_cand_missing} ${_cli}"
+      fi
+    done
+    if [ -z "$_cand_line" ]; then
+      bad "降格案内に代替 CLI の候補行が無い（registry からの導出が届いていない）"
+      sed 's/^/    | /' "$WORK/err.log" >&2
+    elif [ "$_cand_checked" -eq 0 ]; then
+      bad "候補の突き合わせ対象が 0 件（検査が空振りしている）"
+    elif [ -n "$_cand_unexpected" ]; then
+      bad "降格案内が metered な CLI を候補に挙げている:${_cand_unexpected}"
+      sed 's/^/    | /' "$WORK/err.log" >&2
+    elif [ -n "$_cand_missing" ]; then
+      bad "降格案内に既定ラインナップの CLI が出ていない:${_cand_missing}（候補が直書きで drift している）"
+      sed 's/^/    | /' "$WORK/err.log" >&2
+    else
+      ok "降格案内の代替 CLI 候補が委譲先の既定選定基準（metered 除外）と一致する（${_cand_checked} 件照合）"
+    fi
+  fi
 fi
 
 run_shim --fresh --base develop
@@ -1101,6 +1253,35 @@ git -C "$DIFF_REPO" commit -qm base
 printf 'changed\n' >> "$DIFF_REPO/app.txt"
 git -C "$DIFF_REPO" add app.txt
 git -C "$DIFF_REPO" commit -qm changed
+
+# (6) toolkit そのものを解決できない経路も黙って生の値へ落とさない。歯止めは委譲より**前**に
+#     走り、小 diff なら skip して exit 0 で終わる —— つまり委譲段の ERROR には到達しないので、
+#     ここで黙ると「どの基準で測って skip したか」がどこにも残らない。(4)(5) と同水準の
+#     WARNING を出すこと（rc は従来どおり。ハードエラーにはしない）。
+RUN_SHIM_CWD="$DIFF_REPO" RUN_SHIM_TOOLKIT="$WORK/no-such-toolkit" \
+  run_shim CODEX_REVIEW_MIN_LINES=999999 --base HEAD~1
+unset RUN_SHIM_TOOLKIT
+if [ "$RUN_RC" -eq 0 ] && [ ! -s "$WORK/argv.log" ] \
+   && grep -q 'WARNING: toolkit を解決できなかったため base ref を解決できません' "$WORK/err.log" \
+   && grep -q '生の値 HEAD~1 で diff サイズを測ります' "$WORK/err.log" \
+   && grep -q 'CODEX_REVIEW_MIN_LINES' "$WORK/err.log"; then
+  ok "toolkit を解決できない経路でも、歯止めで skip する前に測定基準を WARNING で残す"
+else
+  bad "toolkit 未解決のまま無警告で生の値へ落ち、skip の測定基準が記録に残らない (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+
+# pipefail コメントは条件を反転させない。マスクが起きるのは pipefail が**無い**ときで、
+# 「pipefail 下でもマスクされる」と読める記述は、`set -o pipefail` を対処法として明記して
+# いる消費側プロジェクトに自分の SSOT を疑わせる（構造そのもの——rc と tail を分ける——は
+# 正しいので変えない。直すのは根拠の書き方だけ）。
+if grep -q 'pipefail 下でも' "$SHIM"; then
+  bad "pipefail コメントが条件を反転している（マスクは pipefail が無いときに起きる）"
+elif grep -q 'pipefail が無い環境では' "$SHIM" && grep -q 'pipefail 下では非 0 が保たれる' "$SHIM"; then
+  ok "pipefail コメントがマスクの起きる条件（pipefail が無い環境）を正しく書いている"
+else
+  bad "pipefail コメントからマスクの条件が読み取れない"
+fi
 
 # --reviewers は multi-agent.sh の --perspective へ写す（複数値は個別フラグへ展開）
 run_shim --reviewers code-review,security-analysis

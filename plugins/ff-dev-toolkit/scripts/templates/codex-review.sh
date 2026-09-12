@@ -64,6 +64,7 @@
 #               2 = 入力の誤り（未対応オプション・不正な env）
 #               3 = diff が大きすぎてレビューできない（成功と区別する）
 #               4 = codex CLI が PATH に無い（レビュー未実施。Claude セルフレビューへ降格）
+#                   ただし --dry-run は CLI を 1 本も起動しないので警告に留めて続行する
 #               その他 = 委譲先の終了コードをそのまま返す
 #     **リテラル `1` のみ**を見る。`true` / `yes` では走る。既存の各プロジェクト実装と
 #     同じ挙動で、値の解釈を広げると「どの値なら効くのか」が実装ごとに分かれるため、
@@ -445,8 +446,9 @@ load_resolved_toolkit() {
 resolve_base_ref_for_size() {
   local base="$1" adapter resolved raw_resolved base_rc
   if [ -z "${RESOLVED_TOOLKIT_ROOT:-}" ]; then
-    # 診断は委譲段が出す。ここでの失敗は「解決できなかった」以上の意味を持たないので
-    # 黙って落とす（同じ ERROR を 2 回出すと、どちらが本番の判定か分からなくなる）。
+    # ERROR は委譲段が出す（同じ ERROR を 2 回出すと、どちらが本番の判定か分からなく
+    # なる）。ここでは stderr を捨てて再解決だけ試し、結果の告知は下の 3 経路で
+    # **WARNING として**揃える（粒度が違うので二重告知にはならない）。
     resolve_toolkit >/dev/null 2>&1 || true
   fi
   if [ -n "${RESOLVED_TOOLKIT_ROOT:-}" ]; then
@@ -458,8 +460,10 @@ resolve_base_ref_for_size() {
       # 配布され、実行時にどの版の adapter が source されるかは分からない。将来 source が
       # stdout へ 1 行でも出せば解決値が複数行になり、`git diff <2 行>...HEAD` が落ちて
       # exit 2 —— まさにこの関数が直している事故と同じ形になる。最終行だけを採る。
-      # rc と tail は分ける（`|` の途中に置くと pipefail 下でも resolve の非 0 が
-      # tail の 0 に消える）。
+      # rc と tail は分ける。`|` の途中に置くと、**pipefail が無い環境では** resolve の
+      # 非 0 が tail の 0 に消える（pipefail 下では非 0 が保たれる）。このファイル冒頭は
+      # `set -euo pipefail` を立てているが、シムは単体で配布され pipefail の無い呼び出し元
+      # から source / 実行されうるので、pipefail に依存しない形にしておく。
       base_rc=0
       raw_resolved="$( . "$adapter" && resolve_base_branch_ref "$base" )" || base_rc=$?
       if [ "$base_rc" -eq 0 ]; then
@@ -480,6 +484,14 @@ resolve_base_ref_for_size() {
       echo "WARNING: base ref の解決実装が見つかりませんでした: ${adapter}" >&2
       echo "         生の値 ${base} で diff サイズを測ります（委譲先が origin/${base} を使う場合、測る範囲がレビュー範囲とずれます）。" >&2
     fi
+  else
+    # toolkit そのものを解決できなかった経路。ここを**黙って**落とすと、歯止め
+    # （CODEX_REVIEW_MIN_LINES / CODEX_REVIEW_MAX_DIFF_BYTES）は委譲より**前**に走って
+    # skip → exit 0 で終わりうるため、「どの基準で測って skip したか」がどこにも残らない
+    # （委譲段の ERROR には到達しない）。上の 2 経路と同型の WARNING を出してから落とす
+    # （ハードエラーにはしない —— 測れること自体は toolkit 無しでも成立する）。
+    echo "WARNING: toolkit を解決できなかったため base ref を解決できません。" >&2
+    echo "         生の値 ${base} で diff サイズを測ります（委譲先が origin/${base} を使う場合、測る範囲がレビュー範囲とずれます）。" >&2
   fi
   printf '%s\n' "$base"
 }
@@ -574,6 +586,9 @@ PRINT_ROOT_FORMAT=""
 # diff サイズの歯止めを測るための基準。--base が明示されたときだけ埋まる。
 BASE_FOR_SIZE=""
 STAGED_GIVEN=0
+# --dry-run。委譲先はプランを出すだけで CLI を 1 本も起動しないので、CLI の実在を
+# 要求するゲートはこのモードでは掛けない（下の codex 実在検査で参照する）。
+DRY_RUN_GIVEN=0
 
 append_review_context_file() {
   local context_file="$1" context_bytes context
@@ -704,6 +719,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --dry-run)
+      DRY_RUN_GIVEN=1
       ORCH_ARGS+=(--dry-run)
       shift
       ;;
@@ -1119,10 +1135,89 @@ fi
 # read-only で並列起動 → 5. それでも足りなければ主担当だけで継続し理由を記録）へ降格する旨を
 # 明示する。**このシムはレビューを実行していない**ので終了コードは非 0 のまま
 # （codex 不在は 4、toolkit 未解決は従来どおり解決側の rc）。
-print_claude_fallback_notice() { # $1: 理由
-  echo "⚠️  Codex 不在のため Claude セルフレビュー（別コンテキストの reviewer サブエージェント）へ降格します: ${1}" >&2
+#
+# 案内で挙げる代替 CLI 候補は**委譲先の registry から引く**。案内側に候補名を直書きすると、
+# 委譲先のラインナップが変わったときに案内だけが古いまま残り、既定から外れている metered な
+# CLI を勧め続ける（導入先から報告された実害: 消費側の規約は課金系 reviewer へのフォールバックを
+# 禁じているのに、案内がそれを第一候補として並べていた）。
+#
+# registry は multi-agent.sh の中で 2 つの見出し行に挟まれた**制限文法**として置かれており、
+# toolkit 側の検査がその境界と単純 case lookup の形を固定している。ここでは multi-agent.sh を
+# **実行も source もせず**にその区間だけを読む（委譲先を source すると 1800 行のユーティリティが
+# シムの名前空間へ入り、「シムに無い関数」へ気づかず依存できてしまう）。
+#
+# 除外の根拠は委譲先の既定選定と同一にする —— cost tier が metered の CLI は既定ラインナップから
+# 外れ、`--cli` で明示 opt-in したときだけ載る。tier の記載が無い名前は委譲先の lookup でも
+# 既定値（metered ではない）になるので、ここでも同じ扱いにする。判定を独自に厳しくすると、
+# 委譲先が実際に使う CLI を案内が隠す方向へずれる。
+#
+# 読めない / 境界が変わった場合は空を返す。呼び出し側は候補名の無い案内へ落ちる（案内が消えるの
+# ではなく、嘘の候補を出さない形で縮む）。
+derive_fallback_cli_candidates() { # $1: multi-agent.sh のパス / $2: 除外する CLI 名
+  local orchestrator="$1" exclude="$2"
+  [ -n "$orchestrator" ] && [ -r "$orchestrator" ] || return 0
+  LC_ALL=C awk -v exclude="$exclude" '
+    $0 == "# ── All known CLI names ──" { in_registry = 1; next }
+    $0 == "# ── CLI Registry End ──"    { in_registry = 0; next }
+    !in_registry { next }
+    /^ALL_CLIS="[a-z0-9 -]*"$/ {
+      known = $0
+      sub(/^ALL_CLIS="/, "", known)
+      sub(/"$/, "", known)
+      next
+    }
+    /^get_cli_cost_tier\(\)/ { in_tier = 1; next }
+    in_tier && /^}/ { in_tier = 0; next }
+    in_tier && /^[ \t]*[a-z0-9-]+\)[ \t]*echo[ \t]*"[a-z-]+"[ \t]*;;/ {
+      name = $0; sub(/^[ \t]*/, "", name); sub(/\).*$/, "", name)
+      tier = $0; sub(/^[^"]*"/, "", tier); sub(/".*$/, "", tier)
+      tiers[name] = tier
+    }
+    END {
+      n = split(known, names, " ")
+      out = ""
+      for (i = 1; i <= n; i++) {
+        if (names[i] == exclude) continue
+        if (tiers[names[i]] == "metered") continue
+        out = (out == "" ? names[i] : out " / " names[i])
+      }
+      print out
+    }
+  ' "$orchestrator" 2>/dev/null || true
+}
+
+print_claude_fallback_notice() { # $1: 理由 / $2: toolkit（multi-agent.sh）が使えるか（1 = 使える） / $3: toolkit 解決の rc（$2=0 のときだけ見る）
+  local reason="$1" toolkit_usable="${2:-0}" resolve_rc="${3:-0}" candidates=""
+  # 見出しは**理由に依存しない**文言にする。呼び出しは 2 経路あり、片方は codex とは無関係
+  # （toolkit 未解決）。「Codex 不在のため」と決め打つと、codex が入っている環境で原因を誤って
+  # 名指しし、切り分けを遅らせるだけでなく存在しない問題への起票を生む（導入先で実測）。
+  echo "⚠️  クロスレビューを実行できないため Claude セルフレビュー（別コンテキストの reviewer サブエージェント）へ降格します: ${reason}" >&2
   echo "   降格先（self-review.md §レビュー担当の選択と利用制限時の継続 3〜5）:" >&2
-  echo "     1. 別 CLI（grok-cli / copilot-cli / claude-code）が使えるなら multi-agent.sh --task review --cli <cli> で再配分する" >&2
+  if [ "$toolkit_usable" -eq 1 ]; then
+    candidates="$(derive_fallback_cli_candidates "${RESOLVED_ORCHESTRATOR:-}" "codex-cli")"
+    if [ -n "$candidates" ]; then
+      echo "     1. 別 CLI（${candidates}）が使えるなら multi-agent.sh --task review --cli <cli> で再配分する" >&2
+    else
+      echo "     1. 別 CLI が使えるなら multi-agent.sh --task review --cli <cli> で再配分する（候補は委譲先の既定ラインナップに従う）" >&2
+    fi
+  else
+    # この経路では multi-agent.sh 自体を解決できていない。手順として multi-agent.sh の実行を
+    # 出すと、**見つからなかったファイルを実行しろ**という案内になる（その場で実行不能）。
+    #
+    # さらに解決の rc で二分する。rc=1 は「どこにも無い」、rc=2 は「明示指定
+    # （FF_DEV_TOOLKIT_ROOT）が在るのに使えない」で、直し方が違う。探索順は
+    # FF_DEV_TOOLKIT_ROOT → cache → サイドカーで**環境変数が最優先**なので、rc=2 で
+    # setup-multi-agent.sh を案内しても setup が直すのはサイドカー側であり、次回も同じ
+    # 環境変数が先に勝って同じ rc=2 で止まる。効かない手順を「次の一手」として渡すのは、
+    # この診断ブロックが直そうとしている欠陥そのものなので、環境変数を名指しする。
+    if [ "$resolve_rc" -eq 2 ] && [ -n "${FF_DEV_TOOLKIT_ROOT:-}" ]; then
+      echo "     1. FF_DEV_TOOLKIT_ROOT を修正するか unset する（この変数は cache / サイドカーより先に勝つので、setup-multi-agent.sh の再実行では解決先が変わりません）" >&2
+      echo "        現在値: ${FF_DEV_TOOLKIT_ROOT}" >&2
+      echo "        unset すれば Codex/Claude cache → サイドカーの探索へ進めます。拒否の理由は上の ERROR 行が示しています。" >&2
+    else
+      echo "     1. setup-multi-agent.sh を再実行して toolkit を配置し直す（解決できるまで別 CLI への再配分も実行できない）" >&2
+    fi
+  fi
   echo "     2. 別モデルの完走が 0 本なら pr-review-toolkit:code-reviewer 等の reviewer サブエージェントを read-only で起動する" >&2
   echo "     3. それも不可なら主担当のみで継続し、PR / 最終報告に「クロスレビュー未実施」と候補別の利用不可理由を残す" >&2
   echo "   このシムはレビューを実行していません（非 0 終了。レビュー済みと読まないこと）。" >&2
@@ -1132,7 +1227,7 @@ print_claude_fallback_notice() { # $1: 理由
 _resolve_rc=0
 load_resolved_toolkit || _resolve_rc=$?
 if [ "$_resolve_rc" -ne 0 ]; then
-  print_claude_fallback_notice "toolkit（multi-agent.sh）を解決できない（rc=${_resolve_rc}）"
+  print_claude_fallback_notice "toolkit（multi-agent.sh）を解決できない（rc=${_resolve_rc}）" 0 "$_resolve_rc"
   exit "$_resolve_rc"
 fi
 
@@ -1140,10 +1235,20 @@ fi
 # まま「主が未インストール」で止まるので、ここで降格先を名指しした方が次の一手が早い。
 # 実体名は CODEX_REVIEW_CODEX_BIN で差し替えられる（tests/review-wrapper-shim が codex の
 # 有無を PATH 操作なしに実測するためのシーム。通常運用で設定する必要はない）。
+#
+# ただし **--dry-run には掛けない**。委譲先の --dry-run はプランを出すだけで CLI を 1 本も
+# 起動しないため、ここで止めると「主 CLI が使えないときにプランを確認する」という、まさに
+# 確認したい状況で確認手段そのものが消える（導入先の運用手順はプランに載る CLI の事前確認を
+# 求めている）。非実行モードでは警告に留め、実行モードでは従来どおり降格して rc=4 で止める。
 _codex_bin="${CODEX_REVIEW_CODEX_BIN:-codex}"
 if ! command -v -- "$_codex_bin" >/dev/null 2>&1; then
-  print_claude_fallback_notice "codex CLI（${_codex_bin}）が PATH に無い"
-  exit 4
+  if [ "$DRY_RUN_GIVEN" -eq 1 ]; then
+    echo "WARNING: codex CLI（${_codex_bin}）が PATH にありませんが、--dry-run は CLI を起動しないためプラン表示を続行します。" >&2
+    echo "         このプランをそのまま実行するには codex の導入（または CODEX_REVIEW_CODEX_BIN の修正）が要ります。" >&2
+  else
+    print_claude_fallback_notice "codex CLI（${_codex_bin}）が PATH に無い" 1
+    exit 4
+  fi
 fi
 
 exec bash "$RESOLVED_ORCHESTRATOR" "${ORCH_ARGS[@]}"

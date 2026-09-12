@@ -209,6 +209,62 @@ else
   bad "oss README: Skills（${got}） ≠ 実数 $ACTUAL"
 fi
 
+# --- H. 公開 README の「Bash ガード」紹介文（本数と実体名） ---
+# 「### Bash ガード（PreToolUse）」の導入文（本数・実体名）も G と同じ構造の
+# 手書き複製で、hooks.json 側にガードを追加・削除しても README 側は追従しない
+# （公開リポジトリの README のみを読む利用者が「有効になるガード数」を誤解する）。
+# 正本は hooks.json の PreToolUse・matcher が完全一致で "Bash" のエントリ。
+HOOKS_JSON="$ROOT/plugins/ff-dev-toolkit/hooks/hooks.json"
+if [ ! -f "$HOOKS_JSON" ]; then
+  bad "hooks.json が見つかりません: $HOOKS_JSON"
+else
+  actual_guards_raw="$(jq -r '.hooks.PreToolUse[]? | select(.matcher == "Bash") | .hooks[]?.command' "$HOOKS_JSON" 2>/dev/null | grep -oE 'guard-[A-Za-z0-9_-]+\.sh' | LC_ALL=C sort || true)"
+  actual_guards="$(printf '%s\n' "$actual_guards_raw" | LC_ALL=C uniq || true)"
+  actual_guard_n=0
+  actual_guard_raw_n=0
+  [ -z "$actual_guards" ] || actual_guard_n="$(printf '%s\n' "$actual_guards" | wc -l | tr -d ' ')"
+  [ -z "$actual_guards_raw" ] || actual_guard_raw_n="$(printf '%s\n' "$actual_guards_raw" | wc -l | tr -d ' ')"
+  if [ "$actual_guard_n" -lt 1 ]; then
+    bad "hooks.json の PreToolUse・Bash matcher からガードを抽出できません（fail-closed）"
+  elif [ "$actual_guard_raw_n" -ne "$actual_guard_n" ]; then
+    # 実体名を突き合わせるために重複を畳むが、畳んだ事実そのものは見逃さない。
+    # 同じガードが 2 回登録されていると、登録本数（= 実際に発火する回数）と実体名の
+    # 数が食い違い、README が実体名の数と一致していても「有効になるガード」の記述は
+    # 実態とずれる。畳む前と後の件数を比べて fail-closed にする。
+    bad "hooks.json の PreToolUse・Bash matcher に同じガードが重複登録されています（登録 ${actual_guard_raw_n} 件 / 実体名 ${actual_guard_n} 種）: $(printf '%s\n' "$actual_guards_raw" | LC_ALL=C uniq -d | tr '\n' ' ')"
+  else
+    # 導入文は 1 行（改行しない Markdown 段落）。本数と実体名を同じ行から取るのは、
+    # 数だけ合わせて名前を古いまま残す（またはその逆の）半端な追従を見逃さないため。
+    intro_line="$(printf '%s\n' "$readme_text" | grep -E 'Bash ツールの実行前に [0-9]+ つのガードが自動で有効になる' || true)"
+    intro_n=0
+    [ -z "$intro_line" ] || intro_n="$(printf '%s\n' "$intro_line" | wc -l | tr -d ' ')"
+    if [ "$intro_n" -ne 1 ]; then
+      bad "oss README: 「Bash ツールの実行前に N つのガードが自動で有効になる」を一意に抽出できません（一致 ${intro_n} 件。書式を変えた場合は本 suite も更新すること）"
+    else
+      readme_guard_count="$(printf '%s' "$intro_line" | grep -oE '[0-9]+ つのガード' | grep -oE '[0-9]+' || true)"
+      readme_guards="$(printf '%s' "$intro_line" | grep -oE 'hooks/guard-[A-Za-z0-9_-]+\.sh' | sed 's#^hooks/##' | LC_ALL=C sort -u || true)"
+      readme_guard_n=0
+      [ -z "$readme_guards" ] || readme_guard_n="$(printf '%s\n' "$readme_guards" | wc -l | tr -d ' ')"
+
+      if [ -z "$readme_guard_count" ]; then
+        bad "oss README: ガード本数の数値を抽出できません（fail-closed）"
+      elif [ "$readme_guard_count" -eq "$actual_guard_n" ]; then
+        ok "oss README: Bash ガード本数 ${readme_guard_count} = 実数 ${actual_guard_n}"
+      else
+        bad "oss README: Bash ガード本数 ${readme_guard_count} ≠ 実数 ${actual_guard_n}（hooks.json の PreToolUse・Bash matcher）"
+      fi
+
+      if [ "$readme_guard_n" -lt 1 ]; then
+        bad "oss README: ガード実体名（hooks/guard-*.sh）を抽出できません（fail-closed）"
+      elif [ "$readme_guards" = "$actual_guards" ]; then
+        ok "oss README: Bash ガード実体名 ${readme_guard_n} 件が実体と一致"
+      else
+        bad "oss README: Bash ガード実体名が実体と一致しません（README: $(printf '%s' "$readme_guards" | tr '\n' ' ')／実体: $(printf '%s' "$actual_guards" | tr '\n' ' ')）"
+      fi
+    fi
+  fi
+fi
+
 echo
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ skill-count-consistency: $FAIL 件失敗（pass ${PASS}）" >&2

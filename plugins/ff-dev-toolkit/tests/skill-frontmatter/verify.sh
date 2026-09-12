@@ -31,8 +31,10 @@
 #   - legacy `commands/*.md` の再追加検査
 #   - バージョン固定 cache パスの検査
 #   - AskUserQuestion 等ホスト固有ツール名の必須手順使用検査
-#   - 観測台帳 OBS-042 発: pre-commit-check の shell 単体チェック節（手順 6 /
-#     出力テンプレート）の固定文言 pin（check_pre_commit_shell_step）
+#   - 観測台帳 OBS-042 / OBS-133 発: pre-commit-check の commit 前チェック節（手順 6 の
+#     staged 内容と作業ツリーの一致確認 / 手順 7 の shell 単体チェック / 手順 8 の静的
+#     suite プリフライト / 手順 9 の出力テンプレート）の固定文言 pin と、手順 8 の固定表が
+#     名指しする suite 名の実在照合
 # これら 5 検査は ${PLUGIN_ROOT}（ff-dev-toolkit）のスキルにのみ適用する。
 #
 # 一時ディレクトリも jq 以外の外部コマンドも要らない純粋なファイル検査なので、
@@ -94,9 +96,18 @@ is_allowlisted() {
   return 1
 }
 
-# 観測台帳 OBS-042 発: pre-commit-check の手順 6「staged shell ファイルの単体チェック」と
-# 手順 7 の出力テンプレート「shell 単体チェック」節が消えないことを pin する
-# （節を変更したのに固定文言検査が無い状態を作らない規定。ff-dev-toolkit 固有）。
+# 観測台帳 OBS-042 / OBS-133 発: pre-commit-check の手順 6「staged 内容と作業ツリーの
+# 一致確認」・手順 7「staged shell ファイルの単体チェック」・手順 8「staged ファイル種別
+# ごとの静的 suite プリフライト」・手順 9 の出力テンプレートの各節が消えないことを pin
+# する（節を変更したのに固定文言検査が無い状態を作らない規定。ff-dev-toolkit 固有）。
+# 手順 6 は手順 7・8 の前提ゲートである。手順 7・8 は staged パスから検査対象を選ぶのに
+# 実体は作業ツリーを読むので、両者が食い違うと staged 側の違反を「違反なし」と報告した
+# まま commit を通す。一致確認の手順そのもの（index と作業ツリーの差分を取るコマンド）と、
+# 不一致を「違反なし」ではなく判定不能へ倒す文言の双方を pin する（片方だけ残ると、
+# 手順が消えても「判定不能」の語だけが散文に残って緑で通る）。
+# 手順 8 の固定表は「種別 → 単体で回す静的 suite」を名指しする。名指しした suite 名が
+# 実在の tests/<name>/verify.sh と一致することは下の照合が機械的に確かめる（表だけ直して
+# suite を消す・改名する drift は、プリフライトの実行手順を静かに空振りさせるため）。
 # shellcheck source=../lib/section-scope.sh
 . "$SCRIPT_DIR/../lib/section-scope.sh"
 
@@ -112,15 +123,137 @@ check_pre_commit_shell_step() {
   fi
 }
 
-check_pre_commit_shell_step '### 6. staged shell ファイルの単体チェック' 'mbcs_scan' 'mbcs_scan の呼び出し記述'
-check_pre_commit_shell_step '### 6. staged shell ファイルの単体チェック' 'exit_code_scan' 'exit_code_scan の呼び出し記述'
-check_pre_commit_shell_step '### 6. staged shell ファイルの単体チェック' '1 ファイルずつ' 'mbcs_scan/exit_code_scan を 1 ファイルずつ呼ぶ規定（バッチ呼び出しはファイル境界をまたいで行番号・内容が破損する）'
-check_pre_commit_shell_step '### 6. staged shell ファイルの単体チェック' '検査不能' '検査不能→commit へ進まない fail-closed の記述'
-check_pre_commit_shell_step '### 7. 結果の出力' 'shell 単体チェック' '出力テンプレートの shell 単体チェック節'
-check_pre_commit_shell_step '### 7. 結果の出力' '✅ 違反なし' '出力テンプレート4状態: 違反なし'
-check_pre_commit_shell_step '### 7. 結果の出力' '❌ 違反あり' '出力テンプレート4状態: 違反あり'
-check_pre_commit_shell_step '### 7. 結果の出力' '○ 対象なし' '出力テンプレート4状態: 対象なし'
-check_pre_commit_shell_step '### 7. 結果の出力' '❌ 検査不能' '出力テンプレート4状態: 検査不能'
+PRE_COMMIT_CONSISTENCY_HEADING='### 6. staged 内容と作業ツリーの一致確認'
+PRE_COMMIT_SHELL_HEADING='### 7. staged shell ファイルの単体チェック'
+PRE_COMMIT_OUTPUT_HEADING='### 9. 結果の出力'
+
+# 手順 6（手順 7・8 の前提ゲート）。針はコード行・判定規則そのものを指す — 同じ語が
+# 散文にも現れる針だと、実体を消しても散文が残って緑で通る。
+check_pre_commit_shell_step "$PRE_COMMIT_CONSISTENCY_HEADING" 'git diff --name-only --' \
+  'index と作業ツリーの差分を取る一致確認コマンド'
+check_pre_commit_shell_step "$PRE_COMMIT_CONSISTENCY_HEADING" '不一致のため判定不能' \
+  '不一致を「判定不能」として報告する規定'
+check_pre_commit_shell_step "$PRE_COMMIT_CONSISTENCY_HEADING" '「違反なし」とは書かない' \
+  '判定不能を「違反なし」と書かない（緑扱いにしない）規定'
+check_pre_commit_shell_step "$PRE_COMMIT_CONSISTENCY_HEADING" 'git add <名指ししたファイル>' \
+  '不一致時に利用者が取る次の一手（stage し直して回し直す）の案内'
+
+check_pre_commit_shell_step "$PRE_COMMIT_SHELL_HEADING" 'mbcs_scan' 'mbcs_scan の呼び出し記述'
+check_pre_commit_shell_step "$PRE_COMMIT_SHELL_HEADING" 'exit_code_scan' 'exit_code_scan の呼び出し記述'
+check_pre_commit_shell_step "$PRE_COMMIT_SHELL_HEADING" '1 ファイルずつ' 'mbcs_scan/exit_code_scan を 1 ファイルずつ呼ぶ規定（バッチ呼び出しはファイル境界をまたいで行番号・内容が破損する）'
+check_pre_commit_shell_step "$PRE_COMMIT_SHELL_HEADING" '検査不能' '検査不能→commit へ進まない fail-closed の記述'
+check_pre_commit_shell_step "$PRE_COMMIT_SHELL_HEADING" '手順 6 の一致確認' \
+  '手順 6 が不一致だったファイルを判定不能として扱う委譲'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" 'shell 単体チェック' '出力テンプレートの shell 単体チェック節'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '✅ 違反なし' '出力テンプレート4状態: 違反なし'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '❌ 違反あり' '出力テンプレート4状態: 違反あり'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '○ 対象なし' '出力テンプレート4状態: 対象なし'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '❌ 検査不能' '出力テンプレート4状態: 検査不能'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '### staged 内容と作業ツリーの一致確認' \
+  '出力テンプレートの一致確認節'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '❌ 不一致のため判定不能' \
+  '出力テンプレート: 不一致のため判定不能の状態'
+
+PRE_COMMIT_PREFLIGHT_HEADING='### 8. staged ファイル種別ごとの静的 suite プリフライト'
+PRE_COMMIT_TABLE_HEADING='#### 種別 → 単体で回す静的 suite（固定表）'
+PRE_COMMIT_STEPS_HEADING='#### プリフライトの実行手順'
+
+# 手順 8 の散文が持つべき規定。プリフライトは全件ゲートの絞り込みではないこと（全件ゲートの
+# 既定を変更連動選択にする設計を退けた過去の判断との整合）、監視 glob を持たない固定表で
+# あること、「対象なし」と「実行できなかった」を「違反なし」へ倒さないことを pin する。
+check_pre_commit_shell_step "$PRE_COMMIT_PREFLIGHT_HEADING" '全件ゲートを置き換えない' \
+  'プリフライトが全件ゲートを置き換えない規定'
+check_pre_commit_shell_step "$PRE_COMMIT_PREFLIGHT_HEADING" '監視 glob ではなく固定表' \
+  '監視 glob を持たず固定表で名指しする規定'
+check_pre_commit_shell_step "$PRE_COMMIT_PREFLIGHT_HEADING" '対象なし' \
+  '該当種別が無いときは「対象なし」として 1 行で報告する規定'
+check_pre_commit_shell_step "$PRE_COMMIT_PREFLIGHT_HEADING" '手順 6 の一致確認' \
+  '手順 6 が不一致なら本手順を緑扱いにしない委譲'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '実行できなかった' \
+  '「実行できなかった」と「違反なし」を区別する fail-closed の記述'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '違反なしへ倒さない' \
+  'suite 不在・依存不足・skip を違反なしへ倒さない規定'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '静的 suite プリフライト' \
+  '出力テンプレートの静的 suite プリフライト節'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '❌ 実行できなかった' \
+  '出力テンプレート: プリフライトの「実行できなかった」状態'
+
+# 固定表（| 種別 | staged パスの条件 | 単体で回す suite |）の 3 列目が名指しする suite 名を
+# 実体（tests/<name>/verify.sh）と機械照合する。表が空・行が減った・suite 名を 1 つも
+# 持たない行があるときは「照合対象ゼロで緑」にならないよう fail-closed で赤にする。
+# 外部コマンドは awk だけを使う（本 suite は一時領域も jq 以外の外部コマンドも要らない
+# 純粋なファイル検査である。here-doc / here-string は一時ファイルを要求するので使わない）。
+PRE_COMMIT_TABLE_MIN_ROWS=3
+
+# want=rows: データ行数 / want=empty: suite 名を 1 つも持たない行番号 / want=names:
+# 重複除去した suite 名（空白区切り）。いずれも 1 行だけを返す。
+pre_commit_table_field() {
+  printf '%s\n' "$2" | awk -F'|' -v want="$1" '
+    /^[[:space:]]*\|/ {
+      if ($0 ~ /^[[:space:]]*\|[[:space:]]*[-:][-:[:space:]|]*$/) next
+      if ($2 ~ /種別/) next
+      rows++
+      n = split($4, parts, "`")
+      hits = 0
+      for (i = 2; i <= n; i += 2) {
+        if (parts[i] == "") continue
+        hits++
+        if (!(parts[i] in seen)) { seen[parts[i]] = 1; names = names (names == "" ? "" : " ") parts[i] }
+      }
+      if (hits == 0) empty = empty (empty == "" ? "" : " ") rows
+    }
+    END {
+      if (want == "rows") print rows + 0
+      else if (want == "empty") print empty
+      else print names
+    }
+  '
+}
+
+if ! pre_commit_table="$(section_scope_extract "$PRE_COMMIT_SKILL" "$PRE_COMMIT_TABLE_HEADING")"; then
+  bad "pre-commit-check — 種別→suite 固定表を切り出せません（${pre_commit_table}）"
+else
+  pre_commit_rows="$(pre_commit_table_field rows "$pre_commit_table")"
+  pre_commit_empty="$(pre_commit_table_field empty "$pre_commit_table")"
+  pre_commit_suites="$(pre_commit_table_field names "$pre_commit_table")"
+
+  case "$pre_commit_rows" in
+    ''|*[!0-9]*)
+      bad "pre-commit-check — 種別→suite 固定表の行数を数えられません（表の形が変わっています）"
+      ;;
+    *)
+      if [ "$pre_commit_rows" -lt "$PRE_COMMIT_TABLE_MIN_ROWS" ]; then
+        bad "pre-commit-check — 種別→suite 固定表の行が ${pre_commit_rows} 件です（${PRE_COMMIT_TABLE_MIN_ROWS} 系統以上であること）"
+      else
+        ok "pre-commit-check — 種別→suite 固定表が ${pre_commit_rows} 系統ある"
+      fi
+      ;;
+  esac
+
+  if [ -n "$pre_commit_empty" ]; then
+    bad "pre-commit-check — 種別→suite 固定表に suite 名を 1 つも名指ししない行があります（行: ${pre_commit_empty}）"
+  fi
+
+  if [ -z "$pre_commit_suites" ]; then
+    bad "pre-commit-check — 種別→suite 固定表から suite 名を 1 件も抽出できません（照合が空振りします）"
+  else
+    # suite 名に空白は入らない前提で単語分割して回す（分割は意図的）。
+    # shellcheck disable=SC2086
+    for pre_commit_suite in $pre_commit_suites; do
+      case "$pre_commit_suite" in
+        *[!A-Za-z0-9._-]*)
+          bad "pre-commit-check — 固定表の suite 名に使えない文字があります: ${pre_commit_suite}"
+          continue
+          ;;
+      esac
+      if [ -f "$PLUGIN_ROOT/tests/$pre_commit_suite/verify.sh" ]; then
+        ok "pre-commit-check — 固定表の suite 名が実在する: tests/${pre_commit_suite}/verify.sh"
+      else
+        bad "pre-commit-check — 固定表の suite 名に対応する実体がありません: tests/${pre_commit_suite}/verify.sh"
+      fi
+    done
+  fi
+fi
 
 # frontmatter（先頭 `---` から 2 つ目の `---` まで）を stdout へ出す。
 # CR は落とす（CRLF ファイルで `/^---$/` が一致せず、抽出が静かに空になるのを防ぐ）。

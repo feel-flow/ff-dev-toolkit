@@ -280,13 +280,18 @@ grep -n "return " src/render.ts
 
 #### コミット
 
-**`git add` の後・`git commit` の前に staged shell の単体チェックを通す**: 下のステップ5「セルフレビュー」の `/pr-review-toolkit:review-pr` や Codex CLI クロスレビューは commit 済みの diff を対象にするため、commit 前の staged 状態でしか見えない違反（例: 日本語コメント中の `$VAR` 直付けマルチバイト展開）を検出する経路がステップ5には無い。ここで `/pre-commit-check`（ff-dev-toolkit スキル。**AI エージェントへのスラッシュコマンドで、シェルコマンドではない点に注意**。または同等の staged shell 単体チェック）を実行し、staged された `*.sh` に対する mbcs-guard / exit-code-guard の単体チェックを通してから commit する。これを飛ばすと、同じ違反が全件ゲート（`run-all.sh` の sync-forbidden-patterns 等）まで到達して初めて赤になる。
+**`git add` の後・`git commit` の前に staged 由来の単体チェックを通す**: 下のステップ5「セルフレビュー」の `/pr-review-toolkit:review-pr` や Codex CLI クロスレビューは commit 済みの diff を対象にするため、commit 前の staged 状態でしか見えない違反（例: 日本語コメント中の `$VAR` 直付けマルチバイト展開）を検出する経路がステップ5には無い。ここで `/pre-commit-check`（ff-dev-toolkit スキル。**AI エージェントへのスラッシュコマンドで、シェルコマンドではない点に注意**。または同等の staged 単体チェック）を実行してから commit する。対象は 2 系統ある:
+
+1. staged された `*.sh` に対する mbcs-guard / exit-code-guard の単体チェック
+2. staged ファイルの**種別**（配布 Markdown / 公開同期対象 / shell）から**固定表**で決まる静的 suite のプリフライト。本テンプレートのソースリポジトリでは `docs-gates` / `plugin-root-contract` / `sync-forbidden-patterns` / `run-all` / `shellcheck` を単体で回す（各 1 分未満）
+
+これを飛ばすと、同じ違反が全件ゲート（`run-all.sh` の 1 周、約 10 分）まで到達して初めて赤になる。**プリフライトは全件ゲートを置き換えない** — 全件ゲートは従来どおり全件で回し、プリフライトはその手前へ追加で置く安い先行検査である（回す suite を絞り込む仕組みではない）。
 
 ```bash
 # AIツール（Claude Code等）で実装後、コミット
 git add .
 
-# commit 前に staged shell の単体チェック（ブロッカーがあればここで止めて修正する）
+# commit 前に staged shell の単体チェックと静的 suite プリフライト（ブロッカーがあればここで止めて修正する）
 # 次の行は AI エージェントへのスラッシュコマンドで、シェルコマンドではない
 # （ff-dev-toolkit プラグイン提供。シェルに渡しても実行できない）
 /pre-commit-check
@@ -1021,6 +1026,33 @@ git switch --detach origin/develop                 # base を掴まずに退避�
 
 完了報告には「リモートブランチを削除したか」を `gh pr merge` の成否とは**別項目**で明示する（`/merge-cleanup` のサマリーも同じ項目を出す）。
 
+#### `--delete-branch` の部分失敗の読み方とリモート個別削除
+
+base ではなく**削除対象の head ブランチ自体**が別の worktree（サブエージェント用など）でチェックアウトされている場合も、`gh pr merge --squash --delete-branch` は部分的に失敗する。出力に残るのは `failed to delete local branch ... used by worktree at ...` の 1 行だけで、これだけを見るとマージそのものが失敗したように読めるが、**マージとリモートブランチ削除は成功していることがある**（失敗しているのはローカルブランチの削除だけで、マージ・リモート削除は別工程のため影響を受けない）。
+
+判定は出力の文言ではなく実測で行う:
+
+1. `gh pr view ${PR_NUMBER} --json state --jq .state` が `MERGED` であること
+2. `git ls-remote --exit-code --heads origin '<head ブランチ>'` の**終了コード**を見ること。`2` = ref なし（リモートは削除済み）、`0` = ref あり（残存）。**それ以外の終了コードは「判定不能」で、削除済みと読んではいけない**（通信・認証の失敗でも出力は空になるため、行数だけで判定すると残っているブランチを削除済みと誤認する）
+
+1 と 2 の終了コード `2` を満たせば、この失敗は「マージが失敗した」ことも「リモートにブランチが残っている」ことも意味しない。ローカルブランチ・保持している worktree の後始末は `/merge-cleanup` に任せてよい。
+
+終了コード `0`（残存）だったときだけ個別に削除する。**削除の前に、残っている ref がその PR の head と同一であることを確認する**。マージ後に同名ブランチが再利用されて新しいコミットが push されていることがあり、OID を照合せずに消すと別作業を削除する:
+
+```bash
+REMOTE_OID="$(git ls-remote --heads origin '<head ブランチ>' | cut -f1)"
+PR_HEAD_OID="$(gh pr view ${PR_NUMBER} --json headRefOid --jq .headRefOid)"
+[ "$REMOTE_OID" = "$PR_HEAD_OID" ] || { echo "ブランチが再利用されている。削除しない"; exit 1; }
+```
+
+これは Step 5 の worktree 自動削除が使う「(名前, ローカル OID) が MERGED PR の head と一致」と同じ証拠基準で、削除の対象が本当にマージ済みのものだと機械的に示す。
+
+一致したら削除する。**ブランチ名に含まれる `#`（Issue/PR 番号を使った命名規則）は `%23` へエンコードする**。素の `#` を渡すと `gh api` 側で URL のフラグメント区切りとして解釈され、`#` 以降が送信対象のパスから欠落した不正な ref 名になるため、`-X DELETE` は 422 で失敗する:
+
+```bash
+gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/fix/%23NNNN-<slug>
+```
+
 ```bash
 # /close-issue 完了報告の「照合時の head SHA」を転記する
 VERIFIED_HEAD_SHA="<照合時のheadSHA>"
@@ -1323,7 +1355,7 @@ ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行�
 tracking Issue / Epic 配下に多数の sub-issue がぶら下がっていて 1 セッションでまとめて消化するときは、Issue 単位のコアサイクルをそのまま並列に走らせず、次の 4 点で束ねる。実測 4 回（19 / 15 / 24 / 5 sub-issue をいずれも 1 セッションで完遂、意味的競合ゼロ。出典は本テンプレートのソースリポジトリの観測台帳 OBS-038）に基づく手順で、衝突は「起きたら解消する」ではなく**構造的に起こさない**側へ倒す。
 
 1. **バッチは対象ファイル集合が互いに素になるように組む。** 着手前に sub-issue ごとの対象ファイルを列挙し、同一ファイルを触る Issue は同一バッチに入れず、依存として先行バッチのマージ後に開始する。対象が重なる Issue 同士を並列 PR に割ると、rebase で解消できる textual conflict ではなく、同じ節を別々に書き換えた意味的競合になる
-2. **実装は worktree 隔離のサブエージェントで並列に行い、レビュー・マージは親が直列に行う。** 並列側が触るのは自分の worktree だけなので、マージ順を親が制御すれば衝突が構造的に起きない。親は PR ごとにセルフレビュー（ステップ5）→ `/close-issue` → マージ（ステップ8）を 1 本ずつ進め、次の PR は直前のマージ後の base へ rebase してから同じ手順に入れる。委譲先の作法は [Multi-CLI Agent Orchestration の「長時間タスクの委譲契約（こまめコミット）」](./multi-cli-agent-orchestration.md#長時間タスクの委譲契約こまめコミット) に従う。worktree の中でゲート・テストを回させるなら、起動プロンプトへ [依存プリフライトの一文](./multi-cli-agent-orchestration.md#worktree-委譲の依存プリフライト) も常置する（親が毎回思い出して書く形にしない。省くと最初のゲート実行 1 回分が環境都合の skip / fail で捨てられる）。各サブエージェントの完了報告を受けたら、[委譲先の完了後に残る background 子プロセス](./multi-cli-agent-orchestration.md#委譲先の完了後に残る-background-子プロセス) に従って取り残しを確認して回収する（worktree の回収と同じタイミング。確認しないと気付けない — エージェント一覧・worktree 一覧・未コミット差分はすべて正常に見える）
+2. **実装は worktree 隔離のサブエージェントで並列に行い、レビュー・マージは親が直列に行う。** 並列側が触るのは自分の worktree だけなので、マージ順を親が制御すれば衝突が構造的に起きない。親は PR ごとにセルフレビュー（ステップ5）→ `/close-issue` → マージ（ステップ8）を 1 本ずつ進め、次の PR は直前のマージ後の base へ rebase してから同じ手順に入れる。委譲先の作法は [Multi-CLI Agent Orchestration の「長時間タスクの委譲契約（こまめコミット）」](./multi-cli-agent-orchestration.md#長時間タスクの委譲契約こまめコミット) に従う。worktree の中でゲート・テストを回させるなら、起動プロンプトへ [依存プリフライトの一文](./multi-cli-agent-orchestration.md#worktree-委譲の依存プリフライト) も常置する（親が毎回思い出して書く形にしない。省くと最初のゲート実行 1 回分が環境都合の skip / fail で捨てられる）。各サブエージェントの完了報告を受けたら、[委譲先の完了後に残る background 子プロセス](./multi-cli-agent-orchestration.md#委譲先の完了後に残る-background-子プロセス) に従って取り残しを確認して回収する（worktree の回収と同じタイミング。確認しないと気付けない — エージェント一覧・worktree 一覧・未コミット差分はすべて正常に見える）。起動プロンプトへ事実主張を書くときと、受け取った完了報告を Issue コメント・PR 本文・別の委譲プロンプトへ転記するときは、[委譲プロンプトへ載せる事実主張の一次情報確認](./multi-cli-agent-orchestration.md#委譲プロンプトへ載せる事実主張の一次情報確認) に従って渡す前に一次情報で確認する（ホストの Agent / Task ツールで直接起こすサブエージェントも対象。規定はここへ複製しない）
 3. **Issue 本文が順序制約を持つ場合（Epic の「順序制約」節、「A の完了が B の前提」等）は、それをバッチ境界として採用する。** 制約を無視して並列化すると、同じ節を触る PR 同士が意味的に競合する。順序制約が書かれていない Epic では、1 の列挙で見つけた重なりを Epic 本文へ制約として追記しておくとよい（次に同じ Epic を扱うセッションが同じ列挙をやり直さずに済む）
 4. **changelog は fragment 方式（`changelog.d/` への 1 断片追加）にする。** 本体ファイルを直接編集する方式だと、並列マージのたびに同じ箇所で衝突する。断片の集約はリリース準備の側で 1 回だけ行う
 

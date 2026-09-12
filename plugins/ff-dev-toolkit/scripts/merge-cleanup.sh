@@ -2,7 +2,12 @@
 #
 # merge-cleanup.sh — PR マージ後のクリーンアップ一括実行
 #
-# 使い方: merge-cleanup.sh <PR番号>
+# 使い方: merge-cleanup.sh [--dry-run] <PR番号>
+#         merge-cleanup.sh --help
+#
+# オプション:
+#   --dry-run   何も削除せず、「実行時に削除されるもの」だけを一覧表示する
+#   --help, -h  使い方を表示して終了する（PR 番号としては解釈しない）
 #
 # やること:
 #   0. plugin root 固定ガード（自分の実体位置と host handoff の不一致で中断。
@@ -18,9 +23,17 @@
 #   5.5 削除した worktree のトランスクリプト回収（cwd 照合のうえ tar.gz へアーカイブ）
 #   6. リモート取り残しブランチのガード付き自動削除（fail-closed）
 #   7. 最終検証と結果サマリー
+#   （--dry-run では 1〜7 の破壊的操作とネットワーク更新 — 削除 push・switch・pull・
+#     fetch --prune・hook 実行・トランスクリプトのアーカイブ — をすべて見送り、判定
+#     だけを実行時と同じ条件で行って「実行時に削除されるもの」を一覧表示する。
+#     見送った prune とリモート削除の連鎖 — 削除 → prune → 新たに [gone] になる
+#     ローカルブランチ → その worktree — は read-only の ls-remote で予測して
+#     予告へ含める。ref は 1 つも書き換えない）
 #
 # 終了コード:
-#   0 = 完全成功 / 1 = 致命的エラーで中断 / 2 = 完了したが一部失敗・要手動対応あり（PARTIAL）
+#   0 = 完全成功（--help もここ） / 1 = 致命的エラーで中断（引数なし・不正なオプション
+#   を含む） / 2 = 完了したが一部失敗・要手動対応あり（PARTIAL）
+#   --dry-run でも契約は同じで、実行時と同じ判定から出た結果をそのまま返す
 #
 # 安全原則:
 #   - 保護ブランチは絶対に削除しない。develop / main / master / staging/* は
@@ -48,6 +61,18 @@
 #   - トランスクリプトの回収は「今回削除に成功した worktree の分」だけを対象にし、
 #     jsonl の cwd がその worktree を指すことを照合してから処理する。既定は削除では
 #     なく tar.gz へのアーカイブで、アーカイブに失敗したら元ディレクトリを残す
+#   - --dry-run は「判定は実行時と同じ、副作用だけが無い」。保護ブランチ・dirty
+#     worktree・fail-closed な縮退はすべて実行時と同じ条件で評価し、dry-run だけ
+#     判定を緩めない。実行時の削除は --force-with-lease で OID を照合するので、
+#     予告も read-only の ls-remote で「ref の実在と OID 一致」を確かめてから出す
+#     （取れなければ予告しない = fail-closed）。判定の基準時点も実行時に合わせる:
+#     -d 相当の判定と「呼び出し元がチェックアウト中」は、実行時に switch / pull した
+#     後の base を基準にする（現在の HEAD ではない）。見送った prune と削除の連鎖も
+#     予測して予告へ含める — **予告が実際の削除より少ないのは最も危険な壊れ方**で、
+#     --dry-run の唯一の価値（何が壊れるかを先に見せる）がそこで失われるため
+#   - --help の解析と早期終了は mktemp・gh / jq の存在確認より前に置く。依存の後ろに
+#     置くと、使い方をいちばん知りたい環境（gh / jq 未導入・TMPDIR 書き込み不可）で
+#     usage が出ないまま exit 1 になる
 
 set -Eeuo pipefail
 
@@ -553,6 +578,91 @@ transcript_cwd_verdict() {
   return 0
 }
 
+# ---- Step 0: 引数 -----------------------------------------------------------
+#
+# この Step は mktemp と gh / jq の存在確認より **前** に置く。--help は「何が消えるのか
+# を副作用なしで知る」ための最も壊れにくい経路で、依存の後ろに置くと gh / jq 未導入や
+# TMPDIR 書き込み不可の環境（= 使い方をいちばん知りたい環境）で usage が出ないまま
+# exit 1 になる。引数の解析と早期終了は外部コマンドを一切使わないので、依存の前で完結する。
+
+print_usage() {
+  # 破壊的処理を持つツールなので、使い方には「何を消すのか」まで書く。
+  # 変数展開は使わない（--help は最も壊れにくい経路であるべき）。
+  cat <<'USAGE'
+使い方:
+  merge-cleanup.sh [--dry-run] <PR番号>   マージ済み PR のクリーンアップを実行する
+  merge-cleanup.sh --help                 この使い方を表示する
+
+引数:
+  <PR番号>    マージ済み PR の番号（必須。例: 1234）。省略すると
+              delete_branch_on_merge=false な repo でリモートブランチが残る。
+
+オプション:
+  --dry-run   何も削除せず、「実行時に削除されるもの」だけを一覧表示する。
+              保護ブランチ・dirty worktree・fail-closed な縮退の判定は実行時と
+              同じで、dry-run だけ緩むことはない。削除のほかに base への switch /
+              pull / fetch --prune / hook の実行も行わないが、見送った prune と
+              リモート削除の連鎖（削除 → prune → 新たに [gone] になるローカル
+              ブランチ → その worktree）は read-only の ls-remote で予測して
+              一覧へ含める。ref は 1 つも書き換えない。
+  --help, -h  この使い方を表示して終了する（PR 番号としては解釈しない）。
+
+このスクリプトが削除するもの（--dry-run を付けない場合）:
+  - 対象 PR のリモートブランチ（origin。--force-with-lease で OID 一致時のみ）
+  - [gone] ローカルブランチと、それを保持する worktree（clean のときだけ）
+  - 削除した worktree だけが使っていた Claude Code のトランスクリプト
+    （既定は削除ではなく tar.gz へのアーカイブ）
+  - リモート取り残しのマージ済みブランチ（(名前, OID) 照合を通ったものだけ）
+
+終了コード: 0 = 完全成功 / 1 = 中断（引数不正を含む） / 2 = PARTIAL（一部失敗）
+USAGE
+}
+
+# --help は「PR 番号として解釈しない」ことが要件。数値判定より前に、専用の分岐で
+# 必ず終了させる（引数を 1 つずつ見る形にしないと、先頭以外に置かれた --help が
+# 位置引数として素通りする）。
+DRY_RUN=0
+PR_NUM=""
+ARG_ERROR=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --help|-h)
+      print_usage
+      exit 0
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      ;;
+    -*)
+      ARG_ERROR="不明なオプションです: ${1}"
+      break
+      ;;
+    *)
+      # 2 つ目の位置引数を黙って捨てると、'merge-cleanup.sh 12 34' が 1 つ目の
+      # 番号に対する破壊的処理として走る。打ち間違いを削除の前に止める。
+      if [ -n "$PR_NUM" ]; then
+        ARG_ERROR="PR 番号は 1 つだけ指定してください: '${PR_NUM}' と '${1}'"
+        break
+      fi
+      PR_NUM="$1"
+      ;;
+  esac
+  shift
+done
+
+if [ -n "$ARG_ERROR" ]; then
+  echo "❌ ${ARG_ERROR}" >&2
+  print_usage >&2
+  exit 1
+fi
+
+if [ -z "$PR_NUM" ] || ! [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
+  echo "❌ PR 番号を指定してください（例: merge-cleanup.sh 1234）" >&2
+  echo "   PR 番号無しだと delete_branch_on_merge=false な repo でリモートブランチが残ります。" >&2
+  print_usage >&2
+  exit 1
+fi
+
 # temp はディレクトリ 1 つにまとめ、trap で確実に回収する
 # （コマンド置換内で配列に追記する方式はサブシェルで消えるため使わない）
 WORK_TMP="$(mktemp -d)" || die "mktemp -d に失敗しました"
@@ -644,13 +754,87 @@ last_push_error_head() {
   printf '%s' "$line"
 }
 
-# ---- Step 0: 引数 -----------------------------------------------------------
+dry_run_skip() {
+  # dry-run で見送った操作を 1 行で示す。**ガードの判定はこの関数を通さない** —
+  # 通すと dry-run だけ判定が変わり、「実行時と同じ判定」という契約が壊れる。
+  printf '  [dry-run] 実行しません: %s\n' "$*"
+}
 
-PR_NUM="${1:-}"
-if [ -z "$PR_NUM" ] || ! [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
-  echo "❌ PR 番号を指定してください（例: merge-cleanup.sh 1234）" >&2
-  echo "   PR 番号無しだと delete_branch_on_merge=false な repo でリモートブランチが残ります。" >&2
-  exit 1
+# dry-run で「実行したらこの ref は消えるのか」を副作用なしで判定する。
+# 実行時の削除は --force-with-lease=<ref>:<PR head OID> なので、origin 側の ref が
+# 無い / OID が違えば**実行しても消えない**。headRefOid を取得できたことだけを根拠に
+# 削除対象と書くと、再利用された同名ブランチや既に消えた ref まで「実行時は消える」と
+# 過剰に予告することになる。判定基準はマージ後手順（skills/merge-cleanup/SKILL.md と
+# docs-template/05-operations/deployment/git-workflow.md の「削除の前に、残っている ref が
+# その PR の head と同一であることを確認する」）と同じで、実装をその規範へ揃える。
+# read-only の ls-remote だけを使い、ref は 1 つも書き換えない。
+# stdout: "match<TAB><現OID>" / "mismatch<TAB><現OID>" / "missing<TAB>" / "error<TAB><詳細>"
+dry_remote_delete_verdict() {
+  # $1: branch / $2: 期待 OID
+  local branch="$1" expected="$2" out="" rc=0 oid=""
+  local err="$WORK_TMP/dry_remote_verdict_error"
+  # --exit-code は「ref なし」を 2 で返す。通信・認証の失敗（128 等）と区別しないと、
+  # 出力が空になるだけの失敗を「消えている」と読んでしまう。
+  set +e
+  out="$(LC_ALL=C git ls-remote --exit-code --heads origin "refs/heads/$branch" 2>"$err")"
+  rc=$?
+  set -e
+  case "$rc" in
+    0)
+      oid="$(printf '%s\n' "$out" | awk 'NR == 1 { print $1 }')"
+      if [ "$oid" = "$expected" ]; then
+        printf 'match\t%s\n' "$oid"
+      else
+        printf 'mismatch\t%s\n' "$oid"
+      fi
+      ;;
+    2) printf 'missing\t\n' ;;
+    *) printf 'error\t%s\n' "$(tr '\n' ' ' < "$err")" ;;
+  esac
+}
+
+# dry-run の仮想 prune。実行時は Step 3 / Step 4 の `fetch --prune` と Step 4 の
+# リモート削除によって、**今は [gone] ではないローカルブランチが新たに [gone] になり、
+# その worktree ごと Step 5 で消える**。dry-run は prune も削除もしないので、素の
+# `upstream:track` だけを見ると連鎖の予告が実際の削除より少なくなる — --dry-run の
+# 唯一の価値が「何が壊れるかを先に見せる」ことである以上、予告が実際より少ないのは
+# 最も危険な壊れ方で、受け入れ条件（削除対象が一覧で出力される）も満たせない。
+# 副作用なしで同じ集合を作る:
+#   (a) Step 4 が削除する ref を追跡しているブランチ
+#   (b) origin から既に消えている ref を追跡しているブランチ（実行時は prune で [gone]）
+# ref は 1 つも書き換えない（read-only の ls-remote だけを使う）。
+# stdout: 新たに [gone] になるブランチ名（1 行 1 本）。取得に失敗したら非 0 を返す。
+dry_virtual_prune_gone_branches() {
+  local origin_refs="$WORK_TMP/dry_origin_heads.list"
+  local ls_out="" dbranch="" dupstream="" dtrack="" dremote=""
+  if ! ls_out="$(LC_ALL=C git ls-remote --heads origin 2>&1)"; then
+    printf '%s\n' "$ls_out" > "$WORK_TMP/dry_virtual_prune_error"
+    return 1
+  fi
+  printf '%s\n' "$ls_out" | awk -F'\t' 'NF > 1 { print $2 }' | sort -u > "$origin_refs"
+  while IFS="$(printf '\t')" read -r dbranch dupstream dtrack; do
+    [ -n "$dbranch" ] || continue
+    # 既に [gone] のものは呼び出し元の一覧に載っている（二重計上しない）
+    [ "$dtrack" = "[gone]" ] && continue
+    case "$dupstream" in
+      refs/remotes/origin/*) ;;
+      # upstream 無し / origin 以外の remote は `fetch --prune origin` の対象外
+      *) continue ;;
+    esac
+    dremote="refs/heads/${dupstream#refs/remotes/origin/}"
+    if [ "$PR_REMOTE_RESULT" = "would_delete" ] && [ "$dremote" = "refs/heads/$PR_HEAD" ]; then
+      printf '%s\n' "$dbranch"
+      continue
+    fi
+    if ! grep -qxF "$dremote" "$origin_refs"; then
+      printf '%s\n' "$dbranch"
+    fi
+  done < <(git for-each-ref --format='%(refname:short)%09%(upstream)%09%(upstream:track)' refs/heads/)
+  return 0
+}
+
+if [ "$DRY_RUN" = "1" ]; then
+  echo "🔎 dry-run: 何も削除しません。削除・switch・pull・fetch --prune・hook 実行を見送り、判定だけを実行時と同じ条件で行います。"
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)" || die "git リポジトリ内で実行してください"
@@ -960,7 +1144,11 @@ fi
 
 HOOK="$REPO_ROOT/.claude/hooks/pre-merge-cleanup.sh"
 if [ -f "$HOOK" ]; then
-  if [ -x "$HOOK" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    # hook は project 固有の破壊的処理（DDEV stop・キャッシュ削除など）の差し込み口で、
+    # 何をするかはこちらからは分からない。dry-run では起動しない。
+    dry_run_skip "pre-merge-cleanup hook の実行: ${HOOK}"
+  elif [ -x "$HOOK" ]; then
     echo "▶ running $HOOK"
     "$HOOK" || die "pre-merge-cleanup hook が失敗しました。cleanup を中断します。"
     if [ "$NO_SWITCH_MODE" = "1" ]; then
@@ -1003,14 +1191,21 @@ if [ "$NO_SWITCH_MODE" = "1" ]; then
     echo "   保持者: ${BASE_WORKTREE}（${BASE_HOLDER_STATE} / 最終コミット: ${BASE_HOLDER_LAST:-不明}）"
   fi
 
-  git fetch --prune origin 2>&1 \
-    || die "git fetch --prune が失敗しました。ネットワーク / 認証を確認してください。"
+  if [ "$DRY_RUN" = "1" ]; then
+    dry_run_skip "git fetch --prune origin（リモート追跡 ref を書き換えるため行いません）"
+  else
+    git fetch --prune origin 2>&1 \
+      || die "git fetch --prune が失敗しました。ネットワーク / 認証を確認してください。"
+  fi
 
   # checkout せずに base を最新化できるなら行う。base がどこかの worktree に
   # checkout されていると git 自身が拒否する（#749 の実測）ので、その場合は
   # スキップして報告する（サマリーの未実施項目にも載せる）。
   BASE_FF_OUT=""
-  if BASE_FF_OUT="$(git fetch origin "$PR_BASE:$PR_BASE" 2>&1)"; then
+  if [ "$DRY_RUN" = "1" ]; then
+    BASE_FF_NOTE="未実施（dry-run）"
+    dry_run_skip "git fetch origin ${PR_BASE}:${PR_BASE}"
+  elif BASE_FF_OUT="$(git fetch origin "$PR_BASE:$PR_BASE" 2>&1)"; then
     BASE_FF_NOTE="実施済み（git fetch origin ${PR_BASE}:${PR_BASE} で checkout せずに更新）"
     echo "ℹ️ ${PR_BASE} は checkout せずに最新化しました（git fetch origin ${PR_BASE}:${PR_BASE}）。"
   else
@@ -1057,14 +1252,28 @@ if [ "$NO_SWITCH_MODE" != "1" ] && [ -n "$BASE_WORKTREE" ] && [ "$BASE_WORKTREE"
   BASE_WORKTREE_OID="$(git -C "$BASE_WORKTREE" rev-parse HEAD 2>&1)" \
     || die "$PR_BASE を保持する worktree の HEAD 取得に失敗しました: $BASE_WORKTREE — $BASE_WORKTREE_OID"
 
-  echo "ℹ️ $PR_BASE は別の clean worktree が保持しています。worktree を残して detached へ退避します:"
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "ℹ️ ${PR_BASE} は別の clean worktree が保持しています（実行時は worktree を残して detached へ退避します）:"
+  else
+    echo "ℹ️ $PR_BASE は別の clean worktree が保持しています。worktree を残して detached へ退避します:"
+  fi
   echo "   $BASE_WORKTREE ($BASE_WORKTREE_OID)"
-  git -C "$BASE_WORKTREE" switch --detach "$BASE_WORKTREE_OID" 2>&1 \
-    || die "$PR_BASE を保持する worktree の detached 退避に失敗しました: $BASE_WORKTREE"
-  BASE_WORKTREE_DETACHED=1
+  if [ "$DRY_RUN" = "1" ]; then
+    # dirty ガード（上の status 確認と die）は実行時と同じ条件で通過済み。
+    # 見送るのは退避そのものだけで、判定は緩めていない。
+    dry_run_skip "git -C ${BASE_WORKTREE} switch --detach ${BASE_WORKTREE_OID}"
+  else
+    git -C "$BASE_WORKTREE" switch --detach "$BASE_WORKTREE_OID" 2>&1 \
+      || die "$PR_BASE を保持する worktree の detached 退避に失敗しました: $BASE_WORKTREE"
+    BASE_WORKTREE_DETACHED=1
+  fi
 fi
 
-if [ "$NO_SWITCH_MODE" != "1" ]; then
+if [ "$NO_SWITCH_MODE" != "1" ] && [ "$DRY_RUN" = "1" ]; then
+  dry_run_skip "git switch ${PR_BASE} / git fetch --prune origin / git pull --ff-only origin ${PR_BASE}"
+fi
+
+if [ "$NO_SWITCH_MODE" != "1" ] && [ "$DRY_RUN" != "1" ]; then
   SWITCH_OUT=""
   if ! SWITCH_OUT="$(git switch "$PR_BASE" 2>&1)"; then
     if [ "$BASE_WORKTREE_DETACHED" = "1" ]; then
@@ -1182,6 +1391,41 @@ elif [ "$PR_HEAD_OID_OK" != "1" ]; then
       PR_OID_PENDING_FAILURE="$PR_HEAD: headRefOid の取得と ref の実在確認がどちらも失敗しリモート削除未実施 — ネットワーク / 認証を確認して merge-cleanup を再実行（実在と OID を確認できるまで削除しない）"
       ;;
   esac
+elif [ "$DRY_RUN" = "1" ]; then
+  # ここに来る時点で、fork 判定・ガード情報の有無・open PR 再利用・headRefOid の
+  # 有無は実行時と同じ順に評価済み。見送るのは削除 push そのものだけ。
+  #
+  # ただし「push を見送る」は「無条件に削除対象と書いてよい」ではない。実行時の削除は
+  # --force-with-lease で origin 側の OID を照合するため、ref が無い / OID が違えば
+  # 実行しても消えない。headRefOid が取れたことだけを根拠に would_delete と書くと、
+  # 再利用された同名ブランチや既に消えた ref を過剰に予告することになる。
+  DRY_PR_HEAD_VERDICT="$(dry_remote_delete_verdict "$PR_HEAD" "$PR_HEAD_OID")"
+  # 区切りはタブ。リテラルのタブを ${} の中へ直書きすると読み手に見えないので cut で割る
+  DRY_PR_HEAD_REMOTE_OID="$(printf '%s' "$DRY_PR_HEAD_VERDICT" | cut -f2-)"
+  case "$(printf '%s' "$DRY_PR_HEAD_VERDICT" | cut -f1)" in
+    match)
+      echo "🗑️  リモートブランチ削除（対象）: $PR_HEAD (PR #$PR_NUM: $PR_TITLE)"
+      dry_run_skip "git push --force-with-lease=refs/heads/${PR_HEAD}:${PR_HEAD_OID} origin :refs/heads/${PR_HEAD}"
+      PR_REMOTE_RESULT="would_delete"
+      ;;
+    mismatch)
+      # 実行時は lease に拒否されて削除されない（= 保護）。予告でも削除対象にしない。
+      echo "  ⚠️ $PR_HEAD はマージ後に更新されています（origin の現 OID ${DRY_PR_HEAD_REMOTE_OID} ≠ PR #$PR_NUM の head ${PR_HEAD_OID}）。実行時も lease 拒否で削除されないため、削除対象にしません。"
+      PR_REMOTE_RESULT="skipped_lease_rejected"
+      SKIPPED_LEFTOVERS+=("$PR_HEAD: マージ後 push あり（実行時も lease 拒否）")
+      ;;
+    missing)
+      echo "ℹ️  origin に $PR_HEAD は既にありません（実行時も削除は不要）。"
+      PR_REMOTE_RESULT="already_missing"
+      ;;
+    *)
+      # 判定材料が取れないなら削除対象と書かない（fail-closed）。予告を出せていない
+      # ことは黙らせず、サマリーの失敗項目にも載せる。
+      echo "⚠️ origin 上の $PR_HEAD の実在・OID を確認できませんでした。削除対象かどうか判定できないため予告しません（fail-closed）: ${DRY_PR_HEAD_REMOTE_OID}"
+      PR_REMOTE_RESULT="skipped_remote_check_failed"
+      FAILED_ITEMS+=("$PR_HEAD: origin 上の ref を確認できず dry-run の削除予告を保留（ネットワーク / 認証を確認）")
+      ;;
+  esac
 else
   echo "🗑️  リモートブランチ削除: $PR_HEAD (PR #$PR_NUM: $PR_TITLE)"
   set +e
@@ -1222,10 +1466,14 @@ fi
 # 失敗しても安全側にしか外れない: ref は Step 3 の fetch 時点まで新しく、prune が
 # 飛ぶと「消えたはずのブランチが [gone] に見えない」= 処理対象が減るだけ。Step 5 の
 # -D は MERGED PR との (名前, OID) 照合を維持し、Step 6 は自前の ls-remote で判定する。
-git fetch --prune origin 2>&1 || {
-  echo "⚠️ 削除反映の fetch --prune が失敗しました。[gone] 判定が不完全な可能性があります。"
-  FAILED_ITEMS+=("削除反映の fetch --prune 失敗: [gone] 検出が不完全な可能性")
-}
+if [ "$DRY_RUN" = "1" ]; then
+  dry_run_skip "削除反映の git fetch --prune origin（代わりに read-only の ls-remote で prune 後の [gone] を予測します）"
+else
+  git fetch --prune origin 2>&1 || {
+    echo "⚠️ 削除反映の fetch --prune が失敗しました。[gone] 判定が不完全な可能性があります。"
+    FAILED_ITEMS+=("削除反映の fetch --prune 失敗: [gone] 検出が不完全な可能性")
+  }
+fi
 
 # ---- Step 5: [gone] ブランチ + 関連 worktree の削除 ---------------------------
 
@@ -1233,6 +1481,53 @@ git fetch --prune origin 2>&1 || {
 GONE_BRANCHES="$(git for-each-ref \
   --format='%(if:equals=[gone])%(upstream:track)%(then)%(refname:short)%(end)' \
   refs/heads/ | grep -v '^$' || true)"
+
+if [ "$DRY_RUN" = "1" ]; then
+  # 仮想 prune。実行時に「リモート削除 → prune → 新たに [gone] → その worktree」と
+  # 連鎖して消えるものを、副作用なしで予告へ足す（dry_virtual_prune_gone_branches の
+  # コメント参照）。fetch --prune は撃たない = リポジトリ状態は変えない。
+  DRY_EXTRA_GONE_LIST="$WORK_TMP/dry_extra_gone.list"
+  if dry_virtual_prune_gone_branches > "$DRY_EXTRA_GONE_LIST"; then
+    if [ -s "$DRY_EXTRA_GONE_LIST" ]; then
+      echo "ℹ️ (dry-run) 実行時の削除と fetch --prune で新たに [gone] になるブランチを予告へ含めます（そのブランチと worktree も実行時には消えます）:"
+      sed 's/^/  - /' "$DRY_EXTRA_GONE_LIST"
+      if [ -n "$GONE_BRANCHES" ]; then
+        GONE_BRANCHES="${GONE_BRANCHES}
+$(cat "$DRY_EXTRA_GONE_LIST")"
+      else
+        GONE_BRANCHES="$(cat "$DRY_EXTRA_GONE_LIST")"
+      fi
+    fi
+  else
+    # 予告を出せないまま「[gone] はありません」と書くと、実行すると消えるものが
+    # 一覧から丸ごと落ちる。黙らせず失敗として積む（fail-closed）。
+    echo "⚠️ origin のブランチ一覧を取得できませんでした。prune 後に新しく [gone] になるブランチ（と、その worktree）を予告できません（fail-closed）: $(cat "$WORK_TMP/dry_virtual_prune_error" 2>/dev/null | tr '\n' ' ')"
+    FAILED_ITEMS+=("dry-run: origin のブランチ一覧を取得できず、prune 連鎖で削除されるブランチ / worktree を予告できていない")
+  fi
+fi
+
+# dry-run の `git branch -d` 相当の判定に使う基準コミット。実行時の -d は
+# **base へ switch して pull した後の HEAD** に対してマージ済みかを見る。dry-run は
+# switch も pull もしないので、現在の HEAD を基準にすると実行時と判定が食い違う
+# （受け入れ条件「dry-run だけ判定が緩まない」に直接抵触する。緩む向きにも厳しくなる
+# 向きにもずれる）。実行時が使う base 相当の commit を明示的に基準にする:
+#   - switch なし掃除モード = 実行時も HEAD のままなので HEAD
+#   - それ以外 = base の先端。pull 後に最も近い origin/<base> を優先し、無ければ
+#     ローカルの <base>、どちらも解決できなければ HEAD へ落として理由を出す
+DRY_MERGED_BASE_REF=""
+if [ "$DRY_RUN" = "1" ]; then
+  if [ "$NO_SWITCH_MODE" = "1" ]; then
+    DRY_MERGED_BASE_REF="HEAD"
+  elif git rev-parse --verify --quiet "refs/remotes/origin/$PR_BASE" >/dev/null 2>&1; then
+    DRY_MERGED_BASE_REF="refs/remotes/origin/$PR_BASE"
+  elif git rev-parse --verify --quiet "refs/heads/$PR_BASE" >/dev/null 2>&1; then
+    DRY_MERGED_BASE_REF="refs/heads/$PR_BASE"
+  else
+    DRY_MERGED_BASE_REF="HEAD"
+    echo "⚠️ (dry-run) ${PR_BASE} の先端を解決できないため、'git branch -d' 相当の判定を現在の HEAD で行います（実行時の判定と食い違う可能性があります）。"
+  fi
+  echo "ℹ️ (dry-run) [gone] ブランチの 'git branch -d' 相当の判定は ${DRY_MERGED_BASE_REF} を基準に行います（実行時に base へ switch / pull した後の HEAD に相当）。"
+fi
 
 if [ -z "$GONE_BRANCHES" ]; then
   echo "✅ [gone] ブランチはありません。"
@@ -1243,6 +1538,13 @@ else
   # switch なし掃除モードでは呼び出し元のブランチが [gone] のこともある。checkout 中の
   # ブランチは git 自身が削除を拒否するが、失敗（PARTIAL）ではなく名指しのスキップにする
   CURRENT_BRANCH_STEP5="$(git branch --show-current)"
+  if [ "$DRY_RUN" = "1" ] && [ "$NO_SWITCH_MODE" != "1" ]; then
+    # 実行時はこの時点で既に base へ switch している。現在の checkout を基準にすると、
+    # 実行時には切り替わって削除できるブランチを「呼び出し元がチェックアウト中」として
+    # 予告から落とすことになる（-d の判定基準を base 相当に寄せるのと同じ理由で、
+    # 予告が実際の削除より少なくなる向きのずれを塞ぐ）。
+    CURRENT_BRANCH_STEP5="$PR_BASE"
+  fi
 
   while IFS= read -r branch; do
     [ -z "$branch" ] && continue
@@ -1274,7 +1576,9 @@ else
 
     # optional post-branch-cleanup hook（DDEV stop など project 固有処理の差し込みポイント）
     HOOK="$REPO_ROOT/.claude/hooks/post-branch-cleanup.sh"
-    if [ -f "$HOOK" ] && [ -x "$HOOK" ]; then
+    if [ -f "$HOOK" ] && [ "$DRY_RUN" = "1" ]; then
+      dry_run_skip "post-branch-cleanup hook の実行: ${HOOK} (${branch})"
+    elif [ -f "$HOOK" ] && [ -x "$HOOK" ]; then
       echo "▶ running $HOOK ($branch)"
       if ! BRANCH="$branch" WORKTREE_PATH="$WORKTREE_PATH" "$HOOK"; then
         echo "  ⚠️ post-branch-cleanup hook が失敗。次のブランチへ進みます。"
@@ -1351,7 +1655,13 @@ else
       fi
 
       WT_AGENT_NOTES=""
-      if [ "$WT_AGENT_PATH" = "1" ]; then
+      if [ "$WT_AGENT_PATH" = "1" ] && [ "$DRY_RUN" = "1" ]; then
+        # 3 条件（OID 照合 / claude agent ロック / 残置物が使い捨てパスのみ）は
+        # 上で実行時と同じ条件を通過済み。unlock と除去だけを見送る。
+        echo "  ℹ️ マージ済みエージェント worktree の条件を満たします（実行時は unlock と使い捨てパス除去を行います）。"
+        dry_run_skip "git worktree unlock ${WORKTREE_PATH} / rm -rf ${WORKTREE_PATH}/.review-results"
+        WT_AGENT_NOTES="claude agent ロックの解除と使い捨てパス除去（dry-run のため未実施）"
+      elif [ "$WT_AGENT_PATH" = "1" ]; then
         WT_UNLOCK_OUT=""
         if WT_UNLOCK_OUT="$(git worktree unlock "$WORKTREE_PATH" 2>&1)"; then
           echo "  ℹ️ claude agent ロックを解除しました（(名前, OID) が MERGED PR の head と一致）: ${WT_LOCK_REASON:-（理由の記載なし）}"
@@ -1396,7 +1706,10 @@ else
       # 注意: .gitignore 対象のファイル（.env 等）は clean 扱いのまま削除される。
       # 惜しいファイルを worktree の ignored 領域にだけ置く運用は避けること（コマンド doc にも明記）
       WORKTREE_RM_OUT=""
-      if ! WORKTREE_RM_OUT="$(git worktree remove "$WORKTREE_PATH" 2>&1)"; then
+      if [ "$DRY_RUN" = "1" ]; then
+        # clean 確認・ロック判定は実行時と同じ条件を通過済み。削除だけ見送る。
+        dry_run_skip "git worktree remove ${WORKTREE_PATH}"
+      elif ! WORKTREE_RM_OUT="$(git worktree remove "$WORKTREE_PATH" 2>&1)"; then
         echo "  ❌ worktree 削除に失敗: $WORKTREE_RM_OUT"
         echo "     ブランチ削除もスキップします。手動対応してください。"
         if [ "$WT_AGENT_PATH" = "1" ]; then
@@ -1409,7 +1722,11 @@ else
         FAILED_ITEMS+=("$branch: worktree 削除失敗 ($WORKTREE_PATH)")
         continue
       fi
-      echo "  ✓ worktree removed: $WORKTREE_PATH"
+      if [ "$DRY_RUN" = "1" ]; then
+        echo "  ✓ (dry-run) 削除対象の worktree: $WORKTREE_PATH"
+      else
+        echo "  ✓ worktree removed: $WORKTREE_PATH"
+      fi
       if [ -n "$WT_AGENT_NOTES" ]; then
         INFO_ITEMS+=("$branch: マージ済みエージェント worktree を自動処理（(名前, OID) が MERGED PR の head と一致。${WT_AGENT_NOTES}）")
       fi
@@ -1417,18 +1734,40 @@ else
       DELETED_WORKTREE_REALS+=("${WORKTREE_REAL:-$WORKTREE_PATH}")
     fi
 
-    # まず -d（小文字）でマージ済みのみ削除を試す
+    # まず -d（小文字）でマージ済みのみ削除を試す。
+    # dry-run では -d 自体が削除なので撃てない。同じ 1 段目（マージ済みか）を、
+    # 削除を伴わない merge-base で等価に判定してから 2 段目の OID 照合へ落とす。
+    # 判定材料（MERGED 一覧・ローカル OID）は実行時とまったく同じものを使う。
     BRANCH_DEL_OUT=""
-    if BRANCH_DEL_OUT="$(LC_ALL=C git branch -d "$branch" 2>&1)"; then
+    BRANCH_DELETE_MODE="run"
+    if [ "$DRY_RUN" = "1" ]; then
+      if git merge-base --is-ancestor "refs/heads/$branch" "$DRY_MERGED_BASE_REF" 2>/dev/null; then
+        BRANCH_DELETE_MODE="dry_merged"
+      else
+        BRANCH_DELETE_MODE="dry_escalate"
+      fi
+    fi
+
+    if [ "$BRANCH_DELETE_MODE" = "dry_merged" ]; then
+      dry_run_skip "git branch -d ${branch}"
+      echo "  ✓ (dry-run) 削除対象のブランチ: $branch"
+      DELETED_BRANCHES+=("$branch")
+    elif [ "$BRANCH_DELETE_MODE" != "dry_escalate" ] \
+      && BRANCH_DEL_OUT="$(LC_ALL=C git branch -d "$branch" 2>&1)"; then
       echo "  ✓ branch deleted: $branch"
       DELETED_BRANCHES+=("$branch")
-    elif printf '%s' "$BRANCH_DEL_OUT" | grep -qE 'not fully merged'; then
+    elif [ "$BRANCH_DELETE_MODE" = "dry_escalate" ] \
+      || printf '%s' "$BRANCH_DEL_OUT" | grep -qE 'not fully merged'; then
       # squash merge 由来は -d で消せない。ただし [gone] は「upstream が消えた」ことしか
       # 保証しないため、-D は (名前, ローカル OID) が MERGED PR の head と一致する
       # ブランチに限定する（手動でリモート削除された未マージ作業を消さないため）
       LOCAL_OID="$(git rev-parse "refs/heads/$branch")"
       if [ "$GUARDS_OK" = "1" ] && grep -qxF "$(printf '%s\t%s' "$branch" "$LOCAL_OID")" "$MERGED_LIST"; then
-        if BRANCH_DEL_OUT="$(git branch -D "$branch" 2>&1)"; then
+        if [ "$DRY_RUN" = "1" ]; then
+          dry_run_skip "git branch -D ${branch}（squash merge 済みを OID 照合で確認）"
+          echo "  ✓ (dry-run) 削除対象のブランチ: $branch"
+          DELETED_BRANCHES+=("$branch")
+        elif BRANCH_DEL_OUT="$(git branch -D "$branch" 2>&1)"; then
           echo "  ✓ branch deleted (forced, squash merge 済みを OID 照合で確認): $branch"
           DELETED_BRANCHES+=("$branch")
         else
@@ -1487,6 +1826,12 @@ if [ "$TRANSCRIPT_MODE" != "archive" ] && [ "$TRANSCRIPT_MODE" != "off" ]; then
   FAILED_ITEMS+=("トランスクリプト回収: FF_MERGE_CLEANUP_TRANSCRIPTS の値が不正 ($TRANSCRIPT_MODE)")
 elif [ "$TRANSCRIPT_MODE" = "off" ]; then
   TRANSCRIPT_STEP_NOTE="無効（FF_MERGE_CLEANUP_TRANSCRIPTS=off）"
+elif [ "$DRY_RUN" = "1" ]; then
+  # この Step の対象は「今回実際に削除できた worktree の分」だけで、dry-run では
+  # 1 つも削除しない。候補を先回りして一覧にすると、実行時に worktree の削除が
+  # 保護・失敗で見送られた場合にアーカイブもされないため、一覧が実行時と食い違う。
+  # 値の検証（上の不正値ブロック）は dry-run でも実行時と同じに行う。
+  TRANSCRIPT_STEP_NOTE="未評価（dry-run。実際に削除できた worktree の分だけが対象のため）"
 elif [ "${#DELETED_WORKTREES[@]}" -eq 0 ]; then
   : # 削除した worktree が無ければ対象も無い
 else
@@ -1816,6 +2161,21 @@ else
           continue
         fi
 
+        if [ "$DRY_RUN" = "1" ]; then
+          # Step 4 で削除対象に挙げた head は、実行時にはこの時点で既に消えていて
+          # 取り残し一覧に載らない。dry-run では消していないので載るが、同じ 1 本を
+          # 2 回数えると「実行時に削除されるもの」の件数が実態とずれる。
+          if [ "$PR_REMOTE_RESULT" = "would_delete" ] \
+            && [ "$rbranch" = "$PR_HEAD" ] && [ "$roid" = "$PR_HEAD_OID" ]; then
+            echo "  ℹ️ (dry-run) $rbranch は Step 4 の削除対象です（実行時はこの時点で既に消えているため、ここでは重複して数えません）。"
+            continue
+          fi
+          dry_run_skip "git push --force-with-lease=refs/heads/${rbranch}:${roid} origin :refs/heads/${rbranch}"
+          echo "  ✓ (dry-run) 削除対象の取り残し: $rbranch"
+          DELETED_LEFTOVERS+=("$rbranch")
+          continue
+        fi
+
         set +e
         delete_remote_branch_with_lease "$rbranch" "$roid"
         rc=$?
@@ -1893,7 +2253,11 @@ else
       done <<< "$LEFTOVER"
 
       # 削除を反映（ここの失敗は最終検証の [gone] 表示が古くなるだけなので警告に留める）
-      git fetch --prune origin 2>&1 || echo "⚠️ 最終 fetch --prune が失敗しました（表示が古い可能性があります）"
+      if [ "$DRY_RUN" = "1" ]; then
+        dry_run_skip "削除反映の git fetch --prune origin"
+      else
+        git fetch --prune origin 2>&1 || echo "⚠️ 最終 fetch --prune が失敗しました（表示が古い可能性があります）"
+      fi
     fi
   fi
 fi
@@ -1910,7 +2274,9 @@ git status
 
 CURRENT_BRANCH="$(git branch --show-current)"
 if [ "$CURRENT_BRANCH" != "$PR_BASE" ]; then
-  if [ "$NO_SWITCH_MODE" = "1" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "ℹ️ dry-run のため ${PR_BASE} への復帰は行っていません: ${CURRENT_BRANCH:-（detached）}"
+  elif [ "$NO_SWITCH_MODE" = "1" ]; then
     echo "ℹ️ 呼び出し元のブランチを保持したままです: ${CURRENT_BRANCH}（switch なし掃除モードのため base への復帰は行っていません）"
   else
     echo "⚠️ 現在のブランチが $PR_BASE ではありません: $CURRENT_BRANCH"
@@ -1946,7 +2312,10 @@ fi
 # ---- Step 7.5: optional post-merge-cleanup hook -------------------------------
 
 HOOK="$REPO_ROOT/.claude/hooks/post-merge-cleanup.sh"
-if [ -f "$HOOK" ] && [ -x "$HOOK" ]; then
+if [ -f "$HOOK" ] && [ "$DRY_RUN" = "1" ]; then
+  echo ""
+  dry_run_skip "post-merge-cleanup hook の実行: ${HOOK}"
+elif [ -f "$HOOK" ] && [ -x "$HOOK" ]; then
   echo ""
   echo "▶ running $HOOK"
   if ! "$HOOK"; then
@@ -1970,6 +2339,16 @@ echo "## マージ後 Cleanup 結果"
 echo ""
 echo "**対象 PR**: #$PR_NUM"
 echo ""
+# dry-run では「削除した」と書けない。同じ行を両方で使い回すため動詞だけ差し替える
+# （別の報告ブロックを書き起こすと、項目が片方にだけ足される形の乖離が起きる）。
+DELETED_LABEL="削除した"
+LEFTOVER_LABEL="自動削除した"
+if [ "$DRY_RUN" = "1" ]; then
+  DELETED_LABEL="削除対象の"
+  LEFTOVER_LABEL="削除対象の"
+  echo "**🔎 dry-run**: 以下は「実行した場合に削除されるもの」で、今回は 1 つも削除していません。"
+  echo ""
+fi
 # 「リモートブランチを削除したか」は完了報告で必ず明示する（Issue #758。`gh pr merge`
 # の成否と混同されると、delete_branch_on_merge=false のリポジトリで取り残しに気付けない）
 case "$PR_REMOTE_RESULT" in
@@ -1977,11 +2356,12 @@ case "$PR_REMOTE_RESULT" in
   already_missing|already_missing_at_leftover_retry) PR_REMOTE_HUMAN="既に存在しない（今回の削除は不要）" ;;
   skipped_fork) PR_REMOTE_HUMAN="削除していない（fork PR のため origin 側は対象外）" ;;
   skipped_open_reuse|skipped_lease_rejected|skipped_lease_rejected_at_leftover_retry) PR_REMOTE_HUMAN="削除していない（保護。上の警告を参照）" ;;
+  would_delete) PR_REMOTE_HUMAN="削除していない（dry-run。実行時は削除する）" ;;
   *) PR_REMOTE_HUMAN="削除していない（要確認。上の警告 / 失敗項目を参照）" ;;
 esac
 echo "- 対象 PR のリモートブランチ ($PR_HEAD): $PR_REMOTE_RESULT — リモートブランチの削除: ${PR_REMOTE_HUMAN}"
-echo "- 削除した [gone] ローカルブランチ: ${#DELETED_BRANCHES[@]} 本${DELETED_BRANCHES[*]+ (${DELETED_BRANCHES[*]})}"
-echo "- 削除した worktree: ${#DELETED_WORKTREES[@]} 個${DELETED_WORKTREES[*]+ (${DELETED_WORKTREES[*]})}"
+echo "- ${DELETED_LABEL}[gone] ローカルブランチ: ${#DELETED_BRANCHES[@]} 本${DELETED_BRANCHES[*]+ (${DELETED_BRANCHES[*]})}"
+echo "- ${DELETED_LABEL}worktree: ${#DELETED_WORKTREES[@]} 個${DELETED_WORKTREES[*]+ (${DELETED_WORKTREES[*]})}"
 if [ -n "$TRANSCRIPT_STEP_NOTE" ]; then
   echo "- worktree トランスクリプトの回収: $TRANSCRIPT_STEP_NOTE"
 elif [ "${#ARCHIVED_TRANSCRIPTS[@]}" -gt 0 ]; then
@@ -1997,7 +2377,7 @@ if [ "${#SKIPPED_TRANSCRIPTS[@]}" -gt 0 ]; then
   printf '  - %s\n' "${SKIPPED_TRANSCRIPTS[@]}"
 fi
 if [ "$LEFTOVER_CHECK_DONE" = "1" ]; then
-  echo "- 自動削除したリモート取り残し: ${#DELETED_LEFTOVERS[@]} 本${DELETED_LEFTOVERS[*]+ (${DELETED_LEFTOVERS[*]})}"
+  echo "- ${LEFTOVER_LABEL}リモート取り残し: ${#DELETED_LEFTOVERS[@]} 本${DELETED_LEFTOVERS[*]+ (${DELETED_LEFTOVERS[*]})}"
 else
   echo "- リモート取り残し検証: スキップ（ガード情報の取得失敗）"
 fi
@@ -2039,5 +2419,9 @@ elif [ "$LEFTOVER_CHECK_DONE" != "1" ]; then
 fi
 
 echo ""
-echo "次のステップ: /ace-curate $PR_NUM で知見をプレイブックへ反映"
+if [ "$DRY_RUN" = "1" ]; then
+  echo "次のステップ: 上の一覧を確認し、問題なければ --dry-run を外して 'merge-cleanup.sh ${PR_NUM}' を実行する"
+else
+  echo "次のステップ: /ace-curate $PR_NUM で知見をプレイブックへ反映"
+fi
 exit "$EXIT_CODE"

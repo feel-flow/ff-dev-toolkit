@@ -216,6 +216,42 @@ contains 'footer 差分でも省略しない' \
   "収束段落が footer 差分でのゲート省略を禁じている（旧 3 suite 充足への書き戻し検出。レビュー W1）"
 contains '検査した tree と HEAD の tree が一致しない' \
   "dirty なまま得た green を「HEAD を検査済み」と扱わない"
+
+# 手順 0b の部分 skip 許容条件。散文が `checks-skipped` 非 0 を「未実行の検査がある」と
+# 書くだけで**続行するのか中断するのか**を規定せず、判定コード片は GATE_RC しか見て
+# いなかった。その状態では散文は実行面で空文になり、実測 3 回とも内訳を個別 suite の
+# 再実行で調べ直したうえで「既存実績と同じ内訳」と判断して続行していた（判断の再演）。
+# かつ全 suite が対象の 0b では adapter-sandbox-contract の grok enum 非公表が恒久的に
+# 残るため `checks-skipped: total=0` は達成不能で、手順 8（対象 2 suite。total=0 が現に
+# 成立する）の基準をそのまま持ち込むことはできない。許容表・表で判定する分岐・環境 skip
+# を許さない旨の 3 つを固定する（どれが消えても「非 0 を内訳なしで通す」へ戻る）。
+# 判定コード片は `bash -e <<'EOF' … EOF` で渡す規約（git-workflow.md）に従って set -e 下で
+# 走る。`cmd` の直後に `GATE_RC=$?` と書くと run-all が非 0 で終わった時点でシェルごと落ち、
+# 下の中断理由と次の一手が表示されない（緑と赤で出力の質が変わる）。捕捉形を固定する。
+# 針はコード行そのものを指す。`|| GATE_RC=$?` だけだと、同じ綴りを含む直上の説明コメントで
+# 満たされてしまい、コード側を元の `GATE_RC=$?` へ戻しても緑のまま通る（実測）。
+contains 'run-all.sh >"$GATE_OUT" 2>&1 || GATE_RC=$?' \
+  "手順 0b が run-all の終了コードを set -e で落ちない形（|| GATE_RC=\$?）で捕捉する"
+contains 'ALLOWED_SKIP_PATTERNS=(' \
+  "手順 0b が続行してよい部分 skip の正本を配列として持つ"
+contains 'done <<<"$(awk '"'"'/^[[:space:]]+○ skip(:|$)/'"'"' "$GATE_OUT")"' \
+  "手順 0b が run-all 出力の部分 skip 理由行を走査する（GATE_RC だけを見て散文を空文にしない）"
+contains 'NG: 許容表に無い部分 skip がある' \
+  "許容表に無い部分 skip で中断することが判定コード片にある"
+contains '**環境 skip は許容しない**' \
+  "外部 CLI 不在などの環境 skip を続行させないことが明記されている"
+contains '`total=0` を要求しない理由（手順 8 との非対称は意図）' \
+  "0b が total=0 を要求しない理由と、手順 8 へ波及させない旨が明記されている"
+# 許容表の各要素。1 行消しても配列の形は保たれるため、要素単位でも固定する（消えた要素の
+# skip はその場で中断側へ倒れるので安全側だが、「なぜ止まるのか」が手順書から消える）。
+contains "'検査 B/C は免除（件数ゲートが担保'" \
+  "許容表に設計上の免除（plugin-description-enumeration）がある"
+contains "'estimation カテゴリファイルは未作成'" \
+  "許容表にデータ未到来（effort-contract）がある"
+contains "'enum 照合は対象外（grok-cli は受け付ける値の集合を公表していない）'" \
+  "許容表に上流仕様による照合不能（adapter-sandbox-contract）がある"
+contains "'に対応する compare リンク行が無いためスキップ（公開タグ前の開発周期では正常'" \
+  "許容表に同期サイクル内で解消するもの（changelog-public-tags）がある"
 # 旧方式（ADR-034 決定 2 + Issue #830 の green 再利用機構）の復活禁止。針は散文を
 # 誤検出しない最小限の広さにする — 現 SKILL の散文言及は backtick 内の `FULL_GATE_SHA`
 # （代入の `=` を含まない）だけで、check-full-gate-reuse への言及は無い（実測）。
@@ -264,6 +300,7 @@ L_GUARD="$(line_of 'if [ -n "${SYNC_SRC_SHA:-}" ] && [ "$(git rev-parse HEAD)" =
 L_COMMIT="$(line_of 'git -C "$PUBLIC" commit -m "sync: ')"
 L_CIHEALTH="$(line_of 'HEALTH_OUT="$(bash scripts/check-weekly-run-all-health.sh 2>&1)" || true')"
 L_GATE="$(line_of 'if [ "$GATE_MODE" = fast ]; then')"
+L_SKIPJUDGE="$(line_of 'NG: 許容表に無い部分 skip がある')"
 
 # 記録の読み取りが同期実行より前にあると、前回の同期が残した記録を掴む（今回の
 # 同期内容とは無関係な SHA を「反映済み」と記録する退行）。
@@ -285,6 +322,14 @@ assert_order "${L_CIHEALTH}" "${L_GATE}" \
 assert_order "${L_GATE}" "${L_SYNC}" \
   "順序: 定期実行点ゲートが同期実行より前" \
   "順序: 定期実行点ゲートが同期実行より後ろにある — 不可逆操作の後で検査する退行"
+# 部分 skip の判定は run-all 実行の後（出力が無ければ判定材料が無い）かつ同期実行の前
+# （不可逆操作の後で気付いても遅い）。前へ動かす退行も後ろへ動かす退行も、この 2 本で捕まえる。
+assert_order "${L_GATE}" "${L_SKIPJUDGE}" \
+  "順序: 部分 skip の許容判定が run-all 実行より後" \
+  "順序: 部分 skip の許容判定が run-all 実行より前にある — 判定材料が無い時点で判定する退行"
+assert_order "${L_SKIPJUDGE}" "${L_SYNC}" \
+  "順序: 部分 skip の許容判定が同期実行より前" \
+  "順序: 部分 skip の許容判定が同期実行より後ろにある — 不可逆操作の後で未実行の検査に気付く退行"
 # リリース準備（手順 R）の判定は定期実行点ゲート（手順 0b）の**前**に置く（ADR-042）。
 # R の判定材料は手順 0a が揃えた作業ツリーと公開側 clone の履歴 / タグで、**ゲート結果には
 # 依存しない**。後ろに置くと RELEASE_REQUIRED の回だけ「捨てられる 1 回目」が生まれる

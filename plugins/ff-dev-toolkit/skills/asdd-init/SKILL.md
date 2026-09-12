@@ -54,7 +54,7 @@ fi
 `--check` なら次だけを実行し、結果と未決事項を報告して終了する。
 
 ```bash
-node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/cli.mjs" --root "$ASDD_PROJECT_ROOT" --check
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/cli.mjs" --root "$ASDD_PROJECT_ROOT" --check
 ```
 
 ## 2. 目的から少数ずつ対話する
@@ -89,14 +89,14 @@ node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/cli.mjs" --root "$ASDD_PROJECT_ROOT" -
 合意した内容を[設定契約](references/configuration.md)に従ったJSONにまとめ、秘密を含まない一時ファイルの絶対パスを `ASDD_CONFIRMED_CONFIG` に設定する。シェルのevalやコマンド文字列へのJSON埋込は使わない。
 
 ```bash
-node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/cli.mjs" --root "$ASDD_PROJECT_ROOT" --config "$ASDD_CONFIRMED_CONFIG"
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/cli.mjs" --root "$ASDD_PROJECT_ROOT" --config "$ASDD_CONFIRMED_CONFIG"
 ```
 
 作成・変更・衝突するファイルと有効になる自動処理を見せる。既存の承認範囲内なら再確認せず続ける。重要な未合意事項に依存する反映は止め、それ以外の調査・提案は進める。
 
 ```bash
-node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/cli.mjs" --root "$ASDD_PROJECT_ROOT" --config "$ASDD_CONFIRMED_CONFIG" --apply
-node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/cli.mjs" --root "$ASDD_PROJECT_ROOT" --check
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/cli.mjs" --root "$ASDD_PROJECT_ROOT" --config "$ASDD_CONFIRMED_CONFIG" --apply
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/cli.mjs" --root "$ASDD_PROJECT_ROOT" --check
 ```
 
 手編集との衝突はユーザーの内容を保ち、解決案を示す。設定の直接書換え、無条件上書き・削除、全面的なコピーで生成器の保護を迂回しない。生成結果の文書間の矛盾、未決の重要事項、根拠のない技術バージョンも読む。

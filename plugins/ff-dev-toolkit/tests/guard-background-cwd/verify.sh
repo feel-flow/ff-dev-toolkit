@@ -22,6 +22,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/hooks/guard-background-cwd.sh"
+# ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
+# shellcheck source=../lib/asdd-gate-drain.sh
+. "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 
 [ -f "$TARGET" ] || { echo "✗ guard-background-cwd.sh が見つかりません: $TARGET" >&2; exit 1; }
@@ -440,6 +443,33 @@ if jq -e '.description | test("linked worktree")' "$HOOKS_JSON" >/dev/null 2>&1;
   ok "hooks.json の description が linked worktree での foreground 警告に言及する"
 else
   bad "hooks.json の description に linked worktree の記述が無い"
+fi
+
+echo "guard-background-cwd: ASDD ゲートの早期終了経路でも stdin を読み切る"
+# 任意 Hook を止めるゲート（hooks/asdd-hook-gate.sh）は stdin を消費しない設計なので、
+# 前置きが drain より前にあると「読まずに exit 0」する経路ができ、書き手がその場で
+# EPIPE / SIGPIPE を受ける。ゲートが停止する 2 経路を fixture で作って固定する。
+ASDD_ON="$TEST_TMP/asdd-hooks-on"
+ASDD_OFF="$TEST_TMP/asdd-hooks-off"
+mkdir -p "$ASDD_ON" "$ASDD_OFF"
+ff_asdd_fixture "$ASDD_ON" true
+ff_asdd_fixture "$ASDD_OFF" false
+ASDD_PAYLOAD="$(ff_asdd_big_payload '{"tool_name":"Bash","tool_input":{"command":"echo ok"},"cwd":"/tmp","hook_event_name":"PreToolUse"}')"
+ff_asdd_drain_probe "$TARGET" "$ASDD_PAYLOAD" "$ASDD_ON" PATH=/nonexistent
+if [ "$FF_ASDD_DRAIN_RC" -eq 0 ] && [ -z "$FF_ASDD_DRAIN_OUT" ]; then
+  ok ".asdd 設定あり + node 不在（ゲートが停止）でも stdin を読み切ってから無出力 exit 0"
+else
+  bad "ASDD ゲート（node 不在）の drain: exit=$FF_ASDD_DRAIN_RC out=[$FF_ASDD_DRAIN_OUT]（非 0 なら前置きが drain より前にある）"
+fi
+if command -v node >/dev/null 2>&1; then
+  ff_asdd_drain_probe "$TARGET" "$ASDD_PAYLOAD" "$ASDD_OFF"
+  if [ "$FF_ASDD_DRAIN_RC" -eq 0 ] && [ -z "$FF_ASDD_DRAIN_OUT" ]; then
+    ok "features.hooks=false（ゲートが無効と判定）でも stdin を読み切ってから無出力 exit 0"
+  else
+    bad "ASDD ゲート（feature 無効）の drain: exit=$FF_ASDD_DRAIN_RC out=[$FF_ASDD_DRAIN_OUT]（非 0 なら前置きが drain より前にある）"
+  fi
+else
+  echo "  ○ skip: node が無いため features.hooks=false 経路は未検査（guard-background-cwd の ASDD ゲート無効判定）"
 fi
 
 echo

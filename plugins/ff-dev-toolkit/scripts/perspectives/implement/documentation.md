@@ -39,7 +39,7 @@
 
 ## Output Format
 
-```markdown
+````markdown
 ## Documentation Results
 
 ### JSDoc/TSDoc Generated
@@ -71,7 +71,7 @@
 - JSDoc 追加: X 関数
 - README 更新: X セクション
 - 使用例追加: X 件
-```
+````
 
 ## Safety Constraints
 

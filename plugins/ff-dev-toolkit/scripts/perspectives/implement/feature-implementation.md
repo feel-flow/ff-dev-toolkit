@@ -34,7 +34,7 @@
 
 生成するコードは以下の形式で出力する:
 
-```markdown
+````markdown
 ## Implementation Results
 
 ### Files Created/Modified
@@ -57,7 +57,7 @@
 ### Integration Steps
 1. 実装後に必要な追加手順
 2. マイグレーション、設定変更等
-```
+````
 
 ## Safety Constraints
 

@@ -39,7 +39,7 @@
 
 ## Output Format
 
-```markdown
+````markdown
 ## Test Writing Results
 
 ### Test Files Created
@@ -61,7 +61,7 @@
 
 ### Uncovered Scenarios
 - [シナリオ] — テスト追加が必要な理由
-```
+````
 
 ## Safety Constraints
 

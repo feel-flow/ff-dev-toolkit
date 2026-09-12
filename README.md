@@ -140,7 +140,7 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 
 ### Bash ガード（PreToolUse）
 
-プラグインをインストールすると、Bash ツールの実行前に 2 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。どちらも「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、**抜け道付きの deny（= その場で対処して再実行できる警告）**として実装している。自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。
+プラグインをインストールすると、Bash ツールの実行前に 5 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-issue-labels.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。
 
 **未コミット変更ガード（`guard-checkout-restore.sh`）** — 未コミット変更のあるファイルへの `git checkout [--] <path>` / `git restore <path>` を検出し、変更消失の前に警告する。警告文は代替手段（`cp` バックアップ / `git stash push -- <file>` → `pop`）を案内する。ブランチ切り替え（`git checkout <branch>` / `git switch`）、clean・untracked なファイルへの復元、`git restore --staged`（worktree 非破壊）では発火しない。
 
@@ -154,6 +154,22 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 - 判定対象: コマンド文字列全体（heredoc・`--body "..."` を含む）と、hook 実行時点で読める `--body-file <path>` / `-F <path>` の内容
 - 既知の限界（判定できず素通しする渡し方）: `--body-file -`（stdin）・プロセス置換・同一コマンド内で生成する一時ファイル・`--fill`・インタラクティブ / web での本文入力
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1`
+
+**cwd ガード（`guard-background-cwd.sh`）** — モノレポで `run_in_background` 付きの Bash を実行するとき、または linked worktree が複数存在するリポジトリで絶対パス以外の `cd` から始まる Bash を実行しようとしたときに、意図と異なるディレクトリでコマンドが走るリスクを警告する。誤警告のコストを優先し、`systemMessage` の警告のみでコマンド自体はブロックしない。
+
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1`
+- 既知の限界: `systemMessage` は利用者向け表示チャネルでエージェントのコンテキストには入らないため、警告を読んで先頭に `cd` を書き足す判断は人間側に委ねられる
+
+**工数実績未記入マージガード（`guard-effort-actual.sh`）** — `gh pr merge` が閉じようとしている Issue の本文に `ff-effort` ブロックが存在するのに `effort_ai_actual` が未記入のまま残っている場合、マージ前に停止する。`ff-effort` ブロック自体が無い Issue では発火しない。
+
+- 通し方: `/close-issue` で実績を書き戻してからマージする、またはコマンド先頭に環境代入 `FF_EFFORT_ACTUAL_ACK=1` を付けて再実行する
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1`
+- 既知の限界: heredoc・クォートの閉じていないセグメント・変数展開やコマンド置換で組み立てる `gh pr merge`、`gh` の認証切れ・オフラインなどでは判定できず素通しする（fail-open）
+
+**起票ラベル契約ガード（`guard-issue-labels.sh`）** — 素の `gh issue create` に種別・優先度のいずれかのラベルが付いていない場合に停止する。起票スキルの verify-then-skip 契約（実在確認のうえラベルを付与する手順）を直接の `gh issue create` で迂回するのを機械的に捕まえるのが目的。`follow-up` ラベルの欠落は起票が PR レビュー由来かどうかを機械的に判定できないため、`systemMessage` の案内のみに留める（停止しない）。
+
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1`（対象コマンド先頭の環境代入としても有効な抜け道）
+- 既知の限界: `--label` を変数展開・コマンド置換で組み立てる形、`gh issue create` を経ない起票（API 直叩き・Web UI）では判定できず素通しする（fail-open）
 
 ## 前提
 

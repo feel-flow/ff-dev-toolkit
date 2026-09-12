@@ -39,7 +39,7 @@
 
 ## Output Format
 
-```markdown
+````markdown
 ## Migration Results
 
 ### Migration Plan
@@ -80,7 +80,7 @@
 - 推定所要時間: X分
 - ロールバック可能: Yes/No
 - ダウンタイム: X分
-```
+````
 
 ## Safety Constraints
 

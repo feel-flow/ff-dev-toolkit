@@ -52,6 +52,13 @@ FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
+# 節スコープ照合（見出しから次の見出しまでを切り出してから固定文字列を当てる）。
+# 文書全体の grep だけで「その節に在ること」を検査すると、規定を正本節から削除して
+# 同じ一文を別節へ書き写すだけで緑のまま通る。節の定義を本 suite 側へ書き直さない
+# （同じ文書に対して 2 つの答えが出るのを避ける。正本は tests/lib/section-scope.sh）。
+# shellcheck source=../lib/section-scope.sh
+. "$SCRIPT_DIR/../lib/section-scope.sh"
+
 # --- 消費プロジェクトのレビュー入口（Issue #1011） ---
 # shellcheck source=consumer-review-entrypoint-scan.sh
 . "$SCRIPT_DIR/consumer-review-entrypoint-scan.sh"
@@ -397,6 +404,24 @@ must_contain() {
     ok "$label"
   else
     bad "$label — 期待パターンが見つかりません: $needle ($file)"
+  fi
+}
+
+# 固定文字列が「その文書の指定した節の中に」存在することを要求する。文書全体の
+# must_contain だと、規定を正本節から削除して同じ文言を別節へ移すだけで緑のままになる
+# （見出しも needle も文書内に残るため、各リンク先の正本節が空になっても気付けない）。
+# 節の切り出しは tests/lib/section-scope.sh を使う（節の定義を本 suite へ書き直さない）。
+# HEADING は見出し行のリテラル前方一致。見出しが 1 本でなければ fail-closed で赤になる。
+must_contain_section() {
+  local file="$1" heading="$2" needle="$3" label="$4" reason=""
+  if [ ! -f "$DOCS/$file" ]; then
+    bad "$label — 対象ファイルがありません: $file"
+    return
+  fi
+  if reason="$(section_scope_contains "$DOCS/$file" "$heading" "$needle")"; then
+    ok "$label"
+  else
+    bad "$label — $reason ($file)"
   fi
 }
 
@@ -996,6 +1021,31 @@ must_match "$f" '^\*\*並列マージで残る定型作業\*\*:.*並列側は fr
 must_contain "$f" '同じ文書を触る単発 PR が同時に開いているとき' \
   "Epic 一括対応: 振り直しの定型はバッチ外の単発 PR 並行にも適用する"
 
+# --- Git Workflow: `--delete-branch` の部分失敗の読み方とリモート個別削除（観測台帳 OBS-132 から昇格）---
+must_contain "$f" '`--delete-branch` の部分失敗の読み方とリモート個別削除' \
+  "Git Workflow に --delete-branch の部分失敗を扱う節が実在する"
+must_contain "$f" 'の 1 行だけで、これだけを見るとマージそのものが失敗したように読めるが、**マージとリモートブランチ削除は成功していることがある**' \
+  "Git Workflow が --delete-branch の部分失敗（ローカル削除のみ失敗）の読み方を明記している"
+must_contain "$f" '`gh pr view ${PR_NUMBER} --json state --jq .state` が `MERGED` であること' \
+  "Git Workflow が部分失敗の判定基準（state=MERGED）を実測コマンドで明示している"
+must_contain "$f" 'git ls-remote --exit-code --heads origin' \
+  "Git Workflow が部分失敗の判定にリモート実測（ls-remote --exit-code）を使うことを明示している"
+must_contain "$f" 'それ以外の終了コードは「判定不能」で、削除済みと読んではいけない' \
+  "Git Workflow が ls-remote の判定不能（通信・認証失敗）を削除済みと読まないことを明示している"
+# 削除は破壊的なので、対象がその PR の head であることを OID で示してから消す。
+# 手順から OID 照合が落ちると、マージ後に再利用された同名ブランチを消す経路が開く。
+must_contain "$f" '削除の前に、残っている ref がその PR の head と同一であることを確認する' \
+  "Git Workflow がリモート削除前の OID 照合を要求している"
+must_contain "$f" 'gh pr view ${PR_NUMBER} --json headRefOid --jq .headRefOid' \
+  "Git Workflow が OID 照合の実測コマンドを示している"
+must_contain "$f" 'ブランチ名に含まれる `#`（Issue/PR 番号を使った命名規則）は `%23` へエンコードする' \
+  "Git Workflow がリモート個別削除時のブランチ名 # エンコードを明記している"
+# 説明文だけが残ってコマンド例が消えると、手順として実行できない状態で緑になる。
+must_contain "$f" 'gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/fix/%23NNNN-<slug>' \
+  "Git Workflow がリモート個別削除のコマンド例そのものを持つ"
+must_contain "$f" '`#` 以降が送信対象のパスから欠落した不正な ref 名になるため、`-X DELETE` は 422 で失敗する' \
+  "Git Workflow が # エンコードの理由（素の # は 422）を明記している"
+
 # --- Git Workflow: 状態を変える複数行の手順とプロンプト特殊文字は heredoc / ファイル経由（観測台帳 OBS-092 から昇格）---
 must_contain "$f" 'プロンプト等の特殊文字（バッククォート・`$VAR`・条件展開）を含む文字列はヒアドキュメントで一時ファイルに書いてから渡す' \
   "Git Workflow が特殊文字を含む文字列をヒアドキュメント経由で渡す規則を持つ"
@@ -1043,10 +1093,48 @@ else
   fi
 fi
 
-# --- multi-implement SKILL.md: 委譲プロンプトの事実確認義務（親側 / 子側の 2 規定）---
-# 親側（委譲プロンプトへ載せる事実主張を一次情報で確認する）と子側（指示からの逸脱を
-# 根拠つきで報告してよい）は別の規定で、どちらも文言だけが防御である。片方だけが残ると
-# 「子が訂正するから親は確認しなくてよい」という読み方が復活するので、併存を固定する。
+# --- 委譲プロンプトの事実確認義務（親側 / 子側の 2 規定）とその到達性 ---
+# 親側（委譲プロンプトへ載せる事実主張と、委譲先の完了報告の転記を一次情報で確認する）と
+# 子側（指示からの逸脱を根拠つきで報告してよい）は別の規定で、どちらも文言だけが防御である。
+# 片方だけが残ると「子が訂正するから親は確認しなくてよい」という読み方が復活するので、併存を固定する。
+#
+# 親側の正本は multi-cli-agent-orchestration.md の節に置く。multi-implement の SKILL.md に
+# しか無かった頃は、ホストが提供する Agent / Task ツールで直接サブエージェントを起こす経路へ
+# 1 行も届かなかった（同経路はこの SKILL.md を読まない）。正本は 1 つに保ったまま、
+# 各委譲経路からの到達点を個別に固定する — どれか 1 つの所在が消えたら赤にするため、
+# 参照側の針は節アンカーまで含めた link 断片で持つ（本文の言い換えでは素通りする）。
+FACT_CHECK_DOC='05-operations/deployment/multi-cli-agent-orchestration.md'
+FACT_CHECK_HEADING='## 委譲プロンプトへ載せる事実主張の一次情報確認'
+FACT_CHECK_SECTION_NAME='委譲プロンプトへ載せる事実主張の一次情報確認'
+FACT_CHECK_ANCHOR='#委譲プロンプトへ載せる事実主張の一次情報確認'
+
+# 正本: 見出しから次の見出しまでの節が一意に切り出せる（= 見出しがちょうど 1 本ある）。
+# 到達点 3 経路のアンカーはこの見出しから導出されるので、0 本でも 2 本以上でも赤にする。
+fact_section_body=""
+if fact_section_body="$(section_scope_extract "$DOCS/$FACT_CHECK_DOC" "$FACT_CHECK_HEADING")"; then
+  ok "親側の事実確認義務の正本節を multi-cli-agent-orchestration.md から一意に切り出せる（到達点 3 経路のアンカーの導出元）"
+else
+  bad "親側の事実確認義務の正本節を切り出せません — ${fact_section_body}（到達点 3 経路のアンカーが壊れます）"
+fi
+
+# 規定の針は**正本節スコープ**で当てる。文書全体の grep だと、規定を正本節から削除して
+# 同じ文言を別節へ移すだけで見出しも needle も残り緑のまま通るが、各到達点のリンク先
+# （= この節）は空になり、到達性そのものが壊れる。
+must_contain_section "$FACT_CHECK_DOC" "$FACT_CHECK_HEADING" '出所がレビュー指摘でもオーケストレータ自身の観察でも、一次情報' \
+  "正本節の事実確認義務が出所を問わない形で残っている"
+must_contain_section "$FACT_CHECK_DOC" "$FACT_CHECK_HEADING" '親（委譲するオーケストレータ）が事実主張を確認せずに委譲プロンプトへ載せてよい理由にはならない' \
+  "正本節に親側の確認義務と子側の逸脱報告の分離が残っている（子の機構で親の確認を代替できると読める形を防ぐ）"
+must_contain_section "$FACT_CHECK_DOC" "$FACT_CHECK_HEADING" 'サブエージェントの報告の転記も同じ確認義務の対象' \
+  "正本節が報告の転記（Issue コメント・PR 本文・別の委譲プロンプト）も義務の対象に含めている"
+must_contain_section "$FACT_CHECK_DOC" "$FACT_CHECK_HEADING" 'ホストが提供する Agent / Task ツールで直接起こしたサブエージェントも含む' \
+  "正本節が同梱スクリプト経由以外の委譲（ホストの Agent / Task ツール）も対象だと明記している"
+
+# 到達点 1: 配布 git-workflow.md。ホストのサブエージェントへ並列委譲する手順の中から張る。
+must_contain "05-operations/deployment/git-workflow.md" "](./multi-cli-agent-orchestration.md${FACT_CHECK_ANCHOR})" \
+  "git-workflow.md の並列委譲手順から親側の事実確認義務の正本節へ到達できる"
+
+# 到達点 2: multi-implement SKILL.md（同梱スクリプト経由の委譲手順）。子側の逸脱報告の
+# 正本はこちらのままなので、併存の検査も同じ場所で続ける。
 # SKILL.md は ${DOCS}（docs-template）の外にあるため絶対パスへ直接 grep する。
 MULTI_IMPLEMENT_SKILL="$PLUGIN_ROOT/skills/multi-implement/SKILL.md"
 if [ ! -f "$MULTI_IMPLEMENT_SKILL" ]; then
@@ -1058,17 +1146,139 @@ else
   else
     bad "multi-implement SKILL.md の子側の逸脱報告規定が見つかりません"
   fi
-  if grep -qF '出所がレビュー指摘でもオーケストレータ自身の観察でも、一次情報' \
-      "$MULTI_IMPLEMENT_SKILL"; then
-    ok "multi-implement SKILL.md に親側の事実確認義務が出所を問わない形で常置されている"
+  if grep -qF "](../../docs-template/${FACT_CHECK_DOC}${FACT_CHECK_ANCHOR})" "$MULTI_IMPLEMENT_SKILL"; then
+    ok "multi-implement SKILL.md の委譲手順から親側の事実確認義務の正本節へ到達できる"
   else
-    bad "multi-implement SKILL.md の親側の事実確認義務（出所を問わない）が見つかりません"
+    bad "multi-implement SKILL.md から親側の事実確認義務の正本節への参照が見つかりません"
   fi
-  if grep -qF '子側の規定であり、親（このスキルを実行するオーケストレータ）が事実主張を確認せずに委譲プロンプトへ載せてよい理由にはならない' \
-      "$MULTI_IMPLEMENT_SKILL"; then
-    ok "親側の確認義務と子側の逸脱報告が別規定である旨が明記されている"
+fi
+
+# 到達点 3: リポジトリ入口の AGENTS.md。スキルも配布文書も読まずにホストの Agent / Task
+# ツールで直接委譲するオーケストレータへ届く唯一の経路。
+#
+# 適用範囲の判定は本 suite が既に使っている軸へ揃える — リポジトリ正本 docs/ は公開
+# checkout へ同期されない（公開対象は plugins/ff-dev-toolkit と oss/ff-dev-toolkit だけ）ので、
+# その有無を「開発元リポジトリか」の判定に使う（上の REPO_DECISIONS / REPO_TESTING と同じ軸）。
+# **開発元リポジトリでは AGENTS.md の不在自体を赤にする**。以前は `-f` で丸ごと skip して
+# いたため、AGENTS.md を消すと assertion が 1 件も走らないまま緑になり、ホスト直接委譲の
+# 経路が丸ごと消えてもゲートが気付かなかった（fail-open）。「適用外（公開 checkout）」と
+# 「違反なし」は別の行として出す。
+REPO_ROOT_DIR="$(cd "$PLUGIN_ROOT/../.." && pwd)"
+REPO_AGENTS="$REPO_ROOT_DIR/AGENTS.md"
+if [ ! -f "$REPO_AGENTS" ] && [ ! -f "$REPO_TESTING" ]; then
+  ok "AGENTS.md の到達点検査は適用外（リポジトリ正本 docs/ を持たない checkout。公開ミラー等）"
+elif [ ! -f "$REPO_AGENTS" ]; then
+  bad "AGENTS.md がありません: ${REPO_AGENTS}（リポジトリ正本 docs/ を持つ開発元 checkout では必須 — ホスト直接委譲の経路が丸ごと消えます）"
+else
+  # 節名だけを見ると、正本パスを誤記・削除しても節名さえ残れば緑になり、直接委譲者は
+  # 正本へ到達できない。参照行 1 行の中で「正本パス + 節名 + 親側義務の識別句」を同時に
+  # 固定し、さらに**書かれたパスを実測**する（実在すること・その中に正本節があること）。
+  fact_agents_line="$(awk -v key="「${FACT_CHECK_SECTION_NAME}」節" '
+    index($0, key) > 0 { n++; line = $0 }
+    END { if (n == 1) print line; else printf "FF_AGENTS_HITS=%d\n", n + 0 }
+  ' "$REPO_AGENTS")"
+  case "$fact_agents_line" in
+    FF_AGENTS_HITS=*)
+      bad "AGENTS.md の親側の事実確認義務の参照行が ${fact_agents_line#FF_AGENTS_HITS=} 行（期待 1 行）— ホスト直接委譲の経路へ届かなくなります"
+      ;;
+    *)
+      case "$fact_agents_line" in
+        *'委譲プロンプトへ載せる事実主張を一次情報で確認してから渡す'*)
+          ok "AGENTS.md の参照行が親側の義務本文（事実主張を一次情報で確認してから渡す）を述べている"
+          ;;
+        *)
+          bad "AGENTS.md の参照行に親側の義務本文がありません（節名だけが残ると、義務そのものが消えても気付けません）"
+          ;;
+      esac
+      case "$fact_agents_line" in
+        *'別の委譲プロンプトへ転記する場面も対象'*)
+          ok "AGENTS.md の参照行が完了報告の転記も同じ義務の対象だと述べている"
+          ;;
+        *)
+          bad "AGENTS.md の参照行に完了報告の転記も対象である旨がありません"
+          ;;
+      esac
+      # 正本パスは参照行から実際に取り出す（本 suite 側の定数と突き合わせるだけでは、
+      # AGENTS.md が実在しないパスを指していても気付けない）。code span の直後が
+      # 「の「<節名>」節」である code span を正本パスとみなす。
+      fact_agents_path="$(
+        printf '%s\n' "$fact_agents_line" | awk -v marker="の「${FACT_CHECK_SECTION_NAME}」節" '
+          BEGIN { FS = "`" }
+          {
+            for (i = 2; i <= NF; i += 2) {
+              tail = $(i + 1)
+              sub(/^[[:space:]]+/, "", tail)
+              if (index(tail, marker) == 1) { print $i; exit }
+            }
+          }
+        '
+      )"
+      if [ -z "$fact_agents_path" ]; then
+        bad "AGENTS.md の参照行に正本パスがありません（\`<path>\` の「${FACT_CHECK_SECTION_NAME}」節 の形で書くこと）"
+      elif [ "$fact_agents_path" = "${fact_agents_path%"$FACT_CHECK_DOC"}" ]; then
+        bad "AGENTS.md の参照先が正本文書ではありません: ${fact_agents_path}（期待は …/${FACT_CHECK_DOC}）"
+      elif [ ! -f "$REPO_ROOT_DIR/$fact_agents_path" ]; then
+        bad "AGENTS.md が指す正本パスが実在しません: ${fact_agents_path}（リポジトリルート起点で解決）"
+      else
+        fact_agents_target=""
+        if fact_agents_target="$(section_scope_extract "$REPO_ROOT_DIR/$fact_agents_path" "$FACT_CHECK_HEADING")"; then
+          ok "AGENTS.md が指す正本パスが実在し、その中に正本節がちょうど 1 つある（パスと節を実測）"
+        else
+          bad "AGENTS.md が指す正本パス ${fact_agents_path} に正本節がありません — ${fact_agents_target}"
+        fi
+      fi
+      ;;
+  esac
+fi
+
+# --- merge-cleanup SKILL.md: `--delete-branch` の部分失敗の読み方とリモート個別削除
+# （観測台帳 OBS-132 から昇格）。SKILL.md は ${DOCS}（docs-template）の外にあるため
+# 絶対パスへ直接 grep する。
+MERGE_CLEANUP_SKILL="$PLUGIN_ROOT/skills/merge-cleanup/SKILL.md"
+if [ ! -f "$MERGE_CLEANUP_SKILL" ]; then
+  bad "merge-cleanup SKILL.md が見つかりません: $MERGE_CLEANUP_SKILL"
+else
+  if grep -qF '`--delete-branch` の部分失敗の読み方とリモート個別削除' "$MERGE_CLEANUP_SKILL"; then
+    ok "merge-cleanup SKILL.md に --delete-branch の部分失敗を扱う節が実在する"
   else
-    bad "親側の確認義務と子側の逸脱報告の分離が見つかりません（子の機構で親の確認を代替できると読める）"
+    bad "merge-cleanup SKILL.md に --delete-branch の部分失敗を扱う節が見つかりません"
+  fi
+  if grep -qF 'マージとリモートブランチ削除は別工程であり、そちらは成功していることがある' "$MERGE_CLEANUP_SKILL"; then
+    ok "merge-cleanup SKILL.md が --delete-branch の部分失敗（ローカル削除のみ失敗）の読み方を明記している"
+  else
+    bad "merge-cleanup SKILL.md の --delete-branch 部分失敗の読み方が見つかりません"
+  fi
+  if grep -qF '`gh pr view <PR番号> --json state --jq .state` が `MERGED` であること' "$MERGE_CLEANUP_SKILL"; then
+    ok "merge-cleanup SKILL.md が部分失敗の判定基準（state=MERGED）を実測コマンドで明示している"
+  else
+    bad "merge-cleanup SKILL.md の部分失敗の判定基準（state=MERGED）が見つかりません"
+  fi
+  if grep -qF 'それ以外の終了コードは「判定不能」で、削除済みと読んではいけない' "$MERGE_CLEANUP_SKILL"; then
+    ok "merge-cleanup SKILL.md が ls-remote の判定不能（通信・認証失敗）を削除済みと読まないことを明示している"
+  else
+    bad "merge-cleanup SKILL.md の ls-remote 判定不能の扱いが見つかりません"
+  fi
+  # 削除は破壊的なので、対象がその PR の head であることを OID で示してから消す。
+  if grep -qF '削除の前に、残っている ref がその PR の head と同一であることを確認する' "$MERGE_CLEANUP_SKILL"; then
+    ok "merge-cleanup SKILL.md がリモート削除前の OID 照合を要求している"
+  else
+    bad "merge-cleanup SKILL.md のリモート削除前の OID 照合が見つかりません"
+  fi
+  if grep -qF 'ブランチ名に含まれる `#`（Issue/PR 番号を使った命名規則）は `%23` へエンコードする' "$MERGE_CLEANUP_SKILL"; then
+    ok "merge-cleanup SKILL.md がリモート個別削除時のブランチ名 # エンコードを明記している"
+  else
+    bad "merge-cleanup SKILL.md のリモート個別削除時のブランチ名 # エンコードが見つかりません"
+  fi
+  # 説明文だけが残ってコマンド例が消えると、手順として実行できない状態で緑になる。
+  if grep -qF 'gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/fix/%23NNNN-<slug>' "$MERGE_CLEANUP_SKILL"; then
+    ok "merge-cleanup SKILL.md がリモート個別削除のコマンド例そのものを持つ"
+  else
+    bad "merge-cleanup SKILL.md のリモート個別削除のコマンド例が見つかりません"
+  fi
+  if grep -qF '`#` 以降が送信対象のパスから欠落した不正な ref 名になるため、`-X DELETE` は 422 で失敗する' "$MERGE_CLEANUP_SKILL"; then
+    ok "merge-cleanup SKILL.md が # エンコードの理由（素の # は 422）を明記している"
+  else
+    bad "merge-cleanup SKILL.md の # エンコードの理由（素の # は 422）が見つかりません"
   fi
 fi
 

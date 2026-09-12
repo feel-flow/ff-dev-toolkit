@@ -3885,6 +3885,16 @@ capture_and_guard_unresolved_critical_state() {
   [[ -f "$report_file" ]] || return 0
   if ! parsed="$(extract_unresolved_critical_perspectives "$report_file")"; then
     echo "ERROR: cannot inspect unresolved Critical perspectives in the previous report." >&2
+    # An abort that names no recovery route sends the caller back to --help. The
+    # three leftover-state branches that this one belongs with — unreadable
+    # perspective list, state from another branch/base/scope, and narrowed review
+    # omitting unresolved perspectives — all spell --fresh out here; this branch
+    # was the only one of the four that did not. (Other aborts in this function
+    # report malformed or unidentifiable state rather than a usable leftover, and
+    # deliberately say nothing about --fresh.) This one is reached by a leftover
+    # whose machine state cannot be read at all — the case where re-reading the
+    # report helps least.
+    echo "       Or archive leftover results and retry: add --fresh" >&2
     echo "       Previous results were left untouched: ${report_file}" >&2
     return 1
   fi

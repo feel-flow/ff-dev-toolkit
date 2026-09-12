@@ -1,10 +1,10 @@
 ---
 title: "MASTER"
-version: "1.8.0"
+version: "1.9.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-08"
+updated: "2026-09-12"
 changeImpact: "medium"
 ---
 
@@ -694,6 +694,21 @@ draft → review → approved
 
 `.version-claims` contract を持つプロジェクト（リポジトリルートに `.version-claims/` ディレクトリがある場合）では、`version` を変更する文書の claim（`.version-claims/<document>.claim`）も**同じ commit で**更新すること（リポジトリ固有ルールが claim を要求する文書は version 不変の更新でも同様）。claim を落とすと `shared-version-convergence` 系のゲートが赤くなり、provisional commit → claim 生成 → amend の復旧を後追いで行うことになる。生成手順の正本は `.version-claims/README.md` — 手順はそちらを参照し、ここへ複製しない。contract を持たないプロジェクトではこの手順は不要。
 
+### 実測の記録先
+
+正本（本書やコア7文書、`CLAUDE.md` 等）に実測の記録（実体数・版の一覧・時刻表・スコープ差の注記など）を書き足すと、レビューのたびに数字・単位・スコープの整合を取り直す面が増え、前巡の修正が次の指摘を生んで収束しなくなる。
+
+正本に残してよいのは次の範囲までとする。
+
+- 判断手順（どう判断するか）
+- 判断に直結する境界値（閾値・上限など）
+- 測り直すためのコマンド
+- 証跡文書へのリンク
+
+実体数・版の一覧・時刻表・スコープ差の注記のような**時間で腐る記述**は正本に置かず、`08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く。数字を引き直すときは証跡文書のコマンドを回し直し、結果を**行として追記**する（古い行は消さない）。
+
+証跡文書の命名・追記規律と `08-knowledge/` 配下の使い分け表は `08-knowledge/README.md`（初期セット外）が持つ。`${CLAUDE_PLUGIN_ROOT}/docs-template/08-knowledge/README.md` からコピーして使う。
+
 ### Changelog カテゴリ
 
 Changelog エントリには以下のカテゴリを使用する（[Keep a Changelog](https://keepachangelog.com/) 準拠）。
@@ -715,6 +730,10 @@ Changelog エントリには以下のカテゴリを使用する（[Keep a Chang
 ## Changelog
 
 - 2026-09-08 追記: プラグイン変数がない直接利用でも取得できる公開配布元を明記（ai-spec-driven-development#525）。
+
+### [1.9.0] - 2026-09-12
+
+- §文書運用ルール に「実測の記録先」を追加。正本に残すのは判断手順・判断に直結する境界値・測り直しコマンド・証跡へのリンクまでとし、実体数・版の一覧・時刻表・スコープ差の注記のような時間で腐る記述は `08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く規範を明文化。証跡文書の置き場の定義は新設した `08-knowledge/README.md` を参照。
 
 ### [1.8.0] - 2026-09-08
 

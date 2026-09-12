@@ -973,6 +973,444 @@ else
   ok "negative control: 外部envでprovenanceを抑止できる形を拒否する（${env_quiet_applied} script）"
 fi
 
+# ---- node entry 側 plugin rootガード ----------------------------------------
+# 共通の shell ガードを挿入できない入口（node entry）。穴の形は同じなので、同じ判定・同じ案内
+# 文言を JS で複製し、shell 側と同じ「marker各1件 → canonical一致 → 期待rc → 必須句 → 禁止句 →
+# 配置」の順で見る。**案内文言の正本は shell ガード block ただ 1 つ**で、node 側の写しは後半の
+# 実走同値照合（同じ fixture で shell と node を走らせ、案内の本文が 1 行も違わないことを assert
+# する）が縛る。ソース文字列どうしの比較にしないのは、`${var:-既定}` のような言語ごとの綴りを
+# 吸収する正規化規則そのものが第 3 の正本になるためで、consumer が実際に読む出力の側で同値を
+# 要求する。
+
+# 実行時ガードの対象外（`entry名|理由`）。黙って母集団から落とさないため理由付きで登録し、
+# 報告にも出す。現在は 0 件。
+NODE_GUARD_EXEMPT=()
+
+# 中断コード（`entry名|rc`）。node entry は `main()` の異常と判定結果の双方を 1 で返すので、
+# ガードの停止を 1 にすると「本来の処理が走って 1 を返した」と区別できない。2 を割り当てて
+# 表で固定し、静的検査と実走の両方で照合する。
+NODE_EXPECT_RC=(
+  "asdd/cli.mjs|2"
+  "asdd/work.mjs|2"
+)
+
+# 崩壊床（絶対下限）。shell 側（MIN_ROOT_SCRIPTS / MIN_GUARDED_SCRIPTS）と同じ規律で、抽出から
+# 導いた量ではなく入力から独立した絶対値を置く。node entry を意図的に減らすときだけ下げる。
+MIN_ROOT_NODE_ENTRIES=2
+MIN_GUARDED_NODE_ENTRIES=2
+
+node_guard_exempt_reason() {
+  local name="$1" entry
+  [ "${#NODE_GUARD_EXEMPT[@]}" -gt 0 ] || return 0
+  for entry in "${NODE_GUARD_EXEMPT[@]}"; do
+    case "$entry" in
+      "$name"'|'*) printf '%s' "${entry#*|}"; return 0 ;;
+    esac
+  done
+  return 0
+}
+
+node_expect_rc() {
+  local name="$1" entry
+  for entry in "${NODE_EXPECT_RC[@]}"; do
+    case "$entry" in
+      "$name"'|'*) printf '%s' "${entry#*|}"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# 母集団は shell 側と同じく呼び出し側から導く（`${FF_DEV_TOOLKIT_ROOT}/scripts/<path>.mjs`）。
+# `scripts/` 直下とは限らないので basename ではなく `scripts/` 以降の相対 path を名前にする。
+# 綴りは shell 側と同じく 3 つの root 変数名・修飾付き parameter expansion・brace 無しを拾う。
+derive_root_node_entries() {
+  { grep -rhoE '\$\{?(FF_DEV_TOOLKIT_ROOT|CLAUDE_PLUGIN_ROOT|GROK_PLUGIN_ROOT)(:[-?+=][^}]*)?\}?/scripts/[A-Za-z0-9_./-]+\.mjs' \
+      "$@" 2>/dev/null || true; } \
+    | sed 's|.*/scripts/||' | sort -u
+}
+
+ROOT_NODE_ENTRY_NAMES="$(derive_root_node_entries "$PLUGIN_ROOT/skills" "$PLUGIN_ROOT/docs-template")"
+
+check_node_guards() {
+  local scripts_dir="$1"
+  local name file reason starts ends block norm required forbidden expect_rc actual_rc
+  local guard_start_ln prelude
+  local canonical="" population=0 guarded=0 tree_fail=0
+
+  for name in $ROOT_NODE_ENTRY_NAMES; do
+    population=$((population + 1))
+    reason="$(node_guard_exempt_reason "$name")"
+    [ -z "$reason" ] || continue
+    file="$scripts_dir/$name"
+    if [ ! -f "$file" ]; then
+      echo "$name: 固定root経由で呼ばれる同梱node entryが実在しません: $file" >&2
+      tree_fail=1
+      continue
+    fi
+    guarded=$((guarded + 1))
+
+    starts="$(grep -Fc '// ff-dev-toolkit-node-root-guard:start' "$file" || true)"
+    ends="$(grep -Fc '// ff-dev-toolkit-node-root-guard:end' "$file" || true)"
+    if [ "$starts" -ne 1 ] || [ "$ends" -ne 1 ]; then
+      echo "$name: node側ガードのmarkerはstart/end各1件が必要です" >&2
+      tree_fail=1
+      continue
+    fi
+
+    block="$(sed -n '\%// ff-dev-toolkit-node-root-guard:start%,\%// ff-dev-toolkit-node-root-guard:end%p' "$file")"
+    # 中断コードだけを正規化して canonical 比較する（shell 側と同じ理由。正規化で見えなくなった
+    # 数字は下の期待rc表で名指しして別に固定する）。
+    norm="$(printf '%s\n' "$block" | sed 's/process\.exit([0-9][0-9]*)/process.exit(<中断コード>)/')"
+    if [ -z "$canonical" ]; then
+      canonical="$norm"
+    elif [ "$norm" != "$canonical" ]; then
+      echo "$name: node側ガードが他のnode entryと一致しません" >&2
+      tree_fail=1
+    fi
+
+    if ! expect_rc="$(node_expect_rc "$name")"; then
+      echo "$name: 期待rcがNODE_EXPECT_RCにありません（新しい入口はrc契約も同時に決めること）" >&2
+      tree_fail=1
+    else
+      actual_rc="$(printf '%s\n' "$block" | sed -n 's/^if (!ffGuardAssertPluginRoot(import\.meta\.url)) process\.exit(\([0-9][0-9]*\));$/\1/p' | head -1)"
+      if [ "$actual_rc" != "$expect_rc" ]; then
+        echo "$name: ガードの中断コードが期待rcと違います（実体 ${actual_rc:-不明} / 期待 ${expect_rc}）" >&2
+        tree_fail=1
+      fi
+    fi
+
+    for required in \
+      'if (!ffGuardAssertPluginRoot(import.meta.url)) process.exit(' \
+      "for (const name of ['FF_DEV_TOOLKIT_ROOT', 'CLAUDE_PLUGIN_ROOT', 'GROK_PLUGIN_ROOT'])" \
+      'ff-dev-toolkit更新後にこのskillを再呼び出してください' \
+      'version混在と未リリースWIPの実行になります' \
+      'return false;' \
+      'if (launchedIsLink) {' \
+      'if (!ffGuardLstat(file).isFile()) return ' \
+      'launched = process.argv[1] ? ffGuardRealpath(process.argv[1])' \
+      'return ffGuardRealpath(ffGuardFromUrl(selfUrl));' \
+      "return self !== '' && launched === self;" \
+      'dir = ffGuardRealpath(ffGuardDirname(self))' \
+      'canonical = ffGuardRealpath(value)' \
+      '判定不能は停止に倒します' \
+      '別のインストール領域の実体です' \
+      '照合対象外'; do
+      case "$block" in
+        *"$required"*) ;;
+        *)
+          echo "$name: node側ガードの必須句がありません: $required" >&2
+          tree_fail=1
+          ;;
+      esac
+    done
+
+    # 禁止句。root の解決に「候補の走査」が混ざると、防御が防御対象（cache / marketplace /
+    # 旧インストール領域を探しに行くこと）を踏む。渡された handoff を canonical 化して自分の
+    # 実体位置と比べる以外の探索は静的にも拒否する。provenance 抑止を外部から渡せる形も
+    # shell 側と同じ理由で拒否する。
+    for forbidden in 'readdirSync' 'opendirSync' 'globSync' 'FF_NODE_ROOT_GUARD_QUIET'; do
+      case "$block" in
+        *"$forbidden"*)
+          echo "$name: node側ガードが候補走査/外部抑止の形を持っています: $forbidden" >&2
+          tree_fail=1
+          ;;
+      esac
+    done
+
+    # 直接起動（file 末尾の `main()` 起動）の判定が、ガードと同じ canonical 判定を使うこと。
+    # ここだけ素の文字列比較に戻すと、symlink 成分を含む絶対 path から正規の handoff 付きで
+    # 起動したときに「ガードは通るのに `main()` が一度も呼ばれない」= 出力なし・exit 0 の
+    # 黙った失敗になる（ガードと `main()` で直接起動の基準が割れる）。判定は block の外に
+    # あるので、block ではなく file 全体を見る。
+    if ! grep -qF 'if (ffGuardIsEntry(import.meta.url)) {' "$file"; then
+      echo "$name: 直接起動の判定がガードと同じ ffGuardIsEntry ではありません" >&2
+      tree_fail=1
+    fi
+    if grep -qF 'process.argv[1] === fileURLToPath(import.meta.url)' "$file"; then
+      echo "$name: 直接起動の判定に素の文字列比較が残っています（ガードと基準が割れます）" >&2
+      tree_fail=1
+    fi
+
+    # 配置。ガードより前にあってよいのは shebang / コメント / 空行だけにする。ESM の static
+    # import は巻き上げられるので「あらゆる評価より先」は保証できないが（block より下に書いた
+    # sibling module の評価は先に起きる。それらの top-level は定義だけで副作用を持たない）、
+    # entry 自身の文と `main()` の呼び出しより前であることはここで固定する。
+    guard_start_ln="$(grep -n -F '// ff-dev-toolkit-node-root-guard:start' "$file" | head -1 | cut -d: -f1)"
+    if [ "$guard_start_ln" -gt 1 ]; then
+      prelude="$(sed -n "1,$((guard_start_ln - 1))p" "$file" \
+        | grep -Ev '^[[:space:]]*(//|$)|^#!' || true)"
+      if [ -n "$prelude" ]; then
+        echo "$name: node側ガードより前に実行文があります（起動直後に走る契約が崩れています）" >&2
+        tree_fail=1
+      fi
+    fi
+  done
+
+  if [ "$population" -eq 0 ]; then
+    echo "固定root経由で呼ばれる同梱node entryの導出が空振りしました" >&2
+    return 1
+  fi
+  if [ "$population" -lt "$MIN_ROOT_NODE_ENTRIES" ]; then
+    echo "母集団 ${population} 件が絶対下限 ${MIN_ROOT_NODE_ENTRIES} 件を下回りました — 名簿が縮んでいます（意図的にnode entryを減らしたならMIN_ROOT_NODE_ENTRIESも下げる）" >&2
+    return 1
+  fi
+  if [ "$guarded" -lt "$MIN_GUARDED_NODE_ENTRIES" ]; then
+    echo "ガード対象 ${guarded} 件が絶対下限 ${MIN_GUARDED_NODE_ENTRIES} 件を下回りました — NODE_GUARD_EXEMPT が広がりすぎているか名簿が縮んでいます" >&2
+    return 1
+  fi
+  NODE_SCANNED_COUNT="$guarded"
+  [ "$tree_fail" -eq 0 ]
+}
+
+echo ""
+echo "== node entry側 plugin rootガード検査 =="
+NODE_SCANNED_COUNT=0
+if check_node_guards "$PLUGIN_ROOT/scripts"; then
+  ok "固定root経由で呼ばれる同梱node entryは同一のroot照合ガードを冒頭に持つ（検査対象 ${NODE_SCANNED_COUNT} entry）"
+else
+  bad "liveのnode entry側ガードに違反があります"
+fi
+if [ "${#NODE_GUARD_EXEMPT[@]}" -eq 0 ]; then
+  echo "  - node entry側ガード対象外 allowlist: 0 件"
+else
+  echo "  - node entry側ガード対象外 allowlist: ${#NODE_GUARD_EXEMPT[@]} 件"
+  printf '      %s\n' "${NODE_GUARD_EXEMPT[@]}"
+fi
+
+# census の抽出そのものの negative control（shell 側と同型）。修飾付き parameter expansion と
+# brace 無し、および `scripts/` 直下でない相対 path を拾えなくなったら赤にする。
+mkdir -p "$TMP/node-census-fixture"
+{
+  printf 'node "${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}/scripts/zz/qualified.mjs"\n'
+  printf 'node "${FF_DEV_TOOLKIT_ROOT:-/fallback}/scripts/zz/default.mjs"\n'
+  printf 'node "$FF_DEV_TOOLKIT_ROOT/scripts/zz/unbraced.mjs" --flag\n'
+  printf 'node "${CLAUDE_PLUGIN_ROOT}/scripts/zz/claude.mjs"\n'
+  printf 'node "${GROK_PLUGIN_ROOT}/scripts/zz/grok.mjs"\n'
+} > "$TMP/node-census-fixture/sample.md"
+node_census_out="$(derive_root_node_entries "$TMP/node-census-fixture" | tr '\n' ' ')"
+node_census_missing=""
+for name in zz/qualified.mjs zz/default.mjs zz/unbraced.mjs zz/claude.mjs zz/grok.mjs; do
+  case " $node_census_out " in
+    *" $name "*) ;;
+    *) node_census_missing="${node_census_missing} ${name}" ;;
+  esac
+done
+if [ -n "$node_census_missing" ]; then
+  bad "census(node): 修飾付き/brace無し/入れ子pathのroot参照を取りこぼしました:${node_census_missing}"
+else
+  ok "census(node): \${VAR:?…} / \${VAR:-…} / \$VAR / 3つのroot変数名と入れ子pathから入口を導出する"
+fi
+
+# live の名簿に 2 resource が入っていること（回帰ピン）。
+node_census_live_missing=""
+for name in asdd/cli.mjs asdd/work.mjs; do
+  case " $(printf '%s ' $ROOT_NODE_ENTRY_NAMES) " in
+    *" $name "*) ;;
+    *) node_census_live_missing="${node_census_live_missing} ${name}" ;;
+  esac
+done
+if [ -n "$node_census_live_missing" ]; then
+  bad "census(node): liveのnode entryが名簿にありません:${node_census_live_missing}"
+else
+  ok "census(node): liveのnode entry 2 件が母集団に入る（母集団 $(printf '%s\n' $ROOT_NODE_ENTRY_NAMES | wc -l | tr -d ' ') 件）"
+fi
+
+# 崩壊床の実測。呼び出し側から名簿が丸ごと消える／1 件へ縮む変異で、同じ live tree を見たまま
+# 赤になること。床を抽出から導いた量に置くと、この 2 つは部分集合を自分自身と比べるだけになって
+# 検出できない。
+mkdir -p "$TMP/node-census-empty"
+printf '%s\n' 'node entry を呼ばない散文だけの tree' > "$TMP/node-census-empty/sample.md"
+if ( ROOT_NODE_ENTRY_NAMES="$(derive_root_node_entries "$TMP/node-census-empty")"
+     check_node_guards "$PLUGIN_ROOT/scripts" >/dev/null 2>&1 ); then
+  bad "崩壊床(node): 名簿が丸ごと空になっても緑のまま通りました"
+else
+  ok "崩壊床(node): 呼び出し側から名簿が消えると母集団0で赤になる"
+fi
+mkdir -p "$TMP/node-census-shrunk"
+printf 'node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/cli.mjs" --check\n' > "$TMP/node-census-shrunk/sample.md"
+if ( ROOT_NODE_ENTRY_NAMES="$(derive_root_node_entries "$TMP/node-census-shrunk")"
+     check_node_guards "$PLUGIN_ROOT/scripts" >/dev/null 2>&1 ); then
+  bad "崩壊床(node): 名簿が 1 件へ縮んでも緑のまま通りました（MIN_ROOT_NODE_ENTRIES が効いていません）"
+else
+  ok "崩壊床(node): 名簿が 1 件へ縮むと絶対下限 ${MIN_ROOT_NODE_ENTRIES} 件で赤になる"
+fi
+
+make_node_fixture() {
+  local dest="$1" name
+  mkdir -p "$dest"
+  for name in $ROOT_NODE_ENTRY_NAMES; do
+    [ -f "$PLUGIN_ROOT/scripts/$name" ] || continue
+    mkdir -p "$dest/$(dirname "$name")"
+    cp "$PLUGIN_ROOT/scripts/$name" "$dest/$name"
+  done
+}
+
+node_mutate_all() {
+  # $1: fixture dir / $2: perl script。全 entry へ同じ変異を当て、適用件数を stdout へ返す。
+  # 1 本だけ変異させると canonical 一致の検出器が先に赤くなり、赤の出所を区別できない。
+  local dest="$1" program="$2" file rel total=0 applied=0
+  for file in "$dest"/*/*.mjs; do
+    [ -f "$file" ] || continue
+    grep -Fq '// ff-dev-toolkit-node-root-guard:start' "$file" || continue
+    total=$((total + 1))
+    perl -0pi -e "$program" "$file"
+    rel="${file#"$dest"/}"
+    cmp -s "$TMP/node-baseline/$rel" "$file" || applied=$((applied + 1))
+  done
+  printf '%s %s' "$total" "$applied"
+}
+
+make_node_fixture "$TMP/node-baseline"
+if check_node_guards "$TMP/node-baseline" >/dev/null 2>&1; then
+  ok "positive control(node): 無変異のfixtureはガード契約を満たす（以降の非0が変異由来だと言える）"
+else
+  bad "positive control(node): 無変異のfixtureが落ちました（以降の negative control は根拠になりません）"
+fi
+
+make_node_fixture "$TMP/node-missing-marker"
+perl -0pi -e 's{// ff-dev-toolkit-node-root-guard:start\n}{}' "$TMP/node-missing-marker/asdd/cli.mjs"
+if cmp -s "$TMP/node-baseline/asdd/cli.mjs" "$TMP/node-missing-marker/asdd/cli.mjs"; then
+  bad "negative control(node): marker削除の変異が適用されませんでした（検査結果は根拠になりません）"
+elif check_node_guards "$TMP/node-missing-marker" >/dev/null 2>&1; then
+  bad "negative control(node): node側ガードのmarker欠落を見逃しました"
+else
+  ok "negative control(node): node側ガードのmarker欠落を拒否する"
+fi
+
+# 呼び出し行だけを消す変異（関数定義は残るので marker も canonical も一致したまま）。
+make_node_fixture "$TMP/node-uncalled-guard"
+perl -0pi -e 's{^if \(!ffGuardAssertPluginRoot\(import\.meta\.url\)\) process\.exit\([0-9]+\);\n}{}m' \
+  "$TMP/node-uncalled-guard/asdd/cli.mjs"
+if cmp -s "$TMP/node-baseline/asdd/cli.mjs" "$TMP/node-uncalled-guard/asdd/cli.mjs"; then
+  bad "negative control(node): 呼び出し行削除の変異が適用されませんでした（検査結果は根拠になりません）"
+elif check_node_guards "$TMP/node-uncalled-guard" >/dev/null 2>&1; then
+  bad "negative control(node): 定義だけ残してガードを呼ばない退行を見逃しました"
+else
+  ok "negative control(node): ガードを呼ばない退行を拒否する"
+fi
+
+# 一斉弱体化（shell 側と同型）。停止を落として続行させる形。canonical は一致したままなので、
+# 赤は必須句検査だけに由来する。
+make_node_fixture "$TMP/node-weakened-all"
+read -r node_weak_total node_weak_applied <<EOF
+$(node_mutate_all "$TMP/node-weakened-all" 's{^if \(!ffGuardAssertPluginRoot\(import\.meta\.url\)\) process\.exit\([0-9]+\);$}{ffGuardAssertPluginRoot(import.meta.url);}m')
+EOF
+if [ "$node_weak_total" -eq 0 ] || [ "$node_weak_applied" -ne "$node_weak_total" ]; then
+  bad "negative control(node): 一斉弱体化の変異が全entryへ適用されませんでした（${node_weak_applied}/${node_weak_total}）"
+elif check_node_guards "$TMP/node-weakened-all" >/dev/null 2>&1; then
+  bad "negative control(node): 全entryを同じ弱体形へ揃えた退行を見逃しました"
+else
+  ok "negative control(node): 全entryを同じ弱体形へ揃えても（canonical一致のまま）必須句検査が拒否する（${node_weak_applied} entry）"
+fi
+
+# 判定の穴を塞ぐ必須句が一斉に落ちても赤になること（canonical 一致のまま必須句だけが欠ける）。
+# symlink 拒否 / manifest の fail-closed / 「library として import されたときは走らない」判定は、
+# どれも 1 行の書き換えで静かに戻せる形なので個別に固定する。
+for _ncase in \
+  'symlink拒否|if \(launchedIsLink\) \{|if (false) {' \
+  'manifestのfail-closed|ffGuardLstat\(file\)\.isFile\(\)|true' \
+  'entry判定|launched = process\.argv\[1\] \? ffGuardRealpath\(process\.argv\[1\]\)|launched = process.argv[1] ? String(process.argv[1])' \
+  'selfのcanonical化|ffGuardRealpath\(ffGuardFromUrl\(selfUrl\)\)|ffGuardFromUrl(selfUrl)'; do
+  _nlabel="${_ncase%%|*}"
+  _nrest="${_ncase#*|}"
+  _nfrom="${_nrest%%|*}"
+  _nto="${_nrest#*|}"
+  make_node_fixture "$TMP/node-weak-$_nlabel"
+  read -r _nw_total _nw_applied <<EOF
+$(FF_FROM="$_nfrom" FF_TO="$_nto" node_mutate_all "$TMP/node-weak-$_nlabel" 's/$ENV{FF_FROM}/$ENV{FF_TO}/')
+EOF
+  if [ "$_nw_total" -eq 0 ] || [ "$_nw_applied" -ne "$_nw_total" ]; then
+    bad "negative control(node ${_nlabel}): 変異が全entryへ適用されませんでした（${_nw_applied}/${_nw_total}）"
+  elif check_node_guards "$TMP/node-weak-$_nlabel" >/dev/null 2>&1; then
+    bad "negative control(node ${_nlabel}): 全entryから同時に落としても見逃しました"
+  else
+    ok "negative control(node): ${_nlabel}を全entryから同時に落としても拒否する（${_nw_applied} entry）"
+  fi
+done
+
+# 直接起動の判定だけを素の文字列比較へ戻す変異。ガード block は無傷（canonical 一致も必須句も
+# 通る）なので、file 末尾の判定を見る検査だけが検出できる。この形は「ガードは通るのに `main()`
+# が呼ばれない」= 出力なし・exit 0 の黙った失敗になる。
+make_node_fixture "$TMP/node-raw-entry-compare"
+read -r node_raw_total node_raw_applied <<EOF
+$(node_mutate_all "$TMP/node-raw-entry-compare" 's!^if \(ffGuardIsEntry\(import\.meta\.url\)\) \{$!if (process.argv[1] === fileURLToPath(import.meta.url)) {!m')
+EOF
+if [ "$node_raw_total" -eq 0 ] || [ "$node_raw_applied" -ne "$node_raw_total" ]; then
+  bad "negative control(node): 直接起動の判定の差し替えが全entryへ適用されませんでした（${node_raw_applied}/${node_raw_total}）"
+elif check_node_guards "$TMP/node-raw-entry-compare" >/dev/null 2>&1; then
+  bad "negative control(node): 直接起動の判定だけを素の文字列比較へ戻した退行を見逃しました"
+else
+  ok "negative control(node): 直接起動の判定を素の文字列比較へ戻せば（ガードは無傷でも）拒否する（${node_raw_applied} entry）"
+fi
+
+# 候補走査を足す変異。root の解決へ探索が混ざると防御が防御対象を踏む。
+make_node_fixture "$TMP/node-scanning-guard"
+read -r node_scan_total node_scan_applied <<EOF
+$(node_mutate_all "$TMP/node-scanning-guard" 's{^  const version = ffGuardManifestField}{  const candidate = readdirSync(root).sort().pop();\n  const version = ffGuardManifestField}m')
+EOF
+if [ "$node_scan_total" -eq 0 ] || [ "$node_scan_applied" -ne "$node_scan_total" ]; then
+  bad "negative control(node): 候補走査の追加が全entryへ適用されませんでした（${node_scan_applied}/${node_scan_total}）"
+elif check_node_guards "$TMP/node-scanning-guard" >/dev/null 2>&1; then
+  bad "negative control(node): rootの解決へ候補走査を足したのを見逃しました"
+else
+  ok "negative control(node): rootの解決に候補走査（readdirSync + 並べ替え）を足せば拒否する（${node_scan_applied} entry）"
+fi
+
+# 中断コードの誤番号。canonical 比較は `process.exit(N)` を正規化するので、期待rc表だけが検出できる。
+make_node_fixture "$TMP/node-wrong-rc"
+perl -0pi -e 's{^if \(!ffGuardAssertPluginRoot\(import\.meta\.url\)\) process\.exit\(2\);$}{if (!ffGuardAssertPluginRoot(import.meta.url)) process.exit(1);}m' \
+  "$TMP/node-wrong-rc/asdd/cli.mjs"
+if cmp -s "$TMP/node-baseline/asdd/cli.mjs" "$TMP/node-wrong-rc/asdd/cli.mjs"; then
+  bad "negative control(node): 中断コード差し替えの変異が適用されませんでした（検査結果は根拠になりません）"
+elif check_node_guards "$TMP/node-wrong-rc" >/dev/null 2>&1; then
+  bad "negative control(node): 既存rc契約と衝突する中断コードを見逃しました"
+else
+  ok "negative control(node): 期待rc表と違う中断コードを拒否する"
+fi
+
+# canonical 一致の検出器は先頭以外を変えないと発火しない（名簿は sort 済みなので work.mjs を変異させる）。
+make_node_fixture "$TMP/node-diverged-guard"
+perl -0pi -e 's/version混在と未リリースWIPの実行になります。/更新が間に合わないときは新しい方を使ってよい。/' \
+  "$TMP/node-diverged-guard/asdd/work.mjs"
+if cmp -s "$TMP/node-baseline/asdd/work.mjs" "$TMP/node-diverged-guard/asdd/work.mjs"; then
+  bad "negative control(node): 案内文の変異が適用されませんでした（検査結果は根拠になりません）"
+elif check_node_guards "$TMP/node-diverged-guard" >/dev/null 2>&1; then
+  bad "negative control(node): node entry間でガードがdivergeした状態を見逃しました"
+else
+  ok "negative control(node): 一部entryだけガードが異なれば拒否する"
+fi
+
+# 配置の negative control。ガードの前に実行文を差し込む。
+make_node_fixture "$TMP/node-late-guard"
+perl -0pi -e 's{^// ff-dev-toolkit-node-root-guard:start$}{const launchedFrom = process.cwd();\n// ff-dev-toolkit-node-root-guard:start}m' \
+  "$TMP/node-late-guard/asdd/cli.mjs"
+if cmp -s "$TMP/node-baseline/asdd/cli.mjs" "$TMP/node-late-guard/asdd/cli.mjs"; then
+  bad "negative control(node): ガード前への実行文挿入が適用されませんでした（検査結果は根拠になりません）"
+elif check_node_guards "$TMP/node-late-guard" >/dev/null 2>&1; then
+  bad "negative control(node): ガードより前の実行文を見逃しました"
+else
+  ok "negative control(node): ガードより前に実行文があれば拒否する"
+fi
+
+# 名簿にあるのに実体が無い（入口を消した / 改名した）場合に fail-closed であること、および
+# 理由付き allowlist での除外が実際に効くこと。
+make_node_fixture "$TMP/node-missing-entry"
+rm -f "$TMP/node-missing-entry/asdd/cli.mjs"
+if check_node_guards "$TMP/node-missing-entry" >/dev/null 2>&1; then
+  bad "negative control(node): 固定root経由で呼ばれるnode entryの消失を見逃しました"
+else
+  ok "negative control(node): 名簿にある同梱node entryが実在しなければ拒否する"
+fi
+if (
+  NODE_GUARD_EXEMPT+=("asdd/cli.mjs|negative control fixture（liveの判断ではない）")
+  MIN_GUARDED_NODE_ENTRIES=$((MIN_GUARDED_NODE_ENTRIES - 1))
+  check_node_guards "$TMP/node-missing-entry" >/dev/null 2>&1
+); then
+  ok "allowlist(node): 理由付きで登録したentryはガード対象外になり緑を保つ"
+else
+  bad "allowlist(node): 理由付き登録が効かず赤のままです"
+fi
+
 # ---- 固定root経由の実行部が同じ行でhandoffを渡すこと ------------------------
 # host は plugin root を Bash tool の環境へ export せず、実行部テキストへ解決済みの絶対 path を
 # 差し込むだけである。handoff を運ぶのが skill 本文の resolver / fence だけだと、「本文が劣化して
@@ -991,7 +1429,11 @@ fi
 # 余裕があると、起動行を grep が拾えない綴り（`bash -- "${ROOT}/scripts/x.sh"` / `exec bash …`）
 # への書き換えが**母集団と検査の両方から同時に落ち**、床を通過したまま黙って handoff 要求を
 # 逃れられる。実行部を意図的に減らすときだけこの値を下げる。
-MIN_HANDOFF_LAUNCHES=101
+#
+# node entry（`node "${ROOT}/scripts/asdd/<名>.mjs"`）を母集団へ入れた分も含む実数。床を据え置くと
+# ちょうどその差だけ余裕が生まれ、node 起動が丸ごと検出対象から落ちても床を通過する（下の
+# negative control が、検出外の綴りへ書き換えた live の写しで赤になることを実測する）。
+MIN_HANDOFF_LAUNCHES=108
 
 handoff_launch_files() { # <tree root> → 対象 .md を列挙
   find "$1/skills" -name SKILL.md -type f 2>/dev/null
@@ -1003,15 +1445,29 @@ check_exec_handoff() {
   # 起動トークンの綴り。`bash`/`sh` を挟む形と挟まない形、固定root経由のpathを受けた変数経由の
   # 起動（`names`）をまとめる。`assign` は handoff 代入で、**起動トークンの直前に並ぶ**ことを
   # 求めるために前置する。
-  local root_expr='\$\{?(FF_DEV_TOOLKIT_ROOT|CLAUDE_PLUGIN_ROOT|GROK_PLUGIN_ROOT)[^}]*\}?/scripts/[A-Za-z0-9_.-]+\.sh'
-  local assign='FF_DEV_TOOLKIT_ROOT="[^"]*"[[:space:]]+'
+  # node entry（`node "${ROOT}/scripts/asdd/<名>.mjs"`）も同じ層の実行部である。shell script だけを
+  # 見ると、ガードを入れた入口の半分が handoff 要求の外に残り、「本文が落ちたときに素通しになる」
+  # 経路がそのまま残る。path は `scripts/` 直下とは限らないので `/` を含める。
+  local root_vars='FF_DEV_TOOLKIT_ROOT|CLAUDE_PLUGIN_ROOT|GROK_PLUGIN_ROOT'
+  local root_expr='\$\{?('"$root_vars"')[^}]*\}?/scripts/([A-Za-z0-9_.-]+\.sh|[A-Za-z0-9_./-]+\.mjs)'
+  # 代入は「値が何であれ付いていればよい」では足りない。`FF_DEV_TOOLKIT_ROOT="/stale/root" node
+  # "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/cli.mjs"` は行としては代入付きだが、実行するのは現在の
+  # root・子へ渡すのは別の root になり、ガードが毎回 exit 2 で止まる（= skill が動かない）退行が
+  # 緑のまま通る。許可する形は**起動パスと同じ root 変数を参照する代入**だけにする。変数経由の
+  # 起動（`bash "${JUDGE}"`。行に root 変数が現れない）でも、RHS が 3 つの root 変数のいずれかの
+  # 参照であることは求める。
+  local assign_any='FF_DEV_TOOLKIT_ROOT="\$\{?('"$root_vars"')(:[-?+=][^}]*)?\}?"[[:space:]]+'
+  local var anchored_base=""
+  for var in FF_DEV_TOOLKIT_ROOT CLAUDE_PLUGIN_ROOT GROK_PLUGIN_ROOT; do
+    anchored_base="${anchored_base:+${anchored_base}|}"'FF_DEV_TOOLKIT_ROOT="\$\{?'"$var"'(:[-?+=][^}]*)?\}?"[[:space:]]+((bash|sh|node)[[:space:]]+)?"?\$\{?'"$var"'[^}]*\}?/scripts/([A-Za-z0-9_.-]+\.sh|[A-Za-z0-9_./-]+\.mjs)'
+  done
   local launch_re="" anchored_re="" n_launch="" n_anchor=""
   while IFS= read -r file; do
     [ -f "$file" ] || continue
     names="$(grep -Eo '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="?\$\{?(FF_DEV_TOOLKIT_ROOT|CLAUDE_PLUGIN_ROOT|GROK_PLUGIN_ROOT)[^}]*\}?/scripts/[A-Za-z0-9_.-]+\.sh"?$' "$file" \
       | sed 's/=.*//' | tr -d ' ' | sort -u | tr '\n' '|' | sed 's/|$//')" || names=""
     : > "$TMP/handoff-hits"
-    grep -nE '(bash|sh)[[:space:]]+"?\$\{?(FF_DEV_TOOLKIT_ROOT|CLAUDE_PLUGIN_ROOT|GROK_PLUGIN_ROOT)[^}]*\}?/scripts/[A-Za-z0-9_.-]+\.sh' \
+    grep -nE '(bash|sh|node)[[:space:]]+"?\$\{?(FF_DEV_TOOLKIT_ROOT|CLAUDE_PLUGIN_ROOT|GROK_PLUGIN_ROOT)[^}]*\}?/scripts/([A-Za-z0-9_.-]+\.sh|[A-Za-z0-9_./-]+\.mjs)' \
       "$file" >> "$TMP/handoff-hits" || true
     # 直接起動（`bash` を挟まない形）。handoff 代入を前置した形もここで拾えないと、
     # 「直したら検出対象から外れる」= 母集団が縮む検査になる。
@@ -1025,11 +1481,11 @@ check_exec_handoff() {
     # 実際に起動している側は素の `bash "${ROOT}/scripts/x.sh"` のまま通せる（実測: 代入を行末
     # コメントへ退避させた変異が旧判定では緑だった）。1 行に起動が複数あってもよいので、
     # 「起動トークンの総数」と「直前に代入が並ぶ起動の総数」が一致することを要求する。
-    launch_re="((bash|sh)[[:space:]]+)?\"?${root_expr}"
-    anchored_re="${assign}((bash|sh)[[:space:]]+)?\"?${root_expr}"
+    launch_re="((bash|sh|node)[[:space:]]+)?\"?${root_expr}"
+    anchored_re="$anchored_base"
     if [ -n "$names" ]; then
       launch_re="${launch_re}|(bash|sh)[[:space:]]+\"\\\$\\{?($names)\\}?\""
-      anchored_re="${anchored_re}|${assign}(bash|sh)[[:space:]]+\"\\\$\\{?($names)\\}?\""
+      anchored_re="${anchored_re}|${assign_any}(bash|sh)[[:space:]]+\"\\\$\\{?($names)\\}?\""
     fi
     while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -1107,6 +1563,47 @@ elif ( MIN_HANDOFF_LAUNCHES=1; check_exec_handoff "$TMP/handoff-fixture-list" >/
 else
   ok "negative control: 代入が起動トークンの直前に無ければ（同じ行のコメントにあっても）拒否する"
 fi
+# handoff の値を stale な root literal へ差し替える変異。行としては「代入付きの起動」なので、
+# 代入の有無だけを見る判定では緑のまま通る。実行するのは現在の root・子へ渡すのは別の root に
+# なるので、ガードが毎回 exit 2 で止まる（= skill がまったく動かない）。
+cp "$PLUGIN_ROOT/skills/merge-cleanup/SKILL.md" "$TMP/handoff-fixture/a.md"
+cp "$PLUGIN_ROOT/skills/close-issue/SKILL.md" "$TMP/handoff-fixture/b.md"
+perl -0pi -e 's/^FF_DEV_TOOLKIT_ROOT="\$\{FF_DEV_TOOLKIT_ROOT\}" bash "\$\{FF_DEV_TOOLKIT_ROOT\}\/scripts\/merge-cleanup\.sh"/FF_DEV_TOOLKIT_ROOT="\/stale\/root" bash "\${FF_DEV_TOOLKIT_ROOT}\/scripts\/merge-cleanup.sh"/m' \
+  "$TMP/handoff-fixture/a.md"
+if cmp -s "$PLUGIN_ROOT/skills/merge-cleanup/SKILL.md" "$TMP/handoff-fixture/a.md"; then
+  bad "negative control: handoffのstale root差し替えが適用されませんでした（検査結果は根拠になりません）"
+elif ( MIN_HANDOFF_LAUNCHES=1; check_exec_handoff "$TMP/handoff-fixture-list" >/dev/null 2>&1 ); then
+  bad "negative control: 起動パスと違うrootを渡す代入を見逃しました"
+else
+  ok "negative control: handoffのRHSが起動パスと同じroot参照でなければ（literalなら）拒否する"
+fi
+
+# 崩壊床の negative control。node 起動を「検出外の綴り」（`node -- "${ROOT}/scripts/…"`）へ
+# 書き換えると、その行は母集団からも検査からも同時に落ちる。床が live の実数ぴったりに置かれて
+# いる限り、この取りこぼしは床割れとして赤になる（床に余裕があると黙って通過する）。
+mkdir -p "$TMP/handoff-floor-fixture"
+handoff_floor_n=0
+while IFS= read -r handoff_src; do
+  handoff_floor_n=$((handoff_floor_n + 1))
+  cp "$handoff_src" "$TMP/handoff-floor-fixture/$(printf '%04d' "$handoff_floor_n").md"
+done < "$TMP/handoff-live-list"
+find "$TMP/handoff-floor-fixture" -name '*.md' -type f | sort > "$TMP/handoff-floor-list"
+if check_exec_handoff "$TMP/handoff-floor-list" >/dev/null 2>&1; then
+  ok "positive control: liveの写し（${handoff_floor_n} file）は床 ${MIN_HANDOFF_LAUNCHES} 行をそのまま通る"
+else
+  bad "positive control: liveの写しが床を通りませんでした（以降の床の negative control は根拠になりません）"
+fi
+handoff_node_before="$(cat "$TMP/handoff-floor-fixture"/*.md | { grep -cE 'node "\$\{(FF_DEV_TOOLKIT_ROOT|CLAUDE_PLUGIN_ROOT|GROK_PLUGIN_ROOT)' || true; })"
+perl -0pi -e 's/\bnode "\$\{(FF_DEV_TOOLKIT_ROOT|CLAUDE_PLUGIN_ROOT|GROK_PLUGIN_ROOT)/node -- "\${$1/g' \
+  "$TMP/handoff-floor-fixture"/*.md
+handoff_node_after="$(cat "$TMP/handoff-floor-fixture"/*.md | { grep -cE 'node -- "\$\{(FF_DEV_TOOLKIT_ROOT|CLAUDE_PLUGIN_ROOT|GROK_PLUGIN_ROOT)' || true; })"
+if [ "$handoff_node_before" -eq 0 ] || [ "$handoff_node_after" -ne "$handoff_node_before" ]; then
+  bad "negative control: 検出外の綴りへの書き換えが適用されませんでした（${handoff_node_after}/${handoff_node_before} 行）"
+elif ( check_exec_handoff "$TMP/handoff-floor-list" >/dev/null 2>&1 ); then
+  bad "negative control: node起動 ${handoff_node_before} 行が検出対象から落ちても床を通過しました（床に余裕があります）"
+else
+  ok "negative control: node起動 ${handoff_node_before} 行を検出外の綴り（node -- …）へ変えると床割れで赤になる"
+fi
 
 # ---- ガードの実走（fixture 実行） ------------------------------------------
 # 静的検査だけでは「書いてあるが効かない」を排除できない。plugin root が消えた状態で
@@ -1124,6 +1621,15 @@ make_run_fixture() {
   for name in $ROOT_SCRIPT_NAMES; do
     [ -f "$PLUGIN_ROOT/scripts/$name" ] || continue
     cp "$PLUGIN_ROOT/scripts/$name" "$dest/scripts/$name"
+  done
+  # node entry と、それが import する sibling module（top-level は定義だけで副作用を持たない）。
+  # entry だけを複製すると module 解決に失敗し、ガードではなく loader のエラーで止まって
+  # 「停止した」が偽の positive になる。
+  for name in $ROOT_NODE_ENTRY_NAMES; do
+    [ -f "$PLUGIN_ROOT/scripts/$name" ] || continue
+    mkdir -p "$dest/scripts/$(dirname "$name")"
+    cp "$PLUGIN_ROOT/scripts/$name" "$dest/scripts/$name"
+    cp "$PLUGIN_ROOT/scripts/$(dirname "$name")"/*.mjs "$dest/scripts/$(dirname "$name")/"
   done
 }
 
@@ -1407,6 +1913,281 @@ else
   fi
 fi
 
+
+# ---- node entry 側ガードの実走と、shell 側との案内文言の同値照合 ------------
+# 静的検査だけでは「書いてあるが効かない」を排除できない。shell 側と同じ fixture で node entry を
+# 直接起動し、案内付きで非 0 停止すること・別インストール領域の完全な候補があっても切り替えない
+# ことを実測する。実走は本来の処理へ到達しても破壊的にならない引数（`--help` / 未知引数）で行う。
+#
+# 併せて、**案内文言の正本が shell ガード block ただ 1 つ**であることをここで担保する。同じ
+# handoff・同じ fixture で shell script と node entry を走らせ、実体 path の 1 行だけを伏せて
+# 本文を cmp する。ソース文字列どうしの比較にしないのは、`${var:-既定}` のような言語ごとの綴りを
+# 吸収する正規化規則そのものが第 3 の正本になるためで、consumer が実際に読む出力の側で縛る。
+NODE_PROBE_ARG='--ff-guard-probe'
+NODE_REACHED_NEEDLE="ASDD: Unknown argument: ${NODE_PROBE_ARG}"
+# canonical 化した綴り。provenance の期待値（実体 path の完全一致）を組み立てるのに使う。
+# 起動そのものは canonical でなくてよい — entry 判定は `process.argv[1]` と `import.meta.url` の
+# **両方**を canonical 化して比べるので、symlink 成分を含む綴りで起動しても `main()` へ到達する。
+# その形は下の「symlink 成分を含む綴りで起動」ケースが実測する（判定が片側だけ canonical、または
+# 素の文字列比較へ戻ると、ガードは通るのに `main()` が呼ばれず出力なし・exit 0 になる）。
+# handoff の値は素の path のまま渡し、ガード側が canonical 化して一致させることを併せて示す。
+SOURCE_ROOT_CANONICAL="$(cd -P "$SOURCE_ROOT" && pwd -P)"
+# 起動パスに symlink 成分を持たせるための綴り（macOS の `/var/folders/…` → `/private/var/…` と
+# 同じ形）。最終成分は実体の file のままなので、symlink 起動の拒否とは別の経路を測る。
+ln -s "$SOURCE_ROOT_CANONICAL" "$RUN_ROOT/source-link"
+
+# 「別インストール領域の実体が走ってしまった」ことを検出する印（node 側）。走らなければ作られない。
+NODE_CACHE_MARKER="$RUN_ROOT/cache-node-ran"
+mkdir -p "$CACHE_ROOT/scripts/asdd"
+{
+  printf '%s\n' '#!/usr/bin/env node'
+  printf '%s\n' "import fs from 'node:fs';"
+  printf '%s\n' "fs.writeFileSync('$NODE_CACHE_MARKER', 'ran');"
+} >"$CACHE_ROOT/scripts/asdd/cli.mjs"
+
+# 全 node entry を同じ形で実走する。1 本だけの実走では、残る入口の rc 契約と衝突する誤番号や、
+# 複製のずれで「案内が出ない 1 本」が残っていても見えない。
+node_run_fail=0
+node_run_count=0
+for name in $ROOT_NODE_ENTRY_NAMES; do
+  [ -f "$SOURCE_ROOT/scripts/$name" ] || continue
+  expect_rc="$(node_expect_rc "$name")" || expect_rc=""
+  if [ -z "$expect_rc" ]; then
+    bad "実走(node): $name の期待rcがNODE_EXPECT_RCにありません"
+    node_run_fail=1
+    continue
+  fi
+  rc=0
+  ( env HOME="$RUN_ROOT/cache-home" FF_DEV_TOOLKIT_ROOT="$INSTALLED_ROOT" \
+      node "$SOURCE_ROOT_CANONICAL/scripts/$name" --help ) \
+    >"$RUN_ROOT/node-all-$(basename "$name").log" 2>&1 </dev/null || rc=$?
+  node_run_count=$((node_run_count + 1))
+  if [ "$rc" -ne "$expect_rc" ]; then
+    bad "実走(node): $name — exit ${rc}、期待 ${expect_rc}"
+    sed -n '1,10p' "$RUN_ROOT/node-all-$(basename "$name").log" >&2 || true
+    node_run_fail=1
+  elif ! grep -qF 'ff-dev-toolkit更新後にこのskillを再呼び出してください' "$RUN_ROOT/node-all-$(basename "$name").log"; then
+    bad "実走(node): $name — 期待した案内がありません"
+    sed -n '1,10p' "$RUN_ROOT/node-all-$(basename "$name").log" >&2 || true
+    node_run_fail=1
+  fi
+done
+if [ "$node_run_count" -lt "$MIN_GUARDED_NODE_ENTRIES" ]; then
+  bad "実走(node): 対象 ${node_run_count} 件が絶対下限 ${MIN_GUARDED_NODE_ENTRIES} 件を下回りました"
+elif [ "$node_run_fail" -eq 0 ]; then
+  ok "全 ${node_run_count} 本のnode entryが消えたrootで期待rcと案内つきに停止する（rcはNODE_EXPECT_RCの表）"
+fi
+
+run_script_guard_exec "node: 消えたrootをFF_DEV_TOOLKIT_ROOTが指したまま別実体を直接起動すると停止" \
+  2 'plugin rootが消えています' "$RUN_ROOT/node-vanished-fixed.log" \
+  env HOME="$RUN_ROOT/cache-home" FF_DEV_TOOLKIT_ROOT="$INSTALLED_ROOT" \
+  node "$SOURCE_ROOT_CANONICAL/scripts/asdd/cli.mjs" --help
+run_script_guard_exec "node: 同じ停止の案内にfallback禁止の理由（version混在・未リリースWIP）が入る" \
+  2 'version混在と未リリースWIPの実行になります' "$RUN_ROOT/node-vanished-reason.log" \
+  env HOME="$RUN_ROOT/cache-home" FF_DEV_TOOLKIT_ROOT="$INSTALLED_ROOT" \
+  node "$SOURCE_ROOT_CANONICAL/scripts/asdd/work.mjs" --help
+run_script_guard_exec "node: 消えたrootをCLAUDE_PLUGIN_ROOTが指す場合も停止" \
+  2 'plugin rootが消えています' "$RUN_ROOT/node-vanished-host.log" \
+  env HOME="$RUN_ROOT/cache-home" CLAUDE_PLUGIN_ROOT="$INSTALLED_ROOT" \
+  node "$SOURCE_ROOT_CANONICAL/scripts/asdd/cli.mjs" --help
+run_script_guard_exec "node: 実在する別インストール領域を指すhandoffも停止" \
+  2 '別のインストール領域の実体です' "$RUN_ROOT/node-other-install.log" \
+  env HOME="$RUN_ROOT/cache-home" CLAUDE_PLUGIN_ROOT="$CACHE_ROOT" \
+  node "$SOURCE_ROOT_CANONICAL/scripts/asdd/cli.mjs" --help
+if [ -e "$NODE_CACHE_MARKER" ]; then
+  bad "node: 停止したはずの経路でcacheの別実体が実行されました"
+else
+  ok "node: 停止時にcache/marketplaceの完全な候補へ切り替えていない（候補を走査しない）"
+fi
+run_script_guard_exec "node: manifestを読めない実在rootは素通しせず停止する（fail-closed）" \
+  2 '誰のrootか判定できません' "$RUN_ROOT/node-partial-install.log" \
+  env HOME="$RUN_ROOT/cache-home" FF_DEV_TOOLKIT_ROOT="$BROKEN_ROOT" \
+  node "$SOURCE_ROOT_CANONICAL/scripts/asdd/cli.mjs" --help
+run_script_guard_exec "node: 入れ子のnameが先にある実在rootも別plugin扱いせず停止する" \
+  2 '別のインストール領域の実体です' "$RUN_ROOT/node-nested-name-install.log" \
+  env HOME="$RUN_ROOT/cache-home" FF_DEV_TOOLKIT_ROOT="$NESTED_SELF_ROOT" \
+  node "$SOURCE_ROOT_CANONICAL/scripts/asdd/cli.mjs" --help
+
+# 期待 root の内側に置いた symlink から、別 checkout の実体を実行する形。ESM loader は実体まで
+# 解決してから読むので、`import.meta.url` だけを見ると handoff は一致してしまう。
+mkdir -p "$RUN_ROOT/symlink-install/ff-dev-toolkit/scripts/asdd"
+ln -s "$SOURCE_ROOT/scripts/asdd/cli.mjs" "$RUN_ROOT/symlink-install/ff-dev-toolkit/scripts/asdd/cli.mjs"
+run_script_guard_exec "node: 期待root内のsymlinkから別checkoutの実体を実行する形も停止" \
+  2 '起動したスクリプトがsymlinkです' "$RUN_ROOT/node-symlink-self.log" \
+  env HOME="$RUN_ROOT/cache-home" FF_DEV_TOOLKIT_ROOT="$RUN_ROOT/symlink-install/ff-dev-toolkit" \
+  node "$RUN_ROOT/symlink-install/ff-dev-toolkit/scripts/asdd/cli.mjs" --help
+
+# `--preserve-symlinks-main` は main module の symlink を解決せず、`import.meta.url` に起動した
+# 綴りをそのまま残す。entry 判定の片側（`process.argv[1]`）だけを canonical 化していると、この
+# 起動が「不一致 = library として import された」と誤認され、ガードが丸ごと素通りする（host が
+# NODE_OPTIONS を渡すだけで停止を外せる）。同じ symlink 起動が、このオプション下でも拒否される
+# ことを実測する。
+#
+# このオプション下では sibling module の解決も symlink 側の directory で行われるため、entry だけを
+# symlink した fixture では loader のエラーで止まり、ガードへ到達しない（= 停止の理由が測れない）。
+# 同じ directory に sibling の実体を置いて、ガードが走る形にする。
+PRESERVE_LINK_ROOT="$RUN_ROOT/preserve-symlinks-install/ff-dev-toolkit"
+mkdir -p "$PRESERVE_LINK_ROOT/scripts/asdd"
+cp "$SOURCE_ROOT/scripts/asdd/"*.mjs "$PRESERVE_LINK_ROOT/scripts/asdd/"
+rm -f "$PRESERVE_LINK_ROOT/scripts/asdd/cli.mjs"
+ln -s "$SOURCE_ROOT_CANONICAL/scripts/asdd/cli.mjs" "$PRESERVE_LINK_ROOT/scripts/asdd/cli.mjs"
+run_script_guard_exec "node: --preserve-symlinks-main 下でもガードを迂回できない" \
+  2 '起動したスクリプトがsymlinkです' "$RUN_ROOT/node-preserve-symlinks.log" \
+  env HOME="$RUN_ROOT/cache-home" NODE_OPTIONS=--preserve-symlinks-main \
+  FF_DEV_TOOLKIT_ROOT="$PRESERVE_LINK_ROOT" \
+  node "$PRESERVE_LINK_ROOT/scripts/asdd/cli.mjs" --help
+
+# 「止めない」側。未知引数は本来の処理（引数検査）へ到達した印で、filesystem には触れない。
+run_script_guard_exec "node: 正規のhandoff（同じ実体）は止めない" \
+  1 "$NODE_REACHED_NEEDLE" "$RUN_ROOT/node-valid-handoff.log" \
+  env FF_DEV_TOOLKIT_ROOT="$SOURCE_ROOT" node "$SOURCE_ROOT_CANONICAL/scripts/asdd/cli.mjs" "$NODE_PROBE_ARG"
+# symlink 成分を含む綴りのまま（canonical 化せずに）起動する形。ガードと `main()` の直接起動判定が
+# 同じ canonical 判定でないと、ガードは通るのに `main()` が一度も呼ばれず、出力なし・exit 0 の
+# 黙った失敗になる。到達の印（引数検査のエラー）が出ることで、両者の基準が揃っていることを測る。
+run_script_guard_exec "node: symlink成分を含む綴りで起動してもmain()へ到達する" \
+  1 "$NODE_REACHED_NEEDLE" "$RUN_ROOT/node-noncanonical-launch.log" \
+  env FF_DEV_TOOLKIT_ROOT="$SOURCE_ROOT" node "$RUN_ROOT/source-link/scripts/asdd/cli.mjs" "$NODE_PROBE_ARG"
+run_script_guard_exec "node: --preserve-symlinks-main 下でも正規の起動は止めない" \
+  1 "$NODE_REACHED_NEEDLE" "$RUN_ROOT/node-preserve-symlinks-ok.log" \
+  env NODE_OPTIONS=--preserve-symlinks-main FF_DEV_TOOLKIT_ROOT="$SOURCE_ROOT" \
+  node "$SOURCE_ROOT_CANONICAL/scripts/asdd/cli.mjs" "$NODE_PROBE_ARG"
+run_script_guard_exec "node: handoffがscripts/を直接指す綴りでも止めない" \
+  1 "$NODE_REACHED_NEEDLE" "$RUN_ROOT/node-scripts-spelling.log" \
+  env FF_DEV_TOOLKIT_ROOT="$SOURCE_ROOT/scripts" node "$SOURCE_ROOT_CANONICAL/scripts/asdd/work.mjs" "$NODE_PROBE_ARG"
+run_script_guard_exec "node: handoffなしの直接起動も止めない" \
+  1 "$NODE_REACHED_NEEDLE" "$RUN_ROOT/node-no-handoff.log" \
+  env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT \
+  node "$SOURCE_ROOT_CANONICAL/scripts/asdd/cli.mjs" "$NODE_PROBE_ARG"
+run_script_guard_exec "node: 別pluginのhandoffでは止めない（照合対象外）" \
+  1 "$NODE_REACHED_NEEDLE" "$RUN_ROOT/node-other-plugin.log" \
+  env CLAUDE_PLUGIN_ROOT="$OTHER_ROOT" node "$SOURCE_ROOT_CANONICAL/scripts/asdd/cli.mjs" "$NODE_PROBE_ARG"
+if grep -qF '照合対象外: CLAUDE_PLUGIN_ROOT=別plugin(another-plugin)' "$RUN_ROOT/node-other-plugin.log"; then
+  ok "node: provenanceが照合を飛ばしたhandoffと理由を1行に含める"
+else
+  bad "node: provenanceが照合を飛ばしたhandoffを報告していません"
+  sed -n '1,5p' "$RUN_ROOT/node-other-plugin.log" >&2 || true
+fi
+run_script_guard_exec "node: 入れ子のnameが自分の名前でもtop-levelが別名なら別plugin扱い（止めない）" \
+  1 "$NODE_REACHED_NEEDLE" "$RUN_ROOT/node-nested-name-other.log" \
+  env CLAUDE_PLUGIN_ROOT="$NESTED_OTHER_ROOT" node "$SOURCE_ROOT_CANONICAL/scripts/asdd/cli.mjs" "$NODE_PROBE_ARG"
+
+# library として import された経路では走らない（`work.mjs` の関数は tests から直接 import される）。
+# ここを止めると shell 側の「bash で起動したときだけ効く」より広い範囲を殺す。
+printf '%s\n' "import { workStatus } from '$SOURCE_ROOT_CANONICAL/scripts/asdd/work.mjs';" \
+  'process.stdout.write(typeof workStatus === "function" ? "IMPORT-OK\n" : "IMPORT-NG\n");' \
+  >"$RUN_ROOT/import-probe.mjs"
+run_script_guard_exec "node: library として import された経路ではガードを走らせない" \
+  0 'IMPORT-OK' "$RUN_ROOT/node-import-probe.log" \
+  env HOME="$RUN_ROOT/cache-home" FF_DEV_TOOLKIT_ROOT="$INSTALLED_ROOT" \
+  node "$RUN_ROOT/import-probe.mjs"
+
+# provenance の完全一致（node 側）。実体 path と manifest version の 1 行が、ちょうど 1 件出ること。
+if [ -n "${PLUGIN_VERSION:-}" ]; then
+  ( env FF_DEV_TOOLKIT_ROOT="$SOURCE_ROOT" node "$SOURCE_ROOT_CANONICAL/scripts/asdd/cli.mjs" "$NODE_PROBE_ARG" ) \
+    >"$RUN_ROOT/node-provenance.log" 2>&1 </dev/null || true
+  NODE_PROVENANCE_EXPECTED="ℹ️  ff-dev-toolkit ${PLUGIN_VERSION} — 実行実体: ${SOURCE_ROOT_CANONICAL}/scripts/asdd/cli.mjs（handoff: FF_DEV_TOOLKIT_ROOT）"
+  node_provenance_hits="$(grep -cFx "$NODE_PROVENANCE_EXPECTED" "$RUN_ROOT/node-provenance.log" || true)"
+  if [ "$node_provenance_hits" -eq 1 ]; then
+    ok "node: 起動時のprovenanceが manifest version + 実体絶対path + handoff名 の完全な1行として出る"
+  else
+    bad "node: provenanceの完全一致が ${node_provenance_hits} 件（期待 1 件）"
+    printf '    期待: %s\n' "$NODE_PROVENANCE_EXPECTED" >&2
+    sed -n '1,5p' "$RUN_ROOT/node-provenance.log" >&2 || true
+  fi
+else
+  bad "node: provenance検査: plugin manifestからversionを読めませんでした（検査は成立していない）"
+fi
+
+# 案内文言の同値照合。shell 側ガードと node 側ガードを同じ handoff で走らせ、実体 path の 1 行
+# だけを伏せて本文を突き合わせる。ここが緑である限り、文言の正本は shell ガード block 1 つで済む。
+normalize_guard_message() { # <log> → 実体pathの行を伏せた本文を stdout へ
+  sed 's|^   起動したスクリプト: .*|   起動したスクリプト: <SELF>|' "$1"
+}
+compare_guard_message() { # <label> <shell log> <node log>
+  local label="$1" shell_log="$2" node_log="$3"
+  normalize_guard_message "$shell_log" >"${shell_log}.norm"
+  normalize_guard_message "$node_log" >"${node_log}.norm"
+  if [ ! -s "${shell_log}.norm" ]; then
+    bad "案内文言の同値照合(${label}): shell 側の出力が空です（照合は成立していない）"
+    return 0
+  fi
+  if cmp -s "${shell_log}.norm" "${node_log}.norm"; then
+    ok "案内文言がshell側ガードと1行も違わない: ${label}"
+  else
+    bad "案内文言がshell側ガードと食い違います: ${label}"
+    diff "${shell_log}.norm" "${node_log}.norm" >&2 || true
+  fi
+}
+
+( env HOME="$RUN_ROOT/cache-home" FF_DEV_TOOLKIT_ROOT="$INSTALLED_ROOT" \
+    bash "$SOURCE_ROOT/scripts/merge-cleanup.sh" --help ) \
+  >"$RUN_ROOT/parity-shell-vanished.log" 2>&1 </dev/null || true
+compare_guard_message "rootが消えている" \
+  "$RUN_ROOT/parity-shell-vanished.log" "$RUN_ROOT/node-vanished-fixed.log"
+
+( env HOME="$RUN_ROOT/cache-home" CLAUDE_PLUGIN_ROOT="$CACHE_ROOT" \
+    bash "$SOURCE_ROOT/scripts/merge-cleanup.sh" --help ) \
+  >"$RUN_ROOT/parity-shell-other.log" 2>&1 </dev/null || true
+compare_guard_message "別インストール領域を指している" \
+  "$RUN_ROOT/parity-shell-other.log" "$RUN_ROOT/node-other-install.log"
+
+( env HOME="$RUN_ROOT/cache-home" FF_DEV_TOOLKIT_ROOT="$BROKEN_ROOT" \
+    bash "$SOURCE_ROOT/scripts/merge-cleanup.sh" --help ) \
+  >"$RUN_ROOT/parity-shell-partial.log" 2>&1 </dev/null || true
+compare_guard_message "manifestを読めない（判定不能）" \
+  "$RUN_ROOT/parity-shell-partial.log" "$RUN_ROOT/node-partial-install.log"
+
+( env HOME="$RUN_ROOT/cache-home" FF_DEV_TOOLKIT_ROOT="$RUN_ROOT/symlink-install/ff-dev-toolkit" \
+    bash "$RUN_ROOT/symlink-install/ff-dev-toolkit/scripts/merge-cleanup.sh" --help ) \
+  >"$RUN_ROOT/parity-shell-symlink.log" 2>&1 </dev/null || true
+compare_guard_message "起動した綴りがsymlink" \
+  "$RUN_ROOT/parity-shell-symlink.log" "$RUN_ROOT/node-symlink-self.log"
+
+# 同値照合そのものの negative control。node 側の案内を 1 語変えた複製では照合が赤になること
+# （= 上の 4 件が文言を測っていること）を実測する。
+NODE_PARITY_MUTANT="$RUN_ROOT/parity-mutant/plugins/ff-dev-toolkit"
+make_run_fixture "$NODE_PARITY_MUTANT"
+perl -0pi -e 's/version混在と未リリースWIPの実行になります。/更新が間に合わないときは新しい方を使ってよい。/' \
+  "$NODE_PARITY_MUTANT/scripts/asdd/cli.mjs"
+if cmp -s "$SOURCE_ROOT/scripts/asdd/cli.mjs" "$NODE_PARITY_MUTANT/scripts/asdd/cli.mjs"; then
+  bad "negative control(node): 案内文言の変異が適用されませんでした（同値照合は根拠になりません）"
+else
+  ( env HOME="$RUN_ROOT/cache-home" FF_DEV_TOOLKIT_ROOT="$INSTALLED_ROOT" \
+      node "$NODE_PARITY_MUTANT/scripts/asdd/cli.mjs" --help ) \
+    >"$RUN_ROOT/parity-node-mutant.log" 2>&1 </dev/null || true
+  normalize_guard_message "$RUN_ROOT/parity-shell-vanished.log" >"$RUN_ROOT/parity-shell-vanished.log.norm"
+  normalize_guard_message "$RUN_ROOT/parity-node-mutant.log" >"$RUN_ROOT/parity-node-mutant.log.norm"
+  if cmp -s "$RUN_ROOT/parity-shell-vanished.log.norm" "$RUN_ROOT/parity-node-mutant.log.norm"; then
+    bad "negative control(node): 案内文言を変えても同値照合が通りました（照合は何も測っていません）"
+  else
+    ok "negative control(node): node側の案内文言を1語変えるとshell側との同値照合が赤になる"
+  fi
+fi
+
+# 実走ケースの negative control。ガードの呼び出し行を落とした複製では、同じ起動が案内付きの
+# 停止にならないこと（= 上のケースがガードを測っていること）を実測する。「案内が出ない」だけでは
+# 別の初期エラーでも positive になるので、後続処理へ到達した印と終了コードも併せて確認する。
+NODE_MUTANT_ROOT="$RUN_ROOT/node-mutant-checkout/plugins/ff-dev-toolkit"
+make_run_fixture "$NODE_MUTANT_ROOT"
+perl -0pi -e 's{^if \(!ffGuardAssertPluginRoot\(import\.meta\.url\)\) process\.exit\([0-9]+\);\n}{}m' \
+  "$NODE_MUTANT_ROOT/scripts/asdd/cli.mjs"
+if cmp -s "$SOURCE_ROOT/scripts/asdd/cli.mjs" "$NODE_MUTANT_ROOT/scripts/asdd/cli.mjs"; then
+  bad "negative control(node): 実走用の呼び出し行削除が適用されませんでした（実走ケースは根拠になりません）"
+else
+  node_mutant_rc=0
+  NODE_MUTANT_ROOT_CANONICAL="$(cd -P "$NODE_MUTANT_ROOT" && pwd -P)"
+  ( env HOME="$RUN_ROOT/cache-home" FF_DEV_TOOLKIT_ROOT="$INSTALLED_ROOT" \
+      node "$NODE_MUTANT_ROOT_CANONICAL/scripts/asdd/cli.mjs" "$NODE_PROBE_ARG" ) \
+    >"$RUN_ROOT/node-mutant.log" 2>&1 </dev/null || node_mutant_rc=$?
+  if grep -qF 'ff-dev-toolkit更新後にこのskillを再呼び出してください' "$RUN_ROOT/node-mutant.log"; then
+    bad "negative control(node): ガードを外しても停止の案内が出ました（実走ケースはガードを測っていません）"
+  elif [ "$node_mutant_rc" -ne 1 ] || ! grep -qF "$NODE_REACHED_NEEDLE" "$RUN_ROOT/node-mutant.log"; then
+    bad "negative control(node): ガードを外した起動が後続処理へ到達していません（rc=${node_mutant_rc}。別の初期エラーで止まった可能性）"
+    sed -n '1,10p' "$RUN_ROOT/node-mutant.log" >&2 || true
+  else
+    ok "negative control(node): ガードを外すと同じ起動が案内なしで後続処理（引数検査）まで進む（実走ケースの検出力の裏取り）"
+  fi
+fi
 echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ plugin-root-contract verify: $FAIL 件失敗" >&2

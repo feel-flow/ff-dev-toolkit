@@ -23,6 +23,10 @@
 #        marketplace / plugin.json を整合させたまま README 単独の乖離を測る）
 #   G15. 公開 README に件数見出しが無い → 赤（fail-closed の 0 件側）
 #   G16. 公開 README に件数見出しが 2 つある → 赤（fail-closed の ≥2 側）
+#   G17. hooks.json の PreToolUse・Bash matcher にガードを 1 本足し、README の
+#        「Bash ガード」導入文を更新しない → 赤（本数の乖離）
+#   G18. 本数は一致するが実体名が hooks.json と食い違う → 赤（名前だけの差し替えを
+#        本数一致だけでは見逃さないことを固定する）
 #
 # baseline の内訳は「・区切りの個別列挙（2 件）+ 数値グループ（1 件）」を含み、
 # 実リポジトリの説明文が依存する ・分割の名前数カウントを G1 で常時実測する。
@@ -75,8 +79,15 @@ PLUGIN_DESC_3='テスト用。収録: スキル3（alpha・beta + グループ1�
 # 公開 README（oss/ff-dev-toolkit/README.md）の最小再現。$1=見出しの件数。
 # 見出し以外に「### Skills（N）」に似た行を混ぜ、行頭 anchor が効いていることを
 # baseline から常時実測する（anchor を外す変異は G16 と同じ ≥2 側で赤になる）。
+# README の「Bash ガード」導入文の最小再現（G1 baseline は hooks.json 側も同じ
+# 2 本 guard-alpha.sh / guard-beta.sh で揃える。write_hooks_json のデフォルトと対）。
+GUARD_INTRO_2='### Bash ガード（PreToolUse）
+
+Bash ツールの実行前に 2 つのガードが自動で有効になる（実体は `hooks/guard-alpha.sh` / `hooks/guard-beta.sh`）。
+'
+
 readme_body() {
-  printf '# ff-dev-toolkit\n\n## 収録内容\n\n### Skills（%s）\n\n| スキル | 用途 |\n|---|---|\n| `alpha` | 参考: ### Skills（99）という表記を本文に含む |\n' "$1"
+  printf '# ff-dev-toolkit\n\n## 収録内容\n\n### Skills（%s）\n\n| スキル | 用途 |\n|---|---|\n| `alpha` | 参考: ### Skills（99）という表記を本文に含む |\n\n%s\n' "$1" "$GUARD_INTRO_2"
 }
 README_BODY_NONE='# ff-dev-toolkit
 
@@ -84,6 +95,17 @@ README_BODY_NONE='# ff-dev-toolkit
 
 件数の記載なし。
 '
+
+# hooks.json の PreToolUse・Bash matcher を $2... の名前（拡張子なし）で組み立てる。
+# $1=root。デフォルト（build_fixture から呼ぶとき）は GUARD_INTRO_2 と対の alpha/beta。
+write_hooks_json() {
+  local root="$1"
+  shift
+  mkdir -p "$root/plugins/ff-dev-toolkit/hooks"
+  jq -n '{hooks: {PreToolUse: [{matcher: "Bash", hooks: ($ARGS.positional | map({type: "command", command: ("bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-" + . + ".sh\""), timeout: 10}))}]}}' \
+    --args "$@" \
+    > "$root/plugins/ff-dev-toolkit/hooks/hooks.json"
+}
 
 build_fixture() {
   # $1=root $2=root marketplace の desc $3=oss marketplace の desc $4=plugin.json の desc
@@ -107,6 +129,7 @@ build_fixture() {
   jq -n --arg d "$odesc" '{plugins: [{name: "ff-dev-toolkit", description: $d}]}' \
     > "$root/oss/ff-dev-toolkit/.claude-plugin/marketplace.json"
   printf '%s\n' "$rbody" > "$root/oss/ff-dev-toolkit/README.md"
+  write_hooks_json "$root" alpha beta
 }
 
 run_target() {
@@ -304,6 +327,28 @@ if [ "$RC" -ne 0 ] && [[ "$OUT" == *"「### Skills（N）」を一意に抽出�
   ok "G16: README 見出しの複数一致を赤にできる（fail-closed）"
 else
   bad "G16: README 見出しの複数一致が緑のまま素通りしました（rc=${RC}）"
+fi
+
+# G17: hooks.json のガードを 1 本足し、README の「Bash ガード」導入文（2 本のまま）を
+# 更新しない → 赤（本数の乖離。README にある本数だけを実体からずらす変異）
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3"
+write_hooks_json "$FIX" alpha beta gamma
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"Bash ガード本数 2 ≠ 実数 3"* ]]; then
+  ok "G17: hooks.json のガード追加（README 未更新）を本数の乖離で赤にできる"
+else
+  bad "G17: ガード本数の乖離を検出できませんでした（rc=${RC}）: $OUT"
+fi
+
+# G18: 本数は一致するが実体名が hooks.json と食い違う → 赤（本数だけ合わせた
+# 名前の差し替えを、本数一致だけでは見逃さないことを固定する）
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3"
+write_hooks_json "$FIX" alpha zzz
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"Bash ガード実体名が実体と一致しません"* ]]; then
+  ok "G18: hooks.json のガード名差し替え（README 未更新）を実体名の不一致で赤にできる"
+else
+  bad "G18: ガード実体名の乖離を検出できませんでした（rc=${RC}）: $OUT"
 fi
 
 echo

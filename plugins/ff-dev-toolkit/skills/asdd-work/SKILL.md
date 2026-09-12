@@ -84,14 +84,14 @@ CLIはログイン中のアカウント、またはGitHubが所有者・組織�
 例の値は実際の合意に置き換える。`files` は履歴保存を合意した範囲の相対ファイルパスを明示し、Issue記録だけなら空配列にする。JSONの一時ファイルの絶対パスを `ASDD_WORK_RECORD` に固定する。
 
 ```bash
-node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/work.mjs" --root "$ASDD_PROJECT_ROOT" --record "$ASDD_WORK_RECORD"
-node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/work.mjs" --root "$ASDD_PROJECT_ROOT" --record "$ASDD_WORK_RECORD" --apply
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/work.mjs" --root "$ASDD_PROJECT_ROOT" --record "$ASDD_WORK_RECORD"
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/work.mjs" --root "$ASDD_PROJECT_ROOT" --record "$ASDD_WORK_RECORD" --apply
 ```
 
 既存承認の範囲ならpreviewを確認してapplyへ進み、再承認は求めない。CLIは安定した記録IDを照合してIssue・コメントの重複を防ぎ、合意したファイルだけを保存する。別会話の再開・状況確認では、記録時のtaskIdを `ASDD_TASK_ID` として次を実行する。
 
 ```bash
-node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/work.mjs" --root "$ASDD_PROJECT_ROOT" --status "$ASDD_TASK_ID"
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/work.mjs" --root "$ASDD_PROJECT_ROOT" --status "$ASDD_TASK_ID"
 ```
 
 最新Issue本文・コメントとローカルの同期状態を照合する。`.asdd/local/work.json` は再開用ローカル状態であり、保存成功の証拠を読み返す。失敗・成否不明は「未同期」として報告する。同じ目的の再試行でtaskIdを作り直さない。既存のstage変更がある場合は無関係な変更を含めず、整理方法を相談する。

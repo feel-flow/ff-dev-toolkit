@@ -44,6 +44,13 @@
 #   - fence が閉じていないファイル（意図的な fixture が実在する）は走査を諦めず、
 #     fence 記号を潰した写しで走査し直す（閉じない fence の素通しを作らない）
 #
+# 到達可能参照の allowlist（scripts/scan-unreachable-repo-refs.sh）は 2 つの形を見る。
+# `owner/repo#N` は owner を問わず全件、URL 形（`https://github.com/<org>/<repo>/...`
+# と SCP 形）は SSOT の org 配下だけ。後者を org へ絞るのは、公開対象に外部の公開
+# リポジトリ URL と、そもそもリポジトリでない GitHub のパスが多数あり、owner を
+# 問わない allowlist が成立しないため。本 suite は許可側（外部 owner・非リポジトリ
+# パス・サブドメイン）と禁止側を対で固定する。
+#
 # 本ファイルは公開同期対象。禁止パターンのリテラルを隣接して書かないこと
 # （隔離 fixture へ実行時に組み立てて流す。再現性のために実パスを戻すと
 # 公開同期が止まる）。
@@ -902,9 +909,15 @@ plugins/ff-dev-toolkit/doc.md:6' refs_run "$M_ALLOW"
   fi
 fi
 
-# --- 12. 公開側から到達できない owner/repo#N を止める（allowlist 側） ---------
+# --- 12. 公開側から到達できない参照を止める（allowlist 側） -------------------
 # 対象は scripts/scan-unreachable-repo-refs.sh と、それを呼ぶ 2 つの入口
 # （同期前の全文検査 --check-only / 追加行限定の check-added-bare-refs.sh）。
+# 見る形は 2 つ: `owner/repo#N`（owner を問わず全件）と、SSOT の org 配下の URL
+# （`https://github.com/<org>/<repo>/...` と SCP 形 `git@github.com:<org>/<repo>.git`）。
+# 後者は 12-17 以降で固定する — owner を問わない allowlist は成立しないため、
+# 判定対象を org へ絞って外部 owner と GitHub の自前パスには触れない。ホスト名の
+# 大小文字違いと明示ポート（`https://GitHub.com/...` / `github.com:443/...`）は
+# 同じ URL なので同じ規則で見る（書き方を変えるだけの回避形を作らない）。
 #
 # 11 との違いは**許可規則の向き**にある。11（bare `#N`）は「ミラー先の文脈で
 # GitHub がリンク化するか」が論点なので fence / inline code / リンクの中を除外する。
@@ -1099,9 +1112,215 @@ else
   expect_refs_rc "到達不能参照の走査器が出力なしの rc=1 を返したら走査不成立で止まる（変異）" 2 \
     "走査が成立しませんでした" refs_run "$M_EMPTYHIT"
 
+  # 12-17〜12-22. URL 形（org スコープ）。`owner/repo#N` と同じ allowlist を、
+  # SSOT の org 配下の `https://github.com/<org>/<repo>/...` と SCP 形
+  # `git@github.com:<org>/<repo>.git` にも掛ける。owner を問わない allowlist は
+  # 成立しない（公開対象には外部の公開リポジトリ URL と、github.com/sponsors/... の
+  # ようにリポジトリですらないパスが多数ある）ので、判定対象を org へ絞ることで
+  # 誤検出を出さずに未登録名だけを止める。
+  #
+  # org スコープの未登録名を実行時に組み立てる（本ファイルは検査対象そのもので、
+  # リテラルで置くと live 検査に当たる）。
+  SCOPED_UNLISTED="$(printf '%s-%s/%s' 'feel' 'flow' 'internal-only')"
+
+  # 12-17. 未登録の org スコープ URL を file:line で名指しして止める
+  # （AC: denylist に載っていない非公開リポジトリの URL でも非 0 になること）
+  U_URL_HIT="$TMP/unreachable-url-hit"
+  mkdir -p "$U_URL_HIT"
+  {
+    printf '%s\n' "詳細は https://github.com/${SCOPED_UNLISTED}/issues/1 を参照。"
+    printf '%s\n' "clone は git@github.com:${SCOPED_UNLISTED}.git"
+    # 同じ URL の別表記。取り逃がすと「書き方を変えるだけで検査を抜けられる」
+    # 回避形になる（ホスト名は大小文字を区別せず、明示ポートは権威部の一部）
+    printf '%s\n' "大小文字違いの https://GitHub.com/${SCOPED_UNLISTED}/issues/2 も同じ URL。"
+    printf '%s\n' "明示ポートの https://github.com:443/${SCOPED_UNLISTED}/issues/3 も同じ URL。"
+  } > "$U_URL_HIT/doc.md"
+  expect_hit_reason "org スコープの未登録 URL を file:line で名指しして止める" \
+    "doc.md:1" "到達できない" run_check --scan-dir "$U_URL_HIT"
+  expect_hit "SCP 形（git@github.com:org/repo.git）も同じ規則で止める" "doc.md:2" \
+    run_check --scan-dir "$U_URL_HIT"
+  expect_hit "ホスト名の大小文字違い（GitHub.com）も同じ規則で止める" "doc.md:3" \
+    run_check --scan-dir "$U_URL_HIT"
+  expect_hit "明示ポート（github.com:443）をポート番号ごと org と読み違えず止める" "doc.md:4" \
+    run_check --scan-dir "$U_URL_HIT"
+
+  # 12-18. 12-17 の対。外部 owner の公開リポジトリ URL・リポジトリでない GitHub の
+  # 自前パス・サブドメイン・org ページは 1 件も誤検出しない（AC の 2 項目め）。
+  # 止める側だけを固定すると、org スコープが外部 owner へ広がっても緑のまま通る
+  U_URL_OK="$TMP/unreachable-url-ok"
+  mkdir -p "$U_URL_OK"
+  {
+    printf '%s\n' "公開ミラー自身の https://github.com/feel-flow/ff-dev-toolkit/issues/1 は通す。"
+    printf '%s\n' "clone URL の https://github.com/feel-flow/ff-dev-toolkit.git も通す。"
+    printf '%s\n' "SCP 形の git@github.com:feel-flow/ff-dev-toolkit.git も通す。"
+    printf '%s\n' "外部 owner の https://github.com/mikefarah/yq には触らない。"
+    printf '%s\n' "リポジトリでないパス https://github.com/sponsors/wooorm にも触らない。"
+    printf '%s\n' "設定ページ https://github.com/settings/copilot にも触らない。"
+    printf '%s\n' "サブドメイン https://docs.github.com/ja/actions にも触らない。"
+    printf '%s\n' "org ページ https://github.com/feel-flow は repo を持たない。"
+    printf '%s\n' "大小文字違いでも許可名は通す https://GitHub.com/Feel-Flow/FF-Dev-Toolkit。"
+    printf '%s\n' "大小文字違いのサブドメイン https://Docs.GitHub.com/ja/actions にも触らない。"
+    printf '%s\n' "大小文字違いの外部 owner https://GitHub.com/MikeFarah/yq にも触らない。"
+    printf '%s\n' "明示ポート付きの許可名 https://github.com:443/feel-flow/ff-dev-toolkit も通す。"
+  } > "$U_URL_OK/doc.md"
+  expect_clear "外部 owner・非リポジトリパス・サブドメイン・org ページは誤検出しない（大小文字違い・明示ポートを含む）" \
+    run_check --scan-dir "$U_URL_OK"
+
+  # 12-19. 変異: allowlist から掲載リポジトリを外したコピーだけが 12-18 を赤にする
+  # （URL 形の判定も同じ allowlist を読んでいることの実測。`.git` 付き・SCP 形も
+  # 同じ名前へ正規化されるので、同じ 1 行の削除で 3 形すべてが赤になる）
+  M_URL_REPO="$TMP/unreachable-url-mutate-repo"
+  mkdir -p "$M_URL_REPO/scripts"
+  LC_ALL=C sed "/^  'feel-flow\/ff-dev-toolkit'\$/d" "$SYNC" \
+    > "$M_URL_REPO/scripts/sync-dev-toolkit-to-public.sh"
+  cp "$UNREACHABLE_SRC" "$M_URL_REPO/scripts/scan-unreachable-repo-refs.sh"
+  expect_hit "allowlist から掲載リポジトリを外すと通っていた URL が赤になる（変異）" \
+    "doc.md:1" bash "$M_URL_REPO/scripts/sync-dev-toolkit-to-public.sh" \
+    --check-only --scan-dir "$U_URL_OK"
+  expect_hit "同じ変異で clone URL（.git）も赤になる（変異）" \
+    "doc.md:2" bash "$M_URL_REPO/scripts/sync-dev-toolkit-to-public.sh" \
+    --check-only --scan-dir "$U_URL_OK"
+  expect_hit "同じ変異で SCP 形も赤になる（変異。3 形すべてが同じ 1 行に依っている）" \
+    "doc.md:3" bash "$M_URL_REPO/scripts/sync-dev-toolkit-to-public.sh" \
+    --check-only --scan-dir "$U_URL_OK"
+
+  # 12-20. 変異: 判定対象 org を外すと、URL 形の検査は「対象 0 件で何も見ない」に
+  # なる。これを通すと「検査が存在しない」と「違反が無い」が区別できないので
+  # fail-closed（配線を外したら赤くなること）
+  M_URL_ORG="$TMP/unreachable-url-mutate-org"
+  mkdir -p "$M_URL_ORG/scripts"
+  LC_ALL=C sed "/^  'feel-flow'\$/d" "$SYNC" \
+    > "$M_URL_ORG/scripts/sync-dev-toolkit-to-public.sh"
+  cp "$UNREACHABLE_SRC" "$M_URL_ORG/scripts/scan-unreachable-repo-refs.sh"
+  expect_fail "判定対象 org を空にすると fail-closed で止まる（変異）" "org 行がありません" \
+    bash "$M_URL_ORG/scripts/sync-dev-toolkit-to-public.sh" --check-only --scan-dir "$U_URL_OK"
+
+  # 12-21. 追加行限定の入口でも URL 形の規則が効く。既存行の同型は通し、追加行だけ止める
+  # （全文検査と差分限定の 2 入口があり、後者だけ規則が抜ける経路を作らない）
+  F_URL="$TMP/refs-url"
+  refs_fixture_prepare "$F_URL"
+  printf '%s\n' "既存行: https://github.com/${SCOPED_UNLISTED}/issues/1" 'baseline' \
+    > "$F_URL/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_URL"
+  printf '%s\n' "追加行: https://github.com/${SCOPED_UNLISTED}/issues/2" \
+    >> "$F_URL/plugins/ff-dev-toolkit/doc.md"
+  expect_refs_only "追加行の org スコープ URL だけを止め、既存行の同型は通す" 1 \
+    "plugins/ff-dev-toolkit/doc.md:3" "plugins/ff-dev-toolkit/doc.md:1" \
+    refs_run "$F_URL"
+
+  # 12-23. 変異: org 行の値が owner 名の形を外れる（末尾空白）と、org 行の件数は
+  # 1 件のままなのに orgs のキーが実在の org と一致しなくなり、URL 形の検査が
+  # 「判定対象があるのに何も止めない」状態になる。件数だけでは検出できないので
+  # 値の形まで見て fail-closed にすること（12-20 の件数ゲートの穴）
+  M_URL_ORGFMT="$TMP/unreachable-url-mutate-orgfmt"
+  mkdir -p "$M_URL_ORGFMT/scripts"
+  LC_ALL=C sed "s|^  'feel-flow'\$|  'feel-flow '|" "$SYNC" \
+    > "$M_URL_ORGFMT/scripts/sync-dev-toolkit-to-public.sh"
+  cp "$UNREACHABLE_SRC" "$M_URL_ORGFMT/scripts/scan-unreachable-repo-refs.sh"
+  expect_fail "org 行の値が owner 名の形を外れると fail-closed で止まる（変異）" "書式が違います" \
+    bash "$M_URL_ORGFMT/scripts/sync-dev-toolkit-to-public.sh" --check-only --scan-dir "$U_URL_OK"
+
+  # 12-22. 走査器の self-test が URL 形の許可・禁止も固定していること（走査規則
+  # そのものの検出力。ゲート側の配線とは別に走査器側でも対を持つ）
+  selftest_out="$(bash "$UNREACHABLE_SRC" --self-test 2>&1)" || true
+  case "$selftest_out" in
+    *"org スコープの URL / SCP 形だけを止め"*) ok "走査器の self-test が URL 形の対を固定している" ;;
+    *) bad "走査器の self-test に URL 形の対が無い"
+       printf '%s\n' "$selftest_out" | sed 's/^/    | /' >&2 ;;
+  esac
+
   # 12-10. live: この作業ツリーの公開対象に未登録の owner/repo が無いこと。
   # 12-2〜12-9 は隔離 fixture の検査で、ゲート本体が現ツリーへ当たっているかは別
   expect_clear "現在の公開対象作業ツリーに未登録の owner/repo は無い（live）" run_check
+fi
+
+# --- 13. 本番プロンプト資産（scripts/perspectives/）の code fence 整合 ---------
+# 観点プロンプトは multi-agent.sh が CLI へそのまま渡す本番資産であり、公開ミラー
+# 対象でもある。ここで fence が閉じないと実害が 2 つ出る:
+#   - Markdown として読むと、閉じなかった開始行以降が丸ごとコードブロックへ化け、
+#     意図した節区切りが読み手にも CLI にも伝わらない
+#   - fence 境界を追う走査器 scripts/scan-bare-issue-refs.sh が rc=2（走査不成立）を
+#     返す。呼び出し側 scripts/check-added-bare-refs.sh は開始行を潰して再走査する
+#     回復経路を持つが、潰した行の内側は本来の fence 判定と意味が変わる。本番資産の
+#     記述ミスのためにその回復経路を常用させない
+# 対象は scripts/perspectives/ 配下の Markdown に**限定**する。tests/ 配下の
+# fixtures と heredoc で fixture を組み立てる verify.sh には**意図的な**未閉 fence が
+# 実在し（走査器が fail-closed であること自体を固定する資産）、それらは直さない。
+# 入れ子を書きたい場合の正しい形は「外側のフェンス文字数を増やす」（4 連 backtick で
+# 3 連を囲む）。閉じフェンスを足すだけの修正はブロックの範囲が変わるので不可。
+FENCE_SCANNER="$REPO_ROOT/scripts/scan-bare-issue-refs.sh"
+PERSPECTIVES_REL="plugins/ff-dev-toolkit/scripts/perspectives"
+
+fence_scan_rc() { # $1=ファイル -> 走査器の rc を stdout へ（2 = 走査不成立）
+  local rc=0
+  bash "$FENCE_SCANNER" < "$1" >/dev/null 2>&1 || rc=$?
+  printf '%s\n' "$rc"
+}
+
+# 行が「閉じフェンスになりうる行」（字下げ 3 まで・同記号 3 連以上・後続は空白のみ）
+# かを見て、最後の 1 件の行番号を返す。awk の繰り返し区間 {n,m} は環境差があるため
+# 使わず、先頭空白の剥がしと連長の数え上げで判定する。
+last_closing_fence_line() { # $1=ファイル -> 行番号（無ければ空）
+  awk '
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      ind = 0
+      while (ind < 3 && substr(line, 1, 1) == " ") { line = substr(line, 2); ind++ }
+      c = substr(line, 1, 1)
+      if (c != "`" && c != "~") next
+      n = 0
+      while (substr(line, n + 1, 1) == c) n++
+      if (n < 3) next
+      if (substr(line, n + 1) ~ /^[ \t]*$/) last = NR
+    }
+    END { if (last) print last }
+  ' "$1"
+}
+
+if [[ ! -f "$FENCE_SCANNER" ]]; then
+  bad "fence 境界を追う走査器が見つかりません: $FENCE_SCANNER"
+elif [[ ! -d "$REPO_ROOT/$PERSPECTIVES_REL" ]]; then
+  bad "観点プロンプトのディレクトリが見つかりません: $PERSPECTIVES_REL"
+else
+  PERSPECTIVE_FILES=()
+  while IFS= read -r p; do
+    [[ "$p" == *.md ]] || continue
+    PERSPECTIVE_FILES+=("$p")
+  done < <(git -C "$REPO_ROOT" ls-files -- "$PERSPECTIVES_REL")
+
+  if [[ "${#PERSPECTIVE_FILES[@]}" -eq 0 ]]; then
+    bad "観点プロンプトの Markdown が 0 件のため fence 検査が成立しません"
+  else
+    UNBALANCED=()
+    for p in "${PERSPECTIVE_FILES[@]}"; do
+      if [[ "$(fence_scan_rc "$REPO_ROOT/$p")" -eq 2 ]]; then
+        UNBALANCED+=("$p")
+      fi
+    done
+    if [[ "${#UNBALANCED[@]}" -eq 0 ]]; then
+      ok "観点プロンプト ${#PERSPECTIVE_FILES[@]} 件の code fence が開閉している（走査器が rc=2 を返さない）"
+    else
+      bad "観点プロンプト ${#UNBALANCED[@]} 件の code fence が閉じていません（入れ子は外側のフェンス文字数を増やして書くこと）"
+      printf '    | %s\n' "${UNBALANCED[@]}" >&2
+    fi
+
+    # 検出力の実測: 実ファイルの閉じフェンスを 1 つ削った写しが rc=2 になること。
+    # これが赤くならないなら、上の緑は「検査が空振りしている」ことの証明にしかならない
+    FENCE_MUT_SRC="$REPO_ROOT/${PERSPECTIVE_FILES[0]}"
+    mut_line="$(last_closing_fence_line "$FENCE_MUT_SRC")"
+    if [[ -z "$mut_line" ]]; then
+      bad "変異注入の対象（閉じフェンス行）が無いため検出力を実測できません: ${PERSPECTIVE_FILES[0]}"
+    else
+      FENCE_MUT="$TMP/perspective-fence-mutant.md"
+      awk -v n="$mut_line" 'NR != n' "$FENCE_MUT_SRC" > "$FENCE_MUT"
+      if [[ "$(fence_scan_rc "$FENCE_MUT")" -eq 2 ]]; then
+        ok "閉じフェンスを 1 つ削った写しは走査不成立（rc=2）になる（変異注入で検出力を実測）"
+      else
+        bad "閉じフェンスを 1 つ削っても rc=2 にならない（fence 検査が空振りしている）"
+      fi
+    fi
+  fi
 fi
 
 echo

@@ -40,7 +40,7 @@
 
 ## Output Format
 
-```markdown
+````markdown
 ## Refactoring Results
 
 ### Changes Applied
@@ -73,7 +73,7 @@
 - 影響ファイル: X
 - 行数削減: X行
 - 複雑度改善: Before X → After Y
-```
+````
 
 ## Safety Constraints
 

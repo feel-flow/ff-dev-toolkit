@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
 
-# ASDD 2.0: disabled optional hooks do not prompt, block, or mutate.
-if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
-  echo 'ff-dev-toolkit: ASDD Hook helper is unavailable; optional hook skipped' >&2
-  exit 0
-fi
-asdd_hook_enabled hooks || exit 0
 #
 # Bash の cwd ガード（PreToolUse / Bash）。
 #
@@ -131,6 +125,18 @@ asdd_hook_enabled hooks || exit 0
 # 読み、EOF では非 0 を返すが input には内容が入っている。
 input=""
 IFS= read -r -d '' input || true
+
+# ASDD ゲートはこの drain より後に置く。ゲートの早期終了（.asdd 設定があり node が
+# 無い / 当該 feature が無効 / ヘルパ自体が読めない）は exit 0 なので、ゲートを先頭へ
+# 置くと stdin 未読のまま抜ける経路ができ、上の drain が守っている EPIPE / SIGPIPE が
+# そこから漏れる。ゲート自身は stdin を消費しない（asdd-hook-gate.sh）ので、読み切って
+# から呼んでも hook が受け取るペイロードは変わらない。
+# ASDD 2.0: disabled optional hooks do not prompt, block, or mutate.
+if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
+  echo 'ff-dev-toolkit: ASDD Hook helper is unavailable; optional hook skipped' >&2
+  exit 0
+fi
+asdd_hook_enabled hooks || exit 0
 
 # opt-out も stdin を読み切ってから抜ける（drain 前に exit すると同じ EPIPE を書き手へ返す）。
 [ "${FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD:-0}" = "1" ] && exit 0

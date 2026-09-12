@@ -123,6 +123,18 @@
 #      破壊的処理の前に中断する。main tree のパスが取れれば再実行コマンドを引用付きで
 #      示し（空白を含むパスでも貼って実行できる）、bare リポジトリのようにパスが
 #      取れない構成でも素通しせず原因と対処を示す。main tree からの起動は完走する
+#  39. (46.x) 破壊的処理を伴わない確認手段（--dry-run / --help）。--dry-run は削除対象を
+#      一覧するだけでブランチ・worktree・リモート参照を 1 つも変えず、保護ブランチ・
+#      dirty worktree・fail-closed な縮退の判定は通常実行と 1 行も違わない。予告は
+#      実行時の削除を 1 つも取りこぼさない — 見送った prune / リモート削除の連鎖
+#      （削除 → prune → 新たに [gone] → その worktree）まで予測し、通常実行が削除した
+#      ものが全て予告に載っていたことを包含関係で実測する。逆に origin 上の ref を
+#      read-only で照合し、OID 不一致（マージ後に再利用）・既に無い head は予告しない。
+#      -d 相当の判定基準は「実行時に switch / pull した後の base」で、現在の HEAD では
+#      ない。--help は PR 番号として解釈されず（gh を一度も呼ばない）、mktemp と
+#      gh / jq の存在確認より前に効く。引数なしは使い方を表示して非 0 で終わる。
+#      通常実行の削除と終了コード契約は従来どおり。連鎖予告なし / OID 照合なし /
+#      -d の基準を現在 HEAD へ / 依存確認を --help より前へ、の 4 mutant で検出力を実測する
 #
 # あわせて静的検査として、bash 3.2 で変数名にマルチバイト文字が取り込まれる書き方
 # （"$VAR" の直後に全角文字を直付けする形）が merge-cleanup.sh と本 suite 自身に無いことを
@@ -959,6 +971,16 @@ JSON
 cat > "$MOCK/gh" <<SH
 #!/usr/bin/env bash
 args="\$*"
+# 46.1 / 46.2: --help と引数なしが PR 番号として解釈されていないことを、ログの文言では
+# なく「gh を一度も呼んでいない」で見るための記録。
+printf '%s\n' "\$args" >> "$TMP/gh-calls.log"
+# 46.5: ガード情報（MERGED 一覧）の取得を失敗させ、fail-closed な縮退を再現する。
+# フラグはケースの直前に作り直後に消すので、他の run へは漏れない。
+if [ -f "$TMP/ghfail-merged.enabled" ]; then
+  case "\$args" in
+    *"--state merged"*) echo "simulated gh pr list failure" >&2; exit 1 ;;
+  esac
+fi
 case "\$args" in
   "pr view 10 --json"*)   cat "$MOCK/pr_view_10.json" ;;
   "pr view 11 --json"*)   cat "$MOCK/pr_view_11.json" ;;
@@ -981,6 +1003,9 @@ case "\$args" in
   "pr view 60 --json"*)   cat "$MOCK/pr_view_60.json" ;;
   "pr view 61 --json"*)   cat "$MOCK/pr_view_61.json" ;;
   "pr view 62 --json"*)   cat "$MOCK/pr_view_62.json" ;;
+  "pr view 63 --json"*)   cat "$MOCK/pr_view_63.json" ;;
+  "pr view 64 --json"*)   cat "$MOCK/pr_view_64.json" ;;
+  "pr view 65 --json"*)   cat "$MOCK/pr_view_65.json" ;;
   "pr view 99 --json"*)   cat "$MOCK/pr_view_99.json" ;;
   *"--state merged"*)
     # 実物の gh と同じく --limit を尊重する（#835 の照合上限が実際に gh へ渡り、
@@ -3213,6 +3238,480 @@ if [ "$EXIT_SPACE_MAIN" -eq 1 ] \
   ok "空白を含む main tree のパスも、貼って実行すれば同じパスへ解決する形で案内する"
 else
   bad "空白入り main tree パスの案内が期待どおりでない (exit=${EXIT_SPACE_MAIN})"
+fi
+
+# ---- 46. (dry-run / --help) 破壊的処理を伴わない確認手段 -----------------------
+#
+# 破壊的ツールに無害な確認手段が無いと、「ガードが発火するところだけを見たい」検証者が
+# ツールの全副作用を引き受けることになる（本件の発見元は、その結果として開発中の
+# worktree が実際に削除された実測）。--dry-run の契約は「判定は実行時と同じ、副作用だけ
+# が無い」で、--help は PR 番号として解釈されない。
+#
+# ここでは呼び出し元を detached、base (develop) を別 worktree が保持、という構成にする。
+# 通常実行はこの構成で「呼び出し元を develop へ switch し、base 保持 worktree を detach
+# する」ので、dry-run がそれを見送ったことを状態の差として観測できる。
+#
+# fixture は「dry-run の予告が実行時の削除より少なくなる」壊れ方を観測できる形にする:
+#   - 対象 PR の head をローカルブランチ + worktree として残す
+#     （実行時は 削除 → prune → [gone] → worktree ごと削除、と連鎖する）
+#   - origin から既に消えているが追跡 ref だけ残っているブランチ + worktree
+#     （実行時は Step 3 の fetch --prune で [gone] になり worktree ごと消える）
+#   - 呼び出し元の HEAD を base の先端より前に置く
+#     （実行時の `git branch -d` は switch / pull 後の HEAD で判定するため、
+#       現在の HEAD を基準にすると dry-run だけ判定が食い違う）
+#   - マージ後に同名ブランチが再利用された head / origin 側が既に消えている head
+#     （どちらも実行時には削除されないので、予告に出してはいけない）
+
+echo ""
+echo "== (dry-run / --help) 破壊的処理を伴わない確認手段 =="
+
+cd "$CALLER"
+git switch -q --detach develop
+git -C "$BASE_OWNER" switch -q develop
+
+OID_DEVELOP_BEFORE="$(git rev-parse develop)"
+
+# (a) 対象 PR の head。ローカルブランチと worktree を残す
+DRY_TARGET='feature/dry-run-target'
+git switch -q -c "$DRY_TARGET" develop
+echo dry-run-target > dry-run-target.txt
+git add dry-run-target.txt
+git commit -qm "commit on the dry-run target"
+OID_DRY_TARGET="$(git rev-parse HEAD)"
+git push -q --no-verify -u origin "$DRY_TARGET"
+
+# (b) マージ後に同名ブランチが再利用された head（origin の OID が PR head と違う）
+DRY_REUSED='feature/dry-reused-head'
+git switch -q -c "$DRY_REUSED" develop
+echo reused > dry-reused.txt
+git add dry-reused.txt
+git commit -qm "head of the reused PR"
+OID_DRY_REUSED="$(git rev-parse HEAD)"
+git push -q --no-verify -u origin "$DRY_REUSED"
+echo reused-again >> dry-reused.txt
+git add dry-reused.txt
+git commit -qm "pushed after the merge (branch reused)"
+git push -q --no-verify origin "$DRY_REUSED"
+
+# (c) origin 側が既に消えている head
+DRY_ALREADY='feature/dry-already-removed'
+git switch -q -c "$DRY_ALREADY" develop
+echo already > dry-already.txt
+git add dry-already.txt
+git commit -qm "head of the already-removed PR"
+OID_DRY_ALREADY="$(git rev-parse HEAD)"
+git push -q --no-verify -u origin "$DRY_ALREADY"
+git push -q --no-verify origin --delete "$DRY_ALREADY"
+
+git switch -q --detach "$OID_DEVELOP_BEFORE"
+git branch -q -D "$DRY_REUSED" "$DRY_ALREADY"
+git worktree add -q "$TMP/wt-dry-chain" "$DRY_TARGET"
+
+# base を 1 コミット進める。呼び出し元は進める前の位置で detached のままにするので、
+# 「現在の HEAD」と「実行時に switch / pull した後の HEAD」が別物になる。
+echo base-advance > "$BASE_OWNER/base-advance.txt"
+git -C "$BASE_OWNER" add base-advance.txt
+git -C "$BASE_OWNER" commit -qm "advance develop after the caller detached"
+git -C "$BASE_OWNER" push -q --no-verify origin develop
+
+if [ "$(git rev-parse refs/remotes/origin/develop)" = "$(git rev-parse develop)" ] \
+  && [ "$(git rev-parse HEAD)" != "$(git rev-parse develop)" ]; then
+  ok "fixture: 呼び出し元 HEAD が base の先端より前にある（-d 相当の判定基準の差を観測できる。self-test）"
+else
+  bad "fixture: 呼び出し元 HEAD と base 先端の差が作れていない — 判定基準の検証が空振りになる"
+fi
+
+# (d) [gone] + clean worktree（既に [gone]。通常実行では削除される）
+add_clean_gone_worktree 'feature/dry-gone-clean' "$TMP/wt-dry-gone"
+# (e) [gone] + dirty worktree（保護。dry-run でも同じ判定になること）
+add_clean_gone_worktree 'feature/dry-gone-dirty' "$TMP/wt-dry-dirty"
+echo work-in-progress > "$TMP/wt-dry-dirty/wip.txt"
+# (f) origin からは消えているが、ローカルの追跡 ref だけが残っている（prune 前の状態）。
+#     add_clean_gone_worktree の push --delete は追跡 ref も消すので、書き戻して再現する。
+DRY_STALE='feature/dry-stale-upstream'
+add_clean_gone_worktree "$DRY_STALE" "$TMP/wt-dry-stale"
+git update-ref "refs/remotes/origin/${DRY_STALE}" "$(git rev-parse "refs/heads/${DRY_STALE}")"
+
+if [ "$(git for-each-ref --format='%(upstream:track)' "refs/heads/${DRY_STALE}")" != '[gone]' ] \
+  && [ "$(git for-each-ref --format='%(upstream:track)' "refs/heads/${DRY_TARGET}")" != '[gone]' ]; then
+  ok "fixture: 連鎖対象の 2 本は今は [gone] ではない（予告が連鎖を予測できているかを観測できる。self-test）"
+else
+  bad "fixture: 連鎖対象が既に [gone] — 連鎖予告の検証が空振りになる"
+fi
+
+# git worktree list が返すのは symlink 解決後のパス（macOS の $TMPDIR は
+# /var -> /private/var）。ログとの照合は解決後の綴りで持つ。
+WT_GONE_REAL="$(cd "$TMP/wt-dry-gone" && pwd -P)"
+WT_DIRTY_REAL="$(cd "$TMP/wt-dry-dirty" && pwd -P)"
+WT_CHAIN_REAL="$(cd "$TMP/wt-dry-chain" && pwd -P)"
+WT_STALE_REAL="$(cd "$TMP/wt-dry-stale" && pwd -P)"
+
+write_pr_view_json() {
+  # $1: 出力先 / $2: head 名 / $3: head OID / $4: タイトル
+  cat > "$1" <<JSON
+{
+  "state": "MERGED",
+  "headRefName": "$2",
+  "headRefOid": "$3",
+  "baseRefName": "develop",
+  "title": "$4",
+  "isCrossRepository": false
+}
+JSON
+}
+
+write_pr_view_json "$MOCK/pr_view_63.json" "$DRY_TARGET"  "$OID_DRY_TARGET"  "dry-run target PR"
+write_pr_view_json "$MOCK/pr_view_64.json" "$DRY_REUSED"  "$OID_DRY_REUSED"  "PR whose head branch was reused after the merge"
+write_pr_view_json "$MOCK/pr_view_65.json" "$DRY_ALREADY" "$OID_DRY_ALREADY" "PR whose head branch is already gone from origin"
+
+jq --arg t "$DRY_TARGET"  --arg to "$OID_DRY_TARGET" \
+   --arg r "$DRY_REUSED"  --arg ro "$OID_DRY_REUSED" \
+   --arg a "$DRY_ALREADY" --arg ao "$OID_DRY_ALREADY" \
+  '. + [{"headRefName": $t, "headRefOid": $to, "isCrossRepository": false},
+        {"headRefName": $r, "headRefOid": $ro, "isCrossRepository": false},
+        {"headRefName": $a, "headRefOid": $ao, "isCrossRepository": false}]' \
+  "$MOCK/pr_list_merged.json" > "$TMP/pr_list_merged.dry.json"
+mv "$TMP/pr_list_merged.dry.json" "$MOCK/pr_list_merged.json"
+
+repo_state_snapshot() {
+  # $1: 出力先。「dry-run の後にリポジトリ状態が不変であること」を実行ログの文言では
+  # なく実測で固定するための材料。ブランチ・リモート追跡 ref・origin 上の ref・
+  # worktree・両 worktree の HEAD・トランスクリプトとアーカイブをまとめて落とす。
+  {
+    echo "== local branches =="
+    git for-each-ref --format='%(refname) %(objectname) %(upstream:track)' refs/heads/
+    echo "== remote-tracking refs =="
+    git for-each-ref --format='%(refname) %(objectname)' refs/remotes/
+    echo "== origin refs =="
+    git ls-remote --heads origin
+    echo "== worktrees =="
+    git worktree list --porcelain
+    echo "== caller HEAD =="
+    git rev-parse HEAD
+    printf 'branch=%s\n' "$(git branch --show-current)"
+    echo "== base owner HEAD =="
+    git -C "$BASE_OWNER" rev-parse HEAD
+    printf 'branch=%s\n' "$(git -C "$BASE_OWNER" branch --show-current)"
+    echo "== transcripts =="
+    ls -1 "$FF_MERGE_CLEANUP_PROJECTS_DIR" 2>/dev/null || true
+    echo "== archives =="
+    ls -1 "$FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR" 2>/dev/null || true
+    echo "== dry-run worktree files =="
+    ls -1 "$TMP/wt-dry-gone" "$TMP/wt-dry-dirty" "$TMP/wt-dry-chain" "$TMP/wt-dry-stale" 2>/dev/null || true
+  } > "$1"
+}
+
+guard_verdict_lines() {
+  # $1: 実行ログ。ガードの判定行だけを取り出す（削除 push の成否は含めない）。
+  # dry-run と通常実行でここが 1 行でも違えば、dry-run だけ判定が緩んでいる。
+  grep -E 'skip \(保護ブランチ\)|skip \(設定保護パターン|worktree に未コミット変更があります' "$1" || true
+}
+
+predicted_branches() { sed -nE 's/^  ✓ \(dry-run\) 削除対象のブランチ: //p' "$1" | sort -u; }
+predicted_worktrees() { sed -nE 's/^  ✓ \(dry-run\) 削除対象の worktree: //p' "$1" | sort -u; }
+deleted_branches()   { sed -nE 's/^  ✓ branch deleted( \([^)]*\))?: //p' "$1" | sort -u; }
+deleted_worktrees()  { sed -nE 's/^  ✓ worktree removed: //p' "$1" | sort -u; }
+
+# 46.1 --help は使い方・破壊的処理の一覧・--dry-run の存在を出し、PR 番号として
+#      解釈されない（= gh を一度も呼ばない）
+: > "$TMP/gh-calls.log"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" --help > "$TMP/run-help.log" 2>"$TMP/run-help.err"
+EXIT_HELP=$?
+set -e
+if [ "$EXIT_HELP" -eq 0 ] \
+  && grep -q '使い方:' "$TMP/run-help.log" \
+  && grep -q -- '--dry-run' "$TMP/run-help.log" \
+  && grep -q 'このスクリプトが削除するもの' "$TMP/run-help.log" \
+  && grep -q 'リモートブランチ' "$TMP/run-help.log" \
+  && grep -q 'worktree' "$TMP/run-help.log" \
+  && [ ! -s "$TMP/gh-calls.log" ] \
+  && ! grep -q 'マージ後 Cleanup 結果' "$TMP/run-help.log"; then
+  ok "--help は使い方と破壊的処理の一覧を表示し、PR 番号として解釈しない（gh を呼ばない）"
+else
+  bad "--help の挙動が期待どおりでない (exit=${EXIT_HELP})"
+fi
+
+# 46.1b --help は mktemp と gh / jq の存在確認より前に効く。使い方をいちばん知りたい
+#       環境（依存未導入・TMPDIR 書き込み不可）で usage が出ないのが元の壊れ方。
+NODEPS_BIN="$TMP/nodeps-bin"
+mkdir -p "$NODEPS_BIN"
+NODEPS_OK=1
+for _c in bash cat mktemp rm; do
+  _p="$(command -v "$_c" 2>/dev/null || true)"
+  if [ -n "$_p" ]; then ln -sf "$_p" "$NODEPS_BIN/$_c"; else NODEPS_OK=0; fi
+done
+# 在否の確認は必ず新しいシェルで行う。本 suite は jq を直接呼んでいるため、
+# 現在のシェルの command hash に残った実体が PATH の差し替えより優先され、
+# 「不在の PATH」を用意できたのに見つかったことになる（実測）。
+if [ "$NODEPS_OK" = "1" ] && ! PATH="$NODEPS_BIN" bash -c 'command -v gh' >/dev/null 2>&1 \
+  && ! PATH="$NODEPS_BIN" bash -c 'command -v jq' >/dev/null 2>&1; then
+  ok "gh / jq を含まない PATH を用意できた（self-test）"
+else
+  bad "gh / jq 不在の PATH を用意できない — 依存より前かどうかの検証が空振りになる"
+fi
+set +e
+PATH="$NODEPS_BIN" bash "$TARGET" --help > "$TMP/run-help-nodeps.log" 2>&1
+EXIT_HELP_NODEPS=$?
+TMPDIR="$TMP/no-such-tmpdir" PATH="$MOCK:$PATH" bash "$TARGET" --help > "$TMP/run-help-notmp.log" 2>&1
+EXIT_HELP_NOTMP=$?
+set -e
+if [ "$EXIT_HELP_NODEPS" -eq 0 ] && grep -q '使い方:' "$TMP/run-help-nodeps.log" \
+  && [ "$EXIT_HELP_NOTMP" -eq 0 ] && grep -q '使い方:' "$TMP/run-help-notmp.log"; then
+  ok "gh / jq 未導入・TMPDIR 書き込み不可でも --help は usage を出して 0 で終わる（解析が依存確認より前）"
+else
+  bad "依存不在環境で --help が usage を出さない (nodeps=${EXIT_HELP_NODEPS}, notmpdir=${EXIT_HELP_NOTMP})"
+  { tail -5 "$TMP/run-help-nodeps.log" | sed 's/^/     /' >&2 || true; }
+fi
+
+# 46.2 引数なし（--dry-run だけの場合も含む）は使い方を表示して非 0 で終わる
+: > "$TMP/gh-calls.log"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" > "$TMP/run-noargs.log" 2>&1
+EXIT_NOARGS=$?
+PATH="$MOCK:$PATH" bash "$TARGET" --dry-run > "$TMP/run-dryonly.log" 2>&1
+EXIT_DRYONLY=$?
+set -e
+if [ "$EXIT_NOARGS" -eq 1 ] && [ "$EXIT_DRYONLY" -eq 1 ] \
+  && grep -q 'PR 番号を指定してください' "$TMP/run-noargs.log" \
+  && grep -q '使い方:' "$TMP/run-noargs.log" \
+  && grep -q '使い方:' "$TMP/run-dryonly.log" \
+  && [ ! -s "$TMP/gh-calls.log" ]; then
+  ok "引数なしは使い方を表示して exit 1 で終わる（--dry-run だけの指定も同じ）"
+else
+  bad "引数なしの扱いが期待どおりでない (noargs=${EXIT_NOARGS}, dryonly=${EXIT_DRYONLY})"
+fi
+
+# 46.3 --dry-run は削除対象を一覧表示し、リポジトリ状態を 1 つも変えない
+repo_state_snapshot "$TMP/state-before-dry.txt"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" --dry-run 63 > "$TMP/run-dry-63.log" 2>&1
+EXIT_DRY=$?
+set -e
+repo_state_snapshot "$TMP/state-after-dry.txt"
+
+if exit_is_complete "$EXIT_DRY" \
+  && grep -q 'マージ後 Cleanup 結果' "$TMP/run-dry-63.log" \
+  && grep -qF "リモートブランチ削除（対象）: ${DRY_TARGET}" "$TMP/run-dry-63.log" \
+  && grep -qF '削除対象のブランチ: feature/dry-gone-clean' "$TMP/run-dry-63.log" \
+  && grep -qF "削除対象の worktree: ${WT_GONE_REAL}" "$TMP/run-dry-63.log" \
+  && grep -qF '✓ (dry-run) 削除対象の取り残し:' "$TMP/run-dry-63.log" \
+  && grep -qF 'は Step 4 の削除対象です' "$TMP/run-dry-63.log"; then
+  ok "--dry-run は削除対象（リモートブランチ / ローカルブランチ / worktree / 取り残し）を一覧表示する"
+else
+  bad "--dry-run の一覧表示が期待どおりでない (exit=${EXIT_DRY})"
+  { tail -30 "$TMP/run-dry-63.log" | sed 's/^/     /' >&2 || true; }
+fi
+
+# 46.3b 見送った prune / リモート削除の**連鎖**も予告に入る。ここが落ちると、
+#       dry-run に出ていないブランチ・worktree が実行すると消える（最も危険な壊れ方）。
+if grep -qF "削除対象のブランチ: ${DRY_TARGET}" "$TMP/run-dry-63.log" \
+  && grep -qF "削除対象の worktree: ${WT_CHAIN_REAL}" "$TMP/run-dry-63.log" \
+  && grep -qF "削除対象のブランチ: ${DRY_STALE}" "$TMP/run-dry-63.log" \
+  && grep -qF "削除対象の worktree: ${WT_STALE_REAL}" "$TMP/run-dry-63.log" \
+  && grep -q '新たに \[gone\] になるブランチを予告へ含めます' "$TMP/run-dry-63.log"; then
+  ok "--dry-run は「リモート削除 / prune → 新たに [gone] → その worktree」の連鎖も予告する"
+else
+  bad "--dry-run が prune 連鎖で消えるブランチ / worktree を予告していない"
+  { grep -nE '削除対象|gone' "$TMP/run-dry-63.log" | head -20 | sed 's/^/     /' >&2 || true; }
+fi
+
+if cmp -s "$TMP/state-before-dry.txt" "$TMP/state-after-dry.txt"; then
+  ok "--dry-run の後もブランチ・worktree・リモート参照が 1 つも変化していない"
+else
+  bad "--dry-run がリポジトリ状態を変更した"
+  { diff "$TMP/state-before-dry.txt" "$TMP/state-after-dry.txt" | head -20 | sed 's/^/     /' >&2 || true; }
+fi
+
+if remote_has "$DRY_TARGET" \
+  && git show-ref -q "refs/heads/feature/dry-gone-clean" \
+  && [ -d "$TMP/wt-dry-gone" ] \
+  && [ -d "$TMP/wt-dry-chain" ] \
+  && [ -z "$(git branch --show-current)" ] \
+  && [ "$(git -C "$BASE_OWNER" branch --show-current)" = "develop" ]; then
+  ok "--dry-run は削除対象に挙げたものを実際には消さず、base 復帰のための detach も行わない"
+else
+  bad "--dry-run が削除・切り替えを実行している"
+fi
+
+# 46.4 ガード（保護ブランチ・dirty worktree）の判定が通常実行と同じ
+if grep -qF "worktree に未コミット変更があります。削除をスキップします: ${WT_DIRTY_REAL}" "$TMP/run-dry-63.log" \
+  && grep -qF 'skip (保護ブランチ): staging/keep' "$TMP/run-dry-63.log"; then
+  ok "--dry-run でも dirty worktree と保護ブランチのガードが発火する"
+else
+  bad "--dry-run のガード発火が期待どおりでない"
+fi
+
+# 46.5 fail-closed な縮退（ガード情報の取得失敗）も実行時と同じ判定になる
+: > "$TMP/ghfail-merged.enabled"
+repo_state_snapshot "$TMP/state-before-failclosed.txt"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" --dry-run 63 > "$TMP/run-dry-failclosed.log" 2>&1
+EXIT_DRY_FAILCLOSED=$?
+set -e
+repo_state_snapshot "$TMP/state-after-failclosed.txt"
+rm -f "$TMP/ghfail-merged.enabled"
+
+if [ "$EXIT_DRY_FAILCLOSED" -eq 2 ] \
+  && grep -q 'マージ済み PR 一覧の取得に失敗しました（fail-closed で縮退）' "$TMP/run-dry-failclosed.log" \
+  && grep -q 'リモートブランチ削除をスキップします（fail-closed）' "$TMP/run-dry-failclosed.log" \
+  && grep -q '取り残し検証をスキップします（fail-closed）' "$TMP/run-dry-failclosed.log" \
+  && ! grep -qF 'リモートブランチ削除（対象）' "$TMP/run-dry-failclosed.log" \
+  && ! grep -qF '削除対象の取り残し' "$TMP/run-dry-failclosed.log" \
+  && cmp -s "$TMP/state-before-failclosed.txt" "$TMP/state-after-failclosed.txt"; then
+  ok "--dry-run でも fail-closed な縮退は同じで、削除対象として挙げない（判定が緩まない）"
+else
+  bad "--dry-run の fail-closed 縮退が期待どおりでない (exit=${EXIT_DRY_FAILCLOSED})"
+  { tail -20 "$TMP/run-dry-failclosed.log" | sed 's/^/     /' >&2 || true; }
+fi
+
+# 46.6 origin 上の ref を確認せずに「実行時は削除する」と書かない。
+#      実行時の削除は --force-with-lease で OID を照合するので、再利用された同名
+#      ブランチ（OID 不一致）と既に消えた ref は実行しても削除されない。
+repo_state_snapshot "$TMP/state-before-verdict.txt"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" --dry-run 64 > "$TMP/run-dry-64.log" 2>&1
+EXIT_DRY_REUSED=$?
+PATH="$MOCK:$PATH" bash "$TARGET" --dry-run 65 > "$TMP/run-dry-65.log" 2>&1
+EXIT_DRY_ALREADY=$?
+set -e
+repo_state_snapshot "$TMP/state-after-verdict.txt"
+
+if exit_is_complete "$EXIT_DRY_REUSED" \
+  && grep -qF "${DRY_REUSED} はマージ後に更新されています" "$TMP/run-dry-64.log" \
+  && ! grep -qF "リモートブランチ削除（対象）: ${DRY_REUSED}" "$TMP/run-dry-64.log" \
+  && exit_is_complete "$EXIT_DRY_ALREADY" \
+  && grep -qF "origin に ${DRY_ALREADY} は既にありません" "$TMP/run-dry-65.log" \
+  && ! grep -qF "リモートブランチ削除（対象）: ${DRY_ALREADY}" "$TMP/run-dry-65.log" \
+  && cmp -s "$TMP/state-before-verdict.txt" "$TMP/state-after-verdict.txt"; then
+  ok "--dry-run は origin の ref を read-only で照合し、OID 不一致 / 既に無い head を削除対象にしない"
+else
+  bad "--dry-run のリモート ref 照合が期待どおりでない (reused=${EXIT_DRY_REUSED}, already=${EXIT_DRY_ALREADY})"
+  { grep -nE 'リモートブランチ|既にありません|更新されています' "$TMP/run-dry-64.log" "$TMP/run-dry-65.log" | head -10 | sed 's/^/     /' >&2 || true; }
+fi
+
+# 46.7 変異テスト（すべて dry-run のみ。通常実行の前に走らせて、比較材料を揃える）
+MUTANT_CHAIN="$TMP/merge-cleanup-mutant-chain.sh"
+MUTANT_VERDICT="$TMP/merge-cleanup-mutant-verdict.sh"
+MUTANT_BASEREF="$TMP/merge-cleanup-mutant-baseref.sh"
+sed 's|^dry_virtual_prune_gone_branches() {$|dry_virtual_prune_gone_branches() { return 0|' "$TARGET" > "$MUTANT_CHAIN"
+sed 's|^dry_remote_delete_verdict() {$|dry_remote_delete_verdict() { printf "match\\t%s\\n" "$2"; return 0|' "$TARGET" > "$MUTANT_VERDICT"
+sed 's|"\$DRY_MERGED_BASE_REF"|HEAD|g' "$TARGET" > "$MUTANT_BASEREF"
+if ! cmp -s "$TARGET" "$MUTANT_CHAIN" && ! cmp -s "$TARGET" "$MUTANT_VERDICT" \
+  && ! cmp -s "$TARGET" "$MUTANT_BASEREF"; then
+  ok "mutant 3 種を生成できた（連鎖予告なし / OID 照合なし / -d の基準を現在 HEAD へ。self-test）"
+else
+  bad "mutant が原本と同一 — 変異テストは何も検証していない"
+fi
+
+set +e
+PATH="$MOCK:$PATH" bash "$MUTANT_CHAIN"   --dry-run 63 > "$TMP/run-dry-63-mut-chain.log" 2>&1
+PATH="$MOCK:$PATH" bash "$MUTANT_BASEREF" --dry-run 63 > "$TMP/run-dry-63-mut-baseref.log" 2>&1
+PATH="$MOCK:$PATH" bash "$MUTANT_VERDICT" --dry-run 64 > "$TMP/run-dry-64-mut-verdict.log" 2>&1
+PATH="$MOCK:$PATH" bash "$MUTANT_VERDICT" --dry-run 65 > "$TMP/run-dry-65-mut-verdict.log" 2>&1
+set -e
+
+if grep -qF "リモートブランチ削除（対象）: ${DRY_REUSED}" "$TMP/run-dry-64-mut-verdict.log" \
+  && grep -qF "リモートブランチ削除（対象）: ${DRY_ALREADY}" "$TMP/run-dry-65-mut-verdict.log"; then
+  ok "mutant（OID 照合なし）は再利用 / 削除済みの head を過剰予告する = 46.6 が mutant を赤にできる"
+else
+  bad "mutant（OID 照合なし）の過剰予告が観測できない — 46.6 の検出力は主張できない"
+fi
+
+if grep -qF "${DRY_STALE} はマージ済み PR の head と OID 一致しません" "$TMP/run-dry-63-mut-baseref.log" \
+  && ! grep -qF "削除対象のブランチ: ${DRY_STALE}" "$TMP/run-dry-63-mut-baseref.log"; then
+  ok "mutant（-d の基準を現在 HEAD へ）は base 先端でマージ済みのブランチを予告から落とす = 判定基準の検証が mutant を赤にできる"
+else
+  bad "mutant（-d の基準を現在 HEAD へ）の退行が観測できない"
+  { grep -nE "${DRY_STALE}" "$TMP/run-dry-63-mut-baseref.log" | head -10 | sed 's/^/     /' >&2 || true; }
+fi
+
+# 46.8 --dry-run を外した通常実行は従来どおり削除し、終了コード契約も変わらない。
+#      あわせて 46.3 の snapshot が「変化を検出できる」ことの self-test にする
+#      （検出できない snapshot なら、不変の主張は空振りになる）。
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 63 > "$TMP/run-real-63.log" 2>&1
+EXIT_REAL=$?
+set -e
+repo_state_snapshot "$TMP/state-after-real.txt"
+
+if exit_is_complete "$EXIT_REAL" \
+  && ! remote_has "$DRY_TARGET" \
+  && ! git show-ref -q "refs/heads/feature/dry-gone-clean" \
+  && ! git show-ref -q "refs/heads/${DRY_TARGET}" \
+  && ! git show-ref -q "refs/heads/${DRY_STALE}" \
+  && [ ! -d "$TMP/wt-dry-gone" ] \
+  && [ ! -d "$TMP/wt-dry-chain" ] \
+  && [ ! -d "$TMP/wt-dry-stale" ] \
+  && [ -d "$TMP/wt-dry-dirty" ] \
+  && git show-ref -q "refs/heads/feature/dry-gone-dirty" \
+  && ! cmp -s "$TMP/state-before-dry.txt" "$TMP/state-after-real.txt"; then
+  ok "通常実行は従来どおり削除し、dry-run では不変だった状態が実際に変わる（snapshot の self-test）"
+else
+  bad "--dry-run なしの通常実行が期待どおりでない (exit=${EXIT_REAL})"
+  { tail -30 "$TMP/run-real-63.log" | sed 's/^/     /' >&2 || true; }
+fi
+
+# 46.9 予告は実行時の削除を **1 つも取りこぼしていない**（実測の包含関係）。
+#      --dry-run の唯一の価値は「何が壊れるかを先に見せる」ことなので、
+#      予告が実際より少ないことが本質的な壊れ方。mutant では包含が破れる。
+predicted_branches  "$TMP/run-dry-63.log"  > "$TMP/dry-branches.txt"
+predicted_worktrees "$TMP/run-dry-63.log"  > "$TMP/dry-worktrees.txt"
+deleted_branches    "$TMP/run-real-63.log" > "$TMP/real-branches.txt"
+deleted_worktrees   "$TMP/run-real-63.log" > "$TMP/real-worktrees.txt"
+MISSED_BRANCHES="$(comm -13 "$TMP/dry-branches.txt" "$TMP/real-branches.txt")"
+MISSED_WORKTREES="$(comm -13 "$TMP/dry-worktrees.txt" "$TMP/real-worktrees.txt")"
+if [ ! -s "$TMP/real-branches.txt" ] || [ ! -s "$TMP/real-worktrees.txt" ]; then
+  bad "通常実行のログから削除済みブランチ / worktree を取り出せない — 包含比較が空振りになる"
+elif [ -z "$MISSED_BRANCHES" ] && [ -z "$MISSED_WORKTREES" ]; then
+  ok "通常実行が削除したブランチ / worktree は 1 つ残らず --dry-run の予告に載っていた"
+else
+  bad "--dry-run の予告に載っていないものが通常実行で削除された"
+  { printf '%s\n' "$MISSED_BRANCHES" "$MISSED_WORKTREES" | sed 's/^/     /' >&2 || true; }
+fi
+
+predicted_branches  "$TMP/run-dry-63-mut-chain.log" > "$TMP/mut-chain-branches.txt"
+predicted_worktrees "$TMP/run-dry-63-mut-chain.log" > "$TMP/mut-chain-worktrees.txt"
+if [ -n "$(comm -13 "$TMP/mut-chain-branches.txt" "$TMP/real-branches.txt")" ] \
+  && [ -n "$(comm -13 "$TMP/mut-chain-worktrees.txt" "$TMP/real-worktrees.txt")" ]; then
+  ok "mutant（連鎖予告なし）では予告が通常実行の削除より少なくなる = 46.9 が mutant を赤にできる"
+else
+  bad "mutant（連鎖予告なし）の取りこぼしが観測できない — 46.9 の検出力は主張できない"
+fi
+
+# 46.10 変異テスト: --help の解析を依存確認の後ろへ戻した mutant は、gh / jq 不在で
+#       usage を出さずに落ちる（46.1b の判定が mutant を赤にできる）。
+MUTANT_DEPORDER="$TMP/merge-cleanup-mutant-deporder.sh"
+awk '
+  !moved && /^# ---- Step 0: 引数/ {
+    print "WORK_TMP_MUTANT=\"$(mktemp -d)\" || die \"mktemp -d に失敗しました\""
+    print "command -v gh >/dev/null 2>&1 || die \"gh CLI が必要です\""
+    print "command -v jq >/dev/null 2>&1 || die \"jq が必要です\""
+    moved = 1
+  }
+  { print }
+' "$TARGET" > "$MUTANT_DEPORDER"
+set +e
+PATH="$NODEPS_BIN" bash "$MUTANT_DEPORDER" --help > "$TMP/run-help-nodeps-mutant.log" 2>&1
+EXIT_HELP_NODEPS_MUT=$?
+set -e
+if ! cmp -s "$TARGET" "$MUTANT_DEPORDER" \
+  && [ "$EXIT_HELP_NODEPS_MUT" -ne 0 ] \
+  && ! grep -q '使い方:' "$TMP/run-help-nodeps-mutant.log"; then
+  ok "mutant（依存確認を --help より前へ）は gh 不在で usage を出さず落ちる = 46.1b が mutant を赤にできる"
+else
+  bad "mutant（依存確認の順序）の退行が観測できない (exit=${EXIT_HELP_NODEPS_MUT})"
+fi
+
+guard_verdict_lines "$TMP/run-dry-63.log" > "$TMP/dry-guards.txt"
+guard_verdict_lines "$TMP/run-real-63.log" > "$TMP/real-guards.txt"
+if [ ! -s "$TMP/dry-guards.txt" ]; then
+  bad "dry-run のログからガード判定行を取り出せない — 一致比較が空振りになる"
+elif cmp -s "$TMP/dry-guards.txt" "$TMP/real-guards.txt"; then
+  ok "--dry-run のガード判定は通常実行と 1 行も違わない（dry-run だけ緩まない）"
+else
+  bad "--dry-run のガード判定が通常実行と食い違う"
+  { diff "$TMP/dry-guards.txt" "$TMP/real-guards.txt" | head -20 | sed 's/^/     /' >&2 || true; }
 fi
 
 echo ""

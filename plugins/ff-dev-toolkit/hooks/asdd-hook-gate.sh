@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Optional plugin hooks respect the nearest project ASDD configuration.
-# No stdin consumption: the actual hook still receives its complete payload.
+# No stdin consumption here, so a hook that reads its payload after the gate
+# still receives it complete. The gate does NOT drain either: every disabled
+# path below ends in a caller-side exit 0, so a hook that owns a stdin payload
+# must read it BEFORE calling this helper. Otherwise the writing host is left
+# with an unread pipe and takes EPIPE / SIGPIPE.
 asdd_hook_enabled() {
   local feature="$1" root="${PWD}" parent gate
   while :; do
