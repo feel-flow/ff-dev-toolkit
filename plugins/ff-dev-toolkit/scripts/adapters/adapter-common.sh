@@ -1122,6 +1122,36 @@ fail_output_write() { # <perspective_name> <output_file>
   exit "$ORCHESTRATOR_ERROR_EXIT_CODE"
 }
 
+# 委譲経路の「書けたが読み戻しが一致しない」。fail_output_write と分けるのは、壊れている
+# 対象は同じ出力先でも**残っている状態が違う**ため（無い vs 在るが違う）。上書きしない
+# ことを明言するのは、次の一手が「その成果物を見に行く」だから。
+fail_output_readback() { # <perspective_name> <output_file> <response_file>
+  local perspective_name="$1" output_file="$2" response_file="$3" state
+  # 読み戻しが一致しない理由は 1 つではない。**いま何が在るか**を見てから名乗る —
+  # 「在るが内容が違う」と決め打つと、publish 後に成果物が消えた / ディレクトリへ
+  # 置き換わった / 読めなくなった回に嘘をつく（次の一手が「そのファイルを見る」に
+  # なるのに、見るものが無い）。分類（この関数へ来たこと = publish 後の検証に失敗した）は
+  # 同じで、違うのは残っている状態のほうである。
+  if [ ! -e "$output_file" ]; then
+    state="the artifact is GONE — something removed it after it was published"
+  elif [ -d "$output_file" ]; then
+    state="a DIRECTORY now occupies that path — something replaced the artifact after it was published"
+  elif [ ! -f "$output_file" ]; then
+    state="that path is no longer a regular file — something replaced the artifact after it was published"
+  elif [ ! -r "$output_file" ]; then
+    state="the artifact is there but NOT READABLE — its permissions changed after it was published"
+  elif [ ! -s "$output_file" ]; then
+    state="the artifact is there but EMPTY — something truncated it after it was published"
+  else
+    state="the artifact IS there — it is its content that disagrees (a partial write, a second writer, or a header-format mismatch)"
+  fi
+  echo "ERROR: ${CLI_NAME} finished its ${TASK_TYPE:-review} of ${perspective_name}, and ${output_file} was published, but reading it back does not give the response that was adopted." >&2
+  echo "       ${state}." >&2
+  echo "       This is not a write failure: the write itself succeeded, so look at that path and at whatever else writes there — not at free space or permissions at write time." >&2
+  echo "       Neither the artifact nor the host's response was overwritten or removed by this failure, so whatever is left is the evidence. The response is at: ${response_file}" >&2
+  exit "$ORCHESTRATOR_ERROR_EXIT_CODE"
+}
+
 # ── ホスト委譲 ──
 #
 # 背景: claude-code レーンは `claude` CLI を**別プロセス**として起動するため、その CLI が
@@ -1359,10 +1389,12 @@ delegate_task() { # <lane-id> <cli-display-name> <perspective> <prompt> <allowed
         # ヘッダーを剥がすと受理した本文へ戻ることまで、書いたファイル自身で確かめて
         # から応答を消す（delegation_output_written のヘッダー参照）。
         if ! delegation_output_written "$OUTPUT_FILE" "$body"; then
-          echo "ERROR: ${lane}/${persp}: ${OUTPUT_FILE} does not read back as the response that was adopted." >&2
-          echo "       The host's response was NOT removed and is still at: ${response_file}" >&2
-          echo "       Fix the output path (space, permissions, mount) and re-run the same command." >&2
-          return 1
+          # 素の 1 を返さない（汎用の orchestrator 失敗へ落ちると、内容が違うと分かった
+          # ばかりの成果物を INCOMPLETE で上書きして証拠を消す）。呼び出し側は専用の
+          # 分類（fail_output_readback）へ分岐する。応答ファイルのパスは呼び出し側が
+          # 同じ規則（<delegate-dir>/<観点>.response.md）で導けるので、値は渡さない
+          # （渡すと同じ事実の出所が 2 つになり、片方だけが腐る）。
+          return "$DELEGATION_OUTPUT_READBACK_EXIT_CODE"
         fi
         # 受理した応答は消費する。残すと、次回同じ digest のまま再実行したときに
         # 「ホストが今回書いたもの」と区別できない滞留物になる。
@@ -1443,6 +1475,15 @@ readonly DELEGATION_PENDING_EXIT_CODE=123
 # 残る。番号を分けて fail_output_write へ分岐させる。124 / 125 / 137 / 123 と同じく
 # CLI 自身が返しうる値とは衝突しない位置に置く（委譲経路では CLI を 1 つも起動しない）。
 readonly DELEGATION_OUTPUT_WRITE_EXIT_CODE=122
+# 委譲経路で「成果物は所定のパスへ書けたが、読み戻した内容が受理した応答と一致しない」
+# ことを表す戻り値。書き込み失敗（122）とは**調査の向きが逆**で、122 は「そこに何も残って
+# いない」（空き容量・権限・マウントを見る）、こちらは「在るが中身が違う」（別の書き手・
+# 部分書き込み・ヘッダー書式の食い違いを見る）。素の 1 で返すと汎用の orchestrator 失敗へ
+# 落ち、fail_cli_task 経由で write_output を踏み直して**内容が違うと分かったばかりの成果物を
+# INCOMPLETE で上書きする** — 食い違いの証拠をその場で消す。122 の文言（「そこに成果物は
+# 残らなかった」）へ寄せることもしない: 事実と食い違ううえ、次の一手が変わる。
+# 124 / 125 / 137 / 123 / 122 と同じく CLI 自身が返しうる値とは衝突しない位置に置く。
+readonly DELEGATION_OUTPUT_READBACK_EXIT_CODE=121
 # Seconds between the deadline's SIGTERM and the SIGKILL that follows it.
 # Overridable so the regression suite can exercise the escalation quickly.
 TIMEOUT_KILL_GRACE="${FF_TIMEOUT_KILL_GRACE:-10}"

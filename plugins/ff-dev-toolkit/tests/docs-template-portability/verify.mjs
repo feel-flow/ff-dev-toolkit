@@ -385,6 +385,66 @@ for (const [label, rel] of [
   );
 }
 
+// SETUP_CLAUDE_CODE.md は heredoc の**中**で、生成先（消費プロジェクト）を基準に `docs/` と
+// 書く必要がある。実際には外側の `docs-template/` 表記がそのまま内側へ流れ込んでいた（実測 14 件）。
+// heredoc の**外**の表記が正しいかは本検査の対象外（未検証。この手順書自体が消費側へコピー
+// される運用なので、外側も解決しない可能性がある — 別 Issue で確定する）。
+// 生成された CLAUDE.md は消費プロジェクトで AI が最初に読む文書なので、そこに解決できない
+// パスがあると初回体験が壊れる。
+//
+// 範囲は行番号ではなくマーカーで取る（heredoc は編集で伸縮する）。マーカーを見つけられない
+// 回は「違反 0 件」ではなく検査不成立として落とす — 生成ブロックの書き方が変わった日に
+// 黙って空振りさせないため。
+const setupClaude = text("SETUP_CLAUDE_CODE.md");
+const setupLines = setupClaude.split("\n");
+const heredocStart = setupLines.findIndex((line) => line.startsWith("cat > CLAUDE.md << 'EOF'"));
+const heredocEnd = heredocStart === -1
+  ? -1
+  : setupLines.findIndex((line, i) => i > heredocStart && line === "EOF");
+check(
+  heredocStart !== -1 && heredocEnd !== -1,
+  "SETUP_CLAUDE_CODE の CLAUDE.md 生成 heredoc を特定できる",
+  `start=${heredocStart} end=${heredocEnd}`,
+);
+if (heredocStart !== -1 && heredocEnd !== -1) {
+  const inside = setupLines.slice(heredocStart + 1, heredocEnd);
+  const strays = inside
+    .map((line, i) => [heredocStart + 2 + i, line])
+    .filter(([, line]) => line.includes("docs-template/"));
+  check(
+    strays.length === 0,
+    "生成される CLAUDE.md が消費側に実在しない docs-template/ を指さない",
+    strays.map(([n, line]) => `L${n}: ${line.trim()}`).join(" / "),
+  );
+  // 基準を揃えるだけでは足りない。元の参照が階層を落としていれば、揃えた結果も解決できない
+  // （実測: `docs-template/ARCHITECTURE.md` は実体が `02-design/` 配下なので、機械置換した
+  // `docs/ARCHITECTURE.md` は消費側に存在しない）。参照は**実体と突き合わせる**。
+  // 消費側の `docs/X` は配布時の `docs-template/X` に対応する。
+  const docRefs = [
+    ...new Set(
+      inside
+        .flatMap((line) => line.match(/docs\/[A-Za-z0-9_.\/-]+\.md/g) ?? [])
+        .map((ref) => ref.replace(/^docs\//, "")),
+    ),
+  ];
+  const unresolved = docRefs.filter((ref) => !existsSync(join(templateRoot, ref)));
+  check(
+    unresolved.length === 0,
+    "生成される CLAUDE.md の参照が配布物の実体へ解決できる",
+    unresolved.map((ref) => `docs/${ref}`).join(" / "),
+  );
+  // 内側が空になる（heredoc を空にする / 参照を全部消す）退行を、違反 0 件と同じ緑にしない。
+  // 解決検査は参照が 0 件でも緑になるため、この下限が無いと参照を全部消す変異を通す。
+  // 件数は下限で縛る。検査数の baseline と違って**不等号が正しい** — 参照を足すのは
+  // 正常な変更だからで、縛りたいのは「まとめて消える」退行のほうである。
+  const EXPECTED_DOC_REFS = 8;
+  check(
+    docRefs.length >= EXPECTED_DOC_REFS,
+    `生成される CLAUDE.md が消費側の docs/ を ${EXPECTED_DOC_REFS} 件以上参照している`,
+    `inside=${inside.length} 行 / 参照 ${docRefs.length} 件`,
+  );
+}
+
 const pullRequest = text(".github/pull_request_template.md");
 check(!/^- \[ \].*scripts\//m.test(pullRequest), "PR チェック項目が未配置スクリプトを必須にしない");
 
@@ -410,6 +470,23 @@ check(!aceCycle.includes("PLAYBOOK.md に追記"), "ace-cycle が PLAYBOOK 本�
 check(
   playbook.includes("https://github.com/feel-flow/ai-spec-driven-development/blob/HEAD/docs/ACE_FRAMEWORK.md"),
   "PLAYBOOK の ACE_FRAMEWORK 参照が公開絶対 URL",
+);
+
+// 針ごとの変異は「検査そのものが消される」退化を検出できない（違反が無いツリーでは、
+// 判定を true へ書き換えても元々 pass なので緑のまま）。実行された検査の**総数**を
+// baseline で縛ると、検査を 1 つ消した時点で違反の有無に関係なく赤になる。
+// 数えるのは pass ではなく pass + fail — pass だけだと、赤い検査が 1 件あるときに
+// baseline も同時に割れて原因が二重になる。
+// 数えるのは**この検査より前に実行された**検査（自分自身は計上前なので含まない）。
+// 検査を足したらこの数も同じ PR で上げること（上げ忘れは「増やしたのに赤」で即わかる）。
+// 不等号ではなく**完全一致**にする — `>=` だと上げ忘れが緑で通り、baseline が実数より
+// 下にずれる。以後は「1 件足して 1 件消す」が検出されず、この針の目的自体が静かに失効する。
+const EXPECTED_CHECKS = 59;
+const executed = pass + failures.length;
+check(
+  executed === EXPECTED_CHECKS,
+  `実行された検査が baseline（${EXPECTED_CHECKS} 件）と一致する`,
+  `実行 ${executed} 件 — 検査が消えたか、追加時に baseline を更新していない`,
 );
 
 console.log("");

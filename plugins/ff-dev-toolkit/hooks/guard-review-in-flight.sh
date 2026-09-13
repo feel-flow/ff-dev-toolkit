@@ -119,9 +119,14 @@
 #     共有しないので凍結の前提が無い（git-workflow の「ステップ5」が正本）。ここでレーンを
 #     取ると、隔離 worktree の中で変異注入を行うレビュアーが**自分のロックで自分の編集を
 #     止める**（自己デッドロック）。
-#   - 名簿（FF_REVIEW_SUBAGENT_LOCK_TYPES）に無い subagent。既定は pr-review-toolkit の
-#     **read-only な**レビュアーだけで、共有ツリーを編集する前提の `code-simplifier` は
-#     同じ自己デッドロックを避けるため名簿から外してある。
+#   - 名簿（FF_REVIEW_SUBAGENT_LOCK_TYPES）に無く、かつ委譲レビューでもない subagent。
+#     既定の名簿は pr-review-toolkit の **read-only な**レビュアーだけで、共有ツリーを
+#     編集する前提の `code-simplifier` は同じ自己デッドロックを避けるため外してある。
+#     名簿が実体（別プラグインのレビュアー群）へ追随しているかは
+#     `scripts/check-review-roster-drift.sh` が突き合わせる（実行時は列挙、検査時に照合）。
+#     **例外**: `multi-agent.sh --delegate-to-host` の委譲レビューは汎用の subagent_type で
+#     起動されるため名簿に載らないが、渡された prompt（マーカーまたは委譲プロンプトのパス）
+#     で識別してレーンを取る。名簿へ汎用型を足すとレビュー以外の委譲まで凍結するため。
 #   - `Agent` / `Task` の `PreToolUse` が来ない状況（イベントが来なければ何も起きない
 #     = fail-open）。
 #   - レーン置き場（`.review-results/` とその下の `.review-in-flight.d/`）が symlink である
@@ -236,6 +241,16 @@ LANE_DIR="${ROOT}/${OUTPUT_DIR_NAME}/.review-in-flight.d"
 # サブエージェント自身の編集は deny しない（下の「レビュアー自身は止めない」節）。
 REVIEW_LOCK_TYPES="${FF_REVIEW_SUBAGENT_LOCK_TYPES:-pr-review-toolkit:code-reviewer pr-review-toolkit:silent-failure-hunter pr-review-toolkit:pr-test-analyzer pr-review-toolkit:type-design-analyzer pr-review-toolkit:comment-analyzer}"
 
+# 委譲レビュー（multi-agent.sh --delegate-to-host）の識別マーカー。
+# あの経路はオーケストレータが rc=3 で終了し、**ホストが自分のセッションでレビューを走らせる**。
+# 起動に使われるのは汎用の `subagent_type` なので名簿には載らず、名簿へ汎用型を足すと
+# レビュー以外の委譲まで凍結してしまう。そこで「何の型で起動したか」ではなく
+# **何を渡されたか**で識別する: 委譲プロンプトのパス、または handoff がホストへ載せるよう
+# 求めるマーカーが `prompt` に在れば、その起動はレビューである。
+# マーカーは multi-agent.sh の handoff 文と対。片方だけ変えると識別が静かに外れるので、
+# tests/guard-review-in-flight が両者の綴りの一致を検査する。
+REVIEW_DELEGATION_MARKER="FF-REVIEW-DELEGATED"
+
 # 対応づいた（SubagentStart で agent_id を書き込んだ）レーンの寿命上限。
 # 導出: A の `FF_REVIEW_LOCK_MAX_AGE_SECONDS` と同じ 14400 秒（4 時間）に**揃える**。
 # 同じ 1 回のレビューを、外部 CLI 経路（A）とサブエージェント経路（C）のどちらで回すかで
@@ -303,8 +318,21 @@ lane_field() { # <レーンのパス> <キー>
   sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n 1
 }
 
-sanitize_id() { # <文字列> → ファイル名に使える形
-  printf '%s' "$1" | tr -dc 'A-Za-z0-9_-' 2>/dev/null
+sanitize_id() { # <文字列> → ファイル名に使える形（衝突しない）
+  # 記号を**削るだけ**だと別物が同じ形へ潰れる（`a!` と `a@` がどちらも `a` になる）。
+  # 潰れた id で対応づけ・解放を行うと、無関係なサブエージェントの終端が別レーンを
+  # 閉じる（= 走行中のレビューで凍結が解ける）。削って形が変わった場合は、元の文字列の
+  # ハッシュを添えて一意性を戻す。
+  local stripped hashed
+  stripped="$(printf '%s' "$1" | tr -dc 'A-Za-z0-9_-' 2>/dev/null)"
+  [ "$stripped" = "$1" ] && { printf '%s' "$stripped"; return 0; }
+  hashed="$(printf '%s' "$1" | cksum 2>/dev/null | awk '{ print $1 "-" $2 }' 2>/dev/null)"
+  case "$hashed" in
+    [0-9]*) printf '%s-x%s' "$stripped" "$hashed" ;;
+    # ハッシュを作れない環境では、潰れた形を使わずに空を返す（対応づけも解放も行わない
+    # ＝ 早く解ける側へ倒さない。レーンは寿命上限で回収される）。
+    *) : ;;
+  esac
 }
 
 is_review_lock_type() { # <subagent_type>
@@ -325,10 +353,46 @@ is_review_lock_type() { # <subagent_type>
 
 # レーン名の鍵。`tool_use_id` は PreToolUse と PermissionDenied の両方に載るので、
 # 起動と「起動しなかった」を同じ鍵で対応づけられる。無い版のハーネスでは
+is_delegated_review_prompt() { # <prompt 文字列>
+  # prompt は利用者・ホストが自由に書ける文字列なので、**部分一致で拾わない**。
+  # マーカーの語がただ含まれるだけ（用語集・「レビューするな」という指示文など）で
+  # 凍結すると、レビュー以外の委譲が最大 30 分止まる。次の 3 つをすべて要求する:
+  #   (a) 行頭が `FF-REVIEW-DELEGATED: ` である行がある（散文中の言及を落とす）
+  #   (b) その行が名指すパスが、このリポジトリのレビュー出力先の `.delegated/` 配下の
+  #       `.prompt.md` である（出力先の外・別リポジトリの同名パスを落とす）
+  #   (c) そのパスが**実在する通常ファイル**である（委譲が現に起きた回に限る）
+  # パスだけを載せる書き方は拾わない。自由文字列との衝突を避けられる最小の形が
+  # 「行頭アンカー + 実在検査」で、handoff もその形で出す（綴りの一致は suite が固定）。
+  local line path prefix
+  prefix="${ROOT}/${OUTPUT_DIR_NAME}/"
+  while IFS= read -r line; do
+    case "$line" in
+      "${REVIEW_DELEGATION_MARKER}: "*) : ;;
+      *) continue ;;
+    esac
+    path="${line#"${REVIEW_DELEGATION_MARKER}": }"
+    # 前後の空白を落とす（handoff をそのまま貼ると字下げが付きうる）。
+    path="${path#"${path%%[![:space:]]*}"}"
+    path="${path%"${path##*[![:space:]]}"}"
+    case "$path" in
+      "${prefix}"*"/.delegated/"*".prompt.md") : ;;
+      *) continue ;;
+    esac
+    [ -f "$path" ] || continue
+    return 0
+  done <<EOF
+$1
+EOF
+  return 1
+}
+
 # tool_input の内容から決定的な鍵を作る。
 lane_key() {
   local k
-  k="$(printf '%s' "$input" | jq -r '.tool_use_id // ""' 2>/dev/null | tr -dc 'A-Za-z0-9_-' 2>/dev/null)"
+  # 記号を削るだけの正規化は使わない（sanitize_id と同じ潰し衝突が起きる。記号だけが違う
+  # 2 つの tool_use_id が同じ鍵へ潰れると、取得の冪等判定が 2 本目を「既に在る」と読んで
+  # レーンを 1 本落とし、1 本目の終端で凍結が解ける）。
+  k="$(sanitize_id "$(printf '%s' "$input" | jq -r '.tool_use_id // ""' 2>/dev/null)")"
   if [ -n "$k" ]; then
     printf '%s' "$k"
     return 0
@@ -604,6 +668,15 @@ scan_lanes() {
 }
 
 # ── C の対応づけ / 解放イベント（ここで終わる入口。permissionDecision は出さない） ──
+# 対応づけ・解放の経路ごとに、何で絞るかが違う。
+#   - `SubagentStart` / `SubagentStop`: 名簿で絞る（従来どおり）。これらは相関 ID を持たず、
+#     対応づけは「agent_id 一致」か「同型で対応づいていない最古のレーン」なので、絞りを
+#     外すと無関係なサブエージェントの終端が別レーンを閉じうる。委譲レビューのレーンは
+#     専用の型名で記帳してあり、どの agent_type とも一致しないので、ここを通らない。
+#   - `PermissionDenied`: 名簿で絞らない。委譲レビューは汎用の subagent_type で起動される
+#     ため名簿に載らず、絞ると**起動が拒否された委譲レビューのレーンだけが解放されない**。
+#     この経路は `tool_use_id`（無ければ tool_input のハッシュ）で対応づくので、型で
+#     絞らなくても別レーンを掴まない。
 if [ "$EVENT" = "SubagentStart" ]; then
   agent_type="$(printf '%s' "$input" | jq -r '.agent_type // ""' 2>/dev/null)"
   agent_id="$(printf '%s' "$input" | jq -r '.agent_id // ""' 2>/dev/null)"
@@ -614,7 +687,6 @@ fi
 if [ "$EVENT" = "SubagentStop" ]; then
   agent_type="$(printf '%s' "$input" | jq -r '.agent_type // ""' 2>/dev/null)"
   agent_id="$(printf '%s' "$input" | jq -r '.agent_id // ""' 2>/dev/null)"
-  # 名簿外のサブエージェントはレーンを取っていないので、閉じるものも無い。
   is_review_lock_type "$agent_type" && release_lane_by_agent "$agent_id" "$agent_type"
   exit 0
 fi
@@ -624,8 +696,7 @@ if [ "$EVENT" = "PermissionDenied" ]; then
     Agent | Task) : ;;
     *) exit 0 ;;
   esac
-  subagent_denied="$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // ""' 2>/dev/null)"
-  is_review_lock_type "$subagent_denied" && release_lane_by_key
+  release_lane_by_key
   exit 0
 fi
 
@@ -698,12 +769,35 @@ if [ "$tool" = "Agent" ] || [ "$tool" = "Task" ]; then
   # 大きい・遅いリポジトリでそれを使い切りうる。取得より先に status を読むと、timeout した
   # 回はレーンを 1 本も作らないままレビューが起動してしまう（ガードが最初から居ない）。
   # 取得は数え上げ（scan_lanes）より後なので、自分の記帳を自分で数えることにはならない。
+  lane_target=0
+  lane_type="$subagent"
   if is_review_lock_type "$subagent"; then
+    lane_target=1
+  else
+    # 名簿外でも、委譲レビュー（--delegate-to-host）の起動ならレーンを取る。判定材料は
+    # prompt だけなので、取れない版のハーネスでは何も起きない（fail-open）。
+    agent_prompt="$(printf '%s' "$input" | jq -r '.tool_input.prompt // ""' 2>/dev/null)" || agent_prompt=""
+    if [ -n "$agent_prompt" ] && is_delegated_review_prompt "$agent_prompt"; then
+      lane_target=1
+      # 委譲レビューのレーンは**専用の型名**で記帳する。汎用の subagent_type をそのまま
+      # 書くと、無関係な同型サブエージェントの `SubagentStart` / `SubagentStop` が
+      # 「同型で対応づいていない最古のレーン」フォールバックでこのレーンを奪い、
+      # レビューが走っている最中に凍結が解ける（実測）。この型名はどの agent_type とも
+      # 一致しないので、フォールバックの対象にならない。
+      # その結果このレーンは agent 系イベントでは解放されない（`SubagentStop` に相関 ID が
+      # 無く、汎用型では正しい委譲先を識別できないので、早く解ける側へ倒さない）。
+      # 出口は 3 つ: 起動が拒否された回は `PermissionDenied` の同一鍵、正常に終わった回は
+      # **委譲結果の回収**（multi-agent.sh の collect_delegated_responses。回収の到達が
+      # 「委譲したレビューは終わった」の宣言）、どちらも来なければ未対応レーンの寿命上限。
+      lane_type="delegated-review"
+    fi
+  fi
+  if [ "$lane_target" -eq 1 ]; then
     case "$isolation" in
       # 隔離起動のレビュアーは親と作業ツリーを共有しないので凍結の対象外
       # （加えて、隔離 worktree 内で変異注入を行うレビュアーの自己デッドロックを避ける）
       worktree) : ;;
-      *) acquire_lane "$subagent" ;;
+      *) acquire_lane "$lane_type" ;;
     esac
   fi
   case "$subagent" in
@@ -765,7 +859,22 @@ fi
 
 # 対象ツールの絞り込み（ロックがあるときだけ払うコスト）
 case "$tool" in
-  Edit | Write | MultiEdit | NotebookEdit) : ;;
+  Edit | Write | MultiEdit | NotebookEdit)
+    # **レビュー出力先への書き込みは止めない。** ここを止めると、委譲レビュー
+    # （--delegate-to-host）が自分の結果ファイルを書けず、自分のレーンで自分を
+    # デッドロックさせる（handoff の手順 2 がまさにこのパスへ書く）。線引きは B の
+    # dirty 判定が `:(exclude)${OUTPUT_DIR_NAME}` で「作業ツリーではない」と扱って
+    # いる領域と同じで、そこへの書き込みはレビュー対象の diff を動かさない。
+    # `code-simplifier` を名簿から外したのと同型の自己デッドロック回避。
+    edit_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // ""' 2>/dev/null)" || edit_path=""
+    case "$edit_path" in
+      /*) : ;;
+      ?*) edit_path="${CWD}/${edit_path}" ;;
+    esac
+    case "$edit_path" in
+      "${ROOT}/${OUTPUT_DIR_NAME}/"*) exit 0 ;;
+    esac
+    ;;
   Bash)
     cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)" || exit 0
     [ -n "$cmd" ] || exit 0

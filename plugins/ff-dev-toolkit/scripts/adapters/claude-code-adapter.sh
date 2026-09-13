@@ -105,6 +105,13 @@ if [[ -n "${DELEGATE_DIR:-}" ]]; then
     "$DELEGATION_OUTPUT_WRITE_EXIT_CODE")
       fail_output_write "$perspective_name" "$OUTPUT_FILE"
       ;;
+    # 書けたが読み戻しが一致しない。122 と同じく汎用の orchestrator エラーへは流さない
+    # （write_output を踏み直して、内容が違うと分かったばかりの成果物を上書きする）。
+    # 122 とも分けるのは、残っている状態が「無い」と「在るが違う」で次の一手が変わるため。
+    "$DELEGATION_OUTPUT_READBACK_EXIT_CODE")
+      fail_output_readback "$perspective_name" "$OUTPUT_FILE" \
+        "${DELEGATE_DIR}/${perspective_name}.response.md"
+      ;;
     *)
       fail_orchestrator_error "$perspective_name" \
         "cannot hand the ${TASK_TYPE:-review} to the host through ${DELEGATE_DIR} (see the error above)."

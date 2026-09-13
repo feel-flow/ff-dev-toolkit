@@ -29,6 +29,27 @@
 # 検出器は静的走査（実 CLI 不要）。効くことは fixture で先に確かめる —
 # 「直接叩く」形を検出できない検出器は、本体を通しても何も保証しない。
 # 振る舞い（オプションの写し・拒否・skip）は stub の multi-agent.sh で実測する。
+#
+# **stub で測れるのは argv の形まで**。委譲先が実際にプランを出すか・何本の CLI を
+# 検出するかは実体の multi-agent.sh でしか測れないので、codex 不在の --dry-run 経路は
+# 実体を toolkit へ置いた fixture で固定する。この区別を怠ると「AC が fake stub に
+# 対してだけ緑」になる（実測: この経路の受け入れ条件がその形で 1 版ぶん緑のまま通った）。
+#
+# 変異検出（2026-09-13 実測。赤転しなかった変異は無し）:
+#   「--cli codex-cli を外す」処理の無効化 → 3 件赤。外す条件を「常に外す」へ広げる → 5 件赤
+#   （codex が居る回・除外指定の回で固定 argv が壊れる）。`--exclude-cli codex-cli` の回でも
+#   外す → 3 件赤。除外指定の解釈分岐から判定を落とす → 空白形 2 件赤 / `=` 形 1 件赤
+#   （2 つの分岐を別々に測らないと、片方だけに足した実装が緑で通る）。
+#   除去ループを「CLI 名を取るオプションなら全部落とす」形へ書き換える → 1 件赤
+#   （利用者の除外指定まで巻き込む壊れ方）。「実行は rc=4 で止まる」の警告行を落とす → 1 件赤。
+#   終了コード表から pair 主 reviewer 不在の行を削除 → 1 件赤。
+#   **実体経由の配線を fake stub へ戻す → 1 件赤**（この 1 件が、本 suite が同型の
+#   再発を止める唯一の針。stub は常に rc=0 を返すのでプランの有無を測れない）。
+#
+#   このとき**当たらなかった変異を 2 つ踏んだ**ので記録する。(1) 終了コード表の行末へ
+#   文字列を足す形は、部分一致の needle を満たしたまま通る（行ごと落とす変異で測り直す）。
+#   (2) 同じ要素へ `--cli` と `--exclude-cli` の両方を要求する条件は論理的に到達不能で、
+#   実装を 1 行も変えていないのと同じ。変異は「当たったこと」を先に確かめる。
 
 set -euo pipefail
 
@@ -778,25 +799,39 @@ else
 fi
 
 # --dry-run は CLI を 1 本も起動しないので、codex 実在検査でシムが握りつぶさず委譲すること
-# （rc=4 で止めない）。**固定するのはここまで**で、委譲先がプランを出すことは含まない。
-# codex 不在では委譲先が rc=1 で止まりプランは出ない（その実態は下の実オーケストレータの
-# 2 ケースが固定する）。この stub ケースの緑を「プランが確認できる」と読まないこと。
+# （rc=4 で止めない）。さらに **固定の --cli codex-cli をこの回だけ外す**ことまで固定する。
+# 外さないと、codex-cli の観点の fallback 再割り当てが --cli フィルタに弾かれて実行対象
+# 0 件になり、素通りさせた意味がそのまま打ち消される。
 #
 # 判定は **委譲が現に起きたところ**まで見る。rc=0 と `--dry-run` の 1 行だけだと、stub が
 # 無条件に rc=0 を返す以上「シムが rc=4 で止めなかった」ことしか言えず、委譲先を exec せずに
 # 自前で rc=0 を返す実装も同じく緑になる。stub の標準出力（委譲先が現に走った印）と、
-# 委譲の中核契約（--task review / --cli codex-cli）・利用者が渡した引数（--base develop /
-# --dry-run）が引数列に保たれていることを揃えて見る。
+# 委譲の中核契約（--task review）・利用者が渡した引数（--base develop / --dry-run）が
+# 引数列に保たれていること、そして --cli codex-cli が**落ちていること**を揃えて見る。
 run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent --base develop --dry-run
 if [ "$RUN_RC" -eq 0 ] && grep -q 'stub orchestrator ran' "$WORK/stdout.log" \
-  && argv_has_seq "--task" "review" && argv_has_seq "--cli" "codex-cli" \
+  && argv_has_seq "--task" "review" && ! argv_has_seq "--cli" "codex-cli" \
   && argv_has_seq "--base" "develop" && argv_has --dry-run \
   && grep -q 'WARNING: codex CLI（/nonexistent/ff-codex-absent）が PATH にありませんが、--dry-run' "$WORK/err.log" \
+  && grep -q '固定の --cli codex-cli を外して委譲します' "$WORK/err.log" \
   && ! grep -q 'へ降格します' "$WORK/err.log"; then
-  ok "codex 不在でも --dry-run は rc=4 で止めず委譲先を exec する（委譲引数が保たれ、警告に留める）"
+  ok "codex 不在の --dry-run は rc=4 で止めず、固定の --cli codex-cli を外して委譲する（他の引数は保たれる）"
 else
-  bad "codex 不在の --dry-run がシム側で rc=4 に落ちている、委譲先を起動していない、または委譲引数が欠けた (rc=$RUN_RC)"
+  bad "codex 不在の --dry-run がシム側で rc=4 に落ちている、委譲先を起動していない、--cli codex-cli が残っている、または他の委譲引数が欠けた (rc=$RUN_RC)"
   sed 's/^/    | /' "$WORK/out.log" >&2
+  sed 's/^/    argv| /' "$WORK/argv.log" >&2
+fi
+
+# 外す条件は「--dry-run かつ codex 不在」に閉じている。codex が居る --dry-run では固定の
+# --cli codex-cli が**残る**こと（このシムが codex 用であることの中核契約）を同じ stub で
+# 測る。上のケースだけだと「常に外す」実装も緑になり、シムの位置づけごと壊れる。
+run_shim --base develop --dry-run
+if [ "$RUN_RC" -eq 0 ] && argv_has_seq "--task" "review" && argv_has_seq "--cli" "codex-cli" \
+  && argv_has --dry-run \
+  && ! grep -q 'WARNING: codex CLI' "$WORK/err.log"; then
+  ok "codex が居る --dry-run では固定の --cli codex-cli が残る（外す条件は codex 不在に閉じている）"
+else
+  bad "codex が居る --dry-run で --cli codex-cli が落ちている、または不要な警告が出た (rc=$RUN_RC)"
   sed 's/^/    argv| /' "$WORK/argv.log" >&2
 fi
 # 先頭の終了コード表に 4 が載っていること。載っていないと「その他 = 委譲先の終了コード」が
@@ -806,13 +841,13 @@ if grep -qE '^#[[:space:]]+4 = ' "$SHIM"; then
 else
   bad "終了コード表に 4 が無い（「その他 = 委譲先の終了コードをそのまま返す」が嘘になる）"
 fi
-# codex 不在環境の --dry-run が終了コード表に載っていること。**帰結は同じ rc=1 だが
-# 原因が 2 通りある**ので、両方が載っていることを別々に固定する:
-#   ・AI CLI が 1 本も PATH に無い → 委譲先の CLI 検出が No AI CLIs are installed で止まる
-#   ・codex だけが不在            → シムが固定で足す --cli codex-cli が fallback 再割り当てを
-#                                    除外して実行対象 0 件になり Execution plan is empty で止まる
-# 片方だけを書くと、もう片方を踏んだ利用者が原因を取り違える（「他の CLI を入れれば
-# プランが出る」と読んで入れても、--cli フィルタが固定なので結果は変わらない）。
+# codex 不在環境の --dry-run が終了コード表に載っていること。**帰結が 2 通りに分かれる**ので、
+# 両方が載っていることを別々に固定する:
+#   ・codex だけが不在            → 固定の --cli codex-cli を外して委譲するので rc=0 でプランが出る
+#   ・AI CLI が 1 本も PATH に無い → 委譲先の CLI 検出が No AI CLIs are installed で止まり rc=1
+# 片方だけを書くと、もう片方を踏んだ利用者が原因を取り違える。さらに、プランが出る側では
+# 「出たプラン = このシムを実行したときに走るもの」と読める案内が危険なので（実行は codex 不在で
+# rc=4 のまま）、その食い違いが表に書かれていることも固定する。
 # 抽出は終了コード表の区間だけに閉じる。ファイル全体を grep すると、下の実行時 WARNING
 # （codex 不在時に出す文言）にも同じ語句が現れるため、そちらだけが残っていても
 # ヘッダーの記載漏れを見逃す（実測: ヘッダーを旧文言へ戻す変異が緑のまま通った）。
@@ -820,33 +855,51 @@ fi
 # SIGPIPE により rc が反転しうる（このリポジトリの run-all case 10 が禁止している形）。
 _exitcode_doc="$(awk '/^#[[:space:]]+終了コード: 0 = /{f=1} f{print} /^#[[:space:]]+\*\*リテラル/{exit}' "$SHIM")"
 case "$_exitcode_doc" in
-  *'その他 = '*'rc=1 で停止し'*'No AI CLIs are installed'*)
+  *'その他 = '*'AI CLI が 1 本も PATH に無い'*'rc=1'*'No AI CLIs are installed'*)
     ok "終了コード表に AI CLI ゼロ時の rc=1（No AI CLIs are installed）が載っている" ;;
   *)
     bad "終了コード表が AI CLI ゼロ時の rc=1 を案内していない" ;;
 esac
 case "$_exitcode_doc" in
-  *'その他 = '*'rc=1 で停止し'*'Execution plan is empty'*)
-    ok "終了コード表に codex だけ不在時の rc=1（Execution plan is empty）が載っている" ;;
+  *'その他 = '*'pair 主 reviewer'*'導入済み'*'rc=0'*'--cli codex-cli'*'外して'*)
+    ok "終了コード表に codex 不在 + pair 主 reviewer 導入済み時の rc=0（--cli を外してプランを出す）が載っている" ;;
   *)
-    bad "終了コード表が codex だけ不在時の rc=1 を案内していない（「他の CLI があればプランが出る」と読める案内は実態と食い違う）" ;;
+    bad "終了コード表が codex 不在 + pair 主 reviewer 導入済み時の rc=0 を案内していない（rc=1 のままの案内は実態と食い違う）" ;;
+esac
+case "$_exitcode_doc" in
+  *'このシムを --dry-run なしで実行したときの'*)
+    ok "終了コード表が「出たプラン ≠ このシムの実行結果」を明記している" ;;
+  *)
+    bad "終了コード表がプランと実行の食い違いを書いていない（プランが出たことを実行可能と読める）" ;;
+esac
+# rc=0 になるのは pair 主 reviewer が導入済みの構成に限られる。主が居ない構成（例: grok
+# だけ）は rc=1 で別のエラーになるので、「codex 以外が 1 本でもあれば rc=0」と読める案内に
+# しない（その読み方をした利用者は No AI CLIs are installed を探して見つけられない）。
+case "$_exitcode_doc" in
+  *'pair 主 reviewer も導入されていない'*'main reviewer'*'is not installed'*)
+    ok "終了コード表に pair 主 reviewer 不在時の rc=1（main reviewer is not installed）が載っている" ;;
+  *)
+    bad "終了コード表が pair 主 reviewer 不在時の rc=1 を案内していない（codex 以外が 1 本あれば rc=0 と読める）" ;;
 esac
 
 # ── 実オーケストレータでの codex 不在経路の固定 ────────────────────────────────
 #
 # 上のケースは stub オーケストレータ（常に rc=0 で "stub orchestrator ran" とだけ返す）を
-# 使っているため、委譲先が実際に何本の AI CLI を検出したかには関与しない。シムの WARNING は
-# 「--dry-run はこの検査を素通りして委譲する」としか約束しておらず、委譲先
-# （multi-agent.sh）が実際にプランを表示することまでは保証しない。実体を通すと、codex が
-# PATH に無い --dry-run は**他の AI CLI の有無に関わらず** rc=1 で止まりプランは出ない:
-#   ・AI CLI が 1 本も無い → 委譲先の CLI 検出が `ERROR: No AI CLIs are installed`
-#                            （新規セットアップ直後・CI の最小イメージで踏む — 本 Issue の発端）
-#   ・codex だけが不在      → このシムは委譲 argv に `--cli codex-cli` を固定で足すので、
-#                            codex-cli の fallback 再割り当て（claude-code 等）が --cli
-#                            フィルタで除外され、実行対象 0 件で
-#                            `ERROR: Execution plan is empty`
-# 後者は「他の CLI があればプランまで到達する」という誤った案内を緑のまま通していた経路
-# なので、stub ではなく実体の multi-agent.sh を toolkit へ置いて両方を固定する。
+# 使っているため、委譲先が実際に何本の AI CLI を検出したかには関与しない。**stub は argv の
+# 形しか測れない** — 「--cli を外したら本当にプランが出るのか」は委譲先の CLI 検出と
+# fallback 再割り当ての実装が決めるので、実体の multi-agent.sh を toolkit へ置いて測る:
+#   ・codex だけが不在      → 固定の --cli codex-cli を外して委譲する。--cli は委譲先では
+#                            分散モードのフィルタなので、外すと review 既定の pair モードへ
+#                            戻り、主 reviewer（既定 claude-code）が観点すべてを担当する
+#                            プランが rc=0 で出る
+#   ・codex 不在 + 主 reviewer も不在 → pair の主が居ないので rc=1
+#                            （`main reviewer '<名前>' is not installed.`）
+#   ・AI CLI が 1 本も無い → --cli を外しても委譲先の CLI 検出が
+#                            `ERROR: No AI CLIs are installed` で止まる（rc=1・プランなし。
+#                            新規セットアップ直後・CI の最小イメージで踏む）
+# 前者は「codex だけ不在なら他の CLI がある環境でプランを確認できる」という受け入れ条件が
+# **fake stub に対してだけ緑だった**経路で、実体では rc=1 でプランが出ていなかった。
+# stub に戻すとこの食い違いが永久に緑になるので、ここは実体を通す。
 REAL_ORCH_TOOLKIT="$WORK/toolkit-real-orchestrator"
 cp -R "$TOOLKIT" "$REAL_ORCH_TOOLKIT"
 cp "$PLUGIN_ROOT/scripts/multi-agent.sh" "$REAL_ORCH_TOOLKIT/scripts/multi-agent.sh"
@@ -865,7 +918,7 @@ RUN_SHIM_TOOLKIT="$REAL_ORCH_TOOLKIT" \
 unset RUN_SHIM_TOOLKIT
 if [ "$RUN_RC" -eq 1 ] \
   && grep -q 'codex CLI（/nonexistent/ff-codex-absent）が PATH にありませんが、--dry-run' "$WORK/err.log" \
-  && grep -q 'AI CLI が 1 本も PATH に無い場合: 委譲先の CLI 検出が「No AI CLIs are installed」で止まります' "$WORK/err.log" \
+  && grep -q 'AI CLI が 1 本も PATH に無い環境では、--cli を外しても委譲先の CLI 検出が「No AI CLIs are installed」で止まります' "$WORK/err.log" \
   && grep -q 'ERROR: No AI CLIs are installed' "$WORK/err.log" \
   && ! grep -q '^🏁 Dry run complete' "$WORK/out.log"; then
   ok "AI CLI ゼロ + --dry-run（実オーケストレータ）: rc=1 で停止し、シムの警告文が実態（プラン非表示）と一致する"
@@ -874,11 +927,12 @@ else
   sed 's/^/    | /' "$WORK/out.log" >&2
 fi
 
-# codex だけが不在（他の AI CLI はある）経路。PATH に claude だけを置いた fixture で
-# 再現する。委譲先の CLI 検出は通過するが、シム固定の --cli codex-cli が fallback
-# 再割り当てを除外するので実行対象が 0 件になり、`Execution plan is empty` で rc=1。
+# codex だけが不在（pair の主 reviewer はある）経路。PATH に claude だけを置いた fixture
+# で再現する。シムが固定の --cli codex-cli を外して委譲するので pair モードへ戻り、
+# 主 reviewer が review 観点すべてを担当するプランが出て rc=0 になる。
 # 委譲先へ実際に届く CLI 集合を測りたいので、ここも stub オーケストレータではなく
-# 実体を通す（stub は常に rc=0 を返すため、この食い違いを永久に緑にする）。
+# 実体を通す（stub は常に rc=0 を返すため、プランが出たかどうかを測れない —
+# 実体でしか「--cli を外した効果」は観測できない）。
 OTHER_CLI_ONLY="$WORK/other-cli-only"
 mkdir -p "$OTHER_CLI_ONLY"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "stub claude must not be invoked by dry-run" >&2' 'exit 99' \
@@ -888,16 +942,89 @@ RUN_SHIM_TOOLKIT="$REAL_ORCH_TOOLKIT" \
   run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent "PATH=$OTHER_CLI_ONLY:/usr/bin:/bin" \
   --base develop --dry-run
 unset RUN_SHIM_TOOLKIT
-if [ "$RUN_RC" -eq 1 ] \
+if [ "$RUN_RC" -eq 0 ] \
   && grep -q 'codex CLI（/nonexistent/ff-codex-absent）が PATH にありませんが、--dry-run' "$WORK/err.log" \
-  && grep -q 'codex だけが不在で他の AI CLI がある場合' "$WORK/err.log" \
-  && grep -q '「Execution plan is empty」で止まります' "$WORK/err.log" \
-  && grep -q 'ERROR: Execution plan is empty' "$WORK/err.log" \
-  && grep -q 'fallback claude-code excluded by --cli filter' "$WORK/err.log" \
-  && ! grep -q '^🏁 Dry run complete' "$WORK/out.log"; then
-  ok "codex だけ不在（claude あり）+ --dry-run（実オーケストレータ）: 空プランで rc=1 停止し、シムの警告文が実態と一致する"
+  && grep -q '固定の --cli codex-cli を外して委譲します' "$WORK/err.log" \
+  && grep -q 'このシムを --dry-run なしで実行すると、従来どおり codex 不在で rc=4 停止します' "$WORK/err.log" \
+  && grep -q '^🏁 Dry run complete' "$WORK/out.log" \
+  && grep -qE '^   claude-code \[' "$WORK/out.log" \
+  && ! grep -q 'ERROR: Execution plan is empty' "$WORK/err.log" \
+  && ! grep -q 'excluded by --cli filter' "$WORK/err.log"; then
+  ok "codex だけ不在（claude あり）+ --dry-run（実オーケストレータ）: rc=0 でプランが出て、シムの警告文が実態（実行は rc=4）と一致する"
 else
-  bad "codex だけ不在（claude あり）+ --dry-run（実オーケストレータ）: rc / 警告文 / 委譲先の空プランエラーのいずれかが実態と食い違う (rc=$RUN_RC)"
+  bad "codex だけ不在（claude あり）+ --dry-run（実オーケストレータ）: プランが出ていない、rc が 0 でない、または警告文が実態と食い違う (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+  sed 's/^/    err| /' "$WORK/err.log" >&2
+fi
+
+# codex 不在 + pair の主 reviewer も不在（grok だけ）の経路。--cli を外しても pair の主が
+# 居ないので rc=1 で止まる。「codex 以外が 1 本でもあれば rc=0」という読み方を止める針で、
+# この 1 件が無いと上の claude 入り fixture だけが根拠になり、案内が 1 構成にしか当たらない。
+MAIN_ABSENT_ONLY="$WORK/main-reviewer-absent"
+mkdir -p "$MAIN_ABSENT_ONLY"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "stub grok must not be invoked by dry-run" >&2' 'exit 99' \
+  > "$MAIN_ABSENT_ONLY/grok"
+chmod +x "$MAIN_ABSENT_ONLY/grok"
+RUN_SHIM_TOOLKIT="$REAL_ORCH_TOOLKIT" \
+  run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent "PATH=$MAIN_ABSENT_ONLY:/usr/bin:/bin" \
+  --base develop --dry-run
+unset RUN_SHIM_TOOLKIT
+if [ "$RUN_RC" -eq 1 ] \
+  && grep -q 'pair の主 reviewer（既定 claude-code）が未導入なら' "$WORK/err.log" \
+  && grep -q "main reviewer 'claude-code' is not installed" "$WORK/err.log" \
+  && ! grep -q '^🏁 Dry run complete' "$WORK/out.log"; then
+  ok "codex 不在 + pair 主 reviewer 不在（grok だけ）+ --dry-run（実オーケストレータ）: rc=1 で止まり、シムの警告文がその構成を案内している"
+else
+  bad "codex 不在 + pair 主 reviewer 不在（grok だけ）+ --dry-run（実オーケストレータ）: rc / 警告文 / 委譲先のエラーのいずれかが実態と食い違う (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+
+# --exclude-cli codex-cli との併用。ここでは固定の --cli を**落とさない** — 落とすと同じ
+# コマンドが codex の導入状況で「委譲先の矛盾エラー」と「プラン表示」に分かれ、利用者から
+# 見て意味が環境依存になる。落とす対象を広げる変異（利用者の --exclude-cli まで消す形を
+# 含む）はこの 2 本の argv 検査が赤にする。
+run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent --base develop --dry-run --exclude-cli codex-cli
+if [ "$RUN_RC" -eq 0 ] && argv_has_seq "--cli" "codex-cli" \
+  && argv_has_seq "--exclude-cli" "codex-cli" \
+  && grep -q '固定の --cli codex-cli は外しません' "$WORK/err.log"; then
+  ok "--exclude-cli codex-cli 併用（codex 不在 --dry-run）: 固定の --cli を残して委譲し、矛盾検査へ委ねる"
+else
+  bad "--exclude-cli codex-cli 併用（codex 不在 --dry-run）で固定の --cli が落ちている、除外指定が消えた、または案内が無い (rc=$RUN_RC)"
+  sed 's/^/    argv| /' "$WORK/argv.log" >&2
+fi
+# codex-cli **以外**の除外と併用した回は、固定の --cli を落としつつ利用者の除外指定は
+# そのまま残す。落とす対象を「--cli codex-cli の 1 組」から広げる変異（利用者の
+# --exclude-cli まで巻き込む形）は、この 1 件だけが赤にする。
+run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent --base develop --dry-run --exclude-cli grok-cli
+if [ "$RUN_RC" -eq 0 ] && ! argv_has_seq "--cli" "codex-cli" \
+  && argv_has_seq "--exclude-cli" "grok-cli"; then
+  ok "codex-cli 以外の --exclude-cli 併用（codex 不在 --dry-run）: 固定の --cli だけが落ち、利用者の除外指定は残る"
+else
+  bad "codex-cli 以外の --exclude-cli 併用で、固定の --cli が残っている、または利用者の除外指定まで落ちた (rc=$RUN_RC)"
+  sed 's/^/    argv| /' "$WORK/argv.log" >&2
+fi
+# 値が = で繋がる形（--exclude-cli=codex-cli）でも同じ判定になること。片方だけを見ると、
+# 判定を 1 つの解釈分岐にだけ足した実装が緑で通る。
+run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent --base develop --dry-run --exclude-cli=codex-cli
+if [ "$RUN_RC" -eq 0 ] && argv_has_seq "--cli" "codex-cli" \
+  && argv_has_seq "--exclude-cli" "codex-cli"; then
+  ok "--exclude-cli=codex-cli（= 形）併用でも固定の --cli を残す"
+else
+  bad "--exclude-cli=codex-cli（= 形）併用で固定の --cli が落ちている (rc=$RUN_RC)"
+  sed 's/^/    argv| /' "$WORK/argv.log" >&2
+fi
+# 実体の委譲先まで通して、帰結が rc=1（矛盾検査）であることを固定する。argv の形だけだと
+# 「委譲先が実際に止めるか」は測れない。
+RUN_SHIM_TOOLKIT="$REAL_ORCH_TOOLKIT" \
+  run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent "PATH=$OTHER_CLI_ONLY:/usr/bin:/bin" \
+  --base develop --dry-run --exclude-cli codex-cli
+unset RUN_SHIM_TOOLKIT
+if [ "$RUN_RC" -eq 1 ] \
+  && grep -q -- '--cli and --exclude-cli both name' "$WORK/err.log" \
+  && ! grep -q '^🏁 Dry run complete' "$WORK/out.log"; then
+  ok "--exclude-cli codex-cli 併用（実オーケストレータ・codex 不在）: 委譲先の矛盾検査で rc=1（codex の有無で意味が変わらない）"
+else
+  bad "--exclude-cli codex-cli 併用（実オーケストレータ・codex 不在）が矛盾検査で止まっていない (rc=$RUN_RC)"
   sed 's/^/    | /' "$WORK/out.log" >&2
 fi
 

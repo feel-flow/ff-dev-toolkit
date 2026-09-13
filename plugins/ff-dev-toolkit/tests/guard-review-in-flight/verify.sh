@@ -35,6 +35,29 @@
 #   - 解放の rename claim を「選んでから rm」に戻す               → 赤（(h10) 同時終端 4/8 回）
 #   - acquire_lane の atomic publish（tmp → rename）を外す         → 赤（(h10) 同時取得）
 #   - 名簿一致の呼び出し元の素通しを外す                          → 赤（(h13)）
+#
+# 変異検出（(h14) 名簿の追随 / (h15) 委譲レビュー経路。2026-09-13 実測）:
+#   委譲レビューの識別を無効化 → 3 件赤。委譲レーンを汎用型で記帳する → 1 件赤。
+#   委譲プロンプトの実在検査を外す → 1 件赤。出力先の条件を落とす → 1 件赤。
+#   行頭アンカーを case と抽出の両方で緩める → 1 件赤。マーカーの綴りを hook 側だけ変える → 6 件赤。
+#   agent_id / lane_key の正規化から衝突回避を外す → 各 1 件赤。名簿を 1 本減らす → 1 件赤。
+#   名簿の 1 本を同数のまま別名へ差し替える → 1 件赤。除外リストを空にする → 1 件赤。
+#   実体 0 件を一致へ倒す → 1 件赤。改行入りファイル名の検査を外す → 1 件赤。
+#   名簿分割の glob 抑止を外す → 1 件赤。出力先への書き込み免除を外す → 2 件赤。
+#   相対パスの正規化を外す → 1 件赤。免除の錨（このリポジトリの出力先）を緩める → 1 件赤。
+#   回収時の委譲レーン解放を無効化 → 1 件赤。同じ解放を全レーンへ広げる → 1 件赤。
+#
+#   **赤転しなかった変異を 2 つ記録する（どちらも二重防御の片側で、単独では観測できない）**:
+#   (1) `SubagentStart` の名簿ゲートを外す → 緑。委譲レーンを専用型で記帳しているので、
+#       ゲートを外しても同型フォールバックが掴まない。記帳型そのものを見る針が別に在る。
+#   (2) 行頭アンカーを `case` だけ緩める → 緑。抽出（`${line#マーカー: }`）が行頭でない行を
+#       弾くので、`case` は前段の絞りにすぎない。両方を緩めると赤になる。
+#   二重防御では「片方を外す変異が緑」は検出力の欠如ではない。**どちらの層を観測しているか**を
+#   針ごとに決め、どちらでもない層は単独変異で測れないことを記録しておく。
+#
+#   名簿の崩壊床は件数ではなく**名前の並び**で持つ: (h14) の突き合わせは実体側の fixture を
+#   hook の名簿から作るので、名簿が縮んでも差し替わっても fixture が追随して一致する
+#   （実測: 件数だけの床では同数の名前置換が緑で通った）。派生させない並びを別に置く。
 #   実測で分かった 3 つの取りこぼし:
 #   1. 最初の設計では (h2) の 2 本が別々の観点だったため「同型を全部閉じる」への退化が
 #      現れなかった。同型 2 本のケースを足して初めて赤になる。
@@ -44,9 +67,12 @@
 #   3. atomic publish の変異は「最終パスへ追記で書く」形だと**赤にならない** — 走査に
 #      消されても後続の `>>` がファイルを作り直し、started_epoch を含む形で復活するため。
 #      実装が本当に失う形（走査に消されたら以後の書き込みが落ちる）で模さないと測れない。
-#   検査を持たない変更（検査追加の TODO）: レーン取得を `git status` の**あと**へ戻す順序
-#   変更は、hook の 10 秒 timeout を実際に使い切らせないと差が出ないため本 suite では
-#   赤にならない（順序の根拠はヘッダのコメントで残している）。
+#   レーン取得を `git status` の**あと**へ戻す順序変更は (h16) が赤にする。時間ではなく
+#   因果で測る — `git status` を解放の合図まで返らないシムにすると、順序が正しければ
+#   レーンは status へ入る前に存在し、逆なら status から返れないので永久に現れない。
+#   「10 秒かかる status」を再現する形は機械の速さに依存して flaky になり、赤が
+#   「またフレーキーか」と読まれて検出力を失う。シムが呼ばれたことも併せて確かめる
+#   （呼ばれないまま緑になる形を残さない）。
 #
 # hook ごとに suite を分ける既存慣行（guard-checkout-restore / guard-pr-followup /
 # guard-background-cwd）に合わせて 1 本立てる。
@@ -90,8 +116,34 @@ else
   exit 0
 fi
 REACHED_END=0
+# (h16) が背景で起こす hook の PID と、そのシムを解放する合図ファイル。中断
+# （SIGINT / SIGTERM / 想定外の set -e 終了）で置き去りにすると、子は消えた合図ファイルを
+# 待ち続ける。cleanup から解放 → 短い待ち → kill の順で必ず終わらせる。
+SLOW_HOOK_PID=""
+SLOW_GIT_RELEASE=""
+reap_slow_hook() { # 解放して終わらせる。<期限内に終わったか> を rc で返す
+  local w=0
+  [ -n "$SLOW_HOOK_PID" ] || return 0
+  [ -n "$SLOW_GIT_RELEASE" ] && : > "$SLOW_GIT_RELEASE" 2>/dev/null
+  while kill -0 "$SLOW_HOOK_PID" 2>/dev/null && [ "$w" -lt 100 ]; do
+    sleep 0.1
+    w=$((w + 1))
+  done
+  if kill -0 "$SLOW_HOOK_PID" 2>/dev/null; then
+    kill -TERM "$SLOW_HOOK_PID" 2>/dev/null || true
+    wait "$SLOW_HOOK_PID" 2>/dev/null || true
+    SLOW_HOOK_PID=""
+    return 1
+  fi
+  SLOW_HOOK_RC=0
+  wait "$SLOW_HOOK_PID" 2>/dev/null || SLOW_HOOK_RC=$?
+  SLOW_HOOK_PID=""
+  return 0
+}
+SLOW_HOOK_RC=0
 cleanup() {
   local rc=$?
+  reap_slow_hook >/dev/null 2>&1 || true
   cd /
   rm -rf "$TEST_TMP"
   if [ "$REACHED_END" -ne 1 ] && [ "$rc" -eq 0 ]; then
@@ -148,6 +200,11 @@ clear_lock() { rm -f "$LOCK"; }
 # 「何本残っているか」を数える 1 点だけで、開け閉めは必ず hook 経由で行う。
 LANE_DIR="$LOCK_DIR/.review-in-flight.d"
 clear_lanes() { rm -rf "$LANE_DIR"; }
+lane_count_for_key() { # <鍵（tool_use_id）> このケースが開いたレーンだけを数える
+  local n=0
+  n="$(ls -1 "$LANE_DIR/$1".*.lane 2>/dev/null | grep -c . 2>/dev/null)" || n=0
+  printf '%s' "${n:-0}" | tr -d '[:space:]'
+}
 lane_count() {
   # grep -c はパイプを最後まで読むので書き手へ SIGPIPE を投げない（run-all の禁止形を避ける）。
   # 0 件のとき grep -c は rc=1 を返すので、set -e / pipefail 下では明示的に受ける。
@@ -192,6 +249,12 @@ agent_json() { # <subagent_type> [tool_name] [tool_use_id] [isolation]
   jq -n --arg s "$1" --arg d "$REPO" --arg t "${2:-Agent}" --arg u "${3:-}" --arg iso "${4:-}" \
   '{tool_name: $t, tool_input: ({subagent_type: $s, description: "review", prompt: "review the diff"}
       + (if $iso == "" then {} else {isolation: $iso} end)), cwd: $d, hook_event_name: "PreToolUse"}
+   + (if $u == "" then {} else {tool_use_id: $u} end)'; }
+# 汎用 `subagent_type` + 任意の prompt（委譲レビューの識別を測るため）。
+generic_agent_json() { # <prompt> [tool_use_id] [subagent_type]
+  jq -n --arg d "$REPO" --arg p "$1" --arg u "${2:-}" --arg s "${3:-general-purpose}" \
+  '{tool_name: "Agent", tool_input: {subagent_type: $s, description: "delegated", prompt: $p},
+    cwd: $d, hook_event_name: "PreToolUse"}
    + (if $u == "" then {} else {tool_use_id: $u} end)'; }
 subagent_start_json() { # <agent_type> [agent_id]
   jq -n --arg d "$REPO" --arg t "$1" --arg a "${2:-agent-1}" \
@@ -930,6 +993,478 @@ if command -v node >/dev/null 2>&1; then
   fi
 else
   echo "  ○ skip: node が無いため features.hooks=false 経路は未検査（guard-review-in-flight の ASDD ゲート無効判定）"
+fi
+
+# ── (h16) レーン取得は `git status` より前 ─────────────────────────────────────
+# この hook の登録 timeout は 10 秒で、`git status` は大きい・遅いリポジトリでそれを
+# 使い切りうる。取得より先に status を読むと、timeout した回はレーンを 1 本も作らないまま
+# レビューが起動する（ガードが最初から居ない）。
+#
+# **時間ではなく因果で測る。** 「10 秒かかる status」を再現しようとすると、機械の速さに
+# 結果が依存して flaky になり、赤が「またフレーキーか」と読まれて検出力を失う。そこで
+# `git status` を**進めなくする**（解放の合図が来るまで返らないシム）。順序が正しければ
+# レーンは status へ入る前に存在し、順序が逆なら status から返れないので永久に現れない。
+# 判定は「止まっている間にレーンが在るか」の 1 点で、**順序の判定を固定の待ち時間へ
+# 依存させない**（プロセスの起動と取得到達には依存するので、そこには上限つきの生存確認を
+# 置く。極端な CPU starvation では正しい実装でも赤になりうるが、その回は上限超過として
+# 診断が出る）。
+SLOW_GIT_DIR="$TEST_TMP/slow-git"
+SLOW_GIT_ENTERED="$TEST_TMP/slow-git-entered"
+SLOW_GIT_RELEASE="$TEST_TMP/slow-git-release"
+mkdir -p "$SLOW_GIT_DIR"
+_real_git="$(command -v git)"
+if [ -z "$_real_git" ]; then
+  bad "(h16) git の実体を解決できない（シムを作れない）"
+else
+  cat > "$SLOW_GIT_DIR/git" <<SHIM
+#!/usr/bin/env bash
+# status だけを解放の合図まで止める。他のサブコマンド（rev-parse 等）はそのまま通す。
+for _a in "\$@"; do
+  if [ "\$_a" = "status" ]; then
+    : > "$SLOW_GIT_ENTERED"
+    while [ ! -f "$SLOW_GIT_RELEASE" ]; do sleep 0.05; done
+    break
+  fi
+done
+exec "$_real_git" "\$@"
+SHIM
+  chmod +x "$SLOW_GIT_DIR/git"
+  clear_lanes
+  rm -f "$SLOW_GIT_ENTERED" "$SLOW_GIT_RELEASE"
+  # 観測は**このケースが開いたレーン**（鍵 tu-slow）だけに限る。全レーンを数えると、
+  # 取りこぼした別プロセスが後から書いた 1 本で緑になりうる。開始前に 0 本であることも
+  # 確かめる（前のケースの残りを自分の成果と読まない）。
+  if [ "$(lane_count_for_key tu-slow)" -ne 0 ] || [ "$(lane_count)" -ne 0 ]; then
+    bad "(h16) 開始前にレーンが残っている（前のケースの残りを観測しうる）: [$(lane_count)]"
+  fi
+  ( PATH="$SLOW_GIT_DIR:$PATH" bash "$TARGET" >/dev/null 2>&1 <<HOOKIN
+$(agent_json 'pr-review-toolkit:code-reviewer' Agent tu-slow)
+HOOKIN
+  ) &
+  SLOW_HOOK_PID=$!
+  # レーンが現れるまで待つ（上限つき）。正しい順序なら status へ入る前に現れるので
+  # 実測は 1〜数回目の待機で終わる。上限は「現れない」を有限時間で結論するためだけの
+  # もので、判定には使わない（レーンの有無だけで決める）。
+  _waited=0
+  while [ "$(lane_count_for_key tu-slow)" -eq 0 ] && [ "$_waited" -lt 100 ]; do
+    sleep 0.1
+    _waited=$((_waited + 1))
+  done
+  _lane_seen="$(lane_count_for_key tu-slow)"
+  # 解放して hook を終わらせる。**期限つき**で刈り取る — 無期限の wait だと、解放後に
+  # hook や git が固まった回に suite 自体が止まる（止まった suite は赤も緑も出さない）。
+  _reap_ok=0
+  reap_slow_hook || _reap_ok=1
+  if [ ! -f "$SLOW_GIT_ENTERED" ]; then
+    # シムが一度も呼ばれていない = この検査は何も測っていない（vacuous green を防ぐ）
+    bad "(h16) 遅い git status のシムが呼ばれていない（検査が成立していない）"
+  elif [ "$_reap_ok" -ne 0 ]; then
+    bad "(h16) 解放後も hook が期限内に終わらなかった（固まっている）"
+  elif [ "$SLOW_HOOK_RC" -ne 0 ]; then
+    bad "(h16) hook が非 0 で終了した (rc=${SLOW_HOOK_RC})"
+  elif [ "$_lane_seen" -eq 1 ]; then
+    ok "(h16) git status が返らない間にレーンが存在する（取得が status より前）"
+  else
+    bad "(h16) git status が止まっている間にレーンが 1 本も無い（取得が status より後へ戻った）: [${_lane_seen}]"
+  fi
+  clear_lanes
+  rm -f "$SLOW_GIT_ENTERED" "$SLOW_GIT_RELEASE"
+fi
+
+# ── (h15) 委譲レビュー（--delegate-to-host）経路のレーン ───────────────────────
+# オーケストレータは rc=3 で終了し、ホストが**汎用の subagent_type** で自分のセッション
+# へレビューを流す。名簿には載らないので、識別は「何の型で起動したか」ではなく
+# 「何を渡されたか」で行う。prompt は自由文字列なので、識別は
+#   (a) 行頭 `FF-REVIEW-DELEGATED: <パス>` / (b) パスが出力先の .delegated/ 配下 /
+#   (c) そのパスが実在する通常ファイル
+# の 3 つをすべて要求する。1 つでも緩めると、レビュー以外の委譲が最大 30 分凍結される。
+DELEG_DIR="$REPO/.review-results/claude-code/.delegated"
+mkdir -p "$DELEG_DIR"
+printf '%s\n' '# delegated review prompt' > "$DELEG_DIR/code-review.prompt.md"
+DELEG_MARK="FF-REVIEW-DELEGATED: $DELEG_DIR/code-review.prompt.md"
+
+clear_lanes
+run_hook "$(generic_agent_json "$DELEG_MARK")"
+if [ "$(lane_count)" -eq 1 ]; then
+  ok "(h15) 委譲レビュー（行頭マーカー + 実在する委譲プロンプト）の汎用 Agent はレーンを取る"
+else
+  bad "(h15) 委譲レビューの起動でレーンが開かない: [$(lane_count)]"
+fi
+
+# レーンの**記帳型**を直接見る。汎用の subagent_type をそのまま書くと、同型フォールバック
+# （同じ agent_type で対応づいていない最古のレーンを引き受ける）に拾われる。名簿ゲートと
+# 二重防御になっているので、片方を外す変異は他方が受け止めてしまう — 記帳型そのものを
+# 観測するこの針だけが、記帳側の退行を単独で赤にできる。
+_deleg_lane_type=""
+for _f in "$LANE_DIR"/*.lane; do
+  [ -f "$_f" ] || continue
+  _deleg_lane_type="$(sed -n 's/^perspectives=//p' "$_f" | head -n 1)"
+  break
+done
+if [ "$_deleg_lane_type" = "delegated-review" ]; then
+  ok "(h15) 委譲レーンは専用の型名で記帳される（同型フォールバックの対象にならない）"
+else
+  bad "(h15) 委譲レーンの記帳型が専用名でない: [${_deleg_lane_type}]（汎用型だと無関係な同型サブエージェントに奪われる）"
+fi
+
+# 委譲レビューのレーンが開いている間は編集が止まる（この経路の目的そのもの）
+run_hook "$(edit_json_as 'main-agent')"
+assert_deny "(h15) 委譲レビューが走っている間の編集は止まる"
+
+# **無関係な汎用サブエージェントの終端でレーンが解けてはいけない。** 委譲レーンは専用の
+# 型名で記帳してあり、同型フォールバック（同じ agent_type で対応づいていない最古の
+# レーンを引き受ける）の対象にならない。ここが緩むと、レビュー中に凍結が消える。
+run_hook "$(subagent_start_json 'general-purpose' agent-x1)"
+run_hook "$(subagent_stop_json 'general-purpose' agent-x1)"
+if [ "$(lane_count)" -eq 1 ]; then
+  ok "(h15) 無関係な汎用サブエージェントの Start/Stop では委譲レーンが解けない"
+else
+  bad "(h15) 無関係な汎用サブエージェントの終端で委譲レーンが解けた（レビュー中に凍結が消える）: [$(lane_count)]"
+fi
+# agent_id が空の Stop でも同じ（相関 ID が無い側から奪われない）
+run_hook "$(subagent_stop_json 'general-purpose' '')"
+if [ "$(lane_count)" -eq 1 ]; then
+  ok "(h15) agent_id が空の Stop でも委譲レーンが解けない"
+else
+  bad "(h15) agent_id が空の Stop で委譲レーンが解けた: [$(lane_count)]"
+fi
+
+# **委譲先は自分の結果ファイルを書ける。** ここを止めると、handoff の手順 2（結果を
+# 出力先へ書く）が自分のレーンで自分をデッドロックさせる。線引きは dirty 判定の除外
+# （出力先は「作業ツリーではない」）と同じで、そこへの書き込みはレビュー対象を動かさない。
+run_hook "$(jq -n --arg d "$REPO" --arg f "$REPO/.review-results/claude-code/code-review.md" \
+  '{hook_event_name: "PreToolUse", cwd: $d, tool_name: "Write", agent_type: "general-purpose",
+    tool_input: {file_path: $f, content: "result"}}')"
+assert_silent "(h15) 委譲レビューは自分の結果ファイル（出力先配下）を書ける"
+# 相対パスでも同じ（ホストは cwd 相対で書くことがある）
+run_hook "$(jq -n --arg d "$REPO" \
+  '{hook_event_name: "PreToolUse", cwd: $d, tool_name: "Write", agent_type: "general-purpose",
+    tool_input: {file_path: ".review-results/claude-code/code-review.md", content: "result"}}')"
+assert_silent "(h15) 出力先配下への相対パスの書き込みも止めない"
+# 出力先の外は従来どおり止まる（免除がレビュー対象へ広がっていないこと）
+run_hook "$(jq -n --arg d "$REPO" --arg f "$REPO/src/app.ts" \
+  '{hook_event_name: "PreToolUse", cwd: $d, tool_name: "Write", agent_type: "general-purpose",
+    tool_input: {file_path: $f, content: "x"}}')"
+assert_deny "(h15) 出力先の外への書き込みは従来どおり止まる"
+# 免除の錨は**このリポジトリの**出力先。同じディレクトリ名を含むだけの他所のパスまで
+# 免除すると、レビュー対象の外という理由が成り立たないまま穴が広がる。
+run_hook "$(jq -n --arg d "$REPO" --arg f "$TEST_TMP/elsewhere/.review-results/claude-code/x.md" \
+  '{hook_event_name: "PreToolUse", cwd: $d, tool_name: "Write", agent_type: "general-purpose",
+    tool_input: {file_path: $f, content: "x"}}')"
+assert_deny "(h15) リポジトリ外の同名ディレクトリ（.review-results）への書き込みは免除しない"
+
+# 起動が拒否された回は、同じ鍵の PermissionDenied で解放される（名簿外でも通す経路）。
+clear_lanes
+run_hook "$(generic_agent_json "$DELEG_MARK" tu-d9)"
+if [ "$(lane_count)" -eq 1 ]; then
+  run_hook "$(jq -n --arg d "$REPO" --arg p "$DELEG_MARK" \
+    '{hook_event_name: "PermissionDenied", cwd: $d, tool_name: "Agent", tool_use_id: "tu-d9",
+      tool_input: {subagent_type: "general-purpose", description: "delegated", prompt: $p}}')"
+  if [ "$(lane_count)" -eq 0 ]; then
+    ok "(h15) 起動が拒否された委譲レビューは同じ鍵の PermissionDenied で解放される"
+  else
+    bad "(h15) 拒否された委譲レビューのレーンが解放されない: [$(lane_count)]"
+  fi
+else
+  bad "(h15) 拒否検査の前提（レーン 1 本）が作れない: [$(lane_count)]"
+fi
+
+# 以下は「取らない」側。1 つでも取ってしまうと、レビュー以外の委譲が凍結する。
+clear_lanes
+run_hook "$(generic_agent_json "リポジトリの依存関係を調べて要約してください")"
+if [ "$(lane_count)" -eq 0 ]; then
+  ok "(h15) レビュー以外の汎用 Agent はレーンを取らない"
+else
+  bad "(h15) レビュー以外の汎用 Agent でレーンが開いた: [$(lane_count)]"
+fi
+
+clear_lanes
+run_hook "$(generic_agent_json "用語集に FF-REVIEW-DELEGATED という語をそのまま残してください。レビューはしないでください。")"
+if [ "$(lane_count)" -eq 0 ]; then
+  ok "(h15) マーカーの語が散文中に出るだけではレーンを取らない（行頭アンカー）"
+else
+  bad "(h15) 散文中のマーカーでレーンが開いた: [$(lane_count)]"
+fi
+
+clear_lanes
+run_hook "$(generic_agent_json "参考までに以下を見てください: FF-REVIEW-DELEGATED: $DELEG_DIR/code-review.prompt.md")"
+if [ "$(lane_count)" -eq 0 ]; then
+  ok "(h15) 行の途中に置かれたマーカー（実在パス付き）ではレーンを取らない"
+else
+  bad "(h15) 行頭でないマーカーでレーンが開いた（散文との衝突面が広がる）: [$(lane_count)]"
+fi
+
+clear_lanes
+run_hook "$(generic_agent_json "FF-REVIEW-DELEGATED: $DELEG_DIR/no-such-perspective.prompt.md")"
+if [ "$(lane_count)" -eq 0 ]; then
+  ok "(h15) 実在しない委譲プロンプトを名指す行ではレーンを取らない"
+else
+  bad "(h15) 実在しないパスでレーンが開いた: [$(lane_count)]"
+fi
+
+clear_lanes
+mkdir -p "$REPO/docs/.delegated"
+printf '%s\n' 'notes' > "$REPO/docs/.delegated/notes.prompt.md"
+run_hook "$(generic_agent_json "FF-REVIEW-DELEGATED: $REPO/docs/.delegated/notes.prompt.md")"
+if [ "$(lane_count)" -eq 0 ]; then
+  ok "(h15) レビュー出力先の外にある .delegated/ ではレーンを取らない"
+else
+  bad "(h15) 出力先の外の .delegated/ でレーンが開いた: [$(lane_count)]"
+fi
+
+clear_lanes
+run_hook "$(generic_agent_json "次のプロンプトを実行してください: $DELEG_DIR/code-review.prompt.md")"
+if [ "$(lane_count)" -eq 0 ]; then
+  ok "(h15) パスだけを載せた形ではレーンを取らない（行頭マーカーを要求する）"
+else
+  bad "(h15) パスだけでレーンが開いた（自由文字列との衝突面が広がる）: [$(lane_count)]"
+fi
+clear_lanes
+
+# 正常完了の出口は「委譲結果の回収」。回収の到達が「委譲したレビューは終わった」の宣言で、
+# ここで消さないと 3 分のレビューのあと寿命上限（既定 1800 秒）まで凍結が残る。
+# 委譲レーンを 1 本置いた状態で回収関数を呼び、消えることを実測する。
+clear_lanes
+run_hook "$(generic_agent_json "$DELEG_MARK" tu-d10)"
+if [ "$(lane_count)" -eq 1 ]; then
+  ( set -e
+    OUTPUT_DIR="$REPO/.review-results"
+    DELEGATE_TO_HOST=true
+    # 回収本体は委譲状態を要求するので、レーン解放の関数だけを取り出して回す。
+    eval "$(awk '/^release_delegated_review_lanes\(\) \{/{f=1} f{print} f && /^\}$/{exit}' "$MULTI_AGENT")"
+    release_delegated_review_lanes )
+  if [ "$(lane_count)" -eq 0 ]; then
+    ok "(h15) 委譲結果の回収で委譲レーンが解放される（正常完了の出口）"
+  else
+    bad "(h15) 回収しても委譲レーンが残る（正常完了でも寿命上限まで凍結が続く）: [$(lane_count)]"
+  fi
+else
+  bad "(h15) 回収検査の前提（レーン 1 本）が作れない: [$(lane_count)]"
+fi
+# 回収の解放は委譲レーンだけを対象にする（名簿の型のレーンまで消すと、走行中の
+# レビュアーの凍結が消える）
+clear_lanes
+run_hook "$(agent_json 'pr-review-toolkit:code-reviewer' Agent tu-d11)"
+( set -e
+  OUTPUT_DIR="$REPO/.review-results"
+  eval "$(awk '/^release_delegated_review_lanes\(\) \{/{f=1} f{print} f && /^\}$/{exit}' "$MULTI_AGENT")"
+  release_delegated_review_lanes )
+if [ "$(lane_count)" -eq 1 ]; then
+  ok "(h15) 回収の解放は委譲レーンだけを消す（名簿の型のレーンは残る）"
+else
+  bad "(h15) 回収の解放が名簿の型のレーンまで消した: [$(lane_count)]"
+fi
+clear_lanes
+
+# マーカーの綴りは hook と multi-agent.sh の **handoff を出す関数の中**で一致していなければ
+# ならない。ファイル全体を grep すると、handoff 行が消えても説明文側の同じ語が残るだけで
+# 緑になる（実際に識別へ効くのは handoff 行だけ）。
+_marker_hook="$(sed -n 's/^REVIEW_DELEGATION_MARKER="\(.*\)"$/\1/p' "$TARGET" | head -n 1)"
+_handoff_body="$(awk '/^print_delegation_handoff\(\) \{/{f=1} f{print} f && /^\}$/{exit}' "$MULTI_AGENT")"
+case "$_marker_hook" in
+  FF-*[A-Z]*) : ;;
+  *) bad "(h15) 委譲マーカーが FF- 接頭辞の識別子でない: [${_marker_hook}]（自由文字列と衝突しやすい弱い語は使わない）" ;;
+esac
+if [ -z "$_marker_hook" ]; then
+  bad "(h15) hook から委譲マーカーを抽出できない（綴りの一致を検査できない）"
+elif [ -z "$_handoff_body" ]; then
+  bad "(h15) multi-agent.sh の print_delegation_handoff を切り出せない"
+else
+  case "$_handoff_body" in
+    *"${_marker_hook}: "*)
+      ok "(h15) 委譲マーカーの綴りが hook と handoff 生成関数で一致している" ;;
+    *)
+      bad "(h15) 委譲マーカー（${_marker_hook}）が print_delegation_handoff の出力に無い" ;;
+  esac
+fi
+
+# 鍵（tool_use_id）側にも同じ潰し衝突がある。記号だけが違う 2 つの起動が同じ鍵へ潰れると、
+# 取得の冪等判定が 2 本目を「既に在る」と読んでレーンを 1 本落とし、1 本目の終端で凍結が解ける。
+clear_lanes
+run_hook "$(agent_json 'pr-review-toolkit:code-reviewer' Agent 'tu!1')"
+run_hook "$(agent_json 'pr-review-toolkit:silent-failure-hunter' Agent 'tu@1')"
+if [ "$(lane_count)" -eq 2 ]; then
+  ok "(h15) 記号だけが違う tool_use_id は別の鍵になる（レーンを落とさない）"
+else
+  bad "(h15) 記号だけが違う tool_use_id が同じ鍵へ潰れ、レーンが落ちた: [$(lane_count)]"
+fi
+clear_lanes
+
+# 記号を削るだけの正規化だと、別の agent_id が同じ形へ潰れて無関係な終端が別レーンを
+# 閉じる。名簿の型どうしでも起きるので、ここで固定する。
+clear_lanes
+run_hook "$(agent_json 'pr-review-toolkit:code-reviewer' Agent tu-c1)"
+run_hook "$(subagent_start_json 'pr-review-toolkit:code-reviewer' 'collision!')"
+run_hook "$(subagent_stop_json 'pr-review-toolkit:code-reviewer' 'collision@')"
+if [ "$(lane_count)" -eq 1 ]; then
+  ok "(h15) 記号だけが違う agent_id の終端では別レーンを閉じない（正規化の衝突）"
+else
+  bad "(h15) 記号だけが違う agent_id で他レーンが閉じた（走行中のレビューで凍結が解ける）: [$(lane_count)]"
+fi
+# 同じ id の終端では閉じる（衝突対策が正当な解放まで潰していないこと）
+run_hook "$(subagent_stop_json 'pr-review-toolkit:code-reviewer' 'collision!')"
+if [ "$(lane_count)" -eq 0 ]; then
+  ok "(h15) 同じ agent_id の終端では従来どおり解放される"
+else
+  bad "(h15) 同じ agent_id の終端で解放されない（衝突対策が正当な解放を潰した）: [$(lane_count)]"
+fi
+clear_lanes
+
+# ── (h14) 名簿の追随検査（scripts/check-review-roster-drift.sh） ────────────────
+# レーンを取る subagent_type の名簿は**列挙**で、実体は別プラグインのレビュアー群にある。
+# 実体が増えても列挙は自動では追随しないので、突き合わせる検査を置く。ここでは実体を
+# fixture で作って全分岐を**常時**回す（ホストに当該プラグインが入っているかに依存させない。
+# 実体との照合は同じスクリプトへ実配置のディレクトリを渡して行う）。
+ROSTER_CHECK="$PLUGIN_ROOT/scripts/check-review-roster-drift.sh"
+if [ ! -x "$ROSTER_CHECK" ]; then
+  bad "(h14) 名簿の追随検査スクリプトがありません: $ROSTER_CHECK"
+else
+  ROSTER_FIX="$TEST_TMP/roster"
+  # 名簿の既定値を hook から取り出し、fixture の実体を**そこから**作る。ここでリテラルを
+  # 書き写すと、hook の名簿を変えたときに fixture だけが古いまま «常に一致» を出す。
+  _roster_default="$(sed -n 's/^REVIEW_LOCK_TYPES="\${FF_REVIEW_SUBAGENT_LOCK_TYPES:-\(.*\)}"$/\1/p' "$TARGET" | head -n 1)"
+  if [ -z "$_roster_default" ]; then
+    bad "(h14) hook から名簿の既定値を抽出できません（fixture を実体から作れない）"
+  else
+    make_roster_fixture() { # <ディレクトリ> [追加の agent 名]...
+      local dir="$1"; shift
+      rm -rf "$dir"; mkdir -p "$dir"
+      local t base
+      set -f
+      for t in $_roster_default; do
+        base="${t##*:}"
+        printf '%s\n' "# $base" > "$dir/$base.md"
+      done
+      set +f
+      local extra
+      for extra in "$@"; do
+        printf '%s\n' "# $extra" > "$dir/$extra.md"
+      done
+    }
+    # 出力の照合はシェルの glob で行う。`printf | grep -q` は grep が一致した時点で閉じるため
+    # producer が SIGPIPE を受け、pipefail 下で「一致したのに失敗」へ反転しうる。
+    roster_out_has() { case "$ROSTER_OUT" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+    run_roster() { # <ディレクトリ> [追加引数]...
+      local dir="$1"; shift
+      ROSTER_OUT="$(bash "$ROSTER_CHECK" --agents-dir "$dir" --hook "$TARGET" "$@" 2>&1)" \
+        && ROSTER_RC=0 || ROSTER_RC=$?
+    }
+
+    make_roster_fixture "$ROSTER_FIX/match"
+    run_roster "$ROSTER_FIX/match"
+    if [ "$ROSTER_RC" -eq 0 ] && roster_out_has 'ROSTER_CHECK=OK'; then
+      ok "(h14) 実体が名簿どおりなら rc=0"
+    else
+      bad "(h14) 実体が名簿どおりなのに rc=${ROSTER_RC}（${ROSTER_OUT}）"
+    fi
+
+    # AC: レビュアーが 1 本増えた状態で赤になる（名簿が追随していないことが分かる）
+    make_roster_fixture "$ROSTER_FIX/added" brand-new-reviewer
+    run_roster "$ROSTER_FIX/added"
+    if [ "$ROSTER_RC" -eq 1 ] && roster_out_has 'MISSING=' && roster_out_has 'brand-new-reviewer'; then
+      ok "(h14) レビュアーが 1 本増えると rc=1 で、足す候補が名指しされる"
+    else
+      bad "(h14) レビュアーが増えても検出できない、または名前が出ない (rc=$ROSTER_RC): $ROSTER_OUT"
+    fi
+
+    # 実体から 1 本消えた側も検出する（名簿だけが残ると、存在しない型を待ち続ける）
+    make_roster_fixture "$ROSTER_FIX/removed"
+    rm -f "$ROSTER_FIX/removed/$(printf '%s\n' $_roster_default | head -n 1 | sed 's/^.*://').md"
+    run_roster "$ROSTER_FIX/removed"
+    if [ "$ROSTER_RC" -eq 1 ] && roster_out_has 'EXTRA='; then
+      ok "(h14) 実体から 1 本消えると rc=1 で、名簿側の余りが名指しされる"
+    else
+      bad "(h14) 実体から消えた名前を検出できない (rc=$ROSTER_RC): $ROSTER_OUT"
+    fi
+
+    # 除外対象（共有ツリーを編集するレビュアー）は実体に在っても drift にしない
+    make_roster_fixture "$ROSTER_FIX/excluded" code-simplifier
+    run_roster "$ROSTER_FIX/excluded"
+    if [ "$ROSTER_RC" -eq 0 ]; then
+      ok "(h14) 除外対象（code-simplifier）は実体に在っても drift にならない"
+    else
+      bad "(h14) 除外対象が drift として報告された (rc=$ROSTER_RC): $ROSTER_OUT"
+    fi
+
+    # 判定不能は 0 へ倒さない（判定できないことを一致と読むと、名簿が腐っても緑が続く）
+    run_roster "$ROSTER_FIX/no-such-dir"
+    if [ "$ROSTER_RC" -eq 2 ] && roster_out_has 'ROSTER_CHECK=UNDETERMINED'; then
+      ok "(h14) 実体のディレクトリが無い回は rc=2（一致へ倒さない）"
+    else
+      bad "(h14) 実体のディレクトリが無い回が rc=2 でない (rc=$ROSTER_RC): $ROSTER_OUT"
+    fi
+
+    # 改行を含むファイル名は 1 件が複数行へ化け、行志向の突き合わせが別々のレビュアーと
+    # して数える（実体 1 件で名簿 2 件を満たせる）。
+    make_roster_fixture "$ROSTER_FIX/newline"
+    if touch "$ROSTER_FIX/newline/$(printf 'a\npr-review-toolkit:zz').md" 2>/dev/null; then
+      run_roster "$ROSTER_FIX/newline"
+      if [ "$ROSTER_RC" -eq 2 ]; then
+        ok "(h14) 実体のファイル名に改行があれば rc=2（行として突き合わせられない）"
+      else
+        bad "(h14) 改行入りのファイル名が rc=2 でない (rc=${ROSTER_RC}): ${ROSTER_OUT}"
+      fi
+    else
+      bad "(h14) 改行を含むファイル名の fixture を作れない（この経路が未検査のまま）"
+    fi
+
+    mkdir -p "$ROSTER_FIX/empty"
+    run_roster "$ROSTER_FIX/empty"
+    if [ "$ROSTER_RC" -eq 2 ]; then
+      ok "(h14) 実体が 0 件の回は rc=2（空ディレクトリを「名簿と一致」と読まない）"
+    else
+      bad "(h14) 実体 0 件が rc=2 でない (rc=$ROSTER_RC): $ROSTER_OUT"
+    fi
+
+    # 名簿は glob を書ける契約なので、検査側が素のまま分割すると**呼び出し元 cwd の
+    # ファイル名**が名簿として読まれ、cwd 次第で判定が反転する。
+    printf '%s\n' '#!/usr/bin/env bash' \
+      'REVIEW_LOCK_TYPES="${FF_REVIEW_SUBAGENT_LOCK_TYPES:-pr-review-toolkit:* }"' \
+      > "$ROSTER_FIX/hook-glob.sh"
+    mkdir -p "$ROSTER_FIX/cwd-decoy"
+    : > "$ROSTER_FIX/cwd-decoy/pr-review-toolkit:decoy"
+    ROSTER_OUT="$( cd "$ROSTER_FIX/cwd-decoy" && bash "$ROSTER_CHECK" \
+      --agents-dir "$ROSTER_FIX/match" --hook "$ROSTER_FIX/hook-glob.sh" 2>&1 )" \
+      && ROSTER_RC=0 || ROSTER_RC=$?
+    if roster_out_has 'decoy'; then
+      bad "(h14) 呼び出し元 cwd のファイル名が名簿として読まれた（glob が展開されている）: ${ROSTER_OUT}"
+    else
+      ok "(h14) 名簿の glob は展開せず、cwd のファイル名を名簿に混ぜない"
+    fi
+
+    # 名簿を抽出できない hook（書き方が変わった）も判定不能へ倒す
+    printf '%s\n' '#!/usr/bin/env bash' 'REVIEW_LOCK_TYPES="$(derive_from_somewhere)"' > "$ROSTER_FIX/hook-changed.sh"
+    ROSTER_OUT="$(bash "$ROSTER_CHECK" --agents-dir "$ROSTER_FIX/match" --hook "$ROSTER_FIX/hook-changed.sh" 2>&1)" \
+      && ROSTER_RC=0 || ROSTER_RC=$?
+    if [ "$ROSTER_RC" -eq 2 ]; then
+      ok "(h14) hook から名簿を抽出できない回は rc=2（抽出失敗を一致と読まない）"
+    else
+      bad "(h14) 名簿を抽出できない hook が rc=2 でない (rc=$ROSTER_RC): $ROSTER_OUT"
+    fi
+
+    # 崩壊床: 名簿の件数そのものを独立した絶対数で縛る。上の突き合わせは実体を fixture から
+    # 作るので、hook と fixture が同時に縮むと一致したまま通る（両方が同じ既定値から派生する
+    # ため）。件数だけは派生させずに書く。
+    # 崩壊床は**件数だけでは足りない**。上の突き合わせは実体側の fixture を hook の名簿から
+    # 作るので、名簿の 1 本を別名へ差し替えても件数が同じなら一致したまま通る（実測）。
+    # 名前そのものを、名簿から導出しない独立した並びとしてここに置く。名簿を変えるのは
+    # 意図的な行為なので、同じ PR でこの並びも更新する。
+    _roster_expected="pr-review-toolkit:code-reviewer
+pr-review-toolkit:comment-analyzer
+pr-review-toolkit:pr-test-analyzer
+pr-review-toolkit:silent-failure-hunter
+pr-review-toolkit:type-design-analyzer"
+    set -f
+    _roster_actual="$(printf '%s\n' $_roster_default | LC_ALL=C sort -u)"
+    set +f
+    if [ "$_roster_actual" = "$_roster_expected" ]; then
+      ok "(h14) 名簿の中身が崩壊床（5 件の固定並び）と一致する"
+    else
+      bad "(h14) 名簿が崩壊床と食い違う — 意図した変更なら本検査の並びも同じ PR で更新すること"
+      printf '    期待| %s\n' "$(printf '%s' "$_roster_expected" | tr '\n' ' ')" >&2
+      printf '    実体| %s\n' "$(printf '%s' "$_roster_actual" | tr '\n' ' ')" >&2
+    fi
+  fi
 fi
 
 echo

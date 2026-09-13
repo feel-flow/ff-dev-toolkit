@@ -25,6 +25,59 @@
 # 一致せず、退避一式がコミットへ巻き込まれる。ignore 済みであること（check-ignore /
 # git status）と、退避先が今回の集計・残骸名指しに現れないことを併せて固定する。
 #
+# 変異検出（未解消 Critical ガードの原因別案内と文書追随。2026-09-13 実測。変異は 1 件ずつ
+# 直列に当て、前後で対照を取る — 同じファイルへ 2 変異を同時に当てると一方の復元が他方を
+# 巻き戻し、赤緑がどちらも信用できなくなる）:
+#   区別できない 2 原因の併記を削る → 2 件赤。HEAD 破損側の直し方を削る → 1 件赤。
+#   プロジェクトルート不在の案内を削る → 1 件赤。系列を作れない分岐へ --fresh 提示を足す
+#   → 2 件赤。レポートを読めない分岐へ --fresh 提示を足す → 2 件赤。説明文書の
+#   「ファイルを読めない」行から --fresh 禁止を外す → 1 件赤。案内側の case ラベルだけを
+#   書き換える → 1 件赤。記録側の理由名だけを書き換える → 2 件赤。レポート側の既定アームを
+#   削る → 1 件赤。レポート側の原因別アームを 2 つとも削る → 2 件赤。理由を書かずに返る分岐を
+#   作る → 1 件赤。記録失敗の警告を出さなくする → 1 件赤。許可値だけを増やす → 2 件赤。
+#   本文側を実装と矛盾する旧記述へ戻す → 1 件赤。
+#
+#   **赤転しなかった変異を 1 つ記録する**: current_review_series_id 冒頭の「前回の失敗理由を
+#   消す」処理を外す → 緑。失敗する分岐はすべて理由を書いてから返るので、消さなくても直後に
+#   上書きされる。将来「理由を書かずに返る分岐」が足されたときだけ効く保険で、その分岐が
+#   無いうちは観測できない（黙って外すと、保険が必要になった回に誰も気づかない）。その
+#   「理由を書かずに返る分岐」の追加自体は、失敗 return と記録呼び出しの**件数一致**検査が
+#   赤にする。
+#
+#   **赤転しなかった変異をもう 1 つ記録する**: review_series_failure_reason の実行トークン
+#   照合（読んだ行を今回の実行が書いたのか確かめる部分）を外す → 緑。剥がし損ねた行は
+#   `<別実行のトークン>:repo-root` のまま case へ渡るが、この文字列は原因別ラベルのどれにも
+#   マッチせず既定アームへ落ちるので、案内の出力は変わらない（保護の実体は「書く行に
+#   トークンを前置する形式」の側にあり、照合そのものは既定アームと二重防御になっている）。
+#   実走で測るには「別実行の行が読み戻しまで生き残る」状態が要るが、
+#   current_review_series_id は冒頭で理由ファイルを消すので、そこへ到達するには**親
+#   ディレクトリが書き込み不可**でなければならない。これは root 実行では再現できず、
+#   環境依存の skip を作らずに注入する手段が無い（既定アームの検査は「親ディレクトリごと
+#   存在しない」パスで代替した — こちらは権限に依存しない）。case を持たない将来の消費側の
+#   ための保険として残し、測れない事実をここに記録する。
+#
+#   **セルフレビューで塞いだ穴（すべて変異注入で緑を実測してから直した）**: (a) 消費側 case の
+#   ラベルを 2 ブロック合併で比べていたため、レポート側ブロックを丸ごと消しても緑だった
+#   → ブロックごとに比較する。(b) 既定アーム `*)` を見る検査が今回の diff で原因別の針へ
+#   置き換わり無検査になっていた → 理由ファイルのシームを親ディレクトリごと存在しない
+#   パスへ向けて実走で固定する。(c) レポート生成側の失敗経路に実走が 1 件も無かった
+#   → 遅延注入（N 回目以降の symbolic-ref を落とす）でガードを通過させたまま発火させる。
+#   (d) 文書の針が散文にも一致して表の消滅を拾えなかった → 針を表の行へ限定し、本文側の
+#   ハンクを独立に固定する。(e) 無マッチ grep の代入が `set -euo pipefail` で落ち、直下の
+#   「行が無い」bad が到達不能な死枝だった → `|| true` を通してから空を検出する。
+#
+#   **針を締め直した経緯も残す**: ルート不在の案内は最初「The project root is gone or
+#   unreadable」だけを見ていたが、同じ語がレポート側の短い診断行にもあるため、中断分岐の
+#   案内を削っても緑だった。静的な針は**その分岐だけに在る文字列**で持つこと。
+#
+#   **原因の数え方を実測へ合わせた経緯**: 当初は 3 原因（ルート不在 / worktree の外 /
+#   HEAD 破損）を別々に名乗る実装にし、テストは `symbolic-ref` を rc=1 に偽装してから
+#   `rev-parse` を落として HEAD 破損を作っていた。実測ではこの形は起きない — `.git/HEAD`
+#   を壊すと `symbolic-ref` は **rc=128**（worktree の外と同じ）を返し、
+#   `rev-parse --is-inside-work-tree` も 128 なので git から区別できない。detached の形
+#   （rc=1）まで到達した HEAD は 40 桁 hex なので、実在しないオブジェクトでも `rev-parse` は
+#   成功する。**起きない形を測っていた**ので、原因を 2 つに畳んで案内は両方を名乗る形にした。
+#
 # run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
 
 set -euo pipefail
@@ -46,7 +99,7 @@ MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 # 実行環境の MULTI_AGENT_* から分離する（Issue #374 / #378 の共通機構）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES" \
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES FF_MULTI_AGENT_REVIEW_SERIES_REASON_FILE" \
   "$MULTI_AGENT" "$PLUGIN_ROOT"/scripts/adapters/*.sh
 
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正な
@@ -155,8 +208,20 @@ cat > "$STUB/git" <<SH
 #!/usr/bin/env bash
 # current_review_series_id() の \`git symbolic-ref --quiet HEAD\` だけを落とす。
 # rc=1（detached）は正常系なので、rc!=1 のエラーを注入する。
+# \`.git/HEAD\` が壊れている側も**実測では worktree の外と同じ rc=128** で、git から区別
+# できない（\`--is-inside-work-tree\` も 128）。専用のセンチネルを分けると「別の形を測って
+# いる」ように見えるが実体は同じ注入なので、1 つに畳んで案内の両方の名乗りを同じ実走で
+# 固定する。偽装で rc=1 + rev-parse 失敗を作ると、実際には起きない形を測ることになる。
 if [[ -f "$TMP/git-symbolic-ref-fail" && "\$*" == "symbolic-ref --quiet HEAD" ]]; then
   exit 128
+fi
+# レポート生成側（generate_review_report）の系列特定失敗を測るための遅延注入。ガード側は
+# 通過させ、N 回目以降の symbolic-ref だけを落とす（tail-fail-nth と同じイディオム）。
+if [[ -f "$TMP/git-symbolic-ref-fail-after" && "\$*" == "symbolic-ref --quiet HEAD" ]]; then
+  printf 'x\n' >> "$TMP/git-symbolic-ref-calls"
+  if [[ "\$(wc -l < "$TMP/git-symbolic-ref-calls")" -ge "\$(cat "$TMP/git-symbolic-ref-fail-after")" ]]; then
+    exit 128
+  fi
 fi
 exec "$REAL_GIT" "\$@"
 SH
@@ -1631,18 +1696,271 @@ Critical issues detected (code-review). Review before proceeding.
 REPORT_BODY
 run_sequence_step "$MULTI_AGENT" code-review "$TMP/recovery-no-series.log"
 rm -f "$TMP/git-symbolic-ref-fail"
-# 案内が挙げる原因は実測したものだけ（worktree の外 / HEAD が解決不能 /
-# プロジェクトルートが消えている）。コミット 0 件のリポジトリは原因にならない
+# 案内が挙げる原因は実測したものだけ。コミット 0 件のリポジトリは原因にならない
 # ——`git symbolic-ref --quiet HEAD` は unborn branch を rc=0 で返す（実測）。
+#
+# 「worktree の外」と「`.git/HEAD` の破損」は**同じ注入**（symbolic-ref rc=128）で、git から
+# 区別できない。以前は専用センチネルを分けて 2 本走らせていたが、実体は同じ分岐の再走
+# だったので 1 本に畳み、両方の名乗りと両方の直し方をこの実走で固定する。
 assert_recovery_hint "$TMP/recovery-no-series.log" \
   'cannot identify the current review series' \
-  'Run from inside the repository worktree, with the project root still present and HEAD resolvable, then retry.' \
-  "系列を特定できない中断も復帰手段を案内する"
+  'this run is not inside a git worktree' \
+  "系列を特定できない中断は、worktree の外側を名乗る"
+assert_recovery_hint "$TMP/recovery-no-series.log" \
+  'cannot identify the current review series' \
+  'or the worktree'"'"'s .git/HEAD is corrupt' \
+  "系列を特定できない中断は、区別できない 2 原因を両方名乗る"
+assert_recovery_hint "$TMP/recovery-no-series.log" \
+  'cannot identify the current review series' \
+  'repair .git/HEAD' \
+  "系列を特定できない中断は、HEAD 破損側の直し方も出す"
 assert_no_fresh_offer "$TMP/recovery-no-series.log" \
   "系列を特定できない中断には --fresh を提示しない"
 assert_fresh_ruled_out "$TMP/recovery-no-series.log" \
   "$FRESH_RULED_OUT_NO_SERIES" \
   "系列を特定できない中断は --fresh を出さない理由も案内する"
+
+# 既定アーム（`*)`）は「理由を読めなかった回」の受け皿で、原因を名乗れない代わりに復帰
+# 手段だけは残す層。ここを無検査にすると、原因別アームの検査が全部緑のまま既定アームだけ
+# 消え、理由を読めない利用者に次の一手が一行も出なくなる（変異注入で緑を実測済み）。
+#
+# 理由ファイルのシームを**親ディレクトリが存在しないパス**へ向けて実走させる。記録の
+# 書き込みが失敗し（→ 警告）、読み戻しも成立しない（→ 理由は空）ので、案内は既定アームへ
+# 落ちる。権限（chmod）に依存しないので root 実行でも同じ形で発火する。
+: > "$TMP/git-symbolic-ref-fail"
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:code-review nonblock:- -->
+REPORT_BODY
+SEQUENCE_RC=0
+set +e
+run_isolated PATH="$STUB:$PATH" \
+  FF_MULTI_AGENT_REVIEW_SERIES_REASON_FILE="$TMP/no-such-dir/reason" \
+  bash "$MULTI_AGENT" --task review --cli codex-cli --perspective code-review \
+  --base develop --timeout 60 >"$TMP/recovery-default-arm.log" 2>&1
+SEQUENCE_RC=$?
+set -e
+rm -f "$TMP/git-symbolic-ref-fail"
+assert_recovery_hint "$TMP/recovery-default-arm.log" \
+  'cannot identify the current review series' \
+  'with the project root still present and HEAD resolvable' \
+  "理由を読めない回は既定アームの復帰手段を出す"
+if grep -qF 'could not record the review-series failure reason' "$TMP/recovery-default-arm.log"; then
+  ok "理由を記録できなかったことを黙らず警告する"
+else
+  bad "理由の記録失敗が痕跡なく握り潰されている"
+  sed -n '1,20p' "$TMP/recovery-default-arm.log" >&2 || true
+fi
+if grep -qF 'git cannot read HEAD here' "$TMP/recovery-default-arm.log"; then
+  bad "理由を読めていないのに原因を名乗っている（記録失敗が案内に反映されていない）"
+  sed -n '1,20p' "$TMP/recovery-default-arm.log" >&2 || true
+else
+  ok "理由を読めない回は原因を名乗らない"
+fi
+
+# 系列 ID はガード側だけでなく**レポート生成側**でも要る。こちらの失敗経路は今まで実走が
+# 1 件も無く、原因別アームを丸ごと消しても緑だった（変異注入で実測）。
+#
+# ガード側が系列 ID を引くのは「前回レポートに series マーカーが在るとき」だけなので、
+# レポートを消した状態で走れば `symbolic-ref` の 1 回目がレポート生成側になる。遅延注入
+# （N 回目以降を落とす）で、ガードを通過させたままレポート生成だけを落とす。
+rm -f "$REPORT"
+rm -f "$TMP/git-symbolic-ref-calls"
+printf '1\n' > "$TMP/git-symbolic-ref-fail-after"
+run_sequence_step "$MULTI_AGENT" code-review "$TMP/report-no-series.log"
+rm -f "$TMP/git-symbolic-ref-fail-after" "$TMP/git-symbolic-ref-calls"
+if grep -qF 'cannot identify the current review series for the report.' "$TMP/report-no-series.log"; then
+  ok "レポート生成側の系列特定失敗を実走で発火できている"
+else
+  bad "レポート生成側の系列特定失敗を発火できていない（以降の検査は空振り）"
+  sed -n '1,30p' "$TMP/report-no-series.log" >&2 || true
+fi
+if grep -qF 'git cannot read HEAD here' "$TMP/report-no-series.log"; then
+  ok "レポート生成側の中断も原因を名指しする"
+else
+  bad "レポート生成側の中断が原因を名指ししない"
+  sed -n '1,30p' "$TMP/report-no-series.log" >&2 || true
+fi
+if [[ -f "$REPORT" ]]; then
+  bad "系列を書けなかったレポートが公開されている（未解消 Critical の機械状態を欠いた成果物）"
+else
+  ok "系列を書けなかったレポートは公開しない"
+fi
+
+# 前回の失敗理由を消す処理（current_review_series_id 冒頭）は、**現状のどの経路からも
+# 観測できない** — 失敗する分岐はすべて理由を書いてから返るので、消さなくても直後に
+# 上書きされる。将来「理由を書かずに返る分岐」が足されたときだけ効く保険で、その分岐が
+# 無いうちは変異が緑になる（実測）。測れないことを記録して残す（黙って外すと、保険が
+# 必要になった回に誰も気づかない）。
+#
+# 3 つ目の原因（プロジェクトルートが消えた・読めない）は、この経路へ**実走では到達
+# できない**: REPO_ROOT は起動時に 1 度だけ解決され、解決できない値だと設定読み込みや
+# diff 取得がこの分岐より先に落ちる（実測）。分岐の実在と文言だけを静的に固定する。
+# 静的検査に落とすのは「測れないので諦める」ではなく、**測れる層と測れない層を分けて
+# どちらも空白にしない**ため（測れない層を黙って落とすと、案内が消えても誰も気づかない）。
+# 針は**中断分岐の案内に固有の文言**で持つ。「ルートが読めない」だけだと、レポート側の
+# 短い診断行にも同じ語が出るので、中断分岐の案内を削っても緑のまま通る（実測）。
+if grep -qF 'The project root is gone or unreadable: ${REPO_ROOT}. Restore it' "$MULTI_AGENT"; then
+  ok "系列を特定できない中断にプロジェクトルート不在の案内がある（静的）"
+else
+  bad "プロジェクトルート不在の案内（中断分岐の復帰手段）が無い"
+fi
+if grep -qF 'record_review_series_failure repo-root' "$MULTI_AGENT"; then
+  ok "プロジェクトルート不在が専用の理由として区別されている（静的）"
+else
+  bad "プロジェクトルート不在が理由として区別されていない"
+fi
+
+# 上の 2 つは「記録する側の文字列」と「案内の文字列」を**別々に**見ているだけなので、
+# case のラベル（repo-root）だけを書き換えると両方の文字列が残ったまま緑で通り、実行時は
+# 黙って `*)` の一般案内へ落ちる（セルフレビューのクロスモデル指摘）。実装から 3 つの
+# 集合／件数を採って、片側だけの書き換え・削除を赤にする。
+#
+# 集合の比較だけでは足りない点が 2 つある:
+#   - 消費側の case は 2 箇所（ガード側とレポート側）あり、**合併**して比べると片方の
+#     ブロックを丸ごと消しても、もう片方からラベルが採れる限り一致し続ける（実測で緑）。
+#     ブロックごとに比べる。
+#   - 同じ理由を記録する地点が複数ある（git-error は 2 箇所）。集合比較では 1 箇所消えても
+#     一致したままなので、**失敗して返る地点の数と記録する地点の数が一致すること**を別に
+#     見る（理由を書かずに返る分岐が増えたら赤になる）。
+#
+# grep の非一致は rc=1 で、`set -euo pipefail` 配下では代入ごと落ちて下の空振り検出
+# （bad）へ到達できない。抽出は必ず `|| true` を通してから空を検出する。
+ALLOWED_REASONS="$({ awk '
+  /^record_review_series_failure\(\)/            { inblk = 1; next }
+  inblk && /^\}/                                 { inblk = 0; next }
+  inblk && match($0, /^[[:space:]]*[a-z][a-z|-]*\)[[:space:]]*:[[:space:]]*;;/) {
+    lbl = substr($0, RSTART, RLENGTH)
+    sub(/^[[:space:]]*/, "", lbl)
+    sub(/\).*$/, "", lbl)
+    n = split(lbl, parts, "|")
+    for (i = 1; i <= n; i++) print parts[i]
+  }
+' "$MULTI_AGENT" || true; } | LC_ALL=C sort -u)"
+CALLED_REASONS="$({ grep -oE 'record_review_series_failure [a-z][a-z-]*;' "$MULTI_AGENT" || true; } \
+  | sed 's/^record_review_series_failure //; s/;$//' | LC_ALL=C sort -u)"
+CONSUMER_ROWS="$({ awk '
+  /case "\$\(review_series_failure_reason\)" in/ { blk++; inblk = 1; next }
+  inblk && /^[[:space:]]*esac/                      { inblk = 0; next }
+  inblk && /^[[:space:]]*\*\)/                      { print blk "\t*"; next }
+  inblk && match($0, /^[[:space:]]*[a-z][a-z-]*\)/) {
+    lbl = substr($0, RSTART, RLENGTH)
+    sub(/^[[:space:]]*/, "", lbl)
+    sub(/\)$/, "", lbl)
+    print blk "\t" lbl
+  }
+' "$MULTI_AGENT" || true; })"
+
+if [[ -z "$ALLOWED_REASONS" || -z "$CALLED_REASONS" || -z "$CONSUMER_ROWS" ]]; then
+  bad "失敗理由の許可値／記録地点／消費側ブロックのいずれかを抽出できない（対応検査が空振りしている）"
+elif [[ "$ALLOWED_REASONS" != "$CALLED_REASONS" ]]; then
+  bad "記録の入口検証が許す理由と、実際に記録している理由が食い違う（許可: $(printf '%s' "$ALLOWED_REASONS" | tr '\n' ' ')/ 記録: $(printf '%s' "$CALLED_REASONS" | tr '\n' ' '))"
+else
+  ok "記録の入口検証が許す理由と、実際に記録している理由が一致する"
+fi
+
+CONSUMER_BLOCKS="$(printf '%s\n' "$CONSUMER_ROWS" | awk -F'\t' 'NF { print $1 }' | LC_ALL=C sort -u)"
+CONSUMER_BLOCK_COUNT="$(printf '%s\n' "$CONSUMER_BLOCKS" | awk 'NF { c++ } END { print c + 0 }')"
+if [[ "$CONSUMER_BLOCK_COUNT" -lt 2 ]]; then
+  bad "理由を消費する case ブロックが ${CONSUMER_BLOCK_COUNT} 箇所しかない（ガード側とレポート側の 2 箇所を期待）"
+else
+  _consumer_mismatch=""
+  _consumer_no_default=""
+  for _blk in $CONSUMER_BLOCKS; do
+    _labels="$(printf '%s\n' "$CONSUMER_ROWS" | awk -F'\t' -v b="$_blk" '$1 == b && $2 != "*" { print $2 }' | LC_ALL=C sort -u)"
+    [[ "$_labels" == "$ALLOWED_REASONS" ]] || _consumer_mismatch="${_consumer_mismatch}${_blk} "
+    if ! printf '%s\n' "$CONSUMER_ROWS" | awk -F'\t' -v b="$_blk" '$1 == b && $2 == "*" { found = 1 } END { exit found ? 0 : 1 }'; then
+      _consumer_no_default="${_consumer_no_default}${_blk} "
+    fi
+  done
+  if [[ -n "$_consumer_mismatch" ]]; then
+    bad "理由を消費する case ブロックのラベルが許可値と食い違う（ブロック: ${_consumer_mismatch%% }）"
+  else
+    ok "理由を消費する ${CONSUMER_BLOCK_COUNT} ブロックすべてが許可値と同じラベルを持つ"
+  fi
+  # 既定アームは「理由を読めなかった回」の受け皿。消費側のどちらかから消えると、その経路
+  # だけ復帰手段がゼロになる（ガード側は実走で固定しているが、レポート側は静的にしか
+  # 見られない — 変異注入で緑を実測したので、ここで塞ぐ）。
+  if [[ -n "$_consumer_no_default" ]]; then
+    bad "理由を消費する case ブロックに既定アームが無い（ブロック: ${_consumer_no_default%% }）"
+  else
+    ok "理由を消費する ${CONSUMER_BLOCK_COUNT} ブロックすべてが既定アームを持つ"
+  fi
+fi
+
+SERIES_FN_BODY="$({ awk '
+  /^current_review_series_id\(\)/ { inblk = 1 }
+  inblk                            { print }
+  inblk && /^\}/                   { inblk = 0 }
+' "$MULTI_AGENT" || true; })"
+SERIES_FAIL_RETURNS="$(printf '%s\n' "$SERIES_FN_BODY" | { grep -oE 'return 1' || true; } | awk 'END { print NR + 0 }')"
+SERIES_RECORDS="$(printf '%s\n' "$SERIES_FN_BODY" | { grep -oE 'record_review_series_failure [a-z][a-z-]*;' || true; } | awk 'END { print NR + 0 }')"
+if [[ "$SERIES_FAIL_RETURNS" -lt 1 ]]; then
+  bad "current_review_series_id の失敗経路を抽出できない（件数検査が空振りしている）"
+elif [[ "$SERIES_FAIL_RETURNS" -eq "$SERIES_RECORDS" ]]; then
+  ok "current_review_series_id は失敗して返る ${SERIES_FAIL_RETURNS} 箇所すべてで理由を記録する"
+else
+  bad "理由を記録せずに失敗して返る分岐がある（失敗 return ${SERIES_FAIL_RETURNS} / 記録 ${SERIES_RECORDS}）"
+fi
+
+# 文書側が 3 分類に追随していること。コード側は分岐ごとに --fresh の可否が変わるので、
+# 文書が 2 分岐のままだと「--fresh は一律の復帰手段」と読める。
+ORCH_DOC="$PLUGIN_ROOT/docs-template/05-operations/deployment/multi-cli-review-orchestration.md"
+if [ ! -f "$ORCH_DOC" ]; then
+  bad "説明文書が見つからない: $ORCH_DOC"
+else
+  # 分類名を文書全体から探すと、同じ語を含む散文（再検証の節）にも一致するので、3 分類表が
+  # 丸ごと消えても緑で通りうる。針は**表の行そのもの**（`| **<分類名>**`）に限定する。
+  # 一律禁止文だけは表の外の地の文なので文書全体から探す。
+  for _needle in '| **残骸は読める**' '| **ファイルを読めない**' '| **系列を作れない**' \
+    '`--fresh` を一律の復帰手段として使わないこと'; do
+    if grep -qF -- "$_needle" "$ORCH_DOC"; then
+      ok "説明文書が 3 分類へ追随している: ${_needle}"
+    else
+      bad "説明文書に 3 分類の記述が無い: ${_needle}"
+    fi
+  done
+  # 3 分類表とは別に、再検証の節（本文側）にも「分類によって --fresh の可否が変わる」記述が
+  # ある。表の側の針だけだと、本文を実装と矛盾する旧記述へ書き戻しても緑で通る。
+  for _prose in 'ファイルを読めない分類と系列を作れない分類では `--fresh` を提示しない' \
+    '案内は両方を名乗って両方の直し方を出す'; do
+    if grep -qF -- "$_prose" "$ORCH_DOC"; then
+      ok "再検証の節が分類ごとの復帰手段に追随している"
+    else
+      bad "再検証の節が分類ごとの復帰手段に追随していない: ${_prose}"
+    fi
+  done
+  # 語句が在るだけでは足りない。**どの分類で --fresh が使えるか**の対応まで固定する
+  # （3 分類の名前と一律禁止文を残したまま、行の復帰手段を --fresh 推奨へ書き換えられる）。
+  for _row in 'ファイルを読めない' '系列を作れない'; do
+    # 無マッチの grep は rc=1。`set -euo pipefail` 配下では代入ごと落ちて、直下の
+    # 「行が無い」bad へ到達できない（表の行を消す変異が無名の中断に化ける）。
+    _line="$({ grep -F -- "| **${_row}**" "$ORCH_DOC" || true; } | head -n 1)"
+    if [ -z "$_line" ]; then
+      bad "3 分類表に「${_row}」の行が無い"
+    elif [[ "$_line" == *'**`--fresh` を使わない**'* ]]; then
+      ok "3 分類表の「${_row}」行が --fresh を使わないと書いている"
+    else
+      bad "3 分類表の「${_row}」行が --fresh を使わないと書いていない（実装と食い違う）"
+    fi
+  done
+  # 表の「系列を作れない」行は、実装と同じ原因の名乗り方（ルート不在は名指し／残り 2 つは
+  # 区別できないので併記）まで書いていること。行の存在だけだと、原因の説明が実装と
+  # 食い違う旧記述へ戻っても緑で通る。
+  _no_series_line="$({ grep -F -- '| **系列を作れない**' "$ORCH_DOC" || true; } | head -n 1)"
+  if [[ "$_no_series_line" == *'区別できない'* ]]; then
+    ok "3 分類表の「系列を作れない」行が、区別できない 2 原因の扱いを書いている"
+  else
+    bad "3 分類表の「系列を作れない」行が原因の名乗り方を実装と同じに書いていない"
+  fi
+  _leftover_line="$({ grep -F -- '| **残骸は読める**' "$ORCH_DOC" || true; } | head -n 1)"
+  if [[ "$_leftover_line" == *'`--fresh`'* ]]; then
+    ok "3 分類表の「残骸は読める」行だけが --fresh を復帰手段として挙げている"
+  else
+    bad "3 分類表の「残骸は読める」行に --fresh の案内が無い"
+  fi
+fi
 
 echo "== Issue #1025: 別系列の残存結果と --fresh =="
 

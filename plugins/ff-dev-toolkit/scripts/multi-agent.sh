@@ -3773,6 +3773,9 @@ remove_run_in_flight() {
 output_lock_exit() {
   local rc=$?
   remove_run_in_flight
+  # 失敗して返った回の理由ファイルはプロセス終了後も残る（削除は
+  # current_review_series_id の冒頭にしかない）。stale 読み取りの種を残さない。
+  rm -f "$(review_series_reason_file)" 2>/dev/null || true
   release_output_lock || {
     [[ "$rc" -ne 0 ]] || rc=1
   }
@@ -3922,15 +3925,82 @@ previous_report_has_critical_marker() { # <report-file>
   fi
 }
 
+# 失敗の理由。呼び出し側は rc=1 だけでは 3 通りを区別できず、案内を「HEAD が解決できる
+# worktree で実行」という一般化した言い方にせざるを得なかった。理由を別チャネルで持たせて、
+# **このリポジトリのどこが解決できていないか**まで案内できるようにする。
+# 値は 2 つに閉じる（repo-root / git-error）。**3 つ目（HEAD だけが壊れている）は作れない** —
+# `.git/HEAD` を壊すと `git symbolic-ref --quiet HEAD` は rc=128 を返し、worktree の外で
+# 走った場合と**区別がつかない**（`git rev-parse --is-inside-work-tree` も同じく 128。実測）。
+# detached の形（rc=1）まで到達した HEAD は 40 桁 hex なので、実在しないオブジェクトでも
+# `rev-parse` は成功する（実測）。したがって git-error の案内は 2 つの原因を両方名乗り、
+# 両方の直し方を出す。
+#
+# **なぜ変数ではなくファイルか**: この関数は常に `$(current_review_series_id)` の形で
+# 呼ばれる（標準出力が戻り値なので、そうとしか呼べない）。コマンド置換はサブシェルなので、
+# そこで代入した変数は呼び出し側へ届かない — アダプタ側の run_with_timeout が失敗理由を
+# ファイルで運んでいるのと同じ理由で、ここも同じ形にする。
+# 実行ごとのトークン。理由ファイルは PID で名前を作るので、クラッシュした前回の残骸と
+# PID が再利用された回、あるいは書き込めない既存ファイルを指した回に、**古い 1 行を今回の
+# 理由として読む**余地がある。内容へトークンを前置し、読む側は一致しない行を捨てる
+# （捨てた回は一般案内へ倒れる — 誤った原因を名乗るより無害）。
+REVIEW_SERIES_REASON_TOKEN="$$-$(date -u +%s 2>/dev/null || echo 0)"
+
+review_series_reason_file() {
+  # テストが隔離した場所を指せるようにする（本番の呼び出しは設定しない）。
+  if [[ -n "${FF_MULTI_AGENT_REVIEW_SERIES_REASON_FILE:-}" ]]; then
+    printf '%s\n' "$FF_MULTI_AGENT_REVIEW_SERIES_REASON_FILE"
+    return 0
+  fi
+  printf '%s\n' "${TMPDIR:-/tmp}/ff-review-series-reason.$$"
+}
+
+review_series_failure_reason() { # stdout: 今回の実行が書いた失敗理由（無ければ空）
+  local f line
+  f="$(review_series_reason_file)"
+  [[ -r "$f" ]] || return 0
+  line="$(head -n 1 "$f" 2>/dev/null || true)"
+  # トークンが一致しない = 今回の実行が書いたものではない（残骸・書き込み失敗）。
+  [[ "$line" == "${REVIEW_SERIES_REASON_TOKEN}:"* ]] || return 0
+  printf '%s\n' "${line#"${REVIEW_SERIES_REASON_TOKEN}":}"
+}
+
+record_review_series_failure() { # <理由>
+  local reason="$1" f
+  # 許可値の検証を入口へ集約する（record_timeout_reason と同じ理由）。任意文字列を
+  # 受けると、typo した理由は消費側の case をすべて素通りして既定アームへ黙って落ち、
+  # 「原因を名乗る」という本機能が痕跡なしに無効化される。
+  case "$reason" in
+    repo-root|git-error) : ;;
+    *)
+      echo "WARNING: record_review_series_failure called with unknown reason '${reason}' (orchestrator bug); not recording it. The guidance falls back to the generic wording." >&2
+      return 0
+      ;;
+  esac
+  f="$(review_series_reason_file)"
+  # 書けなくても呼び出し側の失敗処理は続ける。ただし黙ると原因別案内が一般文言へ
+  # 痕跡なしに退行するので、失敗時は stderr へ 1 行だけ警告する（先行実装と同じ）。
+  if ! printf '%s:%s\n' "$REVIEW_SERIES_REASON_TOKEN" "$reason" > "$f" 2>/dev/null; then
+    echo "WARNING: could not record the review-series failure reason '${reason}' at ${f}; the guidance below falls back to the generic wording." >&2
+  fi
+}
+
 current_review_series_id() {
   local branch scope repo symbolic_ref_rc
-  repo="$(cd "$REPO_ROOT" && pwd -P)" || return 1
+  # 前回の失敗が残っていると、次の成功を失敗として読む呼び出し側が出る。
+  rm -f "$(review_series_reason_file)" 2>/dev/null || true
+  # プロジェクトルートが消えた・読めない。残骸ではなくリポジトリ側の問題。
+  repo="$(cd "$REPO_ROOT" && pwd -P)" || { record_review_series_failure repo-root; return 1; }
   if branch="$(git symbolic-ref --quiet HEAD)"; then
     :
   else
     symbolic_ref_rc=$?
-    [[ "$symbolic_ref_rc" -eq 1 ]] || return 1
-    branch="detached:$(git rev-parse HEAD 2>/dev/null)" || return 1
+    # rc=1 は「detached HEAD」（正常な状態）。それ以外は git 側のエラーで、
+    # worktree の外で走っている場合が代表。
+    [[ "$symbolic_ref_rc" -eq 1 ]] || { record_review_series_failure git-error; return 1; }
+    # ここへ来る HEAD は 40 桁 hex なので、実在しないオブジェクトでも rev-parse は
+    # 成功する（実測）。失敗は git 側の異常なので、上と同じ分類にする。
+    branch="detached:$(git rev-parse HEAD 2>/dev/null)" \
+      || { record_review_series_failure git-error; return 1; }
   fi
   if [[ "$STAGED_DIFF" == "true" ]]; then scope="staged"; else scope="branch"; fi
   # This is an accidental-mixing guard, not an authentication boundary. POSIX
@@ -4186,7 +4256,23 @@ capture_and_guard_unresolved_critical_state() {
       # unreadable. A repository with no commits is NOT one of them — HEAD is an
       # unborn branch there and symbolic-ref still resolves it.
       echo "ERROR: cannot identify the current review series." >&2
-      echo "       Run from inside the repository worktree, with the project root still present and HEAD resolvable, then retry." >&2
+      # 理由ごとに直す場所が違う。一般化した案内だと「自分の状況に当てはまるのか」が
+      # 読み手に判断できない。
+      case "$(review_series_failure_reason)" in
+        repo-root)
+          echo "       The project root is gone or unreadable: ${REPO_ROOT}. Restore it (or run from a checkout that still has it), then retry." >&2
+          ;;
+        git-error)
+          # この 2 つは git の側から区別できない（どちらも rc=128。実測）ので、両方名乗って
+          # 両方の直し方を出す。片方だけ書くと、もう片方を踏んだ利用者が「自分の話ではない」
+          # と読んで手が止まる。
+          echo "       git cannot read HEAD here. Two causes look identical from git: this run is not inside a git worktree, or the worktree's .git/HEAD is corrupt." >&2
+          echo "       Run it from inside the repository worktree; if you are already there, repair .git/HEAD (for example, check out a branch or a known commit), then retry." >&2
+          ;;
+        *)
+          echo "       Run from inside the repository worktree, with the project root still present and HEAD resolvable, then retry." >&2
+          ;;
+      esac
       echo "       --fresh does not help here: the failure is in the current repository state, not in the leftover report." >&2
       echo "       Previous results were left untouched: ${report_file}" >&2
       return 1
@@ -4402,9 +4488,28 @@ guard_outstanding_delegations() {
 # ここは運ぶだけで**内容を見ない**。「このプロンプトへの応答か」「レビュー本文として
 # 成立しているか」の判定はアダプタ側（delegate_task）に 1 箇所だけ置く — 同じ判定を
 # 2 箇所に置くと、片方だけ緩めた回に受理条件が静かにずれる。
+# 委譲レビューのレーン（PreToolUse hook が置く凍結レーン）を解放する。
+# あの経路のレーンは、終端イベントに相関 ID が無いため agent 系イベントでは閉じられない。
+# **回収の到達そのものが「委譲したレビューは終わった」という宣言**なので、ここが唯一の
+# 確定的な解放点になる。ここで消さないと、3 分のレビューのあと未対応レーンの寿命
+# （既定 1800 秒）まで編集が凍結され、「正常完了」が「手で拒否された起動」と同じ扱いになる。
+# レーンの形式は hook 側の正本に合わせる（`perspectives=delegated-review` を持つ *.lane）。
+release_delegated_review_lanes() {
+  local lane_dir lane
+  lane_dir="${OUTPUT_DIR}/.review-in-flight.d"
+  [[ -d "$lane_dir" ]] || return 0
+  for lane in "$lane_dir"/*.lane; do
+    [[ -f "$lane" ]] || continue
+    grep -qx 'perspectives=delegated-review' "$lane" 2>/dev/null || continue
+    rm -f "$lane" 2>/dev/null || true
+  done
+  return 0
+}
+
 collect_delegated_responses() {
   [[ "$DELEGATE_TO_HOST" == "true" ]] || return 0
   local entry cli persp dir src dst collected=0 names=""
+  release_delegated_review_lanes
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
     cli="${entry%%:*}"
@@ -5866,6 +5971,7 @@ print_delegation_handoff() {
     persp="${task#*/}"
     req="$(delegate_dir_for "$cli")/${persp}.request"
     printf '%s\n' '--- task ---'
+    printf 'FF-REVIEW-DELEGATED: %s\n' "$(delegate_dir_for "$cli")/${persp}.prompt.md"
     if [[ -r "$req" ]]; then
       cat "$req"
     else
@@ -6100,6 +6206,13 @@ HEADER
   state_nonblock="${state_nonblock% }"
   state_series="$(current_review_series_id)" || {
     echo "ERROR: cannot identify the current review series for the report." >&2
+    case "$(review_series_failure_reason)" in
+      repo-root)       echo "       The project root is gone or unreadable: ${REPO_ROOT}." >&2 ;;
+      git-error)       echo "       git cannot read HEAD here — this run is not inside a git worktree, or .git/HEAD is corrupt (the two are indistinguishable from git)." >&2 ;;
+      # 理由を読めなかった回（記録に失敗した / 別実行の残骸だった）。原因は名乗れないが、
+      # 復帰手段まで消すと利用者に次の一手が残らない。ガード側の既定アームと同じ文言を出す。
+      *)               echo "       Run from inside the repository worktree, with the project root still present and HEAD resolvable, then retry." >&2 ;;
+    esac
     rm -f "$report_file" 2>/dev/null || true
     return 1
   }
@@ -6454,6 +6567,16 @@ main() {
       echo "     ${delegated_entry}" >&2
     done
     echo "   1) Run each prompt below in this host's own session (read-only; do not touch the worktree)." >&2
+    echo "      Keep the line 'FF-REVIEW-DELEGATED: <prompt-file>' AT THE START OF ITS OWN LINE in" >&2
+    echo "      the prompt you hand to the subagent, with the prompt-file path exactly as printed" >&2
+    echo "      below. The review-in-flight guard identifies this path by what is handed over, not" >&2
+    echo "      by subagent type (a generic type is used here), and freezes edits while the review" >&2
+    echo "      runs. It requires the line anchor and an existing prompt file, so a mention of the" >&2
+    echo "      marker inside prose does not freeze anything. Dropping the line only loses that" >&2
+    echo "      guard; the review still works." >&2
+    echo "      The lane is released when the launch is denied, or by its own age limit — a" >&2
+    echo "      subagent-stop event carries no correlation id, so a generic type cannot be matched" >&2
+    echo "      back to this review without risking the release of someone else's lane." >&2
     echo "   2) Write each result to the output-file path named with it." >&2
     echo "   3) Re-run this command WITH --resume to adopt them and regenerate the report." >&2
     echo "      --resume is not optional here beyond saving the other lanes' work: without it this" >&2

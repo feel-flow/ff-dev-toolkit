@@ -69,7 +69,7 @@ cat > CLAUDE.md << 'EOF'
 
 ## 🚨 必須: 作業開始前にMASTER.mdを必ず参照
 
-**このプロジェクトで作業を開始する前に、必ず `docs-template/MASTER.md` を読み、内容を理解してください。**
+**このプロジェクトで作業を開始する前に、必ず `docs/MASTER.md` を読み、内容を理解してください。**
 
 ## プロジェクトコンテキスト
 
@@ -89,7 +89,7 @@ cat > CLAUDE.md << 'EOF'
 ```
 
 1. CLAUDE.md を確認（このファイル）
-2. docs-template/MASTER.md を読み込む
+2. docs/MASTER.md を読み込む
 3. プロジェクトの技術スタックと要件を理解
 4. 実装優先順位を確認（Phase 1: MVP → Phase 2: 拡張 → Phase 3: 最適化）
 5. コーディング規約を理解
@@ -152,7 +152,7 @@ Claude Codeは、ドキュメント生成やコード生成時に**情報が不�
 - 定数化: 業務上意味のある値・変更対象の値を推奨し合意
 - エラーハンドリング: 例外／Result型などを比較して合意
 
-詳細は `docs-template/MASTER.md` の「情報不足時の必須確認プロトコル」を参照。
+詳細は `docs/MASTER.md` の「情報不足時の必須確認プロトコル」を参照。
 
 ---
 
@@ -179,7 +179,7 @@ Claude Codeは、ドキュメント生成やコード生成時に**情報が不�
 | ディレクトリ（docs） | 数字-英語小文字  | `01-context`, `02-design`          |
 | ファイル（docs）     | 英語大文字.md    | `MASTER.md`, `ARCHITECTURE.md`     |
 
-詳細は `docs-template/03-implementation/CONVENTIONS.md` を参照
+詳細は `docs/03-implementation/CONVENTIONS.md` を参照
 
 ## アーキテクチャパターン
 
@@ -216,7 +216,7 @@ Claude Codeは、ドキュメント生成やコード生成時に**情報が不�
 ### コード生成時
 
 ```
-このプロジェクトで作業を開始する前に、docs-template/MASTER.mdの内容を確認し、以下の点を理解してください：
+このプロジェクトで作業を開始する前に、docs/MASTER.mdの内容を確認し、以下の点を理解してください：
 - 技術スタック（TypeScript、React、Node.js等）
 - コード生成ルール（型安全性、エラーハンドリング等）
 - 禁止事項（any型、マジックナンバー等）
@@ -228,7 +228,7 @@ Claude Codeは、ドキュメント生成やコード生成時に**情報が不�
 ### 設計レビュー時
 
 ```
-docs-template/ARCHITECTURE.mdの内容に基づいて、以下の設計案をレビューしてください：
+docs/02-design/ARCHITECTURE.mdの内容に基づいて、以下の設計案をレビューしてください：
 - Clean Architectureの原則に従っているか
 - レイヤー間の依存関係は適切か
 - セキュリティ要件を満たしているか
@@ -240,7 +240,7 @@ docs-template/ARCHITECTURE.mdの内容に基づいて、以下の設計案をレ
 ### テストコード生成時
 
 ```
-docs-template/TESTING.mdのテスト戦略に従って、以下の機能のユニットテストを生成してください：
+docs/04-quality/TESTING.mdのテスト戦略に従って、以下の機能のユニットテストを生成してください：
 - AAA pattern (Arrange-Act-Assert) を使用
 - モックを適切に設定
 - エッジケースをカバー
@@ -395,13 +395,13 @@ gh issue create --repo "$expected_repo" --title "fix: 問題の説明" --body "�
 
 ## 参照ドキュメント
 
-- `docs-template/MASTER.md` - プロジェクト概要とルール
-- `docs-template/01-context/PROJECT.md` - ビジネス要件
-- `docs-template/02-design/ARCHITECTURE.md` - 技術アーキテクチャ
-- `docs-template/02-design/DOMAIN.md` - ビジネスロジック
-- `docs-template/03-implementation/PATTERNS.md` - 実装パターン
-- `docs-template/04-quality/TESTING.md` - テスト戦略
-- `docs-template/05-operations/DEPLOYMENT.md` - デプロイメント手順
+- `docs/MASTER.md` - プロジェクト概要とルール
+- `docs/01-context/PROJECT.md` - ビジネス要件
+- `docs/02-design/ARCHITECTURE.md` - 技術アーキテクチャ
+- `docs/02-design/DOMAIN.md` - ビジネスロジック
+- `docs/03-implementation/PATTERNS.md` - 実装パターン
+- `docs/04-quality/TESTING.md` - テスト戦略
+- `docs/05-operations/DEPLOYMENT.md` - デプロイメント手順
 
 ---
 

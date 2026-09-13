@@ -67,15 +67,23 @@
 #                   ただし --dry-run はこのシムの codex 実在検査を素通りして常に委譲する
 #                   （--dry-run がこの rc=4 で止まることは無い）
 #               その他 = 委譲先の終了コードをそのまま返す。codex が PATH に無い環境の
-#                   --dry-run は、他の AI CLI の有無に関わらず委譲先（multi-agent.sh）が
-#                   rc=1 で停止し `🏁 Dry run complete.` には到達しない。帰結は同じ rc=1
-#                   でも原因は 2 通りあり、委譲先のメッセージで読み分ける:
+#                   --dry-run は、残りの AI CLI の構成で 3 通りに分かれる:
+#                     ・codex が不在で、委譲先の pair 主 reviewer（既定 claude-code。
+#                       --set-reviewers / MULTI_AGENT_REVIEW_MAIN で変わる）が導入済み
+#                       → rc=0。プランは出る。このシムは固定で足している
+#                          `--cli codex-cli` を**この回だけ外して**委譲する。`--cli` は
+#                          委譲先では分散モードのフィルタなので、外すと review の既定
+#                          である pair モードへ戻り、主 reviewer が review 観点すべてを
+#                          担当するプランになって `🏁 Dry run complete.` まで到達する。
+#                          表示されるのは `multi-agent.sh --task review` と同じプラン
+#                          であって、このシムを --dry-run なしで実行したときの
+#                          プランではない（実行は従来どおり rc=4 で止まる）
+#                     ・codex が不在で、pair 主 reviewer も導入されていない（例: grok だけ）
+#                       → rc=1。`ERROR: main reviewer '<名前>' is not installed.` で止まる。
+#                          プランは出ない（主を導入するか --set-reviewers で変える）
 #                     ・AI CLI が 1 本も PATH に無い
-#                       → `ERROR: No AI CLIs are installed`（CLI の導入前に止まる）
-#                     ・codex だけが不在で他の AI CLI は PATH にある
-#                       → `ERROR: Execution plan is empty — nothing would be reviewed`
-#                          （このシムが固定で足す `--cli codex-cli` が codex-cli の
-#                          fallback 再割り当てを除外するため実行対象が 0 件になる）
+#                       → rc=1。委譲先の CLI 検出が `ERROR: No AI CLIs are installed`
+#                          で止まり `🏁 Dry run complete.` には到達しない
 #     **リテラル `1` のみ**を見る。`true` / `yes` では走る。既存の各プロジェクト実装と
 #     同じ挙動で、値の解釈を広げると「どの値なら効くのか」が実装ごとに分かれるため、
 #     互換のまま狭く保つ。判断の記録であって、うっかりではない。
@@ -599,6 +607,9 @@ STAGED_GIVEN=0
 # --dry-run。委譲先はプランを出すだけで CLI を 1 本も起動しないので、CLI の実在を
 # 要求するゲートはこのモードでは掛けない（下の codex 実在検査で参照する）。
 DRY_RUN_GIVEN=0
+# 利用者が `--exclude-cli codex-cli` を渡したか。下の codex 実在検査で、固定の
+# `--cli codex-cli` を外す対象からこの回を除くために見る。
+EXCLUDE_CODEX_GIVEN=0
 
 append_review_context_file() {
   local context_file="$1" context_bytes context
@@ -788,10 +799,15 @@ while [ $# -gt 0 ]; do
       # このシムは `--cli codex-cli` を固定で足すため、`--exclude-cli codex-cli` は
       # multi-agent.sh 側の矛盾検査で非 0 になる — それが正しい帰結なので、ここで
       # 先回りして別のメッセージを出すことはしない（判定の正本を 2 つにしない）。
+      # **この帰結は codex の有無で変わらない**: 下の codex 実在検査は `--dry-run` の回に
+      # 固定の `--cli` を落とすが、`--exclude-cli codex-cli` が渡っている回は落とさない
+      # （EXCLUDE_CODEX_GIVEN）。落とすと、同じコマンドが codex の導入状況で「矛盾エラー」
+      # と「プラン表示」に分かれ、利用者から見て意味が環境依存になる。
       if [ $# -lt 2 ] || [ -z "$2" ]; then
         echo "ERROR: --exclude-cli には CLI 名が必要です（例: --exclude-cli grok-cli）。" >&2
         exit 2
       fi
+      [ "$2" = "codex-cli" ] && EXCLUDE_CODEX_GIVEN=1
       ORCH_ARGS+=(--exclude-cli "$2")
       shift 2
       ;;
@@ -801,6 +817,7 @@ while [ $# -gt 0 ]; do
         echo "ERROR: --exclude-cli には CLI 名が必要です（例: --exclude-cli grok-cli）。" >&2
         exit 2
       fi
+      [ "$_val" = "codex-cli" ] && EXCLUDE_CODEX_GIVEN=1
       ORCH_ARGS+=(--exclude-cli "$_val")
       shift
       ;;
@@ -1250,25 +1267,64 @@ fi
 # 起動しないため、ここで止めると「主 CLI が使えないときにプランを確認する」という、まさに
 # 確認したい状況で確認手段そのものが消える（導入先の運用手順はプランに載る CLI の事前確認を
 # 求めている）。非実行モードでは警告に留め、実行モードでは従来どおり降格して rc=4 で止める。
-# （この判断は「シムが握りつぶさない」ことまでで、委譲先までプランが届くかは別。下記の実測を見る）
 #
-# 「続行する」の範囲はこのシムの codex 実在検査を通過することだけであり、委譲先
-# （multi-agent.sh）が実際にプランを表示することまでは保証しない。実測（--dry-run・
-# codex 不在）では、他の AI CLI の有無に関わらず委譲先が rc=1 で止まりプランは出ない:
-#   ・AI CLI が 1 本も無い  → 委譲先の CLI 検出が `ERROR: No AI CLIs are installed`
-#   ・codex だけが不在      → このシムが固定で足す `--cli codex-cli` が codex-cli の
-#                              fallback 再割り当て（claude-code 等）を除外するので
-#                              実行対象が 0 件になり `ERROR: Execution plan is empty`
-# 以下の警告文は、この 2 つを「同じ rc=1・原因違い」として読み分けられる書き方に
-# すること（片方だけを書くと、もう片方の利用者が原因を取り違える）。
+# **素通りさせるだけではプランは出ない。** このシムは委譲 argv へ `--cli codex-cli` を固定で
+# 足しており、codex が不在だと委譲先はその観点を fallback 先（claude-code 等）へ再割り当て
+# しようとして `--cli` フィルタに弾かれ、実行対象 0 件で `ERROR: Execution plan is empty`
+# （rc=1）で止まる。検査を素通りさせた分の効果が、固定 argv でそのまま打ち消されていた。
+# そこで **この回だけ `--cli codex-cli` を外して**委譲する。外す条件は「--dry-run かつ
+# codex が不在」に閉じており、実行モードと codex 導入済みの --dry-run は argv も rc も従来
+# どおりである。
+#
+# `--cli` は委譲先では**分散モードのフィルタ**なので、外すと review の既定である pair
+# モードへ戻る。表示されるのは `multi-agent.sh --task review` と同じプラン（pair の主
+# reviewer が review 観点すべてを担当する形）であって、**このシムを --dry-run なしで
+# 実行したときのプランではない** — 実行は従来どおり rc=4 で止まる。プランと実行の帰結が
+# 食い違うので、下の警告文はその 2 点を必ず併記すること（片方だけだと「プランが出たの
+# だから実行できる」と読める）。
+#
+# 外してもプランが出ない構成が 2 つあり、rc=1 の理由が違う。どちらも本分岐では直せない
+# ので、警告文で読み分けられるようにする:
+#   ・pair 主 reviewer（既定 claude-code）が未導入  → `ERROR: main reviewer '<名前>' is
+#     not installed.`（例: grok だけが入っている環境）
+#   ・AI CLI が 1 本も無い                          → `ERROR: No AI CLIs are installed`
 _codex_bin="${CODEX_REVIEW_CODEX_BIN:-codex}"
 if ! command -v -- "$_codex_bin" >/dev/null 2>&1; then
-  if [ "$DRY_RUN_GIVEN" -eq 1 ]; then
-    echo "WARNING: codex CLI（${_codex_bin}）が PATH にありませんが、--dry-run はこの検査を素通りしてそのまま委譲します。" >&2
-    echo "         ただし委譲先（multi-agent.sh）は rc=1 で停止し、レビュー対象の載ったプランは表示されません（完了行まで到達しません）。原因は 2 通りです。" >&2
-    echo "         ・AI CLI が 1 本も PATH に無い場合: 委譲先の CLI 検出が「No AI CLIs are installed」で止まります。" >&2
-    echo "         ・codex だけが不在で他の AI CLI がある場合: このシムが固定で足す --cli codex-cli が codex-cli の fallback 再割り当てを除外するため、実行対象 0 件で「Execution plan is empty」で止まります。" >&2
-    echo "         プランの表示にもレビューの実行にも codex の導入（または CODEX_REVIEW_CODEX_BIN の修正）が要ります。別 CLI のプランを見るだけなら multi-agent.sh を直接呼んで --cli を指定してください。" >&2
+  if [ "$DRY_RUN_GIVEN" -eq 1 ] && [ "$EXCLUDE_CODEX_GIVEN" -eq 0 ]; then
+    # 固定で足した `--cli codex-cli` の 2 要素だけを落とす。利用者は --cli を渡せない
+    # （このシムはオプションとして受け付けない）ので、落とす対象は先頭の 1 組に限られる。
+    # `--exclude-cli codex-cli` が渡っている回は落とさない（上の解釈分岐を参照）。
+    _orch_kept=()
+    _orch_i=0
+    _orch_dropped=0
+    while [ "$_orch_i" -lt "${#ORCH_ARGS[@]}" ]; do
+      if [ "$_orch_dropped" -eq 0 ] \
+        && [ "${ORCH_ARGS[$_orch_i]}" = "--cli" ] \
+        && [ "$((_orch_i + 1))" -lt "${#ORCH_ARGS[@]}" ] \
+        && [ "${ORCH_ARGS[$((_orch_i + 1))]}" = "codex-cli" ]; then
+        _orch_dropped=1
+        _orch_i=$((_orch_i + 2))
+        continue
+      fi
+      _orch_kept+=("${ORCH_ARGS[$_orch_i]}")
+      _orch_i=$((_orch_i + 1))
+    done
+    if [ "$_orch_dropped" -eq 1 ]; then
+      ORCH_ARGS=("${_orch_kept[@]}")
+    fi
+    echo "WARNING: codex CLI（${_codex_bin}）が PATH にありませんが、--dry-run はこの検査を素通りして委譲します。" >&2
+    echo "         このとき固定の --cli codex-cli を外して委譲します（付けたままだと codex-cli の観点の fallback 再割り当てが --cli フィルタで除外され、実行対象 0 件の「Execution plan is empty」で止まってプランが出ません）。" >&2
+    echo "         --cli は委譲先では分散モードのフィルタなので、外すと review の既定である pair モードへ戻ります。表示されるのは multi-agent.sh --task review と同じプラン（pair の主 reviewer が review 観点すべてを担当する形）です。" >&2
+    echo "         このシムを --dry-run なしで実行すると、従来どおり codex 不在で rc=4 停止します（プランが出たことは実行できることを意味しません）。" >&2
+    echo "         実行するには codex の導入（または CODEX_REVIEW_CODEX_BIN の修正）が要ります。表示されたプランをそのまま走らせるなら multi-agent.sh を直接呼んでください。" >&2
+    echo "         プランが出ない構成が 2 つあり、rc=1 の理由が違います。pair の主 reviewer（既定 claude-code）が未導入なら「main reviewer '<名前>' is not installed.」で止まります（例: grok だけが入っている環境。--set-reviewers で主を変えられます）。" >&2
+    echo "         AI CLI が 1 本も PATH に無い環境では、--cli を外しても委譲先の CLI 検出が「No AI CLIs are installed」で止まります（rc=1・プランなし）。" >&2
+  elif [ "$DRY_RUN_GIVEN" -eq 1 ]; then
+    # --dry-run だが --exclude-cli codex-cli が渡っている回。固定の --cli は残すので、
+    # 委譲先の矛盾検査が rc=1 で止める（codex の有無に関わらず同じ帰結）。
+    echo "WARNING: codex CLI（${_codex_bin}）が PATH にありませんが、--dry-run はこの検査を素通りして委譲します。" >&2
+    echo "         ただし --exclude-cli codex-cli が渡っているため、固定の --cli codex-cli は外しません。委譲先の矛盾検査（--cli と --exclude-cli が同じ CLI 名）が rc=1 で止めます。" >&2
+    echo "         この帰結は codex の導入状況で変わりません（同じコマンドの意味を環境で変えないため）。プランを見たいなら --exclude-cli codex-cli を外してください。" >&2
   else
     print_claude_fallback_notice "codex CLI（${_codex_bin}）が PATH に無い" 1
     exit 4

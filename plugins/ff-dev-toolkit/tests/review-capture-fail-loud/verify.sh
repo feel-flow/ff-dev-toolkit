@@ -1245,6 +1245,128 @@ else
 fi
 rm -rf "$DELEG_OUT/d.md"
 
+# 「書けたが読み戻しが一致しない」経路。書き込み失敗（122 → 125）とは残っている状態が
+# 違う（無い vs 在るが違う）ので、専用の分類と文言を持つ。実走で作るには、成果物を
+# 書いた**直後に**中身が変わる状況が要る — 出力先を、書いた内容とは違うものを返す形へ
+# 差し替える（別の書き手・部分書き込み・ヘッダー書式の食い違いの代理）。
+# この状態（成果物は在るが読み戻しが一致しない）は、**別の書き手**や部分書き込みで起きる。
+# 通常の入力では作れない — 成果物はヘッダー + 本文で書かれ、読み戻しはその逆を行うので、
+# 素直な入力では必ず一致する（この検査は外からの干渉に対する防御である）。
+# そこで干渉そのものを決定的に作る: 成果物を所定のパスへ publish する `mv` をシムにして、
+# **publish した直後に 1 行足す**。別の書き手が割り込んだのと同じ状態になる。
+# **固定しているのは原因ではなく分類と文言**（書けなかった / 書けたが違う）で、干渉の
+# 作り方は状態を作る手段にすぎない。
+MVSTUB="$TMP/mv-stub"
+mkdir -p "$MVSTUB"
+_real_mv="$(command -v mv)"
+cat > "$MVSTUB/mv" <<MVSHIM
+#!/usr/bin/env bash
+# 本物の mv を通したあと、宛先が観測対象の成果物なら 1 行足す（別の書き手の代理）。
+"$_real_mv" "\$@" || exit \$?
+for _d in "\$@"; do :; done
+if [ "\$_d" = "$DELEG_OUT/d.md" ] && [ -f "\$_d" ]; then
+  printf '%s\n' "<!-- injected by another writer -->" >> "\$_d"
+  : > "$TMP/mv-stub-fired"
+fi
+exit 0
+MVSHIM
+chmod +x "$MVSTUB/mv"
+printf '%s\n' "$ZERO_REPORT" > "$DELEG_DIR/perspective.response.md"
+rm -rf "$DELEG_OUT/d.md"
+rm -f "$TMP/mv-stub-fired"
+set +e
+( cd "$REPO" && run_isolated PATH="$MVSTUB:$STUB:$PATH" FF_TEST_STUB_PAYLOAD="$TMP/payload-zero.txt" \
+    bash "$ADAPTERS_DIR/claude-code-adapter.sh" "$PERSPECTIVE" "$DELEG_OUT/d.md" \
+    --base develop --timeout 30 --task-type review \
+    --delegate-dir "$DELEG_DIR" ) >"$TMP/deleg-readback.log" 2>&1
+DELEG_READBACK_RC=$?
+set -e
+# 干渉が実際に起きたことを先に確かめる。これが無いと、シムが発火しなかった回・別の
+# 要因で 121 へ入った回が、同じ文言と応答の残存だけで緑になる（vacuous green）。
+if [ -f "$TMP/mv-stub-fired" ]; then
+  ok "委譲: 干渉（publish 後の追記）が実際に起きた"
+else
+  bad "委譲: 干渉のシムが発火していない（読み戻し不一致の検査が成立していない）"
+fi
+# 食い違いの**両側**が残ること。文言が「両方残した」と言う以上、成果物側も測る。
+if [ -f "$DELEG_OUT/d.md" ] && grep -qF '<!-- injected by another writer -->' "$DELEG_OUT/d.md"; then
+  ok "委譲: 読み戻し不一致の回も成果物を上書きしない（注入された内容がそのまま残る）"
+else
+  bad "委譲: 成果物が通常ファイルとして残っていない、または注入内容が消えた（証拠が片側だけになる）"
+fi
+if [ "$DELEG_READBACK_RC" -eq 125 ]; then
+  ok "委譲: 読み戻しが一致しない回も 125（orchestrator 起因）で落ちる"
+else
+  bad "委譲: 読み戻し不一致の rc が 125 でない (rc=${DELEG_READBACK_RC})"
+  tail -10 "$TMP/deleg-readback.log" | sed 's/^/    | /' >&2
+fi
+if grep -qF 'does not give the response that was adopted' "$TMP/deleg-readback.log" \
+   && grep -qF 'the artifact IS there — it is its content that disagrees' "$TMP/deleg-readback.log"; then
+  ok "委譲: 読み戻し不一致は「成果物は在るが内容が違う」と名乗る"
+else
+  bad "委譲: 読み戻し不一致が専用の文言で報告されていない（fail_output_readback へ分岐していない）"
+  tail -10 "$TMP/deleg-readback.log" | sed 's/^/    | /' >&2
+fi
+if grep -qF 'No artifact was left there' "$TMP/deleg-readback.log"; then
+  bad "委譲: 読み戻し不一致が「成果物は残らなかった」という事実と違う理由で報告されている"
+else
+  ok "委譲: 読み戻し不一致が書き込み失敗の文言を流用しない"
+fi
+if grep -qF 'cannot hand the' "$TMP/deleg-readback.log"; then
+  bad "委譲: 読み戻し不一致が「ホストへ渡せなかった」という誤った理由で報告されている"
+else
+  ok "委譲: 読み戻し不一致が汎用の orchestrator 失敗へ落ちていない"
+fi
+if [ -f "$DELEG_DIR/perspective.response.md" ]; then
+  ok "委譲: 読み戻しが一致しなくてもホストの応答を消さない（食い違いの両側を残す）"
+else
+  bad "委譲: 読み戻し不一致の回がホストの応答を消した（証拠が片側だけになる）"
+fi
+# 応答ファイルのパスを名指しすること（次の一手がそこを見に行くため）
+if grep -qF "$DELEG_DIR/perspective.response.md" "$TMP/deleg-readback.log"; then
+  ok "委譲: 読み戻し不一致の報告がホストの応答のパスを名指しする"
+else
+  bad "委譲: 読み戻し不一致の報告が応答のパスを名指ししない"
+fi
+# publish 後に成果物が**空になる**干渉。分類（読み戻し検証の失敗）は同じでも残っている
+# 状態が違うので、名乗りも変わらなければならない（「在るが内容が違う」と言うと、次の一手
+# 「そのファイルの中身を見る」が空振りする）。
+# なお**消える**側はここへ来ない — write_output の publish 後検査（通常ファイルの実在）が
+# 先に捕まえて書き込み失敗として名乗る。読み戻しへ到達するのは「通常ファイルとしては
+# 在るが中身が期待と違う」場合だけで、空・不可読はその中の区別である。
+cat > "$MVSTUB/mv" <<MVSHIM2
+#!/usr/bin/env bash
+"$_real_mv" "\$@" || exit \$?
+for _d in "\$@"; do :; done
+if [ "\$_d" = "$DELEG_OUT/d.md" ] && [ -f "\$_d" ]; then
+  : > "\$_d"
+  : > "$TMP/mv-stub-fired-gone"
+fi
+exit 0
+MVSHIM2
+chmod +x "$MVSTUB/mv"
+printf '%s\n' "$ZERO_REPORT" > "$DELEG_DIR/perspective.response.md"
+rm -rf "$DELEG_OUT/d.md"
+rm -f "$TMP/mv-stub-fired-gone"
+set +e
+( cd "$REPO" && run_isolated PATH="$MVSTUB:$STUB:$PATH" FF_TEST_STUB_PAYLOAD="$TMP/payload-zero.txt" \
+    bash "$ADAPTERS_DIR/claude-code-adapter.sh" "$PERSPECTIVE" "$DELEG_OUT/d.md" \
+    --base develop --timeout 30 --task-type review \
+    --delegate-dir "$DELEG_DIR" ) >"$TMP/deleg-gone.log" 2>&1
+DELEG_GONE_RC=$?
+set -e
+if [ ! -f "$TMP/mv-stub-fired-gone" ]; then
+  bad "委譲: 空化の干渉が起きていない（この経路の検査が成立していない）"
+elif [ "$DELEG_GONE_RC" -eq 125 ] \
+  && grep -qF 'the artifact is there but EMPTY' "$TMP/deleg-gone.log" \
+  && ! grep -qF 'it is its content that disagrees' "$TMP/deleg-gone.log"; then
+  ok "委譲: publish 後に成果物が空になった回は「空になった」と名乗る（「内容が違う」と言わない）"
+else
+  bad "委譲: 成果物が空になった回の報告が実態と食い違う (rc=${DELEG_GONE_RC})"
+  tail -8 "$TMP/deleg-gone.log" | sed 's/^/    | /' >&2
+fi
+rm -f "$DELEG_DIR/perspective.response.md"
+
 echo "== orchestrator 側の 125 分類（並列・逐次の両回収経路） =="
 
 # 125 は「壊れているのは CLI ではなくこちら側（出力先・ラッパー）」の意味で、素の
