@@ -13,8 +13,23 @@
 # 見ること（`&&` / `||` / `|` / `;` / 改行のいずれで連結しても、また `then` / `elif` /
 # `else` 前置のセグメントでも素通りしない）、実体の消えた（prunable）worktree 登録を live と数えないこと、そして残る既知の誤警告
 # （npm --prefix /abs のようにオプション側で絶対化する形）を固定する。あわせて警告が
-# ブロックでないこと（permissionDecision を出さない）を固定し、hooks.json の
-# PreToolUse 登録を静的照合する。
+# 出力チャネルが経路で分かれること（linked worktree あり かつ 先頭が相対 cd →
+# エージェントへ届く deny / それ以外 → ブロックしない systemMessage の警告）を固定し、
+# hooks.json の PreToolUse 登録を静的照合する。
+#
+# 変異検出（届くチャネルへの切り替え）:
+#           deny 分岐を外して systemMessage のみへ戻すと 9 件が赤。
+#           相対 cd の条件を外して経路 B 全体を deny にする（面を広げる）と 22 件が赤。
+#           前置（環境変数・サブシェル・env）の剥がし後ではなく生の command で判定すると 2 件が赤。
+#           オプション（`cd -P /abs` / `cd -L /abs`）を相対と誤判定すると 2 件が赤。
+#           区切り（`;` / `&&`）を越えて次の語を引数と読むと 3 件が赤。
+#           deny のラベルを警告へ戻すと 1 件が赤。
+#           deny の締めへ警告用の文（「ブロックしません」）を流用すると 2 件が赤
+#           — 届けたい唯一のチャネルの中で「止めていない」と自称する形（レビューで実測）。
+#           絶対パス・コマンド置換・変数展開を相対と誤判定すると 6 件が赤。
+#           良性: 改行の切り落としだけを外しても緑、空白読み飛ばしを [[:space:]] へ戻すだけでも緑。
+#           この 2 つは同じ危険（`cd<改行><次行>` を相対 cd と読む）を独立に塞ぐ冗長化で、
+#           **両方を同時に外すと 1 件が赤**になる。検査は実装の片側ではなく振る舞いを固定している。
 #
 # run-all-required: no — jq / git 不在での skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。既存の Bash ガード suite と同じ扱い）
 set -euo pipefail
@@ -150,6 +165,7 @@ run_hook() { # <command> <cwd> [background:true|false|absent] [env NAME=VALUE]
   fi
   MESSAGE="$(printf '%s' "$OUT" | jq -r '.systemMessage // empty' 2>/dev/null || true)"
   DECISION="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)"
+  REASON="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)"
 }
 
 assert_warn() { # <label>
@@ -157,6 +173,17 @@ assert_warn() { # <label>
     ok "$1"
   else
     bad "$1: exit=$RC decision=[$DECISION] out=[$OUT]"
+  fi
+}
+
+# deny（エージェントへ届く警告）。systemMessage しか出ない形は「利用者の画面にだけ出て
+# エージェントには届かない」状態そのものなので、reason の非空と systemMessage の不在を
+# 対で見る（片方だけだと、両方出す折衷へ変えても緑のまま通る）。
+assert_deny() { # <label>
+  if [ "$RC" -eq 0 ] && [ "$DECISION" = "deny" ] && [ -n "$REASON" ] && [ -z "$MESSAGE" ]; then
+    ok "$1"
+  else
+    bad "$1: exit=$RC decision=[$DECISION] reason_len=${#REASON} message_len=${#MESSAGE} out=[$OUT]"
   fi
 }
 
@@ -273,6 +300,96 @@ if [ "$PRUNE_READY" -eq 1 ]; then
   assert_silent "実体の消えた（prunable）登録しか無い repo は無音（git worktree prune 前でも鳴らさない）"
 else
   bad "prunable fixture を作れませんでした（prunable 除外が未検査のまま緑になるのを防ぐため失敗にします）"
+fi
+
+echo "guard-background-cwd: 経路 B かつ相対 cd はエージェントへ届く deny にする"
+# systemMessage は利用者向けの表示チャネルで、行動を変えるべきエージェントには届かない
+# （導入先で実測: 経路 B の発火条件を満たす相対 cd の呼び出しが、続く 2 呼び出しの
+# no such file or directory に化けたが、エージェント側には警告が 1 行も出なかった）。
+# 兄弟ガード 3 本が既に採っている deny + permissionDecisionReason へ寄せる。
+# 面は広げない — deny にするのは「linked worktree あり かつ 先頭が相対 cd」だけで、
+# cd を含まない呼び出しと経路 A のみの呼び出しは従来どおり非ブロックの警告のまま。
+if [ "$WT_READY" -eq 1 ]; then
+  run_hook 'cd docs/notes && npm test' "$WTMAIN" false
+  assert_deny "経路 B + 相対 cd: エージェントへ届く deny を返す"
+  case "$REASON" in
+    *"絶対パス"*"cd"*"再実行"*) ok "経路 B + 相対 cd: reason が「絶対パスの cd で再実行」を案内する" ;;
+    *) bad "経路 B + 相対 cd: reason に再実行の案内が無い: [$REASON]" ;;
+  esac
+  case "$REASON" in
+    *"linked worktree"*) ok "経路 B + 相対 cd: reason が linked worktree の存在を名指しする" ;;
+    *) bad "経路 B + 相対 cd: reason に linked worktree が無い: [$REASON]" ;;
+  esac
+  case "$REASON" in
+    *FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD*) ok "経路 B + 相対 cd: reason が opt-out を案内する" ;;
+    *) bad "経路 B + 相対 cd: reason に opt-out の案内が無い: [$REASON]" ;;
+  esac
+  run_hook 'cd ../other-tree && npm test' "$WTLINKED" false
+  assert_deny "経路 B + 相対 cd: cwd が linked worktree 側でも deny"
+
+  # 面を広げないこと（AC2）。deny になるのは相対 cd で始まる形だけ。
+  run_hook 'npm test' "$WTMAIN" false
+  assert_warn "経路 B + cd 無し: 従来どおり非ブロックの警告のまま"
+  run_hook 'bash scripts/patch.sh' "$WTMAIN" false
+  assert_warn "経路 B + 相対スクリプト実行（cd で始まらない）: 警告のまま"
+  run_hook 'cd' "$WTMAIN" false
+  assert_warn "経路 B + 引数なしの cd: 相対パス指定ではないので警告のまま"
+  run_hook 'cd -- sub && npm test' "$WTMAIN" false
+  assert_deny "経路 B + cd -- <相対>: 区切りを剥がして相対と判定する"
+
+  # deny の理由文が自分の効果を正しく名乗ること。警告用の締め（「ブロックしません」
+  # 「そのまま実行して構いません」）を流用すると、**届けたい唯一のチャネルの中で**
+  # 止めていないと自称することになり、同じ呼び出しの再実行と opt-out 探索を誘発する
+  # （レビューで実測）。抜け道の案内は残す — 案内の無い deny は詰まりになる。
+  run_hook 'cd docs/notes && npm test' "$WTMAIN" false
+  case "$REASON" in
+    *"ブロックしません"* | *"そのまま実行して構いません"*)
+      bad "deny の reason が警告用の締めを流用している（止めていないと自称する）: [$REASON]" ;;
+    *) ok "deny の reason は警告用の締め（ブロックしません）を含まない" ;;
+  esac
+  case "$REASON" in
+    *"ブロックしました"*) ok "deny の reason が自分の効果（ブロックした）を名乗る" ;;
+    *) bad "deny の reason が効果を名乗っていない: [$REASON]" ;;
+  esac
+  case "$REASON" in
+    *"・警告）"*) bad "deny の reason が警告ラベルのまま: [$REASON]" ;;
+    *) ok "deny の reason は拒否ラベルを使う" ;;
+  esac
+
+  # 前置の剥がしを経た判定であること（`head_cmd` ではなく生の command で判定すると
+  # これらが deny から落ちる）。
+  run_hook 'FOO=1 cd docs && npm test' "$WTMAIN" false
+  assert_deny "経路 B + 環境変数前置 + 相対 cd: 前置を剥がして deny"
+  run_hook '(cd docs && npm test)' "$WTMAIN" false
+  assert_deny "経路 B + サブシェル前置 + 相対 cd: 前置を剥がして deny"
+
+  # 面を広げない側（AC2）。ここが緑のまま広がると、警告なら読み飛ばせた誤検知が
+  # **コマンドの停止**へ昇格する。
+  run_hook 'cd -P /abs && npm test' "$WTMAIN" false
+  assert_warn "経路 B + オプション付き絶対 cd（cd -P /abs）: deny へ倒さない"
+  run_hook 'cd -L /abs && npm test' "$WTMAIN" false
+  assert_warn "経路 B + cd -L /abs: deny へ倒さない"
+  run_hook 'cd - && npm test' "$WTMAIN" false
+  assert_warn "経路 B + cd -（OLDPWD）: 相対パス指定ではないので deny へ倒さない"
+  run_hook 'cd && npm test' "$WTMAIN" false
+  assert_warn "経路 B + 引数なし cd + 区切り: 区切りを越えて次の語を引数と読まない"
+  run_hook 'cd ; npm test' "$WTMAIN" false
+  assert_warn "経路 B + cd ; <後続>: 区切りを越えない"
+  run_hook 'cd -- && npm test' "$WTMAIN" false
+  assert_warn "経路 B + cd -- <引数なし>: パス引数が無いので deny へ倒さない"
+  run_hook "$(printf 'cd\nnpm test')" "$WTMAIN" false
+  assert_warn "経路 B + cd <改行> <後続>: 改行を越えて次行を引数と読まない"
+
+  # heredoc 本文は deny 面に入れない（本文の最初の実効行は警告の判定にだけ使う）。
+  run_hook "$(printf "bash -e <<'EOF'\ncd docs/notes\nnpm test\nEOF")" "$WTMAIN" false
+  assert_warn "経路 B + heredoc 本文が相対 cd: deny 面には入れず警告のまま"
+else
+  bad "worktree fixture を作れませんでした（deny 経路が未検査のまま緑になるのを防ぐため失敗にします）"
+fi
+
+if [ -d "$MONO" ]; then
+  run_hook 'cd packages/app && npm test' "$MONO" true
+  assert_warn "経路 A のみ（linked worktree 無し）+ 相対 cd: deny へ倒さず警告のまま"
 fi
 
 echo "guard-background-cwd: 経路 A と B が同時に立つ場合（モノレポ + linked worktree）"

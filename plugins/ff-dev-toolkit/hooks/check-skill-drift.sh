@@ -1,5 +1,24 @@
 #!/usr/bin/env bash
 
+# stdin は **上限付きで**読み切ってから ASDD ゲートへ入る（契約 (c)。正本は
+# hooks/asdd-hook-gate.sh）。ゲートの早期終了は exit 0 なので、ゲートを先に置くと
+# 「読まずに exit 0」する経路ができ、書き手（ホスト）が EPIPE / SIGPIPE を受ける
+# （パイプバッファ 65536 バイト超で実測）。SessionStart の実ペイロードは今は小さいが、
+# 免除は denylist であり後から足す hook を無審査で通すので、読み切る側で揃える。
+#
+# 上限を付けるのは、**閉じない stdin（対話端末・パイプを開いたまま書かないホスト）で
+# 無限に待たないため**。無上限の `read -d ''` は EOF が来るまで戻らず、実測では
+# 3 本とも 6 秒経っても戻らなかった（上限付きなら 0.1 秒台で抜ける）。上限は本 hook の
+# 登録 timeout（hooks.json: 5 秒）より十分小さい値に置く。本 hook は自分の処理だけで
+# 実測 3.9 秒（登録 timeout の 79%）を使うため、上限は 1 秒に置いている — 上限が timeout を
+# 超えるとホストの kill が先に来て、その kill が drain の防いでいる EPIPE を渡す。
+#
+# `cat` を使わないのは、PATH が空・壊れた環境で command not found となり
+# stdin 未読のまま exit 0 する経路がそこから開くため。
+FF_STDIN_BOUND_SECONDS=1
+input=""
+IFS= read -r -t "$FF_STDIN_BOUND_SECONDS" -d '' input || true
+
 # ASDD 2.0: disabled optional hooks do not prompt, block, or mutate.
 if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
   echo 'ff-dev-toolkit: ASDD Hook helper is unavailable; optional hook skipped' >&2

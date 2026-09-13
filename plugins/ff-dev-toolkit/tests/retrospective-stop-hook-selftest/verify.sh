@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONSUMER="$PLUGIN_ROOT/tests/retrospective-stop-hook/verify.sh"
-EXPECTED_CONSUMER_CHECKS=63
+EXPECTED_CONSUMER_CHECKS=69
 
 command -v perl >/dev/null 2>&1 || { echo "○ skip: perl が無いため retrospective Stop hook self-test をスキップ"; exit 0; }
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
@@ -216,6 +216,39 @@ ROOT="$(make_fixture context-off-guard)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'case "$MODE" in' 2
 perl -0pi -e 's/case "\$MODE" in/case "auto" in/g' "$ROOT/hooks/retrospective-context.sh"
 check_mutation "事前注入の off ガード削除" "context hook も RETROSPECTIVE_MODE=off なら無効" "$ROOT"
+
+# 事前注入が載せるスキル本文の絶対パス。散文の針だけでは、実行される側（パスを組む分岐と
+# JSON エスケープ）を外す変異が緑で通る。倒れ方が「パスを足したつもりで注入契約ごと失う」
+# 向きなので、6 分岐すべてを常設の変異で固定する。
+ROOT="$(make_fixture context-skill-path-default-removed)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" '%s%s"}}' 2
+perl -0pi -e 's/read-only\. %s%s"\}\}\\n. "\$FILING_CLAUSE" "\$SKILL_PATH_CLAUSE"\n\nexit 0/read-only. %s"}}\\n\x27 "\$FILING_CLAUSE"\n\nexit 0/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "既定分岐からスキル経路を削除" "事前注入（__unset__）のスキル経路が不正" "$ROOT"
+
+ROOT="$(make_fixture context-skill-path-ask-removed)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" '%s%s"}}' 2
+perl -0pi -e 's/read-only\. %s%s"\}\}\\n. "\$FILING_CLAUSE" "\$SKILL_PATH_CLAUSE"\n    exit 0/read-only. %s"}}\\n\x27 "\$FILING_CLAUSE"\n    exit 0/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "ask 分岐からスキル経路を削除" "事前注入（ask）のスキル経路が不正" "$ROOT"
+
+ROOT="$(make_fixture context-skill-path-backslash-unescaped)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" '_ff_escaped="${_ff_skill_file//\\/\\\\}"' 1
+perl -0pi -e 's/_ff_escaped="\$\{_ff_skill_file\/\/\\\\\/\\\\\\\\\}"/_ff_escaped="\${_ff_skill_file}"/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "スキル経路のバックスラッシュ非エスケープ" "敵対的な root でスキル経路が壊れた" "$ROOT"
+
+ROOT="$(make_fixture context-skill-path-quote-unescaped)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" '_ff_escaped="${_ff_escaped//\"/\\\"}"' 1
+perl -0pi -e 's/_ff_escaped="\$\{_ff_escaped\/\/\\"\/\\\\\\"\}"/_ff_escaped="\${_ff_escaped}"/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "スキル経路の引用符非エスケープ" "敵対的な root でスキル経路が壊れた" "$ROOT"
+
+ROOT="$(make_fixture context-skill-path-cntrl-guard-removed)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" '*[[:cntrl:]]*) : ;;' 1
+perl -0pi -e 's/\*\[\[:cntrl:\]\]\*\) : ;;/*__never_matches__*) : ;;/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "スキル経路の制御文字ガード削除" "制御文字を含む root で注入が壊れた" "$ROOT"
+
+ROOT="$(make_fixture context-skill-path-existence-removed)"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'if [ -f "$_ff_skill_file" ]; then' 1
+perl -0pi -e 's/if \[ -f "\$_ff_skill_file" \]; then/if true; then/' "$ROOT/hooks/retrospective-context.sh"
+check_mutation "スキル経路の実在検査削除" "スキル経路の fallback が不正" "$ROOT"
 
 # Issue #840: 非対話 codex exec の判定そのもの。判定を外す（常に注入する）と消費側の
 # スキップ検査が赤くなること = 変異赤化の常設実測。
@@ -621,7 +654,7 @@ if [ "$JOB_N" -gt "$RETRO_JOBS" ] && [ "$_retro_waits" -eq 0 ]; then
 fi
 
 # 件数は名前付き定数で持つ（このファイルは EXPECTED_CONSUMER_CHECKS で既にその慣習）。
-EXPECTED_MUTATIONS=43
+EXPECTED_MUTATIONS=49
 EXPECTED_BENIGN=2
 if [ "$MUTATIONS" -ne "$EXPECTED_MUTATIONS" ]; then
   echo "✗ mutation 実行数が不正: ${MUTATIONS}（期待 ${EXPECTED_MUTATIONS}）" >&2

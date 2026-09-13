@@ -11,7 +11,8 @@
 #
 # 判定は単純な共起（マーカーあり かつ Issue 参照なし）なので誤検出はありうる。
 # したがってブロックではなく警告が趣旨だが、PreToolUse には「実行を許しつつ
-# agent に警告文を見せる」チャネルが無い（additionalContext 非対応）ため、
+# agent に警告文を見せる」チャネル（`additionalContext`）は無い。届くのは
+# `permissionDecision: "deny"` の `permissionDecisionReason` だけなので、警告は
 # 抜け道付きの deny（= 再実行可能な警告）として実装する。抜け道:
 #   - 本文に Issue 参照（`#<数字>` / GitHub Issue URL）を書く
 #   - 起票不要の正当な判断は `<!-- no-followup: 理由 -->`（理由は必須）を本文へ書く

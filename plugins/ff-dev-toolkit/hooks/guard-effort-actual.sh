@@ -34,8 +34,9 @@
 # （落とさないとマーカーが一致せず、集計器が `planned_only` として静かに落とす
 # 本文こそガードが素通ししてしまう）。
 #
-# PreToolUse には「実行を許しつつ agent に警告文を見せる」チャネルが無い
-# （additionalContext 非対応）ため、停止は**抜け道付きの deny**として実装する。
+# PreToolUse には「実行を許しつつ agent に警告文を見せる」チャネル（`additionalContext`）は
+# 無い。届くのは `permissionDecision: "deny"` の `permissionDecisionReason` だけなので、
+# 停止は**抜け道付きの deny**として実装する。
 # 抜け道は deny の本文で必ず案内する（案内の無い deny は詰まりになる）:
 #   - 対象コマンドの先頭に環境代入 `FF_EFFORT_ACTUAL_ACK=1` を付ける
 #     （文字列としてコマンド中に現れるだけでは無効。コマンド位置の

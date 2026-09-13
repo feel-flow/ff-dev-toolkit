@@ -1,0 +1,5 @@
+# Git Workflow: 状態を変える複数行の手順とプロンプト特殊文字は heredoc / ファイル経由
+# （観測台帳 OBS-092 から昇格）。ヒアドキュメント経由を要求する規則そのものが消えると、
+# 特殊文字を含む文字列が素のコマンド行へ載り、シェルがそれを解釈して事故になる。
+contains	05-operations/deployment/git-workflow.md	プロンプト等の特殊文字（バッククォート・`$VAR`・条件展開）を含む文字列はヒアドキュメントで一時ファイルに書いてから渡す	Git Workflow が特殊文字を含む文字列をヒアドキュメント経由で渡す規則を持つ
+contains	05-operations/deployment/git-workflow.md	状態を変える複数行の手順は `bash -e <<'EOF' … EOF` の形で Bash ツールへ渡し	Git Workflow が状態を変える複数行の手順を quoted heredoc で bash に渡す規則を持つ

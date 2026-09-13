@@ -7,8 +7,9 @@
 # 「未コミット変更のあるファイル」への `git checkout [--] <path>` /
 # `git restore <path>` を検出したら permissionDecision "deny" +
 # 代替手段（cp バックアップ / git stash push → pop）の案内で止める。
-# PreToolUse には「実行を許しつつ agent に警告文を見せる」チャネルが無い
-# （additionalContext 非対応）ため、警告は再実行可能な deny として実装する。
+# PreToolUse には「実行を許しつつ agent に警告文を見せる」チャネル（`additionalContext`）は
+# 無い。届くのは `permissionDecision: "deny"` の `permissionDecisionReason` だけなので、
+# 警告は再実行可能な deny として実装する。
 # 意図的な破棄は、対象 git コマンドの先頭に環境代入 FF_DISCARD_UNCOMMITTED=1 を
 # 付ければ素通しする（文字列としてコマンド中に現れるだけでは無効）。
 #

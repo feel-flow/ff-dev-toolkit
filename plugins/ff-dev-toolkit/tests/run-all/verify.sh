@@ -752,6 +752,201 @@ if [ "$MBCS_SELFTEST_OK" -eq 1 ]; then
 fi
 
 echo ""
+echo "== case 44: hooks.json 登録 hook の stdin drain 契約 =="
+
+HOOKDRAIN_PLUGIN_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
+# 契約の正本は hooks/asdd-hook-gate.sh の "stdin contract" 節。読まない hook を免除しないのは、
+# 免除が denylist になり後から足した hook を無審査で通すため。判定対象は hooks.json の登録
+# コマンドから導出し、検査側に hook 名を書かない（名簿で守らない = AC の要求）。
+# 実装の正本は tests/lib/hook-stdin-drain.sh。
+# shellcheck source=../lib/hook-stdin-drain.sh
+. "$SCRIPT_DIR/../lib/hook-stdin-drain.sh"
+
+# 検出器の自己検証。契約に反する形を 1 つずつ足した写しで**赤になること**を先に測る。
+# 変異の一覧はレビューで実測した偽陰性（検出器が緑にしてしまう形）をそのまま並べたもので、
+# どれか 1 つでも緑へ戻ると、その形の契約違反が無審査で通る。
+HOOKDRAIN_FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/ff-hook-drain.XXXXXX" 2>&1)" || HOOKDRAIN_FIXTURE=""
+if [ -z "$HOOKDRAIN_FIXTURE" ] || [ ! -d "$HOOKDRAIN_FIXTURE" ]; then
+  bad "case 44: 一時領域を作成できず、drain 契約の検出力を実測できません: $HOOKDRAIN_FIXTURE"
+else
+  mkdir -p "$HOOKDRAIN_FIXTURE/hooks"
+  cp "$HOOKDRAIN_PLUGIN_ROOT/hooks/hooks.json" "$HOOKDRAIN_FIXTURE/hooks/hooks.json.orig"
+  for _hd_src in "$HOOKDRAIN_PLUGIN_ROOT"/hooks/*.sh; do cp "$_hd_src" "$HOOKDRAIN_FIXTURE/hooks/"; done
+
+  # 登録を 1 件足す（$1 = command 文字列）
+  hookdrain_register() {
+    cp "$HOOKDRAIN_FIXTURE/hooks/hooks.json.orig" "$HOOKDRAIN_FIXTURE/hooks/hooks.json"
+    FF_HD_CMD="$1" python3 - "$HOOKDRAIN_FIXTURE/hooks/hooks.json" <<'HOOKJSON'
+import io, json, os, sys
+p = sys.argv[1]
+d = json.load(io.open(p, encoding="utf-8"))
+d.setdefault("hooks", {}).setdefault("SessionStart", []).append(
+    {"hooks": [{"type": "command", "command": os.environ["FF_HD_CMD"]}]})
+io.open(p, "w", encoding="utf-8").write(json.dumps(d, ensure_ascii=False, indent=2))
+HOOKJSON
+  }
+  # 変異 1 件を測る（$1 = ラベル / $2 = 期待 rc / $3 = 期待診断の部分文字列）
+  hookdrain_expect() {
+    local label="$1" want_rc="$2" needle="$3" out got
+    out="$(ff_hook_stdin_drain_scan "$HOOKDRAIN_FIXTURE" 2>&1)" && got=0 || got=$?
+    case "$got:$out" in
+      "$want_rc":*"$needle"*) ok "case 44: $label" ;;
+      *) bad "case 44: ${label}（rc=${got} 期待 ${want_rc}）: $out" ;;
+    esac
+  }
+
+  cp "$HOOKDRAIN_FIXTURE/hooks/hooks.json.orig" "$HOOKDRAIN_FIXTURE/hooks/hooks.json"
+  hookdrain_expect "未変異の対照は緑（変異の赤を対照と区別できる）" 0 "INSPECTED"
+
+  # 走査件数は固定床ではなく hooks.json の実体と突き合わせる。固定床（-ge N）は、
+  # 「走査から漏れた 1 本 + 契約違反 1 本」を同時に吸収して緑にする（レビューで実測）。
+  HOOKDRAIN_EXPECTED="$(jq -r '.hooks // {} | to_entries[] | .value[]? | .hooks[]? | .command // empty' \
+    "$HOOKDRAIN_FIXTURE/hooks/hooks.json" | awk '{ n=split($(0),w,/[[:space:]]+/); for(i=1;i<=n;i++){ gsub(/["\047]/,"",w[i]); if (w[i] ~ /\.sh$/) { sub(/.*\//,"",w[i]); print w[i]; break } } }' | sort -u | wc -l | tr -d ' ')"
+  HOOKDRAIN_OUT="$(ff_hook_stdin_drain_scan "$HOOKDRAIN_FIXTURE" 2>&1)" && HOOKDRAIN_RC=0 || HOOKDRAIN_RC=$?
+  HOOKDRAIN_COUNT="$(printf '%s\n' "$HOOKDRAIN_OUT" | awk -F'\t' '/^INSPECTED/ { print $2 }')"
+  if [ "$HOOKDRAIN_RC" -eq 0 ] && [ -n "$HOOKDRAIN_COUNT" ] && [ "$HOOKDRAIN_COUNT" -eq "$HOOKDRAIN_EXPECTED" ]; then
+    ok "case 44: 走査本数が hooks.json の登録実体と一致する（${HOOKDRAIN_COUNT} 本・固定床で吸収しない）"
+  else
+    bad "case 44: 走査本数が実体と不一致（走査 ${HOOKDRAIN_COUNT:-0} / 実体 ${HOOKDRAIN_EXPECTED} / rc=${HOOKDRAIN_RC}）: $HOOKDRAIN_OUT"
+  fi
+
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh" || exit 0' \
+    > "$HOOKDRAIN_FIXTURE/hooks/ff-probe.sh"
+  hookdrain_register 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/ff-probe.sh"'
+  hookdrain_expect "drain の無い hook を 1 本足すと赤（名簿ではなく列挙で守られている）" 1 "drain がありません"
+
+  hookdrain_register 'bash ${CLAUDE_PLUGIN_ROOT}/hooks/ff-probe.sh --flag'
+  hookdrain_expect "無引用 + 引数付きの登録も検査対象になる（黙って除外しない）" 1 "drain がありません"
+
+  hookdrain_register 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/ff-probe-missing.sh"'
+  hookdrain_expect "実在しないファイルの登録は走査不成立（rc=2）" 2 "実在しません"
+
+  hookdrain_register 'node --eval "process.exit(0)"'
+  hookdrain_expect "hook ファイルを解決できない登録形は走査不成立（rc=2）" 2 "解決できません"
+
+  hookdrain_register 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/ff-probe.sh"'
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'input=""'
+    printf '%s\n' "IFS= read -r -d x input || true"
+    printf '%s\n' 'source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh" || exit 0'
+  } > "$HOOKDRAIN_FIXTURE/hooks/ff-probe.sh"
+  hookdrain_expect "区切りが非空の read（read -d x）は drain と認めない" 1 "drain がありません"
+
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'while IFS= read -r -d "" f; do :; done < <(find . -maxdepth 0 -print0)'
+    printf '%s\n' 'source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh" || exit 0'
+  } > "$HOOKDRAIN_FIXTURE/hooks/ff-probe.sh"
+  hookdrain_expect "リダイレクト付きの read（stdin を読んでいない）は drain と認めない" 1 "drain がありません"
+
+  {
+    printf '%s\n' '#!/usr/bin/env bash' "cat <<'DOC'"
+    printf '%s\n' "IFS= read -r -d '' input || true"
+    printf '%s\n' 'DOC' 'source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh" || exit 0'
+  } > "$HOOKDRAIN_FIXTURE/hooks/ff-probe.sh"
+  hookdrain_expect "heredoc 本文の read（実行されない）は drain と認めない" 1 "drain がありません"
+
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'GATE="${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"'
+    printf '%s\n' 'source "$GATE" || exit 0' 'input=""'
+    printf '%s\n' "IFS= read -r -d '' input || true"
+  } > "$HOOKDRAIN_FIXTURE/hooks/ff-probe.sh"
+  hookdrain_expect "変数経由で source してもゲート位置を見失わない" 1 "より後にあります"
+
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'input="$(cat)"'
+    printf '%s\n' 'source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh" || exit 0'
+  } > "$HOOKDRAIN_FIXTURE/hooks/ff-probe.sh"
+  hookdrain_expect "cat による drain は契約 (a) 違反として名指しする" 1 "cat を使っています"
+
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'input=""'
+    printf '%s\n' "IFS= read -r -d '' input || true"
+  } > "$HOOKDRAIN_FIXTURE/hooks/ff-probe.sh"
+  hookdrain_expect "ゲート言及の無い hook は緑にしない" 1 "ゲートへの言及がありません"
+
+  # 正当な旗順・結合旗を誤って赤にしない（偽陽性側）
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'input=""'
+    printf '%s\n' "IFS= read -rd '' input || true"
+    printf '%s\n' 'source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh" || exit 0'
+  } > "$HOOKDRAIN_FIXTURE/hooks/ff-probe.sh"
+  hookdrain_expect "結合旗（read -rd ''）は正当な drain として通す" 0 "INSPECTED"
+
+  rm -f "$HOOKDRAIN_FIXTURE/hooks/hooks.json"
+  hookdrain_expect "hooks.json が読めない回は走査不成立（rc=2）で止まる" 2 "SCAN-ERROR"
+  rm -rf "$HOOKDRAIN_FIXTURE"
+fi
+
+# 契約 (c): 上限付き drain は「閉じない stdin でも必ず終わる」ことを買っている。
+# 無上限（-t 無し）の read は EOF まで戻らないので、対話端末やパイプを開いたまま書かない
+# ホストで hook が固まり、ホストの timeout kill まで持ち時間を使い切る（実測 6.1s / 上限付きは
+# 0.1s 台）。実 hook を起動すると副作用（ネットワーク照会・キャッシュ書き込み）を踏むので、
+# drain の形だけを写した fixture で終了保証を測り、実 hook 側は上限の宣言を静的に確かめる。
+HOOKBOUND_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ff-hook-bound.XXXXXX" 2>&1)" || HOOKBOUND_DIR=""
+if [ -z "$HOOKBOUND_DIR" ] || [ ! -d "$HOOKBOUND_DIR" ]; then
+  bad "case 44: 一時領域を作成できず、上限付き drain の終了保証を実測できません: $HOOKBOUND_DIR"
+else
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'FF_STDIN_BOUND_SECONDS=1' 'input=""'
+    printf '%s\n' "IFS= read -r -t \"\$FF_STDIN_BOUND_SECONDS\" -d '' input || true"
+    printf '%s\n' 'exit 0'
+  } > "$HOOKBOUND_DIR/bounded.sh"
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'input=""'
+    printf '%s\n' "IFS= read -r -d '' input || true"
+    printf '%s\n' 'exit 0'
+  } > "$HOOKBOUND_DIR/unbounded.sh"
+
+  # 閉じない stdin を与え、上限の 3 倍の猶予で戻るかを見る（戻らなければ kill して赤）。
+  hookbound_probe() { # <script> -> 戻れば 0 / 固まれば 1
+    bash "$1" < <(sleep 9) >/dev/null 2>&1 &
+    local pid=$! waited=0
+    while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 3 ]; do sleep 1; waited=$((waited + 1)); done
+    if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 1; fi
+    wait "$pid" 2>/dev/null
+    return 0
+  }
+  if hookbound_probe "$HOOKBOUND_DIR/bounded.sh"; then
+    ok "case 44: 上限付き drain は閉じない stdin でも上限内に終わる（契約 (c) の終了保証）"
+  else
+    bad "case 44: 上限付き drain が閉じない stdin で戻りません（上限が効いていない）"
+  fi
+  if hookbound_probe "$HOOKBOUND_DIR/unbounded.sh"; then
+    bad "case 44: 無上限 drain が閉じない stdin で戻りました（対照が成立せず、上の検査は終了保証を測れていません）"
+  else
+    ok "case 44: 無上限 drain は閉じない stdin で戻らない（上限の有無が実際に効いている対照）"
+  fi
+  rm -rf "$HOOKBOUND_DIR"
+fi
+
+# 実 hook 側: SessionStart の 3 本が上限を宣言していること（無上限へ戻す変更を止める）。
+# 値そのものは登録 timeout との突き合わせを行わないので契約文では規範扱い（asdd-hook-gate.sh）。
+HOOKBOUND_MISSING=""
+for _hb in check-update check-skill-drift auto-update-marketplace; do
+  if ! awk '/^[[:space:]]*#/ { next } /read[[:space:]]+-r[[:space:]]+-t[[:space:]]/ { found = 1 } END { exit !found }' \
+    "$HOOKDRAIN_PLUGIN_ROOT/hooks/${_hb}.sh"; then
+    HOOKBOUND_MISSING="${HOOKBOUND_MISSING}${_hb} "
+  fi
+done
+if [ -z "$HOOKBOUND_MISSING" ]; then
+  ok "case 44: SessionStart の 3 本は上限付きで読む（無上限へ戻すと赤）"
+else
+  bad "case 44: 上限の宣言が無い hook があります: ${HOOKBOUND_MISSING}"
+fi
+
+# live: 実体の hooks.json に登録された全 hook が契約を満たす
+HOOKDRAIN_LIVE="$(ff_hook_stdin_drain_scan "$HOOKDRAIN_PLUGIN_ROOT" 2>&1)" && HOOKDRAIN_LIVE_RC=0 || HOOKDRAIN_LIVE_RC=$?
+HOOKDRAIN_LIVE_EXPECTED="$(jq -r '.hooks // {} | to_entries[] | .value[]? | .hooks[]? | .command // empty' \
+  "$HOOKDRAIN_PLUGIN_ROOT/hooks/hooks.json" | awk '{ n=split($(0),w,/[[:space:]]+/); for(i=1;i<=n;i++){ gsub(/["\047]/,"",w[i]); if (w[i] ~ /\.sh$/) { sub(/.*\//,"",w[i]); print w[i]; break } } }' | sort -u | wc -l | tr -d ' ')"
+HOOKDRAIN_LIVE_COUNT="$(printf '%s\n' "$HOOKDRAIN_LIVE" | awk -F'\t' '/^INSPECTED/ { print $2 }')"
+if [ "$HOOKDRAIN_LIVE_RC" -eq 0 ] && [ -n "$HOOKDRAIN_LIVE_COUNT" ] && [ "$HOOKDRAIN_LIVE_COUNT" -eq "$HOOKDRAIN_LIVE_EXPECTED" ]; then
+  ok "case 44: 登録 hook ${HOOKDRAIN_LIVE_COUNT} 本すべてが stdin を読み切る契約を満たす（live）"
+else
+  bad "case 44: live の drain 契約が不正（rc=${HOOKDRAIN_LIVE_RC} / 走査 ${HOOKDRAIN_LIVE_COUNT:-0} / 実体 ${HOOKDRAIN_LIVE_EXPECTED}）: $HOOKDRAIN_LIVE"
+fi
+
 echo "== case 35: パイプ終端の終了コード誤読の再混入ガード =="
 
 # `cmd | head -20; echo "EXIT=$?"` は head の終了コードを読むため、非 0 で終わった実行が

@@ -1,0 +1,6 @@
+# Git Workflow: 長時間ゲート開始前の並行セッション実測（観測台帳 OBS-014 から昇格）。
+# 並行マージの静止確認は、同じ作業ツリーで動く別セッション（untracked ファイル・
+# 別ブランチへの checkout）を検出しない。節の消失と、実測コマンドを削って散文だけ
+# 残す骨抜きの両方を固定文字列で検出する。
+contains	05-operations/deployment/git-workflow.md	並行マージの静止確認と並べて、同じ作業ツリーで動く並行セッションの実測も行う	長時間ゲート開始前の節が並行セッション実測を並行マージの静止確認と並べて要求する
+contains	05-operations/deployment/git-workflow.md	git worktree list --porcelain`、`git branch --show-current` で、別セッションが同じ作業ツリーへ untracked ファイルを書き込んでいないか・別ブランチへ checkout していないかを確認する	長時間ゲート開始前の節が具体的な実測コマンドと検出対象を明記している

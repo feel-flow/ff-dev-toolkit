@@ -1127,6 +1127,9 @@ else
   # org スコープの未登録名を実行時に組み立てる（本ファイルは検査対象そのもので、
   # リテラルで置くと live 検査に当たる）。
   SCOPED_UNLISTED="$(printf '%s-%s/%s' 'feel' 'flow' 'internal-only')"
+  # percent-encoded な `/`（%2F）。非公開リポジトリ名をソースへ固定しないため、
+  # 同じ組み立て方で実行時に作る（形 2）。
+  SCOPED_UNLISTED_ENC="$(printf '%s-%s%%2F%s' 'feel' 'flow' 'internal-only')"
 
   # 12-17. 未登録の org スコープ URL を file:line で名指しして止める
   # （AC: denylist に載っていない非公開リポジトリの URL でも非 0 になること）
@@ -1322,6 +1325,126 @@ else
   expect_refs_only "追加行の org スコープ API URL だけを止め、既存行の同型は通す" 1 \
     "plugins/ff-dev-toolkit/doc.md:3" "plugins/ff-dev-toolkit/doc.md:1" \
     refs_run "$F_API"
+
+  # 12-29〜12-33. 綴りを変えるだけで抜けられた 3 形。
+  # 従来は (1) ホストを書かない `gh api repos/<owner>/<repo>` (2) 末尾ドット
+  # FQDN と percent-encoded な識別子 (3) raw.githubusercontent.com が未検出だった。
+  # 塞ぎ方の性質が違うので実装は 2 層に分けてある: (2)(3) は抽出前の正規化層で畳み、
+  # (1) は `gh` のサブコマンド行に限定した別検出器。
+
+  # 12-29. gh コマンド行の引数形（ホストを書かない綴り）
+  U_GH_HIT="$TMP/unreachable-gh-hit"
+  mkdir -p "$U_GH_HIT"
+  {
+    printf '%s\n' "取得は gh api repos/${SCOPED_UNLISTED}/issues --jq .title で行う。"
+    printf '%s\n' "API パス形の gh api /repos/${SCOPED_UNLISTED} も同じ識別子。"
+    printf '%s\n' "引用付きの gh api \"repos/${SCOPED_UNLISTED}/issues\" も同じ。"
+    printf '%s\n' "他リポジトリ指定の gh issue list --repo ${SCOPED_UNLISTED} も同じ識別子。"
+    printf '%s\n' "短縮形の gh pr list -R ${SCOPED_UNLISTED} も同じ。"
+    printf '%s\n' "位置引数形の gh repo view ${SCOPED_UNLISTED} も同じ。"
+  } > "$U_GH_HIT/doc.md"
+  expect_hit_reason "gh コマンド行の引数形（ホストなし）を file:line で名指しして止める" \
+    "doc.md:1" "到達できない" run_check --scan-dir "$U_GH_HIT"
+  expect_hit "gh api の API パス形（先頭スラッシュ）も同じ規則で止める" "doc.md:2" \
+    run_check --scan-dir "$U_GH_HIT"
+  expect_hit "gh api の引用付き引数も同じ規則で止める" "doc.md:3" \
+    run_check --scan-dir "$U_GH_HIT"
+
+  # 12-30. 12-29 の対。誤検出の面を広げないこと — 任意の `repos/a/b` を拾うと
+  # 公開対象の実測で 39 箇所に当たる（gh 行限定なら 4 箇所で、すべて外部 owner か
+  # プレースホルダ）。gh 以外のコマンド行・リポジトリを指さない API パス・
+  # 外部 owner・許可名・語の一部（myrepos/）は 1 件も止めない。
+  U_GH_OK="$TMP/unreachable-gh-ok"
+  mkdir -p "$U_GH_OK"
+  {
+    printf '%s\n' "外部 owner の gh api repos/mikefarah/yq/releases には触らない。"
+    printf '%s\n' "リポジトリを指さない gh api /user と gh api /rate_limit も対象外。"
+    printf '%s\n' "公開ミラー自身の gh api repos/feel-flow/ff-dev-toolkit/issues は通す。"
+    printf '%s\n' "gh 以外の行は見ない: curl https://example.com/repos/${SCOPED_UNLISTED}"
+    printf '%s\n' "語の一部は別語として扱う: gh api myrepos/${SCOPED_UNLISTED} は対象外。"
+    printf '%s\n' "ハイフン付きの別語も同じ: gh api sub-repos/${SCOPED_UNLISTED} は対象外。"
+    printf '%s\n' "プレースホルダの gh api repos/OWNER/REPO も通す。"
+    printf '%s\n' "許可名は文末句点つきでも通す: gh api repos/feel-flow/ff-dev-toolkit."
+    printf '%s\n' "許可名は .git つきでも通す: gh api repos/feel-flow/ff-dev-toolkit.git"
+    printf '%s\n' "外部 owner の gh issue list --repo mikefarah/yq も通す。"
+  } > "$U_GH_OK/doc.md"
+  expect_clear "gh 形の許可名・外部 owner・非リポジトリパス・gh 以外の行・語の一部は誤検出しない" \
+    run_check --scan-dir "$U_GH_OK"
+
+  # 12-31. 正規化層（末尾ドット FQDN / percent-encoded）。Web 形と API 形の両方へ
+  # 同時に効くことを 1 つの fixture で固定する — 片方だけ効く実装へ戻ると赤になる。
+  U_NORM_HIT="$TMP/unreachable-norm-hit"
+  mkdir -p "$U_NORM_HIT"
+  {
+    printf '%s\n' "末尾ドットの API 形 https://api.github.com./repos/${SCOPED_UNLISTED} も同じホスト。"
+    printf '%s\n' "末尾ドットの Web 形 https://github.com./${SCOPED_UNLISTED} も同じホスト。"
+    printf '%s\n' "percent-encoded な https://api.github.com/repos/${SCOPED_UNLISTED_ENC} も同じ識別子。"
+  } > "$U_NORM_HIT/doc.md"
+  expect_hit "末尾ドット FQDN の API 形を止める" "doc.md:1" run_check --scan-dir "$U_NORM_HIT"
+  expect_hit "末尾ドット FQDN の Web 形も同じ正規化で止める" "doc.md:2" run_check --scan-dir "$U_NORM_HIT"
+  expect_hit "percent-encoded な識別子も復号して止める" "doc.md:3" run_check --scan-dir "$U_NORM_HIT"
+  # 2 形の合成。正規化の適用順が逆だと、生ファイル配信ホストを畳んだ後に
+  # 末尾ドットが残って後段が落とす（レビューで実測した素通り経路）。
+  printf '%s\n' "合成形の https://raw.githubusercontent.com./${SCOPED_UNLISTED}/main/x.md も止める。" \
+    >> "$U_NORM_HIT/doc.md"
+  expect_hit "生ファイル配信ホスト × 末尾ドットの合成も止める（正規化の適用順）" "doc.md:4" \
+    run_check --scan-dir "$U_NORM_HIT"
+
+  # 12-32. raw.githubusercontent.com（文字列 github.com を含まない別ホスト）。
+  # 入口を広げた側なので、外部 owner・許可名・似た別ホストを誤検出しないことを対で置く。
+  U_RAW="$TMP/unreachable-raw"
+  mkdir -p "$U_RAW"
+  {
+    printf '%s\n' "バッジは https://raw.githubusercontent.com/${SCOPED_UNLISTED}/main/README.md を指す。"
+  } > "$U_RAW/hit.md"
+  {
+    printf '%s\n' "外部 owner の https://raw.githubusercontent.com/other-org/whatever/main/x.md は対象外。"
+    printf '%s\n' "公開ミラー自身の https://raw.githubusercontent.com/feel-flow/ff-dev-toolkit/main/README.md は通す。"
+    printf '%s\n' "似た別ホストの https://raw.notgithubusercontent.com/${SCOPED_UNLISTED}/main/x も触らない。"
+    printf '%s\n' "サブドメインの前置がある https://xraw.githubusercontent.com/${SCOPED_UNLISTED}/main/x も触らない。"
+  } > "$U_RAW/ok.md"
+  mkdir -p "$TMP/unreachable-raw-hit-only"
+  cp "$U_RAW/hit.md" "$TMP/unreachable-raw-hit-only/doc.md"
+  expect_hit_reason "raw.githubusercontent.com の未登録 repo を file:line で名指しして止める" \
+    "doc.md:1" "到達できない" run_check --scan-dir "$TMP/unreachable-raw-hit-only"
+  mkdir -p "$TMP/unreachable-raw-ok-only"
+  cp "$U_RAW/ok.md" "$TMP/unreachable-raw-ok-only/doc.md"
+  expect_clear "raw 形の外部 owner・許可名・似た別ホストは誤検出しない" \
+    run_check --scan-dir "$TMP/unreachable-raw-ok-only"
+
+  # 12-33. 追加行限定の入口でも 3 形すべてが効く（全文検査と差分限定の 2 入口があり、
+  # 後者だけ規則が抜ける経路を作らない。URL 形は 12-21、API 形は 12-28 が同じ契約）
+  F_EVA="$TMP/refs-evasions"
+  refs_fixture_prepare "$F_EVA"
+  printf '%s\n' "既存行: gh api repos/${SCOPED_UNLISTED}/issues" 'baseline' \
+    > "$F_EVA/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_EVA"
+  printf '%s\n' "追加行: gh api repos/${SCOPED_UNLISTED}/pulls" \
+    >> "$F_EVA/plugins/ff-dev-toolkit/doc.md"
+  expect_refs_only "追加行の gh 形だけを止め、既存行の同型は通す" 1 \
+    "plugins/ff-dev-toolkit/doc.md:3" "plugins/ff-dev-toolkit/doc.md:1" \
+    refs_run "$F_EVA"
+
+  F_RAW="$TMP/refs-raw"
+  refs_fixture_prepare "$F_RAW"
+  printf '%s\n' "既存行: https://raw.githubusercontent.com/${SCOPED_UNLISTED}/main/a.md" 'baseline' \
+    > "$F_RAW/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_RAW"
+  printf '%s\n' "追加行: https://raw.githubusercontent.com/${SCOPED_UNLISTED}/main/b.md" \
+    >> "$F_RAW/plugins/ff-dev-toolkit/doc.md"
+  expect_refs_only "追加行の raw 形だけを止め、既存行の同型は通す" 1 \
+    "plugins/ff-dev-toolkit/doc.md:3" "plugins/ff-dev-toolkit/doc.md:1" \
+    refs_run "$F_RAW"
+
+  # 12-34. 走査器の self-test が迂回形 3 種の許可・禁止も対で固定していること
+  # （12-22 / 12-27 と同じ契約。self-test の期待値は検出ラベルまで完全一致なので、
+  # ラベルを取り違える変異はそこでだけ赤くなる）
+  case "$selftest_out" in
+    *"迂回形 3 種（gh 引数形・末尾ドット・生ファイル配信ホスト）を検出ラベルまで固定"*)
+      ok "走査器の self-test が迂回形 3 種の対を固定している" ;;
+    *) bad "走査器の self-test に迂回形 3 種の対が無い"
+       printf '%s\n' "$selftest_out" | sed 's/^/    | /' >&2 ;;
+  esac
 
   # 12-10. live: この作業ツリーの公開対象に未登録の owner/repo が無いこと。
   # 12-2〜12-9 は隔離 fixture の検査で、ゲート本体が現ツリーへ当たっているかは別

@@ -198,13 +198,44 @@ case "$FILING" in
     ;;
 esac
 
+# A subagent without the Skill tool has to find SKILL.md itself, and
+# the injected text never said where it is (measured 5 times in a consumer project:
+# 3-6 tool calls per turn spent on `find`, because the plugin cache path is both
+# deep and version-scoped). hooks.json launches this hook as
+# `bash "${CLAUDE_PLUGIN_ROOT}/hooks/retrospective-context.sh"`, so the hook can
+# expand the same root the host resolved. The variable name is the one the skill's
+# plugin-root contract already defines for non-Claude hosts, so nothing new is added.
+#
+# The value is interpolated into a JSON string literal, so it MUST be escaped: an
+# unescaped `"` or `\` would produce malformed JSON, the host would parse nothing,
+# and the whole retrospective contract would silently disappear — strictly worse
+# than not carrying the path. Control characters cannot be expressed with the two
+# simple escapes, so a path containing them drops the clause instead (the same
+# fail-safe as an unset root: the injection stays valid, only the hint is missing).
+SKILL_PATH_CLAUSE=''
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  _ff_skill_file="${CLAUDE_PLUGIN_ROOT}/skills/retrospective/SKILL.md"
+  if [ -f "$_ff_skill_file" ]; then
+    case "$_ff_skill_file" in
+      *[[:cntrl:]]*) : ;;
+      *)
+        _ff_escaped="${_ff_skill_file//\\/\\\\}"
+        _ff_escaped="${_ff_escaped//\"/\\\"}"
+        SKILL_PATH_CLAUSE=" The skill body is at FF_DEV_TOOLKIT_SKILL_FILE=\\\"${_ff_escaped}\\\" — read that file directly instead of searching for it."
+        ;;
+    esac
+    unset _ff_escaped
+  fi
+  unset _ff_skill_file
+fi
+
 case "$MODE" in
   [Aa][Ss][Kk])
-    printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"RETROSPECTIVE_MODE=ask. Before producing the final response, apply ff-dev-toolkit:retrospective. If the user already approved the retrospective for this completed task, run it now; otherwise ask whether to run it. If this turn is not a task closeout, include exactly: 振り返り: 今回は作業完了前のため対象外. Do not wait for the Stop hook. The retrospective inspection is read-only. %s"}}\n' "$FILING_CLAUSE"
+    printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"RETROSPECTIVE_MODE=ask. Before producing the final response, apply ff-dev-toolkit:retrospective. If the user already approved the retrospective for this completed task, run it now; otherwise ask whether to run it. If this turn is not a task closeout, include exactly: 振り返り: 今回は作業完了前のため対象外. Do not wait for the Stop hook. The retrospective inspection is read-only. %s%s"}}\n' "$FILING_CLAUSE" "$SKILL_PATH_CLAUSE"
     exit 0
     ;;
 esac
 
-printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Before producing the final response, run ff-dev-toolkit:retrospective automatically. If this turn completes the user requested work, inspect only events measured in this session and include the retrospective result. If this is a clarification, approval wait, external-state wait, or unfinished work, include exactly: 振り返り: 今回は作業完了前のため対象外. Do not wait for the Stop hook. The retrospective inspection is read-only. %s"}}\n' "$FILING_CLAUSE"
+printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Before producing the final response, run ff-dev-toolkit:retrospective automatically. If this turn completes the user requested work, inspect only events measured in this session and include the retrospective result. If this is a clarification, approval wait, external-state wait, or unfinished work, include exactly: 振り返り: 今回は作業完了前のため対象外. Do not wait for the Stop hook. The retrospective inspection is read-only. %s%s"}}\n' "$FILING_CLAUSE" "$SKILL_PATH_CLAUSE"
 
 exit 0

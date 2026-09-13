@@ -1,5 +1,19 @@
 #!/usr/bin/env bash
 # Runtime contract for retrospective prompt/Stop hooks (Issues #583 / #616).
+#
+# 変異検出（事前注入のスキル経路）:
+#           既定分岐から `%s` のパス節を落とすと 2 件が赤（経路と fallback の両方）。
+#           ask 分岐から落とすと 1 件が赤。
+#           バックスラッシュのエスケープを外すと 1 件が赤、引用符のエスケープを外すと 1 件が赤
+#           （どちらも JSON が壊れて注入契約ごと消える向きの退行。**当初この 2 件は suite ごと
+#           落ちていた** — 取得ヘルパーが `jq | sed` のパイプで、壊れた JSON に対する jq の
+#           非 0 が `set -euo pipefail` で suite を殺し、どの検査が落ちたか名指しできなかった。
+#           取得失敗は空文字へ落として判定を呼び出し側の bad に委ねる形へ直した）。
+#           SKILL.md の実在検査を外すと 1 件が赤。
+#           制御文字を弾く `[[:cntrl:]]` 分岐を一致しない綴りへ変えると 1 件が赤
+#           （改行入り root で JSON が壊れ、注入が丸ごと消える向き）。
+#           良性: `CLAUDE_PLUGIN_ROOT` の非空検査を外しても緑（直後の実在検査が同じ状態を
+#           捕まえるため。非空検査は多重防御であって唯一の関門ではない）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -273,6 +287,116 @@ if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
 else
   bad "ask モードの事前注入契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
+
+# Skill ツールを持たない subagent は SKILL.md の所在を自力で探すしかなく、
+# 注入文にも書いていなかった（導入先で 5 回・毎回 3〜6 呼び出しを探索に費やした実測）。
+# hooks.json が ${CLAUDE_PLUGIN_ROOT} で起動するので hook 自身が絶対パスを組める。
+# 検査は 3 点: (1) 既定分岐と ask 分岐の**両方**に実値が載る (2) 値は実在ファイルを指す
+# (3) root 不在・パス不在では節だけが落ち、注入そのものは従来どおり成立する。
+context_skill_path() {
+  local ctx
+  ctx="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+  printf '%s' "$ctx" \
+    | sed -n 's/.*FF_DEV_TOOLKIT_SKILL_FILE="\(.*\)" — read that file directly.*/\1/p'
+}
+
+SKILL_ROOT_FIXTURE="$TEST_TMP/skill-root"
+mkdir -p "$SKILL_ROOT_FIXTURE/skills/retrospective"
+printf 'fixture\n' > "$SKILL_ROOT_FIXTURE/skills/retrospective/SKILL.md"
+
+for _ctx_mode in __unset__ ask; do
+  RC=0
+  if [ "$_ctx_mode" = "__unset__" ]; then
+    OUT="$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}' \
+      | env -u RETROSPECTIVE_MODE -u RETROSPECTIVE_FILING CLAUDE_PLUGIN_ROOT="$SKILL_ROOT_FIXTURE" \
+        /bin/bash "$CONTEXT_TARGET" 2>"$TEST_TMP/context-stderr")" || RC=$?
+  else
+    OUT="$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}' \
+      | env -u RETROSPECTIVE_FILING RETROSPECTIVE_MODE="$_ctx_mode" CLAUDE_PLUGIN_ROOT="$SKILL_ROOT_FIXTURE" \
+        /bin/bash "$CONTEXT_TARGET" 2>"$TEST_TMP/context-stderr")" || RC=$?
+  fi
+  ERR="$(cat "$TEST_TMP/context-stderr" 2>/dev/null || true)"
+  rm -f "$TEST_TMP/context-stderr"
+  _ctx_path="$(context_skill_path)"
+  if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
+    && [ "$_ctx_path" = "$SKILL_ROOT_FIXTURE/skills/retrospective/SKILL.md" ] \
+    && [ -f "$_ctx_path" ]; then
+    ok "事前注入（${_ctx_mode}）が SKILL.md の絶対パスを実値で載せ、その先が実在する"
+  else
+    bad "事前注入（${_ctx_mode}）のスキル経路が不正: path=[$_ctx_path] exit=$RC stderr=[$ERR]"
+  fi
+done
+
+# パスが JSON 文字列リテラルへ差し込まれるため、`"` / `\` を含む root でも JSON が壊れない
+# ことを実測する。壊れると jq が何も返さず、パスどころか**注入契約が丸ごと消える** —
+# 「値を足したつもりが機能を失う」向きの退行なので、敵対的なパスで固定する。
+HOSTILE_ROOT="$TEST_TMP/ho\"st\\le root"
+mkdir -p "$HOSTILE_ROOT/skills/retrospective"
+printf 'fixture\n' > "$HOSTILE_ROOT/skills/retrospective/SKILL.md"
+RC=0
+OUT="$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}' \
+  | env -u RETROSPECTIVE_MODE -u RETROSPECTIVE_FILING CLAUDE_PLUGIN_ROOT="$HOSTILE_ROOT" \
+    /bin/bash "$CONTEXT_TARGET" 2>"$TEST_TMP/context-stderr")" || RC=$?
+ERR="$(cat "$TEST_TMP/context-stderr" 2>/dev/null || true)"
+rm -f "$TEST_TMP/context-stderr"
+HOSTILE_PATH="$(context_skill_path)"
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
+  && printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | length > 0' >/dev/null 2>&1 \
+  && [ "$HOSTILE_PATH" = "$HOSTILE_ROOT/skills/retrospective/SKILL.md" ] \
+  && [ -f "$HOSTILE_PATH" ]; then
+  ok '引用符・バックスラッシュを含む root でも JSON が壊れず、パスが原文のまま届く'
+else
+  bad "敵対的な root でスキル経路が壊れた: path=[$HOSTILE_PATH] exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
+# 制御文字は `\n` / `\t` の 2 文字エスケープでは表せず、素で入れると JSON が壊れる。
+# hook はこの場合も節ごと落とす設計だが、その分岐だけ検査が無いと「fail-safe に倒している」
+# という主張が実測に支えられない（レビュー実測: `[[:cntrl:]]` を一致しない綴りへ変えても
+# 全件緑のまま、改行入り root で additionalContext が丸ごと失われた）。
+CNTRL_ROOT="$TEST_TMP/$(printf 'nl\nline')"
+if mkdir -p "$CNTRL_ROOT/skills/retrospective" 2>/dev/null \
+  && printf 'fixture\n' > "$CNTRL_ROOT/skills/retrospective/SKILL.md" 2>/dev/null; then
+  RC=0
+  OUT="$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}' \
+    | env -u RETROSPECTIVE_MODE -u RETROSPECTIVE_FILING CLAUDE_PLUGIN_ROOT="$CNTRL_ROOT" \
+      /bin/bash "$CONTEXT_TARGET" 2>"$TEST_TMP/context-stderr")" || RC=$?
+  ERR="$(cat "$TEST_TMP/context-stderr" 2>/dev/null || true)"
+  rm -f "$TEST_TMP/context-stderr"
+  CNTRL_BODY="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+  if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && [ -n "$CNTRL_BODY" ] \
+    && printf '%s' "$CNTRL_BODY" | grep -F 'ff-dev-toolkit:retrospective' >/dev/null \
+    && ! printf '%s' "$CNTRL_BODY" | grep -F 'FF_DEV_TOOLKIT_SKILL_FILE' >/dev/null; then
+    ok '制御文字を含む root では節だけを落とし、JSON と注入契約は保たれる'
+  else
+    bad "制御文字を含む root で注入が壊れた: exit=$RC output=[$OUT] stderr=[$ERR]"
+  fi
+else
+  bad "制御文字 fixture を作成できないため、cntrl 分岐の検査が成立していない: $CNTRL_ROOT"
+fi
+
+# root 不在・パス不在は節だけを落とす（注入は従来どおり成立する = hook を失敗させない）。
+for _ctx_case in unset missing; do
+  RC=0
+  if [ "$_ctx_case" = unset ]; then
+    OUT="$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}' \
+      | env -u RETROSPECTIVE_MODE -u RETROSPECTIVE_FILING -u CLAUDE_PLUGIN_ROOT \
+        /bin/bash "$CONTEXT_TARGET" 2>"$TEST_TMP/context-stderr")" || RC=$?
+  else
+    OUT="$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"作業を完了して"}' \
+      | env -u RETROSPECTIVE_MODE -u RETROSPECTIVE_FILING CLAUDE_PLUGIN_ROOT="$TEST_TMP/no-such-root" \
+        /bin/bash "$CONTEXT_TARGET" 2>"$TEST_TMP/context-stderr")" || RC=$?
+  fi
+  ERR="$(cat "$TEST_TMP/context-stderr" 2>/dev/null || true)"
+  rm -f "$TEST_TMP/context-stderr"
+  _ctx_body="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+  if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && [ -n "$_ctx_body" ] \
+    && printf '%s' "$_ctx_body" | grep -F 'ff-dev-toolkit:retrospective' >/dev/null \
+    && ! printf '%s' "$_ctx_body" | grep -F 'FF_DEV_TOOLKIT_SKILL_FILE' >/dev/null; then
+    ok "スキル経路を解決できない場合（${_ctx_case}）は節だけを落として注入は成立する"
+  else
+    bad "スキル経路の fallback が不正（${_ctx_case}）: exit=$RC output=[$OUT] stderr=[$ERR]"
+  fi
+done
 
 # Issue #1451: 事前注入も Stop と同じ起票境界を持つ（既定は承認と起票の規定を指し、
 # 承認文言は RETROSPECTIVE_FILING=ask のときだけ）。

@@ -43,6 +43,28 @@
 #   測れない）。その層は tests/docs-gates-runtime/repo-testing-gate-cases.sh が担い、
 #   ブロックを `if false` へ倒すと docs-gates-runtime が 5 件赤になることを実測済み。
 #
+# 変異検出（契約データランナー contracts/*.tsv。2026-09-13 実測。赤転しなかった変異は 1 件で、
+# その 1 件は下記のとおり設計上の下限）:
+#   走査不成立 — ディレクトリ不在 / .tsv が 0 ファイル / 全行コメント化 / 未知の種別、はすべて赤。
+#   行の形 — 欄不足・欄過剰・空パス・空パターン・空ラベル・section の空見出しはすべて赤。
+#   欄数検査の検出力は「漏れた needle が文書に実在する短い行」で測る（漏れた needle が実在
+#   しない行は、needle 不一致で赤になるだけでガードの証明にならない）。この行を入れたまま
+#   欄数検査を `if false` へ倒すと緑へ落ちる（= ガードが効いていた）。空欄検査も同型で緑へ落ちる。
+#   ファイル単位 — .tsv の 0 バイト切詰 / コメントだけ / 削除 / .tsv.bak への改名 / MANIFEST 不在 /
+#   壊れた symlink はすべて赤（件数側の「全体で 0」判定では、他ファイルが 1 行でも返す限り
+#   発火しない。ファイル単位の行数検査・MANIFEST 突合・兄弟要素の検分がこの層を担う）。
+#   隠しファイルの混入 / 契約を隠し名へ退避 / 契約を symlink でディレクトリ外へ逃がす /
+#   改行を含むファイル名で「1 ファイルを一覧の 2 行」に見せる、もすべて赤。
+#   .tsv と MANIFEST の該当行を**両方**消すと緑（設計上の下限。消えたことに気付ける知識は
+#   消えた対象の外にしか置けず、その外側も同じ PR で消せる。verify.sh から needle ブロックを
+#   消す変異が測れないのと同型で、差分には現れる）。同じ下限で、契約ファイルの中身を
+#   「別の通る 1 行」へ置換する変異も緑 — 行数・形・ファイルの実在はすべて満たすため。
+#   MANIFEST へ契約ごとの必須行数を持たせれば行数が変わる置換だけは拾えるが、行を 1 本足す
+#   たびに共有ファイルを編集することになり、本ディレクトリが消そうとしている競合面が戻る。
+#   置換に対する防御は、契約行を足したときに規定側を落として赤転を確かめる運用側の規律
+#   （リポジトリ正本 docs/04-quality/TESTING.md の変異注入バッテリー）が担う。
+#   義務 needle を 0 組で呼ぶ変異（deleg_agents_reference_check）も赤。
+#
 # Bash と、本プロジェクトの対応環境に標準搭載される grep / awk / sed / find を使う。
 # 一時ファイルを作らない読み取り専用 suite とし、docs の複製を伴う動的 smoke / mutation は
 # docs-gates-runtime が担うため、書き込み不可の環境でも本 suite 単体は完走できる。
@@ -1151,20 +1173,8 @@ must_contain "$f" 'gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/fix/%23N
 must_contain "$f" '`#` 以降が送信対象のパスから欠落した不正な ref 名になるため、`-X DELETE` は 422 で失敗する' \
   "Git Workflow が # エンコードの理由（素の # は 422）を明記している"
 
-# --- Git Workflow: 状態を変える複数行の手順とプロンプト特殊文字は heredoc / ファイル経由（観測台帳 OBS-092 から昇格）---
-must_contain "$f" 'プロンプト等の特殊文字（バッククォート・`$VAR`・条件展開）を含む文字列はヒアドキュメントで一時ファイルに書いてから渡す' \
-  "Git Workflow が特殊文字を含む文字列をヒアドキュメント経由で渡す規則を持つ"
-must_contain "$f" '状態を変える複数行の手順は `bash -e <<'\''EOF'\'' … EOF` の形で Bash ツールへ渡し' \
-  "Git Workflow が状態を変える複数行の手順を quoted heredoc で bash に渡す規則を持つ"
-
-# --- Git Workflow: 長時間ゲート開始前の並行セッション実測（ソースリポジトリの観測台帳 OBS-014 から昇格）---
-# `gh pr list` による並行マージの静止確認は、同じ作業ツリーで動く別セッション
-# （untracked ファイル・別ブランチへの checkout）を検出しない。節の消失・要求の
-# 骨抜き（実測コマンドを削って散文だけ残す等）を固定文字列で検出する。
-must_contain "$f" '並行マージの静止確認と並べて、同じ作業ツリーで動く並行セッションの実測も行う' \
-  "長時間ゲート開始前の節が並行セッション実測を並行マージの静止確認と並べて要求する"
-must_contain "$f" 'git worktree list --porcelain`、`git branch --show-current` で、別セッションが同じ作業ツリーへ untracked ファイルを書き込んでいないか・別ブランチへ checkout していないかを確認する' \
-  "長時間ゲート開始前の節が具体的な実測コマンドと検出対象を明記している"
+# Git Workflow の heredoc 規則と並行セッション実測の 2 契約は contracts/*.tsv へ移した
+# （宣言で書ける検査はデータ側へ寄せ、契約を足す PR が verify.sh を触らずに済むようにする）。
 
 # --- multi-review SKILL.md: レビュー待ち時間の使い方（https://github.com/feel-flow/ff-dev-toolkit/issues/99）---
 # SKILL.md は ${DOCS}（docs-template）の外（plugin 直下の skills/）にあるため、
@@ -1208,6 +1218,73 @@ fi
 # 1 行も届かなかった（同経路はこの SKILL.md を読まない）。正本は 1 つに保ったまま、
 # 各委譲経路からの到達点を個別に固定する — どれか 1 つの所在が消えたら赤にするため、
 # 参照側の針は節アンカーまで含めた link 断片で持つ（本文の言い換えでは素通りする）。
+# AGENTS.md の参照行 1 行が「正本パス + 節名 + 義務本文」を同時に満たすかを測る。
+# 節名だけを見ると、正本パスを誤記・削除しても節名さえ残れば緑になり、直接委譲者は
+# 正本へ到達できない。書かれたパスは**実測**する（実在すること・その中に正本節があること）。
+#
+# 引数: <参照元テキスト> <節名> <正本節の見出し> <正本文書の末尾> <ラベル> [<義務 needle> <義務ラベル>]...
+# 義務 needle は 2 つ組の可変長で受ける — 呼び出し側が 1 本しか要らない場合も、
+# 2 本要る場合も同じ実装を通す（同型の検査を 2 箇所へ写すと、片方だけ直した drift が入る）。
+deleg_agents_reference_check() {
+  local rules="$1" section_name="$2" heading="$3" doc_suffix="$4" label="$5"
+  shift 5
+  local line path target duty duty_label
+  line="$(printf '%s\n' "$rules" | awk -v key="「${section_name}」節" '
+    index($0, key) > 0 { n++; line = $0 }
+    END { if (n == 1) print line; else printf "FF_AGENTS_HITS=%d\n", n + 0 }
+  ')"
+  case "$line" in
+    FF_AGENTS_HITS=*)
+      bad "${label}: AGENTS.md の開発ルール節にある参照行が ${line#FF_AGENTS_HITS=} 行（期待 1 行）— ホスト直接委譲の経路へ届かなくなります"
+      return
+      ;;
+  esac
+  # 義務 needle が 1 組も渡らなければ、参照行の存在だけを見て緑になる。呼び出し側から
+  # needle が落ちたことを検出できる唯一の場所がここなので、0 組は bad にする。
+  if [ "$#" -lt 2 ]; then
+    bad "${label}: 義務 needle が 1 組も渡っていません（参照行の存在だけでは、義務が消えても緑になります）"
+    return
+  fi
+  while [ "$#" -ge 2 ]; do
+    duty="$1"; duty_label="$2"; shift 2
+    case "$line" in
+      *"$duty"*)
+        ok "${label}: AGENTS.md の参照行が${duty_label}を述べている"
+        ;;
+      *)
+        bad "${label}: AGENTS.md の参照行に${duty_label}がありません（節名だけが残ると、義務そのものが消えても気付けません）"
+        ;;
+    esac
+  done
+  # code span の直後が「の「<節名>」節」である code span を正本パスとみなす。
+  path="$(
+    printf '%s\n' "$line" | awk -v marker="の「${section_name}」節" '
+      BEGIN { FS = "`" }
+      {
+        for (i = 2; i <= NF; i += 2) {
+          tail = $(i + 1)
+          sub(/^[[:space:]]+/, "", tail)
+          if (index(tail, marker) == 1) { print $i; exit }
+        }
+      }
+    '
+  )"
+  if [ -z "$path" ]; then
+    bad "${label}: AGENTS.md の参照行に正本パスがありません（\`<path>\` の「${section_name}」節 の形で書くこと）"
+  elif [ "$path" = "${path%"$doc_suffix"}" ]; then
+    bad "${label}: AGENTS.md の参照先が正本文書ではありません: ${path}（期待は …/${doc_suffix}）"
+  elif [ ! -f "$REPO_ROOT_DIR/$path" ]; then
+    bad "${label}: AGENTS.md が指す正本パスが実在しません: ${path}（リポジトリルート起点で解決）"
+  else
+    target=""
+    if target="$(section_scope_extract "$REPO_ROOT_DIR/$path" "$heading")"; then
+      ok "${label}: AGENTS.md が指す正本パスが実在し、その中に正本節がちょうど 1 つある（パスと節を実測）"
+    else
+      bad "${label}: AGENTS.md が指す正本パス ${path} に正本節がありません — ${target}"
+    fi
+  fi
+}
+
 FACT_CHECK_DOC='05-operations/deployment/multi-cli-agent-orchestration.md'
 FACT_CHECK_HEADING='## 委譲プロンプトへ載せる事実主張の一次情報確認'
 FACT_CHECK_SECTION_NAME='委譲プロンプトへ載せる事実主張の一次情報確認'
@@ -1277,62 +1354,12 @@ else
   # 節名だけを見ると、正本パスを誤記・削除しても節名さえ残れば緑になり、直接委譲者は
   # 正本へ到達できない。参照行 1 行の中で「正本パス + 節名 + 親側義務の識別句」を同時に
   # 固定し、さらに**書かれたパスを実測**する（実在すること・その中に正本節があること）。
-  fact_agents_line="$(awk -v key="「${FACT_CHECK_SECTION_NAME}」節" '
-    index($0, key) > 0 { n++; line = $0 }
-    END { if (n == 1) print line; else printf "FF_AGENTS_HITS=%d\n", n + 0 }
-  ' "$REPO_AGENTS")"
-  case "$fact_agents_line" in
-    FF_AGENTS_HITS=*)
-      bad "AGENTS.md の親側の事実確認義務の参照行が ${fact_agents_line#FF_AGENTS_HITS=} 行（期待 1 行）— ホスト直接委譲の経路へ届かなくなります"
-      ;;
-    *)
-      case "$fact_agents_line" in
-        *'委譲プロンプトへ載せる事実主張を一次情報で確認してから渡す'*)
-          ok "AGENTS.md の参照行が親側の義務本文（事実主張を一次情報で確認してから渡す）を述べている"
-          ;;
-        *)
-          bad "AGENTS.md の参照行に親側の義務本文がありません（節名だけが残ると、義務そのものが消えても気付けません）"
-          ;;
-      esac
-      case "$fact_agents_line" in
-        *'別の委譲プロンプトへ転記する場面も対象'*)
-          ok "AGENTS.md の参照行が完了報告の転記も同じ義務の対象だと述べている"
-          ;;
-        *)
-          bad "AGENTS.md の参照行に完了報告の転記も対象である旨がありません"
-          ;;
-      esac
-      # 正本パスは参照行から実際に取り出す（本 suite 側の定数と突き合わせるだけでは、
-      # AGENTS.md が実在しないパスを指していても気付けない）。code span の直後が
-      # 「の「<節名>」節」である code span を正本パスとみなす。
-      fact_agents_path="$(
-        printf '%s\n' "$fact_agents_line" | awk -v marker="の「${FACT_CHECK_SECTION_NAME}」節" '
-          BEGIN { FS = "`" }
-          {
-            for (i = 2; i <= NF; i += 2) {
-              tail = $(i + 1)
-              sub(/^[[:space:]]+/, "", tail)
-              if (index(tail, marker) == 1) { print $i; exit }
-            }
-          }
-        '
-      )"
-      if [ -z "$fact_agents_path" ]; then
-        bad "AGENTS.md の参照行に正本パスがありません（\`<path>\` の「${FACT_CHECK_SECTION_NAME}」節 の形で書くこと）"
-      elif [ "$fact_agents_path" = "${fact_agents_path%"$FACT_CHECK_DOC"}" ]; then
-        bad "AGENTS.md の参照先が正本文書ではありません: ${fact_agents_path}（期待は …/${FACT_CHECK_DOC}）"
-      elif [ ! -f "$REPO_ROOT_DIR/$fact_agents_path" ]; then
-        bad "AGENTS.md が指す正本パスが実在しません: ${fact_agents_path}（リポジトリルート起点で解決）"
-      else
-        fact_agents_target=""
-        if fact_agents_target="$(section_scope_extract "$REPO_ROOT_DIR/$fact_agents_path" "$FACT_CHECK_HEADING")"; then
-          ok "AGENTS.md が指す正本パスが実在し、その中に正本節がちょうど 1 つある（パスと節を実測）"
-        else
-          bad "AGENTS.md が指す正本パス ${fact_agents_path} に正本節がありません — ${fact_agents_target}"
-        fi
-      fi
-      ;;
-  esac
+  # 同型の到達点検査は 1 実装へ寄せる（節名だけの合格・パス誤記・義務本文の欠落を
+  # 同じ規則で見る）。インライン版が別に在ると、片方だけ直した drift が入る。
+  deleg_agents_reference_check "$(cat "$REPO_AGENTS")" "$FACT_CHECK_SECTION_NAME" "$FACT_CHECK_HEADING" \
+    "$FACT_CHECK_DOC" "親側の事実確認義務" \
+    '委譲プロンプトへ載せる事実主張を一次情報で確認してから渡す' '親側の義務本文（事実主張を一次情報で確認してから渡す）' \
+    '別の委譲プロンプトへ転記する場面も対象' '完了報告の転記も同じ義務の対象である旨'
 fi
 
 # --- merge-cleanup SKILL.md: `--delete-branch` の部分失敗の読み方とリモート個別削除
@@ -1580,61 +1607,12 @@ deleg_must_contain_section_file "$DELEG_SKILL" "$DELEG_SKILL_HEADING" "$DELEG_TI
 # ツールで直接委譲するオーケストレータへ届く唯一の経路。節名だけを見ると、正本パスを
 # 誤記・削除しても節名さえ残れば緑になるため、参照行 1 行の中で「正本パス + 節名 + 義務の
 # 識別句」を同時に固定し、さらに**書かれたパスを実測**する（実在すること・その中に正本節が
-# あること）。2 節ぶん同じ検査を行うので手続きを関数へ畳む。
+# あること）。同じ検査を複数の節へ当てるので手続きを関数へ畳む（現在の呼び出しは
+# 事実確認義務・子側・親側の 3 箇所）。
 # 参照行の探索範囲は**開発ルール節の中だけ**にする（到達点 1・2 と同じ理由。文書全体を見ると、
 # 規定をルール一覧から外して同じ文書の別節 — 冒頭の位置付け説明など — へ移しても緑のまま
 # 通り、ルールとして読まれる位置からは消える）。
 DELEG_AGENTS_HEADING='## このリポジトリを開発する場合のルール'
-
-deleg_agents_reference_check() {
-  local rules="$1" section_name="$2" heading="$3" duty_needle="$4" label="$5"
-  local line path target
-  line="$(printf '%s\n' "$rules" | awk -v key="「${section_name}」節" '
-    index($0, key) > 0 { n++; line = $0 }
-    END { if (n == 1) print line; else printf "FF_AGENTS_HITS=%d\n", n + 0 }
-  ')"
-  case "$line" in
-    FF_AGENTS_HITS=*)
-      bad "${label}: AGENTS.md の開発ルール節にある参照行が ${line#FF_AGENTS_HITS=} 行（期待 1 行）— ホスト直接委譲の経路へ届かなくなります"
-      return
-      ;;
-  esac
-  case "$line" in
-    *"$duty_needle"*)
-      ok "${label}: AGENTS.md の参照行が義務本文そのものを述べている"
-      ;;
-    *)
-      bad "${label}: AGENTS.md の参照行に義務本文がありません（節名だけが残ると、義務そのものが消えても気付けません）"
-      ;;
-  esac
-  # code span の直後が「の「<節名>」節」である code span を正本パスとみなす。
-  path="$(
-    printf '%s\n' "$line" | awk -v marker="の「${section_name}」節" '
-      BEGIN { FS = "`" }
-      {
-        for (i = 2; i <= NF; i += 2) {
-          tail = $(i + 1)
-          sub(/^[[:space:]]+/, "", tail)
-          if (index(tail, marker) == 1) { print $i; exit }
-        }
-      }
-    '
-  )"
-  if [ -z "$path" ]; then
-    bad "${label}: AGENTS.md の参照行に正本パスがありません（\`<path>\` の「${section_name}」節 の形で書くこと）"
-  elif [ "$path" = "${path%"$DELEG_DOC"}" ]; then
-    bad "${label}: AGENTS.md の参照先が正本文書ではありません: ${path}（期待は …/${DELEG_DOC}）"
-  elif [ ! -f "$REPO_ROOT_DIR/$path" ]; then
-    bad "${label}: AGENTS.md が指す正本パスが実在しません: ${path}（リポジトリルート起点で解決）"
-  else
-    target=""
-    if target="$(section_scope_extract "$REPO_ROOT_DIR/$path" "$heading")"; then
-      ok "${label}: AGENTS.md が指す正本パスが実在し、その中に正本節がちょうど 1 つある（パスと節を実測）"
-    else
-      bad "${label}: AGENTS.md が指す正本パス ${path} に正本節がありません — ${target}"
-    fi
-  fi
-}
 
 # 適用範囲の判定は上の事実確認義務の到達点検査と同じ軸へ揃える（リポジトリ正本 docs/ を
 # 持たない公開 checkout は適用外。開発元 checkout では AGENTS.md の不在自体を赤にする）。
@@ -1648,11 +1626,13 @@ else
     bad "AGENTS.md の開発ルール節を切り出せません — ${deleg_agents_rules}（ホスト直接委譲の到達点を測れません）"
   else
     deleg_agents_reference_check "$deleg_agents_rules" "$DELEG_FG_SECTION_NAME" "$DELEG_FG_HEADING" \
+      "$DELEG_DOC" "子側（foreground 待機）" \
       '委譲プロンプトへ「タイムアウトを明示して foreground で待つ」「background 実行オプションを使わない」とタイムアウトの実値を書く' \
-      "子側（foreground 待機）"
+      '義務本文そのもの'
     deleg_agents_reference_check "$deleg_agents_rules" "$DELEG_WT_SECTION_NAME" "$DELEG_WT_HEADING" \
+      "$DELEG_DOC" "親側（生存中の worktree を回収しない）" \
       '未コミット差分 0 件（clean）を回収の根拠にせず' \
-      "親側（生存中の worktree を回収しない）"
+      '義務本文そのもの'
     # 「タイムアウトの実値を書く」と述べるだけでは、その実値がここには無い。到達点 1・2 と
     # 同じ針で、入口にも値そのものが残ることを固定する。
     deleg_must_contain_section_file "$REPO_AGENTS" "$DELEG_AGENTS_HEADING" "$DELEG_TIMEOUT_VALUE" \
@@ -1667,6 +1647,177 @@ else
 fi
 
 echo ""
+# --- 契約データの実行（contracts/*.tsv）-----------------------------------------
+# 契約ごとに 1 ファイルへ分けることで、別々の規定を固定する PR が同じ領域を触らずに済む
+# （書式と使い分けは contracts/README.md）。宣言で書ける検査だけがここへ来る。
+#
+# **走査不成立を緑にしない**: ディレクトリが読めない・1 行も解釈できない・種別が未知、は
+# すべて bad にする。データ駆動の検査は「データが読めなければ検査 0 件で緑」に倒れやすく、
+# その形は契約が消えたのと区別できない。行の形が崩れている場合（欄数が種別の規定と
+# 違う・必須欄が空）も同じ扱いにする — 欄がずれた行は隣の欄を検査パターンとして実行し、
+# 空パターンはどの文書にも一致するので、どちらも「規定の有無に関係なく合格する検査」になる。
+
+# 1 行に含まれるタブ区切りの欄数を数える（値にタブは書けない契約なので、区切り数 + 1）。
+contract_field_count() {
+  contract_fc_rest="$1"
+  contract_fc_n=1
+  while :; do
+    case "$contract_fc_rest" in
+      *"	"*)
+        contract_fc_rest="${contract_fc_rest#*	}"
+        contract_fc_n=$((contract_fc_n + 1))
+        ;;
+      *) break ;;
+    esac
+  done
+  printf '%s\n' "$contract_fc_n"
+}
+
+# 「欄名 値」の並びを受け取り、値が空の欄名を ' / ' で連結して返す（すべて必須欄）。
+contract_blank_fields() {
+  contract_bf_out=''
+  while [ "$#" -ge 2 ]; do
+    if [ -z "$2" ]; then
+      contract_bf_out="${contract_bf_out:+${contract_bf_out} / }$1"
+    fi
+    shift 2
+  done
+  printf '%s\n' "$contract_bf_out"
+}
+
+CONTRACTS_DIR="$SCRIPT_DIR/contracts"
+CONTRACTS_MANIFEST="$CONTRACTS_DIR/MANIFEST"
+if [ ! -d "$CONTRACTS_DIR" ]; then
+  bad "契約データのディレクトリがありません: ${CONTRACTS_DIR}（宣言的な検査が 1 件も走りません）"
+else
+  # ディレクトリの中身を検分する。`*.tsv` だけを glob する走査は、`.tsv.bak` への改名・
+  # 隠し名への退避・壊れた symlink を「対象が無い」と読んで静かに素通りする。
+  # 走査は find の NUL 区切りで行う（glob は dotfile を展開しないうえ、名前に改行を含む
+  # 要素を扱えない。名前に改行があると、下の一覧突合が「1 ファイルを 2 行」と数えて
+  # MANIFEST の 2 行と一致し、実在しない契約を在ることにできる）。
+  # 実行対象はこの走査で集めた path だけにする — glob と走査で対象集合がずれると、
+  # 「一覧には在るのに実行されない契約」が生まれる。
+  contract_foreign=''
+  contract_actual_names=''
+  contract_paths=''
+  while IFS= read -r -d '' contract_entry; do
+    contract_base="${contract_entry##*/}"
+    case "$contract_base" in
+      *[[:cntrl:]]*)
+        # 名前を改行区切りの一覧へ足せない（足すと 1 要素が複数行に化ける）。
+        contract_foreign="${contract_foreign:+${contract_foreign} / }<制御文字を含む名前>"
+        continue
+        ;;
+    esac
+    # symlink は許さない（実体をディレクトリ外へ逃がすと、差分に出ないまま中身が変わる）。
+    case "$contract_base" in
+      README.md|MANIFEST)
+        if [ -f "$contract_entry" ] && [ ! -L "$contract_entry" ]; then
+          continue
+        fi
+        ;;
+      *.tsv)
+        if [ -f "$contract_entry" ] && [ ! -L "$contract_entry" ]; then
+          contract_actual_names="${contract_actual_names}${contract_base}
+"
+          contract_paths="${contract_paths}${contract_entry}
+"
+          continue
+        fi
+        ;;
+    esac
+    contract_foreign="${contract_foreign:+${contract_foreign} / }${contract_base}"
+  done < <(find "$CONTRACTS_DIR" -mindepth 1 -maxdepth 1 -print0)
+  if [ -n "$contract_foreign" ]; then
+    bad "契約データのディレクトリに想定外の要素があります: ${contract_foreign}（*.tsv を別の拡張子へ改名すると、走査対象から静かに外れます）"
+  fi
+
+  # ファイルごと消えた契約は、残ったファイルが 1 行でも返す限り件数側の検査に掛からない。
+  # 期待する集合を MANIFEST に置いて突き合わせる（verify.sh 側に置かないのは、契約を
+  # 足す PR が verify.sh を触らずに済むという本ディレクトリの目的を保つため）。
+  if [ ! -f "$CONTRACTS_MANIFEST" ]; then
+    bad "契約データの一覧がありません: ${CONTRACTS_MANIFEST}（ファイルごと消えた契約を検出できません）"
+  else
+    contract_expected_names="$(awk '{ sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "") } NF && $0 !~ /^#/' "$CONTRACTS_MANIFEST" | LC_ALL=C sort)"
+    contract_listed_names="$(printf '%s' "$contract_actual_names" | LC_ALL=C sort)"
+    if [ "$contract_expected_names" = "$contract_listed_names" ]; then
+      ok "契約データの一覧と実体が一致している（MANIFEST）"
+    else
+      bad "契約データの一覧と実体が食い違います（削除・改名・追加の取りこぼし）"
+      printf '    MANIFEST: %s\n' "$(printf '%s' "$contract_expected_names" | tr '\n' ' ')" >&2
+      printf '    実体:     %s\n' "$(printf '%s' "$contract_listed_names" | tr '\n' ' ')" >&2
+    fi
+  fi
+
+  contract_rows=0
+  contract_files=0
+  while IFS= read -r contract_file; do
+    [ -n "$contract_file" ] || continue
+    contract_files=$((contract_files + 1))
+    contract_name="${contract_file##*/}"
+    contract_file_rows=0
+    while IFS= read -r contract_line || [ -n "$contract_line" ]; do
+      case "$contract_line" in ''|'#'*) continue ;; esac
+      contract_rows=$((contract_rows + 1))
+      contract_file_rows=$((contract_file_rows + 1))
+      # bash 3.2 互換。タブ区切りの欄を順に取り出す（値にタブは書けない契約）。
+      c_kind="${contract_line%%	*}"
+      # **実行前に形を検める**: 欄数が合わない行・空欄を含む行は、そのまま実行すると
+      # 「別の欄が needle として渡る」「空パターンがどの文書にも一致する」形で
+      # 常に緑の検査になる。契約が消えたのと区別できないので bad で落とす。
+      case "$c_kind" in
+        contains|absent|matches) c_want_fields=4 ;;
+        section)                 c_want_fields=5 ;;
+        *)                       c_want_fields=0 ;;
+      esac
+      if [ "$c_want_fields" -eq 0 ]; then
+        bad "契約データの種別が未知です: ${c_kind}（${contract_name}）— 未知の種別を黙って読み飛ばすと契約が消えたのと同じになります"
+        continue
+      fi
+      c_got_fields="$(contract_field_count "$contract_line")"
+      if [ "$c_got_fields" -ne "$c_want_fields" ]; then
+        bad "契約データの欄数が合いません: 種別 ${c_kind} は ${c_want_fields} 欄ですが ${c_got_fields} 欄です（${contract_name}）— 欄がずれると隣の欄が検査パターンとして実行されます"
+        continue
+      fi
+      contract_rest="${contract_line#*	}"
+      c_file="${contract_rest%%	*}"; contract_rest="${contract_rest#*	}"
+      c_heading=''
+      case "$c_kind" in
+        section)
+          c_heading="${contract_rest%%	*}"; contract_rest="${contract_rest#*	}"
+          ;;
+      esac
+      c_needle="${contract_rest%%	*}"; c_label="${contract_rest#*	}"
+      case "$c_kind" in
+        section) c_blank="$(contract_blank_fields ファイル "$c_file" 見出し "$c_heading" パターン "$c_needle" ラベル "$c_label")" ;;
+        *)       c_blank="$(contract_blank_fields ファイル "$c_file" パターン "$c_needle" ラベル "$c_label")" ;;
+      esac
+      if [ -n "$c_blank" ]; then
+        bad "契約データに空欄があります: ${c_blank}（${contract_name} / 種別 ${c_kind}）— 空欄のまま実行すると、空のパターンがどの文書にも一致して規定の有無に関係なく合格します"
+        continue
+      fi
+      case "$c_kind" in
+        contains) must_contain         "$c_file" "$c_needle" "$c_label" ;;
+        absent)   must_not_contain     "$c_file" "$c_needle" "$c_label" ;;
+        matches)  must_match           "$c_file" "$c_needle" "$c_label" ;;
+        section)  must_contain_section "$c_file" "$c_heading" "$c_needle" "$c_label" ;;
+      esac
+    done < "$contract_file"
+    if [ "$contract_file_rows" -eq 0 ]; then
+      bad "契約データを 1 行も解釈できないファイルがあります: ${contract_name}（空・コメントだけ — 契約が消えたのと区別できません）"
+    fi
+  done <<CONTRACT_PATHS
+$contract_paths
+CONTRACT_PATHS
+  if [ "$contract_files" -eq 0 ]; then
+    bad "契約データのファイルが 1 つもありません: ${CONTRACTS_DIR}/*.tsv（走査不成立）"
+  elif [ "$contract_rows" -eq 0 ]; then
+    bad "契約データを 1 行も解釈できませんでした（${contract_files} ファイル）— 走査不成立"
+  else
+    ok "契約データ ${contract_files} ファイル / ${contract_rows} 行を実行した"
+  fi
+fi
+
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ docs-gates verify: $FAIL 件失敗" >&2
   exit 1

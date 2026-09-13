@@ -23,18 +23,23 @@
 # の実害ケースまで無効化する。worktree の本数は「どのツリーで走るかが曖昧になっている」ことの
 # 機械的な証拠なので、そこを発火の線とする。
 #
-# 出力は exit 0 + `systemMessage` の**警告のみ**で、コマンドはブロックしない。
-# 同じ PreToolUse でも `guard-checkout-restore.sh` / `guard-pr-followup.sh` が
-# 抜け道付き deny を選んでいるのは「実行させると失うものがある」ためで、本ガードは
-# 誤警告のコストのほうが大きい（起動が止まるより、読み飛ばせる 1 行のほうが安い）。
-# 受け入れ条件もブロックしない警告を要求しているため、deny 側へは倒さない。
+# 出力チャネルは 2 つに分かれる。PreToolUse には「実行を許しつつ agent に警告文を見せる」
+# チャネル（`additionalContext`）は無く、`systemMessage` は利用者向けの表示チャネルで
+# エージェントのコンテキストには入らない。届くのは `permissionDecision: "deny"` の
+# `permissionDecisionReason` だけで、兄弟ガード（`guard-checkout-restore.sh` /
+# `guard-pr-followup.sh` / `guard-effort-actual.sh`）はいずれもその形を採っている。
 #
-# 既知の限界: `systemMessage` は利用者向けの表示チャネルで、エージェントのコンテキストには
-# 入らない。この警告を読んで先頭に cd を書き足すのは人間であってエージェントではない。
-# PreToolUse にエージェント可視の警告チャネル（`additionalContext`）が無いという制約は
-# 上記 2 本のガードのヘッダーに記録済みで、本ガードでも変わっていない。それらが
-# 抜け道付き deny でエージェントへ届かせているのに対し、本ガードは誤警告の頻度が高い側
-# なので、届かないことを承知で表示のみに留める。
+#   - linked worktree あり かつ 先頭が**相対パスの cd** → 再実行可能な deny。
+#     どのツリーで走るかが直前の呼び出し次第で変わる確定的な取り違えで、先頭を絶対パスの
+#     cd へ書き換えれば直る。行動を変えるのはエージェントなので、届くチャネルで返す。
+#   - それ以外（cd を含まない呼び出し・経路 A のみ） → exit 0 + `systemMessage` の警告で、
+#     コマンドはブロックしない。この面は誤警告の頻度が高く、起動が止まるより読み飛ばせる
+#     1 行のほうが安い。
+#
+# 表示のみへ寄せていた当初の判断は、導入先の実測で覆った — 経路 B の発火条件を満たす
+# 呼び出しが相対 cd で始まり、続く 2 呼び出しが no such file or directory になったが、
+# エージェント側には警告が 1 行も現れなかった。deny へ寄せる面を「相対 cd で始まる」だけに
+# 絞ることで、誤警告の面は広げずに届かない非対称だけを解消している。
 #
 # 判定:
 #   0. `tool_name` が Bash（それ以外は無音）
@@ -274,6 +279,63 @@ starts_with_absolute_cd() {
   esac
 }
 
+# 先頭コマンドが「相対パスの `cd`」で始まるか。`starts_with_absolute_cd` の否定ではない —
+# あちらは「先頭が cd でない」場合にも 1 を返すので、否定を取ると cd を含まない呼び出しまで
+# 巻き込む。届く警告（deny）へ倒す面はここで絞る条件そのものなので、独立した述語で持つ。
+# 引数なしの `cd`（$HOME へ行く）は対象外にする — 相対パス指定による取り違えとは別の形で、
+# deny の面を必要以上に広げない。
+starts_with_relative_cd() {
+  local s="$1" first arg word nl
+  first="${s%%[[:space:]]*}"
+  [ "$first" = "cd" ] || return 1
+  arg="${s#cd}"
+  # `cdfoo` のような別コマンドを弾く（cd の直後は空白か行末でなければならない）
+  case "$arg" in
+    "") return 1 ;;
+    [[:space:]]*) ;;
+    *) return 1 ;;
+  esac
+  # 改行以降は別コマンド。`cd` と次行の間に引数は無いので、ここで切らないと
+  # 次行の先頭語をパス引数と読み違える（`cd<改行>npm test` が相対 cd に化ける）。
+  nl='
+'
+  arg="${arg%%"$nl"*}"
+  # 語を 1 つずつ見る。空白の読み飛ばしは space / tab だけにする（改行は上で落とし済み）。
+  while :; do
+    while :; do
+      case "$arg" in
+        " "* | "	"*) arg="${arg#?}" ;;
+        *) break ;;
+      esac
+    done
+    word="${arg%%[[:space:]]*}"
+    case "$word" in
+      # 引数なしの cd（$HOME へ）。区切りが続く形も「パス引数が無い」側。
+      "") return 1 ;;
+      ";"* | "&"* | "|"* | ")"* | "}"* | "#"* | "<"* | ">"*) return 1 ;;
+      # 引数直前の `--` を落として次の語を見る
+      "--")
+        arg="${arg#--}"
+        continue
+        ;;
+      # `cd -`（OLDPWD へ）は相対パス指定ではない。オプション（-L / -P / -e / -@）も
+      # ここで降りる — 絶対パスへ行く `cd -P /abs` を相対と誤判定して deny へ
+      # 巻き込まないため（誤検知のコストが警告より桁違いに高い側なので、迷ったら降りる）。
+      "-" | -*) return 1 ;;
+      *) break ;;
+    esac
+  done
+  # 開きクォートだけを剥がす（閉じ位置は解析しない）
+  case "$word" in
+    \"* | \'*) word="${word#?}" ;;
+  esac
+  case "$word" in
+    "") return 1 ;;
+    /* | '$('* | '`'* | '$'* | '~'*) return 1 ;;   # 絶対・置換・展開は absolute 側が扱う
+    *) return 0 ;;
+  esac
+}
+
 # cwd 非依存のセグメントか（複合コマンドの 1 区間、または単独コマンド全体）
 segment_is_cwd_independent() { # <segment>
   parse_head "$1"
@@ -470,6 +532,7 @@ if [ "$bg" = "true" ]; then
 fi
 
 message=""
+warn_tail=""
 if [ "$has_linked_worktree" -eq 1 ]; then
   message="⚠️ ff-dev-toolkit guard（Bash の cwd・警告）: このリポジトリには linked worktree があります（合計 ${worktree_count} 本のツリー）。どのツリーで走るかを固定するため、コマンドの先頭で絶対パスの cd を書いてください。
 Bash の cwd は「前の呼び出しの cd が残っている」か「セッション cwd から始まる」かが呼び出しごとに変わります。相対パスの編集や npm run が、利用者の稼働中のツリーへ着弾することがあります（現在の cwd の repo root: ${root}）。
@@ -479,20 +542,49 @@ Bash の cwd は「前の呼び出しの cd が残っている」か「セッシ
     message="${message}
 加えてこのリポジトリはモノレポで、background の Bash は直前の foreground 呼び出しの cd を引き継がずセッション cwd から始まります。パッケージ配下で実行するつもりなら、無関係なパッケージの結果を自分の変更の赤として読む前に絶対パスの cd を書いてください。"
   fi
-  message="${message}
-このツリーで走らせるのが意図どおりなら、そのまま実行して構いません（この警告はブロックしません）。
+  # 締めの 2 行は**警告専用**。deny の理由文へ流用すると、届けたい唯一のチャネルの中で
+  # 「ブロックしません／そのまま実行して構いません」と自称することになり、同じ呼び出しの
+  # 再実行と opt-out 探索を誘発する（レビューで実測）。deny 側は下で別に組む。
+  warn_tail="このツリーで走らせるのが意図どおりなら、そのまま実行して構いません（この警告はブロックしません）。
 このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1 を設定します。"
 elif [ "$is_monorepo" -eq 1 ]; then
   message="⚠️ ff-dev-toolkit guard（background Bash の cwd・警告）: モノレポで background の Bash を起動しますが、コマンドの先頭が絶対パスの cd ではありません。
 background の Bash は直前の foreground 呼び出しの cd を引き継がず、セッション cwd（worktree root: ${root}）から始まります。パッケージ配下で実行するつもりなら、無関係なパッケージの結果を自分の変更の赤として読む前に、先頭で絶対パスの cd を書いてください。
   例: cd ${root}/packages/<pkg> && npm test
-  リポジトリ規約どおり cd \"\$(git rev-parse --show-toplevel)\" のようにその場で絶対化する形も可です。
-worktree root で走らせるのが意図どおりなら、そのまま実行して構いません（この警告はブロックしません）。
+  リポジトリ規約どおり cd \"\$(git rev-parse --show-toplevel)\" のようにその場で絶対化する形も可です。"
+  warn_tail="worktree root で走らせるのが意図どおりなら、そのまま実行して構いません（この警告はブロックしません）。
 このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1 を設定します。"
 else
   exit 0
 fi
 
-jq -n --arg m "$message" '{systemMessage: $m}' 2>/dev/null
+# 出力チャネルの選択。`systemMessage` は利用者向けの表示チャネルで、行動を変えるべき
+# エージェントのコンテキストには入らない（導入先で実測: 経路 B の発火条件を満たした
+# 呼び出しが相対 cd で始まり、続く 2 呼び出しが no such file or directory になったが、
+# エージェント側のツール結果には警告が 1 行も現れなかった）。
+#
+# 同じ PreToolUse の兄弟ガード 3 本（guard-pr-followup / guard-checkout-restore /
+# guard-effort-actual）は `permissionDecision: "deny"` + `permissionDecisionReason` で
+# 既にエージェントへ届かせている。deny へ寄せるのはその先例に合わせるためで、
+# **面は広げない** — 対象は「linked worktree があり、かつ先頭が相対パスの cd」だけ。
+# この形は取り違えの実害が確定的（どのツリーで走るかが呼び出しごとに変わる）で、
+# 先頭を絶対パスの cd へ書き換えて再実行すれば直る＝再実行可能な deny になる。
+# cd を含まない呼び出しと経路 A のみの呼び出しは従来どおり警告（ブロックしない）。
+if [ "$has_linked_worktree" -eq 1 ] && starts_with_relative_cd "$head_cmd"; then
+  # ラベルも「警告」から「拒否」へ差し替える。理由文の中身と自称が食い違うと、
+  # 読んだエージェントは「止まっていない」と解釈して同じ呼び出しを再実行する。
+  reason="${message#⚠️ ff-dev-toolkit guard（Bash の cwd・警告）: }"
+  reason="🛑 ff-dev-toolkit guard（Bash の cwd・拒否）: ${reason}
+
+この呼び出しは先頭が相対パスの cd なので、どのツリーで走るかが直前の呼び出し次第で変わります。
+**この呼び出しはブロックしました。** 先頭を絶対パスの cd へ書き換えて再実行してください（上の例を参照）。
+このツリーで走らせるのが意図どおりなら、環境変数 FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD=1 を付けて再実行します。"
+  jq -n --arg reason "$reason" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
+  exit 0
+fi
+
+jq -n --arg m "${message}
+${warn_tail}" '{systemMessage: $m}' 2>/dev/null
 
 exit 0
