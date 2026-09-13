@@ -21,6 +21,34 @@
 # 静的な fixture としてコミットしてあるが、登録漏れ検査だけは一時 tree を必要とする。TMPDIR が
 # 使えなければ部分検査にせず、冒頭で suite 全体を明示 skip する。
 #
+# 変異検出（case 41 / 同梱 MCP 依存の起動ガード）:
+#           ガードの発火条件を常に偽へ倒すと 41-A が赤。
+#           述語から `mcp/package.json` の実在を落とすと、既定一覧を回す他ケース（26 / 38 /
+#           39 / 40）まで巻き添えで赤になる — fixture 複製は mcp を持たないため。この述語が
+#           「入れる先がある checkout だけを止める」ための配線であることの実測。
+#           オプトアウトの値解釈を「任意の非空値で有効」へ緩めると 41-E が赤。
+#           実行後の案内行（○ 案内: 同梱 MCP の依存が揃っていないため）の配線を外すと 41-F と
+#           case 37 が赤。判定対象の解決を起動ガード側へ移した変更の回帰はここで観測する。
+#           必須 skip の再現コマンドからオプトアウト前置を落とすと 41-G が赤。
+#           述語を `.bin/esbuild` の実行可能性からディレクトリの実在へ戻すと 41-H が赤
+#           （末尾の案内行の側で同じ退行をすると case 37 の partial-mcp が赤）。
+#           判定対象の上書きの告知を落とすと 41-I が赤、無条件化すると 39-A が赤。
+#           停止の終了コードを suite 失敗と同じ 1 へ戻すと 41-A / 41-E / 41-H が赤。
+#           ガードを登録照合の前・dirty ガードの前へ移すと 41-J / 41-K が赤。
+#           発火条件から USING_DEFAULT_SCRIPTS を落とすと case 37 の partial-mcp が赤。
+#           （位置と適用範囲は述語より退行しやすいので、全 3 方向を実測で固定してある）
+#
+# 変異検出（case 42 / 鮮度バケット）:
+#           鮮度マーカーの実体を改名すると suite 冒頭のマーカー契約検査が赤（fixture は照合側
+#           しか固定できないので、emit 側の drift はここでしか捕まらない）。
+#           行頭アンカーを部分一致へ緩めると stale-indented の回が赤。
+#           分類を逐次経路だけに置くと RUN_JOBS=2 の回が赤（既定は並列）。
+#           鮮度を skip へ倒すと「非 0 で終わる」「failed からも外さない」が赤。
+#           緑 + マーカーの fail-loud を外すと stale-green の回が赤。
+#           復旧手段の案内を落とすと 2 件が赤（初版は fixture 自身が同じ文言を出していたため
+#           SURVIVED した。fixture からマーカー以外を落として解消してある）。
+#           （件数は検査追加で静かに腐るのでケース番号で書く）
+#
 # 使い方: bash plugins/ff-dev-toolkit/tests/run-all/verify.sh
 
 set -euo pipefail
@@ -39,6 +67,17 @@ KEPT_SELFTEST_TAIL='件は除外しなかった'
 for _kept_needle in "$KEPT_SELFTEST_HEAD" "$KEPT_SELFTEST_TAIL"; do
   /usr/bin/grep -qF -- "$_kept_needle" "$RUNNER" \
     || { echo "✗ run-all verify: サマリー文言「${_kept_needle}」が run-all.sh に見つかりません（この検査は空振りします）" >&2; exit 1; }
+done
+
+# 鮮度マーカーは「ヘルパ側の emit」と「ランナー側の照合」の 2 箇所に現れる。片方だけを変える
+# 変異は、3 suite すべて緑のまま**本番の分類だけが死ぬ**（実測済み）。fixture は照合側しか固定
+# できないので、両方に同じリテラルが実在することをここで fail-closed に確かめる。
+STALE_MARKER_LITERAL='✗ 鮮度:'
+STALE_HELPER="$TESTS_DIR/lib/stale-base.sh"
+[ -f "$STALE_HELPER" ] || { echo "✗ run-all verify: 鮮度ヘルパが見つかりません: $STALE_HELPER" >&2; exit 1; }
+for _stale_file in "$STALE_HELPER" "$RUNNER"; do
+  /usr/bin/grep -qF -- "$STALE_MARKER_LITERAL" "$_stale_file" \
+    || { echo "✗ run-all verify: 鮮度マーカー「${STALE_MARKER_LITERAL}」が ${_stale_file} に見つかりません（emit と照合が drift すると分類が無警告で死にます）" >&2; exit 1; }
 done
 
 [ -f "$RUNNER" ] || { echo "✗ run-all.sh が見つかりません: $RUNNER" >&2; exit 1; }
@@ -742,6 +781,32 @@ RC=\$?"
 EXITCODE_PROBE_GOOD='bash verify.sh >"$OUT" 2>&1 && RC=0 || RC=$?'
 EXITCODE_PROBE_FEED='printf %s x | bash "$0" >/dev/null 2>&1 || rc=$?'
 EXITCODE_PROBE_PS='st=("${PIPESTATUS[@]}")'
+# ゲート起動が診断で終端する形（起動したプロセスの rc が診断のものになる）。`$?` の読み方は
+# 正しくても、外側（background 実行の完了通知・CI ステップ）が「赤いゲートを緑」と断定する。
+EXITCODE_PROBE_GATE_ECHO='FF_RUN_ALL_FULL=1 bash tests/run-all.sh > run-all.log 2>&1; echo "EXIT=$?"'
+EXITCODE_PROBE_GATE_TAIL='bash plugins/ff-dev-toolkit/tests/run-all.sh 2>&1 | tail -20'
+# 握り潰す形（実測: rc=7 のゲートを包むと全体が 0 になる）。
+EXITCODE_PROBE_GATE_OR='bash tests/run-all.sh > log 2>&1 || echo FAILED'
+EXITCODE_PROBE_GATE_PIPE_AND='bash tests/run-all.sh 2>&1 | tail -20 && echo done'
+EXITCODE_PROBE_GATE_SEMI_AND='bash tests/run-all.sh > log 2>&1; echo A && echo B'
+EXITCODE_PROBE_GATE_TRUE='bash tests/run-all.sh > log 2>&1 || true'
+EXITCODE_PROBE_GATE_EXIT0='bash tests/run-all.sh > log 2>&1; exit 0'
+EXITCODE_PROBE_GATE_BARE_TAIL='bash tests/run-all.sh > log 2>&1; tail -25 log'
+EXITCODE_PROBE_GATE_EXITQ='bash tests/run-all.sh > log 2>&1; echo "EXIT=$?"; exit $?'
+EXITCODE_PROBE_GATE_TIMEOUT='timeout 600 bash tests/run-all.sh > log 2>&1; echo "EXIT=$?"'
+EXITCODE_PROBE_GATE_NOHUP='nohup bash tests/run-all.sh > log 2>&1; echo hi'
+EXITCODE_PROBE_GATE_FEEDPIPE='printf x | bash tests/run-all.sh; echo "EXIT=$?"'
+EXITCODE_PROBE_GATE_DIRECT='./tests/run-all.sh > log 2>&1; echo done'
+EXITCODE_PROBE_GATE_SH='sh tests/run-all.sh > log 2>&1; echo done'
+# rc が残る形 / 起動ではない形（誤検出すると直しようのない赤になる）。
+EXITCODE_PROBE_GATE_AND='bash tests/run-all.sh > log 2>&1 && echo OK'
+EXITCODE_PROBE_GATE_OK='bash tests/run-all.sh > log 2>&1; rc=$?; echo "EXIT=$rc"; exit $rc'
+EXITCODE_PROBE_GATE_EXITQ_OK='bash tests/run-all.sh > log 2>&1; exit $?'
+EXITCODE_PROBE_GATE_SOLO='bash plugins/ff-dev-toolkit/tests/run-all.sh > run-all.log 2>&1'
+EXITCODE_PROBE_GATE_READ='cat plugins/ff-dev-toolkit/tests/run-all.sh | head -20'
+EXITCODE_PROBE_GATE_JQ='bash tests/run-all.sh 2>&1 | jq -R .'
+EXITCODE_PROBE_GATE_ASSIGN='RUNNER=tests/run-all.sh; echo "$RUNNER"'
+EXITCODE_PROBE_GATE_SUFFIX='bash tools/prerun-all.sh > log 2>&1; echo "EXIT=$?"'
 EXITCODE_FENCE='```'
 EXITCODE_PROBE_MD_BASH="${EXITCODE_FENCE}bash
 ${EXITCODE_PROBE_TAIL}
@@ -800,6 +865,78 @@ exitcode_expect exit_code_scan "$EXITCODE_PROBE_GOOD" nohit "" \
 exitcode_expect exit_code_scan "$EXITCODE_PROBE_FEED" nohit "" \
   "終了コード検出器が入力供給パイプ（終端が測定対象）を誤検出しない（self-test）" \
   "終了コード検出器が入力供給パイプを誤検出する"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_ECHO" hit gate-exit-swallowed \
+  "終了コード検出器が \`; echo\` 終端 を検出できる（self-test）" \
+  "終了コード検出器が \`; echo\` 終端 を取りこぼす — 完了通知が赤いゲートを緑と断定する形が素通りする"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_TAIL" hit gate-exit-swallowed \
+  "終了コード検出器が \`| tail\` 終端 を検出できる（self-test）" \
+  "終了コード検出器が \`| tail\` 終端 を取りこぼす — 区間が 1 つでも成否は落ちる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_OR" hit gate-exit-swallowed \
+  "終了コード検出器が \`|| echo\` 終端 を検出できる（self-test）" \
+  "終了コード検出器が \`|| echo\` 終端 を取りこぼす — ゲートが赤いときだけ右辺が走り、その 0 が全体の rc になる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_PIPE_AND" hit gate-exit-swallowed \
+  "終了コード検出器が \`| tail && echo\`（パイプで既に rc が落ちている） を検出できる（self-test）" \
+  "終了コード検出器が \`| tail && echo\`（パイプで既に rc が落ちている） を取りこぼす — \`&&\` 例外がパイプ握り潰しまで免除している"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SEMI_AND" hit gate-exit-swallowed \
+  "終了コード検出器が \`; echo A && echo B\`（ゲート以降に \`;\` が混ざる） を検出できる（self-test）" \
+  "終了コード検出器が \`; echo A && echo B\`（ゲート以降に \`;\` が混ざる） を取りこぼす — 区切り子を最後の 1 つだけで判定している"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_TRUE" hit gate-exit-swallowed \
+  "終了コード検出器が \`|| true\` を検出できる（self-test）" \
+  "終了コード検出器が \`|| true\` を取りこぼす — 診断が「抜け道も塞ぐ」と書いているのに実体が抜けている"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_EXIT0" hit gate-exit-swallowed \
+  "終了コード検出器が \`; exit 0\` を検出できる（self-test）" \
+  "終了コード検出器が \`; exit 0\` を取りこぼす — 赤を消す最短手が素通りする"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_BARE_TAIL" hit gate-exit-swallowed \
+  "終了コード検出器が \`; tail -25 log\`（裸の出力整形コマンド） を検出できる（self-test）" \
+  "終了コード検出器が \`; tail -25 log\`（裸の出力整形コマンド） を取りこぼす — 終端判定が echo / printf だけに閉じている"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_EXITQ" hit gate-exit-swallowed \
+  "終了コード検出器が \`; echo …; exit $?\`（rc を取り忘れた取り違え） を検出できる（self-test）" \
+  "終了コード検出器が \`; echo …; exit $?\`（rc を取り忘れた取り違え） を取りこぼす — 規定を読んだ人が最も踏みやすい形が素通りする"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_TIMEOUT" hit gate-exit-swallowed \
+  "終了コード検出器が \`timeout\` ラッパ経由の起動 を検出できる（self-test）" \
+  "終了コード検出器が \`timeout\` ラッパ経由の起動 を取りこぼす — background 起動の定番形が素通りする"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_NOHUP" hit gate-exit-swallowed \
+  "終了コード検出器が \`nohup\` ラッパ経由の起動 を検出できる（self-test）" \
+  "終了コード検出器が \`nohup\` ラッパ経由の起動 を取りこぼす — ラッパ前置きを剥がしていない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_FEEDPIPE" hit gate-exit-swallowed \
+  "終了コード検出器が 入力供給パイプ経由の起動 + 診断 を検出できる（self-test）" \
+  "終了コード検出器が 入力供給パイプ経由の起動 + 診断 を取りこぼす — パイプの段ごとに起動を見ていない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_DIRECT" hit gate-exit-swallowed \
+  "終了コード検出器が 直接起動（\`./tests/run-all.sh\`） を検出できる（self-test）" \
+  "終了コード検出器が 直接起動（\`./tests/run-all.sh\`） を取りこぼす — インタプリタ経由だけを起動と数えている"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SH" hit gate-exit-swallowed \
+  "終了コード検出器が \`sh\` 経由の起動 を検出できる（self-test）" \
+  "終了コード検出器が \`sh\` 経由の起動 を取りこぼす — インタプリタ集合が bash だけに縮んでいる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_AND" nohit "" \
+  "終了コード検出器が \`&& echo\`（短絡するので rc が保たれる） を誤検出しない（self-test）" \
+  "終了コード検出器が \`&& echo\`（短絡するので rc が保たれる） を誤検出する — 安全な起動形まで止める直しようのない赤になる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_OK" nohit "" \
+  "終了コード検出器が 伝播まで書いた形（rc を取って exit する形） を誤検出しない（self-test）" \
+  "終了コード検出器が 伝播まで書いた形（rc を取って exit する形） を誤検出する — 正しい起動形を誤検出する"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_EXITQ_OK" nohit "" \
+  "終了コード検出器が \`; exit $?\`（ゲート直後なので伝播する） を誤検出しない（self-test）" \
+  "終了コード検出器が \`; exit $?\`（ゲート直後なので伝播する） を誤検出する — 伝播する形まで赤にする"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SOLO" nohit "" \
+  "終了コード検出器が 単体起動 を誤検出しない（self-test）" \
+  "終了コード検出器が 単体起動 を誤検出する — 単体起動を誤検出する"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_READ" nohit "" \
+  "終了コード検出器が ゲートを**読むだけ**の参照 を誤検出しない（self-test）" \
+  "終了コード検出器が ゲートを**読むだけ**の参照 を誤検出する — 名前の出現だけで赤くする形は運用できない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_JQ" nohit "" \
+  "終了コード検出器が 非フィルタ終端（終端そのものの成否を測りたい形） を誤検出しない（self-test）" \
+  "終了コード検出器が 非フィルタ終端（終端そのものの成否を測りたい形） を誤検出する — 出力整形フィルタだけを対象にする境界が壊れている"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_ASSIGN" nohit "" \
+  "終了コード検出器が 変数代入（起動ではない） を誤検出しない（self-test）" \
+  "終了コード検出器が 変数代入（起動ではない） を誤検出する — 代入を起動と数える"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SUFFIX" nohit "" \
+  "終了コード検出器が 名前が後方一致する別スクリプト を誤検出しない（self-test）" \
+  "終了コード検出器が 名前が後方一致する別スクリプト を誤検出する — basename の完全一致で見ていない"
+EXITCODE_PROBE_MD_GATE="${EXITCODE_FENCE}bash
+${EXITCODE_PROBE_GATE_ECHO}
+${EXITCODE_FENCE}"
+exitcode_expect exit_code_scan_bash_blocks "$EXITCODE_PROBE_MD_GATE" hit gate-exit-swallowed \
+  "終了コード検出器が Markdown フェンス本文でも新タグを検出できる（self-test）" \
+  "終了コード検出器が md 経路で新タグを落とす — SKILL.md が主要走査面なので影響が大きい"
 exitcode_expect exit_code_scan_bash_blocks "$EXITCODE_PROBE_MD_BASH" hit pipe-exit-read \
   "終了コード検出器が Markdown の bash フェンス本文も検出できる（self-test）" \
   "終了コード検出器が bash フェンス本文を走査できていない"
@@ -813,6 +950,54 @@ if /usr/bin/grep -qF -- 'zsh では空へ展開されて機能しない' "$SCRIP
   ok "PIPESTATUS の診断が zsh で機能しない理由を含む"
 else
   bad "PIPESTATUS の診断から zsh の理由が消えている（タグだけでは直し方が分からない）"
+fi
+
+# 横断検査が新タグで hits へ倒れること、そのとき**利用者へ届く stderr** が正しい形と抜け道を
+# 名指しすることを、隔離した git fixture で実測する。
+#
+# 実装ファイルへ `grep -qF` を当てる形は採らない — needle が本体コードの無関係な箇所
+# （`… || true` など）に当たって vacuous になり、案内行を丸ごと削除しても緑のままだった（実測）。
+# 加えてファイル全体を見る形は「案内を stderr からコメントへ移す（＝利用者に届かなくなる）」
+# 退行も緑にする。出力を捕まえるなら、届く経路そのものを捕まえる。
+if ! command -v git >/dev/null 2>&1; then
+  echo "  ○ skip: git が無いため横断検査の hits 経路をスキップ（この検査は 1 件も実行していません）"
+else
+  _gx_fx="${TMPDIR:-/tmp}/ff-run-all-gate-exit.$$"
+  rm -rf "$_gx_fx"
+  mkdir -p "$_gx_fx"
+  printf '%s\n' '#!/usr/bin/env bash' 'bash tests/run-all.sh > log 2>&1; echo "EXIT=$?"' > "$_gx_fx/violate.sh"
+  _gx_git() { git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -c init.defaultBranch=main "$@"; }
+  _gx_setup=0
+  _gx_git -C "$_gx_fx" init -q . >/dev/null 2>&1 || _gx_setup=1
+  _gx_git -C "$_gx_fx" add -A >/dev/null 2>&1 || _gx_setup=1
+  _gx_git -C "$_gx_fx" commit -qm fixture >/dev/null 2>&1 || _gx_setup=1
+  if [ "$_gx_setup" -ne 0 ]; then
+    bad "横断検査 hits 経路の git fixture を作れない（検査が成立していない）"
+  else
+    set +e
+    _gx_err="$(exit_code_check_tracked "$_gx_fx" 2>&1 >/dev/null)"
+    _gx_sum="$(exit_code_check_tracked "$_gx_fx" 2>/dev/null)"
+    _gx_rc=$?
+    set -e
+    case "$_gx_sum" in
+      EXIT_CODE_RESULT=hits\ *) ok "横断検査は新タグの違反で hits へ倒れる（サマリー）" ;;
+      *) bad "横断検査が新タグの違反を hits にしない（実際: ${_gx_sum}）" ;;
+    esac
+    if [ "$_gx_rc" -ne 0 ]; then ok "横断検査は違反ありで非 0 を返す"; else bad "横断検査が違反ありでも 0 を返す"; fi
+    # 利用者へ届く stderr が、タグ・正しい形・抜け道の 3 点を名指しするか。
+    for _gx_needle in \
+      'gate-exit-swallowed' \
+      'RUN_ALL_EXIT=' \
+      'exit $rc' \
+      '|| true' \
+      '&&' ; do
+      case "$_gx_err" in
+        *"$_gx_needle"*) ok "横断検査の stderr が「${_gx_needle}」を含む" ;;
+        *) bad "横断検査の stderr から「${_gx_needle}」が消えている（タグだけでは直し方も抜け道も伝わらない）" ;;
+      esac
+    done
+  fi
+  rm -rf "$_gx_fx"
 fi
 
 if [ "$EXITCODE_SELFTEST_OK" -eq 1 ]; then
@@ -1579,33 +1764,52 @@ rm -rf "$_mkchk_fx"
 
 echo ""
 echo "== case 37: node_modules 不在の案内は mcp/node_modules の実在だけで出し分ける =="
-# 実リポジトリの plugins/ff-dev-toolkit/mcp/node_modules は動かさず、テスト専用の上書き
-# FF_RUN_ALL_MCP_NODE_MODULES でランナーの判定対象を差し替える（他suiteと並列実行しても
-# 共有資源を壊さない）。判定は「そのパスが実在するか」だけの単純な述語（AC2）。
+# 実リポジトリの plugins/ff-dev-toolkit/mcp は動かさず、テスト専用の上書き FF_RUN_ALL_MCP_DIR で
+# ランナーの判定対象を差し替える（他suiteと並列実行しても共有資源を壊さない）。判定は消費側と
+# 同じ 1 点（<mcp>/node_modules/.bin/esbuild が実行可能か）。
 _ff_missing_nm="${TMPDIR:-/tmp}/ff-run-all-verify-missing-node_modules.$$"
-rm -rf "$_ff_missing_nm"
+_ff_ready_mcp="${TMPDIR:-/tmp}/ff-run-all-verify-ready-mcp.$$"
+rm -rf "$_ff_missing_nm" "$_ff_ready_mcp"
+mkdir -p "$_ff_ready_mcp/node_modules/.bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$_ff_ready_mcp/node_modules/.bin/esbuild"
+chmod +x "$_ff_ready_mcp/node_modules/.bin/esbuild"
 
-FF_RUN_ALL_MCP_NODE_MODULES="$_ff_missing_nm" run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/skip/verify.sh"
+FF_RUN_ALL_MCP_DIR="$_ff_missing_nm" run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/skip/verify.sh"
 expect_rc 0 "pass + skip の混在は従来どおり rc=0（skip は失敗として数えない）"
-expect_has '^○ 案内: mcp/node_modules が無いため' "node_modules 不在 + skip ありの回は案内行を出す"
+expect_has '^○ 案内: 同梱 MCP の依存が揃っていないため' "node_modules 不在 + skip ありの回は案内行を出す"
 expect_has 'npm ci --prefix plugins/ff-dev-toolkit/mcp' "案内行に npm ci コマンドを含む"
 
-FF_RUN_ALL_MCP_NODE_MODULES="$FIXTURES" run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/skip/verify.sh"
+FF_RUN_ALL_MCP_DIR="$_ff_ready_mcp" run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/skip/verify.sh"
 expect_rc 0 "node_modules が実在する回も rc=0"
-expect_lacks '^○ 案内: mcp/node_modules が無いため' "node_modules が実在する回は案内行を出さない（正常系で警告し続けない）"
+expect_lacks '^○ 案内: 同梱 MCP の依存が揃っていないため' "node_modules が実在する回は案内行を出さない（正常系で警告し続けない）"
 
-FF_RUN_ALL_MCP_NODE_MODULES="$_ff_missing_nm" run_runner "$FIXTURES/pass/verify.sh"
+FF_RUN_ALL_MCP_DIR="$_ff_missing_nm" run_runner "$FIXTURES/pass/verify.sh"
 expect_rc 0 "pass のみ（skip/fail 0 件）は rc=0"
-expect_lacks '^○ 案内: mcp/node_modules が無いため' "node_modules 不在でも skip/fail が 0 件の回は案内行を出さない"
+expect_lacks '^○ 案内: 同梱 MCP の依存が揃っていないため' "node_modules 不在でも skip/fail が 0 件の回は案内行を出さない"
 
 # SKIPPED が 0 件でも FAILED だけで案内条件が満たされることを実測する（run-all.sh:1588 の
 # `${#SKIPPED[@]} -gt 0 || ${#FAILED[@]} -gt 0` の OR 右辺）。skip を混ぜた上のケースだけでは
 # 左辺しか通らず、右辺の検出力が無検査になる。
-FF_RUN_ALL_MCP_NODE_MODULES="$_ff_missing_nm" run_runner "$FIXTURES/fail/verify.sh"
+FF_RUN_ALL_MCP_DIR="$_ff_missing_nm" run_runner "$FIXTURES/fail/verify.sh"
 expect_rc nz "fail のみ（skip 0 件）は従来どおり rc が非 0"
-expect_has '^○ 案内: mcp/node_modules が無いため' "node_modules 不在 + fail のみ（skip 0 件）の回も案内行を出す"
+expect_has '^○ 案内: 同梱 MCP の依存が揃っていないため' "node_modules 不在 + fail のみ（skip 0 件）の回も案内行を出す"
 
-rm -rf "$_ff_missing_nm"
+# install が不完全な状態（node_modules は在るが .bin/esbuild が無い）も案内条件を満たす。
+# 述語をディレクトリの実在へ退行させるとここだけが赤くなる — 下流 suite は「npm install が
+# 不完全」で赤くなるのに、案内は黙るという食い違いが残るため。
+# package.json も置く（＝起動ガードの述語を**両方**満たす状態）。これで本ケースは「明示引数の実行では
+# ガードが発火しない」ことの実測も兼ねる — ガードの発火条件から USING_DEFAULT_SCRIPTS を落とす変異を
+# 入れると、ここが rc=3 で赤くなる。置かないと `-f package.json` で先に落ちて連言が無検査になる。
+_ff_partial_mcp="${TMPDIR:-/tmp}/ff-run-all-verify-partial-mcp.$$"
+rm -rf "$_ff_partial_mcp"
+mkdir -p "$_ff_partial_mcp/node_modules"
+: > "$_ff_partial_mcp/package.json"
+FF_RUN_ALL_MCP_DIR="$_ff_partial_mcp" run_runner "$FIXTURES/pass/verify.sh" "$FIXTURES/skip/verify.sh"
+expect_rc 0 "明示引数の実行は依存が揃っていなくてもガードに止められない（部分実行は正当な用途）"
+expect_lacks '環境が未整備です' "明示引数の実行ではガードが発火しない"
+expect_has '^○ 案内: 同梱 MCP の依存が揃っていないため' "node_modules は在るが esbuild が無い回も案内行を出す"
+
+rm -rf "$_ff_missing_nm" "$_ff_ready_mcp" "$_ff_partial_mcp"
 
 echo ""
 echo "== case 38: 登録のみで他の随伴先に触れていない suite は逆向き導出で名指しし、随伴先文書のパスも出す =="
@@ -1786,6 +1990,10 @@ else
   expect_has "^suites: total=2 run=2 passed=2 failed=0 skipped=0 not-run=0$" "clean tree では従来どおりサマリーが出る"
   expect_lacks '未コミットの変更がある作業ツリー' "clean tree ではガードが無音（誤検知しない）"
   expect_lacks 'clean かどうかを確認できません' "clean tree では確認不能の分岐へ落ちない"
+  # 依存判定の上書き告知（case 41 が「出ること」を測る側）は、**上書きしていない回に出ない**ことを
+  # ここで測る。無条件化する変異を入れると、実運用の全ゲート実行に毎回、設定していない変数名の
+  # 警告が乗る。case 41 は全ケースが上書き前提なので、不在を主張できるのはこの経路しかない。
+  expect_lacks 'FF_RUN_ALL_MCP_DIR で依存判定の対象を上書き' "上書きしていない回は告知を出さない"
 
   # 39-B: 未追跡ファイル 1 件だけで止まること。判定を `git diff` 系（未追跡を見ない）へ退行させると
   # ここだけが赤くなる — 記録側 record-gate-head.sh は未追跡も汚れに数えるので、述語がずれると
@@ -1981,6 +2189,523 @@ PROBE
   fi
 fi
 rm -rf "$_dg_fx"
+fi
+
+echo ""
+echo "== case 41: 同梱 MCP の依存が無い既定一覧は「環境の未整備」として起動前に止める =="
+
+# ガードの対象は「引数なしの既定一覧」なので、疑似 suite を明示引数で渡す通常経路（case 37 ほか）
+# では一度も踏まれない。case 39 と同じ awk で SCRIPTS / REQUIRED_SUITES を最小内容へ差し替えた
+# 複製ランナーを隔離した一時 git リポジトリへ置き、**判定対象の mcp ディレクトリはリポジトリの外**
+# に作る（FF_RUN_ALL_MCP_DIR で差し替える。リポジトリ内に作ると dirty ガードが先に
+# 発火して、測りたいガードへ到達しない）。
+if ! command -v git >/dev/null 2>&1; then
+  echo "  ○ skip: git が無いため MCP 依存ガードの実測をスキップ（case 41 の検査は 1 件も実行していません）"
+else
+_mg_fx="${TMPDIR:-/tmp}/ff-run-all-mcp-deps-guard.$$"
+rm -rf "$_mg_fx"
+mkdir -p "$_mg_fx/repo/tests/mcp-guard-probe" "$_mg_fx/repo/tests/mcp-guard-required-probe" "$_mg_fx/repo/scripts" "$_mg_fx/mcp"
+_mg_rec="$_mg_fx/gate-record"
+_mg_mcp="$_mg_fx/mcp"                 # ランナーへ渡す判定対象（mcp パッケージのディレクトリ）
+_mg_nm="$_mg_mcp/node_modules"
+_mg_esbuild="$_mg_nm/.bin/esbuild"    # 実在を切り替える 1 点（消費側と同じ述語）
+_mg_pkg="$_mg_mcp/package.json"       # 「入れる先がある」ことの目印
+# 依存が揃った状態を作る（ディレクトリだけでは不十分 — 述語は .bin/esbuild の実行可能性を見る）
+_mg_install_deps() {
+  mkdir -p "$_mg_nm/.bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$_mg_esbuild"
+  chmod +x "$_mg_esbuild"
+}
+# rc は環境変数で切り替える（既定 0）。fixture の中身を書き換えると隔離リポジトリが dirty になり、
+# dirty ガードが先に発火して測りたいガードへ到達しないため、ファイルは固定して外から振る。
+cat > "$_mg_fx/repo/tests/mcp-guard-probe/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+echo "FIXTURE-MCP-GUARD-EXECUTED"
+exit "${FIXTURE_MCP_GUARD_PROBE_RC:-0}"
+PROBE
+# case 39 と同じ理由（bash 3.2 の set -u）で必須名簿には 1 件残す。skip 経路は材料だけ置く。
+cat > "$_mg_fx/repo/tests/mcp-guard-required-probe/verify.sh" <<'PROBE'
+#!/usr/bin/env bash
+if [ "${FIXTURE_MCP_GUARD_REQUIRED_SKIP:-0}" = "1" ]; then
+  echo "○ skip: 依存が無いため（41-G が必須 skip 経路へ到達するための材料）"
+  exit 0
+fi
+exit 0
+PROBE
+chmod +x "$_mg_fx/repo/tests/mcp-guard-probe/verify.sh" "$_mg_fx/repo/tests/mcp-guard-required-probe/verify.sh"
+awk '
+  /^  SCRIPTS=\($/ {
+    print
+    print "    \"$SCRIPT_DIR/mcp-guard-probe/verify.sh\""
+    print "    \"$SCRIPT_DIR/mcp-guard-required-probe/verify.sh\""
+    in_scripts = 1
+    next
+  }
+  in_scripts && /^  \)$/ { in_scripts = 0; print; next }
+  in_scripts { next }
+  /^REQUIRED_SUITES=\($/ {
+    print
+    print "  mcp-guard-required-probe"
+    in_required = 1
+    next
+  }
+  in_required && /^\)$/ { in_required = 0; print; next }
+  in_required { next }
+  { print }
+' "$RUNNER" > "$_mg_fx/repo/tests/run-all.sh"
+cp "$TESTS_DIR/../scripts/record-gate-head.sh" "$_mg_fx/repo/scripts/record-gate-head.sh"
+
+_mg_git() { git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -c init.defaultBranch=main "$@"; }
+_mg_setup_rc=0
+_mg_git -C "$_mg_fx/repo" init -q . >/dev/null 2>&1 || _mg_setup_rc=1
+_mg_git -C "$_mg_fx/repo" add -A >/dev/null 2>&1 || _mg_setup_rc=1
+_mg_git -C "$_mg_fx/repo" commit -qm "fixture" >/dev/null 2>&1 || _mg_setup_rc=1
+
+_mg_run() { # <env のオプション or 代入>...
+  rm -f "$_mg_rec"
+  if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_ALLOW_SKIP \
+    -u FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS -u FIXTURE_MCP_GUARD_PROBE_RC -u FIXTURE_MCP_GUARD_REQUIRED_SKIP -u FF_GATE_RECORD -u FF_RUN_ALL_ALLOW_DIRTY -u FF_RUN_ALL_CHECK_REGISTRATION "$@" FF_RUN_ALL_JOBS=1 FF_RUN_ALL_MCP_DIR="$_mg_mcp" \
+    FF_GATE_RECORD_FILE="$_mg_rec" bash "$_mg_fx/repo/tests/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
+}
+
+if [ "$_mg_setup_rc" -ne 0 ]; then
+  bad "case 41: 一時 git リポジトリの fixture を作れない（ガードの実測ができていない）"
+else
+  # 41-A: 入れる先（package.json）が在るのに node_modules が無い回は、suite を 1 つも実行せずに止まる。
+  : > "$_mg_pkg"
+  rm -rf "$_mg_nm"
+  _mg_run
+  expect_rc 3 "依存が無い既定一覧は環境分類の専用コード（3）で終わる（suite 失敗の 1 と区別できる）"
+  expect_has '^✗ 環境が未整備です' "変更起因ではなく環境であることを先頭で名乗る"
+  expect_has '^  次を実行してから回し直してください: npm ci --prefix plugins/ff-dev-toolkit/mcp' "復旧コマンドを出す（末尾の案内行ではなくガードの行であることまで固定する）"
+  expect_has 'FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1' "オプトアウトの名前を案内する"
+  expect_lacks '^FIXTURE-MCP-GUARD-EXECUTED$' "suite を 1 つも実行しない（十数分を先に捨てない）"
+  expect_lacks '^suites: total=' "サマリー行を出さない（実行が成立していない）"
+  if [ -e "$_mg_rec" ]; then
+    bad "停止した実行が鮮度記録を作っている（記録より手前で止まっていない）"
+  else
+    ok "停止した実行は鮮度記録を作成・更新しない"
+  fi
+
+  # 41-B: 依存が整っている通常環境ではガードが無音で、従来どおり既定一覧が走る（AC3）。
+  _mg_install_deps
+  _mg_run
+  expect_rc 0 "依存が在る回は従来どおり rc=0"
+  expect_has '^FIXTURE-MCP-GUARD-EXECUTED$' "依存が在る回は suite が実際に走る"
+  expect_lacks '環境が未整備です' "依存が在る回はガードが無音（正常系で警告し続けない）"
+  expect_lacks '^○ 案内: 同梱 MCP の依存が揃っていないため' "依存が在る回は末尾の案内も出ない"
+  # 41-A の「停止した回は記録を作らない」は負の主張なので、記録器が一度も動かない fixture では
+  # 空振りのまま緑になる。走った回に記録が**在る**ことを対で主張して足場を確かめる。
+  if [ -f "$_mg_rec" ]; then
+    ok "走りきった回は鮮度記録が書かれる（41-A の負の主張が空振りでないことの対）"
+  else
+    bad "走りきった回でも鮮度記録が書かれない（記録器の配線が壊れており 41-A が空振りする）"
+  fi
+
+  # 41-C: 入れる先が無い checkout（配布物・fixture 複製）では止めない。案内が成立しないうえ、
+  # ここで止めると回せる実行を奪うだけになる。述語を「node_modules の不在」だけへ退行させると
+  # このケースが赤くなる。
+  rm -rf "$_mg_nm" "$_mg_pkg"
+  _mg_run
+  expect_rc 0 "mcp/package.json が無い checkout では止めない"
+  expect_has '^FIXTURE-MCP-GUARD-EXECUTED$' "入れる先が無い回は従来どおり suite が走る"
+  expect_lacks '環境が未整備です' "入れる先が無い回はガードが発火しない"
+
+  # 41-D: 明示のオプトアウトなら従来どおり走り、実行後の案内行（原因の名指し）は残る。
+  : > "$_mg_pkg"
+  rm -rf "$_mg_nm"
+  _mg_run FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1
+  expect_rc 0 "オプトアウト付きなら依存が無くても従来どおり走る"
+  expect_has '^FIXTURE-MCP-GUARD-EXECUTED$' "オプトアウト付きなら suite が走る"
+  expect_lacks '環境が未整備です' "オプトアウト付きではガードが停止しない"
+
+  # 41-F: オプトアウトして suite が fail した回は、実行後の案内行が原因を名指しする。
+  # ガードが既定一覧を止めるようになったぶん、この案内行へ到達するのは「明示引数」と「オプトアウト」の
+  # 2 経路だけになった。判定対象 MCP_NODE_MODULES の解決を起動ガード側へ移した変更が、末尾の案内へ
+  # 正しく共有されているかはここでしか観測できない（41-D は suite が全部 pass するので案内条件を満たさない）。
+  _mg_run FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 FIXTURE_MCP_GUARD_PROBE_RC=1
+  expect_rc nz "オプトアウトして suite が fail した回は従来どおり非 0"
+  expect_has '^○ 案内: 同梱 MCP の依存が揃っていないため' "オプトアウト経路では実行後の案内行が残る"
+  expect_has 'npm ci --prefix plugins/ff-dev-toolkit/mcp' "案内行に復旧コマンドを含む"
+
+  # 41-G: オプトアウト経路で必須 suite が skip したとき、再現コマンドに前置が残る。
+  # 前置を落とした案内をコピペすると起動ガードに止められ、案内どおりに再実行できない
+  # （案内が自分で自分を無効化する）。fixture の必須 probe を skip させて到達させる。
+  _mg_run FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 FIXTURE_MCP_GUARD_REQUIRED_SKIP=1
+  expect_rc nz "必須 suite が skip した回は従来どおり非 0"
+  expect_has '環境都合で消してはいけない suite が skip しました' "必須 skip の停止理由を出す"
+  expect_has 'FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 FF_RUN_ALL_ALLOW_SKIP=' "再現コマンドにオプトアウト前置が残る（コピペで再実行できる）"
+
+  # 41-H: install が不完全（node_modules は在るが .bin/esbuild が無い）な回も止める。
+  # 述語をディレクトリの実在へ退行させるとここだけが赤くなる — npm ci --omit=dev / 中断した
+  # install がこの状態を作り、下流 suite は「npm install が不完全」で赤くなる。
+  : > "$_mg_pkg"
+  rm -rf "$_mg_nm"
+  mkdir -p "$_mg_nm"
+  _mg_run
+  expect_rc 3 "依存が在るが不完全な回も環境分類で止まる"
+  expect_has '依存は展開されていますが必要なコマンドがありません' "「在るが足りない」を「まるごと無い」と別の文言で名乗る"
+  expect_lacks '^FIXTURE-MCP-GUARD-EXECUTED$' "不完全な回も suite を 1 つも実行しない"
+
+  # 41-I: 判定対象の上書きが効いている回は 1 行名乗る（無音の迂回路にしない）。
+  # この上書きは検査専用だが、ガードの発火可否を決めるようになったので、黙って効くと
+  # 「export したシェルでは以後すべての既定一覧ゲートが無防備」を作れてしまう。
+  _mg_install_deps
+  _mg_run
+  expect_has 'FF_RUN_ALL_MCP_DIR で依存判定の対象を上書きしています' "上書きが効いている回は 1 行名乗る"
+
+  # 41-J: 依存が無くても、**登録漏れ（変更起因の赤）は先に出る**。ガードを登録照合の前へ戻すと
+  # ここが赤になる。この PR が意図的に動かした配置で、順序を主張する唯一のケース。
+  : > "$_mg_pkg"
+  rm -rf "$_mg_nm"
+  mkdir -p "$_mg_fx/repo/tests/mcp-guard-unlisted-probe"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$_mg_fx/repo/tests/mcp-guard-unlisted-probe/verify.sh"
+  chmod +x "$_mg_fx/repo/tests/mcp-guard-unlisted-probe/verify.sh"
+  _mg_git -C "$_mg_fx/repo" add -A >/dev/null 2>&1 || true
+  _mg_git -C "$_mg_fx/repo" commit -qm "unlisted probe" >/dev/null 2>&1 || true
+  _mg_run
+  expect_has '未登録の suite があります' "依存が無くても登録漏れ（変更起因の赤）は先に出る"
+  expect_lacks '環境が未整備です' "登録漏れがある回は環境分類より先に登録照合で止まる"
+  # 後続ケースのために未登録 probe を取り除いて commit し直す（木は clean へ戻す）。
+  rm -rf "$_mg_fx/repo/tests/mcp-guard-unlisted-probe"
+  _mg_git -C "$_mg_fx/repo" add -A >/dev/null 2>&1 || true
+  _mg_git -C "$_mg_fx/repo" commit -qm "drop unlisted probe" >/dev/null 2>&1 || true
+
+  # 41-K: 依存が無く、かつ木が汚れている回は **dirty 側が先に止める**（ガードを dirty の前へ
+  # 移すと赤）。どちらも「実行しない」判断だが、汚れた木は依存を入れても証拠にならないので
+  # 先に言う必要がある。
+  : > "$_mg_fx/repo/tests/mcp-guard-probe/scratch.txt"
+  _mg_run
+  expect_has '未コミットの変更がある作業ツリー' "依存不足と dirty が同時なら dirty 側が先に止める"
+  expect_lacks '環境が未整備です' "dirty で止まった回は環境分類の行を出さない"
+  rm -f "$_mg_fx/repo/tests/mcp-guard-probe/scratch.txt"
+
+  # 41-L: 検査専用モード（登録照合のみ）は依存が無くても回る。ガードを検査専用モードの早期 exit
+  # より前へ移すと赤。実行も記録もしないモードを依存不足で止める理由が無い。
+  _mg_run FF_RUN_ALL_CHECK_REGISTRATION=1
+  expect_rc 0 "検査専用モードは依存が無くても回る"
+  expect_lacks '環境が未整備です' "検査専用モードはガードの対象外"
+
+  # 41-E: 解釈できない値は 1 行警告のうえガード有効のまま（fail-closed 側）。
+  rm -rf "$_mg_nm"
+  _mg_run FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=yes
+  expect_rc 3 "解釈できない値ではガードが有効のまま（オプトアウトにならない）"
+  expect_has 'FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS="yes" は解釈できない値です' "解釈できない値を 1 行で警告する"
+fi
+rm -rf "$_mg_fx"
+fi
+
+echo ""
+echo "== case 42: base の鮮度が原因の赤は failed の内訳として別行で名指しする（赤のまま） =="
+
+# 並行して default branch が進む環境では、ブランチが古くなった瞬間に「base が HEAD の祖先」を
+# 要求する検査が落ちる。その赤は変更の是非を語らないのに、従来は変更起因の赤と同じ形で出ていた。
+# 分類だけを変え、**赤であることは変えない**（古い base で判定を諦めて skip へ倒すのは fail-open）。
+run_runner "$FIXTURES/stale/verify.sh" "$FIXTURES/pass/verify.sh"
+expect_rc nz "鮮度由来の赤でも従来どおり非 0 で終わる（skip へ倒さない）"
+expect_has '^✗ failed: .*stale' "鮮度の suite は failed 一覧からも外さない（赤は赤のまま・名指しまで固定する）"
+expect_has '^✗ stale (base が先行しているための赤を含む): ' "鮮度由来を別行で名指しする"
+# サマリー行の指定インデント（2 スペース）まで固定する。fixture 側は復旧手段を出さないので、
+# ここが一致するのはランナーが出した行だけである（fixture が同じ文言を出すと変異を吸収する）。
+expect_has '^  取り込んでから回し直してください: git merge ' "取り込む側の復旧手段（merge）を出す"
+expect_has '^  取り込んでから回し直してください: .*git rebase ' "履歴を畳む側の復旧手段（rebase）も同じ行に出す"
+expect_has '取り込んでも同じ suite が赤いままなら、それは変更起因の赤です' "取り込んでも赤なら変更起因だと言い切る（鮮度で片付けさせない）"
+expect_has '^FIXTURE-PASS-EXECUTED$' "鮮度の赤は後続 suite の実行を止めない"
+
+# 変更起因の赤しか無い回に鮮度の行を出さない（正常系で毎回警告し続けない）。
+run_runner "$FIXTURES/fail/verify.sh"
+expect_rc nz "変更起因の赤は従来どおり非 0"
+expect_lacks '^✗ stale ' "鮮度マーカーの無い赤では stale 行を出さない"
+expect_lacks '取り込んでから回し直してください' "鮮度の案内も出さない"
+
+# 緑の回にも出さない。
+run_runner "$FIXTURES/pass/verify.sh"
+expect_rc 0 "緑の回は従来どおり rc=0"
+expect_lacks '^✗ stale ' "緑の回に stale 行を出さない"
+
+# 行頭マーカーだけを拾う（部分 skip と同じ境界）。**非 0 で終わり、かつインデント付きで**
+# 鮮度マーカーを引用しただけの suite は分類しない — この repo の標準ダンプ書式（`sed 's/^/    | /'`）
+# は他 suite の出力をそのまま引用するので、部分一致へ緩むと変更起因の赤が鮮度として報告される。
+run_runner "$FIXTURES/stale-indented/verify.sh"
+expect_rc nz "インデント付き引用の suite も従来どおり赤"
+expect_lacks '^✗ stale ' "インデント付きの鮮度マーカーは分類に使わない（行頭アンカー）"
+
+# 鮮度マーカーを出しながら緑で終わる = 判定を諦めた fail-open。passed に数えつつ 1 行 fail-loud する。
+run_runner "$FIXTURES/stale-green/verify.sh"
+expect_rc 0 "緑で終わった suite の終了コードは変えない"
+expect_lacks '^✗ stale ' "緑の suite は stale バケットへ入れない（STALE は FAILED の部分集合）"
+expect_has '鮮度マーカーを出しながら緑で終わりました' "鮮度マーカー付きの緑は fail-loud する（分類は skip 経路ではない）"
+
+# 既定は並列実行。分類が逐次経路にしか無いと、実運用では一度も出ない。
+RUN_JOBS=2 run_runner "$FIXTURES/stale/verify.sh" "$FIXTURES/pass/verify.sh"
+expect_rc nz "並列経路でも鮮度由来の赤は非 0"
+expect_has '^✗ stale (base が先行しているための赤を含む): ' "並列経路でも鮮度バケットへ分類する"
+
+run_runner "$FIXTURES/partial-skip/verify.sh"
+expect_lacks '^✗ stale ' "鮮度と無関係な suite を巻き込まない"
+
+echo ""
+echo "== case 43: node --test の reporter 未固定を横断で検出する =="
+
+# `node --test` の既定 reporter は stdout が TTY かどうかで変わり（TTY=spec / pipe=TAP）、
+# しかも Node の版で既定が動く。出力を文字列照合する検査はこの差でそのまま壊れ、「手元で
+# 緑・CI で赤」と「CI で偽の緑」の両方が成立する。既定が spec の環境では pin を外す変異が
+# 緑になるため**振る舞いテストでは回帰ガードを作れない**（ACE-307-2 と同型）。静的に縛る。
+# 実装の正本は tests/lib/node-test-reporter.sh。
+
+NT_LIB="$SCRIPT_DIR/../lib/node-test-reporter.sh"
+[ -f "$NT_LIB" ] || { echo "✗ run-all verify: node --test reporter ガードが見つかりません: $NT_LIB" >&2; exit 1; }
+# 出力タグは契約（docs/04-quality/TESTING.md）が名前で参照する。実装に実在することを
+# fail-closed で確かめてから、下のケースがこの名前をアサートする。
+NT_TAG='node-test-unpinned'
+/usr/bin/grep -qF -- "$NT_TAG" "$NT_LIB" \
+  || { echo "✗ run-all verify: タグ「${NT_TAG}」が ${NT_LIB} に見つかりません（契約名と実装が drift）" >&2; exit 1; }
+# shellcheck source=../lib/node-test-reporter.sh
+. "$NT_LIB"
+
+# 検出器の自己検証。probe は 2 分割で組み立てる — 1 行に直書きすると、本検査がこのファイル
+# 自身を違反として拾う（case 11 と同じ理由）。
+NT_CMD='node --test'
+NT_Q="'"
+NT_PROBE_BAD="${NT_CMD} \"\$dir\"/*.test.mjs"
+NT_PROBE_PINNED="${NT_CMD} --test-reporter=spec \"\$dir\"/*.test.mjs"
+NT_PROBE_ENV="FF_X=1 ${NT_CMD} \"\$dir\"/*.test.mjs"
+NT_PROBE_CAPTURE="out=\"\$(${NT_CMD} \"\$dir\"/x.test.mjs)\""
+NT_PROBE_CAPTURE_PINNED="out=\"\$(${NT_CMD} --test-reporter=spec \"\$dir\"/x.test.mjs)\""
+NT_PROBE_SEMI="cd \"\$dir\" && ${NT_CMD} x.test.mjs"
+NT_PROBE_IF="if ${NT_CMD} x.test.mjs; then :; fi"
+NT_PROBE_NODEFLAG="node --experimental-test-coverage --test x.test.mjs"
+NT_PROBE_NPX="npx ${NT_CMD} x.test.mjs"
+NT_PROBE_VAR="\"\$NODE\" --test x.test.mjs"
+NT_PROBE_PIN_QUOTED="${NT_CMD} \"--test-reporter=\$R\" x.test.mjs"
+NT_PROBE_PIN_IN_COMMENT="${NT_CMD} x.test.mjs  # TODO --test-reporter=spec"
+NT_PROBE_PIN_IN_DQ="${NT_CMD} x.test.mjs || echo \"use --test-reporter=spec\""
+NT_PROBE_PIN_IN_SQ="${NT_CMD} x.test.mjs || echo ${NT_Q}use --test-reporter=spec${NT_Q}"
+NT_PROBE_WORD_HASH="${NT_CMD} \${files[@]#./} --test-reporter=spec"
+# パターン部も NT_CMD から組み立てる。${NT_Q} で引用が切れるため、リテラルで書くと
+# この行自体が違反として拾われる（自己言及の永久赤）。
+NT_PROBE_PATTERN="N=\"\$(grep -cE ${NT_Q}(^|[^a-z])${NT_CMD}( |\$)${NT_Q} \"\$F\" || true)\""
+NT_PROBE_QUOTED="echo \"${NT_CMD} を回す\""
+NT_PROBE_ECHO="echo ${NT_CMD} \"\$dir\"/*.test.mjs"
+NT_PROBE_COMMENT="# ${NT_CMD} \"\$dir\"/*.test.mjs"
+NT_PROBE_CONT="${NT_CMD} \\"
+NT_PROBE_CONT="${NT_PROBE_CONT}
+  --test-reporter=spec \"\$dir\"/*.test.mjs"
+# 最終行がバックスラッシュ継続で終わるファイル（END フラッシュの経路）。
+NT_PROBE_EOF="${NT_CMD} x.test.mjs \\"
+
+NT_SELFTEST_OK=1
+nt_expect() { # $1: probe / $2: hit|nohit / $3: 成立時の名 / $4: 不成立時の名
+  if _nt_out="$(printf '%s\n' "$1" | node_test_scan)"; then
+    if [ "$2" = "hit" ]; then
+      # タグと開始行番号まで固定する（空/非空だけだと、タグ名を変える退行が緑のまま通る）。
+      case "$_nt_out" in
+        1:"$NT_TAG":*) ok "$3" ;;
+        "") bad "$4"; NT_SELFTEST_OK=0 ;;
+        *) bad "$4（出力の形が違う: ${_nt_out%%$'\n'*}）"; NT_SELFTEST_OK=0 ;;
+      esac
+    else
+      if [ -z "$_nt_out" ]; then ok "$3"; else bad "$4"; NT_SELFTEST_OK=0; fi
+    fi
+  else
+    bad "node_test_scan を実行できません（$4）"
+    NT_SELFTEST_OK=0
+  fi
+}
+
+nt_expect "$NT_PROBE_BAD" hit \
+  "検出器が reporter 未固定の起動を検出できる（self-test）" \
+  "検出器が reporter 未固定の起動を検出できない — 横断検査は空振りするため実行しない"
+nt_expect "$NT_PROBE_ENV" hit \
+  "検出器が環境変数を前置きした起動も検出できる（self-test）" \
+  "検出器が環境変数前置きの起動を取りこぼす（実在する唯一の形がこれだった）"
+nt_expect "$NT_PROBE_CAPTURE" hit \
+  "検出器が出力を捕捉する起動を検出できる（self-test）" \
+  "検出器が出力捕捉の起動を取りこぼす — 捕捉こそ stdout が pipe になる形で、この契約が狙う当のハザード"
+nt_expect "$NT_PROBE_SEMI" hit \
+  "検出器が行の先頭語でない起動を検出できる（self-test）" \
+  "検出器が && 連結の右辺を取りこぼす — 局所ガードより検出力が低い"
+nt_expect "$NT_PROBE_IF" hit \
+  "検出器が if 条件部の起動を検出できる（self-test）" \
+  "検出器が制御構文のキーワードで起動を見失う"
+nt_expect "$NT_PROBE_NODEFLAG" hit \
+  "検出器が node 側フラグを挟んだ起動を検出できる（self-test）" \
+  "検出器が --test の隣接を要求している — フラグ 1 つで pin 要求を回避できる"
+nt_expect "$NT_PROBE_NPX" hit \
+  "検出器がパッケージランナー経由の起動を検出できる（self-test）" \
+  "検出器が npx / pnpm exec 経由を取りこぼす"
+nt_expect "$NT_PROBE_VAR" hit \
+  "検出器が変数で起動する形を検出できる（self-test）" \
+  "検出器が変数経由を取りこぼす — 変数 1 つで pin 要求を回避できる"
+nt_expect "$NT_PROBE_PIN_IN_COMMENT" hit \
+  "検出器がコメント内の pin 言及を pin と数えない（self-test）" \
+  "検出器がコメントの言及を pin と誤認する"
+nt_expect "$NT_PROBE_PIN_IN_DQ" hit \
+  "検出器が二重引用符内の pin 言及を pin と数えない（self-test）" \
+  "検出器が文字列内の言及を pin と誤認する"
+nt_expect "$NT_PROBE_PIN_IN_SQ" hit \
+  "検出器が単一引用符内の pin 言及を pin と数えない（self-test）" \
+  "検出器が文字列内の言及を pin と誤認する"
+nt_expect "$NT_PROBE_PINNED" nohit \
+  "検出器が pin 済みの起動を誤検出しない（self-test）" \
+  "検出器が pin 済みを誤検出する — 直しようのない赤になる"
+nt_expect "$NT_PROBE_CAPTURE_PINNED" nohit \
+  "検出器が捕捉 + pin 済みを誤検出しない（self-test）" \
+  "検出器が捕捉の中の pin を見落とす"
+nt_expect "$NT_PROBE_PIN_QUOTED" nohit \
+  "検出器が引用符で括った pin を誤検出しない（self-test）" \
+  "検出器が伏せた版で pin を判定している — 変数を使った正当な pin が直しようのない赤になる"
+nt_expect "$NT_PROBE_WORD_HASH" nohit \
+  "検出器が語中の # をコメント開始と数えない（self-test）" \
+  "検出器が \${files[@]#./} をコメント開始と読み、その後ろの pin を見失う"
+nt_expect "$NT_PROBE_PATTERN" nohit \
+  "検出器が置換内のパターン文字列を起動と数えない（self-test）" \
+  "検出器が grep のパターン文字列を起動として拾う — 検出器自身を縛る検査が永久に赤くなる"
+nt_expect "$NT_PROBE_CONT" nohit \
+  "検出器がバックスラッシュ行継続をまたいだ pin を認識する（self-test）" \
+  "検出器が行継続で pin を見失う — 折り返して書いた起動が直しようのない赤になる"
+nt_expect "$NT_PROBE_QUOTED" nohit \
+  "検出器が引用符の中の散文を起動と数えない（self-test）" \
+  "検出器が散文を起動と数える — 検出器自身やテストの期待値で永久に赤くなる"
+nt_expect "$NT_PROBE_ECHO" nohit \
+  "検出器がコマンド語が node でない行を起動と数えない（self-test）" \
+  "検出器が echo 経由の言及を起動と数える"
+nt_expect "$NT_PROBE_COMMENT" nohit \
+  "検出器がコメント行を起動と数えない（self-test）" \
+  "検出器がコメントを起動と数える"
+# 最終行が継続で終わるファイルは END でフラッシュしないと違反が黙って消える。
+if _nt_eof="$(printf '%s\n' "$NT_PROBE_EOF" | node_test_scan)"; then
+  case "$_nt_eof" in
+    *"$NT_TAG"*) ok "検出器が末尾の行継続を END でフラッシュする（self-test）" ;;
+    *) bad "検出器が末尾の行継続をフラッシュしない — ファイル末尾の違反が黙って消える"; NT_SELFTEST_OK=0 ;;
+  esac
+else
+  bad "node_test_scan を実行できません（末尾フラッシュ）"; NT_SELFTEST_OK=0
+fi
+
+if [ "$NT_SELFTEST_OK" -eq 1 ]; then
+  NT_REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || NT_REPO_ROOT=""
+  if [ -z "$NT_REPO_ROOT" ]; then
+    bad "リポジトリルートを解決できない（git rev-parse 失敗）— 横断検査を実行できない"
+  else
+    set +e
+    NT_SUMMARY="$(node_test_check_tracked "$NT_REPO_ROOT" 2>/dev/null)"
+    set -e
+    case "$NT_SUMMARY" in
+      NODE_TEST_RESULT=ok\ *)
+        NT_SCANNED="$(printf '%s\n' "$NT_SUMMARY" | sed -E 's/.*SCANNED=([0-9]+).*/\1/')"
+        # 走査 0 件は「違反 0 件」の根拠にならないし、**下限では対象集合の縮小を捕まえられない**
+        # （shebang 判定を落とす変異で 282 → 255 になっても、緩い下限なら通る。実測で生存した）。
+        # 対象集合を**独立に数えて一致**を要求する。予測子は tests/shellcheck/verify.sh の
+        # SHEBANG_RE と同じ形で、2 つのガードが同じ集合を別定義で持つ drift もここで赤になる。
+        NT_EXPECT=0
+        while IFS= read -r _nt_f; do
+          [ -n "$_nt_f" ] || continue
+          [ -f "$NT_REPO_ROOT/$_nt_f" ] || continue
+          case "$_nt_f" in
+            *.sh) NT_EXPECT=$((NT_EXPECT + 1)); continue ;;
+          esac
+          _nt_first=""
+          IFS= read -r _nt_first < "$NT_REPO_ROOT/$_nt_f" || true
+          case "$_nt_first" in
+            '#!'*[/\ ]sh|'#!'*[/\ ]sh' '*|'#!'*[/\ ]bash|'#!'*[/\ ]bash' '*|'#!'*[/\ ]dash|'#!'*[/\ ]dash' '*|'#!'*[/\ ]ksh|'#!'*[/\ ]ksh' '*) NT_EXPECT=$((NT_EXPECT + 1)) ;;
+          esac
+        done < <(git -C "$NT_REPO_ROOT" -c core.quotepath=false ls-files)
+        if [ "${NT_SCANNED:-0}" -lt 1 ]; then
+          bad "走査対象が 0 件 — 違反 0 件を主張できない"
+        elif [ "${NT_SCANNED:-0}" -eq "$NT_EXPECT" ]; then
+          ok "tracked shell の node --test はすべて reporter を固定している（${NT_SCANNED} ファイル走査・独立集計と一致）"
+        else
+          bad "走査対象の件数が独立集計と一致しない（走査 ${NT_SCANNED} / 期待 ${NT_EXPECT}）— 対象集合が黙って縮んでいる"
+        fi
+        ;;
+      NODE_TEST_RESULT=hits\ *)
+        bad "reporter を固定しない node --test が混入した"
+        node_test_check_tracked "$NT_REPO_ROOT" >/dev/null || true
+        ;;
+      NODE_TEST_RESULT=error_repo\ *)
+        bad "リポジトリルートを解決できない（git rev-parse 失敗）— 横断検査を実行できない"
+        ;;
+      NODE_TEST_RESULT=error_list\ *)
+        bad "検査対象の tracked ファイル一覧を取得できない（git ls-files 失敗/空）— 0 件の主張はできない"
+        ;;
+      NODE_TEST_RESULT=error_scan\ *)
+        bad "走査に失敗したファイルがある — そのファイルの 0 件は主張できない"
+        node_test_check_tracked "$NT_REPO_ROOT" >/dev/null || true
+        ;;
+      *)
+        bad "横断検査のサマリーを解釈できない（実際: ${NT_SUMMARY}）"
+        ;;
+    esac
+
+    # 集約層（scan → all_hits → result=hits → rc=1）と、利用者へ届く stderr を隔離 fixture で
+    # 実測する。実リポジトリの ok だけを見る形では、集約を no-op 化する変異が緑のまま通る。
+    if ! command -v git >/dev/null 2>&1; then
+      echo "  ○ skip: git が無いため横断検査の hits / fail-closed 経路をスキップ（この検査は 1 件も実行していません）"
+    else
+      _nt_fx="${TMPDIR:-/tmp}/ff-node-test-guard.$$"
+      rm -rf "$_nt_fx"; mkdir -p "$_nt_fx"
+      printf '%s\n' '#!/usr/bin/env bash' "$NT_PROBE_BAD" > "$_nt_fx/violate.sh"
+      _nt_git() { git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -c init.defaultBranch=main "$@"; }
+      _nt_setup=0
+      _nt_git -C "$_nt_fx" init -q . >/dev/null 2>&1 || _nt_setup=1
+      _nt_git -C "$_nt_fx" add -A >/dev/null 2>&1 || _nt_setup=1
+      _nt_git -C "$_nt_fx" commit -qm fixture >/dev/null 2>&1 || _nt_setup=1
+      if [ "$_nt_setup" -ne 0 ]; then
+        bad "横断検査 hits 経路の git fixture を作れない（検査が成立していない）"
+      else
+        set +e
+        _nt_err="$(node_test_check_tracked "$_nt_fx" 2>&1 >/dev/null)"
+        _nt_sum="$(node_test_check_tracked "$_nt_fx" 2>/dev/null)"
+        _nt_rc=$?
+        set -e
+        case "$_nt_sum" in
+          NODE_TEST_RESULT=hits\ *) ok "横断検査は違反入り fixture で hits へ倒れる（集約層）" ;;
+          *) bad "横断検査が違反を hits にしない（実際: ${_nt_sum}）— 集約を no-op 化する変異が通る" ;;
+        esac
+        if [ "$_nt_rc" -ne 0 ]; then ok "横断検査は違反ありで非 0 を返す"; else bad "横断検査が違反ありでも 0 を返す"; fi
+        for _nt_needle in "$NT_TAG" '--test-reporter=spec' '照合の有無は静的に決められず'; do
+          case "$_nt_err" in
+            *"$_nt_needle"*) ok "横断検査の stderr が「${_nt_needle}」を含む" ;;
+            *) bad "横断検査の stderr から「${_nt_needle}」が消えている（タグだけでは直し方が伝わらない）" ;;
+          esac
+        done
+        # fail-closed の 3 経路。テストシームが用意されているのに使われていないと、
+        # 「0 件」を主張できない状態を素通りさせる変異が緑で通る。
+        printf '%s\n' '#!/usr/bin/env bash' 'exit 3' > "$_nt_fx/git-stub"
+        chmod +x "$_nt_fx/git-stub"
+        set +e
+        _nt_s1="$(FF_NODE_TEST_GIT="$_nt_fx/git-stub" node_test_check_tracked "$_nt_fx" 2>/dev/null)"
+        printf '%s\n' '#!/usr/bin/env bash' 'exit 9' > "$_nt_fx/awk-stub"
+        chmod +x "$_nt_fx/awk-stub"
+        _nt_s2="$(FF_NODE_TEST_AWK="$_nt_fx/awk-stub" node_test_check_tracked "$_nt_fx" 2>/dev/null)"
+        set -e
+        case "$_nt_s1" in
+          NODE_TEST_RESULT=error_repo\ *) ok "git が使えない回は error_repo（0 件を主張しない）" ;;
+          *) bad "git が使えない回に error_repo を返さない（実際: ${_nt_s1}）" ;;
+        esac
+        case "$_nt_s2" in
+          NODE_TEST_RESULT=error_scan\ *) ok "走査器が壊れている回は error_scan（0 件を主張しない）" ;;
+          *) bad "走査器が壊れている回に error_scan を返さない（実際: ${_nt_s2}）" ;;
+        esac
+        # tracked 一覧が空の回。ここを ok へ倒す変異は「走査 0 件なのに違反 0 件」を主張させる
+        # 典型的な fail-open で、実測で生存した経路でもある。
+        _nt_empty="$_nt_fx/empty"
+        mkdir -p "$_nt_empty"
+        _nt_git -C "$_nt_empty" init -q . >/dev/null 2>&1 || true
+        set +e
+        _nt_s3="$(node_test_check_tracked "$_nt_empty" 2>/dev/null)"
+        _nt_rc3=$?
+        set -e
+        case "$_nt_s3" in
+          NODE_TEST_RESULT=error_list\ *) ok "tracked 一覧が空の回は error_list（0 件を主張しない）" ;;
+          *) bad "tracked 一覧が空の回に error_list を返さない（実際: ${_nt_s3}）— 走査 0 件で緑になる" ;;
+        esac
+        if [ "$_nt_rc3" -ne 0 ]; then ok "tracked 一覧が空の回は非 0 を返す"; else bad "tracked 一覧が空でも 0 を返す"; fi
+      fi
+      rm -rf "$_nt_fx"
+    fi
+  fi
 fi
 
 rm -f "$RUN_GATE_RECORD"

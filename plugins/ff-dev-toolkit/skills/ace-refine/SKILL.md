@@ -143,9 +143,65 @@ dry-run レポート全文と近似重複の抽出結果を、操作種別ごと
 
 **dry-run レポートの提示とユーザー承認より前に、いかなるファイルも書き換えない。**
 
+#### 承認を求める前に base の先行を照合する
+
+R3 の開始前ガード（下記）は**適用の直前**に在るが、承認待ちで空く窓はその手前にある。ユーザーの
+応答時間だけ窓が開くので、並行セッションが同じ default ブランチへマージしていると、承認対象が
+承認された時点で既に古いことがある。実測では、承認を挟んでいる間に同じカテゴリの整理が
+マージされ、**適用済みの 161 件を破棄して 138 件を取り直した**（OBS-004 の 3 回目）。
+
+**レポートを提示する直前に照合する。** ここで先行していれば、古い対象をそもそも承認させない —
+手戻りは「dry-run の作り直し」で済み、**承認のやり直しが発生しない**。これが窓を実際に狭める唯一の
+検出点である（R3 の開始前ガードとの間には手順が無く、承認の直後に足しても時間窓は縮まらない）。
+
+照合は R3 の開始前ガードと**同じ集合**（base の先行 + clean tree）を見る。片方だけを見ると、
+「承認前は通ったのに R3 で止まる」という本節が塞ごうとしている形がそのまま残る。
+
+```bash
+default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || {
+  echo "origin/HEAD を解決できません（git remote set-head origin -a を実行してください）" >&2
+  exit 1
+}
+[[ "$default_ref" == origin/* ]] || { echo "default branch ref が不正です: ${default_ref}" >&2; exit 1; }
+default_branch="${default_ref#origin/}"
+[[ -z "$(git status --porcelain --untracked-files=all)" ]] || {
+  echo "作業ツリーを clean にしてから dry-run をやり直してください" >&2
+  exit 1
+}
+if ! git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" >/dev/null 2>&1; then
+  echo "origin/${default_branch} を取得できません（stale 値で判定しない。認証・通信・remote 設定を確認）" >&2
+  exit 1
+fi
+git rev-parse --verify --quiet "refs/remotes/origin/${default_branch}" >/dev/null || {
+  echo "remote-tracking ref を解決できません: origin/${default_branch}" >&2
+  exit 1
+}
+git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
+  echo "origin/${default_branch} が先行しています。取り込んでから dry-run をやり直してください（承認は求めない）" >&2
+  exit 1
+}
+```
+
+非 0 で止まったらレポートを提示しない。取り込みは利用者の操作である（並行して入った整理の内容を
+見てから dry-run を作り直す必要があり、自動追随はできない）。
+
+> **対象範囲**: 本規定は `ace-refine` に閉じる。3 フェーズ承認を持つスキルは他にもあるが
+> （`asdd-init` / `asdd-work` / `harness-review` / `multi-explore` / `multi-implement`）、実測された
+> 手戻り（承認対象を作り直す）が起きるのは、**承認待ちの窓の後段に default ブランチの共有文書への
+> 書き込みがある**スキルだけである。`ace-curate` と `retrospective` は同じ共有文書（PLAYBOOK /
+> OBSERVATIONS）へ直接書くが、**承認待ちの窓を持たない**（どちらも収集して追記するだけ）ので
+> 本規定の対象外。ただし `retrospective` は同じ台帳へ直接 push しながら base 先行のガード自体を
+> 持たない（`ace-curate` は持つ）ので、その非対称は別の観点として follow-up Issue で扱う。
+> 横断化が要ると分かった時点で同じく Issue を立てる。
+
 ### Phase R3: 適用
 
 承認された操作を適用する**前**に、R2 の承認対象を作った base が最新か確認する。R3-a〜R3-d の書き込み後に clean tree を要求してはならない。
+
+このガードは上の「承認を求める前」の照合と**同じ集合**（base の先行 + clean tree）を同じ向きで見る。
+承認の直後に 3 つめの検出点は置かない — 承認から R3 の開始までに手順が無く、時間窓が縮まらないため
+（足しても利用者向けの文言が増えるだけになる）。ここで止まった場合は、承認対象を作り直す必要が
+あることを利用者へ伝える。
 
 ```bash
 default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || {
@@ -173,6 +229,18 @@ git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
 ```
 
 fetch 失敗・ref 解決不能・diverge は stale 値へ fallback せず停止する。remote が先行していれば取り込み、dry-run と R2 の承認対象差分から作り直す。確認後、承認された操作のみを以下の順で適用する。
+
+**適用後にも 2 度目の先行が起きうる。** R3 の書き込みが終わってから claim を生成するまでの間にも
+窓は開く（実測では OBS 台帳の更新が並行して入った）。この経路は下記 claim contract の content
+conflict で止まる。止まったときの復帰は次のとおり:
+
+1. 適用済みの成果は**捨てない**。`git stash push` などで退避するのではなく、最新 base を取り込んでから
+   同じ結果へ到達できるかを見る — 並行して入った整理と対象が重なっていなければ、取り込み後に
+   claim を再生成するだけで収束する
+2. 対象が重なっていた場合（同じカテゴリの stale アーカイブ等）は、**重なった分を差し引いた集合**へ
+   作り直す。実測では 161 件のうち 23 件が先に入っており、138 件へ作り直して収束した
+3. どちらの場合も、claim は**最新 base から**再生成する（version / `ace_entry_count` / Changelog も
+   同じ base で取り直す）。claim の片寄せ・削除で競合を解消しない
 
 #### R3-0. archive へ追記する前の共通規則（保全済み ID の分岐・一意性検証）
 

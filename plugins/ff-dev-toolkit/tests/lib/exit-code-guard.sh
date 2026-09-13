@@ -23,6 +23,19 @@
 #                   読む形は `echo "EXIT=$?"` / `rc=$?` のほか `if [ $? -ne 0 ]` /
 #                   `[[ $? -ne 0 ]]` / `test $? -eq 0` / `exit $?` / `return $?` / `case $? in`
 #   pipestatus      PIPESTATUS を参照している（zsh では空へ展開されて機能しない）
+#   gate-exit-swallowed
+#                   ゲート起動を含む論理行が、ゲートの成否を運ばない区間で終端している。
+#                   `$?` の読み方とは**別の壊れ方**である — 読む側は正しくても、起動した
+#                   プロセス全体の終了コードが最後の区間のもの（`echo` の 0）になるため、
+#                   それを読む外側（background 実行の完了通知・CI ステップ・呼び出し元の
+#                   `set -e`）が「赤いゲートを緑」と**断定**する。自動通知は断定として届く
+#                   ぶん、ログを読み直す動機すら消える。
+#                   例: `bash tests/run-all.sh > log 2>&1; echo "EXIT=$?"`
+#                       → 通知は exit code 0。実際は failed=4 でも読み手に届かない
+#                   握り潰すのは `;` / `||` / パイプの 3 つ。**`&&` は対象外** — 短絡するので
+#                   ゲートが赤なら右辺は実行されず、終了コードはゲートのものが残る（実測）
+#                   正しい形: `bash tests/run-all.sh > log 2>&1` で改行し、次の行で
+#                       `rc=$?; echo "EXIT=$rc"; exit $rc`（診断を出したうえで伝播させる）
 #
 # 「出力整形フィルタ」= head / tail / less / more / cat / tee / wc（`| sudo tee x` /
 # `| command head -1` / `| LC_ALL=C wc -l` のように前置きが 1 段あっても同じ）。これらは測定対象の
@@ -110,6 +123,111 @@ function is_pipe(s,   k, arr, t, w) {
   sub(/^.*\//, "", w)
   return (w ~ /^(head|tail|less|more|cat|tee|wc)$/)
 }
+# ゲート起動を含むか。対象は「赤なら止めるべき検証の入口」で、名前で拾う。ここを
+# 「あらゆるコマンド」へ広げると、診断で終わる普通のスクリプトが全部赤になる。
+function is_gate_launch(s,   w, rest, guard) {
+  if (s !~ /run-all\.sh/) return 0
+  sub(/^[[:space:]]+/, "", s)
+  # 前置きを剥がす。環境変数代入とラッパ（timeout / nohup / stdbuf / env / command / sudo / time）は
+  # background 起動の定番形で、ここを剥がさないと**実際に事故が起きる形だけ**が素通りする。
+  # `is_pipe` が同じファイル内で sudo / command / env を剥がしているのに、こちらだけ剥がさない
+  # 非対称は境界として説明できない。
+  guard = 0
+  while (guard++ < 8) {
+    if (s ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]/) { sub(/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/, "", s); continue }
+    w = s; sub(/[[:space:]].*$/, "", w); sub(/^.*\//, "", w)
+    if (w == "timeout") {
+      sub(/^[^[:space:]]+[[:space:]]+/, "", s)
+      while (s ~ /^-[^[:space:]]*[[:space:]]/) sub(/^-[^[:space:]]*[[:space:]]+/, "", s)
+      sub(/^[0-9][^[:space:]]*[[:space:]]+/, "", s)
+      continue
+    }
+    if (w ~ /^(nohup|stdbuf|env|command|sudo|time)$/) {
+      sub(/^[^[:space:]]+[[:space:]]+/, "", s)
+      while (s ~ /^-[^[:space:]]*[[:space:]]/) sub(/^-[^[:space:]]*[[:space:]]+/, "", s)
+      while (s ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]/) sub(/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/, "", s)
+      continue
+    }
+    break
+  }
+  w = s
+  sub(/[[:space:]].*$/, "", w)
+  # 代入は起動ではない（`RUNNER=tests/run-all.sh; echo done` を赤にすると直しようがない）。
+  if (w ~ /=/) return 0
+  sub(/^.*\//, "", w)
+  # basename の完全一致で見る。後方一致だと `prerun-all.sh` のような別スクリプトを本ゲートと
+  # 誤認して、起動していない行まで止める。
+  if (w == "run-all.sh") return 1
+  if (w ~ /^(bash|sh|zsh|ksh|dash)$/) {
+    rest = s
+    sub(/^[^[:space:]]+[[:space:]]+/, "", rest)
+    while (rest ~ /^-[^[:space:]]*[[:space:]]/) sub(/^-[^[:space:]]*[[:space:]]+/, "", rest)
+    w = rest
+    sub(/[[:space:]].*$/, "", w)
+    sub(/^.*\//, "", w)
+    return (w == "run-all.sh")
+  }
+  return 0
+}
+# `exit $?` / `return $?` の形か。ゲート直後なら伝播するが、診断を 1 つ挟むとその 0 を読む。
+function is_status_exit(s) {
+  sub(/^[[:space:]]+/, "", s)
+  sub(/[[:space:]]+$/, "", s)
+  return (s ~ /^(exit|return)[[:space:]]+\$\?$/)
+}
+# 論理行を区間へ割り、区切り子の種別を保つ。単一の `|` では割らない（パイプは区間の内側）。
+function split_segments(s, segs, seps,   i, c, seg, n) {
+  n = 0; seg = ""
+  for (i = 1; i <= length(s); i++) {
+    c = substr(s, i, 1)
+    if (c == ";") { segs[++n] = seg; seps[n] = ";"; seg = "" }
+    else if (c == "&" && substr(s, i + 1, 1) == "&") { segs[++n] = seg; seps[n] = "&&"; seg = ""; i++ }
+    else if (c == "|" && substr(s, i + 1, 1) == "|") { segs[++n] = seg; seps[n] = "||"; seg = ""; i++ }
+    else seg = seg c
+  }
+  segs[++n] = seg
+  return n
+}
+# 区間のどこか（パイプの段を含む）にゲート起動があるか。入力供給パイプ
+# （`printf x | bash tests/run-all.sh`）は先頭語がゲートでないので、段ごとに見ないと落ちる。
+function seg_has_gate(s,   k, arr, i) {
+  if (is_gate_launch(s)) return 1
+  if (s !~ /[|]/) return 0
+  k = split(s, arr, "[|]")
+  for (i = 1; i <= k; i++) if (is_gate_launch(arr[i])) return 1
+  return 0
+}
+# パイプの**手前の段**にゲート起動があるか（`bash tests/run-all.sh 2>&1 | tail -20` の形）。
+function pipe_head_has_gate(s,   k, arr, i) {
+  if (s !~ /[|]/) return 0
+  k = split(s, arr, "[|]")
+  for (i = 1; i < k; i++) if (is_gate_launch(arr[i])) return 1
+  return 0
+}
+# その区間がゲートの成否を運ぶか。運ばない＝診断・出力整形で終端している。
+# `exit $rc` / `exit $?` / 代入 / 制御構文は運ぶ側（後段で使える）なので対象外。
+function is_silent_tail(s,   w, rest) {
+  sub(/^[[:space:]]+/, "", s)
+  sub(/[[:space:]]+$/, "", s)
+  if (s == "") return 0
+  if (is_pipe(s)) return 1
+  w = s
+  sub(/[[:space:]].*$/, "", w)
+  sub(/^.*\//, "", w)
+  # 診断（echo / printf）に加えて、**裸の出力整形コマンド**も成否を運ばない
+  # （`gate > log; tail -25 log` の形。`is_pipe` が持つ集合と同じものを終端側でも見る）。
+  if (w ~ /^(echo|printf|head|tail|less|more|cat|tee|wc)$/) return 1
+  # 赤を消す最短手そのもの。診断文が「抜け道も塞ぐ」と書く以上、実際に塞ぐ。
+  if (w ~ /^(true|:)$/) return 1
+  if (w == "exit") {
+    rest = s
+    sub(/^exit[[:space:]]*/, "", rest)
+    # `exit $rc` / `exit $?` は伝播させる形。`exit 0` / 素の `exit`（直前の rc になるが、
+    # 診断を挟んだ後では 0 になる）は成否を運ばない。
+    return (rest !~ /\$/)
+  }
+  return 0
+}
 function is_status(s) {
   sub(/^[[:space:]]+/, "", s)
   sub(/[[:space:]]+$/, "", s)
@@ -124,7 +242,33 @@ function is_status(s) {
   if (s ~ /^case[[:space:]]/) return 1
   return 0
 }
-function analyze(line, start,   m, k, arr, i, hit) {
+# ゲートの終了コードが、この論理行のプロセス rc として残らない形か。
+#
+# rc が残るのは次のどちらか:
+#   (1) ゲート区間がそのまま終端（単体起動）
+#   (2) ゲート以降の区切り子が**全部 `&&`** — 短絡するのでゲートが赤なら後続は走らない
+# 落ちるのは:
+#   (a) ゲートがパイプの最終段でない（rc はパイプ終端のものになる。後続の区切り子に関係なく）
+#   (b) ゲート以降に `;` か `||` が 1 つでもある
+# ただし終端が成否を運ぶ形（代入・制御構文・非フィルタ終端）なら、後段で使える形なので見ない。
+function gate_swallowed(m,   segs, seps, n, i, gi) {
+  n = split_segments(m, segs, seps)
+  if (n < 1) return 0
+  gi = 0
+  for (i = 1; i <= n; i++) if (seg_has_gate(segs[i])) { gi = i; break }
+  if (gi == 0) return 0
+  # `exit $?` は「ゲート区間の直後」でだけ伝播する。診断を 1 つでも挟むとその 0 を読むので、
+  # 規定を読んだ人が最も踏みやすい取り違え（`rc=$?` を取り忘れた形）がここで止まる。
+  if (is_status_exit(segs[n])) { if (n == gi + 1) return 0 }
+  else if (!is_silent_tail(segs[n])) return 0
+  # (a) ゲートがパイプの手前の段にある = rc は既に落ちている。
+  if (pipe_head_has_gate(segs[gi])) return 1
+  if (gi == n) return 0
+  # (b) ゲート以降の区切り子に `&&` 以外が混ざっていれば落ちる。
+  for (i = gi; i < n; i++) if (seps[i] != "&&") return 1
+  return 0
+}
+function analyze(line, start,   m, k, arr, i, hit, swallowed) {
   if (mask(line, 1) ~ /\$\{?PIPESTATUS/) print start ":pipestatus:" line
   m = strip_subst(mask(line))
   sub(/[[:space:]]*(;|&&|[|][|])[[:space:]]*$/, "", m)
@@ -133,6 +277,9 @@ function analyze(line, start,   m, k, arr, i, hit) {
   if (prev_pipe == 1 && is_status(arr[1])) hit = 1
   for (i = 2; i <= k; i++) if (is_status(arr[i]) && is_pipe(arr[i - 1])) hit = 1
   if (hit) print start ":pipe-exit-read:" line
+  # ゲート起動を含む論理行が診断・出力整形で終端していると、その**プロセスの終了コード**が
+  # ゲートの成否を運ばない。区間が 2 つ以上あるときだけ見る（単体起動は正しい形）。
+  if (gate_swallowed(m)) print start ":gate-exit-swallowed:" line
   prev_pipe = is_pipe(arr[k]) ? 1 : 0
 }
 function flush() { if (buf != "") { analyze(buf, buf_start); buf = "" } }
@@ -298,7 +445,17 @@ ${hits}
     echo "パイプ終端の終了コードを読む書き方が混入した" >&2
     echo "  pipe-exit-read: パイプを外し、出力をファイルへ受けて終了コードを直接読む（cmd >log 2>&1; rc=\$?）" >&2
     echo "                  pipefail 下の tee も赤にする（静的には pipefail の到達を決められない）— ファイルへ落として \$? を直接読む形へ寄せる" >&2
-    echo "  pipestatus:     PIPESTATUS は zsh では空へ展開されて機能しない（Issue #608）— 使わない" >&2
+    echo "  pipestatus:     PIPESTATUS は zsh では空へ展開されて機能しない — 使わない" >&2
+    echo "  gate-exit-swallowed: ゲート起動を含む行を診断・出力整形で終端しない。プロセスの終了コードが" >&2
+    echo "                  その診断のもの（0）になり、background 実行の完了通知や CI ステップが" >&2
+    echo "                  「赤いゲートを緑」と断定する。診断を出したいなら伝播まで書く:" >&2
+    echo "                    bash tests/run-all.sh > run-all.log 2>&1" >&2
+    echo "                    rc=\$?; echo \"RUN_ALL_EXIT=\$rc\"; exit \$rc" >&2
+    echo "                  抜け道も塞いである: 末尾へ \`| tail\` \`| head\` を足す・\`; echo\` や" >&2
+    echo "                  \`; tail log\` を足す・\`|| echo\` で失敗時だけ診断する・\`|| true\` や" >&2
+    echo "                  \`; exit 0\` で握り潰す — いずれも同じ偽の緑になるので同じタグで止まる" >&2
+    echo "                  \`&&\` だけは例外（短絡するのでゲートが赤なら後続は走らない）。ログを" >&2
+    echo "                  読ませたいなら伝播させたうえで別コマンドで読む" >&2
     printf '%s' "$all_hits" | sed 's/^/  | /' >&2
   fi
   if [ "$has_errors" -eq 1 ]; then

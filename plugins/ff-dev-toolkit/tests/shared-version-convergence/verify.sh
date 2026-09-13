@@ -168,6 +168,9 @@ if ! helper_duplicate_out="$(cd "$HELPER_FIX" && "$CLAIM_HELPER" --base HEAD --d
 if ! helper_parent_out="$(cd "$HELPER_FIX" && "$CLAIM_HELPER" --base HEAD --document docs/../README.md 2>&1)" && [[ "$helper_parent_out" == *"component"* ]]; then ok "claim helper は親 directory component を拒否"; else bad "claim helper が docs/ 外への traversal を許可"; fi
 if ! helper_dot_out="$(cd "$HELPER_FIX" && "$CLAIM_HELPER" --base HEAD --document docs/./04-quality/TESTING.md 2>&1)" && [[ "$helper_dot_out" == *"component"* ]]; then ok "claim helper は dot component の別名 path を拒否"; else bad "claim helper が非正規 path を許可"; fi
 
+# shellcheck source=../lib/stale-base.sh
+. "$SCRIPT_DIR/../lib/stale-base.sh"
+
 validate_live_claims() {
   local validation_root="${1:-$REPO_ROOT}"
   [[ "$validation_root" == "$REPO_ROOT" ]] || git -C "$validation_root" add -A
@@ -175,10 +178,30 @@ validate_live_claims() {
 }
 source "$SCRIPT_DIR/cases/claim-helper-failures.sh"
 REPO_ROOT="$(git -C "$PLUGIN_ROOT" rev-parse --show-toplevel)"
-if GITHUB_ACTIONS="$FF_AMBIENT_GITHUB_ACTIONS" validate_live_claims; then
+# 出力を捨てずに受ける。鮮度由来の非 0（validator の FF_STALE_BASE マーカー）を
+# 内容の欠陥として報告すると、読み手は存在しない claim 不整合を探しに行く。
+set +e
+live_claims_out="$(GITHUB_ACTIONS="$FF_AMBIENT_GITHUB_ACTIONS" validate_live_claims 2>&1)"
+live_claims_rc=$?
+set -e
+if [[ "$live_claims_rc" -eq 0 ]]; then
   ok "変更した version 文書の claim が差分と一致"
   ok "変更した claim は version 変更文書へ逆参照できる"
+elif [[ $'\n'"$live_claims_out" == *$'\nFF_STALE_BASE='* ]]; then
+  # 赤のままにする（古い base で「版が収束している」と判定するのは誤り）。分類だけを変える。
+  # 判定は**行頭アンカー**で行う — 部分一致だと、path 名に FF_STALE_BASE= を含む checkout の
+  # 内容違反がこの枝へ吸われ、本物の診断が消える。診断はこの枝でも捨てない。
+  printf '%s\n' "$live_claims_out" >&2
+  ff_report_stale_base "claim と version 文書の照合" "$REPO_ROOT"
+  bad "base が先行しているため live claim の照合が成立しない（鮮度・変更起因ではない）"
+elif [[ "$live_claims_rc" -eq 2 ]]; then
+  # exit 2 は鮮度以外に origin/HEAD 未解決・fetch 失敗（オフラインでは日常的）・plugin root
+  # 解決失敗・usage error を含む。claim を 1 件も検査していないのに「不足・stale・orphan」と
+  # 断定するのは、この suite が本 Issue で潰した嘘と同じ形になる。
+  printf '%s\n' "$live_claims_out" >&2
+  bad "claim 検査が成立しない（claim の中身は未検査。鮮度以外の検査不能）"
 else
+  printf '%s\n' "$live_claims_out" >&2
   bad "version claim が不足・stale・orphan"
   bad "claim と version 文書の双方向対応が不正"
 fi
@@ -230,6 +253,15 @@ if [[ "$stale_rc" -ne 0 && "$stale_out" == *"HEAD より先行"* ]] &&
 else
   bad "差分空の stale ref が live claim 検証を素通り"
 fi
+# 鮮度由来の非 0 は機械可読マーカーで名乗る。呼び出し側はこれを見て「内容の欠陥」
+# ではなく「base が古い」と分類する — 散文の文字列一致に頼ると、診断文を直した瞬間に分類が
+# 静かに壊れて、また「claim が不足・stale・orphan」という嘘の赤が出る。exit 2 は使い方の誤り・
+# plugin root 解決失敗とも共有しているので、コードだけでは鮮度を特定できない。
+if [[ "$stale_out" == *"FF_STALE_BASE="* ]]; then
+  ok "鮮度由来の非 0 は FF_STALE_BASE マーカーで名乗る（呼び出し側が内容の欠陥と分類しないため）"
+else
+  bad "鮮度由来の非 0 に FF_STALE_BASE マーカーが無い（呼び出し側の分類が文字列一致頼みになる）"
+fi
 # ローカル条件の fetch で remote-tracking ref が checkout より先へ進んだ状態 = CI で「job 開始時点の
 # ref が checkout より先行」に相当する。CI 条件でも先行ガードは残る（fetch を省くだけで緩めない）。
 set +e
@@ -241,6 +273,57 @@ if [[ "$stale_ci_ahead_rc" -eq 2 && "$stale_ci_ahead_out" == *"job 開始時点�
 else
   bad "CI 条件で先行した remote-tracking ref を素通り、または診断文が違う（rc=${stale_ci_ahead_rc}）"
   printf '%s\n' "$stale_ci_ahead_out" | sed 's/^/    | /' >&2
+fi
+if [[ "$stale_ci_ahead_out" == *"FF_STALE_BASE="* ]]; then
+  ok "CI 条件の先行ガードも同じマーカーで名乗る"
+else
+  bad "CI 条件の先行ガードにマーカーが無い（経路ごとに分類が分かれる）"
+fi
+
+# 上の 2 件は producer 側（validator がマーカーを出すか）しか測っていない。本 Issue の本丸は
+# **consumer 側** — マーカーを受けた suite が「claim が不足・stale・orphan」という嘘の内容欠陥を
+# 出さないこと。live repo が実際に古い回にしか通らない配線なので、stub で分岐を直接踏む。
+# 分岐は関数として切り出してあるので、validator の出力と rc を差し替えて 3 分岐すべてを測れる。
+classify_live_claims() { # <rc> <出力>  — 本体の分岐と同じ順序・同じ述語で分類だけを返す
+  local rc="$1" out="$2"
+  if [[ "$rc" -eq 0 ]]; then
+    echo "ok"
+  elif [[ $'\n'"$out" == *$'\nFF_STALE_BASE='* ]]; then
+    echo "stale"
+  elif [[ "$rc" -eq 2 ]]; then
+    echo "unmeasurable"
+  else
+    echo "content"
+  fi
+}
+# 本体の分岐がこの順序・述語から drift したら、この検査は「別物を測っている」ことになる。
+# 4 つの述語がすべて本体に実在することを fail-closed で確かめる（文言だけの複製にしない）。
+for _classify_needle in \
+  'if [[ "$live_claims_rc" -eq 0 ]]; then' \
+  $'elif [[ $\'\\n\'"$live_claims_out" == *$\'\\nFF_STALE_BASE=\'* ]]; then' \
+  'elif [[ "$live_claims_rc" -eq 2 ]]; then'; do
+  /usr/bin/grep -qF -- "$_classify_needle" "$0" \
+    || bad "live claim 分類の述語が本体に見つからない（stub 検査が別物を測っている）: ${_classify_needle}"
+done
+if [[ "$(classify_live_claims 2 "FF_STALE_BASE=origin/develop"$'\n'"✗ origin/develop が HEAD より先行しています")" == "stale" ]]; then
+  ok "マーカー付きの非 0 は鮮度へ分類する（嘘の内容欠陥を出さない）"
+else
+  bad "マーカー付きの非 0 が鮮度へ分類されない"
+fi
+if [[ "$(classify_live_claims 2 "✗ origin/HEAD を解決できません")" == "unmeasurable" ]]; then
+  ok "マーカーの無い rc=2 は検査不能へ分類する（claim の中身を未検査のまま断定しない）"
+else
+  bad "マーカーの無い rc=2 が内容の欠陥として断定される"
+fi
+if [[ "$(classify_live_claims 1 "✗ claim が差分と一致しません")" == "content" ]]; then
+  ok "rc=1 は従来どおり内容の欠陥として報告する（分類が緩んで見逃さない）"
+else
+  bad "rc=1 が内容の欠陥へ分類されない"
+fi
+if [[ "$(classify_live_claims 1 "✗ version claim 対象外の特殊 path です: docs/FF_STALE_BASE=1.md")" == "content" ]]; then
+  ok "行中に FF_STALE_BASE= を含む内容違反は鮮度へ吸われない（行頭アンカー）"
+else
+  bad "行中の FF_STALE_BASE= が鮮度へ吸われる（本物の診断が消える）"
 fi
 # CI 条件で remote-tracking ref が無い（workflow の fetch step が抜けた）: fetch で補完せず exit 2
 STALE_NOREF="$TMP/stale-noref"

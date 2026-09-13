@@ -83,6 +83,8 @@ green」。healthy を確認できない回は全件で代替 — ADR-039）。`
 | case 36 | （tests 直下の verify.sh とリポジトリ直下の scripts/*.sh の静的監査 + 変異 fixture） | テンプレート付き `mktemp -d ... 2>&1` が成功経路で実体（`-d`）を検査しない形の再混入ガード。同一行・代入直後 8 行以内の多行形も検査済みに含める。走査 30 件未満はこの検査自体が不成立。成功経路の `-d` 検査を落とした複製を未検査として検出することも実測する |
 | case 37 | pass, skip, fail（`FF_RUN_ALL_MCP_NODE_MODULES` でテスト専用に差し替え） | `mcp/node_modules` 不在の案内は実在有無だけの単純な述語（AC2）で出し分ける。skip 混在・fail 単独どちらも案内条件（`SKIPPED` または `FAILED` が 1 件以上）を満たす。実在する回・pass のみの回は案内を出さない |
 | case 38 | normal-probe, unlisted-required-probe（`SCRIPTS` へ登録済み・`REQUIRED_SUITES` は normal-probe のみ掲載の一時複製 run-all.sh） | SCRIPTS へ登録済みだが他の随伴先（`REQUIRED_SUITES`）に触れていない suite を逆向き導出で名指しし、随伴先文書 `docs/04-quality/TESTING.md` のパス・節名も案内する（AC2）。名指しと案内文言の3点だけでは登録漏れ分岐（case 13）と見分けが付かないため、未掲載分岐固有の文言 `REQUIRED_SUITES に載っていない必須 suite` を含み、登録漏れ分岐固有の文言 `未登録の suite があります` を含まないことまで縛る |
+| case 41 | mcp-guard-probe, mcp-guard-required-probe（隔離した一時 git リポジトリ内の複製ランナー + `FF_RUN_ALL_MCP_DIR` で差し替えた判定対象） | 同梱 MCP の依存が揃っていない既定一覧を「環境の未整備」として起動前に止める。停止は終了コード **3**（suite 失敗の 1 と区別できる）で、suite を 1 つも実行せず鮮度記録も書かない。述語は `mcp/package.json` が在るのに `node_modules/.bin/esbuild` が実行可能でないこと — 入れる先が無い checkout では止めず、`node_modules` が在るだけの不完全な install では止める。オプトアウト `FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1` は従来どおり走らせ、末尾の案内行と必須 skip の再現コマンド前置を残す。解釈できない値は 1 行警告のうえガード有効。判定対象を上書きした回は 1 行名乗る |
+| case 42 | stale, stale-indented, stale-green, fail, pass, partial-skip | base の鮮度が原因の赤を `✗ failed:` とは別行（`✗ stale`）で名指しし、復旧手段（merge / rebase）と「取り込んでも赤なら変更起因」を出す。**赤であることと終了コードは変えない**（skip へ倒すのは fail-open）。行頭マーカーだけを拾い、インデント付き引用・鮮度と無関係な赤・緑では出さない。緑 + マーカー（判定を諦めた形）は passed に数えつつ fail-loud する。並列経路（`RUN_JOBS=2`）でも同じ分類が効く |
 | case 35 | （tracked shell・SKILL.md・docs-template の静的監査 + `tests/lib/exit-code-guard.sh`） | 出力整形フィルタ（head / tail / less / more / cat / tee / wc、`sudo` / `command` / `env` / `VAR=` の前置き 1 段を含む）で終わるパイプラインの直後で `$?` を読む形（代入・`echo` のほか `if [ $? -ne 0 ]` などの制御構文、コメント行を跨いだ次の行も）と、zsh では機能しない `PIPESTATUS` 参照が無いこと。検出器 self-test 付き（誤検出しない形・Markdown フェンスの走査境界も含む） |
 
 ケース番号には欠番があります。Issue #1022 でランナー契約の核心 4 領域（集計 / skip 判定 / fail-closed 経路 /
@@ -138,6 +140,14 @@ tests/run-all/
     ├── skip/verify.sh               # exit 0 + 行頭 `○ skip`
     ├── skip-large/verify.sh         # 行頭 `○ skip` + パイプ容量超の出力（SIGPIPE 反転の検出用）
     ├── partial-skip/verify.sh       # suite 自体は passed のまま検査 2 件だけを `checks-skipped` として skip
+    ├── stale/verify.sh               # 非 0 終了 + 行頭 `✗ 鮮度:`（鮮度バケットの分類用。復旧手段は
+    │                                 #   **書かない** — 書くとランナーの案内を測るアサーションが
+    │                                 #   fixture 自身の出力に一致して変異を吸収する）
+    ├── stale-indented/verify.sh      # 非 0 終了 + **インデント付き**の鮮度マーカー引用（行頭アンカーの境界。
+    │                                 #   標準ダンプ書式が他 suite の出力を引用するため、部分一致へ緩むと
+    │                                 #   変更起因の赤が鮮度として報告される）
+    ├── stale-green/verify.sh         # exit 0 + 行頭 `✗ 鮮度:`（判定を諦めた fail-open の形。ランナーは
+    │                                 #   passed に数えつつ fail-loud する）
     ├── pass-selftest/verify.sh      # `-selftest` 終端名の成功 suite（対 = pass があるので除外側）
     ├── pass-selftest-extra/verify.sh # `-selftest` を途中に含む成功 suite（終端一致の境界固定用）
     ├── orphan-selftest/verify.sh    # 対になる本体 suite を持たない `-selftest`（除外しない側。
@@ -207,3 +217,22 @@ FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh
   | 任意の非コメント行へ `printf ... \| grep -q` を再追加する | case 10 |
   | 走行中の自己書き換え検査（起動時の指紋照合）を外す・サマリー行の出力と別の関数へ分ける | case 29 |
   | `tests/lib/exit-code-guard.sh` の `is_pipe` を常に 0 へ倒す（パイプ終端を認識しなくする） | case 35 |
+  | 同梱 MCP 依存ガードの発火条件を常に偽へ倒す | case 41-A |
+  | ガードの述語から `mcp/package.json` の実在を落とす | 既定一覧を回す case 26 / 39 / 40 と case 41（fixture 複製は mcp を持たないため巻き添えで止まる） |
+  | ガードの実在検査を `.bin/esbuild` からディレクトリの実在へ戻す | case 41-H |
+  | 末尾の `○ 案内` 行の述語をディレクトリの実在へ戻す | case 37（partial-mcp の回） |
+  | 停止の終了コードを suite 失敗と同じ `1` へ戻す | case 41-A / 41-E / 41-H |
+  | オプトアウトの値解釈を「任意の非空値で有効」へ緩める | case 41-E |
+  | 実行後の `○ 案内` 行の配線を外す | case 41-F / case 37 |
+  | 必須 skip の再現コマンドからオプトアウト前置を落とす | case 41-G |
+  | 判定対象の上書き（`FF_RUN_ALL_MCP_DIR`）の告知を落とす | case 41-I |
+  | 上書き告知の条件を無条件（`if true`）にする | case 39-A（上書きしていない回の不在を測る側） |
+  | ガードを `check_suite_registration` の**前**へ戻す | case 41-J |
+  | ガードを dirty tree ガードの**前**へ移す | case 41-J / 41-K |
+  | ガードの発火条件から `USING_DEFAULT_SCRIPTS` を落とす（明示引数にも効かせる） | case 37（partial-mcp の回） |
+  | 鮮度マーカーの実体（`tests/lib/stale-base.sh` の `FF_STALE_MARKER`）を改名する | suite 冒頭のマーカー契約検査（fail-closed。fixture は照合側しか固定できない） |
+  | 鮮度分類の行頭アンカーを部分一致へ緩める | case 42（stale-indented の回） |
+  | 鮮度分類を逐次実行の経路だけに置く | case 42（`RUN_JOBS=2` の回。既定は並列なので実運用で分類が出なくなる） |
+  | 鮮度を skip へ倒す（終了コードを 0 にする） | case 42（「非 0 で終わる」「failed からも外さない」） |
+  | 緑 + 鮮度マーカーの fail-loud を外す | case 42（stale-green の回） |
+  | サマリーの復旧手段（merge / rebase）を落とす | case 42 |

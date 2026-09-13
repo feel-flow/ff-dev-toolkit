@@ -141,6 +141,31 @@
 # fail-loud する（終了コードは変えない。実装は下方の「走行中に汚れなかったかを終了時に
 # 再評価する」節、規約側は docs/04-quality/TESTING.md）。
 #
+# ── 起動ガード: 同梱 MCP の依存が無い回は「環境の未整備」として先に止める ──────────
+# 引数なしの既定一覧は、plugins/ff-dev-toolkit/mcp の依存が揃っていないと suite を 1 つも
+# 実行せずに非 0（3）で終わる。この状態の既定一覧は**必ず赤になる** — ace-refine と
+# live-ace-gates が esbuild 不在で fail し、依存を要する残りの suite が必須 skip に落ちる
+# ためである（どの suite がどちらへ倒れるかの一覧は docs/04-quality/TESTING.md「npm ci の
+# 前提」節が正本。ここへ書き写すと suite の増減で静かに腐る）。その赤は変更の是非を何も語らないのに、変更起因の赤と
+# 同じ形（suite の ✗）で十数分かけて出てくるので、読み手が毎回「これは環境か自分か」を
+# 判定していた（2026-09-12 の一括対応で 6 体以上のエージェントが同一事象を
+# 報告している）。**赤の分類を出力の形で分ける**のがこのガードの目的であり、検査を増やす
+# ものではない。停止する回はもともと必ず赤だったので、緑にできた実行は失われない — 変更起因の
+# 赤である登録漏れ検査だけはガードより前に残してあり、未整備環境でも従来どおり出る。
+#
+#   述語: mcp/package.json が在るのに mcp/node_modules が無い
+#         — 同梱 MCP を持たない checkout（配布物・fixture 複製）では入れる先が無いので
+#           案内が成立しない。そこまで止めると回せる実行を奪うだけになる
+#   オプトアウト: FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1（値が 1 のときだけ有効。`0` と空値は
+#                 quiet で無効、それ以外の非空値は 1 行警告のうえガード有効のまま続行する。
+#                 dirty ガードと同じ解釈規則）。従来どおり赤 / skip のまま進む
+#
+# 明示引数の実行は対象外 — 依存が要る suite を避けて名指しで回すのは正当な用途である。
+# skip 経路の新設ではないので fail-closed 規約（skip 経路を持つ suite は既定で必須）とも
+# 衝突しない: suite の必須性は何も変えず、起動前に**実行しない**ことだけを決めている。
+# 依存の導入自体は自動化しない（ゲートの実行時間とネットワーク副作用を増やすため。
+# 案内に留める判断は導入 PR の本文に記録）。詳細は docs/04-quality/TESTING.md。
+#
 # Keep this read-only friendly: do not create temporary files and avoid here-doc / here-string.
 
 set -euo pipefail
@@ -1466,6 +1491,60 @@ if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
   check_suite_registration || exit 1
 fi
 
+# ── 起動ガード: 同梱 MCP の依存が無い回は「環境の未整備」として止める ──────────────
+# 置き場所は登録照合の**後ろ**。登録漏れ検査は環境に依存しない変更起因の赤なので、依存が
+# 揃っていないというだけで見えなくなると「環境の赤と変更起因の赤を分ける」という趣旨と
+# 逆向きの副作用になる。照合は suite を 1 つも実行せず記録も書かないので、後ろへ置いても
+# 「止まった回は何も実行していない」は保たれる。
+# 判定対象は mcp パッケージのディレクトリ 1 点から導く。ここで一度だけ解決して末尾の案内行と
+# 共有する（二重に解決すると、片方だけ上書きが効く回が生まれる）。
+#
+# **node_modules のパスを受け取って親を `${var%/*}` で導出する形は採らない**。あれは文字列手術
+# であって親ディレクトリの導出ではなく、末尾スラッシュ（シェル補完が付ける）やスラッシュを含まない
+# 相対名では「親 = 自分」になって package.json が見つからず、ガードが**無音で外れる**。事故で
+# 成立するうえ、倒れる向きが「黙って通す」なので気づけない。
+MCP_DIR="${FF_RUN_ALL_MCP_DIR:-$SCRIPT_DIR/../mcp}"
+MCP_NODE_MODULES="$MCP_DIR/node_modules"
+# **実在検査は消費側と同じ 1 点（.bin/esbuild）へ当てる**。ディレクトリの実在だけを見ると、
+# `npm ci --omit=dev` / `NODE_ENV=production` / 中断した install が作る「在るが足りない」を
+# 素通しする。その状態で下流 suite（mcp-dist-gate / live-ace-gates / ace-refine）は
+# 「npm install が不完全」で赤くなるので、ガードが分類すると宣言した環境の赤が、出力の
+# どこにも現れないまま十数分かけて出ることになる（述語がずれた側が黙る = いちばん避けたい形）。
+MCP_ESBUILD="$MCP_NODE_MODULES/.bin/esbuild"
+# 上書きは検査専用の口である。この PR 以前は末尾の案内 1 行しか動かさなかったが、いまは
+# **既定一覧を起動するかどうか**を決める。黙って効かせると無音の迂回路になるので 1 行名乗る
+# （suite は実パスを読み続けるため、上書きした回の赤 / skip はそのまま出る）。
+if [[ -n "${FF_RUN_ALL_MCP_DIR:-}" ]]; then
+  echo "⚠️  FF_RUN_ALL_MCP_DIR で依存判定の対象を上書きしています: ${MCP_DIR}（起動ガードと末尾の案内だけが動きます。suite は実パスを読みます）" >&2
+fi
+ALLOW_MISSING_MCP_DEPS=0
+case "${FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS:-}" in
+  1) ALLOW_MISSING_MCP_DEPS=1 ;;
+  ""|0) ;;
+  *)
+    echo "⚠️  FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=\"${FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS}\" は解釈できない値です（オプトアウトになるのは 1 のときだけ）。fail-closed 側のガード有効で続行します" >&2
+    ;;
+esac
+
+if [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$ALLOW_MISSING_MCP_DEPS" != "1" \
+      && -f "$MCP_DIR/package.json" && ! -x "$MCP_ESBUILD" ]]; then
+  echo "✗ 環境が未整備です: 同梱 MCP の依存が揃っていないため既定一覧を実行しません（suite は 1 つも実行していません）" >&2
+  if [[ -d "$MCP_NODE_MODULES" ]]; then
+    echo "    依存は展開されていますが必要なコマンドがありません: $MCP_ESBUILD" >&2
+    echo "    （npm ci --omit=dev / NODE_ENV=production / 中断した install で起きます。esbuild は devDependencies です）" >&2
+  else
+    echo "    見つからないパス: $MCP_NODE_MODULES" >&2
+  fi
+  echo "  これは変更起因の赤ではありません。この状態で回すと ace-refine / live-ace-gates が esbuild 不在で失敗し、依存を要する残りの suite は必須 skip に落ちます（一覧: docs/04-quality/TESTING.md）。" >&2
+  echo "  次を実行してから回し直してください: npm ci --prefix plugins/ff-dev-toolkit/mcp" >&2
+  echo "  依存を入れずに回す意図なら FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 を付けて再実行してください（従来どおり赤 / skip のまま進みます）。" >&2
+  # 終了コードは suite の失敗（1）と分ける。この Epic の主題は「環境の赤と変更起因の赤を
+  # 区別できる形にする」ことなので、機械が読む唯一の信号を同値にしたままでは、判定コストを
+  # 人間から機械読者へ移すだけになる。3 = 前提が整っていないため実行しなかった。
+  # （dirty tree ガードの 1 は既存互換のため据え置き。鮮度の分類とまとめて扱う）
+  exit 3
+fi
+
 # ── 実行モードの解決（既定は高速モード。ADR-034）──────────────────────────────
 # `-selftest` サフィックスを持ち、かつ対になる本体 suite が実在する suite を実行対象から
 # 除外する（背景・トレードオフはヘッダー参照）。登録漏れ検査（check_suite_registration）は
@@ -1576,6 +1655,8 @@ PASSED=()
 FAILED=()
 SKIPPED=()
 NOT_RUN=()
+# 鮮度由来の赤（base 先行）。FAILED の部分集合で、終了コードには影響しない（分類のみ）。
+STALE=()
 CHECKS_SKIPPED_TOTAL=0
 CHECKS_SKIPPED=()
 
@@ -1646,6 +1727,27 @@ ff_consume() { # <name> <kind: run|missing|notexec|gone> <script> <rc>。本文�
   if [[ "$checks_skipped" -gt 0 ]]; then
     CHECKS_SKIPPED_TOTAL=$((CHECKS_SKIPPED_TOTAL + checks_skipped))
     CHECKS_SKIPPED+=("${name}=${checks_skipped}")
+  fi
+
+  # base の鮮度が原因の赤は、変更起因の赤と**同じ形**で出ると読み手が毎回切り分ける羽目になる。
+  # 並行して default branch が進む環境では、ブランチが古くなった瞬間に「base が HEAD の祖先」を
+  # 要求する検査（shared-version-convergence / changelog-fragments）が落ちるため頻度が高い。
+  # 切り分けを誤る方向は 2 つあり、どちらも損失が出る — 鮮度を自分のせいと読んで無駄に調査する／
+  # 本物の赤を「どうせ鮮度だろう」と読んで見逃す。
+  #
+  # **赤であることは変えない**。古い base で「断片が揃っている」「版が収束している」と判定するのは
+  # 誤りなので、skip へ倒すのは fail-open になる。変えるのは分類と、サマリーに出す次の一手だけ。
+  # 判定は行頭マーカー（`○ skip` と同じ仕組み）で、パイプを使わない理由も同じ（SIGPIPE 反転）。
+  if [[ $'\n'"$FF_SUITE_OUTPUT" == *$'\n✗ 鮮度:'* ]]; then
+    if [[ "$suite_rc" -ne 0 ]]; then
+      STALE+=("$name")
+    else
+      # 鮮度マーカーを出しながら緑で終わった suite は、判定を諦めて素通ししている（fail-open）。
+      # 分類は「赤の読み方」を変えるものであって、赤を消す口ではない。黙って passed に数えると、
+      # この PR が塞いだはずの経路が呼び出し側の書き忘れ 1 つで復活する。終了コードは変えない
+      # （suite の結果は suite が決める）が、1 行言い切る。
+      echo "⚠️  $name は鮮度マーカーを出しながら緑で終わりました。鮮度は分類であって skip 経路ではありません（判定を諦めていないか確認してください）" >&2
+    fi
   fi
 
   if [[ "$suite_rc" -eq 0 ]]; then
@@ -1951,11 +2053,14 @@ if [[ ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
   # 案内は**実行中のモードを保つ形**で出す。高速モードは既定なので前置は要らないが、
   # 全件実行中に前置を落とした案内を出すと、コピペした利用者が気づかないまま既定（高速）へ
   # 落ちる — 既定反転（ADR-034）で前置が要る側が入れ替わった。
-  if [[ "$FAST_MODE" == "1" ]]; then
-    echo "    FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh" >&2
-  else
-    echo "    FF_RUN_ALL_FULL=1 FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh" >&2
-  fi
+  #
+  # 同じ理由で、依存ガードをオプトアウトして走った回は再現コマンドにも前置を残す。この案内へ
+  # 到達しているのは「依存が無いまま必須 suite が skip した」回なので、前置を落とした行をコピペ
+  # すると起動ガードに止められて、案内どおりに再実行できない（案内が自分で自分を無効化する）。
+  MODE_PREFIX=""
+  [[ "$FAST_MODE" == "1" ]] || MODE_PREFIX="FF_RUN_ALL_FULL=1 "
+  [[ "$ALLOW_MISSING_MCP_DEPS" != "1" ]] || MODE_PREFIX="${MODE_PREFIX}FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 "
+  echo "    ${MODE_PREFIX}FF_RUN_ALL_ALLOW_SKIP=\"${REQUIRED_SKIPPED[*]}\" bash tests/run-all.sh" >&2
 fi
 if [[ ${#NOT_RUN[@]} -gt 0 ]]; then
   echo "✗ not run (suite を起動できなかった): ${NOT_RUN[*]}" >&2
@@ -1963,16 +2068,33 @@ fi
 if [[ ${#FAILED[@]} -gt 0 ]]; then
   echo "✗ failed: ${FAILED[*]}" >&2
 fi
+# 鮮度由来の赤は failed の内訳として**別行で**名指しする（failed からは外さない — 赤は赤のまま）。
+# 次の一手が変更起因の赤とは違う（コードを直すのではなく base を取り込む）ので、行を分けないと
+# 読み手は failed 一覧の中からそれを毎回自分で切り分けることになる。
+if [[ ${#STALE[@]} -gt 0 ]]; then
+  # 分類は suite 粒度で、鮮度と変更起因は**同じ suite で同時に立ちうる**（shared-version-convergence は
+  # 100 件超の検査を持つ）。「変更起因ではない」と言い切ると、この節が自分で名指しした 2 番目の
+  # 誤読方向（本物の赤を鮮度で片付ける）をランナー自身が助長する。「含む」に留める。
+  echo "✗ stale (base が先行しているための赤を含む): ${STALE[*]}" >&2
+  _stale_ref="$(git -C "$SCRIPT_DIR" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || _stale_ref="origin/<default-branch>"
+  echo "  取り込んでから回し直してください: git merge ${_stale_ref}（履歴を畳んでよいなら git rebase ${_stale_ref}）" >&2
+  echo "  取り込んでも同じ suite が赤いままなら、それは変更起因の赤です。" >&2
+fi
 
 # node_modules 不在に起因する必須 skip / FULL での fail は、markdownlint 系 / mcp-* 系 /
 # ace-* 系 / docs-scan-mirror / live-ace-gates 系にまたがる（各 suite のコメント参照）。
 # 個々の skip/fail 理由を suite ごとに読み解かなくても、原因は
 # 「plugins/ff-dev-toolkit/mcp/node_modules の実在」1点に単純化できるため、判定はそこだけを
-# 見る（既存の ○ skip 行に埋もれないための可視化。検査の新設ではない）。テスト用の上書きは
-# FF_RUN_ALL_MCP_NODE_MODULES（既定は run-all.sh から見た相対パス）。
-MCP_NODE_MODULES="${FF_RUN_ALL_MCP_NODE_MODULES:-$SCRIPT_DIR/../mcp/node_modules}"
-if [[ ! -d "$MCP_NODE_MODULES" && ( ${#SKIPPED[@]} -gt 0 || ${#FAILED[@]} -gt 0 ) ]]; then
-  echo "○ 案内: mcp/node_modules が無いため一部 suite が skip / fail した可能性があります。全件ゲート前に次を実行してください: npm ci --prefix plugins/ff-dev-toolkit/mcp"
+# 見る（既存の ○ skip 行に埋もれないための可視化。検査の新設ではない）。
+#
+# 既定一覧のうち**ガードが発火する回**はこの行まで来ないが、ここへ届く経路は 3 つ残る:
+# （1）明示引数の実行（ガードの対象外）（2）FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 のオプトアウト
+# （3）mcp/package.json を持たない checkout（公開配布物・fixture 複製。入れる先が無いので
+# ガードは掛からないが、node_modules を要る suite は skip する）。どれも案内が最後の手掛かりに
+# なるので消さない。判定対象は起動ガードで解決済み（述語も同じ .bin/esbuild へ揃える —
+# ここだけディレクトリの実在で見ると、install が不完全な回にガードと案内が同時に黙る）。
+if [[ ! -x "$MCP_ESBUILD" && ( ${#SKIPPED[@]} -gt 0 || ${#FAILED[@]} -gt 0 ) ]]; then
+  echo "○ 案内: 同梱 MCP の依存が揃っていないため一部 suite が skip / fail した可能性があります（未検出: ${MCP_ESBUILD}）。全件ゲート前に次を実行してください: npm ci --prefix plugins/ff-dev-toolkit/mcp"
 fi
 
 # ── 走行中に汚れなかったかを終了時に再評価する（fail-loud。終了コードは変えない）─────

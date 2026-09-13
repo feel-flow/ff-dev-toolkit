@@ -8,7 +8,13 @@ test_root="$(cd "$(dirname "$0")" && pwd)"
 marker="$(mktemp "${TMPDIR:-/tmp}/asdd-skip.XXXXXX")"
 trap 'rm -f "$marker"' EXIT HUP INT TERM
 rc=0
-FF_ASDD_SKIP_MARKER="$marker" node --test "$test_root"/*.test.mjs || rc=$?
+# reporter を固定する。この suite は出力を文字列照合していない（rc しか見ていない）が、
+# 既定 reporter は stdout が TTY かどうかと Node の版で動くので、**照合を足した瞬間に**
+# 手元と CI で結果が変わる穴が開く。起動側へ一律 pin するのが横断ガードの契約
+# （tests/lib/node-test-reporter.sh）。下の marker 経由の skip 受け渡しは reporter に
+# 依存しない経路なので、pin しても出力の二重計上は起きない（test 側の console.log は
+# marker 未設定のときだけ走る分岐）。
+FF_ASDD_SKIP_MARKER="$marker" node --test --test-reporter=spec "$test_root"/*.test.mjs || rc=$?
 while IFS= read -r reason; do
   [ -n "$reason" ] && printf '  ○ skip: %s\n' "$reason"
 done < "$marker"

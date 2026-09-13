@@ -146,33 +146,44 @@ expect_occurrences() { # <ファイル> <固定文字列> <期待数>
   fi
 }
 
+# 変異の検査は**登録してから並列に回す**。
+#
+# consumer 1 回が実測 21 秒（うち 3 秒は入力上限の契約を測る sleep で、これは契約そのもの
+# なので削れない）で、変異は 43 件あるため直列だと 15 分、並列エージェント下の高負荷では
+# 1 時間級になる。**時間が理由で誰も回さない検査は、検出力ゼロの検査と同じ**なので、
+# 実行時間そのものを設計対象にする。
+#
+# 並列化できるのは fixture が変異ごとに隔離されているから（make_fixture が $TMP/<name>/plugin
+# を作り、consumer はその root だけを読む）。共有状態は無い。ここで変えるのは**実行の仕方**
+# だけで、変異の一覧・期待診断・判定条件はすべて元のまま — 43 個の登録ブロックには触らない。
+#
+# 出力は登録順に並べ直す（完了順にすると、同じ一覧でも実行のたびに並びが変わって前回との
+# 差分が読めない。run-all.sh の並列実行と同じ理由）。
 MUTATIONS=0
+BENIGN=0
+JOB_N=0
+JOB_NAMES=()
+JOB_KINDS=()
+JOB_EXPECTED=()
+JOB_ROOTS=()
+
+register_job() { # <kind: mutation|benign> <name> <expected> <root>
+  JOB_KINDS+=("$1")
+  JOB_NAMES+=("$2")
+  JOB_EXPECTED+=("$3")
+  JOB_ROOTS+=("$4")
+  JOB_N=$((JOB_N + 1))
+}
+
 check_mutation() {
-  local name="$1" expected="$2" root="$3"
-  run_consumer "$root"
-  if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -F "$expected" >/dev/null; then
-    echo "  ✓ $name を検出"
-    MUTATIONS=$((MUTATIONS + 1))
-  else
-    echo "✗ $name が狙った診断で red になりません: exit=$RC output=[$OUT]" >&2
-    exit 1
-  fi
+  register_job mutation "$1" "$2" "$3"
 }
 
 # 良性の変更で赤くならないことも測る（Issue #931）。定型文の照合を「どこかに 1 つ」から
 # 「自動発火の節の中」へ絞ったので、逆に厳しすぎないかを固定しておく必要がある。
 # 散文への加筆で毎回この suite が止まるなら、SKILL.md を書き足せなくなる。
-BENIGN=0
 check_no_regression() { # <名前> <root>
-  local name="$1" root="$2"
-  run_consumer "$root"
-  if [ "$RC" -eq 0 ]; then
-    echo "  ✓ $name では red にならない"
-    BENIGN=$((BENIGN + 1))
-  else
-    echo "✗ $name で red になりました（偽の赤）: exit=$RC output=[$OUT]" >&2
-    exit 1
-  fi
+  register_job benign "$1" "" "$2"
 }
 
 ROOT="$(make_fixture active-guard)"
@@ -480,6 +491,134 @@ ROOT="$(make_fixture fenced-heading-in-section)"
 perl -0pi -e 's{(対応ホストでは[^\n]*\n)}{$1\n```text\n## セッション振り返り\n```\n}' \
   "$ROOT/skills/retrospective/SKILL.md"
 check_no_regression "自動発火 節内へフェンス例示を追加" "$ROOT"
+
+# ── 登録した検査を並列に回す ─────────────────────────────────────────────────
+#
+#   既定の同時実行数: 論理 CPU 数（上限 8）。上限を置くのは、consumer が測る入力上限の
+#   契約（2 秒の上限 < 3 秒の EOF）が負荷で潰れると «間違った理由で赤い» を作るため。
+#   上書き: FF_RETRO_SELFTEST_JOBS=<1〜64>。`1` で逐次へ戻る。解釈できない値と上限超過は
+#   1 行警告のうえ既定値で続行する（fail-safe 側）。
+#   spool は逐次実行でも使うので、確保できない回は退避せず fail-closed で止める。
+RETRO_JOBS_DEFAULT=4
+if command -v getconf >/dev/null 2>&1; then
+  _retro_cpu="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+  case "$_retro_cpu" in
+    ''|*[!0-9]*) ;;
+    *) [ "$_retro_cpu" -ge 1 ] && RETRO_JOBS_DEFAULT=$(( _retro_cpu > 8 ? 8 : _retro_cpu )) ;;
+  esac
+fi
+RETRO_JOBS="$RETRO_JOBS_DEFAULT"
+# 入れ子の実行（run-all.sh から suite として呼ばれた回）は、明示指定が無ければ**予算を半分に
+# 落とす**。run-all.sh が自分自身へ掛けている規約は「入れ子なら逐次」だが、この suite に
+# そのまま当てると Issue の目的が消える — この suite が走るのは FF_RUN_ALL_FULL=1 のときだけで、
+# それは必ず run-all.sh 経由（＝入れ子）だから、逐次へ倒すと短縮が一度も効かない。
+#
+# 掛け算の懸念（外 8 × 内 8 = 64）は、内部並列を持つ suite が**この 1 本だけ**なので実際には
+# 成立しない。実態は「外側の 8 スロットのうち 1 つが内側 N を持つ」で、ピークは 7 + N。
+# 予算を半分（上限 4）に落とせば、外側が既に受け入れている 8 並列と同程度に収まる。
+#
+# 実測の余裕: 16 論理 CPU で 32 並列（= 2× コア）でも 43 + 良性 2 のまま緑で、consumer が測る
+# 実時間の契約（入力上限 2 秒 < EOF 3 秒 / 10MB を 2 秒以内）は壊れなかった。コア数の少ない CI を
+# 考えて既定は控えめに置き、必要なら FF_RETRO_SELFTEST_JOBS で明示的に上書きする。
+if [ -z "${FF_RETRO_SELFTEST_JOBS:-}" ] && [ "${FF_RUN_ALL_NESTED:-0}" != "0" ]; then
+  RETRO_JOBS=$(( RETRO_JOBS_DEFAULT / 2 ))
+  [ "$RETRO_JOBS" -ge 1 ] || RETRO_JOBS=1
+fi
+case "${FF_RETRO_SELFTEST_JOBS:-}" in
+  '') ;;
+  *[!0-9]*|'')
+    echo "⚠️  FF_RETRO_SELFTEST_JOBS=\"${FF_RETRO_SELFTEST_JOBS}\" は解釈できない値です。既定（${RETRO_JOBS_DEFAULT}）で続行します" >&2 ;;
+  *)
+    if [ "$FF_RETRO_SELFTEST_JOBS" -ge 1 ] && [ "$FF_RETRO_SELFTEST_JOBS" -le 64 ]; then
+      RETRO_JOBS="$FF_RETRO_SELFTEST_JOBS"
+    else
+      echo "⚠️  FF_RETRO_SELFTEST_JOBS=${FF_RETRO_SELFTEST_JOBS} は範囲外（1〜64）です。既定（${RETRO_JOBS_DEFAULT}）で続行します" >&2
+    fi ;;
+esac
+
+# spool は**逐次実行でも要る**（run_job は同時実行数に関わらず結果をここへ書く）。作れない回に
+# 「逐次へ退避します」と言っても退避先が無く、最後に「rc が残っていない」で落ちる — 成立しない
+# 退避を警告文だけが約束する形になる。ここは fail-closed で止める。
+#
+# $TMP 自体は冒頭の mktemp -d が成功した時点で書けているので、この失敗は「走行中に消えた」
+# のような異常であり、黙って続ける理由が無い。
+SPOOL="$TMP/spool"
+mkdir -p "$SPOOL" 2>/dev/null || {
+  echo "✗ spool を作成できません: ${SPOOL}（${TMP} は作成済みなので、走行中に失われた可能性があります）" >&2
+  exit 1
+}
+
+run_job() { # <index>
+  local i="$1" root="${JOB_ROOTS[$1]}" rc=0 out
+  out="$(bash "$root/tests/retrospective-stop-hook/verify.sh" 2>&1)" || rc=$?
+  printf '%s' "$out" > "$SPOOL/$i.out"
+  # rc は本文を書き終えた**後に** rename で置く。「rc ファイルの実在 = その出力が完成している」
+  # を親が追加の同期なしに読めるようにするため（run-all.sh の spool と同じ規約）。
+  printf '%s' "$rc" > "$SPOOL/$i.rc.tmp"
+  mv "$SPOOL/$i.rc.tmp" "$SPOOL/$i.rc"
+}
+
+# 同時実行数の制限は **bash 3.2 で動く形**で書く。`wait -n` は bash 4.3 以降で、macOS 標準の
+# 3.2 では `invalid option` になる。`wait -n || break` のように書くと**常に break して制限が
+# 効かず**、全 job が一斉に起動する（結果は登録順の判定で正しく出るので、設計だけが静かに
+# 壊れる）。走っている子の数を数えて空くまで短く待つ形にする。
+_retro_started=0
+_retro_waits=0
+while [ "$_retro_started" -lt "$JOB_N" ]; do
+  while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$RETRO_JOBS" ]; do
+    _retro_waits=$((_retro_waits + 1))
+    sleep 0.2
+  done
+  run_job "$_retro_started" &
+  _retro_started=$((_retro_started + 1))
+done
+wait
+
+# 判定は登録順に行う（出力の並びを実行のたびに変えない）。
+_retro_i=0
+while [ "$_retro_i" -lt "$JOB_N" ]; do
+  name="${JOB_NAMES[$_retro_i]}"
+  kind="${JOB_KINDS[$_retro_i]}"
+  expected="${JOB_EXPECTED[$_retro_i]}"
+  if [ ! -f "$SPOOL/$_retro_i.rc" ]; then
+    # rc を残さず子が消えた。pass にも fail にも倒さず、検査が成立していないこととして止める。
+    echo "✗ $name の検査が完了しませんでした（rc が残っていない）" >&2
+    exit 1
+  fi
+  RC="$(cat "$SPOOL/$_retro_i.rc")"
+  OUT="$(cat "$SPOOL/$_retro_i.out" 2>/dev/null || true)"
+  if [ "$kind" = mutation ]; then
+    if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -F "$expected" >/dev/null; then
+      echo "  ✓ $name を検出"
+      MUTATIONS=$((MUTATIONS + 1))
+    else
+      echo "✗ $name が狙った診断で red になりません: exit=$RC output=[$OUT]" >&2
+      exit 1
+    fi
+  else
+    if [ "$RC" -eq 0 ]; then
+      echo "  ✓ $name では red にならない"
+      BENIGN=$((BENIGN + 1))
+    else
+      echo "✗ $name で red になりました（偽の赤）: exit=$RC output=[$OUT]" >&2
+      exit 1
+    fi
+  fi
+  _retro_i=$((_retro_i + 1))
+done
+
+# 制限が壊れても**結果は変わらない**（判定は登録順で行うため）。壊れるのは実行の仕方だけなので、
+# 何も言わなければ誰も気づけない — 実際 `wait -n`（bash 4.3 以降）で書いた初版は macOS 標準の
+# bash 3.2 で `invalid option` になり、全 job を一斉起動していたのに緑だった。
+# job が同時実行数より多い回は、制限が最低 1 回は効いているはずである。
+#
+# **判定ループの後ろへ置く**。前に置くと、全 job が即死する回（spool 消失・fork 枯渇・ENOSPC）に
+# プールが飽和せず waits=0 になり、真の失敗を隠して「プールが無効化されています」という誤った
+# 原因を名指しする。実 job の診断が先に出てから、この主張を確かめる。
+if [ "$JOB_N" -gt "$RETRO_JOBS" ] && [ "$_retro_waits" -eq 0 ]; then
+  echo "✗ 同時実行数の制限が一度も効いていません（job ${JOB_N} 件 / 上限 ${RETRO_JOBS}）— プールが無効化されています" >&2
+  exit 1
+fi
 
 # 件数は名前付き定数で持つ（このファイルは EXPECTED_CONSUMER_CHECKS で既にその慣習）。
 EXPECTED_MUTATIONS=43

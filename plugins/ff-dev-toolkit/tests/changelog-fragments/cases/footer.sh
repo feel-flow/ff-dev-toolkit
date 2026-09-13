@@ -295,7 +295,10 @@ elif ! git -C "$REPO_ROOT" fetch origin "+refs/heads/${default_ref#origin/}:refs
 elif ! git -C "$REPO_ROOT" rev-parse --verify "${default_ref}^{commit}" >/dev/null 2>&1; then
   bad "共有 CHANGELOG 判定の default branch を解決できない"
 elif ! git -C "$REPO_ROOT" merge-base --is-ancestor "$default_ref" HEAD; then
-  bad "共有 CHANGELOG 判定前に最新 default branch を取り込んでいない"
+  # 古い base で「通常 PR は共有 CHANGELOG を直接編集しない」を判定すると、base 側で
+  # 既に入った編集を自分の変更と読み違える。判定は諦めず、分類だけ鮮度へ寄せる。
+  ff_report_stale_base "共有 CHANGELOG の編集判定" "$REPO_ROOT"
+  bad "base が先行しているため共有 CHANGELOG 判定が成立しない（鮮度・変更起因ではない）"
 elif git -C "$REPO_ROOT" diff --quiet "$default_ref" -- oss/ff-dev-toolkit/CHANGELOG.md; then
   ok "通常 PR は共有 CHANGELOG を直接編集しない"
 else

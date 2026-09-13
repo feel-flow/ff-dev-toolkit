@@ -259,6 +259,43 @@ if has_line 'CRON_RUN_ID=111' && has_line 'CRON_RUN_CONCLUSION=failure'; then
 else
   bad "cron 行が最新 schedule run を指していない: $(dump)"
 fi
+# 判定を据え置いたまま、赤い schedule run の事実を HEALTH の隣へ出す（Issue の実害は
+# 「CRON_RUN_CONCLUSION=failure は出ていたが 20 行の出力に埋もれて 2 週間気づかれなかった」）。
+if grep -q '^CRON_NOTE=' <<<"$OUT" && grep -q '^CRON_NOTE=.*concluded failure' <<<"$OUT"; then
+  ok "赤い schedule run は CRON_NOTE= で名指しされる（判定は据え置き・可視性だけ上げる）"
+else
+  bad "赤い schedule run が CRON_NOTE= で名乗られていない: $(dump)"
+fi
+_note_ln="$(printf '%s\n' "$OUT" | grep -n '^CRON_NOTE=' | sed -n '1s/:.*//p' || true)"
+_health_ln="$(printf '%s\n' "$OUT" | grep -n '^HEALTH=' | sed -n '1s/:.*//p' || true)"
+if [ -n "${_note_ln:-}" ] && [ -n "${_health_ln:-}" ] && [ "$_note_ln" -eq $((_health_ln + 1)) ]; then
+  ok "CRON_NOTE= は HEALTH= の直後に出る（埋もれさせない）"
+else
+  bad "CRON_NOTE= が HEALTH= の直後に無い (health=${_health_ln:-none} note=${_note_ln:-none})"
+fi
+
+# 赤の綴りは failure だけではない。判定は allowlist ではなく fail-closed（success / pending 以外は
+# すべて名乗る）で書いてあるので、**列挙に入っていない綴り**も測る — `stale` は schedule run 特有の
+# 自動打ち切り、`action_required` は承認待ちで、どちらも週次 cron に現実に起きる。ここを測らないと
+# 「fail-closed を allowlist へ戻す」変異が緑で通る（実測で生存した）。
+for _nc in timed_out startup_failure cancelled stale action_required neutral skipped; do
+  STUB_SCHEDULE_RUNS="[$(mkrun 111 completed "\"${_nc}\"" develop "$D2" "$D2" schedule)]" \
+    STUB_DISPATCH_RUNS="$DISPATCH_OK_FRESH" STUB_LOG_TOTALS="221=207" run_checker
+  if grep -q "^CRON_NOTE=.*concluded ${_nc}" <<<"$OUT"; then
+    ok "conclusion=${_nc} の schedule run も CRON_NOTE= で名指しされる"
+  else
+    bad "conclusion=${_nc} が CRON_NOTE= に現れない: $(dump)"
+  fi
+done
+
+# 成功している回に NOTE を出さない（正常系で毎回ノイズを出さない・消費側のパースを汚さない）。
+STUB_SCHEDULE_RUNS="[$(mkrun 111 completed '"success"' develop "$D2" "$D2" schedule)]" \
+  STUB_DISPATCH_RUNS="$DISPATCH_OK_FRESH" STUB_LOG_TOTALS="221=207" run_checker
+if grep -q '^CRON_NOTE=' <<<"$OUT"; then
+  bad "成功している schedule run でも CRON_NOTE= が出る（正常系のノイズ）: $(dump)"
+else
+  ok "成功している schedule run では CRON_NOTE= を出さない"
+fi
 if has_line 'SUITES_TOTAL=207' && grep -qxF '221' "$MARKER" && ! grep -qxF '111' "$MARKER"; then
   ok "ログ解析は採用した成功実績 run（dispatch）に対して行われる"
 else

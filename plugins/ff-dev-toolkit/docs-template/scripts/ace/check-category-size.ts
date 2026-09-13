@@ -1505,6 +1505,13 @@ export function main(): number {
     }
   }
   console.log("カテゴリ別件数:\n" + formatHistogram(merged.histogram));
+  // 件数の閾値は「超えたカテゴリの行」にしか現れないため、追記前に超過を予測したい呼び出し側
+  // （/ace-curate の予測手順）は、目安以下のカテゴリでは上限を読む対象が存在しなかった。
+  // 判定に使う 2 つの閾値を件数の状態に関わらず 1 行で出し、呼び出し側が閾値を自前で持たずに
+  // 済むようにする。この行の欠落は「読めなければ素通り」を招くので、常に出す。
+  console.log(
+    `ブロック上限: ${String(maxAllowed)} 件/カテゴリ（refine 目安: ${String(warnAllowed)} 件/カテゴリ）`,
+  );
 
   if (warnCategories.length > 0) {
     console.error(

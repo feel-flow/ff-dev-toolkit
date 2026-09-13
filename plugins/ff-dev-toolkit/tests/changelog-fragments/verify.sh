@@ -12,6 +12,13 @@ TARGET_EXACT_LINK_LIB="${REPO_ROOT:+$REPO_ROOT/plugins/ff-dev-toolkit/scripts/li
 # fixture リポジトリの identity を呼び出し元へ漏らさない（Issue #1348 / #1368）
 # shellcheck source=../lib/git-fixture.sh
 . "$SCRIPT_DIR/../lib/git-fixture.sh"
+# shellcheck source=../lib/stale-base.sh
+. "$SCRIPT_DIR/../lib/stale-base.sh"
+# 読み込み漏れを起動時に fail-closed で止める。この suite は set -euo pipefail なので、
+# 関数が無い状態で鮮度分岐へ入ると `command not found`（rc 127）で途中死し、分類も後続の
+# 診断も出ないまま終わる — base が古い回にだけ起きるので、平時のゲートでは気づけない。
+declare -F ff_report_stale_base >/dev/null \
+  || { echo "✗ tests/lib/stale-base.sh の読み込みに失敗（鮮度分岐が 127 で途中死します）" >&2; exit 1; }
 
 if [[ -z "$REPO_ROOT" || ! -x "$TARGET" ]]; then
   echo "○ skip: CHANGELOG 断片集約器が無い checkout のためスキップ"

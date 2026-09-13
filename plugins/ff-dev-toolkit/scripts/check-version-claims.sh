@@ -224,12 +224,15 @@ resolve_fresh_base() {
     # CI: job 開始時点の remote-tracking ref を基準に固定する（ヘッダコメント参照）。fetch すると
     # 走行中に進んだ live の origin/<default> を取り込み、checkout SHA に閉じた検査でなくなる。
     default_base="$(git -C "$root" rev-parse --verify "${default_ref}^{commit}")" || { echo "✗ $default_ref の commit を固定できません（CI では job 開始時点に fetch 済みの remote-tracking ref が必要です）" >&2; return 2; }
-    git -C "$root" merge-base --is-ancestor "$default_base" HEAD || { echo "✗ ${default_ref}（job 開始時点の remote-tracking ref）が checkout より先行しています。既定ブランチの最新 SHA で dispatch し直してください" >&2; return 2; }
+    git -C "$root" merge-base --is-ancestor "$default_base" HEAD || { echo "FF_STALE_BASE=${default_ref}" >&2; echo "✗ ${default_ref}（job 開始時点の remote-tracking ref）が checkout より先行しています。既定ブランチの最新 SHA で dispatch し直してください" >&2; return 2; }
     return 0
   fi
   git -C "$root" fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" >/dev/null 2>&1 || { echo "✗ $default_ref を最新化できません" >&2; return 2; }
   default_base="$(git -C "$root" rev-parse --verify "${default_ref}^{commit}")" || { echo "✗ $default_ref の commit を固定できません" >&2; return 2; }
-  git -C "$root" merge-base --is-ancestor "$default_base" HEAD || { echo "✗ $default_ref が HEAD より先行しています。rebase 後に再実行してください" >&2; return 2; }
+  # 鮮度由来の非 0 は「内容の欠陥」ではないので、呼び出し側が散文の文字列一致に頼らず
+  # 分類できる機械可読マーカーを先に出す（exit 2 は使い方の誤り・plugin root 解決失敗とも
+  # 共有しているため、コードだけでは鮮度を特定できない）。
+  git -C "$root" merge-base --is-ancestor "$default_base" HEAD || { echo "FF_STALE_BASE=${default_ref}" >&2; echo "✗ $default_ref が HEAD より先行しています。rebase 後に再実行してください" >&2; return 2; }
 }
 
 path_is_canonical() {

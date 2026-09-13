@@ -8,6 +8,39 @@
 # 静かに壊れる。本 suite は固定文言 grep でこれらの安全弁を fail-closed で検証する。
 # 併せて、ace-curate 側の書き込み時ゲート（行数バジェット・叙述の記録先分離・
 # 索引タイトルのみ・refine 専権）と、テンプレート・スクリプトの案内文言も固定する。
+#
+# 変異検出（承認待ちの窓を覆う照合・OBS-004）:
+#           `merge-base --is-ancestor` の引数を逆転させると 2 件が赤。
+#           clean tree の検査を削ると 2 件が赤（R3 と同じ集合を見ないと、承認前は通って
+#           R3 で止まる形が残る）。
+#           fetch 失敗の停止を削ると 1 件が赤。**当初この変異は生存した** — fetch 失敗の
+#           検査を remote 先行より後ろに置いていたため、先行した remote-tracking ref のせいで
+#           別の理由（先行判定）で止まっており、fetch 失敗の停止を測れていなかった。
+#           「stale だが通る値」の状態で fetch を失敗させる順序へ組み替えて解消。
+#           節ごと移動させる（配置を失う）と 6 件が赤（針は節スコープで張ってある）。
+#
+# 変異検出（curate の追記前予測・完了報告の契約）:
+#           上限以上のとき「追記したうえでフォローアップに記録する」へ書き換えると 1 件が赤。
+#           **当初この変異は生存した** — 条件（上限以上なら）と帰結（停止する）を別々の針で
+#           張っており、帰結の語が上のフェンスの診断文にも在るため吸収されていた。条件と帰結を
+#           同じ 1 文として固定して解消。
+#           方針を反転（超えてから直す）すると 1 件が赤。
+#           「記録した」で完了にしない、を削ると 1 件が赤。
+#           予測節を**見出しごと**追記手順の後ろへ移すと 1 件が赤（節スコープの針は移動を
+#           検出できないため、見出しの前後関係そのものを検査している）。
+#           上限を警告行から読む形へ戻すと 1 件が赤。
+#           fence の `case` を丸ごと `|| true` へ差し替えると 4 件が赤。**当初この変異は生存した**
+#           — 針が散文（「rc を || true で捨てない」）にしか当たっておらず、実行される側が
+#           無防備だった。fence 本体へ針を張り、握り潰しの形を否定側からも見て解消。
+#           警告行に依存すると fail-open になる、という説明を反転すると 1 件が赤。
+#           catch-all を rc=2 限定へ狭める（rc 3 が素通り）と 1 件が赤。
+#           実体の選択を同梱固定へ戻す（プロジェクトの閾値上書きを取りこぼす）と 1 件が赤。
+#           停止条件を「上限以上」へ戻す（ゲートは count > max なので 1 件早く止まる）と 1 件が赤。
+#           報告契約が参照する検証の出所を実体と不一致にすると 1 件が赤。
+#           非 0 を返さない 4-e を機械的検証の列挙へ戻すと 1 件が赤（その除外理由を削っても 1 件が赤）。
+#           check-category-size から常時出力のブロック上限行を削ると 1 件が赤
+#           （実出力に対する behavioural 検査。文言検査では見えない）。
+#           良性: 節の配置要件を述べた一文を削っても緑（配置は上の順序検査が機械的に守る）。
 
 set -euo pipefail
 
@@ -87,6 +120,100 @@ echo "== ace-refine ハードルール（安全弁の固定文言） =="
 contains "$REFINE_FILE" \
   "dry-run レポートの提示とユーザー承認より前に、いかなるファイルも書き換えない" \
   "承認前書き換え禁止"
+# 承認待ちで空く窓の照合（OBS-004 の 3 回目で閾値到達）。R3 開始前ガードは**適用の直前**に
+# 在るが、窓はその手前に開く。針は **節スコープ**で張る — 全文 grep だと、ハードルール節への
+# 写しや R3 への移動で「承認より前に在る」という要件を失ったまま緑になる。
+REFINE_PREGATE_SECTION="#### 承認を求める前に base の先行を照合する"
+section_contains "$REFINE_FILE" "$REFINE_PREGATE_SECTION" \
+  "レポートを提示する直前に照合する" \
+  "承認を求める前の照合点（窓を実際に狭める唯一の検出点）"
+section_contains "$REFINE_FILE" "$REFINE_PREGATE_SECTION" \
+  "承認のやり直しが発生しない" \
+  "承認前に照合する目的（手戻りを dry-run の作り直しに留める）"
+section_contains "$REFINE_FILE" "$REFINE_PREGATE_SECTION" \
+  'git merge-base --is-ancestor "origin/${default_branch}" HEAD' \
+  "承認前の照合が base 先行を見る"
+section_contains "$REFINE_FILE" "$REFINE_PREGATE_SECTION" \
+  'git status --porcelain --untracked-files=all' \
+  "承認前の照合が clean tree も見る（R3 と同じ集合。片方だけだと承認後に止まる）"
+section_contains "$REFINE_FILE" "$REFINE_PREGATE_SECTION" \
+  "承認待ちの窓の後段に default ブランチの共有文書への" \
+  "対象範囲を閉じた理由（窓の後段に共有文書への書き込みがあるか）"
+section_contains "$REFINE_FILE" "### Phase R3: 適用" \
+  "同じ集合" \
+  "R3 開始前ガードが承認前の照合と同じ集合を見ると明記している"
+section_contains "$REFINE_FILE" "### Phase R3: 適用" \
+  "承認の直後に 3 つめの検出点は置かない" \
+  "承認直後に検出点を置かない理由（時間窓が縮まらない）"
+section_contains "$REFINE_FILE" "### Phase R3: 適用" \
+  "適用後にも 2 度目の先行が起きうる" \
+  "適用後（claim 生成時）の 2 度目の先行に触れている"
+section_contains "$REFINE_FILE" "### Phase R3: 適用" \
+  "適用済みの成果は**捨てない**" \
+  "2 度目の先行からの復帰手順（成果を捨てない）"
+
+# 固定文言の針は「文言が在る」ことしか見ない。引数を逆転させても fetch 失敗の停止を削っても
+# 通るので、**SKILL.md からガードのフェンスを抽出して実際に動かす**。
+echo ""
+echo "== base 鮮度ガードの振る舞い（SKILL.md から抽出して実行） =="
+
+if ! command -v git >/dev/null 2>&1; then
+  echo "  ○ skip: git が無いため base 鮮度ガードの実測をスキップ（この検査は 1 件も実行していません）"
+elif ! _bf_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ace-refine-basefresh.XXXXXX" 2>&1)" || [ ! -d "$_bf_tmp" ]; then
+  # 診断を捨てると不正 TMPDIR と read-only を区別できないため、成功時のパスと失敗時の理由を
+  # 同じ変数へ受ける。rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で
+  # 変数へ警告文が混入し、以後の処理が原因不明の失敗に化けるため。
+  echo "  ○ skip: 一時ディレクトリを作成できないため base 鮮度ガードの実測をスキップ"
+  printf '    mktemp: %s\n' "$_bf_tmp"
+else
+  # 承認前の照合フェンスを節から取り出す。抽出できなければ空振りなので止める。
+  _bf_fn="$_bf_tmp/guard.sh"
+  awk -v sec="$REFINE_PREGATE_SECTION" '
+    $0 == sec { in_sec = 1; next }
+    in_sec && /^#### |^### / { in_sec = 0 }
+    in_sec && /^```bash$/ { in_fence = 1; next }
+    in_fence && /^```$/ { in_fence = 0; exit }
+    in_fence { print }
+  ' "$REFINE_FILE" > "$_bf_fn"
+  if ! /usr/bin/grep -qF 'merge-base --is-ancestor' "$_bf_fn"; then
+    bad "SKILL.md から承認前の照合フェンスを抽出できない（この検査は空振りします）"
+  else
+    _bf_git() { git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -c init.defaultBranch=main "$@"; }
+    _bf_setup=0
+    _bf_git init -q --bare "$_bf_tmp/remote.git" >/dev/null 2>&1 || _bf_setup=1
+    _bf_git clone -q "$_bf_tmp/remote.git" "$_bf_tmp/work" >/dev/null 2>&1 || _bf_setup=1
+    ( cd "$_bf_tmp/work" 2>/dev/null \
+      && printf 'seed\n' > seed.txt \
+      && _bf_git add -A >/dev/null 2>&1 \
+      && _bf_git commit -qm seed >/dev/null 2>&1 \
+      && _bf_git push -q origin main >/dev/null 2>&1 ) || _bf_setup=1
+    _bf_git -C "$_bf_tmp/work" remote set-head origin main >/dev/null 2>&1 || _bf_setup=1
+    if [ "$_bf_setup" -ne 0 ]; then
+      bad "base 鮮度ガードの git fixture を作れない（実測が成立していない）"
+    else
+      _bf_run() { ( cd "$_bf_tmp/work" && bash "$_bf_fn" >/dev/null 2>&1 ); }
+      if _bf_run; then ok "base 鮮度ガード: 同一 HEAD・clean tree は通す"; else bad "base 鮮度ガードが正常系を止める"; fi
+      ( cd "$_bf_tmp/work" && printf 'local\n' > local.txt && _bf_git add -A >/dev/null 2>&1 && _bf_git commit -qm local >/dev/null 2>&1 ) || true
+      if _bf_run; then ok "base 鮮度ガード: ローカル先行（未 push）は通す"; else bad "base 鮮度ガードが正常なローカル先行を拒否する（引数の向きが逆）"; fi
+      ( cd "$_bf_tmp/work" && printf 'dirty\n' > dirty.txt ) || true
+      if _bf_run; then bad "base 鮮度ガードが dirty tree を通す（R3 で初めて止まる形が残る）"; else ok "base 鮮度ガード: dirty tree を止める（R3 と同じ集合）"; fi
+      rm -f "$_bf_tmp/work/dirty.txt"
+      # fetch 失敗の検査を **remote 先行より先に**置く。順序を逆にすると、先行した origin/main が
+      # remote-tracking ref に残っているせいで先行判定の側で止まり、fetch 失敗の停止を削る変異が
+      # 素通りする（実測で生存した）。ここでは remote-tracking ref が **stale だが通る値**の状態で
+      # fetch を失敗させ、停止するのが fetch 失敗の停止だけである状況を作る。
+      _bf_git -C "$_bf_tmp/work" remote set-url origin "$_bf_tmp/does-not-exist.git" >/dev/null 2>&1 || true
+      _bf_git clone -q "$_bf_tmp/remote.git" "$_bf_tmp/other" >/dev/null 2>&1 || true
+      ( cd "$_bf_tmp/other" && printf 'remote\n' > remote.txt && _bf_git add -A >/dev/null 2>&1 && _bf_git commit -qm remote >/dev/null 2>&1 && _bf_git push -q origin main >/dev/null 2>&1 ) || true
+      if _bf_run; then bad "base 鮮度ガードが fetch 失敗時に stale な ref で通す（fail-open）"; else ok "base 鮮度ガード: fetch できない回は stale 値へ fallback せず止める"; fi
+      # URL を戻すと、今度は fetch が成功して remote 先行そのものを検出する。
+      _bf_git -C "$_bf_tmp/work" remote set-url origin "$_bf_tmp/remote.git" >/dev/null 2>&1 || true
+      if _bf_run; then bad "base 鮮度ガードが remote 先行を通す（古い対象を承認させてしまう）"; else ok "base 鮮度ガード: remote 先行を検出して止める"; fi
+    fi
+  fi
+  rm -rf "$_bf_tmp"
+fi
+
 contains "$REFINE_FILE" \
   "原文はアーカイブへ verbatim で保全する。保全なしの削除・要約は禁止" \
   "原文 verbatim 保全"
@@ -265,6 +392,123 @@ echo "== ace-curate 書き込み時ゲート =="
 contains "$CURATE_FILE" \
   "一回性のインシデント叙述は Playbook に書かない" \
   "インシデント叙述の記録先分離（TROUBLESHOOTING/runbook）"
+
+# 追記前の超過予測（OBS 由来）。curate は増やす操作しか持たないのに、増やした結果がブロック
+# ゲートに当たりうる — 自分が壊した状態を自分では直せない。針は**節スコープ**で張る
+# （全文 grep だと、注意事項へ写して停止点としての位置を失っても緑になる）。
+CURATE_PREDICT_SECTION="#### 4-b-0. 追記前にブロック上限の超過を予測する（必須・停止点）"
+CURATE_APPEND_SECTION="#### 4-b. playbook/category.md への追記 + PLAYBOOK.md 索引の更新"
+# 節スコープの針は「その節に在ること」しか見ないので、**見出しごと**追記手順の後ろへ動かす変異は
+# 全件緑のまま通る（レビュー実測）。停止点の本体は「追記より前に在ること」なので、節の前後関係
+# そのものを検査する。見出しの一致本数まで見るのは、複製で順序検査を骨抜きにさせないため。
+CURATE_ORDER_REPORT="$(awk -v predict="$CURATE_PREDICT_SECTION" -v append="$CURATE_APPEND_SECTION" '
+  index($0, predict) == 1 { p_n++; if (p_line == 0) p_line = NR }
+  index($0, append)  == 1 { a_n++; if (a_line == 0) a_line = NR }
+  END { printf "%d %d %d %d", p_n + 0, p_line + 0, a_n + 0, a_line + 0 }
+' "$CURATE_FILE")"
+# 位置パラメータ（set --）へ流さない。suite の後段が "$@" を読む形へ変わったときに、
+# ここで上書きした値を拾う遠隔の壊れ方になるため。
+IFS=' ' read -r PREDICT_N PREDICT_LINE APPEND_N APPEND_LINE <<< "$CURATE_ORDER_REPORT"
+if [ "$PREDICT_N" -ne 1 ] || [ "$APPEND_N" -ne 1 ]; then
+  bad "追記前予測/追記の見出しが 1 本ずつでない（予測 ${PREDICT_N} 本 / 追記 ${APPEND_N} 本）— 順序検査が成立しない"
+elif [ "$PREDICT_LINE" -ge "$APPEND_LINE" ]; then
+  bad "追記前予測の節が追記手順より後ろにある（予測 L${PREDICT_LINE} / 追記 L${APPEND_LINE}）— 追記してから気づく形へ戻っている"
+else
+  ok "追記前予測の節が 4-b の追記手順より前に置かれている（停止点の位置）"
+fi
+section_contains "$CURATE_FILE" "$CURATE_PREDICT_SECTION" \
+  "超える前に止める" \
+  "超えてから直すのではなく超える前に止める、という方針"
+# 「上限以上なら」という**条件**だけを固定すると、後続を「追記したうえでフォローアップに記録する」
+# へ書き換えても緑で通る（レビュー実測。この skill が起票された事故そのものの挙動）。帰結の語だけを
+# 別に張るのも効かない — 同じ語が上のフェンスの診断文にも在るため吸収される（本 suite で実測）。
+# 条件と帰結を**同じ 1 文**として固定する。
+# ゲートは `count > maxAllowed` で落ちる（件数 == 上限は緑）。「以上」で止めると 1 件早く
+# 止まり、承認の往復を無駄に要求したうえで「何件超えるか」が 0 件になる。
+section_contains "$CURATE_FILE" "$CURATE_PREDICT_SECTION" \
+  "ブロック上限を超えるなら追記せず、その時点で停止する" \
+  "上限を超える回は追記せず停止する（条件と帰結を 1 本の針で固定する）"
+section_contains "$CURATE_FILE" "$CURATE_PREDICT_SECTION" \
+  "「フォローアップとして記録した」で完了にしない" \
+  "ゲートの赤をフォローアップ記録へ振り替えて完了にしない"
+section_contains "$CURATE_FILE" "$CURATE_PREDICT_SECTION" \
+  "先に必要な refine の範囲" \
+  "停止時に refine の範囲を名指しする（ユーザーの往復を 1 回にする）"
+section_contains "$CURATE_FILE" "$CURATE_PREDICT_SECTION" \
+  "承認必須は正しく、変えない" \
+  "refine の 3 フェーズ承認契約を壊さないことの明記"
+section_contains "$CURATE_FILE" "$CURATE_PREDICT_SECTION" \
+  "閾値も件数の数え方も二重に持たない" \
+  "判定は check-category-size の出力を読むだけ（閾値を二重に持たない）"
+# fail-open の 2 経路。(1) rc を捨てると「既に超過」も「runner 不在」も素通りする。
+# (2) 上限を警告行から読むと、refine 目安以下のカテゴリでは読む対象が存在せず、
+#     読めなかった回が「超過なし」に化ける。
+section_contains "$CURATE_FILE" "$CURATE_PREDICT_SECTION" \
+  'rc を `|| true` で捨てない' \
+  "rc 1 / 2 / 3 を握り潰さない（判定が行われなかった回を通さない）"
+section_contains "$CURATE_FILE" "$CURATE_PREDICT_SECTION" \
+  "読めなかった回が「超過なし」に化ける" \
+  "警告行を上限の取得元にすると fail-open になることの明記"
+section_contains "$CURATE_FILE" "$CURATE_PREDICT_SECTION" \
+  "ブロック上限: <N> 件/カテゴリ" \
+  "常に出る 1 行から上限を読む（警告行に依存しない）"
+
+# ここまでの針はすべて**散文**に当たる。散文を残したまま fence の `case` を丸ごと
+# `printf '%s\n' "${SIZE_OUT}" || true` へ差し替える変異は、全件緑のまま通った（レビューで実測）。
+# 実行される側（fence 本体）にも針を張り、握り潰しの形が入っていないことを否定側から確かめる。
+CURATE_PREDICT_BODY=""
+if ! CURATE_PREDICT_BODY="$(section_scope_extract "$CURATE_FILE" "$CURATE_PREDICT_SECTION")"; then
+  bad "追記前予測の節を切り出せない — fence の検査が成立しない: $CURATE_PREDICT_BODY"
+else
+  CURATE_PREDICT_FENCE="$(printf '%s\n' "$CURATE_PREDICT_BODY" | awk '
+    /^```/ { in_fence = !in_fence; next }
+    in_fence { print }
+  ')"
+  if [ -z "$CURATE_PREDICT_FENCE" ]; then
+    bad "追記前予測の節に実行可能な fence が無い（散文だけでは手順が実行されない）"
+  else
+    fence_has() {
+      case "$CURATE_PREDICT_FENCE" in
+        *"$1"*) ok "$2" ;;
+        *) bad "${2} — fence に '$1' がありません" ;;
+      esac
+    }
+    fence_has 'SIZE_RC=$?' "fence が check-category-size の終了コードを捕まえている"
+    fence_has 'case "${SIZE_RC}" in' "fence が終了コードで分岐している"
+    fence_has '  1) printf' "fence が rc 1（既に超過）で停止する分岐を持つ"
+    fence_has '  *) printf' "fence が rc 1 以外の非 0（判定不成立）を捕まえる catch-all を持つ"
+    # プロジェクト側の実体があればそれを使う（4-f と同じ順）。同梱固定だと、プロジェクトが
+    # 閾値を環境変数で変えている場合に予測だけが既定値を読む別方向の fail-open になる。
+    fence_has 'if [ -f scripts/ace/check-category-size.ts ]; then' \
+      "fence が実体をプロジェクト側 → 同梱の順で選ぶ（閾値の上書きを取りこぼさない）"
+    case "$CURATE_PREDICT_FENCE" in
+      *"|| true"*|*"|| :"*)
+        bad "fence が check-category-size の rc を握り潰している（|| true / || : が在る）" ;;
+      *) ok "fence に rc の握り潰し（|| true / || :）が無い" ;;
+    esac
+  fi
+fi
+
+CURATE_REPORT_SECTION="#### 4-g. 完了報告の契約（機械的検証が非 0 なら「停止」）"
+section_contains "$CURATE_FILE" "$CURATE_REPORT_SECTION" \
+  "非 0 を返したまま「完了」と報告しない" \
+  "非 0 を残したまま完了と報告しない契約"
+section_contains "$CURATE_FILE" "$CURATE_REPORT_SECTION" \
+  "報告は**停止**であり" \
+  "非 0 が残る回は完了ではなく停止として報告する"
+section_contains "$CURATE_FILE" "$CURATE_REPORT_SECTION" \
+  "live-ace-gates" \
+  "どの default ブランチのゲートが赤になるかを名指しする"
+# 列挙した検証の出所が実体と一致していること。4-e / 4-f は件数を見ないので、
+# カテゴリ件数の出所は 4-b-0 でなければならない（かつて 4-e / 4-f と書いていた）。
+section_contains "$CURATE_FILE" "$CURATE_REPORT_SECTION" \
+  "4-b-0 / 4-f の機械的検証" \
+  "報告契約が参照する検証の出所が実体（件数は 4-b-0）と一致している"
+# 4-e の行数バジェットは警告しか出さず終了コードを動かさないので、「非 0 が無い＝完了」の
+# 根拠に使えない。列挙へ戻すと、15 行超のエントリが「全ゲート 0」を満たしてしまう。
+section_contains "$CURATE_FILE" "$CURATE_REPORT_SECTION" \
+  "4-e（行数バジェット）はこの列挙に入れない" \
+  "非 0 を返さない 4-e を機械的検証の列挙に混ぜない"
 contains "$CURATE_FILE" \
   "行数バジェット自己チェック（必須・ブロッキング）" \
   "15 行バジェットの自己チェック"
@@ -442,6 +686,45 @@ else
     2>&1)"
     BUILD_RC=$?
     if [ "$BUILD_RC" -eq 0 ]; then
+      # 追記前予測（4-b-0）が読む「ブロック上限:」行が、**警告が 1 件も出ない回でも**出ること。
+      # 上限は長らく refine 目安を超えたカテゴリの警告行にしか現れず、目安以下のカテゴリへ
+      # 追記する回は読む対象が存在しなかった（読めなかった回が「超過なし」に化ける fail-open。
+      # 本 suite のレビューで実測）。SKILL.md の文言検査ではこの不一致は見えないので、実出力で固定する。
+      LIMIT_FIXTURE_DIR="$BUNDLE_DIR/limit-fixture"
+      mkdir "$LIMIT_FIXTURE_DIR"
+      {
+        printf '%s\n' '---'
+        printf '%s\n' 'version: 1.0.0'
+        printf '%s\n' 'ace_entry_count: 1'
+        printf '%s\n' '---'
+        printf '\n%s\n\n' '# Playbook'
+        printf '%s%s\n\n' '<a id=' '"ace-1-1"></a>'
+        printf '%s%s\n\n' '### ' 'ACE-1-1: サンプル'
+        printf '%s\n' '| Category | coding | Origin | ローカル fixture |'
+        printf '%s\n' '| Date | 2026-09-13 |'
+        printf '%s\n' '| Helpful | 0 | Harmful | 0 |'
+        printf '%s\n\n' '| Status | active |'
+        printf '%s\n\n' '本文。'
+        printf '%s\n' '---'
+      } > "$LIMIT_FIXTURE_DIR/PLAYBOOK.md"
+      LIMIT_OUT="$(node "$BUNDLE_DIR/check-category-size" "$LIMIT_FIXTURE_DIR/PLAYBOOK.md" 2>&1)"
+      LIMIT_RC=$?
+      # 閾値の実値はここに書かない（二重に持つと本体の既定値を変えたとき静かにずれる）。
+      # 見るのは「警告が出ていない回（= 読む対象が警告行に無い回）に、上限の行が出ること」。
+      LIMIT_LINE_OK="$(printf '%s\n' "$LIMIT_OUT" | awk '
+        /^ブロック上限: [0-9]+ 件\/カテゴリ（refine 目安: [0-9]+ 件\/カテゴリ）$/ { found = 1 }
+        /refine 目安を超えています/ { warned = 1 }
+        END { print (found && !warned) ? "ok" : ((warned) ? "warned" : "missing") }
+      ')"
+      if [ "$LIMIT_RC" -ne 0 ]; then
+        bad "check-category-size が目安以下の fixture で非 0（rc=${LIMIT_RC}）: $LIMIT_OUT"
+      elif [ "$LIMIT_LINE_OK" = "warned" ]; then
+        bad "ブロック上限行の検査 fixture が refine 目安を超えている（検査が「警告が出ない回」を測れていない）"
+      elif [ "$LIMIT_LINE_OK" != "ok" ]; then
+        bad "警告が出ない回に「ブロック上限: <N> 件/カテゴリ（refine 目安: <M> 件/カテゴリ）」行が出ない — 4-b-0 の予測が読む対象を失う（fail-open）: $LIMIT_OUT"
+      else
+        ok "check-category-size が警告の有無に関わらずブロック上限を 1 行で出す（4-b-0 が読む対象）"
+      fi
       SEED_IDS="$(node "$BUNDLE_PATH" --list-entry-ids "$TEMPLATE_PLAYBOOK_DIR" 2>&1)"
       SEED_LIST_RC=$?
       SEED_LEGACY_IDS="$(node "$BUNDLE_PATH" --list-legacy "$TEMPLATE_PLAYBOOK_DIR" 2>&1)"
