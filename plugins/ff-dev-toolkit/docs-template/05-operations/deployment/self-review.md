@@ -137,16 +137,34 @@ AIがレビュー結果を返したら、指摘事項があればその場で修
 
 ## レビュー担当の選択と利用制限時の継続
 
-セルフレビューと PR 作成後のレビューに共通して、通常は **主担当＋主担当以外の最低1つ**で進める。全候補の実行は不要。
+セルフレビュー（PR 作成前。レビューの実行はここで完結し、PR 作成後に担当の選択をやり直して再実行しない）において、**基準線は主担当のセルフレビュー**である。主担当 1 モデルで完了した回は正常であり、クロスレビューは環境チェックで別 CLI が在るときに**加える**ものであって、無いことを記録する義務は負わない（利用者の多くは AI CLI を 1 つしか持たない — 反転の判断は本テンプレートのソースリポジトリの ADR-053）。全候補の実行は不要。
 
-1. **主担当**は実装を進めている Claude / Codex / Grok / Copilot とする。主担当自身が必要な全観点をセルフレビューし、結果と対象 commit / diff を記録する。同じ主担当 CLI の再起動は必須ではない。
-2. **クロスレビュー担当**は主担当以外から、利用可能なものを1つ選ぶ。CLI 名は `claude-code` / `codex-cli` / `grok-cli` / `copilot-cli`。利用者の明示指定を優先し、可能なら異なるモデル系統を選ぶ。別 CLI でも同じモデルの場合はモデルの独立性を保証しない。Copilot も選択候補だが、利用者の既存の利用・課金許可の範囲で選ぶ。
-3. **利用不可なら別候補へ**。現在の実行ログや当該セッションで確認した制限情報、CLI 不在、認証・利用枠・サービス障害などの根拠を記録し、まだ利用できる別候補を選ぶ。既知の制限を確認するためだけの再試行は不要。PATH にあるだけで利用可能と確定しない。
-4. **ホストと別モデルによるクロスレビューの完走が 0 本なら、主担当のみへ落ちる前に Toolkit のレビューエージェントを read-only で並列起動する**（ホストがサブエージェント起動に対応し、Toolkit が利用可能で、利用者の既存の利用・課金許可の範囲で実行できる場合）。（判定は `--dry-run` のプラン本数ではなく実際の完走本数。失敗・タイムアウト・`INCOMPLETE` は完走に数えず、完走した CLI のモデルがホストと同じ場合も別モデルの完走に数えない）。**別モデルが 1 本でも完走していれば step 2 は満たされており、この段は不要**（本節の基準線は「主担当＋主担当以外の最低1つ」であって 2 本以上ではない）。`pr-review-toolkit:code-reviewer` / `comment-analyzer` / `silent-failure-hunter` などから、差分の性質に合うものを選ぶ（runbook・手順書なら `comment-analyzer` の「記述と実態の一致・腐りやすさ」が効く）。起動時の規定は本書では再掲せず、[ステップ5 の正本](./git-workflow.md#ステップ5-セルフレビューpr作成前重要)に従う。**この段はモデル独立性を回復しない** — エージェントはホストと同じモデルで動くので、step 2 の「別 CLI でも同じモデルの場合はモデルの独立性を保証しない」がそのまま当てはまる。位置づけは「別モデルの代替」ではなく「**主担当のみで継続する前に、既存の利用・課金許可の範囲で観点を増やす段**」であり、PR / 最終報告には「クロスレビュー未実施（同一モデルの追加観点で代替）」と候補別の利用不可理由を残す。**サブエージェントもトークンを消費する**ので、ホスト非対応・Toolkit 未導入に加え、利用枠・予算の都合で起動できない場合も、その理由を記録して次項へ進む。実測（消費プロジェクトでの運用）: 完走した別 CLI 1 本が Important 1 件だったのに対し、Toolkit 2 観点で Critical 1 + Important 6 を検出し、うち 1 件は手順書どおりに実行すると本番 migration の read-back で偽の緑を作れる設計欠陥だった。
-5. **それでも足りなければ主担当だけで継続してよい**。制限解除待ち・繰り返しの再試行・事後クロスレビューを必須にしない。PR / 最終報告へ「セルフレビュー完了／クロスレビュー未実施（途中失敗なら未完了）／候補別の利用不可理由」を残す。主担当のレビューも未完了なら、この例外では進めない。
-6. **品質条件は維持する**。必要なテスト・CI・既存のマージ条件、未解消の Critical / Warning は免除しない。レビュー対象の欠落、diff の変更による結果破棄、ツールキット自体の不整合を利用制限扱いにして通さない。
+1. **主担当**は実装を進めている Claude / Codex / Grok / Copilot とする。主担当自身が必要な全観点をセルフレビューし、結果と対象 commit / diff を記録する。これで本節の要件は満たす。同じ主担当 CLI の再起動は必須ではない。
+2. **環境チェック**。次を実行し、`cross_review=` と `available=` の行を読む。本書のコマンドは [Multi-CLI Review Orchestration §ff-dev-toolkit plugin root の固定](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入する — 実行前に同節の resolver + guard へ host の読み込み済み plugin 情報と `FF_DEV_TOOLKIT_PROJECT_ROOT` を渡し、fence 全体とコマンドを 1 回の Bash tool 呼び出し / shell script body で実行する。
 
-CLI の失敗・タイムアウトと `INCOMPLETE` は「未確認」であり「指摘なし」ではない。スクリプトの非0終了を成功へ書き換えず、**ホストが根拠を確認して別 CLI を明示実行するか、Toolkit のレビューエージェントを read-only で起動するか、主担当のみの継続を記録する**。原因不明の失敗・タイムアウトだけでは利用制限を確定しない。実行ごとの出力を別ディレクトリに保持し、失敗した試行と採用した結果を区別する。無人の厳格なレビューフックの終了コード判定は変更しない。
+   ```bash
+   ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
+   ```
+
+   **終了コードで分岐する**（出力のマーカー行を `grep -q` で拾わない — パイプ入力の `grep -q` は SIGPIPE + `pipefail` で判定が反転する）。exit 0 / 3 は続行、exit 1 は設定または環境の問題なので stderr をそのまま提示して止まる — ただし stderr が `No AI CLIs are installed` の exit 1 は「別 CLI が無い」という事実であって設定不正ではないので、止まらずに 4 へ進むか主担当のみで正常に完了する。`cross_review=off` なら 3（別 CLI のクロスレビュー）の自動起動を省略する — 4 の Toolkit エージェントは同一モデルの別軸なので任意のまま（[クロスレビューの単一固定](#クロスレビューの単一固定cross_review)）。検出は PATH 上の有無（と `exclude_clis` / `--exclude-cli` の除外）だけで、認証・残高はモデルを呼ばないと分からないため probe しない。
+3. **別 CLI が `available=` に在れば、クロスレビューを 1 本加える**。主担当以外から 1 つ選ぶ。CLI 名は `claude-code` / `codex-cli` / `grok-cli` / `copilot-cli`。利用者の明示指定を優先し、可能なら異なるモデル系統を選ぶ。別 CLI でも同じモデルの場合はモデルの独立性を保証しない。Copilot も候補だが、利用者の既存の利用・課金許可の範囲で選ぶ。PATH に在ることは利用可能の確定ではないが、確かめる手段は実行しかないので、まず走らせる。
+4. **別 CLI が無く、ホストが Claude Code で Toolkit のレビューエージェントが使えるなら、`pr-review-toolkit:*` を read-only で並列起動してよい**（任意。ホストがサブエージェント起動に対応し、Toolkit が利用可能で、利用者の既存の利用・課金許可の範囲で実行できる場合）。`pr-review-toolkit:code-reviewer` / `comment-analyzer` / `silent-failure-hunter` などから、差分の性質に合うものを選ぶ（runbook・手順書なら `comment-analyzer` の「記述と実態の一致・腐りやすさ」が効く）。起動時の規定は本書では再掲せず、[ステップ5 の正本](./git-workflow.md#ステップ5-セルフレビューpr作成前重要)に従う。**この段はモデル独立性を回復しない** — エージェントはホストと同じモデルで動くので、3 の「別 CLI でも同じモデルの場合はモデルの独立性を保証しない」がそのまま当てはまる。位置づけは「別モデルの代替」ではなく「**主担当のみで完了する前に、既存の利用・課金許可の範囲で同一モデルの追加観点を増やす段**」である。**サブエージェントもトークンを消費する**ので、ホスト非対応・Toolkit 未導入・利用枠や予算の都合で起動しない場合は、そのまま主担当のみで完了してよい（理由の記録は不要）。実測（消費プロジェクトでの運用）: 完走した別 CLI 1 本が Important 1 件だったのに対し、Toolkit 2 観点で Critical 1 + Important 6 を検出し、うち 1 件は手順書どおりに実行すると本番 migration の read-back で偽の緑を作れる設計欠陥だった。
+5. **一時的な利用不可はその回だけ単一に落ち、次回は自動で戻る**。走らせた別 CLI が認証・残高・利用枠で落ちた場合（`multi-agent.sh` が結果ファイルの stderr から `auth` / `billing` を分類して 🔑 / 💳 の案内を出す。同一 CLI の残りタスクは自動でスキップされる）、その回は主担当のみのレビューとして正常に完了する。制限解除待ち・繰り返しの再試行・事後クロスレビューは不要。**`exclude_clis` や pair 設定へ書き込まない** — あれは sandbox 不適用など恒久的な環境事情のための機構で、一時的な判定を保存すると利用枠が復活しても戻らない。次回の実行は 2 の環境チェックからやり直すので、復活すれば自動で 2 本に戻る。原因不明の失敗・タイムアウト・`INCOMPLETE` は「未確認」として記録する（「指摘なし」ではない）。
+6. **記録は事実だけを書く**。PR / 最終報告には実施した担当と本数を書く（「主担当のみ」「主担当 + codex-cli」「主担当のみ（codex-cli: 利用枠切れ）」等）。候補別の利用不可理由の列挙は要求しない。主担当のレビューが未完了なら、本節のどの経路でも先へ進めない。
+7. **品質条件は維持する**。必要なテスト・CI・既存のマージ条件、未解消の Critical / Warning は免除しない。レビュー対象の欠落、diff の変更による結果破棄、ツールキット自体の不整合を利用制限扱いにして通さない。
+
+CLI の失敗・タイムアウトと `INCOMPLETE` は「未確認」であり「指摘なし」ではない。スクリプトの非0終了を成功へ書き換えず、**ホストが根拠を確認して別 CLI を明示実行するか、主担当のみでの完了を記録する**。実行ごとの出力を別ディレクトリに保持し、失敗した試行と採用した結果を区別する。無人の厳格なレビューフックの終了コード判定は変更しない。
+
+### クロスレビューの単一固定（`cross_review`）
+
+別 CLI が在っても常に主担当だけでレビューしたい利用者は、`cross_review=off` を保存する（pair の `main=` が未設定でも保存できる。明示した空値は拒否され、解除は `cross_review=auto`）。値は `auto`（既定。上の 2〜3 のとおり別 CLI が在れば加える）と `off` の 2 つで、pair 設定と同じ 3 層から解決する — 環境変数 `MULTI_AGENT_CROSS_REVIEW` → プロジェクトの `.claude/agent-config.yaml` の `review.cross_review` → ユーザー設定ファイル（`${XDG_CONFIG_HOME:-~/.config}/ff-dev-toolkit/reviewers`）。保存と確認は次のとおり。
+
+```bash
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --set-reviewers cross_review=off
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
+```
+
+`off` が止めるのはクロスレビューの**自動起動**だけで、`--mode cross-model --cli <cli>` を明示した単発実行は従来どおり可能（設定は変わらない）。ASDD 2.0 の `.asdd/config.json` で `features.multiReview=false` を合意している場合は `cross_review=off` と同義に扱う（設定を書き写さない。両方あれば `off` が勝つ。`--print-reviewers` は `.asdd/config.json` を読まないので、その出力が `auto` でもスキル層が `off` に倒す）。4 の Toolkit エージェントは同一モデルの別軸なので `off` の影響を受けない。プロジェクト設定（`.claude/agent-config.yaml`）の値は `yq` が無い環境では読まれない（その旨が stderr に出る）。環境変数を空で設定した場合（`MULTI_AGENT_CROSS_REVIEW=`）は未設定として下位層へ落ちる — 1 回だけ既定へ戻すなら `MULTI_AGENT_CROSS_REVIEW=auto` と書く。保存ファイルの未知キー・重複キーは行を名指しして警告される（読み取りは止めない）。
 
 ## クロスモデルレビュー（主担当以外）
 
@@ -157,7 +175,7 @@ CLI の失敗・タイムアウトと `INCOMPLETE` は「未確認」であり�
 ### 実行方法
 
 ```bash
-# Toolkit レビュー後に実行（プラグイン同梱の multi-review 経由）
+# 主担当のセルフレビュー後、別 CLI が在るときだけ実行（プラグイン同梱の multi-review 経由）
 ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
 # scripts/codex-review.sh は multi-agent.sh へ委譲するシムとして同梱される
 # 生成シムはCodex-only互換入口であり、このcross-model実行とはmode・担当範囲が異なる
@@ -286,7 +304,7 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 
 ### 2. AIツールを積極的に活用
 
-- Claude Code（pr-review-toolkit）+ Codex CLI に明示的にレビューを依頼
+- 導入済みの手段（主担当のセルフレビュー。別 CLI が在ればクロスレビューを 1 本）で明示的にレビューを依頼
 - 指摘事項は即座に修正
 
 ### 3. チェックリストを毎回確認

@@ -114,6 +114,54 @@ ls SHOULD_NOT_EXIST.txt   # 存在しないこと
 
 存在しないプロファイル名を渡した場合、Grok CLI は警告のうえ**起動を拒否**します（fail-closed）。組み込みプロファイル名（`read-only` / `workspace` / `strict` / `devbox`）か、`~/.grok/sandbox.toml` に定義したカスタムプロファイル名を渡してください。
 
+### docker.sock が symlink の macOS で read-only が起動拒否される
+
+症状（grok 1.0.30、2026-09-14 実測）:
+
+```text
+$ grok --sandbox read-only inspect
+warning: sandbox could not be applied: runtime-socket deny resolution failed: could not resolve runtime-socket deny path /var/run/docker.sock: endpoint is a symlink
+error: could not apply the 'read-only' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing.
+```
+
+Docker Desktop の macOS 既定配置では `/var/run/docker.sock` が `~/.docker/run/docker.sock` への symlink です。`restrict_network = true` を持つプロファイル（組み込みの `read-only` / `strict`）は、起動時にコンテナランタイムのソケット（docker / podman / containerd）への deny を張り、その path を実体解決する際に symlink を拒否します。**`workspace` は `restrict_network = false` なので同じ機械で起動する**ため、オーケストレーション配下では implement だけが動き review / explore が常に `INCOMPLETE` になります。
+
+**採ってはいけない回避**: review を `workspace` で走らせること。レーンは動きますが、CWD への書き込みを許した別の保証の実行になります（`multi-review` が依拠する「read-only サンドボックスで書き込みを失敗させる」が黙って外れる）。アダプタは `MULTI_AGENT_GROK_READONLY_PROFILE=workspace` を名前の時点で拒否します。
+
+**採る回避**: deny を張らせない、read-only 相当のカスタムプロファイルを定義する。deny は `restrict_network` に連動しており（`extends = "workspace"` + `restrict_network = true` でも同じ拒否になる）、`restrict_network` のネットワーク遮断自体は macOS では no-op です（ベンダー文書 `18-sandbox.md`「On macOS network blocking is a no-op」。[Issue #897 の実測](../../../tests/adapter-sandbox-contract/README.md)でも `read-only` の外部 HTTPS は通っていた）。
+
+**この差し替えで失うもの（実測、要認識）**: `restrict_network` が張るコンテナランタイムソケットの deny です。`extends = "read-only"` + `restrict_network = false` のプロファイルで課金走行し、`curl --unix-socket` で `/var/run/docker.sock` とその実体 `~/.docker/run/docker.sock` の両方から Docker API の応答を取得できました。カスタムプロファイルの `deny` に両パスを足しても、symlink 側は塞がる（curl rc=7）一方で実体側への接続は通ります（`deny` は file-read / file-write の規則で、unix socket の connect を止めない）。つまりレビューエージェントが Docker API に到達できる状態で走り、書き込み境界（作業ツリー）だけが保たれます。同じ機械の implement（`workspace`、`restrict_network = false`）は既にこの状態なので新規の後退ではありませんが、review が受け取る diff は信頼できない入力です。アダプタはこの差し替えで走るたびに `⚠️ runtime-socket:` の通知を stderr へ出します（ネットワーク開放の通知と同じ扱い。黙って走らせない）。この露出を受け入れられない環境では差し替えを使わず、従来どおり `exclude_clis` で外してください。
+
+```toml
+# ~/.grok/sandbox.toml（<project>/.grok/sandbox.toml でも可。user 側が優先）
+[profiles.ff-review-ro]
+extends = "read-only"
+restrict_network = false
+```
+
+```bash
+# 単発確認（rc=0 で起動し、ProfileApplied の read_write_paths が ~/.grok と temp 系だけ = 組み込み read-only と同一）
+grok --sandbox ff-review-ro inspect </dev/null; echo "rc=$?"
+tail -1 ~/.grok/sessions/sandbox-events.jsonl
+```
+
+オーケストレーション配下では、[multi-cli-review-orchestration.md](multi-cli-review-orchestration.md) の起動手順の環境に `MULTI_AGENT_GROK_READONLY_PROFILE=ff-review-ro` を加えて dry-run し、grok-cli の項目から「この環境では sandbox を適用できません」の警告が消えることを確認します。差し替わるのは read-only スロット（review / explore / implement `--inline-output`）だけで、通常の implement の `workspace` は不変です。
+
+この機械の既定にするなら、シェルの起動ファイルで `export MULTI_AGENT_GROK_READONLY_PROFILE=ff-review-ro` します。`exclude_clis` / `--exclude-cli` はクロスモデルを 1 本減らす手段なので、この差し替えが成立する環境では使いません。
+
+アダプタ側の fail-closed（名前だけでは中身を保証できないため）:
+
+| 条件 | アダプタの挙動 |
+| --- | --- |
+| 環境変数が未設定 | 従来どおり `read-only`。`workspace` へ黙って降格する経路は無い |
+| `workspace` / `devbox` / `strict` / `off` / `none`、フラグに化ける値 | 起動前に非 0 で拒否（dry-run の probe も `refused-to-start` で報告） |
+| カスタム名で実行後、ProfileApplied の `read_write_paths` に作業ツリー・その祖先・その配下・`/` が含まれる（末尾スラッシュは正規化） | **結果を採用しない**（「read-only ではない」と名指し。成果物にも同じ理由が残る）。`extends = "workspace"` や `read_write` で作業ツリーやその一部を足したプロファイルはここで落ちる |
+| カスタム名で実行後、`read_write_paths` 配列が無い、または引用文字列として読めない | 確認不能として不採用 |
+
+書き込み境界の実測（grok 1.0.30 / macOS、`ff-review-ro`、temp 外の CWD で課金走行）: CWD への shell 書き込み・`touch`・Write ツールとも `Operation not permitted` で失敗し、`FsViolation` が記録された。`/tmp` への書き込みだけは組み込み `read-only` と同じく許可（仕様）。`read_write_paths` の記録は 0.2.118 時代の組み込み `read-only` の記録（`~/.grok/sandbox-events.jsonl`）と同一で、1.0.30 の `read-only` はこの機械では起動しないため 1.0.30 同士の比較ではない。コマンドと出力は [tests/adapter-sandbox-contract/README.md](../../../tests/adapter-sandbox-contract/README.md) の「カスタム read-only プロファイル（docker.sock symlink 対応）」節。
+
+**この対応が要らない環境**: Linux（docker.sock は通常 symlink ではない）や Docker Desktop 未導入の macOS では組み込み `read-only` がそのまま起動するので、環境変数は設定しません。Linux で `restrict_network = false` にすると子プロセスのネットワーク遮断（seccomp）を実際に失うため、Linux でこの差し替えを既定にはしないでください。
+
 ### 出力が空になる
 
 `--output-format plain` を使っているか確認してください。アダプタは stdout をレビュー結果として扱うため、TUI 向けの出力形式では正しく回収できません。

@@ -232,7 +232,21 @@ check_all_wiring() {
   for suite in multi-agent-critical-marker multi-agent-plan multi-agent-serialization multi-agent-timeout reviewer-pair; do
     check_logical_wiring "$TESTS_DIR/$suite/verify.sh" orchestrator || return 1
   done
-  check_logical_wiring "$SHIM_SUITE" shim
+  # review-wrapper-shim は verify.sh（bootstrap）+ 機能別 *-cases.sh（検査本体）の構成
+  # （`Issue #1604`）。シム起動の大半は cases 側にあるので、verify.sh だけを見ると
+  # 「素起動ゼロ」が何も見ていない緑になる。ディレクトリの全 *.sh を対象にする。
+  # 最初の 1 ファイルで止めず全ファイルを走査してから返す（違反を 1 回の実行で全部出す）。
+  local shim_file shim_files=0 shim_bad=0
+  for shim_file in "${SHIM_SUITE%/verify.sh}"/*.sh; do
+    [ -f "$shim_file" ] || continue
+    shim_files=$((shim_files + 1))
+    check_logical_wiring "$shim_file" shim || shim_bad=1
+  done
+  if [ "$shim_files" -lt 2 ]; then
+    echo "review-wrapper-shim の走査対象が ${shim_files} 件しかない（verify.sh + *-cases.sh の構成が崩れているか glob が空振り）" >&2
+    return 1
+  fi
+  [ "$shim_bad" -eq 0 ]
 }
 
 check_timeout_sentinels() {

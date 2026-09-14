@@ -1042,6 +1042,456 @@ else
   sed 's/^/    /' "$TMP/excl-none.log" >&2
 fi
 
+# ── cross_review 設定（単一固定のオプトイン） ─────────────────────────────
+#
+# 別 CLI が在るときにスキル層がクロスレビューを 1 本加えるか（auto）／常に主担当のみか（off）のオプトイン。
+# orchestrator は 3 層（env > project config > user config）で解決して
+# --print-reviewers に **表示するだけ**で、プラン・縮退警告・レポート行は変えない
+# （分岐はスキル層）。ここで固定するのは (1) 解決と出所、(2) 保存の部分更新、
+# (3) 不正値の入口ごとの拒否、(4) 「挙動を変えない」の完全比較、の 4 点。
+# 表示側だけ書くと「常に off と表示する」実装でも緑になるので、既定 auto の
+# 正常系と precedence を先に主張する。
+
+echo ""
+echo "-- cross_review: 既定と旧形式ファイルの互換 --"
+reset_config
+run "$TMP/cr-default.log" -- --print-reviewers
+if [ "$RUN_RC" -eq 3 ] \
+  && grep -q '^cross_review=auto$' "$TMP/cr-default.log" \
+  && grep -q '^cross_review_source=unset$' "$TMP/cr-default.log"; then
+  ok "未設定なら cross_review=auto / cross_review_source=unset を表示し、exit 3 は変わらない"
+else
+  bad "未設定時の cross_review 表示が期待と違う（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-default.log" >&2
+fi
+# 新しい 2 行は既存行の**後ろ**（source= の直後、available= の前）。既存行の並びと
+# 綴り（`^main=` 等の grep 契約）を変えないことを、行番号ではなく相対順で固定する。
+if [ "$(grep -n -E '^(source|cross_review|cross_review_source|available)=' "$TMP/cr-default.log" | cut -d: -f2- | cut -d= -f1 | tr '\n' ' ')" = "source cross_review cross_review_source available " ]; then
+  ok "cross_review の 2 行は source= の直後・available= の前に並ぶ（既存行順は不変）"
+else
+  bad "--print-reviewers の行順が期待と違う"
+  sed 's/^/    /' "$TMP/cr-default.log" >&2
+fi
+# 旧形式（3 行目が無い）の手書きファイルは cross_review 未設定として読む。
+mkdir -p "$CFG/ff-dev-toolkit"
+printf '%s\n' 'main=claude-code' 'sub=codex-cli' > "$CFG/ff-dev-toolkit/reviewers"
+run "$TMP/cr-legacy.log" -- --print-reviewers
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q '^main=claude-code$' "$TMP/cr-legacy.log" \
+  && grep -q '^cross_review=auto$' "$TMP/cr-legacy.log" \
+  && grep -q '^cross_review_source=unset$' "$TMP/cr-legacy.log"; then
+  ok "cross_review 行の無い旧形式ファイルは unset として読める（後方互換）"
+else
+  bad "旧形式ファイルの読み出しが壊れている（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-legacy.log" >&2
+fi
+
+echo ""
+echo "-- cross_review: 保存と部分更新 --"
+run "$TMP/cr-base.log" -- --set-reviewers main=claude-code,sub=codex-cli
+# 選んでいないときは 3 行目を書かない（unset のまま）。書いてしまうと出所が
+# user config に化けて「利用者が選んでいない」事実が消える。
+if [ "$RUN_RC" -eq 0 ] \
+  && ! grep -q '^cross_review=' "$CFG/ff-dev-toolkit/reviewers" \
+  && grep -q 'Saved reviewers: main=claude-code sub=codex-cli cross_review=auto' "$TMP/cr-base.log"; then
+  ok "cross_review を指定しない保存はファイルに行を足さず、✅ 行は実効値 auto を出す"
+else
+  bad "cross_review 未指定の保存でファイル形式または ✅ 行が期待と違う（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-base.log" >&2
+  sed 's/^/    | /' "$CFG/ff-dev-toolkit/reviewers" >&2
+fi
+run "$TMP/cr-setoff.log" -- --set-reviewers cross_review=off
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q '^main=claude-code$' "$CFG/ff-dev-toolkit/reviewers" \
+  && grep -q '^sub=codex-cli$' "$CFG/ff-dev-toolkit/reviewers" \
+  && grep -q '^cross_review=off$' "$CFG/ff-dev-toolkit/reviewers" \
+  && grep -q 'Saved reviewers: main=claude-code sub=codex-cli cross_review=off' "$TMP/cr-setoff.log"; then
+  ok "cross_review=off 単独の保存が通り、主・副は保存済みの値を引き継ぐ"
+else
+  bad "cross_review=off 単独の保存が失敗、または主・副が消えた（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-setoff.log" >&2
+  sed 's/^/    | /' "$CFG/ff-dev-toolkit/reviewers" >&2 || true
+fi
+run "$TMP/cr-print-off.log" -- --print-reviewers
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q '^main=claude-code$' "$TMP/cr-print-off.log" \
+  && grep -q '^sub=codex-cli$' "$TMP/cr-print-off.log" \
+  && grep -q '^cross_review=off$' "$TMP/cr-print-off.log" \
+  && grep -q '^cross_review_source=user config$' "$TMP/cr-print-off.log"; then
+  ok "保存後は cross_review=off / cross_review_source=user config を読み出せ、exit 0 は変わらない"
+else
+  bad "保存した cross_review を読み出せない（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-print-off.log" >&2
+fi
+# `main=X` だけの再保存で off が消えない（sub の引き継ぎと同じ部分更新の作法）。
+run "$TMP/cr-keep.log" -- --set-reviewers main=claude-code
+rc_keep=$RUN_RC
+run "$TMP/cr-keep-print.log" -- --print-reviewers
+# 保存の rc と ✅ 行も見る — 見ないと「保存が失敗して前の値が残った」回も緑になる
+# （pr-test-analyzer の変異実測で空振りを確認）。
+if [ "$rc_keep" -eq 0 ] && [ "$RUN_RC" -eq 0 ] \
+  && grep -q 'Saved reviewers: main=claude-code sub=codex-cli cross_review=off' "$TMP/cr-keep.log" \
+  && grep -q '^cross_review=off$' "$CFG/ff-dev-toolkit/reviewers" \
+  && grep -q '^sub=codex-cli$' "$TMP/cr-keep-print.log" \
+  && grep -q '^cross_review=off$' "$TMP/cr-keep-print.log"; then
+  ok "main= だけの再保存は保存済みの cross_review=off（と sub）を引き継ぐ"
+else
+  bad "main= だけの再保存で cross_review が消えた（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-keep-print.log" >&2
+fi
+# auto へ戻す経路も通ること（off しか書けない実装を弾く）。
+run "$TMP/cr-setauto.log" -- --set-reviewers cross_review=auto
+rc_auto=$RUN_RC
+run "$TMP/cr-print-auto.log" -- --print-reviewers
+if [ "$rc_auto" -eq 0 ] && [ "$RUN_RC" -eq 0 ] \
+  && grep -q '^cross_review=auto$' "$TMP/cr-print-auto.log" \
+  && grep -q '^cross_review_source=user config$' "$TMP/cr-print-auto.log"; then
+  ok "cross_review=auto の明示保存は出所 user config で auto を返す（unset と区別される）"
+else
+  bad "cross_review=auto の明示保存が期待と違う（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-print-auto.log" >&2
+fi
+# 主が保存されていない状態でも cross_review 単独は保存できる（受け入れ条件:
+# main= の有無を問わない）。読み戻しは主未設定（exit 3）+ cross_review=off。
+reset_config
+run "$TMP/cr-nomain.log" -- --set-reviewers cross_review=off
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q '^main=$' "$CFG/ff-dev-toolkit/reviewers" \
+  && grep -q '^cross_review=off$' "$CFG/ff-dev-toolkit/reviewers"; then
+  ok "引き継ぐ主が無くても cross_review 単独の保存が通り、main は空のまま書かれる"
+else
+  bad "主なしの cross_review 単独の保存が失敗した（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-nomain.log" >&2
+  sed 's/^/    | /' "$CFG/ff-dev-toolkit/reviewers" >&2 || true
+fi
+run "$TMP/cr-nomain-print.log" -- --print-reviewers
+if [ "$RUN_RC" -eq 3 ] \
+  && grep -q '^main=$' "$TMP/cr-nomain-print.log" \
+  && grep -q '^cross_review=off$' "$TMP/cr-nomain-print.log" \
+  && grep -q '^cross_review_source=user config$' "$TMP/cr-nomain-print.log"; then
+  ok "主未設定 + cross_review=off は exit 3（主未設定）のまま off を出所 user config で読み戻す"
+else
+  bad "主未設定 + cross_review=off の読み戻しが期待と違う（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-nomain-print.log" >&2
+fi
+# 明示した空値は「解除」ではなく拒否（契約は auto | off の 2 値。解除は cross_review=auto）。
+run "$TMP/cr-empty.log" -- --set-reviewers cross_review=
+if [ "$RUN_RC" -ne 0 ] && grep -q 'cross_review= needs a value' "$TMP/cr-empty.log" \
+  && grep -q '^cross_review=off$' "$CFG/ff-dev-toolkit/reviewers"; then
+  ok "cross_review= の空値は非 0 で拒否され、保存済みの off は変わらない"
+else
+  bad "cross_review= の空値が通った、または保存値が変わった（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-empty.log" >&2
+fi
+
+echo ""
+echo "-- cross_review: 不正値の拒否（入口ごと） --"
+run "$TMP/cr-base2.log" -- --set-reviewers main=claude-code,sub=codex-cli,cross_review=off
+run "$TMP/cr-badset.log" -- --set-reviewers cross_review=maybe
+if [ "$RUN_RC" -ne 0 ] \
+  && grep -q "unknown cross_review value: 'maybe'" "$TMP/cr-badset.log" \
+  && grep -q '^cross_review=off$' "$CFG/ff-dev-toolkit/reviewers"; then
+  ok "--set-reviewers cross_review=maybe を値を名指しして拒否し、既存の設定を壊さない"
+else
+  bad "不正な cross_review 値が保存された、または値を名乗らない（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-badset.log" >&2
+fi
+run "$TMP/cr-badkey.log" -- --set-reviewers main=claude-code,cross-review=off
+if [ "$RUN_RC" -ne 0 ] && grep -q "unknown reviewer key: 'cross-review'" "$TMP/cr-badkey.log" \
+  && grep -q 'expected main=, sub= or cross_review=' "$TMP/cr-badkey.log"; then
+  ok "キーの綴り間違いは拒否し、エラー文が cross_review= を候補に挙げる"
+else
+  bad "未知キーの拒否メッセージが cross_review= を案内しない（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-badkey.log" >&2
+fi
+run "$TMP/cr-badenv.log" MULTI_AGENT_CROSS_REVIEW=maybe -- --print-reviewers
+if [ "$RUN_RC" -eq 1 ] \
+  && grep -q "unknown cross_review value: 'maybe'" "$TMP/cr-badenv.log" \
+  && grep -q 'MULTI_AGENT_CROSS_REVIEW' "$TMP/cr-badenv.log"; then
+  ok "env の不正値は出所（MULTI_AGENT_CROSS_REVIEW）付きで exit 1 に拒否する"
+else
+  bad "env の不正な cross_review 値が通った、または出所を名乗らない（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-badenv.log" >&2
+fi
+# 解決は --dry-run（プラン構築）経路でも同じ関数を通る。表示経路だけ検証する
+# 実装だと、実行時に不正値が黙って auto 扱いになる。
+run "$TMP/cr-badenv-run.log" MULTI_AGENT_CROSS_REVIEW=maybe -- --dry-run
+if [ "$RUN_RC" -ne 0 ] && grep -q "unknown cross_review value: 'maybe'" "$TMP/cr-badenv-run.log"; then
+  ok "プラン構築経路でも env の不正値を拒否する"
+else
+  bad "--dry-run で env の不正な cross_review 値が通った（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-badenv-run.log" >&2
+fi
+printf '%s\n' 'main=claude-code' 'sub=codex-cli' 'cross_review=maybe' > "$CFG/ff-dev-toolkit/reviewers"
+run "$TMP/cr-badfile.log" -- --print-reviewers
+if [ "$RUN_RC" -eq 1 ] \
+  && grep -q "unknown cross_review value: 'maybe'" "$TMP/cr-badfile.log" \
+  && grep -q 'user config' "$TMP/cr-badfile.log"; then
+  ok "手編集した user config の不正値も出所付きで拒否する"
+else
+  bad "手編集ファイルの不正な cross_review 値が通った（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-badfile.log" >&2
+fi
+# 壊れた 3 行目を `main=X` の再保存で引き継いで書き戻す経路も塞ぐ。
+run "$TMP/cr-badcarry.log" -- --set-reviewers main=claude-code
+if [ "$RUN_RC" -ne 0 ] && grep -q "unknown cross_review value: 'maybe'" "$TMP/cr-badcarry.log"; then
+  ok "壊れた保存値を main= の再保存で引き継がない（書き戻す前に拒否する）"
+else
+  bad "壊れた cross_review 値が再保存で引き継がれた（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-badcarry.log" >&2
+fi
+if [ "$YQ_AVAILABLE" = "true" ]; then
+  printf '%s\n' 'main=claude-code' 'sub=codex-cli' > "$CFG/ff-dev-toolkit/reviewers"
+  mkdir -p "$REPO/.claude"
+  cat > "$REPO/.claude/agent-config.yaml" <<'YAML'
+version: "2.0"
+review:
+  cross_review: maybe
+YAML
+  run "$TMP/cr-badyaml.log" -- --print-reviewers
+  if [ "$RUN_RC" -eq 1 ] \
+    && grep -q "unknown cross_review value: 'maybe'" "$TMP/cr-badyaml.log" \
+    && grep -q 'review.cross_review' "$TMP/cr-badyaml.log"; then
+    ok "プロジェクト設定の不正値も出所キー付きで拒否する"
+  else
+    bad "プロジェクト設定の不正な cross_review 値が通った（rc=${RUN_RC}）"
+    sed 's/^/    /' "$TMP/cr-badyaml.log" >&2
+  fi
+  # YAML の自然な書き方 `cross_review: false` は yq の `//` で「無い」扱いになり、黙って
+  # auto へ化ける経路があった（silent-failure-hunter 指摘）。false は名指しで拒否する。
+  cat > "$REPO/.claude/agent-config.yaml" <<'YAML'
+version: "2.0"
+review:
+  cross_review: false
+YAML
+  run "$TMP/cr-falseyaml.log" -- --print-reviewers
+  if [ "$RUN_RC" -eq 1 ] \
+    && grep -q "unknown cross_review value: 'false'" "$TMP/cr-falseyaml.log"; then
+    ok "プロジェクト設定の cross_review: false は未設定に化けず、'false' を名指しして拒否する"
+  else
+    bad "cross_review: false が黙って通った（rc=${RUN_RC}）"
+    sed 's/^/    /' "$TMP/cr-falseyaml.log" >&2
+  fi
+  rm -rf "$REPO/.claude"
+else
+  ok "○ yq 不在のためプロジェクト設定の cross_review 不正値検査はスキップ"
+fi
+
+# 手編集ファイルの未知キー（typo）は行を名指しして警告し、読み取りは止めない。
+printf '%s\n' 'main=claude-code' 'sub=codex-cli' 'cross-review=off' > "$CFG/ff-dev-toolkit/reviewers"
+run "$TMP/cr-typo.log" -- --print-reviewers
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q "ignoring unknown key 'cross-review'" "$TMP/cr-typo.log" \
+  && grep -q '^cross_review=auto$' "$TMP/cr-typo.log"; then
+  ok "保存ファイルの未知キー 'cross-review' は警告付きで読み飛ばされ、exit 0 のまま"
+else
+  bad "保存ファイルの未知キーが黙って捨てられた（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-typo.log" >&2
+fi
+printf '%s\n' 'main=claude-code' 'sub=codex-cli' 'cross_review=off' 'cross_review=auto' > "$CFG/ff-dev-toolkit/reviewers"
+run "$TMP/cr-dup.log" -- --print-reviewers
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q "duplicate key 'cross_review'" "$TMP/cr-dup.log" \
+  && grep -q '^cross_review=auto$' "$TMP/cr-dup.log"; then
+  ok "保存ファイルの重複キーは警告され、最後の値が勝つ"
+else
+  bad "保存ファイルの重複キーが黙って処理された（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-dup.log" >&2
+fi
+# 上位層（env）が勝っていても、保存ファイルの不正値はその場で検証される（上位層を
+# 外した瞬間に「突然の exit 1」になる遅延を作らない）。
+printf '%s\n' 'main=claude-code' 'sub=codex-cli' 'cross_review=maybe' > "$CFG/ff-dev-toolkit/reviewers"
+MULTI_AGENT_CROSS_REVIEW=off run "$TMP/cr-lower-bad.log" -- --print-reviewers
+if [ "$RUN_RC" -eq 1 ] \
+  && grep -q "unknown cross_review value: 'maybe'" "$TMP/cr-lower-bad.log" \
+  && grep -q 'Repair it with: --set-reviewers cross_review=auto' "$TMP/cr-lower-bad.log"; then
+  ok "env が勝っていても保存ファイルの不正値は検証され、修復コマンドが案内される"
+else
+  bad "上位層が在るときに保存ファイルの不正値が見逃された（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-lower-bad.log" >&2
+fi
+
+# 大文字は受理しない（契約は小文字 2 値。正規化を足す「親切な」変更で受理集合が黙って広がるのを止める）。
+run "$TMP/cr-upper.log" -- --set-reviewers cross_review=OFF
+if [ "$RUN_RC" -ne 0 ] && grep -q "unknown cross_review value: 'OFF'" "$TMP/cr-upper.log"; then
+  ok "cross_review=OFF（大文字）は拒否される"
+else
+  bad "cross_review=OFF が通った（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-upper.log" >&2
+fi
+# 手編集で `key = value` と空白を入れた行はキーが 'cross_review ' になる。黙って auto に
+# 化けず、未知キーとして行を名指しする。
+printf '%s\n' 'main=claude-code' 'sub=codex-cli' 'cross_review = off' > "$CFG/ff-dev-toolkit/reviewers"
+run "$TMP/cr-spaced.log" -- --print-reviewers
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q "ignoring unknown key 'cross_review '" "$TMP/cr-spaced.log" \
+  && grep -q '^cross_review=auto$' "$TMP/cr-spaced.log"; then
+  ok "空白入りの 'cross_review = off' は未知キーとして警告され、黙って auto に化けない"
+else
+  bad "空白入りキーが黙って読み飛ばされた（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-spaced.log" >&2
+fi
+# review 専用の設定だが resolve_reviewer_pair は全タスクで走る（MULTI_AGENT_REVIEW_MAIN と
+# 同じ契約）。不正値は explore でも exit 1 — 現状の契約を固定し、変えるなら意図的に変える。
+reset_config
+set +e
+(
+  cd "$REPO"
+  run_isolated env PATH="$STUB:/usr/bin:/bin" XDG_CONFIG_HOME="$CFG" HOME="$TMP/home" \
+    MULTI_AGENT_CROSS_REVIEW=maybe bash "$MULTI_AGENT" --task explore --description "probe" --dry-run
+) >"$TMP/cr-explore-bad.log" 2>&1
+rc_explore=$?
+set -e
+if [ "$rc_explore" -eq 1 ] && grep -q "unknown cross_review value: 'maybe'" "$TMP/cr-explore-bad.log"; then
+  ok "不正な MULTI_AGENT_CROSS_REVIEW は review 以外のタスク（explore）でも exit 1 で名指し拒否される"
+else
+  bad "explore タスクでの不正 cross_review の扱いが契約と違う（rc=${rc_explore}）"
+  sed 's/^/    /' "$TMP/cr-explore-bad.log" >&2
+fi
+
+echo ""
+echo "-- cross_review: 3 層解決の優先順位 --"
+run "$TMP/cr-prec-base.log" -- --set-reviewers main=claude-code,sub=codex-cli,cross_review=off
+if [ "$YQ_AVAILABLE" = "true" ]; then
+  mkdir -p "$REPO/.claude"
+  cat > "$REPO/.claude/agent-config.yaml" <<'YAML'
+version: "2.0"
+review:
+  cross_review: auto
+YAML
+  run "$TMP/cr-proj.log" -- --print-reviewers
+  if [ "$RUN_RC" -eq 0 ] \
+    && grep -q '^cross_review=auto$' "$TMP/cr-proj.log" \
+    && grep -q '^cross_review_source=project config$' "$TMP/cr-proj.log" \
+    && grep -q '^main=claude-code$' "$TMP/cr-proj.log"; then
+    ok "プロジェクト設定（auto）がユーザーグローバル（off）より優先され、主・副は user config のまま"
+  else
+    bad "cross_review の project config > user config が壊れている（rc=${RUN_RC}）"
+    sed 's/^/    /' "$TMP/cr-proj.log" >&2
+  fi
+  # 利用者が実際に書く値は off。yaml 層の驚き（真偽値の扱い等）は off でだけ出るので、
+  # 実 yq で off を通す経路を持つ。
+  cat > "$REPO/.claude/agent-config.yaml" <<'YAML'
+version: "2.0"
+review:
+  cross_review: off
+YAML
+  run "$TMP/cr-proj-off.log" -- --print-reviewers
+  if [ "$RUN_RC" -eq 0 ] \
+    && grep -q '^cross_review=off$' "$TMP/cr-proj-off.log" \
+    && grep -q '^cross_review_source=project config$' "$TMP/cr-proj-off.log"; then
+    ok "プロジェクト設定の cross_review: off は実 yq で off / project config と読まれる"
+  else
+    bad "プロジェクト設定の cross_review: off が読まれない（rc=${RUN_RC}）"
+    sed 's/^/    /' "$TMP/cr-proj-off.log" >&2
+  fi
+  cat > "$REPO/.claude/agent-config.yaml" <<'YAML'
+version: "2.0"
+review:
+  cross_review: auto
+YAML
+  run "$TMP/cr-env.log" MULTI_AGENT_CROSS_REVIEW=off -- --print-reviewers
+  if [ "$RUN_RC" -eq 0 ] \
+    && grep -q '^cross_review=off$' "$TMP/cr-env.log" \
+    && grep -q '^cross_review_source=env$' "$TMP/cr-env.log"; then
+    ok "env（off）がプロジェクト設定（auto）より優先される"
+  else
+    bad "cross_review の env > project config が壊れている（rc=${RUN_RC}）"
+    sed 's/^/    /' "$TMP/cr-env.log" >&2
+  fi
+  rm -rf "$REPO/.claude"
+else
+  ok "○ yq 不在のためプロジェクト設定の優先順位検査はスキップ"
+fi
+run "$TMP/cr-env-user.log" MULTI_AGENT_CROSS_REVIEW=auto -- --print-reviewers
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q '^cross_review=auto$' "$TMP/cr-env-user.log" \
+  && grep -q '^cross_review_source=env$' "$TMP/cr-env-user.log" \
+  && grep -q '^main_source=user config$' "$TMP/cr-env-user.log"; then
+  ok "env（auto）がユーザーグローバル（off）より優先され、主・副の出所は独立に user config のまま"
+else
+  bad "cross_review の env > user config、または main/sub との独立性が壊れている（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-env-user.log" >&2
+fi
+# 空文字の env は「未設定」（副の `MULTI_AGENT_REVIEW_SUB=` とは違い、空に意味を
+# 持たせない）。下位層の off がそのまま見えること。
+run "$TMP/cr-env-empty.log" MULTI_AGENT_CROSS_REVIEW= -- --print-reviewers
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q '^cross_review=off$' "$TMP/cr-env-empty.log" \
+  && grep -q '^cross_review_source=user config$' "$TMP/cr-env-empty.log"; then
+  ok "空文字の env は未設定として下位層（user config）へ落ちる"
+else
+  bad "空文字の MULTI_AGENT_CROSS_REVIEW が下位層を隠している（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-env-empty.log" >&2
+fi
+# 主が未設定で cross_review だけが在るファイル（exit 3 の契約が変わらないこと）。
+printf '%s\n' 'main=' 'sub=' 'cross_review=off' > "$CFG/ff-dev-toolkit/reviewers"
+run "$TMP/cr-only.log" -- --print-reviewers
+if [ "$RUN_RC" -eq 3 ] \
+  && grep -q '^main=$' "$TMP/cr-only.log" \
+  && grep -q '^cross_review=off$' "$TMP/cr-only.log" \
+  && grep -q '^cross_review_source=user config$' "$TMP/cr-only.log"; then
+  ok "cross_review だけが在って主が無ければ exit 3 のまま（終了コードの契約は主の有無だけで決まる）"
+else
+  bad "cross_review の有無が exit code に影響している（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-only.log" >&2
+fi
+
+echo ""
+echo "-- cross_review: 挙動を変えない（プラン完全一致） --"
+# 読み取り・表示専用の契約。plan_lines（CLI と観点の並び）だけでなく dry-run の
+# 出力**全体**を突き合わせる — 縮退警告・ℹ️ 行・レポート行のどれか 1 行でも
+# 増減すれば落ちる。dry-run の出力は決定的（時刻・乱数を含まない）なので byte
+# 一致で比較できる。空同士の一致は vacuous pass なので非空も主張する。
+printf '%s\n' 'main=claude-code' 'sub=codex-cli' > "$CFG/ff-dev-toolkit/reviewers"
+run "$TMP/cr-plan-unset.log" -- --dry-run
+rc_unset=$RUN_RC
+printf '%s\n' 'main=claude-code' 'sub=codex-cli' 'cross_review=off' > "$CFG/ff-dev-toolkit/reviewers"
+run "$TMP/cr-plan-off.log" -- --dry-run
+if [ "$rc_unset" -eq 0 ] && [ "$RUN_RC" -eq 0 ] \
+  && [ -n "$(plan_lines "$TMP/cr-plan-off.log")" ] \
+  && cmp -s "$TMP/cr-plan-unset.log" "$TMP/cr-plan-off.log"; then
+  ok "cross_review=off の pair プランは未設定時と出力全体が byte 一致する（挙動を変えない）"
+else
+  bad "cross_review=off が dry-run の出力を変えている（rc=${rc_unset}/${RUN_RC}）"
+  diff "$TMP/cr-plan-unset.log" "$TMP/cr-plan-off.log" | sed 's/^/    /' >&2 || true
+fi
+# 既定 pair（pair.log）とも一致すること。上の 2 本が同じ形で壊れていても落ちる。
+if [ "$(plan_lines "$TMP/pair.log")" = "$(plan_lines "$TMP/cr-plan-off.log")" ]; then
+  ok "cross_review=off の主・副 CLI と観点の並びが既定 pair と完全一致する"
+else
+  bad "cross_review=off のプランが既定 pair と一致しない"
+  diff <(plan_lines "$TMP/pair.log") <(plan_lines "$TMP/cr-plan-off.log") | sed 's/^/    /' >&2 || true
+fi
+# 単一 CLI への縮退警告（既存契約）は cross_review=off でも従来どおり出る。
+# off は「スキル層がクロスレビューへ回さない」であって、orchestrator の縮退通知を
+# 黙らせる設定ではない。
+run "$TMP/cr-degrade.log" -- --perspective code-review --dry-run
+if [ "$RUN_RC" -eq 0 ] \
+  && grep -q 'Plan resolved to a single CLI (claude-code)' "$TMP/cr-degrade.log" \
+  && grep -q "sub reviewer 'codex-cli' runs only 'comprehensive-review'" "$TMP/cr-degrade.log"; then
+  ok "cross_review=off でも単一 CLI 縮退警告と副の脱落理由は従来どおり出る"
+else
+  bad "cross_review=off が縮退警告を黙らせている（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-degrade.log" >&2
+fi
+run "$TMP/cr-degrade-env.log" MULTI_AGENT_CROSS_REVIEW=off MULTI_AGENT_REVIEW_SUB= -- --dry-run
+if [ "$RUN_RC" -eq 0 ] && grep -q 'No sub reviewer set' "$TMP/cr-degrade-env.log"; then
+  ok "env cross_review=off でも副なしの縮退通知は従来どおり出る"
+else
+  bad "env cross_review=off が副なしの縮退通知を消している（rc=${RUN_RC}）"
+  sed 's/^/    /' "$TMP/cr-degrade-env.log" >&2
+fi
+# --help が新キーを案内すること（保存の入口が発見できないと設定は存在しないに等しい）。
+run "$TMP/cr-help.log" -- --help
+if [ "$RUN_RC" -eq 0 ] && grep -q -- '--set-reviewers' "$TMP/cr-help.log" \
+  && grep -q 'cross_review=auto|off' "$TMP/cr-help.log"; then
+  ok "--help が --set-reviewers の cross_review=auto|off を案内する"
+else
+  bad "--help に cross_review の案内が無い（rc=${RUN_RC}）"
+fi
+run "$TMP/cr-restore.log" -- --set-reviewers main=claude-code,sub=codex-cli
+
 echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ reviewer-pair verify: $FAIL 件失敗" >&2

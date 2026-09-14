@@ -67,9 +67,14 @@
 #                   ただし --dry-run はこのシムの codex 実在検査を素通りして常に委譲する
 #                   （--dry-run がこの rc=4 で止まることは無い）
 #               その他 = 委譲先の終了コードをそのまま返す。codex が PATH に無い環境の
-#                   --dry-run は、残りの AI CLI の構成で 3 通りに分かれる:
-#                     ・codex が不在で、委譲先の pair 主 reviewer（既定 claude-code。
-#                       --set-reviewers / MULTI_AGENT_REVIEW_MAIN で変わる）が導入済み
+#                   --dry-run は、残りの AI CLI の構成で 4 通りに分かれる。主 reviewer に
+#                   既定値は無く、MULTI_AGENT_REVIEW_MAIN / プロジェクト設定
+#                   （.claude/agent-config.yaml の review.main。yq がある環境のみ読まれる）
+#                   のいずれかで指定したものだけが pair の主になる（委譲先の
+#                   --set-reviewers も同じ役だがこのシムは受け付けない。multi-agent.sh を
+#                   直接呼ぶときだけ使える）。設定値が未知・不正な
+#                   CLI 名のときは CLI 検出の前に rc=1 で止まる（以下は有効な設定での分岐）:
+#                     ・codex が不在で、委譲先の pair 主 reviewer（設定済み）が導入済み
 #                       → rc=0。プランは出る。このシムは固定で足している
 #                          `--cli codex-cli` を**この回だけ外して**委譲する。`--cli` は
 #                          委譲先では分散モードのフィルタなので、外すと review の既定
@@ -78,9 +83,19 @@
 #                          表示されるのは `multi-agent.sh --task review` と同じプラン
 #                          であって、このシムを --dry-run なしで実行したときの
 #                          プランではない（実行は従来どおり rc=4 で止まる）
-#                     ・codex が不在で、pair 主 reviewer も導入されていない（例: grok だけ）
+#                     ・codex が不在で、設定済みの pair 主 reviewer も導入されていない
+#                       （例: 主を claude-code に設定したまま grok だけが入っている）
 #                       → rc=1。`ERROR: main reviewer '<名前>' is not installed.` で止まる。
-#                          プランは出ない（主を導入するか --set-reviewers で変える）
+#                          プランは出ない（主を導入するか MULTI_AGENT_REVIEW_MAIN で変える。主を
+#                          --exclude-cli / exclude_clis で除外している回は文言が
+#                          `was excluded by …` に変わる）
+#                     ・codex が不在で、pair 主 reviewer が**未設定**（非従量の AI CLI が
+#                       1 本でもある）
+#                       → rc=0。委譲先が `No reviewers configured — falling back to the
+#                          distributed plan.` で分散プランへ縮退し、残りの CLI が観点を
+#                          引き受けたプランが出る（pair のプランではない）。従量課金の
+#                          copilot だけの環境は分散プランで既定除外されるため、
+#                          `ERROR: Execution plan is empty` で rc=1（プランなし）
 #                     ・AI CLI が 1 本も PATH に無い
 #                       → rc=1。委譲先の CLI 検出が `ERROR: No AI CLIs are installed`
 #                          で止まり `🏁 Dry run complete.` には到達しない
@@ -877,10 +892,15 @@ while [ $# -gt 0 ]; do
       exit 0
       ;;
     *)
+      # 復旧形に固定の `--cli codex-cli` は書かない。このシムが codex 不在の --dry-run で
+      # 外そうとしている当の引数で、案内どおり付けると codex-cli の観点の fallback
+      # 再割り当てが --cli フィルタに弾かれて「Execution plan is empty」へ戻る。codex
+      # だけに絞る従来形は、codex が入っている環境で利用者が足す（Issue 1600）。
       echo "ERROR: ${SCRIPT_NAME} は '${1}' を受け付けません。" >&2
       echo "       対応オプションは --help で確認してください。" >&2
       echo "       それ以外は multi-agent.sh を直接呼んで指定してください:" >&2
-      echo "         bash <toolkit>/scripts/multi-agent.sh --task review --cli codex-cli ${1} ..." >&2
+      echo "         bash <toolkit>/scripts/multi-agent.sh --task review ${1} ..." >&2
+      echo "       （codex だけに絞る従来の形は、codex が PATH にある環境で --cli codex-cli を足す。codex 不在の --dry-run でプランを見る回は付けない）" >&2
       exit 2
       ;;
   esac
@@ -1158,9 +1178,10 @@ fi
 # plugin cache も持ち込まれないため、このシムは toolkit 解決で exit=1 して止まっていた。
 # 止まること自体は正しい（黙って 0 で抜けるとレビュー済みと誤読される）が、次に何をすべきかが
 # 出力に無かった。self-review.md「レビュー担当の選択と利用制限時の継続」の契約
-# （3. 利用不可なら別候補へ → 4. 別モデルの完走が 0 本なら Toolkit のレビューエージェントを
-# read-only で並列起動 → 5. それでも足りなければ主担当だけで継続し理由を記録）へ降格する旨を
-# 明示する。**このシムはレビューを実行していない**ので終了コードは非 0 のまま
+# （3. 別 CLI が在れば 1 本加える → 4. 無ければ Toolkit のレビューエージェントを read-only で
+# 任意起動 → 5〜6. 一時的な利用不可はその回だけ単一に落ち、記録は事実のみ）へ降格する旨を
+# 明示する（基準線が「主担当のセルフレビュー」へ反転してからは、降格先は
+# 「別 CLI が在れば再配分 / 無ければ主担当のみで正常完了」の 2 段）。**このシムはレビューを実行していない**ので終了コードは非 0 のまま
 # （codex 不在は 4、toolkit 未解決は従来どおり解決側の rc）。
 #
 # 案内で挙げる代替 CLI 候補は**委譲先の registry から引く**。案内側に候補名を直書きすると、
@@ -1219,7 +1240,7 @@ print_claude_fallback_notice() { # $1: 理由 / $2: toolkit（multi-agent.sh）�
   # （toolkit 未解決）。「Codex 不在のため」と決め打つと、codex が入っている環境で原因を誤って
   # 名指しし、切り分けを遅らせるだけでなく存在しない問題への起票を生む（導入先で実測）。
   echo "⚠️  クロスレビューを実行できないため Claude セルフレビュー（別コンテキストの reviewer サブエージェント）へ降格します: ${reason}" >&2
-  echo "   降格先（self-review.md §レビュー担当の選択と利用制限時の継続 3〜5）:" >&2
+  echo "   降格先（self-review.md §レビュー担当の選択と利用制限時の継続 3〜6）:" >&2
   if [ "$toolkit_usable" -eq 1 ]; then
     candidates="$(derive_fallback_cli_candidates "${RESOLVED_ORCHESTRATOR:-}" "codex-cli")"
     if [ -n "$candidates" ]; then
@@ -1245,8 +1266,8 @@ print_claude_fallback_notice() { # $1: 理由 / $2: toolkit（multi-agent.sh）�
       echo "     1. setup-multi-agent.sh を再実行して toolkit を配置し直す（解決できるまで別 CLI への再配分も実行できない）" >&2
     fi
   fi
-  echo "     2. 別モデルの完走が 0 本なら pr-review-toolkit:code-reviewer 等の reviewer サブエージェントを read-only で起動する" >&2
-  echo "     3. それも不可なら主担当のみで継続し、PR / 最終報告に「クロスレビュー未実施」と候補別の利用不可理由を残す" >&2
+  echo "     2. 別 CLI が無く Claude Code で Toolkit が使えるなら pr-review-toolkit:code-reviewer 等の reviewer サブエージェントを read-only で起動する（任意）" >&2
+  echo "     3. 主担当のセルフレビューが基準線なので、それだけでも正常に完了できる。PR / 最終報告には実施した担当と本数だけを残す（利用不可理由の列挙は不要）" >&2
   echo "   このシムはレビューを実行していません（非 0 終了。レビュー済みと読まないこと）。" >&2
 }
 
@@ -1285,11 +1306,35 @@ fi
 #
 # 外してもプランが出ない構成が 2 つあり、rc=1 の理由が違う。どちらも本分岐では直せない
 # ので、警告文で読み分けられるようにする:
-#   ・pair 主 reviewer（既定 claude-code）が未導入  → `ERROR: main reviewer '<名前>' is
-#     not installed.`（例: grok だけが入っている環境）
-#   ・AI CLI が 1 本も無い                          → `ERROR: No AI CLIs are installed`
+#   ・設定済みの pair 主 reviewer が未導入  → `ERROR: main reviewer '<名前>' is not
+#     installed.`（例: 主を claude-code に設定したまま grok だけが入っている環境）
+#   ・AI CLI が 1 本も無い                  → `ERROR: No AI CLIs are installed`
+# 主 reviewer に既定値は無い。未設定なら委譲先は `No reviewers configured — falling back
+# to the distributed plan.` で分散プランへ縮退し、残りの非従量 CLI が観点を引き受けた
+# プランを rc=0 で出す（copilot だけなら分散プランの既定除外で Execution plan is empty の
+# rc=1）。案内に「既定 claude-code」と書くと、reviewers 設定の無い環境で grok だけが
+# 入っているときの帰結（rc=0）を rc=1 と偽る。
+#
+# 警告が案内する復旧手段は**このシムが受け付けるもの**に限る。委譲先の
+# `--set-reviewers` はこのシムが受け付けないので、案内に書くと案内どおり渡した利用者を
+# 上の未対応オプション経路が rc=2 で拒む（消費側で実測・Issue 1600）。主 reviewer の
+# 差し替えは env（MULTI_AGENT_REVIEW_MAIN）かプロジェクト設定で案内し、
+# `--set-reviewers` は multi-agent.sh を直接呼ぶときだけ使えると併記する。
+#
+# この不在判定は CODEX_REVIEW_CODEX_BIN 由来で、委譲先はこの env を見ずに PATH の `codex`
+# を独立に検出する。env に存在しない値が入ったまま PATH に codex が居ると、シムは「codex
+# 不在」で `--cli` を外し、委譲先は同じ実行で codex を「導入済み」と検出する（プランに codex-cli が載るかは主 reviewer の設定次第 — 未設定なら分散縮退で載り、pair の主が別 CLI なら載らない）。
+# このとき上の「外さないと Execution plan is empty」は当てはまらない。判定を委譲先に
+# 揃えるとシームが PATH 操作なしに不在を再現できなくなるので、判定は env のまま残し、
+# 食い違いを検出して警告文で「env 由来の判定であり委譲先の検出とは別」と明示する。
 _codex_bin="${CODEX_REVIEW_CODEX_BIN:-codex}"
 if ! command -v -- "$_codex_bin" >/dev/null 2>&1; then
+  # 委譲先が同じ実行で検出する実体（PATH の `codex`）。env の差し替えが効くのはシムの
+  # 判定だけなので、両者が割れたときに限り警告へ 1 行足す。
+  _delegate_sees_codex=0
+  if command -v -- codex >/dev/null 2>&1; then
+    _delegate_sees_codex=1
+  fi
   if [ "$DRY_RUN_GIVEN" -eq 1 ] && [ "$EXCLUDE_CODEX_GIVEN" -eq 0 ]; then
     # 固定で足した `--cli codex-cli` の 2 要素だけを落とす。利用者は --cli を渡せない
     # （このシムはオプションとして受け付けない）ので、落とす対象は先頭の 1 組に限られる。
@@ -1313,11 +1358,15 @@ if ! command -v -- "$_codex_bin" >/dev/null 2>&1; then
       ORCH_ARGS=("${_orch_kept[@]}")
     fi
     echo "WARNING: codex CLI（${_codex_bin}）が PATH にありませんが、--dry-run はこの検査を素通りして委譲します。" >&2
+    if [ "$_delegate_sees_codex" -eq 1 ]; then
+      echo "         NOTE: この不在判定は CODEX_REVIEW_CODEX_BIN（${_codex_bin}）に基づくシム側のものです。委譲先（multi-agent.sh）はこの env を見ず PATH の codex を独立に検出するため、委譲先から見ると codex は導入済みです（プランに codex-cli が載るかは主 reviewer の設定次第。以下の「外さないとプランが出ない」の説明はこの回には当てはまりません。実行は env の指す実体が無いため rc=4 で止まります）。" >&2
+    fi
     echo "         このとき固定の --cli codex-cli を外して委譲します（付けたままだと codex-cli の観点の fallback 再割り当てが --cli フィルタで除外され、実行対象 0 件の「Execution plan is empty」で止まってプランが出ません）。" >&2
     echo "         --cli は委譲先では分散モードのフィルタなので、外すと review の既定である pair モードへ戻ります。表示されるのは multi-agent.sh --task review と同じプラン（pair の主 reviewer が review 観点すべてを担当する形）です。" >&2
     echo "         このシムを --dry-run なしで実行すると、従来どおり codex 不在で rc=4 停止します（プランが出たことは実行できることを意味しません）。" >&2
     echo "         実行するには codex の導入（または CODEX_REVIEW_CODEX_BIN の修正）が要ります。表示されたプランをそのまま走らせるなら multi-agent.sh を直接呼んでください。" >&2
-    echo "         プランが出ない構成が 2 つあり、rc=1 の理由が違います。pair の主 reviewer（既定 claude-code）が未導入なら「main reviewer '<名前>' is not installed.」で止まります（例: grok だけが入っている環境。--set-reviewers で主を変えられます）。" >&2
+    echo "         プランが出ない構成が 2 つあり、rc=1 の理由が違います。pair の主 reviewer（MULTI_AGENT_REVIEW_MAIN / プロジェクト設定で指定したもの）が未導入なら「main reviewer '<名前>' is not installed.」で止まります（例: 主を claude-code に設定したまま grok だけが入っている環境。MULTI_AGENT_REVIEW_MAIN=<cli> を付けて再実行すると主を変えられます。委譲先の --set-reviewers はこのシムでは受け付けません — multi-agent.sh を直接呼ぶときだけ使えます）。" >&2
+    echo "         主 reviewer が未設定なら、委譲先は「No reviewers configured — falling back to the distributed plan.」で分散プランへ縮退し、残りの非従量 AI CLI が観点を引き受けたプランが rc=0 で出ます（pair のプランではありません。copilot だけの環境は既定除外で「Execution plan is empty」の rc=1 です）。" >&2
     echo "         AI CLI が 1 本も PATH に無い環境では、--cli を外しても委譲先の CLI 検出が「No AI CLIs are installed」で止まります（rc=1・プランなし）。" >&2
   elif [ "$DRY_RUN_GIVEN" -eq 1 ]; then
     # --dry-run だが --exclude-cli codex-cli が渡っている回。固定の --cli は残すので、

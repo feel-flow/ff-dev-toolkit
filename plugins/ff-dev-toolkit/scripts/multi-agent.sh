@@ -77,6 +77,13 @@
 #                           other lane runs unchanged, and the default (no flag) still
 #                           spawns the CLI. See "Host delegation" below.
 #   --dry-run               Show plan without executing
+#   --print-reviewers       Print the resolved review pair (main / sub / sources) plus
+#                           cross_review and its source as key=value lines, then exit
+#                           (0 = main set, 3 = unset). Builds no plan.
+#   --set-reviewers <spec>  Save main=<cli>[,sub=<cli>][,cross_review=auto|off] to the user
+#                           config. main= is required unless only cross_review= is given
+#                           (then the saved main, if any, is kept); sub= / cross_review=
+#                           left out keep their saved values.
 #   --timeout <seconds>     Timeout per CLI (default: review 900 / explore 600 / implement 900)
 #   --help                  Show this help
 #
@@ -511,7 +518,7 @@ get_cli_model_env_vars() {
     claude-code) echo "MULTI_AGENT_MODEL_CLAUDE_CODE MULTI_AGENT_CLAUDE_EFFORT" ;;
     codex-cli)   echo "MULTI_AGENT_MODEL_CODEX_CLI MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CODEX_REASONING_EFFORT" ;;
     copilot-cli) echo "MULTI_AGENT_MODEL_COPILOT_CLI" ;;
-    grok-cli)    echo "MULTI_AGENT_MODEL_GROK_CLI" ;;
+    grok-cli)    echo "MULTI_AGENT_MODEL_GROK_CLI MULTI_AGENT_GROK_READONLY_PROFILE" ;;
     *) echo "" ;;
   esac
 }
@@ -738,11 +745,37 @@ validate_reviewer_value() { # <役割> <値>
   return 0
 }
 
-# ユーザーグローバルの保存ファイルを読む（`main=...` / `sub=...` の 2 行）。
+# cross_review — 別 CLI が在るときにスキル層がクロスレビューを 1 本
+# 加えるか（auto）／常に主担当のみか（off）の**オプトイン設定**。値は auto（既定）| off。ここで扱うのは読み取り・検証・表示
+# だけで、プラン構築・縮退警告・レポート行・実行の挙動は一切変えない（分岐はスキル
+# 層が --print-reviewers の `cross_review=` 行を見て行う）。
+# 値は CLI 名ではないので validate_reviewer_value（ALL_CLIS 照合）は使わない。
+# 空文字は「未設定」として素通しし、呼び出し側で auto / unset に落とす。
+readonly CROSS_REVIEW_VALUES="auto off"
+
+validate_cross_review_value() { # <出所> <値>
+  local origin="$1" value="$2"
+  [[ -z "$value" ]] && return 0
+  if ! list_contains "$CROSS_REVIEW_VALUES" "$value"; then
+    echo "ERROR: unknown cross_review value: '${value}' (from ${origin})" >&2
+    echo "       Expected one of: auto, off" >&2
+    # 手編集で壊れた保存値は、main= の再保存も止める（引き継ぎ値も検証するため）。
+    # 直し方を添えないと、利用者は「何を打てば抜けられるか」をコードから探すことになる。
+    case "$origin" in
+      "user config"*) echo "       Repair it with: --set-reviewers cross_review=auto (or edit the file named above)" >&2 ;;
+    esac
+    return 1
+  fi
+  return 0
+}
+
+# ユーザーグローバルの保存ファイルを読む（`main=...` / `sub=...` の 2 行 +
+# 任意の `cross_review=...` 1 行。旧形式＝3 行目が無いファイルは
+# cross_review 未設定として読む）。
 # ユーザーグローバルの保存ファイルを読み、指定された変数名へ入れる。
 # グローバルを直接書かないのは、フィールド単位の優先順位判定を呼び出し側に
 # 一元化するため（ここで書き戻すと「誰が入れた値か」が追えなくなる）。
-read_reviewers_file_into() { # <main を入れる変数名> <sub を入れる変数名>
+read_reviewers_file_into() { # <main を入れる変数名> <sub を入れる変数名> [cross_review を入れる変数名]
   local f key value
   f="$(reviewers_config_file)"
   [[ -f "$f" ]] || return 0
@@ -750,10 +783,30 @@ read_reviewers_file_into() { # <main を入れる変数名> <sub を入れる変
   # 素の while だとその行が黙って捨てられる。この設定は ~/.config の平文で説明
   # コメント付きなので手編集を誘うし、落ちる形が「副が黙って消える」——まさに
   # この機能が可視化しようとしている縮退そのもの。
+  # 未知のキー・重複キーは黙って捨てない。この文書は手編集を誘う
+  # （self-review.md がパスを名指しする）ので、`cross-review=off` のような typo が
+  # 「未設定 = auto」に化けると、利用者が切ったつもりのクロスレビューが走る。
+  # 読み取りは止めない（main / sub の旧互換）が、行を名指しして警告する。
+  local seen=""
   while IFS='=' read -r key value || [[ -n "$key" ]]; do
+    case "$key" in
+      ""|\#*) continue ;;
+      main|sub|cross_review)
+        if list_contains "$seen" "$key"; then
+          echo "⚠️  ${f}: duplicate key '${key}' — the last value wins" >&2
+        fi
+        seen="${seen} ${key}"
+        ;;
+      *)
+        echo "⚠️  ${f}: ignoring unknown key '${key}' (expected main=, sub=, cross_review=)" >&2
+        continue
+        ;;
+    esac
     case "$key" in
       main) eval "$1=\"\$value\"" ;;
       sub)  eval "$2=\"\$value\"" ;;
+      # 第 3 引数を渡さない旧来の呼び出しは cross_review を読み飛ばす（互換）
+      cross_review) [[ -n "${3:-}" ]] && eval "$3=\"\$value\"" ;;
     esac
   done < "$f"
   return 0
@@ -771,9 +824,14 @@ resolve_reviewer_pair() {
   local v
   REVIEW_MAIN=""
   REVIEW_SUB=""
-  local main_src="" sub_src=""
+  local main_src="" sub_src="" cross_src=""
   REVIEWERS_MAIN_SOURCE=""
   REVIEWERS_SUB_SOURCE=""
+  # cross_review も同じ 3 層・同じ出所語彙で解決する。副と違い
+  # 空文字に意味を持たせない（空 = 未設定 → 既定 auto）。不正値は入口ごとに出所
+  # 付きで拒否し、下位層へ黙って落とさない。
+  CROSS_REVIEW=""
+  CROSS_REVIEW_SOURCE=""
 
   if [[ -n "${MULTI_AGENT_REVIEW_MAIN:-}" ]]; then
     REVIEW_MAIN="$MULTI_AGENT_REVIEW_MAIN"; main_src="env"
@@ -782,7 +840,16 @@ resolve_reviewer_pair() {
   if [[ "${MULTI_AGENT_REVIEW_SUB+set}" == "set" ]]; then
     REVIEW_SUB="$MULTI_AGENT_REVIEW_SUB"; sub_src="env"
   fi
+  if [[ -n "${MULTI_AGENT_CROSS_REVIEW:-}" ]]; then
+    validate_cross_review_value "env MULTI_AGENT_CROSS_REVIEW" "$MULTI_AGENT_CROSS_REVIEW" || return 1
+    CROSS_REVIEW="$MULTI_AGENT_CROSS_REVIEW"; cross_src="env"
+  fi
 
+  if [[ -f "$CONFIG_FILE" ]] && ! command -v yq &>/dev/null && grep -q '^review:' "$CONFIG_FILE" 2>/dev/null; then
+    # yq が無いと project config の review.* は読めない。load_config の汎用案内だけでは
+    # 「単一固定を書いたのに効かない」が cross_review に帰属できないので名指しする。
+    echo "ℹ️  yq not found — review.main / review.sub / review.cross_review in ${CONFIG_FILE} are not read." >&2
+  fi
   if [[ -f "$CONFIG_FILE" ]] && command -v yq &>/dev/null; then
     if [[ -z "$main_src" ]]; then
       v="$(yq -r '.review.main // ""' "$CONFIG_FILE" 2>/dev/null || true)"
@@ -792,14 +859,34 @@ resolve_reviewer_pair() {
       v="$(yq -r '.review.sub // ""' "$CONFIG_FILE" 2>/dev/null || true)"
       [[ -n "$v" ]] && { REVIEW_SUB="$v"; sub_src="project config"; }
     fi
+    if [[ -z "$cross_src" ]]; then
+      # `// ""` は使わない — yq の `//` は false を「無い」扱いにするので、YAML の
+      # 自然な書き方 `cross_review: false` が黙って未設定（auto）へ化ける。null だけを
+      # 空にし、false / true / 0 は文字列として validate へ届けて名指しで拒否する。
+      v="$(yq -r '.review.cross_review | select(. != null) | tostring' "$CONFIG_FILE" 2>/dev/null || true)"
+      if [[ -n "$v" ]]; then
+        validate_cross_review_value "project config review.cross_review (${CONFIG_FILE})" "$v" || return 1
+        CROSS_REVIEW="$v"; cross_src="project config"
+      fi
+    fi
   fi
 
-  if [[ -z "$main_src" || -z "$sub_src" ]]; then
-    local file_main="" file_sub=""
-    read_reviewers_file_into file_main file_sub
-    if [[ -z "$main_src" && -n "$file_main" ]]; then REVIEW_MAIN="$file_main"; main_src="user config"; fi
-    if [[ -z "$sub_src"  && -n "$file_sub"  ]]; then REVIEW_SUB="$file_sub";  sub_src="user config"; fi
+  # 保存ファイルは常に読み、cross_review の値は上位層が勝っていても検証する。上位層が
+  # 在るあいだ壊れた保存値を見逃すと、上位層を外した瞬間に「突然の exit 1」になり、
+  # 原因の帰属が難しい（検証は列挙値の照合 1 回で、コストは無い）。
+  local file_main="" file_sub="" file_cross=""
+  read_reviewers_file_into file_main file_sub file_cross
+  if [[ -n "$file_cross" ]]; then
+    validate_cross_review_value "user config $(reviewers_config_file)" "$file_cross" || return 1
   fi
+  if [[ -z "$main_src" && -n "$file_main" ]]; then REVIEW_MAIN="$file_main"; main_src="user config"; fi
+  if [[ -z "$sub_src"  && -n "$file_sub"  ]]; then REVIEW_SUB="$file_sub";  sub_src="user config"; fi
+  if [[ -z "$cross_src" && -n "$file_cross" ]]; then CROSS_REVIEW="$file_cross"; cross_src="user config"; fi
+
+  # 未設定は既定 auto。出所 unset は「利用者が選んでいない」ことの表示で、
+  # 明示 auto（user config 等）と区別できるようにする。
+  CROSS_REVIEW="${CROSS_REVIEW:-auto}"
+  CROSS_REVIEW_SOURCE="${cross_src:-unset}"
 
   # 出所は main / sub が同じなら 1 つ、違えば両方を出す（どこを直せばよいか分かる形）
   if [[ -z "$main_src" && -z "$sub_src" ]]; then
@@ -820,9 +907,13 @@ resolve_reviewer_pair() {
 
 # 書き込みは hooks/check-update.sh の write_cache と同じアトミック置換。
 # 部分的に書けたファイルを残すと、次回の読み出しが壊れた設定を拾う。
-write_reviewers_file() { # <main> <sub>
-  local f dir tmp
+write_reviewers_file() { # <main> <sub> [cross_review]
+  local f dir tmp cross_line=""
   f="$(reviewers_config_file)"
+  # cross_review は選ばれたときだけ 3 行目に書く。未設定でも
+  # `cross_review=auto` を書いてしまうと、次回の読み出しで出所が「user config」に
+  # 化け、「利用者が選んでいない（unset）」という事実が消える。
+  [[ -n "${3:-}" ]] && cross_line="cross_review=$3"
   dir="$(dirname "$f")"
   mkdir -p "$dir" 2>/dev/null || {
     echo "ERROR: cannot create ${dir}" >&2
@@ -843,10 +934,12 @@ write_reviewers_file() { # <main> <sub>
   # 1 回の printf で書く。複数の printf を { } で束ねると、ブロックの終了状態は
   # **最後の 1 つ**のものになり、途中の書き込み失敗を検出できない（切り詰められた
   # ファイルがそのまま install される）。
+  # cross_line が空のときは末尾の空行を作らない（旧形式と byte 一致を保つ）。
   if ! printf '%s\n' \
     "# ff-dev-toolkit review reviewers (CLI names only — models are each CLI's own setting)" \
     "main=$1" \
-    "sub=$2" > "$tmp"; then
+    "sub=$2" \
+    ${cross_line:+"$cross_line"} > "$tmp"; then
     rm -f "$tmp" 2>/dev/null
     echo "ERROR: cannot write ${tmp}" >&2
     return 1
@@ -874,6 +967,10 @@ print_reviewers_state() {
   printf 'main_source=%s\n' "${REVIEWERS_MAIN_SOURCE:-unset}"
   printf 'sub_source=%s\n' "${REVIEWERS_SUB_SOURCE:-unset}"
   printf 'source=%s\n' "${REVIEWERS_SOURCE:-unset}"
+  # cross_review は既存行の**後ろ**に足す。消費側は `^main=` 等の
+  # キーで grep する契約なので、既存行の並びと綴りを変えない。
+  printf 'cross_review=%s\n' "${CROSS_REVIEW:-auto}"
+  printf 'cross_review_source=%s\n' "${CROSS_REVIEW_SOURCE:-unset}"
   # stderr は握りつぶさない。CLI 未導入時の唯一の手がかり（インストール案内）が
   # そこにしか無い。stdout の ✅/❌ だけを捨てる。
   detect_available_clis >/dev/null
@@ -883,10 +980,10 @@ print_reviewers_state() {
   return 3
 }
 
-# `main=<cli>,sub=<cli>` を検証して保存する。検証はここ 1 箇所に閉じ込め、
-# スキル層にはプロンプト以外の判断をさせない。
+# `main=<cli>,sub=<cli>,cross_review=<auto|off>` を検証して保存する。検証はここ
+# 1 箇所に閉じ込め、スキル層にはプロンプト以外の判断をさせない。
 set_reviewers_from_spec() { # <spec>
-  local spec="$1" part key value main="" sub="" sub_given=false
+  local spec="$1" part key value main="" sub="" sub_given=false cross="" cross_given=false
   # IFS の変更はカンマ分割のあいだだけに閉じる。関数の残り（validate_reviewer_value →
   # list_contains）は `for i in $list` の単語分割に依存しているので、IFS=',' のまま
   # 進むと既知の CLI 名すら「未知」と判定される（実際に踏んだ）。
@@ -898,8 +995,9 @@ set_reviewers_from_spec() { # <spec>
     case "$key" in
       main) main="$value" ;;
       sub)  sub="$value"; sub_given=true ;;
+      cross_review) cross="$value"; cross_given=true ;;
       *)
-        echo "ERROR: unknown reviewer key: '${key}' (expected main= or sub=)" >&2
+        echo "ERROR: unknown reviewer key: '${key}' (expected main=, sub= or cross_review=)" >&2
         return 1
         ;;
     esac
@@ -907,17 +1005,48 @@ set_reviewers_from_spec() { # <spec>
 
   IFS="$saved_ifs"
 
-  if [[ -z "$main" ]]; then
-    echo "ERROR: --set-reviewers requires main=<cli> (sub=<cli> is optional)." >&2
+  # 既存の保存値は 1 回だけ読む。部分更新（main だけ / cross_review だけ）で
+  # 渡されなかったキーはここから引き継ぐ。
+  local existing_main="" existing_sub="" existing_cross=""
+  read_reviewers_file_into existing_main existing_sub existing_cross
+
+  # `cross_review=` 単独も許す — 主・副は保存済みのものを引き継ぐ。
+  # 引き継ぐ主が無くても保存する（main= の有無を問わない、が AC）: 単一固定は
+  # 「主担当 = 実装中のホスト」を前提にしていて、pair の主を選ぶ手順と独立に決めたい
+  # 初回利用者が最初に触る設定になる。main が空の保存ファイルは、主未設定（exit 3）+
+  # cross_review だけが決まった状態として読み戻される。
+  # 明示した空値（`cross_review=`）は「解除」ではなく拒否する — 契約は auto | off の
+  # 2 値で、解除は `cross_review=auto` と書く（空値で黙って未設定へ戻る経路を作ると、
+  # 誤って値を落とした指定が成功して見える）。
+  if [[ "$cross_given" == "true" && -z "$cross" ]]; then
+    echo "ERROR: cross_review= needs a value: auto | off (use cross_review=auto to turn the fixed single-model setting off)." >&2
+    return 1
+  fi
+  if [[ -z "$main" && "$cross_given" == "true" && -n "$existing_main" ]]; then
+    main="$existing_main"
+    echo "ℹ️  main は既存の設定（${main}）を引き継ぎます。" >&2
+  fi
+  if [[ -z "$main" && "$cross_given" != "true" ]]; then
+    echo "ERROR: --set-reviewers requires main=<cli> (sub=<cli> and cross_review=auto|off are optional)." >&2
     return 1
   fi
   # `main=X` だけを渡したときに副を黙って消さない。部分更新に見える指定が
   # 全置換として振る舞うのは事故のもと。消したいときは `sub=` を明示する。
   if [[ "$sub_given" != "true" ]]; then
-    local _existing_main="" existing_sub=""
-    read_reviewers_file_into _existing_main existing_sub
     sub="$existing_sub"
     [[ -n "$sub" ]] && echo "ℹ️  sub は既存の設定（${sub}）を引き継ぎます。消すには sub= を明示してください。" >&2
+  fi
+  # cross_review も同じ部分更新の作法。`main=X` で保存済みの off が黙って
+  # 消えると、次回の単独レビューが「クロスレビューへ回してよい」に化ける。
+  if [[ "$cross_given" != "true" ]]; then
+    cross="$existing_cross"
+  fi
+  # 値は CLI 名ではない — 出所を名乗って auto | off だけを通す。引き継いだ値も
+  # 検証する（手編集で壊れた 3 行目を保存し直す経路を塞ぐ）。
+  if [[ "$cross_given" == "true" ]]; then
+    validate_cross_review_value "--set-reviewers" "$cross" || return 1
+  else
+    validate_cross_review_value "user config $(reviewers_config_file)" "$cross" || return 1
   fi
 
   validate_reviewer_value main "$main" || return 1
@@ -939,8 +1068,8 @@ set_reviewers_from_spec() { # <spec>
     fi
   done
 
-  write_reviewers_file "$main" "$sub" || return 1
-  echo "✅ Saved reviewers: main=${main} sub=${sub:-（なし）}" >&2
+  write_reviewers_file "$main" "$sub" "$cross" || return 1
+  echo "✅ Saved reviewers: main=${main} sub=${sub:-（なし）} cross_review=${cross:-auto}" >&2
   echo "   $(reviewers_config_file)" >&2
   return 0
 }
@@ -1045,6 +1174,10 @@ MODE=""            # 未指定なら apply_task_defaults がタスク種別ご�
 REVIEW_MAIN=""
 REVIEW_SUB=""
 REVIEWERS_SOURCE=""
+# cross_review（auto | off）とその出所（env / project config / user config / unset）。
+# 読み取り・表示専用で、プラン構築には使わない（単一固定のオプトイン）。
+CROSS_REVIEW=""
+CROSS_REVIEW_SOURCE=""
 MODE_EXPLICIT=false
 # MODE の出所（--mode flag / config のキー / task default）。whitelist 拒否は config
 # 由来でも発火するため、値だけ名指しすると利用者がどこを直せばよいか辿れない
@@ -2305,6 +2438,21 @@ warn_unappliable_sandbox() {
   # 引数なので「今回だけ」側（--cli と --exclude-cli の同時指定は拒否されるため、設定由来の
   # 除外だけが --cli で 1 回だけ戻せる）。設定行は CLI 名を埋めた形で印字し、コピーで済ませる。
   # exclude_clis は 1 文字列 1 キーなので、既にある場合は「行を足す」ではなく「値へ足す」。
+  # 外す以外の道（docker.sock symlink 対応）。理由が runtime-socket の deny path（docker.sock の
+  # symlink）なら、read-only 相当を保ったまま起動できるカスタムプロファイルがある。
+  # 除外はカバレッジを 1 本減らすので、外す 2 択より**先に**「動かす」道を示す。
+  if [[ "$cli" == "grok-cli" && "$reason" == *runtime-socket* ]]; then
+    echo "         外さずに動かす（推奨）: この拒否は restrict_network の deny が symlink を解決できないもので、" >&2
+    echo "                     macOS では restrict_network 自体が no-op です。~/.grok/sandbox.toml に" >&2
+    echo "                       [profiles.ff-review-ro]" >&2
+    echo "                       extends = \"read-only\"" >&2
+    echo "                       restrict_network = false" >&2
+    echo "                     を置き、MULTI_AGENT_GROK_READONLY_PROFILE=ff-review-ro で起動すると review / explore が" >&2
+    echo "                     read-only の書き込み境界のまま走ります（アダプタが実行後に read_write_paths を検証）。" >&2
+    echo "                     失うのはコンテナランタイムのソケット遮断（docker.sock へ接続できる。実測）。" >&2
+    echo "                     Linux では restrict_network が子プロセスの遮断を実際に担うので、この差し替えを既定にしない。" >&2
+    echo "                     詳細: docs-template/05-operations/deployment/grok-cli-reviewer.md" >&2
+  fi
   echo "         この実行から外すなら 2 択です:" >&2
   echo "           今回だけ: 走らせたい CLI を --cli で明示するか、外す方を --exclude-cli ${cli} で名指しする" >&2
   echo "                     （どちらもその 1 回の引数。次回省けば同じ警告が出ます）" >&2

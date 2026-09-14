@@ -8,7 +8,7 @@
 
 **目的**: 各CLIの得意分野とコスト特性を活かし、高品質かつコスト効率の良いコードレビューを実現する
 
-> **標準レビュー体制**: 一次レビューは Claude Code（pr-review-toolkit）、クロスモデルレビューは Codex CLI の2本柱が標準です。GitHub Copilot（Copilot CLI / Copilot code review）は従量課金への移行に伴い**既定のレビューラインナップから除外**しました（アダプタは残置、`--cli copilot-cli` でオプトイン可能）。
+> **標準レビュー体制**: 基準線は主担当（実装中のホスト）のセルフレビューで、環境チェックで別 CLI が在るときだけクロスモデルレビューを 1 本加えます（正本: [self-review.md](./self-review.md#レビュー担当の選択と利用制限時の継続)）。GitHub Copilot（Copilot CLI / Copilot code review）は従量課金への移行に伴い**既定のレビューラインナップから除外**しました（アダプタは残置、`--cli copilot-cli` でオプトイン可能）。
 
 ---
 
@@ -247,13 +247,13 @@ guard は bundled manifest の先頭 `name` marker、通常 directory の `scrip
 
 ## クロスモデルレビュー（推奨パターン）
 
-主担当のセルフレビューに、主担当以外の最低1つのレビューを加えるパターンです。[レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続)を正本とし、ホストと別モデルによるクロスレビューの完走が 0 本なら、ホストが対応し Toolkit が利用可能で利用枠の範囲なら主担当のみへ落ちる前に read-only で挟み、起動できない場合はその理由を記録して主担当のみで進めます。以下の Codex コマンドは Claude が主担当の場合の例です。
+主担当のセルフレビューに、環境チェックで別 CLI が在るときだけクロスレビューを 1 本加えるパターンです。[レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続)を正本とし、別 CLI が無い・認証や利用枠で落ちた回は主担当のみで正常に完了します（`cross_review=off` で常に主担当のみに固定できます）。以下の Codex コマンドは Claude が主担当の場合の例です。
 
 ### Codex CLI 3パターン
 
 | パターン                     | 実行タイミング       | 自動/提案        | 説明                                          |
 | ---------------------------- | -------------------- | ---------------- | --------------------------------------------- |
-| **Cross-Model Review**       | セルフレビュー時     | 通常実施（順次） | 主担当＋別担当。利用不可時は選択ルールを適用 |
+| **Cross-Model Review**       | セルフレビュー時     | 通常実施（順次） | 主担当。環境チェックで別 CLI が在れば 1 本加える |
 | **Parallel Task Suggestion** | 独立サブタスク発見時 | ユーザーに提案   | 並列実行による効率化                          |
 | **Second Opinion**           | 設計判断の分岐点     | ユーザーに提案   | アーキテクチャ決定の第二意見                  |
 
@@ -789,7 +789,7 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 ### 特定CLI/パースペクティブのみ
 
 ```bash
-# Claude + Codex だけ（標準の2本柱）
+# Claude + Codex の 2 本を明示する例
 ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli claude-code --cli codex-cli
 
 # セキュリティ分析だけ

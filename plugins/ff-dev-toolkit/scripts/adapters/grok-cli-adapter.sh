@@ -153,14 +153,90 @@ fi
 # CLIs implement their sandboxes independently, and a `--cwd` that only relocated
 # the CWD without moving the sandbox root would silently change nothing while the
 # comment claimed otherwise.
+# ── read-only スロットのプロファイル差し替え（docker.sock symlink 対応） ──
+#
+# 潰す事故: **review / explore レーンが、この機械では一度も走らない**。grok の
+# `read-only` / `strict`（= `restrict_network:true` を持つ組み込み）は、コンテナ
+# ランタイムのソケット（/var/run/docker.sock 等）への deny を張ってから起動する。
+# その deny path を実体解決する際に **symlink を拒否する**ため、Docker Desktop の
+# macOS 既定配置（/var/run/docker.sock → ~/.docker/run/docker.sock）では
+# 「runtime-socket deny resolution failed: ... endpoint is a symlink」で起動拒否
+# になる。`workspace` は restrict_network:false なので同じ機械で起動する。
+#
+# 実測（grok 1.0.30 / macOS seatbelt、2026-09-14、`grok --sandbox <p> inspect`）:
+#   read-only / strict                          → rc=1 起動拒否（上の理由）
+#   workspace                                   → rc=0
+#   custom: extends=read-only                   → rc=1（deny を継承する）
+#   custom: extends=read-only, restrict_network=false
+#                                               → rc=0。ProfileApplied の
+#                                                  read_write_paths は組み込み
+#                                                  read-only と同一（CWD を含まない）
+#   custom: extends=workspace, restrict_network=true
+#                                               → rc=1（deny は restrict_network に
+#                                                  連動しており、base には依らない）
+# つまり deny を外せるのは `restrict_network=false` だけで、これは macOS では
+# もともと no-op（ベンダー文書 18-sandbox.md「On macOS network blocking is a
+# no-op」、および tests/adapter-sandbox-contract/README.md のネットワーク境界の実測: read-only でも外部 HTTPS が通る）。書き込み
+# 境界は失わない — 同版の課金走行で、CWD への shell 書き込み・Write ツールとも
+# "Operation not permitted" で失敗し FsViolation が記録された
+# （tests/adapter-sandbox-contract/README.md）。
+#
+# 採らない回避: read-only → workspace への切り替え。レーンは動くが、動いているのは
+# CWD 書き込みを許した別の保証の実行になる（multi-review SKILL.md が依拠する
+# 「read-only サンドボックスで書き込みを失敗させる」が黙って外れる）。
+#
+# したがってアダプタは既定を `read-only` のまま変えず、利用者が ~/.grok/sandbox.toml
+# （または <project>/.grok/sandbox.toml）に定義したカスタムプロファイル名を
+# MULTI_AGENT_GROK_READONLY_PROFILE で受け取ったときだけ、**read-only スロット**
+# （review / explore / implement --inline-output）をその名前へ差し替える。implement
+# の `workspace` には触れない。fail-closed の 3 点:
+#   1. 未設定なら `read-only`。workspace へ黙って降格する経路は無い
+#   2. 書き込みを許す組み込み名（workspace / devbox）と無効化（off / none）は
+#      名前の時点で拒否する（レーンを動かすためにそれを指すのが最短の誤用のため）
+#   3. 名前だけでは custom の中身を保証できないので、実行後の ProfileApplied ゲートが
+#      `read_write_paths` に作業ツリー（その祖先・配下を含む）が**含まれない**ことを要求する
+#      （下の「Confirm the sandbox actually took effect」）。含まれていれば結果を
+#      採用しない。ここが「read-only ではない」を機械的に検出する本体
+readonly READONLY_PROFILE_ENV="MULTI_AGENT_GROK_READONLY_PROFILE"
+readonly READONLY_PROFILE_DEFAULT="read-only"
+
+# 成功時は stdout にプロファイル名を 1 つ書き rc=0。拒否時は stderr に理由、rc=2。
+resolve_readonly_profile() {
+  local value="${MULTI_AGENT_GROK_READONLY_PROFILE:-}"
+  if [[ -z "$value" ]]; then
+    echo "$READONLY_PROFILE_DEFAULT"
+    return 0
+  fi
+  # grok のプロファイル名は sandbox.toml の table キー。argv に載せるので、フラグに
+  # 化ける先頭 `-` や空白・引用符は名前として受け付けない。
+  if [[ ! "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    echo "ERROR: ${READONLY_PROFILE_ENV}='${value}' is not a sandbox profile name (letters, digits, '.', '_', '-' only; must start with a letter or digit)." >&2
+    return 2
+  fi
+  # strict も CWD への書き込みを許す（18-sandbox.md: "write CWD + ~/.grok/sessions +
+  # temp dirs"）ので read-only の代替にはならない。
+  case "$value" in
+    workspace|devbox|strict|off|none)
+      echo "ERROR: ${READONLY_PROFILE_ENV}='${value}' names a profile that permits writes to the working tree (or disables the sandbox)." >&2
+      echo "       The read-only slot (review / explore) cannot be pointed at it. Define a custom profile" >&2
+      echo "       in ~/.grok/sandbox.toml that extends \"read-only\" (see docs-template/05-operations/deployment/grok-cli-reviewer.md) and name that instead." >&2
+      return 2
+      ;;
+  esac
+  echo "$value"
+}
+
+# stdout にプロファイル名。read-only スロットで環境変数が不正なら rc=2（stderr に理由）。
+# 呼び出し側は必ず失敗を受ける — set -e 下で素の command substitution に置くと
+# bare exit で成果物が残らない。
 get_sandbox_profile() {
   if [[ "${TASK_TYPE:-review}" == "implement" && "${INLINE_OUTPUT:-false}" == "true" ]]; then
-    echo "read-only"
+    resolve_readonly_profile
     return
   fi
   case "${TASK_TYPE:-review}" in
-    review)    echo "read-only" ;;
-    explore)   echo "read-only" ;;
+    review)    resolve_readonly_profile ;;
+    explore)   resolve_readonly_profile ;;
     # implement has to write its staging output, so it gets the profile that
     # allows CWD writes rather than no sandbox at all.
     #
@@ -168,8 +244,20 @@ get_sandbox_profile() {
     # CWD to REPO_ROOT and rejects output dirs outside it before launch; confining
     # writes from the whole repository to staging alone remains a prompt contract
     # here (see the note above on why the codex-style narrowing is not copied over).
+    # MULTI_AGENT_GROK_READONLY_PROFILE はここに効かない（read-only スロット専用）。
     implement) echo "workspace" ;;
-    *)         echo "read-only" ;;
+    *)         resolve_readonly_profile ;;
+  esac
+}
+
+# 「read-only / workspace 以外の名前が入っている」= 名前では書き込み境界を保証できない
+# 実行。ProfileApplied ゲートが read_write_paths の検査を追加で要求する。組み込みの
+# strict / devbox / off / none もここでは custom 扱いになるが、read-only スロットへは
+# resolve_readonly_profile が名前の時点で通さないので到達しない。
+is_custom_readonly_profile() { # $1: profile
+  case "$1" in
+    read-only|workspace) return 1 ;;
+    *) return 0 ;;
   esac
 }
 
@@ -182,26 +270,37 @@ get_sandbox_profile() {
 #
 # 課金しない probe が成立する理由（本実装の要点）。サンドボックスの適用は起動時に
 # 済み、失敗すればそこで拒否される — つまり**エージェントを走らせないサブコマンド**
-# でも同じ適用経路を踏む。実測（grok 0.2.118 / macOS seatbelt、2026-09-06）:
+# でも同じ適用経路を踏む。実測（grok 0.2.118 / macOS seatbelt、2026-09-06。同じ
+# 4 行を grok 1.0.30 で 2026-09-14 に再測: workspace は rc=0 で一致、read-only は
+# この機械では rc=1 側へ落ちる（docker.sock symlink）、拒否時の stderr は warning 行に加えて
+# "error: could not apply ..." 行が付く形へ変わった。probe の目印は行頭の warning /
+# error の両方を見ているので判定は変わらない）:
 #   grok --sandbox read-only inspect  → rc=0。sandbox-events.jsonl へ
 #                                       ProfileApplied / enforced:true が 1 行増える。
 #                                       モデル呼び出し・ネットワーク往復は無し
+#                                       （1.0.30 では docker.sock が symlink の機械で
+#                                       rc=1 側へ落ちる — 上の差し替えの節）
 #   grok --sandbox workspace inspect  → rc=0（同上）
 #   grok --sandbox <適用できない値> inspect
 #                                     → rc=1、stderr に
 #                                       "warning: sandbox could not be applied: ..." と
-#                                       "... refusing to start." — 観測台帳が記録した
+#                                       "error: could not apply the '<p>' sandbox
+#                                       profile; ... Refusing to start with its
+#                                       protections missing." — 観測台帳が記録した
 #                                       実環境の失敗（runtime-socket の deny path が
 #                                       symlink）と同じ形
 # `inspect` を選ぶのは、設定探索を表示するだけでローカル完結だから。`models` は
 # 同じくサンドボックスを適用するが認証済みアカウントへ問い合わせるので使わない。
-# **`inspect` の存在は grok 0.2.118 で実測したもの**で、ベンダーの互換保証ではない。
+# **`inspect` の現存は grok 0.2.118 と 1.0.30 で実測したもの**（`grok inspect --help`
+# rc=0、`grok --help` の Commands 一覧に "inspect  Show the configuration Grok
+# discovers for this directory"）で、ベンダーの互換保証ではない。
 # 将来のバージョンで消える・改名されると probe は「目印が出ない」経路へ落ちて
 # fail-open で黙る（= 警告が消えるだけで、赤くはならない）。probe が常に無言に
 # なったらまずこのサブコマンドの現存を疑うこと。
 #
 # **副作用**: probe も本物の起動なので、適用に成功したときは
-# ${GROK_HOME:-~/.grok}/sandbox-events.jsonl へ ProfileApplied を 1 行足す。
+# ${GROK_HOME:-~/.grok}/sessions/sandbox-events.jsonl（1.0.30。0.2.118 は
+# ${GROK_HOME:-~/.grok}/sandbox-events.jsonl）へ ProfileApplied を 1 行足す。
 # GROK_HOME を一時領域へ逃がして避けることはしない — 逃がすと ~/.grok/sandbox.toml
 # の探索先まで変わり、**本番とは別の条件**を測ることになるため。この追記が下の
 # ProfileApplied ゲートに与える影響は、そのゲート側のコメント（残る限界）に書く。
@@ -286,7 +385,18 @@ run_sandbox_probe() { # $1: profile
 
 if [[ "$PROBE_SANDBOX" == "true" ]]; then
   probe_rc=0
-  run_sandbox_probe "$(get_sandbox_profile)" || probe_rc=$?
+  # 環境変数が指すプロファイル名が不正なら、CLI は起動しない（アダプタが argv を
+  # 組む前に拒否する）。probe の出力契約に乗せて「起動を拒否する側」として報告する
+  # — プランに載っていても未実行になる、という帰結はサンドボックス拒否と同じ。
+  # stdout（成功時の名前）と stderr（拒否時の理由）は排他なので 1 本に併合して受ける。
+  # 一時ファイルを挟まない — 予測可能な /tmp パスへの redirect は避けるべき形で、
+  # 作れない環境では「理由の無い拒否」を報告することになる。
+  probe_out=""
+  if ! probe_out="$(get_sandbox_profile 2>&1)"; then
+    printf 'refused-to-start\n%s\n' "$(printf '%s\n' "$probe_out" | sed -n '1p')"
+    exit "$SANDBOX_PROBE_REFUSED_STATUS"
+  fi
+  run_sandbox_probe "$probe_out" || probe_rc=$?
   exit "$probe_rc"
 fi
 
@@ -297,7 +407,29 @@ echo "   Perspective: ${perspective_name}" >&2
 echo "   Task type: ${TASK_TYPE:-review}" >&2
 echo "   Timeout: ${TIMEOUT}s" >&2
 
-sandbox_profile="$(get_sandbox_profile)"
+# 拒否理由は成果物にも残す（stderr だけだと INCOMPLETE 成果物を読む人に値も理由も
+# 届かない）。stdout / stderr は排他なので 1 本で受け、失敗時は理由として使う。
+sandbox_profile=""
+if ! sandbox_profile="$(get_sandbox_profile 2>&1)"; then
+  printf '%s\n' "$sandbox_profile" >&2
+  fail_orchestrator_error "$perspective_name" \
+    "${READONLY_PROFILE_ENV} does not name a usable read-only sandbox profile: $(printf '%s\n' "$sandbox_profile" | sed -n '1p')"
+fi
+if is_custom_readonly_profile "$sandbox_profile"; then
+  echo "   ℹ️ sandbox: read-only スロットを ${READONLY_PROFILE_ENV}='${sandbox_profile}' で差し替えています（実行後に read_write_paths が作業ツリーを含まないことを確認します）" >&2
+  # 差し替えで外れるのは restrict_network の deny = コンテナランタイムのソケット
+  # （docker.sock 等）への deny。実測（grok 1.0.30 / macOS、2026-09-14、課金走行）:
+  # extends=read-only + restrict_network=false では /var/run/docker.sock とその実体
+  # ~/.docker/run/docker.sock の両方に `curl --unix-socket` で到達できた。custom の
+  # `deny` に両パスを足しても、symlink 側は塞がるが実体側への connect は通る
+  # （deny は file-read/write の規則で、unix socket の connect を止めない）。つまり
+  # この差し替えは「書き込み境界を保ったまま、ランタイムソケットの遮断を失う」。
+  # 同じ機械の implement（workspace、restrict_network:false）は既にこの状態で走って
+  # いるので保証の新規後退ではないが、review が受ける diff は信頼できない入力なので、
+  # 黙って走らせずネットワーク通知と同じく毎回提示する（fail-closed にしないのは、
+  # それがこの機械で grok review を走らせる唯一の道であり、代替が「走らない」だから）。
+  echo "   ⚠️ runtime-socket: '${sandbox_profile}' は restrict_network を外しているため、コンテナランタイムのソケット（/var/run/docker.sock 等）への接続を遮断しません（macOS 実測 2026-09-14 / 1.0.30。custom の deny でも実体パスへの connect は塞げない）" >&2
+fi
 
 # grok のサンドボックスは outbound network を遮断しない（Issue #897 の実測
 # 2026-09-01 / grok 0.2.118 / macOS: workspace は宣言どおり開放、read-only は
@@ -325,18 +457,37 @@ if [[ -z "$sandbox_home" ]]; then
     "GROK_HOME も HOME も設定されていないため、${CLI_NAME} のサンドボックス適用を確認できません。"
 fi
 if [[ -n "${GROK_HOME:-}" ]]; then
-  sandbox_events_file="${GROK_HOME}/sandbox-events.jsonl"
+  grok_home_dir="${GROK_HOME}"
 else
-  sandbox_events_file="${sandbox_home}/.grok/sandbox-events.jsonl"
+  grok_home_dir="${sandbox_home}/.grok"
 fi
-sandbox_events_before=""
-if [[ -f "$sandbox_events_file" ]]; then
-  sandbox_events_before="$(wc -l < "$sandbox_events_file" 2>/dev/null | tr -d ' ' || true)"
-  [[ "$sandbox_events_before" =~ ^[0-9]+$ ]] || sandbox_events_before=""
-else
-  # ファイル未作成なら、この実行が作る分がまるごと追記分になる。
-  sandbox_events_before=0
-fi
+# イベントログの置き場は版で動いた（実測）: 0.2.118 は <grok home>/sandbox-events.jsonl、
+# 1.0.30 は <grok home>/sessions/sandbox-events.jsonl（実測で `inspect` と本実行の
+# ProfileApplied がそこへ追記され、ベンダー文書 18-sandbox.md も「~/.grok/sessions」
+# へ変わっている。binary の文字列にはファイル名しか無く、ディレクトリは実行時に組まれる）。
+# 片方だけを見ると、もう片方の版では**適用できていても**「確認できない」で全結果を
+# 捨てる（1.0.30 を旧パスのまま読んで review レーンが常に sandbox-refused になった）。
+# 両方を候補にし、baseline もそれぞれ取る。**存在するのに行数を取れない**ファイルが
+# 1 つでもあれば確認不能（fail-closed）— その窓に ApplyFailed / BypassGranted が
+# 書かれていても見えないため。
+sandbox_events_file="${grok_home_dir}/sessions/sandbox-events.jsonl"
+sandbox_events_file_legacy="${grok_home_dir}/sandbox-events.jsonl"
+events_baseline() { # $1: file → stdout に行数（未作成なら 0、取れなければ空）
+  local f="$1" n=""
+  if [[ -f "$f" ]]; then
+    n="$(wc -l < "$f" 2>/dev/null | tr -d ' ' || true)"
+    [[ "$n" =~ ^[0-9]+$ ]] || n=""
+  else
+    # ファイル未作成なら、この実行が作る分がまるごと追記分になる。
+    n=0
+  fi
+  printf '%s' "$n"
+}
+sandbox_events_before="$(events_baseline "$sandbox_events_file")"
+sandbox_events_before_legacy="$(events_baseline "$sandbox_events_file_legacy")"
+sandbox_events_unreadable="false"
+[[ -f "$sandbox_events_file" && -z "$sandbox_events_before" ]] && sandbox_events_unreadable="true"
+[[ -f "$sandbox_events_file_legacy" && -z "$sandbox_events_before_legacy" ]] && sandbox_events_unreadable="true"
 # Guard this mktemp explicitly: under `set -e` a failure here would kill the
 # adapter with a bare 1 before run_with_timeout is ever reached, filing a broken
 # TMPDIR as "the CLI exited 1" and writing no artifact at all.
@@ -393,6 +544,10 @@ _FF_PROMPT_FILE=""
 #   - The confirmation is structured, in ${GROK_HOME:-~/.grok}/sandbox-events.jsonl:
 #       {"event_type":"ProfileApplied","profile":"read-only","enforced":true,...}
 #     The binary also carries an "ApplyFailed" event type.
+#     grok 1.0.30 (measured 2026-09-14) writes the same events to
+#     ${GROK_HOME:-~/.grok}/sessions/sandbox-events.jsonl instead, and the line
+#     additionally carries "read_write_paths":[...] (the applied write grants,
+#     symlinks resolved) — the field the custom-profile check below relies on.
 #   - The binary contains TWO different failure strings, and they behave
 #     differently:
 #       "warning: sandbox could not be applied:"            → CLI refuses to start
@@ -410,6 +565,10 @@ _FF_PROMPT_FILE=""
 new_sandbox_events=""
 if [[ -n "$sandbox_events_before" && -f "$sandbox_events_file" ]]; then
   new_sandbox_events="$(tail -n "+$((sandbox_events_before + 1))" "$sandbox_events_file" 2>/dev/null || true)"
+fi
+if [[ -n "$sandbox_events_before_legacy" && -f "$sandbox_events_file_legacy" ]]; then
+  new_sandbox_events="${new_sandbox_events}${new_sandbox_events:+
+}$(tail -n "+$((sandbox_events_before_legacy + 1))" "$sandbox_events_file_legacy" 2>/dev/null || true)"
 fi
 
 # 3 条件を別々に grep すると**別々の行**で成立してしまう。実測: 「workspace が
@@ -460,20 +619,87 @@ sandbox_workspace="$(pwd -P 2>/dev/null || pwd)"
 #                    実測ではレビュー実行中に一度も出ていない
 #   FsViolation / NetViolation は**失格にしない**。これはサンドボックスが実際に
 #   操作を止めた記録で、機能している証拠だから（実測: 書き込みを試させたときに 1 件出た）
-sandbox_confirmed=false
-if [[ -n "$new_sandbox_events" ]] \
-  && printf '%s\n' "$new_sandbox_events" \
-     | awk -v prof="\"profile\":\"${sandbox_profile}\"" -v ws="\"workspace\":\"${sandbox_workspace}\"" '
+#
+# カスタムプロファイル（docker.sock symlink 対応）の追加条件: 名前は利用者が付けたもので、中身が
+# read-only 相当である保証は名前に無い。同じ ProfileApplied 行の `read_write_paths`
+# （実測 1.0.30: 適用された書き込み許可の実パス配列。組み込み read-only では ~/.grok と
+# temp 系だけ、workspace ではそこに CWD が加わる）を見て、作業ツリー自身・その祖先・
+# その配下・`/` のいずれかが含まれていれば **read-only ではない**として結果を採用
+# しない（配下も落とすのは、`read_write = ["src"]` のような部分 grant でもソース改変が
+# 通るため）。配列そのものが無い行・引用文字列として読めない要素は「確認できない」=
+# 不採用（fail-closed）。組み込み `read-only` を要求した実行にはこの追加条件を掛けない
+# — 名前が組み込みの保証で、判定を配列の有無に依存させないため（0.2.118 の行にも配列は
+# 在ったが、stub で走る既存 suite の行には無い）。
+#
+# 配列は `"…"` の引用トークン単位で読む。`,` や `]` で切ると、パスにその文字を含む
+# grant が要素として壊れて一致せず、fail-open になる。awk の -v は `\` を解釈するので
+# 作業ツリーのパスは ENVIRON で素のまま渡す。
+sandbox_custom="false"
+is_custom_readonly_profile "$sandbox_profile" && sandbox_custom="true"
+sandbox_verdict=""
+if [[ "$sandbox_events_unreadable" == "true" ]]; then
+  sandbox_verdict="events-unreadable"
+elif [[ -n "$new_sandbox_events" ]]; then
+  # awk 自身の失敗（方言差・不在）は bare exit にせず「判定不能」へ倒す — set -e で
+  # ここが落ちると INCOMPLETE 成果物が残らない。
+  sandbox_verdict="$(printf '%s\n' "$new_sandbox_events" \
+     | FF_SANDBOX_WSDIR="$sandbox_workspace" awk -v prof="\"profile\":\"${sandbox_profile}\"" \
+           -v ws="\"workspace\":\"${sandbox_workspace}\"" -v custom="${sandbox_custom}" '
+         BEGIN { wsdir = ENVIRON["FF_SANDBOX_WSDIR"]; sub(/\/+$/, "", wsdir) }
+         function grant_covers_tree(p) {
+           if (p == "/") return 1
+           sub(/\/+$/, "", p)
+           if (p == "") return 1                       # "/" の末尾正規化後
+           if (p == wsdir) return 1                    # 作業ツリー自身
+           if (index(wsdir, p "/") == 1) return 1      # 祖先
+           if (index(p, wsdir "/") == 1) return 1      # 配下
+           return 0
+         }
          index($0, "\"event_type\":\"ProfileApplied\"") && index($0, ws) {
-           if (index($0, prof) && index($0, "\"enforced\":true")) applied = 1
+           if (index($0, prof) && index($0, "\"enforced\":true")) {
+             applied = 1
+             if (custom == "true") {
+               key = "\"read_write_paths\":["
+               i = index($0, key)
+               if (i == 0) { grants_unknown = 1 }
+               else {
+                 rest = substr($0, i + length(key))
+                 closed = 0
+                 while (!closed) {
+                   sub(/^[ \t]*/, "", rest)
+                   c = substr(rest, 1, 1)
+                   if (c == "]") { closed = 1; break }
+                   if (c != "\"") { grants_unknown = 1; break }
+                   # 引用文字列の終端: `\` でエスケープされていない次の `"`
+                   rest = substr(rest, 2); p = ""; ended = 0
+                   while (length(rest) > 0) {
+                     c = substr(rest, 1, 1)
+                     if (c == "\\") { p = p substr(rest, 2, 1); rest = substr(rest, 3); continue }
+                     if (c == "\"") { rest = substr(rest, 2); ended = 1; break }
+                     p = p c; rest = substr(rest, 2)
+                   }
+                   if (!ended) { grants_unknown = 1; break }
+                   if (grant_covers_tree(p)) write_granted = 1
+                   sub(/^[ \t]*,?/, "", rest)
+                 }
+                 if (!closed && !grants_unknown) grants_unknown = 1
+               }
+             }
+           }
            else other_profile = 1          # 要求と違うプロファイルが同じ窓で適用された
          }
          index($0, "\"event_type\":\"ApplyFailed\"")   { failed = 1 }
          index($0, "\"event_type\":\"BypassGranted\"") { failed = 1 }
-         END { exit (applied && !other_profile && !failed) ? 0 : 1 }
-       '; then
-  sandbox_confirmed=true
+         END {
+           if (!(applied && !other_profile && !failed)) { print "unconfirmed"; exit }
+           if (write_granted)  { print "write-granted";  exit }
+           if (grants_unknown) { print "grants-unknown"; exit }
+           print "confirmed"
+         }
+       ')" || sandbox_verdict="awk-failed"
 fi
+sandbox_confirmed=false
+[[ "$sandbox_verdict" == "confirmed" ]] && sandbox_confirmed=true
 
 
 # backstop として stderr の警告文字列も見ていたが、撤去した。真理値表を取ると、
@@ -483,10 +709,36 @@ fi
 # stderr がその文言を引用しただけの実行を落とした（無アンカーの grep は、CLI 自身の
 # 警告と CLI が中継した文字列を区別できない）。肯定確認だけに寄せる。
 if [[ "$sandbox_confirmed" != "true" ]]; then
-  echo "ERROR: ${CLI_NAME} did not confirm the '${sandbox_profile}' sandbox took effect." >&2
-  echo "       Expected a ProfileApplied/enforced event in ${sandbox_events_file}." >&2
-  echo "       Refusing the result: this ${TASK_TYPE:-review} may have run with wider" >&2
-  echo "       filesystem access than intended, so its findings are unverified." >&2
+  # 理由は stderr と CLI の stderr ログの両方へ書く。後者は INCOMPLETE 成果物へ抜粋
+  # されるので、成果物だけを読む人にも「未確認」と「書き込みが許されていた」の区別が届く。
+  {
+  case "$sandbox_verdict" in
+    write-granted)
+      # 名前は通ったが中身が read-only ではない。降格を黙って通さないための本体。
+      echo "ERROR: ${CLI_NAME} applied the '${sandbox_profile}' sandbox, but its read_write_paths grant writes to the working tree (${sandbox_workspace}) or a directory above/inside it."
+      echo "       ${READONLY_PROFILE_ENV}='${sandbox_profile}' is therefore NOT a read-only profile (it extends workspace/devbox/strict, or adds the tree via read_write)."
+      echo "       Refusing the result: the review ran with write access it must not have. Fix the profile in ~/.grok/sandbox.toml (extends = \"read-only\") or unset ${READONLY_PROFILE_ENV}."
+      ;;
+    grants-unknown)
+      echo "ERROR: ${CLI_NAME} applied the '${sandbox_profile}' sandbox, but the ProfileApplied event carries no read_write_paths array (or one this adapter cannot parse), so the write boundary of this custom profile cannot be verified."
+      echo "       Refusing the result: a custom read-only profile is accepted only when the event proves the working tree is not writable."
+      ;;
+    events-unreadable)
+      echo "ERROR: ${CLI_NAME} sandbox event log exists but its line count could not be read before the run (${sandbox_events_file} / ${sandbox_events_file_legacy}), so this run's events cannot be isolated."
+      echo "       Refusing the result: without a baseline, an ApplyFailed/BypassGranted written by this run could go unseen."
+      ;;
+    awk-failed)
+      echo "ERROR: ${CLI_NAME} sandbox verdict could not be computed (awk failed while reading the ProfileApplied events)."
+      echo "       Refusing the result: the sandbox may have taken effect, but this adapter could not verify it."
+      ;;
+    *)
+      echo "ERROR: ${CLI_NAME} did not confirm the '${sandbox_profile}' sandbox took effect."
+      echo "       Expected a ProfileApplied/enforced event in ${sandbox_events_file} (grok 1.0.30 measured) or ${sandbox_events_file_legacy} (grok 0.2.118 measured)."
+      echo "       Refusing the result: this ${TASK_TYPE:-review} may have run with wider"
+      echo "       filesystem access than intended, so its findings are unverified."
+      ;;
+  esac
+  } | tee -a "$stderr_log" >&2
   # Not a CLI crash — it may well have exited 0 and reached a conclusion. Record
   # the real reason so the report names the sandbox rather than sending the
   # reader after a crash that never happened.

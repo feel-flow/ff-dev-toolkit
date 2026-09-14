@@ -267,6 +267,116 @@ LOCAL-AFTER 02:24:15 GMT（前後時刻の間に収まる = 実通信の証拠�
    この通知行の存在は verify.sh の静的針で固定している（定常ゲート外なのは実測
    そのものであって、通知の存在検査は定常で走る）
 
+## カスタム read-only プロファイル（docker.sock symlink 対応）— 定常ゲート外の実測記録
+
+### 何を測ったか
+
+docker.sock が symlink の macOS（Docker Desktop 既定）で組み込み `read-only` が起動拒否される
+問題に対し、(1) どのプロファイルが拒否されるか、(2) 拒否を避けたカスタムプロファイルが
+書き込み境界を保つか、を測った。(1) はモデルを呼ばない `inspect` で無課金、(2) は課金走行。
+
+### (1) プロファイル別の起動可否（grok 1.0.30 / macOS seatbelt、2026-09-14、`grok --sandbox <p> inspect </dev/null`）
+
+`<project>/.grok/sandbox.toml` に次を置いて測った:
+
+```toml
+[profiles.ro-plain]
+extends = "read-only"
+[profiles.ro-netoff]
+extends = "read-only"
+restrict_network = false
+[profiles.ws-neton]
+extends = "workspace"
+restrict_network = true
+[profiles.strict-plain]
+extends = "strict"
+```
+
+| profile | rc | stderr |
+|---|---|---|
+| read-only | 1 | `runtime-socket deny resolution failed: could not resolve runtime-socket deny path /var/run/docker.sock: endpoint is a symlink` |
+| strict | 1 | 同上 |
+| workspace | 0 | （なし） |
+| ro-plain（extends read-only） | 1 | 同上（deny を継承） |
+| **ro-netoff（extends read-only, restrict_network=false）** | **0** | （なし） |
+| ws-neton（extends workspace, restrict_network=true） | 1 | 同上 |
+| strict-plain | 1 | 同上 |
+
+帰結: deny は `restrict_network` に連動し、base（read-only / workspace）には依らない。外せる
+つまみは `restrict_network = false` だけ。macOS では `restrict_network` は no-op（ベンダー
+文書 18-sandbox.md、および上のネットワーク境界の実測）なので、この差し替えで失う遮断は macOS には無い。
+
+ro-netoff の ProfileApplied（`~/.grok/sessions/sandbox-events.jsonl`）:
+
+```text
+{"timestamp":"2026-09-14T01:23:40.312408Z","event_type":"ProfileApplied","profile":"ro-netoff",
+ "workspace":"<CWD の実パス>","platform":"macos/seatbelt","enforced":true,
+ "restrict_network":false,"read_write_paths":["/Users/<user>/.grok","/tmp","/var/tmp","/private/tmp",
+ "/private/var/tmp","/private/var/folders","/var/folders/.../T/"]}
+```
+
+（`workspace` は `pwd -P` と一致。アダプタの相関キー）。`read_write_paths` は組み込み
+read-only の記録（0.2.118 時代に `~/.grok/sandbox-events.jsonl` へ残ったもの。1.0.30 の
+read-only はこの機械では起動しないため同版比較ではない）と同一で、CWD を含まない
+（workspace の記録は先頭に CWD が加わる）。アダプタの custom 検証はこの配列を見る。
+
+### (1b) ランタイムソケットの deny は custom で復元できない（課金走行、2026-09-14）
+
+差し替えが外すのは restrict_network の deny = コンテナランタイムソケットの遮断。custom の
+`deny` で戻せるかを測った。プロンプトは `curl -s -m 5 --unix-socket <path> http://localhost/version`
+を symlink（`/var/run/docker.sock`）と実体（`~/.docker/run/docker.sock`）の両方で実行させる。
+
+| profile | deny | symlink 経由 | 実体経由 |
+|---|---|---|---|
+| ff-review-ro（deny なし） | — | **HTTP 応答（到達）** | **HTTP 応答（到達）** |
+| ff-review-ro-deny | `["/var/run/docker.sock", "~/.docker/run/docker.sock"]`（絶対パス） | curl rc=7（遮断） | **HTTP 応答（到達）** |
+| ff-review-ro-denydir | `["/var/run/docker.sock", "~/.docker/run"]`（親ディレクトリ） | curl rc=7（遮断） | **HTTP 応答（到達）** |
+
+ProfileApplied には `deny_paths` として指定どおり記録される（例:
+`"deny_paths":["/Users/<user>/.docker/run/docker.sock","/var/run/docker.sock"]`）が、実体への
+connect は通る。`deny` は file-read / file-write（Seatbelt の `file-*` 規則）で、unix socket の
+`connect` を止めない。symlink 側が塞がるのは symlink の読み取り（解決）が拒否されるため。
+
+帰結: 差し替えは「書き込み境界は保つが、ランタイムソケットの遮断は失う」。復元手段は無いので、
+アダプタは custom で走るたびに `⚠️ runtime-socket:` を stderr へ出す（上のネットワーク通知と
+同じ扱い）。文書は `deny` の追加を推奨しない（symlink 側だけ塞がって安心を誤らせる）。
+
+### (2) 書き込み境界（課金走行、temp 外の CWD `~/.ff-grok-probe-1601`）
+
+```bash
+cat > prompt.txt <<'PROBE'
+Do exactly these steps using the bash tool and report the raw results:
+1. printf hello > ./probe-write.txt ; echo "rc=$?"
+2. touch /Users/<user>/.ff-grok-probe-1601/probe-touch.txt ; echo "rc=$?"
+3. ls -la /Users/<user>/.ff-grok-probe-1601
+4. printf hello > /tmp/ff-grok-probe-1601-tmp.txt ; echo "rc=$?"
+If the Write tool exists, also try writing ./probe-tool.txt with it and report the error verbatim.
+PROBE
+grok --prompt-file prompt.txt --sandbox ff-review-ro --output-format plain </dev/null
+```
+
+エージェント出力（要点）と呼び出し側の突き合わせ:
+
+| 操作 | 結果 | 呼び出し側の確認 |
+|---|---|---|
+| shell `printf > ./probe-write.txt` | `operation not permitted`, rc=1 | ファイル無し |
+| shell `touch <CWD>/probe-touch.txt` | `Operation not permitted`, rc=1 | ファイル無し |
+| Write ツール `./probe-tool.txt` | `Tool write failed: IO Error: Operation not permitted (os error 1)` | ファイル無し。`FsViolation` が 1 行記録 |
+| shell `printf > /tmp/...` | rc=0 | ファイル有り（read-only の仕様どおり temp は許可） |
+
+記録された FsViolation:
+
+```text
+{"event_type":"FsViolation","profile":"ff-review-ro","operation":"write","target":"/Users/<user>/.ff-grok-probe-1601/./probe-tool.txt"}
+```
+
+### 併せて判明した版差（アダプタが吸収）
+
+- イベントログの置き場: 0.2.118 は `~/.grok/sandbox-events.jsonl`、1.0.30 は
+  `~/.grok/sessions/sandbox-events.jsonl`（`GROK_HOME` 指定時は `$GROK_HOME/sessions/`）。
+  1.0.30 の binary 文字列には後者しか無い。アダプタは両方を候補にする
+- `inspect` サブコマンドは 1.0.30 でも現存（`grok inspect --help` rc=0）。probe の前提は維持
+
 ## 実行
 
 ```bash

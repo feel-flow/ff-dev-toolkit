@@ -20,6 +20,31 @@
 
 ## [Unreleased]
 
+## [0.109.0] - 2026-09-14
+
+### 変更
+
+- レビュー担当の基準線を「主担当 + 主担当以外の最低 1 つ」から**主担当のセルフレビュー**へ反転した（`self-review.md` §レビュー担当の選択と利用制限時の継続、`multi-review` スキル手順 0）。クロスレビューは `multi-agent.sh --task review --print-reviewers` の環境チェックで別 CLI が `available=` に在るときだけ 1 本加えるものになり、単一 CLI 環境で毎回「クロスレビュー未実施」と候補別の利用不可理由を PR に残す義務は廃止。記録は実施した担当と本数だけ。別 CLI が無く Claude Code で Toolkit が使える場合の `pr-review-toolkit:*` 起動は必須から任意へ
+- 走らせた別 CLI が認証・残高・利用枠（失敗サマリーの 🔑 / 💳）で落ちた回は主担当のみで正常に完了し、`exclude_clis` や pair 設定へは書き込まない。判定は毎回の実行ごとなので、利用枠が復活すれば次回から自動で 2 本に戻る
+- 単一固定のオプトイン `cross_review: auto | off` を追加。`--set-reviewers cross_review=off` で保存し、環境変数 `MULTI_AGENT_CROSS_REVIEW` → `.claude/agent-config.yaml` の `review.cross_review` → ユーザー設定ファイルの順で解決、`--print-reviewers` に `cross_review=` / `cross_review_source=` 行が加わる。値はスキル層が消費し、プラン・縮退警告・レポートは変わらない。ASDD 2.0 の `features.multiReview=false` は `off` と同義
+- `git-workflow.md` ステップ 7a（PR 作成後のクロスレビュー再実行）を廃止し、レビューの実行はステップ 5 で完結させた。指摘対応後の再確認は既存の部分再検証（`--reviewers` 限定再実行）に従う。あわせて Draft PR → `gh pr ready` の運用も廃止（Copilot レビュー並走のための状態だった）— `workflow-principles.md` のフロー・チェックリストと `close-issue` スキルの実行タイミングは「PR 作成 → `/close-issue` → merge」
+- `cross_review` の堅牢化: `cross_review: false`（YAML）を未設定に化けさせず名指しで拒否、保存ファイルの未知キー・重複キーを警告、上位層が勝っていても保存値を検証、`yq` 不在時にプロジェクト設定の `review.*` が読まれない旨を通知、`cross_review=` の空値は拒否（解除は `cross_review=auto`）、pair の `main=` 未設定でも `cross_review=off` を保存できる
+- 「Claude + Codex の 2 本柱が標準」という固定ペア表現（`multi-cli-review-orchestration.md` / `automated-code-review.md` / `COPILOT_AGENTS.md` / `REVIEW_AGENT_CREATION_GUIDE.md`）を新基準線へ揃え、`codex-review.sh` シムの降格案内本文も同じはしごへ更新した（見出し行と rc=4 は不変）
+
+### 修正
+
+- 週次フル run-all で Linux の awk でだけ赤になっていた setup-multi-agent の Homebrew 導入分岐の静的検査を、case ラベルを行頭に固定した走査へ直した。従来は `brew\)` がヘッダコメントの `(Homebrew)` にも一致し、プラグイン root ガードの `*)` で走査が打ち切られていた（macOS の awk は `\s` を解釈しないため偽緑だった）
+- codex-review.sh の --dry-run 案内で「pair 主 reviewer は既定 claude-code」としていた記述を実態へ直した。主 reviewer に既定値は無く、未設定なら委譲先は「No reviewers configured — falling back to the distributed plan.」で分散プランへ縮退して rc=0 でプランを出す（従量課金の copilot だけの環境は既定除外で rc=1）。設定済みの主が未導入のときだけ rc=1 で止まる
+- review-wrapper-shim suite が実オーケストレータ経由のケースで利用者設定（XDG_CONFIG_HOME / HOME 配下の reviewers）と cwd のプロジェクト設定をホストから読んでいた環境依存を、fixture 内の空の設定領域と fixture の config へ隔離して解消した。主 reviewer 設定済み / 未設定の 2 構成を明示した fixture で分けて実測する
+- codex-review.sh の codex 不在 --dry-run 警告が、シム自身が受け付けない `--set-reviewers` を主 reviewer の差し替え手段として案内していたのを、シム経由で実際に効く `MULTI_AGENT_REVIEW_MAIN=CLI名` / プロジェクト設定の案内へ直した（`--set-reviewers` は multi-agent.sh を直接呼ぶときだけ使えると併記。ヘッダー注記も同じ語で整合）
+- codex-review.sh の未対応オプション拒否メッセージが提示する復旧形から固定の `--cli codex-cli` を外した。codex 不在の --dry-run で外そうとしている当の引数で、案内どおり付けると「Execution plan is empty」へ戻る。codex だけに絞る従来形を足す条件は別行で案内する
+- codex-review.sh の codex 不在判定（CODEX_REVIEW_CODEX_BIN 由来）と委譲先の codex 検出（PATH の codex を独立に検出）が割れる回に、判定が env 由来であり委譲先から見ると codex は導入済みであることを警告文に NOTE で明示した（プランに codex-cli が載るかは主 reviewer の設定次第なので断定しない）。判定そのものは env に残す（委譲先に揃えるとシームが PATH 操作なしに不在を再現できなくなるため）。PATH にも codex が無い回は NOTE を出さない
+- grok-cli の review / explore レーンが、`/var/run/docker.sock` が symlink の macOS（Docker Desktop 既定）で常に未実行になっていた問題に、read-only 相当を保ったまま起動できる道を足した。組み込み `read-only` / `strict` は `restrict_network` に連動してコンテナソケットの deny を張り、その path の symlink を解決できず起動拒否する（grok 1.0.30 で実測。`restrict_network` は macOS では no-op）。`~/.grok/sandbox.toml` に `extends = "read-only"` / `restrict_network = false` のカスタムプロファイルを定義し、環境変数 `MULTI_AGENT_GROK_READONLY_PROFILE` で指すと read-only スロット（review / explore / implement `--inline-output`）だけがその名前で走る。通常の implement の `workspace` は変えない。差し替えで失うのはコンテナランタイムのソケット遮断で（docker.sock へ接続できることを実測。custom の deny では実体パスへの接続を塞げない）、アダプタは dispatch 前に毎回その旨を通知する
+- 差し替えは fail-closed: 未設定なら従来どおり `read-only`、`workspace` / `devbox` / `strict` / `off` / `none` やフラグに化ける値は起動前に拒否（dry-run の probe も `refused-to-start` で報告）、カスタム名での実行後は ProfileApplied の `read_write_paths` に作業ツリー・その祖先・その配下・`/` が含まれない（配列が無い・引用として読めない場合も含めて）ことを要求し、満たさなければ「read-only ではない」と名指しして結果を採用しない。書き込み境界は課金走行で確認した（CWD への shell 書き込み・Write ツールとも Operation not permitted、FsViolation 記録）
+- grok 1.0.x がサンドボックスイベントを `~/.grok/sessions/sandbox-events.jsonl` に書くようになった版差を吸収した。旧パス（`~/.grok/sandbox-events.jsonl`）だけを見ていたため、1.0.30 では適用できていても全結果が sandbox-refused になっていた。両パスを候補にし、baseline もそれぞれ取る
+- dry-run の sandbox 警告に、理由が runtime-socket の symlink なら「外さずに動かす」手順（カスタムプロファイル + 環境変数）を先に示すようにした。`exclude_clis` はクロスモデルを 1 本減らすため、動かせる環境では使わない
+- grok-cli アダプタの probe 根拠コメントの実測版を 1.0.30 へ追従した（`inspect` の現存と rc / stderr の形を再測）
+
 ## [0.108.0] - 2026-09-13
 
 ### 追加

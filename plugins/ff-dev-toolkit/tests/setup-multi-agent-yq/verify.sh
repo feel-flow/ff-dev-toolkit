@@ -81,8 +81,18 @@ else
 fi
 
 # help 文中の "brew install yq" だけでは不十分。install 分岐（brew) case）を要求する。
-if grep -nE 'brew\)' "$SETUP" | head -1 >/dev/null \
-  && awk '/brew\)/{f=1} f && /brew install yq/{found=1} f && /^\s*\*\)/{exit} END{exit !found}' "$SETUP"; then
+#
+# case ラベルは**行頭（空白のみ）**に固定する。素の `brew\)` はヘッダコメントの
+# `(Homebrew)` にも一致し、そこから次の `*)`（プラグイン root ガードの case。install
+# 分岐よりずっと前）までを走査して「brew install yq が無い」と誤判定した（Issue 1599 の
+# 週次 CI 赤）。空白クラスは `[[:space:]]` を使う — `\s` は macOS の awk が解釈しない
+# ため、ローカルでは `*)` 打ち切りが効かず help 文の "brew install yq" を拾って偽緑、
+# Linux の awk（CI の runner）でだけ赤になる環境依存を生む。
+# install 行は**実行行の形**（行頭空白 + `brew install yq` + 行末/空白）で見る。素の
+# `/brew install yq/` は分岐内のコメントや echo の文字列にも一致し、実行行を消して
+# 文字列だけ残す変異が緑のまま通る。
+if grep -qE '^[[:space:]]*brew\)' "$SETUP" \
+  && awk '/^[[:space:]]*brew\)/{f=1} f && /^[[:space:]]*brew[[:space:]]+install[[:space:]]+yq([[:space:]]|$)/{found=1} f && /^[[:space:]]*\*\)/{exit} END{exit !found}' "$SETUP"; then
   ok "Homebrew 導入分岐（brew) + brew install yq）が残っている"
 else
   bad "Homebrew 導入分岐（brew) + brew install yq）が消えている"

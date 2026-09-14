@@ -513,7 +513,7 @@ fallback:
 
 **フォールバック優先順位の設計思想**:
 
-- 標準の2本柱（Claude / Codex）は相互にフォールバックし、クロスモデル性を維持する
+- Claude / Codex は相互にフォールバックし、両方が導入済みならクロスモデル性を維持する（片方だけの環境では主担当のみが基準線）
 - その他のCLIが不可 → 対応表の次のCLIへ（現行の代替はいずれも Codex）
 - **対応表の経路が尽きたら、導入済みのCLIから選び直す**。対応表は相互参照を含むので、経路をたどるだけでは行き止まりが残る（実測: あるCLIだけを導入した構成で 7 観点中 1 つしか計画されなかった）。観点を落とすくらいなら、対応表に無いCLIで見てもらう方がよい
 - 従量課金のCLI（Copilot）へは最後の砦としてもフォールバックしない。利用者が求めていない課金が発生するため
@@ -566,7 +566,7 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 # コスト最小化モード
 ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --strategy minimize_cost
 
-# 特定CLIのみ（標準の2本柱）
+# 特定CLIのみ（Claude + Codex の 2 本を明示する例）
 ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --cli claude-code --cli codex-cli
 
 # クロスモデル比較

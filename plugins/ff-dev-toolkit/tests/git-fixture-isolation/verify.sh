@@ -396,7 +396,9 @@ multi-agent-timeout/verify.sh
 release-required-selftest/verify.sh
 review-capture-fail-loud/verify.sh
 review-diff-scope/verify.sh
-review-wrapper-shim/verify.sh
+review-wrapper-shim/base-ref-diff-guard-cases.sh
+review-wrapper-shim/codex-absent-real-orchestrator-cases.sh
+review-wrapper-shim/recovery-mode-cases.sh
 reviewer-pair/verify.sh
 shared-version-convergence/cases/claim-helper-failures.sh
 shared-version-convergence/cases/merge-races.sh

@@ -2,7 +2,7 @@
 # See: docs-template/05-operations/deployment/multi-cli-review-orchestration.md
 
 version: "2.0"
-toolkit_version: "0.108.0"
+toolkit_version: "0.109.0"
 
 # ── Global Defaults ──
 # mode はタスク単位でも指定できる（tasks.<task>.mode）。ここはその既定。
@@ -12,9 +12,13 @@ parallel: true
 # ── Excluded CLIs（この環境ではプランに載せない CLI）──
 # 空白またはカンマ区切りの **1 文字列**（YAML リストは不可 — 読み飛ばして警告する）。
 # 挙げた CLI は「未インストール」と同じ扱いになり、担当観点は既存の fallback 経路へ
-# 回る。用途は「その機械では構造的に起動できない CLI」を毎回書かずに外すこと
-# （例: Docker Desktop が /var/run/docker.sock を symlink にしていて grok-cli の
-# read-only sandbox が起動を拒否する環境）。CLI 引数 --exclude-cli との**和集合**で、
+# 回る。用途は「その機械では構造的に起動できない CLI」を毎回書かずに外すこと。
+# ただし grok-cli が「Docker Desktop の /var/run/docker.sock symlink で read-only
+# sandbox が起動拒否」で落ちる環境は、外さずに動かせる: ~/.grok/sandbox.toml に
+# extends = "read-only" / restrict_network = false のカスタムプロファイルを定義し、
+# 環境変数 MULTI_AGENT_GROK_READONLY_PROFILE=<名前> で指す（書き込み境界は保たれ、
+# アダプタが実行後に検証する。docs-template/05-operations/deployment/grok-cli-reviewer.md）。
+# 除外はそれでも起動できない CLI に使う。CLI 引数 --exclude-cli との**和集合**で、
 # プラン表示にはどちらの由来かが出る。1 回だけ戻したいときは --cli <name> を明示する
 # （その実行に限り設定の除外より優先される）。
 # ⚠ 除外はカバレッジを減らす。cross-model が 1 本へ縮退した回はプランが警告する。
@@ -62,6 +66,11 @@ tasks:
 #review:
 #  main: claude-code
 #  sub: codex-cli
+#  # 別 CLI が在るときにスキル層がクロスレビューを 1 本加えるか（auto）／常に主担当のみか（off）のオプトイン（auto | off。
+#  # 既定 auto）。解決順は env MULTI_AGENT_CROSS_REVIEW > 本ファイル > ユーザー
+#  # グローバル。multi-agent.sh は読み取り・表示（--print-reviewers）だけを行い、
+#  # プラン構築・縮退警告は変えない（分岐はスキル層）
+#  cross_review: auto
 #  # CRITICAL_BLOCK を立てない「非ブロック観点」名簿の上書き（1 文字列、空白または
 #  # カンマ区切り。YAML リストは不可）。既定は multi-agent.sh の
 #  # DEFAULT_CRITICAL_NONBLOCK_PERSPECTIVES。env

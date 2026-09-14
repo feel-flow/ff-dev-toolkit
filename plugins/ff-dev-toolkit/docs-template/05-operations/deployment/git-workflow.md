@@ -463,7 +463,7 @@ npm audit --audit-level=moderate
 
 #### レビュー担当
 
-[レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続)を適用する。主担当は実装中の Claude / Codex / Grok / Copilot、クロスレビューはそれ以外の利用可能な最低1つ。ホストと別モデルによるクロスレビューの完走が 0 本（失敗・タイムアウト・`INCOMPLETE` は数えず、完走 CLI のモデルがホストと同じ場合も別モデルの完走に数えない）なら、ホストが対応し Toolkit が利用可能で利用枠の範囲なら主担当のみへ落ちる前に read-only で挟み、起動できない場合はその理由を記録して主担当のみで継続する。以下の Toolkit / Codex は実行例であり固定の必須ペアではない。
+[レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続)を適用する。基準線は実装中の主担当（Claude / Codex / Grok / Copilot）のセルフレビューで、`--print-reviewers` の環境チェックで別 CLI が在るときだけクロスレビューを 1 本加える（`cross_review=off` なら加えない）。別 CLI が無く、ホストが Claude Code で Toolkit が使えるなら read-only の Toolkit エージェント（同一モデルの追加観点）を任意で挟んでよい。走らせた別 CLI が認証・利用枠で落ちた回は主担当のみで正常に完了し、次回は環境チェックからやり直す。記録は実施した担当と本数だけを書く。以下の Toolkit / Codex は実行例であり固定の必須ペアではない。**レビューの実行はこのステップで完結し、PR 作成後に担当の選択をやり直して再実行しない**（ステップ7）。
 
 #### セルフレビューの実行方法
 
@@ -717,40 +717,15 @@ rm -f "${SURFACE}"
 
 ### ステップ7: レビュー対応（Review）
 
-#### 7a. クロスモデルレビュー（PR作成後）
+レビューの実行は[ステップ5](#ステップ5-セルフレビューpr作成前重要)（PR 作成前）で完結する。PR 作成後にレビュー担当の選択をやり直してクロスレビューを再実行することはしない — 旧 7a はステップ5 と同じ差分に同じレビューを二度払っていたため廃止した（本テンプレートのソースリポジトリの ADR-053）。本ステップは、届いたレビュー指摘（人間レビュー・PR 上の自動レビュー）への対応と、対応後の再確認を扱う。対応の fix commit で差分が動いた範囲の再確認は、下の「統合レポートの確認」末尾の**部分再検証**（修正が影響する観点だけの限定再実行）に従い、担当の選択からやり直す全体再実行はしない。
 
-**原則**: PR作成後、マージ前にも[レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続)を適用する。主担当以外の最低1つを選び、ホストと別モデルによるクロスレビューの完走が 0 本なら、ホストが対応し Toolkit が利用可能で利用枠の範囲なら主担当のみへ落ちる前に read-only で挟み、起動できない場合を含め主担当のみで継続した理由を記録する。
+> 部分再検証でレビュー用サブエージェントを再起動する場合の起動時規定（read-only 起動の禁止事項列挙と、全エージェントが終端に達するまでの作業ツリー凍結）は、ステップ5「セルフレビューの実行方法」を参照。ここで起動するレビューにも同じ規定が適用される。ホストが worktree 隔離を提供する場合のレビュアー起動既定（`isolation: "worktree"`。隔離したレビュアーには凍結が適用されない）も同節が正本。
 
-> **レビュー深度（Risk-Based Workflow）**: `bash scripts/review-level.sh --base develop` で変更の規模・種別からレビュー深度（1: 軽量 = docs のみ ≤50行は簡潔なレビュー / 2: 標準 = 通常のレビュー観点 / 3: 重点 = 400 行超・実行系ディレクトリ・`*.sh`・`package.json`・ルート直下設定ファイルは multi-review 併用推奨）を判定し、深度を変更のリスクに釣り合わせる。判定は推奨でありブロックしない。**これは [DEPLOYMENT.md](../DEPLOYMENT.md#主要ステップ) の tier とは別の軸である** — tier が決めるのは段の重さで、こちらが決めるのはレビューの深さ。tier はレビューの本数を減らさない。担当数の例外は上記の利用不可時の規定に従う。PR 説明に貼れる形式は `--format pr`（レベル＋PR Size Check の `[x]` 判定＋センシティブパス一覧）。
+> **レビュー深度（Risk-Based Workflow）**: `bash scripts/review-level.sh --base develop` で変更の規模・種別からレビュー深度（1: 軽量 = docs のみ ≤50行は簡潔なレビュー / 2: 標準 = 通常のレビュー観点 / 3: 重点 = 400 行超・実行系ディレクトリ・`*.sh`・`package.json`・ルート直下設定ファイルは multi-review 併用推奨）を判定し、深度を変更のリスクに釣り合わせる。判定は推奨でありブロックしない。**これは [DEPLOYMENT.md](../DEPLOYMENT.md#主要ステップ) の tier とは別の軸である** — tier が決めるのは段の重さで、こちらが決めるのはレビューの深さ。tier はレビューの本数を減らさない。担当の選び方はステップ5 の[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)に従う。PR 説明に貼れる形式は `--format pr`（レベル＋PR Size Check の `[x]` 判定＋センシティブパス一覧）。
 >
 > **push 時の可視化**: `.husky/pre-push` は品質ゲート実行前に review-level 判定を表示し、Level 3 では重点レビューを促す（既定は advisory・非ブロック）。`REVIEW_LEVEL_BLOCK=1 git push` のときだけ Level 3 を push ブロックに昇格できる（opt-in）。変更行数・パスの機械判定は review-level.sh に一本化し、`/assess-impact` はその結果を入力として互換性・アーキテクチャ影響（LOW/MEDIUM/HIGH）を評価する。
 >
 > **Note**: 旧構成では GitHub Copilot の `@review-router` エージェント（VS Code Copilot Chat）を標準としていたが、Copilot の従量課金化に伴い既定構成から除外した。課金を許容する場合のオプトインとしては引き続き利用可能（[COPILOT_AGENTS.md](../../06-reference/COPILOT_AGENTS.md) 参照）。
-
-#### 実行方法
-
-> レビュー用サブエージェントの起動時規定（read-only 起動の禁止事項列挙と、全エージェントが終端に達するまでの作業ツリー凍結）は、ステップ5「セルフレビューの実行方法」を参照。ここで起動するレビューにも同じ規定が適用される。ホストが worktree 隔離を提供する場合のレビュアー起動既定（`isolation: "worktree"`。隔離したレビュアーには凍結が適用されない）も同節が正本。
-
-```bash
-# 一次レビュー（Claude Code 内で実行）
-/pr-review-toolkit:review-pr
-
-# クロスモデルレビュー（GPT系の観点、read-only・同梱 multi-review）
-ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --mode cross-model --cli codex-cli
-# scripts/codex-review.sh は multi-agent.sh へ委譲するシムとして同梱される
-# 生成シムはCodex-only互換入口であり、このcross-model実行とはmode・担当範囲が異なる
-```
-
-さらに多観点で確認したい場合は、Multi-CLI 分散レビュー（オプション）を併用します：
-
-```bash
-# 既定ラインナップ: Claude / Codex / Grok（Copilot は --cli copilot-cli でオプトイン）
-# multi-review.sh / multi-agent.sh / adapters/* はプラグイン同梱
-ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"
-
-# 特定の観点のみ
-ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --perspective test-analysis
-```
 
 #### 統合レポートの確認
 
@@ -773,7 +748,7 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 
 fix 後の再検証を修正が影響する観点だけに限定できる条件（**部分再検証**）と、そのときの統合レポート・マーカーの整合ルールは [multi-cli-review-orchestration.md](./multi-cli-review-orchestration.md#fix-ループの部分再検証--reviewers-限定再実行) を参照。
 
-#### 7b. AI支援レビュー対応
+#### AI支援レビュー対応
 
 編集を始める前に、ステップ5の [凍結解除後、レビュー結果へ着手する前に base を取り直す](#凍結解除後レビュー結果へ着手する前に-base-を取り直す) を実施する。先に fetch と必要な rebase / merge を済ませ、取り込み後も残る指摘を修正する。
 
@@ -1340,7 +1315,7 @@ ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行�
 3. [ ] 実装
 4. [ ] テスト実行・合格確認
 5. [ ] セルフレビュー: 主担当による必要観点の確認
-6. [ ] クロスレビュー: 主担当以外で完了、または全候補の利用不可理由と、Toolkit レビューエージェント（read-only・同一モデルの追加観点）での代替か主担当のみでの継続を記録（[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)）
+6. [ ] クロスレビュー: 環境チェックで別 CLI が在れば 1 本実施し、実施した担当と本数を記録。無ければ主担当のみで完了（理由の記録は不要。[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)）
 7. [ ] レビュー指摘修正・コミット
 8. [ ] 全件/ビルドの重いゲート（指摘 0 件でもレビュー終端後に 1 回）
 9. [ ] Push + PR 作成

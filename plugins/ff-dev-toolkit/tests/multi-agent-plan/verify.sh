@@ -888,6 +888,34 @@ else
   tail -20 "$SANDBOX_LOG" | sed 's/^/    | /' >&2
 fi
 
+# 外す 2 択より前に「外さずに動かす」道（docker.sock symlink 対応: カスタムプロファイル + 環境変数）を
+# 示す。理由が runtime-socket のときだけで、別理由の拒否には出さない（無関係な処方を
+# 出すと読み手を sandbox.toml へ送ってしまう）。
+HINT_LINE="$(grep -n '外さずに動かす（推奨）' "$SANDBOX_LOG" | head -1 | cut -d: -f1)" || HINT_LINE=""
+EXCLUDE_LINE="$(grep -n 'この実行から外すなら 2 択です' "$SANDBOX_LOG" | head -1 | cut -d: -f1)" || EXCLUDE_LINE=""
+if [ -n "$HINT_LINE" ] && [ -n "$EXCLUDE_LINE" ] && [ "$HINT_LINE" -lt "$EXCLUDE_LINE" ] \
+  && grep -q 'MULTI_AGENT_GROK_READONLY_PROFILE=ff-review-ro' "$SANDBOX_LOG" \
+  && grep -q 'restrict_network = false' "$SANDBOX_LOG"; then
+  ok "runtime-socket の拒否には、外す 2 択より前に「外さずに動かす」手順（sandbox.toml + 環境変数）を出す"
+else
+  bad "「外さずに動かす」手順が無い / 外す 2 択より後ろにある（hint=${HINT_LINE:-なし} exclude=${EXCLUDE_LINE:-なし}）"
+  tail -30 "$SANDBOX_LOG" | sed 's/^/    | /' >&2
+fi
+OTHER_REFUSE_STUB='echo "warning: sandbox could not be applied: Custom sandbox profile '"'"'nope'"'"' not found. Define it in ~/.grok/sandbox.toml" >&2
+echo "error: could not apply the '"'"'nope'"'"' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing." >&2
+exit 1'
+write_sandbox_stub "$OTHER_REFUSE_STUB"
+OTHER_SANDBOX_LOG="$TMP/sandbox-refused-other.log"
+run_sandbox_plan "$OTHER_SANDBOX_LOG" || true
+if grep -q 'grok-cli: この環境では sandbox を適用できません' "$OTHER_SANDBOX_LOG" \
+  && ! grep -q '外さずに動かす（推奨）' "$OTHER_SANDBOX_LOG"; then
+  ok "runtime-socket 以外の拒否理由には「外さずに動かす」手順を出さない"
+else
+  bad "別理由の拒否に runtime-socket 用の処方が出ている（または警告自体が出ていない）"
+  tail -20 "$OTHER_SANDBOX_LOG" | sed 's/^/    | /' >&2
+fi
+write_sandbox_stub "$REFUSE_STUB"
+
 # 表示位置は「CLI 一覧の後ろのブロック」ではなく**その CLI の行の直下**。
 # grok-cli の項目より前に警告が出ていたり、別 CLI の項目を挟んだ後ろに出ていたら
 # 「どの行の話か」が読み手に伝わらない。行番号で固定する。

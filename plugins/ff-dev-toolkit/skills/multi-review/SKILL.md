@@ -1,6 +1,6 @@
 ---
 name: multi-review
-description: Claude / Codex / Grok / Copilot で主担当以外のクロスレビューを行う。利用制限時は理由を記録し主担当のセルフレビューだけで継続する
+description: 主担当のセルフレビューを基準線に、環境チェックで別 CLI（Claude / Codex / Grok / Copilot）が在るときだけクロスレビューを 1 本加える。一時的な利用不可はその回だけ単一で完了し、cross_review=off で単一固定もできる
 ---
 
 # /multi-review — 複数AIによるクロスモデルレビュー実行
@@ -111,25 +111,30 @@ pair で指定した場合は黙って無視せず、適用されない旨（値
 
 ## 手順
 
-### 0. 主担当と別担当を選ぶ
+### 0. 主担当を確定し、環境チェックで別 CLI を加えるか決める
 
-[レビュー担当の選択と利用制限時の継続](../../docs-template/05-operations/deployment/self-review.md#レビュー担当の選択と利用制限時の継続)を適用する。主担当は現在実装を進めているホストであり、保存済み pair 設定から推測しない。主担当が必要観点のセルフレビューを終えたら、それ以外の利用可能な Claude / Codex / Grok / Copilot を1つ選ぶ。全候補や主担当 CLI の再起動は不要。
+[レビュー担当の選択と利用制限時の継続](../../docs-template/05-operations/deployment/self-review.md#レビュー担当の選択と利用制限時の継続)を適用する。**基準線は主担当のセルフレビュー**である。主担当は現在実装を進めているホストであり、保存済み pair 設定から推測しない。主担当が必要観点のセルフレビューを終えた時点で基準線は満たしており、以下は環境に別 CLI が在るときの上乗せである。全候補や主担当 CLI の再起動は不要。
 
-通常のセルフレビュー依頼では、既定 pair をそのまま起動せず、選んだ別担当を `--mode cross-model --cli <選んだCLI> --perspective comprehensive-review` で明示する。対象の `--base` / `--staged` 等は引き継ぎ、試行ごとに異なる `--output-dir` を指定する。以下の `$ARGUMENTS` にはホストがこの選択済み引数を実値で組み立てて渡す（引数なしの既定実行に戻さない）。主担当の結果とこの実行の結果を合わせて記録する。利用者が担当・モード・観点を明示した場合はそれを優先する。
+1. **環境チェック**。次を実行し、`cross_review=` と `available=` の行を読む。**終了コードで分岐する**（出力のマーカー行を `grep -q` で拾わない — パイプ入力の `grep -q` は SIGPIPE + `pipefail` で判定が反転する）。exit 0 / 3 は続行、exit 1 は設定または環境の問題なので stderr をそのまま提示して停止する — ただし stderr が `No AI CLIs are installed` の exit 1 は「別 CLI が無い」という事実であって設定不正ではないので、停止せず 4 へ進むか主担当のみで完了する。検出は PATH 上の有無（と `exclude_clis` の除外）だけで、認証・残高は見ない。
 
-利用不可が確認された候補は理由を記録して次候補へ進む。ホストと別モデルによるクロスレビューの完走が 0 本（失敗・タイムアウト・`INCOMPLETE` は数えず、完走 CLI のモデルがホストと同じ場合も別モデルの完走に数えない）なら、主担当のみへ落ちる前に Toolkit のレビューエージェント（`pr-review-toolkit:*`）を read-only で並列起動する（同一モデルなのでモデル独立性は回復しない。記録は「クロスレビュー未実施（同一モデルの追加観点で代替）」）。ホスト非対応 / Toolkit 未導入 / 利用枠の都合で起動できない場合も含め、それでも足りなければ主担当のレビュー完了と品質条件を確認し、クロスレビュー未実施・未完了を明記して先へ進む。実行スクリプトの非0終了・INCOMPLETE・保存済みの未解消指摘は維持する。原因不明の実行失敗や基盤の不整合をこの例外で免除しない。
+   ```bash
+   FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
+   ```
 
-### 0a. 固定 pair の設定（利用者が明示的に依頼した場合のみ）
+2. **`cross_review=off`**（または ASDD 2.0 の `features.multiReview=false`）なら、セルフレビュー経路では 3 の別 CLI 選択と、手順1（`--dry-run`）・手順2（実行）のクロスモデル実行を省略する（4 の Toolkit エージェントは同一モデルの別軸なので任意のまま）。記録は「主担当のみ（cross_review=off）」。利用者が `/multi-review` や担当・モード・観点を明示して起動した回は `off` でも従来どおり実行する（設定は変更しない）。
+3. **`available=` に主担当以外の CLI が在れば 1 つ選ぶ**（可能なら異なるモデル系統。Copilot は既存の課金許可の範囲で）。既定 pair をそのまま起動せず、選んだ別担当を `--mode cross-model --cli <選んだCLI> --perspective comprehensive-review` で明示する。対象の `--base` / `--staged` 等は引き継ぎ、試行ごとに異なる `--output-dir` を指定する。以下の `$ARGUMENTS` にはホストがこの選択済み引数を実値で組み立てて渡す（引数なしの既定実行に戻さない）。利用者が担当・モード・観点を明示した場合はそれを優先する。
+4. **別 CLI が無く、ホストが Claude Code で Toolkit のレビューエージェントが使えるなら**、`pr-review-toolkit:*` を read-only で並列起動してよい（任意。同一モデルの追加観点であり、モデル独立性は増えない。起動規定は正本のステップ5 に従う）。起動しない場合はそのまま主担当のみで完了してよい（理由の記録は不要）。
+5. **走らせた別 CLI が認証・残高・利用枠で落ちた**（失敗サマリーの 🔑 / 💳）場合、その回は主担当のみのレビューとして正常に完了する。`exclude_clis` や pair 設定へは書き込まず、次回は環境チェックからやり直す（利用枠が復活すれば自動で 2 本に戻る）。原因不明の失敗・タイムアウト・`INCOMPLETE` は「未確認」として記録する（「指摘なし」ではない）。
 
-通常のセルフレビューではこの節を飛ばし、手順0で選んだ担当で手順1へ進みます。利用者が固定 pair の設定・変更を依頼した場合だけ、以下を実施します。固定 pair は主 CLI に全観点、副 CLI に総合レビュー1本を割り当てる低水準の実行モードです。保存設定は今回の実装主体を自動判別しません。
+記録は実施した担当と本数だけを書く（「主担当のみ」「主担当 + codex-cli」「主担当のみ（codex-cli: 利用枠切れ）」）。候補別の利用不可理由の列挙は不要。実行スクリプトの非0終了・INCOMPLETE・保存済みの未解消指摘は維持する。原因不明の実行失敗や基盤の不整合をこの規定で免除しない。
 
-まず現在の設定を確認します。
+### 0a. 固定 pair / 単一固定の設定（利用者が明示的に依頼した場合のみ）
 
-```bash
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
-```
+通常のセルフレビューではこの節を飛ばし、手順0の判定で手順1へ進みます。利用者が固定 pair の設定・変更、または「常に主担当だけでレビューする」単一固定を依頼した場合だけ、以下を実施します。固定 pair は主 CLI に全観点、副 CLI に総合レビュー1本を割り当てる低水準の実行モードです。保存設定は今回の実装主体を自動判別しません。
 
-**終了コードで分岐します**（出力のマーカー行を `grep -q` で拾う形にしないこと。パイプ入力の `grep -q` は SIGPIPE + `pipefail` で判定が反転します）。
+単一固定は `--set-reviewers cross_review=off` で保存します（`auto` に戻す場合は `cross_review=auto`。正本は [self-review.md §クロスレビューの単一固定](../../docs-template/05-operations/deployment/self-review.md#クロスレビューの単一固定cross_review)）。
+
+固定 pair は、手順0の環境チェックと同じ `--print-reviewers` の出力（`main=` / `sub=`）で現在の設定を読みます。終了コードの意味も同じです。
 
 - **exit 0** — 設定済み。ただし出力の `main=` が `available=` に含まれているか確認する（保存済みの CLI が未導入だとレビューは開始できない）。含まれていなければ exit 3 と同じ扱いで選び直してもらう
 - **exit 3** — 未設定。以下を行う
@@ -172,6 +177,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 この境界に 1 つだけ例外があります。**サンドボックスの適用可否だけは、モデルを呼ばずにプラン時点で確かめています**。Grok はサンドボックスプロファイルを適用してから走るため、適用できない環境（実測: macOS で `/var/run/docker.sock` が symlink の場合、runtime-socket の deny path を解決できない）ではモデルを呼ぶ前に起動を拒否します。dry-run はこれを起動前に検出し、該当 CLI の行に「この環境では sandbox を適用できません」と、CLI 自身が出した理由、そして**プランに載っていても未実行になる**という帰結を表示します。
 
+- **外す前に、動かせるか確かめる（grok-cli / docker.sock の symlink）**: 理由文が `runtime-socket deny resolution failed: ... endpoint is a symlink` なら、拒否しているのは `restrict_network` を持つ組み込みプロファイル（`read-only` / `strict`）が張るコンテナソケットの deny で、`restrict_network` 自体は macOS では no-op です（ベンダー文書・実測とも）。`~/.grok/sandbox.toml` に `[profiles.ff-review-ro]` / `extends = "read-only"` / `restrict_network = false` を定義し、`MULTI_AGENT_GROK_READONLY_PROFILE=ff-review-ro` を付けて起動すると、review / explore が **read-only の書き込み境界のまま**走ります（アダプタは実行後に ProfileApplied の `read_write_paths` が作業ツリー（祖先・配下含む）を含まないことを検証し、含めば結果を採用しない。`workspace` 等を指すと名前の時点で拒否）。失うのはコンテナランタイムのソケット遮断で、docker.sock へ接続できる状態で走ります（実測。同じ機械の implement は既に同条件。アダプタが dispatch 前に通知）。この露出を受け入れない環境では `exclude_clis` を使います。手順は [grok-cli-reviewer.md「docker.sock が symlink の macOS」](../../docs-template/05-operations/deployment/grok-cli-reviewer.md#dockersock-が-symlink-の-macos-で-read-only-が起動拒否される)。この機械の既定にするなら、シェルの起動ファイルで export します（`exclude_clis` はクロスモデルを 1 本減らすので、こちらが成立するなら使わない）
 - 警告が出ても**プランからは外しません**（実行時の失敗を別モデルへ振り替えない方針と同じ理由。手順0に従ってホストが別候補を選ぶ）。その CLI を外して走らせるなら 2 択です:
   - **今回だけ**: 走らせたい CLI を `--cli` で明示するか、外す方を `--exclude-cli <name>` で名指しする（どちらもその 1 回の引数。次回省けば同じ警告が出る。`--cli` と `--exclude-cli` に同じ CLI を書くと拒否される）
   - **恒久**（この機械で毎回同じ警告が出るなら）: プランの `Config:` に表示された設定ファイル（通常はプロジェクトの `.claude/agent-config.yaml`。`plugin default` と出ているなら同梱の `scripts/agent-config.yaml` をそこへ写して作る。読み取りに `yq` が必要）に `exclude_clis: "<name>"` を置く。以後の実行すべてから外れ、設定由来の除外は `--cli <name>` で 1 回だけ戻せる。**既に `exclude_clis` があるならキーを増やさず、同じ 1 文字列へ空白区切りで足す**（例: `exclude_clis: "codex-cli grok-cli"`）。リポジトリへ commit するとプロジェクト全員に効くので、この機械だけなら `MULTI_AGENT_CONFIG` で別ファイルを指す。警告の本文にも CLI 名を埋めた設定行がそのまま印字されるので、コピーで済みます。**同じ環境で 2 回目に同じ警告を見たら `--cli` / `--exclude-cli` の手動除外を繰り返さず、こちらへ移ってください**
@@ -216,7 +222,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 1 回転 5〜25 分の待ち時間を「何もしない」で潰さない。**許可側**: `gh` 経由の GitHub 側作業（Issue 本文の AC 更新・PR 本文の更新・follow-up の起票・完了報告の下書き）は作業ツリーを触らないので、レビュー走行中に回してよい。**禁止側**: ファイルの編集は溜めない — 走行中の編集自体が上記の凍結対象なので、直したい箇所を見つけても凍結解除（全 CLI 終端）まで待ち、**レビュー終端後に直したらすぐ commit し、次の回転を dirty な作業ツリーで起動しない**。理由: 未コミットの修正が残ったまま次の回転を起動すると、cross-model CLI はリビジョンガードにより結果を DISCARDED として破棄し、レビューエージェント（`git diff <base>...HEAD` を見る）は PR の内容としては未解消のままと判定する。この 2 つは PreToolUse hook `guard-review-in-flight.sh` が機械的にも止める — 走行中は編集系ツールと git 書き込みコマンドを抜け道付き deny（tool 非依存の復旧は理由文に引用付きで出る `rm -- '<ロックのフルパス>'` と `rm -rf -- '<レーン置き場>'`。Bash ツールなら対象 git コマンド先頭に `FF_REVIEW_LOCK_OVERRIDE=1` を置いても解除できる。これはロックとレーンの deny をまとめて解除する）、dirty な状態でのレビューエージェント起動は確認を出す（禁止ではなく選ばせる）。**走行中の判定は外部 CLI 経路（`multi-agent.sh` のロック）とホストのサブエージェント経路（レーン）の両方を見る**ので、Toolkit のレビューエージェントだけで回しているときも同じ deny が出る。レーンは SubagentStart で書き込まれた `agent_id` と一致するものだけが SubagentStop で閉じる（同じ `agent_id` の 2 回目以降の終端は何も閉じない — レビュアーは 1 回応答を終えるたびに終端イベントを出すため）。auto mode で拒否された起動は PermissionDenied でその場で閉じる。解放イベントを取りこぼしても、対応づいたレーンは `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`（既定 14400 秒 = 走行中ロックと同値）、まだ走り始めていないレーンは `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`（既定 1800 秒。手で拒否された起動の受け皿）を過ぎると走査時に自動回収され、**回収したことは systemMessage で必ず通知される**ので、凍結が黙って永続することも黙って解けることも無い。**レビュアー自身の編集は自分のレーンでは止まらない**（名簿の型で動いているサブエージェントは deny の対象外）。**非対話実行での注意**: `permissionDecision: ask` は `claude -p` / background / subagent など確認を出せない実行では **block 相当**になり、`/pr-review-toolkit:review-pr` のように N エージェントを並列起動する経路では N 回ぶんの確認が出る。非対話でレビュー起動を自動化するときは `FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1` を設定して hook を無効化する（走行中ロックの deny もあわせて解除される）。
 
-**CLI が失敗・タイムアウトした場合**: そのタスクは失敗として報告され、**別 CLI での自動再実行（実行時 fallback）は行われません**。打ち切り前に得られた部分出力は `Status: incomplete` 付きの結果ファイルとして保存され、統合レポートにも「INCOMPLETE」と明示されます。**未完了の節は「指摘なし」ではなく「未確認」と読むこと。** 失敗サマリーが「同じ CLI に時間を足す」「設定上の代替 CLI を明示実行する」2 つのコマンドを出力するので、手順0に従って必要な別候補を明示実行します。ホストと別モデルによるクロスレビューの完走が 0 本なら、主担当のみへ落ちる前に Toolkit のレビューエージェントを read-only で並列起動し（同一モデルのため独立性は回復しない。ホスト非対応・未導入・利用枠の都合で起動できない場合は理由を記録）、それでも足りなければ主担当のみでの継続を記録します。
+**CLI が失敗・タイムアウトした場合**: そのタスクは失敗として報告され、**別 CLI での自動再実行（実行時 fallback）は行われません**。打ち切り前に得られた部分出力は `Status: incomplete` 付きの結果ファイルとして保存され、統合レポートにも「INCOMPLETE」と明示されます。**未完了の節は「指摘なし」ではなく「未確認」と読むこと。** 失敗サマリーが「同じ CLI に時間を足す」「設定上の代替 CLI を明示実行する」2 つのコマンドを出力します。手順0に従い、失敗が認証・残高・利用枠（🔑 / 💳）ならその回は主担当のみで正常に完了し、それ以外は根拠を確認して別候補を明示実行するか、主担当のみでの完了（未確認の観点があればその旨）を記録します。
 
 同じ CLI・base・HEAD・perspective 集合・設定・レビュー diff のまま未完了観点だけを再実行する場合は `--resume` を付ける。成功済み観点は内容 hash を検証して再利用され、統合レポートには各観点が `reused` / `executed` のどちらか表示される。timeout は延長して再開できるが、それ以外の入力変更やキャッシュ破損では安全側に全該当観点を再実行する。
 
@@ -448,6 +454,7 @@ FF_MULTI_AGENT_IGNORE_PATHS='videos/**:.cache/**' \
 | `MULTI_AGENT_CODEX_REASONING_EFFORT` | `-c model_reasoning_effort=<value>` | Codex の effort だけを単発指定。`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`。プロファイル併用時はこの値が明示上書きする |
 | `MULTI_AGENT_MODEL_COPILOT_CLI` | `--model` | Copilot。`auto` で Copilot 側の自動選択 |
 | `MULTI_AGENT_MODEL_GROK_CLI` | `-m` | Grok |
+| `MULTI_AGENT_GROK_READONLY_PROFILE` | `--sandbox <name>`（read-only スロット = review / explore / implement `--inline-output` のみ。通常の implement の `workspace` には効かない） | Grok。`~/.grok/sandbox.toml` のカスタムプロファイル名。docker.sock が symlink の macOS で組み込み `read-only` が起動拒否されるときの差し替え。`workspace` / `devbox` / `strict` / `off` / `none` は拒否、実行後に `read_write_paths` が作業ツリー（祖先・配下含む）を含まないことを検証。ランタイムソケットの遮断は失う（実測。dispatch 前に通知） |
 
 ```bash
 # Codex を専用プロファイルでレビューさせる（推奨）

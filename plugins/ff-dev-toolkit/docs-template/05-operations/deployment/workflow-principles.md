@@ -14,12 +14,12 @@ AI駆動Git Workflowを効率的に運用するための基本原則を定義し
 
 ### 原則1: ノンストップフロー（フルオート）
 
-**ルール**: Issue作成から振り返りまで、不要な確認を挟まず一気通貫で進める（push / Draft PR / ready / merge / cleanup / ACE / `/retrospective` の実施を含む）
+**ルール**: Issue作成から振り返りまで、不要な確認を挟まず一気通貫で進める（push / PR 作成 / merge / cleanup / ACE / `/retrospective` の実施を含む）
 
 ```
-Issue作成 → ブランチ作成 → 実装 → テスト → セルフレビュー
-  → Commit/push → Draft PR → 主担当＋別担当のレビュー（利用不可時は選択ルールに従う） → 1 fix commit
-  → gh pr ready → /close-issue（AC照合ゲート） → gh pr merge --squash
+Issue作成 → ブランチ作成 → 実装 → テスト → セルフレビュー（主担当。環境チェックで別 CLI が在ればクロスレビュー 1 本を加える）
+  → 1 fix commit → Commit/push → PR 作成
+  → /close-issue（AC照合ゲート） → gh pr merge --squash
   → /merge-cleanup → ACE → /retrospective（セッション振り返り）
                     ↑ この一連の流れを中断しない（フルオート） ↑
 ```
@@ -140,11 +140,11 @@ Issue #123 の作業中に発見。UserService.createUser() が150行を超え�
 2. [ ] feature ブランチ作成
 3. [ ] 実装
 4. [ ] テスト実行・合格確認
-5. [ ] Push + Draft PR 作成
-6. [ ] セルフレビュー: 主担当による必要観点の確認
-7. [ ] クロスレビュー: 主担当以外で完了、または全候補の利用不可理由と、Toolkit レビューエージェント（read-only・同一モデルの追加観点）での代替か主担当のみでの継続を記録（[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)）
-8. [ ] レビュー指摘修正（1 fix commit）
-9. [ ] gh pr ready → /close-issue（AC照合ゲート） → gh pr merge --squash
+5. [ ] セルフレビュー: 主担当による必要観点の確認
+6. [ ] クロスレビュー: 環境チェックで別 CLI が在れば 1 本実施し、実施した担当と本数を記録。無ければ主担当のみで完了（理由の記録は不要。[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)）
+7. [ ] レビュー指摘修正（1 fix commit）
+8. [ ] Push + PR 作成
+9. [ ] /close-issue（AC照合ゲート） → gh pr merge --squash
 10. [ ] /merge-cleanup
 11. [ ] ACE
 12. [ ] /retrospective（セッション振り返り）
