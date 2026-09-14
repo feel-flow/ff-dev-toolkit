@@ -89,6 +89,9 @@ extract_rules_block() { # <ファイル> / stdout: ブロック本文
 # h2 節（`## <名前>` の次行から次の `## ` 直前まで）を取り出す。針の節スコープ照合用。
 # 開始は完全一致で開き、見出し不在 / 重複は非 0。EOF 終端は許す（Notes 等の末尾節）。
 # コードフェンス内の `## ` 行（Output Template の例示が h2 風の行を含む）では閉じない。
+# 大小無視の畳み込み。`tr` は入力を読み切るので早期終了が起きず、下の SIGPIPE 反転は踏まない。
+to_lower() { printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; }
+
 extract_h2_section() { # <完全一致の h2 見出し> <ファイル> / stdout: 節本文
   awk -v h="$1" '
     /^[[:space:]]*(```|~~~)/ { fence = !fence }
@@ -192,7 +195,8 @@ for name in "${EXPECTED_PERSPECTIVES[@]}"; do
   # test-analysis は Edge Case Gaps が受け皿（下の較正検査で見出しごと固定する）。
   if ! output_section="$(extract_h2_section '## Output Template' "$file")"; then
     bad "$name — Output Template 節を取り出せません"
-  elif printf '%s\n' "$output_section" | grep -Eiq 'suggestion|Edge Case Gaps'; then
+  elif [[ "$(to_lower "$output_section")" == *suggestion* \
+       || "$(to_lower "$output_section")" == *"edge case gaps"* ]]; then
     ok "$name — Output Template に Suggestion 系の受け皿あり"
   else
     bad "$name — Output Template に Suggestion 系の受け皿がありません（規則 2 で回した指摘の置き場が無い）"
@@ -203,7 +207,14 @@ echo "== (3) test-analysis の較正（Important = 変更コードが導入ま�
 
 TEST_ANALYSIS="$REVIEW_PERSPECTIVES_DIR/test-analysis.md"
 in_section() { # <節本文> <needle> — 完全固定文字列
-  printf '%s\n' "$1" | grep -Fq -- "$2"
+  # 判定はシェル内の文字列マッチで行い、パイプを使わない。`printf | grep -Fq` だと grep が
+  # 一致時点で終了して上流の printf が EPIPE で死に、pipefail のもとでパイプライン全体が
+  # 失敗扱いになる = **一致が「不一致」へ反転する**。節が育つほど踏みやすく、実測では
+  # 週次 CI（run 34838896940）が実在するリテラルを「消えています」と報告して赤になった。
+  # 同じ禁止イディオムは tests/run-all.sh / tests/issue-label-supply/verify.sh などが
+  # 既にコメントで明文化している。needle は単一行の固定文字列なので、行境界をまたぐ
+  # 誤一致は起こらず grep -F と同値。
+  [[ "$1" == *"$2"* ]]
 }
 if [ ! -f "$TEST_ANALYSIS" ]; then
   bad "test-analysis.md が存在しません"

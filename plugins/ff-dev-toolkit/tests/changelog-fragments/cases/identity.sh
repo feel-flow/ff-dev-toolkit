@@ -159,4 +159,41 @@ if [[ -f "$WEEKLY_WF" ]]; then
   else
     bad "週次 CI の origin/HEAD 設定が remote default を使わないか --force が残る"
   fi
+
+  # 判定基準（refs/remotes/origin/<default>）は actions/checkout が checkout した SHA で
+  # 置いてくれている。走行中に default branch が進む環境では、ここで**無条件に fetch すると
+  # その正しい値を live の先端で上書きしてしまい**、祖先検査が鮮度赤に倒れる。fetch してよいのは
+  # 「先行ガードを効かせたい回」— ref が無い（既定ブランチ以外からの dispatch）か、初回試行で
+  # ない（Re-run）— だけ。fetch を囲む if ブロックを構造ごと取り出して照合する（全文への存在
+  # 確認だと、fetch が条件の外へ出ても、条件が入れ替わっても通ってしまう）。
+  fetch_count="$(grep -c 'git fetch origin "+refs/heads/${default_branch}' "$WEEKLY_WF" || true)"
+  if [ "$fetch_count" != 1 ]; then
+    bad "週次 CI の default branch fetch が 1 箇所ではない（${fetch_count} 箇所。無条件経路が増えると基準が live 先端で上書きされる）"
+  else
+    fetch_block="$(awk '
+      /^[[:space:]]*if / { buf = $0; collecting = 1; next }
+      collecting { buf = buf "\n" $0 }
+      collecting && /git fetch origin "\+refs\/heads\/\$\{default_branch\}/ { print buf; exit }
+    ' "$WEEKLY_WF")"
+    if [ -z "$fetch_block" ]; then
+      bad "週次 CI の default branch fetch が if ブロックに囲まれていない（走行中に進んだ先端で基準が上書きされる）"
+    else
+      for _cond in \
+        '[ "${GITHUB_RUN_ATTEMPT:-0}" != 1 ]' \
+        'git rev-parse --verify --quiet "refs/remotes/origin/${default_branch}^{commit}"'
+      do
+        if [[ "$fetch_block" == *"$_cond"* ]]; then
+          ok "週次 CI の fetch 条件に ${_cond} がある（同じ if ブロック内）"
+        else
+          bad "週次 CI の fetch 条件から ${_cond} が消えています"
+        fi
+      done
+      # 2 条件は OR。AND に変えると、既定ブランチ以外からの初回 dispatch で ref を作れない。
+      if [[ "$fetch_block" == *"||"* ]]; then
+        ok "週次 CI の fetch 条件は OR で結ばれている（どちらか一方でも fetch する）"
+      else
+        bad "週次 CI の fetch 条件が OR ではない（片方しか成立しない回で基準 ref を用意できない）"
+      fi
+    fi
+  fi
 fi

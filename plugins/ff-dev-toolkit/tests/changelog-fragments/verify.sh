@@ -2,6 +2,11 @@
 # CHANGELOG 断片の schema・materialize・並行 merge 契約（ADR-038 / Issue #764）。
 set -euo pipefail
 
+# 鮮度分岐は「CI か否か」で比較基準の取り方を変える（cases/footer.sh 参照）。fixture が
+# GITHUB_ACTIONS を触っても判定がぶれないよう、起動時の ambient 値をここで captureする
+# （shared-version-convergence/verify.sh と同じ形）。
+FF_AMBIENT_GITHUB_ACTIONS="${GITHUB_ACTIONS-}"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
 TARGET="${REPO_ROOT:+$REPO_ROOT/scripts/materialize-dev-toolkit-changelog.sh}"

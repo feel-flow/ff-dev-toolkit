@@ -290,7 +290,14 @@ if ! default_ref="$(git -C "$REPO_ROOT" symbolic-ref --quiet --short refs/remote
   bad "origin/HEAD が無く共有 CHANGELOG 判定を開始できない"
 elif [[ "$default_ref" != origin/* ]]; then
   bad "origin/HEAD が origin/* ではない"
-elif ! git -C "$REPO_ROOT" fetch origin "+refs/heads/${default_ref#origin/}:refs/remotes/origin/${default_ref#origin/}" >/dev/null 2>&1; then
+# CI では fetch しない — checkout は特定 SHA に固定されていて rebase という対処が存在せず、
+# 走行中（週次 run-all は約 25 分）に default branch が進んだことを理由に赤にしても実害と
+# 対応しない。判定入力を job 開始時点の remote-tracking ref に閉じる（check-version-claims.sh
+# が CI について既に採っている形と同じ。workflow 側が既定ブランチ checkout の回にその ref を
+# checkout SHA へ固定する）。ローカルは従来どおり fetch して最新の base で判定する —
+# 作業者には rebase という対処があるので、古い base で緑を出す方が有害。
+elif [[ "$FF_AMBIENT_GITHUB_ACTIONS" != true ]] \
+  && ! git -C "$REPO_ROOT" fetch origin "+refs/heads/${default_ref#origin/}:refs/remotes/origin/${default_ref#origin/}" >/dev/null 2>&1; then
   bad "共有 CHANGELOG 判定前に latest default branch を fetch できない"
 elif ! git -C "$REPO_ROOT" rev-parse --verify "${default_ref}^{commit}" >/dev/null 2>&1; then
   bad "共有 CHANGELOG 判定の default branch を解決できない"

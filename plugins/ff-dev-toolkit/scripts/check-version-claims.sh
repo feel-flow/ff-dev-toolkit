@@ -11,8 +11,11 @@
 #     リリース準備 PR のマージ）ことを理由に赤にしても実害と対応しない。検査入力を checkout SHA と
 #     job 開始時点の ref に閉じ、走行中の外向き操作に左右されないようにする（週次 run-all の
 #     shared-version-convergence suite が本スクリプトを呼ぶ）。先行ガード自体は残す — checkout が
-#     job 開始時点の origin/<default> より古い場合（既定ブランチ以外からの dispatch、checkout〜fetch
-#     step の間に入った push）は従来どおり exit 2 にする（fetch を省くだけで判定は緩めない）
+#     job 開始時点の origin/<default> より古い場合（既定ブランチ以外からの dispatch）は従来どおり
+#     exit 2 にする（fetch を省くだけで判定は緩めない）。既定ブランチを checkout した回に
+#     「checkout〜fetch step の間に入った push」で ref が先行する経路は、workflow 側が
+#     actions/checkout の置いた remote-tracking ref を live の先端で上書きしないことで塞いで
+#     ある — 本スクリプトの判定は変えていないので、先行した ref を渡されれば従来どおり exit 2
 set -euo pipefail
 
 # ff-dev-toolkit-script-root-guard:start

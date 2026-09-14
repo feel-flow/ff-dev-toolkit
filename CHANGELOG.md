@@ -20,6 +20,14 @@
 
 ## [Unreleased]
 
+## [0.110.1] - 2026-09-14
+
+### 修正
+
+- レビュー観点の配置規則を検査する `tests/review-severity-scope` が節本文の照合に `printf` とパイプした `grep -q` を使っていたため、grep が一致時点で終了して上流の printf が EPIPE で死に、`pipefail` のもとで一致が「不一致」へ反転していた。実在するリテラルを「消えています」と報告する偽の赤を出す経路なので、パイプを使わないシェル内の文字列マッチへ変更した。同じ禁止イディオムは他の suite が既にコメントで明文化している
+- 週次フル run-all の CI が、走行中に既定ブランチが進むと `changelog-fragments` と `shared-version-convergence` を鮮度由来の赤にしていた。判定基準の remote-tracking ref は checkout の時点で正しい commit を指しているのに、workflow 自身がそれを live の先端で上書きしていたのが原因。上書きを条件付きにし、基準 ref がまだ無い回（既定ブランチ以外からの起動）と初回試行でない回（再実行）だけ取得するようにした。どちらも先行ガードを効かせたい回と一致するため、古い checkout を見逃す経路は増えない
+- `changelog-fragments` の共有 CHANGELOG 判定に、`check-version-claims.sh` が既に採っている「CI では fetch せず job 開始時点の remote-tracking ref を基準にする」形を揃えた。ローカル実行は従来どおり fetch して最新の base で判定する
+
 ## [0.110.0] - 2026-09-14
 
 ### 変更
