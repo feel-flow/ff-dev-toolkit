@@ -26,7 +26,7 @@ changeImpact: "medium"
 | ------------------------------------------------- | ------------------------------------------------- | -------------- |
 | `deployment/github-setup.md`                      | GitHub初期設定（ラベル・Release Drafter）         | ⭐⭐⭐⭐⭐ 0th |
 | `deployment/git-workflow.md`                      | AI駆動Git Workflow全体                            | ⭐⭐⭐⭐⭐ 1st |
-| `deployment/self-review.md`                       | セルフレビュー詳細（PR作成前）                    | ⭐⭐⭐⭐ 2nd   |
+| `deployment/self-review.md`                       | セルフレビュー詳細（PR作成後）                    | ⭐⭐⭐⭐ 2nd   |
 | `deployment/devin-pre-pr-review.md`               | Devin Pre-PRレビューシステム（5エージェント並列） | ⭐⭐⭐⭐ 2.5th |
 | `deployment/automated-code-review.md`             | 自動コードレビュー（Claude Code + Husky）         | ⭐⭐⭐⭐ -     |
 | `deployment/agent-deletion-prevention-harness.md` | 削除事故防止ハーネス設計                          | ⭐⭐⭐⭐ -     |
@@ -56,11 +56,11 @@ gh issue create --title "feat: ..." --body "..."
 # 2. ブランチ作成
 git checkout -b "feature/123-feature-name"
 
-# 3. セルフレビュー（AIツールに依頼）
-「MASTER.mdとPATTERNS.mdに基づいて、今回の変更をレビューしてください」
-
-# 4. PR作成
+# 3. PR作成（push の直後に通常 PR として作る）
 gh pr create --base develop --title "..." --body "..."
+
+# 4. セルフレビュー（PR 作成後に AI ツールへ依頼。対象は PR の head SHA）
+「MASTER.mdとPATTERNS.mdに基づいて、今回の変更をレビューしてください」
 
 # 5. ナレッジ記録（マージ後）
 gh discussion create --category "..." --title "..." --body-file knowledge.md
@@ -70,7 +70,7 @@ gh discussion create --category "..." --title "..." --body-file knowledge.md
 
 ### 概要
 
-Git Flowベースで、**テスト・セルフレビュー（PR前）** と **ACEナレッジ体系化（マージ後・cleanup後）** を組み込んだワークフロー。
+Git Flowベースで、**テスト・セルフレビュー（PR 作成後・マージ前）** と **ACEナレッジ体系化（マージ後・cleanup後）** を組み込んだワークフロー。
 
 ### 主要ステップ
 
@@ -82,8 +82,8 @@ Git Flowベースで、**テスト・セルフレビュー（PR前）** と **AC
 2. **ブランチ作成** - `feature/{issue-num}-{name}`
 3. **実装・コミット** - AI駆動開発
 4. **テスト・検証** - `npm run quality:local` 等
-5. **セルフレビュー** ← 詳細: `deployment/self-review.md`
-6. **PR作成** - 構造化されたPR本文
+5. **PR作成** - push の直後に通常 PR として作る（構造化されたPR本文）
+6. **セルフレビュー** - PR の head SHA を対象に 1 回 ← 詳細: `deployment/self-review.md`
 7. **レビュー対応** - **レビュワーへのコメント必須**（修正内容・理由・変更箇所を明記）← 詳細: `deployment/git-workflow.md`
 8. **マージ** - Squash推奨
 9. **クリーンアップ** - ブランチ削除、`git fetch --prune`

@@ -1158,7 +1158,7 @@ must_contain "$f" '後者を「存在しない」と断定しない' \
 must_match "$f" '^/pre-commit-check$' \
   "Git Workflow のコミット手順が commit 前に /pre-commit-check（staged shell 単体チェック）を呼んでいる"
 must_contain "$f" 'commit 前の staged 状態でしか見えない違反' \
-  "Git Workflow のコミット手順がステップ5レビューでは staged shell を検出できない理由を明記している"
+  "Git Workflow のコミット手順がステップ6レビューでは staged shell を検出できない理由を明記している"
 
 # --- Git Workflow: Epic の一括対応手順（Issue #1145。観測台帳 OBS-038 から昇格）---
 # 契約文は番号付き太字の行頭から句点までをアンカーする。部分一致だけでは

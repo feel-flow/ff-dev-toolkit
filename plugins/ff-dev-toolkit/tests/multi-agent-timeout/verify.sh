@@ -695,6 +695,22 @@ case "\$mode" in
     echo "boom: stub failure" >&2
     exit 1
     ;;
+  spend-limit)
+    # claude-code の実測文言（単一 CLI 基準線への整合）。credits / balance の語を含まないので、
+    # 従来の語彙では分類が空（一般的な失敗案内）に落ちていた。
+    echo "You've hit your individual spend limit" >&2
+    exit 1
+    ;;
+  usage-limit)
+    # 同じ上限系。語彙を 1 つずつ別 fixture にするのは、1 つ外す変異をそれぞれ赤にするため
+    # （3 行をまとめて 1 fixture に置くと、残りの語で拾って緑のまま通る）。
+    echo "Error: you have reached your usage limit for this period" >&2
+    exit 1
+    ;;
+  monthly-limit)
+    echo "Error: monthly limit reached for this account" >&2
+    exit 1
+    ;;
   monthly-token-limit)
     # 課金側の上限。「token limit」という語を共有するが、これは残高の話であって
     # プロンプト長の話ではない（Claude 1 / Codex 1）。billing の材料を奪わないこと。
@@ -1136,6 +1152,26 @@ if grep -q 'or the configured substitute claude-code' "$TMP/run.log"; then
 else
   bad "billing: 残高切れなのに代替 CLI の案内が無い"
 fi
+
+# 利用枠の上限（spend / usage / monthly limit）も billing（単一 CLI 基準線への整合）。基準線が主担当
+# 1 モデルになった今（ADR-053）、この分類は「その回は単一で正常完了」の判定に直結する。
+# 語彙 1 つにつき fixture 1 本 — 語彙を 1 つ外す変異がその fixture だけで赤になる。
+for limit_mode in spend-limit usage-limit monthly-limit; do
+  echo "$limit_mode" > "$TMP/codex-mode"
+  read -r RC EL <<<"$(run_orchestrator 60)"
+  if [[ "$RC" -ne 0 ]] && grep -q '💳' "$TMP/run.log" \
+    && grep -q 'credits / usage balance are exhausted' "$TMP/run.log"; then
+    ok "billing(${limit_mode}): 利用枠の上限を残高切れとして切り分ける(rc=${RC})"
+  else
+    bad "billing(${limit_mode}): 利用枠の上限が一般的な失敗のまま（語彙に無い）(rc=${RC})"
+    tail -20 "$TMP/run.log" | sed 's/^/    | /' >&2
+  fi
+  if ! grep -q '🔑' "$TMP/run.log" && ! grep -q '📐' "$TMP/run.log"; then
+    ok "billing(${limit_mode}): 認証切れ・プロンプト超過へ取り違えない"
+  else
+    bad "billing(${limit_mode}): 利用枠の上限を認証切れまたはプロンプト超過として案内している"
+  fi
+done
 
 # 走査範囲の陰性対照。判定材料は CLI stderr であって、保全された部分出力ではない。
 echo crash-quoting > "$TMP/codex-mode"

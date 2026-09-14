@@ -187,7 +187,7 @@ git diff --stat <前のブランチ> <base ブランチ> -- <対象ディレク�
 
 #### 作業中の判断ログ: `implementation-notes.md` を並走させる
 
-実装着手と同時に **作業ブランチ直下** に `implementation-notes.md` を作成し、コミットと一緒に追記する。コミット diff には残らない「なぜこの選択をしたか / spec から変えた点 / 捨てた選択肢」を保持することで、ステップ5（Self-Review）の精度とステップ10（ACE Generate）の入力品質が上がる。詳細根拠は ACE-034。
+実装着手と同時に **作業ブランチ直下** に `implementation-notes.md` を作成し、コミットと一緒に追記する。コミット diff には残らない「なぜこの選択をしたか / spec から変えた点 / 捨てた選択肢」を保持することで、ステップ6（Self-Review）の精度とステップ10（ACE Generate）の入力品質が上がる。詳細根拠は ACE-034。
 
 最小ひな形（コピペして使う）:
 
@@ -216,8 +216,8 @@ git diff --stat <前のブランチ> <base ブランチ> -- <対象ディレク�
 - **書くタイミングは「気付いた瞬間」**: 後で書こうとすると確実に忘れる（ACE-032 の発見経緯と同じ構造）
 - **粒度は 1〜3 行**: 「なぜ A ではなく B を選んだか」を短文で残す
 - **スコープ外発見は本ファイルへ溜めず三分岐**: [ワークフロー運用原則 原則2](./workflow-principles.md) に従い、YAGNI なら記録対象にせず、必要かつ軽微なら現 PR で修正する。独立対応が必要なら類似 Issue を先に検索し、同じ完了条件へ吸収できれば既定は既存 Issue へのコメントで集約する。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立するなら関連 Issue を作成する。implementation-notes は「現 PR の判断ログ」であり、将来タスクの代替 backlog にはしない
-- **PR 作成時に PR description に転記**: ステップ6 でレビュアーが「なぜ」を読みやすくなる
-- **マージ前にファイルを削除する（推奨）**: squash merge を標準とするチームでは、ファイルを残すと次 PR がルート直下で衝突する。pr-ready 直前に PR description へ転記 → `git rm implementation-notes.md` → 1 commit で削除。長期保存したい場合は `notes/<issue-num>.md` 形式で per-PR ファイル化する代替案あり（並行 PR で衝突しないが notes/ が累積するトレードオフ）
+- **PR 作成時に PR description に転記**: ステップ5 でレビュアーが「なぜ」を読みやすくなる
+- **マージ前にファイルを削除する（推奨）**: squash merge を標準とするチームでは、ファイルを残すと次 PR がルート直下で衝突する。ステップ7 の fix commit（マージ前の最後の push）で PR description へ転記 → `git rm implementation-notes.md` → 同じ commit で削除。長期保存したい場合は `notes/<issue-num>.md` 形式で per-PR ファイル化する代替案あり（並行 PR で衝突しないが notes/ が累積するトレードオフ）
 
 #### 決定事項コメント: Issue に「なぜ」を残す
 
@@ -280,7 +280,7 @@ grep -n "return " src/render.ts
 
 #### コミット
 
-**`git add` の後・`git commit` の前に staged 由来の単体チェックを通す**: 下のステップ5「セルフレビュー」の `/pr-review-toolkit:review-pr` や Codex CLI クロスレビューは commit 済みの diff を対象にするため、commit 前の staged 状態でしか見えない違反（例: 日本語コメント中の `$VAR` 直付けマルチバイト展開）を検出する経路がステップ5には無い。ここで `/pre-commit-check`（ff-dev-toolkit スキル。**AI エージェントへのスラッシュコマンドで、シェルコマンドではない点に注意**。または同等の staged 単体チェック）を実行してから commit する。対象は 2 系統ある:
+**`git add` の後・`git commit` の前に staged 由来の単体チェックを通す**: 下のステップ6「セルフレビュー」の `/pr-review-toolkit:review-pr` や Codex CLI クロスレビューは commit 済みの diff を対象にするため、commit 前の staged 状態でしか見えない違反（例: 日本語コメント中の `$VAR` 直付けマルチバイト展開）を検出する経路がステップ6には無い。ここで `/pre-commit-check`（ff-dev-toolkit スキル。**AI エージェントへのスラッシュコマンドで、シェルコマンドではない点に注意**。または同等の staged 単体チェック）を実行してから commit する。対象は 2 系統ある:
 
 1. staged された `*.sh` に対する mbcs-guard / exit-code-guard の単体チェック
 2. staged ファイルの**種別**（配布 Markdown / 公開同期対象 / shell）から**固定表**で決まる静的 suite のプリフライト。本テンプレートのソースリポジトリでは `docs-gates` / `plugin-root-contract` / `sync-forbidden-patterns` / `run-all` / `shellcheck` を単体で回す（各 1 分未満）
@@ -368,11 +368,11 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 確認後に別の push が入っても、明示した SHA と違えばサーバー側で拒否される。拒否時は expected を更新して押し切らず、相手の変更を確認する。**lease は所有権を証明しない**ため、単独利用・未マージ・直前の自分の push を確認できない場合はこの経路を使わない。上の条件を満たす base 追随の送信はフルオートの通常手順で、無条件の `--force` とは区別する。`--force`・`reset --hard`・本番破壊は引き続き停止して確認する。実測では、単独 PR の rebase 後に通常 push が拒否され、force-push を一律に停止対象と読むことで不要な中断が生じたため、この区別を置いている。
 
-重いゲートを起動するときは（起動時点はステップ5の規定）、ステップ5の「長時間の読み取りゲートにも凍結を適用する」を確認する。ステップ4で全件・ビルドゲートを前倒ししない。
+重いゲートを起動するときは（起動時点はステップ6の規定）、ステップ6の「長時間の読み取りゲートにも凍結を適用する」を確認する。ステップ4で全件・ビルドゲートを前倒ししない。
 
 #### 自動テストの実行
 
-ステップ4で回すのは既定の短いテストだけ（下記の lint / 型チェック / 単体テスト相当。プロジェクトに短い検証の統合エイリアスがあるならそれ）。全件テスト・`FF_RUN_ALL_FULL`・変異テスト・長時間ビルドなど重いゲートはステップ5へ送る。
+ステップ4で回すのは既定の短いテストだけ（下記の lint / 型チェック / 単体テスト相当。プロジェクトに短い検証の統合エイリアスがあるならそれ）。全件テスト・`FF_RUN_ALL_FULL`・変異テスト・長時間ビルドなど重いゲートはステップ6へ送る。
 
 ```bash
 # Linter（静的解析）
@@ -388,9 +388,9 @@ npm run test -- --coverage
 npm audit --audit-level=moderate
 ```
 
-> **注**: 上記は汎用例です。プロジェクトに短い検証の統合エイリアスがある場合は、個別コマンドの代わりにそれを実行してください。全件・ビルドを含む統合ゲートはステップ4では回さず、ステップ5の重い検証ゲートに回す。
+> **注**: 上記は汎用例です。プロジェクトに短い検証の統合エイリアスがある場合は、個別コマンドの代わりにそれを実行してください。全件・ビルドを含む統合ゲートはステップ4では回さず、ステップ6の重い検証ゲートに回す。
 
-**frontmatter に `version` を持つ文書を `docs/` 配下へ追加した回・その `version` を変えた回・PLAYBOOK / PATTERNS を変更した回は、短い検証に claim 照合を含める。** 次の 2 コマンドは固定 root を使うので、ステップ5と同じ [plugin root固定契約](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) で host の読み込み済み実体から root を解決してから回す（配置先の推測や `${CLAUDE_PLUGIN_ROOT}` の手動コピーでは作らない）。
+**frontmatter に `version` を持つ文書を `docs/` 配下へ追加した回・その `version` を変えた回・PLAYBOOK / PATTERNS を変更した回は、短い検証に claim 照合を含める。** 次の 2 コマンドは固定 root を使うので、ステップ6と同じ [plugin root固定契約](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) で host の読み込み済み実体から root を解決してから回す（配置先の推測や `${CLAUDE_PLUGIN_ROOT}` の手動コピーでは作らない）。
 
 `.version-claims/` を持つプロジェクトでは、まず `git fetch origin "+refs/heads/<default branch>:refs/remotes/origin/<default branch>"` と `git merge-base --is-ancestor origin/<default branch> HEAD` を通す — helper は fetch せずローカルの `origin/<default branch>` をそのまま `--base` に使うので、ref が stale なまま生成した claim は、自分で fetch して最新 commit を pin する validator から byte 不一致（exit 1）で弾かれ、遅れではなく stale claim に見える（契約の正は `.version-claims/README.md`）。そのうえで claim を要求される文書ごとに（frontmatter `version` を持つ文書の新規追加・その `version` の変更・PLAYBOOK / PATTERNS の版不変の内容更新。frontmatter に `version` が無い文書は対象外で、要求条件の正は `.version-claims/README.md`）`FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/update-version-claim.sh" --base "origin/<default branch>" --document <文書 path>` で claim を再生成し、`docs/` 配下の変更と claim を**まとめて** stage してから `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-version-claims.sh"` を回す。validator はこれらの文書に限らず、`docs/**/*.md` と `.version-claims/**/*.claim` に未 stage / 未追跡が 1 件でも残っていれば拒否するので、stage が部分的だと claim 自体は正しくても赤になる。helper は `--root` を取らず CWD の `git rev-parse --show-toplevel` で対象を解決するので、作業ツリー内ならどこで実行してもよいが、別リポジトリの CWD から起動すると文書不在・base 解決不能・`.version-claims/` 不在のいずれかで非 0 になる。**validator が通ったら claim を同じ commit へ含める**（stage したまま次へ進まない — push は HEAD しか送らないので、claim の入らない PR になる）。
 
@@ -398,7 +398,7 @@ npm audit --audit-level=moderate
 
 `/spec-driven` の G4（手順 5）・`/ace-curate`・`/ace-refine` を通った回は、同じ 2 コマンドがそれらの手順の中で既に走っている。ステップ4 の照合は、それらを経由しない編集（手動の `version` bump など）向けの案内である。
 
-再生成漏れは重い検証ゲート側でも検出できるが、そちらは分オーダーである。ステップ5で赤を受けてから fix commit → 重いゲート再実行へ戻ると、数秒で済む照合の代わりに、分オーダーの追加コストを 1 周ぶん払うことになる（実測例がある）。ステップ4に置く理由はこの差だけであり、新しい検査を足すものではない。
+再生成漏れは重い検証ゲート側でも検出できるが、そちらは分オーダーである。ステップ6で赤を受けてから fix commit → 重いゲート再実行へ戻ると、数秒で済む照合の代わりに、分オーダーの追加コストを 1 周ぶん払うことになる（実測例がある）。ステップ4に置く理由はこの差だけであり、新しい検査を足すものではない。
 
 **新規ファイルを追加した回は、これから回すゲートの直前に commit する。** `git ls-files` / `git ls-tree` を走査面に持つ静的ガードは untracked なファイルを見ない。`git add` だけでは `git ls-tree HEAD` には現れない。commit 前の緑は「新規ファイルを検査していない緑」であり、しかも未実施ではなく緑として現れる。既存ファイルの変更のみなら、この追加コミットは不要。この規則は短いテストにも重いゲートにも適用する。ステップ4で重いゲートを前倒しするものではない。
 
@@ -411,11 +411,107 @@ npm audit --audit-level=moderate
 | テストカバレッジ | 数値目標を採用した場合のみ合意値を確認 |
 | セキュリティ     | moderate以上の脆弱性0件 |
 
-**ポイント**: 既定の短いテストはステップ4で回してからセルフレビュー（ステップ5）へ進む。
+**ポイント**: 既定の短いテストはステップ4で回してから push・PR 作成（ステップ5）を経てセルフレビュー（ステップ6）へ進む。
 
-### ステップ5: セルフレビュー（PR作成前）【重要】
+### ステップ5: Pull Request作成
 
-**目的**: PRレビュー時の単純な指摘を事前に防ぎ、レビュー品質を向上させる
+**原則**: PRは自己完結型（レビュワーが全体像を把握できる情報を含める）
+
+テスト（ステップ4）を通した commit を push し、その場で通常 PR として作る（Draft にしない — 本テンプレートのソースリポジトリの ADR-053 / ADR-054）。セルフレビュー（ステップ6）は PR 作成の**後**に、PR の head SHA を対象として 1 回行う — レビュー対象の固定点と記録の置き場が PR に揃い、`/close-issue`（ステップ8。PR 作成後・マージ直前）と段の並びが一致する（並びの判断は同 ADR-054）。
+
+```bash
+# ブランチをプッシュ
+git push -u origin "feature/${ISSUE_NUM}-user-auth"
+
+# PRを作成
+gh pr create \
+  --base develop \
+  --title "feat: ユーザー認証機能を実装" \
+  --body "## 概要
+ユーザー認証機能をJWTベースで実装しました。
+
+## 変更内容
+- 認証ミドルウェアの追加 (src/middleware/auth.ts:1-85)
+- ログイン/ログアウトAPI実装 (src/routes/auth.ts:12-156)
+- リフレッシュトークン機構 (src/services/token.ts:45-120)
+
+## テスト結果
+- 単体テスト: 42件 全てパス
+- カバレッジ: 85.3%
+
+## セルフレビュー結果
+（ステップ6 の完了後に gh pr edit --body-file で追記）
+
+## チェックリスト
+- [x] MASTER.mdのコード生成ルールに準拠
+- [x] 合意した対象の定数化ルールを遵守
+- [x] 型安全性を確保
+- [x] 合意した検証対象の確認完了
+
+## 関連Issue
+Closes #${ISSUE_NUM}
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+# 人間レビュアーの指定（--reviewer / gh pr edit --add-reviewer）はここでは行わない。
+# 単純な指摘をセルフレビュー（ステップ6）で潰してから、ステップ7 の fix push 後に依頼する。
+# PR ラベルも Issue 同様、存在しない名前を直書きすると失敗する。
+# 付ける場合はステップ1と同じ verify-then-skip（gh label list → 実在するものだけ --label）を使う。
+```
+
+**PRの原則**:
+
+- タイトルは変更内容を端的に表現
+- 変更ファイルと行番号を明記
+- テスト結果を含める
+- セルフレビュー結果を含める（ステップ6 の完了後に追記する。PR 作成時点では枠だけでよい）
+- **PR 本文にフォローアップ Issue の番号を書くなら、その起票を PR 作成より前に済ませる**。GitHub は Issue と PR で採番列を共有するため、「次に発行されるはずの番号」を推測して書くと PR 自身がその番号を取る。後で起票する場合は番号を書かず `<!-- follow-up issue: TBD -->` のプレースホルダを置き、起票直後に `gh pr edit --body-file` で埋める（順序制約の詳細は `out-of-scope-issue` スキル §3.3）
+
+#### PR タイトルと Issue 参照の規約【重要】
+
+**post-merge 検証（staging 実機確認・外部 ops など）が受け入れ条件に残る Issue では、PR タイトルにもコミット件名・本文にも `#N` を書かない**。本文の参照も `Closes #N` ではなく `Refs #N` にする。
+
+理由: GitHub の closing keyword は PR 本文だけでなく **squash commit のメッセージ**も走査する。`fix: #123 …` という Conventional Commits の自然な件名がそのまま `fix #123` として解釈され、本文を `Refs #123` にしても Issue が閉じる。squash メッセージの供給源はリポジトリ設定で決まり（`squash_merge_commit_title` / `squash_merge_commit_message`）、既定では **PR タイトルまたは単一コミットの件名**が件名に、**全コミットのメッセージ**が本文に入る。
+
+さらに、`gh pr view --json closingIssuesReferences` は **PR 本文しか見ない**（コミットメッセージは見ない）。コミット件名に `fix: #N` があっても空配列を返し、それでもマージで Issue は閉じる。**検出系が「この PR は Issue を閉じません」と報告しながら閉じる**のが、マージ時点の注意喚起では止まらない理由である。
+
+| Issue の性質                             | 本文の参照   | タイトル・コミットメッセージ       | マージ後の Issue |
+| ---------------------------------------- | ------------ | ---------------------------------- | ---------------- |
+| マージ前に全 AC を検証できる             | `Closes #N`  | `#N` を書いてよい                  | 自動クローズ     |
+| post-merge 検証が AC に残る（Refs 運用） | `Refs #N`    | **`#N` を書かない**（`(#PR番号)` は可） | open のまま維持  |
+
+`(#PR番号)` の形（GitHub が squash 時に末尾へ付ける PR 番号）が安全なのは、PR 番号と Issue 番号が同じ名前空間を共有していて、末尾の PR 番号がその PR 自身を指すためである。抵触するのは `fix: #N …` のように **closing keyword と Issue 参照が隣接**する形だけで、検出語は `close` / `closes` / `closed` / `fix` / `fixes` / `fixed` / `resolve` / `resolves` / `resolved` の 9 語（`fix:` のようにコロンが挟まる形も一致する）。`chore: 検査を追加する。fixes は 9 語ある（#123 参照）` のように keyword と番号が同居しているだけの件名は抵触ではない。
+
+この規約はステップ8 の `/close-issue` が機械的に検査する（PR タイトル + ブランチ上の全コミットの件名と本文が対象）。手作業で確認する場合は同じ検査を直接呼べる:
+
+```bash
+TARGET_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+[[ -n "${TARGET_REPO}" ]] || { echo "❌ リポジトリ名を解決できません" >&2; exit 2; }
+
+# パイプで直結すると上流の失敗が最終段の終了コードに隠れる（jq は部分出力して
+# から死ぬので、途中まで検査して緑、が成立する）。いったん実体化して確定させる。
+SURFACE="$(mktemp)"
+gh pr view "${PR_NUMBER}" --json title,commits --jq '
+  ("title\t" + .title),
+  (.commits[] | ("commit:" + .oid[0:7] + "\t" + .messageHeadline)),
+  (.commits[] | select(.messageBody != "")
+    | "commit-body:" + .oid[0:7] + "\t" + (.messageBody | gsub("\n"; " ")))
+' > "${SURFACE}" || { echo "❌ 検査面の取得に失敗（検査は成立していない）" >&2; exit 2; }
+
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-closing-keywords.sh" \
+  --repo "${TARGET_REPO}" --refs-issue "${ISSUE_NUM}" < "${SURFACE}"
+# 終了コード 0=抵触なし / 1=抵触あり / 2=検査が成立しない。0 と 1 以外はすべて停止側へ倒す
+rm -f "${SURFACE}"
+```
+
+`${FF_DEV_TOOLKIT_ROOT}` は、ステップ6と同じ [plugin root固定契約](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) で host の読み込み済み実体から解決する。配置先の推測や `${CLAUDE_PLUGIN_ROOT}` の手動コピーでは作らない。プラグイン未導入の環境ではこの手動確認は行えないため、ステップ8 のマージ直後 read-back を必ず実施すること。
+
+コミット件名・本文はマージ時に書き換えられないため、そこに `#N` が残ってしまった場合はステップ8 で `--subject` と `--body` を**両方明示**して squash メッセージを差し替える。両方明示した squash メッセージはその 2 つだけで決まり、コミットメッセージは畳み込まれない。
+
+### ステップ6: セルフレビュー（PR作成後）【重要】
+
+**目的**: PR 上のレビュー（人間・自動）で単純な指摘を受ける前に潰し、レビュー品質を向上させる
+
+レビュー対象は push 済みの PR head SHA に固定する（レビュー結果の記録先も同じ PR に揃う。後述の worktree 隔離起動が要求する「対象を含む commit 済みの状態で起動する」前提とも一致する）。Toolkit エージェントも cross-model CLI もローカルの `git diff <base>...HEAD` を読むため、PR の有無で動作は変わらない。
 
 レビュー起動前にも、[検証・レビュー前の base 追随確認](#検証レビュー前の-base-追随確認) を行う。遅れていれば取り込んでから検証・レビューし、既に追随済みならそのまま進む。
 
@@ -459,11 +555,11 @@ npm audit --audit-level=moderate
 - 関連する技術文書の更新が必要か
 - 配布物・公開物を変更したなら、通常 PR では `changelog.d/<Issue番号>.<種別>.<branch-slug>.md` に利用者から見える変更が書かれているか（リリース準備で断片を CHANGELOG の `[Unreleased]` へ集約する。比較リンク footer-only 更新だけは共有 CHANGELOG を直接更新する。tier と独立に課される要求。[DEPLOYMENT.md](../DEPLOYMENT.md#変更規模による-tier) §変更規模による tier）
 
-最後の 1 件を**この段（PR 作成前）で確認する**のが要点。記載漏れは実装にも検査にも現れないため PR をそのまま通り抜け、見つかるのはリリース準備や公開同期の直前 — その時点では PR のスコープ外になっている。判定を機械化できるプロジェクトでは、公開物の変更に対する有効な `changelog.d` 断片（リリース準備では集約済み `[Unreleased]`）の有無を PR 作成前に一度だけ問い合わせ、**警告として扱う**（PR 作成は止めない）。ゲートにしてはいけない: 通常開発では「公開物の変更 + 有効な断片 + version 据え置き」が正常で、リリース準備では「集約済み `[Unreleased]` + version bump」が正常であるため、単一の中間状態だけを常時ゲートにすると開発経路が恒常的に赤くなる。
+最後の 1 件を**この段（PR 作成後・マージ前）で確認する**のが要点。記載漏れは実装にも検査にも現れないため PR をそのまま通り抜け、見つかるのはリリース準備や公開同期の直前 — その時点では PR のスコープ外になっている。判定を機械化できるプロジェクトでは、公開物の変更に対する有効な `changelog.d` 断片（リリース準備では集約済み `[Unreleased]`）の有無をこの段で一度だけ問い合わせ、**警告として扱う**（マージを止めない）。ゲートにしてはいけない: 通常開発では「公開物の変更 + 有効な断片 + version 据え置き」が正常で、リリース準備では「集約済み `[Unreleased]` + version bump」が正常であるため、単一の中間状態だけを常時ゲートにすると開発経路が恒常的に赤くなる。
 
 #### レビュー担当
 
-[レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続)を適用する。基準線は実装中の主担当（Claude / Codex / Grok / Copilot）のセルフレビューで、`--print-reviewers` の環境チェックで別 CLI が在るときだけクロスレビューを 1 本加える（`cross_review=off` なら加えない）。別 CLI が無く、ホストが Claude Code で Toolkit が使えるなら read-only の Toolkit エージェント（同一モデルの追加観点）を任意で挟んでよい。走らせた別 CLI が認証・利用枠で落ちた回は主担当のみで正常に完了し、次回は環境チェックからやり直す。記録は実施した担当と本数だけを書く。以下の Toolkit / Codex は実行例であり固定の必須ペアではない。**レビューの実行はこのステップで完結し、PR 作成後に担当の選択をやり直して再実行しない**（ステップ7）。
+レビュー担当の規定（基準線・環境チェック・別 CLI の扱い・失敗時の継続・記録）は [レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従う。本書は要約を再掲しない。以下の Toolkit / Codex は実行例であり固定の必須ペアではない。レビューの実行はこのステップで 1 回だけ行い、fix commit（ステップ7）の後に担当の選択をやり直して全体を再実行しない。
 
 #### セルフレビューの実行方法
 
@@ -552,9 +648,9 @@ Claude Codeのpr-review-toolkitサブエージェントを活用した包括的�
 
 **テスト suite を追加・強化する PR の起動プロンプト定型文（変異実測）**: 対象 PR がテスト suite を追加・強化するものであれば、`pr-test-analyzer`（および `silent-failure-hunter`）の起動プロンプトへ次を定型で含める — 「隔離 worktree（`isolation: "worktree"`）の中で、まず最初の suite 実行の前に依存インストール（プロジェクトの正本のコマンドを実値で書く。例: `npm ci --prefix <worktree>/<パッケージ定義のあるディレクトリ>`）を済ませ、追加・強化した suite に対して自作の変異を 2〜3 種当て（例: アサートの条件を反転 / fixture を単一要素に退化 / 検査対象の 1 行を削除）、suite が赤になるかを実測する。生き残った変異（緑のままだったもの）を指摘として報告する。親の作業ツリーと repo ファイルは編集しない（変異は worktree 内で当てて `git checkout --` で戻す）」。diff を読むだけのクロスモデルレビューは空振りアサート・退化 fixture を 0〜1 件しか拾わないが、変異実測を指示すると毎回複数の生存変異が出た（導入元で 3 PR 連続）。依存インストールをリンクではなくコマンドの実値で書くのは、貼られたプロンプトの中では相対リンクが解決しないためで、規定の正本は [worktree 委譲の依存プリフライト](./multi-cli-agent-orchestration.md#worktree-委譲の依存プリフライト)。依存不足のまま変異を当てると suite が環境都合で赤 / skip になり、変異の生死そのものが測れない。この定型文は上の[セルフレビューの実行方法](#セルフレビューの実行方法)の read-only 起動規定・worktree 隔離規定と矛盾しない — 変異は**隔離 worktree 内でのみ**当てる前提を明記している。この定型文は read-only 起動規定に対する例外を**隔離 worktree の内側に限って**与えるものであり、親の作業ツリー・共有ツリーでは従来どおり read-only を維持する。隔離を提供しないホスト・経路ではこの定型文を使わない（変異実測を省く）。
 
-**主担当以外によるクロスレビュー**:
+**主担当以外によるクロスレビュー**（正本の選択ルールで別 CLI を加える回）:
 
-主担当以外を選び、可能なら異なるモデル系統の観点からレビューします。下は Claude が主担当で Codex を選んだ場合の例です。
+下は Claude が主担当で Codex を選んだ場合の例です。
 詳細は [Multi-CLI Review Orchestration](./multi-cli-review-orchestration.md#クロスモデルレビュー推奨パターン) を参照してください。
 
 本書は [同文書の plugin root 前提](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入します。AI host は読み込み済みplugin情報と `FF_DEV_TOOLKIT_PROJECT_ROOT` を渡し、同節の resolver + guard fence 全体と下のコマンドを1回の Bash tool 呼び出し / shell script body で実行します。
@@ -586,7 +682,7 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 
 #### セルフレビュー結果の記録
 
-PR本文にセルフレビュー結果を含めることで、レビュワーに品質保証の証跡を提供します。
+PR 本文（`gh pr edit --body-file`）にセルフレビュー結果を追記することで、レビュワーに品質保証の証跡を提供します。
 
 ```markdown
 ## セルフレビュー結果
@@ -621,107 +717,16 @@ PR本文にセルフレビュー結果を含めることで、レビュワーに
 
 ### 結論
 
-すべての必須項目をクリアしています。PR作成準備完了。
+すべての必須項目をクリアしています。マージ準備完了。
 ```
-
-### ステップ6: Pull Request作成
-
-**原則**: PRは自己完結型（レビュワーが全体像を把握できる情報を含める）
-
-```bash
-# ブランチをプッシュ
-git push -u origin "feature/${ISSUE_NUM}-user-auth"
-
-# PRを作成
-gh pr create \
-  --base develop \
-  --title "feat: ユーザー認証機能を実装" \
-  --body "## 概要
-ユーザー認証機能をJWTベースで実装しました。
-
-## 変更内容
-- 認証ミドルウェアの追加 (src/middleware/auth.ts:1-85)
-- ログイン/ログアウトAPI実装 (src/routes/auth.ts:12-156)
-- リフレッシュトークン機構 (src/services/token.ts:45-120)
-
-## テスト結果
-- 単体テスト: 42件 全てパス
-- カバレッジ: 85.3%
-
-## セルフレビュー結果
-[上記のセルフレビュー結果を記載]
-
-## チェックリスト
-- [x] MASTER.mdのコード生成ルールに準拠
-- [x] 合意した対象の定数化ルールを遵守
-- [x] 型安全性を確保
-- [x] 合意した検証対象の確認完了
-
-## 関連Issue
-Closes #${ISSUE_NUM}
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)" \
-  --reviewer "team-lead"
-# PR ラベルも Issue 同様、存在しない名前を直書きすると失敗する。
-# 付ける場合はステップ1と同じ verify-then-skip（gh label list → 実在するものだけ --label）を使う。
-```
-
-**PRの原則**:
-
-- タイトルは変更内容を端的に表現
-- 変更ファイルと行番号を明記
-- テスト結果を含める
-- セルフレビュー結果を含める
-- **PR 本文にフォローアップ Issue の番号を書くなら、その起票を PR 作成より前に済ませる**。GitHub は Issue と PR で採番列を共有するため、「次に発行されるはずの番号」を推測して書くと PR 自身がその番号を取る。後で起票する場合は番号を書かず `<!-- follow-up issue: TBD -->` のプレースホルダを置き、起票直後に `gh pr edit --body-file` で埋める（順序制約の詳細は `out-of-scope-issue` スキル §3.3）
-
-#### PR タイトルと Issue 参照の規約【重要】
-
-**post-merge 検証（staging 実機確認・外部 ops など）が受け入れ条件に残る Issue では、PR タイトルにもコミット件名・本文にも `#N` を書かない**。本文の参照も `Closes #N` ではなく `Refs #N` にする。
-
-理由: GitHub の closing keyword は PR 本文だけでなく **squash commit のメッセージ**も走査する。`fix: #123 …` という Conventional Commits の自然な件名がそのまま `fix #123` として解釈され、本文を `Refs #123` にしても Issue が閉じる。squash メッセージの供給源はリポジトリ設定で決まり（`squash_merge_commit_title` / `squash_merge_commit_message`）、既定では **PR タイトルまたは単一コミットの件名**が件名に、**全コミットのメッセージ**が本文に入る。
-
-さらに、`gh pr view --json closingIssuesReferences` は **PR 本文しか見ない**（コミットメッセージは見ない）。コミット件名に `fix: #N` があっても空配列を返し、それでもマージで Issue は閉じる。**検出系が「この PR は Issue を閉じません」と報告しながら閉じる**のが、マージ時点の注意喚起では止まらない理由である。
-
-| Issue の性質                             | 本文の参照   | タイトル・コミットメッセージ       | マージ後の Issue |
-| ---------------------------------------- | ------------ | ---------------------------------- | ---------------- |
-| マージ前に全 AC を検証できる             | `Closes #N`  | `#N` を書いてよい                  | 自動クローズ     |
-| post-merge 検証が AC に残る（Refs 運用） | `Refs #N`    | **`#N` を書かない**（`(#PR番号)` は可） | open のまま維持  |
-
-`(#PR番号)` の形（GitHub が squash 時に末尾へ付ける PR 番号）が安全なのは、PR 番号と Issue 番号が同じ名前空間を共有していて、末尾の PR 番号がその PR 自身を指すためである。抵触するのは `fix: #N …` のように **closing keyword と Issue 参照が隣接**する形だけで、検出語は `close` / `closes` / `closed` / `fix` / `fixes` / `fixed` / `resolve` / `resolves` / `resolved` の 9 語（`fix:` のようにコロンが挟まる形も一致する）。`chore: 検査を追加する。fixes は 9 語ある（#123 参照）` のように keyword と番号が同居しているだけの件名は抵触ではない。
-
-この規約はステップ8 の `/close-issue` が機械的に検査する（PR タイトル + ブランチ上の全コミットの件名と本文が対象）。手作業で確認する場合は同じ検査を直接呼べる:
-
-```bash
-TARGET_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
-[[ -n "${TARGET_REPO}" ]] || { echo "❌ リポジトリ名を解決できません" >&2; exit 2; }
-
-# パイプで直結すると上流の失敗が最終段の終了コードに隠れる（jq は部分出力して
-# から死ぬので、途中まで検査して緑、が成立する）。いったん実体化して確定させる。
-SURFACE="$(mktemp)"
-gh pr view "${PR_NUMBER}" --json title,commits --jq '
-  ("title\t" + .title),
-  (.commits[] | ("commit:" + .oid[0:7] + "\t" + .messageHeadline)),
-  (.commits[] | select(.messageBody != "")
-    | "commit-body:" + .oid[0:7] + "\t" + (.messageBody | gsub("\n"; " ")))
-' > "${SURFACE}" || { echo "❌ 検査面の取得に失敗（検査は成立していない）" >&2; exit 2; }
-
-ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-closing-keywords.sh" \
-  --repo "${TARGET_REPO}" --refs-issue "${ISSUE_NUM}" < "${SURFACE}"
-# 終了コード 0=抵触なし / 1=抵触あり / 2=検査が成立しない。0 と 1 以外はすべて停止側へ倒す
-rm -f "${SURFACE}"
-```
-
-`${FF_DEV_TOOLKIT_ROOT}` は、ステップ5と同じ [plugin root固定契約](./multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) で host の読み込み済み実体から解決する。配置先の推測や `${CLAUDE_PLUGIN_ROOT}` の手動コピーでは作らない。プラグイン未導入の環境ではこの手動確認は行えないため、ステップ8 のマージ直後 read-back を必ず実施すること。
-
-コミット件名・本文はマージ時に書き換えられないため、そこに `#N` が残ってしまった場合はステップ8 で `--subject` と `--body` を**両方明示**して squash メッセージを差し替える。両方明示した squash メッセージはその 2 つだけで決まり、コミットメッセージは畳み込まれない。
 
 ### ステップ7: レビュー対応（Review）
 
-レビューの実行は[ステップ5](#ステップ5-セルフレビューpr作成前重要)（PR 作成前）で完結する。PR 作成後にレビュー担当の選択をやり直してクロスレビューを再実行することはしない — 旧 7a はステップ5 と同じ差分に同じレビューを二度払っていたため廃止した（本テンプレートのソースリポジトリの ADR-053）。本ステップは、届いたレビュー指摘（人間レビュー・PR 上の自動レビュー）への対応と、対応後の再確認を扱う。対応の fix commit で差分が動いた範囲の再確認は、下の「統合レポートの確認」末尾の**部分再検証**（修正が影響する観点だけの限定再実行）に従い、担当の選択からやり直す全体再実行はしない。
+レビューの実行は[ステップ6](#ステップ6-セルフレビューpr作成後重要)（PR 作成後）で 1 回だけ行う — 対象は PR の head SHA、担当の選択は正本の[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)に従う。PR 作成前に別途レビューを走らせて PR 作成後にやり直す二重払いはしない（旧 7a の廃止は本テンプレートのソースリポジトリの ADR-053、段の並びは同 ADR-054）。本ステップは、ステップ6 の指摘と届いたレビュー指摘（人間レビュー・PR 上の自動レビュー）への対応（1 つの fix commit へ束ねて push）と、対応後の再確認を扱う。fix commit で差分が動いた範囲の再確認は、下の「統合レポートの確認」末尾の**部分再検証**（修正が影響する観点だけの限定再実行）に従い、担当の選択からやり直す全体再実行はしない。
 
-> 部分再検証でレビュー用サブエージェントを再起動する場合の起動時規定（read-only 起動の禁止事項列挙と、全エージェントが終端に達するまでの作業ツリー凍結）は、ステップ5「セルフレビューの実行方法」を参照。ここで起動するレビューにも同じ規定が適用される。ホストが worktree 隔離を提供する場合のレビュアー起動既定（`isolation: "worktree"`。隔離したレビュアーには凍結が適用されない）も同節が正本。
+> 部分再検証でレビュー用サブエージェントを再起動する場合の起動時規定（read-only 起動の禁止事項列挙と、全エージェントが終端に達するまでの作業ツリー凍結）は、ステップ6「セルフレビューの実行方法」を参照。ここで起動するレビューにも同じ規定が適用される。ホストが worktree 隔離を提供する場合のレビュアー起動既定（`isolation: "worktree"`。隔離したレビュアーには凍結が適用されない）も同節が正本。
 
-> **レビュー深度（Risk-Based Workflow）**: `bash scripts/review-level.sh --base develop` で変更の規模・種別からレビュー深度（1: 軽量 = docs のみ ≤50行は簡潔なレビュー / 2: 標準 = 通常のレビュー観点 / 3: 重点 = 400 行超・実行系ディレクトリ・`*.sh`・`package.json`・ルート直下設定ファイルは multi-review 併用推奨）を判定し、深度を変更のリスクに釣り合わせる。判定は推奨でありブロックしない。**これは [DEPLOYMENT.md](../DEPLOYMENT.md#主要ステップ) の tier とは別の軸である** — tier が決めるのは段の重さで、こちらが決めるのはレビューの深さ。tier はレビューの本数を減らさない。担当の選び方はステップ5 の[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)に従う。PR 説明に貼れる形式は `--format pr`（レベル＋PR Size Check の `[x]` 判定＋センシティブパス一覧）。
+> **レビュー深度（Risk-Based Workflow）**: `bash scripts/review-level.sh --base develop` で変更の規模・種別からレビュー深度（1: 軽量 = docs のみ ≤50行は簡潔なレビュー / 2: 標準 = 通常のレビュー観点 / 3: 重点 = 400 行超・実行系ディレクトリ・`*.sh`・`package.json`・ルート直下設定ファイルは multi-review 併用推奨）を判定し、深度を変更のリスクに釣り合わせる。判定は推奨でありブロックしない。**これは [DEPLOYMENT.md](../DEPLOYMENT.md#主要ステップ) の tier とは別の軸である** — tier が決めるのは段の重さで、こちらが決めるのはレビューの深さ。tier はレビューの本数を減らさない。担当の選び方は[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従う。PR 説明に貼れる形式は `--format pr`（レベル＋PR Size Check の `[x]` 判定＋センシティブパス一覧）。
 >
 > **push 時の可視化**: `.husky/pre-push` は品質ゲート実行前に review-level 判定を表示し、Level 3 では重点レビューを促す（既定は advisory・非ブロック）。`REVIEW_LEVEL_BLOCK=1 git push` のときだけ Level 3 を push ブロックに昇格できる（opt-in）。変更行数・パスの機械判定は review-level.sh に一本化し、`/assess-impact` はその結果を入力として互換性・アーキテクチャ影響（LOW/MEDIUM/HIGH）を評価する。
 >
@@ -750,7 +755,7 @@ fix 後の再検証を修正が影響する観点だけに限定できる条件�
 
 #### AI支援レビュー対応
 
-編集を始める前に、ステップ5の [凍結解除後、レビュー結果へ着手する前に base を取り直す](#凍結解除後レビュー結果へ着手する前に-base-を取り直す) を実施する。先に fetch と必要な rebase / merge を済ませ、取り込み後も残る指摘を修正する。
+編集を始める前に、ステップ6の [凍結解除後、レビュー結果へ着手する前に base を取り直す](#凍結解除後レビュー結果へ着手する前に-base-を取り直す) を実施する。先に fetch と必要な rebase / merge を済ませ、取り込み後も残る指摘を修正する。
 
 **原則**: レビュー指摘には**必ずスレッド形式で返信**し、修正内容を明確にする
 
@@ -920,7 +925,7 @@ mutation($body: String!) {
 マージの前に、AI エージェントへのスラッシュコマンド **`/close-issue <PR番号>`**（ff-dev-toolkit プラグイン提供。シェルコマンドではない点に注意。PR 番号省略時は現在のブランチの PR を自動検出）で AC 照合ゲートを実施する:
 
 - PR の `Closes` 参照と `Refs` 参照から対象 Issue を自動検出し、受け入れ条件（GWT + DoD）を照合
-- `Refs` 運用の Issue がある場合、PR タイトル + ブランチ上の全コミットの件名と本文を closing keyword × Issue 参照で検査し、抵触があればマージへ進まずに改題を促す（ステップ6 のタイトル規約の機械チェック）。さらに、実際に渡す `--subject` / `--body` そのものを検査してからマージへ進む
+- `Refs` 運用の Issue がある場合、PR タイトル + ブランチ上の全コミットの件名と本文を closing keyword × Issue 参照で検査し、抵触があればマージへ進まずに改題を促す（ステップ5 のタイトル規約の機械チェック）。さらに、実際に渡す `--subject` / `--body` そのものを検査してからマージへ進む
 - 達成項目のチェックボックスを `- [x]` に更新 + 完了報告コメントを投稿してからマージへ進む
 - 未達 AC は fix commit → 再照合の自動修正ループで解消。実装で解消できない場合（仕様変更の判断が必要など）は停止してユーザーに確認する
 - 完了報告に照合時の head SHA（`headRefOid`）が含まれるので、マージ時に `--match-head-commit` へ渡す
@@ -1307,30 +1312,29 @@ ACE 完了後、チェーンの末尾として `/retrospective` を毎回実行�
 
 ワークフローの進捗は TodoWrite で管理します。詳細は [ワークフロー運用原則](./workflow-principles.md#タスク管理-todowrite) を参照してください。
 
-**標準チェックリスト**:
+**標準チェックリスト**（番号は TodoWrite の項番であって、上の「ステップN」ではない — 1 つの段が複数の項に割れる）:
 
 ```
 1. [ ] GitHub Issue 作成
 2. [ ] feature ブランチ作成
 3. [ ] 実装
 4. [ ] テスト実行・合格確認
-5. [ ] セルフレビュー: 主担当による必要観点の確認
-6. [ ] クロスレビュー: 環境チェックで別 CLI が在れば 1 本実施し、実施した担当と本数を記録。無ければ主担当のみで完了（理由の記録は不要。[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)）
-7. [ ] レビュー指摘修正・コミット
+5. [ ] Push + PR 作成
+6. [ ] セルフレビュー（PR の head SHA を対象に 1 回。担当は [選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続) の正本に従う）
+7. [ ] レビュー指摘修正・コミット・push（1 fix commit）
 8. [ ] 全件/ビルドの重いゲート（指摘 0 件でもレビュー終端後に 1 回）
-9. [ ] Push + PR 作成
-10. [ ] /close-issue（AC 照合ゲート: チェックボックス - [x] 更新 + 完了報告コメント）
-11. [ ] マージ（Squash merge、--match-head-commit 付き）
+9. [ ] /close-issue（AC 照合ゲート: チェックボックス - [x] 更新 + 完了報告コメント）
+10. [ ] マージ（Squash merge、--match-head-commit 付き）
 ```
 
-ステップ10 を飛ばして 11 へ進もうとした場合、閉じる Issue の `ff-effort` ブロックに `effort_ai_actual` が未記入なら PreToolUse ガード（ff-dev-toolkit の `hooks/guard-effort-actual.sh`）が `gh pr merge` の実行前に停止する。ブロックが無い Issue と、既に閉じている Issue は対象外。closing keyword で閉じる Issue が取れる PR では本文の `Refs` を見ないので、長命の tracking / Epic Issue を `Refs` で参照する sub-PR は止まらない。実績を書き戻さずに進める判断をしたときは案内どおり対象コマンドの先頭へ `FF_EFFORT_ACTUAL_ACK=1` を付けて再実行する。
+チェックリストの 9（`/close-issue`）を飛ばして 10（マージ）へ進もうとした場合、閉じる Issue の `ff-effort` ブロックに `effort_ai_actual` が未記入なら PreToolUse ガード（ff-dev-toolkit の `hooks/guard-effort-actual.sh`）が `gh pr merge` の実行前に停止する。ブロックが無い Issue と、既に閉じている Issue は対象外。closing keyword で閉じる Issue が取れる PR では本文の `Refs` を見ないので、長命の tracking / Epic Issue を `Refs` で参照する sub-PR は止まらない。実績を書き戻さずに進める判断をしたときは案内どおり対象コマンドの先頭へ `FF_EFFORT_ACTUAL_ACK=1` を付けて再実行する。
 
 ## Epic の一括対応（バッチ分割・worktree 並列・直列マージ）
 
 tracking Issue / Epic 配下に多数の sub-issue がぶら下がっていて 1 セッションでまとめて消化するときは、Issue 単位のコアサイクルをそのまま並列に走らせず、次の 4 点で束ねる。実測 4 回（19 / 15 / 24 / 5 sub-issue をいずれも 1 セッションで完遂、意味的競合ゼロ。出典は本テンプレートのソースリポジトリの観測台帳 OBS-038）に基づく手順で、衝突は「起きたら解消する」ではなく**構造的に起こさない**側へ倒す。
 
 1. **バッチは対象ファイル集合が互いに素になるように組む。** 着手前に sub-issue ごとの対象ファイルを列挙し、同一ファイルを触る Issue は同一バッチに入れず、依存として先行バッチのマージ後に開始する。対象が重なる Issue 同士を並列 PR に割ると、rebase で解消できる textual conflict ではなく、同じ節を別々に書き換えた意味的競合になる
-2. **実装は worktree 隔離のサブエージェントで並列に行い、レビュー・マージは親が直列に行う。** 並列側が触るのは自分の worktree だけなので、マージ順を親が制御すれば衝突が構造的に起きない。親は PR ごとにセルフレビュー（ステップ5）→ `/close-issue` → マージ（ステップ8）を 1 本ずつ進め、次の PR は直前のマージ後の base へ rebase してから同じ手順に入れる。委譲先の作法は [Multi-CLI Agent Orchestration の「長時間タスクの委譲契約（こまめコミット）」](./multi-cli-agent-orchestration.md#長時間タスクの委譲契約こまめコミット) に従う。worktree の中でゲート・テストを回させるなら、起動プロンプトへ [依存プリフライトの一文](./multi-cli-agent-orchestration.md#worktree-委譲の依存プリフライト) も常置する（親が毎回思い出して書く形にしない。省くと最初のゲート実行 1 回分が環境都合の skip / fail で捨てられる）。各サブエージェントの完了報告を受けたら、[委譲先の完了後に残る background 子プロセス](./multi-cli-agent-orchestration.md#委譲先の完了後に残る-background-子プロセス) に従って取り残しを確認して回収する（worktree の回収と同じタイミング。確認しないと気付けない — エージェント一覧・worktree 一覧・未コミット差分はすべて正常に見える）。起動プロンプトへ事実主張を書くときと、受け取った完了報告を Issue コメント・PR 本文・別の委譲プロンプトへ転記するときは、[委譲プロンプトへ載せる事実主張の一次情報確認](./multi-cli-agent-orchestration.md#委譲プロンプトへ載せる事実主張の一次情報確認) に従って渡す前に一次情報で確認する（ホストの Agent / Task ツールで直接起こすサブエージェントも対象。規定はここへ複製しない）。起動プロンプトには [委譲先に長時間コマンドを foreground で待たせる契約](./multi-cli-agent-orchestration.md#委譲先に長時間コマンドを-foreground-で待たせる契約) の文言を実値ごと常置する（「長時間コマンドは Bash ツールの `timeout` へ `600000`（ミリ秒）を明示して foreground で待つ / background 実行オプションを使わない」。既定のタイムアウトのまま全件ゲートを叩かせるとホストが自動 background 化し、委譲先は完了を追わずに停止する。実値はリンクで代替しない — 貼られたプロンプトの中では相対リンクが解決しない）。worktree の回収は [生存中の委譲先の worktree を回収しない](./multi-cli-agent-orchestration.md#生存中の委譲先の-worktree-を回収しない) に従い、成果の確認と生存判定の実測が揃ってから行う（未コミット差分 0 件を根拠にしない。規定と判定手順はここへ複製しない）
+2. **実装は worktree 隔離のサブエージェントで並列に行い、レビュー・マージは親が直列に行う。** 並列側が触るのは自分の worktree だけなので、マージ順を親が制御すれば衝突が構造的に起きない。親は PR ごとに PR 作成（ステップ5）→ セルフレビュー（ステップ6）→ `/close-issue` → マージ（ステップ8）を 1 本ずつ進め、次の PR は直前のマージ後の base へ rebase してから同じ手順に入れる。委譲先の作法は [Multi-CLI Agent Orchestration の「長時間タスクの委譲契約（こまめコミット）」](./multi-cli-agent-orchestration.md#長時間タスクの委譲契約こまめコミット) に従う。worktree の中でゲート・テストを回させるなら、起動プロンプトへ [依存プリフライトの一文](./multi-cli-agent-orchestration.md#worktree-委譲の依存プリフライト) も常置する（親が毎回思い出して書く形にしない。省くと最初のゲート実行 1 回分が環境都合の skip / fail で捨てられる）。各サブエージェントの完了報告を受けたら、[委譲先の完了後に残る background 子プロセス](./multi-cli-agent-orchestration.md#委譲先の完了後に残る-background-子プロセス) に従って取り残しを確認して回収する（worktree の回収と同じタイミング。確認しないと気付けない — エージェント一覧・worktree 一覧・未コミット差分はすべて正常に見える）。起動プロンプトへ事実主張を書くときと、受け取った完了報告を Issue コメント・PR 本文・別の委譲プロンプトへ転記するときは、[委譲プロンプトへ載せる事実主張の一次情報確認](./multi-cli-agent-orchestration.md#委譲プロンプトへ載せる事実主張の一次情報確認) に従って渡す前に一次情報で確認する（ホストの Agent / Task ツールで直接起こすサブエージェントも対象。規定はここへ複製しない）。起動プロンプトには [委譲先に長時間コマンドを foreground で待たせる契約](./multi-cli-agent-orchestration.md#委譲先に長時間コマンドを-foreground-で待たせる契約) の文言を実値ごと常置する（「長時間コマンドは Bash ツールの `timeout` へ `600000`（ミリ秒）を明示して foreground で待つ / background 実行オプションを使わない」。既定のタイムアウトのまま全件ゲートを叩かせるとホストが自動 background 化し、委譲先は完了を追わずに停止する。実値はリンクで代替しない — 貼られたプロンプトの中では相対リンクが解決しない）。worktree の回収は [生存中の委譲先の worktree を回収しない](./multi-cli-agent-orchestration.md#生存中の委譲先の-worktree-を回収しない) に従い、成果の確認と生存判定の実測が揃ってから行う（未コミット差分 0 件を根拠にしない。規定と判定手順はここへ複製しない）
 3. **Issue 本文が順序制約を持つ場合（Epic の「順序制約」節、「A の完了が B の前提」等）は、それをバッチ境界として採用する。** 制約を無視して並列化すると、同じ節を触る PR 同士が意味的に競合する。順序制約が書かれていない Epic では、1 の列挙で見つけた重なりを Epic 本文へ制約として追記しておくとよい（次に同じ Epic を扱うセッションが同じ列挙をやり直さずに済む）
 4. **changelog は fragment 方式（`changelog.d/` への 1 断片追加）にする。** 本体ファイルを直接編集する方式だと、並列マージのたびに同じ箇所で衝突する。断片の集約はリリース準備の側で 1 回だけ行う
 

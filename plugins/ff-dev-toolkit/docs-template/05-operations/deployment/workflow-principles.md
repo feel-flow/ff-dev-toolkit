@@ -17,8 +17,8 @@ AI駆動Git Workflowを効率的に運用するための基本原則を定義し
 **ルール**: Issue作成から振り返りまで、不要な確認を挟まず一気通貫で進める（push / PR 作成 / merge / cleanup / ACE / `/retrospective` の実施を含む）
 
 ```
-Issue作成 → ブランチ作成 → 実装 → テスト → セルフレビュー（主担当。環境チェックで別 CLI が在ればクロスレビュー 1 本を加える）
-  → 1 fix commit → Commit/push → PR 作成
+Issue作成 → ブランチ作成 → 実装 → テスト → Commit/push → PR 作成
+  → セルフレビュー（PR の head SHA を対象に 1 回。担当は self-review.md の正本）→ 1 fix commit → push
   → /close-issue（AC照合ゲート） → gh pr merge --squash
   → /merge-cleanup → ACE → /retrospective（セッション振り返り）
                     ↑ この一連の流れを中断しない（フルオート） ↑
@@ -32,7 +32,7 @@ Issue作成 → ブランチ作成 → 実装 → テスト → セルフレビ�
 **やること**:
 
 - 各ステップを順序通りに連続実行する（外向き操作も確認なし）
-- セルフレビューの指摘は即座に修正して 1 fix commit に束ねる（レビューエージェントを並列起動した場合の着手時点は、git-workflow.md ステップ5 の作業ツリー凍結が上書きする — 全エージェントの終端後に着手する）。ただし対応が PR の宣言した前提（設計判断）を覆す指摘は、重大度に関わらず fix commit へ束ねず別 Issue に切り出し、現行 PR は元のスコープで収束させる（切り分けは [git-workflow.md §レビュー指摘のスコープ判定](./git-workflow.md#レビュー指摘のスコープ判定欠陥か前提変更か)）。fix commit で実装が Issue の AC の前提を超えた／変えた場合は、その場で Issue 本文の該当 AC も更新する（変わった理由を 1 行添える。スコープ外発見を別 Issue の AC へ追記する場合は原則2 に従う）
+- セルフレビューの指摘は即座に修正して 1 fix commit に束ねる（レビューエージェントを並列起動した場合の着手時点は、git-workflow.md ステップ6 の作業ツリー凍結が上書きする — 全エージェントの終端後に着手する）。ただし対応が PR の宣言した前提（設計判断）を覆す指摘は、重大度に関わらず fix commit へ束ねず別 Issue に切り出し、現行 PR は元のスコープで収束させる（切り分けは [git-workflow.md §レビュー指摘のスコープ判定](./git-workflow.md#レビュー指摘のスコープ判定欠陥か前提変更か)）。fix commit で実装が Issue の AC の前提を超えた／変えた場合は、その場で Issue 本文の該当 AC も更新する（変わった理由を 1 行添える。スコープ外発見を別 Issue の AC へ追記する場合は原則2 に従う）
 - レビュー対応ポリシーに従い、Critical/Warning は確認不要で即対応（ただし前項のスコープ判定が先行する — 前提を覆す指摘は重大度に関わらず別 Issue）
 - 進捗は TodoWrite と短い完了報告で可視化する（承認待ちにはしない）
 
@@ -140,10 +140,10 @@ Issue #123 の作業中に発見。UserService.createUser() が150行を超え�
 2. [ ] feature ブランチ作成
 3. [ ] 実装
 4. [ ] テスト実行・合格確認
-5. [ ] セルフレビュー: 主担当による必要観点の確認
-6. [ ] クロスレビュー: 環境チェックで別 CLI が在れば 1 本実施し、実施した担当と本数を記録。無ければ主担当のみで完了（理由の記録は不要。[選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続)）
-7. [ ] レビュー指摘修正（1 fix commit）
-8. [ ] Push + PR 作成
+5. [ ] Push + PR 作成
+6. [ ] セルフレビュー（PR の head SHA を対象に 1 回。担当は [選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続) の正本に従う）
+7. [ ] レビュー指摘修正（1 fix commit → push）
+8. [ ] 全件/ビルドの重いゲート（指摘 0 件でもレビュー終端後に 1 回）
 9. [ ] /close-issue（AC照合ゲート） → gh pr merge --squash
 10. [ ] /merge-cleanup
 11. [ ] ACE
@@ -168,7 +168,7 @@ Issue #123 の作業中に発見。UserService.createUser() が150行を超え�
 | 実装中の発見         | 原則2（YAGNI / インライン / Issue 化）                        |
 | セルフレビュー       | 原則1 + [Review Response Policy](./review-response-policy.md) |
 | レビュー対応         | 原則1 + 原則2                                                 |
-| push / ready / merge | 原則1（外向きでも確認しない。例外は限定列挙のみ）             |
+| push / PR 作成 / merge | 原則1（外向きでも確認しない。例外は限定列挙のみ）             |
 
 ---
 

@@ -213,7 +213,7 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 - Never use magic numbers — extract to named constants
 
 ## Commit & PR Guidelines
-- Issue 起票 → ブランチ → 実装 → セルフレビュー → PR → マージ
+- Issue 起票 → ブランチ → 実装 → テスト → push → PR → セルフレビュー（PR の head SHA を対象に 1 回）→ fix commit → マージ
 - コミットは `<type>: #<issue> <subject>`
 
 ## 実測の記録先

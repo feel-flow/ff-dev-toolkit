@@ -280,9 +280,22 @@ set +e
 rc=$?
 set -e
 if [ "$rc" -eq 0 ] && grep -q "sub reviewer 'codex-cli' is not installed" "$TMP/submissing.log"; then
-  ok "副が未導入なら警告して主のみで続行する"
+  ok "副が未導入なら理由を名乗って主のみで続行する"
 else
   bad "副が未導入のときの縮退が期待と違う（rc=${rc}）"
+fi
+# 未導入は情報行（ℹ️）で、警告（⚠️）でも単一 CLI 縮退警告でもない（単一 CLI 基準線への整合）。
+# 基準線は主担当 1 モデル（ADR-053）なので、副が入っていない環境で単一に落ちた回は
+# 正常。警告のままだと「単一は正常」と言う文書と機械の出力が毎回食い違う。
+# 針は行頭の絵文字まで含める — 文言だけを見ると ⚠️ へ戻す変異で緑のまま通る。
+if grep -q "ℹ️  sub reviewer 'codex-cli' is not installed" "$TMP/submissing.log" \
+  && ! grep -q "⚠️  sub reviewer 'codex-cli' is not installed" "$TMP/submissing.log" \
+  && ! grep -q 'Plan resolved to a single CLI' "$TMP/submissing.log" \
+  && ! grep -q 'zero review coverage' "$TMP/submissing.log"; then
+  ok "副が未導入の単一は情報行（ℹ️）で、ゼロカバレッジの警告を出さない"
+else
+  bad "副が未導入の単一が警告（⚠️ / zero review coverage）のまま（基準線は主担当 1 モデル）"
+  sed 's/^/    | /' "$TMP/submissing.log" >&2
 fi
 
 set +e
@@ -527,7 +540,9 @@ else
 fi
 
 # 単一 CLI へ縮退したこと自体の警告（#183 と同等）が pair モードでも出ること。
-if grep -q 'Plan resolved to a single CLI (claude-code)' "$TMP/persp-main.log" \
+# 副が導入済みなのに --perspective で落ちた回は「クロスモデルにできたのに単一になった」
+# 経路なので、未導入の単一（上の submissing: 情報行）と違って警告のまま（単一 CLI 基準線への整合）。
+if grep -q '⚠️  Plan resolved to a single CLI (claude-code)' "$TMP/persp-main.log" \
   && grep -q 'means zero review coverage' "$TMP/persp-main.log" \
   && grep -q -- '--mode cross-model --perspective code-review' "$TMP/persp-main.log"; then
   ok "pair モードでも単一 CLI 縮退警告と cross-model の案内が出る"

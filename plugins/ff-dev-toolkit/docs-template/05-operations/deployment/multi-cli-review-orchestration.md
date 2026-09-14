@@ -8,7 +8,7 @@
 
 **目的**: 各CLIの得意分野とコスト特性を活かし、高品質かつコスト効率の良いコードレビューを実現する
 
-> **標準レビュー体制**: 基準線は主担当（実装中のホスト）のセルフレビューで、環境チェックで別 CLI が在るときだけクロスモデルレビューを 1 本加えます（正本: [self-review.md](./self-review.md#レビュー担当の選択と利用制限時の継続)）。GitHub Copilot（Copilot CLI / Copilot code review）は従量課金への移行に伴い**既定のレビューラインナップから除外**しました（アダプタは残置、`--cli copilot-cli` でオプトイン可能）。
+> **標準レビュー体制**: レビュー担当の規定は [レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従います（本書は要約を再掲しません）。GitHub Copilot（Copilot CLI / Copilot code review）は従量課金への移行に伴い**既定のレビューラインナップから除外**しました（アダプタは残置、`--cli copilot-cli` でオプトイン可能）。
 
 ---
 
@@ -247,13 +247,13 @@ guard は bundled manifest の先頭 `name` marker、通常 directory の `scrip
 
 ## クロスモデルレビュー（推奨パターン）
 
-主担当のセルフレビューに、環境チェックで別 CLI が在るときだけクロスレビューを 1 本加えるパターンです。[レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続)を正本とし、別 CLI が無い・認証や利用枠で落ちた回は主担当のみで正常に完了します（`cross_review=off` で常に主担当のみに固定できます）。以下の Codex コマンドは Claude が主担当の場合の例です。
+担当の選択（主担当・別 CLI を加える条件・失敗時の継続）は [レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従います。以下の Codex コマンドは Claude が主担当の場合の例です。
 
 ### Codex CLI 3パターン
 
 | パターン                     | 実行タイミング       | 自動/提案        | 説明                                          |
 | ---------------------------- | -------------------- | ---------------- | --------------------------------------------- |
-| **Cross-Model Review**       | セルフレビュー時     | 通常実施（順次） | 主担当。環境チェックで別 CLI が在れば 1 本加える |
+| **Cross-Model Review**       | セルフレビュー時     | 通常実施（順次） | 担当は [正本の選択ルール](./self-review.md#レビュー担当の選択と利用制限時の継続) |
 | **Parallel Task Suggestion** | 独立サブタスク発見時 | ユーザーに提案   | 並列実行による効率化                          |
 | **Second Opinion**           | 設計判断の分岐点     | ユーザーに提案   | アーキテクチャ決定の第二意見                  |
 
@@ -415,13 +415,15 @@ export LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 ### CLI別インストール状態の確認
 
+`--print-reviewers` が、レビュー担当の解決結果と利用可能な CLI を機械可読で返す。手書きの `command -v claude` 等の列挙は使わない — `exclude_clis` / `--exclude-cli` の除外を反映せず、スクリプトの判定と食い違う。他の実行例と同じく [§ff-dev-toolkit plugin root の固定](#ff-dev-toolkit-plugin-root-prerequisite) の resolver + guard と同じ Bash body で実行する。
+
 ```bash
-# インストール確認コマンド
-command -v claude  && echo "✅ Claude Code" || echo "❌ Claude Code"
-command -v codex   && echo "✅ Codex CLI"   || echo "❌ Codex CLI"
-command -v copilot && echo "✅ Copilot CLI"  || echo "❌ Copilot CLI"
-command -v grok    && echo "✅ Grok CLI"     || echo "❌ Grok CLI"
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
 ```
+
+出力は `main=` / `sub=` / `main_source=` / `sub_source=` / `source=` / `cross_review=` / `cross_review_source=` / `available=` / `known=` の行（この順。消費側は `^available=` のようにキーで grep する契約なので、並びと綴りは変えない）。`available=` は利用可能な CLI の空白区切りで、PATH 上で実行できるものと `--delegate-to-host` でホストへ委譲したもの（PATH に無くてもよい）を含み、`exclude_clis` / `--exclude-cli` の除外は反映済み。`known=` はレジストリ上の全 CLI。
+
+終了コード（0 / 3 / 1）の分岐と、`available=` / `cross_review=` からクロスレビューを加えるかの判断は [self-review.md §レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続) の 2 に従う（本書は再掲しない）。
 
 ---
 
@@ -523,19 +525,21 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 
 ### Git Workflow への組み込み
 
-[AI駆動Git Workflow](./git-workflow.md) のステップ5（セルフレビュー）に統合します：
+[AI駆動Git Workflow](./git-workflow.md) のステップ6（セルフレビュー。PR 作成後）に統合します：
 
 ```
 ステップ3: 実装 & コミット（Implement）
     ↓
 ステップ4: テスト・検証（Test）
     ↓
-ステップ5: セルフレビュー（Self-Review）
+ステップ5: PR作成（push → gh pr create）
+    ↓
+ステップ6: セルフレビュー（Self-Review。対象は PR の head SHA）
     ├── multi-review.sh（Multi-CLI分散レビュー）
     ├── pr-review-toolkit（Claude Code サブエージェント）
     └── codex review --base develop（Codex クロスモデルレビュー）
     ↓
-ステップ6: PR作成
+ステップ7: レビュー対応（1 fix commit → push）
 ```
 
 ### Husky pre-push フックとの統合

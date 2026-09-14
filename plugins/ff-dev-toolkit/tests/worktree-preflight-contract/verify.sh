@@ -194,7 +194,7 @@ doc_has "$GIT_WORKFLOW" "git-workflow.md" \
 # 地点ごとに固有の文言を針にして、消えた地点を名指しできるようにする。
 doc_has "$GIT_WORKFLOW" "git-workflow.md" \
   "隔離したレビュアーに suite・ゲートを実走させる場合は、起動プロンプトへ" \
-  "消費地点1（ステップ5 のレビュアー worktree 隔離起動）が残っている"
+  "消費地点1（ステップ6 のレビュアー worktree 隔離起動）が残っている"
 doc_has "$GIT_WORKFLOW" "git-workflow.md" \
   "worktree の中でゲート・テストを回させるなら、起動プロンプトへ" \
   "消費地点2（Epic の worktree 並列実装手順）が残っている"

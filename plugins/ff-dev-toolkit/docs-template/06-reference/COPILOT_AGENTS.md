@@ -1,6 +1,6 @@
 # GitHub Copilot Agents 設定リファレンス
 
-> **⚠️ ステータス（オプトイン）**: GitHub Copilot（Copilot CLI / Copilot code review）は従量課金へ移行したため、本リポジトリの**既定レビュー体制からは除外**されています。標準は主担当のセルフレビューに、導入済みの別 CLI（Codex CLI 等）のクロスモデルレビューを 1 本加える体制です（[multi-cli-review-orchestration.md](../05-operations/deployment/multi-cli-review-orchestration.md) 参照）。本ドキュメントは、課金を許容して Copilot をレビューに使う場合の参考構成として残しています。
+> **⚠️ ステータス（オプトイン）**: GitHub Copilot（Copilot CLI / Copilot code review）は従量課金へ移行したため、本リポジトリの**既定レビュー体制からは除外**されています。標準のレビュー担当は [self-review.md §レビュー担当の選択と利用制限時の継続](../05-operations/deployment/self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従います（本書は要約を再掲しません）。本ドキュメントは、課金を許容して Copilot をレビューに使う場合の参考構成として残しています。
 
 ## 概要
 

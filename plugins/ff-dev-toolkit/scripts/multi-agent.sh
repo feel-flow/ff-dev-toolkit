@@ -1280,6 +1280,9 @@ LIST_PERSPECTIVES=false
 
 # Detected available CLIs (space-separated)
 AVAILABLE_CLIS=""
+# 導入済みなのに除外で AVAILABLE_CLIS から落ちた CLI（detect_available_clis が記録）。
+# 未導入 CLI の除外は何も落としていないので入らない（単一 CLI ゲートはこれを見る）。
+EXCLUDED_INSTALLED_CLIS=""
 
 # Execution plan: CLI_NAME:PERSPECTIVE pairs (newline-separated)
 EXECUTION_PLAN=""
@@ -1738,6 +1741,7 @@ apply_task_defaults() {
 # classify_cli_failure_cause のヘッダーに書いてある（Issue #659）。
 detect_available_clis() {
   AVAILABLE_CLIS=""
+  EXCLUDED_INSTALLED_CLIS=""
   local cli_name cmd exclusion
   # 除外を掛ける**前**の導入済み本数。空プランの診断で「1 本も入っていない」と
   # 「入っているが全部外した」を分けるのに要る（除外指定の有無だけで分けると、
@@ -1759,6 +1763,12 @@ detect_available_clis() {
     # プランからは外さない」側の機構で、こちらはその判断を利用者が明示したときの
     # 受け皿になる。
     exclusion="$(cli_exclusion_source "$cli_name")"
+    # 除外が**実際に落とした**本数を別に数える。除外指定の有無で数えると、未導入 CLI を
+    # 除外しただけの回（単一 CLI 環境の project config に exclude_clis: copilot-cli 等）が
+    # 「除外で 1 本になった」扱いになり、打てる手の無い縮退警告が毎回出る。
+    if [[ "$cli_installed" == "true" ]] && [[ "$exclusion" == "flag" || "$exclusion" == "config" ]]; then
+      EXCLUDED_INSTALLED_CLIS="${EXCLUDED_INSTALLED_CLIS:+$EXCLUDED_INSTALLED_CLIS }$cli_name"
+    fi
     case "$exclusion" in
       flag)
         echo "  ⏭  ${cli_name} excluded (--exclude-cli). Its perspectives follow the not-installed fallback path." >&2
@@ -2028,7 +2038,12 @@ build_pair_plan() {
     echo "  ⚠️  sub reviewer '${REVIEW_SUB}' excluded by ${sub_excl_desc} — running single-reviewer." >&2
     PAIR_REVIEWERS_NOTE="${REVIEW_MAIN} (single — sub '${REVIEW_SUB}' excluded by ${sub_excl_desc})"
   elif ! list_contains "$AVAILABLE_CLIS" "$REVIEW_SUB"; then
-    echo "  ⚠️  sub reviewer '${REVIEW_SUB}' is not installed — running single-reviewer." >&2
+    # 未導入は情報行（ℹ️）で、警告（⚠️）にしない（単一 CLI 基準線への整合）。基準線は主担当 1 モデル
+    # （ADR-053 決定 1。同 決定 6 の「警告は据え置き」は本変更で改訂）なので、副が入っていない環境で単一に落ちた回は正常であり、打てる手も
+    # install 以外に無い。⚠️ のままだと「単一は正常」と言う文書と「機械は毎回警告する」
+    # が食い違う。除外（上の枝）と --perspective 落ち（下）は「副を立てられたのに落ちた」
+    # 経路なので ⚠️ のまま。PAIR_SUB_DROPPED も立てず、単一 CLI 縮退警告は出さない。
+    echo "  ℹ️  sub reviewer '${REVIEW_SUB}' is not installed — running single-reviewer (the baseline; install it to add a cross-model review)." >&2
     PAIR_REVIEWERS_NOTE="${REVIEW_MAIN} (single — sub '${REVIEW_SUB}' not installed)"
   else
     sub_effective="$REVIEW_SUB"
@@ -2089,9 +2104,10 @@ build_pair_plan() {
       # 未設定 / 主と同一 / 未導入）は全部理由を出しているのに、ここだけ else が
       # 無く無言で落ちていた。書式を揃える。
       #
-      # ここだけが「クロスモデルにできたのに単一になった」経路なので、単一 CLI
-      # 縮退警告のフラグを立てるのもここだけ。他 3 経路は主しか使えない状況を
-      # それぞれの 1 行で説明済みで、そこへ「--mode cross-model にせよ」と足しても
+      # 「クロスモデルにできたのに単一になった」経路は本経路と除外（上の
+      # cli_excluded の枝）の 2 つで、単一 CLI 縮退警告のフラグを立てるのもこの 2 つだけ。
+      # 残る 3 経路（副未設定 / 主と同一 / 未導入）は主しか使えない状況をそれぞれの
+      # 1 行で説明済みで、そこへ「--mode cross-model にせよ」と足しても
       # 副が居ない事実は変わらない。逆に --perspective comprehensive-review は
       # 副だけが残って単一 CLI になるが、それは要求どおりなので警告しない
       # （プラン CLI 数だけを見る一般化された gate では、この差が潰れる）。
@@ -2623,7 +2639,28 @@ show_plan() {
     echo "       Drop an exclusion, or install another CLI, to compare models." >&2
   fi
 
+  # 分散モードで「入っている CLI が 1 本だけ、除外が導入済み CLI を落としていない」回は
+  # 情報行に落とす
+  # （単一 CLI 基準線への整合）。この形は単一 CLI 利用者が --set-reviewers 無しで毎回通る既定経路で、
+  # 基準線が主担当 1 モデルになった今（ADR-053 決定 1。決定 6 の据え置きは本変更で改訂）は正常。「ゼロカバレッジ」と警告し
+  # --mode cross-model を勧めても、比べる相手が入っていないので打てる手が無い（cross-model
+  # ゲートが「除外なしで 1 本なら黙る」のと同じ理由）。除外で 1 本になった回・--perspective
+  # で副が落ちた pair の回は、クロスモデルにできたのに単一になった経路なので警告のまま。
+  # 本数は除外適用後の AVAILABLE_CLIS で数える（除外は検出の段で落ちている。委譲レーンも
+  # ここに入るので「導入済み」ではなく「利用可能」の本数）。除外の判定は excl_by_* ではなく
+  # EXCLUDED_INSTALLED_CLIS — excl_by_* は未導入 CLI の除外も含み、それは何も落としていない。
+  local available_cli_count
+  available_cli_count="$(wc -w <<<"$AVAILABLE_CLIS" | tr -d '[:space:]')"
   if [[ "$TASK_TYPE" == "review" && -z "$CLI_FILTER" && "$planned_cli_count" -eq 1 ]] \
+     && [[ "$MODE" == "distributed" && "$available_cli_count" -eq 1 ]] \
+     && [[ -z "$EXCLUDED_INSTALLED_CLIS" ]]; then
+    echo "" >&2
+    # 「installed」とは言わない — --delegate-to-host で委譲した CLI は PATH に無くても
+    # AVAILABLE_CLIS に入る（委譲レーンは CLI を起動しない）。数えているのは実行可能または
+    # 委譲された本数なので、文言もそれに合わせる。
+    echo "   ℹ️  Plan runs on a single CLI (${planned_clis}) — no other AI CLI is available (installed or delegated to the host)." >&2
+    echo "       A single-reviewer run is the baseline; install another CLI to add a cross-model review." >&2
+  elif [[ "$TASK_TYPE" == "review" && -z "$CLI_FILTER" && "$planned_cli_count" -eq 1 ]] \
      && { [[ "$MODE" == "distributed" ]] \
           || [[ "$MODE" == "pair" && "$PAIR_SUB_DROPPED" == "true" ]]; }; then
     echo "" >&2
@@ -5458,11 +5495,16 @@ classify_cli_failure_cause() { # <result-file> → "auth" | "billing" | "argv" |
     #
     # 数値ステータスは単独では見ない（stderr 抜粋に現れる "402 files" のような無関係な
     # 数字を拾う）。HTTP 文脈の語と同じ行に並んでいるときだけ採る。
+    # `spend limit` / `usage limit` / `monthly limit` は利用枠の上限（単一 CLI 基準線への整合）。実測の
+    # claude-code 文言 `You've hit your individual spend limit` は credits / balance の語を
+    # 含まず、分類が空（従来案内）に落ちていた。基準線が主担当 1 モデルになった今（ADR-053 決定 1）は
+    # billing の分類が「その回は単一で正常完了」の判定に直結するので、上限系の語も採る。
+    # `token limit` は採らない — `_PROMPT_TOO_LONG_RE` の `(context|prompt|input).*token limit` と重なる（`prompt_too_long_matches` の文脈語要求参照）。
     # パイプにしないのは `set -o pipefail` 下で grep -q が先頭付近で早期終了すると
     # printf が EPIPE で死に、パイプライン rc=141 が「不一致」に化けるため（実測: 先頭に
     # unauthorized を置いた 640KB 入力が LOST）。真陽性が読み解けない形で落ちる。
     if grep -qiE \
-      'out of credits|no credits|insufficient credit|credit balance|balance exhausted|insufficient_quota|payment required|(http|status|code)[^0-9]{0,10}402|402[^0-9]{0,12}(payment|http|status)' <<<"$stderr_section"; then
+      'out of credits|no credits|insufficient credit|credit balance|balance exhausted|insufficient_quota|payment required|spend limit|usage limit|monthly limit|(http|status|code)[^0-9]{0,10}402|402[^0-9]{0,12}(payment|http|status)' <<<"$stderr_section"; then
       printf 'billing\n'
       return 0
     fi

@@ -20,6 +20,16 @@
 
 ## [Unreleased]
 
+## [0.110.0] - 2026-09-14
+
+### 変更
+
+- `multi-agent.sh` の単一 CLI 縮退の扱いを「主担当 1 モデルが基準線」へ揃えた。pair モードで副 CLI が未導入の回は警告ではなく情報行で単一を名乗り、分散モードで導入済み CLI が 1 本だけ・除外なしの回は「zero review coverage」の警告と `--mode cross-model` の案内を出さず情報行に落とす。副が導入済みなのに `--perspective` で落ちた回と、除外で 1 本になった回は従来どおり警告する
+- `classify_cli_failure_cause` の `billing` 語彙に `spend limit` / `usage limit` / `monthly limit` を加えた。claude-code の実測文言 `You've hit your individual spend limit` が分類されず一般的な失敗案内に落ちていたが、残高切れ（billing）として切り分けられる（語彙 1 つにつき fixture 1 本で固定）
+- `multi-cli-review-orchestration.md` §CLI別インストール状態の確認 の手書き `command -v` 列挙を `multi-agent.sh --task review --print-reviewers` の実行例へ置き換え、出力行のキー一覧と `available=` の定義（PATH 上で実行できる CLI と `--delegate-to-host` で委譲した CLI を含み、`exclude_clis` / `--exclude-cli` の除外を反映済み）を書いた。終了コードの分岐とクロスレビュー可否の判断は `self-review.md` の正本節へのリンクに置き換え、再掲しない
+- Git Workflow の段を「push → PR 作成（ステップ5）→ セルフレビュー（ステップ6。対象は PR の head SHA）→ fix commit → `/close-issue` → merge」の一直線に並べ替えた。レビューは PR 作成の後に 1 回だけ置き、PR 作成前に別途走らせてやり直す二重払いをしない。`git-workflow.md` / `workflow-principles.md` / `DEPLOYMENT.md` / `self-review.md` / `multi-cli-review-orchestration.md` / `review-response-policy.md` と `multi-review` スキルの手順 0 を同じ並びへ同期し、ステップ6 のアンカーは `#ステップ6-セルフレビューpr作成後重要` になった
+- レビュー担当の規定（基準線・環境チェック・別 CLI の扱い・失敗時の継続・記録）は `self-review.md` §レビュー担当の選択と利用制限時の継続 の 1 節だけが持ち、他の配布文書と `multi-review` スキルは正本へのリンクへ置き換えた（要約再掲を撤去）。`tests/review-freeze-contract` に「正本節の文を他文書が含まない」針を追加し、正本での実在と他文書での不在を対で固定する（要約を戻す変異で赤になることを実測済み）
+
 ## [0.109.0] - 2026-09-14
 
 ### 変更

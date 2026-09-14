@@ -580,7 +580,7 @@ contains "$SKILL" '例外は、手順 3 の「AC が実装より古い」判定�
 echo
 echo "-- git-workflow.md の契約 --"
 
-contains "$WORKFLOW" 'PR タイトルにもコミット件名・本文にも `#N` を書かない' "ステップ6 にタイトル規約がある"
+contains "$WORKFLOW" 'PR タイトルにもコミット件名・本文にも `#N` を書かない' "ステップ5 にタイトル規約がある"
 contains "$WORKFLOW" "squash_merge_commit_title" "squash メッセージの供給源を明記している"
 contains "$WORKFLOW" "PR 本文しか見ない" "closingIssuesReferences の実際の走査範囲を正しく述べている"
 contains "$WORKFLOW" '--subject "fix: 誤クローズを防ぐ検査を追加する' "ステップ8 に Refs 版 merge テンプレートがある"

@@ -1177,11 +1177,9 @@ fi
 # Claude Code cloud の実測（2026-09-08）: codex CLI が PATH に無く、sidecar も ~/.claude の
 # plugin cache も持ち込まれないため、このシムは toolkit 解決で exit=1 して止まっていた。
 # 止まること自体は正しい（黙って 0 で抜けるとレビュー済みと誤読される）が、次に何をすべきかが
-# 出力に無かった。self-review.md「レビュー担当の選択と利用制限時の継続」の契約
-# （3. 別 CLI が在れば 1 本加える → 4. 無ければ Toolkit のレビューエージェントを read-only で
-# 任意起動 → 5〜6. 一時的な利用不可はその回だけ単一に落ち、記録は事実のみ）へ降格する旨を
-# 明示する（基準線が「主担当のセルフレビュー」へ反転してからは、降格先は
-# 「別 CLI が在れば再配分 / 無ければ主担当のみで正常完了」の 2 段）。**このシムはレビューを実行していない**ので終了コードは非 0 のまま
+# 出力に無かった。降格先の規定は self-review.md#レビュー担当の選択と利用制限時の継続 が正本で、
+# 本シムは規定を再掲せず正本を指す（規定の要約をここへ書くと、正本を変えるたびに案内文が腐る）。
+# **このシムはレビューを実行していない**ので終了コードは非 0 のまま
 # （codex 不在は 4、toolkit 未解決は従来どおり解決側の rc）。
 #
 # 案内で挙げる代替 CLI 候補は**委譲先の registry から引く**。案内側に候補名を直書きすると、
@@ -1240,7 +1238,7 @@ print_claude_fallback_notice() { # $1: 理由 / $2: toolkit（multi-agent.sh）�
   # （toolkit 未解決）。「Codex 不在のため」と決め打つと、codex が入っている環境で原因を誤って
   # 名指しし、切り分けを遅らせるだけでなく存在しない問題への起票を生む（導入先で実測）。
   echo "⚠️  クロスレビューを実行できないため Claude セルフレビュー（別コンテキストの reviewer サブエージェント）へ降格します: ${reason}" >&2
-  echo "   降格先（self-review.md §レビュー担当の選択と利用制限時の継続 3〜6）:" >&2
+  echo "   降格先（規定の正本は self-review.md §レビュー担当の選択と利用制限時の継続）:" >&2
   if [ "$toolkit_usable" -eq 1 ]; then
     candidates="$(derive_fallback_cli_candidates "${RESOLVED_ORCHESTRATOR:-}" "codex-cli")"
     if [ -n "$candidates" ]; then
@@ -1266,8 +1264,7 @@ print_claude_fallback_notice() { # $1: 理由 / $2: toolkit（multi-agent.sh）�
       echo "     1. setup-multi-agent.sh を再実行して toolkit を配置し直す（解決できるまで別 CLI への再配分も実行できない）" >&2
     fi
   fi
-  echo "     2. 別 CLI が無く Claude Code で Toolkit が使えるなら pr-review-toolkit:code-reviewer 等の reviewer サブエージェントを read-only で起動する（任意）" >&2
-  echo "     3. 主担当のセルフレビューが基準線なので、それだけでも正常に完了できる。PR / 最終報告には実施した担当と本数だけを残す（利用不可理由の列挙は不要）" >&2
+  echo "     2. 別 CLI を加えない回の扱い（Toolkit の reviewer サブエージェントを read-only で起動する任意の段を含む）と完了条件・記録の書式は正本 4〜6 のとおり（本シムは再掲しない）" >&2
   echo "   このシムはレビューを実行していません（非 0 終了。レビュー済みと読まないこと）。" >&2
 }
 

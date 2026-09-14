@@ -133,12 +133,74 @@ else
   bad "除外された導入済み CLI の理由が不足"
 fi
 
-if grep -q 'Plan resolved to a single CLI (codex-cli)' "$FILTER_LOG" \
+# 4 CLI が導入済みなのに --perspective で 1 本へ絞られた回は、クロスモデルにできたのに
+# 単一になった経路なので警告（⚠️）のまま（単一 CLI 基準線の対照。分散モードで情報行へ落とすのは
+# 下の「1 本しか入っていない」回だけ。pair の副未導入は reviewer-pair suite が固定する）。
+if grep -q '⚠️  Plan resolved to a single CLI (codex-cli)' "$FILTER_LOG" \
   && grep -q -- '--mode cross-model --perspective code-review' "$FILTER_LOG" \
   && grep -q 'means zero review coverage' "$FILTER_LOG"; then
   ok "暗黙の単一 CLI 縮退がリスクと cross-model 代替を警告"
 else
   bad "単一 CLI 縮退警告または代替コマンドが不足"
+fi
+
+echo ""
+echo "== 単一 CLI 環境の既定プラン（単一 CLI 基準線への整合） =="
+# claude だけを PATH に置く。主担当 1 モデルが基準線（ADR-053）なので、入っている CLI が
+# 1 本だけ・除外も無しの回は正常で、「ゼロカバレッジ」の警告も --mode cross-model の案内も
+# 出さない（比べる相手が入っていないので打てる手が無い）。情報行で単一を名乗るだけ。
+SOLO="$TMP/solo-bin"
+mkdir -p "$SOLO"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 99' > "$SOLO/claude"
+chmod +x "$SOLO/claude"
+SOLO_LOG="$TMP/solo.log"
+if (
+  cd "$REPO"
+  run_isolated PATH="$SOLO:/usr/bin:/bin" bash "$MULTI_AGENT" \
+    --task review --mode distributed --strategy balanced --base develop --dry-run
+) >"$SOLO_LOG" 2>&1; then
+  ok "1 本しか入っていない環境の分散 dry-run が成功"
+else
+  bad "1 本しか入っていない環境の分散 dry-run が失敗"
+  sed 's/^/    | /' "$SOLO_LOG" >&2
+fi
+if grep -q 'ℹ️  Plan runs on a single CLI (claude-code)' "$SOLO_LOG" \
+  && grep -q 'no other AI CLI is available' "$SOLO_LOG" \
+  && ! grep -q 'Plan resolved to a single CLI' "$SOLO_LOG" \
+  && ! grep -q 'zero review coverage' "$SOLO_LOG" \
+  && ! grep -q -- '--mode cross-model' "$SOLO_LOG"; then
+  ok "1 本しか入っていない単一は情報行で、ゼロカバレッジ警告と cross-model 案内を出さない"
+else
+  bad "1 本しか入っていない単一がゼロカバレッジ警告のまま（基準線は主担当 1 モデル）"
+  sed 's/^/    | /' "$SOLO_LOG" >&2
+fi
+# 未導入 CLI を除外しただけの回は何も落としていないので情報行のまま（除外指定の有無で
+# 判定する変異はここで赤になる — 単一 CLI 環境の project config が exclude_clis を持つ形）。
+SOLO_EXCL_ABSENT_LOG="$TMP/solo-excl-absent.log"
+if (
+  cd "$REPO"
+  run_isolated PATH="$SOLO:/usr/bin:/bin" bash "$MULTI_AGENT" \
+    --task review --mode distributed --strategy balanced --base develop --dry-run \
+    --exclude-cli codex-cli
+) >"$SOLO_EXCL_ABSENT_LOG" 2>&1 \
+  && grep -q 'ℹ️  Plan runs on a single CLI (claude-code)' "$SOLO_EXCL_ABSENT_LOG" \
+  && ! grep -q 'zero review coverage' "$SOLO_EXCL_ABSENT_LOG"; then
+  ok "未導入 CLI を除外しただけの単一は情報行のまま（除外は何も落としていない）"
+else
+  bad "未導入 CLI の除外で単一 CLI 縮退警告が復活している（打てる手が無い回に警告）"
+  sed 's/^/    | /' "$SOLO_EXCL_ABSENT_LOG" >&2
+fi
+# 導入済み CLI を除外して 1 本になった回は「クロスモデルにできたのに単一になった」経路なので警告のまま。
+# 上の情報行の条件（除外なし）を外す変異はここで赤になる。
+SOLO_EXCL_LOG="$TMP/solo-excl.log"
+if run_plan "$SOLO_EXCL_LOG" --exclude-cli codex-cli --exclude-cli copilot-cli --exclude-cli grok-cli \
+  && grep -q '⚠️  Plan resolved to a single CLI (claude-code)' "$SOLO_EXCL_LOG" \
+  && grep -q 'means zero review coverage' "$SOLO_EXCL_LOG" \
+  && ! grep -q 'Plan runs on a single CLI' "$SOLO_EXCL_LOG"; then
+  ok "除外で 1 本になった単一は警告のまま（情報行へ落とさない）"
+else
+  bad "除外で 1 本になった単一が情報行へ落ちている（除外を外せばクロスモデルにできる回）"
+  sed 's/^/    | /' "$SOLO_EXCL_LOG" >&2
 fi
 
 if grep -q 'codex-cli \[standard\]:' "$FILTER_LOG" \
