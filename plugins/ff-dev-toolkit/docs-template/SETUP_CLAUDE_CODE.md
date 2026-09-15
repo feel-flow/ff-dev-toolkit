@@ -418,7 +418,7 @@ EOF
 > CLAUDE.md に記載した作業スタイル、Git Workflow、セルフレビューチェックリストなどは、
 > `AGENTS.md`（Codex等）や `.github/copilot-instructions.md`（GitHub Copilot）にも
 > 同様に記載することで、どのAIツールでも統一された開発体験が得られます。
-> 詳細は [AIツール設定ファイルのベストプラクティス](../docs/AI_CONFIG_BEST_PRACTICES.md) を参照してください。
+> 詳細は `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/ai-tools-integration.md` の「AIツール別設定概要」（初期セット外・必要ならコピーする）を参照してください。
 
 **例1: Reactプロジェクトの場合**
 ```markdown
@@ -465,7 +465,7 @@ EOF
 
    ```
    1. Claude Code の画面で「ファイルをアップロード」をクリック
-   2. docs-template/MASTER.md を選択
+   2. docs/MASTER.md を選択
    3. アップロード完了を待つ
    ```
 
@@ -483,10 +483,10 @@ EOF
 必要に応じて他のドキュメントもアップロードします：
 
 ```
-- docs-template/02-design/ARCHITECTURE.md（アーキテクチャ検討時）
-- docs-template/02-design/DOMAIN.md（ビジネスロジック実装時）
-- docs-template/03-implementation/PATTERNS.md（実装パターン確認時）
-- docs-template/04-quality/TESTING.md（テスト作成時）
+- docs/02-design/ARCHITECTURE.md（アーキテクチャ検討時）
+- docs/02-design/DOMAIN.md（ビジネスロジック実装時）
+- docs/03-implementation/PATTERNS.md（実装パターン確認時）
+- docs/04-quality/TESTING.md（テスト作成時）
 ```
 
 ## 効果的な使い方
@@ -570,7 +570,7 @@ MASTER.mdの以下の観点でチェックしてください：
 
 ```
 プロンプト例：
-もう一度 docs-template/MASTER.md の内容を確認してください。
+もう一度 docs/MASTER.md の内容を確認してください。
 特に以下の点に注意してコードを生成してください：
 - 意味のある値の定数化（採用時）
 - any型禁止
@@ -602,7 +602,7 @@ MASTER.mdの以下の観点でチェックしてください：
 2. **参照ドキュメントを明示**
 
    ```
-   「docs-template/PATTERNS.mdのRepository Patternに従って実装してください」
+   「docs/03-implementation/PATTERNS.mdのRepository Patternに従って実装してください」
    ```
 
 ### 問題3: コンテキストウィンドウの制限
@@ -618,7 +618,6 @@ MASTER.mdの以下の観点でチェックしてください：
 2. **重い処理はスキル（サブエージェント）で実行**
    - コードレビュー、全コードベーススキャンなど、10ファイル以上を読み込む処理はスキルとして実行
    - サブエージェントは独立コンテキストで動作し、メインセッションのトークン枠を消費しない
-   - 詳細は [Commands vs Skills ガイド](../docs/CLAUDE_CODE_COMMANDS_SKILLS.md) を参照
 
 3. **ファイルを分割してアップロード**
    - 大きなファイルは必要な部分のみ抽出
@@ -668,7 +667,7 @@ MASTER.mdの以下の観点でチェックしてください：
 2. [機能2]
 3. [機能3]
 
-## 必須制約（docs-template/MASTER.mdより）
+## 必須制約（docs/MASTER.mdより）
 - TypeScript strict mode
 - 意味のある値の定数化（採用時）
 - any型禁止
@@ -692,7 +691,7 @@ MASTER.mdの以下の観点でチェックしてください：
 ## レビュー対象
 [ファイルパスまたはPR番号]
 
-## チェック項目（docs-template/MASTER.mdより）
+## チェック項目（docs/MASTER.mdより）
 - [ ] 型安全性（any型なし）
 - [ ] マジックナンバーなし
 - [ ] エラーハンドリング適切
@@ -729,7 +728,7 @@ MASTER.mdの以下の観点でチェックしてください：
 ## 関連コード
 [問題のあるコードをペースト]
 
-## 制約（docs-template/MASTER.mdより）
+## 制約（docs/MASTER.mdより）
 - MASTER.mdのコーディング規約を遵守
 - 既存のテストを壊さない
 - 新しいテストを追加
@@ -754,7 +753,7 @@ git push origin main
 
 1. **この SETUP_CLAUDE_CODE.md**
 2. **CLAUDE.md**（プロジェクト固有のルール）
-3. **docs-template/MASTER.md**（プロジェクト全体のルール）
+3. **docs/MASTER.md**（プロジェクト全体のルール）
 
 ## まとめ
 
@@ -776,9 +775,9 @@ Claude Code のセットアップは以下の3ステップ：
 ### 次のステップ
 
 1. ✅ Claude Code のセットアップ完了
-2. → [GETTING_STARTED_NEW_PROJECT.md](./GETTING_STARTED_NEW_PROJECT.md) で実際のプロジェクト開始
-3. → [docs-template/MASTER.md](./MASTER.md) で詳細なプロジェクトルール確認
-4. → [ACE サイクル運用手順](./05-operations/deployment/ace-cycle.md) でマージ後の知見体系化を設定。エントリ ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（採番ルールの SSOT は [エントリID規則](./08-knowledge/PLAYBOOK.md#エントリid規則)）
+2. → `${CLAUDE_PLUGIN_ROOT}/docs-template/GETTING_STARTED_NEW_PROJECT.md`（初期セット外・必要ならコピーする）で実際のプロジェクト開始
+3. → [MASTER.md](./MASTER.md) で詳細なプロジェクトルール確認
+4. → ACE サイクル運用手順（`${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/ace-cycle.md`。初期セット外・必要ならコピーする）でマージ後の知見体系化を設定。エントリ ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（採番ルールの SSOT は同じくコピー元の `${CLAUDE_PLUGIN_ROOT}/docs-template/08-knowledge/PLAYBOOK.md` の「エントリID規則」節）
 
 ---
 
@@ -788,4 +787,4 @@ Claude Code のセットアップは以下の3ステップ：
 - [Claude Code](https://claude.ai/code)
 - [Anthropic Documentation](https://docs.anthropic.com/)
 - [MASTER.md](./MASTER.md)
-- [AGENTS.md](../AGENTS.md)
+- `AGENTS.md`（Codex 等の汎用エージェント向け設定。`/setup-ai-config` がプロジェクトルートへ生成）

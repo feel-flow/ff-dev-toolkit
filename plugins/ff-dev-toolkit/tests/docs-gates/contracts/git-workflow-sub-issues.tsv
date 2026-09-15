@@ -1,0 +1,6 @@
+# Git Workflow: Epic / 子 Issue の sub-issues 紐付けはヘルパを通す
+# （観測台帳 OBS-052 から昇格）。その場で gh api -f sub_issue_id= を組み立てると
+# 全件 422 になる。呼び出し口の実体が消えると、同じ 1 文字の取り違えが再発する。
+contains	05-operations/deployment/git-workflow.md	FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo OWNER/REPO <parent> <child>...	Git Workflow が sub-issues 紐付けの呼び出し口として link-sub-issues.sh を名指しする
+contains	05-operations/deployment/git-workflow.md	hooks/guard-sub-issue-id.sh	Git Workflow が -f sub_issue_id= を実行前に止めるガードを名指しする
+contains	05-operations/deployment/git-workflow.md	`-f sub_issue_id=` は値を常に文字列で送り、integer スキーマで全件 422 になる	Git Workflow が -f 取り違えの失敗モードを本文で固定する

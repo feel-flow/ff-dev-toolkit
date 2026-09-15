@@ -22,6 +22,10 @@
  *   エントリなら histogram から消え）、それでも正常終了する。なお本関数は CLI 専用ではなく
  *   sync-playbook-frontmatter.ts の countActualEntries も消費するので、エラーはそちらでも
  *   fail-loud になる。
+ * - PLAYBOOK.md の `## エントリ一覧` 節の索引テーブルについて、カテゴリ列が本文の
+ *   Category と食い違う行（＝列順を取り違えてタイトル文が入った行）が無いかを検査し、
+ *   警告のみ出す（終了コードは変えない）。ID 列・カテゴリ列の位置はどちらもヘッダ行から
+ *   読む（導入先ごとに列順が違う）。
  * - `playbook/archive/` 配下（/ace-refine が退避した原文）は集計対象に**含めない**。
  *   discoverPlaybookSubfiles が playbook/ 直下の *.md のみを非再帰で走査するのは
  *   この除外を実現する仕様であり、再帰化してはならない。
@@ -34,6 +38,13 @@ import { fileURLToPath } from "node:url";
 const EXIT_OK = 0;
 const EXIT_THRESHOLD_EXCEEDED = 1;
 const EXIT_USAGE_ERROR = 2;
+
+/**
+ * 索引 Category 列の指摘を 1 回の実行で名指しする上限。索引は数百行あり、列順を
+ * 取り違えた curate は同じ形の行をまとめて作るため、全件を並べると他の警告が流れる。
+ * 超えた分は件数で示し、直したあと再実行すれば次の束が出る。
+ */
+const INDEX_FINDING_REPORT_LIMIT = 10;
 
 /**
  * 件数ゲートのハード上限（exit 1）。refine を使い切っても検索語彙が分岐しない
@@ -156,6 +167,12 @@ export function entryHeadingSource(mode: EntryHeadingMode): string {
 }
 const ACE_ENTRY_HEADER_PATTERN = new RegExp(entryHeadingSource("non-capturing"), "mu");
 /**
+ * エントリセグメント先頭の見出しから ID を取り出す。splitEntrySegments は見出し行を
+ * セグメントに残すので、セグメント文字列の先頭に対して照合すれば足りる
+ * （ID 用の見出し正規表現をローカルに持たない — 源は entryHeadingSource の単一源）。
+ */
+const ENTRY_HEADING_ID_PATTERN = new RegExp(entryHeadingSource("capture-id"), "u");
+/**
  * Category 行。1 セグメント内の**本数**を数えるため matchAll で走らせる（Issue #340）。
  *
  * `g` を落とすと `matchAll` は TypeError を投げるので、その方向の変異は静かには壊れない。
@@ -209,13 +226,69 @@ export const ENTRY_ANCHOR_LINE_PATTERN = /^<a id="ace-[\w-]+"><\/a>\s*$/iu;
  * ace-refine-report.ts はこの値を import する。
  */
 export const SECTION_HEADING_LINE_PATTERN = /^## /u;
+/**
+ * 索引行の ID セル。**セル全体が 1 つのエントリ ID である**ことを要求する。
+ * 列位置はヘッダから解決するので、このパターンは「そのセルが ID か」だけを見る
+ * （1 セル目固定にすると、ID 列が 1 列目でない索引で 1 行も拾えず、指摘 0 件・未検査 0 件の
+ * 完全な無言で緑になる）。エントリ本文のメタ行（`| Category | coding | … |`）は
+ * ID 形のセルを持たないので一致しない。
+ */
+const INDEX_ROW_ID_CELL_PATTERN = new RegExp(String.raw`^(?:${ACE_ENTRY_ID_SOURCE})$`, "u");
+/**
+ * テーブル行の候補（行頭が `|`）。表の連続範囲を切り出すのに使う。
+ *
+ * GFM は先頭 `|` の省略も許すが、省略形まで受けると `|` を含む散文がすべて表の行に見え、
+ * 表の範囲を決められない。live / docs-template の PLAYBOOK はいずれも先頭 `|` を書く。
+ * 先頭 `|` を省いた索引は「索引テーブルの節が見つからない / 行を拾えない」経路で
+ * 未検査として報告されるので、黙って緑にはならない。
+ */
+const TABLE_ROW_LINE_PATTERN = /^\s*\|/u;
+/**
+ * ヘッダ直下の区切り行（`| --- | :--: | … |`）。**ヘッダ行の同定はこの行の実在で行う**。
+ * 区切り行を見ずに「索引行の手前で最初に見つかった `|` 行」をヘッダとして採ると、
+ * 表の外に落ちた索引行が遠く離れた別の表のヘッダと対応付き、その表の列順で検査される。
+ *
+ * **末尾の `|` は任意**（GFM は省略を許す）。必須にすると省略形の表でヘッダを認識できず、
+ * 列が入れ替わった行が未検査のまま exit 0 で素通りする。
+ */
+const TABLE_DELIMITER_LINE_PATTERN = /^\s*\|\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/u;
+/** ヘッダのカテゴリ列。導入先ごとに `Category` / `カテゴリ` の表記ゆれがある。 */
+const CATEGORY_HEADER_LABEL_PATTERN = /^(?:category|カテゴリ)$/u;
+/** ヘッダの ID 列。`ID` / `エントリID` / `ACE ID` / `Entry ID` の表記ゆれを吸収する。 */
+const ID_HEADER_LABEL_PATTERN = /^(?:(?:ace|entry|エントリ)\s*)?id$/u;
+/**
+ * 索引テーブルを含む節の見出し。検査はこの節の中だけを走査する。
+ * 節へ限定しないと、1 セル目が ACE ID の別表（改番履歴など）が Category 列を持たないだけで
+ * 恒久的に未検査件数へ積まれ、意味のある未検査が埋もれる。
+ * 見出しが 1 つも無い PLAYBOOK では 1 行も検査せず、その事実を出力する（fail-closed）。
+ */
+const INDEX_SECTION_HEADING_PATTERN = /^##\s+(?:エントリ一覧|entries|entry list|index)\s*$/iu;
+/**
+ * カテゴリ値として許す ASCII スラッグの形（`coding` / `documentation-quality`）。
+ * 実体から取った語彙に一致しない値でも、この形なら正当なカテゴリとして受ける
+ * （全エントリを archive したカテゴリの索引行が残っている場合など、語彙側が先に空になる）。
+ * 索引の列を取り違えた行に入るのはタイトル 1 文なので、空白・和文・句読点でこの形から外れる。
+ */
+const CATEGORY_SLUG_PATTERN = /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$/u;
 
 /** 存在しないキーは undefined（Record 全面 number ではない）。呼び出し側は ?? 0 で読む。 */
 export type CategoryHistogram = Readonly<Partial<Record<string, number>>>;
 
+/**
+ * エントリ ID → 本文の Category 値。索引行のカテゴリ列を**本文と直接**突き合わせるために持つ。
+ * 語彙集合だけで判定すると、英単語 1 語のタイトル（英語 Playbook では普通）が ASCII スラッグに
+ * 見えて、列の入れ替わりが素通りする。
+ */
+export type EntryCategoryMap = Readonly<Record<string, string>>;
+
 export type AnalyzeSuccess = Readonly<{
   readonly kind: "ok";
   readonly histogram: CategoryHistogram;
+  /**
+   * 同一 ID が 2 回現れたら**先勝ち**。ID の一意性は check-entry-format のゲートが見るので、
+   * ここで別の失敗の形を増やさない（衝突時に索引がどちらの本文と比べられるかが変わるだけ）。
+   */
+  readonly entryCategories: EntryCategoryMap;
   readonly totalEntries: number;
 }>;
 
@@ -240,6 +313,8 @@ export type MergedCategoryHistogram = Readonly<Record<string, number>>;
 export type MergeSuccess = Readonly<{
   readonly kind: "ok";
   readonly histogram: MergedCategoryHistogram;
+  /** 分割レイアウトの全ファイル分を合算した ID → Category（先勝ち）。 */
+  readonly entryCategories: EntryCategoryMap;
   readonly totalEntries: number;
 }>;
 
@@ -1037,7 +1112,7 @@ export function analyzePlaybookMarkdown(
   }
   if (entries.length === 0) {
     if (options.allowEmpty === true) {
-      return { kind: "ok", histogram: {}, totalEntries: 0 };
+      return { kind: "ok", histogram: {}, entryCategories: {}, totalEntries: 0 };
     }
     return {
       kind: "error",
@@ -1045,6 +1120,7 @@ export function analyzePlaybookMarkdown(
     };
   }
   const histogram: Record<string, number> = {};
+  const entryCategories: Record<string, string> = {};
 
   for (const entry of entries) {
     // 本文が例示する追記テンプレート（フェンス内の `| Category | … |`）を数えない。
@@ -1120,11 +1196,19 @@ export function analyzePlaybookMarkdown(
       };
     }
     incrementHistogram(histogram, categoryKey);
+    // 見出しから ID を取れなかったセグメントは索引の突き合わせ対象から外れるだけで、
+    // 件数集計には影響しない（splitEntrySegments は見出しでしか切らないので通常は取れる）。
+    const heading = ENTRY_HEADING_ID_PATTERN.exec(entry.text);
+    const entryId = heading?.[1];
+    if (entryId !== undefined && entryCategories[entryId] === undefined) {
+      entryCategories[entryId] = categoryKey;
+    }
   }
 
   return {
     kind: "ok",
     histogram,
+    entryCategories,
     totalEntries: entries.length,
   };
 }
@@ -1148,6 +1232,7 @@ export function analyzePlaybookMarkdown(
  */
 export function mergeAnalyses(results: readonly AnalyzeSuccess[]): MergeResult {
   const histogram: Record<string, number> = {};
+  const entryCategories: Record<string, string> = {};
   let totalEntries = 0;
   for (const result of results) {
     if (!isEntryCount(result.totalEntries)) {
@@ -1170,6 +1255,11 @@ export function mergeAnalyses(results: readonly AnalyzeSuccess[]): MergeResult {
       }
       histogram[categoryKey] = (histogram[categoryKey] ?? 0) + count;
     }
+    for (const [entryId, category] of Object.entries(result.entryCategories)) {
+      if (entryCategories[entryId] === undefined) {
+        entryCategories[entryId] = category;
+      }
+    }
   }
   const summed = Object.values(histogram).reduce((sum, count) => sum + count, 0);
   if (summed !== totalEntries) {
@@ -1180,7 +1270,309 @@ export function mergeAnalyses(results: readonly AnalyzeSuccess[]): MergeResult {
         `どちらかが脱落しているため、件数ゲートの判定を続けると超過を静かに見逃します。`,
     };
   }
-  return { kind: "ok", histogram, totalEntries };
+  return { kind: "ok", histogram, entryCategories, totalEntries };
+}
+
+/**
+ * 指摘の理由。1 つへ畳まないのは直し方が違うため。
+ * `missing-column` は Category 列そのものが行に無い、`column-count` はヘッダと列数が違う
+ * （セル内の素の `|` が列を増やした形を含む）、`empty` は列はあるが空、
+ * `mismatch` は本文の Category と食い違う、`not-a-category` は本文に対応エントリが無く
+ * カテゴリ語彙にもスラッグ形にも当たらない。
+ */
+export type IndexCategoryFindingReason =
+  | "missing-column"
+  | "column-count"
+  | "empty"
+  | "mismatch"
+  | "not-a-category";
+
+/** 索引行 1 件分の指摘。`line` は 1-origin（利用者へそのまま提示する行番号）。 */
+export type IndexCategoryFinding = Readonly<{
+  readonly line: number;
+  readonly entryId: string;
+  readonly reason: IndexCategoryFindingReason;
+  /** 索引のカテゴリ列に実際に入っていた値。`missing-column` / `column-count` / `empty` では空文字。 */
+  readonly value: string;
+  /** 本文の Category 値。`mismatch` のときだけ非空。 */
+  readonly expected: string;
+}>;
+
+/**
+ * scanIndexCategoryColumn の結果。件数と `indexSectionFound` を返すのは、
+ * 「指摘 0 件」が検査した結果なのか 1 行も読めなかった結果なのかを呼び出し側から
+ * 区別できるようにするため（読めなかった場合を黙って緑にすると、索引テーブルの
+ * 書式や節見出しが変わった瞬間に検査だけが静かに無効化される）。
+ */
+export type IndexCategoryScan = Readonly<{
+  readonly findings: readonly IndexCategoryFinding[];
+  readonly checkedRows: number;
+  /** 索引行だが Category 列の位置を決められなかった行数（ヘッダが無い / ヘッダに Category 列が無い）。 */
+  readonly unresolvedRows: number;
+  /** 索引テーブルの節（`## エントリ一覧`）が 1 つでも見つかったか。false なら 1 行も検査していない。 */
+  readonly indexSectionFound: boolean;
+}>;
+
+/** 行末の CR を落とす（CRLF 文書で行末アンカーの正規表現が一致しなくなるのを防ぐ）。 */
+function stripCarriageReturn(line: string): string {
+  return line.endsWith("\r") ? line.slice(0, -1) : line;
+}
+
+/**
+ * テーブル行をセルへ分割する。**素の `|` はすべてセル区切りとして扱う**。
+ *
+ * GFM の表はセル内に `|` を含めるとき、**インラインコードスパンの中でも** `\|` の
+ * エスケープを要求する（コードスパンは `|` の分割から行を守らない）。したがって
+ * コードスパンを空白化してから境界を決めると、GitHub 上では実際に列がずれている行を
+ * 検査が緑にする。この関数はフェンス空白化済みの行をそのまま受け、`\|` だけを
+ * 区切りから外す。
+ */
+function splitTableCells(line: string): string[] {
+  const cells: string[] = [];
+  let cellStart = -1;
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === "\\") {
+      i += 1;
+      continue;
+    }
+    if (line[i] !== "|") {
+      continue;
+    }
+    if (cellStart >= 0) {
+      cells.push(line.slice(cellStart, i));
+    }
+    cellStart = i + 1;
+  }
+  // 末尾の `|` を省いた行（`| a | b`）の最終セルを落とさない。落とすとヘッダと
+  // データ行でセル数が食い違い、正しい行が列数不一致として指摘に出る。
+  if (cellStart >= 0 && line.slice(cellStart).trim() !== "") {
+    cells.push(line.slice(cellStart));
+  }
+  return cells;
+}
+
+/** ヘッダのセルを役割名と照合できる形へ正規化する（強調・コードスパンの記号を落とす）。 */
+function normalizeHeaderLabel(cell: string): string {
+  return trimCategoryValue(cell).replace(/[`*_]/gu, "").toLowerCase();
+}
+
+/** セルの値を照合できる形へ正規化する（囲みのコードスパン・強調を落とす）。 */
+function normalizeCellValue(cell: string): string {
+  return trimCategoryValue(cell)
+    .replace(/^[`*]+/u, "")
+    .replace(/[`*]+$/u, "")
+    .trim();
+}
+
+/**
+ * `start` 行から始まる表 1 つ分の行番号を、`limit`（節の終端）まで集める。
+ *
+ * **空行は表を割らない。** live の索引は追記のたびに空行を挟んだ塊になっており、
+ * 空行で領域を切ると先頭の塊以外がすべて「ヘッダ不明」に落ちて検査が実質無効になる
+ * （実測: 908 行中 899 行が未検査へ落ちた）。領域を終端するのは**表の行でも空行でもない行**
+ * （見出し・段落・水平線）だけにする。
+ *
+ * 2 行目より後に区切り行が現れたら、その直前の行が**次の表のヘッダ**である。
+ * そこで領域を切り、次の走査をそのヘッダ行から始める（切らずに続けると、空行 1 本だけで
+ * 隣接する別の表のデータ行を前の表の列順で検査してしまう）。
+ */
+function collectTableRegion(
+  lines: readonly string[],
+  start: number,
+  limit: number,
+): { readonly rows: number[]; readonly nextIndex: number } {
+  const rows: number[] = [];
+  let cursor = start;
+  while (cursor < limit) {
+    const line = lines[cursor];
+    if (line.trim() === "") {
+      cursor += 1;
+      continue;
+    }
+    if (!TABLE_ROW_LINE_PATTERN.test(line)) {
+      break;
+    }
+    if (rows.length >= 2 && TABLE_DELIMITER_LINE_PATTERN.test(line)) {
+      const nextHeader = rows[rows.length - 1];
+      rows.pop();
+      return { rows, nextIndex: nextHeader };
+    }
+    rows.push(cursor);
+    cursor += 1;
+  }
+  // 空行だけを消費して終わる形でも必ず 1 行は進める（start は表の行なので rows は空にならない）。
+  return { rows, nextIndex: Math.max(cursor, start + 1) };
+}
+
+/**
+ * 索引行の ID を取り出す。ID 列がヘッダから解決できていればその列だけを見る
+ * （別の列に ID 形の値があっても索引行とは見なさない）。解決できない場合、および
+ * その行に ID 列が存在しない場合だけ、全セルから ID 形の値を探す — ここを厳密にすると
+ * 索引行そのものを見落とし、未検査件数にも現れない silent green になる。
+ */
+function findIndexRowEntryId(
+  cells: readonly string[],
+  idColumn: number,
+): string | undefined {
+  if (idColumn >= 0 && idColumn < cells.length) {
+    const value = normalizeCellValue(cells[idColumn]);
+    return INDEX_ROW_ID_CELL_PATTERN.test(value) ? value : undefined;
+  }
+  for (const cell of cells) {
+    const value = normalizeCellValue(cell);
+    if (INDEX_ROW_ID_CELL_PATTERN.test(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+/** scanIndexCategoryColumn が表 1 つを走査した結果（節単位・ファイル単位で合算する）。 */
+type IndexRegionScan = {
+  readonly findings: IndexCategoryFinding[];
+  readonly checkedRows: number;
+  readonly unresolvedRows: number;
+};
+
+/** 表 1 つ分（`rows` は行番号）を走査する。 */
+function scanIndexRegion(
+  lines: readonly string[],
+  rows: readonly number[],
+  vocabulary: ReadonlySet<string>,
+  entryCategories: EntryCategoryMap,
+): IndexRegionScan {
+  const findings: IndexCategoryFinding[] = [];
+  let checkedRows = 0;
+  let unresolvedRows = 0;
+  const hasHeader =
+    rows.length >= 2 && TABLE_DELIMITER_LINE_PATTERN.test(lines[rows[1]]);
+  const headerCells = hasHeader ? splitTableCells(lines[rows[0]]) : [];
+  const columnOf = (pattern: RegExp): number =>
+    headerCells.findIndex((cell: string) => pattern.test(normalizeHeaderLabel(cell)));
+  const idColumn = hasHeader ? columnOf(ID_HEADER_LABEL_PATTERN) : -1;
+  const categoryColumn = hasHeader ? columnOf(CATEGORY_HEADER_LABEL_PATTERN) : -1;
+
+  for (const row of hasHeader ? rows.slice(2) : rows) {
+    const cells = splitTableCells(lines[row]);
+    const entryId = findIndexRowEntryId(cells, idColumn);
+    if (entryId === undefined) {
+      continue;
+    }
+    if (categoryColumn < 0) {
+      unresolvedRows += 1;
+      continue;
+    }
+    checkedRows += 1;
+    const finding = (
+      reason: IndexCategoryFindingReason,
+      value: string,
+      expected: string,
+    ): void => {
+      findings.push({ line: row + 1, entryId, reason, value, expected });
+    };
+    if (categoryColumn >= cells.length) {
+      finding("missing-column", "", "");
+      continue;
+    }
+    // 列数不一致は、ずれた先にたまたま語彙値が落ちると値の検査では捕まらない。
+    // GFM は余剰セルを描画で捨てるので、不足・余剰のどちらも列ずれそのものである。
+    if (cells.length !== headerCells.length) {
+      finding("column-count", "", "");
+      continue;
+    }
+    const value = normalizeCellValue(cells[categoryColumn]);
+    if (value === "") {
+      finding("empty", "", "");
+      continue;
+    }
+    // 本文に対応エントリがあるなら**本文の Category と直接**比べる（型検査より強い）。
+    const expected = entryCategories[entryId];
+    if (expected !== undefined) {
+      if (trimCategoryValue(expected).toLowerCase() !== value.toLowerCase()) {
+        finding("mismatch", value, trimCategoryValue(expected));
+      }
+      continue;
+    }
+    // 本文に無い ID（アーカイブ済みのエントリが索引に残っている等）は突き合わせできない。
+    // 語彙とスラッグ形で「カテゴリらしさ」だけを見る（ここを指摘に倒すと偽陽性になる）。
+    if (vocabulary.has(value.toLowerCase()) || CATEGORY_SLUG_PATTERN.test(value)) {
+      continue;
+    }
+    finding("not-a-category", value, "");
+  }
+  return { findings, checkedRows, unresolvedRows };
+}
+
+/**
+ * PLAYBOOK.md の索引テーブルで、**カテゴリ列に本文と食い違う値が入っている行**を挙げる。
+ *
+ * 索引行の列順は導入先ごとに違う（`| ID | Category | Title | Link |` と
+ * `| エントリID | タイトル | Category | 参照先 |` が実在する）。`/ace-curate` が固定の列順を
+ * 写すと、カテゴリ列にタイトル 1 文が入った行が量産される。件数ゲートは本文の
+ * `| Category |` 行を読むためずれないので、この食い違いは索引を読む側（索引検索・
+ * レビューの集計・目視）でしか現れず、ゲートの件数と突き合わせるまで気づけない。
+ *
+ * **ID 列も Category 列もヘッダ行から読む**（固定位置で見ない）。ヘッダがタイトル先の
+ * 導入先でもカテゴリ先の導入先でも、同じ検査がそれぞれの正しい列を見る。
+ *
+ * 判定は `entryCategories`（エントリ ID → 本文の Category）との直接比較が主で、
+ * 本文に対応エントリが無い行だけ語彙・スラッグ形へ落とす。語彙は引数から導く
+ * （本文の Category 値の集合）ので、`auth & session` のように空白・記号を含む
+ * カテゴリ名でも誤検出しない。
+ *
+ * 走査は `## エントリ一覧` 節の中だけ。節が 1 つも無ければ 1 行も検査せず
+ * `indexSectionFound: false` を返す（呼び出し側がその事実を出力する fail-closed）。
+ *
+ * 未閉フェンスに対しては fail-open（blankFencedCodeBlocks がその位置から空白化しない）。
+ * 未閉フェンスそのものは analyzePlaybookMarkdown が名指しで落とすので、ここで二重に
+ * 止めない。
+ */
+export function scanIndexCategoryColumn(
+  content: string,
+  entryCategories: EntryCategoryMap,
+): IndexCategoryScan {
+  const vocabulary = new Set(
+    Object.values(entryCategories)
+      .map((value: string) => trimCategoryValue(value).toLowerCase())
+      .filter((value: string) => value !== ""),
+  );
+  // HTML コメント（`<!-- 追記例: … -->` に置かれた索引行の例示）と**閉じたフェンス**を
+  // 落とす。インラインコードスパンは落とさない（splitTableCells のコメント参照）。
+  const cleaned = blankHtmlBlockComments(content);
+  const lines = blankFencedCodeBlocks(cleaned)
+    .text.split("\n")
+    .map(stripCarriageReturn);
+  const findings: IndexCategoryFinding[] = [];
+  let checkedRows = 0;
+  let unresolvedRows = 0;
+  let indexSectionFound = false;
+
+  for (let line = 0; line < lines.length; line++) {
+    if (!INDEX_SECTION_HEADING_PATTERN.test(lines[line])) {
+      continue;
+    }
+    indexSectionFound = true;
+    let sectionEnd = line + 1;
+    while (sectionEnd < lines.length && !SECTION_HEADING_LINE_PATTERN.test(lines[sectionEnd])) {
+      sectionEnd += 1;
+    }
+    let cursor = line + 1;
+    while (cursor < sectionEnd) {
+      if (!TABLE_ROW_LINE_PATTERN.test(lines[cursor])) {
+        cursor += 1;
+        continue;
+      }
+      const region = collectTableRegion(lines, cursor, sectionEnd);
+      const scanned = scanIndexRegion(lines, region.rows, vocabulary, entryCategories);
+      findings.push(...scanned.findings);
+      checkedRows += scanned.checkedRows;
+      unresolvedRows += scanned.unresolvedRows;
+      cursor = region.nextIndex;
+    }
+    line = sectionEnd - 1;
+  }
+
+  return { findings, checkedRows, unresolvedRows, indexSectionFound };
 }
 
 /**
@@ -1285,6 +1677,25 @@ function resolvePlaybookPath(argv: readonly string[]): string | undefined {
   return undefined;
 }
 
+/**
+ * 索引の指摘 1 件を 1 行で説明する。理由ごとに直し方が違うので、値をそのまま出すだけに
+ * しない（`missing-column` は値が無いので、値だけ出すと空行が並んで原因が読めない）。
+ */
+function describeIndexFinding(finding: IndexCategoryFinding): string {
+  switch (finding.reason) {
+    case "missing-column":
+      return "Category 列がありません（ヘッダより列数が少ない。セル内の素の `|` は `\\|` へエスケープしてください）";
+    case "column-count":
+      return "ヘッダと列数が違います（セル内の素の `|` は、コードスパンの中にあっても列を増やします。`\\|` へエスケープしてください）";
+    case "empty":
+      return "Category 列が空です";
+    case "mismatch":
+      return `${finding.value}（本文の Category は ${finding.expected}）`;
+    case "not-a-category":
+      return finding.value;
+  }
+}
+
 function formatHistogram(histogram: CategoryHistogram): string {
   return Object.entries(histogram)
     .map(([key, count]) => `${key}: ${String(count)}`)
@@ -1333,11 +1744,17 @@ export function main(): number {
     headerLines: number;
     exceptionTally: ReliableBudgetExceptionTally;
   }[] = [];
+  // 索引テーブルは PLAYBOOK.md 側にしかないので、その本文だけを後段の列検査へ渡す。
+  // 全ファイルの本文を fileReports へ持たせないのは、索引以外の用途が無いため。
+  let indexContent: string | undefined;
 
   for (const filePath of filesToAnalyze) {
     const content = readFileOrExit(filePath);
     if (content === undefined) {
       return EXIT_USAGE_ERROR;
+    }
+    if (filePath === playbookPath) {
+      indexContent = content;
     }
     // 分割レイアウトでは索引ファイル・カテゴリファイルとも「このファイル単体は
     // 0 件」でも異常ではない（総件数がゼロなら後段でまとめてエラーにする）。
@@ -1512,6 +1929,48 @@ export function main(): number {
   console.log(
     `ブロック上限: ${String(maxAllowed)} 件/カテゴリ（refine 目安: ${String(warnAllowed)} 件/カテゴリ）`,
   );
+
+  // 索引テーブルのカテゴリ列の型検査。語彙は本文の `| Category |` 行から取った実体
+  // （merged.histogram のキー）で、カテゴリ一覧の語彙を別に持たない — 語彙を二重に持つと
+  // 新カテゴリの追加時に索引側だけが赤くなる。
+  //
+  // **exit code は変えない（警告のみ）。** 判定は実体から取った語彙による推定であり、
+  // 本スクリプトは導入先へ配られるテンプレートなので、誤検出がそのまま導入先のゲートを
+  // 止める形にはしない。行数バジェット警告と同じ位置づけで、直すべき行を名指しする。
+  if (indexContent !== undefined) {
+    const indexScan = scanIndexCategoryColumn(indexContent, merged.entryCategories);
+    // 検査した行数を常に出す（0 件の指摘が「検査した結果」なのか「1 行も読めなかった
+    // 結果」なのかを出力から区別できるようにする）。節が見つからない形も黙らせない。
+    if (!indexScan.indexSectionFound) {
+      console.log(
+        "索引 Category 列: 索引テーブルの節（## エントリ一覧）が見つからず 0 行を検査（節見出しを合わせるまでこの検査は効きません）",
+      );
+    } else {
+      console.log(
+        `索引 Category 列: ${String(indexScan.checkedRows)} 行を検査` +
+          (indexScan.unresolvedRows > 0
+            ? `（うち ${String(indexScan.unresolvedRows)} 行は列位置を解決できず未検査: 同じ表にヘッダ行が無い / ヘッダに Category 列が無い）`
+            : ""),
+      );
+    }
+    if (indexScan.findings.length > 0) {
+      const shown = indexScan.findings.slice(0, INDEX_FINDING_REPORT_LIMIT);
+      const rest = indexScan.findings.length - shown.length;
+      const detail = shown
+        .map(
+          (finding) =>
+            `${String(finding.line)} 行目 ${finding.entryId}: ${describeIndexFinding(finding)}`,
+        )
+        .join("\n- ");
+      console.error(
+        `⚠ 索引テーブルの Category 列が本文と食い違う行が ${String(indexScan.findings.length)} 行あります。` +
+          `索引テーブルのヘッダ行の列順に合わせて値を並べ直してください（列順は導入先ごとに違うため、雛形の列順を写すと入れ替わります）。` +
+          `件数ゲートは本文の \`| Category |\` 行を読むためずれませんが、索引を読む側の集計がずれます:\n- ` +
+          detail +
+          (rest > 0 ? `\n- ほか ${String(rest)} 行` : ""),
+      );
+    }
+  }
 
   if (warnCategories.length > 0) {
     console.error(

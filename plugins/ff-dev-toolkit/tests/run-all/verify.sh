@@ -921,19 +921,42 @@ else
   rm -rf "$HOOKBOUND_DIR"
 fi
 
-# 実 hook 側: SessionStart の 3 本が上限を宣言していること（無上限へ戻す変更を止める）。
-# 値そのものは登録 timeout との突き合わせを行わないので契約文では規範扱い（asdd-hook-gate.sh）。
+# 実 hook 側: SessionStart に登録された hook が上限を宣言していること（無上限へ戻す変更を
+# 止める）。値そのものは登録 timeout との突き合わせを行わないので契約文では規範扱い
+# （asdd-hook-gate.sh）。**対象は hooks.json から導出する** — ここへ名前を書き並べると、
+# 後から足した SessionStart hook が無審査で通る（drain の走査側が名簿を持たないのと同じ理由）。
+HOOKBOUND_RESOLVED_RAW="$(jq -r '(.hooks.SessionStart // [])[] | .hooks[]? | .command // empty' \
+  "$HOOKDRAIN_PLUGIN_ROOT/hooks/hooks.json" \
+  | awk '{ n=split($(0),w,/[[:space:]]+/); for(i=1;i<=n;i++){ gsub(/["\047]/,"",w[i]); if (w[i] ~ /\.sh$/) { sub(/.*\//,"",w[i]); print w[i]; break } } }')"
+HOOKBOUND_TARGETS="$(printf '%s\n' "$HOOKBOUND_RESOLVED_RAW" | grep -v '^$' | sort -u || true)"
+HOOKBOUND_COUNT="$(printf '%s\n' "$HOOKBOUND_TARGETS" | grep -c . || true)"
+# 「0 件なら赤」だけでは足りない。hooks.json の書き方が変わって**一部だけ**導出できなく
+# なった回（`.sh` で終わらない command・wrapper 化）は、対象が黙って縮んだまま緑になる。
+# 直下の live 検査は登録 hook の**総数**しか見ないので、SessionStart 部分集合の縮みは拾えない。
+# 登録エントリ 1 件につき 1 本解決できたことを突き合わせて、縮んだ回を赤にする
+# （重複登録があっても数が合うよう、比較は sort -u の前の解決数で行う）。
+HOOKBOUND_RESOLVED="$(printf '%s\n' "$HOOKBOUND_RESOLVED_RAW" | grep -c . || true)"
+HOOKBOUND_REGISTERED="$(jq -r '[(.hooks.SessionStart // [])[].hooks[]?] | length' \
+  "$HOOKDRAIN_PLUGIN_ROOT/hooks/hooks.json" 2>/dev/null || true)"
 HOOKBOUND_MISSING=""
-for _hb in check-update check-skill-drift auto-update-marketplace; do
-  if ! awk '/^[[:space:]]*#/ { next } /read[[:space:]]+-r[[:space:]]+-t[[:space:]]/ { found = 1 } END { exit !found }' \
-    "$HOOKDRAIN_PLUGIN_ROOT/hooks/${_hb}.sh"; then
-    HOOKBOUND_MISSING="${HOOKBOUND_MISSING}${_hb} "
-  fi
-done
-if [ -z "$HOOKBOUND_MISSING" ]; then
-  ok "case 44: SessionStart の 3 本は上限付きで読む（無上限へ戻すと赤）"
+if [ -z "$HOOKBOUND_TARGETS" ] || [ "$HOOKBOUND_COUNT" -eq 0 ]; then
+  bad "case 44: hooks.json から SessionStart hook を 1 本も導出できません（走査不成立を緑にしない）"
+elif ! printf '%s' "$HOOKBOUND_REGISTERED" | grep -Eq '^[0-9]+$' \
+  || [ "$HOOKBOUND_RESOLVED" -ne "$HOOKBOUND_REGISTERED" ]; then
+  bad "case 44: SessionStart の登録エントリから解決できた hook 数が一致しません（解決 ${HOOKBOUND_RESOLVED} / 登録 ${HOOKBOUND_REGISTERED:-取得失敗}）— 一部だけ解釈できない形を緑にしない"
 else
-  bad "case 44: 上限の宣言が無い hook があります: ${HOOKBOUND_MISSING}"
+  for _hb in $HOOKBOUND_TARGETS; do
+    if [ ! -f "$HOOKDRAIN_PLUGIN_ROOT/hooks/${_hb}" ] \
+      || ! awk '/^[[:space:]]*#/ { next } /read[[:space:]]+-r[[:space:]]+-t[[:space:]]/ { found = 1 } END { exit !found }' \
+        "$HOOKDRAIN_PLUGIN_ROOT/hooks/${_hb}"; then
+      HOOKBOUND_MISSING="${HOOKBOUND_MISSING}${_hb} "
+    fi
+  done
+  if [ -z "$HOOKBOUND_MISSING" ]; then
+    ok "case 44: SessionStart の ${HOOKBOUND_COUNT} 本は上限付きで読む（無上限へ戻すと赤）"
+  else
+    bad "case 44: 上限の宣言が無い hook があります: ${HOOKBOUND_MISSING}"
+  fi
 fi
 
 # live: 実体の hooks.json に登録された全 hook が契約を満たす

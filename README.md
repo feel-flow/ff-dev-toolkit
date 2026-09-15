@@ -129,6 +129,17 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 - 古い cache は自動削除しません。`claude plugin marketplace update`（引数なし）→ `claude plugin list` で登録 ID（`プラグイン名@marketplace名` 形式）を確認 → `claude plugin update <確認した ID>` → Claude Code の再起動、の順で追従し、**再起動の後に**通知の古い version ディレクトリだけを手動で削除してください（素の名前を渡すと `Plugin not found` で失敗します）。hook はセッション中ずっと起動時に読み込んだディスク実体を参照するため、再起動より前に削除すると稼働中セッションの hook が壊れます。稼働中の別セッションがロードしている version も削除しないでください。再起動しても既存の会話を再開すると古いスナップショットへ再接続されるため、新しい会話を開始してください。marketplace checkout は消さないでください
 - 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK=1` を設定してください
 
+### レビュアー名簿ドリフト検査
+
+レビュー走行中の編集を凍結する hook は、レーンを取るレビュアーの種別を**列挙**で持っています（`FF_REVIEW_SUBAGENT_LOCK_TYPES` の既定値）。列挙先の実体は別プラグインのレビュアー群なので、そちらにレビュアーが増えても列挙は自動では追随しません。セッション開始時に、その列挙とホストに在るレビュアー実体を突き合わせます。
+
+- 名簿に足すべきレビュアー・実体から消えたレビュアーがあるときに通知します。名簿から落ちたレビュアーはレーンを取らないため、そのレビュアーが動いている間は編集の凍結が効きません
+- レビュアー実体を 1 つも見つけられない環境（当該プラグイン未導入）と、名簿が実体と一致している場合は無音です
+- 突き合わせが成立しない場合（ディレクトリを列挙できない・実体が 0 件・名簿を抽出できない等）は「一致」ではなく**判定不能**として報告します
+- 同じプラグインの版違いの写しが併存する環境では、最新版（版を読み取れないときは写し全体の和集合）を 1 つの判定へ畳みます。写しを独立に突き合わせると、名簿を正しく直したあとも古い写しが通知を出し続けるためです
+- 本検査が読むのは**同梱の既定値だけ**です。`FF_REVIEW_SUBAGENT_LOCK_TYPES` で名簿を上書きして実行時の取りこぼしを直しても判定は変わらないため、その場合は下の環境変数も併せて設定してください
+- 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK=1` を設定してください
+
 ### 自動振り返り
 
 対応ホストでは、`UserPromptSubmit` hook が `/retrospective` の実行契約を応答前に注入し、通常時は最初の応答内で振り返りを完了する。応答終了時の `Stop` hook は結果が無い実行漏れ時だけ 1 回継続する。継続後はホストの `stop_hook_active` と最終応答の振り返り結果で再入を止めるため、永続 marker は作らない。
@@ -140,7 +151,7 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 
 ### Bash ガード（PreToolUse）
 
-プラグインをインストールすると、Bash ツールの実行前に 5 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-issue-labels.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。
+プラグインをインストールすると、Bash ツールの実行前に 6 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。
 
 **未コミット変更ガード（`guard-checkout-restore.sh`）** — 未コミット変更のあるファイルへの `git checkout [--] <path>` / `git restore <path>` を検出し、変更消失の前に警告する。警告文は代替手段（`cp` バックアップ / `git stash push -- <file>` → `pop`）を案内する。ブランチ切り替え（`git checkout <branch>` / `git switch`）、clean・untracked なファイルへの復元、`git restore --staged`（worktree 非破壊）では発火しない。
 
@@ -171,6 +182,12 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1`（対象コマンド先頭の環境代入としても有効な抜け道）
 - 既知の限界: `--label` を変数展開・コマンド置換で組み立てる形、`gh issue create` を経ない起票（API 直叩き・Web UI）では判定できず素通しする（fail-open）
 
+**sub-issues integer フィールドガード（`guard-sub-issue-id.sh`）** — `gh api` が `-f sub_issue_id=`（または同じ API の `-f after_id=` / `-f before_id=`）で integer フィールドを送ろうとしたときに停止する。`-f` は値を常に文字列で送るため、GitHub の sub-issues API は 422 で弾き、ループで回すと全件が同じエラーで落ちる。対象を `gh api -f` 全般へは広げない（GraphQL の `-f query=` や REST の `-f base=<branch>`、`per_page` は文字列として正しい）。
+
+- 通し方: `-F sub_issue_id=` に直す、または同梱の `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo OWNER/REPO <parent> <child>...` を使う。意図的に文字列で送る場合は対象コマンドの先頭に `FF_SUB_ISSUE_ID_ACK=1` を付ける
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1`
+- 既知の限界: コマンド位置に無い gh（echo の文字列）、変数展開で組み立てるフラグ名、heredoc 本文では判定できず素通しする（fail-open）
+
 ## 前提
 
 - [Claude Code](https://docs.claude.com/en/docs/claude-code)（プラグインの第一ターゲット。Codex CLI / Claude Cowork / grok CLI / GitHub Copilot CLI も Claude 形式 marketplace 互換で利用可。詳細は下記「他のツールで使う」）
@@ -197,6 +214,8 @@ Copilot CLI で確認したのは marketplace 登録 → インストール → 
 書籍からの参照はリリースタグで固定されます。最新の安定版は [Releases](https://github.com/feel-flow/ff-dev-toolkit/releases) を参照してください。
 
 バージョンごとの変更内容は [CHANGELOG.md](./CHANGELOG.md) を参照してください。
+
+互換性の約束の対象（skill の起動名 / hooks / `FF_*` 環境変数 / 導入先へ配置されるパスのうち、何が契約で何が実装詳細か）は [PUBLIC-SURFACE.md](./plugins/ff-dev-toolkit/PUBLIC-SURFACE.md) にまとめてあります。契約側を壊す変更は CHANGELOG の `### 破壊的変更` 節に記録されます。
 
 ## 開発とフィードバック
 

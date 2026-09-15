@@ -387,10 +387,10 @@ for (const [label, rel] of [
 
 // SETUP_CLAUDE_CODE.md は heredoc の**中**で、生成先（消費プロジェクト）を基準に `docs/` と
 // 書く必要がある。実際には外側の `docs-template/` 表記がそのまま内側へ流れ込んでいた（実測 14 件）。
-// heredoc の**外**の表記が正しいかは本検査の対象外（未検証。この手順書自体が消費側へコピー
-// される運用なので、外側も解決しない可能性がある — 別 Issue で確定する）。
 // 生成された CLAUDE.md は消費プロジェクトで AI が最初に読む文書なので、そこに解決できない
 // パスがあると初回体験が壊れる。
+// heredoc の**外**も同じ基準で解決する（この手順書自体が消費側へコピーされる運用なので、
+// 外側にも解決しない参照が残っていた — 実測 12 件）。検査は下の「heredoc の外」ブロック。
 //
 // 範囲は行番号ではなくマーカーで取る（heredoc は編集で伸縮する）。マーカーを見つけられない
 // 回は「違反 0 件」ではなく検査不成立として落とす — 生成ブロックの書き方が変わった日に
@@ -443,6 +443,77 @@ if (heredocStart !== -1 && heredocEnd !== -1) {
     `生成される CLAUDE.md が消費側の docs/ を ${EXPECTED_DOC_REFS} 件以上参照している`,
     `inside=${inside.length} 行 / 参照 ${docRefs.length} 件`,
   );
+
+  // heredoc の**外**も基準は同じ。この手順書自体が消費プロジェクトへコピーされて読まれる
+  // 運用で（MASTER.md「AIツール初期設定ガイド（初期セット外・必要時にコピー）」）、コピー先は
+  // docs/SETUP_CLAUDE_CODE.md。消費側に docs-template/ は無いので、外側の参照も内側と同じく
+  // **実体と突き合わせる**。外側は heredoc の補集合として取る（行番号で切らない）。
+  // 対象外: `${...}_ROOT}/docs-template/...` — プラグイン実体を指す正当な参照で、消費側基準
+  // ではない（upstreamLeak が同じ除外規則を持つ）。
+  // 行番号を保ったまま補集合を取る（落ちたとき 790 行のどこかを名指しできるようにする）
+  const outsidePairs = setupLines
+    .map((line, i) => [i + 1, line])
+    .filter(([n]) => n <= heredocStart + 1 || n >= heredocEnd + 1);
+  const outside = outsidePairs.map(([, line]) => line).join("\n");
+  const outsideReport = scanFile(
+    "docs/SETUP_CLAUDE_CODE.md",
+    outside,
+    "docs-template/SETUP_CLAUDE_CODE.md（heredoc の外）",
+  );
+  const outsideStrays = outsidePairs.filter(([, line]) => upstreamLeak.test(line));
+  check(
+    outsideStrays.length === 0,
+    "SETUP_CLAUDE_CODE の heredoc の外に展開前パス docs-template/ が残っていない",
+    outsideStrays.map(([n, line]) => `L${n}: ${line.trim()}`).join(" / "),
+  );
+  const outsideBrokenLinks = [...outsideReport.brokenRelative, ...outsideReport.brokenInline];
+  check(
+    outsideBrokenLinks.length === 0,
+    "SETUP_CLAUDE_CODE の heredoc の外のリンクと inline code パスが展開先で解決する",
+    outsideBrokenLinks.join(" / "),
+  );
+  // 解決するだけでは足りない。/init-docs が展開するのは初期セットの 20 文書だけなので、
+  // 初期セット外へ Markdown リンクを張るとコピー直後にリンク切れになる（配布ツリーには
+  // 実体が在るので上の解決検査は通ってしまう）。初期セット外はコピー元パス付きの案内
+  // テキストで示す — MASTER.md が「初期セット外・必要時にコピー」の文書に採っている形。
+  check(
+    outsideReport.outsideInitialSet.length === 0,
+    "SETUP_CLAUDE_CODE の heredoc の外のリンク先が初期セット内にある（初期セット外はコピー元パスの案内テキストで示す）",
+    outsideReport.outsideInitialSet.join(" / "),
+  );
+  // リンクでも inline code でもない素のテキスト（アップロード手順・プロンプト例）の docs/ 参照。
+  // 内側と同じ抽出を掛ける — 実測ではこの形が最も多く、階層を落とした参照もここに混ざる。
+  const outsideDocRefs = [
+    ...new Set(
+      (outside.match(/docs\/[A-Za-z0-9_.\/-]+\.md/g) ?? []).map((ref) =>
+        ref.replace(/^docs\//, ""),
+      ),
+    ),
+  ];
+  const outsideUnresolved = outsideDocRefs.filter((ref) => !existsSync(join(templateRoot, ref)));
+  check(
+    outsideUnresolved.length === 0,
+    "SETUP_CLAUDE_CODE の heredoc の外の docs/ 参照が配布物の実体へ解決できる",
+    outsideUnresolved.map((ref) => `docs/${ref}`).join(" / "),
+  );
+  // 内側と同じ理由の下限。解決検査は参照 0 件でも緑になるので、外側の参照をまとめて消す
+  // 退行を「違反 0 件」と区別できるようにする。
+  // 下限は素テキストの docs/ 参照と Markdown リンクで**別に**置く。片方だけだともう一方を
+  // 全部消す退行が通る（素テキストの下限だけを置いた段階では、`./` 始まりのリンクは
+  // docs/ 正規表現に一致しないため全削除しても緑のままだった）。
+  const EXPECTED_OUTSIDE_DOC_REFS = 5;
+  check(
+    outsideDocRefs.length >= EXPECTED_OUTSIDE_DOC_REFS,
+    `SETUP_CLAUDE_CODE の heredoc の外が消費側の docs/ を ${EXPECTED_OUTSIDE_DOC_REFS} 件以上参照している`,
+    `参照 ${outsideDocRefs.length} 件`,
+  );
+  const outsideLinks = [...outside.matchAll(relativeLink)].map((match) => match[1]);
+  const EXPECTED_OUTSIDE_LINKS = 2;
+  check(
+    outsideLinks.length >= EXPECTED_OUTSIDE_LINKS,
+    `SETUP_CLAUDE_CODE の heredoc の外が展開先の文書へ ${EXPECTED_OUTSIDE_LINKS} 件以上リンクしている`,
+    `リンク ${outsideLinks.length} 件: ${outsideLinks.join(" / ") || "-"}`,
+  );
 }
 
 const pullRequest = text(".github/pull_request_template.md");
@@ -481,7 +552,7 @@ check(
 // 検査を足したらこの数も同じ PR で上げること（上げ忘れは「増やしたのに赤」で即わかる）。
 // 不等号ではなく**完全一致**にする — `>=` だと上げ忘れが緑で通り、baseline が実数より
 // 下にずれる。以後は「1 件足して 1 件消す」が検出されず、この針の目的自体が静かに失効する。
-const EXPECTED_CHECKS = 59;
+const EXPECTED_CHECKS = 65;
 const executed = pass + failures.length;
 check(
   executed === EXPECTED_CHECKS,

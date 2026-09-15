@@ -47,15 +47,74 @@ export function countRelativeEntryLinks(content: string): number {
 }
 
 /**
+ * frontmatter の開始・終了区切りとして扱う行か。**行頭の厳密な `---`** だけを区切りと
+ * 見なし、末尾の `\r`（CRLF）のみ許容する。`trim()` で判定すると YAML ブロックスカラー
+ * 内のインデント済み `  ---` を閉じ区切りと取り違え、注記を正しく置いたファイルを
+ * 「冒頭注記 なし」にする — 倒れる向きは fail-closed だが、書き手に actionable な
+ * 修正手段が無い赤になる。
+ */
+function isFrontmatterBoundary(line: string): boolean {
+  return line === "---" || line === "---\r";
+}
+
+/**
+ * frontmatter の中身らしい `key:` 行（`  nested: x` も含む）。
+ * 1 行目の `---` を frontmatter の開始と thematic break のどちらと読むかの切り分けに使う。
+ */
+const FRONTMATTER_KEY_LINE = /^\s*[A-Za-z_][A-Za-z0-9_.-]*\s*:(\s|$)/u;
+
+/**
+ * 先頭の YAML frontmatter を読み飛ばした本文の開始行番号を返す（無ければ 0）。
+ * 導入先の docs 規約では archive ファイルも frontmatter を持つ。読み飛ばさないと
+ * 1 行目の `---` で冒頭走査が即座に打ち切られ、Parent ブロックが永久に見つからない
+ * （注記があっても「冒頭注記 なし」と判定される）。
+ *
+ * frontmatter の閉じ `---` と本文の区切り `---` は同じ記号なので、frontmatter と
+ * 見なすのは次の両方を満たすときだけに限る:
+ *   1. **1 行目が区切り**（2 行目以降の `---` は本文の区切り）
+ *   2. 開始と閉じの区切りの間に `key:` 行が **1 行以上**ある
+ * (2) が無いと、1 行目が thematic break の `---` であるだけの frontmatter 無しファイルを
+ * frontmatter 付きと読み、本来「注記なし＝違反」だった判定を黙って緑へ倒してしまう。
+ *
+ * 閉じ区切りが無い / `key:` 行が 1 件も無い形はいずれも frontmatter 無し（0）として扱う。
+ * 1 行目の `---` が区切りとして冒頭走査を打ち切り、注記なし＝違反へ倒れる（fail-closed）。
+ * 判定できない形をゲートの緩む側へ倒さない。
+ *
+ * `sync-playbook-frontmatter.ts` の `splitFrontmatter()` とは**別契約**で、共用しない:
+ * あちらは frontmatter 本文と残り全文を文字列で返す（CRLF を LF へ正規化するため元の
+ * 行 index へ戻せない）一方、こちらは元の配列上の行 index を返す。加えて上の (2) は
+ * 後方互換（frontmatter を持たない archive ファイルの判定を変えない）のための本ゲート
+ * 固有の条件で、常に実 frontmatter を相手にする `splitFrontmatter` へ持ち込むと
+ * あちらの契約を変えてしまう。片方だけ直して食い違わせないこと。
+ */
+function findBodyStart(lines: readonly string[]): number {
+  if (lines.length === 0 || !isFrontmatterBoundary(lines[0])) {
+    return 0;
+  }
+  let hasKeyLine = false;
+  for (let i = 1; i < lines.length; i++) {
+    if (isFrontmatterBoundary(lines[i])) {
+      return hasKeyLine ? i + 1 : 0;
+    }
+    if (FRONTMATTER_KEY_LINE.test(lines[i])) {
+      hasKeyLine = true;
+    }
+  }
+  return 0;
+}
+
+/**
  * archive ファイル冒頭の Parent ブロック（`> **Parent**` から始まる連続引用）を返す。
  * ファイル全体の includes だと、エントリ本文や後段の引用にマーカーが偶然含まれても
  * 冒頭注記ありと誤判定する（Issue #492）。
+ * 先頭に frontmatter がある場合はその直後を「冒頭」とみなす。
  * Parent ブロックが無ければ null。
  */
 export function extractOpeningParentBlock(content: string): string | null {
   const lines = content.split("\n");
+  const bodyStart = findBodyStart(lines);
   let headerEnd = lines.length;
-  for (let i = 0; i < lines.length; i++) {
+  for (let i = bodyStart; i < lines.length; i++) {
     if (
       lines[i].trim() === "---" ||
       /^<a\s+id="/u.test(lines[i]) ||
@@ -66,7 +125,7 @@ export function extractOpeningParentBlock(content: string): string | null {
     }
   }
   let start = -1;
-  for (let i = 0; i < headerEnd; i++) {
+  for (let i = bodyStart; i < headerEnd; i++) {
     if (/^>\s*\*\*Parent\*\*/u.test(lines[i])) {
       start = i;
       break;

@@ -455,6 +455,16 @@ else
     # ラベル名の正本が setup-github-labels の軸別表であることを隔離コピーへの
     # 変異注入で実測する。gh は fixture の stub に解決させ、実リポジトリは照会しない。
     "$SCRIPT_DIR/guard-issue-labels/verify.sh"
+    # PreToolUse（Bash）の sub-issues integer フィールドガード
+    # （hooks/guard-sub-issue-id.sh、観測台帳 OBS-052 の対策）。
+    # `gh api -f sub_issue_id=` を実行前に抜け道付き deny し、`-F` と
+    # 同梱ヘルパを案内する。対象を -f 全般へ広げない判断（query / base /
+    # per_page は素通し）も stdin JSON fixture で固定する。
+    "$SCRIPT_DIR/guard-sub-issue-id/verify.sh"
+    # 上のガードが案内する呼び出し口（scripts/link-sub-issues.sh）。
+    # POST は `-F sub_issue_id=` 固定、失敗時は HTTP 本文を出し 1 件目で止まる。
+    # gh は stub に解決させ、ネットワークには出ない。
+    "$SCRIPT_DIR/link-sub-issues/verify.sh"
     # squash 件名の closing keyword が Refs 運用の Issue を閉じる経路のガード。
     # 検査ロジック（scripts/check-closing-keywords.sh）の振る舞いと、SKILL.md /
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド

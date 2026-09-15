@@ -15,6 +15,7 @@ import {
   main,
   mergeAnalyses,
   parsePositiveIntEnv,
+  scanIndexCategoryColumn,
   scanUnclosedFence,
   splitEntrySegments,
 } from "./check-category-size";
@@ -670,17 +671,54 @@ ${fence}
   });
 });
 
+describe("analyzePlaybookMarkdown の entryCategories", () => {
+  it("エントリ ID と本文の Category の対応を返す（索引の突き合わせ元）", () => {
+    const md = [
+      "### ACE-1-1: a",
+      "",
+      "| Category | coding | Origin | PR |",
+      "",
+      "---",
+      "",
+      "### ACE-2-1: b",
+      "",
+      "| Category | auth & session | Origin | PR |",
+      "",
+    ].join("\n");
+
+    const result = analyzePlaybookMarkdown(md);
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.entryCategories).toEqual({
+      "ACE-1-1": "coding",
+      "ACE-2-1": "auth & session",
+    });
+  });
+});
+
 describe("mergeAnalyses", () => {
   it("複数ファイルの histogram / totalEntries を合算する", () => {
     const merged = mergeAnalyses([
-      { kind: "ok", histogram: { coding: 2, process: 1 }, totalEntries: 3 },
-      { kind: "ok", histogram: { process: 4 }, totalEntries: 4 },
-      { kind: "ok", histogram: {}, totalEntries: 0 },
+      {
+        kind: "ok",
+        histogram: { coding: 2, process: 1 },
+        entryCategories: { "ACE-1-1": "coding" },
+        totalEntries: 3,
+      },
+      {
+        kind: "ok",
+        histogram: { process: 4 },
+        entryCategories: { "ACE-2-1": "process" },
+        totalEntries: 4,
+      },
+      { kind: "ok", histogram: {}, entryCategories: {}, totalEntries: 0 },
     ]);
     expect(merged.kind).toBe("ok");
     if (merged.kind !== "ok") return;
     expect(merged.totalEntries).toBe(7);
     expect(merged.histogram).toEqual({ coding: 2, process: 5 });
+    expect(merged.entryCategories).toEqual({ "ACE-1-1": "coding", "ACE-2-1": "process" });
   });
 
   it("空配列は totalEntries 0 の ok を返す", () => {
@@ -696,6 +734,7 @@ describe("mergeAnalyses", () => {
       {
         kind: "ok",
         totalEntries: 200,
+        entryCategories: {},
         histogram: { testing: undefined, process: 5 },
       },
     ]);
@@ -707,7 +746,7 @@ describe("mergeAnalyses", () => {
 
   it("histogram に NaN が混ざっていたら error を返す（silent に捨てない）", () => {
     const merged = mergeAnalyses([
-      { kind: "ok", totalEntries: 200, histogram: { coding: Number.NaN } },
+      { kind: "ok", totalEntries: 200, entryCategories: {}, histogram: { coding: Number.NaN } },
     ]);
 
     expect(merged.kind).toBe("error");
@@ -717,13 +756,13 @@ describe("mergeAnalyses", () => {
 
   it("負数・小数の件数は有限でも error（131 + (-2) で閾値を静かに回避させない）", () => {
     const negative = mergeAnalyses([
-      { kind: "ok", totalEntries: 2, histogram: { coding: 4, testing: -2 } },
+      { kind: "ok", totalEntries: 2, entryCategories: {}, histogram: { coding: 4, testing: -2 } },
     ]);
     expect(negative.kind).toBe("error");
     if (negative.kind === "error") expect(negative.message).toContain("testing");
 
     const fractional = mergeAnalyses([
-      { kind: "ok", totalEntries: 1, histogram: { coding: 1.5 } },
+      { kind: "ok", totalEntries: 1, entryCategories: {}, histogram: { coding: 1.5 } },
     ]);
     expect(fractional.kind).toBe("error");
     if (fractional.kind === "error") expect(fractional.message).toContain("coding");
@@ -733,7 +772,7 @@ describe("mergeAnalyses", () => {
     // 値の検査では届かない破れ方。Object.entries に現れないキーは per-value 判定に
     // 到達しないので、合計との突き合わせだけが検出できる。
     const merged = mergeAnalyses([
-      { kind: "ok", totalEntries: 5, histogram: { coding: 1 } },
+      { kind: "ok", totalEntries: 5, entryCategories: {}, histogram: { coding: 1 } },
     ]);
 
     expect(merged.kind).toBe("error");
@@ -2055,6 +2094,233 @@ describe("isDirectExecution", () => {
   });
 });
 
+describe("scanIndexCategoryColumn", () => {
+  /** エントリ ID → 本文の Category（analyzePlaybookMarkdown が返す形）。 */
+  const entryCategories = {
+    "ACE-1-1": "coding",
+    "ACE-1-2": "coding",
+    "ACE-2-1": "auth & session",
+    "ACE-2-2": "testing",
+  };
+
+  function indexTable(header: string, rows: readonly string[]): string {
+    const columns = header.split("|").filter((cell: string) => cell.trim() !== "").length;
+    return [
+      "## エントリ一覧",
+      "",
+      header,
+      `|${" --- |".repeat(columns)}`,
+      ...rows,
+      "",
+    ].join("\n");
+  }
+
+  it("Category 先のヘッダでは 2 列目を読み、タイトル先で書かれた行を指摘する", () => {
+    const md = indexTable("| ID | Category | Title | Link |", [
+      "| ACE-1-1 | coding | 正しい列順で書いた行 | [playbook/coding.md#ace-1-1](./playbook/coding.md#ace-1-1) |",
+      "| ACE-1-2 | 雛形の列順を写した行 | coding | [playbook/coding.md#ace-1-2](./playbook/coding.md#ace-1-2) |",
+    ]);
+
+    const scan = scanIndexCategoryColumn(md, entryCategories);
+
+    expect(scan.indexSectionFound).toBe(true);
+    expect(scan.checkedRows).toBe(2);
+    expect(scan.unresolvedRows).toBe(0);
+    expect(scan.findings).toHaveLength(1);
+    expect(scan.findings[0].entryId).toBe("ACE-1-2");
+    expect(scan.findings[0].reason).toBe("mismatch");
+    expect(scan.findings[0].expected).toBe("coding");
+  });
+
+  it("タイトル先のヘッダでは 3 列目を読み、既存導入先の行は指摘しない", () => {
+    const md = indexTable("| エントリID | タイトル | Category | 参照先 |", [
+      "| ACE-1-1 | 従来どおりタイトル先で書いた行 | coding | [playbook/coding.md#ace-1-1](./playbook/coding.md#ace-1-1) |",
+      "| ACE-2-2 | もう 1 行 | testing | [playbook/testing.md#ace-2-2](./playbook/testing.md#ace-2-2) |",
+    ]);
+
+    const scan = scanIndexCategoryColumn(md, entryCategories);
+
+    expect(scan.checkedRows).toBe(2);
+    expect(scan.findings).toEqual([]);
+  });
+
+  /**
+   * ID 列も 1 列目固定にしない回帰。固定すると ID が 1 列目でない索引で 1 行も拾えず、
+   * 指摘 0 件・未検査 0 件の完全な無言で緑になる（判定不能を一致へ倒す形）。
+   */
+  it("ID 列が 1 列目でない索引でも行を拾って検査する", () => {
+    const md = indexTable("| Category | ID | Title | Link |", [
+      "| coding | ACE-1-1 | 正しい列順 | [playbook/coding.md#ace-1-1](./playbook/coding.md#ace-1-1) |",
+      "| 列順を取り違えた行 | ACE-1-2 | coding | [playbook/coding.md#ace-1-2](./playbook/coding.md#ace-1-2) |",
+    ]);
+
+    const scan = scanIndexCategoryColumn(md, entryCategories);
+
+    expect(scan.checkedRows).toBe(2);
+    expect(scan.findings.map((finding) => finding.entryId)).toEqual(["ACE-1-2"]);
+  });
+
+  /**
+   * 語彙集合だけでは、英単語 1 語のタイトル（英語 Playbook では普通）が ASCII スラッグに
+   * 見えて列の入れ替わりが素通りする。本文の Category と直接比べることで塞ぐ。
+   */
+  it("英単語 1 語のタイトルが Category 列に入っても本文との比較で捕まえる", () => {
+    const md = indexTable("| ID | Category | Title | Link |", [
+      "| ACE-1-2 | Rollback | coding | [playbook/coding.md#ace-1-2](./playbook/coding.md#ace-1-2) |",
+    ]);
+
+    const scan = scanIndexCategoryColumn(md, entryCategories);
+
+    expect(scan.findings).toHaveLength(1);
+    expect(scan.findings[0].reason).toBe("mismatch");
+    expect(scan.findings[0].value).toBe("Rollback");
+  });
+
+  /**
+   * 本文に対応エントリが無い行（アーカイブ済みなど）は突き合わせできない。空白・記号入りの
+   * カテゴリ名が実在するので、ASCII スラッグの形だけで判定すると正当な行が総崩れになる。
+   */
+  it("本文に無い ID の行は語彙とスラッグ形で判定し、正当なカテゴリ名を指摘しない", () => {
+    const md = indexTable("| ID | Category | Title | Link |", [
+      "| ACE-9-1 | auth & session | 語彙にある空白入りのカテゴリ | [playbook/auth.md#ace-9-1](./playbook/auth.md#ace-9-1) |",
+      "| ACE-9-2 | documentation-quality | 語彙には無いが ASCII スラッグ | [playbook/documentation-quality.md#ace-9-2](./playbook/documentation-quality.md#ace-9-2) |",
+      "| ACE-9-3 | 索引の列を取り違えたタイトル文 | coding | [playbook/coding.md#ace-9-3](./playbook/coding.md#ace-9-3) |",
+    ]);
+
+    const scan = scanIndexCategoryColumn(md, entryCategories);
+
+    expect(scan.findings.map((finding) => finding.entryId)).toEqual(["ACE-9-3"]);
+    expect(scan.findings[0].reason).toBe("not-a-category");
+  });
+
+  /**
+   * live の索引は追記のたびに空行を挟んだ塊になっている。空行で表を切ると 2 塊目以降が
+   * すべて「ヘッダ不明」に落ち、検査が 0 件で緑になる（静かな無効化）。
+   */
+  it("空行を挟んだ索引でもヘッダの列順を引き継ぐ", () => {
+    const md = [
+      indexTable("| ID | Category | Title | Link |", [
+        "| ACE-1-1 | coding | 1 塊目 | [playbook/coding.md#ace-1-1](./playbook/coding.md#ace-1-1) |",
+      ]),
+      "| ACE-1-2 | 2 塊目でタイトルとカテゴリが入れ替わった行 | coding | [playbook/coding.md#ace-1-2](./playbook/coding.md#ace-1-2) |",
+      "",
+    ].join("\n");
+
+    const scan = scanIndexCategoryColumn(md, entryCategories);
+
+    expect(scan.checkedRows).toBe(2);
+    expect(scan.findings.map((finding) => finding.entryId)).toEqual(["ACE-1-2"]);
+  });
+
+  /** 末尾 `|` を省いた GFM 有効形でもヘッダを認識する（認識できないと未検査のまま緑）。 */
+  it("末尾パイプを省いた区切り行でもヘッダとして認識する", () => {
+    const md = [
+      "## エントリ一覧",
+      "",
+      "| ID | Category | Title | Link",
+      "| --- | --- | --- | ---",
+      "| ACE-1-2 | タイトルとカテゴリが入れ替わった行 | coding | [playbook/coding.md#ace-1-2](./playbook/coding.md#ace-1-2)",
+      "",
+    ].join("\n");
+
+    const scan = scanIndexCategoryColumn(md, entryCategories);
+
+    expect(scan.checkedRows).toBe(1);
+    expect(scan.findings.map((finding) => finding.reason)).toEqual(["mismatch"]);
+  });
+
+  /**
+   * GFM はセル内の `|` を**インラインコードスパンの中でも** `\|` でエスケープするよう
+   * 要求する。コードスパンを空白化してから境界を決めると、GitHub 上では列がずれている行を
+   * 緑にする。エスケープ済みの `\|` は列を増やさない。
+   */
+  it("コードスパン内の素の縦棒も列を増やすものとして扱い、エスケープ済みは増やさない", () => {
+    const md = indexTable("| エントリID | タイトル | Category | 参照先 |", [
+      "| ACE-1-1 | `grep x | head -1` を引用したタイトル | coding | [playbook/coding.md#ace-1-1](./playbook/coding.md#ace-1-1) |",
+      "| ACE-1-2 | `grep x \\| head -1` をエスケープしたタイトル | coding | [playbook/coding.md#ace-1-2](./playbook/coding.md#ace-1-2) |",
+    ]);
+
+    const scan = scanIndexCategoryColumn(md, entryCategories);
+
+    expect(scan.findings.map((finding) => finding.entryId)).toEqual(["ACE-1-1"]);
+    expect(scan.findings[0].reason).toBe("column-count");
+  });
+
+  /** ヘッダより列が少ない行（Category 列そのものが無い形）。 */
+  it("Category 列が行に無ければ missing-column として指摘する", () => {
+    const md = indexTable("| エントリID | タイトル | Category | 参照先 |", [
+      "| ACE-1-1 | 列が足りない行 |",
+    ]);
+
+    const scan = scanIndexCategoryColumn(md, entryCategories);
+
+    expect(scan.checkedRows).toBe(1);
+    expect(scan.findings.map((finding) => finding.reason)).toEqual(["missing-column"]);
+  });
+
+  /** 余剰セル側の列ずれ。ずれた先にたまたま語彙値が落ちると値の検査では捕まらない。 */
+  it("ヘッダより列が多い行は値が語彙に当たっても column-count として指摘する", () => {
+    const md = indexTable("| ID | Category | Title | Link |", [
+      "| ACE-1-1 | coding | 余分な列がある行 | 余剰 | [playbook/coding.md#ace-1-1](./playbook/coding.md#ace-1-1) |",
+    ]);
+
+    const scan = scanIndexCategoryColumn(md, entryCategories);
+
+    expect(scan.findings.map((finding) => finding.reason)).toEqual(["column-count"]);
+  });
+
+  /** 索引テーブルの節の外にある ACE ID 表（改番履歴など）は検査対象にしない。 */
+  it("索引テーブルの節の外にある ACE ID 表は検査も未検査件数にも数えない", () => {
+    const md = [
+      "## 運用ルール",
+      "",
+      "| ID | 状態 |",
+      "| --- | --- |",
+      "| ACE-1-1 | active |",
+      "",
+      indexTable("| ID | Category | Title | Link |", [
+        "| ACE-1-2 | coding | 索引の行 | [playbook/coding.md#ace-1-2](./playbook/coding.md#ace-1-2) |",
+      ]),
+    ].join("\n");
+
+    const scan = scanIndexCategoryColumn(md, entryCategories);
+
+    expect(scan.checkedRows).toBe(1);
+    expect(scan.unresolvedRows).toBe(0);
+    expect(scan.findings).toEqual([]);
+  });
+
+  /** 節が見つからない PLAYBOOK は「検査していない」ことを返す（黙って緑にしない）。 */
+  it("索引テーブルの節が無ければ indexSectionFound=false を返す", () => {
+    const md = [
+      "## 別の節",
+      "",
+      "| ID | Category | Title | Link |",
+      "| --- | --- | --- | --- |",
+      "| ACE-1-2 | 列順を取り違えた行 | coding | [playbook/coding.md#ace-1-2](./playbook/coding.md#ace-1-2) |",
+      "",
+    ].join("\n");
+
+    const scan = scanIndexCategoryColumn(md, entryCategories);
+
+    expect(scan.indexSectionFound).toBe(false);
+    expect(scan.checkedRows).toBe(0);
+    expect(scan.findings).toEqual([]);
+  });
+
+  it("ヘッダに Category 列が無い索引行は未検査として数える（黙って読み飛ばさない）", () => {
+    const md = indexTable("| ID | Title | Link |", [
+      "| ACE-1-1 | Category 列を持たない索引 | [playbook/coding.md#ace-1-1](./playbook/coding.md#ace-1-1) |",
+    ]);
+
+    const scan = scanIndexCategoryColumn(md, entryCategories);
+
+    expect(scan.checkedRows).toBe(0);
+    expect(scan.unresolvedRows).toBe(1);
+    expect(scan.findings).toEqual([]);
+  });
+});
+
 describe("main（行数警告のみ・exit code 不変）", () => {
   const originalArgv = process.argv;
   let tmpDir = "";
@@ -2102,6 +2368,38 @@ describe("main（行数警告のみ・exit code 不変）", () => {
       ].join("\n");
     }).join("\n");
   }
+
+  /**
+   * 索引 Category 列の検査が main から配線されていることの回帰（配線を外すと緑に倒れる）。
+   * 判定は本文の `| Category |` 行との突き合わせなので、fixture は索引と本文の両方を持つ。
+   * 終了コードは変えない — 索引の書式は導入先ごとに違い、誤検出で導入先のゲートを止めない。
+   */
+  it("索引 Category 列が本文と食い違う行を警告する（exit code は変えない）", () => {
+    const body = [
+      "## エントリ一覧",
+      "",
+      "| ID | Category | Title | Link |",
+      "| --- | --- | --- | --- |",
+      "| ACE-1-1 | coding | 正しい列順 | [playbook/coding.md#ace-1-1](./playbook/coding.md#ace-1-1) |",
+      "| ACE-1-2 | 列順を取り違えてタイトルが入った行 | coding | [playbook/coding.md#ace-1-2](./playbook/coding.md#ace-1-2) |",
+      "",
+      compactEntries(2),
+    ].join("\n");
+    const file = writePlaybook(body);
+    process.argv = ["node", "check-category-size.ts", file];
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const code = main();
+
+    expect(code).toBe(0);
+    expect(log.mock.calls.flat().join("\n")).toContain("索引 Category 列: 2 行を検査");
+    const stderr = err.mock.calls.flat().join("\n");
+    expect(stderr).toContain("索引テーブルの Category 列");
+    expect(stderr).toContain("本文の Category は coding");
+    expect(stderr).toContain("ACE-1-2");
+    expect(stderr).not.toContain("ACE-1-1:");
+  });
 
   it("行数のみ超過なら exit 0・stderr に警告・行数は常時出力", () => {
     const body =

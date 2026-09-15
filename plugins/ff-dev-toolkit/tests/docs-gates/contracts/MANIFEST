@@ -4,3 +4,5 @@
 # 契約を足す / 消すときはここも同じ PR で直す（`#` 始まりと空行は無視）。
 git-workflow-concurrent-session.tsv
 git-workflow-heredoc.tsv
+git-workflow-sub-issues.tsv
+

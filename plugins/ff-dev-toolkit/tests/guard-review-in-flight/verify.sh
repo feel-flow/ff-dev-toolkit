@@ -1467,6 +1467,213 @@ pr-review-toolkit:type-design-analyzer"
   fi
 fi
 
+# ── (h17) 追随検査を実体に対して回す配線（hooks/check-review-roster-drift.sh） ──
+# (h14) は突き合わせロジックを fixture で測る。ロジックが正しくても**実体に対して回す
+# 経路が無ければ**、名簿の遅れは誰かが手で叩いた回にしか分からない。ここで測るのは
+# 「SessionStart に登録されていること」と「実体不在・drift・判定不能の 3 分岐が
+# セッション開始で正しく出ること」の 2 点。
+ROSTER_HOOK="$PLUGIN_ROOT/hooks/check-review-roster-drift.sh"
+HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
+if [ ! -x "$ROSTER_HOOK" ]; then
+  bad "(h17) 追随検査を回す hook がありません（実行ビットを含む）: $ROSTER_HOOK"
+elif [ ! -f "$HOOKS_JSON" ]; then
+  bad "(h17) hooks.json がありません: $HOOKS_JSON"
+elif [ -z "${_roster_default:-}" ]; then
+  bad "(h17) 名簿の既定値を抽出できず、実体の fixture を作れません（h14 と同じ抽出に失敗）"
+else
+  # ── 配線そのもの ──────────────────────────────────────────────────────────
+  # 部分一致（basename が command 文字列に含まれる）だけでは、`true # <名前>.sh` のように
+  # **hook を実行しない** command でも緑になる。type / command / timeout を構造的な完全一致で
+  # 見る（下の偽登録への変異注入がこの検出力を実測する）。
+  roster_hook_registered() { # <hooks.json> <hook の basename>
+    jq -e --arg b "$2" '
+      [ (.hooks.SessionStart // [])[] | .hooks[]?
+        | select(.type == "command")
+        | select(.command == ("bash \"${CLAUDE_PLUGIN_ROOT}/hooks/" + $b + "\""))
+        | select((.timeout | type) == "number" and .timeout > 0) ]
+      | length == 1
+    ' "$1" >/dev/null 2>&1
+  }
+  ROSTER_HOOK_BASE="$(basename "$ROSTER_HOOK")"
+  if roster_hook_registered "$HOOKS_JSON" "$ROSTER_HOOK_BASE"; then
+    ok "(h17) 追随検査が SessionStart へ構造的に登録されている（type / command / timeout・配線を外すと赤）"
+  else
+    bad "(h17) 追随検査が hooks.json の SessionStart に登録されていません（検査は在るが実体に対して回らない）"
+  fi
+  # 偽の参照（command が hook を実行せず、名前だけコメントに出てくる形）を配線と認めない。
+  ROSTER_FAKE_JSON="$TEST_TMP/hooks-fake-registration.json"
+  if jq --arg b "$ROSTER_HOOK_BASE" '
+    .hooks.SessionStart |= map(.hooks |= map(
+      if (.command // "") | contains($b) then .command = ("true # " + $b) else . end))
+  ' "$HOOKS_JSON" > "$ROSTER_FAKE_JSON" 2>/dev/null; then
+    if roster_hook_registered "$ROSTER_FAKE_JSON" "$ROSTER_HOOK_BASE"; then
+      bad "(h17) hook を実行しない command（コメントに名前が出るだけ）を配線として緑にしています"
+    else
+      ok "(h17) hook を実行しない command は配線と認めない（偽の参照文字列への変異注入）"
+    fi
+  else
+    bad "(h17) 偽登録の fixture を作れず、配線検査の検出力を実測できません"
+  fi
+
+  # ── 実体を与えた駆動 ──────────────────────────────────────────────────────
+  ROSTER_HOME="$TEST_TMP/roster-home"
+  # 実体の fixture は (h14) と同じく名簿の既定値から作る。**パスのプラグイン名も**
+  # 名簿から導く — リテラルを書くと、名簿を別プラグインへ向け替えたときに
+  # 「配線の欠陥ではない理由」で赤くなる。
+  ROSTER_PLUGIN="${_roster_default%%:*}"
+  make_agents_dir() { # <agents ディレクトリ> [追加の agent 名]...
+    local dir="$1"; shift
+    mkdir -p "$dir"
+    local t base extra
+    set -f
+    for t in $_roster_default; do
+      base="${t##*:}"
+      printf '%s\n' "# $base" > "$dir/$base.md"
+    done
+    set +f
+    for extra in "$@"; do
+      printf '%s\n' "# $extra" > "$dir/$extra.md"
+    done
+  }
+  cache_agents_dir() { # <Claude 設定ディレクトリ> <版ディレクトリ名>
+    printf '%s' "$1/plugins/cache/mp/$ROSTER_PLUGIN/$2/agents"
+  }
+  make_home_fixture() { # <Claude 設定ディレクトリ> [追加の agent 名]...
+    local home="$1"; shift
+    rm -rf "$home"
+    make_agents_dir "$(cache_agents_dir "$home" 1.0.0)" "$@"
+  }
+  run_roster_hook() { # <Claude 設定ディレクトリ> [<名簿を持つ hook のパス>]
+    ROSTER_HOOK_OUT="$(printf '{}' | env \
+      FF_DEV_TOOLKIT_ROSTER_DRIFT_CLAUDE_HOME="$1" \
+      FF_DEV_TOOLKIT_ROSTER_DRIFT_HOOK="${2:-$TARGET}" \
+      bash "$ROSTER_HOOK" 2>&1)" && ROSTER_HOOK_RC=0 || ROSTER_HOOK_RC=$?
+  }
+  roster_hook_msg() { printf '%s' "$ROSTER_HOOK_OUT" | jq -r '.systemMessage // empty' 2>/dev/null || true; }
+  roster_expect_silent() { # <ラベル>
+    if [ "$ROSTER_HOOK_RC" -eq 0 ] && [ -z "$ROSTER_HOOK_OUT" ]; then
+      ok "(h17) $1"
+    else
+      bad "(h17) ${1}（無音であるべきなのに出力あり rc=${ROSTER_HOOK_RC}）: ${ROSTER_HOOK_OUT}"
+    fi
+  }
+  roster_expect_msg() { # <ラベル> <systemMessage に期待する部分文字列>
+    local m
+    m="$(roster_hook_msg)"
+    case "$m" in
+      *"$2"*) ok "(h17) $1" ;;
+      *) bad "(h17) ${1}（期待: ${2} / rc=${ROSTER_HOOK_RC}）: ${ROSTER_HOOK_OUT}" ;;
+    esac
+  }
+  # 判定不能の経路は通知の出し方が 2 つある（走査を始められない回は単独の文面、実体ごとに
+  # 成立しなかった回は drift との併記）。どちらも additionalContext に「一致」ではなく
+  # 「判定不能」だと書くので、通知全体に対して照合する。
+  roster_expect_out() { # <ラベル> <通知全体に期待する部分文字列>...
+    local label="$1" needle
+    shift
+    for needle in "$@"; do
+      case "$ROSTER_HOOK_OUT" in
+        *"$needle"*) ;;
+        *) bad "(h17) ${label}（期待: ${needle} / rc=${ROSTER_HOOK_RC}）: ${ROSTER_HOOK_OUT}"; return 0 ;;
+      esac
+    done
+    ok "(h17) $label"
+  }
+
+  # AC: 当該プラグインが導入されていない環境は無音で抜ける（無関係な利用者を赤にしない）。
+  # 実体不在を通知する実装へ変えると赤になる。
+  mkdir -p "$ROSTER_HOME-absent/plugins/cache" "$ROSTER_HOME-absent/plugins/marketplaces"
+  run_roster_hook "$ROSTER_HOME-absent"
+  roster_expect_silent "レビュアー実体が無い環境は無音で exit 0（セッション開始を汚さない）"
+
+  make_home_fixture "$ROSTER_HOME-match"
+  run_roster_hook "$ROSTER_HOME-match"
+  roster_expect_silent "名簿と実体が一致する環境も無音"
+
+  # AC: レビュアーが 1 本増えた環境で、追随していないことが利用者に見える形で伝わる。
+  make_home_fixture "$ROSTER_HOME-added" brand-new-reviewer
+  run_roster_hook "$ROSTER_HOME-added"
+  roster_expect_msg "レビュアーが 1 本増えると systemMessage で名指しされる" "brand-new-reviewer"
+
+  # AC: 検査自体が成立しない環境では「一致」へ倒れない。以下 4 形はいずれも候補 0 件
+  # または rc=2 として現れるので、無音（= 一致と区別できない緑）にしないことを固定する。
+  rm -rf "$ROSTER_HOME-empty"
+  mkdir -p "$(cache_agents_dir "$ROSTER_HOME-empty" 1.0.0)"
+  run_roster_hook "$ROSTER_HOME-empty"
+  roster_expect_out "レビュアー実体が 0 件の回は「判定不能」として伝わる（一致へ倒さない）" "判定不能"
+
+  rm -rf "$ROSTER_HOME-noagents"
+  mkdir -p "$ROSTER_HOME-noagents/plugins/cache/mp/$ROSTER_PLUGIN/1.0.0"
+  run_roster_hook "$ROSTER_HOME-noagents"
+  roster_expect_out "プラグイン実体はあるが agents/ が無い回も「判定不能」（未導入として無音にしない）" "判定不能"
+
+  # 中間ディレクトリが「あるのに列挙できない」回。glob が空振りして「未導入」と同じ形に
+  # なるので、権限で見分けられていなければここが赤になる。
+  make_home_fixture "$ROSTER_HOME-midperm"
+  if chmod 111 "$ROSTER_HOME-midperm/plugins/cache" 2>/dev/null && [ ! -r "$ROSTER_HOME-midperm/plugins/cache" ]; then
+    run_roster_hook "$ROSTER_HOME-midperm"
+    chmod 755 "$ROSTER_HOME-midperm/plugins/cache" 2>/dev/null || true
+    roster_expect_out "中間ディレクトリを列挙できない回も「判定不能」（未導入と同じ無音にしない）" "判定不能"
+  else
+    chmod 755 "$ROSTER_HOME-midperm/plugins/cache" 2>/dev/null || true
+    echo "  ○ skip: 読み取り不可のディレクトリを作れない（root 実行等）ため中間ディレクトリの経路は未検査"
+  fi
+
+  # 名簿側を読めない・抽出できない回も「一致」へ倒さない。
+  run_roster_hook "$ROSTER_HOME-match" "$TEST_TMP/roster-no-such-hook.sh"
+  roster_expect_msg "名簿を持つ hook を読めない回は「判定不能」" "判定できませんでした"
+  printf '%s\n' '#!/usr/bin/env bash' 'REVIEW_LOCK_TYPES="$(derive_from_somewhere)"' \
+    > "$TEST_TMP/roster-hook-changed.sh"
+  run_roster_hook "$ROSTER_HOME-match" "$TEST_TMP/roster-hook-changed.sh"
+  roster_expect_msg "名簿を抽出できない hook の回は「判定不能」" "判定できませんでした"
+
+  # 版の併存を独立に突き合わせると、名簿を正しく直したあとも古い写しが EXTRA を出し続け、
+  # **どの名簿値でも消せない通知**になる。グループ単位で 1 つの判定へ畳むことを固定する。
+  rm -rf "$ROSTER_HOME-semver"
+  make_agents_dir "$(cache_agents_dir "$ROSTER_HOME-semver" 2.0.0)"
+  make_agents_dir "$(cache_agents_dir "$ROSTER_HOME-semver" 1.0.0)"
+  rm -f "$(cache_agents_dir "$ROSTER_HOME-semver" 1.0.0)/${_roster_default##*:}.md"
+  run_roster_hook "$ROSTER_HOME-semver"
+  roster_expect_silent "SemVer で順序づく併存は最新版だけを見る（古い写しの欠落で鳴り続けない）"
+
+  rm -rf "$ROSTER_HOME-semver-new"
+  make_agents_dir "$(cache_agents_dir "$ROSTER_HOME-semver-new" 2.0.0)" brand-new-reviewer
+  make_agents_dir "$(cache_agents_dir "$ROSTER_HOME-semver-new" 1.0.0)"
+  run_roster_hook "$ROSTER_HOME-semver-new"
+  roster_expect_msg "最新版で増えたレビュアーは併存していても名指しされる" "brand-new-reviewer"
+
+  # 版を解釈できない併存（開発ホストの実体がこの形: 版ディレクトリ名が内容ハッシュで、
+  # plugin.json に version が無い）は和集合へ畳む。片方に欠落があっても鳴らない。
+  rm -rf "$ROSTER_HOME-union"
+  make_agents_dir "$(cache_agents_dir "$ROSTER_HOME-union" 022b3c274938)"
+  make_agents_dir "$(cache_agents_dir "$ROSTER_HOME-union" 0e3f501d0f4a)"
+  rm -f "$(cache_agents_dir "$ROSTER_HOME-union" 0e3f501d0f4a)/${_roster_default##*:}.md"
+  run_roster_hook "$ROSTER_HOME-union"
+  roster_expect_silent "版を解釈できない併存は和集合で畳む（消せない EXTRA を作らない）"
+
+  rm -rf "$ROSTER_HOME-union-new"
+  make_agents_dir "$(cache_agents_dir "$ROSTER_HOME-union-new" 022b3c274938)" brand-new-reviewer
+  make_agents_dir "$(cache_agents_dir "$ROSTER_HOME-union-new" 0e3f501d0f4a)"
+  run_roster_hook "$ROSTER_HOME-union-new"
+  roster_expect_msg "和集合へ畳んでも増えたレビュアーは名指しされる" "brand-new-reviewer"
+
+  # drift と判定不能が同時に起きる回。先に見つかった方で早期に返すと、もう片方が届かない。
+  rm -rf "$ROSTER_HOME-both"
+  make_agents_dir "$ROSTER_HOME-both/plugins/cache/mp1/$ROSTER_PLUGIN/1.0.0/agents" brand-new-reviewer
+  mkdir -p "$ROSTER_HOME-both/plugins/marketplaces/mp2/plugins/$ROSTER_PLUGIN/agents"
+  run_roster_hook "$ROSTER_HOME-both"
+  roster_expect_out "drift と判定不能が同時に起きたら 1 通へ併記する（片方で早期に返さない）" \
+    "brand-new-reviewer" "判定不能"
+
+  # 利用者向け opt-out（他の SessionStart hook と同じ形）。
+  ROSTER_HOOK_OUT="$(printf '{}' | env \
+    FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK=1 \
+    FF_DEV_TOOLKIT_ROSTER_DRIFT_CLAUDE_HOME="$ROSTER_HOME-both" \
+    FF_DEV_TOOLKIT_ROSTER_DRIFT_HOOK="$TARGET" \
+    bash "$ROSTER_HOOK" 2>&1)" && ROSTER_HOOK_RC=0 || ROSTER_HOOK_RC=$?
+  roster_expect_silent "FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK=1 で無音になる"
+fi
+
 echo
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ guard-review-in-flight: ${FAIL} 件失敗（成功 ${PASS} 件）" >&2

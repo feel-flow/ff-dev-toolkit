@@ -57,6 +57,39 @@ function archiveWithParent(noteInParent: boolean, extra = ""): string {
   ].join("\n");
 }
 
+/**
+ * 導入先の docs 規約では archive ファイルも frontmatter を持つ。frontmatter の
+ * 閉じ `---` と本文の区切り `---` は同じ記号なので、読み飛ばさないと 1 行目の `---` で
+ * 冒頭走査が終わり、注記の有無にかかわらず Parent ブロックが見つからなくなる。
+ */
+function withFrontmatter(md: string): string {
+  return [
+    "---",
+    "title: PLAYBOOK Archive — テスト戦略",
+    "version: 1.0.0",
+    "---",
+    "",
+    md,
+  ].join("\n");
+}
+
+/**
+ * frontmatter の YAML ブロックスカラーがインデント済みの `---` を含む形。
+ * 区切り判定が `trim()` だとこの行を閉じ区切りと取り違える。
+ */
+function withBlockScalarFrontmatter(md: string): string {
+  return [
+    "---",
+    "title: PLAYBOOK Archive — テスト戦略",
+    "summary: |",
+    "  ---",
+    "  区切りに見える行をブロックスカラーの中に持つ。",
+    "---",
+    "",
+    md,
+  ].join("\n");
+}
+
 describe("extractOpeningParentBlock / hasLiveBasisNote", () => {
   it("Parent ブロック内の規定マーカーだけを注記ありと判定する", () => {
     expect(hasLiveBasisNote(archiveWithParent(true))).toBe(true);
@@ -86,6 +119,58 @@ describe("extractOpeningParentBlock / hasLiveBasisNote", () => {
   it("Parent ブロック自体が無ければ false", () => {
     expect(hasLiveBasisNote("# PLAYBOOK Archive — ツール設定 (tooling)\n")).toBe(false);
     expect(extractOpeningParentBlock("# PLAYBOOK Archive\n")).toBeNull();
+  });
+
+  it("frontmatter で始まっても直後の Parent ブロック内の注記を拾う", () => {
+    const md = withFrontmatter(archiveWithParent(true));
+    expect(hasLiveBasisNote(md)).toBe(true);
+    expect(extractOpeningParentBlock(md)).toContain(LIVE_BASIS_NOTE_MARKER);
+  });
+
+  it("frontmatter があっても Parent ブロックに注記が無ければ false", () => {
+    expect(hasLiveBasisNote(withFrontmatter(archiveWithParent(false)))).toBe(false);
+  });
+
+  it("frontmatter 内のブロックスカラーにインデント済み `---` があっても閉じ区切りを取り違えない", () => {
+    const md = withBlockScalarFrontmatter(archiveWithParent(true));
+    expect(hasLiveBasisNote(md)).toBe(true);
+    expect(extractOpeningParentBlock(md)).toContain(LIVE_BASIS_NOTE_MARKER);
+  });
+
+  it("CRLF の frontmatter でも冒頭注記を拾う", () => {
+    const md = withFrontmatter(archiveWithParent(true)).replace(/\n/gu, "\r\n");
+    expect(hasLiveBasisNote(md)).toBe(true);
+  });
+
+  it("1 行目が thematic break の `---`（key 行なし）は frontmatter と見なさない", () => {
+    // frontmatter を持たないファイルの判定を変えない（後方互換）。key 行の条件が
+    // 無いと、この形は冒頭が後段の Parent ブロックへずれて違反が緑へ倒れる。
+    const md = [
+      "---",
+      "",
+      "# PLAYBOOK Archive — テスト戦略 (testing)",
+      "",
+      "---",
+      "",
+      "> **Parent**: [PLAYBOOK.md](../../PLAYBOOK.md)",
+      `> **${LIVE_BASIS_NOTE_MARKER}**: 冒頭ではないので無効。`,
+      "",
+    ].join("\n");
+    expect(extractOpeningParentBlock(md)).toBeNull();
+    expect(hasLiveBasisNote(md)).toBe(false);
+  });
+
+  it("閉じ `---` の無い壊れた frontmatter は注記なしへ倒す（fail-closed）", () => {
+    const md = [
+      "---",
+      "title: 閉じられていない frontmatter",
+      "",
+      "> **Parent**: [PLAYBOOK.md](../../PLAYBOOK.md)",
+      `> **${LIVE_BASIS_NOTE_MARKER}**: 注記はあるが frontmatter が閉じていない。`,
+      "",
+    ].join("\n");
+    expect(extractOpeningParentBlock(md)).toBeNull();
+    expect(hasLiveBasisNote(md)).toBe(false);
   });
 });
 
@@ -292,6 +377,56 @@ describe("main", () => {
     const errOut = err.mock.calls.flat().join("\n");
     expect(errOut).toContain("testing.md");
     expect(errOut).toContain("ace-164-2");
+  });
+
+  it("frontmatter 付きでも注記があれば `./` リンク込みで exit 0", () => {
+    const playbookPath = writeArchive({
+      "testing.md": withFrontmatter(
+        archiveWithParent(true, "本文 [ACE-1-1](./testing.md#ace-1-1)。\n"),
+      ),
+    });
+    process.argv = ["node", "check-archive-links.ts", playbookPath];
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const code = main();
+
+    expect(code).toBe(0);
+    expect(log.mock.calls.flat().join("\n")).toContain("冒頭注記 あり");
+    expect(err.mock.calls.flat().join("\n")).not.toContain("testing.md");
+  });
+
+  it("frontmatter のブロックスカラーに `---` があっても注記があれば exit 0", () => {
+    const playbookPath = writeArchive({
+      "testing.md": withBlockScalarFrontmatter(
+        archiveWithParent(true, "本文 [ACE-1-1](./testing.md#ace-1-1)。\n"),
+      ),
+    });
+    process.argv = ["node", "check-archive-links.ts", playbookPath];
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const code = main();
+
+    expect(code).toBe(0);
+    expect(log.mock.calls.flat().join("\n")).toContain("冒頭注記 あり");
+    expect(err.mock.calls.flat().join("\n")).not.toContain("testing.md");
+  });
+
+  it("frontmatter 付きで注記が無ければ従来どおり exit 1（検出力を落とさない）", () => {
+    const playbookPath = writeArchive({
+      "tooling.md": withFrontmatter(
+        archiveWithParent(false, "本文 [ACE-1-1](./tooling.md#ace-1-1)。\n"),
+      ),
+    });
+    process.argv = ["node", "check-archive-links.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const code = main();
+
+    expect(code).toBe(1);
+    expect(err.mock.calls.flat().join("\n")).toContain("tooling.md");
   });
 
   it("引数も ACE_PLAYBOOK_PATH も無ければ usage error（exit 2）", () => {

@@ -405,6 +405,7 @@ chmod 700 "$READ_ONLY_TMP"
 rm "$FRAGMENTS/5.docs.readonly-check.md"
 if [[ "$RC" -eq 0 && "$OUT" == *"FRAGMENTS=1"* ]]; then ok "--check は書き込み可能 TMPDIR を要求しない"; else bad "--check が TMPDIR 書き込みに依存"; fi
 
+printf '%s\n' '- 契約から外した名前' > "$FRAGMENTS/5.breaking.feature-g.md"
 printf '%s\n' '- 追加された機能' > "$FRAGMENTS/10.added.feature-a.md"
 printf '%s\n' '- 変更された挙動' > "$FRAGMENTS/20.changed.feature-b.md"
 printf '%s\n' '- 修正された不具合' > "$FRAGMENTS/30.fixed.feature-c.md"
@@ -470,8 +471,8 @@ if [[ "$RC" -eq 2 && "$OUT" == *"集約済み CHANGELOG を生成できません
 source "$SCRIPT_DIR/cases/snapshot-transactions.sh"
 : > "$TMP/gh.log"
 run_contract "$FIX" --write
-if [[ "$RC" -eq 0 && "$OUT" == *"MATERIALIZED=6"* && "$OUT" == *"CONSUMED=6"* ]]; then ok "全6種別を materialize"; else bad "materialize が失敗"; fi
-if [[ "$(tr '\n' ' ' < "$TMP/gh.log")" == "10 20 30 40 50 60 " ]]; then ok "--write は各断片の Issue 番号を検証"; else bad "--write が断片の Issue 番号を渡さない"; fi
+if [[ "$RC" -eq 0 && "$OUT" == *"MATERIALIZED=7"* && "$OUT" == *"CONSUMED=7"* ]]; then ok "全7種別を materialize"; else bad "materialize が失敗"; fi
+if [[ "$(tr '\n' ' ' < "$TMP/gh.log")" == "10 20 30 40 5 50 60 " ]]; then ok "--write は各断片の Issue 番号を検証"; else bad "--write が断片の Issue 番号を渡さない"; fi
 if [[ ! -e "$FRAGMENTS/.ff-changelog.lock" ]]; then ok "成功後に集約 lock を解放"; else bad "集約 lock が残存"; fi
 if changelog_mode="$(stat -c '%a' "$CHANGELOG" 2>/dev/null)"; then :; else changelog_mode="$(stat -f '%Lp' "$CHANGELOG")"; fi
 if [[ "$changelog_mode" == 640 ]]; then ok "materialize 前後で CHANGELOG の file mode を保全"; else bad "CHANGELOG の file mode が変化"; fi
@@ -483,8 +484,8 @@ if [[ "$unreleased_added_count" -eq 1 ]]; then ok "既存の追加見出しへ�
 added_line="$(grep -n '^- 追加された機能$' "$CHANGELOG" | cut -d: -f1)"
 fixed_line="$(grep -n '^- 修正された不具合$' "$CHANGELOG" | cut -d: -f1)"
 if [[ -n "$added_line" && -n "$fixed_line" && "$added_line" -lt "$fixed_line" ]]; then ok "種別順が決定的"; else bad "種別順が不定"; fi
-heading_order="$(awk '/^## \[Unreleased\]$/{f=1;next} /^## \[/{f=0} f && /^### (追加|変更|修正|ドキュメント|削除|セキュリティ)$/{printf "%s ", $0}' "$CHANGELOG")"
-if [[ "$heading_order" == "### 追加 ### 変更 ### 修正 ### ドキュメント ### 削除 ### セキュリティ " ]]; then ok "全6種別の見出し順が決定的"; else bad "全6種別の順序または変換が不正"; fi
+heading_order="$(awk '/^## \[Unreleased\]$/{f=1;next} /^## \[/{f=0} f && /^### (破壊的変更|追加|変更|修正|ドキュメント|削除|セキュリティ)$/{printf "%s ", $0}' "$CHANGELOG")"
+if [[ "$heading_order" == "### 破壊的変更 ### 追加 ### 変更 ### 修正 ### ドキュメント ### 削除 ### セキュリティ " ]]; then ok "全7種別の見出し順が決定的（破壊的変更を先頭に置く）"; else bad "全7種別の順序または変換が不正"; fi
 if [[ ! -e "$FRAGMENTS/10.added.feature-a.md" && ! -e "$FRAGMENTS/30.fixed.feature-c.md" ]]; then ok "成功後に断片を削除"; else bad "消費済み断片が残る"; fi
 
 printf '%s\n' '- staged first' > "$FRAGMENTS/70.changed.staged-first.md"

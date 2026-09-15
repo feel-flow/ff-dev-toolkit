@@ -324,3 +324,49 @@ else
     bad "通常 PR が共有 CHANGELOG を直接編集"
   fi
 fi
+
+# --- 契約側の要素を消す変更には breaking 断片が要る ---
+# 公開面の一覧（PUBLIC-SURFACE.md）と実体を**同時に**消す PR は、skill-count-consistency の
+# 集合一致では緑になる（一覧も実体も同じだけ縮むため）。互換性の約束の対象が黙って消えるのは
+# まさに破壊的変更なので、base の一覧に在って HEAD の一覧に無い契約要素があるなら、
+# changelog.d に breaking 断片を要求する。対象は skill の起動名 / hook の三つ組 /
+# 導入先に配置されるパス / 契約側の FF_*（抽出は tests/lib/public-surface.sh と共有）。
+#
+# base は共有 CHANGELOG の直編集判定と同じ default branch。FF_SURFACE_BASE_REF は
+# 変異バッテリー専用の差し替え口で、通常運用では設定しない（他 suite の FF_*_ROOT と同じ扱い）。
+SURFACE_LIB="$REPO_ROOT/plugins/ff-dev-toolkit/tests/lib/public-surface.sh"
+SURFACE_DOC_REL="plugins/ff-dev-toolkit/PUBLIC-SURFACE.md"
+surface_base_ref="${FF_SURFACE_BASE_REF:-${default_ref:-}}"
+if [[ ! -f "$SURFACE_LIB" ]]; then
+  bad "公開面の共有実装がありません: $SURFACE_LIB"
+elif [[ ! -f "$REPO_ROOT/$SURFACE_DOC_REL" ]]; then
+  bad "公開面の一覧がありません: $SURFACE_DOC_REL"
+elif [[ -z "$surface_base_ref" ]]; then
+  bad "base を解決できず契約要素の削除判定が成立しない（fail-closed）"
+elif ! git -C "$REPO_ROOT" merge-base --is-ancestor "$surface_base_ref" HEAD 2>/dev/null; then
+  bad "base が先行しているため契約要素の削除判定が成立しない（鮮度・変更起因ではない）"
+else
+  # shellcheck source=../../lib/public-surface.sh
+  . "$SURFACE_LIB"
+  surface_head_contract="$(ff_surface_contract_tokens "$REPO_ROOT/$SURFACE_DOC_REL" | LC_ALL=C sort -u)"
+  surface_base_doc="$TMP/base-public-surface.md"
+  if git -C "$REPO_ROOT" show "${surface_base_ref}:${SURFACE_DOC_REL}" > "$surface_base_doc" 2>/dev/null; then
+    surface_base_contract="$(ff_surface_contract_tokens "$surface_base_doc" | LC_ALL=C sort -u)"
+  else
+    # base に一覧が無い（一覧の初版）。削除は起こり得ないので空集合として扱う。
+    surface_base_contract=""
+  fi
+  if [[ -n "$surface_base_contract" && -z "$surface_head_contract" ]]; then
+    bad "公開面の一覧から契約要素を 1 件も抽出できません（見出しか書式を変えた場合は本 suite も更新すること）"
+  else
+    surface_removed="$(comm -23 <(printf '%s\n' "$surface_base_contract") <(printf '%s\n' "$surface_head_contract") | sed '/^$/d' | tr '\n' ' ')"
+    surface_breaking="$(find "$REPO_ROOT/changelog.d" -maxdepth 1 -type f -name '*.breaking.*.md' 2>/dev/null | wc -l | tr -d ' ')"
+    if [[ -z "$surface_removed" ]]; then
+      ok "契約側の要素は base から減っていない"
+    elif [[ "$surface_breaking" -gt 0 ]]; then
+      ok "契約側の要素の削除・改名に breaking 断片が伴っている（${surface_removed}）"
+    else
+      bad "契約側の要素が base から消えているのに changelog.d に breaking 断片がありません: ${surface_removed}"
+    fi
+  fi
+fi

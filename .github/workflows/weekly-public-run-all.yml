@@ -37,7 +37,7 @@ concurrency:
 jobs:
   run-public-suites:
     runs-on: ubuntu-latest
-    # job の timeout は全 step の timeout 合計（先行 19 分 + 本体 40 分）より長く取る。
+    # job の timeout は全 step の timeout 合計（先行 21 分 + 本体 40 分）より長く取る。
     # job 側 timeout で cancel されると if: failure() の起票 step ごと殺され、
     # 通知契約が破れる — ハングは各 step の timeout が先に失敗へ倒し、起票まで届く。
     timeout-minutes: 75
@@ -53,6 +53,39 @@ jobs:
       # .github/dependabot.yml を置いてはいけない** — 公開側は SSOT からの
       # 一方向ミラー（rsync --delete）で、公開側で作られた更新はミラー時に消える。
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # actions/checkout は git clone と違い refs/remotes/origin/HEAD を置かない。
+      # ace-curate-commit が SKILL.md から抽出して実測する保護判定 block は、default
+      # branch の解決に origin/HEAD を使う。未設定だとこの block は保護判定へ到達する前に
+      # exit 1 し、全シナリオが「origin/HEAD を解決できません」で落ちる（開発元の週次
+      # CI が同じランナー特性へ先に対策を入れており、こちらはその写し）。
+      # git remote set-head に --force は無い（-a/--auto・-d/--delete・<branch> のみ）。
+      # 手動 dispatch の選択ブランチは remote の default と限らないので使わない。
+      - name: Point origin/HEAD at the remote default branch
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          default_branch="$(git ls-remote --symref origin HEAD | awk '/^ref:/{sub(/^refs\/heads\//,"",$2); print $2}')"
+          default_branch="${default_branch%%$'\n'*}"
+          test -n "$default_branch"
+          # actions/checkout は checkout した SHA を refs/remotes/origin/<checkout したブランチ>
+          # へ置く。既定ブランチを checkout した回は、この ref が**判定に使いたい基準そのもの**
+          # なので触らない。ここで無条件に fetch すると、走行中に進んだ live の先端でその ref を
+          # 上書きしてしまい、base を基準にする検査が変更と無関係な鮮度赤に倒れる。
+          #
+          # fetch が要るのは次の 2 つだけで、どちらも「先行ガードを効かせたい回」と一致する:
+          #   - ref が無い = 既定ブランチ以外からの dispatch（checkout は別名の ref を作る）。
+          #     set-head は実在する refs/remotes/origin/<branch> を要求するので、この回は
+          #     fetch しないと step 自体が失敗する
+          #   - 初回試行でない = Re-run。GitHub の Re-run は元 run の commit SHA で checkout
+          #     するため、ref をそのまま信じると古い checkout が自己参照で緑になる。
+          #     変数が無い環境も fetch 側へ倒す（fail-closed）
+          if [ "${GITHUB_RUN_ATTEMPT:-0}" != 1 ] \
+            || ! git rev-parse --verify --quiet "refs/remotes/origin/${default_branch}^{commit}" >/dev/null; then
+            git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"
+          fi
+          git remote set-head origin "$default_branch"
+          test "$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" = "origin/${default_branch}"
 
       # SHA ピン（ADR-048）。SHA は resolve 時点で actions/setup-node の
       # 「同 step の uses: 行末コメントが示す版」のタグが指していたもの

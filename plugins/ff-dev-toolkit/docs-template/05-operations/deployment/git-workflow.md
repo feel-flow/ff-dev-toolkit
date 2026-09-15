@@ -1349,6 +1349,10 @@ tracking Issue / Epic 配下に多数の sub-issue がぶら下がっていて 1
 | バッチ間 | 直列 | 先行バッチのマージ完了を後続バッチの開始条件にする |
 | マージ後の ACE ナレッジ体系化（親） | 直列 | PR ごとの `/ace-curate` は PLAYBOOK の frontmatter / claim を共有するため並列にしない（4 回目の実測で直列化） |
 
+### Epic と子 Issue の sub-issues 紐付け
+
+棚卸しで GitHub の sub-issues API に親子を載せるときは、`gh api` をその場で組み立てない。`-f sub_issue_id=` は値を常に文字列で送り、integer スキーマで全件 422 になる（本テンプレートのソースリポジトリの観測台帳 OBS-052）。同梱の `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo OWNER/REPO <parent> <child>...` を使う。ヘルパは Issue 番号から database ID を解決して `-F` で送り、失敗時は HTTP 本文を出し、1 件目の失敗で止まる。Claude Code では PreToolUse ガード `hooks/guard-sub-issue-id.sh` が `-f sub_issue_id=` / `-f after_id=` / `-f before_id=` を実行前に止める。
+
 ## ワークフロー全体のベストプラクティス
 
 ### 1. Issue駆動開発の徹底

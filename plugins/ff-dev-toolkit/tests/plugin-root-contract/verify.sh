@@ -521,6 +521,7 @@ SCRIPT_EXPECT_RC=(
   "check-plugin-versions.sh|1"
   "check-version-claims.sh|2"
   "effort-report.sh|2"
+  "link-sub-issues.sh|2"
   "merge-cleanup.sh|1"
   "multi-agent.sh|2"
   "multi-review.sh|2"
@@ -549,8 +550,8 @@ script_expect_rc() {
 # `${VAR:?…}` のような修飾付き parameter expansion で呼ばれる 2 本（Issue 本文差分の判定器と
 # 工数集計器）が構造的に母集団の外にあった。床を「同じ抽出から導いた 12」に置いていたため、
 # 漏れは部分集合を自分自身と比べるだけになって検出できなかった。
-MIN_ROOT_SCRIPTS=14
-MIN_GUARDED_SCRIPTS=14
+MIN_ROOT_SCRIPTS=15
+MIN_GUARDED_SCRIPTS=15
 
 script_guard_exempt_reason() {
   local name="$1" entry
@@ -1433,7 +1434,7 @@ fi
 # node entry（`node "${ROOT}/scripts/asdd/<名>.mjs"`）を母集団へ入れた分も含む実数。床を据え置くと
 # ちょうどその差だけ余裕が生まれ、node 起動が丸ごと検出対象から落ちても床を通過する（下の
 # negative control が、検出外の綴りへ書き換えた live の写しで赤になることを実測する）。
-MIN_HANDOFF_LAUNCHES=108
+MIN_HANDOFF_LAUNCHES=109
 
 handoff_launch_files() { # <tree root> → 対象 .md を列挙
   find "$1/skills" -name SKILL.md -type f 2>/dev/null
