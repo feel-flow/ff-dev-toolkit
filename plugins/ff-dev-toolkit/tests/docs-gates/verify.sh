@@ -1684,6 +1684,17 @@ else
       "AGENTS.md の開発ルール節が生存判定の第 1 段（lock の読み取り）をコマンドの実値で持つ"
     deleg_must_contain_section_file "$REPO_AGENTS" "$DELEG_AGENTS_HEADING" 'ps -ww -eo pid,ppid,etime,command' \
       "AGENTS.md の開発ルール節が生存判定の第 2 段（プロセスの実測）をコマンドの実値で持つ"
+    # スキル実行の正本は作業ツリー側。インストール済みスナップショットと食い違っても
+    # そちらへ従う旨が開発ルール節から外れると、チェーン末尾が旧本文のまま走る。
+    # 2 本に分ける（直上の生存判定と同じ）。末尾句だけだと優先されない側を消しても緑。
+    # 変異検出: 「インストール済みスナップショット」を落とすとその 1 件だけが赤。
+    # 「この正本に従う」を落とすとその 1 件だけが赤（2026-09-15 実測）。
+    deleg_must_contain_section_file "$REPO_AGENTS" "$DELEG_AGENTS_HEADING" \
+      'インストール済みスナップショット' \
+      "AGENTS.md の開発ルール節が優先されない側（インストール済みスナップショット）を名指ししている"
+    deleg_must_contain_section_file "$REPO_AGENTS" "$DELEG_AGENTS_HEADING" \
+      'この正本に従う' \
+      "AGENTS.md の開発ルール節がスキル実行の正本をインストール済みスナップショットより優先すると述べている"
   fi
 fi
 

@@ -55,8 +55,8 @@ SRC_LEDGER_TEMPLATE="$PLUGIN_ROOT/docs-template/08-knowledge/OBSERVATIONS.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=185
-EXPECTED_GATE_CHECKS_PUBLIC=170
+EXPECTED_GATE_CHECKS_MONOREPO=190
+EXPECTED_GATE_CHECKS_PUBLIC=175
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -522,6 +522,10 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|まず**観測台帳**へ記録する|観測台帳: 起票前にまず台帳へ記録|2"
   "${FIX_SKILL}|retrospective-SKILL.md|台帳は**作業中のリポジトリ**の \`docs/08-knowledge/OBSERVATIONS.md\`|観測台帳: 作業中リポジトリの台帳へ記録|2"
   "${FIX_SKILL}|retrospective-SKILL.md|**累計 3 回**に到達し、対応 Issue が未リンク|観測台帳: Issue 昇格の閾値|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|#### Count の単位|観測台帳: Count の単位節|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**1 行 = 1 回**|観測台帳: Count は 1 行 1 回|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**同一セッション・同一エントリは 1 回**|観測台帳: 同一セッションの反復は 1 回|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**既存エントリは遡及しない**|観測台帳: Count の既存値は遡及しない|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**特急レーン**|観測台帳: 重大観測の特急レーン|1"
   "${FIX_SKILL}|retrospective-SKILL.md|アクションに繋がらない Keep は記録しない|観測台帳: Keep はアクションに繋がるものだけ記録|1"
   "${FIX_SKILL}|retrospective-SKILL.md|\`\${FF_DEV_TOOLKIT_ROOT}/docs-template/08-knowledge/OBSERVATIONS.md\` をコピーして作成する|観測台帳: 不在時はテンプレートから作成|1"
@@ -671,6 +675,13 @@ restore_all
 printf '\n%s\n' '- **SSOT 以外のリポジトリで作業中**: 台帳へ直接書かず、観測を SSOT リポジトリへ `[observation]` 接頭辞の Issue として受け渡す' >>"$FIX_SKILL"
 if assert_mutated "$FIX_SKILL" "$PRISTINE/retrospective-SKILL.md" "M-T 旧受け渡し便の逐語復元"; then
   expect_red "M-T 旧受け渡し便の逐語復元（not_contains）" "✗ 観測台帳: 旧受け渡し便の起票規則が復元されていない" 1
+fi
+restore_all
+
+# M-T2: Count を事象の多重度と読める旧定義（退役）を逐語復元する。
+printf '\n%s\n' '`Count` は観測の累計回数で、「この警告が当たった回数」になる' >>"$FIX_SKILL"
+if assert_mutated "$FIX_SKILL" "$PRISTINE/retrospective-SKILL.md" "M-T2 Count 旧定義の逐語復元"; then
+  expect_red "M-T2 Count 旧定義の逐語復元（not_contains）" "✗ 観測台帳: Count を事象の多重度と読める旧定義が復元されていない" 1
 fi
 restore_all
 
