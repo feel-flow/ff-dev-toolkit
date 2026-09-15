@@ -17,7 +17,10 @@
 #           検査を remote 先行より後ろに置いていたため、先行した remote-tracking ref のせいで
 #           別の理由（先行判定）で止まっており、fetch 失敗の停止を測れていなかった。
 #           「stale だが通る値」の状態で fetch を失敗させる順序へ組み替えて解消。
-#           節ごと移動させる（配置を失う）と 6 件が赤（針は節スコープで張ってある）。
+#           節ごと移動させる（配置を失う）と 7 件が赤（針は節スコープで張ってある。
+#           節スコープ針 6 本 + フェンス抽出の空振り 1 件。針を増減したらこの数も更新すること）。
+#           `retrospective` が自前の base 先行ガードを持つ、という相互参照を削ると 1 件が赤
+#           （2026-09-15 実測。実体側は tests/retrospective-contract が固定する）。
 #
 # 変異検出（curate の追記前予測・完了報告の契約）:
 #           上限以上のとき「追記したうえでフォローアップに記録する」へ書き換えると 1 件が赤。
@@ -139,6 +142,13 @@ section_contains "$REFINE_FILE" "$REFINE_PREGATE_SECTION" \
 section_contains "$REFINE_FILE" "$REFINE_PREGATE_SECTION" \
   "承認待ちの窓の後段に default ブランチの共有文書への" \
   "対象範囲を閉じた理由（窓の後段に共有文書への書き込みがあるか）"
+# `retrospective` は同じ共有文書（OBS 台帳）へ直接 push するので、本規定の対象外にした
+# 理由は「承認待ちの窓を持たない」であって「照合が要らない」ではない。相互参照が
+# 片側だけ腐ると、`retrospective` のガードを外しても本節の注記は「持つ」と言い続ける
+# （その実体は tests/retrospective-contract が固定している）。
+section_contains "$REFINE_FILE" "$REFINE_PREGATE_SECTION" \
+  "**記録内容を作る前**（同一性判定・\`Count\`・OBS ID 採番より前）の照合を自前で持つ" \
+  "retrospective が自前の base 先行ガードを持つと相互参照している"
 section_contains "$REFINE_FILE" "### Phase R3: 適用" \
   "同じ集合" \
   "R3 開始前ガードが承認前の照合と同じ集合を見ると明記している"

@@ -190,9 +190,11 @@ git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
 > 手戻り（承認対象を作り直す）が起きるのは、**承認待ちの窓の後段に default ブランチの共有文書への
 > 書き込みがある**スキルだけである。`ace-curate` と `retrospective` は同じ共有文書（PLAYBOOK /
 > OBSERVATIONS）へ直接書くが、**承認待ちの窓を持たない**（どちらも収集して追記するだけ）ので
-> 本規定の対象外。ただし `retrospective` は同じ台帳へ直接 push しながら base 先行のガード自体を
-> 持たない（`ace-curate` は持つ）ので、その非対称は別の観点として follow-up Issue で扱う。
-> 横断化が要ると分かった時点で同じく Issue を立てる。
+> 本規定の対象外。`retrospective` も同じ台帳へ直接 push するが、承認待ちの窓ではなく
+> **記録内容を作る前**（同一性判定・`Count`・OBS ID 採番より前）の照合を自前で持つ —
+> `ace-curate` と同じ向きの base 先行ガードで、clean tree の検査だけを単独コミットの
+> 粒度に合わせて台帳のパスへ絞ってある。
+> 他スキルへ横断化が要ると分かった時点で Issue を立てる。
 
 ### Phase R3: 適用
 

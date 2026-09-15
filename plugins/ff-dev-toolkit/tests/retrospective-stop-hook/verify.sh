@@ -14,6 +14,16 @@
 #           （改行入り root で JSON が壊れ、注入が丸ごと消える向き）。
 #           良性: `CLAUDE_PLUGIN_ROOT` の非空検査を外しても緑（直後の実在検査が同じ状態を
 #           捕まえるため。非空検査は多重防御であって唯一の関門ではない）。
+# 変異検出（チェーン末尾判定 / Issue `#1635`）:
+#   同一 message の位置比較を反転すると「振り返りの後に末尾が来たら要求する」が赤。
+#   位置比較を末尾優先にすると「末尾の後に振り返りが来たら実施済み」が赤。
+#   前置からバッククォートを外すと「バッククォートのコマンド置換」が赤。
+#   前置からブレースを外すと「ブレースグループ内」が赤。
+#   予約語から `!` を外すと「! で否定された gh pr merge」が赤。
+#   予約語から `if` を外すと「if の条件部」が赤。
+#   予約語から `else` を外すと「else の直後」が赤。
+#   末尾から改行を外すと「引数なしで行末」が赤。
+#   末尾を否定先読みへ広げると「sed の | 区切り」が赤。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -837,6 +847,30 @@ EOF
 run_hook "$(stop_input_for "$NOT_DELIVERED_TRANSCRIPT")"
 assert_continuation "span 内に振り返りが無ければチェーン末尾として継続を要求する"
 
+# 上の 2 件は振り返りと末尾を**別 message** へ置いている。同居した場合は message 内の
+# 位置が答えを決める（Issue `#1635`）。ホストが出す普通の形は `[text][tool_use]` なので、
+# Epic 一括対応で「PR1 の振り返りを書いてから PR2 の /merge-cleanup を呼ぶ」は 1 つの
+# message に収まる。先に当たった方を返す実装だとこれが done に倒れ、PR2 の振り返りが
+# 黙って消えた（偽陰性 = この hook が唯一許されない失敗形）。逆向きも同時に壊れていて、
+# 末尾のあとに振り返りを書いた message は実施済みなのに継続を要求していた。
+SAME_MSG_RETRO_THEN_TAIL="$(mk_transcript same-msg-retro-then-tail <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"Epic の子 PR を全部片付けて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"## セッション振り返り\nPR101 の分。\n\n続けて PR102 を片付けます。"},{"type":"tool_use","name":"Skill","input":{"skill":"ff-dev-toolkit:merge-cleanup"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"クリーンアップが完了しました"}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$SAME_MSG_RETRO_THEN_TAIL")"
+assert_continuation "同一 message で振り返りの後に末尾が来たら、その末尾の分を要求する"
+
+SAME_MSG_TAIL_THEN_RETRO="$(mk_transcript same-msg-tail-then-retro <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"PR を仕上げて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"ff-dev-toolkit:ace-curate"}},{"type":"text","text":"## セッション振り返り\n観測なし"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"background の後片付けも終わりました"}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$SAME_MSG_TAIL_THEN_RETRO")"
+assert_silent_success "同一 message で末尾の後に振り返りが来たら実施済みとして扱う"
+
 # `gh pr merge` の一致点は 3 系統ある（行頭 / 区切りの直後 / 前置付き）。`&&` の 1 系統
 # だけを固定していると、**このリポジトリのワークフローが実際に打つ形**——行頭の
 # `gh pr merge <PR> --squash`——を落とす変異が緑で通る（実測）。3 系統すべてを置く。
@@ -863,6 +897,83 @@ EOF
 )"
 run_hook "$(stop_input_for "$MULTILINE_MERGE_TRANSCRIPT")"
 assert_continuation "複数行コマンドの行頭にある gh pr merge も拾う"
+
+# 前置集合の穴（Issue `#1635`）。いずれも実測で `no-tail`（無音）へ倒れていた形で、
+# 見落とす側 = 振り返りが黙って消える向きなので対で固定する。`$(…)` と `&&` `||` は
+# 改修前から拾えていたため、上の既存 3 件がその回帰を担う。
+BACKTICK_MERGE_TRANSCRIPT="$(mk_transcript backtick-merge <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"OUT=`gh pr merge 1624 --squash`"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$BACKTICK_MERGE_TRANSCRIPT")"
+assert_continuation "バッククォートのコマンド置換にある gh pr merge を拾う"
+
+BRACE_MERGE_TRANSCRIPT="$(mk_transcript brace-merge <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"{ gh pr merge 1624 --squash; }"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$BRACE_MERGE_TRANSCRIPT")"
+assert_continuation "ブレースグループ内の gh pr merge を拾う"
+
+# `!` は文字クラスではなく予約語側に置いている。POSIX で `!` は独立した語である必要が
+# あり、`!gh` は履歴展開であってコマンド位置ではないため、後続の空白を必須にしている。
+BANG_MERGE_TRANSCRIPT="$(mk_transcript bang-merge <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"! gh pr merge 1624 --squash"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$BANG_MERGE_TRANSCRIPT")"
+assert_continuation "! で否定された gh pr merge も実行として拾う"
+
+IF_MERGE_TRANSCRIPT="$(mk_transcript if-merge <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"if gh pr merge 1624 --squash; then echo merged; fi"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$IF_MERGE_TRANSCRIPT")"
+assert_continuation "if の条件部にある gh pr merge を拾う（then の直後は改行で既に拾えている）"
+
+ELSE_MERGE_TRANSCRIPT="$(mk_transcript else-merge <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"if false; then echo skip; else gh pr merge 1624 --squash; fi"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$ELSE_MERGE_TRANSCRIPT")"
+assert_continuation "else の直後にある gh pr merge を拾う（if/then と同じ予約語クラス）"
+
+# 末尾は狭い許可リストのまま `\n` だけを足した。`(?![A-Za-z0-9_-])` にすると
+# 引数なしの `sed 's|gh pr merge|x|'` の `|` まで許し、その形をマージと読む
+# （下の否定テストがその回帰）。引数付きの `s|gh pr merge 1|x|` は空白で
+# 既に一致するので、狭い末尾が守るのは引数なし形だけである。
+EOL_MERGE_TRANSCRIPT="$(mk_transcript eol-merge <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr merge\necho done"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$EOL_MERGE_TRANSCRIPT")"
+assert_continuation "引数なしで行末に来る gh pr merge も拾う"
+
+SED_DELIM_TRANSCRIPT="$(mk_transcript sed-delim <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"ドキュメントを直して"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"sed -i '' 's|gh pr merge|マージ|' docs/a.md"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$SED_DELIM_TRANSCRIPT")"
+assert_no_continuation "sed の | 区切りに挟まれた gh pr merge はチェーン末尾にしない"
+
+# 前置にバッククォートを足した副作用。引用の内側にコマンド区切りを含む形
+# （`echo "手順: ; gh pr merge"`）と同じ既知の偽陽性で、コストは継続 1 回。
+# コマンド置換 `` `gh pr merge` `` を拾う契約を維持したまま、markdown の
+# インラインコードを実行と区別するにはシェルパーサが要る。
+MARKDOWN_BT_TRANSCRIPT="$(mk_transcript markdown-backtick-merge <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"Issue を立てて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"gh issue create --body '最後に `gh pr merge 1636 --squash` を実行'"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$MARKDOWN_BT_TRANSCRIPT")"
+assert_continuation "引用内の markdown インラインコードにある gh pr merge は既知の偽陽性（引用内セパレータと同型）"
 
 SLASH_COMMAND_TRANSCRIPT="$(mk_transcript slash-command <<'EOF'
 {"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}

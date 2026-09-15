@@ -22,6 +22,11 @@
 #   C. 導出した上限・1 行報告・承認境界が消費側文書（git-workflow / DEPLOYMENT /
 #      workflow-principles / README）へ同じ値で伝播している（片側書き換えの検出）
 #   D. `/ace-curate` との責務分離の記述が双方向に残っている
+#   E. 台帳直 push の base 先行ガード（Issue `#1570`）が「記録内容を作る前」の節に在り、
+#      復帰（取り込んでから記録を作り直す）と `/ace-curate` との述語差の理由まで残って
+#      いる。**節そのものの位置**（ガード節が記録手順より前）と、台帳パスが 3 箇所
+#      （フェンス・記録手順 0・書き込み節の commit 形）で一致することも見る — 節スコープ針は
+#      節の移動を検出せず、パスは独立リテラルなので片側だけ変えても文言検査は通るため
 #
 # **契約値（提案上限・1 行報告の文面）はこのファイルに書かない**（SKILL.md から
 # 導出する）。一方、針数・ファイル数の期待値は「ループが黙って縮む」ことを捕まえる
@@ -35,9 +40,28 @@
 # observation 受け渡し便の起票規則〔SKILL.md〕と、SSOT 中央台帳の所在〔消費側文書〕）。
 # 追記型の矛盾はレビューで見る前提とし、ここでは主張しない。
 #
+# **検査 E のフェンスが実際にどう振る舞うかは本 suite の対象外**。引数の向き・pathspec の
+# cwd 依存・停止点の fail-open は文言では測れないので、tests/retrospective-ledger-freshness/
+# が SKILL.md からフェンスを抽出して隔離 git fixture で走らせる。ここへ振る舞い検査を
+# 置かないのは、対の selftest が「baseline の ✓ ラベルは全件変異で実測」を要求するため、
+# 振る舞い 1 件につきゲート全体の再実行が増え、**他の約 85 変異も毎回 git fixture の構築を
+# 払う**から（実測で selftest が 11 分 → 18 分）。層を分けて両方を速いまま保つ。
+#
 # 検出力の実測は tests/retrospective-contract-selftest/（同 Issue）が変異注入で行う。
 #
 # 外部コマンド・一時領域は不要。read-only。
+#
+# 変異検出（台帳直 push の base 先行ガード。2026-09-15 実測。変異は 1 件ずつ当て、
+# 前後で対照を取る。赤転しなかった変異は無し。件数の正本は selftest の expect_red 宣言）:
+#           ガード節を**見出しごと**記録手順の後ろへ移すと 1 件が赤（節内の 11 針は全件緑の
+#           まま通る。節スコープ針は配置を見ないので、見出しの前後関係そのものを検査している）。
+#           記録手順 0 の台帳パスだけを変えると 1 件が赤、書き込み節の commit 先だけを
+#           変えると 1 件が赤（フェンスから抽出したパスを基準に 3 箇所の一致を見ている）。
+#           台帳 status の行を落とすと 3 件が赤（pathspec の針・rc を受ける針・パス抽出）。
+#           復帰手順 1 の行を落とすと 3 件が赤（ff-only・rebase 否定・force 禁止が同一行）。
+#           復帰不能時の行を落とすと 2 件が赤（記録の断念と、提案の閾値の免除を受けない規定）。
+#           先行判定・`origin/*` の形状検査・台帳 dirty の復帰可能・非デフォルトブランチ・
+#           記録手順 0 の照合参照は、契約行ごとに 1 件ずつ赤。
 
 set -euo pipefail
 
@@ -437,6 +461,131 @@ contains "$SKILL" "代わりに \`Status\` を \`mitigated\`、\`Issue\` を対�
 # #1135（ACE の件数上限）と共通の原則。片方の設計だけが残ると、次に同型の形骸化が
 # 起きたときに「閾値を緩める」対処へ倒れる。
 contains "$SKILL" "**閾値は発火点であり、発火時に取った判断は状態として台帳へ書き戻す。**" "提案閾値: 閾値到達時の判断を状態として書き戻す"
+# ── 台帳直 push の base 先行ガード（Issue `#1570`） ─────────────────────────────
+# 台帳はデフォルト統合ブランチの共有文書で、`/retrospective` はそこへ直接 push する。
+# 照合が無いと、同一性判定・`Count` +1・OBS ID 採番が古い台帳から決まり、push の
+# non-fast-forward で弾かれた時点では記録内容が既に作られている（同じ観測が別セッションで
+# 記録済みでも `Count` が二重に増えうる）。針は **節スコープ**で張る — 全文 grep だと、
+# 照合が書き込み節や別スキルの引用へ移って「記録内容を作る前に在る」という要件を
+# 失っても緑のままになる。
+LEDGER_PREGATE_SECTION="### 記録の前に base の先行を照合する"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  "**記録手順 0 より前に照合する。**" \
+  "台帳の base 先行ガード: 照合点は記録内容を作る前"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  "最終境界であって検出点ではない" \
+  "台帳の base 先行ガード: push の non-fast-forward を検出点と混同しない"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  'git merge-base --is-ancestor "origin/${default_branch}" HEAD' \
+  "台帳の base 先行ガード: base の先行を見る"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  'git status --porcelain --untracked-files=all -- ":(top)docs/08-knowledge/OBSERVATIONS.md"' \
+  "台帳の base 先行ガード: 台帳パスの未コミット変更も見る（:(top) で cwd 非依存）"
+# pathspec を cwd 相対のまま残すと、リポジトリルート以外から実行した回に台帳 dirty を
+# 見落として通る（実測: サブディレクトリからは warning だけ出て rc=0）。`/ace-curate` の
+# 全ツリー status には無い、絞ったことで入った fail-open なので `:(top)` を針で固定する。
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  'ledger_status="$(git status' \
+  "台帳の base 先行ガード: git status の失敗を受けてから空判定する"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  '[[ "$default_ref" == origin/* ]]' \
+  "台帳の base 先行ガード: default branch ref の形状を検査する"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  '`git pull --ff-only` で取り込む' \
+  "台帳の base 先行ガード: 取り込みは ff-only（rebase / merge で作りかけを残さない）"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  '`--rebase` / merge で取り込まない' \
+  "台帳の base 先行ガード: ff-only 以外の取り込みを否定側からも固定"
+# 停止の種別ごとに帰結が違う。台帳 dirty は復帰可能（コミット/退避して再照合）で、
+# 取り込み不能は記録断念。ここを混ぜると、一過性の停止で観測が黙って落ちる。
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  '台帳自身に未コミットの変更があって止まった回は**復帰可能**である' \
+  "台帳の base 先行ガード: 台帳 dirty は復帰可能と規定"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  '**ただし「提案の閾値」は通常どおり適用する**' \
+  "台帳の base 先行ガード: 停止時も提案の閾値の免除は受けない"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  'デフォルト統合ブランチ以外に居る回は、記録の前にそのブランチへ戻る' \
+  "台帳の base 先行ガード: 非デフォルトブランチでは戻ってから記録する"
+section_contains "$SKILL" "### 記録手順" \
+  '上「記録の前に base の先行を照合する」のフェンスを通してから手順 0 へ入る' \
+  "記録手順: 手順 0 の前に照合フェンスを通す"
+# 復帰の規定（AC 3）。「取り込んでから作り直す」と「既存へ Count を足す」が別の分岐として
+# 並ぶと、実行側がどちらかを選べてしまう。後者は前者の**結果**であることまで固定する。
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  "取り込んでから記録を作り直す" \
+  "台帳の base 先行ガード: 復帰は取り込んでから記録を作り直す"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  "**記録手順 0 からやり直す**" \
+  "台帳の base 先行ガード: やり直しは記録手順 0 から"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  "並行セッションが同じ主張を既に記録していれば手順 2（\`Count\` +1・\`Last\` 更新・観測メモ 1 行）へ" \
+  "台帳の base 先行ガード: 既記録なら Count +1 へ落ちる"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  "OBS ID は**取り込んだ後の**台帳の最大連番 +1 で採番する" \
+  "台帳の base 先行ガード: OBS ID は取り込み後に採番し直す"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  "\`--force\` / \`--force-with-lease\` で先行セッションを上書きしない" \
+  "台帳の base 先行ガード: 先行セッションを force で上書きしない"
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  "復帰できないまま停止した場合" \
+  "台帳の base 先行ガード: 復帰不能時は台帳へ書かず報告に留める"
+# `/ace-curate` との述語差（clean tree を台帳パスへ絞った点）は意図的な逸脱で、理由が
+# 落ちると次の保守で「揃える」方向に戻され、作業中の単独実行が記録できなくなる。
+section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
+  "clean tree の検査を**台帳のパスへ絞っている**" \
+  "台帳の base 先行ガード: ace-curate との述語差と理由を明記"
+# 書き込み節側の相互参照。片側だけ残ると non-fast-forward が再び検出点として読まれる。
+section_contains "$SKILL" "### 書き込み（定型コミット）" \
+  "検出点は上の照合" \
+  "書き込み節: non-fast-forward は最終境界で検出点は照合側"
+# 最終境界からの復帰も、照合点からの復帰と同じ「作り直し」へ戻す。ID の採番し直しだけを
+# 指示すると、照合から push までの間に同じ主張が記録された回に重複エントリが残る。
+section_contains "$SKILL" "### 書き込み（定型コミット）" \
+  "**記録手順 0 から記録内容を作り直す**" \
+  "書き込み節: non-fast-forward の復帰も記録内容の作り直しへ戻す"
+section_contains "$SKILL" "### 書き込み（定型コミット）" \
+  "OBS ID の採番し直しだけで push を再試行しない" \
+  "書き込み節: ID の採番し直しだけの再 push を否定側からも固定"
+# push の粒度はブランチなので、commit を単独に保っても未 push のローカルコミットは一緒に
+# 送られる。照合はこれを止めない（`/ace-curate` と述語を揃えるため）ので、本文で注意を置く。
+section_contains "$SKILL" "### 書き込み（定型コミット）" \
+  "**ローカルに未 push のコミットがある回は、それらも同じ push で統合ブランチへ送られる**" \
+  "書き込み節: ローカル先行のコミットも同じ push で送られると明記"
+# 台帳のパスは 3 箇所（ガードのフェンス・記録手順 0・書き込み節の commit 形）に独立した
+# リテラルで現れる。片方だけ変えると「照合したパスと書き込むパスが違う」状態になるので、
+# 節から抽出したフェンスのパスを基準に、残り 2 箇所と一致することを見る。
+LEDGER_PATH_IN_GUARD="$(awk -v sec="$LEDGER_PREGATE_SECTION" '
+  $0 == sec { in_sec = 1; next }
+  in_sec && /^#/ { in_sec = 0 }
+  in_sec && /:\(top\)/ {
+    if (match($0, /:\(top\)[^"]+/)) { print substr($0, RSTART + 6, RLENGTH - 6); exit }
+  }
+' "$SKILL")"
+if [[ -z "$LEDGER_PATH_IN_GUARD" ]]; then
+  bad "台帳の base 先行ガード: フェンスから台帳パスを抽出（不足: :(top) 付きの pathspec）"
+else
+  ok "台帳の base 先行ガード: フェンスから台帳パスを抽出"
+  section_contains "$SKILL" "### 記録手順" "\`$LEDGER_PATH_IN_GUARD\`" \
+    "記録手順 0 の台帳パスが照合フェンスと一致"
+  section_contains "$SKILL" "### 書き込み（定型コミット）" "git commit -- $LEDGER_PATH_IN_GUARD" \
+    "書き込み節の commit 形が照合フェンスと同じ台帳パスへ固定されている"
+fi
+
+# 節スコープ針は**節そのものの位置**を見ない。ガード節を見出しごと記録手順の後ろへ移すと、
+# 「記録内容を作る前に照合する」という AC を失ったまま針が全件緑で通る（実測）。見出しの
+# 前後関係そのものを検査する（tests/ace-refine の「予測節を見出しごと後ろへ移す」と同型）。
+GUARD_HEADING_LINE="$(grep -n -m1 -F -- "$LEDGER_PREGATE_SECTION" "$SKILL" | cut -d: -f1)"
+STEPS_HEADING_LINE="$(grep -n -m1 -F -- '### 記録手順' "$SKILL" | cut -d: -f1)"
+if [[ -z "$GUARD_HEADING_LINE" || -z "$STEPS_HEADING_LINE" ]]; then
+  bad "台帳の base 先行ガード: 見出しの順序を検査（不足: 見出し行を特定できません）"
+elif [[ "$GUARD_HEADING_LINE" -lt "$STEPS_HEADING_LINE" ]]; then
+  ok "台帳の base 先行ガード: 照合節が記録手順より前に置かれている"
+else
+  bad "台帳の base 先行ガード: 照合節が記録手順より前に置かれている（不足: 節が記録手順の後ろにあります）"
+fi
+
+
 # 記録手順 0 が依存するテンプレートの実在。SKILL.md の文字列だけを固定すると、テンプレートの
 # 移動・削除で導入先の初回振り返りが cp で止まるのに全 suite が緑のまま残る。
 if [[ -f "$LEDGER_TEMPLATE" ]]; then

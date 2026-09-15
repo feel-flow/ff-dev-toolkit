@@ -399,6 +399,13 @@ else
     # SKILL.md から導出して消費側文書へ伝播しているかを照合する。外部コマンド・一時領域
     # 不要。同じ「スキルの契約文言 × 消費側文書」を扱う out-of-scope 系に続けて置く。
     "$SCRIPT_DIR/retrospective-contract/verify.sh"
+    # 上の gate は「文言が在る」ことしか見ない。台帳直 push の base 先行ガードだけは
+    # SKILL.md からフェンスを抽出し、隔離 git fixture で実際に走らせる（Issue `#1570`）。
+    # 引数の向き・cwd 依存の pathspec・停止点の fail-open は、実行しないと測れない。
+    # contract 側へ置かないのは、対の selftest が「✓ ラベルは全件変異で実測」を要求する
+    # ため、振る舞い 1 件につきゲート全体の再実行が増え、他の約 85 変異も毎回 git fixture
+    # の構築を払うから（実測で selftest が 11 分 → 18 分）。git / 一時領域が無ければ ○ skip。
+    "$SCRIPT_DIR/retrospective-ledger-freshness/verify.sh"
     # 上の gate の検出力を隔離 fixture への変異注入（チェーン記載の針それぞれからの
     # コマンド削除・規定マーカーと伝播の契約行削除・上限の片側書き換え・抽出不能化・
     # 上限の併存・絞り込み文の追従漏れ・1 行報告の drift・ゲート自身の針数ガードの
@@ -1161,6 +1168,10 @@ REQUIRED_SUITES=(
   # スクリプト不在で ○ skip するため、そちらでは
   # FF_RUN_ALL_ALLOW_SKIP=weekly-health-contract が要る（上の 8 件の列挙参照）。
   weekly-health-contract
+  # /retrospective の台帳 base 先行ガードのフェンスを実際に走らせる唯一の層（Issue `#1570`）。
+  # git / 一時領域が無いと suite 全体が ○ skip し、引数の向き・cwd 依存の pathspec・
+  # 停止点の fail-open を測る手段が他に無くなる。contract 側は文言しか見ない。
+  retrospective-ledger-freshness
 )
 
 # 渡された verify.sh を走査し、1 行 1 suite で `<名前>:<skip>:<yes>:<no>:<bad>` を返す。

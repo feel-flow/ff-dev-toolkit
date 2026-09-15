@@ -37,23 +37,46 @@
 // inside the read cap, unparsable line — resolves to `first`.
 //
 // One false-positive class is known and accepted for that reason: a Bash
-// command that CONTAINS a command-position `gh pr merge` inside a here-document
-// it is writing — a session authoring workflow docs or this suite's own
-// fixtures — reads as a chain tail. Separating "runs the command" from "writes
-// the command into a file" needs a shell parser, and the cost of being wrong
-// here is one continuation prompt in a session that is, by construction, about
-// this very code.
+// command that CONTAINS a command-position `gh pr merge` inside a quoted
+// string, a here-document, or markdown inline code it is writing. The leading
+// set cannot tell "runs the command" from "writes the three words" without a
+// shell parser, so `echo "手順: ; gh pr merge --squash"` and
+// `gh issue create --body '… `gh pr merge 1 --squash` …'` both read as a
+// chain tail. The cost is one continuation prompt. Backtick is in the leading
+// set because POSIX command substitution is an invocation (Issue `#1635`);
+// markdown inline code uses the same character and therefore joins this class.
 
 import fs from "node:fs";
 
 const CAP_STAGES = [512 * 1024, 8 * 1024 * 1024];
 
-// `gh pr merge` at a command position. `(^|[\n;&|(])` is what separates an
+// `gh pr merge` at a command position. The leading set is what separates an
 // invocation from the same three words sitting inside someone's grep pattern or
 // echo string — `grep -n 'gh pr merge' file` puts a quote in front of `gh`, and
 // a quote is not a command separator. Optional leading `VAR=value` assignments
 // and an explicit path (`/usr/local/bin/gh`) are still invocations.
-const GH_PR_MERGE = /(?:^|[\n;&|(])[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]*[ \t]+)*(?:[^\s]*\/)?gh[ \t]+pr[ \t]+merge(?:[ \t]|$)/;
+//
+// Three shapes were missing until Issue `#1635` measured them, all of them
+// false negatives (the direction this module calls expensive):
+//   - command substitution and grouping — `` `gh pr merge` `` and `{ gh pr
+//     merge; }` put a backtick or a brace in command position, not a quote
+//   - reserved words that introduce a command on the same line — `if gh pr
+//     merge …; then`, `else gh pr merge`, and `! gh pr merge`. `!` belongs
+//     here rather than in the character class because POSIX requires it to be
+//     its own word; `!gh` is history expansion, not a command. `else` is the
+//     same class as `if`/`elif`/`then`/`do`: it introduces a command, and a
+//     missing match is a silent drop. `)` (case-arm) is not in the leading
+//     set; adding it would be the same accepted quote-internal false-positive
+//     class as `;`, but it is not a reserved word and is left as a known
+//     boundary rather than widening the character class.
+//   - a newline directly after `merge`, so that `gh pr merge\necho done` is an
+//     invocation. The tail stays a narrow allow-list rather than a negative
+//     lookahead: `(?![A-Za-z0-9_-])` would also accept the `|` in the
+//     argument-less form `sed 's|gh pr merge|x|'`. An argument-bearing
+//     `s|gh pr merge 1|x|` still matches either tail, because the character
+//     after `merge` is a space. The narrow tail therefore buys only the
+//     argument-less sed delimiter, not "every docs edit in this repository".
+const GH_PR_MERGE = /(?:^|[\n;&|(`{])[ \t]*(?:(?:!|if|elif|else|while|until|then|do|time)[ \t]+)*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]*[ \t]+)*(?:[^\s]*\/)?gh[ \t]+pr[ \t]+merge(?:[ \t\n]|$)/;
 
 // Skill names are matched on the segment after the plugin prefix, so
 // `ff-dev-toolkit:ace-curate` and a bare `ace-curate` both count, and a skill
@@ -193,14 +216,32 @@ const scanSlice = (text, partialHead) => {
       if (i === 0 && partialHead) continue;
       return "unknown";
     }
-    for (const block of assistantBlocks(entry)) {
-      // Entries are walked newest-first; within one entry the first matching
-      // block wins (blocks are in array order, so oldest-first there). A single
-      // message holding both a delivered retrospective and a chain-tail
-      // tool_use therefore resolves to "done" whichever came last — the
-      // fail-open direction, and not a case the skill's own output produces.
-      if (deliveredRetrospective(block)) return "done";
-      if (isChainTailTool(block)) return "tail";
+    // Entries are walked newest-first; within one entry, POSITION decides.
+    // An ordinary assistant message is `[text][tool_use]`, so a retrospective
+    // followed by a chain-tail tool_use means the tail is still owed, while a
+    // tail followed by a retrospective means it was already paid.
+    //
+    // Returning the FIRST match instead inverted both directions (measured
+    // 2026-09-15, Issue `#1635`). The expensive half was the Epic batch shape
+    // `[振り返り][tool_use]` — an agent delivering one PR's retrospective and
+    // moving straight to the next PR's `/merge-cleanup` in the same message —
+    // which read as "done" and silently dropped a retrospective that was owed.
+    // The comment here used to justify that as "not a case the skill's own
+    // output produces", but what produces it is the agent's response, not the
+    // skill. The other half blocked turns that had already delivered one.
+    //
+    // A tie is impossible: one block cannot be both a text block and a
+    // tool_use. `-1` for absent therefore also gives the single-kind answers —
+    // a tail alone beats -1, a retrospective alone does not.
+    const blocks = assistantBlocks(entry);
+    let lastRetrospective = -1;
+    let lastTail = -1;
+    for (let b = 0; b < blocks.length; b += 1) {
+      if (deliveredRetrospective(blocks[b])) lastRetrospective = b;
+      if (isChainTailTool(blocks[b])) lastTail = b;
+    }
+    if (lastRetrospective !== -1 || lastTail !== -1) {
+      return lastTail > lastRetrospective ? "tail" : "done";
     }
     const prompt = boundaryText(entry);
     if (prompt !== null) return invokesTailCommand(prompt) ? "tail" : "no-tail";

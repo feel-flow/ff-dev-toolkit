@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONSUMER="$PLUGIN_ROOT/tests/retrospective-stop-hook/verify.sh"
-EXPECTED_CONSUMER_CHECKS=111
+EXPECTED_CONSUMER_CHECKS=121
 
 command -v perl >/dev/null 2>&1 || { echo "○ skip: perl が無いため retrospective Stop hook self-test をスキップ"; exit 0; }
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
@@ -140,7 +140,19 @@ echo "  ✓ consumer は node --test の reporter を固定している"
 # 変異の直前に出現数を固定し、増減したら「変異が届いていないかもしれない」と名指しで落とす。
 expect_occurrences() { # <ファイル> <固定文字列> <期待数>
   local n
-  n="$(LC_ALL=C grep -cF -- "$2" "$1" 2>/dev/null || echo 0)"
+  # `grep -c` は 0 件のとき **stdout に `0` を出したうえで exit 1** を返す。
+  # `$( … || echo 0)` は両方を拾って `0\n0` という 2 行の値を作り、`[ "$n" -ne … ]` が
+  # 整数として解釈できずに rc=2 で返る。if 本体は実行されないので、**このガードが唯一
+  # 存在意義を持つケース（対象が消えた = 出現 0 件）でだけ黙って素通りしていた**
+  # （Issue `#1635` で実測。構造変更で変異対象の行が消えても空振りを報告しなかった）。
+  # 代入と既定値を分け、数値でない結果（ファイル不在なら空文字 + exit 2）は 0 に倒して
+  # 期待数との不一致として鳴らす。`grep -c` は一致した行数であり、同一行の複数出現は
+  # 1 と数える。過小報告は perl の単発置換が空振りして selftest が赤になる側なので
+  # fail-closed。関数名の「出現数」は行数の意味で使っている。
+  n="$(LC_ALL=C grep -cF -- "$2" "$1" 2>/dev/null)" || true
+  case "$n" in
+    '' | *[!0-9]*) n=0 ;;
+  esac
   if [ "$n" -ne "$3" ]; then
     echo "✗ 変異対象の出現数が想定と違います（${1##*/}: 「$2」が ${n} 件 / 期待 $3 件）" >&2
     echo "  出現が増えたなら /g の要否とヘッダーの棚卸しを見直すこと。単発置換のままだと" >&2
@@ -152,13 +164,13 @@ expect_occurrences() { # <ファイル> <固定文字列> <期待数>
 # 変異の検査は**登録してから並列に回す**。
 #
 # consumer 1 回が実測 21 秒（うち 3 秒は入力上限の契約を測る sleep で、これは契約そのもの
-# なので削れない）で、変異は 43 件あるため直列だと 15 分、並列エージェント下の高負荷では
-# 1 時間級になる。**時間が理由で誰も回さない検査は、検出力ゼロの検査と同じ**なので、
+# なので削れない）で、変異を直列だと数十分、並列エージェント下の高負荷では
+# 1 時間級を優に超える。**時間が理由で誰も回さない検査は、検出力ゼロの検査と同じ**なので、
 # 実行時間そのものを設計対象にする。
 #
 # 並列化できるのは fixture が変異ごとに隔離されているから（make_fixture が $TMP/<name>/plugin
 # を作り、consumer はその root だけを読む）。共有状態は無い。ここで変えるのは**実行の仕方**
-# だけで、変異の一覧・期待診断・判定条件はすべて元のまま — 43 個の登録ブロックには触らない。
+# だけで、変異の一覧・期待診断・判定条件はすべて元のまま — 登録ブロックには触らない。
 #
 # 出力は登録順に並べ直す（完了順にすると、同じ一覧でも実行のたびに並びが変わって前回との
 # 差分が読めない。run-all.sh の並列実行と同じ理由）。
@@ -373,6 +385,57 @@ expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'return invokesTai
 perl -0pi -e 's/return invokesTailCommand\(prompt\) \? "tail" : "no-tail";/return "no-tail";/' "$ROOT/hooks/retrospective-chain-tail.mjs"
 check_mutation "利用者の明示指定の検出削除" "利用者が /retrospective を明示したターンは継続を返す（AC4）" "$ROOT"
 
+# 同一 message 内の位置比較（Issue `#1635`）。退行は両方向に起きうるので対で置く —
+# 片方だけだと「全部 done に倒す」「全部 tail に倒す」のどちらかが緑で通る。
+ROOT="$(make_fixture chain-tail-block-order-inverted)"
+expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'lastTail > lastRetrospective' 1
+perl -0pi -e 's/lastTail > lastRetrospective/lastTail < lastRetrospective/' "$ROOT/hooks/retrospective-chain-tail.mjs"
+check_mutation "同一 message の位置比較を反転（振り返り後の末尾を見落とす）" "同一 message で振り返りの後に末尾が来たら、その末尾の分を要求する" "$ROOT"
+
+ROOT="$(make_fixture chain-tail-block-order-always-tail)"
+expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'lastTail > lastRetrospective' 1
+perl -0pi -e 's/lastTail > lastRetrospective/lastTail !== -1/' "$ROOT/hooks/retrospective-chain-tail.mjs"
+check_mutation "位置比較を捨てて常に末尾優先（実施済みでも再要求）" "同一 message で末尾の後に振り返りが来たら実施済みとして扱う" "$ROOT"
+
+# 前置集合と末尾の許可（Issue `#1635`）。狭める向きは文字・予約語ごとに 1 変異。
+# まとめて外すと、片方が壊れてももう片方の検査が赤になって空振りする。
+ROOT="$(make_fixture chain-tail-merge-prefix-backtick)"
+expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '[\n;&|(`{]' 1
+perl -0pi -e 's/\[\\n;&\|\(`\{\]/[\\n;&|({]/' "$ROOT/hooks/retrospective-chain-tail.mjs"
+check_mutation "前置集合からバッククォートを外す" "バッククォートのコマンド置換にある gh pr merge を拾う" "$ROOT"
+
+ROOT="$(make_fixture chain-tail-merge-prefix-brace)"
+expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '[\n;&|(`{]' 1
+perl -0pi -e 's/\[\\n;&\|\(`\{\]/[\\n;&|(`]/' "$ROOT/hooks/retrospective-chain-tail.mjs"
+check_mutation "前置集合からブレースを外す" "ブレースグループ内の gh pr merge を拾う" "$ROOT"
+
+ROOT="$(make_fixture chain-tail-merge-keyword-bang)"
+expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '(?:(?:!|if|elif|else|while|until|then|do|time)[ \t]+)*' 1
+perl -0pi -e 's/\(\?:\(\?:!\|if\|elif\|else\|while\|until\|then\|do\|time\)/(?:(?:if|elif|else|while|until|then|do|time)/' "$ROOT/hooks/retrospective-chain-tail.mjs"
+check_mutation "予約語から ! を外す" "! で否定された gh pr merge も実行として拾う" "$ROOT"
+
+ROOT="$(make_fixture chain-tail-merge-keyword-if)"
+expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '(?:(?:!|if|elif|else|while|until|then|do|time)[ \t]+)*' 1
+perl -0pi -e 's/\(\?:\(\?:!\|if\|elif\|else\|while\|until\|then\|do\|time\)/(?:(?:!|elif|else|while|until|then|do|time)/' "$ROOT/hooks/retrospective-chain-tail.mjs"
+check_mutation "予約語から if を外す" "if の条件部にある gh pr merge を拾う（then の直後は改行で既に拾えている）" "$ROOT"
+
+ROOT="$(make_fixture chain-tail-merge-keyword-else)"
+expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '(?:(?:!|if|elif|else|while|until|then|do|time)[ \t]+)*' 1
+perl -0pi -e 's/\(\?:\(\?:!\|if\|elif\|else\|while\|until\|then\|do\|time\)/(?:(?:!|if|elif|while|until|then|do|time)/' "$ROOT/hooks/retrospective-chain-tail.mjs"
+check_mutation "予約語から else を外す" "else の直後にある gh pr merge を拾う（if/then と同じ予約語クラス）" "$ROOT"
+
+ROOT="$(make_fixture chain-tail-merge-tail-narrow)"
+expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'merge(?:[ \t\n]|$)' 1
+perl -0pi -e 's/merge\(\?:\[ \\t\\n\]\|\$\)/merge(?:[ \\t]|\$)/' "$ROOT/hooks/retrospective-chain-tail.mjs"
+check_mutation "末尾から改行を外す（改修前の挙動へ戻る）" "引数なしで行末に来る gh pr merge も拾う" "$ROOT"
+
+# 逆向き。末尾を否定先読みへ広げると `sed 's|gh pr merge|x|'` の `|` まで許し、この
+# リポジトリ自身の docs 編集をマージと読む（実装中に一度作り込んで実測した誤検出）。
+ROOT="$(make_fixture chain-tail-merge-tail-wide)"
+expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'merge(?:[ \t\n]|$)' 1
+perl -0pi -e 's/merge\(\?:\[ \\t\\n\]\|\$\)/merge(?![A-Za-z0-9_-])/' "$ROOT/hooks/retrospective-chain-tail.mjs"
+check_mutation "末尾を否定先読みへ広げる（sed の区切りを誤検出）" "sed の | 区切りに挟まれた gh pr merge はチェーン末尾にしない" "$ROOT"
+
 ROOT="$(make_fixture chain-tail-module-missing)"
 perl -0pi -e 's/if \[ ! -f "\$CHAIN_TAIL_DETECTOR" \]; then/if false; then/' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "判定モジュール不在の診断削除（無言で自動振り返りが消える）" "判定モジュール不在は応答をブロックせず復旧ヒントを通知" "$ROOT"
@@ -383,8 +446,10 @@ perl -0pi -e 's/finish\(notification \? "skip-notification" : "inject"\);/finish
 check_mutation "通知ターンの事前注入抑止削除（OBS-187 初回へ戻る）" "task notification のターンには事前注入しない（AC2）" "$ROOT"
 
 ROOT="$(make_fixture chain-tail-delivered)"
-expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'if (deliveredRetrospective(block)) return "done";' 1
-perl -0pi -e 's/if \(deliveredRetrospective\(block\)\) return "done";\n//' "$ROOT/hooks/retrospective-chain-tail.mjs"
+# 位置比較への変更（Issue `#1635`）で、実施済みの検出は「その場で done を返す」から
+# 「最後の位置を覚える」へ移った。覚えるのをやめれば span 内の実施済みは消える。
+expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'if (deliveredRetrospective(blocks[b])) lastRetrospective = b;' 1
+perl -0pi -e 's/      if \(deliveredRetrospective\(blocks\[b\]\)\) lastRetrospective = b;\n//' "$ROOT/hooks/retrospective-chain-tail.mjs"
 check_mutation "span 内の実施済み判定を削除（通知のたびに再要求へ戻る）" "span 内で振り返りを出し終えていれば、同じ span の後続応答で再要求しない" "$ROOT"
 
 ROOT="$(make_fixture chain-tail-delivered-too-wide)"
@@ -393,8 +458,8 @@ perl -0pi -e 's/if \(verdict === "done"\) return "active";/if (verdict === "done
 check_mutation "実施済み判定をチェーン末尾全体へ広げる（未実施でも黙る）" "span 内に振り返りが無ければチェーン末尾として継続を要求する" "$ROOT"
 
 ROOT="$(make_fixture chain-tail-merge-anchor)"
-expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '(?:^|[\n;&|(])' 1
-perl -0pi -e 's/\(\?:\^\|\[\\n;&\|\(\]\)/(?:[\\n;&|(])/' "$ROOT/hooks/retrospective-chain-tail.mjs"
+expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '(?:^|[\n;&|(`{])' 1
+perl -0pi -e 's/\(\?:\^\|\[\\n;&\|\(`\{\]\)/(?:[\\n;&|(`{])/' "$ROOT/hooks/retrospective-chain-tail.mjs"
 check_mutation "gh pr merge の行頭一致を落とす（ワークフローが実際に打つ形を見落とす）" "行頭の gh pr merge を拾う（ワークフローが実際に打つ形）" "$ROOT"
 
 ROOT="$(make_fixture chain-tail-merge-prefix)"
@@ -699,7 +764,7 @@ RETRO_JOBS="$RETRO_JOBS_DEFAULT"
 # 成立しない。実態は「外側の 8 スロットのうち 1 つが内側 N を持つ」で、ピークは 7 + N。
 # 予算を半分（上限 4）に落とせば、外側が既に受け入れている 8 並列と同程度に収まる。
 #
-# 実測の余裕: 16 論理 CPU で 32 並列（= 2× コア）でも 43 + 良性 2 のまま緑で、consumer が測る
+# 実測の余裕: 2× コア並列でも全変異 + 良性 2 が緑のまま、consumer が測る
 # 実時間の契約（入力上限 2 秒 < EOF 3 秒 / 10MB を 2 秒以内）は壊れなかった。コア数の少ない CI を
 # 考えて既定は控えめに置き、必要なら FF_RETRO_SELFTEST_JOBS で明示的に上書きする。
 if [ -z "${FF_RETRO_SELFTEST_JOBS:-}" ] && [ "${FF_RUN_ALL_NESTED:-0}" != "0" ]; then
@@ -803,7 +868,7 @@ if [ "$JOB_N" -gt "$RETRO_JOBS" ] && [ "$_retro_waits" -eq 0 ]; then
 fi
 
 # 件数は名前付き定数で持つ（このファイルは EXPECTED_CONSUMER_CHECKS で既にその慣習）。
-EXPECTED_MUTATIONS=75
+EXPECTED_MUTATIONS=84
 EXPECTED_BENIGN=2
 if [ "$MUTATIONS" -ne "$EXPECTED_MUTATIONS" ]; then
   echo "✗ mutation 実行数が不正: ${MUTATIONS}（期待 ${EXPECTED_MUTATIONS}）" >&2

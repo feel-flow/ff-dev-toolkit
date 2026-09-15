@@ -55,8 +55,8 @@ SRC_LEDGER_TEMPLATE="$PLUGIN_ROOT/docs-template/08-knowledge/OBSERVATIONS.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=192
-EXPECTED_GATE_CHECKS_PUBLIC=177
+EXPECTED_GATE_CHECKS_MONOREPO=219
+EXPECTED_GATE_CHECKS_PUBLIC=204
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -530,14 +530,14 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|**既存エントリは遡及しない**|観測台帳: Count の既存値は遡及しない|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**特急レーン**|観測台帳: 重大観測の特急レーン|1"
   "${FIX_SKILL}|retrospective-SKILL.md|アクションに繋がらない Keep は記録しない|観測台帳: Keep はアクションに繋がるものだけ記録|1"
-  "${FIX_SKILL}|retrospective-SKILL.md|\`\${FF_DEV_TOOLKIT_ROOT}/docs-template/08-knowledge/OBSERVATIONS.md\` をコピーして作成する|観測台帳: 不在時はテンプレートから作成|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|\`\${FF_DEV_TOOLKIT_ROOT}/docs-template/08-knowledge/OBSERVATIONS.md\` をコピーして作成する|観測台帳: 不在時はテンプレートから作成|2"
   "${FIX_SKILL}|retrospective-SKILL.md|受け渡し便）は**廃止**した|観測台帳: 受け渡し便の廃止を明記|1"
   # 起票先分岐の bullet には「改善対象で分岐」と「プロジェクト固有はそのリポジトリへ」の 2 針が乗る。
   "${FIX_SKILL}|retrospective-SKILL.md|**昇格の起票先は改善対象で分岐する**|観測台帳: 起票先は改善対象で分岐|2"
   "${FIX_SKILL}|retrospective-SKILL.md|作業中プロジェクト固有のプロセス・手順なら**作業中リポジトリ自身**の Issue|観測台帳: プロジェクト固有はそのリポジトリへ|2"
   "${FIX_SKILL}|retrospective-SKILL.md|検索対象は **SSOT と配布ミラーの両方**で|観測台帳: 旧経路残件は両リポジトリを検索|1"
   "${FIX_SKILL}|retrospective-SKILL.md|\`（owner/repo#N より取り込み）\` マーカー|観測台帳: 取り込みマーカーはリポジトリ修飾|1"
-  "${FIX_SKILL}|retrospective-SKILL.md|そのリポジトリで ACE Playbook の直コミットに使っている経路（PR 化等）に揃える|観測台帳: 直 push 不可のリポジトリは Playbook 直コミットの経路に揃える|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|そのリポジトリで ACE Playbook の直コミットに使っている経路（PR 化等）に揃える|観測台帳: 直 push 不可のリポジトリは Playbook 直コミットの経路に揃える|2"
   "${FIX_SKILL}|retrospective-SKILL.md|**台帳へ書き込めないリポジトリ**|観測台帳: 書き込めないリポジトリの扱いを定義|1"
   "${FIX_SKILL}|retrospective-SKILL.md|台帳へ書き込めないリポジトリだけがこの限定の対象外|提案閾値: 書き込めないリポジトリだけが閾値限定の対象外|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**SSOT リポジトリで本スキルを実行するとき**に SSOT の台帳へ取り込む|観測台帳: 旧経路残件の取り込みは SSOT 実行時に限る|1"
@@ -589,6 +589,31 @@ MARKER_MUTATIONS=(
   # oss README のラベルは配置で変わる（モノレポ: oss/ff-dev-toolkit/README.md /
   # 公開: README.md）ため、両配置で一致する接頭辞だけを針にする（M-G と同じ扱い）。
   "${FIX_OSS_README}|oss-README.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック:|7"
+  # 台帳直 push の base 先行ガード（Issue `#1570`）の散文側。フェンス自体の壊し方は
+  # 下の「フェンス変異」で別に測る（行削除だとフェンス抽出ごと空振りして、先行検出
+  # そのものが測れなくなるため）。
+  "${FIX_SKILL}|retrospective-SKILL.md|**記録手順 0 より前に照合する。**|台帳の base 先行ガード: 照合点は記録内容を作る前|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|最終境界であって検出点ではない|台帳の base 先行ガード: push の non-fast-forward を検出点と混同しない|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|取り込んでから記録を作り直す|台帳の base 先行ガード: 復帰は取り込んでから記録を作り直す|1"
+  # 「やり直しは記録手順 0 から」と「既記録なら Count +1 へ落ちる」は同じ箇条書き行に乗る
+  # （後者が前者の帰結であることを 1 文で固定しているため）。行削除では 2 件が赤になる。
+  "${FIX_SKILL}|retrospective-SKILL.md|**記録手順 0 からやり直す**|台帳の base 先行ガード: やり直しは記録手順 0 から|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|OBS ID は**取り込んだ後の**台帳の最大連番 +1 で採番する|台帳の base 先行ガード: OBS ID は取り込み後に採番し直す|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|\`--force\` / \`--force-with-lease\` で先行セッションを上書きしない|台帳の base 先行ガード: 先行セッションを force で上書きしない|3"
+  "${FIX_SKILL}|retrospective-SKILL.md|復帰できないまま停止した場合|台帳の base 先行ガード: 復帰不能時は台帳へ書かず報告に留める|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|clean tree の検査を**台帳のパスへ絞っている**|台帳の base 先行ガード: ace-curate との述語差と理由を明記|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|検出点は上の照合|書き込み節: non-fast-forward は最終境界で検出点は照合側|3"
+  "${FIX_SKILL}|retrospective-SKILL.md|**ローカルに未 push のコミットがある回は、それらも同じ push で統合ブランチへ送られる**|書き込み節: ローカル先行のコミットも同じ push で送られると明記|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|git merge-base --is-ancestor \"origin/\${default_branch}\" HEAD|台帳の base 先行ガード: base の先行を見る|1"
+  # 台帳 status の行には pathspec の針と rc を受ける針が同居し、さらにこの行から
+  # 台帳パスを抽出しているため、落とすと抽出側も赤になる（3 件）。
+  "${FIX_SKILL}|retrospective-SKILL.md|ledger_status=\"\$(git status|台帳の base 先行ガード: 台帳パスの未コミット変更も見る（:(top) で cwd 非依存）|3"
+  "${FIX_SKILL}|retrospective-SKILL.md|[[ \"\$default_ref\" == origin/* ]]|台帳の base 先行ガード: default branch ref の形状を検査する|1"
+  # 復帰手順 1 の行には ff-only・rebase 否定・force 禁止の 3 針が乗る。
+  "${FIX_SKILL}|retrospective-SKILL.md|\`git pull --ff-only\` で取り込む|台帳の base 先行ガード: 取り込みは ff-only（rebase / merge で作りかけを残さない）|3"
+  "${FIX_SKILL}|retrospective-SKILL.md|台帳自身に未コミットの変更があって止まった回は**復帰可能**である|台帳の base 先行ガード: 台帳 dirty は復帰可能と規定|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|デフォルト統合ブランチ以外に居る回は、記録の前にそのブランチへ戻る|台帳の base 先行ガード: 非デフォルトブランチでは戻ってから記録する|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|上「記録の前に base の先行を照合する」のフェンスを通してから手順 0 へ入る|記録手順: 手順 0 の前に照合フェンスを通す|1"
 )
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   MARKER_MUTATIONS+=(
@@ -760,6 +785,40 @@ restore_all
 drop_lines_containing "$FIX_SKILL" "振り返り: 改善候補なし"
 if assert_mutated "$FIX_SKILL" "$PRISTINE/retrospective-SKILL.md" "M-I 1 行報告の抽出不能化"; then
   expect_red "M-I 1 行報告の抽出不能化" "改善候補なしの 1 行報告を SKILL.md の text フェンスから抽出できません" 1
+fi
+restore_all
+
+# ── 系統 3b: ガード節の配置と台帳パスの一致（Issue `#1570`） ───────────────────
+# 節スコープ針は**節そのものの位置**を見ない。ガード節を見出しごと記録手順の後ろへ移すと、
+# 「記録内容を作る前に照合する」という AC を失ったまま針が全件緑で通る（実測）。
+# フェンス本体を壊す変異（引数逆転・pathspec の cwd 依存化・停止点の fail-open）は、
+# 文言では測れないので tests/retrospective-ledger-freshness/ が実行で測る。ここでは
+# **この gate が主張している範囲**＝文言・配置・パスの一致だけを実測する。
+
+# M-BF1: ガード節を見出しごとファイル末尾へ移す（節内の針は全件緑のまま）。
+FF_GUARD_HEADING='### 記録の前に base の先行を照合する' \
+FF_STEPS_HEADING='### 記録手順' \
+perl -0777 -pi -e '
+  my $g = quotemeta($ENV{FF_GUARD_HEADING});
+  my $s = quotemeta($ENV{FF_STEPS_HEADING});
+  if (s{($g.*?)(?=$s)}{}s) { $_ .= "\n" . $1; }
+' "$FIX_SKILL"
+if assert_mutated "$FIX_SKILL" "$PRISTINE/retrospective-SKILL.md" "M-BF1 ガード節を記録手順の後ろへ移動"; then
+  expect_red "M-BF1 ガード節を記録手順の後ろへ移動" "✗ 台帳の base 先行ガード: 照合節が記録手順より前に置かれている" 1
+fi
+restore_all
+
+# M-BF2: 記録手順 0 の台帳パスだけを変える（ガードと書き込み節は元のまま）。
+perl -pi -e 's{\Q`docs/08-knowledge/OBSERVATIONS.md` が無ければ\E}{`docs/08-knowledge/OBSERVATIONS-v2.md` が無ければ}' "$FIX_SKILL"
+if assert_mutated "$FIX_SKILL" "$PRISTINE/retrospective-SKILL.md" "M-BF2 記録手順 0 の台帳パスだけ変更"; then
+  expect_red "M-BF2 記録手順 0 の台帳パスだけ変更" "✗ 記録手順 0 の台帳パスが照合フェンスと一致" 1
+fi
+restore_all
+
+# M-BF3: 書き込み節の commit 形の台帳パスだけを変える。
+perl -pi -e 's{\Qgit commit -- docs/08-knowledge/OBSERVATIONS.md\E}{git commit -- docs/08-knowledge/OBSERVATIONS-v2.md}' "$FIX_SKILL"
+if assert_mutated "$FIX_SKILL" "$PRISTINE/retrospective-SKILL.md" "M-BF3 書き込み節の commit 先だけ変更"; then
+  expect_red "M-BF3 書き込み節の commit 先だけ変更" "✗ 書き込み節の commit 形が照合フェンスと同じ台帳パスへ固定されている" 1
 fi
 restore_all
 
