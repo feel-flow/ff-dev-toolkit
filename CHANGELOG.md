@@ -20,6 +20,15 @@
 
 ## [Unreleased]
 
+
+## [0.112.0] - 2026-09-15
+
+### 変更
+
+- 自動振り返りの発火を「ワークフローチェーンの末尾に到達したターン」へ限定した。`/merge-cleanup` か `/ace-curate` を実行したターン、コマンド位置で `gh pr merge` を実行したターン、利用者が `/retrospective` `/merge-cleanup` `/ace-curate` を明示指定したターンだけが対象になる（判定するのは実行であって成否ではない）。判定はセッションの transcript にある実行痕跡を構造的に読み、判定できない場合は従来どおり継続を要求する（fail-closed）
+- 質問・設計相談・承認待ち・background task の完了通知のターンで「振り返り: 今回は作業完了前のため対象外」の定型 1 行が出なくなった。Stop hook もこれらのターンでは応答をブロックしない
+- UserPromptSubmit の事前注入は、通知形の prompt で始まるターンには入らなくなった。応答生成前に走る hook はチェーン末尾を判定できないため、注入する契約は条件付きになり、判定の正本は Stop hook 側へ移した
+
 ## [0.111.0] - 2026-09-15
 
 ### ドキュメント
@@ -2468,7 +2477,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.110.1...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.111.0...HEAD
+[0.111.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.110.1...v0.111.0
 [0.110.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.110.0...v0.110.1
 [0.110.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.109.0...v0.110.0
 [0.109.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.108.0...v0.109.0

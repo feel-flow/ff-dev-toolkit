@@ -514,8 +514,12 @@ contains "$SKILL" "**off モード**: 事前注入と Stop fallback はどちら
 contains "$SKILL" "**毎回実施・問いかけなし**" "既定モード: 問いかけなしで毎回実施"
 
 contains "$SKILL" "## 自動発火（事前注入 + Stop fallback）" "自動発火: 事前注入と Stop fallback 節"
-contains "$SKILL" "ユーザー依頼の作業がこの応答で完了する" "自動発火: 完了時は振り返りを実施"
-contains "$SKILL" "質問・承認待ち・外部状態待ち・作業途中である" "自動発火: 未完了時は対象外"
+contains "$SKILL" "このターンがチェーン末尾に到達した" "自動発火: チェーン末尾では振り返りを実施"
+contains "$SKILL" "チェーン末尾ではない" "自動発火: 末尾以外は振り返りについて何も書かない"
+# Issue `#1612`: 発火条件の定義そのもの。「作業が完了したように見えるか」というターンごとの
+# モデル判断へ戻すと、質問・確認待ち・通知のたびに定型 1 行が出る形（OBS-187）へ退行する。
+contains "$SKILL" "ワークフローチェーンの末尾に到達したターンであること" "自動発火: 発火条件はチェーン末尾のターン"
+contains "$SKILL" "事前注入はチェーン末尾を判定できない" "自動発火: 判定の正本は Stop 側"
 contains "$SKILL" "UserPromptSubmit の \`additionalContext\`" "自動発火: 応答生成前に振り返り契約を注入"
 # Issue #840: 非対話の単発実行（codex exec）には注入しない規定。判別条件（model +
 # bypassPermissions）が SKILL.md から落ちると、hook 実装だけが知る暗黙挙動になる。

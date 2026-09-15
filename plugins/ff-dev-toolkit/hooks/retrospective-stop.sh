@@ -3,10 +3,15 @@
 # ff-dev-toolkit automatic retrospective Stop hook (Issue #583).
 #
 # A Stop event is emitted for every assistant response, not only task closeout.
-# The continuation prompt therefore asks the agent to distinguish completed work
-# from a clarification/waiting turn. The host sets stop_hook_active=true for the
-# continuation, which is the recursion guard; this hook intentionally writes no
-# marker files.
+# Since `#1612` this hook decides which of those responses is a closeout itself,
+# by reading the session transcript through retrospective-chain-tail.mjs, and
+# stays silent for every turn that provably did not reach the workflow chain
+# tail. The continuation prompt below is now the fallback for the two remaining
+# cases: the turn DID reach the chain tail without a retrospective, or the turn
+# could not be classified — and it still asks the agent to distinguish completed
+# work from a clarification/waiting turn. The host sets stop_hook_active=true
+# for the continuation, which is the recursion guard; this hook intentionally
+# writes no marker files.
 #
 # Parsing/runtime failures are fail-open. A missing Node.js runtime is a
 # persistent installation problem, so it emits a non-blocking recovery hint.
@@ -91,33 +96,65 @@ if ! command -v node >/dev/null 2>&1; then
   exit 0
 fi
 
-HOOK_STATE="$(printf '%s' "$HOOK_INPUT" | node -e '
-let source = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", chunk => { source += chunk; });
-process.stdin.on("end", () => {
-  try {
-    const input = JSON.parse(source);
-    if (input.hook_event_name !== "Stop") process.exit(2);
-    if (typeof input.stop_hook_active !== "boolean") process.exit(2);
-    const message = typeof input.last_assistant_message === "string"
-      ? input.last_assistant_message
-      : "";
-    const retrospectiveDone = /(^|\n)(振り返り:|## セッション振り返り)/m.test(message);
-    // Codex Stop decision:block renders reason as a visible HookPrompt. Codex
-    // inputs include model, so rely on UserPromptSubmit pre-injection there and
-    // keep this fallback only for hosts such as Claude Code.
-    const codexStop = typeof input.model === "string";
-    process.stdout.write(input.stop_hook_active || retrospectiveDone || codexStop ? "active" : "first");
-  } catch (_) {
-    process.exit(2);
-  }
-});
-' 2>/dev/null)" || exit 0
-
-if [ "$HOOK_STATE" != "first" ]; then
+# Issue `#1612`: the turn classification lives in retrospective-chain-tail.mjs.
+# It answers three ways — `active` (stop already allowed: the host re-entry
+# flag, a retrospective result in the final message OR earlier in the same turn
+# span, or a Codex host), `no-tail` (the turn provably did not reach the
+# workflow chain tail), `first` (block). An exit 2 — an input the module does
+# not recognise as a Stop event, whether unparsable JSON, a different
+# `hook_event_name`, or a missing `stop_hook_active` — is fail-open, exactly as
+# the inline parser it replaces was.
+CHAIN_TAIL_DETECTOR="${BASH_SOURCE[0]%/*}/retrospective-chain-tail.mjs"
+# A missing module would otherwise land on the `|| exit 0` below and disable the
+# retrospective in total silence — the one failure mode this hook must never
+# have, because its whole job is to notice when something was skipped. Say so
+# instead, the same way the missing-Node.js branch above does, without blocking.
+if [ ! -f "$CHAIN_TAIL_DETECTOR" ]; then
+  printf '%s\n' '{"systemMessage":"ff-dev-toolkit: hooks/retrospective-chain-tail.mjs が見つからないため自動振り返りをスキップしました。プラグインを再インストールするか、手動で ff-dev-toolkit:retrospective を実行してください。自動発火を無効にする場合は RETROSPECTIVE_MODE=off を設定してください"}'
   exit 0
 fi
+HOOK_STATE="$(printf '%s' "$HOOK_INPUT" | node "$CHAIN_TAIL_DETECTOR" 2>/dev/null)"
+DETECTOR_RC=$?
+
+# The exit code has to be read, not collapsed into `|| exit 0`. Only 2 means
+# "this is not a Stop input I recognise", which is the fail-open the inline
+# parser always had. Every other non-zero is the module failing to run — a
+# truncated file from an interrupted mirror sync (measured: node rc 1 for a
+# half-written module, and rc 0 with EMPTY stdout for one truncated at a
+# statement boundary), a mode that forbids reading it, a node that cannot load
+# it. Those used to reach `|| exit 0` and disable the retrospective in silence,
+# which is the one failure this hook must never have: its entire job is to
+# notice that something was skipped.
+if [ "$DETECTOR_RC" -eq 2 ]; then
+  exit 0
+fi
+
+# The state word is whitelisted for the same reason the rc is. A truncated
+# module can exit 0 with empty or partial stdout, and a future state added to
+# the module without updating this file would land here too; both used to fall
+# through the `!= "first"` catch-all and exit silently.
+case "$DETECTOR_RC:$HOOK_STATE" in
+  0:active)
+    exit 0
+    ;;
+  0:no-tail)
+    # The quiet exit added by `#1612`: before it, every response that carried no
+    # retrospective marker was blocked, which is what made questions, approval
+    # waits and background-task notifications each cost one continuation prompt
+    # and one 対象外 status line (OBS-187). The breadcrumb keeps the new silence
+    # observable in the hook log — a misclassification here is invisible by
+    # construction, because its whole effect is that nothing happens.
+    echo 'retrospective-stop: skip continuation (turn did not reach the workflow chain tail)' >&2
+    exit 0
+    ;;
+  0:first)
+    ;;
+  *)
+    printf '%s\n' '{"systemMessage":"ff-dev-toolkit: hooks/retrospective-chain-tail.mjs を実行できないため自動振り返りをスキップしました。プラグインを再インストールするか、手動で ff-dev-toolkit:retrospective を実行してください。自動発火を無効にする場合は RETROSPECTIVE_MODE=off を設定してください"}'
+    echo "retrospective-stop: detector unusable (rc=${DETECTOR_RC} state='${HOOK_STATE}')" >&2
+    exit 0
+    ;;
+esac
 
 # Issue #1451: issue filing is governed by the skill section 承認と起票. The default
 # files proposals that passed the pre-filing checks without waiting for approval;
@@ -137,11 +174,11 @@ esac
 
 case "$MODE" in
   [Aa][Ss][Kk])
-  printf '{"decision":"block","reason":"RETROSPECTIVE_MODE=ask. Before stopping, check whether the user already approved the retrospective for this completed task. If approved, run the ff-dev-toolkit:retrospective skill now; otherwise ask whether to run it. Do not ask again after the retrospective result is already present. If this turn is not a task closeout, report: 振り返り: 今回は作業完了前のため対象外. %s","systemMessage":"Automatic retrospective check before stop"}\n' "$FILING_CLAUSE"
+  printf '{"decision":"block","reason":"RETROSPECTIVE_MODE=ask. This turn either reached the workflow chain tail (/merge-cleanup, /ace-curate, or a PR merge) or could not be classified from the session transcript. Before stopping, check whether the user already approved the retrospective for this completed task. If approved, run the ff-dev-toolkit:retrospective skill now; otherwise ask whether to run it. Do not ask again after the retrospective result is already present. If this turn is not a task closeout, report: 振り返り: 今回は作業完了前のため対象外. %s","systemMessage":"Automatic retrospective check before stop"}\n' "$FILING_CLAUSE"
   exit 0
   ;;
 esac
 
-printf '{"decision":"block","reason":"Before stopping, run the ff-dev-toolkit:retrospective skill now. If this turn completes the user requested work, inspect only events measured in this session and include the retrospective result in the final response. If this is a clarification, approval wait, external-state wait, or unfinished work, do not invent proposals; report exactly: 振り返り: 今回は作業完了前のため対象外. The retrospective inspection is read-only. %s","systemMessage":"Automatic retrospective before stop"}\n' "$FILING_CLAUSE"
+printf '{"decision":"block","reason":"This turn either reached the workflow chain tail (/merge-cleanup, /ace-curate, or a PR merge) or could not be classified from the session transcript, so before stopping, run the ff-dev-toolkit:retrospective skill now. If this turn completes the user requested work, inspect only events measured in this session and include the retrospective result in the final response. If this is a clarification, approval wait, external-state wait, or unfinished work, do not invent proposals; report exactly: 振り返り: 今回は作業完了前のため対象外. The retrospective inspection is read-only. %s","systemMessage":"Automatic retrospective before stop"}\n' "$FILING_CLAUSE"
 
 exit 0

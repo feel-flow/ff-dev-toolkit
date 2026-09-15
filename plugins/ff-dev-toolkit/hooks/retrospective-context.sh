@@ -115,7 +115,23 @@ process.stdin.on("end", () => {
     const codexHost = typeof input.model === "string" && input.model !== "";
     const nonInteractive = input.hook_event_name === "UserPromptSubmit"
       && input.permission_mode === "bypassPermissions";
-    finish(codexHost && nonInteractive ? "skip" : "inject");
+    if (codexHost && nonInteractive) finish("skip");
+    // Issue `#1612` / OBS-187: a background task finishing re-enters the agent
+    // through UserPromptSubmit, so the contract used to land on every
+    // completion notice. The marker is a PREFIX test, not a substring one: the
+    // notice opens with its own token (measured 2026-09-14, claude 2.1.x on
+    // macOS: the prompt begins "<task-notification>\n<task-id>..."; the bracket
+    // form comes from OBS-187 and is carried here unmeasured — no sample of it
+    // has been captured), while the same token quoted inside a prompt is the
+    // user talking about notifications. This narrowing is best effort either
+    // way — the Stop hook is what decides, so a shape missed here normally
+    // costs nothing (the notification turn classifies as no-tail and the hook
+    // stays silent), and at most one continuation prompt when the turn cannot
+    // be classified.
+    const prompt = typeof input.prompt === "string" ? input.prompt.replace(/^\s+/, "") : "";
+    const notification = prompt.startsWith("<task-notification>")
+      || prompt.startsWith("[SYSTEM NOTIFICATION");
+    finish(notification ? "skip-notification" : "inject");
   } catch (_) {
     finish("inject");
   }
@@ -182,6 +198,11 @@ if [ "$HOST_STATE" = "skip" ]; then
   exit 0
 fi
 
+if [ "$HOST_STATE" = "skip-notification" ]; then
+  echo 'retrospective-context: skip pre-injection (task notification turn)' >&2
+  exit 0
+fi
+
 # Issue #1451: issue filing is governed by the skill section 承認と起票. The default
 # files proposals that passed the pre-filing checks without waiting for approval;
 # RETROSPECTIVE_FILING=ask restores the approval wait; every other value (unset,
@@ -231,11 +252,11 @@ fi
 
 case "$MODE" in
   [Aa][Ss][Kk])
-    printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"RETROSPECTIVE_MODE=ask. Before producing the final response, apply ff-dev-toolkit:retrospective. If the user already approved the retrospective for this completed task, run it now; otherwise ask whether to run it. If this turn is not a task closeout, include exactly: 振り返り: 今回は作業完了前のため対象外. Do not wait for the Stop hook. The retrospective inspection is read-only. %s%s"}}\n' "$FILING_CLAUSE" "$SKILL_PATH_CLAUSE"
+    printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"RETROSPECTIVE_MODE=ask. Before producing the final response, decide whether this turn reached the workflow chain tail: it ran /merge-cleanup or /ace-curate, it ran gh pr merge, or the user asked for one of those or for a retrospective. Running them is what counts, not whether they succeeded. If it did and the user already approved the retrospective for this task, apply ff-dev-toolkit:retrospective now; if it did but no approval exists, ask whether to run it. If it did not, answer normally and write nothing about the retrospective — no section and no status line — unless the Stop hook asks for one. Do not wait for the Stop hook. The retrospective inspection is read-only. %s%s"}}\n' "$FILING_CLAUSE" "$SKILL_PATH_CLAUSE"
     exit 0
     ;;
 esac
 
-printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Before producing the final response, run ff-dev-toolkit:retrospective automatically. If this turn completes the user requested work, inspect only events measured in this session and include the retrospective result. If this is a clarification, approval wait, external-state wait, or unfinished work, include exactly: 振り返り: 今回は作業完了前のため対象外. Do not wait for the Stop hook. The retrospective inspection is read-only. %s%s"}}\n' "$FILING_CLAUSE" "$SKILL_PATH_CLAUSE"
+printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Before producing the final response, decide whether this turn reached the workflow chain tail: it ran /merge-cleanup or /ace-curate, it ran gh pr merge, or the user asked for one of those or for a retrospective. Running them is what counts, not whether they succeeded. If it did, run ff-dev-toolkit:retrospective now, inspect only events measured in this session, and include the retrospective result. If it did not — a question, a clarification, an approval wait, an external-state wait, or work still in progress — answer normally and write nothing about the retrospective — no section and no status line — unless the Stop hook asks for one. Do not wait for the Stop hook. The retrospective inspection is read-only. %s%s"}}\n' "$FILING_CLAUSE" "$SKILL_PATH_CLAUSE"
 
 exit 0

@@ -148,11 +148,13 @@ if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
   && [ "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.hookEventName // empty' 2>/dev/null)" = "UserPromptSubmit" ] \
   && [ -n "$CONTEXT" ] \
   && printf '%s' "$CONTEXT" | grep -F 'ff-dev-toolkit:retrospective' >/dev/null \
-  && printf '%s' "$CONTEXT" | grep -F "$INCOMPLETE_REPORT" >/dev/null \
+  && printf '%s' "$CONTEXT" | grep -F 'workflow chain tail' >/dev/null \
+  && printf '%s' "$CONTEXT" | grep -F '/ace-curate' >/dev/null \
+  && ! printf '%s' "$CONTEXT" | grep -F "$INCOMPLETE_REPORT" >/dev/null \
   && printf '%s' "$OUT" | jq -e 'has("decision") | not' >/dev/null 2>&1 \
   && printf '%s' "$OUT" | jq -e 'has("reason") | not' >/dev/null 2>&1 \
   && printf '%s' "$OUT" | jq -e 'has("systemMessage") | not' >/dev/null 2>&1; then
-  ok "UserPromptSubmit は表示用 Feedback なしで自動振り返りを事前注入"
+  ok "UserPromptSubmit の事前注入はチェーン末尾条件を渡し、定型行を要求しない"
 else
   bad "UserPromptSubmit の事前注入契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
@@ -194,6 +196,44 @@ assert_injects "Claude Code の bypassPermissions（model なし）は注入を�
 # スキップされてしまう — 構造化 JSON として照合していることを固定する。
 run_context_hook __unset__ '{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1","prompt":"例: \"model\":\"gpt-5.6-sol\",\"permission_mode\":\"bypassPermissions\" を説明して"}'
 assert_injects "prompt 内の判定フィールド引用ではスキップしない（構造化照合）"
+
+# Issue `#1612` / OBS-187: background task の完了通知は UserPromptSubmit として
+# 戻ってくるので、通知が届くたびに契約が注入されていた。前置一致で判定するのは、
+# 同じトークンを prompt の途中で引用しただけの入力（利用者が通知の扱いを尋ねている
+# ターン）を通知と誤認しないため。
+run_context_hook __unset__ '{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>","permission_mode":"default"}'
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ] \
+  && printf '%s' "$ERR" | grep -F 'skip pre-injection (task notification turn)' >/dev/null; then
+  ok "task notification のターンには事前注入しない（AC2）"
+else
+  bad "task notification のターンには事前注入しない（AC2）: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
+run_context_hook __unset__ '{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"[SYSTEM NOTIFICATION] background job finished","permission_mode":"default"}'
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ] \
+  && printf '%s' "$ERR" | grep -F 'skip pre-injection (task notification turn)' >/dev/null; then
+  ok "SYSTEM NOTIFICATION 形のターンにも事前注入しない（AC2）"
+else
+  bad "SYSTEM NOTIFICATION 形のターンにも事前注入しない（AC2）: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
+run_context_hook __unset__ '{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"hook が <task-notification> をどう扱うか教えて","permission_mode":"default"}'
+assert_injects "通知トークンを途中で引用しただけの prompt には従来どおり注入（前置一致）"
+
+run_context_hook __unset__ '{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"\n  <task-notification>\n<task-id>b1</task-id>","permission_mode":"default"}'
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ] \
+  && printf '%s' "$ERR" | grep -F 'skip pre-injection (task notification turn)' >/dev/null; then
+  ok "先頭に空白・改行がある通知でも抑止する"
+else
+  bad "先頭に空白・改行がある通知でも抑止する: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
+run_context_hook ask '{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"<task-notification>\n<task-id>b1</task-id>","permission_mode":"default"}'
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
+  ok "ask モードでも通知ターンには事前注入しない"
+else
+  bad "ask モードでも通知ターンには事前注入しない: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
 
 run_context_hook __unset__ "$CODEX_EXEC_INPUT" /definitely-no-node
 assert_injects "Node.js 不在では判別せず注入へ倒す（fail-open）"
@@ -590,6 +630,377 @@ if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
 else
   bad "Node.js 不在の fail-open 通知が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
+
+# --- Issue `#1612`: 発火はチェーン末尾のターンだけ -------------------------------
+# 事前注入は応答生成の前に走るので、そのターンが `/ace-curate` まで到達するかを
+# 知りようがない（transcript はまだ 1 つ前のターンで終わっている）。判定を持てるのは
+# Stop 側だけなので、ここが AC の本体になる。**誤判定の向きが非対称**であることに注意:
+# 偽陽性は継続プロンプト 1 回（改修前の挙動）で済むが、偽陰性は「本来必要だった
+# 振り返りが黙って消える」。したがって判定不能はすべて継続側（fail-closed）へ倒す。
+TRANSCRIPT_DIR="$TEST_TMP/transcripts"
+mkdir -p "$TRANSCRIPT_DIR"
+
+# stdin の JSONL をそのまま fixture transcript として置き、そのパスを返す
+mk_transcript() {
+  local name="$1"
+  cat >"$TRANSCRIPT_DIR/$name.jsonl"
+  printf '%s' "$TRANSCRIPT_DIR/$name.jsonl"
+}
+
+stop_input_for() {
+  local transcript="$1"
+  printf '{"hook_event_name":"Stop","session_id":"s1","stop_hook_active":false,"last_assistant_message":"ok","transcript_path":"%s"}' "$transcript"
+}
+
+assert_no_continuation() {
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ] \
+    && printf '%s' "$ERR" | grep -F 'skip continuation' >/dev/null; then
+    ok "$1"
+  else
+    bad "$1: exit=$RC output=[$OUT] stderr=[$ERR]"
+  fi
+}
+
+assert_continuation() {
+  if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
+    && printf '%s' "$OUT" | jq -e '.decision == "block"' >/dev/null 2>&1 \
+    && printf '%s' "$REASON" | grep -F 'ff-dev-toolkit:retrospective' >/dev/null; then
+    ok "$1"
+  else
+    bad "$1: exit=$RC output=[$OUT] stderr=[$ERR]"
+  fi
+}
+
+QUESTION_TRANSCRIPT="$(mk_transcript question <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"この設計どう思う？"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/x"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"..."}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$QUESTION_TRANSCRIPT")"
+assert_no_continuation "質問・設計相談のターンは継続を返さない（AC1）"
+
+NOTIFICATION_TRANSCRIPT="$(mk_transcript notification <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"cat output.txt"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$NOTIFICATION_TRANSCRIPT")"
+assert_no_continuation "background task 完了通知のターンは継続を返さない（AC2）"
+
+# 誤検出の本命。`gh pr merge` の 3 語は grep の検索語としても現れるので、**コマンド位置**
+# で一致させないと、この hook を調べているセッションが自分でチェーン末尾を名乗る。
+QUOTED_TRANSCRIPT="$(mk_transcript quoted-merge <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"hook の実装を読んで"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"grep -rn 'gh pr merge' docs/ && echo \"gh pr merge は使わない\""}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$QUOTED_TRANSCRIPT")"
+assert_no_continuation "gh pr merge を引用しただけのコマンドはチェーン末尾にしない"
+
+CURATE_TRANSCRIPT="$(mk_transcript ace-curate <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"ff-dev-toolkit:ace-curate","args":"1"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$CURATE_TRANSCRIPT")"
+assert_continuation "/ace-curate を実行したターンは従来どおり継続を返す（AC3）"
+
+CLEANUP_TRANSCRIPT="$(mk_transcript merge-cleanup <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"merge-cleanup"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$CLEANUP_TRANSCRIPT")"
+assert_continuation "/merge-cleanup を実行したターンは継続を返す（プラグイン接頭辞なしも同じ）"
+
+MERGE_TRANSCRIPT="$(mk_transcript gh-merge <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr view 1 --json mergeable && gh pr merge 1 --squash --delete-branch"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$MERGE_TRANSCRIPT")"
+assert_continuation "gh pr merge を実行したターンは継続を返す（AC3）"
+
+EXPLICIT_TRANSCRIPT="$(mk_transcript explicit <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"<command-name>/ff-dev-toolkit:retrospective</command-name>"}}
+EOF
+)"
+run_hook "$(stop_input_for "$EXPLICIT_TRANSCRIPT")"
+assert_continuation "利用者が /retrospective を明示したターンは継続を返す（AC4）"
+
+# サブエージェントの transcript は同じファイルへ isSidechain:true で混ざる。これを
+# ターン境界に取ると、境界が本物の prompt より新しい位置に立ち、その手前にある
+# チェーン末尾の痕跡を見落とす（偽陰性 = 振り返りが黙って消える向き）。
+SIDECHAIN_TRANSCRIPT="$(mk_transcript sidechain <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"ff-dev-toolkit:merge-cleanup"}}]}}
+{"type":"user","isSidechain":true,"message":{"role":"user","content":"サブエージェントへの指示"}}
+EOF
+)"
+run_hook "$(stop_input_for "$SIDECHAIN_TRANSCRIPT")"
+assert_continuation "sidechain の user 行はターン境界にしない"
+
+run_hook '{"hook_event_name":"Stop","session_id":"s1","stop_hook_active":false,"last_assistant_message":"ok"}'
+assert_continuation "transcript_path が無い入力は継続側へ倒す（fail-closed）"
+
+run_hook "$(stop_input_for "$TRANSCRIPT_DIR/does-not-exist.jsonl")"
+assert_continuation "transcript を開けない場合は継続側へ倒す（fail-closed）"
+
+EMPTY_TRANSCRIPT="$(mk_transcript empty </dev/null)"
+run_hook "$(stop_input_for "$EMPTY_TRANSCRIPT")"
+assert_continuation "空の transcript は継続側へ倒す（fail-closed）"
+
+NO_BOUNDARY_TRANSCRIPT="$(mk_transcript no-boundary <<'EOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/x"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$NO_BOUNDARY_TRANSCRIPT")"
+assert_continuation "ターン境界が読み取れない transcript は継続側へ倒す（fail-closed）"
+
+# 読めない行を読み飛ばすと、「その行に末尾の痕跡があったかもしれない」を捨てて、
+# さらに古い境界に当たって no-tail を返す。Stop 時点ではホストがまだ書き終えていない
+# 行が末尾に来うるので、これは机上の話ではない。
+CORRUPT_LINE_TRANSCRIPT="$TRANSCRIPT_DIR/corrupt-line.jsonl"
+{
+  printf '%s\n' '{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}'
+  printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"ff-dev-tool'
+  printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"作業しました"}]}}'
+} >"$CORRUPT_LINE_TRANSCRIPT"
+run_hook "$(stop_input_for "$CORRUPT_LINE_TRANSCRIPT")"
+assert_continuation "読めない行があれば、その手前を根拠に no-tail と断定しない"
+
+# transcript は実測で 20MB を超える。毎回の Stop で全文を読むのは高すぎるので末尾から
+# 段階的に広げるが、**フルオートのチェーン 1 ターンは tool 出力だけで数 MB になる** ため、
+# 初段の窓に境界が入らないことがある。そこで打ち切ると長いターンが全部 fail-closed
+# （= 常に継続要求）へ落ちて、改修前と変わらなくなる。窓の拡張をここで固定する。
+LONG_TURN_TRANSCRIPT="$TRANSCRIPT_DIR/long-turn.jsonl"
+node -e '
+const fs = require("fs");
+const pad = "x".repeat(20000);
+let out = JSON.stringify({ type: "user", isSidechain: false, message: { role: "user", content: "この設計どう思う？" } }) + "\n";
+for (let i = 0; i < 60; i += 1) {
+  out += JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", content: pad }] } }) + "\n";
+}
+fs.writeFileSync(process.argv[1], out);
+' "$LONG_TURN_TRANSCRIPT"
+if [ "$(wc -c <"$LONG_TURN_TRANSCRIPT")" -gt 524288 ]; then
+  run_hook "$(stop_input_for "$LONG_TURN_TRANSCRIPT")"
+  assert_no_continuation "初段の読み取り窓を超える長いターンでも境界まで遡って判定する"
+else
+  bad "long-turn fixture が初段の窓（512KiB）を超えていません"
+fi
+
+run_hook "$(stop_input_for "$QUESTION_TRANSCRIPT")" ask
+assert_no_continuation "ask モードでもチェーン末尾でなければ継続を返さない（AC5）"
+
+run_hook "$(stop_input_for "$CURATE_TRANSCRIPT")" ask
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
+  && printf '%s' "$OUT" | jq -e '.decision == "block"' >/dev/null 2>&1 \
+  && printf '%s' "$REASON" | grep -F 'RETROSPECTIVE_MODE=ask' >/dev/null; then
+  ok "ask モードはチェーン末尾のターンで従来どおり実施前確認を返す（AC5）"
+else
+  bad "ask モードはチェーン末尾のターンで従来どおり実施前確認を返す（AC5）: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
+run_hook "$(stop_input_for "$CURATE_TRANSCRIPT")" off
+assert_silent_success "off はチェーン末尾のターンでも自動発火しない（AC5）"
+
+# secondary guard は判定より先に立つ。チェーン末尾で振り返り済みなら再要求しない。
+run_hook "$(printf '{"hook_event_name":"Stop","session_id":"s1","stop_hook_active":false,"last_assistant_message":"## セッション振り返り\\n実施済み","transcript_path":"%s"}' "$CURATE_TRANSCRIPT")"
+assert_silent_success "チェーン末尾でも振り返り結果があれば終了を許可"
+
+# 完了通知の再入は、**必ずしも新しい user エントリ（= ターン境界）を書かない**。
+# task id で突き合わせた実測（2026-09-15 / ローカル transcript 4 本）では、多くは
+# `type:"user"` を書く一方、1 セッションあたり 3〜5 件は `attachment` だけで境界を
+# 残さなかった。したがって 1 つの span にチェーン末尾・振り返り・そのあとの応答が
+# 同居しうる。span 内で振り返りを出し終えたことを終端状態にしないと、以降の応答の
+# たびに fallback が再要求する（OBS-187 のノイズがセッション後半へ移るだけ）。
+DELIVERED_TRANSCRIPT="$(mk_transcript delivered <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"ff-dev-toolkit:ace-curate"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"## セッション振り返り\n\n記録: OBS-000"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"background の後片付けも終わりました"}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$DELIVERED_TRANSCRIPT")"
+assert_silent_success "span 内で振り返りを出し終えていれば、同じ span の後続応答で再要求しない"
+
+# 逆向き: 振り返りがまだなら、同じ形でも従来どおり継続を要求する（終端状態が
+# 「チェーン末尾を一度でも見たら黙る」へ広がっていないことの対照）。
+NOT_DELIVERED_TRANSCRIPT="$(mk_transcript not-delivered <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"ff-dev-toolkit:ace-curate"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"マージまで完了しました"}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$NOT_DELIVERED_TRANSCRIPT")"
+assert_continuation "span 内に振り返りが無ければチェーン末尾として継続を要求する"
+
+# `gh pr merge` の一致点は 3 系統ある（行頭 / 区切りの直後 / 前置付き）。`&&` の 1 系統
+# だけを固定していると、**このリポジトリのワークフローが実際に打つ形**——行頭の
+# `gh pr merge <PR> --squash`——を落とす変異が緑で通る（実測）。3 系統すべてを置く。
+BARE_MERGE_TRANSCRIPT="$(mk_transcript bare-merge <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr merge 1624 --squash --delete-branch"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$BARE_MERGE_TRANSCRIPT")"
+assert_continuation "行頭の gh pr merge を拾う（ワークフローが実際に打つ形）"
+
+PREFIXED_MERGE_TRANSCRIPT="$(mk_transcript prefixed-merge <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"FF_EFFORT_ACTUAL_ACK=1 /opt/homebrew/bin/gh pr merge 1624 --squash"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$PREFIXED_MERGE_TRANSCRIPT")"
+assert_continuation "環境代入と明示パスが前置された gh pr merge も拾う"
+
+MULTILINE_MERGE_TRANSCRIPT="$(mk_transcript multiline-merge <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"set -e\ngh pr merge 1624 --squash\ngit checkout develop"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$MULTILINE_MERGE_TRANSCRIPT")"
+assert_continuation "複数行コマンドの行頭にある gh pr merge も拾う"
+
+SLASH_COMMAND_TRANSCRIPT="$(mk_transcript slash-command <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"SlashCommand","input":{"command":"/ff-dev-toolkit:ace-curate 1624"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$SLASH_COMMAND_TRANSCRIPT")"
+assert_continuation "SlashCommand 経由の /ace-curate も拾う"
+
+# 誤検出の本命その 2。`/` はパス区切りでもあるので、prompt 全文を検索する実装だと
+# **このリポジトリのファイル名を口にしただけ**でチェーン末尾になる。判定はコマンドの
+# 「形」で行う（ホストが記録する `<command-name>` か、prompt の先頭トークン）。
+PATH_MENTION_TRANSCRIPT="$(mk_transcript path-mention <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"hooks/retrospective-stop.sh と tests/retrospective-contract/verify.sh を読んで"}}
+EOF
+)"
+run_hook "$(stop_input_for "$PATH_MENTION_TRANSCRIPT")"
+assert_no_continuation "パスとしてコマンド名を含む prompt はチェーン末尾にしない"
+
+BARE_SLASH_TRANSCRIPT="$(mk_transcript bare-slash <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"/merge-cleanup"}}
+EOF
+)"
+run_hook "$(stop_input_for "$BARE_SLASH_TRANSCRIPT")"
+assert_continuation "ラッパー無しのホストでは prompt 先頭トークンで明示指定を拾う"
+
+# tool_result の user エントリにホストが `<system-reminder>` のテキストを添えることが
+# ある。text だけを見て境界にすると、その手前のチェーン末尾を隠して黙る。
+TOOL_RESULT_TEXT_TRANSCRIPT="$(mk_transcript tool-result-text <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"ff-dev-toolkit:ace-curate"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"done"},{"type":"text","text":"<system-reminder>注意書き</system-reminder>"}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$TOOL_RESULT_TEXT_TRANSCRIPT")"
+assert_continuation "text を伴う tool_result エントリを境界にしない"
+
+IS_META_TRANSCRIPT="$(mk_transcript is-meta <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"ff-dev-toolkit:ace-curate"}}]}}
+{"type":"user","isMeta":true,"isSidechain":false,"message":{"role":"user","content":"(Re-invocation of /ff-dev-toolkit:ace-curate)"}}
+EOF
+)"
+run_hook "$(stop_input_for "$IS_META_TRANSCRIPT")"
+assert_continuation "ホスト記帳の isMeta エントリを境界にしない"
+
+SKILL_PREFIX_TRANSCRIPT="$(mk_transcript skill-prefix <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"レポートを作って"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"ff-dev-toolkit:ace-curate-report"}}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$SKILL_PREFIX_TRANSCRIPT")"
+assert_no_continuation "名前が前方一致するだけの skill はチェーン末尾にしない"
+
+# span 内の実施済み判定は、散文で引用しただけの行に反応してはいけない。この hook や
+# 観測台帳を編集しているセッションが毎回それを書くため、緩いと本物の末尾が黙る。
+QUOTED_MARKER_TRANSCRIPT="$(mk_transcript quoted-marker <<'EOF'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"実装を進めて"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"ff-dev-toolkit:ace-curate"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"検出しているのは行頭の\n振り返り: というマーカーです"}]}}
+EOF
+)"
+run_hook "$(stop_input_for "$QUOTED_MARKER_TRANSCRIPT")"
+assert_continuation "散文が定型文を引用しただけでは実施済みと見なさない"
+
+run_hook '{"hook_event_name":"Stop","session_id":"s1","stop_hook_active":false,"last_assistant_message":"ok","model":"","transcript_path":"/nonexistent"}'
+assert_continuation "空文字の model は Codex ホストと見なさない"
+
+# 判定を別モジュールへ出したので、hook は初めて「同梱ファイルが欠けている」形で壊れうる。
+# その壊れ方が無言だと、振り返りが黙って消えたことに誰も気づけない（この hook の唯一の
+# 仕事が「抜けに気づくこと」なので、最悪の失敗形）。応答はブロックせず、復旧ヒントを出す。
+MODULE_SANDBOX="$TEST_TMP/no-detector/hooks"
+mkdir -p "$MODULE_SANDBOX"
+cp "$TARGET" "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$MODULE_SANDBOX/"
+RC=0
+ERR=""
+OUT="$(printf '%s' "$FIRST_INPUT" | env -u RETROSPECTIVE_MODE -u RETROSPECTIVE_FILING \
+  /bin/bash "$MODULE_SANDBOX/${TARGET##*/}" 2>"$TEST_TMP/no-detector-stderr")" || RC=$?
+ERR="$(cat "$TEST_TMP/no-detector-stderr" 2>/dev/null || true)"
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
+  && printf '%s' "$OUT" | jq -e 'has("decision") | not' >/dev/null 2>&1 \
+  && printf '%s' "$OUT" | jq -r '.systemMessage // empty' | grep -F 'retrospective-chain-tail.mjs' >/dev/null \
+  && printf '%s' "$OUT" | jq -r '.systemMessage // empty' | grep -F 'ff-dev-toolkit:retrospective' >/dev/null; then
+  ok "判定モジュール不在は応答をブロックせず復旧ヒントを通知"
+else
+  bad "判定モジュール不在は応答をブロックせず復旧ヒントを通知: exit=$RC output=[$OUT] stderr=[$ERR]"
+fi
+
+# 「不在」は壊れ方の 1 つでしかない。配布はミラー同期と自動更新で行われるので、
+# **途中まで書かれた**モジュール（node は rc 0 で空 stdout を返すことがある）と
+# **読めない**モジュール（rc 1）も同じくらい起こる。どちらも無音だと、自動振り返りが
+# 恒久的に、しかも誰にも見えない形で止まる。
+run_unusable_detector() { # $1=モジュールの作り方（関数名） $2=検査名
+  local sandbox="$TEST_TMP/unusable/hooks"
+  rm -rf "$TEST_TMP/unusable"
+  mkdir -p "$sandbox"
+  cp "$TARGET" "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$sandbox/"
+  "$1" "$sandbox/retrospective-chain-tail.mjs"
+  RC=0
+  OUT="$(printf '%s' "$FIRST_INPUT" | env -u RETROSPECTIVE_MODE -u RETROSPECTIVE_FILING \
+    /bin/bash "$sandbox/${TARGET##*/}" 2>"$TEST_TMP/unusable-stderr")" || RC=$?
+  ERR="$(cat "$TEST_TMP/unusable-stderr" 2>/dev/null || true)"
+  if [ "$RC" -eq 0 ] \
+    && printf '%s' "$OUT" | jq -e 'has("decision") | not' >/dev/null 2>&1 \
+    && printf '%s' "$OUT" | jq -r '.systemMessage // empty' | grep -F 'retrospective-chain-tail.mjs' >/dev/null \
+    && printf '%s' "$ERR" | grep -F 'detector unusable' >/dev/null; then
+    ok "$2"
+  else
+    bad "$2: exit=$RC output=[$OUT] stderr=[$ERR]"
+  fi
+}
+
+make_truncated_detector() { head -c 400 "$PLUGIN_ROOT/hooks/retrospective-chain-tail.mjs" >"$1"; }
+run_unusable_detector make_truncated_detector "途中で切れた判定モジュールは無音にせず復旧ヒントを返す"
+
+make_unreadable_detector() { cp "$PLUGIN_ROOT/hooks/retrospective-chain-tail.mjs" "$1"; chmod 000 "$1"; }
+run_unusable_detector make_unreadable_detector "読めない判定モジュールは無音にせず復旧ヒントを返す"
+chmod 644 "$TEST_TMP/unusable/hooks/retrospective-chain-tail.mjs" 2>/dev/null || true
+
+make_unknown_state_detector() { printf '%s\n' '#!/usr/bin/env node' 'process.stdin.resume();' 'process.stdin.on("end", () => { process.stdout.write("UNKNOWN-STATE"); });' >"$1"; }
+run_unusable_detector make_unknown_state_detector "未知の state 語も無音にせず復旧ヒントを返す"
+
+make_empty_state_detector() { printf '%s\n' '#!/usr/bin/env node' 'process.stdin.resume();' 'process.stdin.on("end", () => {});' >"$1"; }
+run_unusable_detector make_empty_state_detector "空の state も無音にせず復旧ヒントを返す"
+
+# exit 2 は「Stop 入力として認識できない」という設計どおりの fail-open。ここだけは
+# 復旧ヒントを出さずに無音で通す — 出すと、別イベントや不正 JSON のたびに利用者へ
+# 壊れた旨の通知が飛ぶ。
+make_failopen_detector() { printf '%s\n' '#!/usr/bin/env node' 'process.stdin.resume();' 'process.stdin.on("end", () => { process.exit(2); });' >"$1"; }
+FAILOPEN_SANDBOX="$TEST_TMP/failopen/hooks"
+rm -rf "$TEST_TMP/failopen"; mkdir -p "$FAILOPEN_SANDBOX"
+cp "$TARGET" "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$FAILOPEN_SANDBOX/"
+make_failopen_detector "$FAILOPEN_SANDBOX/retrospective-chain-tail.mjs"
+RC=0
+OUT="$(printf '%s' "$FIRST_INPUT" | env -u RETROSPECTIVE_MODE -u RETROSPECTIVE_FILING \
+  /bin/bash "$FAILOPEN_SANDBOX/${TARGET##*/}" 2>"$TEST_TMP/failopen-stderr")" || RC=$?
+ERR="$(cat "$TEST_TMP/failopen-stderr" 2>/dev/null || true)"
+assert_silent_success "exit 2 は設計どおりの fail-open として無音で通す"
 
 READ_STUB="$TEST_TMP/read-stub.bash"
 printf '%s\n' \

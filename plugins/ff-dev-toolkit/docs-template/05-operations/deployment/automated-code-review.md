@@ -397,7 +397,7 @@ npx husky init
 
 ### `claude -p` の stdout に振り返り行が混ざる（ping の exact 一致が落ちる）
 
-利用側の単体ラッパー（`scripts/claude-review.sh` 等）が `claude -p "Return exactly: ok" --output-format text` のような **exact 一致の ping** で CLI 生存確認をしている場合、出力が `ok` だけにならず `振り返り: 今回は作業完了前のため対象外` などの行が付いて判定に落ちることがある。
+利用側の単体ラッパー（`scripts/claude-review.sh` 等）が `claude -p "Return exactly: ok" --output-format text` のような **exact 一致の ping** で CLI 生存確認をしている場合、出力が `ok` だけにならず振り返り関連の行が付いて判定に落ちることがある。`#1612` 以降、その行が出るのは Stop hook がターンを分類できなかった場合に限られる（入れ子の `claude -p` は自分の transcript を持つので通常はチェーン末尾以外と分類され、何も出ない）が、抑止の正本は下の `RETROSPECTIVE_MODE=off` のままで変わらない。
 
 原因は **ユーザーレベル**（`~/.claude/settings.json`）に入った自動振り返りの `UserPromptSubmit` hook で、入れ子で起動された非対話の `claude -p` にも注入される。hook 入力には print / headless / `output_format` に相当するフィールドが無く、hook 側から「これはツール的起動だ」と判別できない（`permission_mode` は `--permission-mode` の写しなので対話セッションと同形）。プロジェクトの `.claude/settings.json` では止められず、リポジトリ外（`cd /tmp`）でも再現する。
 
