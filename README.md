@@ -151,7 +151,7 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 
 ### Bash ガード（PreToolUse）
 
-プラグインをインストールすると、Bash ツールの実行前に 7 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
+プラグインをインストールすると、Bash ツールの実行前に 8 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
 
 **未コミット変更ガード（`guard-checkout-restore.sh`）** — 未コミット変更のあるファイルへの `git checkout [--] <path>` / `git restore <path>` を検出し、変更消失の前に警告する。警告文は代替手段（`cp` バックアップ / `git stash push -- <file>` → `pop`）を案内する。ブランチ切り替え（`git checkout <branch>` / `git switch`）、clean・untracked なファイルへの復元、`git restore --staged`（worktree 非破壊）では発火しない。
 
@@ -181,6 +181,12 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1`（対象コマンド先頭の環境代入としても有効な抜け道）
 - 既知の限界: `--label` を変数展開・コマンド置換で組み立てる形、`gh issue create` を経ない起票（API 直叩き・Web UI）では判定できず素通しする（fail-open）
+
+**委譲先の長時間ゲート background ガード（`guard-long-gate-background.sh`）** — 委譲先のサブエージェントが全件ゲート（`run-all.sh`）を `run_in_background` で起こすとき、および Bash ツールの `timeout` が未指定・foreground 上限（既定 600000 ミリ秒）未満のためホストに自動 background 化されるときに停止する。background へ回された委譲先は「完了通知を待つ」と言って停止し、親がナッジするまで再開しないため、待ち時間だけが失われる。**発火するのは委譲先（サブエージェント）の呼び出しだけ**で、オーケストレータ自身が意図的に background でゲートを回す運用は対象外（hook 入力の `agent_type` の有無で判別する）。発火と抜け道通過は `${TMPDIR}` 配下の session_id 別ログへ追記され、どの子が起こしたかの追跡と発生回数の計測に使える。
+
+- 通し方: `run_in_background` を外して Bash ツールの `timeout` に `600000` を明示し foreground で待つ、またはゲートを foreground 上限に収まる粒度へ分割する。それでも background で起こす必要がある場合は**ゲートを実行するセグメントの先頭**に `FF_LONG_GATE_BACKGROUND_ACK=1` を付ける（判定はセグメントごとなので、`cd /repo && bash …/run-all.sh` なら `cd /repo && FF_LONG_GATE_BACKGROUND_ACK=1 bash …/run-all.sh` と置く）
+- 要求する最小 timeout は環境変数 `FF_LONG_GATE_FOREGROUND_TIMEOUT_MS`（既定 600000）で変えられる
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD=1`
 
 **sub-issues integer フィールドガード（`guard-sub-issue-id.sh`）** — `gh api` が `-f sub_issue_id=`（または同じ API の `-f after_id=` / `-f before_id=`）で integer フィールドを送ろうとしたときに停止する。`-f` は値を常に文字列で送るため、GitHub の sub-issues API は 422 で弾き、ループで回すと全件が同じエラーで落ちる。対象を `gh api -f` 全般へは広げない（GraphQL の `-f query=` や REST の `-f base=<branch>`、`per_page` は文字列として正しい）。
 

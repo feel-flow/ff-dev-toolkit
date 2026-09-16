@@ -442,6 +442,14 @@ else
     # ブロックでない（systemMessage のみ）ことを stdin JSON fixture で固定する。
     # 絶対化イディオム（コマンド置換・変数展開）を誤警告しない線引きも併せて見る。
     "$SCRIPT_DIR/guard-background-cwd/verify.sh"
+    # PreToolUse（Bash）の委譲先 長時間ゲート background ガード
+    # （hooks/guard-long-gate-background.sh、観測台帳 OBS-036 の対策）。
+    # サブエージェントが run-all.sh を run_in_background で起こす形と、timeout 未指定 /
+    # foreground 上限未満でハーネスに自動 background 化される形の両方を抜け道付き
+    # deny で止める。**親の呼び出しを対象にしない**
+    # 非適用（意図的な background 運用を壊さない）と、発火の記録がリポジトリの外へ
+    # 出ることを stdin JSON fixture で固定する。
+    "$SCRIPT_DIR/guard-long-gate-background/verify.sh"
     # PreToolUse（Bash）の工数実績 未記入マージガード（hooks/guard-effort-actual.sh）。
     # ff-effort ブロックがあるのに effort_ai_actual が未記入の Issue を閉じる
     # gh pr merge を止める側と、ブロック不在・記入済み・非該当コマンド・gh/jq 不在で

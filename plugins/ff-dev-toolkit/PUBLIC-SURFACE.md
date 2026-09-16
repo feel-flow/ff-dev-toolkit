@@ -82,6 +82,7 @@
 - `PreToolUse :: Bash :: hooks/guard-effort-actual.sh`
 - `PreToolUse :: Bash :: hooks/guard-exit-code.sh`
 - `PreToolUse :: Bash :: hooks/guard-issue-labels.sh`
+- `PreToolUse :: Bash :: hooks/guard-long-gate-background.sh`
 - `PreToolUse :: Bash :: hooks/guard-pr-followup.sh`
 - `PreToolUse :: Bash :: hooks/guard-sub-issue-id.sh`
 - `PreToolUse :: Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task :: hooks/guard-review-in-flight.sh`
@@ -147,6 +148,7 @@
 - `FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD`
+- `FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK`
@@ -156,12 +158,14 @@
 - `FF_DISCARD_UNCOMMITTED`
 - `FF_EFFORT_ACTUAL_ACK`
 - `FF_EXIT_CODE_ACK`
+- `FF_LONG_GATE_BACKGROUND_ACK`
 - `FF_SUB_ISSUE_ID_ACK`
 - `FF_REVIEW_LOCK_OVERRIDE`
 
 #### hooks の閾値・対象
 
 - `FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED`
+- `FF_LONG_GATE_FOREGROUND_TIMEOUT_MS`
 - `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`
 - `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`
 - `FF_REVIEW_SUBAGENT_LOCK_TYPES`

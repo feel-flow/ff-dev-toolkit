@@ -20,6 +20,12 @@
 
 ## [Unreleased]
 
+## [0.115.0] - 2026-09-16
+
+### 追加
+
+- 委譲先のサブエージェントが全件ゲート（`run-all.sh`）を background で起こして完了を追わずに停止する事故を、PreToolUse ガードで実行前に止めるようになった。対象は run-all.sh だけで、依存インストール等の綴りは含めない（自然文へ紛れ込む綴りは、引用符を跨ぐ近似的なコマンド分割と組み合わさって無害なコマンドの誤検知を生むため）。`run_in_background: true` に加えて、Bash ツールの `timeout` が未指定 / foreground 上限（既定 600000 ミリ秒・`FF_LONG_GATE_FOREGROUND_TIMEOUT_MS` で変更可）未満のためハーネスに自動 background 化される形も同じ抜け道付き deny で止め、foreground での再実行・ゲートの分割・`FF_LONG_GATE_BACKGROUND_ACK=1` の抜け道を案内する。**発火するのは委譲先（サブエージェント）の呼び出しだけ**で、オーケストレータ自身が意図的に background でゲートを回す運用は対象外（hook 入力の `agent_type` の有無で判別する）。発火と抜け道通過は `${TMPDIR}/ff-dev-toolkit-delegation-guard/` 配下の session_id 別ログへ追記され、どの子が起こしたかの追跡と発生回数の計測に使える
+
 ## [0.114.0] - 2026-09-16
 
 ### 追加
