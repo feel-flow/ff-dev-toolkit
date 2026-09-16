@@ -2537,7 +2537,8 @@
 
 <!-- 比較リンクは公開リポジトリに存在するタグ同士のみ。plugin version のうち未タグの版は見出しのみ。 -->
 
-[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.115.0...HEAD
+[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.115.1...HEAD
+[0.115.1]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.115.0...v0.115.1
 [0.115.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.114.0...v0.115.0
 [0.114.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.113.0...v0.114.0
 [0.113.0]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.112.1...v0.113.0
