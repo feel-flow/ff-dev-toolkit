@@ -185,6 +185,12 @@ jobs:
           #   - claude-hooks-path / sync-forbidden-patterns / sync-sha-contract /
           #     public-dependabot-health / release-required-selftest: 開発元の同期・
           #     フック運用スクリプト（同期対象外）を検査
+          #   - cloud-env-setup / weekly-health-contract: 開発元の scripts/setup-cloud-env.sh /
+          #     scripts/probe-env-capabilities.sh / scripts/check-weekly-run-all-health.sh
+          #     （いずれも同期対象外）を検査対象として要求
+          #   - host-route-parity / root-instructions-parity: 開発元の docs/（正本表）と
+          #     リポジトリ直下の指示文書（CLAUDE.md / AGENTS.md。いずれも同期対象外）の
+          #     一致を検査する。配布先 checkout では検査対象が 1 件も同梱されない
           EXCLUDED_SSOT_SUITES="
             markdownlint markdownlint-selftest
             skill-count-consistency
@@ -198,6 +204,8 @@ jobs:
             roadmap-release-facts shared-version-convergence
             claude-hooks-path sync-forbidden-patterns sync-sha-contract
             public-dependabot-health release-required-selftest
+            cloud-env-setup weekly-health-contract
+            host-route-parity root-instructions-parity
           "
           # 除外名簿の実在検査: 改名・削除で名簿が腐ると、○ skip へ倒れる suite では
           # 「空振り → 実行集合へ入る → 失敗」の fail-closed が成立しない（skip で緑の

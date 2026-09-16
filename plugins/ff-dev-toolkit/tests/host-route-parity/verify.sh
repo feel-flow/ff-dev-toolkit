@@ -32,13 +32,18 @@
 #       スクリプトが参照する名簿とも突き合わせる
 #   - 契約が経路のどこかに 1 件でもあれば緑、にすると正本節を消しても同じ経路の
 #     別ファイルに残った参照文で通る
-#     → contracts 表が経路ごとの「正本ファイル」を持ち、そのファイルでの実在だけを
+#     → contracts 表が届け先ごとの「正本ファイル」を持ち、そのファイルでの実在だけを
 #       要求する（経路配下の hit を合算しない）
+#   - 1 経路が 2 つの届け先を持つとき（root-instructions = AGENTS.md + CLAUDE.md）、
+#     正本ファイルを「1 経路 1 件」で固定すると**片方に書いてあれば緑**になる。Claude Code は
+#     CLAUDE.md しか読まないので、これは「届いている」の誤報になる
+#     → 届け先 1 つにつき 1 ファイルを要求し、届け先ごとに検出語を測る
 #
 # 検出できないこと（原理的な限界。README の「この suite が見ないもの」が正本）:
 #   **新しい規定を 1 経路だけに書いた場合は赤にならない**。contracts 表に行が無い
 #   ためで、行を足すのは人側の受け持ちである。本 suite が見るのは「配ってあると
-#   宣言した契約が、その経路から消えていないか」だけ。
+#   宣言した契約が、その経路から消えていないか」だけ。表に行の無い規定まで含めた
+#   2 入口（AGENTS.md / CLAUDE.md）の記載一致は root-instructions-parity が見る。
 #
 # 実体を 1 つも実行しない。Markdown 表の読み取りと grep -F（固定文字列）だけで、
 # 正規表現へマルチバイト文字を渡さないのでロケールに依存しない。
@@ -57,6 +62,7 @@ REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd -P)"
 REGISTRY="$REPO_ROOT/docs/06-reference/HOST-PARITY.md"
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 REGISTRY_PARSER="$PLUGIN_ROOT/tests/lib/cli-registry-parser.sh"
+PARITY_TABLES="$PLUGIN_ROOT/tests/lib/host-parity-tables.sh"
 # 入口検査スクリプトの path はここに直書きしない。asymmetries 表 `skills-discovery`
 # 行の一次情報から導出する（下の (4)）。直書きすると、スクリプトを改名した側と表の側の
 # 片方だけが動いたときに食い違いが閉じないままになる。
@@ -86,9 +92,13 @@ if [ ! -f "$REGISTRY" ]; then
   exit 1
 fi
 
-for path in "$MULTI_AGENT" "$REGISTRY_PARSER"; do
+for path in "$MULTI_AGENT" "$REGISTRY_PARSER" "$PARITY_TABLES"; do
   [ -e "$path" ] || { echo "✗ 対象が見つかりません: $path" >&2; exit 1; }
 done
+
+# shellcheck disable=SC1090,SC1091 # runtime-checked repo-local shared helper
+. "$PARITY_TABLES"
+ff_parity_set_registry "$REGISTRY"
 
 PASS=0
 FAIL=0
@@ -126,73 +136,11 @@ compare_sets() { # <ラベル> <期待> <実際> <期待側の名前> <実際側
 
 # ── 正本表の読み取り ─────────────────────────────────────────────────────────
 #
-# sentinel は開始・終了が各1件で正順であることまで見る。重複・欠落・逆順を黙って
-# 「0 行」へ畳むと、表を丸ごと消した変更が全 pass のまま緑になる。
-parity_block() { # <ブロック名> : 区間内の生の行
-  awk -v s="<!-- host-parity:$1:start -->" -v e="<!-- host-parity:$1:end -->" '
-    $0 == s { if (inb) bad = 1; inb = 1; ns++; next }
-    $0 == e { if (!inb) bad = 1; inb = 0; ne++; next }
-    inb { print }
-    END { if (ns != 1 || ne != 1 || inb || bad) exit 3 }
-  ' "$REGISTRY"
-}
-
-# 表の本文行だけを返す（ヘッダー行と区切り行を落とす）。
-parity_rows() { # <ブロック名>
-  parity_block "$1" | awk '
-    substr($0, 1, 1) != "|" { next }
-    { body = $0; gsub(/[ \t|:-]/, "", body); if (body == "") next }
-    !seen_header { seen_header = 1; next }
-    { print }
-  '
-}
-
-# `exit` で 1 行目だけ読んで抜けない。reader が先に落ちると writer（parity_block の
-# awk）が SIGPIPE で死に、`set -euo pipefail` のもとで裸代入ごと rc=141 で落ちる —
-# 診断を 1 行も出さない死に方で、count_matching_files で踏んだのと同型。ブロックが
-# パイプバッファ（macOS 64KB）を超えたときだけ起きるので、表が育つまで気付けない。
-parity_header() { # <ブロック名>
-  parity_block "$1" | awk 'substr($0, 1, 1) == "|" && !seen { seen = 1; print }'
-}
-
-# `| a | b | c |` の n 番目のセル。前後の空白を落とす。
-row_cell() { # <行> <n>
-  printf '%s\n' "$1" | awk -F'|' -v n="$2" '
-    { c = $(n + 1); gsub(/^[ \t]+/, "", c); gsub(/[ \t]+$/, "", c); print c }
-  '
-}
-
-row_cell_count() { # <行>
-  printf '%s\n' "$1" | awk -F'|' '{ print NF - 2 }'
-}
-
-# セル内のバッククォート囲みトークンを 1 行 1 件で返す。
-bt_tokens() { # <セル>
-  printf '%s\n' "$1" | awk '
-    { n = split($0, a, "`"); for (i = 2; i <= n; i += 2) if (a[i] != "") print a[i] }
-  '
-}
-
-bt_one() { # <セル> : ちょうど1件ならそれを返す。それ以外は非 0
-  local toks count
-  toks="$(bt_tokens "$1")"
-  count="$(printf '%s\n' "$toks" | awk 'NF { n++ } END { print n + 0 }')"
-  [ "$count" = "1" ] || return 1
-  printf '%s' "$toks"
-}
-
-route_paths_of() { # <経路 ID> : その経路の届け先を空白区切りで返す
-  local want="$1" rrow rid out=""
-  while IFS= read -r rrow; do
-    [ -n "$rrow" ] || continue
-    rid="$(bt_one "$(row_cell "$rrow" 1)" || true)"
-    [ "$rid" = "$want" ] || continue
-    out="$(bt_tokens "$(row_cell "$rrow" 2)" | tr '\n' ' ')"
-  done <<EOF
-$(parity_rows routes)
-EOF
-  printf '%s' "$out"
-}
+# 読み取り関数（sentinel の切り出し・行と列の分解・バッククォート囲みの抽出・
+# 経路 ID からの引き当て）は共有ライブラリ tests/lib/host-parity-tables.sh が持つ。
+# 表形式を知っているコードを 2 箇所へ写さない — 同じ表を読む suite が 2 つあるので、
+# 写すと片方だけが動いたときに「同じ表を読んでいるはずの 2 つの検査が別のものを読む」
+# 形でドリフトする。以下はこの suite にしか要らない補助だけを置く。
 
 # 検出語を含むファイル数を数える。
 #
@@ -215,23 +163,6 @@ count_matching_files() { # <検出語> <パス> : ファイル数を stdout
   printf '%s\n' "$out" | awk 'NF { n++ } END { print n + 0 }'
 }
 
-# asymmetries 表の <ID> 行が挙げる一次情報パスを空白区切りで返す。
-# 一次情報列は末尾から 2 列目（最終列は「判明した経緯」）。
-asym_sources_of() { # <非対称 ID>
-  local want="$1" arow aid n out=""
-  while IFS= read -r arow; do
-    [ -n "$arow" ] || continue
-    aid="$(bt_one "$(row_cell "$arow" 1)" || true)"
-    [ "$aid" = "$want" ] || continue
-    n="$(row_cell_count "$arow")"
-    [ "$n" -ge 2 ] || continue
-    out="$(bt_tokens "$(row_cell "$arow" $((n - 1)))" | tr '\n' ' ')"
-  done <<EOF
-$(parity_rows asymmetries)
-EOF
-  printf '%s' "$out"
-}
-
 # 空白区切りリストの要素数 / n 番目。
 count_tokens() { # <空白区切りリスト>
   printf '%s\n' "$1" | awk '{ n += NF } END { print n + 0 }'
@@ -241,23 +172,10 @@ nth_token() { # <空白区切りリスト> <n>
   printf '%s\n' "$1" | awk -v n="$2" '{ print $n }'
 }
 
-route_hosts_of() { # <経路 ID> : その経路の対象ホストを空白区切りで返す
-  local want="$1" rrow rid out=""
-  while IFS= read -r rrow; do
-    [ -n "$rrow" ] || continue
-    rid="$(bt_one "$(row_cell "$rrow" 1)" || true)"
-    [ "$rid" = "$want" ] || continue
-    out="$(bt_tokens "$(row_cell "$rrow" 3)" | tr '\n' ' ')"
-  done <<EOF
-$(parity_rows routes)
-EOF
-  printf '%s' "$out"
-}
-
 echo "== ホスト経路パリティ（正本: docs/06-reference/HOST-PARITY.md） =="
 
 for block in hosts routes asymmetries contracts; do
-  if ! parity_block "$block" >/dev/null; then
+  if ! ff_parity_block "$block" >/dev/null; then
     echo "✗ 正本表のブロック '${block}' の sentinel が一意・正順ではありません" >&2
     echo "  期待: host-parity:${block} の start と end が各1件、開始が先" >&2
     exit 1
@@ -282,7 +200,7 @@ host_rows=0
 while IFS= read -r row; do
   [ -n "$row" ] || continue
   host_rows=$((host_rows + 1))
-  if ! id="$(bt_one "$(row_cell "$row" 1)")"; then
+  if ! id="$(ff_parity_bt_one "$(ff_parity_row_cell "$row" 1)")"; then
     bad "hosts 表の 1 列目がバッククォート囲みのホスト名 1 件ではありません: ${row}"
     continue
   fi
@@ -291,8 +209,8 @@ while IFS= read -r row; do
     continue
   fi
   DECLARED_HOSTS="${DECLARED_HOSTS} ${id}"
-  target="$(row_cell "$row" 3)"
-  reason="$(row_cell "$row" 4)"
+  target="$(ff_parity_row_cell "$row" 3)"
+  reason="$(ff_parity_row_cell "$row" 4)"
   case "$target" in
     yes) TARGET_HOSTS="${TARGET_HOSTS} ${id}" ;;
     no)
@@ -303,7 +221,7 @@ while IFS= read -r row; do
     *) bad "hosts 表の ${id} の対象列が yes / no ではありません: '${target}'" ;;
   esac
 done <<EOF
-$(parity_rows hosts)
+$(ff_parity_rows hosts)
 EOF
 
 if [ "$host_rows" -eq 0 ]; then
@@ -330,7 +248,7 @@ route_path_total=0
 while IFS= read -r row; do
   [ -n "$row" ] || continue
   route_rows=$((route_rows + 1))
-  if ! rid="$(bt_one "$(row_cell "$row" 1)")"; then
+  if ! rid="$(ff_parity_bt_one "$(ff_parity_row_cell "$row" 1)")"; then
     bad "routes 表の 1 列目がバッククォート囲みの経路名 1 件ではありません: ${row}"
     continue
   fi
@@ -340,7 +258,7 @@ while IFS= read -r row; do
   fi
   ROUTE_IDS="${ROUTE_IDS} ${rid}"
 
-  paths="$(bt_tokens "$(row_cell "$row" 2)")"
+  paths="$(ff_parity_bt_tokens "$(ff_parity_row_cell "$row" 2)")"
   if [ -z "$paths" ]; then
     bad "routes 表の ${rid} に届け先パスがありません"
   fi
@@ -351,7 +269,7 @@ while IFS= read -r row; do
     fi
   done
 
-  hosts="$(bt_tokens "$(row_cell "$row" 3)")"
+  hosts="$(ff_parity_bt_tokens "$(ff_parity_row_cell "$row" 3)")"
   if [ -z "$hosts" ]; then
     bad "routes 表の ${rid} に対象ホストがありません"
   fi
@@ -360,7 +278,7 @@ while IFS= read -r row; do
       || bad "routes 表の ${rid} が対象外・未宣言のホストを指しています: ${h}"
   done
 done <<EOF
-$(parity_rows routes)
+$(ff_parity_rows routes)
 EOF
 
 if [ "$route_rows" -eq 0 ]; then
@@ -376,7 +294,7 @@ fi
 for h in $TARGET_HOSTS; do
   reached=0
   for rid in $ROUTE_IDS; do
-    list_has "$(route_hosts_of "$rid")" "$h" && reached=1
+    list_has "$(ff_parity_route_hosts "$rid")" "$h" && reached=1
   done
   [ "$reached" -eq 1 ] || bad "対象ホスト ${h} へ届く経路が routes 表にありません"
 done
@@ -393,7 +311,7 @@ if [ -z "${ROOT_ACTUAL# }" ]; then
   bad "既知のホスト指示文書がリポジトリ直下に 1 件もありません — 導出が空振りしています"
 else
   compare_sets "routes の root-instructions がリポジトリ直下の指示文書と一致" \
-    "$ROOT_ACTUAL" "$(route_paths_of root-instructions)" "実体" "routes 表"
+    "$ROOT_ACTUAL" "$(ff_parity_route_paths root-instructions)" "実体" "routes 表"
 fi
 
 # ── (4) repo-local スキル入口のパリティ（正本側 と Codex 側） ────────────────
@@ -401,7 +319,7 @@ echo
 echo "-- repo-local スキル入口 --"
 
 # 届け先は「正本ディレクトリ」「Codex 入口ディレクトリ」の順で宣言する契約。
-REPO_LOCAL_PATHS="$(route_paths_of repo-local-skills)"
+REPO_LOCAL_PATHS="$(ff_parity_route_paths repo-local-skills)"
 canon_dir="$(printf '%s\n' "$REPO_LOCAL_PATHS" | awk '{ print $1 }')"
 codex_dir="$(printf '%s\n' "$REPO_LOCAL_PATHS" | awk '{ print $2 }')"
 if [ -z "$canon_dir" ] || [ -z "$codex_dir" ]; then
@@ -469,7 +387,7 @@ else
   ENTRYPOINT_CHECKER=""
   checker_rel=""
   checker_count=0
-  for src in $(asym_sources_of skills-discovery); do
+  for src in $(ff_parity_asym_sources skills-discovery); do
     case "$src" in
       *.sh) checker_rel="$src"; checker_count=$((checker_count + 1)) ;;
     esac
@@ -499,15 +417,15 @@ fi
 echo
 echo "-- 非対称の正本表 --"
 
-header="$(parity_header asymmetries)"
-ncell="$(row_cell_count "$header")"
+header="$(ff_parity_header asymmetries)"
+ncell="$(ff_parity_row_cell_count "$header")"
 if [ "$ncell" -lt 5 ]; then
   bad "asymmetries 表の列が足りません（ID / 非対称 / ホスト列 / 一次情報 / 判明した経緯）"
 else
   header_hosts=""
   i=3
   while [ "$i" -le $((ncell - 2)) ]; do
-    hid="$(bt_one "$(row_cell "$header" "$i")" || true)"
+    hid="$(ff_parity_bt_one "$(ff_parity_row_cell "$header" "$i")" || true)"
     if [ -z "$hid" ]; then
       bad "asymmetries 表のヘッダー ${i} 列目がバッククォート囲みのホスト名ではありません"
     else
@@ -524,11 +442,11 @@ else
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     asym_rows=$((asym_rows + 1))
-    if [ "$(row_cell_count "$row")" != "$ncell" ]; then
+    if [ "$(ff_parity_row_cell_count "$row")" != "$ncell" ]; then
       bad "asymmetries 表の列数がヘッダーと違います: ${row}"
       continue
     fi
-    if ! aid="$(bt_one "$(row_cell "$row" 1)")"; then
+    if ! aid="$(ff_parity_bt_one "$(ff_parity_row_cell "$row" 1)")"; then
       bad "asymmetries 表の 1 列目がバッククォート囲みの名前 1 件ではありません: ${row}"
       continue
     fi
@@ -543,7 +461,7 @@ else
     # いるので、`-n` だけの検査では `-` への置換が素通りする（変異注入で実測）。
     i=3
     while [ "$i" -le $((ncell - 2)) ]; do
-      cell="$(row_cell "$row" "$i")"
+      cell="$(ff_parity_row_cell "$row" "$i")"
       case "$cell" in
         "")
           bad "asymmetries 表 ${aid} の ${i} 列目が空です（未実測ならその旨を書く）" ;;
@@ -553,7 +471,7 @@ else
       i=$((i + 1))
     done
 
-    sources="$(bt_tokens "$(row_cell "$row" $((ncell - 1)))")"
+    sources="$(ff_parity_bt_tokens "$(ff_parity_row_cell "$row" $((ncell - 1)))")"
     if [ -z "$sources" ]; then
       bad "asymmetries 表 ${aid} に一次情報のパスがありません"
     fi
@@ -565,13 +483,13 @@ else
 
     # 判明した経緯は Issue / PR / ADR / OBS のいずれかの番号を必ず伴う。
     # 根拠の無い行は、次の変更で「まだ本当か」を一から測り直す羽目になる。
-    prov="$(row_cell "$row" "$ncell")"
+    prov="$(ff_parity_row_cell "$row" "$ncell")"
     case "$prov" in
       *"Issue #"[0-9]*|*"PR #"[0-9]*|*"ADR-"[0-9]*|*"OBS-"[0-9]*) ;;
       *) bad "asymmetries 表 ${aid} の経緯に Issue / PR / ADR / OBS の番号がありません: '${prov}'" ;;
     esac
   done <<EOF
-$(parity_rows asymmetries)
+$(ff_parity_rows asymmetries)
 EOF
 
   if [ "$asym_rows" -eq 0 ]; then
@@ -593,7 +511,7 @@ probe_total=0
 while IFS= read -r row; do
   [ -n "$row" ] || continue
   contract_rows=$((contract_rows + 1))
-  if ! cid="$(bt_one "$(row_cell "$row" 1)")"; then
+  if ! cid="$(ff_parity_bt_one "$(ff_parity_row_cell "$row" 1)")"; then
     bad "contracts 表の 1 列目がバッククォート囲みの契約名 1 件ではありません: ${row}"
     continue
   fi
@@ -603,67 +521,117 @@ while IFS= read -r row; do
   fi
   CONTRACT_IDS="${CONTRACT_IDS} ${cid}"
 
-  if ! needle="$(bt_one "$(row_cell "$row" 4)")"; then
+  if ! needle="$(ff_parity_bt_one "$(ff_parity_row_cell "$row" 4)")"; then
     bad "contracts 表 ${cid} の検出語がバッククォート囲み 1 件ではありません"
     continue
   fi
-  target_routes="$(bt_tokens "$(row_cell "$row" 2)" | tr '\n' ' ')"
+  target_routes="$(ff_parity_bt_tokens "$(ff_parity_row_cell "$row" 2)" | tr '\n' ' ')"
   if [ -z "${target_routes% }" ]; then
     bad "contracts 表 ${cid} に到達すべき経路がありません"
     continue
   fi
-  # 正本ファイル列は経路と同じ並びで 1 経路 1 ファイル。件数が食い違ったら、どの
-  # 経路にどのファイルが対応するかが決まらないので照合せずに赤にする。
-  canon_files="$(bt_tokens "$(row_cell "$row" 3)" | tr '\n' ' ')"
-  n_routes="$(count_tokens "$target_routes")"
+  # 正本ファイル列は**経路の届け先 1 つにつき 1 ファイル**。1 経路が複数の届け先を持つ
+  # 場合（root-instructions は AGENTS.md と CLAUDE.md の 2 つ）は、その全部を書く。
+  # 「1 経路 1 ファイル」で固定していた頃は、2 届け先のうち**片方に書いてあれば緑**に
+  # なり、Claude Code しか読まない CLAUDE.md へ契約が 1 行も届いていない状態が機械的に
+  # 許容されていた（2026-09-15 の実測: 5 契約の検出語をどれも含まないスタブを置いても
+  # 全 33 件 pass）。件数が食い違ったら、どの届け先にどのファイルが対応するかが決まらない
+  # ので照合せずに赤にする。
+  canon_files="$(ff_parity_bt_tokens "$(ff_parity_row_cell "$row" 3)" | tr '\n' ' ')"
+  dest_total=0
+  routes_known=1
+  for rid in $target_routes; do
+    if ! list_has "$ROUTE_IDS" "$rid"; then
+      bad "contracts 表 ${cid} が routes 表に無い経路を指しています: ${rid}"
+      routes_known=0
+      continue
+    fi
+    dest_total=$((dest_total + $(count_tokens "$(ff_parity_route_paths "$rid")")))
+  done
+  if [ "$routes_known" -ne 1 ]; then
+    continue
+  fi
   n_files="$(count_tokens "$canon_files")"
-  if [ "$n_routes" != "$n_files" ]; then
-    bad "contracts 表 ${cid} の経路と正本ファイルの件数が違います（経路 ${n_routes} 件 / 正本ファイル ${n_files} 件）"
+  if [ "$dest_total" != "$n_files" ]; then
+    bad "contracts 表 ${cid} の届け先と正本ファイルの件数が違います（届け先 ${dest_total} 件 / 正本ファイル ${n_files} 件）— 届け先が複数ある経路は届け先ごとに 1 ファイル書く"
     continue
   fi
 
-  idx=0
+  # 経路の届け先はそのつど routes 表から引く（経路からパスへの写しを持たない）。
+  # 届け先と正本ファイルの対応づけは**並び順ではなく配下関係**で決める。並び順で対応
+  # づけると、届け先が 2 つある経路とそうでない経路が混ざった行で「何番目がどの届け先か」
+  # が読み手にも機械にも決まらない。
+  assigned=""
   for rid in $target_routes; do
-    idx=$((idx + 1))
-    canon="$(nth_token "$canon_files" "$idx")"
-    if ! list_has "$ROUTE_IDS" "$rid"; then
-      bad "contracts 表 ${cid} が routes 表に無い経路を指しています: ${rid}"
-      continue
-    fi
-    probe_total=$((probe_total + 1))
-    # 経路の届け先はそのつど routes 表から引く（経路からパスへの写しを持たない）。
-    # 正本ファイルがその届け先の配下にあることまで見る。配下判定を省くと、経路と
-    # 正本ファイルの対応がずれた編集（別経路のファイルを書いた）が緑のまま通る。
-    under=0
-    for rp in $(route_paths_of "$rid"); do
-      case "$canon" in
-        "$rp"|"$rp"/*) under=1 ;;
-      esac
+    for rp in $(ff_parity_route_paths "$rid"); do
+      probe_total=$((probe_total + 1))
+      hits=""
+      for canon in $canon_files; do
+        case "$canon" in
+          "$rp"|"$rp"/*) hits="${hits} ${canon}" ;;
+        esac
+      done
+      n_hits="$(count_tokens "$hits")"
+      if [ "$n_hits" -eq 0 ]; then
+        bad "contracts 表 ${cid} に経路 ${rid} の届け先 ${rp} 配下の正本ファイルがありません（届け先ごとに 1 ファイル書く）"
+        continue
+      fi
+      if [ "$n_hits" -gt 1 ]; then
+        bad "contracts 表 ${cid} の経路 ${rid} の届け先 ${rp} 配下に正本ファイルが ${n_hits} 件あります（1 届け先 1 ファイル）:${hits}"
+        continue
+      fi
+      canon="${hits# }"
+      # 同じファイルが 2 つの届け先へ対応づくのは、届け先が入れ子になっている（= 別の
+      # 届け先の配下に別の届け先がある）ときだけ。名指しで赤にしないと、余った側の
+      # ファイルが「どこにも対応づかない」形でしか現れず原因が読めない。
+      if list_has "$assigned" "$canon"; then
+        bad "contracts 表 ${cid} の正本ファイル ${canon} が複数の届け先に対応づきます（届け先が入れ子です）"
+        continue
+      fi
+      assigned="${assigned} ${canon}"
+      if [ ! -f "$REPO_ROOT/$canon" ]; then
+        bad "contracts 表 ${cid} の正本ファイルが実在しません: ${canon}"
+        continue
+      fi
+      # 経路配下の hit を合算しない。合算すると、正本節を消しても同じ経路の別ファイル
+      # に残った参照文で緑になる（実測: deployment-docs の正本節は 1 ファイルの見出し
+      # だが、同じ経路の別ファイルに同じ語を含む参照文がある）。逆に全ファイルへ要求
+      # する形にもしない — 1 経路が多数のファイルを持つ届け先で無意味に赤くなる。
+      if ! found="$(count_matching_files "$needle" "$REPO_ROOT/$canon")"; then
+        bad "検出語の探索に失敗しました: ${cid} / ${rid} / ${canon}（grep が異常終了）"
+        continue
+      fi
+      if [ "$found" -gt 0 ]; then
+        ok "${cid} が ${rid} の正本 ${canon} に実在"
+      else
+        bad "${cid} が ${rid} の届け先 ${rp} から消えています（検出語「${needle}」が正本ファイル ${canon} にありません）"
+      fi
     done
-    if [ "$under" -ne 1 ]; then
-      bad "contracts 表 ${cid} の正本ファイルが経路 ${rid} の届け先配下にありません: ${canon}"
-      continue
-    fi
-    if [ ! -f "$REPO_ROOT/$canon" ]; then
-      bad "contracts 表 ${cid} の正本ファイルが実在しません: ${canon}"
-      continue
-    fi
-    # 経路配下の hit を合算しない。合算すると、正本節を消しても同じ経路の別ファイル
-    # に残った参照文で緑になる（実測: deployment-docs の正本節は 1 ファイルの見出し
-    # だが、同じ経路の別ファイルに同じ語を含む参照文がある）。逆に全ファイルへ要求
-    # する形にもしない — 1 経路が多数のファイルを持つ届け先で無意味に赤くなる。
-    if ! found="$(count_matching_files "$needle" "$REPO_ROOT/$canon")"; then
-      bad "検出語の探索に失敗しました: ${cid} / ${rid} / ${canon}（grep が異常終了）"
-      continue
-    fi
-    if [ "$found" -gt 0 ]; then
-      ok "${cid} が ${rid} の正本 ${canon} に実在"
-    else
-      bad "${cid} が ${rid} から消えています（検出語「${needle}」が正本ファイル ${canon} にありません）"
-    fi
+  done
+  # どの届け先にも対応づかなかった正本ファイルを名指しする。経路と正本ファイルの対応が
+  # ずれた編集（別経路のファイルを書いた）はここで止まる。
+  #
+  # 「届け先の配下ではあるが対応づかなかった」ファイルはここでは出さない。同じ届け先へ
+  # 2 件書いた場合がそれで、上の「2 件あります」が既に名指ししている。両方から出すと
+  # **配下にあるファイルを「配下にありません」と報告する**誤った診断になる（変異注入で実測）。
+  reported=""
+  for canon in $canon_files; do
+    list_has "$assigned" "$canon" && continue
+    list_has "$reported" "$canon" && continue
+    under=0
+    for rid in $target_routes; do
+      for rp in $(ff_parity_route_paths "$rid"); do
+        case "$canon" in
+          "$rp"|"$rp"/*) under=1 ;;
+        esac
+      done
+    done
+    [ "$under" -eq 1 ] && continue
+    reported="${reported} ${canon}"
+    bad "contracts 表 ${cid} の正本ファイルが宣言した経路の届け先配下にありません: ${canon}"
   done
 done <<EOF
-$(parity_rows contracts)
+$(ff_parity_rows contracts)
 EOF
 
 if [ "$contract_rows" -eq 0 ]; then

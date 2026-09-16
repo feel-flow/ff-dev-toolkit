@@ -319,6 +319,14 @@ else
     # 正本表を持たない配布先 checkout では丸ごと ○ skip（適用外なので必須名簿には
     # 載せず、verify.sh の `# run-all-required: no` 宣言で明示する）。
     "$SCRIPT_DIR/host-route-parity/verify.sh"
+    # 上の経路表が宣言する root-instructions の 2 届け先（AGENTS.md / CLAUDE.md）の
+    # 記載一致。Claude Code は CLAUDE.md しか自動で読まないため 2 文書を同じ内容で
+    # 維持する契約（ADR-056）で、ホスト固有の差は文書側の host-specific マーカーで
+    # 宣言する。同じ正本表を読むので host-route-parity の直後に置く（表リーダーは
+    # tests/lib/host-parity-tables.sh で共有）。外部コマンド不要の読み取り専用検査で、
+    # 対象文書を持たない配布先 checkout では丸ごと ○ skip（適用外なので必須名簿には
+    # 載せず、verify.sh の `# run-all-required: no` 宣言で明示する）。
+    "$SCRIPT_DIR/root-instructions-parity/verify.sh"
     # 収録スキル数の手入力メタデータ（marketplace.json root/oss・plugin.json）と
     # skills/*/SKILL.md の実数の整合検査（Issue #502）。jq のみに依存する読み取り
     # 専用の静的検査。件数の複製を扱う点で cli-registry-completeness の直後に置く。
