@@ -486,18 +486,21 @@ ROLE_CONSUMERS=(
 #           の `oss/*` 分岐が tar --strip-components を付ける）ため、公開側に
 #           oss/ff-dev-toolkit という **path は残らない**。判別しているのは内容の
 #           非公開性ではなく path の有無である（内容自体は公開されている）。
-#   標識 2: plugins/ に ff-dev-toolkit 以外のプラグインがある。配布物は ff-dev-toolkit
-#           単体で、マーケットプレイス型モノレポだけが複数を収録する。
+#   標識 2: plugins/ に ff-dev-toolkit 以外の**プラグイン実体**（.claude-plugin/plugin.json を
+#           持つディレクトリ）がある。配布物は ff-dev-toolkit 単体で、マーケットプレイス型
+#           モノレポだけが複数を収録する。素のディレクトリ名で数えると、ツール生成物や
+#           スクラッチディレクトリが 1 つ増えただけで的外れな「改名・移動」診断で赤くなる。
 #
 # 標識 1 は retrospective-contract / out-of-scope-routing とその selftest が使う判別子と
-# 同じもの。
+# 同じもの。run-all の case 36 も同じ 2 標識を使う（判定の複製は tests/run-all/verify.sh の
+# `_mkchk_layout` と本ブロックの 2 箇所。共有ヘルパへの括り出しは Issue `#1696` で扱う）。
 REPO_ROOT_DIR="$(cd "$PLUGIN_ROOT/../.." 2>/dev/null && pwd -P || true)"
 SSOT_MARK_OSS=0
 SSOT_MARK_SIBLING=0
 if [[ -n "$REPO_ROOT_DIR" ]]; then
   [[ -d "$REPO_ROOT_DIR/oss/ff-dev-toolkit" ]] && SSOT_MARK_OSS=1
   for _plugin_dir in "$REPO_ROOT_DIR"/plugins/*/; do
-    [[ -d "$_plugin_dir" ]] || continue
+    [[ -f "${_plugin_dir}.claude-plugin/plugin.json" ]] || continue
     [[ "$(basename "$_plugin_dir")" == "ff-dev-toolkit" ]] && continue
     SSOT_MARK_SIBLING=1
     break

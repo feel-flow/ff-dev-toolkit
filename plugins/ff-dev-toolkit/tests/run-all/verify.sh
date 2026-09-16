@@ -1916,6 +1916,68 @@ echo "== case 36: テンプレート付き mktemp -d が成功経路で実体を
 # （後者には materialize-dev-toolkit-changelog.sh の同型が含まれる）。
 _mkchk_repo_root="$(cd "$TESTS_DIR/../../.." && pwd -P)"
 
+# リポジトリ直下の scripts/ は SSOT にしか無い（同期対象の正本
+# scripts/sync-dev-toolkit-to-public.sh の PUBLIC_TARGETS は plugins/ff-dev-toolkit と
+# oss/ff-dev-toolkit の 2 つだけ）。glob をそのまま渡すと、配布先 checkout では展開されず
+# リテラル `…/scripts/*.sh` が awk へ渡り fatal で suite ごと abort する
+# （Issue `#1695`。2026-09-16 に公開 CI で実測）。
+#
+# 配置の判別は review-freeze-contract と同じ独立 2 標識の論理積で行い、**食い違いは赤にする**。
+# 単一の存在確認で分岐すると、SSOT 側で scripts/ が改名・移動された回に黙って「配布先扱い」へ
+# 落ち、materialize-dev-toolkit-changelog.sh の同型を走査しないまま緑になる（fail-open）。
+#   標識 1: root に oss/ff-dev-toolkit がある。oss/ 配下は公開同期時に staging root へ展開
+#           される（同期スクリプトの `oss/*` 分岐が tar --strip-components を付ける）ため、
+#           配布先にこの path は残らない。
+#   標識 2: plugins/ に ff-dev-toolkit 以外の**プラグイン実体**（.claude-plugin/plugin.json を
+#           持つディレクトリ）がある。配布物は単体収録で、マーケットプレイス型モノレポだけが
+#           複数を収録する。素のディレクトリ名で数えると、ツール生成物やスクラッチ
+#           ディレクトリが 1 つ増えただけで「改名・移動された可能性」という的外れな
+#           診断で赤くなる（レビュー実測）。
+#
+# **両標識が 0 でも配布先と断定しない。** XOR だけを赤にすると、SSOT 側で oss/ が改名され、かつ
+# 収録プラグインが単体になった状態が「標識 0/0 = 配布先」へ黙って落ちる。そこで root scripts/ の
+# 実在を配布先方向の反証に使い、配布先の標識なのに scripts/ が在る回も赤にする。
+#
+# 判定を関数へ切り出しているのは、下の「配置判定の回帰ケース」で合成ツリーに対する判定を
+# 固定するため。インラインのままだと、ここで足した分岐を自動で踏む手段が無い（Codex 指摘）。
+#   ssot              = SSOT 配置（root scripts/ も走査する）
+#   dist              = 配布先 checkout（tests 側だけ走査する）
+#   mismatch          = 標識が食い違う
+#   ssot-no-scripts   = SSOT 配置なのに scripts/ が無い
+#   dist-with-scripts = 配布先の標識なのに root scripts/ が在る
+_mkchk_layout() {
+  local _root="$1" _mark_oss=0 _mark_sibling=0 _d
+  if [ -d "$_root/oss/ff-dev-toolkit" ]; then _mark_oss=1; fi
+  for _d in "$_root"/plugins/*/; do
+    [ -f "${_d}.claude-plugin/plugin.json" ] || continue
+    [ "$(basename "$_d")" = "ff-dev-toolkit" ] && continue
+    _mark_sibling=1
+    break
+  done
+  if [ "$_mark_oss" -ne "$_mark_sibling" ]; then
+    printf 'mismatch\n'
+  elif [ "$_mark_oss" -eq 1 ]; then
+    if [ -d "$_root/scripts" ]; then printf 'ssot\n'; else printf 'ssot-no-scripts\n'; fi
+  else
+    if [ -d "$_root/scripts" ]; then printf 'dist-with-scripts\n'; else printf 'dist\n'; fi
+  fi
+}
+
+_mkchk_verdict="$(_mkchk_layout "$_mkchk_repo_root")"
+_mkchk_root_scripts=""
+case "$_mkchk_verdict" in
+  ssot) _mkchk_root_scripts=1 ;;
+  dist) ;;
+  mismatch)
+    bad "case 36: 配置の判別が食い違います（oss/ff-dev-toolkit と plugins/ の収録数が別の配置を示す）— どちらかの標識が改名・移動されたか、plugins/ 直下に想定外のプラグインが増えた可能性。配布先扱いへ倒さず赤にする" ;;
+  ssot-no-scripts)
+    bad "case 36: ソースリポジトリの配置なのに scripts/ がありません（改名・移動なら本 suite の走査対象も直すこと）" ;;
+  dist-with-scripts)
+    bad "case 36: 配布先の標識なのに root に scripts/ が在ります（標識側が改名・移動された可能性。走査対象を黙って落とさない）" ;;
+  *)
+    bad "case 36: 配置の判定結果を解釈できません（${_mkchk_verdict:-空}）" ;;
+esac
+
 # 走査本体。引数のファイルを読み、未検査を「UNCHECKED <path>:<行>」、総数を「TOTAL <n>」で出す。
 _mkchk_scan() {
   awk '
@@ -1952,17 +2014,89 @@ _mkchk_scan() {
 # 件数だけを取り出す（grep -c は 0 件で rc=1 になり set -e に触れるので awk で数える）。
 _mkchk_count() { printf '%s\n' "$1" | awk '$1 == "UNCHECKED" { n++ } END { print n + 0 }'; }
 
-_mkchk_out="$(_mkchk_scan "$TESTS_DIR"/*/verify.sh "$_mkchk_repo_root"/scripts/*.sh)"
+# **glob は必ず nullglob 下で配列へ展開し、0 件を明示的に赤にする。** 一致 0 件の glob を
+# そのまま awk へ渡すと、リテラル文字列をファイル名として開こうとして fatal で suite ごと
+# abort する — Issue `#1695` の実体がこれで、下限判定には**到達しない**（0 件は下限では捕まらない）。
+# 下限が守るのは「1 件以上残ったまま縮退した」回だけである。tests 側の glob も同じ形なので
+# 併せて塞ぐ（片方だけ直すと、次に TESTS_DIR の解決が壊れた回に同じ読み違いを再演する）。
+# 公開ワークフローの suite 集合の組み立ても同じ nullglob + 0 件ガードの形を採っている。
+# shopt -p は当該オプションが off のとき非 0 を返す。set -e 下では代入ごと落ちるので
+# 明示的に握る（保存の失敗は復元の失敗であって検査の失敗ではない）。
+_mkchk_saved_nullglob="$(shopt -p nullglob || true)"
+shopt -s nullglob
+_mkchk_targets=("$TESTS_DIR"/*/verify.sh)
+if [ -n "$_mkchk_root_scripts" ]; then
+  _mkchk_targets+=("$_mkchk_repo_root"/scripts/*.sh)
+fi
+eval "$_mkchk_saved_nullglob"
+
+if [ "${#_mkchk_targets[@]}" -eq 0 ]; then
+  bad "case 36: 走査対象が 0 件（glob が 1 件も一致しない）— この検査は成立していない"
+  _mkchk_out="TOTAL 0"
+else
+  _mkchk_out="$(_mkchk_scan "${_mkchk_targets[@]}")"
+fi
 _mkchk_total="$(printf '%s\n' "$_mkchk_out" | awk '$1 == "TOTAL" { print $2 + 0 }')"
 _mkchk_bad="$(_mkchk_count "$_mkchk_out")"
+# 下限は配置によらず 1 本にする。母集団の差は実測で 1 件だけ（SSOT 51 / 配布先 50。root
+# scripts/ 側の寄与が 1 件）なので、配置別に緩い下限を置くと「配布先だけ半分の欠落を許す」
+# ことになり、最も守りたい退行の回に最も緩くなる（レビュー実測）。
 if [ "${_mkchk_total:-0}" -lt 30 ]; then
-  bad "テンプレート付き mktemp -d を ${_mkchk_total:-0} 件しか走査できなかった（この検査は成立していない）"
+  bad "テンプレート付き mktemp -d を ${_mkchk_total:-0} 件しか走査できなかった（下限 30。この検査は成立していない）"
 elif [ "$_mkchk_bad" -eq 0 ]; then
   ok "成功経路で実体を検査しない mktemp -d が無い（${_mkchk_total} 件走査）"
 else
   bad "成功経路で実体（-d）を検査しない mktemp -d が再混入した"
   printf '%s\n' "$_mkchk_out" | awk '$1 == "UNCHECKED" { print "    | " $2 }' >&2
 fi
+
+# 配置判定の回帰ケース。上の分岐は通常の checkout では 1 つしか踏まれないため、合成ツリーで
+# 5 通りすべての判定を固定する。これが無いと、配布先での未展開 glob による中断や、標識が
+# 片方だけ立った回の誤った成功判定が再発しても検出できない（Codex 指摘）。
+_mkchk_lx="${TMPDIR:-/tmp}/ff-mkchk-layout.$$"
+rm -rf "$_mkchk_lx"
+# 合成ツリーを 1 つ作る。$1 = 名前 / $2 = oss を置くか / $3 = 兄弟プラグインを置くか /
+# $4 = root scripts/ を置くか。プラグイン実体は .claude-plugin/plugin.json の実在で数えるので、
+# 兄弟側にもそれを置く（素のディレクトリでは標識にならないことも下で対照にする）。
+_mkchk_mktree() {
+  local _name="$1" _oss="$2" _sib="$3" _scr="$4" _r="$_mkchk_lx/$1"
+  mkdir -p "$_r/plugins/ff-dev-toolkit/.claude-plugin"
+  printf '{}\n' > "$_r/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
+  [ "$_oss" = "yes" ] && mkdir -p "$_r/oss/ff-dev-toolkit"
+  if [ "$_sib" = "yes" ]; then
+    mkdir -p "$_r/plugins/other-plugin/.claude-plugin"
+    printf '{}\n' > "$_r/plugins/other-plugin/.claude-plugin/plugin.json"
+  fi
+  [ "$_scr" = "yes" ] && mkdir -p "$_r/scripts"
+  printf '%s\n' "$_r"
+}
+_mkchk_expect_layout() {
+  local _label="$1" _root="$2" _want="$3" _got
+  _got="$(_mkchk_layout "$_root")"
+  if [ "$_got" = "$_want" ]; then
+    ok "配置判定: ${_label} → ${_want}"
+  else
+    bad "配置判定: ${_label} は ${_want} を期待したが ${_got} だった"
+  fi
+}
+_mkchk_expect_layout "SSOT（oss + 兄弟プラグイン + scripts）" \
+  "$(_mkchk_mktree ssot yes yes yes)" ssot
+_mkchk_expect_layout "配布先（oss なし + 単体収録 + scripts なし）" \
+  "$(_mkchk_mktree dist no no no)" dist
+_mkchk_expect_layout "標識の食い違い（oss だけ）" \
+  "$(_mkchk_mktree mismatch-oss yes no no)" mismatch
+_mkchk_expect_layout "標識の食い違い（兄弟プラグインだけ）" \
+  "$(_mkchk_mktree mismatch-sib no yes no)" mismatch
+_mkchk_expect_layout "SSOT 配置なのに scripts/ が無い" \
+  "$(_mkchk_mktree ssot-no-scripts yes yes no)" ssot-no-scripts
+_mkchk_expect_layout "配布先の標識なのに root scripts/ が在る" \
+  "$(_mkchk_mktree dist-with-scripts no no yes)" dist-with-scripts
+# 標識 2 が「プラグイン実体」を数えていることの負の対照。plugin.json を持たない素の
+# ディレクトリは標識にならない（ツール生成物で誤って mismatch にしない）。
+_mkchk_lx_bare="$(_mkchk_mktree bare-dir no no no)"
+mkdir -p "$_mkchk_lx_bare/plugins/tmp-artifact"
+_mkchk_expect_layout "配布先 + plugins/ 直下の素のディレクトリ" "$_mkchk_lx_bare" dist
+rm -rf "$_mkchk_lx"
 
 # 検出器そのものが効くことを変異 fixture で実測する（構造検査が空振りしていないこと）。この
 # verify.sh の複製から成功経路の -d 検査だけを落とし、複製を走査して赤くなることを見る。
