@@ -499,6 +499,8 @@ else
     # POST は `-F sub_issue_id=` 固定、失敗時は HTTP 本文を出し 1 件目で止まる。
     # gh は stub に解決させ、ネットワークには出ない。
     "$SCRIPT_DIR/link-sub-issues/verify.sh"
+    # 導入先の入口規範とスキルの判定順の矛盾検査（read-only。--offline で gh に出ない）
+    "$SCRIPT_DIR/workflow-doctor/verify.sh"
     # squash 件名の closing keyword が Refs 運用の Issue を閉じる経路のガード。
     # 検査ロジック（scripts/check-closing-keywords.sh）の振る舞いと、SKILL.md /
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド

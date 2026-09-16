@@ -400,6 +400,7 @@ review-wrapper-shim/base-ref-diff-guard-cases.sh
 review-wrapper-shim/codex-absent-real-orchestrator-cases.sh
 review-wrapper-shim/recovery-mode-cases.sh
 reviewer-pair/verify.sh
+shared-version-convergence/cases/base-guard-fetch-stderr.sh
 shared-version-convergence/cases/claim-helper-failures.sh
 shared-version-convergence/cases/merge-races.sh
 shared-version-convergence/verify.sh

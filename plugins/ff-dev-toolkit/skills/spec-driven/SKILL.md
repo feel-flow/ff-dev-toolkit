@@ -71,7 +71,10 @@ fi
 
 ### Step 1: タスクの受領とモード判定
 
-1. **入力**（Issue・機能要求・依頼文）を読み、タスクサマリーを書く
+1. **入力**（Issue・機能要求・依頼文）を読み、タスクサマリーを書く。Issue のラベルで作業単位を決める（`gh issue view <n> --json labels,url`）:
+   - **`bundle`**（着手単位）: sub-issues を全件 `gh issue view <子> --comments` で読み、**子の全件を 1 ブランチ・1 PR の作業単位**として扱う。PR 本文に `Closes #子… Closes #bundle` を列挙し、コミット subject は `fix(#bundle):` 形にする（子番号を closing keyword の直後に置かない）。bundle 本文が「子ごとに PR 可」と明記している場合だけ、子を単独で着手してよい
+   - **`epic`**（カテゴリの入れ物）: 直接着手しない。配下の bundle（`gh api --paginate repos/<owner>/<repo>/issues/<n>/sub_issues --jq '.[] | select(.state=="open") | "#\(.number) \(.title)"'`）を提示して「bundle を指定してください」で止める
+   - どちらでもない: `gh api graphql` で親（`parent { number labels(first:20){ nodes { name } } }`）を読み、**親が `bundle` なら子を単独で着手せず**、その bundle 番号を指定し直す（bundle 本文が「子ごとに PR 可」と明記している場合のみ子のまま進む）。親が無い・親が `epic` だけ・親を取得できない場合は従来どおり単独の作業単位
 2. **モード判定**: Git Workflow の tier 判定に従う（**自己申告で宣言しない**。宣言制は申告漏れがそのまま「全部標準」または「全部軽量」へ倒れる）。着手時点はまだ差分が無いので、予定している変更対象の path を渡した**暫定判定**を使う:
 
    ```bash

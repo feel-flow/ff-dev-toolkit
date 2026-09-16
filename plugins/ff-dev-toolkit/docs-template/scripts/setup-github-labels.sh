@@ -69,10 +69,11 @@ fi
 #    実在を「大枠 Issue を Epic 相当で管理しているか」の判定に使い、実在すれば open な
 #    Epic を照会して、該当領域だと確信できる場合に限り follow-up Issue 本文へ Epic 番号を
 #    記載する（Epic 側のチェックリストへ追記する場合は、既存 Issue 本文の全置換を伴う）。
-#    残る 13 件は分類が増えるだけで、他スキルの分岐を開かない。
-#    この 1 件を作りたくない場合、本スクリプトには除外オプションが無く、この定義ブロックを
-#    編集すると github-setup.md との 3 箇所照合が赤になる。github-setup.md の手動セット
-#    アップ例から epic の行を除いて実行すること。
+#    `bundle` も同様に挙動を変える（`create-issue --bundle` が付与し、`out-of-scope-issue` が
+#    open な bundle を統合先として先に探す）。残る 13 件は分類が増えるだけで、他スキルの分岐を
+#    開かない。この 2 件を作りたくない場合、本スクリプトには除外オプションが無く、この定義
+#    ブロックを編集すると github-setup.md との 3 箇所照合が赤になる。github-setup.md の手動
+#    セットアップ例から epic / bundle の行を除いて実行すること。
 # LABEL_DEFS_BEGIN
 LABEL_DEFS='major|D93F0B|メジャーバージョン変更（破壊的変更）
 minor|FBCA04|マイナーバージョン変更（新機能追加）
@@ -87,7 +88,8 @@ follow-up|006B75|PR レビュー・実装から派生した追跡課題
 refactor|D4C5F9|リファクタリング（機能変更なし）
 chore|BFD4F2|保守タスク（依存更新・ビルド・CI・開発ツール）
 testing|C2E0C6|テスト整備（テストの追加・修正・検出力強化）
-epic|5319E7|親 Issue（複数の子 Issue を束ねる大枠）'
+epic|5319E7|親 Issue（複数の子 Issue を束ねる大枠）
+bundle|CFE8FF|着手単位（子 Issue を全件 1 ブランチ・1 PR で束ねて対応する。epic は入れ物、bundle は着手単位）'
 # LABEL_DEFS_END
 
 # ---- 実在確認（信用できない一覧では作成しない） --------------------------------

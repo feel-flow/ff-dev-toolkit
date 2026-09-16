@@ -82,6 +82,8 @@ release/*     ← リリース準備ブランチ（developから分岐）
 
 **原則**: 全ての作業は必ずIssueから開始する
 
+**着手の指定単位は `bundle`**（下「bundle（子を全件 1 PR で束ねる着手単位）」）。指定された Issue のラベルが `bundle` なら sub-issues を全件 `gh issue view <子> --comments` で読み、**1 ブランチ・1 PR** で対応し、PR 本文に `Closes #子… Closes #bundle` を列挙する（コミット subject は `fix(#bundle):` 形 — 子番号を closing keyword の直後に置かない）。`epic`（カテゴリの入れ物）を指定されたら配下の bundle を提示して止める。子を単独で着手しない（bundle 本文が「子ごとに PR 可」と明記している場合のみ例外）。
+
 起票は **body-file + 単純コマンド分割**で行う（`/create-issue` スキルと同じ契約。Issue #715 / #1079）。1 つの複合 bash ブロック（配列でラベル引数を組み立て、照会と起票を同じフェンスで分岐させる形）は使わない — worktree 隔離セッションの複合コマンド拒否ガードに当たり、起票そのものが止まる。
 
 raw `gh issue create` を直接使う前に、`.github/ISSUE_TEMPLATE/<種別>.md` があれば `cat` して節見出しを本文の骨子へ写す（`/create-issue` はこの確認を pre-flight として自動化している）。
@@ -1348,6 +1350,22 @@ tracking Issue / Epic 配下に多数の sub-issue がぶら下がっていて 1
 | レビュー・AC 照合・マージ（親） | 直列 | PR を 1 本ずつ。次の PR は直前のマージ後の base へ rebase してから。PR ブランチは `git switch --detach origin/<branch>` で扱い（並列側の worktree が同名ブランチを保持していて `git checkout` / `git checkout -B` が失敗する）、push は `HEAD:<branch>` を使う。マージは `--delete-branch` を使わず `gh pr merge <PR番号> --squash` と `git push origin --delete <head>` に分割する（detached HEAD では `--delete-branch` のローカル branch 解決も、PR 番号を省略したときの PR 解決も失敗する。`--match-head-commit` の渡し方を含む全文はステップ8の「base が他 worktree に保持されている場合の分割手順」と同じで、保持されているのが base ではなく PR の head ブランチという違いだけ） |
 | バッチ間 | 直列 | 先行バッチのマージ完了を後続バッチの開始条件にする |
 | マージ後の ACE ナレッジ体系化（親） | 直列 | PR ごとの `/ace-curate` は PLAYBOOK の frontmatter / claim を共有するため並列にしない（4 回目の実測で直列化） |
+
+### bundle（子を全件 1 PR で束ねる着手単位）
+
+「発見 = 起票」で細かい Issue が増え続けると、レビュー・テスト・マージの固定費が Issue の件数分になり、クローズの速度を細分化の速度が上回る（実測: 導入先の 1 つで open 95 件・直近 2 日で 28 件起票・親無し 32 件）。`bundle` はこれを **1 PR = 1 レビュー・1 テスト** へ戻す着手単位で、`epic` とはラベルで区別する:
+
+| 種別 | ラベル | 意味 | 番号を指定したとき |
+| --- | --- | --- | --- |
+| カテゴリ Epic | `epic` | 入れ物。配下の bundle が全部閉じたら手で close（従来どおり） | 配下の bundle を提示して止める |
+| bundle | `bundle` | 着手単位。1 ブランチ・1 PR・レビュー 1 回 | 子を全件読んで 1 PR |
+| 子 | 従来どおり | 証跡（症状・再現コマンド）を持つ細かい Issue。起票時に close せず bundle の sub-issue として残す | 単独では着手しない（bundle 経由） |
+
+- **スコープ外の発見は起票の前に判定する**（`out-of-scope-issue` §1.2〜§3.1）: YAGNI → 同 PR インライン → 既存 bundle へコメント追記 → bundle 単位で新規。親無し・ラベル無しの単独 Issue を作らない
+- **起票**: `create-issue --bundle`（+ カテゴリ Epic があれば `--parent <n>`）。子の追加は `--parent <bundle>` で sub-issue にする（紐付けは `scripts/link-sub-issues.sh`）
+- **着手**: bundle 番号を指定する。子を全件 `--comments` で読み、1 ブランチで実装し、PR 本文に `Closes #子… Closes #bundle` を列挙する。マージで子と bundle が同時に閉じる
+- **完了**: `/close-issue` は bundle + 子の全件で AC を照合し、`Closes` の欠けを検査する。`/merge-cleanup` と `/ace-curate` へ渡す番号は PR 1 本だけ
+- **上の「Epic の一括対応」との違い**: あちらは多数の sub-issue を **PR は 1 子 1 本のまま**並列に消化する手順。bundle は子を **1 本の PR に束ねる**。並列化が要るほど大きいなら Epic の一括対応、レビューを 1 回で済ませたいなら bundle
 
 ### Epic と子 Issue の sub-issues 紐付け
 

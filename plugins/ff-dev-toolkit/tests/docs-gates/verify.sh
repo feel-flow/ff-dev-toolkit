@@ -248,10 +248,12 @@ case "$review_resource_command_rc" in
           -e 's#${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent\.sh##g' \
           -e 's#${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent\.sh##g' \
           -e 's#${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review\.sh##g')"
-        if printf '%s\n' "$unquoted_review_resource" | grep -Eq \
+        if grep -Eq \
           '\$\{FF_DEV_TOOLKIT_ROOT\}/scripts/(setup-multi-agent|multi-agent|multi-review)\.sh' \
-          || printf '%s\n' "$residual_review_resource" | grep -Eq \
-          '/(setup-multi-agent|multi-agent|multi-review)\.sh([^[:alnum:]_.-]|$)'; then
+          <<<"$unquoted_review_resource" \
+          || grep -Eq \
+          '/(setup-multi-agent|multi-agent|multi-review)\.sh([^[:alnum:]_.-]|$)' \
+          <<<"$residual_review_resource"; then
           bad "review resource command が固定 root の引用付き正準形ではない: ${review_resource_command}"
         fi
       done < <(printf '%s\n' "$review_resource_commands")

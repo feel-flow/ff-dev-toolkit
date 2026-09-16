@@ -135,7 +135,16 @@ B の上書き条件を示せないものは Issue 化せず、現在の PR の 
 
 ### 3.1 類似 Issue の検索（新規作成より先）
 
-YAGNI ではなく、判定が B に該当したら、まず open な既存 Issue をタイトル・本文の主要語で検索する。**同じパスから複数の新規 B 発見が出ている場合は、先に §3.1b で束ねる単位を決め、束ねた単位ごとにこの検索を 1 回行う**:
+YAGNI ではなく、判定が B に該当したら、まず open な既存 Issue を探す。**同じパスから複数の新規 B 発見が出ている場合は、先に §3.1b で束ねる単位を決め、束ねた単位ごとにこの検索を 1 回行う**。
+
+**主要語の検索より先に、`bundle` ラベル（着手単位。子 Issue を全件 1 PR で束ねて対応する Issue。`github-setup.md` 参照）の open Issue を列挙する。** bundle の表題は「〇〇の改修」のようなテーマ名で、発見の主要語（関数名・エラー文言）に当たらないことが多い。テーマ（`area:*` 等の領域ラベル、表題）が一致する bundle があれば、主要語が外れていてもそれを統合候補に入れる。`bundle` ラベルが実在しないリポジトリではこの列挙を飛ばして主要語検索へ進む:
+
+```bash
+expected_repo="OWNER/REPO"
+gh issue list --repo "$expected_repo" --state open --label bundle --limit 200 --json number,title,labels,url   # --limit は必須（既定 30 件で打ち切られる）
+```
+
+次に主要語で検索する:
 
 ```bash
 # expected_repo は現在の PR / Issue URL から確定し、ユーザーが対象にした
@@ -160,7 +169,8 @@ gh issue list \
 | 類似度 | 対応 |
 | ------ | ---- |
 | 同じ完了条件へ軽微に吸収できる | 新規 Issue は作らない。既定は既存 Issue へのコメント。本文の AC 追記は明示許可と競合確認がある場合だけ行う |
-| 同じテーマだが完了条件・検証が独立する | 新規 Issue を作り、既存 Issue を `Related: #{number}` として関連付ける |
+| テーマの `bundle` がある | 新規の単独 Issue は作らない。既定は bundle へのコメント（チェックリスト 1 行）。独立した検証・再現手順を持つ発見だけ、その bundle の **sub-issue** として起票する（§3.3 の後に `link-sub-issues.sh` で紐付ける）。どちらでも親無しの新規は作らない |
+| 同じテーマだが完了条件・検証が独立する（bundle は無い） | `bundle` ラベルが実在するリポジトリでは、テーマの bundle を `/create-issue --bundle`（カテゴリ Epic があれば `--parent`）で新設し、発見はその sub-issue として起票する（親無しの単独 Issue にしない）。`bundle` ラベルが無いリポジトリでは新規 Issue を作り、既存 Issue を `Related: #{number}` として関連付ける |
 | 用語が似ているだけで目的が異なる | 無理にまとめず、新規 Issue を作る |
 
 **統合元・統合先の本文は全文取得する**（`head` / `tail` で切った出力を統合の根拠にしない）。このリポジトリ群の house format では受け入れ条件 / DoD が本文の**末尾**にあり、`head -25` はちょうどその手前で切れる（実測: 棚卸しで重複 4 件を統合した際、3 件で末尾の AC・DoD・参照を survivor へ転記し損ねた。クローズ済み Issue は検索の作業セットから外れるため、survivor が不完全なまま気づかれない）。`gh issue view {number} --repo "$expected_repo" --json body --jq '.body'` をそのまま読むか、一時ファイルへ落として読む。統合元をクローズする前には、**survivor への転記を機械的に確認する** — 転記した見出し・固有記述が `gh issue view {survivor} --repo "$expected_repo" --json body` の取得結果に現れることを `grep -c` 等で実測してからクローズする（コミット前に主張と `git status --short` を突き合わせるのと同型の原則: 「転記した」という主張は survivor 本文の実測で裏を取る）。
@@ -236,6 +246,8 @@ N 件の発見を N Issue にすると、処理固定費（起票 → ブラン�
 照会が失敗しただけなのに「存在しない」と断定すると、運用者が実在するラベルを再作成して重複ラベルが生える。なおラベルが 1 つも無いリポジトリも「照会失敗」（確認できなかった）に倒れる — 「本当に 0 件」と「一覧が取れていない」を出力から区別できないため、重複ラベルを生やさない側へ倒すのが既定。
 
 #### Epic への紐付け（該当する場合のみ）
+
+**bundle への紐付け**: §3.1 の列挙でテーマの `bundle` を見つけていて、発見を sub-issue として起票する場合は、`gh issue create` の直後に `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo "$expected_repo" <bundle 番号> <発行番号>` で紐付ける（`gh api -f sub_issue_id=` をその場で組み立てない）。紐付けの失敗は起票の失敗ではないが、報告に「親: 未紐付け（理由）」を残す。
 
 対象リポジトリが Epic 相当のラベルで大枠 Issue を管理している場合（`gh label list` に `epic` 等が実在する場合）は、`gh issue list --repo "$expected_repo" --label epic --state open` で open Epic を確認し（この照会を単独のブロックで実行する場合は、§3.1 と同様に `expected_repo` を宣言してから行う — 別シェルには他ブロックの宣言は残っていない）、**該当領域だと確信できる場合のみ** Issue 本文の `## 発見元` に Epic 番号を記載する。判断に迷う場合は紐付けずに進めてよい（誤った紐付けは Epic の完了判定を汚す）。
 

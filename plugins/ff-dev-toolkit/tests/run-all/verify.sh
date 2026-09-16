@@ -950,7 +950,7 @@ HOOKBOUND_REGISTERED="$(jq -r '[(.hooks.SessionStart // [])[].hooks[]?] | length
 HOOKBOUND_MISSING=""
 if [ -z "$HOOKBOUND_TARGETS" ] || [ "$HOOKBOUND_COUNT" -eq 0 ]; then
   bad "case 44: hooks.json から SessionStart hook を 1 本も導出できません（走査不成立を緑にしない）"
-elif ! printf '%s' "$HOOKBOUND_REGISTERED" | grep -Eq '^[0-9]+$' \
+elif [[ ! "$HOOKBOUND_REGISTERED" =~ ^[0-9]+$ ]] \
   || [ "$HOOKBOUND_RESOLVED" -ne "$HOOKBOUND_REGISTERED" ]; then
   bad "case 44: SessionStart の登録エントリから解決できた hook 数が一致しません（解決 ${HOOKBOUND_RESOLVED} / 登録 ${HOOKBOUND_REGISTERED:-取得失敗}）— 一部だけ解釈できない形を緑にしない"
 else
@@ -3197,6 +3197,354 @@ if [ "$(printf '%s\n' "$_el_fx_out" | awk '/^slowest: /{print; exit}')" = \
 else
   bad "slowest の降順・上限 8・0 秒除外が崩れている"
   printf '%s\n' "$_el_fx_out" | awk '/^elapsed-sec:|^slowest:/{print}' | sed 's/^/    | /' >&2
+fi
+
+echo ""
+echo "== case 46: pipefail 配下の grep -q によるパイプの反転を横断で検出する =="
+
+# `grep -q` は一致した時点で読むのをやめる。上流の printf / echo / cat が書き続けていると
+# EPIPE で死に、`set -o pipefail` がその非 0 をパイプライン全体の終了コードにするので、
+# **一致が「不一致」へ反転する**（否定形 `if ! … | grep -q` は偽の緑になる）。反転するのは
+# payload が大きいときだけなので、小さい fixture を使う振る舞いテストでは回帰ガードを
+# 作れない（case 43 と同型）。違反の形そのものを静的に縛る。
+# 実装の正本は tests/lib/pipefail-grep-q.sh（禁止・代替・除外マーカーの規約もそこが正本）。
+#
+# 実行モード: 本 suite（run-all/verify.sh）は `-selftest` 対の片割れではないので、高速モード
+# （既定）でも全件モード（FF_RUN_ALL_FULL=1）でも回る。case 43 と同じ扱いにしてある —
+# 再混入は「次の誰か」が書いた瞬間に赤くしたいので、既定で回る側に置く。
+
+PG_LIB="$SCRIPT_DIR/../lib/pipefail-grep-q.sh"
+[ -f "$PG_LIB" ] || { echo "✗ run-all verify: pipefail/grep -q ガードが見つかりません: $PG_LIB" >&2; exit 1; }
+# 出力タグは下のケースがアサートする契約名。実装に実在することを fail-closed で先に確かめる。
+PG_TAG='pipefail-grep-q'
+/usr/bin/grep -qF -- "$PG_TAG" "$PG_LIB" \
+  || { echo "✗ run-all verify: タグ「${PG_TAG}」が ${PG_LIB} に見つかりません（契約名と実装が drift）" >&2; exit 1; }
+# shellcheck source=../lib/pipefail-grep-q.sh
+. "$PG_LIB"
+
+# probe は部品から組み立てる。1 行に直書きすると、本検査がこのファイル自身を違反として
+# 拾う（case 43 / case 11 と同じ理由）。とくにコマンド置換の probe は `$(` の隣接を
+# 作らないこと — mask() が二重引用符の中の `$(` を置換として開くため、直書きすると
+# 中身が走査対象になって永久に赤くなる。
+PG_PF='set -euo pipefail'
+PG_Q="'"
+PG_PIPE='|'
+PG_GQ='grep -q'
+PG_DOLLAR='$'
+PG_PROBE_BAD="if printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE} ${PG_GQ} X; then :; fi"
+PG_PROBE_NEG="if ! printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE} grep -Eq X; then :; fi"
+PG_PROBE_ECHO="echo \"\$s\" ${PG_PIPE} ${PG_GQ} X"
+PG_PROBE_CAT="cat \"\$f\" ${PG_PIPE} grep -qF X"
+PG_PROBE_FLAG="printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE} grep -qE X"
+PG_PROBE_LONG="printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE} grep --quiet X"
+PG_PROBE_MID="printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE} sed s/a/b/ ${PG_PIPE} ${PG_GQ} X"
+PG_PROBE_SUBST="n=\"${PG_DOLLAR}(printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE} ${PG_GQ} X && echo y)\""
+PG_PROBE_GREPC="n=\"${PG_DOLLAR}(printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE} grep -c X)\""
+PG_PROBE_BARE="printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE} grep X"
+PG_PROBE_HERE="${PG_GQ} X <<<\"\$s\""
+PG_PROBE_FILE="${PG_GQ} X \"\$f\""
+PG_PROBE_MARKER="printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE} ${PG_GQ} X  # pipefail-safe: 定数 1 行"
+PG_PROBE_OR="printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE}${PG_PIPE} ${PG_GQ} X \"\$f\""
+PG_PROBE_DQ="echo \"printf x ${PG_PIPE} ${PG_GQ} y\""
+PG_PROBE_SQ="echo ${PG_Q}printf x ${PG_PIPE} ${PG_GQ} y${PG_Q}"
+PG_PROBE_COMMENT="# printf x ${PG_PIPE} ${PG_GQ} y"
+PG_BS='\'
+PG_DQC='"'
+# 1) mask() の escape 扱い: `\"` は引用符の終端ではない（hit 側は以前これを引用符の開始と
+#    読んで後続の実パイプを伏せていた。nohit 側は逆に文字列の途中で閉じたと読んで拾っていた）。
+PG_PROBE_ESCDQ="printf ${PG_DQC}a${PG_BS}${PG_DQC}b${PG_DQC} ${PG_PIPE} ${PG_GQ} x"
+PG_PROBE_ESCDQ_OK="echo ${PG_DQC}a${PG_BS}${PG_DQC}b ${PG_PIPE} ${PG_GQ} y${PG_DQC}"
+#    引用符の外の escape（`printf a\"b`）も同じ規則。こちらは二重引用符の中とは別の枝なので
+#    probe を分ける（片方だけを無効化する変異が緑で通らないように）。
+PG_PROBE_ESCBARE="printf a${PG_BS}${PG_DQC}b ${PG_PIPE} ${PG_GQ} x"
+# 2) `&` の扱い: リダイレクトの `&` は境界にしない / `|&` はパイプ / 単独 `&` は境界。
+PG_PROBE_REDIR="printf ${PG_Q}%s${PG_Q} \"\$s\" 2>&1 ${PG_PIPE} ${PG_GQ} x"
+PG_PROBE_PIPEAMP="printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE}& ${PG_GQ} x"
+PG_PROBE_BG="printf x & ${PG_GQ} y \"\$f\""
+# 3) pipefail 設定の認識: 終端が空白でない形（`;` 等）でも拾う / 語の途中一致では拾わない。
+PG_PROBE_PFSEMI="set -o pipefail; printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE} ${PG_GQ} x"
+PG_PROBE_PFWORD="set -o pipefailx; printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE} ${PG_GQ} x"
+# 4) 除外マーカーは実コメントで始まるものだけ（引用符の中の同文言では除外しない）。
+PG_PROBE_MARKER_STR="printf ${PG_Q}%s${PG_Q} ${PG_DQC}# pipefail-safe: x${PG_DQC} ${PG_PIPE} ${PG_GQ} y"
+# 5) 行末 `|` / `&&` の改行継続（バックスラッシュ無し）。
+PG_PROBE_CONT_A="printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE}"
+PG_PROBE_CONT_B="  ${PG_GQ} x"
+PG_PROBE_CONT_OR_A="printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE}${PG_PIPE}"
+PG_PROBE_CONT_OR_B="  ${PG_GQ} x \"\$f\""
+# 6) コマンド語の前に来る env / sudo プレフィックス（tests/skill-bash-blocks/verify.sh と同じ規約）。
+PG_PROBE_SUDO="printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE} sudo ${PG_GQ} x"
+PG_PROBE_ENV="printf ${PG_Q}%s${PG_Q} \"\$s\" ${PG_PIPE} env ${PG_GQ} x"
+PG_PROBE_ENVSRC="env ${PG_PIPE} ${PG_GQ} x"
+
+PG_SELFTEST_OK=1
+pg_expect_lines() { # $1: 入力全文（pipefail 行も呼び出し側が含める） / $2: hit|nohit / $3: 期待開始行 / $4: 成立時の名 / $5: 不成立時の名
+  if _pg_out="$(printf '%s\n' "$1" | pipefail_grep_q_scan)"; then
+    if [ "$2" = "hit" ]; then
+      # タグと開始行番号まで固定する（空/非空だけだと、タグ名を変える退行が緑のまま通る）。
+      case "$_pg_out" in
+        "$3":"$PG_TAG":*) ok "$4" ;;
+        "") bad "$5"; PG_SELFTEST_OK=0 ;;
+        *) bad "$5（出力の形が違う: ${_pg_out%%$'\n'*}）"; PG_SELFTEST_OK=0 ;;
+      esac
+    else
+      if [ -z "$_pg_out" ]; then ok "$4"; else bad "$5（出力: ${_pg_out%%$'\n'*}）"; PG_SELFTEST_OK=0; fi
+    fi
+  else
+    bad "pipefail_grep_q_scan を実行できません（$5）"
+    PG_SELFTEST_OK=0
+  fi
+}
+pg_expect() { # $1: probe（1 行） / $2: hit|nohit / $3: 成立時の名 / $4: 不成立時の名
+  # probe の前に pipefail 行を足して食わせる。違反行は 2 行目になる。
+  pg_expect_lines "$PG_PF
+$1" "$2" 2 "$3" "$4"
+}
+
+pg_expect "$PG_PROBE_BAD" hit \
+  "検出器が printf を上流にした grep -q を検出できる（self-test）" \
+  "検出器が違反の基本形を検出できない — 横断検査は空振りするため実行しない"
+pg_expect "$PG_PROBE_NEG" hit \
+  "検出器が否定形（偽の緑になる側）を検出できる（self-test）" \
+  "検出器が否定形を取りこぼす — 偽の緑をそのまま見逃す、いちばん悪い取りこぼし"
+pg_expect "$PG_PROBE_ECHO" hit \
+  "検出器が echo を上流にした形も検出できる（self-test）" \
+  "検出器が echo 経由を取りこぼす — printf から echo への言い換えが抜け道になる"
+pg_expect "$PG_PROBE_CAT" hit \
+  "検出器が cat を上流にした形も検出できる（self-test）" \
+  "検出器が cat 経由を取りこぼす — printf から cat への言い換えが抜け道になる"
+pg_expect "$PG_PROBE_FLAG" hit \
+  "検出器がフラグ結合（-qE）の grep を検出できる（self-test）" \
+  "検出器が -q の単独表記だけを見ている — フラグを 1 つ束ねるだけで回避できる"
+pg_expect "$PG_PROBE_LONG" hit \
+  "検出器が長形 --quiet を検出できる（self-test）" \
+  "検出器が長形を取りこぼす — --quiet への言い換えが抜け道になる"
+pg_expect "$PG_PROBE_MID" hit \
+  "検出器が中間フィルタを挟んだ形も検出できる（self-test）" \
+  "検出器が直前の 1 区間しか見ていない — sed を 1 つ挟むだけで回避できる（上流は同じく死ぬ）"
+pg_expect "$PG_PROBE_SUBST" hit \
+  "検出器がコマンド置換の中の違反を検出できる（self-test）" \
+  "検出器が置換の中を見ていない — 捕捉して使う形が丸ごと無検査になる"
+pg_expect "$PG_PROBE_GREPC" nohit \
+  "検出器が grep -c を誤検出しない（self-test）" \
+  "検出器が grep -c を拾う — 入力を読み切る形は言い換え先の 1 つで、直しようのない赤になる"
+pg_expect "$PG_PROBE_BARE" nohit \
+  "検出器が grep 単独を誤検出しない（self-test）" \
+  "検出器が grep 単独を拾う — 入力を読み切る形は反転しない"
+pg_expect "$PG_PROBE_HERE" nohit \
+  "検出器が here-string の grep -q を誤検出しない（self-test）" \
+  "検出器が here-string を拾う — 第一の言い換え先が直しようのない赤になる"
+pg_expect "$PG_PROBE_FILE" nohit \
+  "検出器がファイルを直接渡す grep -q を誤検出しない（self-test）" \
+  "検出器がファイル引数の grep -q を拾う — 上流プロセスが無いので反転しない"
+pg_expect "$PG_PROBE_MARKER" nohit \
+  "検出器が行末マーカーによる除外宣言を尊重する（self-test）" \
+  "検出器が pipefail-safe マーカーを無視する — 根拠付きの例外を宣言できない"
+pg_expect "$PG_PROBE_OR" nohit \
+  "検出器が || をパイプと数えない（self-test）" \
+  "検出器が論理和をパイプと読む — 無関係な行が直しようのない赤になる"
+pg_expect "$PG_PROBE_DQ" nohit \
+  "検出器が二重引用符の中の散文を違反と数えない（self-test）" \
+  "検出器が文字列内の言及を拾う — 検出器自身やテストの期待値で永久に赤くなる"
+pg_expect "$PG_PROBE_SQ" nohit \
+  "検出器が単一引用符の中の散文を違反と数えない（self-test）" \
+  "検出器が文字列内の言及を拾う — 検出器自身やテストの期待値で永久に赤くなる"
+pg_expect "$PG_PROBE_COMMENT" nohit \
+  "検出器がコメント行を違反と数えない（self-test）" \
+  "検出器がコメントの言及を拾う — 禁止イディオムを明文化した注記が赤になる"
+
+pg_expect "$PG_PROBE_ESCDQ" hit \
+  "検出器が escape された二重引用符を引用符の終端と読まない（self-test）" \
+  "検出器が \\\" を引用符の終端と読む — 後続の実パイプを伏せて違反を見逃す"
+pg_expect "$PG_PROBE_ESCDQ_OK" nohit \
+  "検出器が escape された二重引用符を含む文字列の中の言及を拾わない（self-test）" \
+  "検出器が文字列の途中で引用符が閉じたと読む — 散文が直しようのない赤になる"
+pg_expect "$PG_PROBE_ESCBARE" hit \
+  "検出器が引用符の外の escape された二重引用符で引用符を開かない（self-test）" \
+  "検出器が引用符外の \\\" で引用符を開く — 後続の実パイプを伏せて違反を見逃す"
+pg_expect "$PG_PROBE_REDIR" hit \
+  "検出器がリダイレクトの & を鎖の境界と数えない（self-test）" \
+  "検出器が 2>&1 の & で鎖を切る — 上流を見失って実違反を見逃す"
+pg_expect "$PG_PROBE_PIPEAMP" hit \
+  "検出器が |&（stderr 込みのパイプ）を検出できる（self-test）" \
+  "検出器が |& を取りこぼす — | から |& への言い換えが抜け道になる"
+pg_expect "$PG_PROBE_BG" nohit \
+  "検出器が単独の &（background）を鎖の境界と数える（self-test）" \
+  "検出器が background の & でパイプを繋ぐ — 無関係な行が直しようのない赤になる"
+pg_expect_lines "$PG_PROBE_PFSEMI" hit 1 \
+  "検出器が同一行の set -o pipefail; を pipefail 設定と読む（self-test）" \
+  "検出器が空白以外で終わる pipefail 設定を取りこぼす — そのファイルが丸ごと無検査になる"
+pg_expect_lines "$PG_PROBE_PFWORD" nohit 1 \
+  "検出器が pipefail の語の途中一致を設定と読まない（self-test）" \
+  "検出器が pipefailx まで設定と読む — 反転しない形まで禁止してしまう"
+pg_expect "$PG_PROBE_MARKER_STR" hit \
+  "検出器が引用符の中の pipefail-safe 文言を除外宣言と読まない（self-test）" \
+  "検出器が文字列内のマーカーで除外する — 違反行を文字列で包むだけで検査を黙らせられる"
+pg_expect_lines "$PG_PF
+$PG_PROBE_CONT_A
+$PG_PROBE_CONT_B" hit 2 \
+  "検出器が行末 | の改行継続を畳み込む（self-test）" \
+  "検出器が継続行を別の論理行として見る — 鎖が切れて実違反を見逃す"
+pg_expect_lines "$PG_PF
+$PG_PROBE_CONT_OR_A
+$PG_PROBE_CONT_OR_B" nohit 2 \
+  "検出器は行末 || の継続でも鎖を繋がない（self-test）" \
+  "検出器が論理和の継続をパイプと読む — 無関係な行が直しようのない赤になる"
+pg_expect "$PG_PROBE_SUDO" hit \
+  "検出器が sudo プレフィックス付きの grep -q を検出できる（self-test）" \
+  "検出器が sudo 経由を取りこぼす — プレフィックスを 1 語足すだけで回避できる"
+pg_expect "$PG_PROBE_ENV" hit \
+  "検出器が env プレフィックス付きの grep -q を検出できる（self-test）" \
+  "検出器が env 経由を取りこぼす — プレフィックスを 1 語足すだけで回避できる"
+pg_expect "$PG_PROBE_ENVSRC" nohit \
+  "検出器が env そのものを上流コマンドと数えない（self-test）" \
+  "検出器が env を printf の仲間と読む — 上流が読み切る形まで赤になる"
+
+# pipefail を設定していないファイルでは反転しないので報告しない。ここを落とすと、
+# この検査は「パイプの下流の grep -q 全般」を禁止する別の契約に化ける。
+if _pg_nopf="$(printf '%s\n' "$PG_PROBE_BAD" | pipefail_grep_q_scan)"; then
+  if [ -z "$_pg_nopf" ]; then
+    ok "検出器は pipefail を設定していない入力を報告しない（self-test）"
+  else
+    bad "検出器が pipefail 未設定でも報告する — 反転しない形まで禁止してしまう"; PG_SELFTEST_OK=0
+  fi
+else
+  bad "pipefail_grep_q_scan を実行できません（pipefail 未設定の入力）"; PG_SELFTEST_OK=0
+fi
+
+if [ "$PG_SELFTEST_OK" -eq 1 ]; then
+  PG_REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || PG_REPO_ROOT=""
+  if [ -z "$PG_REPO_ROOT" ]; then
+    bad "リポジトリルートを解決できない（git rev-parse 失敗）— 横断検査を実行できない"
+  else
+    set +e
+    PG_SUMMARY="$(pipefail_grep_q_check_tracked "$PG_REPO_ROOT" 2>/dev/null)"
+    set -e
+    case "$PG_SUMMARY" in
+      PIPEFAIL_GREP_Q_RESULT=ok\ *)
+        PG_SCANNED="$(printf '%s\n' "$PG_SUMMARY" | sed -E 's/.*SCANNED=([0-9]+).*/\1/')"
+        PG_SKIPPED="$(printf '%s\n' "$PG_SUMMARY" | sed -E 's/.*SKIPPED=([0-9]+).*/\1/')"
+        # 走査 0 件は「違反 0 件」の根拠にならないし、下限では対象集合の縮小を捕まえられない
+        # （case 43 で実測済み）。対象集合を独立に数えて一致を要求する。予測子は
+        # tests/shellcheck/verify.sh の SHEBANG_RE と同じ形。
+        PG_EXPECT=0
+        while IFS= read -r _pg_f; do
+          [ -n "$_pg_f" ] || continue
+          [ -f "$PG_REPO_ROOT/$_pg_f" ] || continue
+          case "$_pg_f" in
+            *.sh) PG_EXPECT=$((PG_EXPECT + 1)); continue ;;
+          esac
+          _pg_first=""
+          IFS= read -r _pg_first < "$PG_REPO_ROOT/$_pg_f" || true
+          case "$_pg_first" in
+            '#!'*[/\ ]sh|'#!'*[/\ ]sh' '*|'#!'*[/\ ]bash|'#!'*[/\ ]bash' '*|'#!'*[/\ ]dash|'#!'*[/\ ]dash' '*|'#!'*[/\ ]ksh|'#!'*[/\ ]ksh' '*) PG_EXPECT=$((PG_EXPECT + 1)) ;;
+          esac
+        done < <(git -C "$PG_REPO_ROOT" -c core.quotepath=false ls-files)
+        if [ "${PG_SCANNED:-0}" -lt 1 ]; then
+          bad "走査対象が 0 件 — 違反 0 件を主張できない"
+        elif [ "${PG_SKIPPED:-1}" -ne 0 ]; then
+          # tracked なのに作業ツリーに実体が無い shell は「走査していない」ので 0 件を主張できない。
+          # フル checkout では 0 件が正（sparse checkout など欠損しうる環境でだけ非 0 になる）。
+          bad "実体が無く走査できなかった tracked shell がある（SKIPPED=${PG_SKIPPED}）— その分の 0 件は主張できない"
+        elif [ "${PG_SCANNED:-0}" -eq "$PG_EXPECT" ]; then
+          ok "tracked shell の pipefail 配下に反転する grep -q は無い（${PG_SCANNED} ファイル走査・独立集計と一致・欠損 0 件）"
+        else
+          bad "走査対象の件数が独立集計と一致しない（走査 ${PG_SCANNED} / 期待 ${PG_EXPECT}）— 対象集合が黙って縮んでいる"
+        fi
+        ;;
+      PIPEFAIL_GREP_Q_RESULT=hits\ *)
+        bad "pipefail 配下で反転する grep -q が混入した"
+        pipefail_grep_q_check_tracked "$PG_REPO_ROOT" >/dev/null || true
+        ;;
+      PIPEFAIL_GREP_Q_RESULT=error_repo\ *)
+        bad "リポジトリルートを解決できない（git rev-parse 失敗）— 横断検査を実行できない"
+        ;;
+      PIPEFAIL_GREP_Q_RESULT=error_list\ *)
+        bad "検査対象の tracked ファイル一覧を取得できない（git ls-files 失敗/空）— 0 件の主張はできない"
+        ;;
+      PIPEFAIL_GREP_Q_RESULT=error_scan\ *)
+        bad "走査に失敗したファイルがある — そのファイルの 0 件は主張できない"
+        pipefail_grep_q_check_tracked "$PG_REPO_ROOT" >/dev/null || true
+        ;;
+      *)
+        bad "横断検査のサマリーを解釈できない（実際: ${PG_SUMMARY}）"
+        ;;
+    esac
+
+    # 集約層（scan → all_hits → result=hits → rc=1）と、利用者へ届く stderr を隔離 fixture で
+    # 実測する。実リポジトリの ok だけを見る形では、集約を no-op 化する変異が緑のまま通る。
+    if ! command -v git >/dev/null 2>&1; then
+      echo "  ○ skip: git が無いため横断検査の hits / fail-closed 経路をスキップ（この検査は 1 件も実行していません）"
+    else
+      _pg_fx="$(mktemp -d "${TMPDIR:-/tmp}/ff-pipefail-grep-q-guard.XXXXXX")"
+      printf '%s\n' '#!/usr/bin/env bash' "$PG_PF" "$PG_PROBE_BAD" > "$_pg_fx/violate.sh"
+      _pg_git() { git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -c init.defaultBranch=main "$@"; }
+      _pg_setup=0
+      _pg_git -C "$_pg_fx" init -q . >/dev/null 2>&1 || _pg_setup=1
+      _pg_git -C "$_pg_fx" add -A >/dev/null 2>&1 || _pg_setup=1
+      _pg_git -C "$_pg_fx" commit -qm fixture >/dev/null 2>&1 || _pg_setup=1
+      if [ "$_pg_setup" -ne 0 ]; then
+        bad "横断検査 hits 経路の git fixture を作れない（検査が成立していない）"
+      else
+        set +e
+        _pg_err="$(pipefail_grep_q_check_tracked "$_pg_fx" 2>&1 >/dev/null)"
+        _pg_sum="$(pipefail_grep_q_check_tracked "$_pg_fx" 2>/dev/null)"
+        _pg_rc=$?
+        set -e
+        case "$_pg_sum" in
+          PIPEFAIL_GREP_Q_RESULT=hits\ *) ok "横断検査は違反入り fixture で hits へ倒れる（集約層）" ;;
+          *) bad "横断検査が違反を hits にしない（実際: ${_pg_sum}）— 集約を no-op 化する変異が通る" ;;
+        esac
+        if [ "$_pg_rc" -ne 0 ]; then ok "横断検査は違反ありで非 0 を返す"; else bad "横断検査が違反ありでも 0 を返す"; fi
+        # 直し方（代替）と抜け道の封じ（言い換えても同じ）と例外の宣言方法が stderr に残ること。
+        # タグだけでは「何をどう書き直せばよいか」が伝わらない（ACE-1076-1）。
+        for _pg_needle in "$PG_TAG" 'here-string' 'pipefail-safe' '抜け道にならない'; do
+          case "$_pg_err" in
+            *"$_pg_needle"*) ok "横断検査の stderr が「${_pg_needle}」を含む" ;;
+            *) bad "横断検査の stderr から「${_pg_needle}」が消えている（直し方・例外の宣言方法が伝わらない）" ;;
+          esac
+        done
+        # fail-closed の 3 経路。テストシームが用意されているのに使われていないと、
+        # 「0 件」を主張できない状態を素通りさせる変異が緑で通る。
+        printf '%s\n' '#!/usr/bin/env bash' 'exit 3' > "$_pg_fx/git-stub"
+        chmod +x "$_pg_fx/git-stub"
+        set +e
+        _pg_s1="$(FF_PIPEFAIL_GREP_Q_GIT="$_pg_fx/git-stub" pipefail_grep_q_check_tracked "$_pg_fx" 2>/dev/null)"
+        _pg_rc1=$?
+        printf '%s\n' '#!/usr/bin/env bash' 'exit 9' > "$_pg_fx/awk-stub"
+        chmod +x "$_pg_fx/awk-stub"
+        _pg_s2="$(FF_PIPEFAIL_GREP_Q_AWK="$_pg_fx/awk-stub" pipefail_grep_q_check_tracked "$_pg_fx" 2>/dev/null)"
+        _pg_rc2=$?
+        set -e
+        case "$_pg_s1" in
+          PIPEFAIL_GREP_Q_RESULT=error_repo\ *) ok "git が使えない回は error_repo（0 件を主張しない）" ;;
+          *) bad "git が使えない回に error_repo を返さない（実際: ${_pg_s1}）" ;;
+        esac
+        case "$_pg_s2" in
+          PIPEFAIL_GREP_Q_RESULT=error_scan\ *) ok "走査器が壊れている回は error_scan（0 件を主張しない）" ;;
+          *) bad "走査器が壊れている回に error_scan を返さない（実際: ${_pg_s2}）" ;;
+        esac
+        # サマリー行だけを見ると、終了コードが 0 へ退行しても緑のまま通る（呼び出し側は rc で
+        # 倒れる）。検査不能の 2 経路それぞれで非 0 を明示的にアサートする。
+        if [ "$_pg_rc1" -ne 0 ]; then ok "git が使えない回は非 0 を返す"; else bad "git が使えない回に 0 を返す — 検査不能が緑で素通りする"; fi
+        if [ "$_pg_rc2" -ne 0 ]; then ok "走査器が壊れている回は非 0 を返す"; else bad "走査器が壊れている回に 0 を返す — 検査不能が緑で素通りする"; fi
+        # tracked 一覧が空の回。ここを ok へ倒す変異は「走査 0 件なのに違反 0 件」を主張させる
+        # 典型的な fail-open。
+        _pg_empty="$_pg_fx/empty"
+        mkdir -p "$_pg_empty"
+        _pg_git -C "$_pg_empty" init -q . >/dev/null 2>&1 || true
+        set +e
+        _pg_s3="$(pipefail_grep_q_check_tracked "$_pg_empty" 2>/dev/null)"
+        _pg_rc3=$?
+        set -e
+        case "$_pg_s3" in
+          PIPEFAIL_GREP_Q_RESULT=error_list\ *) ok "tracked 一覧が空の回は error_list（0 件を主張しない）" ;;
+          *) bad "tracked 一覧が空の回に error_list を返さない（実際: ${_pg_s3}）— 走査 0 件で緑になる" ;;
+        esac
+        if [ "$_pg_rc3" -ne 0 ]; then ok "tracked 一覧が空の回は非 0 を返す"; else bad "tracked 一覧が空でも 0 を返す"; fi
+      fi
+      rm -rf "$_pg_fx"
+    fi
+  fi
 fi
 
 rm -f "$RUN_GATE_RECORD"

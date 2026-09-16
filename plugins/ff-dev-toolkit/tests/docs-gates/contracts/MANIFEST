@@ -2,7 +2,7 @@
 # verify.sh が実体と突き合わせ、食い違えば赤にする — ファイルごと消えた契約は、
 # 残ったファイルが 1 行でも返す限り件数側の検査に掛からないため。
 # 契約を足す / 消すときはここも同じ PR で直す（`#` 始まりと空行は無視）。
+bundle-work-unit.tsv
 git-workflow-concurrent-session.tsv
 git-workflow-heredoc.tsv
 git-workflow-sub-issues.tsv
-

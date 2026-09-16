@@ -1746,6 +1746,179 @@ else
   printf '%s\n' "$WARN_OUT" | sed 's/^/    | /' >&2
 fi
 
+# --- D1b: 理由ファイルのパスのシンボリックリンクを追わない（リンク先を truncate しない） ---
+# 共有 sticky /tmp では理由ファイルのパス（pid から導ける）を他ユーザーが先に取れる。
+# 素の `>` はリンクを追ってリンク先を空にするので、排他生成でそれを止め、黙らず警告する。
+SYMLINK_VICTIM="$TMP/reason-symlink-victim"
+SYMLINK_REASON="$TMP/reason-symlink"
+printf 'unrelated payload\n' > "$SYMLINK_VICTIM"
+rm -f "$SYMLINK_REASON"
+ln -s "$SYMLINK_VICTIM" "$SYMLINK_REASON"
+set +e
+SYMLINK_OUT="$(
+  exec 2>&1
+  export FF_TIMEOUT_REASON_FILE="$SYMLINK_REASON"
+  # shellcheck source=../../scripts/adapters/adapter-common.sh
+  source "$ADAPTER_COMMON"
+  record_timeout_reason empty-output
+  printf 'readback=[%s]\n' "$(read_timeout_reason)"
+  true
+)"
+set -e
+if [[ "$(cat "$SYMLINK_VICTIM" 2>/dev/null)" == "unrelated payload" ]]; then
+  ok "timeout-reason: シンボリックリンク先のファイルが truncate されない"
+else
+  bad "timeout-reason: シンボリックリンクを追ってリンク先を truncate している"
+  printf '%s\n' "$SYMLINK_OUT" | sed 's/^/    | /' >&2
+fi
+if [[ "$SYMLINK_OUT" == *"refusing to write the failure reason"* ]]; then
+  ok "timeout-reason: リンクを掴まなかったことを stderr へ警告する"
+else
+  bad "timeout-reason: リンク検知が痕跡なく握り潰されている"
+  printf '%s\n' "$SYMLINK_OUT" | sed 's/^/    | /' >&2
+fi
+if [[ "$SYMLINK_OUT" == *"readback=[]"* ]]; then
+  ok "timeout-reason: リンクが在る回は理由を読み戻さない（status へ縮退）"
+else
+  bad "timeout-reason: 自分が書いていない内容を今回の理由として読み戻している"
+  printf '%s\n' "$SYMLINK_OUT" | sed 's/^/    | /' >&2
+fi
+rm -f "$SYMLINK_REASON" "$SYMLINK_VICTIM"
+
+# --- D1c: リンク先がデバイス / FIFO でも掴まない（noclobber だけでは止まらない形） ---
+# bash の noclobber は stat した先が**通常ファイルのときだけ** O_EXCL を付ける。
+# リンク先が /dev/null なら素通りして理由がデバイスへ消え（警告ゼロ）、FIFO なら open が
+# 読み手を待ってブロックし、同居ユーザーがレビュー実行を止められる。だから排他生成では
+# なく「リンクなら掴まない」を先に判定する。ここが返らずハングしたら退行。
+for LINK_TARGET in /dev/null "$TMP/reason-fifo"; do
+  DEVLINK_REASON="$TMP/reason-devlink"
+  rm -f "$DEVLINK_REASON" "$TMP/reason-fifo"
+  if [[ "$LINK_TARGET" == "$TMP/reason-fifo" ]]; then
+    mkfifo "$TMP/reason-fifo"
+  fi
+  ln -s "$LINK_TARGET" "$DEVLINK_REASON"
+  set +e
+  DEVLINK_OUT="$(
+    exec 2>&1
+    export FF_TIMEOUT_REASON_FILE="$DEVLINK_REASON"
+    # shellcheck source=../../scripts/adapters/adapter-common.sh
+    source "$ADAPTER_COMMON"
+    record_timeout_reason empty-output
+    printf 'readback=[%s]\n' "$(read_timeout_reason)"
+    true
+  )"
+  set -e
+  if [[ "$DEVLINK_OUT" == *"refusing to write the failure reason"* ]]; then
+    ok "timeout-reason: リンク先が ${LINK_TARGET##*/} でも掴まず警告する（ブロックせず返る）"
+  else
+    bad "timeout-reason: リンク先が ${LINK_TARGET##*/} のリンクを掴んでいる"
+    printf '%s\n' "$DEVLINK_OUT" | sed 's/^/    | /' >&2
+  fi
+  if [[ "$DEVLINK_OUT" == *"readback=[]"* ]]; then
+    ok "timeout-reason: リンク先が ${LINK_TARGET##*/} の回は理由を読み戻さない"
+  else
+    bad "timeout-reason: 掴んでいないのに理由を読み戻している（${LINK_TARGET##*/}）"
+    printf '%s\n' "$DEVLINK_OUT" | sed 's/^/    | /' >&2
+  fi
+  rm -f "$DEVLINK_REASON" "$TMP/reason-fifo"
+done
+
+# --- D1d: victim へのハードリンクを掴まない（`-L` false / `-f` true をすり抜ける形） ---
+# 先に置かれるのがリンクとは限らない。victim へのハードリンクなら「通常ファイルが在る」
+# としか見えず、素直に書くと victim を上書きする。所有者が同じでも、リンク数が 1 でなければ
+# 掴まない。
+HARDLINK_VICTIM="$TMP/reason-hardlink-victim"
+HARDLINK_REASON="$TMP/reason-hardlink"
+printf 'IMPORTANT DATA\n' > "$HARDLINK_VICTIM"
+rm -f "$HARDLINK_REASON"
+ln "$HARDLINK_VICTIM" "$HARDLINK_REASON"
+set +e
+HARDLINK_OUT="$(
+  exec 2>&1
+  export FF_TIMEOUT_REASON_FILE="$HARDLINK_REASON"
+  # shellcheck source=../../scripts/adapters/adapter-common.sh
+  source "$ADAPTER_COMMON"
+  record_timeout_reason empty-output
+  true
+)"
+set -e
+if [[ "$(cat "$HARDLINK_VICTIM" 2>/dev/null)" == "IMPORTANT DATA" ]]; then
+  ok "timeout-reason: ハードリンク先の内容が書き換わらない"
+else
+  bad "timeout-reason: ハードリンク経由で無関係のファイルを上書きしている"
+  printf '%s\n' "$HARDLINK_OUT" | sed 's/^/    | /' >&2
+fi
+if [[ "$HARDLINK_OUT" == *"refusing to write the failure reason"* && "$HARDLINK_OUT" == *"hard links"* ]]; then
+  ok "timeout-reason: ハードリンクを掴まなかったことを警告する"
+else
+  bad "timeout-reason: ハードリンク検知が痕跡なく握り潰されている"
+  printf '%s\n' "$HARDLINK_OUT" | sed 's/^/    | /' >&2
+fi
+rm -f "$HARDLINK_REASON" "$HARDLINK_VICTIM"
+
+# --- D1e: 同一実行内の再記録は従来どおり届く（掴む条件を締めすぎていない） ---
+# run_with_timeout が起動時に書いた command を、アダプタが sandbox-refused などで
+# 上書きする経路。ここを拒むと理由が呼び出し側へ届かず、本機能そのものが止まる。
+REWRITE_REASON="$TMP/reason-rewrite"
+rm -f "$REWRITE_REASON"
+set +e
+REWRITE_OUT="$(
+  exec 2>&1
+  export FF_TIMEOUT_REASON_FILE="$REWRITE_REASON"
+  # shellcheck source=../../scripts/adapters/adapter-common.sh
+  source "$ADAPTER_COMMON"
+  record_timeout_reason command
+  record_timeout_reason empty-output
+  printf 'readback=[%s]\n' "$(read_timeout_reason)"
+  true
+)"
+set -e
+if [[ "$REWRITE_OUT" == *"readback=[empty-output]"* ]]; then
+  ok "timeout-reason: 自分が作った通常ファイルへの再記録は従来どおり届く"
+else
+  bad "timeout-reason: 同一実行内の再記録が届かない（掴む条件が締まりすぎ）"
+  printf '%s\n' "$REWRITE_OUT" | sed 's/^/    | /' >&2
+fi
+rm -f "$REWRITE_REASON"
+
+# --- D1f: 後始末の rm 失敗を黙らず警告し、同じパスでは 1 回だけ出す ---
+# 共有 sticky /tmp では他人が置いた実体を消せない。黙って通すと「掃除したつもり」のまま
+# stale が残る。一方で後始末は 1 実行で何度も走るので、毎回出すとレポートの stderr 節が
+# 同じ 2 行で埋まる。親ディレクトリを読み取り専用にして rm を実際に失敗させる。
+if [[ "$(id -u)" == "0" ]]; then
+  ok "timeout-reason: rm 失敗の実走は root では検査しない（権限が効かない）"
+else
+  RO_DIR="$TMP/reason-ro-dir"
+  rm -rf "$RO_DIR"
+  mkdir -p "$RO_DIR"
+  RO_REASON="$RO_DIR/reason-marker"
+  printf 'stale\n' > "$RO_REASON"
+  set +e
+  (
+    exec >"$TMP/reason-rm.log" 2>&1
+    export FF_TIMEOUT_REASON_FILE="$RO_REASON"
+    # shellcheck source=../../scripts/adapters/adapter-common.sh
+    source "$ADAPTER_COMMON"
+    # source が張る EXIT trap（clear_timeout_reason）を上書きして、失敗させた区間の
+    # 権限を必ず戻す。捕捉漏れに備えて親側でも戻す。
+    trap 'chmod 0755 "$RO_DIR" 2>/dev/null || true' EXIT
+    chmod 0555 "$RO_DIR"
+    clear_timeout_reason
+    clear_timeout_reason
+    true
+  )
+  set -e
+  chmod 0755 "$RO_DIR" 2>/dev/null || true
+  RM_WARN_COUNT="$(grep -c -F 'could not remove the failure reason marker' "$TMP/reason-rm.log" || true)"
+  if [[ "$RM_WARN_COUNT" == "1" ]]; then
+    ok "timeout-reason: 後始末の rm 失敗を警告し、同じパスでは 1 回だけ出す"
+  else
+    bad "timeout-reason: rm 失敗の警告が ${RM_WARN_COUNT} 行（1 行であるべき: 0 = 握り潰し / 2 以上 = 重複）"
+    sed -n '1,20p' "$TMP/reason-rm.log" | sed 's/^/    | /' >&2 || true
+  fi
+  rm -rf "$RO_DIR"
+fi
+
 # --- D2: 成功パスで reason ファイルが残留しない（#266 / EXIT trap） ---
 SUCCESS_REASON="$TMP/reason-on-success"
 rm -f "$SUCCESS_REASON"

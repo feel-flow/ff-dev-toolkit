@@ -227,7 +227,7 @@ fi
 # 対照が経路へ届いていること（$OUT が空でないこと）を先に固定する（ACE-924-2）。
 if [ -z "$OUT" ]; then
   bad "案内コマンド: 対照が経路へ届いていない（否定の主張が空振りする）"
-elif printf '%s' "$OUT" | grep -Eq 'claude plugin update ff-dev-toolkit([^@]|$)'; then
+elif grep -Eq 'claude plugin update ff-dev-toolkit([^@]|$)' <<<"$OUT"; then
   bad "案内コマンド: 素の plugin 名で update を案内している（not found になる）: [$OUT]"
 else
   ok "案内コマンド: 素の plugin 名での update を案内していない"

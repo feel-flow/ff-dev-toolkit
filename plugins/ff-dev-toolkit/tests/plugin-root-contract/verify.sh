@@ -35,12 +35,12 @@ GUARD_EXEMPT=(
 # （実測: skills を 1 件へ削った tree が緑のまま通った）。名簿が丸ごと縮む変異を赤に
 # するには、入力から独立した絶対値が要る。値は現時点で契約 fence を持つ skill の実数。
 # fence 付き skill を減らす変更（skill の統合・撤去）は、意図的ならこの値も同時に下げる。
-MIN_SKILLS=23
+MIN_SKILLS=24
 
 # 実行時ガードを持つ skill の絶対下限。MIN_SKILLS と同じ理由で、母集団から導いた量
 # （母集団 - 除外数）を床にしても崩壊を検出できない。値は現時点でガードを持つ skill の
 # 実数（母集団のうち GUARD_EXEMPT に載らないもの）。
-MIN_GUARD_SKILLS=19
+MIN_GUARD_SKILLS=20
 
 SCANNED_COUNT=0
 
@@ -528,6 +528,7 @@ SCRIPT_EXPECT_RC=(
   "setup-multi-agent.sh|2"
   "sweep-orphan-transcripts.sh|2"
   "update-version-claim.sh|2"
+  "workflow-doctor.sh|2"
   "workflow-tier.sh|64"
 )
 
@@ -550,8 +551,8 @@ script_expect_rc() {
 # `${VAR:?…}` のような修飾付き parameter expansion で呼ばれる 2 本（Issue 本文差分の判定器と
 # 工数集計器）が構造的に母集団の外にあった。床を「同じ抽出から導いた 12」に置いていたため、
 # 漏れは部分集合を自分自身と比べるだけになって検出できなかった。
-MIN_ROOT_SCRIPTS=15
-MIN_GUARDED_SCRIPTS=15
+MIN_ROOT_SCRIPTS=16
+MIN_GUARDED_SCRIPTS=16
 
 script_guard_exempt_reason() {
   local name="$1" entry
@@ -1434,7 +1435,7 @@ fi
 # node entry（`node "${ROOT}/scripts/asdd/<名>.mjs"`）を母集団へ入れた分も含む実数。床を据え置くと
 # ちょうどその差だけ余裕が生まれ、node 起動が丸ごと検出対象から落ちても床を通過する（下の
 # negative control が、検出外の綴りへ書き換えた live の写しで赤になることを実測する）。
-MIN_HANDOFF_LAUNCHES=109
+MIN_HANDOFF_LAUNCHES=119
 
 handoff_launch_files() { # <tree root> → 対象 .md を列挙
   find "$1/skills" -name SKILL.md -type f 2>/dev/null

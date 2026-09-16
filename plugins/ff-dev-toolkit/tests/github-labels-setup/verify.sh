@@ -39,7 +39,7 @@ STUB_DIR="$SCRIPT_DIR/fixtures/gh-stub"
 # （純粋な並べ替えは compare_defs の集合照合も wc -l の件数も通す）。重複は、
 # 正本を触らない形なら導出件数との不一致が、正本まで同時に触る形なら下の
 # 一意性自己検査が赤にする — 3 経路の組で全パターンを閉じている。
-EXPECTED_LABEL_NAMES='major minor patch hotfix urgent priority:critical priority:high priority:medium priority:low follow-up refactor chore testing epic'
+EXPECTED_LABEL_NAMES='major minor patch hotfix urgent priority:critical priority:high priority:medium priority:low follow-up refactor chore testing epic bundle'
 # 件数は正本から導出する（表・手動例の件数固定に使う）。
 EXPECTED_LABEL_COUNT=$(printf '%s\n' $EXPECTED_LABEL_NAMES | wc -l | tr -d '[:space:]')
 

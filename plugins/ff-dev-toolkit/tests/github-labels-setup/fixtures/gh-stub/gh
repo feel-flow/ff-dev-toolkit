@@ -6,7 +6,7 @@
 #   normal      … GitHub デフォルト相当 + near-miss 群（カスタムラベルは全部不足）
 #   partial     … normal の一覧 + major / minor（カスタムの一部だけ既存）
 #   casevariant … normal の一覧 + Major / MINOR（大文字小文字違いで既存）
-#   allexist    … デフォルト 3 件 + カスタム 14 件すべて（作成対象なし）
+#   allexist    … デフォルト 3 件 + カスタム 15 件すべて（作成対象なし）
 #   fail        … 非 0 終了（照会そのものの失敗）
 #   empty       … 終了コード 0 で空出力（0 件のリポジトリと区別できない経路）
 #   truncated   … 取得上限ちょうどの件数を返す（打ち切りの疑いがある経路）
@@ -66,7 +66,7 @@ case "${1:-} ${2:-}" in
         exit 0 ;;
       partial)     printf 'major\n%s\nminor\n' "$BASE_LABELS"; exit 0 ;;
       casevariant) printf 'Major\n%s\nMINOR\n' "$BASE_LABELS"; exit 0 ;;
-      allexist)    printf 'bug\nenhancement\ndocumentation\nmajor\nminor\npatch\nhotfix\nurgent\npriority:critical\npriority:high\npriority:medium\npriority:low\nfollow-up\nrefactor\nchore\ntesting\nepic\n'; exit 0 ;;
+      allexist)    printf 'bug\nenhancement\ndocumentation\nmajor\nminor\npatch\nhotfix\nurgent\npriority:critical\npriority:high\npriority:medium\npriority:low\nfollow-up\nrefactor\nchore\ntesting\nepic\nbundle\n'; exit 0 ;;
       *)           printf '%s\n' "$BASE_LABELS"; exit 0 ;;
     esac ;;
   "label create")

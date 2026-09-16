@@ -60,6 +60,7 @@ fi
 - **毎回実施・問いかけなし**: チェーン末尾に到達したら「振り返りを実施しますか？」と確認せずそのまま実施する（ノンストップフロー整合。起票も既定では確認を挟まない — 下記「承認と起票」）
 - **read-only**: 振り返り工程ではファイル編集・コミット・Issue 作成を行わない（記録・起票は振り返りを終えてからの別工程）。書き込みが発生するのは、観測台帳への定型記録（作業中リポジトリでの台帳の作成・エントリ追記・Count 更新・旧経路 Issue の取り込み。下記「観測の記録」）と、既存確認を完了した提案を起票する段（既定は承認を待たない。`RETROSPECTIVE_FILING=ask` のときだけユーザー承認後）だけ
 - **ノイズ対策は台帳の閾値と提案の閾値で行う**（下記）。実施頻度で絞らない
+- **冒頭で入口規範の逆戻りを検査する**: `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/workflow-doctor.sh" --root "$(git rev-parse --show-toplevel)" --offline` を回し、FAIL があれば観察チェックリストの 4（構造対策の余地）の観測として拾う（正本は `/workflow-doctor`。read-only なので実行ポリシーに反しない）
 
 ## 自動発火（事前注入 + Stop fallback）
 
@@ -152,8 +153,9 @@ ledger_status="$(git status --porcelain --untracked-files=all -- ":(top)docs/08-
   echo "台帳に未コミットの変更があります（記録の前にコミットするか退避してください）" >&2
   exit 1
 }
-if ! git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" >/dev/null 2>&1; then
-  echo "origin/${default_branch} を取得できません（stale 値で記録内容を決めない。認証・通信・remote 設定を確認）" >&2
+if ! _fetch_err="$(git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" 2>&1 >/dev/null)"; then
+  _fetch_err="$(sed -E 's#(://)[^/[:space:]]*@#\1***@#g' <<<"${_fetch_err:-（原因は出力されませんでした）}")"
+  echo "origin/${default_branch} を取得できません（stale 値で記録内容を決めない。認証・通信・remote 設定を確認）: ${_fetch_err}" >&2
   exit 1
 fi
 git rev-parse --verify --quiet "refs/remotes/origin/${default_branch}" >/dev/null || {
@@ -165,6 +167,8 @@ git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
   exit 1
 }
 ```
+
+fetch が失敗した回は、停止メッセージの末尾へ git が出した原因をそのまま付ける（「認証・通信・remote 設定のどれか」を利用者が切り分け直さずに済ませるため）。git の stderr は remote URL を含みうるので、表示の前に `https://user:token@host/` 形の資格情報部だけを `***` へ伏せる。原因を振り返り結果の報告・台帳エントリへ転記するときは、下「機微情報は台帳エントリ・観測メモ・昇格 Issue 本文へも引用しない」が重ねて効く — 本番ホスト名まで含めて値を伏せ、事象だけを書く。
 
 **先行していたときの復帰は「取り込んでから記録を作り直す」**（「既存の観測へ `Count` を足す」はその作り直しの結果であって、別の分岐ではない）。照合点で止まった回は記録内容をまだ作っていないので、実体は「取り込んでから記録手順 0 へ進む」になる — 文字どおりの作り直しになるのは、記録内容を作った後に書き込み節の最終境界（non-fast-forward）で弾かれた回である:
 
@@ -327,7 +331,7 @@ git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
    - **指していない**: 知見として既知でも、対策が Issue として管理されていない状態である。**既存エントリを参照した新規起票**を行い（提案に参照先のエントリ ID を書く）、あわせて既存エントリのカウンター更新も提案する。「記録済み」を起票しない理由にしない
 
    検索しても知見ストアが見つからない repo でだけ本手順をスキップして手順 3 へ進む（手順 1・4 は ACE の有無にかかわらず常に行う）
-3. **既存 Issue の確認**: 既存 Issue を state を絞らずに検索する（`gh issue list --repo "<owner>/<repo>" --search "<キーワード>" --state all --limit 200`。`--limit` は省略しない — 既定では取得が 30 件で打ち切られ、その先にある重複を「無い」と誤判定する）。重複する Issue が既にあれば新規起票せず、ヒットした Issue の state で分岐する:
+3. **既存 Issue の確認**: まず起票先 repo の open な `bundle`（着手単位。子 Issue を全件 1 PR で束ねる Issue）を `gh issue list --repo "<owner>/<repo>" --state open --label bundle --limit 200` で列挙し、**改善対象が導入先の CLAUDE.md / docs の規律（散文の追記）なら、表題に「規律」を含む bundle へのコメント追記を既定にする**（単独の docs Issue を立てない。`bundle` ラベルが実在しない repo ではこの列挙を飛ばす）。次に既存 Issue を state を絞らずに検索する（`gh issue list --repo "<owner>/<repo>" --search "<キーワード>" --state all --limit 200`。`--limit` は省略しない — 既定では取得が 30 件で打ち切られ、その先にある重複を「無い」と誤判定する）。重複する Issue が既にあれば新規起票せず、ヒットした Issue の state で分岐する:
    - **open**: **既存 Issue へのコメント追記**（再発情報の集約先として）を提案する
    - **closed**: closed へのコメント単独では作業として追跡されないため、未対応のまま閉じられていたなら **reopen** を、修正後の再発なら **closed Issue を参照した regression Issue の新規起票**を提案する（どちらなのかを提案に明示する）
 

@@ -242,9 +242,9 @@ else
   bad "前提が崩れた: grok-cli の観点数が ${GROK_TASKS}（期待 5。プラン形の変更を確認して本 suite を追随させること）"
 fi
 GROK_SECTION="$(printf '%s\n' "$PLAN_OUT" | awk '/^   grok-cli \[/{f=1;next} /^   [a-z]/{f=0} f')"
-if printf '%s\n' "$GROK_SECTION" | /usr/bin/grep -q 'type-design-analysis' \
-  && printf '%s\n' "$GROK_SECTION" | /usr/bin/grep -q 'code-simplification' \
-  && printf '%s\n' "$GROK_SECTION" | /usr/bin/grep -q 'comment-analysis'; then
+if /usr/bin/grep -q 'type-design-analysis' <<<"$GROK_SECTION" \
+  && /usr/bin/grep -q 'code-simplification' <<<"$GROK_SECTION" \
+  && /usr/bin/grep -q 'comment-analysis' <<<"$GROK_SECTION"; then
   ok "claude の 3 観点（type-design-analysis / code-simplification / comment-analysis）が grok へ振替されている"
 else
   bad "claude からの振替観点が grok のプランに揃っていない"

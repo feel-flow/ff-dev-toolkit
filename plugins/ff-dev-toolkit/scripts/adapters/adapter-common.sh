@@ -786,7 +786,20 @@ PROMPT
 #        ゼロ件報告行（`- Critical: none` / `- Critical: 0` / `- 指摘なし（注記
 #        つき）`）はスコープ内でも実所見に数えない。空所見語彙の裸 bullet
 #        （なし / 該当なし / 特になし / 指摘なし / 指摘事項なし / none / n/a /
-#        no issues）と参照語 veto 行も不算入
+#        no issues）と参照語 veto 行も不算入。
+#        さらに**ゼロ宣言の後ろは抑止する**（crit_zero）— 同じ critical スコープで
+#        一度ゼロを宣言したら、そのスコープの残りの bullet は c3 で数えない。
+#        ゼロ宣言 = 明示ゼロ / ゼロ件報告行（cls_zero）・空所見語彙の bullet・
+#        bullet 無しの散文ゼロ宣言（`なし。` / `該当なし` / `none` — 語彙は
+#        BEGIN ブロックの zero_decl_re）。抑止は次の見出し（head_re）で解除する。
+#        抑止を入れた理由: レビュアーが Critical 節へ「なし。」と書いた後ろへ
+#        裏取り・補足の箇条書き（`- DOMAIN.md:322 の記述は正確` 型のメモ）を
+#        置く形が実所見として数えられ、どの CLI も Critical を報告していない
+#        レビューで CRITICAL_BLOCK が立つ偽陽性が実測された。
+#        既知の限界: ゼロ宣言の後ろに本物の所見（`- [app.txt:2] …` + 信頼度行）を
+#        続けて書いた矛盾レポートは c3 では数えない（ゼロ宣言側を信じる）。件数行
+#        （`Critical: 1`）を併記していれば c1 が拾うので検出は維持される。
+#        抑止は c3 だけに掛かる — c1 / c2 / c4 はゼロ宣言の後でも従来どおり発火する
 #   (c4) 行頭（列 0）の `CRITICAL:` マーカー行（明示ゼロ行を除く）。bullet 無しの
 #        この形は受理側の実体行ではない（受理と検出は別契約 — 検出だけが広い唯一の形)
 _ff_severity_scan() { # $1: ff_mode (accept|critical) / 本文: stdin または $2 のファイル
@@ -829,7 +842,12 @@ _ff_severity_scan() { # $1: ff_mode (accept|critical) / 本文: stdin または 
       lab_crit_breq   = b_req "[*]*critical"       # s3 bullet 形のラベルが critical か
       lab_crit_strong = "^" sp "*\\*\\*critical"   # s3 強調形のラベルが critical か
       s4_bullet_re = "^" sp "*[-*+]" sp
-      s4_empty_re  = "^" sp "*[-*+]" sp "*(なし|該当なし|特になし|指摘なし|指摘事項なし|none|n\\/a|no issues)[[:space:]。.]*$"
+      zerow        = "(なし|該当なし|特になし|指摘なし|指摘事項なし|none|n\\/a|no issues)"
+      s4_empty_re  = "^" sp "*[-*+]" sp "*" zerow "[[:space:]。.]*$"
+      # ゼロ宣言（c3 の抑止トリガ — ヘッダの (c3) を参照）。s4_empty_re から bullet
+      # 要求を外した形で、bullet 無しの散文ゼロ宣言（`なし。` / `該当なし` / `none`）
+      # も同じ語彙で拾う
+      zero_decl_re = "^" sp "*([-*+]" sp "*)?" zerow "[[:space:]。.]*$"
       bare_re      = "^critical:"
       bare_zero_re = "^critical:" sp "*(" numzero "|" zerov ")"
       # ATX 見出し: 先頭の字下げはスペース 0〜3 個のみ（CommonMark — スペース 4 個
@@ -879,6 +897,7 @@ _ff_severity_scan() { # $1: ff_mode (accept|critical) / 本文: stdin または 
         is_crit = (l ~ /critical/ && l !~ /no[[:space:]]+critical/ && l !~ /non-critical/)
         if (!(in_sev && lvl > sev_lvl)) { in_sev = is_sev; sev_lvl = lvl }
         if (!(in_crit && lvl > crit_lvl)) { in_crit = is_crit; crit_lvl = lvl }
+        crit_zero = 0   # ゼロ宣言による c3 抑止は次の見出しで解除する
         next
       }
       # ── 行分類（唯一の分類箇所 — 判定側はこのフラグだけを見る）──
@@ -914,8 +933,11 @@ _ff_severity_scan() { # $1: ff_mode (accept|critical) / 本文: stdin または 
         # (c3) critical 見出しスコープ配下の bullet。行分類のゼロ判定が優先 —
         # cls_zero の行（`- Critical: none` / `- Critical: 0` / `- 指摘なし（注記
         # つき）`）はスコープ内でも実所見に数えない。空所見語彙の裸 bullet と
-        # 参照語 veto 行も不算入
-        if (in_crit && !isref && !cls_zero && l ~ s4_bullet_re && l !~ s4_empty_re) found = 1
+        # 参照語 veto 行も不算入。さらに**ゼロ宣言の後ろは抑止する** — 同じ
+        # スコープで一度ゼロを宣言した後の bullet は裏取り・補足として扱う
+        # （抑止は次の見出しで解除。crit_zero は c3 だけに掛かり c1/c2/c4 は素通し）
+        if (in_crit && (cls_zero || l ~ zero_decl_re)) crit_zero = 1
+        if (in_crit && !crit_zero && !isref && !cls_zero && l ~ s4_bullet_re && l !~ s4_empty_re) found = 1
         # (c4) 行頭の CRITICAL: マーカー（明示ゼロは s1 と同じ合成部品で除外。
         # 受理側の実体行ではないが検出は維持 — 受理と検出は別契約）
         if (l ~ bare_re && l !~ bare_zero_re) found = 1
@@ -1510,6 +1532,85 @@ timeout_reason_file() {
   printf '%s\n' "${TMPDIR:-/tmp}/ff-run-with-timeout-reason.$$"
 }
 
+# ── Reason-File Exclusive Write ──
+#
+# 理由ファイルの名前は「コマンド置換のサブシェルを跨いで両側が同じパスを導ける」ことが
+# 要件なので、引数を通さずに導ける ${TMPDIR:-/tmp} と自分の pid から作るしかない = 名前は
+# 推測できる。TMPDIR を設定していないホストでは共有 sticky /tmp に落ちるため、他ユーザーが
+# 先に実体を置ける。素の `>` は先に在るシンボリックリンクを追って**リンク先を truncate**
+# する（無関係のファイルが空になる）。
+#
+# 方針は「既存の実体には一切書かない」。掴んでよいのは**自分が同じ実行の中で作った通常
+# ファイル**だけで、それも一度消してから作り直す。判定は次の順で、1 つでも外れたら書かずに
+# rc1 を返す（呼び出し側は従来どおり「記録できなかった」警告へ落ちる）:
+#
+#   1. シンボリックリンク（リンク先が何であれ）→ 掴まない。**排他生成より前**に見る。
+#      bash の noclobber は stat した先が通常ファイルのときだけ O_EXCL を付けるので、
+#      リンク先が /dev/null なら警告ゼロで成功し（理由がデバイスへ消える）、FIFO なら
+#      open がブロックして返らない（同居ユーザーがレビュー実行をハングさせられる）。
+#      「noclobber がリンクを弾く」は成り立たない。
+#   2. 通常ファイル以外の実体（ディレクトリ / FIFO / デバイス等）→ 掴まない。
+#   3. 他人所有、またはハードリンク数が 1 でない通常ファイル → 掴まない。リンク数 1 を
+#      要求するのは、victim へのハードリンクを先に置かれると `-L` は false・`-f` は true
+#      で、そのまま書けば victim を上書きするため。リンク数が取れないホストでも掴まない。
+#   4. 残った「自分所有・リンク数 1 の通常ファイル」= 同一実行内の再記録（run_with_timeout
+#      が起動時に書いた command を、アダプタが sandbox-refused などで上書きする経路）。
+#      ここを拒むと理由が呼び出し側へ届かなくなるので、`rm -f` してから作り直す。
+#
+# 最後の生成と書き込みは同じサブシェルの `set -C` 下で 1 操作にする（下見と書き込みを
+# 分けると、その間にリンクへ差し替えられる TOCTOU が残る）。
+#
+# 既知の限界: 4 の `rm -f` と生成の間のマイクロ秒の窓でシンボリックリンク → FIFO を
+# 差し込まれると、noclobber がリンクを追って open でブロックしうる。窓を完全に閉じるには
+# O_NOFOLLOW|O_EXCL を直に呼ぶ必要があり、シェルからは届かないので対策は入れていない。
+#
+# orchestrator（multi-agent.sh）も同じ形の理由ファイルを持つので、この関数を共有する
+# — 2 本目の実装を書き写すと、片方だけ直った状態へ静かにずれる。
+_ff_reason_link_count() { # $1: パス / stdout: ハードリンク数（取れなければ rc1）
+  local n
+  # macOS（BSD stat）は -f %l、GNU stat は -c %h。片方は必ずエラーになるので順に試す。
+  n="$(stat -f %l "$1" 2>/dev/null || stat -c %h "$1" 2>/dev/null || true)"
+  case "$n" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s' "$n"
+}
+
+write_reason_file() { # $1: パス / $2: 書く内容 -- rc0 = 書けた, rc1 = 書かなかった
+  local f="$1" content="$2" links
+  if [[ -L "$f" ]]; then
+    echo "WARNING: refusing to write the failure reason at ${f}: a symlink is already there, and writing would act on its target instead." >&2
+    echo "         Remove it by hand if it is yours; otherwise point TMPDIR at a directory only you can write." >&2
+    return 1
+  fi
+  if [[ -e "$f" ]]; then
+    if [[ ! -f "$f" ]]; then
+      echo "WARNING: refusing to write the failure reason at ${f}: something that is not a regular file is already there." >&2
+      return 1
+    fi
+    if [[ ! -O "$f" ]]; then
+      echo "WARNING: refusing to write the failure reason at ${f}: the file there is owned by someone else." >&2
+      return 1
+    fi
+    links="$(_ff_reason_link_count "$f")" || links=""
+    if [[ "$links" != "1" ]]; then
+      echo "WARNING: refusing to write the failure reason at ${f}: the file there has ${links:-an unknown number of} hard links, so writing could overwrite another name for it." >&2
+      return 1
+    fi
+    if ! rm -f "$f" 2>/dev/null; then
+      echo "WARNING: refusing to write the failure reason at ${f}: the stale file from this run could not be removed." >&2
+      return 1
+    fi
+  fi
+  # 生成と書き込みを 1 操作にする。`rm` と生成の間に差し込まれた回はここで失敗する。
+  # サブシェルに閉じ、呼び出し側の noclobber 設定を変えない。
+  if ! ( set -C; printf '%s' "$content" > "$f" ) 2>/dev/null; then
+    echo "WARNING: refusing to write the failure reason at ${f}: it could not be created exclusively." >&2
+    return 1
+  fi
+  return 0
+}
+
 # run_with_timeout 自身が書くのは timeout | orchestrator-error | command の 3 値。
 # アダプタが上書きで書く値（sandbox-refused | empty-output | missing-review-body）も
 # ここを通る。許可値の検証はこの入口に一箇所で集約する — 文字列は疑似 Union であり、
@@ -1532,7 +1633,10 @@ record_timeout_reason() {
   # 書けなくても呼び出し側の失敗処理は続ける（従来どおり）。ただし黙ると
   # empty-output が status 1 へ化けたり stale な timeout 案内の種になるので、
   # 失敗時は stderr へ 1 行だけ警告する（Issue #266）。
-  if ! printf '%s' "$reason" >"$f" 2>/dev/null; then
+  # 掴んではいけない実体（リンク・他人所有・ハードリンク）は write_reason_file が
+  # 弾く。弾いた回は書かずに同じ警告へ落ちる — 他人のファイルへ書くより、理由を
+  # 運べない方が軽い。
+  if ! write_reason_file "$f" "$reason"; then
     echo "WARNING: could not record timeout reason '${reason}' at ${f}; failure classification may fall back to the exit status only." >&2
   fi
 }
@@ -1542,12 +1646,40 @@ record_timeout_reason() {
 read_timeout_reason() {
   local f
   f="$(timeout_reason_file)"
+  # 書く側がリンクを掴まない以上、リンクが在る回の中身は自分が書いたものではない。
+  # 読めば他人の内容を「今回の理由」として名乗ることになるので読まない（警告は
+  # 書く側が既に出している）。
+  if [[ -L "$f" ]]; then
+    return 0
+  fi
   [[ -f "$f" ]] || return 0
   cat "$f" 2>/dev/null || true
 }
 
+# 理由ファイルの後始末。共有 sticky /tmp では他人が置いた実体を消せない（rm が失敗する）。
+# 黙って通すと「掃除したつもり」のまま stale な実体が残り、次に同じパスを引いた実行が
+# 記録を拒む理由になるので、失敗は 1 行残す。prepare_reason_file と同じく orchestrator
+# （multi-agent.sh）とも共有する — 2 経路の一時ファイルは同じ形なので、後始末も同じ形にする。
+# 同じパスの警告は 1 プロセス 1 回だけにする。後始末は 1 実行の中で何度も走る
+# （orchestrator の current_review_series_id は呼ばれるたびに掃除する）ので、毎回
+# 出すとレポートの CLI stderr 節が同じ 2 行で埋まる。
+_FF_REASON_RM_WARNED=""
+clear_reason_file() { # $1: パス（空なら何もしない）
+  local f="$1" seen
+  [[ -n "$f" ]] || return 0
+  if ! rm -f "$f" 2>/dev/null; then
+    seen=$'\n'"${_FF_REASON_RM_WARNED}"$'\n'
+    if [[ "$seen" != *$'\n'"$f"$'\n'* ]]; then
+      echo "WARNING: could not remove the failure reason marker: ${f}" >&2
+      echo "         Remove it by hand, or the next run there refuses to record its reason." >&2
+      _FF_REASON_RM_WARNED="${_FF_REASON_RM_WARNED}${_FF_REASON_RM_WARNED:+$'\n'}${f}"
+    fi
+  fi
+  return 0
+}
+
 clear_timeout_reason() {
-  rm -f "$(timeout_reason_file)" 2>/dev/null || true
+  clear_reason_file "$(timeout_reason_file)"
 }
 
 # 成功パスでは fail_cli_task が呼ばれないため、run_with_timeout が書いた

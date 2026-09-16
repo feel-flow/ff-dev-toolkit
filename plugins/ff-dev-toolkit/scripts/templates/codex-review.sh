@@ -633,7 +633,7 @@ append_review_context_file() {
     exit 2
   fi
   context_bytes="$(wc -c <"$context_file" | tr -d ' ')"
-  if ! printf '%s\n' "$context_bytes" | grep -Eq '^[0-9]+$' \
+  if [[ ! "$context_bytes" =~ ^[0-9]+$ ]] \
     || [ "$context_bytes" -eq 0 ] || [ "$context_bytes" -gt 65536 ]; then
     echo "ERROR: --review-context-file は 1〜65536 bytes にしてください: ${context_bytes:-unknown}" >&2
     exit 2

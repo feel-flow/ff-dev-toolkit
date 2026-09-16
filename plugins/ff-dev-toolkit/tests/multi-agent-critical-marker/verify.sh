@@ -212,6 +212,13 @@ cat > "$STUB/git" <<SH
 # できない（\`--is-inside-work-tree\` も 128）。専用のセンチネルを分けると「別の形を測って
 # いる」ように見えるが実体は同じ注入なので、1 つに畳んで案内の両方の名乗りを同じ実走で
 # 固定する。偽装で rc=1 + rev-parse 失敗を作ると、実際には起きない形を測ることになる。
+# 理由ファイルのシンボリックリンクを「削除の後・記録の前」に植える。
+# current_review_series_id は冒頭で理由ファイルを消してから symbolic-ref を呼ぶので、
+# ここは共有 /tmp で他ユーザーが割り込める窓とちょうど同じ位置になる。センチネルの
+# 中身は植えるリンクのパス。
+if [[ -f "$TMP/plant-reason-symlink" && "\$*" == "symbolic-ref --quiet HEAD" ]]; then
+  ln -sfn "$TMP/series-reason-victim" "\$(cat "$TMP/plant-reason-symlink")"
+fi
 if [[ -f "$TMP/git-symbolic-ref-fail" && "\$*" == "symbolic-ref --quiet HEAD" ]]; then
   exit 128
 fi
@@ -1758,6 +1765,52 @@ if grep -qF 'git cannot read HEAD here' "$TMP/recovery-default-arm.log"; then
 else
   ok "理由を読めない回は原因を名乗らない"
 fi
+
+# 理由ファイルのパスに他ユーザーのシンボリックリンクが置かれている回。素の `>` はリンクを
+# 追って**リンク先を truncate** する（共有 sticky /tmp では pid からパスを推測できる）。
+# アダプタ側の timeout-reason と**同じ関数**で排他生成するので、ここが緑でも向こうが赤なら
+# 片方だけ直った状態が見える。リンクを掴まなかった回は理由を運べないので、案内は既定アーム
+# へ落ちる（誤った原因を名乗るより無害）。
+SERIES_REASON_SYMLINK="$TMP/series-reason-symlink"
+printf 'unrelated payload\n' > "$TMP/series-reason-victim"
+rm -f "$SERIES_REASON_SYMLINK"
+printf '%s\n' "$SERIES_REASON_SYMLINK" > "$TMP/plant-reason-symlink"
+: > "$TMP/git-symbolic-ref-fail"
+cat > "$REPORT" <<'REPORT_BODY'
+<!-- CRITICAL_BLOCK -->
+Critical issues detected (code-review). Review before proceeding.
+<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:code-review nonblock:- -->
+REPORT_BODY
+set +e
+run_isolated PATH="$STUB:$PATH" \
+  FF_MULTI_AGENT_REVIEW_SERIES_REASON_FILE="$SERIES_REASON_SYMLINK" \
+  bash "$MULTI_AGENT" --task review --cli codex-cli --perspective code-review \
+  --base develop --timeout 60 >"$TMP/recovery-symlink.log" 2>&1
+set -e
+rm -f "$TMP/git-symbolic-ref-fail" "$TMP/plant-reason-symlink"
+if [[ "$(cat "$TMP/series-reason-victim" 2>/dev/null)" == "unrelated payload" ]]; then
+  ok "理由ファイルのシンボリックリンク先を truncate しない"
+else
+  bad "シンボリックリンクを追ってリンク先を truncate している"
+  sed -n '1,20p' "$TMP/recovery-symlink.log" >&2 || true
+fi
+if grep -qF 'refusing to write the failure reason' "$TMP/recovery-symlink.log"; then
+  ok "リンクを掴まなかったことを黙らず警告する"
+else
+  bad "リンク検知が痕跡なく握り潰されている"
+  sed -n '1,20p' "$TMP/recovery-symlink.log" >&2 || true
+fi
+assert_recovery_hint "$TMP/recovery-symlink.log" \
+  'cannot identify the current review series' \
+  'with the project root still present and HEAD resolvable' \
+  "リンクで理由を運べない回も既定アームの復帰手段を出す"
+if grep -qF 'git cannot read HEAD here' "$TMP/recovery-symlink.log"; then
+  bad "理由を運べていないのに原因を名乗っている"
+  sed -n '1,20p' "$TMP/recovery-symlink.log" >&2 || true
+else
+  ok "リンクで理由を運べない回は原因を名乗らない"
+fi
+rm -f "$SERIES_REASON_SYMLINK" "$TMP/series-reason-victim"
 
 # 系列 ID はガード側だけでなく**レポート生成側**でも要る。こちらの失敗経路は今まで実走が
 # 1 件も無く、原因別アームを丸ごと消しても緑だった（変異注入で実測）。

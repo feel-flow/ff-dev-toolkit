@@ -1,18 +1,18 @@
 ---
 name: setup-github-labels
-description: Use when setting up recommended GitHub labels for a repository. 推奨ラベル構成（GitHub デフォルト + バージョニング・緊急度・優先度・分類の補完からなるカスタムラベル 14 件）のうち不足分だけを冪等に作成する。「ラベルを整備して」「ラベルをセットアップして」「推奨ラベルを作って」「set up labels」「create the recommended labels」と言われたとき、および create-issue や Git Workflow の実在確認（verify-then-skip）がラベル不在を報告したときに使用する。起票時にラベルを付けるのは create-issue（あちらはラベルを作らない）。本スキルはリポジトリ設定を変更する側で、既存ラベルには触れない。
+description: Use when setting up recommended GitHub labels for a repository. 推奨ラベル構成（GitHub デフォルト + バージョニング・緊急度・優先度・分類の補完からなるカスタムラベル 15 件）のうち不足分だけを冪等に作成する。「ラベルを整備して」「ラベルをセットアップして」「推奨ラベルを作って」「set up labels」「create the recommended labels」と言われたとき、および create-issue や Git Workflow の実在確認（verify-then-skip）がラベル不在を報告したときに使用する。起票時にラベルを付けるのは create-issue（あちらはラベルを作らない）。本スキルはリポジトリ設定を変更する側で、既存ラベルには触れない。
 ---
 
 # /setup-github-labels — 推奨ラベル構成の冪等セットアップ
 
-対象リポジトリに、AI Spec-Driven Development の推奨カスタムラベル 14 件のうち**存在しないものだけ**を作成します。既存ラベルの色・説明は変更しません。
+対象リポジトリに、AI Spec-Driven Development の推奨カスタムラベル 15 件のうち**存在しないものだけ**を作成します。既存ラベルの色・説明は変更しません。
 
 | 軸 | ラベル |
 |------|--------|
 | バージョニング | `major` / `minor` / `patch` |
 | 緊急度 | `hotfix` / `urgent` |
 | 優先度 | `priority:critical` / `priority:high` / `priority:medium` / `priority:low` |
-| 分類の補完 | `follow-up` / `refactor` / `chore` / `testing` / `epic` |
+| 分類の補完 | `follow-up` / `refactor` / `chore` / `testing` / `epic` / `bundle` |
 
 `priority:*` と `follow-up` は `create-issue` / `out-of-scope-issue` が付与を試みるラベルで、未整備のリポジトリでは起票が成功したままラベルだけ省略されます。本スキルはその不足を埋める側です。
 
@@ -56,13 +56,13 @@ fi
 
 ## 手順
 
-### 1. 対象リポジトリの確認と epic の要否
+### 1. 対象リポジトリの確認と epic / bundle の要否
 
 本スキルは**リポジトリ設定を変更する**（ラベルを作成する）。起票と違って Issue 単位で取り消せる操作ではないため、対象リポジトリ（`OWNER/REPO`）をユーザーの意図と突き合わせてから実行する。ユーザーが対象を明示していない場合はカレントリポジトリ（`gh repo view`）を候補として提示し、確認を取る。確認を挟まない自律フローから呼ばれた場合も、作業対象として文脈上確定しているリポジトリ以外へは適用しない。
 
-あわせて `epic` の要否を確認する。**このラベルだけは作ると他スキルの挙動が変わる**: `out-of-scope-issue` が実在を「Epic 相当で大枠 Issue を管理しているか」の判定に使い、実在すれば open Epic を照会して、該当領域だと確信できる場合に限り follow-up Issue 本文へ Epic 番号を記載する（Epic 側のチェックリストへ追記する場合は既存 Issue 本文の全置換を伴う）。残る 13 件は分類が増えるだけで、他スキルの分岐を開かない。
+あわせて `epic` / `bundle` の要否を確認する。**この 2 件は作ると他スキルの挙動が変わる**: `out-of-scope-issue` が `epic` の実在を「Epic 相当で大枠 Issue を管理しているか」の判定に使い、実在すれば open Epic を照会して、該当領域だと確信できる場合に限り follow-up Issue 本文へ Epic 番号を記載する（Epic 側のチェックリストへ追記する場合は既存 Issue 本文の全置換を伴う）。残る 13 件は分類が増えるだけで、他スキルの分岐を開かない。
 
-`epic` は不要と確認できた場合、**手順 2 のスクリプトは使えない**。スクリプトは 14 件固定で除外オプションを持たず、余剰引数を fail-closed で拒否する（同梱の `LABEL_DEFS` を編集する回避も不可 — 定義と文書の 3 箇所照合が赤になる）。この場合は `github-setup.md` の「手動セットアップ」から `epic` の行を除いて `gh label create` を実行し、手順 3 ではその実行結果を報告する。
+`bundle` は `epic` と対のラベル（`epic` = カテゴリの入れ物 / `bundle` = 子を全件 1 PR で束ねる着手単位。`create-issue --bundle` と `out-of-scope-issue` の統合先探索が読む）で、要否も `epic` と一緒に確認する。`epic` / `bundle` が不要と確認できた場合、**手順 2 のスクリプトは使えない**。スクリプトは 15 件固定で除外オプションを持たず、余剰引数を fail-closed で拒否する（同梱の `LABEL_DEFS` を編集する回避も不可 — 定義と文書の 3 箇所照合が赤になる）。この場合は `github-setup.md` の「手動セットアップ」から `epic` / `bundle` の行（不要と確認できた側）を除いて `gh label create` を実行し、手順 3 ではその実行結果を報告する。
 
 ### 2. セットアップスクリプトの実行
 

@@ -684,10 +684,10 @@ delete_remote_branch_with_lease() {
       origin ":refs/heads/$branch" 2>&1)"; then
     return 0
   fi
-  if printf '%s' "$out" | grep -qE 'remote ref does not exist'; then
+  if grep -qE 'remote ref does not exist' <<<"$out"; then
     return 2
   fi
-  if printf '%s' "$out" | grep -qE 'stale info|\[rejected\]'; then
+  if grep -qE 'stale info|\[rejected\]' <<<"$out"; then
     # GitHub の merge 時削除などで ref が既に無い場合も、Git は `stale info` を
     # 返すことがある。ref を再取得し、真の競合 push と削除済みを区別する。
     remote_err="$WORK_TMP/remote_recheck_error"
@@ -1620,7 +1620,7 @@ else
         WT_LOCKED=1
       fi
       WT_CLAUDE_LOCK=0
-      if [ "$WT_LOCKED" = "1" ] && printf '%s' "$WT_LOCK_REASON" | grep -qi 'claude agent'; then
+      if [ "$WT_LOCKED" = "1" ] && grep -qi 'claude agent' <<<"$WT_LOCK_REASON"; then
         WT_CLAUDE_LOCK=1
       fi
 
@@ -1757,7 +1757,7 @@ else
       echo "  ✓ branch deleted: $branch"
       DELETED_BRANCHES+=("$branch")
     elif [ "$BRANCH_DELETE_MODE" = "dry_escalate" ] \
-      || printf '%s' "$BRANCH_DEL_OUT" | grep -qE 'not fully merged'; then
+      || grep -qE 'not fully merged' <<<"$BRANCH_DEL_OUT"; then
       # squash merge 由来は -d で消せない。ただし [gone] は「upstream が消えた」ことしか
       # 保証しないため、-D は (名前, ローカル OID) が MERGED PR の head と一致する
       # ブランチに限定する（手動でリモート削除された未マージ作業を消さないため）

@@ -40,7 +40,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 
 ## 収録内容
 
-### Skills（25）
+### Skills（26）
 
 | スキル | 用途 |
 |---|---|
@@ -48,6 +48,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `harness-review` | エージェントハーネス設計のレビュー。アンチパターンカタログと観点チェックリストに基づく設計評価 |
 | `out-of-scope-issue` | スコープ外の発見を `YAGNI（対応も Issue 化もしない）→ 軽微ならインライン修正 → Issue 化` の順で判定。Issue 化前に類似 Issue を検索し、同じ完了条件ならコメントで集約。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立する場合だけ関連 Issue を作成 |
 | `check-plugin-versions` | GitHub・Claude Code 登録・Desktop セッションの版を読み取り専用で照合。更新ありと確認不可を区別する |
+| `workflow-doctor` | 導入先の入口規範（CLAUDE.md / AGENTS.md / .cursor / グローバル CLAUDE.md / Stop hook）が out-of-scope-issue の判定順（YAGNI → インライン → 既存 bundle へ追記 → bundle 単位で新規）を上書きしていないかを read-only で検査。旧文言・節の必須語・bundle の受け皿・ラベル・親無し Issue を重大度付きで報告し、置換案を印字する（--fix は持たない） |
 | `removal-sweep` | 撤去（機能・設定・UI 要素の削除）PR の残存参照を 3 系統（識別子 / 表示文言 / 構造セレクタ・モック応答）で走査するチェックリスト。E2E がデプロイ済み成果物を指す構成の警告を含む |
 
 以下のワークフロースキルのうち 14 件は v0.15.0 で旧 Commands から Agent Skills 標準へ移行したもので、残りはその後に追加しました（`/ace-refine` は v0.18.0）。Claude Code では `/ff-dev-toolkit:<name>`、Codex では `$ff-dev-toolkit:<name>`、両方で自然文による自動発火を利用できます。

@@ -243,36 +243,61 @@ parse_head() { # <command string>
   done
 }
 
+# `cd` の引数取り出し（絶対/相対どちらの判定も共有する）。「cd」の直後の文字列を渡すと、
+# 先頭の空白と `cd` のオプション（`-L` / `-P` / `-e` / `-@` とその結合形 `-LP` 等。
+# bash 組み込み `cd` に長いオプションは無いので `-` 始まりの語はすべてオプション扱い）を
+# 読み飛ばした残り（パス引数以降の文字列。以降のセグメントも含む生の残余）を `CD_ARG` へ、
+# オプションを 1 つ以上読み飛ばしたら `CD_HAD_OPT=1` を立てる。`--` はオプションの数には
+# 数えない。`--` はオプションの終端なので、消費した時点で走査を終え、以降（`-P` のような
+# 語を含む）はそのままパス引数として `CD_ARG` に残す（`cd -- -P /abs` を絶対 cd と読まない）。
+# `cd -`（OLDPWD へ）の単独 `-` はオプションと同じ扱い（`CD_HAD_OPT=1`、`CD_ARG` は残余）に
+# する — 相対パス指定ではないので、呼び出し側は `CD_HAD_OPT` で降りればよい。
+cd_arg_after_options() { # <text right after "cd">
+  local s="$1" word
+  CD_ARG=""
+  CD_HAD_OPT=""
+  while :; do
+    while :; do
+      case "$s" in
+        " "* | "	"*) s="${s#?}" ;;
+        *) break ;;
+      esac
+    done
+    word="${s%%[[:space:]]*}"
+    case "$word" in
+      "--")
+        s="${s#--}"
+        while :; do
+          case "$s" in
+            " "* | "	"*) s="${s#?}" ;;
+            *) break ;;
+          esac
+        done
+        break
+        ;;
+      "-" | -*)
+        s="${s#"$word"}"
+        CD_HAD_OPT=1
+        continue
+        ;;
+    esac
+    break
+  done
+  CD_ARG="$s"
+}
+
 starts_with_absolute_cd() {
   local s="$1" first arg
   first="${s%%[[:space:]]*}"
   [ "$first" = "cd" ] || return 1
-  arg="${s#cd}"
-  while :; do
-    case "$arg" in
-      [[:space:]]*) arg="${arg#?}" ;;
-      *) break ;;
-    esac
-  done
-  # 引数直前の `--` を 1 回だけ落とす（`cd -- /abs`。`--foo` は落とさない）
-  case "$arg" in
-    "--") arg="" ;;
-    "--"[[:space:]]*)
-      arg="${arg#--}"
-      while :; do
-        case "$arg" in
-          [[:space:]]*) arg="${arg#?}" ;;
-          *) break ;;
-        esac
-      done
-      ;;
-  esac
+  cd_arg_after_options "${s#cd}"
+  arg="$CD_ARG"
   # 開きクォートだけを剥がす（閉じ位置は解析しない）
   case "$arg" in
     \"* | \'*) arg="${arg#?}" ;;
   esac
   case "$arg" in
-    /*) return 0 ;;                # 絶対パス
+    /*) return 0 ;;                # 絶対パス（`cd -P /abs` のようにオプション付きも含む）
     '$('* | '`'*) return 0 ;;      # コマンド置換（git rev-parse --show-toplevel 等）
     '$'* | '~'*) return 0 ;;       # 変数展開・チルダ展開（hook では評価できない）
     *) return 1 ;;
@@ -283,7 +308,11 @@ starts_with_absolute_cd() {
 # あちらは「先頭が cd でない」場合にも 1 を返すので、否定を取ると cd を含まない呼び出しまで
 # 巻き込む。届く警告（deny）へ倒す面はここで絞る条件そのものなので、独立した述語で持つ。
 # 引数なしの `cd`（$HOME へ行く）は対象外にする — 相対パス指定による取り違えとは別の形で、
-# deny の面を必要以上に広げない。
+# deny の面を必要以上に広げない。オプションが 1 つでも付く形（`cd -P sub` を含む）も
+# 対象外にする（`cd -`（OLDPWD へ）の単独 `-` も同じ経路で降りる）— `cd -P /abs` を相対と
+# 誤判定して deny へ巻き込まないため（誤検知のコストが
+# 警告より桁違いに高い側なので、迷ったら降りる。絶対 cd の判定は `starts_with_absolute_cd`
+# 側で先に無音になる）。
 starts_with_relative_cd() {
   local s="$1" first arg word nl
   first="${s%%[[:space:]]*}"
@@ -300,31 +329,14 @@ starts_with_relative_cd() {
   nl='
 '
   arg="${arg%%"$nl"*}"
-  # 語を 1 つずつ見る。空白の読み飛ばしは space / tab だけにする（改行は上で落とし済み）。
-  while :; do
-    while :; do
-      case "$arg" in
-        " "* | "	"*) arg="${arg#?}" ;;
-        *) break ;;
-      esac
-    done
-    word="${arg%%[[:space:]]*}"
-    case "$word" in
-      # 引数なしの cd（$HOME へ）。区切りが続く形も「パス引数が無い」側。
-      "") return 1 ;;
-      ";"* | "&"* | "|"* | ")"* | "}"* | "#"* | "<"* | ">"*) return 1 ;;
-      # 引数直前の `--` を落として次の語を見る
-      "--")
-        arg="${arg#--}"
-        continue
-        ;;
-      # `cd -`（OLDPWD へ）は相対パス指定ではない。オプション（-L / -P / -e / -@）も
-      # ここで降りる — 絶対パスへ行く `cd -P /abs` を相対と誤判定して deny へ
-      # 巻き込まないため（誤検知のコストが警告より桁違いに高い側なので、迷ったら降りる）。
-      "-" | -*) return 1 ;;
-      *) break ;;
-    esac
-  done
+  cd_arg_after_options "$arg"
+  [ -n "$CD_HAD_OPT" ] && return 1
+  word="$CD_ARG"
+  case "$word" in
+    # 引数なしの cd（$HOME へ）。区切りが続く形も「パス引数が無い」側。
+    "") return 1 ;;
+    ";"* | "&"* | "|"* | ")"* | "}"* | "#"* | "<"* | ">"*) return 1 ;;
+  esac
   # 開きクォートだけを剥がす（閉じ位置は解析しない）
   case "$word" in
     \"* | \'*) word="${word#?}" ;;

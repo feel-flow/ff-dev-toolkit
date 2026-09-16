@@ -494,7 +494,7 @@ contains "$CREATE_ISSUE" 'expected_repo="OWNER/REPO"' "対象リポジトリを�
 # 検査対象が 0 件になる（= 違反ゼロで緑）空振りを防ぐ。
 gh_issue_commands_bound "$CREATE_ISSUE" create 1 yes "create-issue の gh issue create が --repo と --assignee を持つ"
 gh_issue_commands_bound "$OUT_OF_SCOPE" create 1 no  "out-of-scope-issue の gh issue create が --repo を持ち --assignee を持たない"
-gh_issue_commands_bound "$OUT_OF_SCOPE" list   1 no  "out-of-scope-issue の gh issue list が --repo を持つ"
+gh_issue_commands_bound "$OUT_OF_SCOPE" list   2 no  "out-of-scope-issue の gh issue list が --repo を持つ（主要語検索 + bundle の列挙の 2 件）"
 
 # 2 系統（type / priority）であって follow-up は付けない、という create-issue 側の境界。
 # 契約 fragment はこの違いを持てない（両ファイルに同一で在ることを見る仕組みのため）

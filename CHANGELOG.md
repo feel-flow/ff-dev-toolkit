@@ -20,6 +20,32 @@
 
 ## [Unreleased]
 
+## [0.117.0] - 2026-09-17
+
+### 追加
+
+- `bundle` ラベル（子 Issue を全件 1 ブランチ・1 PR で束ねて対応する着手単位。`epic` はカテゴリの入れ物のまま）を推奨ラベル構成に追加し、起票・着手・完了・統合の各スキルがラベルで作業単位を判定するようにした。`create-issue` は `--bundle`（ラベル付与 + 表題接頭辞）と `--parent N`（同梱の sub-issue 紐付けヘルパで sub-issue 化）を受け、AC 粒度チェックに「1 Issue = 1 PR で閉じる単位か / 親を付けたか」を足した。`out-of-scope-issue` は主要語検索より先に open な bundle を列挙し、統合先の選択肢を「コメント追記」「bundle の sub-issue として起票」の 2 択にして、親無し・ラベル無しの単独 Issue を作らない。`retrospective` は導入先の規律に関する提案を規律 bundle へのコメント追記へ既定で回す。`spec-driven` は `bundle` を指定されたら子を全件読んで 1 PR の作業単位に、`epic` を指定されたら配下の bundle を提示して止める。`close-issue` は bundle + 子の全件で AC を照合し、PR 本文の `Closes` の欠けを検査する。配布ドキュメントの Git Workflow に「bundle（子を全件 1 PR で束ねる着手単位）」節と挙動表を置き、docs-gates の契約で固定した。
+- 新スキル `workflow-doctor` を追加した。導入先の入口規範（CLAUDE.md / AGENTS.md / `.cursor` / `.github/copilot-instructions.md` / グローバル CLAUDE.md / Stop hook）が `out-of-scope-issue` の判定順（YAGNI → 同 PR インライン → 既存 bundle へ追記 → bundle 単位で新規）を上書きしていないかを read-only で検査し、旧文言（該当行）・節の必須語・hook の reminder・bundle の受け皿・ラベルの実在・親無し Issue・`RETROSPECTIVE_FILING` を重大度付きで報告する。`--fix` は意図的に持たず、置換案を `FIXTEXT` 行で印字する。検査語は固定文字列と `.*` だけで書き（BSD grep の C ロケールで多バイトの文字クラスが一致 0 件になる fail-open を避ける）、grep の失敗は「0 件」に畳まず FAIL にする。
+
+### 変更
+
+- `/retrospective` `/ace-curate` `/ace-refine` の base 先行ガードで `git fetch` が失敗したとき、git が出した原因を停止メッセージの末尾へ載せるようにした（4 箇所すべて同じ形。remote URL の資格情報部は表示前に伏せる）
+
+### 修正
+
+- `guard-background-cwd.sh`（Bash の cwd ガード）が `cd -P /abs` のようにオプション付きで絶対パスへ移動する `cd` を誤って警告していたのを修正した。`cd` のオプション（`-L` / `-P` / `-e` / `-@` と結合形）を読み飛ばしてから絶対パス判定するようになり、この形は無音になる。オプションのあとに相対パスが続く形（`cd -P sub` 等）は従来どおり検出する。
+- `set -o pipefail` 配下でパイプの下流に `grep -q` を置くと、一致した時点で grep が読むのをやめて上流の `printf` / `echo` / `cat` が EPIPE で死に、パイプライン全体が非 0 になる（一致が「不一致」へ反転し、否定形は偽の緑になる）欠陥を、同梱スクリプトとテストの残存箇所すべてで解消した。対象は merge-cleanup / multi-agent / codex-review テンプレートと、docs-gates / guard-issue-labels / update-check / auto-update-hook / multi-agent-serialization / run-all の各テスト。
+- tracked な shell スクリプト全体へこの形の再混入を検出する横断ガードを追加した。走査の実装は `tests/lib/pipefail-grep-q.sh`、実行は run-all の自己検査 suite から行う。git が使えない・走査器が壊れている・tracked 一覧が空のときは「違反 0 件」を主張せず検査不能として非 0 で止まる。
+- ガードの案内には禁止形だけでなく代替（here-string の `grep -q` / `case` / `[[ =~ ]]` / ファイルを直接渡す形 / 入力を読み切る `grep -c`）と、payload が原理的に小さい箇所のための行末マーカー `# pipefail-safe:` による除外宣言を明記した。
+- 統合レポートの Critical 検出が、Critical 見出しのゼロ件宣言の後ろへ置かれた裏取り・補足の箇条書きを実所見として数え、どの CLI も Critical を報告していないレビューで CRITICAL_BLOCK マーカーが立つ偽陽性を修正した。critical 見出しスコープ内でゼロ宣言（明示ゼロ・ゼロ件報告行・空所見語彙の bullet・bullet 無しの散文ゼロ宣言）を観測したら、そのスコープの残りの bullet を実所見に数えない（抑止は次の見出しで解除）。ゼロ宣言の無い Critical 節の指摘は、位置参照を持たない散文 bullet も含めて従来どおり検出する
+
+### セキュリティ
+
+- 失敗理由を受け渡す一時ファイルへ書くとき、既にそこに在る実体を掴まないようにした。共有 /tmp のようにパスを他ユーザーが先に取れる場所で、シンボリックリンク（リンク先がデバイスや FIFO でも）・ディレクトリ・他人所有のファイル・ハードリンクされたファイルはいずれも掴まず、無関係のファイルを空にしたり書き換えたりすることがなくなる。
+- 掴んでよいのは自分がその実行の中で作った通常ファイルだけで、その再記録も一度消してから排他生成で作り直す（下見と書き込みの間にすり替えられる隙を狭める）。
+- 掴まなかった回・理由ファイルを消せなかった回は、黙って続けずに stderr へ警告を出す（同じパスの後始末の警告は 1 実行につき 1 回だけ）。理由を運べない回の案内は従来どおり終了ステータス由来の一般文言へ縮退する。
+- アダプタのタイムアウト理由とレビュー系列の失敗理由の 2 経路は、同じ関数で書き込む（片方だけ直った状態へずれないようにするため）。
+
 ## [0.116.1] - 2026-09-16
 
 ### 修正

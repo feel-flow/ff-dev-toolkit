@@ -168,8 +168,9 @@ default_branch="${default_ref#origin/}"
   echo "作業ツリーを clean にしてから dry-run をやり直してください" >&2
   exit 1
 }
-if ! git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" >/dev/null 2>&1; then
-  echo "origin/${default_branch} を取得できません（stale 値で判定しない。認証・通信・remote 設定を確認）" >&2
+if ! _fetch_err="$(git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" 2>&1 >/dev/null)"; then
+  _fetch_err="$(sed -E 's#(://)[^/[:space:]]*@#\1***@#g' <<<"${_fetch_err:-（原因は出力されませんでした）}")"
+  echo "origin/${default_branch} を取得できません（stale 値で判定しない。認証・通信・remote 設定を確認）: ${_fetch_err}" >&2
   exit 1
 fi
 git rev-parse --verify --quiet "refs/remotes/origin/${default_branch}" >/dev/null || {
@@ -181,6 +182,8 @@ git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
   exit 1
 }
 ```
+
+fetch が失敗した回は、停止メッセージの末尾へ git が出した原因をそのまま付ける（「認証・通信・remote 設定のどれか」を利用者が切り分け直さずに済ませるため）。git の stderr は remote URL を含みうるので、表示の前に `https://user:token@host/` 形の資格情報部だけを `***` へ伏せる。
 
 非 0 で止まったらレポートを提示しない。取り込みは利用者の操作である（並行して入った整理の内容を
 見てから dry-run を作り直す必要があり、自動追随はできない）。
@@ -216,8 +219,9 @@ default_branch="${default_ref#origin/}"
   echo "ACE refine 適用前に作業ツリーを clean にしてください" >&2
   exit 1
 }
-if ! git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" >/dev/null 2>&1; then
-  echo "origin/${default_branch} を取得できません（stale 値で版を確定しない。認証・通信・remote 設定を確認）" >&2
+if ! _fetch_err="$(git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" 2>&1 >/dev/null)"; then
+  _fetch_err="$(sed -E 's#(://)[^/[:space:]]*@#\1***@#g' <<<"${_fetch_err:-（原因は出力されませんでした）}")"
+  echo "origin/${default_branch} を取得できません（stale 値で版を確定しない。認証・通信・remote 設定を確認）: ${_fetch_err}" >&2
   exit 1
 fi
 git rev-parse --verify --quiet "refs/remotes/origin/${default_branch}" >/dev/null || {
@@ -229,6 +233,8 @@ git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
   exit 1
 }
 ```
+
+fetch が失敗した回は、停止メッセージの末尾へ git が出した原因をそのまま付ける（「認証・通信・remote 設定のどれか」を利用者が切り分け直さずに済ませるため）。git の stderr は remote URL を含みうるので、表示の前に `https://user:token@host/` 形の資格情報部だけを `***` へ伏せる。
 
 fetch 失敗・ref 解決不能・diverge は stale 値へ fallback せず停止する。remote が先行していれば取り込み、dry-run と R2 の承認対象差分から作り直す。確認後、承認された操作のみを以下の順で適用する。
 

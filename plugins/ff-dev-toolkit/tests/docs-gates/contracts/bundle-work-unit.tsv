@@ -1,0 +1,10 @@
+# Git Workflow: bundle（子 Issue を全件 1 ブランチ・1 PR で束ねる着手単位）の規定。
+# 導入先で「発見 = 起票」が細かい Issue を増やし続け、レビュー・テスト・マージの固定費が
+# Issue の件数分になった（導入先の 1 つで open 95 件・2 日で 28 件起票を実測）。規定の所在が
+# 消えると、epic（入れ物）と着手単位の区別が散文から落ちて「どの番号を指定するか」が
+# また揺れるので、節と挙動表の 3 行を固定する。
+section	05-operations/deployment/git-workflow.md	### bundle（子を全件 1 PR で束ねる着手単位）	| bundle | `bundle` | 着手単位。1 ブランチ・1 PR・レビュー 1 回 | 子を全件読んで 1 PR |	Git Workflow が bundle を「着手単位 = 1 PR」として表で定義する
+section	05-operations/deployment/git-workflow.md	### bundle（子を全件 1 PR で束ねる着手単位）	| カテゴリ Epic | `epic` | 入れ物。配下の bundle が全部閉じたら手で close（従来どおり） | 配下の bundle を提示して止める |	Git Workflow が epic 指定時の挙動（止める）を表で定義する
+section	05-operations/deployment/git-workflow.md	### bundle（子を全件 1 PR で束ねる着手単位）	YAGNI → 同 PR インライン → 既存 bundle へコメント追記 → bundle 単位で新規	Git Workflow がスコープ外発見の 4 段の判定順を bundle 節で名指しする
+section	05-operations/deployment/git-workflow.md	### ステップ1: Issue作成	**着手の指定単位は `bundle`**	Git Workflow ステップ1 が着手の指定単位を bundle と宣言する
+contains	05-operations/deployment/github-setup.md	| `bundle`            | 着手単位（子 Issue を全件 1 ブランチ・1 PR で束ねて対応する。epic は入れ物、bundle は着手単位） | #CFE8FF | -               |	github-setup.md の推奨ラベル表に bundle が在る（LABEL_DEFS との照合は github-labels-setup が持つ）

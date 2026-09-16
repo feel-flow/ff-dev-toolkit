@@ -420,7 +420,7 @@ while IFS= read -r name; do
   case "$name" in
     follow*) continue ;; # follow-up は「選び方」を書くので語幹が出る（変異 3 が実体を固定する）
   esac
-  if printf '%s' "$code_lines" | grep -Fq -- "$name"; then
+  if grep -Fq -- "$name" <<<"$code_lines"; then
     hardcoded="${hardcoded:+$hardcoded }$name"
   fi
 done <<EOF

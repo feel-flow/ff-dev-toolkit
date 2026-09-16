@@ -12,7 +12,10 @@
 # 最初の実効行で判定すること（本文はセグメント分割の対象外）、allowlist をセグメント単位で
 # 見ること（`&&` / `||` / `|` / `;` / 改行のいずれで連結しても、また `then` / `elif` /
 # `else` 前置のセグメントでも素通りしない）、実体の消えた（prunable）worktree 登録を live と数えないこと、そして残る既知の誤警告
-# （npm --prefix /abs のようにオプション側で絶対化する形）を固定する。あわせて警告が
+# （npm --prefix /abs のようにオプション側で絶対化する形）を固定する。`cd` のオプション
+# （`-L` / `-P` / `-e` / `-@` と結合形）を読み飛ばして絶対パス判定すること（`cd -P /abs` は
+# 無音、`cd -P sub` のようなオプション後の相対パスは従来どおり検出すること）も固定する。
+# あわせて警告が
 # 出力チャネルが経路で分かれること（linked worktree あり かつ 先頭が相対 cd →
 # エージェントへ届く deny / それ以外 → ブロックしない systemMessage の警告）を固定し、
 # hooks.json の PreToolUse 登録を静的照合する。
@@ -21,7 +24,10 @@
 #           deny 分岐を外して systemMessage のみへ戻すと 9 件が赤。
 #           相対 cd の条件を外して経路 B 全体を deny にする（面を広げる）と 22 件が赤。
 #           前置（環境変数・サブシェル・env）の剥がし後ではなく生の command で判定すると 2 件が赤。
-#           オプション（`cd -P /abs` / `cd -L /abs`）を相対と誤判定すると 2 件が赤。
+#           `starts_with_absolute_cd` のオプション読み飛ばし（`cd_arg_after_options` の
+#           利用）を外し、`cd` 直後の文字列をそのまま絶対パス判定に渡すと 22 件が赤
+#           （`cd -P /abs` 等のオプション付き絶対 cd が無音にならなくなる）。
+#           `--` の後もオプション走査を続ける（`cd -- -P /abs` を絶対 cd と読む）と 1 件が赤。
 #           区切り（`;` / `&&`）を越えて次の語を引数と読むと 3 件が赤。
 #           deny のラベルを警告へ戻すと 1 件が赤。
 #           deny の締めへ警告用の文（「ブロックしません」）を流用すると 2 件が赤
@@ -238,6 +244,24 @@ assert_silent "AC2: linked worktree が無く非モノレポなら foreground �
 run_hook 'npm test' "$SINGLE" absent
 assert_silent "AC2: linked worktree が無く非モノレポなら run_in_background キー無しも無音"
 
+echo "guard-background-cwd: cd のオプション付き絶対パス（cd -P /abs 等）は無音"
+run_hook "cd -P $MONO/packages/app && npm test" "$MONO"
+assert_silent "cd -P /abs: オプションを読み飛ばして絶対パスの cd と判定する"
+run_hook "cd -L $MONO/packages/app && npm test" "$MONO"
+assert_silent "cd -L /abs も無音"
+run_hook "cd -e $MONO/packages/app && npm test" "$MONO"
+assert_silent "cd -e /abs も無音"
+run_hook "cd -@ $MONO/packages/app && npm test" "$MONO"
+assert_silent "cd -@ /abs も無音"
+run_hook "cd -LP $MONO/packages/app && npm test" "$MONO"
+assert_silent "結合形 cd -LP /abs も無音"
+run_hook "cd -- -P $MONO/packages/app && npm test" "$MONO"
+assert_warn "cd -- -P /abs: -- の後の -P はオプションではなくパス引数なので、絶対 cd と読まず従来どおり検出する"
+run_hook 'cd -P sub && npm test' "$MONO"
+assert_warn "cd -P sub（オプションのあとの相対パス）は従来どおり検出する"
+run_hook 'cd -P' "$MONO" true
+assert_warn "cd -P（パス引数が無い）は引数なしの cd と同じ扱い（deny へ倒さないが警告は従来どおり）"
+
 echo "guard-background-cwd: 経路 B（linked worktree のある repo は foreground でも警告）"
 if [ "$WT_READY" -eq 1 ]; then
   run_hook 'npm test' "$WTMAIN" false
@@ -365,10 +389,14 @@ if [ "$WT_READY" -eq 1 ]; then
 
   # 面を広げない側（AC2）。ここが緑のまま広がると、警告なら読み飛ばせた誤検知が
   # **コマンドの停止**へ昇格する。
-  run_hook 'cd -P /abs && npm test' "$WTMAIN" false
-  assert_warn "経路 B + オプション付き絶対 cd（cd -P /abs）: deny へ倒さない"
-  run_hook 'cd -L /abs && npm test' "$WTMAIN" false
-  assert_warn "経路 B + cd -L /abs: deny へ倒さない"
+  run_hook "cd -P $WTMAIN && npm test" "$WTMAIN" false
+  assert_silent "経路 B + オプション付き絶対 cd（cd -P /abs）: 無音"
+  run_hook "cd -LP $WTMAIN && npm test" "$WTMAIN" false
+  assert_silent "経路 B + 結合形 cd -LP /abs: 無音"
+  run_hook 'cd -P sub && npm test' "$WTMAIN" false
+  assert_warn "経路 B + オプション付き相対 cd（cd -P sub）: 従来どおり deny へ倒さない"
+  run_hook 'cd -P' "$WTMAIN" false
+  assert_warn "経路 B + オプションのみでパス引数が無い cd -P: 引数なしの cd と同じ扱い（deny へ倒さない）"
   run_hook 'cd - && npm test' "$WTMAIN" false
   assert_warn "経路 B + cd -（OLDPWD）: 相対パス指定ではないので deny へ倒さない"
   run_hook 'cd && npm test' "$WTMAIN" false

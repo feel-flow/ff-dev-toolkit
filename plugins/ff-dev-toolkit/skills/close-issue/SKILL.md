@@ -338,6 +338,8 @@ gh pr view $PR_NUMBER --json body,statusCheckRollup,reviewDecision
 - 「テストがパスすること」系の DoD は diff だけで達成と判定せず、`statusCheckRollup` またはプロジェクトのテストコマンド（例: `npm run quality:local`）の**実行結果**を根拠にする
 - **根拠が取得できない項目は「未達」扱い**にする（証拠なしで達成と判定しない）
 
+**対象 Issue が `bundle`（子 Issue を全件 1 PR で束ねる着手単位）の場合は、照合を bundle 本文と sub-issues の全件へ広げる。** `gh api --paginate repos/<owner>/<repo>/issues/<n>/sub_issues --jq '.[].number'` で子を列挙し、各子の AC を同じ表で判定する。あわせて **PR 本文の `Closes` に子と bundle がすべて列挙されているか**を検査し、欠けている番号があれば追記案（`Closes #<欠けた番号>`）を出す（欠けたまま squash merge すると、その子だけ open で取り残される）。
+
 Issue 本文の「受け入れ条件（AC）」（振る舞い Given-When-Then + Definition of Done）の各項目について、PR の diff・テスト結果・PR body の検証記録を根拠に判定します:
 
 | 判定                 | 意味                                                                                       |

@@ -410,6 +410,7 @@ DDEV / Next.js キャッシュ / Tauri ビルド成果物 など、プロジェ�
 - サマリーは対象 PR について**「リモートブランチを削除したか」を必ず明示する**（`削除した` / `既に存在しない` / `削除していない（保護 / 要確認）`）。`gh pr merge` の成否と混同して取り残しを見逃さないための項目で、完了報告にはこの行をそのまま引用する
 - base を保持していた clean な別 worktree は、cleanup 後も同じ commit の detached 状態で残る。必要なら、その worktree で別ブランチを明示的に checkout して再利用する
 - worktree の削除は clean 確認後でも、**`.gitignore` 対象のファイル（`.env` 等）は clean 扱いのまま消える**。惜しいファイルを worktree の ignored 領域にだけ置く運用は避けること
+- `bundle`（子 Issue を全件 1 PR で束ねた着手単位）の PR でも、渡す番号は **その 1 本の PR** だけでよい。子 Issue は PR 本文の `Closes` でまとめて閉じており、ブランチも worktree も 1 本しか無い
 - `/ace-curate <PR番号>` の **前に** 実行する。ACE はナレッジ更新のみで cleanup はしない。cleanup が完了しないかぎり Git Workflow は終了していない
 - Step 6 の取り残し自動削除が過去のマージ漏れをまとめて回収するため、複数 PR 分の残骸も 1 回の実行で掃除される
 - スクリプトは git のエラーメッセージ文言を照合する箇所を `LC_ALL=C` でロケール固定している

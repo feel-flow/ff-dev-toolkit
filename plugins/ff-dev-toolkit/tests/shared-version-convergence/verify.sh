@@ -136,6 +136,8 @@ contains "$ACE_CURATE" '直 push / PR のどちらでも' "ace-curate は直 pus
 contains "$ACE_REFINE" '直 push / PR のどちらでも' "ace-refine は直 push でも変更文書 claim を更新"
 contains "$ACE_CYCLE" '直 push / PR のどちらでも' "配布 ace-cycle も直 push と PR の交差を閉じる"
 
+source "$SCRIPT_DIR/cases/base-guard-fetch-stderr.sh"
+
 HELPER_FIX="$TMP/claim-helper"
 HELPER_EXTERNAL="$TMP/claim-helper-external"
 mkdir -p "$HELPER_FIX/docs/04-quality" "$HELPER_FIX/.version-claims" "$HELPER_EXTERNAL"

@@ -174,7 +174,7 @@ HOOK_ENTRY="$(jq -r '.hooks.SessionStart[0].hooks[] | select(.command | contains
 if [[ -n "$HOOK_ENTRY" ]] \
   && [[ "$(printf '%s' "$HOOK_ENTRY" | jq -r '.async')" == "true" ]] \
   && [[ "$(printf '%s' "$HOOK_ENTRY" | jq -r '.timeout')" =~ ^[0-9]+$ ]] \
-  && printf '%s' "$HOOK_ENTRY" | jq -r '.command' | grep -Fq '${CLAUDE_PLUGIN_ROOT}/hooks/auto-update-marketplace.sh'; then
+  && grep -Fq '${CLAUDE_PLUGIN_ROOT}/hooks/auto-update-marketplace.sh' <<<"$(jq -r '.command' <<<"$HOOK_ENTRY")"; then
   ok "hooks.json: SessionStart に async: true + timeout 付きで CLAUDE_PLUGIN_ROOT 経由登録されている"
 else
   bad "hooks.json: auto-update-marketplace.sh の登録が不正（async/timeout/経路）"

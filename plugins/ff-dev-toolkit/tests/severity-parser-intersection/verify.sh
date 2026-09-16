@@ -307,6 +307,107 @@ row "スコープ内ゼロ: critical 見出し配下の注記つき指摘なし"
 - 指摘なし（境界条件も確認済み）
 BODY
 
+# Critical 節のゼロ件宣言の後ろへ裏取り・補足の箇条書きを置く形（消費プロジェクトの
+# 実レビューで CRITICAL_BLOCK の偽陽性として実測した入力をそのまま fixture 化）。
+# 同じ critical スコープで一度ゼロを宣言したら、そのスコープの残りの bullet は c3 で
+# 数えない（抑止は次の見出しで解除）。受理側は従来どおり受理（s4 の bullet と
+# 集計行の両方がある）。
+row "スコープ内の裏取りメモ: なし。+ 所見でない bullet 5 行" accept none <<'BODY'
+## Code Review Results
+
+### Critical Issues (信頼度 91-100)
+
+なし。
+
+主要な事実主張は in-repo で裏取りできた:
+- `DOMAIN.md:322` の「新しい録音の開始を拒否する（checkUsageLimits）」は実在し、記述は正確。
+- `tokenEstimator.ts:35-38` の「本番の呼び出し元は無い」は参照 2 件のみで、正確。
+- `HEARING_MIN_PLAN` を明示設定している in-repo の配線は無い。
+- `usageLimitResolver.ts:148,159-160` は実効値まで伝播する。
+- `PLAN_LIMITS` 未知プランは `DEFAULT_PLAN_NAME` fallback へ落ちることを pin している。
+
+### Summary
+- Critical: 0
+BODY
+
+# bullet 形のゼロ宣言（`- なし`）でも同じスコープの後続 bullet を抑止する
+# （散文形のゼロ宣言だけを塞ぐ変異を赤にする）。
+row "スコープ内の裏取りメモ: - なし bullet + 後続 bullet" accept none <<'BODY'
+### Critical Issues
+
+- なし
+- `tokenEstimator.ts:35-38` の「本番の呼び出し元は無い」は参照 2 件のみで、正確。
+
+### Summary
+- Critical: 0
+BODY
+
+# 上の偽陽性を消す変更で偽陰性を作らないこと（ここから 3 行）。ゼロ宣言の無い
+# critical スコープ配下の bullet は、同梱観点テンプレートの各形式で従来どおり発火する。
+row "スコープ内の本物の Critical: [path:line] + 信頼度行" accept fire <<'BODY'
+## Code Review Results
+
+### Critical Issues (信頼度 91-100)
+- [app.txt:2] 認証チェックの欠落
+  - 信頼度: 95
+
+### Summary
+- Critical: 1
+BODY
+
+# acceptance-criteria 観点の Critical テンプレート（`- [Issue 番号 / AC 項目] 未達の
+# 説明` — path:line も信頼度行も持たない）。この観点はブロック名簿側なので、ここが
+# 数えられなくなると本物の Critical が CRITICAL_BLOCK を立てない fail-open になる。
+row "スコープ内の本物の Critical: acceptance-criteria 形（件数行なし）" accept fire <<'BODY'
+### Critical（AC 未達）
+- [AC-3 / GWT-1] ゼロ件宣言の後ろの bullet で CRITICAL_BLOCK が立つ
+  - 根拠: 統合レポートのマーカーと個別結果が食い違う
+BODY
+
+# test-analysis 観点の `### Critical Gaps` 配下の散文 bullet（件数行なし）。
+# 位置参照も信頼度行も持たない指摘形で、従来どおり発火し続けること。
+row "スコープ内の本物の Critical: test-analysis 形（散文 bullet）" accept fire <<'BODY'
+### Critical Gaps (優先度 9-10)
+- 新規ガードの偽陰性を固定するケースが無い
+- 未閉フェンスの分岐に相当するケースが無い
+BODY
+
+# 既知の限界（意図的に固定する）: ゼロ宣言の後ろに本物の所見形を続けて書いた矛盾
+# レポートは、c3 ではゼロ宣言側を信じて数えない。件数行を併記していれば c1 が拾う。
+row "既知の限界: ゼロ宣言の後の所見形 bullet（件数行なし）" accept none <<'BODY'
+### Critical Issues (信頼度 91-100)
+
+なし。
+
+- [app.txt:2] 認証チェックの欠落
+  - 信頼度: 95
+BODY
+
+row "既知の限界の逃げ道: 同じ矛盾レポートでも件数行があれば c1 が拾う" accept fire <<'BODY'
+### Critical Issues (信頼度 91-100)
+
+なし。
+
+- [app.txt:2] 認証チェックの欠落
+  - 信頼度: 95
+
+### Summary
+- Critical: 1
+BODY
+
+# 抑止は次の見出しで解除する: ゼロ宣言のあった Critical 節の後ろに別の critical
+# 見出しが来たら、その配下の bullet は再び数える。
+row "抑止の解除: ゼロ宣言の節の後に別の critical 見出し" accept fire <<'BODY'
+### Critical Issues (信頼度 91-100)
+
+なし。
+
+- 裏取りのメモ（所見ではない）
+
+### CRITICAL Issues (追記分)
+- [app.txt:2] 認証チェックの欠落
+BODY
+
 row "他重大度スコープ: warning 見出し配下の実指摘" accept none <<'BODY'
 ### Warning
 - stderr の破棄が早すぎる（scripts/foo.sh:12）

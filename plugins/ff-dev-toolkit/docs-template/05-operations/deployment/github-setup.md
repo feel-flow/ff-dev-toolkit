@@ -50,8 +50,9 @@ AI Spec-Driven Developmentでは、**GitHubデフォルトラベル + 必要最�
 | `chore`             | 保守タスク（依存更新・ビルド・CI・開発ツール） | #BFD4F2 | -               |
 | `testing`           | テスト整備（テストの追加・修正・検出力強化） | #C2E0C6 | -               |
 | `epic`              | 親 Issue（複数の子 Issue を束ねる大枠）    | #5319E7 | -               |
+| `bundle`            | 着手単位（子 Issue を全件 1 ブランチ・1 PR で束ねて対応する。epic は入れ物、bundle は着手単位） | #CFE8FF | -               |
 
-ラベルは 4 つの軸に分かれます。**バージョニング**（`major` / `minor` / `patch`）、**緊急度**（`hotfix` / `urgent`）、**優先度**（`priority:*`）、**分類の補完**（`follow-up` / `refactor` / `chore` / `testing` / `epic`）です。このうち **優先度と分類の補完**（`priority:*` / `follow-up` / `refactor` / `chore` / `testing` / `epic`）は、リリースノートの生成にもバージョン解決にも関与しません（§2 のサンプル設定で `version-resolver` にも `categories` にも載せないため、`default: patch` のまま・リリースノートには出ません）。緊急度の `hotfix` は例外で、同サンプルでは Fixes カテゴリと patch 解決の両方に載ります。
+ラベルは 4 つの軸に分かれます。**バージョニング**（`major` / `minor` / `patch`）、**緊急度**（`hotfix` / `urgent`）、**優先度**（`priority:*`）、**分類の補完**（`follow-up` / `refactor` / `chore` / `testing` / `epic` / `bundle`）です。このうち **優先度と分類の補完**（`priority:*` / `follow-up` / `refactor` / `chore` / `testing` / `epic` / `bundle`）は、リリースノートの生成にもバージョン解決にも関与しません（§2 のサンプル設定で `version-resolver` にも `categories` にも載せないため、`default: patch` のまま・リリースノートには出ません）。緊急度の `hotfix` は例外で、同サンプルでは Fixes カテゴリと patch 解決の両方に載ります。
 
 `priority:*` と `follow-up` は、ff-dev-toolkit の起票スキルが付与を試みるラベルです（`create-issue` が種別と優先度、`out-of-scope-issue` が加えて `follow-up`）。これらが存在しないリポジトリでは、起票は成功したままラベルだけが省略されます。
 
@@ -59,7 +60,9 @@ AI Spec-Driven Developmentでは、**GitHubデフォルトラベル + 必要最�
 >
 > GitHub ネイティブの sub-issues は親子の階層を表しますが、「**どの Issue を Epic として運用するか**」という意図までは表しません（子をまだ持たない Epic もあれば、偶発的な親子リンクもあります）。`gh issue list --label epic` を成立させるこのラベルがその意図を担い、sub-issues と併用します。
 >
-> 親子関係を運用しないプロジェクトでこの 1 件を作りたくない場合は、**自動セットアップを使わず**、下の「手動セットアップ」から `epic` の行を除いて実行してください。自動セットアップのスクリプトは 14 件固定で除外オプションを持たず、配布実体の定義を直接編集すると定義と文書の照合が赤になります。
+> **`bundle` は `epic` と対で使います**: `epic` が「カテゴリの入れ物」を表すのに対し、`bundle` は「**着手単位**」— 子 Issue（sub-issues）を全件 `--comments` で読み、**1 ブランチ・1 PR・レビュー 1 回**で束ねて対応し、PR 本文に `Closes #子… Closes #bundle` を列挙して 1 回のマージでまとめて閉じる Issue です。`create-issue --bundle` が付与し、`out-of-scope-issue` はテーマの open な bundle を先に探して発見をコメントで追記します（親無し・ラベル無しの単独 Issue を増やさない）。判定はラベルで行うので、`epic` をカテゴリとして使う既存運用と衝突しません。着手・完了の規則は git-workflow.md「bundle（子を全件 1 PR で束ねる着手単位）」を参照。
+>
+> 親子関係を運用しないプロジェクトでこの 2 件を作りたくない場合は、**自動セットアップを使わず**、下の「手動セットアップ」から `epic` / `bundle` の行を除いて実行してください。自動セットアップのスクリプトは 15 件固定で除外オプションを持たず、配布実体の定義を直接編集すると定義と文書の照合が赤になります。
 
 ### 自動セットアップ（推奨）
 
@@ -74,7 +77,7 @@ AI Spec-Driven Developmentでは、**GitHubデフォルトラベル + 必要最�
 
 **スクリプトの動作**:
 
-- 上表のカスタムラベル 14 件のうち**存在しないものだけ**を作成（照合は GitHub のラベル名一意制約に合わせ大文字小文字を区別しない）
+- 上表のカスタムラベル 15 件のうち**存在しないものだけ**を作成（照合は GitHub のラベル名一意制約に合わせ大文字小文字を区別しない）
 - 既存ラベルはスキップとして報告（エラーにしない。色・説明の上書きもしない）
 - GitHubデフォルトラベルはそのまま使用
 - ラベル一覧の照会を信用できない場合（取得失敗・空・取得上限到達）は、**1 件も作成せず**非 0 で終了（「存在しない」と誤断定したまま作成に進まない）
@@ -105,6 +108,7 @@ gh label create "refactor" --description "リファクタリング（機能変�
 gh label create "chore" --description "保守タスク（依存更新・ビルド・CI・開発ツール）" --color "BFD4F2"
 gh label create "testing" --description "テスト整備（テストの追加・修正・検出力強化）" --color "C2E0C6"
 gh label create "epic" --description "親 Issue（複数の子 Issue を束ねる大枠）" --color "5319E7"
+gh label create "bundle" --description "着手単位（子 Issue を全件 1 ブランチ・1 PR で束ねて対応する。epic は入れ物、bundle は着手単位）" --color "CFE8FF"
 ```
 
 ### ラベルの使い分け

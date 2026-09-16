@@ -45,8 +45,8 @@ GITHUB_SETUP="$PLUGIN_ROOT/docs-template/05-operations/deployment/github-setup.m
 # ファイルごとの参照ラベル数（重複除去後）。スキルの参照を増減したときは必ず
 # ここも直す。固定しないと、抽出が壊れて 0 件になっても「全参照が供給済み」で
 # 緑になる。
-EXPECTED_REFS_CREATE=9
-EXPECTED_REFS_SCOPE=12
+EXPECTED_REFS_CREATE=10
+EXPECTED_REFS_SCOPE=13
 # GitHub デフォルトラベルは 9 件で安定している（GitHub 側の仕様）。github-setup.md の
 # 表が黙って縮む・別の表を誤って読む退化をここで検出する。
 EXPECTED_ALLOWLIST=9

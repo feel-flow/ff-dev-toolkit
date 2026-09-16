@@ -167,3 +167,4 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 4. プロジェクトにscripts/aceがある場合、同梱スクリプト群と比較し、形式検査・refine・domain共有module・反映チェッカーと依存の差分を更新する。独自改変は保全し、競合箇所を解決する。未配置なら同梱runnerを使う運用を記録する。古いcheck-entry-formatのままdomain対応済みとしない。
 5. 旧形式がある場合のみStep 3-bのallowlist初期化を行う。既存allowlistの手動拡張やdomainへの一括再分類をしない。形式検査と既存プロジェクトの検証を実行する。既存の不整合は検出結果を報告し、修復と更新を混同しない。
 6. 再実行時は同一契約・参照・カテゴリを重複追加しない。既存指示にACE節がある場合も全体スキップせず、domain契約への参照差分だけ確認する。更新結果、使用入口、未適用差分、検証結果を報告する。
+7. 最後に `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/workflow-doctor.sh" --root "$(git rev-parse --show-toplevel)" --offline` を実行し、導入先の入口規範（CLAUDE.md / AGENTS.md / hook）がスキルの判定順（YAGNI → インライン → 既存 bundle へ追記 → bundle 単位で新規）と矛盾していないかを報告する（正本は `/workflow-doctor`。FAIL は導入先で直してもらう）。

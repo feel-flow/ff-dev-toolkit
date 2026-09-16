@@ -288,3 +288,4 @@ Multi-CLI Agent Orchestrator のセットアップ結果も含めて報告して
 - 各ツール固有のフォーマットや慣習に従うこと
 - 生成後、ファイルの内容をユーザーに確認してもらうこと
 - 生成物が5境界を等価に含むことは `plugins/ff-dev-toolkit/tests/setup-ai-config/verify.sh` で検証できる
+- 生成後に `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/workflow-doctor.sh" --root "$(git rev-parse --show-toplevel)" --offline` を実行し、生成した入口が「スコープ外発見の YAGNI・インライン・Issue 化」の判定順（YAGNI → インライン → 既存 bundle へ追記 → bundle 単位で新規）と矛盾していないことを確認する（正本は `/workflow-doctor`）

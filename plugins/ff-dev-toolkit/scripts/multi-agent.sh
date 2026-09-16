@@ -3960,7 +3960,7 @@ output_lock_exit() {
   remove_run_in_flight
   # 失敗して返った回の理由ファイルはプロセス終了後も残る（削除は
   # current_review_series_id の冒頭にしかない）。stale 読み取りの種を残さない。
-  rm -f "$(review_series_reason_file)" 2>/dev/null || true
+  clear_reason_file "$(review_series_reason_file)"
   release_output_lock || {
     [[ "$rc" -ne 0 ]] || rc=1
   }
@@ -4142,6 +4142,11 @@ review_series_reason_file() {
 review_series_failure_reason() { # stdout: 今回の実行が書いた失敗理由（無ければ空）
   local f line
   f="$(review_series_reason_file)"
+  # 書く側がリンクを掴まない以上、リンクが在る回の中身は自分が書いたものではない
+  # （トークン照合でも落ちるが、他人のファイルを読むこと自体をここで止める）。
+  if [[ -L "$f" ]]; then
+    return 0
+  fi
   [[ -r "$f" ]] || return 0
   line="$(head -n 1 "$f" 2>/dev/null || true)"
   # トークンが一致しない = 今回の実行が書いたものではない（残骸・書き込み失敗）。
@@ -4164,7 +4169,10 @@ record_review_series_failure() { # <理由>
   f="$(review_series_reason_file)"
   # 書けなくても呼び出し側の失敗処理は続ける。ただし黙ると原因別案内が一般文言へ
   # 痕跡なしに退行するので、失敗時は stderr へ 1 行だけ警告する（先行実装と同じ）。
-  if ! printf '%s:%s\n' "$REVIEW_SERIES_REASON_TOKEN" "$reason" > "$f" 2>/dev/null; then
+  # 既存の実体を掴まない書き込みも、アダプタ側と**同じ関数**（adapter-common.sh の
+  # write_reason_file）で行う。2 経路は同じ形の一時ファイルなので、片方だけ直すと
+  # 「同じ方法で解いている」という対応が崩れる。
+  if ! write_reason_file "$f" "${REVIEW_SERIES_REASON_TOKEN}:${reason}"$'\n'; then
     echo "WARNING: could not record the review-series failure reason '${reason}' at ${f}; the guidance below falls back to the generic wording." >&2
   fi
 }
@@ -4172,7 +4180,7 @@ record_review_series_failure() { # <理由>
 current_review_series_id() {
   local branch scope repo symbolic_ref_rc
   # 前回の失敗が残っていると、次の成功を失敗として読む呼び出し側が出る。
-  rm -f "$(review_series_reason_file)" 2>/dev/null || true
+  clear_reason_file "$(review_series_reason_file)"
   # プロジェクトルートが消えた・読めない。残骸ではなくリポジトリ側の問題。
   repo="$(cd "$REPO_ROOT" && pwd -P)" || { record_review_series_failure repo-root; return 1; }
   if branch="$(git symbolic-ref --quiet HEAD)"; then
@@ -6631,7 +6639,7 @@ main() {
   show_plan
 
   # Validate TIMEOUT
-  if ! echo "$TIMEOUT" | grep -qE '^[0-9]+$' || [[ "$TIMEOUT" -eq 0 ]]; then
+  if [[ ! "$TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$TIMEOUT" -eq 0 ]]; then
     echo "ERROR: --timeout must be a positive integer, got: '${TIMEOUT}'" >&2
     exit 1
   fi

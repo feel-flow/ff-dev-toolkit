@@ -186,6 +186,7 @@ AI 工数の目安（**実測由来**。上の人間工数を圧縮率で割っ�
 - [ ] **具体的か**: 「〜が動くこと」ではなく「〜の場合に〜が返ること」のように具体的
 - [ ] **検証可能か**: テストで確認できる表現になっている
 - [ ] **単一責務か**: 1つの Issue に複数の独立した機能が混在していない
+- [ ] **1 Issue = 1 PR で閉じる単位か / 親を付けたか**: 1 本の PR で閉じられる大きさで書かれている（複数の独立した検証を要するなら `--bundle` で束ね、子は sub-issue にする）。テーマの `bundle` / カテゴリ Epic が open なら `--parent` で紐付ける（親無し・ラベル無しの単独 Issue を作らない。docs へ数行足すだけの発見は単独 Issue にせず bundle へコメント追記する）
 - [ ] **曖昧な表現がないか**: 「適切に」「正しく」「きちんと」等の曖昧語を排除
 - [ ] **ストーリーが埋まっているか**: ペルソナ/状況・動機・価値/結果のいずれも空欄でない
 - [ ] **AC が GWT+DoD 形式か**: 「振る舞い（Given-When-Then）」と「Definition of Done」の 2 ブロックで記述されている
@@ -240,6 +241,15 @@ AI 工数の目安（**実測由来**。上の人間工数を圧縮率で割っ�
 | priority | 手順 3 のストーリーと背景から読み取れる影響範囲・緊急度を、下の基準に当てる | `priority:critical` / `priority:high` / `priority:medium` / `priority:low` |
 
 `follow-up` 系のラベルは付けない。本スキルは**着手前の起票ゲート**であって、PR レビュー・実装から派生した発見の記録ではない（そちらは `out-of-scope-issue` が `follow-up` を付けて起票する）。
+
+#### `--bundle` と `--parent <n>`（着手単位と親の指定）
+
+| 引数 | 効果 |
+|------|------|
+| `--bundle` | 付与候補に `bundle` を足し、表題に `bundle:` 接頭辞を付ける（実在確認はステップ 2 と同じ verify-then-skip）。`bundle` は**着手単位**のラベル — 子 Issue（sub-issues）を全件 1 ブランチ・1 PR で束ねて対応する Issue に付ける。`epic`（カテゴリの入れ物）とは別物で、`gh issue list --label bundle --state open` が着手候補の一覧になる |
+| `--parent <n>` | 起票直後に `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo "$expected_repo" <n> <発行番号>` で親の sub-issue にする（`gh api -f sub_issue_id=` をその場で組み立てない — 型付き `-F` の綴りはヘルパが固定する）。親は `epic` でも `bundle` でもよい。紐付けの失敗は起票の失敗ではないが、完了報告に「親: 未紐付け（理由）」を残す |
+
+**親無し・ラベル無しの単独 Issue を既定で作らない。** テーマの `bundle` が open なら本スキルで新規に立てず、`out-of-scope-issue` §3.1 の統合（bundle へのコメント追記）へ回す。bundle を新設するときは `--bundle` を付け、カテゴリ Epic があれば `--parent` で紐付ける。
 
 #### priority の判定基準
 

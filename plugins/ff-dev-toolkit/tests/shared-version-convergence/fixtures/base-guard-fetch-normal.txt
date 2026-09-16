@@ -1,0 +1,5 @@
+if ! _fetch_err="$(git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" 2>&1 >/dev/null)"; then
+  _fetch_err="$(sed -E 's#(://)[^/[:space:]]*@#\1***@#g' <<<"${_fetch_err:-（原因は出力されませんでした）}")"
+  echo "origin/${default_branch} を取得できません（<REASON>）: ${_fetch_err}" >&2
+  exit 1
+fi

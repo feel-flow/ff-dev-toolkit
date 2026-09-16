@@ -123,7 +123,7 @@ fi
 SubAgent への指示テンプレート:
 
 ```text
-マージ済み PR #<PR番号> または Issue #<Issue番号> に紐づく明示指定資料から、ACE Playbook の候補となる知見を抽出してください。
+マージ済み PR #<PR番号> または Issue #<Issue番号> に紐づく明示指定資料から、ACE Playbook の候補となる知見を抽出してください（`bundle` — 子 Issue を全件 1 PR で束ねた着手単位 — の PR も対象は **その 1 本の PR** で、子 Issue ごとに分けて回さない）。
 read-only で実行します: 編集・ファイル作成・ビルド・テスト実行・git 書き込みを禁止します。
 読み取り（gh pr view / gh pr diff / cat / grep 相当）のみ使用してください。
 このタスクは自分で遂行し、追加のエージェントへ委譲しないでください。
@@ -310,8 +310,9 @@ default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || {
 [[ "$default_ref" == origin/* ]] || { echo "default branch ref が不正です: $default_ref" >&2; exit 1; }
 default_branch="${default_ref#origin/}"
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] || { echo "PLAYBOOK 追記前に作業ツリーを clean にしてください" >&2; exit 1; }
-if ! git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" >/dev/null 2>&1; then
-  echo "origin/${default_branch} を取得できません（stale 値で版を確定しない。認証・通信・remote 設定を確認）" >&2
+if ! _fetch_err="$(git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" 2>&1 >/dev/null)"; then
+  _fetch_err="$(sed -E 's#(://)[^/[:space:]]*@#\1***@#g' <<<"${_fetch_err:-（原因は出力されませんでした）}")"
+  echo "origin/${default_branch} を取得できません（stale 値で版を確定しない。認証・通信・remote 設定を確認）: ${_fetch_err}" >&2
   exit 1
 fi
 git rev-parse --verify --quiet "refs/remotes/origin/${default_branch}" >/dev/null || {
@@ -323,6 +324,8 @@ git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
   exit 1
 }
 ```
+
+fetch が失敗した回は、停止メッセージの末尾へ git が出した原因をそのまま付ける（「認証・通信・remote 設定のどれか」を利用者が切り分け直さずに済ませるため）。git の stderr は remote URL を含みうるので、表示の前に `https://user:token@host/` 形の資格情報部だけを `***` へ伏せる。
 
 remote が先行していた場合は**追記前に** `git pull --ff-only`（直 push フロー）または `git rebase origin/<default-branch>`（専用ブランチ）で取り込む。fresh read は同時 read を防がない。直 push の最終境界は手順 5 の non-fast-forward である。`.version-claims` contract があるリポジトリでは、**直 push / PR のどちらでも** PLAYBOOK.md と同じ commit で `.version-claims/docs/08-knowledge/PLAYBOOK.md.claim` を `document` / `version` / `change` の3行だけへ更新する。version 不変のカウンター更新でも `change` は更新するため、直 push と進行中 PR の交差も claim conflict で止まる。`change` は同梱 `scripts/update-version-claim.sh` が最新 base/current の blob ID から Git 設定非依存で生成する。merge-ready 前の `origin/<default-branch>` 祖先検査後に同じ文書の別更新が先行しても、claim の content conflict で停止させ、最新 base から version / `ace_entry_count` / Changelog / claim を再生成する（feature branch 自身への push は default branch の CAS ではなく、claim の片寄せ・削除で競合を解消しない）。
 
