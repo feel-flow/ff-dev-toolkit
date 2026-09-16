@@ -38,6 +38,15 @@
 #           発火条件から USING_DEFAULT_SCRIPTS を落とすと case 37 の partial-mcp が赤。
 #           （位置と適用範囲は述語より退行しやすいので、全 3 方向を実測で固定してある）
 #
+# 変異検出（case 45 / suite 単位の経過秒）:
+#           elapsed-sec 行を出さなくすると 45-A / 45-B が赤。
+#           未実行（missing / not-executable）を elapsed-sec へ混ぜると 45-A が赤。
+#           1 秒かかる suite を 0 秒で出すと 45-B / 45-C が赤。
+#           合成入力の降順ソートを外す・0 秒を残す・上限 8 を外すと 45-F が赤。
+#           計測行の echo または ff_emit_elapsed 呼び出しを ff-summary-head-block の
+#           内側へ移すと 45-E が赤。
+#           date 不能をテスト失敗へ倒すと 45-D が赤。
+#
 # 変異検出（case 42 / 鮮度バケット）:
 #           鮮度マーカーの実体を改名すると suite 冒頭のマーカー契約検査が赤（fixture は照合側
 #           しか固定できないので、emit 側の drift はここでしか捕まらない）。
@@ -1719,7 +1728,7 @@ echo "== case 30: 並列実行が逐次と同じ結果・同じ並びを出し�
 # 混在 fixture（fail / pass / skip / not-executable / missing）を同じ一覧で 2 回走らせ、逐次と並列の
 # 出力を丸ごと突き合わせる。個別のアサートを並べる代わりに全文比較にするのは、**後から suite の
 # 種別が増えても書き忘れが差分として出る**ため。比較の前に落とすのは並列実行の告知行と空行だけ。
-_norm_run_out() { printf '%s\n' "$1" | grep -v '^🧵 ' | grep -v '^[[:space:]]*$' || true; }
+_norm_run_out() { printf '%s\n' "$1" | grep -v '^🧵 ' | grep -v '^elapsed-sec:' | grep -v '^slowest:' | grep -v '^[[:space:]]*$' || true; }
 
 RUN_JOBS=1 run_runner "${MIXED_FIXTURES[@]}"
 _par_seq_rc="$RUN_RC"
@@ -2924,6 +2933,136 @@ if [ "$NT_SELFTEST_OK" -eq 1 ]; then
       rm -rf "$_nt_fx"
     fi
   fi
+fi
+
+echo ""
+echo "== case 45: suite 単位の経過秒 =="
+
+# 45-A: 実行した suite だけが登録順で elapsed-sec に載り、未実行は載せない。
+# 秒の値は date +%s の整数差なので、即終了 fixture でも秒境界で 1 になりうる。
+# 集合と並びだけを固定し、0 秒前提の完全一致は置かない。
+RUN_JOBS=1 run_runner "${MIXED_FIXTURES[@]}"
+expect_has '^elapsed-sec: fail=[0-9][0-9]* pass=[0-9][0-9]* skip=[0-9][0-9]*$' \
+  "elapsed-sec は実行した suite だけを登録順で出す（未実行は混ぜない）"
+expect_lacks 'not-executable=' "実行ビットの無い suite を elapsed-sec に載せない"
+expect_lacks 'missing=' "存在しない suite を elapsed-sec に載せない"
+
+# 45-B: 1 秒かかる suite は逐次でも 1 以上。
+RUN_JOBS=1 run_runner "$FIXTURES/slow-a/verify.sh"
+expect_rc 0 "1 秒かかる suite の逐次実行は rc=0"
+_el_sec="$(printf '%s\n' "$RUN_OUT" | awk '/^elapsed-sec: / {
+  for (i = 2; i <= NF; i++) if ($i ~ /^slow-a=/) { split($i, a, "="); print a[2] }
+}')"
+if [ -n "$_el_sec" ] && [ "$_el_sec" -ge 1 ] 2>/dev/null; then
+  ok "逐次実行の elapsed-sec が slow-a を 1 秒以上で出す（${_el_sec}s）"
+else
+  bad "逐次実行の elapsed-sec が slow-a を 1 秒以上で出さない（値=${_el_sec:-空}）"
+fi
+expect_has '^slowest: slow-a=' "1 秒以上の suite がある回は slowest に載せる"
+
+# 45-C: 並列経路でも 1 秒以上を出し、4 本すべてが slowest に載る（同時実行数より多い本数）。
+RUN_JOBS=2 run_runner \
+  "$FIXTURES/slow-a/verify.sh" "$FIXTURES/slow-b/verify.sh" \
+  "$FIXTURES/slow-c/verify.sh" "$FIXTURES/slow-d/verify.sh"
+expect_rc 0 "並列実行で 4 本すべてが pass なら rc=0（経過秒の計測後も）"
+expect_has '^elapsed-sec: slow-a=' "並列経路でも elapsed-sec が出る"
+_el_all=1
+for _el_name in slow-a slow-b slow-c slow-d; do
+  _el_sec="$(printf '%s\n' "$RUN_OUT" | awk -v n="${_el_name}=" '/^elapsed-sec: / {
+    for (i = 2; i <= NF; i++) if (index($i, n) == 1) { split($i, a, "="); print a[2] }
+  }')"
+  if [ -z "$_el_sec" ] || [ "$_el_sec" -lt 1 ] 2>/dev/null; then
+    _el_all=0
+  fi
+done
+if [ "$_el_all" -eq 1 ]; then
+  ok "並列実行の elapsed-sec が 4 本すべてを 1 秒以上で出す"
+else
+  bad "並列実行の elapsed-sec が 4 本を 1 秒以上で出さない"
+  printf '%s\n' "$RUN_OUT" | awk '/^elapsed-sec:|^slowest:/{print}' | sed 's/^/    | /' >&2
+fi
+expect_has '^slowest: ' "1 秒以上の suite が複数ある回は slowest 行を出す"
+_el_slowest="$(printf '%s\n' "$RUN_OUT" | awk '/^slowest: /{print; exit}')"
+_el_slowest_ok=1
+for _el_name in slow-a slow-b slow-c slow-d; do
+  case "$_el_slowest" in
+    *"${_el_name}="*) ;;
+    *) _el_slowest_ok=0 ;;
+  esac
+done
+if [ "$_el_slowest_ok" -eq 1 ]; then
+  ok "slowest に 1 秒の 4 本がすべて載る（上限 8）"
+else
+  bad "slowest に 4 本が揃っていない: ${_el_slowest}"
+fi
+
+# 45-D: 時計が取れない環境では計測行を出さず、終了コードは変えない。
+if _el_stub="$(mktemp -d "${TMPDIR:-/tmp}/ff-elapsed-date.XXXXXX" 2>&1)" \
+  && [ -d "$_el_stub" ]; then
+  printf '%s\n' '#!/bin/sh' 'exit 1' > "$_el_stub/date"
+  chmod +x "$_el_stub/date"
+  _el_old_path="$PATH"
+  PATH="${_el_stub}:${PATH}"
+  RUN_JOBS=1 run_runner "$FIXTURES/pass/verify.sh"
+  PATH="$_el_old_path"
+  expect_rc 0 "時計が取れなくても実行の終了コードは変えない"
+  expect_has '^suites: total=1 run=1 passed=1 failed=0 skipped=0 not-run=0$' \
+    "時計不能でも既存のサマリー行は出す"
+  expect_lacks '^elapsed-sec:' "時計が取れない回は elapsed-sec を出さない"
+  expect_lacks '^slowest:' "時計が取れない回は slowest を出さない"
+  rm -rf "$_el_stub"
+else
+  bad "case 45-D: 一時領域を作成できず、時計不能の経路を実測できません: ${_el_stub}"
+fi
+
+# 45-E: 計測行は指紋ブロックの外。内側へ移すと「サマリー行が出た ⟹ 指紋照合」の
+# 構造的保証に計測の増減が割り込む。
+_el_in_block="$(awk '
+  /^# >>> ff-summary-head-block/ { grab = 1 }
+  /^# <<< ff-summary-head-block/ { grab = 0 }
+  grab && /elapsed-sec:|slowest:|ff_emit_elapsed/ { n++ }
+  END { print n + 0 }
+' "$RUNNER")"
+if [ "$_el_in_block" -eq 0 ]; then
+  ok "elapsed-sec / slowest / ff_emit_elapsed は ff-summary-head-block の外にある"
+else
+  bad "計測行または ff_emit_elapsed が指紋ブロックの内側にある（${_el_in_block} 件）"
+fi
+if [ "$(LC_ALL=C grep -c 'echo "elapsed-sec:' "$RUNNER")" -eq 1 ]; then
+  ok "elapsed-sec の echo はランナーに 1 箇所だけある"
+else
+  bad "elapsed-sec の echo が 1 箇所ではない"
+fi
+
+# 45-F: 降順・0 秒除外・上限 8 を壁時計なしの合成入力で実測する。
+# 9 件が 1 秒以上 + 0 秒 1 件。上限を外すと 9 件載り、ソートを外すと先頭が a=1、
+# 0 秒除外を外すと c=0 が混ざる。
+if _el_fx_out="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL \
+  FF_RUN_ALL_ELAPSED_FIXTURE='a=1 b=9 c=0 d=3 e=8 f=2 g=7 h=4 i=6 j=5' \
+  FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" \
+  "$FIXTURES/pass/verify.sh" 2>&1)"; then
+  _el_fx_rc=0
+else
+  _el_fx_rc=$?
+fi
+if [ "$_el_fx_rc" -eq 0 ]; then
+  ok "合成 elapsed 入力の実行が rc=0"
+else
+  bad "合成 elapsed 入力の実行が非 0（rc=${_el_fx_rc}）"
+fi
+if [ "$(printf '%s\n' "$_el_fx_out" | awk '/^elapsed-sec: /{print; exit}')" = \
+  "elapsed-sec: a=1 b=9 c=0 d=3 e=8 f=2 g=7 h=4 i=6 j=5" ]; then
+  ok "合成入力の elapsed-sec は渡した順のまま出す"
+else
+  bad "合成入力の elapsed-sec が渡した順ではない"
+  printf '%s\n' "$_el_fx_out" | awk '/^elapsed-sec:|^slowest:/{print}' | sed 's/^/    | /' >&2
+fi
+if [ "$(printf '%s\n' "$_el_fx_out" | awk '/^slowest: /{print; exit}')" = \
+  "slowest: b=9 e=8 g=7 i=6 j=5 h=4 d=3 f=2" ]; then
+  ok "slowest は 1 秒以上を降順・最大 8 件・0 秒は載せない（a=1 と c=0 が落ちる）"
+else
+  bad "slowest の降順・上限 8・0 秒除外が崩れている"
+  printf '%s\n' "$_el_fx_out" | awk '/^elapsed-sec:|^slowest:/{print}' | sed 's/^/    | /' >&2
 fi
 
 rm -f "$RUN_GATE_RECORD"

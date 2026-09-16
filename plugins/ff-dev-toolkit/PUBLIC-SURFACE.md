@@ -80,6 +80,7 @@
 - `PreToolUse :: Bash :: hooks/guard-background-cwd.sh`
 - `PreToolUse :: Bash :: hooks/guard-checkout-restore.sh`
 - `PreToolUse :: Bash :: hooks/guard-effort-actual.sh`
+- `PreToolUse :: Bash :: hooks/guard-exit-code.sh`
 - `PreToolUse :: Bash :: hooks/guard-issue-labels.sh`
 - `PreToolUse :: Bash :: hooks/guard-pr-followup.sh`
 - `PreToolUse :: Bash :: hooks/guard-sub-issue-id.sh`
@@ -144,6 +145,7 @@
 - `FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD`
+- `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD`
@@ -153,6 +155,7 @@
 - `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK`
 - `FF_DISCARD_UNCOMMITTED`
 - `FF_EFFORT_ACTUAL_ACK`
+- `FF_EXIT_CODE_ACK`
 - `FF_SUB_ISSUE_ID_ACK`
 - `FF_REVIEW_LOCK_OVERRIDE`
 
@@ -262,6 +265,7 @@
 - `FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS`
 - `FF_RUN_ALL_CHECK_REGISTRATION`
 - `FF_RUN_ALL_DUMP_DECLARATIONS`
+- `FF_RUN_ALL_ELAPSED_FIXTURE`
 - `FF_RUN_ALL_FAST`
 - `FF_RUN_ALL_JOBS`
 - `FF_RUN_ALL_MCP_DIR`

@@ -189,8 +189,11 @@ FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh
 ## メンテナンス
 
 - サマリーの文言（`suites: total=… run=…` / `✗ failed:` / `○ skipped (…)` / `✗ not run (…)` /
-  `✗ 検証できた suite がありません…`）を変えたら、`verify.sh` の完全一致パターンも追随させること。
-  数の内訳を完全一致で固定しているのは、「未実行があるのに success に見える」状態を再び通さないため。
+  `✗ 検証できた suite がありません…` / `elapsed-sec:` / `slowest:`）を変えたら、`verify.sh` の
+  完全一致パターンも追随させること。数の内訳を完全一致で固定しているのは、「未実行があるのに
+  success に見える」状態を再び通さないため。`elapsed-sec:` は実行した suite だけを登録順で出し、
+  未実行には秒を付けない。`slowest:` は 1 秒以上の suite があるときだけ、大きい順・最大 8 件。
+  両行は `ff_emit_summary_head` の外（指紋ブロックの後）に置く。
 - 検査総数ガード（末尾の `EXPECTED_CHECKS` 会計）は Issue #873 で廃止した。ケースを増減しても
   期待値の更新は不要になった（針の黙った消失の検出は週次 CI での selftest 実行とレビューが担う。
   再導入はしない — TESTING.md §「検査総数ガードは廃止した」）。
@@ -216,6 +219,9 @@ FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh
   | 入れ子の引数なし実行ガードを外す | case 8（※ ガードを完全に削ると無限再帰するので、`exit 1` を `exit 0` にする形で試すこと） |
   | 任意の非コメント行へ `printf ... \| grep -q` を再追加する | case 10 |
   | 走行中の自己書き換え検査（起動時の指紋照合）を外す・サマリー行の出力と別の関数へ分ける | case 29 |
+  | elapsed-sec を出さない / 未実行を混ぜる | case 45-A |
+  | 合成入力の降順・0 秒除外・上限 8 を外す | case 45-F |
+  | 計測行を指紋ブロックの内側へ移す | case 45-E |
   | `tests/lib/exit-code-guard.sh` の `is_pipe` を常に 0 へ倒す（パイプ終端を認識しなくする） | case 35 |
   | 同梱 MCP 依存ガードの発火条件を常に偽へ倒す | case 41-A |
   | ガードの述語から `mcp/package.json` の実在を落とす | 既定一覧を回す case 26 / 39 / 40 と case 41（fixture 複製は mcp を持たないため巻き添えで止まる） |

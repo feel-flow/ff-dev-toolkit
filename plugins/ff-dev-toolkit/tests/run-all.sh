@@ -110,6 +110,14 @@
 # 経由で食って «間違った理由で赤い» を作る。数値の実測は Issue #595 のコメントに残す
 # — ここへ書くと suite の増減で静かに腐る（ADR-034 のヘッダーが辿った形）。
 #
+# ── 経過秒（elapsed-sec / slowest）──────────────────────────────────────────
+# 実行した suite のプロセス経過を整数秒でサマリーへ出す。数値は文書へ書かない
+# （suite の増減で腐る）。並列実行の秒は負荷を含むプロセス時間であり、孤立時間では
+# ない。未実行（missing / not executable / process gone）は載せない。時計が取れない
+# 環境では両行を出さず、終了コードは変えない。出力は ff_emit_summary_head の外
+# （指紋ブロックの後）に置く — サマリー行の「出た ⟹ 指紋照合を通った」契約を
+# 計測行の増減で壊さないため。
+#
 # 並列実行は spool ディレクトリ（mktemp -d）を要求するため、下の read-only 制約から
 # 外れる。**制約は逐次実行の経路で維持する** — 一時領域を確保できない環境では 1 行
 # 警告して逐次へ退避し、skip も失敗もしない（実行対象と結果は同じで所要時間だけ伸びる）。
@@ -461,6 +469,16 @@ else
     # 同梱ヘルパを案内する。対象を -f 全般へ広げない判断（query / base /
     # per_page は素通し）も stdin JSON fixture で固定する。
     "$SCRIPT_DIR/guard-sub-issue-id/verify.sh"
+    # PreToolUse（Bash）の終了コード誤読・握り潰しガード
+    # （hooks/guard-exit-code.sh、観測台帳 OBS-003 の対策）。静的検出器
+    # （tests/lib/exit-code-guard.sh）はファイルしか走査できず、エージェントがその場で
+    # 組み立てた Bash 呼び出しに原理的に届かない。その走査面だけを足した hook が、
+    # 実測された事故形（ゲート起動を診断で終端する形）を deny し、単体起動・`&&` 連結・
+    # 推奨形・引用符の中の同型・heredoc 本文を素通しすることを stdin JSON fixture で
+    # 固定する。検出器を読み込めないときの fail-closed と、その面が候補コマンドに
+    # 限られること（検出器が壊れても復旧作業ができる）も併せて見る。判定を複製して
+    # いないことは、検出器スタブへ向けたコピーで verdict が追随することで実測する。
+    "$SCRIPT_DIR/guard-exit-code/verify.sh"
     # 上のガードが案内する呼び出し口（scripts/link-sub-issues.sh）。
     # POST は `-F sub_issue_id=` 固定、失敗時は HTTP 本文を出し 1 件目で止まる。
     # gh は stub に解決させ、ネットワークには出ない。
@@ -1680,6 +1698,9 @@ NOT_RUN=()
 STALE=()
 CHECKS_SKIPPED_TOTAL=0
 CHECKS_SKIPPED=()
+# 実行した suite の経過秒。要素は `名前=整数秒`。未実行と時計不能は載せない。
+# bash 3.2 に連想配列が無いので登録順の 1 配列に畳む。
+ELAPSED_ENTRIES=()
 
 # ── 実行経路の共有部（Issue #595）────────────────────────────────────────────
 # 「何を走らせ、どう数えるか」は逐次・並列で 1 か所へ集約する。並列化で変わるのは
@@ -1697,6 +1718,79 @@ ff_suite_kind() { # <script> -> run|missing|notexec
     printf 'run\n'
   fi
 }
+
+# 整数 Unix 秒。取れなければ非 0（計測行を出さない側へ倒す。終了コードは変えない）。
+ff_epoch() {
+  local n
+  n="$(date +%s 2>/dev/null)" || return 1
+  case "$n" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$n"
+}
+
+ff_elapsed_between() { # <t0> <t1> -> stdout 秒。いずれかが非整数なら非 0
+  local t0="$1" t1="$2" d
+  case "$t0" in ''|*[!0-9]*) return 1 ;; esac
+  case "$t1" in ''|*[!0-9]*) return 1 ;; esac
+  d=$((t1 - t0))
+  if [[ "$d" -lt 0 ]]; then
+    d=0
+  fi
+  printf '%s\n' "$d"
+}
+
+ff_record_elapsed() { # <name> <seconds>
+  ELAPSED_ENTRIES+=("$1=$2")
+}
+
+# 指紋ブロックの外で呼ぶ。here-doc / head は使わない（read-only 制約と SIGPIPE 反転）。
+ff_emit_elapsed() {
+  local slowest
+  [[ ${#ELAPSED_ENTRIES[@]} -gt 0 ]] || return 0
+  echo "elapsed-sec: ${ELAPSED_ENTRIES[*]}"
+  slowest="$(printf '%s\n' "${ELAPSED_ENTRIES[@]}" | awk -F= '
+    $2+0 >= 1 {
+      n++
+      sec[n] = $2 + 0
+      ent[n] = $0
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        for (j = i + 1; j <= n; j++) {
+          if (sec[j] > sec[i]) {
+            ts = sec[i]; te = ent[i]
+            sec[i] = sec[j]; ent[i] = ent[j]
+            sec[j] = ts; ent[j] = te
+          }
+        }
+      }
+      lim = (n < 8) ? n : 8
+      out = ""
+      for (i = 1; i <= lim; i++) {
+        out = out (i == 1 ? "" : " ") ent[i]
+      }
+      if (out != "") print out
+    }
+  ')"
+  [[ -n "$slowest" ]] || return 0
+  echo "slowest: ${slowest}"
+}
+
+# verify.sh case 45-F 専用。合成の name=sec を渡してソート・上限・0 秒除外を壁時計なしで
+# 実測する。本番の既定実行では未設定のまま。
+if [[ -n "${FF_RUN_ALL_ELAPSED_FIXTURE:-}" ]]; then
+  ELAPSED_ENTRIES=()
+  set -f
+  for _e in ${FF_RUN_ALL_ELAPSED_FIXTURE}; do
+    case "$_e" in
+      *=*) ELAPSED_ENTRIES+=("$_e") ;;
+    esac
+  done
+  set +f
+  ff_emit_elapsed
+  exit 0
+fi
 
 ff_consume() { # <name> <kind: run|missing|notexec|gone> <script> <rc>。本文は $FF_SUITE_OUTPUT
   local name="$1" kind="$2" script="$3" suite_rc="$4"
@@ -1791,7 +1885,7 @@ ff_consume() { # <name> <kind: run|missing|notexec|gone> <script> <rc>。本文�
 
 # 逐次実行。一時領域を要求しない経路で、read-only 環境の退避先でもある。
 ff_run_sequential() {
-  local script name kind suite_rc
+  local script name kind suite_rc _t0 _t1 _elapsed
   for script in "${SCRIPTS[@]}"; do
     name="$(basename "$(dirname "$script")")"
     kind="$(ff_suite_kind "$script")"
@@ -1801,10 +1895,15 @@ ff_run_sequential() {
       # 出力を変数へ受けるのは skip マーカー判定のため。command substitution は
       # パイプで完結し一時ファイルを作らないので read-only 環境でも動く。判定後に
       # そのまま全量を出力するので、診断情報は失敗時も成功時も欠けない。
+      _t0="$(ff_epoch)" || _t0=""
       if FF_SUITE_OUTPUT="$(bash "$script" 2>&1)"; then
         suite_rc=0
       else
         suite_rc=$?
+      fi
+      _t1="$(ff_epoch)" || _t1=""
+      if _elapsed="$(ff_elapsed_between "$_t0" "$_t1")"; then
+        ff_record_elapsed "$name" "$_elapsed"
       fi
     fi
     ff_consume "$name" "$kind" "$script" "$suite_rc"
@@ -1814,7 +1913,7 @@ ff_run_sequential() {
 # 並列実行。${SPOOL}（mktemp -d 済み）を要求する。
 ff_run_parallel() {
   local total="${#SCRIPTS[@]}"
-  local i next_launch=0 next_print=0 running=0 suite_rc
+  local i next_launch=0 next_print=0 running=0 suite_rc _elapsed
   # 配列名の DONE / PIDS を避けるのは shellcheck 対策。`DONE[$i]=1` が文頭に来ると
   # `done` キーワードの大文字違い（SC1081）+ `[` の前のスペース欠落（SC1069）と読まれる。
   local -a SUITE_KIND SUITE_PID SUITE_DONE
@@ -1839,8 +1938,15 @@ ff_run_parallel() {
       # なしに読めるようにするため（部分的に書かれた出力を完成品として読まない）。
       (
         set +e
+        _t0="$(ff_epoch)"
         bash "${SCRIPTS[$i]}" >"$SPOOL/$i.out" 2>&1
-        printf '%s\n' "$?" >"$SPOOL/$i.rc.part"
+        _rc=$?
+        _t1="$(ff_epoch)"
+        if _elapsed="$(ff_elapsed_between "$_t0" "$_t1")"; then
+          printf '%s\n' "$_elapsed" >"$SPOOL/$i.elapsed.part"
+          mv -f "$SPOOL/$i.elapsed.part" "$SPOOL/$i.elapsed"
+        fi
+        printf '%s\n' "$_rc" >"$SPOOL/$i.rc.part"
         mv -f "$SPOOL/$i.rc.part" "$SPOOL/$i.rc"
       ) &
       SUITE_PID[$i]=$!
@@ -1877,7 +1983,13 @@ ff_run_parallel() {
         # 残りの suite が未起動で消える（ff_consume の unreadable 分岐の理由）。
         if suite_rc="$(cat "$SPOOL/$i.rc" 2>/dev/null)" \
           && FF_SUITE_OUTPUT="$(cat "$SPOOL/$i.out" 2>/dev/null)"; then
-          rm -f "$SPOOL/$i.out" "$SPOOL/$i.rc" 2>/dev/null || true
+          if _elapsed="$(cat "$SPOOL/$i.elapsed" 2>/dev/null)"; then
+            case "$_elapsed" in
+              ''|*[!0-9]*) ;;
+              *) ff_record_elapsed "$(basename "$(dirname "${SCRIPTS[$i]}")")" "$_elapsed" ;;
+            esac
+          fi
+          rm -f "$SPOOL/$i.out" "$SPOOL/$i.rc" "$SPOOL/$i.elapsed" 2>/dev/null || true
         else
           SUITE_KIND[$i]=unreadable
           suite_rc=0
@@ -2010,6 +2122,7 @@ fi
 # 「実行した suite 数」と「失敗/スキップ/未実行の suite 名」を必ず出す。総数と
 # 実行数が食い違ったまま success を名乗らないことが、本 Issue の masking 対策の本体。
 ff_emit_summary_head
+ff_emit_elapsed
 if [[ ${#CHECKS_SKIPPED[@]} -gt 0 ]]; then
   echo "○ checks skipped (suite内の部分skip。suite-level skippedとは別勘定): ${CHECKS_SKIPPED[*]}"
 fi

@@ -151,7 +151,7 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 
 ### Bash ガード（PreToolUse）
 
-プラグインをインストールすると、Bash ツールの実行前に 6 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。
+プラグインをインストールすると、Bash ツールの実行前に 7 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
 
 **未コミット変更ガード（`guard-checkout-restore.sh`）** — 未コミット変更のあるファイルへの `git checkout [--] <path>` / `git restore <path>` を検出し、変更消失の前に警告する。警告文は代替手段（`cp` バックアップ / `git stash push -- <file>` → `pop`）を案内する。ブランチ切り替え（`git checkout <branch>` / `git switch`）、clean・untracked なファイルへの復元、`git restore --staged`（worktree 非破壊）では発火しない。
 
@@ -187,6 +187,18 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 - 通し方: `-F sub_issue_id=` に直す、または同梱の `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo OWNER/REPO <parent> <child>...` を使う。意図的に文字列で送る場合は対象コマンドの先頭に `FF_SUB_ISSUE_ID_ACK=1` を付ける
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1`
 - 既知の限界: コマンド位置に無い gh（echo の文字列）、変数展開で組み立てるフラグ名、heredoc 本文では判定できず素通しする（fail-open）
+
+**終了コード誤読ガード（`guard-exit-code.sh`）** — 実行しようとしている Bash コマンドが、測りたい処理の終了コードを運ばない形になっているときに停止する。検出する形は 3 つで、判定は同梱の静的検出器 `tests/lib/exit-code-guard.sh` をそのまま再利用する（この hook は判定規則を持たず、**走査面だけを足す**）。
+
+- `gate-exit-swallowed`: 全件ゲートの起動を含む行が診断・出力整形で終端している（`bash …/run-all.sh > log 2>&1; echo "rc=$?"` / `… | tail -20` / `… || true` / `…; exit 0`）。プロセス全体の終了コードが末尾コマンドのものになり、バックグラウンド実行の完了通知や CI ステップが「赤いゲートを緑」と断定する
+- `pipe-exit-read`: `head` / `tail` / `less` / `more` / `cat` / `tee` / `wc` で終わるパイプラインの直後で `$?` を読んでいる（読めるのはフィルタの終了コード）
+- `pipestatus`: `PIPESTATUS` を参照している（zsh では空へ展開されて機能しない）
+- なぜ hook が要るか: 静的検出器の入口は 3 つとも**ファイルを入力に取る**ため、エージェントがその場で組み立てた Bash ツール呼び出しには原理的に届かない。同じ形が実行時に再発するのはこの走査面の穴による
+- 通し方: 診断を出したうえで `rc=$?` → `exit $rc` まで書いて伝播させる。停止メッセージは、切り出しが一意に決まる形では**検出した実コマンドを書き換えた案**を出す（決まらない形では一般形だけを出し、誤った案内をしない）。どうしてもその形で実行する場合はコマンドの**先頭**に `FF_EXIT_CODE_ACK=1` を付ける
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1`
+- **このガードだけは判定を完了できないとき fail-closed**（判定不能である旨を出して止める）。対象は検出器の欠落・破損、走査 `awk` の失敗、`jq` フィルタの実行失敗、検出器出力の解釈不能。ただしその面は `$?` / `PIPESTATUS` / ゲート綴りを含む**候補コマンドに限る**ので、検出器が壊れても無関係な Bash 呼び出しは止まらない
+- 引用符の扱い: 検出器は**単一引用符**とコメントを散文として伏せる。二重引用符の中も区切り子・コマンド名は伏せるが、`$?` と `PIPESTATUS` は実際に展開されるため判定対象に残る（散文として書くなら単一引用符を使う）
+- 既知の限界（素通しする形）: `&` によるバックグラウンド起動・`{ }` / `( )` のグループ実行・末尾区間が環境代入で始まる形・改行で区切った 2 行目以降の `gate-exit-swallowed`（`pipe-exit-read` は行をまたいで判定する）・変数展開やコマンド置換で組み立てた綴り・heredoc 本文（データとして落とす）・ASDD ゲートが「検証不能」を返す環境
 
 ## 前提
 
