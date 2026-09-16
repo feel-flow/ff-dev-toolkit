@@ -20,6 +20,12 @@
 
 ## [Unreleased]
 
+## [0.115.1] - 2026-09-16
+
+### 修正
+
+- 配布先 checkout（公開リポジトリ単体）で回帰スイートの 2 suite が恒常的に失敗していた問題を修正した。`review-freeze-contract` はソースリポジトリかどうかを `plugins/ff-dev-toolkit` という path 形状で判定していたが、公開リポジトリも同じ形状を持つため常にソース扱いになり、存在しない `docs/05-operations/DEPLOYMENT.md` を要求していた。`retrospective-contract-selftest` は fixture を組み立てるとき、ソースリポジトリにしか無い観測台帳（`docs/08-knowledge/OBSERVATIONS.md`）を配置に関わらず置いていたため、fixture だけが実際の checkout より検査 1 件多くなり侵食ガードが赤になっていた。どちらも配置の判別をソースリポジトリ固有の標識へ揃え、fixture が実行中の配置を模写するようにした。ソースリポジトリ側の検査件数は変更していない
+
 ## [0.115.0] - 2026-09-16
 
 ### 追加

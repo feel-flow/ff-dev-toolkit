@@ -468,11 +468,47 @@ ROLE_CONSUMERS=(
   "$MULTI_REVIEW"
   "$PLUGIN_ROOT/scripts/templates/codex-review.sh"
 )
-# ソースリポジトリ（plugins/ff-dev-toolkit 配下に本 suite がある配置）では root の写しを必須にする。
-# 存在確認だけで分岐すると、改名・移動で黙って else 側へ落ち、10 本の針が緑のまま消える
-# （fail-open）。配置で判定し、ソースリポジトリなのに無ければ赤にする。
-ROOT_DEPLOYMENT="$PLUGIN_ROOT/../../docs/05-operations/DEPLOYMENT.md"
-if [[ "$(cd "$PLUGIN_ROOT/../.." 2>/dev/null && pwd -P)/plugins/ff-dev-toolkit" == "$PLUGIN_ROOT" ]]; then
+# ソースリポジトリ（SSOT モノレポ）では root の写しを必須にする。
+# 存在確認だけで分岐すると、改名・移動で黙って else 側へ落ち、再掲検査の針（実測 11 本）が
+# 緑のまま消える（fail-open）。配置で判定し、ソースリポジトリなのに無ければ赤にする。
+#
+# plugins/ff-dev-toolkit という path 形状で判定してはならない — 公開リポジトリ
+# feel-flow/ff-dev-toolkit も同じ形状を持つため常に真になり、配布先 checkout を
+# 「ソースリポジトリの配置」と誤判定して、存在しない root の DEPLOYMENT.md を要求して
+# 恒常的に赤くなる（Issue `#1688`。2026-09-16 に公開 CI で実測）。
+#
+# 代わりに独立な 2 標識の論理積で判定し、**食い違ったら配布扱いへ倒さず赤にする**。
+# 単一の標識で分岐すると、その標識が改名・移動された回に上と同じ fail-open が再発する
+# （判別の軸が変わるだけで、黙って else 側へ落ちる構造は残る）。
+#
+#   標識 1: root に oss/ff-dev-toolkit がある。`oss/` 配下は公開同期時に staging root
+#           （公開リポジトリの root）へ展開される（scripts/sync-dev-toolkit-to-public.sh
+#           の `oss/*` 分岐が tar --strip-components を付ける）ため、公開側に
+#           oss/ff-dev-toolkit という **path は残らない**。判別しているのは内容の
+#           非公開性ではなく path の有無である（内容自体は公開されている）。
+#   標識 2: plugins/ に ff-dev-toolkit 以外のプラグインがある。配布物は ff-dev-toolkit
+#           単体で、マーケットプレイス型モノレポだけが複数を収録する。
+#
+# 標識 1 は retrospective-contract / out-of-scope-routing とその selftest が使う判別子と
+# 同じもの。
+REPO_ROOT_DIR="$(cd "$PLUGIN_ROOT/../.." 2>/dev/null && pwd -P || true)"
+SSOT_MARK_OSS=0
+SSOT_MARK_SIBLING=0
+if [[ -n "$REPO_ROOT_DIR" ]]; then
+  [[ -d "$REPO_ROOT_DIR/oss/ff-dev-toolkit" ]] && SSOT_MARK_OSS=1
+  for _plugin_dir in "$REPO_ROOT_DIR"/plugins/*/; do
+    [[ -d "$_plugin_dir" ]] || continue
+    [[ "$(basename "$_plugin_dir")" == "ff-dev-toolkit" ]] && continue
+    SSOT_MARK_SIBLING=1
+    break
+  done
+fi
+ROOT_DEPLOYMENT="$REPO_ROOT_DIR/docs/05-operations/DEPLOYMENT.md"
+if [[ -z "$REPO_ROOT_DIR" ]]; then
+  bad "リポジトリルートを解決できないため配置を判定できません（判定不能を配布扱いへ倒さない）"
+elif [[ "$SSOT_MARK_OSS" -ne "$SSOT_MARK_SIBLING" ]]; then
+  bad "配置の判別が食い違います（oss/ff-dev-toolkit=${SSOT_MARK_OSS} / 兄弟プラグイン=${SSOT_MARK_SIBLING}）— どちらかの標識が改名・移動された可能性。配布扱いへ倒さず赤にする"
+elif [[ "$SSOT_MARK_OSS" -eq 1 ]]; then
   if [[ -f "$ROOT_DEPLOYMENT" ]]; then
     ROLE_CONSUMERS+=("$ROOT_DEPLOYMENT")
     ok "ソースリポジトリの docs/05-operations/DEPLOYMENT.md も再掲検査の対象に含める"

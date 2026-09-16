@@ -149,9 +149,19 @@ cp "$SRC_ACE_CURATE" "$FIX_ACE_CURATE"
 cp "$SRC_GIT_WORKFLOW" "$FIX_GIT_WORKFLOW"
 cp "$SRC_WORKFLOW_PRINCIPLES" "$FIX_WORKFLOW_PRINCIPLES"
 cp "$SRC_DEPLOYMENT" "$FIX_DEPLOYMENT"
-mkdir -p "$(dirname "$FIX_LEDGER_TEMPLATE")" "$(dirname "$FIX_LEDGER_REPO")"
+mkdir -p "$(dirname "$FIX_LEDGER_TEMPLATE")"
 cp "$SRC_LEDGER_TEMPLATE" "$FIX_LEDGER_TEMPLATE"
-cp "$SRC_LEDGER_TEMPLATE" "$FIX_LEDGER_REPO"
+# repo 側（root の docs/）の観測台帳はモノレポにだけ在る成果物で、公開リポジトリ
+# feel-flow/ff-dev-toolkit には docs/ 自体が無い。配置に関わらず置くと、公開 checkout で
+# 回した回だけ fixture が実ツリーより検査 1 件多くなり、内側の「公開配置」fixture
+# （下の PUB_ 系。repo 側台帳を置かない）で較正した EXPECTED_GATE_CHECKS_PUBLIC と
+# 食い違って侵食ガードが恒常的に赤くなる。モノレポで回す限り消費されるのは内側 fixture 側
+# だけなので、開発ツリーのゲートには一度も現れない（Issue `#1688`。2026-09-16 に
+# 公開 CI で実測: 実ツリー 204 件 / 無条件配置の fixture 205 件）。
+if [[ "$IS_MONOREPO" -eq 1 ]]; then
+  mkdir -p "$(dirname "$FIX_LEDGER_REPO")"
+  cp "$SRC_LEDGER_TEMPLATE" "$FIX_LEDGER_REPO"
+fi
 
 # 公開配置では oss/ を作らない（作るとゲートがモノレポと誤認する）。
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
@@ -174,7 +184,7 @@ cp "$FIX_GIT_WORKFLOW" "$PRISTINE/git-workflow.md"
 cp "$FIX_WORKFLOW_PRINCIPLES" "$PRISTINE/workflow-principles.md"
 cp "$FIX_DEPLOYMENT" "$PRISTINE/DEPLOYMENT.md"
 cp "$FIX_LEDGER_TEMPLATE" "$PRISTINE/observations-template.md"
-cp "$FIX_LEDGER_REPO" "$PRISTINE/observations-repo.md"
+[[ "$IS_MONOREPO" -eq 0 ]] || cp "$FIX_LEDGER_REPO" "$PRISTINE/observations-repo.md"
 cp "$FIX_OSS_README" "$PRISTINE/oss-README.md"
 [[ "$IS_MONOREPO" -eq 0 ]] || cp "$FIX_ROOT_README" "$PRISTINE/root-README.md"
 
@@ -185,7 +195,7 @@ restore_all() {
   cp "$PRISTINE/workflow-principles.md" "$FIX_WORKFLOW_PRINCIPLES"
   cp "$PRISTINE/DEPLOYMENT.md" "$FIX_DEPLOYMENT"
   cp "$SRC_LEDGER_TEMPLATE" "$FIX_LEDGER_TEMPLATE"
-  cp "$SRC_LEDGER_TEMPLATE" "$FIX_LEDGER_REPO"
+  [[ "$IS_MONOREPO" -eq 0 ]] || cp "$SRC_LEDGER_TEMPLATE" "$FIX_LEDGER_REPO"
   cp "$PRISTINE/oss-README.md" "$FIX_OSS_README"
   [[ "$IS_MONOREPO" -eq 0 ]] || cp "$PRISTINE/root-README.md" "$FIX_ROOT_README"
 }
@@ -560,9 +570,6 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|**\`mitigated\` の再発を記録するときは \`Issue\` 列の参照先を確認する**|観測台帳: mitigated の再発時に参照先を確認する|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**取り下げても台帳は書き戻す**|SSOT 照合: 取り下げた閾値到達エントリは mitigated へ書き戻す|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**恒久対策の Issue を指していて新規起票を見送った**|知見ストア: 起票を見送った閾値到達エントリは mitigated へ書き戻す|1"
-  # 本体台帳側の値域行を落とす。テンプレは無傷なので、照合分岐だけが赤化する
-  # （公開 fixture では実行されない分岐を、モノレポ fixture の変異で担保する）。
-  "${FIX_LEDGER_REPO}|observations-repo.md|- \`Status\` の値域: |観測台帳: 本体台帳の Status 値域行が配布テンプレと一致|1"
   # 値域行そのものの削除は導出の fail-closed 経路（下流 3 針は導出できず実行されない）。
   "${FIX_LEDGER_TEMPLATE}|observations-template.md|- \`Status\` の値域: |観測台帳: Status 値域行を配布テンプレから導出|1"
   "${FIX_GIT_WORKFLOW}|git-workflow.md|観測は起票の前に**作業中リポジトリ**の観測台帳|分散台帳が git-workflow へ伝播|1"
@@ -617,6 +624,10 @@ MARKER_MUTATIONS=(
 )
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   MARKER_MUTATIONS+=(
+    # 本体台帳側の値域行を落とす。テンプレは無傷なので、照合分岐だけが赤化する。
+    # 本体台帳（root の docs/）を持つのはモノレポだけなので、この変異もモノレポ限定に置く
+    # — 公開配置の fixture にはそもそも照合対象が無く、ゲートも当該分岐を実行しない。
+    "${FIX_LEDGER_REPO}|observations-repo.md|- \`Status\` の値域: |観測台帳: 本体台帳の Status 値域行が配布テンプレと一致|1"
     "${FIX_ROOT_README}|root-README.md|起票は既定では承認を待たずに実行して発行番号を報告する|起票境界がルート README へ伝播|5"
     "${FIX_ROOT_README}|root-README.md|作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し|分散台帳がルート README へ伝播|5"
     "${FIX_ROOT_README}|root-README.md|**スキル未解決時のフォールバック**|スキル未解決時のフォールバック: README.md|7"
@@ -722,19 +733,35 @@ else
 fi
 restore_all
 
+# 配布テンプレを壊したとき、本体台帳（root の docs/）との一致を見る針も道連れで赤化する。
+# ただしその針はゲート側が `-f "$LEDGER_REPO"` で分岐するため、本体台帳を持つ fixture でしか
+# 実行されない。公開配置の fixture は配置に合わせて本体台帳を置かない（上の FIX_LEDGER_REPO
+# 節）ので、下流の針 1 本だけが赤化する。期待件数を 2 に固定すると、公開 checkout で回した
+# 回だけ「巻き添えの範囲が変わった」で恒常的に赤くなる（Issue `#1688`。2026-09-16 に公開 CI
+# で実測）。
+#
+# 期待件数は IS_MONOREPO ではなく**判定対象そのもの**（その fixture に本体台帳が在るか）から
+# 導く。配置と台帳配置は別の規則なので、IS_MONOREPO 経由にすると fixture の配置規則を変えた
+# 回に期待値だけが静かにずれる。下の系統 5（公開配置 fixture）も同じ関数で導出し、
+# 公開側の期待値がモノレポ実行でも実測されるようにする。
+ledger_template_pair_fails() {
+  if [[ -f "$1" ]]; then printf '2\n'; else printf '1\n'; fi
+}
+LEDGER_TEMPLATE_PAIR_FAILS="$(ledger_template_pair_fails "$FIX_LEDGER_REPO")"
+
 # M-Y: 配布テンプレの Status 値域から mitigated を落とす。値域の欠落（下流の針）と、
-# 本体台帳との片側 drift（一致の針）が同時に赤化する = 期待 ✗ は 2 件。
+# 本体台帳との片側 drift（一致の針）が同時に赤化する = モノレポでの期待 ✗ は 2 件。
 perl -pi -e 's/\Q`mitigated`（対策済み\E/`deprecated`（対策済み/' "$FIX_LEDGER_TEMPLATE"
 if assert_mutated "$FIX_LEDGER_TEMPLATE" "$PRISTINE/observations-template.md" "M-Y テンプレ値域から mitigated を落とす"; then
-  expect_red "M-Y 配布テンプレの Status 値域から mitigated を落とす" "✗ 観測台帳: 配布テンプレの Status 値域に mitigated がある" 2
+  expect_red "M-Y 配布テンプレの Status 値域から mitigated を落とす" "✗ 観測台帳: 配布テンプレの Status 値域に mitigated がある" "$LEDGER_TEMPLATE_PAIR_FAILS"
 fi
 restore_all
 
 # M-Z: 配布テンプレの値域行の所在接頭辞だけを SKILL.md に無いものへ差し替える。
-# 接頭辞の一致（片側 drift）と本体台帳との一致が同時に赤化する = 期待 ✗ は 2 件。
+# 接頭辞の一致（片側 drift）と本体台帳との一致が同時に赤化する = モノレポでの期待 ✗ は 2 件。
 perl -pi -e 's/\Q`skill:\E/`plugin:/' "$FIX_LEDGER_TEMPLATE"
 if assert_mutated "$FIX_LEDGER_TEMPLATE" "$PRISTINE/observations-template.md" "M-Z 値域行の所在接頭辞の差し替え"; then
-  expect_red "M-Z 値域行の所在接頭辞を SKILL.md に無いものへ差し替え" "✗ 観測台帳: 所在の接頭辞が値域行と SKILL.md で一致" 2
+  expect_red "M-Z 値域行の所在接頭辞を SKILL.md に無いものへ差し替え" "✗ 観測台帳: 所在の接頭辞が値域行と SKILL.md で一致" "$LEDGER_TEMPLATE_PAIR_FAILS"
 fi
 restore_all
 
@@ -1130,6 +1157,24 @@ if [[ "$IS_MONOREPO" -eq 1 ]]; then
   else
     bad "公開配置: 検査が ${PUB_CHECKS:-不明} 件（期待 ${EXPECTED_GATE_CHECKS_PUBLIC} 件）— 公開側の期待値が古い"
   fi
+
+  # 公開配置での巻き添え期待件数（LEDGER_TEMPLATE_PAIR_FAILS の「本体台帳なし」側）を
+  # ここで実測する。M-Y / M-Z は外側 fixture（＝実行環境の配置）しか叩かないため、
+  # モノレポ実行では 2 の側しか通らず、1 の側は公開 checkout で回すまで一度も検証されない。
+  # 検証されない期待値は針が 1 本増えた回に静かにずれ、週次の公開 run-all でだけ赤くなる
+  # — 本 suite が直したばかりの失敗様式そのものなので、同じ導出関数を公開 fixture にも当てる。
+  PUB_LEDGER_TEMPLATE="$PUB_PLUGIN/docs-template/08-knowledge/OBSERVATIONS.md"
+  PUB_LEDGER_PAIR_FAILS="$(ledger_template_pair_fails "$PUB_REPO/docs/08-knowledge/OBSERVATIONS.md")"
+  perl -pi -e 's/\Q`mitigated`（対策済み\E/`deprecated`（対策済み/' "$PUB_LEDGER_TEMPLATE"
+  if assert_mutated "$PUB_LEDGER_TEMPLATE" "$PRISTINE/observations-template.md" "公開配置: テンプレ値域から mitigated を落とす"; then
+    expect_red "公開配置: 配布テンプレの Status 値域から mitigated を落とす" "✗ 観測台帳: 配布テンプレの Status 値域に mitigated がある" "$PUB_LEDGER_PAIR_FAILS" "$PUB_GATE"
+  fi
+  cp "$SRC_LEDGER_TEMPLATE" "$PUB_LEDGER_TEMPLATE"
+  perl -pi -e 's/\Q`skill:\E/`plugin:/' "$PUB_LEDGER_TEMPLATE"
+  if assert_mutated "$PUB_LEDGER_TEMPLATE" "$PRISTINE/observations-template.md" "公開配置: 値域行の所在接頭辞の差し替え"; then
+    expect_red "公開配置: 値域行の所在接頭辞を SKILL.md に無いものへ差し替え" "✗ 観測台帳: 所在の接頭辞が値域行と SKILL.md で一致" "$PUB_LEDGER_PAIR_FAILS" "$PUB_GATE"
+  fi
+  cp "$SRC_LEDGER_TEMPLATE" "$PUB_LEDGER_TEMPLATE"
 
   # 公開 fixture への変異はここが最後なので復元しない。後ろに変異を追加するときは
   # 汚染を引き継がないよう、モノレポ側の restore_all と同じ復元を先に入れること。
