@@ -58,6 +58,21 @@
 #           SURVIVED した。fixture からマーカー以外を落として解消してある）。
 #           （件数は検査追加で静かに腐るのでケース番号で書く）
 #
+# 変異検出（case 14b / 空振り検出の宣言の登録照合。Issue `#1665`）:
+#           名簿外 suite に宣言を要求する分岐を落とすと 14b-1 / 14b-6 / 14b-7' と case 14 の
+#           source 検査が赤。名指しを先頭 1 件で打ち切ると 14b-6' が赤。
+#           名簿の実在照合を落とすと 14b-4、宣言済み suite の名簿残留の照合を落とすと
+#           14b-3 が赤。本文の無い宣言を probe=1 に数えると case 14 の負の対照
+#           （pred-neg-probe-empty）が赤（14b-5 は malformed 経路の名指しを見る）。
+#           ヘッダ限定を外す（ファイル全体で宣言を拾う）と 14b-2b と pred-neg-probe-late /
+#           pred-neg-probe-heredoc が赤。空名簿で照合を成立させない（unbound で abort）形へ
+#           戻すと 14b-6 / 14b-7 が赤。案内から正本のパス / 節名を落とすと 14b-1 が赤。
+#
+# 空振り検出: 実体の宣言ダンプが 0 件になる（書式が変わって 1 行も拾えない）と 14b-0 と
+#           case 26 の「宣言ダンプが N 件の導出材料を返す」が赤になる。run-all.sh の名簿の
+#           見出し行（MISS_PROBE_BASELINE=(）や SCRIPTS=( が改稿されて犠牲 suite を合成
+#           できない木を与えると 14b-0 が赤になる（以降の 14b は成立しないと明示する）。
+#
 # 使い方: bash plugins/ff-dev-toolkit/tests/run-all/verify.sh
 
 set -euo pipefail
@@ -541,9 +556,20 @@ expect_src '^\s*if \[\[ .*FAILED\[@\].*REQUIRED_SKIPPED\[@\].*\]\]; then' "$_ra_
 expect_src 'verify.sh の走査が失敗しました' "$_ra_src" \
   "走査の失敗を fail-closed にする経路が在る" \
   "awk の終了コードを捨てている（読めない verify.sh が黙って導出から落ちる）"
-expect_src '理由の無い run-all-required 宣言があります' "$_ra_src" \
-  "理由を欠く run-all-required 宣言の検出が在る" \
-  "理由なしの no 宣言で判断の記録なしに必須から外れる"
+expect_src '理由の無い run-all-required 宣言、または本文の無い 空振り検出 宣言があります' "$_ra_src" \
+  "理由を欠く run-all-required 宣言 / 本文を欠く 空振り検出 宣言の検出が在る" \
+  "理由なしの no 宣言で判断の記録なしに必須から外れる（または本文なしの空振り検出宣言が通る）"
+# 空振り検出の宣言（Issue `#1665`）: 名簿外 suite への要求・名簿の実在照合・宣言済み suite の
+# 名簿残留の 3 経路が実装に在ること。振る舞いは下の 14b で複製木を崩して実測する。
+expect_src '空振り検出の宣言が無い suite があります' "$_ra_src" \
+  "名簿（MISS_PROBE_BASELINE）外の suite に空振り検出の宣言を要求する経路が在る" \
+  "新設 suite が宣言なしで登録照合を通る（`#1665` の導線が消えた）"
+expect_src 'MISS_PROBE_BASELINE に実在しない suite 名があります' "$_ra_src" \
+  "免除名簿の実在照合が在る" \
+  "改名・削除に未追従の名簿行が何も免除しないまま残る"
+expect_src '空振り検出を宣言した suite が MISS_PROBE_BASELINE に残っています' "$_ra_src" \
+  "宣言済み suite の名簿残留を赤にする経路が在る（名簿は縮める方向のみ）" \
+  "宣言を足しても名簿が「未実測」を主張し続ける"
 
 # ── 導出述語の対照（引用符種別と「出力文の行頭 skip」の境界）────────────────────
 # 述語は run-all.sh の内部関数なので、**複製木へ run-all.sh を置いて宣言ダンプだけを回す**
@@ -571,6 +597,18 @@ _pred_add pred-pos-single '#!/usr/bin/env bash\necho \047○ skip: 単一引用�
 _pred_add pred-pos-printf '#!/usr/bin/env bash\nprintf \047○ skip: printf で行頭 skip を出す\\n\047\nexit 0\n'
 # 負の対照 3: 理由を欠く宣言（yes / no のどちらでもなく bad として印が付く）
 _pred_add pred-neg-noreason '#!/usr/bin/env bash\n# run-all-required: no\nexit 0\n'
+# 正の対照 3: 本文を持つ空振り検出の宣言（probe=1）
+_pred_add pred-pos-probe '#!/usr/bin/env bash\n# 空振り検出: 対象ディレクトリの不在を与えると (1) が赤になる。\nexit 0\n'
+# 負の対照 4: 本文を欠く空振り検出の宣言（probe ではなく bad として印が付く）
+_pred_add pred-neg-probe-empty '#!/usr/bin/env bash\n# 空振り検出:   \nexit 0\n'
+# 負の対照 5: 本文を次のコメント行へ折り返した宣言（本文は同じ行に書く契約。bad）
+_pred_add pred-neg-probe-continuation '#!/usr/bin/env bash\n# 空振り検出:\n#   対象不在で (1) が赤になる。\nexit 0\n'
+# 負の対照 6: ヘッダの外（最初の非コメント行より後ろ）の宣言は数えない（bad）
+_pred_add pred-neg-probe-late '#!/usr/bin/env bash\nset -eu\n# 空振り検出: 対象不在で (1) が赤になる。\nexit 0\n'
+# 負の対照 7: heredoc 本文の中の同形も数えない（fixture を書く suite が宣言済みに化けない）
+_pred_add pred-neg-probe-heredoc '#!/usr/bin/env bash\ncat > /dev/null <<EOF\n# 空振り検出: heredoc の中\nEOF\nexit 0\n'
+# 対照 8: 本文付き + 本文なしが同居 — bad が勝つ（probe と bad の両方に印が付く）
+_pred_add pred-mix-probe-multi '#!/usr/bin/env bash\n# 空振り検出: 対象不在で (1) が赤になる。\n# 空振り検出:\nexit 0\n'
 _pred_rc=0
 if ! _pred_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL \
   FF_RUN_ALL_DUMP_DECLARATIONS=1 FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" \
@@ -585,12 +623,225 @@ _pred_expect() { # <期待する 1 行> <検査名>
     printf '%s\n' "$_pred_out" | sed 's/^/    | /' >&2
   fi
 }
-_pred_expect 'pred-neg-assert:0:0:0:0' "アサート行の期待値文字列を suite 全体 skip に数えない（負の対照）"
-_pred_expect 'pred-neg-partial:0:0:0:0' "インデント付き部分 skip を suite 全体 skip に数えない（負の対照）"
-_pred_expect 'pred-pos-single:1:0:0:0' "単一引用符の行頭 skip を suite 全体 skip として拾う（正の対照）"
-_pred_expect 'pred-pos-printf:1:0:0:0' "printf の書式文字列の行頭 skip を拾う（正の対照）"
-_pred_expect 'pred-neg-noreason:0:0:0:1' "理由を欠く run-all-required 宣言に bad の印が付く（負の対照）"
+_pred_expect 'pred-neg-assert:0:0:0:0:0' "アサート行の期待値文字列を suite 全体 skip に数えない（負の対照）"
+_pred_expect 'pred-neg-partial:0:0:0:0:0' "インデント付き部分 skip を suite 全体 skip に数えない（負の対照）"
+_pred_expect 'pred-pos-single:1:0:0:0:0' "単一引用符の行頭 skip を suite 全体 skip として拾う（正の対照）"
+_pred_expect 'pred-pos-printf:1:0:0:0:0' "printf の書式文字列の行頭 skip を拾う（正の対照）"
+_pred_expect 'pred-neg-noreason:0:0:0:1:0' "理由を欠く run-all-required 宣言に bad の印が付く（負の対照）"
+_pred_expect 'pred-pos-probe:0:0:0:0:1' "本文を持つ空振り検出の宣言を probe として拾う（正の対照）"
+_pred_expect 'pred-neg-probe-empty:0:0:0:1:0' "本文を欠く空振り検出の宣言は probe に数えず bad の印が付く（負の対照）"
+_pred_expect 'pred-neg-probe-continuation:0:0:0:1:0' "本文を次行へ折り返した宣言は bad（本文は同じ行に書く）（負の対照）"
+_pred_expect 'pred-neg-probe-late:0:0:0:1:0' "ヘッダの外に置いた宣言は probe に数えず bad の印が付く（負の対照）"
+_pred_expect 'pred-neg-probe-heredoc:0:0:0:1:0' "heredoc 本文の中の同形は probe に数えず bad の印が付く（負の対照）"
+_pred_expect 'pred-mix-probe-multi:0:0:0:1:1' "本文付きと本文なしが同居すると bad の印も付く（malformed が先に落ちる）"
 rm -rf "$_pred_fx"
+
+echo ""
+echo "== case 14b: 空振り検出の宣言の登録照合（名簿外 suite は宣言必須・名簿は縮める方向のみ）=="
+
+# 実体の木では全 suite が名簿か宣言のどちらかを持つので、赤の経路は複製木でしか踏めない。
+# 複製木は case 26 と同じく宣言ダンプ（実装側の述語）から stub を起こし、run-all.sh の
+# 名簿と stub の宣言だけを崩す。崩した先は毎回 grep -c で適用を確かめる（適用に失敗しても
+# 「緑」は検出失敗と同じ顔をするため）。犠牲にする suite は**複製木の中で合成する**
+# （`miss-probe-victim`。SCRIPTS と MISS_PROBE_BASELINE へ足す）— 実体の名簿から借りると、
+# 全 suite が遡及済みで名簿が空になった終端状態（run-all.sh が明示的に許す）で本ケースが
+# 恒久的に赤になる。
+_probe_decl_rc=0
+if ! _probe_decl_raw="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL \
+  FF_RUN_ALL_DUMP_DECLARATIONS=1 FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" \
+  bash "$_ra_src" 2>&1)"; then _probe_decl_rc=$?; fi
+# 材料は case 26 と同じ書式フィルタを通す（非 0 時の警告文や余計な語が stub 名に化けない）
+_probe_decl="$(printf '%s\n' "$_probe_decl_raw" | grep -E '^[A-Za-z0-9._-]+:[01]:[01]:[01]:[01]:[01]$' || true)"
+_probe_decl_n="$(printf '%s\n' "$_probe_decl" | grep -c .)"
+_probe_undeclared_n="$(printf '%s\n' "$_probe_decl" | grep -c ':0$')"
+_probe_fx="${TMPDIR:-/tmp}/ff-miss-probe-registration.$$"
+_probe_victim="miss-probe-victim"
+_probe_stub() { # <dir> <yes> <no> <probe> <skip> : 複製木の stub を書く（宣言はヘッダに置く）
+  {
+    printf '#!/usr/bin/env bash\n'
+    if [ "$2" = "1" ]; then printf '# run-all-required: yes — 複製木 stub\n'; fi
+    if [ "$3" = "1" ]; then printf '# run-all-required: no — 複製木 stub\n'; fi
+    if [ "$4" = "1" ]; then printf '# 空振り検出: 複製木 stub（実体の宣言を写した導出材料）\n'; fi
+    if [ "$5" = "1" ]; then printf 'if false; then echo "○ skip: 逆向き導出の材料"; fi\n'; fi
+    printf 'exit 0\n'
+  } > "$1/verify.sh"
+  chmod +x "$1/verify.sh"
+}
+_probe_build() { # <dir> : 実体を写した複製木 + 合成した犠牲 suite。適用を確かめ、失敗なら非 0
+  rm -rf "$1"
+  mkdir -p "$1"
+  cp "$_ra_src" "$1/run-all.sh"
+  local n flags skip rest yes no probe
+  while IFS= read -r _probe_e; do
+    [ -n "$_probe_e" ] || continue
+    n="${_probe_e%%:*}"; flags="${_probe_e#*:}"
+    skip="${flags%%:*}"; rest="${flags#*:}"
+    yes="${rest%%:*}"; rest="${rest#*:}"
+    no="${rest%%:*}"; rest="${rest#*:}"
+    probe="${rest#*:}"
+    mkdir -p "$1/$n"
+    _probe_stub "$1/$n" "$yes" "$no" "$probe" "$skip"
+  done <<EOF
+$_probe_decl
+EOF
+  mkdir -p "$1/$_probe_victim"
+  _probe_stub "$1/$_probe_victim" 0 0 0 0
+  sed -i.bak "s|^  SCRIPTS=(\$|&\\
+    \"\$SCRIPT_DIR/${_probe_victim}/verify.sh\"|; s|^MISS_PROBE_BASELINE=(\$|&\\
+  ${_probe_victim}|" "$1/run-all.sh" && rm -f "$1/run-all.sh.bak"
+  [ "$(grep -c "^    \"\\\$SCRIPT_DIR/${_probe_victim}/verify.sh\"\$" "$1/run-all.sh")" -eq 1 ] \
+    && [ "$(grep -c "^  ${_probe_victim}\$" "$1/run-all.sh")" -eq 1 ]
+}
+_probe_run() { # 複製木で登録照合だけを回す（_probe_out / _probe_rc）
+  _probe_rc=0
+  if _probe_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL \
+    FF_RUN_ALL_CHECK_REGISTRATION=1 FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" \
+    bash "$_probe_fx/run-all.sh" 2>&1)"; then _probe_rc=0; else _probe_rc=$?; fi
+}
+_probe_expect_red() { # <ラベル> <名指しされるべき suite> <含むべき文言>... : 非 0 + 名指し + 全文言
+  local label="$1" who="$2" needle miss=""
+  shift 2
+  # 名指し対象が空だと `*""*` が常に一致して名指し検査が空振りする
+  [ -n "$who" ] || { bad "$label (名指し対象が空 — 名指し検査が成立しない)"; return; }
+  case "$_probe_out" in *"$who"*) ;; *) miss="${miss} 名指し(${who})" ;; esac
+  for needle in "$@"; do
+    case "$_probe_out" in *"$needle"*) ;; *) miss="${miss} 文言(${needle})" ;; esac
+  done
+  if [ "$_probe_rc" -ne 0 ] && [ -z "$miss" ]; then
+    ok "$label"
+  else
+    bad "$label (rc=${_probe_rc} 欠落:${miss:- なし})"
+    printf '%s\n' "$_probe_out" | sed 's/^/    | /' >&2
+  fi
+}
+_probe_expect_green() { # <ラベル> <期待する免除名簿の件数> : rc=0 + ℹ️ 行の件数一致
+  if [ "$_probe_rc" -eq 0 ] && [ "$(printf '%s\n' "$_probe_out" | grep -c "空振り検出の免除名簿 $2 件")" -eq 1 ]; then
+    ok "$1"
+  else
+    bad "$1 (rc=${_probe_rc} / 期待した免除名簿 $2 件の報告が無い)"
+    printf '%s\n' "$_probe_out" | sed 's/^/    | /' >&2
+  fi
+}
+_probe_roster_n() { # 複製木の名簿の行数
+  awk '/^MISS_PROBE_BASELINE=\($/ { on = 1; next } on && /^\)$/ { exit } on && /^  [A-Za-z0-9._-]+$/ { n++ } END { print n + 0 }' "$_probe_fx/run-all.sh"
+}
+_probe_unlist() { # 複製木の名簿から victim の行を消す。行が無かった / 消えなかった、のどちらも非 0
+  [ "$(grep -c "^  ${_probe_victim}\$" "$_probe_fx/run-all.sh")" -eq 1 ] || return 1
+  sed -i.bak "/^  ${_probe_victim}\$/d" "$_probe_fx/run-all.sh" && rm -f "$_probe_fx/run-all.sh.bak"
+  [ "$(grep -c "^  ${_probe_victim}\$" "$_probe_fx/run-all.sh")" -eq 0 ]
+}
+_probe_declare() { # <suite 名> <宣言行> : stub のヘッダ（2 行目）へ宣言を差し込む
+  awk -v decl="$2" 'NR == 1 { print; print decl; next } { print }' "$_probe_fx/$1/verify.sh" > "$_probe_fx/$1/verify.sh.new" \
+    && mv "$_probe_fx/$1/verify.sh.new" "$_probe_fx/$1/verify.sh" && chmod +x "$_probe_fx/$1/verify.sh"
+  [ "$(grep -c -F -- "$2" "$_probe_fx/$1/verify.sh")" -eq 1 ]
+}
+_probe_ready=0
+if [ "$_probe_decl_rc" -eq 0 ] && [ "$_probe_decl_n" -ge 1 ] && _probe_build "$_probe_fx"; then
+  _probe_ready=1
+  ok "14b-0: 宣言ダンプ ${_probe_decl_n} 件から複製木を起こし、犠牲 suite ${_probe_victim} を SCRIPTS と名簿へ合成できた"
+else
+  bad "14b-0: 複製木を起こせない（decl rc=${_probe_decl_rc} 材料 ${_probe_decl_n} 件）— 以降の 14b は成立しない"
+fi
+if [ "$_probe_ready" -eq 1 ]; then
+  _probe_n="$(_probe_roster_n)"
+  # 14b-0': 崩す前の複製木は通り、免除名簿の件数（実体 + 合成 1）を報告する
+  _probe_run
+  _probe_expect_green "14b-0': 崩していない複製木は登録照合を通り、免除名簿の件数（${_probe_n} 件）を報告する" "$_probe_n"
+  # 14b-1: 名簿から外した suite（= 新設 suite と同じ立場）が宣言なしなら赤で名指し + 正本案内
+  if _probe_unlist; then
+    _probe_run
+    _probe_expect_red "14b-1: 名簿外で宣言の無い suite を名指しし、正本のパス・節名を案内する" \
+      "$_probe_victim" "空振り検出の宣言が無い suite" "docs/04-quality/TESTING.md" "針が当たらない入力の既定"
+  else
+    bad "14b-1: 複製木の名簿から ${_probe_victim} を外せなかった（変異が適用されていない）"
+  fi
+  # 14b-2: 同じ suite のヘッダへ本文付きの宣言を足すと通り、免除名簿は 1 件減って報告される
+  if _probe_declare "$_probe_victim" '# 空振り検出: 対象ディレクトリの不在を与えると (1) が赤になる。'; then
+    _probe_run
+    _probe_expect_green "14b-2: 名簿外でもヘッダに本文付きの宣言があれば通る（免除名簿 $((_probe_n - 1)) 件）" "$((_probe_n - 1))"
+  else
+    bad "14b-2: 複製木の stub へ宣言を差し込めなかった（変異が適用されていない）"
+  fi
+  # 14b-2b: 同じ本文でもヘッダの外（最初の非コメント行より後ろ）に置いた宣言は数えない
+  _probe_build "$_probe_fx" && _probe_unlist \
+    && printf '# 空振り検出: 対象ディレクトリの不在を与えると (1) が赤になる。\n' >> "$_probe_fx/$_probe_victim/verify.sh"
+  if [ "$(grep -c '^# 空振り検出:' "$_probe_fx/$_probe_victim/verify.sh")" -eq 1 ]; then
+    _probe_run
+    _probe_expect_red "14b-2b: ヘッダの外（exit 0 の後ろ）に置いた宣言は数えず、置き場所を案内して赤にする" \
+      "$_probe_victim" "本文の無い 空振り検出 宣言" "ヘッダ（最初の非コメント行より前）"
+  else
+    bad "14b-2b: 複製木の stub 末尾へ宣言を足せなかった（変異が適用されていない）"
+  fi
+  # 14b-3: 宣言を持つ suite が名簿に残っていると赤（名簿は縮める方向のみ）
+  _probe_build "$_probe_fx" && _probe_declare "$_probe_victim" '# 空振り検出: 対象ディレクトリの不在を与えると (1) が赤になる。'
+  _probe_run
+  _probe_expect_red "14b-3: 宣言済み suite の名簿残留を赤にする" \
+    "$_probe_victim" "MISS_PROBE_BASELINE に残っています"
+  # 14b-4: 名簿の実在しない名前は赤
+  _probe_build "$_probe_fx"
+  sed -i.bak 's/^MISS_PROBE_BASELINE=($/&\
+  ghost-suite-miss-probe/' "$_probe_fx/run-all.sh" && rm -f "$_probe_fx/run-all.sh.bak"
+  if [ "$(grep -c '^  ghost-suite-miss-probe$' "$_probe_fx/run-all.sh")" -eq 1 ]; then
+    _probe_run
+    _probe_expect_red "14b-4: 名簿の実在しない suite 名を赤にする" \
+      "ghost-suite-miss-probe" "MISS_PROBE_BASELINE に実在しない suite 名"
+  else
+    bad "14b-4: 複製木の名簿へ実在しない名前を足せなかった（変異が適用されていない）"
+  fi
+  # 14b-5: 本文を欠く宣言は malformed として赤（名簿の内外を問わず、名簿照合より前に落ちる。
+  # probe に数えないこと自体は case 14 の負の対照 pred-neg-probe-empty が固定する）
+  _probe_build "$_probe_fx" && _probe_declare "$_probe_victim" '# 空振り検出:'
+  _probe_run
+  _probe_expect_red "14b-5: 本文の無い宣言は malformed として赤にする（pred-neg-probe-empty と対）" \
+    "$_probe_victim" "本文の無い 空振り検出 宣言"
+  # 14b-6（空振り）: 免除名簿を空にすると、宣言を持たない stub が**全件**名指しされる
+  _probe_build "$_probe_fx"
+  sed -i.bak '/^MISS_PROBE_BASELINE=($/,/^)$/{/^  [A-Za-z0-9._-]*$/d;}' "$_probe_fx/run-all.sh" && rm -f "$_probe_fx/run-all.sh.bak"
+  if [ "$(_probe_roster_n)" -eq 0 ]; then
+    _probe_run
+    _probe_expect_red "14b-6: 免除名簿が空（集合が空）なら宣言の無い suite が名指しされ緑に倒れない" \
+      "$_probe_victim" "空振り検出の宣言が無い suite"
+    # 先頭 1 件だけ報告する退行は上では緑のまま通るので、名指しの行数を材料から突き合わせる
+    _probe_named_n="$(printf '%s\n' "$_probe_out" | grep -c '^    [A-Za-z0-9._-]*$')"
+    if [ "$_probe_named_n" -eq $((_probe_undeclared_n + 1)) ]; then
+      ok "14b-6': 宣言の無い suite を全件（${_probe_named_n} 件 = 材料 ${_probe_undeclared_n} + 犠牲 1）名指しする"
+    else
+      bad "14b-6': 名指しが ${_probe_named_n} 件（期待 $((_probe_undeclared_n + 1)) 件）— 先頭だけ報告する形へ退行している"
+    fi
+  else
+    bad "14b-6: 複製木の名簿を空にできなかった（変異が適用されていない）"
+  fi
+  # 14b-7: 名簿が空でも全 suite が宣言済みなら通る（遡及が終わった終端状態）。1 本の宣言を
+  # 落とすとその suite だけが名指しされる
+  _probe_build "$_probe_fx"
+  sed -i.bak '/^MISS_PROBE_BASELINE=($/,/^)$/{/^  [A-Za-z0-9._-]*$/d;}' "$_probe_fx/run-all.sh" && rm -f "$_probe_fx/run-all.sh.bak"
+  _probe_declared_all=1
+  for _probe_dir in "$_probe_fx"/*/; do
+    _probe_dn="$(basename "$_probe_dir")"
+    [ -f "$_probe_dir/verify.sh" ] || continue
+    if [ "$(grep -c '^# 空振り検出: ' "$_probe_dir/verify.sh")" -eq 0 ]; then
+      _probe_declare "$_probe_dn" '# 空振り検出: 終端状態の材料（複製木 stub）。対象不在で (1) が赤になる。' || _probe_declared_all=0
+    fi
+  done
+  if [ "$(_probe_roster_n)" -eq 0 ] && [ "$_probe_declared_all" -eq 1 ]; then
+    _probe_run
+    _probe_expect_green "14b-7: 免除名簿が空でも全 suite が宣言済みなら通る（免除名簿 0 件）" 0
+    sed -i.bak '/^# 空振り検出: /d' "$_probe_fx/$_probe_victim/verify.sh" && rm -f "$_probe_fx/$_probe_victim/verify.sh.bak"
+    if [ "$(grep -c '^# 空振り検出: ' "$_probe_fx/$_probe_victim/verify.sh")" -eq 0 ]; then
+      _probe_run
+      _probe_expect_red "14b-7': 終端状態から 1 本の宣言を落とすと、その suite だけが名指しされる" \
+        "$_probe_victim" "空振り検出の宣言が無い suite"
+      _probe_named_n="$(printf '%s\n' "$_probe_out" | grep -c '^    [A-Za-z0-9._-]*$')"
+      [ "$_probe_named_n" -eq 1 ] && ok "14b-7'': 名指しは 1 件だけ（宣言済み suite を巻き込まない）" \
+        || bad "14b-7'': 名指しが ${_probe_named_n} 件（期待 1 件）"
+    else
+      bad "14b-7': 犠牲 suite の宣言を落とせなかった（変異が適用されていない）"
+    fi
+  else
+    bad "14b-7: 終端状態の複製木を作れなかった（名簿 $(_probe_roster_n) 件 / 全宣言 ${_probe_declared_all}）"
+  fi
+fi
+rm -rf "$_probe_fx"
 
 echo ""
 echo "== case 15: mktemp skip ゲートが失敗理由を捨てる形の再混入ガード =="
@@ -1408,7 +1659,7 @@ cp "$TESTS_DIR/run-all.sh" "$_fast_fx/run-all.sh"
 # 登録照合が落ちる。
 #
 # 材料の判定は **run-all.sh 自身に出させる**（`FF_RUN_ALL_DUMP_DECLARATIONS=1` が
-# `<名前>:<skip>:<yes>:<no>:<bad>` を返す）。ここへ判定述語を書き写すと「述語を変えるときは
+# `<名前>:<skip>:<yes>:<no>:<bad>:<probe>` を返す）。ここへ判定述語を書き写すと「述語を変えるときは
 # 2 箇所同時」の結合が生まれ、片方だけ直すと複製木の導出集合がずれて case 26 が原因の
 # 読めない赤になる（実測。導出述語は run-all.sh 側の単一定義に保つ）。
 _fast_decl_rc=0
@@ -1416,7 +1667,7 @@ if ! _fast_decl="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FUL
   FF_RUN_ALL_DUMP_DECLARATIONS=1 FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" \
   bash "$TESTS_DIR/run-all.sh" 2>&1)"; then _fast_decl_rc=$?; fi
 _fast_decl_n="$(printf '%s\n' "$_fast_decl" \
-  | awk '/^[A-Za-z0-9._-]+:[01]:[01]:[01]:[01]$/ { n++ } END { print n + 0 }')"
+  | awk '/^[A-Za-z0-9._-]+:[01]:[01]:[01]:[01]:[01]$/ { n++ } END { print n + 0 }')"
 if [ "$_fast_decl_rc" -eq 0 ] && [ "$_fast_decl_n" -ge 1 ]; then
   ok "宣言ダンプが ${_fast_decl_n} 件の導出材料を返す（複製木は実装側の述語を使う）"
 else
@@ -1431,6 +1682,8 @@ for _fast_entry in $_fast_decl; do
   _fast_yes="${_fast_rest%%:*}"
   _fast_rest="${_fast_rest#*:}"
   _fast_no="${_fast_rest%%:*}"
+  _fast_rest="${_fast_rest#*:}"
+  _fast_probe="${_fast_rest#*:}"
   mkdir -p "$_fast_fx/$_fast_n"
   # skip の材料は **実行されない分岐**（`if false; then ... fi`）として置く。出力文の形は
   # 保つ（導出はそこを見る）が実行しても何も出ないので、複製木の集計が skip 側へ倒れて
@@ -1442,6 +1695,9 @@ for _fast_entry in $_fast_decl; do
     fi
     if [ "$_fast_no" = "1" ]; then
       printf '# run-all-required: no — 複製木 stub（実体の宣言を写した導出材料）\n'
+    fi
+    if [ "$_fast_probe" = "1" ]; then
+      printf '# 空振り検出: 複製木 stub（実体の宣言を写した導出材料）\n'
     fi
     if [ "$_fast_skip" = "1" ]; then
       printf 'if false; then echo "○ skip: 逆向き導出の材料（この stub は skip を出力しない）"; fi\n'
@@ -2215,9 +2471,22 @@ awk '
   }
   in_required && /^\)$/ { in_required = 0; print; next }
   in_required { next }
+  # 空振り検出の免除名簿も fixture の名前へ差し替える（実体の名簿を残すと
+  # 「実在しない名前」検査が先に落ちて本題まで届かない。REQUIRED_SUITES と同じ理由）
+  /^MISS_PROBE_BASELINE=\($/ {
+    print
+    print "  normal-probe"
+    print "  unlisted-required-probe"
+    in_baseline = 1
+    next
+  }
+  in_baseline && /^\)$/ { in_baseline = 0; print; next }
+  in_baseline { next }
   { print }
 ' "$RUNNER" > "$_fu_fx/run-all.sh"
 chmod +x "$_fu_fx/run-all.sh"
+[ "$(grep -c '^  unlisted-required-probe$' "$_fu_fx/run-all.sh")" -eq 1 ] \
+  || bad "case 38: 複製ランナーの MISS_PROBE_BASELINE 差し替えが適用されていない（見出し行の改稿で awk が空振り）"
 
 _fu_rc=0
 if _fu_out="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL FF_RUN_ALL_CHECK_REGISTRATION=1 \
@@ -2307,8 +2576,21 @@ awk '
   }
   in_required && /^\)$/ { in_required = 0; print; next }
   in_required { next }
+  # 空振り検出の免除名簿も fixture の名前へ差し替える（実体の名簿を残すと
+  # 「実在しない名前」検査が先に落ちて本題まで届かない。REQUIRED_SUITES と同じ理由）
+  /^MISS_PROBE_BASELINE=\($/ {
+    print
+    print "  dirty-guard-probe"
+    print "  dirty-guard-required-probe"
+    in_baseline = 1
+    next
+  }
+  in_baseline && /^\)$/ { in_baseline = 0; print; next }
+  in_baseline { next }
   { print }
 ' "$RUNNER" > "$_dg_fx/repo/tests/run-all.sh"
+[ "$(grep -c '^  dirty-guard-probe$' "$_dg_fx/repo/tests/run-all.sh")" -eq 1 ] \
+  || bad "case 39: 複製ランナーの MISS_PROBE_BASELINE 差し替えが適用されていない（見出し行の改稿で awk が空振り）"
 cp "$TESTS_DIR/../scripts/record-gate-head.sh" "$_dg_fx/repo/scripts/record-gate-head.sh"
 
 # 利用者のグローバル設定（署名・テンプレート）から独立させる。
@@ -2612,8 +2894,21 @@ awk '
   }
   in_required && /^\)$/ { in_required = 0; print; next }
   in_required { next }
+  # 空振り検出の免除名簿も fixture の名前へ差し替える（実体の名簿を残すと
+  # 「実在しない名前」検査が先に落ちて本題まで届かない。REQUIRED_SUITES と同じ理由）
+  /^MISS_PROBE_BASELINE=\($/ {
+    print
+    print "  mcp-guard-probe"
+    print "  mcp-guard-required-probe"
+    in_baseline = 1
+    next
+  }
+  in_baseline && /^\)$/ { in_baseline = 0; print; next }
+  in_baseline { next }
   { print }
 ' "$RUNNER" > "$_mg_fx/repo/tests/run-all.sh"
+[ "$(grep -c '^  mcp-guard-probe$' "$_mg_fx/repo/tests/run-all.sh")" -eq 1 ] \
+  || bad "case 40: 複製ランナーの MISS_PROBE_BASELINE 差し替えが適用されていない（見出し行の改稿で awk が空振り）"
 cp "$TESTS_DIR/../scripts/record-gate-head.sh" "$_mg_fx/repo/scripts/record-gate-head.sh"
 
 _mg_git() { git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -c init.defaultBranch=main "$@"; }

@@ -24,6 +24,12 @@
 #     `REQUIRED_SUITES` へ 1 行足すか、verify.sh へ `# run-all-required: no — 理由`
 #     （理由は必須。無いと赤）を書くまで登録照合が赤になる。導出規則は下の
 #     check_suite_registration 直前のコメント「必須名簿の逆向き導出」を参照。
+#     **新設 suite は「針が当たらない入力」で赤になる実測を verify.sh のヘッダへ宣言する**
+#     （`# 空振り検出: <針が当たらない入力> を与えると (検査番号) が赤になる。`。本文は
+#     同じ行に書き、最初の非コメント行より前に置く。それ以降・heredoc 内の同形は数えない）。
+#     宣言が無いと登録照合が赤になる。既存 suite は MISS_PROBE_BASELINE の名簿で免除
+#     するが、名簿は縮める方向にしか動かさない（規定の正本は docs/04-quality/TESTING.md
+#     「針が当たらない入力の既定」節。Issue `#1665`）
 #   - 終了コード: 失敗 or 未実行が 1 件でもあれば 1、それ以外は 0。ただし passed が
 #     0 で skipped だけの場合も 1（検証が 1 件も成立していない状態を緑にしない）
 #     起動ガード（後述の dirty tree 検査など）で suite を 1 件も実行せずに終わる回も 1
@@ -1220,7 +1226,158 @@ REQUIRED_SUITES=(
   retrospective-ledger-freshness
 )
 
-# 渡された verify.sh を走査し、1 行 1 suite で `<名前>:<skip>:<yes>:<no>:<bad>` を返す。
+# ── 「空振り検出」宣言を免除する既存 suite の名簿（縮める方向にしか動かさない）────
+# 検査の針が当たらない入力（対象の不在・読めない・0 件一致・書式変更・名前だけ残って
+# 中身が変わる・集合が空）に対して既定が緑へ倒れる形が、Epic `#1652` の 6 PR で 13 件
+# 同型に出た（Issue `#1665`）。新設 suite には「その入力で赤になる」実測を verify.sh の
+# ヘッダへ `# 空振り検出:` として宣言させ、登録照合が宣言の実在を要求する。
+#
+# 既存 suite への遡及は `#1665` のスコープ外なので、その時点の suite をここへ列挙して
+# 免除する。**この名簿には追加しない** — 新設 suite は宣言を書く。宣言を後から足した
+# suite はここから外す（載ったままだと赤: 名簿が「未実測」を主張し続ける形を残さない）。
+# 実在しない名前も赤（改名・削除に追従できていない行は何も免除していない）。
+MISS_PROBE_BASELINE=(
+  ace-curate-commit
+  ace-curate-fallback-exec
+  ace-line-budget-docs
+  ace-refine
+  ace-run-ts
+  ace-scripts-mirror-selftest
+  ace-scripts-mirror
+  ace-scripts-typecheck-selftest
+  ace-scripts-typecheck
+  ace-scripts-vitest
+  adapter-argv-limit
+  adapter-base-ref-freshness
+  adapter-env-isolation-selftest
+  adapter-model-args
+  adapter-prompt-guard
+  adapter-prompt-utf8
+  adapter-sandbox-contract
+  agent-config-doc-sync
+  asdd-runtime
+  assess-impact
+  auto-update-hook
+  background-child-reclaim-contract
+  changelog-contract-selftest
+  changelog-contract
+  changelog-digest
+  changelog-fragments
+  changelog-public-tags-selftest
+  changelog-public-tags
+  claude-hooks-path
+  cli-registry-completeness
+  close-issue-shell-quote
+  closing-keyword-guard
+  cloud-env-setup
+  create-issue-template-preflight
+  docs-fact-drift-selftest
+  docs-fact-drift
+  docs-frontmatter-repo-selftest
+  docs-frontmatter-repo
+  docs-gates-runtime
+  docs-gates
+  docs-scan-mirror
+  docs-template-frontmatter-selftest
+  docs-template-frontmatter
+  docs-template-portability
+  docs-version-changelog-selftest
+  docs-version-changelog
+  effort-contract
+  git-fixture-isolation
+  github-labels-setup
+  guard-background-cwd
+  guard-checkout-restore
+  guard-effort-actual
+  guard-exit-code
+  guard-issue-labels
+  guard-long-gate-background
+  guard-pr-followup
+  guard-review-in-flight
+  guard-sub-issue-id
+  host-route-parity
+  init-docs-placeholder-list
+  issue-label-contract
+  issue-label-supply
+  link-sub-issues
+  live-ace-gates-selftest
+  live-ace-gates
+  long-task-commit-contract
+  markdownlint-selftest
+  markdownlint
+  mbcs-guard-failclosed
+  mcp-dist-gate
+  mcp-state-selftest
+  mcp-typecheck-selftest
+  mcp-typecheck
+  mcp-vitest
+  merge-cleanup
+  merge-freshness
+  multi-agent-critical-marker
+  multi-agent-host-delegation
+  multi-agent-ignore-paths
+  multi-agent-plan
+  multi-agent-resume
+  multi-agent-review-banner
+  multi-agent-revision-guard
+  multi-agent-serialization
+  multi-agent-skip-poisoned-cli
+  multi-agent-stale-outputs
+  multi-agent-timeout
+  no-checks-merge-basis-contract
+  no-hardcoded-model
+  out-of-scope-decision
+  out-of-scope-routing-selftest
+  out-of-scope-routing
+  plugin-description-enumeration-selftest
+  plugin-description-enumeration
+  plugin-root-contract
+  plugin-version-check
+  public-dependabot-health
+  refine-issue-skip-contract
+  release-required-selftest
+  removal-sweep
+  retrospective-contract-selftest
+  retrospective-contract
+  retrospective-ledger-freshness
+  retrospective-stop-hook-selftest
+  retrospective-stop-hook
+  review-capture-fail-loud
+  review-diff-scope
+  review-freeze-contract
+  review-rejection-discipline
+  review-severity-scope
+  review-worktree-scripts-decision
+  review-wrapper-shim
+  reviewer-pair
+  roadmap-release-facts-selftest
+  roadmap-release-facts
+  root-instructions-parity
+  setup-ai-config
+  setup-multi-agent-yq
+  severity-parser-intersection
+  shared-version-convergence
+  shellcheck
+  skill-bash-blocks
+  skill-count-consistency-selftest
+  skill-count-consistency
+  skill-drift-check
+  skill-frontmatter
+  skill-references-existence
+  sweep-orphan-transcripts
+  sync-forbidden-patterns
+  sync-sha-contract
+  update-check
+  validate-docs-placeholders-selftest
+  validate-docs-placeholders
+  validate-docs
+  weekly-health-contract
+  workflow-doctor
+  workflow-tier
+  worktree-preflight-contract
+)
+
+# 渡された verify.sh を走査し、1 行 1 suite で `<名前>:<skip>:<yes>:<no>:<bad>:<probe>` を返す。
 #
 # `<skip>` は **suite 全体の** skip 経路の有無。ランナーの実行時判定（出力の列 0 に
 # `○ skip` が現れた行）と同じ境界を静的側でも取る:
@@ -1235,15 +1392,21 @@ REQUIRED_SUITES=(
 #     「環境都合で丸ごと消えうる」と誤って必須へ引き上げないため。
 #
 # `<yes>` / `<no>` は宣言コメントの有無で、両方 1 なら矛盾。`<bad>` は `run-all-required:`
-# を名乗りながら理由（yes / no の直後の非空白）を欠く宣言の有無。理由なしの `no` を素通り
-# させると、判断の記録なしに必須から外れてしまう。
+# を名乗りながら理由（yes / no の直後の非空白）を欠く宣言、または `空振り検出:` を名乗り
+# ながら本文を欠く宣言の有無。理由なしの `no` を素通りさせると、判断の記録なしに必須から
+# 外れてしまう。`<probe>` は本文を持つ `# 空振り検出:` 宣言の有無（MISS_PROBE_BASELINE
+# に無い suite はこれが 1 でないと赤）。**宣言はヘッダ限定** — 最初の非コメント・非空行
+# より後ろ（heredoc 本文・fixture の生成文・ファイル末尾）に現れた同形は probe に数えず
+# bad で印を付ける。run-all-required と違い任意の位置を許さないのは、fixture を heredoc で
+# 書く suite が本文中の `# 空振り検出:` で宣言済みに見えてしまう（名前だけ残って中身が
+# 無い形）のを閉じるため。
 #
 # ファイルごとに awk を起動する形は suite 数ぶんのプロセス生成で実測 3 秒近く伸びた
 # （run-all は毎回この照合を通る）。FILENAME を使った 1 パスにまとめる。
 suite_declaration_scan() {
   awk '
     function emit() {
-      if (name != "") { printf "%s:%d:%d:%d:%d\n", name, skip, yes, no, bad }
+      if (name != "") { printf "%s:%d:%d:%d:%d:%d\n", name, skip, yes, no, bad, probe }
     }
     FNR == 1 {
       emit()
@@ -1251,7 +1414,8 @@ suite_declaration_scan() {
       sub(/\/verify\.sh$/, "", path)
       sub(/^.*\//, "", path)
       name = path
-      skip = 0; yes = 0; no = 0; bad = 0
+      skip = 0; yes = 0; no = 0; bad = 0; probe = 0
+      header = 1
     }
     # 宣言は「yes / no + 理由」で 1 つの形。理由を欠く宣言は読み飛ばさず bad で印を付ける。
     /^[[:space:]]*#[[:space:]]*run-all-required:/ {
@@ -1262,7 +1426,20 @@ suite_declaration_scan() {
       else { bad = 1 }
       next
     }
+    # 空振り検出の宣言。本文（針が当たらない入力と赤になる検査）を同じ行に持たない宣言、
+    # ヘッダの外（最初の非コメント・非空行より後ろ）に置かれた宣言は bad。
+    /^[[:space:]]*#[[:space:]]*空振り検出:/ {
+      decl = $0
+      sub(/^[[:space:]]*#[[:space:]]*空振り検出:[[:space:]]*/, "", decl)
+      if (!header) { bad = 1 }
+      else if (decl ~ /[^[:space:]]/) { probe = 1 }
+      else { bad = 1 }
+      next
+    }
+    /^[[:space:]]*$/ { next }
     /^[[:space:]]*#/ { next }
+    # コメントでも空行でもない最初の行でヘッダが終わる（以降の宣言は数えない）
+    { header = 0 }
     # heredoc 本文（引用符を伴わず列 0 から始まる skip 行）
     /^○ skip/ { skip = 1; next }
     # 出力文が、開き引用符の直後＝出力行の列 0 に `○ skip` を置く形（引用符種別を問わない）
@@ -1357,7 +1534,8 @@ check_suite_registration() {
   # 走査は awk 1 プロセス。**終了コードを捨てない** — BSD awk は開けないファイルを警告
   # して次へ進み最後に非 0 を返すので、`for entry in $(...)` の形だと 1 本だけ読めない
   # verify.sh がその suite を黙って導出から落とす（名簿にも無ければ緑のまま）。
-  local entry sname flags scan_out derived=() conflicts=() dead_optout=() malformed=()
+  local entry sname flags probe scan_out derived=() conflicts=() dead_optout=() malformed=()
+  local probed=() unprobed=() stale_baseline=() dead_baseline=() in_baseline
   if ! scan_out="$(suite_declaration_scan "$SCRIPT_DIR"/*/verify.sh)"; then
     echo "✗ verify.sh の走査が失敗しました（読めない verify.sh がある可能性。逆向き照合が成立していません）" >&2
     return 1
@@ -1365,9 +1543,14 @@ check_suite_registration() {
   for entry in $scan_out; do
     sname="${entry%%:*}"
     flags="${entry#*:}"
+    # 末尾の <probe> を先に切り出す（空振り検出の宣言の有無。判定は下の名簿照合で行う）
+    probe="${flags##*:}"
+    flags="${flags%:*}"
+    [[ "$probe" == "1" ]] && probed+=("$sname")
     case "$flags" in
       *:1)
-        # 理由を欠く run-all-required 宣言（yes / no の判定より前に落とす）
+        # 本文を欠く宣言（run-all-required の理由なし / 空振り検出の本文なし）。
+        # yes / no の判定より前に落とす
         malformed+=("$sname")
         continue
         ;;
@@ -1395,9 +1578,11 @@ check_suite_registration() {
     esac
   done
   if [[ "${#malformed[@]}" -gt 0 ]]; then
-    echo "✗ 理由の無い run-all-required 宣言があります:" >&2
+    echo "✗ 理由の無い run-all-required 宣言、または本文の無い 空振り検出 宣言があります:" >&2
     printf '    %s\n' "${malformed[@]}" >&2
     echo "  '# run-all-required: yes — 理由' / '# run-all-required: no — 理由' の形で理由を書いてください（理由なしの no は判断の記録なしに必須から外れます）。" >&2
+    echo "  '# 空振り検出: <針が当たらない入力> を与えると (検査番号) が赤になる。' の形で本文を書いてください（本文の無い宣言は実測の記録になりません）。" >&2
+    echo "  空振り検出 宣言は verify.sh のヘッダ（最初の非コメント行より前）に置き、本文は同じ行に書いてください（継続行・heredoc 内・ファイル末尾の同形は数えません）。" >&2
     return 1
   fi
   if [[ "${#conflicts[@]}" -gt 0 ]]; then
@@ -1446,11 +1631,58 @@ check_suite_registration() {
     echo "  suite 全体の skip 経路も yes 宣言も無い（または no 宣言と同居しています）。skip 経路が無いまま名簿へ残すなら verify.sh へ '# run-all-required: yes — 理由' を書いてください。" >&2
     return 1
   fi
-  echo "ℹ️  既定 suite 一覧の登録漏れなし（実体 ${#disk_names[@]} 件 / 必須 ${#REQUIRED_SUITES[@]} 件 — 実体からの導出と一致）"
+  # ── 空振り検出の宣言: 名簿（MISS_PROBE_BASELINE）に無い suite は宣言が必須 ─────
+  # 名簿は「`#1665` 以前に新設され、遡及していない suite」の列挙で、縮める方向にしか
+  # 動かさない。実在しない名前（改名・削除に未追従）と、宣言を持つのに載ったままの名前
+  # （名簿が「未実測」を主張し続ける）はどちらも赤にする。
+  # 名簿が空（全 suite が遡及済みの終端状態）でも bash 3.2 の set -u で落ちない展開で回す
+  for req in ${MISS_PROBE_BASELINE[@]+"${MISS_PROBE_BASELINE[@]}"}; do
+    found=0
+    for d in "${disk_names[@]}"; do
+      [[ "$req" == "$d" ]] && { found=1; break; }
+    done
+    [[ "$found" -eq 1 ]] || stale_baseline+=("$req")
+    # bash 3.2 の set -u は空配列の "${arr[@]}" を unbound にするので、空許容の展開で回す
+    for d in ${probed[@]+"${probed[@]}"}; do
+      [[ "$req" == "$d" ]] && { dead_baseline+=("$req"); break; }
+    done
+  done
+  if [[ "${#stale_baseline[@]}" -gt 0 ]]; then
+    echo "✗ MISS_PROBE_BASELINE に実在しない suite 名があります:" >&2
+    printf '    %s\n' "${stale_baseline[@]}" >&2
+    echo "  改名・削除に追従できていません（その行は何も免除していません）。名簿から外してください。" >&2
+    return 1
+  fi
+  if [[ "${#dead_baseline[@]}" -gt 0 ]]; then
+    echo "✗ 空振り検出を宣言した suite が MISS_PROBE_BASELINE に残っています:" >&2
+    printf '    %s\n' "${dead_baseline[@]}" >&2
+    echo "  宣言を足した suite は名簿から外してください（名簿は縮める方向にしか動かしません）。" >&2
+    return 1
+  fi
+  for d in "${disk_names[@]}"; do
+    in_baseline=0
+    for req in ${MISS_PROBE_BASELINE[@]+"${MISS_PROBE_BASELINE[@]}"}; do
+      [[ "$d" == "$req" ]] && { in_baseline=1; break; }
+    done
+    [[ "$in_baseline" -eq 1 ]] && continue
+    found=0
+    for req in ${probed[@]+"${probed[@]}"}; do
+      [[ "$d" == "$req" ]] && { found=1; break; }
+    done
+    [[ "$found" -eq 1 ]] || unprobed+=("$d")
+  done
+  if [[ "${#unprobed[@]}" -gt 0 ]]; then
+    echo "✗ 空振り検出の宣言が無い suite があります（MISS_PROBE_BASELINE に無い suite は宣言が必須です）:" >&2
+    printf '    %s\n' "${unprobed[@]}" >&2
+    echo "  検査の針が当たらない入力（対象の不在・読めない・0 件一致・書式変更・名前だけ残って中身が変わる・集合が空）を最低 1 つ与えて赤になることを実測し、verify.sh のヘッダへ '# 空振り検出: <針が当たらない入力> を与えると (検査番号) が赤になる。' と書いてください。名簿へ追加して免除する形は採りません。" >&2
+    echo "  規定の正本は docs/04-quality/TESTING.md §針が当たらない入力の既定 を参照してください。" >&2
+    return 1
+  fi
+  echo "ℹ️  既定 suite 一覧の登録漏れなし（実体 ${#disk_names[@]} 件 / 必須 ${#REQUIRED_SUITES[@]} 件 — 実体からの導出と一致 / 空振り検出の免除名簿 ${#MISS_PROBE_BASELINE[@]} 件）"
   return 0
 }
 
-# --dump-declarations: 実体から読んだ導出材料（`<名前>:<skip>:<yes>:<no>:<bad>`）を
+# --dump-declarations: 実体から読んだ導出材料（`<名前>:<skip>:<yes>:<no>:<bad>:<probe>`）を
 # そのまま出して終わる。tests/run-all/verify.sh は既定一覧の統合検査（case 26）のために
 # 実在 suite を写した複製木を作るが、そこで判定述語を書き写すと「述語を変えるときは
 # 2 箇所同時」の結合が生まれ、片方だけ直すと複製木の導出集合がずれて原因の読めない赤に
