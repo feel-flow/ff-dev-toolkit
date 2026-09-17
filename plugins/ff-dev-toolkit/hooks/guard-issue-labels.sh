@@ -164,54 +164,21 @@ list_has() { # <list> <needle>
 
 # ---- 1) heredoc 本文を落とす -------------------------------------------------
 # heredoc 本文は「コマンドの並び」ではなくデータなので、判定対象から外す。
-# 解析に失敗したら元のコマンドへ倒す（fail-open ではなく検出側だが、抜け道は
-# deny 文に出る）。実装は `guard-review-in-flight.sh` と同型。
-code_only="$(printf '%s\n' "$cmd" | awk '
-  function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-  # 行末に連なるバックスラッシュの数（奇数なら行継続、偶数ならエスケープ済みの `\`）
-  function tailbs(s,   i, c) {
-    c = 0
-    for (i = length(s); i >= 1; i--) {
-      if (substr(s, i, 1) == "\\") c++
-      else break
-    }
-    return c
-  }
-  BEGIN {
-    q = sprintf("%c", 39)
-    re = "<<-?[ \t]*(\"[^\"]*\"|" q "[^" q "]*" q "|[A-Za-z_][A-Za-z0-9_]*)"
-    nd = 0
-    pend = ""
-  }
-  {
-    if (nd > 0) {
-      if (trim($0) == d[1]) { for (i = 1; i < nd; i++) d[i] = d[i + 1]; nd-- }
-      next
-    }
-    scan = $0
-    gsub(/<<</, "___", scan) # here-string は heredoc ではない（長さを保つ置換）
-    pos = 1
-    while (match(substr(scan, pos), re)) {
-      st = pos + RSTART - 1
-      tok = substr(scan, st, RLENGTH)
-      sub(/^<<-?[ \t]*/, "", tok)
-      gsub("[\"" q "]", "", tok)
-      nd++
-      d[nd] = tok
-      pos = st + RLENGTH
-    }
-    # 行末 `\` は行継続。シェルと同じく `\` + 改行を丸ごと取り除いて次行へ連結する。
-    # 両起票スキルの起票テンプレートは `--label` を継続行へ置くので、ここで繋がないと
-    # 先頭行のトークンしか見えず、契約どおりラベルを付けた起票を止めてしまう。
-    if (tailbs($0) % 2 == 1) {
-      pend = pend substr($0, 1, length($0) - 1)
-      next
-    }
-    print pend $0
-    pend = ""
-  }
-  END { if (pend != "") print pend }
-' 2>/dev/null)" || code_only="$cmd"
+# 判定は共有ヘルパ `tests/lib/heredoc-strip.sh`（行末 `\` の継続結合を含む。正本は
+# ヘルパのヘッダ）。ヘルパが読めない・awk が失敗したら元のコマンドへ倒す（fail-open
+# ではなく検出側だが、抜け道は deny 文に出る）。未終端（rc 3）はヘルパが生コマンドを
+# 返すので、そのまま走査する。
+HEREDOC_HELPER="${BASH_SOURCE[0]%/*}/../tests/lib/heredoc-strip.sh"
+# shellcheck source=../tests/lib/heredoc-strip.sh
+if . "$HEREDOC_HELPER" 2>/dev/null; then
+  code_only="$(ff_heredoc_strip "$cmd")"
+  case $? in
+    0 | 3) : ;;
+    *) code_only="$cmd" ;;
+  esac
+else
+  code_only="$cmd"
+fi
 [ -n "$code_only" ] || exit 0
 case "$code_only" in
   *issue*) : ;;

@@ -50,6 +50,29 @@
 #       one: tests/lib/hook-stdin-drain.sh accepts any `-t <value>` without
 #       comparing it against hooks.json. A bound that outgrows its timeout is
 #       caught by review, not by the gate.
+# Return-code contract (Issue `#1684`). "Disabled" and "cannot verify" are
+# distinct outcomes, and callers that care must read the value, not just the
+# truthiness:
+#
+#   0  enabled  — no ASDD config up to the nearest .git, or config says on
+#   3  disabled — .asdd/config.json exists and features.hooks (or the named
+#                 feature) is false. Intentional, silent pass-through.
+#   1  cannot verify — .asdd/config.json exists but `node` is not on PATH
+#   2  cannot verify — node ran but the config could not be loaded/validated
+#                      (asdd-feature.mjs exit 2)
+#   anything else — cannot verify (node itself failed in an unexpected way)
+#
+# `asdd_hook_enabled hooks || exit 0` folds 3 and the "cannot verify" values
+# into one silent pass-through. That is the intended shape for fail-open hooks
+# (the only thing lost is a warning). A hook with a fail-closed contract must
+# read the value and treat everything other than 0 / 3 as undecidable:
+#
+#   asdd_hook_enabled hooks
+#   asdd_rc=$?
+#   case "$asdd_rc" in 0) ;; 3) exit 0 ;; *) <stop, as undecidable> ;; esac
+#
+# The rc 1 path (this helper) and the rc 2 path (asdd-feature.mjs) print a
+# diagnostic to stderr; an unexpected node failure ("anything else") does not.
 asdd_hook_enabled() {
   local feature="$1" root="${PWD}" parent gate
   while :; do

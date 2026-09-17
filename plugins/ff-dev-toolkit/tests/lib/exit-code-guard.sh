@@ -32,8 +32,11 @@
 #                   ぶん、ログを読み直す動機すら消える。
 #                   例: `bash tests/run-all.sh > log 2>&1; echo "EXIT=$?"`
 #                       → 通知は exit code 0。実際は failed=4 でも読み手に届かない
-#                   握り潰すのは `;` / `||` / パイプの 3 つ。**`&&` は対象外** — 短絡するので
-#                   ゲートが赤なら右辺は実行されず、終了コードはゲートのものが残る（実測）
+#                   握り潰すのは `;` / `||` / 単独の `&`（background 起動。`a & b` の rc は
+#                   b のもの）/ パイプの 4 つ。**`&&` は対象外** — 短絡するのでゲートが赤なら
+#                   右辺は実行されず、終了コードはゲートのものが残る（実測）。`{ … }` / `( … )`
+#                   のグループ実行と、末尾区間が環境代入・ラッパで始まる形（`FOO=1 echo done`）
+#                   も同じ判定に入る（Issue `#1683`）
 #                   正しい形: `bash tests/run-all.sh > log 2>&1` で改行し、次の行で
 #                       `rc=$?; echo "EXIT=$rc"; exit $rc`（診断を出したうえで伝播させる）
 #
@@ -123,17 +126,24 @@ function is_pipe(s,   k, arr, t, w) {
   sub(/^.*\//, "", w)
   return (w ~ /^(head|tail|less|more|cat|tee|wc)$/)
 }
-# ゲート起動を含むか。対象は「赤なら止めるべき検証の入口」で、名前で拾う。ここを
-# 「あらゆるコマンド」へ広げると、診断で終わる普通のスクリプトが全部赤になる。
-function is_gate_launch(s,   w, rest, guard) {
-  if (s !~ /run-all\.sh/) return 0
+# 区間の前置きを剥がす。グループ実行の括弧（`{` / `(` と対応する `}` / `)`）、環境変数代入、
+# ラッパ（timeout / nohup / stdbuf / env / command / sudo / time）は background 起動の定番形で、
+# ここを剥がさないと**実際に事故が起きる形だけ**が素通りする。`is_pipe` が同じファイル内で
+# sudo / command / env を剥がしているのに、起動側だけ・終端側だけ剥がさない非対称は境界として
+# 説明できない（Issue `#1683`）ので、起動判定（is_gate_launch）と終端判定（is_silent_tail）の
+# 両方がこの 1 つを使う。
+function strip_prefix(s,   w, guard) {
   sub(/^[[:space:]]+/, "", s)
-  # 前置きを剥がす。環境変数代入とラッパ（timeout / nohup / stdbuf / env / command / sudo / time）は
-  # background 起動の定番形で、ここを剥がさないと**実際に事故が起きる形だけ**が素通りする。
-  # `is_pipe` が同じファイル内で sudo / command / env を剥がしているのに、こちらだけ剥がさない
-  # 非対称は境界として説明できない。
+  sub(/[[:space:]]+$/, "", s)
   guard = 0
   while (guard++ < 8) {
+    # グループ実行の括弧は語として現れる（`{ cmd; }` / `( cmd )`）。先頭・末尾から剥がす
+    if (s ~ /^[{}()]([[:space:]]|$)/) { sub(/^[{}()][[:space:]]*/, "", s); continue }
+    # `(` `)` は語境界を要らない（`(cmd); echo` も有効な bash）。`{` `}` は語なので空白が要る
+    if (s ~ /^\(/) { sub(/^\(/, "", s); continue }
+    if (s ~ /\)$/) { sub(/[[:space:]]*\)$/, "", s); continue }
+    if (s ~ /[[:space:]][{}()]$/) { sub(/[[:space:]]+[{}()]$/, "", s); continue }
+    if (s ~ /^[{}()]$/) { s = ""; break }
     if (s ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]/) { sub(/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/, "", s); continue }
     w = s; sub(/[[:space:]].*$/, "", w); sub(/^.*\//, "", w)
     if (w == "timeout") {
@@ -150,6 +160,13 @@ function is_gate_launch(s,   w, rest, guard) {
     }
     break
   }
+  return s
+}
+# ゲート起動を含むか。対象は「赤なら止めるべき検証の入口」で、名前で拾う。ここを
+# 「あらゆるコマンド」へ広げると、診断で終わる普通のスクリプトが全部赤になる。
+function is_gate_launch(s,   w, rest) {
+  if (s !~ /run-all\.sh/) return 0
+  s = strip_prefix(s)
   w = s
   sub(/[[:space:]].*$/, "", w)
   # 代入は起動ではない（`RUNNER=tests/run-all.sh; echo done` を赤にすると直しようがない）。
@@ -175,7 +192,20 @@ function is_status_exit(s) {
   sub(/[[:space:]]+$/, "", s)
   return (s ~ /^(exit|return)[[:space:]]+\$\?$/)
 }
+# 位置 i の `&` が background 起動の区切り子か。リダイレクト由来の `&`（`2>&1` / `>&2` /
+# `&>log` / `>&-` / `<&0`）は区切りではない: 直前の非空白が `>` / `<`、または直後が `>` /
+# 数字 / `-` の形を除く（`&&` は呼び出し側で先に判定済み）。
+function is_bg_amp(s, i,   j, p, nx) {
+  j = i - 1
+  while (j >= 1 && (substr(s, j, 1) == " " || substr(s, j, 1) == "\t")) j--
+  p = (j >= 1) ? substr(s, j, 1) : ""
+  nx = substr(s, i + 1, 1)
+  if (p == ">" || p == "<") return 0
+  if (nx == ">" || nx == "-" || nx ~ /[0-9]/) return 0
+  return 1
+}
 # 論理行を区間へ割り、区切り子の種別を保つ。単一の `|` では割らない（パイプは区間の内側）。
+# 単独の `&`（background 起動）は区切り子（seps = "&"）。
 function split_segments(s, segs, seps,   i, c, seg, n) {
   n = 0; seg = ""
   for (i = 1; i <= length(s); i++) {
@@ -183,6 +213,7 @@ function split_segments(s, segs, seps,   i, c, seg, n) {
     if (c == ";") { segs[++n] = seg; seps[n] = ";"; seg = "" }
     else if (c == "&" && substr(s, i + 1, 1) == "&") { segs[++n] = seg; seps[n] = "&&"; seg = ""; i++ }
     else if (c == "|" && substr(s, i + 1, 1) == "|") { segs[++n] = seg; seps[n] = "||"; seg = ""; i++ }
+    else if (c == "&" && is_bg_amp(s, i)) { segs[++n] = seg; seps[n] = "&"; seg = "" }
     else seg = seg c
   }
   segs[++n] = seg
@@ -207,8 +238,8 @@ function pipe_head_has_gate(s,   k, arr, i) {
 # その区間がゲートの成否を運ぶか。運ばない＝診断・出力整形で終端している。
 # `exit $rc` / `exit $?` / 代入 / 制御構文は運ぶ側（後段で使える）なので対象外。
 function is_silent_tail(s,   w, rest) {
-  sub(/^[[:space:]]+/, "", s)
-  sub(/[[:space:]]+$/, "", s)
+  # 起動側と同じ前置き剥がし（`FOO=1 echo done` / `command tail -5 log` / `{ … }` の閉じ）
+  s = strip_prefix(s)
   if (s == "") return 0
   if (is_pipe(s)) return 1
   w = s
@@ -249,7 +280,7 @@ function is_status(s) {
 #   (2) ゲート以降の区切り子が**全部 `&&`** — 短絡するのでゲートが赤なら後続は走らない
 # 落ちるのは:
 #   (a) ゲートがパイプの最終段でない（rc はパイプ終端のものになる。後続の区切り子に関係なく）
-#   (b) ゲート以降に `;` か `||` が 1 つでもある
+#   (b) ゲート以降に `;` か `||` か単独の `&` が 1 つでもある
 # ただし終端が成否を運ぶ形（代入・制御構文・非フィルタ終端）なら、後段で使える形なので見ない。
 function gate_swallowed(m,   segs, seps, n, i, gi) {
   n = split_segments(m, segs, seps)
@@ -257,6 +288,8 @@ function gate_swallowed(m,   segs, seps, n, i, gi) {
   gi = 0
   for (i = 1; i <= n; i++) if (seg_has_gate(segs[i])) { gi = i; break }
   if (gi == 0) return 0
+  # 末尾がグループの閉じ（`{ echo done; }` の `}`）だけなら、その手前の区間を終端として見る
+  while (n > gi && strip_prefix(segs[n]) == "") n--
   # `exit $?` は「ゲート区間の直後」でだけ伝播する。診断を 1 つでも挟むとその 0 を読むので、
   # 規定を読んだ人が最も踏みやすい取り違え（`rc=$?` を取り忘れた形）がここで止まる。
   if (is_status_exit(segs[n])) { if (n == gi + 1) return 0 }

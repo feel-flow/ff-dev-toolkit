@@ -18,8 +18,13 @@
 #   (8) 分岐時は解決がローカルを維持し、混入件数つきの鮮度警告が残る
 #   (9) 選択行は 1 実行につき 1 行だけ（使わない既定 base の行を出さない）
 #  (10) レビュー系列 ID は base の鮮度で変わらない（pull しただけで別系列にしない）
+#       被検体は multi-agent.sh の写しを丸ごと source し、stderr の漏れも測る
 #  (11) 祖先関係を確認できないとき（rc が 0/1 以外）は「判定できなかった」と名乗る
 #  (12) アダプタ直叩き（parse_adapter_args）の --base も同じ解決を通る
+#
+# 変異検出: 写し（multi-agent.sh）から review_series_reason_file() の定義を消すと (10c) が
+#   `command not found` で赤になる。旧形（関数 2 つの sed 部分抽出）へ戻しても同じ行で赤。
+#   写しの `main "$@"` 行が別の形になると (10a) が赤、系列 ID が空になり (10b) も赤。
 #
 # ネットワークには触らない（fetch でリモートへ出ない）。書き込み不可の環境では skip。
 
@@ -286,38 +291,66 @@ git branch -q -D other-base
 # 系列 ID に**解決後**の base 名を混ぜると、stale のまま 1 回目 → git pull 後の
 # 2 回目で develop ↔ origin/develop が入れ替わり、同じブランチ・同じ base・同じ
 # scope のレビューが「another branch/base/scope」と判定される（未解決 Critical を
-# 引き継げず強制フルレビューになる偽陽性）。被検体の 2 関数だけを取り出して固定する。
+# 引き継げず強制フルレビューになる偽陽性）。
+#
+# 被検体は multi-agent.sh を `main "$@"` 行だけ除いた写しとして**丸ごと** source して呼ぶ。
+# 関数を sed で部分抽出すると、抽出した関数が呼ぶ依存関数（review_series_reason_file 等）が
+# 未定義になり `command not found`（rc 127）が stderr へ漏れる。コマンド置換の中で起きる 127 は
+# `|| true` に吸われて系列 ID 自体は出るため、アサーションは緑のまま診断だけを汚す — 週次の
+# 公開 run-all で別 suite の失敗原因と誤読された（Issue `#1664`）。$0 には実スクリプトのパスを
+# 渡し、SCRIPT_DIR（= adapter-common の解決）を本物に向ける（tests/multi-agent-stale-outputs
+# と同じ形）。
 
-sed -n '/^finalize_base_branch() {/,/^}/p' "$MULTI_AGENT" > "$TMP/fn-finalize.sh"
-sed -n '/^current_review_series_id() {/,/^}/p' "$MULTI_AGENT" > "$TMP/fn-series.sh"
-series_id_now() {
-  (
+FUNCS="$TMP/multi-agent-functions.sh"
+if grep -q '^main "\$@"$' "$MULTI_AGENT"; then
+  ok "(10a) 写しの前提（末尾の main 呼び出し行）が実物に存在する"
+else
+  bad "(10a) multi-agent.sh の main 呼び出し行が想定の形ではない（写しに main 実行が残る）"
+fi
+sed '/^main "\$@"$/d' "$MULTI_AGENT" > "$FUNCS"
+# 写しは $TMP 配下にあるので、ホストが plugin root の handoff（FF_DEV_TOOLKIT_ROOT 等）を
+# export していると script-root guard が「別領域の実体」と判定して exit 2 する。この呼び出し
+# だけ 3 つを外す。理由ファイルは /tmp を汚さないよう $TMP へ向ける。
+SOURCED_ENV=("${ORCHESTRATOR_ENV[@]}" -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT)
+series_id_now() { # stdout: 系列 ID / stderr: $STDERR_FILE へ追記
+  "${SOURCED_ENV[@]}" FF_MULTI_AGENT_REVIEW_SERIES_REASON_FILE="$TMP/series-reason" bash -c '
     set -euo pipefail
-    . "$ADAPTER_COMMON"
-    . "$TMP/fn-finalize.sh"
-    . "$TMP/fn-series.sh"
-    REPO_ROOT="$TMP/work"
+    cd "$2"
+    source "$1"
     STAGED_DIFF=false
     BASE_BRANCH="develop"
     BASE_BRANCH_IDENTITY=""
     finalize_base_branch 2>/dev/null
     current_review_series_id
-  )
+  ' "$MULTI_AGENT" "$FUNCS" "$TMP/work" 2>>"$STDERR_FILE"
 }
-if [ -s "$TMP/fn-finalize.sh" ] && [ -s "$TMP/fn-series.sh" ]; then
-  # 1 回目: ローカル develop は stale（解決は origin/develop を採る）
-  SERIES_STALE="$(series_id_now)"
-  # 2 回目: 追従した（解決はローカル develop を採る）
-  git branch -qf develop "$ORIGIN_SHA"
-  SERIES_SYNCED="$(series_id_now)"
-  git branch -qf develop "${ORIGIN_SHA}^"
-  if [ -n "$SERIES_STALE" ] && [ "$SERIES_STALE" = "$SERIES_SYNCED" ]; then
-    ok "(10) base を pull しても系列 ID は変わらない（stale=${SERIES_STALE}）"
-  else
-    bad "(10) base の鮮度だけで系列 ID が変わった（stale='${SERIES_STALE}' synced='${SERIES_SYNCED}'）"
-  fi
+: > "$STDERR_FILE"
+# 写しの source や算出が非 0 で終わっても suite をラベル無しで即死させない（`set -e` 配下の
+# 代入で落ちると原因が $STDERR_FILE に埋もれる）。空 ID として (10b) を赤にし、(10c) が stderr
+# の中身を出す。
+# 1 回目: ローカル develop は stale（解決は origin/develop を採る）
+SERIES_STALE="$(series_id_now)" || SERIES_STALE=""
+# 2 回目: 追従した（解決はローカル develop を採る）
+git branch -qf develop "$ORIGIN_SHA"
+SERIES_SYNCED="$(series_id_now)" || SERIES_SYNCED=""
+git branch -qf develop "${ORIGIN_SHA}^"
+if [ -n "$SERIES_STALE" ] && [ "$SERIES_STALE" = "$SERIES_SYNCED" ]; then
+  ok "(10b) base を pull しても系列 ID は変わらない（stale=${SERIES_STALE}）"
 else
-  bad "(10) 被検体の関数を multi-agent.sh から抽出できなかった（関数名が変わった可能性）"
+  bad "(10b) base の鮮度だけで系列 ID が変わった、または算出に失敗した（stale='${SERIES_STALE}' synced='${SERIES_SYNCED}'。stderr は (10c) を参照）"
+fi
+# (10c) 2 回分の stderr は provenance 行以外が空であること。script-root guard は basename の
+# allowlist に無い script で `ℹ️  ff-dev-toolkit …` を常に 1 行出し、env では抑止できない
+# （設計上の契約）。それ以外の行 — 未定義関数の `command not found` など — が 1 行でもあれば
+# 赤。grep -v は「該当なし」の rc=1 だけを空へ落とし、rc≥2（読めない等）は判定不能として赤。
+series_leak_rc=0
+series_leak="$(grep -v '^ℹ' "$STDERR_FILE")" || series_leak_rc=$?
+if [ "$series_leak_rc" -ge 2 ]; then
+  bad "(10c) stderr を読めない（判定不能 rc=${series_leak_rc}）"
+elif [ -z "$series_leak" ]; then
+  ok "(10c) 系列 ID の算出は stderr へ何も出さない（未定義関数の 127 が隠れていない）"
+else
+  bad "(10c) 系列 ID の算出が stderr へ出力した: '${series_leak}'"
 fi
 
 # ---- (11) 祖先関係を確認できないとき（rc が 0/1 以外）------------------------

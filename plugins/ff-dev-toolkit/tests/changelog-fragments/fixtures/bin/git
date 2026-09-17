@@ -4,4 +4,7 @@ if [[ "${FAKE_FRAGMENT_SWAP_ON_HASH:-0}" == 1 && "$*" == *"hash-object ${FAKE_FR
   /bin/rm "$FAKE_FRAGMENT_SWAP_PATH"
   /bin/ln -s "${FAKE_FRAGMENT_SWAP_TARGET:?}" "$FAKE_FRAGMENT_SWAP_PATH"
 fi
-exec "${FAKE_FRAGMENT_REAL_GIT:-/usr/bin/git}" "$@"
+# 実 git は呼び出し側（verify.sh の run_contract）が PATH 前置より前に解決して渡す。この
+# fixture 自身が PATH 先頭に載るため `command -v git` は自分へ再帰し、`/usr/bin/git` の既定は
+# ホスト git 障害時の PATH シムを素通りする（Issue `#1720`）。未設定は fail-loud にする。
+exec "${FAKE_FRAGMENT_REAL_GIT:?}" "$@"

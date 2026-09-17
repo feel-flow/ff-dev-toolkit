@@ -20,6 +20,23 @@
 
 ## [Unreleased]
 
+## [0.119.0] - 2026-09-18
+
+### 変更
+
+- PreToolUse の Bash ガード 5 本（effort-actual / issue-labels / long-gate-background / review-in-flight / exit-code）が個別に持っていた heredoc 本文の除去処理を、共有ヘルパ `tests/lib/heredoc-strip.sh` へ 1 本化した。引用符や算術式の中に現れた heredoc の開始記号を本物の heredoc と誤認して以降の行を捨てていた形は「未終端」として区別され（rc 3 で本文除去前の生コマンドを返す）、awk が使えない環境は 0 / 3 以外の rc で返るので、各ガードが自分の fail-open / fail-closed 契約で分岐できる。ヘルパ自身の回帰 suite（`tests/heredoc-strip/`）を追加した。
+
+### 修正
+
+- 終了コード検出器（`tests/lib/exit-code-guard.sh` の `gate-exit-swallowed`）が、全件ゲートの起動を単独の `&` で background にした形（ログへ出力を向けたゲート起動の直後に `& echo started` が続く形）、波括弧・丸括弧のグループ実行、末尾区間が環境代入やラッパで始まる形（`; FOO=1 echo done` / `; command tail -5 log`）を取りこぼしていた穴を塞いだ。リダイレクト由来の `&`（標準エラーを標準出力へ向ける形など）とゲートを含まない行の `&` は区切り子と見なさない。PreToolUse ガード `guard-exit-code.sh` は同じ検出器を使うので、これらの形も止まるようになった（既知の限界一覧から削除）。
+- ASDD ゲート（`hooks/asdd-hook-gate.sh` の `asdd_hook_enabled`）の戻り値契約を明文化した: 0 = 有効、3 = 機能無効、それ以外 = 検証不能（`.asdd/config.json` があるのに Node.js が無い、設定を読めない）。既存の `|| exit 0` 呼び出しは挙動不変。fail-closed 契約を持つ `guard-exit-code.sh` はこの値を読むようになり、検証不能のときは候補コマンド（`$?` / `PIPESTATUS` / 全件ゲートの起動を含む Bash 呼び出し）に限り判定不能として止める。機能を無効にした環境は従来どおり無音で通る。
+- レビュー走行中ガード（`guard-review-in-flight.sh`）が、走行中ロックまたはレーンが生きている間、Bash 経由で作業ツリー内のファイルを書き換えるコマンドも止めるようになった。対象は出力リダイレクト（上書き・追記・標準エラー込み）、`tee` / `sed -i` / `perl -i` / `cp` `mv` `rm` `mkdir` `touch` `chmod` / `patch` `dd` `tar` `zip` `gzip` `curl -o` `wget` `sort -o` / `find -delete` / `git rm` `git clean` など（走査ライブラリ `tests/lib/review-write-scan.sh` の head 表が正本）と、書き込みマーカー（`open(…, "w")` / `write_text(` / `writeFileSync(` 等）を含むインタプリタのプログラム（`python3 -` へ heredoc で流す本文、`-c` / `-e` のインライン、script ファイル）。`bash -c` と sh 系の heredoc、`$(…)` とバッククォートの本文、`source` / `.` / `./script` の直接実行は本文を再帰的に判定する。引用符の中の `;` や改行を含むインラインプログラム、単独の `&` で繋いだコマンドも区間として正しく扱う。
+- 書き込み先は cwd の物理パス基準で解決する（`cd` の追跡、コマンド内の代入と環境変数の展開、`$(mktemp …)` の代入は一時領域扱い）。作業ツリーの外（scratchpad / `mktemp -d` / `/tmp`）、`/dev/null`、レビュー出力先 `.review-results/`、読み取り専用の形（`sed -n` / `python3 -c 'print(1)'` / マーカーの無いプログラム）は通す。書き込み先を判定できない形（変数展開・コマンド置換・読めないスクリプト・stdin から読むプログラム・未終端 heredoc・`cd` 先が不明な相対パス）は走行中に限り deny 側へ倒す。
+- deny の理由文に書き込み先（または判定できない理由）と下書きの退避先を出し、抜け道 `FF_REVIEW_LOCK_OVERRIDE=1` を git 以外のコマンドの区間先頭にも置けるようにした。ロックが無いときの挙動は変わらない。
+- `check-version-claims.sh` が既定ブランチの fetch に失敗したとき、git が出した原因（接続・認証・remote 設定など）を停止メッセージの末尾へ載せるようにした。URL に含まれる資格情報は表示前に伏せる
+- テスト fixture が委譲する実 git の解決を `/usr/bin/git` の直書きから PATH 経由または呼び出し側からの注入へ改め、ホストの git 障害を PATH 先頭のシムで回避できるようにした（mbcs-guard-failclosed / changelog-fragments）
+- adapter-base-ref-freshness のレビュー系列 ID 検査を、関数の部分抽出ではなく orchestrator 全体の読み込みへ改め、未定義関数の呼び出しが `command not found` を漏らしたまま緑になる形をなくした
+
 ## [0.118.0] - 2026-09-17
 
 ### 変更

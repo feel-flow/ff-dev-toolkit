@@ -21,11 +21,14 @@
 #
 # 変異検出（2026-09-16 実測。赤転しなかった変異は無し）:
 #   - fail-closed 分岐を `exit 0` へ倒したコピーは AC4 の deny 検査を赤にする
-#   - heredoc 本文の読み飛ばしを無効化したコピーは「PR 本文は素通し」を赤にする
+#   - heredoc 本文の読み飛ばしを無効化した共有ヘルパ（tests/lib/heredoc-strip.sh）の
+#     コピーは「PR 本文は素通し」を赤にする
 #   - ACK 抜け道の分岐を消したコピーは抜け道検査を赤にする
 #   - 候補の前置フィルタを常に真にしたコピーは「検出器が壊れても非候補は素通し」を赤にする
-#   - 未終端 heredoc の検出（awk の END）を消したコピーは「引用符の中の << で以降の行を
-#     捨てない」検査を赤にする
+#   - 未終端 heredoc の検出（共有ヘルパの awk END）を消したコピーは「引用符の中の << で
+#     以降の行を捨てない」検査を赤にする
+#   - ASDD ゲートの rc 読みを `|| exit 0` へ戻したコピーは「検証不能 × 候補は deny」を赤にする
+#   （共有ヘルパを置かない / 中身を空にしたコピーの deny は変異ではなく AC4 の直接検査）
 #   - 実値案の安全条件（区切りがちょうど 1 個）を外したコピーは「曖昧なら一般形」を赤にする
 #
 # run-all-required: no — jq 不在での skip を許容する（jq が無いと hook 自身が fail-open で
@@ -36,12 +39,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/hooks/guard-exit-code.sh"
 DETECTOR="$PLUGIN_ROOT/tests/lib/exit-code-guard.sh"
+HELPER="$PLUGIN_ROOT/tests/lib/heredoc-strip.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
 
 [ -f "$TARGET" ] || { echo "✗ guard-exit-code.sh が見つかりません: $TARGET" >&2; exit 1; }
 [ -f "$DETECTOR" ] || { echo "✗ 検出器が見つかりません: $DETECTOR" >&2; exit 1; }
+[ -f "$HELPER" ] || { echo "✗ heredoc 除去ヘルパが見つかりません: $HELPER" >&2; exit 1; }
 [ -f "$HOOKS_JSON" ] || { echo "✗ hooks.json が見つかりません: $HOOKS_JSON" >&2; exit 1; }
 if ! command -v jq >/dev/null 2>&1; then
   echo "○ skip: jq が見つからないためスキップ（guard-exit-code は未検査のままです）"
@@ -162,6 +167,9 @@ make_copy() { # <dir> [detector-body-file|"" で検出器を置かない]
   cp "$TARGET" "$dir/hooks/guard-exit-code.sh"
   cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$dir/hooks/"
   cp "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$dir/hooks/"
+  # heredoc 除去ヘルパは hook が `hooks/../tests/lib/` から source する（共有ヘルパ）。
+  # 置かないコピーは「ヘルパ不在 = fail-closed」の検査そのものになる。
+  cp "$HELPER" "$dir/tests/lib/heredoc-strip.sh"
   if [ -n "$det" ]; then cp "$det" "$dir/tests/lib/exit-code-guard.sh"; fi
   printf '%s' "$dir/hooks/guard-exit-code.sh"
 }
@@ -348,6 +356,27 @@ FC_AWK="$(make_copy "$TEST_TMP/fc-awk" "$DETECTOR")"
 run_hook_on "$FC_AWK" "$GATE > log 2>&1; echo \"rc=\$?\"" 'FF_EXIT_CODE_AWK=/nonexistent/awk'
 assert_fire "検出器の走査（awk）が失敗するとき deny"
 
+# 共有 heredoc 除去ヘルパ（tests/lib/heredoc-strip.sh）が無い・壊れている・awk が失敗する回。
+# 前処理はヘルパに移ったので、ヘルパ側の不成立も候補コマンドに限り fail-closed。
+FC_NOHELPER="$(make_copy "$TEST_TMP/fc-nohelper" "$DETECTOR")"
+rm -f "$TEST_TMP/fc-nohelper/tests/lib/heredoc-strip.sh"
+run_hook_on "$FC_NOHELPER" "$GATE > log 2>&1; echo \"rc=\$?\""
+assert_fire "heredoc 除去ヘルパが無いとき、候補コマンドは deny（素通ししない）"
+case "$REASON" in
+  *判定不能*) ok "ヘルパ不在の理由文が判定不能である旨を出す" ;;
+  *) bad "ヘルパ不在の理由文に判定不能の記述が無い: [$REASON]" ;;
+esac
+run_hook_on "$FC_NOHELPER" 'git log --oneline -20'
+assert_pass "ヘルパが無くても非候補コマンドは素通し"
+FC_BADHELPER="$(make_copy "$TEST_TMP/fc-badhelper" "$DETECTOR")"
+printf 'true\n' > "$TEST_TMP/fc-badhelper/tests/lib/heredoc-strip.sh"
+run_hook_on "$FC_BADHELPER" "$GATE > log 2>&1; echo \"rc=\$?\""
+assert_fire "ヘルパに ff_heredoc_strip が無いとき deny"
+run_hook "$GATE > log 2>&1; echo \"rc=\$?\"" 'FF_HEREDOC_AWK=/nonexistent/awk'
+assert_fire "heredoc 除去の awk（ヘルパの seam）が失敗するとき deny"
+run_hook 'git log --oneline -20' 'FF_HEREDOC_AWK=/nonexistent/awk'
+assert_pass "heredoc 除去の awk が失敗しても非候補コマンドは素通し"
+
 # **PATH から awk を落とす**（seam ではなく実環境の awk 不在）。heredoc 除去の awk が
 # 先に落ちるので、そこを fail-open にすると検出器側の fail-closed へ到達できない。
 NOAWK_BIN="$TEST_TMP/noawk-bin"
@@ -439,13 +468,23 @@ else
   bad "hook 内に名簿リテラルが複数ある（GATE_NAME へ寄せること）"
 fi
 
-echo "guard-exit-code: 既知の限界（検出器側の判定規則なので、ここでは素通しを固定する）"
+echo "guard-exit-code: 検出器側で塞いだ形（hook は判定を持たないので検出器に追随する）"
 run_hook "$GATE > log 2>&1 & echo started"
-assert_pass "& による background 起動は素通し（検出器が単独の & を区切り子にしない）"
+assert_fire "& による background 起動（本ガードの主題そのものの形）を deny"
 run_hook "{ $GATE > log 2>&1; }; echo done"
-assert_pass "{ } グループ実行は素通し（先頭語が { になり is_gate_launch が外れる）"
+assert_fire "{ } グループ実行を deny"
+run_hook "( $GATE > log 2>&1 ); echo done"
+assert_fire "( ) サブシェル実行を deny"
 run_hook "$GATE > log 2>&1; FOO=1 echo done"
-assert_pass "末尾区間が環境代入で始まる形は素通し（is_silent_tail が外れる）"
+assert_fire "末尾区間が環境代入で始まる形を deny"
+run_hook "$GATE >&2 2>&1"
+assert_pass "リダイレクトの & は区切り子ではない（単体起動は素通し）"
+run_hook "( $GATE > log 2>&1 ) && echo OK"
+assert_pass "サブシェル実行 + && は短絡するので素通し"
+
+echo "guard-exit-code: 既知の限界（検出器側の判定規則なので、ここでは素通しを固定する）"
+run_hook "$GATE > log 2>&1 &"
+assert_pass "末尾が裸の & で終わり後続の区間が無い形は素通し（空の末尾区間は診断終端ではない）"
 run_hook "$GATE > log 2>&1
 echo done"
 assert_pass "改行で区切った 2 行目の gate-exit-swallowed は素通し（検出器は論理行ごと）"
@@ -510,6 +549,52 @@ else
   echo "  ○ skip: node が無いため features.hooks=false 経路は未検査（guard-exit-code の ASDD ゲート無効判定）"
 fi
 
+echo "guard-exit-code: ASDD ゲートの検証不能は候補コマンドに限り deny（無効は素通し）"
+# node だけを PATH から落とす（jq / awk / bash など hook と検出器が使うものは残す）。
+NONODE_BIN="$TEST_TMP/nonode-bin"
+mkdir -p "$NONODE_BIN"
+for _tool in jq awk sed head cat grep tr date; do
+  _p="$(command -v "$_tool" 2>/dev/null || true)"
+  [ -n "$_p" ] && ln -s "$_p" "$NONODE_BIN/$_tool"
+done
+ln -s /bin/bash "$NONODE_BIN/bash"
+ln -s /bin/sh "$NONODE_BIN/sh"
+asdd_probe() { # <cwd> <command> [NAME=VALUE ...]
+  local cwd="$1" cmd="$2" json
+  shift 2
+  json="$(jq -n --arg c "$cmd" --arg d "$cwd" \
+    '{tool_name: "Bash", tool_input: {command: $c}, cwd: $d, hook_event_name: "PreToolUse"}')"
+  ff_asdd_drain_probe "$TARGET" "$json" "$cwd" "$@"
+  RC="$FF_ASDD_DRAIN_RC"
+  OUT="$FF_ASDD_DRAIN_OUT"
+  DECISION="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)"
+  EVENT="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.hookEventName // empty' 2>/dev/null || true)"
+  REASON="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)"
+}
+asdd_probe "$ASDD_ON" "$GATE > log 2>&1; echo \"rc=\$?\"" "PATH=$NONODE_BIN"
+assert_fire ".asdd 設定あり + node 不在（検証不能）× 候補コマンドは deny"
+case "$REASON" in
+  *ASDD*) ok "検証不能の理由文が ASDD ゲートを名指しする" ;;
+  *) bad "検証不能の理由文に ASDD の記述が無い: [$REASON]" ;;
+esac
+asdd_probe "$ASDD_ON" 'git log --oneline -20' "PATH=$NONODE_BIN"
+assert_pass ".asdd 設定あり + node 不在でも非候補コマンドは素通し（fail-closed の面は候補に限る）"
+# node は在るが設定を読めない（asdd-feature.mjs の例外経路 = rc 2）を node シムで模擬する。
+NODE2_BIN="$TEST_TMP/node2-bin"
+mkdir -p "$NODE2_BIN"
+printf '#!/bin/sh\necho "ff-dev-toolkit: ASDD 設定を検証できないため任意Hookを停止しました" >&2\nexit 2\n' > "$NODE2_BIN/node"
+chmod +x "$NODE2_BIN/node"
+asdd_probe "$ASDD_ON" "$GATE > log 2>&1; echo \"rc=\$?\"" "PATH=$NODE2_BIN:$PATH"
+assert_fire ".asdd 設定あり + 設定を読めない（ゲート rc 2）× 候補コマンドは deny"
+if command -v node >/dev/null 2>&1; then
+  asdd_probe "$ASDD_OFF" "$GATE > log 2>&1; echo \"rc=\$?\""
+  assert_pass "features.hooks=false（無効）× 候補コマンドは従来どおり無音で素通し"
+  asdd_probe "$ASDD_ON" "$GATE > log 2>&1; echo \"rc=\$?\""
+  assert_fire "features.hooks=true（有効）× 事故形は deny（ゲートを読む形にしても判定は変わらない）"
+else
+  echo "  ○ skip: node が無いため features.hooks=false / true の経路は未検査"
+fi
+
 echo "guard-exit-code: hooks.json 登録の静的照合"
 if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
     | select(.command | contains("guard-exit-code.sh"))' "$HOOKS_JSON" >/dev/null 2>&1; then
@@ -544,13 +629,15 @@ fi
 cp "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"
 
 # 変異 2: heredoc 本文の読み飛ばしを無効化する（本文をそのまま走査対象へ流す）
-sed 's/if (nd > 0) {/if (nd > 99) {/' "$TARGET" > "$MUT"
+cp "$TARGET" "$MUT"
+sed 's/if (nd > 0) {/if (nd > 99) {/' "$HELPER" > "$MUT_DIR/tests/lib/heredoc-strip.sh"
 run_hook_on "$MUT" "$HEREDOC_BODY"
 if [ "$RC" -eq 0 ] && [ "$DECISION" = "deny" ]; then
   ok "変異検出: heredoc 本文の読み飛ばしを外すと PR 本文の素通し検査は赤になる"
 else
   bad "heredoc 読み飛ばしを外しても素通しのまま: decision=[$DECISION] out=[$OUT]"
 fi
+cp "$HELPER" "$MUT_DIR/tests/lib/heredoc-strip.sh"
 
 # 変異 3: ACK 抜け道を消す
 sed "s/^  'FF_EXIT_CODE_ACK=1 '\*|'FF_EXIT_CODE_ACK=1\t'\*) exit 0 ;;/  __never_match__) exit 0 ;;/" "$TARGET" > "$MUT"
@@ -572,8 +659,12 @@ else
 fi
 cp "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"
 
-# 変異 5: 未終端 heredoc の検出（awk の END）を消す
-sed 's/^  END { if (nd > 0) exit 3 }$//' "$TARGET" > "$MUT"
+# 変異 5: 未終端 heredoc の検出（共有ヘルパの awk END）を消す
+cp "$TARGET" "$MUT"
+sed 's/^    if (nd > 0) exit 3$//' "$HELPER" > "$MUT_DIR/tests/lib/heredoc-strip.sh"
+if cmp -s "$HELPER" "$MUT_DIR/tests/lib/heredoc-strip.sh"; then
+  bad "変異 5 の注入が空振り（ヘルパの未終端検査行が見つからない）"
+fi
 run_hook_on "$MUT" "git commit -m \"refactor: a << B ordering\"
 $GATE > log 2>&1; echo \"rc=\$?\""
 if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
@@ -581,8 +672,24 @@ if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
 else
   bad "未終端検出を消しても deny のまま: decision=[$DECISION] out=[$OUT]"
 fi
+cp "$HELPER" "$MUT_DIR/tests/lib/heredoc-strip.sh"
 
-# 変異 6: 実値案の安全条件（区切りがちょうど 1 個）を外す
+# 変異 6: ASDD ゲートの rc 読みを `|| exit 0` へ戻す（検証不能を無効と同じに畳む）
+MUT_ASDD_DIR="$TEST_TMP/mut-asdd"
+MUT_ASDD="$(make_copy "$MUT_ASDD_DIR" "$DETECTOR")"
+sed 's/^asdd_hook_enabled hooks$/asdd_hook_enabled hooks || exit 0/' "$TARGET" > "$MUT_ASDD"
+if cmp -s "$TARGET" "$MUT_ASDD"; then
+  bad "変異 7 の注入が空振り（asdd_hook_enabled hooks の行が見つからない）"
+fi
+ff_asdd_drain_probe "$MUT_ASDD" "$(jq -n --arg c "$GATE > log 2>&1; echo \"rc=\$?\"" --arg d "$ASDD_ON" \
+  '{tool_name: "Bash", tool_input: {command: $c}, cwd: $d, hook_event_name: "PreToolUse"}')" "$ASDD_ON" "PATH=$NONODE_BIN"
+if [ "$FF_ASDD_DRAIN_RC" -eq 0 ] && [ -z "$FF_ASDD_DRAIN_OUT" ]; then
+  ok "変異検出: rc 読みを || exit 0 へ戻すと「検証不能 × 候補は deny」検査は赤になる"
+else
+  bad "rc 読みを || exit 0 へ戻しても deny のまま: out=[$FF_ASDD_DRAIN_OUT]"
+fi
+
+# 変異 7: 実値案の安全条件（区切りがちょうど 1 個）を外す
 sed 's/^\[ "\$sep_n" -eq 1 \] || launch_ok=0$/:/' "$TARGET" > "$MUT"
 run_hook_on "$MUT" "x=1; $GATE > log 2>&1; echo done"
 MUT_FIX="$(fix_block)"

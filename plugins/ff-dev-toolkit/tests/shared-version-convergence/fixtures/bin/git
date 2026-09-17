@@ -20,4 +20,10 @@ if [[ "${FAKE_CLAIM_GIT_MOVE_BASE:-0}" == 1 && "$args" == *" diff --cached "* &&
   : > "$FAKE_CLAIM_GIT_BASE_MARKER"
   "${FAKE_CLAIM_REAL_GIT:?}" -C "${FAKE_CLAIM_GIT_ROOT:?}" update-ref refs/remotes/origin/develop "${FAKE_CLAIM_GIT_NEW_BASE:?}"
 fi
+# fetch だけを、資格情報付き URL を stderr へ出して失敗させる（伏せ字の検査用。実 git は版・
+# 経路によって userinfo を自分で落とすため、伏せ字そのものは stub でしか測れない）。
+if [[ "${FAKE_CLAIM_GIT_FAIL_FETCH:-0}" == 1 && "$args" == *" fetch origin "* ]]; then
+  printf "fatal: unable to access '%s': Failed to connect\n" "${FAKE_CLAIM_GIT_FETCH_URL:?}" >&2
+  exit 128
+fi
 exec "${FAKE_CLAIM_REAL_GIT:?}" "$@"

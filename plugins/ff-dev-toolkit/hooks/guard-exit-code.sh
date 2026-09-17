@@ -55,8 +55,8 @@
 # 現れるだけのコマンドは当たらない。二重引用符の中は扱いが分かれる — 区切り子や
 # コマンド名は伏せられるが、`$?` と `PIPESTATUS` は**実際に展開されるため判定対象に
 # 残す**設計になっている（検出器の `mask` の該当コメント）。同じ近似分割を写経している
-# 兄弟ガード（クォート状態を追跡しない `gsub(/&&|\|\||;|\|/, "\n")`。本 hook を除いて
-# 6 本）が抱える「散文中の綴りで誤 deny」クラスは、そのぶん構造的に小さい。
+# 兄弟ガード（クォート状態を追跡しない `gsub(/&&|\|\||;|\|/, "\n")` の写し。実数は
+# `grep -l` で数える）が抱える「散文中の綴りで誤 deny」クラスは、そのぶん構造的に小さい。
 #
 # 実測（2026-09-16。エージェントが日常的に組み立てる 35 形へ当てた）:
 #   素通しした形  `git commit -m "docs: <ゲート> > log; echo rc=$? を直す"`
@@ -83,10 +83,9 @@
 #
 # **heredoc 本文だけは落とす。** 実測（2026-09-16）: PR 本文へ Test Plan を書く
 # `gh pr create --body "$(cat <<'EOF' … EOF)"` の本文に同型の綴りが入ると deny になった。
-# 本文は実行されるコマンドではなくデータなので、走査の前に落とす。この awk は
-# `guard-effort-actual.sh` / `guard-issue-labels.sh` / `guard-review-in-flight.sh` と
-# **同じ実装を写したもの**だが、本 hook の版だけは `END` の未終端検査を足してある
-# （下記「未終端 heredoc」）。共有ヘルパへの括り出しは別 Issue。
+# 本文は実行されるコマンドではなくデータなので、走査の前に落とす。落とす処理は
+# 共有ヘルパ `tests/lib/heredoc-strip.sh`（兄弟ガード 4 本と同じ正本。未終端は rc 3、
+# awk 失敗は非 0 で返す契約。下記「未終端 heredoc」）。
 #
 # ## fail-closed にする面と、fail-open のままにする面
 #
@@ -137,26 +136,22 @@
 # いずれも検出器側の判定規則そのもので、ここで上書きすると case 35 の回帰と割れる。
 # 塞ぐなら検出器を直す（別 Issue）。
 #
-#   - **`&` による background 起動**: `<ゲート> > log 2>&1 & echo started` は素通しする
-#     （検出器の `split_segments` が単独の `&` を区切り子にしない）。**本ガードが主題に
-#     している background 起動そのものの形**なので、限界として最初に挙げる。ハーネスの
-#     `run_in_background` 経由で起こす形は、コマンド文字列側が `;` / `||` / パイプで
-#     終端していれば当たる（実測された事故はこちら）
-#   - **グループ実行**: `{ <ゲート> …; }; echo done` / `( <ゲート> … ); echo done` は
-#     先頭語が `{` / `(` になり検出器の `is_gate_launch` が外れる
-#   - **末尾区間が環境代入で始まる形**: `<ゲート> > log 2>&1; FOO=1 echo done`
+#   - **末尾が裸の `&` で終わる形**（`<ゲート> > log 2>&1 &`。後続の区間が無い）: 区切り子
+#     としては見るが、空の末尾区間は「診断で終端」ではないので当たらない。`& echo started` /
+#     `{ … }; echo done` / `( … ); echo done` / `; FOO=1 echo done` は Issue `#1683` で検出器側を
+#     直し、当たるようになった
 #   - **改行で区切った 2 行目以降の `gate-exit-swallowed`**: 検出器は論理行ごとに
 #     判定するため `<ゲート> > log 2>&1`⏎`echo done` は当たらない。実際には Bash ツール
 #     呼び出し全体が 1 プロセスなので末尾 `echo` の rc が返る。推奨形が同じ複数行の形
 #     （`rc=$?` → `exit $rc`）である以上、規定を読んだ人の書き方は当たらない側へ落ちる。
-#     **`pipe-exit-read` は行をまたぐ**（検出器が `prev_pipe` を空行・コメント行以外で
-#     保持する）ので、`npm test 2>&1 | tail -20`⏎`echo "EXIT=$?"` は当たる
+#     **`pipe-exit-read` は行をまたぐ**（検出器が `prev_pipe` を空行・コメント行を挟んでも
+#     保持し、フェンス境界・ファイル境界でだけ倒す）ので、`npm test 2>&1 | tail -20`⏎`echo "EXIT=$?"` は当たる
 #   - 変数展開・コマンド置換の中で組み立てられる綴り（`$CMD > log; echo $?`）
 #   - heredoc 本文に書かれた形（データとして落とす。上記）
-#   - **ASDD ゲートが「検証不能」を返す環境**（`.asdd/config.json` があり node が無い）。
-#     共有ヘルパ `asdd_hook_enabled` は「機能無効」と同じ非 0 を返し、呼び出し側は
-#     `|| exit 0` で受けるため、候補コマンドでも素通しになる。fail-closed 方針と整合
-#     しない既知の穴で、共有ヘルパの契約変更になるため別 Issue（stderr へは診断が出る）
+#
+# ASDD ゲートが「検証不能」を返す環境（`.asdd/config.json` があり node が無い・設定を
+# 読めない）は、以前はここに挙がる穴だった。共有ヘルパの rc 契約（0=有効 / 3=無効 /
+# それ以外=検証不能）を読む形へ改め、候補コマンドに限り fail-closed へ倒す（Issue `#1684`）。
 #
 # ## 未終端 heredoc
 #
@@ -164,8 +159,11 @@
 # でも heredoc モードに入る。区切り子が現れないまま入力が終わると、以降の行が丸ごと
 # 落ちて**検出すべきコマンドが無音で素通しする**（実測:
 # `git commit -m "refactor: a << B ordering"`⏎`<ゲート> > log 2>&1; echo "rc=$?"`）。
-# 未終端を awk 側で検出し、そのときは heredoc 除去**前**の生コマンドを走査する。
-# 実行可能なコマンドの heredoc は必ず終端するので、未終端 = `<<` の誤検出とみなせる。
+# 未終端はヘルパが rc 3 で検出し、そのときは heredoc 除去**前**の生コマンド（ヘルパが
+# 返す）を走査する。実行可能なコマンドの heredoc は必ず終端するので、未終端 = `<<` の
+# 誤検出とみなせる。ヘルパ自体が読めない・awk が失敗した回は候補コマンドを止める
+# （fail-closed。前処理と検出器が同じ awk に依存するため、ここを fail-open にすると
+# 検出器側の fail-closed 分岐へ実環境では到達できない）。
 #
 # 設計原則:
 #   - 互換性: bash 3.2（stock macOS）互換。連想配列・readarray・=~ は使わない
@@ -189,7 +187,17 @@ if ! source "${BASH_SOURCE[0]%/*}/asdd-hook-gate.sh"; then
   echo 'ff-dev-toolkit: ASDD Hook helper is unavailable; optional hook skipped' >&2
   exit 0
 fi
-asdd_hook_enabled hooks || exit 0
+# rc を読む（`|| exit 0` にしない）。共有ヘルパの契約は 0=有効 / 3=無効 / それ以外=検証不能。
+# 無効は従来どおり無音で通す。検証不能は「判定できない」なので、候補コマンドに限り下で
+# fail-closed へ倒す（非候補は前置フィルタで無音 exit 0 のまま。Issue `#1684`）。
+asdd_hook_enabled hooks
+asdd_rc=$?
+asdd_unverifiable=0
+case "$asdd_rc" in
+  0) : ;;
+  3) exit 0 ;;
+  *) asdd_unverifiable=1 ;;
+esac
 
 # opt-out も stdin を読み切ってから抜ける。
 [ "${FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD:-0}" = "1" ] && exit 0
@@ -287,45 +295,30 @@ case "$ack_probe" in
   'FF_EXIT_CODE_ACK=1 '*|'FF_EXIT_CODE_ACK=1	'*) exit 0 ;;
 esac
 
+# ASDD ゲートが検証不能を返した回は、候補コマンド（前置フィルタ通過）に限りここで止める。
+# 「機能無効」と同じ素通しに畳むと、このガードの fail-closed 契約と食い違う（Issue `#1684`）。
+# ACK 抜け道の判定より後に置く — deny 文が案内する「先頭へ FF_EXIT_CODE_ACK=1」が効く位置。
+if [ "$asdd_unverifiable" -eq 1 ]; then
+  deny_unavailable "ASDD 設定を検証できません（asdd_hook_enabled rc=${asdd_rc}。.asdd/config.json があるのに node が無い・設定を読めない等）"
+fi
+
 # ---- heredoc 本文を走査対象から落とす ------------------------------------------
 # heredoc 本文は実行されるコマンドではなくデータなので、`gh pr create --body "$(cat <<EOF
 # … EOF)"` のような引用で停止すると、PR / Issue へ手順を書く操作がゲートに引っかかる。
-# **guard-effort-actual.sh / guard-issue-labels.sh / guard-review-in-flight.sh と同じ
-# 実装を写したもの**に、`END` の未終端検査（exit 3）だけを足してある。
-code_only="$(printf '%s\n' "$cmd" | LC_ALL=C awk '
-  function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-  BEGIN {
-    q = sprintf("%c", 39)
-    re = "<<-?[ \t]*(\"[^\"]*\"|" q "[^" q "]*" q "|[A-Za-z_][A-Za-z0-9_]*)"
-    nd = 0
-  }
-  {
-    if (nd > 0) {
-      if (trim($0) == d[1]) { for (i = 1; i < nd; i++) d[i] = d[i + 1]; nd-- }
-      next
-    }
-    scan = $0
-    gsub(/<<</, "___", scan) # here-string は heredoc ではない（長さを保つ置換）
-    pos = 1
-    while (match(substr(scan, pos), re)) {
-      st = pos + RSTART - 1
-      tok = substr(scan, st, RLENGTH)
-      sub(/^<<-?[ \t]*/, "", tok)
-      gsub("[\"" q "]", "", tok)
-      nd++
-      d[nd] = tok
-      pos = st + RLENGTH
-    }
-    print
-  }
-  # 区切り子が現れないまま入力が終わった = `<<` の誤検出。以降の行を捨てたまま
-  # 「解析成功」として返すと、検出すべきコマンドが無音で素通しする。
-  END { if (nd > 0) exit 3 }
-' 2>/dev/null)"
+# 判定は共有ヘルパ `tests/lib/heredoc-strip.sh`（正本はヘルパのヘッダ。未終端は rc 3 +
+# 生コマンド、awk 失敗は非 0 で返す契約）。本 hook は fail-closed 側なので、ヘルパが
+# 読めない・awk が失敗した回は候補コマンドを止める（下記）。
+HEREDOC_HELPER="${BASH_SOURCE[0]%/*}/../tests/lib/heredoc-strip.sh"
+[ -f "$HEREDOC_HELPER" ] && [ -r "$HEREDOC_HELPER" ] || deny_unavailable "heredoc 除去ヘルパのファイルが無いか読めません（${HEREDOC_HELPER}）"
+# shellcheck source=../tests/lib/heredoc-strip.sh
+. "$HEREDOC_HELPER" 2>/dev/null || deny_unavailable "heredoc 除去ヘルパの読み込みに失敗しました"
+[ "$(type -t ff_heredoc_strip 2>/dev/null)" = "function" ] || deny_unavailable "heredoc 除去ヘルパに ff_heredoc_strip がありません"
+code_only="$(ff_heredoc_strip "$cmd")"
 awk_rc=$?
 if [ "$awk_rc" -eq 3 ]; then
-  # 未終端。行を捨てずに、heredoc 除去前の生コマンドを走査する（上記「未終端 heredoc」）。
-  code_only="$cmd"
+  # 未終端。ヘルパが heredoc 除去前の生コマンドを返しているので、行を捨てずに走査する
+  # （上記「未終端 heredoc」）。
+  :
 elif [ "$awk_rc" -ne 0 ]; then
   # awk 不在（127）・破損。前処理と検出器が同じ awk に依存しているので、ここを
   # fail-open にすると検出器側の fail-closed 分岐へ実環境では到達できない。

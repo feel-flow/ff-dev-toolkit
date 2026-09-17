@@ -469,6 +469,8 @@ git clone -q "$NORMAL_BARE" "$BAD_HEAD_WORK"; git -C "$BAD_HEAD_WORK" symbolic-r
 if ! "$CLAIM_VALIDATOR" --root "$BAD_HEAD_WORK" >/dev/null 2>&1; then ok "origin 外を向く default ref を拒否"; else bad "不正 default ref で claim 検証を続行"; fi
 git clone -q "$NORMAL_BARE" "$FETCH_FAIL_WORK"; git -C "$FETCH_FAIL_WORK" remote set-url origin "$TMP/missing-origin.git"
 if ! "$CLAIM_VALIDATOR" --root "$FETCH_FAIL_WORK" >/dev/null 2>&1; then ok "default branch fetch 失敗を検査不能で拒否"; else bad "fetch 失敗を stale ref で代替"; fi
+# 拒否するだけでなく、git が出した原因が停止メッセージへ届き資格情報が伏せられること（Issue `#1717`）
+source "$SCRIPT_DIR/cases/validator-fetch-stderr.sh"
 
 OPT_OUT_SEED="$TMP/opt-out-seed"
 OPT_OUT_BARE="$TMP/opt-out-origin.git"

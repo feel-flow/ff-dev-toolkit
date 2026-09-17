@@ -1276,6 +1276,14 @@ EXITCODE_PROBE_GATE_NOHUP='nohup bash tests/run-all.sh > log 2>&1; echo hi'
 EXITCODE_PROBE_GATE_FEEDPIPE='printf x | bash tests/run-all.sh; echo "EXIT=$?"'
 EXITCODE_PROBE_GATE_DIRECT='./tests/run-all.sh > log 2>&1; echo done'
 EXITCODE_PROBE_GATE_SH='sh tests/run-all.sh > log 2>&1; echo done'
+# Issue `#1683`: 単独 `&` の background 起動（`a & b` の rc は b のもの）・グループ実行・
+# 末尾区間が環境代入で始まる形。いずれも実測で素通ししていた（hook 側の既知の限界）。
+EXITCODE_PROBE_GATE_AMP='bash tests/run-all.sh > log 2>&1 & echo started'
+EXITCODE_PROBE_GATE_BRACE='{ bash tests/run-all.sh > log 2>&1; }; echo done'
+EXITCODE_PROBE_GATE_SUBSHELL='( bash tests/run-all.sh > log 2>&1 ); echo done'
+EXITCODE_PROBE_GATE_ENVTAIL='bash tests/run-all.sh > log 2>&1; FOO=1 echo done'
+EXITCODE_PROBE_GATE_WRAPTAIL='bash tests/run-all.sh > log 2>&1; command tail -5 log'
+EXITCODE_PROBE_GATE_BRACE_TAIL='bash tests/run-all.sh > log 2>&1; { echo done; }'
 # rc が残る形 / 起動ではない形（誤検出すると直しようのない赤になる）。
 EXITCODE_PROBE_GATE_AND='bash tests/run-all.sh > log 2>&1 && echo OK'
 EXITCODE_PROBE_GATE_OK='bash tests/run-all.sh > log 2>&1; rc=$?; echo "EXIT=$rc"; exit $rc'
@@ -1285,6 +1293,12 @@ EXITCODE_PROBE_GATE_READ='cat plugins/ff-dev-toolkit/tests/run-all.sh | head -20
 EXITCODE_PROBE_GATE_JQ='bash tests/run-all.sh 2>&1 | jq -R .'
 EXITCODE_PROBE_GATE_ASSIGN='RUNNER=tests/run-all.sh; echo "$RUNNER"'
 EXITCODE_PROBE_GATE_SUFFIX='bash tools/prerun-all.sh > log 2>&1; echo "EXIT=$?"'
+# `&` を区切り子にしても、リダイレクトの `&`（`2>&1` / `>&2` / `&>`）とゲートを含まない行の
+# `&` は赤にならない。グループ実行も終端が診断でなければ rc は残る。
+EXITCODE_PROBE_GATE_REDIR_AMP='bash tests/run-all.sh >&2 2>&1'
+EXITCODE_PROBE_GATE_AMP_NOGATE='git -C x log &'
+EXITCODE_PROBE_GATE_BRACE_SOLO='{ bash tests/run-all.sh > log 2>&1; }'
+EXITCODE_PROBE_GATE_SUBSHELL_AND='( bash tests/run-all.sh > log 2>&1 ) && echo OK'
 EXITCODE_FENCE='```'
 EXITCODE_PROBE_MD_BASH="${EXITCODE_FENCE}bash
 ${EXITCODE_PROBE_TAIL}
@@ -1385,6 +1399,24 @@ exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_DIRECT" hit gate-exit-swall
 exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SH" hit gate-exit-swallowed \
   "終了コード検出器が \`sh\` 経由の起動 を検出できる（self-test）" \
   "終了コード検出器が \`sh\` 経由の起動 を取りこぼす — インタプリタ集合が bash だけに縮んでいる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_AMP" hit gate-exit-swallowed \
+  "終了コード検出器が 単独の \`&\` による background 起動（\`& echo started\`） を検出できる（self-test）" \
+  "終了コード検出器が 単独の \`&\` による background 起動 を取りこぼす — split_segments が単独の & を区切り子にしていない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_BRACE" hit gate-exit-swallowed \
+  "終了コード検出器が \`{ … }\` のグループ実行 を検出できる（self-test）" \
+  "終了コード検出器が \`{ … }\` のグループ実行 を取りこぼす — 先頭語 { を剥がしていない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SUBSHELL" hit gate-exit-swallowed \
+  "終了コード検出器が \`( … )\` のサブシェル実行 を検出できる（self-test）" \
+  "終了コード検出器が \`( … )\` のサブシェル実行 を取りこぼす — 先頭語 ( を剥がしていない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_ENVTAIL" hit gate-exit-swallowed \
+  "終了コード検出器が 末尾区間が環境代入で始まる形（\`FOO=1 echo done\`） を検出できる（self-test）" \
+  "終了コード検出器が 末尾区間が環境代入で始まる形 を取りこぼす — is_silent_tail が前置きを剥がしていない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_WRAPTAIL" hit gate-exit-swallowed \
+  "終了コード検出器が 末尾区間がラッパで始まる形（\`command tail -5 log\`） を検出できる（self-test）" \
+  "終了コード検出器が 末尾区間がラッパで始まる形 を取りこぼす — is_silent_tail が前置きを剥がしていない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_BRACE_TAIL" hit gate-exit-swallowed \
+  "終了コード検出器が 末尾区間がグループ（\`{ echo done; }\`） を検出できる（self-test）" \
+  "終了コード検出器が 末尾区間がグループ を取りこぼす — 閉じ括弧だけの区間を終端と見ている"
 exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_AND" nohit "" \
   "終了コード検出器が \`&& echo\`（短絡するので rc が保たれる） を誤検出しない（self-test）" \
   "終了コード検出器が \`&& echo\`（短絡するので rc が保たれる） を誤検出する — 安全な起動形まで止める直しようのない赤になる"
@@ -1409,6 +1441,18 @@ exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_ASSIGN" nohit "" \
 exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SUFFIX" nohit "" \
   "終了コード検出器が 名前が後方一致する別スクリプト を誤検出しない（self-test）" \
   "終了コード検出器が 名前が後方一致する別スクリプト を誤検出する — basename の完全一致で見ていない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_REDIR_AMP" nohit "" \
+  "終了コード検出器が リダイレクトの \`&\`（\`>&2\` / \`2>&1\`） を区切り子と誤認しない（self-test）" \
+  "終了コード検出器が リダイレクトの \`&\` を区切り子と誤認する — 単体起動が赤になる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_AMP_NOGATE" nohit "" \
+  "終了コード検出器が ゲートを含まない行の \`&\` を誤検出しない（self-test）" \
+  "終了コード検出器が ゲートを含まない行の \`&\` を誤検出する — & を区切り子にしたことで無関係な行が赤になる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_BRACE_SOLO" nohit "" \
+  "終了コード検出器が グループ実行の単体起動（\`{ … }\` で終端） を誤検出しない（self-test）" \
+  "終了コード検出器が グループ実行の単体起動 を誤検出する — 閉じ括弧を診断と数えている"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SUBSHELL_AND" nohit "" \
+  "終了コード検出器が サブシェル実行 + \`&& echo OK\` を誤検出しない（self-test）" \
+  "終了コード検出器が サブシェル実行 + \`&&\` を誤検出する — 短絡する形まで赤にする"
 EXITCODE_PROBE_MD_GATE="${EXITCODE_FENCE}bash
 ${EXITCODE_PROBE_GATE_ECHO}
 ${EXITCODE_FENCE}"

@@ -501,6 +501,11 @@ else
     # 限られること（検出器が壊れても復旧作業ができる）も併せて見る。判定を複製して
     # いないことは、検出器スタブへ向けたコピーで verdict が追随することで実測する。
     "$SCRIPT_DIR/guard-exit-code/verify.sh"
+    # 上の 5 本の Bash ガード（effort-actual / issue-labels / long-gate-background /
+    # review-in-flight / exit-code）が共有する heredoc 除去ヘルパ（tests/lib/heredoc-strip.sh）
+    # の契約: 正常終端は本文だけを落とし、未終端は rc 3 で生コマンドを返し、awk 失敗は
+    # 0/3 以外の rc で返す。写経を 1 本化した Issue `#1682` の回帰。
+    "$SCRIPT_DIR/heredoc-strip/verify.sh"
     # 上のガードが案内する呼び出し口（scripts/link-sub-issues.sh）。
     # POST は `-F sub_issue_id=` 固定、失敗時は HTTP 本文を出し 1 件目で止まる。
     # gh は stub に解決させ、ネットワークには出ない。

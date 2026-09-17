@@ -330,9 +330,11 @@ else
 # hook と正本を隔離コピーし、正本だけを書き換える。hook 内にラベル名を直書きして
 # いたら以下の変異は効かず、期待どおりに挙動が変わらない。
 COPY="$TEST_TMP/plugin"
-mkdir -p "$COPY/hooks" "$COPY/skills/setup-github-labels" \
+mkdir -p "$COPY/hooks" "$COPY/tests/lib" "$COPY/skills/setup-github-labels" \
   "$COPY/skills/create-issue" "$COPY/docs-template/05-operations/deployment"
 cp "$TARGET" "$COPY/hooks/guard-issue-labels.sh"
+# heredoc 除去は共有ヘルパ（hooks/../tests/lib/）を source するので、コピー側にも置く
+cp "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$COPY/tests/lib/heredoc-strip.sh"
 cp "$GATE_LIB" "$COPY/hooks/asdd-hook-gate.sh"
 cp "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$COPY/hooks/asdd-feature.mjs" 2>/dev/null || true
 cp "$LABEL_SKILL" "$COPY/skills/setup-github-labels/SKILL.md"

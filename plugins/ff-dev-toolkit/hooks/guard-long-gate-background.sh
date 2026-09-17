@@ -335,37 +335,17 @@ scan_long_gate() {
 # ---- heredoc 本文を走査対象から落とす ------------------------------------------
 # heredoc 本文は実行されるコマンドではなくデータなので、`gh pr comment --body "$(cat <<EOF
 # … bash …/run-all.sh … EOF)"` のような引用で停止すると、PR へ手順を書く操作が
-# ゲートに引っかかる。**この awk は guard-effort-actual.sh / guard-review-in-flight.sh
-# と同じ実装を写したもの**で、独自の構文解析を足していない（同じアルゴリズムの複製で
-# あることが一目で分かる形に保つ。片方だけ直して黙って挙動が割れるのを避ける）。
-# 解析に失敗したら素通しへ倒す（fail-open）。
-code_only="$(printf '%s\n' "$cmd" | LC_ALL=C awk '
-  function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-  BEGIN {
-    q = sprintf("%c", 39)
-    re = "<<-?[ \t]*(\"[^\"]*\"|" q "[^" q "]*" q "|[A-Za-z_][A-Za-z0-9_]*)"
-    nd = 0
-  }
-  {
-    if (nd > 0) {
-      if (trim($0) == d[1]) { for (i = 1; i < nd; i++) d[i] = d[i + 1]; nd-- }
-      next
-    }
-    scan = $0
-    gsub(/<<</, "___", scan) # here-string は heredoc ではない（長さを保つ置換）
-    pos = 1
-    while (match(substr(scan, pos), re)) {
-      st = pos + RSTART - 1
-      tok = substr(scan, st, RLENGTH)
-      sub(/^<<-?[ \t]*/, "", tok)
-      gsub("[\"" q "]", "", tok)
-      nd++
-      d[nd] = tok
-      pos = st + RLENGTH
-    }
-    print
-  }
-' 2>/dev/null)" || exit 0
+# ゲートに引っかかる。判定は共有ヘルパ `tests/lib/heredoc-strip.sh`（正本はヘルパの
+# ヘッダ。独自の構文解析を足さない）。ヘルパが読めない・awk が失敗したら素通しへ倒す
+# （fail-open）。未終端（rc 3）はヘルパが生コマンドを返すので、行を捨てずに走査する。
+HEREDOC_HELPER="${BASH_SOURCE[0]%/*}/../tests/lib/heredoc-strip.sh"
+# shellcheck source=../tests/lib/heredoc-strip.sh
+. "$HEREDOC_HELPER" 2>/dev/null || exit 0
+code_only="$(ff_heredoc_strip "$cmd")"
+case $? in
+  0 | 3) : ;;
+  *) exit 0 ;;
+esac
 [ -n "$code_only" ] || exit 0
 case "$code_only" in
   *run-all.sh*) : ;;

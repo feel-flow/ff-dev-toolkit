@@ -230,7 +230,17 @@ resolve_fresh_base() {
     git -C "$root" merge-base --is-ancestor "$default_base" HEAD || { echo "FF_STALE_BASE=${default_ref}" >&2; echo "✗ ${default_ref}（job 開始時点の remote-tracking ref）が checkout より先行しています。既定ブランチの最新 SHA で dispatch し直してください" >&2; return 2; }
     return 0
   fi
-  git -C "$root" fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" >/dev/null 2>&1 || { echo "✗ $default_ref を最新化できません" >&2; return 2; }
+  # fetch の stderr はコマンド置換で受け、停止メッセージの末尾へ載せる（stdout は捨てる）。
+  # 「最新化できません」だけでは認証・通信・remote 設定のどれかを実行者が一から切り分け直す
+  # ことになる。URL の userinfo（`https://user:token@host/`）は表示前に伏せる — `/` と空白以外を
+  # 貪欲に取って最後の `@` まで伏せ、userinfo 内の生 `@` で後半が残らないようにする
+  # （skill 側の base 先行ガード 4 箇所と同じ形。Issue `#1717` / `#1640`）。
+  local fetch_err
+  if ! fetch_err="$(git -C "$root" fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" 2>&1 >/dev/null)"; then
+    fetch_err="$(sed -E 's#(://)[^/[:space:]]*@#\1***@#g' <<<"${fetch_err:-（原因は出力されませんでした）}")"
+    echo "✗ $default_ref を最新化できません: ${fetch_err}" >&2
+    return 2
+  fi
   default_base="$(git -C "$root" rev-parse --verify "${default_ref}^{commit}")" || { echo "✗ $default_ref の commit を固定できません" >&2; return 2; }
   # 鮮度由来の非 0 は「内容の欠陥」ではないので、呼び出し側が散文の文字列一致に頼らず
   # 分類できる機械可読マーカーを先に出す（exit 2 は使い方の誤り・plugin root 解決失敗とも

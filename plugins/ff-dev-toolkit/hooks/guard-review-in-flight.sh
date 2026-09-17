@@ -53,9 +53,17 @@
 #     900 秒 × 観点数を十分に超える）を超えたロックは、PID が生きていても stale として
 #     扱い、警告だけ出して通す。上限より前に PID が再利用された場合は取りこぼす
 #     （deny 側へ倒れるだけで、`rm <ロック>` で即復旧できる）。
-#   - Bash コマンドの解析は素朴な空白トークン化で、引用文字列の中までは解かない
-#     （`sh -c 'git commit ...'` のような形は判定が曖昧になる）。heredoc 本文だけは
-#     明示的に判定対象から外している。
+#   - git 走査（Bash 分岐）の解析は素朴な空白トークン化で、引用文字列の中までは解かない。
+#     `sh -c 'git commit ...'` の内側の git は git 走査では見ないが、Bash 書き込み走査が
+#     sh 系の本文を再帰走査して同じ名簿で止める。heredoc 本文は git 走査の対象から外し
+#     （データ）、Bash 書き込み走査ではインタプリタの stdin プログラムとして読む。
+#   - Bash 書き込み走査（tests/lib/review-write-scan.sh。線引きと限界の正本はそのヘッダ）は
+#     ヒューリスティック: インタプリタ（python / node / perl / ruby / awk / sh 系）のプログラム
+#     本文はマーカー（`open(…"w")` / `write_text(` 等）で見るので、別名 import
+#     （`from os import remove as r`）や動的に組み立てた書き込みは見逃す。空白を含むパスは
+#     トークン化で割れる。`python3 -m MOD` / `eval` / stdin から読むプログラム（`curl … | sh`）
+#     は本文が無いので判定不能（走行中は deny 側）。`npm` / `make` 等のビルドツールが書く
+#     成果物は対象外
 #   - C の対応づけ（`SubagentStart`）は `agent_type` と「まだ対応づいていない最も古い
 #     レーン」でしか結べない。隔離起動（レーンを取らない）と非隔離起動が**同じ型で同時に**
 #     走っている場合、隔離側が非隔離側のレーンを引き受けうる（解放の本数は保存されるが、
@@ -72,10 +80,13 @@
 #   - Bash の heredoc 本文（`<<` / `<<-` のトークン以降、終端行まで）に現れる git。
 #     `cat <<'EOF' > notes.md` の本文に `git commit -m x` と書いても deny しない
 #   - `git -C <path>` がロックを持つリポジトリ（cwd の toplevel）以外を指す場合
-#   - Bash 経由の書き込み全般（`sed -i` / リダイレクト / `cp` / `mv` / `rm` / `tee` /
-#     `python -c` 等）。これは意図的な線引きで、拡張しない — scratchpad への書き出しなど
-#     偽陽性が多く、bypass ハーネスの常用経路（レビュー待ちの下書き作成など）ごと
-#     止めてしまう。git の書き込み系サブコマンドと編集系ツールだけを対象にする
+#   - Bash 経由の書き込みのうち **作業ツリーの外**へのもの（scratchpad / `mktemp -d` /
+#     `/tmp` への `tee` / リダイレクト / `cp`）、`/dev/null` へのリダイレクト、
+#     `.review-results/` への書き込み、読み取り専用の形（`sed -n` / `-i` の無い `sed` /
+#     `python3 -c 'print(1)'` / `node -e 'console.log(1)'` / 書き込みマーカーを含まない
+#     heredoc プログラム / マーカー行の書き込み先リテラルがツリー外のプログラム）。走行中ロックの目的は作業ツリーの静止であって下書きの禁止ではない
+#     （Issue `#1710` で Bash 経由の書き込み走査を追加。それ以前は Bash 経由の書き込み全般を
+#     対象外にしていた）
 #   - `Agent` でも `subagent_type` が `pr-review-toolkit:` 以外
 #   - gitignore 済みの成果物だけがある状態（判定は `git status --porcelain` の出力有無で、
 #     ignored は既定で出力されない）
@@ -136,15 +147,18 @@
 #     詳細は本体の「レビュアー自身の編集は止めない」節。
 #
 # 設計原則:
-#   - fail-open: 解析不能・jq 不在・git 外・壊れた stdin では黙って許可
-#     （exit 0・無出力）。ガードとしての取りこぼしは許容し、誤ブロックだけを避ける
+#   - fail-open: jq 不在・git 外・壊れた stdin・ロック無しでは黙って許可（exit 0・無出力）。
+#     ガードとしての取りこぼしは許容し、誤ブロックだけを避ける。**例外は走行中の Bash 書き込み
+#     走査**で、書き込み先を判定できない形は deny 側へ倒す（下記「Bash 経由の書き込み走査」。
+#     ロックが生きているときだけ払うコストで、ロック無しの経路には及ばない）
 #   - 互換性: bash 3.2（stock macOS）互換。連想配列・readarray・=~ は使わない
 #
 # 環境変数:
 #   FF_REVIEW_LOCK_OVERRIDE=1                     A（走行中ロック）と C（レーン）の deny を解除する。
 #                                                 Bash ツール
-#                                                 なら対象 git コマンド先頭の環境代入としても効く
-#                                                 （`FF_REVIEW_LOCK_OVERRIDE=1 git commit ...`）。
+#                                                 なら対象コマンド（区間）先頭の環境代入としても効く
+#                                                 （`FF_REVIEW_LOCK_OVERRIDE=1 git commit ...` /
+#                                                 `FF_REVIEW_LOCK_OVERRIDE=1 tee notes.md`）。
 #                                                 Edit / Write などの編集系ツールにはコマンド行が
 #                                                 無く、hook はセッションの環境変数を継承するだけ
 #                                                 なので、そちらは再起動なしには変えられない
@@ -287,28 +301,36 @@ shq() { # <文字列> → シェルの単一引用語
 # 消さない）。検査に失敗しても**起動は止めない** — C は追加の防御層という位置づけなので、
 # 安全に記帳できないときは素通しへ倒す。
 LANE_SAFE=0
+# 物理パスの包含判定（レーン置き場の検証と、Bash 書き込み走査の「ツリー内か」が共用する）
+phys_dir() { # <dir> → 物理パス（失敗は空）
+  (cd "$1" 2>/dev/null && pwd -P 2>/dev/null)
+}
+path_within() { # <phys> <root_phys>
+  case "$1" in
+    "$2" | "$2"/*) return 0 ;;
+  esac
+  return 1
+}
 lane_dir_is_safe() {
   local out_dir root_phys phys
   out_dir="${ROOT}/${OUTPUT_DIR_NAME}"
   [ -L "$out_dir" ] && return 1
   [ -L "$LANE_DIR" ] && return 1
-  root_phys="$(cd "$ROOT" 2>/dev/null && pwd -P 2>/dev/null)" || return 1
+  root_phys="$(phys_dir "$ROOT")"
   [ -n "$root_phys" ] || return 1
   if [ -e "$out_dir" ]; then
     [ -d "$out_dir" ] || return 1
-    phys="$(cd "$out_dir" 2>/dev/null && pwd -P 2>/dev/null)" || return 1
-    case "$phys" in
-      "$root_phys"/*) : ;;
-      *) return 1 ;;
-    esac
+    phys="$(phys_dir "$out_dir")"
+    [ -n "$phys" ] || return 1
+    path_within "$phys" "$root_phys" || return 1
+    [ "$phys" != "$root_phys" ] || return 1
   fi
   if [ -e "$LANE_DIR" ]; then
     [ -d "$LANE_DIR" ] || return 1
-    phys="$(cd "$LANE_DIR" 2>/dev/null && pwd -P 2>/dev/null)" || return 1
-    case "$phys" in
-      "$root_phys"/*) : ;;
-      *) return 1 ;;
-    esac
+    phys="$(phys_dir "$LANE_DIR")"
+    [ -n "$phys" ] || return 1
+    path_within "$phys" "$root_phys" || return 1
+    [ "$phys" != "$root_phys" ] || return 1
   fi
   return 0
 }
@@ -857,6 +879,14 @@ if [ "$lock_live" -ne 1 ] && [ "$LANE_LIVE" -eq 0 ] && [ -z "$lock_stale_reason"
   exit 0
 fi
 
+# ---- Bash 経由の書き込み走査（Issue `#1710`）---------------------------------------
+# 判定の本体は共有ライブラリ tests/lib/review-write-scan.sh（線引き・既知の限界の正本は
+# そのヘッダ）。hook 本体の行数を分割閾値の内側に保つため、ここでは呼び出しと deny 文の
+# 組み立てだけを持つ。走行中材料があるときだけ読み込む（ロック無しの経路は従来どおり
+# 何も読まない）。ライブラリが読めない回は「判定不能」として deny 側へ倒す
+# （guard-exit-code.sh の検出器不在と同じ形）。
+WRITE_SCAN_LIB="${BASH_SOURCE[0]%/*}/../tests/lib/review-write-scan.sh"
+
 # 対象ツールの絞り込み（ロックがあるときだけ払うコスト）
 case "$tool" in
   Edit | Write | MultiEdit | NotebookEdit)
@@ -878,45 +908,32 @@ case "$tool" in
   Bash)
     cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)" || exit 0
     [ -n "$cmd" ] || exit 0
-    case "$cmd" in
-      *git*) : ;;
-      *) exit 0 ;;
-    esac
     # heredoc 本文（`<<` / `<<-` のトークン以降、終端行まで）は実行されるコマンドでは
     # なくデータなので、判定対象から落とす。`cat <<'EOF' > notes.md` の本文に
     # `git commit -m x` と書いただけで deny すると、レビュー待ちのメモ書きが止まる。
-    # 解析に失敗したら元のコマンドへ倒す（deny 側だが復旧手段は deny 文に出る）。
-    code_only="$(printf '%s\n' "$cmd" | awk '
-      function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-      BEGIN {
-        q = sprintf("%c", 39)
-        re = "<<-?[ \t]*(\"[^\"]*\"|" q "[^" q "]*" q "|[A-Za-z_][A-Za-z0-9_]*)"
-        nd = 0
-      }
-      {
-        if (nd > 0) {
-          if (trim($0) == d[1]) { for (i = 1; i < nd; i++) d[i] = d[i + 1]; nd-- }
-          next
-        }
-        scan = $0
-        gsub(/<<</, "___", scan) # here-string は heredoc ではない（長さを保つ置換）
-        pos = 1
-        while (match(substr(scan, pos), re)) {
-          st = pos + RSTART - 1
-          tok = substr(scan, st, RLENGTH)
-          sub(/^<<-?[ \t]*/, "", tok)
-          gsub("[\"" q "]", "", tok)
-          nd++
-          d[nd] = tok
-          pos = st + RLENGTH
-        }
-        print
-      }
-    ' 2>/dev/null)" || code_only="$cmd"
+    # 判定は共有ヘルパ `tests/lib/heredoc-strip.sh`（正本はヘルパのヘッダ）。ヘルパが
+    # 読めない・awk が失敗した・未終端（rc 3）のときは生コマンドで git 走査を続けつつ、
+    # Bash 書き込み走査では「判定不能」として扱う（走行中に限る deny 側。復旧手段は
+    # deny 文に出る）。
+    HEREDOC_HELPER="${BASH_SOURCE[0]%/*}/../tests/lib/heredoc-strip.sh"
+    HEREDOC_STATE=unavailable
+    HEREDOC_BODIES=""
+    # shellcheck source=../tests/lib/heredoc-strip.sh
+    if . "$HEREDOC_HELPER" 2>/dev/null; then
+      code_only="$(ff_heredoc_strip "$cmd")"
+      case $? in
+        0) HEREDOC_STATE=ok; HEREDOC_BODIES="$(ff_heredoc_bodies "$cmd" 2>/dev/null)" || HEREDOC_BODIES="" ;;
+        3) HEREDOC_STATE=unterminated ;;
+        *) code_only="$cmd" ;;
+      esac
+    else
+      code_only="$cmd"
+    fi
     [ -n "$code_only" ] || exit 0
+    HEREDOC_CODE="$code_only"
+    has_git=0
     case "$code_only" in
-      *git*) : ;;
-      *) exit 0 ;;
+      *git*) has_git=1 ;;
     esac
     # git が「コマンド位置」にあり、かつ書き込み系サブコマンドを取る形だけを対象に
     # する（`echo git commit ...` のような文字列出力は対象外）。連結演算子で分割し、
@@ -925,6 +942,7 @@ case "$tool" in
     is_write_git=0
     cmd_override=0
     segments="$(printf '%s\n' "$code_only" | awk '{ gsub(/&&|\|\||;|\|/, "\n"); print }')"
+    [ "$has_git" -eq 1 ] || segments=""
     while IFS= read -r seg; do
       [ -n "$seg" ] || continue
       case "$seg" in
@@ -1039,7 +1057,33 @@ case "$tool" in
     done <<EOF
 $segments
 EOF
-    [ "$is_write_git" -eq 1 ] || exit 0
+    # git の書き込みでなければ、Bash 経由のファイル書き込みを走査する（Issue `#1710`）。
+    is_write_bash=0
+    write_note=""
+    if [ "$is_write_git" -ne 1 ]; then
+      ROOT_PHYS="$(phys_dir "$ROOT")"
+      [ -n "$ROOT_PHYS" ] || ROOT_PHYS="$ROOT"
+      write_scan_rc=1
+      # shellcheck source=../tests/lib/review-write-scan.sh
+      if [ -r "$WRITE_SCAN_LIB" ] && . "$WRITE_SCAN_LIB" 2>/dev/null \
+        && [ "$(type -t ff_write_scan 2>/dev/null)" = "function" ]; then
+        ff_write_scan_init "$ROOT_PHYS" "$(phys_dir "$CWD")" "$OUTPUT_DIR_NAME"
+        ff_write_scan "$cmd" "$HEREDOC_STATE" "$HEREDOC_CODE" "$HEREDOC_BODIES"
+        write_scan_rc=$?
+      else
+        WRITE_REASON="書き込み先を判定できません（走査ライブラリ ${WRITE_SCAN_LIB} を読めない）"
+        WRITE_OVERRIDE=0
+        write_scan_rc=0
+      fi
+      if [ "$write_scan_rc" -eq 0 ]; then
+        is_write_bash=1
+        [ "${WRITE_OVERRIDE:-0}" -eq 1 ] && cmd_override=1
+        write_note="このコマンドは${WRITE_REASON}。判定できない書き込みは deny 側へ倒します。
+下書き・一時出力は作業ツリーの外（scratchpad や \`mktemp -d\` の一時ディレクトリ）へ書いてください。レビュー出力先 ${ROOT}/${OUTPUT_DIR_NAME}/ への書き込みは止めません。
+"
+      fi
+    fi
+    [ "$is_write_git" -eq 1 ] || [ "$is_write_bash" -eq 1 ] || exit 0
     ;;
   *) exit 0 ;;
 esac
@@ -1098,7 +1142,7 @@ if [ "$LANE_RECLAIMED" -gt 0 ]; then
 "
 fi
 
-emit_deny "⚠️ ff-dev-toolkit guard（レビュー走行中・作業ツリー編集の抑止）: ${deny_head}走行中に作業ツリーが動くと、実行後のリビジョン検証が結果を**全破棄**します（数分〜十数分ぶんのレビューが失われます）。サブエージェント経路には破棄の機構が無い代わりに、走行中の編集は「レビュー対象と食い違う指摘」を生みます。完了通知が出るまで編集・commit・checkout をしないでください。
+emit_deny "⚠️ ff-dev-toolkit guard（レビュー走行中・作業ツリー編集の抑止）: ${deny_head}${write_note:-}走行中に作業ツリーが動くと、実行後のリビジョン検証が結果を**全破棄**します（数分〜十数分ぶんのレビューが失われます）。サブエージェント経路には破棄の機構が無い代わりに、走行中の編集は「レビュー対象と食い違う指摘」を生みます。完了通知が出るまで編集・commit・checkout をしないでください。
 待ち時間にできることは multi-review スキルの「レビュー待ち時間の使い方」節を参照してください。
 続行する必要がある場合（走行が既に終わっている / 結果の破棄を承知で編集する）:
   1) ツール非依存の復旧: ロックを消す → rm -- $(shq "$LOCK")
@@ -1106,8 +1150,8 @@ emit_deny "⚠️ ff-dev-toolkit guard（レビュー走行中・作業ツリー
      （どのツールからでも効きます。次のレビュー実行がロックを置き直します。レーンは
      対応づけ済みで ${LANE_MAX_AGE} 秒・未対応づけで ${LANE_PENDING_MAX_AGE} 秒を過ぎると
      走査時に自動で回収されるので、放置しても凍結は永続しません）
-  2) Bash ツールで実行するコマンドに限り、対象の git コマンド先頭に環境代入を付ける
-     → FF_REVIEW_LOCK_OVERRIDE=1 git ...
+  2) Bash ツールで実行するコマンドに限り、対象のコマンド（区間）の先頭に環境代入を付ける
+     → FF_REVIEW_LOCK_OVERRIDE=1 git ... / FF_REVIEW_LOCK_OVERRIDE=1 tee ...
      Edit / Write などの編集系ツールにはコマンド行が無く、hook はセッションの環境変数を
      継承するだけなので、この変数はセッションを再起動せずには変えられません。編集系を
      通したいときは 1) を使ってください。

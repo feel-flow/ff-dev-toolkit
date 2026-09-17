@@ -152,38 +152,20 @@ CWD="$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null)"
 # ---- heredoc 本文を走査対象から落とす ------------------------------------------
 # heredoc 本文は実行されるコマンドではなくデータなので、`cat > note.md <<'EOF'` の
 # 本文に書いた `gh pr merge 42 --squash` で停止すると、メモ書きがマージガードに
-# 引っかかる。走査は guard-review-in-flight.sh と同じ awk（`<<` / `<<-` の直後の
-# 区切り語を積み、終端行まで読み飛ばす。`<<<` の here-string は heredoc ではない）。
-# 終端行の**直後**に続く実コマンドは落とさない。
-# 解析に失敗したら素通しへ倒す（guard-review-in-flight.sh は走行中ロック側なので元の
-# コマンドへ倒すが、本 hook は検査不能を「違反」と読み替えない fail-open 側）。
-code_only="$(printf '%s\n' "$cmd" | LC_ALL=C awk '
-  function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-  BEGIN {
-    q = sprintf("%c", 39)
-    re = "<<-?[ \t]*(\"[^\"]*\"|" q "[^" q "]*" q "|[A-Za-z_][A-Za-z0-9_]*)"
-    nd = 0
-  }
-  {
-    if (nd > 0) {
-      if (trim($0) == d[1]) { for (i = 1; i < nd; i++) d[i] = d[i + 1]; nd-- }
-      next
-    }
-    scan = $0
-    gsub(/<<</, "___", scan) # here-string は heredoc ではない（長さを保つ置換）
-    pos = 1
-    while (match(substr(scan, pos), re)) {
-      st = pos + RSTART - 1
-      tok = substr(scan, st, RLENGTH)
-      sub(/^<<-?[ \t]*/, "", tok)
-      gsub("[\"" q "]", "", tok)
-      nd++
-      d[nd] = tok
-      pos = st + RLENGTH
-    }
-    print
-  }
-' 2>/dev/null)" || exit 0
+# 引っかかる。走査は共有ヘルパ `tests/lib/heredoc-strip.sh`（`<<` / `<<-` の直後の
+# 区切り語を積み、終端行まで読み飛ばす。`<<<` の here-string は heredoc ではない。
+# 終端行の**直後**に続く実コマンドは落とさない。判定規則の正本はヘルパのヘッダ）。
+# ヘルパが読めない・awk が失敗したら素通しへ倒す（本 hook は検査不能を「違反」と
+# 読み替えない fail-open 側）。未終端（rc 3）はヘルパが生コマンドを返すので、行を
+# 捨てずにそのまま走査する。
+HEREDOC_HELPER="${BASH_SOURCE[0]%/*}/../tests/lib/heredoc-strip.sh"
+# shellcheck source=../tests/lib/heredoc-strip.sh
+. "$HEREDOC_HELPER" 2>/dev/null || exit 0
+code_only="$(ff_heredoc_strip "$cmd")"
+case $? in
+  0 | 3) : ;;
+  *) exit 0 ;;
+esac
 [ -n "$code_only" ] || exit 0
 case "$code_only" in
   *merge*) : ;;

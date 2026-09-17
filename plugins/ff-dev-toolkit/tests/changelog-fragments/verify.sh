@@ -57,12 +57,16 @@ TEST_BIN="$TMP/bin"
 mkdir -p "$TEST_BIN"
 cp "$SCRIPT_DIR"/fixtures/bin/* "$TEST_BIN/"
 chmod +x "$TEST_BIN/gh" "$TEST_BIN/sort" "$TEST_BIN/cmp" "$TEST_BIN/mkdir" "$TEST_BIN/rmdir" "$TEST_BIN/mv" "$TEST_BIN/ln" "$TEST_BIN/perl" "$TEST_BIN/cp" "$TEST_BIN/rm" "$TEST_BIN/grep" "$TEST_BIN/git" "$TEST_BIN/awk" "$TEST_BIN/footer-awk"
+# fixture の git stub が委譲する実 git は、$TEST_BIN を PATH 先頭へ載せる前にここで解決して
+# 渡す（cases/footer.sh の FOOTER_REAL_GIT と同じ形）。stub 側に `/usr/bin/git` の既定を
+# 置くとホスト git 障害時の PATH シムが効かない（Issue `#1720`）。
+FRAGMENT_REAL_GIT="$(command -v git)"
 
 run_contract() {
   root="$1"
   shift
   set +e
-  OUT="$(PATH="$TEST_BIN:$PATH" FAKE_GH_LOG="$TMP/gh.log" TMPDIR="${CONTRACT_TMPDIR:-${TMPDIR:-/tmp}}" bash "$root/scripts/materialize-dev-toolkit-changelog.sh" "$@" 2>&1)"
+  OUT="$(PATH="$TEST_BIN:$PATH" FAKE_FRAGMENT_REAL_GIT="${FAKE_FRAGMENT_REAL_GIT:-$FRAGMENT_REAL_GIT}" FAKE_GH_LOG="$TMP/gh.log" TMPDIR="${CONTRACT_TMPDIR:-${TMPDIR:-/tmp}}" bash "$root/scripts/materialize-dev-toolkit-changelog.sh" "$@" 2>&1)"
   RC=$?
   set -e
 }
@@ -439,7 +443,7 @@ rm -f "$FRAGMENTS/7.changed.symlink-race.md" "$FIX/symlink-race-target.md"
 printf '%s\n' '- check symlink race source' > "$FRAGMENTS/7.changed.check-symlink-race.md"
 printf '%s\n' '- external check content' > "$FIX/check-symlink-target.md"
 canonical_fragments="$(cd "$FRAGMENTS" && pwd -P)"
-FAKE_FRAGMENT_SWAP_ON_HASH=1 FAKE_FRAGMENT_SWAP_PATH="$canonical_fragments/7.changed.check-symlink-race.md" FAKE_FRAGMENT_SWAP_TARGET="$FIX/check-symlink-target.md" FAKE_FRAGMENT_SWAP_MARKER="$TMP/check-symlink-marker" FAKE_FRAGMENT_REAL_GIT="$(command -v git)" run_contract "$FIX" --check
+FAKE_FRAGMENT_SWAP_ON_HASH=1 FAKE_FRAGMENT_SWAP_PATH="$canonical_fragments/7.changed.check-symlink-race.md" FAKE_FRAGMENT_SWAP_TARGET="$FIX/check-symlink-target.md" FAKE_FRAGMENT_SWAP_MARKER="$TMP/check-symlink-marker" run_contract "$FIX" --check
 if [[ "$RC" -eq 2 && "$OUT" == *"file type が検査中に変化"* && -L "$FRAGMENTS/7.changed.check-symlink-race.md" ]]; then ok "--check は fingerprint 中の fragment symlink 置換を拒否"; else bad "--check が symlink 参照先を検証基準に採用"; printf '    | rc=%s link=%s\n' "$RC" "$([[ -L "$FRAGMENTS/7.changed.check-symlink-race.md" ]] && echo yes || echo no)" >&2; printf '%s\n' "$OUT" | sed 's/^/    | /' >&2; fi
 rm -f "$FRAGMENTS/7.changed.check-symlink-race.md" "$FIX/check-symlink-target.md"
 FAKE_MV_STAGE_SIGNAL=1 run_contract "$FIX" --write

@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # Runtime contract for the review in-flight / dirty guard hook.
 #
-# 配布物 hooks/guard-review-in-flight.sh を stdin JSON で直接駆動し、2 つの受け入れ条件を
+# 配布物 hooks/guard-review-in-flight.sh を stdin JSON で直接駆動し、受け入れ条件を
 # 固定する。
 #   A) 走行中ロック: `.review-results/.review-in-flight` があり PID 生存中は編集系ツールと
 #      git 書き込みコマンドを deny / FF_REVIEW_LOCK_OVERRIDE=1 で通る / ロック無しは無音 /
 #      stale PID は警告のみ（deny しない）/ 上限より古いロックは PID 生存でも警告のみ /
 #      heredoc 本文・別リポジトリの `git -C`・read-only な git は誤爆しない
+#   K) Bash 経由の作業ツリー書き込み（Issue `#1710`。判定は tests/lib/review-write-scan.sh）:
+#      走行中はリダイレクト / `tee` / `sed -i` / `cp` `mv` `rm` 等 / 書き込みマーカーを含む
+#      インタプリタのプログラム（heredoc・-c・script ファイル・`$(…)` の本文・`source`）を deny し、
+#      ツリー外（scratchpad / mktemp）・`.review-results/`・読み取り専用の形・ロック無しは無音。
+#      書き込み先を判定できない形（変数展開・読めないスクリプト・未終端 heredoc・cd 先不明の
+#      相対パス・走査ライブラリ不在）は走行中に限り deny 側。区間分割は引用符・`$(…)` を保ち、
+#      単独の `&` で割る。サブシェル・子シェルの `cd` は親へ漏れない。override は区間ごと
 #   B) 起動時 dirty: `Agent`（`Task`）+ `subagent_type` が `pr-review-toolkit:` + dirty で
 #      permissionDecision "ask" / clean は無音 / gitignore 済み成果物だけなら無音
 #   C) サブエージェント経路の走行中レーン: レビュー用サブエージェントの起動ごとに
@@ -54,6 +61,24 @@
 #       弾くので、`case` は前段の絞りにすぎない。両方を緩めると赤になる。
 #   二重防御では「片方を外す変異が緑」は検出力の欠如ではない。**どちらの層を観測しているか**を
 #   針ごとに決め、どちらでもない層は単独変異で測れないことを記録しておく。
+#
+# 変異検出（(k) Bash 書き込み走査 = tests/lib/review-write-scan.sh。2026-09-17 実測。ライブラリの
+# コピーへ変異 → suite 実行 → 復元。数字は赤になった (k) の針の件数）:
+#   ws_scan_code を常に非 hit へ倒す → 96。`.review-results/` の免除を外す → 2。
+#   判定不能（resolve 失敗）を素通しへ → 4。インタプリタ本文から heredoc を外す → 8。
+#   script ファイルの読み込みを外す → 5。`mv` を移動先だけに → 1。`sed` の `-i` 判定を外す → 2。
+#   `cd` 追跡を外す → 4。マーカー `write_text` を消す → 6。マーカー行のリテラル抽出を外す
+#   （一致で即 deny）→ 2。単独 `&` の区切りを外す → 1。引用符を無視して区切る → 5。
+#   子シェル（bash -c / $(…)）の状態復元を外す → 1。サブシェル `( )` の状態復元を外す → 1。
+#   override を区間先頭で確定しない → 2。mktemp テンプレートの配置先を見ない → 1。
+#   出力リダイレクト語を引数から除かない → 4。grep 失敗をマーカー無しに畳む → 2。
+#   $(…) の本文を走査しない → 3。制御語（do / then）を剥がさない → 2。
+#   引用符付きの密着リダイレクト（`>"f"`）を判定しない → 1。最初のマーカーだけで判定する → 2。
+#   override 区間で走査を打ち切る → 2。パイプ・条件付き区間の cd を親へ漏らす → 4。
+#   background 区間の cd を親へ漏らす → 1。
+#   ライブラリ不在 / heredoc ヘルパ不在は変異ではなく直接検査（コピーへ置かない）。
+#   lane_dir_is_safe の (h9) は「symlink 検査（-L）」と「物理パス包含（path_within）」の二重で、
+#   phys_dir / path_within へ括り出した後も両方を外すと赤（3 件）のまま。
 #
 #   名簿の崩壊床は件数ではなく**名前の並び**で持つ: (h14) の突き合わせは実体側の fixture を
 #   hook の名簿から作るので、名簿が縮んでも差し替わっても fixture が追随して一致する
@@ -365,12 +390,15 @@ assert_warn_only "(d2) 上限が数値でなければ既定 14400 秒へ倒す"
 clear_lock
 
 echo "guard-review-in-flight: (d3) heredoc 本文の git は deny しない"
+# メモ書きの出力先はツリー外（(k) がツリー内へのリダイレクトを止めるようになったため）
+TEST_OUT="$TEST_TMP/out"
+mkdir -p "$TEST_OUT"
 write_lock "$LIVE_PID"
-run_hook "$(bash_json "$(printf 'cat <<%sEOF%s > notes.md\ngit commit -m x\nEOF\n' "'" "'")")"
+run_hook "$(bash_json "$(printf 'cat <<%sEOF%s > %s/notes.md\ngit commit -m x\nEOF\n' "'" "'" "$TEST_OUT")")"
 assert_silent "(d3) heredoc 本文の git commit は無音（メモ書きを止めない）"
-run_hook "$(bash_json "$(printf 'cat <<-EOF > notes.md\n\tgit commit -m x\nEOF\n' )")"
+run_hook "$(bash_json "$(printf 'cat <<-EOF > %s/notes.md\n\tgit commit -m x\nEOF\n' "$TEST_OUT")")"
 assert_silent "(d3) <<- 形式の heredoc 本文も無音"
-run_hook "$(bash_json "$(printf 'cat <<%sEOF%s > notes.md\ngit commit -m x\nEOF\ngit switch develop\n' "'" "'")")"
+run_hook "$(bash_json "$(printf 'cat <<%sEOF%s > %s/notes.md\ngit commit -m x\nEOF\ngit switch develop\n' "'" "'" "$TEST_OUT")")"
 assert_deny "(d3) 終端行のあとに戻ったコマンド位置の git は deny される（本文の読み飛ばしが終端で止まる）"
 run_hook "$(bash_json 'git commit -m "$(cat <<<hello)"')"
 assert_deny "(d3) here-string（<<<）は heredoc として扱わない"
@@ -1673,6 +1701,318 @@ else
     bash "$ROSTER_HOOK" 2>&1)" && ROSTER_HOOK_RC=0 || ROSTER_HOOK_RC=$?
   roster_expect_silent "FF_DEV_TOOLKIT_SKIP_REVIEW_ROSTER_CHECK=1 で無音になる"
 fi
+
+echo "guard-review-in-flight: (k) Bash 経由の作業ツリー書き込み"
+bash_json_at() { jq -n --arg c "$1" --arg d "$2" \
+  '{tool_name: "Bash", tool_input: {command: $c}, cwd: $d, hook_event_name: "PreToolUse"}'; }
+k_deny() { # <command> <label> [cwd]
+  run_hook "$(bash_json_at "$1" "${3:-$REPO}")"
+  assert_deny "(k) $2"
+}
+k_silent() { # <command> <label> [cwd]
+  run_hook "$(bash_json_at "$1" "${3:-$REPO}")"
+  assert_silent "(k) $2"
+}
+clear_lanes
+clear_lock
+write_lock "$LIVE_PID"
+printf 'from pathlib import Path\nPath("a").write_text("x")\n' > "$REPO/patch.py"
+printf 'print(open("README.md").read())\n' > "$REPO/read.py"
+printf 'require("fs").writeFileSync("a", "x")\n' > "$REPO/fix.js"
+printf 'x\n' > "$TEST_OUT/fix.diff"
+K_POS_1="$(printf 'python3 - <<%sPY%s\nopen("a.txt","w").write("x")\nPY\n' "'" "'")"
+K_POS_2="$(printf 'python3 - <<%sPY%s\nfrom pathlib import Path\nPath("a.txt").write_text("x")\nPY\n' "'" "'")"
+K_POS_SUB="$(printf 'python3 - <<%sPY%s\nimport subprocess\nsubprocess.run(["x"])\nPY\n' "'" "'")"
+K_POS_NOTES="$(printf 'cat <<%sEOF%s > notes.md\ngit commit -m x\nEOF\n' "'" "'")"
+K_POS_UNTERM="$(printf 'cat <<%sEOF%s > %s/x\nno terminator\n' "'" "'" "$TEST_OUT")"
+K_POS_SHDOC="$(printf 'bash <<%sEOF%s\necho x > f\nEOF\n' "'" "'")"
+K_NEG_READ="$(printf 'python3 - <<%sPY%s\nprint(open("f").read())\nPY\n' "'" "'")"
+K_NEG_BODY="$(printf 'cat > %s/notes.md <<%sEOF%s\nsed -i s/a/b/ README.md\ntee README.md\nEOF\n' "$TEST_OUT" "'" "'")"
+K_NEG_GH="$(printf 'gh pr create --body "$(cat <<%sEOF%s\nsed -i s/a/b/ README.md\nEOF\n)"\n' "'" "'")"
+K_NEG_SHDOC="$(printf 'bash -e <<%sEOF%s\ncd %s && echo x > f\nEOF\n' "'" "'" "$TEST_OUT")"
+# 正の対照（走行中 → deny）
+k_deny "$K_POS_1" "事故形: python3 の heredoc プログラムが open(…,\"w\") を持つ"
+case "$REASON" in
+  *"$REPO/a.txt"*'open('*'heredoc'*) ok "(k) 理由文がマーカー（open(…）と本文の出所（heredoc）と書き込み先の実パスを出す" ;;
+  *) bad "(k) 理由文にマーカー / 出所 / 書き込み先が無い: [$REASON]" ;;
+esac
+case "$REASON" in
+  *'作業ツリーの外'*) ok "(k) 理由文が下書きの退避先（作業ツリーの外）を案内する" ;;
+  *) bad "(k) 理由文に退避先の案内が無い: [$REASON]" ;;
+esac
+case "$REASON" in
+  *"rm -- '$LOCK'"*) ok "(k) 理由文にロック削除の復旧手段が残る" ;;
+  *) bad "(k) 理由文にロック削除の案内が無い: [$REASON]" ;;
+esac
+case "$REASON" in
+  *'FF_REVIEW_LOCK_OVERRIDE=1 tee'*) ok "(k) 抜け道の案内が git 以外のコマンドにも及ぶ" ;;
+  *) bad "(k) 抜け道の案内が git 限定のまま: [$REASON]" ;;
+esac
+k_deny "$K_POS_2" "事故形: Path.write_text を持つ heredoc プログラム"
+k_deny "sed -i '' 's/a/b/' README.md" "sed -i（macOS 形）"
+case "$REASON" in
+  *"$REPO/README.md"*) ok "(k) sed -i の理由文が対象ファイルの実パスを出す（script 引数を対象と誤認しない）" ;;
+  *) bad "(k) sed -i の理由文の対象が違う: [$REASON]" ;;
+esac
+k_deny "sed -i.bak 's/a/b/' README.md" "sed -i.bak（GNU 形）"
+k_deny "tee README.md" "tee で作業ツリーへ"
+case "$REASON" in
+  *"$REPO/README.md"*) ok "(k) 理由文が書き込み先の実パスを出す" ;;
+  *) bad "(k) 理由文に書き込み先が無い: [$REASON]" ;;
+esac
+k_deny "tee -a src/app.txt" "tee -a で作業ツリーへ"
+k_deny "echo x > README.md" "リダイレクト >"
+k_deny "echo x >> sub/file" "未作成ディレクトリ配下への >>（祖先を辿って解決）"
+k_deny "echo x >README.md" "パス密着のリダイレクト"
+k_deny "printf x 1> README.md" "fd 付きリダイレクト 1>"
+k_deny "cmd &> log.txt" "&> リダイレクト"
+k_deny "cp /tmp/x README.md" "cp の移動先が作業ツリー"
+case "$REASON" in
+  *"$REPO/README.md"*) ok "(k) cp の理由文が移動先の実パスを出す" ;;
+  *) bad "(k) cp の理由文の対象が違う: [$REASON]" ;;
+esac
+k_deny "tee README.md 2>/dev/null" "tee + 2>/dev/null（stderr リダイレクトを対象と誤認せず README.md で止める）"
+case "$REASON" in
+  *"$REPO/README.md"*) ok "(k) tee 2>/dev/null の理由文が README.md を指す" ;;
+  *) bad "(k) tee 2>/dev/null の理由文の対象が違う: [$REASON]" ;;
+esac
+k_deny "mv src/app.txt $TEST_OUT/app.txt" "mv の移動元が作業ツリー（移動先はツリー外）"
+k_deny "rm README.md" "rm"
+k_deny "rm -rf build/" "gitignore 済みでもツリー内の rm -rf は止める"
+k_deny "find . -name '*.pyc' -delete" "find -delete"
+k_deny "mkdir newdir" "mkdir"
+k_deny "touch new.txt" "touch"
+k_deny "chmod +x s.sh" "chmod"
+k_deny "python3 patch.py" "script ファイル（write_text を含む）を読んで判定"
+k_deny "node fix.js" "node の script ファイル（writeFileSync）"
+k_deny "python3 < patch.py" "< で流す script ファイル"
+k_deny "bash -c 'echo x > f'" "bash -c のインライン本文を再帰走査"
+k_deny "$K_POS_SHDOC" "bash の heredoc プログラムを再帰走査"
+k_deny "cd src && echo x > f" "cd 追跡（ツリー内のサブディレクトリへ）"
+k_deny 'cd "$(git rev-parse --show-toplevel)" && echo x > f' "cd 先がコマンド置換なら以後の相対パスは判定不能"
+k_deny "cd $TEST_OUT && echo x > $REPO/README.md" "cd でツリー外へ出ても絶対パスの書き込み先は判定する"
+k_deny 'O=src; echo x > "$O/x"' "コマンド内の代入を展開して判定する"
+k_deny 'echo x > "$UNSET_VAR_FF_1710/x"' "未定義変数は判定不能"
+case "$REASON" in
+  *'判定できません'*) ok "(k) 判定不能の理由文がその旨を出す" ;;
+  *) bad "(k) 判定不能の理由文が無い: [$REASON]" ;;
+esac
+k_deny 'python3 "$SCRIPT"' "script パスが変数なら判定不能"
+k_deny 'tee $(mktemp -p .)' "コマンド置換の書き込み先は判定不能"
+k_deny "python3 missing.py" "読めない script は判定不能"
+k_deny "python3 -m mymod" "python3 -m は本文を取れないので判定不能"
+k_deny "curl -s https://x | bash" "stdin から読む bash は判定不能"
+k_deny "$K_POS_SUB" "subprocess を含むプログラムは判定不能側"
+k_deny "$K_POS_UNTERM" "未終端 heredoc は判定不能"
+k_deny "tee >(cat) README.md" "プロセス置換は判定不能"
+k_deny "patch -p1 < $TEST_OUT/fix.diff" "patch は cwd へ書く"
+k_deny "dd if=/dev/zero of=README.md" "dd of="
+k_deny "git status && tee README.md" "read-only な git と並んだ tee（git 走査は無音、書き込み走査が止める）"
+k_deny "echo x > ../README.md" "サブディレクトリ cwd からの ../ 参照" "$REPO/src"
+# レビュー指摘（Codex / code-reviewer / silent-failure-hunter / test-analyzer。2026-09-17）で
+# 取りこぼしていた形
+k_deny "true & touch README.md" "単独の & で繋いだ後続コマンド"
+k_deny "python3 -c 'import os; os.remove(\"src/app.txt\")'" "引用符の中の ; を含むインライン本文（区間が割れない）"
+k_deny "python3 -c 'from pathlib import Path; Path(\"README.md\").write_text(\"x\")'" "インライン本文の write_text"
+k_deny "node -e 'const fs=require(\"fs\"); fs.writeFileSync(\"src/app.txt\",\"x\")'" "node -e の複文本文"
+k_deny "ruby -e 'x=1; File.write(\"a\",\"x\")'" "ruby -e の複文本文"
+K_POS_MULTI="$(printf 'python3 -c %simport os\nos.remove("a")%s\n' "'" "'")"
+k_deny "$K_POS_MULTI" "改行を含むインライン本文（引用符が行をまたぐ）"
+k_deny "bash -c 'cd /tmp'; touch README.md" "子シェルの cd は親へ漏れない"
+k_deny "( cd /tmp ); touch README.md" "サブシェルの cd は親へ漏れない"
+k_deny "D=\"\$(mktemp -d ./draft.XXXXXX)\"; tee \"\$D/x\"" "mktemp のテンプレートが cwd 配下なら一時領域扱いにしない"
+k_deny "FF_REVIEW_LOCK_OVERRIDE=1 true; echo x > README.md" "前区間の override は次の区間へ引き継がない"
+k_deny "echo hi>src/app.txt" "語に密着したリダイレクト"
+k_deny "echo x >| src/app.txt" ">| リダイレクト"
+k_deny "RESULT=\$(python3 patch.py)" "代入値のコマンド置換の本文を走査する"
+k_deny 'for f in README.md; do rm "$f"; done' "制御語（do）の後ろのコマンド（変数は判定不能側）"
+k_deny 'if true; then rm README.md; fi' "制御語（then）の後ろのコマンド"
+k_deny 'case x in x) rm README.md ;; esac' "case のパターンの後ろのコマンド"
+k_deny 'echo "$(echo x > README.md)"' "引用文字列の中の \$(…) の本文"
+k_deny 'echo `rm README.md`' "バッククォートの本文"
+k_deny 'eval "rm README.md"' "eval は判定不能"
+printf 'sed -i s/a/b/ README.md\n' > "$REPO/fix.sh"
+printf '#!/usr/bin/env python3\nopen("a","w")\n' > "$REPO/patch2"
+chmod +x "$REPO/patch2"
+k_deny '. ./fix.sh' ". で読む sh 本文を再帰走査"
+k_deny 'source fix.sh' "source で読む sh 本文を再帰走査"
+k_deny './patch2' "直接実行するスクリプト（shebang で言語を決める）"
+k_deny './missing.sh' "読めない直接実行は判定不能"
+k_deny "awk '{print > \"src/app.txt\"}' src/app.txt" "awk の出力リダイレクト"
+k_deny "tar -cf archive.tar src/" "tar -c のアーカイブ先"
+k_deny "tar -C src -xf $TEST_OUT/a.tar" "tar の連結フラグ（-xf）と -C"
+k_deny "gzip README.md" "gzip の in-place 圧縮"
+k_deny "zip out.zip README.md" "zip"
+k_deny "git rm README.md" "git rm（git 走査の名簿外だった形）"
+k_deny "git clean -fdx" "git clean"
+k_deny "bash -c 'git commit -m x'" "sh -c の内側の git 書き込み"
+k_deny "python3 < patch.py" "< で流す script ファイル"
+k_deny "perl -pi -e 's/a/b/' README.md" "perl -pi（クラスタに i）"
+k_deny "curl -sSLo out.txt https://x" "curl の連結フラグ -o"
+k_deny "curl -sO https://x" "curl -O（cwd へ保存）"
+k_deny "sort -o README.md README.md" "sort -o"
+k_deny 'echo x > $PWD/f' "\$PWD はツール側の cwd で解決"
+k_deny "python3 -c 'open(p,\"w\").write(\"x\")'" "マーカー行に書き込み先リテラルが無ければ判定不能"
+# Codex 2 巡目（2026-09-17）: 引用符付きの密着リダイレクト / プログラム内の複数書き込み先 /
+# override 区間の後ろの書き込み / パイプ・background・条件付きの cd
+k_deny 'echo x >"README.md"' "引用符付きの密着リダイレクト"
+k_deny "python3 -c 'open(\"$TEST_OUT/d\",\"w\"); open(\"README.md\",\"w\")'" "最初の書き込み先がツリー外でも後続のツリー内書き込みで止める（同一行）"
+K_POS_TWO="$(printf 'python3 - <<%sPY%s\nopen("%s/d","w")\nopen("README.md","w")\nPY\n' "'" "'" "$TEST_OUT")"
+k_deny "$K_POS_TWO" "最初の書き込み先がツリー外でも後続のツリー内書き込みで止める（別行）"
+k_deny "FF_REVIEW_LOCK_OVERRIDE=1 touch README.md; rm src/app.txt" "override 付き区間の後ろの override 無し書き込みは止める"
+k_deny "FF_REVIEW_LOCK_OVERRIDE=1 tee README.md; touch src/app.txt" "override 付き区間で走査を打ち切らない"
+k_deny "printf x | cd /tmp; touch README.md" "パイプ内の cd は親へ漏れない"
+k_deny "cd /tmp & touch README.md" "background の cd は親へ漏れない"
+k_deny "false && cd /tmp; touch README.md" "条件付き（&&）の cd は基準不明にする（deny 側）"
+k_deny "true || cd /tmp; touch README.md" "条件付き（||）の cd は基準不明にする（deny 側）"
+k_deny "true && cd $TEST_OUT; echo x > f" "条件付き cd の後の相対パスは判定不能（ツリー外へ動いたつもりでも止める）"
+k_deny "node -e 'require(\"fs\").writeFileSync(path.join(a,b),\"x\")'" "書き込み先が式ならリテラルで許可しない（判定不能）"
+K_POS_GLUED="$(printf 'cat <<EOF>README.md\nx\nEOF\n')"
+k_deny "$K_POS_GLUED" "heredoc の opener に密着したリダイレクト"
+k_deny "$K_POS_NOTES" "cat <<EOF > notes.md（ツリー内へのメモ書きは止める。本文の git ではなくリダイレクトが理由）"
+case "$REASON" in
+  *'リダイレクト'*) ok "(k) notes.md への deny の理由はリダイレクト（git commit の綴りではない）" ;;
+  *) bad "(k) notes.md への deny の理由が違う: [$REASON]" ;;
+esac
+# 負の対照（走行中 → 無音）
+k_silent "tee $TEST_OUT/draft.md" "ツリー外への tee（下書き）"
+k_silent "node -e 'require(\"fs\").writeFileSync(\"$TEST_OUT/d\",\"x\")'" "マーカーの対象引数（\"fs\" ではなく書き込み先）で判定する"
+k_silent "python3 -c 'open(\"$TEST_OUT/a\",\"w\"); open(\"$TEST_OUT/b\",\"w\")'" "複数の書き込み先がすべてツリー外なら通す"
+k_silent "FF_REVIEW_LOCK_OVERRIDE=1 tee README.md; FF_REVIEW_LOCK_OVERRIDE=1 touch src/app.txt" "全区間に override が付いていれば通す"
+k_silent "tee $TEST_OUT/x >/dev/null" "ツリー外への tee + >/dev/null（リダイレクト語を引数と誤認しない）"
+k_silent "tee $TEST_OUT/x < README.md" "ツリー外への tee + < README.md（入力リダイレクトを対象と誤認しない）"
+k_silent "rm -rf /tmp/x 2>/dev/null" "ツリー外の rm + 2>/dev/null"
+k_silent "mkdir -p $TEST_OUT/a 2>/dev/null" "ツリー外の mkdir + 2>/dev/null"
+k_silent "cp README.md $TEST_OUT/ 2>&1" "ツリー外への cp + 2>&1"
+k_silent "FF_REVIEW_LOCK_OVERRIDE=1 echo x > README.md" "リダイレクトでも区間先頭の override が効く"
+k_silent "D=\$(mktemp -d) && echo x > \$D/a.md" "引用符なしの mktemp -d 代入"
+k_silent "D=\$(mktemp) && echo x > \$D" "引用符なしの mktemp 代入（ファイル）"
+k_silent "python3 -c 'open(\"$TEST_OUT/draft.md\",\"w\").write(\"x\")'" "マーカー行の書き込み先リテラルがツリー外"
+k_silent "echo 'sleep 1 & touch README.md; text'" "引用文字列の中の & と ; は区切らない"
+k_silent "cd /tmp; touch draft.md" "cd の後の相対パスは cd 先で解決（ツリー外）"
+k_silent "echo \"cost: \$(date)\"" "書き込みを含まないコマンド置換"
+k_silent "perl -pe 's/a/b/' README.md" "perl -pe（i を含まないクラスタ）は読み取り"
+k_silent "perl -ne 'print' README.md" "perl -ne は読み取り"
+k_silent "perl -Mstrict -e 'print 1'" "-M のモジュール名に i があっても in-place ではない"
+k_silent "python3 < read.py" "< で流す読み取り専用の script"
+k_silent "awk '{ if (\$1 > 5) print }' README.md" "awk の比較演算子 > はリダイレクトではない"
+k_silent "cd $TEST_OUT; echo x > \$PWD/f" "cd の後の \$PWD は cd 先"
+k_silent "git stash list" "read-only な git（サブシェル走査側でも名簿外）"
+k_silent "bash -c 'git status'" "sh -c の内側の read-only な git"
+k_silent "sort README.md" "-o の無い sort"
+k_silent "tar -tf $TEST_OUT/a.tar" "tar -t は読み取り"
+k_silent "gzip -c README.md > $TEST_OUT/x.gz" "gzip -c は stdout（リダイレクト先はツリー外）"
+K_NEG_MULTI="$(printf 'echo "a\nb"; ls\n')"
+k_silent "$K_NEG_MULTI" "引用符が行をまたぐ読み取り専用コマンド"
+k_silent "$K_NEG_BODY" "ツリー外へのメモ書き（本文に sed -i / tee の綴り）"
+k_silent "echo x > /dev/null" "/dev/null"
+k_silent "ls 2>/dev/null" "2>/dev/null"
+k_silent "ls 2>&1" "2>&1 は fd 複製"
+k_silent "echo x >&2" ">&2 は fd 複製"
+k_silent "ls 2>&1 | tee $TEST_OUT/log" "パイプ先の tee がツリー外"
+k_silent "sed -n '1,5p' README.md" "sed -n は読み取り"
+k_silent "sed 's/a/b/' README.md" "-i の無い sed は読み取り"
+k_silent "python3 -c 'print(1)'" "読み取り専用の python3 -c"
+k_silent "python3 -c 'print(1 > 0)'" "引用文字列の中の > はリダイレクトではない"
+k_silent "node -e 'console.log(1)'" "読み取り専用の node -e"
+k_silent "$K_NEG_READ" "読み取りだけの heredoc プログラム（open の r モード）"
+k_silent "python3 read.py" "読み取りだけの script ファイル"
+k_silent "grep -r x . > $TEST_OUT/out" "検索結果をツリー外へ"
+k_silent "$K_NEG_GH" "PR 本文の heredoc に sed -i の綴り（データ）"
+k_silent "git status" "read-only な git"
+k_silent "tee $REPO/.review-results/x.md" "レビュー出力先への tee（絶対パス）"
+k_silent "echo x > .review-results/x.md" "レビュー出力先へのリダイレクト（相対パス）"
+k_silent "rm -rf /tmp/x" "ツリー外の rm -rf"
+k_silent "rm -rf $TEST_OUT/*" "glob の手前で切ってディレクトリ部分で判定"
+k_silent "mkdir -p $TEST_OUT/a/b" "ツリー外の mkdir"
+k_silent "cp README.md $TEST_OUT/c.md" "cp の移動先がツリー外（移動元は読むだけ）"
+k_silent "bash -c 'echo x > /dev/null'" "bash -c の再帰走査で /dev/null"
+k_silent "$K_NEG_SHDOC" "bash の heredoc プログラム内の cd 追跡（ツリー外）"
+k_silent "cd $TEST_OUT && echo x > f" "cd でツリー外へ出た後の相対パス"
+k_silent "O=$TEST_OUT; echo x > \"\$O/draft.md\"" "コマンド内の代入（ツリー外）を展開"
+k_silent 'D="$(mktemp -d)"; tee "$D/x"' "mktemp -d の代入は一時領域（ツリー外）とみなす"
+k_silent "mktemp" "引数無しの mktemp"
+k_silent "mktemp -p $TEST_OUT" "ツリー外の mktemp -p"
+k_silent "npm test" "ビルド・テストツールは対象外"
+k_silent "curl -s https://example.com" "-o の無い curl"
+k_silent "python3 --version" "バージョン表示だけのインタプリタ"
+k_silent "echo 'a > b'" "引用文字列の中の >"
+k_silent "echo FF_REVIEW_LOCK_OVERRIDE=1 && tee $TEST_OUT/x" "抜け道の綴りをデータとして出すだけ"
+k_silent "FF_REVIEW_LOCK_OVERRIDE=1 tee README.md" "区間先頭の FF_REVIEW_LOCK_OVERRIDE=1 で通る（git 以外にも効く）"
+run_hook "$(bash_json_at "tee README.md" "$REPO")" 'FF_REVIEW_LOCK_OVERRIDE=1'
+assert_silent "(k) セッション環境の FF_REVIEW_LOCK_OVERRIDE=1 で通る"
+# マーカー走査の grep が失敗する回（seam）は「マーカー無し」ではなく判定不能 → deny
+run_hook "$(bash_json_at "$K_POS_1" "$REPO")" 'FF_WRITE_SCAN_GREP=/nonexistent/grep'
+assert_deny "(k) マーカー走査の grep が失敗すると判定不能として deny（マーカー無しに畳まない）"
+case "$REASON" in
+  *'grep'*) ok "(k) grep 失敗の理由文がその旨を出す" ;;
+  *) bad "(k) grep 失敗の理由文が違う: [$REASON]" ;;
+esac
+run_hook "$(bash_json_at "tee $TEST_OUT/x" "$REPO")" 'FF_WRITE_SCAN_GREP=/nonexistent/grep'
+assert_silent "(k) grep 失敗でもマーカー走査に到達しないコマンドは影響を受けない"
+run_hook "$(bash_json_at "echo x > README.md" "$REPO")" 'FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1'
+assert_silent "(k) opt-out で無音"
+# cwd がリポジトリへの symlink でも物理パスで判定する
+ln -s "$REPO" "$TEST_TMP/repo-link"
+k_silent "tee $TEST_OUT/x" "symlink 経由の cwd からツリー外への tee は無音" "$TEST_TMP/repo-link"
+k_deny "tee README.md" "symlink 経由の cwd からツリー内への tee は deny（物理パスで判定）" "$TEST_TMP/repo-link"
+# レーンだけが生きている状態でも同じ deny
+clear_lock
+run_hook "$(agent_json pr-review-toolkit:code-reviewer Agent k-lane-1)"
+k_deny "tee README.md" "レーンだけが生きている状態でも Bash 書き込みは deny"
+run_hook "$(subagent_start_json pr-review-toolkit:code-reviewer k-agent-1)"
+run_hook "$(subagent_stop_json pr-review-toolkit:code-reviewer k-agent-1)"
+clear_lanes
+# stale ロックは警告のみ
+write_lock "$DEAD_PID"
+run_hook "$(bash_json_at "echo x > README.md" "$REPO")"
+assert_warn_only "(k) stale なロックでは Bash 書き込みも警告のみ（deny しない）"
+clear_lock
+# ロック無しでは正例が全件無音（走査はロックがあるときだけ払うコスト）
+k_nolock_bad=0
+for k_cmd in "$K_POS_1" "sed -i '' 's/a/b/' README.md" "tee README.md" "echo x > README.md" "rm README.md" \
+  "python3 patch.py" "python3 missing.py" 'echo x > "$UNSET_VAR_FF_1710/x"' "$K_POS_UNTERM" "bash -c 'echo x > f'" \
+  "true & touch README.md" 'eval "rm README.md"'; do
+  run_hook "$(bash_json_at "$k_cmd" "$REPO")"
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then :; else k_nolock_bad=$((k_nolock_bad + 1)); bad "(k) ロック無しなのに出力あり: cmd=[$(printf '%s' "$k_cmd" | head -1)] out=[$OUT]"; fi
+done
+[ "$k_nolock_bad" -eq 0 ] && ok "(k) ロック無しでは Bash 書き込みの正例 12 件がすべて無音（判定不能形を含む）"
+# 共有ライブラリが無いコピー: 走行中 + Bash コマンドは判定不能として deny、ロック無しは無音
+# （heredoc 除去ヘルパ不在 / 書き込み走査ライブラリ不在の 2 通り）
+K_COPY="$TEST_TMP/k-nohelper"
+mkdir -p "$K_COPY/hooks" "$K_COPY/tests/lib"
+cp "$TARGET" "$K_COPY/hooks/guard-review-in-flight.sh"
+cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$K_COPY/hooks/"
+cp "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$K_COPY/hooks/" 2>/dev/null || true
+cp "$PLUGIN_ROOT/tests/lib/review-write-scan.sh" "$K_COPY/tests/lib/"
+K_COPY2="$TEST_TMP/k-noscanlib"
+mkdir -p "$K_COPY2/hooks" "$K_COPY2/tests/lib"
+cp "$TARGET" "$K_COPY2/hooks/guard-review-in-flight.sh"
+cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$K_COPY2/hooks/"
+cp "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$K_COPY2/hooks/" 2>/dev/null || true
+cp "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$K_COPY2/tests/lib/"
+write_lock "$LIVE_PID"
+K_OUT="$(printf '%s' "$(bash_json_at "tee $TEST_OUT/x" "$REPO")" | bash "$K_COPY/hooks/guard-review-in-flight.sh" 2>/dev/null)"
+case "$(printf '%s' "$K_OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" in
+  deny) ok "(k) heredoc 除去ヘルパが無いと走行中の Bash コマンドは判定不能として deny（ツリー外でも）" ;;
+  *) bad "(k) ヘルパ不在で素通し: out=[$K_OUT]" ;;
+esac
+K_OUT="$(printf '%s' "$(bash_json_at "tee $TEST_OUT/x" "$REPO")" | bash "$K_COPY2/hooks/guard-review-in-flight.sh" 2>/dev/null)"
+case "$(printf '%s' "$K_OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)" in
+  *'走査ライブラリ'*) ok "(k) 書き込み走査ライブラリが無いと走行中の Bash コマンドは判定不能として deny（理由にライブラリの不在を出す）" ;;
+  *) bad "(k) 走査ライブラリ不在で素通し / 理由が違う: out=[$K_OUT]" ;;
+esac
+K_OUT="$(printf '%s' "$(bash_json_at "git status" "$REPO")" | bash "$K_COPY2/hooks/guard-review-in-flight.sh" 2>/dev/null)"
+case "$(printf '%s' "$K_OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" in
+  deny) ok "(k) 走査ライブラリ不在では走行中の read-only な git も判定不能として止まる（fail-closed の面は走行中の全 Bash）" ;;
+  *) bad "(k) 走査ライブラリ不在で git status が素通し: out=[$K_OUT]" ;;
+esac
+clear_lock
+K_OUT="$(printf '%s' "$(bash_json_at "tee $TEST_OUT/x" "$REPO")" | bash "$K_COPY/hooks/guard-review-in-flight.sh" 2>/dev/null)"
+[ -z "$K_OUT" ] && ok "(k) ヘルパ不在でもロック無しは無音（fail-open 経路は変えない）" || bad "(k) ヘルパ不在 + ロック無しで出力: [$K_OUT]"
+K_OUT="$(printf '%s' "$(bash_json_at "tee README.md" "$REPO")" | bash "$K_COPY2/hooks/guard-review-in-flight.sh" 2>/dev/null)"
+[ -z "$K_OUT" ] && ok "(k) 走査ライブラリ不在でもロック無しは無音" || bad "(k) 走査ライブラリ不在 + ロック無しで出力: [$K_OUT]"
+rm -f "$REPO/patch.py" "$REPO/read.py" "$REPO/fix.js" "$REPO/fix.sh" "$REPO/patch2"
 
 echo
 if [ "$FAIL" -gt 0 ]; then

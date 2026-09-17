@@ -64,6 +64,11 @@ trap _ff_exit_guard EXIT
 echo "== mbcs-guard fail-closed 経路の自動回帰 =="
 
 # ---- helper: stub git --------------------------------------------------------
+# stub が委譲する実 git は PATH で解決する（`exec git`）。`/usr/bin/git` を直書きすると、
+# ホスト git 障害（Xcode 更新後のライセンス未同意で rc=69）を PATH 先頭のシムで回避しても
+# この suite だけ赤のまま残り、隔離環境の実装エージェントが「環境由来」と誤診する
+# （Issue `#1720` / OBS-218）。stub は FF_MBCS_GIT の絶対パスで渡され PATH には載らないので、
+# `exec git` が stub 自身へ再帰することはない。
 write_git_stub() {
   # $1=path $2=mode: revparse-fail | lsfiles-fail | lsfiles-empty | passthrough
   local dest="$1" mode="$2"
@@ -75,7 +80,7 @@ if [[ "$*" == *rev-parse* ]]; then
   echo "fatal: not a git repository" >&2
   exit 128
 fi
-exec /usr/bin/git "$@"
+exec git "$@"
 STUB
       ;;
     lsfiles-fail)
@@ -87,9 +92,9 @@ if [[ "$*" == *ls-files* ]]; then
 fi
 if [[ "$*" == *rev-parse* ]]; then
   # 次引数の -C path を解釈して show-toplevel
-  exec /usr/bin/git "$@"
+  exec git "$@"
 fi
-exec /usr/bin/git "$@"
+exec git "$@"
 STUB
       ;;
     lsfiles-empty)
@@ -99,7 +104,7 @@ if [[ "$*" == *ls-files* ]]; then
   FF_REACHED_END=1
   exit 0
 fi
-exec /usr/bin/git "$@"
+exec git "$@"
 STUB
       ;;
     *)
