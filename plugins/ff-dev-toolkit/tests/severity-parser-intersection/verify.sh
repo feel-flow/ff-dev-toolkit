@@ -337,6 +337,166 @@ row "強調非ゼロ: - Critical: *2*" accept fire <<'BODY'
 - Critical: *2*
 BODY
 
+# ラベルとコロンを**まとめて**強調で囲んだ形（`- **Critical:** 0`）。`**` が `:` の
+# 後ろへ来るため、ラベル側の `[*]*` でも値側の emph でも吸収できず、s1（件数行）
+# ではなく s3（ラベル付き指摘行）へ落ちて偽の CRITICAL_BLOCK を立てていた
+# （実レポートで実測 — 値側・ゼロ語側の強調を許した回とは別経路の同じ失敗形）。
+# 修正は BEGIN ブロックの colon を強調跨ぎへ広げたもの。colon は s1 / s1_zero /
+# s3b / s3s が共有するため、受理・検出の両モードと全ラベルへ同時に効く。
+# colon を旧定義（強調を跨がない形）へ戻す変異では、直下 4 行の none 期待だけでなく
+# bullet 無しの 2 行・critical 節の複数行 2 行・コロン前側の 2 行も落ちて計 9 行が
+# 赤になる（実測）。「直下だけが針」と読んで他の行を削らないこと。
+row "強調コロン跨ぎゼロ: - **Critical:** 0" accept none <<'BODY'
+- **Critical:** 0
+BODY
+
+row "強調コロン跨ぎゼロ語: - **Critical:** なし" accept none <<'BODY'
+- **Critical:** なし
+BODY
+
+row "強調コロン跨ぎゼロ: 全角コロン - **Critical：** 0" accept none <<'BODY'
+- **Critical：** 0
+BODY
+
+row "強調コロン跨ぎゼロ: 単一 * の - *Critical:* 0" accept none <<'BODY'
+- *Critical:* 0
+BODY
+
+# 偽陰性を作らないこと — 強調コロン跨ぎでも非ゼロ件数は従来どおり発火する。
+row "強調コロン跨ぎ非ゼロ: - **Critical:** 1" accept fire <<'BODY'
+- **Critical:** 1
+BODY
+
+# ラベル違いへ波及しないこと（colon は全ラベル共有 — critical 以外のゼロ / 非ゼロが
+# Critical 検出へ漏れない）。
+row "強調コロン跨ぎ: - **Warning:** 0 は Critical を発火しない" accept none <<'BODY'
+- **Warning:** 0
+BODY
+
+row "強調コロン跨ぎ: - **Warning:** 2 は Critical を発火しない" accept none <<'BODY'
+- **Warning:** 2
+BODY
+
+row "強調コロン跨ぎ: - **Suggestion:** 0 は Critical を発火しない" accept none <<'BODY'
+- **Suggestion:** 0
+BODY
+
+# bullet 無しの件数行（s1 は bullet 任意）。colon を広げたことで `**Critical:** 0` が
+# s1 として**受理**されるようになった（変更前は s1 / s3b / s3s のどれにも該当せず
+# 不受理 = その観点の結果が欠測扱い）。件数行は値を行内に持つ自己完結行なので、
+# 受理側が広がる向きは s1 の契約どおり。意図した挙動として固定する。
+row "強調コロン跨ぎ: bullet 無しの **Critical:** 0 を受理する" accept none <<'BODY'
+**Critical:** 0
+BODY
+
+row "強調コロン跨ぎ: bullet 無しの **Critical:** 1 は c1 で発火する" accept fire <<'BODY'
+**Critical:** 1
+BODY
+
+# 既存の除外規則が強調コロン跨ぎでも効くこと — 参照語 veto は行単位で s3 に掛かる
+# （`- **Critical:** 詳細は前のターンです` は s1 の値（数値 / ゼロ語）を持たないため
+# s3 側へ落ち、veto されて不受理・不発火）。
+row "強調コロン跨ぎ + 参照語 veto: - **Critical:** 詳細は前のターンです" reject none <<'BODY'
+- **Critical:** 詳細は前のターンです
+BODY
+
+# 強調コロン跨ぎの**本物の指摘**は従来どおり受理・発火する（s3 の経路は残る）。
+row "強調コロン跨ぎの実指摘: - **Critical:** 本物の指摘です" accept fire <<'BODY'
+- **Critical:** 本物の指摘です
+BODY
+
+# ── 強調コロン跨ぎ × 既存経路の交点（セルフレビューで実測した 2 件の fail-open）──
+
+# (1) bullet 無しの強調コロン跨ぎ指摘行。s3s_re がラベル直後に literal `**` を要求して
+# いた間、この形は s1/s2/s3 のどれにも該当せず c2 が発火しなかった。同じ本文に
+# `**Warning:** 0` のような件数行が 1 行でもあると受理だけが成立するため、**欠測
+# （fail-loud）だったものが「本文あり・Critical なし」（無音の fail-open）へ化ける**。
+# s3s_re の literal `**` を emph へ寄せる修正を戻すと、この 2 行が赤になる。
+row "bullet 無し強調コロン跨ぎの実指摘: **Critical:** 散文" accept fire <<'BODY'
+**Critical:** 認証チェックの欠落（scripts/foo.sh:10）
+BODY
+
+row "bullet 無し強調コロン跨ぎ: 件数行で受理されても Critical を見落とさない" accept fire <<'BODY'
+## Summary
+**Warning:** 0
+**Critical:** src/db.ts:88 に SQL インジェクションがある
+BODY
+
+# (2) critical 見出しスコープ配下のゼロ宣言抑止（c3 の crit_zero）。colon が強調を
+# 跨ぐようになったことで**他ラベルの件数行**（`- **Warning:** 0` / 集約形の
+# `- **Suggestion:** 0 / **Critical:** 2`）が s1 ゼロへ落ちるようになり、ラベルを
+# 見ない抑止トリガのままだと後続の実所見を黙らせた（実測 rc0 → rc1 の fail-open）。
+# 抑止トリガへ `cls != 1 || cls_crit` を入れる修正を戻すと、この 2 行が赤になる。
+row "critical 節の **Warning:** 0 は後続の実所見を黙らせない" accept fire <<'BODY'
+### Critical
+- **Warning:** 0
+- [src/a.ts:1] 実際の Critical 指摘（信頼度: 高）
+BODY
+
+row "critical 節の集約件数行（Critical 非先頭）は後続の実所見を黙らせない" accept fire <<'BODY'
+### Critical Issues
+- **Suggestion:** 0 / **Critical:** 2
+- [src/a.ts:1] 実際の Critical 指摘（信頼度: 高）
+BODY
+
+# (3) 抑止そのものは強調コロン跨ぎでも従来どおり効く（ゼロ宣言側を信じる既定）。
+# 単行だけのテーブル行はこの c3 経路を踏まないため、複数行ボディで固定する。
+# crit_zero のトリガから cls_zero を落とす変異はこの 3 行が赤になる（単行行では緑のまま）。
+row "critical 節の - **Critical:** 0 の後ろの裏取り bullet は c3 で数えない" accept none <<'BODY'
+### Critical Issues
+- **Critical:** 0
+- 参考: DOMAIN.md:322 の記述は正確
+- 参考: 境界条件も確認済み
+BODY
+
+row "critical 節の - **Critical：** 0（全角）の後ろの裏取り bullet も同じ" accept none <<'BODY'
+### Critical
+- **Critical：** 0
+- 参考: 確認済み
+BODY
+
+row "critical 節の素の - Critical: 0 の後ろの裏取り bullet（従来経路の対照）" accept none <<'BODY'
+### Critical Issues
+- Critical: 0
+- 参考: 確認済み
+BODY
+
+# (4) コロンの**前**側の emph。ラベル側の `[*]*` は `_` を受けないため、前側 emph が
+# 効くのは `- **Critical**_: 0` / `- Critical_: 0` のような `_` 混じりの形だけ。
+# 前側 emph だけを削る変異はこの 2 行でしか赤にならない（後側だけを固定していると
+# 「変更の半分が針を持たない」状態になる — セルフレビューで実測）。
+row "コロン前側の強調: - **Critical**_: 0" accept none <<'BODY'
+- **Critical**_: 0
+BODY
+
+# 前側 emph は検出側も広げる（分類そのものが変わるため）。向きは fail-safe
+# （見落としを作らない側）で、非ゼロは発火する。
+row "コロン前側の強調: - Critical_: 5 は発火する" accept fire <<'BODY'
+- Critical_: 5
+BODY
+
+# (5) ラベル**そのもの**を `_` で囲む形は受理しない（既知の境界）。ラベル側の強調は
+# `[*]*` のままで emph へ揃えていないため。受理されない = その観点は欠測として
+# fail-loud になる向きで、本 PR では広げていない。
+row "_ 強調ラベルは受理しない（既知の境界）: - _Critical:_ 0" reject none <<'BODY'
+- _Critical:_ 0
+BODY
+
+# (6) 既知の限界（本 PR では変えていない）: s1 は行頭の 1 ラベルでスキャンが確定する
+# ため、集約件数行で critical が**先頭でない**と c1 が届かない。強調の有無に関わらず
+# 同じで、base でも同一挙動。契約（Critical 先頭）に沿う語順なら従来どおり発火する。
+row "既知の限界: 集約件数行の Critical 非先頭は c1 が拾わない（強調あり）" accept none <<'BODY'
+- **Warning:** 0 / **Critical:** 2
+BODY
+
+row "既知の限界: 集約件数行の Critical 非先頭は c1 が拾わない（素のコロン）" accept none <<'BODY'
+- Warning: 0 / Critical: 2
+BODY
+
+row "対照: 集約件数行の Critical 先頭は従来どおり発火する" accept fire <<'BODY'
+- Critical: 2 / Warning: 0
+BODY
+
 # 強調はゼロ**語**にも掛かる。値側だけに掛けた版では `- **指摘なし**` /
 # `- **なし**` が偽 Critical として発火し続けた（実測）。ゼロ語は s2a_re /
 # s4_empty_re / zero_decl_re が共有するため、片側だけ直すと同根の非対称が残る。
