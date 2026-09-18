@@ -372,6 +372,8 @@ gh issue create --repo "<owner>/<repo>" --assignee @me \
 5. 昇格起票した提案は、起票後に対応する台帳エントリの `Status` を `promoted`、`Issue` を発行番号へ更新する（定型書き込み）。対策が既に別の場所にあるため起票そのものを見送った閾値到達エントリは、代わりに `Status` を `mitigated`、`Issue` を対策の所在へ更新する（同じく定型書き込み。値域と復帰条件の正本は「昇格閾値と特急レーン」）
 6. 発行された Issue 番号を報告して終了する。既存への追記へ切り替えた提案は、新規番号の代わりに追記先（コメントした Issue 番号・更新を依頼したエントリ ID）を報告する
 
+Markdown 本文へ script で文字列パッチを当てる場合は [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
+
 ## ask / off モード（保険）
 
 毎回実施がノイジーだった場合に、実施前確認式（`ask`）または自動発火の無効化（`off`）へ切り替えられる。`ask` / `off` は環境変数用の値で、`off` は `0` / `false` / `no` / `none` / `disabled` も大文字小文字と空白を無視して受け付ける。**振り返りに入る前に、必ず最初にモードを判定する**:

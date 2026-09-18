@@ -851,6 +851,12 @@ else
     # 参照リンクも見る。文言だけが防御の文書契約なので、消失を回帰として扱う。
     # 純粋な静的検査で一時領域も git も要らず、skip 経路を持たない。
     "$SCRIPT_DIR/long-task-commit-contract/verify.sh"
+    # Markdown 文字列パッチ規律の「正本 1 本 + 参照 N 本」（Issue `#1753`）: 正本
+    # docs-template/05-operations/deployment/markdown-patch-discipline.md の 3 節の実在と、
+    # 本文パッチを行う 6 スキルがフェンス外で同一リテラルの参照を持つことを固定する。
+    # 規律本文がスキル側へ書き戻される逆方向（正本が 2 本目に増える）も赤にする。
+    # 純粋な静的検査で一時領域も git も要らず、skip 経路を持たない。
+    "$SCRIPT_DIR/markdown-patch-discipline-refs/verify.sh"
     # worktree 委譲の依存プリフライト契約（Issue #1444）: 正本
     # multi-cli-agent-orchestration.md の契約節（委譲プロンプトへの常置・コマンドを実値で
     # 書く・対象はゲートを回す委譲すべて・lockfile 変更時の入れ直し）を節スコープで固定し、
@@ -1121,6 +1127,12 @@ REQUIRED_SUITES=(
   # review-freeze-contract と同じ理由で名簿に載せ、suite の改名・削除と将来の
   # skip 経路を黙って通さない。
   long-task-commit-contract
+  # Markdown 文字列パッチ規律の「正本 1 本 + 参照 N 本」（Issue `#1753` / bundle `#1759`）も
+  # 文言だけが防御。参照が 1 本消えると、そのスキルの作業中だけ規律へ到達できない状態
+  # （公開 ff-dev-toolkit `#110` が報告した、適用範囲が 2 スキルに閉じていた状態）へ戻る。
+  # 静的検査で skip 経路を持たないが、review-freeze-contract と同じ理由で名簿に載せ、
+  # 改名・削除と将来の skip 経路を黙って通さない。
+  markdown-patch-discipline-refs
   # worktree 委譲の依存プリフライト契約（Issue #1444）も文言だけが防御。委譲プロンプトへ
   # 常置する文言が消えると、対策は文書に在るのに委譲先へ届かない状態（OBS-013 が 5 回
   # 再発した状態）へ戻る。同じ理由で名簿に載せ、改名・削除と将来の skip 経路を通さない。

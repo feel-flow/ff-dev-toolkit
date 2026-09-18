@@ -370,6 +370,8 @@ fi
 
 本文は Write ツールで作業ツリー外の一時ファイル（セッションの scratchpad 等）へ書き、`--body-file` で渡す（heredoc でシェル変数へ組み立てない。空のファイルを渡さない — 空の本文は「作成済みだが中身の無い」Issue を黙って生む）。内容は上の構造で組み立てる。
 
+Markdown 本文へ script で文字列パッチを当てる場合は [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
+
 本文を書いた直後に、手順 5 末尾の「ISSUE_TEMPLATE 節の pre-flight（fail-soft）」の bash ブロックを単独実行し、列挙された `## ` 見出しを今書いた本文と突き合わせる（比較対象の本文がここで初めて揃うため、実行点はこのステップ）。
 
 #### ステップ 2: ラベルの実在確認（単独コマンド）

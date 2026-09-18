@@ -20,6 +20,14 @@
 
 ## [Unreleased]
 
+## [0.123.0] - 2026-09-19
+
+### 変更
+
+- Markdown 本文へ script で文字列パッチを当てるときの規律を `docs-template/05-operations/deployment/markdown-patch-discipline.md` へ 1 本化した。heredoc ではなく coding ヘッダー付きの script file にする / 値はシェル変数ではなく `sys.argv` で渡す / パッチと後続コマンドを同じ実行にまとめない、の 3 点を含む
+- 本文パッチを行う 6 スキル（`ace-curate` / `close-issue` / `create-issue` / `refine-issue` / `retrospective` / `out-of-scope-issue`）が同規律を参照するようにした。これまで規律は 2 スキルに別々の文面で書かれ、残る 4 スキルには 1 文字も無かった
+- 参照が 1 本でも消えると赤になる検査 `tests/markdown-patch-discipline-refs` を追加した
+
 ## [0.122.0] - 2026-09-18
 
 ### ドキュメント

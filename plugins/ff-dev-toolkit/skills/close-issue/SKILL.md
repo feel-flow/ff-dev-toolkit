@@ -417,6 +417,8 @@ gh pr view "$PR_NUMBER" --json additions,deletions,commits,reviews
 
 #### 5b. 本文の書き換えと送信
 
+Markdown 本文へ script で文字列パッチを当てる場合は [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
+
 達成した AC のチェックボックスをチェック済みに更新します。**必ず Markdown タスクリスト記法の checked state（`- [ ]` → `- [x]`）で書き換えること**（`☑` などの文字を挿入すると GitHub 上ではタスクとして認識されない）:
 
 ```bash
@@ -428,16 +430,9 @@ gh issue view $ISSUE_URL --json body,updatedAt
 # 2) 達成と判定した AC の行だけを "- [ ]" → "- [x]" に書き換える
 #    （利用中のホストが提供するファイル編集機能で該当行を個別に置換する。sed 等での一括置換は
 #      未達・対象外の項目まで完了扱いにしてしまうため禁止。ファイル編集機能が使えず
-#      文字列パッチの script で書き換える場合は python3 を既定にするが、
-#      `python3 - <<'PY'` のヒアドキュメントではなく、scratchpad 等へ script file として
-#      書き出し、1 行目に `# -*- coding: utf-8 -*-` を置いて `python3 <file>` で実行するのを
-#      既定にする（ファイル I/O は open(path, encoding="utf-8") を明示する）。ヒアドキュメント形は
-#      環境により SyntaxError: Non-UTF-8 code starting with '\xe5' ... but no encoding declared
-#      で 1 行も実行されずに落ち、PYTHONUTF8=1 だけでは不足だった（実測: PYTHONUTF8=1 で通った
-#      セッションの翌日には同じ変数で落ち、coding ヘッダー付き script file で通った）。
-#      Node のテンプレートリテラルは日本語 + バックティック混在の本文で SyntaxError になり、
-#      パッチが失敗したまま後続だけが走る。パッチ実行と git add / git commit は別コマンドにし、
-#      パッチ失敗時は 4) の送信へ進まない）
+#      文字列パッチの script で書き換える場合は、この SKILL.md から
+#      ../../docs-template/05-operations/deployment/markdown-patch-discipline.md を
+#      読み、その規律に従う。パッチ失敗時は 4) の送信へ進まない）
 
 # 3) 書き換え結果を機械判定する。目視で diff を眺めない —
 #    緩めた安全条件を散文で守ろうとすると守れない（発動しないゲートは無いゲートと同じ）。
