@@ -183,9 +183,9 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1`（対象コマンド先頭の環境代入としても有効な抜け道）
 - 既知の限界: `--label` を変数展開・コマンド置換で組み立てる形、`gh issue create` を経ない起票（API 直叩き・Web UI）では判定できず素通しする（fail-open）
 
-**委譲先の長時間ゲート background ガード（`guard-long-gate-background.sh`）** — 委譲先のサブエージェントが全件ゲート（`run-all.sh`）を `run_in_background` で起こすとき、および Bash ツールの `timeout` が未指定・foreground 上限（既定 600000 ミリ秒）未満のためホストに自動 background 化されるときに停止する。background へ回された委譲先は「完了通知を待つ」と言って停止し、親がナッジするまで再開しないため、待ち時間だけが失われる。**発火するのは委譲先（サブエージェント）の呼び出しだけ**で、オーケストレータ自身が意図的に background でゲートを回す運用は対象外（hook 入力の `agent_type` の有無で判別する）。発火と抜け道通過は `${TMPDIR}` 配下の session_id 別ログへ追記され、どの子が起こしたかの追跡と発生回数の計測に使える。
+**委譲先の background ガード（`guard-long-gate-background.sh`）** — 委譲先のサブエージェントが `run_in_background: true` を**明示**したとき（コマンドを問わない）、および名簿の長時間ゲート（`run-all.sh` / `run-mutations.sh`）を Bash ツールの `timeout` 未指定・foreground 上限（既定 600000 ミリ秒）未満で起こしてホストに自動 background 化されるときに停止する。**名簿に縛られるのは後者だけ**である — 前者は構造化フィールド 1 つで判定でき所要時間の予測が要らないのに対し、後者は「このコマンドは上限を超えるか」の予測が要り、一般化すると `timeout` を書かない短いコマンドが全部止まるため。background へ回された委譲先は「完了通知を待つ」と言って停止し、親がナッジするまで再開しないため、待ち時間だけが失われる。**発火するのは委譲先（サブエージェント）の呼び出しだけ**で、オーケストレータ自身が意図的に background でゲートを回す運用は対象外（hook 入力の `agent_type` の有無で判別する）。発火と抜け道通過は `${TMPDIR}` 配下の session_id 別ログへ追記され、どの子が起こしたかの追跡と発生回数の計測に使える。
 
-- 通し方: `run_in_background` を外して Bash ツールの `timeout` に `600000` を明示し foreground で待つ、またはゲートを foreground 上限に収まる粒度へ分割する。それでも background で起こす必要がある場合は**ゲートを実行するセグメントの先頭**に `FF_LONG_GATE_BACKGROUND_ACK=1` を付ける（判定はセグメントごとなので、`cd /repo && bash …/run-all.sh` なら `cd /repo && FF_LONG_GATE_BACKGROUND_ACK=1 bash …/run-all.sh` と置く）
+- 通し方: `run_in_background` を外して Bash ツールの `timeout` に `600000` を明示し foreground で待つ、またはゲートを foreground 上限に収まる粒度へ分割する。それでも background で起こす必要がある場合は `FF_LONG_GATE_BACKGROUND_ACK=1` を付ける。**置き場はトリガごとに違う** — 名簿の自動 background 化は**ゲートを実行するセグメントの先頭**（`cd /repo && bash …/run-all.sh` なら `cd /repo && FF_LONG_GATE_BACKGROUND_ACK=1 bash …/run-all.sh`）、明示 `run_in_background` は**コマンドの先頭**（そちらには「ゲートのセグメント」に相当するものが無く、近似的なコマンド分割に抜け道の到達性を預けないため）
 - 要求する最小 timeout は環境変数 `FF_LONG_GATE_FOREGROUND_TIMEOUT_MS`（既定 600000）で変えられる
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD=1`
 

@@ -1371,7 +1371,6 @@ MISS_PROBE_BASELINE=(
   skill-references-existence
   sweep-orphan-transcripts
   sync-forbidden-patterns
-  sync-sha-contract
   update-check
   validate-docs-placeholders-selftest
   validate-docs-placeholders

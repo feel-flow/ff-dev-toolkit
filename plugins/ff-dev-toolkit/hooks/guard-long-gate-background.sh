@@ -4,9 +4,10 @@
 # 委譲先が長時間ゲートを background で起こすのを止めるガード（PreToolUse / Bash、
 # 観測台帳 OBS-036 の対策）。
 #
-# サブエージェントが全件ゲート（`run-all.sh`）を
-#   (a) `run_in_background: true` で起こす
-#   (b) Bash ツールの `timeout` を省く / foreground 上限より短く指定する
+# サブエージェントが
+#   (a) **任意のコマンド**を `run_in_background: true` で起こす
+#   (b) 名簿の長時間ゲート（`run-all.sh` / `run-mutations.sh`）を、Bash ツールの
+#       `timeout` を省いて / foreground 上限より短く指定して起こす
 # と、ハーネスがそのコマンドを background へ回す。background へ回された委譲先は
 # 「完了通知を待つ」と言って停止し、親がナッジするまで再開しない。親が引き取るので
 # 最終成果には現れず、失うのは待ち時間だけなので観測台帳を見ないと累積が分からない。
@@ -38,11 +39,31 @@
 # 判定材料が無いので**無音で通す**（fail-open。guard-review-in-flight.sh が
 # `subagent_type` 不在の版に対して採っているのと同じ規律）。
 #
-# ## 対象コマンドを一般の「長そうなコマンド」へ広げない
+# ## トリガは 2 つ。名簿に縛られるのは「自動 background 化」の側だけである
 #
-# 名簿は `run-all.sh`（全件ゲート）**だけ**である。OBS-036 の 6 回の再発のうち
-# `run-all` と名指しされているのは 3 回、`npm ci` が 1 回、残る 2 回は対象コマンドを
-# 特定できない（うち 1 回はサブエージェントですらなく親自身の待機ループ）。
+# 止める行為は 1 つ（委譲先が起こしたコマンドの完了を追わない）だが、そこへ至る経路は
+# 2 つあり、**判定材料の質がまるで違う**。混ぜると片方の制約がもう片方を不必要に縛る。
+#
+#   (i)  委譲先が `run_in_background: true` を**明示**した … **deny の判定**は構造化
+#        フィールド 1 つで決まり、コマンド本文の解析結果に依存しない。だから下で名簿を
+#        狭く保っている理由（近似的なコマンド解析が生む誤検知）が掛からず、
+#        **名簿に依らず止める**。
+#        ただし本文をまったく見ないわけではない — ACK 前置の検出（`code_only` の先頭）と
+#        記録へ載せるコマンド名の解決は本文から取る。したがって**本文処理側の fail-open
+#        は (ii) と共有する**: heredoc ヘルパが読めない・`code_only` が空・jq 不在では
+#        (i) も無音で通る。「解析に依らない」のは deny の判定であって、hook 全体の
+#        到達性ではない
+#   (ii) ハーネスが自動で background へ回した（`timeout` 未指定・foreground 上限未満）
+#        … これは「このコマンドは上限を超えるか」の**予測**が要る。一般化すると
+#        `timeout` を書かない短いコマンドが全部 deny になるので、**名簿で絞る**
+#
+# ## (ii) の名簿を一般の「長そうなコマンド」へ広げない
+#
+# 名簿は `run-all.sh`（全件ゲート）と `run-mutations.sh`（effort-contract の変異
+# マトリクス。`run-all.sh` の既定一覧に**載せない**設計なので、回すには自分の綴りで
+# 起動するしかない）の 2 件である。OBS-036 の 7 回の再発のうち `run-all` と名指し
+# されているのは 3 回、`npm ci` が 1 回、7 回目が下記の変異ループ、残る 2 回は対象
+# コマンドを特定できない（うち 1 回はサブエージェントですらなく親自身の待機ループ）。
 #
 # **依存インストール（`npm ci` 等）を名簿から外したのは実測の結果である。**
 # クロスモデルレビュー 3 回転が出した誤検知（無害なコマンドの deny）は**すべて**
@@ -64,7 +85,21 @@
 # 「ビルド検証」も入れない（機械照合できる安定した綴りが実測に無い。`npm run build`
 # はプロジェクトごとに所要が大きく違い、短いものまで止めると誤警告が常態化する）。
 # 別の綴りで再発したら名簿へ足す — ただし足す前に、その綴りが散文に現れうるかを
-# 見ること。現れうる綴りは同じ誤検知を連れてくる。
+# 見ること。現れうる綴りは同じ誤検知を連れてくる。名簿の綴りは `LONG_GATE_ROSTER`
+# の 1 行が正本で、前置フィルタ 3 段も判定も全部そこから作る（下の宣言のコメント参照）。
+#
+# **`verify.sh` は名簿へ足さない（Issue `#1719` の判断）。** 7 回目の再発（2026-09-16 /
+# Epic `#1651`）で素通りしたのは、`adapter-common.sh` へ手で変異を当てながら影響 suite を
+# 繰り返し回すループで、実行された綴りは `bash plugins/ff-dev-toolkit/tests/<suite>/verify.sh`
+# だった（親セッションの実測: 12:47:52Z「one temporary mutation on adapter-common.sh is
+# applied」。委譲先自身の transcript は worktree 回収時に掃除済みで復元できない）。
+# `verify.sh` は 140 suite すべての入口で（`find plugins/ff-dev-toolkit/tests -maxdepth 2
+# -name verify.sh | wc -l` = 140。`run-all.sh` の登録照合も同じ集合を数える）、大半は
+# 数秒で終わる — 名簿へ足すと
+# 「`timeout` を書かずに単体 suite を回す」という日常の呼び出しが全部 deny になる。
+# 名簿は所要時間の**予測**なので、suite ごとに所要が違う共通入口は原理的に載せられない。
+# この回は上の (i)（明示 background）側で止まる。ハーネスの自動 background 化で
+# 同じことが起きる経路は開いたままで、既知の限界 A に「名簿外の綴り」として残す。
 #
 # ## 出力チャネル
 #
@@ -106,17 +141,33 @@
 # ### A. 取りこぼす形（発火すべきだが素通しする。fail-open 側）
 #   ※ この一覧は網羅ではない。近似的なコマンド解析なので、ここに挙げていない綴りでも
 #     素通しする。挙げてあるのは実測で確認した代表形である。
+#   ※ **以下は (ii)（ハーネスの自動 background 化）の経路に限る。** 明示
+#     `run_in_background: true` は名簿にも解析にも依らず止まるので、下の形はどれも
+#     素通ししない（実測 2026-09-17: コマンド置換パス / サブシェル / 空白を含むパス /
+#     `timeout 900` ラッパ / `xargs` / 変数展開 / 引用符付き 2 本目 の 7 形すべて deny）。
+#     唯一 (i) にも掛かるのは 1 番目（`agent_type` を載せないハーネス版）と、上の (i) の
+#     項が述べた本文処理側の fail-open である。
 #   - `agent_type` を載せないハーネス版（判定材料が無い）
+#   - **名簿外の綴りが、ハーネスの自動 background 化（`timeout` 未指定・過少）で
+#     background へ回る形**。明示 `run_in_background` なら名簿に依らず止まるが、
+#     自動 background 化の側は所要時間の予測が要るので名簿に縛られる。OBS-036 の
+#     7 回目（変異を当てながら個別 suite を回すループ）がこのクラスで、`verify.sh` を
+#     名簿へ足せない理由は上の「(ii) の名簿を…広げない」節にある
 #   - 変数展開・コマンド置換の中で組み立てられるゲート名
 #   - heredoc 本文に書かれたゲート名（データであって実行されるコマンドではない）。
 #     走査の前に本文ごと落とす
 #   - 引用符を含むコマンドの、2 本目以降のセグメント（`echo "x" && bash …/run-all.sh`）。
 #     下の「引用符を含むコマンドは最初のセグメントだけを見る」規則の代償
 #   - コマンド置換で組み立てられたパス（`bash "$(git rev-parse --show-toplevel)/…/run-all.sh"`）。
-#     **リポジトリ直下の指示文が推奨する絶対パス化イディオムがそのまま死角になる**ので、
-#     委譲プロンプトへ常置する文言はこの形のために要る（正本テンプレートにも明記）
-#   - サブシェル括弧（`( cd /repo && bash …/run-all.sh )`）。`(` は分割・除去の対象では
-#     ないので basename が `run-all.sh)` になり名簿に当たらない
+#     リポジトリ直下の指示文が推奨する絶対パス化イディオムが、**自動 background 化の
+#     経路では**そのまま死角になるので、委譲プロンプトへ常置する文言はこの形のために
+#     要る（正本テンプレートにも明記）。明示 `run_in_background` なら止まる
+#   - サブシェル括弧のうち、**区切り記号を含まない形**（`( bash …/run-all.sh )`）。
+#     `(` は分割・除去の対象ではないので head トークンが `(` のままになり、ラッパ判定
+#     （`bash` 等）にもゲート判定にも当たらない。`( cd /repo && bash …/run-all.sh )` は
+#     `&&` で割れて 2 本目の head が `bash` になるため**止まる**（2026-09-17 実測。
+#     以前ここには後者を例に「basename が `run-all.sh)` になる」と書いてあったが、
+#     例も機序も誤りだった）
 #   - 空白を含むパス（素朴な空白トークン化で割れる）
 #   - 値を取るラッパ経由の実行（`timeout 900 bash …/run-all.sh`）。ラッパ名簿へ
 #     足すには引数の取り方まで持つ必要があり、名簿は観測台帳が実測した形だけで
@@ -181,13 +232,36 @@ asdd_hook_enabled hooks || exit 0
 # opt-out も stdin を読み切ってから抜ける。
 [ "${FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD:-0}" = "1" ] && exit 0
 
-# 安価な前置フィルタ: Bash 以外、名簿の綴りを 1 つも含まない入力は即終了。
+# ---- 名簿（正本はここ 1 箇所） -------------------------------------------------
+#
+# 前置フィルタ 3 段（生の $input / heredoc 除去後の $code_only / セグメント単位）と
+# scan_long_gate は**すべてこの一覧から作る**。綴りを段ごとに直書きすると、一部の段
+# だけが広がって新しい綴りが scan_long_gate へ到達しない（=「名簿へ足したのに効かない」
+# が静かに起きる）。
+# 変異注入の効き方は 2 通りで違う（2026-09-17 実測）: 段を**削除**しても検査は 1 本も
+# 赤くならない（段 1 は純粋な速度目的で、落とすのは通してよい入力だけ）が、綴りを段ごと
+# に**直書きへ戻す**変異は名簿 2 件目が針になって赤くなる（suite ヘッダ MN2〜MN4）。
+# 宣言を 1 箇所へ畳むのは、前者の測れない層を構造的に潰すためである。
+LONG_GATE_ROSTER='run-all.sh run-mutations.sh'
+
+# 名簿の綴りは**メタ文字を含められない**。下のループは語分割と同時にパス名展開も
+# 受けるため、`run-*.sh` のような綴りを 1 件足すと委譲先の cwd 次第で名簿が別物へ
+# 展開され、検査は全緑のまま防御だけが消える。`set -f` で展開を止めたうえで、
+# 綴りの制約をここに書いておく（宣言が無いと、次に足す人が踏む）。
+has_roster_spelling() { # <text>
+  local _g _glob=0
+  case "$-" in *f*) _glob=1 ;; esac
+  set -f
+  for _g in $LONG_GATE_ROSTER; do
+    case "$1" in *"$_g"*) [ "$_glob" -eq 1 ] || set +f; return 0 ;; esac
+  done
+  [ "$_glob" -eq 1 ] || set +f
+  return 1
+}
+
+# 安価な前置フィルタ: Bash 以外は即終了。
 case "$input" in
   *'"Bash"'*) : ;;
-  *) exit 0 ;;
-esac
-case "$input" in
-  *run-all.sh*) : ;;
   *) exit 0 ;;
 esac
 # 親（agent_type 不在）は構造的に対象外。キーそのものが無い入力をここで落とす。
@@ -195,6 +269,15 @@ case "$input" in
   *agent_type*) : ;;
   *) exit 0 ;;
 esac
+# 名簿の綴りも `run_in_background` も無い入力は、どちらのトリガも発火しえない。
+# 後者はコマンド本文ではなく**構造化フィールドのキー名**なので、この段が広がっても
+# 散文由来の誤検知面は 1 つも増えない。
+if ! has_roster_spelling "$input"; then
+  case "$input" in
+    *run_in_background*) : ;;
+    *) exit 0 ;;
+  esac
+fi
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -287,8 +370,48 @@ skip_command_prefixes() {
   done
 }
 
-# セグメントが名簿の長時間ゲートかどうか。当たれば MATCH_LABEL に綴りを入れる。
+# セグメントの「実際に走るコマンド」の basename。`bash <script>` はラッパではなく
+# スクリプト側を返す（`any:bash` では何を background へ回したのか分からず、観測台帳で
+# 再発をクラス別に数えられない）。**表示とログのためだけ**の関数で、何も止めない —
+# だから scan_long_gate の `-n`（実行しない呼び出しの除外）は持たない。持たせると
+# 「止める判定」と「名乗らせる判定」が 1 つの関数へ混ざる。
+CMD_LABEL=""
+resolve_segment_label() {
+  local n=${#SEG_TOKS[@]} head sub j
+  CMD_LABEL=""
+  [ "$SEG_HEAD_I" -lt "$n" ] || return 1
+  head="$(basename_of "$(strip_quotes "${SEG_TOKS[$SEG_HEAD_I]}")")"
+  CMD_LABEL="$head"
+  case "$head" in
+    bash|sh|zsh|ksh|dash)
+      j=$((SEG_HEAD_I + 1))
+      while [ "$j" -lt "$n" ]; do
+        sub="$(strip_quotes "${SEG_TOKS[$j]}")"
+        case "$sub" in -*) j=$((j + 1)); continue ;; esac
+        break
+      done
+      [ "$j" -lt "$n" ] && CMD_LABEL="$(basename_of "$(strip_quotes "${SEG_TOKS[$j]}")")"
+      ;;
+  esac
+  return 0
+}
+
+# 名簿の綴りと basename が一致するか。当たれば MATCH_LABEL にその綴りを入れる。
 MATCH_LABEL=""
+roster_match() { # <basename>
+  local _g _glob=0
+  case "$-" in *f*) _glob=1 ;; esac
+  set -f
+  for _g in $LONG_GATE_ROSTER; do
+    if [ "$1" = "$_g" ]; then
+      MATCH_LABEL="$_g"; [ "$_glob" -eq 1 ] || set +f; return 0
+    fi
+  done
+  [ "$_glob" -eq 1 ] || set +f
+  return 1
+}
+
+# セグメントが名簿の長時間ゲートかどうか。当たれば MATCH_LABEL に綴りを入れる。
 scan_long_gate() {
   MATCH_LABEL=""
   local n=${#SEG_TOKS[@]} head sub j noexec
@@ -305,7 +428,7 @@ scan_long_gate() {
   #    だけの日常コマンドまで止まる（`git add …/run-all.sh` / `git diff -- …/run-all.sh`
   #    / `chmod +x …/run-all.sh`）。allowlist を足して回る方向では追いつかない
   #    （止めたいのは実行だけなので、名簿は位置で絞るのが正しい）。
-  if [ "$head" = "run-all.sh" ]; then MATCH_LABEL="run-all.sh"; return 0; fi
+  if roster_match "$head"; then return 0; fi
   case "$head" in
     bash|sh|zsh|ksh|dash)
       # シェル経由（`bash <path>/run-all.sh`）は最初の非フラグオペランドだけを見る。
@@ -323,8 +446,8 @@ scan_long_gate() {
       done
       [ "$noexec" -eq 1 ] && return 1
       [ "$j" -lt "$n" ] || return 1
-      if [ "$(basename_of "$(strip_quotes "${SEG_TOKS[$j]}")")" = "run-all.sh" ]; then
-        MATCH_LABEL="run-all.sh"; return 0
+      if roster_match "$(basename_of "$(strip_quotes "${SEG_TOKS[$j]}")")"; then
+        return 0
       fi
       ;;
   esac
@@ -347,10 +470,8 @@ case $? in
   *) exit 0 ;;
 esac
 [ -n "$code_only" ] || exit 0
-case "$code_only" in
-  *run-all.sh*) : ;;
-  *) exit 0 ;;
-esac
+# 段 2。明示 background は名簿に依らない一般トリガを持つので、ここでは落とさない。
+if [ "$bg" != "true" ] && ! has_roster_spelling "$code_only"; then exit 0; fi
 
 # セグメント分割はクォート状態を解釈しない（完全なシェル構文解析は持ち込まない）。
 # そのぶん `git commit -m "手順を直す; bash tests/run-all.sh が要る"` のようにクォートの内側にある
@@ -424,29 +545,60 @@ ACKED=0
 # ack の記録に到達せず、「抜け道通過も記録する」契約が静かに破れる（実測 2026-09-16:
 # `FF_LONG_GATE_BACKGROUND_ACK=1 bash …/run-all.sh && git add …` でログ 0 行）。
 ACK_LABEL=""
+# 一般トリガ（明示 background）側の ack と、ログへ載せる綴り。名簿に当たらない回は
+# `MATCH_LABEL` が空のままなので、先頭セグメントのコマンド名を別に確保する。
+# **一般トリガの ACK は、セグメント分割にも `quotes_balanced` にも依存させない。**
+# 一般トリガの deny はコマンド本文に依存せず `bg = true` だけで成立するのに、抜け道
+# （ACK）の検出だけを近似パーサに預けると、パーサが落ちた回は deny が残って ack だけが
+# 消える — 案内した唯一の復帰手段が無音で効かなくなる（実測 2026-09-17:
+# `FF_LONG_GATE_BACKGROUND_ACK=1 python3 -c 'import x; print(1)'` は、先頭セグメントが
+# 未閉鎖クォートになるため `SEG_ACK` が一度も計算されず deny のままだった）。
+# ヘッダの「案内の無い deny は詰まりになる」は、**案内はあるが no-op** という形でも破れる。
+#
+# 判定は deny 本文の案内（「**先頭セグメントの先頭**へ付ける」）と同じ位置に限る。
+# roster 側の「ゲートを実行するセグメントの先頭」とは規則が違うが、一般トリガには
+# 「ゲートのセグメント」に相当するものが無いので、狭いほうへ揃えて案内と一致させる。
+ANY_ACK=0
+case "$code_only" in
+  FF_LONG_GATE_BACKGROUND_ACK=1[[:space:]]*) ANY_ACK=1 ;;
+esac
+BG_LABEL=""
+BG_LABEL_N=0
 SEG_N=0
 while IFS= read -r seg; do
   SEG_N=$((SEG_N + 1))
   [ "$QUOTED" -eq 1 ] && [ "$SEG_N" -gt 1 ] && continue
   [ -n "$seg" ] || continue
-  case "$seg" in
-    *run-all.sh*) : ;;
-    *) continue ;;
-  esac
+  # 段 3。名簿の綴りが無いセグメントも、明示 background の回だけは走査する
+  # （ack の検出と、記録へ載せるコマンド名の確保に要る）。
+  if [ "$bg" != "true" ] && ! has_roster_spelling "$seg"; then continue; fi
   quotes_balanced "$seg" || continue
   # 注意（名簿を拡張するとき）: 名簿の綴りで絞る前置フィルタは **3 段**ある —
   #   1. 生の `$input`（jq より前のコストフィルタ）
   #   2. heredoc 除去後の `$code_only`
   #   3. この**セグメント単位**の 1 行
-  # いずれも名簿の綴りで絞っているので、一部だけ広げても新しい綴りは `scan_long_gate`
-  # へ到達しない（=「名簿へ足したのに効かない」が静かに起きる。変異注入で実測）。
-  # **1 段目は純粋な速度目的なので、削っても検査は 1 本も赤くならない** — 変異注入では
-  # 見つからない層なので、ここに数として明記しておく。
+  # 3 段とも `has_roster_spelling` を通すので、綴りの追加は `LONG_GATE_ROSTER` の
+  # 1 行だけで全段に効く。段を直書きへ戻すと、一部だけ広がって新しい綴りが
+  # `scan_long_gate` へ到達しない状態が静かに戻る（変異 MN2〜MN4 が針）。
+  # **1 段目を削除しても検査は 1 本も赤くならない**（純粋な速度目的で、落とすのは通して
+  # よい入力だけ）— 削除方向は変異注入で測れない層なので、ここに数として明記しておく。
   set -f
   # shellcheck disable=SC2206 # 素朴な空白トークン化（意図的。glob は set -f で抑止）
   SEG_TOKS=($seg)
   set +f
   skip_command_prefixes
+  # ---- F2: ラベルは先着で確定させない ------------------------------------------
+  # `resolve_segment_label` の存在理由は「観測台帳で再発をクラス別に数える」ことなので、
+  # `cd /repo && bash …/verify.sh` で `any:cd` になっては目的を外す（実測 2026-09-17）。
+  # 無害な先頭語の allowlist は作らない（同じ理由で 1 度削った経緯がヘッダ M6 に在る）。
+  # 走査したセグメントの名前を順に、重複を除いて最大 3 件まで連ねる。
+  if [ "$BG_LABEL_N" -lt 3 ] && resolve_segment_label && [ -n "$CMD_LABEL" ]; then
+    case "|${BG_LABEL}|" in
+      *"|${CMD_LABEL}|"*) : ;;
+      *) BG_LABEL="${BG_LABEL:+$BG_LABEL|}${CMD_LABEL}"; BG_LABEL_N=$((BG_LABEL_N + 1)) ;;
+    esac
+  fi
+  has_roster_spelling "$seg" || continue
   if scan_long_gate; then
     if [ "$SEG_ACK" -eq 1 ]; then ACKED=1; ACK_LABEL="$MATCH_LABEL"; else FIRE_LABEL="$MATCH_LABEL"; break; fi
   fi
@@ -485,11 +637,30 @@ LOG_PATH=""
 ACK_ONLY=0
 if [ "$ACKED" -eq 1 ] && [ -z "$FIRE_LABEL" ]; then
   ACK_ONLY=1
-  # 名簿が 1 件の現状では `run-all.sh` 直書きでも同じだが、名簿を増やしたときに
-  # ack 側の記録だけが綴りの追随から漏れるので、判定が入れた綴りをそのまま使う。
+  # 名簿は 2 件（`run-all.sh` / `run-mutations.sh`）なので、ここを直書きにすると ack 側の
+  # 記録だけが綴りの追随から漏れる。判定が入れた綴りをそのまま使う。
   # ただし読むのはループ中に確保した `ACK_LABEL` で、走査が終わった後の
   # `MATCH_LABEL` ではない（上の理由）。
   FIRE_LABEL="$ACK_LABEL"
+fi
+
+# ---- 一般トリガ: 明示 background は名簿に依らず止める --------------------------
+#
+# 名簿は「そのコマンドが foreground 上限を超えるか」の**予測**である。予測できない
+# 綴り（`verify.sh` のように suite ごとに所要が違う共通入口）は名簿へ載せられない。
+# だが `run_in_background: true` は予測ではなく、委譲先が**明示的に**「待たない」を
+# 選んだという事実そのもので、判定材料はコマンド本文ではなく構造化フィールド 1 つ
+# しかない。したがってこのトリガには、名簿を狭く保っている理由（コマンド本文の
+# 近似解析が生む誤検知）が 1 つも掛からない。
+#
+# ハーネスの**自動** background 化（`timeout` 未指定・過少）は依然として名簿に縛られる。
+# そちらは所要時間の予測が要り、一般化すると `timeout` を書かない短いコマンドが
+# すべて deny になるため（既知の限界 A に記載）。
+GENERAL=0
+if [ -z "$FIRE_LABEL" ] && [ "$bg" = "true" ]; then
+  GENERAL=1
+  FIRE_LABEL="any:${BG_LABEL:-command}"
+  [ "$ANY_ACK" -eq 1 ] && ACK_ONLY=1
 fi
 [ -n "$FIRE_LABEL" ] || exit 0
 
@@ -514,6 +685,11 @@ fi
 if [ "$ACK_ONLY" -eq 1 ]; then
   # 抜け道で通った回。**発火条件を満たしていたときだけ**記録する（上の理由）。
   record "ack" "trigger=${TRIGGER} gate=${FIRE_LABEL} timeout=${timeout_ms:-none}"
+  # 記録できなかったときだけ警告する。deny は本文がエージェントへ届くので気づけるが、
+  # ack は素通しなので、書けなければ**どこにも痕跡が残らないまま許可**される。
+  # 「数える手段の無い 0 は主張できない」が、失敗時に無言で崩れるのを止める。
+  [ -n "$LOG_PATH" ] || \
+    echo 'ff-dev-toolkit: delegation-guard log unavailable; the ACK bypass was NOT recorded' >&2
   exit 0
 fi
 
@@ -528,13 +704,23 @@ case "$TRIGGER" in
     why="Bash ツールの \`timeout\` が ${timeout_ms} ms で、要求値 ${REQUIRED_MS} ms より短いです（超えた分は自動で background へ回されます）" ;;
 esac
 
-reason="⚠️ ff-dev-toolkit guard（委譲先は長時間ゲートを foreground で待つ）: 長時間ゲート \`${FIRE_LABEL}\` を ${why}。
-background へ回された委譲先は「完了通知を待つ」と言って停止し、親がナッジするまで再開しません（観測台帳 OBS-036。6 回再発）。同時に複数の子が同じ全件ゲートを background で起こすと CPU 競合で他の子まで巻き込みます。
+if [ "$GENERAL" -eq 1 ]; then
+  reason="⚠️ ff-dev-toolkit guard（委譲先は自分で起こしたコマンドを foreground で待つ）: \`${BG_LABEL:-このコマンド}\` を ${why}。
+background へ回された委譲先は「完了通知を待つ」と言って停止し、親がナッジするまで再開しません（観測台帳 OBS-036。7 回再発）。7 回目は名簿の綴り（全件ゲート）ではなく、変異を当てながら個別 suite を繰り返し回すループでした — 所要時間はコマンド名から予測できないので、\`run_in_background: true\` という**明示の意思表示**の側で止めます。
+次のいずれかで再実行してください:
+  1) foreground で待つ（推奨）: Bash ツールの \`run_in_background\` を外し、\`timeout\` に \`${REQUIRED_MS}\` を明示する
+  2) foreground 上限に収まる粒度へ分割する（変更した suite を単体で緑にしてから全件ゲートは 1 回だけ）
+  3) それでも background で起こす必要がある場合は、監視機構を armed してから停止し完了通知で再開する運用に切り替えたうえで、**先頭セグメントの先頭**へ環境代入 FF_LONG_GATE_BACKGROUND_ACK=1 を付けて再実行する
+このガードは委譲先（サブエージェント）の呼び出しだけに掛かります。親（メインセッション）の意図的な background 運用は構造的に対象外です。ガードごと止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD=1 を設定します。"
+else
+  reason="⚠️ ff-dev-toolkit guard（委譲先は長時間ゲートを foreground で待つ）: 長時間ゲート \`${FIRE_LABEL}\` を ${why}。
+background へ回された委譲先は「完了通知を待つ」と言って停止し、親がナッジするまで再開しません（観測台帳 OBS-036。7 回再発）。同時に複数の子が同じ全件ゲートを background で起こすと CPU 競合で他の子まで巻き込みます。
 次のいずれかで再実行してください:
   1) foreground で待つ（推奨）: Bash ツールの \`run_in_background\` を外し、\`timeout\` に \`${REQUIRED_MS}\` を明示する
   2) ゲートを foreground 上限に収まる粒度へ分割する（変更した suite を単体で緑にしてから全件ゲートは 1 回だけ）
   3) それでも background で起こす必要がある場合は、監視機構を armed してから停止し完了通知で再開する運用に切り替えたうえで、**ゲートを実行するセグメントの先頭**へ環境代入 FF_LONG_GATE_BACKGROUND_ACK=1 を付けて再実行する（判定はセグメントごとなので、\`cd /repo && bash …/run-all.sh\` なら \`cd /repo && FF_LONG_GATE_BACKGROUND_ACK=1 bash …/run-all.sh\` のように**ゲート側**へ置く。コマンド 1 本だけなら先頭がそのままゲートのセグメントになる）
 このガードは委譲先（サブエージェント）の呼び出しだけに掛かります。ガードごと止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD=1 を設定します。"
+fi
 
 if [ -n "$LOG_PATH" ]; then
   reason="${reason}

@@ -37,6 +37,20 @@
 #   作る → 1 件赤。記録失敗の警告を出さなくする → 1 件赤。許可値だけを増やす → 2 件赤。
 #   本文側を実装と矛盾する旧記述へ戻す → 1 件赤。
 #
+#   追加（2026-09-17 実測 / Issue `#1666`。SURVIVED 無し）:
+#   SKILL.md 手順 1 の「新ブランチ初回は --fresh」前提を旧形へ戻す → 1 件赤（針は手順 1 の
+#   節の中に限定してある。引数一覧の `--fresh` 行は残るので、文書全体の grep では緑で通る）。
+#   is_unfiltered_full_review_plan から mode / perspective の条件を落とす（案 A へ寄せた形）
+#   → 8 件赤。series 不一致なら filtered でも自動開始する（案 A の素朴実装）→ 8 件赤。
+#   どちらも「標準起動形が別系列で中断する」「マージ済みの前 series でも自動開始しない」を
+#   含めて赤になるので、将来 filtered 側を緩めるとここで気づく。
+#   セルフレビュー指摘で追加（同日実測）: レビュー運用文書
+#   （`docs-template/05-operations/deployment/multi-cli-review-orchestration.md`）の
+#   該当段落から「手動退避は不要が成立するのはフルレビューだけ」を落とす → 1 件赤
+#   （SKILL.md 手順 1 だけを固定していたので、運用文書の追記は消しても緑で通っていた）。
+#   マージ済み series ブロックの fixture 復元を落とす → 1 件赤（後続へ実行順結合を
+#   残す形。この 1 本が無いと約 1,000 行下で原因不明の失敗になる）。
+#
 #   **赤転しなかった変異を 1 つ記録する**: current_review_series_id 冒頭の「前回の失敗理由を
 #   消す」処理を外す → 緑。失敗する分岐はすべて理由を書いてから返るので、消さなくても直後に
 #   上書きされる。将来「理由を書かずに返る分岐」が足されたときだけ効く保険で、その分岐が
@@ -1173,6 +1187,93 @@ else
   bad "cross-model 単一観点が別系列の未解消状態を解除した (rc=$SEQUENCE_RC)"
 fi
 
+# --- Issue `#1666`: 標準の /multi-review 起動形は「前 series がマージ済み」でも
+#     新シリーズを自動開始しない（案 A を採らなかったことを挙動で固定する） ---
+#
+# 導入先の Git Workflow が案内する標準起動は
+#   --mode cross-model --strategy minimize_cost --perspective code-review --base origin/develop
+# で、`--mode cross-model` と `--perspective` のどちらも unfiltered の条件を外す。
+# したがって新しいブランチの初回は毎回 1 度中断し、`--fresh` を足して再実行になる。
+#
+# **案 A（前 series のブランチがマージ済みなら filtered でも自動開始する）は
+# 実装できない。** 系列 ID は repo/branch/base/scope を `cksum` で畳んだダイジェスト
+# （`current_review_series_id`）で、レポート末尾の機械状態が持つのは `series:<n>-<n>`
+# だけ。ブランチ名が 1 文字も残らないので、残骸の側から到達可能性を判定する材料が無い。
+# 判定材料を足すには機械状態の書式を変えることになり、既存の残骸がすべて legacy 扱いへ
+# 落ちる（= 同じ中断が 1 回起きる）。よって案 B（SKILL.md の手順へ前提として書く）を
+# 採った。下の 2 本は、その判断が「マージ済みでも中断する」という形で実際に効いている
+# ことを固定する — 将来 filtered 側の条件を緩めるなら、ここが赤くなって気付く。
+SEQUENCE_RC=0
+set +e
+run_isolated PATH="$STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
+  --task review --mode cross-model --perspective code-review --base develop --timeout 60 \
+  >"$TMP/standard-invocation-other-series.log" 2>&1
+SEQUENCE_RC=$?
+set -e
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'belongs to another branch/base/scope' "$TMP/standard-invocation-other-series.log" \
+  && grep -qF -- '--fresh' "$TMP/standard-invocation-other-series.log" \
+  && cmp -s "$TMP/report-before-omission.md" "$REPORT"; then
+  ok "標準起動形（cross-model + perspective）は別系列で中断し --fresh を案内する"
+else
+  bad "標準起動形が別系列の未解消状態を素通しした (rc=$SEQUENCE_RC)"
+fi
+
+# 前 series のブランチを base へマージしても判定は変わらない（ガードは到達可能性を
+# 見ていない。上の理由により見る材料が無い）。
+#
+# マージの前に現在のブランチへ 1 コミット足す。足さないと `feature/x` を develop へ
+# 畳んだ時点で `develop...HEAD` の diff が空になり、レビュー対象なしの別経路で
+# 中断してしまう（= 系列ガードを 1 度も通らないまま「中断した」ことになる）。
+SERIES_PROBE_BEFORE="$(git rev-parse HEAD)"
+printf 'issue-1666\n' > "$REPO/merged-series-probe.txt"
+git add merged-series-probe.txt
+git commit -q -m "probe: keep a diff against develop after the merge"
+DEVELOP_BEFORE_MERGE="$(git rev-parse develop)"
+git switch -q develop
+git merge -q --no-ff -m "merge feature/x into develop" feature/x
+git switch -q other-review-series
+if git merge-base --is-ancestor feature/x develop \
+  && [[ -n "$(git diff --name-only develop...HEAD)" ]]; then
+  ok "前提: 前 series のブランチが base から到達可能で、かつ今回の diff は空でない"
+else
+  bad "前提が作れていない: feature/x の到達可能性 or develop...HEAD の diff"
+fi
+SEQUENCE_RC=0
+set +e
+run_isolated PATH="$STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
+  --task review --mode cross-model --perspective code-review --base develop --timeout 60 \
+  >"$TMP/merged-previous-series.log" 2>&1
+SEQUENCE_RC=$?
+set -e
+if [[ "$SEQUENCE_RC" -ne 0 ]] \
+  && grep -qF 'belongs to another branch/base/scope' "$TMP/merged-previous-series.log" \
+  && grep -qF 'Run an unfiltered full review to start a new review series' "$TMP/merged-previous-series.log" \
+  && cmp -s "$TMP/report-before-omission.md" "$REPORT"; then
+  ok "前 series がマージ済みでも filtered 起動は新シリーズを自動開始しない（案 A 不採用の固定）"
+else
+  bad "マージ済みの前 series で filtered 起動が自動開始した (rc=$SEQUENCE_RC): $(tail -n 8 "$TMP/merged-previous-series.log")"
+fi
+git switch -q develop
+git reset -q --hard "$DEVELOP_BEFORE_MERGE"
+git switch -q other-review-series
+# **ブロック前後で fixture の状態を同一に戻す。** 約 2,700 行の suite で、このブロック
+# だけがブランチトポロジと作業ツリーを触る。probe コミットを残すと、後続ケースが
+# commit 数や `develop...HEAD` の中身に依存し始めた時点で「原因が 1,000 行上にある」
+# 形で壊れる。`git reset --hard` は切り替えで持ち回っている作業ツリーの変更も巻き添えに
+# するので、退避してから戻す（2026-09-17 指摘）。
+git stash -q --include-untracked 2>/dev/null || true
+git reset -q --hard "$SERIES_PROBE_BEFORE"
+git stash pop -q 2>/dev/null || true
+rm -f "$REPO/merged-series-probe.txt"
+if [ "$(git rev-parse HEAD)" = "$SERIES_PROBE_BEFORE" ] \
+  && [ "$(git rev-parse develop)" = "$DEVELOP_BEFORE_MERGE" ] \
+  && [ ! -e "$REPO/merged-series-probe.txt" ]; then
+  ok "マージ済み series ブロックは fixture の状態を元へ戻す（後続へ実行順結合を残さない）"
+else
+  bad "マージ済み series ブロックが fixture を戻していない（HEAD=$(git rev-parse --short HEAD) develop=$(git rev-parse --short develop)）"
+fi
+
 mv "$REPO/.review-results/codex-cli" "$TMP/codex-cli-before-new-series-setup-failure"
 mkdir -p "$TMP/outside-new-series-result-dir"
 ln -s "$TMP/outside-new-series-result-dir" "$REPO/.review-results/codex-cli"
@@ -1955,6 +2056,48 @@ elif [[ "$SERIES_FAIL_RETURNS" -eq "$SERIES_RECORDS" ]]; then
   ok "current_review_series_id は失敗して返る ${SERIES_FAIL_RETURNS} 箇所すべてで理由を記録する"
 else
   bad "理由を記録せずに失敗して返る分岐がある（失敗 return ${SERIES_FAIL_RETURNS} / 記録 ${SERIES_RECORDS}）"
+fi
+
+# Issue `#1666`: `/multi-review` の SKILL.md が「新ブランチ初回は --fresh」を
+# **実行手順の位置**に書いていること。案 A（filtered でも自動開始へ広げる）は系列 ID が
+# ダイジェストでブランチ名を持たないため実装できず、案 B（手順へ前提として書く）を採った。
+# 針を文書全体ではなく**手順 1 の節の中**へ限定するのは、引数一覧（`--fresh` の説明行）
+# にも同じ語が在り、節から落としても文書全体の grep では緑のまま通るため。
+REVIEW_SKILL="$PLUGIN_ROOT/skills/multi-review/SKILL.md"
+if [ ! -f "$REVIEW_SKILL" ]; then
+  bad "multi-review の SKILL.md が見つからない: $REVIEW_SKILL"
+else
+  STEP1_SECTION="$(awk '/^### 1\. プラン確認/{f=1} f{print} /^### 2\. レビュー実行/{if(f)exit}' "$REVIEW_SKILL")"
+  for _needle in '新しいブランチでの初回レビューは `--fresh` を付けます' \
+    '本スキルの標準起動では構造的に発火しません' \
+    '同じブランチの 2 回目以降に `--fresh` を付けてはいけません' \
+    'すでにマージ済みでも変わりません'; do
+    if grep -qF -- "$_needle" <<<"$STEP1_SECTION"; then
+      ok "SKILL.md 手順 1 が新ブランチ初回の前提を書いている: ${_needle}"
+    else
+      bad "SKILL.md 手順 1 に記述が無い（引数一覧だけに在っても不可）: ${_needle}"
+    fi
+  done
+fi
+
+# 運用文書側にも同じ前提の針を張る。SKILL.md 手順 1 だけを固定すると、運用文書の
+# 追記（「手動退避は不要」が成立するのはフルレビューだけ）を消しても緑で通り、
+# 標準起動形の読者は旧い案内に戻る（クロスモデルレビューが指摘。2026-09-17）。
+# 針は当該段落に限定する — 文書全体だと別節の `--fresh` 言及で緑になる。
+ORCH_REVIEW_DOC="$PLUGIN_ROOT/docs-template/05-operations/deployment/multi-cli-review-orchestration.md"
+if [ ! -f "$ORCH_REVIEW_DOC" ]; then
+  bad "レビュー運用文書が見つからない: $ORCH_REVIEW_DOC"
+else
+  FRESH_SECTION="$(awk '/^# フルレビューとして新しい系列を開始する/{f=1} f{print} /^### 結果の不整合/{if(f)exit}' "$ORCH_REVIEW_DOC")"
+  for _needle in '「手動退避は不要」が成立するのはフルレビューだけである' \
+    '新ブランチの初回は最初から `--fresh` を付ける' \
+    'すでにマージ済みでも変わらない'; do
+    if grep -qF -- "$_needle" <<<"$FRESH_SECTION"; then
+      ok "レビュー運用文書が新ブランチ初回の前提を書いている: ${_needle}"
+    else
+      bad "レビュー運用文書の該当段落に記述が無い: ${_needle}"
+    fi
+  done
 fi
 
 # 文書側が 3 分類に追随していること。コード側は分岐ごとに --fresh の可否が変わるので、
