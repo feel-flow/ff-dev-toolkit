@@ -1295,10 +1295,8 @@ MISS_PROBE_BASELINE=(
   guard-checkout-restore
   guard-effort-actual
   guard-exit-code
-  guard-issue-labels
   guard-long-gate-background
   guard-pr-followup
-  guard-review-in-flight
   guard-sub-issue-id
   host-route-parity
   init-docs-placeholder-list

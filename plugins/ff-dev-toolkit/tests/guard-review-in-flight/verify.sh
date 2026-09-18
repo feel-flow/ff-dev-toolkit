@@ -103,6 +103,8 @@
 # guard-background-cwd）に合わせて 1 本立てる。
 #
 # run-all-required: no — jq / git 不在での skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。既存の Bash ガード suite と同じ扱い）
+# 空振り検出: 検査対象 hooks/guard-review-in-flight.sh を「exit 0 だけ」の空ファイルへ差し替えると (a)〜(m) の 188 件が赤になる（2026-09-18 実測。先頭は (a)「Edit が deny される」。対象の不在・無出力を「発火しないのが正しい」へ倒さないことの実測）。
+# 空振り検出: ignored 判定の rc 分岐で 127 を ignored 側へ畳む変異（tests/lib/review-write-scan.sh の `0) return 0` へ `127) return 0` を足す）を入れると (m)「check-ignore を起動できない回は ignored と読まずに deny」と (m)「Bash 経路でも check-ignore 不能なら deny」の 2 件が赤になる（2026-09-18 実測。判定の口が失敗した回を「ignored」へ畳むと許可側へ緩むため、起動不能を deny 側で固定している）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -191,8 +193,26 @@ ff_git_fixture_init "$REPO" "guard-review-in-flight-test" "test@example.com" \
 git -C "$REPO" config commit.gpgsign false
 mkdir -p "$REPO/src"
 printf 'base\n' > "$REPO/src/app.txt"
-printf '.review-results/\nbuild/\n' > "$REPO/.gitignore"
+# 出力先の無視は**アンカー付き**（先頭 `/`）で書く。素の `.review-results/` は任意の
+# 深さの同名ディレクトリに当たるので、「出力先だから免除された」のか「gitignore 済み
+# だから免除された」のかを区別できなくなる（Issue `#1756` で ignored も免除側へ入った）。
+# アンカー付きなら `src/.review-results/` は ignored でないツリー内のパスとして残り、
+# (h15) の錨の針が成立する。
+printf '/.review-results/\nbuild/\ncache/\n' > "$REPO/.gitignore"
+# ignore パターン（`build/`）に当たる **tracked** なファイルを 1 つ置く。`git check-ignore`
+# が index を見る（= tracked なら「ignored ではない」と答える）ことに (m) の判定が依存して
+# いるので、その依存を fixture で持つ。
+# `build/` は**丸ごと ignored のまま**にして、tracked な針は別の ignored ディレクトリ
+# （`cache/`）へ置く。`build/` の中に tracked を混ぜると `rm -rf build/` が tracked を
+# 巻き込む形になり、「ignored なディレクトリごと消す」の許可検査と主題が混ざる。
+#
+# **`$REPO/build` はディスク上に実在させる（この mkdir が必要）。** `git check-ignore` は
+# 素のディレクトリ名を、それが実在するときだけ ignored と答える。この mkdir を落とすと
+# `rm -rf build/` の許可検査が黙って deny 側へ倒れる（fixture と検査の結合点）。
+mkdir -p "$REPO/build" "$REPO/cache"
+printf 'tracked\n' > "$REPO/cache/keep.txt"
 git -C "$REPO" add -A
+git -C "$REPO" add -f "$REPO/cache/keep.txt"
 git -C "$REPO" commit -qm init
 
 LOCK_DIR="$REPO/.review-results"
@@ -1174,12 +1194,15 @@ run_hook "$(jq -n --arg d "$REPO" --arg f "$REPO/src/app.ts" \
   '{hook_event_name: "PreToolUse", cwd: $d, tool_name: "Write", agent_type: "general-purpose",
     tool_input: {file_path: $f, content: "x"}}')"
 assert_deny "(h15) 出力先の外への書き込みは従来どおり止まる"
-# 免除の錨は**このリポジトリの**出力先。同じディレクトリ名を含むだけの他所のパスまで
-# 免除すると、レビュー対象の外という理由が成り立たないまま穴が広がる。
-run_hook "$(jq -n --arg d "$REPO" --arg f "$TEST_TMP/elsewhere/.review-results/claude-code/x.md" \
+# 免除の錨は**このリポジトリの**出力先。同じディレクトリ名を含むだけの**ツリー内**の
+# パスまで免除すると、レビュー対象の外という理由が成り立たないまま穴が広がる。
+# （リポジトリ外の同名パスは Issue `#1756` 以降そもそもツリー外として通る側なので、
+# 錨の針はツリー内へ置く。ツリー外が通ること自体は (m) の
+# 「Write: 作業ツリーの外（scratchpad 相当）は止めない」が対で固定する）
+run_hook "$(jq -n --arg d "$REPO" --arg f "$REPO/src/.review-results/claude-code/x.md" \
   '{hook_event_name: "PreToolUse", cwd: $d, tool_name: "Write", agent_type: "general-purpose",
     tool_input: {file_path: $f, content: "x"}}')"
-assert_deny "(h15) リポジトリ外の同名ディレクトリ（.review-results）への書き込みは免除しない"
+assert_deny "(h15) ツリー内の同名ディレクトリ（src/.review-results）への書き込みは免除しない"
 
 # 起動が拒否された回は、同じ鍵の PermissionDenied で解放される（名簿外でも通す経路）。
 clear_lanes
@@ -1778,7 +1801,16 @@ case "$REASON" in
 esac
 k_deny "mv src/app.txt $TEST_OUT/app.txt" "mv の移動元が作業ツリー（移動先はツリー外）"
 k_deny "rm README.md" "rm"
-k_deny "rm -rf build/" "gitignore 済みでもツリー内の rm -rf は止める"
+# gitignore 済みはリビジョン指紋に映らないので止めない（Issue `#1756`）。対で
+# 「ignored でないディレクトリの rm -rf は従来どおり止まる」を置き、ignored の免除が
+# ツリー全体へ広がっていないことを示す。
+k_silent "rm -rf build/" "gitignore 済みのツリー内パスは止めない（指紋に映らない）"
+k_deny "rm -rf src/" "対: ignored でないディレクトリの rm -rf は従来どおり止まる"
+# ignore パターンに当たるディレクトリでも、中に tracked があれば `check-ignore` は
+# 「ignored ではない」と答える（index を見るため）。`rm -rf` が tracked を巻き込む形は
+# 指紋を動かすので止まる側で固定する。
+k_deny "rm -rf cache/" "対: tracked を含む ignored ディレクトリの rm -rf は止まる"
+k_deny "mv cache/ $TEST_OUT/cache" "対: tracked を含む ignored ディレクトリの移動も止まる"
 k_deny "find . -name '*.pyc' -delete" "find -delete"
 k_deny "mkdir newdir" "mkdir"
 k_deny "touch new.txt" "touch"
@@ -2013,6 +2045,107 @@ K_OUT="$(printf '%s' "$(bash_json_at "tee $TEST_OUT/x" "$REPO")" | bash "$K_COPY
 K_OUT="$(printf '%s' "$(bash_json_at "tee README.md" "$REPO")" | bash "$K_COPY2/hooks/guard-review-in-flight.sh" 2>/dev/null)"
 [ -z "$K_OUT" ] && ok "(k) 走査ライブラリ不在でもロック無しは無音" || bad "(k) 走査ライブラリ不在 + ロック無しで出力: [$K_OUT]"
 rm -f "$REPO/patch.py" "$REPO/read.py" "$REPO/fix.js" "$REPO/fix.sh" "$REPO/patch2"
+
+echo "guard-review-in-flight: (m) 指紋に映らない書き込み先は止めない（Issue \`#1756\`）"
+# 走行中に止める根拠は「レビュー対象の指紋が動くこと」。指紋（adapter-common.sh の
+# capture_repo_snapshot）は status / diff HEAD / diff --cached / ls-files --exclude-standard の
+# 4 つで、**ignored とツリー外はそのどれにも現れない**。ツール経路ではなく書き込み先で
+# 判定する面を、編集系ツールと Bash の両方で固定する。
+write_json() { # <file_path> [cwd]
+  jq -n --arg f "$1" --arg d "${2:-$REPO}" \
+    '{tool_name: "Write", tool_input: {file_path: $f, content: "x"}, cwd: $d, hook_event_name: "PreToolUse"}'
+}
+m_silent() { # <json> <label>
+  run_hook "$1"
+  assert_silent "(m) $2"
+}
+m_deny() { # <json> <label>
+  run_hook "$1"
+  assert_deny "(m) $2"
+}
+clear_lanes
+clear_lock
+write_lock "$LIVE_PID"
+
+# --- 編集系ツール（報告された過剰 deny の本体）---
+m_silent "$(write_json "$REPO/build/note.md")" "Write: gitignore 済みのツリー内パスは止めない"
+m_silent "$(write_json "build/note.md")" "Write: 相対パスの gitignore 済みも止めない（cwd 基準で解決する）"
+m_silent "$(write_json "$TEST_OUT/note.md")" "Write: 作業ツリーの外（scratchpad 相当）は止めない"
+m_deny "$(write_json "$REPO/src/app.txt")" "対: tracked なファイルへの Write は従来どおり止まる"
+m_deny "$(write_json "$REPO/src/new.txt")" "対: ignored でない未作成パスへの Write も止まる（指紋の untracked 出現に映る）"
+# `.git/` は check-ignore が「ignored ではない」と答える（rc=1）。HEAD / ブランチは指紋の
+# 一部なので、ここが免除側へ倒れると指紋そのものを書き換えられる。
+m_deny "$(write_json "$REPO/.git/HEAD")" "対: .git 配下は ignored ではないので止まる（指紋の HEAD / ブランチを守る）"
+# ignore パターンに当たっても **tracked** なら指紋に出る（status / diff HEAD が見る）。
+# `git check-ignore` は既定で index を見るのでここは rc 1 になる。判定へ `--no-index` を
+# 足すと純粋なパターン照合へ倒れ、この行が緑のまま fail-open になる。
+m_deny "$(write_json "$REPO/cache/keep.txt")" "対: ignore パターンに当たる tracked ファイルは止まる（check-ignore が index を見ることに依存）"
+# 編集系ツールの他の名前でも同じ面を通ること（免除が Write 限定にならない）
+run_hook "$(jq -n --arg f "$REPO/build/note.md" --arg d "$REPO" \
+  '{tool_name: "MultiEdit", tool_input: {file_path: $f, edits: []}, cwd: $d, hook_event_name: "PreToolUse"}')"
+assert_silent "(m) MultiEdit でも同じ判定面を通る"
+# **`NotebookEdit` は `file_path` を持たない** — パラメータは `notebook_path`（ツール
+# schema）。`file_path` を組み立てた payload はハーネスが出さない形で、hook のどの分岐にも
+# 当たらないまま緑になる（針が当たらない入力）。実在する形で測る。
+notebook_json() { # <notebook_path>
+  jq -n --arg f "$1" --arg d "$REPO" \
+    '{tool_name: "NotebookEdit", tool_input: {notebook_path: $f, new_source: "x"}, cwd: $d, hook_event_name: "PreToolUse"}'
+}
+run_hook "$(notebook_json "$REPO/build/nb.ipynb")"
+assert_silent "(m) NotebookEdit（notebook_path）でも同じ判定面を通る"
+run_hook "$(notebook_json "$REPO/src/app.txt")"
+assert_deny "(m) 対: NotebookEdit の notebook_path がツリー内なら止まる（空の file_path で素通ししていない）"
+run_hook "$(notebook_json "$REPO/.review-results/claude-code/out.ipynb")"
+assert_silent "(m) NotebookEdit も出力先へは書ける（委譲レビューの自己デッドロック回避）"
+
+# --- 末端 symlink: 免除はリンク名ではなくリンク先で決まる ---
+# ignored な名前の symlink が tracked を指すと、書き込みは tracked へ届いて指紋が動く
+# （実測: ignored な symlink 経由の追記で `git diff HEAD` に tracked が出た）。
+ln -sf "$REPO/src/app.txt" "$REPO/build/escape.txt"
+printf 'plain\n' > "$REPO/build/plain.txt"
+ln -sf "$REPO/build/plain.txt" "$REPO/build/toignored.txt"
+ln -sf "$REPO/nowhere/missing.txt" "$REPO/build/broken.txt"
+ln -sf "$REPO/src/app.txt" "$TEST_OUT/outside-escape.txt"
+m_deny "$(write_json "$REPO/build/escape.txt")" "symlink: ignored な名前でもリンク先が tracked なら止まる"
+m_silent "$(write_json "$REPO/build/toignored.txt")" "symlink: リンク先も ignored なら止めない"
+m_deny "$(write_json "$REPO/build/broken.txt")" "symlink: 解決できない（壊れた）リンクは止まる"
+m_deny "$(write_json "$TEST_OUT/outside-escape.txt")" "symlink: ツリー外の名前でもリンク先が tracked なら止まる"
+k_deny "tee $REPO/build/escape.txt" "symlink: Bash 経路でも ignored な名前のリンク先で判定する"
+
+# --- Bash 経路（2026-09-18 の実測形: gh の出力を ignored なパスへ受ける）---
+k_silent "gh pr view 3019 --json body --jq .body > build/body.md" "gh の出力を gitignore 済みパスへリダイレクトできる"
+k_silent "tee build/body.md" "tee で gitignore 済みパスへ書ける"
+k_deny "tee src/app.txt" "対: ignored でないツリー内への tee は従来どおり止まる"
+
+# --- 緩めていない側（判定不能は deny のまま）---
+m_deny "$(write_json "")" "判定不能: file_path が空の編集系ツールは従来どおり止まる"
+k_deny 'echo x > "$UNSET_VAR_FF_1756/note.md"' "判定不能: 変数展開の書き込み先は ignored かどうか以前に止まる"
+k_deny 'echo x > "$(printf build)/note.md"' "判定不能: コマンド置換の書き込み先は止まる（ignored へ解決しうる形でも）"
+
+# --- ignored 判定そのものが失敗する回は deny 側（fail-closed の実測）---
+# 差し替え口 FF_WRITE_SCAN_GIT で `git check-ignore` を起動不能にする。rc 0 以外をすべて
+# 「ignored ではない」へ倒しているので、判定できない回は緩まない。
+run_hook "$(write_json "$REPO/build/note.md")" 'FF_WRITE_SCAN_GIT=/nonexistent/git'
+assert_deny "(m) check-ignore を起動できない回は ignored と読まずに deny（判定不能を許可側へ倒さない）"
+run_hook "$(bash_json_at "tee build/body.md" "$REPO")" 'FF_WRITE_SCAN_GIT=/nonexistent/git'
+assert_deny "(m) Bash 経路でも check-ignore 不能なら deny"
+run_hook "$(write_json "$TEST_OUT/note.md")" 'FF_WRITE_SCAN_GIT=/nonexistent/git'
+assert_silent "(m) check-ignore 不能でも、ツリー外の判定はそれ以前に決まるので影響を受けない"
+
+# --- 走査ライブラリを読めない編集系ツールは deny（Bash 経路と同じ fail-closed）---
+M_OUT="$(printf '%s' "$(write_json "$REPO/build/note.md")" | bash "$K_COPY2/hooks/guard-review-in-flight.sh" 2>/dev/null)"
+case "$(printf '%s' "$M_OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)" in
+  *'走査ライブラリ'*) ok "(m) 走査ライブラリが無いと ignored なパスへの Write も判定不能として deny（理由にライブラリの不在を出す）" ;;
+  *) bad "(m) 走査ライブラリ不在で素通し / 理由が違う: out=[$M_OUT]" ;;
+esac
+
+# --- ロック無しでは (m) の deny 例も全件無音（fail-open 経路を変えない）---
+clear_lock
+run_hook "$(write_json "$REPO/src/app.txt")"
+assert_silent "(m) ロック無しでは tracked への Write も無音"
+run_hook "$(write_json "$REPO/build/note.md")" 'FF_WRITE_SCAN_GIT=/nonexistent/git'
+assert_silent "(m) ロック無しでは check-ignore 不能でも無音"
+rm -rf "$REPO/build/note.md" "$REPO/build/nb.ipynb"
 
 echo
 if [ "$FAIL" -gt 0 ]; then

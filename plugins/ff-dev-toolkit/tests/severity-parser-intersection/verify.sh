@@ -307,6 +307,114 @@ row "スコープ内ゼロ: critical 見出し配下の注記つき指摘なし"
 - 指摘なし（境界条件も確認済み）
 BODY
 
+# 件数**値**を markdown 強調で囲んだゼロ。ラベル側の強調は以前から
+# 許していたが値側は許しておらず、`- Critical: **0**` が s1（件数行）に落ちずに
+# s3（ラベル付き指摘行）へ流れて偽の CRITICAL_BLOCK を立てていた。レビュー本文は
+# LLM 出力なのでゼロを太字で書くかは実行ごとに揺れ、同じ差分・同じ 0 件でも
+# ゲートが通ったり落ちたりしていた（消費プロジェクトの実レポートで実測）。
+row "強調ゼロ: - Critical: **0**" accept none <<'BODY'
+- Critical: **0**
+BODY
+
+row "強調ゼロ: - Critical: *0*" accept none <<'BODY'
+- Critical: *0*
+BODY
+
+row "強調ゼロ: - Critical: __0__" accept none <<'BODY'
+- Critical: __0__
+BODY
+
+row "強調ゼロ語: - Critical: **なし**" accept none <<'BODY'
+- Critical: **なし**
+BODY
+
+# 偽陰性を作らないこと — 強調付きの非ゼロは従来どおり発火する。
+row "強調非ゼロ: - Critical: **1**" accept fire <<'BODY'
+- Critical: **1**
+BODY
+
+row "強調非ゼロ: - Critical: *2*" accept fire <<'BODY'
+- Critical: *2*
+BODY
+
+# 強調はゼロ**語**にも掛かる。値側だけに掛けた版では `- **指摘なし**` /
+# `- **なし**` が偽 Critical として発火し続けた（実測）。ゼロ語は s2a_re /
+# s4_empty_re / zero_decl_re が共有するため、片側だけ直すと同根の非対称が残る。
+row "強調ゼロ語 bullet: critical 見出し配下の - **指摘なし**" accept none <<'BODY'
+### Critical Issues
+- **指摘なし**
+BODY
+
+row "強調ゼロ語 bullet: critical 見出し配下の - **なし**" accept none <<'BODY'
+### Critical Issues
+- **なし**
+BODY
+
+# 偽陰性を作らないこと — 強調された「本物の指摘」は従来どおり発火する。
+row "強調された実指摘: critical 見出し配下の bullet" accept fire <<'BODY'
+### Critical Issues
+- **本物の指摘です**
+BODY
+
+# 行全体を強調した件数行。値の**後置**強調を許したことで s1 ゼロとして扱われる
+# ようになった（変更前は `0**` の直後が境界文字でないため s3 へ落ちて発火した）。
+# 意図した挙動として固定する — 後置側の emph を削る変異がここで赤になる。
+row "行全体強調の件数行: - **Critical: 0**" accept none <<'BODY'
+- **Critical: 0**
+BODY
+
+# 強調ゼロ語だけの本文も**受理**されること（s2a_re 側の強調許容）。これが無いと
+# 「本文は - **指摘なし** の 1 行だけ」というレビュー応答が受理ゲートで弾かれ、
+# その観点の結果が欠測として扱われる（実測: 受理 rc=0 → 1 へ反転）。
+row "強調ゼロ語 単独行の受理: - **指摘なし**" accept none <<'BODY'
+- **指摘なし**
+BODY
+
+row "強調ゼロ件報告行の受理: - **指摘 0 件**" accept none <<'BODY'
+- **指摘 0 件**
+BODY
+
+# 件数**値**側だけを強調した形も対称に受理する（s2b_re の emph が前置のみだと
+# 不受理になり、その観点の結果が欠測として扱われる）。
+row "強調ゼロ件報告行の受理: - 指摘 **0** 件" accept none <<'BODY'
+- 指摘 **0** 件
+BODY
+
+# 強調ゼロ宣言も c3 抑止のトリガになる（= 抑止の範囲が広がった向き）。
+# 強調を許す前は `- **なし**` がゼロ宣言と認識されず、後続 bullet が実所見として
+# 数えられて発火していた（実測: 旧実装 rc=0 → 新実装 rc=1）。既存 c3 の
+# 「ゼロ宣言側を信じる」既定と一貫しているので意図した挙動として固定する。
+# zero_decl_re の emph を削る変異はこの行で赤になる。
+row "強調ゼロ宣言の後ろの実所見は c3 で数えない（抑止が広がった向き）" accept none <<'BODY'
+### Critical
+- **なし**
+- [app.txt:2] 本物の指摘
+BODY
+
+# 上の抑止は c1 までは覆わない — 件数行を併記した矛盾レポートは従来どおり発火する。
+row "強調ゼロ宣言 + 件数行 Critical: 1 は c1 で発火する" accept fire <<'BODY'
+### Critical
+- **なし**
+- [app.txt:2] 本物の指摘
+
+### Summary
+- Critical: 1
+BODY
+
+# 実レポートの形（Critical 節はゼロ語、Summary の件数行だけ強調ゼロ）。
+row "強調ゼロ: Critical 節はゼロ語 + Summary の件数行が **0**" accept none <<'BODY'
+## Acceptance Criteria Review Results
+
+### Critical Issues
+
+なし。
+
+### Summary
+
+- AC 項目数: **7**
+- Critical: **0**
+BODY
+
 # Critical 節のゼロ件宣言の後ろへ裏取り・補足の箇条書きを置く形（消費プロジェクトの
 # 実レビューで CRITICAL_BLOCK の偽陽性として実測した入力をそのまま fixture 化）。
 # 同じ critical スコープで一度ゼロを宣言したら、そのスコープの残りの bullet は c3 で

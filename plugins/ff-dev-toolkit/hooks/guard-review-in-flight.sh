@@ -80,9 +80,15 @@
 #   - Bash の heredoc 本文（`<<` / `<<-` のトークン以降、終端行まで）に現れる git。
 #     `cat <<'EOF' > notes.md` の本文に `git commit -m x` と書いても deny しない
 #   - `git -C <path>` がロックを持つリポジトリ（cwd の toplevel）以外を指す場合
-#   - Bash 経由の書き込みのうち **作業ツリーの外**へのもの（scratchpad / `mktemp -d` /
-#     `/tmp` への `tee` / リダイレクト / `cp`）、`/dev/null` へのリダイレクト、
-#     `.review-results/` への書き込み、読み取り専用の形（`sed -n` / `-i` の無い `sed` /
+#   - **書き込み先がレビュー対象の指紋に映らない**書き込み。判定面は Bash 経由も
+#     編集系ツール（`Edit` / `Write` / `MultiEdit` / `NotebookEdit`）も共通で
+#     `tests/lib/review-write-scan.sh` の `target_in_tree`: 作業ツリーの外（scratchpad /
+#     `mktemp -d` / `/tmp`）、`.review-results/`、**gitignore 済みのパス**（`tmp/**` /
+#     `node_modules/.cache/**`）。ignored を通すのは、結果の破棄を決めるリビジョン指紋
+#     （capture_repo_snapshot）が ignored を原理的に見ないため — 止めても守るものが無く、
+#     `multi-review` が待ち時間に勧める作業（`gh` の出力を `tmp/` へ受ける形）だけが
+#     止まっていた（Issue `#1756`）。判定できない書き込み先は従来どおり deny 側
+#   - `/dev/null` へのリダイレクト、読み取り専用の形（`sed -n` / `-i` の無い `sed` /
 #     `python3 -c 'print(1)'` / `node -e 'console.log(1)'` / 書き込みマーカーを含まない
 #     heredoc プログラム / マーカー行の書き込み先リテラルがツリー外のプログラム）。走行中ロックの目的は作業ツリーの静止であって下書きの禁止ではない
 #     （Issue `#1710` で Bash 経由の書き込み走査を追加。それ以前は Bash 経由の書き込み全般を
@@ -896,7 +902,12 @@ case "$tool" in
     # dirty 判定が `:(exclude)${OUTPUT_DIR_NAME}` で「作業ツリーではない」と扱って
     # いる領域と同じで、そこへの書き込みはレビュー対象の diff を動かさない。
     # `code-simplifier` を名簿から外したのと同型の自己デッドロック回避。
-    edit_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // ""' 2>/dev/null)" || edit_path=""
+    # 書き込み先のキーは**ツールごとに違う**。`NotebookEdit` は `file_path` を持たず
+    # `notebook_path` を取る（ツール schema で確認）。`file_path` だけを読んでいた頃は
+    # `edit_path` が空になり、この下の免除にも `.review-results/` の免除にも一度も
+    # 入らなかった（= notebook の書き込みは出力先へでも deny され、委譲レビューが
+    # 自分の結果を書けない自己デッドロックが残っていた）。
+    edit_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // ""' 2>/dev/null)" || edit_path=""
     case "$edit_path" in
       /*) : ;;
       ?*) edit_path="${CWD}/${edit_path}" ;;
@@ -904,6 +915,45 @@ case "$tool" in
     case "$edit_path" in
       "${ROOT}/${OUTPUT_DIR_NAME}/"*) exit 0 ;;
     esac
+    # 出力先の外でも、**レビュー対象の指紋に映らない書き込み先**は止めない。判定面は
+    # Bash 経由の書き込みと同じ `target_in_tree`（作業ツリー外 / 出力先 / gitignore 済み）
+    # を使う — ここに別の線引きを置くと、同じ書き込みがツール経路によって可否が割れる
+    # （実測された過剰 deny はまさにその形で、`Write` だけがツリー外の下書きを通さなかった）。
+    # ライブラリを読めない回・書き込み先を解決できない回は従来どおり deny 側へ進み、
+    # **その理由を deny 文へ載せる**（Bash 経路は同じ失敗に理由を付けているので、
+    # 説明までツール経路で揃える）。
+    if [ -n "$edit_path" ]; then
+      ROOT_PHYS="$(phys_dir "$ROOT")"
+      [ -n "$ROOT_PHYS" ] || ROOT_PHYS="$ROOT"
+      # ゲートは**実際に呼ぶ関数すべて**に張る。`ff_write_scan_init` の実在だけを見て
+      # `! target_in_tree` を判定式にすると、`target_in_tree` を欠いた lib（同期途中の
+      # 切り詰め・改名・移設）で `!` が「コマンドが無い（127）」を反転して真にし、
+      # 走行中の全編集を無音で許可する。rc は変数へ取り、**1（免除）以外は deny 側**。
+      # shellcheck source=../tests/lib/review-write-scan.sh
+      if [ -r "$WRITE_SCAN_LIB" ] && . "$WRITE_SCAN_LIB" 2>/dev/null \
+        && [ "$(type -t ff_write_scan_init 2>/dev/null)" = "function" ] \
+        && [ "$(type -t resolve_target 2>/dev/null)" = "function" ] \
+        && [ "$(type -t target_in_tree 2>/dev/null)" = "function" ]; then
+        ff_write_scan_init "$ROOT_PHYS" "$(phys_dir "$CWD")" "$OUTPUT_DIR_NAME"
+        if resolve_target "$edit_path"; then
+          target_in_tree "$RESOLVED"
+          edit_tit_rc=$?
+          if [ "$edit_tit_rc" -eq 1 ]; then
+            exit 0
+          fi
+          if [ "${WS_IGNORE_UNKNOWN:-0}" -eq 1 ]; then
+            write_note="この書き込み先が gitignore 済みかを判定できません（git check-ignore rc=${WS_IGNORE_RC:-?}: ${RESOLVED}）。判定できない書き込みは deny 側へ倒します。
+"
+          fi
+        else
+          write_note="書き込み先を判定できません（${RESOLVE_WHY:-理由不明}: ${edit_path}）。判定できない書き込みは deny 側へ倒します。
+"
+        fi
+      else
+        write_note="書き込み先を判定できません（走査ライブラリ ${WRITE_SCAN_LIB} を読めない、または必要な関数が欠けている）。判定できない書き込みは deny 側へ倒します。
+"
+      fi
+    fi
     ;;
   Bash)
     cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)" || exit 0

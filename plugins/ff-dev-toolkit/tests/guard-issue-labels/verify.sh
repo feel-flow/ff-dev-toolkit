@@ -27,6 +27,8 @@
 # ので、想定外の gh 呼び出しを足すと赤になる。
 #
 # run-all-required: no — jq 不在での skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。既存の Bash ガード suite と同じ扱い）
+# 空振り検出: 検査対象 hooks/guard-issue-labels.sh を「exit 0 だけ」の空ファイルへ差し替えると 53 件が赤になる（2026-09-18 実測。先頭は AC1「type 系も priority 系も無い起票は停止する」。対象の不在・0 件出力を「違反なし」へ倒さないことの実測）。
+# 空振り検出: 軸別表の優先度行から名前空間を落とす（`priority:critical` → `critical`）と、水準語の抽出が 0 件になって 23 件が赤になる（2026-09-18 実測。AC1「欠落系統に優先度が無い」/ AC2「type はあるが priority が無い起票は停止する」/ 別命名の全 deny 検査。書式変更による抽出空振りを「違反なし」へ畳まない）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -283,6 +285,120 @@ assert_message_only "対: 空白を含む固有の種別ラベルは値ごと読
 run_hook 'gh issue create --title t --label area:api --label priority:high'
 assert_message_only "既知の穴: 未知の名前空間ラベル 1 個で種別が充足する（現状を固定）"
 
+echo "guard-issue-labels: 優先度の別命名（綴りを消費側の実体から引く）"
+# 消費側の実測（feel-flow/hearing-realtime, 付与実績 592 件）と同じ命名。正本の綴り
+# （`priority:*`）は 1 件も無く、水準語だけを共有する。
+ALIAS_LABELS="bug
+enhancement
+documentation
+follow-up
+P0-Critical
+P1-High
+P2-Medium
+P3-Low"
+alias_run() { # <command> [hook]
+  run_hook "$1" "${2:-$TARGET}" 'FF_STUB_LABELS_MODE=custom' "FF_STUB_LABELS=$ALIAS_LABELS"
+}
+
+alias_run 'gh issue create --title t --label bug'
+assert_deny "別命名: 種別だけの起票は優先度の欠落として停止する（旧形はここが素通しだった）"
+case "$MISSING_LINE" in
+  *優先度*) ok "別命名: 欠落系統として優先度を名指しする" ;;
+  *) bad "別命名: 欠落系統に優先度が無い: [$MISSING_LINE]" ;;
+esac
+case "$MISSING_LINE" in
+  *P0-Critical*) ok "別命名: 例として消費側の実際の綴りを出す（正本の綴りを勧めない）" ;;
+  *) bad "別命名: 例が消費側の綴りでない: [$MISSING_LINE]" ;;
+esac
+case "$MISSING_LINE" in
+  *種別*) bad "別命名: 充足済みの種別まで欠落として名指ししている: [$MISSING_LINE]" ;;
+  *) ok "別命名: 充足済みの種別は欠落として名指ししない" ;;
+esac
+
+alias_run 'gh issue create --title t --label P1-High'
+assert_deny "別命名: 優先度ラベルだけの起票は種別の欠落として停止する"
+case "$MISSING_LINE" in
+  *種別*) ok "別命名: 別命名の優先度ラベルは種別として充足しない" ;;
+  *) bad "別命名: 種別が欠落として名指しされない（優先度ラベルが種別を充足している）: [$MISSING_LINE]" ;;
+esac
+case "$MISSING_LINE" in
+  *優先度*) bad "別命名: 優先度を充足しているのに欠落として名指ししている: [$MISSING_LINE]" ;;
+  *) ok "別命名: 優先度としては充足する" ;;
+esac
+
+# `gh` のラベル解決は大小を区別しないので、判定も水準語の大小を区別しない。
+alias_run 'gh issue create --title t --label p1-high'
+assert_deny "別命名: 水準語の大小が違っても優先度として読む"
+case "$MISSING_LINE" in
+  *優先度*) bad "別命名: 小文字形を優先度として読めていない: [$MISSING_LINE]" ;;
+  *) ok "別命名: 小文字形も優先度として充足する" ;;
+esac
+
+alias_run 'gh issue create --title t --label bug --label P1-High'
+assert_message_only "別命名: 種別 + 別命名の優先度が揃えば停止しない"
+alias_run 'gh issue create --title t --label bug --label P1-High --label follow-up'
+assert_silent "別命名: 3 系統が揃った起票は無出力"
+
+# 別命名として採る条件は「同一ファミリが正本の水準の**過半**を覆う」こと。ここを
+# 緩めると、優先度軸を持たないリポジトリで無関係なラベルが優先度として読まれ、
+# **正しい起票が誤ブロックされる**（下 3 件はいずれもその実測形）。
+run_hook 'gh issue create --title t --label docs-low' "$TARGET" 'FF_STUB_LABELS_MODE=custom' \
+  "FF_STUB_LABELS=bug
+follow-up
+docs-low"
+assert_message_only "1 水準だけの一致は優先度系統として採らない（誤ブロックしない側へ倒す）"
+run_hook 'gh issue create --title t --label bug --label follow-up' "$TARGET" 'FF_STUB_LABELS_MODE=custom' \
+  "FF_STUB_LABELS=bug
+follow-up
+effort-high
+effort-low"
+assert_silent "2 水準の別軸（effort-*）は優先度として採らない（正しい起票を止めない）"
+run_hook 'gh issue create --title t --label bug --label follow-up' "$TARGET" 'FF_STUB_LABELS_MODE=custom' \
+  "FF_STUB_LABELS=bug
+follow-up
+docs-high
+docs-low"
+assert_silent "2 水準の別軸（docs-*）も優先度として採らない"
+# 区切りの要求。これが無いと水準語で終わるだけの種別ラベル（`workflow` の末尾 `low`）が
+# 優先度として読まれ、種別の欠落で誤ブロックされる。
+run_hook 'gh issue create --title t --label workflow --label P1-High --label P2-Medium --label P3-Low --label follow-up' \
+  "$TARGET" 'FF_STUB_LABELS_MODE=custom' \
+  "FF_STUB_LABELS=bug
+workflow
+follow-up
+P1-High
+P2-Medium
+P3-Low"
+assert_silent "区切りの無い連結（workflow の末尾 low）は水準語として読まない"
+# 区切りは空白も受ける（実世界で多い `Priority: High` 形）。正本の 4 水準のうち 3 水準
+# （過半）を同一ファミリが覆うので発火する。
+run_hook 'gh issue create --title t --label bug' "$TARGET" 'FF_STUB_LABELS_MODE=custom' \
+  "FF_STUB_LABELS=bug
+follow-up
+Priority: High
+Priority: Medium
+Priority: Low"
+assert_deny "空白区切りの別命名（Priority: High）も優先度系統として読む"
+case "$MISSING_LINE" in
+  *"Priority: High"*) ok "空白区切りでも例に消費側の実際の綴りを出す" ;;
+  *) bad "空白区切りの例が消費側の綴りでない: [$MISSING_LINE]" ;;
+esac
+
+# 発火の条件は「正本の綴りの優先度が対象リポジトリに 1 件も無い」こと。正本の綴りが
+# 在るリポジトリでは、別命名らしき形のラベルがあっても判定材料に加えない。
+run_hook 'gh issue create --title t --label docs-high' "$TARGET" 'FF_STUB_LABELS_MODE=custom' \
+  "FF_STUB_LABELS=bug
+follow-up
+docs-high
+docs-low
+priority:high
+priority:low"
+assert_deny "正本の綴りが在るリポジトリでは別命名の網を張らない（docs-high は従来どおり種別）"
+case "$MISSING_LINE" in
+  *優先度*) ok "正本の綴りが在れば、別命名らしき形は優先度を充足しない" ;;
+  *) bad "正本の綴りが在るのに別命名の網が発火している: [$MISSING_LINE]" ;;
+esac
+
 echo "guard-issue-labels: AC6 対象外と heredoc（対で固定する）"
 run_hook 'npm test'
 assert_silent "AC6: gh issue create を含まない Bash は素通し"
@@ -407,6 +523,28 @@ perl -0pi -e 's/^\| *type *\|.*\n//m' "$COPY_CREATE_ISSUE"
 run_hook 'gh issue create --title t --label wontfix --label priority:high' "$COPY_HOOK"
 assert_message_only "変異 6: type 行を落とすと否定名簿を作れず種別判定が緩む（fail-open）"
 cp "$CREATE_ISSUE_MD" "$COPY_CREATE_ISSUE"
+
+# 変異 7: 軸別表の優先度行から名前空間を落とす（`priority:critical` → `critical`）→
+# 水準語（`:` 以降）を切り出せなくなり、別命名の綴りを引けない。水準語の正本が軸別表で
+# あることの実測（hook 側に水準語を直書きしていたらここは緑のまま残る）。
+perl -0pi -e 's/`priority:/`/g' "$COPY_SKILL"
+alias_run 'gh issue create --title t --label bug' "$COPY_HOOK"
+# `assert_not_deny` だと「hook が丸ごと早期 exit した」回とも区別できない
+# （`[ -n "$PRIORITY_NAMES" ] || exit 0`）。follow-up の案内が出ることまで見て、
+# **判定へ到達したうえで別命名を引けなかった**ことを固定する。
+assert_message_only "変異 7: 軸別表から名前空間を落とすと別命名を引けず旧形の fail-open へ戻る"
+cp "$LABEL_SKILL" "$COPY_SKILL"
+
+# 変異 8: 判定を旧形へ戻す（別命名の採用を無効化）→ 同じリポジトリで優先度が要求されなく
+# なり、さらに優先度ラベルが種別として充足する（報告された二重の fail-open が再現する）。
+perl -0pi -e 's/^  PRIORITY_ALIAS_ACTIVE=1$/  PRIORITY_ALIAS_ACTIVE=0/m' "$COPY_HOOK"
+alias_run 'gh issue create --title t --label bug' "$COPY_HOOK"
+assert_message_only "変異 8: 別命名の採用を無効化すると優先度が要求されなくなる（旧形の再現）"
+alias_run 'gh issue create --title t --label P1-High' "$COPY_HOOK"
+assert_message_only "変異 8 対: 同時に優先度ラベルが種別として充足する（二重の fail-open）"
+cp "$TARGET" "$COPY_HOOK"
+alias_run 'gh issue create --title t --label bug' "$COPY_HOOK"
+assert_deny "変異 8 復元: hook を戻すと再び優先度を要求する"
 
 run_hook 'gh issue create --title t' "$COPY_HOOK"
 assert_deny "復元: 正本を戻すと再び停止する"

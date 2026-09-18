@@ -1249,6 +1249,15 @@ else
   else
     bad "レビュー待ち時間の使い方の禁止側の理由が見つかりません"
   fi
+  # 通る書き込み先（ガードの許可条件）の明記。hooks/guard-review-in-flight.sh と
+  # tests/lib/review-write-scan.sh の `target_in_tree` が持つ 3 つと同じ集合で、
+  # ここが無いと「待ち時間に何をしてよいか」が機構側にしか無い状態へ戻る。
+  if grep -qF '**通る書き込み先は 3 つ: 作業ツリーの外（scratchpad / `mktemp -d` / `/tmp`）・`.review-results/`・gitignore 済みのパス' \
+      "$MULTI_REVIEW_SKILL"; then
+    ok "レビュー待ち時間の使い方が通る書き込み先 3 つ（ツリー外 / 出力先 / gitignore 済み）を明記している"
+  else
+    bad "レビュー待ち時間の使い方に通る書き込み先 3 つの明記が見つかりません"
+  fi
 fi
 
 # --- 委譲プロンプトの事実確認義務（親側 / 子側の 2 規定）とその到達性 ---

@@ -691,7 +691,16 @@ PROMPT
 # bullet under a severity heading"。
 #
 # コードフェンス外に、次のいずれかの**実体行**が 1 行でもあれば受理（rc=0）。
-# bullet は `-` / `*` / `+` の 3 種を等価に扱う:
+# bullet は `-` / `*` / `+` の 3 種を等価に扱う。
+#
+# **強調の許容（s1 / s2 / s4 / c3 に共通。BEGIN ブロックの emph が唯一の実装）**:
+# 件数**値**とゼロ語は markdown 強調で囲まれていてもよい（`- Critical: **0**` /
+# `- Critical: **なし**` / `- **指摘なし**` / `- **なし**` / `- **指摘 0 件**` /
+# 行全体を囲む `- **Critical: 0**`）。レビュー本文は LLM 出力で強調の有無が実行
+# ごとに揺れるため、書式差でゲートの通過可否が変わらないようにしている。
+# 実装は `[*_]*` の前後付けなので、**不均衡・種類不一致の強調**（`**0` / `_0*` /
+# `0__`）も受ける — ゼロ判定を緩める方向にしか効かず、非ゼロ件数と実指摘の
+# 発火は変わらないため、厳密な対応付けはしていない:
 #   (s1) 件数行 — 行頭（任意の bullet / `**` 強調可）が critical / warning /
 #        suggestion（大文字小文字・複数形不問、Issues / Vulnerabilities / Gaps 修飾可）
 #        + コロン + **数値またはゼロ語（なし / none / n/a / zero / ゼロ）**の行
@@ -704,15 +713,17 @@ PROMPT
 #        Suggestion: 0（前述の観点はすべて確認済み）` のような契約準拠ゼロ報告 +
 #        参照注記を落とさない）
 #   (s2) ゼロ件報告行 — 行頭（任意の bullet 可）が「指摘なし」「該当なし」
-#        「指摘事項なし」で始まる行、または「指摘 … 0 件」の行。(s1) と同じく
-#        自己完結行として参照語 veto の対象外
+#        「指摘事項なし」で始まる行、または「指摘 … 0 件」の行（上の**強調の
+#        許容**のとおり `- **指摘なし**` / `- **指摘 0 件**` も含む）。(s1) と
+#        同じく自己完結行として参照語 veto の対象外
 #   (s3) ラベル付き指摘行 — bullet または行頭 `**` 強調の重大度ラベル + コロン +
 #        **非空の本文**（`- Suggestion: 〜を単純化できる` / `**Warning**: …`）。
 #        参照語 veto の対象（`- Critical: 詳細は前のターンです` は不受理）
 #   (s4) 重大度見出し配下の bullet 行 — critical / warning / suggestion / 重大度 を
 #        含む Markdown 見出しのスコープ内（次の見出しまで）の bullet 行。指摘
 #        （comprehensive-review の `### Critical` + `- **要約**（file:line）` 形）と
-#        `- なし` 等の空所見の別を問わない。参照語 veto の対象
+#        `- なし` / `- **なし**` 等の空所見（上の**強調の許容**）の別を問わない。
+#        参照語 veto の対象
 # 除外規則（実体行に数えない）:
 #   - 参照語の行単位 veto — 「前のターン」「前述」「報告済み」「上記で報告/完了」
 #     earlier/previous turn・reported above/earlier・see above を含む行は (s3)(s4)
@@ -791,13 +802,18 @@ PROMPT
 #        一度ゼロを宣言したら、そのスコープの残りの bullet は c3 で数えない。
 #        ゼロ宣言 = 明示ゼロ / ゼロ件報告行（cls_zero）・空所見語彙の bullet・
 #        bullet 無しの散文ゼロ宣言（`なし。` / `該当なし` / `none` — 語彙は
-#        BEGIN ブロックの zero_decl_re）。抑止は次の見出し（head_re）で解除する。
+#        BEGIN ブロックの zero_decl_re）。**強調形も同じくゼロ宣言**（`- **なし**` /
+#        `**指摘なし**`）— 上の**強調の許容**のとおりで、これは抑止の側を広げる
+#        （強調ゼロ宣言の後ろの bullet が c3 で数えられなくなる）。抑止は次の
+#        見出し（head_re）で解除する。
 #        抑止を入れた理由: レビュアーが Critical 節へ「なし。」と書いた後ろへ
 #        裏取り・補足の箇条書き（`- DOMAIN.md:322 の記述は正確` 型のメモ）を
 #        置く形が実所見として数えられ、どの CLI も Critical を報告していない
 #        レビューで CRITICAL_BLOCK が立つ偽陽性が実測された。
 #        既知の限界: ゼロ宣言の後ろに本物の所見（`- [app.txt:2] …` + 信頼度行）を
-#        続けて書いた矛盾レポートは c3 では数えない（ゼロ宣言側を信じる）。件数行
+#        続けて書いた矛盾レポートは c3 では数えない（ゼロ宣言側を信じる）。この
+#        限界は**強調形のゼロ宣言にも同じく及ぶ**（`- **なし**` + 実所見 → 数えない。
+#        強調を許す前は発火していた形なので、抑止の範囲はその分広がっている）。件数行
 #        （`Critical: 1`）を併記していれば c1 が拾うので検出は維持される。
 #        抑止は c3 だけに掛かる — c1 / c2 / c4 はゼロ宣言の後でも従来どおり発火する
 #   (c4) 行頭（列 0）の `CRITICAL:` マーカー行（明示ゼロ行を除く）。bullet 無しの
@@ -827,27 +843,43 @@ _ff_severity_scan() { # $1: ff_mode (accept|critical) / 本文: stdin または 
       sp    = "[[:space:]]"
       lab   = "(critical|warning|suggestion)s?( issues| vulnerabilities| gaps)?"
       colon = sp "*(:|：)" sp "*"
-      numv    = "[0-9]+" sp "*(\\/|件|（|$)"   # 件数と認める数値（境界つき）
-      numzero = "0+" sp "*(\\/|件|（|$)"       # 明示ゼロの数値形（同じ境界）
-      zerov   = "(なし|none|n\\/a|zero|ゼロ)" sp "*(\\/|。|（|$)"  # ゼロ語 5 種
+      # 件数**値**を囲む markdown 強調（`**0**` / `*0*` / `__0__`）。ラベル側は
+      # 以前から `[*]*` で強調を許していたが、値側は許していなかったため
+      # `- Critical: **0**` が s1（件数行）に落ちず、s3（ラベル付き指摘行）へ
+      # 流れて「Critical あり」と判定されていた。レビュー本文は LLM 出力なので
+      # ゼロを太字で書くかは実行ごとに揺れ、同じ差分・同じ 0 件でもゲートが
+      # 通ったり落ちたりしていた。
+      # 件数**値**と**ゼロ語**の両方に掛ける。片側だけに入れると同根の非対称が
+      # 残り、`- **指摘なし**` / `- **なし**` が偽の Critical として発火し続ける
+      # （s1 側だけ直した版で実測）。
+      # ゼロ語側で観測可能な効果を持つのは s2a_re と zero_decl_re の 2 箇所。
+      # s4_empty_re にも掛けてあるが、こちらは zero_decl_re に包含され（同じ
+      # zerow・同じ末尾・bullet が必須か任意かの違いだけ）、critical モードでは
+      # 同じ行の先行文が先に crit_zero を立てるため到達しない。accept モードでは
+      # そもそも参照されない。保険として揃えてあるだけで、外しても契約テストは
+      # 緑のまま（実測: 一致しない値へ置換しても 81/81 pass）。
+      emph  = "[*_]*"
+      numv    = emph "[0-9]+" emph sp "*(\\/|件|（|$)"   # 件数と認める数値（境界つき）
+      numzero = emph "0+" emph sp "*(\\/|件|（|$)"       # 明示ゼロの数値形（同じ境界）
+      zerov   = emph "(なし|none|n\\/a|zero|ゼロ)" emph sp "*(\\/|。|（|$)"  # ゼロ語 5 種
       b_opt = "^" sp "*[-*+]?" sp "*"          # bullet 任意（s1/s2）
       b_req = "^" sp "*[-*+]" sp "+"           # bullet 必須（s3 の bullet 形）
       s1_re      = b_opt "[*]*" lab "[*]*" colon "(" numv "|" zerov ")"
       s1_zero_re = b_opt "[*]*" lab "[*]*" colon "(" numzero "|" zerov ")"
       lab_crit_opt = b_opt "[*]*critical"      # s1 のラベルが critical か（前方一致）
-      s2a_re = b_opt "(指摘なし|該当なし|指摘事項なし)"
-      s2b_re = b_opt "指摘[^0-9]*0" sp "*件"
+      s2a_re = b_opt emph "(指摘なし|該当なし|指摘事項なし)" emph
+      s2b_re = b_opt emph "指摘[^0-9]*0" emph sp "*件"
       s3b_re = b_req "[*]*" lab "[*]*" colon "[^[:space:]]"
       s3s_re = "^" sp "*\\*\\*" lab "\\*\\*" colon "[^[:space:]]"
       lab_crit_breq   = b_req "[*]*critical"       # s3 bullet 形のラベルが critical か
       lab_crit_strong = "^" sp "*\\*\\*critical"   # s3 強調形のラベルが critical か
       s4_bullet_re = "^" sp "*[-*+]" sp
       zerow        = "(なし|該当なし|特になし|指摘なし|指摘事項なし|none|n\\/a|no issues)"
-      s4_empty_re  = "^" sp "*[-*+]" sp "*" zerow "[[:space:]。.]*$"
+      s4_empty_re  = "^" sp "*[-*+]" sp "*" emph zerow emph "[[:space:]。.]*$"
       # ゼロ宣言（c3 の抑止トリガ — ヘッダの (c3) を参照）。s4_empty_re から bullet
       # 要求を外した形で、bullet 無しの散文ゼロ宣言（`なし。` / `該当なし` / `none`）
       # も同じ語彙で拾う
-      zero_decl_re = "^" sp "*([-*+]" sp "*)?" zerow "[[:space:]。.]*$"
+      zero_decl_re = "^" sp "*([-*+]" sp "*)?" emph zerow emph "[[:space:]。.]*$"
       bare_re      = "^critical:"
       bare_zero_re = "^critical:" sp "*(" numzero "|" zerov ")"
       # ATX 見出し: 先頭の字下げはスペース 0〜3 個のみ（CommonMark — スペース 4 個

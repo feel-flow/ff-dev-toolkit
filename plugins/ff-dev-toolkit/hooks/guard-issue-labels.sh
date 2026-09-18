@@ -31,6 +31,14 @@
 # `tests/github-labels-setup/verify.sh` が抽出正規表現で他 4 箇所と照合している）を
 # 読み、軸ごとに引く。抽出できなければ無音で通す（fail-open）。
 #
+# 優先度（priority）の**綴り**は正本に固定しない。正本が定めるのは
+# `<名前空間>:<水準語>` という形で、消費プロジェクトが別の命名（`P1-High` 等）を
+# 採っている場合、綴りで照合すると優先度系統が丸ごと不可視になる（要求されないうえ、
+# 優先度ラベル自身が下の否定形判定で種別として充足する = 二重の fail-open）。そこで
+# **水準語は正本から**、**綴りは対象リポジトリのラベル一覧から**引く。発火は「正本の
+# 綴りの優先度ラベルが対象リポジトリに 1 件も無い」ときに限るので、既定命名の
+# リポジトリでは判定材料が増えない（従来と同じ判定）。詳細は本体の 4c 節。
+#
 # 種別（type）は**許可名簿を持たない**。起票スキル側が「具体的なラベル名は消費
 # プロジェクトの分類に合わせる（代表例であり、この名前でなければならないという
 # 意味ではない）」と定めているため、閉じた許可名簿を hook が持つと消費側の分類を
@@ -68,6 +76,11 @@
 #   - `--label` を変数展開・コマンド置換で組み立てる形
 #   - `gh issue create` を経ない起票（API 直叩き・Web UI）
 #   - 未知の名前空間ラベル（`area:*` など）1 個での種別充足（意図的な穴。上記参照）
+#   - 別命名の優先度系統が正本の水準の**過半に満たない**リポジトリ（`effort-high` /
+#     `effort-low` の 2 水準だけ等）。順序を持つ別軸と優先度軸は名前からは区別できず、
+#     読み違えると無関係なラベルが種別判定を奪って**正しい起票を誤ブロックする**ため、
+#     過半を覆うファミリが 1 つに定まらない限り採らない（fail-open 側へ倒す）
+#   - 過半を覆うファミリが 2 つ以上あるリポジトリ（どれを優先度軸と読むべきか決まらない）
 #
 # 設計原則:
 #   - fail-open: 全 Bash 呼び出しに割り込むため、解析不能・jq/gh 不在・抽出失敗では
@@ -158,8 +171,20 @@ strip_quotes() {
 
 # 改行区切りリストに完全一致の行があるか
 list_has() { # <list> <needle>
+  # 完全一致（行単位）。`printf | grep` は 1 件あたり 2 fork で、ラベル 1 件につき
+  # 数回呼ばれるため上限 200 ラベルでは数百プロセスになる。別命名の検出で走査が
+  # 2 周するようになり、実測で照会 1 回が 2.7 秒 → 5.6 秒（hooks.json の timeout 10 秒に
+  # 対して余裕が半減）まで伸びたので、pure bash の部分文字列一致へ置き換える。
+  # 前後を改行で包むのは、先頭行・末尾行も `\n<値>\n` の形で当てるため。
   [ -n "$2" ] || return 1
-  printf '%s\n' "$1" | grep -Fxq -- "$2" 2>/dev/null
+  case "
+$1
+" in
+    *"
+$2
+"*) return 0 ;;
+  esac
+  return 1
 }
 
 # ---- 1) heredoc 本文を落とす -------------------------------------------------
@@ -468,6 +493,169 @@ $default_names
 EOF
 fi
 
+# ---- 4c) 優先度の別命名（綴りは消費側の実体から引く）--------------------------
+# 正本の綴り（`<名前空間>:<水準語>`）へ判定を固定すると、別の命名規則を採る消費
+# プロジェクトでは優先度系統が**丸ごと不可視**になる。要求されないだけでなく、優先度
+# ラベル自身が下の否定形判定をすり抜けて種別として充足するので、倒れ方は二重の fail-open。
+#
+# 消費側と共有されるのは名前空間の綴りではなく**水準語**（正本の `:` 以降）である。
+# そこで水準語は正本から引き、綴りは**対象リポジトリのラベル一覧**から引く。ラベル名を
+# hook が持たない不変（ヘッダ「ラベル名の正本」）はそのまま保つ。
+#
+# 発火は次の 3 つを**すべて**満たすときだけに絞る。緩めると、優先度軸を持たない
+# リポジトリで無関係なラベルが優先度として読まれ、**正しい起票が誤ブロックされる**
+# （実測: `effort-high` / `effort-low` しか無いリポジトリで `--label bug --label follow-up`
+# が「優先度（例: effort-high）」で停止した）:
+#   (a) 正本の綴りの優先度ラベルが対象リポジトリに 1 件も無い
+#   (b) 同一の**ファミリ**（後述の鍵）が正本の水準の**過半**を覆う
+#   (c) その条件を満たすファミリが**ちょうど 1 つ**（複数あればどれを優先度軸と読むべきか
+#       決まらないので、読まない側＝従来どおりへ倒す）
+PRIORITY_LEVELS=""
+PRIORITY_LEVEL_COUNT=0
+while IFS= read -r _pn; do
+  [ -n "$_pn" ] || continue
+  # 名前空間を持たない正本からは水準語を切り出せない（`major` のような単語は、区切りで
+  # 分けられる「軸の綴り」と「水準」を持たない）。
+  case "$_pn" in
+    *:*) _pn="${_pn##*:}" ;;
+    *) continue ;;
+  esac
+  [ -n "$_pn" ] || continue
+  if ! list_has "$PRIORITY_LEVELS" "$_pn"; then
+    PRIORITY_LEVELS="${PRIORITY_LEVELS}${_pn}
+"
+    PRIORITY_LEVEL_COUNT=$((PRIORITY_LEVEL_COUNT + 1))
+  fi
+done <<EOF
+$PRIORITY_NAMES
+EOF
+
+# 大小無視の照合はパターン側を前計算する（`high` → `[hH][iI][gG][hH]`）。bash 3.2 には
+# `${v,,}` が無く、`shopt -s nocasematch` は他の case まで巻き込むグローバル状態なので
+# 使わない。ラベル 1 件ごとに `tr` を起動する形も避ける（照会 1 回で数百のプロセス生成に
+# なる）。前計算は水準語の数（数件）だけ回る。
+CI_LOWER="abcdefghijklmnopqrstuvwxyz"
+CI_UPPER="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+ci_pattern() { # <小文字語> → 大小無視のグロブ
+  local w="$1" out="" c rest idx
+  while [ -n "$w" ]; do
+    c="${w%"${w#?}"}"
+    w="${w#?}"
+    rest="${CI_LOWER#*"$c"}"
+    if [ "${#rest}" -lt "${#CI_LOWER}" ]; then
+      idx=$((${#CI_LOWER} - ${#rest} - 1))
+      out="${out}[${c}${CI_UPPER:$idx:1}]"
+    else
+      out="${out}${c}"
+    fi
+  done
+  printf '%s' "$out"
+}
+
+PRIORITY_LEVEL_PATTERNS=""
+while IFS= read -r _lv; do
+  [ -n "$_lv" ] || continue
+  PRIORITY_LEVEL_PATTERNS="${PRIORITY_LEVEL_PATTERNS}$(ci_pattern "$_lv")
+"
+done <<EOF
+$PRIORITY_LEVELS
+EOF
+
+# ファミリ鍵の正規化: 小文字化し、**数字の連なりを `#` へ潰す**。潰さないと
+# `P0-` / `P1-` / `P2-` / `P3-` が 4 つの別ファミリへ割れ、水準ごとに番号が変わる実在の
+# 別命名（報告された消費側がこの形）が 1 水準ずつになって (b) を満たせない。
+norm_family_key() { # <文字列> → 正規化した鍵
+  local s="$1" out="" c rest idx prev_digit=0
+  while [ -n "$s" ]; do
+    c="${s%"${s#?}"}"
+    s="${s#?}"
+    case "$c" in
+      [0-9])
+        [ "$prev_digit" -eq 1 ] || out="${out}#"
+        prev_digit=1
+        continue
+        ;;
+    esac
+    prev_digit=0
+    rest="${CI_UPPER#*"$c"}"
+    if [ "${#rest}" -lt "${#CI_UPPER}" ]; then
+      idx=$((${#CI_UPPER} - ${#rest} - 1))
+      out="${out}${CI_LOWER:$idx:1}"
+    else
+      out="${out}${c}"
+    fi
+  done
+  printf '%s' "$out"
+}
+
+# ラベルを「ファミリ鍵」と「水準パターン」へ分解する。区切り 1 文字を挟んで水準語で
+# 終わる形だけを取り（`P1-High` / `sev_LOW` / `Priority: High`）、水準語そのもの（`high`）や
+# 区切りの無い連結（`workflow` の末尾 `low`）は取らない。**この区切りの要求が無いと、
+# 水準語で終わるだけの種別ラベルが優先度として読まれる**（実測: `workflow` が水準 `low`
+# として読まれ、種別の欠落で誤ブロックされた）。
+ALIAS_RS="$(printf '\001')"
+priority_family_of() { # <name> → "<鍵>\001<水準パターン>"（一致しなければ非 0）
+  local name="$1" pat head
+  [ -n "$name" ] || return 1
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    case "$name" in
+      *[-_:/.\ ]$pat)
+        head="${name%$pat}"
+        printf '%s%s%s' "$(norm_family_key "$head")" "$ALIAS_RS" "$pat"
+        return 0
+        ;;
+    esac
+  done <<EOF
+$PRIORITY_LEVEL_PATTERNS
+EOF
+  return 1
+}
+
+PRIORITY_ALIAS_ACTIVE=0
+PRIORITY_ALIAS_FAMILY=""
+detect_priority_alias() { # <ラベル一覧（改行区切り）> → 0 = 別命名の優先度系統が実在する
+  local pairs="" seen_key="" lb kp kp2 key n families=0 best=""
+  [ -n "$PRIORITY_LEVEL_PATTERNS" ] || return 1
+  [ "$PRIORITY_LEVEL_COUNT" -gt 0 ] || return 1
+  while IFS= read -r lb; do
+    [ -n "$lb" ] || continue
+    kp="$(priority_family_of "$lb")" || continue
+    list_has "$pairs" "$kp" && continue
+    pairs="${pairs}${kp}
+"
+  done <<EOF
+$1
+EOF
+  [ -n "$pairs" ] || return 1
+  while IFS= read -r kp; do
+    [ -n "$kp" ] || continue
+    key="${kp%%"$ALIAS_RS"*}"
+    list_has "$seen_key" "$key" && continue
+    seen_key="${seen_key}${key}
+"
+    n=0
+    while IFS= read -r kp2; do
+      [ -n "$kp2" ] || continue
+      [ "${kp2%%"$ALIAS_RS"*}" = "$key" ] && n=$((n + 1))
+    done <<EOF
+$pairs
+EOF
+    # 過半は**正本の水準数から導く**（軸別表の水準が増減しても追随する。閾値の定数を
+    # 持たない）。正本が 4 水準なら 3 水準以上が要る — 2 水準では `effort-high` /
+    # `effort-low` のような別の順序軸と区別できない。
+    if [ $((n * 2)) -gt "$PRIORITY_LEVEL_COUNT" ]; then
+      families=$((families + 1))
+      best="$key"
+    fi
+  done <<EOF
+$pairs
+EOF
+  [ "$families" -eq 1 ] || return 1
+  PRIORITY_ALIAS_FAMILY="$best"
+  return 0
+}
+
 is_priority_label() { # <name>
   [ -n "$1" ] || return 1
   list_has "$PRIORITY_NAMES" "$1" && return 0
@@ -475,6 +663,15 @@ is_priority_label() { # <name>
     case "$1" in
       "$PRIORITY_PREFIX"?*) return 0 ;;
     esac
+  fi
+  # 別命名は、対象リポジトリで系統の実在を確かめたときだけ材料にする（4c）。
+  # 検出したファミリの所属だけを優先度として読む — 水準語で終わるというだけで採ると、
+  # 無関係なラベルが優先度を充足し（種別の欠落で誤ブロック）、あるいは優先度を要求した
+  # まま別軸のラベルで満たされる（両方向の実測あり）。
+  if [ "$PRIORITY_ALIAS_ACTIVE" -eq 1 ] && [ -n "$PRIORITY_ALIAS_FAMILY" ]; then
+    local _kp
+    _kp="$(priority_family_of "$1")" || return 1
+    [ "${_kp%%"$ALIAS_RS"*}" = "$PRIORITY_ALIAS_FAMILY" ] && return 0
   fi
   return 1
 }
@@ -495,17 +692,28 @@ is_type_label() { # <name>
   return 0
 }
 
+# 与えられたラベルの走査は 2 度回りうる（別命名を検出したら材料が変わるため）。
+# 毎回 0 から数え直す（前回の充足を持ち越すと、別命名の優先度ラベルが種別として
+# 立てた has_type が再走査後も残り、AC「優先度ラベルは種別として充足しない」が緑のまま
+# 通ってしまう）。
 has_type=0
 has_priority=0
 has_followup=0
-while IFS= read -r lb; do
-  [ -n "$lb" ] || continue
-  is_priority_label "$lb" && has_priority=1
-  is_type_label "$lb" && has_type=1
-  [ -n "$FOLLOWUP_NAME" ] && [ "$lb" = "$FOLLOWUP_NAME" ] && has_followup=1
-done <<EOF
+scan_given_labels() {
+  has_type=0
+  has_priority=0
+  has_followup=0
+  local lb
+  while IFS= read -r lb; do
+    [ -n "$lb" ] || continue
+    is_priority_label "$lb" && has_priority=1
+    is_type_label "$lb" && has_type=1
+    [ -n "$FOLLOWUP_NAME" ] && [ "$lb" = "$FOLLOWUP_NAME" ] && has_followup=1
+  done <<EOF
 $given_labels
 EOF
+}
+scan_given_labels
 
 if [ "$has_type" -eq 1 ] && [ "$has_priority" -eq 1 ] && [ "$has_followup" -eq 1 ]; then
   exit 0
@@ -535,19 +743,41 @@ type_available=0
 followup_available=0
 type_example=""
 priority_example=""
-while IFS= read -r lb; do
-  [ -n "$lb" ] || continue
-  if is_priority_label "$lb"; then
-    priority_available=1
-    [ -n "$priority_example" ] || priority_example="$lb"
-  elif is_type_label "$lb"; then
-    type_available=1
-    [ -n "$type_example" ] || type_example="$lb"
-  fi
-  [ -n "$FOLLOWUP_NAME" ] && [ "$lb" = "$FOLLOWUP_NAME" ] && followup_available=1
-done <<EOF
+scan_repo_labels() {
+  priority_available=0
+  type_available=0
+  followup_available=0
+  type_example=""
+  priority_example=""
+  local lb
+  while IFS= read -r lb; do
+    [ -n "$lb" ] || continue
+    if is_priority_label "$lb"; then
+      priority_available=1
+      [ -n "$priority_example" ] || priority_example="$lb"
+    elif is_type_label "$lb"; then
+      type_available=1
+      [ -n "$type_example" ] || type_example="$lb"
+    fi
+    [ -n "$FOLLOWUP_NAME" ] && [ "$lb" = "$FOLLOWUP_NAME" ] && followup_available=1
+  done <<EOF
 $repo_labels
 EOF
+}
+scan_repo_labels
+
+# ---- 5b) 別命名の優先度系統を材料に加える（4c）--------------------------------
+# 正本の綴りの優先度ラベルが対象リポジトリに 1 件も無いときだけ探す。見つかったら
+# 両方の走査を**やり直す**: 与えられたラベル側では別命名が優先度として充足し、同時に
+# 種別としては充足しなくなる（従来は優先度ラベルが種別を満たしてしまっていた）。
+if [ "$priority_available" -eq 0 ] && detect_priority_alias "$repo_labels"; then
+  PRIORITY_ALIAS_ACTIVE=1
+  scan_repo_labels
+  scan_given_labels
+  if [ "$has_type" -eq 1 ] && [ "$has_priority" -eq 1 ] && [ "$has_followup" -eq 1 ]; then
+    exit 0
+  fi
+fi
 
 missing=""
 add_missing() { missing="${missing:+$missing / }$1"; }

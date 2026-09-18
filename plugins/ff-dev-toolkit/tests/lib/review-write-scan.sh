@@ -15,8 +15,16 @@
 #     cd 先不明の相対パス・マーカー行に書き込み先リテラルが無い）ときは deny 側へ倒す（走行中に
 #     限る）。判定できないものを通すと、このガードが守る「レビュー対象と作業ツリーの一致」を
 #     ガード自身が破る
-#   - gitignore 済みでもツリー内は止める（凍結の主題はツリーの静止で、走行中のサブエージェントが
-#     編集を環境由来と誤認して巻き戻す事故は ignore の有無に依らない）
+#   - gitignore 済みのパスは**ツリー内でも止めない**。結果の破棄を決めるリビジョン指紋
+#     （scripts/adapters/adapter-common.sh の capture_repo_snapshot）は
+#     `git status --porcelain` / `git diff HEAD` / `git diff --cached` /
+#     `git ls-files --others --exclude-standard` の 4 つで組まれており、ignored はその
+#     どれにも現れない（同関数の「見えないものを明示しておく」に明記）。指紋に映らない
+#     書き込みを止めても守るものが無く、`multi-review` 自身が待ち時間に勧める作業
+#     （`gh` の出力を `tmp/` へ受ける形）だけが止まる。判定は `git check-ignore` で、
+#     **起動できない / rc が 0 以外はすべて「ignored ではない」= deny 側**へ倒す。
+#     免除に当たっても**末端が symlink ならリンク先で判定し直す**（`ignored/link -> tracked`
+#     で指紋を動かせるため）。リンクを解決できない回は止める側
 #   - インタプリタ（python / node / perl / ruby / awk / sh 系）は**プログラム本文**を取ってから
 #     判定する。インライン（`-c` / `-e`）・stdin の heredoc 本文・here-string・`< file`・読める
 #     script ファイル（先頭 256 KiB）を本文とし、sh 系（`source` / `.` を含む）は本文を再帰走査
@@ -39,6 +47,8 @@
 # 依存: heredoc-strip.sh（入れ子の本文を落とすため。無ければ入れ子は判定不能側）。
 # 検査用の差し替え口: FF_WRITE_SCAN_GREP（マーカー走査の grep。失敗（不在 127 等）を
 # 「マーカー無し」に畳まず判定不能へ倒すことを suite で実測するため）。
+# FF_WRITE_SCAN_GIT（ignored 判定の git。起動できない回を「ignored」に畳まず deny 側へ
+# 倒すことを suite で実測するため）。
 # 互換性: bash 3.2（stock macOS）。連想配列・readarray・=~ は使わない。
 
 WRITE_HIT=0
@@ -231,10 +241,98 @@ resolve_target() { # <path token> → RESOLVED（物理パス）。判定不能�
   fi
   return 0
 }
-target_in_tree() { # <phys> → 0 = 止める対象（ツリー内かつ出力先ではない）
-  ws_path_within "$1" "$WS_ROOT_PHYS" || return 1
-  ws_path_within "$1" "${WS_ROOT_PHYS}/${WS_OUTPUT_DIR}" && return 1
-  return 0
+# gitignore 済みか（0 = ignored = 止めない）。ここが走行中ガードの許可条件のうち
+# 「指紋に映らない書き込み先」を判定する面で、**判定できない回はすべて deny 側**
+# （「ignored ではない」）へ倒す:
+#   - `git` を起動できない（PATH に無い / 差し替え口が壊れている）→ rc 127 等
+#   - リポジトリ外・パス解決不能 → rc 128
+#   - ignored でない → rc 1
+# ignored なのは rc 0 の 1 経路だけで、それ以外を許可側へ畳まない（緩める方向の変更を
+# 判定不能へ波及させない）。呼ぶのはツリー内と分かった後だけなので、`git` の起動は
+# 「止める候補」に当たった回にしか払わない。
+#
+# **`--no-index` を足さないこと。** `check-ignore` は既定で index を見るので、ignore
+# パターンに当たる **tracked なファイル**（`git add -f` された `build/keep.txt` 等）を
+# 「ignored ではない」と答える（実測: rc 1）。これは指紋の側と一致している — tracked で
+# ある以上その変更は `git status` にも `git diff HEAD` にも出るので、止めなければ結果は
+# 破棄される。`--no-index` は純粋なパターン照合へ倒すので、この一致が壊れて fail-open に
+# なる。suite の「tracked だが ignore パターンに当たるファイル」の針がここを固定する。
+#
+# rc 1（本当に ignored でない）と rc 127 / 128（判定そのものが不能）は**同じ「止める」だが
+# 別の理由**なので、後者を WS_IGNORE_UNKNOWN / WS_IGNORE_RC で外へ出す。畳むと、git が
+# 壊れた環境で ignored なパスへの書き込みが「作業ツリー内へ書き込みます」という**原因を
+# 誤って名指しする** deny になり、利用者が ignored 免除の壊れた理由へ辿り着けない。
+WS_IGNORE_UNKNOWN=0
+WS_IGNORE_RC=""
+ws_target_ignored() { # <phys> → 0 = ignored
+  local rc
+  WS_IGNORE_UNKNOWN=0
+  WS_IGNORE_RC=""
+  [ -n "$WS_ROOT_PHYS" ] || return 1
+  "${FF_WRITE_SCAN_GIT:-git}" -C "$WS_ROOT_PHYS" check-ignore -q -- "$1" >/dev/null 2>&1
+  rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *)
+      WS_IGNORE_UNKNOWN=1
+      WS_IGNORE_RC="$rc"
+      return 1
+      ;;
+  esac
+}
+
+# 免除に当たるか（0 = 免除 = 止めない）。ツリー外 / レビュー出力先 / gitignore 済みの 3 つ。
+ws_target_exempt() { # <phys>
+  ws_path_within "$1" "$WS_ROOT_PHYS" || return 0
+  ws_path_within "$1" "${WS_ROOT_PHYS}/${WS_OUTPUT_DIR}" && return 0
+  ws_target_ignored "$1" && return 0
+  return 1
+}
+
+# 末端が symlink のときの最終的な実体（stdout）。解決できなければ 1。
+# `resolve_target` は末端の symlink を辿らない（ツリー内のエントリとして見る）ので、
+# 免除の判定は**リンク名**に当たってしまう。`ignored/link.txt -> src/app.ts` の形で
+# tracked を書き換えられる（実測 2026-09-18: ignored な symlink 経由の追記で
+# `git diff HEAD` に tracked が現れた）。同じ穴はツリー外 symlink にも在る。
+WS_LINK_MAX=8
+ws_final_target() { # <phys>
+  local p="$1" n=0 t d pd leaf
+  while [ -L "$p" ]; do
+    n=$((n + 1))
+    [ "$n" -le "$WS_LINK_MAX" ] || return 1
+    t="$(readlink "$p" 2>/dev/null)" || return 1
+    [ -n "$t" ] || return 1
+    case "$t" in
+      /*) p="$t" ;;
+      *)
+        d="${p%/*}"
+        [ "$d" != "$p" ] || d="."
+        [ -n "$d" ] || d="/"
+        p="${d}/${t}"
+        ;;
+    esac
+  done
+  leaf="${p##*/}"
+  d="${p%/*}"
+  [ "$d" != "$p" ] || d="."
+  [ -n "$d" ] || d="/"
+  pd="$(ws_phys_dir "$d")" || return 1
+  [ -n "$pd" ] || return 1
+  if [ "$pd" = "/" ]; then printf '/%s' "$leaf"; else printf '%s/%s' "$pd" "$leaf"; fi
+}
+
+target_in_tree() { # <phys> → 0 = 止める対象（ツリー内・出力先でない・ignored でない）
+  local ws_final
+  ws_target_exempt "$1" || return 0
+  # 免除に当たっても、末端が symlink なら**リンク先**で判定し直す。リンク名の ignore /
+  # ツリー外は「その名前で解決される実体」の話ではない。解決できない（壊れたリンク・
+  # 深すぎる連鎖・readlink 不在）回は止める側。
+  if [ -L "$1" ]; then
+    ws_final="$(ws_final_target "$1")" || return 0
+    ws_target_exempt "$ws_final" || return 0
+  fi
+  return 1
 }
 judge_target() { # <path token> <何の書き込みか> → 0 = hit
   case "$(unquote1 "$1")" in
@@ -247,7 +345,13 @@ judge_target() { # <path token> <何の書き込みか> → 0 = hit
   fi
   if target_in_tree "$RESOLVED"; then
     WRITE_HIT=1
-    WRITE_REASON="作業ツリー内へ書き込みます: ${RESOLVED}（${2}）"
+    if [ "${WS_IGNORE_UNKNOWN:-0}" -eq 1 ]; then
+      # 「ツリー内だから止めた」と「ignored かを判定できないから止めた」は別の原因。
+      # 畳むと、git が壊れた環境で ignored なパスが誤った理由で名指しされる。
+      WRITE_REASON="gitignore 済みかを判定できません（git check-ignore rc=${WS_IGNORE_RC:-?}: ${RESOLVED}。${2}）"
+    else
+      WRITE_REASON="作業ツリー内へ書き込みます: ${RESOLVED}（${2}）"
+    fi
     return 0
   fi
   return 1
