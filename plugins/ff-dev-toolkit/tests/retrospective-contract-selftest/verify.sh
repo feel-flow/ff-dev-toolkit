@@ -55,8 +55,8 @@ SRC_LEDGER_TEMPLATE="$PLUGIN_ROOT/docs-template/08-knowledge/OBSERVATIONS.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=219
-EXPECTED_GATE_CHECKS_PUBLIC=204
+EXPECTED_GATE_CHECKS_MONOREPO=221
+EXPECTED_GATE_CHECKS_PUBLIC=206
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -562,6 +562,10 @@ MARKER_MUTATIONS=(
   "${FIX_SKILL}|retrospective-SKILL.md|(a) **対策が失われた**|観測台帳: 復帰条件 (a) 対策の消失|1"
   "${FIX_SKILL}|retrospective-SKILL.md|(b) **対策が効いていない**|観測台帳: 復帰条件 (b) 対策が効いていない|1"
   "${FIX_SKILL}|retrospective-SKILL.md|\`archived\` との違いは**再発しているか**|観測台帳: archived / promoted との違いを併記|1"
+  # closed 済み対策の再発時に同型を再提案しない（Issue `#1770`）。禁止と許可は同じ bullet に
+  # 乗るので、変異（契約行の削除）はどちらの針でも 2 件を赤にする（起票先分岐の bullet と同型）。
+  "${FIX_SKILL}|retrospective-SKILL.md|**closed 済み対策の再発時は、前の対策と同じ型を再提案しない**|観測台帳: closed 済み対策の再発時に同型を再提案しない|2"
+  "${FIX_SKILL}|retrospective-SKILL.md|**構造を変える案**（判定をゲート側へ移す・経路自体を減らす・その工程を廃止する）だけを候補にする|観測台帳: 再発時の候補は構造を変える案に限る|2"
   "${FIX_SKILL}|retrospective-SKILL.md|代わりに \`Status\` を \`mitigated\`、\`Issue\` を対策の所在へ更新する|承認と起票: 見送りは mitigated へ書き戻す|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**閾値は発火点であり、発火時に取った判断は状態として台帳へ書き戻す。**|提案閾値: 閾値到達時の判断を状態として書き戻す|1"
   # レビュー指摘 1〜3（復帰の完全性・参照先の確認・取り下げ経路からの書き戻し）の針。

@@ -1341,7 +1341,6 @@ MISS_PROBE_BASELINE=(
   release-required-selftest
   removal-sweep
   retrospective-contract-selftest
-  retrospective-contract
   retrospective-ledger-freshness
   retrospective-stop-hook-selftest
   retrospective-stop-hook

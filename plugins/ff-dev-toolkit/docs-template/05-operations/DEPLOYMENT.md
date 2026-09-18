@@ -1,10 +1,10 @@
 ---
 title: "DEPLOYMENT"
-version: "1.5.0"
+version: "1.5.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-10"
+updated: "2026-09-18"
 changeImpact: "medium"
 ---
 
@@ -38,7 +38,7 @@ changeImpact: "medium"
 | `deployment/infrastructure.md`                    | インフラ構成                                      | ⭐⭐⭐ -       |
 | `deployment/multi-cli-review-orchestration.md`    | Multi-CLI分散レビュー                             | ⭐⭐⭐ -       |
 | `deployment/review-response-policy.md`            | PRレビュー対応ポリシー                            | ⭐⭐⭐⭐ -     |
-| `deployment/workflow-principles.md`               | ワークフロー運用原則（3原則＋TodoWrite）          | ⭐⭐⭐⭐ -     |
+| `deployment/workflow-principles.md`               | ワークフロー運用原則（各原則＋TodoWrite）         | ⭐⭐⭐⭐ -     |
 | `deployment/monitoring.md`                        | モニタリング                                      | ⭐⭐ -         |
 
 ## 🚀 クイックスタート（30秒で理解）
@@ -302,6 +302,12 @@ PRマージ後のブランチ切り替え忘れを防ぐため、セッション
 ## Changelog
 
 - 2026-09-08 追記: プラグイン変数がない直接利用でも取得できる公開配布元を明記（ai-spec-driven-development#525）。
+
+### [1.5.1] - 2026-09-18
+
+#### 変更
+
+- `workflow-principles.md` の索引キャプションを件数なし（各原則＋TodoWrite）に改めた（原則4「定型判断の即決と熟慮の起動条件」の追加に追従）
 
 ### [1.5.0] - 2026-09-10
 
