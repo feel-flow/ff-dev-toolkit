@@ -22,6 +22,10 @@
 # scripts/check-dev-toolkit-sync-drift.sh 自身のルート解決、および解決不能時に
 # スキップが可視化されること。
 #
+# guard-commit-identity.sh（PreToolUse / Bash。Issue `#1784`）も同じ resolver 形で登録するため
+# 同じ 4 経路を固定する。合成 identity の deny / allow 判定そのものは末尾の
+# 「guard-commit-identity.sh 本体の deny / allow」節で実物の hook に stdin JSON を当てて固定する。
+#
 # 対象は SSOT リポジトリの .claude/settings.json（公開配布物ではない）。skip の判定軸は
 # settings.json の存在と対象 hook の定義数のみ（公開リポジトリ等では ○ skip）。定義が
 # あるのに hook 実体や drift checker が無いのは SSOT 側の事故なので fail-closed で名指しする。
@@ -45,7 +49,11 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
-HOOK_NAMES="post-merge-dev-toolkit-sync.sh session-start-sync-drift.sh session-start-dependabot-health.sh"
+HOOK_NAMES="post-merge-dev-toolkit-sync.sh session-start-sync-drift.sh session-start-dependabot-health.sh guard-commit-identity.sh"
+# Issue `#474` の「hook 本体が参照するルート」検査の対象。下流スクリプト（scripts/*.sh）を
+# 呼ぶ hook だけが対象で、guard-commit-identity.sh は cwd のリポジトリの identity だけを読み
+# 下流を持たないため入れない（resolver 層の 4 経路は上の HOOK_NAMES で見る）。
+BODY_HOOK_NAMES="post-merge-dev-toolkit-sync.sh session-start-sync-drift.sh session-start-dependabot-health.sh"
 
 # settings.json が valid JSON であること自体を独立に固定する — 壊れていると
 # Claude Code は hook を全停止するため、これは沈黙の全無効化ゲートでもある。
@@ -61,13 +69,14 @@ fi
 PM_COUNT="$(jq -r '[.hooks.PostToolUse[]?.hooks[]?.command // empty | select(contains("post-merge-dev-toolkit-sync.sh"))] | length' "$SETTINGS")"
 SS_COUNT="$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command // empty | select(contains("session-start-sync-drift.sh"))] | length' "$SETTINGS")"
 DH_COUNT="$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command // empty | select(contains("session-start-dependabot-health.sh"))] | length' "$SETTINGS")"
-if [ "$PM_COUNT" = 0 ] && [ "$SS_COUNT" = 0 ] && [ "$DH_COUNT" = 0 ]; then
+GI_COUNT="$(jq -r '[.hooks.PreToolUse[]?.hooks[]?.command // empty | select(contains("guard-commit-identity.sh"))] | length' "$SETTINGS")"
+if [ "$PM_COUNT" = 0 ] && [ "$SS_COUNT" = 0 ] && [ "$DH_COUNT" = 0 ] && [ "$GI_COUNT" = 0 ]; then
   echo "○ skip: 対象 hook の定義が settings.json に無いためスキップ（SSOT リポジトリ以外の構成）"
   FF_REACHED_END=1
   exit 0
 fi
-if [ "$PM_COUNT" != 1 ] || [ "$SS_COUNT" != 1 ] || [ "$DH_COUNT" != 1 ]; then
-  echo "✗ 対象 hook の定義数が想定と違う（post-merge=${PM_COUNT} / session-start=${SS_COUNT} / dependabot-health=${DH_COUNT}。片方だけの削除・重複は設定事故）" >&2
+if [ "$PM_COUNT" != 1 ] || [ "$SS_COUNT" != 1 ] || [ "$DH_COUNT" != 1 ] || [ "$GI_COUNT" != 1 ]; then
+  echo "✗ 対象 hook の定義数が想定と違う（post-merge=${PM_COUNT} / session-start=${SS_COUNT} / dependabot-health=${DH_COUNT} / commit-identity=${GI_COUNT}。片方だけの削除・重複は設定事故）" >&2
   exit 1
 fi
 # 抽出も正確な JSON パスで行う（改行を含むコマンドでも全文が 1 要素として取れる —
@@ -76,6 +85,7 @@ fi
 PM_CMD="$(jq -r '[.hooks.PostToolUse[]?.hooks[]?.command // empty | select(contains("post-merge-dev-toolkit-sync.sh"))][0]' "$SETTINGS")"
 SS_CMD="$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command // empty | select(contains("session-start-sync-drift.sh"))][0]' "$SETTINGS")"
 DH_CMD="$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command // empty | select(contains("session-start-dependabot-health.sh"))][0]' "$SETTINGS")"
+GI_CMD="$(jq -r '[.hooks.PreToolUse[]?.hooks[]?.command // empty | select(contains("guard-commit-identity.sh"))][0]' "$SETTINGS")"
 
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正な
 # パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に誤帰属し、
@@ -128,6 +138,7 @@ get_command() { # $1: hook 名 / stdout: settings.json の実コマンド文字�
     post-merge-dev-toolkit-sync.sh)     printf '%s\n' "$PM_CMD" ;;
     session-start-sync-drift.sh)        printf '%s\n' "$SS_CMD" ;;
     session-start-dependabot-health.sh) printf '%s\n' "$DH_CMD" ;;
+    guard-commit-identity.sh)           printf '%s\n' "$GI_CMD" ;;
   esac
 }
 
@@ -301,7 +312,7 @@ make_stub() { # $1: スクリプトパス / $2: stdout に出す本文
 make_real_root() { # $1: ルートパス
   local root="$1" n
   mkdir -p "$root/.claude/hooks"
-  for n in $HOOK_NAMES; do
+  for n in $BODY_HOOK_NAMES; do
     cp "$REAL_HOOK_DIR/$n" "$root/.claude/hooks/$n"
     chmod +x "$root/.claude/hooks/$n"
   done
@@ -385,7 +396,7 @@ run_real() {
 echo
 echo "== hook 本体が参照するルート（Issue #474） =="
 
-for name in $HOOK_NAMES; do
+for name in $BODY_HOOK_NAMES; do
   CMD="$(get_command "$name")"
   if [ -z "$CMD" ] || [ "$CMD" = "null" ]; then
     bad "${name}: settings.json にコマンド定義が無い"
@@ -714,6 +725,91 @@ else
       cat "$TMP/out.log" "$TMP/err.log" | sed 's/^/    | /' >&2
     fi
   done
+fi
+
+# ---- guard-commit-identity.sh 本体の deny / allow（Issue `#1784`） ----
+# resolver の 4 経路だけでは hook 本体を `exit 0` にしても緑のまま（2 回転のクロスモデル
+# レビューで指摘）。合成 identity の一時リポジトリへ実物の hook を stdin JSON で当て、
+# (a) 素の commit は deny、(b) git オプション区間の `-c user.*=` は allow、(c) `-m` 本文中の
+# 同じ文字列は deny、(d) 本文中の `; FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1` は deny、(e) heredoc 本文に deny の案内文を
+# 引用した `commit -F -` は deny、(f) 先頭の環境代入は allow、(g) 先行する別コマンドの文字列
+# では免除しない、(h) `git -C dir commit` / `git -c k=v commit` も検出する、(i) 引数全体を引用した
+# `-c "user.email=…"` も上書きとして読む（cwd が実 identity でも合成値なら deny）、(j) 単独 `&` と
+# バックスラッシュ継続行も区切り / 結合として扱う、を固定する。
+# 検出と免除を同じ単純コマンドの中で判定する構造がここで実測される。
+echo
+echo "== guard-commit-identity.sh 本体の deny / allow（Issue \`#1784\`） =="
+GI_HOOK="$REAL_HOOK_DIR/guard-commit-identity.sh"
+if [ ! -f "$GI_HOOK" ]; then
+  bad "guard-commit-identity.sh: hook 実体が ${REAL_HOOK_DIR} に無い"
+else
+  # fixture の identity は隔離ヘルパーの既定値（合成 identity）をそのまま使う — この既定値こそ
+  # 本 hook が捕まえる対象で、値を直書きすると git-fixture-isolation の直書き検査に当たる
+  # shellcheck source=../lib/git-fixture.sh
+  . "$SCRIPT_DIR/../lib/git-fixture.sh"
+  GI_FX="$TMP/gi-fixture"
+  ff_git_fixture_init "$GI_FX" || bad "guard-commit-identity: fixture の初期化に失敗"
+  GI_OK="$TMP/gi-real"
+  ff_git_fixture_init "$GI_OK" "Real Person" "real@example.com" || bad "guard-commit-identity: 実 identity fixture の初期化に失敗"
+  # $1: コマンド文字列 / $2: hook JSON の cwd（既定は合成 identity の fixture）
+  # → stdout に deny / allow（deny 以外の出力形は判定不能として "other"）
+  gi_decide() {
+    local out
+    out="$(jq -nc --arg c "$1" --arg w "${2:-$GI_FX}" '{tool_name:"Bash",tool_input:{command:$c},cwd:$w}' \
+      | env -u FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" bash "$GI_HOOK" 2>/dev/null)"
+    if [ -z "$out" ]; then printf 'allow'; return 0; fi
+    printf '%s' "$out" | jq -r 'if .hookSpecificOutput.permissionDecision == "deny" then "deny" else "other" end' 2>/dev/null || printf 'other'
+  }
+  gi_case() { # $1: 期待 / $2: ラベル / $3: コマンド / $4: cwd（省略時 fixture）
+    local got; got="$(gi_decide "$3" "${4:-}")"
+    if [ "$got" = "$1" ]; then ok "guard-commit-identity: ${2}（${1}）"; else bad "guard-commit-identity: ${2} — 期待 ${1} / 実測 ${got}"; fi
+  }
+  gi_case deny  "合成 identity の素の commit は止める" 'git commit -m "feat: x"'
+  gi_case deny  "合成 identity の push は止める" 'git push origin develop'
+  gi_case allow "git オプション区間の -c user.*= は意図した上書きとして通す" 'git -c user.name=A -c user.email=a@b.c commit -m x'
+  gi_case allow "先頭の環境代入 FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 は通す" 'FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 git commit -m x'
+  gi_case deny  "-m 本文中の -c user.email= では免除しない" 'git commit -m "docs: explain -c user.email= override"'
+  gi_case deny  "-m 本文中の ; FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 では免除しない" 'git commit -m "docs: explain ; FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 bypass"'
+  gi_case deny  "heredoc 本文に deny の案内文を引用しても免除しない" 'git commit -F - <<EOF
+knowledge: x
+
+2) 今回だけ意図した identity を明示する: git -c user.name=A -c user.email=a@b.c commit …
+EOF'
+  gi_case allow "実 identity のリポジトリ（cwd）では止めない" 'git commit -m x' "$GI_OK"
+  # 3 回転目（codex-cli）: 検出と免除の区間不一致。先行する別コマンドの文字列で免除が成立しない /
+  # `git -C dir commit` `git -c k=v commit` の形も検出する / `-c user.*=` 免除はその単純コマンド自身にだけ効く
+  gi_case deny  "先行する別コマンド中の -c user.email= では免除しない" 'echo " -c user.email=a@b.c"; git commit -m x'
+  gi_case deny  "先行する別コマンドの環境代入では免除しない" 'FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD=1 true; git commit -m x'
+  gi_case deny  "git -C <dir> commit の形も検出する" "$(printf 'git -C %q commit -m x' "$GI_FX")"
+  gi_case deny  "git -c 別キー commit は免除にならない" 'git -c commit.gpgsign=false commit -m x'
+  gi_case allow "&& で繋いだ 2 本目の git -c user.*= commit は通す" 'git add -A && git -c user.name=A -c user.email=a@b.c commit -m x'
+  # 4 回転目: `-c user.*=` は免除ではなく上書き（片側・合成値は止める）/ サブコマンドは最初の非オプション語
+  gi_case deny  "-c user.name= だけの上書きは残る email が合成値なので止める" 'git -c user.name=A commit -m x'
+  gi_case deny  "-c user.email= だけの上書きは残る name が fixture なので止める" 'git -c user.email=a@b.c commit -m x'
+  # 合成値は fixture の config から読んで組み立てる（値の直書きは git-fixture-isolation の直書き検査に当たる）
+  gi_case deny  "-c で合成 identity そのものを渡しても止める" "git -c user.name=$(git -C "$GI_FX" config --get user.name) -c user.email=$(git -C "$GI_FX" config --get user.email) commit -m x"
+  gi_case allow "引用符付きの -c user.*= 両方指定は通す" "git -c user.name='A B' -c user.email='a@b.c' commit -m x"
+  gi_case allow "git log --grep commit は commit サブコマンドではない" 'git log --oneline --grep commit'
+  gi_case allow "git stash push は push サブコマンドではない" 'git stash push -m x'
+  gi_case deny  "git -C <dir> -c core.pager=cat commit は検出する" "$(printf 'git -C %q -c core.pager=cat commit -m x' "$GI_FX")"
+  # 5 回転目: 引用符付き値で単語分割がサブコマンドを見失う / 最初の一致で止めると後続の commit が通る
+  gi_case deny  "空白入り引用値の -c user.name= だけの上書きは止める（サブコマンドを見失わない）" "git -c user.name='A B' commit -m x"
+  gi_case deny  "空白入り引用値 + 合成 email の -c 指定は止める" "git -c user.name='A B' -c user.email=$(git -C "$GI_FX" config --get user.email) commit -m x"
+  gi_case allow "空白入り引用値の -c user.*= 両方指定（二重引用符）は通す" 'git -c user.name="Jane Doe" -c user.email=j@d.e commit -m x'
+  gi_case deny  "上書き付き commit の後ろに繋いだ素の git commit は止める" 'git -c user.name=A -c user.email=a@b.c commit -m x; git commit -m y'
+  gi_case deny  "上書き付き commit && git commit --amend は止める" 'git -c user.name=A -c user.email=a@b.c commit -m x && git commit --amend --no-edit'
+  gi_case allow "上書き付き commit を 2 本繋いだ形は通す" 'git -c user.name=A -c user.email=a@b.c commit -m x && git -c user.name=A -c user.email=a@b.c push origin HEAD'
+  # 6 回転目: 引数全体を引用した `-c "user.email=…"` は引用が語の中に残ったまま判定されて上書きにならず、
+  # cwd が実 identity なら合成 email のまま通った（codex-cli が `git var GIT_AUTHOR_IDENT` で実証）/
+  # 単独 `&` とバックスラッシュ継続行が区切りの近似から漏れていた（claude-code）。引用符は切り出し直後に
+  # 1 箇所で外す構造へ変えたので、値だけの引用・引数全体の引用のどちらも同じ語として読める
+  gi_case deny  '実 identity の cwd でも -c "user.email=<合成>" は止める（引数全体の引用）' "git -c user.name=A -c \"user.email=$(git -C "$GI_FX" config --get user.email)\" commit -m x" "$GI_OK"
+  gi_case allow "引数全体を引用した -c 'user.name=A B' -c 'user.email=…' の両方指定は通す" "git -c 'user.name=A B' -c 'user.email=a@b.c' commit -m x"
+  gi_case deny  "単独 & の後ろの git commit は止める" 'true & git commit -m x'
+  gi_case deny  "バックスラッシュ継続行で分かれた git / commit は止める" 'git \
+commit -m x'
+  gi_case allow "2>&1 付きの上書き commit は & で割れても通す" 'git -c user.name=A -c user.email=a@b.c commit -m x 2>&1'
+  gi_case deny  "2>&1 付きの素の commit は止める" 'git commit -m x 2>&1'
 fi
 
 echo

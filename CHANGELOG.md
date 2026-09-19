@@ -20,6 +20,14 @@
 
 ## [Unreleased]
 
+## [0.125.0] - 2026-09-19
+
+### 変更
+
+- `claude-hooks-path` suite が、開発元リポジトリ専用の PreToolUse hook `guard-commit-identity.sh`（実効 git identity が検査用の合成値 `fixture` / `*@example.invalid` のときに `git commit` / `git push` を止める）の登録経路と deny / allow 行列（引用符付き値・引数全体の引用・片側だけの `-c user.*=` 上書き・単独 `&`・バックスラッシュ継続行を含む）を固定するようになった。導入先（`.claude/settings.json` に当該 hook の定義が無い構成）では従来どおり skip する
+- `git-fixture-isolation` の consumer 名簿へ `tests/claude-hooks-path/verify.sh` を追加し、合成 identity の値を直書きせず fixture の `git config --get` から組み立てる規約を同 suite にも適用した
+- `PUBLIC-SURFACE.md` の内部 `FF_*` 一覧へ `FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD`（上記 hook の迂回用環境代入。開発元専用）を登録した
+
 ## [0.124.0] - 2026-09-19
 
 ### 追加
