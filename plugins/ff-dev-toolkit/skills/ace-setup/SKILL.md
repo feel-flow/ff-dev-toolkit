@@ -109,13 +109,14 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ユーザーに対象 AI ツールを確認する（複数選択可）:
 
-- **(a) Claude Code** — `/ace-curate` コマンドは**本プラグインが提供するため追加設定は不要**（プロジェクトへのコマンドコピーも不要）。PLAYBOOK.md の配置先を Step 2 でデフォルトから変更した場合のみ、その旨を CLAUDE.md に記録するよう案内する
+- **(a) Claude Code** — `/ace-curate` コマンドは**本プラグインが提供するため追加設定は不要**（プロジェクトへのコマンドコピーも不要）。PLAYBOOK.md の配置先を Step 2 でデフォルトから変更した場合のみ、その旨を CLAUDE.md に記録するよう案内する。**読み側の配線は必須**: `CLAUDE.md` へ「着手前に `/knowledge-lookup` で ACE Playbook と観測台帳（`docs/08-knowledge/OBSERVATIONS.md`。`/retrospective` が作成する）の両方を引く。`promoted` / `mitigated` は対策あり、`active` だけが未対策」を 1 行書き、台帳の配置パスを併記する。`AGENTS.md` がある導入先は (a) だけを選んでも同じ行を `AGENTS.md` へも書く（Claude Code は `CLAUDE.md` しか読まず、Codex / grok は `AGENTS.md` しか読まない — 2 入口必須の規定は ADR-056）。書き側（`/retrospective`）は自動で台帳を作るが、読む導線は入口文書に書かないと届かない（実測: 導入先で Playbook の参照は 12 ファイル以上から辿れたのに、台帳を参照するファイルは 0 だった）。repo-local の ACE lookup スキルを既に持つ導入先は、その探索対象へ台帳を加えるか `/knowledge-lookup` へ寄せ、引く動作を 2 つ並べない
 - **(b) GitHub Copilot** — `.github/copilot-instructions.md` に ACE 運用ルールを追記
 - **(c) Codex / その他の AI エージェント** — `AGENTS.md` に ACE 運用ルールを追記
 
 (b)〜(c) の指示ファイルへ追記する ACE 運用ルールは、配置済みの `docs/05-operations/deployment/ace-cycle.md`（3フェーズ手順）と PLAYBOOK.md の「運用ルール」「エントリID規則」セクションを要約して生成する。最低限含めるもの:
 
 - PLAYBOOK.md の配置場所（Step 2 で確定したパス）
+- 着手前の参照経路: `/knowledge-lookup` で PLAYBOOK と観測台帳（`docs/08-knowledge/OBSERVATIONS.md`）の両方を引くこと。台帳の `promoted` / `mitigated` は対策あり、`active` だけが未対策（`AGENTS.md` は Codex / grok が読む入口なので、(a) の `CLAUDE.md` と同じ内容を書く）
 - PRマージ後、または明示指定資料とIssueから Generate（知見抽出）→ Reflect（評価・分類・既存照合）→ Curate（増分追記）を実行すること。PRからの通常収集でもdomainを標準対象とし、資料指定や追加opt-inは不要。domainはace-domain.mdの根拠・確認状態・反映先契約に従い、設計書反映はace-refineの別PRとする
 - 採番はPR由来なら **PRスコープ式**（`ACE-<PR番号>-<連番>`）、資料単独ならIssueスコープ式（`ACE-i<Issue番号>-<連番>`）。末尾追記のみ・既存本文の書き換え禁止、カウンターはインクリメントのみ
 - 詳細手順は `docs/05-operations/deployment/ace-cycle.md` を参照すること

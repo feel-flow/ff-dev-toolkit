@@ -55,6 +55,7 @@
 - `create-issue`
 - `harness-review`
 - `init-docs`
+- `knowledge-lookup`
 - `merge-cleanup`
 - `multi-explore`
 - `multi-implement`

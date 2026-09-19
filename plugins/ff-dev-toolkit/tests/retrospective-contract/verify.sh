@@ -657,6 +657,10 @@ if [[ "$IS_MONOREPO" -eq 1 ]]; then
 fi
 contains "$SKILL" "**再現価値のある成功パターン（Keep）**" "観察チェックリスト: Keep レンズ"
 contains "$SKILL" "**過剰動作**" "観察チェックリスト: 過剰動作レンズ"
+# 台帳の読み側（Issue `#1778`）: 観測を拾う前の promoted × open 突き合わせと、読み出し経路の節。
+# どちらも無いと台帳は書き込み専用に戻り、promoted 再発時のコメント追記が「気付くこと」依存になる。
+contains "$SKILL" "**promoted × open の突き合わせ（台帳の読み戻し）**" "観察チェックリスト: promoted × open の突き合わせ（第 0 項）"
+contains "$SKILL" "### 台帳は引く store でもある（読み出し経路）" "観測台帳: 読み出し経路の節"
 
 # スキルの自動起動を左右する trigger 語。skill-frontmatter suite は形式しか見ない
 # ので、trigger 語が消えてもどこも赤くならない。

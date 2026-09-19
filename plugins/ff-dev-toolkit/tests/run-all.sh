@@ -512,6 +512,11 @@ else
     "$SCRIPT_DIR/link-sub-issues/verify.sh"
     # 導入先の入口規範とスキルの判定順の矛盾検査（read-only。--offline で gh に出ない）
     "$SCRIPT_DIR/workflow-doctor/verify.sh"
+    # ACE Playbook と観測台帳の統合読み出し器（scripts/knowledge-lookup.sh。Issue `#1778`）。
+    # 状態切り分け（promoted / mitigated を未対策として返さない）と、store 不在・読めない・
+    # 見出し書式の変更・配置の曖昧さに対する既定を隔離 fixture で実測する。gh は stub に
+    # 解決させ、ネットワークには出ない。
+    "$SCRIPT_DIR/knowledge-lookup/verify.sh"
     # squash 件名の closing keyword が Refs 運用の Issue を閉じる経路のガード。
     # 検査ロジック（scripts/check-closing-keywords.sh）の振る舞いと、SKILL.md /
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド
@@ -1241,6 +1246,10 @@ REQUIRED_SUITES=(
   # git / 一時領域が無いと suite 全体が ○ skip し、引数の向き・cwd 依存の pathspec・
   # 停止点の fail-open を測る手段が他に無くなる。contract 側は文言しか見ない。
   retrospective-ledger-freshness
+  # ACE Playbook と観測台帳の統合読み出し器の振る舞い（Issue `#1778`）。promoted / mitigated を
+  # 未対策として返さない状態切り分けと、store 不在・読めない・見出し書式変更の既定を見る唯一の
+  # 層で、一時領域不足で skip すると「対策済みの観測を未対策として実装判断へ混ぜる」退行が黙って戻る。
+  knowledge-lookup
 )
 
 # ── 「空振り検出」宣言を免除する既存 suite の名簿（縮める方向にしか動かさない）────

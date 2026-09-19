@@ -521,6 +521,7 @@ SCRIPT_EXPECT_RC=(
   "check-plugin-versions.sh|1"
   "check-version-claims.sh|2"
   "effort-report.sh|2"
+  "knowledge-lookup.sh|3"
   "link-sub-issues.sh|2"
   "merge-cleanup.sh|1"
   "multi-agent.sh|2"

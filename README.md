@@ -40,7 +40,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 
 ## 収録内容
 
-### Skills（26）
+### Skills（27）
 
 | スキル | 用途 |
 |---|---|
@@ -69,6 +69,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `/ace-curate` | マージ済み PR からの知見抽出・プレイブック追記 |
 | `/ace-refine` | ACE Playbook の定期整理（stale アーカイブ・長大エントリ圧縮・重複統合）。dry-run → 承認 → 適用の 3 フェーズで原文を保全する |
 | `/retrospective` | ワークフローチェーン末尾（`/merge-cleanup` → `/ace-curate` → `/retrospective`）のセッション振り返り。対応ホストでは UserPromptSubmit で応答前に注入し、Stop hook は実行漏れ時だけ継続する（`RETROSPECTIVE_MODE=ask\|off` で制御）。実測した手戻り・無駄時間・Keep・過剰動作を作業中リポジトリの観測台帳（無ければテンプレートから作成）へ記録し、閾値に到達した再発からプロセス/ツール改善を最大 3 件提案（該当なしなら 1 行報告）。起票は既定では承認を待たずに実行して発行番号を報告する（`RETROSPECTIVE_FILING=ask` で承認待ち式へ戻せる） |
+| `/knowledge-lookup` | ACE Playbook と観測台帳（`docs/08-knowledge/OBSERVATIONS.md`）を同じキーワードで 1 回引き、状態（ACE の active / deprecated / archived、台帳の active / promoted / mitigated / archived）で切り分けて返す読み出し器。着手前の参照と `/retrospective` の promoted × open 突き合わせ（`--promoted-open`）に使う。書き込みはしない |
 | `/setup-ai-config` | AI 開発ツール設定の初期化 |
 | `/multi-explore` | マルチAI CLI による並列探索 |
 | `/multi-implement` | マルチAI CLI による並列実装 |

@@ -20,6 +20,13 @@
 
 ## [Unreleased]
 
+## [0.124.0] - 2026-09-19
+
+### 追加
+
+- `knowledge-lookup` スキルと同梱 `scripts/knowledge-lookup.sh` を追加。ACE Playbook と振り返り観測台帳（`docs/08-knowledge/OBSERVATIONS.md`）を同じキーワードで 1 回引き、状態（ACE の active / deprecated / archived、台帳の active / promoted / mitigated / archived）で切り分けて返す。`--promoted-open` は台帳の promoted エントリのうち昇格先 Issue が open のものを列挙し、state を確認できない参照は `未確認` として隠さない
+- `/retrospective` の観察チェックリストへ第 0 項「promoted × open の突き合わせ」を追加し、観測台帳の読み出し経路（実装・レビュー前は `/knowledge-lookup`、導入先の配線は `/ace-setup` Step 4）を本文へ明記。git-workflow「着手前の Playbook 参照」は観測台帳も同じ導線で引く規定へ拡張し、`/ace-setup` Step 4 に入口文書への読み側配線を追加
+
 ## [0.123.0] - 2026-09-19
 
 ### 変更

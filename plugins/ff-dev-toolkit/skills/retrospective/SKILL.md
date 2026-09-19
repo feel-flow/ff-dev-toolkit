@@ -85,6 +85,18 @@ Codex では Stop hook の `decision:block` を返さないため、事前注入
 
 セッションのログ・作業履歴を振り返り、以下を確認する:
 
+0. **promoted × open の突き合わせ（台帳の読み戻し）** — 観測を拾う**前**に、台帳の `Status` が `promoted` かつ昇格先 Issue が open のエントリを列挙し、そのセッションの事象と 1 件ずつ突き合わせる。再発していれば記録手順 2（`Count` +1・観測メモ 1 行）に加え、「昇格閾値と特急レーン」が定める promoted 再発時の動作（open → 再発の実測をコメント追記）を発火させる。この項が無いと再発コメント追記の起動条件が「実行者が OBS-NNN の再発だと気付くこと」に依存し、計上されない再発が台帳の `Count` を狂わせる（閾値へ到達しないので測定器の誤差として本体より先に効く。Issue `#1778` の実測: Count 10 のエントリの再発 2 回と別エントリの再発 1 回が記録から落ち、後者はクロスモデル不成立のまま規定の fallback を回さずマージしていた）。列挙は `/knowledge-lookup` の `--promoted-open` で行う（Issue state の確認まで含む。gh が使えない回は state を `未確認` として全 promoted を出す）:
+
+   ```bash
+   FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --root "$(git rev-parse --show-toplevel)" --promoted-open
+   ```
+
+   スクリプトへ到達できない回の代替（state は付かないので、列挙した Issue を `gh issue view` で個別に確かめる）:
+
+   ```bash
+   sed -n '/^### OBS-/h; /^| Status | promoted/{x;p;}' docs/08-knowledge/OBSERVATIONS.md
+   ```
+
 1. **品質ゲートの実行回数と重複・競合** — 同じ品質ゲート（レビュー・検証スイート等）を何度も回していないか。並行ビルド中の作業ツリー変更のような競合が起きていないか
 2. **レビュー指摘 → fix の手戻りループ** — そのうちスキル/テンプレの指示不足で防げたものはないか
 3. **stale な生成物・キャッシュの誤読** — 前回実行のレビュー結果、`.next/types` 等の古い生成物を読んで誤診しなかったか
@@ -131,6 +143,15 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解
 ## 観測の記録 — 観測台帳（起票の前段バッファ）
 
 チェックリストで拾った実測（Problem / Keep）は、Issue として直接起票せず、まず**観測台帳**へ記録する。台帳は**作業中のリポジトリ**の `docs/08-knowledge/OBSERVATIONS.md`（ACE Playbook と同じ場所。リポジトリごとに 1 つ持つ）。Issue トラッカーを観測の蓄積バッファに使うと、一回性の観測まで Issue になり重複起票が構造化する（実測: 本スキルの改善 Issue #606 — 起票した提案の過半が既存の重複だった。導入先から SSOT へ観測を 1 件ずつ Issue で受け渡していた旧経路も、2 日で 23 件が滞留した）。蓄積はそのリポジトリの台帳が受け、Issue は閾値に到達した再発と重大例外だけに絞る。
+
+### 台帳は引く store でもある（読み出し経路）
+
+台帳は本スキルが書く store であると同時に、**実装中・レビュー中に引く store** である。読み出し経路が無いと台帳は書き込み専用になり、観測は「再発してから数えられる」だけで「再発を防ぐ」側には回らない（Issue `#1778` の実測: 同じセッションで ACE Playbook の知見は e2e が落ちた時点の検索で届いたが、台帳の同じ主張は振り返りの事後にしか突き合わされなかった）。読み側の入口は次の 2 つで、本スキルは記録の規定だけを持ち、引く手順は複製しない:
+
+- **実装・レビュー前**: `/knowledge-lookup`（ACE Playbook と台帳を同じキーワードで 1 回引き、状態で切り分けて返す）。起動点は git-workflow「着手前の Playbook 参照」で、同節は台帳も同じ導線で引く規定を持つ。`promoted` / `mitigated` は「対策あり」、`active` だけが未対策の落とし穴（読み方の正本は `/knowledge-lookup`）
+- **振り返り**: 観察チェックリスト第 0 項（`--promoted-open` による promoted × open の突き合わせ）
+
+導入先での配線（`CLAUDE.md` / `AGENTS.md` へ「着手前に `/knowledge-lookup` で両 store を引く」と台帳の配置パスを書く）は `/ace-setup` Step 4 が正本。台帳を作るのは本スキルだが、読む導線を配線するのはセットアップ側の責務で、作成時の報告に「読み側の配線は `/ace-setup` Step 4」を添える。
 
 ### 記録の前に base の先行を照合する
 

@@ -55,8 +55,8 @@ SRC_LEDGER_TEMPLATE="$PLUGIN_ROOT/docs-template/08-knowledge/OBSERVATIONS.md"
 # 赤くなった針を更新せず消して緑に戻す、という実運用で最も起こりやすい退化）は、
 # 針ごとの変異では原理的に検出できない — 消えた針は変異しても赤くならないからだ。
 # baseline の総数を縛ることでその 1 方向を塞ぐ。ゲートに検査を足したらここも上げる。
-EXPECTED_GATE_CHECKS_MONOREPO=221
-EXPECTED_GATE_CHECKS_PUBLIC=206
+EXPECTED_GATE_CHECKS_MONOREPO=223
+EXPECTED_GATE_CHECKS_PUBLIC=208
 
 # 実行環境の配置を判定する（ゲート側と同じ判定を使う）。
 if [[ -d "$REPO_ROOT/oss/ff-dev-toolkit" ]]; then
@@ -581,6 +581,8 @@ MARKER_MUTATIONS=(
   "${FIX_WORKFLOW_PRINCIPLES}|workflow-principles.md|観測記録は作業中リポジトリの観測台帳への定型書き込み|分散台帳が workflow-principles へ伝播|4"
   "${FIX_SKILL}|retrospective-SKILL.md|**再現価値のある成功パターン（Keep）**|観察チェックリスト: Keep レンズ|1"
   "${FIX_SKILL}|retrospective-SKILL.md|**過剰動作**|観察チェックリスト: 過剰動作レンズ|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|**promoted × open の突き合わせ（台帳の読み戻し）**|観察チェックリスト: promoted × open の突き合わせ（第 0 項）|1"
+  "${FIX_SKILL}|retrospective-SKILL.md|### 台帳は引く store でもある（読み出し経路）|観測台帳: 読み出し経路の節|1"
   "${FIX_ACE_CURATE}|ace-curate-SKILL.md|ACE Playbook ではなく \`/retrospective\` の提案経路で扱う|責務分離: ACE 側からの送り先明示|3"
   "${FIX_GIT_WORKFLOW}|git-workflow.md|既定では承認を待たずに起票して発行番号を振り返り結果で報告する|起票境界が git-workflow へ伝播|4"
   # RETROSPECTIVE_FILING の保険スイッチは MODE の行（実施前確認 / off）と同じ行に乗る。
