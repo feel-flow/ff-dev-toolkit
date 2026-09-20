@@ -594,6 +594,12 @@ else
     "$SCRIPT_DIR/setup-ai-config/verify.sh"
     "$SCRIPT_DIR/asdd-runtime/verify.sh"
     "$SCRIPT_DIR/assess-impact/verify.sh"
+    # Jev 判定アダプタ（scripts/jev/jev-judge.sh）と offline 評価ハーネス（jev-eval.sh）の
+    # 契約。PATH 先頭の偽 curl で呼び出しの形（-K - で設定を stdin 経由・argv にキーを
+    # 載せない）と HTTP ステータス種別ごとの終了コード・再試行・入力不正の不送信・
+    # ハーネスの fail-closed（空セット / 読めない行 / 判定失敗は集計しない）を実測する。
+    # 実網には出ない。jq と一時領域を要し、無ければ skip ではなく赤。
+    "$SCRIPT_DIR/jev-adapter/verify.sh"
     "$SCRIPT_DIR/validate-docs/verify.sh"
     # /validate-docs §4 のプレースホルダー免除（閉じたフェンス / コメント /
     # インラインコードスパン、閉じ忘れは除外区間にしない）を fixture のトークン
@@ -1282,7 +1288,6 @@ MISS_PROBE_BASELINE=(
   adapter-sandbox-contract
   agent-config-doc-sync
   asdd-runtime
-  assess-impact
   auto-update-hook
   background-child-reclaim-contract
   changelog-contract-selftest

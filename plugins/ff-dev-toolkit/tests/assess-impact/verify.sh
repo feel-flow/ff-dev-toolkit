@@ -14,6 +14,7 @@
 # ACE-86-2: here-string / heredoc を使わない（read-only レビューsandboxで temp file 不可）。
 #            標準入力へは `printf ... | cmd`。`TMPDIR=/nonexistent bash verify.sh` でも走る。
 #
+# 空振り検出: 一次情報確認の本文削除・見出し変更・要約だけを許す旧形・参照削除・ファイル不在を隔離 fixture で赤と実測。
 # 使い方: bash plugins/ff-dev-toolkit/tests/assess-impact/verify.sh
 
 set -euo pipefail
@@ -27,6 +28,7 @@ CMD="$SCRIPT_DIR/../../skills/assess-impact/SKILL.md"
 # 形式: ラベル|節開始 regex|節終了 regex|期待する正規化済みの完全行
 # 部分一致ではなく完全行一致にすることで、「N/A は分母から除外しない」等の否定形 false-green を防ぐ。
 GENERATOR_RULES=(
+  "一次情報確認への到達|^### 2\. |^### 3\. |評価を確定する前に、[判断確定前の一次情報確認](../../docs-template/05-operations/deployment/workflow-principles.md#判断確定前の一次情報確認)を適用する。"
   "変更量で判定しない警告|^### 2\. |^### 3\. |変更を次の3分類のいずれかに割り当て、影響度を判定します。**影響度は「何に影響するか」（波及範囲）で測ります。行数・文字数・ファイル数などの変更量で判定してはいけません。**"
   "3分類:文言修正|^### 2\. |^### 3\. || **文言修正** | **LOW** | 意味を変えない表現・体裁の修正で、他の箇所へ波及しない | typo修正、コメント調整、言い回しの変更 |"
   "3分類:概念追加|^### 2\. |^### 3\. || **概念追加** | **MEDIUM** | 既存の枠組みを保ったまま要素を足す。他の文書・コードへ波及するが、既存設計は維持できる | フィールド追加、新規関数追加、既存APIにオプショナルパラメータ追加 |"
@@ -362,6 +364,31 @@ echo
 if [[ "$case_count" -eq 0 ]]; then
   echo "  ✗ 検証対象のケースが1件も無い"
   fail=1
+fi
+
+# 横断規定は参照先の当該節にある本文も照合する（リンクだけ残る空振りを防ぐ）。
+primary_source_doc="$SCRIPT_DIR/../../docs-template/05-operations/deployment/workflow-principles.md"
+primary_source_rules=(
+  '設計・閾値・配置の判断をユーザーへ提示する直前、または実装へ移る前に、根拠がファイル名・コメント・git 履歴・見積もりなどの要約だけなら「根拠になる一次情報がリポジトリ内にあるか」を問い、あれば本文を読んでから確定する。対象の最小例は設計規約の正本、構成ファイル（CI を含む）、型・関数シグネチャ、閾値の母集団の実測である（OBS-074）。'
+  '未読は「確認していない（着手順の問題）」と報告して自分で確認を進め、不在を調べた結果は「確認できない（リポジトリ内に無いことを確認済み）」と書き分ける。ユーザーへ追加作業を求めるのは後者だけとする。記憶・索引・メモの識別子（CLI オプション・suite 名・パス）で起動する直前も、現行の `--help` や実体へ辿り、要約と本体が矛盾していれば本体を確認する（OBS-028）。'
+)
+if [[ ! -r "$primary_source_doc" ]]; then
+  echo "  ✗ 一次情報確認の正本が読めない"
+  fail=1
+else
+  primary_source_section="$(awk '
+    /^### 判断確定前の一次情報確認$/ { found=1; next }
+    found && /^---$/ { exit }
+    found { print }
+  ' "$primary_source_doc")"
+  for rule in "${primary_source_rules[@]}"; do
+    if contains_exact_normalized_line "$primary_source_section" "$rule"; then
+      echo "  ✓ 判断確定前の一次情報確認: 本文を保持"
+    else
+      echo "  ✗ 判断確定前の一次情報確認: 本文が欠落または変更"
+      fail=1
+    fi
+  done
 fi
 
 # --- ブラインド実行の手順（機械検証の対象外・人手/エージェント用の案内）---

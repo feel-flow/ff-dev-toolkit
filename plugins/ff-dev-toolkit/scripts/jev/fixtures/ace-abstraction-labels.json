@@ -1,0 +1,352 @@
+{
+ "_meta": {
+  "labeled_on": "2026-09-20",
+  "criterion": "ADR-047 抽象度の下限（適用条件が固有名なしで書けるか）。deficient=true は主張が事象・構成の粒度に固定され次の類似状況へ移らないもの。CLI 実挙動・ランタイム仕様・終了コード対応のような固有名がアクション本体の類型は false。",
+  "note": "元 Issue の精読 49 件は集計値しか残っていないため、本 fixture は本セッションで機械候補 49 件 + 非候補 20 件を精読して付け直したラベル。"
+ },
+ "ACE-36-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-44-1": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-44-2": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-44-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-47-1": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-47-2": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-49-2": {
+  "deficient": true,
+  "machine_candidate": true,
+  "note": "特定ツール群の故障時の代替手段で、主張が事象の粒度"
+ },
+ "ACE-52-1": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-52-2": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-52-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-56-1": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-56-2": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-56-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-58-1": {
+  "deficient": true,
+  "machine_candidate": true,
+  "note": "特定のスキルパック構成の段階展開手順で、適用条件が構成に固定"
+ },
+ "ACE-70-2": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-78-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "CLI の usage と実挙動の乖離（固有名がアクション本体の類型）"
+ },
+ "ACE-86-1": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-96-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-98-1": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-116-2": {
+  "deficient": true,
+  "machine_candidate": true,
+  "note": "特定の配布物と manifest の対で書かれ、一般形（配布物の版境界）へ上がっていない"
+ },
+ "ACE-136-2": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-147-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-149-1": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-149-2": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-149-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-153-2": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "終了コードの多義性（固有名がアクション本体の類型）"
+ },
+ "ACE-153-4": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-153-5": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-156-1": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-156-2": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-159-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-159-4": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-160-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-164-1": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-166-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-222-1": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-243-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-249-2": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-253-4": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-259-1": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-259-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-262-1": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-262-2": {
+  "deficient": true,
+  "machine_candidate": true,
+  "note": "公開同期境界という当該リポジトリの構成に適用条件が固定"
+ },
+ "ACE-270-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-279-1": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-279-2": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "言語ランタイム仕様（固有名がアクション本体の類型）"
+ },
+ "ACE-279-3": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-279-4": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-279-5": {
+  "deficient": false,
+  "machine_candidate": true,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-007": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-220-2": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-396-3": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-508-1": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-653-1": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-725-1": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-827-1": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-927-1": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-1047-3": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-1091-4": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "CLI の実挙動（固有名がアクション本体の類型）"
+ },
+ "ACE-1123-1": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "言語ランタイム仕様（固有名がアクション本体の類型）"
+ },
+ "ACE-1176-1": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-1252-2": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-1294-2": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-1412-1": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-1440-9": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-1501-1": {
+  "deficient": true,
+  "machine_candidate": false,
+  "note": "走査対象のパスと追記先 suite が当該リポジトリの構成に固定"
+ },
+ "ACE-1563-1": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-1595-1": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ },
+ "ACE-1674-2": {
+  "deficient": false,
+  "machine_candidate": false,
+  "note": "一般形で書かれており固有名は例示"
+ }
+}

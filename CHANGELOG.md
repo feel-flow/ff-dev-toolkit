@@ -20,6 +20,22 @@
 
 ## [Unreleased]
 
+## [0.126.0] - 2026-09-21
+
+### 追加
+
+- Jev（TypeSafe AI System One Model）の判定アダプタ `scripts/jev/jev-judge.sh` と offline 評価ハーネス `scripts/jev/jev-eval.sh` を追加した。state + 型付き質問（noul / choice / score）を 1 つの入口で投げ、判定・確率・confidence・usage・レイテンシを 1 行 JSON で返す。有効化は `FF_JEV_ENABLED=1` と API キー（環境変数 / ファイル / 既定パスの順に解決。値は出力と argv に出さない）の両方が要り、既定は Off。キー未設定・無効・HTTP ステータス種別・応答不正はそれぞれ別の終了コードで名乗る。
+- 評価ハーネスはラベル付き JSONL を流し、一致率・質問 id 別・group 別・confidence 帯別（0.2 刻み）の精度、p50 / p95 レイテンシ、合計入力トークンと概算コストを表で出す。空セット・空行・読めない行・判定失敗は集計せず非 0 で止める。日英同内容の Choice 質問 5 対を同梱 fixture として置いた。
+- 回帰 suite `tests/jev-adapter` を追加した（偽 curl による offline 実測。登録 143 suite）。
+- ACE Playbook から `/ace-curate` の新規性判定・抽象度判定を Jev の Noul で offline 評価するための評価セット生成器 `scripts/jev/build-ace-eval-sets.ts` を追加した。Changelog の Helpful 行から正例 / 負例の対、抽象度レポートの候補と精読ラベル、直近版の候補と近傍エントリの組、の 3 セットを決定的に生成し、`--summarize` で候補単位の一致表と precision / recall を出す。Playbook は読むだけで書き換えない。
+- 抽象度の精読ラベル fixture `scripts/jev/fixtures/ace-abstraction-labels.json`（機械候補 49 件 + 非候補 20 件）を追加し、`tests/jev-adapter` に生成器の決定性・件数・ラベル欠落・集計の検査（H 節）を足した（検査 82 → 106。合成 Playbook fixture で期待値・時点境界・fail-closed 経路まで固定）。
+
+### ドキュメント
+
+- 既存 Issue への着手時に工数見積もりブロックを確認し、未記入の案件を計測対象へ加える手順を追加。
+- 判断確定前の一次情報確認、修正担当への裁定4区分、推奨案付きの方針確認を運用手順へ追加。
+- レビュー待ち中に同じコミットへの既定モードの検査を並走できる条件と、全件モードを並走させない制限を明記。
+
 ## [0.125.0] - 2026-09-19
 
 ### 変更
