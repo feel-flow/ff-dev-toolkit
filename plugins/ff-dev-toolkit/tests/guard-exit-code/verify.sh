@@ -21,8 +21,8 @@
 #
 # 変異検出（2026-09-16 実測。赤転しなかった変異は無し）:
 #   - fail-closed 分岐を `exit 0` へ倒したコピーは AC4 の deny 検査を赤にする
-#   - heredoc 本文の読み飛ばしを無効化した共有ヘルパ（tests/lib/heredoc-strip.sh）の
-#     コピーは「PR 本文は素通し」を赤にする
+#   - （退役 2026-09-21）heredoc 本文の読み飛ばしを無効化した共有ヘルパのコピー — 検出器が
+#     heredoc を自前で読み飛ばすようになり赤転しなくなった（本文中の変異 2 の注記を参照）
 #   - ACK 抜け道の分岐を消したコピーは抜け道検査を赤にする
 #   - 候補の前置フィルタを常に真にしたコピーは「検出器が壊れても非候補は素通し」を赤にする
 #   - 未終端 heredoc の検出（共有ヘルパの awk END）を消したコピーは「引用符の中の << で
@@ -30,6 +30,16 @@
 #   - ASDD ゲートの rc 読みを `|| exit 0` へ戻したコピーは「検証不能 × 候補は deny」を赤にする
 #   （共有ヘルパを置かない / 中身を空にしたコピーの deny は変異ではなく AC4 の直接検査）
 #   - 実値案の安全条件（区切りがちょうど 1 個）を外したコピーは「曖昧なら一般形」を赤にする
+#   - 検出器の論理行をまたぐ持ち越し追跡（track_gate の呼び出し）を消したコピーは AC1
+#     「改行区切りで exit $rc を落とした形を deny」を赤にする（Issue `#1748`、2026-09-20 実測）
+#   - ゲート起動行での消費判定（制御構文が $? を読む分岐）を消したコピーは「fast が緑なら
+#     全件を続ける形は素通し」を赤にする（3 回転目の設計変更、2026-09-21 実測）
+#   - ブロック境界の判定を「行全体の完全一致の名簿」へ戻したコピーは「elif を挟む分岐は
+#     素通し」を赤にする（名簿方式が付属物のある形を取りこぼす、2026-09-21 実測）
+#   - 変異 7 の対象は 2026-09-21 に `*) [ "$sep_n" -eq 1 ] || launch_ok=0 ;;` の行へ移した
+#     （dropped は区切り 0 個のときだけ実値案を出す分岐を case で分けたため）
+#
+# 空振り検出: hook の `GATE_NAME='…'` 行の書式を変える（名前だけ残って中身が変わる）と静的照合「hook が名簿の綴りを 1 箇所（GATE_NAME）に持つ」「検出器の名簿と一致する」「名簿リテラルは 1 箇所だけ」の 3 検査が赤になる（2026-09-20 実測: `GATE_NAME="run-all.sh"` へ変えた hook で 3 件失敗・suite rc=1）。
 #
 # run-all-required: no — jq 不在での skip を許容する（jq が無いと hook 自身が fail-open で
 # 何もしないため、検査対象の振る舞いが存在しない）
@@ -485,9 +495,183 @@ assert_pass "サブシェル実行 + && は短絡するので素通し"
 echo "guard-exit-code: 既知の限界（検出器側の判定規則なので、ここでは素通しを固定する）"
 run_hook "$GATE > log 2>&1 &"
 assert_pass "末尾が裸の & で終わり後続の区間が無い形は素通し（空の末尾区間は診断終端ではない）"
+run_hook "$GATE > log 2>&1 &
+pid=\$!
+wait \$pid"
+assert_pass "末尾 & の background 起動の後は追わない（rc は wait が運ぶ）"
+
+echo "guard-exit-code: Issue \`#1748\` — 改行区切りで exit \$rc を落とした形（gate-exit-dropped）"
+run_hook "nohup $GATE > log 2>&1
+rc=\$?
+echo \"EXIT=\$rc\""
+assert_fire "AC1: nohup 起動 ⏎ rc=\$? ⏎ echo で終わり exit \$rc を持たない形を deny"
+case "$REASON" in
+  *'検出タグ `gate-exit-dropped`'*) ok "AC1: 検出タグが gate-exit-dropped（swallowed とは別の壊れ方として案内する）" ;;
+  *) bad "AC1: 検出タグが gate-exit-dropped ではない: [$REASON]" ;;
+esac
+assert_fix_concrete "AC1: 書き換え案が起動行 + rc 伝播の実値で出る（exit \$rc を足す案）" "nohup $GATE > log 2>&1"
+run_hook "nohup $GATE > log 2>&1; rc=\$?; echo \"EXIT=\$rc\""
+assert_fire "AC2: 同じ形を ; で連結した変種も deny（区切り子が改行か ; かで判定が変わらない）"
+run_hook "nohup $GATE > log 2>&1; rc=\$?; echo \"EXIT=\$rc\"; exit \$rc"
+assert_pass "AC3: 末尾に exit \$rc を持つ正しい形（; 連結）は素通し"
+run_hook "nohup $GATE > log 2>&1
+rc=\$?
+echo \"EXIT=\$rc\"
+exit \$rc"
+assert_pass "AC3: 末尾に exit \$rc を持つ正しい形（改行区切り）は素通し"
 run_hook "$GATE > log 2>&1
 echo done"
-assert_pass "改行で区切った 2 行目の gate-exit-swallowed は素通し（検出器は論理行ごと）"
+assert_fire "改行で区切った 2 行目が診断だけの形（\$? を読まない）を deny（旧・既知の限界）"
+run_hook "$GATE > log 2>&1
+echo \"EXIT=\$?\""
+assert_fire "改行で区切った 2 行目が echo で \$? を読むだけの形を deny（; echo と同じ壊れ方）"
+run_hook "$GATE > log 2>&1
+rc=\$?
+tail -25 log
+exit \"\$rc\""
+assert_pass "rc を取ってログを読んでから exit \"\$rc\" で伝播する形は素通し（引用した参照も消費）"
+run_hook "$GATE > log 2>&1
+rc=\$?
+if [ \"\$rc\" -ne 0 ]; then echo red; fi
+echo done"
+assert_pass "rc を制御構文が消費する形は素通し（診断以外の参照は消費）"
+run_hook "$GATE > log 2>&1
+if [ \$? -ne 0 ]; then exit 1; fi
+echo done"
+assert_pass "次の行の制御構文が \$? を直接読む形は素通し"
+run_hook "$GATE > log 2>&1 && ok=1 || ok=0
+[ \"\$ok\" = 1 ] || exit 1"
+assert_pass "&& … || で変数へ受けて後段が消費する形は素通し"
+run_hook "run_hook \"\$(payload 'git commit -m \"x; $GATE が要る\"' general-purpose false \"\")\"
+assert_silent \"(4L-1)\""
+assert_pass "二重引用符の中の \$(…) に入れ子で現れるゲート綴りは起動と見ない（mask が不透明に伏せる）"
+run_hook "jq -n --arg c 'cat > note.md <<EOF
+  $GATE
+EOF
+git status --short' '{a: 1}'
+echo next"
+assert_pass "複数行にまたがる引用文字列の中間行のゲート綴りは起動と見ない（引用符が閉じるまで 1 論理行）"
+run_hook "run_gate() {
+  $GATE > log 2>&1
+}
+run_gate; rc=\$?; exit \$rc"
+assert_pass "関数本体の最終コマンドがゲート（} で閉じる暗黙 return）は素通し（閉じ行は rc を透過する）"
+run_hook "if [ -n \"\$FULL\" ]; then
+  FF_RUN_ALL_FULL=1 $GATE > log 2>&1
+fi"
+assert_pass "if ブロックの最終コマンドがゲート（fi で閉じる）は素通し"
+run_hook "if [ x = y ]; then
+  $GATE > log 2>&1
+elif [ a = b ]; then
+  FF_RUN_ALL_FULL=1 $GATE > log 2>&1
+fi
+rc=\$?
+exit \$rc"
+assert_pass "elif を挟む分岐の最終コマンドがゲートは素通し（境界判定は先頭語。条件が付いても境界）"
+run_hook "while read -r x; do
+  $GATE > log 2>&1
+done < list
+rc=\$?
+exit \$rc"
+assert_pass "リダイレクト付きの done で閉じるループは素通し（付属物で境界判定が変わらない）"
+run_hook "case \"\$M\" in
+  fast)
+    $GATE > log 2>&1
+    ;;
+esac
+rc=\$?
+exit \$rc"
+assert_pass "case 分岐の終端（;;）と esac で閉じる形は素通し"
+run_hook "{
+  $GATE > log 2>&1
+} > out
+rc=\$?
+exit \$rc"
+assert_pass "リダイレクト付きのグループ閉じ（} > out）は素通し"
+run_hook "$GATE > log 2>&1
+done_flag=1
+echo x"
+assert_fire "予約語を前置きに持つ識別子（done_flag=1）は境界ではないので deny（負の対照）"
+run_hook "$GATE > log 2>&1
+( echo x )
+echo y"
+assert_fire "中身を実行するサブシェル（( echo x )）は境界ではないので deny（開き括弧を含めない）"
+run_hook "$GATE > log 2>&1
+$GATE > log 2>&1"
+assert_fire "連続するゲート起動（1 本目の rc を 2 本目が読まずに上書き）は deny"
+run_hook "$GATE > log 2>&1
+rc=\$?
+$GATE > log 2>&1
+exit \$?"
+assert_fire "変数へ受けた 1 本目の rc を消費しないまま 2 本目を起動する形も deny"
+run_hook "$GATE > log 2>&1 || RC=\$?
+$GATE > log 2>&1 || RC=\$?
+exit \${RC:-0}"
+assert_pass "2 本のゲートを同じ変数へ受けて後段が消費する形は素通し"
+run_hook "cd /repo; $GATE > log 2>&1
+echo done"
+assert_fire "前置コマンド付きの起動行が改行で落ちる形も deny"
+assert_fix_generic "dropped の起動行に区切りがあれば一般形へ落とす（前置だけを起動として案内しない）"
+run_hook "true || $GATE > log 2>&1
+echo done"
+assert_fix_generic "|| 前置でも一般形へ落とす"
+run_hook "cat <<'EOF' > /tmp/note.md
+Don't panic
+EOF
+$GATE > log 2>&1; echo done"
+assert_fire "heredoc 本文の対にならない引用符が後続の事故形を隠さない（本文は読み飛ばす）"
+run_hook "$GATE > log 2>&1
+[ \$? -eq 0 ] && FF_RUN_ALL_FULL=1 $GATE > log2 2>&1"
+assert_pass "fast が緑なら全件を続ける形（\$? を読んでから 2 本目を起動）は素通し（ゲート行でも消費判定が先）"
+run_hook "$GATE > log 2>&1
+rc=\$?
+[ \"\$rc\" -eq 0 ] && FF_RUN_ALL_FULL=1 $GATE > log2 2>&1
+exit \$?"
+assert_pass "変数で受けた rc をゲート行の前置区間が消費する形は素通し"
+run_hook "$GATE > log 2>&1 || RC=\$?
+$GATE > log 2>&1 || RC=\$?
+$GATE > log 2>&1 || RC=\$?
+exit \${RC:-0}"
+assert_pass "3 本のゲートを同じ変数へ条件付き集約して後段が消費する形は素通し"
+run_hook "$GATE > log 2>&1
+a=\$?
+$GATE > log 2>&1
+b=\$?
+$GATE > log 2>&1
+exit \$?"
+assert_fire "別名の変数へ受けた rc を消費しないまま起動を重ねる形は deny"
+run_hook "$GATE > log 2>&1
+exit"
+assert_fire "ゲート直後の引数なし exit は deny（文書化した偽陽性。伝播扱いにすると 5 形が無音になる）"
+run_hook "$GATE 2>&1 | tail -20; exit"
+assert_fire "パイプ段のゲート + 裸の exit を deny（裸の exit が運ぶのはパイプライン全体の rc）"
+run_hook "nohup $GATE > log 2>&1 & exit"
+assert_fire "background 起動 + 裸の exit を deny（運ぶのは & 起動の rc）"
+run_hook "$GATE > log 2>&1
+rc=\$?
+rc=0
+exit \$rc"
+assert_fire "受けた rc を \$? 由来でない値で上書きしてから exit する形は deny（元の rc は失われている）"
+run_hook "$GATE > log 2>&1
+rc=\$?
+rc=\$((rc|0))
+exit \$rc"
+assert_pass "自己参照する再代入（算術式）は上書きではないので素通し"
+run_hook "$GATE > log 2>&1
+rc=\$?
+echo \"\$rc\"; rc=0
+exit \$rc"
+assert_fire "同じ行に診断の参照と無条件上書きが同居しても上書きを見逃さない（判定は区間単位）"
+run_hook "$GATE > log 2>&1 && ok=1"
+assert_pass "&& の末尾代入（短絡でゲートの rc が残る）が単位の最終行でも素通し"
+run_hook "$GATE > log 2>&1 && ok=1
+echo done"
+assert_fire "&& の末尾代入の次の行が診断だけなら deny（\$? の持ち越しとして追う）"
+run_hook "cat <<\\EOF > /tmp/note.md
+Don't panic
+EOF
+$GATE > log 2>&1; echo done"
+assert_fire "バックスラッシュ引用の区切り語（<<\\EOF）でも heredoc 本文を読み飛ばす"
 
 echo "guard-exit-code: fail-open（jq 以前・非 Bash・壊れた入力）"
 run_hook_on "$TARGET" 'echo ok'
@@ -628,16 +812,10 @@ else
 fi
 cp "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"
 
-# 変異 2: heredoc 本文の読み飛ばしを無効化する（本文をそのまま走査対象へ流す）
-cp "$TARGET" "$MUT"
-sed 's/if (nd > 0) {/if (nd > 99) {/' "$HELPER" > "$MUT_DIR/tests/lib/heredoc-strip.sh"
-run_hook_on "$MUT" "$HEREDOC_BODY"
-if [ "$RC" -eq 0 ] && [ "$DECISION" = "deny" ]; then
-  ok "変異検出: heredoc 本文の読み飛ばしを外すと PR 本文の素通し検査は赤になる"
-else
-  bad "heredoc 読み飛ばしを外しても素通しのまま: decision=[$DECISION] out=[$OUT]"
-fi
-cp "$HELPER" "$MUT_DIR/tests/lib/heredoc-strip.sh"
+# 変異 2（退役 2026-09-21）: 共有ヘルパの heredoc 読み飛ばしを無効化しても、検出器自身が
+# heredoc の opener / terminator を認識して本文を読み飛ばすようになった（Issue `#1748`）ため、
+# 本文の同型は素通しのままで赤転しない。ヘルパの読み飛ばし自体の検出力はヘルパの suite が持つ。
+# hook 側に残るヘルパ契約（不在・破損・awk 失敗の fail-closed）は上の AC4 検査がそのまま担う。
 
 # 変異 3: ACK 抜け道を消す
 sed "s/^  'FF_EXIT_CODE_ACK=1 '\*|'FF_EXIT_CODE_ACK=1\t'\*) exit 0 ;;/  __never_match__) exit 0 ;;/" "$TARGET" > "$MUT"
@@ -690,13 +868,80 @@ else
 fi
 
 # 変異 7: 実値案の安全条件（区切りがちょうど 1 個）を外す
-sed 's/^\[ "\$sep_n" -eq 1 \] || launch_ok=0$/:/' "$TARGET" > "$MUT"
+sed 's/^  \*) \[ "\$sep_n" -eq 1 \] || launch_ok=0 ;;$/  *) : ;;/' "$TARGET" > "$MUT"
 run_hook_on "$MUT" "x=1; $GATE > log 2>&1; echo done"
 MUT_FIX="$(fix_block)"
 case "$MUT_FIX" in
   *"$GENERIC"*) bad "安全条件を外しても一般形のまま: [$MUT_FIX]" ;;
   *) ok "変異検出: 安全条件を外すと先頭区間（x=1）を起動として案内し、一般形の検査は赤になる" ;;
 esac
+
+# 変異 8: 検出器の論理行をまたぐ持ち越し追跡（track_gate の呼び出し）を消す（Issue `#1748`）
+cp "$TARGET" "$MUT"
+sed 's/^  track_gate(line, start, m, swallowed)$/  swallowed = swallowed/' "$DETECTOR" > "$MUT_DIR/tests/lib/exit-code-guard.sh"
+if grep -q 'track_gate(line, start, m, swallowed)' "$MUT_DIR/tests/lib/exit-code-guard.sh"; then
+  bad "変異 8 が当たっていない（track_gate の呼び出し行が sed に一致しない）"
+else
+  run_hook_on "$MUT" "nohup $GATE > log 2>&1
+rc=\$?
+echo \"EXIT=\$rc\""
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
+    ok "変異検出: 持ち越し追跡を消すと AC1（改行区切りで exit \$rc を落とした形）の deny 検査は赤になる"
+  else
+    bad "持ち越し追跡を消しても deny のまま: decision=[$DECISION]"
+  fi
+fi
+cp "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"
+
+# 変異 9: ゲート起動行での消費判定（制御構文が \$? を読む分岐）を消す（3 回転目の設計変更）
+cp "$TARGET" "$MUT"
+sed 's/^    } else if (is_status(segs\[1\]) \&\& t !~ \/^(echo|printf)(\[\[:space:\]\]|\$)\/) {$/    } else if (0) {/' "$DETECTOR" > "$MUT_DIR/tests/lib/exit-code-guard.sh"
+if grep -q 'is_status(segs\[1\]) && t !~' "$MUT_DIR/tests/lib/exit-code-guard.sh"; then
+  bad "変異 9 が当たっていない（消費判定の分岐行が sed に一致しない）"
+else
+  run_hook_on "$MUT" "$GATE > log 2>&1
+[ \$? -eq 0 ] && FF_RUN_ALL_FULL=1 $GATE > log2 2>&1"
+  if [ "$RC" -eq 0 ] && [ "$DECISION" = "deny" ]; then
+    ok "変異検出: ゲート行の消費判定を消すと「fast が緑なら全件を続ける形は素通し」は赤になる"
+  else
+    bad "消費判定を消しても素通しのまま: decision=[$DECISION]"
+  fi
+fi
+cp "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"
+
+# （`is_status_exit` を旧正規表現へ戻す変異は 2026-09-21 に撤去した。追加回転で拡張そのものを
+# revert したため変異後の状態が出荷状態と一致して赤転しえない。拡張が偽陰性 5 形を開くことは
+# 上の assert_fire 3 本（裸 exit / パイプ + 裸 exit / background + 裸 exit）が直接張っている。）
+
+# 変異 10: ブロック境界の判定を「行全体の完全一致の名簿」へ戻す（名簿方式の取りこぼしを張る）
+cp "$TARGET" "$MUT"
+awk '
+  /^  if \(w ~ \/\^\(fi\|done\|esac\|else\|elif\|then\|do\)\$\/\) return 1$/ {
+    print "  if (s ~ /^(fi|done|esac|else|then|do)$/) return 1"
+    print "  if (w != \"\") return 0"
+    mutated = 1
+    next
+  }
+  { print }
+  END { if (!mutated) exit 9 }
+' "$DETECTOR" > "$MUT_DIR/tests/lib/exit-code-guard.sh"
+if [ "$?" -ne 0 ]; then
+  bad "変異 10 が当たっていない（is_block_boundary の予約語判定行が見つからない）"
+else
+  run_hook_on "$MUT" "if [ x = y ]; then
+  $GATE > log 2>&1
+elif [ a = b ]; then
+  FF_RUN_ALL_FULL=1 $GATE > log 2>&1
+fi
+rc=\$?
+exit \$rc"
+  if [ "$RC" -eq 0 ] && [ "$DECISION" = "deny" ]; then
+    ok "変異検出: 境界判定を完全一致の名簿へ戻すと「elif を挟む分岐は素通し」は赤になる"
+  else
+    bad "名簿へ戻しても素通しのまま: decision=[$DECISION]"
+  fi
+fi
+cp "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"
 
 echo
 if [ "$FAIL" -gt 0 ]; then

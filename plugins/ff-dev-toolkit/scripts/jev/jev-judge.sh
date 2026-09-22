@@ -8,10 +8,10 @@
 #   jev-judge.sh --check                       … 有効化・キー・依存の事前確認だけ（通信しない）
 #
 # 何のためにあるか:
-#   ワークフローの「閉じた選択肢 / 真偽 / スコア」の判断点へ Jev を shadow / offline で
-#   並走させるための**唯一の入口**。判定点ごとに呼び出しを書くと評価の形式がばらけて
-#   比較できないので、「state + 質問集合 → 判定・確率・confidence・usage・レイテンシ」を
-#   1 つの契約で返す。判定主体の切り替えは本スクリプトの責務ではない（shadow のみ）。
+#   ワークフローの「閉じた選択肢 / 真偽 / スコア」の判断点へ Jev を当てるための**唯一の通信口**。
+#   判定点ごとに呼び出しを書くと評価の形式がばらけて比較できないので、「state + 質問集合 →
+#   判定・確率・confidence・usage・レイテンシ」を 1 つの契約で返す。採否（閾値・切替 FF_JEV_MODE・
+#   記録）は jev-decide.sh の責務で、本スクリプトは判定を返すだけ。shadow 並走は行わない（ADR-059）。
 #
 # 有効化（両方が揃ったときだけ通信する。既定は Off）:
 #   FF_JEV_ENABLED=1            … オプトインのスイッチ。未設定 / 1 以外は「無効」で非 0
@@ -79,8 +79,10 @@
 # 価格: FF_JEV_PRICE_PER_MTOK_USD=0.042（2026-09 の公表値。入力トークン課金のみ）。
 #   出力の cost_usd は概算で、請求の正本ではない。
 #
-# 制約: bash 3.2 互換（連想配列・mapfile 禁止）。依存は jq と curl。
+# 制約: bash 3.2 互換（連想配列・mapfile 禁止）。依存は jq と curl。キーの文字種検査は C ロケールで
+#       行う（ja_JP.UTF-8 では `[A-Za-z0-9]` の範囲照合が見た目どおりに効かない）。
 set -uo pipefail
+export LC_ALL=C
 
 JEV_API_URL="${TYPESAFE_API_URL:-https://api.typesafe.ai/v1/systemone}"
 JEV_MODEL="${TYPESAFE_MODEL:-jev-latest}"

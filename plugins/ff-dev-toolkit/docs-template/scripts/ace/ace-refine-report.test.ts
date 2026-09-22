@@ -1763,7 +1763,7 @@ describe("エントリ見出し ID 規則の単一源（4 スクリプトの認�
    * 決定したため。ただし**認識**は従来どおり広い（下の専用テスト参照）。認識まで
    * 狭めると #318 が解消したスクリプト間の分裂が再発する。
    */
-  const CANONICAL_IDS = ["ACE-001", "ACE-438-1", "ACE-i425-1", "ACE-1-2-3"] as const;
+  const CANONICAL_IDS = ["ACE-001", "ACE-1071", "ACE-438-1", "ACE-i425-1", "ACE-1-2-3"] as const;
   it.each(CANONICAL_IDS)("正準 ID %s は 4 者すべてが認識し、参照走査からも到達できる", (id) => {
     const content = buildFixture([`### ${id}: 正準形`]);
     const got = recognizeByAll(content);

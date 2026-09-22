@@ -158,7 +158,7 @@ ID は **PRスコープ式**（`ACE-<PR番号>-<連番>`）。採番ルールの
 # 非PR由来は ACE-i<Issue番号>-<連番>（例: ACE-i425-1）
 ```
 
-**採番前ガード（自己修復）**: 採番の前に、対象 PLAYBOOK.md に「エントリID規則」セクションが存在するか確認する。存在しない場合（旧形式 PLAYBOOK、または plugin 非経由でセットアップされたプロジェクト）は、利用中 plugin 同梱の `docs-template/08-knowledge/PLAYBOOK.md`、または上流の [ai-spec-driven-development リポジトリの同ファイル](https://github.com/feel-flow/ai-spec-driven-development/blob/HEAD/docs-template/08-knowledge/PLAYBOOK.md#エントリid規則) から「エントリID規則」セクションをコピーして追加してから採番する（この状況では自プロジェクトの PLAYBOOK にセクション自体が無いため、自分自身はコピー元にできない。挿入位置は「運用ルール」セクションの直後、無ければ先頭見出し直後）。既存の ID なしエントリ・旧 3 桁エントリは改名・書き換えせず共存させる。旧形式のローカル ACE コマンド（ID なし採番の `.claude/commands/ace.md` 等）を検出した場合は、PRスコープ式コマンドへの一本化をユーザーに提案する。
+**採番前ガード（自己修復）**: 採番の前に、対象 PLAYBOOK.md に「エントリID規則」セクションが存在するか確認する。存在しない場合（旧形式 PLAYBOOK、または plugin 非経由でセットアップされたプロジェクト）は、利用中 plugin 同梱の `docs-template/08-knowledge/PLAYBOOK.md`、または上流の [ai-spec-driven-development リポジトリの同ファイル](https://github.com/feel-flow/ai-spec-driven-development/blob/HEAD/docs-template/08-knowledge/PLAYBOOK.md#エントリid規則) から「エントリID規則」セクションをコピーして追加してから採番する（この状況では自プロジェクトの PLAYBOOK にセクション自体が無いため、自分自身はコピー元にできない。挿入位置は「運用ルール」セクションの直後、無ければ先頭見出し直後）。既存の ID なしエントリ・旧連番エントリ（3 桁・4 桁以上とも）は改名・書き換えせず共存させる。旧形式のローカル ACE コマンド（ID なし採番の `.claude/commands/ace.md` 等）を検出した場合は、PRスコープ式コマンドへの一本化をユーザーに提案する。
 
 #### 2. カテゴリ別サブファイルへの追記
 

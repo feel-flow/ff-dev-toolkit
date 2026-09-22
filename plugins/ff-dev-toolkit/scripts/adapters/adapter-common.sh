@@ -1639,8 +1639,23 @@ timeout_reason_file() {
 # — 2 本目の実装を書き写すと、片方だけ直った状態へ静かにずれる。
 _ff_reason_link_count() { # $1: パス / stdout: ハードリンク数（取れなければ rc1）
   local n
-  # macOS（BSD stat）は -f %l、GNU stat は -c %h。片方は必ずエラーになるので順に試す。
-  n="$(stat -f %l "$1" 2>/dev/null || stat -c %h "$1" 2>/dev/null || true)"
+  # GNU stat は -c %h、BSD（macOS）stat は -f %l。「片方は必ずエラーになる」は成り立たない:
+  # GNU の -f は --file-system であって書式指定ではないので、-f %l は %l を実在しない
+  # FILE オペランドとして扱いながら、$1 のファイルシステム情報を stdout へ出す。旧形は
+  # `$(stat -f … || stat -c …)` とコマンドを繋いでいたため両者の出力が混ざって非数値になり、
+  # Linux では常にリンク数が取れなくなった（Issue `#1806` — 上書きが必ず拒否され、失敗理由が
+  # run_with_timeout の初期値のまま固定された）。
+  #
+  # 効いているのは順序より先に「何を `||` で繋ぐか」である。繋ぐ対象をコマンドではなく
+  # 代入そのものにすると、失敗した側の stdout は次の代入に上書きされて決して残らない
+  # （両方失敗すれば return 1）。この形なら順序を入れ替えても値は壊れない（実測）。
+  # そのうえで GNU 形を先に置くのは、GNU の -f が rc=0 で返る場合への備え — 全オペランドが
+  # 実在すると --file-system は成功終了するので（ACE-1047-1）、BSD 形が先だと `||` 自体が
+  # 発火せずファイルシステム統計がそのまま n に残る。書式に見える引数と同名のファイルが
+  # cwd に在る回がこれに当たる。
+  # BSD stat に -c は無く、未知オプションは rc≠0 かつ stdout 空で返るので、GNU 形を先に
+  # 試しても BSD 側は汚れない（実測済み）。
+  n="$(stat -c %h "$1" 2>/dev/null)" || n="$(stat -f %l "$1" 2>/dev/null)" || return 1
   case "$n" in
     ''|*[!0-9]*) return 1 ;;
   esac
@@ -1682,6 +1697,11 @@ write_reason_file() { # $1: パス / $2: 書く内容 -- rc0 = 書けた, rc1 = 
   return 0
 }
 
+# rc の契約: 本関数は常に 0 を返す（記録できなかった回も含む）。呼び出し側に
+# 「記録できたか」を判定させないための既定で、記録に失敗しても残るのは run_with_timeout が
+# 起動時に書いた command であり、分類は exit status ベースの文言へ縮退する。
+# したがって `record_timeout_reason X || fallback` は書かないこと — その `||` は発火しない。
+#
 # run_with_timeout 自身が書くのは timeout | orchestrator-error | command の 3 値。
 # アダプタが上書きで書く値（sandbox-refused | empty-output | missing-review-body）も
 # ここを通る。許可値の検証はこの入口に一箇所で集約する — 文字列は疑似 Union であり、

@@ -1299,6 +1299,83 @@ EXITCODE_PROBE_GATE_REDIR_AMP='bash tests/run-all.sh >&2 2>&1'
 EXITCODE_PROBE_GATE_AMP_NOGATE='git -C x log &'
 EXITCODE_PROBE_GATE_BRACE_SOLO='{ bash tests/run-all.sh > log 2>&1; }'
 EXITCODE_PROBE_GATE_SUBSHELL_AND='( bash tests/run-all.sh > log 2>&1 ) && echo OK'
+# Issue `#1748`: 論理行をまたぐ持ち越し。推奨形から `exit $rc` の 1 語を落とした形（改行区切り）と、
+# その偽陽性クラス 2 つ（二重引用符内 `$(…)` の入れ子・複数行にまたがる引用文字列）。
+EXITCODE_PROBE_GATE_DROPPED='nohup bash tests/run-all.sh > log 2>&1'
+EXITCODE_PROBE_GATE_DROPPED="${EXITCODE_PROBE_GATE_DROPPED}
+rc=\$?
+echo \"EXIT=\$rc\""
+EXITCODE_PROBE_GATE_DROPPED_OK="${EXITCODE_PROBE_GATE_DROPPED}
+exit \$rc"
+EXITCODE_PROBE_GATE_NESTED_SUBST='run_hook "$(payload '"'"'git commit -m "x; bash tests/run-all.sh が要る"'"'"' general-purpose false "")"'
+EXITCODE_PROBE_GATE_NESTED_SUBST="${EXITCODE_PROBE_GATE_NESTED_SUBST}
+assert_silent \"(4L-1)\""
+EXITCODE_PROBE_GATE_MULTILINE_QUOTE="jq -n --arg c 'cat > note.md <<EOF
+  bash plugins/ff-dev-toolkit/tests/run-all.sh
+EOF
+git status --short' '{a: 1}'
+echo next"
+EXITCODE_PROBE_GATE_BLOCK_CLOSE="run_gate() {
+  bash tests/run-all.sh > log 2>&1
+}
+run_gate; rc=\$?; exit \$rc"
+EXITCODE_PROBE_GATE_CONSECUTIVE="bash tests/run-all.sh > log 2>&1
+bash tests/run-all.sh > log 2>&1"
+# 偽陰性側の対（クロスモデルレビューの指摘）: heredoc 本文の対にならない引用符が後続の実行行を
+# 伏せない / 閉じない引用符の結合は 20 物理行で打ち切られ、その先の違反は見える。
+EXITCODE_PROBE_GATE_HEREDOC_APOS="cat <<'EOF' > note.md
+Don't panic
+EOF
+bash tests/run-all.sh > log 2>&1; echo done"
+EXITCODE_PROBE_GATE_LONG_OPEN_QUOTE="echo 'open"
+_ec_i=0
+while [ "$_ec_i" -lt 24 ]; do
+  EXITCODE_PROBE_GATE_LONG_OPEN_QUOTE="${EXITCODE_PROBE_GATE_LONG_OPEN_QUOTE}
+prose line ${_ec_i}"
+  _ec_i=$((_ec_i + 1))
+done
+EXITCODE_PROBE_GATE_LONG_OPEN_QUOTE="${EXITCODE_PROBE_GATE_LONG_OPEN_QUOTE}
+bash tests/run-all.sh > log 2>&1; echo done"
+EXITCODE_PROBE_GATE_VAR_CONSECUTIVE="bash tests/run-all.sh > log 2>&1
+rc=\$?
+bash tests/run-all.sh > log 2>&1
+exit \$?"
+# ゲート起動行の前置区間が持ち越した rc を消費する形（3 回転目: 消費判定をゲート行でも先に行う）。
+EXITCODE_PROBE_GATE_STATUS_THEN_GATE="bash tests/run-all.sh > log 2>&1
+[ \$? -eq 0 ] && FF_RUN_ALL_FULL=1 bash tests/run-all.sh > log2 2>&1"
+EXITCODE_PROBE_GATE_VAR_THEN_GATE="bash tests/run-all.sh > log 2>&1
+rc=\$?
+[ \"\$rc\" -eq 0 ] && FF_RUN_ALL_FULL=1 bash tests/run-all.sh > log2 2>&1
+exit \$?"
+EXITCODE_PROBE_GATE_COLLECT3="bash tests/run-all.sh > log 2>&1 || RC=\$?
+bash tests/run-all.sh > log 2>&1 || RC=\$?
+bash tests/run-all.sh > log 2>&1 || RC=\$?
+exit \${RC:-0}"
+# 追加回転の指摘: 引数なし exit の伝播 / 保存変数の無条件上書き / `&&` 末尾代入は `$?` の持ち越し。
+EXITCODE_PROBE_GATE_BARE_EXIT="bash tests/run-all.sh > log 2>&1
+exit"
+EXITCODE_PROBE_GATE_PIPE_BARE_EXIT='bash tests/run-all.sh 2>&1 | tail -20; exit'
+EXITCODE_PROBE_GATE_ELIF="if [ x = y ]; then
+  bash tests/run-all.sh > log 2>&1
+elif [ a = b ]; then
+  FF_RUN_ALL_FULL=1 bash tests/run-all.sh > log 2>&1
+fi
+rc=\$?
+exit \$rc"
+EXITCODE_PROBE_GATE_DONE_REDIR="while read -r x; do
+  bash tests/run-all.sh > log 2>&1
+done < list
+rc=\$?
+exit \$rc"
+EXITCODE_PROBE_GATE_OVERWRITE_SAMELINE="bash tests/run-all.sh > log 2>&1
+rc=\$?
+echo \"\$rc\"; rc=0
+exit \$rc"
+EXITCODE_PROBE_GATE_OVERWRITE="bash tests/run-all.sh > log 2>&1
+rc=\$?
+rc=0
+exit \$rc"
+EXITCODE_PROBE_GATE_AND_ASSIGN_TAIL='bash tests/run-all.sh > log 2>&1 && ok=1'
 EXITCODE_FENCE='```'
 EXITCODE_PROBE_MD_BASH="${EXITCODE_FENCE}bash
 ${EXITCODE_PROBE_TAIL}
@@ -1453,6 +1530,63 @@ exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_BRACE_SOLO" nohit "" \
 exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_SUBSHELL_AND" nohit "" \
   "終了コード検出器が サブシェル実行 + \`&& echo OK\` を誤検出しない（self-test）" \
   "終了コード検出器が サブシェル実行 + \`&&\` を誤検出する — 短絡する形まで赤にする"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_DROPPED" hit gate-exit-dropped \
+  "終了コード検出器が 改行区切りで exit \$rc を落とした形（nohup 起動 ⏎ rc=\$? ⏎ echo） を検出できる（self-test）" \
+  "終了コード検出器が 改行区切りで exit \$rc を落とした形 を取りこぼす — 論理行をまたぐ持ち越しを追っていない（Issue \`#1748\` の regression）"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_DROPPED_OK" nohit "" \
+  "終了コード検出器が 改行区切りの推奨形（rc を取って exit \$rc で伝播） を誤検出しない（self-test）" \
+  "終了コード検出器が 改行区切りの推奨形 を誤検出する — 規定どおりの書き方が赤になる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_NESTED_SUBST" nohit "" \
+  "終了コード検出器が 二重引用符内 \$(…) に入れ子で現れるゲート綴り を起動と見ない（self-test）" \
+  "終了コード検出器が 二重引用符内 \$(…) の入れ子 を起動と誤認する — mask が内側の引用符を外側の閉じと取り違えている"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_MULTILINE_QUOTE" nohit "" \
+  "終了コード検出器が 複数行にまたがる引用文字列の中間行 を起動と見ない（self-test）" \
+  "終了コード検出器が 複数行にまたがる引用文字列の中間行 を起動と誤認する — 引用符が閉じるまで論理行を結合していない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_BLOCK_CLOSE" nohit "" \
+  "終了コード検出器が ブロックの最終コマンドがゲート（} で閉じる関数本体） を誤検出しない（self-test）" \
+  "終了コード検出器が ブロックの閉じ行 を「rc を読まずに実行した行」と数える — 関数本体の暗黙 return が赤になる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_CONSECUTIVE" hit gate-exit-dropped \
+  "終了コード検出器が 連続するゲート起動（1 本目の rc を 2 本目が上書き） を検出できる（self-test）" \
+  "終了コード検出器が 連続するゲート起動 を取りこぼす — 新起動で前の持ち越しを黙って捨てている"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_HEREDOC_APOS" hit gate-exit-swallowed \
+  "終了コード検出器が heredoc 本文の対にならない引用符の後続行 の事故形を検出できる（self-test）" \
+  "終了コード検出器が heredoc 本文の引用符に後続の実行行を伏せられる — 本文を読み飛ばしていない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_LONG_OPEN_QUOTE" hit gate-exit-swallowed \
+  "終了コード検出器が 20 行を超えて閉じない引用符 の先の事故形を検出できる（self-test）" \
+  "終了コード検出器が 閉じない引用符で単位終端まで伏せている — 結合の行数上限が効いていない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_VAR_CONSECUTIVE" hit gate-exit-dropped \
+  "終了コード検出器が 変数へ受けた rc を消費しないまま次のゲートを起動する形 を検出できる（self-test）" \
+  "終了コード検出器が 変数保存の持ち越しを次のゲート起動で黙って捨てている"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_STATUS_THEN_GATE" nohit "" \
+  "終了コード検出器が \$? を読んでから 2 本目を起動する形（fast 緑なら全件） を誤検出しない（self-test）" \
+  "終了コード検出器が ゲート行の前置区間の \$? 読み を消費と見ていない — 自然な連続起動が赤になる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_VAR_THEN_GATE" nohit "" \
+  "終了コード検出器が 変数で受けた rc をゲート行の前置区間が消費する形 を誤検出しない（self-test）" \
+  "終了コード検出器が ゲート行の前置区間の変数参照 を消費と見ていない"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_COLLECT3" nohit "" \
+  "終了コード検出器が 同じ変数への 3 本の条件付き集約 を誤検出しない（self-test）" \
+  "終了コード検出器が 同名変数への集約 を 2 本前の取りこぼしと数えている"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_BARE_EXIT" hit gate-exit-dropped \
+  "終了コード検出器が ゲート直後の引数なし exit を赤にする（文書化した偽陽性。self-test）" \
+  "終了コード検出器が 引数なし exit を伝播と見ている — パイプ段・background の 5 形が無音になる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_ELIF" nohit "" \
+  "終了コード検出器が elif を挟む分岐の最終コマンドがゲート を誤検出しない（self-test）" \
+  "終了コード検出器が ブロック境界を行全体の完全一致で見ている — 条件が付く elif を取りこぼす"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_DONE_REDIR" nohit "" \
+  "終了コード検出器が リダイレクト付きの done で閉じるループ を誤検出しない（self-test）" \
+  "終了コード検出器が ブロック境界を行全体の完全一致で見ている — リダイレクトが付く done を取りこぼす"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_PIPE_BARE_EXIT" hit gate-exit-swallowed \
+  "終了コード検出器が パイプ段のゲート + 裸の exit を検出できる（self-test）" \
+  "終了コード検出器が パイプ段のゲート + 裸の exit を取りこぼす — 裸の exit が運ぶのはパイプライン全体の rc"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_OVERWRITE_SAMELINE" hit gate-exit-dropped \
+  "終了コード検出器が 同じ行の診断参照 + 無条件上書き を検出できる（self-test）" \
+  "終了コード検出器が 上書き判定を論理行全体へ当てている — 同居する診断参照で上書きを見逃す"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_OVERWRITE" hit gate-exit-dropped \
+  "終了コード検出器が 受けた rc の無条件上書き（rc=0） を検出できる（self-test）" \
+  "終了コード検出器が 保存変数の上書き を見逃す — 元の rc が失われた形が緑になる"
+exitcode_expect exit_code_scan "$EXITCODE_PROBE_GATE_AND_ASSIGN_TAIL" nohit "" \
+  "終了コード検出器が && の末尾代入が単位の最終行 を誤検出しない（self-test）" \
+  "終了コード検出器が && の末尾代入 を変数の捕獲と数えている — 短絡で rc が残る形が赤になる"
 EXITCODE_PROBE_MD_GATE="${EXITCODE_FENCE}bash
 ${EXITCODE_PROBE_GATE_ECHO}
 ${EXITCODE_FENCE}"
@@ -1509,6 +1643,7 @@ else
     # 利用者へ届く stderr が、タグ・正しい形・抜け道の 3 点を名指しするか。
     for _gx_needle in \
       'gate-exit-swallowed' \
+      'gate-exit-dropped' \
       'RUN_ALL_EXIT=' \
       'exit $rc' \
       '|| true' \

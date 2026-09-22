@@ -128,11 +128,15 @@ export const ACE_ENTRY_ID_SOURCE = String.raw`ACE-i?\d(?:[\w-]*\w)?`;
  * ではなく、認識したうえで `check-entry-format` が fail-loud に拒否する（#318 設計文書
  * §正とする系が予約していた安全網の実装）。
  *
- * 許す形: 旧 3 桁（ACE-001。単段を許すのは**この形だけ**）・PRスコープ（ACE-438-1）・
- * Issue 由来（ACE-i425-1）・3 段以上（ACE-1-2-3）。落とす形: 二重ハイフン
- * （ACE-337--1）・アンダースコア（ACE-1_9）・英字 suffix（ACE-01a / ACE-438-1a）・
- * 連番の無い単段（ACE-1 / ACE-01 / ACE-0001 / ACE-i425 — 採番規則は PR 由来・
- * Issue 由来とも連番を必須にしており、旧 3 桁だけが歴史的例外）。
+ * 許す形: 旧連番形式（ACE-001 / ACE-1071。単段を許すのは**この形だけ** — 3 桁ちょうどは
+ * 先頭ゼロ可、4 桁以上は先頭ゼロ不可。旧 3 桁採番のまま 999 を超えて 4 桁へ到達した導入先が実在し、採番規則は
+ * 既存 ID の改名を禁じているので、桁数を 3 に固定すると改名以外に通す手段が無くなる。
+ * https://github.com/feel-flow/ff-dev-toolkit/issues/120 ）・PRスコープ（ACE-438-1）・Issue 由来
+ * （ACE-i425-1）・3 段以上（ACE-1-2-3）。落とす形: 二重ハイフン（ACE-337--1）・
+ * アンダースコア（ACE-1_9）・英字 suffix（ACE-01a / ACE-438-1a）・連番の無い単段
+ * （ACE-1 / ACE-01 / ACE-0001 / ACE-i425 — 採番規則は PR 由来・Issue 由来とも連番を
+ * 必須にしており、旧連番形式だけが歴史的例外。ACE-0001 は 4 桁以上で先頭ゼロなので
+ * 旧連番形式ではなく、採番規則が明示的に禁止している形のまま落とす）。
  *
  * 英字 suffix は #339 で**落とす**と決定した。採番規則（PLAYBOOK §エントリID規則）に
  * suffix の定義が無く、許すと同じエントリが suffix の有無で 2 通りに参照されうる —
@@ -140,7 +144,7 @@ export const ACE_ENTRY_ID_SOURCE = String.raw`ACE-i?\d(?:[\w-]*\w)?`;
  * カウンターと stale 判定が分裂する。#318 の CANONICAL_IDS はこの決定に合わせて
  * 「認識される」ことの検査へ役割を狭めた（認識は従来どおり広いまま）。
  */
-export const ACE_ENTRY_ID_SHAPE = /^ACE-(?:\d{3}|i?\d+(?:-\d+)+)$/u;
+export const ACE_ENTRY_ID_SHAPE = /^ACE-(?:[1-9]\d{2,}|\d{3}|i?\d+(?:-\d+)+)$/u;
 /** entryHeadingSource の生成モード。ID を捕捉するか、捕捉せず素の連接にするか。 */
 export type EntryHeadingMode = "capture-id" | "non-capturing";
 /**

@@ -638,8 +638,8 @@ describe("ID 形状の fail-loud 検査（Issue #339）", () => {
     ["ACE-01a", "英字 suffix（単段）"],
     ["ACE-438-1a", "英字 suffix（多段。#339 で落とすと決定した形）"],
     ["ACE-1", "連番の無い単段（PR 由来は連番必須）"],
-    ["ACE-01", "連番の無い 2 桁（旧 3 桁形式ではない）"],
-    ["ACE-0001", "連番の無い 4 桁（旧 3 桁形式ではない）"],
+    ["ACE-01", "連番の無い 2 桁（旧連番形式は 3 桁以上）"],
+    ["ACE-0001", "先頭ゼロの 4 桁（4 桁以上は先頭ゼロ不可。§エントリID規則が明示的に禁止する形 — 単段を 4 桁以上へ広げても落とす）"],
     ["ACE-i425", "連番の無い Issue 由来（連番必須）"],
   ])("不正 ID %s（%s）は非 0 で名指しされる", (badId) => {
     const body = [
@@ -666,7 +666,20 @@ describe("ID 形状の fail-loud 検査（Issue #339）", () => {
     expect(err).toContain("単段");
   });
 
-  it.each(["ACE-001", "ACE-438-1", "ACE-i425-1", "ACE-1-2-3", "ACE-1-2-3-4"])(
+  it.each([
+    "ACE-001",
+    // 3 桁ちょうどは先頭ゼロ可（`\\d{3}` 枝を落として `[1-9]\\d{2,}` だけにする変異を ACE-001 以外でも殺す）
+    "ACE-012",
+    // 旧連番が 999 を超えた導入先の既存 ID（https://github.com/feel-flow/ff-dev-toolkit/issues/120）。採番規則は
+    // 既存 ID の改名を禁じるので、桁数を 3 に固定すると改名以外に通す手段が無くなる
+    "ACE-1000",
+    "ACE-1071",
+    "ACE-10000",
+    "ACE-438-1",
+    "ACE-i425-1",
+    "ACE-1-2-3",
+    "ACE-1-2-3-4",
+  ])(
     "正準な ID %s は pass する",
     (goodId) => {
       const body = [
@@ -1249,6 +1262,17 @@ describe("scanEntryAnchors（Issue #730）", () => {
     const scan = scanEntryAnchors(CATEGORY_HEADER + compactEntry("41-1") + compactEntry("41-2"));
 
     expect(scan.anchors.map((anchor) => anchor.id)).toEqual(["ace-41-1", "ace-41-2"]);
+    expect(scan.mismatches).toEqual([]);
+  });
+
+  it("4 桁の旧連番 ID のアンカーも列挙する（ACE_ANCHOR_ID_SHAPE は ACE_ENTRY_ID_SHAPE から派生する）", () => {
+    // 単段を 3 桁ちょうどに限っていた版では ace-1071 が anchors から静かに落ち、重複・不一致の
+    // 検査対象から外れていた。派生をやめて anchor 側の regex を直書きする変更をここで止める
+    const scan = scanEntryAnchors(
+      ['<a id="ace-1071"></a>', "", "### ACE-1071: 4 桁の旧連番", ""].join("\n"),
+    );
+
+    expect(scan.anchors.map((anchor) => anchor.id)).toEqual(["ace-1071"]);
     expect(scan.mismatches).toEqual([]);
   });
 

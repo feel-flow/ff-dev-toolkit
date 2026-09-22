@@ -1881,6 +1881,209 @@ else
 fi
 rm -f "$REWRITE_REASON"
 
+# --- D1e2: stat の方言差（GNU / BSD）でリンク数取得が壊れない ---
+# `stat -f` は BSD ではフォーマット指定、GNU では --file-system。GNU は書式に見える引数を
+# 実在しない FILE オペランドとして扱い、実在するオペランドのファイルシステム情報を stdout
+# へ出す。`stat -f … || stat -c …` の形は両者の出力が混ざって非数値になり、リンク数が
+# 取れない。すると write_reason_file が既存ファイルへの上書きを常に拒み、Linux 上の全実行で
+# 失敗理由が run_with_timeout の初期値 command のまま固定される（Issue `#1806`。公開 /
+# SSOT 週次 CI で 5 suite が赤、実測 readback=[command]）。
+#
+# 宿主の実 stat では片方の方言しか踏めない（開発ツリーは macOS、週次 CI は ubuntu-latest）
+# ので、両方言を stub で与えて双方の分岐を両プラットフォームで検査する。
+#
+# 空振り検出（このブロックについての実測）: stub を PATH へ置かずに同じ 3 検査を回すと、
+# 本番コードを旧形へ戻しても 3 件とも緑になる（macOS の実 BSD stat が 3 条件をそのまま
+# 満たし、GNU CI でも修正後は満たすため）。針の不着は「違反なし」ではなく検査不成立なので、
+# PATH 解決が stub を指すことを事前 probe と各サブシェル内の両方で assert して赤へ倒す。
+DIALECT_BIN="$TMP/dialect-bin"
+rm -rf "$DIALECT_BIN"
+mkdir -p "$DIALECT_BIN"
+
+# GNU coreutils stat の意味論だけを再現する stub（一次情報: GNU coreutils "stat invocation"）。
+#   -c <fmt> <file> : フォーマット指定。%h = ハードリンク数
+#   -f <operand>... : --file-system。全オペランドを *ファイル名* として扱い、実在するものは
+#                     ファイルシステム情報を stdout へ、無いものは stderr へ出して rc=1 を返す
+# リンク数は宿主の stat 方言に依らない形で採る。ここで実体の stat を呼ぶと、GNU ホストでは
+# 本 stub 自身が検査対象の罠を踏んで非数値を stdout へ出し、Linux でだけこの回帰ガードが
+# 赤くなる。POSIX の ls -l は第 2 フィールドがリンク数で、BSD / GNU のどちらでも同じ（実測）。
+cat > "$DIALECT_BIN/stat.gnu" <<'GNU_STAT_STUB'
+#!/usr/bin/env bash
+stub_link_count() { # $1: パス / stdout: リンク数（取れなければ rc1）
+  local n
+  n="$(ls -ld "$1" | awk '{print $2}')"
+  case "$n" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$n"
+}
+if [[ "${1:-}" == "-c" ]]; then
+  [[ "${2:-}" == "%h" ]] || { echo "stat: unsupported format '${2:-}'" >&2; exit 1; }
+  # 実体の GNU stat は -c でも lstat を使う。ここは ls -ld（リンクを追わない）と揃える。
+  [[ -e "${3:-}" || -L "${3:-}" ]] || { echo "stat: cannot stat '${3:-}': No such file or directory" >&2; exit 1; }
+  stub_link_count "$3" || { echo "stat: cannot determine link count for '$3'" >&2; exit 1; }
+  exit 0
+fi
+if [[ "${1:-}" == "-f" ]]; then
+  shift
+  stub_rc=0
+  for operand in "$@"; do
+    if [[ -e "$operand" || -L "$operand" ]]; then
+      printf '  File: "%s"\n    ID: 0 Namelen: 255 Type: ext2/ext3\nBlock size: 4096\n' "$operand"
+    else
+      echo "stat: cannot read file system information for '$operand': No such file or directory" >&2
+      stub_rc=1
+    fi
+  done
+  exit "$stub_rc"
+fi
+echo "stat: unsupported invocation" >&2
+exit 1
+GNU_STAT_STUB
+
+# BSD（macOS）stat の意味論。-c は存在せず未知オプションとして rc≠0 かつ stdout 空で返る。
+# 週次 CI は ubuntu-latest だけなので、この分岐は stub 無しでは Linux 側に検査が届かない
+# （`stat -f %l` の書き間違いが CI 緑のまま出荷されうる）。
+cat > "$DIALECT_BIN/stat.bsd" <<'BSD_STAT_STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-f" ]]; then
+  [[ "${2:-}" == "%l" ]] || { echo "stat: invalid format '${2:-}'" >&2; exit 1; }
+  [[ -e "${3:-}" || -L "${3:-}" ]] || { echo "stat: ${3:-}: stat: No such file or directory" >&2; exit 1; }
+  n="$(ls -ld "$3" | awk '{print $2}')"
+  case "$n" in
+    ''|*[!0-9]*) echo "stat: cannot determine link count" >&2; exit 1 ;;
+  esac
+  printf '%s\n' "$n"
+  exit 0
+fi
+# BSD stat に -c は無い。usage は stderr へ出し、stdout は汚さない（実測）。
+echo "stat: illegal option -- ${1#-}" >&2
+exit 1
+BSD_STAT_STUB
+
+# リンク数を一切返せない環境（stat 不在・壊れた stat）。write_reason_file の
+# 「リンク数が取れなければ書かない」fail-closed 分岐は、この stub でしか踏めない。
+cat > "$DIALECT_BIN/stat.broken" <<'BROKEN_STAT_STUB'
+#!/usr/bin/env bash
+echo "stat: command failed" >&2
+exit 1
+BROKEN_STAT_STUB
+
+use_dialect() { # $1: gnu | bsd | broken
+  cp "$DIALECT_BIN/stat.$1" "$DIALECT_BIN/stat"
+  chmod +x "$DIALECT_BIN/stat"
+}
+
+# 事前 probe: stub が PATH 解決で宿主の実 stat に勝つこと。ここが崩れると以降の方言検査は
+# 「違反なし」ではなく検査不成立になる。
+use_dialect gnu
+DIALECT_PROBE="$(PATH="$DIALECT_BIN:$PATH" command -v stat 2>/dev/null || true)"
+if [[ "$DIALECT_PROBE" == "$DIALECT_BIN/stat" ]]; then
+  ok "timeout-reason: 方言 stub が PATH 解決で勝つ（以降の方言検査に針が当たる）"
+else
+  bad "timeout-reason: 方言 stub が PATH に載らない（以降の方言検査は不成立。解決先=${DIALECT_PROBE:-<なし>}）"
+fi
+
+# 方言ごとに「再記録が届く」「ハードリンクは拒否され続ける」を対で測る。
+# 前者だけだとリンク数チェックごと削除する修正が通り、排他生成のハードニングを黙って外せる。
+for DIALECT in gnu bsd; do
+  use_dialect "$DIALECT"
+
+  DIALECT_REWRITE_REASON="$TMP/reason-$DIALECT-rewrite"
+  rm -f "$DIALECT_REWRITE_REASON"
+  set +e
+  DIALECT_REWRITE_OUT="$(
+    exec 2>&1
+    PATH="$DIALECT_BIN:$PATH"
+    export PATH
+    [[ "$(command -v stat)" == "$DIALECT_BIN/stat" ]] || { echo "STUB-NOT-ON-PATH"; exit 97; }
+    export FF_TIMEOUT_REASON_FILE="$DIALECT_REWRITE_REASON"
+    # shellcheck source=../../scripts/adapters/adapter-common.sh
+    source "$ADAPTER_COMMON"
+    record_timeout_reason command
+    record_timeout_reason empty-output
+    printf 'readback=[%s]\n' "$(read_timeout_reason)"
+    true
+  )"
+  set -e
+  if [[ "$DIALECT_REWRITE_OUT" != *"STUB-NOT-ON-PATH"* && "$DIALECT_REWRITE_OUT" == *"readback=[empty-output]"* ]]; then
+    ok "timeout-reason: ${DIALECT} 意味論の stat でも再記録が届く（方言差で分類が固定されない）"
+  else
+    bad "timeout-reason: ${DIALECT} 意味論の stat で再記録が届かない（方言差でリンク数が取れていない）"
+    printf '%s\n' "$DIALECT_REWRITE_OUT" | sed 's/^/    | /' >&2
+  fi
+  rm -f "$DIALECT_REWRITE_REASON"
+
+  DIALECT_VICTIM="$TMP/reason-$DIALECT-victim"
+  DIALECT_REASON="$TMP/reason-$DIALECT-hardlink"
+  printf 'IMPORTANT DATA\n' > "$DIALECT_VICTIM"
+  rm -f "$DIALECT_REASON"
+  ln "$DIALECT_VICTIM" "$DIALECT_REASON"
+  set +e
+  DIALECT_HARDLINK_OUT="$(
+    exec 2>&1
+    PATH="$DIALECT_BIN:$PATH"
+    export PATH
+    [[ "$(command -v stat)" == "$DIALECT_BIN/stat" ]] || { echo "STUB-NOT-ON-PATH"; exit 97; }
+    export FF_TIMEOUT_REASON_FILE="$DIALECT_REASON"
+    # shellcheck source=../../scripts/adapters/adapter-common.sh
+    source "$ADAPTER_COMMON"
+    record_timeout_reason empty-output
+    true
+  )"
+  set -e
+  if [[ "$(cat "$DIALECT_VICTIM" 2>/dev/null)" == "IMPORTANT DATA" ]]; then
+    ok "timeout-reason: ${DIALECT} 意味論でもハードリンク先の内容が書き換わらない"
+  else
+    bad "timeout-reason: ${DIALECT} 意味論でハードリンク経由の上書きが起きている（リンク数チェックが無効化された）"
+    printf '%s\n' "$DIALECT_HARDLINK_OUT" | sed 's/^/    | /' >&2
+  fi
+  if [[ "$DIALECT_HARDLINK_OUT" != *"STUB-NOT-ON-PATH"* && "$DIALECT_HARDLINK_OUT" == *"2 hard links"* ]]; then
+    ok "timeout-reason: ${DIALECT} 意味論でもリンク数を実数で名指しする（取得失敗の既定文言へ落ちない）"
+  else
+    bad "timeout-reason: ${DIALECT} 意味論でリンク数が実数で出ない（an unknown number of へ縮退している）"
+    printf '%s\n' "$DIALECT_HARDLINK_OUT" | sed 's/^/    | /' >&2
+  fi
+  rm -f "$DIALECT_REASON" "$DIALECT_VICTIM"
+done
+
+# リンク数が取れない環境での fail-closed。ここを測らないと
+# `links="$(_ff_reason_link_count "$f")" || links=""` を `|| links="1"` へ変える変異が
+# suite 全体を生き延び、stat の無いホストでハードリンク防御が黙って消える。
+use_dialect broken
+BROKEN_VICTIM="$TMP/reason-broken-victim"
+BROKEN_REASON="$TMP/reason-broken-hardlink"
+printf 'IMPORTANT DATA\n' > "$BROKEN_VICTIM"
+rm -f "$BROKEN_REASON"
+ln "$BROKEN_VICTIM" "$BROKEN_REASON"
+set +e
+BROKEN_OUT="$(
+  exec 2>&1
+  PATH="$DIALECT_BIN:$PATH"
+  export PATH
+  [[ "$(command -v stat)" == "$DIALECT_BIN/stat" ]] || { echo "STUB-NOT-ON-PATH"; exit 97; }
+  export FF_TIMEOUT_REASON_FILE="$BROKEN_REASON"
+  # shellcheck source=../../scripts/adapters/adapter-common.sh
+  source "$ADAPTER_COMMON"
+  record_timeout_reason empty-output
+  true
+)"
+set -e
+if [[ "$(cat "$BROKEN_VICTIM" 2>/dev/null)" == "IMPORTANT DATA" ]]; then
+  ok "timeout-reason: リンク数が取れない環境でも上書きしない（fail-closed）"
+else
+  bad "timeout-reason: リンク数が取れない環境で上書きしている（取得失敗が許可側へ倒れている）"
+  printf '%s\n' "$BROKEN_OUT" | sed 's/^/    | /' >&2
+fi
+if [[ "$BROKEN_OUT" != *"STUB-NOT-ON-PATH"* && "$BROKEN_OUT" == *"an unknown number of hard links"* ]]; then
+  ok "timeout-reason: リンク数が取れない回は既定文言で拒否理由を名指しする"
+else
+  bad "timeout-reason: リンク数が取れない回の拒否理由が既定文言になっていない"
+  printf '%s\n' "$BROKEN_OUT" | sed 's/^/    | /' >&2
+fi
+rm -f "$BROKEN_REASON" "$BROKEN_VICTIM"
+rm -rf "$DIALECT_BIN"
+
 # --- D1f: 後始末の rm 失敗を黙らず警告し、同じパスでは 1 回だけ出す ---
 # 共有 sticky /tmp では他人が置いた実体を消せない。黙って通すと「掃除したつもり」のまま
 # stale が残る。一方で後始末は 1 実行で何度も走るので、毎回出すとレポートの stderr 節が

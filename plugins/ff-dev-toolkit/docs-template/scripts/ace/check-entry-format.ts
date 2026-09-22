@@ -1074,7 +1074,7 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
     console.error(
       "⚠ ID の形状が不正なエントリがあります（PLAYBOOK.md §エントリID規則の形 " +
         "`ACE-<番号>-<連番>`（Issue 由来は `ACE-i<番号>-<連番>`。段は増やせる。" +
-        "連番の無い単段は旧 3 桁形式 `ACE-001` だけの歴史的例外）へ改番してください。" +
+        "連番の無い単段は旧連番形式 `ACE-001`（3 桁ちょうど、または先頭ゼロ無しの 4 桁以上）だけの歴史的例外）へ改番してください。" +
         "二重ハイフン・アンダースコア・英字 suffix・連番の無い単段は不可。" +
         "suffix や枝番を表したい場合は `-<連番>` を 1 段増やします）:\n- " +
         shapeViolations.join("\n- "),

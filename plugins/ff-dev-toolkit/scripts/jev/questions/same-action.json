@@ -1,0 +1,13 @@
+{
+  "same_action": {
+    "type": "noul",
+    "instructions": {
+      "candidate": "{{CANDIDATE}}",
+      "question": "The state is an existing playbook entry. `candidate` is a one-line summary of a new finding. Would a reader who acts on `candidate` take the same executable action as a reader of the existing entry? Answer yes only if the actions are the same even though the wording or the example differs; answer no if the candidate leads to a different action."
+    },
+    "criteria": {
+      "true": "Same executable action: the candidate is a re-confirmation of the existing entry (would be recorded as Helpful +1, not as a new entry).",
+      "false": "Different executable action: a reader of the existing entry would not already do what the candidate says (would be a new entry)."
+    }
+  }
+}

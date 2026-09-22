@@ -39,6 +39,36 @@
 #                   も同じ判定に入る（Issue `#1683`）
 #                   正しい形: `bash tests/run-all.sh > log 2>&1` で改行し、次の行で
 #                       `rc=$?; echo "EXIT=$rc"; exit $rc`（診断を出したうえで伝播させる）
+#   gate-exit-dropped
+#                   ゲート起動の**後続の論理行**が、ゲートの rc を伝播させずに単位（stdin /
+#                   ファイル / フェンス）を終えている。`gate-exit-swallowed` と同じ壊れ方
+#                   （プロセス全体の終了コードが末尾行のものになる）だが、区切り子が `;` では
+#                   なく改行なので論理行ごとの判定には載らなかった（Issue `#1748`。正しい形
+#                   から `exit $rc` の 1 語を落としただけの形で、実測では `nohup … > log 2>&1`
+#                   ⏎ `rc=$?` ⏎ `echo "EXIT=$rc"` を background 起動し、完了通知が rc=1 の
+#                   ゲートを「exit code 0」と断定した）。
+#                   持ち越しの追跡: ゲート起動行の rc は `$?`（単体起動 / `&&` 連結）か変数
+#                   （`rc=$?` / `… || RC=$?` / `… && ok=1 || ok=0`）として次の行へ渡る。
+#                     - `$?` のまま次の実行行が読まなければ（`tail log` / `echo done`）失われる
+#                     - 変数は、echo / printf 以外の区間（`exit $rc` / `[ $rc -ne 0 ]` /
+#                       `if … "$rc"` / `(( rc ))` / 他コマンドの引数）が参照すれば消費とみなす
+#                     - 単位の終端に達しても伝播も消費もされていなければ赤（ゲート起動行を報告）
+#                   検出しない形: 単体起動が単位の最終行（rc がそのまま残る）/ 末尾 `&` の
+#                   background 起動（rc は `wait` が運ぶ）/ `if gate; then`（制御構文が消費）/
+#                   ゲートがブロックの最終コマンド（次の行がブロック境界 = 先頭語が `fi` / `done` /
+#                   `esac` / `else` / `elif` / `then` / `do` / `;;` / `}` / `)`。条件やリダイレクトが
+#                   付いていても同じ。rc はブロックの rc として外へ出るので、その先は追わない）
+#                   既知の限界: 引数なしの `exit` / `return` は伝播と見ない（`gate > log; exit` /
+#                   同じ形を改行で分けたもの / `gate > log || exit` は赤になる）。ゲートが
+#                   パイプ段・`&` の背後に在るときに「直前のコマンド」がゲートでなくなるためで、
+#                   偽陽性 3 と引き換えに偽陰性 5 を閉じる選択（赤は `rc=$?; …; exit $rc` で解ける）。
+#                   `set -e` の到達は静的に追わない（`gate` ⏎ `後片付け` は errexit
+#                   下では正しい形だが赤にする。pipefail と同じ判断で、読み手が `set -e` を
+#                   追う形へは寄せない — `rc=$?; …; exit $rc` へ書き換える）。
+#                   対にならない引用符（heredoc の外の散文 `Don't` 等）は、次の同じ
+#                   引用符までを 1 論理行として伏せる。結合は 20 物理行で打ち切り、超えたら
+#                   開いた行だけを従来どおり解析して残りは個別に流すので、伏せられる範囲は
+#                   最大 20 行に留まる（heredoc 本文はそもそも読み飛ばすので対象外）
 #
 # 「出力整形フィルタ」= head / tail / less / more / cat / tee / wc（`| sudo tee x` /
 # `| command head -1` / `| LC_ALL=C wc -l` のように前置きが 1 段あっても同じ）。これらは測定対象の
@@ -70,26 +100,48 @@
 
 # awk 本体。mode=sh は全行、mode=md は bash 系フェンス本文だけを流す。
 # 判定は「引用符・行末コメントを伏せた版（mask）」の上で行い、`$?` だけは二重引用符の
-# 中でも残す（`echo "EXIT=$?"` を読み落とさないため）。PIPESTATUS の照合は「単一引用符と
+# 中でも残す（`echo "EXIT=$?"` を読み落とさないため）。引用符の**中身**は `_` で伏せ、
+# 引用符**そのもの**は識別子文字ではない `.`（QF）で伏せる — `exit "$rc"` を mask(line, 1) で
+# 見たとき `$rc.` となり、変数参照の語境界（`[^A-Za-z0-9_]`）が引用符の位置で切れる。
+# 両方を `_` にすると `$rc_` が別名の変数に見えて、引用した参照が全部読み落ちる。PIPESTATUS の照合は「単一引用符と
 # コメントだけを伏せ、二重引用符の中は残した版（mask(line, 1)）」に当てる — `st=("${PIPESTATUS[@]}")`
 # は二重引用符の中にあり、`printf '%s' '${PIPESTATUS[@]}'` は単一引用符の中の散文だから。
 _FF_EXIT_CODE_AWK_PROG='
-function mask(s, keepdq,   i, n, c, out, q, prev) {
-  n = length(s); q = ""; out = ""; prev = " "
+# 二重引用符の中の `$( … )` は bash が引用状態を抜けて再解釈する区間なので、内側の `"` を
+# 外側の閉じ引用符と誤認しないよう、対応する `)` まで不透明（`_`、keepdq なら生の文字）に
+# 伏せる（`run_hook "$(payload <単一引用符の中の bash tests/run-all.sh> x "")"` の綴りを起動と
+# 誤認して赤にした実測、Issue `#1748` の偽陽性潰し）。呼び出し後 MASK_OPEN に「閉じていない
+# 引用符」（SQ / DQ / 空）が残る — feed が複数行の引用文字列を 1 論理行へ結合するのに使う。
+function mask(s, keepdq,   i, n, c, out, q, prev, sub_depth, sub_q) {
+  n = length(s); q = ""; out = ""; prev = " "; sub_depth = 0; sub_q = ""
   for (i = 1; i <= n; i++) {
     c = substr(s, i, 1)
+    if (sub_depth > 0) {
+      if (sub_q != "") {
+        if (c == sub_q) { sub_q = ""; out = out QF; continue }
+        if (sub_q == DQ && c == "\\") { out = out "__"; i++; continue }
+        out = out (keepdq == 1 ? c : "_"); continue
+      }
+      if (c == SQ || c == DQ) { sub_q = c; out = out QF; continue }
+      if (c == "\\") { out = out "__"; i++; continue }
+      if (c == "(") sub_depth++
+      else if (c == ")") sub_depth--
+      out = out (keepdq == 1 ? c : "_"); continue
+    }
     if (q == "") {
       if (c == "#" && (prev == " " || prev == "\t" || prev == ";" || prev == "&" || prev == "|")) break
       if (c == "\\") { out = out "__"; i++; prev = "_"; continue }
-      if (c == SQ || c == DQ) { q = c; out = out "_"; prev = "_"; continue }
+      if (c == SQ || c == DQ) { q = c; out = out QF; prev = "_"; continue }
       out = out c; prev = c; continue
     }
-    if (c == q) { q = ""; out = out "_"; prev = "_"; continue }
+    if (c == q) { q = ""; out = out QF; prev = "_"; continue }
     if (q == DQ && c == "\\") { out = out "__"; i++; prev = "_"; continue }
+    if (q == DQ && c == "$" && substr(s, i + 1, 1) == "(") { sub_depth = 1; out = out "__"; i++; prev = "_"; continue }
     if (q == DQ && keepdq == 1) { out = out c; prev = "_"; continue }
     if (q == DQ && c == "$" && substr(s, i + 1, 1) == "?") { out = out "$?"; i++; prev = "?"; continue }
     out = out "_"; prev = "_"
   }
+  MASK_OPEN = (sub_depth > 0) ? (sub_q != "" ? sub_q : DQ) : q
   return out
 }
 # コマンド置換・プロセス置換の内側を伏せる。`grep -q x < <(cmd | tail -1); echo "EXIT=$?"` の
@@ -187,6 +239,13 @@ function is_gate_launch(s,   w, rest) {
   return 0
 }
 # `exit $?` / `return $?` の形か。ゲート直後なら伝播するが、診断を 1 つ挟むとその 0 を読む。
+# **引数なしの `exit` / `return` は含めない。** 字面どおりには「直前のコマンドの rc を運ぶ」が、
+# ここでの呼び出し側 3 箇所はいずれも「直前のコマンド = ゲート」を前提に早期 return する。
+# ゲートがパイプの手前段・`&` の背後・`||` の左辺に在るとき「直前のコマンド」はゲートではなく
+# パイプライン全体や background 起動なので、含めると 5 形（`gate | tail; exit` /
+# `{ gate | tail; exit; }` / `nohup gate & exit` / `gate | tail || exit` / `gate | tail && exit`）が
+# 無音で素通しする — 本ガードが塞ぐべき「偽の緑」そのもの。実測で 14 形を旧実装と突き合わせ、
+# 偽陽性 3 と引き換えに偽陰性 5 が開くことを確認して元へ戻した（PR の設計疑義メモ）。
 function is_status_exit(s) {
   sub(/^[[:space:]]+/, "", s)
   sub(/[[:space:]]+$/, "", s)
@@ -301,6 +360,181 @@ function gate_swallowed(m,   segs, seps, n, i, gi) {
   for (i = gi; i < n; i++) if (seps[i] != "&&") return 1
   return 0
 }
+# ── 論理行をまたぐ持ち越しの追跡（Issue `#1748`）────────────────────────────────
+# 直前のゲート起動行の rc を「$?」（g_state=1）または変数（g_state=2, g_var）として持ち越し、
+# 単位の終端（unit_end）までに伝播も消費もされなければ gate-exit-dropped を出す。
+# 報告する行はゲート起動行（開始行番号 / 論理行）— 直す場所は「その後ろ」だが、hook が実値の
+# 書き換え案（起動行 + `rc=$?; echo "EXIT=$rc"; exit $rc`）を組み立てるのに起動行が要る。
+function capture_var(s,   t) {
+  t = strip_prefix(s)
+  sub(/^(local|export|declare|typeset)[[:space:]]+(-[A-Za-z]+[[:space:]]+)?/, "", t)
+  if (t ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*\$\?/) { sub(/=.*$/, "", t); return t }
+  return ""
+}
+function assign_var(s,   t) {
+  t = strip_prefix(s)
+  sub(/^(local|export|declare|typeset)[[:space:]]+(-[A-Za-z]+[[:space:]]+)?/, "", t)
+  if (t ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { sub(/=.*$/, "", t); return t }
+  return ""
+}
+# ブロック境界の行か。bash の予約語（`fi` / `done` / `esac` / `else` / `elif` / `then` / `do`）、
+# case 分岐の終端（`;;`）、グループの閉じ（`}` / `)`）で始まる行は、構文の境界であって新しい
+# コマンドの実行ではない。ゲートがそのブロックの最終コマンドなら rc はブロックの rc として
+# 外へ出るので、ここで追跡を閉じる（外で誰が受けるかは静的に追えない）。
+#
+# **判定は先頭語だけで行う。** 条件やリダイレクトが付いても境界であることは変わらない
+# （`elif [ x = y ]; then` / `done < list` / `done | tail -5` / `} > out` / `esac > out`）。
+# ここを「行全体の完全一致」で書くと、付属物のある形だけが取りこぼされて**正しい形を deny する**。
+# 実際 `elif` と `done < file` がそうなっており、名簿へ語を足しても次は `;;` や `done > out` が
+# 出る構造だった（クロスモデルレビュー + 実測。名簿方式そのものを捨てた）。
+#
+# 予約語は完全一致で見る（`donefoo` / `fifo` / `do_something` を拾わない）。閉じ括弧は語境界を
+# 要らないので前置一致で見る（`};` / `)` / `} > out`）。**開き側（`{` / `(`）は含めない** —
+# `( echo x )` のように中身を実行する形があり、`$?` を上書きするため。
+function is_block_boundary(s,   w) {
+  sub(/^[[:space:]]+/, "", s)
+  sub(/[[:space:]]+$/, "", s)
+  if (s == "") return 1
+  if (s ~ /^;;/) return 1
+  w = s
+  sub(/[[:space:]].*$/, "", w)
+  if (w ~ /^(fi|done|esac|else|elif|then|do)$/) return 1
+  if (w ~ /^[})]/) return 1
+  return 0
+}
+# この論理行のどこかの区間が変数 var を**消費**しているか。区間の境界は二重引用符を伏せた版
+# （mask(line)）で決め、参照の有無は二重引用符の中を残した版（mask(line, 1)）で見る —
+# `exit "$rc"` / `[ "$rc" -ne 0 ]` は引用符の中に参照がある。echo / printf だけの参照
+# （`echo "EXIT=$rc"` / `echo "$rc" > rcfile`）は診断であって消費ではない。
+function consumes(line, var,   m0, m1, i, n, c, k, st, seg, w, re) {
+  m0 = mask(line); m1 = mask(line, 1)
+  re = "[$][{]?" var "([^A-Za-z0-9_]|$)"
+  n = length(m0); st = 1
+  for (i = 1; i <= n + 1; i++) {
+    c = (i <= n) ? substr(m0, i, 1) : ";"
+    k = 0
+    if (c == ";") k = 1
+    else if (c == "&" && substr(m0, i + 1, 1) == "&") k = 2
+    else if (c == "|" && substr(m0, i + 1, 1) == "|") k = 2
+    else if (c == "&" && is_bg_amp(m0, i)) k = 1
+    if (k == 0) continue
+    seg = substr(m1, st, i - st)
+    if (seg ~ re || (seg ~ /^[[:space:]]*\(\(/ && seg ~ ("[^A-Za-z0-9_$]" var "[^A-Za-z0-9_]"))) {
+      w = strip_prefix(substr(m0, st, i - st))
+      sub(/[[:space:]].*$/, "", w); sub(/^.*\//, "", w)
+      if (w !~ /^(echo|printf)$/) return 1
+    }
+    st = i + k; i = i + k - 1
+  }
+  return 0
+}
+# 変数 var を `$?` 由来でも自己参照でもない値で上書きしている区間があるか（`rc=0`）。
+# 区間の境界は consumes と同じく mask(line) 上で取り、右辺の自己参照（`rc=${rc:-0}` /
+# `rc=$((rc|x))`）の判定は**同じ範囲の** mask(line, 1) スライスへ当てる。論理行全体へ当てると、
+# 同じ行の診断（`echo "$rc"; rc=0`）が自己参照に見えて上書きを見逃す（codex-cli / grok-cli）。
+function overwrites(line, var,   m0, m1, i, n, c, k, st, seg0, seg1, a, re) {
+  m0 = mask(line); m1 = mask(line, 1)
+  re = "[$][{]?" var "([^A-Za-z0-9_]|$)"
+  n = length(m0); st = 1
+  for (i = 1; i <= n + 1; i++) {
+    c = (i <= n) ? substr(m0, i, 1) : ";"
+    k = 0
+    if (c == ";") k = 1
+    else if (c == "&" && substr(m0, i + 1, 1) == "&") k = 2
+    else if (c == "|" && substr(m0, i + 1, 1) == "|") k = 2
+    else if (c == "&" && is_bg_amp(m0, i)) k = 1
+    if (k == 0) continue
+    seg0 = substr(m0, st, i - st)
+    seg1 = substr(m1, st, i - st)
+    a = assign_var(seg0)
+    if (a == var && capture_var(seg0) == "" && seg1 !~ re) {
+      if (!(seg1 ~ /\(\(/ && seg1 ~ ("[^A-Za-z0-9_$]" var "[^A-Za-z0-9_]"))) return 1
+    }
+    st = i + k; i = i + k - 1
+  }
+  return 0
+}
+function track_gate(line, start, m, swallowed,   segs, seps, n, n0, i, gi, last, v, only_and, t) {
+  n0 = split_segments(m, segs, seps)
+  gi = 0
+  for (i = 1; i <= n0; i++) if (seg_has_gate(segs[i])) { gi = i; break }
+  t = strip_prefix(segs[1])
+  # 0) ブロック境界の行（判定は is_block_boundary。先頭語だけを見る）は `$?` を書き換えない
+  #    透過行。`$?` のまま持ち越し中（g_state=1）なら、ゲートがそのブロックの最終コマンド =
+  #    ブロックの rc としてそのまま外へ出る形（関数本体の暗黙 return / `if … then` ⏎ ゲート ⏎
+  #    `fi` / `elif` を挟む分岐 / `done < list` で閉じるループ）なので追跡を閉じる。変数で
+  #    持ち越し中（g_state=2）は消費を追い続ける。
+  if (gi == 0 && is_block_boundary(segs[1])) {
+    if (g_state == 1) g_state = 0
+    return
+  }
+  # 1) 消費判定 — **ゲート起動行かどうかに関わらず先に行う**。ゲート行でも、ゲートより前の
+  #    区間は持ち越した rc を読む場でありうる（`[ $? -eq 0 ] && <ゲート2>` /
+  #    `[ "$rc" -eq 0 ] && <ゲート2>` — fast ゲートが緑なら全件を続ける自然な形）。判定を
+  #    非ゲート行の側にだけ置くと、この形が「読まずに上書きした」と誤認されて hook が deny
+  #    する（クロスモデルレビューで 3 回転続いた同クラスの指摘。分岐の順序を直して閉じた）。
+  if (g_pvar != "" && consumes(line, g_pvar)) g_pvar = ""
+  if (g_state == 2 && consumes(line, g_var)) g_state = 0
+  # 保存変数を `$?` でも自分自身の参照でもない値で上書きする区間（`rc=0`）は、その時点で
+  # 元の rc を失う（`rc=$?` ⏎ `rc=0` ⏎ `exit $rc` はプロセス 0 で終わる。codex-cli の実測）。
+  if (g_pvar != "" && overwrites(line, g_pvar)) { print g_pstart ":gate-exit-dropped:" g_pline; g_pvar = "" }
+  if (g_state == 2 && overwrites(line, g_var)) { print g_start ":gate-exit-dropped:" g_line; g_state = 0 }
+  if (g_state == 1) {
+    # `$?` を持ち越している。この行の先頭区間で読まなければ失われる（後段では読めない）。
+    v = capture_var(segs[1])
+    if (v != "") {
+      g_state = 2; g_var = v
+      if (consumes(line, v)) g_state = 0
+    } else if (is_status_exit(segs[1])) {
+      g_state = 0
+    } else if (is_status(segs[1]) && t !~ /^(echo|printf)([[:space:]]|$)/) {
+      # 制御構文が読む形（`if [ $? -ne 0 ]` / `case $? in`）は消費。echo / printf が読む形は
+      # 診断だけなので落ちる（`; echo "EXIT=$?"` を握り潰しと見る規則と同じ）。
+      g_state = 0
+    } else {
+      print g_start ":gate-exit-dropped:" g_line
+      g_state = 0
+    }
+  }
+  if (gi == 0) return
+  # 2) 新しいゲート起動行。変数へ受けた rc（g_state=2）が未消費なら、後段でまとめて消費しうる
+  #    （`gate1 || RC=$?` ⏎ `gate2 || RC=$?` ⏎ `exit $RC`）ので報告せず 1 本前として持ち越す。
+  #    2 本前がまだ在り、かつ別名の変数なら消費されないまま 2 回上書きされたので報告する
+  #    （同名は条件付き集約の途中なので報告しない）。
+  if (g_state == 2) {
+    if (g_pvar != "" && g_pvar != g_var) print g_pstart ":gate-exit-dropped:" g_pline
+    g_pvar = g_var; g_pline = g_line; g_pstart = g_start
+  }
+  # 握り潰し（同一行）は analyze が報告済みなので、ここでは rc が次の行へどう渡るかだけを決める。
+  g_state = 0; g_line = line; g_start = start
+  if (swallowed) return
+  n = n0
+  while (n > gi && strip_prefix(segs[n]) == "") n--
+  # 末尾 `&` の background 起動は rc を `$?` に残さない（`wait` が運ぶ）ので追わない
+  if (n < n0 && seps[n] == "&") return
+  last = segs[n]
+  only_and = 1
+  for (i = gi; i < n; i++) if (seps[i] != "&&") only_and = 0
+  v = capture_var(last)
+  # `$?` 由来でない末尾代入（`… && ok=1 || ok=0`）は `||` を含む形だけ捕獲とみなす。
+  # `gate && ok=1` は短絡でゲートの rc が `$?` に残る（代入は緑のときしか走らない）ので
+  # 変数ではなく `$?` の持ち越し（grok-cli の実測: 単位末尾に置くと偽陽性になっていた）。
+  if (v == "" && !only_and) v = assign_var(last)
+  if (v != "") { g_state = 2; g_var = v; return }
+  if (n > gi && (is_status_exit(last) || is_status(last))) return
+  if (n == gi || only_and) g_state = 1
+}
+# 単位（stdin / ファイル / フェンス）の終端。持ち越したまま終わっていれば赤。
+# 単体起動が最終行なら rc はそのまま残る（正しい形）ので出さない。
+# g_state=1（`$?` の持ち越し）は次の実行行で必ず 2 か 0 へ解決されるので、ここで 1 のまま
+# 残っているのは「ゲート起動行が単位の最終行」の形だけ = rc はそのまま残る（正しい形）。
+function unit_end() {
+  if (g_pvar != "") { print g_pstart ":gate-exit-dropped:" g_pline; g_pvar = "" }
+  if (g_state == 0) return
+  if (g_state == 1) { g_state = 0; return }
+  print g_start ":gate-exit-dropped:" g_line
+  g_state = 0
+}
 function analyze(line, start,   m, k, arr, i, hit, swallowed) {
   if (mask(line, 1) ~ /\$\{?PIPESTATUS/) print start ":pipestatus:" line
   m = strip_subst(mask(line))
@@ -312,23 +546,95 @@ function analyze(line, start,   m, k, arr, i, hit, swallowed) {
   if (hit) print start ":pipe-exit-read:" line
   # ゲート起動を含む論理行が診断・出力整形で終端していると、その**プロセスの終了コード**が
   # ゲートの成否を運ばない。区間が 2 つ以上あるときだけ見る（単体起動は正しい形）。
-  if (gate_swallowed(m)) print start ":gate-exit-swallowed:" line
+  swallowed = gate_swallowed(m)
+  if (swallowed) print start ":gate-exit-swallowed:" line
+  track_gate(line, start, m, swallowed)
   prev_pipe = is_pipe(arr[k]) ? 1 : 0
 }
-function flush() { if (buf != "") { analyze(buf, buf_start); buf = "" } }
-function feed(line, lineno,   t) {
+function flush() { if (buf != "") { complete(buf, buf_start); buf = "" }; open_q = ""; q_n = 0 }
+# 論理行が確定した。heredoc の opener（`<<WORD` / `<<-WORD`。`<<<` は here-string）を
+# 引用符・置換を伏せた版で探し、区切り語（生の行の同じ位置から取る — mask は長さを保つ）を
+# 積んでから解析する。以降の物理行は区切り語だけの行が来るまで本文として読み飛ばす
+# （行番号は保つ）。hook 経路は共有ヘルパ tests/lib/heredoc-strip.sh が先に本文を落とすが、
+# tracked 走査（sh モード）はファイルを直接流すので、本文の対にならない引用符（英語の所有格の apostrophe など）が
+# 後続の実行コードを引用文字列として伏せる後退があった（クロスモデルレビューの指摘）。
+# 引用符の中・`$((…))` の中の `<<` は伏せた版に残らないので opener と誤認しない。
+function complete(logical, start,   m, pos, rest, tok, raw, dash) {
+  m = strip_subst(mask(logical))
+  gsub(/<<</, "___", m)
+  pos = 1
+  while (match(substr(m, pos), /<<-?[ \t]*/)) {
+    dash = (substr(m, pos + RSTART + 1, 1) == "-") ? 1 : 0
+    pos = pos + RSTART + RLENGTH - 1
+    raw = substr(logical, pos)
+    if (raw ~ /^\\/) raw = substr(raw, 2)
+    if (raw ~ /^"/) { tok = raw; sub(/^"/, "", tok); sub(/".*$/, "", tok) }
+    else if (substr(raw, 1, 1) == SQ) { tok = substr(raw, 2); if (index(tok, SQ) > 0) tok = substr(tok, 1, index(tok, SQ) - 1) }
+    else { tok = raw; sub(/[^A-Za-z0-9_].*$/, "", tok) }
+    if (tok != "" && hd_off == 0) { hd_d[++hd_n] = tok; hd_dash[hd_n] = dash }
+  }
+  analyze(logical, start)
+}
+# 単位の終端。heredoc が終端していないまま終わったら、それは `<<` の誤検出（または hook が
+# 共有ヘルパで本文と終端行を先に落とした入力）なので、読み飛ばした行を捨てずに heredoc
+# 認識を切って流し直す（共有ヘルパの「未終端は解析成功にしない」と同じ契約）。
+function unit_close(   i, n, keep, keepln) {
+  if (hd_n > 0) {
+    n = hd_cnt
+    for (i = 1; i <= n; i++) { keep[i] = hd_lines[i]; keepln[i] = hd_ln[i] }
+    hd_n = 0; hd_cnt = 0; hd_off = 1
+    for (i = 1; i <= n; i++) feed(keep[i], keepln[i])
+    hd_off = 0
+  }
+  flush(); unit_end()
+}
+function feed(line, lineno,   t, m, i, n, was_open, keep, keepln) {
+  # heredoc 本文の読み飛ばし（区切り語だけの行で 1 段閉じる）。bash と同じく `<<-` のときだけ
+  # 先頭タブを剥がして照合し、`<<` はインデント付きの `  EOF` を本文として扱う。
+  if (hd_n > 0) {
+    hd_lines[++hd_cnt] = line; hd_ln[hd_cnt] = lineno
+    t = line; sub(/[ \t]+$/, "", t)
+    if (hd_dash[1] == 1) sub(/^\t+/, "", t)
+    if (t == hd_d[1]) {
+      for (i = 1; i < hd_n; i++) { hd_d[i] = hd_d[i + 1]; hd_dash[i] = hd_dash[i + 1] }
+      hd_n--
+      if (hd_n == 0) hd_cnt = 0
+    }
+    return
+  }
   # 空行もコメント行も $? を書き換えないので prev_pipe は保持する（`cmd | tail -20` の次に
   # コメントを 1 行挟んでから `rc=$?` を読む形も誤読）。フェンス境界・ファイル境界だけで倒す。
-  if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*#/) { flush(); return }
-  if (buf == "") buf_start = lineno
+  # ただし引用符が開いたまま（open_q）の物理行は引用文字列の続きなので、空行・`#` 行でも
+  # 論理行を切らない（`jq --arg c <単一引用符で 3 行にわたる bash tests/run-all.sh>` の中間行を起動と誤認しない）。
+  if (buf == "" || open_q == "") {
+    if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*#/) { flush(); return }
+    if (buf == "") buf_start = lineno
+  }
   t = line
-  if (t ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, "", t); buf = buf t " "; return }
+  if (open_q == "" && t ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, "", t); buf = buf t " "; return }
+  was_open = open_q
+  if (was_open != "") { q_pend[++q_n] = line; q_pendln[q_n] = lineno }
   buf = buf t
-  if (mask(buf) ~ /([|]|&&)[[:space:]]*$/) { buf = buf " "; return }
-  analyze(buf, buf_start); buf = ""
+  m = mask(buf); open_q = MASK_OPEN
+  if (open_q != "") {
+    if (was_open == "") { q_head = buf; q_head_start = buf_start; q_n = 0 }
+    # 結合は QUOTE_JOIN_MAX 物理行まで。閉じないまま超えたら「引用符が対になっていない」と
+    # みなし、開いた行だけを従来どおり 1 論理行として解析し、溜めた行は個別に流し直す
+    # （対にならない apostrophe 以降が単位終端まで伏せられる後退を、上限で打ち切る）。
+    if (q_n < QUOTE_JOIN_MAX) { buf = buf " "; return }
+    n = q_n
+    for (i = 1; i <= n; i++) { keep[i] = q_pend[i]; keepln[i] = q_pendln[i] }
+    q_n = 0; open_q = ""; buf = ""
+    complete(q_head, q_head_start)
+    for (i = 1; i <= n; i++) feed(keep[i], keepln[i])
+    return
+  }
+  q_n = 0
+  if (m ~ /([|]|&&)[[:space:]]*$/) { buf = buf " "; return }
+  complete(buf, buf_start); buf = ""
 }
-BEGIN { SQ = sprintf("%c", 39); DQ = sprintf("%c", 34); SEP = ";|&&|[|][|]" }
-FNR == 1 { buf = ""; prev_pipe = 0; in_block = 0 }
+BEGIN { SQ = sprintf("%c", 39); DQ = sprintf("%c", 34); QF = "."; SEP = ";|&&|[|][|]"; QUOTE_JOIN_MAX = 20; hd_n = 0; hd_cnt = 0; hd_off = 0; q_n = 0 }
+FNR == 1 { unit_close(); buf = ""; prev_pipe = 0; in_block = 0; g_state = 0; g_pvar = ""; hd_n = 0; hd_cnt = 0 }
 { sub(/\r$/, "") }
 mode != "md" { feed($0, FNR); next }
 in_block == 0 {
@@ -343,7 +649,7 @@ in_block == 0 {
     sub(/[[:space:]].*$/, "", info)
     in_block = 1
     is_bash = (info ~ /^(bash|sh|shell|zsh)$/) ? 1 : 0
-    buf = ""; prev_pipe = 0
+    buf = ""; prev_pipe = 0; g_state = 0; g_pvar = ""; hd_n = 0; hd_cnt = 0
   }
   next
 }
@@ -352,12 +658,12 @@ in_block == 0 {
   sub(/^[[:space:]]*/, "", stripped)
   sub(/[[:space:]]*$/, "", stripped)
   if (stripped ~ /^(`+|~+)$/ && substr(stripped, 1, 1) == fence_char && length(stripped) >= fence_len) {
-    flush(); prev_pipe = 0; in_block = 0; next
+    unit_close(); prev_pipe = 0; in_block = 0; next
   }
   if (is_bash == 0) next
   feed($0, FNR)
 }
-END { flush() }
+END { unit_close() }
 '
 
 _ff_exit_code_awk() {
@@ -489,6 +795,9 @@ ${hits}
     echo "                  \`; exit 0\` で握り潰す — いずれも同じ偽の緑になるので同じタグで止まる" >&2
     echo "                  \`&&\` だけは例外（短絡するのでゲートが赤なら後続は走らない）。ログを" >&2
     echo "                  読ませたいなら伝播させたうえで別コマンドで読む" >&2
+    echo "  gate-exit-dropped: ゲート起動の後続の行が rc を伝播させずに終端している（改行区切りで" >&2
+    echo "                  \`rc=\$?\` ⏎ \`echo\` だけを置き、末尾の \`exit \$rc\` を落とした形）。上と同じ" >&2
+    echo "                  壊れ方なので同じ直し方: 起動行の後に \`rc=\$?; echo \"EXIT=\$rc\"; exit \$rc\`" >&2
     printf '%s' "$all_hits" | sed 's/^/  | /' >&2
   fi
   if [ "$has_errors" -eq 1 ]; then

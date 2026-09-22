@@ -1320,7 +1320,6 @@ MISS_PROBE_BASELINE=(
   guard-background-cwd
   guard-checkout-restore
   guard-effort-actual
-  guard-exit-code
   guard-long-gate-background
   guard-pr-followup
   guard-sub-issue-id
