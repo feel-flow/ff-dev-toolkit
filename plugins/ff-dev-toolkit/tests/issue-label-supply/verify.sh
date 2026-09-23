@@ -39,6 +39,10 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 CREATE_ISSUE="$PLUGIN_ROOT/skills/create-issue/SKILL.md"
 OUT_OF_SCOPE="$PLUGIN_ROOT/skills/out-of-scope-issue/SKILL.md"
+# out-of-scope-issue は起票手順（ラベル系統表・Epic 照会の --label）を条件付きで読む
+# references/ へ切り出している。参照ラベルはスキル全体（本線 + references）で数える —
+# 本線だけを見ると、切り出した表の参照が包含検査の外へ出て黙って緑になる。
+OUT_OF_SCOPE_REFS="$PLUGIN_ROOT/skills/out-of-scope-issue/references"
 SETUP_SCRIPT="$PLUGIN_ROOT/docs-template/scripts/setup-github-labels.sh"
 GITHUB_SETUP="$PLUGIN_ROOT/docs-template/05-operations/deployment/github-setup.md"
 
@@ -58,7 +62,7 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 echo "== 起票スキルの参照ラベルと供給（LABEL_DEFS ∪ デフォルト allowlist）の照合 =="
 
-for file in "$CREATE_ISSUE" "$OUT_OF_SCOPE" "$SETUP_SCRIPT" "$GITHUB_SETUP"; do
+for file in "$CREATE_ISSUE" "$OUT_OF_SCOPE" "$OUT_OF_SCOPE_REFS/filing.md" "$SETUP_SCRIPT" "$GITHUB_SETUP"; do
   [ -s "$file" ] || { echo "✗ 必須ファイルが無いか空です: $file" >&2; exit 1; }
 done
 
@@ -95,7 +99,7 @@ extract_referenced() {
         line = substr(line, RSTART + RLENGTH)
       }
     }
-  ' "$1"
+  ' "$@"
 }
 
 # 供給側（SSOT）: LABEL_DEFS ブロックからラベル名だけを取り出す。
@@ -165,7 +169,7 @@ unknown_lineage_rows() {
       next
     }
     in_t { in_t = 0 }
-  ' "$1"
+  ' "$@"
 }
 
 # ---- 自己検証（抽出器・比較器が本当に見ているかを先に確かめる） -----------------
@@ -271,7 +275,7 @@ supply_union="$(printf '%s\n%s\n' "$supply" "$allowlist" | awk 'NF' | sort -u)"
 
 # ---- 2. 参照側の抽出と件数固定 ---------------------------------------------------
 refs_create="$(sort_unique "$(extract_referenced "$CREATE_ISSUE")")"
-refs_scope="$(sort_unique "$(extract_referenced "$OUT_OF_SCOPE")")"
+refs_scope="$(sort_unique "$(extract_referenced "$OUT_OF_SCOPE" "$OUT_OF_SCOPE_REFS"/*.md)")"
 
 for pair in "create-issue:$EXPECTED_REFS_CREATE:$(count_lines "$refs_create")" \
             "out-of-scope-issue:$EXPECTED_REFS_SCOPE:$(count_lines "$refs_scope")"; do
@@ -286,9 +290,12 @@ done
 
 # 系統表の侵食ガード: 未知の系統行が増えていないこと（増えるとその行の参照が
 # 抽出の外へ出て、包含検査が素通りする）。
-for pair in "create-issue:$CREATE_ISSUE" "out-of-scope-issue:$OUT_OF_SCOPE"; do
-  name="${pair%%:*}"; file="${pair#*:}"
-  unknown="$(unknown_lineage_rows "$file")"
+for name in create-issue out-of-scope-issue; do
+  if [ "$name" = create-issue ]; then
+    unknown="$(unknown_lineage_rows "$CREATE_ISSUE")"
+  else
+    unknown="$(unknown_lineage_rows "$OUT_OF_SCOPE" "$OUT_OF_SCOPE_REFS"/*.md)"
+  fi
   if [ -z "$unknown" ]; then
     ok "${name} の系統表に抽出アンカー外の系統行が無い"
   else

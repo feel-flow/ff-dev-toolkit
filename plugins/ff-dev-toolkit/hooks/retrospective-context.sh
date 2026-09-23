@@ -33,7 +33,7 @@
 # hook keeps injecting. The launcher owns the contract instead: any script that
 # shells out to a nested non-interactive `claude -p` whose stdout is the
 # deliverable must export RETROSPECTIVE_MODE=off for that child process (see
-# skills/retrospective/SKILL.md "自動発火"). Re-measure and revisit this branch
+# skills/retrospective/references/auto-trigger.md, rule 4). Re-measure and revisit this branch
 # if a future host adds a headless marker to the input.
 
 INPUT_TIMEOUT_SECONDS=2

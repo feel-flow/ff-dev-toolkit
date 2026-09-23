@@ -470,7 +470,7 @@ Closes #${ISSUE_NUM}
 - 変更ファイルと行番号を明記
 - テスト結果を含める
 - セルフレビュー結果を含める（ステップ6 の完了後に追記する。PR 作成時点では枠だけでよい）
-- **PR 本文にフォローアップ Issue の番号を書くなら、その起票を PR 作成より前に済ませる**。GitHub は Issue と PR で採番列を共有するため、「次に発行されるはずの番号」を推測して書くと PR 自身がその番号を取る。後で起票する場合は番号を書かず `<!-- follow-up issue: TBD -->` のプレースホルダを置き、起票直後に `gh pr edit --body-file` で埋める（順序制約の詳細は `out-of-scope-issue` スキル §3.3）
+- **PR 本文にフォローアップ Issue の番号を書くなら、その起票を PR 作成より前に済ませる**。GitHub は Issue と PR で採番列を共有するため、「次に発行されるはずの番号」を推測して書くと PR 自身がその番号を取る。後で起票する場合は番号を書かず `<!-- follow-up issue: TBD -->` のプレースホルダを置き、起票直後に `gh pr edit --body-file` で埋める（順序制約の詳細は `skills/out-of-scope-issue/references/filing.md` §3.3）
 
 #### PR タイトルと Issue 参照の規約【重要】
 

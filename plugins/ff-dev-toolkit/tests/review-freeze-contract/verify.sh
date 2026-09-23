@@ -491,7 +491,7 @@ ROLE_CONSUMERS=(
 #           モノレポだけが複数を収録する。素のディレクトリ名で数えると、ツール生成物や
 #           スクラッチディレクトリが 1 つ増えただけで的外れな「改名・移動」診断で赤くなる。
 #
-# 標識 1 は retrospective-contract / out-of-scope-routing とその selftest が使う判別子と
+# 標識 1 は retrospective-contract / out-of-scope-routing が使う判別子と
 # 同じもの。run-all の case 36 も同じ 2 標識を使う（判定の複製は tests/run-all/verify.sh の
 # `_mkchk_layout` と本ブロックの 2 箇所。共有ヘルパへの括り出しは Issue `#1696` で扱う）。
 REPO_ROOT_DIR="$(cd "$PLUGIN_ROOT/../.." 2>/dev/null && pwd -P || true)"

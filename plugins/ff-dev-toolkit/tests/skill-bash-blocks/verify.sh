@@ -2,6 +2,8 @@
 #
 # SKILL.md の bash コードブロックに対する「パイプ入力の grep -q*」横断検査（Issue #234）。
 #
+# 空振り検出: 走査対象から `skills/*/references/*.md` のグロブを外した写しを与えると、references のコントロール（retrospective/references/filing.md が対象に入っていること）の 1 件が赤になる（2026-09-23 実測。13 件中 1 件失敗。切り出し先の bash ブロックが検査から黙って外れる形を緑にしない）。
+#
 # SKILL.md の bash ブロックはエージェントがそのまま実行する。`set -euo pipefail` の
 # もとでパイプの下流に早期終了する grep -q* を置くと、一致した時点で grep が終了して
 # 上流 producer が SIGPIPE (141) で死に、パイプライン全体が失敗扱いになる —
@@ -15,6 +17,8 @@
 #   - SKILL.md の bash 系コードブロック → 本 suite（grep -q* と MBCS。裸の $0 検査
 #     も本 suite だが、対象はブロックではなくファイル全文 + commands/*.md）。対象は
 #     plugins/*/skills/*/SKILL.md（全プラグインのスキル）、
+#     plugins/*/skills/*/references/*.md（条件付きで読む reference。本文から切り出した
+#     手順の bash ブロックも、エージェントがそのまま実行するので同じ検査に掛ける）、
 #     plugins/*/docs-template/.github/skills/*/SKILL.md（配布テンプレートのスキル）、
 #     リポジトリローカルの .claude/skills/*/SKILL.md（存在する場合のみ。公開 checkout
 #     には無いので nullglob で自然に空になる）
@@ -236,6 +240,7 @@ fi
 shopt -s nullglob
 SKILL_FILES=(
   "$PLUGINS_DIR"/*/skills/*/SKILL.md
+  "$PLUGINS_DIR"/*/skills/*/references/*.md
   "$PLUGINS_DIR"/*/docs-template/.github/skills/*/SKILL.md
   "$REPO_ROOT"/.claude/skills/*/SKILL.md
 )
@@ -251,9 +256,11 @@ fi
 # （.claude/skills は私有 checkout 限定の任意対象なのでコントロールにしない）
 control_skill=0
 control_template=0
+control_reference=0
 for file in "${SKILL_FILES[@]}"; do
   case "$file" in
     */ff-dev-toolkit/skills/out-of-scope-issue/SKILL.md) control_skill=1 ;;
+    */ff-dev-toolkit/skills/retrospective/references/filing.md) control_reference=1 ;;
     */ff-dev-toolkit/docs-template/.github/skills/skill-authoring-safety/SKILL.md) control_template=1 ;;
   esac
 done
@@ -261,6 +268,11 @@ if [ "$control_skill" -eq 1 ]; then
   ok "検査対象に out-of-scope-issue/SKILL.md を含む（skills グロブの妥当性）"
 else
   bad "検査対象に out-of-scope-issue/SKILL.md が含まれていません（skills グロブがずれている可能性）"
+fi
+if [ "$control_reference" -eq 1 ]; then
+  ok "検査対象に retrospective/references/filing.md を含む（references グロブの妥当性）"
+else
+  bad "検査対象に retrospective/references/filing.md が含まれていません（references グロブがずれている可能性）"
 fi
 if [ "$control_template" -eq 1 ]; then
   ok "検査対象に docs-template の skill-authoring-safety/SKILL.md を含む（テンプレート側グロブの妥当性）"

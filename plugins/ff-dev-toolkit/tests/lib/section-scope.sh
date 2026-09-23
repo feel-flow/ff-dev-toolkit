@@ -19,6 +19,17 @@
 #       （番号列の順序など、真偽では足りないもの）はここを通す。**呼び出し側で awk を
 #       書き直さない** — 節の定義が 2 つ並存すると、フェンス追跡や終端の規則が片方だけ
 #       更新され、同じ文書に対して 2 つの答えが出る（2026-09 のレビュー指摘）。
+#   section_scope_extract_prose FILE HEADING
+#       section_scope_extract と同じ節から、コードフェンス（区切り行と中身）を除いた
+#       散文だけを出す。節の確定・失敗時の扱いは section_scope_extract と同じ。散文の
+#       構造（番号付きリストの項目など）だけを照合したいとき、フェンス内の例示を拾わない
+#       ために使う。呼び出し側でフェンスの開閉を追い直さない — 4 連の中の 3 連や
+#       バッククォートの中の `~~~` を「閉じ」と誤判定する簡易版が実際に書かれた。
+#   section_scope_heading_count FILE HEADING
+#       HEADING（リテラル前方一致）に一致する見出し行のうち、コードフェンスの外にあるものの
+#       本数を stdout へ出して 0。フェンスが閉じていなければ 1 を返し、理由 1 行を出す。
+#       見出しの実在・一意性だけを見たいときに使う（section_scope_extract は本文の空な節を
+#       「空です」で落とすので、直後に小節が続く見出しの実在確認には使えない）。
 #
 # 契約:
 #   - 見出しの一致本数が 1 本でなければ fail-closed。0 本 = 節が無い、2 本以上 =
@@ -66,8 +77,9 @@
 # 見出しが 2 本以上でも「先頭 1 本ぶんの本文」が漏れて誤って照合されることはない。
 # フェンス状態機械は tests/lib/mbcs-guard.sh の mbcs_scan_bash_blocks と同型
 # （開始フェンスの文字種と長さを記録し、同種・同長以上のフェンスだけを終了とみなす）。
+# 第 3 引数が 1 なら、フェンス（区切り行と中身）を節本文へ含めない（散文モード）。
 _section_scope_scan() {
-  awk -v h="$1" '
+  awk -v h="$1" -v prose="${3:-0}" '
     { sub(/\r$/, "") }
     {
       line = $0
@@ -79,7 +91,7 @@ _section_scope_scan() {
         if (closer ~ /^(`+|~+)$/ && substr(closer, 1, 1) == fence_char && length(closer) >= fence_len) {
           in_fence = 0
         }
-        if (inside == 1) body = body line "\n"
+        if (inside == 1 && prose != 1) body = body line "\n"
         next
       }
       if (stripped ~ /^(```|~~~)/) {
@@ -87,7 +99,7 @@ _section_scope_scan() {
         fence_len = 0
         while (substr(stripped, fence_len + 1, 1) == fence_char) fence_len++
         in_fence = 1
-        if (inside == 1) body = body line "\n"
+        if (inside == 1 && prose != 1) body = body line "\n"
         next
       }
       if (index(line, h) == 1) { n++; inside = 1; next }
@@ -105,12 +117,35 @@ _section_scope_scan() {
 }
 
 section_scope_extract() {
-  local file="$1" heading="$2" scan section heading_hits base nl
+  _section_scope_extract_mode "$1" "$2" 0
+}
+
+section_scope_heading_count() {
+  local scan first nl='
+'
+  scan="$(_section_scope_scan "$2" "$1" 1)"
+  first="${scan%%"$nl"*}"
+  case "$first" in
+    ''|*[!0-9]*)
+      echo "見出し '$2' は検査不能です（見出し数を数えられません。$(basename "$1")）"
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$first"
+}
+
+section_scope_extract_prose() {
+  _section_scope_extract_mode "$1" "$2" 1
+}
+
+# $3=0 は節本文そのまま、1 はフェンスを除いた散文だけ（_section_scope_scan の第 3 引数）。
+_section_scope_extract_mode() {
+  local file="$1" heading="$2" mode="$3" scan section heading_hits base nl
   base="$(basename "$file")"
   nl='
 '
 
-  scan="$(_section_scope_scan "$heading" "$file")"
+  scan="$(_section_scope_scan "$heading" "$file" "$mode")"
   case "$scan" in
     *"$nl"*)
       heading_hits="${scan%%"$nl"*}"

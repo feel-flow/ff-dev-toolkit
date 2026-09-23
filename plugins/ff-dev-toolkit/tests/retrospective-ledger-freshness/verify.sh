@@ -8,12 +8,9 @@
 # `exit 1` を `exit 0` へ倒しても、needle は全部一致したままである。実際に走らせる層が
 # 要る（tests/ace-refine の「base 鮮度ガードの振る舞い」と同じ発想）。
 #
-# **tests/retrospective-contract から分けてある理由**: 向こうには
-# retrospective-contract-selftest が対で付いており、`check_label_coverage` が「baseline で
-# ✓ になった全ラベルを変異で実測する」ことを要求する。振る舞い検査を向こうへ置くと、
-# ラベル 1 件につきゲート全体の再実行が 1 回増え、しかも**それ以外の約 85 変異も**毎回
-# git fixture の構築を払う。実測で selftest が 11 分 → 18 分に伸びた。振る舞いは
-# needle ではないので、検出力を変異で測る対象でもない。層を分けて両方を速いまま保つ。
+# **tests/retrospective-contract から分けてある理由**: 向こうは一時領域不要の文言 gate で、
+# 1 秒未満で終わる。振る舞い検査は git fixture の構築を払うので、層を分けて文言 gate を
+# 速いまま保つ（フェンスのコード行に文言の針を張らないのも、ここが実行で見ているため）。
 #
 # 検査:
 #   S0. 構造 — フェンスの停止点が 6 箇所あり、すべて `exit 1` である（`exit 0` は 0 箇所）。

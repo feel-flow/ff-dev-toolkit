@@ -24,6 +24,7 @@
 #   予約語から `else` を外すと「else の直後」が赤。
 #   末尾から改行を外すと「引数なしで行末」が赤。
 #   末尾を否定先読みへ広げると「sed の | 区切り」が赤。
+# 空振り検出: 自動発火節の判定リストから未完了報告の定型文を変えた SKILL.md を与えると、hook / SKILL.md の自動発火契約の照合 1 件が赤になる（2026-09-23 実測。shell 検査 121 件中 1 件失敗。判定リストを壊したまま「契約あり」へ倒さない）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -33,6 +34,9 @@ CONTEXT_TARGET="$PLUGIN_ROOT/hooks/retrospective-context.sh"
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
+# 自動発火節の切り出しは共通 lib に任せる（呼び出し側で awk を書き直さない。lib のヘッダ参照）。
+# shellcheck source=../lib/section-scope.sh
+. "$SCRIPT_DIR/../lib/section-scope.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 SKILL="$PLUGIN_ROOT/skills/retrospective/SKILL.md"
 
@@ -1202,22 +1206,12 @@ fi
 # 改名・構造崩れ）も空になって赤へ倒れる（fail-closed）。
 # 見出しの literal は 1 か所で持つ（節の切り出しと実在検査が同じ値を使う）。
 AUTOFIRE_HEADING='## 自動発火（事前注入 + Stop fallback）'
-# 切り出しで気をつける点が 2 つある。
-#   1. コードフェンス内の `## ` 行で節が早期終了しないこと。SKILL.md は実際にフェンス内へ
-#      `## セッション振り返り` を含んでおり、同種のフェンスが節内へ入った瞬間に
-#      「節は非空だが定型文を含まない」= **偽の赤**になる
-#   2. 見出しの一致は前方一致ではなく**完全一致**にすること。前方一致だと、見出しの後ろへ
-#      文字を足した別見出し（`## 自動発火（…）の補足` など）が開始規則に当たって exit を
-#      迂回し、節が次の見出しまで広がる。広がった範囲に散文の出現が入れば、また
-#      「どこかに 1 つあれば満たす」へ戻る（節の広がり）
-AUTOFIRE_SECTION="$(awk -v h="$AUTOFIRE_HEADING" '
-  { sub(/\r$/, "") }
-  /^```/ { inf = !inf; next }
-  inf { next }
-  $0 == h { f = 1; next }
-  /^## / { if (f) exit }
-  f
-' "$SKILL")"
+# 節の切り出し（フェンス内の `## ` 行で早期終了しない・見出しがちょうど 1 本でなければ
+# 空にして赤へ倒す）は共通 lib の契約で、lib の状態機械は tests/section-scope-lib が直接叩く。
+# 散文モード（section_scope_extract_prose）はコードフェンスの区切り行と中身を除いて返す。フェンス内の
+# 番号付きの例示（`2. 振り返り: …`）を判定リストと見なすと、例示を残して本物の項目を壊した形が
+# 緑になるため。フェンスの開閉は lib の状態機械（文字種・長さを区別する）に任せ、ここで追い直さない。
+AUTOFIRE_SECTION="$(section_scope_extract_prose "$SKILL" "$AUTOFIRE_HEADING")" || AUTOFIRE_SECTION=""
 # 節に絞るだけでは足りない。**節内の散文**へ定型文が引用された時点で、判定リスト側を
 # 壊しても散文側の出現で満たされ、#931 と同じ見逃しが狭い範囲で再発する（クロスモデル
 # レビュー指摘）。契約を担っているのは判定リストの項目そのものなので、**番号付きリスト行**
@@ -1230,11 +1224,8 @@ if [ -n "$AUTOFIRE_SECTION" ] && [ -n "$AUTOFIRE_JUDGMENT" ] \
   && [[ $AUTOFIRE_JUDGMENT == *"$INCOMPLETE_REPORT"* ]] \
   && printf '%s' "$FIRST_INPUT" | env -u RETROSPECTIVE_MODE -u RETROSPECTIVE_FILING /bin/bash "$TARGET" | jq -r '.reason // empty' | grep -F "$INCOMPLETE_REPORT" >/dev/null \
   && grep -F "$AUTOFIRE_HEADING" "$SKILL" >/dev/null \
-  && [[ $AUTOFIRE_JUDGMENT == *'Claude Code 互換入力でだけ実行漏れの fallback'* ]] \
-  && [[ $AUTOFIRE_JUDGMENT == *'Codex の Stop 入力（`model` フィールドあり）は常に無音'* ]] \
-  && [[ $AUTOFIRE_JUDGMENT == *'自分で hook を再実行したり marker を作ったりしない'* ]] \
-  && [[ $AUTOFIRE_JUDGMENT == *'Codex の非対話の単発実行（UserPromptSubmit 入力に `model` があり `permission_mode` が `bypassPermissions`'* ]]; then
-  ok "未完了報告・ホスト別 Stop・自動発火境界が hook / SKILL.md で一致"
+  && [[ $AUTOFIRE_JUDGMENT == *'自分で hook を再実行したり marker を作ったりしない'* ]]; then
+  ok "未完了報告・自動発火境界が hook / SKILL.md で一致"
 else
   bad "hook / SKILL.md の自動発火契約が drift"
 fi

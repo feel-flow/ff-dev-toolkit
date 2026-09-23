@@ -499,10 +499,11 @@ fi
 
 # epic の副作用（ラベルの実在が out-of-scope-issue の分岐を開く）は、スクリプト・
 # github-setup.md・SKILL.md の 3 箇所に警告として書かれている。参照先が変わると
-# その 3 箇所が黙って嘘になるため、参照先の記述そのものをピン留めする。
-OUT_OF_SCOPE="$PLUGIN_ROOT/skills/out-of-scope-issue/SKILL.md"
+# その 3 箇所が黙って嘘になるため、参照先の記述そのものをピン留めする。分岐の本体は
+# out-of-scope-issue の起票手順（条件付きで読む references/filing.md）にある。
+OUT_OF_SCOPE="$PLUGIN_ROOT/skills/out-of-scope-issue/references/filing.md"
 if [ ! -s "$OUT_OF_SCOPE" ]; then
-  bad "out-of-scope-issue の SKILL.md が見つからない（epic 副作用の参照先）"
+  bad "out-of-scope-issue の references/filing.md が見つからない（epic 副作用の参照先）"
 elif ! grep -qF -- '#### Epic への紐付け' "$OUT_OF_SCOPE"; then
   bad "out-of-scope-issue に Epic 紐付けの節が無い（3 箇所の epic 警告文が嘘になる）"
 elif ! grep -qF -- '--label epic' "$OUT_OF_SCOPE"; then

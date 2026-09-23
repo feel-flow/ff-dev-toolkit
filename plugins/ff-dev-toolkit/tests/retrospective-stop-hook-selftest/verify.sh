@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Mutation self-test for retrospective prompt/Stop hooks (Issues #583 / #616).
+# 空振り検出: consumer の判定リスト抽出を、散文モードからフェンス行で状態を反転するだけの簡易な除外へ戻した写しを与えると、「フェンス内の番号付き例示を残して判定リスト側を壊す」変異（4 連の中の 3 連・バッククォートの中の ~~~）が検出されず exit 1 で止まる（2026-09-23 実測。consumer が例示側の出現で緑に倒れる形を「検出した」扱いにしない）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -45,6 +46,8 @@ make_fixture() {
   cp "$PLUGIN_ROOT/hooks/retrospective-chain-tail.mjs" "$root/hooks/retrospective-chain-tail.mjs"
   mkdir -p "$root/tests/lib"
   cp "$PLUGIN_ROOT/tests/lib/asdd-gate-drain.sh" "$root/tests/lib/asdd-gate-drain.sh"
+  # 消費側は自動発火節の切り出しを共通 lib に任せている。
+  cp "$PLUGIN_ROOT/tests/lib/section-scope.sh" "$root/tests/lib/section-scope.sh"
   # sandbox へ入れる hook 集合も hooks.json から導出する。消費側（asdd.test.mjs）は
   # 静音契約の名簿を hooks.json から導出するので、ここで列挙を持つと**同じ名簿を 2 か所**
   # で持つことになり、ガードを 1 本足したときに「sandbox に実体が無い」という偽の赤で
@@ -111,15 +114,14 @@ echo "  ✓ consumer は node --test の reporter を固定している"
 # 実測（PR #926 が SKILL.md へ定型文の 2 箇所目を足した回）: SKILL 定型文 drift の
 # 変異が空振りし、develop の全件ゲートが赤いまま残った。
 #
-# 棚卸し（2026-08-27 実測、2026-09-01 Issue #840 で更新。対象ファイル内の出現数）:
+# 棚卸し（2026-08-27 実測、2026-09-01 に更新、2026-09-23 に再実測。対象ファイル内の出現数）:
 #   複数箇所 → `/g` 必須: `case "$MODE" in`（retrospective-stop.sh: 2 / context.sh: 2）/
 #     `ff-dev-toolkit:retrospective`（context.sh: 2）/ `{"hookSpecificOutput"`（context.sh: 2）
 #   意味の錨へ限定: SKILL.md の定型文は自動発火節の番号付き判定リストへ範囲を閉じる。
 #     散文中の引用数は契約ではないため数えず、増減を良性変更として許容する（Issue #956）
 #   1 箇所のみ: `  0:active)`（stop.sh） / `input.stop_hook_active || RETROSPECTIVE_DONE`（mjs） /
-#     `retrospectiveDone || codexStop` /
+#     `RETROSPECTIVE_DONE.test(message) || codexStop`（chain-tail.mjs: 1）/
 #     `INPUT_TIMEOUT_SECONDS=2` / `Automatic retrospective check before stop` /
-#     `Codex の Stop 入力（\`model\` フィールドあり）は常に無音` /
 #     `if ! command -v node ...` / `"Stop": [` / `"UserPromptSubmit": [` /
 #     `codexHost && nonInteractive`（context.sh: 1）/
 #     `(Number(process.argv[1]) || 2) * 1000`（context.sh: 1。discard 段の bound は
@@ -130,7 +132,7 @@ echo "  ✓ consumer は node --test の reporter を固定している"
 #     `setTimeout(latch,`（context.sh: 1）/ `[ "$RETROSPECTIVE_OFF" -eq 0 ]`（context.sh: 1）/
 #     `...registeredHooks()`（asdd.test.mjs: 1）
 #   `finish("inject")` は context.sh に 3 箇所あるが、変異は前後の行ごと指定して一意に当てている
-#   `process.exit(2)` は 3 箇所あるが、変異は前後の行ごと指定して一意に当てている
+#   `process.exit(2)` は 4 箇所あるが、変異は前後の行ごと指定して一意に当てている
 #   shebang 直後への 1 行挿入（ASDD ゲートを drain より前へ戻す変異）は `\A` 固定なので一意
 #
 # 変異対象の文字列を増やす変更を入れたら、この棚卸しを実測し直すこと。
@@ -175,14 +177,13 @@ expect_occurrences() { # <ファイル> <固定文字列> <期待数>
 # 出力は登録順に並べ直す（完了順にすると、同じ一覧でも実行のたびに並びが変わって前回との
 # 差分が読めない。run-all.sh の並列実行と同じ理由）。
 MUTATIONS=0
-BENIGN=0
 JOB_N=0
 JOB_NAMES=()
 JOB_KINDS=()
 JOB_EXPECTED=()
 JOB_ROOTS=()
 
-register_job() { # <kind: mutation|benign> <name> <expected> <root>
+register_job() { # <kind: mutation> <name> <expected> <root>
   JOB_KINDS+=("$1")
   JOB_NAMES+=("$2")
   JOB_EXPECTED+=("$3")
@@ -194,12 +195,8 @@ check_mutation() {
   register_job mutation "$1" "$2" "$3"
 }
 
-# 良性の変更で赤くならないことも測る（Issue #931）。定型文の照合を「どこかに 1 つ」から
-# 「自動発火の節の中」へ絞ったので、逆に厳しすぎないかを固定しておく必要がある。
-# 散文への加筆で毎回この suite が止まるなら、SKILL.md を書き足せなくなる。
-check_no_regression() { # <名前> <root>
-  register_job benign "$1" "" "$2"
-}
+# 良性の変更（節外・節内フェンスへの散文追記）で赤くならないことは、節の切り出しを共通 lib へ
+# 寄せたので lib 側の契約になった（tests/section-scope-lib がフェンス状態機械を直接叩く）。
 
 ROOT="$(make_fixture active-guard)"
 # `#1612` で再入ガードは判定モジュール側へ移った（shell の `!= "first"` は case へ）。
@@ -565,27 +562,6 @@ FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
   "$ROOT/skills/retrospective/SKILL.md"
 check_mutation "SKILL 定型文 drift（自動発火の判定リスト側）" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
 
-# 節内かつ判定リストより前へ引用を足しても、変異が判定リスト行へ到達すること。
-# 上の 3 つ目の絞りが外れると、変異が散文へ当たって消費側が緑になるため検出できる。
-ROOT="$(make_fixture skill-drift-with-in-section-prose)"
-FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
-  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E\n)/${1}\n参考: 未完了ターンは `振り返り: 今回は作業完了前のため対象外` と報告する。\n/m' \
-  "$ROOT/skills/retrospective/SKILL.md"
-FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
-  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E(?:(?!\n## ).)*?\n\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外/${1}振り返り: 未完了/ms' \
-  "$ROOT/skills/retrospective/SKILL.md"
-check_mutation "節内散文が先にあっても変異は判定リスト行へ届く" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
-
-# 見出しを改名すると節の抽出が空になり、消費側は赤へ倒れる。
-# この針が測るのは**抽出が空になった場合の挙動**であって、`[ -n ... ]` ガードの有無では
-# ない（そのガードを外しても、空文字列を非空パターンで照合すれば偽になるので赤のまま。
-# ガードは多重防御であり、この fixture はその削除に無感応である）。
-ROOT="$(make_fixture autofire-heading-rename)"
-FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
-  -e 's/^\Q$ENV{FF_AUTOFIRE_HEADING}\E/## 自動発火の契約/m' \
-  "$ROOT/skills/retrospective/SKILL.md"
-check_mutation "自動発火 節見出しの改名" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
-
 # 節に絞るだけでは足りない — **節内の散文**へ定型文を足したうえで判定リスト側を壊すと、
 # 節全体を見る実装では散文側の出現で満たされ、#931 が狭い範囲で再発する（クロスモデル
 # レビュー指摘）。この 2 段変異が赤くなることで「番号付きリスト行まで絞っている」ことを
@@ -598,25 +574,23 @@ perl -0pi -e 's/^(\d+\. [^\n]*?)振り返り: 今回は作業完了前のため�
   "$ROOT/skills/retrospective/SKILL.md"
 check_mutation "節内の散文を残して判定リスト側を壊す" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
 
+# フェンス内へ番号付きの例示を置いたうえで本物の判定リスト側を壊すと、フェンスを除外しない実装、
+# あるいはフェンスの開閉を文字種・長さで区別しない簡易な除外では、例示側で照合が成立して緑になる。
+# 例示は「4 連の中の 3 連」と「バッククォートの中の ~~~」の内側に置く（簡易版が閉じと誤判定する形）。
+ROOT="$(make_fixture fenced-numbered-example-then-drift)"
+FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
+  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E\n)/${1}\n````text\n```\n2. 振り返り: 今回は作業完了前のため対象外\n```\n````\n\n```text\n~~~\n2. 振り返り: 今回は作業完了前のため対象外\n~~~\n```\n/m' \
+  "$ROOT/skills/retrospective/SKILL.md"
+perl -0pi -e 's/^(\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外(?=[^\n]*報告する)/${1}振り返り: 未完了/m' \
+  "$ROOT/skills/retrospective/SKILL.md"
+check_mutation "フェンス内の番号付き例示を残して判定リスト側を壊す" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
+
 # 定型文の契約は**両側**（SKILL.md の判定リストと hook の出力）で成立する。SKILL 側だけを
 # 固定しても、hook 側の文字列が変わった drift は検出できない。
 ROOT="$(make_fixture hook-incomplete-report)"
 perl -0pi -e 's/振り返り: 今回は作業完了前のため対象外/振り返り: 未完了/g' \
   "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "hook 側 定型文 drift" "継続理由の必須境界が不足" "$ROOT"
-
-ROOT="$(make_fixture skill-codex-host-drift)"
-expect_occurrences "$ROOT/skills/retrospective/SKILL.md" 'Codex の Stop 入力（`model` フィールドあり）は常に無音' 1
-perl -0pi -e 's/Codex の Stop 入力（`model` フィールドあり）は常に無音/Codex の Stop 入力は fallback/' \
-  "$ROOT/skills/retrospective/SKILL.md"
-check_mutation "SKILL の Codex Stop 無音契約 drift" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
-
-# Issue #840: SKILL.md の非対話スキップ規定（判定リスト項目 5）の drift。
-ROOT="$(make_fixture skill-noninteractive-drift)"
-expect_occurrences "$ROOT/skills/retrospective/SKILL.md" 'Codex の非対話の単発実行（UserPromptSubmit 入力に `model` があり' 1
-perl -0pi -e 's/Codex の非対話の単発実行（UserPromptSubmit 入力に `model` があり/Codex の非対話の単発実行（入力に `model` があり/' \
-  "$ROOT/skills/retrospective/SKILL.md"
-check_mutation "SKILL の非対話スキップ規定 drift" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
 
 # 事前注入が担う契約は `#1612` で入れ替わった。定型文はもう注入文に無いので、
 # 同じ位置で守るのは**発火条件そのもの**になる（旧: 定型文の綴り一致）。
@@ -723,22 +697,6 @@ ROOT="$(make_fixture filing-default-approval)"
 perl -0pi -e 's/without waiting for approval/after asking the user for approval/g' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "既定の起票文言が承認待ちへ退化" "継続理由の必須境界が不足" "$ROOT"
 
-# 節の外（散文）へ定型文を足すだけの変更は、意味を担う出現を壊していないので緑のまま
-# であること。ここが赤くなる実装は「出現数の増加そのもの」を検出しているだけで、
-# Issue #931 の欠陥（意味を担う側の破壊を見逃す）は直っていない。
-ROOT="$(make_fixture prose-mention)"
-printf '\n本節は `振り返り: 今回は作業完了前のため対象外` の扱いに触れる（散文中の引用）。\n' \
-  >> "$ROOT/skills/retrospective/SKILL.md"
-check_no_regression "節外の散文へ定型文を追記" "$ROOT"
-
-# 節**内**へコードフェンスの例示を足しても赤くならないこと。上の EOF 追記は awk の
-# 打ち切り位置より後なので節の境界を一切通らない — 境界そのものを測るのはこちら。
-# フェンス内の `## ` 行で抽出が早期終了する実装だと、純粋な加筆でここが赤くなる。
-ROOT="$(make_fixture fenced-heading-in-section)"
-perl -0pi -e 's{(対応ホストでは[^\n]*\n)}{$1\n```text\n## セッション振り返り\n```\n}' \
-  "$ROOT/skills/retrospective/SKILL.md"
-check_no_regression "自動発火 節内へフェンス例示を追加" "$ROOT"
-
 # ── 登録した検査を並列に回す ─────────────────────────────────────────────────
 #
 #   既定の同時実行数: 論理 CPU 数（上限 8）。上限を置くのは、consumer が測る入力上限の
@@ -764,7 +722,7 @@ RETRO_JOBS="$RETRO_JOBS_DEFAULT"
 # 成立しない。実態は「外側の 8 スロットのうち 1 つが内側 N を持つ」で、ピークは 7 + N。
 # 予算を半分（上限 4）に落とせば、外側が既に受け入れている 8 並列と同程度に収まる。
 #
-# 実測の余裕: 2× コア並列でも全変異 + 良性 2 が緑のまま、consumer が測る
+# 実測の余裕: 2× コア並列でも全変異を検出したまま（計測時は良性 2 件も含む）、consumer が測る
 # 実時間の契約（入力上限 2 秒 < EOF 3 秒 / 10MB を 2 秒以内）は壊れなかった。コア数の少ない CI を
 # 考えて既定は控えめに置き、必要なら FF_RETRO_SELFTEST_JOBS で明示的に上書きする。
 if [ -z "${FF_RETRO_SELFTEST_JOBS:-}" ] && [ "${FF_RUN_ALL_NESTED:-0}" != "0" ]; then
@@ -834,22 +792,16 @@ while [ "$_retro_i" -lt "$JOB_N" ]; do
   fi
   RC="$(cat "$SPOOL/$_retro_i.rc")"
   OUT="$(cat "$SPOOL/$_retro_i.out" 2>/dev/null || true)"
-  if [ "$kind" = mutation ]; then
-    if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -F "$expected" >/dev/null; then
-      echo "  ✓ $name を検出"
-      MUTATIONS=$((MUTATIONS + 1))
-    else
-      echo "✗ $name が狙った診断で red になりません: exit=$RC output=[$OUT]" >&2
-      exit 1
-    fi
+  if [ "$kind" != mutation ]; then
+    echo "✗ $name の検査種別が不正です: ${kind}" >&2
+    exit 1
+  fi
+  if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -F "$expected" >/dev/null; then
+    echo "  ✓ $name を検出"
+    MUTATIONS=$((MUTATIONS + 1))
   else
-    if [ "$RC" -eq 0 ]; then
-      echo "  ✓ $name では red にならない"
-      BENIGN=$((BENIGN + 1))
-    else
-      echo "✗ $name で red になりました（偽の赤）: exit=$RC output=[$OUT]" >&2
-      exit 1
-    fi
+    echo "✗ $name が狙った診断で red になりません: exit=$RC output=[$OUT]" >&2
+    exit 1
   fi
   _retro_i=$((_retro_i + 1))
 done
@@ -868,15 +820,10 @@ if [ "$JOB_N" -gt "$RETRO_JOBS" ] && [ "$_retro_waits" -eq 0 ]; then
 fi
 
 # 件数は名前付き定数で持つ（このファイルは EXPECTED_CONSUMER_CHECKS で既にその慣習）。
-EXPECTED_MUTATIONS=84
-EXPECTED_BENIGN=2
+EXPECTED_MUTATIONS=81
 if [ "$MUTATIONS" -ne "$EXPECTED_MUTATIONS" ]; then
   echo "✗ mutation 実行数が不正: ${MUTATIONS}（期待 ${EXPECTED_MUTATIONS}）" >&2
   exit 1
 fi
-if [ "$BENIGN" -ne "$EXPECTED_BENIGN" ]; then
-  echo "✗ 良性変更の検査数が不正: ${BENIGN}（期待 ${EXPECTED_BENIGN}）" >&2
-  exit 1
-fi
 REACHED_END=1
-echo "✓ retrospective Stop hook mutation self-test: ${EXPECTED_MUTATIONS} 件すべて検出 / 良性変更 ${EXPECTED_BENIGN} 件は緑"
+echo "✓ retrospective Stop hook mutation self-test: ${EXPECTED_MUTATIONS} 件すべて検出"

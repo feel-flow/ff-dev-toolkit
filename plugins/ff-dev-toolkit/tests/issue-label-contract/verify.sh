@@ -20,11 +20,16 @@
 # SIGPIPE 回避の照合ループ・fail-soft 分岐群）は存在せず、worktree 隔離セッションの
 # 複合コマンド拒否ガードとも衝突しない。
 #
-# なぜ共有ファイルに切り出さず複製するのか: 照合と報告の判定規則は起票コマンドの
-# 直前で読まれる必要がある。参照ファイルへ分断すると、エージェントが参照先を読まずに
-# 実在確認ごと飛ばす経路ができる（progressive disclosure は「読まれないことがある」を
-# 前提にした仕組みで、必須手順の置き場所ではない）。そこでドリフト対策は「共有」では
-# なく「照合」で行う。
+# なぜ共有ファイルに切り出さず複製するのか: 2 つの起票手順は同じ骨格を持つが中身が違う
+# （照合する候補の系統が 2 系統 / 3 系統、`--assignee` の既定が付ける / 付けない）。共有ファイル
+# にすると差分を分岐として書くことになり、起票コマンドの直前に他スキルの分岐が混ざる。加えて
+# 照合と報告の判定規則は起票コマンドと同じファイルの直前で読まれる必要があり、規則と起票
+# コマンドを別ファイルへ分断すると、起票コマンドだけを読んで実在確認ごと飛ばす経路ができる。
+# そこで両スキルとも「照合と起票コマンドを同じファイルの中で隣接させる」形を守り、ドリフト
+# 対策は「共有」ではなく「照合」で行う。out-of-scope-issue は起票手順ごと references/filing.md
+# へ切り出している（B 判定で新規に起票するときだけ読む。本線 SKILL.md の振り分け表が読む
+# 条件を名指しする）ので、起票側の検査はそのファイルへ当て、類似 Issue 検索（gh issue list）は
+# 本線へ当てる。起票コマンドが filing.md 以外（本線・他の references）に現れないことも見る。
 #
 # 検査の層:
 #   1. 起票手順の形（検査 1）… 3 つの構造検査で worktree ガード拒否の再発
@@ -58,12 +63,15 @@
 #   6 観点の項目名は見ない。期待値は両ファイルの実体から導出するので、テスト側に
 #   項目数を書かない（書くと項目を増やすたびにここも直す必要が生まれ、忘れれば
 #   検査対象の増減が緑のまま通る）。
-#   SKILL.md 側の「片方だけ直すと red になる」という注記も、この範囲に限定して書くこと。
+#   スキル側（create-issue の SKILL.md と out-of-scope-issue の references/filing.md）の
+#   「片方だけ直すと red になる」という注記も、この範囲に限定して書くこと。
 #
 # 一時ディレクトリも jq / gh / yq も要らない純粋なファイル検査なので、書き込み不可の
 # 環境でも完走する。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/issue-label-contract/verify.sh
+#
+# 空振り検出: out-of-scope-issue の references/consolidation.md に `--assignee` 付き・ラベル無しの起票フェンスを足すと 101 件中 2 件、本線 SKILL.md に `console` フェンスの `$ gh issue create` を足すと 101 件中 1 件、references/filing.md から fixture の行全体一致行（`#### priority の判定基準`）を書き換えると 101 件中 1 件が赤になる（2026-09-23 実測。起票コマンドがラベル確認のファイルの外へ出る・フェンスの書式を変えて検出器の外へ出る・複製された契約行が片側だけ変わる変更を「契約あり」へ倒さない）。
 
 set -euo pipefail
 
@@ -75,6 +83,9 @@ FRAGMENTS="$FIXTURES_DIR/shared-fragments.txt"
 
 CREATE_ISSUE="$PLUGIN_ROOT/skills/create-issue/SKILL.md"
 OUT_OF_SCOPE="$PLUGIN_ROOT/skills/out-of-scope-issue/SKILL.md"
+# out-of-scope-issue の起票手順（ラベルの実在確認 → 起票）の置き場所。
+OUT_OF_SCOPE_FILING="$PLUGIN_ROOT/skills/out-of-scope-issue/references/filing.md"
+OUT_OF_SCOPE_REFS="$PLUGIN_ROOT/skills/out-of-scope-issue/references"
 # 2 つの役割を持つ: (1) `gh label create` 検出器の生きた対照（refine-issue は
 # needs-spec を実際に作る）、(2) 検査 10 の同期対象そのもの（手順 4 の対応表）。
 REFINE_ISSUE="$PLUGIN_ROOT/skills/refine-issue/SKILL.md"
@@ -106,7 +117,7 @@ rel() { printf '%s' "${1#"$REPO_ROOT"/}"; }
 
 echo "== 起票スキルのラベル契約 + create-issue↔refine-issue 項目リストの同期検査 =="
 
-for file in "$CREATE_ISSUE" "$OUT_OF_SCOPE" "$REFINE_ISSUE" "$FRAGMENTS"; do
+for file in "$CREATE_ISSUE" "$OUT_OF_SCOPE" "$OUT_OF_SCOPE_FILING" "$REFINE_ISSUE" "$FRAGMENTS"; do
   [ -s "$file" ] || { echo "✗ 必須ファイルが無いか空です: $file" >&2; exit 1; }
 done
 
@@ -144,7 +155,7 @@ lacks() {
 # 素の部分文字列検索では散文中の言及（「`--assignee @me` へ戻さないこと」等）まで
 # 拾ってしまい、**ルールを書き残すほどテストが赤くなる**。逆に「在ること」を主張する
 # 側も、散文の引用で充足してしまうと何も見ていないのと同じになる。両方向とも行に
-# 束縛する（out-of-scope-routing の no_assignee_argument と同じ理由）。
+# 束縛する。
 argument_lines() { awk -v pat="$2" '$0 ~ pat { print NR }' "$1"; }
 
 ASSIGNEE_PATTERN='^[[:space:]]*--assignee([[:space:]]|=)|[[:space:]]--assignee([[:space:]]|=)|[[:space:]]-a[[:space:]]'
@@ -206,6 +217,29 @@ gh_issue_commands_bound() {
     }
   ' "$file")"
   if [ -z "$out" ]; then ok "$label"; else bad "$label"; printf '%s\n' "$out" >&2; fi
+}
+
+# `gh issue <verb>` の出現行を数え、期待件数と照合する。gh_issue_commands_bound は ```bash 等の
+# タグ付きフェンスの行頭だけを拾うので、期待 0 件の主張（「ここには起票コマンドが無い」）では、
+# 拾えない書き方（`~~~bash`・```console・`VAR=... ` の前置・コマンド置換・フラグの前置など）を
+# 「無い」と区別できない。「コマンド位置」を許す書き方を列挙すると、列挙の外の書き方がすべて
+# 0 件へ倒れる（2 巡のレビューで回避形が層を変えて続いた。ACE-1681-1）。そこで定義を裏返し、
+# 散文中の**素の言及**（バッククォートが verb の直後で閉じる `` `gh issue create` ``）だけを
+# 除いて、残りの出現はすべて数える。引数付きのインラインコード・表のセル・英文中の裸の
+# コマンド名も数える側に倒れる（書くなら素の言及にする）。
+gh_issue_command_lines() {
+  local file="$1" verb="$2" expected="$3" label="$4" out
+  out="$(awk -v verb="$verb" -v expected="$expected" '
+    BEGIN {
+      flag = "([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*"
+      bare = "`gh[[:space:]]+issue[[:space:]]+" verb "`"
+      pat = "(^|[^A-Za-z0-9_.-])gh" flag "[[:space:]]+issue" flag "[[:space:]]+" verb "([^A-Za-z0-9_-]|$)"
+    }
+    { line = $0; sub(/\r$/, "", line); gsub(bare, "", line) }
+    line ~ pat { n++; lines = lines " " FNR }
+    END { if (n + 0 != expected + 0) print "素の言及以外の gh issue " verb " が " n + 0 " 行（期待 " expected " 行。行:" lines "）" }
+  ' "$file")"
+  if [ -z "$out" ]; then ok "$label"; else bad "${label}（${out}）"; fi
 }
 
 # 指定した文字列を含む**最初の** bash フェンスを取り出す。
@@ -345,10 +379,10 @@ else
   ok "自己検証: needle を含むフェンスの無いファイルからは抽出しない"
 fi
 
-# 単純フェンス検出器の正の対照。out-of-scope-issue §3.5 のフェンスは `||` 連結と
+# 単純フェンス検出器の正の対照。out-of-scope-issue の references/filing.md §3.5 のフェンスは `||` 連結と
 # リダイレクトを含む生きた複合行を持つので、これを名指しで検出できなければ
 # 検出器は常に「違反ゼロ」を返している。
-if [ -n "$(awk -v needle='gh pr diff --name-only' -v expected=1 "$SIMPLE_FENCE_SCAN" "$OUT_OF_SCOPE")" ]; then
+if [ -n "$(awk -v needle='gh pr diff --name-only' -v expected=1 "$SIMPLE_FENCE_SCAN" "$OUT_OF_SCOPE_FILING")" ]; then
   ok "自己検証: 複合行を含む生きたフェンス（§3.5）を検出できる（正の対照）"
 else
   bad "自己検証: 複合行を含むフェンスを検出できない — 単純フェンス検出器が壊れている"
@@ -383,25 +417,25 @@ all_needle_fences_simple "$CREATE_ISSUE" 'gh label list --repo "$expected_repo" 
   "create-issue: ラベル実在確認のフェンス（全数）が単純コマンドのみ"
 all_needle_fences_simple "$CREATE_ISSUE" 'gh issue create' 1 \
   "create-issue: 起票のフェンス（全数）が単純コマンドのみ"
-all_needle_fences_simple "$OUT_OF_SCOPE" 'gh label list --repo "$expected_repo" --limit 200' 1 \
-  "out-of-scope-issue: ラベル実在確認のフェンス（全数）が単純コマンドのみ"
-all_needle_fences_simple "$OUT_OF_SCOPE" 'gh issue create' 1 \
-  "out-of-scope-issue: 起票のフェンス（全数）が単純コマンドのみ"
+all_needle_fences_simple "$OUT_OF_SCOPE_FILING" 'gh label list --repo "$expected_repo" --limit 200' 1 \
+  "out-of-scope-issue（references/filing.md）: ラベル実在確認のフェンス（全数）が単純コマンドのみ"
+all_needle_fences_simple "$OUT_OF_SCOPE_FILING" 'gh issue create' 1 \
+  "out-of-scope-issue（references/filing.md）: 起票のフェンス（全数）が単純コマンドのみ"
 
 # $expected_repo を参照する全フェンスが同一フェンス内で宣言している（別シェルで走る
 # 後続フェンスからの参照 = 空展開の再発防止）。
 fences_using_repo_declare_it "$CREATE_ISSUE" "create-issue: \$expected_repo は参照フェンス内で宣言されている"
-fences_using_repo_declare_it "$OUT_OF_SCOPE" "out-of-scope-issue: \$expected_repo は参照フェンス内で宣言されている"
+fences_using_repo_declare_it "$OUT_OF_SCOPE_FILING" "out-of-scope-issue（references/filing.md）: \$expected_repo は参照フェンス内で宣言されている"
 
 # 起票フェンスに --repo / --label / --body-file が同居している（散文照合の補完）。
 create_fence_bundles_flags "$CREATE_ISSUE" "create-issue: 起票フェンスに --repo / --label / --body-file が同居"
-create_fence_bundles_flags "$OUT_OF_SCOPE" "out-of-scope-issue: 起票フェンスに --repo / --label / --body-file が同居"
+create_fence_bundles_flags "$OUT_OF_SCOPE_FILING" "out-of-scope-issue（references/filing.md）: 起票フェンスに --repo / --label / --body-file が同居"
 
 # 旧 1 ブロック方式の装置が復元されていないこと。これらはシェル変数で状態を
 # コマンド間に運ぶ設計（= 単一の複合ブロックを要求する設計）の指紋であり、
 # 1 つでも戻れば worktree ガード拒否（Issue #715 の起点）が再発する。
-for target in "$CREATE_ISSUE" "$OUT_OF_SCOPE"; do
-  name="$(basename "$(dirname "$target")")"
+for target in "$CREATE_ISSUE" "$OUT_OF_SCOPE_FILING"; do
+  name="${target#"$PLUGIN_ROOT"/skills/}"
   lacks "$target" 'label_args' "${name}: label_args（配列組み立て）が無い"
   lacks "$target" 'for candidate in ' "${name}: 照合の for ループが無い"
   lacks "$target" 'issue_body' "${name}: issue_body（heredoc 組み立て）が無い"
@@ -422,7 +456,7 @@ while IFS= read -r fragment || [ -n "$fragment" ]; do
     '~ '*) mode=substring; fragment="${fragment#~ }" ;;
   esac
   fragment_count=$((fragment_count + 1))
-  for target in "$CREATE_ISSUE" "$OUT_OF_SCOPE"; do
+  for target in "$CREATE_ISSUE" "$OUT_OF_SCOPE_FILING"; do
     if [ "$mode" = line ]; then
       has_line "$target" "$fragment" && continue
     else
@@ -433,7 +467,7 @@ while IFS= read -r fragment || [ -n "$fragment" ]; do
       echo "  ✗ create-issue に契約行がありません（${mode}）: $fragment" >&2
     else
       missing_scope=$((missing_scope + 1))
-      echo "  ✗ out-of-scope-issue に契約行がありません（${mode}）: $fragment" >&2
+      echo "  ✗ out-of-scope-issue（references/filing.md）に契約行がありません（${mode}）: $fragment" >&2
     fi
   done
 done < "$FRAGMENTS"
@@ -451,10 +485,10 @@ elif [ "$missing_create" -gt 0 ]; then
   echo "  ✗ create-issue に ${missing_create} 行の欠落（$(rel "$FRAGMENTS") と突き合わせること）" >&2
 fi
 if [ "$fragment_count" -gt 0 ] && [ "$missing_scope" -eq 0 ]; then
-  ok "out-of-scope-issue が散文契約 全 ${fragment_count} 行を保持"
+  ok "out-of-scope-issue（references/filing.md）が散文契約 全 ${fragment_count} 行を保持"
 elif [ "$missing_scope" -gt 0 ]; then
   FAIL=$((FAIL + 1))
-  echo "  ✗ out-of-scope-issue に ${missing_scope} 行の欠落（$(rel "$FRAGMENTS") と突き合わせること）" >&2
+  echo "  ✗ out-of-scope-issue（references/filing.md）に ${missing_scope} 行の欠落（$(rel "$FRAGMENTS") と突き合わせること）" >&2
 fi
 
 # ---- 3. create-issue 固有 ------------------------------------------------------
@@ -493,8 +527,47 @@ contains "$CREATE_ISSUE" 'expected_repo="OWNER/REPO"' "対象リポジトリを�
 # 実行される gh コマンドを 1 件ずつ検査する。件数も固定して、行継続を畳むだけで
 # 検査対象が 0 件になる（= 違反ゼロで緑）空振りを防ぐ。
 gh_issue_commands_bound "$CREATE_ISSUE" create 1 yes "create-issue の gh issue create が --repo と --assignee を持つ"
-gh_issue_commands_bound "$OUT_OF_SCOPE" create 1 no  "out-of-scope-issue の gh issue create が --repo を持ち --assignee を持たない"
+gh_issue_commands_bound "$OUT_OF_SCOPE_FILING" create 1 no  "out-of-scope-issue（references/filing.md）の gh issue create が --repo を持ち --assignee を持たない"
+gh_issue_command_lines "$OUT_OF_SCOPE_FILING" create 1 "out-of-scope-issue（references/filing.md）: 素の言及以外の gh issue create は起票フェンスの 1 行だけ"
+# Epic の照会（引数付きのインラインコード）が 1 行。検索そのものは本線にある。
+gh_issue_command_lines "$OUT_OF_SCOPE_FILING" list 1 "out-of-scope-issue（references/filing.md）: 素の言及以外の gh issue list は Epic 照会の 1 行だけ"
 gh_issue_commands_bound "$OUT_OF_SCOPE" list   2 no  "out-of-scope-issue の gh issue list が --repo を持つ（主要語検索 + bundle の列挙の 2 件）"
+
+# 起票コマンドはラベルの実在確認と同じファイル（references/filing.md）にだけ置く。本線や他の
+# references へ起票コマンドが現れると、実在確認を読まずに起票できる経路が再びできる。filing.md
+# 以外の全ファイル（本線 + 他の references）へ、起票コマンドの不在・アサインとラベル作成の不在・
+# フェンス内の宣言・旧装置の不在を当てる。走査対象が本線だけへ縮んだら赤にする（references を
+# 列挙できない = 検査していない）。glob は隠しファイルやサブディレクトリを拾わないが、references/
+# に直下の通常の .md 以外を置かせないことは out-of-scope-routing が見ている。
+OOS_OTHERS=("$OUT_OF_SCOPE")
+OOS_REFS_SEEN=0
+for ref in "$OUT_OF_SCOPE_REFS"/*.md; do
+  [ -f "$ref" ] || continue
+  OOS_REFS_SEEN=$((OOS_REFS_SEEN + 1))
+  [ "$ref" = "$OUT_OF_SCOPE_FILING" ] || OOS_OTHERS+=("$ref")
+done
+if [ "$OOS_REFS_SEEN" -ge 2 ] && [ "${#OOS_OTHERS[@]}" -eq "$OOS_REFS_SEEN" ]; then
+  ok "out-of-scope-issue: filing.md 以外の走査対象を列挙できる（本線 + references ${OOS_REFS_SEEN} 本のうち filing.md 以外）"
+else
+  bad "out-of-scope-issue: filing.md 以外の走査対象を列挙できる（references ${OOS_REFS_SEEN} 本・走査対象 ${#OOS_OTHERS[@]} 件 — filing.md が無いか references を列挙できていない）"
+fi
+for target in "${OOS_OTHERS[@]}"; do
+  name="${target#"$PLUGIN_ROOT"/skills/}"
+  gh_issue_command_lines "$target" create 0 "${name}: 素の言及以外の gh issue create が無い（起票は references/filing.md だけ）"
+  if [ "$target" = "$OUT_OF_SCOPE" ]; then
+    gh_issue_command_lines "$target" list 2 "${name}: 素の言及以外の gh issue list は検索の 2 行だけ"
+  else
+    gh_issue_command_lines "$target" list 0 "${name}: 素の言及以外の gh issue list が無い（検索は本線）"
+  fi
+  lacks_argument_line "$target" "$ASSIGNEE_PATTERN" "${name}: follow-up 起票はアサインを既定にしない"
+  lacks_argument_line "$target" "$LABEL_CREATE_PATTERN" "${name}: ラベルを作成しない"
+  fences_using_repo_declare_it "$target" "${name}: \$expected_repo は参照フェンス内で宣言されている"
+  lacks "$target" 'label_args' "${name}: label_args（配列組み立て）が無い"
+  lacks "$target" 'for candidate in ' "${name}: 照合の for ループが無い"
+  lacks "$target" 'issue_body' "${name}: issue_body（heredoc 組み立て）が無い"
+  lacks "$target" 'LABEL_LOOKUP_FAILED' "${name}: 状態出力プロトコルが無い"
+  lacks "$target" 'までを 1 つの bash ブロックで' "${name}: 単一ブロック要求の宣言が無い"
+done
 
 # 2 系統（type / priority）であって follow-up は付けない、という create-issue 側の境界。
 # 契約 fragment はこの違いを持てない（両ファイルに同一で在ることを見る仕組みのため）
@@ -506,16 +579,16 @@ contains "$CREATE_ISSUE" '照合する候補は手順 5 で決めた type / prio
 contains "$CREATE_ISSUE" '`follow-up` 系のラベルは付けない' "着手前起票は follow-up を付けない"
 
 # ---- 4. out-of-scope-issue 固有 ------------------------------------------------
-contains "$OUT_OF_SCOPE" '照合する候補は §3.2 で決めた type / priority / follow-up の 3 系統' "候補は type / priority / follow-up の 3 系統"
+contains "$OUT_OF_SCOPE_FILING" '照合する候補は §3.2 で決めた type / priority / follow-up の 3 系統' "候補は type / priority / follow-up の 3 系統"
 
 # ---- 5. 意図的な非対称の固定（アサイン） ----------------------------------------
 # create-issue は着手前の起票ゲートなので同梱 Git Workflow に従い @me を付ける。
 # out-of-scope-issue の起票は backlog 化であって着手ではないのでアサインしない。
 # 「揃えよう」としてどちらかを崩す変更を検出する。
 has_argument_line "$CREATE_ISSUE" "$ASSIGNEE_PATTERN" "着手前起票はアサインを既定にする（引数行として存在）"
-lacks_argument_line "$OUT_OF_SCOPE" "$ASSIGNEE_PATTERN" "follow-up 起票はアサインを既定にしない"
+lacks_argument_line "$OUT_OF_SCOPE_FILING" "$ASSIGNEE_PATTERN" "follow-up 起票はアサインを既定にしない（references/filing.md。本線と他の references は検査 1 のループで見る）"
 contains "$CREATE_ISSUE" "この非対称は意図的で" "アサインの非対称が意図的だと本文に明記されている"
-contains "$OUT_OF_SCOPE" "アサインについて本スキルは中立" "follow-up 側のアサイン中立方針が残っている"
+contains "$OUT_OF_SCOPE_FILING" "アサインについて本スキルは中立" "follow-up 側のアサイン中立方針が残っている"
 
 # ---- 6. ラベル作成はしない（両スキル共通） --------------------------------------
 # 起票ゲートが消費プロジェクトのラベル体系を増やすと分類が場当たりに膨らむ。
@@ -523,7 +596,7 @@ contains "$OUT_OF_SCOPE" "アサインについて本スキルは中立" "follow
 # 検出器が空振りしていないことを、実際に作る refine-issue を対照にして確かめる。
 has_argument_line "$REFINE_ISSUE" "$LABEL_CREATE_PATTERN" "自己検証: gh label create の実行行を検出できる（refine-issue が対照）"
 lacks_argument_line "$CREATE_ISSUE" "$LABEL_CREATE_PATTERN" "create-issue はラベルを作成しない"
-lacks_argument_line "$OUT_OF_SCOPE" "$LABEL_CREATE_PATTERN" "out-of-scope-issue はラベルを作成しない"
+lacks_argument_line "$OUT_OF_SCOPE_FILING" "$LABEL_CREATE_PATTERN" "out-of-scope-issue はラベルを作成しない（references/filing.md。本線と他の references は検査 1 のループで見る）"
 
 # ---- 7. 手順番号の整合 ----------------------------------------------------------
 # 手順を挿入したときに本文中の「手順 N」参照が置き去りになると、エージェントは

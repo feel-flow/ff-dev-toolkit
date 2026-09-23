@@ -313,6 +313,10 @@ else
     # case 11（*.sh MBCS）の fail-closed 経路をシームで自動回帰（Issue #312）。
     # skill-bash-blocks の直後: 同欠陥クラスの SKILL.md 側ガードと並べて報告する。
     "$SCRIPT_DIR/mbcs-guard-failclosed/verify.sh"
+    # 共通 lib tests/lib/section-scope.sh のフェンス状態機械（字下げ・チルダ・4 連・未閉じ）と
+    # 見出し本数のガードを fixture 文書で直接叩く。consumer 文書はチルダ・未閉じを踏まないので、
+    # その分岐はここでしか実行されない。一時領域が作れなければ skip せず赤で止める（1 秒未満）。
+    "$SCRIPT_DIR/section-scope-lib/verify.sh"
     "$SCRIPT_DIR/no-hardcoded-model/verify.sh"
     # 上の「外部コマンド不要」の例外で、yq に依存する（agent-config.yaml の構造検査 —
     # 単一ドキュメント性と全 map 横断の重複キー — を削除したミラー 2 suite から引き継いだ）。
@@ -391,18 +395,12 @@ else
     # 収束させる手順と 2 clone 実測（ADR-038 / Issue #764）。
     "$SCRIPT_DIR/shared-version-convergence/verify.sh"
     "$SCRIPT_DIR/docs-gates/verify.sh"
+    # /out-of-scope-issue の判定・検索・統合・起票の規定と消費側文書の整合。針は本線の
+    # SKILL.md と条件付きの references/*.md のうち規定が置かれたファイルへ張り、ちょうど
+    # 1 行に出現することまで見る（行数閾値と prefix 優先順位は値ごと針にする）。振り分け表と
+    # references の実体の双方向一致・スキル内の相対リンクの解決も見る。外部コマンド・
+    # 一時領域不要。
     "$SCRIPT_DIR/out-of-scope-routing/verify.sh"
-    # out-of-scope 判定の実挙動検証（Issue #499）: SKILL.md から抽出した行数閾値と
-    # prefix 優先順位を参照実装へ流し、判定表・バッチ表の期待ルートと照合する
-    # 静的検査。外部コマンド・一時領域不要。契約文言を見る out-of-scope-routing の
-    # 直後に置く。
-    "$SCRIPT_DIR/out-of-scope-decision/verify.sh"
-    # 上 2 gate の検出力を隔離 fixture への変異注入（旧規則の言い換え・矛盾文の
-    # 注入・SKILL 本文/コンシューマーからの契約節の個別削除・閾値/優先順位の改変・
-    # 抽出契約行の破壊・参照実装への依存注入、の 12 種）で実測する（Issue #499）。
-    # perl / 一時領域が無い場合だけ丸ごと ○ skip（実作業ツリーは変更しない）。
-    # 検査対象の直後に置くことを優先し、安価な順の例外として扱う。
-    "$SCRIPT_DIR/out-of-scope-routing-selftest/verify.sh"
     # /refine-issue の skip 条件契約（Issue #683）: 手順 6・7 を skip してよいのは
     # 「6 観点違反 0 件 かつ SubAgent 論点 0 件」のときだけ、という AND を SKILL.md の
     # 3 箇所（skip 条件・階層化判定の入口・skip 時の報告見出し）で固定する。単一条件へ
@@ -416,26 +414,18 @@ else
     # 一時領域不要。同じ「スキルの契約文言」を扱う out-of-scope 系に続けて置く。
     "$SCRIPT_DIR/removal-sweep/verify.sh"
     # /retrospective の規定（提案閾値・承認境界・read-only 境界・ask モード・trigger 語）
-    # と、ワークフローチェーン記載の相互整合の静的検査（Issue #540）。モノレポでは
-    # 7 ファイル / 13 針、公開配置では 6 ファイル / 11 針を見る。上限と 1 行報告の文面は
+    # と、ワークフローチェーン記載の相互整合の静的検査。針は本線の SKILL.md と
+    # 条件付きの references/*.md のうち規定が置かれたファイルへ張り、ちょうど 1 行に出現する
+    # ことまで見る（写しが残って本体を消しても緑、を塞ぐ）。上限と 1 行報告の文面は
     # SKILL.md から導出して消費側文書へ伝播しているかを照合する。外部コマンド・一時領域
     # 不要。同じ「スキルの契約文言 × 消費側文書」を扱う out-of-scope 系に続けて置く。
     "$SCRIPT_DIR/retrospective-contract/verify.sh"
     # 上の gate は「文言が在る」ことしか見ない。台帳直 push の base 先行ガードだけは
     # SKILL.md からフェンスを抽出し、隔離 git fixture で実際に走らせる（Issue `#1570`）。
     # 引数の向き・cwd 依存の pathspec・停止点の fail-open は、実行しないと測れない。
-    # contract 側へ置かないのは、対の selftest が「✓ ラベルは全件変異で実測」を要求する
-    # ため、振る舞い 1 件につきゲート全体の再実行が増え、他の約 85 変異も毎回 git fixture
-    # の構築を払うから（実測で selftest が 11 分 → 18 分）。git / 一時領域が無ければ ○ skip。
+    # 文言の gate と分けてあるのは、実行検査は git fixture の構築を払うため（文言の gate を
+    # 一時領域不要の 1 秒未満に保つ）。git / 一時領域が無ければ ○ skip。
     "$SCRIPT_DIR/retrospective-ledger-freshness/verify.sh"
-    # 上の gate の検出力を隔離 fixture への変異注入（チェーン記載の針それぞれからの
-    # コマンド削除・規定マーカーと伝播の契約行削除・上限の片側書き換え・抽出不能化・
-    # 上限の併存・絞り込み文の追従漏れ・1 行報告の drift・ゲート自身の針数ガードの
-    # 縮み）で実測し、赤化した検査の件数まで照合する。ゲートの
-    # 検査総数も縛るので、検査そのものが削除される侵食もここで赤くなる。モノレポでは
-    # 公開配置を模した第 2 fixture も回す。perl / 一時領域が無い場合だけ丸ごと ○ skip
-    # （実作業ツリーは変更しない）。検査対象の直後に置くことを優先し、安価な順の例外。
-    "$SCRIPT_DIR/retrospective-contract-selftest/verify.sh"
     # `retrospective-contract` は prompt 文言だけを固定する。実際の plugin context / Stop hook が
     # 初回に block し、継続中・off・不正入力では fail-open するランタイム契約を fixture
     # で実行する（Issue #583）。直後の selftest は入出力・再入・mode・依存・副作用・
@@ -1166,9 +1156,6 @@ REQUIRED_SUITES=(
   # 「<cli> が外向き symlink のとき外部を消さない・書かない」を実測する（#722 で残りを
   # 塞ぐまでの唯一の実行時検査）。一時領域不足で消える場合は明示許可を要求する。
   multi-agent-stale-outputs
-  # out-of-scope 契約ゲート（routing / decision）の検出力 selftest。代替の検査が
-  # 無く、perl・一時領域の都合で消える場合は明示許可を要求する（#499）。
-  out-of-scope-routing-selftest
   # 公開 CHANGELOG 参照ゲートの検出力 selftest。本体は実 CHANGELOG が clean な限り
   # 緑のままなので、検出パターンが弱っても本体だけでは分からない。perl・一時領域の
   # 都合で消えると「参照検出の退行が黙って通る」状態になる（Issue #610）。
@@ -1179,9 +1166,6 @@ REQUIRED_SUITES=(
   # 一時領域 + bare remote + 2 clone が無いと、fresh read だけでは閉じない同時採番を
   # non-fast-forward 後の再生成で収束させる検出力が丸ごと消える（Issue #764）。
   shared-version-convergence
-  # /retrospective 契約ゲートの検出力 selftest。代替の検査が無く、perl・一時領域の
-  # 都合で消えるとチェーン記載の針と規定マーカーの検出力喪失が黙って通る（#540）。
-  retrospective-contract-selftest
   # 自動振り返りのランタイム検出力は mutation self-test 以外に代替がない（#583）。
   retrospective-stop-hook-selftest
   # スキル実体ドリフト検査は、この suite 以外に代替がない。一時領域不足で消えると
@@ -1325,7 +1309,6 @@ MISS_PROBE_BASELINE=(
   guard-sub-issue-id
   host-route-parity
   init-docs-placeholder-list
-  issue-label-contract
   issue-label-supply
   link-sub-issues
   live-ace-gates-selftest
@@ -1354,9 +1337,6 @@ MISS_PROBE_BASELINE=(
   multi-agent-timeout
   no-checks-merge-basis-contract
   no-hardcoded-model
-  out-of-scope-decision
-  out-of-scope-routing-selftest
-  out-of-scope-routing
   plugin-description-enumeration-selftest
   plugin-description-enumeration
   plugin-root-contract
@@ -1365,10 +1345,7 @@ MISS_PROBE_BASELINE=(
   refine-issue-skip-contract
   release-required-selftest
   removal-sweep
-  retrospective-contract-selftest
   retrospective-ledger-freshness
-  retrospective-stop-hook-selftest
-  retrospective-stop-hook
   review-capture-fail-loud
   review-diff-scope
   review-freeze-contract
@@ -1385,7 +1362,6 @@ MISS_PROBE_BASELINE=(
   severity-parser-intersection
   shared-version-convergence
   shellcheck
-  skill-bash-blocks
   skill-count-consistency-selftest
   skill-count-consistency
   skill-drift-check

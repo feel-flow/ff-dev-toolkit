@@ -194,7 +194,7 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 2
 # 失敗で、集計へ進んだうえでの失敗を意味するので、ガードの停止とは分ける。
 
 # 閾値の正本は skills/close-issue/SKILL.md（工数実績セクションの規則）。
-# ここと skills/retrospective/SKILL.md が複製で、tests/effort-contract が 3 箇所の
+# ここと skills/retrospective/references/effort.md が複製で、tests/effort-contract が 3 箇所の
 # 一致を機械照合する。変えるときは 3 箇所すべてを同時に直すこと。
 #
 # 2026-09-10 に 3 リポジトリ 78 件で較正した値（旧 0.77 / 1.30 は暫定値）。

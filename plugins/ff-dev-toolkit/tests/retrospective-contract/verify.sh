@@ -13,56 +13,45 @@
 #
 # 検査:
 #   A. チェーン記載サイト（`/merge-cleanup` → `/ace-curate` → `/retrospective`）が
-#      全導線に存在する。サイトごとに固定針を持ち、**ループが黙って縮まない**よう
-#      ファイル数・針数の両方を明示の期待値で縛る
-#   B. SKILL.md の規定マーカー（提案閾値・実測限定・提案の構造と出力形式・承認境界・
-#      read-only 境界・ask/off モード・trigger 語）が存在する。提案上限（最大 N 件）
-#      と 1 行報告の文面は **SKILL.md から導出**し、抽出できなければ赤にする
-#      （fail-closed）。上限は SKILL.md 内で一意であることまで見る
+#      全導線に存在する（導線ごとに表記が違うので、サイトごとに固定針を持つ）
+#   B. スキルの規定マーカー（提案閾値・実測限定・出力形式・承認境界・read-only 境界・
+#      ask/off モード・trigger 語）が存在する。規定は本線の SKILL.md と、条件付きで読む
+#      references/*.md のうち**実際に置かれたファイル**へ針を張る。SKILL.md の振り分け表が
+#      各 reference を読む条件とともに名指ししていること、外部から節名で参照される見出しが
+#      スキル内でちょうど 1 本であることも見る。提案上限（最大 N 件）と 1 行報告の文面は
+#      **SKILL.md から導出**し、抽出できなければ赤にする（fail-closed）。上限はスキル内で
+#      一意であることまで見る
 #   C. 導出した上限・1 行報告・承認境界が消費側文書（git-workflow / DEPLOYMENT /
 #      workflow-principles / README）へ同じ値で伝播している（片側書き換えの検出）
 #   D. `/ace-curate` との責務分離の記述が双方向に残っている
-#   E. 台帳直 push の base 先行ガード（Issue `#1570`）が「記録内容を作る前」の節に在り、
-#      復帰（取り込んでから記録を作り直す）と `/ace-curate` との述語差の理由まで残って
-#      いる。**節そのものの位置**（ガード節が記録手順より前）と、台帳パスが 3 箇所
-#      （フェンス・記録手順 0・書き込み節の commit 形）で一致することも見る — 節スコープ針は
-#      節の移動を検出せず、パスは独立リテラルなので片側だけ変えても文言検査は通るため
+#   E. 台帳直 push の base 先行ガードが「記録内容を作る前」の節に在る。**節そのものの位置**
+#      （ガード節が記録手順より前）と、台帳パスが 3 箇所（フェンス・記録手順 0・書き込み節の
+#      commit 形）で一致することも見る — 節スコープ針は節の移動を検出せず、パスは独立
+#      リテラルなので片側だけ変えても文言検査は通るため
 #
-# **契約値（提案上限・1 行報告の文面）はこのファイルに書かない**（SKILL.md から
-# 導出する）。一方、針数・ファイル数の期待値は「ループが黙って縮む」ことを捕まえる
-# ための機械アサートなので直書きし、導線を増減したら同時に更新する。
-# 契約**文言**も針として持つ: 表現を変えたら本 suite も同時に更新する運用で、
-# 更新漏れは空振り = 赤として現れる（docs-fact-drift のヘッダと同じ方針）。
+# **針は対象ファイル（節照合なら節内）でちょうど 1 行に出現すること**を要求する。0 行は
+# 規定の欠落、2 行以上は写しが残った状態で、写しがあると本体を消しても緑のまま通る。
+# 以前は対の selftest が針ごとに行を消して赤化を確かめていたが、grep -F の針は該当行を
+# 消せば必ず赤になるので何も測っておらず（実際に固定していたのは 1 行に乗る針の本数
+# だけ）、Issue `#1824` でこの 1 行判定へ置き換えて撤去した。
 #
-# 検出範囲の限界（意図的）: 本ゲートはほぼ `contains` で構成され、**契約行を残した
-# まま矛盾する文を追記する**変更は検出できない。`not_contains` は out-of-scope-routing
-# と同じく「退役した旧規則の逐語復元」を塞ぐ用途に限る（対象は ADR-046 で退役した 2 規則 —
-# observation 受け渡し便の起票規則〔SKILL.md〕と、SSOT 中央台帳の所在〔消費側文書〕）。
-# 空振り検出: SKILL.md から「closed 済み対策の再発時は、前の対策と同じ型を再提案しない」の箇条を削ると、禁止と許可の対の針 2 件が赤になる（2026-09-18 実測。221 件中 2 件失敗。規定が名前だけ残って中身が変わる変更を「契約あり」へ倒さないことの実測）。
-# 追記型の矛盾はレビューで見る前提とし、ここでは主張しない。
+# **契約値（提案上限・1 行報告の文面）はこのファイルに書かない**（SKILL.md から導出する）。
+# 契約**文言**は針として持つ: 表現を変えたら本 suite も同時に更新する運用で、更新漏れは
+# 空振り = 赤として現れる。針は規定に従属する — 経緯・理由の叙述や、別の検査が振る舞いで
+# 覆っている文言（台帳照合フェンスの `merge-base` の向き・`:(top)`・rc の受け方は下の
+# ledger-freshness が実行で見る）には張らない。
+#
+# 検出範囲の限界（意図的）: **契約行を残したまま矛盾する文を追記する**変更は検出できない。
+# `not_contains` は「退役した旧規則・旧定義の逐語復元」を塞ぐ用途に限る（ADR-046 で退役した
+# SSOT 中央台帳の所在〔消費側文書〕と、事象の多重度とも読める `Count` の旧定義）。
+# 追記型の矛盾はレビューで見る前提とする。
+# 空振り検出: references/promotion.md から「closed 済み対策の再発時は、前の対策と同じ型を再提案しない」の箇条を削ると禁止と許可の対の針 2 件が赤、SKILL.md へ針の写しを 1 行足すと「重複」で 1 件が赤になる（2026-09-23 実測。197 件中 2 件 / 1 件失敗。規定が名前だけ残って中身が変わる変更と、写しで本体の欠落が隠れる変更を「契約あり」へ倒さない）。
 #
 # **検査 E のフェンスが実際にどう振る舞うかは本 suite の対象外**。引数の向き・pathspec の
 # cwd 依存・停止点の fail-open は文言では測れないので、tests/retrospective-ledger-freshness/
-# が SKILL.md からフェンスを抽出して隔離 git fixture で走らせる。ここへ振る舞い検査を
-# 置かないのは、対の selftest が「baseline の ✓ ラベルは全件変異で実測」を要求するため、
-# 振る舞い 1 件につきゲート全体の再実行が増え、**他の約 85 変異も毎回 git fixture の構築を
-# 払う**から（実測で selftest が 11 分 → 18 分）。層を分けて両方を速いまま保つ。
-#
-# 検出力の実測は tests/retrospective-contract-selftest/（同 Issue）が変異注入で行う。
+# が SKILL.md からフェンスを抽出して隔離 git fixture で走らせる。
 #
 # 外部コマンド・一時領域は不要。read-only。
-#
-# 変異検出（台帳直 push の base 先行ガード。2026-09-15 実測。変異は 1 件ずつ当て、
-# 前後で対照を取る。赤転しなかった変異は無し。件数の正本は selftest の expect_red 宣言）:
-#           ガード節を**見出しごと**記録手順の後ろへ移すと 1 件が赤（節内の 11 針は全件緑の
-#           まま通る。節スコープ針は配置を見ないので、見出しの前後関係そのものを検査している）。
-#           記録手順 0 の台帳パスだけを変えると 1 件が赤、書き込み節の commit 先だけを
-#           変えると 1 件が赤（フェンスから抽出したパスを基準に 3 箇所の一致を見ている）。
-#           台帳 status の行を落とすと 3 件が赤（pathspec の針・rc を受ける針・パス抽出）。
-#           復帰手順 1 の行を落とすと 3 件が赤（ff-only・rebase 否定・force 禁止が同一行）。
-#           復帰不能時の行を落とすと 2 件が赤（記録の断念と、提案の閾値の免除を受けない規定）。
-#           先行判定・`origin/*` の形状検査・台帳 dirty の復帰可能・非デフォルトブランチ・
-#           記録手順 0 の照合参照は、契約行ごとに 1 件ずつ赤。
 
 set -euo pipefail
 
@@ -91,6 +80,14 @@ else
 fi
 
 SKILL="$PLUGIN_ROOT/skills/retrospective/SKILL.md"
+# 条件付きでしか使わない規定は references/ へ切り出してある（本線の SKILL.md は振り分け表で
+# 各ファイルと読む条件を名指しする）。規定の針はその規定が実際に置かれたファイルへ張る。
+SKILL_REFS="$PLUGIN_ROOT/skills/retrospective/references"
+REF_FILING="$SKILL_REFS/filing.md"
+REF_PROMOTION="$SKILL_REFS/promotion.md"
+REF_LEGACY="$SKILL_REFS/legacy-intake.md"
+REF_EFFORT="$SKILL_REFS/effort.md"
+REF_AUTOTRIGGER="$SKILL_REFS/auto-trigger.md"
 ACE_CURATE="$PLUGIN_ROOT/skills/ace-curate/SKILL.md"
 GIT_WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 WORKFLOW_PRINCIPLES="$PLUGIN_ROOT/docs-template/05-operations/deployment/workflow-principles.md"
@@ -115,45 +112,65 @@ bad() {
   FAIL=$((FAIL + 1))
 }
 
-contains() {
-  local file="$1" needle="$2" label="$3"
-  if grep -qF -- "$needle" "$file"; then
-    ok "$label"
+# 針の出現行数を判定する（ヘッダ参照: ちょうど 1 行であること）。
+once_verdict() { # $1=出現行数 $2=needle $3=label
+  if [[ "$1" -eq 1 ]]; then
+    ok "$3"
+  elif [[ "$1" -eq 0 ]]; then
+    bad "${3}（不足: ${2}）"
   else
-    bad "${label}（不足: ${needle}）"
+    bad "${3}（重複: ${1} 行に出現。写しが残ると本体を消しても緑になる: ${2}）"
   fi
 }
 
-# 退役した旧規則（ADR-046: observation 受け渡し便の起票規則 / SSOT 中央台帳の所在）の逐語復元を塞ぐ。
+# grep -c はファイルを直接読むのでパイプの SIGPIPE 反転は起きない。0 件のとき rc=1 を
+# 返すので rc は捨てて件数だけを見る（数値でなければ 0 = 不足へ倒す）。
+contains() {
+  local file="$1" needle="$2" label="$3" n
+  n="$(grep -cF -- "$needle" "$file")" || true
+  case "$n" in '' | *[!0-9]*) n=0 ;; esac
+  once_verdict "$n" "$needle" "$label"
+}
+
+# 退役した旧規則・旧定義の逐語復元を塞ぐ。対象が SKILL.md のときは references/ も含めて
+# 見る（切り出し先へ復元されても同じ退行）。
 not_contains() {
   local file="$1" needle="$2" label="$3"
-  if grep -qF -- "$needle" "$file"; then
-    bad "${label}（旧ルールが残存: ${needle}）"
-  else
-    ok "$label"
-  fi
+  local -a targets=("$file")
+  local rc=0
+  [[ "$file" == "$SKILL" ]] && targets+=("$SKILL_REFS"/*.md)
+  # rc は三値で読む（0 = 残存、1 = 不在、それ以外 = 読めない）。読めないファイルを
+  # 「不在 = 緑」へ流さない。
+  grep -qF -- "$needle" "${targets[@]}" || rc=$?
+  case "$rc" in
+    0) bad "${label}（旧ルールが残存: ${needle}）" ;;
+    1) ok "$label" ;;
+    *) bad "${label}（検査不能: grep rc=${rc}）" ;;
+  esac
 }
 
-# 節スコープ照合の共通ラッパ。診断は `（不足: …）` の形へ揃える
-# （selftest の gate_labels がこの接頭辞でラベルを正規化する）。
+# 節スコープ照合の共通ラッパ。節の切り出しは共通 lib に任せ（自前の awk を書かない）、
+# 節本文の中で針がちょうど 1 行であることを見る。awk は here-string を読み切るので
+# SIGPIPE は起きない。needle は ENVIRON 経由で渡す（-v はバックスラッシュを解釈する）。
 section_contains() {
-  local file="$1" heading="$2" needle="$3" label="$4" reason
-  if reason="$(section_scope_contains "$file" "$heading" "$needle")"; then
-    ok "$label"
-  else
-    bad "${label}（不足: ${reason}）"
+  local file="$1" heading="$2" needle="$3" label="$4" body n
+  if ! body="$(section_scope_extract "$file" "$heading")"; then
+    bad "${label}（不足: ${body}）"
+    return
   fi
+  n="$(FF_NEEDLE="$needle" awk 'index($0, ENVIRON["FF_NEEDLE"]) { c++ } END { print c + 0 }' <<<"$body")"
+  once_verdict "$n" "$needle" "$label"
 }
 
 # 起票前の手順の針は当該節だけを見る。別節へのコピーでは手順の欠落を埋められない。
 # 節の切り出しは共通ヘルパへ寄せた（自前 awk はコードフェンス内の `#` 行で早期終端する）。
 preflight_contains() {
-  section_contains "$SKILL" "$PREFLIGHT_HEADING" "$1" "$2"
+  section_contains "$REF_FILING" "$PREFLIGHT_HEADING" "$1" "$2"
 }
 
 echo "== retrospective 契約検査 =="
 
-REQUIRED_FILES=("$SKILL" "$ACE_CURATE" "$GIT_WORKFLOW" "$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
+REQUIRED_FILES=("$SKILL" "$REF_FILING" "$REF_PROMOTION" "$REF_LEGACY" "$REF_AUTOTRIGGER" "$REF_EFFORT" "$ACE_CURATE" "$GIT_WORKFLOW" "$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   REQUIRED_FILES+=("$ROOT_README")
 fi
@@ -200,48 +217,15 @@ if [[ "$IS_MONOREPO" -eq 1 ]]; then
   )
 fi
 
-# 期待値はモノレポ/公開の 2 配置で違う。導線が減ったときにループが黙って縮み、
-# 検査していないのに全 pass に見えるのを防ぐ（out-of-scope-routing の
-# EXPECTED_INLINE_CONSUMERS と同じ趣旨）。
-if [[ "$IS_MONOREPO" -eq 1 ]]; then
-  EXPECTED_CHAIN_FILES=7
-  EXPECTED_CHAIN_NEEDLES=13
-else
-  EXPECTED_CHAIN_FILES=6
-  EXPECTED_CHAIN_NEEDLES=11
-fi
-
-CHAIN_NEEDLES_SEEN=0
-CHAIN_FILES_SEEN=0
-SEEN_FILES=""
 for site in "${CHAIN_SITES[@]}"; do
   site_file="${site%%|*}"
   site_rest="${site#*|}"
   site_needle="${site_rest%|*}"
   site_label="${site_rest##*|}"
   contains "$site_file" "$site_needle" "チェーン記載: ${site_label}"
-  CHAIN_NEEDLES_SEEN=$((CHAIN_NEEDLES_SEEN + 1))
-  case "$SEEN_FILES" in
-    *"[${site_file}]"*) ;;
-    *)
-      SEEN_FILES="${SEEN_FILES}[${site_file}]"
-      CHAIN_FILES_SEEN=$((CHAIN_FILES_SEEN + 1))
-      ;;
-  esac
 done
 
-if [[ "$CHAIN_FILES_SEEN" -eq "$EXPECTED_CHAIN_FILES" ]]; then
-  ok "チェーン記載の検査対象が ${EXPECTED_CHAIN_FILES} ファイル（増減時は EXPECTED_CHAIN_FILES も更新すること）"
-else
-  bad "チェーン記載の検査対象が ${CHAIN_FILES_SEEN} ファイル（期待 ${EXPECTED_CHAIN_FILES} ファイル）— ループが黙って縮んでいる"
-fi
-if [[ "$CHAIN_NEEDLES_SEEN" -eq "$EXPECTED_CHAIN_NEEDLES" ]]; then
-  ok "チェーン記載の針が ${EXPECTED_CHAIN_NEEDLES} 件（増減時は EXPECTED_CHAIN_NEEDLES も更新すること）"
-else
-  bad "チェーン記載の針が ${CHAIN_NEEDLES_SEEN} 件（期待 ${EXPECTED_CHAIN_NEEDLES} 件）— ループが黙って縮んでいる"
-fi
-
-# ── B. SKILL.md の規定マーカーと導出値 ───────────────────────────────────────
+# ── B. スキル（SKILL.md + references/）の規定マーカーと導出値 ─────────────────────
 # 提案上限は SKILL.md の**最初の出現**（frontmatter description）から導出する。
 # 本文との一致は下の `**最大 N 件**` 針が担保する。抽出できない形（漢数字化・
 # 節ごと削除）へ変わったら「上限が無い」ではなく赤にする（fail-closed）。
@@ -253,9 +237,10 @@ else
   bad "提案上限（最大 N 件）を SKILL.md から抽出できません（節の削除か表記変更。fail-closed）"
 fi
 
-# 導出は最初の一致だけを採るので、SKILL.md 内に異なる上限が併存しても素通りする。
+# 導出は最初の一致だけを採るので、スキル内に異なる上限が併存しても素通りする。
 # 「最大 3 件」と「最大 5 件」が同居した状態は、読み手ごとに違う上限で運用される
 # ので、値が一意であることまで検査する（消費側の照合は導出値としか比べられない）。
+# 走査は本線と references/ の両方 — 切り出し先に別の上限を書いても同じ退行になる。
 if [[ -n "$CAP" ]]; then
   CAP_VARIANTS="$(awk '
     { line = $0
@@ -266,11 +251,11 @@ if [[ -n "$CAP" ]]; then
         line = substr(line, RSTART + RLENGTH)
       }
     }
-  ' "$SKILL" | sort -u | tr '\n' ' ')"
+  ' "$SKILL" "$SKILL_REFS"/*.md | sort -u | tr '\n' ' ')"
   if [[ "$CAP_VARIANTS" == "${CAP} " ]]; then
-    ok "提案上限が SKILL.md 内で一意（${CAP}）"
+    ok "提案上限がスキル内で一意（${CAP}）"
   else
-    bad "提案上限が SKILL.md 内で一意でありません（検出値: ${CAP_VARIANTS}）— 併存した上限は読み手ごとに違う運用を生む"
+    bad "提案上限がスキル内で一意でありません（検出値: ${CAP_VARIANTS}）— 併存した上限は読み手ごとに違う運用を生む"
   fi
 fi
 
@@ -311,36 +296,40 @@ contains "$SKILL" "**機微情報を提案本文へ引用しない**" "提案閾
 # まま下流（承認・起票）へ流れていた。
 # 針は文頭から文末（句点）までを含める。末尾だけを見る針だと `…提示する**のが望ましい**。` の
 # ような文中へのモダリティ差し替えが部分一致で素通りし、義務が推奨へ緑のまま落ちる。
-contains "$SKILL" "- **提示する前に**下の「起票前の既存確認」を実施し、起票先 repo の既存 Issue 検索まで済ませてから提示する。" "提案閾値: 提示前に既存 Issue 検索を済ませる"
+contains "$SKILL" "- **提示する前に** [references/filing.md](references/filing.md) の「起票前の既存確認」を実施し、起票先 repo の既存 Issue 検索まで済ませてから提示する。" "提案閾値: 提示前に既存 Issue 検索を済ませる"
 
 # Issue #1451: 起票の既定を承認待ちから自動起票へ変更。承認待ち式は RETROSPECTIVE_FILING=ask の
 # 保険だけに残す。既定の針・保険の針・env の観測手順（ACE-539-2）・構造的に起票できない場合の
 # 提示止まり・出力形式の起票結果行を対で持つ（どれか 1 つが落ちると「自動起票」が「勝手に起票」
 # か「結局承認待ち」のどちらかへ退化する）。
-contains "$SKILL" "既定は**承認を待たずに起票する**（自動起票）" "起票境界: 既定は承認を待たずに起票"
-contains "$SKILL" "承認待ち式は保険 \`RETROSPECTIVE_FILING=ask\` でだけ有効になる" "起票境界: 承認待ちは RETROSPECTIVE_FILING=ask の保険"
-contains "$SKILL" "printenv RETROSPECTIVE_FILING" "起票境界: RETROSPECTIVE_FILING の観測手順（printenv）"
-contains "$SKILL" "**既定モードでも起票せず提示に留めるもの**" "起票境界: 起票先・内容を確定できない提案は提示止まり"
+contains "$REF_FILING" "既定は**承認を待たずに起票する**（自動起票）" "起票境界: 既定は承認を待たずに起票"
+contains "$REF_FILING" "承認待ち式は保険 \`RETROSPECTIVE_FILING=ask\` でだけ有効になる" "起票境界: 承認待ちは RETROSPECTIVE_FILING=ask の保険"
+contains "$REF_FILING" "printenv RETROSPECTIVE_FILING" "起票境界: RETROSPECTIVE_FILING の観測手順（printenv）"
+contains "$REF_FILING" "**既定モードでも起票せず提示に留めるもの**" "起票境界: 起票先・内容を確定できない提案は提示止まり"
+# 見出し語だけ残して列挙を縮めると、確認できなかった提案や個人環境への提案まで自動起票される。
+contains "$REF_FILING" "「起票前の既存確認」を実行できなかった（認証エラー・rate limit 等）" "起票境界: 既存確認を実行できなかった提案は起票しない"
+contains "$REF_FILING" "個人環境（\`~/.claude\` 等）への提案" "起票境界: 個人環境への提案は起票しない"
+# 実施のスイッチ（明示指定は env を上書き）と違い、起票は外向き書き込みなので明示呼び出しでも ask を尊重する。
+contains "$REF_FILING" "明示呼び出しでも ask 設定は尊重する" "起票境界: 明示呼び出しでも RETROSPECTIVE_FILING=ask を尊重する"
 contains "$SKILL" "起票: [owner/repo#N（新規）" "出力形式: 起票結果の行"
 # ask モードの出力形状も対で pin する（既定側だけ固定すると ask 側の文言が自由落下する）。
 contains "$SKILL" "\`RETROSPECTIVE_FILING=ask\` のときは \`起票:\` 行の代わりに \`承認いただければ起票します。\` で終え" "出力形式: ask モードは承認待ちの文で終える"
-contains "$SKILL" "**ask モード（\`RETROSPECTIVE_FILING=ask\`）**: 提案を提示して**ユーザー承認を待つ**（承認なしに起票しない）" "起票境界: ask モードは起票前にユーザー承認を待つ"
+contains "$REF_FILING" "**ask モード（\`RETROSPECTIVE_FILING=ask\`）**: 提案を提示して**ユーザー承認を待つ**（承認なしに起票しない）" "起票境界: ask モードは起票前にユーザー承認を待つ"
 # Issue #1293: 包括的な実行指示（「最後までやって」等）が出ている場合の例外。利用者指示は
 # skill に優先する（using-superpowers）ため、承認ゲートと衝突したときの向きを明文化する。
 # Issue #1451 以降この例外は ask モード（RETROSPECTIVE_FILING=ask）に限る — 既定は承認を
 # 待たないので包括指示の判定自体が要らない。
 # 例外が特急レーンを飲み込む退化（重大起票まで無確認になる）を対の針で塞ぐ。
-contains "$SKILL" "利用者がそのセッションで当該作業を含む**包括的な実行指示**" "承認境界: 包括的な実行指示の下では改めて確認しない"
-contains "$SKILL" "ask モードの包括指示例外は特急レーン（データ破壊・広範な作業停止・セキュリティの重大起票）には及ばない" "承認境界: 包括指示の例外は特急レーンに及ばない"
+contains "$REF_FILING" "利用者がそのセッションで当該作業を含む**包括的な実行指示**" "承認境界: 包括的な実行指示の下では改めて確認しない"
+contains "$REF_FILING" "ask モードの包括指示例外は特急レーン（データ破壊・広範な作業停止・セキュリティの重大起票）には及ばない" "承認境界: 包括指示の例外は特急レーンに及ばない"
 contains "$SKILL" "振り返り工程ではファイル編集・コミット・Issue 作成を行わない" "承認境界: 振り返り工程は read-only"
 # 観測台帳の導入で書き込みは 2 系統に分かれた: 定型記録（作業中リポジトリ内・承認不要）と
-# Issue 起票（既存確認の完了後。既定は承認を待たない）。どちらか一方だけが残る退化を両針で検出する（同一行に乗る）。
+# Issue 起票（既存確認の完了後。既定は承認を待たない）。どちらか一方だけが残る退化を両針で検出する。
 contains "$SKILL" "書き込みが発生するのは、観測台帳への定型記録" "承認境界: 定型記録の書き込み範囲を明示"
 contains "$SKILL" "と、既存確認を完了した提案を起票する段（既定は承認を待たない" "承認境界: Issue 起票の書き込みは既存確認の完了後"
 
 # 提案 1 件の構造。実測欄が出力形式から消えれば、閾値の文言が残っていても
 # 「実測を添えずに一般論を提案する」退化が起きる（閾値と出力形式は対で効く）。
-contains "$SKILL" "各提案に **起票先 repo** と **期待効果**（何が速く/正確になるか）に加え、**既存確認**（重複していないことの根拠）と **付与予定ラベル** を添える" "提案の構造: 必須 4 欄を列挙する"
 # 出力形式の欄は「出力形式節のテンプレートに在ること」が要件そのもの（別節の散文へ
 # 同じ接頭辞を書いても、報告テンプレートからは落ちたまま）。節はテンプレートを収めた
 # `text` フェンスで、その中に `## セッション振り返り` があるため、フェンス追跡を持つ
@@ -354,31 +343,28 @@ section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "- 起票先: " "出力形式
 section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "- 付与予定ラベル: " "出力形式: 付与予定ラベル欄"
 section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "- 期待効果: " "出力形式: 期待効果欄"
 
-# Issue #606: 起票前の既存確認。欄（`- 既存確認: `）だけ残って節が消えると、書く場所は
-# あるのに何を確認するかが消えるため、節の見出し・記入を強制する一文・検索の取得上限を
-# 対で持つ。特に `--limit` は、消えても症状が「重複 Issue が増える」だけで原因へ辿れない
+# 起票前の既存確認。欄（`- 既存確認: `）だけ残って手順が消えると、書く場所はあるのに
+# 何を確認するかが消えるため、記入を強制する一文と検索の取得上限を対で持つ（節の見出しは
+# 下の B2 がスキル内でちょうど 1 本であることを見る）。特に `--limit` は、消えても症状が「重複 Issue が増える」だけで原因へ辿れない
 # （既定 30 件の打ち切りをその先の不在と誤判定する fail-open）ので針の価値が高い。
-contains "$SKILL" "### 起票前の既存確認（必須）" "起票前の既存確認: 節が存在する"
 preflight_contains "この行を書けない提案は提示しない" "起票前の既存確認: 既存確認を書けない提案は提示しない"
 preflight_contains "--state all --limit 200" "起票前の既存確認: 既存 Issue 検索は state 非限定 + 取得上限を明示"
 # Issue #865: 重複していなくても、既存 Issue が提案の方針を否定・制約していることがある
 # （実測: 別プロジェクトで、並列レビュー不可を実測付きで結論した Issue が既にあるのに並列化を
 # 提案していた。出典は同 Issue の本文）。この分岐が落ちると「重複なし = 提示してよい」に縮退する
 # ため、明示か取り下げの一文を独立の針で持つ。前半の「全文読み」はその前提条件で、先頭だけで
-# 打ち切れば矛盾は見つからず、分岐は実行されたまま空回りする（同一行なので巻き添えは正常）。
+# 打ち切れば矛盾は見つからず、分岐は実行されたまま空回りする。
 preflight_contains "矛盾する提案はそのまま出さず、方針側の変更提案であることを明示するか取り下げる" "起票前の既存確認: 方針に矛盾する提案は明示か取り下げ"
 preflight_contains "本文を**全文**読み（先頭だけで切らない）" "起票前の既存確認: ヒットした Issue の本文を全文読む"
 # 節の冒頭にある 2 規定。Issue #865 の争点そのものが「確認のタイミング」なので、閾値側
 # （上の針）だけでなく正本側の順序も固定する。もう 1 本は確認自体が実行できなかったときの
 # 向きで、これが落ちると「検索できなかった = 重複なし」へ倒れ（fail-open）、症状は「重複 Issue が
-# 増える」だけで原因へ辿れない。2 針とも同じ 1 行に乗る。
+# 増える」だけで原因へ辿れない。
 preflight_contains "提案を提示する**前**に、各提案について次を確認する" "起票前の既存確認: 確認は提示前に行う（正本側）"
 preflight_contains "は「重複なし」と扱わない" "起票前の既存確認: 確認不能時は重複なしと扱わない"
 
 # SSOT の最新版との照合（既存 Issue 検索とは別の確認）。
 preflight_contains "SSOT の既定ブランチで当該記述を照合する" "SSOT 照合: 既定ブランチの実体を確認"
-preflight_contains "git -C \"<SSOT clone>\" fetch \"<確認済み remote>\" \"refs/heads/<既定ブランチ>\"" "SSOT 照合: clone は fetch した実体を確認"
-preflight_contains "gh api -H \"Accept: application/vnd.github.raw+json\" \"repos/<SSOT owner/repo>/contents/<対象 path>?ref=<取得した SHA>\"" "SSOT 照合: clone 不在でも API で確認"
 preflight_contains "「SSOT では対応済み（該当コミット/該当箇所）」として提案を取り下げる" "SSOT 照合: 修正済みは起票せず取り下げ"
 # 見送りが実際に決まるのは既存確認の取り下げ分岐で、そこは「承認と起票」手順 5 を
 # 通らない。書き戻しの相互参照が落ちるとエントリが active のまま残り、本 Issue が
@@ -386,18 +372,17 @@ preflight_contains "「SSOT では対応済み（該当コミット/該当箇所
 preflight_contains "**取り下げても台帳は書き戻す**" "SSOT 照合: 取り下げた閾値到達エントリは mitigated へ書き戻す"
 preflight_contains "**恒久対策の Issue を指していて新規起票を見送った**" "知見ストア: 起票を見送った閾値到達エントリは mitigated へ書き戻す"
 preflight_contains "未修正の残余だけに絞った提案を提示" "SSOT 照合: 一部修正は残余だけ提案"
+# 取得の手段（git / gh のコマンド列）は推論で導出できる側なので針を張らない。導出できない
+# 規則 — 取得した実体（SHA）で読むこと・取得失敗時に古い ref へ戻らないこと — だけを持つ。
+preflight_contains "が成功した直後の \`FETCH_HEAD\` の SHA を記録する" "SSOT 照合: 取得した実体の SHA で読む"
+preflight_contains "fetch 失敗時に古い remote-tracking ref へ戻らない" "SSOT 照合: 取得失敗時に古い ref へ戻らない"
 preflight_contains "「照合不能」と記録し、「修正済みでない」と扱わない" "SSOT 照合: 確認不能を未対応と混同しない"
 preflight_contains "\`既存確認:\` 行へ SSOT の repo・既定ブランチ・確認した SHA/path" "SSOT 照合: 結果と参照先を既存確認へ記録"
 
-preflight_contains "gh repo view \"<SSOT owner/repo>\" --json defaultBranchRef --jq '.defaultBranchRef.name'" "SSOT 照合: 既定ブランチ名を取得"
-preflight_contains "git -C \"<SSOT clone>\" show \"<取得した SHA>:<対象 path>\"" "SSOT 照合: clone は SHA と path を指定して読む"
-preflight_contains "gh api \"repos/<SSOT owner/repo>/git/ref/heads/<既定ブランチ>\" --jq '.object.sha'" "SSOT 照合: API は既定ブランチの SHA を取得"
 
 # 起票先の解決と変更要求/応答の振り分け。
-preflight_contains "git -C \"<marketplace checkout>\" remote get-url origin" "起票先解決: marketplace の実在 remote を読む"
 preflight_contains "**作業対象リポジトリの owner から類推しない**" "起票先解決: owner を類推しない"
 preflight_contains "**配布元と SSOT を区別する**" "起票先解決: 開発元と配布ミラーの関係を確認"
-preflight_contains "gh repo view \"<候補 owner/repo>\" --json nameWithOwner" "起票先解決: repo の存在と正規名を確認"
 preflight_contains "到達可能な SSOT。配布ミラーへ新規起票しない" "起票先解決: 変更要求は SSOT へ"
 preflight_contains "その公開 Issue へ返信。実装修正の管理先は SSOT" "起票先解決: 公開報告への応答先を維持"
 preflight_contains "そのプロジェクトで実測した remote の repo" "起票先解決: プロジェクト固有課題の行先"
@@ -407,8 +392,8 @@ preflight_contains "開発元が非公開・非開示で SSOT 関係を確認で
 
 # 観測台帳（起票の前段バッファ・KPT 拡張）: Issue トラッカーを観測の蓄積に使うと
 # 一回性の観測まで Issue になり重複起票が構造化する（Issue #606 の実測が背景）。
-# 「まず台帳へ記録 → 閾値到達で昇格」の経路と、Keep / 過剰動作の観察レンズが SKILL.md
-# から落ちると、閾値の文言だけ残して直接起票へ縮退しても他の針は緑のままなので、
+# 「まず台帳へ記録 → 閾値到達で昇格」の経路と、Keep / 過剰動作の観察レンズがスキルから
+# 落ちると、閾値の文言だけ残して直接起票へ縮退しても他の針は緑のままなので、
 # 経路の要素を個別の針で固定する。
 contains "$SKILL" "## 観測の記録 — 観測台帳（起票の前段バッファ）" "観測台帳: 節が存在する"
 contains "$SKILL" "まず**観測台帳**へ記録する" "観測台帳: 起票前にまず台帳へ記録"
@@ -416,58 +401,51 @@ contains "$SKILL" "**累計 3 回**に到達し、対応 Issue が未リンク" 
 # Count の単位。行内の多重度と同一セッションの反復でレビュアーの判定が割れた。
 # 「累計回数」だけ残して単位が落ちると、また行数と事象数のどちらで数えるかが分岐する。
 # 旧定義「この警告が当たった回数」は事象の多重度にも読めるので、復元を not_contains で塞ぐ。
-contains "$SKILL" "#### Count の単位" "観測台帳: Count の単位節"
 contains "$SKILL" "**1 行 = 1 回**" "観測台帳: Count は 1 行 1 回"
 contains "$SKILL" "**同一セッション・同一エントリは 1 回**" "観測台帳: 同一セッションの反復は 1 回"
 contains "$SKILL" "**既存エントリは遡及しない**" "観測台帳: Count の既存値は遡及しない"
 not_contains "$SKILL" "この警告が当たった回数" "観測台帳: Count を事象の多重度と読める旧定義が復元されていない"
 contains "$SKILL" "**特急レーン**" "観測台帳: 重大観測の特急レーン"
 contains "$SKILL" "アクションに繋がらない Keep は記録しない" "観測台帳: Keep はアクションに繋がるものだけ記録"
-# 分散台帳（ADR-046 / Issue #1146）: 台帳は作業中リポジトリごとに持ち、無ければテンプレートから
-# 作成する。導入先から SSOT へ observation Issue で 1 件ずつ受け渡す旧経路は廃止した
-# （2 日で 23 件が滞留した実測）。旧経路の残件だけは SSOT での実行時に両リポジトリを
-# 検索して取り込む。廃止文言は「退役した旧規則の逐語復元」を塞ぐ固定文字列でもある。
+# 分散台帳（ADR-046）: 台帳は作業中リポジトリごとに持ち、無ければテンプレートから作成する。
 contains "$SKILL" "台帳は**作業中のリポジトリ**の \`docs/08-knowledge/OBSERVATIONS.md\`" "観測台帳: 作業中リポジトリの台帳へ記録"
 contains "$SKILL" "\`\${FF_DEV_TOOLKIT_ROOT}/docs-template/08-knowledge/OBSERVATIONS.md\` をコピーして作成する" "観測台帳: 不在時はテンプレートから作成"
-contains "$SKILL" "受け渡し便）は**廃止**した" "観測台帳: 受け渡し便の廃止を明記"
-contains "$SKILL" "**昇格の起票先は改善対象で分岐する**" "観測台帳: 起票先は改善対象で分岐"
-contains "$SKILL" "作業中プロジェクト固有のプロセス・手順なら**作業中リポジトリ自身**の Issue" "観測台帳: プロジェクト固有はそのリポジトリへ"
-contains "$SKILL" "検索対象は **SSOT と配布ミラーの両方**で" "観測台帳: 旧経路残件は両リポジトリを検索"
-contains "$SKILL" "\`（owner/repo#N より取り込み）\` マーカー" "観測台帳: 取り込みマーカーはリポジトリ修飾"
-not_contains "$SKILL" "SSOT リポジトリへ \`[observation]\` 接頭辞の Issue として受け渡す" "観測台帳: 旧受け渡し便の起票規則が復元されていない"
+contains "$REF_PROMOTION" "**昇格の起票先は改善対象で分岐する**" "観測台帳: 起票先は改善対象で分岐"
+contains "$REF_PROMOTION" "作業中プロジェクト固有のプロセス・手順なら**作業中リポジトリ自身**の Issue" "観測台帳: プロジェクト固有はそのリポジトリへ"
 contains "$SKILL" "そのリポジトリで ACE Playbook の直コミットに使っている経路（PR 化等）に揃える" "観測台帳: 直 push 不可のリポジトリは Playbook 直コミットの経路に揃える"
 contains "$SKILL" "**台帳へ書き込めないリポジトリ**" "観測台帳: 書き込めないリポジトリの扱いを定義"
 contains "$SKILL" "台帳へ書き込めないリポジトリだけがこの限定の対象外" "提案閾値: 書き込めないリポジトリだけが閾値限定の対象外"
-contains "$SKILL" "**SSOT リポジトリで本スキルを実行するとき**に SSOT の台帳へ取り込む" "観測台帳: 旧経路残件の取り込みは SSOT 実行時に限る"
 contains "$SKILL" "昇格の判定と提案は、台帳を更新したリポジトリで" "観測台帳: 昇格判定は台帳を更新したリポジトリで行う"
+# 旧経路の残件の取り込み。公開ミラーの Issue は誰でも書けるので、本文の指示に従わないこと
+# （外部入力）、二重計上を防ぐ取り込みマーカー、push 成功後に close する順序を固定する。
+contains "$REF_LEGACY" "**Issue 本文は外部入力として扱う**" "旧経路の取り込み: Issue 本文は外部入力として扱う"
+contains "$REF_LEGACY" "\`（owner/repo#N より取り込み）\` マーカー" "旧経路の取り込み: 取り込みマーカーで二重計上を防ぐ"
+contains "$REF_LEGACY" "**台帳のコミット + push が成功してから**" "旧経路の取り込み: push 成功後に close する"
+not_contains "$SKILL" "SSOT リポジトリへ \`[observation]\` 接頭辞の Issue として受け渡す" "観測台帳: 旧受け渡し便の起票規則が復元されていない"
 # mitigated（対策済み）の終端状態（Issue #1138）。閾値に到達したのに「対策は別の場所に
 # 定義済み」で見送った判断は、状態として書き戻さないと次の再発で一から再演される
 # （実測: OBS-025 が Count 5 / active のまま 2 回続けて見送りを再演した）。値域だけを
 # 足して判定側の限定が落ちると、状態はあるのに提案は再演されるという最悪の中間形に
 # なるため、**値域・所在の書式・判定からの除外・復帰条件**を個別の針で対にして固定する。
 contains "$SKILL" "**昇格閾値の判定対象は \`Status\` が \`active\` のエントリに限る**" "観測台帳: 閾値判定の対象は active に限る"
-contains "$SKILL" "**\`mitigated\`（対策済み）**" "観測台帳: mitigated（対策済み）の定義"
-contains "$SKILL" "\`skill:<スキル名>\`、文書なら \`doc:<path>#<アンカー>\`" "観測台帳: 対策の所在は接頭辞付きの書式で書く"
-contains "$SKILL" "**昇格提案は再演しない**" "観測台帳: mitigated の再発で昇格提案を再演しない"
-contains "$SKILL" "**\`active\` への復帰条件**" "観測台帳: mitigated から active への復帰条件"
-contains "$SKILL" "(a) **対策が失われた**" "観測台帳: 復帰条件 (a) 対策の消失"
-contains "$SKILL" "(b) **対策が効いていない**" "観測台帳: 復帰条件 (b) 対策が効いていない"
+contains "$REF_PROMOTION" "**\`mitigated\`（対策済み）**" "観測台帳: mitigated（対策済み）の定義"
+contains "$REF_PROMOTION" "\`skill:<スキル名>\`、文書なら \`doc:<path>#<アンカー>\`" "観測台帳: 対策の所在は接頭辞付きの書式で書く"
+contains "$REF_PROMOTION" "**昇格提案は再演しない**" "観測台帳: mitigated の再発で昇格提案を再演しない"
+contains "$REF_PROMOTION" "**\`active\` への復帰条件**" "観測台帳: mitigated から active への復帰条件"
+contains "$REF_PROMOTION" "(a) **対策が失われた**" "観測台帳: 復帰条件 (a) 対策の消失"
+contains "$REF_PROMOTION" "(b) **対策が効いていない**" "観測台帳: 復帰条件 (b) 対策が効いていない"
 # 復帰は `Status` だけでは成立しない。`Issue` 列に所在が残ると昇格条件の未リンク判定に
 # 掛からず、`active` へ戻しても提案が出ない（AC 3 が空振りする）。
-contains "$SKILL" "戻すときは **\`Issue\` 列も \`なし\` へ戻す**" "観測台帳: 復帰時は Issue 列も なし へ戻す"
+contains "$REF_PROMOTION" "戻すときは **\`Issue\` 列も \`なし\` へ戻す**" "観測台帳: 復帰時は Issue 列も なし へ戻す"
 # 閾値判定から外した分、参照先の生死を読む経路は再発記録時のこの確認しか残らない。
-contains "$SKILL" "**\`mitigated\` の再発を記録するときは \`Issue\` 列の参照先を確認する**" "観測台帳: mitigated の再発時に参照先を確認する"
-contains "$SKILL" "\`archived\` との違いは**再発しているか**" "観測台帳: archived / promoted との違いを併記"
+contains "$REF_PROMOTION" "**\`mitigated\` の再発を記録するときは \`Issue\` 列の参照先を確認する**" "観測台帳: mitigated の再発時に参照先を確認する"
 # closed 済み対策の再発時に同型の対策を再提案しない（Issue `#1770`）。到達点を増やす方向の
 # 対策を世代ごとに繰り返しても遵守率は上がらない（OBS-036 で 4 世代・OBS-013 で 3 世代）。
 # 「再提案しない」の禁止と「構造を変える案だけ」の許可を対の針で固定する — 片方だけ残ると、
 # 禁止だけで提案が出なくなるか、許可だけで同型の再提案が続くかのどちらかに退化する。
-contains "$SKILL" "**closed 済み対策の再発時は、前の対策と同じ型を再提案しない**" "観測台帳: closed 済み対策の再発時に同型を再提案しない"
-contains "$SKILL" "**構造を変える案**（判定をゲート側へ移す・経路自体を減らす・その工程を廃止する）だけを候補にする" "観測台帳: 再発時の候補は構造を変える案に限る"
-contains "$SKILL" "代わりに \`Status\` を \`mitigated\`、\`Issue\` を対策の所在へ更新する" "承認と起票: 見送りは mitigated へ書き戻す"
-# #1135（ACE の件数上限）と共通の原則。片方の設計だけが残ると、次に同型の形骸化が
-# 起きたときに「閾値を緩める」対処へ倒れる。
-contains "$SKILL" "**閾値は発火点であり、発火時に取った判断は状態として台帳へ書き戻す。**" "提案閾値: 閾値到達時の判断を状態として書き戻す"
+contains "$REF_PROMOTION" "**closed 済み対策の再発時は、前の対策と同じ型を再提案しない**" "観測台帳: closed 済み対策の再発時に同型を再提案しない"
+contains "$REF_PROMOTION" "**構造を変える案**（判定をゲート側へ移す・経路自体を減らす・その工程を廃止する）だけを候補にする" "観測台帳: 再発時の候補は構造を変える案に限る"
+contains "$REF_FILING" "代わりに \`Status\` を \`mitigated\`、\`Issue\` を対策の所在へ更新する" "承認と起票: 見送りは mitigated へ書き戻す"
 # ── 台帳直 push の base 先行ガード（Issue `#1570`） ─────────────────────────────
 # 台帳はデフォルト統合ブランチの共有文書で、`/retrospective` はそこへ直接 push する。
 # 照合が無いと、同一性判定・`Count` +1・OBS ID 採番が古い台帳から決まり、push の
@@ -479,24 +457,6 @@ LEDGER_PREGATE_SECTION="### 記録の前に base の先行を照合する"
 section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
   "**記録手順 0 より前に照合する。**" \
   "台帳の base 先行ガード: 照合点は記録内容を作る前"
-section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
-  "最終境界であって検出点ではない" \
-  "台帳の base 先行ガード: push の non-fast-forward を検出点と混同しない"
-section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
-  'git merge-base --is-ancestor "origin/${default_branch}" HEAD' \
-  "台帳の base 先行ガード: base の先行を見る"
-section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
-  'git status --porcelain --untracked-files=all -- ":(top)docs/08-knowledge/OBSERVATIONS.md"' \
-  "台帳の base 先行ガード: 台帳パスの未コミット変更も見る（:(top) で cwd 非依存）"
-# pathspec を cwd 相対のまま残すと、リポジトリルート以外から実行した回に台帳 dirty を
-# 見落として通る（実測: サブディレクトリからは warning だけ出て rc=0）。`/ace-curate` の
-# 全ツリー status には無い、絞ったことで入った fail-open なので `:(top)` を針で固定する。
-section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
-  'ledger_status="$(git status' \
-  "台帳の base 先行ガード: git status の失敗を受けてから空判定する"
-section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
-  '[[ "$default_ref" == origin/* ]]' \
-  "台帳の base 先行ガード: default branch ref の形状を検査する"
 section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
   '`git pull --ff-only` で取り込む' \
   "台帳の base 先行ガード: 取り込みは ff-only（rebase / merge で作りかけを残さない）"
@@ -523,12 +483,6 @@ section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
   "取り込んでから記録を作り直す" \
   "台帳の base 先行ガード: 復帰は取り込んでから記録を作り直す"
 section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
-  "**記録手順 0 からやり直す**" \
-  "台帳の base 先行ガード: やり直しは記録手順 0 から"
-section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
-  "並行セッションが同じ主張を既に記録していれば手順 2（\`Count\` +1・\`Last\` 更新・観測メモ 1 行）へ" \
-  "台帳の base 先行ガード: 既記録なら Count +1 へ落ちる"
-section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
   "OBS ID は**取り込んだ後の**台帳の最大連番 +1 で採番する" \
   "台帳の base 先行ガード: OBS ID は取り込み後に採番し直す"
 section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
@@ -537,11 +491,6 @@ section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
 section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
   "復帰できないまま停止した場合" \
   "台帳の base 先行ガード: 復帰不能時は台帳へ書かず報告に留める"
-# `/ace-curate` との述語差（clean tree を台帳パスへ絞った点）は意図的な逸脱で、理由が
-# 落ちると次の保守で「揃える」方向に戻され、作業中の単独実行が記録できなくなる。
-section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
-  "clean tree の検査を**台帳のパスへ絞っている**" \
-  "台帳の base 先行ガード: ace-curate との述語差と理由を明記"
 # 書き込み節側の相互参照。片側だけ残ると non-fast-forward が再び検出点として読まれる。
 section_contains "$SKILL" "### 書き込み（定型コミット）" \
   "検出点は上の照合" \
@@ -551,9 +500,6 @@ section_contains "$SKILL" "### 書き込み（定型コミット）" \
 section_contains "$SKILL" "### 書き込み（定型コミット）" \
   "**記録手順 0 から記録内容を作り直す**" \
   "書き込み節: non-fast-forward の復帰も記録内容の作り直しへ戻す"
-section_contains "$SKILL" "### 書き込み（定型コミット）" \
-  "OBS ID の採番し直しだけで push を再試行しない" \
-  "書き込み節: ID の採番し直しだけの再 push を否定側からも固定"
 # push の粒度はブランチなので、commit を単独に保っても未 push のローカルコミットは一緒に
 # 送られる。照合はこれを止めない（`/ace-curate` と述語を揃えるため）ので、本文で注意を置く。
 section_contains "$SKILL" "### 書き込み（定型コミット）" \
@@ -600,7 +546,8 @@ if [[ -f "$LEDGER_TEMPLATE" ]]; then
 else
   bad "観測台帳: テンプレート docs-template/08-knowledge/OBSERVATIONS.md が実在する（不足: ファイル不在）"
 fi
-# `Status` の値域は台帳ファイル冒頭のエントリ形式が複製先（正本は SKILL.md）。値域行は
+# `Status` の値域は台帳ファイル冒頭のエントリ形式が複製先（`mitigated` の定義と所在書式の正本は
+# references/promotion.md）。値域行は
 # **配布テンプレから導出**し、本文の針を直書きしない（表現を変えたときに片側だけ古くなる
 # のを避ける）。抽出できない形へ変わったら「値域が無い」ではなく赤にする（fail-closed）。
 STATUS_DOMAIN_LINE="$(grep -m1 -F -- '- `Status` の値域: ' "$LEDGER_TEMPLATE" || true)"
@@ -616,21 +563,21 @@ if [[ -n "$STATUS_DOMAIN_LINE" ]]; then
     *)
       bad "観測台帳: 配布テンプレの Status 値域に mitigated がある（不足: \`mitigated\`）" ;;
   esac
-  # 所在の接頭辞（`skill:` / `doc:`）は値域行と SKILL.md の書式規定の両方に現れる。
+  # 所在の接頭辞（`skill:` / `doc:`）は値域行と references/promotion.md の書式規定の両方に現れる。
   # 片側だけ変えると台帳の書式と正本の書式が静かに分かれるので、値域行から接頭辞
-  # トークンを抜き出し、同じトークンが SKILL.md にもあることを見る（抜けなければ赤）。
+  # トークンを抜き出し、同じトークンが references/promotion.md にもあることを見る（抜けなければ赤）。
   STATUS_PREFIX_TOKENS="$(printf '%s\n' "$STATUS_DOMAIN_LINE" | grep -oE '`[a-z]+:' | sort -u | tr '\n' ' ')"
   if [[ -z "$STATUS_PREFIX_TOKENS" ]]; then
-    bad "観測台帳: 所在の接頭辞が値域行と SKILL.md で一致（不足: 値域行に接頭辞トークンがありません）"
+    bad "観測台帳: 所在の接頭辞が値域行と promotion.md で一致（不足: 値域行に接頭辞トークンがありません）"
   else
     STATUS_PREFIX_MISSING=""
     for token in $STATUS_PREFIX_TOKENS; do
-      grep -qF -- "$token" "$SKILL" || STATUS_PREFIX_MISSING="${STATUS_PREFIX_MISSING}${token} "
+      grep -qF -- "$token" "$REF_PROMOTION" || STATUS_PREFIX_MISSING="${STATUS_PREFIX_MISSING}${token} "
     done
     if [[ -z "$STATUS_PREFIX_MISSING" ]]; then
-      ok "観測台帳: 所在の接頭辞が値域行と SKILL.md で一致"
+      ok "観測台帳: 所在の接頭辞が値域行と promotion.md で一致"
     else
-      bad "観測台帳: 所在の接頭辞が値域行と SKILL.md で一致（不足: ${STATUS_PREFIX_MISSING%% })"
+      bad "観測台帳: 所在の接頭辞が値域行と promotion.md で一致（不足: ${STATUS_PREFIX_MISSING%% })"
     fi
   fi
   # 本体台帳は導入先ごとに持つ（ADR-046）ため、存在する配置でだけ照合する。公開ミラーの
@@ -673,22 +620,22 @@ contains "$SKILL" "出力が \`ask\` なら ask モード、\`off\` または上
 contains "$SKILL" "**off モード**: 事前注入と Stop fallback はどちらも動作せず" "off モード: 自動振り返りを無効化"
 contains "$SKILL" "**毎回実施・問いかけなし**" "既定モード: 問いかけなしで毎回実施"
 
-contains "$SKILL" "## 自動発火（事前注入 + Stop fallback）" "自動発火: 事前注入と Stop fallback 節"
 contains "$SKILL" "このターンがチェーン末尾に到達した" "自動発火: チェーン末尾では振り返りを実施"
 contains "$SKILL" "チェーン末尾ではない" "自動発火: 末尾以外は振り返りについて何も書かない"
 # Issue `#1612`: 発火条件の定義そのもの。「作業が完了したように見えるか」というターンごとの
 # モデル判断へ戻すと、質問・確認待ち・通知のたびに定型 1 行が出る形（OBS-187）へ退行する。
 contains "$SKILL" "ワークフローチェーンの末尾に到達したターンであること" "自動発火: 発火条件はチェーン末尾のターン"
-contains "$SKILL" "事前注入はチェーン末尾を判定できない" "自動発火: 判定の正本は Stop 側"
 contains "$SKILL" "UserPromptSubmit の \`additionalContext\`" "自動発火: 応答生成前に振り返り契約を注入"
 # Issue #840: 非対話の単発実行（codex exec）には注入しない規定。判別条件（model +
-# bypassPermissions）が SKILL.md から落ちると、hook 実装だけが知る暗黙挙動になる。
-contains "$SKILL" "Codex の非対話の単発実行（UserPromptSubmit 入力に \`model\` があり \`permission_mode\` が \`bypassPermissions\`" "自動発火: 非対話の単発実行には事前注入しない"
+# bypassPermissions）が references/auto-trigger.md から落ちると、hook 実装だけが知る暗黙挙動になる。
+contains "$REF_AUTOTRIGGER" "Codex の非対話の単発実行（UserPromptSubmit 入力に \`model\` があり \`permission_mode\` が \`bypassPermissions\`" "自動発火: 非対話の単発実行には事前注入しない"
 # https://github.com/feel-flow/ff-dev-toolkit/issues/94: 入れ子の非対話 `claude -p` は
 # hook 側で判別できず、抑止の正本は起動側の環境変数。この一文が落ちると、利用側は
 # 「hook がいつか判別してくれる」と読んでラッパーに前置きを書かず、ping の exact 一致が
 # 再び落ちる。
-contains "$SKILL" "起動側が子プロセスの環境へ \`RETROSPECTIVE_MODE=off\` を載せて抑止する" "自動発火: 入れ子の claude 非対話起動は起動側で抑止する"
+contains "$REF_AUTOTRIGGER" "起動側が子プロセスの環境へ \`RETROSPECTIVE_MODE=off\` を載せて抑止する" "自動発火: 入れ子の claude 非対話起動は起動側で抑止する"
+# Codex の Stop は常に無音で、事前注入だけに委ねる（振る舞いは retrospective-stop-hook が実行で見る）。
+contains "$REF_AUTOTRIGGER" "Codex の Stop 入力（\`model\` フィールドあり）は常に無音" "自動発火: Codex の Stop は無音で事前注入に委ねる"
 
 # ── C. 消費側文書への伝播 ────────────────────────────────────────────────────
 # 上限・1 行報告・承認境界が片側だけ書き換わるのを検出する。
@@ -728,30 +675,10 @@ if [[ "$IS_MONOREPO" -eq 1 ]]; then
   contains "$ROOT_README" "（\`RETROSPECTIVE_FILING=ask\` で承認待ち式へ戻せる） |" "起票の保険スイッチがルート README へ伝播"
 fi
 
-# スキル未解決時のフォールバック（Issue #574）。チェーン手順は文書側がプラグインより
-# 新しくなりうる（docs-template は展開先プロジェクトに残る）ため、旧版プラグインの
-# 利用者が手順書どおりに実行して `Unknown skill` で止まる。全消費側文書に同一の
-# フォールバック 1 行があることを縛る（片側 drift の検出。文言は全サイト同一）。
-# Issue #607: `Unknown skill` を「スキル不在」と誤結論しないための 3 針を追加 —
-# 名前確認の手順（利用可能スキル一覧の検索）、プレフィックス付き / 無しの両試行、
-# `ListSkills`（claude.ai 側の別レジストリ）の空振りを不在の根拠にしない旨。
-# Issue #630: プラグインが複数ディレクトリへ分割インストールされ、一部スキルが
-# 当該セッションのレジストリに載っていない場合の突き合わせ手順を 3 針で固定する
-# （原因の説明・実体突き合わせの操作・「不在と結論しない」の結論ガード。原因句
-# だけを守ると、操作と結論を消しても緑のまま手順が骨抜きになる）。
-# 7 針とも同一の 1 行に乗る。
-#
-# 針は `ラベル|針` の表で持ち、本数を EXPECTED_FALLBACK_NEEDLES で宣言する（Issue #640）。
-# 表は行頭側の最初の `|` で切るので、**ラベルに `|` を含めないこと**（針側は残り全部を
-# 採るため `|` を含んでよい）。
-# 宣言値は selftest 側が出力から読み、句単位変異（M-K〜M-Q）の実行数と突き合わせる
-# 網羅ガードの比較相手になる。**針を増減したら 4 箇所が同時に動く**:
-#   1. この表と EXPECTED_FALLBACK_NEEDLES
-#   2. selftest の FALLBACK_CLAUSE_MUTATIONS（句単位変異を 1 件追加する。狙う検査名は
-#      表の中で一意でなければならない — 複製で件数だけ合わせるのを selftest が弾く）
-#   3. selftest の MARKER_MUTATIONS にある「フォールバック行の削除」4〜5 件の期待 ✗ 件数
-#   4. selftest の EXPECTED_GATE_CHECKS_MONOREPO / _PUBLIC（針 1 件につき消費側の
-#      ファイル数ぶん増える = モノレポ +5 / 公開 +4）
+# スキル未解決時のフォールバック 1 行（`Unknown skill` を「スキル不在」と誤結論しない手順）。
+# チェーン手順は文書側がプラグインより新しくなりうる（docs-template は展開先に残る）ため、
+# 全消費側文書に**同一の 1 行**が要る。句の針は正本（git-workflow）の行にだけ張り、
+# 他の消費側はその行と完全一致することを見る（同じ 7 句を 5 ファイルへ重ねて張らない）。
 FALLBACK_NEEDLES=(
   "スキル未解決時のフォールバック|プラグインを更新するか、インストール済みプラグインの \`skills/<スキル名>/SKILL.md\` を直接 Read して手順に従う"
   "スキル名の確認手順|セッションの利用可能スキル一覧をキーワードで検索して実名を確認"
@@ -761,28 +688,105 @@ FALLBACK_NEEDLES=(
   "分割インストールの実体突き合わせ操作|インストール済みプラグインディレクトリの中身を突き合わせる"
   "分割インストール時の結論ガード|その場合はリポジトリ側の SKILL.md を読んで手順に従う（スキルが存在しないと結論しない）"
 )
-EXPECTED_FALLBACK_NEEDLES=7
-
-FALLBACK_CONSUMERS=("$GIT_WORKFLOW" "$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
-if [[ "$IS_MONOREPO" -eq 1 ]]; then
-  FALLBACK_CONSUMERS+=("$ROOT_README")
-fi
-for file in "${FALLBACK_CONSUMERS[@]}"; do
+# 正本の行は `**スキル未解決時のフォールバック**` の見出し語を含む行。1 行に定まらなければ
+# 照合の基準が無いので赤にする（fail-closed）。句はその**行の中**で照合する — ファイル全体の
+# どこかに在るだけでは、行を縮めて句を別の行へ逃がした形（消費側へ届くのは縮めた行だけ）を
+# 緑で通してしまう。
+FALLBACK_LINE="$(grep -F -- "**スキル未解決時のフォールバック**" "$GIT_WORKFLOW" || true)"
+if [[ -z "$FALLBACK_LINE" || "$FALLBACK_LINE" == *$'\n'* ]]; then
+  bad "フォールバック行: 正本（git-workflow）の行を 1 行に特定（不足: **スキル未解決時のフォールバック** の行がちょうど 1 行）"
+else
+  ok "フォールバック行: 正本（git-workflow）の行を 1 行に特定"
   for entry in "${FALLBACK_NEEDLES[@]}"; do
-    # `#` の右辺はパターン文脈。クォートしないと REPO_ROOT に含まれる [ * ? が
-    # パターンとして解釈され、前置き除去が効かずラベルが変わる（fixture の
-    # REPO_ROOT は TMPDIR 由来なので実際に踏みうる）。
-    contains "$file" "${entry#*|}" "${entry%%|*}: ${file#"$REPO_ROOT"/}"
+    case "$FALLBACK_LINE" in
+      *"${entry#*|}"*) ok "${entry%%|*}: 正本（git-workflow）の行に在る" ;;
+      *) bad "${entry%%|*}: 正本（git-workflow）の行に在る（不足: ${entry#*|}）" ;;
+    esac
   done
+  FALLBACK_COPIES=("$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
+  if [[ "$IS_MONOREPO" -eq 1 ]]; then
+    FALLBACK_COPIES+=("$ROOT_README")
+  fi
+  for file in "${FALLBACK_COPIES[@]}"; do
+    # `#` の右辺はパターン文脈。クォートしないと REPO_ROOT に含まれる [ * ? が
+    # パターンとして解釈され、前置き除去が効かずラベルが変わる。
+    if grep -qxF -- "$FALLBACK_LINE" "$file"; then
+      ok "フォールバック行が正本と一致: ${file#"$REPO_ROOT"/}"
+    else
+      bad "フォールバック行が正本と一致: ${file#"$REPO_ROOT"/}（不足: git-workflow と同一の行）"
+    fi
+  done
+fi
+
+# ── B2. 条件付きで読む references への振り分け ─────────────────────────────────
+# 本線の SKILL.md は毎回読まれ、references/*.md は振り分け表の条件に当たったときだけ
+# 読まれる。表の行が消えると、reference に置いた規定は存在しても**読まれる経路が無い**。
+# 行ごとに「読む条件 + リンク」を針にし、表と references/ の実体を双方向に照合する。
+REF_ROUTES=(
+  "filing.md|| 提案が 1 件以上ある（閾値到達・特急レーン・台帳へ書き込めないリポジトリでの提案） | [references/filing.md](references/filing.md) |"
+  "promotion.md|| 閾値到達エントリの昇格先を決める・\`promoted\` / \`mitigated\` のエントリへ再発を記録する・昇格を見送る | [references/promotion.md](references/promotion.md) |"
+  "effort.md|| \`ff-effort\` ブロックを持つ Issue がこのセッションでマージされた、または前回の集計から \`ff-effort\` 付き Issue が増えた | [references/effort.md](references/effort.md) |"
+  "legacy-intake.md|| SSOT リポジトリで実行する（旧版が起票した \`[observation]\` Issue の残件は同ファイル手順 1 の検索で確かめる） | [references/legacy-intake.md](references/legacy-intake.md) |"
+  "auto-trigger.md|| hook を変更する・自動発火の挙動を確かめる・入れ子の非対話起動を組む | [references/auto-trigger.md](references/auto-trigger.md) |"
+)
+for route in "${REF_ROUTES[@]}"; do
+  contains "$SKILL" "${route#*|}" "振り分け表: ${route%%|*} を読む条件とリンク"
 done
 
-# 針の本数を宣言する。selftest 側の句単位変異がこの本数を覆っていることを、あちらが
-# この行の値と突き合わせる（針だけ増やして変異を増やさない状態の検出）。
-if [[ "${#FALLBACK_NEEDLES[@]}" -eq "$EXPECTED_FALLBACK_NEEDLES" ]]; then
-  ok "フォールバック針が ${EXPECTED_FALLBACK_NEEDLES} 件（増減時は EXPECTED_FALLBACK_NEEDLES も更新すること）"
+# 表に載らない reference は読まれる経路が無く、表のリンク先が無ければ条件に当たっても開けない。
+# 実体（references/*.md）の各ファイルが表の節にちょうど 1 回リンクされ、表の各リンク先が
+# 実在することを両向きに見る。
+ROUTING_HEADING="### 条件付きで読む references"
+if ! ROUTING_SECTION="$(section_scope_extract "$SKILL" "$ROUTING_HEADING")"; then
+  bad "振り分け表: 節を切り出せる（不足: ${ROUTING_SECTION}）"
 else
-  bad "フォールバック針が ${#FALLBACK_NEEDLES[@]} 件（期待 ${EXPECTED_FALLBACK_NEEDLES} 件）— 針の増減に宣言値が追従していない"
+  ok "振り分け表: 節を切り出せる"
+  REF_FILES_SEEN=0
+  for ref_file in "$SKILL_REFS"/*.md; do
+    [[ -e "$ref_file" ]] || continue
+    REF_FILES_SEEN=$((REF_FILES_SEEN + 1))
+    ref_name="${ref_file##*/}"
+    n="$(FF_NEEDLE="](references/${ref_name})" awk 'index($0, ENVIRON["FF_NEEDLE"]) { c++ } END { print c + 0 }' <<<"$ROUTING_SECTION")"
+    once_verdict "$n" "](references/${ref_name})" "振り分け表: references/${ref_name} が表に載っている"
+  done
+  if [[ "$REF_FILES_SEEN" -eq 0 ]]; then
+    bad "振り分け表: references/ の実体を列挙できる（不足: references/*.md が 0 件）"
+  fi
+  ROUTE_TARGETS="$(awk '{ line = $0; while (match(line, /\]\(references\/[^)]*\)/)) { print substr(line, RSTART + 2, RLENGTH - 3); line = substr(line, RSTART + RLENGTH) } }' <<<"$ROUTING_SECTION")"
+  ROUTE_MISSING=""
+  while IFS= read -r target; do
+    [[ -n "$target" ]] || continue
+    [[ -s "$(dirname "$SKILL")/$target" ]] || ROUTE_MISSING="${ROUTE_MISSING}${target} "
+  done <<<"$ROUTE_TARGETS"
+  if [[ -z "$ROUTE_TARGETS" ]]; then
+    bad "振り分け表: リンク先がすべて実在する（不足: 表にリンクが 1 件も無い）"
+  elif [[ -z "$ROUTE_MISSING" ]]; then
+    ok "振り分け表: リンク先がすべて実在する"
+  else
+    bad "振り分け表: リンク先がすべて実在する（不足: ${ROUTE_MISSING% }）"
+  fi
 fi
+
+# 他のスキル・hook・文書は節名で参照している（例: hook の注入文の「承認と起票」、
+# create-issue の「集計レポートの実行」）。見出しがスキル内に 0 本なら参照が切れ、
+# 2 本以上なら参照先が一意に定まらない。本線と references/ を合わせてちょうど 1 本を見る。
+REFERENCED_HEADINGS=(
+  "#### Count の単位"
+  "### 承認と起票"
+  "### 昇格閾値と特急レーン"
+  "### 起票前の既存確認（必須）"
+  "## 集計レポートの実行（較正トリガの唯一の発火点）"
+)
+for heading in "${REFERENCED_HEADINGS[@]}"; do
+  # awk は読めないファイルで非 0 を返し set -e で止まる（cat | grep -c の || true は読み取り
+  # 失敗を握り潰して残りのファイルだけで数えてしまう）。
+  n="$(awk -v h="$heading" '{ sub(/\r$/, "") } $0 == h { c++ } END { print c + 0 }' "$SKILL" "$SKILL_REFS"/*.md)"
+  once_verdict "$n" "$heading" "外部参照される見出し: ${heading#\#* }"
+done
+
+# 節名に加えてファイルまで指す参照は、節の移動で指す先が古くなる（見出しの一意性だけでは
+# 見えない）。配布テンプレートが旧ファイルを正本として指す形の復元を塞ぐ。
+not_contains "$WORKFLOW_PRINCIPLES" "skills/retrospective/SKILL.md\`「承認と起票」" "workflow-principles: 承認と起票の正本を旧ファイル（SKILL.md）で指していない"
 
 # ── D. /ace-curate との責務分離 ──────────────────────────────────────────────
 contains "$ACE_CURATE" "ACE Playbook ではなく \`/retrospective\` の提案経路で扱う" "責務分離: ACE 側からの送り先明示"

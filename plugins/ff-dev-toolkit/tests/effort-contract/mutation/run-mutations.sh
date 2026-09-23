@@ -3,6 +3,11 @@
 # effort-contract の変異テスト: 各検査が本当に効いているかを実測する。
 # 変異 → 赤を確認 → 復元 → 緑を確認（コントロール）。
 #
+# 対象は判定器・集計器のロジックと、検査 11・12 を実際に起動する一時 root 注入だけに絞る。
+# 文書の針（フィールド名・閾値・帯の語）を 1 つ消して赤を見る変異は、grep の針に対しては
+# 必ず赤になるので何も測らない（Issue `#1824` で撤去した。retrospective-contract と同じ判断）。
+# 変異の番号は撤去前の通し番号のまま（1〜3・10〜12 が欠番）。
+#
 # run-all.sh の既定一覧には載せない — 作業ツリーを一時的に壊すため、他の suite と
 # 並行実行すると誤診を招く（CLAUDE.md の並行ビルド禁止と同じ理由）。
 #
@@ -21,10 +26,6 @@ set -uo pipefail
 cd "$(cd "$(dirname "$0")/../../../../.." && pwd -P)"
 
 V=plugins/ff-dev-toolkit/tests/effort-contract/verify.sh
-CREATE=plugins/ff-dev-toolkit/skills/create-issue/SKILL.md
-CLOSE=plugins/ff-dev-toolkit/skills/close-issue/SKILL.md
-RETRO=plugins/ff-dev-toolkit/skills/retrospective/SKILL.md
-TMPL=plugins/ff-dev-toolkit/docs-template/08-knowledge/PLAYBOOK.md
 JUDGE=plugins/ff-dev-toolkit/scripts/check-issue-body-diff.sh
 REPORT=plugins/ff-dev-toolkit/scripts/effort-report.sh
 MUTDIR=plugins/ff-dev-toolkit/tests/effort-contract/mutation
@@ -39,9 +40,6 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   git status --short >&2
   exit 2
 fi
-
-# sed -i は BSD と GNU で構文が違う。公開側の Linux CI へ配布される場所なので吸収する
-sed_i() { local f="$1"; shift; sed "$@" "$f" > "${f}.mut" && mv "${f}.mut" "$f"; }
 
 DETECTED=0; MISSED=0
 run() { bash "$V" >/dev/null 2>&1; echo $?; }
@@ -65,20 +63,6 @@ probe() { # <ラベル> <変異対象ファイル（差分発生の確認用。n
 
 echo "コントロール（変異なし）:"
 [ "$(run)" = "0" ] && echo "  ✅ 緑" || { echo "  ❌ 変異前から赤。中止"; exit 1; }
-
-echo "変異 1: create-issue のフィールド名を改名"
-sed_i "$CREATE" -e 's/effort_ai_planned/ai_planned/g'
-probe "フィールド名の改名（検査 1）" "$CREATE" "git checkout -- '$CREATE'"
-
-echo "変異 2: close-issue 側だけ閾値を変える"
-# 較正で帯を動かしたらこのアンカーも動かす（旧値のままだと空振りして
-# 「変異が適用されていない」で止まる）
-sed_i "$CLOSE" -e 's/1\.40/1.50/g'
-probe "閾値の片側変更（検査 3）" "$CLOSE" "git checkout -- '$CLOSE'"
-
-echo "変異 3: close-issue の fail-open 記述を削除"
-sed_i "$CLOSE" -e '/ブロック不在のためスキップ/d'
-probe "fail-open 記述の削除（検査 5）" "$CLOSE" "git checkout -- '$CLOSE'"
 
 echo "変異 4: 判定器の marker_sanity から順序判定を外す（最重要）"
 python3 "$MUTDIR/mut-marker-order.py"
@@ -123,18 +107,6 @@ probe "該当 Issue の名指しの消失（検査 4d）" "$REPORT" "git checkou
 echo "変異 9d: 「行全体が 1 個の HTML コメント」の内側ガードを外す"
 python3 "$MUTDIR/mut-suspect-multi.py"
 probe "1 行 2 コメントの取りこぼし（検査 4d）" "$REPORT" "git checkout -- '$REPORT'"
-
-echo "変異 10: 配布テンプレ側の estimation 行だけ削除"
-sed_i "$TMPL" -e '/^| `estimation`/d'
-probe "カテゴリ語彙の片側削除（検査 8）" "$TMPL" "git checkout -- '$TMPL'"
-
-echo "変異 11: create-issue から知見層の参照経路を削除"
-sed_i "$CREATE" -e 's/`estimation` カテゴリ/カテゴリ/g'
-probe "知見層の参照経路の削除（検査 9）" "$CREATE" "git checkout -- '$CREATE'"
-
-echo "変異 12: retrospective から Kind: keep の帯を削除"
-sed_i "$RETRO" -e 's/`Kind: keep`/`Kind: problem`/g'
-probe "当たり帯の削除（検査 10）" "$RETRO" "git checkout -- '$RETRO'"
 
 # --- 以下 2 件は実ツリーを触らず一時 root へ注入する（検査 11/12 の実起動） ---
 inject_root() { # <estimation.md の中身を作る関数名> → 一時 root のパスを stdout

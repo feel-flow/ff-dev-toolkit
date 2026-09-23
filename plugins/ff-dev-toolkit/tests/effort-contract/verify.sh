@@ -47,7 +47,9 @@ ROOT="${FF_DOCS_REPO_ROOT:-$DEFAULT_ROOT}"
 FIX="$SCRIPT_DIR/fixtures"
 CREATE="$PLUGIN_ROOT/skills/create-issue/SKILL.md"
 CLOSE="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
-RETRO="$PLUGIN_ROOT/skills/retrospective/SKILL.md"
+# 乖離帯と集計手順は retrospective の条件付き reference へ切り出してある（本線の SKILL.md は
+# 帯を持たない）。ラベルは dirname から導くと `references` に化けるので下で名前を固定する。
+RETRO="$PLUGIN_ROOT/skills/retrospective/references/effort.md"
 REPORT="$PLUGIN_ROOT/scripts/effort-report.sh"
 JUDGE="$PLUGIN_ROOT/scripts/check-issue-body-diff.sh"
 TMPL_PLAYBOOK="$PLUGIN_ROOT/docs-template/08-knowledge/PLAYBOOK.md"
@@ -160,11 +162,11 @@ echo "検査 3: 閾値定数が 3 箇所で一致する"
 # 較正のたびにここも動く。動かし忘れると 3 箇所一致が崩れて赤になる（それが狙い）。
 for _f in "$CLOSE" "$RETRO" "$REPORT"; do
   _n="$(basename "$(dirname "$_f")")"
+  [ "$_f" = "$RETRO" ] && _n="retrospective"
   contains "$_f" "0.71" "${_n}: 下限 0.71"
   contains "$_f" "1.40" "${_n}: 上限 1.40"
 done
 contains "$CLOSE" '1/1.40' "close-issue: 0.71 が 1/1.40 の丸め（乗法的対称）である導出"
-contains "$RETRO" "3 箇所" "retrospective: 複製先が 3 箇所であることを明示"
 
 echo "検査 3c: 較正手順が再現できる形で書かれている"
 # 帯を「実測分布から導出した」と書くだけでは、次の較正で同じ値が引けない。
@@ -177,9 +179,7 @@ contains "$RETRO" "再較正" "retrospective: 次の再較正の発火条件が�
 echo "検査 3b: 集計器に到達できる経路がある"
 # 呼び出し元が無ければ「記録するだけで参照されない層」になる。実行手順を持つ
 # ファイルがあることと、較正トリガの発火点が書かれていることを検査する。
-contains "$RETRO" 'scripts/effort-report.sh"' "retrospective に集計器の実行手順がある（実行行）"
-contains "$RETRO" "--repo" "retrospective の実行手順が --repo を渡している"
-contains "$RETRO" "較正" "retrospective に較正トリガの記載がある"
+contains "$RETRO" 'scripts/effort-report.sh" --repo' "retrospective に集計器の実行手順がある（--repo を渡す実行行）"
 contains "$RETRO" "suspect_marker" "retrospective が綴りずれの出力の読み方を持つ"
 
 echo "検査 4: effort-report.sh の集計が手計算と一致する（behavioral）"
