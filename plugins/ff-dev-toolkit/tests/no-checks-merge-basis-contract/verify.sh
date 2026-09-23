@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# no-checks-merge-basis-contract: PR トリガーの CI を持たないリポジトリ（本リポジトリを
-# 含む）で、checks を待たずローカル全件ゲート + 鮮度照合をマージ根拠にする分岐の
-# 回帰検査。
+# no-checks-merge-basis-contract: マージ前のゲートの分岐（checks の有無）の回帰検査。
+# 既定は PR トリガーの CI がある形で、checks の成功がマージ根拠・ローカル全件はリリース前と
+# 契約面の変更時に限る（ADR-062）。PR トリガーの CI を持たないリポジトリでは、checks を待たず
+# ローカル全件ゲート + 鮮度照合をマージ根拠にする。
 #
 # 守っている事故: `gh pr checks --watch` は checks が 1 件も登録されない repo では
 # `no checks reported` を返して即終了する。これを CI 通過と早合点すると、CI が
@@ -11,17 +12,18 @@
 # 観測台帳 OBS-070 が Count 3 に到達した事例（この分岐を手順として固定していなかった
 # ため、実行者が毎回別の待機ループを自作していた）。
 #
-# 検査対象は 2 文書 2 箇所:
+# 検査対象は 2 文書 3 箇所:
 #   - close-issue/SKILL.md 手順 7 の「CI checks の有無による分岐」小節
-#     （`statusCheckRollup` 空配列 → checks を待たない分岐と完了報告への明記）
-#   - git-workflow.md ステップ8（マージ）の「PR トリガーの CI を持たないリポジトリでの
-#     checks 待機」小節（`no checks reported` を CI 通過とみなさない旨と、待機と
-#     マージを 1 チェーンに繋がない旨）
+#     （checks がある既定の分岐でローカル全件をリリース前と契約面の変更時に限る旨、
+#     `statusCheckRollup` 空配列 → checks を待たない分岐と完了報告への明記）
+#   - git-workflow.md ステップ8（マージ）の「マージ前のゲート: PR トリガーの CI がある場合
+#     （既定）」小節と「PR トリガーの CI を持たないリポジトリでの checks 待機」小節
+#     （`no checks reported` を CI 通過とみなさない旨と、待機とマージを 1 チェーンに繋がない旨）
 #
 # 文書全体の grep ではなく節スコープで照合するのは、同じ語が別節（ハードルール節・
 # 引用・再掲）へ書き写された時点で「本来在るべき節から消えても緑のまま」通るのを
 # 防ぐため（tests/lib/section-scope.sh のヘッダーコメント参照。ACE-810-1 と同型の懸念）。
-# 対象節はいずれも bash フェンスを含むため、フェンス追跡を持つ共通ヘルパでなければ節が
+# 対象節の多くは bash フェンスを含むため、フェンス追跡を持つ共通ヘルパでなければ節が
 # 途中で切れる。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/no-checks-merge-basis-contract/verify.sh
@@ -39,6 +41,7 @@ WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 
 SKILL_HEADING='#### CI checks の有無による分岐（待つか、ローカルゲートを根拠にするか）'
 WORKFLOW_HEADING='#### PR トリガーの CI を持たないリポジトリでの checks 待機'
+WORKFLOW_CI_HEADING='#### マージ前のゲート: PR トリガーの CI がある場合（既定）'
 FRESHNESS_HEADING='#### ゲート実測鮮度そのものの照合'
 
 PASS=0
@@ -92,12 +95,24 @@ section_contains "$SKILL" "$SKILL_HEADING" \
   "statusCheckRollup 空配列時の完了報告文言がある"
 
 section_contains "$SKILL" "$SKILL_HEADING" \
-  '`statusCheckRollup` が**空配列**（`null` も同じ扱い）の場合、checks の完了を待たずに次へ進み' \
+  '（PR トリガーの CI を持たない' \
+  "空配列の分岐が CI を持たないリポジトリの形である旨がある"
+
+section_contains "$SKILL" "$SKILL_HEADING" \
+  'リポジトリ）、checks の完了を待たずに次へ進み' \
   "空配列時に checks の完了を待たない旨を明記している"
 
 section_contains "$SKILL" "$SKILL_HEADING" \
-  '`statusCheckRollup` が**非空**の場合は、従来どおり全 checks の完了と成功を確認してからマージへ' \
-  "非空時は従来どおり全 checks の完了・成功確認を維持する旨がある"
+  '`statusCheckRollup` が**非空**の場合（PR トリガーの CI がある既定の形）は、全 checks の完了と' \
+  "非空時（既定）は全 checks の完了・成功確認を維持する旨がある"
+
+section_contains "$SKILL" "$SKILL_HEADING" \
+  '対象 PR に checks が登録されているかを先に確認します。**既定は PR トリガーの CI が' \
+  "分岐の既定が PR トリガーの CI がある形である旨がある"
+
+section_contains "$SKILL" "$SKILL_HEADING" \
+  '**checks の成功がマージの根拠で、ローカルの全件ゲートはリリース前（タグ / Release の' \
+  "checks がある既定ではローカル全件をリリース前と契約面の変更時に限る旨がある"
 
 section_contains "$SKILL" "$SKILL_HEADING" \
   "gh pr view \"\${PR_NUMBER}\" --json statusCheckRollup" \
@@ -129,6 +144,25 @@ echo "-- close-issue/SKILL.md 手順 7: 判定不能時の再実行条件 --"
 section_contains "$SKILL" "$FRESHNESS_HEADING" \
   '鮮度照合が判定不能（`FRESH_STATUS=2`）で、かつ `FRESH_REASON` が' \
   "判定不能時の全件ゲート再実行が FRESH_REASON 条件付きで書かれている"
+
+section_contains "$SKILL" "$FRESHNESS_HEADING" \
+  '**ただし `FRESH_REASON` が「記録が部分実行である」で、かつ checks が非空で全件成功した回に限り、リリース前と契約面の変更時を除き再実行しません**' \
+  "再実行しない例外は部分実行の記録 + checks 全件成功に限る旨がある"
+
+section_contains "$SKILL" "$FRESHNESS_HEADING" \
+  '「汚れた木で測った / 記録が無い」は checks が成功していても従来どおり全件ゲートを再実行します' \
+  "汚れた木・記録無しは checks 成功でも全件を再実行する旨がある（例外を広げない）"
+
+echo
+echo "-- git-workflow.md ステップ8: PR トリガーの CI がある既定の分岐 --"
+
+section_contains "$WORKFLOW" "$WORKFLOW_CI_HEADING" \
+  'checks の完了と成功がマージの根拠になる' \
+  "checks の成功がマージ根拠である旨がある"
+
+section_contains "$WORKFLOW" "$WORKFLOW_CI_HEADING" \
+  '**全件ゲートを回すのはリリース前（タグ / Release の作成前）と契約面の変更時に' \
+  "ローカル全件をリリース前と契約面の変更時に限る旨がある"
 
 echo
 echo "-- git-workflow.md ステップ8: no checks reported の扱い --"

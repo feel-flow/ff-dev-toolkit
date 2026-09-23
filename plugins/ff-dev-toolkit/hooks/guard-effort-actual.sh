@@ -18,7 +18,7 @@
 # ガードの本体である。
 #
 # 未記入の定義は集計器 `scripts/effort-report.sh` の分類（マーカー判定・キー解析・
-# `as_days()`・`malformed` / `planned_only` への振り分け）と**同形**にする。止めるのは
+# `as_hours()`・`malformed` / `unit_mismatch` / `planned_only` への振り分け）と**同形**にする。止めるのは
 # 「同じ本文を集計器が `planned_only` として母集団から落とす」状態だけ:
 #   - マーカーは `<!-- ff-effort:begin -->` / `<!-- ff-effort:end -->` の**行全体の
 #     完全一致**（行末 CR だけ落とす）。字下げ・行末空白つきのマーカーは集計器では
@@ -27,8 +27,10 @@
 #   - ブロック不在 / 未閉鎖 / begin が 2 組 / end が begin より前 / キー重複は
 #     集計器では noblock か malformed。どちらも素通しする
 #   - `effort_human_planned` / `effort_ai_planned` / `effort_ai_actual` のいずれかが
-#     `^[0-9]+(\.[0-9]+)?d$` でない（0 以下も含む）値なら集計器では malformed。
-#     兄弟キーの書式不正でも素通しする（書式不正は集計器が名指しする担当）
+#     `^[0-9]+(\.[0-9]+)?[dh]$` でない（0 以下も含む）値、または未知の `effort_unit` なら
+#     集計器では malformed。単位が `effort_unit` の宣言と食い違う値（`effort_unit: h` なのに
+#     `d` 付き・宣言が無いのに `h` 付き）なら unit_mismatch。どちらも兄弟キーでも素通しする
+#     （書式不正・単位の食い違いは集計器が名指しする担当）
 #   - 止めるのは `effort_ai_actual` がキー不在 / 空 / `(未記入)` のときだけ
 # 本文が CRLF でも同じ判定になるよう、集計器と同じく行末の CR を落としてから見る
 # （落とさないとマーカーが一致せず、集計器が `planned_only` として静かに落とす
@@ -380,15 +382,22 @@ esac
 is_effort_unfilled() {
   printf '%s\n' "$1" | LC_ALL=C awk '
     function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-    # 集計器 as_days(): 未記入は -1、単位違い・数値でない値・0 以下は -2（書式不正）
-    function as_days(s,   v) {
+    # 集計器 as_hours(): 未記入は -1、数値でない値・0 以下は -2（書式不正）、
+    # `effort_unit` の宣言と値の単位の食い違いは -3（unit_mismatch）
+    function as_hours(s, unit,   v) {
       s = trim(s)
       if (s == "" || s == "(未記入)") return -1
-      if (s !~ /^[0-9]+(\.[0-9]+)?d$/) return -2
-      sub(/d$/, "", s)
-      v = s + 0
-      if (v <= 0) return -2
-      return v
+      if (s ~ /^[0-9]+(\.[0-9]+)?h$/) {
+        if (unit != "h") return -3
+        sub(/h$/, "", s); v = s + 0
+        return (v <= 0) ? -2 : v
+      }
+      if (s ~ /^[0-9]+(\.[0-9]+)?d$/) {
+        if (unit == "h") return -3
+        sub(/d$/, "", s); v = s + 0
+        return (v <= 0) ? -2 : v * 8
+      }
+      return -2
     }
     {
       line = $0
@@ -411,17 +420,22 @@ is_effort_unfilled() {
       if (key == "effort_human_planned") { if (hp_seen) broken = 1; hp_seen = 1; hp_raw = val }
       else if (key == "effort_ai_planned") { if (ap_seen) broken = 1; ap_seen = 1; ap_raw = val }
       else if (key == "effort_ai_actual") { if (aa_seen) broken = 1; aa_seen = 1; aa_raw = val }
+      else if (key == "effort_unit") { if (un_seen) broken = 1; un_seen = 1; unit = val }
     }
     END {
       # ブロック不在は close-issue 手順 5a の fail-open 契約どおり止めない
       if (!hasblock) exit 1
       if (!closed) broken = 1           # 未閉鎖ブロックは集計器でも malformed
       if (broken) exit 1
-      hp = hp_seen ? as_days(hp_raw) : -1
-      ap = ap_seen ? as_days(ap_raw) : -1
-      aa = aa_seen ? as_days(aa_raw) : -1
-      # 兄弟キーの書式不正は集計器では planned_only より先に malformed へ落ちる
+      # 未知の単位宣言は集計器では malformed
+      if (un_seen && unit != "h") exit 1
+      hp = hp_seen ? as_hours(hp_raw, unit) : -1
+      ap = ap_seen ? as_hours(ap_raw, unit) : -1
+      aa = aa_seen ? as_hours(aa_raw, unit) : -1
+      # 兄弟キーの書式不正・単位の食い違いは集計器では planned_only より先に
+      # malformed / unit_mismatch へ落ちる
       if (hp == -2 || ap == -2 || aa == -2) exit 1
+      if (hp == -3 || ap == -3 || aa == -3) exit 1
       if (aa < 0) exit 0                # planned_only（= 止める唯一の状態）
       exit 1
     }

@@ -11,8 +11,6 @@ description: プロジェクトの docs/ がコア7文書要件（存在・必�
 
 2.0では `asdd-init --check` を実行し、選択済み `documents` とその生成物を確認する。未選択文書はN/Aであり、以下の「必須3文書」やテストコードの存在だけで追加を強制しない。最小MASTERに目的・使い方・合意・未決・関連記録があり、7観点の必要情報を追えることを確認する。数値のカバレッジ目標は未採用でも不足ではない。記載内容の矛盾、未決の重要事項、未確認の技術バージョンは別途報告し、初期化・実装準備・公開準備を分けて判定する。以下の採点・固定必須セクションは従来環境だけに適用する。
 
-プロジェクトの `docs/` ディレクトリが AI仕様駆動開発のコア7文書要件を満たしているか検証します。
-
 ## プラグインルートの固定（必須）
 
 <!-- ff-dev-toolkit-plugin-root-contract:start -->
@@ -44,7 +42,7 @@ fi
 
 <!-- ff-dev-toolkit-plugin-root-guard:end -->
 
-> 本コマンドの検証規則（必須3文書と条件付き4文書の N/A 判定・兆候検出・同義見出しの内容判定・空セクションの状態明記・Frontmatter スキーマ・スコア算出・プレースホルダー免除区分）が drift しないことは、`plugins/ff-dev-toolkit/tests/validate-docs/verify.sh`（節スコープの条文ピン）と `plugins/ff-dev-toolkit/tests/validate-docs-placeholders/verify.sh`（境界の機械照合）で検証する。規則の文言・節番号を変えたら `tests/validate-docs/verify.sh` を追随させること。
+> 規則の文言・節番号を変えたら `tests/validate-docs/verify.sh` の条文ピンを追随する（構成は同 suite の README）。
 
 ## 検証項目
 
@@ -52,15 +50,8 @@ fi
 
 コア7文書のうち、**常に必須なのは MASTER・PROJECT・ARCHITECTURE の3文書**です。残る4文書（DOMAIN・PATTERNS・TESTING・DEPLOYMENT）は、判断マトリクス上必要になった時点で作成すればよく、**未作成の場合は N/A（未達ではない）として扱います**。
 
-| # | ファイル | 要求 | 役割 |
-|---|---------|------|------|
-| 1 | `docs/MASTER.md` | **必須** | 中央管理ハブ |
-| 2 | `docs/01-context/PROJECT.md` または `docs/01-business/PROJECT.md` | **必須** | ビジョン・要件 |
-| 3 | `docs/02-design/ARCHITECTURE.md` | **必須** | システム設計 |
-| 4 | `docs/02-design/DOMAIN.md` または `docs/01-context/DOMAIN.md` | 条件付き（未作成なら N/A） | ビジネスロジック |
-| 5 | `docs/03-implementation/PATTERNS.md` | 条件付き（未作成なら N/A） | 実装パターン |
-| 6 | `docs/04-quality/TESTING.md` または `docs/07-quality/TESTING.md` | 条件付き（未作成なら N/A） | テスト戦略 |
-| 7 | `docs/05-operations/DEPLOYMENT.md` | 条件付き（未作成なら N/A） | 運用手順 |
+- 必須: `docs/MASTER.md`・`docs/01-context/PROJECT.md`（または `docs/01-business/PROJECT.md`）・`docs/02-design/ARCHITECTURE.md`
+- 条件付き（未作成なら N/A）: `docs/02-design/DOMAIN.md`（または `docs/01-context/DOMAIN.md`）・`docs/03-implementation/PATTERNS.md`・`docs/04-quality/TESTING.md`（または `docs/07-quality/TESTING.md`）・`docs/05-operations/DEPLOYMENT.md`（役割: `${FF_DEV_TOOLKIT_ROOT}/docs-template/MASTER.md`「コア7文書（起点）」）
 
 **N/A にできるのは、判断マトリクス上も不要な場合だけ**です。未作成の条件付き文書に次の**必要性の兆候**がある場合は、N/A ではなく ❌（不足）として報告し、作成を求めてください:
 
@@ -69,16 +60,7 @@ fi
 - TESTING 未作成なのに、テストコードが存在する
 - DEPLOYMENT 未作成なのに、CI/CD 設定や本番環境が存在する
 
-なお、7文書すべての整備はより成熟した準拠状態として推奨されます（兆候がなく未作成 = N/A の場合は減点しない）。
-
-**補助ドキュメント**（推奨）:
-
-| ファイル | 推奨 | 役割 |
-|---------|------|------|
-| `docs/06-reference/GLOSSARY.md` | 推奨 | 用語集 |
-| `docs/06-reference/DECISIONS.md` | 推奨 | 設計判断記録 |
-| `docs/01-context/CONSTRAINTS.md` | 任意 | 制約条件 |
-| `docs/03-implementation/CONVENTIONS.md` | 任意 | 命名・コーディング規約 |
+**補助ドキュメント**（コア7文書以外）: 推奨は `docs/06-reference/` の `GLOSSARY.md`・`DECISIONS.md`、任意は `docs/01-context/CONSTRAINTS.md`・`docs/03-implementation/CONVENTIONS.md`。
 
 `docs/06-reference/DECISIONS.md` が存在する場合は、ADR 番号の重複と見出し ↔ 決定ログ表の不一致を
 `bash "${FF_DEV_TOOLKIT_ROOT}/tests/docs-gates/adr-number-scan.sh" docs/06-reference/DECISIONS.md`
@@ -88,30 +70,27 @@ fi
 
 **存在する各コア文書**について、標準が定める必須セクションに対応する内容があるか確認します（未作成の条件付き文書はスキップ = N/A）。
 
-| 文書 | 必須セクション | テンプレート由来の同義見出しの例 |
-|------|---------------|--------------------------------|
-| MASTER | プロジェクト概要 / 文書索引 / ディレクトリ構造 / 重要な制約 | 文書索引 →「関連ドキュメント」、重要な制約 →「前提」+「コード生成ルール」 |
-| PROJECT | ビジョン / 対象ユーザー / 主要機能 / 非機能要件 / スコープ外 | 対象ユーザー →「ステークホルダー分析」、主要機能・非機能要件 →「要件定義」配下、スコープ外 →「スコープ定義」 |
-| ARCHITECTURE | システム構成 / 技術スタック（各技術のバージョン明記） / コンポーネント設計 / ADR | システム構成 →「システム構成図」、ADR →「設計判断記録（ADR）」 |
-| DOMAIN | ドメインモデル / ビジネスルール / 状態遷移 / 用語集 | ドメインモデル →「ドメイン概要」「エンティティ定義」、用語集 →「ユビキタス言語」 |
-| PATTERNS | コーディング規約 / 頻出パターン / アンチパターン | 頻出パターン →「デザインパターン」「エラーハンドリング」等の各パターン節 |
-| TESTING | テスト方針 / テストの書き方 / カバレッジ目標 | テスト方針 →「テスト戦略概要」、テストの書き方 →「ユニットテスト」等の各テスト節 |
-| DEPLOYMENT | 環境 / デプロイ手順 / 監視項目 / 障害対応 | 環境 →「インフラストラクチャ」、デプロイ手順 →「CI/CDパイプライン」「運用手順」、監視項目 →「モニタリング」、障害対応 →「ロールバック戦略」「災害復旧」 |
+| 文書 | 必須セクション |
+|------|---------------|
+| MASTER | プロジェクト概要 / 文書索引 / ディレクトリ構造 / 重要な制約 |
+| PROJECT | ビジョン / 対象ユーザー / 主要機能 / 非機能要件 / スコープ外 |
+| ARCHITECTURE | システム構成 / 技術スタック（各技術のバージョン明記） / コンポーネント設計 / ADR |
+| DOMAIN | ドメインモデル / ビジネスルール / 状態遷移 / 用語集 |
+| PATTERNS | コーディング規約 / 頻出パターン / アンチパターン |
+| TESTING | テスト方針 / テストの書き方 / カバレッジ目標 |
+| DEPLOYMENT | 環境 / デプロイ手順 / 監視項目 / 障害対応 |
+
+同義見出しは `${FF_DEV_TOOLKIT_ROOT}/docs-template/` の該当テンプレートの見出しで対応付ける。
 
 判定ルール:
 
-- **見出しの文字列一致ではなく、内容の責務で判定する**。同義見出し（上表の例のほか、番号prefix `## 9. 状態遷移` や見出しレベルの違い `###` も許容）に該当内容があれば充足とする。ただし見出し名だけで充足と即断せず、**該当内容が実際に書かれているかを確認し、充足と判定した根拠（対応する見出しと内容の要旨）を出力に含める**（例: 「ステークホルダー分析」に対象ユーザーの記述がなければ「対象ユーザー」は未充足）
+- **見出しの文字列一致ではなく、内容の責務で判定する**。同義見出し（上記の対応のほか、番号prefix `## 9. 状態遷移` や見出しレベルの違い `###` も許容）に該当内容があれば充足とする。ただし見出し名だけで充足と即断せず、**該当内容が実際に書かれているかを確認し、充足と判定した根拠（対応する見出しと内容の要旨）を出力に含める**（例: 「ステークホルダー分析」に対象ユーザーの記述がなければ「対象ユーザー」は未充足）
 - **空セクションの状態明記チェック**: 必須セクションが実質空（見出しのみ、またはテンプレートのプレースホルダーのみ）の場合、「該当なし」「未定」などの状態が明記されていれば ✅（状態明記あり）、明記がなければ ❌（空セクション）として指摘する
 - ARCHITECTURE の技術スタックは、各技術に**バージョンが明記されているか**まで確認する
 
 ### 3. MASTER.md 追加チェック（公式実装は標準より厳格）
 
-本ツールキットのテンプレートを前提に、標準の必須セクションに**加えて**以下も確認します。これらは公式実装（ff-dev-toolkit）が AI との協業品質のために追加している項目であり、標準の要求そのものではありません:
-
-- [ ] **プロジェクト識別情報**: プロジェクト名、バージョン、最終更新日
-- [ ] **技術スタック要約**: FE/BE/DB/Infra のいずれかが記載
-- [ ] **守るべきルール**: 命名規則 or コーディング規約の記載
-- [ ] **情報不足時の必須確認プロトコル**: 推論禁止ルールの記載
+§2 に加え、テンプレート `${FF_DEV_TOOLKIT_ROOT}/docs-template/MASTER.md` の同名見出し（プロジェクト識別情報・技術スタック・情報不足時の必須確認プロトコル）と、命名規則またはコーディング規約の記載も確認する。
 
 ### 4. 各ドキュメントの内容チェック
 
@@ -135,7 +114,7 @@ fi
 
 ### 6. Frontmatter スキーマチェック
 
-標準はすべての仕様文書に YAML Frontmatter を要求し、適合チェックリストにも Frontmatter の MUST 項目があります。**存在する各コア文書**の先頭 YAML Frontmatter を以下の観点で検証します（未作成の条件付き文書はスキップ = N/A。プロジェクトが追加した拡張文書も Frontmatter を持つ場合は同じ基準で検証する）:
+**存在する各コア文書**の先頭 YAML Frontmatter を以下の観点で検証します（未作成の条件付き文書はスキップ = N/A。プロジェクトが追加した拡張文書も Frontmatter を持つ場合は同じ基準で検証する）:
 
 - **必須6フィールドの充足**: `title` / `version` / `status` / `owner` / `created` / `updated` の6フィールドが揃っているか。Frontmatter ブロック自体が無い場合、または欠落フィールドがある場合は ❌ とし、**欠落しているフィールド名を列挙する**
 - **version 形式**: `version` が `x.y.z` 形式のセマンティックバージョンか（例: `1.2.0` は ✅。`1.0` / `1` / `v1.0.0` / `1.0.0.0` / `1.2.x` は ❌）
@@ -145,81 +124,17 @@ fi
 判定ルール:
 
 - 各フィールドの**プレースホルダー残存**（`owner` の `@your-github-handle`、`created` / `updated` の `YYYY-MM-DD` 等）は §4 の内容チェックで扱う。本チェックはフィールドの**存在・形式・値域**に絞り、二重指摘しない
-- **`docs/specs/` の 6 ステータスは別スキーマ**: 仕様ファイル（`docs/specs/`）は Spec Kit 運用ガイドの Front Matter スキーマ（`specId` / `owners` / `lastUpdated` と、中間状態 `implementing` / `done` を含む 6 ステータス）を持つ。これはコア7文書・拡張文書の Frontmatter とは**別のスキーマ**であり、本チェックの対象外。本節の 4 値（`draft` / `review` / `approved` / `deprecated`）へ `implementing` / `done` を混ぜない（`docs-template/MASTER.md` §Frontmatter の注記も同じ線引きを持つ。機械側の pin は `tests/docs-template-frontmatter-selftest` G18）
+- `docs/specs/` は別スキーマ（Spec Kit の 6 ステータス）で対象外。本節の 4 値へ `implementing` / `done` を混ぜない（正本: `${FF_DEV_TOOLKIT_ROOT}/docs-template/MASTER.md`「Frontmatter」の注記）
 - Frontmatter を持たない補助ドキュメント（`GETTING_STARTED*.md`・`SETUP_*.md` 等）は本チェックの対象外。Frontmatter を持つ拡張文書は同じ基準で検証する
 - Frontmatter スキーマ違反は ❌ として扱い、最終判定（達成 / 未達）に反映する。**値の違反を正常扱いする silent failure を防ぐことが本チェックの目的**
 
 ## 出力形式
 
-検証結果を以下の形式で出力してください:
+出力例は置かない（例が条文と食い違うと例に従うため。`${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/workflow-principles.md`「原則4」）。出力は次の 3 点:
 
-```markdown
-## ドキュメント検証結果
-
-### コア文書の存在
-必須3文書:
-- ✅ MASTER.md — 存在 (xxx行)
-- ✅ PROJECT.md — 存在 (xxx行)
-- ❌ ARCHITECTURE.md — 未作成（必須）
-
-条件付き文書:
-- ✅ DOMAIN.md — 存在 (xxx行)
-- ➖ PATTERNS.md — 未作成 → N/A（判断マトリクス上の必要性の兆候なし。必要になった時点で作成）
-- ❌ TESTING.md — 未作成だがテストコードが存在（判断マトリクス上必要）→ 作成が必要
-- ...
-
-### 必須セクション（存在する文書のみ）
-MASTER.md:
-- ✅ プロジェクト概要
-- ✅ 文書索引（「関連ドキュメント」が充足）
-- ❌ ディレクトリ構造 — 見つかりません
-- ❌ 重要な制約 — セクションは存在するが空（「該当なし」等の状態明記もなし）
-
-DOMAIN.md:
-- ✅ ビジネスルール
-- ✅ 状態遷移（空だが「該当なし（状態を持たないドメイン）」と明記あり）
-- ...
-
-### MASTER.md 追加チェック（公式実装基準）
-- ✅ プロジェクト識別情報
-- ❌ 技術スタック要約 — 見つかりません
-- ...
-
-### 内容品質
-- ⚠️ DOMAIN.md — プレースホルダー残存 (3箇所)
-- ⚠️ PATTERNS.md — 内容が少ない (8行)
-- ...
-
-### Frontmatter スキーマ（存在する文書のみ）
-- ✅ MASTER.md — 必須6フィールド充足 / version 1.4.0 / status draft / changeImpact medium
-- ❌ PROJECT.md — 必須フィールド欠落（`status`, `owner`）
-- ❌ ARCHITECTURE.md — version が SemVer 形式でない（`1.0`）
-- ❌ DOMAIN.md — status が値域外（`Draft` — 有効値は draft / review / approved / deprecated）
-- ❌ TESTING.md — 変更済みだが changeImpact 未記録（`created` と `updated` が異なる）
-- ❌ DEPLOYMENT.md — changeImpact が大文字（`LOW` → `low`）
-- ...
-
-### クロスリファレンス
-- ✅ 全リンク有効
-- ❌ MASTER.md → docs/03-implementation/PATTERNS.md — リンク切れ
-- ...
-
-### サマリー
-- 必須3文書: 2/3 ✅（ARCHITECTURE.md 未作成）
-- 条件付き文書: 1/4 存在（2件 N/A、1件 不足）
-- 必須セクション: 11/13 ✅（存在する MASTER 4 + PROJECT 5 + DOMAIN 4 を分母とする）
-- Frontmatter: 1/4 ✅（存在する文書のうち PROJECT / ARCHITECTURE / DEPLOYMENT に違反）
-- 全体スコア: 72%（例示値）— 改善が必要
-- **判定: 未達**（❌ の項目が残っている）
-
-### 推奨アクション
-1. ARCHITECTURE.md を作成してください（`/init-docs` で初期化可能）
-2. MASTER.md に「ディレクトリ構造」セクションを追加してください
-3. MASTER.md の「重要な制約」を記入するか、「該当なし」等の状態を明記してください
-4. PROJECT.md の Frontmatter に不足フィールド（`status`, `owner`）を追加してください
-5. ARCHITECTURE.md の Frontmatter の `version` を SemVer 形式（`1.0.0`）に修正してください
-6. ...
-```
+- **観点別の結果**: §1〜§6 の観点ごとの見出しの下に項目を 1 行ずつ「記号 + 対象 + 根拠」で書く。記号は ✅ 充足 / ❌ 不足・違反 / ⚠️ 注意（§4・§5 の別枠報告等）/ ➖ N/A
+- **サマリー**: 観点ごとの充足数 / 分母（内訳付き）・全体スコア・判定。⚠️ は判定に効かず、判定は ❌ が 1 つも無ければ達成・あれば未達
+- **推奨アクション**: ❌ と ⚠️ の各項目の改善を番号付きで示す
 
 ## 重要ルール
 
@@ -228,8 +143,4 @@ DOMAIN.md:
 - docs/ 以外の場所（例: root直下のMASTER.md）にあるファイルも検出する
 - **N/A と判定した条件付き文書（DOMAIN・PATTERNS・TESTING・DEPLOYMENT）はスコアの分母に入れない**（N/A は未達ではない）。ただし必要性の兆候があるのに未作成の文書は ❌（不足）として分母に入れる。必須セクションのスコアは存在する文書のみを分母とする
 - **全体スコア** = 充足項目数 ÷ 判定対象項目数（N/A は分母から除外）。スコアは参考値であり、**最終判定は「❌ の項目が1つもないこと」**（達成 / 未達）で行う
-- 必須セクションは見出しの文字列一致ではなく内容の責務で判定し、充足の根拠（対応見出しと内容の要旨）を添える（同義見出し・番号prefix・見出しレベルの違いを許容）
-- **Frontmatter スキーマは存在する文書のみを検証する**（未作成の条件付き文書は N/A）。必須6フィールド（title / version / status / owner / created / updated）の充足・version の SemVer 形式・status の値域（draft / review / approved / deprecated）・変更済み文書の changeImpact 記録と小文字（low / medium / high）を確認し、違反は ❌ として最終判定に反映する
-- Frontmatter のフィールド値がプレースホルダー（`@your-github-handle`・`YYYY-MM-DD`）のまま残っている場合は §4 の内容チェックで報告し、Frontmatter スキーマチェックとは二重指摘しない
-- **プレースホルダー免除は閉じた区間のみ**: 閉じたコードフェンス・閉じた HTML コメント・同一行内で対になった単一バックティックのインラインコードスパンの中は検査対象外。閉じ忘れは除外区間にしない（閉じマーカー探索だけを打ち切り、開始行の本文は残して走査を続ける）。表セル・通常本文は検出対象のまま。規則の正本は §4
 - 検証結果に基づいた具体的な改善アクションを必ず提示する

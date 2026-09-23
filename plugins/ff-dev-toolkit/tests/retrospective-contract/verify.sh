@@ -792,6 +792,13 @@ not_contains "$WORKFLOW_PRINCIPLES" "skills/retrospective/SKILL.md\`「承認と
 contains "$ACE_CURATE" "ACE Playbook ではなく \`/retrospective\` の提案経路で扱う" "責務分離: ACE 側からの送り先明示"
 contains "$SKILL" "本スキルで扱わず、\`/ace-curate\`（または ACE Playbook への追記）へ回す" "責務分離: retrospective 側からの送り先明示"
 
+# ── E. 集計レポートの読み方（工数の単位を人時へ移した後の除外） ─────────────────
+# 人時化で除外の種類が 1 つ増えた（excluded_unit_mismatch）。読み方の表に行が無いと、
+# 振り返りが単位の食い違いを受け取っても行動が決まらない。旧 d ブロックは除外ではなく
+# 正規化される（較正母集団を捨てない）ことも同じ行で固定する。
+contains "$REF_EFFORT" '| `excluded_unit_mismatch` が 1 以上 |' "effort.md: 単位の食い違い（excluded_unit_mismatch）の読み方と行動がある"
+contains "$REF_EFFORT" '1d = 8h で人時へ正規化して母集団に入れている' "effort.md: 旧 d ブロックは除外でなく正規化される旨"
+
 echo
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ retrospective contract verify: $FAIL 件失敗 / $PASS 件成功" >&2

@@ -142,11 +142,14 @@ printf 'ISSUE_URL=%s ISSUE_NUM=%s\n' "$ISSUE_URL" "$ISSUE_NUM"
 
 既存 Issue への着手時は、分岐前に本文の `<!-- ff-effort:begin -->` ブロック有無を確認する。無ければ `/create-issue` の工数ブロック契約（過去実績の3層参照を含む）に従って見積もりを既存 Issue 本文へ追記し、既にあれば作り直さず着手を続行する。bundle では本体と子を確認し、既存の予定値を上書きしない。
 
+工数ブロックの単位は人時（`- effort_unit: h` を宣言し、値は `N.Nh`）。宣言の無い既存ブロックの人日（`N.Nd`）は書き換えない — 集計器が 1d = 8h で人時へ正規化する。ブランチ作成（`git checkout -b` / `git switch -c`）と `gh pr merge` は ff-dev-toolkit の hook（`hooks/record-effort-wallclock.sh`）がブランチ名の Issue 番号をキーに wall-clock の開始 / 終了として記録し、`/close-issue` が `effort_wallclock_actual` として書き戻す（記録先はリポジトリ外の `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/`。書けなくてもワークフローは止まらず、書き戻しが `(unmeasured)` になる）。ブランチ名に `#<Issue番号>` を入れないと開始が記録されない。
+hook に届くのは展開前のコマンド文字列なので、ブランチ名を変数で組む形（`git checkout -b "feature/#${ISSUE_NUM}-x"`）・`git worktree add -b`・`git branch -m` は記録されない（`/close-issue` の読み手はそのときブランチの reflog の最古エントリから開始を補い、引けなければ `(unmeasured)`）。下の例のようにブランチ名をリテラルで書く。
+
 ```bash
 # ブランチ作成
 git checkout develop
 git pull origin develop
-git checkout -b "feature/${ISSUE_NUM}-user-auth"
+git checkout -b "feature/#123-user-auth"   # Issue 番号をリテラルで書く（123 は ISSUE_NUM の値）
 ```
 
 **ポイント**:
@@ -427,7 +430,7 @@ npm audit --audit-level=moderate
 
 ```bash
 # ブランチをプッシュ
-git push -u origin "feature/${ISSUE_NUM}-user-auth"
+git push -u origin "feature/#123-user-auth"
 
 # PRを作成
 gh pr create \
@@ -940,9 +943,26 @@ mutation($body: String!) {
 - マージ直前に「リモート先端 == ゲート実測対象」を機械照合する（下の鮮度ゲート）。`--match-head-commit` とは守る窓が違う
 - プラグイン未導入の環境では同等の手順を `gh` コマンドで手動実施する
 
+#### マージ前のゲート: PR トリガーの CI がある場合（既定）
+
+既定の形は **PR トリガーの CI（open / synchronize で走る checks）がマージ前のゲートを担う**ことで、
+checks の完了と成功がマージの根拠になる（`/close-issue` の手順 7 が `statusCheckRollup` の非空を
+確かめてから `gh pr checks --watch --fail-fast` で待つ）。ローカルでは変更に関係する範囲だけを回す
+部分ゲートで足り、**全件ゲートを回すのはリリース前（タグ / Release の作成前）と契約面の変更時に
+限る**。全件をマージ前の既定にすると、ローカルで数十分の待ちが PR ごとに発生し、しかも実行環境の
+差（Linux 限定の方言差など）は手元の全件でも見えない — その差は PR の checks が CI ランナー上で拾う。
+
+- 部分ゲートの選択が漏れうる依存（字面に現れない参照）は、定期の全件実行（週次 CI など）が拾う
+- 契約面（ランナー自身・共有ライブラリ・hook 登録・配布テンプレート・CI 定義など、影響先を差分から
+  言い切れない変更）は部分ゲートでも全件へ倒す。何を契約面とするかはプロジェクトの検証スイートが
+  定める
+- 鮮度照合（下記）が部分ゲートの記録で判定不能（exit 2）を返すのは想定どおりで、checks が全件成功
+  していれば全件ゲートの再実行は要らない（報告の `REASON` / `ACTION` は従来どおり残す）。判定不能の
+  理由が「汚れた木で測った」「記録が無い」なら、checks が成功していても全件ゲートを回し直す
+
 #### PR トリガーの CI を持たないリポジトリでの checks 待機
 
-PR トリガーの CI を設定していないリポジトリ（本リポジトリを含む）では、`gh pr checks --watch`
+PR トリガーの CI を設定していないリポジトリでは、`gh pr checks --watch`
 は checks が 1 件も登録されないまま `no checks reported` を返して即終了する。これを **CI 通過とは
 みなさない**——checks が 0 件なのは「まだ実行中」ではなく「そもそも実行されていない」状態であり、
 `--watch` の即終了は成功でも失敗でもない。同様に `statusCheckRollup` の登録を `until` ループなどで

@@ -94,7 +94,7 @@ codex plugin add ff-dev-toolkit@ff-dev-toolkit
 
 - `docs-template/` — コア7文書 + 拡張フォルダのテンプレート一式
 - `scripts/` — マルチAI CLI オーケストレーション用スクリプト
-- `hooks/` — 更新通知・スキル実体ドリフト検査・自動振り返り・Bash ガードのフック（下記）
+- `hooks/` — 更新通知・スキル実体ドリフト検査・自動振り返り・工数の実測記録・決定木（経路判定と葉の到達記録）・Bash ガードのフック（下記）
 
 ### プラグインバージョン検査（読み取り専用）
 
@@ -150,6 +150,21 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 - `RETROSPECTIVE_MODE=off` で自動発火を無効にする。`0` / `false` / `no` / `none` / `disabled` も大文字小文字と空白を無視して受け付ける
 - Node.js 22 以上が見つからない場合は応答をブロックせず、手動実行と復旧方法を通知する
 - 改善提案の Issue 起票は既定では承認を待たずに実行し、発行番号を振り返り結果で報告する。`RETROSPECTIVE_FILING=ask` で承認待ち式へ戻せる（`RETROSPECTIVE_MODE` とは独立した起票側のスイッチで、hook は `ask` のときだけ承認文言を注入する）
+
+### 工数の実測記録（wall-clock・指示の読み込みバイト）
+
+Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申告値と並べるための実測を、リポジトリ外の `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/` へ追記専用の TSV として記録する。`hooks/record-effort-wallclock.sh`（PreToolUse・`Bash`）はブランチ作成（`git checkout -b` / `git switch -c`）と `gh pr merge` を検出し、ブランチ名 `<type>/#<Issue番号>-<slug>` の番号とリポジトリをキーに開始 / 終了時刻を残す（ブランチ名を変数で組む形は記録されず、読み手がブランチの reflog から開始を補う）。`hooks/record-instruction-bytes.sh`（PreToolUse・`Read` / `Skill`）は `SKILL.md`・`references/*.md`・`docs/**/*.md` の読み込みバイトを残す。`/close-issue` がこれを `scripts/effort-report.sh --issue-metrics <Issue番号>` で読んで `effort_wallclock_actual` / `effort_instruction_bytes` として書き戻し、`scripts/effort-report.sh --format kv` が変更クラス（docs-only / 10 行以下 / それ以外）別の中央値・p75 を出す。どちらの hook もコマンドを止めず何も出力しない。記録できないとき（置き場を作れない・書けない）は黙って通り、書き戻しが `(unmeasured)` になる（0 とは区別する）。`FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS=1` で両方を無効化できる。
+### 決定木 v0（経路の判定と葉の到達記録）
+
+「いつ何が走るか」を散文ではなく 1 ファイルの決定木データ `scripts/decision-tree/tree.tsv` で持つ。葉は同梱の全スキル（`skills/<名>/SKILL.md`）と全 hook（`hooks/<名>.sh`）で、各ノードは「問い 1 つ + 閉じた答えの集合 + `none`（ホスト判定へ）」を持つ。根だけが機械判定で、依頼の経路 **fast / full / none** を返す。葉の中身はこの版では書き直していない。
+
+- 判定は `bash scripts/decision-tree/route.sh`（bash + awk。LLM を経由せずミリ秒で返る）。引数なしは cwd の差分（base は `origin/HEAD` → `origin/develop`、`--base` / `WORKFLOW_TIER_BASE` で指定）、`--files <path>...` / `--files-from <file|->` は path 一覧で判定する。stdout の `DT_ROUTE=fast|full|none` 行が契約で、`DT_REASON=` / `DT_SOURCE=` / `DT_FILES=` / `DT_LINES=` / `DT_TARGET=` が続く。判定不能は `DT_ROUTE=none` + exit 2
+- 規則（既定の `FF_JEV_MODE=off`。`tree.tsv` の `rule root` 行が値を持つ）: 契約 path（`hooks/hooks.json` / `PUBLIC-SURFACE.md` / plugin manifest / `SKILL.md` など）を含めば full → 全 path が docs（`*.md` / `docs/` / `changelog.d/` / `.version-claims/`）なら fast → 変更行数が 10 以下なら fast → それ以外は full。変更ファイルが 0 件なら none。off では Jev を呼ばず、既存の発火（`SKILL.md` の description / hook の matcher）に何も足さない
+- `FF_JEV_MODE=on` かつ `FF_JEV_POINTS` に `route` を含めると、根（choice 型ノード）は先に `scripts/jev/jev-decide.sh` へ criteria（`scripts/jev/questions/root.json`）を渡し、confidence が閾値（Choice の共通既定 0.99。判定点別の上書きは `scripts/jev/jev-decide.sh` のヘッダのとおり）以上のときだけ採用する。閾値未満と Jev の失敗は none（ホスト判定へ）、名簿に無ければ規則判定へ落ちる二段構え
+- `route.sh --check` が木の静的検査（実在しない葉・到達不能なノード・木に載っていないスキル / hook・深さ 5 以上・葉 51 以上・`none` の欠落・同じ規則キーの重複を赤にする）、`--leaves` が葉の一覧、`--walk <答え>...` が根からの辿りを出す
+- hook `hooks/decision-tree.sh` は `UserPromptSubmit` でルータを cwd に当てて根の答えをセッション記録へ置き（stdout 無出力）、`Stop` で到達した葉（根の答え・transcript に残る Skill 起動・自身）を Issue 番号と repo（cwd の `git rev-parse --path-format=absolute --git-common-dir`。工数の実測記録と同じ列）付きで `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/leaves.tsv` へ追記する（1 行 1 レコード・追記専用・同じセッションの同じ葉は 1 行）。Skill 起動として採るのは Skill ツールの `tool_use`（`"name":"Skill"` + `"input":{"skill":"…"}`）とスラッシュコマンド（`<command-name>/ff-dev-toolkit:<名></command-name>`）の 2 形だけで、本文に `"skill":"…"` の文字列があるだけでは採らない。どちらの痕跡も無い transcript は 0 件ではなく `(unmeasured)`。Issue 番号はブランチ名 `<type>/#<番号>-<slug>` から取る。記録が書けない・読めない・repo を引けないときは止めず、stderr に `(unmeasured)` を残す
+- 読み手は `bash scripts/effort-report.sh --unreached-leaves [--days N] [--metrics-dir DIR] [--repo-dir DIR]`（既定 14 日・カレントのリポジトリ）。repo 列が一致する行だけを採り、期間内に記録の無い葉を列挙する。記録が無い・読めないときは `(unmeasured)` と出す（0 件の到達にしない）。**既知の残差（v0）**: 列挙できるのは skill の葉と根の答えだけで、各 hook の発火と doc の葉の参照は記録の供給源が未配線のため、到達 0 ではなく `(unavailable)` 件数で出る（0 と区別する）
+- 止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_DECISION_TREE=1` を設定してください。plugin hooks が発火しないホストでは `route.sh` を手で呼ぶ
 
 ### Bash ガード（PreToolUse）
 

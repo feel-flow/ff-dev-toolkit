@@ -247,8 +247,7 @@ select_cache_toolkit() {
   [ -d "$cache_root" ] || return 1
   for root in "$cache_root"/*/ff-dev-toolkit/*; do
     [ -d "$root" ] || continue
-    version="$(toolkit_manifest_version "$root" 2>/dev/null || true)"
-    if [ -z "$version" ]; then
+    if ! version="$(toolkit_manifest_version "$root" 2>/dev/null)" || [ -z "$version" ]; then
       echo "WARNING: ff-dev-toolkit cache 候補の安定版 version を読めないためスキップします: $root" >&2
       continue
     fi
@@ -281,8 +280,8 @@ verify_toolkit_identity() {
     echo "       bash ${root}/scripts/setup-multi-agent.sh を再実行してください。" >&2
     return 2
   fi
-  config_version="$(sed -nE 's/^toolkit_version:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' "$root/scripts/agent-config.yaml" 2>/dev/null || true)"
-  if [ "$config_version" != "$version" ]; then
+  if ! config_version="$(sed -nE 's/^toolkit_version:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' "$root/scripts/agent-config.yaml" 2>/dev/null)" \
+     || [ "$config_version" != "$version" ]; then
     echo "ERROR: ff-dev-toolkit の plugin version と agent-config.yaml が一致しません。" >&2
     echo "       plugin=${version} agent-config=${config_version:-missing} root=${root}" >&2
     return 2
@@ -318,8 +317,10 @@ resolve_toolkit() {
       print_toolkit_path_shapes "       "
       return 2
     fi
-    version="$(toolkit_manifest_version "$root" 2>/dev/null || true)"
-    [ -n "$version" ] || { echo "ERROR: FF_DEV_TOOLKIT_ROOT の plugin version を読めません: $root" >&2; return 2; }
+    if ! version="$(toolkit_manifest_version "$root" 2>/dev/null)" || [ -z "$version" ]; then
+      echo "ERROR: FF_DEV_TOOLKIT_ROOT の plugin version を読めません: $root" >&2
+      return 2
+    fi
     set_resolved_toolkit "$root" "$version" "explicit"
     return $?
   fi
@@ -347,8 +348,10 @@ resolve_toolkit() {
   if [ -f "$sidecar" ]; then
     sidecar_value="$(read_sidecar_first_line "$sidecar")"
     if [ -n "$sidecar_value" ] && root="$(canonical_toolkit_root "$sidecar_value")"; then
-      version="$(toolkit_manifest_version "$root" 2>/dev/null || true)"
-      [ -n "$version" ] || { echo "ERROR: sidecar が指す toolkit の version を読めません: $root" >&2; return 2; }
+      if ! version="$(toolkit_manifest_version "$root" 2>/dev/null)" || [ -z "$version" ]; then
+        echo "ERROR: sidecar が指す toolkit の version を読めません: $root" >&2
+        return 2
+      fi
       set_resolved_toolkit "$root" "$version" "sidecar"
       return $?
     fi

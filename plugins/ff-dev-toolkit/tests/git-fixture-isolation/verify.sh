@@ -377,7 +377,9 @@ changelog-fragments/cases/footer.sh
 changelog-fragments/cases/parallel-branches.sh
 changelog-public-tags-selftest/verify.sh
 claude-hooks-path/verify.sh
+decision-tree/verify.sh
 docs-gates-runtime/ci-example-cases.sh
+effort-contract/verify.sh
 guard-checkout-restore/verify.sh
 guard-review-in-flight/verify.sh
 markdownlint-selftest/verify.sh

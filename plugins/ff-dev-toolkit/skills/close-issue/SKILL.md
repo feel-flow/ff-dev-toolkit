@@ -389,8 +389,9 @@ Issue 本文の「受け入れ条件（AC）」（振る舞い Given-When-Then +
 gh pr view "$PR_NUMBER" --json additions,deletions,commits,reviews
 ```
 
-- **AI 実績は観測事実つきで申告する。** 人日換算そのものは AI の判断だが、根拠となる観測可能な事実（差分行数・コミット数・レビュー往復回数・品質ゲートの実行回数）を必ず併記する。事実を伴わない数字は報告として不完全に扱う — 検証できない数字は KPI の母集団を汚す
-- **単位は `d`（人日。1d = 8h）固定**、小数第 1 位まで、最小 0.1d。時間単位（`h`）は使わない
+- **AI 実績は観測事実つきで申告する。** 人時換算そのものは AI の判断だが、根拠となる観測可能な事実（差分行数・コミット数・レビュー往復回数・品質ゲートの実行回数）を必ず併記する。事実を伴わない数字は報告として不完全に扱う — 検証できない数字は KPI の母集団を汚す
+- **単位はブロックの宣言に従う**。`- effort_unit: h` 行のあるブロックは `N.Nh`（小数第 1 位まで、最小 1.0h）、宣言の無い旧ブロックは起票時と同じ `N.Nd`（1d = 8h）で書く。宣言と食い違う単位で書くと集計器が `excluded_unit_mismatch` として母集団から外す
+- **hook の実測を自己申告値と並記する**（`effort_ai_actual` を置き換えない）。`FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/effort-report.sh" --issue-metrics <Issue番号>`（作業中のリポジトリで実行する。記録は共有置き場からこのリポジトリの行だけを読む）の `wallclock_actual_h` を `effort_wallclock_actual: N.Nh`（ブランチ作成からこの書き戻し時点 = マージ直前まで）、`instruction_bytes` を `effort_instruction_bytes: N` として書き、`gh pr view "$PR_NUMBER" --json files,additions,deletions --jq 'if ([.files[].path | test("[.]md$")] | all) then "docs-only" elif (.additions + .deletions) <= 10 then "small" else "other" end'` の出力を `effort_change_class:` に書く。記録置き場（`${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/`）が無い・読めない・hook を `FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS=1` で止めている等で値が `(unmeasured)` のときは、そのまま `(unmeasured)` と書く（0 と書かない・マージは止めない）。この 3 行は Issue 単位の累積値なので、1 Issue に複数 PR でも加算せず最新の値で置き換える
 - **人間の実績は書かない**（`effort_human_actual` という項目は作らない）。人間は実際には作業しないため実績は原理的に取れず、人間側は永久に予定（反実仮想）である
 - **乖離率はブロックに書かない**。`effort_ai_planned` と `effort_ai_actual` から導出できる値であり、下の加算ケースで静かに stale になる。乖離率は手順 6 のコメントと集計器がその都度計算する
 
@@ -405,9 +406,13 @@ gh pr view "$PR_NUMBER" --json additions,deletions,commits,reviews
 
 ```markdown
 <!-- ff-effort:begin -->
-- effort_human_planned: 3.0d
-- effort_ai_planned: 0.6d
-- effort_ai_actual: 1.4d
+- effort_unit: h
+- effort_human_planned: 24.0h
+- effort_ai_planned: 4.8h
+- effort_ai_actual: 11.2h
+- effort_wallclock_actual: 6.5h
+- effort_instruction_bytes: 431000
+- effort_change_class: other
 - effort_evidence: diff +412/-88 / レビュー往復 2 / fix commit 2 / 全件ゲート 3 回
 - effort_basis: （起票時のまま）
 <!-- ff-effort:end -->
@@ -500,13 +505,13 @@ gh issue comment "$ISSUE_URL" --body-file "/tmp/close-issue-report-${ISSUE_NUMBE
 
 | 区分 | 予定 | 実績 | 備考 |
 | ---- | ---- | ---- | ---- |
-| 人間（換算） | 3.0d | — | 実作業なし。圧縮率の基準線 |
-| AI | 0.6d | 1.4d | 乖離率 2.33（閾値 1.40 超） |
+| 人間（換算） | 24.0h | — | 実作業なし。圧縮率の基準線 |
+| AI | 4.8h | 11.2h | 乖離率 2.33（閾値 1.40 超） |
 
 観測事実: diff +412/-88 / レビュー往復 2 / fix commit 2 / 全件ゲート 3 回
-圧縮率: 3.0d ÷ 1.4d = 2.1 倍
+圧縮率: 24.0h ÷ 11.2h = 2.1 倍
 
-**乖離の原因**: 契約ゲートの mutation テストが予定に入っていなかった（レビューで要求され 0.5d 相当を追加）
+**乖離の原因**: 契約ゲートの mutation テストが予定に入っていなかった（レビューで要求され 4.0h 相当を追加）
 
 ### 参照
 
@@ -526,7 +531,7 @@ gh issue comment "$ISSUE_URL" --body-file "/tmp/close-issue-report-${ISSUE_NUMBE
 
 閾値 `0.71` / `1.40` は**実測分布から導出した値**である。出荷時の暫定値（`0.77` / `1.30`。「0.6d 予定に対し 0.75d は運用上の誤差だが 2 倍は前提が壊れている」という設計判断）は、2026-09-10 に 3 リポジトリ・母集団 78 件で較正して置き換えた。次に較正するときも同じ手順で引く:
 
-1. **母集団を取る**。`scripts/effort-report.sh --repo <owner/repo> --format kv` の `variance_population` が較正母集団で、その条件は集計器の除外規則と同一である — `effort_ai_actual` が単位 `d` の正の数で記入され、かつ `effort_ai_planned` が単位 `d` の正の数であること。次のものは母集団に入らない: `ff-effort` ブロック不在（`excluded_noblock`）／実績が未記入（`excluded_planned_only`）／**実績が複数 PR の加算更新の途中にあり同じキーが 2 行ある**・単位違い・未閉鎖ブロック（いずれも `excluded_malformed`）。`suspect_marker` が 1 以上・`limit_reached=1` のまま較正しない（前者は本文が読めていない Issue が落ちている、後者は母集団が打ち切られている）
+1. **母集団を取る**。`scripts/effort-report.sh --repo <owner/repo> --format kv` の `variance_population` が較正母集団で、その条件は集計器の除外規則と同一である — `effort_ai_actual` と `effort_ai_planned` がブロックの単位宣言どおりの正の数で記入されていること（`effort_unit: h` なら `N.Nh`、宣言の無い旧ブロックは `N.Nd` を 1d = 8h で人時へ正規化。乖離率は比なので単位に依らない）。次のものは母集団に入らない: `ff-effort` ブロック不在（`excluded_noblock`）／実績が未記入（`excluded_planned_only`）／**実績が複数 PR の加算更新の途中にあり同じキーが 2 行ある**・数値でない値・未知の単位宣言・未閉鎖ブロック（いずれも `excluded_malformed`）／単位宣言と値の単位の食い違い（`excluded_unit_mismatch`）。`suspect_marker` が 1 以上・`limit_reached=1` のまま較正しない（前者は本文が読めていない Issue が落ちている、後者は母集団が打ち切られている）
 2. **分位点を読む**。同じ出力の `variance_p10` / `variance_p25` / `variance_median` / `variance_p75` / `variance_p90`
 3. **上限を引く**。`上限 = max(p75, 1/p25)` を小数第 2 位へ丸める。これで帯は「中央値を中心に p25〜p75 を包む乗法対称帯」になる
 4. **下限は上限の逆数**。`下限 = 1/上限` を小数第 2 位へ丸める。**乗法対称を崩さない**（加法的な ±x% にしない）
@@ -543,8 +548,9 @@ gh issue comment "$ISSUE_URL" --body-file "/tmp/close-issue-report-${ISSUE_NUMBE
 
 #### CI checks の有無による分岐（待つか、ローカルゲートを根拠にするか）
 
-マージ前に、対象 PR に checks が登録されているかを先に確認します。PR トリガーの CI を持たない
-リポジトリ（本リポジトリを含む）では、`gh pr checks --watch` は `no checks reported` を返して
+マージ前に、対象 PR に checks が登録されているかを先に確認します。**既定は PR トリガーの CI が
+ある形**で、checks の完了と成功がマージの根拠になります。PR トリガーの CI を持たない
+リポジトリでは、`gh pr checks --watch` は `no checks reported` を返して
 即終了するため、これを CI 通過と早合点してはいけません。また `statusCheckRollup` の登録を待つ
 自作の待機ループは、checks が存在しない repo では永遠に終わりません。
 
@@ -566,11 +572,15 @@ else
 fi
 ```
 
-- `statusCheckRollup` が**空配列**（`null` も同じ扱い）の場合、checks の完了を待たずに次へ進み、
+- `statusCheckRollup` が**非空**の場合（PR トリガーの CI がある既定の形）は、全 checks の完了と
+  成功を確認してからマージへ進みます。`--watch --fail-fast` で完了を待ち、失敗（rc 非 0）ならそこで
+  止まります。**checks の成功がマージの根拠で、ローカルの全件ゲートはリリース前（タグ / Release の
+  作成前）と契約面の変更時に限ります** — 通常の PR のローカル検証は部分ゲート（プロジェクトが
+  変更ベースの選択を持つならその実行）で足ります
+- `statusCheckRollup` が**空配列**（`null` も同じ扱い）の場合（PR トリガーの CI を持たない
+  リポジトリ）、checks の完了を待たずに次へ進み、
   `CHECKS_REPORT` の文言をそのまま手順 8 の完了報告へ明記します。マージ可否はこの後のローカル
   全件ゲート実行結果と鮮度照合（下記）だけを根拠にします
-- `statusCheckRollup` が**非空**の場合は、従来どおり全 checks の完了と成功を確認してからマージへ
-  進みます。`--watch --fail-fast` で完了を待ち、失敗（rc 非 0）ならそこで止まります
 - `gh pr view` 自体が失敗した場合は、分岐を決められない＝検査が成立していないため停止します
   （取得失敗を「checks 無し」へ倒さない）
 
@@ -642,7 +652,7 @@ esac
 - 終了コード **0 = 一致（無出力）**、**1 = 不一致（マージを止める）**、**2 = 判定不能（止めないが報告する）**、**3 = 検査不成立（停止する）**。部分実行の記録（`STATUS=partial`）は、リモート先端と**一致していても** 2 へ倒れる — 名指しした suite だけを回した記録を全件緑へ昇格させないため
 - 判定不能に当たる原因は増えうる（記録が無い / 別ブランチの記録 / 汚れた木で測った / 直近のゲートが赤い / 記録が部分実行である / 記録の版や内容を解釈できない / 実測対象のコミットが手元に無い）。**個別の原因ではなく `FRESH_STATUS` で分岐する**
 - **2 で止めないのは意図的**です。記録の仕組みを持たないプロジェクトでは判定不能が常態で、そこで無条件にマージを止めると検査ごと迂回されます。**この窓は静かに外れると squash merge に畳み込まれるので、ノイズより見逃しのコストが高い** — だから「黙って緑を返さない」ことを最低線として守り、判定不能は手順 8 の完了報告に必ず載せる
-- 鮮度照合が判定不能（`FRESH_STATUS=2`）で、かつ `FRESH_REASON` が「汚れた木で測った / 記録が無い / 記録が部分実行である」のいずれかなら、clean な作業ツリーで全件ゲートを再実行してから改めて照合します（記録の仕組みを持たないプロジェクトではこの限りではなく、2 でマージを止めない既存規定も変わりません）
+- 鮮度照合が判定不能（`FRESH_STATUS=2`）で、かつ `FRESH_REASON` が「汚れた木で測った / 記録が無い / 記録が部分実行である」のいずれかなら、clean な作業ツリーで全件ゲートを再実行してから改めて照合します（記録の仕組みを持たないプロジェクトではこの限りではなく、2 でマージを止めない既存規定も変わりません）。**ただし `FRESH_REASON` が「記録が部分実行である」で、かつ checks が非空で全件成功した回に限り、リリース前と契約面の変更時を除き再実行しません** — PR の checks がリモート先端（base へのマージ結果）を実測しており、部分ゲートの記録で判定不能になるのは想定どおりだからです（`FRESH_REASON` / `FRESH_ACTION` は従来どおり完了報告へ載せる）。「汚れた木で測った / 記録が無い」は checks が成功していても従来どおり全件ゲートを再実行します（checks がローカルの検証スイートを回しているとは限らないため）
 - マージ対象 PR のブランチを checkout して照合する。記録の `BRANCH` が現在の名前付きブランチと異なる場合は、コミット照合より前に **`UNDETERMINED`（exit 2）** を返す。別ブランチの古い記録は同一ブランチへの追加 push の証拠ではないため、`RELATION=divergent` で止めず、記録側のブランチ名を含む `REASON` と現在のブランチでの再実測を勧める `ACTION` を報告する。SHA が同一でも別ブランチの記録を一致へ昇格させない
 - `BRANCH` が欠落・空・`HEAD`・`(unknown)`、または現在が detached HEAD などで名前付きブランチを取得できない場合は、別ブランチと断定せず従来のコミット照合を行う。`--measured` 明示時も従来どおり記録を読まない
 - 不一致の `RELATION` で次の一手が変わる:
@@ -695,7 +705,7 @@ printf 'gh pr merge %s --squash --match-head-commit %s \\\n  --subject %s \\\n  
 - 対象 Issue: #46（達成 6 / 未達 0 / 対象外 0）
 - チェックボックス更新: ✅
 - 完了報告コメント: ✅
-- 工数記録: ✅ AI 予定 0.6d → 実績 1.4d（乖離率 2.33・閾値超過）／ブロック不在の場合は「ブロック不在のためスキップ」
+- 工数記録: ✅ AI 予定 4.8h → 実績 11.2h（乖離率 2.33・閾値超過）／ブロック不在の場合は「ブロック不在のためスキップ」
 - closing keyword 抵触検査: 対象なし（Closes 運用）
 - CI checks: <手順 7 の CHECKS_REPORT をそのまま貼る>
 - ゲート実測鮮度: <手順 7 の FRESH_REPORT をそのまま貼る>
@@ -735,7 +745,7 @@ printf 'gh pr merge %s --squash --match-head-commit %s \\\n  --subject %s \\\n  
 - 対象 Issue: #46（達成 5 / 未達 0 / 対象外 0 / post-merge 検証待ち 1）— **マージ後も open 維持**
 - チェックボックス更新: ✅
 - 完了報告コメント: ✅
-- 工数記録: ✅ AI 予定 0.6d → 実績 1.4d（乖離率 2.33・閾値超過）／ブロック不在の場合は「ブロック不在のためスキップ」
+- 工数記録: ✅ AI 予定 4.8h → 実績 11.2h（乖離率 2.33・閾値超過）／ブロック不在の場合は「ブロック不在のためスキップ」
 - closing keyword 抵触検査: ✅ 2a 抵触なし（INSPECTED 7 行）/ 2b 抵触なし（INSPECTED 2 行）
 - CI checks: <手順 7 の CHECKS_REPORT をそのまま貼る>
 - ゲート実測鮮度: <手順 7 の FRESH_REPORT をそのまま貼る>

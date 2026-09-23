@@ -151,13 +151,34 @@ else
 fi
 
 WEEKLY_WF="$REPO_ROOT/.github/workflows/weekly-run-all.yml"
+# SSOT 側の checkout 直後の段（origin/HEAD の設置など）は、週次と PR トリガー CI が共有する
+# ローカル action に置いてある（ADR-062）。本文契約と公開側との突き合わせはその action へ当て、
+# 両 workflow が checkout の直後にその action を呼んでいること（配線）を別に確かめる。
+SSOT_SETUP="$REPO_ROOT/.github/actions/run-all-setup/action.yml"
+PR_WF="$REPO_ROOT/.github/workflows/pr-run-all.yml"
 # 公開側 workflow も同じ actions/checkout を使い、同じランナー特性
 # （refs/remotes/origin/HEAD を置かない）に晒される。本文契約を SSOT 側にしか掛けないと、
 # step 名だけを見る後段の突き合わせでは拾えない片側劣化 — name を保ったまま fetch の
 # if ガードを落とす・GITHUB_REF_NAME へ差し替える — が全ゲート緑で通る。両側へ回す。
 PUBLIC_WF="$REPO_ROOT/oss/ff-dev-toolkit/.github/workflows/weekly-public-run-all.yml"
 if [[ -f "$WEEKLY_WF" ]]; then
-  for _wf in "$WEEKLY_WF" "$PUBLIC_WF"; do
+  # 共有 action の不在は「本文契約が当たる先が無い」なので名指しで赤にする（無音で抜けない）。
+  [[ -f "$SSOT_SETUP" ]] || bad "共有セットアップ action が見つからない（origin/HEAD の本文契約が空振りする）: ${SSOT_SETUP#"$REPO_ROOT"/}"
+  # 配線: 両 workflow とも checkout の直後の step が共有 action であること。action だけ正しくても
+  # workflow が呼ばなくなれば、ランナー特性の対策は実行されない。
+  for _wf in "$WEEKLY_WF" "$PR_WF"; do
+    _wf_label="${_wf#"$REPO_ROOT"/}"
+    _next_step="$(awk '
+      /^      - uses: actions\/checkout@/ { region = 1; next }
+      region && /^      - (uses|name): / { print; exit }
+    ' "$_wf" 2>/dev/null)"
+    if [[ "$_next_step" == '      - uses: ./.github/actions/run-all-setup' ]]; then
+      ok "${_wf_label} は checkout の直後に共有セットアップ action を呼ぶ"
+    else
+      bad "${_wf_label} が checkout の直後に共有セットアップ action を呼んでいない（実際: ${_next_step:-抽出できない}）"
+    fi
+  done
+  for _wf in "$SSOT_SETUP" "$PUBLIC_WF"; do
     # 公開側の不在は後段の突き合わせが名指しで赤にする（ここで重ねて報告しない）。
     [[ -f "$_wf" ]] || continue
     _wf_label="${_wf#"$REPO_ROOT"/}"
@@ -227,6 +248,14 @@ post_checkout_step_names() { # $1=workflow ファイル
     region && index($0, "      - name: ") == 1 { print substr($0, length("      - name: ") + 1) }
   ' "$1"
 }
+# 共有 action 側の「checkout 直後の段」= 最初の `- uses:` より前の run step（action は checkout の
+# 直後に呼ばれることを上の配線検査が確かめている）。
+setup_head_step_names() { # $1=action.yml
+  awk '
+    /^    - uses: / { exit }
+    index($0, "    - name: ") == 1 { print substr($0, length("    - name: ") + 1) }
+  ' "$1"
+}
 
 if [[ ! -f "$WEEKLY_WF" ]]; then
   : # 公開リポジトリのチェックアウトは oss/ も weekly-run-all.yml（同期対象外）も持たない。
@@ -236,7 +265,8 @@ elif [[ ! -f "$PUBLIC_WF" ]]; then
   # 消えた対象が**検出器そのもの**である回に非対称が誰にも見えなくなる。
   bad "公開側 workflow が見つからない（移動・削除で非対称の突き合わせが空振りする）: ${PUBLIC_WF#"$REPO_ROOT"/}"
 else
-  ssot_post_checkout="$(post_checkout_step_names "$WEEKLY_WF")"
+  ssot_post_checkout=""
+  [[ ! -f "$SSOT_SETUP" ]] || ssot_post_checkout="$(setup_head_step_names "$SSOT_SETUP")"
   public_post_checkout="$(post_checkout_step_names "$PUBLIC_WF")"
   if [[ -z "$ssot_post_checkout" ]]; then
     # 抽出が空振りしたら「差分なし」ではなく検査不能として赤にする（書式変更で

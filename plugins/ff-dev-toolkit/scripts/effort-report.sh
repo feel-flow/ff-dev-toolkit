@@ -12,13 +12,31 @@
 #   乖離率 … 件ごとに算出し中央値と p90（精度指標。1 件の大外れで平均を汚さない）
 #
 # 母集団から外したものは必ず件数で出す。黙って落とすと「一部の Issue だけの値」が
-# 全体の値に見える。除外は 4 種を区別する:
+# 全体の値に見える。除外は 5 種を区別する:
 #   noblock       … ff-effort ブロックが無い
 #   planned_only  … 実績が未記入（PR を伴わずクローズ等）。実績 0 ではない
-#   malformed     … 記入されているが読めない（単位違い・書式ずれ・重複キー）
+#   malformed     … 記入されているが読めない（書式ずれ・重複キー・未知の effort_unit）
+#   unit_mismatch … 値の単位がブロックの単位宣言と食い違う（下の「単位」）
 #   no_human_planned … 実績はあるが人間予定が無く、圧縮率の対を作れない
 # 「記入されていない」と「記入されているが読めない」を同じ数字に合流させると、
 # 記入ミスが KPI から静かに消える。
+#
+# 単位: 集計は人時（h）で行う。`- effort_unit: h` 行を持つブロックは値を `N.Nh` で読み、
+# その行が無い旧ブロックは値を `N.Nd`（人日）で読んで ×8 で人時へ正規化し、同じ母集団へ
+# 入れる（旧ブロックを捨てると較正母集団が消える）。単位宣言と値の単位が食い違うもの
+# （`effort_unit: h` なのに `d` 付きの値、宣言が無いのに `h` 付きの値）は黙って混ぜず
+# unit_mismatch として件数で出す。乖離率・圧縮率は比なので単位に依らない。
+#
+# 速度指標（--format kv の wallclock_* / instruction_bytes_* / review_rounds_* /
+# gate_minutes_*）は、/close-issue が書き戻す effort_wallclock_actual /
+# effort_instruction_bytes / effort_change_class を変更クラス別に集計する。供給源が
+# まだ配線されていない指標は `(unavailable)`、配線済みだが該当クラスに実測が無いものは
+# `(unmeasured)` を出し、どちらも 0 と区別する。
+#
+# --issue-metrics N は Issue 本文ではなく、hook が書くリポジトリ外の記録
+# （${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/ の wallclock.tsv /
+# instruction-bytes.tsv）から 1 Issue 分の実測を読む（/close-issue の書き戻し元）。記録置き場は
+# リポジトリ横断で共有されるので、--repo-dir（既定はカレントのリポジトリ）の行だけを採る。
 #
 # 抽出に grep を使わない: grep は「不一致=1 / エラー=2」だが、別実装へ差し替えられた
 # 環境ではエラーでも 1 を返すことがあり、`rc<=1 なら正常` の判定が fail-open へ反転する。
@@ -202,6 +220,114 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 2
 VARIANCE_LOWER="0.71"
 VARIANCE_UPPER="1.40"
 
+# --- 決定木の葉の到達（hooks/decision-tree.sh が Stop で書く leaves.tsv の読み手）-----------
+# Issue の集計とは独立した別モード。記録の置き場は Wave 0 の wall-clock / 読み込みバイト記録と
+# 同じ ${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/ で、1 行 1 レコード
+# （<ISO 時刻> <epoch> <Issue> <session> <kind> <名> <via> <repo>。書式は hook のヘッダが正本）。
+# 「N 日間到達 0 の葉」を列挙する。表記は同じ置き場を読む他の指標と揃える: 記録が無い・
+# 読めないは `(unmeasured)`（0 件の到達ではない）、供給源がまだ配線されていない葉（各 hook の
+# 発火と doc の葉の参照は v0 では誰も書かない）は `(unavailable)`。どちらも 0 と区別し、葉の
+# 列挙に混ぜない。読めない行（フィールド数違い・epoch が整数でない）は黙って落とさず件数で出す。
+# 記録置き場はリポジトリ横断で共有されるので、wall-clock の読み手と同じく repo 列が
+# --repo-dir（既定はカレントのリポジトリ）と一致する行だけを採る。重複行は集合として畳む。
+# 失敗でワークフローを止めないため、このモードは引数の誤り以外 exit 0 で終わる。
+report_unreached_leaves() { # $1=days $2=format $3=metrics_dir $4=repo_dir
+  local days="$1" format="$2" metrics_dir="$3" repo_dir="$4" script_dir router leaves now cutoff repo
+  script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  router="$script_dir/decision-tree/route.sh"
+  leaves="$metrics_dir/leaves.tsv"
+  case "$days" in ''|*[!0-9]*|0) echo "--days は正の整数を指定してください: ${days}" >&2; return 2 ;; esac
+  [ -f "$router" ] || { echo "決定木のルータがありません: ${router}" >&2; return 1; }
+  local tree_leaves
+  tree_leaves="$(bash "$router" --leaves 2>/dev/null)" || { echo "決定木の葉を列挙できません（route.sh --leaves が失敗）" >&2; return 1; }
+  [ -n "$tree_leaves" ] || { echo "決定木の葉が 0 件です（木データを確認してください）" >&2; return 1; }
+  now="$(date -u +%s)"
+  cutoff=$((now - days * 86400))
+  repo="$(metrics_repo_key "$repo_dir")"
+
+  local source="" records=0 in_window=0 malformed=0
+  if [ -z "$repo" ]; then
+    source="(unmeasured)"
+  elif [ -f "$leaves" ] && [ -r "$leaves" ]; then
+    source="$leaves"
+  else
+    source="(unmeasured)"
+  fi
+
+  # 到達した葉（期間内・対象 repo）の集合を「kind:name」の行で作る
+  local reached=""
+  if [ "$source" = "$leaves" ]; then
+    reached="$(awk -F'\t' -v cutoff="$cutoff" -v repo="$repo" '
+      NF != 8 || $2 !~ /^[0-9]+$/ { bad++; next }
+      $8 != repo { next }
+      { total++ }
+      $2 + 0 >= cutoff { win++; print $5 ":" $6 }
+      END { printf "__records=%d\n__in_window=%d\n__malformed=%d\n", total + 0, win + 0, bad + 0 }
+    ' "$leaves")" || { echo "leaves.tsv の走査に失敗しました: ${leaves}" >&2; return 1; }
+    records="$(printf '%s\n' "$reached" | awk -F= '/^__records=/ { print $2; exit }')"
+    in_window="$(printf '%s\n' "$reached" | awk -F= '/^__in_window=/ { print $2; exit }')"
+    malformed="$(printf '%s\n' "$reached" | awk -F= '/^__malformed=/ { print $2; exit }')"
+    reached="$(printf '%s\n' "$reached" | awk '!/^__/' | LC_ALL=C sort -u)"
+  fi
+  local nl='
+'
+  local reached_set="${nl}${reached}${nl}"
+  # 供給源が未配線の葉（decision-tree 以外の hook と doc の葉）は到達 0 ではなく (unavailable) に数える
+  local unreached="" unavailable=0 kind name line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    kind="${line%%	*}"; name="$(printf '%s' "$line" | cut -f2)"
+    if { [ "$kind" = "hook" ] && [ "$name" != "decision-tree" ]; } || [ "$kind" = "doc" ]; then
+      unavailable=$((unavailable + 1)); continue
+    fi
+    case "$reached_set" in
+      *"${nl}${kind}:${name}${nl}"*) ;;
+      *) unreached="${unreached}${kind}:${name}${nl}" ;;
+    esac
+  done <<EOF
+$tree_leaves
+EOF
+  local n_unreached
+  n_unreached="$(printf '%s' "$unreached" | awk 'NF { n++ } END { print n + 0 }')"
+
+  if [ "$format" = "kv" ]; then
+    echo "leaves_days=${days}"
+    echo "metrics_dir=${metrics_dir}"
+    echo "repo=${repo:-(unresolved)}"
+    echo "leaves_source=${source}"
+    echo "leaves_records=${records}"
+    echo "leaves_in_window=${in_window}"
+    echo "leaves_malformed=${malformed}"
+    echo "leaves_unavailable=${unavailable}"
+    if [ "$source" = "$leaves" ]; then
+      echo "leaves_unreached=${n_unreached}"
+      echo "leaves_unreached_list=$(printf '%s' "$unreached" | awk 'NF' | tr '\n' ',' | sed 's/,$//')"
+    else
+      echo "leaves_unreached=${source}"
+      echo "leaves_unreached_list=${source}"
+    fi
+    return 0
+  fi
+
+  printf '# 決定木の葉の到達（直近 %s 日間）\n\n' "$days"
+  printf '既知の残差（v0）: 列挙できるのは skill の葉と route だけ。decision-tree 以外の hook と doc の葉は到達の供給源が未配線なので、到達 0 ではなく (unavailable) として件数だけ出す（0 と区別する）\n'
+  printf 'repo:           %s\n' "${repo:-(unresolved)}"
+  if [ "$source" != "$leaves" ]; then
+    printf '記録:           %s（%s が無い・読めない、または repo を引けない）\n' "$source" "$leaves"
+    printf '到達 0 の葉:    %s（記録が無いので 0 件とは言えない）\n' "$source"
+    printf '供給源が未配線の葉: (unavailable) %s 件（decision-tree 以外の hook と doc。v0 では発火・参照を記録しない）\n' "$unavailable"
+    return 0
+  fi
+  printf '記録:           %s（対象 repo %s 行 / 期間内 %s 行 / 読めない行 %s 行）\n' "$leaves" "$records" "$in_window" "$malformed"
+  if [ "$malformed" -gt 0 ]; then
+    printf '  ⚠️ 読めない行が %s 行あります（フィールド数 8 でない・epoch が整数でない）。落とした行の葉は到達に数えていません\n' "$malformed"
+  fi
+  printf '到達 0 の葉:    %s 件\n' "$n_unreached"
+  printf '%s' "$unreached" | awk 'NF { print "  - " $0 }'
+  printf '供給源が未配線の葉: (unavailable) %s 件（decision-tree 以外の hook と doc。v0 では発火・参照を記録しない）\n' "$unavailable"
+  return 0
+}
+
 usage() {
   cat >&2 <<'USAGE'
 Usage: effort-report.sh [options]
@@ -212,6 +338,16 @@ Usage: effort-report.sh [options]
   --state STATE    all | open | closed（既定 all）
   --limit N        取得上限（既定 200）
   --format FORMAT  text（既定・日本語レポート） | kv（key=value の機械可読形式）
+  --issue-metrics N  Issue 本文を読まず、hook の記録から Issue N の wall-clock と
+                   指示読み込みバイトを kv で出す（記録が無ければ (unmeasured)。常に exit 0）
+  --metrics-dir DIR  hook の記録置き場（既定 ${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics）
+  --repo-dir DIR   --issue-metrics で絞るリポジトリ（既定はカレントディレクトリのリポジトリ）。
+                   記録置き場はリポジトリ横断で共有されるので、別リポジトリの同じ番号を混ぜない
+  --unreached-leaves  決定木の葉のうち直近 N 日間に到達 0 の葉を列挙する（Issue の集計は行わない。
+                   記録は hooks/decision-tree.sh が Stop で書く leaves.tsv。記録が無ければ (unmeasured)。
+                   --metrics-dir / --repo-dir / --format も効く。--issue-metrics とは同時に指定できない。
+                   引数の誤り以外は常に exit 0）
+  --days N         --unreached-leaves の期間（既定 14）
   -h, --help       この使い方を表示する
 USAGE
 }
@@ -225,6 +361,11 @@ REPO=""
 STATE="all"
 LIMIT="200"
 FORMAT="text"
+ISSUE_METRICS=""
+METRICS_DIR="${FF_DEV_TOOLKIT_STATE_DIR:-${HOME:-}/.config/ff-dev-toolkit}/metrics"
+REPO_DIR="."
+UNREACHED_LEAVES=0
+DAYS="14"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -233,6 +374,11 @@ while [ $# -gt 0 ]; do
     --state)  need_value "$1" $#; STATE="$2"; shift 2 ;;
     --limit)  need_value "$1" $#; LIMIT="$2"; shift 2 ;;
     --format) need_value "$1" $#; FORMAT="$2"; shift 2 ;;
+    --issue-metrics) need_value "$1" $#; ISSUE_METRICS="$2"; shift 2 ;;
+    --metrics-dir) need_value "$1" $#; METRICS_DIR="$2"; shift 2 ;;
+    --repo-dir) need_value "$1" $#; REPO_DIR="$2"; shift 2 ;;
+    --unreached-leaves) UNREACHED_LEAVES=1; shift ;;
+    --days)   need_value "$1" $#; DAYS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "不明な引数: $1" >&2; usage; exit 2 ;;
   esac
@@ -242,6 +388,147 @@ case "$FORMAT" in
   text|kv) ;;
   *) echo "--format は text または kv を指定してください: ${FORMAT}" >&2; exit 2 ;;
 esac
+
+# --- hook の記録（1 Issue 分の wall-clock / 指示読み込みバイト）----------------
+# 書き手は hooks/record-effort-wallclock.sh（wallclock.tsv）と
+# hooks/record-instruction-bytes.sh（instruction-bytes.tsv）。どちらも 1 行 1 レコードの
+# 追記専用 TSV で、列は次のとおり:
+#   wallclock.tsv         issue  event(start|end)  epoch  iso8601  session_id  branch  repo
+#   instruction-bytes.tsv issue(番号 or -)  session_id  bytes  epoch  path  repo
+# repo は `git rev-parse --path-format=absolute --git-common-dir`（linked worktree 間で共通）。
+# 記録置き場はリポジトリ横断で共有されるので、repo 列が対象リポジトリと一致する行だけを採る
+# （repo 列の無い行・一致しない行は採らない。別リポジトリの同じ番号の Issue を混ぜない）。
+# 読み方:
+#   wall-clock … 最初の start から、それ以降の最後の end まで。end は `gh pr merge` の
+#                **試行時刻**（PreToolUse で記録するので失敗したマージも残る）で、最後の試行を
+#                採る。end が無ければ now まで（/close-issue はマージ直前に呼ぶので、書き戻し
+#                時点までの経過になる）。start が無いときは、対象リポジトリのブランチ
+#                `<type>/#<n>-<slug>` の reflog の最古エントリを開始とみなす（hook 導入前・
+#                変数形のブランチ作成で start を取りこぼした場合の補い。引けなければ unmeasured）
+#   読み込みバイト … その Issue の行の合計 + Issue 未確定（`-`）の行のうち、その Issue
+#                だけを開始したセッションの行（ブランチを切る前に読んだ指示を落とさない。
+#                複数 Issue を開始したセッションの `-` 行はどの Issue にも寄せない）
+# 記録が無い・読めない・該当行が無いときは `(unmeasured)` を出す（0 とは区別する）。
+# 失敗でワークフローを止めないため、このモードは常に exit 0 で終わる。
+metrics_repo_key() { # <dir> → 共通 git dir の絶対パス（引けなければ空）
+  command -v git >/dev/null 2>&1 || return 0
+  git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true
+}
+
+# start の記録が無い Issue の開始時刻を、対象リポジトリのブランチの reflog から補う。
+# 該当ブランチ（`<type>/#<n>-…`）の reflog の最古エントリの epoch を返す（無ければ空）。
+metrics_reflog_start() { # <repo_dir> <issue>
+  local dir="$1" issue="$2" br oldest="" t
+  command -v git >/dev/null 2>&1 || return 0
+  while IFS= read -r br; do
+    [ -n "$br" ] || continue
+    t="$(git -C "$dir" reflog show --date=unix --format='%gd' "refs/heads/${br}" -- 2>/dev/null \
+      | awk -F '[{}]' 'NF >= 2 && $2 ~ /^[0-9]+$/ { v = $2 } END { if (v != "") print v }')" || t=""
+    [ -n "$t" ] || continue
+    if [ -z "$oldest" ] || [ "$t" -lt "$oldest" ]; then oldest="$t"; fi
+  done <<EOF
+$(git -C "$dir" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null \
+  | awk -v n="$issue" '$0 ~ ("^[A-Za-z0-9_.-]+/#" n "([-_/].*)?$")')
+EOF
+  [ -n "$oldest" ] && printf '%s' "$oldest"
+  return 0
+}
+
+metrics_issue_report() { # <issue> <metrics_dir> <repo_dir>
+  local issue="$1" dir="$2" repo_dir="$3" wc_file bytes_file now repo wc_out fb=""
+  wc_file="${dir}/wallclock.tsv"
+  bytes_file="${dir}/instruction-bytes.tsv"
+  now="$(date +%s 2>/dev/null)" || now=""
+  repo="$(metrics_repo_key "$repo_dir")"
+  printf 'issue=%s\n' "$issue"
+  printf 'metrics_dir=%s\n' "$dir"
+  printf 'repo=%s\n' "${repo:-(unresolved)}"
+  if [ -z "$repo" ] || [ -z "$now" ]; then
+    printf 'wallclock_source=(unmeasured)\nwallclock_start=(unmeasured)\nwallclock_end=(unmeasured)\nwallclock_actual_h=(unmeasured)\ninstruction_bytes=(unmeasured)\n'
+    return 0
+  fi
+  local wc_src="/dev/null"
+  [ -f "$wc_file" ] && [ -r "$wc_file" ] && wc_src="$wc_file"
+  # start 行が無ければ reflog から補う（hook の start が優先。補った値は source=reflog で区別する）
+  if ! awk -F '\t' -v want="$issue" -v repo="$repo" \
+      '$1 == want && $2 == "start" && $7 == repo { f = 1 } END { exit f ? 0 : 1 }' "$wc_src" 2>/dev/null; then
+    fb="$(metrics_reflog_start "$repo_dir" "$issue")"
+  fi
+  wc_out="$(awk -F '\t' -v want="$issue" -v repo="$repo" -v now="$now" -v fb="$fb" '
+    $1 == want && $7 == repo && $2 == "start" && $3 ~ /^[0-9]+$/ {
+      if (start == "" || $3 + 0 < start + 0) { start = $3 + 0; start_iso = $4 }
+    }
+    $1 == want && $7 == repo && $2 == "end" && $3 ~ /^[0-9]+$/ { ends[++ne] = $3 + 0; end_iso[ne] = $4 }
+    END {
+      src = "hook"
+      if (start == "" && fb != "") { start = fb + 0; start_iso = "reflog@" fb; src = "reflog" }
+      if (start == "") {
+        print "wallclock_source=(unmeasured)"; print "wallclock_start=(unmeasured)"
+        print "wallclock_end=(unmeasured)"; print "wallclock_actual_h=(unmeasured)"; exit 0
+      }
+      # end は gh pr merge の試行時刻。start 以降の最後の試行を採る（失敗した試行の後に
+      # 成功した試行があれば、後者で上書きされる）
+      end = ""; eiso = ""
+      for (i = 1; i <= ne; i++) if (ends[i] >= start && (end == "" || ends[i] > end)) { end = ends[i]; eiso = end_iso[i] }
+      if (end == "") { end = now + 0; eiso = "now" }
+      printf "wallclock_source=%s\n", src
+      printf "wallclock_start=%s\n", start_iso
+      printf "wallclock_end=%s\n", eiso
+      printf "wallclock_actual_h=%.1f\n", (end - start) / 3600
+    }' "$wc_src" 2>/dev/null)" \
+    || wc_out="$(printf 'wallclock_source=(unmeasured)\nwallclock_start=(unmeasured)\nwallclock_end=(unmeasured)\nwallclock_actual_h=(unmeasured)')"
+  printf '%s\n' "$wc_out"
+  if [ -f "$bytes_file" ] && [ -r "$bytes_file" ]; then
+    # 1 ファイル目（wallclock.tsv。無ければ /dev/null）でセッションごとの開始 Issue を数え、
+    # 2 ファイル目で合算する。1 ファイル目の判定は FILENAME で行う — `FNR == NR` は 1 ファイル目が
+    # 空だと 2 ファイル目まで 1 ファイル目扱いになり、バイトの記録が丸ごと読まれない
+    awk -F '\t' -v want="$issue" -v repo="$repo" -v first="$wc_src" '
+      FILENAME == first {
+        if ($2 == "start" && $5 != "" && $7 == repo) {
+          if (!(($5 SUBSEP $1) in seen)) { seen[$5, $1] = 1; nissue[$5]++ }
+          if ($1 == want) mine[$5] = 1
+        }
+        next
+      }
+      $6 != repo { next }
+      $3 !~ /^[0-9]+$/ { next }
+      $1 == want { total += $3; hit = 1; if ($2 != "") mine_b[$2] = 1; next }
+      $1 == "-" { pend[++np] = $3; pend_s[np] = $2 }
+      END {
+        for (i = 1; i <= np; i++) {
+          s = pend_s[i]
+          if (s == "") continue
+          if ((mine[s] && nissue[s] == 1) || (mine_b[s] && !(s in nissue))) { total += pend[i]; hit = 1 }
+        }
+        if (hit) printf "instruction_bytes=%d\n", total
+        else print "instruction_bytes=(unmeasured)"
+      }' "$wc_src" "$bytes_file" 2>/dev/null \
+      || printf 'instruction_bytes=(unmeasured)\n'
+  else
+    printf 'instruction_bytes=(unmeasured)\n'
+  fi
+  return 0
+}
+
+# 記録を読む 2 つのモードは排他（同時指定は出力の形が決まらないので使い方の誤り）
+if [ -n "$ISSUE_METRICS" ] && [ "$UNREACHED_LEAVES" -eq 1 ]; then
+  echo "--issue-metrics と --unreached-leaves は同時に指定できません" >&2
+  usage
+  exit 2
+fi
+
+if [ -n "$ISSUE_METRICS" ]; then
+  case "$ISSUE_METRICS" in
+    ''|*[!0-9]*) echo "--issue-metrics には Issue 番号（数字）を指定してください: ${ISSUE_METRICS}" >&2; exit 2 ;;
+  esac
+  metrics_issue_report "$ISSUE_METRICS" "$METRICS_DIR" "$REPO_DIR"
+  exit 0
+fi
+
+if [ "$UNREACHED_LEAVES" -eq 1 ]; then
+  report_unreached_leaves "$DAYS" "$FORMAT" "$METRICS_DIR" "$REPO_DIR"
+  exit $?
+fi
 
 # --- 入力の確定 ---------------------------------------------------------
 # JSON は一度実体化してから流す。同じ入力を 2 回走査する（本文の展開と、本文が
@@ -283,17 +570,37 @@ awk -v lower="$VARIANCE_LOWER" -v upper="$VARIANCE_UPPER" -v format="$FORMAT" \
     -v limit="$LIMIT" -v from_gh="$([ -n "$INPUT" ] && echo 0 || echo 1)" '
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
 
-# "3.0d" → 3.0。単位 d 以外・数値でないものは書式不正として -2、未記入は -1 を返す。
-# 「記入されていない」と「記入されているが読めない」を同じ値へ潰さない。
-function as_days(s,   v) {
+# 値を人時（h）へ正規化する。unit はブロックの `effort_unit` の値（無ければ空 = 旧ブロック）。
+#   `effort_unit: h` のブロック … "3.0h" → 3.0。"3.0d" は単位の食い違いとして -3
+#   宣言の無い旧ブロック      … "3.0d" → 24.0（×8）。"3.0h" は単位の食い違いとして -3
+# 数値でない・0 以下は書式不正として -2、未記入は -1 を返す。
+# 「記入されていない」「読めない」「単位が食い違う」を同じ値へ潰さない。
+function as_hours(s, unit,   v) {
   s = trim(s)
   if (s == "" || s == "(未記入)") return -1
-  if (s !~ /^[0-9]+(\.[0-9]+)?d$/) return -2
-  sub(/d$/, "", s)
-  v = s + 0
-  if (v <= 0) return -2
-  return v
+  if (s ~ /^[0-9]+(\.[0-9]+)?h$/) {
+    if (unit != "h") return -3
+    sub(/h$/, "", s); v = s + 0
+    return (v <= 0) ? -2 : v
+  }
+  if (s ~ /^[0-9]+(\.[0-9]+)?d$/) {
+    if (unit == "h") return -3
+    sub(/d$/, "", s); v = s + 0
+    return (v <= 0) ? -2 : v * 8
+  }
+  return -2
 }
+
+# 速度指標の集計: 変更クラスごとの値を tmp へ写して並べ、中央値 / p75 を返す。
+# 該当 0 件は "(unmeasured)"（0 と区別する）。fmt は printf 書式。
+function class_stat(kind, cls, which, fmt,   i, n, tmp) {
+  n = sp_n[kind, cls] + 0
+  if (n == 0) return "(unmeasured)"
+  for (i = 1; i <= n; i++) tmp[i] = sp_v[kind, cls, i]
+  if (which == "median") return sprintf(fmt, median(tmp, n))
+  return sprintf(fmt, pctl(tmp, n, 0.75))
+}
+function sp_add(kind, cls, v) { sp_v[kind, cls, ++sp_n[kind, cls]] = v }
 
 # マーカー形の行か: 前後の空白を除いた行【全体】が 1 個の HTML コメントで、その中身が
 # ff-effort に言及しているもの。begin / end の綴りは条件に入れない — 綴りずれこそが
@@ -380,6 +687,12 @@ FNR == NR { if ($0 != "") { order[++total] = $0 + 0 } ; next }
   if (key == "effort_human_planned") { if (num in hp_raw) broken[num] = 1; hp_raw[num] = val }
   else if (key == "effort_ai_planned") { if (num in ap_raw) broken[num] = 1; ap_raw[num] = val }
   else if (key == "effort_ai_actual")  { if (num in aa_raw) broken[num] = 1; aa_raw[num] = val }
+  else if (key == "effort_unit")       { if (num in unit_raw) broken[num] = 1; unit_raw[num] = val }
+  # 速度指標のキーは重複しても Issue 全体を malformed にしない（乖離率の母集団を巻き添えに
+  # しない）。重複した Issue は速度指標からだけ外す。
+  else if (key == "effort_wallclock_actual")  { if (num in wc_raw) sp_dup[num] = 1; wc_raw[num] = val }
+  else if (key == "effort_instruction_bytes") { if (num in ib_raw) sp_dup[num] = 1; ib_raw[num] = val }
+  else if (key == "effort_change_class")      { if (num in cc_raw) sp_dup[num] = 1; cc_raw[num] = val }
 }
 
 END {
@@ -392,6 +705,8 @@ END {
   }
 
   noblock = 0; planned_only = 0; malformed = 0; no_hp = 0
+  unit_mismatch = 0; mismatch_kv = ""; mismatch_txt = ""
+  wc_unmeasured = 0; wc_malformed = 0; ib_unmeasured = 0; ib_malformed = 0
   population = 0; suspect_n = 0; suspect_kv = ""; suspect_txt = ""
   hp_total = 0; ap_total = 0; aa_total = 0
   pair_n = 0; pair_denom = 0; vn = 0; out_of_band = 0
@@ -413,11 +728,48 @@ END {
     if (!hasblock[n]) { noblock++; continue }
     if (broken[n])    { malformed++; continue }
 
-    hp = (n in hp_raw) ? as_days(hp_raw[n]) : -1
-    ap = (n in ap_raw) ? as_days(ap_raw[n]) : -1
-    aa = (n in aa_raw) ? as_days(aa_raw[n]) : -1
+    # 単位宣言は `h` だけを受ける。未知の宣言（`d` を含む）は旧ブロックとも読めないので
+    # 書式不正として落とす（宣言を無視して読むと、宣言した意図と逆の単位で集計される）
+    unit = (n in unit_raw) ? unit_raw[n] : ""
+    # 空の宣言（`- effort_unit:`）も書式不正（旧ブロックとして読まない。guard-effort-actual と同形）
+    if ((n in unit_raw) && unit != "h") { malformed++; continue }
+
+    # 速度指標（乖離率の母集団とは独立に、読めるブロックすべてから拾う）。wall-clock と
+    # 読み込みバイトは互いに独立に集計する（片側だけ未計測の Issue で、もう片側を落とさない）
+    cls = (n in cc_raw) ? trim(cc_raw[n]) : ""
+    if (cls == "docs-only") cls = "docs_only"
+    else if (cls != "small" && cls != "other") cls = ""
+    if (n in wc_raw) {
+      wv = trim(wc_raw[n])
+      if (sp_dup[n]) { wc_malformed++ }
+      else if (wv == "(unmeasured)" || wv == "(未記入)" || wv == "") { wc_unmeasured++ }
+      else if (wv ~ /^[0-9]+(\.[0-9]+)?h$/) {
+        sub(/h$/, "", wv)
+        sp_add("wc", "all", wv + 0); if (cls != "") sp_add("wc", cls, wv + 0)
+      } else { wc_malformed++ }
+    }
+    if (n in ib_raw) {
+      bv = trim(ib_raw[n])
+      if (sp_dup[n]) { ib_malformed++ }
+      else if (bv == "(unmeasured)" || bv == "(未記入)" || bv == "") { ib_unmeasured++ }
+      else if (bv ~ /^[0-9]+$/) { sp_add("ib", "all", bv + 0); if (cls != "") sp_add("ib", cls, bv + 0) }
+      else { ib_malformed++ }
+    }
+
+    hp = (n in hp_raw) ? as_hours(hp_raw[n], unit) : -1
+    ap = (n in ap_raw) ? as_hours(ap_raw[n], unit) : -1
+    aa = (n in aa_raw) ? as_hours(aa_raw[n], unit) : -1
 
     if (hp == -2 || ap == -2 || aa == -2) { malformed++; continue }
+    # 単位の食い違いは書式不正の一種だが、旧ブロック（×8 で正規化）の混入事故と区別できる
+    # よう別の件数で出し、該当 Issue も名指しする（件数だけの警告は直す対象を特定できない）
+    if (hp == -3 || ap == -3 || aa == -3) {
+      unit_mismatch++
+      ns = sprintf("%d", n)
+      mismatch_kv = (mismatch_kv == "") ? ns : (mismatch_kv "," ns)
+      mismatch_txt = (mismatch_txt == "") ? ("#" ns) : (mismatch_txt ", #" ns)
+      continue
+    }
 
     # 実績なしは「実績 0」ではない。0 と解釈すると圧縮率が発散するため母集団から外す
     if (aa < 0) { planned_only++; continue }
@@ -450,7 +802,11 @@ END {
     printf "excluded_noblock=%d\n", noblock
     printf "excluded_planned_only=%d\n", planned_only
     printf "excluded_malformed=%d\n", malformed
+    printf "excluded_unit_mismatch=%d\n", unit_mismatch
+    printf "excluded_unit_mismatch_issues=%s\n", mismatch_kv
     printf "excluded_no_human_planned=%d\n", no_hp
+    # 以下の合計値の単位（旧ブロックの d は ×8 で正規化済み）
+    printf "effort_unit=h\n"
     printf "population=%d\n", population
     printf "compression_pairs=%d\n", pair_n
     printf "human_planned_total=%.1f\n", hp_total
@@ -469,34 +825,53 @@ END {
     # 0 件でもキーは出す。存在しないキーと空値を消費側に区別させる
     printf "suspect_marker_issues=%s\n", suspect_kv
     printf "limit_reached=%d\n", truncated
+    # 速度指標（変更クラス別）。review_rounds / gate_minutes は供給源が未配線なので
+    # 常に (unavailable)。配線済みでも該当 0 件のクラスは (unmeasured)
+    printf "wallclock_unmeasured=%d\n", wc_unmeasured
+    printf "wallclock_malformed=%d\n", wc_malformed
+    printf "instruction_bytes_unmeasured=%d\n", ib_unmeasured
+    printf "instruction_bytes_malformed=%d\n", ib_malformed
+    split("docs_only small other all", classes, " ")
+    for (ci = 1; ci <= 4; ci++) {
+      c = classes[ci]
+      printf "wallclock_population_%s=%d\n", c, sp_n["wc", c] + 0
+      printf "instruction_bytes_population_%s=%d\n", c, sp_n["ib", c] + 0
+      printf "wallclock_median_h_%s=%s\n", c, class_stat("wc", c, "median", "%.1f")
+      printf "wallclock_p75_h_%s=%s\n", c, class_stat("wc", c, "p75", "%.1f")
+      printf "instruction_bytes_median_%s=%s\n", c, class_stat("ib", c, "median", "%.0f")
+      printf "review_rounds_median_%s=(unavailable)\n", c
+      printf "gate_minutes_median_%s=(unavailable)\n", c
+    }
     exit 0
   }
 
   printf "# 工数 KPI レポート\n\n"
   printf "走査した Issue: %d 件\n", total
   printf "集計母集団:     %d 件\n", population
-  printf "除外:           ブロック不在 %d 件 / 予定のみ・実績なし %d 件 / 書式不正 %d 件\n",
-         noblock, planned_only, malformed
+  printf "除外:           ブロック不在 %d 件 / 予定のみ・実績なし %d 件 / 書式不正 %d 件 / 単位の食い違い %d 件\n",
+         noblock, planned_only, malformed, unit_mismatch
+  if (unit_mismatch > 0)
+    printf "  ⚠️ effort_unit の宣言と値の単位が食い違う Issue が %d 件あります: %s（effort_unit: h なら値は N.Nh、宣言が無い旧ブロックなら N.Nd）\n", unit_mismatch, mismatch_txt
   if (suspect_n > 0)
     printf "  ⚠️ ff-effort に似た行があるのにマーカーとして認識されなかった Issue が %d 件あります: %s（綴り・字下げ・行末空白を確認すること）\n", suspect_n, suspect_txt
   if (truncated)
     printf "  ⚠️ 取得件数が --limit（%d）に達しています。母集団が打ち切られている可能性があります\n", limit
-  if (total > 0 && (noblock + planned_only + malformed) * 2 > total)
+  if (total > 0 && (noblock + planned_only + malformed + unit_mismatch) * 2 > total)
     printf "  ⚠️ 除外が過半を占めます。以下の値は一部の Issue だけのものです\n"
 
   printf "\n## 圧縮率（対外指標・人間予定と AI 実績が揃った対だけを合計してから除算）\n\n"
   printf "対になった Issue: %d 件", pair_n
   if (no_hp > 0) printf "（人間予定が無く対を作れなかった %d 件は除外）", no_hp
   printf "\n"
-  printf "人間予定合計:   %.1fd\n", hp_total
-  printf "対の AI 実績:   %.1fd\n", pair_denom
+  printf "人間予定合計:   %.1fh\n", hp_total
+  printf "対の AI 実績:   %.1fh\n", pair_denom
   if (compression > 0) printf "圧縮率:         %.2f 倍\n", compression
   else if (population == 0) printf "圧縮率:         算出不能（集計母集団が空）\n"
   else printf "圧縮率:         算出不能（人間予定と AI 実績が揃った Issue がありません）\n"
 
   printf "\n## 乖離率（精度指標・件ごとに算出）\n\n"
-  printf "AI 予定合計:    %.1fd\n", ap_total
-  printf "AI 実績合計:    %.1fd（母集団全体）\n", aa_total
+  printf "AI 予定合計:    %.1fh\n", ap_total
+  printf "AI 実績合計:    %.1fh（母集団全体）\n", aa_total
   if (vn > 0) {
     printf "p10:            %.2f\n", vp10
     printf "p25:            %.2f\n", vp25
@@ -506,6 +881,16 @@ END {
     printf "閾値外（<%s または >%s）: %d 件 / %d 件\n", lower, upper, out_of_band, vn
   } else {
     printf "算出不能（予定と実績が揃った Issue がありません）\n"
+  }
+
+  printf "\n## 速度指標（変更クラス別・/close-issue が書き戻した実測）\n\n"
+  printf "wall-clock 未計測 %d 件 / 書式不正 %d 件、指示読み込み 未計測 %d 件 / 書式不正 %d 件（いずれも集計から外す）\n", wc_unmeasured, wc_malformed, ib_unmeasured, ib_malformed
+  split("docs_only small other all", classes, " ")
+  for (ci = 1; ci <= 4; ci++) {
+    c = classes[ci]
+    printf "%-10s wall-clock n=%d 中央値 %s h・p75 %s h / 指示読み込み n=%d 中央値 %s B / レビュー巡回 (unavailable) / ゲート分 (unavailable)\n",
+      c, sp_n["wc", c] + 0, class_stat("wc", c, "median", "%.1f"), class_stat("wc", c, "p75", "%.1f"),
+      sp_n["ib", c] + 0, class_stat("ib", c, "median", "%.0f")
   }
 }
 ' "$NUMBERS" "$FLAT"

@@ -8,6 +8,18 @@
 
 echo "-- cache 解決順・版整合 --"
 
+# 配布先 FFID の fallback-swallow:check は、判定値を作る代入内の `|| true` を
+# 常時検出する。動作だけのテストでは旧コードも緑なので、正本の該当形も固定する。
+VERSION_SWALLOW_RC=0
+grep -nE '^[[:space:]]*(version|config_version)="\$\(.*\|\|[[:space:]]*(true|:)' "$SHIM" \
+  > "$WORK/version-swallow.log" || VERSION_SWALLOW_RC=$?
+if [ "$VERSION_SWALLOW_RC" -eq 1 ]; then
+  ok "版読み取りの判定値を || true / || : で作らない"
+else
+  bad "版読み取りの握りつぶし形が残る、または検査できない (grep rc=$VERSION_SWALLOW_RC)"
+  sed 's/^/    | /' "$WORK/version-swallow.log" >&2
+fi
+
 make_cache_toolkit() { # <root> <version>
   local root="$1" version="$2"
   mkdir -p "$root/scripts/templates" "$root/.claude-plugin"
@@ -204,6 +216,19 @@ else
   sed 's/^/    | err: /' "$WORK/print.err" >&2
 fi
 
+# 壊れた cache 候補だけは警告してスキップする。明示 root や sidecar の
+# 読み取り失敗と同じ hard-fail にすると、使える cache も選べなくなる。
+BAD_CACHE_ROOT="$CACHE_QUIET_HOME/plugins/cache/market/ff-dev-toolkit/99.0.0"
+make_cache_toolkit "$BAD_CACHE_ROOT" "99.0.0"
+printf '%s\n' '{"name":"ff-dev-toolkit","version":"broken"}' > "$BAD_CACHE_ROOT/.claude-plugin/plugin.json"
+run_print_root CODEX_HOME="$CACHE_QUIET_HOME" CLAUDE_CONFIG_DIR="$WORK/no-claude-home" -- --print-toolkit-root=kv
+if [ "$PRINT_RC" -eq 0 ] && grep -qxF 'version=0.38.0' "$WORK/print.out" \
+   && grep -q 'cache 候補の安定版 version を読めないためスキップ' "$WORK/print.err"; then
+  ok "cache: 不正な manifest は警告してスキップし、使える候補を選ぶ"
+else
+  bad "cache: 不正な manifest が使える候補まで塞いだ、または無警告で飛ばした (rc=$PRINT_RC)"
+fi
+
 # レビュー系オプションとの併用は拒否（黙ってレビューも出力も捨てない）。
 # パーサの全分岐を回す: 委譲 argv を増やすもの（--base 以下）と、増やさずに専用変数だけを
 # 立てるもの（--list-reviewers / --all-perspectives）の両方。委譲 argv を経由しないフラグを
@@ -242,6 +267,28 @@ if [ "$RUN_RC" -eq 0 ] && grep -qxF "source=explicit" "$WORK/stdout.log" \
 else
   bad "--print-toolkit-root: 明示指定が explicit として解決されない (rc=$RUN_RC)"
   sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+
+cp "$TOOLKIT/.claude-plugin/plugin.json" "$WORK/explicit-manifest.good"
+printf '%s\n' '{"name":"ff-dev-toolkit","version":"broken"}' > "$TOOLKIT/.claude-plugin/plugin.json"
+run_print_root FF_DEV_TOOLKIT_ROOT="$TOOLKIT" CODEX_HOME="$CACHE_QUIET_HOME" \
+  CLAUDE_CONFIG_DIR="$WORK/no-claude-home" -- --print-toolkit-root
+mv "$WORK/explicit-manifest.good" "$TOOLKIT/.claude-plugin/plugin.json"
+if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] \
+   && grep -q 'FF_DEV_TOOLKIT_ROOT の plugin version を読めません' "$WORK/print.err"; then
+  ok "明示 root: manifest が不正なら使える cache へ落ちず exit 2"
+else
+  bad "明示 root: 不正な manifest が cache へ落ちた、または rc が違う (rc=$PRINT_RC)"
+fi
+
+printf '%s\n' "$BAD_CACHE_ROOT/scripts" > "$SIDECAR"
+run_print_root CODEX_HOME="$WORK/empty-codex-home" CLAUDE_CONFIG_DIR="$WORK/empty-claude-home" -- --print-toolkit-root
+printf '%s\n' "$FAKE/scripts" > "$SIDECAR"
+if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] \
+   && grep -q 'sidecar が指す toolkit の version を読めません' "$WORK/print.err"; then
+  ok "sidecar: manifest が不正なら exit 2・stdout 空"
+else
+  bad "sidecar: 不正な manifest を拒否できない (rc=$PRINT_RC)"
 fi
 
 # SKIP_CODEX_REVIEW はレビューの逃がし弁であって解決の逃がし弁ではない。
@@ -283,6 +330,17 @@ else
   bad "版整合: agent-config の不一致を拒否できない (rc=$MISMATCH_RC)"
 fi
 
+mv "$TOOLKIT/scripts/agent-config.yaml" "$WORK/agent-config.missing"
+run_print_root FF_DEV_TOOLKIT_ROOT="$TOOLKIT" CODEX_HOME="$WORK/empty-codex-home" \
+  CLAUDE_CONFIG_DIR="$WORK/empty-claude-home" -- --print-toolkit-root
+mv "$WORK/agent-config.missing" "$TOOLKIT/scripts/agent-config.yaml"
+if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] \
+   && grep -q 'agent-config.yaml が一致しません' "$WORK/print.err"; then
+  ok "版整合: agent-config が読めなくても exit 2・stdout 空"
+else
+  bad "版整合: agent-config の読み取り失敗を拒否できない (rc=$PRINT_RC)"
+fi
+
 cp "$TOOLKIT/scripts/templates/codex-review.sh" "$WORK/template.good"
 printf '\n# mismatched template\n' >> "$TOOLKIT/scripts/templates/codex-review.sh"
 : > "$WORK/argv.log"
@@ -321,4 +379,3 @@ else
   bad "配置先の既定がトップレベルでない（サブディレクトリ実行で迷子になる）"
   sed 's/^/    | /' "$WORK/install3.log" >&2
 fi
-

@@ -1,0 +1,42 @@
+[
+  {
+    "number": 301,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 2.0h\n- effort_ai_actual: 2.0h\n- effort_wallclock_actual: 1.5h\n- effort_instruction_bytes: 400000\n- effort_change_class: docs-only\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 302,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 0.5d\n- effort_ai_actual: 0.5d\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 303,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 2.0h\n- effort_ai_actual: 0.3d\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 304,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_human_planned: 1.0d\n- effort_ai_planned: 2.0h\n- effort_ai_actual: 0.3d\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 305,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: d\n- effort_human_planned: 1.0d\n- effort_ai_planned: 0.5d\n- effort_ai_actual: 0.5d\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 306,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 4.0h\n- effort_ai_planned: 1.0h\n- effort_ai_actual: 1.5h\n- effort_wallclock_actual: 0.5h\n- effort_instruction_bytes: 100000\n- effort_change_class: small\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 307,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 16.0h\n- effort_ai_planned: 4.0h\n- effort_ai_actual: 4.0h\n- effort_wallclock_actual: 8.5h\n- effort_instruction_bytes: 600000\n- effort_change_class: other\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 308,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 2.0h\n- effort_ai_actual: 2.0h\n- effort_wallclock_actual: (unmeasured)\n- effort_instruction_bytes: (unmeasured)\n- effort_change_class: other\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 309,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit:\n- effort_human_planned: 1.0d\n- effort_ai_planned: 0.5d\n- effort_ai_actual: 0.5d\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 310,
+    "body": "## 工数見積もり\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 2.0h\n- effort_ai_planned: 1.0h\n- effort_ai_actual: 1.0h\n- effort_wallclock_actual: (unmeasured)\n- effort_instruction_bytes: 200000\n- effort_change_class: small\n<!-- ff-effort:end -->\n"
+  }
+]

@@ -4021,6 +4021,11 @@ if [ "$PG_SELFTEST_OK" -eq 1 ]; then
   fi
 fi
 
+# case 47: 変更ベースの部分ゲート（FF_RUN_ALL_CHANGED。ADR-062）。本体が 4,000 行を超えているので
+# cases ファイルへ置く（ADR-057 決定 2）。
+# shellcheck source=cases/changed-selection.sh
+. "$SCRIPT_DIR/cases/changed-selection.sh"
+
 rm -f "$RUN_GATE_RECORD"
 
 echo ""

@@ -50,7 +50,8 @@ green」。healthy を確認できない回は全件で代替 — ADR-039）。`
 
 `All ff-dev-toolkit fixture checks passed.` は **除外が掛かっていない実行**（全件実行、および明示引数の実行）で対象がすべて passed のときだけ出力されます
 （skip が 1 件でもあれば「実行した N suite は全て通過」に切り替わり、本体が走っていない suite の存在を
-隠しません。高速モードでは除外分が未実行のため、全 pass でもこの行を名乗らず専用の完了文言になります）。
+隠しません。高速モードでは除外分が未実行のため、全 pass でもこの行を名乗らず専用の完了文言になります。
+変更ベースの選択 `FF_RUN_ALL_CHANGED`〔ADR-062〕も部分実行なので同じく名乗りません）。
 
 ## 検証ケース（verify.sh）
 
@@ -87,6 +88,7 @@ green」。healthy を確認できない回は全件で代替 — ADR-039）。`
 | case 41 | mcp-guard-probe, mcp-guard-required-probe（隔離した一時 git リポジトリ内の複製ランナー + `FF_RUN_ALL_MCP_DIR` で差し替えた判定対象） | 同梱 MCP の依存が揃っていない既定一覧を「環境の未整備」として起動前に止める。停止は終了コード **3**（suite 失敗の 1 と区別できる）で、suite を 1 つも実行せず鮮度記録も書かない。述語は `mcp/package.json` が在るのに `node_modules/.bin/esbuild` が実行可能でないこと — 入れる先が無い checkout では止めず、`node_modules` が在るだけの不完全な install では止める。オプトアウト `FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1` は従来どおり走らせ、末尾の案内行と必須 skip の再現コマンド前置を残す。解釈できない値は 1 行警告のうえガード有効。判定対象を上書きした回は 1 行名乗る |
 | case 42 | stale, stale-indented, stale-green, fail, pass, partial-skip | base の鮮度が原因の赤を `✗ failed:` とは別行（`✗ stale`）で名指しし、復旧手段（merge / rebase）と「取り込んでも赤なら変更起因」を出す。**赤であることと終了コードは変えない**（skip へ倒すのは fail-open）。行頭マーカーだけを拾い、インデント付き引用・鮮度と無関係な赤・緑では出さない。緑 + マーカー（判定を諦めた形）は passed に数えつつ fail-loud する。並列経路（`RUN_JOBS=2`）でも同じ分類が効く |
 | case 35 | （tracked shell・SKILL.md・docs-template の静的監査 + `tests/lib/exit-code-guard.sh`） | 出力整形フィルタ（head / tail / less / more / cat / tee / wc、`sudo` / `command` / `env` / `VAR=` の前置き 1 段を含む）で終わるパイプラインの直後で `$?` を読む形（代入・`echo` のほか `if [ $? -ne 0 ]` などの制御構文、コメント行を跨いだ次の行も）と、zsh では機能しない `PIPESTATUS` 参照が無いこと、ゲート起動（`run-all.sh`）の終了コードを運ばない終端（セミコロン・`\|\|`・単独 `&`・パイプ。`{ }` / `( )` のグループ実行と環境代入・ラッパ前置きの終端も含む）が無いこと。検出器 self-test 付き（誤検出しない形・Markdown フェンスの走査境界も含む） |
+| case 47 | chg-docs-probe, chg-script-probe, chg-required-probe, chg-tree-probe（隔離した一時リポジトリの `plugins/ff` に置いた複製ランナー。`cases/changed-selection.sh`） | 変更ベースの選択（`FF_RUN_ALL_CHANGED`。ADR-062）: 参照されたファイルの変更でそれを参照する suite だけを選んで根拠を出す／交差 0 件は登録照合だけで `suites: selected=0`／suite 自身のディレクトリ・改名元でも選ぶ／プラグインルートを参照する suite は配下のすべての変更で選ぶ／契約面の名簿（run-all.sh の 2 配列）の全要素と解決できない base は全件へ倒して理由を出す／FULL・FAST・明示引数との同時指定は矛盾警告、`0` と空値は未設定と同じ／参照を削った suite は選ばれず、参照 0 本の suite は常に選ぶ／選択の指定を suite へ継承しない／記録は `STATUS=partial` / `MODE=changed` |
 
 ケース番号には欠番があります。Issue #1022 でランナー契約の核心 4 領域（集計 / skip 判定 / fail-closed 経路 /
 選択モード）へ絞り、同じ検出対象を別の疑似 suite で二重に踏んでいたケースを**検出力単位で統合**したためです。

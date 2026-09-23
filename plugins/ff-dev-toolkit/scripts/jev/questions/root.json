@@ -1,0 +1,12 @@
+{
+  "root": {
+    "type": "choice",
+    "instructions": {
+      "question": "The state is a change request: the list of changed file paths, the number of changed lines (added plus deleted), and optionally the issue body. Decide which review route the change should take. Answer fast only when every changed file is documentation (Markdown, docs/, changelog fragments, version claims) or the change is at most ten lines, and no contract file (hook registration, public surface list, plugin manifests, anything under a skill directory, distributed docs-template, the CLAUDE.md / AGENTS.md entry files, the decision-tree data and router, Jev question fixtures, host parity or decision records) is touched. Answer full otherwise."
+    },
+    "criteria": {
+      "fast": "Documentation-only or at most ten changed lines, and no contract file (hooks.json, PUBLIC-SURFACE.md, .claude-plugin manifests, skills/*/* including references, docs-template/*, CLAUDE.md, AGENTS.md, scripts/decision-tree/*, scripts/jev/questions/*, HOST-PARITY.md, DECISIONS.md) is touched: a single reader can review it directly.",
+      "full": "Implementation, test, script, or contract files are touched, or the change exceeds ten lines without being documentation-only: the full review path with cross-model lanes applies."
+    }
+  }
+}

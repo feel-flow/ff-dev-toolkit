@@ -28,6 +28,7 @@ cd "$(cd "$(dirname "$0")/../../../../.." && pwd -P)"
 V=plugins/ff-dev-toolkit/tests/effort-contract/verify.sh
 JUDGE=plugins/ff-dev-toolkit/scripts/check-issue-body-diff.sh
 REPORT=plugins/ff-dev-toolkit/scripts/effort-report.sh
+WC_HOOK=plugins/ff-dev-toolkit/hooks/record-effort-wallclock.sh
 MUTDIR=plugins/ff-dev-toolkit/tests/effort-contract/mutation
 
 for _dep in git python3 awk; do
@@ -88,9 +89,53 @@ echo "変異 7c: 帯の判定を閉区間から開区間へ変える"
 python3 "$MUTDIR/mut-band-edge.py"
 probe "帯の端の取りこぼし（検査 4e）" "$REPORT" "git checkout -- '$REPORT'"
 
-echo "変異 8: 集計器の単位検査を緩めて時間単位を受理させる"
+echo "変異 8: 集計器の単位検査を緩めて宣言の無い旧ブロックの時間単位を受理させる"
 python3 "$MUTDIR/mut-unit.py"
-probe "単位契約の緩和（検査 2/4）" "$REPORT" "git checkout -- '$REPORT'"
+probe "単位契約の緩和（検査 4/4f）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 8b: 旧 d ブロックの ×8 正規化を外す"
+python3 "$MUTDIR/mut-unit-normalize.py"
+probe "旧ブロックの正規化の欠落（検査 4/4f）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 8c: effort_unit: h のブロックの d 値を除外せず ×8 で合流させる"
+python3 "$MUTDIR/mut-unit-mismatch.py"
+probe "単位の食い違いの黙った合流（検査 4f）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 8d: 未配線の巡回数を (unavailable) でなく 0 で出す"
+python3 "$MUTDIR/mut-unavailable.py"
+probe "未計測と 0 の合流（検査 4g）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 8e: --issue-metrics の記録不在を (unmeasured) でなく 0 で出す"
+python3 "$MUTDIR/mut-metrics-zero.py"
+probe "記録不在の 0 化（検査 13a）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 8f: wall-clock hook が記録置き場を作れないとき止める"
+python3 "$MUTDIR/mut-hook-failsoft.py"
+probe "fail-soft の反転（検査 14d）" "$WC_HOOK" "git checkout -- '$WC_HOOK'"
+
+echo "変異 8g: wall-clock の start を repo 列で絞らない"
+python3 "$MUTDIR/mut-repo-filter.py"
+probe "別リポジトリの同じ番号の混入（検査 13b）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 8h: バイト集計の 1 ファイル目判定を FNR == NR へ戻す"
+python3 "$MUTDIR/mut-fnr.py"
+probe "wallclock.tsv 不在でのバイトの読み落とし（検査 13e）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 8i: 読み込みバイトを wall-clock 実測済みの Issue だけで集計する"
+python3 "$MUTDIR/mut-bytes-coupled.py"
+probe "片側未計測でのバイトの取りこぼし（検査 4g）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 8j: start が無いときの reflog からの補いを外す"
+python3 "$MUTDIR/mut-reflog-off.py"
+probe "reflog fallback の欠落（検査 13f）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 8k: 空の単位宣言を旧ブロックとして読む"
+python3 "$MUTDIR/mut-empty-unit.py"
+probe "空の宣言の旧ブロック扱い（検査 4f）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 8l: Issue 番号抽出の # を任意に戻す"
+python3 "$MUTDIR/mut-hash-optional.py"
+probe "日付入りブランチの Issue 誤認（検査 14c）" "$WC_HOOK" "git checkout -- '$WC_HOOK'"
 
 echo "変異 9: 集計器の重複キー検出を外す"
 python3 "$MUTDIR/mut-dupkey.py"

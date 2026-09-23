@@ -191,6 +191,37 @@ BLOCK_SIBLING_MALFORMED='<!-- ff-effort:begin -->
 - effort_ai_planned: 0.5d
 - effort_ai_actual: (未記入)
 <!-- ff-effort:end -->'
+# 人時ブロック（effort_unit: h）と単位の食い違い（集計器は unit_mismatch として母集団から外す）
+BLOCK_HOURS_UNFILLED='<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_human_planned: 8.0h
+- effort_ai_planned: 2.0h
+- effort_ai_actual: (未記入)
+<!-- ff-effort:end -->'
+BLOCK_HOURS_FILLED='<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_human_planned: 8.0h
+- effort_ai_planned: 2.0h
+- effort_ai_actual: 2.5h
+<!-- ff-effort:end -->'
+BLOCK_HOURS_WITH_DAYS='<!-- ff-effort:begin -->
+- effort_unit: h
+- effort_human_planned: 1.0d
+- effort_ai_planned: 2.0h
+- effort_ai_actual: (未記入)
+<!-- ff-effort:end -->'
+BLOCK_LEGACY_WITH_HOURS='<!-- ff-effort:begin -->
+- effort_human_planned: 1.0d
+- effort_ai_planned: 2.0h
+- effort_ai_actual: (未記入)
+<!-- ff-effort:end -->'
+# 空の単位宣言（集計器では malformed。旧ブロックとしては読まない）
+BLOCK_EMPTY_UNIT='<!-- ff-effort:begin -->
+- effort_unit:
+- effort_human_planned: 1.0d
+- effort_ai_planned: 0.5d
+- effort_ai_actual: (未記入)
+<!-- ff-effort:end -->'
 # CRLF 本文（集計器は CR を落として同じ行として読む）
 BLOCK_UNFILLED_CRLF="$(printf '%s\r\n' \
   '<!-- ff-effort:begin -->' \
@@ -292,6 +323,18 @@ write_issue 912 "$BLOCK_TWO_BLOCKS"
 write_issue 913 "$BLOCK_END_BEFORE_BEGIN"
 write_issue 914 "$BLOCK_SIBLING_MALFORMED"
 write_issue 915 "$BLOCK_UNFILLED"
+write_issue 916 "$BLOCK_HOURS_UNFILLED"
+write_issue 917 "$BLOCK_HOURS_FILLED"
+write_issue 918 "$BLOCK_HOURS_WITH_DAYS"
+write_issue 919 "$BLOCK_LEGACY_WITH_HOURS"
+# closing keyword の本文は関数で組む（公開同期の番号短縮形検査に fixture の番号を拾わせない）
+closes_body() { printf 'Closes %s%s' '#' "$1"; }
+write_pr 60 "$(closes_body 916)" 60 "916"
+write_pr 61 "$(closes_body 917)" 61 "917"
+write_pr 62 "$(closes_body 918)" 62 "918"
+write_pr 63 "$(closes_body 919)" 63 "919"
+write_issue 920 "$BLOCK_EMPTY_UNIT"
+write_pr 64 "$(closes_body 920)" 64 "920"
 
 OUT=""
 RC=0
@@ -442,6 +485,16 @@ run_hook "gh pr merge 56 --squash"
 assert_pass "兄弟キーの書式不正（effort_human_planned: 1 day。集計器では malformed）は停止しない"
 run_hook "gh pr merge 50 --squash"
 assert_fire "CRLF 本文の Issue でも停止する（集計器と同じく行末 CR を落として判定する）"
+run_hook "gh pr merge 60 --squash"
+assert_fire "人時ブロック（effort_unit: h）で実績が未記入なら停止する"
+run_hook "gh pr merge 61 --squash"
+assert_pass "人時ブロックで実績が記入済み（2.5h）なら停止しない"
+run_hook "gh pr merge 62 --squash"
+assert_pass "effort_unit: h なのに d 付きの兄弟値（集計器では unit_mismatch）は停止しない"
+run_hook "gh pr merge 63 --squash"
+assert_pass "宣言の無い旧ブロックに h 付きの兄弟値（集計器では unit_mismatch）は停止しない"
+run_hook "gh pr merge 64 --squash"
+assert_pass "空の単位宣言（- effort_unit:。集計器では malformed）は停止しない"
 
 echo "guard-effort-actual: 閉じる Issue の集合（tracking Issue への Refs を巻き込まない）"
 run_hook "gh pr merge 51 --squash"
@@ -615,6 +668,12 @@ if [ -f "$REPORT" ] && grep -q 'line == "<!-- ff-effort:begin -->"' "$REPORT"; t
   ok "集計器のマーカー判定は行全体の完全一致のまま（本 hook もこれに合わせている）"
 else
   bad "集計器のマーカー判定が変わった: 本 hook の完全一致と揃っているか確認が要る"
+fi
+if [ -f "$REPORT" ] && grep -q 'hp == -3 || ap == -3 || aa == -3' "$REPORT" && grep -q 'function as_hours(s, unit' "$REPORT" \
+  && grep -qF '(n in unit_raw) && unit != "h"' "$REPORT"; then
+  ok "集計器は単位の食い違いを planned_only より先に unit_mismatch へ落とすまま（本 hook の as_hours と同形）"
+else
+  bad "集計器の単位判定が変わった: 本 hook の as_hours() / unit_mismatch 判定と揃っているか確認が要る"
 fi
 if [ -f "$REPORT" ] && grep -q 'hp == -2 || ap == -2 || aa == -2' "$REPORT"; then
   ok "集計器は兄弟キーの書式不正を planned_only より先に malformed へ落とすまま"

@@ -87,14 +87,18 @@
 - `PreToolUse :: Bash :: hooks/guard-long-gate-background.sh`
 - `PreToolUse :: Bash :: hooks/guard-pr-followup.sh`
 - `PreToolUse :: Bash :: hooks/guard-sub-issue-id.sh`
+- `PreToolUse :: Bash :: hooks/record-effort-wallclock.sh`
 - `PreToolUse :: Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task :: hooks/guard-review-in-flight.sh`
+- `PreToolUse :: Read|Skill :: hooks/record-instruction-bytes.sh`
 - `SessionStart :: * :: hooks/auto-update-marketplace.sh`
 - `SessionStart :: * :: hooks/check-review-roster-drift.sh`
 - `SessionStart :: * :: hooks/check-skill-drift.sh`
 - `SessionStart :: * :: hooks/check-update.sh`
+- `Stop :: - :: hooks/decision-tree.sh`
 - `Stop :: - :: hooks/retrospective-stop.sh`
 - `SubagentStart :: - :: hooks/guard-review-in-flight.sh`
 - `SubagentStop :: - :: hooks/guard-review-in-flight.sh`
+- `UserPromptSubmit :: - :: hooks/decision-tree.sh`
 - `UserPromptSubmit :: - :: hooks/retrospective-context.sh`
 
 ### 2-2. 内部（入口から呼ばれる実装）
@@ -147,7 +151,9 @@
 - `FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE`
 - `FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD`
+- `FF_DEV_TOOLKIT_SKIP_DECISION_TREE`
 - `FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD`
+- `FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS`
 - `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD`
@@ -166,6 +172,7 @@
 
 #### hooks の閾値・対象
 
+- `FF_DEV_TOOLKIT_STATE_DIR`（工数の実測記録の置き場の親。既定 `$HOME/.config/ff-dev-toolkit`）
 - `FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED`
 - `FF_LONG_GATE_FOREGROUND_TIMEOUT_MS`
 - `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`
@@ -213,6 +220,9 @@
 - `FF_CHANGELOG_PUBLIC_TAGS_REPO_URL`
 - `FF_CHANGELOG_TEST_REMOTE`
 - `FF_CHECK_WEEKLY_RELAX`
+- `FF_CHG_FILES`
+- `FF_CHG_TESTS_DIR`
+- `FF_CHG_TESTS_PREFIX`
 - `FF_CKSUM_COUNT`
 - `FF_CR`
 - `FF_CURL_RC`
@@ -272,6 +282,7 @@
 - `FF_RETRO_SELFTEST_JOBS`
 - `FF_RUN_ALL_ALLOW_DIRTY`
 - `FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS`
+- `FF_RUN_ALL_CHANGED`
 - `FF_RUN_ALL_CHECK_REGISTRATION`
 - `FF_RUN_ALL_DUMP_DECLARATIONS`
 - `FF_RUN_ALL_ELAPSED_FIXTURE`

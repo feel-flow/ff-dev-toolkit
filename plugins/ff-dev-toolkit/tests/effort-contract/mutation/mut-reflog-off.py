@@ -1,8 +1,8 @@
 import io
 p = "plugins/ff-dev-toolkit/scripts/effort-report.sh"
 s = io.open(p, encoding="utf-8").read()
-# 宣言の無い旧ブロックの h 値を単位の食い違いにせず受理させる（単位契約の緩和）
-a = '    if (unit != "h") return -3\n'
+# start が無いときの reflog からの補いを外す
+a = '    fb="$(metrics_reflog_start "$repo_dir" "$issue")"\n'
 assert s.count(a) == 1, "anchor not found"
-s = s.replace(a, "", 1)
+s = s.replace(a, '    fb=""\n', 1)
 io.open(p, "w", encoding="utf-8").write(s)

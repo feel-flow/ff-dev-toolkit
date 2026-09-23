@@ -1,0 +1,146 @@
+# decision-tree v0 — 「いつ何が走るか」を 1 ファイルの決定木データにしたもの。
+#
+# 葉は現行のスキル（skills/<名>/SKILL.md）と hook（hooks/<名>.sh）で、v0 では葉の中身を
+# 書き直さない。根だけが機械判定（route.sh）で、根より下の問いはホスト（LLM / 利用者）が
+# 答える。各ノードは「問い 1 つ + 閉じた答えの集合 + none（ホスト判定へ）」を持ち、
+# 木が万能を装わないよう none の無いノードは静的検査（route.sh --check）が赤にする。
+#
+# 行の形（タブ区切り。# 始まりと空行は無視）:
+#   node    <id>   <kind>   <問い>
+#     kind = choice … 機械判定するノード（FF_JEV_MODE=on では Jev の Choice を先に 1 回呼ぶ。
+#                     criteria は scripts/jev/questions/<id>.json が fixture として持つ）
+#            select … ホストが答えるノード（Jev を呼ばない）
+#   answer  <node-id>   <答え>   <行き先>
+#     行き先 = node:<id> | skill:<名> | hook:<名> | doc:<plugin 相対パス>#<見出し文字列> | none
+#     `none` は「ホスト判定へ落とす」で、各ノードにちょうど 1 本要る（行き先も none）
+#   rule    <node-id>   <キー>   <値>
+#     choice ノードの機械判定規則。root の 3 キーは route.sh のヘッダが意味を持つ
+#
+# 制約（--check が固定する）: 深さ（root から葉までの辺数）≤ 4、葉 ≤ 50、
+# 実在しない葉 / 到達不能なノード / 木に載っていないスキル・hook / 同じ (node, key) の rule の重複 /
+# 未知の rule キーはいずれも赤。葉の上限は「27 スキル + 起票時の 16 hook + 熟慮へ + アーカイブ候補
+# = 45」から、Wave 0 が hook を 2 本足したぶんを含めて 50 へ置いた（深さの上限は据え置き）。
+
+# ---- 根: 経路分岐（fast / full / none）------------------------------------------------
+# 規則の評価順（route.sh）: contract-path に当たる path が 1 つでもあれば full →
+# 残りが docs-glob だけなら fast → 変更行数（追加 + 削除）が fast-max-lines 以下なら fast →
+# それ以外は full。判定材料（変更ファイル）が 0 件なら none（ホスト判定へ）。
+node	root	choice	依頼の経路 — 変更ファイル一覧（または Issue 本文）から fast / full のどちらで回すか
+rule	root	docs-glob	*.md docs/* changelog.d/* .version-claims/*
+rule	root	contract-path	*/hooks/hooks.json *PUBLIC-SURFACE.md .claude-plugin/* */.claude-plugin/* */skills/*/* */docs-template/* CLAUDE.md AGENTS.md */scripts/decision-tree/* */scripts/jev/questions/* docs/06-reference/HOST-PARITY.md docs/06-reference/DECISIONS.md
+rule	root	fast-max-lines	10
+answer	root	fast	node:fast
+answer	root	full	node:full
+answer	root	none	none
+
+# ---- fast 経路（docs のみ / 10 行以下 / 契約変更なし）----------------------------------
+# v0 では fast も full と同じ葉集合の部分集合で、レーン数の削減はレビュー経路の bundle が
+# この根の出力を読んで行う（ここでは葉を減らさない）。
+node	fast	select	fast 経路の段 — いま何をしているか
+answer	fast	start	node:start
+answer	fast	commit	skill:pre-commit-check
+answer	fast	review	node:review
+answer	fast	merge	node:merge
+answer	fast	tail	node:tail
+answer	fast	hook	node:hook-event
+answer	fast	none	none
+
+# ---- full 経路 ----------------------------------------------------------------------
+node	full	select	full 経路の段 — いま何をしているか
+answer	full	start	node:start
+answer	full	implement	node:implement
+answer	full	review	node:review
+answer	full	merge	node:merge
+answer	full	tail	node:tail
+answer	full	setup	node:setup
+answer	full	hook	node:hook-event
+answer	full	none	none
+
+# ---- 段ごとの問い --------------------------------------------------------------------
+node	start	select	着手前に何を確定するか
+answer	start	new-issue	skill:create-issue
+answer	start	vague-issue	skill:refine-issue
+answer	start	known-pitfalls	skill:knowledge-lookup
+answer	start	impact	skill:assess-impact
+answer	start	spec-gates	skill:spec-driven
+answer	start	none	none
+
+node	implement	select	実装で何を分担・走査するか
+answer	implement	explore	skill:multi-explore
+answer	implement	delegate	skill:multi-implement
+answer	implement	removal	skill:removal-sweep
+answer	implement	asdd-task	skill:asdd-work
+answer	implement	harness	skill:harness-review
+answer	implement	none	none
+
+node	review	select	レビュー段で何を通すか
+answer	review	cross-review	skill:multi-review
+answer	review	staged-check	skill:pre-commit-check
+answer	review	out-of-scope	skill:out-of-scope-issue
+answer	review	deliberate	doc:docs-template/05-operations/deployment/workflow-principles.md#原則4: 定型判断の即決と熟慮の起動条件
+answer	review	none	none
+
+node	merge	select	マージ前後で何を閉じるか
+answer	merge	ac-gate	skill:close-issue
+answer	merge	cleanup	skill:merge-cleanup
+answer	merge	none	none
+
+node	tail	select	尾で何を記録・整理するか
+answer	tail	knowledge	skill:ace-curate
+answer	tail	retrospective	skill:retrospective
+answer	tail	refine	skill:ace-refine
+answer	tail	orphan-transcripts	skill:sweep-orphan-transcripts
+answer	tail	none	none
+
+node	setup	select	導入・保守で何を整えるか
+answer	setup	docs-init	skill:init-docs
+answer	setup	asdd-init	skill:asdd-init
+answer	setup	ace-init	skill:ace-setup
+answer	setup	ai-config	skill:setup-ai-config
+answer	setup	labels	skill:setup-github-labels
+answer	setup	docs-validate	skill:validate-docs
+answer	setup	plugin-versions	skill:check-plugin-versions
+answer	setup	entry-rules	skill:workflow-doctor
+answer	setup	none	none
+
+# ---- hook（ホストのイベントで走る葉）-----------------------------------------------------
+node	hook-event	select	ホストのどのイベントか
+answer	hook-event	pre-tool-bash	node:bash-guard
+answer	hook-event	pre-tool-write	hook:guard-review-in-flight
+answer	hook-event	pre-tool-read	hook:record-instruction-bytes
+answer	hook-event	subagent	hook:guard-review-in-flight
+answer	hook-event	permission-denied	hook:guard-review-in-flight
+answer	hook-event	session-start	node:session-start
+answer	hook-event	user-prompt	node:user-prompt
+answer	hook-event	stop	node:stop
+answer	hook-event	none	none
+
+node	bash-guard	select	Bash コマンドのどの形か
+answer	bash-guard	checkout-dirty	hook:guard-checkout-restore
+answer	bash-guard	pr-followup	hook:guard-pr-followup
+answer	bash-guard	background-cwd	hook:guard-background-cwd
+answer	bash-guard	long-gate-background	hook:guard-long-gate-background
+answer	bash-guard	effort-actual	hook:guard-effort-actual
+answer	bash-guard	issue-labels	hook:guard-issue-labels
+answer	bash-guard	sub-issue-id	hook:guard-sub-issue-id
+answer	bash-guard	exit-code	hook:guard-exit-code
+answer	bash-guard	review-lock	hook:guard-review-in-flight
+answer	bash-guard	effort-wallclock	hook:record-effort-wallclock
+answer	bash-guard	none	none
+
+node	session-start	select	起動時にどの検査か
+answer	session-start	update	hook:check-update
+answer	session-start	skill-drift	hook:check-skill-drift
+answer	session-start	roster-drift	hook:check-review-roster-drift
+answer	session-start	auto-update	hook:auto-update-marketplace
+answer	session-start	none	none
+
+node	user-prompt	select	応答前に何を注入・判定するか
+answer	user-prompt	retrospective	hook:retrospective-context
+answer	user-prompt	route	hook:decision-tree
+answer	user-prompt	none	none
+
+node	stop	select	応答終了時に何を確かめ・記録するか
+answer	stop	retrospective	hook:retrospective-stop
+answer	stop	leaves	hook:decision-tree
+answer	stop	none	none

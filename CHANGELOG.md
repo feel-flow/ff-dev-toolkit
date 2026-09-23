@@ -20,6 +20,29 @@
 
 ## [Unreleased]
 
+## [0.129.0] - 2026-09-24
+
+### 追加
+
+- 決定木 v0 を追加した。同梱の 27 スキルと全 hook を葉にした 1 ファイルの木データ `scripts/decision-tree/tree.tsv`（各ノードは問い 1 つ + 閉じた答えの集合 + `none`）と、根の経路分岐（fast / full / none）を bash + awk だけで返すルータ `scripts/decision-tree/route.sh`（stdout の `DT_ROUTE=` 行が契約。既定の `FF_JEV_MODE=off` では規則だけで決まり Jev を呼ばず、`on` では choice 型ノードだけ `jev-decide.sh` へ criteria を渡して閾値以上のときだけ採用する二段構え）、木の静的検査 `route.sh --check`（実在しない葉・到達不能ノード・木に載っていないスキル / hook・深さ 5 以上・葉 51 以上を赤にする）、`UserPromptSubmit` / `Stop` に配線した hook `hooks/decision-tree.sh`（根の答えと到達した葉を Issue 番号・repo 付きで `metrics/leaves.tsv` へ追記。Skill 起動は Skill ツールの `tool_use` とスラッシュコマンドの 2 形だけを採る。fail-soft）、読み手 `effort-report.sh --unreached-leaves`（期間内に到達 0 の葉を列挙。記録の不在は `(unmeasured)`）。原則 4 の「熟慮を起こすトリガ（索引）」を木の「熟慮へ」葉から参照する。葉の中身（SKILL.md）はこの版では書き直していない
+- 環境変数 `FF_DEV_TOOLKIT_SKIP_DECISION_TREE`（決定木 hook の無効化）と `FF_DEV_TOOLKIT_STATE_DIR`（記録の置き場の親。既定 `$HOME/.config/ff-dev-toolkit`）を契約へ追加した
+- `tests/run-all.sh` に変更ベースの部分ゲート `FF_RUN_ALL_CHANGED` を追加した。base（`1` は origin/HEAD）との差分に関係する suite だけを実行する。suite のスクリプトの字面から参照パスを導出して変更ファイルと交差させ、手書きの対応表は持たない。契約面（ランナー自身・テスト共通ライブラリ・`hooks/hooks.json`・`docs-template/`・root の 2 入口・CI 定義・同梱 MCP の依存）の変更と base を解決できない回は全件へ倒して理由を出す。交差 0 件は登録照合だけを実行して `suites: selected=0` を出す。選んだ suite と根拠はサマリーに出し、鮮度記録は部分実行（`STATUS=partial` / `MODE=changed`）として書く
+- `/close-issue` 手順 7 の checks の分岐で、PR トリガーの CI がある形を既定にした。checks の成功をマージの根拠とし、ローカルの全件ゲートはリリース前と契約面の変更時に限る。部分ゲートの記録による鮮度照合の判定不能では、checks が全件成功していれば全件を再実行しない。`docs-template` の git-workflow ステップ8 にも同じ既定を書いた
+
+### 変更
+
+- 工数ブロック（ff-effort）の単位を人日（d）から人時（h）へ移した。新しいブロックは `- effort_unit: h` を宣言して値を `N.Nh` で書き、最小値は 1.0h（旧 0.15d）。`/create-issue` の目安表・記入例と `/close-issue` の書き戻し例を人時へ換算した
+- `scripts/effort-report.sh` が `effort_unit` を読むようになった。宣言の無い旧ブロックの `N.Nd` は 1d = 8h で人時へ正規化して同じ母集団に入れ、宣言と食い違う単位の値は `excluded_unit_mismatch` / `excluded_unit_mismatch_issues` として除外件数と Issue 番号を出す。合計値（`human_planned_total` など）は人時になり、`effort_unit=h` を出す。乖離率・圧縮率と閾値 0.71 / 1.40 は比なので変わらない
+- `scripts/effort-report.sh --format kv` が変更クラス（docs-only / 10 行以下 / それ以外）別の `wallclock_median_h_*` / `wallclock_p75_h_*` / `instruction_bytes_median_*` / `review_rounds_median_*` / `gate_minutes_median_*` を出すようになった。供給源が未配線の指標は `(unavailable)`、実測が 0 件のクラスは `(unmeasured)` を出し、0 と区別する
+- 工数の実測を記録する hook を 2 本追加した。`hooks/record-effort-wallclock.sh`（PreToolUse・Bash）はブランチ作成と `gh pr merge` を Issue 番号キーの開始 / 終了として、`hooks/record-instruction-bytes.sh`（PreToolUse・Read / Skill）は SKILL.md・references・docs の読み込みバイトとして、`${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/` の追記専用 TSV へ記録する。記録置き場はリポジトリ横断で共有されるので、各行にリポジトリの共通 git dir の列を持たせる。Issue 番号はブランチ名の種別の後ろに `#` 付きで書いた番号だけから取る（日付入りのブランチ名を Issue 番号と読まない）どちらも止めず何も出力せず、書けないときは黙って通る。`FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS=1` で無効化できる
+- `scripts/effort-report.sh --issue-metrics N` を追加した。hook の記録からカレント（または `--repo-dir`）のリポジトリの Issue N の wall-clock と読み込みバイトを出す。別リポジトリの同じ番号の行は採らず、start の記録が無ければブランチの reflog の最古エントリから開始を補い、それも無ければ `(unmeasured)` を出す。`/close-issue` 手順 5a はこれを `effort_wallclock_actual` / `effort_instruction_bytes` / `effort_change_class` として自己申告の `effort_ai_actual` と並べて書き戻す
+- `/validate-docs` の本線（SKILL.md）を約 23.8 KB から 17.0 KB へ畳んだ。`## 出力形式` の出力例を削って 3 行の出力契約（観点別の結果 / サマリー / 推奨アクション。注意の記号は判定に効かず、判定は ❌ が 1 つも無ければ達成）に置き換え、`## 重要ルール` で §2・§4・§6 の条文を言い直していた 4 行を削った。§1 のコア文書表と補助ドキュメント表は列挙へ、§2 の同義見出しの例は docs-template の各テンプレートの見出しへの参照へ、§3 は 1 段落へ縮めた。判定規則（N/A と兆候、内容の責務での充足判定、§4 のプレースホルダー免除区分、§6 の Frontmatter の値域、スコアと最終判定）は変えていない
+- `tests/validate-docs/verify.sh` から、削った出力例と重複行に張っていた条文ピン 12 本を外し、1 本を出力契約のサマリー行へ付け替えた。あわせて SKILL.md 本線が 20,000 B を超えたら FAIL する検査を追加した
+
+### 修正
+
+- 配布用 codex-review.sh の版読み取り失敗を明示的に扱い、壊れた cache 候補は警告してスキップし、明示指定や sidecar の不正な版は停止するようにしました。
+
 ## [0.128.0] - 2026-09-23
 
 ### 変更
