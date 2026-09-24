@@ -521,11 +521,15 @@ SCRIPT_EXPECT_RC=(
   "check-plugin-versions.sh|1"
   "check-version-claims.sh|2"
   "effort-report.sh|2"
+  "finish.sh|2"
+  "knowledge-commit.sh|2"
   "knowledge-lookup.sh|3"
   "link-sub-issues.sh|2"
   "merge-cleanup.sh|1"
   "multi-agent.sh|2"
   "multi-review.sh|2"
+  "mutation-harness.sh|3"
+  "review-route.sh|3"
   "setup-multi-agent.sh|2"
   "sweep-orphan-transcripts.sh|2"
   "update-version-claim.sh|2"
@@ -552,8 +556,8 @@ script_expect_rc() {
 # `${VAR:?…}` のような修飾付き parameter expansion で呼ばれる 2 本（Issue 本文差分の判定器と
 # 工数集計器）が構造的に母集団の外にあった。床を「同じ抽出から導いた 12」に置いていたため、
 # 漏れは部分集合を自分自身と比べるだけになって検出できなかった。
-MIN_ROOT_SCRIPTS=16
-MIN_GUARDED_SCRIPTS=16
+MIN_ROOT_SCRIPTS=19
+MIN_GUARDED_SCRIPTS=19
 
 script_guard_exempt_reason() {
   local name="$1" entry
@@ -1436,10 +1440,20 @@ fi
 # node entry（`node "${ROOT}/scripts/asdd/<名>.mjs"`）を母集団へ入れた分も含む実数。床を据え置くと
 # ちょうどその差だけ余裕が生まれ、node 起動が丸ごと検出対象から落ちても床を通過する（下の
 # negative control が、検出外の綴りへ書き換えた live の写しで赤になることを実測する）。
-MIN_HANDOFF_LAUNCHES=119
+# skills/<名>/references/*.md を母集団へ入れた分（2026-09-24 時点で 5 行: ace-refine 3・
+# retrospective 1・out-of-scope-issue 1）も同じ理由で含める。加えて multi-review の本線を
+# 20 KB 以下へ畳んだとき、`--staged`・固定 pair の保存・ホスト委譲・部分再検証の起動例を正本
+# リンクへ置き換え、モデル選択・パス除外の起動例を references/ へ移した（本線の起動行 12 → 6）。
+# 尾の 4 スキル（close-issue / merge-cleanup / ace-curate / retrospective）の固定手順を
+# scripts/finish.sh の単一 handoff へ機械化し、各スキルが個別に持っていた起動行を畳んだ分だけ
+# 母集団の起動総数が減った。床はこの機械化を含めた live 実数ぴったり（121 行）。
+MIN_HANDOFF_LAUNCHES=121
 
 handoff_launch_files() { # <tree root> → 対象 .md を列挙
   find "$1/skills" -name SKILL.md -type f 2>/dev/null
+  # 本線から切り出した条件付き reference（skills/<名>/references/*.md）も同じ実行部を持つ。
+  # SKILL.md だけを見ると、実行部を references へ移した時点で handoff 要求の外へ落ちる。
+  find "$1/skills" -path '*/references/*.md' -type f 2>/dev/null
   find "$1/docs-template" -name '*.md' -type f 2>/dev/null
 }
 
@@ -1533,7 +1547,7 @@ if ( MIN_HANDOFF_LAUNCHES=1; check_exec_handoff "$TMP/handoff-fixture-list" >/de
 else
   bad "positive control: 無変異のhandoff fixtureが落ちました（以降の negative control は根拠になりません）"
 fi
-perl -0pi -e 's/^FF_DEV_TOOLKIT_ROOT="\$\{FF_DEV_TOOLKIT_ROOT\}" bash "\$\{FF_DEV_TOOLKIT_ROOT\}\/scripts\/merge-cleanup\.sh"/bash "\${FF_DEV_TOOLKIT_ROOT}\/scripts\/merge-cleanup.sh"/m' \
+perl -0pi -e 's/^FF_DEV_TOOLKIT_ROOT="\$\{FF_DEV_TOOLKIT_ROOT\}" bash "\$\{FF_DEV_TOOLKIT_ROOT\}\/scripts\/finish\.sh"/bash "\${FF_DEV_TOOLKIT_ROOT}\/scripts\/finish.sh"/m' \
   "$TMP/handoff-fixture/a.md"
 if cmp -s "$PLUGIN_ROOT/skills/merge-cleanup/SKILL.md" "$TMP/handoff-fixture/a.md"; then
   bad "negative control: handoff削除の変異が適用されませんでした（検査結果は根拠になりません）"
@@ -1557,7 +1571,7 @@ fi
 # ため緑のままになり、起動している側が素の `bash "${ROOT}/scripts/…"` でも通ってしまう。
 cp "$PLUGIN_ROOT/skills/merge-cleanup/SKILL.md" "$TMP/handoff-fixture/a.md"
 cp "$PLUGIN_ROOT/skills/close-issue/SKILL.md" "$TMP/handoff-fixture/b.md"
-perl -0pi -e 's/^FF_DEV_TOOLKIT_ROOT="\$\{FF_DEV_TOOLKIT_ROOT\}" bash "\$\{FF_DEV_TOOLKIT_ROOT\}\/scripts\/merge-cleanup\.sh"(.*)$/bash "\${FF_DEV_TOOLKIT_ROOT}\/scripts\/merge-cleanup.sh"$1  # FF_DEV_TOOLKIT_ROOT="\${FF_DEV_TOOLKIT_ROOT}" を同じ行へ載せること/m' \
+perl -0pi -e 's/^FF_DEV_TOOLKIT_ROOT="\$\{FF_DEV_TOOLKIT_ROOT\}" bash "\$\{FF_DEV_TOOLKIT_ROOT\}\/scripts\/finish\.sh"(.*)$/bash "\${FF_DEV_TOOLKIT_ROOT}\/scripts\/finish.sh"$1  # FF_DEV_TOOLKIT_ROOT="\${FF_DEV_TOOLKIT_ROOT}" を同じ行へ載せること/m' \
   "$TMP/handoff-fixture/a.md"
 if cmp -s "$PLUGIN_ROOT/skills/merge-cleanup/SKILL.md" "$TMP/handoff-fixture/a.md"; then
   bad "negative control: 代入のコメント退避が適用されませんでした（検査結果は根拠になりません）"
@@ -1571,7 +1585,7 @@ fi
 # なるので、ガードが毎回 exit 2 で止まる（= skill がまったく動かない）。
 cp "$PLUGIN_ROOT/skills/merge-cleanup/SKILL.md" "$TMP/handoff-fixture/a.md"
 cp "$PLUGIN_ROOT/skills/close-issue/SKILL.md" "$TMP/handoff-fixture/b.md"
-perl -0pi -e 's/^FF_DEV_TOOLKIT_ROOT="\$\{FF_DEV_TOOLKIT_ROOT\}" bash "\$\{FF_DEV_TOOLKIT_ROOT\}\/scripts\/merge-cleanup\.sh"/FF_DEV_TOOLKIT_ROOT="\/stale\/root" bash "\${FF_DEV_TOOLKIT_ROOT}\/scripts\/merge-cleanup.sh"/m' \
+perl -0pi -e 's/^FF_DEV_TOOLKIT_ROOT="\$\{FF_DEV_TOOLKIT_ROOT\}" bash "\$\{FF_DEV_TOOLKIT_ROOT\}\/scripts\/finish\.sh"/FF_DEV_TOOLKIT_ROOT="\/stale\/root" bash "\${FF_DEV_TOOLKIT_ROOT}\/scripts\/finish.sh"/m' \
   "$TMP/handoff-fixture/a.md"
 if cmp -s "$PLUGIN_ROOT/skills/merge-cleanup/SKILL.md" "$TMP/handoff-fixture/a.md"; then
   bad "negative control: handoffのstale root差し替えが適用されませんでした（検査結果は根拠になりません）"

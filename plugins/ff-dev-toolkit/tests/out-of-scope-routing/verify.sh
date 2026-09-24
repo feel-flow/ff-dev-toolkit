@@ -28,7 +28,7 @@
 # 宣言・--assignee を付けないこと・起票コマンドを filing.md 以外に置かないことは、同じ不変条件を
 # issue-label-contract（fixture 照合と構造検査）が守っているのでここでは張らない。
 #
-# 空振り検出: references/consolidation.md を空にすると必須ファイル検査で中断して赤、SKILL.md の振り分け表から examples.md の行を消すと 122 件中 3 件、B の上書き条件の箇条（10 行閾値）を「迷ったら」節へ移すと 122 件中 2 件、§1.0 を本線から examples.md へ移すと 122 件中 3 件、references/ にサブディレクトリや隠しファイルを作って旧規則を置くと 122 件中 1 件が赤になる（2026-09-23 実測。規定の置き場所が空になる・読まれる経路が消える・規則が別の節やファイルへ移って意味や読まれ方が変わる・検査の glob の外へ置かれる変更を「契約あり」へ倒さない）。
+# 空振り検出: references/consolidation.md を空にすると必須ファイル検査で中断して赤、SKILL.md の振り分け表から examples.md の行を消すと 127 件中 3 件、B の上書き条件の箇条（10 行閾値）を「迷ったら」節へ移すと 127 件中 2 件、§1.0 を本線から examples.md へ移すと 127 件中 4 件、references/ にサブディレクトリや隠しファイルを作って旧規則を置くと 127 件中 1 件、本線へ 3 KB を足して 20,000 B を超えると 127 件中 1 件、bundle の新設手順を本線の類似度表へ写すと 127 件中 1 件、1 行に畳んだ分割条件から条件語を 1 つ削ると 127 件中 1 件、filing.md の bundle 新設段落から --parent / Related の分岐を 1 つ削ると 127 件中 1 件が赤になる（2026-09-24 実測。規定の置き場所が空になる・読まれる経路が消える・規則が別の節やファイルへ移って意味や読まれ方が変わる・検査の glob の外へ置かれる・本線が上限を超える・列挙や分岐の一部だけが欠ける変更を「契約あり」へ倒さない）。 create-issue の references/filing.md に旧形式の `` `out-of-scope-issue` §3.3 `` を戻すと 122 件中 1 件が赤になる（2026-09-24 実測。針を create-issue の本線から filing.md へ移した後）。
 
 set -euo pipefail
 
@@ -55,7 +55,8 @@ REF_CONSOLIDATION="$SKILL_REFS/consolidation.md"
 REF_EXAMPLES="$SKILL_REFS/examples.md"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/workflow-principles.md"
 GIT_WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
-CREATE_ISSUE="$PLUGIN_ROOT/skills/create-issue/SKILL.md"
+# create-issue の起票手順（重複の注記を含む）は references/filing.md に切り出してある。
+CREATE_ISSUE_FILING="$PLUGIN_ROOT/skills/create-issue/references/filing.md"
 CLOSE_ISSUE="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
 REVIEW_POLICY="$PLUGIN_ROOT/docs-template/05-operations/deployment/review-response-policy.md"
 OSS_README="$OSS_ROOT/README.md"
@@ -180,7 +181,7 @@ gh_issue_blocks_bound() {
 
 echo "== out-of-scope routing 契約検査 =="
 
-REQUIRED_FILES=("$SKILL" "$REF_FILING" "$REF_CONSOLIDATION" "$REF_EXAMPLES" "$WORKFLOW" "$GIT_WORKFLOW" "$CREATE_ISSUE" "$CLOSE_ISSUE" "$REVIEW_POLICY" "$OSS_README" "$OSS_COPILOT")
+REQUIRED_FILES=("$SKILL" "$REF_FILING" "$REF_CONSOLIDATION" "$REF_EXAMPLES" "$WORKFLOW" "$GIT_WORKFLOW" "$CREATE_ISSUE_FILING" "$CLOSE_ISSUE" "$REVIEW_POLICY" "$OSS_README" "$OSS_COPILOT")
 MISSING_REQUIRED=0
 for file in "${REQUIRED_FILES[@]}"; do
   if [[ ! -s "$file" ]]; then
@@ -236,10 +237,25 @@ sec_once "$SKILL" "$H31" "統合を選んだら [references/consolidation.md](re
 sec_once "$SKILL" "$H31B" "既定ではテーマが近接するもの同士を 1 つのフォローアップ Issue に束ねて起票する" "同一 PR の複数発見をバッチ統合"
 sec_once "$SKILL" "$H31B" "最も重い種別に合わせる（fix > test > refactor > chore > docs の順）" "種別混在時は最も重い種別へ（向きと順序を変えると針が消える）"
 sec_once "$SKILL" "$H31B" "分割して個別 Issue にするのは次のいずれかの場合だけ" "束ねを分割するのは列挙した条件のときだけ"
+# 分割条件 3 つは 1 行の列挙に畳んである。条件語ごとに針を張る — 先頭だけでは、同じ行から
+# 残りの条件を削る部分欠落が緑のまま通る。
 sec_once "$SKILL" "$H31B" "完了条件・検証環境が互いに衝突する" "分割条件: 完了条件・検証環境の衝突"
 sec_once "$SKILL" "$H31B" "優先度・対応時期が明確に異なる" "分割条件: 優先度・対応時期の相違"
 sec_once "$SKILL" "$H31B" "担当や対象リポジトリが分かれる" "分割条件: 担当・対象リポジトリの相違"
 no_piped_grep_q "手順（本線と references）がパイプ入力の grep -q* を使わない"
+
+# 本線の上限。本線は毎回読まれるので、規定は正本へのリンクで畳み、推論で導出できない事実だけを
+# 残す（workflow-principles.md 原則4）。畳んだ本線が再び膨らむのを止める。wc が数値を返さない
+# 場合も赤にする（fail-closed）。
+SKILL_MAX_BYTES=20000
+if ! skill_bytes="$(wc -c <"$SKILL" | tr -d '[:space:]')"; then
+  skill_bytes="(wc 失敗)"
+fi
+if [[ "$skill_bytes" =~ ^[0-9]+$ ]] && ((skill_bytes <= SKILL_MAX_BYTES)); then
+  ok "本線のバイト数: ${skill_bytes} B（上限 ${SKILL_MAX_BYTES} B）"
+else
+  bad "本線のバイト数が上限を超えた、または測れない: \"${skill_bytes}\" B（上限 ${SKILL_MAX_BYTES} B）"
+fi
 
 # ── B. references/consolidation.md: 既存 Issue への統合 ─────────────────────────
 once "$REF_CONSOLIDATION" "統合元・統合先の本文は全文取得する" "Issue 統合は本文を全文取得（head で切らない）"
@@ -260,6 +276,18 @@ sec_once "$REF_FILING" "$H33" "AC の分量・詳細度を SKILL.md §1.3 の A/
 sec_once "$REF_FILING" "#### 報告の書き分け（「不在」と「照会失敗」を混同しない）" "省略したラベル名" "省略したラベルを報告（黙って落とさない）"
 # Epic の照会は散文中のインラインコードなので、issue-label-contract のフェンス走査には載らない。
 sec_once "$REF_FILING" "#### Epic への紐付け（該当する場合のみ）" 'gh issue list --repo "$expected_repo" --label epic --state open' "Epic の照会が対象リポジトリへ束縛"
+# bundle の新設手順は起票側（filing.md）へ移した。本線の類似度表は振り分けの結論だけを持つ —
+# 手順が本線へ戻る・両方に写る変更を赤にする（本線の件数は grep -c の 0 件で見る）。
+sec_once "$REF_FILING" "#### Epic への紐付け（該当する場合のみ）" '`/create-issue --bundle`' "bundle の新設手順が filing.md の Epic 紐付け節にある"
+# 新設手順の 2 分岐（カテゴリ Epic があれば親を付ける / bundle ラベルが無ければ Related で関連付ける）。
+sec_once "$REF_FILING" "#### Epic への紐付け（該当する場合のみ）" '（カテゴリ Epic があれば `--parent`）' "bundle の新設: カテゴリ Epic があれば --parent で親を付ける"
+sec_once "$REF_FILING" "#### Epic への紐付け（該当する場合のみ）" '既存 Issue を `Related: #{number}` として関連付ける' "bundle の新設: bundle ラベルが無ければ Related で関連付ける"
+n_bundle_create="$(grep -cF -- '/create-issue --bundle' "$SKILL")" || true
+if [[ "$n_bundle_create" == 0 ]]; then
+  ok "bundle の新設手順が本線に無い（振り分けの結論だけを持つ）"
+else
+  bad "bundle の新設手順が本線に無い（本線に ${n_bundle_create:-読めない} 行: /create-issue --bundle）"
+fi
 
 # ── D. 振り分け表と、スキル内の参照の解決 ───────────────────────────────────────
 # 本線の SKILL.md は毎回読まれ、references/*.md は振り分け表の条件に当たったときだけ
@@ -466,7 +494,7 @@ once "$SKILL" "| 判定例 6 件 |" "振り分け表が判定例の件数を名�
 
 # ファイルまで指す節参照は、節の移動で指す先が古くなる（見出しの一意性だけでは見えない）。
 # §3.3 を旧ファイル（スキル名だけ = SKILL.md）で指す形の復元を塞ぐ。
-not_contains "$CREATE_ISSUE" '`out-of-scope-issue` §3.3' "create-issue: 起票手順の複製元を旧ファイル（SKILL.md）で指していない"
+not_contains "$CREATE_ISSUE_FILING" '`out-of-scope-issue` §3.3' "create-issue（references/filing.md）: 起票手順の複製元を旧ファイル（SKILL.md）で指していない"
 not_contains "$GIT_WORKFLOW" '`out-of-scope-issue` スキル §3.3' "git-workflow: 起票順序の詳細を旧ファイル（SKILL.md）で指していない"
 
 # ── E. 消費側文書 ─────────────────────────────────────────────────────────────

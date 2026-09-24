@@ -425,7 +425,8 @@ else
     # /refine-issue の skip 条件契約（Issue #683）: 手順 6・7 を skip してよいのは
     # 「6 観点違反 0 件 かつ SubAgent 論点 0 件」のときだけ、という AND を SKILL.md の
     # 3 箇所（skip 条件・階層化判定の入口・skip 時の報告見出し）で固定する。単一条件へ
-    # 戻すと上流ゲートの検出結果が後段へ届かず落ちる。外部コマンド・一時領域不要。
+    # 戻すと上流ゲートの検出結果が後段へ届かず落ちる。本線の上限バイト数（20,000 B）も
+    # fail-closed で見る。外部コマンド・一時領域不要。
     # 同じ「スキルの契約文言」を扱う out-of-scope 系に続けて置く。
     "$SCRIPT_DIR/refine-issue-skip-contract/verify.sh"
     # removal-sweep の 3 系統走査契約（Issue #991）: 撤去 PR の残存参照走査
@@ -557,6 +558,12 @@ else
     # 3 帯すべてを覆うこと。マージ直前の窓（Issue 本文の書き換え）を守る契約なので
     # merge-freshness の隣に置く。jq と一時領域を要する。
     "$SCRIPT_DIR/effort-contract/verify.sh"
+    # PR の尾の固定手順（scripts/finish.sh precheck / cleanup / knowledge-commit）の振る舞い契約と、
+    # 本線を 20 KB 以下へ畳んだスキルの本線バイト上限の名簿。precheck は stub gh + 本物の記録で
+    # 前提崩れ（PR 不在 / gh 不通 / 記録不在）が非 0 で名指しされることを、knowledge-commit は
+    # bare origin への直 push と保護ルールの拒否を実測する。マージ直前の窓の契約なので
+    # effort-contract の隣に置く。git・jq・一時領域を要する。
+    "$SCRIPT_DIR/finish/verify.sh"
     # Git Workflow の tier 判定（scripts/workflow-tier.sh）の振る舞いと、段の単一正本の
     # 契約（Issue #801）。判定は path 一覧を受ける入口を持つので git の状態を捏造せずに
     # 全ケースを回せる。段数・tier 件数・分布の手書きが無いことは否定の主張なので、
@@ -592,9 +599,9 @@ else
     # 供給されない参照は「起票成功のままラベルだけ黙って落ちる」ため）。
     # gh / jq / yq・一時ファイル不要の静的検査。
     "$SCRIPT_DIR/issue-label-supply/verify.sh"
-    # create-issue 手順5の ISSUE_TEMPLATE 節 pre-flight（テンプレートの `## ` 見出しを
+    # create-issue（references/filing.md）の ISSUE_TEMPLATE 節 pre-flight（テンプレートの `## ` 見出しを
     # 本文と照合し、無い節を fail-soft で報告する）が実装から消えないことの固定。
-    # 手順6ステップ1の実行指示、手順7の完了報告への報告義務、git-workflow.md
+    # 起票ステップ1の実行指示、手順7の完了報告への報告義務、git-workflow.md
     # ステップ1の raw `gh issue create` 前の確認手順も見る。jq / gh 不要の静的検査。
     # ラベル契約つながりで issue-label-supply の直後に置く。
     "$SCRIPT_DIR/create-issue-template-preflight/verify.sh"
@@ -620,6 +627,11 @@ else
     # exit 0 / 10 / 11 / 12 / 2）、hook の記録と fail-soft、読み手の (unmeasured) /
     # (unavailable) を固定する。jq / git / 一時領域が無ければ ○ skip。
     "$SCRIPT_DIR/decision-tree/verify.sh"
+    # 変異ハーネス（scripts/mutation-harness.sh）の契約。fixture リポジトリへ実際に回し、
+    # 空の変異表・対照の赤で止まること、判定 5 種と終了コード、--work-dir の一意な子だけを
+    # 消す cleanup、symlink 越しの変異を NOT-APPLIED にする写しの境界、対照の副作用の隔離、
+    # 引数の末尾改行の保持を固定する。git / 一時領域が無ければ ○ skip。
+    "$SCRIPT_DIR/mutation-harness/verify.sh"
     "$SCRIPT_DIR/validate-docs/verify.sh"
     # /validate-docs §4 のプレースホルダー免除（閉じたフェンス / コメント /
     # インラインコードスパン、閉じ忘れは除外区間にしない）を fixture のトークン
@@ -1019,6 +1031,7 @@ REQUIRED_SUITES=(
   # 検証を持つ唯一の suite。jq 不在で丸ごと skip されると、安全ゲートが本当に
   # マーカー外の編集を弾くかを誰も見なくなる（Issue #1136）。
   effort-contract
+  finish
   # root契約のnegative controlは一時領域を使う。skipすると旧版誤選択を拒否する
   # 検出力が丸ごと消えるため、明示許可なしのskipを認めない（Issue #838）。
   plugin-root-contract
@@ -1283,10 +1296,8 @@ REQUIRED_SUITES=(
 # suite はここから外す（載ったままだと赤: 名簿が「未実測」を主張し続ける形を残さない）。
 # 実在しない名前も赤（改名・削除に追従できていない行は何も免除していない）。
 MISS_PROBE_BASELINE=(
-  ace-curate-commit
   ace-curate-fallback-exec
   ace-line-budget-docs
-  ace-refine
   ace-run-ts
   ace-scripts-mirror-selftest
   ace-scripts-mirror
@@ -1315,7 +1326,6 @@ MISS_PROBE_BASELINE=(
   close-issue-shell-quote
   closing-keyword-guard
   cloud-env-setup
-  create-issue-template-preflight
   docs-fact-drift-selftest
   docs-fact-drift
   docs-frontmatter-repo-selftest
@@ -1371,24 +1381,18 @@ MISS_PROBE_BASELINE=(
   plugin-root-contract
   plugin-version-check
   public-dependabot-health
-  refine-issue-skip-contract
   release-required-selftest
   removal-sweep
   retrospective-ledger-freshness
   review-capture-fail-loud
   review-diff-scope
-  review-freeze-contract
-  review-rejection-discipline
   review-severity-scope
-  review-worktree-scripts-decision
   reviewer-pair
   roadmap-release-facts-selftest
   roadmap-release-facts
   root-instructions-parity
-  setup-ai-config
   setup-multi-agent-yq
   severity-parser-intersection
-  shared-version-convergence
   shellcheck
   skill-count-consistency-selftest
   skill-count-consistency
@@ -1402,7 +1406,6 @@ MISS_PROBE_BASELINE=(
   validate-docs-placeholders
   weekly-health-contract
   workflow-doctor
-  workflow-tier
   worktree-preflight-contract
 )
 

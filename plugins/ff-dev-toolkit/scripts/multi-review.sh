@@ -5,7 +5,27 @@
 # Backward-compatible wrapper that delegates to multi-agent.sh
 # with --task review.
 #
-# All options are passed through to multi-agent.sh.
+# All options are passed through to multi-agent.sh, except --route below,
+# which this wrapper owns.
+#
+# --route fast|full|none   変更クラス別のレーン数（`scripts/review-route.sh` の REVIEW_ROUTE を
+#                          そのまま渡す）。レーン構成を明示するので、既定の pair・利用者設定の
+#                          レビュアー（review.main / review.sub / cross_review）に依らず同じ実計画になる:
+#                          fast = Codex 1 レーンだけ（`--mode cross-model --cli codex-cli
+#                          --perspective comprehensive-review`。Claude の観点は起動しない）/
+#                          full = 5 レーン（主 claude-code の code-review / error-handler-hunt /
+#                          test-analysis / comment-analysis + 副 codex-cli の comprehensive-review。
+#                          `--mode pair` と MULTI_AGENT_REVIEW_MAIN / _SUB / MULTI_AGENT_CROSS_REVIEW を
+#                          この起動に限って指定する）/ none = ホストの判定に任せる（渡された引数どおり）。
+#                          省略は none と同じ。fast / full とレーン構成を決める `--mode` / `--cli` /
+#                          `--perspective` / `--exclude-cli` / `--exclude-perspective` の併用は exit 2
+#                          （fast は `--delegate-to-host` も exit 2 — 委譲する claude-code レーンが無い）。
+# 巡回の上限:              exec 先の multi-agent.sh の review 本体が数える（exit 4。正本は
+#                          tests/lib/review-round-counter.sh のヘッダ）。1 巡だけ通すのは
+#                          `FF_REVIEW_ROUND_ACK=1 bash …/multi-review.sh …`、無効化は
+#                          `FF_REVIEW_ROUND_LIMIT=0`（pre-push のゲートのように fix ループの巡では
+#                          ない起動）。
+#
 # For new usage, prefer: bash scripts/multi-agent.sh --task review
 #
 # See: bash scripts/multi-agent.sh --help
@@ -179,4 +199,54 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 2
 # ff-dev-toolkit-script-root-guard:end
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec bash "$SCRIPT_DIR/multi-agent.sh" --task review "$@"
+
+ROUTE=""
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --route)
+      [ $# -ge 2 ] || { echo "ERROR: --route requires fast|full|none" >&2; exit 2; }
+      ROUTE="$2"
+      shift 2
+      ;;
+    --route=*) ROUTE="${1#--route=}"; shift ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+route_rejects_lane_args() { # <route> <拒否する追加の引数...>
+  local route="$1" a x
+  shift
+  for a in ${ARGS[@]+"${ARGS[@]}"}; do
+    case "$a" in
+      --mode | --mode=* | --cli | --cli=* | --perspective | --perspective=* | --exclude-cli | --exclude-cli=* \
+        | --exclude-perspective | --exclude-perspective=*)
+        echo "ERROR: --route ${route} decides the lanes itself; drop ${a} (or use --route none)" >&2
+        exit 2
+        ;;
+    esac
+    for x in "$@"; do
+      if [ "$a" = "$x" ]; then
+        echo "ERROR: --route ${route} cannot be combined with ${a}" >&2
+        exit 2
+      fi
+    done
+  done
+}
+case "$ROUTE" in
+  '' | none) : ;;
+  fast)
+    route_rejects_lane_args fast --delegate-to-host
+    ARGS+=(--mode cross-model --cli codex-cli --perspective comprehensive-review)
+    echo "ℹ️  --route fast: Codex 1 lane only (--mode cross-model --cli codex-cli --perspective comprehensive-review)" >&2
+    ;;
+  full)
+    route_rejects_lane_args full
+    ARGS+=(--mode pair --perspective comprehensive-review --perspective code-review --perspective error-handler-hunt
+      --perspective test-analysis --perspective comment-analysis)
+    export MULTI_AGENT_REVIEW_MAIN=claude-code MULTI_AGENT_REVIEW_SUB=codex-cli MULTI_AGENT_CROSS_REVIEW=auto
+    echo "ℹ️  --route full: 5 lanes (claude-code: code-review / error-handler-hunt / test-analysis / comment-analysis + codex-cli: comprehensive-review)" >&2
+    ;;
+  *) echo "ERROR: --route must be fast|full|none (got: ${ROUTE})" >&2; exit 2 ;;
+esac
+
+exec bash "$SCRIPT_DIR/multi-agent.sh" --task review ${ARGS[@]+"${ARGS[@]}"}

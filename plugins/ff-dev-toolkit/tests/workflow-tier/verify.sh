@@ -36,6 +36,9 @@
 # 依存は POSIX ユーティリティ + `mktemp` + `git`。一時領域が使えない場合は、それを要する
 # 検査（C の変異注入 / D の実 git 差分 / `--paths-from <file>`）だけを名指しで skip し、
 # **全件実行（FF_RUN_ALL_FULL=1）では skip を許さず赤にする**。
+#
+# 空振り検出: spec-driven 本線のバイト数ゲートは、本線が無いと wc が失敗して「(wc 失敗)」で赤、
+# 本線へ約 5 KB を足して上限を越えさせる変異で「上限を超えた」の赤（実測）。
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -560,6 +563,19 @@ if [ "$B_ACTUAL" -eq "$B_EXPECT" ]; then
   ok "B の検査件数が期待どおり（${B_ACTUAL} 件。検査そのものの削除を検出する）"
 else
   bad "B の検査件数が ${B_ACTUAL} 件です（期待 ${B_EXPECT}）。検査が削られたか、追加時に期待値を更新していません"
+fi
+
+# spec-driven 本線の上限。畳んだ本線が再び膨らむのを止める（B の件数勘定の外に置く）。
+# wc が失敗した・数値を返さない場合も赤にする（fail-closed）。本線 20 KB の汎用ゲートが
+# できたらそちらへ畳む前提で、ここでは spec-driven だけを見る（名簿は持たない）。
+SPEC_MAX_BYTES=20000
+if ! spec_bytes="$(wc -c < "$SPEC_SKILL" | tr -d '[:space:]')"; then
+  spec_bytes="(wc 失敗)"
+fi
+if [[ "$spec_bytes" =~ ^[0-9]+$ ]] && (( spec_bytes <= SPEC_MAX_BYTES )); then
+  ok "spec-driven: 本線のバイト数 ${spec_bytes} B（上限 ${SPEC_MAX_BYTES} B）"
+else
+  bad "spec-driven: 本線のバイト数が上限を超えた、または測れない: \"${spec_bytes}\" B（上限 ${SPEC_MAX_BYTES} B）"
 fi
 
 # ---- C. 手書きの段数・件数・割合が無いこと ------------------------------------

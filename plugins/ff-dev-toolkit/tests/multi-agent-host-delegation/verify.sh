@@ -105,6 +105,11 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # --- レビュー対象の差分を持つ一時リポジトリ ---
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+# レビュー巡回の上限（multi-agent.sh の review 本体が同じブランチの異なる HEAD を数える）は
+# この suite の関心外。同じ feature/x で HEAD を進めながら review を何度も起動するので、
+# 上限を 0（無効）に固定して直交させる（multi-agent-plan / guard-review-in-flight (a)〜(m) と同じ）
+export FF_REVIEW_ROUND_LIMIT=0
+unset FF_REVIEW_ROUND_ACK
 REPO="$TMP/repo"
 ff_git_fixture_init "$REPO" "host-delegation-test" "test@example.com"
 cd "$REPO"

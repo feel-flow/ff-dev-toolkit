@@ -38,6 +38,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 CREATE_ISSUE="$PLUGIN_ROOT/skills/create-issue/SKILL.md"
+# create-issue も起票手順（references/filing.md）と工数の目安（references/estimation.md）を
+# 切り出している。系統表と `--label bundle` は本線にあるが、参照は out-of-scope-issue と同じく
+# スキル全体（本線 + references）で数える — references へ移った参照を検査の外へ出さない。
+CREATE_ISSUE_REFS="$PLUGIN_ROOT/skills/create-issue/references"
 OUT_OF_SCOPE="$PLUGIN_ROOT/skills/out-of-scope-issue/SKILL.md"
 # out-of-scope-issue は起票手順（ラベル系統表・Epic 照会の --label）を条件付きで読む
 # references/ へ切り出している。参照ラベルはスキル全体（本線 + references）で数える —
@@ -274,7 +278,7 @@ fi
 supply_union="$(printf '%s\n%s\n' "$supply" "$allowlist" | awk 'NF' | sort -u)"
 
 # ---- 2. 参照側の抽出と件数固定 ---------------------------------------------------
-refs_create="$(sort_unique "$(extract_referenced "$CREATE_ISSUE")")"
+refs_create="$(sort_unique "$(extract_referenced "$CREATE_ISSUE" "$CREATE_ISSUE_REFS"/*.md)")"
 refs_scope="$(sort_unique "$(extract_referenced "$OUT_OF_SCOPE" "$OUT_OF_SCOPE_REFS"/*.md)")"
 
 for pair in "create-issue:$EXPECTED_REFS_CREATE:$(count_lines "$refs_create")" \
@@ -292,7 +296,7 @@ done
 # 抽出の外へ出て、包含検査が素通りする）。
 for name in create-issue out-of-scope-issue; do
   if [ "$name" = create-issue ]; then
-    unknown="$(unknown_lineage_rows "$CREATE_ISSUE")"
+    unknown="$(unknown_lineage_rows "$CREATE_ISSUE" "$CREATE_ISSUE_REFS"/*.md)"
   else
     unknown="$(unknown_lineage_rows "$OUT_OF_SCOPE" "$OUT_OF_SCOPE_REFS"/*.md)"
   fi

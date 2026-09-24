@@ -66,6 +66,10 @@ REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 
 PREFLIGHT_HEADING='### 起票前の既存確認（必須）'
 OUTPUT_FORMAT_HEADING='## 出力形式（提案がある場合）'
+# 提案の書式（6 欄 + 起票行）のテンプレートは references/filing.md「出力形式」が正本（本線は欄の
+# 名指しと参照だけ）。台帳の照合フェンスは references/ledger.md（本線は通す義務だけ）。
+REF_OUTPUT_FORMAT_HEADING='## 出力形式'
+REF_LEDGER_PREGATE_SECTION='## 記録の前に base の先行を照合する'
 
 # SSOT モノレポでは公開文書は oss/ff-dev-toolkit/、公開リポジトリへ同期した後は
 # リポジトリルートへ展開される。両配置で同じ suite を実行する。
@@ -88,6 +92,7 @@ REF_PROMOTION="$SKILL_REFS/promotion.md"
 REF_LEGACY="$SKILL_REFS/legacy-intake.md"
 REF_EFFORT="$SKILL_REFS/effort.md"
 REF_AUTOTRIGGER="$SKILL_REFS/auto-trigger.md"
+REF_LEDGER="$SKILL_REFS/ledger.md"
 ACE_CURATE="$PLUGIN_ROOT/skills/ace-curate/SKILL.md"
 GIT_WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 WORKFLOW_PRINCIPLES="$PLUGIN_ROOT/docs-template/05-operations/deployment/workflow-principles.md"
@@ -311,7 +316,7 @@ contains "$REF_FILING" "「起票前の既存確認」を実行できなかっ�
 contains "$REF_FILING" "個人環境（\`~/.claude\` 等）への提案" "起票境界: 個人環境への提案は起票しない"
 # 実施のスイッチ（明示指定は env を上書き）と違い、起票は外向き書き込みなので明示呼び出しでも ask を尊重する。
 contains "$REF_FILING" "明示呼び出しでも ask 設定は尊重する" "起票境界: 明示呼び出しでも RETROSPECTIVE_FILING=ask を尊重する"
-contains "$SKILL" "起票: [owner/repo#N（新規）" "出力形式: 起票結果の行"
+contains "$REF_FILING" "起票: [owner/repo#N（新規）" "出力形式: 起票結果の行"
 # ask モードの出力形状も対で pin する（既定側だけ固定すると ask 側の文言が自由落下する）。
 contains "$SKILL" "\`RETROSPECTIVE_FILING=ask\` のときは \`起票:\` 行の代わりに \`承認いただければ起票します。\` で終え" "出力形式: ask モードは承認待ちの文で終える"
 contains "$REF_FILING" "**ask モード（\`RETROSPECTIVE_FILING=ask\`）**: 提案を提示して**ユーザー承認を待つ**（承認なしに起票しない）" "起票境界: ask モードは起票前にユーザー承認を待つ"
@@ -334,14 +339,14 @@ contains "$SKILL" "と、既存確認を完了した提案を起票する段（�
 # 同じ接頭辞を書いても、報告テンプレートからは落ちたまま）。節はテンプレートを収めた
 # `text` フェンスで、その中に `## セッション振り返り` があるため、フェンス追跡を持つ
 # 共通ヘルパでしか切り出せない。
-section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "- 実測: " "出力形式: 実測欄"
-section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "- 既存確認: " "出力形式: 既存確認欄"
+section_contains "$REF_FILING" "$REF_OUTPUT_FORMAT_HEADING" "- 実測: " "出力形式: 実測欄"
+section_contains "$REF_FILING" "$REF_OUTPUT_FORMAT_HEADING" "- 既存確認: " "出力形式: 既存確認欄"
 # 欄の接頭辞だけだと `- 既存確認: [なし]` へ縮めても緑になる。角括弧の中身は出力形式側で
 # 「方針矛盾」に言及する唯一の箇所でもあるので、判定軸（重複 + 方針矛盾）まで固定する。
-section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "重複・方針矛盾なしと判断したか" "出力形式: 既存確認欄は重複と方針矛盾の両方を判定して書く"
-section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "- 起票先: " "出力形式: 起票先欄"
-section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "- 付与予定ラベル: " "出力形式: 付与予定ラベル欄"
-section_contains "$SKILL" "$OUTPUT_FORMAT_HEADING" "- 期待効果: " "出力形式: 期待効果欄"
+section_contains "$REF_FILING" "$REF_OUTPUT_FORMAT_HEADING" "重複・方針矛盾なしと判断したか" "出力形式: 既存確認欄は重複と方針矛盾の両方を判定して書く"
+section_contains "$REF_FILING" "$REF_OUTPUT_FORMAT_HEADING" "- 起票先: " "出力形式: 起票先欄"
+section_contains "$REF_FILING" "$REF_OUTPUT_FORMAT_HEADING" "- 付与予定ラベル: " "出力形式: 付与予定ラベル欄"
+section_contains "$REF_FILING" "$REF_OUTPUT_FORMAT_HEADING" "- 期待効果: " "出力形式: 期待効果欄"
 
 # 起票前の既存確認。欄（`- 既存確認: `）だけ残って手順が消えると、書く場所はあるのに
 # 何を確認するかが消えるため、記入を強制する一文と検索の取得上限を対で持つ（節の見出しは
@@ -508,13 +513,13 @@ section_contains "$SKILL" "### 書き込み（定型コミット）" \
 # 台帳のパスは 3 箇所（ガードのフェンス・記録手順 0・書き込み節の commit 形）に独立した
 # リテラルで現れる。片方だけ変えると「照合したパスと書き込むパスが違う」状態になるので、
 # 節から抽出したフェンスのパスを基準に、残り 2 箇所と一致することを見る。
-LEDGER_PATH_IN_GUARD="$(awk -v sec="$LEDGER_PREGATE_SECTION" '
+LEDGER_PATH_IN_GUARD="$(awk -v sec="$REF_LEDGER_PREGATE_SECTION" '
   $0 == sec { in_sec = 1; next }
   in_sec && /^#/ { in_sec = 0 }
   in_sec && /:\(top\)/ {
     if (match($0, /:\(top\)[^"]+/)) { print substr($0, RSTART + 6, RLENGTH - 6); exit }
   }
-' "$SKILL")"
+' "$REF_LEDGER")"
 if [[ -z "$LEDGER_PATH_IN_GUARD" ]]; then
   bad "台帳の base 先行ガード: フェンスから台帳パスを抽出（不足: :(top) 付きの pathspec）"
 else
@@ -524,6 +529,19 @@ else
   section_contains "$SKILL" "### 書き込み（定型コミット）" "git commit -- $LEDGER_PATH_IN_GUARD" \
     "書き込み節の commit 形が照合フェンスと同じ台帳パスへ固定されている"
 fi
+
+# 書き込みは共通の書き込み口（knowledge-commit.sh）を通す。/ace-curate の保留と 1 コミットへ畳む規定と、
+# 振り返りを実施しない回でも保留を回収する規定を固定する（削ると ACE の追記が stage 済みのまま残るか、
+# ACE と観測が別コミットに割れる）。
+section_contains "$SKILL" "### 書き込み（定型コミット）" \
+  "knowledge-commit add --source obs --id <OBS-ID> --summary <要約> -- docs/08-knowledge/OBSERVATIONS.md\`" \
+  "書き込み節が観測を共通の書き込み口へ add してから commit する"
+section_contains "$SKILL" "### 書き込み（定型コミット）" \
+  "同じ \`commit\` が両方を 1 コミット（\`knowledge: ACE-… / OBS-…\`）に畳む" \
+  "書き込み節が /ace-curate の保留と観測を 1 コミットへ畳む"
+section_contains "$SKILL" "## ask / off モード（保険）" \
+  "振り返りを実施しない回（off モード・ask で断られた回）でも \`commit\` → push を行う" \
+  "モード判定の直後に保留中の knowledge 追記を回収する（振り返りを実施しない回でも取り残さない）"
 
 # 節スコープ針は**節そのものの位置**を見ない。ガード節を見出しごと記録手順の後ろへ移すと、
 # 「記録内容を作る前に照合する」という AC を失ったまま針が全件緑で通る（実測）。見出しの

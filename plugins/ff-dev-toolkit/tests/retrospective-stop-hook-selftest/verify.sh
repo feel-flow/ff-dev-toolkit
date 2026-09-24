@@ -240,7 +240,9 @@ check_mutation "事前注入の off ガード削除" "context hook も RETROSPEC
 # 向きなので、6 分岐すべてを常設の変異で固定する。
 ROOT="$(make_fixture context-skill-path-default-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '%s%s"}}' 2
-perl -0pi -e 's/read-only\. %s%s"\}\}\\n. "\$FILING_CLAUSE" "\$SKILL_PATH_CLAUSE"\n\nexit 0/read-only. %s"}}\\n\x27 "\$FILING_CLAUSE"\n\nexit 0/' "$ROOT/hooks/retrospective-context.sh"
+# 既定分岐の文面は末尾に ACE_DEFER_TO_RETRO の案内（`#1841`）が続くので、散文ではなく
+# 書式と引数の並び（+ 直後の exit 0）だけで位置を決める
+perl -0pi -e 's/ %s%s"\}\}\\n. "\$FILING_CLAUSE" "\$SKILL_PATH_CLAUSE"\n\nexit 0/ %s"}}\\n\x27 "\$FILING_CLAUSE"\n\nexit 0/' "$ROOT/hooks/retrospective-context.sh"
 check_mutation "既定分岐からスキル経路を削除" "事前注入（__unset__）のスキル経路が不正" "$ROOT"
 
 ROOT="$(make_fixture context-skill-path-ask-removed)"

@@ -26,6 +26,13 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 GUARD="$PLUGIN_ROOT/scripts/check-closing-keywords.sh"
 SKILL="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
+# 手順 1〜2 の機械部分（参照の抽出・和集合・差集合・抵触検査の呼び出し・merge コマンド生成）は
+# scripts/finish.sh precheck が実行し、2a / 2b の根拠散文と手動クローズの警告文は
+# references/merge-gate.md、AC 陳腐化の判定規則は references/ac-judgement.md へ置いてある。
+# 針は規定が実際に置かれたファイルへ張る。
+FINISH="$PLUGIN_ROOT/scripts/finish.sh"
+GATE_REF="$PLUGIN_ROOT/skills/close-issue/references/merge-gate.md"
+AC_REF="$PLUGIN_ROOT/skills/close-issue/references/ac-judgement.md"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 
 # 2a（供給源のスキャン）と 2b（マージへ渡す文字列の検査）は役割が違い、片方の規定を
@@ -123,14 +130,14 @@ echo "== closing keyword 抵触検査 =="
 
 # ファイルが 1 つ欠けただけで後続の contains が全部個別に落ちると、1 つの事実が
 # 数十行のノイズになる。存在検査は即座に打ち切る。
-for file in "$GUARD" "$SKILL" "$WORKFLOW"; do
+for file in "$GUARD" "$SKILL" "$FINISH" "$GATE_REF" "$AC_REF" "$WORKFLOW"; do
   if [[ ! -s "$file" ]]; then
     echo "  ✗ 必須ファイルが存在し非空: $file" >&2
     echo "✗ closing-keyword-guard verify: 必須ファイル欠落のため中断" >&2
     exit 1
   fi
 done
-ok "必須ファイルが 3 件とも存在し非空"
+ok "必須ファイルが 6 件とも存在し非空"
 
 # ---- 系統1: 抵触あり ---------------------------------------------------------
 echo
@@ -328,8 +335,8 @@ contains "$SKILL" "scripts/check-closing-keywords.sh" "検査ロジックを共�
 contains "$SKILL" "PR 本文だけ" "closingIssuesReferences の実際の走査範囲を正しく述べている"
 contains "$SKILL" "空を理由に打ち切ると" "closingIssuesReferences が空でも Refs 運用を検査対象にする"
 contains "$SKILL" '拾う綴りは `Ref` / `Refs` のみ' "Refs 参照として拾う綴りを固定している"
-contains "$SKILL" "RSTART, RLENGTH" "Refs 参照の抽出を機械化している（目視に委ねない）"
-contains "$SKILL" 'EXTRACT_RC}" -eq 0' "抽出の失敗を rc の意味論に依存せず判定する"
+contains "$FINISH" "RSTART, RLENGTH" "Refs 参照の抽出を機械化している（目視に委ねない）"
+contains "$FINISH" 'EXTRACT_RC}" -eq 0' "抽出の失敗を rc の意味論に依存せず判定する"
 
 # ---- 手順 1 の awk を実体として実行する機能検査（Issue #776 / #994 AC） ------
 # contains のテキスト照合では「awk が原文どおり存在する」ことしか言えず、引数展開
@@ -351,14 +358,14 @@ extract_skill_awk_after() {
     extracting == 1 { print }
     found == 0 && extracting == 0 && armed && index($0, "| awk") > 0 { extracting = 1 }
     END { exit found == 1 ? 0 : 1 }
-  ' "$SKILL"
+  ' "$FINISH"
 }
 
 SKILL_AWK_SRC="$(extract_skill_awk_after 'REFS_RAW=')" || SKILL_AWK_SRC=""
 if [[ -n "$SKILL_AWK_SRC" ]]; then
-  ok "手順 1 の awk プログラムを SKILL.md のフェンスから抽出できる"
+  ok "手順 1 の awk プログラムを finish.sh から抽出できる"
 else
-  bad "手順 1 の awk プログラムを SKILL.md から抽出できない（マーカー行の変更時はこの検査を追随させる）"
+  bad "手順 1 の awk プログラムを finish.sh から抽出できない（マーカー行の変更時はこの検査を追随させる）"
 fi
 
 REFS_EXTRACTED="$(printf '%s\n' 'Closes #100' 'Refs #620' 'refs owner/repo#42 と Ref: #7 を参照' \
@@ -372,9 +379,9 @@ fi
 
 CLOSES_AWK_SRC="$(extract_skill_awk_after 'CLOSES_RAW=')" || CLOSES_AWK_SRC=""
 if [[ -n "$CLOSES_AWK_SRC" ]]; then
-  ok "closing keyword の awk プログラムを SKILL.md のフェンスから抽出できる"
+  ok "closing keyword の awk プログラムを finish.sh から抽出できる"
 else
-  bad "closing keyword の awk プログラムを SKILL.md から抽出できない（マーカー行の変更時はこの検査を追随させる）"
+  bad "closing keyword の awk プログラムを finish.sh から抽出できない（マーカー行の変更時はこの検査を追随させる）"
 fi
 
 if [[ -n "$CLOSES_AWK_SRC" ]]; then
@@ -420,9 +427,9 @@ fi
 
 UNION_AWK_SRC="$(extract_skill_awk_after 'CLOSES_UNION=')" || UNION_AWK_SRC=""
 if [[ -n "$UNION_AWK_SRC" ]]; then
-  ok "Closes 和集合の awk プログラムを SKILL.md のフェンスから抽出できる"
+  ok "Closes 和集合の awk プログラムを finish.sh から抽出できる"
 else
-  bad "Closes 和集合の awk プログラムを SKILL.md から抽出できない（マーカー行の変更時はこの検査を追随させる）"
+  bad "Closes 和集合の awk プログラムを finish.sh から抽出できない（マーカー行の変更時はこの検査を追随させる）"
 fi
 
 if [[ -n "$UNION_AWK_SRC" ]]; then
@@ -463,11 +470,11 @@ JOIN_AWK_SRC="$(awk -v q="'" -v needle='$1 == "C"' '
   }
   extracting == 1 { print }
   END { exit found == 1 ? 0 : 1 }
-' "$SKILL")" || JOIN_AWK_SRC=""
+' "$FINISH")" || JOIN_AWK_SRC=""
 if [[ -n "$JOIN_AWK_SRC" ]]; then
-  ok "Refs 差集合の join awk を SKILL.md から抽出できる"
+  ok "Refs 差集合の join awk を finish.sh から抽出できる"
 else
-  bad "Refs 差集合の join awk を SKILL.md から抽出できない（マーカー行の変更時はこの検査を追随させる）"
+  bad "Refs 差集合の join awk を finish.sh から抽出できない（マーカー行の変更時はこの検査を追随させる）"
 fi
 
 if [[ -n "$JOIN_AWK_SRC" && -n "$UNION_AWK_SRC" ]]; then
@@ -519,46 +526,47 @@ else
   bad "AUTO_CLOSE_UNRELIABLE の状態表が崩れている"
 fi
 
-contains "$SKILL" 'closingIssuesReferences` と本文由来 closing keyword 参照の**和集合**' "Closes 群を API ∪ 本文由来の和集合で定義している"
-contains "$SKILL" 'API_CLOSE_COUNT}" -eq 0 && "${BODY_CLOSE_COUNT}" -gt 0' "警告フラグの条件が API 空 × 本文に keyword"
-contains "$SKILL" "この PR のマージでは Issue が自動クローズされない可能性が高い" "完了報告に自動クローズされない可能性の警告がある"
-contains "$SKILL" "確認済みの事実" "警告が確認済みの事実を書き分けている"
-contains "$SKILL" "推測（原因の断定ではない）" "警告が推測を事実と書き分けている"
-contains "$SKILL" "gh issue close <ISSUE_URL>" "警告に手動クローズ手順がある"
-contains "$SKILL" '本文に closing keyword（`Closes` / `Fixes` / `Resolves` 等）または `Refs` 参照があれば終了しない' "空 API ガードが Closes 本文も救う"
-contains "$SKILL" "同じ Issue を二重に照合しない" "Refs 群を Closes 和集合の差として機械的に取る"
-contains "$SKILL" 'tolower($(0))' "closing keyword 抽出が大文字小文字を問わない"
-contains "$SKILL" '-v repo="${TARGET_REPO}"' "和集合 awk が TARGET_REPO を -v repo で渡す"
+contains "$SKILL" '`closingIssuesReferences` ∪ 本文の closing keyword' "Closes 群を API ∪ 本文由来の和集合で定義している"
+contains "$FINISH" '"$api_close_count" -eq 0 && "$body_close_count" -gt 0' "警告フラグの条件が API 空 × 本文に keyword"
+contains "$GATE_REF" "この PR のマージでは Issue が自動クローズされない可能性が高い" "完了報告に自動クローズされない可能性の警告がある"
+contains "$GATE_REF" "確認済みの事実" "警告が確認済みの事実を書き分けている"
+contains "$GATE_REF" "推測（原因の断定ではない）" "警告が推測を事実と書き分けている"
+contains "$GATE_REF" "gh issue close <ISSUE_URL>" "警告に手動クローズ手順がある"
+contains "$FINISH" '"${API_CLOSES_TOKENS}" "${CLOSES_RAW}"' "空 API ガードが Closes 本文も救う（API 由来と本文由来を 1 つの和集合へ畳み、空 API で打ち切らない）"
+contains "$FINISH" "同じ Issue を二重に照合しない" "Refs 群を Closes 和集合の差として機械的に取る"
+contains "$FINISH" 'tolower($(0))' "closing keyword 抽出が大文字小文字を問わない"
+contains "$FINISH" '-v repo="${TARGET_REPO}"' "和集合 awk が TARGET_REPO を -v repo で渡す"
 contains "$SKILL" "空 API を「閉じない」と読まない" "空 API をコミット経路の非クローズと誤読させない"
-contains "$SKILL" "UNION_RC" "和集合パイプの失敗を握り潰さない"
-contains "$SKILL" "REFS_ONLY_RC" "差集合パイプの失敗を握り潰さない"
+contains "$FINISH" "Closes 和集合の正規化に失敗" "和集合パイプの失敗を握り潰さない"
+contains "$FINISH" "Refs 差集合の正規化に失敗" "差集合パイプの失敗を握り潰さない"
 contains "$SKILL" "参照から検出できる対象 Issue はありません" "keyword も Refs も無い PR は従来どおり正常終了する"
-section_contains "$SKILL" "$STEP2A_HEADING" "既定のマージ経路" "抵触時は既定のマージ経路が安全でないと宣言する"
-section_contains "$SKILL" "$STEP2A_HEADING" "2b の結果をマージの条件にする" "コミット由来の抵触は 2b へ委ねる"
-section_contains "$SKILL" "$STEP2A_HEADING" "2a の抵触で無条件に停止しない" "改題で消せない抵触で永久に赤にならない"
-section_contains "$SKILL" "$STEP2A_HEADING" "NON_TITLE_CONFLICTS" "origin 別の分岐を実行可能な形で書いている"
-contains "$SKILL" "set -o pipefail" "参照抽出パイプの上流失敗を握り潰さない"
+section_contains "$GATE_REF" "$STEP2A_HEADING" "既定のマージ経路" "抵触時は既定のマージ経路が安全でないと宣言する"
+section_contains "$GATE_REF" "$STEP2A_HEADING" "2b の結果をマージの条件にする" "コミット由来の抵触は 2b へ委ねる"
+section_contains "$GATE_REF" "$STEP2A_HEADING" "2a の抵触で無条件に停止しない" "改題で消せない抵触で永久に赤にならない"
+section_contains "$GATE_REF" "$STEP2A_HEADING" "NON_TITLE_CONFLICTS" "origin 別の分岐を script が持つ"
+contains "$FINISH" "NON_TITLE_CONFLICTS" "origin 別の分岐を script が実行する"
+contains "$FINISH" "set -o pipefail" "参照抽出パイプの上流失敗を握り潰さない"
 contains "$SKILL" "SUGGEST" "改題案を報告に含める"
-contains "$SKILL" "抵触なしとして扱わず停止する" "検査不成立を fail-closed で扱う"
-contains "$SKILL" 'case "${GATE_STATUS}" in' "終了コードを実行可能な分岐として書いている"
+contains "$FINISH" "抵触なしとして扱わない" "検査不成立を fail-closed で扱う"
+contains "$FINISH" 'case "$gate_status" in' "終了コードを実行可能な分岐として書いている"
 contains "$SKILL" "INSPECTED" "検査行数を呼び出し側へ返す契約がある"
-contains "$SKILL" "EXPECTED_COMMITS" "コミット取得の切り詰めを検出する"
+contains "$FINISH" "expected_commits" "コミット取得の切り詰めを検出する"
 contains "$SKILL" 'FF_DEV_TOOLKIT_ROOT` を**一度だけ**解決し' "同梱スクリプトのパス解決手順がある"
 contains "$SKILL" "post-merge 検証待ち" "post-merge 検証待ちの判定を定義している"
-contains "$SKILL" 'MERGE_BODY="Refs #${REFS_ISSUE}' "Refs 運用の merge 本文が Refs 参照から組み立てられる"
+contains "$SKILL" '--body "Refs #${REFS_ISSUE}' "Refs 運用の merge 本文が Refs 参照から組み立てられる"
 # 2b が検査した文字列とマージで渡す文字列の間に「人が書き写す」継ぎ目を作らない。
 # ここが literal の例示に戻ると、実際の再発経路（--subject のコピペ）が復活する。
 # 引用は %q ではなく単引用エスケープ関数 q（ロケール非依存）。%q は非 UTF-8 ロケールで
 # 日本語を壊すため置換した（回帰は tests/close-issue-shell-quote が見る）。ここが見るのは
 # 「literal ではなく変数展開で組み立てる」という契約なので、引用方式が変わっても変わらない。
-contains "$SKILL" '--subject %s' "merge コマンドを検査済み変数から組み立てる"
-contains "$SKILL" '"${MERGE_SUBJECT}" "${MERGE_BODY}"' "生成に 2b で検査した変数をそのまま展開する"
+contains "$FINISH" '--subject %s' "merge コマンドを検査済み変数から組み立てる"
+contains "$FINISH" '"$(q "${MERGE_SUBJECT}")" "$(q "${MERGE_BODY}")"' "生成に 2b で検査した変数をそのまま展開する"
 # merge コマンドの生成は手順 7（鮮度照合の後）へ移した。`--match-head-commit` へ渡して
 # よい先端は照合を通った値だけで、2b の時点では確定しないため（Issue #880）。ここが
 # 見ているのは「報告へ貼るのは生成物であって書き写しではない」という契約で、
 # 生成の位置が変わってもその契約は変わらない。
-contains "$SKILL" "手順 7 の printf が出力した gh pr merge コマンドをそのまま貼る" "報告テンプレートが生成物を貼る形になっている"
-section_contains "$SKILL" "$STEP2B_HEADING" '文字列を打ち直さずそのまま手順 7 へ持ち越す' "2b が検査した文字列が打ち直されずに生成側へ渡る"
+contains "$SKILL" "finish.sh precheck が出力した MERGE_COMMAND をそのまま貼る" "報告テンプレートが生成物を貼る形になっている"
+section_contains "$GATE_REF" "$STEP2B_HEADING" '文字列を打ち直さずそのまま手順 7 へ持ち越す' "2b が検査した文字列が打ち直されずに生成側へ渡る"
 contains "$SKILL" "書き写さない" "報告の merge コマンドを書き写させない"
 contains "$SKILL" "gh issue view 46 --json state" "マージ直後の read-back を手順として残す"
 contains "$SKILL" "read-back は検査を追加しても省略しない" "検査追加を理由に実測を省かせない"
@@ -571,10 +579,10 @@ contains "$SKILL" 'gh issue edit "$ISSUE_URL" --body-file' "チェックボッ�
 # AC 文言基準の照合が「達成しているのに未達」と誤検知する。判定の分岐・解消手順・
 # 方向の限定（AC を弱めて緑にする迂回の禁止）・手順 5 例外の列挙を固定する。
 contains "$SKILL" '「未達」と「AC が実装より古い」を区別する' "AC 照合が未達と AC 陳腐化を区別する"
-contains "$SKILL" 'Issue 本文の該当 AC を実装に合わせて更新（変わった理由を 1 行添える）してから再照合' "AC 陳腐化は本文更新 + 再照合で解消する"
-contains "$SKILL" 'AC を弱める方向の書き換えには使わない' "AC 更新経路の方向限定（弱化への迂回を禁止）"
-contains "$SKILL" '更新は手順 5 と同じ競合確認手順' "AC 更新が手順 5 の競合確認手順に接続されている"
-contains "$SKILL" '例外は、手順 3 の「AC が実装より古い」判定で行う AC 更新と、手順 4 でユーザーがスコープ変更を明示した場合の AC 更新の 2 経路のみ' "本文不変規則の例外が 2 経路に限定列挙されている"
+contains "$AC_REF" 'Issue 本文の該当 AC を実装に合わせて更新（変わった理由を 1 行添える）してから再照合' "AC 陳腐化は本文更新 + 再照合で解消する"
+contains "$AC_REF" 'AC を弱める方向の書き換えには使わない' "AC 更新経路の方向限定（弱化への迂回を禁止）"
+contains "$AC_REF" '更新は手順 5 と同じ競合確認手順' "AC 更新が手順 5 の競合確認手順に接続されている"
+contains "$SKILL" '例外は手順 3 の「AC が実装より古い」と手順 4 のスコープ変更' "本文不変規則の例外が 2 経路に限定列挙されている"
 
 # ---- git-workflow.md の契約 --------------------------------------------------
 echo
@@ -604,10 +612,10 @@ contains "$REVIEW_POLICY" 'その場で Issue 本文の該当 AC も更新する
 echo
 echo "-- 2 文書の検査面パリティ --"
 SURFACE_MARKER='"commit-body:" + .oid[0:7]'
-contains "$SKILL" "$SURFACE_MARKER" "SKILL.md の検査面がコミット本文を含む"
+contains "$FINISH" "$SURFACE_MARKER" "finish.sh の検査面がコミット本文を含む"
 contains "$WORKFLOW" "$SURFACE_MARKER" "git-workflow.md の検査面がコミット本文を含む"
 HEADLINE_MARKER='"commit:" + .oid[0:7]'
-contains "$SKILL" "$HEADLINE_MARKER" "SKILL.md の検査面がコミット件名を含む"
+contains "$FINISH" "$HEADLINE_MARKER" "finish.sh の検査面がコミット件名を含む"
 contains "$WORKFLOW" "$HEADLINE_MARKER" "git-workflow.md の検査面がコミット件名を含む"
 
 echo

@@ -34,6 +34,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 
 SKILL="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
+# checks の有無分岐と鮮度照合の再実行条件の散文は close-issue の条件付き reference（merge-gate.md）に
+# あり、判定そのもの（statusCheckRollup の件数・--watch --fail-fast・checks 失敗での停止）は
+# scripts/finish.sh precheck が実行する。針は規定が置かれた先へ張る。
+GATE_REF="$PLUGIN_ROOT/skills/close-issue/references/merge-gate.md"
+FINISH="$PLUGIN_ROOT/scripts/finish.sh"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 
 # shellcheck source=../lib/section-scope.sh
@@ -78,59 +83,56 @@ section_contains() {
   fi
 }
 
-for file in "$SKILL" "$WORKFLOW"; do
+for file in "$SKILL" "$GATE_REF" "$FINISH" "$WORKFLOW"; do
   if [[ ! -s "$file" ]]; then
     echo "  ✗ 必須ファイルが無い、または空: $file" >&2
     echo "✗ no-checks-merge-basis-contract verify: 必須ファイル欠落のため中断" >&2
     exit 1
   fi
 done
-ok "必須ファイルが 2 件とも存在し非空"
+ok "必須ファイルが 4 件とも存在し非空"
 
 echo
-echo "-- close-issue/SKILL.md 手順 7: checks 有無の分岐 --"
+echo "-- close-issue references/merge-gate.md（手順 7）: checks 有無の分岐 --"
 
-section_contains "$SKILL" "$SKILL_HEADING" \
+section_contains "$GATE_REF" "$SKILL_HEADING" \
   'この PR に登録された checks は無い。マージ可否はローカル全件ゲート + 鮮度照合で判定する' \
   "statusCheckRollup 空配列時の完了報告文言がある"
 
-section_contains "$SKILL" "$SKILL_HEADING" \
+section_contains "$GATE_REF" "$SKILL_HEADING" \
   '（PR トリガーの CI を持たない' \
   "空配列の分岐が CI を持たないリポジトリの形である旨がある"
 
-section_contains "$SKILL" "$SKILL_HEADING" \
+section_contains "$GATE_REF" "$SKILL_HEADING" \
   'リポジトリ）、checks の完了を待たずに次へ進み' \
   "空配列時に checks の完了を待たない旨を明記している"
 
-section_contains "$SKILL" "$SKILL_HEADING" \
+section_contains "$GATE_REF" "$SKILL_HEADING" \
   '`statusCheckRollup` が**非空**の場合（PR トリガーの CI がある既定の形）は、全 checks の完了と' \
   "非空時（既定）は全 checks の完了・成功確認を維持する旨がある"
 
-section_contains "$SKILL" "$SKILL_HEADING" \
+section_contains "$GATE_REF" "$SKILL_HEADING" \
   '対象 PR に checks が登録されているかを先に確認します。**既定は PR トリガーの CI が' \
   "分岐の既定が PR トリガーの CI がある形である旨がある"
 
-section_contains "$SKILL" "$SKILL_HEADING" \
+section_contains "$GATE_REF" "$SKILL_HEADING" \
   '**checks の成功がマージの根拠で、ローカルの全件ゲートはリリース前（タグ / Release の' \
   "checks がある既定ではローカル全件をリリース前と契約面の変更時に限る旨がある"
 
-section_contains "$SKILL" "$SKILL_HEADING" \
-  "gh pr view \"\${PR_NUMBER}\" --json statusCheckRollup" \
-  "statusCheckRollup の判定コマンドがある"
+file_contains_count "$FINISH" 'statusCheckRollup,' 1 \
+  "finish.sh precheck が statusCheckRollup を PR の取得項目に含める"
 
-section_contains "$SKILL" "$SKILL_HEADING" \
-  "(.statusCheckRollup // []) | length" \
+file_contains_count "$FINISH" '(.statusCheckRollup // []) | length' 1 \
   "null を空扱いにする jq 式で件数を取っている"
 
-section_contains "$SKILL" "$SKILL_HEADING" \
-  '= "0"' \
+file_contains_count "$FINISH" '== "0"' 1 \
   "checks 不在の判定を件数 0 で行っている"
 
-section_contains "$SKILL" "$SKILL_HEADING" \
+section_contains "$GATE_REF" "$SKILL_HEADING" \
   '--watch --fail-fast' \
   "非空時は --watch --fail-fast で完了を待つ"
 
-section_contains "$SKILL" "$SKILL_HEADING" \
+section_contains "$GATE_REF" "$SKILL_HEADING" \
   'マージへ進まない' \
   "checks 失敗時にマージへ進まない旨がある"
 
@@ -139,17 +141,17 @@ file_contains_count "$SKILL" \
   "完了報告テンプレート 2 種の両方に CI checks 欄がある"
 
 echo
-echo "-- close-issue/SKILL.md 手順 7: 判定不能時の再実行条件 --"
+echo "-- close-issue references/merge-gate.md（手順 7）: 判定不能時の再実行条件 --"
 
-section_contains "$SKILL" "$FRESHNESS_HEADING" \
+section_contains "$GATE_REF" "$FRESHNESS_HEADING" \
   '鮮度照合が判定不能（`FRESH_STATUS=2`）で、かつ `FRESH_REASON` が' \
   "判定不能時の全件ゲート再実行が FRESH_REASON 条件付きで書かれている"
 
-section_contains "$SKILL" "$FRESHNESS_HEADING" \
+section_contains "$GATE_REF" "$FRESHNESS_HEADING" \
   '**ただし `FRESH_REASON` が「記録が部分実行である」で、かつ checks が非空で全件成功した回に限り、リリース前と契約面の変更時を除き再実行しません**' \
   "再実行しない例外は部分実行の記録 + checks 全件成功に限る旨がある"
 
-section_contains "$SKILL" "$FRESHNESS_HEADING" \
+section_contains "$GATE_REF" "$FRESHNESS_HEADING" \
   '「汚れた木で測った / 記録が無い」は checks が成功していても従来どおり全件ゲートを再実行します' \
   "汚れた木・記録無しは checks 成功でも全件を再実行する旨がある（例外を広げない）"
 

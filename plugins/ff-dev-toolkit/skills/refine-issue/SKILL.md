@@ -5,9 +5,7 @@ description: 既存 GitHub Issue の仕様曖昧さを6観点 + コードベー�
 
 # /refine-issue — 既存 Issue の仕様曖昧さを検出・refine
 
-既存の GitHub Issue を入力として、`/create-issue` 手順 4 の粒度チェックをベースに refine 用途向けへ項目構成を再編した観点で受け入れ条件を検証し、コードベース探索によって「Issue が触れていない論点」を洗い出します。検出した曖昧さは trivial / architectural / critical の 3 階層に分類し、階層に応じて Issue body 更新・コメント投稿・ラベル付与のいずれかを実行します。
-
-`/create-issue` が「新規 Issue を作る前のゲート」なのに対し、`/refine-issue` は「既に立った曖昧 Issue を事後に磨く」役割を担います。
+既存の GitHub Issue を入力に、`/create-issue` 手順 4 の粒度チェックを refine 用途向けへ再編した観点で受け入れ条件を検証し、コードベース探索で「Issue が触れていない論点」を洗い出します。検出した曖昧さは trivial / architectural / critical の 3 階層に分類し、階層に応じて Issue body 更新・コメント投稿・ラベル付与のいずれかを実行します（`/create-issue` は起票前のゲート、本スキルは既に立った Issue を事後に磨く）。
 
 ## プラグインルートの固定（必須）
 
@@ -62,23 +60,9 @@ fi
 
 ### 1. 入力パース
 
-引数を 3 形式のいずれかとして正規化し、`num`（issue 番号）と `repo`（`owner/name` 形式）を確定します:
+引数を数字のみ（`repo` は `gh repo view --json nameWithOwner --jq .nameWithOwner`）・URL（`github.com/<owner>/<repo>/issues/<num>` をパース）・`owner/repo#N`（`#` で分割）の 3 形式のいずれかとして正規化し、`num` と `repo`（`owner/name`）を確定します。GitHub Enterprise Server (`*.ghe.com` 等) のサポートは MVP では対象外。
 
-```text
-# 形式 1: 数字のみ
-  → num=$1, repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
-
-# 形式 2: URL
-  → 正規表現 ".*github\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/issues/(?<num>\d+)" でパース
-  → repo="${owner}/${repo}"
-
-# 形式 3: owner/repo#N
-  → "#" で split: repo=$(前半), num=$(後半)
-```
-
-GitHub Enterprise Server (`*.ghe.com` 等) のサポートは MVP では対象外。
-
-引数なし・無効な形式の場合はエラー表示して停止。
+引数なし・無効な形式の場合はエラー表示して停止。以後の `gh` コマンド（`issue view` / `issue edit` / `issue comment` / `label create`）にはすべて `--repo <owner/repo>` を渡す（クロスリポジトリ対応）。
 
 ### 2. Issue 取得
 
@@ -92,15 +76,7 @@ gh issue view <num> --repo <owner/repo> --json number,title,body,labels,comments
 
 ### 3. 参照文書の自動提案
 
-Issue body の内容から、関連しそうな参照文書を提案します（`/create-issue` 同様）:
-
-| 内容のキーワード | 必須参照 | 推奨参照 |
-| ---- | -------- | -------- |
-| 機能追加・新規 API | MASTER, ARCHITECTURE, DOMAIN | PATTERNS, TESTING |
-| バグ・不具合 | 関連 Issue, PATTERNS | TESTING |
-| リファクタリング | ARCHITECTURE, PATTERNS | TESTING |
-| インフラ・デプロイ | MASTER, DEPLOYMENT | ARCHITECTURE |
-| ドキュメント | MASTER | 更新対象文書 |
+Issue body の内容から、関連しそうな参照文書を提案します。タスク種別ごとの必須・推奨参照は [git-workflow.md](../../docs-template/05-operations/deployment/git-workflow.md) の「タスク種別×参照文書」を正とします。
 
 判定が難しい場合は、利用中のホストの質問機能または通常の対話で確認します。
 
@@ -115,20 +91,7 @@ Issue body の内容から、関連しそうな参照文書を提案します（
 - [ ] **ストーリー有無**: ユーザーストーリー（ペルソナ/価値）またはジョブストーリー（状況/結果）が言語化されているか
 - [ ] **AC の GWT 形式**: 受け入れ条件が「振る舞い（Given-When-Then）」+「Definition of Done」で記述されているか
 
-違反箇所はリストアップして、改善案を併記します:
-
-```text
-⚠️ 6 観点バリデーション結果
-
-具体性違反 (2 件):
-- 「正しくバリデーションされること」
-  → 改善案: 「メールアドレスが RFC 5322 に準拠していない場合、422 エラーを返すこと」
-- 「適切にエラーハンドリングすること」
-  → 改善案: 「DB 接続エラー時に 503 ステータスとリトライ可能なレスポンスを返すこと」
-
-単一責務違反 (1 件):
-- 認証機能の追加とログ出力強化が同居 → 2 Issue に分割を推奨
-```
+違反箇所はリストアップし、改善案（曖昧な文言 → 検証可能な書き換え）を併記します。
 
 #### `/create-issue` 手順 4 との対応
 
@@ -148,9 +111,9 @@ Issue body の内容から、関連しそうな参照文書を提案します（
 | 具体値の出所が確認されているか | 非継承 |
 | 他リポジトリの台帳 ID を修飾しているか | 非継承 |
 
-観点「受け入れ条件の明示」は `/create-issue` 側に対応が無い本スキル固有の追加です。表で「非継承」としている項目は、いずれも**書く値・書く対象の出所を着手前に確定させる**ことを求めるもので、その確定の責務が起票ゲート側にあるためです（「引用した文言・アンカー・パス・行番号が実在するか」も同様に、引用を本文へ書く前の実在確認であって、既に書かれた文言の曖昧さの是正ではないため非継承）。本スキルは既に立った Issue の記述の曖昧さを扱います。ただし refine の結果として**本文へ新たに引用（既存の文言・アンカー・パス・行番号）を書き足す**場合は、その引用に限り `/create-issue` 手順 4 の「引用した文言・アンカー・パス・行番号が実在するか」がそのまま適用されます（非継承にしているのは既存本文の引用を洗い直す責務であって、自分が新しく書く引用の実在確認を免除する意味ではありません）。
+観点「受け入れ条件の明示」は `/create-issue` 側に対応が無い本スキル固有の追加です。「非継承」の項目は書く値・書く対象の出所を着手前に確定させるもので、その責務は起票ゲート側にあります。ただし refine で本文へ新たに引用（既存の文言・アンカー・パス・行番号）を書き足す場合は、その引用に `/create-issue` 手順 4 の「引用した文言・アンカー・パス・行番号が実在するか」をそのまま適用します。
 
-`/create-issue` 手順 4 の項目を増減・改名したときは、この表の左列も同時に直してください。片方だけを更新したドリフトは `tests/issue-label-contract/verify.sh` が実体同士を突き合わせて red にします（表の左列と同手順の項目名の集合が一致しない場合、および表そのものが消えた場合）。
+`/create-issue` 手順 4 の項目を増減・改名したときは、この表の左列も同時に直します（`tests/issue-label-contract/verify.sh` が集合の不一致と表の消失を red にする）。
 
 ### 5. コードベース探索
 
@@ -235,9 +198,11 @@ else:
     → Architectural アクション実行（質問コメント）
 ```
 
+投稿するコメントには `🛑 /refine-issue:` / `🤖 /refine-issue` / `❓ /refine-issue` の Bot 識別プレフィックスを必ず付け、人間のコメントと区別します。
+
 #### Critical → `needs-spec` ラベル付与 + 停止
 
-- `needs-spec` ラベルが対象 repo に存在しなければ作成（冪等化のため `--force` 推奨）:
+- `needs-spec` ラベルが対象 repo に存在しなければ作成（冪等化のため `--force` 必須）:
 
   ```bash
   gh label create needs-spec --repo <owner/repo> \
@@ -275,22 +240,7 @@ Issue body 全体を破壊しないよう、以下の手順で更新します:
 
 Markdown 本文へ script で文字列パッチを当てる場合は [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
 
-補完内容を注記コメントで通知:
-
-```text
-🤖 /refine-issue による自動補完
-
-以下の論点を trivial 判定で自動補完しました:
-
-- 受け入れ条件「正しくバリデーション」→ 「RFC 5322 準拠チェック失敗時に 422 を返す」に具体化
-- 参照文書 ARCHITECTURE.md へのリンクを追加
-- テストファイル配置を `*.test.ts` 規約で記載
-- AC を「振る舞い（Given-When-Then）＋ Definition of Done」形式に再構成
-
-補完内容が原文意図とズレている場合は修正してください。
-```
-
-`gh issue comment <num> --repo <owner/repo> --body "<上記コメント>"` で投稿。
+補完内容は `🤖 /refine-issue による自動補完` で始まる注記コメント（trivial 判定で補完した論点の箇条と、原文意図とズレていれば修正を求める 1 文）にまとめ、body 用とは別に `mktemp` で作ったコメント専用の一時ファイルへ書いて `gh issue comment <num> --repo <owner/repo> --body-file <その一時ファイル>` で投稿します（body 用の `/tmp/refine-issue-<num>.md` を渡すと本文全体をコメントしてしまう）。
 
 #### Architectural → 非同期質問コメント
 
@@ -301,13 +251,9 @@ Issue body は更新せず、未解決論点をコメントで投稿:
 
 以下、複数の妥当な選択肢があります。意図を教えてください:
 
-1. 認証方式
-   - A) JWT（既存 `lib/auth/jwt.ts` 踏襲）
-   - B) Session ベース（新規実装）
-
-2. エラーレスポンス形式
-   - A) RFC 7807 problem+json
-   - B) 既存の `{ error, message }` 形式
+1. <論点>
+   - A) <選択肢（踏襲元の既存実装があれば併記）>
+   - B) <選択肢>
 
 決定が出たら Issue body に追記し、再度 `/refine-issue <num>` を走らせて他の論点について refine を続けてください（注: 現状、過去コメントの自動取り込みはサポートしていません）。
 ```
@@ -323,9 +269,7 @@ Issue body は更新せず、未解決論点をコメントで投稿:
 
 ### 8. Issue body 更新
 
-Trivial の自動補完がある場合のみ、`gh issue edit <num> --repo <owner/repo> --body-file <tempfile>` で本文を更新（手順 7 の Trivial サブセクションで実行済み）。
-
-**critical 検出時は body 更新しない**: 仕様未策定の状態で部分補完を残すと、refine 済みと誤認されるリスクを避けるため（手順 7 のゲート制御で保証）。
+body の更新は手順 7 の Trivial で実行済みで、critical 検出時は手順 7 のゲートにより更新しません（仕様未策定のまま部分補完を残すと refine 済みと誤認されるため）。
 
 ### 9. 完了報告
 
@@ -355,43 +299,6 @@ URL: <Issue URL>
 URL: <Issue URL>
 ```
 
-## 重要ルール
+## Out of Scope
 
-- **判断が曖昧な論点は重い階層に倒す**: Trivial vs Architectural で迷ったら Architectural、Architectural vs Critical で迷ったら Critical。事故防止優先
-- **Critical を検出したら他の階層処理を実行しない**: 手順 7 のゲート制御で保証。仕様未策定状態で部分補完を残すと「refine 済み」と誤解される
-- **既存 Issue body を破壊しない**: 自動補完は原則追記、矛盾解消が必要な場合のみ置換。原文の構造（見出し・順序）は保持
-- **`needs-spec` ラベルが存在しなければ作成する**: skill 内で `gh label create --repo <owner/repo> ... --force` を実行（冪等化のため `--force` 必須）
-- **closed Issue はホストの質問機能または通常の対話で続行確認する**: ユーザーが明示的に Yes と答えた場合のみ続行
-- **クロスリポジトリ対応**: 全 `gh` コマンド（`issue view`, `issue edit`, `issue comment`, `label create`）に必ず `--repo <owner/repo>` を渡す
-- **コメント投稿時は必ず Bot 識別を含める**: 「🤖 /refine-issue による...」「❓ /refine-issue が判断つかない論点（...）」「🛑 /refine-issue: 仕様策定が必要...」のようにプレフィックスを付け、人間のコメントと区別
-- **mention 対象が bot の場合は skip**: assignee / author が `[bot]` suffix の場合はフォールバック規則に従う
-
-## 使用する gh CLI コマンド一覧
-
-保守時に CLI 仕様変更があった場合の更新ポイントを集約:
-
-| 用途 | コマンド |
-| ---- | -------- |
-| Issue 取得 | `gh issue view <num> --repo <owner/repo> --json number,title,body,labels,comments,state,url,assignees,author` |
-| Issue body 更新 | `gh issue edit <num> --repo <owner/repo> --body-file <tempfile>` |
-| ラベル付与 | `gh issue edit <num> --repo <owner/repo> --add-label <label>` |
-| ラベル作成（冪等） | `gh label create <label> --repo <owner/repo> --description "..." --color <hex> --force` |
-| コメント投稿 | `gh issue comment <num> --repo <owner/repo> --body-file <tempfile>` |
-| repo 確定 | `gh repo view --json nameWithOwner --jq .nameWithOwner` |
-
-## Out of Scope（このコマンドの範囲外）
-
-以下は別コマンド・別 issue で扱います:
-
-- Orchestrator ループ（複数 Issue を順次 refine する `/loop` 連携）
-- 司令ファイル（`.claude/orchestrator/mission.md`）+ PreCompact hook 連携
-- 複数 Issue を一括 refine する batch モード
-- `gh issue list --label needs-refinement` での自動対象抽出
-- Architectural 質問への返信を picking up して continuation する機能（過去コメントを自動で読んで反映する機能。現状は再度 `/refine-issue` を手動実行）
-- GitHub Enterprise Server (`*.ghe.com`) サポート
-
-## 関連
-
-- `/create-issue` コマンド（本プラグイン同梱）: バリデーションのベース（項目ごとの対応は手順 4 の対応表が正）
-- `docs/MASTER.md`: 7 文書体系の根拠（観点リスト自体は `/create-issue` の手順 4 が正規ソース）
-- `docs/03-implementation/PATTERNS.md`: 既存パターンとの整合
+複数 Issue の順次・一括 refine（`/loop` 連携・batch モード・`needs-refinement` ラベルからの自動抽出）、司令ファイル + PreCompact hook 連携、Architectural 質問への返信の自動取り込み（現状は再度 `/refine-issue` を手動実行）、GitHub Enterprise Server は範囲外です。

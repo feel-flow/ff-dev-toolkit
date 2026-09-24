@@ -368,7 +368,8 @@ $users
 EOF
   # consumer 名簿を件数 + ファイル名で pin する（1 件でも raw init + config へ戻れば赤。
   # 移行を増やしたらこの名簿も更新する）
-  expected_users="adapter-argv-limit/verify.sh
+  expected_users="ace-curate-commit/verify.sh
+adapter-argv-limit/verify.sh
 adapter-base-ref-freshness/verify.sh
 adapter-model-args/verify.sh
 adapter-prompt-guard/verify.sh
@@ -380,6 +381,7 @@ claude-hooks-path/verify.sh
 decision-tree/verify.sh
 docs-gates-runtime/ci-example-cases.sh
 effort-contract/verify.sh
+finish/verify.sh
 guard-checkout-restore/verify.sh
 guard-review-in-flight/verify.sh
 markdownlint-selftest/verify.sh
@@ -396,6 +398,7 @@ multi-agent-serialization/verify.sh
 multi-agent-skip-poisoned-cli/verify.sh
 multi-agent-stale-outputs/verify.sh
 multi-agent-timeout/verify.sh
+mutation-harness/verify.sh
 release-required-selftest/verify.sh
 review-capture-fail-loud/verify.sh
 review-diff-scope/verify.sh
@@ -408,6 +411,7 @@ shared-version-convergence/cases/claim-helper-failures.sh
 shared-version-convergence/cases/merge-races.sh
 shared-version-convergence/verify.sh
 sync-forbidden-patterns/verify.sh
+sync-sha-contract/release-runtime.sh
 sync-sha-contract/reuse-runtime.sh
 sync-sha-contract/src-sha-runtime.sh
 update-check/verify.sh"

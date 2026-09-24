@@ -115,7 +115,7 @@
 #     MULTI_AGENT_MODEL_CODEX_CLI=<model>     モデルを明示する
 #     MULTI_AGENT_CODEX_PROFILE=<profile>     ~/.codex/<name>.config.toml を層に重ねる
 #     MULTI_AGENT_CODEX_REASONING_EFFORT=<effort>  effort だけを明示する
-#   （両者は同時指定できない。詳細は skills/multi-review/SKILL.md の「モデル選択」）
+#   （両者は同時指定できない。詳細は skills/multi-review/references/model-selection.md）
 #
 #   旧ラッパーの env は写す（黙殺しない。1 行通知する）:
 #     CODEX_MODEL             → MULTI_AGENT_MODEL_CODEX_CLI

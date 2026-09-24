@@ -12,7 +12,7 @@
 - `reset_model_args` を `add_model_arg` の後に置いて、組み立てた値を消す
 - 値の語分割（`"model with spaces"` が 2 引数に割れる）
 
-いずれも成果物からもログからも判別できない沈黙した後退なので、argv を実測して契約を固定する。**環境変数名はこの suite にリテラルで書いてある** — これが `skills/multi-review/SKILL.md` の表と実装の間の突き合わせになり、実装側だけ名前を変えると red になる。
+いずれも成果物からもログからも判別できない沈黙した後退なので、argv を実測して契約を固定する。**環境変数名はこの suite にリテラルで書いてある** — これが `skills/multi-review/references/model-selection.md` の表と実装の間の突き合わせになり、実装側だけ名前を変えると red になる。
 
 実 CLI は起動しない。`PATH` の先頭に argv を記録するだけの stub を置くので、課金もネットワークアクセスも発生しない。
 

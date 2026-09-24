@@ -16,11 +16,13 @@
 # 主張であるときだけ実測を要求し、設計方針・スコープ判断の却下には要求しない）が
 # 消えると、全却下への一律実測要求へ侵食してレビュー速度を落とすため、絞り込み句も
 # 針で固定する。消費側は multi-review の「PR Review Response Policy に従い…自動修正
-# します」の委譲行 1 本を全文針で見る（分類表をインライン展開している multi-review が
+# します」の委譲行 1 本を全文針で見る（multi-review が
 # 採否処理をポリシーへ委譲する記述を保てているか。ポリシー文書へのファイルリンクの
 # 有無までは固定しない）。
 #
 # 外部コマンド・一時領域不要の静的検査。
+#
+# 空振り検出: multi-review の本線を 20,001 B にすると 51 件中 1 件（ちょうど 20,000 B は緑）、3-7 の収束判定の正本リンクから節アンカーを外すと 51 件中 1 件、references/model-selection.md を空にすると 51 件中 1 件、本線から references/ignore-paths.md を読む条件の行を消すと 51 件中 1 件が赤になる（2026-09-24 実測。本線が上限を超える・wc が数値を返さない・外した規定へのリンクや reference が名前だけ残って中身が無い形を「契約あり」へ倒さない）。
 
 set -euo pipefail
 
@@ -157,12 +159,18 @@ echo "== fix ループの収束判定（Issue #877 / ADR-040） =="
 
 contains "$ORCHESTRATION" "### fix ループの収束判定と打ち切り" \
   "オーケストレーション文書が収束判定節を持つ"
-contains "$ORCHESTRATION" "上限は 3 回転" \
-  "fix ループ上限が 3 回転"
+contains "$ORCHESTRATION" "上限は 2 巡" \
+  "fix ループ上限が 2 巡"
+contains "$ORCHESTRATION" "3 巡目のレビュー起動は PreToolUse hook \`guard-review-in-flight.sh\` と \`scripts/multi-review.sh\`" \
+  "収束判定の正本が、上限を hook と全ホスト共通の multi-review.sh の巡回カウンタで機械的に止めることを書いている"
+contains "$ORCHESTRATION" "2 巡目の fix の確認は、親の直読と対象 suite の再実行で行い、結果を PR 本文へ残す" \
+  "収束判定の正本が、2 巡目の fix の確認をレビュアーの再起動ではなく直読 + suite の再実行で行うと書いている（ADR-064）"
 contains "$ORCHESTRATION" "既出の Critical / Warning を全解消" \
   "停止条件が既出 Critical / Warning の全解消を含む"
-contains "$ORCHESTRATION" "3 回転終了時点でも未解消または新規の Critical / Warning がある場合は、4 回転目の自動修正を開始しない" \
-  "上限到達時は 4 回転目を自動開始せず設計を疑う"
+contains "$ORCHESTRATION" "2 巡目の fix の後に未解消または新規の Critical / Warning が残っても、3 巡目のレビューは起動しない" \
+  "上限到達時は 3 巡目を起動せず設計を疑う"
+contains "$ORCHESTRATION" "\`/out-of-scope-issue\` の bundle 統合へ流す" \
+  "上限到達時の残件（Critical / Warning 以外）を bundle 統合へ流す"
 contains "$ORCHESTRATION" "上限に達する前に、ループが伸びている原因を問う" \
   "収束判定の正本に、上限到達前に原因を問うトリガーがある"
 contains "$ORCHESTRATION" "追加上限は Critical / Warning の解消義務を免除しない" \
@@ -177,12 +185,13 @@ contains "$MULTI_REVIEW" "green（全指摘ゼロ）を待たない" \
   "multi-review が green 待ちではないことを実行時要約に持つ"
 contains "$ORCHESTRATION" '`code-simplification` は既定の非ブロック観点のまま' \
   "code-simplification の非ブロック維持を明示"
-contains "$MULTI_REVIEW" "上限に達する前に、ループが伸びている原因を問う" \
-  "multi-review の要約に、上限到達前に原因を問うトリガーがある"
-contains "$MULTI_REVIEW" "追加上限は Critical / Warning の解消義務を免除しない" \
-  "multi-review の要約に、追加上限が解消義務を免除しないことが書いてある"
-contains "$MULTI_REVIEW" "上限は 3 回転" \
-  "multi-review が 3 回転上限を実行時要約として持つ"
+# 「上限に達する前に原因を問う」「追加上限は解消義務を免除しない」は正本（上の $ORCHESTRATION の
+# 針）だけが持つ。multi-review は本線を 20 KB 以下へ畳んだときに要約の複製を外し、正本リンクを残した。
+# リンクが切れると外した 2 規定へ到達できなくなるので、節アンカーまで含めて固定する。
+contains "$MULTI_REVIEW" "multi-cli-review-orchestration.md#fix-ループの収束判定と打ち切り" \
+  "multi-review の要約が収束判定の正本節へリンクしている"
+contains "$MULTI_REVIEW" "上限は 2 巡" \
+  "multi-review が 2 巡上限を実行時要約として持つ"
 contains "$MULTI_REVIEW" "独立 Warning のパーキングはしない" \
   "multi-review がパーキング不採用を実行時に持つ"
 
@@ -209,6 +218,34 @@ contains "$MULTI_REVIEW" "subagent が無いホストでは、従来どおりメ
   "subagent 非対応ホストの fallback 分岐を保持"
 contains "$MULTI_REVIEW" "その応答を成功として扱わず、下の fallback（メイン読み込み）で分析をやり直します" \
   "空・形式違反の subagent 応答を成功扱いしないガードを保持"
+
+echo
+echo "== multi-review 本線のバイト上限と条件付き references =="
+# 本線は毎回読まれるので、規定は正本へのリンクで畳み、推論で導出できない事実だけを残す
+# （workflow-principles.md 原則4）。畳んだ本線が再び膨らむのを止める。wc が数値を返さない
+# 場合も赤にする（fail-closed）。
+SKILL_MAX_BYTES=20000
+if ! skill_bytes="$(wc -c <"$MULTI_REVIEW" | tr -d '[:space:]')"; then
+  skill_bytes="(wc 失敗)"
+fi
+if [[ "$skill_bytes" =~ ^[0-9]+$ ]] && ((skill_bytes <= SKILL_MAX_BYTES)); then
+  ok "multi-review 本線のバイト数: ${skill_bytes} B（上限 ${SKILL_MAX_BYTES} B）"
+else
+  bad "multi-review 本線のバイト数が上限を超えた、または測れない: \"${skill_bytes}\" B（上限 ${SKILL_MAX_BYTES} B）"
+fi
+# 本線から外した 2 節（モデル選択・パス除外）は、読む条件の 1 行から辿れること。
+REVIEW_REFS_DIR="$(dirname "$MULTI_REVIEW")/references"
+for _ref in model-selection ignore-paths; do
+  if [[ -s "$REVIEW_REFS_DIR/${_ref}.md" ]]; then
+    ok "references/${_ref}.md が実在し非空"
+  else
+    bad "references/${_ref}.md が無いか空です"
+  fi
+done
+contains "$MULTI_REVIEW" "モデルを明示指定するときは [references/model-selection.md](references/model-selection.md) を読む" \
+  "本線がモデル選択の reference を読む条件を持つ"
+contains "$MULTI_REVIEW" "常駐ツールが書き込むリポジトリでリビジョンガードが毎回発火するときは [references/ignore-paths.md](references/ignore-paths.md) を読む" \
+  "本線がパス除外の reference を読む条件を持つ"
 
 echo
 echo "結果: PASS=${PASS} FAIL=${FAIL}"

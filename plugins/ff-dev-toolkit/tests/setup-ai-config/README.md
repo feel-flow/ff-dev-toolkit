@@ -40,10 +40,11 @@ tests/setup-ai-config/
 └── fixtures/
     ├── input/
     │   └── docs/MASTER.md     # サンプル入力（索引/技術スタック/アーキ/ビルド/Git/確認プロトコル）
-    └── expected/
-        ├── CLAUDE.md
-        ├── AGENTS.md
-        └── .github/copilot-instructions.md
+    ├── expected/
+    │   ├── CLAUDE.md
+    │   ├── AGENTS.md
+    │   └── .github/copilot-instructions.md
+    └── assembled/             # 組み立て後テンプレの golden（CLAUDE.md.txt / copilot-instructions.md.txt / AGENTS.md.txt）
 ```
 
 ## verify.sh が検証すること
@@ -51,7 +52,7 @@ tests/setup-ai-config/
 `verify.sh` は**2種類の対象**を検査し、いずれかで欠落があれば非ゼロ終了します:
 
 1. **期待生成物 fixture**（`fixtures/expected/`）— スナップショットの自己一貫性（3ファイル × 5境界）
-2. **Skill 定義のツール別テンプレート**（`skills/setup-ai-config/SKILL.md` の各生成テンプレ節）— 生成器が fixture から drift していないこと。fixture は手書きで自己一貫のため、これが無いとテンプレから境界を落としても fixture だけは PASS してしまう（Issue #84 が直したのはまさにこの非対称な欠落）
+2. **Skill 定義のツール別テンプレート**（`skills/setup-ai-config/SKILL.md` の各生成テンプレ節）— 生成器が fixture から drift していないこと。fixture は手書きで自己一貫のため、これが無いとテンプレから境界を落としても fixture だけは PASS してしまう（この検査はまさにこの非対称な欠落を塞ぐために入った）。境界4・5と実測の記録先は SKILL.md の「3 ファイル共通ブロック」節に 1 本だけあり、各ツール節には差し込み行 `<!-- setup-ai-config:common-block -->` が 1 行ある。照合先は、差し込み行を共通ブロックのフェンス本文で置き換えた**組み立て後の生成器出力**で、差し込み行が 1 行でない・節のコードフェンスが 1 本でない・共通ブロックのフェンスが抽出できない場合は赤になる。組み立て結果は固定アンカーに加えて `fixtures/assembled/*.txt`（共通ブロック化する前のテンプレ本文そのもの）と完全一致で照合するので、アンカーの無い文の削除・改変も赤になる
 
 あわせて期待生成物が入力（`TaskFlow`）から乖離していないことも検証します。
 
@@ -67,5 +68,5 @@ tests/setup-ai-config/
 bash plugins/ff-dev-toolkit/tests/setup-ai-config/verify.sh
 ```
 
-コマンド定義（`setup-ai-config.md`）のテンプレート、または生成手順の**節番号**を変更したら、
-期待生成物 fixture と本スクリプト（`BLOCKS` の節見出し regex を含む）を同期させること。
+Skill 定義（`SKILL.md`）のテンプレート・共通ブロック、または生成手順の**節番号**を変更したら、
+期待生成物 fixture・組み立て結果の golden（`fixtures/assembled/`）と本スクリプト（`BLOCKS` / `COMMON_BLOCK` の節見出し regex と `COMMON_MARKER` を含む）を同期させること。

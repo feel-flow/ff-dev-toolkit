@@ -56,8 +56,9 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=../lib/section-scope.sh
 . "$SCRIPT_DIR/../lib/section-scope.sh"
 
-SKILL="$PLUGIN_ROOT/skills/retrospective/SKILL.md"
-GUARD_SECTION="### 記録の前に base の先行を照合する"
+# 照合フェンスは本線から条件付き reference（references/ledger.md）へ移した。抽出元はその reference。
+SKILL="$PLUGIN_ROOT/skills/retrospective/references/ledger.md"
+GUARD_SECTION="## 記録の前に base の先行を照合する"
 EXPECTED_STOPS=6
 
 PASS=0

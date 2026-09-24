@@ -42,6 +42,8 @@
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/review-worktree-scripts-decision/verify.sh
 #
+# 空振り検出: multi-review の SKILL.md で「基盤の挙動を PR 起因と即断しない」を「PR 起因とみなす」へ反転すると 9 件中 1 件、担保の「変更対象に対応する suite を PR の worktree で実走する」を「run-all を回す」へ差し替えると 9 件中 1 件が赤になる（2026-09-24 実測。限定・担保が別の文へすり替わった形を「契約あり」へ倒さない）。
+#
 # run-all-required: yes — 制約明示とオプト不採用の pin も文言だけが防御。suite 全体の skip 経路は持たない（部分 skip のみ）ので明示宣言で必須名簿へ載せる
 
 set -euo pipefail
@@ -109,27 +111,19 @@ echo "-- 設計判断: worktree 実行オプトは実装しない（ADR-043） -
 doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
   "（\`--use-worktree-scripts\` 相当）は**実装しない**（設計判断の正本は ADR-043）" \
   "オプト不採用の判断が ADR-043 を正本として明記されている"
-# 理由の 2 本柱（契約衝突と自己参照）。理由が消えると「今なら実装してよい」と
-# 読めてしまい、ADR の改訂を経ずにオプトが復活する。
-doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
-  "レビュー基盤そのものが未レビューのコードで走る自己参照を作るため" \
-  "不採用理由に自己参照リスクが残っている"
+# 不採用の理由（契約衝突と自己参照）は ADR-043 の決定文が持ち、下の ADR↔SKILL 相互照合が
+# 片側だけの改訂を赤にする。SKILL.md の理由文への針は本線を 20 KB 以下へ畳んだときに外した。
 
 echo
 echo "-- 担保: 変更対象に対応する suite の worktree 実走 --"
 
 # 「載らない」制約だけを書いて担保を書かないと、toolkit 変更 PR の検証手段が
-# 文書から消える（Issue #915 の DoD）。担保は包括保証ではなく手順 —
-# run-all green を任意の変更の保証として読ませない限定が対になっている。
+# 文書から消える（ADR-043 の決定 2）。担保は包括保証ではなく手順として書く。
 doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
   "変更対象に対応する suite を PR の worktree で実走する" \
   "担保が「変更対象に対応する suite の worktree 実走」の手順として書かれている"
-doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
-  "suite はそのツリーのスクリプト実体を直接叩くため、レビュー実行経路に載らない変更もここで検証される" \
-  "worktree 実走が実行経路外の変更を検証すると明記"
-doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
-  "run-all green は任意の変更の担保ではない" \
-  "run-all green を包括保証として読ませない限定が残っている"
+# 実走の仕組みの説明文と「run-all green は包括保証ではない」の一般原則は、本線を 20 KB 以下へ
+# 畳んだときに外した（後者は docs/04-quality/TESTING.md から導出できる）。
 doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
   "基盤の挙動を PR 起因と即断しない" \
   "読み替え規定が「即断しない」の範囲に限定されている（検証の継続を妨げない）"

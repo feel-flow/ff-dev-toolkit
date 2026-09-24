@@ -25,6 +25,18 @@
 #      上限を過ぎたレーンは走査で自動回収され、**回収したことを必ず出力する** /
 #      レーン置き場が symlink のときは何も触らない / レーンの記帳が B の dirty 判定を
 #      誤爆させない / 名簿の型で動いているレビュアー自身の編集は deny しない
+#   N) 巡回カウンタ（tests/lib/review-round-counter.sh）: 同じブランチで異なる HEAD に対する
+#      レビュー起動を巡として数え、上限（既定 2）を超える巡の起動（Agent の名簿型・隔離起動・
+#      委譲レビュー / Bash の multi-review.sh・codex-review.sh・multi-agent.sh --task review）を
+#      deny してレーンを取らない / 同じ HEAD の起動は同じ巡 / --dry-run・--staged・コマンド位置に
+#      無い言及は数えない / 1 回限りの通過口（Bash の区間先頭・Agent の prompt 行頭の
+#      FF_REVIEW_ROUND_ACK=1。セッション環境は読まない）/ 記録が無い・読めない・detached HEAD・
+#      ライブラリ不在は判定不能 = 通す + 警告 / 残件数は FF_JEV_MODE=on のときだけ畳み込み後を読む /
+#      統合ブランチ上は数えない / 記録は git common dir 配下で --fresh の実際の退避を経ても残る /
+#      ask の出口では記録しない / 配布文書の起動形（if ! ・行継続・timeout / nice・--task 無し）も数える /
+#      multi-agent.sh の review 本体（multi-review.sh 経由・直接起動）も同じ記録で 3 巡目を exit 4 で止める /
+#      ask の出口は仮記録して PermissionDenied で取り消す / linked worktree 間で記録を共有する /
+#      ライブラリ不在は Bash の起動にも警告する
 # あわせて hooks.json への登録を静的照合する。
 #
 # 変異検出（2026-09-12 実測。変異 → suite 実行 → 復元の 1 検査 1 変異。全 14 件赤）:
@@ -105,6 +117,28 @@
 # run-all-required: no — jq / git 不在での skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。既存の Bash ガード suite と同じ扱い）
 # 空振り検出: 検査対象 hooks/guard-review-in-flight.sh を「exit 0 だけ」の空ファイルへ差し替えると (a)〜(m) の 188 件が赤になる（2026-09-18 実測。先頭は (a)「Edit が deny される」。対象の不在・無出力を「発火しないのが正しい」へ倒さないことの実測）。
 # 空振り検出: ignored 判定の rc 分岐で 127 を ignored 側へ畳む変異（tests/lib/review-write-scan.sh の `0) return 0` へ `127) return 0` を足す）を入れると (m)「check-ignore を起動できない回は ignored と読まずに deny」と (m)「Bash 経路でも check-ignore 不能なら deny」の 2 件が赤になる（2026-09-18 実測。判定の口が失敗した回を「ignored」へ畳むと許可側へ緩むため、起動不能を deny 側で固定している）。
+# 変異検出（(n) 巡回カウンタ。2026-09-24 実測。scripts/mutation-harness.sh で 1 件ずつ作業ツリーの写しへ
+# 適用 → 内容ハッシュで適用確認 → 本 suite。15 件すべて赤、誤検知確認 1 件は緑。数字は赤になった針の件数）:
+#   lib: deny を pass へ倒す → 20。記録不在の警告を消す → 2。読めない記録を 0 巡として続行 → 2。
+#   異なる HEAD でなく行数で数える → 1。prompt 中の ACK を部分一致で拾う → 1。セッション環境の ACK を
+#   読む → 2。既定上限 2 を 3 へ → 18。off で畳み込み後の件数を読む → 1。コマンド位置を見ず末尾の語で
+#   起動を判定 → 7。--dry-run を数える → 1。
+#   hook: 隔離起動を数えない → 赤（記録が作られず (n8) で suite が止まる）。Bash 経路の配線を外す → 6。
+#   ask の出口で警告を落とす → 1。無音の出口で警告を落とす（EXIT trap を外す）→ 15。レーン取得の後に
+#   判定する → 6。
+#   誤検知確認: deny 文の説明句（「<上限> 巡目の fix の後にレビューを重ねない」）を消す → 緑（文面の針は
+#   案内の要所 = 巡目・bundle 統合・通過口だけに置いている）。
+# 変異検出（(n13)〜(n16)。2026-09-24 実測。scripts/mutation-harness.sh、11 件すべて赤。数字は赤の針の件数）:
+#   統合ブランチを除外しない → 2。記録を出力先（.review-in-flight.d/rounds）へ戻す → 赤（(n7) 以降で
+#   suite が止まる）。ask の出口で記録する → 1。multi-agent.sh を --task review 明示時だけ数える → 13。
+#   timeout / gtimeout を剥がさない → 2。制御の接頭辞を剥がさない → 2。行継続をつながない → 1。
+#   --print-toolkit-root を数える → 1。multi-review.sh の巡回検査を外す → 3。multi-review.sh が
+#   FF_REVIEW_ROUND_ACK を読まない → 2。
+# 変異検出（2 巡目の fix。2026-09-24 実測。scripts/mutation-harness.sh、7 件すべて赤）: ask の出口で仮記録しない
+#   → 1。PermissionDenied で仮記録を取り消さない → 1。ライブラリ不在の Bash 起動を無警告にする → 1。
+#   multi-agent.sh の review 本体の巡回検査を外す → 4。記録を worktree ごとの git dir へ置く → 1（(n17)）。
+#   環境代入を剥がさない → 3。
+# 空振り検出: 巡回の記録が無い回を「0 巡」と見なして警告なしで通す変異（記録不在の rr_warn を消す）を入れると (n1) と (n11) の 2 件が赤になる（2026-09-24 実測。記録不在・読めない記録は判定不能 = 通す + 警告で固定し、黙って 0 巡から数えない）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -119,6 +153,11 @@ MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 [ -f "$TARGET" ] || { echo "✗ guard-review-in-flight.sh が見つかりません: $TARGET" >&2; exit 1; }
 [ -f "$HOOKS_JSON" ] || { echo "✗ hooks.json が見つかりません: $HOOKS_JSON" >&2; exit 1; }
 [ -f "$MULTI_AGENT" ] || { echo "✗ multi-agent.sh が見つかりません: $MULTI_AGENT" >&2; exit 1; }
+# 巡回カウンタ（(n) 節）の入力をホストの環境から隔離する。(a)〜(m) は巡回上限と直交する契約
+# （凍結・dirty・レーン）を測るので上限を 0（無効）へ固定し、(n) だけが区間ごとに外して
+# 既定値で測る。有効のままだと、レーンを消すたびに「記録が無い」警告が無音の針へ混ざる。
+unset FF_REVIEW_ROUND_ACK FF_JEV_MODE
+export FF_REVIEW_ROUND_LIMIT=0
 if ! command -v jq >/dev/null 2>&1; then
   echo "○ skip: jq が見つからないためスキップ（guard-review-in-flight は未検査のままです）"
   exit 0
@@ -2146,6 +2185,445 @@ assert_silent "(m) ロック無しでは tracked への Write も無音"
 run_hook "$(write_json "$REPO/build/note.md")" 'FF_WRITE_SCAN_GIT=/nonexistent/git'
 assert_silent "(m) ロック無しでは check-ignore 不能でも無音"
 rm -rf "$REPO/build/note.md" "$REPO/build/nb.ipynb"
+
+# ---------------------------------------------------------------------------
+# (n) 巡回カウンタ（tests/lib/review-round-counter.sh）。上限を超える巡の起動を deny し、
+# 記録が無い・読めない回は「判定不能 = 通す + 警告」。ここから先は既定値（上限 2）で測るので、
+# 冒頭で 0（無効）へ固定した FF_REVIEW_ROUND_LIMIT を区間ごとに外す（`env -u`）。
+# ---------------------------------------------------------------------------
+echo "guard-review-in-flight: (n) 巡回カウンタ（上限 2 巡 / 3 巡目の起動を deny）"
+clear_lock
+clear_lanes
+git -C "$REPO" add -A
+git -C "$REPO" commit -q --allow-empty -m "n: baseline"
+# 巡は PR のブランチで数える（統合ブランチ上は判定不能 = 数えない。(n13)）。fixture の初期
+# ブランチ名は git の既定（main / master）に依るので、PR 相当のブランチへ移ってから測る。
+N_BASE_BRANCH="$(git -C "$REPO" symbolic-ref --short HEAD)"
+git -C "$REPO" branch n-base
+git -C "$REPO" switch -q -c feature/n-rounds
+N_DEF='-u FF_REVIEW_ROUND_LIMIT'
+# 記録は git common dir 配下（出力先 `.review-results/` の外）。レーン置き場を消しても残る。
+N_ROUNDS_DIR="$REPO/.git/ff-review-rounds"
+n_reset() { clear_lanes; rm -rf "$N_ROUNDS_DIR"; }
+n_file() { ls -1 "$N_ROUNDS_DIR"/*.tsv 2>/dev/null | head -n 1; }
+n_heads() { # 記録の異なる HEAD の数
+  local f
+  f="$(n_file)"
+  [ -n "$f" ] || { printf '0'; return 0; }
+  awk -F '\t' 'NR > 1 && NF == 3 { s[$2] = 1 } END { n = 0; for (k in s) n++; print n }' "$f"
+}
+n_commit() { git -C "$REPO" commit -q --allow-empty -m "$1"; }
+# 起動は隔離（isolation=worktree）を既定にする。隔離起動もレーンを取らないだけで巡としては
+# 数えるので、同じ区間の Bash 起動が凍結（レーン）に当たらず、巡回の判定だけを観測できる。
+n_agent() { agent_json "$1" Agent "" worktree; }
+ack_agent_json() { # <prompt>
+  jq -n --arg d "$REPO" --arg p "$1" \
+  '{tool_name: "Agent", tool_input: {subagent_type: "pr-review-toolkit:code-reviewer", description: "review", prompt: $p, isolation: "worktree"},
+    cwd: $d, hook_event_name: "PreToolUse"}'; }
+assert_n_deny() { # <label>
+  case "$REASON" in
+    *'レビュー巡回の上限'*) assert_deny "$1" ;;
+    *) bad "$1: 巡回上限の deny ではない: decision=[$DECISION] out=[$OUT]" ;;
+  esac
+}
+
+# --- 記録が無い（初回 / 消えた）: 0 巡と見なさず、通す + 警告 + 1 巡目として記録 ---
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+case "$MESSAGE" in
+  *'巡回の記録がありません'*'1 巡目として記録'*)
+    if [ -z "$DECISION" ] && [ "$(n_heads)" = "1" ]; then
+      ok "(n1) 記録が無い回は判定不能 = 通す + 警告し、この起動を 1 巡目として記録する"
+    else
+      bad "(n1) 記録不在の回の扱いが違う: decision=[$DECISION] heads=[$(n_heads)]"
+    fi
+    ;;
+  *) bad "(n1) 記録が無い回に警告が出ない（0 巡と見なして黙って通した）: out=[$OUT]" ;;
+esac
+
+# --- 同じ HEAD の起動は同じ巡（並列起動の 2 本目・--resume・委譲のホスト側起動）---
+run_hook "$(n_agent pr-review-toolkit:silent-failure-hunter)" "$N_DEF"
+assert_silent "(n2) 記録済みの HEAD で起動した 2 本目は同じ巡として無音"
+run_hook "$(bash_json 'bash scripts/multi-review.sh --base main')" "$N_DEF"
+assert_silent "(n2) 同じ HEAD の Bash 起動（multi-review.sh）も同じ巡"
+run_hook "$(n_agent pr-review-toolkit:pr-test-analyzer)" "$N_DEF"
+if [ "$(n_heads)" = "1" ]; then ok "(n2) 同じ巡を何本起動しても数えるのは 1 巡（行数でなく異なる HEAD の数）"; else bad "(n2) 同じ HEAD が複数の巡に数えられた: heads=[$(n_heads)]"; fi
+
+# --- fix を commit して 2 巡目: 上限内なので無音で記録 ---
+n_commit "fix round 1"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+assert_silent "(n3) 2 巡目（上限内）の起動は無音"
+if [ "$(n_heads)" = "2" ]; then ok "(n3) 2 巡目が記録される"; else bad "(n3) 2 巡目が記録されない: heads=[$(n_heads)]"; fi
+
+# --- 2 巡目の fix の後: 3 巡目の起動を deny（レーンを取らない）---
+n_commit "fix round 2"
+N_LANES_BEFORE="$(lane_count)"
+run_hook "$(agent_json pr-review-toolkit:code-reviewer "" n3-agent)" "$N_DEF"
+assert_n_deny "(n4) 2 巡目の fix の後の 3 巡目（Agent 起動）を deny する"
+case "$REASON" in
+  *'3 巡目'*'/out-of-scope-issue'*'bundle'*'FF_REVIEW_ROUND_ACK=1'*) ok "(n4) deny 文が 3 巡目・bundle 統合への案内・1 回限りの通過口を出す" ;;
+  *) bad "(n4) deny 文に案内が欠けている: reason=[$REASON]" ;;
+esac
+if [ "$(lane_count)" = "$N_LANES_BEFORE" ] && [ "$(n_heads)" = "2" ]; then
+  ok "(n4) deny した起動（非隔離）はレーンも巡も残さない"
+else
+  bad "(n4) deny した起動がレーン / 巡を残した: lanes ${N_LANES_BEFORE}→$(lane_count) heads=[$(n_heads)]"
+fi
+run_hook "$(agent_json pr-review-toolkit:code-reviewer Agent n3-iso worktree)" "$N_DEF"
+assert_n_deny "(n4) isolation=worktree の隔離起動も巡として数える（隔離既定の経路でゲートが空にならない）"
+run_hook "$(bash_json 'FF_DEV_TOOLKIT_ROOT="/x" bash "/x/scripts/multi-review.sh" --base main')" "$N_DEF"
+assert_n_deny "(n4) Bash の multi-review.sh 起動（環境代入 + 引用付きパス）も deny"
+run_hook "$(bash_json 'bash /x/scripts/multi-agent.sh --task review --cli codex-cli')" "$N_DEF"
+assert_n_deny "(n4) multi-agent.sh --task review（Codex 1 レーン）も deny"
+run_hook "$(bash_json 'bash /x/scripts/codex-review.sh --base develop')" "$N_DEF"
+assert_n_deny "(n4) codex-review.sh シムの起動も deny"
+
+# --- レビューの起動ではないものは数えない ---
+run_hook "$(bash_json 'grep -n review scripts/multi-review.sh')" "$N_DEF"
+assert_silent "(n5) コマンド位置に無い言及（grep の引数）は起動ではない"
+run_hook "$(bash_json 'bash scripts/multi-review.sh --dry-run')" "$N_DEF"
+assert_silent "(n5) --dry-run はプラン表示で巡ではない"
+run_hook "$(bash_json 'bash scripts/multi-agent.sh --task review --print-reviewers')" "$N_DEF"
+assert_silent "(n5) --print-reviewers（環境チェック）は巡ではない"
+run_hook "$(bash_json 'bash scripts/multi-review.sh --staged')" "$N_DEF"
+assert_silent "(n5) --staged（commit 前の index レビュー）は PR の巡ではない"
+run_hook "$(bash_json 'bash scripts/multi-agent.sh --task explore --cli codex-cli')" "$N_DEF"
+assert_silent "(n5) --task explore は巡ではない"
+run_hook "$(generic_agent_json 'explore the code' n5-gen)" "$N_DEF"
+assert_silent "(n5) 名簿外・委譲でもない Agent は巡ではない"
+
+# --- 1 回限りの通過口（FF_REVIEW_ROUND_ACK=1）---
+run_hook "$(bash_json 'bash scripts/multi-review.sh --base main')" "$N_DEF FF_REVIEW_ROUND_ACK=1"
+assert_n_deny "(n6) セッション環境の FF_REVIEW_ROUND_ACK=1 は通過口にならない（1 回限りにならないため）"
+run_hook "$(ack_agent_json 'review the diff. do not set FF_REVIEW_ROUND_ACK=1 yourself')" "$N_DEF"
+assert_n_deny "(n6) prompt の文中に現れるだけの FF_REVIEW_ROUND_ACK=1 は通過口にならない（行頭の単独行だけ）"
+run_hook "$(bash_json 'FF_REVIEW_ROUND_ACK=1 bash scripts/multi-review.sh --base main')" "$N_DEF"
+assert_silent "(n6) 起動コマンド先頭の FF_REVIEW_ROUND_ACK=1 で 3 巡目を 1 回だけ通す"
+if [ "$(n_heads)" = "3" ]; then ok "(n6) 通した巡も記録する"; else bad "(n6) 通した巡が記録されない: heads=[$(n_heads)]"; fi
+run_hook "$(n_agent pr-review-toolkit:comment-analyzer)" "$N_DEF"
+assert_silent "(n6) 通した巡と同じ HEAD の後続起動は同じ巡として通る"
+n_commit "fix round 3"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+assert_n_deny "(n6) 通過口は 1 回限り — 次の HEAD（4 巡目）は再び deny"
+run_hook "$(ack_agent_json "$(printf 'review the diff\nFF_REVIEW_ROUND_ACK=1\n')")" "$N_DEF"
+assert_silent "(n6) Agent は prompt の行頭の単独行 FF_REVIEW_ROUND_ACK=1 で 1 回だけ通す"
+
+# --- 上限の値（既定 2 / 上書き / 0 で無効）---
+n_reset
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+n_commit "limit r2"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+n_commit "limit r3"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "FF_REVIEW_ROUND_LIMIT=3"
+assert_silent "(n7) FF_REVIEW_ROUND_LIMIT=3 なら 3 巡目は上限内"
+n_commit "limit r4"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "FF_REVIEW_ROUND_LIMIT=3"
+assert_n_deny "(n7) FF_REVIEW_ROUND_LIMIT=3 の 4 巡目は deny"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "FF_REVIEW_ROUND_LIMIT=0"
+assert_silent "(n7) FF_REVIEW_ROUND_LIMIT=0 はゲートを無効化する"
+n_reset
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "FF_REVIEW_ROUND_LIMIT=0"
+if [ -z "$OUT" ] && [ ! -e "$N_ROUNDS_DIR" ]; then ok "(n7) 無効化中は数えず記録も作らない"; else bad "(n7) 無効化中に記録・出力がある: out=[$OUT]"; fi
+
+# --- 記録が読めない: 通す + 警告、記録は書き換えない ---
+n_reset
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+N_F="$(n_file)"
+printf 'garbage line\n' >> "$N_F"
+N_SUM_BEFORE="$(cksum < "$N_F")"
+n_commit "unreadable r2"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+case "$MESSAGE" in
+  *'巡回の記録を読めません'*)
+    if [ -z "$DECISION" ] && [ "$(cksum < "$N_F")" = "$N_SUM_BEFORE" ]; then
+      ok "(n8) 書式の壊れた記録は判定不能 = 通す + 警告し、記録を書き換えない"
+    else
+      bad "(n8) 壊れた記録の扱いが違う: decision=[$DECISION]"
+    fi
+    ;;
+  *) bad "(n8) 壊れた記録で警告が出ない: out=[$OUT]" ;;
+esac
+if [ "$(id -u)" != "0" ]; then
+  n_reset
+  run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+  N_F="$(n_file)"
+  chmod 000 "$N_F"
+  n_commit "unreadable r3"
+  run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+  chmod 600 "$N_F"
+  case "$MESSAGE" in
+    *'巡回の記録を読めません'*) [ -z "$DECISION" ] && ok "(n8) 読み取り権限の無い記録も判定不能 = 通す + 警告" || bad "(n8) 読めない記録で deny した: out=[$OUT]" ;;
+    *) bad "(n8) 読めない記録で警告が出ない: out=[$OUT]" ;;
+  esac
+else
+  ok "(n8) root 実行のため読み取り権限の検査は省略（書式違反の検査で同じ分岐を測っている）"
+fi
+
+# --- detached HEAD: PR を特定できないので通す + 警告 ---
+n_reset
+N_BRANCH="$(git -C "$REPO" symbolic-ref --short HEAD)"
+git -C "$REPO" checkout -q --detach
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+git -C "$REPO" checkout -q "$N_BRANCH"
+case "$MESSAGE" in
+  *'detached HEAD'*) [ -z "$DECISION" ] && ok "(n9) detached HEAD は判定不能 = 通す + 警告" || bad "(n9) detached HEAD で deny した: out=[$OUT]" ;;
+  *) bad "(n9) detached HEAD で警告が出ない: out=[$OUT]" ;;
+esac
+
+# --- 残件数の受け口: FF_JEV_MODE=off（既定）では畳み込み後の件数を読まない（バイト同一）---
+n_reset
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+n_commit "jev r2"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+n_commit "jev r3"
+N_F="$(n_file)"
+N_RES="${N_F%.tsv}.residual"
+printf 'raw=5\n' > "$N_RES"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF -u FF_JEV_MODE"
+N_REASON_RAW="$REASON"
+printf 'raw=5\nfolded=3\n' > "$N_RES"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF -u FF_JEV_MODE"
+N_REASON_UNSET="$REASON"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF FF_JEV_MODE=off"
+N_REASON_OFF="$REASON"
+case "$N_REASON_RAW" in
+  *'残件: 5 件'*) ok "(n10) 残件数（raw）を deny 文へ載せる" ;;
+  *) bad "(n10) 残件数が deny 文に無い: reason=[$N_REASON_RAW]" ;;
+esac
+if [ -n "$N_REASON_RAW" ] && [ "$N_REASON_UNSET" = "$N_REASON_RAW" ] && [ "$N_REASON_OFF" = "$N_REASON_RAW" ]; then
+  ok "(n10) FF_JEV_MODE 未設定 / off では畳み込み後の件数を読まず、deny 文がバイト同一"
+else
+  bad "(n10) off で畳み込みの有無が deny 文を変えた: raw=[$N_REASON_RAW] unset=[$N_REASON_UNSET] off=[$N_REASON_OFF]"
+fi
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF FF_JEV_MODE=on"
+case "$REASON" in
+  *'残件: 3 件（重複 finding の畳み込み後）'*) ok "(n10) FF_JEV_MODE=on かつ畳み込み後の件数があればそれを使う" ;;
+  *) bad "(n10) on で畳み込み後の件数を使わない: reason=[$REASON]" ;;
+esac
+printf 'raw=5\n' > "$N_RES"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF FF_JEV_MODE=on"
+case "$REASON" in
+  *'残件: 5 件'*) ok "(n10) FF_JEV_MODE=on でも畳み込み後の件数が無ければ生の件数を使う" ;;
+  *) bad "(n10) on で畳み込み後が無いときに生の件数へ落ちない: reason=[$REASON]" ;;
+esac
+
+# --- 警告は他の判定（B の ask）と同じ出力へ畳む ---
+n_reset
+printf 'dirty\n' >> "$REPO/src/app.txt"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+git -C "$REPO" checkout -q -- src/app.txt
+case "$MESSAGE" in
+  *'巡回の記録がありません'*) [ "$DECISION" = "ask" ] && ok "(n11) 判定不能の警告は dirty の ask と同じ出力へ systemMessage として載る" || bad "(n11) ask が消えた: out=[$OUT]" ;;
+  *) bad "(n11) ask の出口で巡回の警告が落ちた: out=[$OUT]" ;;
+esac
+if [ "$(n_heads)" = "1" ]; then
+  ok "(n11) ask の出口は巡を仮記録する（利用者が許可して起動した回を数え損ねない）"
+else
+  bad "(n11) ask の出口で巡が仮記録されない（許可した起動が上限を迂回する）: heads=[$(n_heads)]"
+fi
+run_hook "$(n_agent pr-review-toolkit:code-reviewer | jq '.hook_event_name = "PermissionDenied"')" "$N_DEF"
+if [ "$(n_heads)" = "0" ]; then
+  ok "(n11) 起動が拒否された（PermissionDenied が同じ鍵で来た）回は仮記録を取り消す"
+else
+  bad "(n11) PermissionDenied で仮記録が取り消されない: heads=[$(n_heads)]"
+fi
+
+# --- 並列起動が同じ巡を重複して書いた記録（同時の追記）も 1 巡と数える ---
+n_reset
+n_commit "dup r1"
+N_H1="$(git -C "$REPO" rev-parse HEAD)"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+N_F="$(n_file)"
+printf '1\t%s\t0\n1\t%s\t0\n' "$N_H1" "$N_H1" >> "$N_F"
+n_commit "dup r2"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+assert_silent "(n2) 同じ HEAD の重複行は 1 巡と数える（行数で数えると 2 巡目が 3 巡目として deny される）"
+
+# --- ライブラリを読めない: agent 経路は判定不能 = 通す + 警告 ---
+n_reset
+N_OUT="$(printf '%s' "$(n_agent pr-review-toolkit:code-reviewer)" | env -u FF_REVIEW_ROUND_LIMIT bash "$K_COPY2/hooks/guard-review-in-flight.sh" 2>/dev/null)"
+case "$(printf '%s' "$N_OUT" | jq -r '.systemMessage // empty' 2>/dev/null)" in
+  *'巡回カウンタ'*'読めない'*) ok "(n12) 巡回カウンタのライブラリが無いと、レビュー起動は判定不能として警告付きで通る" ;;
+  *) bad "(n12) ライブラリ不在で無音 / 別の出力: out=[$N_OUT]" ;;
+esac
+N_OUT="$(printf '%s' "$(bash_json 'bash scripts/codex-review.sh --base develop')" | env -u FF_REVIEW_ROUND_LIMIT bash "$K_COPY2/hooks/guard-review-in-flight.sh" 2>/dev/null)"
+case "$(printf '%s' "$N_OUT" | jq -r '.systemMessage // empty' 2>/dev/null)" in
+  *'巡回カウンタ'*'読めない'*) ok "(n12) ライブラリが無いと、Bash のレビュー起動（codex-review.sh）も判定不能として警告付きで通る" ;;
+  *) bad "(n12) ライブラリ不在の Bash 起動が無警告: out=[$N_OUT]" ;;
+esac
+N_OUT="$(printf '%s' "$(bash_json 'ls -la')" | env -u FF_REVIEW_ROUND_LIMIT bash "$K_COPY2/hooks/guard-review-in-flight.sh" 2>/dev/null)"
+[ -z "$N_OUT" ] && ok "(n12) ライブラリが無くても、レビューの起動でない Bash は無音" || bad "(n12) 無関係な Bash に警告が出た: out=[$N_OUT]"
+n_reset
+
+# --- 統合ブランチ（develop / main / リモートの既定ブランチ）: PR の巡ではない = 判定不能 → 通す + 警告 ---
+n_reset
+git -C "$REPO" switch -q -C develop
+N_INT_OK=1
+for N_I in 1 2 3; do
+  n_commit "develop r${N_I}"
+  run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+  case "$MESSAGE" in
+    *'統合ブランチ develop'*) [ -z "$DECISION" ] || N_INT_OK=0 ;;
+    *) N_INT_OK=0 ;;
+  esac
+done
+if [ "$N_INT_OK" -eq 1 ] && [ ! -e "$N_ROUNDS_DIR/develop.tsv" ]; then
+  ok "(n13) develop 上の起動は 3 つの HEAD でも deny せず、警告して通し記録しない（PR をまたいで 1 本に数えない）"
+else
+  bad "(n13) develop 上の起動の扱いが違う: decision=[$DECISION] out=[$OUT]"
+fi
+git -C "$REPO" remote add origin "https://example.invalid/fixture.git" 2>/dev/null || true
+git -C "$REPO" update-ref refs/remotes/origin/trunk HEAD
+git -C "$REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+git -C "$REPO" switch -q -C trunk
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+case "$MESSAGE" in
+  *'統合ブランチ trunk'*) [ -z "$DECISION" ] && ok "(n13) リモートの既定ブランチ（origin/HEAD → trunk）も統合ブランチとして数えない" || bad "(n13) 既定ブランチで deny: out=[$OUT]" ;;
+  *) bad "(n13) リモートの既定ブランチを統合ブランチと見なさない: out=[$OUT]" ;;
+esac
+git -C "$REPO" switch -q feature/n-rounds
+
+# --- 記録は出力先の外: レーン置き場の rm -rf と multi-agent.sh --fresh の退避を経ても 3 巡目を deny ---
+n_reset
+n_commit "fresh r1"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+n_commit "fresh r2"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+mkdir -p "$LANE_DIR"
+printf 'marker\n' > "$LANE_DIR/marker.lane"
+printf 'fresh\n' > "$REPO/src/fresh.txt"
+git -C "$REPO" add src/fresh.txt
+git -C "$REPO" commit -q -m "fresh r3 (real diff for the orchestrator)"
+N_STUB="$TEST_TMP/n-stub"
+mkdir -p "$N_STUB"
+printf '#!/bin/sh\nexit 1\n' > "$N_STUB/codex"
+chmod +x "$N_STUB/codex"
+(
+  cd "$REPO" || exit 1
+  env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT -u MULTI_AGENT_CONFIG \
+    PATH="$N_STUB:$PATH" bash "$MULTI_AGENT" --task review --mode cross-model --cli codex-cli \
+    --perspective code-review --base n-base --fresh --timeout 5
+) >/dev/null 2>"$TEST_TMP/n-fresh.err" || true
+if [ ! -e "$LANE_DIR/marker.lane" ] && grep -q -- '--fresh: archived' "$TEST_TMP/n-fresh.err"; then
+  ok "(n14) multi-agent.sh --fresh が出力先（レーン置き場を含む）を実際に退避した"
+else
+  bad "(n14) --fresh の退避が起きていない（統合検査の前提）: $(tail -n 3 "$TEST_TMP/n-fresh.err")"
+fi
+clear_lanes
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+assert_n_deny "(n14) --fresh の退避とレーン置き場の rm -rf を経ても、3 巡目の起動を deny する（記録は git common dir 配下）"
+clear_lock
+
+# --- 文書に載っている起動形（制御の接頭辞・行継続・ラッパー・--task 無し）も 3 巡目で deny ---
+N_DOC_PRE_PUSH="$(printf '%s\n' 'if ! FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" \' '  --output-dir "$FF_REVIEW_OUTPUT" \' '  --cli grok-cli \' '  --sequential; then' '  exit 1' 'fi')"
+run_hook "$(bash_json "$N_DOC_PRE_PUSH")" "$N_DEF"
+assert_n_deny "(n15) 配布文書の起動形（if ! + 環境代入 + 行継続）も deny"
+run_hook "$(bash_json 'bash /x/scripts/multi-agent.sh --base develop')" "$N_DEF"
+assert_n_deny "(n15) --task 無しの multi-agent.sh（既定の task は review）も deny"
+run_hook "$(bash_json 'timeout 600 bash /x/scripts/multi-review.sh --base develop')" "$N_DEF"
+assert_n_deny "(n15) timeout <秒> ラッパー越しの起動も deny"
+run_hook "$(bash_json 'gtimeout -k 5 10m bash /x/scripts/multi-review.sh')" "$N_DEF"
+assert_n_deny "(n15) gtimeout -k <秒> <期間> ラッパー越しの起動も deny"
+run_hook "$(bash_json 'nice -n 10 bash /x/scripts/codex-review.sh --base develop')" "$N_DEF"
+assert_n_deny "(n15) nice -n <数値> ラッパー越しの起動も deny"
+run_hook "$(bash_json 'until bash /x/scripts/multi-review.sh; do sleep 1; done')" "$N_DEF"
+assert_n_deny "(n15) until の条件部の起動も deny"
+run_hook "$(bash_json 'if ! toolkit_root="$(bash "$(git rev-parse --show-toplevel)/scripts/codex-review.sh" --print-toolkit-root)"; then exit 2; fi')" "$N_DEF"
+assert_silent "(n15) シムの解決（--print-toolkit-root）は巡ではない"
+run_hook "$(bash_json 'bash scripts/codex-review.sh --print-toolkit-root=kv')" "$N_DEF"
+assert_silent "(n15) コマンド位置のシムでも --print-toolkit-root（解決だけ）は巡ではない"
+run_hook "$(bash_json 'bash /x/scripts/multi-agent.sh --task=implement --description x')" "$N_DEF"
+assert_silent "(n15) --task=implement は巡ではない"
+
+# --- multi-agent.sh の review 本体の巡回検査（plugin hook が発火しないホストでも効く全ホスト共通の経路。
+# multi-review.sh 経由も直接起動も同じ本体を通る）---
+n_ma() { # [env...] -- <script> <引数...>
+  local envs=()
+  while [ $# -gt 0 ] && [ "$1" != "--" ]; do envs+=("$1"); shift; done
+  [ "${1:-}" = "--" ] && shift
+  local script="$1"
+  shift
+  RC=0
+  OUT="$(cd "$REPO" && env -u FF_REVIEW_ROUND_LIMIT -u FF_REVIEW_ROUND_ACK -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT \
+    -u GROK_PLUGIN_ROOT -u MULTI_AGENT_CONFIG PATH="$N_STUB:$PATH" ${envs[@]+"${envs[@]}"} \
+    bash "$PLUGIN_ROOT/scripts/$script" "$@" 2>"$TEST_TMP/n-ma.err")" || RC=$?
+  N_MA_ERR="$(cat "$TEST_TMP/n-ma.err")"
+}
+N_MA_ARGS="--mode cross-model --cli codex-cli --perspective code-review --base n-base --timeout 5"
+n_commit "script r4"
+# shellcheck disable=SC2086 # N_MA_ARGS は語分割して渡す固定の引数列
+n_ma -- multi-review.sh $N_MA_ARGS
+case "$N_MA_ERR" in
+  *'レビュー巡回の上限'*'3 巡目'*)
+    if [ "$RC" -eq 4 ] && [ ! -e "$LOCK" ]; then ok "(n16) multi-review.sh 経由の 3 巡目を本体が exit 4 で止め、何も起動しない"; else bad "(n16) rc=$RC"; fi ;;
+  *) bad "(n16) multi-review.sh 経由の 3 巡目が止まらない: rc=$RC err=[$N_MA_ERR]" ;;
+esac
+# shellcheck disable=SC2086
+n_ma -- multi-agent.sh --task review $N_MA_ARGS
+case "$N_MA_ERR" in
+  *'レビュー巡回の上限'*) [ "$RC" -eq 4 ] && ok "(n16) multi-agent.sh --task review の直接起動も 3 巡目を exit 4 で止める" || bad "(n16) 直接起動 rc=$RC" ;;
+  *) bad "(n16) multi-agent.sh の直接起動が 3 巡目を止めない: rc=$RC err=[$N_MA_ERR]" ;;
+esac
+n_ma -- multi-review.sh --dry-run --route fast --base n-base
+case "$N_MA_ERR" in
+  *'Dry run complete'*) [ "$RC" -eq 0 ] && ok "(n16) --dry-run は巡ではなく通す" || bad "(n16) dry-run rc=$RC" ;;
+  *) bad "(n16) --dry-run が止まった: rc=$RC err=[$N_MA_ERR]" ;;
+esac
+N_HEADS_BEFORE="$(n_heads)"
+# shellcheck disable=SC2086
+n_ma FF_REVIEW_ROUND_ACK=1 -- multi-review.sh $N_MA_ARGS
+case "$N_MA_ERR" in
+  *'レビュー巡回の上限'*) bad "(n16) ACK 付きでも止まった: err=[$N_MA_ERR]" ;;
+  *)
+    if [ "$(n_heads)" = "$((N_HEADS_BEFORE + 1))" ]; then
+      ok "(n16) プロセス環境の FF_REVIEW_ROUND_ACK=1 で 1 巡だけ通し、通した巡を記録する"
+    else
+      bad "(n16) ACK で通した巡が記録されない: heads ${N_HEADS_BEFORE}→$(n_heads)"
+    fi
+    ;;
+esac
+clear_lock
+run_hook "$(bash_json 'bash scripts/multi-review.sh --base develop')" "$N_DEF"
+assert_silent "(n16) 本体が記録した HEAD は hook からも同じ巡（二重に数えない）"
+n_commit "script r5"
+# shellcheck disable=SC2086
+n_ma FF_REVIEW_ROUND_LIMIT=0 -- multi-review.sh $N_MA_ARGS
+case "$N_MA_ERR" in
+  *'レビュー巡回の上限'*) bad "(n16) FF_REVIEW_ROUND_LIMIT=0 でも止まった: rc=$RC" ;;
+  *) [ "$RC" -ne 4 ] && ok "(n16) FF_REVIEW_ROUND_LIMIT=0 で本体側の検査も無効化する（pre-push のゲート等）" || bad "(n16) LIMIT=0 rc=4" ;;
+esac
+clear_lock
+
+# --- linked worktree 間で記録を共有する（実装と仕上げで worktree が違っても数え直さない）---
+n_reset
+git -C "$REPO" switch -q feature/n-rounds
+n_commit "wt r1"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+n_commit "wt r2"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+git -C "$REPO" checkout -q --detach
+N_WT2="$TEST_TMP/n-wt2"
+git -C "$REPO" worktree add -q "$N_WT2" feature/n-rounds 2>/dev/null
+git -C "$N_WT2" commit -q --allow-empty -m "wt r3 (from the second worktree)"
+N_WT2_JSON="$(jq -n --arg d "$N_WT2" \
+  '{tool_name: "Agent", tool_input: {subagent_type: "pr-review-toolkit:code-reviewer", description: "review", prompt: "review the diff", isolation: "worktree"},
+    cwd: $d, hook_event_name: "PreToolUse"}')"
+run_hook "$N_WT2_JSON" "$N_DEF"
+assert_n_deny "(n17) 第 2 の linked worktree から次の HEAD で起動しても、共有された記録で 3 巡目を deny する"
+git -C "$REPO" worktree remove --force "$N_WT2" 2>/dev/null
+git -C "$REPO" switch -q feature/n-rounds
+n_reset
+
+# --- env の後ろの代入も剥がす（`env FOO=bar bash …/multi-review.sh`）---
+n_commit "env r1"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+n_commit "env r2"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+n_commit "env r3"
+run_hook "$(bash_json 'env FOO=bar bash /x/scripts/multi-review.sh --base develop')" "$N_DEF"
+assert_n_deny "(n18) env のオプションと代入の後ろの起動も 3 巡目で deny"
+run_hook "$(bash_json 'env -u X FF_REVIEW_ROUND_ACK=1 bash /x/scripts/multi-review.sh --base develop')" "$N_DEF"
+assert_silent "(n18) env の後ろの FF_REVIEW_ROUND_ACK=1 も区間先頭の通過口として効く"
+n_reset
 
 echo
 if [ "$FAIL" -gt 0 ]; then

@@ -1320,6 +1320,71 @@ else
 fi
 
 echo ""
+echo "== multi-review.sh --route（変更クラス別のレーン数）の実計画 =="
+# review-route.sh の REVIEW_ROUTE を multi-review.sh へ渡す機械的な接続。fast は Codex 1 レーン
+# だけで Claude の観点を起動しない実計画になること（宣言だけでなく dispatch に反映されること）を
+# dry-run の出力で固定する。巡回の上限は dry-run を数えないが、ホストの記録から隔離するため無効化する。
+MULTI_REVIEW="$PLUGIN_ROOT/scripts/multi-review.sh"
+run_route() { # $1: output file, $2..: multi-review args
+  local output="$1"
+  shift
+  (
+    cd "$REPO"
+    run_isolated PATH="$STUB:$PATH" FF_REVIEW_ROUND_LIMIT=0 bash "$MULTI_REVIEW" --base develop --dry-run "$@"
+  ) >"$output" 2>&1
+}
+plan_lanes() { # $1: log → 実計画に載った CLI レーンの名前（1 行 1 件）
+  awk '/Execution Plan:/ { p = 1 } p && /^   [a-z][a-z-]* \[[a-z]*\]:$/ { sub(/^   /, ""); sub(/ \[.*$/, ""); print }' "$1"
+}
+plan_perspectives() { # $1: log → 実計画の観点（1 行 1 件）
+  awk '/Execution Plan:/ { p = 1 } p && /^     - / { sub(/^     - /, ""); print }' "$1"
+}
+ROUTE_FAST_LOG="$TMP/route-fast.log"
+if run_route "$ROUTE_FAST_LOG" --route fast \
+  && [ "$(plan_lanes "$ROUTE_FAST_LOG")" = "codex-cli" ] \
+  && [ "$(plan_perspectives "$ROUTE_FAST_LOG")" = "comprehensive-review" ]; then
+  ok "--route fast の実計画は Codex 1 レーン（comprehensive-review）だけで、Claude のレーンは 0 件"
+else
+  bad "--route fast の実計画が Codex 1 レーンではない: lanes=[$(plan_lanes "$ROUTE_FAST_LOG" | tr '\n' ' ')] perspectives=[$(plan_perspectives "$ROUTE_FAST_LOG" | tr '\n' ' ')]"
+  cat "$ROUTE_FAST_LOG"
+fi
+ROUTE_FULL_LOG="$TMP/route-full.log"
+ROUTE_FULL_USER_LOG="$TMP/route-full-user.log"
+ROUTE_FULL_WANT="claude-code:code-review claude-code:comment-analysis claude-code:error-handler-hunt claude-code:test-analysis codex-cli:comprehensive-review"
+plan_lane_pairs() { # $1: log → 「CLI:観点」を整列して空白区切り 1 行
+  awk '/Execution Plan:/ { p = 1 } p && /^   [a-z][a-z-]* \[[a-z]*\]:$/ { c = $1 } p && /^     - / { print c ":" $2 }' "$1" | sort | tr '\n' ' ' | sed 's/ $//'
+}
+if run_route "$ROUTE_FULL_LOG" --route full && [ "$(plan_lane_pairs "$ROUTE_FULL_LOG")" = "$ROUTE_FULL_WANT" ]; then
+  ok "--route full の実計画は 5 レーン（claude-code の 4 観点 + codex-cli の comprehensive-review）"
+else
+  bad "--route full の実計画が 5 レーンではない: [$(plan_lane_pairs "$ROUTE_FULL_LOG")]"
+  cat "$ROUTE_FULL_LOG"
+fi
+# 利用者設定（主・副・単一固定）が別でも、--route full は同じ 5 レーンになる
+if (
+  cd "$REPO"
+  run_isolated PATH="$STUB:$PATH" FF_REVIEW_ROUND_LIMIT=0 MULTI_AGENT_REVIEW_MAIN=grok-cli MULTI_AGENT_REVIEW_SUB= \
+    MULTI_AGENT_CROSS_REVIEW=off bash "$MULTI_REVIEW" --base develop --dry-run --route full
+) >"$ROUTE_FULL_USER_LOG" 2>&1 && [ "$(plan_lane_pairs "$ROUTE_FULL_USER_LOG")" = "$ROUTE_FULL_WANT" ]; then
+  ok "--route full は利用者設定の主・副・cross_review=off に依らず同じ 5 レーン"
+else
+  bad "--route full が利用者設定で 5 レーンから外れた: [$(plan_lane_pairs "$ROUTE_FULL_USER_LOG")]"
+fi
+ROUTE_CONFLICT_RC=0
+run_route "$TMP/route-conflict.log" --route fast --cli claude-code || ROUTE_CONFLICT_RC=$?
+ROUTE_FULL_CONFLICT_RC=0
+run_route "$TMP/route-full-conflict.log" --route full --perspective security-analysis || ROUTE_FULL_CONFLICT_RC=$?
+ROUTE_BAD_RC=0
+run_route "$TMP/route-bad.log" --route fastest || ROUTE_BAD_RC=$?
+if [ "$ROUTE_CONFLICT_RC" -eq 2 ] && grep -q -- '--route fast decides the lanes itself' "$TMP/route-conflict.log" \
+  && [ "$ROUTE_FULL_CONFLICT_RC" -eq 2 ] && grep -q -- '--route full decides the lanes itself' "$TMP/route-full-conflict.log" \
+  && [ "$ROUTE_BAD_RC" -eq 2 ] && grep -q -- '--route must be fast|full|none' "$TMP/route-bad.log"; then
+  ok "--route fast とレーン構成の明示（--cli 等）の併用・未知の経路名は exit 2（黙って片方へ倒さない）"
+else
+  bad "--route の誤用が exit 2 にならない: conflict=${ROUTE_CONFLICT_RC} bad=${ROUTE_BAD_RC}"
+fi
+
+echo ""
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ multi-agent-plan verify: $FAIL 件失敗（$PASS 件成功）" >&2
   FF_REACHED_END=1

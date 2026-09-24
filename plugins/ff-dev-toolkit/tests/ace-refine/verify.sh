@@ -22,6 +22,17 @@
 #           `retrospective` が自前の base 先行ガードを持つ、という相互参照を削ると 1 件が赤
 #           （2026-09-15 実測。実体側は tests/retrospective-contract が固定する）。
 #
+# 変異検出（本線の 20 KB 化・操作別手順の references/operations.md への移設。2026-09-24 実測）:
+#           R3 開始前ガードの fence を消して「承認前の fence を再実行する」形へ畳んだ後も、承認前 fence の
+#           `merge-base --is-ancestor` の引数を逆転させると 2 件が赤（節スコープ針 + 抽出実行）。
+#           operations.md の R3-a から「ちょうど 1 件」の一文を削ると 1 件が赤（付け替え先で当たる）。
+#           R3 の「fence をもう一度実行する」一文を削ると 2 件、R3 から operations.md への経路を削ると
+#           1 件、operations.md の R3-a 見出しを崩すと 2 件が赤。
+#
+# 空振り検出: 本線 SKILL.md を 20,001 B にすると 1 件が赤、references/operations.md を空にすると検査対象の
+#             存在検査で中断して赤になる（2026-09-24 実測。本線が上限を超える・操作別手順の置き場所が
+#             空になる変更を「契約あり」へ倒さない）。
+#
 # 変異検出（curate の追記前予測・完了報告の契約）:
 #           上限以上のとき「追記したうえでフォローアップに記録する」へ書き換えると 1 件が赤。
 #           **当初この変異は生存した** — 条件（上限以上なら）と帰結（停止する）を別々の針で
@@ -50,7 +61,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REFINE_FILE="$PLUGIN_ROOT/skills/ace-refine/SKILL.md"
+# 操作別の手順（R3-a〜R3-d）は本線から references へ移した。本線が「承認された操作の節だけを読む」
+# と案内する先なので、そこに在ることが要件の針はこのファイルへ張る。
+REFINE_OPERATIONS_FILE="$PLUGIN_ROOT/skills/ace-refine/references/operations.md"
 CURATE_FILE="$PLUGIN_ROOT/skills/ace-curate/SKILL.md"
+# curate 側のハードルール（append-only・refine 専権・行数バジェット・allowlist の抜け道禁止）は
+# 本線から条件付き reference へ移した。針はその reference へ張る。
+CURATE_RULES="$PLUGIN_ROOT/skills/ace-curate/references/curate.md"
 PLAYBOOK_TEMPLATE="$PLUGIN_ROOT/docs-template/08-knowledge/PLAYBOOK.md"
 PATTERNS_TEMPLATE="$PLUGIN_ROOT/docs-template/03-implementation/PATTERNS.md"
 ACE_CYCLE_TEMPLATE="$PLUGIN_ROOT/docs-template/05-operations/deployment/ace-cycle.md"
@@ -64,7 +81,7 @@ ESBUILD_BIN="$PLUGIN_ROOT/mcp/node_modules/.bin/esbuild"
 # shellcheck source=../lib/section-scope.sh
 . "$SCRIPT_DIR/../lib/section-scope.sh"
 
-for f in "$REFINE_FILE" "$CURATE_FILE" "$PLAYBOOK_TEMPLATE" "$PATTERNS_TEMPLATE" \
+for f in "$REFINE_FILE" "$REFINE_OPERATIONS_FILE" "$CURATE_FILE" "$PLAYBOOK_TEMPLATE" "$PATTERNS_TEMPLATE" \
          "$ACE_CYCLE_TEMPLATE" "$CHECK_SIZE_SCRIPT" "$REFINE_REPORT_SCRIPT" \
          "$FORMAT_GATE_SCRIPT" "$INVARIANTS_GATE_SCRIPT"; do
   [ -s "$f" ] || {
@@ -118,6 +135,21 @@ section_contains() {
   fi
 }
 
+echo "== ace-refine 本線の上限 =="
+
+# 本線は毎回読まれる骨格だけを持ち、操作別・domain・コミットの手順は references へ置いた。
+# 本線が再び膨らむのを止める。wc が数値を返さない場合も赤にする（fail-closed）。
+REFINE_MAX_BYTES=20000
+if ! refine_bytes="$(wc -c < "$REFINE_FILE" | tr -d '[:space:]')"; then
+  refine_bytes="(wc 失敗)"
+fi
+if [[ "$refine_bytes" =~ ^[0-9]+$ ]] && (( refine_bytes <= REFINE_MAX_BYTES )); then
+  ok "本線のバイト数: ${refine_bytes} B（上限 ${REFINE_MAX_BYTES} B）"
+else
+  bad "本線のバイト数が上限を超えた、または測れない: \"${refine_bytes}\" B（上限 ${REFINE_MAX_BYTES} B）"
+fi
+
+echo ""
 echo "== ace-refine ハードルール（安全弁の固定文言） =="
 
 contains "$REFINE_FILE" \
@@ -161,6 +193,16 @@ section_contains "$REFINE_FILE" "### Phase R3: 適用" \
 section_contains "$REFINE_FILE" "### Phase R3: 適用" \
   "適用済みの成果は**捨てない**" \
   "2 度目の先行からの復帰手順（成果を捨てない）"
+# R3 開始前ガードは承認前の fence と同じ中身だったので、fence を 1 本に畳んで再実行を指示する形に
+# した。この一文が消えると R3 の開始時に base を照合する手順そのものが本線から無くなる。
+section_contains "$REFINE_FILE" "### Phase R3: 適用" \
+  "の fence をもう一度実行する" \
+  "R3 開始の直前に承認前の照合 fence を再実行する"
+# 操作別の手順は references/operations.md にだけ在る。本線から読む経路が消えると、承認された
+# 操作の手順（archive の冒頭注記・一意性検証・provenance の変種）に実行者が届かない。
+section_contains "$REFINE_FILE" "### Phase R3: 適用" \
+  "[references/operations.md](references/operations.md)" \
+  "R3 が操作別の手順（references/operations.md）を読む経路を案内する"
 
 # 固定文言の針は「文言が在る」ことしか見ない。引数を逆転させても fetch 失敗の停止を削っても
 # 通るので、**SKILL.md からガードのフェンスを抽出して実際に動かす**。
@@ -242,7 +284,7 @@ contains "$REFINE_FILE" \
 contains "$REFINE_FILE" \
   "playbook/archive/<category>.md" \
   "アーカイブ先パスの明示"
-contains "$REFINE_FILE" \
+contains "$REFINE_OPERATIONS_FILE" \
   "アーカイブ書き込みの検証（必須）" \
   "アーカイブ write の grep 検証ステップ（文言ルールの機械化）"
 contains "$REFINE_FILE" \
@@ -255,7 +297,8 @@ echo "== 同梱スクリプトへの到達可能性検査（Issue #694） =="
 # ゲートの実行例が `path/to/` 等のプレースホルダのままだと、scripts/ace/ 未導入の
 # プロジェクトでは「必須」と書かれたゲートが素通りする（Issue #614 と同一クラス）。
 # 同梱テンプレートへの解決可能なパスを fail-closed で固定する。
-if grep -Fq -- 'path/to/' "$REFINE_FILE"; then
+REFINE_ALL_FILES=("$REFINE_FILE" "$PLUGIN_ROOT"/skills/ace-refine/references/*.md)
+if grep -Fq -- 'path/to/' "${REFINE_ALL_FILES[@]}"; then
   bad "実行例に未解決のプレースホルダ path/to/ が残っています"
 else
   ok "実行例に未解決のプレースホルダ path/to/ が無い"
@@ -263,7 +306,7 @@ fi
 
 # 同梱テンプレート経路は ace-run-ts.sh 経由が正（Issue #879）。root package に tsx が
 # 無い workspace では npx 直書きが command not found で全ゲート到達不能になる。
-if grep -Fq -- 'npx --yes tsx "${FF_DEV_TOOLKIT_ROOT}' "$REFINE_FILE"; then
+if grep -Fq -- 'npx --yes tsx "${FF_DEV_TOOLKIT_ROOT}' "${REFINE_ALL_FILES[@]}"; then
   bad "同梱テンプレート経路が npx --yes tsx 直書きへ戻っています（Issue #879 の退行）"
 else
   ok "同梱テンプレート経路に npx --yes tsx 直書きが無い（ace-run-ts.sh 経由）"
@@ -301,13 +344,13 @@ echo "== archive / provenance 契約の 3 穴（Issue #288） =="
 
 # 穴 1: provenance 注記が「再整形のみ」を表現できず、実際にしていない要約を記録していた。
 # 2 変種と判定条件の両方を固定する（片方だけ残ると再び文言の孤島が生まれる）。
-contains "$REFINE_FILE" \
+contains "$REFINE_OPERATIONS_FILE" \
   "> Compacted: YYYY-MM-DD（live 側を要約済み。本文の原文は本エントリが正）" \
   "provenance 注記 第1変種（本文を意味保存要約した場合）"
-contains "$REFINE_FILE" \
+contains "$REFINE_OPERATIONS_FILE" \
   "> Compacted: YYYY-MM-DD（live 側はメタ表のみ正準フォーマットへ再整形。本文は逐語同一で無改変。本エントリが原文）" \
   "provenance 注記 第2変種（メタ表の再整形のみ・本文は逐語同一）"
-contains "$REFINE_FILE" \
+contains "$REFINE_OPERATIONS_FILE" \
   "live 側の本文文字列が原文と逐語同一かどうか" \
   "2 変種の判定条件"
 contains "$REFINE_FILE" \
@@ -316,18 +359,14 @@ contains "$REFINE_FILE" \
 
 # 穴 2: 保全本文内の相対リンクは verbatim 保全のため書き換えられない。
 # 「書き換えない」と「注記が必須」は対で意味を持つ（片方だけでは行動が決まらない）。
-contains "$REFINE_FILE" \
+contains "$REFINE_OPERATIONS_FILE" \
   "保全本文内の相対リンクは live 基準" \
   "archive 冒頭注記のテンプレート文言（機械ゲートの判定キー）"
-contains "$REFINE_FILE" \
+contains "$REFINE_OPERATIONS_FILE" \
   "保全本文内の相対リンクは書き換えない" \
   "保全本文内リンクの非書き換え契約"
-contains "$REFINE_FILE" \
-  "check-archive-links" \
-  "注記の存在を強制する機械ゲートへの導線"
-contains "$REFINE_FILE" \
-  "check-refine-invariants" \
-  "refine 結果不変条件ゲートへの導線"
+# check-archive-links / check-refine-invariants への導線は、下の「検証ゲートの未導入 fallback
+# パス」の針（ゲートの実行行そのもの）が同じ語を含んでより強く固定している。
 
 # 穴 3: 統合された側が archive で active のまま残り、grep した人に有効と誤読される。
 contains "$REFINE_FILE" \
@@ -347,9 +386,9 @@ echo "== archive 追記前の共通規則（保全済み ID の分岐 / Issue #7
 # 0 / 1 / 2 件以上）と一意性検証が SKILL.md から落ちると、実行者は毎回この穴を踏む。
 # 同型は ACE-490-2 に記録済みだったが手順へ反映されておらず、再発した。
 R30_HEADING="#### R3-0. archive へ追記する前の共通規則"
-R3A_HEADING="#### R3-a. stale エントリのアーカイブ"
-R3B_HEADING="#### R3-b. 長大エントリの圧縮"
-R3C_HEADING="#### R3-c. 近似重複の統合"
+R3A_HEADING="## R3-a. stale エントリのアーカイブ"
+R3B_HEADING="## R3-b. 長大エントリの圧縮"
+R3C_HEADING="## R3-c. 近似重複の統合"
 R3E_HEADING="#### R3-e. 索引・Frontmatter・Changelog の整合"
 HARD_RULES_HEADING="## ハードルール"
 
@@ -371,22 +410,22 @@ section_contains "$REFINE_FILE" "$R30_HEADING" \
 section_contains "$REFINE_FILE" "$R30_HEADING" \
   "ACE-490-2" \
   "R3-0: 同型を記録した知見（ACE-490-2）への参照"
-section_contains "$REFINE_FILE" "$R3A_HEADING" \
+section_contains "$REFINE_OPERATIONS_FILE" "$R3A_HEADING" \
   "保全済み（1 件）なら**原文を再コピーせず**" \
   "R3-a: 保全済みなら既存ブロックへ Archived 注記を追記する"
-section_contains "$REFINE_FILE" "$R3A_HEADING" \
+section_contains "$REFINE_OPERATIONS_FILE" "$R3A_HEADING" \
   "**ちょうど 1 件**あることを確認してから live 側を削除する" \
   "R3-a: 保全検証が一意（=1）で書かれている"
-section_contains "$REFINE_FILE" "$R3B_HEADING" \
+section_contains "$REFINE_OPERATIONS_FILE" "$R3B_HEADING" \
   "保全済みなら原文を再コピーせず、既存ブロックへ今回の \`> Compacted:\` 行だけを追記する" \
   "R3-b: 保全済みなら既存ブロックへ Compacted 注記を追記する"
-section_contains "$REFINE_FILE" "$R3B_HEADING" \
+section_contains "$REFINE_OPERATIONS_FILE" "$R3B_HEADING" \
   "**ちょうど 1 件**であることを確認してから live 側を書き換える" \
   "R3-b: 保全検証が一意（=1）で書かれている"
-section_contains "$REFINE_FILE" "$R3C_HEADING" \
+section_contains "$REFINE_OPERATIONS_FILE" "$R3C_HEADING" \
   "既存の archive レコードへ \`> Merged into:\` を追記して \`Status\` を \`merged\` に変える" \
   "R3-c: 保全済みなら既存レコードへ Merged into 追記と Status=merged を行う"
-section_contains "$REFINE_FILE" "$R3C_HEADING" \
+section_contains "$REFINE_OPERATIONS_FILE" "$R3C_HEADING" \
   "0 件でも 2 件以上でも live 側に触れず中断する" \
   "R3-c: 保全検証が一意（=1）で書かれている"
 section_contains "$REFINE_FILE" "$R3E_HEADING" \
@@ -519,7 +558,7 @@ section_contains "$CURATE_FILE" "$CURATE_REPORT_SECTION" \
 section_contains "$CURATE_FILE" "$CURATE_REPORT_SECTION" \
   "4-e（行数バジェット）はこの列挙に入れない" \
   "非 0 を返さない 4-e を機械的検証の列挙に混ぜない"
-contains "$CURATE_FILE" \
+contains "$CURATE_RULES" \
   "行数バジェット自己チェック（必須・ブロッキング）" \
   "15 行バジェットの自己チェック"
 contains "$CURATE_FILE" \
@@ -528,13 +567,13 @@ contains "$CURATE_FILE" \
 contains "$CURATE_FILE" \
   "索引行はタイトルのみ" \
   "索引タイトルのみルール"
-contains "$CURATE_FILE" \
+contains "$CURATE_RULES" \
   "既存エントリの要約・アーカイブ・統合は \`/ace-refine\` のみが行う" \
   "refine 専権の明示（curate は grow 専用）"
 contains "$CURATE_FILE" \
   "| Helpful | 0 | Harmful | 0 |" \
   "コンパクト正準フォーマットのカウンター行（スクリプト互換の行頭パイプ）"
-contains "$CURATE_FILE" \
+contains "$CURATE_RULES" \
   "既存エントリの本文（新形式の本文 / 旧形式の Insight/Context/Action）の書き換えは禁止" \
   "curate 側の append-only ハードルールが残っている"
 
@@ -611,12 +650,9 @@ contains "$FORMAT_GATE_SCRIPT" \
 contains "$CURATE_FILE" \
   "check-entry-format" \
   "curate の同期検証に形式ゲートが配線されている"
-contains "$CURATE_FILE" \
+contains "$CURATE_RULES" \
   "新規 ID を足して通すことはしない" \
   "curate 側: allowlist を抜け道にしない"
-contains "$REFINE_FILE" \
-  "check-entry-format" \
-  "refine の検証ゲートに形式ゲートが配線されている"
 contains "$REFINE_FILE" \
   "正準化後の allowlist 操作は変種で分岐する" \
   "refine 側: allowlist 操作が変種分岐であること"

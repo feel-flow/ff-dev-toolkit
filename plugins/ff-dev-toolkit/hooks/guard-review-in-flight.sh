@@ -30,6 +30,12 @@
 #      **解除は全レーンの終端でのみ起きる**: 1 本が終わってもそのレーンが消えるだけで、
 #      残りが 1 本でもあれば deny は続く。「一部のレビュアーが返ってきた」という体感で
 #      凍結が解けることを、数える対象を per-lane のファイルにすることで構造的に消す。
+#   D) 巡回カウンタ（レビュー巡回の上限）: 同じブランチで異なる HEAD に対するレビュー起動を
+#      巡として数え、上限（既定 2 巡）を超える巡の起動を deny する。記録は
+#      `<git common dir>/ff-review-rounds/`（出力先の外。レーン置き場の `rm -rf` や `--fresh` の
+#      退避で消えない）。**PR 作成前のレビュー（実装途中の起動）も巡を消費する**。使い切ったら
+#      `FF_REVIEW_ROUND_ACK=1` で 1 巡ずつ通す。統合ブランチ上・記録が無い / 読めない回は判定不能
+#      = 通す + 警告。判定と母集団の正本は tests/lib/review-round-counter.sh のヘッダ
 #
 # deny と ask を使い分ける理由:
 #   - A は「実行させると失うものがある」（数分ぶんのレビューが破棄される）ので
@@ -182,6 +188,10 @@
 #   FF_REVIEW_SUBAGENT_LOCK_TYPES=<空白区切り>     C がレーンを取る subagent_type のパターン名簿
 #                                                 （glob 可。既定は pr-review-toolkit の read-only な
 #                                                 レビュアー 5 種）
+#   FF_REVIEW_ROUND_LIMIT=<n>                     D（巡回カウンタ）の上限（既定 2、0 で無効）。3 巡目以降の
+#                                                 起動を deny する。判定の正本は tests/lib/review-round-counter.sh
+#   FF_REVIEW_ROUND_ACK=1                         D の 1 回限りの通過口。Bash は起動コマンドの区間先頭の
+#                                                 環境代入、Agent は prompt の行頭の単独行（セッション環境は読まない）
 #   FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1  この hook 全体を無効化する。`claude -p` /
 #                                                 background / subagent など非対話実行では
 #                                                 permissionDecision "ask" が block 相当になるため、
@@ -230,21 +240,81 @@ command -v git >/dev/null 2>&1 || exit 0
 ROOT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)" || exit 0
 [ -n "$ROOT" ] && [ -d "$ROOT" ] || exit 0
 
+# D（巡回カウンタ）の警告は、どの出口で終わっても 1 度だけ systemMessage へ載せる。空のときは
+# 従来と 1 バイトも変わらない出力にする（`+ {}` は同じ JSON を出す）。巡の記録は「起動が通る」と
+# 決まった出口（無音・systemMessage）で書き、deny では書かない。ask（利用者が許可すれば起動する）は
+# 仮記録し、拒否されて PermissionDenied が来たら同じ鍵で取り消す。
+ROUND_NOTE=""
+ROUND_NOTE_DONE=0
+ROUND_PENDING=0
 emit_deny() { # <reason>
-  jq -n --arg reason "$1" \
-    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
+  ROUND_NOTE_DONE=1
+  ROUND_PENDING=0
+  jq -n --arg reason "$1" --arg rn "$ROUND_NOTE" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}} + (if $rn == "" then {} else {systemMessage: $rn} end)' 2>/dev/null
   exit 0
 }
 
 emit_ask() { # <reason>
-  jq -n --arg reason "$1" \
-    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: $reason}}' 2>/dev/null
+  review_round_commit provisional
+  ROUND_NOTE_DONE=1
+  jq -n --arg reason "$1" --arg rn "$ROUND_NOTE" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: $reason}} + (if $rn == "" then {} else {systemMessage: $rn} end)' 2>/dev/null
   exit 0
 }
 
 emit_message() { # <text>
-  jq -n --arg m "$1" '{systemMessage: $m}' 2>/dev/null
+  review_round_commit
+  ROUND_NOTE_DONE=1
+  jq -n --arg m "$1" --arg rn "$ROUND_NOTE" '{systemMessage: (if $rn == "" then $m else ($rn + "\n" + $m) end)}' 2>/dev/null
   exit 0
+}
+
+# D) 巡回カウンタ（判定・母集団・記録の置き場の正本は tests/lib/review-round-counter.sh のヘッダ）。
+# 上限を超える巡の起動を deny し、判定不能は警告だけ出して通す。ライブラリを読めない回は、
+# レビューの起動と分かっている agent 経路でだけ判定不能を知らせる（bash 経路は起動かどうかを
+# ライブラリが決める）。
+review_round_gate() { # <agent|bash>
+  local lib="${BASH_SOURCE[0]%/*}/../tests/lib/review-round-counter.sh"
+  # shellcheck source=../tests/lib/review-round-counter.sh
+  if [ -r "$lib" ] && . "$lib" 2>/dev/null && [ "$(type -t ff_review_round_gate 2>/dev/null)" = "function" ]; then
+    ff_review_round_gate "$1" || return 0
+    [ "$RR_VERDICT" = "deny" ] && emit_deny "$RR_REASON"
+    ROUND_NOTE="$RR_NOTE"
+    [ -n "$RR_PENDING_FILE" ] && ROUND_PENDING=1
+  else
+    # ライブラリが無くても、レビューの起動と分かる回は判定不能を知らせる（黙って通さない）。
+    # Bash の判定はライブラリに置いてあるので、ここは起動スクリプト名の字面だけを見る最小限の判定。
+    local launch=0
+    case "$1" in
+      agent) launch=1 ;;
+      bash)
+        case "$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)" in
+          *multi-review.sh* | *multi-agent.sh* | *codex-review.sh*) launch=1 ;;
+        esac
+        ;;
+    esac
+    [ "$launch" -eq 0 ] || ROUND_NOTE="ℹ️ ff-dev-toolkit guard（レビュー巡回カウンタ）: 巡回カウンタ（${lib}）を読めないため巡を数えられません。判定不能として通します。"
+  fi
+  if [ -n "$ROUND_NOTE" ] || [ "$ROUND_PENDING" -eq 1 ]; then
+    trap review_round_finish EXIT
+  fi
+  return 0
+}
+review_round_commit() { # [provisional]
+  [ "$ROUND_PENDING" -eq 1 ] || return 0
+  ROUND_PENDING=0
+  if [ "${1:-}" = "provisional" ]; then
+    ff_review_round_commit_provisional "$(lane_key)" || ROUND_NOTE="$RR_NOTE"
+  else
+    ff_review_round_commit || ROUND_NOTE="$RR_NOTE"
+  fi
+}
+review_round_finish() { # EXIT trap: 無音の出口で記録し、警告を 1 度だけ出す
+  [ "$ROUND_NOTE_DONE" -eq 1 ] && return 0
+  review_round_commit
+  [ -n "$ROUND_NOTE" ] && jq -n --arg m "$ROUND_NOTE" '{systemMessage: $m}' 2>/dev/null
+  return 0
 }
 
 # ── ロックの読み取り（A・B・C が使う） ─────────────────────────────────────
@@ -725,6 +795,12 @@ if [ "$EVENT" = "PermissionDenied" ]; then
     *) exit 0 ;;
   esac
   release_lane_by_key
+  # D) ask で仮記録した巡を取り消す（起動しなかった回に巡を消費させない）
+  ROUND_LIB="${BASH_SOURCE[0]%/*}/../tests/lib/review-round-counter.sh"
+  # shellcheck source=../tests/lib/review-round-counter.sh
+  if [ -r "$ROUND_LIB" ] && . "$ROUND_LIB" 2>/dev/null && [ "$(type -t ff_review_round_cancel 2>/dev/null)" = "function" ]; then
+    ff_review_round_cancel "$ROOT" "$(lane_key)"
+  fi
   exit 0
 fi
 
@@ -821,6 +897,8 @@ if [ "$tool" = "Agent" ] || [ "$tool" = "Task" ]; then
     fi
   fi
   if [ "$lane_target" -eq 1 ]; then
+    # 巡の上限はレーンを取る前に判定する（deny した起動にレーンを残さない）。隔離起動も数える。
+    review_round_gate agent
     case "$isolation" in
       # 隔離起動のレビュアーは親と作業ツリーを共有しないので凍結の対象外
       # （加えて、隔離 worktree 内で変異注入を行うレビュアーの自己デッドロックを避ける）
@@ -876,6 +954,7 @@ fi
 # ペイロードに載る（claude 2.1.267 の同梱実装で確認: hook 入力の共通部が
 # `agent_id` / `agent_type` を持ち、`PreToolUse` はそこへ tool 情報を足した形）。
 caller_agent_type="$(printf '%s' "$input" | jq -r '.agent_type // ""' 2>/dev/null)"
+[ "$tool" = "Bash" ] && review_round_gate bash
 is_review_lock_type "$caller_agent_type" && exit 0
 
 # 走行中とみなせる材料が 1 つも無ければ従来どおり無音で通す。stale なロックが残って

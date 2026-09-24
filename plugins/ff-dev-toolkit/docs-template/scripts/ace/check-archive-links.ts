@@ -28,7 +28,7 @@ const EXIT_VIOLATION = 1;
 const EXIT_USAGE_ERROR = 2;
 
 /**
- * 冒頭注記の判定に使う固定文言。`/ace-refine` SKILL.md R3-a の注記テンプレートと
+ * 冒頭注記の判定に使う固定文言。`/ace-refine` の references/operations.md R3-a の注記テンプレートと
  * PLAYBOOK.md §運用ルールの文言に一致させる（テンプレートを変えるなら両方を同時に変える）。
  */
 export const LIVE_BASIS_NOTE_MARKER = "保全本文内の相対リンクは live 基準";
@@ -259,7 +259,7 @@ export function main(): number {
 
   if (noteViolations.length > 0) {
     console.error(
-      `⚠ 保全本文内に \`./\` 相対リンクがあるのに冒頭注記が無い archive ファイルがあります。原文は verbatim 保全のためリンクを書き換えられないので、代わりに「${LIVE_BASIS_NOTE_MARKER}」の注記をファイル冒頭（Parent ブロック内）へ追加してください（テンプレートは /ace-refine SKILL.md R3-a）。注記が無いと、読者は live に着いたつもりでアーカイブ済みの古い複製を読みます:\n- ` +
+      `⚠ 保全本文内に \`./\` 相対リンクがあるのに冒頭注記が無い archive ファイルがあります。原文は verbatim 保全のためリンクを書き換えられないので、代わりに「${LIVE_BASIS_NOTE_MARKER}」の注記をファイル冒頭（Parent ブロック内）へ追加してください（テンプレートは /ace-refine の references/operations.md R3-a）。注記が無いと、読者は live に着いたつもりでアーカイブ済みの古い複製を読みます:\n- ` +
         noteViolations.join("\n- "),
     );
   }

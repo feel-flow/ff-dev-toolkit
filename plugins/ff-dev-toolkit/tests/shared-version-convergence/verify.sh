@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 # 共有版境界の optimistic retry 契約と 2 clone 実測（ADR-038 / Issue #764）。
+# 空振り検出: spec-driven の針は本線と移設先 references/version-convergence.md の 2 ファイルを見る。
+#   移設先が無いと contains が grep rc=2 で赤。本線 Step 6 の読む条件（「`version` を変更した文書、
+#   または `.version-claims/` の対象を変えた回」）を消す変異、移設先への導線の行を消す変異、
+#   移設先の読む条件を消す変異、移設先から「最大3回」を消す変異は、いずれも該当の針 1 件が赤（実測）。
+# 空振り検出: ace-refine の claim 順序は本線と references/commit.md の実行行を直接比べる。commit.md の
+#   claim block（§1）を commit block（§2）の後ろへ移す変異、commit.md の読む条件（R3-e のゲートが exit 0
+#   になった後に読む）を消す変異、claim helper の起動行を commit の後ろへもう 1 本足す変異、本線 R3-e
+#   手順 7 を手順 5 のゲートより前へ移す変異は、いずれも順序検査 1 件が赤（2026-09-24 実測）。
 set -euo pipefail
 # check-version-claims.sh は GITHUB_ACTIONS=true で「fetch せず job 開始時点の remote-tracking ref を
 # 基準にする」CI 分岐へ入る（Issue #1336）。fixture ベースの検査はランナーの環境変数に左右されず
@@ -72,9 +80,20 @@ read_frontmatter_version() {
   ' "$1"
 }
 
-ACE_CURATE="$PLUGIN_ROOT/skills/ace-curate/SKILL.md"
+# ace-curate の共有値ガードのフェンス・claim の規則・non-fast-forward の再試行・chore PR のフェンスは
+# 条件付き reference（references/curate.md）にあり、claim の生成と検証は scripts/finish.sh
+# knowledge-commit add --claim が実行する。本線の SKILL.md は派生値の規定だけを持つ。
+ACE_CURATE="$PLUGIN_ROOT/skills/ace-curate/references/curate.md"
+ACE_CURATE_MAIN="$PLUGIN_ROOT/skills/ace-curate/SKILL.md"
+FINISH="$PLUGIN_ROOT/scripts/finish.sh"
 ACE_REFINE="$PLUGIN_ROOT/skills/ace-refine/SKILL.md"
+# ace-refine の claim 生成とコミット（PR / 直 push・再試行）は本線から references/commit.md へ移した
+# （R3-e のゲートが exit 0 になった後にだけ読む）。claim 契約の針はそちらへ張る。
+ACE_REFINE_COMMIT="$PLUGIN_ROOT/skills/ace-refine/references/commit.md"
 SPEC="$PLUGIN_ROOT/skills/spec-driven/SKILL.md"
+# 共有版の再確定手順は本線から references へ移した（本線は読む条件つきの 1 行で導く）。
+# 手順の針は移設先を、導線の針は本線を見る。
+SPEC_VC="$PLUGIN_ROOT/skills/spec-driven/references/version-convergence.md"
 ACE_CYCLE="$PLUGIN_ROOT/docs-template/05-operations/deployment/ace-cycle.md"
 CLAIM_HELPER="$PLUGIN_ROOT/scripts/update-version-claim.sh"
 CLAIM_VALIDATOR="$PLUGIN_ROOT/scripts/check-version-claims.sh"
@@ -83,35 +102,39 @@ echo "== shared version contract =="
 contains "$ACE_CURATE" 'git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"' "ace-curate は明示 refspec で fetch"
 contains "$ACE_CURATE" 'git status --porcelain --untracked-files=all' "ace-curate は dirty tree を拒否"
 contains "$ACE_CURATE" 'stale 値で版を確定しない' "ace-curate は fetch 失敗を fail-closed"
-contains "$ACE_CURATE" 'merged tree の live エントリ実数から再計算' "ace_entry_count は派生実数"
+contains "$ACE_CURATE_MAIN" 'merged tree の live エントリ実数から再計算' "ace_entry_count は派生実数"
 contains "$ACE_CURATE" '最大 3 回' "ace-curate retry は bounded"
 contains "$ACE_CURATE" 'git merge-base --is-ancestor "origin/${default_branch}" HEAD' "ace-curate は default branch 祖先を検査"
 contains "$ACE_CURATE" '`--force` / `--force-with-lease` で先行セッションを上書きしない' "ace-curate は force push を禁止"
-contains "$ACE_REFINE" '最大 3 回' "ace-refine retry は bounded"
+contains "$ACE_REFINE_COMMIT" '最大 3 回' "ace-refine retry は bounded"
 contains "$ACE_REFINE" 'git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"' "ace-refine は明示 refspec で fetch"
 contains "$ACE_REFINE" 'git status --porcelain --untracked-files=all' "ace-refine は dirty tree を拒否"
 contains "$ACE_REFINE" 'git merge-base --is-ancestor "origin/${default_branch}" HEAD' "ace-refine は default branch 祖先を検査"
 contains "$ACE_REFINE" 'stale 値へ fallback せず停止' "ace-refine は取得不能を fail-closed"
-contains "$SPEC" 'git status --porcelain --untracked-files=all' "spec-driven は dirty tree を拒否"
-contains "$SPEC" 'git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"' "spec-driven は明示 refspec で fetch"
-contains "$SPEC" 'git merge-base --is-ancestor "origin/${default_branch}" HEAD' "spec-driven は default branch 祖先を検査"
-contains "$SPEC" '最大3回' "spec-driven retry は bounded"
-contains "$SPEC" '`--force` / `--force-with-lease` で上書きしない' "spec-driven は force 系 push を禁止"
-contains "$SPEC" '.version-claims/' "spec-driven は文書別 version claim を要求"
-contains "$SPEC" '`.version-claims/` が無い利用先ではこの手順だけを省略する' "spec-driven は claim contract 未導入先を停止させない"
+contains "$SPEC" '`version` を変更した文書、または `.version-claims/` の対象を変えた回は、`references/version-convergence.md` の手順で最新 default branch から' "spec-driven 本線は読む条件つきで G4 から共有版の再確定手順へ導く"
+contains "$SPEC_VC" '**読むのは、`version` を変更した文書、または `.version-claims/` の対象を変えた回だけ**' "spec-driven の再確定手順は読む条件を version 変更と claim 対象に限る"
+contains "$SPEC_VC" 'git status --porcelain --untracked-files=all' "spec-driven は dirty tree を拒否"
+contains "$SPEC_VC" 'git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"' "spec-driven は明示 refspec で fetch"
+contains "$SPEC_VC" 'git merge-base --is-ancestor "origin/${default_branch}" HEAD' "spec-driven は default branch 祖先を検査"
+contains "$SPEC_VC" '最大3回' "spec-driven retry は bounded"
+contains "$SPEC_VC" '`--force` / `--force-with-lease` で上書きしない' "spec-driven は force 系 push を禁止"
+contains "$SPEC_VC" '.version-claims/' "spec-driven は文書別 version claim を要求"
+contains "$SPEC_VC" '`.version-claims/` が無い利用先ではこの手順だけを省略する' "spec-driven は claim contract 未導入先を停止させない"
 contains "$ACE_CURATE" '.version-claims/docs/08-knowledge/PLAYBOOK.md.claim' "ace-curate は PLAYBOOK claim を要求"
 contains "$ACE_REFINE" '.version-claims/' "ace-refine は変更文書 claim を要求"
-contains "$ACE_CURATE" '[[ -f .version-claims/docs/08-knowledge/PLAYBOOK.md.claim ]] ||' "ace-curate PR は claim 不在を拒否"
+contains "$FINISH" '.version-claims/${doc}.claim" ]] || die_env' "ace-curate PR は claim 不在を拒否（finish.sh knowledge-commit add --claim）"
 ace_curate_pr_block="$(sed -n '/\*\*任意エスカレーション — chore PR\*\*/,/gh pr create/p' "$ACE_CURATE")"
-if [[ "$ace_curate_pr_block" == *'scripts/update-version-claim.sh'* ]]; then ok "ace-curate PR は最新 base から claim を生成"; else bad "ace-curate PR が既存 claim を再利用"; fi
-contains "$ACE_REFINE" '[[ -f .version-claims/docs/08-knowledge/PLAYBOOK.md.claim ]] ||' "ace-refine PR は PLAYBOOK claim 不在を拒否"
-contains "$ACE_REFINE" '[[ -f .version-claims/docs/03-implementation/PATTERNS.md.claim ]] ||' "ace-refine は PATTERNS 変更時の claim 不在を拒否"
+if [[ "$ace_curate_pr_block" == *'add --claim docs/08-knowledge/PLAYBOOK.md'* ]] && grep -qF -- 'update-version-claim.sh" --base "origin/${default_branch}"' "$FINISH"; then ok "ace-curate PR は最新 base から claim を生成（add --claim → update-version-claim.sh --base origin/default）"; else bad "ace-curate PR が既存 claim を再利用"; fi
+contains "$ACE_REFINE_COMMIT" '[[ -f .version-claims/docs/08-knowledge/PLAYBOOK.md.claim ]] ||' "ace-refine PR は PLAYBOOK claim 不在を拒否"
+contains "$ACE_REFINE_COMMIT" '[[ -f .version-claims/docs/03-implementation/PATTERNS.md.claim ]] ||' "ace-refine は PATTERNS 変更時の claim 不在を拒否"
 contains "$ACE_CURATE" 'scripts/update-version-claim.sh' "ace-curate は共通 claim helper を実行"
-contains "$ACE_REFINE" 'scripts/update-version-claim.sh' "ace-refine は共通 claim helper を実行"
-contains "$SPEC" 'scripts/update-version-claim.sh' "spec-driven は共通 claim helper を実行"
-contains "$SPEC" 'scripts/check-version-claims.sh' "spec-driven は stage 後の claim validator を実行"
+# 起動行そのものに当てる（`scripts/update-version-claim.sh` だけだと直前の `-x` 存在確認にも一致し、
+# 呼び出し行を消しても緑のまま残る）。
+contains "$ACE_REFINE_COMMIT" '/scripts/update-version-claim.sh" --base "origin/${default_branch}"' "ace-refine は共通 claim helper を実行"
+contains "$SPEC_VC" 'scripts/update-version-claim.sh' "spec-driven は共通 claim helper を実行"
+contains "$SPEC_VC" 'scripts/check-version-claims.sh' "spec-driven は stage 後の claim validator を実行"
 contains "$ACE_CURATE" 'scripts/check-version-claims.sh' "ace-curate は stage 後の claim validator を実行"
-contains "$ACE_REFINE" 'scripts/check-version-claims.sh' "ace-refine は stage 後の claim validator を実行"
+contains "$ACE_REFINE_COMMIT" 'scripts/check-version-claims.sh' "ace-refine は stage 後の claim validator を実行"
 if [[ -x "$CLAIM_HELPER" ]]; then ok "claim helper は実行可能"; else bad "claim helper が実行可能でない"; fi
 if [[ -x "$CLAIM_VALIDATOR" ]]; then ok "claim validator は通常ゲートから実行可能"; else bad "claim validator が実行可能でない"; fi
 contains "$CLAIM_VALIDATOR" 'ls-files --stage -z' "claim validator の index snapshot は staged entry を read-only 列挙"
@@ -121,14 +144,35 @@ contains "$CLAIM_HELPER" 'current=$current_blob' "claim helper は current blob 
 contains "$CLAIM_HELPER" '! -L "$claim_parent"' "claim helper は symlink 親階層を拒否"
 contains "$CLAIM_HELPER" 'claim の最終検証に失敗' "claim helper は保存後 claim を完全検証"
 contains "$ACE_CURATE" 'default_ref="$(git symbolic-ref' "ace-curate claim block は default branch を自己解決"
-contains "$ACE_REFINE" 'default_ref="$(git symbolic-ref' "ace-refine claim block は default branch を自己解決"
-contains "$ACE_REFINE" 'if [[ -d .version-claims ]]; then' "ace-refine は claim contract がある repository だけで生成"
-contains "$ACE_CURATE" '**各再試行で**上の commit block と同じ claim 生成' "ace-curate は retry ごとに claim を再生成"
-contains "$ACE_REFINE" '**各再試行で**上の claim block と同じ claim 生成' "ace-refine は retry ごとに claim を再生成"
+contains "$ACE_REFINE_COMMIT" 'default_ref="$(git symbolic-ref' "ace-refine claim block は default branch を自己解決"
+contains "$ACE_REFINE_COMMIT" 'if [[ -d .version-claims ]]; then' "ace-refine は claim contract がある repository だけで生成"
+contains "$ACE_CURATE" '**各再試行で** `add --claim docs/08-knowledge/PLAYBOOK.md` からやり直す' "ace-curate は retry ごとに claim を再生成"
+contains "$ACE_REFINE_COMMIT" '**各再試行で**上の claim block と同じ claim 生成' "ace-refine は retry ごとに claim を再生成"
+# ace-refine の claim 生成の実行本体は references/commit.md にある。本線の説明行どうしの前後だけを
+# 見ると、commit.md の中で claim 生成を commit の後ろへ回す・読む条件（ゲート exit 0 の後）を外す
+# 変更が緑のまま通る。順序は 2 ファイルそれぞれで実行行を直接比べる:
+#   本線: R3-e のゲート行 < commit.md へ進む行（「全編集後に claim を最終生成する」と同じ行に commit.md へのリンク）
+#   commit.md: 読む条件（R3-e のゲートが exit 0 になった後）< claim helper の起動行（ちょうど 1 行）
+#              < 変更の stage < git commit
+# 行番号の取得は「最初の一致」に固定し、claim helper の起動行だけは本数も数える（2 本目を commit の
+# 後ろへ足して順序検査を骨抜きにする形を拒む）。
 refine_gate_line="$(grep -nF 'npx --yes tsx scripts/ace/check-entry-format.ts' "$ACE_REFINE" | head -1 | cut -d: -f1 || true)"
-refine_claim_line="$(grep -nF '全編集後に claim を最終生成する' "$ACE_REFINE" | head -1 | cut -d: -f1 || true)"
-if [[ -n "$refine_gate_line" && -n "$refine_claim_line" && "$refine_gate_line" -lt "$refine_claim_line" ]]; then ok "ace-refine は全編集・ゲート後に claim を生成"; else bad "ace-refine claim が最終文書より先に生成される"; fi
-not_contains "$SPEC" 'push が non-fast-forward なら' "spec-driven は feature push を default branch CAS と誤認しない"
+refine_claim_line="$(grep -nF '全編集後に claim を最終生成する' "$ACE_REFINE" | grep -F '(references/commit.md)' | head -1 | cut -d: -f1 || true)"
+if [[ -n "$refine_gate_line" && -n "$refine_claim_line" && "$refine_gate_line" -lt "$refine_claim_line" ]]; then ok "ace-refine 本線は R3-e のゲートの後に claim 生成（references/commit.md）へ進む"; else bad "ace-refine 本線: claim 生成（references/commit.md）へ進む行が R3-e のゲートより前にある、または見つからない"; fi
+refine_commit_cond="$(grep -nF 'R3-e（' "$ACE_REFINE_COMMIT" | grep -F 'が exit 0 になった後に読む' | head -1 | cut -d: -f1 || true)"
+refine_commit_claim="$(grep -nF '/scripts/update-version-claim.sh" --base "origin/${default_branch}"' "$ACE_REFINE_COMMIT" | head -1 | cut -d: -f1 || true)"
+refine_commit_claim_n="$(grep -cF '/scripts/update-version-claim.sh" --base "origin/${default_branch}"' "$ACE_REFINE_COMMIT" || true)"
+refine_commit_stage="$(grep -nE '^git add docs/08-knowledge/' "$ACE_REFINE_COMMIT" | head -1 | cut -d: -f1 || true)"
+refine_commit_commit="$(grep -nE '^git commit( |$)' "$ACE_REFINE_COMMIT" | head -1 | cut -d: -f1 || true)"
+if [[ -n "$refine_commit_cond" && -n "$refine_commit_claim" && -n "$refine_commit_stage" && -n "$refine_commit_commit" \
+  && "$refine_commit_claim_n" == 1 \
+  && "$refine_commit_cond" -lt "$refine_commit_claim" && "$refine_commit_claim" -lt "$refine_commit_stage" \
+  && "$refine_commit_stage" -lt "$refine_commit_commit" ]]; then
+  ok "ace-refine commit.md は ゲート exit 0 の後に読む → claim 生成（1 行）→ stage → commit の順"
+else
+  bad "ace-refine commit.md の順序が崩れている（読む条件=${refine_commit_cond:-なし} / claim=${refine_commit_claim:-なし}（${refine_commit_claim_n:-0} 行）/ stage=${refine_commit_stage:-なし} / commit=${refine_commit_commit:-なし}）"
+fi
+not_contains "$SPEC_VC" 'push が non-fast-forward なら' "spec-driven は feature push を default branch CAS と誤認しない"
 contains "$ACE_CYCLE" '最大 3 回' "配布 ace-cycle も収束規則を案内"
 contains "$ACE_CYCLE" '.version-claims/docs/08-knowledge/PLAYBOOK.md.claim' "配布 ace-cycle も PR race を閉じる"
 contains "$ACE_CYCLE" 'scripts/update-version-claim.sh' "配布 ace-cycle も共通 claim helper を案内"

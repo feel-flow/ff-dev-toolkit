@@ -16,7 +16,8 @@
 #      積む」方向へ一方向に偏り、今度は系統的な過大見積もりになる。3 帯すべてに
 #      記録先があることを検査する。
 #   4. 参照経路の欠落 — 3 層に貯めても読み取り経路が無ければ「記録するだけで参照
-#      されない層」になる。create-issue に 3 経路が揃っていることを検査する。
+#      されない層」になる。create-issue に 3 経路が揃っていることを検査する（3 経路は
+#      工数の目安表と一緒に references/estimation.md へ切り出してあり、そちらを見る）。
 #   5. 抽象度の発散 — estimation カテゴリのエントリに固有名が混ざると、次の類似
 #      ケースが「新しい知見」に見えて件数が発散する（Issue #1135 の先行実験）。
 #   6. 単位の静かな混入 — 単位を人日（d）から人時（h）へ移した。旧ブロック（effort_unit 行が
@@ -38,6 +39,7 @@
 # 変異検出: start が無いときの reflog からの補いを外すと 検査 13f が赤になる（mutation/mut-reflog-off.py）。
 # 変異検出: 空の単位宣言（`- effort_unit:`）を旧ブロックとして読むと 検査 4f の excluded_malformed=2 / population=6 が赤になる（mutation/mut-empty-unit.py）。
 # 変異検出: record-effort-wallclock.sh の Issue 番号抽出の `#` を任意に戻すと 検査 14c（`chore/2026-09-23-cleanup` を Issue として記録する）が赤になる（mutation/mut-hash-optional.py）。
+# 空振り検出: create-issue の references/estimation.md を消すと検査対象不在で exit 1、3 層参照の表を本線 SKILL.md へ戻して estimation.md から消すと 検査 9 の 3 件が赤になる（`--state closed` は補正手順の照会にも在るので残る）（2026-09-24 実測。置き場所を移した針が移動元の写しに当たって緑になる形を塞ぐ）。
 # 空振り検出: --issue-metrics に存在しない記録ディレクトリを与えると (unmeasured) を出して exit 0 することを 検査 13a が固定し、0 を出す変異（mutation/mut-metrics-zero.py）で 13a が赤になる。
 #
 # 検査の書き方の規律（レビュー由来）:
@@ -66,7 +68,14 @@ ROOT="${FF_DOCS_REPO_ROOT:-$DEFAULT_ROOT}"
 
 FIX="$SCRIPT_DIR/fixtures"
 CREATE="$PLUGIN_ROOT/skills/create-issue/SKILL.md"
-CLOSE="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
+# 過去実績の 3 層参照と工数の目安表は create-issue の条件付き reference に切り出してある。
+CREATE_ESTIMATION="$PLUGIN_ROOT/skills/create-issue/references/estimation.md"
+# 工数の書き戻し規則（ブロック例・単位・帯の較正）は close-issue の条件付き reference へ切り出して
+# ある（本線の SKILL.md は fail-open の分岐と reference の名指しだけを持つ）。hook の記録の読み手は
+# scripts/finish.sh precheck が呼ぶ。
+CLOSE="$PLUGIN_ROOT/skills/close-issue/references/effort.md"
+CLOSE_MAIN="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
+FINISH="$PLUGIN_ROOT/scripts/finish.sh"
 # 乖離帯と集計手順は retrospective の条件付き reference へ切り出してある（本線の SKILL.md は
 # 帯を持たない）。ラベルは dirname から導くと `references` に化けるので下で名前を固定する。
 RETRO="$PLUGIN_ROOT/skills/retrospective/references/effort.md"
@@ -122,7 +131,7 @@ for _dep in jq mktemp awk diff cmp; do
   }
 done
 
-for _f in "$CREATE" "$CLOSE" "$RETRO" "$REPORT" "$JUDGE" "$TMPL_PLAYBOOK"; do
+for _f in "$CREATE" "$CREATE_ESTIMATION" "$CLOSE" "$RETRO" "$REPORT" "$JUDGE" "$TMPL_PLAYBOOK"; do
   [ -f "$_f" ] || { echo "✗ 検査対象が見つかりません: ${_f}" >&2; exit 1; }
 done
 
@@ -368,8 +377,8 @@ else
 fi
 
 echo "検査 5: close-issue はブロック不在で fail-open する"
-contains "$CLOSE" "ブロック不在のためスキップ" "スキップ時の報告文言"
-contains "$CLOSE" "マージは止めない" "マージを止めない旨"
+contains "$CLOSE_MAIN" "ブロック不在のためスキップ" "スキップ時の報告文言"
+contains "$CLOSE_MAIN" "マージは止めない" "マージを止めない旨"
 
 echo "検査 6: create-issue の「非対話モードでも工数は推定してよい」非対称"
 contains "$CREATE" "非対話モードでも推定してよい" "非対称の明示"
@@ -410,9 +419,9 @@ rm -f "$EMPTY"
 [ "$(_judge2 "$FIX/body-collision-base.md" "$FIX/body-collision-new.md")" = "1" ] \
   && ok "(e) マスク語彙と衝突する本文の全書き換え → 拒否（退行の早期警報）" \
   || bad "(e) マスク語彙と衝突する本文の全書き換えが通過する"
-contains "$CLOSE" "check-issue-body-diff.sh" "close-issue が判定器を呼んでいる（目視判定に戻していない）"
-contains "$CLOSE" 'FF_DEV_TOOLKIT_ROOT:?' "close-issue の判定器呼び出しが未解決ルートで fail-closed"
-contains "$CLOSE" "上記以外" "close-issue が列挙外の終了コード（起動失敗等）を検査不成立として扱う"
+contains "$CLOSE_MAIN" "check-issue-body-diff.sh" "close-issue が判定器を呼んでいる（目視判定に戻していない）"
+contains "$CLOSE_MAIN" 'FF_DEV_TOOLKIT_ROOT:?' "close-issue の判定器呼び出しが未解決ルートで fail-closed"
+contains "$CLOSE_MAIN" "上記以外" "close-issue が列挙外の終了コード（起動失敗等）を検査不成立として扱う"
 
 echo "検査 8: カテゴリ語彙が配布テンプレと自リポで一致する"
 _norm_cat() { awk '/^\| `estimation`/ { gsub(/[ \t]+/, " "); print; exit }' "$1"; }
@@ -439,11 +448,11 @@ else
   skip "自リポ側 PLAYBOOK が無いため件数上限の記載は未検査"
 fi
 
-echo "検査 9: create-issue に 3 層すべての参照経路がある"
-contains "$CREATE" 'estimation` カテゴリ' "知見層: estimation カテゴリを明示して引く"
-contains "$CREATE" "OBSERVATIONS.md" "パターン層: 観測台帳を引く"
-contains "$CREATE" "--state closed" "データ層: closed Issue の実績を引く"
-contains "$CREATE" "Kind: keep" "パターン層で keep も見る（片側参照にしない）"
+echo "検査 9: create-issue（references/estimation.md）に 3 層すべての参照経路がある"
+contains "$CREATE_ESTIMATION" 'estimation` カテゴリ' "知見層: estimation カテゴリを明示して引く"
+contains "$CREATE_ESTIMATION" "OBSERVATIONS.md" "パターン層: 観測台帳を引く"
+contains "$CREATE_ESTIMATION" "--state closed" "データ層: closed Issue の実績を引く"
+contains "$CREATE_ESTIMATION" "Kind: keep" "パターン層で keep も見る（片側参照にしない）"
 
 echo "検査 10: retrospective に乖離 3 帯すべての記録先がある"
 contains "$RETRO" "過小見積もり" "帯: 過小"
@@ -652,7 +661,7 @@ _run_hook "$IB_HOOK" "$(_read_payload "$REPO_A/docs/sub/x.md" "$REPO_A")" FF_DEV
 _run_hook "$IB_HOOK" "$(jq -n --arg d "$REPO_A" '{tool_name: "Skill", tool_input: {skill: "ff-dev-toolkit:close-issue"}, cwd: $d, session_id: "sessX"}')" FF_DEV_TOOLKIT_STATE_DIR="$HSTATE"
 _run_hook "$IB_HOOK" "$(jq -n --arg d "$REPO_A" '{tool_name: "Skill", tool_input: {skill: "other-plugin:close-issue"}, cwd: $d, session_id: "sessX"}')" FF_DEV_TOOLKIT_STATE_DIR="$HSTATE"
 _run_hook "$IB_HOOK" "$(_read_payload "$REPO_A/docs/sub/x.md" "$MTMP/not-git")" FF_DEV_TOOLKIT_STATE_DIR="$HSTATE"
-_close_bytes="$(wc -c < "$CLOSE" | tr -d ' ')"
+_close_bytes="$(wc -c < "$CLOSE_MAIN" | tr -d ' ')"
 _ib_rows="$(awk -F '\t' '{ print $1 "|" $2 "|" $3 "|" ($6 != "" ? "repo" : "norepo") }' "$HSTATE/metrics/instruction-bytes.tsv" 2>/dev/null | tr '\n' ' ')"
 case "$_ib_rows" in
   "-|sessX|10|repo -|sessX|5|repo -|sessX|7|repo -|sessX|${_close_bytes}|repo ") ok "14e: SKILL.md・references/*.md・docs/sub/*.md の Read と本プラグインの Skill を repo 列つきで数え、対象外パス・他プラグインの Skill・Git 管理外の cwd は数えない（番号の無いブランチ上は Issue 未確定 -）" ;;
@@ -687,7 +696,7 @@ if jq -e '.hooks.PreToolUse[] | select(.matcher == "Read|Skill") | .hooks[] | se
 else
   bad "14g: hooks.json の PreToolUse（Read|Skill）に record-instruction-bytes.sh が無い"
 fi
-contains "$CLOSE" "--issue-metrics" "close-issue 5a が hook の記録の読み手を呼ぶ"
+contains "$FINISH" "--issue-metrics" "close-issue 5a が hook の記録の読み手を呼ぶ（finish.sh precheck 経由）"
 contains "$CLOSE" "effort_wallclock_actual" "close-issue 5a が wall-clock を書き戻す"
 contains "$CLOSE" "effort_instruction_bytes" "close-issue 5a が読み込みバイトを書き戻す"
 contains "$CLOSE" "(unmeasured)" "close-issue 5a が記録なしを (unmeasured) と書く（0 と書かない）"

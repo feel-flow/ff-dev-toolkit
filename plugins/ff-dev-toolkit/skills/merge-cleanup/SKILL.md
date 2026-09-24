@@ -12,7 +12,7 @@ allowed-tools: ["Bash"]
 
 合意した確認方法だけを適用する。カバレッジ80%、Result pattern、strict、定数化などの推奨を未合意のゲートにしない。ACE・振り返り・複数AIレビューの無効設定を尊重し、チェーン末尾にも追加しない。市民開発のIssue中心運用では、既存の組織ルールを保ちつつ、未採用のPR・7文書を必須化しない。
 
-Git Workflow のマージ後クリーンアップを 1 コマンドで実施する project-agnostic な実装。実体は本プラグイン同梱の単一スクリプトで、全ステップが 1 プロセス内で実行されるため、途中結果（削除済み / 失敗リスト）が最終サマリーまで正しく引き継がれる。
+Git Workflow のマージ後クリーンアップを 1 コマンドで実施する project-agnostic な実装。実体は同梱 `scripts/merge-cleanup.sh`（全ステップが 1 プロセスで走り、途中結果が最終サマリーまで正しく引き継がれる）で、`scripts/finish.sh cleanup` が PR の実在と gh の到達を確かめてから委譲する。本文が持つのは呼び出しと、終了コード・サマリーの読み方（判断点）だけ。挙動の全文は `merge-cleanup.sh` のヘッダにある。
 
 ## プラグインルートの固定（必須）
 
@@ -45,128 +45,59 @@ fi
 
 <!-- ff-dev-toolkit-plugin-root-guard:end -->
 
-同じ停止は `scripts/merge-cleanup.sh` 自身にも複製してある。スクリプトは起動時に、自分の実体位置（`<plugin root>/scripts/`）とホストが渡した root が同じ実体を指すことを確認し、食い違えば案内を出して中断する。上の手順が本文ごと届かなかった呼び出し元でも、この層だけは効く。中断コードは 1 で、PARTIAL の 2 とは区別する。スクリプト側のガードは候補を探索せず、渡された値と自分の位置を比べるだけで判定する。
-
-**引数**: `$ARGUMENTS`（マージされた PR 番号、例: `1234`）
-
-PR 番号は **必須**。`delete_branch_on_merge = false` のリポジトリではリモートブランチが残るため、PR 番号から head ref を引いて明示削除する。
-
-**`--dry-run` / `--help`**: `--dry-run` を付けると 1 つも削除せず、「実行した場合に削除されるリモートブランチ・ローカルブランチ・worktree・リモート取り残し」を一覧表示して終わる。保護ブランチ・dirty worktree・ガード情報の取得失敗による fail-closed な縮退の判定は通常実行とまったく同じで、dry-run だけ緩むことはない（代わりに削除・base への `switch`・`pull`・`fetch --prune`・hook 実行を行わないが、見送った prune とリモート削除の**連鎖** — リモート削除 → prune → 新たに `[gone]` になるローカルブランチ → その worktree — は read-only の `git ls-remote` で予測して一覧へ含める。ref は 1 つも書き換えない。リモートブランチの予告も、実行時の `--force-with-lease` と同じ証拠基準で「origin 上の ref が実在し、その PR の head と OID 一致する」ことを確かめてから出す。トランスクリプト回収は「実際に削除できた worktree の分」が対象なので dry-run では評価しない）。動作検証・ガードの再現・導入先での初回実行・手順書の検証のように、**確認したい 1 点のためにツールの全副作用を引き受けたくない**場面で使う。`--help` は使い方と破壊的処理の一覧を表示して終了し、**PR 番号としては解釈しない**。解析と早期終了は `mktemp` と `gh` / `jq` の存在確認より**前**にあるので、依存が入っていない環境でも usage が出る。引数なしの実行は黙って何もせず終わるのではなく、使い方を表示して非 0 で終わる。上の実行部テンプレートは変えない（skill 経由の通常運用は従来どおり PR 番号だけを渡す）。
+同じ停止は `scripts/merge-cleanup.sh` 自身にも複製してある（自分の実体位置とホストが渡した root が同じ実体を指すことを確認し、食い違えば案内を出して中断する。候補は探索しない。中断コードは 1 で PARTIAL の 2 と区別する）。
 
 ## 実行方法
 
-マージ前の base 追随・リベース後の送信は [Git Workflow](../../docs-template/05-operations/deployment/git-workflow.md#base-の取り込みとリベース後の送信) に従う。単独利用の未マージ PR で確認済み SHA を明示する `--force-with-lease` と、停止対象の `--force` を区別する。本スキルが行うマージ済みブランチの削除とは別の手順である。
-
-以下を 1 回だけ実行する:
+**引数**: `$ARGUMENTS`（マージされた PR 番号、例: `1234`）。**必須** — `delete_branch_on_merge = false` のリポジトリではリモートブランチが残るため、PR 番号から head ref を引いて明示削除する。`bundle`（子 Issue を全件 1 PR で束ねた着手単位）でも渡す番号は**その 1 本の PR**だけ。
 
 ```bash
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh" $ARGUMENTS
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" cleanup $ARGUMENTS
 ```
 
-**前提ツール**: 認証済み `gh` CLI と `jq`（不足していればスクリプトが冒頭で中断して案内する）
-
-**実行する cwd**: 対象 PR のブランチを保持する**リンクされた**ワークツリー（`git worktree add` で作った側）を cwd にしたまま実行した場合は、破壊的処理の前に中断する（その cwd では掃除対象のワークツリー自身を削除できず、base を別のワークツリーが保持していれば base 復帰のためにそれを detached HEAD へ退避することになるため）。案内には main worktree（`git worktree list` の先頭）のパスと再実行コマンドを出す。bare リポジトリのように main worktree が checkout を持たない構成ではパスを案内できないため、代わりに原因と対処を示して中断する。それ以外の実行 — main worktree から（PR head を保持している場合を含む）・他セッションの作業ブランチ（下記の掃除モード）・detached HEAD・base 保持 — は従来どおり完走する。
-
-**`disable-model-invocation` は意図的に付けない。** 上の実行部が 1 行なのでフラグはスクリプト直叩きで迂回でき破壊的操作を防げない一方、[git-workflow](../../docs-template/05-operations/deployment/git-workflow.md) のステップ9 と [workflow-principles](../../docs-template/05-operations/deployment/workflow-principles.md) のフルオートチェーンが本スキルの実行を求めているため、可用性だけが落ちる。判断の全文は ACE Playbook の ACE-147-1、回帰防止は `tests/skill-frontmatter/verify.sh`。
+- **前提ツール**: 認証済み `gh` CLI と `jq`（不足していれば冒頭で中断して案内する）。PR 不在・gh 不通は委譲前に **rc 1** で名指しし、復帰手段を出す（黙って 0 で終わらない。委譲先の PARTIAL = rc 2 とは重ねない）
+- **`--dry-run`**（`finish.sh cleanup --dry-run <PR>`）: 1 つも削除せず、「実行した場合に削除されるリモートブランチ・ローカルブランチ・worktree・リモート取り残し」を一覧表示して終わる。保護ブランチ・dirty worktree・fail-closed な縮退の判定は通常実行とまったく同じで、dry-run だけ緩まない。見送った prune とリモート削除の連鎖は read-only の `git ls-remote` で予測して一覧へ含める。動作検証・導入先での初回実行など、確認したい 1 点のためにツールの全副作用を引き受けたくない場面で使う
+- **実行する cwd**: 対象 PR のブランチを保持する**リンクされた** worktree を cwd にしたまま実行すると、破壊的処理の前に中断する（その cwd では掃除対象自身を削除できないため）。案内には main worktree のパスと再実行コマンドが出る。main worktree から・他セッションの作業ブランチ（下記の掃除モード）・detached HEAD・base 保持からの実行は完走する
+- **`disable-model-invocation` は意図的に付けない**。実行部が 1 行なのでフラグはスクリプト直叩きで迂回でき破壊的操作を防げない一方、フルオートチェーンが本スキルの実行を求めているため可用性だけが落ちる（ACE-147-1。回帰防止は `tests/skill-frontmatter/verify.sh`）
+- マージ前の base 追随・リベース後の送信は [Git Workflow](../../docs-template/05-operations/deployment/git-workflow.md#base-の取り込みとリベース後の送信) に従う（本スキルが行うマージ済みブランチの削除とは別の手順）
 
 ## スクリプトがやること
 
-1. **未コミット変更ガード** — あれば中断してユーザーに分類判断を仰ぐ（`git restore` / `git clean` は実行しない）。常駐ツールが書き続けるパスは `FF_MERGE_CLEANUP_IGNORE_PATHS` でガードの対象外にできる（下記）。呼び出し元が base でも PR head でもないブランチにいる場合は中断せず、切り替えを伴わない掃除モードへ落とす（下記）
+1. **未コミット変更ガード** — あれば中断してユーザーに分類判断を仰ぐ（`git restore` / `git clean` は実行しない）。常駐ツールが書き続けるパスは `FF_MERGE_CLEANUP_IGNORE_PATHS` で対象外にできる（下記）
 2. **対象 PR の情報取得** — state / head / base / headRefOid / fork 判定。**MERGED でなければ破壊的処理の前に中断**（番号の打ち間違い対策）
-3. **base ブランチ復帰 + 最新化** — PR の `baseRefName` へ `git switch` し `fetch --prune` + `pull --ff-only`（develop 固定ではない）。別 worktree が base を保持している場合は、その worktree が clean のときだけ同じ HEAD の detached 状態へ退避して worktree 自体を残し、呼び出し元を base へ復帰する。保持側が dirty なら変更を触らず、リモート削除前に中断する。ここでの clean 判定にも `FF_MERGE_CLEANUP_IGNORE_PATHS` は効く（下記）。呼び出し元が base でも PR head でもないブランチを保持している場合は base への復帰自体を行わない（下記の掃除モード）
-4. **対象 PR のリモートブランチ削除** — same-repo かつ open PR で head 再利用されていない場合に、`--force-with-lease=<ref>:<期待OID>` で削除（照合と削除の間に push が入った場合はサーバー側で原子的に拒否 = TOCTOU 対策）。削除 push に新しい lint/test 対象のコミットは無いため `SKIP_SIMPLE_GIT_HOOKS=1` を付け、consumer の simple-git-hooks フルゲートを起動しない。Git の hook 起動自体は止めない（Husky 等は対象外）。削除可否は本スクリプトの保護ブランチ / lease / open-PR ガードが担う。`core.hooksPath` の一時無効化は他の guard まで落とすので使わない
-5. **`[gone]` ローカルブランチ + 関連 worktree の削除** — worktree は **clean を確認してから**削除（dirty なら警告してスキップ）。squash merge 由来の "not fully merged" への `-D` エスカレーションは、**(名前, ローカル OID) が MERGED PR の head と一致する場合のみ**（`[gone]` は upstream 消失しか保証しないため、手動リモート削除された未マージ作業は保護される）。マージ済みと機械確認できたエージェント worktree（claude agent ロック + 使い捨てパスのみ）は unlock + 削除する（下記）
-5.5. **削除した worktree のトランスクリプト回収** — 消した worktree でだけ使われていた Claude Code の履歴を `tar.gz` へアーカイブして元ディレクトリを回収する（下記）。**すでに溜まっている孤児**の一括回収は本ステップの対象外で、`/sweep-orphan-transcripts` を使う
-6. **リモート取り残しのガード付き自動削除** — 過去のマージ漏れで累積したリモートブランチを掃除する（下記）
-7. **最終検証 + 結果サマリー** — 削除 / スキップ / 失敗を分類して報告
+3. **base ブランチ復帰 + 最新化** — `baseRefName` へ `git switch` し `fetch --prune` + `pull --ff-only`。別 worktree が base を保持していれば、clean のときだけ同じ HEAD の detached へ退避して worktree を残し、dirty なら触らず中断する
+4. **対象 PR のリモートブランチ削除** — same-repo かつ open PR で head 再利用されていない場合に `--force-with-lease=<ref>:<期待OID>` で削除（照合と削除の間の push はサーバー側で原子的に拒否 = TOCTOU 対策）。削除 push は `SKIP_SIMPLE_GIT_HOOKS=1` 付き
+5. **`[gone]` ローカルブランチ + 関連 worktree の削除** — worktree は clean を確認してから。`-D` は (名前, ローカル OID) が MERGED PR の head と一致する場合のみ。マージ済みと機械確認できたエージェント worktree（`claude agent` ロック + 使い捨てパス `.review-results/` の untracked だけ）は unlock → 個別除去 → force なしの `git worktree remove` で片付ける
+6. **削除した worktree のトランスクリプト回収** — jsonl の `cwd` 照合を通ったものだけを検証済み `tar.gz` へアーカイブしてから元を消す（既存の孤児は `/sweep-orphan-transcripts`）
+7. **リモート取り残しのガード付き自動削除** — (名前, OID) が MERGED PR の head と一致 / fork 由来でない / 保護ブランチでない / open PR で未使用 の全ガードを通過したものだけ lease 付きで削除。ガード情報の取得に 1 つでも失敗したら削除しない（fail-closed）
+8. **最終検証 + 結果サマリー** — 削除 / スキップ / 失敗を分類して報告
 
-## Step 1: 未コミット変更ガードとパス除外
-
-既定では、作業ツリーに未コミット変更が 1 つでもあれば中断する。分類（commit / `.gitignore` / 破棄）は実行者が代行してよい判断ではないため、`git restore` / `git clean` は決して実行しない。
-
-ただし**常駐ツール（chat-ui / ジェネレーター / ウォッチャー等）が特定ディレクトリを書き続けるリポジトリ**では、作業ツリーが dirty なのが定常状態になる。そこではこのガードは「異常を検出した」のではなく「このプロジェクトの通常状態で必ず発火する」ものになり、cleanup が一度も完走しない。実際に報告された例では、cleanup の実体（OID 照合・`--force-with-lease` 付き削除 push・`[gone]` 掃除）を手作業で再現するはめになり、Step 6 の取り残し回収は実行されないまま残った。
-
-`FF_MERGE_CLEANUP_IGNORE_PATHS` に一致する変更は、このガードの対象から外れる。
-
-### 環境変数（Step 5.5 のものは[別表](#環境変数-1)）
+## 環境変数
 
 | 変数 | 既定 | 用途 |
-|---|---|---|
-| `FF_MERGE_CLEANUP_IGNORE_PATHS` | （空）| 未コミット変更ガードの対象外にするパス。`:` 区切りの glob。空文字列は未設定と同じ |
-
-```bash
-FF_MERGE_CLEANUP_IGNORE_PATHS='videos/**:.cache/**' FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/merge-cleanup.sh" 1234
-```
-
-パターンは git の pathspec（`glob` magic、リポジトリルート基準）として解釈する。`**` はディレクトリを跨ぐが `*` は跨がない — `videos/**` は `videos/a/b/spec.md` にも未追跡ディレクトリ `videos/a/` にも一致するが、`videos/*` は直下しか見ない。
-
-`:` は区切り文字なので、パターンに pathspec magic（`:(exclude)` 等）は書けない。先頭に書けば空要素として中断し、中間に書いた場合はリテラル文字列として扱われる（`(exclude)tmp` という名前のパスを探すため、事実上何にも一致しない）。
-
-`**` / `*` / `.` / `/` 単体は全パスに一致するため、ガードを事実上無効化する。この指定は中断させないが、無効化される旨を実行ログへ出す（無視した変更は全件が一覧に出る）。
-
-**恒常的に dirty なリポジトリでは `.claude/settings.json` の `env` ブロックに書く。** 毎回手で環境変数を渡す運用は、定常状態の問題に対する解にならない（渡し忘れた回にだけ中断する）。
-
-```json
-{
-  "env": {
-    "FF_MERGE_CLEANUP_IGNORE_PATHS": "videos/**"
-  }
-}
-```
-
-### 適用範囲 — 「中断しても何も消えない」ガードだけ
-
-| ガード | 除外指定 | 理由 |
-|---|---|---|
-| Step 1: 呼び出し元 worktree の dirty | **効く** | 中断しても何も消えない。除外したパスが本当に cleanup を妨げるなら、`git switch` / `pull --ff-only` が git 自身の判定で失敗し、そこで中断する |
-| Step 3: base を保持する別 worktree の dirty | **効く** | 退避は同一 OID への detach で、作業ツリーの中身は変わらない。ここだけ据え置くと、除外を設定したユーザーが別の dirty ガードで止まり「効いていない」と読める |
-| Step 5: worktree 削除前の clean 確認 | **効かない** | 通すとファイルが実際に消える。除外指定で緩めると未コミット変更の消失に直結する |
-
-### 不正な指定は中断する（fail-closed）
-
-- **空のパターンを含む指定は中断する**（`videos/**:` / `:` / `a::b` など）。空パターンは pathspec として全パスに一致するため、除外すると status が常に空になり、dirty な作業ツリーでガードが素通りする
-- **前後に空白の付いたパターンは中断する**（`videos/**: .cache/**` の `:` 直後の空白など）。pathspec は空白も含めて照合するので、この指定は何にも一致せず「設定したのに効かない」に見える
-- **除外を適用した `git status` が失敗したら中断する**。失敗の出力を「変更なし」と読み替えない
-- **`git status` が exit 0 でも stderr へ警告を出したら**、作業ツリーを完全には走査できていない可能性がある（`warning: could not open directory …: Permission denied` はその配下の未追跡ファイルを列挙できないまま exit 0 になる）。Step 3（base 所有 worktree）はここで**中断する** — 走査が不完全なまま detach → リモート削除 → worktree 削除へ進ませないため。Step 1 は判定を変えず、警告を実行ログへ出して可視化する
-- 対象外にした変更は**件数と一覧を必ずログに出す**。黙って無視すると、ガードが緩んだのか本当に clean なのかが実行ログから区別できない
-- **指定はあるのに 1 件も一致しない場合もその旨を出す**。黙って従来どおり中断すると、パターンの書き間違いが「設定したのに何も変わらない」としか見えない
+| --- | --- | --- |
+| `FF_MERGE_CLEANUP_IGNORE_PATHS` | （空） | 未コミット変更ガードの対象外にするパス。`:` 区切りの git pathspec glob（`videos/**:.cache/**`）。効くのは「中断しても何も消えない」ガード（Step 1 / Step 3）だけで、worktree 削除前の clean 確認（Step 5）には効かない。空パターン・前後の空白は中断（fail-closed）。恒常的に dirty なリポジトリでは `.claude/settings.json` の `env` に書く |
+| `FF_MERGE_CLEANUP_PROTECT_BRANCHES` | `release/*` | 追加の保護パターン（`:` 区切り glob。`none` で追加なし）。`develop` / `main` / `master` / `staging/*` はハードコードで設定でも外せない。文字クラス `[...]` は未対応で中断 |
+| `FF_MERGE_CLEANUP_MERGED_PR_LIMIT` | 1000 | Step 7 の照合上限。上限到達は「これより古い MERGED PR は照合対象外」とログに出る |
+| `FF_MERGE_CLEANUP_TRANSCRIPTS` | `archive` | `off` で回収を無効化。それ以外の値はエラーとして報告（黙って無効化しない） |
+| `FF_MERGE_CLEANUP_PROJECTS_DIR` / `FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR` | `<config>/projects` / `<config>/transcript-archives` | 走査対象・アーカイブ先の上書き（`<config>` は `CLAUDE_CONFIG_DIR`、未設定なら `~/.claude`） |
 
 ## 呼び出し元が base でも PR head でもないブランチにいる場合 — switch なし掃除モード
 
-並列セッション運用では、呼び出し元（主 checkout）が**他セッションの作業ブランチ**を保持したまま `/merge-cleanup` が呼ばれることがある。そのまま Step 3 が base へ `git switch` すると、他セッションの作業を勝手に切り替えることになる。呼び出し元の現在ブランチが **base でも PR head でもない名前付きブランチ**の場合、スクリプトは**ブランチ切り替えを伴わない掃除モード**で続行する:
-
-- **base への復帰・`pull --ff-only` は行わない**。base の最新化は checkout 不要な `git fetch origin <base>:<base>` を試み、base がどこかの worktree に checkout されていて git に拒否されたらスキップして報告する
-- **base を保持する worktree は detach も削除もしない**。保持者のパス・clean/dirty・最終コミット日時を報告し、処分はユーザー判断に委ねる
-- リモートブランチ削除（Step 4）・`[gone]` 掃除・worktree 削除（Step 5）・トランスクリプト回収（Step 5.5）・取り残し検証(Step 6) は通常どおり実施する。呼び出し元がチェックアウト中の `[gone]` ブランチだけは削除せず、名指しのスキップとして報告する
-- **呼び出し元が dirty でも中断しない**。このモードは呼び出し元のブランチにも作業ツリーにも一切触れないため、dirty を理由に止めると cleanup の実体（OID 照合・lease 削除・取り残し回収）を毎回手作業で再現することになる。変更には触れない旨と変更一覧をログに出して続行する
-- サマリーに **未実施項目（base への復帰・pull、base 最新化の成否）を名指しで載せる**。意図的な見送りなので PARTIAL には数えない
-- **`pre-merge-cleanup` hook が呼び出し元のブランチを切り替えた場合は中断する**。「呼び出し元に触れない」というこのモードの契約を以降のステップで守れなくなるため
-
-detached HEAD（ブランチ名なし）からの実行は従来どおり通常モード（base へ switch して復帰する）。
+並列セッション運用で主 checkout が他セッションの作業ブランチを保持したまま呼ばれた場合、スクリプトは**ブランチ切り替えを伴わない掃除モード**で続行する: base への復帰・`pull --ff-only` は行わず（最新化は `git fetch origin <base>:<base>` を試み、拒否されたらスキップして報告）、base を保持する worktree は detach も削除もせず報告だけ、リモート削除・`[gone]` 掃除・worktree 削除・トランスクリプト回収・取り残し検証は通常どおり実施する。呼び出し元が dirty でも中断しない（このモードは呼び出し元に一切触れない）。未実施項目はサマリーに名指しで載る（意図的な見送いなので PARTIAL には数えない）。detached HEAD からの実行は通常モード。
 
 ## マージ実行時の注意 — base ブランチが他 worktree に保持されている場合
 
-これは本スクリプトではなく**その前段の `gh pr merge` 実行時**のガード。`gh pr merge --squash --delete-branch` はマージ成功後にローカルで base へ切り替えようとするため、base が他 worktree に保持されていると **PR はマージ済みなのにリモートブランチ削除まで到達せず失敗**する（エラーは worktree の話しかせず、リモートブランチが残ったことに気付けない）。マージを実行する AI / 人間は:
-
-1. マージ前に `git worktree list` で base（`develop` 等）が他 worktree に保持されていないか確認する
-2. 保持されていたら `--delete-branch` を使わず、`gh pr merge --squash` と `git push origin --delete <head>` に分割する。ローカル退避は `git switch --detach origin/<base>`（`git switch <base>` は必ず失敗する）
-3. **他セッションの worktree は削除しない**。保持者のパスと状態（clean/dirty・最終更新）を報告し、削除はユーザー確認後にする
-4. 完了報告に「リモートブランチを削除したか」を `gh pr merge` の成否とは別項目で明示する（本スクリプトのサマリーも同じ項目を必ず出す）
-
-その後の `/merge-cleanup` は上記の switch なし掃除モードで完走できる。
+これは本スクリプトではなく前段の `gh pr merge` の話。`finish.sh precheck` が `git worktree list` で base / head の保持を実測し、保持されていれば `--delete-branch` 無し + `&&` で繋いだ lease 付きリモートブランチ削除（merge 成功時だけ走る）の merge コマンドを生成する（`gh pr merge --squash --delete-branch` はマージ成功後にローカルで base へ切り替えようとして失敗し、**PR はマージ済みなのにリモートブランチ削除まで到達しない**）。他セッションの worktree は削除せず、保持者のパスと状態を報告して処分はユーザー判断に委ねる。完了報告には「リモートブランチを削除したか」を `gh pr merge` の成否とは別項目で明示する（本スクリプトのサマリーも同じ項目を必ず出す）。その後の `/merge-cleanup` は上の switch なし掃除モードで完走できる。
 
 ## `--delete-branch` の部分失敗の読み方とリモート個別削除
 
-これも本スクリプトではなく**その前段の `gh pr merge` 実行時**の注意。上記は base 側が他 worktree に保持されている場合だが、**削除対象の head ブランチ自体**が別の worktree（サブエージェント用など）でチェックアウトされている場合にも部分失敗が起きる。この場合、出力に残るのは `failed to delete local branch ... used by worktree at ...` の 1 行だけで、これだけを見るとマージそのものが失敗したように読める。しかし **マージとリモートブランチ削除は別工程であり、そちらは成功していることがある**。ローカルブランチの削除だけが「他 worktree が使用中」で失敗し、マージ・リモート削除の成否には影響しない。
-
-判定は出力の文言ではなく実測で行う:
+削除対象の head ブランチ自体が別の worktree でチェックアウトされている場合、`gh pr merge --squash --delete-branch` は `failed to delete local branch ... used by worktree at ...` の 1 行だけを残して部分的に失敗する。マージそのものが失敗したように読めるが、**マージとリモートブランチ削除は別工程であり、そちらは成功していることがある**。判定は出力の文言ではなく実測で行う:
 
 1. `gh pr view <PR番号> --json state --jq .state` が `MERGED` であること
-2. `git ls-remote --exit-code --heads origin '<head ブランチ>'` の**終了コード**を見ること。`2` = ref なし（リモートは削除済み）、`0` = ref あり（残存）。**それ以外の終了コードは「判定不能」で、削除済みと読んではいけない**（通信・認証の失敗でも出力は空になるため、行数だけで判定すると残っているブランチを削除済みと誤認する）
+2. `git ls-remote --exit-code --heads origin '<head ブランチ>'` の**終了コード**を見ること。`2` = ref なし（リモートは削除済み）、`0` = ref あり（残存）。**それ以外の終了コードは「判定不能」で、削除済みと読んではいけない**（通信・認証の失敗でも出力は空になる）
 
-1 と 2 の終了コード `2` を満たせば、この失敗は「マージが失敗した」ことも「リモートにブランチが残っている」ことも意味しない。ブランチを保持している worktree・ローカルブランチ自体の後始末は本スクリプト（`/merge-cleanup`）の Step 5 に任せてよい。
-
-終了コード `0`（残存）だったときだけ個別に削除する。**削除の前に、残っている ref がその PR の head と同一であることを確認する**。マージ後に同名ブランチが再利用されて新しいコミットが push されていることがあり、OID を照合せずに消すと別作業を削除する:
+1 と 2 の終了コード `2` を満たせば、ローカルブランチ・worktree の後始末は本スクリプトの Step 5 に任せてよい。終了コード `0`（残存）のときだけ個別に削除する。**削除の前に、残っている ref がその PR の head と同一であることを確認する**（マージ後に同名ブランチが再利用されていることがある）:
 
 ```bash
 REMOTE_OID="$(git ls-remote --heads origin '<head ブランチ>' | cut -f1)"
@@ -174,243 +105,30 @@ PR_HEAD_OID="$(gh pr view <PR番号> --json headRefOid --jq .headRefOid)"
 [ "$REMOTE_OID" = "$PR_HEAD_OID" ] || { echo "ブランチが再利用されている。削除しない"; exit 1; }
 ```
 
-これは下の Step 5 が worktree の自動削除に使う「(名前, ローカル OID) が MERGED PR の head と一致」と同じ証拠基準である。
-
-一致したら削除する。**ブランチ名に含まれる `#`（Issue/PR 番号を使った命名規則）は `%23` へエンコードする**。素の `#` を渡すと `gh api` 側で URL のフラグメント区切りとして解釈され、`#` 以降が送信対象のパスから欠落した不正な ref 名になるため、`-X DELETE` は 422 で失敗する:
+一致したら削除する。**ブランチ名に含まれる `#`（Issue/PR 番号を使った命名規則）は `%23` へエンコードする**。素の `#` は URL のフラグメント区切りとして解釈され、`#` 以降が送信対象のパスから欠落した不正な ref 名になるため、`-X DELETE` は 422 で失敗する:
 
 ```bash
 gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/fix/%23NNNN-<slug>
 ```
 
-## Step 5: マージ済みエージェント worktree の自動処理
+## 終了コードとサマリーの読み方（判断点）
 
-サブエージェント並列開発の worktree は、ハーネスのロック（lock reason: `claude agent` を含む文字列）と untracked の `.review-results`（マルチ AI レビューの使い捨て成果物）を残したままマージされることが多く、従来は毎回削除に失敗して PARTIAL になり、unlock → force remove の手動 3 手を要していた。
+| code | 意味 |
+| --- | --- |
+| 0 | 完全成功 |
+| 1 | 致命的エラーで中断（引数不正 / 環境変数の指定不正 / 呼び出し元または base 所有 worktree の未コミット変更 / switch・pull 失敗 / gh 失敗 / Step 3 の `fetch --prune` 失敗 など）。`finish.sh cleanup` が委譲前に止める前提崩れ（PR 不在 / gh 不通 / 委譲先の不在。未実行）もここ |
+| 2 | 完了したが一部失敗あり（PARTIAL）。サマリーの「失敗した項目」を確認して手動対応。**リモートブランチの削除失敗と、その直後の削除反映 `fetch --prune` の失敗はここ**（掃除全体を止めない） |
 
-**設計判断（Issue 914）: 明示スキップではなく、狭い条件での自動 unlock + 削除を採る。** 根拠:
-
-- 「(名前, ローカル OID) が MERGED PR の head と一致」は `-D` エスカレーションと同じ機械的証拠で、マージ済みであることが証明済み
-- `.review-results` はレビューツールが生成する再現可能な使い捨て成果物で、失って困る情報を含まない
-- 明示スキップでは worktree が無制限に溜まり続け（Issue 1056 と同じノイズ問題）、手動 3 手も残る
-
-自動処理の条件は **3 つすべて**を満たす場合のみ:
-
-1. **(名前, ローカル OID) が MERGED PR の head と一致**（ガード情報の取得に失敗していれば不成立 = fail-closed）
-2. **ロックされていて、ロック理由に `claude agent` を含む**（未ロックの worktree は残置物が使い捨てパスだけでも対象外。ロックはエージェント所有の証拠であり、`claude agent` 以外の理由のロックは unlock せず保護）
-3. **dirty の内訳が既知の使い捨てパス（`.review-results/`）の untracked だけ**（clean も可。追跡ファイルの変更・未知の untracked が 1 行でもあれば従来どおり保護）
-
-条件を満たした worktree の削除は **`--force` を使わない**。unlock → 使い捨てパス（`.review-results`）だけを個別に除去 → force なしの `git worktree remove` の順で行い、clean 確認・除去のあとに別の変更が入っていれば **git 自身が削除を拒否する**（TOCTOU の安全網を維持）。拒否された場合は解除した claude agent ロックを**元の理由で復元**してから失敗として報告する。成功時は**失敗ではなく補足行（手当て不要）として報告する**ので PARTIAL にならない。条件が 1 つでも欠ければ従来どおり削除せず PARTIAL で報告する。`FF_MERGE_CLEANUP_IGNORE_PATHS` はこの判定に**効かない**（Step 5 は従来どおり対象外。使い捨てと認めるパスはスクリプトに固定で、環境変数で広げられない）。
-
-### `[gone]` ブランチの `-D` 照合で MERGED 一覧側の OID が null の場合
-
-`gh pr list` が MERGED 一覧側の `headRefOid` を null で返すことがある（Issue 703。Step 4 の `gh pr view` 側の null と同型）。このとき (名前, OID) 照合は成立しないが、それは**照合材料が無い**だけで未マージの証拠ではない。スキップ理由は「一覧側の OID が null で照合材料がありません」と名指しし、「未マージの固有コミットの可能性」とは表示しない（利用者に存在しない未マージコミットを探させない）。削除しない点は従来どおり。
-
-## Step 5.5: worktree トランスクリプトの回収
-
-Claude Code は作業ディレクトリごとに独立したトランスクリプトディレクトリを `<config>/projects/` 配下へ作る。worktree を消してもこれは残るため、二度と参照されない履歴が溜まり続ける（標準の `cleanupPeriodDays` は時間ベースなので、期限内の孤児は消えない）。
-
-**対象は「今回の実行で削除に成功した worktree の分」だけ**で、既存の孤児をまとめて掃除することはしない。dirty などで削除をスキップした worktree の分には触れない。
-
-### 削除の根拠は cwd の照合のみ（fail-closed）
-
-格納先ディレクトリ名は作業ディレクトリの絶対パスから機械的に導出されるが、この変換は非英数字を潰すため `/a/b-c` と `/a/b/c` が同じ名前になりうる。しかも候補名は**削除した worktree のパスから作ったもの**なので、名前を見ても「渡されたパスが worktree だった」以上のことは分からず、目の前のディレクトリが誰のものかという肝心の問いには答えていない。したがって **jsonl に記録された `cwd` の照合を通ったものだけを回収する**。
-
-| 状況 | 判定 |
-|---|---|
-| `cwd` に、削除した worktree（またはその配下）を指すものがある | 回収する |
-| `cwd` はあるが、この worktree を指すものが 1 つも無い | **残す**（スキップとして列挙。PARTIAL にはしない） |
-| `cwd` を記録した jsonl が無い | **残す**（同上） |
-| jsonl の走査・読み取りでエラーが出た | **残す**（PARTIAL で報告。「無い」と「読めない」は別物） |
-| 候補そのものが symlink | **残す**（リンク先が `projects/` 内でも辿らない） |
-| 経路の途中が symlink で `projects/` 直下に着地しない | **残す**（パストラバーサル防止） |
-
-Step 4 のリモート削除を `--force-with-lease` に、Step 5 の `-D` を OID 照合に限定しているのと同じ考え方で、**推測ではなく証拠で消す**。
-
-判定は「一致する `cwd` が 1 つでもあるか」で行う。セッションは途中で親リポジトリや別 worktree へ移動でき、その履歴も開始時の `cwd` から名付けられたディレクトリに残るため、全 `cwd` の一致を要求すると正当なものを取りこぼす。名前が衝突した別プロジェクトのディレクトリには、この worktree を指す `cwd` が 1 つも無いので衝突の検出力は保たれる。
-
-`cwd` を持たないディレクトリ（プラグインが書く `skill-injections.jsonl` 等だけが残ったもの）は**常に残る**。既存の孤児をまとめて掃除する用途は本ステップの担当ではない。
-
-worktree 外を指す `cwd` が混ざっていた場合は、回収したうえでその一覧をログに出す。通常はセッションが親リポジトリへ移動しただけだが、名前が衝突した別プロジェクトと同居している可能性も残るため、黙って進めない（アーカイブは残るので取り戻せる）。
-
-### 既定は削除ではなくアーカイブ
-
-`<config>/transcript-archives/<名前>-<日時>.tar.gz` へ固めてから元ディレクトリを消す。履歴を失わずに容量を回収でき、「未コミット変更を握りつぶさない」という本スクリプトの原則とも揃う。
-
-- **アーカイブは作ったあと読み直して検証する**。`tar` の終了コードだけでは中身が空でも成功に見える（0 バイトのファイルは「空のアーカイブ」として読めてしまう）。元の件数と一致しなければ失敗として扱う
-- **アーカイブ中に元が変更されていたら削除しない**。作成したアーカイブを隔離ディレクトリへ展開し、元と再帰比較する。mtime の前後関係には依存せず、既存ファイルへの追記・追加・削除を内容差として検出する。生きたセッションが書き足している最中に消すと、その分だけ失われる
-- 作業ファイルは `mktemp` で作り、検証を通ってから最終名へ rename する（予測できる名前だと、先回りして置かれた symlink のリンク先を `tar` が切り詰めうる）
-- **同名のアーカイブが既にあれば上書きせず別名で作る**（壊れた symlink も「既にある」とみなす）
-- **失敗したら元ディレクトリは残し、書きかけの成果物は消す**（PARTIAL で報告）
-- 削除する直前にもう一度 symlink と着地先を確認する（bash では fd を握ったまま削除できないため、残る競合窓は rename から削除までのごく短い区間）
-
-### 環境変数（未コミット変更ガードのものは[別表](#環境変数)）
-
-| 変数 | 既定 | 用途 |
-|---|---|---|
-| `FF_MERGE_CLEANUP_TRANSCRIPTS` | `archive` | `off` で本ステップを無効化。**`archive` / `off` 以外を指定すると、worktree を 1 つも削除しなかった実行でもエラーとして報告**し、黙って無効化しない |
-| `FF_MERGE_CLEANUP_PROJECTS_DIR` | `<config>/projects` | 走査対象の上書き |
-| `FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR` | `<config>/transcript-archives` | アーカイブ先の上書き |
-
-`<config>` は `CLAUDE_CONFIG_DIR`（未設定なら `~/.claude`）。
-
-### 終了コードへの影響
-
-- 上表の「残す」は**異常ではない**ので PARTIAL にしない。サマリーに別枠で列挙する
-- PARTIAL になるのは、走査エラー・アーカイブ失敗・アーカイブ後の削除失敗・環境変数の値が不正・明示指定した `projects` ディレクトリを解決できない場合
-- **アーカイブ先を作成できない場合は本ステップ全体を中断する**（残りの候補も同じ理由で失敗するため）。中断した事実はサマリーに出る
-- 既定の `projects` ディレクトリが存在しないだけなら（Claude Code 未使用など）PARTIAL にはしない
-- アーカイブは成功したのに元ディレクトリを削除できなかった場合、アーカイブと元が二重に残る。PARTIAL で報告するので手動で整理する
-
-## Step 6: リモート取り残し自動削除のガード（fail-closed）
-
-以下の **全ガード**を通過したブランチだけ `git push origin --delete` する:
-
-1. **(名前, OID) が MERGED 済み PR の head と完全一致** — 名前再利用・マージ後 push されたブランチは OID が変わるため対象外になる
-2. **fork PR 由来でない** — origin 上の同名別ブランチを誤射しない
-3. **保護ブランチ名でない** — `develop` / `main` / `master` / `staging/*` はハードコード。`release/*` は既定で保護するが設定で変更できる（下記）
-4. **open PR の head として再利用されていない**
-
-削除自体も `--force-with-lease=<ref>:<照合済みOID>` で実行するため、照合の後に push されたブランチはサーバー側で拒否される（skip 扱い）。削除 push には `SKIP_SIMPLE_GIT_HOOKS=1` を付ける（Step 4 と同じ）。ガードの構成に必要な情報（MERGED 一覧 / open 一覧 / `ls-remote`）の**どれか 1 つでも取得に失敗したら、削除を一切行わずスキップ**する（fail-closed）。
-
-照合は既定で直近 1000 件のマージ済み PR まで。大きめのリポジトリではこの取得が数分かかりうるため、`FF_MERGE_CLEANUP_MERGED_PR_LIMIT` で上限を変更でき、取得の前後には進捗（照合上限・取得件数）を出力する（無出力のまま待たせて「ハング」と誤診させない。Issue 835）。取得件数が上限に達した場合は「上限で打ち切っており、これより古い MERGED PR は照合対象外」であることをログに明示する。fail-closed 特性（取得失敗時は削除を一切行わない）は上限の設定値によらず維持される。不正値（非数値・0 以下）は破壊的処理より前に中断する。
-
-### 保護ブランチの設定 — `FF_MERGE_CLEANUP_PROTECT_BRANCHES`（Issue 1056）
-
-`release/*` は運用によって「長命な統合ブランチ」（保護が正しい）と「リリース単位の作業ブランチ」（マージ後は用済み）に二分する。名前だけで前者と決めつけると、後者の運用ではマージ済み `release/*` が永久に取り残される。そこで**追加の保護パターンを設定可能**にする:
-
-| 値 | 意味 |
-|---|---|
-| （未設定 / 空文字列） | 既定 `release/*` を保護（従来どおり = 後方互換） |
-| `release/*:lts/*` など | `:` 区切りの glob で置き換える |
-| `none` | 追加の保護なし（ハードコード分だけが残る） |
-
-- **`develop` / `main` / `master` / `staging/*` はハードコードのまま**。`none` を含むどんな設定でも Step 4 / 5 / 6 のいずれからも削除されない（最終防壁）
-- 空要素（`release/*:` 等）・前後に空白の付いたパターンは中断する（fail-closed。IGNORE_PATHS と同じ扱い）
-- **文字クラス（`[...]`）は未対応で中断する**。`release/[[:digit:]]*` のようなパターンはクラス内の `:` が区切り文字と衝突して黙って分断され、エラーにならないまま保護が消える（fail-open）ため、パース時に検出して拒否する。プレフィックス glob（`release/*` など）を使うこと
-- 設定パターンに止められた Step 6 の skip は、**ハードコード保護と書き分けて**報告する。この候補は他の全ガード（MERGED head と (名前, OID) 一致 / fork 由来でない / open PR 未使用）を通過済み = 「マージ済みで安全に消せる」ことが証明済みなので、手動削除コマンド（照合済み OID を lease に載せた形）と恒久設定の案内を添える。毎回同じ skip が無言で積み上がって、本当に判断が要る skip がノイズに埋もれるのを防ぐ
-
-## リモート削除の判定と失敗時の扱い（Step 4 / Step 6 共通）
-
-Step 4 と Step 6 は同じ関数でリモートブランチを消す。`--force-with-lease` の削除が拒否されたとき、Git は**「ref が既に無い」場合も「マージ後に push された」場合も同じ `stale info` を返す**ため、拒否されたら ref を再取得して初めて両者を分ける。
-
-| 再取得の結果 | 判定 | 扱い |
-|---|---|---|
-| ref が存在しない | 既に削除済み | 既に削除済みとして続行（警告に載せない。Step 4 のサマリー値は `already_missing`、Step 6 のログは `already removed`） |
-| ref が別 OID で存在 | マージ後 push あり | 削除をスキップして警告に載せる（**保護**） |
-| ref が期待 OID のまま存在 | 原因不明 | 削除せず失敗として記録 |
-| 再取得自体が失敗 | 判定不能 | 「存在しない」と断定せず、削除せず失敗として記録 |
-
-**削除できなかった場合の扱いは Step 4 と Step 6 で同じ**で、どちらも失敗として記録して後続 Step を続行し、終了コード 2（PARTIAL）で報告する。ここで cleanup 全体を止めると、一過性のネットワーク断で `[gone]` ブランチ削除・トランスクリプト回収・取り残し掃除・最終検証が丸ごと未実施のまま終わるため（判断軸は ACE-166-1「壊れたとき誰の何が止まるか」）。**どの分岐でも「消していない」点は共通**なので、続行しても誤削除は起きない。失敗項目には失敗の先頭行を添えて、原因（権限 / ネットワーク / ブランチ保護）がサマリーまで届くようにする。
-
-削除の直後に走る**削除反映の `fetch --prune` も同じ扱い**にしてある。ここだけ致命的にすると、リモート削除の失敗と同じ原因（ネットワーク断）でその 2 行先が中断し、上の判断が成立しない。prune が飛んでも安全側にしか外れない — ref は Step 3 の `fetch` 時点まで新しく、「消えたはずのブランチが `[gone]` に見えない」= 処理対象が減るだけである。**Step 3 の `fetch --prune`（破壊的処理より前）は従来どおり致命的**で、これは base の最新化そのものが成立しないため。
-
-なお削除に失敗したブランチ自身の扱いは、**リモート ref が実際に残っているかで決まる**（失敗したという事実では決まらない）。ref が残っていれば `[gone]` にならないため、そのブランチのローカルブランチ・worktree・トランスクリプトは残置される。逆に、削除は実際には成功していて応答だけが失われた場合や、外部が既に消していた場合は `[gone]` になり、通常どおり掃除される。**判定はどちらも実測（`upstream:track`）に基づく**ので、失敗した対象を特別扱いして掃除の対象から外すことはしない。
-
-Step 4 で失敗した対象 PR の head は、その後 Step 6 の (名前, OID) 照合に一致すれば**同じ実行内で再試行される**。`failed` のまま残すと同じサマリーの「自動削除したリモート取り残し」と食い違うため、再試行の結果でサマリーの「対象 PR のリモートブランチ」を更新する。
-
-| Step 6 の再試行結果 | サマリーの値 |
-|---|---|
-| 削除できた | `deleted_by_leftover_retry` |
-| その時点で既に消えていた | `already_missing_at_leftover_retry`（消したのは自分ではないので `deleted` とは書かない） |
-| 再び失敗した / 照合に一致せず候補にならなかった | `failed` のまま |
-
-再試行も失敗した場合は失敗項目が 2 行出る（実際に 2 回失敗している）が、2 行目は「Step 6 の再試行も失敗」と書き分ける。同じ文言が 2 行並ぶと「2 本失敗した」と読めるため。照合は名前だけでなく OID も見るので、同名別 OID の取り残しを消しても対象 PR の行は書き換わらない。
-
-**Step 4 の失敗中にリモートが別 OID へ進んだ場合、Step 6 の候補にならない**（ガード 1 の (名前, OID) 完全一致で弾かれる）ため、更新済みブランチが再試行で消えることはない。いずれの場合も 1 回失敗した事実は失敗項目に残るので、終了コードは PARTIAL のまま。
-
-### `headRefOid` が取得できない場合 — 中断ではなく削除だけスキップ
-
-`gh pr view` が `headRefOid` を返せないことがある。この値は Step 4 の `--force-with-lease=<ref>:<期待OID>` のアンカーそのもので、そのまま渡すと**真因（照合すべき OID が無い）がどの選択肢にも含まれない**「権限 / ネットワーク / ブランチ保護ルールを確認」という案内になる。壊れ方は 2 通りあり、実際に来るのは前者だけである:
-
-| 値 | そのまま渡した場合 |
-|---|---|
-| `"null"`（`jq -r` が JSON `null` を文字列化した値。**実際に来るのはこれ**） | Git が object name として解析できず、push は `stale info` にも `remote ref does not exist` にもマッチしない「その他失敗」へ落ちる |
-| 空文字列 | `--force-with-lease=<ref>:` は「**ref は存在しないはず**」という別の意味になり、lease 拒否（= マージ後 push あり）として誤報される。`jq -r` が空を返す経路は無いため実質到達不能だが、保険で同じ扱いにする |
-
-そこで Step 2 で `headRefOid` の欠落を検出し、Step 4 は**リモートブランチ削除だけをスキップ**する。表示は「`headRefOid` を取得できませんでした」と名指しし、上の的外れな案内は出さない。
-
-削除を諦める前に `git ls-remote --exit-code --heads origin refs/heads/<head>` で ref の実在だけは確かめる。`--exit-code` は「ref なし」を 2 で返すので、**通信・認証の失敗（128 等）と区別できる**:
-
-| `ls-remote` の結果 | サマリーの値 | 失敗項目 |
-|---|---|---|
-| ref が存在する（rc=0） | `skipped_oid_unavailable` | 保留（下表のとおり Step 6 の結果で確定する） |
-| ref が無い（rc=2） | `already_missing` | **積まない**。消すものが無いので失敗ではない。積むと**何度実行しても解消しない PARTIAL** になる |
-| 実在確認自体が失敗（rc=それ以外） | `skipped_oid_unavailable` | 1 行（「消えている」と断定せず fail-closed） |
-
-**復旧手順に無条件の `git push origin --delete` は案内しない。** この時点で「その ref が対象 PR の head である」ことは誰も確認していないため、確認と削除の間に入った push や、同名ブランチの再利用ごと消してしまう。案内するのは次の形だけである:
-
-1. `ls-remote` で得た OID が PR の head であることを、PR ページ / コミット履歴で**人間が確認**する
-2. 確認できた場合のみ `git push origin --force-with-lease=refs/heads/<head>:<確認済みOID> :refs/heads/<head>`（照合後に push が入っていればサーバー側で拒否される）
-3. **確認できなければ削除しない** — 別の作業が push している可能性がある
-4. 削除できたら merge-cleanup を再実行してローカル資産を掃除する
-
-**`die`（中断）は採らない。** 判断軸は ACE-166-1 の「壊れたとき誰の何が止まるか」:
-
-| | `die` にした場合 | 削除だけスキップ（採用） |
-|---|---|---|
-| リモートブランチ | 消えない | 消えない（同じ） |
-| 対象 PR の `[gone]` ブランチ・worktree・トランスクリプト | 未実施 | **同じく残置**（ref が残るので `[gone]` にならない。[上記](#リモート削除の判定と失敗時の扱いstep-4--step-6-共通)の「削除に失敗したブランチ自身の扱い」と同じ判定） |
-| **他ブランチ**の `[gone]` 掃除・トランスクリプト回収・取り残し検証 | **全て未実施** | 通常どおり実施 |
-| 利用者の次の一手 | 全ステップを手作業で再現 | ①リモート削除を手動 → ②merge-cleanup を再実行（対象 PR のローカル資産はこの再実行で片付く） |
-
-`headRefName` / `baseRefName` の欠落を `die` にしているのとは非対称だが、これは意図的である。あちらは**欠けると cleanup の対象そのものが決まらない**（どのブランチを消すのか / どこへ復帰するのか）のに対し、`headRefOid` が欠けても止まるのは Step 4 の 1 ブランチだけで、残りのステップは成立する。同じ「ガード情報が構成できない」状況に対して、Step 4 は既に `skipped_guard_unavailable`（削除をスキップし失敗項目へ積んで続行）という前例を持っており、そちらに揃えた形になる。
-
-#### Step 6 が肩代わりできる場合は失敗に数えない
-
-Step 6 の取り残し掃除は `gh pr list` 側の OID を使うので、**`gh pr view` だけが `null` を返した混在ケースでは、Step 6 が照合済みの実在 OID をアンカーに同じブランチを削除できる**。この場合 Step 4 の判定（`is_pr_head_retry`）は `$PR_HEAD_OID` が `"null"` のため恒偽になるので、`skipped_oid_unavailable` 専用の判定を別に持つ。名前だけの照合で足りるのは、Step 6 のガード 1（取り残し一覧との (名前, OID) 完全一致）を通過した時点で「その OID は MERGED 済み PR の head である」ことが証明済みだからである。
-
-| Step 6 の結果 | サマリーの値 | 失敗項目 |
-|---|---|---|
-| 削除できた | `deleted_by_leftover_retry` | **積まない**（補足行へ。他に失敗が無ければ終了コードは 0） |
-| その時点で既に消えていた | `already_missing_at_leftover_retry` | **積まない**（同上） |
-| 照合の後に push が入り lease に拒否された | `skipped_lease_rejected_at_leftover_retry` | **積まない**（削除しないのは**保護**であって失敗ではない。スキップした削除候補として列挙する） |
-| 削除に失敗した | `skipped_oid_unavailable` のまま | 1 行（Step 4 はスキップ / Step 6 の削除も失敗、と書き分ける。二重計上しない）。案内は**照合済みの OID を lease に載せた再試行** |
-| 候補にならなかった（一覧側の OID も壊れている等） | `skipped_oid_unavailable` のまま | 1 行（削除未実施 + 上記の復旧手順） |
-
-lease 拒否の扱いが既知 OID 側と非対称なのは、**Step 4 が削除を試みたかどうか**が違うため。既知 OID の場合は Step 4 で実際に削除に失敗しており、その失敗行が残るのは正当である。`headRefOid` が無い場合は Step 4 が削除を**見送っている**ので、Step 6 の lease 拒否は「マージ後 push があったので保護した」という Step 4 の `skipped_lease_rejected` と同じ正常系にあたる。
-
-**削除できた場合に PARTIAL を立てないのは、実際の失敗が 1 度も起きていないため。** Step 4 の `failed`（削除を試みて失敗した）とは違い、こちらは削除を**見送った**だけで、その後 Step 6 が同じ実行内で完了させている。ここで PARTIAL にすると「手当てが必要」と誤って伝わり、`ls-remote` を見ても消えているという食い違いになる。経緯は補足行（`ℹ️ 補足（手当て不要）`）に残す。
+- 0 以外なら、サマリーの失敗項目・中断理由をユーザーに報告し、勝手にリトライや強制削除をしない
+- サマリーの「対象 PR のリモートブランチ」（`削除した` / `既に存在しない` / `削除していない（保護 / 要確認）`）は完了報告へそのまま引用する。`headRefOid` を取得できなかった回は削除だけをスキップし（`skipped_oid_unavailable`。Step 7 が照合済み OID で肩代わりできれば `deleted_by_leftover_retry` へ更新）、無条件の `git push origin --delete` は案内しない — `ls-remote` の OID が PR の head だと人間が確認できた場合だけ `--force-with-lease=refs/heads/<head>:<確認済みOID> :refs/heads/<head>` で消し、merge-cleanup を再実行する
+- 「スキップした削除候補」は警告文だけで判断せず `git ls-remote --heads origin <branch>` と `git branch --list` の実測で現物を確認する。設定パターンに止められた候補には、照合済み OID を lease に載せた手動削除コマンドと恒久設定の案内が付く
+- base を保持していた clean な別 worktree は同じ commit の detached で残る。worktree の削除は clean 確認後でも `.gitignore` 対象のファイル（`.env` 等）は消える
+- `/ace-curate <PR番号>` の**前に**実行する。cleanup が完了しないかぎり Git Workflow は終了していない
 
 ## 安全原則（スクリプトが保証すること）
 
-- **保護ブランチはローカル・リモートとも絶対に削除しない**（Step 4 / 5 / 6 すべてにガードあり）。`develop` / `main` / `master` / `staging/*` はハードコードで設定でも外せない。`release/*` は既定で保護し、`FF_MERGE_CLEANUP_PROTECT_BRANCHES` で変更できる
-- **未コミット変更を勝手に消さない** — メイン worktree は Step 1 で中断（switch なし掃除モードでは触れずに続行）、別 worktree は削除前に clean 確認。例外は「(名前, OID) が MERGED head と一致し、claude agent ロックがあり、残置物が既知の使い捨てパス（`.review-results`）の untracked だけ」のエージェント worktree で、これは使い捨てパスを個別除去してから force なしで削除する（`--force` は使わず、除去後に入った変更は git 自身が拒否する。上記の設計判断）
-- **他セッションの作業ブランチを切り替えない・worktree を消さない** — 呼び出し元が base でも PR head でもないブランチにいる場合は switch せずに掃除だけ完遂し、base を保持する worktree は報告のみ（detach も削除もしない）
-- **パス除外が効くのは「中断しても何も消えない」ガードだけ** — Step 1 / Step 3 は `FF_MERGE_CLEANUP_IGNORE_PATHS` を尊重するが、worktree 削除前の clean 確認（Step 5）は対象外。除外指定の不正（空パターン）と `git status` の失敗はどちらも中断（fail-closed）
-- **base を保持する別 worktree を削除しない** — clean（除外指定を適用した後に clean）の場合は同じ HEAD の detached 状態へ退避し、ignored ファイルを含む worktree は維持する。dirty の場合は fail-closed で中断
-- **upstream なしの孤児ブランチは削除しない** — 検出して警告のみ
-- **ガード情報の取得失敗は fail-closed** — 「取得失敗 = 空」ではなく「取得失敗 = 削除中止」。`--force-with-lease` のアンカーになる `headRefOid` が `null` / 空の場合も同じで、未検証の値で削除 push を撃たずに削除だけスキップする（[上記](#headrefoid-が取得できない場合--中断ではなく削除だけスキップ)）
-- **トランスクリプトは推測で消さない** — 削除に成功した worktree の分だけを対象に、jsonl の `cwd` 照合を通ったものだけを、**検証済みのアーカイブを作ってから** 回収する。名前の一致だけを根拠にする経路は持たない（Step 5.5）
-- **失敗を握りつぶさない** — 部分失敗は PARTIAL として終了コード 2 で報告
-- **リモート削除の失敗で掃除全体を止めない** — 消せなかったことは記録して続行する。止めるべきなのは「そのブランチの削除」だけで、ローカル側の掃除まで巻き込まない（上表）
-- **削除 push で consumer の simple-git-hooks フルゲートを起動しない** — `SKIP_SIMPLE_GIT_HOOKS=1` を付ける。Git の hook 起動自体は止めない（Husky 等は対象外）。`core.hooksPath` の一時無効化は他の guard まで落とすので使わない
-
-## 終了コード
-
-| code | 意味 |
-|------|------|
-| 0 | 完全成功 |
-| 1 | 致命的エラーで中断（引数不正 / `FF_MERGE_CLEANUP_IGNORE_PATHS`・`FF_MERGE_CLEANUP_PROTECT_BRANCHES`・`FF_MERGE_CLEANUP_MERGED_PR_LIMIT` の指定不正 / 未コミット変更の確認自体の失敗 / 呼び出し元または base 所有 worktree の未コミット変更 / switch・pull 失敗 / gh 失敗 / Step 3 の `fetch --prune` 失敗 など）。**リモートブランチの削除失敗と、その直後の削除反映 `fetch --prune` の失敗はここに入らない**（PARTIAL 扱い） |
-| 2 | 完了したが一部失敗あり（PARTIAL）。サマリーの「失敗した項目」を確認して手動対応 |
-
-終了コードが 0 以外の場合、Claude はサマリーの失敗項目・中断理由をユーザーに報告し、勝手にリトライや強制削除をしないこと。
+保護ブランチはローカル・リモートとも絶対に削除しない／未コミット変更を勝手に消さない／他セッションの作業ブランチを切り替えない・worktree を消さない／ガード情報の取得失敗は fail-closed（「取得失敗 = 削除中止」）／トランスクリプトは推測で消さない（`cwd` 照合 + 検証済みアーカイブ）／失敗を握りつぶさない（PARTIAL）／リモート削除の失敗で掃除全体を止めない（消せなかったことは記録して続行）／削除 push で consumer の simple-git-hooks フルゲートを起動しない。
 
 ## プロジェクト固有処理の拡張ポイント（optional）
 
-DDEV / Next.js キャッシュ / Tauri ビルド成果物 など、プロジェクト固有の cleanup が必要な場合は、リポジトリ root に以下の **optional hook** を置く:
-
-- `.claude/hooks/pre-merge-cleanup.sh` — 未コミット変更ガード通過直後、base 復帰の前に実行（失敗すると中断）
-- `.claude/hooks/post-branch-cleanup.sh` — `[gone]` ブランチごとの削除直前に実行（環境変数 `BRANCH` / `WORKTREE_PATH` を渡す。失敗するとそのブランチをスキップ）
-- `.claude/hooks/post-merge-cleanup.sh` — 最終検証の直後に実行（失敗は警告のみ）
-
-これらは **存在すれば呼ぶ** だけで、無くても動く。実行可能ファイルでない場合はスキップして警告を出す。default ではプロジェクト固有処理を走らせない（DDEV が無いリポジトリで `ddev` を呼ぶと事故るため）。
-
-## 注意事項
-
-- `/merge-cleanup` は **自動で base ブランチを push しない**。pull のみ
-- サマリーは対象 PR について**「リモートブランチを削除したか」を必ず明示する**（`削除した` / `既に存在しない` / `削除していない（保護 / 要確認）`）。`gh pr merge` の成否と混同して取り残しを見逃さないための項目で、完了報告にはこの行をそのまま引用する
-- base を保持していた clean な別 worktree は、cleanup 後も同じ commit の detached 状態で残る。必要なら、その worktree で別ブランチを明示的に checkout して再利用する
-- worktree の削除は clean 確認後でも、**`.gitignore` 対象のファイル（`.env` 等）は clean 扱いのまま消える**。惜しいファイルを worktree の ignored 領域にだけ置く運用は避けること
-- `bundle`（子 Issue を全件 1 PR で束ねた着手単位）の PR でも、渡す番号は **その 1 本の PR** だけでよい。子 Issue は PR 本文の `Closes` でまとめて閉じており、ブランチも worktree も 1 本しか無い
-- `/ace-curate <PR番号>` の **前に** 実行する。ACE はナレッジ更新のみで cleanup はしない。cleanup が完了しないかぎり Git Workflow は終了していない
-- Step 6 の取り残し自動削除が過去のマージ漏れをまとめて回収するため、複数 PR 分の残骸も 1 回の実行で掃除される
-- スクリプトは git のエラーメッセージ文言を照合する箇所を `LC_ALL=C` でロケール固定している
+リポジトリ root に置けば呼ばれる（無くても動く。実行可能でなければスキップして警告）: `.claude/hooks/pre-merge-cleanup.sh`（未コミット変更ガード通過直後・base 復帰の前。失敗すると中断）/ `.claude/hooks/post-branch-cleanup.sh`（`[gone]` ブランチごとの削除直前。`BRANCH` / `WORKTREE_PATH` を渡す。失敗するとそのブランチをスキップ）/ `.claude/hooks/post-merge-cleanup.sh`（最終検証の直後。失敗は警告のみ）。

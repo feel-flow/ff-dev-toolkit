@@ -48,6 +48,10 @@ CHECK="$PLUGIN_ROOT/scripts/check-merge-freshness.sh"
 RECORD="$PLUGIN_ROOT/scripts/record-gate-head.sh"
 RUNNER="$TESTS_DIR/run-all.sh"
 SKILL="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
+# 鮮度照合の分岐（終了コードごとの停止 / 報告文字列）と merge コマンドの生成は scripts/finish.sh
+# precheck が実行し、根拠の散文は references/merge-gate.md に置く。針は規定が置かれた先へ張る。
+FINISH="$PLUGIN_ROOT/scripts/finish.sh"
+GATE_REF="$PLUGIN_ROOT/skills/close-issue/references/merge-gate.md"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 DEPLOYMENT="$ROOT/docs/05-operations/DEPLOYMENT.md"
 
@@ -815,45 +819,46 @@ echo "== D. 文書契約（SKILL / ワークフロー文書）=="
 # =============================================================================
 
 contains "$SKILL" "### 7. ゲート実測鮮度の照合（マージ直前）" "close-issue に鮮度照合の手順がある"
-contains "$SKILL" "scripts/check-merge-freshness.sh" "手順が検査スクリプトを名指ししている"
-contains "$SKILL" "照合直前に読み直す" "照合する先端をその場で読み直す（手順 1 からの経過中のドリフトを拾う）"
-contains "$SKILL" "**ゲート実測の後**にリモートが先行していたこと" "--match-head-commit との窓の違いを述べている"
-contains "$SKILL" "remote-tracking ref は前回 fetch 時点のスナップショット" \
+contains "$GATE_REF" "scripts/check-merge-freshness.sh" "手順が検査スクリプトを名指ししている"
+contains "$FINISH" "check-merge-freshness.sh" "finish.sh precheck が検査スクリプトを呼ぶ"
+contains "$FINISH" "照合直前に読み直す" "照合する先端をその場で読み直す（手順 1 からの経過中のドリフトを拾う）"
+contains "$GATE_REF" "**ゲート実測の後**にリモートが先行していたこと" "--match-head-commit との窓の違いを述べている"
+contains "$GATE_REF" "remote-tracking ref は前回 fetch 時点のスナップショット" \
   "比較の材料に remote-tracking ref を使わない理由が書かれている"
-contains "$SKILL" "0 = 一致（無出力）" "終了コードの意味が手順に書かれている"
+contains "$GATE_REF" "0 = 一致（無出力）" "終了コードの意味が手順に書かれている"
 contains "$SKILL" "**2 で止めないのは意図的**" "判定不能でマージを止めない判断が明示されている"
-contains "$SKILL" "判定不能は手順 8 の完了報告に必ず載せる" "判定不能を報告へ載せる義務がある"
+contains "$GATE_REF" "判定不能は手順 8 の完了報告に必ず載せる" "判定不能を報告へ載せる義務がある"
 contains "$SKILL" "ゲート実測鮮度: <手順 7 の FRESH_REPORT をそのまま貼る>" "完了報告テンプレートに鮮度の欄がある"
-contains "$SKILL" "record-gate-head.sh" "実測対象が自己申告ではなく記録であることを述べている"
-contains "$SKILL" "--print-record" "報告に実測の素性（ゲート名・モード）を載せる"
+contains "$GATE_REF" "record-gate-head.sh" "実測対象が自己申告ではなく記録であることを述べている"
+contains "$FINISH" "--print-record" "報告に実測の素性（ゲート名・モード）を載せる"
 # 部分記録の導入で虚偽になった旧記述（「明示引数の実行は…記録しません」）が復活して
 # いないこと。記録の説明が実体（明示引数 = 部分記録）を述べていることを直接見る。
-contains "$SKILL" '`STATUS=partial`（部分実行）として記録されます' \
+contains "$GATE_REF" '`STATUS=partial`（部分実行）として記録されます' \
   "close-issue の記録説明が「明示引数は部分記録になる」旨を述べている"
 # 上の一文だけだと、同じコミットに全件緑がある場合の実挙動（据え置き → exit 0）を
 # 読み手が予測できない。操作者は「全件ゲート → 名指し 1 本」で exit 2 を予期して
 # しまう（実際は exit 0）。例外は本文と配布文書の両方に要る。
-contains "$SKILL" '同じコミットに全件緑（`STATUS=pass`）の記録が既にあるときは、部分実行で上書きしません' \
+contains "$GATE_REF" '同じコミットに全件緑（`STATUS=pass`）の記録が既にあるときは、部分実行で上書きしません' \
   "close-issue が同一コミットの pass 据え置きを例外として述べている"
 contains "$WORKFLOW" "同じコミットに全件緑の記録が既にあれば、部分実行で上書きされない" \
   "配布 git-workflow が同一コミットの pass 据え置きを述べている"
 # 判定不能の原因列挙。散文の側を名指しで見る（コード内コメントにも同じ語があるため、
 # 前後を含めた形で拾わないと片方だけ古くなっても緑のままになる）。
-contains "$SKILL" "直近のゲートが赤い / 記録が部分実行である" \
+contains "$GATE_REF" "直近のゲートが赤い / 記録が部分実行である" \
   "close-issue の判定不能 原因列挙に部分実行が入っている"
-contains "$SKILL" "記録が無い / 別ブランチの記録 / 汚れた木で測った" \
+contains "$GATE_REF" "記録が無い / 別ブランチの記録 / 汚れた木で測った" \
   "close-issue の判定不能 原因列挙に別ブランチの記録が入っている"
-contains "$SKILL" '記録の `BRANCH` が現在の名前付きブランチと異なる場合は、コミット照合より前に **`UNDETERMINED`（exit 2）**' \
+contains "$GATE_REF" '記録の `BRANCH` が現在の名前付きブランチと異なる場合は、コミット照合より前に **`UNDETERMINED`（exit 2）**' \
   "close-issue が別ブランチの記録をコミット比較前に分離することを述べている"
-# 実際に「マージを止める」のは SKILL の case 節である（スクリプトの exit 1 ではない）。
-# 散文の針だけだと `1)` から exit 1 を落としても全部緑のままなので、節を切り出して
-# 分岐の実体を見る。
+# 実際に「マージを止める」のは finish.sh precheck の case 節である（check-merge-freshness.sh の
+# exit 1 ではない）。散文の針だけだと `1)` から exit 1 を落としても全部緑のままなので、節を
+# 切り出して分岐の実体を見る（tests/finish D2 が同じ分岐を実走でも見る）。
 CASE_BLOCK="$WORK/skill-case.txt"
 LC_ALL=C awk '
-  /^case "\$\{FRESH_STATUS\}" in$/ { grab = 1 }
+  /^[[:space:]]*case "\$\{FRESH_STATUS\}" in$/ { grab = 1 }
   grab { print }
-  grab && /^esac$/ { exit }
-' "$SKILL" > "$CASE_BLOCK"
+  grab && /^[[:space:]]*esac$/ { exit }
+' "$FINISH" > "$CASE_BLOCK"
 CASE_LINES="$(LC_ALL=C awk 'END { print NR + 0 }' "$CASE_BLOCK")"
 if [[ "$CASE_LINES" -ge 10 ]]; then
   ok "手順 7 の分岐を切り出せる（${CASE_LINES} 行）"
@@ -869,12 +874,12 @@ contains "$CASE_BLOCK" "FRESH_REPORT=" "各分岐が報告用の文字列を残�
 # REASON を実際に載せていることを見る。
 contains "$CASE_BLOCK" 'FRESH_REPORT="⚠️ 判定不能 — ${FRESH_REASON}' \
   "判定不能の報告が ACTION だけでなく REASON も載せる"
-contains "$SKILL" '「全件実行で通した」と読ませないため' "高速モードの記録を全件実行と読ませない意図が書かれている"
+contains "$FINISH" '「全件実行で通した」と読ませないため' "高速モードの記録を全件実行と読ませない意図が書かれている"
 # 件名・本文はロケール非依存の単引用エスケープ関数 q を通す（printf %q は非 UTF-8
 # ロケールで日本語を壊すため置換した。回帰は tests/close-issue-shell-quote が見る）。
 # ここが見ているのは「生成が照合した先端 REMOTE_HEAD を使う」ことなので、引用方式が
 # 変わっても契約は変わらない。
-contains "$SKILL" '"${PR_NUMBER}" "${REMOTE_HEAD}" "$(q "${MERGE_SUBJECT}")"' "merge コマンドの生成が照合した先端を使う"
+contains "$FINISH" '"${PR_NUMBER}" "${REMOTE_HEAD}" "${DELETE_FLAG:-}" "$(q "${MERGE_SUBJECT}")"' "merge コマンドの生成が照合した先端を使う"
 
 contains "$WORKFLOW" "ff-dev-toolkit-merge-freshness-contract:start" "git-workflow に鮮度ゲートの契約ブロックがある"
 contains "$WORKFLOW" "check-merge-freshness.sh" "git-workflow が検査スクリプトを名指ししている"

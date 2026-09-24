@@ -17,8 +17,18 @@
 #   3. 手順 9 の「skip 済み」報告テンプレートの見出し（条件の言い換えが片側だけに
 #      なると、どちらが正なのか読めなくなる）
 #
+# 加えて、本線 SKILL.md のバイト数が上限（20,000 B）以下であることを見る。畳んだ本線が
+# 再び膨らむのを止める。wc が失敗・非数値を返した場合も赤にする（fail-closed）。
+#
 # 一時ディレクトリも jq / gh も要らない純粋なファイル検査なので、書き込み不可の
 # 環境でも完走する。
+#
+# 変異検出: SKILL.md 末尾へ 779 B を足して 20,001 B にすると「本線のバイト数が上限を超えた」で rc=1
+#   （ちょうど 20,000 B は緑）。
+#   手順 5 の skip 条件の「かつ」を「または」へ変えると skip 条件の針が ✗ で rc=1（2026-09-24 実測）。
+# 空振り検出: SKILL.md が無いと「必須ファイルが存在し非空」が ✗ で rc=1。手順 5 / 6 / 9 の見出しが変わり
+#   節が抽出できないと各節の針が ✗ で rc=1。本線のバイト数が測れない場合も rc=1（緑へ倒さない）。PATH 先頭に
+#   exit 1 する wc を置くと「(wc 失敗)」、数値でない値を返す wc を置くと「"abc" B」で「測れない」になる（2026-09-24 実測）。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/refine-issue-skip-contract/verify.sh
 
@@ -37,6 +47,9 @@ SKILL="$PLUGIN_ROOT/skills/refine-issue/SKILL.md"
 STEP5_HEADING='### 5. コードベース探索'
 STEP6_HEADING='### 6. 階層化判定'
 STEP9_HEADING='### 9. 完了報告'
+
+# SKILL.md 本線の上限バイト数（規定は推論で導出できる上位視点で書き、本線を 20 KB 以下に保つ）
+SKILL_MAX_BYTES=20000
 
 PASS=0
 FAIL=0
@@ -141,6 +154,19 @@ lacks_line "$SKILL" \
 section_contains "$SKILL" "$STEP9_HEADING" \
   '/refine-issue 完了 (Issue #<num>) — refine の必要なし' \
   "両方 0 件のときの完了報告テンプレートが残っている"
+
+# ---- 本線の上限バイト数 -------------------------------------------------------
+echo
+echo "-- 本線の上限バイト数 --"
+
+if ! skill_bytes="$(wc -c < "$SKILL" | tr -d '[:space:]')"; then
+  skill_bytes="(wc 失敗)"
+fi
+if [[ "$skill_bytes" =~ ^[0-9]+$ ]] && (( skill_bytes <= SKILL_MAX_BYTES )); then
+  ok "本線のバイト数: ${skill_bytes} B（上限 ${SKILL_MAX_BYTES} B）"
+else
+  bad "本線のバイト数が上限を超えた、または測れない: \"${skill_bytes}\" B（上限 ${SKILL_MAX_BYTES} B）"
+fi
 
 echo
 if [[ "$FAIL" -gt 0 ]]; then

@@ -36,7 +36,7 @@ handoff の producer は skill を実行する AI host である。Claude Code �
 
 キャッシュ全体を探索したり、version 名を並べ替えて別版へ切り替えたりしない。次の resolver + guard を、以下に続く直接実行例より前に同じ shell へ読み込む。Claude Code / Codex / grok CLI の host は、上記の値をこの fence の実行環境へ渡すこと。初回 setup は読み込み済み skill を持つ Claude Code / Codex / grok CLI の host セッションからだけ実行する。単独ターミナルで setup 前の状態から plugin を探索する手順は提供しない。setup 後の単独ターミナルは Codex-only 互換シムを使い、固定版の pair / distributed review は skill を再呼び出して実行する。machine-local sidecar の手動 source は対話ターミナル向けに提供せず、後述の永続 hook の handoff にだけ使う。root が未設定、または更新で resource が消えた場合は別版へフォールバックせず status 2 を返す。
 
-このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowが `FF_DEV_TOOLKIT_ROOT` 経由で起動する同梱scriptである。後者は `check-closing-keywords.sh`（Issueクローズキーワードの手動検査）に加え、`check-merge-freshness.sh`（マージ前の鮮度検査）・`update-version-claim.sh` / `check-version-claims.sh`（version claimの生成と検証）を含む。呼び出す側の案内だけが増えて対象の列挙が追従しない状態を作らないため、Git Workflowから同梱scriptを新たに呼ぶときはこの列挙も同時に更新する。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は Codex cache → Claude cache の semantic version 最大を sidecar より先に選ぶ（Issue #623 の互換動作）。そのため plugin 更新直後は、端末の互換シムが新 cache、pre-push が更新前の sidecar を使う状態がある。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
+このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowが `FF_DEV_TOOLKIT_ROOT` 経由で起動する同梱scriptである。後者は `check-closing-keywords.sh`（Issueクローズキーワードの手動検査）に加え、`check-merge-freshness.sh`（マージ前の鮮度検査）・`update-version-claim.sh` / `check-version-claims.sh`（version claimの生成と検証）・`mutation-harness.sh`（PR作成前の変異表の実行）を含む。呼び出す側の案内だけが増えて対象の列挙が追従しない状態を作らないため、Git Workflowから同梱scriptを新たに呼ぶときはこの列挙も同時に更新する。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は Codex cache → Claude cache の semantic version 最大を sidecar より先に選ぶ（Issue `#623` の互換動作）。そのため plugin 更新直後は、端末の互換シムが新 cache、pre-push が更新前の sidecar を使う状態がある。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
 
 消費側の hook / ゲートが toolkit の**別のスクリプト**（`record-gate-head.sh` など）を呼ぶときは、sidecar を自前で読まず、シムの `--print-toolkit-root` で同じ解決器を使う（下の「消費側の hook / ゲートから toolkit のスクリプトを解決する」）。
 
@@ -483,6 +483,8 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 | `distributed` | 各CLIが異なるパースペクティブを担当（デフォルト） |
 | `cross-model` | 全CLIで同じパースペクティブを実行して比較         |
 
+**変更クラス別のレーン数（`--route fast|full|none`）**: `/multi-review` は決定木の根の答え（`scripts/review-route.sh` の `REVIEW_ROUTE`）を `multi-review.sh --route` へ渡し、レーン構成をモードや利用者設定に依らず明示する。`fast`（docs のみ、または 10 行以下）は Codex 1 レーン（`comprehensive-review`）だけ、`full` は 5 レーン（主 `claude-code` の `code-review` / `error-handler-hunt` / `test-analysis` / `comment-analysis` + 副 `codex-cli` の `comprehensive-review`）、`none` はホストが判定する（渡した引数どおり）。`fast` / `full` とレーン構成の明示（`--mode` / `--cli` / `--perspective` / `--exclude-cli` / `--exclude-perspective`）の併用は exit 2。表の正本は multi-review スキルの手順 0b
+
 ### よくあるカスタマイズ例
 
 設定ファイルで指定できるのは**どう走らせるか**だけで、**どの CLI がどの観点を持つか**は指定できない（CLI レジストリは `multi-agent.sh` が正本）。CLI や観点を絞るのはコマンドラインの `--cli` / `--perspective` の役目。
@@ -616,6 +618,8 @@ if ! FF_REVIEW_OUTPUT="$(mktemp -d "${TMPDIR:-/tmp}/ff-pre-push-review.XXXXXX")"
   exit 1
 fi
 REVIEW_REPORT="${FF_REVIEW_OUTPUT}/integrated-report.md"
+# pre-push のゲートは fix ループの巡ではないので、巡回カウンタ（上限 2 巡）を外す
+export FF_REVIEW_ROUND_LIMIT=0
 if ! FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" \
   --output-dir "$FF_REVIEW_OUTPUT" \
   --strategy minimize_cost \
@@ -753,15 +757,16 @@ bash scripts/codex-review.sh --base develop --reviewers comment-analysis
 
 レビュー→修正のループは**放っておくと収束しない**。AI レビュアーは回すたびに新しい低重要度の指摘を拾い、AI 実装者は指摘のたびにガードと抽象を積み増す。ループには次の打ち切り規範を適用する（harness-review の「無限改善ループ」への自己適用）:
 
-- **上限は 3 回転**（1 回転 = レビュー実行 → fix commit → 再検証）
+- **上限は 2 巡**（1 巡 = レビュー実行 → fix commit。巡は起動時の HEAD で数え、同じ HEAD の起動は同じ巡）。**3 巡目のレビュー起動は PreToolUse hook `guard-review-in-flight.sh` と `scripts/multi-review.sh` / `scripts/multi-agent.sh` の review 本体（hook が発火しないホストでも効く共通経路。`multi-agent.sh --task review` の直接起動も含む。exit 4）の巡回カウンタが止める**（記録は `<git common dir>/ff-review-rounds/`。worktree 間で共有され、出力先の外なので `--fresh` の退避やレーン置き場の削除では消えない。記録が無い・読めない回と統合ブランチ（`develop` / `main` / リモートの既定ブランチ）上の起動は 0 巡と見なさず、判定不能として警告付きで通す。**PR 作成前のレビュー（実装途中の起動）も巡を消費する**。判定と母集団の正本は `tests/lib/review-round-counter.sh` のヘッダ。上限の値は環境変数 `FF_REVIEW_ROUND_LIMIT` で変えられる — 既定 2、0 でゲートを無効化）
+- **2 巡目の fix の確認は、親の直読と対象 suite の再実行で行い、結果を PR 本文へ残す**（レビュアーを再起動しない）。Critical / Warning 未満の残件だけを `/out-of-scope-issue` の bundle へ流す
 - **上限に達する前に、ループが伸びている原因を問う。** レビュー指摘は「箇所」で届くので、受け手も箇所を直すことで応じてしまう。だが**指摘が前巡の fix に由来している**なら、直しているのは症状であって原因ではなく、次の fix がまた次の指摘を生む。次のどちらかに当たったら、個別修正は続けたうえで (a) 指摘を**「系統」で分類**し (b) その系統の**原因を 1 行で書き** (c) **構造的対策を別 Issue にすべきか**を判断する（要ればその turn で起票し PR 本文へ番号を残す）:
   1. **直前の fix が次の指摘を生んだ**（2 巡目以降で、指摘が前巡の修正箇所・修正内容に由来する）
   2. **同型の指摘が 2 回目**（箇所は違うが系統が同じ）
 
-  毎回問うのは過剰なので、トリガーは**検知可能な事実**に限る。**上限 3 回転は最後の安全網であって早期の検知器ではない** — 導入先の実測（2026-09-11。docs-only の規約更新で `/multi-review` を 8 巡した回）では、2 巡目以降の新規指摘が前巡の fix に由来する形が続き、切り替わったのは上限に到達して利用者判断を仰いだ後だった。スコープを絞ってからは**その巡の新規 Critical が 1 件に減り、その巡で解消した**。なお 4 巡目以降は**上限を宣言しないまま再開した回**で、下の「追加の上限を宣言する」はこの形を塞ぐためのもの（規範が 8 巡を許しているわけではない）。判定・起票を行うのは**オーケストレータ（実装側エージェント）**で、read-only のレビュー用サブエージェントではない。判定フローは `out-of-scope-issue` スキルの §1.0
+  毎回問うのは過剰なので、トリガーは**検知可能な事実**に限る。**上限 2 巡は最後の安全網であって早期の検知器ではない** — 導入先の実測（2026-09-11。docs-only の規約更新で `/multi-review` を 8 巡した回）では、2 巡目以降の新規指摘が前巡の fix に由来する形が続き、切り替わったのは上限に到達して利用者判断を仰いだ後だった。スコープを絞ってからは**その巡の新規 Critical が 1 件に減り、その巡で解消した**。なお 4 巡目以降は**上限を宣言しないまま再開した回**で、下の「追加の上限を宣言する」はこの形を塞ぐためのもの（規範が 8 巡を許しているわけではない）。判定・起票を行うのは**オーケストレータ（実装側エージェント）**で、read-only のレビュー用サブエージェントではない。判定フローは `out-of-scope-issue` スキルの §1.0
 - **停止条件は「既出の Critical / Warning を全解消し、かつ新規の Critical / Warning が無いこと」であり、green（全指摘ゼロ）ではない。** 解消は修正、または [PR Review Response Policy](./review-response-policy.md) の却下手順に従った記録付き棄却を含む。大きな diff のクロスモデルレビューは nit だけの REJECTED が続くことがあり、Critical 不在 + 実 Warning 全対応で停止してよい
-- **3 回転終了時点でも未解消または新規の Critical / Warning がある場合は、4 回転目の自動修正を開始しない。** 各指摘を patch せず設計を疑う。判断するのはオーケストレータ（実装側エージェント）である。成果物は PR への設計疑義メモ（指摘が依頼範囲外の追加分に集中している場合はスコープ過剰のサインなので、追加分の別 Issue への切り出しを検討する）。残件は修正するかポリシーの却下手順で記録付き棄却する。未解消 Critical / Warning がある間はマージしない
-- **上限到達後に方針転換（スコープ変更・設計変更）で再開する場合は、再開時に追加の上限を宣言する**（例:「追加 2 回転まで」）。**追加上限は Critical / Warning の解消義務を免除しない** — 追加上限に達しても未解消の Critical / Warning が残るならマージせず、設計疑義メモへ戻す（未対応のまま残せるのは Suggestion 以下だけで、残すものは PR 本文へ記録する）。宣言しない再開は**上限の無い再開**になる — 停止条件の「新規の Critical / Warning が無いこと」は、毎巡 1〜2 件の Warning 相当（CLI 出力では `Important` 表記のことがある）が出る差分（規約文書の更新など）では実質 green 待ちと同じになり、上の「green を待たない」が効かなくなる
+- **2 巡目の fix の後に未解消または新規の Critical / Warning が残っても、3 巡目のレビューは起動しない**（hook が deny する）。各指摘を patch せず設計を疑う。判断するのはオーケストレータ（実装側エージェント）である。成果物は PR への設計疑義メモ（指摘が依頼範囲外の追加分に集中している場合はスコープ過剰のサインなので、追加分の別 Issue への切り出しを検討する）。Critical / Warning の残件は修正するかポリシーの却下手順で記録付き棄却する。それ以外の残件（Suggestion 以下、3 巡目で拾うはずだった確認）は `/out-of-scope-issue` の bundle 統合へ流す。未解消 Critical / Warning がある間はマージしない
+- **上限到達後に方針転換（スコープ変更・設計変更）で再開する場合は、再開時に追加の上限を宣言し、追加の巡を 1 巡ずつ `FF_REVIEW_ROUND_ACK=1` で通す**（例:「追加 1 巡まで」。Bash は起動コマンドの先頭の環境代入、Agent は prompt の行頭の単独行。通した巡も記録されるので次の巡でまた止まる）。**追加上限は Critical / Warning の解消義務を免除しない** — 追加上限に達しても未解消の Critical / Warning が残るならマージせず、設計疑義メモへ戻す（未対応のまま残せるのは Suggestion 以下だけで、残すものは PR 本文へ記録する）。宣言しない再開は**上限の無い再開**になる — 停止条件の「新規の Critical / Warning が無いこと」は、毎巡 1〜2 件の Warning 相当（CLI 出力では `Important` 表記のことがある）が出る差分（規約文書の更新など）では実質 green 待ちと同じになり、上の「green を待たない」が効かなくなる
 - 打ち切り時に残った Suggestion 以下は、[PR Review Response Policy](./review-response-policy.md) の採否と、スコープ外発見の三分岐に従って記録する（黙って捨てない。独立 Warning のパーキングは採用しない）
 
 `code-simplification` は既定の非ブロック観点のままにする。単純化の Critical は修正必須だが、それ単独では push ゲートを再発火させない。複雑性を増やす方向の指摘は、失敗シナリオが無い限り Finding Discipline が Suggestion へ落とすので、対称化は重大度の入口で行う。

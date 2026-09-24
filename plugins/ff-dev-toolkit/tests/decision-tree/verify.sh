@@ -34,6 +34,10 @@
 #      (unmeasured)、供給源が未配線の葉（decision-tree 以外の hook と doc）は (unavailable)、repo 列が
 #      --repo-dir と一致する行だけを採り、期間内に到達した葉は列挙から外れ、期間外の記録は数えず、
 #      読めない行は件数で出す。--metrics-dir は env と同じ置き場を指し、--issue-metrics とは排他
+#   H. 根の答えを読む側（scripts/review-route.sh = multi-review のレーン構成）: fast → 親の直読 +
+#      Codex 1 レーン / full → 5 レーン / none → ホスト判定、完了報告の 1 行は DT_REASON の写像
+#      （例「経路: fast（根拠: docs のみ / 12 行）」）。根の DT_* 行をバイト同一で通し（判定を
+#      再実装しない）、根が判定不能（exit 2）の回・根（ルータ）が無い配置でも none を出して exit 2 を返す
 #
 # 変異検出: 実測は本 suite の B 節がそのまま持つ（合成 root への注入で毎回測る。B1〜B14 の 14 変異）。
 # 空振り検出: 木データを空ファイルにすると (C2) が赤になる（--check は exit 2 を返し、suite は「rc 2 でない」を赤にする。2026-09-23 実測）。
@@ -572,6 +576,61 @@ run_report FF_DEV_TOOLKIT_STATE_DIR="$REC" -- --unreached-leaves --repo-dir "$TE
 [ "$RC" -eq 0 ] && [ "$(kv repo)" = "(unresolved)" ] && [ "$(kv leaves_unreached)" = "(unmeasured)" ] && ok "G10 --repo-dir が git リポジトリでなければ repo=(unresolved) で (unmeasured)" || bad "G10 repo 不明: rc=$RC out=[$OUT]"
 run_report FF_DEV_TOOLKIT_STATE_DIR="$REC" -- --unreached-leaves --issue-metrics 1 --repo-dir "$GITFIX"
 [ "$RC" -eq 2 ] && ok "G11 --issue-metrics と --unreached-leaves の同時指定は exit 2" || bad "G11 同時指定: rc=$RC"
+
+# --- H. レビュー経路（scripts/review-route.sh）: 根の答えをレーン構成と完了報告の 1 行へ写す ---
+REVIEW_ROUTE_SH="$PLUGIN_ROOT/scripts/review-route.sh"
+run_review_route() { # <review-route.sh の引数...>
+  RC=0
+  OUT="$(env -u FF_JEV_MODE -u FF_JEV_POINTS -u FF_JEV_ENABLED -u TYPESAFE_API_KEY -u TYPESAFE_API_KEY_FILE \
+    -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT \
+    bash "$REVIEW_ROUTE_SH" "$@" 2>"$TEST_TMP/review-route.err")" || RC=$?
+}
+assert_review_route() { # <label> <rc> <route> <lanes> <report line>
+  if [ "$RC" -eq "$2" ] && [ "$(kv REVIEW_ROUTE)" = "$3" ] && [ "$(kv REVIEW_LANES)" = "$4" ] \
+    && [ "$(kv REVIEW_REPORT_LINE)" = "$5" ]; then
+    ok "$1"
+  else
+    bad "$1: rc=$RC route=[$(kv REVIEW_ROUTE)] lanes=[$(kv REVIEW_LANES)] line=[$(kv REVIEW_REPORT_LINE)]"
+  fi
+}
+run_review_route --files docs/a.md docs/b.md --lines 12
+assert_review_route "H1 docs のみ → fast（親の直読 + Codex 1 レーン）で、報告行に根拠と行数が出る" \
+  0 fast "parent-read+codex:1" "経路: fast（根拠: docs のみ / 12 行）"
+run_review_route --files plugins/ff-dev-toolkit/scripts/x.sh --lines 4
+assert_review_route "H2 10 行以下の実装 → fast（小さい差分）" \
+  0 fast "parent-read+codex:1" "経路: fast（根拠: 小さい差分 / 4 行）"
+run_review_route --files plugins/ff-dev-toolkit/scripts/x.sh --lines 40
+assert_review_route "H3 実装変更 → full（Codex 1 + Claude 4 観点の 5 レーン）" \
+  0 full "codex:1+claude:4" "経路: full（根拠: 実装変更 / 40 行）"
+run_review_route --files plugins/ff-dev-toolkit/hooks/hooks.json
+assert_review_route "H4 契約 path → full。行数が無い回は「行数不明」" \
+  0 full "codex:1+claude:4" "経路: full（根拠: 契約 path plugins/ff-dev-toolkit/hooks/hooks.json / 行数不明）"
+: > "$TEST_TMP/empty-files.txt"
+run_review_route --files-from "$TEST_TMP/empty-files.txt"
+assert_review_route "H5 変更 0 件 → none（ホスト判定）" \
+  0 none "host" "経路: none（根拠: 変更 0 件 / 行数不明）"
+run_review_route --files x.sh --lines abc
+assert_review_route "H6 根が判定不能（exit 2）でも none を出して exit 2（fast / full へ黙って倒さない）" \
+  2 none "host" "経路: none（根拠: 判定不能（--lines が整数ではありません: abc） / 行数不明）"
+run_review_route --files docs/a.md --lines 3
+H_WRAPPED="$(printf '%s\n' "$OUT" | grep '^DT_' || true)"
+run_router -- --files docs/a.md --lines 3
+if [ -n "$H_WRAPPED" ] && [ "$H_WRAPPED" = "$OUT" ]; then
+  ok "H7 根の DT_* 行をバイト同一で通す（経路の判定を再実装しない）"
+else
+  bad "H7 根の出力と食い違う: wrapped=[$H_WRAPPED] root=[$OUT]"
+fi
+run_review_route --no-such-flag
+[ "$RC" -eq 64 ] && [ -z "$(kv REVIEW_ROUTE)" ] && ok "H8 使い方の誤りは exit 64 で経路を出さない" || bad "H8 使い方の誤り: rc=$RC out=[$OUT]"
+# ルータ（決定木の根）が無い配置: 判定不能として none を出して exit 2（ヘッダの契約。黙って止まらない）
+H_NOROUTER="$TEST_TMP/h-norouter"
+mkdir -p "$H_NOROUTER/scripts" "$H_NOROUTER/.claude-plugin"
+cp "$REVIEW_ROUTE_SH" "$H_NOROUTER/scripts/"
+cp "$PLUGIN_ROOT/.claude-plugin/plugin.json" "$H_NOROUTER/.claude-plugin/"
+RC=0
+OUT="$(env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT bash "$H_NOROUTER/scripts/review-route.sh" --files docs/a.md 2>/dev/null)" || RC=$?
+assert_review_route "H9 決定木のルータが無い配置でも none / host と判定不能の報告行を出して exit 2" \
+  2 none "host" "経路: none（根拠: 判定不能（決定木のルータがありません） / 行数不明）"
 
 echo ""
 if [ "$FAIL" -gt 0 ]; then

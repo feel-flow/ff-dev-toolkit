@@ -130,6 +130,13 @@
 #   Scope: claude-code only. The host is Claude, so routing another lane through it would
 #   silently collapse the cross-model independence this tool exists to provide.
 #
+# Review round limit (review only):
+#   A review run on the same branch at a new HEAD is one "round". The third round
+#   (limit: FF_REVIEW_ROUND_LIMIT, default 2, 0 disables) is refused before any CLI
+#   starts, with exit status 4. Pass it once with FF_REVIEW_ROUND_ACK=1 in front of the
+#   command. --dry-run / --print-reviewers / --staged etc. are not rounds. The rules live
+#   in tests/lib/review-round-counter.sh (shared with the PreToolUse hook).
+#
 # Perspective resolution:
 #   --perspective alone filters the distributed ownership registry and can shrink
 #   a review plan to one CLI. The plan reports installed CLIs excluded this way
@@ -688,7 +695,7 @@ shell_quote() {
 
 # ── Model-Selection Env Passthrough ──
 # モデル選択の env は「インラインで前置して 1 回だけ効かせる」形（multi-review の
-# SKILL.md の例もそれ）なので、元コマンドが終わると消える。再実行コマンドをそのまま
+# references/model-selection.md の例もそれ）なので、元コマンドが終わると消える。再実行コマンドをそのまま
 # 出すと、貼り付けた人は既定のモデル / プロファイルで走ることになり、失敗した構成の
 # 再現にならない。
 #
@@ -6583,6 +6590,26 @@ main() {
   if [[ "$PRINT_REVIEWERS" == "true" ]]; then
     print_reviewers_state
     exit $?
+  fi
+
+  # ── レビュー巡回の上限（全ホスト共通の経路）──
+  # 同じブランチで異なる HEAD に対するレビューの起動を巡として数え、上限（既定 2 巡）を超える巡は
+  # 何も起動せず exit 4 で止める。hook（guard-review-in-flight.sh）と同じライブラリ・同じ記録を
+  # 読むので、hook が数えた起動・multi-review.sh 経由の起動を二重に数えない。判定・母集団・
+  # 通過口（FF_REVIEW_ROUND_ACK=1 を起動コマンドの先頭へ）・無効化（FF_REVIEW_ROUND_LIMIT=0）の
+  # 正本は tests/lib/review-round-counter.sh のヘッダ。ライブラリを読めない回は判定不能として
+  # 警告だけ出して通す（fail-soft）。
+  if [[ "$TASK_TYPE" == "review" ]]; then
+    local round_lib="$SCRIPT_DIR/../tests/lib/review-round-counter.sh"
+    # shellcheck source=../tests/lib/review-round-counter.sh
+    if [[ -r "$round_lib" ]] && . "$round_lib" 2>/dev/null \
+      && [[ "$(type -t ff_review_round_script_gate 2>/dev/null)" == "function" ]]; then
+      if ! ff_review_round_script_gate "$@"; then
+        exit 4
+      fi
+    else
+      echo "ℹ️ ff-dev-toolkit guard（レビュー巡回カウンタ）: 巡回カウンタ（${round_lib}）を読めないため巡を数えられません。判定不能として通します。" >&2
+    fi
   fi
 
   # --cli は分散モード用のフィルタ（所有レジストリを絞る）で、pair モードには

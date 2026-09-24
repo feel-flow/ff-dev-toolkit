@@ -65,7 +65,37 @@
 # 変異検出: 手順 7 の片側空で判定不能として抜ける分岐行を削除すると (6) が赤。
 # 変異検出: 手順 7 の「UNVERIFIED=yes は取りこぼし無しへ倒さない」を削除すると (6) が赤。
 #
+# 手順 0b / 5 / 8 の本体はリリーススクリプト（scripts/release-dev-toolkit.sh。ADR-063）へ移したので、
+# 実行面の針（(7)）はスクリプトに当て、SKILL には判断の根拠（散文）の針だけを残す。スクリプトの
+# 振る舞い（段の順序・dry-run が書き込まない・再実行で続きから・止まるべき状態・粒度判定・同期提案
+# hook の in-flight 抑止）は release-runtime.sh が一時 Git リポジトリで固定する。
+# 変異検出（(7) と release-runtime。2026-09-23 実測）:
+# 変異検出: スクリプトの ALLOWED_SKIP_PATTERNS 照合（許容表に無い部分 skip で止める行）を削除すると (7) と release-runtime が赤。
+# 変異検出: スクリプトの main で stage_gate と stage_sync の行を入れ替えると (7) の順序が赤。
+# 変異検出: スクリプトの limited_gate 呼び出し行を削除すると (7) が赤。
+# 変異検出: スクリプトの dry-run 分岐（prepare 段の DRY_RUN 判定）を外すと release-runtime（dry-run は書き込まない）が赤。
+# 変異検出: スクリプトのゲート緑記録の照合（state_get GATE_OK）を外すと release-runtime（再実行でゲートを回し直さない）が赤。
+# 変異検出: hook の in-flight 判定ブロックを削除すると release-runtime（進行中は再確認を出さない）が赤。
+# 変異検出（2 巡目のレビュー対応。2026-09-24 実測）:
+# 変異検出: preflight の未 push sync commit の push を外すと release-runtime（公開 push の失敗から回復しない）が赤。
+# 変異検出: sync 段の GATE_OK 要求を外すと release-runtime（--only sync が gate を素通り）が赤。
+# 変異検出: report 段の footer 非 green で止める行を外すと release-runtime が赤。
+# 変異検出: 版幅を「修正があれば patch」へ戻すと release-runtime（混在分類が minor にならない）が赤。
+# 変異検出: preflight の書きかけ巻き戻しを外すと release-runtime（bump 後 / footer 更新後の失敗から再開できない）が赤。
+# 変異検出: in-flight 印の取得（writer）を外すと release-runtime（ゲート走行中に印が見えない）が赤。
+# 変異検出: hook の stale 時の粒度判定ガードを外すと release-runtime（stale な drift で日次待ちに倒れる）が赤。
+# 変異検出: tag 段の remote main 一致要求を外しても release-runtime は緑（preflight が先に push するため多重防御）。(7) の針が赤。
+# 変異検出（3 巡目。破壊的な自動復旧をやめ fail-closed へ。2026-09-24 実測）:
+# 変異検出: preflight で acquire_in_flight を復旧の後ろへ動かすと (7) の順序針と release-runtime（live 印 + dirty tree で作業ツリーに触る）が赤。
+# 変異検出: 書きかけの一致判定（writing_match）を常に一致へ倒すと release-runtime（利用者の編集・公開側の未追跡を消す）が赤。
+# 変異検出: try_reclaim が判定後に token を読み直す形へ戻すと (7) の lib 針が赤（判定と読み直しの割り込みは runtime で決定的に作れないので静的に固定する。release-runtime は判定後の取り直しで rename 回収が失敗することを固定する）。
+# 変異検出: gate 段の週次 CI 再評価を記録の照合より後ろへ戻すと release-runtime（healthy でなくなった再実行を全件で回さない）が赤。
+# 変異検出: 完走サマリーの要求を外すと release-runtime（空出力・会計行欠落を緑と読む）が赤。
+# 変異検出: ローカルタグの commit 照合を外すと release-runtime（古いローカルタグを公開する）が赤。
+# 変異検出: tag 段の require_gate_ok を外すと release-runtime（--only tag が gate を素通り）が赤。
+#
 # 空振り検出: FF_SYNC_SHA_SKILL へ存在しないパスを与えると (対象解決) が赤になる。明示指定の不在を skip へ倒さないため、実測は exit 1（○ skip ではない）。
+# 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT へ存在しないパスを与えると (対象解決) が赤になる（実測 exit 1）。リリーススクリプトを空ファイルへ差し替えると (7) の全針と release-runtime が赤になる。
 # 空振り検出: 検査対象を空ファイルへ差し替えると (1〜3 / 5 / 6 の全針) が赤になる。0 件一致を「不足なし」へ倒さないことの実測。
 #
 # run-all-required: no — 同期スクリプトを持たない公開 checkout での skip は正当な適用外（SSOT 専用の検査）
@@ -102,6 +132,18 @@ else
     exit 1
   fi
 fi
+
+# リリーススクリプト（手順 0b / 5 / 8 の本体。ADR-063）の検査対象。FF_SYNC_SHA_RELEASE_SCRIPT で
+# 差し替えられる（変異実測用）。SSOT なのに不在・明示指定の不在はいずれも失敗（skip へ倒さない）。
+RELEASE_SCRIPT="${FF_SYNC_SHA_RELEASE_SCRIPT:-$REPO_ROOT/scripts/release-dev-toolkit.sh}"
+if [[ -n "${FF_SYNC_SHA_RELEASE_SCRIPT:-}" ]]; then
+  echo "⚠ FF_SYNC_SHA_RELEASE_SCRIPT でリリーススクリプトの検査対象を差し替えています: $RELEASE_SCRIPT" >&2
+fi
+if [[ ! -f "$RELEASE_SCRIPT" ]]; then
+  echo "✗ 検査対象のリリーススクリプトがありません: $RELEASE_SCRIPT" >&2
+  exit 1
+fi
+POST_MERGE_HOOK="$REPO_ROOT/.claude/hooks/post-merge-dev-toolkit-sync.sh"
 
 # 同期スクリプト側の検査対象。既定は上で解決した実体と同じで、FF_SYNC_SHA_SCRIPT で
 # 差し替えられる（変異実測用）。SKILL 側と同じく、明示指定の不在は skip ではなく失敗。
@@ -172,6 +214,42 @@ script_line_of() {
   awk -v pat="$1" 'index($0, pat) { print NR; exit }' "$SYNC_SCRIPT_UNDER_TEST"
 }
 
+# リリーススクリプト側の針。対象だけが違う同型の helper。
+release_contains() {
+  local needle="$1" label="$2" rc=0
+  grep -qF -- "$needle" "$RELEASE_SCRIPT" || rc=$?
+  case "$rc" in
+    0) ok "$label" ;;
+    1) bad "${label}（不足: ${needle}）" ;;
+    *) bad "${label}（grep が失敗 rc=${rc}）" ;;
+  esac
+}
+release_contains_exactly() {
+  local needle="$1" want="$2" label="$3" got
+  got="$(grep -cF -- "$needle" "$RELEASE_SCRIPT" || true)"
+  if [[ "$got" == "$want" ]]; then
+    ok "$label"
+  else
+    bad "${label}（期待 ${want} 箇所 / 実際 ${got} 箇所: ${needle}）"
+  fi
+}
+release_not_contains() {
+  local needle="$1" label="$2" rc=0
+  grep -qF -- "$needle" "$RELEASE_SCRIPT" || rc=$?
+  case "$rc" in
+    0) bad "${label}（禁止パターンが存在: ${needle}）" ;;
+    1) ok "$label" ;;
+    *) bad "${label}（grep が失敗 rc=${rc}）" ;;
+  esac
+}
+release_line_of() {
+  awk -v pat="$1" 'index($0, pat) { print NR; exit }' "$RELEASE_SCRIPT"
+}
+# 行全体の完全一致（段の呼び出し行のように、部分一致だと定義や説明に吸われる針に使う）
+release_exact_line_of() {
+  awk -v pat="$1" '$0 == pat { print NR; exit }' "$RELEASE_SCRIPT"
+}
+
 # 行番号の単調性を 1 件の検査として報告する。アンカーが引けない場合は fail-closed。
 assert_order() {
   local before="$1" after="$2" ok_msg="$3" bad_msg="$4"
@@ -218,17 +296,20 @@ contains 'stale な origin/develop で続行しない' \
 # 単行 grep で固定できない — 「NG を出して続行する」変異は静的検査の上限の外）。
 # 針はコマンド形の行全体に固定する — 裸のスクリプト名だと、散文の言及が 1 行増えた
 # 時点で contains も line_of の順序アンカーも散文側に吸われて空振りする（レビュー W2）。
-contains 'HEALTH_OUT="$(bash scripts/check-weekly-run-all-health.sh 2>&1)" || true' \
-  "手順 0b が週次 CI の状態確認を踏む（selftest 層の担保。ADR-039）"
-contains 'if [[ $'"'"'\n'"'"'"$HEALTH_OUT"$'"'"'\n'"'"' == *$'"'"'\n'"'"'"HEALTH=healthy"$'"'"'\n'"'"'* ]]; then' \
-  "高速モードへ受理するのは HEALTH=healthy だけ（warming-up / running を成功実績と読まない）"
-contains '⚠ 週次 CI の成功実績を確認できない（HEALTH が healthy 以外）— この回は全件実行で代替する' \
+# 実行面（コード行）はリリーススクリプトの gate 段が持つ（ADR-063）。SKILL は段を名指しで呼ぶ。
+contains 'scripts/release-dev-toolkit.sh --only gate' \
+  "手順 0b がリリーススクリプトの gate 段を名指しで呼ぶ（本体の所在）"
+release_contains 'capture bash "$HEALTH_SCRIPT"' \
+  "gate 段が週次 CI の状態確認を踏む（selftest 層の担保。ADR-039）"
+release_contains 'if has_line "$HEALTH_OUT" "HEALTH=healthy"; then' \
+  "高速モードへ受理するのは HEALTH=healthy だけ（行単位の完全一致。warming-up / running を成功実績と読まない）"
+release_contains '⚠ 週次 CI の成功実績を確認できない（HEALTH が healthy 以外）— この回は全件実行で代替する' \
   "healthy 以外の回に全件代替へ倒すことが明記されている"
-contains_exactly 'FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh' 1 \
-  "healthy 以外の回の全件代替コマンドが手順 0b の 1 箇所にある"
-contains 'if [ "$GATE_MODE" = fast ]; then' \
+release_contains_exactly 'FF_RUN_ALL_FULL=1 bash "$RUN_ALL" >"$gate_out" 2>&1 || gate_rc=$?' 1 \
+  "healthy 以外の回の全件代替コマンドが gate 段の 1 箇所にある"
+release_contains 'if [[ "$gate_mode" == fast ]]; then' \
   "ローカル実行のモードが週次 CI の状態から導出される"
-contains 'NG: run-all が失敗 — 同期しない' \
+release_contains 'run-all が失敗した — 同期しない' \
   "run-all が非 0 のとき同期しないことが明記されている"
 contains '非 0 なら**同期しない**' \
   "ゲートが非 0 のとき同期しないことが明記されている"
@@ -240,7 +321,7 @@ contains '同じ 2 点を無条件に回し直す' \
   "収束周回でもゲートを省略しない（旧 green 再利用機構の復活を防ぐ）"
 contains 'footer 差分でも省略しない' \
   "収束段落が footer 差分でのゲート省略を禁じている（旧 3 suite 充足への書き戻し検出。レビュー W1）"
-contains '検査した tree と HEAD の tree が一致しない' \
+release_contains '検査した tree と HEAD の tree が一致しない' \
   "dirty なまま得た green を「HEAD を検査済み」と扱わない"
 
 # 手順 0b の部分 skip 許容条件。散文が `checks-skipped` 非 0 を「未実行の検査がある」と
@@ -256,27 +337,27 @@ contains '検査した tree と HEAD の tree が一致しない' \
 # 下の中断理由と次の一手が表示されない（緑と赤で出力の質が変わる）。捕捉形を固定する。
 # 針はコード行そのものを指す。`|| GATE_RC=$?` だけだと、同じ綴りを含む直上の説明コメントで
 # 満たされてしまい、コード側を元の `GATE_RC=$?` へ戻しても緑のまま通る（実測）。
-contains 'run-all.sh >"$GATE_OUT" 2>&1 || GATE_RC=$?' \
-  "手順 0b が run-all の終了コードを set -e で落ちない形（|| GATE_RC=\$?）で捕捉する"
-contains 'ALLOWED_SKIP_PATTERNS=(' \
-  "手順 0b が続行してよい部分 skip の正本を配列として持つ"
-contains 'done <<<"$(awk '"'"'/^[[:space:]]+○ skip(:|$)/'"'"' "$GATE_OUT")"' \
-  "手順 0b が run-all 出力の部分 skip 理由行を走査する（GATE_RC だけを見て散文を空文にしない）"
-contains 'NG: 許容表に無い部分 skip がある' \
-  "許容表に無い部分 skip で中断することが判定コード片にある"
+release_contains 'bash "$RUN_ALL" >"$gate_out" 2>&1 || gate_rc=$?' \
+  "gate 段が run-all の終了コードを落ちない形（|| gate_rc=\$?）で捕捉する"
+release_contains 'ALLOWED_SKIP_PATTERNS=(' \
+  "gate 段が続行してよい部分 skip の正本を配列として持つ"
+release_contains 'done <<<"$(awk '"'"'/^[[:space:]]+○ skip(:|$)/'"'"' "$gate_out")"' \
+  "gate 段が run-all 出力の部分 skip 理由行を走査する（終了コードだけを見て許容表を空文にしない）"
+release_contains '許容表に無い部分 skip がある' \
+  "許容表に無い部分 skip で中断することが判定コードにある"
 contains '**環境 skip は許容しない**' \
   "外部 CLI 不在などの環境 skip を続行させないことが明記されている"
 contains '`total=0` を要求しない理由（手順 8 との非対称は意図）' \
   "0b が total=0 を要求しない理由と、手順 8 へ波及させない旨が明記されている"
 # 許容表の各要素。1 行消しても配列の形は保たれるため、要素単位でも固定する（消えた要素の
 # skip はその場で中断側へ倒れるので安全側だが、「なぜ止まるのか」が手順書から消える）。
-contains "'検査 B/C は免除（件数ゲートが担保'" \
+release_contains "'検査 B/C は免除（件数ゲートが担保'" \
   "許容表に設計上の免除（plugin-description-enumeration）がある"
-contains "'estimation カテゴリファイルは未作成'" \
+release_contains "'estimation カテゴリファイルは未作成'" \
   "許容表にデータ未到来（effort-contract）がある"
-contains "'enum 照合は対象外（grok-cli は受け付ける値の集合を公表していない）'" \
+release_contains "'enum 照合は対象外（grok-cli は受け付ける値の集合を公表していない）'" \
   "許容表に上流仕様による照合不能（adapter-sandbox-contract）がある"
-contains "'に対応する compare リンク行が無いためスキップ（公開タグ前の開発周期では正常'" \
+release_contains "'に対応する compare リンク行が無いためスキップ（公開タグ前の開発周期では正常'" \
   "許容表に同期サイクル内で解消するもの（changelog-public-tags）がある"
 # 旧方式（ADR-034 決定 2 + Issue #830 の green 再利用機構）の復活禁止。針は散文を
 # 誤検出しない最小限の広さにする — 現 SKILL の散文言及は backtick 内の `FULL_GATE_SHA`
@@ -286,47 +367,39 @@ not_contains 'FULL_GATE_SHA=' \
 not_contains 'check-full-gate-reuse' \
   "廃止した green 再利用判定の呼び出しが復活していない"
 
-# 限定ゲートの suite 呼び出し（2 suite / 4 観点。Issue #800 で changelog-contract へ、
-# Issue #1021 で changelog-links + changelog-attribution が changelog-public-tags へ統合）は
-# 手順 8 の footer ブランチ先端での実行（Issue #892）**1 箇所だけ**にある（旧方式の
-# 手順 0 CHANGELOG_FOOTER_ONLY 分岐は ADR-039 で廃止。2 箇所へ戻る退行も、片方だけ
-# suite を足し引きする退行も、件数固定で捕まえる）。
-# needle に行末の継続（バックスラッシュ）を含めるのは、散文中の同名の言及を数えないため
-# （`changelog-public-tags/verify.sh` は手順 8 の再実行の説明にも出る）。`contains_exactly` は
-# `grep -cF` で**行数**を数えるので、1 行に 2 回現れる needle には使えない。
-contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-public-tags/verify.sh \' 1 \
-  "限定ゲートの CHANGELOG 公開タグ検査（リンク追従 + 版節の帰属）が手順 8 の 1 箇所にある"
-# 版の一致と公開参照の境界は Issue #800 で changelog-contract へ統合した（1 本で両方を見る）。
-contains_exactly 'plugins/ff-dev-toolkit/tests/changelog-contract/verify.sh 2>&1)" \' 1 \
-  "限定ゲートの CHANGELOG 契約検査（版の一致 + 公開参照の境界）が手順 8 の 1 箇所にある"
-# skip / 未実行を成功と読まない要求。2 suite だけを走らせる限定ゲートで
-# `changelog-public-tags` が無言の no-op になると代替物が何も残らない。
-contains_exactly "grep -F -- 'failed=0 skipped=0 not-run=0' >/dev/null &&" 1 \
-  "限定ゲートは skip / 未実行を成功と読まない — 手順 8 の 1 箇所"
-# suite 単位の skipped=0 だけでは、changelog-public-tags の帰属検査が
-# インデント付き部分 skip のまま「2 suite とも緑」に見える（Issue #1021 で
-# compare リンク不在 / mktemp 不可が suite 全体 skip から部分 skip へ降格した）。
-contains_exactly "grep -F -- 'checks-skipped: total=0' >/dev/null; then" 1 \
-  "限定ゲートは suite 内の部分 skip も成功と読まない — 手順 8 の 1 箇所"
-
-# 手順 8 が「記録の COMMIT= を footer ブランチの先端にする」ことをブロックの中で読み戻す。
-# 目的そのものを確かめずに終わると、先端を動かす操作（develop 追従・fix commit）を
-# 挟んだ回に記録が先端でなくなり、マージ直前の照合が exit 1 でそこを初めて知る。
-contains 'check-merge-freshness.sh --print-record' \
-  "手順 8 が記録の COMMIT= を読み戻して先端と突合する"
-contains '先端を動かしたなら限定ゲートを回し直すこと' \
-  "読み戻しが失敗したときの次の一手が示されている"
-contains '限定ゲートは、develop 追従を含むすべての push の後に回す' \
-  "限定ゲートを先端が確定した後に回すことが明記されている（順序が記録を無効化しうる）"
+# 手順 8 の限定ゲート（2 suite / 4 観点。旧 changelog-links + changelog-attribution は
+# changelog-public-tags へ、版の一致と公開参照の境界は changelog-contract へ統合済み）は、footer の release
+# コミットを develop へ直 push する**前**に footer 段が回す（ADR-063 で footer PR を廃止）。2 suite の
+# 呼び出しが 1 箇所にあり、suite 全体の skip も部分 skip も成功と読まないことを固定する。
+release_contains_exactly 'for t in "$PUBLIC_TAGS_VERIFY" "$CONTRACT_VERIFY"; do' 1 \
+  "限定ゲートの 2 suite（changelog-public-tags / changelog-contract）が footer 段の 1 箇所にある"
+release_contains "'○ skip' \"\$CAP_FILE\"; then" \
+  "限定ゲートは skip / 部分 skip / 非 0 を成功と読まない（checks-skipped: total=0 と同じ基準）"
+contains '**commit の前に限定ゲート（2 suite / 4 観点）を通す**' \
+  "手順 8 が限定ゲートを footer の commit 前に置くと明記している"
+contains 'update-dev-toolkit-changelog-footer.sh --public-checkout' \
+  "手順 8 の footer writer が実行可能 helper へ一本化されている"
+release_contains 'bash "$FOOTER_SCRIPT" --public-checkout "$PUBLIC"' \
+  "footer 段が footer helper を呼ぶ（footer を手で書き換えない）"
+# 準備と footer 追従は定型 PR を作らず release: の単独コミットを直 push する（ADR-063）。
+release_contains 'RELEASE_PREFIX="release: "' \
+  "リリーススクリプトの直 push は release: prefix の単独コミットに限る"
+release_not_contains 'gh pr create' \
+  "リリーススクリプトは PR を作らない"
+release_not_contains 'push -f' \
+  "リリーススクリプトは force push しない"
+release_not_contains '--force' \
+  "リリーススクリプトは --force を使わない"
+contains '）は作らず、`release: CHANGELOG 比較リンクを vX.Y.Z へ追従` の単独コミット' \
+  "手順 8 が footer PR を作らないと明記している"
 
 # ── 2. 順序（行番号の単調増加） ──────────────────────────────────────────────
 L_READ="$(line_of 'SYNC_SRC_SHA=$(cat "$(git -C "$PUBLIC" rev-parse --absolute-git-dir)/ff-sync-src-sha"')"
 L_SYNC="$(awk '$0 == "scripts/sync-dev-toolkit-to-public.sh --target \"$PUBLIC\"" { print NR; exit }' "$SKILL")"
 L_GUARD="$(line_of 'if [ -n "${SYNC_SRC_SHA:-}" ] && [ "$(git rev-parse HEAD)" = "$SYNC_SRC_SHA" ]; then')"
 L_COMMIT="$(line_of 'git -C "$PUBLIC" commit -m "sync: ')"
-L_CIHEALTH="$(line_of 'HEALTH_OUT="$(bash scripts/check-weekly-run-all-health.sh 2>&1)" || true')"
-L_GATE="$(line_of 'if [ "$GATE_MODE" = fast ]; then')"
-L_SKIPJUDGE="$(line_of 'NG: 許容表に無い部分 skip がある')"
+# SKILL 側のゲートのアンカーは手順 0b の段呼び出し（行頭一致。手順 R の散文中の言及に吸われない）
+L_GATE="$(awk 'index($0, "scripts/release-dev-toolkit.sh --only gate") == 1 { print NR; exit }' "$SKILL")"
 
 # 記録の読み取りが同期実行より前にあると、前回の同期が残した記録を掴む（今回の
 # 同期内容とは無関係な SHA を「反映済み」と記録する退行）。
@@ -340,22 +413,11 @@ assert_order "${L_GUARD}" "${L_COMMIT}" \
   "順序: HEAD 突合が commit より前" \
   "順序: HEAD 突合が commit より後ろにある — 突合前に記録が確定する退行"
 # 定期実行点ゲートは同期実行より前になければ意味がない（同期後に回しても不可逆操作は
-# 済んでいる）。週次 CI 生存確認 → run-all の並びも固定する（生存確認を後置すると、
-# run-all green の後に「担保なし」が判明する形になり、中断点が不可逆操作へ近づく）。
-assert_order "${L_CIHEALTH}" "${L_GATE}" \
-  "順序: 週次 CI の生存確認が run-all より前" \
-  "順序: 週次 CI の生存確認が run-all より後ろにある — 中断点が不可逆操作へ近づく退行"
+# 済んでいる）。手動手順の文書順（手順 0b の段呼び出し < 手順 3 の同期）と、スクリプトの
+# 実行順（下の (7)）の両方で固定する。
 assert_order "${L_GATE}" "${L_SYNC}" \
-  "順序: 定期実行点ゲートが同期実行より前" \
+  "順序: 定期実行点ゲート（手順 0b）が同期実行（手順 3）より前" \
   "順序: 定期実行点ゲートが同期実行より後ろにある — 不可逆操作の後で検査する退行"
-# 部分 skip の判定は run-all 実行の後（出力が無ければ判定材料が無い）かつ同期実行の前
-# （不可逆操作の後で気付いても遅い）。前へ動かす退行も後ろへ動かす退行も、この 2 本で捕まえる。
-assert_order "${L_GATE}" "${L_SKIPJUDGE}" \
-  "順序: 部分 skip の許容判定が run-all 実行より後" \
-  "順序: 部分 skip の許容判定が run-all 実行より前にある — 判定材料が無い時点で判定する退行"
-assert_order "${L_SKIPJUDGE}" "${L_SYNC}" \
-  "順序: 部分 skip の許容判定が同期実行より前" \
-  "順序: 部分 skip の許容判定が同期実行より後ろにある — 不可逆操作の後で未実行の検査に気付く退行"
 # リリース準備（手順 R）の判定は定期実行点ゲート（手順 0b）の**前**に置く（ADR-042）。
 # R の判定材料は手順 0a が揃えた作業ツリーと公開側 clone の履歴 / タグで、**ゲート結果には
 # 依存しない**。後ろに置くと RELEASE_REQUIRED の回だけ「捨てられる 1 回目」が生まれる
@@ -585,6 +647,101 @@ contains_exactly 'if [ -z "$TAGS" ] || [ -z "$RELS" ]; then UNVERIFIED=yes; brea
   "手順 7 が片側空のまま再取得を繰り返さず判定不能として抜ける"
 contains_exactly '`UNVERIFIED=yes` で抜けた = 判定不能。取りこぼしの有無を主張せず**中断してユーザーに報告する**' 1 \
   "手順 7 が判定不能を取りこぼし無しへ倒さないと明記している"
+
+# ── 7. リリーススクリプト（手順 0b / 5 / 8 の本体。ADR-063）───────────────────
+echo "-- (7) リリーススクリプトの段の順序と同期元 SHA の契約 --"
+# 段の実行順（main の呼び出し行）。check → prepare → gate → sync → tag → release → footer → report。
+# ゲートより前に同期・タグ・Release が来る並べ替えは、不可逆操作の後で検査する退行になる。
+R_CHECK="$(release_exact_line_of 'stage_check')"
+R_PREPARE="$(release_exact_line_of '[[ "$NEED_PREPARE" -eq 0 ]] || stage_prepare')"
+R_GATE="$(release_exact_line_of '  stage_gate')"
+R_SYNC="$(release_exact_line_of '  stage_sync')"
+R_TAG="$(release_exact_line_of '  stage_tag')"
+R_REL="$(release_exact_line_of '  stage_release')"
+R_FOOTER="$(release_exact_line_of '  stage_footer')"
+R_REPORT="$(release_exact_line_of 'stage_report')"
+assert_order "$R_CHECK" "$R_PREPARE" "順序(7): リリース要否の判定が準備より前" "順序(7): 準備が判定より前にある"
+assert_order "$R_PREPARE" "$R_GATE" "順序(7): 準備が定期実行点ゲートより前（ゲートは release コミットを含む HEAD を検査する。ADR-042）" "順序(7): ゲートが準備より前にある — 準備後の HEAD を検査しない退行"
+assert_order "$R_GATE" "$R_SYNC" "順序(7): 定期実行点ゲートが同期より前" "順序(7): ゲートが同期より後ろにある — 不可逆操作の後で検査する退行"
+assert_order "$R_SYNC" "$R_TAG" "順序(7): 同期がタグより前" "順序(7): タグが同期より前にある"
+assert_order "$R_TAG" "$R_REL" "順序(7): タグが Release より前" "順序(7): Release がタグより前にある"
+assert_order "$R_REL" "$R_FOOTER" "順序(7): Release が footer 追従より前" "順序(7): footer がタグ / Release より前にある"
+assert_order "$R_FOOTER" "$R_REPORT" "順序(7): 健全性判定と footer 検査の報告が最後" "順序(7): report が footer より前にある"
+# gate 段の中の順序: 週次 CI の状態確認 → run-all → 部分 skip の許容判定 → 緑の記録。
+RG_HEALTH="$(release_exact_line_of '  weekly_health')"
+RG_RUNALL="$(release_line_of 'bash "$RUN_ALL" >"$gate_out" 2>&1 || gate_rc=$?')"
+RG_SKIP="$(release_line_of '許容表に無い部分 skip がある')"
+RG_RECORD="$(release_line_of 'state_set GATE_OK "$head:$gate_mode"')"
+assert_order "$RG_HEALTH" "$RG_RUNALL" "順序(7): 週次 CI の状態確認が run-all より前" "順序(7): 状態確認が run-all より後ろ — 中断点が不可逆操作へ近づく退行"
+assert_order "$RG_RUNALL" "$RG_SKIP" "順序(7): 部分 skip の許容判定が run-all より後" "順序(7): 許容判定が run-all より前 — 判定材料が無い"
+assert_order "$RG_SKIP" "$RG_RECORD" "順序(7): 緑の記録が許容判定より後" "順序(7): 許容判定の前に緑を記録する退行"
+release_contains_exactly 'require_gate_ok "' 3 \
+  "不可逆段（sync / tag / release）は同じ HEAD で定期実行点ゲートが緑だった記録を要求する（--only で素通りさせない）"
+release_contains "summary=\"\$(awk '/^suites: total=[1-9][0-9]* run=[1-9][0-9]* passed=[0-9]+ failed=0( |\$)/'" \
+  "gate 段は run-all の完走サマリー（total > 0・failed=0）を要求する（空出力・途中の exit 0 を緑と読まない）"
+release_contains '  acquire_in_flight
+  resume_partial_write ssot' \
+  "preflight は in-flight 印を取ってから書きかけの復旧へ進む（二重起動のプロセスが作業ツリーへ触らない）"
+release_contains '[[ -n "$remote_main" && "$remote_main" == "$(git -C "$PUBLIC" rev-parse HEAD)" ]] \' \
+  "tag 段は公開側 remote の main がローカル HEAD と一致するときだけタグを打つ（未 push の sync commit へ打たない）"
+release_contains '  resume_partial_write public' \
+  "preflight が公開側 clone への書きかけ（sync 段）を記録と照合してから進む"
+release_not_contains 'reset --hard &&' \
+  "公開側 clone を reset --hard で自動復旧しない"
+release_not_contains 'clean -fd' \
+  "公開側 clone を clean -fd で自動復旧しない"
+release_contains 'ff_release_marker_release "$MARKER_DIR" "$MARKER_TOKEN"' \
+  "in-flight 印の解放は自分の token と一致するときだけ行う（他の取得者の印を消さない）"
+IN_FLIGHT_LIB="$(dirname "$RELEASE_SCRIPT")/lib/release-in-flight-functions.sh"
+if [[ -f "$IN_FLIGHT_LIB" ]] && grep -qF -- 'token="$(_ff_marker_info_field "$info" token)"' "$IN_FLIGHT_LIB" \
+  && grep -qF -- '[ "$(ff_release_marker_state "$dir" "$info")" = stale ] || return 1' "$IN_FLIGHT_LIB"; then
+  ok "in-flight 印の回収 helper は 1 回読んだ info で残骸を判定し、同じ info の token で回収する（読み直さない）"
+else
+  bad "in-flight 印の回収 helper が判定と回収で info を読み直している、または lib が無い: $IN_FLIGHT_LIB"
+fi
+release_contains 'ff_release_marker_try_reclaim "$MARKER_DIR"' \
+  "残骸の in-flight 印は、判定に使った token で rename（CAS 相当）回収する 1 つの helper を通す"
+release_contains 'pub_ahead="$(git -C "$PUBLIC" rev-list --count origin/main..main)"' \
+  "preflight が公開側の未 push の commit（前回の push 失敗の残り）を見る"
+release_contains 'if [[ "${rec%%:*}" == "$head" && ( "${rec#*:}" == full || "$gate_mode" == fast ) ]]; then' \
+  "gate 段は同じ HEAD で緑だった記録があるときだけ回し直さない（HEAD が動けば回す）"
+# sync 段: 同期元 SHA は同期スクリプトの記録から読み、HEAD と突合してから commit する（手順 4 と同じ契約）。
+RS_SYNC="$(release_line_of 'bash "$SYNC_SCRIPT" --target "$PUBLIC" || stop')"
+RS_READ="$(release_line_of 'src_sha="$(cat "$(git -C "$PUBLIC" rev-parse --absolute-git-dir)/ff-sync-src-sha" 2>/dev/null || true)"')"
+RS_GUARD="$(release_line_of 'if [[ -z "$src_sha" || "$(git rev-parse HEAD)" != "$src_sha" ]]; then')"
+RS_COMMIT="$(release_line_of 'git -C "$PUBLIC" commit -q -m "sync: ${SSOT_NAME} $(git rev-parse --short "$src_sha") を反映"')"
+assert_order "$RS_SYNC" "$RS_READ" "順序(7): 記録の読み取りが本同期より後" "順序(7): 記録を本同期より前に読む — 前回の記録を掴む退行"
+assert_order "$RS_READ" "$RS_GUARD" "順序(7): HEAD 突合が記録の読み取りより後" "順序(7): 読む前に判定する退行"
+assert_order "$RS_GUARD" "$RS_COMMIT" "順序(7): HEAD 突合が公開側 commit より前" "順序(7): 突合前に記録が確定する退行"
+release_contains '[[ "$dry_text" == *"禁止パターン検査: クリア"* ]]' \
+  "sync 段は dry-run の成功文字列を要求する（終了コードだけで通さない）"
+# tag 段: リモートの実在（ls-remote の exit code）で分岐し、張り直さない。
+release_contains 'git -C "$PUBLIC" ls-remote --exit-code --tags origin "refs/tags/v$1"' \
+  "tag 段はリモートの実在を ls-remote の exit code で判定する"
+release_contains 'is_semver3 "$VER" || stop' \
+  "tag 段は vX.Y.Z の完全一致を確かめてからタグを打つ"
+# footer 段: 限定ゲートを commit より前に通し、commit の後に push する。
+RF_GATE="$(release_line_of 'limited_gate || stop')"
+RF_COMMIT="$(release_line_of 'CHANGELOG 比較リンクを v${VER} へ追従" \\')"
+assert_order "$RF_GATE" "$RF_COMMIT" "順序(7): footer の限定ゲートが release コミットより前" "順序(7): 限定ゲートの前に commit する退行"
+# release 段（手順 7 と同じ吸収）: 今回の版だけが欠けている間は待ち、片側空は判定不能。
+release_contains_exactly 'if [[ "$missing" != "v$VER" ]]; then break; fi' 1 \
+  "release 段が今回の版以外の混入で再取得ループを抜ける"
+release_contains_exactly 'if [[ -z "$tags" || -z "$rels" ]]; then unverified=yes; break; fi' 1 \
+  "release 段が片側空のまま再取得を繰り返さず判定不能として抜ける"
+release_contains '[[ "$latest" == "v$VER" ]] || stop' \
+  "release 段が Latest の位置を直接検証する"
+
+_release_rt_err="$(mktemp "${TMPDIR:-/tmp}/sync-sha-release.XXXXXX")"
+_release_rt_rc=0
+bash "$SCRIPT_DIR/release-runtime.sh" "$RELEASE_SCRIPT" "$POST_MERGE_HOOK" >"$_release_rt_err" 2>&1 || _release_rt_rc=$?
+if [[ "$_release_rt_rc" -eq 0 ]]; then
+  ok "リリーススクリプトの振る舞い（段の順序・dry-run・冪等な再開・止まるべき状態・粒度・hook の in-flight 抑止）: $(tail -n 1 "$_release_rt_err")"
+else
+  bad "リリーススクリプトの振る舞いが壊れている (rc=${_release_rt_rc})"
+  sed 's/^/    | /' "$_release_rt_err" >&2
+fi
+rm -f "$_release_rt_err"
 
 echo
 if [[ "$FAIL" -gt 0 ]]; then

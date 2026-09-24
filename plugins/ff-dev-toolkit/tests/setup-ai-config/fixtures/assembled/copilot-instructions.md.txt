@@ -1,0 +1,47 @@
+# GitHub Copilot Instructions
+
+## 🚨 MANDATORY: Read MASTER.md First
+Before generating any code suggestions, you MUST read `docs/MASTER.md` first（境界1）.
+Use the MASTER.md index to reach the relevant specification for your task（境界2）.
+
+## Project Overview
+[PROJECT.md からの要約]
+
+## Technology Stack
+[MASTER.md からの技術スタック]
+
+## Coding Standards
+[PATTERNS.md からの抽出]
+
+## Key Architecture Decisions
+[ARCHITECTURE.md からの要約]
+
+## 実測の記録先
+実体数・版の一覧・時刻表・スコープ差の注記のような**時間で腐る記述**は、このファイルなどの正本へ書き足さず、`docs/08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く。
+正本に残してよい範囲と証跡文書の追記規律は、`docs/MASTER.md` の「実測の記録先」を参照する（このファイルへ複製しない）。
+
+## Out-of-Scope Finding Routing
+- 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
+- 判定順は `YAGNI → インライン修正 → Issue 化`
+- 現在の根拠・利用者影響・受け入れ条件がなければ YAGNI とし、対応も Issue 化もしない
+- 必要かつ軽微（仕様判断・別モジュール波及・独立検証・実装 10 行超（テスト・fixture は数えない）のいずれにも明確に該当しない。近傍の設定ファイルの小変更も含む）なら現 PR で修正する
+- 仕様判断・別モジュール波及・独立検証・実装 10 行超のいずれかに明確に該当するなら Issue 化ルートへ進む（仕様判断・波及の 2 軸は不確かでも Issue 化へ倒す）。同一 PR からの複数発見は既定で 1 Issue に束ねる
+- Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
+- 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
+
+## 🚨 Secrets Exposure Prevention
+- secret を stdout/stderr に出すコマンドを実行しない（境界5）。エージェントの出力（トランスクリプト・ログ・PR コメント）は永続化され、値が一度でも出たら「露出」としてローテーション判断が必要になる
+- env ファイル・プロセス環境の全ダンプを禁止（`cat .env*` / `printenv` / `env` / `console.log(process.env)` 等）。個別キーでも値全体を出さない（`printenv KEY` / `echo $KEY` を含む）
+- secret を読み込む CLI に `--debug` / `--verbose` を付ける前に、失敗時に何をダンプするかを確認する。不明なら付けない
+- 値の診断・ログ出力は prefix（先頭5字）+ length まで
+- 露出した場合は隠さず即報告し、露出したキーと範囲を列挙する
+- [プロジェクトの技術スタックから、対象となる secret（接続文字列・署名鍵・API キー等）と、それを出力し得る具体的コマンドを検出して列挙する。例示のコマンドはそのまま転記せず、実際に使うスタックのものへ置き換えること（例示: `supabase --debug` / `vercel env pull /dev/stdout` / `gh auth token` / `stripe config --list`）]
+
+## 🚨 Information Verification Protocol
+When information is missing, DO NOT make assumptions — always ask for confirmation（境界3）.
+[MASTER.md の確認プロトコルを含める]
+
+## Reference Documents
+- docs/MASTER.md — Central coordination document (read this first)
+- docs/01-context/PROJECT.md — Project vision and requirements
+- [その他のドキュメントリンク]

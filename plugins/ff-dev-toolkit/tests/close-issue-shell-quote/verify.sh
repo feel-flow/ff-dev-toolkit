@@ -8,11 +8,11 @@
 # UTF-8 の日本語を渡すと「一部バイトだけ $'\NNN'、残りは生バイト」の混在になり、
 # 出力全体が不正な UTF-8 になる。close-issue の手順 7 は同じ形で
 # `gh pr merge --subject / --body` を組み立てているので、日本語の PR 件名・本文で
-# 同じ壊れ方をする。SKILL.md の bash ブロックは利用者がそのまま実行する手順なので、
+# 同じ壊れ方をする。finish.sh の bash ブロックは利用者がそのまま実行する手順なので、
 # 外部スクリプトの関数に依存せず、ブロック内で完結する単引用エスケープにする。
 #
 # 検査:
-#   1. SKILL.md の bash ブロックから引用関数の定義行を**そのまま抽出**し、
+#   1. finish.sh の bash ブロックから引用関数の定義行を**そのまま抽出**し、
 #      LC_ALL=C の下で日本語・単引用・シェルメタ文字・多行・末尾改行を含む
 #      文字列を通す。eval で戻した結果が元の文字列とバイト同一であること。
 #   2. 生成された引用文字列そのものが valid UTF-8 であること（%q 相当の
@@ -24,11 +24,11 @@
 #      片方だけを生展開へ戻す退行は、q() 単体の検査では素通しになる。
 #   5. 生成されたコマンド文字列を stub gh で実際に eval し、gh が受け取る
 #      --subject / --body が元の MERGE_SUBJECT / MERGE_BODY とバイト同一であること。
-#   6. SKILL.md にロケール依存の %q が残っていないこと（形の pin）。1・2 は
+#   6. finish.sh にロケール依存の %q が残っていないこと（形の pin）。1・2 は
 #      bash 5 の LC_ALL=C など %q が偶然通る環境がありうるため、形も固定する。
 #
-# 関数定義を写経せず抽出するのは、写した時点で「SKILL.md の手順を検査した」ことに
-# ならず、SKILL.md だけが退行しても緑のままになるため。
+# 関数定義を写経せず抽出するのは、写した時点で「finish.sh の手順を検査した」ことに
+# ならず、finish.sh だけが退行しても緑のままになるため。
 #
 # 実 gh・ネットワーク・課金は伴わない。一時ディレクトリを作れない環境では skip。
 
@@ -36,7 +36,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
-SKILL="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
+# 引用関数と merge コマンドの生成は /close-issue 本文から scripts/finish.sh（precheck）へ移した。
+# 抽出元は script で、本文は生成物を貼るだけ（tests/finish が生成物の round-trip を別途見る）。
+SKILL="$PLUGIN_ROOT/scripts/finish.sh"
 
 [ -f "$SKILL" ] || { echo "✗ 対象ファイルが見つかりません: $SKILL" >&2; exit 1; }
 
@@ -47,10 +49,10 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # ── 1. 引用関数の抽出 ──
 QUOTE_FN="$(awk '/^q\(\) \{/ { print; found = 1 } END { exit found ? 0 : 1 }' "$SKILL")" || {
-  echo "  ✗ SKILL.md に引用関数 q() の定義行が見つかりません（手順 7 の merge コマンド生成）" >&2
+  echo "  ✗ finish.sh に引用関数 q() の定義行が見つかりません（手順 7 の merge コマンド生成）" >&2
   exit 1
 }
-ok "SKILL.md の bash ブロック内で引用関数 q() が定義されている"
+ok "finish.sh の bash ブロック内で引用関数 q() が定義されている"
 
 _ff_mktemp_rc=0
 _ff_mktemp_out="$(mktemp -d 2>&1)" || _ff_mktemp_rc=$?
@@ -162,12 +164,12 @@ fi
 # q() 単体が正しくても、生成側で --subject / --body の片方だけが q を通っていれば
 # 元の欠陥（生展開の引用漏れ）が残る。生成行そのものを抽出して両方を pin する。
 GEN_BLOCK="$(awk '
-  /^printf .gh pr merge / { capture = 1 }
+  /^[[:space:]]*printf .gh pr merge %s --squash --match-head-commit %s%s \\\\/ { capture = 1 }
   capture { print; found = 1 }
   capture && !/\\$/ { capture = 0 }
   END { exit found ? 0 : 1 }
 ' "$SKILL")" || {
-  bad "SKILL.md に手順 7 の merge コマンド生成（printf 'gh pr merge ...）が見つかりません"
+  bad "finish.sh に手順 7 の merge コマンド生成（printf 'gh pr merge ...）が見つかりません"
   GEN_BLOCK=""
 }
 
@@ -259,10 +261,10 @@ OFFENDERS="$(awk '
   index(line, "%q") { print FNR ": " line }
 ' "$SKILL")"
 if [ -n "$OFFENDERS" ]; then
-  bad "SKILL.md の非コメント行にロケール依存の %q が残っています（引用がロケール依存へ戻っている）"
+  bad "finish.sh の非コメント行にロケール依存の %q が残っています（引用がロケール依存へ戻っている）"
   printf '%s\n' "$OFFENDERS" >&2
 else
-  ok "SKILL.md の実行される行はロケール依存の %q で引用しない"
+  ok "finish.sh の実行される行はロケール依存の %q で引用しない"
 fi
 
 echo ""

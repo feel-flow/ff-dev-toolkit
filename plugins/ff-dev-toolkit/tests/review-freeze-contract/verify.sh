@@ -34,6 +34,8 @@
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/review-freeze-contract/verify.sh
 #
+# 空振り検出: multi-review の SKILL.md で「凍結の代わりになる機構ではない」を「凍結の代わりになる」へ弱めると 157 件中 1 件、worktree 隔離の限定（外部 CLI 経路には適用されない）を「外部 CLI 経路にも適用される」へ反転すると 157 件中 1 件が赤になる（2026-09-24 実測。消費側の文が反転・弱体化した形を「契約あり」へ倒さない）。
+#
 # run-all-required: yes — 作業ツリー凍結の手順書契約は文言だけが防御で、静的検査には skip 経路が無い。改名・削除と将来の skip 経路を黙って通さないため必須名簿へ載せる
 
 set -euo pipefail
@@ -360,16 +362,10 @@ doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
 doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
   "そちらは結果を DISCARDED にする機構が無い" \
   "multi-review がサブエージェント経路に DISCARDED 機構が無いことを伝えている"
-# サブエージェント経路にも機械的判定（走行中レーン）が入ったので、「手順だけが防御」を
-# 残すと消費側が実態より弱い前提で動く。機械側の存在と、それでも手順だけが防御になる
-# 残りの範囲（非適用ケース）の両方を 1 本ずつ針で固定する — 片方だけだと「常に止まる」
-# か「何も止まらない」のどちらかへ読み違える。
-doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
-  "全レーンが終端するまで編集系ツールと git 書き込みを deny する" \
-  "multi-review がサブエージェント経路の機械的な凍結（全レーン終端まで解けない）を伝えている"
-doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
-  "機械的に止まらないのは次の場合だけ" \
-  "multi-review が機械的に止まらない範囲（非適用ケース）を限定列挙している"
+# サブエージェント経路の機械的な凍結（全レーン終端まで deny）と非適用ケース（隔離起動・
+# 名簿外・opt-out）は hook の振る舞いそのもので、tests/guard-review-in-flight の振る舞い
+# 針が固定している。SKILL.md の散文へ張っていた 2 本の文言針は、本線を 20 KB 以下へ
+# 畳んだときに外した（規定の置き場は hook と正本の Git Workflow ステップ6）。
 doc_has "$MULTI_REVIEW" "multi-review/SKILL.md" \
   "凍結の代わりになる機構ではない" \
   "multi-review が DISCARDED 機構を凍結の代替として売り込んでいない"

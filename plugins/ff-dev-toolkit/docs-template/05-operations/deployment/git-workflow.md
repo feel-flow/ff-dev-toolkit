@@ -86,7 +86,7 @@ release/*     ← リリース準備ブランチ（developから分岐）
 
 起票は **body-file + 単純コマンド分割**で行う（`/create-issue` スキルと同じ契約。Issue #715 / #1079）。1 つの複合 bash ブロック（配列でラベル引数を組み立て、照会と起票を同じフェンスで分岐させる形）は使わない — worktree 隔離セッションの複合コマンド拒否ガードに当たり、起票そのものが止まる。
 
-raw `gh issue create` を直接使う前に、`.github/ISSUE_TEMPLATE/<種別>.md` があれば `cat` して節見出しを本文の骨子へ写す（`/create-issue` はこの確認を pre-flight として自動化している）。
+raw `gh issue create` を直接使う前に、`.github/ISSUE_TEMPLATE/<種別>.md` があれば `cat` して節見出しを本文の骨子へ写す（`/create-issue` はこの確認を起票手順 `references/filing.md` の pre-flight として自動化している）。
 
 **1. 本文を一時ファイルへ書く。** Write ツール（無ければエディタ）で作業ツリー**外**の一時ファイル（セッションの scratchpad 等）へ本文を書く。ファイル名は Issue ごとに一意にする（`mktemp` か Issue の slug を含める — 共有一時領域の汎用名は並列セッションが相互上書きし、別 Issue の本文で起票する）。heredoc でシェル変数へ組み立てない。空のファイルを渡さない（空の本文は「作成済みだが中身の無い」Issue を黙って生む）。
 
@@ -140,7 +140,7 @@ printf 'ISSUE_URL=%s ISSUE_NUM=%s\n' "$ISSUE_URL" "$ISSUE_NUM"
 
 **原則**: 必ずdevelopの最新から分岐する
 
-既存 Issue への着手時は、分岐前に本文の `<!-- ff-effort:begin -->` ブロック有無を確認する。無ければ `/create-issue` の工数ブロック契約（過去実績の3層参照を含む）に従って見積もりを既存 Issue 本文へ追記し、既にあれば作り直さず着手を続行する。bundle では本体と子を確認し、既存の予定値を上書きしない。
+既存 Issue への着手時は、分岐前に本文の `<!-- ff-effort:begin -->` ブロック有無を確認する。無ければ `/create-issue` の工数ブロック契約（SKILL.md 手順 3・6。過去実績の3層参照と目安表は `references/estimation.md`）に従って見積もりを既存 Issue 本文へ追記し、既にあれば作り直さず着手を続行する。bundle では本体と子を確認し、既存の予定値を上書きしない。
 
 工数ブロックの単位は人時（`- effort_unit: h` を宣言し、値は `N.Nh`）。宣言の無い既存ブロックの人日（`N.Nd`）は書き換えない — 集計器が 1d = 8h で人時へ正規化する。ブランチ作成（`git checkout -b` / `git switch -c`）と `gh pr merge` は ff-dev-toolkit の hook（`hooks/record-effort-wallclock.sh`）がブランチ名の Issue 番号をキーに wall-clock の開始 / 終了として記録し、`/close-issue` が `effort_wallclock_actual` として書き戻す（記録先はリポジトリ外の `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/`。書けなくてもワークフローは止まらず、書き戻しが `(unmeasured)` になる）。ブランチ名に `#<Issue番号>` を入れないと開始が記録されない。
 hook に届くのは展開前のコマンド文字列なので、ブランチ名を変数で組む形（`git checkout -b "feature/#${ISSUE_NUM}-x"`）・`git worktree add -b`・`git branch -m` は記録されない（`/close-issue` の読み手はそのときブランチの reflog の最古エントリから開始を補い、引けなければ `(unmeasured)`）。下の例のようにブランチ名をリテラルで書く。
@@ -405,7 +405,7 @@ npm audit --audit-level=moderate
 
 この照合は数秒で終わる（`origin/<default branch>` の fetch を含むのでネットワークに依存する。実測 1.3〜2.2 秒）。非 0 は 2 種類に分かれ、**exit 1 が contract 違反**（claim の不足・stale・orphan に加え、対象 path の未 stage / 未追跡も含む）、**exit 2 は検査不能**（主に `origin/HEAD` を解決できない / default branch を fetch できない / HEAD が default branch の子孫でない）で、後者は claim の不整合ではない。`.version-claims/` を持たないプロジェクトでは「未導入」として exit 0 で明示 skip するが、`origin` remote があるときは skip 判定より先に default branch の解決を通るため、オフラインなどでは exit 2 になりうる。
 
-`/spec-driven` の G4（手順 5）・`/ace-curate`・`/ace-refine` を通った回は、同じ 2 コマンドがそれらの手順の中で既に走っている。ステップ4 の照合は、それらを経由しない編集（手動の `version` bump など）向けの案内である。
+`/spec-driven` の G4（`skills/spec-driven/references/version-convergence.md` の手順 5）・`/ace-curate`・`/ace-refine` を通った回は、同じ 2 コマンドがそれらの手順の中で既に走っている。ステップ4 の照合は、それらを経由しない編集（手動の `version` bump など）向けの案内である。
 
 再生成漏れは重い検証ゲート側でも検出できるが、そちらは分オーダーである。ステップ6で赤を受けてから fix commit → 重いゲート再実行へ戻ると、数秒で済む照合の代わりに、分オーダーの追加コストを 1 周ぶん払うことになる（実測例がある）。ステップ4に置く理由はこの差だけであり、新しい検査を足すものではない。
 
@@ -427,6 +427,24 @@ npm audit --audit-level=moderate
 **原則**: PRは自己完結型（レビュワーが全体像を把握できる情報を含める）
 
 テスト（ステップ4）を通した commit を push し、その場で通常 PR として作る（Draft にしない — 本テンプレートのソースリポジトリの ADR-053 / ADR-054）。セルフレビュー（ステップ6）は PR 作成の**後**に、PR の head SHA を対象として 1 回行う — レビュー対象の固定点と記録の置き場が PR に揃い、`/close-issue`（ステップ8。PR 作成後・マージ直前）と段の並びが一致する（並びの判断は同 ADR-054）。
+
+**契約針の差し替え・文言更新が中心の PR（検査の針を足した・変えた PR）は、変異表を回してから PR を作る**。変異ハーネスを `gh pr create` より**前**に回し、結果表を PR 本文ファイルへ組み込んでから `--body-file` で作る（変異表の書式・判定・終了コードはスクリプトのヘッダ。作法の正本は [TESTING.md「変異注入の適用確認」](../../04-quality/TESTING.md#変異注入の適用確認) と [「変異注入の結果の読み方と書き戻し先」](../../04-quality/TESTING.md#変異注入の結果の読み方と書き戻し先)）。1 件ごとに作業ツリーの写しを作り直し、適用を内容ハッシュで確かめてから suite を回すので、当たらなかった変異は `NOT-APPLIED` として赤で止まる。レビュアーはこの表の外の回避形だけを指摘し、レビューが報告した「緑のまま通る回避形」は同じ表へ 1 行足して再実行する（修正の検証と本文の証拠表が同時に揃う）:
+
+```bash
+# 変異表を回す（非 0 なら PR を作らず、変異表か検査を直して回し直す）
+body_dir="$(mktemp -d)"
+if ! FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/mutation-harness.sh" \
+  --table <変異表.tsv> --suite '<対象 suite の実行コマンド>' --out "$body_dir/mutation.md"; then
+  echo "変異表が期待どおりではありません（SURVIVED / FALSE-POSITIVE / NOT-APPLIED / 対照の赤）" >&2
+  exit 1
+fi
+# 結果表を本文へ組み込んでから push して PR を作る
+git push -u origin "<ブランチ名>"
+{ cat <PR 本文の下書き.md>; printf '\n## 変異注入の結果\n\n'; cat "$body_dir/mutation.md"; } > "$body_dir/body.md"
+gh pr create --base develop --title "<タイトル>" --body-file "$body_dir/body.md"
+```
+
+それ以外の PR の例:
 
 ```bash
 # ブランチをプッシュ
@@ -473,6 +491,7 @@ Closes #${ISSUE_NUM}
 - 変更ファイルと行番号を明記
 - テスト結果を含める
 - セルフレビュー結果を含める（ステップ6 の完了後に追記する。PR 作成時点では枠だけでよい）
+- 契約針の差し替え・文言更新が中心の PR は、上の「変異表を回してから PR を作る」の手順で結果表を本文に含めて作る
 - **PR 本文にフォローアップ Issue の番号を書くなら、その起票を PR 作成より前に済ませる**。GitHub は Issue と PR で採番列を共有するため、「次に発行されるはずの番号」を推測して書くと PR 自身がその番号を取る。後で起票する場合は番号を書かず `<!-- follow-up issue: TBD -->` のプレースホルダを置き、起票直後に `gh pr edit --body-file` で埋める（順序制約の詳細は `skills/out-of-scope-issue/references/filing.md` §3.3）
 
 #### PR タイトルと Issue 参照の規約【重要】
@@ -940,6 +959,7 @@ mutation($body: String!) {
 - 達成項目のチェックボックスを `- [x]` に更新 + 完了報告コメントを投稿してからマージへ進む
 - 未達 AC は fix commit → 再照合の自動修正ループで解消。実装で解消できない場合（仕様変更の判断が必要など）は停止してユーザーに確認する
 - 完了報告に照合時の head SHA（`headRefOid`）が含まれるので、マージ時に `--match-head-commit` へ渡す
+- 固定手順（対象 Issue の検出・closing keyword 抵触検査・工数の実測・checks の有無分岐・鮮度照合・merge コマンド生成）は同梱の `scripts/finish.sh precheck <PR番号>` が実行し、`MERGE_COMMAND_BEGIN` 〜 `MERGE_COMMAND_END` に出す merge コマンドを書き写さずそのまま実行する。前提崩れ（PR 不在・`gh` 不通・ゲート実測の記録不在）は非 0 で判定不能を名指しし、復帰手段を出す
 - マージ直前に「リモート先端 == ゲート実測対象」を機械照合する（下の鮮度ゲート）。`--match-head-commit` とは守る窓が違う
 - プラグイン未導入の環境では同等の手順を `gh` コマンドで手動実施する
 
@@ -1020,7 +1040,7 @@ esac
 
 ゲート通過後にマージする。**Issue を閉じてよいか（`Closes` 運用）／open のまま維持するか（`Refs` 運用）でテンプレートを使い分ける**:
 
-**マージ前に `git worktree list` で base ブランチの保持を確認する**。`gh pr merge --delete-branch` はマージ成功後にローカルで base（`develop` 等）へ切り替えようとするため、base が他 worktree に保持されていると **PR はマージ済みなのにリモートブランチ削除まで到達せずに失敗**する（エラーは worktree の話しかせず、リモートブランチが残ったことに気付けない）。保持されていた場合は detach 経路へ切り替える:
+**マージ前に `git worktree list` で base ブランチの保持を確認する**。`gh pr merge --delete-branch` はマージ成功後にローカルで base（`develop` 等）へ切り替えようとするため、base が他 worktree に保持されていると **PR はマージ済みなのにリモートブランチ削除まで到達せずに失敗**する（エラーは worktree の話しかせず、リモートブランチが残ったことに気付けない）。`finish.sh precheck` はこの保持を `git worktree list --porcelain` で実測し、保持されていれば `--delete-branch` を付けない merge コマンドへ、merge の成功時だけ走るリモートブランチ削除（`&& git push origin --force-with-lease=refs/heads/<head>:<OID> :refs/heads/<head>`）を繋いだ 1 コマンドを生成する（`DELETE_BRANCH_MODE=separate-push`）。手動で行う場合の分割手順:
 
 ```bash
 # base が他 worktree に保持されている場合の分割手順
@@ -1115,6 +1135,8 @@ gh issue view "${ISSUE_NUM}" --json state
 ```bash
 /merge-cleanup 1234
 ```
+
+`/merge-cleanup` の実体は同梱の `scripts/finish.sh cleanup <PR番号>` で、PR の実在と `gh` の到達を確かめてから `scripts/merge-cleanup.sh` へ委譲する（`--dry-run` で削除対象の一覧だけを見られる。未コミット変更ガードの除外指定 `FF_MERGE_CLEANUP_IGNORE_PATHS` はそのまま届く）。
 
 **PR 番号は必須**。`delete_branch_on_merge = false` のリポジトリでは `--delete-branch` を付けてもリモートブランチが残るため、PR 番号から head ref を引いて明示削除する。
 
@@ -1322,9 +1344,11 @@ GitHub Discussions への記録に加え、ACE Playbook への構造化記録を
 
 **既定（推奨）— `<default-branch>` 直マージ**: 保護されていない `<default-branch>` にのみ適用。マージ・cleanup 後の `<default-branch>` で `/ace-curate <PR番号>` を実行し、PLAYBOOK.md 追記を **`<default-branch>` に直接 commit + push** する。PLAYBOOK.md は append-only で構造化されており、ID も PRスコープ式（[エントリID規則](../../08-knowledge/PLAYBOOK.md#エントリid規則)）で衝突しないため、ACE 1 サイクル分の小さな知見追加を毎回 PR 化するのは過剰なオーバーヘッド。
 
+**knowledge コミットの書き込み口（共通）**: `/ace-curate` の PLAYBOOK 追記と `/retrospective` の観測台帳（`OBSERVATIONS.md`）追記は、同梱の `scripts/finish.sh knowledge-commit`（`add` → `commit` → `push`。実体は `scripts/knowledge-commit.sh` で、claim の再生成 `add --claim`・保護判定 `probe`・直 push・PR 経由 `pr` も同じ入口が持つ）で commit を作る。同じセッションで両方が書いた回は 1 コミット（`knowledge: ACE-… / OBS-…`）に畳み、片方だけなら従来どおりの件名の単独コミットになる。commit は記録したパス（PLAYBOOK・台帳と各 claim）へ固定し、コードの変更を含めない。commit の直前に検査用の合成 identity（`fixture` / `*@example.invalid`）を止める。`/ace-curate` は既定ではその場で commit し、チェーンの起動元（振り返りの事前注入 hook の文面）が `ACE_DEFER_TO_RETRO=1` を指示した回だけ `add` までで止める。`/retrospective` はモード判定の直後に保留を確かめ、振り返りを実施しない回でも回収する。
+
 **chore PR 経路**: 大人数チーム、または知見内容自体をレビューに残したい場合は任意エスカレーション、**`<default-branch>` が保護されている場合は必須経路**。`<default-branch>` から `chore/ace-from-pr-<PR番号>` ブランチを切り、PLAYBOOK.md 追記を小さい chore PR として PR レビュー → squash merge する（保護判定・commitlint type 置換の詳細は `/ace-curate` 手順5）。
 
-> **ACE-012 との関係（混同しないこと）**: ACE-012 は _うっかり_ feature 作業を `<default-branch>` に直接 push してしまう事故（ブランチ切り替わりの見落とし）を防ぐルール。一方、本セクションの「`<default-branch>` 直マージ」は `knowledge:`（または commitlint type 許容リストにより置換された type）プレフィックス付きの **PLAYBOOK 単独コミット** に限定した _意図的・承認済み_ のフローであり、両者は別物。ACE-012 は引き続き有効（deprecated にしない）。
+> **ACE-012 との関係（混同しないこと）**: ACE-012 は _うっかり_ feature 作業を `<default-branch>` に直接 push してしまう事故（ブランチ切り替わりの見落とし）を防ぐルール。一方、本セクションの「`<default-branch>` 直マージ」は `knowledge:`（または commitlint type 許容リストにより置換された type）プレフィックス付きの **knowledge 単独コミット**（PLAYBOOK・観測台帳の追記だけを含む。両方を書いた回は上の書き込み口が 1 コミットに畳む）に限定した _意図的・承認済み_ のフローであり、両者は別物。ACE-012 は引き続き有効（deprecated にしない）。
 
 ### チェーン末尾: セッション振り返り（/retrospective）
 

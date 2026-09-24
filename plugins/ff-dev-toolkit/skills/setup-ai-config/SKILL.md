@@ -9,9 +9,7 @@ description: プロジェクトの docs/ を基に AI 開発ツール向け設�
 
 最初に[共通設定契約](../asdd-init/references/configuration.md)を読み、`scripts/asdd/config.mjs` の `loadConfig(root)` で対象プロジェクトの `.asdd/config.json` を検証する。以下の従来手順より、合意済みの文書構成・機能スイッチ・ワークフローを優先する。設定なしは従来互換、不正設定は自動処理を止めて診断する。
 
-2.0導入済みの場合は [asdd-init](../asdd-init/SKILL.md) の差分再設定経路を使う。合意済みの情報を再質問せず、選択した文書とツールの薄い入口だけを生成する。以下の20ファイル一括展開やMulti-CLIの自動配置は実行しない。Copilotなど設定形式の対象外ツールを明示依頼された場合は、共通MASTERへの薄い入口を別途提案し、対応済みツールと混同しない。
-
-プロジェクトの `docs/` を基に、各AI開発ツール向けの設定ファイルを生成します。
+2.0導入済みの場合は [asdd-init「4. 差分を提示して反映する」](../asdd-init/SKILL.md#4-差分を提示して反映する) の経路を使う。合意済みの情報を再質問せず、選択した文書とツールの薄い入口だけを生成する。手順7の Multi-CLI の自動配置は実行しない。Copilotなど設定形式の対象外ツールを明示依頼された場合は、共通MASTERへの薄い入口を別途提案し、対応済みツールと混同しない。
 
 ## プラグインルートの固定（必須）
 
@@ -39,6 +37,7 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 | Claude Code | `CLAUDE.md` | プロジェクトルート |
 | Codex CLI / 汎用エージェント | `AGENTS.md`（[agents.md](https://agents.md) 標準） | プロジェクトルート |
 | GitHub Copilot | `.github/copilot-instructions.md` | `.github/` |
+| すべて | 上の3ファイル | 各配置場所 |
 
 ## 標準への入口（全ツール共通の境界）
 
@@ -67,16 +66,38 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 
 ### 2. 生成するツールの選択
 
-利用中のホストに構造化質問機能があれば使用し、なければ通常の対話で、どのツール向けの設定を生成するか確認します:
+対象ツール表のどれを生成するか（Claude Code 推奨）を、ホストに構造化質問機能があれば使い、なければ通常の対話で確認します。
 
-- **Claude Code (CLAUDE.md)** — 推奨
-- **Codex CLI / 汎用エージェント (AGENTS.md)**
-- **GitHub Copilot (.github/copilot-instructions.md)**
-- **すべて**
+### 3. 3 ファイル共通ブロック
 
-### 3. CLAUDE.md の生成
+3つのテンプレートにある差し込み行 `<!-- setup-ai-config:common-block -->` は、生成時に次のフェンスの本文で置き換える（差し込み行そのものは生成物に残さない）。境界4・5と「実測の記録先」は3ファイルで同じ文面にする。
 
-以下のセクションを含む `CLAUDE.md` を生成します:
+```markdown
+## 実測の記録先
+実体数・版の一覧・時刻表・スコープ差の注記のような**時間で腐る記述**は、このファイルなどの正本へ書き足さず、`docs/08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く。
+正本に残してよい範囲と証跡文書の追記規律は、`docs/MASTER.md` の「実測の記録先」を参照する（このファイルへ複製しない）。
+
+## Out-of-Scope Finding Routing
+- 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
+- 判定順は `YAGNI → インライン修正 → Issue 化`
+- 現在の根拠・利用者影響・受け入れ条件がなければ YAGNI とし、対応も Issue 化もしない
+- 必要かつ軽微（仕様判断・別モジュール波及・独立検証・実装 10 行超（テスト・fixture は数えない）のいずれにも明確に該当しない。近傍の設定ファイルの小変更も含む）なら現 PR で修正する
+- 仕様判断・別モジュール波及・独立検証・実装 10 行超のいずれかに明確に該当するなら Issue 化ルートへ進む（仕様判断・波及の 2 軸は不確かでも Issue 化へ倒す）。同一 PR からの複数発見は既定で 1 Issue に束ねる
+- Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
+- 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
+
+## 🚨 Secrets Exposure Prevention
+- secret を stdout/stderr に出すコマンドを実行しない（境界5）。エージェントの出力（トランスクリプト・ログ・PR コメント）は永続化され、値が一度でも出たら「露出」としてローテーション判断が必要になる
+- env ファイル・プロセス環境の全ダンプを禁止（`cat .env*` / `printenv` / `env` / `console.log(process.env)` 等）。個別キーでも値全体を出さない（`printenv KEY` / `echo $KEY` を含む）
+- secret を読み込む CLI に `--debug` / `--verbose` を付ける前に、失敗時に何をダンプするかを確認する。不明なら付けない
+- 値の診断・ログ出力は prefix（先頭5字）+ length まで
+- 露出した場合は隠さず即報告し、露出したキーと範囲を列挙する
+- [プロジェクトの技術スタックから、対象となる secret（接続文字列・署名鍵・API キー等）と、それを出力し得る具体的コマンドを検出して列挙する。例示のコマンドはそのまま転記せず、実際に使うスタックのものへ置き換えること（例示: `supabase --debug` / `vercel env pull /dev/stdout` / `gh auth token` / `stripe config --list`）]
+```
+
+### 4. CLAUDE.md の生成
+
+以下の構造で `CLAUDE.md` を生成します:
 
 ```markdown
 # CLAUDE.md
@@ -104,35 +125,16 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 ## Development Workflow
 [docs/05-operations/ から採用済み方針を抽出。なければ推奨案を提示して合意]
 
-## 実測の記録先
-実体数・版の一覧・時刻表・スコープ差の注記のような**時間で腐る記述**は、このファイルなどの正本へ書き足さず、`docs/08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く。
-正本に残してよい範囲と証跡文書の追記規律は、`docs/MASTER.md` の「実測の記録先」を参照する（このファイルへ複製しない）。
-
-## Out-of-Scope Finding Routing
-- 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
-- 判定順は `YAGNI → インライン修正 → Issue 化`
-- 現在の根拠・利用者影響・受け入れ条件がなければ YAGNI とし、対応も Issue 化もしない
-- 必要かつ軽微（仕様判断・別モジュール波及・独立検証・実装 10 行超（テスト・fixture は数えない）のいずれにも明確に該当しない。近傍の設定ファイルの小変更も含む）なら現 PR で修正する
-- 仕様判断・別モジュール波及・独立検証・実装 10 行超のいずれかに明確に該当するなら Issue 化ルートへ進む（仕様判断・波及の 2 軸は不確かでも Issue 化へ倒す）。同一 PR からの複数発見は既定で 1 Issue に束ねる
-- Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
-- 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
-
-## 🚨 Secrets Exposure Prevention
-- secret を stdout/stderr に出すコマンドを実行しない（境界5）。エージェントの出力（トランスクリプト・ログ・PR コメント）は永続化され、値が一度でも出たら「露出」としてローテーション判断が必要になる
-- env ファイル・プロセス環境の全ダンプを禁止（`cat .env*` / `printenv` / `env` / `console.log(process.env)` 等）。個別キーでも値全体を出さない（`printenv KEY` / `echo $KEY` を含む）
-- secret を読み込む CLI に `--debug` / `--verbose` を付ける前に、失敗時に何をダンプするかを確認する。不明なら付けない
-- 値の診断・ログ出力は prefix（先頭5字）+ length まで
-- 露出した場合は隠さず即報告し、露出したキーと範囲を列挙する
-- [プロジェクトの技術スタックから、対象となる secret（接続文字列・署名鍵・API キー等）と、それを出力し得る具体的コマンドを検出して列挙する。例示のコマンドはそのまま転記せず、実際に使うスタックのものへ置き換えること（例示: `supabase --debug` / `vercel env pull /dev/stdout` / `gh auth token` / `stripe config --list`）]
+<!-- setup-ai-config:common-block -->
 
 ## 🚨 Information Verification Protocol
 情報が不足している場合は推測せず、必ず確認を求めること（境界3）。
 [MASTER.md の確認プロトコルをそのまま含める]
 ```
 
-### 4. copilot-instructions.md の生成
+### 5. copilot-instructions.md の生成
 
-以下の構造で `.github/copilot-instructions.md` を生成します。**他の2ファイル（CLAUDE.md / AGENTS.md）と同じ5境界**（MASTER 先行参照・索引からの到達・確認プロトコル・スコープ外発見のルーティング・Secrets 露出防止）を必ず含めます:
+以下の構造で `.github/copilot-instructions.md` を生成します:
 
 ```markdown
 # GitHub Copilot Instructions
@@ -153,26 +155,7 @@ Use the MASTER.md index to reach the relevant specification for your task（境�
 ## Key Architecture Decisions
 [ARCHITECTURE.md からの要約]
 
-## 実測の記録先
-実体数・版の一覧・時刻表・スコープ差の注記のような**時間で腐る記述**は、このファイルなどの正本へ書き足さず、`docs/08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く。
-正本に残してよい範囲と証跡文書の追記規律は、`docs/MASTER.md` の「実測の記録先」を参照する（このファイルへ複製しない）。
-
-## Out-of-Scope Finding Routing
-- 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
-- 判定順は `YAGNI → インライン修正 → Issue 化`
-- 現在の根拠・利用者影響・受け入れ条件がなければ YAGNI とし、対応も Issue 化もしない
-- 必要かつ軽微（仕様判断・別モジュール波及・独立検証・実装 10 行超（テスト・fixture は数えない）のいずれにも明確に該当しない。近傍の設定ファイルの小変更も含む）なら現 PR で修正する
-- 仕様判断・別モジュール波及・独立検証・実装 10 行超のいずれかに明確に該当するなら Issue 化ルートへ進む（仕様判断・波及の 2 軸は不確かでも Issue 化へ倒す）。同一 PR からの複数発見は既定で 1 Issue に束ねる
-- Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
-- 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
-
-## 🚨 Secrets Exposure Prevention
-- secret を stdout/stderr に出すコマンドを実行しない（境界5）。エージェントの出力（トランスクリプト・ログ・PR コメント）は永続化され、値が一度でも出たら「露出」としてローテーション判断が必要になる
-- env ファイル・プロセス環境の全ダンプを禁止（`cat .env*` / `printenv` / `env` / `console.log(process.env)` 等）。個別キーでも値全体を出さない（`printenv KEY` / `echo $KEY` を含む）
-- secret を読み込む CLI に `--debug` / `--verbose` を付ける前に、失敗時に何をダンプするかを確認する。不明なら付けない
-- 値の診断・ログ出力は prefix（先頭5字）+ length まで
-- 露出した場合は隠さず即報告し、露出したキーと範囲を列挙する
-- [プロジェクトの技術スタックから、対象となる secret（接続文字列・署名鍵・API キー等）と、それを出力し得る具体的コマンドを検出して列挙する。例示のコマンドはそのまま転記せず、実際に使うスタックのものへ置き換えること（例示: `supabase --debug` / `vercel env pull /dev/stdout` / `gh auth token` / `stripe config --list`）]
+<!-- setup-ai-config:common-block -->
 
 ## 🚨 Information Verification Protocol
 When information is missing, DO NOT make assumptions — always ask for confirmation（境界3）.
@@ -184,9 +167,9 @@ When information is missing, DO NOT make assumptions — always ask for confirma
 - [その他のドキュメントリンク]
 ```
 
-### 5. AGENTS.md の生成（Codex CLI / 汎用エージェント共通）
+### 6. AGENTS.md の生成（Codex CLI / 汎用エージェント共通）
 
-`AGENTS.md` は [agents.md](https://agents.md) 標準に沿った**クロスエージェントの共通入口**で、Codex CLI をはじめ多くの AI コーディングエージェントが参照します。プロジェクトルートに生成し、**他の2ツールと同じ5境界**（MASTER 先行参照・索引からの到達・確認プロトコル・スコープ外発見のルーティング・Secrets 露出防止）を必ず含めます。詳細は複製せず正本（`docs/MASTER.md` 等）を参照する薄い入口として構成します:
+`AGENTS.md` は [agents.md](https://agents.md) 標準に沿ったクロスエージェントの共通入口で、プロジェクトルートに生成します:
 
 ```markdown
 # AGENTS.md
@@ -216,26 +199,7 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 - Issue 起票 → ブランチ → 実装 → テスト → push → PR → セルフレビュー（PR の head SHA を対象に 1 回）→ fix commit → マージ
 - コミットは `<type>: #<issue> <subject>`
 
-## 実測の記録先
-実体数・版の一覧・時刻表・スコープ差の注記のような**時間で腐る記述**は、このファイルなどの正本へ書き足さず、`docs/08-knowledge/` の日付付き証跡文書（`YYYY-MM-DD-<slug>-evidence.md`）へ置く。
-正本に残してよい範囲と証跡文書の追記規律は、`docs/MASTER.md` の「実測の記録先」を参照する（このファイルへ複製しない）。
-
-## Out-of-Scope Finding Routing
-- 現 diff の回帰・現 Issue の AC・既存契約・必須品質ゲート・Critical / Warning は分岐前に現 PR で解消する
-- 判定順は `YAGNI → インライン修正 → Issue 化`
-- 現在の根拠・利用者影響・受け入れ条件がなければ YAGNI とし、対応も Issue 化もしない
-- 必要かつ軽微（仕様判断・別モジュール波及・独立検証・実装 10 行超（テスト・fixture は数えない）のいずれにも明確に該当しない。近傍の設定ファイルの小変更も含む）なら現 PR で修正する
-- 仕様判断・別モジュール波及・独立検証・実装 10 行超のいずれかに明確に該当するなら Issue 化ルートへ進む（仕様判断・波及の 2 軸は不確かでも Issue 化へ倒す）。同一 PR からの複数発見は既定で 1 Issue に束ねる
-- Issue 化の前に類似 Issue を検索し、同じ完了条件なら既定はコメントでまとめる。本文 AC は明示許可と競合確認がある場合だけ最小追記する
-- 完了条件が独立する場合だけ、既存 Issue と関連付けた新規 Issue を作成する
-
-## 🚨 Secrets Exposure Prevention
-- secret を stdout/stderr に出すコマンドを実行しない（境界5）。エージェントの出力（トランスクリプト・ログ・PR コメント）は永続化され、値が一度でも出たら「露出」としてローテーション判断が必要になる
-- env ファイル・プロセス環境の全ダンプを禁止（`cat .env*` / `printenv` / `env` / `console.log(process.env)` 等）。個別キーでも値全体を出さない（`printenv KEY` / `echo $KEY` を含む）
-- secret を読み込む CLI に `--debug` / `--verbose` を付ける前に、失敗時に何をダンプするかを確認する。不明なら付けない
-- 値の診断・ログ出力は prefix（先頭5字）+ length まで
-- 露出した場合は隠さず即報告し、露出したキーと範囲を列挙する
-- [プロジェクトの技術スタックから、対象となる secret（接続文字列・署名鍵・API キー等）と、それを出力し得る具体的コマンドを検出して列挙する。例示のコマンドはそのまま転記せず、実際に使うスタックのものへ置き換えること（例示: `supabase --debug` / `vercel env pull /dev/stdout` / `gh auth token` / `stripe config --list`）]
+<!-- setup-ai-config:common-block -->
 
 ## 🚨 Information Verification Protocol
 情報が不足している場合は推測せず、必ず確認を求める（境界3）。
@@ -246,7 +210,7 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 - GitHub Copilot: `.github/copilot-instructions.md`
 ```
 
-### 6. Multi-CLI Agent Orchestrator のセットアップ
+### 7. Multi-CLI Agent Orchestrator のセットアップ
 
 セットアップスクリプトを実行して、Multi-CLI Agent Orchestrator（review / explore / implement の3タスク）を構成します:
 
@@ -254,12 +218,7 @@ Codex CLI / 汎用 AI エージェント共通の開発ガイド（[agents.md](h
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent.sh"
 ```
 
-このスクリプトが行うこと:
-
-- Mike Farah yq v4（YAMLパーサー）の確認・インストール（Homebrew があれば brew、無ければ GitHub release の公式バイナリ。distro の apt/yum パッケージ yq は使わない）
-- 4つのAI CLI（Claude Code / Codex / Copilot / Grok）の検出
-- 未インストールCLIのインストールガイド表示
-- `multi-agent.sh --dry-run` による動作確認
+処理内容はスクリプトのヘッダ「概要」と実行時の出力を参照する。
 
 セットアップ完了後、以下で利用できます（いずれも本プラグイン同梱）:
 
@@ -268,12 +227,12 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 - 設定のカスタマイズ: プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される。**どのキーが実際に読まれるか**の正本は [Multi-CLI Agent Orchestration の「実際に読まれるキー」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#実際に読まれるキー)（説明をここへ複製しない）
 
-### 7. 完了報告
+### 8. 完了報告
 
 生成したファイルの一覧と、各ファイルの要約を表示してください。
 Multi-CLI Agent Orchestrator のセットアップ結果も含めて報告してください。
 
-### 8. （任意）ACE autonomous テンプレートの案内
+### 9. （任意）ACE autonomous テンプレートの案内
 
 ユーザーが **ACE ナレッジキャプチャの autonomous 化**（post-merge → subagent → worktree）に関心を示した場合、または Multi-CLI / Git 運用の文脈で自動化を聞かれた場合のみ、利用中のホストの質問機能または通常の対話で希望を確認する。
 
@@ -284,8 +243,7 @@ Multi-CLI Agent Orchestrator のセットアップ結果も含めて報告して
 
 - 既存ファイルがある場合は上書き前に必ず確認すること
 - docs/ の内容を正確に反映すること（推測で情報を追加しない）
-- 生成する3ファイル（CLAUDE.md / AGENTS.md / copilot-instructions.md）には、ツールを問わず「標準への入口」5境界（**MASTER 先行参照 / 索引からの到達 / 情報不足時の確認プロトコル / スコープ外発見の YAGNI・インライン・Issue 化 / Secrets 露出防止**）を等価に含めること（CLAUDE.md だけの要件ではない）
+- 生成する3ファイル（CLAUDE.md / AGENTS.md / copilot-instructions.md）には、ツールを問わず「標準への入口」の5境界を等価に含めること（CLAUDE.md だけの要件ではない）
 - 各ツール固有のフォーマットや慣習に従うこと
 - 生成後、ファイルの内容をユーザーに確認してもらうこと
-- 生成物が5境界を等価に含むことは `plugins/ff-dev-toolkit/tests/setup-ai-config/verify.sh` で検証できる
 - 生成後に `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/workflow-doctor.sh" --root "$(git rev-parse --show-toplevel)" --offline` を実行し、生成した入口が「スコープ外発見の YAGNI・インライン・Issue 化」の判定順（YAGNI → インライン → 既存 bundle へ追記 → bundle 単位で新規）と矛盾していないことを確認する（正本は `/workflow-doctor`）

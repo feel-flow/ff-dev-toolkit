@@ -7,9 +7,12 @@
 # フレームワーク等）が丸ごと落ちる。手順5にラベルの実在確認（verify-then-skip）と
 # 並べて追記した pre-flight（テンプレートの `## ` 見出しを列挙し、生成した本文に
 # 無い節を「省略した節」として fail-soft で報告する）が、実装から消えないことを
-# 固定する。あわせて手順6ステップ1に pre-flight の実行指示が残っていること、
+# 固定する。あわせて起票ステップ1に pre-flight の実行指示が残っていること、
 # 手順7の完了報告に省略節の報告義務が残っていること、git-workflow.md ステップ1に
 # raw `gh issue create` 前のテンプレート確認手順が残っていることを見る。
+# pre-flight と起票ステップは、ラベル照合〜起票と一緒に references/filing.md へ
+# 切り出してある（本線は起票時に filing.md を読む条件だけを持つ）。検査 1・2 は
+# filing.md へ、検査 3（完了報告）は本線へ当てる。
 #
 # 検査対象を SKILL.md 全文の grep にしないのは、手順7の報告義務は「その節に
 # 在ること」自体が要件のため（issue-label-contract の section_scope_contains と
@@ -19,6 +22,8 @@
 # 環境でも完走する。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/create-issue-template-preflight/verify.sh
+#
+# 空振り検出: references/filing.md を消すと必須ファイル不在で exit 1、pre-flight 節を本線 SKILL.md へ戻して filing.md から消すと 11 件中 7 件、起票ステップ1の見出しを改名すると 11 件中 1 件が赤になる（2026-09-24 実測。置き場所の移動・見出しの書式変更を「契約あり」へ倒さない）。
 
 set -euo pipefail
 
@@ -27,6 +32,7 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 
 CREATE_ISSUE="$PLUGIN_ROOT/skills/create-issue/SKILL.md"
+CREATE_ISSUE_FILING="$PLUGIN_ROOT/skills/create-issue/references/filing.md"
 GIT_WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 
 CI_PREFLIGHT_HEADING='#### ISSUE_TEMPLATE 節の pre-flight'
@@ -45,7 +51,7 @@ rel() { printf '%s' "${1#"$REPO_ROOT"/}"; }
 
 echo "== create-issue の ISSUE_TEMPLATE pre-flight 契約検査 =="
 
-for file in "$CREATE_ISSUE" "$GIT_WORKFLOW"; do
+for file in "$CREATE_ISSUE" "$CREATE_ISSUE_FILING" "$GIT_WORKFLOW"; do
   [ -s "$file" ] || { echo "✗ 必須ファイルが無いか空です: $file" >&2; exit 1; }
 done
 
@@ -70,22 +76,22 @@ section_contains() {
   fi
 }
 
-# ---- 1. 手順5: pre-flight 見出しと fail-soft 契約 ------------------------------
-contains "$CREATE_ISSUE" "$CI_PREFLIGHT_HEADING" "pre-flight 見出しがある"
-contains "$CREATE_ISSUE" '.github/ISSUE_TEMPLATE' "ISSUE_TEMPLATE ディレクトリへの参照がある"
-contains "$CREATE_ISSUE" "省略した節" "省略した節の報告文言がある"
-contains "$CREATE_ISSUE" "grep '^## '" "節見出し（## ）を列挙するコマンドがある"
-contains "$CREATE_ISSUE" "ディレクトリが無い場合や、種別スラッグに一致するファイルが無い場合は何も出さず" \
+# ---- 1. references/filing.md: pre-flight 見出しと fail-soft 契約 ----------------
+contains "$CREATE_ISSUE_FILING" "$CI_PREFLIGHT_HEADING" "pre-flight 見出しがある"
+contains "$CREATE_ISSUE_FILING" '.github/ISSUE_TEMPLATE' "ISSUE_TEMPLATE ディレクトリへの参照がある"
+contains "$CREATE_ISSUE_FILING" "省略した節" "省略した節の報告文言がある"
+contains "$CREATE_ISSUE_FILING" "grep '^## '" "節見出し（## ）を列挙するコマンドがある"
+contains "$CREATE_ISSUE_FILING" "ディレクトリが無い場合や、種別スラッグに一致するファイルが無い場合は何も出さず" \
   "テンプレート不一致時は fail-soft で何も出さない契約がある"
-contains "$CREATE_ISSUE" "このブロックの非 0 終了はブロッカーではない" \
+contains "$CREATE_ISSUE_FILING" "このブロックの非 0 終了はブロッカーではない" \
   "非 0 終了がブロッカーでない旨の明記がある"
-contains "$CREATE_ISSUE" "GitHub issue forms の \`.yml\` は対象外" \
+contains "$CREATE_ISSUE_FILING" "GitHub issue forms の \`.yml\` は対象外" \
   "検査対象が .md テンプレートに限られる旨の明記がある"
 
-# ---- 2. 手順6ステップ1: 本文を書いた直後の pre-flight 実行指示 -----------------
-# pre-flight ブロックの記述位置（手順5末尾）と実行点（本文が揃う手順6ステップ1）が
+# ---- 2. references/filing.md ステップ1: 本文を書いた直後の pre-flight 実行指示 ----
+# pre-flight ブロックの記述位置（ステップの前の節）と実行点（本文が揃うステップ1）が
 # 離れているため、実行指示が本文作成の節に在ること自体を要件として固定する。
-section_contains "$CREATE_ISSUE" "$CI_BODY_STEP_HEADING" "手順 5 末尾の「ISSUE_TEMPLATE 節の pre-flight（fail-soft）」の bash ブロックを単独実行" \
+section_contains "$CREATE_ISSUE_FILING" "$CI_BODY_STEP_HEADING" "上の「ISSUE_TEMPLATE 節の pre-flight（fail-soft）」の bash ブロックを単独実行" \
   "本文作成ステップに pre-flight の実行指示が含まれる"
 
 # ---- 3. 手順7: 完了報告に省略節の報告義務が残っている --------------------------

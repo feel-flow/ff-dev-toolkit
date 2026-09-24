@@ -1,8 +1,10 @@
 # shellcheck shell=bash
 #
-# base 先行ガードの fetch 失敗が原因を捨てない形であることを、4 箇所すべてで固定する。
+# base 先行ガードの fetch 失敗が原因を捨てない形であることを、3 箇所すべてで固定する。
 #
-# 対象は 3 スキルの 4 フェンス（retrospective 1 / ace-curate 1 / ace-refine 2）。どれも同じ
+# 対象は 3 スキルの 3 フェンス（retrospective 1 / ace-curate 1 / ace-refine 1。ace-refine の R3 開始前
+# ガードは承認前の照合フェンスを再実行する形に畳んだ。retrospective と ace-curate のフェンスは
+# 条件付き reference — references/ledger.md / references/curate.md — にある）。どれも同じ
 # 停止条件・同じ復帰手順を案内するので、片側だけが原因を落とす形へ戻ると「同じ経路なのに
 # 停止の報告だけ内容が違う」非対称が復活する。1 箇所だけ旧形（`>/dev/null 2>&1` で stderr を
 # 捨てる）へ戻す変異でここが赤くなる。
@@ -15,7 +17,7 @@
 # 呼び出し元（verify.sh）の ok / bad / PASS / FAIL を使う。単体では実行しない。
 
 BASE_GUARD_NORMAL="$(cat "$SCRIPT_DIR/fixtures/base-guard-fetch-normal.txt")"$'\n'
-BASE_GUARD_EXPECTED_FENCES=4
+BASE_GUARD_EXPECTED_FENCES=3
 base_guard_found=0
 
 # $1=SKILL.md の絶対パス / $2=報告用のスキル名
@@ -57,8 +59,8 @@ check_base_guard_fetch() {
   done
 }
 
-echo "== base 先行ガードの fetch 失敗診断（4 箇所の正規形） =="
-check_base_guard_fetch "$PLUGIN_ROOT/skills/retrospective/SKILL.md" "retrospective"
+echo "== base 先行ガードの fetch 失敗診断（3 箇所の正規形） =="
+check_base_guard_fetch "$PLUGIN_ROOT/skills/retrospective/references/ledger.md" "retrospective"
 check_base_guard_fetch "$ACE_CURATE" "ace-curate"
 check_base_guard_fetch "$ACE_REFINE" "ace-refine"
 
