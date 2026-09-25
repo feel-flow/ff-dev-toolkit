@@ -2,7 +2,7 @@
 
 このファイルは、ff-dev-toolkit が**互換性を約束する対象**（契約）と、**予告なく変えてよい実装詳細**（内部）の境界の正本です。導入先から読めるように配布物へ同梱しています。
 
-対象は 4 系統 — Skills の起動名 / Hooks / 導入先に配置されるパス / 環境変数 `FF_*`。いずれも「契約」と「内部」を区別して列挙します。
+対象は 5 系統 — Skills の起動名 / Hooks / 導入先に配置されるパス / 環境変数 `FF_*` / `FF_` で始まらない環境変数。いずれも「契約」と「内部」を区別して列挙します。
 
 ## 契約と内部
 
@@ -20,7 +20,7 @@
 - 走査対象: `plugins/ff-dev-toolkit/` 配下と、公開リポジトリのルートへ同期される `oss/ff-dev-toolkit/` 配下
 - 走査対象から外すもの: 本ファイル自身（自分で自分を正当化しないため）と `oss/ff-dev-toolkit/CHANGELOG.md`（過去の版の記録に残る、すでに存在しない名前を母集団へ持ち込まないため）
 - 語の切り出しは純粋に字句的です。そのため `FF_MULTI_AGENT` / `FF_TIMEOUT` のように**環境変数名の接頭辞**として書かれた語も母集団に入ります。これらは内部に分類しています
-- **本版の列挙対象は `FF_*` だけ**です。`FF_` で始まらない環境変数（`RETROSPECTIVE_MODE` / `MULTI_AGENT_CONFIG` / `MULTI_AGENT_BASE_BRANCH` など）は**未分類**で、この一覧に載っていないことは「内部である」ことを意味しません。**契約とも見なさない**でください。分類の拡張は別途扱います
+- `FF_` で始まらない環境変数は字句では境界を引けないため、母集団の決め方が別です。「公開面 5」を参照してください
 
 **母集団のすべてが下の 4-1 か 4-2 のどちらかに載っていること**は機械検査が担保します（未分類 0 件）。
 
@@ -262,6 +262,7 @@
 - `FF_JOBS_LIMIT`
 - `FF_MBCS_AWK`
 - `FF_MBCS_GIT`
+- `FF_MEDIA_RENDER`（ff-media-toolkit の実レンダリング opt-in。`sync-sha-contract` がリリース gate の許容表の理由文として参照するだけで、配布物は読まない）
 - `FF_MULTI_AGENT`
 - `FF_M`
 - `FF_NEEDLE`
@@ -279,6 +280,8 @@
 - `FF_PLUGIN_DESC_ROOT`
 - `FF_POLL_INTERVAL`
 - `FF_PROBE_LOCALE_CMD`
+- `FF_PUBLIC_LAYOUT_SUITES`
+- `FF_RUN_PUBLIC_LAYOUT`
 - `FF_P`
 - `FF_REACHED_END`
 - `FF_REAL_CKSUM`
@@ -394,6 +397,78 @@
 - `FF_TOOLKIT_SCRIPTS`
 - `FF_TOOLKIT_SIDECAR`
 
+## 公開面 5: 環境変数（`FF_` で始まらないもの）
+
+`FF_` で始まらない環境変数も、利用者が設定して効かせる値は契約です。分類は `FF_*` と同じ判定規則（公開されている ∧ 配布実行物が読む）を機械で実行して決めます。
+
+### 5-0. 母集団の決め方
+
+`FF_*` と違い、全大文字の語を字句で拾うと、スクリプトのローカル変数や出力行のキー（決定木の DT_ROUTE 行など）が大半を占めて境界になりません。そこで母集団は**この節で宣言した名前の系統**に限ります。
+
+- **接頭辞系統**: 配布物に現れる、次の接頭辞で始まる大文字・数字・アンダースコアの語すべて。系統の中で名前が増えれば、検査が自動で拾います（この節の backtick token が宣言そのものなので、例示には backtick を使わない）
+  - `MULTI_AGENT_*`（multi-review / multi-agent の設定）
+  - `RETROSPECTIVE_*`（振り返りの起動モード・起票方針）
+  - `TYPESAFE_*`（Jev 判定点の API 接続）
+- **系統外の単独名**: 利用者が設定する値のうち、上の系統に属さないもの
+  - `ACE_DEFER_TO_RETRO`
+  - `ACE_GARDEN_WALL_PATHS`
+  - `CODEX_MODEL`
+  - `CODEX_DEFAULT_REVIEWERS`
+  - `CODEX_REASONING_EFFORT`
+  - `SKIP_CODEX_REVIEW`
+
+走査対象と除外は `FF_*` の「網羅の定義」と同じです。ホスト・OS・外部 CLI が定義する変数（HOME / TMPDIR / XDG 系 / CLAUDE 系 / GROK 系 / CODEX_HOME など）は本プラグインの公開面ではないので、母集団に含めません。
+
+**利用者が設定する値を新しい接頭辞や単独名で足すときは、先にこの節へ系統か単独名を追加してください。** 宣言の外で足した名前は検査が拾えません（機械検査が及ばない範囲。下記）。
+
+### 5-1. 契約
+
+- `ACE_DEFER_TO_RETRO`
+- `CODEX_MODEL`
+- `MULTI_AGENT_BASE_BRANCH`
+- `MULTI_AGENT_CLAUDE_EFFORT`
+- `MULTI_AGENT_CODEX_PROFILE`
+- `MULTI_AGENT_CODEX_REASONING_EFFORT`
+- `MULTI_AGENT_CONFIG`
+- `MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES`
+- `MULTI_AGENT_CROSS_REVIEW`
+- `MULTI_AGENT_GROK_READONLY_PROFILE`
+- `MULTI_AGENT_MODEL`
+- `MULTI_AGENT_MODEL_CLAUDE_CODE`
+- `MULTI_AGENT_MODEL_CODEX_CLI`
+- `MULTI_AGENT_MODEL_COPILOT_CLI`
+- `MULTI_AGENT_MODEL_GROK_CLI`
+- `MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD`
+- `RETROSPECTIVE_FILING`
+- `RETROSPECTIVE_MODE`
+- `SKIP_CODEX_REVIEW`
+
+### 5-2. 内部
+
+予告なく改名・削除します。導入先の設定へ書かないでください。文書の記入例（`MULTI_AGENT_MODEL_EXAMPLE_CLI` など）・テストの注入口・配布文書が案内しない旧名もここに入ります。
+
+なお、**導入先がコピーして所有するスニペットの中だけで読む値**（`ACE_GARDEN_WALL_PATHS` は導入先の `scripts/ace/run-subagent.sh` が読む）も、「`FF_*` の判定規則」の「片方だけになるもの」と同じ理由で内部に分類されます。これは「設定してはいけない」ではなく、「コピーした時点で導入先の資産になり、こちらの改名がその導入先のコピーを壊さない」という意味です。設定の要否はそのスニペットの README に従ってください。この節（5-0〜5-2）の backtick 付きの大文字語は散文の中でも分類の宣言として抽出されるので、一覧に無い名前を例示に使わないでください。
+
+- `ACE_GARDEN_WALL_PATHS`
+- `CODEX_DEFAULT_REVIEWERS`
+- `CODEX_REASONING_EFFORT`
+- `MULTI_AGENT_BAD`
+- `MULTI_AGENT_EXAMPLE_PROFILE`
+- `MULTI_AGENT_MODEL_EXAMPLE_CLI`
+- `MULTI_AGENT_MODEL_GEMINI_CL1`
+- `MULTI_AGENT_MODEL_GEMINI_CLI`
+- `MULTI_AGENT_MODEL_OTHER_CLI`
+- `MULTI_AGENT_REVIEW_MAIN`
+- `MULTI_AGENT_REVIEW_SUB`
+- `RETROSPECTIVE_DELIVERED`
+- `RETROSPECTIVE_DONE`
+- `RETROSPECTIVE_OFF`
+- `RETROSPECTIVE_TEST_INPUT`
+- `TYPESAFE_API_KEY`
+- `TYPESAFE_API_KEY_FILE`
+- `TYPESAFE_API_URL`
+- `TYPESAFE_MODEL`
+
 ## 破壊的変更の記録
 
 契約側の要素を削除・改名・意味変更する変更は、CHANGELOG の `### 破壊的変更` 節へ記録します。開発元リポジトリでは `changelog.d/` の断片種別 `breaking` がこの節へ集約されます。節は各版の先頭に置かれるため、版の差分を読むときに最初に目に入ります。
@@ -415,9 +490,10 @@
 - Hooks: 「2-1」の三つ組の集合 = `hooks/hooks.json` が登録する `発火イベント :: matcher :: 実体` の集合。「2-2」の集合 = `hooks/` の残りのファイル。あわせて登録された実体がすべて通常ファイルとして在ることも見る（登録だけ残して実体を消す変更を素通りさせない）
 - `FF_*` の契約: 「4-1」の集合 = 判定規則の 1 の集合 ∩ 2 の集合。**規則そのものを機械で実行する**ので、公開もされ実行物も読む名前を 4-2 へ入れると赤になる
 - `FF_*` の網羅: 「4-1」と「4-2」の和集合 = 網羅の定義で導いた母集団。片側にしか無い名前と、4-1 と 4-2 の両方に載っている名前は赤
+- `FF_` で始まらない環境変数: 「5-1」= 判定規則の 1 の集合 ∩ 2 の集合（`FF_*` と同じ規則）、「5-1」と「5-2」の和集合 = 「5-0」が宣言した系統・単独名で導いた母集団、両者が排他。宣言した単独名が配布物から消えると一覧側にだけ残る名前として赤
 
 `changelog-fragments`:
 
-- 契約側の要素（「公開面 1」「2-1」「公開面 3」の表の先頭セル「4-1」）が既定ブランチの本ファイルから**消えている**のに `changelog.d/` に `breaking` 断片が無ければ赤。削除・改名を一覧と実体から同時に消しても、破壊的変更の記録が無い限り通らない
+- 契約側の要素（「公開面 1」「2-1」「公開面 3」の表の先頭セル「4-1」「5-1」）が既定ブランチの本ファイルから**消えている**のに `changelog.d/` に `breaking` 断片が無ければ赤。削除・改名を一覧と実体から同時に消しても、破壊的変更の記録が無い限り通らない
 
-機械検査が及ばない範囲: 「公開面 3」の**内部側**として列挙したパスと、`FF_` で始まらない環境変数。撤去・改名のときは `removal-sweep` スキルのチェックリストで残存参照を走査してください。
+機械検査が及ばない範囲: 「公開面 3」の**内部側**として列挙したパスと、「5-0」で宣言していない系統・単独名の `FF_` で始まらない環境変数。撤去・改名のときは `removal-sweep` スキルのチェックリストで残存参照を走査してください。

@@ -20,6 +20,27 @@
 
 ## [Unreleased]
 
+## [0.133.0] - 2026-09-26
+
+### 追加
+
+- 公開リポジトリ単体の checkout を開発元のツリーで合成し、公開 CI（weekly-public-run-all）と同じ実行ロジックで公開 suite セットを回す同梱テスト public-layout を追加した。開発元のリポジトリ構成を前提にしてしまった suite を、公開同期と週次 CI を待たずに検出する。1 周が全件ゲートと同規模のため run-all からは回さず、開発元の日次リリースが同期の直前に明示起動する（CI では理由付きで skip）。合成に必要な前提が欠けた回は検査不成立として失敗する。公開 CI の除外名簿にも本テストを追加した。
+- 公開 CI の除外名簿へ ff-media-toolkit のラッパー suite を追加した。社内専用プラグインを検査する suite で公開 checkout では常に丸ごと skip し、skip 許容名簿の外にあるため、次の公開同期で週次 CI を赤にしていた（上記 public-layout の初回実行で検出）。
+
+### 変更
+
+- 公開面の一覧 `PUBLIC-SURFACE.md` に「公開面 5: 環境変数（`FF_` で始まらないもの）」を新設し、これまで未分類としていた MULTI_AGENT 系・RETROSPECTIVE 系・TYPESAFE 系と、系統外の単独名（ACE_DEFER_TO_RETRO / CODEX_MODEL など）を契約と内部へ分類した。分類は FF 系と同じ判定規則（公開されている ∧ 配布実行物が読む）で機械的に決まり、MULTI_AGENT_CONFIG / MULTI_AGENT_BASE_BRANCH / RETROSPECTIVE_MODE を含む 19 件が契約になった。契約側を削除・改名する変更は、以後は破壊的変更として記録の対象になる。
+- 母集団は字句では境界を引けない（スクリプトのローカル変数や出力行のキーが大半を占める）ため、一覧の 5-0 節で接頭辞系統と単独名を宣言し、その宣言から導く。系統の中で名前が増えれば同梱テストが自動で拾う。
+
+### 修正
+
+- docs-template の `SETUP_GITHUB_COPILOT.md` を消費プロジェクトの docs/ へコピーしたとき、GitHub Copilot の詳細ガイド群・新規プロジェクト開始ガイド・Claude Code セットアップガイド・ACE サイクル運用手順へのリンク 16 件がリンク切れになっていた問題を修正。初期セット外の文書はコピー元パス付きの案内テキストで示し、展開前パス（docs-template 配下の MASTER）を指していた記述も消費側の docs 配下へ揃えた。
+- 同梱テスト docs-template-portability が、MASTER の「AIツール初期設定ガイド」節に列挙されたガイドをすべてコピー後の配置で検査するようにした。対象は手書きで指定せず節の列挙から導くので、節へガイドを足すと検査も追随する。節を見つけられない回は検査不成立として失敗する。
+- ACE スクリプト群の同梱テストを README の案内どおり導入先の scripts/ace/ へ逐語コピーして vitest を実行すると、開発元の配置（プラグインの docs-template 一式）を前提にした 3 ファイルが必ず失敗していた問題を修正（報告: https://github.com/feel-flow/ff-dev-toolkit/issues/121 ）。見本 hook・見本 Playbook・公開文書の記入例が見つからない配置では、失敗ではなく理由付きの skip になる。理由は --reporter=verbose を付けるとテスト名と警告行で確認できる。
+- 同梱テスト ace-scripts-vitest が導入先の配置を一時ディレクトリへ合成して実行し、失敗 0 件・skip 理由 3 ファイル分を確かめるようにした。開発元の配置では skip を 0 件に固定し、skip 条件が開発元でも成立して検査が黙って消える退行を検出する。
+- sync-sha-contract suite が固定するリリース gate の部分 skip 許容表に、ff-media-toolkit の実レンダリング（`FF_MEDIA_RENDER=1` の明示 opt-in）の既定 skip を構造的 skip として足した。setup 前の型検査の skip は環境 skip のまま許容せず、停止文の次の一手が `ff-media.sh setup` を名指しすることを固定する（ff-media-toolkit は公開対象外で、SSOT のリリースだけが対象）。
+- 公開面の一覧 `PUBLIC-SURFACE.md` の「5-2. 内部」に、導入先がコピーして所有するスニペットの中だけで読む値（ACE_GARDEN_WALL_PATHS など）が内部に分類される理由を追記した。「設定してはいけない」ではなく「コピーした時点で導入先の資産になり、こちらの改名がそのコピーを壊さない」という意味で、設定の要否はそのスニペットの README に従う。
+
 ## [0.132.0] - 2026-09-25
 
 ### 追加

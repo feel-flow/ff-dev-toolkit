@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   classifyDomainEntry,
   isDomainAutoArchiveSafe,
@@ -170,9 +171,18 @@ describe("domain workflow states and auto-archive", () => {
 
 // Both distributed instructions must produce metadata accepted by the actual gate.
 // Exercise the docs-template and repository mirror layouts without copying fixture rows.
-describe("published domain metadata examples", () => {
-  const templateRoot = new URL(import.meta.url.includes("/docs-template/")
+// 見本は開発元の配置（docs-template 内 / repository mirror）にしか無い。導入先の scripts/ace/ へ
+// 逐語コピーした配置では見つからないので、ENOENT で失敗させず理由付きで skip する。
+const publishedExampleRoot = (() => {
+  const candidate = new URL(import.meta.url.includes("/docs-template/")
     ? "../../" : "../../plugins/ff-dev-toolkit/docs-template/", import.meta.url);
+  return existsSync(fileURLToPath(new URL(".claude/agents/ace-capture.md", candidate))) ? candidate : null;
+})();
+if (publishedExampleRoot === null) {
+  console.warn(`[skip] 開発元の配置（docs-template/.claude/agents/ace-capture.md）が見つからないため published domain metadata examples を skip します: ${fileURLToPath(import.meta.url)}`);
+}
+describe.skipIf(publishedExampleRoot === null)(`published domain metadata examples${publishedExampleRoot === null ? "（skip: 開発元の配置が無い）" : ""}`, () => {
+  const templateRoot = publishedExampleRoot ?? new URL("./", import.meta.url);
   it.each([".claude/agents/ace-capture.md", "05-operations/deployment/ace-domain.md"])("validates %s against the production contract", (relative) => {
     const document = readFileSync(new URL(relative, templateRoot), "utf8");
     const examples = [...document.matchAll(/```text\r?\n(\| Category \| domain \|[\s\S]*?)\r?\n```/gu)];

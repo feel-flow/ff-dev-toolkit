@@ -34,6 +34,10 @@ post-merge からの呼び出し例は `docs-template/.claude/hooks/post-merge.a
 4. `.claude/settings.local.json`（または CI の環境変数）に **デフォルト無効** の feature flag を設定する（`ace-autonomous.md` 参照）。
 5. `ACE_GARDEN_WALL_PATHS` を **必ず** プロジェクト用に設定する（未設定時は `run-subagent.sh` が起動を拒否する）。
 
+### 同梱テストをコピー先で回すとき
+
+`scripts/ace/*.test.ts` をコピー先で `npx vitest run --dir scripts/ace` すると、開発元の配置（ff-dev-toolkit の `docs-template/` 一式）を前提にした検査は**失敗ではなく skip** になります（`shell-hooks.test.ts` は見本 hook を前提にするのでファイル全体、`ace-domain.test.ts` と `check-entry-format.test.ts` は公開文書の記入例・見本 Playbook を読む一部の検査）。コピー先にはそれらの見本が無いためで、残りの検査はそのまま実行されます。skip の理由は `--reporter=verbose` を付けるとテスト名（「skip: 開発元の配置が無い」）と警告行で確認できます。
+
 ## check-category-size.ts の実行
 
 Node 24+ を前提とします。実行は **tsx などの TypeScript runner 経由**が前提です（推奨例は下記。ff-dev-toolkit プラグイン導入済み環境では同梱の `scripts/ace-run-ts.sh` 経由でも実行できます）。

@@ -191,6 +191,12 @@ jobs:
           #   - host-route-parity / root-instructions-parity: 開発元の docs/（正本表）と
           #     リポジトリ直下の指示文書（CLAUDE.md / AGENTS.md。いずれも同期対象外）の
           #     一致を検査する。配布先 checkout では検査対象が 1 件も同梱されない
+          #   - public-layout: 開発元の scripts/sync-dev-toolkit-to-public.sh（同期対象外）で
+          #     公開配置を合成し、この step 自体を中で回す（公開側で走らせると前提が無く、
+          #     開発元で走らせる合成配置の中では自分自身を再帰的に呼ぶことになる）
+          #   - ff-media-toolkit: 社内専用プラグイン plugins/ff-media-toolkit（公開対象外）の
+          #     suite を回すラッパー。公開 checkout ではプラグインも marketplace の掲載も無く、
+          #     常に丸ごと skip する（skip 許容名簿の外なので除外しないと赤になる）
           EXCLUDED_SSOT_SUITES="
             markdownlint markdownlint-selftest
             skill-count-consistency
@@ -206,6 +212,7 @@ jobs:
             public-dependabot-health release-required-selftest
             cloud-env-setup weekly-health-contract
             host-route-parity root-instructions-parity
+            public-layout ff-media-toolkit
           "
           # 除外名簿の実在検査: 改名・削除で名簿が腐ると、○ skip へ倒れる suite では
           # 「空振り → 実行集合へ入る → 失敗」の fail-closed が成立しない（skip で緑の

@@ -101,6 +101,13 @@
 # 変異検出: 採用した記録（adopted=1）を自動巻き戻しの対象から外す照合を消すと release-runtime（付けない再実行が直した内容を戻す）が赤。
 # 変異検出: dry-run の同期差分を公開側 clone の作業ツリーとの rsync 比較へ戻すと release-runtime（origin/main 基準・内容差分だけ）が赤。
 #
+# 変異検出（ff-media-toolkit の既定 skip。Issue `#1904`。2026-09-25 実測）:
+# 変異検出: 許容表から render-smoke の opt-in 行を消すと (7) の針と release-runtime（render-smoke の skip で止まる）が赤。
+# 変異検出: 許容表へ typecheck の環境 skip 行を足すと (7) の禁止針が赤（release-runtime は typecheck skip で止まらなくなり赤）。
+# 変異検出: SKIP_HINTS の照合ループを消すと (7) の針と release-runtime（停止文が ff-media.sh setup を名指ししない）が赤。
+# 変異検出: 照合の case を外して全ヒントを無条件に足すと release-runtime（codex の未知 skip の停止文に setup が混じる）が赤。
+# 変異検出: 許容表へ語尾を変えた typecheck 行（`…行いません（`）を足すとブロック内照合の針が赤（2026-09-25 実測）。
+# 変異検出: SKIP_HINTS へ `|` の無い要素を足すと要素形の針が赤。
 # 空振り検出: FF_SYNC_SHA_SKILL へ存在しないパスを与えると (対象解決) が赤になる。明示指定の不在を skip へ倒さないため、実測は exit 1（○ skip ではない）。
 # 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT へ存在しないパスを与えると (対象解決) が赤になる（実測 exit 1）。リリーススクリプトを空ファイルへ差し替えると (7) の全針と release-runtime が赤になる。
 # 空振り検出: 検査対象を空ファイルへ差し替えると (1〜3 / 5 / 6 の全針) が赤になる。0 件一致を「不足なし」へ倒さないことの実測。
@@ -366,6 +373,56 @@ release_contains "'enum 照合は対象外（grok-cli は受け付ける値の�
   "許容表に上流仕様による照合不能（adapter-sandbox-contract）がある"
 release_contains "'に対応する compare リンク行が無いためスキップ（公開タグ前の開発周期では正常'" \
   "許容表に同期サイクル内で解消するもの（changelog-public-tags）がある"
+# ff-media-toolkit の既定 skip 2 件（Issue `#1904` / ADR-069）。ラッパーが子 runner の出力を写すため、子の suite 単位 skip が
+# 親では部分 skip になる。opt-in の render-smoke は構造的 skip として表に載せ、setup 前の typecheck は環境 skip として
+# 表に載せず、停止文の次の一手だけを名指しする（SKIP_HINTS）。表へ typecheck を足す退行と、ヒント表ごと消す退行の両方を止める。
+release_contains "'FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません'" \
+  "許容表に明示 opt-in の実レンダリング（ff-media-toolkit render-smoke）がある"
+# 配列ブロック（`NAME=(` 〜 行頭 `)`）の中だけを見る。ファイル全体の grep だと、SKIP_HINTS の要素（同じ理由文 + `|`）や
+# 語尾を変えた要素（`…行いません（`）で禁止針が外れる
+release_block() { awk -v n="$1" '$0 ~ ("^" n "=\\($") {f=1; next} f && /^\)$/ {exit} f' "$RELEASE_SCRIPT"; }
+_allowed_block="$(release_block ALLOWED_SKIP_PATTERNS)"
+if [[ -z "$_allowed_block" ]]; then
+  bad "許容表のブロックを切り出せない（配列の形が変わった）"
+elif [[ "$_allowed_block" == *'node_modules が無いため型検査を行いません'* ]]; then
+  bad "setup 前の typecheck（環境 skip）が許容表の要素になっている"
+else
+  ok "setup 前の typecheck（環境 skip）を許容表の要素にしていない（ブロック内照合）"
+fi
+release_contains 'SKIP_HINTS=(' \
+  "許容表に無い skip の理由行ごとに次の一手を名指しするヒント表がある"
+release_contains "'node_modules が無いため型検査を行いません|bash plugins/ff-media-toolkit/scripts/ff-media.sh setup" \
+  "ヒント表が ff-media の setup 前の typecheck skip に ff-media.sh setup を名指しする"
+# ヒント表の要素は `<理由>|<案内>` の形（`|` の無い要素は照合側が飛ばすので、黙って効かない要素を表に残さない）
+_hint_elems="$(release_block SKIP_HINTS | grep -E "^[[:space:]]*'" || true)"
+_hint_bad="$(printf '%s\n' "$_hint_elems" | grep -vF '|' | grep -c . || true)"
+if [[ -z "$_hint_elems" ]]; then
+  bad "ヒント表の要素を切り出せない（空か配列の形が変わった）"
+elif [[ "$_hint_bad" -ne 0 ]]; then
+  bad "ヒント表に \`|\` の無い要素がある（照合されない）: ${_hint_bad} 件"
+else
+  ok "ヒント表の全要素が <理由>|<案内> の形である"
+fi
+release_contains 'for _pat in ${SKIP_HINTS[@]+"${SKIP_HINTS[@]}"}; do' \
+  "gate 段が未知の skip 行をヒント表と照合する（bash 3.2 の set -u で空表を unbound にしない展開形）"
+release_contains '[[ "$_pat" == *"|"* ]] || continue' \
+  "gate 段が \`|\` の無いヒント要素を照合せず飛ばす"
+# 表・ヒントの理由文は ff-media-toolkit の suite が実際に出す文言の部分文字列でなければ効かない（文言が変わると gate は
+# 再び毎回止まる）。実体のソースに同じ部分文字列があることを固定する（実体が無い木では赤 — この suite は SSOT 専用）
+for _pair in \
+  "render-smoke|FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません" \
+  "typecheck|node_modules が無いため型検査を行いません"; do
+  _src="$REPO_ROOT/plugins/ff-media-toolkit/tests/${_pair%%|*}/verify.sh"
+  if [[ -f "$_src" ]] && grep -qF -- "${_pair#*|}" "$_src"; then
+    ok "ff-media-toolkit/tests/${_pair%%|*} の実出力に表の理由文がある"
+  else
+    bad "ff-media-toolkit/tests/${_pair%%|*} の実出力に表の理由文が無い（suite 不在または文言変更）: ${_pair#*|}"
+  fi
+done
+contains '| `ff-media-toolkit/tests/render-smoke`: FF_MEDIA_RENDER=1 が未設定 | 明示 opt-in |' \
+  "手順 0b の許容表に render-smoke の opt-in skip の行がある"
+contains '`ff-media-toolkit/tests/typecheck` の `node_modules` 不在' \
+  "手順 0b が ff-media の setup 前の typecheck を環境 skip（許容しない）として名指ししている"
 # 旧方式（ADR-034 決定 2 + Issue #830 の green 再利用機構）の復活禁止。針は散文を
 # 誤検出しない最小限の広さにする — 現 SKILL の散文言及は backtick 内の `FULL_GATE_SHA`
 # （代入の `=` を含まない）だけで、check-full-gate-reuse への言及は無い（実測）。

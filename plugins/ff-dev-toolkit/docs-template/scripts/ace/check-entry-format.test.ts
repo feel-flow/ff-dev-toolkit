@@ -15,6 +15,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+const SEED_DIRECTORY_CANDIDATES = [
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../08-knowledge/playbook"),
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../plugins/ff-dev-toolkit/docs-template/08-knowledge/playbook"),
+];
+const SEED_DIRECTORY = SEED_DIRECTORY_CANDIDATES.find((candidate) => fs.existsSync(candidate)) ?? null;
+if (SEED_DIRECTORY === null) {
+  console.warn(`[skip] 開発元の配置（docs-template の見本ディレクトリ）が見つからないため見本 ID 集合の検査を skip します: ${SEED_DIRECTORY_CANDIDATES.join(", ")}`);
+}
+
 /** 旧テーブル形式のエントリ（メタ表ヘッダ + 区切り行 + Insight/Context/Action）。 */
 function legacyEntry(id: string): string {
   return [
@@ -220,18 +229,6 @@ describe("--list-legacy 機械可読 CLI（Issue #336）", () => {
     return tmpDir;
   }
 
-  function resolveSeedDirectory(): string {
-    const sourceDir = path.dirname(fileURLToPath(import.meta.url));
-    const candidates = [
-      path.resolve(sourceDir, "../../08-knowledge/playbook"),
-      path.resolve(sourceDir, "../../plugins/ff-dev-toolkit/docs-template/08-knowledge/playbook"),
-    ];
-    const found = candidates.find((candidate) => fs.existsSync(candidate));
-    if (!found) {
-      throw new Error(`docs-template の見本ディレクトリが見つかりません: ${candidates.join(", ")}`);
-    }
-    return found;
-  }
 
   it("プレースホルダは除外し、コロン直後に空白がない見出しも ID だけを返す", () => {
     const directory = writeDirectory({
@@ -336,8 +333,10 @@ describe("--list-legacy 機械可読 CLI（Issue #336）", () => {
     expect(log).not.toHaveBeenCalled();
   });
 
-  it("現行 docs-template の見本 ID 集合と旧形式 0 件を固定する", () => {
-    const seedDir = resolveSeedDirectory();
+  // 見本は開発元の配置（docs-template 内 / repository mirror）にしか無い。導入先の scripts/ace/ へ
+  // 逐語コピーした配置では見つからないので、失敗させず理由付きで skip する。
+  it.skipIf(SEED_DIRECTORY === null)(`現行 docs-template の見本 ID 集合と旧形式 0 件を固定する${SEED_DIRECTORY === null ? "（skip: 開発元の配置が無い）" : ""}`, () => {
+    const seedDir = SEED_DIRECTORY ?? "";
     expect(listEntryIds(seedDir)).toEqual(["ACE-000-1", "ACE-000-2", "ACE-000-3"]);
     expect(listLegacyEntryIds(seedDir)).toEqual([]);
   });

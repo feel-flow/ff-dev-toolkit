@@ -9,7 +9,10 @@ type ShellHookTestLayout = {
   readonly docsTemplateRoot: string;
 };
 
-function resolveShellHookTestLayout(aceScriptsDir: string): ShellHookTestLayout {
+// 開発元の配置（docs-template 内 / repository mirror）でしか post-merge の見本 hook は隣に無い。
+// 導入先の scripts/ace/ へ逐語コピーした配置では見つからないので null を返し、この
+// ファイルの検査を理由付きで skip する（throw するとファイル全体が失敗として数えられる）。
+function resolveShellHookTestLayout(aceScriptsDir: string): ShellHookTestLayout | null {
   const adjacentDocsTemplateRoot = resolve(aceScriptsDir, "../..");
   const adjacentHook = join(adjacentDocsTemplateRoot, ".claude", "hooks", "post-merge.ace.sample.sh");
   const adjacentRunner = join(aceScriptsDir, "run-subagent.sh");
@@ -35,15 +38,21 @@ function resolveShellHookTestLayout(aceScriptsDir: string): ShellHookTestLayout 
     };
   }
 
-  throw new Error(
-    `shell-hooks.test.ts の配置を解決できません: aceScriptsDir=${aceScriptsDir}`,
-  );
+  return null;
 }
 
 const TEST_LAYOUT = resolveShellHookTestLayout(__dirname);
-const REPO_ROOT = TEST_LAYOUT.executionRoot;
+// skip 理由は黙らせない。件数だけが減ると「導入先で検査が消えた」ことに気付けない
+const SHELL_HOOKS_SKIP_REASON = TEST_LAYOUT === null
+  ? `開発元の配置（docs-template/.claude/hooks/post-merge.ace.sample.sh）が見つからないため shell-hooks.test.ts を skip します: aceScriptsDir=${__dirname}`
+  : null;
+if (SHELL_HOOKS_SKIP_REASON !== null) console.warn(`[skip] ${SHELL_HOOKS_SKIP_REASON}`);
+// 既定レポーターは成功ファイルのコンソール出力を出さない（vitest 4）。skip したテスト名にも
+// 理由を入れ、--reporter=verbose の ↓ 行で読めるようにする
+const SKIP_SUFFIX = TEST_LAYOUT === null ? "（skip: 開発元の配置が無い）" : "";
+const REPO_ROOT = TEST_LAYOUT?.executionRoot ?? __dirname;
 const POST_MERGE_HOOK = join(
-  TEST_LAYOUT.docsTemplateRoot,
+  TEST_LAYOUT?.docsTemplateRoot ?? __dirname,
   ".claude",
   "hooks",
   "post-merge.ace.sample.sh",
@@ -203,7 +212,7 @@ function writeDateStub(bin: string, body: string): void {
   writeExecutable(join(bin, "date"), body);
 }
 
-describe("post-merge.ace.sample.sh", () => {
+describe.skipIf(TEST_LAYOUT === null)(`post-merge.ace.sample.sh${SKIP_SUFFIX}`, () => {
   it("git rev-parse --show-toplevel が失敗したら runner 欠落扱いで握り潰さず fail-loud に失敗する", () => {
     const bin = makeGitStub(`#!/bin/sh
 if [ "$1" = "rev-parse" ] && [ "$2" = "--is-inside-work-tree" ]; then
@@ -232,7 +241,7 @@ exit 99
   });
 }, TEST_TIMEOUT_MS);
 
-describe("run-subagent.sh", () => {
+describe.skipIf(TEST_LAYOUT === null)(`run-subagent.sh${SKIP_SUFFIX}`, () => {
   it("fake git/date 環境で worktree 作成まで到達する smoke test", () => {
     const { bin, repoRoot, marker } = makeRunSubagentGitStub();
     writeDateStub(bin, "#!/bin/sh\necho 1234567890\n");
@@ -303,7 +312,7 @@ exit 99
 
 // 上の 4 件が拠り所にしている診断経路そのものを固定する。上限を 30 秒のまま許容できるのは
 // 「発火したときスクリプト名が分かる」からで、その性質が無検証だと論拠ごと崩れる。
-describe("runBashScript の失敗経路", () => {
+describe.skipIf(TEST_LAYOUT === null)(`runBashScript の失敗経路${SKIP_SUFFIX}`, () => {
   it("spawn に失敗したらスクリプト名を添えて投げ直し、errno を保つ", () => {
     const emptyBin = makeTempDir("ace-empty-bin-");
 

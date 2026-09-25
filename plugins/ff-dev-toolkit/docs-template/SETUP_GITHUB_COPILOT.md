@@ -19,7 +19,7 @@
 - GitHubアカウント（必須）
 - Visual Studio Code（必須）
 - GitHub Copilotサブスクリプション（個人: $10/月、Business: $19/月）
-- プロジェクトの`docs-template/MASTER.md`を作成済み（推奨）
+- プロジェクトの`docs/MASTER.md`を作成済み（推奨。`/init-docs` で作成できる）
 
 ---
 
@@ -37,7 +37,7 @@ GitHub Copilotのサブスクリプション購入とVS Code拡張機能のイ�
 - VS Code拡張機能インストール
 - GitHubアカウント連携
 
-**詳細ガイド**: [setup-guides/github-copilot/installation.md](./setup-guides/github-copilot/installation.md)
+**詳細ガイド**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/installation.md`（初期セット外・必要ならコピーする）
 
 ---
 
@@ -53,7 +53,7 @@ GitHub Copilotのサブスクリプション購入とVS Code拡張機能のイ�
 - AIプロンプトでcopilot-instructions.md生成
 - MASTER.mdの内容統合
 
-**詳細ガイド**: [setup-guides/github-copilot/copilot-instructions.md](./setup-guides/github-copilot/copilot-instructions.md)
+**詳細ガイド**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/copilot-instructions.md`（初期セット外・必要ならコピーする）
 
 ---
 
@@ -69,7 +69,7 @@ GitHub Copilotのサブスクリプション購入とVS Code拡張機能のイ�
 - 言語別の有効/無効設定
 - Copilot Chat設定
 
-**詳細ガイド**: [setup-guides/github-copilot/configuration.md](./setup-guides/github-copilot/configuration.md)
+**詳細ガイド**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/configuration.md`（初期セット外・必要ならコピーする）
 
 ---
 
@@ -85,7 +85,7 @@ GitHub Copilotのサブスクリプション購入とVS Code拡張機能のイ�
 - Copilot Chatの動作確認
 - MASTER.mdルール反映確認
 
-**詳細ガイド**: [setup-guides/github-copilot/03-usage-and-troubleshooting.md#step-4-動作確認5分](./setup-guides/github-copilot/03-usage-and-troubleshooting.md#step-4-動作確認5分)
+**詳細ガイド**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/03-usage-and-troubleshooting.md` の「Step 4: 動作確認」節（初期セット外・必要ならコピーする）
 
 ---
 
@@ -101,7 +101,7 @@ GitHub Copilotのサブスクリプション購入とVS Code拡張機能のイ�
 - Copilot Chatの活用法
 - 効果的なプロンプトの書き方
 
-**詳細ガイド**: [setup-guides/github-copilot/03-usage-and-troubleshooting.md](./setup-guides/github-copilot/03-usage-and-troubleshooting.md)
+**詳細ガイド**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/03-usage-and-troubleshooting.md`（初期セット外・必要ならコピーする）
 
 ---
 
@@ -117,7 +117,7 @@ GitHub Copilotのサブスクリプション購入とVS Code拡張機能のイ�
 - `.vscode/settings.json`をチーム共有（オプション）
 - チームメンバーへの展開
 
-**詳細ガイド**: [setup-guides/github-copilot/03-usage-and-troubleshooting.md#step-6-チーム共有5分](./setup-guides/github-copilot/03-usage-and-troubleshooting.md#step-6-チーム共有5分)
+**詳細ガイド**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/03-usage-and-troubleshooting.md` の「Step 6: チーム共有」節（初期セット外・必要ならコピーする）
 
 ---
 
@@ -151,7 +151,7 @@ GitHub Copilotのサブスクリプション購入とVS Code拡張機能のイ�
 mkdir -p .github
 
 # AIで生成したcopilot-instructions.mdを保存
-# (生成方法は setup-guides/github-copilot/copilot-instructions.md を参照)
+# (生成方法は ${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/copilot-instructions.md を参照)
 
 # チーム共有のためのコミット
 git add .github/copilot-instructions.md
@@ -174,7 +174,7 @@ git push
 |                               | プロンプト不足                | Copilot Chatで明示的に指示            |
 |                               | キャッシュ問題                | VS Code再起動                         |
 
-**詳細ガイド**: [setup-guides/github-copilot/03-usage-and-troubleshooting.md#トラブルシューティング](./setup-guides/github-copilot/03-usage-and-troubleshooting.md#トラブルシューティング)
+**詳細ガイド**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/03-usage-and-troubleshooting.md` の「トラブルシューティング」節（初期セット外・必要ならコピーする）
 
 ---
 
@@ -189,7 +189,7 @@ your-project/
 │   └── .copilotignore              # (オプション) 学習除外ファイル
 ├── .vscode/
 │   └── settings.json               # VS Code設定（推奨）
-└── docs-template/
+└── docs/
     └── MASTER.md                   # プロジェクト全体のルール（参照元）
 ```
 
@@ -201,7 +201,7 @@ your-project/
 
 ### 1. インストール
 
-**ファイル**: [setup-guides/github-copilot/installation.md](./setup-guides/github-copilot/installation.md)
+**ファイル**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/installation.md`（初期セット外・必要ならコピーする）
 
 **内容**:
 
@@ -213,7 +213,7 @@ your-project/
 
 ### 2. Copilot Instructions設定
 
-**ファイル**: [setup-guides/github-copilot/copilot-instructions.md](./setup-guides/github-copilot/copilot-instructions.md)
+**ファイル**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/copilot-instructions.md`（初期セット外・必要ならコピーする）
 
 **内容**:
 
@@ -227,7 +227,7 @@ your-project/
 
 ### 3. VS Code設定
 
-**ファイル**: [setup-guides/github-copilot/configuration.md](./setup-guides/github-copilot/configuration.md)
+**ファイル**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/configuration.md`（初期セット外・必要ならコピーする）
 
 **内容**:
 
@@ -240,7 +240,7 @@ your-project/
 
 ### 4. ベストプラクティス
 
-**ファイル**: [setup-guides/github-copilot/03-usage-and-troubleshooting.md](./setup-guides/github-copilot/03-usage-and-troubleshooting.md)
+**ファイル**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/03-usage-and-troubleshooting.md`（初期セット外・必要ならコピーする）
 
 **内容**:
 
@@ -264,7 +264,7 @@ your-project/
 
 - [MASTER.md](./MASTER.md) - プロジェクト全体のルール
 - [PATTERNS.md](./03-implementation/PATTERNS.md) - 実装パターン
-- [GETTING_STARTED_NEW_PROJECT.md](./GETTING_STARTED_NEW_PROJECT.md) - プロジェクト開始ガイド
+- `${CLAUDE_PLUGIN_ROOT}/docs-template/GETTING_STARTED_NEW_PROJECT.md`（初期セット外・必要ならコピーする） - プロジェクト開始ガイド
 
 ---
 
@@ -274,13 +274,13 @@ your-project/
 
 ### 他のAIツールのセットアップ
 
-- [SETUP_CLAUDE_CODE.md](./SETUP_CLAUDE_CODE.md) - Claude Code セットアップ
+- `${CLAUDE_PLUGIN_ROOT}/docs-template/SETUP_CLAUDE_CODE.md`（初期セット外・必要ならコピーする） - Claude Code セットアップ
 
 ### プロジェクト開発開始
 
-- [GETTING_STARTED_NEW_PROJECT.md](./GETTING_STARTED_NEW_PROJECT.md) - プロジェクト開始ガイド
+- `${CLAUDE_PLUGIN_ROOT}/docs-template/GETTING_STARTED_NEW_PROJECT.md`（初期セット外・必要ならコピーする） - プロジェクト開始ガイド
 - [05-operations/DEPLOYMENT.md](./05-operations/DEPLOYMENT.md) - AI駆動Git Workflow
-- [ACE サイクル運用手順](./05-operations/deployment/ace-cycle.md) - マージ後の知見体系化。エントリ ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（採番ルールの SSOT は [エントリID規則](./08-knowledge/PLAYBOOK.md#エントリid規則)）
+- ACE サイクル運用手順（`${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/ace-cycle.md`。初期セット外・必要ならコピーする） - マージ後の知見体系化。エントリ ID は **PRスコープ式** `ACE-<PR番号>-<連番>`（採番ルールの SSOT は同じくコピー元の `${CLAUDE_PLUGIN_ROOT}/docs-template/08-knowledge/PLAYBOOK.md` の「エントリID規則」節）
 
 ---
 
@@ -295,3 +295,4 @@ GitHub Copilotを使って、効率的なAI駆動開発を楽しんでくださ�
 | 日付       | バージョン | 変更内容                                     |
 | ---------- | ---------- | -------------------------------------------- |
 | 2025-11-05 | 2.0.0      | 索引版として簡潔化、詳細ガイドへのリンク追加 |
+| 2026-09-25 | 2.0.1      | 初期セット外への参照をコピー元パスの案内へ変更（コピー後のリンク切れ解消） |

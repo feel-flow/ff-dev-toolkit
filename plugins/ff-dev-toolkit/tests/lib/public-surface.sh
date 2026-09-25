@@ -4,7 +4,7 @@
 #
 # 同じ文書を 2 つの suite が別々の関心で読むので、節の切り出しと token の抽出を 1 か所に置く。
 # 片方だけ直される drift がそのまま検出漏れになるため、抽出規則を複製しない。現在の消費者:
-#   skill-count-consistency: 一覧と実体（skills / hooks.json / 配布物に現れる FF_*）の集合一致
+#   skill-count-consistency: 一覧と実体（skills / hooks.json / 配布物に現れる FF_* と宣言系統の非 FF_ 環境変数）の集合一致
 #   changelog-fragments:     base との差分で契約側の要素が消えたとき breaking 断片を要求する
 #
 # 抽出は「節見出しでスコープし、その中の backtick token を集合として取る」形で統一する。
@@ -63,6 +63,28 @@ ff_surface_env_internal() {
   ff_surface_tokens "$(ff_surface_section "$1" '^### 4-2\.' '^## ')" '`FF_[A-Z0-9_]+`' 's/`//g'
 }
 
+# 公開面 5: FF_ で始まらない環境変数。
+# 5-0 は母集団の決め方（接頭辞系統 `PREFIX_*` と系統外の単独名）、5-1 / 5-2 は契約 / 内部。
+# FF_ の 4-1 / 4-2 と節を分けているのは、FF_* の等式（4-1 = 公開 ∩ 実行）へ非 FF_ の名前を
+# 混ぜないため。token 形は FF_ 始まりを除外する — 5 節へ FF_* を書いても 4 節の検査から
+# 抜け落ちないよう、こちらでは拾わない。
+ff_surface_nonff_families() {
+  ff_surface_tokens "$(ff_surface_section "$1" '^### 5-0\.' '^### ')" '`[A-Z][A-Z0-9]*(_[A-Z0-9]+)*_\*`' 's/`//g; s/_\*$//' \
+    | { grep -v '^FF$' || true; }
+}
+ff_surface_nonff_singles() {
+  ff_surface_tokens "$(ff_surface_section "$1" '^### 5-0\.' '^### ')" '`[A-Z][A-Z0-9]*_[A-Z0-9_]*[A-Z0-9]`' 's/`//g' \
+    | { grep -v '^FF_' || true; }
+}
+ff_surface_nonff_contract() {
+  ff_surface_tokens "$(ff_surface_section "$1" '^### 5-1\.' '^### ')" '`[A-Z][A-Z0-9]*_[A-Z0-9_]*[A-Z0-9]`' 's/`//g' \
+    | { grep -v '^FF_' || true; }
+}
+ff_surface_nonff_internal() {
+  ff_surface_tokens "$(ff_surface_section "$1" '^### 5-2\.' '^## ')" '`[A-Z][A-Z0-9]*_[A-Z0-9_]*[A-Z0-9]`' 's/`//g' \
+    | { grep -v '^FF_' || true; }
+}
+
 # 契約側の全要素を 1 つの集合として stdout へ（種別ごとに接頭辞を付けて衝突を防ぐ）。
 # base との差分で「契約から消えた要素」を出すために使う。
 ff_surface_contract_tokens() {
@@ -71,4 +93,5 @@ ff_surface_contract_tokens() {
   ff_surface_hook_triples "$doc" | sed 's#^#hook:#'
   ff_surface_paths "$doc" | sed 's#^#path:#'
   ff_surface_env_contract "$doc" | sed 's#^#env:#'
+  ff_surface_nonff_contract "$doc" | sed 's#^#env:#'
 }

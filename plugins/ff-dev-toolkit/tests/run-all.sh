@@ -1015,6 +1015,10 @@ else
     # 後ろに置く（単体で〜35 秒。数字を更新するときは実測してから直すこと）
     "$SCRIPT_DIR/multi-agent-timeout/verify.sh"
     "$SCRIPT_DIR/run-all/verify.sh"
+    # 公開リポジトリ単体の checkout を合成して公開 suite セットを回す（ADR-068）。
+    # 全件ゲートと同規模（macOS 実測で単体約 19 分・全件ゲート内の並列実行で約 36 分）なので run-all からは
+    # 常に ○ skip し、公開同期の直前に scripts/release-dev-toolkit.sh の gate 段が FF_RUN_PUBLIC_LAYOUT=1 で明示起動する。
+    "$SCRIPT_DIR/public-layout/verify.sh"
   )
 fi
 

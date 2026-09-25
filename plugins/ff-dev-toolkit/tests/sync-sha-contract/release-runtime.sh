@@ -198,8 +198,19 @@ m="$(git -C "$(dirname "$0")" rev-parse --absolute-git-dir)/ff-release-in-flight
 [[ ! -f "$m" ]] || cp "$m" "$RELEASE_RT_STATE/marker-seen"
 echo "  ○ skip: estimation カテゴリファイルは未作成（stub）"
 if [[ -f "$RELEASE_RT_STATE/runall.unknown-skip" ]]; then echo "  ○ skip: codex が無いため live probe を省略（stub）"; fi
+# ff-media-toolkit ラッパーは子 runner の出力を 4 スペースで写すので、子の suite 単位 skip が親では部分 skip になる（Issue `#1904`）
+if [[ -f "$RELEASE_RT_STATE/runall.media-typecheck-skip" ]]; then echo "    ○ skip: /x/plugins/ff-media-toolkit/node_modules が無いため型検査を行いません（検査は1件も実行されていません。ff-media.sh setup で有効化）"; fi
+if [[ -f "$RELEASE_RT_STATE/runall.media-render-skip" ]]; then echo "    ○ skip: FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません（検査は1件も実行されていません）"; fi
 echo "suites: total=3 run=3 passed=3 failed=0 skipped=0 not-run=0"
 [[ -f "$RELEASE_RT_STATE/runall.no-skipline" ]] || echo "checks-skipped: total=1 suites=1"
+exit 0
+STUB
+  # gate 段が run-all の緑の後に明示起動する公開配置の合成（ADR-068）。呼ばれたことだけ記録する
+  write_stub "$r/plugins/ff-dev-toolkit/tests/public-layout/verify.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "public-layout ${FF_RUN_PUBLIC_LAYOUT:-0}" >>"$RELEASE_RT_STATE/public-layout.log"
+[[ ! -f "$RELEASE_RT_STATE/public-layout.red" ]] || { echo "✗ public-layout: stub red" >&2; exit 1; }
+echo "✓ public-layout: stub"
 exit 0
 STUB
   write_stub "$r/plugins/ff-dev-toolkit/tests/changelog-public-tags/verify.sh" <<'STUB'
@@ -351,6 +362,11 @@ if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "RELEASE_VERSION=0.
 else
   bad "本実行が完了しない (rc=$RC)"; dump
 fi
+if grep -qx 'public-layout 1' "$STATE/public-layout.log" 2>/dev/null; then
+  ok "gate 段が run-all の緑の後に public-layout を FF_RUN_PUBLIC_LAYOUT=1 で明示起動する（ADR-068）"
+else
+  bad "gate 段が public-layout を呼んでいない"; cat "$STATE/public-layout.log" 2>/dev/null | sed 's/^/    | /' >&2
+fi
 if origin_has_subject "release: ff-dev-toolkit v0.32.0" \
   && origin_has_subject "release: CHANGELOG 比較リンクを v0.32.0 へ追従"; then
   ok "準備と footer 追従が release: の単独コミットとして develop へ直 push される（定型 PR を作らない）"
@@ -448,17 +464,52 @@ if [[ "$RC" -eq 1 ]] && has "合成 identity"; then ok "合成 identity（*@exam
 
 printf '%s\n' '- 追加' >"$SSOT/changelog.d/103.added.more.md"
 commit_push "feat: more"
+: >"$STATE/public-layout.red"
+run_orch
+if [[ "$RC" -eq 1 ]] && has "公開 checkout の配置で公開 suite セットが赤" \
+  && [[ "$(git -C "$PUB_ORIGIN" log -1 --format=%s main)" != *"$(git -C "$SSOT" rev-parse --short HEAD)"* ]]; then
+  ok "public-layout が赤ならゲートで止まり、同期しない"
+else
+  bad "public-layout の赤で止まらない (rc=$RC)"; dump
+fi
+rm -f "$STATE/public-layout.red"
 : >"$STATE/runall.unknown-skip"
 run_orch
 if [[ "$RC" -eq 1 ]] && has "NG: [gate] 許容表に無い部分 skip がある" \
+  && ! has "bash plugins/ff-media-toolkit/scripts/ff-media.sh setup" \
   && [[ "$(git -C "$PUB_ORIGIN" log -1 --format=%s main)" != *"$(git -C "$SSOT" rev-parse --short HEAD)"* ]]; then
-  ok "許容表に無い部分 skip はゲートで止まり、同期しない"
+  ok "許容表に無い部分 skip はゲートで止まり、同期しない（当たらないヒントは停止文へ足さない）"
 else
   bad "未知の部分 skip で止まらない (rc=$RC)"; dump
 fi
 rm -f "$STATE/runall.unknown-skip"
+# ff-media-toolkit の既定 skip 2 件（Issue `#1904`）: setup 前の typecheck は環境 skip なので止まり、停止文が setup を名指しする。
+# opt-in の render-smoke は構造的 skip として許容表にあり、出ていても完了する
+: >"$STATE/runall.media-typecheck-skip"
 run_orch
-if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=0.33.0"; then ok "原因を取り除いた再実行で v0.33.0 まで完了する"; else bad "再実行で完了しない (rc=$RC)"; dump; fi
+# ヒントは stop の「次の一手:」行（既定の案内の後ろ）に付く。別の echo や理由側（$1）に紛れた形を緑にしない
+_next_step="$(printf '%s\n' "$OUT" | grep -F '次の一手: 環境 skip（' || true)"
+if [[ "$RC" -eq 1 ]] && has "NG: [gate] 許容表に無い部分 skip がある" \
+  && [[ "$_next_step" == *' / bash plugins/ff-media-toolkit/scripts/ff-media.sh setup'* ]]; then
+  ok "ff-media の setup 前の typecheck skip はゲートで止まり、停止文の次の一手が ff-media.sh setup を名指しする"
+else
+  bad "typecheck の環境 skip で止まらない・次の一手が setup を名指ししない (rc=$RC)"; dump
+fi
+# 既定環境（setup 前）は 2 行が同時に出る。許容行があっても環境 skip の停止は消えず、許容行は未知として再掲されない
+# （run-all 出力の写し 1 回だけ。typecheck 行は写し + 未知の再掲で 2 回）
+: >"$STATE/runall.media-render-skip"
+run_orch
+render_n="$(printf '%s\n' "$OUT" | grep -cF 'FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません' || true)"
+typecheck_n="$(printf '%s\n' "$OUT" | grep -cF 'node_modules が無いため型検査を行いません' || true)"
+if [[ "$RC" -eq 1 ]] && has "bash plugins/ff-media-toolkit/scripts/ff-media.sh setup" && [[ "$render_n" -eq 1 && "$typecheck_n" -eq 2 ]]; then
+  ok "typecheck と render-smoke の skip が同時に出ても環境 skip で止まり、許容行は未知として再掲されない"
+else
+  bad "2 行同時の回で止まらない・許容行が未知に混じる (rc=$RC render=${render_n} typecheck=${typecheck_n})"; dump
+fi
+rm -f "$STATE/runall.media-typecheck-skip"
+run_orch
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=0.33.0"; then ok "typecheck の原因を取り除いた再実行は、opt-in の render-smoke skip が残っていても v0.33.0 まで完了する（許容表にある）"; else bad "再実行で完了しない（render-smoke の opt-in skip で止まった可能性） (rc=$RC)"; dump; fi
+rm -f "$STATE/runall.media-render-skip"
 
 echo "-- release: 進行中のサイクル（in-flight 印） --"
 MARKER="$SSOT/.git/ff-release-in-flight"

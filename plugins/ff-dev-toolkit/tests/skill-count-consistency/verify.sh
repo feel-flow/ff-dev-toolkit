@@ -35,6 +35,10 @@
 #           現れる）。**規則そのものを機械で実行する** — 単一集合の走査だけでは
 #           連言を検証できず、実行物側の読み取りを消しても緑のままになる。あわせて
 #           「4-1 ∪ 4-2」= 母集団（未分類 0 件）と、4-1 / 4-2 の排他性を見る
+#        L  FF_ で始まらない環境変数: K と同じ判定規則で「5-1」= 公開文書 ∩ 配布実行物、
+#           「5-1 ∪ 5-2」= 母集団、排他性を見る。母集団は字句では境界を引けない（ローカル
+#           変数・出力行のキーが大半）ため、「5-0」が宣言する接頭辞系統と単独名に限る。
+#           宣言・一覧・走査のいずれかが空・失敗なら fail-closed で赤
 #
 # 数値の抽出は fail-closed: パターンが 0 件・2 件以上の一致なら赤にする。説明文の
 # 書式変更で抽出が空振りし、緑のまま検査が無効化するのを防ぐ。件数そのものは
@@ -318,19 +322,28 @@ surface_env_scan() {
 # PUBLIC_TARGETS を --list-targets で受け取る）。ここへ path を直書きすると、公開対象が
 # 1 つ増えたときに本検査だけが追随せず緑のままになるため、二つ目の定義を作らない。
 # 取得できない・空・実体が無い場合は非 0 で戻して fail-closed。
-surface_env_universe() {
-  local scan_dirs=() targets rel
+# 公開対象の実ディレクトリを 1 行 1 件で stdout へ（L の非 FF_ 母集団も同じ走査先を使う）。
+surface_target_dirs() {
+  local targets rel n=0
   [ -f "$SYNC_SCRIPT" ] || return 1
   targets="$(bash "$SYNC_SCRIPT" --list-targets 2>/dev/null)" || return 1
   [ -n "$targets" ] || return 1
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     [ -d "$ROOT/$rel" ] || return 1
-    scan_dirs+=("$ROOT/$rel")
+    printf '%s\n' "$ROOT/$rel"
+    n=$((n + 1))
   done <<EOF
 $targets
 EOF
-  [ "${#scan_dirs[@]}" -gt 0 ] || return 1
+  [ "$n" -gt 0 ] || return 1
+}
+surface_env_universe() {
+  local dirs scan_dirs=() d
+  dirs="$(surface_target_dirs)" || return 1
+  while IFS= read -r d; do scan_dirs+=("$d"); done <<EOF
+$dirs
+EOF
   surface_env_scan "${scan_dirs[@]}"
 }
 
@@ -424,6 +437,70 @@ else
     compare_surface_sets "FF_*（契約 = 公開文書 ∩ 配布実行物）" "$doc_env_contract" "$contract_candidates"
     doc_env_all="$(printf '%s\n%s\n' "$doc_env_contract" "$doc_env_internal" | LC_ALL=C sort -u)"
     compare_surface_sets "FF_*（契約 + 内部の和）" "$doc_env_all" "$env_universe"
+  fi
+
+  # L. FF_ で始まらない環境変数。母集団は 5-0 が宣言する接頭辞系統の語と系統外の単独名
+  # （字句で全大文字語を拾うとスクリプトのローカル変数・出力行のキーが大半を占めるため、
+  # 母集団の決め方を一覧側で宣言する）。分類は K と同じ判定規則を機械で実行する。
+  # 宣言した単独名が配布物に 1 件も無いときは「和 = 母集団」の比較が一覧側だけの名前として
+  # 赤にする（改名で名前だけ残る退行を素通りさせない）。
+  nonff_families="$(ff_surface_nonff_families "$SURFACE_DOC")"
+  nonff_singles="$(ff_surface_nonff_singles "$SURFACE_DOC")"
+  doc_nonff_contract="$(ff_surface_nonff_contract "$SURFACE_DOC")"
+  doc_nonff_internal="$(ff_surface_nonff_internal "$SURFACE_DOC")"
+  if [ -z "$nonff_families" ] || [ -z "$nonff_singles" ]; then
+    bad "PUBLIC-SURFACE.md: 「### 5-0.」節から非 FF_ の接頭辞系統（\`PREFIX_*\`）または単独名を 1 件も抽出できません（見出しか書式を変えた場合は本 suite も更新すること）"
+  elif [ -z "$doc_nonff_contract" ] || [ -z "$doc_nonff_internal" ]; then
+    bad "PUBLIC-SURFACE.md: 「### 5-1.」「### 5-2.」節から非 FF_ の環境変数を 1 件も抽出できません（見出しか書式を変えた場合は本 suite も更新すること）"
+  else
+    # BSD awk は -v の値に改行を許さないので空白区切りで渡す（token は空白を含まない）
+    nonff_filter() {
+      awk -v fams="$(printf '%s' "$nonff_families" | tr '\n' ' ')" -v singles="$(printf '%s' "$nonff_singles" | tr '\n' ' ')" '
+        BEGIN { nf = split(fams, f, " "); ns = split(singles, s, " "); for (i = 1; i <= ns; i++) one[s[i]] = 1 }
+        { for (i = 1; i <= nf; i++) if (f[i] != "" && index($0, f[i] "_") == 1) { print; next }
+          if ($0 in one) print }'
+    }
+    nonff_scan() {
+      local targets=() t
+      for t in "$@"; do
+        [ -e "$t" ] && targets+=("$t")
+      done
+      [ "${#targets[@]}" -gt 0 ] || return 0
+      { find "${targets[@]}" -type f \
+          ! -path '*/node_modules/*' ! -path '*/.git/*' \
+          ! -path "$SURFACE_DOC" ! -path "$ROOT/oss/ff-dev-toolkit/CHANGELOG.md" -print0 2>/dev/null || true; } \
+        | { xargs -0 grep -hoaE '(^|[^A-Za-z0-9_])[A-Z][A-Z0-9]*_[A-Z0-9_]*[A-Z0-9]' 2>/dev/null || true; } \
+        | sed -E 's/^[^A-Z]//' | { grep -v '^FF_' || true; } | nonff_filter | LC_ALL=C sort -u
+    }
+    nonff_dirs=()
+    nonff_dirs_out="$(surface_target_dirs)" || nonff_dirs_out=""
+    while IFS= read -r d; do [ -n "$d" ] && nonff_dirs+=("$d"); done <<EOF
+$nonff_dirs_out
+EOF
+    # 走査の失敗（awk の異常終了など）を set -e の無診断 abort にせず、名指しで赤にする
+    nonff_universe=""
+    nonff_scan_rc=0
+    if [ "${#nonff_dirs[@]}" -gt 0 ]; then
+      nonff_universe="$(nonff_scan "${nonff_dirs[@]}")" || nonff_scan_rc=$?
+    fi
+    nonff_published="$(nonff_scan "$ROOT/oss/ff-dev-toolkit/README.md" "$ROOT/plugins/ff-dev-toolkit/docs-template" "$ROOT/plugins/ff-dev-toolkit/skills")" || nonff_scan_rc=$?
+    nonff_runtime="$(nonff_scan "$ROOT/plugins/ff-dev-toolkit/hooks" "$ROOT/plugins/ff-dev-toolkit/scripts" "$ROOT/plugins/ff-dev-toolkit/tests/run-all.sh")" || nonff_scan_rc=$?
+    if [ "$nonff_scan_rc" -ne 0 ]; then
+      bad "非 FF_ の環境変数の走査が失敗しました（rc=${nonff_scan_rc}。検査不成立。fail-closed）"
+    elif [ -z "$nonff_universe" ] || [ -z "$nonff_published" ] || [ -z "$nonff_runtime" ]; then
+      bad "公開対象の一覧を取得できないか、配布物・公開文書・配布実行物のいずれかから非 FF_ の環境変数を 1 件も抽出できません（走査が空振り。fail-closed）"
+    else
+      nonff_overlap="$(comm -12 <(printf '%s\n' "$doc_nonff_contract") <(printf '%s\n' "$doc_nonff_internal") | tr '\n' ' ')"
+      if [ -z "$nonff_overlap" ]; then
+        ok "PUBLIC-SURFACE.md: 非 FF_ の環境変数の契約と内部が排他"
+      else
+        bad "PUBLIC-SURFACE.md: 非 FF_ の環境変数が契約と内部の両方に載っています: ${nonff_overlap}"
+      fi
+      nonff_candidates="$(comm -12 <(printf '%s\n' "$nonff_published") <(printf '%s\n' "$nonff_runtime"))"
+      compare_surface_sets "非 FF_ 環境変数（契約 = 公開文書 ∩ 配布実行物）" "$doc_nonff_contract" "$nonff_candidates"
+      doc_nonff_all="$(printf '%s\n%s\n' "$doc_nonff_contract" "$doc_nonff_internal" | LC_ALL=C sort -u)"
+      compare_surface_sets "非 FF_ 環境変数（契約 + 内部の和）" "$doc_nonff_all" "$nonff_universe"
+    fi
   fi
 fi
 

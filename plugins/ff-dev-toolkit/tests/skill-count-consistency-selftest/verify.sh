@@ -40,6 +40,9 @@
 #   G25. 公開対象の SSOT（--list-targets）を解決できない → 赤（fail-closed）
 #   G26. 節見出しを変えると**診断つきで**赤（grep の 0 件一致を握り潰さないと
 #        set -euo pipefail で代入ごと落ち、stderr 空・要約行なしの rc=1 になる）
+#   G27. 宣言系統の非 FF_ 環境変数を公開文書と実行物へ足し、一覧に載せない → 赤
+#   G28. 宣言した単独名が配布物から消えた（宣言だけ残った）→ 赤
+#   G29. 5-0 節の見出しを改稿すると診断つきで赤（宣言の空振りを緑にしない）
 #
 # baseline の内訳は「・区切りの個別列挙（2 件）+ 数値グループ（1 件）」を含み、
 # 実リポジトリの説明文が依存する ・分割の名前数カウントを G1 で常時実測する。
@@ -135,7 +138,8 @@ write_hooks_json_body() {
 }
 
 # 公開面の一覧（PUBLIC-SURFACE.md）の最小再現。見出しは本体の抽出アンカーと同じ文字列。
-# fixture の実体は skills 3 件 / 登録 hooks 2 件 / 非登録 hooks 1 件 / FF_* 2 件。
+# fixture の実体は skills 3 件 / 登録 hooks 2 件 / 非登録 hooks 1 件 / FF_* 2 件 /
+# 非 FF_ 環境変数 3 件（系統 FIXTURE_FAMILY_ の契約・内部と単独名 1 件）。
 surface_body() {
   cat <<'SURFACE'
 # 公開面（fixture）
@@ -167,6 +171,22 @@ surface_body() {
 
 - `FF_FIXTURE_INTERNAL`
 
+## 公開面 5: 環境変数（FF_ 以外）
+
+### 5-0. 母集団の決め方
+
+- `FIXTURE_FAMILY_*`
+- `FIXTURE_SINGLE_KNOB`
+
+### 5-1. 契約
+
+- `FIXTURE_FAMILY_CONTRACT`
+
+### 5-2. 内部
+
+- `FIXTURE_FAMILY_INTERNAL`
+- `FIXTURE_SINGLE_KNOB`
+
 ## 検査
 
 集合一致は本体 suite が見る。
@@ -186,7 +206,7 @@ build_fixture() {
            "$root/.claude-plugin" \
            "$root/oss/ff-dev-toolkit/.claude-plugin"
   # alpha だけ FF_* を 1 件持たせる（検査 K の母集団が空にならないように）。
-  printf '# skill\n設定例: FF_FIXTURE_CONTRACT=1\n' > "$root/plugins/ff-dev-toolkit/skills/alpha/SKILL.md"
+  printf '# skill\n設定例: FF_FIXTURE_CONTRACT=1 FIXTURE_FAMILY_CONTRACT=1\n' > "$root/plugins/ff-dev-toolkit/skills/alpha/SKILL.md"
   printf '# skill\n' > "$root/plugins/ff-dev-toolkit/skills/beta/SKILL.md"
   printf '# skill\n' > "$root/plugins/ff-dev-toolkit/skills/gamma/SKILL.md"
   jq -n --arg d "$pdesc" '{name: "ff-dev-toolkit", version: "0.0.1", description: $d}' \
@@ -199,11 +219,11 @@ build_fixture() {
   write_hooks_json "$root" alpha beta
   # hooks.json に登録しない実体（検査 J の「内部」側）と、その中の FF_*（検査 K の内部側。
   # 配布実行物にしか現れないので判定規則の連言を満たさず、契約にはならない）
-  printf '#!/usr/bin/env bash\n# FF_FIXTURE_INTERNAL\n' > "$root/plugins/ff-dev-toolkit/hooks/shared-lib.sh"
+  printf '#!/usr/bin/env bash\n# FF_FIXTURE_INTERNAL FIXTURE_FAMILY_INTERNAL FIXTURE_SINGLE_KNOB\n' > "$root/plugins/ff-dev-toolkit/hooks/shared-lib.sh"
   # 契約側の FF_* は公開文書（skills/alpha/SKILL.md）と配布実行物（scripts/）の両方に置く。
   # write_hooks_json が guard-*.sh を置き直すので、実行物側は hooks ではなく scripts に持つ。
   mkdir -p "$root/plugins/ff-dev-toolkit/scripts" "$root/scripts"
-  printf '#!/usr/bin/env bash\necho "${FF_FIXTURE_CONTRACT:-}"\n' > "$root/plugins/ff-dev-toolkit/scripts/fixture-runtime.sh"
+  printf '#!/usr/bin/env bash\necho "${FF_FIXTURE_CONTRACT:-}" "${FIXTURE_FAMILY_CONTRACT:-}"\n' > "$root/plugins/ff-dev-toolkit/scripts/fixture-runtime.sh"
   # 母集団の走査対象は公開対象の SSOT から受け取るので、fixture 側にも入口を置く。
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" plugins/ff-dev-toolkit oss/ff-dev-toolkit\n' \
     > "$root/scripts/sync-dev-toolkit-to-public.sh"
@@ -547,6 +567,41 @@ if [ "$RC" -ne 0 ] && [[ "$OUT" == *"「### 4-1.」「### 4-2.」節から FF_* 
   ok "G26: 節見出しの改稿を診断つきで赤にできる（無診断 abort へ退行しない）"
 else
   bad "G26: 節見出しの改稿が無診断で落ちました（rc=${RC}）: $OUT"
+fi
+
+# G27: 宣言した系統の非 FF_ 環境変数を公開文書と実行物へ足し、一覧に載せない → 赤。
+# 系統の中の追加を機械的に拾えること（5-0 で系統を宣言した意味）の針。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3"
+printf '設定例: FIXTURE_FAMILY_NEW=1\n' >> "$FIX/plugins/ff-dev-toolkit/skills/alpha/SKILL.md"
+printf '#!/usr/bin/env bash\necho "${FIXTURE_FAMILY_NEW:-}"\n' > "$FIX/plugins/ff-dev-toolkit/scripts/extra.sh"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"非 FF_ 環境変数（契約 = 公開文書 ∩ 配布実行物） が実体と一致しません"* ]] \
+   && [[ "$OUT" == *"実体にだけある: FIXTURE_FAMILY_NEW"* ]]; then
+  ok "G27: 宣言系統の非 FF_ 環境変数の追加を赤にできる（未分類 0 件の担保）"
+else
+  bad "G27: 未分類の非 FF_ 環境変数が緑のまま素通りしました（rc=${RC}）: $OUT"
+fi
+
+# G28: 宣言した単独名が配布物から消えた（改名で宣言だけ残った）→ 赤。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3"
+printf '#!/usr/bin/env bash\n# FF_FIXTURE_INTERNAL FIXTURE_FAMILY_INTERNAL\n' > "$FIX/plugins/ff-dev-toolkit/hooks/shared-lib.sh"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"一覧にだけある: FIXTURE_SINGLE_KNOB"* ]]; then
+  ok "G28: 配布物から消えた単独名の取り残しを赤にできる"
+else
+  bad "G28: 消えた単独名が緑のまま素通りしました（rc=${RC}）: $OUT"
+fi
+
+# G29: 5-0 の見出しを改稿すると診断つきで赤（宣言の空振りを違反 0 件の緑にしない）。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3"
+sed 's/^### 5-0\. 母集団の決め方$/### 母集団の決め方/' "$FIX/plugins/ff-dev-toolkit/PUBLIC-SURFACE.md" > "$TMP/surface-edit.md"
+mv "$TMP/surface-edit.md" "$FIX/plugins/ff-dev-toolkit/PUBLIC-SURFACE.md"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"「### 5-0.」節から非 FF_ の接頭辞系統"* ]] \
+   && [[ "$OUT" == *"skill-count-consistency: "*"件失敗"* ]]; then
+  ok "G29: 5-0 節の見出し改稿を診断つきで赤にできる"
+else
+  bad "G29: 5-0 節の見出し改稿が赤になりませんでした（rc=${RC}）: $OUT"
 fi
 
 echo

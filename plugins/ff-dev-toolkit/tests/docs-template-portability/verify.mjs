@@ -516,6 +516,74 @@ if (heredocStart !== -1 && heredocEnd !== -1) {
   );
 }
 
+// SETUP_CLAUDE_CODE.md 以外の AI ツール設定ガイドも同じ運用（消費側 docs/ へコピーして読む）で、
+// 同じ検査を掛ける。対象は MASTER.md「AIツール初期設定ガイド（初期セット外・必要時にコピー）」節の
+// 列挙から導く（手書きで 1 件を指さない — 節へガイドを足した日に検査が自動で追随する）。
+// 節を見つけられない・SETUP_* の 2 件が揃わない回は検査不成立として赤にする（書き換えで
+// 対象が空になり、違反 0 件の緑へ倒れるのを防ぐ）。
+// 他の「必要時にコピー」の文書（organizational-rollout/ 等）は兄弟文書を一緒にコピーする前提で
+// 相互リンクしており、コピー単位の定義が別に要るため本検査の対象外とする。
+function aiSetupGuidesFromMaster() {
+  const lines = text("MASTER.md").split("\n");
+  const start = lines.findIndex((line) => line.startsWith("### AIツール初期設定ガイド（初期セット外・必要時にコピー）"));
+  if (start === -1) return null;
+  const guides = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^#{1,3} /.test(line)) break;
+    for (const match of line.matchAll(/`\$\{CLAUDE_PLUGIN_ROOT\}\/docs-template\/([^`\s]+\.md)` からコピー/g)) {
+      guides.push(match[1]);
+    }
+  }
+  return guides;
+}
+const aiSetupGuides = aiSetupGuidesFromMaster();
+check(
+  aiSetupGuides !== null &&
+    aiSetupGuides.includes("SETUP_CLAUDE_CODE.md") &&
+    aiSetupGuides.includes("SETUP_GITHUB_COPILOT.md") &&
+    aiSetupGuides.every((guide) => existsSync(join(templateRoot, guide))),
+  "MASTER の AIツール初期設定ガイド節から対象ガイドを導ける（SETUP_CLAUDE_CODE / SETUP_GITHUB_COPILOT を含み、すべて実在する）",
+  aiSetupGuides === null ? "節の見出しが見つからない" : `抽出: ${aiSetupGuides.join(", ") || "-"}`,
+);
+// SETUP_CLAUDE_CODE.md は heredoc の内外を分ける専用検査（上）が持つ
+// 実在しないガイドは上の抽出検査が赤にするので、ここでは読める物だけを走査する（ENOENT で落とさない）
+const copiedGuides = (aiSetupGuides ?? []).filter(
+  (guide) => guide !== "SETUP_CLAUDE_CODE.md" && existsSync(join(templateRoot, guide)),
+);
+const guideBroken = [];
+const guideOutsideSet = [];
+const guideLeaks = [];
+const guideUnresolved = [];
+let guideLinks = 0;
+for (const guide of copiedGuides) {
+  const content = text(guide);
+  const report = scanFile(`docs/${guide}`, content, `docs-template/${guide}`);
+  guideBroken.push(...report.brokenRelative, ...report.brokenInline);
+  guideOutsideSet.push(...report.outsideInitialSet);
+  content.split("\n").forEach((line, i) => {
+    if (upstreamLeak.test(line)) guideLeaks.push(`${guide} L${i + 1}: ${line.trim()}`);
+  });
+  const rawDocRefs = [...new Set((content.match(/(?<![\w/}])docs\/[A-Za-z0-9_.\/-]+\.md/g) ?? []).map((ref) => ref.slice("docs/".length)))];
+  guideUnresolved.push(...rawDocRefs.filter((ref) => !existsSync(join(templateRoot, ref))).map((ref) => `${guide} -> docs/${ref}`));
+  guideLinks += [...content.matchAll(relativeLink)].length;
+}
+check(guideBroken.length === 0, "AI ツール設定ガイドのリンクと inline code パスがコピー後の展開先で解決する", guideBroken.join(" / "));
+check(
+  guideOutsideSet.length === 0,
+  "AI ツール設定ガイドのリンク先が初期セット内にある（初期セット外はコピー元パスの案内テキストで示す）",
+  guideOutsideSet.join(" / "),
+);
+check(guideLeaks.length === 0, "AI ツール設定ガイドに展開前パス docs-template/ が残っていない", guideLeaks.join(" / "));
+check(guideUnresolved.length === 0, "AI ツール設定ガイドの素テキストの docs/ 参照が配布物の実体へ解決できる", guideUnresolved.join(" / "));
+// 解決検査はリンク 0 件でも緑になる。リンクをまとめて消す退行を違反 0 件と区別する下限
+// （現状 SETUP_GITHUB_COPILOT の初期セット内リンク 3 件: MASTER / PATTERNS / DEPLOYMENT）
+const EXPECTED_GUIDE_LINKS = 3;
+check(
+  guideLinks >= EXPECTED_GUIDE_LINKS,
+  `AI ツール設定ガイドが展開先の文書へ ${EXPECTED_GUIDE_LINKS} 件以上リンクしている`,
+  `対象 ${copiedGuides.length} 件 / リンク ${guideLinks} 件`,
+);
+
 const pullRequest = text(".github/pull_request_template.md");
 check(!/^- \[ \].*scripts\//m.test(pullRequest), "PR チェック項目が未配置スクリプトを必須にしない");
 
@@ -552,7 +620,7 @@ check(
 // 検査を足したらこの数も同じ PR で上げること（上げ忘れは「増やしたのに赤」で即わかる）。
 // 不等号ではなく**完全一致**にする — `>=` だと上げ忘れが緑で通り、baseline が実数より
 // 下にずれる。以後は「1 件足して 1 件消す」が検出されず、この針の目的自体が静かに失効する。
-const EXPECTED_CHECKS = 65;
+const EXPECTED_CHECKS = 71;
 const executed = pass + failures.length;
 check(
   executed === EXPECTED_CHECKS,
