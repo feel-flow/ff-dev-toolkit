@@ -1333,10 +1333,12 @@ delegated_task_pending() { # <cli/perspective> → rc0 = 委譲済みで結果�
   list_contains "$DELEGATED_TASKS" "$1"
 }
 
-# スキップしてよい失敗理由（Issue #1143）。classify_cli_failure_cause の 4 分類の
-# うち auth / billing だけを採る。
+# スキップしてよい失敗理由。classify_cli_failure_cause の分類の
+# うち auth / billing / model-unsupportedだけを採る。
 #   - auth / billing … 資格情報・残高は CLI 単位の状態で、同じ実行内の同一 CLI の
 #                      他タスクも確実に同じ理由で落ちる
+#   - model-unsupported … モデル指定は CLI 単位（MULTI_AGENT_MODEL_<CLI> / CLI 自身の
+#                      設定）で、同じ実行内の同一 CLI の他タスクも同じモデルで落ちる
 #   - argv           … 採らない。E2BIG は**そのタスクの argv 長**で決まるため、
 #                      観点が違えば起動できる余地がある
 #   - prompt-too-long … 採らない。超過量は観点ごとのプロンプト長で決まり、
@@ -1348,7 +1350,7 @@ delegated_task_pending() { # <cli/perspective> → rc0 = 委譲済みで結果�
 # する損失（カバレッジ 0）は、誤って実行する損失（setup 1 回分の待ち時間）より大きい。
 cli_failure_is_deterministic() { # <cause> → rc0 = 残りのタスクをスキップしてよい
   case "$1" in
-    auth|billing) return 0 ;;
+    auth|billing|model-unsupported) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1380,6 +1382,97 @@ skipped_task_cause() { # <cli/perspective> → cause | ""
     fi
   done
   return 0
+}
+
+# 主担当以外の CLI が「利用不可」（auth / billing / model-unsupported）で落ちた観点。
+# "cli/perspective:cause" の空白区切り。FAILED_TASKS / SKIPPED_TASKS
+# からは**外さない** — 「この実行がその観点の判定を出していない」ことは変わらず、
+# 前回の未解消 Critical の保持（task_left_perspective_unproven）はそのまま効かせる。
+# ここに載せるのは次の 3 つを変えるためだけ:
+#   - 実行全体の終了コード（主担当のみの完了は失敗ではない — ADR-053 決定 1）
+#   - 統合レポートの節（INCOMPLETE ではなく「主担当のみで完了（<cli>: <理由>）」の 1 行。
+#     基準線は主担当 1 モデル — ADR-053 決定 1。未実施・縮退として記録させない）
+#   - CRITICAL_BLOCK 判定（成果物の本文を判定しない — サルベージした stderr は判定材料ではない）
+UNAVAILABLE_CROSS_TASKS=""
+
+# <cli/perspective> が利用不可として許容された観点なら理由を返す（そうでなければ空文字）。
+unavailable_cross_task_cause() { # <cli/perspective> → cause | ""
+  local task="$1" entry
+  for entry in $UNAVAILABLE_CROSS_TASKS; do
+    if [[ "${entry%:*}" == "$task" ]]; then
+      printf '%s\n' "${entry##*:}"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# 利用不可の観点を集める。許容は次をすべて満たす回だけ:
+#   - review の pair モードで主担当（REVIEW_MAIN）が決まっている — 主担当という概念が
+#     あるのはこの経路だけ。単一 CLI の起動（無人の厳格なレビューフック・--route fast）は
+#     従来どおり非 0 で返す（そちらの主担当はホスト自身で、完走をこの層は観測できない）
+#   - 主担当の全観点がこの実行で判定を出した（失敗・スキップ・委譲待ちが 1 つも無い）
+#     — 主担当そのものが利用不可・途中失敗なら、主担当のみの完了とは言えない。--resume で
+#     再利用した観点は判定済みとして数える（完全プランで見る）
+#   - その観点の CLI は主担当ではない
+#   - 失敗した観点は、CLI が何も出力せずに終了した回に限る（アダプタによる結果の拒否・
+#     部分出力の保全・時間切れの 124 は除く）。部分出力がある観点を許容すると、その中の
+#     Critical を誰も読まなくなる
+#   - 利用不可の分類は stderr の**末尾の行**だけで行う（classify_cli_failure_cause の tail）
+# 途中失敗（分類不能・argv・prompt-too-long・時間切れ・拒否）は載せない — 従来どおり未確認。
+collect_unavailable_cross_tasks() {
+  UNAVAILABLE_CROSS_TASKS=""
+  [[ "$TASK_TYPE" == "review" && "$MODE" == "pair" && -n "$REVIEW_MAIN" ]] || return 0
+  local plan="${FULL_EXECUTION_PLAN:-$EXECUTION_PLAN}" entry cli persp task rc cause result main_seen=false
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    [[ "${entry%%:*}" == "$REVIEW_MAIN" ]] || continue
+    main_seen=true
+    task_left_perspective_unproven "$REVIEW_MAIN" "${entry#*:}" && return 0
+  done <<< "$plan"
+  [[ "$main_seen" == "true" ]] || return 0
+  for entry in $FAILED_TASKS; do
+    task="${entry%:*}"; rc="${entry##*:}"; cli="${task%%/*}"; persp="${task#*/}"
+    [[ "$cli" != "$REVIEW_MAIN" && "$rc" != "124" && "$rc" != "0" ]] || continue
+    result="${OUTPUT_DIR}/${cli}/${persp}.md"
+    [[ -f "$result" ]] || continue
+    # アダプタの拒否（理由コード行あり）と、部分出力を保全した成果物は許容しない
+    grep -q '^> Reason code: ' "$result" 2>/dev/null && continue
+    grep -qxF 'No output was captured before the CLI was stopped.' "$result" 2>/dev/null || continue
+    cause="$(classify_cli_failure_cause "$result" tail)"
+    cli_failure_is_deterministic "$cause" || continue
+    UNAVAILABLE_CROSS_TASKS="${UNAVAILABLE_CROSS_TASKS:+$UNAVAILABLE_CROSS_TASKS }${task}:${cause}"
+  done
+  # スキップは同じ CLI の先行タスクが上の条件で利用不可と判定された回だけ許容する
+  # （スキップ自体は節全体の分類で起きるので、先行タスクの許容を根拠にする）
+  for entry in $SKIPPED_TASKS; do
+    task="${entry%:*}"; cause="${entry##*:}"; cli="${task%%/*}"
+    [[ "$cli" != "$REVIEW_MAIN" ]] || continue
+    cli_failure_is_deterministic "$cause" || continue
+    [[ " ${UNAVAILABLE_CROSS_TASKS} " == *" ${cli}/"* ]] || continue
+    UNAVAILABLE_CROSS_TASKS="${UNAVAILABLE_CROSS_TASKS:+$UNAVAILABLE_CROSS_TASKS }${task}:${cause}"
+  done
+  return 0
+}
+
+# 失敗・スキップの**すべて**が許容済みか（件数ではなく集合で比べる）。
+all_failures_unavailable_cross() {
+  [[ -n "${FAILED_TASKS}${SKIPPED_TASKS}" && -n "$UNAVAILABLE_CROSS_TASKS" ]] || return 1
+  local entry
+  for entry in $FAILED_TASKS $SKIPPED_TASKS; do
+    [[ -n "$(unavailable_cross_task_cause "${entry%:*}")" ]] || return 1
+  done
+  return 0
+}
+
+# 利用不可の理由の日本語名（レポート用）。
+unavailable_cause_label_ja() { # <cause>
+  case "$1" in
+    auth) echo "認証切れ" ;;
+    billing) echo "クレジット・利用枠の上限" ;;
+    model-unsupported) echo "モデル非対応" ;;
+    *) echo "$1" ;;
+  esac
 }
 
 # Previous unresolved review state captured before result cleanup (Issue #843).
@@ -2416,9 +2509,12 @@ warn_if_stale_local_base() {
 # fallback: none）と同じ理由で、走らせる対象を勝手に間引くと「頼んだ CLI が黙って
 # 消えた」形になる。表示を足すだけにして、外す判断は利用者へ残す。
 #
-# fail-open: probe が拒否を確定できなかった場合（probe 自体が失敗した・アダプタが
-# 無い・CLI が別の理由で非 0）は何も出さない。「この環境では動く」と断定はしない
-# ので、警告が出ないことは成功の保証ではない。
+# 黙るのは、probe が sandbox の適用記録（ProfileApplied）の増加を見た場合と、
+# sandbox と無関係な失敗（アダプタが無い・CLI が別の理由で非 0・timeout）の場合だけ。
+# 「この環境では動く」と断定はしないので、警告が出ないことは成功の保証ではない。
+# 逆に、拒否の目印が何も出ないまま適用記録も増えない**不活性**（inert。Windows 実測
+# = https://github.com/feel-flow/ff-dev-toolkit/issues/111）と、その増分を**測れなかった**場合
+# （undetermined）は黙らない — どちらも黙ると「毎回 INCOMPLETE」が起動前に見えなくなる。
 readonly SANDBOX_PROBE_REFUSED_STATUS=3
 
 # 表示位置は**その CLI の項目の直下**（プラン一覧の後ろへまとめない）。CLI が 3 つ
@@ -2440,13 +2536,27 @@ warn_unappliable_sandbox() {
   # アダプタの出力契約: 1 行目 = 種別、2 行目 = CLI 自身が出した理由。
   kind="$(printf '%s\n' "$probe_out" | sed -n '1p')"
   reason="$(printf '%s\n' "$probe_out" | sed -n '2p')"
-  echo "     ⚠️  ${cli}: この環境では sandbox を適用できません（起動前に判明）。" >&2
+  # 見出しも種別で分ける。undetermined は「適用できない」と分かったわけではないので、
+  # 同じ見出しを出すと測れなかっただけの環境を欠陥として断定することになる。
+  if [[ "$kind" == "undetermined" ]]; then
+    echo "     ⚠️  ${cli}: この環境で sandbox が効くかを起動前に判定できませんでした。" >&2
+  else
+    echo "     ⚠️  ${cli}: この環境では sandbox を適用できません（起動前に判明）。" >&2
+  fi
   if [[ -n "$reason" ]]; then
     echo "         ${reason}" >&2
   fi
   # 帰結は種別で分ける。「起動を拒否する」と「sandbox 無しで起動する」は、利用者が
   # 見るログの形も、疑うべき箇所も違う（後者は CLI が正常終了したように見える）。
-  if [[ "$kind" == "unsandboxed-start" ]]; then
+  if [[ "$kind" == "inert" ]]; then
+    echo "         CLI は sandbox の指定をエラーも警告も出さずに受け流し、適用の記録（ProfileApplied）を" >&2
+    echo "         残しません（このプラットフォームでは sandbox の仕組みが働いていない。例: Windows）。" >&2
+    echo "         実行時のゲートは適用の記録が無い結果を採用しないので、プランに載っていても" >&2
+    echo "         成果は得られず、毎回 INCOMPLETE として報告されます。" >&2
+  elif [[ "$kind" == "undetermined" ]]; then
+    echo "         判定に使う sandbox のイベントログを数えられませんでした（上の理由）。実行時のゲートも" >&2
+    echo "         同じログで適用を確認するため、そのままでは結果が INCOMPLETE になる可能性があります。" >&2
+  elif [[ "$kind" == "unsandboxed-start" ]]; then
     echo "         CLI は sandbox 無しで起動するため、このアダプタが要求した保護が" >&2
     echo "         効かないまま走ります。実行時のゲートがその結果を採用しないので、" >&2
     echo "         プランには載っていても成果は得られず、INCOMPLETE として報告されます。" >&2
@@ -2475,6 +2585,15 @@ warn_unappliable_sandbox() {
     echo "                     失うのはコンテナランタイムのソケット遮断（docker.sock へ接続できる。実測）。" >&2
     echo "                     Linux では restrict_network が子プロセスの遮断を実際に担うので、この差し替えを既定にしない。" >&2
     echo "                     詳細: docs-template/05-operations/deployment/grok-cli-reviewer.md" >&2
+  fi
+  # undetermined は「この機械では毎回ダメ」と分かったわけではない（測れなかっただけで、
+  # 原因を直せば走る）。恒久除外を案内すると、直せば使える CLI を設定で永久に落とさせる。
+  # 今回だけの外し方だけを出す。
+  if [[ "$kind" == "undetermined" ]]; then
+    echo "         この実行から外すなら: 走らせたい CLI を --cli で明示するか、外す方を --exclude-cli ${cli} で名指しする" >&2
+    echo "                     （その 1 回の引数。判定不能の原因を直せば次回は警告が消えます）" >&2
+    echo "         検査対象は sandbox の適用可否だけです（認証・残高は probe しません）。" >&2
+    return 0
   fi
   echo "         この実行から外すなら 2 択です:" >&2
   echo "           今回だけ: 走らせたい CLI を --cli で明示するか、外す方を --exclude-cli ${cli} で名指しする" >&2
@@ -5170,7 +5289,22 @@ execute_tasks() {
   for delegated_entry in $DELEGATED_TASKS; do
     delegated_count=$((delegated_count + 1))
   done
-  if [[ $failed -gt 0 ]]; then
+  collect_unavailable_cross_tasks
+  local unavailable_entry
+  if [[ $failed -gt 0 ]] && all_failures_unavailable_cross; then
+    # 失敗・スキップのすべてが主担当以外の利用不可。主担当の結果で
+    # 完了させる。使えるようにする手順は print_failure_advice が 🔑 / 💳 / 🚫 で添える。
+    echo "ℹ️  Completed with the main reviewer (${REVIEW_MAIN}) only: the second CLI was unavailable" >&2
+    echo "   (authentication / credits / unsupported model). Not a failure — the next run tries it again." >&2
+    for unavailable_entry in $UNAVAILABLE_CROSS_TASKS; do
+      echo "     ⏭ ${unavailable_entry%:*} — $(cause_phrase "${unavailable_entry##*:}")" >&2
+    done
+    if [[ $delegated_count -gt 0 ]]; then
+      echo "🤝 ${delegated_count} ${TASK_TYPE} task(s) delegated to the host and still pending." >&2
+    fi
+    print_failure_advice || true
+    return 0
+  elif [[ $failed -gt 0 ]]; then
     if [[ $skipped_count -gt 0 ]]; then
       echo "⚠️  ${failed_only} ${TASK_TYPE} task(s) failed, ${skipped_count} not executed (skipped)." >&2
     else
@@ -5516,24 +5650,86 @@ prompt_too_long_matches() { # <text> <stderr|partial> → rc 0 で一致
   grep -qiE "$both" <<<"$err_lines" && return 0
   return 1
 }
-classify_cli_failure_cause() { # <result-file> → "auth" | "billing" | "argv" | "prompt-too-long" | ""
-  local file="$1" stderr_section="" partial_section=""
+# モデル非対応の語彙。行頭がエラーの体裁である行（プロンプト超過と同じ
+# _PROMPT_TOO_LONG_ERRLINE_RE）に絞ってから照合する。語彙は実測の codex 形
+# （`is not supported when using Codex with`）と、API が返す汎用の形（model_not_found /
+# does not exist / unknown model）。
+# 語彙は実測の形と、アカウントの提供範囲を言う API の定型（does not exist or you do not
+# have access）だけに絞る。`unknown model` / `is not available` のような広い語は、モデル名の
+# typo や一時的な容量不足（try again）まで「利用不可 = 主担当のみで完了」へ倒すので採らない。
+# 一時的であることを言う行（try again / temporarily / overloaded / capacity）は除く。
+_MODEL_UNSUPPORTED_RE='is not supported when using|does not exist or you do not have access'
+_MODEL_UNSUPPORTED_TRANSIENT_RE='try again|temporar|overload|capacity|currently unavailable'
+model_unsupported_matches() { # <stderr-text> → rc 0 で一致
+  local err_lines hits
+  err_lines="$(grep -iE "$_PROMPT_TOO_LONG_ERRLINE_RE" <<<"$1")" || return 1
+  [[ -n "$err_lines" ]] || return 1
+  hits="$(grep -iE "$_MODEL_UNSUPPORTED_RE" <<<"$err_lines")" || return 1
+  grep -viqE "$_MODEL_UNSUPPORTED_TRANSIENT_RE" <<<"$hits"
+}
+classify_cli_failure_cause() { # <result-file> [tail] → "auth" | "billing" | "model-unsupported" | "argv" | "prompt-too-long" | ""
+  # 第 2 引数 tail: stderr 節の**末尾 5 行**（空行を除く）だけで分類し、部分出力側は見ない。
+  # 「利用不可 = 主担当のみで完了」の判定（collect_unavailable_cross_tasks）専用。CLI 自身の
+  # 最終エラーは stderr の末尾に出る — codex は stderr へセッションの推論・ツール出力も流す
+  # ので、節全体を見ると、レビュー本文が「401 unauthorized」「usage limit」に触れただけで
+  # 利用不可に化け、途中失敗が 0 終了になる。案内・スキップは従来どおり節全体で分類する。
+  local file="$1" mode="${2:-}" stderr_section="" partial_section="" tail_n=0
   [[ -f "$file" ]] || return 0
+  [[ "$mode" == "tail" ]] && tail_n=5
   # アダプタが**末尾へ**付ける stderr 節の、コードフェンスの中身だけを取る。
   # 最初の `### CLI stderr` から EOF まで取ると、保全された部分出力がその見出しを
   # 引用している回（このリポジトリのレビュー結果は現にこの文字列を書く）に、
   # レビュー本文の "401" や "credits" を stderr と誤読して分類が化ける。
-  # 見出しは最後の一致を使い、その直後のフェンスで閉じた範囲だけを見る。
-  stderr_section="$(awk '
+  #
+  # 節の特定は**ファイル末尾の閉じフェンス**から逆に辿る。アダプタは抜粋中の最長の
+  # バッククォート列より長いフェンスで囲むので、そのフェンス行と同じ行は抜粋の中に
+  # 現れない — 「見出し・空行・同じフェンス行」の並びは本物の節の開始だけになる。
+  # 最後の見出しを採る方式だと、codex がエコーしたプロンプト（前回のレビュー結果を
+  # 引用しうる）の中の見出しを掴む。末尾がフェンスで終わらない成果物（固定 ``` の旧形式・
+  # 後から注記を足したもの）は従来どおり最後の見出しから読む。
+  #
+  # さらに、プロンプトの終端行（build_prompt の最終行）の**最後の**出現より後ろだけを
+  # 見る。codex は stderr へプロンプトをエコーし、プロンプトはレビュー対象の diff を
+  # 含む — diff の "unauthorized" や "credits" を CLI 自身の失敗と読むと、利用不可の
+  # 分類（= 主担当のみの完了）へ化ける。最後の出現を使うのは、diff 自体がこの行を
+  # 含みうるため（本物の終端は常に diff より後ろにある）。終端行が無ければ全体を見る
+  # （エコーしない CLI・抜粋が終端より後ろだけを切り取った回）。
+  # LC_ALL=C: 抜粋はバイト数で切られており、不正な UTF-8 を含みうる（バッククォートと
+  # 終端行の照合はバイト単位で足りる）。
+  stderr_section="$(LC_ALL=C awk -v sentinel="$PROMPT_END_SENTINEL" -v tail_n="$tail_n" '
     /^### CLI stderr/ { start = NR }
     { line[NR] = $0 }
     END {
-      if (!start) exit 0
-      infence = 0
-      for (i = start + 1; i <= NR; i++) {
-        if (line[i] ~ /^```/) { if (infence) break; infence = 1; continue }
-        if (infence) print line[i]
+      from = 0; to = 0
+      last = NR
+      while (last > 0 && line[last] ~ /^[[:space:]]*$/) last--
+      if (last > 3 && line[last] ~ /^````*$/ && length(line[last]) >= 3) {
+        f = line[last]
+        for (i = 3; i < last; i++)
+          if (line[i] == f && line[i - 1] == "" && line[i - 2] ~ /^### CLI stderr/) { from = i + 1; to = last - 1; break }
       }
+      if (!from) {
+        if (!start) exit 0
+        fence = ""
+        to = NR
+        for (i = start + 1; i <= NR; i++) {
+          if (fence == "") {
+            if (line[i] ~ /^```+[[:space:]]*$/) { fence = line[i]; sub(/[[:space:]]+$/, "", fence); from = i + 1 }
+            continue
+          }
+          t = line[i]; sub(/[[:space:]]+$/, "", t)
+          if (t ~ /^```+$/ && length(t) >= length(fence)) { to = i - 1; break }
+        }
+        if (fence == "") exit 0
+      }
+      for (i = from; i <= to; i++) if (line[i] == sentinel) from = i + 1
+      if (tail_n > 0) {
+        n = 0
+        for (i = to; i >= from && n < tail_n; i--) if (line[i] !~ /^[[:space:]]*$/) { n++; first = i }
+        if (n == 0) exit 0
+        from = first
+      }
+      for (i = from; i <= to; i++) print line[i]
     }' "$file" 2>/dev/null)" || return 0
 
   # stderr 節が無くても打ち切らない。プロンプト超過は stdout 側にだけ出る CLI 形
@@ -5564,6 +5760,19 @@ classify_cli_failure_cause() { # <result-file> → "auth" | "billing" | "argv" |
       return 0
     fi
 
+    # モデル非対応。実測: codex-cli 0.153.x を ChatGPT アカウントで
+    # 最新世代の上位モデルで起動すると 400 `The '<slug>' model is not supported when using
+    # Codex with a ChatGPT account.`（同じアカウントで 0.157.0 は完走）。CLI の版か
+    # アカウント種別のどちらかで決まり、同じ CLI・同じモデルの残りタスクも確実に同じ
+    # 理由で落ちるので auth / billing と同じ「利用不可」に数える。
+    # **エラー行の体裁を要求する**。同じ実測の stderr には `warning: Model metadata for
+    # `<slug>` not found` が並ぶ — 警告は失敗の理由ではなく、ここで拾うと成功した回と
+    # 同じ行で分類が立つ。
+    if model_unsupported_matches "$stderr_section"; then
+      printf 'model-unsupported\n'
+      return 0
+    fi
+
     # 残高側を先に見る。クレジット切れの応答は認証の語（unauthorized 等）を含みうるが、
     # 逆は起きない。取り違えると「再ログインすれば直る」と案内して、実際には同じ失敗を
     # もう一度引かせることになる。
@@ -5579,7 +5788,7 @@ classify_cli_failure_cause() { # <result-file> → "auth" | "billing" | "argv" |
     # printf が EPIPE で死に、パイプライン rc=141 が「不一致」に化けるため（実測: 先頭に
     # unauthorized を置いた 640KB 入力が LOST）。真陽性が読み解けない形で落ちる。
     if grep -qiE \
-      'out of credits|no credits|insufficient credit|credit balance|balance exhausted|insufficient_quota|payment required|spend limit|usage limit|monthly limit|(http|status|code)[^0-9]{0,10}402|402[^0-9]{0,12}(payment|http|status)' <<<"$stderr_section"; then
+      'out of credits|no credits|insufficient credit|credit balance|balance exhausted|insufficient_quota|payment required|spend limit|spending limit|all available credits|usage limit|monthly limit|(http|status|code)[^0-9]{0,10}402|402[^0-9]{0,12}(payment|http|status)' <<<"$stderr_section"; then
       printf 'billing\n'
       return 0
     fi
@@ -5590,6 +5799,8 @@ classify_cli_failure_cause() { # <result-file> → "auth" | "billing" | "argv" |
     fi
   fi
 
+  # 末尾行モードは stderr だけで決める（部分出力側のプロンプト超過は利用不可ではない）
+  [[ "$mode" != "tail" ]] || return 0
   # ── 部分出力側（claude-code 形）──
   # 走査範囲は最後の `### CLI stderr` 見出しより**手前**、つまりバナーと保全された
   # 部分出力。stderr 節を含めないのは二重走査を避けるためで、そちらは既に上で見た。
@@ -5777,6 +5988,8 @@ cause_phrase() { # <cause> → 英文へ差し込む名詞句
   case "$1" in
     auth)    echo "an authentication problem" ;;
     billing) echo "a credits / usage balance problem" ;;
+    model-unsupported)
+             echo "a model-not-supported rejection (the selected model is not available to this CLI version or account)" ;;
     argv)    echo "an argument-list-too-long (E2BIG) failure, i.e. the CLI never started" ;;
     prompt-too-long)
              echo "a prompt-too-long rejection from the model, i.e. the request was refused before any ${TASK_TYPE:-review} happened" ;;
@@ -5796,6 +6009,240 @@ cli_login_command() { # <cli>
     grok-cli)    echo "grok login" ;;
     *) echo "" ;;
   esac
+}
+
+# ── codex-cli の版と自動更新 ──
+#
+# 実測（2026-09-25）: PATH 上の codex-cli 0.153.4 は ChatGPT アカウントで最新世代の上位モデルを
+# 400（model is not supported when using Codex with a ChatGPT account）で拒み、同じ
+# アカウント・同じモデルで 0.157.0 は完走した。アカウント側のモデル一覧
+# （`${CODEX_HOME:-~/.codex}/models_cache.json`）は、それを書いたクライアントの版を
+# `client_version` に残す — これより古い CLI は、そのキャッシュに載ったモデルを扱えない
+# ことがある。そこで dispatch 前に比べ、古ければインストール元の手段で更新してから回す。
+#
+# 判定材料が欠けた回は**黙って緑にしない**: 版を判定しなかったこととその理由を 1 行
+# 出し、CLI はそのまま回す（判定できないことはレビューを止める理由ではない）。
+# 更新が失敗した回も同じく、古い版で走ることを名指しして続ける。
+# 無効化は FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE=1（既存の FF_DEV_TOOLKIT_SKIP_AUTO_UPDATE と
+# 同じ系統。あちらは marketplace の自動更新 hook 用で、ここでは共有しない —
+# プラグインの自動更新だけを止めたい利用者の codex まで止めないため）。
+
+# **版は codex を起動せずに読む**。インストール実体のメタデータ（npm は
+# `<prefix>/lib/node_modules/@openai/codex/package.json` の version、Homebrew は
+# `Caskroom|Cellar/codex/<版>/` のディレクトリ名）から取る。`codex --version` を叩くと、
+# レビュー前に CLI を 1 回余計に起動する（事前検査で止まるはずの実行でも CLI が起動し、
+# 起動をきっかけに作業ツリーへ書く CLI ならリビジョンガードの基準までずれる）。
+# メタデータで読めない配置（pnpm / bun / 手置きのバイナリ等）は版もインストール元も
+# 判定しない側へ倒す — 推測で更新すると別の場所へ 2 本目を入れる。
+
+readonly CODEX_UPDATE_TIMEOUT_SECONDS=300
+
+# 版文字列から数値の版（x.y.z）を取り出す。見つからなければ空。プレリリースの接尾辞
+# （-alpha.2 等）は数値部だけを比べる。
+extract_dotted_version() { # <text>
+  awk 'match($0, /[0-9]+\.[0-9]+(\.[0-9]+)?/) { print substr($0, RSTART, RLENGTH); exit }' <<<"$1"
+}
+
+# a < b なら rc0（数値の要素ごとに比べる。欠けた要素は 0）。
+dotted_version_lt() { # <a> <b>
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    na = split(a, x, "."); nb = split(b, y, "."); n = (na > nb ? na : nb)
+    for (i = 1; i <= n; i++) { xi = x[i] + 0; yi = y[i] + 0; if (xi < yi) exit 0; if (xi > yi) exit 1 }
+    exit 1 }'
+}
+
+codex_models_cache_file() {
+  printf '%s\n' "${CODEX_HOME:-${HOME}/.codex}/models_cache.json"
+}
+
+# models_cache.json を書いたクライアントの版。読めない・キーが無いときは空。
+codex_required_version() {
+  local f v
+  f="$(codex_models_cache_file)"
+  [[ -r "$f" ]] || return 0
+  v="$(awk 'match($0, /"client_version"[[:space:]]*:[[:space:]]*"[^"]*"/) {
+         v = substr($0, RSTART, RLENGTH); sub(/.*:[[:space:]]*"/, "", v); sub(/"$/, "", v); print v; exit }' "$f" 2>/dev/null)" || v=""
+  extract_dotted_version "$v"
+}
+
+# symlink を辿った実体パス（readlink -f の無い環境向けに 1 段ずつ辿る）。
+resolve_symlink_path() { # <path>
+  local p="$1" dir target i=0
+  while [[ -L "$p" && "$i" -lt 40 ]]; do
+    target="$(readlink "$p")" || break
+    case "$target" in
+      /*) p="$target" ;;
+      *) dir="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)" || break; p="${dir}/${target}" ;;
+    esac
+    i=$((i + 1))
+  done
+  printf '%s\n' "$p"
+}
+
+codex_real_path() {
+  local bin
+  bin="$(command -v codex 2>/dev/null)" || return 0
+  [[ -n "$bin" ]] || return 0
+  resolve_symlink_path "$bin"
+}
+
+# インストール元: "npm <prefix>" | "brew <prefix>" | ""（判定できない）。実体の置き場所で
+# 決める — 実測: npm は <prefix>/lib/node_modules/@openai/codex/bin/codex.js、Homebrew は
+# <prefix>/Caskroom/codex/<版>/… または <prefix>/Cellar/codex/<版>/…。
+codex_install_layout() {
+  local real
+  real="$(codex_real_path)"
+  case "$real" in
+    */lib/node_modules/@openai/codex/*) echo "npm ${real%%/lib/node_modules/@openai/codex/*}" ;;
+    */Caskroom/codex/*) echo "brew ${real%%/Caskroom/codex/*}" ;;
+    */Cellar/codex/*) echo "brew ${real%%/Cellar/codex/*}" ;;
+    *) echo "" ;;
+  esac
+}
+
+# PATH 上の codex の版（メタデータから。読めなければ空）。
+codex_installed_version() {
+  local real pkg v=""
+  real="$(codex_real_path)"
+  case "$real" in
+    */lib/node_modules/@openai/codex/*)
+      pkg="${real%%/lib/node_modules/@openai/codex/*}/lib/node_modules/@openai/codex/package.json"
+      [[ -r "$pkg" ]] || return 0
+      v="$(awk 'match($0, /"version"[[:space:]]*:[[:space:]]*"[^"]*"/) {
+             v = substr($0, RSTART, RLENGTH); sub(/.*:[[:space:]]*"/, "", v); print v; exit }' "$pkg" 2>/dev/null)" || v=""
+      ;;
+    */Caskroom/codex/*|*/Cellar/codex/*)
+      v="${real#*/codex/}"; v="${v%%/*}" ;;
+  esac
+  extract_dotted_version "$v"
+}
+
+codex_update_command() { # <source>
+  case "$1" in
+    npm)  echo "npm install -g @openai/codex@latest" ;;
+    brew) echo "brew upgrade codex" ;;
+    *)    echo "" ;;
+  esac
+}
+
+# 手で更新する案内（インストール元を判定できない回・更新が失敗した回に使う）。
+codex_manual_update_hint() {
+  echo "npm install -g @openai/codex@latest (npm) / brew upgrade codex (Homebrew)"
+}
+
+# 更新コマンドが実際に書き換えるのが、PATH 上の codex と同じ prefix か。npm / brew の
+# グローバル prefix と実体の prefix が違う（NPM_CONFIG_PREFIX が別・pnpm / bun の配置・
+# 別の Homebrew）なら更新しない — 別の場所へ 2 本目を入れ、PATH 上の codex は古いまま残る。
+codex_update_targets_path_install() { # <source> <prefix>
+  local got=""
+  case "$1" in
+    npm)  got="$(npm prefix -g </dev/null 2>/dev/null)" || got="" ;;
+    brew) got="$(brew --prefix </dev/null 2>/dev/null)" || got="" ;;
+  esac
+  [[ -n "$got" ]] || return 1
+  got="$(cd "$got" 2>/dev/null && pwd -P)" || return 1
+  [[ "$got" == "$(cd "$2" 2>/dev/null && pwd -P)" ]]
+}
+
+# 更新コマンドを時間制限付きで走らせる。出力は stderr（stdout は委譲 handoff の専用チャネル）。
+run_codex_update() { # <source>
+  local pid wd rc=0
+  case "$1" in
+    npm)  npm install -g @openai/codex@latest </dev/null >&2 2>&1 & ;;
+    # brew upgrade は既定で先に brew update を走らせ、数分かかりうる
+    brew) HOMEBREW_NO_AUTO_UPDATE=1 brew upgrade codex </dev/null >&2 2>&1 & ;;
+    *) return 1 ;;
+  esac
+  pid=$!
+  ( sleep "$CODEX_UPDATE_TIMEOUT_SECONDS"; kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid" || rc=$?
+  kill "$wd" 2>/dev/null || true
+  wait "$wd" 2>/dev/null || true
+  return "$rc"
+}
+
+codex_update_state_file() {
+  printf '%s\n' "${FF_DEV_TOOLKIT_STATE_DIR:-${HOME}/.config/ff-dev-toolkit}/codex-auto-update.last"
+}
+
+# dispatch 前の版チェック。plan に codex-cli が無ければ何もしない。
+# 失敗させる経路は持たない（戻り値は常に 0）— 判定できない・更新できないはレビューを
+# 止める理由ではないが、どちらも 1 行で名指しする。
+ensure_codex_cli_current() {
+  plan_lists_cli codex-cli || return 0
+  if [[ "${FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE:-}" == "1" ]]; then
+    echo "ℹ️  codex-cli version check skipped (FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE=1)." >&2
+    return 0
+  fi
+  local installed required layout source prefix cmd after update_rc=0 state lock last=""
+  required="$(codex_required_version)"
+  if [[ -z "$required" ]]; then
+    echo "ℹ️  codex-cli version NOT checked: no client_version in $(codex_models_cache_file) (missing or unreadable) — running codex-cli as installed." >&2
+    return 0
+  fi
+  layout="$(codex_install_layout)"
+  source="${layout%% *}"; prefix="${layout#* }"
+  installed="$(codex_installed_version)"
+  if [[ -z "$layout" || -z "$installed" ]]; then
+    echo "ℹ️  codex-cli version NOT checked: the install at $(codex_real_path) is neither npm nor Homebrew (or its version metadata is unreadable) — running it as-is." >&2
+    echo "   If it is older than ${required} (the client that wrote the models cache), update it yourself: $(codex_manual_update_hint)." >&2
+    return 0
+  fi
+  if ! dotted_version_lt "$installed" "$required"; then
+    echo "ℹ️  codex-cli ${installed} (models cache written by ${required}) — up to date." >&2
+    return 0
+  fi
+  cmd="$(codex_update_command "$source")"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    echo "⚠️  codex-cli ${installed} is older than the client that wrote the models cache (${required}) — update needed." >&2
+    echo "   A real run updates it first with: ${cmd} (dry-run: not updating)." >&2
+    return 0
+  fi
+  if ! codex_update_targets_path_install "$source" "$prefix"; then
+    echo "⚠️  codex-cli ${installed} is older than the client that wrote the models cache (${required})," >&2
+    echo "   but \`${cmd}\` would not update the codex on PATH ($(codex_real_path)) — NOT updating." >&2
+    echo "   Update that install yourself. Running with the OLD version ${installed}." >&2
+    return 0
+  fi
+  # 同じ組（必要版・現在版）で前回すでに更新を試し、最新を入れても届かなかった回は
+  # 繰り返さない（インストール元の最新がキャッシュを書いたクライアントより古い — Homebrew が
+  # npm より遅れる等）。必要版か現在版が変われば再び試す。
+  state="$(codex_update_state_file)"
+  last="$(cat "$state" 2>/dev/null)" || last=""
+  if [[ "$last" == "${required} ${installed}" ]]; then
+    echo "⚠️  codex-cli ${installed} is older than ${required}, but updating it already did not reach ${required} (${source}'s latest is older) — NOT retrying; running with ${installed}." >&2
+    return 0
+  fi
+  # 並走する別のレビューとグローバルな入れ替えを同時にしない（書きかけの install を
+  # 別のレーンが起動しうる）。取れなければ更新しないで続ける。
+  lock="${TMPDIR:-/tmp}/ff-codex-auto-update.lock"
+  if [[ -d "$lock" ]] && [[ -n "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ]]; then
+    rmdir "$lock" 2>/dev/null || true
+  fi
+  if ! mkdir "$lock" 2>/dev/null; then
+    echo "⚠️  codex-cli ${installed} is older than ${required}, but another run is updating it right now (${lock}) — NOT updating; running with ${installed}." >&2
+    return 0
+  fi
+  echo "⬆️  codex-cli ${installed} is older than the client that wrote the models cache (${required}) — updating: ${cmd}" >&2
+  run_codex_update "$source" || update_rc=$?
+  rmdir "$lock" 2>/dev/null || true
+  after="$(codex_installed_version)"
+  if [[ "$update_rc" -ne 0 ]]; then
+    echo "⚠️  codex-cli update FAILED (rc=${update_rc}: ${cmd}; limit ${CODEX_UPDATE_TIMEOUT_SECONDS}s) — running with the OLD version ${after:-${installed}}." >&2
+    echo "   Update it yourself: ${cmd}" >&2
+    return 0
+  fi
+  if [[ -z "$after" ]] || dotted_version_lt "$after" "$required"; then
+    echo "⚠️  codex-cli update ran but the CLI still reports ${after:-no version} (< ${required}) — running with it as-is." >&2
+    if [[ -n "$after" ]]; then
+      mkdir -p "$(dirname "$state")" 2>/dev/null && printf '%s %s\n' "$required" "$after" > "$state" 2>/dev/null \
+        || echo "   (could not record the attempt at ${state}; the next run will try again)" >&2
+    fi
+    return 0
+  fi
+  echo "✅ codex-cli updated: ${installed} → ${after}." >&2
+  return 0
 }
 
 # ── Retry Advice For Failed Tasks ──
@@ -5912,6 +6359,29 @@ print_failure_advice() {
         echo "        No amount of retrying or extra time changes that; either restore billing" >&2
         echo "        for this CLI or use the substitute below." >&2
         ;;
+      model-unsupported)
+        # 原因の候補（CLI の版 / アカウント種別）と対処（CLI の更新 / モデルの一時上書き）を
+        # 名指しする。上書きの入口はこの層が受け付ける env だけを案内する。
+        local mu_var mu_installed mu_required mu_cmd
+        mu_var="$(get_cli_model_env_vars "$cli")"
+        mu_var="${mu_var%% *}"
+        echo "     🚫 ${cli} — the CLI stderr says the selected model is not supported for this" >&2
+        echo "        CLI version or account. Retrying as-is fails identically." >&2
+        echo "        Likely causes: an outdated ${cli}, or an account type that does not offer" >&2
+        echo "        this model." >&2
+        if [[ "$cli" == "codex-cli" ]]; then
+          mu_installed="$(codex_installed_version)"
+          mu_required="$(codex_required_version)"
+          mu_cmd="$(codex_install_layout)"; mu_cmd="$(codex_update_command "${mu_cmd%% *}")"
+          echo "        codex-cli on PATH: ${mu_installed:-unknown}; models cache written by: ${mu_required:-unknown} ($(codex_models_cache_file))." >&2
+          echo "        Update the CLI: ${mu_cmd:-$(codex_manual_update_hint)}" >&2
+        else
+          echo "        Update ${cli} to its latest version." >&2
+        fi
+        if [[ -n "$mu_var" ]]; then
+          echo "        Or pin a model this CLI accepts for one run: ${mu_var}=<model> (prefix the re-run below)." >&2
+        fi
+        ;;
       argv)
         echo "     📏 ${cli} — the CLI never started: the OS rejected its argument list as too" >&2
         echo "        long (E2BIG). This is not a model failure and not a timeout — nothing ran." >&2
@@ -5944,6 +6414,11 @@ print_failure_advice() {
     if [[ "$rc" -eq 124 ]]; then
       echo "     ${task} — more time on the same CLI:" >&2
       echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp} --timeout $((TIMEOUT * 2))" >&2
+    elif [[ -n "$cause" && -f "${OUTPUT_DIR}/${cli}/${persp}.md" ]]; then
+      # 分類できた失敗は上の行が原因と対処を名指し済み。汎用の「時間では直らない
+      # 失敗」を重ねると、名指しした原因より汎用文が先に読まれる。
+      echo "     ${task} — after fixing the cause above, re-run:" >&2
+      echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp}" >&2
     elif [[ -f "${OUTPUT_DIR}/${cli}/${persp}.md" ]]; then
       echo "     ${task} — failed for a reason more time will not fix; read the CLI" >&2
       echo "       stderr in ${OUTPUT_DIR}/${cli}/${persp}.md, then re-run:" >&2
@@ -6054,6 +6529,8 @@ append_plan_sections() {
       echo ""
       if list_contains "$REUSED_TASKS" "${cli_name}/${perspective_name}"; then
         echo "**Result source:** reused"
+      elif [[ -n "$(unavailable_cross_task_cause "${cli_name}/${perspective_name}")" ]]; then
+        echo "**Result source:** unavailable (completed with the main reviewer only)"
       elif delegated_task_pending "${cli_name}/${perspective_name}"; then
         # 「executed」と書くと、CLI を 1 つも起動していない節が実行済みに見える
         # （skipped と同じ理由で、節の中で数行下の本文と矛盾する）。
@@ -6101,7 +6578,19 @@ append_plan_sections() {
       # 結果パスへ書くと、-f が先に真になってその生テキストがレポートへそのまま載る —
       # プロンプト digest の照合も本文の受理ゲートも通らないまま、しかも節見出しは
       # 「pending」と名乗る。同じ未検証ファイルが CRITICAL_BLOCK 判定の入力にもなる。
-      if delegated_task_pending "${cli_name}/${perspective_name}"; then
+      local unavail_cause
+      unavail_cause="$(unavailable_cross_task_cause "${cli_name}/${perspective_name}")"
+      if [[ -n "$unavail_cause" ]]; then
+        # 主担当以外の利用不可。INCOMPLETE を名乗らない — 主担当の全観点が
+        # 完走した回だけここへ来るので、レビューとしては主担当のみで完了している。
+        # サルベージした成果物（CLI の stderr）は本文へ貼らない: 判定材料ではなく、
+        # codex はプロンプト全文を stderr へエコーするので読み手を迷わせる。
+        echo "⏭ **MAIN REVIEWER ONLY** — ${cli_name} was unavailable ($(unavailable_cause_label_ja "$unavail_cause")),"
+        echo "so this run completed with the main reviewer (${REVIEW_MAIN}) only. This is not a finding"
+        echo "of \"clean\" for this perspective from ${cli_name}; it simply did not run. How to make it"
+        echo "usable again is in the run's stderr advice; the CLI's own output is kept at"
+        echo "\`${result_file}\`."
+      elif delegated_task_pending "${cli_name}/${perspective_name}"; then
         # 委譲待ちは「失敗」でも「スキップ」でもない第 3 の状態。
         # それでも **INCOMPLETE を名乗る** — 消費側ゲートはこの語でレビューの未完了を
         # 判定しており、ここで名乗らないと「委譲したまま誰も実行していないレビュー」が
@@ -6575,6 +7064,7 @@ HEADER
   # 判定の前に記録を消し、型付き経路で判定した観点だけ書き直す。
   local conf_thr typed_tmp typed_rc typed_counts typed_rows="" typed_incomplete="" typed_failsafe="" typed_overrode=""
   local typed_undecided="" typed_undecided_crit="" typed_nobasis="" typed_unfenced="" typed_unreadable=""
+  local typed_unavailable="" tv_unavail
   local tv_cli tv_tsv tv_reason tv_c tv_w tv_s tv_i tv_d tv_l tv_fs_rc tv_exc_thr
   conf_thr="${REVIEW_CONFIDENCE_THRESHOLD:-}"
   if [[ -z "$conf_thr" ]]; then
@@ -6619,7 +7109,17 @@ HEADER
       rm -f "$report_file" 2>/dev/null || true
       return 1
     fi
-    tv_reason="$(review_task_incomplete_reason "$tv_cli" "$crit_persp")"
+    # 主担当以外の利用不可は未完了の観点に数えず、1 行で別記する。
+    # 前回の未解消 Critical の保持は下の task_left_perspective_unproven がそのまま効かせる
+    # （FAILED_TASKS / SKIPPED_TASKS から外していないため）。
+    tv_unavail="$(unavailable_cross_task_cause "${tv_cli}/${crit_persp}")"
+    if [[ -n "$tv_unavail" ]]; then
+      typed_unavailable="${typed_unavailable}- ${tv_cli} / ${crit_persp} — 主担当（${REVIEW_MAIN}）のみで完了（${tv_cli}: $(unavailable_cause_label_ja "$tv_unavail")）
+"
+      tv_reason=""
+    else
+      tv_reason="$(review_task_incomplete_reason "$tv_cli" "$crit_persp")"
+    fi
     if [[ -n "$tv_reason" ]]; then
       typed_incomplete="${typed_incomplete}- ${tv_cli} / ${crit_persp} — ${tv_reason}
 "
@@ -6645,6 +7145,9 @@ HEADER
     if delegated_task_pending "${crit_entry%%:*}/${crit_entry#*:}"; then
       continue
     fi
+    # 利用不可で許容した観点の成果物はサルベージした stderr で、判定材料ではない
+    # （本文を判定すると、エコーされたプロンプトのフェンス崩れ等で安全側へ倒れうる）。
+    [[ -z "$tv_unavail" ]] || continue
     crit_file="${OUTPUT_DIR}/${crit_entry%%:*}/${crit_entry#*:}.md"
     [[ -f "$crit_file" ]] || continue
     # 型付き経路: 有効な判定行が 1 行でもあれば、降格後の重大度と不採用行の fail-safe で
@@ -6829,6 +7332,12 @@ HEADER
       printf '%s' "$typed_incomplete"
     else
       echo "なし"
+    fi
+    if [[ -n "$typed_unavailable" ]]; then
+      echo ""
+      echo "### 主担当のみで完了した観点（2 本目の CLI が利用不可）"
+      echo ""
+      printf '%s' "$typed_unavailable"
     fi
   } >> "$report_file"; then
     echo "ERROR: cannot write the typed verdict aggregation to the integrated review report." >&2
@@ -7198,6 +7707,8 @@ main() {
   fi
 
   if [[ "$DRY_RUN" == "true" ]]; then
+    # codex-cli の版チェック（dry-run は表示だけ）
+    ensure_codex_cli_current
     echo "🏁 Dry run complete. No tasks executed." >&2
     exit 0
   fi
@@ -7236,6 +7747,9 @@ main() {
   local setup_failed=false
   local exec_rc=0
   local delegated_entry
+  # codex-cli が古ければ dispatch 前に更新する。事前検査（base の解決・空 diff）より後に
+  # 置く — 止まる実行でグローバルな入れ替えをしない。
+  ensure_codex_cli_current
   execute_tasks || exec_rc=$?
   if [[ -n "$FULL_EXECUTION_PLAN" ]]; then
     EXECUTION_PLAN="$FULL_EXECUTION_PLAN"

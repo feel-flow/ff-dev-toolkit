@@ -5,7 +5,8 @@
 # 使い方:
 # --- usage:start ---
 #   record-gate-head.sh --gate <ラベル> [--status pass|fail|partial] [--mode <文字列>]
-#                       [--suites <空白区切りの suite 名>] [--result <文字列>]
+#                       [--suites <空白区切りの suite 名>] [--stale-only <空白区切りの suite 名>]
+#                       [--result <文字列>]
 #                       [--expect-head <SHA40>] [--record <パス>]
 #   record-gate-head.sh --print-path
 #
@@ -19,6 +20,12 @@
 #                  この値を「検証済み」として提示するので、実行はしたが skip / 赤だった
 #                  suite を混ぜてはならない（未検証のものが検証済みとして載る）。
 #                  `SUITES=` の行は値が無くても常に書く。
+#   --stale-only   fail のときだけ受ける。赤の原因が**すべて**鮮度分類（base の先行）の
+#                  suite だけで説明できる回に、その suite 名を空白区切りで残す
+#                  （`STALE_ONLY_FAILED=`。行は値が無くても常に書く）。照合側は「取り込んで
+#                  その suite だけを回し直す」を案内する材料にし、**一致の根拠にはしない**
+#                  — 鮮度の分類は suite 粒度の「含む」判定で、同じ suite に変更起因の赤が
+#                  混じりうる。判定は回し直した実測に委ねる（Issue `#1893`）
 #                  値に混じった CR/LF は空白へ畳んでから書く — 記録は 1 行 1 キーで、
 #                  消費側は `head -n 1` で読む。改行を通すと 2 行目以降が別のキーとして
 #                  読まれる（あるいは黙って捨てられる）。
@@ -112,6 +119,7 @@ GATE=""
 STATUS="pass"
 MODE=""
 SUITES=""
+STALE_ONLY=""
 RESULT=""
 EXPECT_HEAD=""
 RECORD_PATH=""
@@ -143,6 +151,12 @@ while [[ $# -gt 0 ]]; do
       # 削除ではなく空白への置換にするのは、suite 名どうしが連結して別名に化けるのを
       # 避けるため（`a\nb` を `ab` にしない）。
       SUITES="$(printf '%s' "$2" | tr '\r\n' '  ')"
+      shift 2
+      ;;
+    --stale-only)
+      [[ $# -ge 2 ]] || fail "--stale-only に値がありません"
+      # --suites と同じ理由で CR/LF を空白へ畳む（記録は 1 行 1 キー）
+      STALE_ONLY="$(printf '%s' "$2" | tr '\r\n' '  ')"
       shift 2
       ;;
     --result) [[ $# -ge 2 ]] || fail "--result に値がありません"; RESULT="$2"; shift 2 ;;
@@ -183,6 +197,10 @@ if [[ "$PRINT_PATH" -eq 1 ]]; then
 fi
 
 [[ -n "$GATE" ]] || fail "--gate は必須です（何を実測したかのラベル）"
+# 鮮度だけの赤という分類は赤い実行にしか意味を持たない。緑の記録に載せると、照合側が
+# 読まない値が「検証済み」の隣に並ぶ
+[[ -z "$STALE_ONLY" || "$STATUS" == "fail" ]] \
+  || fail "--stale-only は --status fail のときだけ指定できます（受領: status=${STATUS}）"
 
 COMMIT="$(git rev-parse HEAD 2>/dev/null)" \
   || fail "HEAD を解決できません（コミットが 1 つも無いか、git work tree の外です）"
@@ -251,6 +269,13 @@ fi
 
 RECORDED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+# 鮮度赤だけという分類は「COMMIT の clean なツリーを測った結果」でなければ意味を持たない。
+# 汚れた木・走行中に HEAD が動いた回の赤い記録は無効化としては書くが、分類は空にする —
+# 残すと照合側が別のツリーの赤を根拠に「名指しで回し直せば足りる」と案内する
+if [[ "$DIRTY" != "no" || ( -n "$EXPECT_HEAD" && "$EXPECT_HEAD" != "$COMMIT" ) ]]; then
+  STALE_ONLY=""
+fi
+
 TARGET_DIR="$(dirname "$TARGET")"
 mkdir -p "$TARGET_DIR" 2>/dev/null || fail "記録先ディレクトリを作成できません: ${TARGET_DIR}"
 
@@ -266,6 +291,7 @@ TMP="${TARGET}.tmp.$$"
   printf 'GATE=%s\n' "$GATE"
   printf 'MODE=%s\n' "$MODE"
   printf 'SUITES=%s\n' "$SUITES"
+  printf 'STALE_ONLY_FAILED=%s\n' "$STALE_ONLY"
   printf 'RESULT=%s\n' "$RESULT"
   printf 'RECORDED_AT=%s\n' "$RECORDED_AT"
 } > "$TMP" 2>/dev/null || { rm -f "$TMP" 2>/dev/null || true; fail "記録を書き込めません: ${TARGET}"; }

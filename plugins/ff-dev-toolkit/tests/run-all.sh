@@ -1008,6 +1008,9 @@ else
     # 4 回の npx 起動で単体〜20 秒かかる。node / npx / 一時領域が無い、または tsx を
     # 解決できない環境では丸ごと ○ skip する。
     "$SCRIPT_DIR/ace-curate-fallback-exec/verify.sh"
+    # ff-media-toolkit プラグインの suite（plugins/ff-media-toolkit/tests/run-all.sh）を
+    # ラッパー経由で回す（ff-media-toolkit 導入時に追加）。node 20 以上が無い環境では丸ごと ○ skip。
+    "$SCRIPT_DIR/ff-media-toolkit/verify.sh"
     # 一時 git リポジトリ + stub CLI を使い、打ち切りや猶予期間の実測待ちを含むので
     # 後ろに置く（単体で〜35 秒。数字を更新するときは実測してから直すこと）
     "$SCRIPT_DIR/multi-agent-timeout/verify.sh"
@@ -1371,7 +1374,6 @@ MISS_PROBE_BASELINE=(
   multi-agent-critical-marker
   multi-agent-host-delegation
   multi-agent-ignore-paths
-  multi-agent-plan
   multi-agent-resume
   multi-agent-review-banner
   multi-agent-revision-guard
@@ -2922,8 +2924,30 @@ fi
 #
 # 記録の失敗は**検証結果の失敗ではない**。1 行警告して終了コードは変えない
 # （記録が無ければ照合側が「判定不能」として報告する。黙って緑にはならない）。
+# 赤の原因が**すべて**鮮度分類（base の先行）の suite だけで説明できるとき、その suite 名を
+# 空白区切りで出す（そうでなければ何も出さない）。起動できなかった suite・必須 skip が 1 件でも
+# あれば鮮度では説明できないので出さない。記録は「取り込んで名指しで回し直す」を照合側が
+# 案内するための材料で、赤を緑へ読み替える口ではない（Issue `#1893`）。STALE / REQUIRED_SKIPPED は
+# 記録ブロックを単独で抽出して走らせる検査では未定義でありうるので、未定義 = 空として読む。
+ff_stale_only_failed() {
+  local f s hit
+  [[ ${#FAILED[@]} -gt 0 && ${#NOT_RUN[@]} -eq 0 ]] || return 0
+  # bash 3.2 の set -u 下では空配列の "${arr[@]}" が unbound になるので、`:-` で要素の有無を見て
+  # から展開する
+  [[ -z "${REQUIRED_SKIPPED[*]:-}" ]] || return 0
+  [[ -n "${STALE[*]:-}" ]] || return 0
+  for f in "${FAILED[@]}"; do
+    hit=0
+    for s in "${STALE[@]}"; do
+      [[ "$f" == "$s" ]] && { hit=1; break; }
+    done
+    [[ "$hit" -eq 1 ]] || return 0
+  done
+  printf '%s' "${FAILED[*]}"
+}
+
 ff_record_gate_head() { # <pass|fail>
-  local status="$1" recorder mode suites
+  local status="$1" recorder mode suites stale_only=""
   if [[ "${FF_GATE_RECORD:-1}" == "0" ]]; then
     echo "○ FF_GATE_RECORD=0 のためゲート実測対象を記録しません（マージ前の鮮度照合は「判定不能」になります）" >&2
     return 0
@@ -2952,6 +2976,7 @@ ff_record_gate_head() { # <pass|fail>
       [[ ${#PASSED[@]} -eq 0 ]] || suites="${PASSED[*]}"
     fi
   fi
+  [[ "$status" != "fail" ]] || stale_only="$(ff_stale_only_failed)"
   # 記録するのは**このランナーが在るリポジトリ**の HEAD。呼び出し元の cwd を基準に
   # すると、別のリポジトリから起動した回に無関係な HEAD を実測対象として記録する。
   ( cd "$SCRIPT_DIR" && bash "$recorder" \
@@ -2959,6 +2984,7 @@ ff_record_gate_head() { # <pass|fail>
       --status "$status" \
       --mode "$mode" \
       --suites "$suites" \
+      ${stale_only:+--stale-only "$stale_only"} \
       --expect-head "${FF_GATE_START_HEAD:-}" \
       --result "passed=${#PASSED[@]} failed=${#FAILED[@]} skipped=${#SKIPPED[@]} not-run=${#NOT_RUN[@]} excluded=${#FAST_EXCLUDED[@]}" ) \
     || echo "⚠️  ゲート実測対象を記録できませんでした（マージ前の鮮度照合は「判定不能」になります）" >&2

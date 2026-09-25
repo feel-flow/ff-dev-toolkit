@@ -685,7 +685,10 @@ SIM="$WORK/sim-runner.sh"
   printf 'FAILED=()\n'
   printf '_i=0; while [ "$_i" -lt "$_nfail" ]; do FAILED+=("f${_i}"); _i=$((_i + 1)); done\n'
   printf 'SKIPPED=()\n'
-  printf 'NOT_RUN=()\n'
+  printf 'NOT_RUN=(${SIM_NOT_RUN:-})\n'
+  # 鮮度分類・必須 skip は環境変数で渡す（未設定なら空配列。語分割は意図どおり）
+  printf 'STALE=(${SIM_STALE:-})\n'
+  printf 'REQUIRED_SKIPPED=(${SIM_REQ_SKIP:-})\n'
   printf 'FAST_EXCLUDED=()\n'
   cat "$BLOCK"
   printf 'ff_record_gate_head "$_status"\n'
@@ -780,6 +783,101 @@ fi
 # 前回の緑を無効化しそこねる（「一度通ったコミット」が「いま通るコミット」に化ける）。
 FF_GATE_RECORD_FILE="$SIM_REC" bash "$SIM" "$SIM_REPO/tests" 0 1 0 fail 2 >/dev/null 2>&1
 contains "$SIM_REC" "STATUS=fail" "明示引数の赤い実行は STATUS=fail で記録を無効化する（partial へ落とさない）"
+
+# --- 赤がすべて鮮度分類で説明できる回の案内（Issue `#1893` / OBS-083）---
+# 並行マージが続く間、全件ゲートを回し直すたびに同じ鮮度赤を踏む。赤が鮮度分類の suite だけで
+# 説明できる回は「取り込んでその suite だけを名指しで回し直す」を案内する。ただし分類は suite 粒度の
+# 「含む」判定なので、記録は案内の材料に留め、一致の根拠にはしない（照合は判定不能のまま）。
+# 空振り検出（このブロックについての実測）: 鮮度分類が一部だけ・空（SIM は STALE を空配列で
+# 定義する。未定義の経路は `:-` の既定で同じく空として読む）・旧記録・読めない値・別コミット・
+# 汚れた木の回は、STALE_ONLY_FAILED が空または無視されて従来の案内へ倒れることを赤側の既定として
+# 測っている。stale 判定を常に真にする変異はそれらが、常に偽にする変異は先頭ケースが赤にする。
+stale_case() { # <label> <env...> -- SIM を fail 2 件で走らせ、照合出力を STALE_OUT / STALE_RC に残す
+  local label="$1"; shift
+  rm -f "$SIM_REC"
+  env "$@" FF_GATE_RECORD_FILE="$SIM_REC" bash "$SIM" "$SIM_REPO/tests" 1 1 0 fail 2 >/dev/null 2>&1
+  STALE_RC=0
+  STALE_OUT="$(cd "$SIM_REPO" && bash "$CHECK" --remote-head "$(git_q -C "$SIM_REPO" rev-parse HEAD)" --record "$SIM_REC" 2>&1)" || STALE_RC=$?
+}
+stale_case all SIM_STALE="f0 f1"
+contains "$SIM_REC" "STALE_ONLY_FAILED=f0 f1" "赤がすべて鮮度分類の回は、その suite 名を記録する"
+[[ "$STALE_RC" -eq 2 ]] && ok "鮮度赤だけの記録も一致としては通らない（判定不能のまま）" \
+  || bad "鮮度赤だけの記録で exit ${STALE_RC}（期待 2）"
+out_has "$STALE_OUT" "鮮度赤だけです（f0 f1" "鮮度赤だけの回は理由でその suite を名指しする"
+out_has "$STALE_OUT" "赤だった suite だけを" "取り込み後の名指し再実行を案内する"
+out_has "$STALE_OUT" "verify.sh のパスで名指し" "名指しの渡し方（suite 名ではなく verify.sh のパス）を案内する"
+case "$STALE_OUT" in
+  *"ゲートを通してから記録を更新すること"*) bad "鮮度赤だけの回に全件ゲートの再実行を案内している" ;;
+  *) ok "鮮度赤だけの回は全件ゲートの再実行を求めない" ;;
+esac
+# finish.sh は REASON の「部分実行」で RERUN_FULL_GATE=no を出す。鮮度赤だけの REASON がその語を
+# 含むと、回し直す前の赤い記録がマージ可へ化ける。
+STALE_REASON="$(printf '%s\n' "$STALE_OUT" | sed -n 's/^REASON=//p')"
+case "$STALE_REASON" in
+  *"部分実行"*) bad "鮮度赤だけの REASON が「部分実行」を含む（finish.sh が RERUN_FULL_GATE=no へ読み替える）" ;;
+  "") bad "鮮度赤だけの回の REASON を読めません" ;;
+  *) ok "鮮度赤だけの REASON は finish.sh の部分実行判定に当たらない" ;;
+esac
+
+stale_case partial SIM_STALE="f0"
+contains "$SIM_REC" "STALE_ONLY_FAILED=" "STALE_ONLY_FAILED 行は値が無くても書かれる"
+if grep -qE '^STALE_ONLY_FAILED=.+' "$SIM_REC"; then
+  bad "鮮度で説明できない赤を含む回に suite 名を記録している: $(grep '^STALE_ONLY_FAILED=' "$SIM_REC")"
+else
+  ok "鮮度で説明できない赤が 1 件でもあれば記録しない"
+fi
+out_has "$STALE_OUT" "直近のゲートが失敗しています" "鮮度で説明できない赤を含む回は従来の案内のまま"
+
+stale_case notrun SIM_STALE="f0 f1" SIM_NOT_RUN="x0"
+if grep -qE '^STALE_ONLY_FAILED=.+' "$SIM_REC"; then bad "起動できなかった suite がある回に鮮度赤だけと記録している"; else ok "起動できなかった suite がある回は鮮度赤だけと記録しない"; fi
+stale_case reqskip SIM_STALE="f0 f1" SIM_REQ_SKIP="y0"
+if grep -qE '^STALE_ONLY_FAILED=.+' "$SIM_REC"; then bad "必須 skip がある回に鮮度赤だけと記録している"; else ok "必須 skip がある回は鮮度赤だけと記録しない"; fi
+
+# 旧記録（行が無い）と読めない値は従来の案内へ倒す（鮮度扱いへ倒さない）。
+for STALE_MUT in drop 'f0;rm -rf x' 'f0  f1'; do
+  stale_case legacy SIM_STALE="f0 f1"
+  if [[ "$STALE_MUT" == drop ]]; then
+    grep -v '^STALE_ONLY_FAILED=' "$SIM_REC" > "$SIM_REC.tmp" && mv "$SIM_REC.tmp" "$SIM_REC"
+  else
+    sed "s/^STALE_ONLY_FAILED=.*/STALE_ONLY_FAILED=${STALE_MUT}/" "$SIM_REC" > "$SIM_REC.tmp" && mv "$SIM_REC.tmp" "$SIM_REC"
+  fi
+  STALE_RC=0
+  STALE_OUT="$(cd "$SIM_REPO" && bash "$CHECK" --remote-head "$(git_q -C "$SIM_REPO" rev-parse HEAD)" --record "$SIM_REC" 2>&1)" || STALE_RC=$?
+  if [[ "$STALE_RC" -eq 2 && "$STALE_OUT" == *"直近のゲートが失敗しています"* && "$STALE_OUT" != *"鮮度赤だけ"* ]]; then
+    ok "STALE_ONLY_FAILED が「${STALE_MUT}」の記録は従来の案内へ倒れる"
+  else
+    bad "STALE_ONLY_FAILED が「${STALE_MUT}」の記録で鮮度扱いへ倒れた / exit ${STALE_RC}"
+  fi
+done
+
+# 記録が別コミット（先端が進んだ）・汚れた木の回は、鮮度赤だけの案内を出さない。
+stale_case othercommit SIM_STALE="f0 f1"
+STALE_RC=0
+STALE_OUT="$(cd "$SIM_REPO" && bash "$CHECK" --remote-head "$ABSENT" --record "$SIM_REC" 2>&1)" || STALE_RC=$?
+[[ "$STALE_OUT" != *"鮮度赤だけ"* && "$STALE_OUT" == *"直近のゲートが失敗しています"* ]] \
+  && ok "記録のコミットがリモート先端と違う回は鮮度赤だけの案内を出さない" \
+  || bad "別コミットの赤い記録から鮮度赤だけの案内を出した / exit ${STALE_RC}"
+stale_case dirtyrec SIM_STALE="f0 f1"
+sed 's/^DIRTY=.*/DIRTY=yes/' "$SIM_REC" > "$SIM_REC.tmp" && mv "$SIM_REC.tmp" "$SIM_REC"
+STALE_RC=0
+STALE_OUT="$(cd "$SIM_REPO" && bash "$CHECK" --remote-head "$(git_q -C "$SIM_REPO" rev-parse HEAD)" --record "$SIM_REC" 2>&1)" || STALE_RC=$?
+[[ "$STALE_OUT" != *"鮮度赤だけ"* ]] && ok "DIRTY=yes の赤い記録は鮮度赤だけの案内を出さない（照合側の二重ガード）" \
+  || bad "DIRTY=yes の赤い記録から鮮度赤だけの案内を出した"
+# 記録器側: 汚れた木・走行中に HEAD が動いた回は分類そのものを空で書く。
+DIRTY_REPO="$(new_repo stale-dirty)"
+echo dirty > "$DIRTY_REPO/a.txt"
+( cd "$DIRTY_REPO" && bash "$RECORD" --gate "tests/run-all.sh" --status fail --stale-only "f0" --record "$WORK/stale-dirty-rec" ) >/dev/null 2>&1
+contains "$WORK/stale-dirty-rec" "DIRTY=yes" "（前提）汚れた木の記録は DIRTY=yes"
+if grep -qE '^STALE_ONLY_FAILED=.+' "$WORK/stale-dirty-rec" 2>/dev/null; then bad "汚れた木の赤い記録に鮮度赤だけの分類を残した"; else ok "汚れた木の赤い記録は鮮度赤だけの分類を空で書く"; fi
+( cd "$SIM_REPO" && bash "$RECORD" --gate "tests/run-all.sh" --status fail --stale-only "f0" --expect-head "$ABSENT" --record "$WORK/stale-moved-rec" ) >/dev/null 2>&1
+contains "$WORK/stale-moved-rec" "STATUS=fail" "（前提）HEAD が動いた回も赤は無効化として書く"
+if grep -qE '^STALE_ONLY_FAILED=.+' "$WORK/stale-moved-rec" 2>/dev/null; then bad "走行中に HEAD が動いた赤い記録に鮮度赤だけの分類を残した"; else ok "走行中に HEAD が動いた赤い記録は鮮度赤だけの分類を空で書く"; fi
+
+# 記録器: 鮮度だけの赤という分類は赤い実行にしか載せない。
+STALE_REC_RC=0
+bash "$RECORD" --gate "tests/run-all.sh" --status pass --stale-only "f0" --record "$WORK/stale-pass-rec" >/dev/null 2>&1 || STALE_REC_RC=$?
+[[ "$STALE_REC_RC" -ne 0 && ! -f "$WORK/stale-pass-rec" ]] && ok "記録器は緑の記録に --stale-only を受けない" \
+  || bad "記録器が status=pass と --stale-only の組を受けた（rc=${STALE_REC_RC}）"
 
 # 明示引数でも pass 0 件なら記録しない（SUITES= が空の部分記録を作らない）。
 rm -f "$SIM_REC"

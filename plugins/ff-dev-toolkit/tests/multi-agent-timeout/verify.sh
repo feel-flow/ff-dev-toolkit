@@ -2078,13 +2078,143 @@ else
   bad "timeout-reason: リンク数が取れない環境で上書きしている（取得失敗が許可側へ倒れている）"
   printf '%s\n' "$BROKEN_OUT" | sed 's/^/    | /' >&2
 fi
-if [[ "$BROKEN_OUT" != *"STUB-NOT-ON-PATH"* && "$BROKEN_OUT" == *"an unknown number of hard links"* ]]; then
-  ok "timeout-reason: リンク数が取れない回は既定文言で拒否理由を名指しする"
+# リンク数が取れない原因は道具の側（stat 不在・故障）であって「リンクが複数ある」とは
+# 限らない。ファイルのリンク数を断定すると利用者は自分のファイルを疑い、stat の確認へ
+# 辿り着けない（Issue `#1816`）。取得失敗の回は「判定できなかった」と述べ、リンク数を
+# 名指ししないこと・次の一手（stat）を示すことの両方を測る。
+if [[ "$BROKEN_OUT" != *"STUB-NOT-ON-PATH"* \
+  && "$BROKEN_OUT" == *"could not determine how many hard links"* \
+  && "$BROKEN_OUT" == *'`stat`'* \
+  && "$BROKEN_OUT" != *"has 2 hard links"* \
+  && "$BROKEN_OUT" != *"an unknown number of hard links"* ]]; then
+  ok "timeout-reason: リンク数が取れない回は「判定できなかった」と述べ、リンク数を断定しない"
 else
-  bad "timeout-reason: リンク数が取れない回の拒否理由が既定文言になっていない"
+  bad "timeout-reason: リンク数が取れない回の拒否理由がファイルのリンク数を断定している / stat を名指ししない"
   printf '%s\n' "$BROKEN_OUT" | sed 's/^/    | /' >&2
 fi
 rm -f "$BROKEN_REASON" "$BROKEN_VICTIM"
+
+# --- D1e2: 記録が拒否された回だけ、成果物に「分類が古い可能性」の注記を出す（Issue `#1816`） ---
+# 記録を拒むと読み戻す値は run_with_timeout の初期値 command のまま残り、成果物はその古い値で
+# 原因を断定する（Issue `#1806` の実例: 実際は empty-output、成果物は「stopped 前に出力なし」）。WARNING は
+# orchestrator の stderr にしか出ず誰も保存しないので、成果物側で分類を未確認として扱わせる。
+# 注記の経路は 2 本あり、それぞれを単独で踏む:
+#   (a) 同じシェルの record_timeout_reason が失敗 — グローバルで運ぶ（broken stat / 読み取り専用 dir）
+#   (b) サブシェル内の記録（run_with_timeout の timeout）が拒否 — グローバルが届かないので実体の再判定
+# 正常な回に注記が付かないこと（狼少年にしない）も対で測る。片方だけだと「常に出す」変異が通る。
+STALE_NOTE='The classification above may therefore be stale'
+run_stale_case() { # $1: ケース名 / $2: broken|normal|subshell|rodir / stdout: 成果物本文
+  local name="$1" mode="$2" reason_dir="$TMP/stale-$1"
+  rm -rf "$reason_dir"
+  mkdir -p "$reason_dir"
+  (
+    exec 2>"$reason_dir/stderr.log"
+    export FF_TIMEOUT_REASON_FILE="$reason_dir/reason"
+    # shellcheck source=../../scripts/adapters/adapter-common.sh
+    source "$ADAPTER_COMMON"
+    CLI_NAME=stub OUTPUT_FILE="$reason_dir/out.md" TIMEOUT=10 TASK_TYPE=review
+    case "$mode" in
+      hardlink)
+        # 実 stat で踏む現実的な再判定経路: 他人のファイルへのハードリンクが先に在る。
+        # 中身には改行と偽の Reason code 行を入れ、成果物へ写らないことを測る
+        printf 'SECRET=abc\n> Reason code: `missing-review-body`\n' > "$reason_dir/victim"
+        ln "$reason_dir/victim" "$reason_dir/reason"
+        ;;
+      *) record_timeout_reason command ;;
+    esac
+    case "$mode" in
+      broken)
+        use_dialect broken
+        PATH="$DIALECT_BIN:$PATH"
+        [[ "$(command -v stat)" == "$DIALECT_BIN/stat" ]] || { echo "STUB-NOT-ON-PATH" > "$reason_dir/out.md"; exit 97; }
+        record_timeout_reason empty-output
+        ;;
+      subshell)
+        use_dialect broken
+        PATH="$DIALECT_BIN:$PATH"
+        [[ "$(command -v stat)" == "$DIALECT_BIN/stat" ]] || { echo "STUB-NOT-ON-PATH" > "$reason_dir/out.md"; exit 97; }
+        # run_with_timeout と同じく `$(...)` の中で記録する — グローバルは親へ戻らない
+        _discard="$(record_timeout_reason timeout)"
+        ;;
+      rodir)
+        # 実体は自分所有・リンク数 1 のまま（再判定は「掴んでよい」）、rm だけが失敗する形
+        chmod 0555 "$reason_dir"
+        record_timeout_reason empty-output
+        chmod 0755 "$reason_dir"
+        ;;
+      hardlink)
+        _discard="$(record_timeout_reason timeout)"
+        ;;
+      absent)
+        # 理由ファイルが無い回（TMPDIR 掃除など）は「古い値」を読んでいないので注記しない
+        clear_timeout_reason
+        ;;
+      normal)
+        record_timeout_reason empty-output
+        ;;
+    esac
+    fail_cli_task 1 "" code-review ""
+  ) || true
+  chmod 0755 "$reason_dir" 2>/dev/null || true
+  cat "$reason_dir/out.md" 2>/dev/null || echo "NO-ARTIFACT"
+}
+
+STALE_BROKEN="$(run_stale_case broken broken)"
+if [[ "$STALE_BROKEN" != *"STUB-NOT-ON-PATH"* && "$STALE_BROKEN" == *"$STALE_NOTE"* \
+  && "$STALE_BROKEN" == *'recorded reason: `command`'* && "$STALE_BROKEN" == *"could not be updated"* \
+  && "$STALE_BROKEN" == *"could not determine how many hard links"* ]]; then
+  ok "stale-note: 記録が拒否された回（stat 不在）は分類が古い可能性を成果物に書き、拒否理由も写す"
+else
+  bad "stale-note: 記録が拒否されたのに成果物が古い分類を断定したまま（注記なし / 拒否理由なし）"
+  printf '%s\n' "$STALE_BROKEN" | sed 's/^/    | /' >&2
+fi
+
+STALE_SUB="$(run_stale_case subshell subshell)"
+if [[ "$STALE_SUB" != *"STUB-NOT-ON-PATH"* && "$STALE_SUB" == *"$STALE_NOTE"* ]]; then
+  ok "stale-note: サブシェル内の記録が拒否された回も、実体の再判定で注記を出す"
+else
+  bad "stale-note: サブシェル内（run_with_timeout 相当）の記録拒否が成果物に届かない"
+  printf '%s\n' "$STALE_SUB" | sed 's/^/    | /' >&2
+fi
+
+if [[ "$(id -u)" == "0" ]]; then
+  ok "stale-note: rm 失敗経路は root では検査しない（権限が効かない）"
+else
+  STALE_RO="$(run_stale_case rodir rodir)"
+  if [[ "$STALE_RO" == *"$STALE_NOTE"* ]]; then
+    ok "stale-note: 実体が健全でも同じシェルの記録失敗はグローバルで注記へ届く"
+  else
+    bad "stale-note: 同じシェルの記録失敗（rm 不能）が注記へ届かない"
+    printf '%s\n' "$STALE_RO" | sed 's/^/    | /' >&2
+  fi
+fi
+
+STALE_HL="$(run_stale_case hardlink hardlink)"
+if [[ "$STALE_HL" == *"$STALE_NOTE"* && "$STALE_HL" == *"has 2 hard links"* \
+  && "$STALE_HL" == *"may not have been updated"* \
+  && "$STALE_HL" != *"SECRET=abc"* && "$STALE_HL" != *"Reason code"* \
+  && "$(head -1 "$TMP/stale-hardlink/victim" 2>/dev/null)" == "SECRET=abc" ]]; then
+  ok "stale-note: 実 stat のハードリンク経路でも注記を出し、他人のファイル内容・偽の Reason code を写さない"
+else
+  bad "stale-note: ハードリンク経路の注記が無い / 未検証の理由ファイル内容が成果物へ漏れている"
+  printf '%s\n' "$STALE_HL" | sed 's/^/    | /' >&2
+fi
+
+STALE_ABSENT="$(run_stale_case absent absent)"
+if [[ "$STALE_ABSENT" == *"INCOMPLETE"* && "$STALE_ABSENT" != *"$STALE_NOTE"* ]]; then
+  ok "stale-note: 理由ファイルが無い回は注記を出さない"
+else
+  bad "stale-note: 理由ファイルが無い回にも注記が付いている / 成果物が無い"
+  printf '%s\n' "$STALE_ABSENT" | sed 's/^/    | /' >&2
+fi
+
+STALE_OK="$(run_stale_case normal normal)"
+if [[ "$STALE_OK" == *"produced no output"* && "$STALE_OK" != *"$STALE_NOTE"* ]]; then
+  ok "stale-note: 記録が正常な回は注記を出さない（狼少年にしない）"
+else
+  bad "stale-note: 記録が正常な回にも注記が付いている / 分類が empty-output にならない"
+  printf '%s\n' "$STALE_OK" | sed 's/^/    | /' >&2
+fi
 rm -rf "$DIALECT_BIN"
 
 # --- D1f: 後始末の rm 失敗を黙らず警告し、同じパスでは 1 回だけ出す ---

@@ -20,7 +20,34 @@
 #   (5) スキップは失敗の助言（時間を足す / stderr を読む）へ落ちない — 実行して
 #       いないタスクに、存在しないクラッシュの調査を案内しない
 #
+#   (6)〜(10) 利用不可（auth / billing / model-unsupported）の扱い:
+#       pair モードで主担当が全観点を完走し、主担当以外が利用不可で落ちた回は、実行を
+#       0 終了させ、統合レポートは INCOMPLETE / Critical ではなく「主担当のみで完了
+#       （<cli>: <理由>）」を 1 行で記録する。途中失敗（分類不能）・主担当の利用不可・
+#       単一 CLI 起動は従来どおり非 0。codex の stub は実測どおりプロンプトを stderr へ
+#       エコーするので、フェンス崩れ・多バイト文字の途中で切れた抜粋・エコーされた diff 内の
+#       語による誤分類も同じ実走で固定する
+#   (11) codex-cli の版チェックと自動更新: models_cache.json の
+#       client_version より古ければインストール元（npm / Homebrew）の手段で更新してから
+#       回す。dry-run は表示だけ、インストール元不明・更新失敗・判定不能は名指しして続行、
+#       FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE=1 で無効化
+#
 # 変異検出: cli_failure_is_deterministic を常に偽へ倒すと (1)(2)(4)(5) が赤になる。
+# 変異検出（2026-09-25 実測、プラグインの写しへ 1 件ずつ当てた。レビュー 1 巡目の fix 後に取り直し）:
+#   モデル非対応の分類を外す → 6 件赤。版比較を外す → 6 件赤。利用不可の許容を外す → 4 件赤。
+#   途中失敗を利用不可へ倒す → 2 件赤。stderr のフェンスを固定 ``` へ戻す → 1 件赤。
+#   プロンプト終端行での切り詰めを外す → 2 件赤。主担当の完走条件を外す → 1 件赤。
+#   pair 限定を外す → 1 件赤（distributed）。部分出力なしの条件を外す → 1 件赤（partial）。
+#   末尾行モード（stderr の末尾 5 行で分類）を外す → 1 件赤（transcript）。
+#   dry-run でも更新する / 更新失敗の名指しを外す / prefix 照合を外す / 再試行抑止を外す /
+#   brew の自動 update 抑止を外す / 版チェックで codex を起動する → 各 1 件赤。
+#   抜粋先頭の切れ端を捨てない → 12 件赤（awk の multibyte conversion failure）。
+#   失敗の集合比較を外す → 12 件赤。
+#   **赤転しなかった変異を 3 つ記録する**（いずれも二重防御で、単独では観測できない）:
+#   collect_unavailable_cross_tasks の「主担当以外」条件を外す → 緑（主担当の失敗は完走条件が
+#   先に弾く）。理由コード行（アダプタの拒否）の除外を外す → 緑（拒否は必ず部分出力を
+#   保全するので「部分出力なし」の条件が先に弾く）。分類器 awk の LC_ALL=C を外す → 緑
+#   （切れ端の除去で抜粋が既に正しい UTF-8）。
 #
 # 実 CLI は 1 つも起動しない（全 CLI を stub で覆う）。書き込み不可の環境では skip。
 
@@ -337,6 +364,377 @@ if [ -f "$REPORT" ] \
 else
   bad "retain: 保持の名指しがレポートに無い、または文面がスキップを含んでいない"
   [ -f "$REPORT" ] && /usr/bin/grep -n 'Critical' "$REPORT" | head -5 | sed 's/^/    | /' >&2
+fi
+
+echo "== (6) pair: 主担当以外の利用不可は主担当のみで完了する =="
+
+# 主担当 claude-code・副担当 codex-cli の pair（--route full と同じ組）。codex の stub は
+# 実測の codex と同じく**プロンプトを stderr へエコー**してから失敗する — エコーには
+# 出力テンプレートの ``` と、プロンプト終端行より手前に置いた「分類語彙を含む diff 行」が
+# 載る。固定の ``` で stderr を囲むとフェンスが崩れて安全側 Critical へ倒れ（実測）、
+# 終端行より手前を分類すると diff の語で誤分類する。
+PSTUB="$TMP/pbin"
+mkdir -p "$PSTUB" "$TMP/codex-home"
+cat > "$PSTUB/codex" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then echo "codex-cli 9.9.9"; exit 0; fi
+mode="\$(cat "$TMP/codex-mode")"
+if [ "\$mode" = refused ]; then
+  cat >/dev/null
+  echo "warning: you are close to your usage limit" >&2
+  echo "## Review"
+  echo "looks fine"
+  exit 0
+fi
+if [ "\$mode" = partial ]; then
+  cat >/dev/null
+  echo "## Review"
+  echo "- Critical: stub finding written before the CLI died"
+  echo "  - verdict: severity=critical failure_scenario=yes confidence=95"
+  echo "ERROR: You've hit your usage limit" >&2
+  exit 1
+fi
+if [ "\$mode" = ok ]; then
+  cat >/dev/null
+  echo "## Review"
+  echo "- verdict: none"
+  exit 0
+fi
+# 実測の codex と同じくプロンプトを stderr へエコーする。終端行の**直前**（= エコーされた
+# diff の位置。stderr 抜粋は末尾 4KB なので、先頭側へ置くと抜粋から落ちて針が当たらない）
+# に分類語彙を置く
+cat > "$TMP/prompt-echo"
+sed '\$d' "$TMP/prompt-echo" >&2
+echo "+ // unauthorized: out of credits, The 'x' model is not supported when using Codex with a stub" >&2
+tail -n 1 "$TMP/prompt-echo" >&2
+echo "warning: Model metadata for \\\`gpt-x\\\` not found. Defaulting to fallback metadata." >&2
+case "\$mode" in
+  transcript)
+    echo "codex: the change returns 401 unauthorized once the usage limit is hit" >&2
+    echo "hook: Stop" >&2
+    echo "hook: Stop Completed" >&2
+    echo "tokens used" >&2
+    echo "12,345" >&2
+    echo "ERROR: stream disconnected before completion" >&2 ;;
+  model) echo 'ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The '"'"'gpt-x'"'"' model is not supported when using Codex with a ChatGPT account."}}' >&2 ;;
+  credits) echo "API error (status 403 Forbidden): Your team has either used all available credits or reached its monthly spending limit" >&2 ;;
+  crash) echo "boom: stub failure" >&2 ;;
+esac
+exit 1
+SH
+cat > "$PSTUB/claude" <<SH
+#!/usr/bin/env bash
+cat >/dev/null
+if [ "\$(cat "$TMP/claude-mode")" = billing ]; then
+  echo "You've hit your individual spend limit" >&2
+  exit 1
+fi
+echo "## Review"
+echo "- verdict: none"
+SH
+chmod +x "$PSTUB/codex" "$PSTUB/claude"
+
+run_pair() { # $1: codex-mode / $2: claude-mode
+  printf '%s\n' "$1" > "$TMP/codex-mode"
+  printf '%s\n' "$2" > "$TMP/claude-mode"
+  rm -rf "$OUT"
+  set +e
+  ( cd "$REPO" && run_isolated PATH="$PSTUB:/usr/bin:/bin" CODEX_HOME="$TMP/codex-home" \
+      MULTI_AGENT_REVIEW_MAIN=claude-code MULTI_AGENT_REVIEW_SUB=codex-cli MULTI_AGENT_CROSS_REVIEW=auto \
+      FF_TIMEOUT_KILL_GRACE=1 \
+      bash "$MULTI_AGENT" --task review --mode pair --perspective comprehensive-review \
+        --perspective code-review --base develop --timeout 60 --output-dir "$OUT" ) >"$TMP/run.log" 2>&1
+  RUN_RC=$?
+  set -e
+  REPORT="$OUT/integrated-report.md"
+}
+report_has() { [ -f "$REPORT" ] && /usr/bin/grep -qF -- "$1" "$REPORT"; }
+log_has() { /usr/bin/grep -qF -- "$1" "$TMP/run.log"; }
+show_log() { tail -30 "$TMP/run.log" | sed 's/^/    | /' >&2; }
+
+run_pair model ok
+if [ "${RUN_RC}" -eq 0 ]; then
+  ok "model/pair: 主担当が完走し副担当がモデル非対応 → 実行全体は 0 終了"
+else
+  bad "model/pair: rc=${RUN_RC}（主担当のみで完了するはずが失敗扱い）"; show_log
+fi
+if log_has "🚫 codex-cli" && log_has "MULTI_AGENT_MODEL_CODEX_CLI=<model>" && log_has "Update the CLI:"; then
+  ok "model/pair: 案内がモデル非対応を名指しし、CLI の更新とモデルの一時上書きを添える"
+else
+  bad "model/pair: モデル非対応の案内（🚫 / 更新 / 上書き）が無い"; show_log
+fi
+if ! log_has "failed for a reason more time will not fix"; then
+  ok "model/pair: 汎用の「時間では直らない失敗」へ丸めない"
+else
+  bad "model/pair: 分類できた失敗に汎用文が出ている"
+fi
+if report_has "MAIN REVIEWER ONLY" && report_has "主担当（claude-code）のみで完了（codex-cli: モデル非対応）"; then
+  ok "model/pair: 統合レポートが「主担当のみで完了（codex-cli: モデル非対応）」を 1 行で記録する"
+else
+  bad "model/pair: 統合レポートに主担当のみで完了した記録が無い"
+fi
+if ! report_has "INCOMPLETE" && ! report_has "<!-- CRITICAL_BLOCK -->" && ! report_has "安全側（Critical あり）"; then
+  ok "model/pair: 利用不可の観点を INCOMPLETE / Critical として扱わない"
+else
+  bad "model/pair: 利用不可の観点が INCOMPLETE か Critical として扱われた"
+  /usr/bin/grep -n 'INCOMPLETE\|CRITICAL_BLOCK\|安全側' "$REPORT" | head -5 | sed 's/^/    | /' >&2
+fi
+
+echo "== (7) pair: クレジット上限（grok 実測の 403 文言）も利用不可として扱う =="
+
+run_pair credits ok
+if [ "${RUN_RC}" -eq 0 ] && log_has "💳 codex-cli" && report_has "（codex-cli: クレジット・利用枠の上限）"; then
+  ok "credits/pair: 403 の spending limit を 💳 に分類し、主担当のみで完了する"
+else
+  bad "credits/pair: rc=${RUN_RC} / 💳 分類またはレポートの記録が無い"; show_log
+fi
+
+echo "== (8) pair: 本物の途中失敗は従来どおり未確認（利用不可と混ぜない） =="
+
+run_pair crash ok
+if [ "${RUN_RC}" -ne 0 ] && report_has "INCOMPLETE" && ! report_has "MAIN REVIEWER ONLY"; then
+  ok "crash/pair: 非 0 終了・INCOMPLETE のまま（黙って緑にしない）"
+else
+  bad "crash/pair: rc=${RUN_RC} — 分類不能な失敗が利用不可として許容された"; show_log
+fi
+# エコーされた diff 行（終端行より手前）の語で分類しない。フェンスも崩れない。
+if ! log_has "🔑 codex-cli" && ! log_has "💳 codex-cli" && ! log_has "🚫 codex-cli"; then
+  ok "crash/pair: エコーされたプロンプト内の語（unauthorized / credits / model）で誤分類しない"
+else
+  bad "crash/pair: プロンプトのエコーを CLI の失敗理由と誤読した"; show_log
+fi
+if ! report_has "コードフェンスが閉じておらず"; then
+  ok "crash/pair: stderr のフェンスが崩れず、判定不能の安全側 Critical へ倒れない"
+else
+  bad "crash/pair: stderr 内の \`\`\` でフェンスが崩れた"
+fi
+
+# codex は stderr へセッションの推論・ツール出力も流す。終端行より後ろにレビュー本文が
+# 「401 unauthorized」「usage limit」に触れる行を出したあと、無関係な理由で落ちた回を
+# 利用不可として許容しない（許容の分類は stderr の末尾の行だけで行う）。
+run_pair transcript ok
+if [ "${RUN_RC}" -ne 0 ] && report_has "INCOMPLETE" && ! report_has "MAIN REVIEWER ONLY"; then
+  ok "transcript/pair: セッション本文中の語で利用不可に倒さない（非 0・INCOMPLETE のまま）"
+else
+  bad "transcript/pair: rc=${RUN_RC} — セッション本文の語で途中失敗を許容した"; show_log
+fi
+# アダプタが結果を拒否した回（型付き判定行の無い本文）は、stderr に上限の語があっても許容しない
+run_pair refused ok
+if [ "${RUN_RC}" -ne 0 ] && ! report_has "MAIN REVIEWER ONLY"; then
+  ok "refused/pair: アダプタの拒否を利用不可として許容しない"
+else
+  bad "refused/pair: rc=${RUN_RC} — 拒否された結果を利用不可として許容した"; show_log
+fi
+
+# 部分出力（Critical を含みうる）を書いてから利用枠で落ちた回は許容しない — 許容すると
+# その部分出力を CRITICAL_BLOCK の判定から外すことになる。
+run_pair partial ok
+if [ "${RUN_RC}" -ne 0 ] && ! report_has "MAIN REVIEWER ONLY"; then
+  ok "partial/pair: 部分出力のある失敗は利用不可として許容しない"
+else
+  bad "partial/pair: rc=${RUN_RC} — 部分出力のある失敗を許容した（その Critical が読まれない）"; show_log
+fi
+
+echo "== (9) pair: 主担当そのものが利用不可なら完了にしない =="
+
+run_pair ok billing
+if [ "${RUN_RC}" -ne 0 ] && ! report_has "MAIN REVIEWER ONLY"; then
+  ok "main-billing/pair: 主担当が利用不可 → 非 0 終了（主担当のみの完了にしない）"
+else
+  bad "main-billing/pair: rc=${RUN_RC} — 主担当が利用不可なのに完了扱い"; show_log
+fi
+run_pair model billing
+if [ "${RUN_RC}" -ne 0 ] && ! report_has "MAIN REVIEWER ONLY"; then
+  ok "both/pair: 主担当も副担当も利用不可 → 非 0 終了"
+else
+  bad "both/pair: rc=${RUN_RC} — 主担当が落ちているのに副担当の利用不可を許容した"; show_log
+fi
+
+echo "== (10) 単一 CLI 起動（無人ゲート・--route fast）は従来どおり非 0 =="
+
+printf '%s\n' model > "$TMP/codex-mode"
+rm -rf "$OUT"
+set +e
+( cd "$REPO" && run_isolated PATH="$PSTUB:/usr/bin:/bin" CODEX_HOME="$TMP/codex-home" \
+    FF_TIMEOUT_KILL_GRACE=1 \
+    bash "$MULTI_AGENT" --task review --mode cross-model --cli codex-cli \
+      --perspective comprehensive-review --base develop --timeout 60 --output-dir "$OUT" ) >"$TMP/run.log" 2>&1
+RUN_RC=$?
+set -e
+if [ "${RUN_RC}" -ne 0 ] && log_has "🚫 codex-cli"; then
+  ok "single/cross-model: 非 0 終了のまま、失敗理由はモデル非対応として名指しする"
+else
+  bad "single/cross-model: rc=${RUN_RC} / モデル非対応の名指しが無い"; show_log
+fi
+
+# distributed は観点を CLI 間で分担する — 利用不可の CLI の観点は主担当も見ていないので、
+# 主担当が決まっていても許容しない（許容は pair だけ）。
+printf '%s\n' model > "$TMP/codex-mode"
+printf '%s\n' ok > "$TMP/claude-mode"
+rm -rf "$OUT"
+set +e
+( cd "$REPO" && run_isolated PATH="$PSTUB:/usr/bin:/bin" CODEX_HOME="$TMP/codex-home" \
+    MULTI_AGENT_REVIEW_MAIN=claude-code FF_TIMEOUT_KILL_GRACE=1 \
+    bash "$MULTI_AGENT" --task review --mode distributed --base develop --timeout 60 \
+      --output-dir "$OUT" ) >"$TMP/run.log" 2>&1
+RUN_RC=$?
+set -e
+REPORT="$OUT/integrated-report.md"
+if [ "${RUN_RC}" -ne 0 ] && log_has "🚫 codex-cli" && ! report_has "MAIN REVIEWER ONLY"; then
+  ok "distributed: 主担当が設定済みでも、観点を分担するモードでは利用不可を許容しない"
+else
+  bad "distributed: rc=${RUN_RC} — 分担された観点が誰にも見られないまま完了扱いになった"; show_log
+fi
+
+echo "== (11) codex-cli の版チェックと自動更新 =="
+
+# 版は codex を起動せずにインストール実体のメタデータから読む（npm: package.json、
+# Homebrew: Caskroom/codex/<版>/）。PATH には symlink を置き、実体を辿れることも併せて
+# 固定する。npm / brew の stub は呼ばれた引数を記録し、prefix の問い合わせに答え、更新時は
+# メタデータを書き換える。codex の stub 自身は起動回数を数え、版チェックが CLI を
+# 起動しないことを実測する。
+U="$TMP/upd"
+NPM_PKG="$U/npm-root/lib/node_modules/@openai/codex"
+mkdir -p "$NPM_PKG/bin" "$U/brew-root/Caskroom/codex/1.1.0" \
+  "$U/bin-npm" "$U/bin-brew" "$U/bin-plain" "$U/tools" "$U/codex-home" "$U/state" "$U/other-prefix"
+cat > "$U/codex-impl" <<SH
+#!/usr/bin/env bash
+printf 'x\n' >> "$U/codex-runs"
+cat >/dev/null
+echo "## Review"
+echo "- verdict: none"
+SH
+chmod +x "$U/codex-impl"
+cp "$U/codex-impl" "$NPM_PKG/bin/codex.js"
+cp "$U/codex-impl" "$U/brew-root/Caskroom/codex/1.1.0/codex-bin"
+cp "$U/codex-impl" "$U/bin-plain/codex"
+ln -s ../npm-root/lib/node_modules/@openai/codex/bin/codex.js "$U/bin-npm/codex"
+cat > "$U/tools/npm" <<SH
+#!/usr/bin/env bash
+if [ "\$*" = "prefix -g" ]; then
+  if [ -f "$U/npm-other" ]; then echo "$U/other-prefix"; else echo "$U/npm-root"; fi
+  exit 0
+fi
+printf 'npm %s\n' "\$*" >> "$U/calls"
+if [ -f "$U/update-fails" ]; then echo "stub: network unreachable" >&2; exit 1; fi
+v=1.3.0; [ -f "$U/npm-stale" ] && v=1.1.5
+printf '{"name":"@openai/codex","version":"%s"}\n' "\$v" > "$NPM_PKG/package.json"
+SH
+cat > "$U/tools/brew" <<SH
+#!/usr/bin/env bash
+if [ "\$*" = "--prefix" ]; then echo "$U/brew-root"; exit 0; fi
+printf 'brew %s HOMEBREW_NO_AUTO_UPDATE=%s\n' "\$*" "\${HOMEBREW_NO_AUTO_UPDATE:-}" >> "$U/calls"
+mkdir -p "$U/brew-root/Caskroom/codex/1.3.0"
+cp "$U/codex-impl" "$U/brew-root/Caskroom/codex/1.3.0/codex-bin"
+ln -sfn "$U/brew-root/Caskroom/codex/1.3.0/codex-bin" "$U/bin-brew/codex"
+SH
+chmod +x "$U/tools/npm" "$U/tools/brew"
+
+run_update_case() { # $1: bin dir / $2: installed version / $3: cache client_version（空 = キャッシュ無し） / $4...: 追加 env / フラグ
+  local bindir="$1" installed="$2" cache="$3"
+  shift 3
+  printf '{"name":"@openai/codex","version":"%s"}\n' "$installed" > "$NPM_PKG/package.json"
+  ln -sfn "$U/brew-root/Caskroom/codex/1.1.0/codex-bin" "$U/bin-brew/codex"
+  : > "$U/calls"
+  : > "$U/codex-runs"
+  rm -f "$U/codex-home/models_cache.json"
+  if [ -n "$cache" ]; then
+    printf '{"fetched_at":"2026-09-25T00:00:00Z","client_version":"%s","models":[]}\n' "$cache" > "$U/codex-home/models_cache.json"
+  fi
+  local extra_env=() flags=() a
+  for a in "$@"; do
+    case "$a" in
+      *=*) extra_env+=("$a") ;;
+      *) flags+=("$a") ;;
+    esac
+  done
+  rm -rf "$OUT"
+  set +e
+  ( cd "$REPO" && run_isolated PATH="$bindir:$U/tools:/usr/bin:/bin" CODEX_HOME="$U/codex-home" \
+      FF_DEV_TOOLKIT_STATE_DIR="$U/state" TMPDIR="$U" \
+      ${extra_env[@]+"${extra_env[@]}"} FF_TIMEOUT_KILL_GRACE=1 \
+      bash "$MULTI_AGENT" --task review --mode cross-model --cli codex-cli \
+        --perspective comprehensive-review --base develop --timeout 60 --output-dir "$OUT" \
+        ${flags[@]+"${flags[@]}"} ) >"$TMP/run.log" 2>&1
+  RUN_RC=$?
+  set -e
+  UPDATE_CALLS="$(cat "$U/calls")"
+  CODEX_RUNS="$(wc -l < "$U/codex-runs" | tr -d ' ')"
+}
+
+run_update_case "$U/bin-npm" 1.1.0 1.2.0
+if [ "$UPDATE_CALLS" = "npm install -g @openai/codex@latest" ] && log_has "✅ codex-cli updated: 1.1.0 → 1.3.0." && [ "${RUN_RC}" -eq 0 ]; then
+  ok "update/npm: キャッシュの client_version より古い npm 版を更新してからレビューを回す"
+else
+  bad "update/npm: calls='${UPDATE_CALLS}' rc=${RUN_RC}"; show_log
+fi
+if [ "$CODEX_RUNS" = "1" ]; then
+  ok "update/npm: 版チェックは codex を起動しない（起動はレビューの 1 回だけ）"
+else
+  bad "update/npm: codex の起動が ${CODEX_RUNS} 回（期待 1。版チェックが CLI を起動している）"
+fi
+run_update_case "$U/bin-brew" 1.1.0 1.2.0
+if [ "$UPDATE_CALLS" = "brew upgrade codex HOMEBREW_NO_AUTO_UPDATE=1" ] && log_has "✅ codex-cli updated: 1.1.0 → 1.3.0."; then
+  ok "update/brew: Homebrew の実体（Caskroom）なら brew の自動 update を止めて brew upgrade codex で更新する"
+else
+  bad "update/brew: calls='${UPDATE_CALLS}'"; show_log
+fi
+run_update_case "$U/bin-npm" 1.1.0 1.2.0 --dry-run
+if [ -z "$UPDATE_CALLS" ] && log_has "update needed" && log_has "(dry-run: not updating)"; then
+  ok "update/dry-run: 更新を実行せず「更新が必要」を表示するだけ"
+else
+  bad "update/dry-run: calls='${UPDATE_CALLS}'（dry-run で更新した、または表示が無い）"; show_log
+fi
+run_update_case "$U/bin-plain" 1.1.0 1.2.0
+if [ -z "$UPDATE_CALLS" ] && log_has "codex-cli version NOT checked: the install at" && log_has "npm install -g @openai/codex@latest"; then
+  ok "update/unknown-source: インストール元を判定できなければ更新せず、判定しなかったことと手順を案内する"
+else
+  bad "update/unknown-source: calls='${UPDATE_CALLS}'"; show_log
+fi
+: > "$U/npm-other"
+run_update_case "$U/bin-npm" 1.1.0 1.2.0
+rm -f "$U/npm-other"
+if [ -z "$UPDATE_CALLS" ] && log_has "would not update the codex on PATH" && log_has "Running with the OLD version 1.1.0"; then
+  ok "update/prefix-mismatch: npm のグローバル prefix が PATH 上の実体と違えば更新しない"
+else
+  bad "update/prefix-mismatch: calls='${UPDATE_CALLS}'"; show_log
+fi
+: > "$U/update-fails"
+run_update_case "$U/bin-npm" 1.1.0 1.2.0
+rm -f "$U/update-fails"
+if log_has "codex-cli update FAILED (rc=1" && log_has "running with the OLD version 1.1.0" && [ "${RUN_RC}" -eq 0 ]; then
+  ok "update/failed: 更新の失敗を名指しし、古い版で走ることを明示して続ける"
+else
+  bad "update/failed: rc=${RUN_RC}"; show_log
+fi
+: > "$U/npm-stale"
+rm -f "$U/state/codex-auto-update.last"
+run_update_case "$U/bin-npm" 1.1.0 1.2.0
+FIRST_CALLS="$UPDATE_CALLS"
+run_update_case "$U/bin-npm" 1.1.5 1.2.0
+rm -f "$U/npm-stale" "$U/state/codex-auto-update.last"
+if [ -n "$FIRST_CALLS" ] && [ -z "$UPDATE_CALLS" ] && log_has "NOT retrying"; then
+  ok "update/stale-latest: 最新を入れても届かなかった組は次の実行で更新を繰り返さない"
+else
+  bad "update/stale-latest: 1 回目 calls='${FIRST_CALLS}' / 2 回目 calls='${UPDATE_CALLS}'"; show_log
+fi
+run_update_case "$U/bin-npm" 1.1.0 ""
+if [ -z "$UPDATE_CALLS" ] && log_has "codex-cli version NOT checked: no client_version"; then
+  ok "update/no-cache: キャッシュが無ければ判定しなかったことを名指しする（黙って緑にしない）"
+else
+  bad "update/no-cache: calls='${UPDATE_CALLS}'"; show_log
+fi
+run_update_case "$U/bin-npm" 1.1.0 1.2.0 FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE=1
+if [ -z "$UPDATE_CALLS" ] && log_has "codex-cli version check skipped (FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE=1)"; then
+  ok "update/skip-env: FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE=1 で更新しない"
+else
+  bad "update/skip-env: calls='${UPDATE_CALLS}'"; show_log
+fi
+run_update_case "$U/bin-npm" 1.10.0 1.9.5-alpha.2
+if [ -z "$UPDATE_CALLS" ] && log_has "codex-cli 1.10.0 (models cache written by 1.9.5) — up to date."; then
+  ok "update/current: 版は要素ごとの数値で比べ、プレリリース接尾辞は数値部で読む"
+else
+  bad "update/current: calls='${UPDATE_CALLS}'"; show_log
 fi
 
 echo ""

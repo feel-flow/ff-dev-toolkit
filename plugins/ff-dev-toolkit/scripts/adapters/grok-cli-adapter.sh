@@ -21,8 +21,10 @@
 # Plan-time probe (no perspective / output file):
 #   ./grok-cli-adapter.sh --probe-sandbox [task-type]
 #     Reports whether this environment can apply the sandbox profile this adapter
-#     would request for <task-type> (default: review). Exit 3 = the sandbox this
-#     adapter asks for will not be in effect here; exit 0 = nothing was determined.
+#     would request for <task-type> (default: review). Exit 3 = something must be
+#     reported at plan time (the sandbox will not be in effect here, or whether it
+#     will could not be measured — stdout line 1 names which); exit 0 = the probe
+#     saw the sandbox being applied, or failed for a reason unrelated to the sandbox.
 #     The probe does NOT take --inline-output: it measures the profile for the
 #     task-type the orchestrator passes, which is what the plan is about (for
 #     implement, `workspace`). --inline-output would make the real run ask for
@@ -305,11 +307,32 @@ is_custom_readonly_profile() { # $1: profile
 # の探索先まで変わり、**本番とは別の条件**を測ることになるため。この追記が下の
 # ProfileApplied ゲートに与える影響は、そのゲート側のコメント（残る限界）に書く。
 #
-# 判定は**片側だけ**。拒否を確定できたときにだけ非 0 を返し、それ以外は 0 を返す
-# （= 呼び出し側は黙る）。「適用できる」と断定はしない — probe が rc=0 で返っても、
-# 本番の実行が別の理由で拒否される可能性は消えないし、実際にサンドボックスが効いた
-# かどうかの肯定確認は下の ProfileApplied ゲートが実行のたびに取り直す。誤った断定
-# （「この環境では動く」）は、動かなかったときに読み手を無関係な原因へ送る。
+# 判定は「適用できる」を**断定しない**。probe が黙る（rc=0・無出力）のは、
+# (a) probe の起動で ProfileApplied が実際に 1 行以上増えた、または (b) probe が
+# sandbox と無関係な理由で失敗した（未ログイン・想定外の rc・timeout）ときだけ。
+# (a) でも本番の実行が別の理由で拒否される可能性は消えないし、実際にサンドボックスが
+# 効いたかどうかの肯定確認は下の ProfileApplied ゲートが実行のたびに取り直す。誤った
+# 断定（「この環境では動く」）は、動かなかったときに読み手を無関係な原因へ送る。
+#
+# 非 0（報告する側）は 4 形:
+#   refused-to-start / unsandboxed-start — CLI 自身が stderr の目印で拒否を言った
+#   inert — **目印が何も出ない不活性**（https://github.com/feel-flow/ff-dev-toolkit/issues/111）。
+#           rc=0・拒否の目印なし・probe の前後でイベントログの ProfileApplied が 0 行増。
+#           Windows 実測（報告者、grok 1.0.30 / 0.2.118）: 存在しないプロファイル名でも
+#           rc=0・stderr 0 バイトで通り、イベントログ自体が作られない。目印の文言に
+#           依存させると、この「何も言わずに素通りする」形は構造的に拾えない（旧実装）。
+#           下の ProfileApplied ゲートは同じ記録が無い結果を必ず捨てるので、黙って
+#           プランに載せると毎回 INCOMPLETE になる。**件数の増分**で見るのは、既存の
+#           ログに過去の ProfileApplied が残っていても「今回の起動が書いたか」を分けるため。
+#           目印以外の stderr 行があっても増分 0 なら inert（stderr が空であることを
+#           条件にすると、無関係な 1 行で Windows の形が黙る側へ戻る）。
+#   undetermined — 増分を**測れなかった**。イベントログの置き場が通常ファイルでない・
+#           読めない・probe の間に件数が減った（切り詰め・ローテート）・GROK_HOME も
+#           HOME も無い・probe の一時ファイルを作れない。測れない入力を「問題なし」と
+#           読んで黙ると、不活性と同じ帰結（毎回 INCOMPLETE）を見えなくするので、
+#           判定不能として明示する。
+# 増分が偽って正になる形（同じログへ別プロセスが同時に ProfileApplied を書いた）は
+# 黙る側へ倒れる。これは断定をしない方向の誤りで、実行時のゲートが取り直す。
 #
 # 認証・残高は probe の対象外。オーケストレータ側が dispatch 前の preflight probe を
 # 採らなかった判断（classify_cli_failure_cause のヘッダー）は生きている — あちらの
@@ -334,17 +357,72 @@ readonly SANDBOX_MARKER_REFUSED_WARNING='^warning: sandbox could not be applied'
 readonly SANDBOX_MARKER_REFUSED_ERROR='^error: could not apply the .* sandbox profile'
 readonly SANDBOX_MARKER_UNSANDBOXED='^Sandbox could not be applied, continuing without sandbox'
 
-# 出力契約: 拒否を確定できたときだけ stdout に 2 行を書き、
-# SANDBOX_PROBE_REFUSED_STATUS を返す。
-#   1 行目 = 種別（refused-to-start / unsandboxed-start）— 呼び出し側の帰結文の出し分け用
-#   2 行目 = CLI 自身が出した理由の行（そのまま）
-# それ以外（rc=0 / timeout / 想定外の rc / 目印なし）は無出力で rc=0（fail-open）。
-run_sandbox_probe() { # $1: profile
-  local profile="$1" stderr_file="" probe_stdout="" probe_rc=0 marker=""
-  if ! stderr_file="$(mktemp)"; then
-    # probe の足回りすら用意できない環境では何も確定できない。fail-open。
+# grok home の解決順は GROK_HOME → HOME（CLI 側も同じ順）。probe と本実行の
+# ProfileApplied ゲートで同じ解決を使う — 片方だけが別の置き場を見ると、probe が
+# 「増えていない」と言う窓と実行時のゲートが確認に使う窓がずれる。
+# 両方未設定なら空を返す（呼び出し側がそれぞれの形で判定不能へ倒す）。
+resolve_grok_home_dir() {
+  if [[ -n "${GROK_HOME:-}" ]]; then
+    printf '%s' "$GROK_HOME"
+  elif [[ -n "${HOME:-}" ]]; then
+    printf '%s/.grok' "$HOME"
+  fi
+}
+
+# イベントログの置き場は版で動いた（1.0.30: <home>/sessions/、0.2.118: <home>/ 直下。
+# 詳細は ProfileApplied ゲート側のコメント）。probe は両方を数える。
+# $1: file → stdout に ProfileApplied の行数。未作成なら 0。
+# 置き場に通常ファイル以外（ディレクトリ・壊れた symlink）がある、読めない、awk が
+# 失敗した — のいずれかなら**空**を返す（= 測れない。0 と区別する）。
+#
+# 「未作成」と断定するのは、実在する最も近い祖先がディレクトリで検索（x）できるときだけ。
+# `-e` は祖先を検索できない（EACCES）ときも偽になるので、それだけで 0 を返すと
+# <home>/sessions が chmod 000 の環境で「増分 0 = inert」と誤診し、恒久除外を案内する。
+count_profile_applied() {
+  local f="$1" n="" d=""
+  if [[ ! -e "$f" && ! -L "$f" ]]; then
+    d="$(dirname "$f")"
+    while [[ ! -e "$d" && ! -L "$d" ]]; do
+      [[ "$d" == "/" || "$d" == "." ]] && break
+      d="$(dirname "$d")"
+    done
+    [[ -d "$d" && -x "$d" ]] || return 0
+    printf '0'
     return 0
   fi
+  [[ -f "$f" && -r "$f" ]] || return 0
+  n="$(awk 'index($0, "\"event_type\":\"ProfileApplied\"") { n++ } END { print n + 0 }' "$f" 2>/dev/null || true)"
+  [[ "$n" =~ ^[0-9]+$ ]] && printf '%s' "$n"
+  return 0
+}
+
+# 出力契約: 報告すべきことがあるときだけ stdout に 2 行を書き、
+# SANDBOX_PROBE_REFUSED_STATUS を返す。
+#   1 行目 = 種別（refused-to-start / unsandboxed-start / inert / undetermined）
+#            — 呼び出し側の見出しと帰結文の出し分け用
+#   2 行目 = 理由の行。refused-to-start / unsandboxed-start は CLI 自身が出した行を
+#            そのまま、inert / undetermined は CLI が何も言わないのでこのアダプタが書く
+# それ以外（適用の記録が増えた / timeout / 目印なしの非 0）は無出力で rc=0。
+run_sandbox_probe() { # $1: profile
+  local profile="$1" stderr_file="" probe_stdout="" probe_rc=0 marker=""
+  local home_dir="" events_new="" events_legacy="" before_new="" before_legacy=""
+  local after_new="" after_legacy=""
+  if ! stderr_file="$(mktemp)"; then
+    # probe の足回りすら用意できない = probe を起動できない。黙ると「測れなかった」が
+    # 「問題なし」に化けるので、判定不能として言う。
+    printf 'undetermined\n%s\n' "could not create a temp file for the sandbox probe (check TMPDIR); applicability was not measured"
+    return "$SANDBOX_PROBE_REFUSED_STATUS"
+  fi
+
+  # 増分の起点は probe の**前**に取る。後から取ると probe が書いた行が起点に入る。
+  home_dir="$(resolve_grok_home_dir)"
+  if [[ -n "$home_dir" ]]; then
+    events_new="${home_dir}/sessions/sandbox-events.jsonl"
+    events_legacy="${home_dir}/sandbox-events.jsonl"
+    before_new="$(count_profile_applied "$events_new")"
+    before_legacy="$(count_profile_applied "$events_legacy")"
+  fi
+
   # 起動形は他のアダプタ呼び出しと同じ「コマンド置換で受ける」形に揃える
   # （run_with_timeout はこの形を前提に stdin の EOF を保証している）。判定に
   # 使うのは stderr だけなので、stdout はファイルへ分けずに置換で捨てる。
@@ -371,16 +449,38 @@ run_sandbox_probe() { # $1: profile
     if [[ -z "$marker" ]]; then
       marker="$(grep -m1 -E "$SANDBOX_MARKER_REFUSED_ERROR" "$stderr_file" || true)"
     fi
+    rm -f "$stderr_file"
     if [[ -n "$marker" ]]; then
       printf 'refused-to-start\n%s\n' "$marker"
-      rm -f "$stderr_file"
       return "$SANDBOX_PROBE_REFUSED_STATUS"
     fi
+    # 想定外の rc（未ログイン・サブコマンド消失・CLI 不在）は拒否と読まない。
+    # sandbox の適用経路まで届いたかどうかが分からないので、増分も見ない。
+    return 0
   fi
-
-  # 想定外の rc（未ログイン・サブコマンド消失・CLI 不在）は拒否と読まない。
   rm -f "$stderr_file"
-  return 0
+
+  # ここから rc=0 かつ拒否の目印なし。旧実装はここで黙っていた（= Windows の不活性を
+  # 素通しした）。今回の起動が ProfileApplied を書いたかを件数の増分で確かめる。
+  if [[ -z "$home_dir" ]]; then
+    printf 'undetermined\n%s\n' "GROK_HOME and HOME are both unset, so the sandbox event log cannot be located; whether the sandbox took effect was not measured"
+    return "$SANDBOX_PROBE_REFUSED_STATUS"
+  fi
+  after_new="$(count_profile_applied "$events_new")"
+  after_legacy="$(count_profile_applied "$events_legacy")"
+  if [[ -z "$before_new" || -z "$before_legacy" || -z "$after_new" || -z "$after_legacy" ]]; then
+    printf 'undetermined\n%s\n' "the sandbox event log (${events_new} / ${events_legacy}) cannot be read: it is not a readable regular file, or a directory above it is not searchable, so the probe's ProfileApplied events cannot be counted"
+    return "$SANDBOX_PROBE_REFUSED_STATUS"
+  fi
+  if (( after_new < before_new || after_legacy < before_legacy )); then
+    printf 'undetermined\n%s\n' "the sandbox event log shrank during the probe (truncated or rotated: ${events_new} ${before_new}->${after_new}, ${events_legacy} ${before_legacy}->${after_legacy}), so this probe's events cannot be isolated"
+    return "$SANDBOX_PROBE_REFUSED_STATUS"
+  fi
+  if (( after_new + after_legacy > before_new + before_legacy )); then
+    return 0
+  fi
+  printf 'inert\n%s\n' "grok --sandbox ${profile} inspect exited 0 with no sandbox refusal message and appended no ProfileApplied event to ${events_new} or ${events_legacy} (observed on Windows, where the sandbox is not applied)"
+  return "$SANDBOX_PROBE_REFUSED_STATUS"
 }
 
 if [[ "$PROBE_SANDBOX" == "true" ]]; then
@@ -451,15 +551,11 @@ echo "   ⚠️ network: grok の '${sandbox_profile}' sandbox は外部ネッ�
 # 参照すると、両方未設定の環境（CI コンテナ / systemd / cron）で set -u が
 # bare exit 1 を投げ、成果物を 1 つも残さずに終わる — 3 行下の mktemp ガードが
 # まさに防いでいる形の失敗を、そのガードの手前で作ることになる。
-sandbox_home="${GROK_HOME:-${HOME:-}}"
-if [[ -z "$sandbox_home" ]]; then
+# 解決は probe と共有する（resolve_grok_home_dir）。
+grok_home_dir="$(resolve_grok_home_dir)"
+if [[ -z "$grok_home_dir" ]]; then
   fail_orchestrator_error "$perspective_name" \
     "GROK_HOME も HOME も設定されていないため、${CLI_NAME} のサンドボックス適用を確認できません。"
-fi
-if [[ -n "${GROK_HOME:-}" ]]; then
-  grok_home_dir="${GROK_HOME}"
-else
-  grok_home_dir="${sandbox_home}/.grok"
 fi
 # イベントログの置き場は版で動いた（実測）: 0.2.118 は <grok home>/sandbox-events.jsonl、
 # 1.0.30 は <grok home>/sessions/sandbox-events.jsonl（実測で `inspect` と本実行の

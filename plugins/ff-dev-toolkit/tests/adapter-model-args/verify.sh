@@ -466,22 +466,39 @@ if [ "$RUN_RC" -ne 0 ] && ! grep -q -F "<--sandbox><-p>" "$WORK/argv.log" \
 else
   bad "grok-cli: フラグに化ける名前が argv に載った（rc=${RUN_RC}）"
 fi
-# probe の正常系: 差し替え名がそのまま inspect へ渡る（rc=0、出力なし = 拒否を確定しない側）
+# probe: 差し替え名がそのまま inspect へ渡る。この suite の共通 stub は rc=0 で
+# sandbox の目印もイベントも出さないので、probe の判定は不活性（inert）になる
+# （「ProfileApplied が増えれば黙る」側は multi-agent-plan が固定している）。
+# stub にイベントを書かせないのは、このケース自身が「増分 0 = inert」を観測するため
+# （後続の grok ケースは RUN_GROK_HOME で別の home を使う）。
+# 報告時の rc はアダプタの定数から読む（直書きすると定数の変更に追従しない）。
+PROBE_REPORT_STATUS="$(sed -n 's/^readonly SANDBOX_PROBE_REFUSED_STATUS=\([0-9][0-9]*\)$/\1/p' "$ADAPTERS_DIR/grok-cli-adapter.sh")"
+if [ -n "$PROBE_REPORT_STATUS" ]; then
+  ok "grok-cli: probe の報告 rc をアダプタの SANDBOX_PROBE_REFUSED_STATUS から読める（${PROBE_REPORT_STATUS}）"
+else
+  bad "grok-cli: アダプタに readonly SANDBOX_PROBE_REFUSED_STATUS=<数値> の行が無い（probe の rc 検査が空振りする）"
+  PROBE_REPORT_STATUS=-1
+fi
 : > "$WORK/argv.log"
 probe_out="$(cd "$WORK/repo" && run_isolated PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" \
   GROK_HOME="$WORK/grok-home-empty" MULTI_AGENT_GROK_READONLY_PROFILE=ff-review-ro \
   bash "$ADAPTERS_DIR/grok-cli-adapter.sh" --probe-sandbox review 2>/dev/null)" && probe_rc=0 || probe_rc=$?
-if [ "$probe_rc" -eq 0 ] && [ -z "$probe_out" ] && grep -q -F "<--sandbox><ff-review-ro><inspect>" "$WORK/argv.log"; then
-  ok "grok-cli: --probe-sandbox は差し替え名で inspect を起動する（rc=0・無出力）"
+if grep -q -F "<--sandbox><ff-review-ro><inspect>" "$WORK/argv.log"; then
+  ok "grok-cli: --probe-sandbox は差し替え名で inspect を起動する"
 else
-  bad "grok-cli: --probe-sandbox に差し替え名が届かない（rc=${probe_rc} out='${probe_out}' argv=$(cat "$WORK/argv.log"))"
+  bad "grok-cli: --probe-sandbox に差し替え名が届かない（argv=$(cat "$WORK/argv.log"))"
+fi
+if [ "$probe_rc" -eq "$PROBE_REPORT_STATUS" ] && [ "$(printf '%s\n' "$probe_out" | sed -n '1p')" = "inert" ]; then
+  ok "grok-cli: イベントを書かない stub の probe は inert（rc=${PROBE_REPORT_STATUS}）を返す"
+else
+  bad "grok-cli: イベントを書かない stub の probe が inert を返さない（rc=${probe_rc} out='${probe_out}'）"
 fi
 # 拒否は probe 入口にも同じ形で出る（プランに載っても未実行になる、を dry-run で言う）
 probe_out="$(cd "$WORK/repo" && run_isolated PATH="$WORK/bin:$PATH" ARGV_LOG="$WORK/argv.log" \
   GROK_HOME="$WORK/grok-home-empty" MULTI_AGENT_GROK_READONLY_PROFILE=workspace \
   bash "$ADAPTERS_DIR/grok-cli-adapter.sh" --probe-sandbox review 2>/dev/null)" && probe_rc=0 || probe_rc=$?
-if [ "$probe_rc" -eq 3 ] && [ "$(printf '%s\n' "$probe_out" | sed -n '1p')" = "refused-to-start" ]; then
-  ok "grok-cli: --probe-sandbox も不正な差し替え名を refused-to-start（rc=3）で報告する"
+if [ "$probe_rc" -eq "$PROBE_REPORT_STATUS" ] && [ "$(printf '%s\n' "$probe_out" | sed -n '1p')" = "refused-to-start" ]; then
+  ok "grok-cli: --probe-sandbox も不正な差し替え名を refused-to-start（rc=${PROBE_REPORT_STATUS}）で報告する"
 else
   bad "grok-cli: --probe-sandbox が不正な差し替え名を報告しない（rc=${probe_rc}: $(printf '%s' "$probe_out" | head -1)）"
 fi

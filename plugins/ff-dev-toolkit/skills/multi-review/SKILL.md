@@ -88,7 +88,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run --route <REVIEW_ROUTE の値> $ARGUMENTS
 ```
 
-CLI・観点・モード・タイムアウト・警告を報告する。✅ は PATH 在だけを意味し、認証・残高切れは実行時まで見えない。例外は sandbox の適用可否で、dry-run が probe して「この環境では sandbox を適用できません」を出す（未実行になる）。probe は片側判定で、**警告が出ないことは「実行が成功する」の保証ではない**。外し方は警告本文にあり、grok の docker.sock symlink は先に [read-only のまま動かす手順](../../docs-template/05-operations/deployment/grok-cli-reviewer.md#dockersock-が-symlink-の-macos-で-read-only-が起動拒否される)を試す。
+CLI・観点・モード・タイムアウト・警告を報告する。✅ は PATH 在だけを意味し、認証・残高切れは実行時まで見えない。例外は sandbox の適用可否で、dry-run の probe が「sandbox を適用できません」（目印の無い不活性を含む。INCOMPLETE になる）か「判定できませんでした」（INCOMPLETE になりうる）を出す。**無警告は成功の保証ではない**。外し方は警告本文にあり、grok の docker.sock symlink は先に [read-only のまま動かす手順](../../docs-template/05-operations/deployment/grok-cli-reviewer.md#dockersock-が-symlink-の-macos-で-read-only-が起動拒否される)を試す。
 
 ### 2. レビュー実行
 
@@ -112,7 +112,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 走行中の deny の例外として、**通る書き込み先は 3 つ: 作業ツリーの外（scratchpad / `mktemp -d` / `/tmp`）・`.review-results/`・gitignore 済みのパス**（`gh ... > tmp/<slug>/body.md` など）。復旧は deny 理由文の `rm` か、Bash の区間先頭の `FF_REVIEW_LOCK_OVERRIDE=1`。非対話で起動を自動化するときは `FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1`。
 
-**失敗・タイムアウト時**: 実行時 fallback は無い。部分出力は `Status: incomplete` で残り、**未完了の節は「指摘なし」ではなく「未確認」と読むこと。** 🔑 / 💳 なら主担当のみで完了する。未完了観点だけの再実行:
+**失敗・タイムアウト時**: 実行時 fallback は無い。部分出力は `Status: incomplete` で残り、**未完了の節は「指摘なし」ではなく「未確認」と読むこと。** 🔑 / 💳 / 🚫 なら主担当のみで完了する。未完了観点だけの再実行:
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --resume --timeout 1800

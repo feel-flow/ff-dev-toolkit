@@ -3,6 +3,8 @@
 # multi-agent の perspective フィルタ解決・縮退表示の回帰テスト（Issue #183）。
 # 実 CLI は起動せず、stub の存在だけを command -v で検出させた dry-run を使う。
 #
+# 空振り検出: sandbox probe の増分を数えられない入力（イベントログの置き場がディレクトリ・親ディレクトリを検索できない・probe 中にログが縮む・GROK_HOME も HOME も無い・probe の mktemp が失敗する）を黙る側へ倒すと「undetermined」系が赤になる。2026-09-25 実測（123 件中）: 不活性判定を目印 grep だけの旧形へ戻す（rc=0・目印なしで即 return 0）と 9 件（inert 4 件 + undetermined 5 件）、増分ではなく「ログに ProfileApplied があるか」で判定すると 1 件、未作成の判定から親ディレクトリの検索可否の確認を外すと 1 件、ProfileApplied 以外の行も数えると 1 件、縮みを合計でしか見ないと 1 件（旧置き場だけが縮むケース）、mktemp 失敗で黙ると 1 件が赤になる。親ディレクトリ検索不可のケースは root 等 chmod 000 を越えて検索できる実行者では部分 skip になる。
+#
 # run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
 
 set -euo pipefail
@@ -65,6 +67,8 @@ fi
 #  出力ゼロのまま失敗した）。最終行のセンチネルを見る。
 FF_REACHED_END=0
 _cleanup() {
+  # sandbox の「親ディレクトリを検索できない」ケースが途中で落ちても消せるよう権限を戻す
+  chmod -R u+rwx "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
   if [[ "$FF_REACHED_END" -ne 1 ]]; then
     echo "✗ multi-agent-plan verify: スイートが最後まで到達しませんでした（途中で中断）" >&2
@@ -909,14 +913,22 @@ printf '%s\n' "$SANDBOX_SENTINEL" > "$REPO/probe-sentinel.txt"
 git -C "$REPO" add probe-sentinel.txt
 git -C "$REPO" commit -qm "probe sentinel"
 
+# GROK_HOME は毎回スクラッチへ向ける。probe は <GROK_HOME>/sessions/sandbox-events.jsonl
+# （と旧置き場）の ProfileApplied の増分で不活性を判定するので、ホストの
+# ~/.grok を読ませると判定がこの機械の実ログ次第になる。既定は呼び出しごとの新しい
+# 空ディレクトリ。置き場を仕込むケースだけ SANDBOX_GROK_HOME で名指しする。
+SANDBOX_HOME_SEQ=0
 run_sandbox_plan() { # $1: 出力先
-  local output="$1"
+  local output="$1" grok_home=""
   shift
   : > "$SANDBOX_ARGV_LOG"
   : > "$SANDBOX_STDIN_LOG"
+  SANDBOX_HOME_SEQ=$((SANDBOX_HOME_SEQ + 1))
+  grok_home="${SANDBOX_GROK_HOME:-$TMP/sandbox-grok-home.$SANDBOX_HOME_SEQ}"
+  mkdir -p "$grok_home"
   (
     cd "$REPO"
-    run_isolated PATH="$SANDBOX_STUB:$PATH" bash "$MULTI_AGENT" \
+    run_isolated PATH="$SANDBOX_STUB:$PATH" GROK_HOME="$grok_home" bash "$MULTI_AGENT" \
       --task review --mode cross-model --base develop --dry-run "$@"
   ) >"$output" 2>&1
 }
@@ -1040,16 +1052,189 @@ else
   tail -20 "$SANDBOX_UNSANDBOXED_LOG" | sed 's/^/    | /' >&2
 fi
 
-# 適用できる環境では表示も挙動も変わらない
-write_sandbox_stub 'exit 0'
+# 適用できる環境では表示も挙動も変わらない。「適用できる」の実体は、probe の起動で
+# イベントログへ ProfileApplied が 1 行増えること（実測: grok 1.0.41 / macOS seatbelt、
+# 2026-09-25、ff-review-ro の inspect で <home>/sessions/sandbox-events.jsonl が 119→120 行）。
+# 増やさない stub は下の inert ケースになる。置き場は版で 2 つあるので両方で黙ることを見る。
+SANDBOX_APPLIED_LINE='{"timestamp":"2026-09-25T00:00:00Z","event_type":"ProfileApplied","profile":"read-only","enforced":true}'
+SANDBOX_APPLIED_FILE="$TMP/sandbox-applied-line.jsonl"
+printf '%s\n' "$SANDBOX_APPLIED_LINE" > "$SANDBOX_APPLIED_FILE"
+write_sandbox_stub "mkdir -p \"\$GROK_HOME/sessions\"
+cat \"$SANDBOX_APPLIED_FILE\" >> \"\$GROK_HOME/sessions/sandbox-events.jsonl\"
+exit 0"
 SANDBOX_OK_LOG="$TMP/sandbox-ok.log"
 if run_sandbox_plan "$SANDBOX_OK_LOG" \
   && ! grep -q 'sandbox を適用できません' "$SANDBOX_OK_LOG" \
+  && ! grep -q 'sandbox が効くかを起動前に判定できませんでした' "$SANDBOX_OK_LOG" \
   && grep -q 'grok-cli \[flat-rate\]:' "$SANDBOX_OK_LOG"; then
-  ok "適用できる環境では警告を出さずプランも変わらない"
+  ok "適用できる環境（probe で ProfileApplied が増える）では警告を出さずプランも変わらない"
 else
   bad "適用できる環境で表示または終了ステータスが変わった"
   tail -20 "$SANDBOX_OK_LOG" | sed 's/^/    | /' >&2
+fi
+write_sandbox_stub "mkdir -p \"\$GROK_HOME\"
+cat \"$SANDBOX_APPLIED_FILE\" >> \"\$GROK_HOME/sandbox-events.jsonl\"
+exit 0"
+SANDBOX_OK_LEGACY_LOG="$TMP/sandbox-ok-legacy.log"
+if run_sandbox_plan "$SANDBOX_OK_LEGACY_LOG" \
+  && ! grep -q 'sandbox を適用できません' "$SANDBOX_OK_LEGACY_LOG" \
+  && ! grep -q 'sandbox が効くかを起動前に判定できませんでした' "$SANDBOX_OK_LEGACY_LOG" \
+  && grep -q 'grok-cli \[flat-rate\]:' "$SANDBOX_OK_LEGACY_LOG"; then
+  ok "旧置き場（0.2.118 の <home>/sandbox-events.jsonl）へ増えた場合も黙る"
+else
+  bad "旧置き場への ProfileApplied を不活性と誤判定した"
+  tail -20 "$SANDBOX_OK_LEGACY_LOG" | sed 's/^/    | /' >&2
+fi
+
+# 不活性（inert）: rc=0・stderr 空・イベント増分 0（https://github.com/feel-flow/ff-dev-toolkit/issues/111 の
+# Windows 実測の形）。旧実装は目印 grep だけで判定していたので、何も言わずに素通りする
+# この形では黙ってプランに載せ、実行は毎回 INCOMPLETE になっていた。
+sandbox_inert_case() { # $1: ケース名, $2: ログ名
+  local label="$1" log="$TMP/$2"
+  if run_sandbox_plan "$log" \
+    && grep -q 'grok-cli: この環境では sandbox を適用できません' "$log" \
+    && grep -q 'appended no ProfileApplied event' "$log" \
+    && grep -q '毎回 INCOMPLETE として報告されます' "$log" \
+    && grep -q 'exclude_clis: "grok-cli"' "$log" \
+    && ! grep -q '外さずに動かす（推奨）' "$log" \
+    && ! grep -q 'sandbox 無しで起動するため' "$log" \
+    && grep -q 'grok-cli \[flat-rate\]:' "$log"; then
+    ok "inert（${label}）: 不活性として警告し、プランには残し、恒久の外し方を出す"
+  else
+    bad "inert（${label}）: 不活性の警告が出ない（または帰結・導線が違う）"
+    tail -30 "$log" | sed 's/^/    | /' >&2
+  fi
+}
+write_sandbox_stub 'exit 0'
+sandbox_inert_case "rc=0・stderr 空・イベント増分 0" "sandbox-inert.log"
+# 過去の ProfileApplied が既にログに残っていても、今回の起動が書かなければ不活性。
+# 「ファイルに ProfileApplied があるか」で見る実装はここで黙る（増分で見る理由）。
+SANDBOX_GROK_HOME="$TMP/sandbox-grok-home-preexisting"
+mkdir -p "$SANDBOX_GROK_HOME/sessions"
+printf '%s\n' "$SANDBOX_APPLIED_LINE" > "$SANDBOX_GROK_HOME/sessions/sandbox-events.jsonl"
+printf '%s\n' "$SANDBOX_APPLIED_LINE" > "$SANDBOX_GROK_HOME/sandbox-events.jsonl"
+sandbox_inert_case "過去の ProfileApplied が残るログで今回 0 行増" "sandbox-inert-preexisting.log"
+unset SANDBOX_GROK_HOME
+# 目印ではない stderr 行が出ていても、増分 0 なら不活性（stderr 空を条件にすると
+# 無関係な 1 行で黙る側へ戻る）。
+write_sandbox_stub 'echo "note: using default configuration" >&2
+exit 0'
+sandbox_inert_case "目印ではない stderr 行 + イベント増分 0" "sandbox-inert-stray.log"
+# 増えたのが ProfileApplied 以外の行（ApplyFailed）だけなら不活性。行数そのものを
+# 数える実装はここで黙る（数えるのは ProfileApplied の行だけ）。
+SANDBOX_OTHER_EVENT_FILE="$TMP/sandbox-other-event-line.jsonl"
+printf '%s\n' '{"timestamp":"2026-09-25T00:00:00Z","event_type":"ApplyFailed","profile":"read-only"}' > "$SANDBOX_OTHER_EVENT_FILE"
+write_sandbox_stub "mkdir -p \"\$GROK_HOME/sessions\"
+cat \"$SANDBOX_OTHER_EVENT_FILE\" >> \"\$GROK_HOME/sessions/sandbox-events.jsonl\"
+exit 0"
+sandbox_inert_case "ProfileApplied 以外の行（ApplyFailed）だけが増える" "sandbox-inert-other-event.log"
+
+# 判定不能（undetermined）: イベントログの置き場が通常ファイルでない（ここではディレクトリ）。
+# 数えられない入力を 0 と読むと不活性・正常のどちらにも化けるので、判定不能として明示する。
+# root でも再現できるよう、権限（chmod 000）ではなく置き場の種類で作る。
+write_sandbox_stub 'exit 0'
+SANDBOX_GROK_HOME="$TMP/sandbox-grok-home-dir"
+mkdir -p "$SANDBOX_GROK_HOME/sessions/sandbox-events.jsonl"
+SANDBOX_UNDETERMINED_LOG="$TMP/sandbox-undetermined.log"
+if run_sandbox_plan "$SANDBOX_UNDETERMINED_LOG" \
+  && grep -q 'grok-cli: この環境で sandbox が効くかを起動前に判定できませんでした' "$SANDBOX_UNDETERMINED_LOG" \
+  && grep -q 'is not a readable regular file' "$SANDBOX_UNDETERMINED_LOG" \
+  && ! grep -q 'sandbox を適用できません' "$SANDBOX_UNDETERMINED_LOG" \
+  && grep -q -- '--exclude-cli grok-cli' "$SANDBOX_UNDETERMINED_LOG" \
+  && ! grep -q 'exclude_clis: "grok-cli"' "$SANDBOX_UNDETERMINED_LOG" \
+  && grep -q 'grok-cli \[flat-rate\]:' "$SANDBOX_UNDETERMINED_LOG"; then
+  ok "undetermined: イベントログが数えられない環境は「判定できない」と明示する（黙らない・適用不可と断定しない・恒久除外は案内しない）"
+else
+  bad "undetermined: 数えられないイベントログで判定不能の表示にならない"
+  tail -30 "$SANDBOX_UNDETERMINED_LOG" | sed 's/^/    | /' >&2
+fi
+unset SANDBOX_GROK_HOME
+
+# 判定不能: GROK_HOME も HOME も無い（イベントログの置き場を決められない）。
+# orchestrator 経由では HOME を外せない（他の経路が HOME を要る）ので、アダプタの
+# probe 入口を直接叩いて出力契約（rc=3 / 1 行目 undetermined）を見る。
+SANDBOX_NOHOME_RC=0
+SANDBOX_NOHOME_OUT="$(cd "$REPO" && run_isolated -u HOME -u GROK_HOME PATH="$SANDBOX_STUB:$PATH" \
+  bash "$ADAPTERS_DIR/grok-cli-adapter.sh" --probe-sandbox review 2>/dev/null)" || SANDBOX_NOHOME_RC=$?
+if [ "$SANDBOX_NOHOME_RC" -eq 3 ] \
+  && [ "$(printf '%s\n' "$SANDBOX_NOHOME_OUT" | sed -n '1p')" = "undetermined" ] \
+  && [[ "$SANDBOX_NOHOME_OUT" == *'GROK_HOME and HOME are both unset'* ]]; then
+  ok "undetermined: GROK_HOME も HOME も無い環境は probe が rc=3 / undetermined を返す"
+else
+  bad "undetermined: HOME 不在の probe が判定不能を返さない（rc=${SANDBOX_NOHOME_RC}: $(printf '%s' "$SANDBOX_NOHOME_OUT" | head -1)）"
+fi
+
+sandbox_undetermined_case() { # $1: ケース名, $2: ログ名, $3: 理由文の部分文字列
+  local label="$1" log="$TMP/$2" needle="$3"
+  if run_sandbox_plan "$log" \
+    && grep -q 'grok-cli: この環境で sandbox が効くかを起動前に判定できませんでした' "$log" \
+    && grep -qF -- "$needle" "$log" \
+    && ! grep -q 'sandbox を適用できません' "$log" \
+    && grep -q 'grok-cli \[flat-rate\]:' "$log"; then
+    ok "undetermined（${label}）: 判定不能として明示する"
+  else
+    bad "undetermined（${label}）: 判定不能の表示にならない"
+    tail -30 "$log" | sed 's/^/    | /' >&2
+  fi
+}
+
+# 判定不能: イベントログの親ディレクトリを検索できない（<home>/sessions が chmod 000）。
+# `-e` はこのとき偽になるので、不在と読むと「増分 0 = inert」と誤診して恒久除外を案内する。
+# root は権限を越えて検索できるため再現しない — その環境ではこのケースだけを部分 skip にする。
+write_sandbox_stub 'exit 0'
+SANDBOX_GROK_HOME="$TMP/sandbox-grok-home-nosearch"
+mkdir -p "$SANDBOX_GROK_HOME/sessions"
+chmod 000 "$SANDBOX_GROK_HOME/sessions"
+if [ -x "$SANDBOX_GROK_HOME/sessions" ]; then
+  chmod 755 "$SANDBOX_GROK_HOME/sessions"
+  echo "  ○ skip: chmod 000 のディレクトリを検索できてしまう実行者（root 等）のため、親ディレクトリ検索不可のケースを実施しない"
+else
+  sandbox_undetermined_case "イベントログの親ディレクトリを検索できない" "sandbox-undetermined-nosearch.log" \
+    'a directory above it is not searchable'
+  chmod 755 "$SANDBOX_GROK_HOME/sessions"
+fi
+unset SANDBOX_GROK_HOME
+
+# 判定不能: probe の間にログが縮んだ（切り詰め・ローテート）。起点との差が負になるので、
+# 今回の起動が書いた行を切り分けられない。
+SANDBOX_GROK_HOME="$TMP/sandbox-grok-home-shrink"
+mkdir -p "$SANDBOX_GROK_HOME/sessions"
+printf '%s\n' "$SANDBOX_APPLIED_LINE" > "$SANDBOX_GROK_HOME/sessions/sandbox-events.jsonl"
+write_sandbox_stub ': > "$GROK_HOME/sessions/sandbox-events.jsonl"
+exit 0'
+sandbox_undetermined_case "新置き場が probe 中に縮む" "sandbox-undetermined-shrink.log" 'shrank during the probe'
+unset SANDBOX_GROK_HOME
+# 旧置き場だけが縮み、新置き場は 2 行増える（合計は増える）。合計の増減だけで見る実装は
+# ここで黙る — 縮んだ側の窓にこの起動の ApplyFailed が消えていても見えない。
+SANDBOX_GROK_HOME="$TMP/sandbox-grok-home-shrink-legacy"
+mkdir -p "$SANDBOX_GROK_HOME"
+printf '%s\n' "$SANDBOX_APPLIED_LINE" > "$SANDBOX_GROK_HOME/sandbox-events.jsonl"
+write_sandbox_stub "mkdir -p \"\$GROK_HOME/sessions\"
+cat \"$SANDBOX_APPLIED_FILE\" \"$SANDBOX_APPLIED_FILE\" >> \"\$GROK_HOME/sessions/sandbox-events.jsonl\"
+: > \"\$GROK_HOME/sandbox-events.jsonl\"
+exit 0"
+sandbox_undetermined_case "旧置き場だけが縮む（合計は増える）" "sandbox-undetermined-shrink-legacy.log" 'shrank during the probe'
+unset SANDBOX_GROK_HOME
+
+# 判定不能: probe の一時ファイルを作れない（probe を起動できない）。PATH の先頭に
+# 失敗する mktemp を置き、アダプタの probe 入口を直接叩く（orchestrator 側も mktemp を
+# 使うので dry-run 全体を通すと別の所で落ちる）。macOS の mktemp は TMPDIR を無視して
+# 成功しうるので、TMPDIR の差し替えは差し込み点にならない。
+SANDBOX_MKTEMP_STUB="$TMP/sandbox-mktemp-fail"
+mkdir -p "$SANDBOX_MKTEMP_STUB"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "mktemp: forced failure" >&2' 'exit 1' > "$SANDBOX_MKTEMP_STUB/mktemp"
+chmod +x "$SANDBOX_MKTEMP_STUB/mktemp"
+mkdir -p "$TMP/sandbox-grok-home-mktemp"
+SANDBOX_MKTEMP_RC=0
+SANDBOX_MKTEMP_OUT="$(cd "$REPO" && run_isolated PATH="$SANDBOX_MKTEMP_STUB:$SANDBOX_STUB:$PATH" \
+  GROK_HOME="$TMP/sandbox-grok-home-mktemp" \
+  bash "$ADAPTERS_DIR/grok-cli-adapter.sh" --probe-sandbox review 2>/dev/null)" || SANDBOX_MKTEMP_RC=$?
+if [ "$SANDBOX_MKTEMP_RC" -eq 3 ] \
+  && [ "$(printf '%s\n' "$SANDBOX_MKTEMP_OUT" | sed -n '1p')" = "undetermined" ] \
+  && [[ "$SANDBOX_MKTEMP_OUT" == *'check TMPDIR'* ]]; then
+  ok "undetermined: probe の一時ファイルを作れないと rc=3 / undetermined（理由に check TMPDIR）を返す"
+else
+  bad "undetermined: mktemp 失敗の probe が判定不能を返さない（rc=${SANDBOX_MKTEMP_RC}: $(printf '%s' "$SANDBOX_MKTEMP_OUT" | head -1)）"
 fi
 
 # fail-open の 4 形。probe が拒否を確定できない失敗で毎回警告すると、存在しない
@@ -1061,7 +1246,9 @@ fi
 sandbox_fail_open_case() { # $1: ケース名, $2: ログ名
   local label="$1" log="$TMP/$2"
   shift 2
-  if run_sandbox_plan "$log" "$@" && ! grep -q 'sandbox を適用できません' "$log"; then
+  if run_sandbox_plan "$log" "$@" && ! grep -q 'sandbox を適用できません' "$log" \
+    && ! grep -q 'sandbox が効くかを起動前に判定できませんでした' "$log" \
+    && ! grep -q '結果が INCOMPLETE になる可能性があります' "$log"; then
     ok "fail-open: ${label}では警告を出さない"
   else
     bad "fail-open 破れ: ${label}で警告が出た（誤警告）"

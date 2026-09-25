@@ -405,6 +405,9 @@ if [[ -z "$MEASURED" ]]; then
   # 部分実行の報告材料。**判定には使わない**（MODE を判定に混ぜない契約はヘッダ参照）。
   RECORD_SUITES="$(sed -n 's/^SUITES=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
   RECORD_MODE="$(sed -n 's/^MODE=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
+  # 赤が鮮度分類の suite だけで説明できた回の suite 名（run-all が書く。旧記録には行が無い）。
+  # 案内の材料であって判定の根拠ではない — 一致・不一致の判定には使わない。
+  RECORD_STALE_ONLY="$(sed -n 's/^STALE_ONLY_FAILED=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
 
   is_sha40 "${RECORD_COMMIT:-}" \
     || undetermined "記録のコミットが読めません（COMMIT=${RECORD_COMMIT:-なし}）: ${RECORD_PATH}" \
@@ -426,6 +429,21 @@ if [[ -z "$MEASURED" ]]; then
     pass) : ;;
     partial) RECORD_PARTIAL=1 ;;
     fail)
+      # 赤がすべて base の先行（鮮度）で説明できた回は、ゲート全体を回し直さなくても
+      # 取り込み後にその suite だけを名指しで回し直せば足りる（緑なら部分実行の記録になり、
+      # 下の部分実行の判定と PR の checks で進める）。案内を分けないと、並行マージが続く間は
+      # 全件ゲートを回し直すたびに同じ鮮度赤を踏み続ける（Issue `#1893` / OBS-083）。
+      # 値は suite 名の文字集合だけを受ける — 読めない値・旧記録の空は従来の案内へ倒す
+      # （鮮度扱いへ倒さない）。案内を出すのは、記録がリモート先端そのものを clean な木で
+      # 測った回だけ。別コミット・汚れた木の赤から部分実行の経路へ誘導すると、そのコミット
+      # 固有の変更が全件ゲートを一度も通らないまま進む。
+      # 正規表現は変数に置く（`[[ =~ ]]` に空白を含む式を直書きすると bash の版で解釈が割れる）
+      stale_only_re='^[A-Za-z0-9._-]+( [A-Za-z0-9._-]+)*$'
+      if [[ "$RECORD_STALE_ONLY" =~ $stale_only_re \
+            && "$RECORD_COMMIT" == "$REMOTE_HEAD" && "$RECORD_DIRTY" == "no" ]]; then
+        undetermined "直近のゲートの赤は base の先行による鮮度赤だけです（${RECORD_STALE_ONLY} / ${RECORD_GATE:-gate} / ${RECORD_AT:-時刻不明}）" \
+                     "base を取り込み、赤だった suite だけを ${RECORD_GATE:-gate} へ verify.sh のパスで名指しして回し直すこと（${RECORD_STALE_ONLY}）。緑なら部分実行の記録になり、PR の checks が全件成功していればゲート全体を回し直さずに進める。取り込んでも赤いままなら変更起因の赤"
+      fi
       undetermined "直近のゲートが失敗しています（${RECORD_GATE:-gate} / ${RECORD_AT:-時刻不明}）" \
                    "ゲートを通してから記録を更新すること"
       ;;

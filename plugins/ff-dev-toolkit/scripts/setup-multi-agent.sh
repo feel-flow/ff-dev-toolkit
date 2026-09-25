@@ -685,6 +685,15 @@ check_and_install_dependencies() {
 
 # ── Step 3: Detect AI CLIs ──
 
+# codex-cli の版の前提。アカウント側のモデル一覧（~/.codex/models_cache.json）を
+# 書いたクライアントより古い CLI は、そこに載ったモデルを扱えないことがある。実測: ChatGPT
+# アカウントで最新世代の上位モデルを codex-cli 0.153.4 は 400（model is not supported when using Codex
+# with a ChatGPT account）で拒み、0.157.0 は完走した。
+print_codex_version_prerequisite() {
+    print_info "  Codex CLI の版: models_cache.json の client_version 以上が前提（最新世代のモデルは 0.153.4 で 400、0.157.0 で完走を実測）"
+    print_info "  multi-agent.sh は起動前に版を比べ、古ければ npm / Homebrew で自動更新します（無効化: FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE=1）"
+}
+
 detect_ai_clis() {
     print_step 3 "AI CLI を検出中..."
 
@@ -701,6 +710,7 @@ grok-cli:grok:Flat-rate"
             local path
             path="$(which "$cmd")"
             print_success "$name ($cmd) — $tier [$path]"
+            [[ "$name" == "codex-cli" ]] && print_codex_version_prerequisite
             found=$((found + 1))
         else
             print_warning "$name ($cmd) — 未インストール"
@@ -747,6 +757,7 @@ show_install_guides() {
         echo -e "  ${BOLD}Codex CLI (Standard tier — クロスモデルレビューに最適)${NC}"
         print_info "  npm install -g @openai/codex"
         print_info "  https://github.com/openai/codex"
+        print_codex_version_prerequisite
     fi
 
     if ! command -v copilot &>/dev/null; then

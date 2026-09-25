@@ -184,6 +184,7 @@
 #### skill が呼ぶスクリプトの設定
 
 - `FF_ACE_TS_RUNNER`
+- `FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE`（`multi-agent.sh` が dispatch 前に古い codex-cli を自動更新するのを止める。`1` で無効）
 - `FF_JEV_MODE`
 - `FF_JEV_POINTS`
 - `FF_MERGE_CLEANUP_IGNORE_PATHS`

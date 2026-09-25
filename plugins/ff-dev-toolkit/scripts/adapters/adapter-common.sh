@@ -359,6 +359,13 @@ load_perspective() {
 # Description is read from DESCRIPTION variable. For review it carries prior
 # review / gate evidence; for explore and implement it is the task description.
 # Staging dir is read from STAGING_DIR variable (implement only; see Issue #392)
+
+# プロンプトの最終行。multi-agent.sh の classify_cli_failure_cause は、
+# stderr へプロンプトをエコーする CLI（codex）の抜粋からこの行の最後の出現より後ろ
+# だけを読む — エコーされた diff 内の語を CLI の失敗と誤読しないため。文言を変える
+# ときはこの 1 箇所だけを変える（分類器は同じ変数を読む）。
+readonly PROMPT_END_SENTINEL="Analyze the above according to your role and output your findings in the specified Output Template format."
+
 build_prompt() {
   local perspective_file="$1"
   local base_branch="${2:-$(detect_base_branch)}"
@@ -717,7 +724,7 @@ ${context_section}
 
 ---
 
-Analyze the above according to your role and output your findings in the specified Output Template format.
+${PROMPT_END_SENTINEL}
 PROMPT
 }
 
@@ -1965,27 +1972,48 @@ _ff_reason_link_count() { # $1: パス / stdout: ハードリンク数（取れ�
   printf '%s' "$n"
 }
 
-write_reason_file() { # $1: パス / $2: 書く内容 -- rc0 = 書けた, rc1 = 書かなかった
-  local f="$1" content="$2" links
+# 既存の実体を掴んではいけない理由を 1 行で返す（掴んでよければ rc1・出力なし）。
+# write_reason_file の下見と、fail_cli_task の「この回の記録は拒否されたか」の再判定が
+# 同じ条件を読む — 2 か所に書き写すと、片方だけ締めた状態へ静かにずれる（Issue `#1816`）。
+_ff_reason_refusal() { # $1: パス / stdout: 拒否理由（rc0 = 拒否する, rc1 = 掴んでよい）
+  local f="$1" links
   if [[ -L "$f" ]]; then
-    echo "WARNING: refusing to write the failure reason at ${f}: a symlink is already there, and writing would act on its target instead." >&2
-    echo "         Remove it by hand if it is yours; otherwise point TMPDIR at a directory only you can write." >&2
+    printf '%s' "a symlink is already there, and writing would act on its target instead."
+    return 0
+  fi
+  [[ -e "$f" ]] || return 1
+  if [[ ! -f "$f" ]]; then
+    printf '%s' "something that is not a regular file is already there."
+    return 0
+  fi
+  if [[ ! -O "$f" ]]; then
+    printf '%s' "the file there is owned by someone else."
+    return 0
+  fi
+  # リンク数が取れないことと「リンクが複数ある」ことは別の原因なので書き分ける。取れない
+  # 原因はたいてい道具の側（stat が PATH に無い・壊れている）で、ファイルのリンク数を
+  # 断定すると利用者は自分のファイルを疑い、次の一手（stat の確認）へ辿り着けない。
+  if ! links="$(_ff_reason_link_count "$f")"; then
+    printf '%s' "could not determine how many hard links the file there has (is a working \`stat\` on PATH?), so writing could overwrite another name for it."
+    return 0
+  fi
+  if [[ "$links" != "1" ]]; then
+    printf '%s' "the file there has ${links} hard links, so writing could overwrite another name for it."
+    return 0
+  fi
+  return 1
+}
+
+write_reason_file() { # $1: パス / $2: 書く内容 -- rc0 = 書けた, rc1 = 書かなかった
+  local f="$1" content="$2" refusal
+  if refusal="$(_ff_reason_refusal "$f")"; then
+    echo "WARNING: refusing to write the failure reason at ${f}: ${refusal}" >&2
+    if [[ -L "$f" ]]; then
+      echo "         Remove it by hand if it is yours; otherwise point TMPDIR at a directory only you can write." >&2
+    fi
     return 1
   fi
   if [[ -e "$f" ]]; then
-    if [[ ! -f "$f" ]]; then
-      echo "WARNING: refusing to write the failure reason at ${f}: something that is not a regular file is already there." >&2
-      return 1
-    fi
-    if [[ ! -O "$f" ]]; then
-      echo "WARNING: refusing to write the failure reason at ${f}: the file there is owned by someone else." >&2
-      return 1
-    fi
-    links="$(_ff_reason_link_count "$f")" || links=""
-    if [[ "$links" != "1" ]]; then
-      echo "WARNING: refusing to write the failure reason at ${f}: the file there has ${links:-an unknown number of} hard links, so writing could overwrite another name for it." >&2
-      return 1
-    fi
     if ! rm -f "$f" 2>/dev/null; then
       echo "WARNING: refusing to write the failure reason at ${f}: the stale file from this run could not be removed." >&2
       return 1
@@ -2012,19 +2040,25 @@ write_reason_file() { # $1: パス / $2: 書く内容 -- rc0 = 書けた, rc1 = 
 # ここを通る。許可値の検証はこの入口に一箇所で集約する — 文字列は疑似 Union であり、
 # 任意文字列を受けると typo した理由が describe_cli_failure / fail_cli_task の
 # case をすべて素通りして既定文言（「status 1 で落ちた」）へ黙って化ける。
+# 理由コードの許可値。記録の入口（record_timeout_reason）と、自分が書いたとは限らない
+# 実体の中身を成果物へ写すかの判定（fail_cli_task の注記）が同じ集合を読む。
+_ff_reason_is_known() { # $1: 値 -- rc0 = 許可値
+  case "$1" in
+    timeout|orchestrator-error|command|sandbox-refused|empty-output|missing-review-body|missing-review-body-prose|review-body-unparsed) return 0 ;;
+  esac
+  return 1
+}
+
 record_timeout_reason() {
   local reason="$1" f
-  case "$reason" in
-    timeout|orchestrator-error|command|sandbox-refused|empty-output|missing-review-body|missing-review-body-prose|review-body-unparsed) : ;;
-    *)
-      # 呼び出し側（アダプタ）のバグ。記録せず名指しして続行する。このとき残るのは
-      # 「記録なし」ではなく、run_with_timeout が起動時に記録した command（CLI 自身
-      # の終了）— typo した理由よりは正確な既定で、分類は exit status ベースの文言に
-      # なる。
-      echo "WARNING: record_timeout_reason called with unknown reason '${reason}' (adapter bug); not recording it. Failure classification falls back to the exit status." >&2
-      return 0
-      ;;
-  esac
+  if ! _ff_reason_is_known "$reason"; then
+    # 呼び出し側（アダプタ）のバグ。記録せず名指しして続行する。このとき残るのは
+    # 「記録なし」ではなく、run_with_timeout が起動時に記録した command（CLI 自身
+    # の終了）— typo した理由よりは正確な既定で、分類は exit status ベースの文言に
+    # なる。
+    echo "WARNING: record_timeout_reason called with unknown reason '${reason}' (adapter bug); not recording it. Failure classification falls back to the exit status." >&2
+    return 0
+  fi
   f="$(timeout_reason_file)"
   # 書けなくても呼び出し側の失敗処理は続ける（従来どおり）。ただし黙ると
   # empty-output が status 1 へ化けたり stale な timeout 案内の種になるので、
@@ -2034,7 +2068,26 @@ record_timeout_reason() {
   # 運べない方が軽い。
   if ! write_reason_file "$f" "$reason"; then
     echo "WARNING: could not record timeout reason '${reason}' at ${f}; failure classification may fall back to the exit status only." >&2
+    # rc では運べない契約（上記）なので、記録の失敗は fail_cli_task へグローバルで運ぶ。
+    # 同じシェルで呼ぶアダプタ本文の記録（empty-output 等）はこれで届く。
+    # run_with_timeout 内の記録は `$(...)` のサブシェルで失われるため、fail_cli_task は
+    # 実体の再判定（reason_record_may_be_stale）も併せて見る（Issue `#1816`）
+    _FF_REASON_RECORD_FAILED=1
   fi
+}
+
+# この回の失敗理由の記録が拒否された（= 読み戻す値が古い段階の値のまま残っている）
+# 可能性があれば rc0。条件は 2 つ:
+#   1. 同じシェルの record_timeout_reason が書けなかった（_FF_REASON_RECORD_FAILED）
+#   2. 理由ファイルの実体が今も上書きを拒まれる形をしている（_ff_reason_refusal）—
+#      run_with_timeout がサブシェルで timeout を記録しようとして拒まれた回は 1 が
+#      届かないが、拒否の原因（stat が無い・ハードリンク・他人所有）は実体側に残る
+# 正常な回は run_with_timeout 自身が作った「自分所有・リンク数 1」のファイルなので、
+# どちらも成り立たず注記は付かない（狼少年にしない）。
+_FF_REASON_RECORD_FAILED=""
+reason_record_may_be_stale() {
+  [[ -n "${_FF_REASON_RECORD_FAILED}" ]] && return 0
+  _ff_reason_refusal "$(timeout_reason_file)" >/dev/null
 }
 
 # Echoes the recorded reason, or "" when it could not be recorded (a broken TMPDIR
@@ -2490,8 +2543,34 @@ readonly STDERR_EXCERPT_BYTES=4000
 fail_cli_task() {
   local rc="$1" stderr_log="$2" perspective_name="$3" partial="$4"
 
-  local kind reason
+  local kind reason stale_note="" refusal shown_kind stale_head
   kind="$(read_timeout_reason)"
+  # 後始末（clear）の前に判定する — 消した後では実体の形を再判定できない。
+  # 記録を拒んだ WARNING は orchestrator の stderr（複数アダプタが交錯し、誰も保存しない）
+  # にしか出ないので、拒否理由そのものを成果物へ写す（Issue `#1816`）
+  if reason_record_may_be_stale; then
+    refusal="$(_ff_reason_refusal "$(timeout_reason_file)")" || refusal=""
+    # 注記が出る回の理由ファイルは、ハードリンク・他人所有など「自分が書いたとは限らない」
+    # 実体である。中身を成果物へそのまま写すと他人のファイル内容が漏れ、改行を含めば
+    # `> Reason code:` 行を偽装して統合レポートの未完了理由まで書き換えられるので、
+    # record_timeout_reason の許可値に一致するときだけ値を見せる
+    if [[ -z "$kind" ]]; then
+      shown_kind="none"
+    elif _ff_reason_is_known "$kind"; then
+      shown_kind="\`${kind}\`"
+    else
+      shown_kind="not shown (the file there may not be ours)"
+    fi
+    # 同じシェルの記録失敗は確定、実体の再判定だけで分かった回は「上書きを拒む形をしている」
+    # 止まり（サブシェル内の記録が実際に試みられたかはここから見えない）なので書き分ける
+    if [[ -n "${_FF_REASON_RECORD_FAILED}" ]]; then
+      stale_head="The failure reason for this run could not be updated"
+    else
+      stale_head="The failure reason for this run may not have been updated (the reason file refuses overwrites)"
+    fi
+    stale_note="
+> ⚠️ ${stale_head}${refusal:+: ${refusal%.}}. The classification above may therefore be stale — it can reflect an earlier stage (recorded reason: ${shown_kind}) rather than the actual failure. Read it as unconfirmed."
+  fi
   clear_timeout_reason
   # 本文の不受理は、直前の review_body_present が残した種別で理由コードを細分する
   # （散文だけのレビュー / 解析できない本文）。理由コードは成果物へ 1 行載せ、統合レポートの
@@ -2529,6 +2608,17 @@ fail_cli_task() {
     cat "$stderr_log" >&2
     echo "--- end stderr ---" >&2
     stderr_excerpt="$(tail -c "$STDERR_EXCERPT_BYTES" "$stderr_log")"
+    # バイト数で切った抜粋の先頭行は切れ端で、UTF-8 の多バイト文字の途中から始まりうる
+    # （実測: codex がエコーした日本語のプロンプト）。不正な UTF-8 が残ると
+    # 下流の awk が `multibyte conversion failure` で落ち、型付き判定は「判定器の実行
+    # 失敗 → 安全側 Critical」、失敗分類は空へ化ける。切ったときだけ、先頭の切れ端の行を
+    # 捨てる（1 行しか無い抜粋は捨てると何も残らないのでそのまま）。
+    local stderr_size
+    stderr_size="$(wc -c < "$stderr_log" 2>/dev/null | tr -d '[:space:]')" || stderr_size=""
+    if [[ "$stderr_size" =~ ^[0-9]+$ && "$stderr_size" -gt "$STDERR_EXCERPT_BYTES" \
+          && "$stderr_excerpt" == *$'\n'* ]]; then
+      stderr_excerpt="$(printf '%s\n' "$stderr_excerpt" | LC_ALL=C sed '1d')"
+    fi
   fi
   # Guard the empty operand: fail_orchestrator_error calls in with "" (there is no
   # stderr file when creating it is what failed). `rm -f ""` is a no-op on BSD, but
@@ -2566,13 +2656,24 @@ ${partial}"
   fi
 
   if [[ -n "$stderr_excerpt" ]]; then
+    # フェンスは抜粋中の最長のバッククォート列より 1 本長くする。
+    # codex は stderr へプロンプトをエコーし、プロンプトは出力テンプレートの ``` を
+    # 含む。固定の ``` で囲むと内側の ``` がフェンスを閉じ、型付き判定は「フェンス
+    # 未閉」として安全側（Critical あり）へ倒れ、失敗分類は末尾の API エラー行へ
+    # 届かない（実測: 400 のモデル非対応が Critical 扱いの INCOMPLETE になった）。
+    local stderr_fence
+    stderr_fence="$(printf '%s\n' "$stderr_excerpt" | LC_ALL=C awk '
+      { s = $0; while (match(s, /`+/)) { if (RLENGTH > max) max = RLENGTH; s = substr(s, RSTART + RLENGTH) } }
+      END { n = (max >= 3 ? max + 1 : 3); out = ""; for (i = 0; i < n; i++) out = out "`"; print out }')" \
+      || stderr_fence=""
+    [[ "$stderr_fence" =~ ^\`{3,}$ ]] || stderr_fence='````````````````'
     body="${body}
 
 ### CLI stderr (last $((STDERR_EXCERPT_BYTES / 1000))KB)
 
-\`\`\`
+${stderr_fence}
 ${stderr_excerpt}
-\`\`\`"
+${stderr_fence}"
   fi
 
   # The "never reached its conclusion" clause is false for a result we refused
@@ -2615,7 +2716,7 @@ ${stderr_excerpt}
 > Reason code: \`${kind}\`" ;;
   esac
   if ! write_output "$OUTPUT_FILE" "$CLI_NAME" "$perspective_name" \
-    "> ⚠️ **INCOMPLETE — ${CLI_NAME} ${reason}.** This is not a finished ${TASK_TYPE:-review}: ${banner_detail}.${reason_line}
+    "> ⚠️ **INCOMPLETE — ${CLI_NAME} ${reason}.** This is not a finished ${TASK_TYPE:-review}: ${banner_detail}.${reason_line}${stale_note}
 
 ${body}" \
     "incomplete"; then
