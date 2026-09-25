@@ -1104,6 +1104,10 @@ must_contain "GETTING_STARTED_ABSOLUTE_BEGINNER.md" 'multi-cli-review-orchestrat
   "GETTING_STARTED が対応プラットフォーム節へ相互参照している"
 must_contain "GETTING_STARTED_ABSOLUTE_BEGINNER.md" 'PowerShell / コマンドプロンプト版は存在しません' \
   "GETTING_STARTED が Windows ネイティブ非対応を明記している"
+# Quickstart の構造図・読み順・プロンプト例が旧ディレクトリ名へ戻る退行。接頭辞 docs/ の無い形
+# （`2. 01-context/PROJECT.md` 等）は docs-template-portability の解決検査の針が当たらないので固定文字列で止める。
+must_not_contain "GETTING_STARTED.md" '01-business/' "GETTING_STARTED が旧ディレクトリ名 01-business/ を使わない"
+must_not_contain "GETTING_STARTED.md" '07-quality/' "GETTING_STARTED が旧ディレクトリ名 07-quality/ を使わない"
 # 固定文字列の不在検査は「その文言の復活」しか止められない。全角/半角括弧の差や
 # 言い換えは素通りする（実測）。ラベルは**実際に守っている範囲**まで狭めておく。
 must_not_contain "GETTING_STARTED_ABSOLUTE_BEGINNER.md" 'コマンドプロンプト（Windows）で実行' \

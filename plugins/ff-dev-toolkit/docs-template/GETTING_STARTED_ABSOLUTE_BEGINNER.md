@@ -67,7 +67,8 @@ xcode-select --install
 > このツールキットの配布物は端から端まで bash スクリプト（`.sh`）で、**PowerShell / コマンドプロンプト版は存在しません**。
 > Windows では **WSL2（推奨）** か、上でインストールした Git for Windows に同梱の **Git Bash** を使ってください。
 > 以降のコマンドは、コマンドプロンプトや PowerShell ではなく **その bash 環境で**実行します。
-> 詳細と既知の注意点は [対応プラットフォーム](./05-operations/deployment/multi-cli-review-orchestration.md#対応プラットフォーム) を参照。
+> 詳細と既知の注意点は `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/multi-cli-review-orchestration.md#対応プラットフォーム`（初期セット外・必要ならコピーする）を参照。
+> `${CLAUDE_PLUGIN_ROOT}` は Claude Code に ff-dev-toolkit を導入したときのプラグインの場所です。導入していない環境（GitHub Copilot だけを使う場合など）では、[公開テンプレート配布元](https://github.com/feel-flow/ff-dev-toolkit/tree/HEAD/plugins/ff-dev-toolkit/docs-template) の同じ相対パスのファイルを開いてください（このガイドの以降の案内も同じ）。
 
 **確認方法:**
 
@@ -91,8 +92,8 @@ git --version
 
 **👉 詳細なセットアップ方法:**
 
-- GitHub Copilot: [`SETUP_GITHUB_COPILOT.md`](./SETUP_GITHUB_COPILOT.md)
-- Claude Code: [`SETUP_CLAUDE_CODE.md`](./SETUP_CLAUDE_CODE.md)
+- GitHub Copilot: `${CLAUDE_PLUGIN_ROOT}/docs-template/SETUP_GITHUB_COPILOT.md`（初期セット外・必要ならコピーする）
+- Claude Code: `${CLAUDE_PLUGIN_ROOT}/docs-template/SETUP_CLAUDE_CODE.md`（初期セット外・必要ならコピーする）
 
 ### 1-2: プロジェクトフォルダの作成
 

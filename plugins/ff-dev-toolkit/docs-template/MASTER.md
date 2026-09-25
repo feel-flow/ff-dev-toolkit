@@ -1,11 +1,11 @@
 ---
 title: "MASTER"
-version: "1.9.0"
+version: "1.9.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-12"
-changeImpact: "medium"
+updated: "2026-09-26"
+changeImpact: "low"
 ---
 
 # AI駆動開発マスタードキュメント
@@ -535,12 +535,11 @@ metrics:
 
 > コア7文書はプロジェクトの最小構成です。成長に応じて各フォルダ内に文書を追加してください。全文書が揃わなくてもAIと対話しながら段階的に仕様を策定できます。
 
-### 品質・セキュリティ（推奨拡張・初期セット外）
+### 品質・セキュリティ（推奨拡張・初期セット外・必要時にコピー）
 
-コア7以外に、次を参照すると品質ゲートとレビュー観点が揃いやすい。必要時に `${CLAUDE_PLUGIN_ROOT}/docs-template/` の同一相対パスからコピーする。
+コア7以外に、次を参照すると品質ゲートとレビュー観点が揃いやすい。
 
-- 04-quality/GUARDRAILS_THREE_LAYERS.md — ガードレール3層（仕様・自動チェック・人間レビュー）
-- 04-quality/SECURITY_REVIEW_CHECKLIST.md — セキュリティレビューチェックリスト（PR用）
+- 04-quality/GUARDRAILS_THREE_LAYERS.md（ガードレール3層: 仕様・自動チェック・人間レビュー）と 04-quality/SECURITY_REVIEW_CHECKLIST.md（セキュリティレビューチェックリスト。PR用）— 相互に参照するので 2 文書を一緒にコピーする。`${CLAUDE_PLUGIN_ROOT}/docs-template/04-quality/GUARDRAILS_THREE_LAYERS.md` と `${CLAUDE_PLUGIN_ROOT}/docs-template/04-quality/SECURITY_REVIEW_CHECKLIST.md` からコピー
 
 ### ナレッジベース（初期セット外・`/ace-setup` が作成）
 
@@ -558,11 +557,11 @@ metrics:
 - 06-reference/DECISION_MATRIX.md — 「どの文書に書く？」判断ガイド（Decision Matrix・曖昧ケース例・機能×文書マトリクス）。`${CLAUDE_PLUGIN_ROOT}/docs-template/06-reference/DECISION_MATRIX.md` からコピー
 - 06-reference/COPILOT_AGENTS.md — GitHub Copilot Agents設定リファレンス（6種のレビューエージェントテンプレート）。`${CLAUDE_PLUGIN_ROOT}/docs-template/06-reference/COPILOT_AGENTS.md` からコピー
 - 06-reference/ISSUE_TEMPLATE_PATTERNS.md — Issue テンプレ設計パターン（ストーリー型=推奨 / 従来型=代替）。`${CLAUDE_PLUGIN_ROOT}/docs-template/06-reference/ISSUE_TEMPLATE_PATTERNS.md` からコピー
-- 05-operations/ORGANIZATIONAL_ROLLOUT.md — 組織展開ガイド索引（段階的導入の Phase 1〜4・文書分割・アーカイブ・月次ヘルスチェック）。`${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/ORGANIZATIONAL_ROLLOUT.md` からコピー
+- 05-operations/ORGANIZATIONAL_ROLLOUT.md — 組織展開ガイド索引（段階的導入の Phase 1〜4・文書分割・アーカイブ・月次ヘルスチェック）。索引と詳細 4 文書（organizational-rollout/）は相互にリンクするので一緒にコピーする。`${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/ORGANIZATIONAL_ROLLOUT.md` と `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/organizational-rollout/` からコピー
 
 ## ドキュメント構造ガイド（AIツール向け）
 
-> **詳細ガイドは 05-operations/ORGANIZATIONAL_ROLLOUT.md（初期セット外・必要時に `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/ORGANIZATIONAL_ROLLOUT.md` からコピー）を参照**。本節はサマリーのみを掲載する（SSOT は新ガイド）。
+> **詳細ガイドは 05-operations/ORGANIZATIONAL_ROLLOUT.md（初期セット外・必要時に組織展開ガイド一式として `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/ORGANIZATIONAL_ROLLOUT.md` と `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/organizational-rollout/` からコピー）を参照**。本節はサマリーのみを掲載する（SSOT は新ガイド）。
 
 ### AIツールの読み込み戦略
 
@@ -594,7 +593,7 @@ AI: DEPLOYMENT.md（索引）→ deployment/self-review.md を読み込み
 | 800 行超  | 分割を推奨     |
 | 1200 行超 | **分割を必須** |
 
-> 親（索引）+ 子（詳細）への分割手順・分割しない判断・実例は organizational-rollout/document-splitting.md（初期セット外・`${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/organizational-rollout/document-splitting.md` からコピー）を SSOT とする。
+> 親（索引）+ 子（詳細）への分割手順・分割しない判断・実例は organizational-rollout/document-splitting.md（初期セット外・組織展開ガイド一式として `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/ORGANIZATIONAL_ROLLOUT.md` と `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/organizational-rollout/` からコピー）を SSOT とする。
 
 ### 簡潔化の原則
 
@@ -613,7 +612,7 @@ AI: DEPLOYMENT.md（索引）→ deployment/self-review.md を読み込み
 
 ## 月次ドキュメント参照チェック
 
-毎月1日に以下4項目を確認する。手順・自動化スクリプト・レポートテンプレートは organizational-rollout/health-check.md（初期セット外・`${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/organizational-rollout/health-check.md` からコピー）を参照。
+毎月1日に以下4項目を確認する。手順・自動化スクリプト・レポートテンプレートは organizational-rollout/health-check.md（初期セット外・組織展開ガイド一式として `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/ORGANIZATIONAL_ROLLOUT.md` と `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/organizational-rollout/` からコピー）を参照。
 
 1. **MASTER.md からの参照確認** — 新規文書が索引から到達可能か
 2. **ファイルサイズ確認** — 上記閾値（500/800/1200）超過の検出
@@ -622,7 +621,7 @@ AI: DEPLOYMENT.md（索引）→ deployment/self-review.md を読み込み
 
 ### アーカイブ対象（要約）
 
-以下に該当する文書は `archive/` への退避を **検討**。判定フロー・手順・リダイレクト管理ルールは organizational-rollout/archive-strategy.md（初期セット外・`${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/organizational-rollout/archive-strategy.md` からコピー）を参照。
+以下に該当する文書は `archive/` への退避を **検討**。判定フロー・手順・リダイレクト管理ルールは organizational-rollout/archive-strategy.md（初期セット外・組織展開ガイド一式として `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/ORGANIZATIONAL_ROLLOUT.md` と `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/organizational-rollout/` からコピー）を参照。
 
 - 6 ヶ月参照なし
 - 技術的に陳腐化
@@ -676,7 +675,7 @@ draft → review → approved
 | approved   | 承認済み                 | 正式な仕様として遵守         |
 | deprecated | 廃止準備・アーカイブ済み | 新規実装の参照元に使用しない |
 
-> `deprecated` はコア/拡張文書の終端状態。役目を終えた文書のアーカイブ（organizational-rollout/archive-strategy.md — 初期セット外・必要時に `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/organizational-rollout/archive-strategy.md` からコピー）や、移動しない ADR の in-place 陳腐化に用いる。`docs/specs/` の 6 ステータス（中間 `implementing`/`done` を含む）とは異なり、コアは終端 1 つのみを持つ。
+> `deprecated` はコア/拡張文書の終端状態。役目を終えた文書のアーカイブ（organizational-rollout/archive-strategy.md — 初期セット外・必要時に組織展開ガイド一式として `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/ORGANIZATIONAL_ROLLOUT.md` と `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/organizational-rollout/` からコピー）や、移動しない ADR の in-place 陳腐化に用いる。`docs/specs/` の 6 ステータス（中間 `implementing`/`done` を含む）とは異なり、コアは終端 1 つのみを持つ。
 
 `review` ステータスの文書に対し1週間レビューコメントがなければ、ドキュメントオーナーが `approved` に昇格する。
 
@@ -730,6 +729,10 @@ Changelog エントリには以下のカテゴリを使用する（[Keep a Chang
 ## Changelog
 
 - 2026-09-08 追記: プラグイン変数がない直接利用でも取得できる公開配布元を明記（ai-spec-driven-development#525）。
+
+### [1.9.1] - 2026-09-26
+
+- 「必要時にコピー」の案内を、一緒にコピーしないとリンクが切れる文書の組（コピー単位）で示すよう整理。組織展開ガイドは索引 ORGANIZATIONAL_ROLLOUT.md と organizational-rollout/ の一式を 1 つの指示でコピーさせ、本文で索引や詳細文書を単体でコピーさせていた 5 か所も一式を指す形へ揃えた。品質・セキュリティ節の 2 文書も見出しと箇条を他節と同じ形にし、相互に参照する 2 文書を一緒にコピーさせる。
 
 ### [1.9.0] - 2026-09-12
 

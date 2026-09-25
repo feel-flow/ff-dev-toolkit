@@ -1,6 +1,6 @@
 # Archive Index
 
-このディレクトリは、`docs-template/` 配下から退避した文書のアーカイブ先です。退避判定・手順・リダイレクト管理ルールは [`../05-operations/organizational-rollout/archive-strategy.md`](../05-operations/organizational-rollout/archive-strategy.md) を SSOT とします。
+このディレクトリは、`docs/` 配下から退避した文書のアーカイブ先です。退避判定・手順・リダイレクト管理ルールは [`../05-operations/organizational-rollout/archive-strategy.md`](../05-operations/organizational-rollout/archive-strategy.md) を SSOT とします。
 
 ## ディレクトリ構成
 

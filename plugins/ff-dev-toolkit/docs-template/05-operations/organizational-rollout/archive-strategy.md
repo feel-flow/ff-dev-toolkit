@@ -1,15 +1,16 @@
 ---
 title: "Archive Strategy"
-version: "1.0.0"
+version: "1.0.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "2026-05-06"
-updated: "2026-05-06"
+updated: "2026-09-26"
+changeImpact: "low"
 ---
 
 # アーカイブ戦略 (Archive Strategy)
 
-> **適用範囲**: 役目を終えた文書を `archive/` に退避させる際の判定基準と運用ルール。`docs-template/` 配下のあらゆる文書（コア 7・拡張・ADR）が対象。
+> **適用範囲**: 役目を終えた文書を `archive/` に退避させる際の判定基準と運用ルール。`docs/` 配下のあらゆる文書（コア 7・拡張・ADR）が対象。
 
 ## なぜアーカイブが必要か
 
@@ -52,7 +53,7 @@ updated: "2026-05-06"
 ### Step 1: 退避先ディレクトリを用意
 
 ```text
-docs-template/
+docs/
 ├── archive/
 │   ├── README.md                  # アーカイブ全体の索引（必須）
 │   ├── 2024/                      # 年単位サブディレクトリ
@@ -63,14 +64,14 @@ docs-template/
 
 - **年単位サブディレクトリ** で整理すると検索性が上がる。
 - `archive/README.md` は索引として **必ず** 用意し、1 行 = 1 文書 + アーカイブ理由を併記する。
-- 本テンプレートでは [`docs-template/archive/README.md`](../../archive/README.md) を **雛形（ヘッダー + 雛形 1 行）** として提供している。初回アーカイブ時にヘッダーはそのままで、雛形行を実エントリに置き換える運用とする。
+- 本テンプレートでは `${CLAUDE_PLUGIN_ROOT}/docs-template/archive/README.md` を **雛形（ヘッダー + 雛形 1 行）** として提供している（初期セット外）。初回アーカイブ時に `docs/archive/README.md` へコピーし、ヘッダーはそのままで雛形行を実エントリに置き換える運用とする。
 
 ### Step 2: `git mv` で履歴を保ったまま移動
 
 ```bash
 # 履歴を保つため、必ず git mv を使う（cp + rm 禁止）
-git mv docs-template/02-design/OLD_AUTH_DESIGN.md \
-       docs-template/archive/2025/OLD_AUTH_DESIGN.md
+git mv docs/02-design/OLD_AUTH_DESIGN.md \
+       docs/archive/2025/OLD_AUTH_DESIGN.md
 ```
 
 ### Step 3: フロントマターを更新
@@ -97,7 +98,7 @@ supersededBy: "02-design/AUTH_DESIGN.md" # 後継文書がある場合のみ
 > ⚠️ **このドキュメントはアーカイブされました**
 >
 > - **アーカイブ日**: 2026-05-06
-> - **理由**: OAuth2 移行完了に伴い、現行設計は [AUTH_DESIGN.md](../../02-design/AUTH_DESIGN.md) に統合
+> - **理由**: OAuth2 移行完了に伴い、現行設計は `02-design/AUTH_DESIGN.md` に統合
 > - **AI ツールへの注意**: この文書を新規実装の参照元として **使用しないでください**
 ```
 
@@ -110,7 +111,7 @@ MASTER.md の参照リンクを以下いずれかに置き換え:
 
 ### Step 6: 機械的検証
 
-- [ ] `grep -rln "OLD_AUTH_DESIGN.md" docs-template/ docs/` でリンク残存を確認。
+- [ ] `grep -rln "OLD_AUTH_DESIGN.md" docs/` でリンク残存を確認。
 - [ ] active 側にリンクが残っていないか目検（archive/ 内部からの参照は OK）。
 - [ ] `npm run lint:md` でリンク切れがないことを確認。
 
@@ -135,7 +136,7 @@ MASTER.md の参照リンクを以下いずれかに置き換え:
 
 「やっぱり必要だった」となった場合:
 
-1. `git mv archive/2025/X.md docs-template/02-design/X.md` で active に戻す。
+1. `git mv docs/archive/2025/X.md docs/02-design/X.md` で active に戻す。
 2. フロントマターの `status` を `draft` または `approved` に更新。
 3. 冒頭のアーカイブバナーを削除し、復活理由を変更履歴に追記。
 4. PR 説明で「resurrect: archive 復帰」と明記し、レビュー時に妥当性を再確認。

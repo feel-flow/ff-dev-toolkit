@@ -1,10 +1,11 @@
 ---
 title: "Monthly Documentation Health Check"
-version: "1.0.0"
+version: "1.0.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "2026-05-06"
-updated: "2026-05-06"
+updated: "2026-09-26"
+changeImpact: "low"
 ---
 
 # 月次ドキュメントヘルスチェック (Monthly Health Check)
@@ -40,10 +41,10 @@ updated: "2026-05-06"
 ```bash
 # 直近 1 ヶ月に追加された .md ファイルを抽出し、MASTER.md からの参照を確認
 git log --since="1 month ago" --diff-filter=A --name-only \
-  --pretty=format: -- 'docs-template/**/*.md' 'docs/**/*.md' \
+  --pretty=format: -- 'docs/**/*.md' \
   | sort -u | while read f; do
   basename=$(basename "$f")
-  grep -q "$basename" docs-template/MASTER.md || echo "MISSING: $f"
+  grep -q "$basename" docs/MASTER.md || echo "MISSING: $f"
 done
 ```
 
@@ -65,7 +66,7 @@ done
 
 ```bash
 # 行数の多い順に並べる（上位 20 件）
-find docs-template docs -name '*.md' -type f \
+find docs -name '*.md' -type f \
   ! -path '*/archive/*' ! -path '*/node_modules/*' \
   -exec wc -l {} + | sort -rn | head -20
 ```
@@ -92,7 +93,7 @@ find docs-template docs -name '*.md' -type f \
 # 6 ヶ月以上更新がない .md を抽出
 # date: macOS は `-v-6m`、GNU coreutils は `-d '6 months ago'`
 SIX_MO_AGO=$(date -v-6m +%Y-%m-%d 2>/dev/null || date -d '6 months ago' +%Y-%m-%d)
-find docs-template docs -name '*.md' -type f \
+find docs -name '*.md' -type f \
   ! -path '*/archive/*' \
   | while read f; do
       last=$(git log -1 --format=%ad --date=short -- "$f")
@@ -125,7 +126,7 @@ find docs-template docs -name '*.md' -type f \
 ```bash
 # 全 .md ファイル（作成から 1 週間経過したものに絞る）
 ONE_WEEK_AGO=$(date -v-7d +%Y-%m-%d 2>/dev/null || date -d '7 days ago' +%Y-%m-%d)
-find docs-template docs -name '*.md' -type f \
+find docs -name '*.md' -type f \
   ! -path '*/archive/*' \
   | while read f; do
       added=$(git log --diff-filter=A --follow --format=%ad --date=short -- "$f" | tail -1)
@@ -133,7 +134,7 @@ find docs-template docs -name '*.md' -type f \
     done | sort > /tmp/all-md.txt
 
 # どこかからリンクされている .md
-grep -rho '\[.*\]([^)]*\.md[^)]*)' docs-template docs \
+grep -rho '\[.*\]([^)]*\.md[^)]*)' docs \
   | grep -oE '[^()]+\.md' | sort -u > /tmp/linked-md.txt
 
 # 差分 = 孤立候補

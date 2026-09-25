@@ -1,6 +1,6 @@
 # GitHub Copilot Agents 設定リファレンス
 
-> **⚠️ ステータス（オプトイン）**: GitHub Copilot（Copilot CLI / Copilot code review）は従量課金へ移行したため、本リポジトリの**既定レビュー体制からは除外**されています。標準のレビュー担当は [self-review.md §レビュー担当の選択と利用制限時の継続](../05-operations/deployment/self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従います（本書は要約を再掲しません）。本ドキュメントは、課金を許容して Copilot をレビューに使う場合の参考構成として残しています。
+> **⚠️ ステータス（オプトイン）**: GitHub Copilot（Copilot CLI / Copilot code review）は従量課金へ移行したため、本リポジトリの**既定レビュー体制からは除外**されています。標準のレビュー担当は `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/self-review.md#レビュー担当の選択と利用制限時の継続`（初期セット外・必要ならコピーする）（正本）に従います（本書は要約を再掲しません）。本ドキュメントは、課金を許容して Copilot をレビューに使う場合の参考構成として残しています。
 
 ## 概要
 
@@ -69,7 +69,7 @@ your-project/
 
 利用側で用意した `scripts/copilot-review.sh` が5つの専門レビュアーを並列で `copilot -p` 実行する想定。
 
-root解決は [Multi-CLI Review Orchestration](../05-operations/deployment/multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite) とセットで導入します。
+root解決は `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/multi-cli-review-orchestration.md#ff-dev-toolkit-plugin-root-prerequisite`（初期セット外・必要ならコピーする）とセットで導入します。
 
 plugin 同梱の `${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh` を固定rootから使えば、Claude/Codex/Copilot/Grok の4つのCLIで同時にクロスモデルレビューが可能です。
 
@@ -717,7 +717,7 @@ PR作成後に `@review-router` を呼び出すだけで、変更内容を自動
 - **常に実行**: Code Review、Error Handler Hunt
 - **条件付き**: Test Analysis、Type Design Analysis、Comment Analysis、Code Simplification
 
-詳細は `.github/agents/review-router.agent.md` を参照。
+ルーター本体の `.github/agents/review-router.agent.md` は利用側で作成します（配布物に雛形はありません）。配置は上の「ディレクトリ構造」節を参照。
 
 ### 個別エージェントの呼び出し
 
@@ -763,10 +763,10 @@ PR作成後に `@review-router` を呼び出すだけで、変更内容を自動
 
 ## 関連ドキュメント
 
-- [REVIEW_AGENT_CREATION_GUIDE.md](./REVIEW_AGENT_CREATION_GUIDE.md) - 汎用レビューエージェント作成ガイド（ツール非依存のパースペクティブ定義・アダプターパターン）
-- [multi-cli-review-orchestration.md](../05-operations/deployment/multi-cli-review-orchestration.md) - Multi-CLI レビューオーケストレーション（4 CLI統合運用）
+- `${CLAUDE_PLUGIN_ROOT}/docs-template/06-reference/REVIEW_AGENT_CREATION_GUIDE.md`（初期セット外・必要ならコピーする） - 汎用レビューエージェント作成ガイド（ツール非依存のパースペクティブ定義・アダプターパターン）
+- `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/multi-cli-review-orchestration.md`（初期セット外・必要ならコピーする） - Multi-CLI レビューオーケストレーション（4 CLI統合運用）
 - [MASTER.md](../MASTER.md) - プロジェクト全体の設定
 - [PATTERNS.md](../03-implementation/PATTERNS.md) - 実装パターン
 - [TESTING.md](../04-quality/TESTING.md) - テスト戦略
 
-> **💡 Note**: 本ドキュメントのエージェントテンプレートはGitHub Copilot固有ですが、ツール非依存の汎用パターンについては [REVIEW_AGENT_CREATION_GUIDE.md](./REVIEW_AGENT_CREATION_GUIDE.md) を参照してください。同ガイドでは、本ドキュメントの6エージェントを含む8つの標準パースペクティブを4つのAI CLI（Claude Code、Codex、Copilot、Grok）で統一的に管理する方法を定義しています。
+> **💡 Note**: 本ドキュメントのエージェントテンプレートはGitHub Copilot固有ですが、ツール非依存の汎用パターンについては `${CLAUDE_PLUGIN_ROOT}/docs-template/06-reference/REVIEW_AGENT_CREATION_GUIDE.md`（初期セット外・必要ならコピーする）を参照してください。同ガイドでは、本ドキュメントの6エージェントを含む8つの標準パースペクティブを4つのAI CLI（Claude Code、Codex、Copilot、Grok）で統一的に管理する方法を定義しています。

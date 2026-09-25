@@ -15,8 +15,8 @@
 
 プロジェクトの特性に応じて、以下のテンプレートも活用してください：
 
-- [INCEPTION_DECK_TEMPLATE.md](./INCEPTION_DECK_TEMPLATE.md) - アジャイル形式の10の質問でプロジェクトの方向性を明確化
-- [USECASE_TEMPLATE.md](./USECASE_TEMPLATE.md) - 機能要件をアクター視点で詳細整理
+- `${CLAUDE_PLUGIN_ROOT}/docs-template/00-planning/INCEPTION_DECK_TEMPLATE.md`（初期セット外・必要ならコピーする） - アジャイル形式の10の質問でプロジェクトの方向性を明確化
+- `${CLAUDE_PLUGIN_ROOT}/docs-template/00-planning/USECASE_TEMPLATE.md`（初期セット外・必要ならコピーする） - 機能要件をアクター視点で詳細整理
 
 ---
 

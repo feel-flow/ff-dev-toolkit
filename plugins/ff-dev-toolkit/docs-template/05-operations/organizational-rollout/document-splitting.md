@@ -1,10 +1,11 @@
 ---
 title: "Document Splitting Procedure"
-version: "1.0.0"
+version: "1.0.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "2026-05-06"
-updated: "2026-05-06"
+updated: "2026-09-26"
+changeImpact: "low"
 ---
 
 # ドキュメント分割の手順 (Document Splitting)
@@ -55,9 +56,9 @@ updated: "2026-05-06"
 - 1 トピックを **300〜800 行** で完結させる
 - 親には書かない詳細（手順・コード例・落とし穴）
 
-### 実例（本リポジトリ）
+### 実例（本テンプレート）
 
-`docs-template/05-operations/DEPLOYMENT.md` は元々 2,000 行超の単一文書だったが、現在は **索引 + サブ文書群** に分割済み（最新の構成は `docs-template/05-operations/DEPLOYMENT.md` および `deployment/` ディレクトリを参照）。
+テンプレートの `05-operations/DEPLOYMENT.md` は元々 2,000 行超の単一文書だったが、現在は **索引 + サブ文書群** に分割済み（最新の構成はコピー元の `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/DEPLOYMENT.md` および `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/` を参照）。
 
 ```text
 DEPLOYMENT.md（索引、300 行未満を維持）
@@ -72,7 +73,7 @@ DEPLOYMENT.md（索引、300 行未満を維持）
     └── ...（他複数）
 ```
 
-> 上記は構造例。具体ファイル数・各サイズは継続的に変動するため、最新は `ls docs-template/05-operations/deployment/` または [GitHub の `deployment/` ディレクトリ](https://github.com/feel-flow/ai-spec-driven-development/tree/develop/docs-template/05-operations/deployment) で確認してください。
+> 上記は構造例。具体ファイル数・各サイズは継続的に変動するため、最新は `ls "${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/"` または [GitHub の `deployment/` ディレクトリ](https://github.com/feel-flow/ai-spec-driven-development/tree/develop/docs-template/05-operations/deployment) で確認してください。
 
 ## 分割の標準手順（チェックリスト）
 
@@ -98,7 +99,7 @@ DEPLOYMENT.md（索引、300 行未満を維持）
 
 - [ ] 親→子のリンクを相対パスで張る (`./subdir/topic.md`)。
 - [ ] 元文書を参照していた **他の文書からのリンク** を全件更新。
-  - `grep -rln "OLD_DOC.md" docs-template/ docs/` で機械的に検索。
+  - `grep -rln "OLD_DOC.md" docs/` で機械的に検索。
 - [ ] **MASTER.md / DECISION_MATRIX.md / GETTING_STARTED.md** からの参照を最優先で更新。
 
 ### Step 5: 検証

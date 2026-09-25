@@ -1,15 +1,16 @@
 ---
 title: "Phased Rollout Guide"
-version: "1.0.0"
+version: "1.0.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "2026-05-06"
-updated: "2026-05-06"
+updated: "2026-09-26"
+changeImpact: "low"
 ---
 
 # 段階的導入ガイド (Phased Rollout)
 
-> **適用範囲**: 既存組織・チームへ AI 仕様駆動開発フレームワークを段階導入する際の手順。新規プロジェクト立ち上げの場合は [GETTING_STARTED_NEW_PROJECT.md](../../GETTING_STARTED_NEW_PROJECT.md) を併読する。
+> **適用範囲**: 既存組織・チームへ AI 仕様駆動開発フレームワークを段階導入する際の手順。新規プロジェクト立ち上げの場合は `${CLAUDE_PLUGIN_ROOT}/docs-template/GETTING_STARTED_NEW_PROJECT.md`（初期セット外・必要ならコピーする）を併読する。
 
 ## なぜ段階導入か
 
@@ -33,7 +34,7 @@ updated: "2026-05-06"
 
 ### 作業内容
 
-1. **テンプレートをコピー**: `docs-template/MASTER.md` をプロジェクト直下にコピー（`docs/MASTER.md` でも可）。
+1. **テンプレートをコピー**: `${CLAUDE_PLUGIN_ROOT}/docs-template/MASTER.md` をプロジェクト直下にコピー（`docs/MASTER.md` でも可）。
 2. **必須情報のみ埋める**:
    - プロジェクト名・ターゲットユーザー・主要機能（5 行以内で十分）
    - 採用済み技術スタック（言語・FW・DB）

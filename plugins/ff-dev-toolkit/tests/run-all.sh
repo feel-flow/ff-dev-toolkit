@@ -1347,7 +1347,6 @@ MISS_PROBE_BASELINE=(
   docs-scan-mirror
   docs-template-frontmatter-selftest
   docs-template-frontmatter
-  docs-template-portability
   docs-version-changelog-selftest
   docs-version-changelog
   git-fixture-isolation

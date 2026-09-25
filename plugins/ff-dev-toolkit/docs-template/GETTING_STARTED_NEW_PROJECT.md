@@ -34,8 +34,10 @@ Phase 4: 実装準備 (1時間)
 
 1. **企画書をコピー**
 
+   コピー元の `${CLAUDE_PLUGIN_ROOT}` は ff-dev-toolkit のプラグインルートです（この変数が無い環境では、[公開テンプレート配布元](https://github.com/feel-flow/ff-dev-toolkit/tree/HEAD/plugins/ff-dev-toolkit/docs-template) から同じ相対パスのファイルを取得します。以降のコピーも同じ）。
+
    ```bash
-   cp docs-template/00-planning/PLANNING_TEMPLATE.md \
+   cp "${CLAUDE_PLUGIN_ROOT}/docs-template/00-planning/PLANNING_TEMPLATE.md" \
       docs/00-planning/my-project-planning.md
    ```
 
@@ -105,7 +107,7 @@ mkdir -p docs/{00-planning,01-context,02-design,03-implementation,04-quality,05-
 1. **テンプレートをコピー**
 
    ```bash
-   cp docs-template/01-context/PROJECT.md docs/01-context/PROJECT.md
+   cp "${CLAUDE_PLUGIN_ROOT}/docs-template/01-context/PROJECT.md" docs/01-context/PROJECT.md
    ```
 
 2. **企画書の内容を転記**
@@ -162,7 +164,7 @@ mkdir -p docs/{00-planning,01-context,02-design,03-implementation,04-quality,05-
 1. **テンプレートをコピー**
 
    ```bash
-   cp docs-template/01-context/CONSTRAINTS.md docs/01-context/CONSTRAINTS.md
+   cp "${CLAUDE_PLUGIN_ROOT}/docs-template/01-context/CONSTRAINTS.md" docs/01-context/CONSTRAINTS.md
    ```
 
 2. **企画書の制約情報を転記**
@@ -217,7 +219,7 @@ mkdir -p docs/{00-planning,01-context,02-design,03-implementation,04-quality,05-
 1. **テンプレートをコピー**
 
    ```bash
-   cp docs-template/MASTER.md docs/MASTER.md
+   cp "${CLAUDE_PLUGIN_ROOT}/docs-template/MASTER.md" docs/MASTER.md
    ```
 
 2. **プロジェクト情報を記入**
@@ -268,7 +270,7 @@ mkdir -p docs/{00-planning,01-context,02-design,03-implementation,04-quality,05-
 1. **テンプレートをコピー**
 
    ```bash
-   cp docs-template/02-design/ARCHITECTURE.md docs/02-design/ARCHITECTURE.md
+   cp "${CLAUDE_PLUGIN_ROOT}/docs-template/02-design/ARCHITECTURE.md" docs/02-design/ARCHITECTURE.md
    ```
 
 2. **AIにアーキテクチャ設計を依頼**
@@ -310,7 +312,7 @@ mkdir -p docs/{00-planning,01-context,02-design,03-implementation,04-quality,05-
 1. **テンプレートをコピー**
 
    ```bash
-   cp docs-template/02-design/DOMAIN.md docs/02-design/DOMAIN.md
+   cp "${CLAUDE_PLUGIN_ROOT}/docs-template/02-design/DOMAIN.md" docs/02-design/DOMAIN.md
    ```
 
 2. **ドメインモデルを整理**
@@ -325,7 +327,7 @@ mkdir -p docs/{00-planning,01-context,02-design,03-implementation,04-quality,05-
 1. **テンプレートをコピー**
 
    ```bash
-   cp docs-template/02-design/DATABASE.md docs/02-design/DATABASE.md
+   cp "${CLAUDE_PLUGIN_ROOT}/docs-template/02-design/DATABASE.md" docs/02-design/DATABASE.md
    ```
 
 2. **AIにER図生成を依頼**
@@ -360,7 +362,7 @@ Mermaid形式のER図と、テーブル定義（DDL）を生成してくださ�
 1. **テンプレートをコピー**
 
    ```bash
-   cp docs-template/03-implementation/PATTERNS.md docs/03-implementation/PATTERNS.md
+   cp "${CLAUDE_PLUGIN_ROOT}/docs-template/03-implementation/PATTERNS.md" docs/03-implementation/PATTERNS.md
    ```
 
 2. **実装パターンを定義**
@@ -374,7 +376,7 @@ Mermaid形式のER図と、テーブル定義（DDL）を生成してくださ�
 1. **テンプレートをコピー**
 
    ```bash
-   cp docs-template/04-quality/TESTING.md docs/04-quality/TESTING.md
+   cp "${CLAUDE_PLUGIN_ROOT}/docs-template/04-quality/TESTING.md" docs/04-quality/TESTING.md
    ```
 
 2. **テスト戦略を定義**
@@ -397,8 +399,8 @@ Mermaid形式のER図と、テーブル定義（DDL）を生成してくださ�
 - 必要なライブラリのインストールコマンド
 - 基本的なディレクトリ構造（コードとドキュメントの両方）
   - コード: src/, tests/, config/ 等
-  - ドキュメント: docs-template/ の構造（`数字-英語小文字`ディレクトリ + `大文字.md`ファイル）
-  - 詳細な命名規則は `docs-template/03-implementation/CONVENTIONS.md` を参照
+  - ドキュメント: docs/ の構造（`数字-英語小文字`ディレクトリ + `大文字.md`ファイル）
+  - 詳細な命名規則は `docs/03-implementation/CONVENTIONS.md` を参照
 - 設定ファイル（tsconfig.json, .eslintrc等）
 - GitHubリポジトリ作成手順
 

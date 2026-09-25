@@ -31,20 +31,20 @@ AI（Claude Code / GitHub Copilot）で迷わず実装できる「最小限の�
 ```
 docs/
 ├── MASTER.md                           # 中央管理文書
-├── 01-business/
-│   ├── PROJECT.md                      # ビジョンと要件
-│   └── DOMAIN.md                       # ビジネスロジック
+├── 01-context/
+│   └── PROJECT.md                      # ビジョンと要件
 ├── 02-design/
-│   └── ARCHITECTURE.md                 # システム設計
+│   ├── ARCHITECTURE.md                 # システム設計
+│   └── DOMAIN.md                       # ビジネスロジック
 ├── 03-implementation/
 │   └── PATTERNS.md                     # 実装パターン
+├── 04-quality/
+│   └── TESTING.md                      # テスト戦略
 ├── 05-operations/
 │   └── DEPLOYMENT.md                   # 運用手順
-├── 06-reference/
-│   ├── GLOSSARY.md                     # 用語集
-│   └── DECISIONS.md                    # 設計判断記録
-└── 07-quality/
-    └── TESTING.md                      # テスト戦略
+└── 06-reference/
+    ├── GLOSSARY.md                     # 用語集
+    └── DECISIONS.md                    # 設計判断記録
 ```
 
 ### チェックリスト
@@ -67,9 +67,9 @@ docs/
 1. 最小ドキュメント3点だけを埋める（30分）
 
 - docs/MASTER.md… 上記4点＋「読ませる順序」を明記
-- docs/01-business/PROJECT.md… Why/Who/What/Success＋MVPの受け入れ基準
+- docs/01-context/PROJECT.md… Why/Who/What/Success＋MVPの受け入れ基準
 - docs/02-design/ARCHITECTURE.md… レイヤ構成/依存方向/データフロー/例外方針/テスト層割合
-  （余力があれば docs/01-business/DOMAIN.md にユビキタス言語と主要エンティティを箇条書き）
+  （余力があれば docs/02-design/DOMAIN.md にユビキタス言語と主要エンティティを箇条書き）
 
 2. 最初の1機能を要件化（15分）
 
@@ -105,10 +105,10 @@ docs/
 ## AIに読ませる順序と粒度（トークン最適化）
 
 1. MASTER.md（必須）
-2. 01-business/PROJECT.md（機能のWhy/受け入れ基準）
+2. 01-context/PROJECT.md（機能のWhy/受け入れ基準）
 3. 02-design/ARCHITECTURE.md（層/依存/エラー/データフロー）
-4. 01-business/DOMAIN.md（必要時のみ：用語/ルール/主要エンティティ）
-5. 07-quality/TESTING.md（書き方/層の割合/命名）
+4. 02-design/DOMAIN.md（必要時のみ：用語/ルール/主要エンティティ）
+5. 04-quality/TESTING.md（書き方/層の割合/命名）
 6. 05-operations/DEPLOYMENT.md（必要時のみ：CI/CDや設定）
 7. 06-reference/[GLOSSARY/DECISIONS]（曖昧さ解消）
 
@@ -127,11 +127,11 @@ docs/
 目的: リポジトリのAI駆動ルールに従い、<機能名> を実装する。
 参照順序（この順で読み、他は見ない）:
 - docs/MASTER.md
-- docs/01-business/PROJECT.md
+- docs/01-context/PROJECT.md
 - docs/02-design/ARCHITECTURE.md
-- （必要時）docs/01-business/DOMAIN.md
+- （必要時）docs/02-design/DOMAIN.md
 
-要件: PROJECT.md の受け入れ基準を満たすこと。テストは 07-quality/TESTING.md のパターン・命名に従い同時生成。
+要件: PROJECT.md の受け入れ基準を満たすこと。テストは 04-quality/TESTING.md のパターン・命名に従い同時生成。
 制約: 合意した対象の定数化（定数or設定から注入）。型安全/エラーパターンは 03-implementation/PATTERNS.md に準拠。
 出力: 変更ファイル一覧→実装→テスト→要点サマリ。疑義は実装前に質問。
 ```
@@ -255,4 +255,4 @@ Claude Skillsの詳細な使い方、トラブルシューティング、ベス�
 
 本ガイドは `MASTER.md` を起点に、`01-context`/`02-design`/`03-implementation`/`04-quality`/`05-operations`/`06-reference`/`07-project-management` の7構成でAIが迷わない導線を作るための実務補助です。
 
-**注意**: このテンプレートを実際のプロジェクトで使用する際は、`docs-template/` フォルダの内容を `docs/` フォルダにコピーして使用してください。
+**注意**: このテンプレートを実際のプロジェクトで使用する際は、`/init-docs` で初期セットを `docs/` へ展開し、初期セット外の文書は `${CLAUDE_PLUGIN_ROOT}/docs-template/` の同じ相対パスから必要時にコピーしてください。

@@ -1,10 +1,11 @@
 ---
 title: "ORGANIZATIONAL_ROLLOUT"
-version: "1.0.0"
+version: "1.0.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "2026-05-06"
-updated: "2026-05-06"
+updated: "2026-09-26"
+changeImpact: "low"
 ---
 
 # ORGANIZATIONAL_ROLLOUT.md - 組織展開ガイド
@@ -13,7 +14,7 @@ updated: "2026-05-06"
 
 ## 📖 この索引の対象範囲
 
-書籍 第14章「ドキュメント増加の管理戦略」および第15章「チーム標準化」を中心に、AI 仕様駆動開発フレームワークを **既存組織・チームに展開するための 4 つの運用ガイド** を扱います。第16章「ロードマップとナレッジ蓄積」のうちナレッジ管理の継続運用は、既存の [deployment/knowledge-management.md](./deployment/knowledge-management.md) に集約されています。
+書籍 第14章「ドキュメント増加の管理戦略」および第15章「チーム標準化」を中心に、AI 仕様駆動開発フレームワークを **既存組織・チームに展開するための 4 つの運用ガイド** を扱います。第16章「ロードマップとナレッジ蓄積」のうちナレッジ管理の継続運用は、既存の `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/knowledge-management.md`（初期セット外・必要ならコピーする）に集約されています。
 
 | ガイド                                                                  | 対象                                                | 推奨読み順     |
 | ----------------------------------------------------------------------- | --------------------------------------------------- | -------------- |
@@ -66,9 +67,9 @@ updated: "2026-05-06"
 ## 🔗 関連ドキュメント
 
 - [DEPLOYMENT.md](./DEPLOYMENT.md) - **個別プロジェクトの運用フロー**（PR・CI/CD・モニタリング）。本ガイドは **組織横断のドキュメント運用** を扱い、住み分けは「コード・デプロイの運用＝DEPLOYMENT、ドキュメントの運用＝ORGANIZATIONAL_ROLLOUT」。
-- [GETTING_STARTED_NEW_PROJECT.md](../GETTING_STARTED_NEW_PROJECT.md) - 新規プロジェクト立ち上げ時のガイド（**注**: 同名の Phase 0〜4 を扱うが、本ガイドの組織展開 Phase 1〜4 とは別概念）。
+- `${CLAUDE_PLUGIN_ROOT}/docs-template/GETTING_STARTED_NEW_PROJECT.md`（初期セット外・必要ならコピーする） - 新規プロジェクト立ち上げ時のガイド（**注**: 同名の Phase 0〜4 を扱うが、本ガイドの組織展開 Phase 1〜4 とは別概念）。
 - [MASTER.md](../MASTER.md) - プロジェクト中央索引（本ガイドの上位）
-- [DECISION_MATRIX.md](../06-reference/DECISION_MATRIX.md) - どの文書に書くかの判断マトリクス
+- `${CLAUDE_PLUGIN_ROOT}/docs-template/06-reference/DECISION_MATRIX.md`（初期セット外・必要ならコピーする） - どの文書に書くかの判断マトリクス
 
 ## 📝 この索引の運用ルール
 

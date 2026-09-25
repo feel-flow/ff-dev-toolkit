@@ -99,21 +99,17 @@ assignees: ""
 
 refactor / infra / docs の従来型はアップストリームリポジトリ
 （`feel-flow/ai-spec-driven-development`）の git 履歴に保存されている。
-PR #447 以前のコミットを特定するには:
-
-```bash
-git log --oneline -- docs-template/.github/ISSUE_TEMPLATE/<name>.md
-```
-
+従来型のファイルを取り出すには、アップストリームの
+[ISSUE_TEMPLATE の変更履歴](https://github.com/feel-flow/ai-spec-driven-development/commits/develop/docs-template/.github/ISSUE_TEMPLATE)
 で PR #447 以前のコミット SHA を確認し、そのコミットから参照すること。
 downstream にコピーしたプロジェクトはアップストリームリポジトリを参照してください。
 
 ## ライブテンプレート（ストーリー型・推奨）
 
 実際に GitHub の Issue chooser に表示されるのはストーリー型のみ。
-配置は `.github/ISSUE_TEMPLATE/`（本リポジトリ）/
-`docs-template/.github/ISSUE_TEMPLATE/`（配布用）を参照。
+配置先は利用側の `.github/ISSUE_TEMPLATE/`、配布用のコピー元は
+`${CLAUDE_PLUGIN_ROOT}/docs-template/.github/ISSUE_TEMPLATE/` を参照。
 
 > **注意**: `general_task.md`（汎用タスク）はアップストリームの
 > `.github/ISSUE_TEMPLATE/` にのみ存在します。
-> 配布用 `docs-template/.github/ISSUE_TEMPLATE/` には含まれていません。
+> 配布用（`${CLAUDE_PLUGIN_ROOT}/docs-template/.github/ISSUE_TEMPLATE/`）には含まれていません。

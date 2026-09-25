@@ -6,6 +6,7 @@ import {
 } from "node:fs";
 import { dirname, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { copyLeakLines, copyTokenPattern, copyUnitsFromMaster } from "./copy-units.mjs";
 
 const suiteDir = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = resolve(suiteDir, "../..");
@@ -79,11 +80,22 @@ function isLinkableTarget(target) {
 //   .github/copilot-instructions.md — /setup-ai-config が利用者側で生成する
 //   docs/specs/*.md                 — MASTER.md の仕様書運用例（架空の例示）
 //   .github/workflows/xxx.yml       — Issue テンプレ（infra.md）の記入例
+//   docs/00-planning/my-*planning.md — 初心者・新規プロジェクトガイドで読み手が作る企画書の保存先
+//   .github/agents/review-router.agent.md — COPILOT_AGENTS のディレクトリ構造が示す、利用側で作るルーター
+//   docs/02-design/OLD_AUTH_DESIGN.md ほか 3 件 — archive-strategy の退避・復活手順の記入例（架空の文書名）
+// 「必要時にコピー」の文書の素テキストの docs/ 参照にも同じ免除を掛ける
 const INLINE_PATH_EXEMPT = new Set([
   ".github/copilot-instructions.md",
   "docs/specs/spec-template.md",
   "docs/specs/authentication.md",
   ".github/workflows/xxx.yml",
+  "docs/00-planning/my-planning.md",
+  "docs/00-planning/my-project-planning.md",
+  ".github/agents/review-router.agent.md",
+  "docs/02-design/OLD_AUTH_DESIGN.md",
+  "docs/archive/2025/OLD_AUTH_DESIGN.md",
+  "docs/02-design/X.md",
+  "docs/archive/2025/X.md",
 ]);
 
 function toTemplatePath(deployedPath) {
@@ -140,8 +152,12 @@ function initialSetFromSkill() {
   return result;
 }
 
-/** 1 文書分を走査し、違反を分類して返す（実ループと自己検証が同じ関数を使う） */
-function scanFile(deployedPath, content, relFile = deployedPath) {
+/**
+ * 1 文書分を走査し、違反を分類して返す（実ループと自己検証が同じ関数を使う）。
+ * sameUnit は「この文書と一緒にコピーされる」展開先パスの集合（コピー単位の兄弟）。
+ * 初期セット・.github/ に加えてここへのリンクも通す
+ */
+function scanFile(deployedPath, content, relFile = deployedPath, sameUnit = new Set()) {
   const report = { brokenRelative: [], outsideInitialSet: [], brokenInline: [], upstreamLeak: false };
   const fromDir = dirname(deployedPath);
   for (const match of content.matchAll(relativeLink)) {
@@ -150,7 +166,7 @@ function scanFile(deployedPath, content, relFile = deployedPath) {
     const templatePath = toTemplatePath(deployedTarget);
     if (templatePath === null || !existsSync(templatePath)) {
       report.brokenRelative.push(`${relFile} -> ${match[1]}`);
-    } else if (!isLinkableTarget(deployedTarget)) {
+    } else if (!isLinkableTarget(deployedTarget) && !sameUnit.has(deployedTarget)) {
       report.outsideInitialSet.push(`${relFile} -> ${deployedTarget}`);
     }
   }
@@ -163,6 +179,51 @@ function scanFile(deployedPath, content, relFile = deployedPath) {
   }
   report.upstreamLeak = upstreamLeak.test(content);
   return report;
+}
+
+// コピー単位の導出・展開前パス検出は copy-units.mjs（定義の説明もそちら）。ここは配置の展開と走査
+function expandTemplatePath(path) {
+  const full = join(templateRoot, path);
+  if (!existsSync(full)) return null;
+  if (path.endsWith("/")) {
+    if (!statSync(full).isDirectory()) return null;
+    return listMarkdown(full).map((file) => relative(templateRoot, file).replaceAll("\\", "/"));
+  }
+  return path.endsWith(".md") ? [path] : [];
+}
+
+/**
+ * コピー単位ごとの走査（実ループと自己検証が同じ関数を使う）。各単位の文書を「初期セット +
+ * 同じ単位」の中で解決できるかを見て、違反を種類ごとに集める。readText は docs-template 相対
+ * パスを受けて本文を返す。案内テキストのコピー元（`${…_ROOT}/docs-template/<path>`、アンカーは
+ * 除く）は expand で実在を確かめる — リンクを案内テキストへ置き換えた先が誤記でも緑にしない
+ */
+function scanCopyUnits(units, readText, expand, skip = () => false) {
+  const out = { broken: [], outside: [], leaks: [], unresolved: [], guides: [], links: 0 };
+  for (const unit of units) {
+    const sameUnit = new Set([...unit.members].map((member) => `docs/${member}`));
+    for (const member of [...unit.members].filter((m) => !skip(m))) {
+      const content = readText(member);
+      const report = scanFile(`docs/${member}`, content, `docs-template/${member}`, sameUnit);
+      out.broken.push(...report.brokenRelative, ...report.brokenInline);
+      out.outside.push(...report.outsideInitialSet);
+      out.leaks.push(...copyLeakLines(content).map(([n, line]) => `${member} L${n}: ${line.trim()}`));
+      const rawDocRefs = [...new Set(content.match(/(?<![\w/}])docs\/[A-Za-z0-9_.\/-]+\.md/g) ?? [])].filter(
+        (ref) => !INLINE_PATH_EXEMPT.has(ref),
+      );
+      out.unresolved.push(
+        ...rawDocRefs
+          .filter((ref) => expand(ref.slice("docs/".length)) === null)
+          .map((ref) => `${member} -> ${ref}`),
+      );
+      for (const match of content.matchAll(copyTokenPattern)) {
+        const source = match[1].split("#", 1)[0];
+        if (expand(source) === null) out.guides.push(`${member} -> ${match[1]}`);
+      }
+      out.links += [...content.matchAll(relativeLink)].length;
+    }
+  }
+  return out;
 }
 
 console.log("== A'. 検出器の自己検証（合成入力。失敗したら横断検査は実行しない。期待値は参照先テンプレートの実在も含めて固定） ==");
@@ -224,6 +285,124 @@ console.log("== A'. 検出器の自己検証（合成入力。失敗したら横
     fromSkill === null
       ? "SKILL.md のツリーを抽出できない"
       : `SKILL側のみ: ${onlySkill.join(", ") || "-"} / 本 suite のみ: ${onlyHere.join(", ") || "-"}`,
+  );
+  // コピー単位の導出（合成の MASTER と合成の配置。期待値は定義から手で組む — ACE-1507-2）
+  const root = "${CLAUDE_PLUGIN_ROOT}/docs-template/";
+  const fakeLayout = {
+    "A.md": ["A.md"],
+    "set/INDEX.md": ["set/INDEX.md"],
+    "set/sub/": ["set/sub/a.md", "set/sub/b.md"],
+    "set/sub/b.md": ["set/sub/b.md"],
+    "K.md": ["K.md"],
+  };
+  const fakeExpand = (path) => fakeLayout[path] ?? null;
+  const syntheticMaster = [
+    "### 集め（初期セット外・必要時にコピー）",
+    "",
+    "- A.md — 単独。`" + root + "A.md` からコピー",
+    "- set — 相互にリンクする一式。`" + root + "set/INDEX.md` と `" + root + "set/sub/` からコピー",
+    "",
+    "```",
+    "- F.md — コードブロックの中は指示ではない。`" + root + "F.md` からコピー",
+    "```",
+    "",
+    "## 本文",
+    "",
+    "詳細は b（初期セット外・`" + root + "set/sub/b.md` からコピー）を参照。",
+    "単独の案内は k（`" + root + "K.md` からコピー）。",
+    "SSOT は `" + root + "README.md` の章（コピーしない）。",
+  ].join("\n");
+  const derived = copyUnitsFromMaster(syntheticMaster, fakeExpand);
+  check(
+    JSON.stringify(derived.units.map((unit) => [...unit.members].sort())) ===
+      JSON.stringify([["A.md"], ["set/INDEX.md", "set/sub/a.md", "set/sub/b.md"], ["K.md"]]),
+    "コピー単位が節の箇条 1 行ごと（ディレクトリは配下の .md へ展開）と、本文だけにある指示の単一文書から導かれる",
+    JSON.stringify(derived.units.map((unit) => [...unit.members])),
+  );
+  check(
+    derived.errors.length === 1 && derived.errors[0].startsWith("MASTER.md L12: ") && derived.errors[0].includes("一部だけ"),
+    "本文の指示が複数ファイルの単位の一部だけを名指ししたら赤にし、コードブロックの中は指示として読まない",
+    derived.errors.join(" / ") || "エラー 0 件",
+  );
+  const errorsOf = (md) => copyUnitsFromMaster(md, fakeExpand).errors;
+  check(
+    errorsOf("## 関連\n\n- `" + root + "A.md` からコピー")[0] === "`###` 見出しに「必要時にコピー」を含む節が見つからない" &&
+      errorsOf("#### x（必要時にコピー）\n\n- `" + root + "A.md` からコピー")[0] === "`###` 見出しに「必要時にコピー」を含む節が見つからない" &&
+      errorsOf("### x（必要時にコピー）\n\n- `" + root + "Z.md` からコピー")[0]?.includes("Z.md が配布物に無い"),
+    "コピー単位の導出が、節の不在（`###` 以外の見出しは節にしない）とコピー元の不在を検査不成立として赤にする",
+  );
+  const bulletErrors = errorsOf(
+    [
+      "### x（必要時にコピー）",
+      "",
+      "- A.md — 言い回し違い。`" + root + "A.md` をコピー",
+      "- K.md — 折り返した箇条の 1 行目",
+      "  `" + root + "K.md` からコピー",
+      "- set — 変数違いも指示として読む。`${FF_DEV_TOOLKIT_ROOT}/docs-template/set/INDEX.md` からコピー",
+    ].join("\n"),
+  );
+  check(
+    bulletErrors.length === 2 &&
+      bulletErrors[0].startsWith("MASTER.md L3: ") &&
+      bulletErrors[1].startsWith("MASTER.md L4: ") &&
+      bulletErrors.every((e) => e.includes("指示を読み取れない")),
+    "「必要時にコピー」節の箇条が指示を持たない（言い回し違い・折り返し）と赤にし、`${FF_DEV_TOOLKIT_ROOT}` のコピー元は指示として読む",
+    bulletErrors.join(" / ") || "エラー 0 件",
+  );
+  const overlapErrors = errorsOf(
+    [
+      "### x（必要時にコピー）",
+      "",
+      "- `" + root + "set/sub/` からコピー",
+      "- `" + root + "set/sub/b.md` からコピー",
+      "",
+      "## 本文",
+      "",
+      "`" + root + "A.md` と `" + root + "set/sub/` からコピー",
+    ].join("\n"),
+  );
+  check(
+    overlapErrors.length === 2 &&
+      overlapErrors[0] === "MASTER.md L4: set/sub/b.md が MASTER.md L3 の単位にも含まれる（単位が重なる）" &&
+      overlapErrors[1].startsWith("MASTER.md L8: 1 つの指示が複数の単位（または単位の外）にまたがる"),
+    "箇条どうしの重なりと、単位の要素と単位外の文書にまたがる本文の指示を赤にする",
+    overlapErrors.join(" / ") || "エラー 0 件",
+  );
+  // 走査ループ本体（scanCopyUnits）の単位別スコープ: 合成の 2 単位で、兄弟は通り別単位は報告される
+  const scanFixture = {
+    "05-operations/ORGANIZATIONAL_ROLLOUT.md":
+      "[p](./organizational-rollout/phased-rollout.md) [g](../GETTING_STARTED.md) [m](../MASTER.md)\n" +
+      "find docs-template docs -name x\n" +
+      "`" + root + "nowhere-1896.md#x`（初期セット外・必要ならコピーする）",
+    "05-operations/organizational-rollout/phased-rollout.md": "",
+    "GETTING_STARTED.md": "",
+  };
+  const unitScan = scanCopyUnits(
+    [
+      { members: new Set(["05-operations/ORGANIZATIONAL_ROLLOUT.md", "05-operations/organizational-rollout/phased-rollout.md"]) },
+      { members: new Set(["GETTING_STARTED.md"]) },
+    ],
+    (member) => scanFixture[member],
+    expandTemplatePath,
+  );
+  check(
+    JSON.stringify(unitScan.outside) === JSON.stringify(["docs-template/05-operations/ORGANIZATIONAL_ROLLOUT.md -> docs/GETTING_STARTED.md"]) &&
+      JSON.stringify(unitScan.leaks) === JSON.stringify(["05-operations/ORGANIZATIONAL_ROLLOUT.md L2: find docs-template docs -name x"]) &&
+      JSON.stringify(unitScan.guides) === JSON.stringify(["05-operations/ORGANIZATIONAL_ROLLOUT.md -> nowhere-1896.md#x"]) &&
+      unitScan.broken.length === 0 &&
+      unitScan.links === 3,
+    "走査ループが単位ごとに兄弟へのリンクを通し、別の単位へのリンク・引数の docs-template・実在しないコピー元を報告する",
+    JSON.stringify(unitScan),
+  );
+  const cloned = "git clone https://github.com/feel-flow/ai-spec-driven-development.git\ncp ../ai-spec-driven-development/docs-template/A.md docs/A.md";
+  check(
+    copyLeakLines(cloned).length === 0 &&
+      copyLeakLines("[履歴](https://github.com/o/r/commits/develop/docs-template/x)").length === 0 &&
+      copyLeakLines("`${FF_DEV_TOOLKIT_ROOT}/docs-template/A.md` と `${CLAUDE_PLUGIN_ROOT}/docs-template` から").length === 0 &&
+      JSON.stringify(
+        copyLeakLines("cp ../upstream/docs-template/A.md docs/A.md\ncp docs-template/B.md docs/B.md\ngrep -r x docs-template docs").map(([n]) => n),
+      ) === JSON.stringify([1, 2, 3]),
+    "展開前パス検出が URL・コピー元の案内・クローン手順のあるクローン相対パスを通し、それ以外の docs-template を引数の形も含めて行番号つきで拾う",
   );
 }
 if (failures.length > 0) {
@@ -516,72 +695,46 @@ if (heredocStart !== -1 && heredocEnd !== -1) {
   );
 }
 
-// SETUP_CLAUDE_CODE.md 以外の AI ツール設定ガイドも同じ運用（消費側 docs/ へコピーして読む）で、
-// 同じ検査を掛ける。対象は MASTER.md「AIツール初期設定ガイド（初期セット外・必要時にコピー）」節の
-// 列挙から導く（手書きで 1 件を指さない — 節へガイドを足した日に検査が自動で追随する）。
-// 節を見つけられない・SETUP_* の 2 件が揃わない回は検査不成立として赤にする（書き換えで
-// 対象が空になり、違反 0 件の緑へ倒れるのを防ぐ）。
-// 他の「必要時にコピー」の文書（organizational-rollout/ 等）は兄弟文書を一緒にコピーする前提で
-// 相互リンクしており、コピー単位の定義が別に要るため本検査の対象外とする。
-function aiSetupGuidesFromMaster() {
-  const lines = text("MASTER.md").split("\n");
-  const start = lines.findIndex((line) => line.startsWith("### AIツール初期設定ガイド（初期セット外・必要時にコピー）"));
-  if (start === -1) return null;
-  const guides = [];
-  for (const line of lines.slice(start + 1)) {
-    if (/^#{1,3} /.test(line)) break;
-    for (const match of line.matchAll(/`\$\{CLAUDE_PLUGIN_ROOT\}\/docs-template\/([^`\s]+\.md)` からコピー/g)) {
-      guides.push(match[1]);
-    }
-  }
-  return guides;
-}
-const aiSetupGuides = aiSetupGuidesFromMaster();
+// MASTER.md が「必要時にコピー」と案内する文書（AI ツール設定ガイド・初心者向けガイド・組織展開
+// ガイド一式など）も、消費側 docs/ へコピーして読む運用なので同じ検査を掛ける。対象は MASTER.md
+// からコピー単位（定義は copy-units.mjs）として導く — 手書きの対象リストを持たないので、
+// 箇条へ文書を足した日に検査が自動で追随する。単位の中の相互リンクは通し、単位の外（別の単位・
+// どの単位にも属さない初期セット外）を指すリンクだけを赤にする。
+// 節が見つからない・SETUP_* の 2 件が揃わない回は検査不成立として赤にする（書き換えで対象が空に
+// なり、違反 0 件の緑へ倒れるのを防ぐ）。
+const copyUnits = copyUnitsFromMaster(text("MASTER.md"), expandTemplatePath);
+const copyMembers = copyUnits.units.flatMap((unit) => [...unit.members]);
 check(
-  aiSetupGuides !== null &&
-    aiSetupGuides.includes("SETUP_CLAUDE_CODE.md") &&
-    aiSetupGuides.includes("SETUP_GITHUB_COPILOT.md") &&
-    aiSetupGuides.every((guide) => existsSync(join(templateRoot, guide))),
-  "MASTER の AIツール初期設定ガイド節から対象ガイドを導ける（SETUP_CLAUDE_CODE / SETUP_GITHUB_COPILOT を含み、すべて実在する）",
-  aiSetupGuides === null ? "節の見出しが見つからない" : `抽出: ${aiSetupGuides.join(", ") || "-"}`,
+  copyUnits.errors.length === 0,
+  "MASTER の「必要時にコピー」の指示からコピー単位を矛盾なく導ける（単位の重なり・一部だけのコピー・コピー元の不在が無い）",
+  copyUnits.errors.join(" / "),
+);
+check(
+  copyMembers.includes("SETUP_CLAUDE_CODE.md") && copyMembers.includes("SETUP_GITHUB_COPILOT.md"),
+  "コピー単位に AI ツール設定ガイド（SETUP_CLAUDE_CODE / SETUP_GITHUB_COPILOT）が含まれる",
+  `節 ${copyUnits.sections} 件 / 単位 ${copyUnits.units.length} 件 / 文書: ${copyMembers.join(", ") || "-"}`,
 );
 // SETUP_CLAUDE_CODE.md は heredoc の内外を分ける専用検査（上）が持つ
-// 実在しないガイドは上の抽出検査が赤にするので、ここでは読める物だけを走査する（ENOENT で落とさない）
-const copiedGuides = (aiSetupGuides ?? []).filter(
-  (guide) => guide !== "SETUP_CLAUDE_CODE.md" && existsSync(join(templateRoot, guide)),
-);
-const guideBroken = [];
-const guideOutsideSet = [];
-const guideLeaks = [];
-const guideUnresolved = [];
-let guideLinks = 0;
-for (const guide of copiedGuides) {
-  const content = text(guide);
-  const report = scanFile(`docs/${guide}`, content, `docs-template/${guide}`);
-  guideBroken.push(...report.brokenRelative, ...report.brokenInline);
-  guideOutsideSet.push(...report.outsideInitialSet);
-  content.split("\n").forEach((line, i) => {
-    if (upstreamLeak.test(line)) guideLeaks.push(`${guide} L${i + 1}: ${line.trim()}`);
-  });
-  const rawDocRefs = [...new Set((content.match(/(?<![\w/}])docs\/[A-Za-z0-9_.\/-]+\.md/g) ?? []).map((ref) => ref.slice("docs/".length)))];
-  guideUnresolved.push(...rawDocRefs.filter((ref) => !existsSync(join(templateRoot, ref))).map((ref) => `${guide} -> docs/${ref}`));
-  guideLinks += [...content.matchAll(relativeLink)].length;
-}
-check(guideBroken.length === 0, "AI ツール設定ガイドのリンクと inline code パスがコピー後の展開先で解決する", guideBroken.join(" / "));
+const copyScan = scanCopyUnits(copyUnits.units, text, expandTemplatePath, (m) => m === "SETUP_CLAUDE_CODE.md");
+check(copyScan.broken.length === 0, "「必要時にコピー」の文書のリンクと inline code パスがコピー後の展開先で解決する", copyScan.broken.join(" / "));
 check(
-  guideOutsideSet.length === 0,
-  "AI ツール設定ガイドのリンク先が初期セット内にある（初期セット外はコピー元パスの案内テキストで示す）",
-  guideOutsideSet.join(" / "),
+  copyScan.outside.length === 0,
+  "「必要時にコピー」の文書のリンク先が初期セット・同じコピー単位の中にある（単位の外はコピー元パスの案内テキストで示す）",
+  copyScan.outside.join(" / "),
 );
-check(guideLeaks.length === 0, "AI ツール設定ガイドに展開前パス docs-template/ が残っていない", guideLeaks.join(" / "));
-check(guideUnresolved.length === 0, "AI ツール設定ガイドの素テキストの docs/ 参照が配布物の実体へ解決できる", guideUnresolved.join(" / "));
-// 解決検査はリンク 0 件でも緑になる。リンクをまとめて消す退行を違反 0 件と区別する下限
-// （現状 SETUP_GITHUB_COPILOT の初期セット内リンク 3 件: MASTER / PATTERNS / DEPLOYMENT）
-const EXPECTED_GUIDE_LINKS = 3;
+check(copyScan.leaks.length === 0, "「必要時にコピー」の文書に展開前のディレクトリ docs-template が残っていない", copyScan.leaks.join(" / "));
+check(copyScan.unresolved.length === 0, "「必要時にコピー」の文書の素テキストの docs/ 参照が配布物の実体へ解決できる", copyScan.unresolved.join(" / "));
+check(copyScan.guides.length === 0, "「必要時にコピー」の文書が案内するコピー元（`${…_ROOT}/docs-template/<path>`）が配布物に実在する", copyScan.guides.join(" / "));
+const copyLinks = copyScan.links;
+// 解決検査はリンク 0 件でも緑になる。リンクをまとめて消す退行・対象がまとめて外れる退行を
+// 違反 0 件と区別する下限（件数は不等号 — 足すのは正常な変更で、縛りたいのは消える側。
+// 現状 19 文書・リンク 77 件。文書は SETUP_CLAUDE_CODE を含み、リンクは専用検査の側で数える同書を除く）
+const EXPECTED_COPY_DOCS = 19;
+const EXPECTED_COPY_LINKS = 77;
 check(
-  guideLinks >= EXPECTED_GUIDE_LINKS,
-  `AI ツール設定ガイドが展開先の文書へ ${EXPECTED_GUIDE_LINKS} 件以上リンクしている`,
-  `対象 ${copiedGuides.length} 件 / リンク ${guideLinks} 件`,
+  copyMembers.length >= EXPECTED_COPY_DOCS && copyLinks >= EXPECTED_COPY_LINKS,
+  `「必要時にコピー」の文書が ${EXPECTED_COPY_DOCS} 件以上あり、展開先の文書へ ${EXPECTED_COPY_LINKS} 件以上リンクしている`,
+  `文書 ${copyMembers.length} 件 / リンク ${copyLinks} 件`,
 );
 
 const pullRequest = text(".github/pull_request_template.md");
@@ -620,7 +773,7 @@ check(
 // 検査を足したらこの数も同じ PR で上げること（上げ忘れは「増やしたのに赤」で即わかる）。
 // 不等号ではなく**完全一致**にする — `>=` だと上げ忘れが緑で通り、baseline が実数より
 // 下にずれる。以後は「1 件足して 1 件消す」が検出されず、この針の目的自体が静かに失効する。
-const EXPECTED_CHECKS = 71;
+const EXPECTED_CHECKS = 80;
 const executed = pass + failures.length;
 check(
   executed === EXPECTED_CHECKS,
