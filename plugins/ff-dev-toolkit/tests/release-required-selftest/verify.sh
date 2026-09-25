@@ -23,6 +23,11 @@
 #   - 変異ケースは終了コードだけでなく赤の理由（メッセージ）も照合する
 #   - 緑ケースは変異が実際にコミットへ入ったこと（no-op でないこと）を確認する
 #   - version の巻き戻し・版節の欠落・空の版節は「bump 済み」として green にしない
+#   - 前版タグと同一内容の path を参照する項目は、断片の段階（昇格前）でも昇格後の版節でも
+#     ATTRIBUTION_DRIFT（ATTRIBUTION_PATH= 行で名指し）。参照した path を今回変えていれば赤にしない
+#
+# 変異検出: materialize --check から断片の帰属検査の呼び出しを外すと S20 が赤。共通 helper の同一 object
+# 判定を常に偽へ倒すと S20 / S21 が赤（2026-09-24 実測）。
 #   - 公開 clone のローカル main が origin/main より遅れていても、--fetch 時は
 #     origin/main を基点に pull 済みと同じ判定を返し、clone 後に origin へ打たれた
 #     タグも取得する（Issue #817 事故 A）
@@ -544,6 +549,47 @@ commit_fix "S12"
 if assert_committed "S12" "$PLUGIN_JSON_REL"; then
   run_check
   expect_check "S12 bump 済み + 空の版節は昇格の空振りとして赤" 1 "RELEASE_REQUIRED" "項目が 1 件も無い"
+fi
+reset_ssot
+
+# ── S20 / S21. 帰属: 前版タグと同一内容の path を参照する項目は ATTRIBUTION_DRIFT ─────
+# 公開側の前版タグ v0.31.0 に baseline の demo skill を載せた clone（判定は共通 helper の 1 箇所）
+PUB_ATTR="$TMP/public-attribution"
+make_public "$PUB_ATTR" "$SYNC_MSG" ""
+mkdir -p "$PUB_ATTR/plugins/ff-dev-toolkit/skills/demo"
+git -C "$SSOT_FIX" show "${BASE_FULL}:plugins/ff-dev-toolkit/skills/demo/SKILL.md" >"$PUB_ATTR/plugins/ff-dev-toolkit/skills/demo/SKILL.md"
+git -C "$PUB_ATTR" add -A
+git -C "$PUB_ATTR" commit -qm "$SYNC_MSG"
+git -C "$PUB_ATTR" tag v0.31.0
+# S20: 断片の段階（version 据え置き・昇格前）でも、未変更の path を参照する断片は RELEASE_REQUIRED ではなく
+# ATTRIBUTION_DRIFT として名指しする（リリース準備の昇格後まで持ち越さない）
+printf '%s\n' 'readme' >> "$SSOT_FIX/oss/ff-dev-toolkit/README.md"
+printf '%s\n' '- デモの手順を直した（`skills/demo/SKILL.md`）' > "$SSOT_FIX/changelog.d/20.changed.stale-ref.md"
+commit_fix "S20"
+if assert_committed "S20" "changelog.d/20.changed.stale-ref.md"; then
+  run_check "$PUB_ATTR"
+  expect_check "S20 未変更の path を参照する断片は断片の段階で ATTRIBUTION_DRIFT" 1 "ATTRIBUTION_DRIFT" "changelog\.d 断片の 1 path が公開側最新タグ"
+  if [[ $'\n'"$OUT" == *$'\n'"ATTRIBUTION_PATH=skills/demo/SKILL.md -> plugins/ff-dev-toolkit/skills/demo/SKILL.md (v0.31.0 と同一 object)"* ]]; then
+    ok "S20 帰属の疑いの path を ATTRIBUTION_PATH= 行で名指しする"
+  else
+    bad "S20 ATTRIBUTION_PATH= 行が無い"; printf '%s\n' "$OUT" | sed 's/^/    | /' >&2
+  fi
+  touch_skill
+  commit_fix "S20b"
+  run_check "$PUB_ATTR"
+  expect_check "S20b 参照した path を今回変えていれば帰属の疑いにしない（RELEASE_REQUIRED）" 1 "RELEASE_REQUIRED" "リリース準備が必要"
+fi
+reset_ssot
+# S21: 昇格後の版節（bump 済み）で未変更の path を参照 → ATTRIBUTION_DRIFT（helper へ移した判定の回帰）
+printf '%s\n' 'readme' >> "$SSOT_FIX/oss/ff-dev-toolkit/README.md"
+write_changelog_promoted
+awk '{ if ($0 == "- 新しい変更") print "- 新しい変更（`skills/demo/SKILL.md`）"; else print }' "$SSOT_FIX/$CHANGELOG_REL" > "$TMP/cl.attr"
+mv "$TMP/cl.attr" "$SSOT_FIX/$CHANGELOG_REL"
+write_plugin_json "0.32.0"
+commit_fix "S21"
+if assert_committed "S21" "$PLUGIN_JSON_REL"; then
+  run_check "$PUB_ATTR"
+  expect_check "S21 昇格後の版節が未変更の path を参照すると ATTRIBUTION_DRIFT" 1 "ATTRIBUTION_DRIFT" "新版節の 1 path が公開側最新タグと同一"
 fi
 reset_ssot
 

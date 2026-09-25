@@ -136,6 +136,7 @@ ${CODEX_HELP_ARM}
 for a in "\$@"; do printf '%s\n' "\$a" >> "$TMP/argv.log"; done
 cat >> "$TMP/stdin.log"
 echo "- Suggestion: stub review output"
+echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
 exit $1
 SH
   chmod +x "$STUB/codex"

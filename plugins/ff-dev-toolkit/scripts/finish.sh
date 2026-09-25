@@ -88,7 +88,9 @@
 #   create → ローカル default branch を origin へ戻す）。push と pr はどちらも、ブランチ作成・push より前に
 #   origin/<default>..HEAD が knowledge コミット 1 つだけであることを確かめる（送信範囲ガード）。
 #   add は `--` より後だけを pathspec として扱い、`--claim` の検証で stage するのは文書・claim・
-#   明示 pathspec に限る（オプションの値を path と取り違えない）。
+#   明示 pathspec に限る（オプションの値を path と取り違えない）。add は default branch（または detached
+#   HEAD）上なら副作用の前に origin/<default> を fetch して祖先確認を行い、ローカルが遅れていれば
+#   復帰手段（git rebase --autostash origin/<default>）つきで止まる（fetch できなければ判定不能で止まる）。
 #
 # 終了コード（cleanup / knowledge-commit）:
 #   委譲先の終了コードをそのまま返す。cleanup の委譲前の前提崩れ（PR 不在 / gh 不通 / 委譲先の
@@ -1007,6 +1009,9 @@ kc_add() {
     esac
   done
   if [[ ${#claim_docs[@]} -gt 0 && -d "$repo_root/.version-claims" ]]; then
+    # default branch の鮮度は claim の再生成・stage より前に確かめる（遅れていれば何も変えずに止まる。
+    # claim の無い add は書き込み口の add 自身が先頭で同じ検査をする）
+    FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${plugin_root}/scripts/knowledge-commit.sh" freshness || return $?
     need_bundled update-version-claim.sh
     need_bundled check-version-claims.sh
     default_branch="$(kc_default_branch)" || exit 2

@@ -119,6 +119,7 @@ if [ "\$(cat "$TMP/grok-mode")" = critical ]; then
   echo "## Findings"
   echo "- Critical: 1件"
   echo "- Critical: stub critical finding"
+  echo "  - verdict: severity=critical failure_scenario=yes confidence=90"
   exit 0
 fi
 if [ "\$n" -eq 1 ]; then
@@ -137,6 +138,7 @@ fi
 emit_sandbox_event
 echo "## Findings"
 echo "- Suggestion: stub grok review"
+echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
 SH
 chmod +x "$STUB/grok"
 for name in claude codex copilot; do
@@ -144,6 +146,7 @@ for name in claude codex copilot; do
 #!/usr/bin/env bash
 echo "## Findings"
 echo "- Suggestion: stub review"
+echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
 SH
   chmod +x "$STUB/$name"
 done

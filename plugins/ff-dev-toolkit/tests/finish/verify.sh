@@ -22,6 +22,8 @@
 # 前提崩れ（PR 不在・gh 不通・記録不在）は黙って 0 で終わらず、判定不能を名指しした
 # 非 0 と復帰手段を出す — これを空振り検出の針にする。
 #
+# 変異検出: knowledge-commit.sh の add から default branch の鮮度検査の呼び出しを外すと (H18 / H18b / H19) が赤、fetch 失敗を素通しへ倒すと (H19) が赤（2026-09-24 実測）。
+#
 # 空振り検出: scripts/finish.sh の写しで precheck の「PR 不在」「gh 不通」「実測の記録が無い」を rc 0 の緑へ倒す（die_env / undetermined の exit 2 を return 0 に）と (B1 / B2 / C1) が赤になる。全スキルが上限内の合成名簿で 1 本だけを 20,001 バイトにすると (L2)、1 本だけを消すと (L3) が赤になる（2026-09-24 実測。針が当たらない入力を緑にしない）。
 #
 # 実 gh・ネットワーク・課金は伴わない。一時ディレクトリを作れない環境は skip ではなく
@@ -715,6 +717,79 @@ run_finish "$KW" knowledge-commit discard
 git -C "$KW" reset -q >/dev/null 2>&1; rm -f "$KW/docs/stray.txt"
 cp "$TMP/uvc.bak" "$ROOT/scripts/update-version-claim.sh"; cp "$TMP/cvc.bak" "$ROOT/scripts/check-version-claims.sh"
 rm -rf "$KW/.version-claims"; g -C "$KW" checkout -q -- docs >/dev/null 2>&1
+# add の鮮度: ローカル default branch が origin より遅れていれば、stage・保留・claim の前に復帰手段つきで止める
+KO="$TMP/ko"
+g clone -q "$TMP/origin.git" "$KO" >/dev/null 2>&1 \
+  && printf 'advance\n' >"$KO/advance.txt" && g -C "$KO" add advance.txt >/dev/null 2>&1 \
+  && g -C "$KO" commit -qm 'chore: advance origin' >/dev/null 2>&1 && g -C "$KO" push -q origin develop >/dev/null 2>&1 \
+  || bad "H18-0: origin を先へ進める fixture を作れません"
+printf -- '- obs8\n' >>"$KW/docs/08-knowledge/OBSERVATIONS.md"
+run_finish "$KW" knowledge-commit add --source obs --id OBS-8 --summary "要約8" -- docs/08-knowledge/OBSERVATIONS.md
+ADD_RC="$RC"; ADD_ERR="$ERR"
+run_finish "$KW" knowledge-commit status
+if [ "$ADD_RC" -eq 1 ] && has_text "$ADD_ERR" "origin/develop より 1 コミット遅れている" && has_text "$ADD_ERR" "git rebase --autostash origin/develop" \
+  && has_line "$OUT" "KNOWLEDGE_PENDING=0" && [ -z "$(git -C "$KW" diff --cached --name-only)" ]; then
+  ok "H18: add は先頭で fetch と祖先確認を行い、default branch が遅れていれば stage も保留もせず rc 1 で復帰手段を出す"
+else
+  bad "H18: 遅れた default branch の add が止まらない（add rc=${ADD_RC}）: ${ADD_ERR} / ${OUT}"
+fi
+mkdir -p "$KW/.version-claims"
+run_finish "$KW" knowledge-commit add --claim docs/08-knowledge/OBSERVATIONS.md --source obs --id OBS-8 --summary "要約8" -- docs/08-knowledge/OBSERVATIONS.md
+if [ "$RC" -eq 1 ] && has_text "$ERR" "コミット遅れている" && [ ! -e "$KW/.version-claims/docs/08-knowledge/OBSERVATIONS.md.claim" ] \
+  && [ -z "$(git -C "$KW" diff --cached --name-only)" ]; then
+  ok "H18b: add --claim も claim の再生成・stage より前に鮮度で止まる"
+else
+  bad "H18b: add --claim が鮮度より前に claim を作った（rc=${RC}）: ${ERR}"
+fi
+rm -rf "$KW/.version-claims"
+g -C "$KW" rebase -q --autostash origin/develop >/dev/null 2>&1 || bad "H18c-0: 案内した復帰手段（git rebase --autostash）が通りません"
+run_finish "$KW" knowledge-commit add --source obs --id OBS-8 --summary "要約8" -- docs/08-knowledge/OBSERVATIONS.md
+if [ "$RC" -eq 0 ] && has_line "$OUT" "KNOWLEDGE_PENDING=1" && grep -q -- '^- obs8$' "$KW/docs/08-knowledge/OBSERVATIONS.md"; then
+  ok "H18c: 案内どおり取り込んだ後の add は通り、書いた知見の編集も残っている"
+else
+  bad "H18c: 復帰後の add が通らない（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+run_finish "$KW" knowledge-commit discard
+g -C "$KW" reset -q >/dev/null 2>&1; g -C "$KW" checkout -q -- docs >/dev/null 2>&1
+# オフライン（fetch 失敗）は遅れを判定できない — 黙って進まず名指しで止める
+g -C "$KW" remote set-url origin "$TMP/nowhere.git" >/dev/null 2>&1
+printf -- '- obs9\n' >>"$KW/docs/08-knowledge/OBSERVATIONS.md"
+run_finish "$KW" knowledge-commit add --source obs --id OBS-9 --summary "要約9" -- docs/08-knowledge/OBSERVATIONS.md
+ADD_RC="$RC"; ADD_ERR="$ERR"
+g -C "$KW" remote set-url origin "$TMP/origin.git" >/dev/null 2>&1
+run_finish "$KW" knowledge-commit status
+if [ "$ADD_RC" -eq 2 ] && has_text "$ADD_ERR" "判定できない" && has_line "$OUT" "KNOWLEDGE_PENDING=0"; then
+  ok "H19: origin/<default> を fetch できない add は判定不能として rc 2 で止まり、保留を作らない"
+else
+  bad "H19: fetch 失敗の add が止まらない（add rc=${ADD_RC}）: ${ADD_ERR}"
+fi
+g -C "$KW" checkout -q -- docs >/dev/null 2>&1
+# origin/HEAD の無い clone（git init + remote add 等）: remote の HEAD で default branch を補い、PR ブランチの add を止めない
+g -C "$KW" remote set-head origin -d >/dev/null 2>&1
+g -C "$TMP/origin.git" symbolic-ref HEAD refs/heads/develop >/dev/null 2>&1
+g -C "$KW" checkout -q -b fix/pr-branch >/dev/null 2>&1
+printf -- '- obs10\n' >>"$KW/docs/08-knowledge/OBSERVATIONS.md"
+run_finish "$KW" knowledge-commit add --source obs --id OBS-10 --summary "要約10" -- docs/08-knowledge/OBSERVATIONS.md
+if [ "$RC" -eq 0 ] && has_line "$OUT" "KNOWLEDGE_PENDING=1"; then
+  ok "H20: origin/HEAD が無くても remote の HEAD で default branch を補い、PR ブランチの add は止めない"
+else
+  bad "H20: origin/HEAD の無い clone で PR ブランチの add が止まった（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+run_finish "$KW" knowledge-commit discard
+g -C "$KW" reset -q >/dev/null 2>&1; g -C "$KW" checkout -q -- docs >/dev/null 2>&1
+g -C "$KW" checkout -q develop >/dev/null 2>&1; g -C "$KW" branch -q -D fix/pr-branch >/dev/null 2>&1
+# origin/HEAD も remote の HEAD も解決できない回は、判定できないまま進まず名指しで止める
+g -C "$KW" remote set-url origin "$TMP/nowhere.git" >/dev/null 2>&1
+printf -- '- obs11\n' >>"$KW/docs/08-knowledge/OBSERVATIONS.md"
+run_finish "$KW" knowledge-commit add --source obs --id OBS-11 --summary "要約11" -- docs/08-knowledge/OBSERVATIONS.md
+if [ "$RC" -eq 2 ] && has_text "$ERR" "origin/HEAD を解決できず" && has_text "$ERR" "git remote set-head origin --auto"; then
+  ok "H20b: origin/HEAD も remote の HEAD も解決できなければ rc 2 で set-head を案内する"
+else
+  bad "H20b: default branch を解決できないのに止まらない（rc=${RC}）: ${ERR}"
+fi
+g -C "$KW" remote set-url origin "$TMP/origin.git" >/dev/null 2>&1
+g -C "$KW" remote set-head origin develop >/dev/null 2>&1
+g -C "$KW" checkout -q -- docs >/dev/null 2>&1
 # 保護判定 probe（stub gh）
 STUB_CLASSIC=404 STUB_RULESETS=false run_finish "$KW" knowledge-commit probe
 if [ "$RC" -eq 0 ] && has_text "$OUT" "protection=unprotected"; then ok "H9: probe は classic 404 + rulesets に pull_request 無し → unprotected"; else bad "H9: probe が違う（rc=${RC}）: ${OUT} / ${ERR}"; fi

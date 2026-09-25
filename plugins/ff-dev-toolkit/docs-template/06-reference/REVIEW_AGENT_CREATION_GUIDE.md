@@ -103,16 +103,22 @@
 
 [全観点共通の配置規則ブロック — 既存観点から同一本文をコピーする]
 
+## Verdict Lines（型付き判定行の契約）
+
+[全観点共通の型付き判定行ブロック — 既存観点から同一本文をコピーする]
+
 ## Output Template
 
-[結果の出力テンプレート — Suggestion 系の受け皿節を含める]
+[結果の出力テンプレート — Suggestion 系の受け皿節と、指摘ごとの型付き判定行の例を含める]
 ```
 
 > **必須**: `## Severity Classification` 節には全観点共通の「### 配置規則（severity スコープ契約）」ブロック（Critical / Important / Warning は今回の変更 diff が導入または悪化させた欠陥に限る、既存コード・上流ツールへの提案は Suggestion / Edge Case へ、settled-design / accepted-residual の格下げ規則）を**既存観点と同一本文**で含めること。ff-dev-toolkit 本体では `tests/review-severity-scope/verify.sh` が観点の名簿・ブロックの存在・9 ファイル間の本文一致を検査するため、新観点の追加は名簿への登録とセットで行う。`## Output Template` には配置規則で区分・格下げした指摘の受け皿（Suggestion 系の節）を必ず用意する。
+>
+> **必須**: `## Output Template` の直前に全観点共通の「## Verdict Lines（型付き判定行の契約）」ブロック（指摘ごとに `- verdict: severity=… failure_scenario=… confidence=… [file=…] [line=…]` を 1 行、指摘ゼロなら `- verdict: none`、フェンス外・強調やバッククォートなし）を**既存観点と同一本文**で含め、Output Template の各指摘例にも型付き判定行を 1 行置くこと（値はプレースホルダではなく、そのまま文法を満たす具体値にする）。ブロック内の例示行はコードフェンスの内側に置く — フェンスの外に置くと、観点ファイルを言い直しただけの応答が型付き行として受理される。ラッパーの受理ゲートはこの行だけを読み、行が 1 行も無い報告は散文の重大度行が揃っていても受理せず INCOMPLETE にする（散文だけの報告には拒否の診断を出す）。ff-dev-toolkit 本体では `tests/review-severity-scope/verify.sh` がブロックの存在・位置・9 ファイル間の本文一致と、例示行が受理ゲートの型付き経路を通ることを検査する。
 
 > **新観点追加時の更新箇所チェックリスト**（ff-dev-toolkit 本体。1 箇所でも漏れると対応する suite が赤になるか、名簿・列挙が黙って古くなる）:
 >
-> - [ ] `scripts/perspectives/review/<name>.md`（配置規則ブロックは既存観点と同一本文・Suggestion 受け皿・件数行を出す Output Template）
+> - [ ] `scripts/perspectives/review/<name>.md`（配置規則ブロックと型付き判定行ブロックは既存観点と同一本文・Suggestion 受け皿・件数行と指摘ごとの型付き判定行を出す Output Template）
 > - [ ] `tests/review-severity-scope/verify.sh` の EXPECTED_PERSPECTIVES 名簿（+ 観点固有の針）
 > - [ ] `scripts/multi-agent.sh` の `get_cli_perspectives_review`（distributed の所有 CLI。所有させない場合は cli-registry-completeness の DYNAMIC_PERSPECTIVES へ）
 > - [ ] `scripts/templates/codex-review.sh` ヘルプの「実在する review 観点」列挙

@@ -20,6 +20,35 @@
 
 ## [Unreleased]
 
+## [0.131.0] - 2026-09-25
+
+### 変更
+
+- レビュー本文の受理判定と Critical 検出が、finding ごとの型付き判定行（コードフェンス外の `- verdict: severity=critical|warning|suggestion|info failure_scenario=yes|no confidence=0〜100 [file=パス] [line=行番号]` と、指摘ゼロを宣言する `- verdict: none`）を読むようにした。有効な型付き行が 1 行でもあれば受理し、Critical の有無は型付き行の severity だけで決める。型付き行の無い本文は従来の散文の判定のまま変わらない（レビュープロンプトはまだ型付き行を要求しない段階的な導入）
+- 必須項目の欠落・値域外・未知の項目・強調や大文字の verdict など文法を満たさない verdict 行は型付きとして採らず、`typed-verdict: line N: rejected (理由コード)` の診断を stderr へ出すようにした（黙って散文扱いにしない）。コードフェンス内の verdict 行は引用として無視する
+- 型付き判定行をタブ区切りのレコードで取り出す `typed_verdicts_extract`（`scripts/adapters/adapter-common.sh`）を追加した。受理判定・Critical 検出と同じコードフェンス追跡を共有し、読めないファイルを「型付き行なし」へ倒さない
+- 型付き判定行の候補を広げ、コロン欠落・バッククォート囲み・番号付きリスト・引用の中に書かれた verdict 行も診断の対象にした（等号か none を含まない散文の総評行は対象外）。文法を満たさない verdict 行が severity=critical を含むときは、他の型付き行や散文の判定に関わらず Critical ありとして扱う（fail-safe。受理判定と抽出レコードは変えない）
+- レビュープロンプト（review タスクの Execution Boundary と Finding Discipline）が、finding ごとに型付き判定行 `- verdict: severity=critical|warning|suggestion|info failure_scenario=yes|no confidence=0〜100 [file=パス] [line=行番号]` を 1 行ずつ書くこと、指摘ゼロなら `- verdict: none` を書くことを要求するようにした。failure_scenario=yes は再現する入力・状態と観測できる誤動作を示せたときだけ、confidence は 80 が報告閾値で 80 未満は捨てずに未確認として扱う、と明記している。例示行はコードフェンスの内側に置き（実際の出力ではフェンスの外に書くよう明記）、プロンプトを言い直しただけの応答が型付き行として受理されないようにした。重大度見出しと件数行は引き続き出力させる
+- 9 つのレビュー観点テンプレートに同一本文の「Verdict Lines（型付き判定行の契約）」節を追加し、各 Output Template の指摘例へ、そのまま有効な値（confidence=95 等）の型付き判定行を足した（プレースホルダを写した行が不採用にならないように）。code-review の「信頼度: XX」行は判定行の confidence へ置き換え、テスト有効性の例外（信頼度 50 以上で報告）の意味は変えていない
+- 型付き判定行が 1 行も無く散文の重大度行だけでレビュー本文を受理した回は、`typed-verdict: Claude Code/code-review: prose fallback used (no valid verdict line)` のように CLI と観点（ホスト委譲ではレーンと観点）を名指しした警告を stderr へ 1 行出すようにした（受理の可否と終了コードは変えない。Critical 検出と判定行の抽出では出さない）。CLI 起動の 4 アダプタとホスト委譲経路（`--delegate-to-host`）は同じ受理関数を通るので、どの経路でも同じ警告になる
+- multi-review のホスト委譲手順に、サブエージェントの応答は型付き判定行を残したまま結果ファイルへ書くことを追記した
+- 統合レビューレポートの Critical 判定が、観点結果に有効な型付き判定行（`- verdict: …`）があるときはその行だけで決まるようにした。`failure_scenario=no` の指摘は 1 段下げて（Critical は Warning、Warning は Suggestion）から数え、`CRITICAL_BLOCK` / `CRITICAL_NONBLOCK` は下げた後の重大度で判定する。書式の崩れた判定行が `severity=critical` を名乗る場合は、下げた後の件数に関わらず Critical ありとして扱い、レポートと stderr で名指しする。判定行の無い観点は従来どおり散文の重大度行で判定し、レポートで名指しする。散文では Critical ありと読めるのに判定行の Critical が 0 件だった観点は、stderr の `typed-verdict: prose Critical finding overridden …` とレポートの 1 行で名指しする（判定行の抽出でもこの診断を出すようにした）
+- 統合レポートの末尾（マーカーの直前）に「型付き判定の集計」節を追加した。観点ごとの重大度別件数・下げた件数・低信頼の件数を表で示し、信頼度が閾値未満の指摘を「未確認 › 低信頼の指摘」へ、完了していない観点（委譲待ち・失敗・スキップ・結果なし）を理由つきで「未確認 › 未完了の観点」へ列挙する。低信頼の指摘は報告から落とさず、Critical の判定からも外さない
+- 信頼度の報告閾値（既定 80）を環境変数 `MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD` または `.claude/agent-config.yaml` の `review.confidence_threshold` で変えられるようにした（環境変数が優先）。0〜100 の整数以外は CLI を起動する前に名指しのエラーで止まる。code-review のテスト有効性の例外は、テンプレートが前置を求める 3 形のタグ（`[TEST-VALIDITY:unreached]` / `[TEST-VALIDITY:coincidental]` / `[TEST-VALIDITY:one-sided]`）を持つ指摘だけを 50 と閾値の小さい方で判定する（素の `[TEST-VALIDITY]` や他の語は通常の閾値。タグは判定行の親の指摘行まで遡って探す）。code-review 観点テンプレートの例外の書き方をこの 3 形のタグへ改めた
+- 型付き判定行で判定した観点ごとに、指摘 1 件 1 行の記録（出力先の CLI 名ディレクトリ配下の `観点名.findings.tsv`。列: cli / perspective / severity / failure_scenario / confidence / file / line / summary / demoted_from、1 行目がヘッダのタブ区切り）を書くようにした。毎回の実行と `--resume` で作り直して前回の記録を残さず、観点を絞った実行ではプラン外の観点の記録を結果と一緒に `previous/` へ退避する
+- **挙動の変更（導入先に影響）**: クロスモデルレビューの結果は、型付き判定行（`- verdict: severity=… failure_scenario=… confidence=…`、指摘ゼロなら `- verdict: none`）が 1 行以上あるときだけ受理するようにした。判定行の無い結果は、重大度見出し・件数行（`Critical: 0 / Warning: 0 / Suggestion: 0` 等）・散文の指摘が揃っていても受理せず、CLI 起動の 4 アダプタでは INCOMPLETE 成果物（捕捉した本文は保全）、ホスト委譲（`--delegate-to-host`）では応答の退避と handoff のやり直しになる。独自の観点テンプレートやレビュアーを使っていて判定行を書かせていない場合、これまで完了として受理されていた結果が INCOMPLETE へ変わる
+- 統合レポートの Critical 判定から散文の重大度行による判定を外した。判定は型付き判定行（と、書式の崩れた `severity=critical` 行を Critical として扱う fail-safe）だけで決まる。判定行の無い結果は、未完了の観点（拒否・失敗・タイムアウト）なら本文から判定せず「未確認 › 未完了の観点」で名指しし、完了扱いの結果（旧版で受理された結果を `--resume` で再利用した場合など）は判定の根拠が無いものとして安全側（Critical あり）へ倒して名指しする。コードフェンスが閉じない結果・判定できなかった結果も、それぞれ別の文で名指しするようにした（これまで「散文の重大度行で判定した観点」と一括で表示していた）
+- 散文の重大度行だけの結果を拒否した回は `typed-verdict: CLI名/観点名: prose-only review refused (no valid verdict line)` を stderr へ 1 行出すようにした（前置きだけの応答と区別するため。これまでの `prose fallback used` の警告はこの診断に置き換わった）。拒否・中断した本文の散文に Critical の記述があった観点は、判定には数えずにレポートの 1 行で名指しする
+- 型付き判定行を持たず受理されなかった結果でも、書式の崩れた `severity=critical` の判定行（大文字の値・数値でない confidence 等）があれば Critical として `CRITICAL_BLOCK` / `CRITICAL_NONBLOCK` の判定に数え、集計節で名指しするようにした
+- 受理されなかった結果の INCOMPLETE 成果物に理由コード（型付き判定行なし / 散文の重大度行だけのレビュー / 出力を解析できない）を 1 行載せ、統合レポートの「未確認 › 未完了の観点」がその理由を名指しするようにした。出力に不正な UTF-8 が含まれて受理判定そのものが失敗した回は、「型付き判定行が無い」ではなく「解析できない」理由で不受理にする
+- 不受理の理由の文面を 1 箇所の定義から出すようにし、「型付き判定行が無い」ことを名指しする文面へ改めた（INCOMPLETE 成果物のバナーと本文、アダプタの ERROR 行、ホスト委譲の退避理由が同じ文面になる）
+- レビュープロンプトと 9 つの観点テンプレートの型付き判定行の説明を、判定行が 1 行も無い報告は受理されないこと・見出しと件数行は読み手のために残すが受理と判定には使わないことへ改めた。PR レビュー対応ポリシー・マルチ CLI レビュー運用ガイド・multi-review スキルに、型付き判定行の規則（必須・`verdict: none`・`failure_scenario=no` の 1 段降格・信頼度の閾値 80 と設定の出所・「未確認」の 2 節・崩れた Critical 行の扱い・判定行の無い結果は INCOMPLETE）を同じ内容で記載した
+
+### 修正
+
+- 知見コミットの書き込み口（`scripts/knowledge-commit.sh` の add と、finish.sh の knowledge-commit add）が、default branch 上では先頭で origin を fetch して祖先確認を行い、ローカルが遅れていれば stage する前に復帰手段（git rebase --autostash で取り込む）つきで止まるようにした。fetch できない回は判定不能として名指しで止まる（黙って進まない）。同じ検査だけを呼ぶ freshness サブコマンドを追加した
+- CHANGELOG の帰属検査の共通 helper（`scripts/lib/changelog-attribution-functions.sh`）へ、前版タグと同一内容の path の参照を見つける走査を移し、断片の段階とリリース時の版節で同じ判定を共有するようにした
+
 ## [0.130.0] - 2026-09-24
 
 ### 追加

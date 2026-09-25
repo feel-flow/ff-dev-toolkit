@@ -9,9 +9,12 @@
 #   knowledge-commit.sh commit [--type <commit type>] [--force]
 #   knowledge-commit.sh status
 #   knowledge-commit.sh discard
+#   knowledge-commit.sh freshness
 #
 #   add     書いたファイルを stage し、エントリ（ID・要約・カテゴリ・パス）を保留記録へ足す。
-#           コミットはしない。同じ source と ID の再 add は記録を増やさない（冪等）。
+#           コミットはしない。同じ source と ID の再 add は記録を増やさない（冪等）。default branch
+#           （または detached HEAD）上では先頭で origin/<default> を fetch し、ローカルが遅れていれば
+#           stage せずに復帰手段つきで止まる（fetch できなければ判定不能として止まる）。
 #   commit  保留記録を 1 コミットへまとめる（`--force` で上の鮮度検査を省く）。件名はエントリ 1 件なら
 #           `<type>: <ID> <要約>`（従来形）、2 件以上なら `<type>: <ID> / <ID> …` で、
 #           要約は本文へ 1 行ずつ置く。カテゴリは本文の `Categories:` 行へ置く（件名には並べない）。
@@ -20,6 +23,8 @@
 #           保留記録が無ければ何もせず `KNOWLEDGE_COMMIT=none` を出して 0 で終わる。
 #   status  保留記録を表示する（`KNOWLEDGE_PENDING=<件数>`・記録したブランチと基点・各エントリ）。
 #   discard 保留記録を捨てる（stage 済みの変更は残すので、要らなければ `git restore --staged` で外す）。
+#   freshness add の先頭と同じ default branch の鮮度検査だけを行う（`KNOWLEDGE_FRESHNESS=ok`。add の前に
+#           別のファイルを stage する呼び出し側が、副作用より前に確かめる）。
 #
 # 保留記録は最初の add のときのブランチ・HEAD（基点）・時刻を持つ。commit はブランチが違う・基点が
 # 今の HEAD の祖先でない・12 時間を超えた保留を拒否する（中断した別セッションの古い追記を今回の
@@ -50,8 +55,10 @@
 #
 # 終了コード:
 #   0  成功（保留記録が無い commit を含む）
-#   1  止めるべき状態（合成 identity・commit の失敗・保留記録の破損）。保留記録は残す
-#   2  使い方の誤り・環境不備（git 管理外・パスがリポジトリ外 / 不在・lib 不在）
+#   1  止めるべき状態（合成 identity・commit の失敗・保留記録の破損・default branch が origin より遅れて
+#      いる add）。保留記録は残す
+#   2  使い方の誤り・環境不備（git 管理外・パスがリポジトリ外 / 不在・lib 不在・origin/<default> を
+#      fetch / 解決できない add）
 #
 # 実装上の制約: macOS 標準の bash 3.2 で動くこと（連想配列・readarray を使わない）。
 
@@ -228,6 +235,7 @@ Usage: knowledge-commit.sh add --source ace|obs --id <ID> --summary <summary> [-
        knowledge-commit.sh status
        knowledge-commit.sh commit [--type <commit type>] [--force]
        knowledge-commit.sh discard
+       knowledge-commit.sh freshness
 USAGE
   exit 2
 }
@@ -268,6 +276,34 @@ pending_stale_reason() {
     echo "保留が $(( PENDING_MAX_AGE / 3600 )) 時間より前に記録された"
   fi
 }
+# default branch の鮮度（add の先頭）。knowledge コミットは default branch へ直 push する（保護されていれば
+# そこから PR ブランチを切る）ので、ローカルが origin/<default> より遅れたまま add すると、commit まで進んで
+# から push が non-fast-forward で拒否される（PR を続けて curate する回に毎回起きた）。default branch 上
+# （merge-cleanup が退避した detached HEAD を含む）の add だけを対象に、fetch と祖先確認を行う。origin
+# remote の無いリポジトリ（ローカル専用・検査用の一時 repo）は直 push の経路が無いので確かめない。
+# fetch できない回は遅れを判定できないので、黙って進まず名指しで止める。
+assert_default_branch_fresh() {
+  local default_ref default branch fetch_err behind
+  git -C "$repo_root" remote get-url origin >/dev/null 2>&1 || return 0
+  # origin/HEAD の無い clone（git init + remote add 等）でも PR ブランチの add を止めないよう、remote の
+  # HEAD を問い合わせて default branch を補う。どちらでも解決できない回だけ名指しで止める
+  default_ref="$(git -C "$repo_root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || default_ref=""
+  if [[ -n "$default_ref" ]]; then
+    default="${default_ref#origin/}"
+  else
+    default="$(git -C "$repo_root" ls-remote --symref origin HEAD 2>/dev/null | awk '$1 == "ref:" && $3 == "HEAD" { sub(/^refs\/heads\//, "", $2); print $2; exit }')"
+    [[ -n "$default" ]] \
+      || die_env "origin/HEAD を解決できず（remote の HEAD も問い合わせられない）、default branch が遅れていないか確かめられない — git remote set-head origin --auto を実行してから add し直す"
+  fi
+  branch="$(current_branch)"
+  [[ "$branch" == "$default" || "$branch" == "(detached)" ]] || return 0
+  fetch_err="$(git -C "$repo_root" fetch -q origin "+refs/heads/${default}:refs/remotes/origin/${default}" 2>&1)" \
+    || die_env "origin/${default} を取得できず、ローカルが遅れていないか判定できない（${fetch_err%%$'\n'*}）— 通信・認証を直してから add し直す（遅れを確かめないまま stage しない）"
+  if ! git -C "$repo_root" merge-base --is-ancestor "refs/remotes/origin/${default}" HEAD; then
+    behind="$(git -C "$repo_root" rev-list --count "HEAD..refs/remotes/origin/${default}" 2>/dev/null)" || behind="?"
+    die_stop "ローカルの ${branch} が origin/${default} より ${behind} コミット遅れている — このまま add → commit → push すると push が non-fast-forward で拒否される。git rebase --autostash origin/${default} で取り込んでから add し直す（書いた知見の編集は autostash が退避して戻す。衝突したら解消してから）"
+  fi
+}
 
 cmd="${1:-}"
 [[ -n "$cmd" ]] || usage
@@ -298,6 +334,8 @@ case "$cmd" in
     for v in ${ids[@]+"${ids[@]}"}; do [[ "$v" == "${id%%-*}"-?* ]] || die_env "--id の接頭辞が揃っていません: $v"; done
     [[ -n "$summary" ]] || die_env "--summary が空です"
     [[ -z "$add_type" || "$add_type" =~ ^[a-z][a-z-]*$ ]] || die_env "--type は英小文字の commit type です: $add_type"
+    # default branch の鮮度（直 push の前提）を stage より前に確かめる
+    assert_default_branch_fresh
     # 既存の保留が古ければ（中断した別セッションの残り）今回の追記を足さない
     if [[ -s "$pending" ]]; then
       stale="$(pending_stale_reason)"
@@ -341,6 +379,13 @@ case "$cmd" in
         || die_stop "保留記録へ書けません: $pending"
     fi
     echo "KNOWLEDGE_PENDING=$(entry_count)"
+    ;;
+
+  freshness)
+    # add の先頭と同じ鮮度検査だけを行う（add の前に claim 等を stage する呼び出し側が、副作用の前に確かめる）
+    [[ $# -eq 0 ]] || usage
+    assert_default_branch_fresh
+    echo "KNOWLEDGE_FRESHNESS=ok"
     ;;
 
   status)

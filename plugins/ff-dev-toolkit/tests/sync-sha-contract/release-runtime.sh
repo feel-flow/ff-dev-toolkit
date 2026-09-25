@@ -111,6 +111,11 @@ ver="$(jq -r .version plugins/ff-dev-toolkit/.claude-plugin/plugin.json)"
 latest="$(git -C "$RELEASE_RT_PUBLIC" ls-remote --refs --tags origin | awk -F/ '{print $NF}' | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
 frag=0
 for f in changelog.d/*.md; do [[ -f "$f" && "${f##*/}" != README.md ]] && frag=$((frag + 1)); done
+# 昇格後の再判定（版が進んだ後）だけが帰属の疑いを出す（前版と同一内容の path を版節が参照している回）
+if [[ -f "$RELEASE_RT_STATE/check.attr" && "$ver" != "$latest" ]] && grep -qF '`scripts/stale.sh`' oss/ff-dev-toolkit/CHANGELOG.md; then
+  echo "ATTRIBUTION_PATH=scripts/stale.sh -> plugins/ff-dev-toolkit/scripts/stale.sh (v${latest} と同一 object)"
+  echo "RELEASE_CHECK=ATTRIBUTION_DRIFT"; echo "REASON=stub: 新版節の 1 path が公開側最新タグと同一"; exit 1
+fi
 if [[ "$ver" == "$latest" && "$frag" -gt 0 ]]; then
   echo "RELEASE_CHECK=RELEASE_REQUIRED"; echo "REASON=stub: 未消費断片 ${frag} 件"; exit 1
 fi
@@ -240,6 +245,8 @@ printf '%s\n' '# fragments' >"$SSOT/changelog.d/README.md"
   printf '%s\n' '[Unreleased]: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.31.0...HEAD'
   printf '%s\n' '[0.31.0]: https://github.com/feel-flow/ff-dev-toolkit/releases/tag/v0.31.0'
 } >"$SSOT/oss/ff-dev-toolkit/CHANGELOG.md"
+# 書き込み先ファイルと接頭辞だけ共有する追跡済みファイル（--resume-with-edits の境界判定の針）
+printf '%s\n' '# backup' >"$SSOT/oss/ff-dev-toolkit/CHANGELOG.md.bak"
 ff_git_fixture_init "$SSOT" "$ID_NAME" "$ID_MAIL"
 git -C "$SSOT" add -A
 git -C "$SSOT" commit -qm baseline
@@ -322,6 +329,11 @@ if has "PLAN: version 0.31.0 → 0.32.0（minor" && has "PLAN: git push origin H
   ok "dry-run が bump（minor）・develop 直 push・タグ・Release を実行予定コマンドとして出す"
 else
   bad "dry-run の PLAN 行が不足"; dump
+fi
+if has "一時 clone で集約・昇格を模擬した再判定: RELEASE_CHECK=OK（rc=0）"; then
+  ok "dry-run の prepare は一時 clone で集約・昇格を模擬し、再判定の実値（RELEASE_CHECK=OK）を PLAN に出す"
+else
+  bad "dry-run が昇格後の再判定の実値を出さない"; dump
 fi
 if [[ "$(git -C "$SSOT" rev-parse HEAD)" == "$head_before" && -z "$(git -C "$SSOT" status --porcelain)" \
   && "$(git -C "$PUB_ORIGIN" rev-parse main)" == "$pub_before" && "$(count_runall)" -eq 0 \
@@ -589,6 +601,104 @@ git -C "$PUB" checkout -q -- .
 rm -f "$SSOT/.git/ff-release-public-writing"
 run_orch
 [[ "$RC" -eq 0 ]] || { bad "手で戻した後の再実行が完了しない (rc=$RC)"; dump; }
+
+echo "-- release: 昇格後の再判定で止まる回（dry-run の模擬・直した内容の採用） --"
+CL="$SSOT/oss/ff-dev-toolkit/CHANGELOG.md"
+WRITING="$SSOT/.git/ff-release-writing"
+PATCHV="$(jq -r .version "$SSOT/plugins/ff-dev-toolkit/.claude-plugin/plugin.json" | awk -F. '{ print $1 "." $2 "." ($3 + 1) }')"
+printf '%s\n' '- 判定を直した（`scripts/stale.sh`）' >"$SSOT/changelog.d/114.fixed.stale.md"
+commit_push "fix: stale ref"
+: >"$STATE/check.attr"
+head_before="$(git -C "$SSOT" rev-parse HEAD)"
+mkdir -p "$TMP/orch-tmp"
+RC=0
+OUT="$(TMPDIR="$TMP/orch-tmp" bash "$SSOT/scripts/release-dev-toolkit.sh" --public "$PUB" --dry-run 2>&1)" || RC=$?
+sim_left="$(find "$TMP/orch-tmp" -mindepth 1 -maxdepth 1 -name 'release-*' | head -n 1)"
+if [[ "$RC" -eq 1 ]] && has "模擬した再判定: RELEASE_CHECK=ATTRIBUTION_DRIFT（rc=1）" && has "ATTRIBUTION_PATH=scripts/stale.sh" \
+  && has "NG: [prepare] 昇格後の再判定が OK にならない（dry-run の模擬" \
+  && [[ "$(git -C "$SSOT" rev-parse HEAD)" == "$head_before" && -z "$(git -C "$SSOT" status --porcelain)" ]] \
+  && [[ -f "$SSOT/changelog.d/114.fixed.stale.md" && ! -f "$WRITING" && -z "$sim_left" ]]; then
+  ok "dry-run は一時 clone で集約・昇格を模擬し、再判定の実値（ATTRIBUTION_DRIFT）を PLAN に出して非 0 で止まる（SSOT は無傷・一時 clone は残さない）"
+else
+  bad "dry-run が昇格後の再判定の赤を予測しない、または何かを残した (rc=$RC left=${sim_left:-なし})"; dump
+fi
+run_orch
+if [[ "$RC" -eq 1 ]] && has "NG: [prepare] 昇格後の再判定が OK にならない" && has "--resume-with-edits で直した内容を採用して再開する" \
+  && ! has "rm \"" && [[ -f "$WRITING" ]]; then
+  ok "本実行の停止文は、直した内容を採用して再開する入口（--resume-with-edits）を案内する（記録ファイルを手で消す抜け道を案内しない）"
+else
+  bad "昇格後の再判定の停止文が再開の設計と噛み合わない (rc=$RC)"; dump
+fi
+awk '{ gsub(/（`scripts\/stale\.sh`）/, "（判定ヘルパ）"); print }' "$CL" >"$TMP/cl.fixed" && mv "$TMP/cl.fixed" "$CL"
+run_orch
+if [[ "$RC" -eq 1 ]] && has "自動では戻さない" && has "--resume-with-edits" && grep -qF '（判定ヘルパ）' "$CL"; then
+  ok "直した後に付けずに再実行すると、直した内容を戻さずに止まり --resume-with-edits を案内する"
+else
+  bad "直した内容を戻した、または案内が無い (rc=$RC)"; dump
+fi
+printf '%s\n' '無関係な編集' >>"$SSOT/plugins/ff-dev-toolkit/skills/demo/SKILL.md"
+run_orch --resume-with-edits
+if [[ "$RC" -eq 1 ]] && has "prepare 段の書き込み先ではないパスが変わっている" && grep -qF '（判定ヘルパ）' "$CL" \
+  && ! grep -q '^adopted=1$' "$WRITING"; then
+  ok "--resume-with-edits は prepare の書き込み先以外が変わっていれば何も変えずに止まる（判別できない状態は採用しない）"
+else
+  bad "書き込み先以外の変更があるのに採用した (rc=$RC)"; dump
+fi
+git -C "$SSOT" checkout -q -- plugins/ff-dev-toolkit/skills/demo/SKILL.md
+printf '%s\n' '接頭辞だけ同じファイルの編集' >>"$SSOT/oss/ff-dev-toolkit/CHANGELOG.md.bak"
+run_orch --resume-with-edits
+if [[ "$RC" -eq 1 ]] && has "prepare 段の書き込み先ではないパスが変わっている（oss/ff-dev-toolkit/CHANGELOG.md.bak）" \
+  && ! grep -q '^adopted=1$' "$WRITING"; then
+  ok "--resume-with-edits は書き込み先ファイルと接頭辞だけ同じパス（CHANGELOG.md.bak）を書き込み先と見なさない（ファイルは完全一致）"
+else
+  bad "接頭辞だけ同じパスの変更を採用した (rc=$RC)"; dump
+fi
+git -C "$SSOT" checkout -q -- oss/ff-dev-toolkit/CHANGELOG.md.bak
+run_orch --resume-with-edits --dry-run
+if [[ "$RC" -eq 0 ]] && has "採用した作業ツリーの再判定: RELEASE_CHECK=OK（rc=0）" && has "RELEASE_RESULT=dry-run" \
+  && [[ "$(git -C "$SSOT" rev-parse HEAD)" == "$head_before" ]] && ! grep -q '^adopted=1$' "$WRITING"; then
+  ok "--resume-with-edits --dry-run は直した内容の再判定（RELEASE_CHECK=OK）を出し、記録も作業ツリーも変えない"
+else
+  bad "--resume-with-edits --dry-run が違う (rc=$RC)"; dump
+fi
+echo $(( $(cat "$STATE/contract.calls" 2>/dev/null || echo 0) + 1 )) >"$STATE/contract.fail-at"
+run_orch --resume-with-edits
+first_rc="$RC"
+run_orch
+if [[ "$first_rc" -eq 1 && "$RC" -eq 1 ]] && has "自動では戻さない" && has "--resume-with-edits で採用した書きかけ" && grep -qF '（判定ヘルパ）' "$CL"; then
+  ok "採用した後に止まった書きかけは、付けない再実行でも自動では戻さない（直した内容を消さない）"
+else
+  bad "採用した書きかけを付けない再実行が戻した、または止まらない (rc=${first_rc}→${RC})"; dump
+fi
+rm -f "$STATE/contract.fail-at"
+run_orch --resume-with-edits
+rel_sha="$(git -C "$SSOT_ORIGIN" log --format='%H %s' develop | awk -v s="release: ff-dev-toolkit v${PATCHV}" '!f && substr($0, 42) == s { print $1; f = 1 }')"
+rel_cl="$(git -C "$SSOT" show "${rel_sha:-none}:oss/ff-dev-toolkit/CHANGELOG.md" 2>/dev/null || true)"
+if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "RELEASE_VERSION=${PATCHV}" \
+  && [[ "$rel_cl" == *'（判定ヘルパ）'* && "$rel_cl" != *'`scripts/stale.sh`'* ]] \
+  && [[ ! -f "$WRITING" && ! -f "$SSOT/changelog.d/114.fixed.stale.md" ]]; then
+  ok "--resume-with-edits は直した作業ツリーを採用し、再判定 → release コミット → 同期まで続ける（直した版節がコミットに入る）"
+else
+  bad "--resume-with-edits で直した内容から再開できない (rc=$RC)"; dump
+fi
+rm -f "$STATE/check.attr"
+
+echo "-- release: dry-run の同期差分（fetch 済み origin/main 基準・内容差分だけ） --"
+git -C "$PUB" reset -q --hard HEAD~1
+pub_head_before="$(git -C "$PUB" rev-parse HEAD)"
+printf '%s\n' '- 差分' >"$SSOT/changelog.d/115.added.preview.md"
+commit_push "feat: preview"
+run_orch --dry-run
+changed_line="$(printf 'M\tplugins/ff-dev-toolkit/scripts/changes.txt')"
+if [[ "$RC" -eq 0 ]] && has "同期差分（公開側 origin/main" && has "タイムスタンプだけの差は出さない）: 1 件" && has "$changed_line" \
+  && [[ "$OUT" != *">f"* ]] \
+  && [[ "$(git -C "$PUB" rev-parse HEAD)" == "$pub_head_before" && -z "$(git -C "$PUB" status --porcelain)" ]]; then
+  ok "dry-run の同期差分は古い公開側 clone の作業ツリーではなく fetch 済み origin/main と比べ、内容が変わるファイルだけを出す（公開側 clone は書き換えない）"
+else
+  bad "dry-run の同期差分が違う (rc=$RC)"; dump
+fi
+run_orch
+[[ "$RC" -eq 0 ]] || { bad "同期差分の確認の後の本実行が完了しない (rc=$RC)"; dump; }
 
 echo "-- release: ゲートの完走証拠と週次 CI の再評価 --"
 printf '%s\n' '- ゲート' >"$SSOT/changelog.d/112.added.gate.md"

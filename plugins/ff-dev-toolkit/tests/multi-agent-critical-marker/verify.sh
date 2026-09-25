@@ -70,6 +70,38 @@
 #   存在しない」パスで代替した — こちらは権限に依存しない）。case を持たない将来の消費側の
 #   ための保険として残し、測れない事実をここに記録する。
 #
+# 型付き判定の集計（ADR-065 の C3 追記。T1〜T14b）: 型付き判定行を持つ観点は降格後の重大度で
+# マーカーを決め、集計節・「未確認」の 2 節・<cli>/<観点>.findings.tsv を出す。変異は 1 件ずつ
+# プラグインの写しへ当てて本 suite を走らせた（2026-09-25 実測。既存ケースはどの変異でも緑）:
+# 変異検出: Critical の降格を外す → T2 / T4 が赤。Warning の降格を外す → T1 が赤。
+# 変異検出: 不採用行の fail-safe を外す（写しの判定を常に「なし」）→ T4 が赤。
+# 変異検出: 低信頼の比較を「未満」から「以下」へ → T5 が赤。テスト有効性の例外を外す → T6 が赤。
+# 変異検出: 低信頼の列挙を集計ファイルへ足さない → T5 / T6 が赤。未完了の理由を常に空 → T10 が赤。
+# 変異検出: env の閾値を読まない → T7（env・env 優先・不正値 4 件）/ T14 が赤。config を読まない → T7（config 2 件・不正値）が赤。
+# 変異検出: env の不正値を黙って既定へ戻す → T7 の不正値 4 件が赤。main の事前検証を外す → T7 の不正値 5 件が赤（CLI を起動してから落ちる）。
+# 変異検出: clear_planned_outputs の記録削除を外す → T12 が赤。quarantine の記録退避を外す / ヘッダ照合を外す → T13 が赤。
+# 変異検出: 型付き経路そのものを外す（常に散文）→ T1〜T14 の 20 件が赤。
+# 変異検出: レポート生成側の記録削除を外す → 当初は全緑（clear_planned_outputs が同じ観点を先に消すため）。
+#   --resume で再利用した観点は clear_planned_outputs の対象外なので、そこに残った記録を消すのは
+#   レポート側だけ — T14b を足して赤になることを確かめた。
+# レビュー 1 巡目の fix（同日実測。1 件ずつ写しへ当てた）:
+# 変異検出: 抽出モードの「散文の Critical を覆した」診断を外す → T9b（stderr・レポート行）と typed-verdict-parser の B3 / B4 / D4 が赤。
+# 変異検出: レポートへの「覆した観点」の 1 行を外す → T9b が赤。
+# 変異検出: findings.tsv の列を旧順（demoted_from を 4 列目）へ戻す → T1 / T6（summary 列の位置）が赤。
+# 散文経路の撤去（ADR-066 / Issue `#1875`。1 件ずつ写しへ当てた 2026-09-25 実測）:
+# 変異検出: 判定行の無い未完了の観点を本文から判定しない分岐を外す（安全側へ倒す）→ 散文だけの本文の拒否ケースなど 29 件赤。
+# 変異検出: 判定行の無い完了扱いの結果を安全側（rc4）でなく Critical なし（rc1）にする → T14b が赤。
+# レビュー 1 巡目の fix（同日実測。1 件ずつ当てた）:
+# 変異検出: 未完了の分岐の fail-safe 検査（critical_findings_present の rc0）を外す → T15 の 2 形が赤。
+# 変異検出: 成果物の理由コードを読まない（未完了の理由を常に既定文）→ T11c が赤。
+# 変異検出: 素の `[TEST-VALIDITY` も例外タグとして受ける → T6（素のタグ・未知の語が列挙されない）が赤。
+# 変異検出: finding の範囲を判定行の直前 1 行へ縮める → T6（折り返した指摘のタグ取りこぼし・summary）が赤。
+# 変異検出: summary を親の指摘行でなく直前の行にする → T6 の summary が赤。
+# C4 の遵守率実測（claude-code が本 PR の diff をレビュー）で出た 2 件の fix（同日実測。1 件ずつ写しへ当てた）:
+# 変異検出: タグの探索範囲を finding の先頭行でなく本文の先頭から取る → T6（素のタグ・未知の語）/ T6b（フラット・入れ子）が赤。
+# 変異検出: 読めない前回の記録を「ヘッダ不一致 = 利用者のもの」と同じ扱いにする → T13b（退避・名指し）が赤。
+# 変異検出: ヘッダの違う記録の名指しを外す → T13b が赤。
+#
 #   **セルフレビューで塞いだ穴（すべて変異注入で緑を実測してから直した）**: (a) 消費側 case の
 #   ラベルを 2 ブロック合併で比べていたため、レポート側ブロックを丸ごと消しても緑だった
 #   → ブロックごとに比較する。(b) 既定アーム `*)` を見る検査が今回の diff で原因別の針へ
@@ -113,7 +145,7 @@ MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 # 実行環境の MULTI_AGENT_* から分離する（Issue #374 / #378 の共通機構）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES FF_MULTI_AGENT_REVIEW_SERIES_REASON_FILE" \
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD FF_MULTI_AGENT_REVIEW_SERIES_REASON_FILE" \
   "$MULTI_AGENT" "$PLUGIN_ROOT"/scripts/adapters/*.sh
 
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正な
@@ -270,8 +302,20 @@ NONBLOCK_MARKER='<!-- CRITICAL_NONBLOCK -->'
 #                         （config 層の実挙動検査）
 #   CASE_CONFIG_RAW       設定すると agent-config.yaml へ**そのまま**書き込む
 #                         （YAML リスト誤設定など、整形済みの 1 文字列で表せない形用）
+# expect は present / absent（型付き判定行を持つ本文 — 受理されて判定される）か、
+# ADR-066 で受理から外した散文だけの本文の 2 形:
+#   refused      — アダプタが不受理 → orchestrator は非 0・レポートは INCOMPLETE を名乗り、
+#                  本文から判定しない（マーカーなし）。散文の Critical の診断行も出ない
+#   refused-crit — 同上で、散文の分類が Critical を読む本文。判定には数えず（マーカーなし）、
+#                  レポートの「拒否・中断した本文の散文に Critical の記述があった観点」行で
+#                  名指しされる（散文の分類の網羅を orchestrator 実走でも診断として保つ）
 run_case() {
   local label="$1" expect="$2" sentinel="$3" rc=0
+  local refused="" crit_diag=""
+  case "$expect" in
+    refused) refused=1; crit_diag=absent; expect=absent ;;
+    refused-crit) refused=1; crit_diag=present; expect=absent ;;
+  esac
   local perspective="${CASE_PERSPECTIVE-code-review}"
   local expect_nonblock="${CASE_EXPECT_NONBLOCK:-absent}"
   local env_set=0 env_val="" cfg_set=0 cfg_val="" cfgraw_set=0 cfgraw_val=""
@@ -328,7 +372,12 @@ run_case() {
   fi
   rc=$?
   set -e
-  if [[ $rc -ne 0 ]]; then
+  if [[ -n "$refused" ]]; then
+    if [[ $rc -eq 0 ]]; then
+      bad "${label}: 散文だけの本文を受理した（型付き判定行の強制が外れている）"
+      return
+    fi
+  elif [[ $rc -ne 0 ]]; then
     bad "${label}: orchestrator が非 0 終了した (rc=$rc)"
     tail -5 "$TMP/run.log" | sed 's/^/    | /' >&2
     return
@@ -340,6 +389,22 @@ run_case() {
   if ! grep -qF "$sentinel" "$REPORT"; then
     bad "${label}: 本文がレポートに到達していない（判定は空振り）"
     return
+  fi
+  if [[ -n "$refused" ]]; then
+    if grep -qF "INCOMPLETE" "$REPORT"; then
+      ok "${label}: 散文だけの本文は不受理（レポートは INCOMPLETE を名乗る）"
+    else
+      bad "${label}: 散文だけの本文を拒否したのにレポートが INCOMPLETE を名乗らない"
+    fi
+    if grep -qF "拒否・中断した本文の散文に Critical の記述があった観点" "$REPORT"; then
+      if [[ "$crit_diag" == "present" ]]; then
+        ok "${label}: 散文の Critical は数えずに名指しだけする"
+      else
+        bad "${label}: 散文の Critical が無いのに名指しの行が出た"
+      fi
+    elif [[ "$crit_diag" == "present" ]]; then
+      bad "${label}: 散文の Critical を名指しする行が無い（診断の経路が切れている）"
+    fi
   fi
   if grep -qF "$MARKER" "$REPORT"; then
     if [[ "$expect" == "present" ]]; then
@@ -374,7 +439,7 @@ run_case() {
 echo "== CRITICAL_BLOCK 判定の構造検査 =="
 
 # 1. Important のみ（[file:line] 箇条書きあり・Critical 0 件）→ 出ない
-run_case "Important のみの [file:line] 箇条書き" absent "sentinel-case-1" <<'BODY'
+run_case "Important のみの [file:line] 箇条書き" refused "sentinel-case-1" <<'BODY'
 <!-- sentinel-case-1 -->
 ## Code Review Results
 
@@ -395,7 +460,7 @@ run_case "Important のみの [file:line] 箇条書き" absent "sentinel-case-1"
 BODY
 
 # 2. Critical セクションに実所見 → 出る
-run_case "Critical セクションの実所見" present "sentinel-case-2" <<'BODY'
+run_case "Critical セクションの実所見" refused-crit "sentinel-case-2" <<'BODY'
 <!-- sentinel-case-2 -->
 ## Code Review Results
 
@@ -408,7 +473,7 @@ run_case "Critical セクションの実所見" present "sentinel-case-2" <<'BOD
 BODY
 
 # 3. 箇条書きは無いが Summary の集計が Critical >= 1 → 出る
-run_case "Summary 集計のみの Critical" present "sentinel-case-3" <<'BODY'
+run_case "Summary 集計のみの Critical" refused-crit "sentinel-case-3" <<'BODY'
 <!-- sentinel-case-3 -->
 ## Review
 
@@ -421,7 +486,7 @@ BODY
 
 # 4. 完了レビューがフェンス内と散文で Critical 判定文字列を引用 → 出ない
 #    （本ツールが自身のスクリプトや perspective 文書をレビューすると実際に起こる形）
-run_case "フェンス引用と散文言及のみ" absent "sentinel-case-4" <<'BODY'
+run_case "フェンス引用と散文言及のみ" refused "sentinel-case-4" <<'BODY'
 <!-- sentinel-case-4 -->
 ## Code Review Results
 
@@ -443,7 +508,7 @@ run_case "フェンス引用と散文言及のみ" absent "sentinel-case-4" <<'B
 BODY
 
 # 5. 行頭の大文字マーカー → 出る
-run_case "行頭 CRITICAL: マーカー" present "sentinel-case-5" <<'BODY'
+run_case "行頭 CRITICAL: マーカー" refused-crit "sentinel-case-5" <<'BODY'
 <!-- sentinel-case-5 -->
 ## Review
 
@@ -455,7 +520,7 @@ BODY
 
 # 6. error-handler-hunt テンプレートの全大文字形 → 出る（同梱 perspective の実契約。
 #    大文字小文字の吸収が落ちると同 perspective の Critical が丸ごと素通りする）
-run_case "全大文字テンプレート（CRITICAL Issues / - CRITICAL: N）" present "sentinel-case-6" <<'BODY'
+run_case "全大文字テンプレート（CRITICAL Issues / - CRITICAL: N）" refused-crit "sentinel-case-6" <<'BODY'
 <!-- sentinel-case-6 -->
 ## Error Handler Hunt Results
 
@@ -475,6 +540,8 @@ run_case "未閉フェンスの後ろの実 Critical" present "sentinel-case-7" 
 
 途中経過の引用:
 
+- verdict: severity=warning failure_scenario=yes confidence=85 file=app.txt line=1
+
 ```text
 （この引用は閉じられないまま本文が続いてしまった）
 
@@ -487,7 +554,7 @@ BODY
 
 # 8. Critical 見出し配下の「- なし」箇条書き → 出ない（空所見の箇条書き表記。
 #    ケース 1 の散文「なし。」と対で、最も紛らわしい変種を固定する）
-run_case "Critical 見出し配下の - なし 箇条書き" absent "sentinel-case-8" <<'BODY'
+run_case "Critical 見出し配下の - なし 箇条書き" refused "sentinel-case-8" <<'BODY'
 <!-- sentinel-case-8 -->
 ## Code Review Results
 
@@ -502,7 +569,7 @@ run_case "Critical 見出し配下の - なし 箇条書き" absent "sentinel-ca
 BODY
 
 # 9. 見出しなし・語彙違いの集計行のみ（test-analysis 形）→ 出る
-run_case "集計行の語彙違い（- Critical Gaps: N）" present "sentinel-case-9" <<'BODY'
+run_case "集計行の語彙違い（- Critical Gaps: N）" refused-crit "sentinel-case-9" <<'BODY'
 <!-- sentinel-case-9 -->
 ## Test Analysis
 
@@ -523,6 +590,7 @@ run_case "非ブロック観点（comment-analysis）の Critical" absent "senti
 
 ### Critical Issues
 - [app.txt:2] コメントが実装と食い違っている
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
   - 信頼度: 95
 
 ### Summary
@@ -556,6 +624,7 @@ run_case "非ブロック観点の Important のみ" absent "sentinel-case-11" <
 
 ### Important Issues
 - [app.txt:2] コメントの言い回しが冗長
+  - verdict: severity=warning failure_scenario=yes confidence=82 file=app.txt line=2
   - 信頼度: 82
 
 ### Summary
@@ -572,6 +641,7 @@ run_case "名簿外の観点（comprehensive-review）の Critical" present "sen
 
 ### Critical Issues
 - [app.txt:2] 認可チェックの欠落
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
   - 信頼度: 96
 
 ### Summary
@@ -587,6 +657,7 @@ run_case "env 空文字の明示指定で全観点ブロック" present "sentine
 
 ### Critical Issues
 - [app.txt:2] コメントが実装と食い違っている
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
   - 信頼度: 95
 
 ### Summary
@@ -603,6 +674,7 @@ run_case "env 上書きで code-review を非ブロック化" absent "sentinel-c
 
 ### Critical Issues
 - [app.txt:2] 認証チェックの欠落
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
   - 信頼度: 95
 
 ### Summary
@@ -620,6 +692,7 @@ for _persp in test-analysis type-design-analysis code-simplification; do
 
 ### Critical Issues
 - [app.txt:2] 重大な指摘
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
   - 信頼度: 95
 
 ### Summary
@@ -636,6 +709,8 @@ run_case "未閉フェンス × 非ブロック観点" absent "sentinel-case-16"
 ## Comment Analysis Results
 
 途中経過の引用:
+
+- verdict: severity=warning failure_scenario=yes confidence=85 file=app.txt line=1
 
 ```text
 （この引用は閉じられないまま本文が続いてしまった）
@@ -666,7 +741,7 @@ fi
 #     CRITICAL_BLOCK を発火していた（3 巡目レビューの security-analysis 誤列挙で
 #     実証）。ガードは「明示ゼロ」だけを除外し、ケース 5 の数字を含まない散文
 #     マーカー（`CRITICAL: 説明`）の検出は維持する。
-run_case "裸の Critical: 0 独立行（ゼロ件報告契約）" absent "sentinel-case-17" <<'BODY'
+run_case "裸の Critical: 0 独立行（ゼロ件報告契約）" refused "sentinel-case-17" <<'BODY'
 <!-- sentinel-case-17 -->
 ## 総合レビュー
 
@@ -677,7 +752,7 @@ BODY
 
 # 18. 裸の `Critical: 0` 単独行（区切りなしの明示ゼロ）→ 出ない。
 #     除外境界のもう一方の正例（ケース 17 は `/` 区切り形）。
-run_case "裸の Critical: 0 単独行" absent "sentinel-case-18" <<'BODY'
+run_case "裸の Critical: 0 単独行" refused "sentinel-case-18" <<'BODY'
 <!-- sentinel-case-18 -->
 ## 総合レビュー
 
@@ -693,7 +768,7 @@ BODY
 # 注: Warning bullet はアダプタ側受理ゲートを通すためのもの（bullet 無しの
 # `CRITICAL: 散文` は受理ゲートの実体行ではない — 受理と検出は別契約）。
 # 集約側の Critical 検出は bare 行だけを見るので、この bullet は判定に混ざらない。
-run_case "CRITICAL: 0-day 型の 0 始まり実指摘" present "sentinel-case-19" <<'BODY'
+run_case "CRITICAL: 0-day 型の 0 始まり実指摘" refused-crit "sentinel-case-19" <<'BODY'
 <!-- sentinel-case-19 -->
 ## Review
 
@@ -706,7 +781,7 @@ BODY
 #     受理ゲート s2（指摘なし・該当なし・指摘事項なし）と揃える — 片側だけに
 #     語彙があると「アダプタは受理するのに集約は実 Critical と数える」ドリフトで
 #     偽 BLOCK になる（5 巡目で実測）。
-run_case "Critical 見出し配下の - 指摘なし" absent "sentinel-case-20" <<'BODY'
+run_case "Critical 見出し配下の - 指摘なし" refused "sentinel-case-20" <<'BODY'
 <!-- sentinel-case-20 -->
 ## 総合レビュー
 
@@ -721,7 +796,7 @@ BODY
 
 # 21. 裸の `Critical: 0 件` → 出ない（明示ゼロの日本語形。除外境界の「件」。
 #     ケース 19 の 0-day 負回帰と対）。
-run_case "裸の Critical: 0 件" absent "sentinel-case-21" <<'BODY'
+run_case "裸の Critical: 0 件" refused "sentinel-case-21" <<'BODY'
 <!-- sentinel-case-21 -->
 ## 総合レビュー
 
@@ -734,7 +809,7 @@ BODY
 #     s1 はゼロ語（none / なし / n/a / ゼロ）を契約準拠ゼロ報告として受理する。
 #     集約側の除外が数値形だけだと、この受理された正常系が偽 BLOCK になる
 #     （語彙の対称性はケース 20 の空所見 bullet と同じ論点）。
-run_case "裸の Critical: none（ゼロ語形）" absent "sentinel-case-22" <<'BODY'
+run_case "裸の Critical: none（ゼロ語形）" refused "sentinel-case-22" <<'BODY'
 <!-- sentinel-case-22 -->
 ## Review
 
@@ -746,7 +821,7 @@ BODY
 # 23. 裸の `Critical: zero`（英語ゼロ語のもう一形）→ 出ない。除外語彙は s1 の
 #     実列挙（なし / none / n/a / zero / ゼロ）と完全一致させる — 1 語でも欠けると
 #     その形の契約準拠ゼロ報告だけが偽 BLOCK になる。
-run_case "裸の Critical: zero（英語ゼロ語）" absent "sentinel-case-23" <<'BODY'
+run_case "裸の Critical: zero（英語ゼロ語）" refused "sentinel-case-23" <<'BODY'
 <!-- sentinel-case-23 -->
 ## Review
 
@@ -762,7 +837,7 @@ BODY
 # （受理と検出の全行対応表は tests/severity-parser-intersection が固定する）。
 
 # 24. `*` bullet の集計行 → 出る（旧実装は `-` bullet しか見ず素通り = fail-open）
-run_case "共有パーサー: * bullet の集計行" present "sentinel-case-24" <<'BODY'
+run_case "共有パーサー: * bullet の集計行" refused-crit "sentinel-case-24" <<'BODY'
 <!-- sentinel-case-24 -->
 ## Review
 
@@ -773,7 +848,7 @@ run_case "共有パーサー: * bullet の集計行" present "sentinel-case-24" 
 BODY
 
 # 25. 行頭 `**Critical**:` の散文指摘行 → 出る（旧実装は ** 強調形を検出しない）
-run_case "共有パーサー: ** 強調の散文指摘行" present "sentinel-case-25" <<'BODY'
+run_case "共有パーサー: ** 強調の散文指摘行" refused-crit "sentinel-case-25" <<'BODY'
 <!-- sentinel-case-25 -->
 ## Review
 
@@ -781,7 +856,7 @@ run_case "共有パーサー: ** 強調の散文指摘行" present "sentinel-cas
 BODY
 
 # 26. bullet + 件数なしの散文指摘行 → 出る（旧実装は [1-9] の件数必須で素通り）
-run_case "共有パーサー: bullet + 件数なし指摘行" present "sentinel-case-26" <<'BODY'
+run_case "共有パーサー: bullet + 件数なし指摘行" refused-crit "sentinel-case-26" <<'BODY'
 <!-- sentinel-case-26 -->
 ## Review
 
@@ -791,7 +866,7 @@ BODY
 # 27. bullet 付きゼロ語（`- Critical: none`）→ 出ない（受理ゲート s1 が契約準拠
 #     ゼロ報告として受理する形。検出側の除外が bullet 形へ広がっていないと
 #     偽 BLOCK になる — ケース 22 / 23 の bullet 版）
-run_case "共有パーサー: bullet 付き Critical: none" absent "sentinel-case-27" <<'BODY'
+run_case "共有パーサー: bullet 付き Critical: none" refused "sentinel-case-27" <<'BODY'
 <!-- sentinel-case-27 -->
 ## Review
 
@@ -835,6 +910,7 @@ run_case "config で code-review を非ブロック化 (stub yq)" absent "sentin
 
 ### Critical Issues
 - [app.txt:2] 認証チェックの欠落
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 
 ### Summary
 - Critical: 1
@@ -849,6 +925,7 @@ run_case "config は既定名簿を置換する（comment-analysis はブロッ�
 
 ### Critical Issues
 - [app.txt:2] コメントが実装と食い違っている
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 
 ### Summary
 - Critical: 1
@@ -863,6 +940,7 @@ run_case "非空 env が config より優先 (stub yq)" present "sentinel-case-1
 
 ### Critical Issues
 - [app.txt:2] 認証チェックの欠落
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 
 ### Summary
 - Critical: 1
@@ -878,6 +956,7 @@ run_case "空文字 env が config より優先（埋め戻さない）(stub yq)
 
 ### Critical Issues
 - [app.txt:2] コメントが実装と食い違っている
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 
 ### Summary
 - Critical: 1
@@ -895,6 +974,7 @@ if [[ "$HAVE_YQ" -eq 1 ]]; then
 
 ### Critical Issues
 - [app.txt:2] 認証チェックの欠落
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 
 ### Summary
 - Critical: 1
@@ -912,6 +992,7 @@ BODY
 
 ### Critical Issues
 - [app.txt:2] 認証チェックの欠落
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 
 ### Summary
 - Critical: 1
@@ -929,6 +1010,7 @@ BODY
 
 ### Critical Issues
 - [app.txt:2] コメントが実装と食い違っている
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 
 ### Summary
 - Critical: 1
@@ -938,9 +1020,9 @@ else
 fi
 
 # ── 判定器（awk）自体の実行失敗（rc>2）の fail-closed ──
-# Critical 判定器（共有パーサー _ff_severity_scan の critical モード —
-# adapter-common.sh critical_findings_present）の awk 呼び出しだけを `-v
-# ff_mode=critical` 引数で選択して失敗させる stub。同じ共有プログラムを使う
+# Critical 判定器（共有パーサー _ff_severity_scan の verdicts モード —
+# adapter-common.sh typed_verdicts_extract。ADR-066 以降の集約側の判定入口）の awk
+# 呼び出しだけを `-v ff_mode=verdicts` 引数で選択して失敗させる stub。同じ共有プログラムを使う
 # アダプタ側の受理判定（ff_mode=accept）と他の awk 呼び出し（Status: incomplete
 # 検査など）は実物へ委譲する — プログラム文字列での選択に戻すと、受理側まで
 # 巻き添えで失敗してアダプタが本文なし扱いになり、このケースが検査したい
@@ -949,7 +1031,7 @@ REAL_AWK="$(command -v awk)"
 cat > "$STUB/awk" <<SH
 #!/usr/bin/env bash
 for a in "\$@"; do
-  case "\$a" in ff_mode=critical) exit 3 ;; esac
+  case "\$a" in ff_mode=verdicts) exit 3 ;; esac
 done
 exec "$REAL_AWK" "\$@"
 SH
@@ -964,6 +1046,7 @@ run_case "awk 失敗 × ブロック観点は fail closed" present "sentinel-cas
 
 ### Important Issues
 - [app.txt:2] 軽微な指摘
+  - verdict: severity=warning failure_scenario=yes confidence=82 file=app.txt line=2
 
 ### Summary
 - Critical: 0
@@ -986,6 +1069,7 @@ run_case "awk 失敗 × 非ブロック観点は注記へ" absent "sentinel-case
 
 ### Important Issues
 - [app.txt:2] 軽微な指摘
+  - verdict: severity=warning failure_scenario=yes confidence=82 file=app.txt line=2
 
 ### Summary
 - Critical: 0
@@ -1012,6 +1096,7 @@ run_case "タブ区切りの env 名簿" absent "sentinel-case-22" <<'BODY'
 
 ### Critical Issues
 - [app.txt:2] 認証チェックの欠落
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 
 ### Summary
 - Critical: 1
@@ -1029,6 +1114,7 @@ run_case "ブロック + 非ブロックの混在" present "sentinel-case-20" <<
 
 ### Critical Issues
 - [app.txt:2] 重大な指摘
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
   - 信頼度: 95
 
 ### Summary
@@ -1077,6 +1163,7 @@ cat > "$TMP/body.md" <<'BODY'
 
 ### Critical Issues
 - [app.txt:2] 認証チェックの欠落
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 
 ### Summary
 - Critical: 1
@@ -1141,6 +1228,7 @@ cat > "$TMP/body.md" <<'BODY'
 
 ### Summary
 - Critical: 0
+- verdict: none
 BODY
 run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/unresolved-omitted.log"
 if [[ "$SEQUENCE_RC" -ne 0 ]] \
@@ -1320,6 +1408,7 @@ cat > "$TMP/body.md" <<'BODY'
 ## Code Review Results
 ### Critical Issues
 - [app.txt:2] 認可欠落
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 ### Summary
 - Critical: 1
 BODY
@@ -1364,6 +1453,7 @@ cat > "$TMP/body.md" <<'BODY'
 - なし
 ### Summary
 - Critical: 0
+- verdict: none
 BODY
 run_sequence_step "$MULTI_AGENT" code-review "$TMP/resolved.log"
 if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
@@ -1382,6 +1472,7 @@ cat > "$TMP/body.md" <<'BODY'
 - なし
 ### Summary
 - Critical: 0
+- verdict: none
 BODY
 run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/after-resolution.log"
 if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
@@ -1412,6 +1503,7 @@ cat > "$TMP/body.md" <<'BODY'
 - 用語の事実誤認
 ### Summary
 - Critical: 1
+- verdict: severity=critical failure_scenario=yes confidence=95
 BODY
 run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/nonblock-initial.log"
 if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
@@ -1444,6 +1536,7 @@ cat > "$TMP/body.md" <<'BODY'
 - なし
 ### Summary
 - Critical: 0
+- verdict: none
 BODY
 run_sequence_step "$MULTI_AGENT" comment-analysis "$TMP/nonblock-resolved.log"
 if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
@@ -1629,6 +1722,7 @@ cat > "$TMP/body.md" <<'BODY'
 ## Code Review Results
 ### Critical Issues
 - [app.txt:2] 認可チェックの欠落
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 ### Summary
 - Critical: 1
 BODY
@@ -2168,6 +2262,7 @@ cat > "$TMP/body.md" <<'BODY'
 ## Code Review Results
 ### Critical Issues
 - [app.txt:2] leftover critical from previous PR
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 ### Summary
 - Critical: 1
 BODY
@@ -2242,6 +2337,7 @@ cat > "$TMP/body.md" <<'BODY'
 - なし
 ### Summary
 - Critical: 0
+- verdict: none
 BODY
 FULL_RC=0
 set +e
@@ -2275,6 +2371,7 @@ cat > "$TMP/body.md" <<'BODY'
 ## Code Review Results
 ### Critical Issues
 - [app.txt:2] leftover for --fresh
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 ### Summary
 - Critical: 1
 BODY
@@ -2294,6 +2391,7 @@ cat > "$TMP/body.md" <<'BODY'
 - なし
 ### Summary
 - Critical: 0
+- verdict: none
 BODY
 FRESH_RC=0
 rm -f "$TMP/stub-lock-probe"
@@ -2408,6 +2506,7 @@ cat > "$TMP/body.md" <<'BODY'
 - なし
 ### Summary
 - Critical: 0
+- verdict: none
 BODY
 FRESH2_RC=0
 set +e
@@ -2449,6 +2548,7 @@ cat > "$TMP/body.md" <<'BODY'
 - なし
 ### Summary
 - Critical: 0
+- verdict: none
 BODY
 # `GLOBIGNORE` を env で渡すだけで dotglob が付くのは bash 4 以降で、bash 3.2
 # （macOS 同梱）は環境からの取り込みで特殊変数のフックを呼ばない（実測）。版に
@@ -2566,6 +2666,7 @@ cat > "$TMP/body.md" <<'BODY'
 - なし
 ### Summary
 - Critical: 0
+- verdict: none
 BODY
 LEGACY_FULL_RC=0
 set +e
@@ -2595,6 +2696,7 @@ cat > "$TMP/body.md" <<'BODY'
 ## Code Review Results
 ### Critical Issues
 - [app.txt:2] unresolved critical in the current series
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
 ### Summary
 - Critical: 1
 BODY
@@ -2646,7 +2748,7 @@ mkdir -p "$ISSUE_699_HOME"
 
 # (a) 副が未設定 → 縮退理由つきで記録される
 rm -rf "$REPO/.review-results" "$REPO/.claude"
-printf '%s\n' 'Summary' '' '- Critical: 0' '' 'sentinel-699-reviewers-line' > "$TMP/body.md"
+printf '%s\n' 'Summary' '' '- Critical: 0' '- verdict: none' '' 'sentinel-699-reviewers-line' > "$TMP/body.md"
 set +e
 run_isolated PATH="$STUB:/usr/bin:/bin" HOME="$ISSUE_699_HOME" XDG_CONFIG_HOME="$ISSUE_699_HOME/.config" \
   MULTI_AGENT_REVIEW_MAIN=codex-cli MULTI_AGENT_REVIEW_SUB= bash "$MULTI_AGENT" \
@@ -2691,7 +2793,7 @@ cat "$TMP/body.md"
 SH
 chmod +x "$STUB/claude"
 rm -rf "$REPO/.review-results" "$REPO/.claude"
-printf '%s\n' 'Summary' '' '- Critical: 0' '' 'sentinel-699-filtered-sub' > "$TMP/body.md"
+printf '%s\n' 'Summary' '' '- Critical: 0' '- verdict: none' '' 'sentinel-699-filtered-sub' > "$TMP/body.md"
 set +e
 run_isolated PATH="$STUB:/usr/bin:/bin" HOME="$ISSUE_699_HOME" XDG_CONFIG_HOME="$ISSUE_699_HOME/.config" \
   MULTI_AGENT_REVIEW_MAIN=codex-cli MULTI_AGENT_REVIEW_SUB=claude-code bash "$MULTI_AGENT" \
@@ -2717,7 +2819,7 @@ fi
 # (c) 正常系: 副が計画に入る既定構成は 2 CLI 形で記録される。縮退側だけを pin すると、
 #     健全系を壊す実装（固定文字列を返す等）が緑のまま通る（ACE-253-3/4）。
 rm -rf "$REPO/.review-results" "$REPO/.claude"
-printf '%s\n' 'Summary' '' '- Critical: 0' '' 'sentinel-699-pair-both' > "$TMP/body.md"
+printf '%s\n' 'Summary' '' '- Critical: 0' '- verdict: none' '' 'sentinel-699-pair-both' > "$TMP/body.md"
 set +e
 run_isolated PATH="$STUB:/usr/bin:/bin" HOME="$ISSUE_699_HOME" XDG_CONFIG_HOME="$ISSUE_699_HOME/.config" \
   MULTI_AGENT_REVIEW_MAIN=codex-cli MULTI_AGENT_REVIEW_SUB=claude-code bash "$MULTI_AGENT" \
@@ -2738,7 +2840,7 @@ fi
 
 # (d) pair 以外では 1 バイトも足さない（レポート書式の不変を pin）。
 rm -rf "$REPO/.review-results" "$REPO/.claude"
-printf '%s\n' 'Summary' '' '- Critical: 0' '' 'sentinel-699-distributed' > "$TMP/body.md"
+printf '%s\n' 'Summary' '' '- Critical: 0' '- verdict: none' '' 'sentinel-699-distributed' > "$TMP/body.md"
 set +e
 run_isolated PATH="$STUB:/usr/bin:/bin" HOME="$ISSUE_699_HOME" XDG_CONFIG_HOME="$ISSUE_699_HOME/.config" \
   bash "$MULTI_AGENT" --task review --mode distributed --cli codex-cli \
@@ -2757,6 +2859,591 @@ else
   tail -5 "$TMP/issue-699-distributed.log" | sed 's/^/    | /' >&2
 fi
 rm -f "$STUB/claude"
+
+echo "== 型付き判定の集計（降格・fail-safe・低信頼・閾値・findings.tsv・stale / resume）=="
+
+# 型付き判定行（`- verdict: ...`）を持つ観点は、判定行の降格後の重大度だけで
+# CRITICAL_BLOCK / CRITICAL_NONBLOCK を決め、統合レポートへ集計節と「未確認」の 2 節を
+# 足し、<cli>/<観点>.findings.tsv を書く（ADR-065 の C3 追記）。実走で固定する。
+TYPED_TSV="$REPO/.review-results/codex-cli/code-review.findings.tsv"
+TYPED_TSV_HEADER="$(printf 'cli\tperspective\tseverity\tfailure_scenario\tconfidence\tfile\tline\tsummary\tdemoted_from')"
+LOW_HEAD='### 未確認 › 低信頼の指摘'
+INC_HEAD='### 未確認 › 未完了の観点'
+
+# typed_run <log> <perspective> <fresh|resume|keep> <ENV=VAL ...（最低 1 つ）>
+# fresh は出力先と config を消してから走らせる。keep / resume は前回の出力を残す。
+typed_run() {
+  local log="$1" persp="$2" how="$3"
+  shift 3
+  if [[ "$how" == "fresh" ]]; then
+    rm -rf "$REPO/.review-results" "$REPO/.claude"
+  fi
+  TYPED_RC=0
+  set +e
+  if [[ "$how" == "resume" ]]; then
+    run_isolated PATH="$STUB:$PATH" "$@" bash "$MULTI_AGENT" --task review --cli codex-cli \
+      --perspective "$persp" --base develop --timeout 60 --resume >"$log" 2>&1
+  else
+    run_isolated PATH="$STUB:$PATH" "$@" bash "$MULTI_AGENT" --task review --cli codex-cli \
+      --perspective "$persp" --base develop --timeout 60 >"$log" 2>&1
+  fi
+  TYPED_RC=$?
+  set -e
+}
+
+# section_of <見出し行> — 統合レポートのその見出しから次の見出し（行頭 #）の直前まで
+section_of() {
+  awk -v h="$1" 'f && /^#/ { exit } f { print } $0 == h { f = 1 }' "$REPORT"
+}
+
+# typed_expect <ラベル> <センチネル> <marker: present|absent> <表の行 | ->
+typed_expect() {
+  local label="$1" sentinel="$2" marker="$3" row="$4"
+  if [[ "$TYPED_RC" -ne 0 || ! -f "$REPORT" ]] || ! grep -qF "$sentinel" "$REPORT"; then
+    bad "${label}: 実行または本文の到達に失敗 (rc=${TYPED_RC})"
+    tail -5 "$TMP/typed.log" | sed 's/^/    | /' >&2
+    return 0
+  fi
+  if grep -qF "$MARKER" "$REPORT"; then
+    if [[ "$marker" == "present" ]]; then ok "${label}: マーカーが出る"; else bad "${label}: マーカーが出た（降格後の重大度で判定していない）"; fi
+  else
+    if [[ "$marker" == "absent" ]]; then ok "${label}: マーカーが出ない"; else bad "${label}: マーカーが出ない（型付きの Critical を素通し）"; fi
+  fi
+  if [[ "$row" != "-" ]]; then
+    if grep -qF -- "$row" "$REPORT"; then
+      ok "${label}: 集計行 ${row}"
+    else
+      bad "${label}: 集計行 ${row} が無い"
+      grep -n '^| codex-cli' "$REPORT" | sed 's/^/    | /' >&2 || true
+    fi
+  fi
+}
+
+# T1. warning + failure_scenario=no → Suggestion（降格）。TSV の列と 1 行を完全一致で固定する
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-1 -->
+## Code Review Results
+### Important Issues
+- [app.txt:2] 変数名が紛らわしい
+  - verdict: severity=warning failure_scenario=no confidence=85 file=app.txt line=2
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=1
+typed_expect "T1 warning + failure_scenario=no" "sentinel-typed-1" absent '| codex-cli / code-review | 0 | 0 | 1 | 0 | 1 | 0 |'
+printf '%s\n' "$TYPED_TSV_HEADER" > "$TMP/typed-t1.expected"
+printf 'codex-cli\tcode-review\tsuggestion\tno\t85\tapp.txt\t2\t[app.txt:2] 変数名が紛らわしい\twarning\n' >> "$TMP/typed-t1.expected"
+if [[ -f "$TYPED_TSV" ]] && cmp -s "$TMP/typed-t1.expected" "$TYPED_TSV"; then
+  ok "T1 findings.tsv がヘッダ 9 列（AC の 8 列の順 + 末尾 demoted_from）+ 降格後の 1 行（demoted_from=warning・summary は親の指摘行）"
+else
+  bad "T1 findings.tsv が期待と違う: $(cat "$TYPED_TSV" 2>/dev/null || echo '(なし)')"
+fi
+
+# T2. critical + failure_scenario=no → Warning。散文の Critical 件数行・Critical 見出しの
+#     指摘があっても、型付き行を持つ観点は散文を読まない（降格後の重大度で判定）
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-2 -->
+## Code Review Results
+### Critical Issues
+- [app.txt:2] 入力検証の欠落
+  - verdict: severity=critical failure_scenario=no confidence=95 file=app.txt line=2
+### Summary
+- Critical: 1
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=2
+typed_expect "T2 critical + failure_scenario=no" "sentinel-typed-2" absent '| codex-cli / code-review | 0 | 1 | 0 | 0 | 1 | 0 |'
+
+# T3. critical + failure_scenario=yes → Critical のまま（型付き経路が発火すること自体の対照）
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-3 -->
+## Code Review Results
+### 指摘
+- [app.txt:2] 認可チェックの欠落
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=3
+typed_expect "T3 critical + failure_scenario=yes" "sentinel-typed-3" present '| codex-cli / code-review | 1 | 0 | 0 | 0 | 0 | 0 |'
+
+# T3b. 非ブロック観点の型付き Critical は CRITICAL_NONBLOCK の注記になる（段階化も降格後の重大度で）
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-3b -->
+## Test Analysis
+- [app.txt:2] テストが無い
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=2
+BODY
+typed_run "$TMP/typed.log" test-analysis fresh TYPED_CASE=3b
+if [[ "$TYPED_RC" -eq 0 ]] && grep -qF "$NONBLOCK_MARKER" "$REPORT" && ! grep -qF "$MARKER" "$REPORT"; then
+  ok "T3b 非ブロック観点の型付き Critical は非ブロック注記になる"
+else
+  bad "T3b 非ブロック観点の型付き Critical の段階化が崩れている (rc=${TYPED_RC})"
+fi
+
+# T4. fail-safe: 有効な行は降格で Critical 0 件でも、書式の崩れた severity=critical 行があれば
+#     Critical ありへ倒す（ADR-065 決定 9 を集約側でも保つ）
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-4 -->
+## Code Review Results
+### 指摘
+- [app.txt:2] 入力検証の欠落
+  - verdict: severity=critical failure_scenario=no confidence=95 file=app.txt line=2
+- [app.txt:1] 認可チェックの欠落
+  - verdict: severity=critical failure_scenario=yes
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=4
+typed_expect "T4 不採用の critical 行（fail-safe）" "sentinel-typed-4" present '| codex-cli / code-review | 0 | 1 | 0 | 0 | 1 | 0 |'
+if grep -qF 'counted as critical (fail-safe)' "$TMP/typed.log" \
+  && grep -qF '（fail-safe）: codex-cli/code-review' "$REPORT"; then
+  ok "T4 fail-safe を stderr とレポートの両方で名指しする"
+else
+  bad "T4 fail-safe の名指しが stderr かレポートに無い"
+fi
+
+# T5. 低信頼: 79 は「未確認 › 低信頼の指摘」へ列挙し、80 は列挙しない（閾値は「未満」）
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-5 -->
+## Code Review Results
+### Important Issues
+- [app.txt:1] 閾値未満の指摘
+  - verdict: severity=warning failure_scenario=yes confidence=79 file=app.txt line=1
+- [app.txt:2] 閾値ちょうどの指摘
+  - verdict: severity=warning failure_scenario=yes confidence=80 file=app.txt line=2
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=5
+typed_expect "T5 低信頼の列挙" "sentinel-typed-5" absent '| codex-cli / code-review | 0 | 2 | 0 | 0 | 0 | 1 |'
+t5_low="$(section_of "$LOW_HEAD")"
+t5_inc="$(section_of "$INC_HEAD")"
+# shellcheck disable=SC2016  # バッククォートはレポートの逐語（展開させない）
+if grep -qF -- '- codex-cli / code-review — Warning / 信頼度 79（閾値 80） / `app.txt:1` — [app.txt:1] 閾値未満の指摘' <<<"$t5_low" \
+  && ! grep -qF '閾値ちょうどの指摘' <<<"$t5_low" \
+  && ! grep -qF '閾値未満の指摘' <<<"$t5_inc"; then
+  ok "T5 信頼度 79 だけを低信頼の節へ列挙し、未完了の節とは分ける"
+else
+  bad "T5 低信頼の節の中身が期待と違う: ${t5_low:-空}"
+fi
+if grep -qx 'なし' <<<"$t5_inc" && ! grep -qF 'INCOMPLETE' "$REPORT"; then
+  ok "T5 未完了の観点が無い回は「なし」で、未完了検査の語をレポートへ持ち込まない"
+else
+  bad "T5 未完了の節が「なし」でない、または未完了検査の語が混入した"
+fi
+
+# T6. テスト有効性の例外: code-review で 3 形のタグ（unreached / coincidental / one-sided）を
+#     前置した指摘は信頼度 50 以上を報告済みとして扱う（低信頼に列挙しない）。素の
+#     [TEST-VALIDITY]・未知の語・タグなし・49 は列挙する。本文が 2 行に折り返してタグが判定行の
+#     直前に無くても、親の指摘行まで遡って拾う。他観点のタグ付き指摘は列挙する
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-6 -->
+## Code Review Results
+### Important Issues
+- [app.txt:1] [TEST-VALIDITY:unreached] 早期 return で検証対象の分岐を通らない
+  - verdict: severity=warning failure_scenario=yes confidence=60 file=app.txt line=1
+- [app.txt:1] [TEST-VALIDITY:coincidental] 既定値との偶然の一致で真になる
+  - verdict: severity=warning failure_scenario=yes confidence=55 file=app.txt line=1
+- [app.txt:2] [TEST-VALIDITY:one-sided] 生成側だけを固定している
+  - verdict: severity=warning failure_scenario=yes confidence=50 file=app.txt line=2
+- [app.txt:2] [TEST-VALIDITY:unreached] 折り返した指摘の 1 行目
+  折り返した 2 行目（タグは親の行にだけある）
+  - verdict: severity=warning failure_scenario=yes confidence=60 file=app.txt line=2
+- [app.txt:1] [TEST-VALIDITY] 素のタグだけの指摘
+  - verdict: severity=warning failure_scenario=yes confidence=60 file=app.txt line=1
+- [app.txt:1] [TEST-VALIDITY:flaky] 未知の語のタグ
+  - verdict: severity=warning failure_scenario=yes confidence=60 file=app.txt line=1
+- [app.txt:2] [TEST-VALIDITY:unreached] 例外の下限未満
+  - verdict: severity=warning failure_scenario=yes confidence=49 file=app.txt line=2
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=6
+typed_expect "T6 テスト有効性の例外（code-review）" "sentinel-typed-6" absent '| codex-cli / code-review | 0 | 7 | 0 | 0 | 0 | 3 |'
+t6_low="$(section_of "$LOW_HEAD")"
+t6_miss=""
+for t6_no in '早期 return で検証対象の分岐を通らない' '既定値との偶然の一致で真になる' '生成側だけを固定している' '折り返した指摘の 1 行目'; do
+  if grep -qF "$t6_no" <<<"$t6_low"; then t6_miss="${t6_miss} [列挙された:${t6_no}]"; fi
+done
+for t6_yes in '素のタグだけの指摘' '未知の語のタグ' '信頼度 49（閾値 50）'; do
+  if ! grep -qF "$t6_yes" <<<"$t6_low"; then t6_miss="${t6_miss} [列挙されない:${t6_yes}]"; fi
+done
+if [[ -z "$t6_miss" ]]; then
+  ok "T6 3 形のタグ（折り返し含む）は 50 以上を列挙せず、素のタグ・未知の語・49 は列挙する"
+else
+  bad "T6 テスト有効性の例外の判定が崩れている:${t6_miss}"
+fi
+if grep -qF "$(printf '\t[app.txt:2] [TEST-VALIDITY:unreached] 折り返した指摘の 1 行目\t')" "$TYPED_TSV" 2>/dev/null; then
+  ok "T6 折り返した指摘の summary は親の指摘行（判定行の直前の折り返し行ではない）"
+else
+  bad "T6 折り返した指摘の summary が親の指摘行になっていない: $(grep -F '折り返し' "$TYPED_TSV" 2>/dev/null || echo '(なし)')"
+fi
+typed_run "$TMP/typed.log" security-analysis fresh TYPED_CASE=6s
+if [[ "$TYPED_RC" -eq 0 ]] && grep -qF '| codex-cli / security-analysis | 0 | 7 | 0 | 0 | 0 | 7 |' "$REPORT"; then
+  ok "T6 例外は code-review だけ（他観点のタグ付き指摘は閾値 80 で列挙）"
+else
+  bad "T6 例外が code-review の外へ漏れている、または実行に失敗 (rc=${TYPED_RC})"
+  grep -n '^| codex-cli' "$REPORT" 2>/dev/null | sed 's/^/    | /' >&2 || true
+fi
+
+# T6b. 例外タグは当該 finding の範囲からだけ拾う。判定行を字下げしない（フラットな）出力で前の
+#      finding の `- 理由:` 行がタグを持つ形と、タグ付きの親の下にタグなしの指摘が入れ子になる
+#      形の両方で、タグなし側は通常閾値（80）で低信頼へ列挙される
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-6b -->
+## Code Review Results
+### Important Issues（フラット）
+- [a.txt:1] [TEST-VALIDITY:unreached] フラットのタグ付き指摘
+- verdict: severity=warning failure_scenario=yes confidence=60 file=a.txt line=1
+- 理由: [TEST-VALIDITY:unreached] の 1 形に当たる
+- [b.txt:9] フラットのタグなし指摘
+- verdict: severity=warning failure_scenario=yes confidence=60 file=b.txt line=9
+### Important Issues（入れ子）
+- [c.txt:1] [TEST-VALIDITY:one-sided] 入れ子の親のタグ付き指摘
+  - verdict: severity=warning failure_scenario=yes confidence=60 file=c.txt line=1
+  - [d.txt:2] 入れ子のタグなし指摘
+    - verdict: severity=warning failure_scenario=yes confidence=60 file=d.txt line=2
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=6b
+typed_expect "T6b 例外タグを別 finding から拾わない" "sentinel-typed-6b" absent '| codex-cli / code-review | 0 | 4 | 0 | 0 | 0 | 2 |'
+t6b_low="$(section_of "$LOW_HEAD")"
+if grep -qF 'フラットのタグなし指摘' <<<"$t6b_low" && grep -qF '入れ子のタグなし指摘' <<<"$t6b_low" \
+  && ! grep -qF 'フラットのタグ付き指摘' <<<"$t6b_low" && ! grep -qF '入れ子の親のタグ付き指摘' <<<"$t6b_low"; then
+  ok "T6b タグなしの指摘だけを低信頼へ列挙する（フラット・入れ子）"
+else
+  bad "T6b 別 finding のタグが漏れている: ${t6b_low:-空}"
+fi
+if grep -qF "$(printf '\t[b.txt:9] フラットのタグなし指摘\t')" "$TYPED_TSV" 2>/dev/null \
+  && grep -qF "$(printf '\t[d.txt:2] 入れ子のタグなし指摘\t')" "$TYPED_TSV" 2>/dev/null; then
+  ok "T6b summary はその finding 自身の指摘行"
+else
+  bad "T6b summary が別 finding の行になっている: $(cat "$TYPED_TSV" 2>/dev/null || echo '(なし)')"
+fi
+
+# T7. 閾値の上書き: env > config > 既定 80。不正値は名指しで停止し、CLI を 1 本も起動しない
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-7 -->
+## Code Review Results
+### Important Issues
+- [app.txt:1] 閾値未満の指摘
+  - verdict: severity=warning failure_scenario=yes confidence=79 file=app.txt line=1
+- [app.txt:2] 閾値ちょうどの指摘
+  - verdict: severity=warning failure_scenario=yes confidence=80 file=app.txt line=2
+BODY
+typed_run "$TMP/typed.log" code-review fresh MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD=70
+if [[ "$TYPED_RC" -eq 0 ]] && grep -qF '信頼度の閾値は 70' "$REPORT" \
+  && grep -qx 'なし' <<<"$(section_of "$LOW_HEAD")"; then
+  ok "T7 env の閾値 70 で 79 / 80 のどちらも低信頼にしない"
+else
+  bad "T7 env の閾値上書きが効かない (rc=${TYPED_RC})"
+fi
+
+# config 層は実 yq の有無で未検証にならないよう、この suite が書く 1 行だけを読む yq stub で
+# 常時検査する（上の critical_nonblock_perspectives と同じ方式）。実 yq があれば代表 1 件を実物でも
+cat > "$STUB/yq" <<'SH'
+#!/usr/bin/env bash
+query="" file=""
+for a in "$@"; do
+  case "$a" in
+    -r) ;;
+    *) if [ -z "$query" ]; then query="$a"; else file="$a"; fi ;;
+  esac
+done
+case "$query" in
+  *confidence_threshold*) sed -n 's/^  confidence_threshold: *//p' "$file" ;;
+  .) cat "$file" ;;
+  *) echo "" ;;
+esac
+SH
+chmod +x "$STUB/yq"
+typed_config() { # <値>
+  mkdir -p "$REPO/.claude"
+  printf 'review:\n  confidence_threshold: %s\n' "$1" > "$REPO/.claude/agent-config.yaml"
+}
+rm -rf "$REPO/.review-results" "$REPO/.claude"
+typed_config 90
+typed_run "$TMP/typed.log" code-review keep TYPED_CASE=7c
+if [[ "$TYPED_RC" -eq 0 ]] && grep -qF '信頼度の閾値は 90' "$REPORT" \
+  && grep -qF '| codex-cli / code-review | 0 | 2 | 0 | 0 | 0 | 2 |' "$REPORT"; then
+  ok "T7 config の閾値 90 で 79 / 80 の両方を低信頼に列挙する (stub yq)"
+else
+  bad "T7 config の閾値が効かない (stub yq, rc=${TYPED_RC})"
+fi
+rm -rf "$REPO/.review-results"
+typed_config 90
+typed_run "$TMP/typed.log" code-review keep MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD=70
+if [[ "$TYPED_RC" -eq 0 ]] && grep -qF '信頼度の閾値は 70' "$REPORT"; then
+  ok "T7 env が config より優先する (stub yq)"
+else
+  bad "T7 env が config より優先しない (stub yq, rc=${TYPED_RC})"
+fi
+rm -rf "$REPO/.review-results"
+typed_config high
+calls_before="$(wc -l < "$TMP/stub-calls" | tr -d ' ')"
+typed_run "$TMP/typed.log" code-review keep TYPED_CASE=7i
+calls_after="$(wc -l < "$TMP/stub-calls" | tr -d ' ')"
+if [[ "$TYPED_RC" -ne 0 && "$calls_before" == "$calls_after" && ! -f "$REPORT" ]] \
+  && grep -qF "review.confidence_threshold in " "$TMP/typed.log" \
+  && grep -qF "/.claude/agent-config.yaml must be an integer from 0 to 100, got: 'high'" "$TMP/typed.log"; then
+  ok "T7 config の不正値は名指しで停止し CLI を起動しない (stub yq)"
+else
+  bad "T7 config の不正値が停止しない (stub yq, rc=${TYPED_RC}, calls ${calls_before}->${calls_after})"
+  tail -3 "$TMP/typed.log" | sed 's/^/    | /' >&2
+fi
+rm -f "$STUB/yq"
+if [[ "$HAVE_YQ" == "1" ]]; then
+  rm -rf "$REPO/.review-results"
+  typed_config 90
+  typed_run "$TMP/typed.log" code-review keep TYPED_CASE=7r
+  if [[ "$TYPED_RC" -eq 0 ]] && grep -qF '信頼度の閾値は 90' "$REPORT"; then
+    ok "T7 config の閾値 90 を実 yq でも読む (real yq)"
+  else
+    bad "T7 config の閾値を実 yq で読めない (rc=${TYPED_RC})"
+  fi
+else
+  echo "  ○ skip: 実 yq が無いため config 閾値の実物照合をスキップ（契約自体は stub yq で検査済み）"
+fi
+rm -rf "$REPO/.claude"
+for bad_thr in abc "" 101 8.5; do
+  calls_before="$(wc -l < "$TMP/stub-calls" | tr -d ' ')"
+  typed_run "$TMP/typed.log" code-review fresh "MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD=${bad_thr}"
+  calls_after="$(wc -l < "$TMP/stub-calls" | tr -d ' ')"
+  if [[ "$TYPED_RC" -ne 0 && "$calls_before" == "$calls_after" && ! -f "$REPORT" ]] \
+    && grep -qF "MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD must be an integer from 0 to 100, got: '${bad_thr}'" "$TMP/typed.log"; then
+    ok "T7 env の不正値 '${bad_thr}' は名指しで停止し CLI を起動しない"
+  else
+    bad "T7 env の不正値 '${bad_thr}' が停止しない (rc=${TYPED_RC}, calls ${calls_before}->${calls_after})"
+  fi
+done
+
+# T8. 散文パーサの穴（集約件数行の語順）の型付き書き直し: 散文の集約件数行 `- Warning: 0 / Critical: 2`（語順違いで
+#     散文の c1 が届かない形）と同じ内容を判定行で書くと、Critical を見落とさない
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-count-order -->
+## Code Review Results
+### Summary
+- Warning: 0 / Critical: 2
+### 指摘
+- [app.txt:1] 認可チェックの欠落
+  - verdict: severity=critical failure_scenario=yes confidence=95 file=app.txt line=1
+- [app.txt:2] 入力検証の欠落
+  - verdict: severity=critical failure_scenario=yes confidence=92 file=app.txt line=2
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=8
+typed_expect "T8 集約件数行の語順の穴を判定行で書く" "sentinel-typed-count-order" present '| codex-cli / code-review | 2 | 0 | 0 | 0 | 0 | 0 |'
+
+# T9. 散文パーサの穴（強調ラベル + 空本文）の型付き書き直し: 強調ラベル + 空本文 `- **Critical:**`（散文では偽の
+#     Critical になる形）の本文に `verdict: none` を添えると、偽陽性にならない。
+#     指摘ゼロの TSV はヘッダ 1 行だけになる
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-empty-label -->
+## Code Review Results
+- **Critical:**
+- verdict: none
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=9
+typed_expect "T9 強調ラベル + 空本文の穴に verdict: none" "sentinel-typed-empty-label" absent '| codex-cli / code-review | 0 | 0 | 0 | 0 | 0 | 0 |'
+if [[ -f "$TYPED_TSV" ]] && [[ "$(cat "$TYPED_TSV")" == "$TYPED_TSV_HEADER" ]]; then
+  ok "T9 指摘ゼロの findings.tsv はヘッダ 1 行だけ"
+else
+  bad "T9 指摘ゼロの findings.tsv が期待と違う: $(cat "$TYPED_TSV" 2>/dev/null || echo '(なし)')"
+fi
+
+# T9b. 散文の Critical を型付き行が覆した回は、stderr の診断（ADR-065 決定 6）とレポートの
+#      1 行の両方で名指しする（`### Critical` 配下の散文の指摘 + `verdict: none`）
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-override -->
+## Code Review Results
+### Critical Issues
+- [app.txt:2] 認可チェックの欠落（散文だけで書いた指摘）
+- verdict: none
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=9b
+typed_expect "T9b 散文の Critical を型付き行が覆す" "sentinel-typed-override" absent '| codex-cli / code-review | 0 | 0 | 0 | 0 | 0 | 0 |'
+if grep -qF 'typed-verdict: prose Critical finding overridden by typed verdict lines (0 critical)' "$TMP/typed.log"; then
+  ok "T9b 覆した事実を stderr へ出す（型付き経路の抽出診断の中継）"
+else
+  bad "T9b 覆した事実の診断が stderr に無い"
+fi
+if grep -q '^散文の重大度行では Critical ありと読めたが、型付き判定行の Critical が 0 件のため型付き行で判定した観点.*: codex-cli/code-review$' "$REPORT" \
+  && ! grep -q 'INCOMPLETE' "$REPORT"; then
+  ok "T9b 覆した観点をレポートへ 1 行で名指しする（未完了検査の語を持ち込まない）"
+else
+  bad "T9b 覆した観点のレポート行が無い、または未完了検査の語が混入した"
+fi
+
+# T10. 未完了の観点は「未確認 › 未完了の観点」へ列挙する（低信頼とは別節）
+printf '17\n' > "$TMP/stub-exit"
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=10
+rm -f "$TMP/stub-exit"
+t10_inc="$(section_of "$INC_HEAD" 2>/dev/null || true)"
+if [[ -f "$REPORT" ]] && grep -q '^- codex-cli / code-review — ' <<<"$t10_inc" \
+  && ! grep -q '^- codex-cli / code-review — ' <<<"$(section_of "$LOW_HEAD")"; then
+  ok "T10 失敗した観点を未完了の節へ列挙する（低信頼の節には入れない）"
+else
+  bad "T10 未完了の観点が未完了の節に列挙されない: ${t10_inc:-空}"
+fi
+
+# T11. stale: 散文だけの本文で再実行したら、前回の型付き記録を残さない。ADR-066 以降、散文
+#      だけの本文は不受理（INCOMPLETE）で、本文から重大度を判定しなかった観点として名指しする
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-11 -->
+## Code Review Results
+### Important Issues
+- [app.txt:2] 変数名が紛らわしい
+  - verdict: severity=warning failure_scenario=yes confidence=85 file=app.txt line=2
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=11a
+t11_had=0
+if [[ -f "$TYPED_TSV" ]]; then t11_had=1; fi
+printf '%s\n' '<!-- sentinel-typed-11b -->' '### Summary' '- Critical: 0' '- Warning: 1' > "$TMP/body.md"
+typed_run "$TMP/typed.log" code-review keep TYPED_CASE=11b
+if [[ "$t11_had" == "1" && "$TYPED_RC" -ne 0 && ! -f "$TYPED_TSV" ]] \
+  && grep -qF '型付き判定行が無いため本文から重大度を判定しなかった未完了の観点（散文の重大度行は読まない。下の「未確認 › 未完了の観点」を参照）: codex-cli/code-review' "$REPORT" \
+  && ! grep -qF "$MARKER" "$REPORT"; then
+  ok "T11 散文だけの再実行は不受理で前回の findings.tsv を消し、判定しなかった観点として名指しする"
+else
+  bad "T11 前回の findings.tsv が残った、または判定しなかった観点の名指しが無い (had=${t11_had}, rc=${TYPED_RC})"
+fi
+
+# T11c. 散文だけの本文を拒否した未完了の観点は、統合レポートの「未確認 › 未完了の観点」が
+#       成果物の理由コードから「散文だけのレビューの拒否」を名指しする（stderr だけにしない）
+if grep -qF -- '- codex-cli / code-review — 結果の拒否: 散文の重大度行だけのレビュー（型付き判定行なし）' "$REPORT" \
+  && grep -qF -- '> Reason code: `missing-review-body-prose`' "$REPO/.review-results/codex-cli/code-review.md"; then
+  ok "T11c 散文だけのレビューの拒否を成果物の理由コードとレポートの未完了の理由で名指しする"
+else
+  bad "T11c 散文だけのレビューの拒否がレポートの未完了の理由に名指しされない"
+  grep -n '^- codex-cli / code-review' "$REPORT" | sed 's/^/    | /' >&2 || true
+fi
+
+# T15. 不受理（未完了）の本文の唯一の verdict 行が書式崩れの critical でも、ADR-065 決定 9 の
+#      fail-safe で Critical として数え、マーカーを立ててレポートで名指しする（受理されない本文は
+#      必ず未完了の分岐へ来るので、そこで見ないと崩れた Critical 宣言が消える）。2 形:
+#      大文字の値（severity=Critical）と非数値の confidence（confidence=high）
+for t15 in 'severity=Critical failure_scenario=yes confidence=90' 'severity=critical failure_scenario=yes confidence=high'; do
+  printf '%s\n' '<!-- sentinel-typed-15 -->' '## Code Review Results' '- [app.txt:2] 認証チェックの欠落' "  - verdict: ${t15}" > "$TMP/body.md"
+  typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=15
+  if [[ "$TYPED_RC" -ne 0 ]] && grep -qF "$MARKER" "$REPORT" \
+    && grep -qF '書式の崩れた判定行が severity=critical を名乗っていたため、表の件数に関わらず Critical ありとして扱った観点（fail-safe）: codex-cli/code-review' "$REPORT" \
+    && grep -qF 'counted as critical (fail-safe)' "$TMP/typed.log"; then
+    ok "T15 未完了 + 書式崩れの critical 行だけ（${t15}）→ fail-safe でマーカーが立ち名指しされる"
+  else
+    bad "T15 未完了 + 書式崩れの critical 行だけ（${t15}）で CRITICAL_BLOCK が立たない、または名指しが無い (rc=${TYPED_RC})"
+  fi
+done
+
+# T12. stale: レポート生成まで到達しない実行（リビジョン変更で破棄）でも、前回の記録を残さない
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-12 -->
+## Code Review Results
+- [app.txt:2] 変数名が紛らわしい
+  - verdict: severity=warning failure_scenario=yes confidence=85 file=app.txt line=2
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=12a
+t12_had=0
+if [[ -f "$TYPED_TSV" ]]; then t12_had=1; fi
+touch "$TMP/stub-mutate-repo"
+typed_run "$TMP/typed.log" code-review keep TYPED_CASE=12b
+rm -f "$TMP/stub-mutate-repo"
+printf 'base\nchange for review\n' > "$REPO/app.txt"
+if [[ "$t12_had" == "1" && "$TYPED_RC" -ne 0 && ! -f "$TYPED_TSV" ]]; then
+  ok "T12 レポート生成前に中断した実行でも前回の findings.tsv を残さない"
+else
+  bad "T12 中断した実行のあとに前回の findings.tsv が残った (had=${t12_had}, rc=${TYPED_RC})"
+fi
+
+# T13. stale: 観点を絞った再実行では、プラン外の観点の記録を結果と一緒に previous/ へ退避する。
+#      orchestrator のヘッダを持たない同名形式のファイル（利用者のもの）は動かさない
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=13a
+printf 'not ours\n' > "$REPO/.review-results/codex-cli/foreign.findings.tsv"
+typed_run "$TMP/typed.log" acceptance-criteria keep TYPED_CASE=13b
+if [[ "$TYPED_RC" -eq 0 && ! -f "$TYPED_TSV" \
+  && -f "$REPO/.review-results/codex-cli/previous/code-review.findings.tsv" \
+  && -f "$REPO/.review-results/codex-cli/foreign.findings.tsv" \
+  && ! -f "$REPO/.review-results/codex-cli/previous/foreign.findings.tsv" ]]; then
+  ok "T13 プラン外の観点の findings.tsv を previous/ へ退避し、利用者のファイルは動かさない"
+else
+  bad "T13 プラン外の findings.tsv の退避が崩れている (rc=${TYPED_RC})"
+  find "$REPO/.review-results/codex-cli" -maxdepth 2 -name '*.tsv' 2>&1 | sed 's/^/    | /' >&2 || true
+fi
+
+# T13b. stale: 読めない（権限なし）前回の記録は、ヘッダを確かめられなくても名指しして previous/ へ
+#       退避し、今回の出力として残さない。ヘッダの違う同名形式のファイルは動かさずに名指しする
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-13b -->
+## Code Review Results
+- [app.txt:2] 変数名が紛らわしい
+  - verdict: severity=warning failure_scenario=yes confidence=85 file=app.txt line=2
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=13c
+printf 'not ours\n' > "$REPO/.review-results/codex-cli/foreign.findings.tsv"
+chmod 000 "$TYPED_TSV"
+if [[ -r "$TYPED_TSV" ]]; then
+  chmod 644 "$TYPED_TSV"
+  echo "  ○ skip: chmod 000 でも読める環境（root 等）のため、読めない記録の退避を検査できない"
+else
+  typed_run "$TMP/typed.log" acceptance-criteria keep TYPED_CASE=13d
+  chmod 644 "$REPO/.review-results/codex-cli/previous/code-review.findings.tsv" "$TYPED_TSV" 2>/dev/null || true
+  if [[ "$TYPED_RC" -eq 0 && ! -e "$TYPED_TSV" \
+    && -e "$REPO/.review-results/codex-cli/previous/code-review.findings.tsv" ]] \
+    && grep -qF "Cannot read a findings record from an earlier run: " "$TMP/typed.log"; then
+    ok "T13b 読めない前回の記録を名指しして previous/ へ退避する"
+  else
+    bad "T13b 読めない前回の記録が黙って残った、または名指しされない (rc=${TYPED_RC})"
+    grep -i 'findings' "$TMP/typed.log" | sed 's/^/    | /' >&2 || true
+  fi
+  if grep -qF 'codex-cli/ (1 .findings.tsv file(s) this orchestrator did not write, or not a regular file' "$REPORT" 2>/dev/null; then
+    ok "T13b ヘッダの違う記録はレポートの Not part of this run で名指しする"
+  else
+    bad "T13b ヘッダの違う記録がレポートで名指しされない"
+  fi
+fi
+
+# T14. --resume: 再利用した観点の記録は今回の本文と閾値から作り直す（前回の記録と混ざらない）
+cat > "$TMP/body.md" <<'BODY'
+<!-- sentinel-typed-14 -->
+## Code Review Results
+- [app.txt:1] 閾値未満の指摘
+  - verdict: severity=warning failure_scenario=yes confidence=79 file=app.txt line=1
+BODY
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=14a
+printf 'codex-cli\tcode-review\tcritical\tyes\t99\tstale.sh\t1\tstale row from an earlier run\t\n' >> "$TYPED_TSV"
+calls_before="$(wc -l < "$TMP/stub-calls" | tr -d ' ')"
+typed_run "$TMP/typed.log" code-review resume MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD=70
+calls_after="$(wc -l < "$TMP/stub-calls" | tr -d ' ')"
+if [[ "$TYPED_RC" -eq 0 && "$calls_before" == "$calls_after" ]] \
+  && grep -qF 'Reused: codex-cli/code-review' "$TMP/typed.log" \
+  && [[ -f "$TYPED_TSV" ]] && ! grep -qF 'stale row' "$TYPED_TSV" \
+  && [[ "$(wc -l < "$TYPED_TSV" | tr -d ' ')" == "2" ]] \
+  && grep -qx 'なし' <<<"$(section_of "$LOW_HEAD")"; then
+  ok "T14 --resume で再利用した観点の findings.tsv と低信頼の列挙を今回の閾値で作り直す"
+else
+  bad "T14 --resume で前回の記録が混ざった、または再利用されなかった (rc=${TYPED_RC}, calls ${calls_before}->${calls_after})"
+fi
+
+# T14b. --resume で再利用した観点が散文だけ（旧版で受理された結果の再利用を模す — 型付きで
+#       完走させた結果ファイルの本文を散文だけへ差し替える）なら、残っていた記録を消し、判定の
+#       根拠が無い完了扱いの結果として安全側（Critical あり）へ倒して名指しする（ADR-066）。
+#       clear_planned_outputs は再利用した観点を消さないので、記録の削除はレポート側だけが守る
+printf '%s\n' '<!-- sentinel-typed-14b -->' '### Summary' '- Critical: 0' '- verdict: none' > "$TMP/body.md"
+typed_run "$TMP/typed.log" code-review fresh TYPED_CASE=14c
+# --resume は結果ファイルではなく resume cache（内容ハッシュ付き）から復元するので、cache 側を
+# 差し替えてハッシュも書き直す（旧版の実行が cache へ残した散文だけの結果と同じ形になる）
+t14b_n=0
+for t14b_cache in "$REPO"/.review-results/.resume-cache/*/codex-cli/code-review.md; do
+  [[ -f "$t14b_cache" ]] || continue
+  awk '/^- verdict: none$/ { next } { print }' "$t14b_cache" > "$TMP/t14b.md" && mv "$TMP/t14b.md" "$t14b_cache"
+  git hash-object "$t14b_cache" > "${t14b_cache}.hash"
+  t14b_n=$((t14b_n + 1))
+done
+if [[ "$t14b_n" -ne 1 ]]; then
+  bad "T14b resume cache の結果を 1 件差し替えられない（${t14b_n} 件。以降の検査は空振り）"
+fi
+printf '%s\n' "$TYPED_TSV_HEADER" > "$TYPED_TSV"
+printf 'codex-cli\tcode-review\tcritical\tyes\t99\tstale.sh\t1\tstale row from an earlier run\t\n' >> "$TYPED_TSV"
+typed_run "$TMP/typed.log" code-review resume TYPED_CASE=14d
+if [[ "$TYPED_RC" -eq 0 && ! -f "$TYPED_TSV" ]] \
+  && grep -qF 'Reused: codex-cli/code-review' "$TMP/typed.log"; then
+  ok "T14b --resume で再利用した散文だけの観点に残っていた findings.tsv を消す"
+else
+  bad "T14b --resume で再利用した散文だけの観点に前回の findings.tsv が残った (rc=${TYPED_RC})"
+fi
+if grep -qF "$MARKER" "$REPORT" \
+  && grep -qF '完了扱いの結果なのに型付き判定行が 1 行も無く、判定の根拠が無いため安全側（Critical あり）へ倒した観点（旧版で受理された結果の再利用など。再実行する）: codex-cli/code-review' "$REPORT"; then
+  ok "T14b 判定行の無い完了扱いの結果は根拠なしとして安全側へ倒し、名指しする"
+else
+  bad "T14b 判定行の無い完了扱いの結果が安全側へ倒れない、または名指しが無い"
+fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then

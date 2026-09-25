@@ -33,6 +33,20 @@
 #       コマンドの出力捏造禁止 + 走査不能項目の未検証明記 + AC ゼロ件でも Output
 #       Template の件数行を維持）を針で固定する
 #
+#   (7) 型付き判定行（ADR-065）の共通ブロック — `## Verdict Lines（型付き判定行の契約）`
+#       が 9 ファイルに 1 回ずつ Output Template より前にあり、本文が同一で、例示行が共有
+#       パーサで型付き経路として受理される。各 Output Template は verdict 行の例を持ち、
+#       code-review の旧 `- 信頼度: XX` 行は verdict 行の confidence へ置き換えてある
+#       （スクリプト上の見出しは「(6) 型付き判定行…」）
+# 変異検出: security-analysis の共通ブロック見出しを変えると「無いか重複」が赤（2026-09-25 実測）。
+# 変異検出: test-analysis のブロックから 1 文を消すと中核針と drift の 2 件が赤（2026-09-25 実測）。
+# 変異検出: code-review のブロックの例示行へ説明文を足す（文法外）と drift が赤。9 ファイルそろって同じ変更をしたときは (d) のパーサ照合が赤になる（2026-09-25 実測は片側）。
+# 変異検出: code-review の Output Template へ旧「- 信頼度: XX」行を戻すと (f) の 2 件が赤（2026-09-25 実測）。
+# 変異検出: 受理モードの散文フォールバック警告を型付き受理でも出すと (d) の 2 件が赤（2026-09-25 実測。ADR-066 で警告は拒否の診断へ置き換えた — (d) は型付き経路で受理され typed-verdict 診断が出ないことを見る）。
+# 変異検出: security-analysis の Output Template の例示値を `confidence=XX` へ戻すと (g) が赤（2026-09-25 実測）。
+# 変異検出: comment-analysis のブロック例示行のフェンスを外すと (h)（本文から finding が抽出される）と drift が赤（2026-09-25 実測）。
+# 空振り検出: 9 ファイルそろって例示行を消す（drift は緑のまま）と、中核針 9 件と (d)「例示行が無い（針が当たらない）」が赤（2026-09-25 実測）。
+#
 # 規則の実効性（LLM が従うか）はここでは測れない。固定するのは「契約がテンプレート
 # 本体に存在し、9 ファイルで一致している」ことまで。純粋な静的検査で一時領域も git も
 # 要らず、skip 経路を持たない。
@@ -386,10 +400,10 @@ else
     else
       bad "code-review — Important 見出しがスコア帯 80-90 のみへ戻っています（例外で報告した指摘の置き場が消える）"
     fi
-    if in_section "$cr_output" '`[TEST-VALIDITY]` を前置し、該当する形を明記'; then
-      ok "code-review — Output Template に [TEST-VALIDITY] ラベル要求あり"
+    if in_section "$cr_output" '`[TEST-VALIDITY:unreached]` / `[TEST-VALIDITY:coincidental]` / `[TEST-VALIDITY:one-sided]` のいずれかを前置'; then
+      ok "code-review — Output Template に [TEST-VALIDITY:<形>] タグ要求あり"
     else
-      bad "code-review — 例外で報告した指摘の [TEST-VALIDITY] ラベル要求が消えています"
+      bad "code-review — 例外で報告した指摘の [TEST-VALIDITY:<形>] タグ要求（3 形の語）が消えています"
     fi
   fi
 
@@ -427,6 +441,13 @@ else
     ok "code-review — 例外を 3 形の外へ広げない宣言あり"
   else
     bad "code-review — 「3 形以外のテスト関連指摘には例外を適用しない」の非拡大宣言が消えています"
+  fi
+  # 統合レポート（multi-agent.sh の型付き集計）は 3 形のタグだけを例外として読む。
+  # テンプレートからタグの語が消えると、例外の指摘がすべて低信頼（未確認）へ落ちる。
+  if in_section "$cr_analysis" '統合レポートはこの 3 つのタグだけを例外として扱う'; then
+    ok "code-review — 3 形のタグだけが例外になる旨の宣言あり（統合レポートの読み取りと一致）"
+  else
+    bad "code-review — 統合レポートが 3 形のタグだけを例外として扱う旨の宣言が消えています"
   fi
   if in_section "$cr_analysis" '**例外も配置規則に従う**'; then
     ok "code-review — 例外が配置規則（diff スコープ）に従う宣言あり"
@@ -610,6 +631,190 @@ else
   else
     bad "acceptance-criteria — /close-issue ゲートとの役割分担（gh が使える経路との分担）の記録行が消えています"
   fi
+fi
+
+echo "== (6) 型付き判定行（verdict 行契約）の共通ブロック（9 観点で同一本文） =="
+
+# 型付き判定行（ADR-065）の出力契約。注入層（build_prompt の Typed Verdict Lines —
+# tests/adapter-prompt-guard が検査）と同じ契約を観点ファイル側にも同一本文で置く
+# （配置規則ブロックと同じ理由: build_prompt は perspective ファイルを 1 本しか読まず、
+# 共通 preamble ファイルは無い）。固定するもの:
+#   (a) `## Verdict Lines（型付き判定行の契約）` 節が各ファイルに 1 回だけあり、
+#       `## Output Template` より前にある（欠落・重複・後置は赤）
+#   (b) 節の本文が 9 ファイル間で同一（末尾の空行を除き行単位で同一）
+#   (c) 契約の中核針（1 行 1 件・文法・failure_scenario の条件・confidence の閾値と未確認扱い・
+#       none・見出しと件数行の維持・フェンス外）。針は 1 行内の部分文字列にする
+#   (d) 節の例示行と none 行が共有パーサ（adapter-common.sh の review_body_present）で
+#       型付き経路として受理される（typed-verdict の診断が出ない）— 文言と文法の
+#       片方だけが変わる drift を挙動で赤にする
+#   (e) 各 Output Template が型付き判定行の例（`- verdict: severity=`）を 1 行以上持つ
+#   (f) code-review の旧 `- 信頼度: XX` 行が verdict 行へ置き換わっている（二重記載にしない）
+#   (g) Output Template の verdict 例示行が単独行として全件有効（プレースホルダを写させない）
+#   (h) テンプレート本文をそのまま共有パーサへ流すと型付き行 0 件（例示はフェンス内）
+VERDICT_HEADING='## Verdict Lines（型付き判定行の契約）'
+ADAPTER_COMMON="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
+[ -f "$ADAPTER_COMMON" ] || bad "adapter-common.sh が見つかりません（(d) の針が当たらない）: $ADAPTER_COMMON"
+
+VERDICT_REF_BLOCK=""
+VERDICT_REF_NAME=""
+for name in "${EXPECTED_PERSPECTIVES[@]}"; do
+  file="$REVIEW_PERSPECTIVES_DIR/$name.md"
+  [ -f "$file" ] || { bad "$name — ファイルが存在しません"; continue; }
+  if ! vblock="$(extract_h2_section "$VERDICT_HEADING" "$file")"; then
+    bad "$name — 型付き判定行の共通ブロック（${VERDICT_HEADING}）が無いか重複しています"
+    continue
+  fi
+  # (a) 位置: Output Template より前（フェンス外の h2 行番号で比べる）
+  v_line="$(awk -v h="$VERDICT_HEADING" '/^[[:space:]]*(```|~~~)/ { f = !f } !f && $0 == h { n = NR } END { if (n) print n }' "$file")"
+  o_line="$(awk '/^[[:space:]]*(```|~~~)/ { f = !f } !f && $0 == "## Output Template" { n = NR } END { if (n) print n }' "$file")"
+  if [ -n "$v_line" ] && [ -n "$o_line" ] && [ "$v_line" -lt "$o_line" ]; then
+    ok "$name — 型付き判定行の共通ブロックが Output Template より前にある"
+  else
+    bad "$name — 型付き判定行の共通ブロックが Output Template より前に無い（verdict=${v_line:-なし} output=${o_line:-なし}）"
+  fi
+  # (c) 中核針
+  for _vd_needle in \
+    '型付き判定行をちょうど 1 行、その指摘の直下へ独立した箇条書きとして書く' \
+    '  - verdict: severity=warning failure_scenario=yes confidence=85 file=scripts/example.sh line=42' \
+    'コードフェンスの内側に書かない' \
+    'severity（必須）: critical / warning / suggestion / info のいずれか' \
+    'yes は、問題を再現する入力・状態と、観測できる誤動作' \
+    '80 が報告閾値で、80 未満の指摘は集約側が「未確認」として列挙する（捨てない）' \
+    '80 へ届かせるために切り上げない' \
+    '  - verdict: none' \
+    '重大度見出しと件数行（Summary）は読み手のために従来どおり残すが、受理と判定には使わない' \
+    'が 1 行も無い報告は、見出しや件数行が揃っていても受理されず、未完了（INCOMPLETE）として扱われる'
+  do
+    if in_section "$vblock" "$_vd_needle"; then
+      ok "$name — 型付き判定行の針あり: ${_vd_needle}"
+    else
+      bad "$name — 型付き判定行の共通ブロックから「${_vd_needle}」が消えています"
+    fi
+  done
+  # (b) drift
+  if [ -z "$VERDICT_REF_NAME" ]; then
+    VERDICT_REF_BLOCK="$vblock"
+    VERDICT_REF_NAME="$name"
+    ok "$name — 型付き判定行ブロックの drift 基準に採用"
+  elif [ "$vblock" = "$VERDICT_REF_BLOCK" ]; then
+    ok "$name — 型付き判定行ブロックが ${VERDICT_REF_NAME} と同一"
+  else
+    bad "$name — 型付き判定行ブロックが ${VERDICT_REF_NAME} と乖離しています（9 ファイル同一が契約。差分:）"
+    diff <(printf '%s\n' "$VERDICT_REF_BLOCK") <(printf '%s\n' "$vblock") | sed 's/^/      /' >&2 || true
+  fi
+  # (e) Output Template に型付き判定行の例
+  if ! v_output="$(extract_h2_section '## Output Template' "$file")"; then
+    bad "$name — Output Template 節を取り出せません"
+  elif in_section "$v_output" '- verdict: severity='; then
+    ok "$name — Output Template に型付き判定行の例あり"
+  else
+    bad "$name — Output Template に型付き判定行（- verdict: severity=）の例がありません"
+  fi
+done
+
+# (d) 共通ブロックの例示行・none 行が共有パーサで型付き経路として受理されること。
+# ブロックは 9 ファイル同一なので基準ブロックから 1 回だけ取り出す
+if [ -z "$VERDICT_REF_NAME" ]; then
+  bad "(d) 型付き判定行ブロックを 1 つも取り出せなかった（針が当たらない）"
+elif [ -f "$ADAPTER_COMMON" ]; then
+  for _vd_kind in finding none; do
+    case "$_vd_kind" in
+      finding) _vd_line="$(awk '/^ *- verdict: severity=/ { print; exit }' <<<"$VERDICT_REF_BLOCK")" ;;
+      none)    _vd_line="$(awk '/^ *- verdict: none$/ { print; exit }' <<<"$VERDICT_REF_BLOCK")" ;;
+    esac
+    if [ -z "$_vd_line" ]; then
+      bad "(d) 共通ブロックに ${_vd_kind} の例示行が無い（針が当たらない）"
+      continue
+    fi
+    _vd_rc=0
+    _vd_err="$(
+      # shellcheck source=../../scripts/adapters/adapter-common.sh
+      source "$ADAPTER_COMMON"
+      review_body_present "$_vd_line" 2>&1 >/dev/null
+    )" || _vd_rc=$?
+    if [ "$_vd_rc" -eq 0 ] && [ -z "$_vd_err" ]; then
+      ok "(d) 共通ブロックの ${_vd_kind} 例示行は共有パーサで型付き経路として受理される"
+    else
+      bad "(d) 共通ブロックの ${_vd_kind} 例示行が型付き経路で受理されない（rc=${_vd_rc}: ${_vd_err:-stderr なし}）"
+    fi
+  done
+fi
+
+# (f) code-review の旧信頼度行の置き換え。テスト有効性の例外（信頼度 50 以上で報告）の
+# 意味は残し、実際の信頼度の記録先を verdict 行の confidence へ移したことを固定する
+if [ -f "$CODE_REVIEW" ]; then
+  cr_output_v="$(extract_h2_section '## Output Template' "$CODE_REVIEW")" || cr_output_v=""
+  cr_analysis_v="$(extract_h2_section '## Analysis Focus' "$CODE_REVIEW")" || cr_analysis_v=""
+  if [ -n "$cr_output_v" ] && ! in_section "$cr_output_v" '- 信頼度: XX'; then
+    ok "code-review — Output Template の旧「- 信頼度: XX」行は verdict 行へ置き換え済み"
+  else
+    bad "code-review — Output Template に旧「- 信頼度: XX」行が残っています（confidence と二重記載になる）"
+  fi
+  if in_section "$cr_output_v" '  - verdict: severity=critical failure_scenario=yes confidence=95' \
+     && in_section "$cr_output_v" '  - verdict: severity=warning failure_scenario=yes confidence=85'; then
+    ok "code-review — Critical / Important の例に verdict 行（confidence=95 / 85）あり"
+  else
+    bad "code-review — Critical / Important の例の verdict 行（confidence=95 / 85）が消えています"
+  fi
+  if in_section "$cr_analysis_v" '実際の信頼度を型付き判定行の confidence に書く'; then
+    ok "code-review — テスト有効性の例外の信頼度は verdict 行の confidence へ書く"
+  else
+    bad "code-review — テスト有効性の例外で実際の信頼度を verdict 行の confidence へ書く指示が消えています"
+  fi
+fi
+
+# (g) Output Template の verdict 例示行は、フェンスを外した単独行として共有パーサの厳密文法で
+# 全件有効（プレースホルダ `confidence=XX` / `line=行番号` を写したレビュアーの行は不採用になり、
+# 型付き経路の遵守率を下げる）。1 つでも不採用なら赤、9 ファイル合計で 0 件も赤
+# （プロセス置換を読ませるので一時ファイルは作らない）
+if [ -f "$ADAPTER_COMMON" ]; then
+  _ot_total=0
+  for name in "${EXPECTED_PERSPECTIVES[@]}"; do
+    file="$REVIEW_PERSPECTIVES_DIR/$name.md"
+    [ -f "$file" ] || continue
+    _ot_sec="$(extract_h2_section '## Output Template' "$file")" || _ot_sec=""
+    _ot_n=0
+    _ot_bad=0
+    while IFS= read -r _ot_line; do
+      [ -n "$_ot_line" ] || continue
+      _ot_n=$((_ot_n + 1))
+      _ot_rec="$(
+        # shellcheck source=../../scripts/adapters/adapter-common.sh
+        source "$ADAPTER_COMMON"
+        typed_verdicts_extract <(printf '%s\n' "$_ot_line") 2>&1
+      )" || true
+      if [[ "$_ot_rec" != finding$'\t'* ]]; then
+        _ot_bad=$((_ot_bad + 1))
+        bad "$name — Output Template の verdict 例示行が共有パーサで有効な finding にならない: ${_ot_line}（${_ot_rec:-出力なし}）"
+      fi
+    done < <(awk '/^ *- verdict: severity=/' <<<"$_ot_sec")
+    _ot_total=$((_ot_total + _ot_n))
+    if [ "$_ot_n" -gt 0 ] && [ "$_ot_bad" -eq 0 ]; then
+      ok "$name — Output Template の verdict 例示行 ${_ot_n} 行がすべて有効（プレースホルダなし）"
+    fi
+  done
+  if [ "$_ot_total" -eq 0 ]; then
+    bad "(g) Output Template の verdict 例示行を 1 行も抽出できなかった（針が当たらない）"
+  fi
+
+  # (h) テンプレート本文そのものはフェンス外に有効な型付き行を持たない（rc=1・0 件）。例示が
+  # フェンスの外にあると、指示を言い直しただけの応答が型付き遵守として受理され、架空の
+  # finding（例示の file / line）が抽出される。rc=0（有効行あり）も rc=2（未閉フェンス）も赤
+  for name in "${EXPECTED_PERSPECTIVES[@]}"; do
+    file="$REVIEW_PERSPECTIVES_DIR/$name.md"
+    [ -f "$file" ] || continue
+    _tv_rc=0
+    _tv_out="$(
+      # shellcheck source=../../scripts/adapters/adapter-common.sh
+      source "$ADAPTER_COMMON"
+      typed_verdicts_extract "$file" 2>/dev/null
+    )" || _tv_rc=$?
+    if [ "$_tv_rc" -eq 1 ] && [ -z "$_tv_out" ]; then
+      ok "$name — テンプレート本文にフェンス外の有効な型付き行が無い（例示はフェンス内）"
+    else
+      bad "$name — テンプレート本文から型付き行が抽出される / 判定不能（rc=${_tv_rc}: ${_tv_out}）"
+    fi
+  done
 fi
 
 echo ""

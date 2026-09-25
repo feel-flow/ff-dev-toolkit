@@ -93,6 +93,13 @@
 # 変異検出: 完走サマリーの要求を外すと release-runtime（空出力・会計行欠落を緑と読む）が赤。
 # 変異検出: ローカルタグの commit 照合を外すと release-runtime（古いローカルタグを公開する）が赤。
 # 変異検出: tag 段の require_gate_ok を外すと release-runtime（--only tag が gate を素通り）が赤。
+# 変異検出（リリース初回実運用の摩擦。2026-09-24 実測）:
+# 変異検出: dry-run の prepare で模擬した再判定が OK でないときの停止を外すと release-runtime（dry-run が ATTRIBUTION_DRIFT を予測しない）が赤。
+# 変異検出: 停止文の次の一手から --resume-with-edits を外す（旧文面へ戻す）と release-runtime（停止文が再開の設計と噛み合わない）が赤。
+# 変異検出: --resume-with-edits の採用で prepare の書き込み先以外の変更を止める行を外すと release-runtime（判別できない状態を採用する）が赤。
+# 変異検出: 採用の印（ADOPTED=1）を立てないと release-runtime（直した内容から再開できない）が赤。
+# 変異検出: 採用した記録（adopted=1）を自動巻き戻しの対象から外す照合を消すと release-runtime（付けない再実行が直した内容を戻す）が赤。
+# 変異検出: dry-run の同期差分を公開側 clone の作業ツリーとの rsync 比較へ戻すと release-runtime（origin/main 基準・内容差分だけ）が赤。
 #
 # 空振り検出: FF_SYNC_SHA_SKILL へ存在しないパスを与えると (対象解決) が赤になる。明示指定の不在を skip へ倒さないため、実測は exit 1（○ skip ではない）。
 # 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT へ存在しないパスを与えると (対象解決) が赤になる（実測 exit 1）。リリーススクリプトを空ファイルへ差し替えると (7) の全針と release-runtime が赤になる。

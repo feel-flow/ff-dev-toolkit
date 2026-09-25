@@ -127,7 +127,8 @@ printf '%s\n' \
   "FRESH-RESULT" \
   "" \
   "### Summary" \
-  "- Critical: 0"
+  "- Critical: 0" \
+  "- verdict: none"
 SH
 chmod +x "$STUB/codex"
 

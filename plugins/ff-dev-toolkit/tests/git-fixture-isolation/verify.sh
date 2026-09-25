@@ -374,6 +374,7 @@ adapter-base-ref-freshness/verify.sh
 adapter-model-args/verify.sh
 adapter-prompt-guard/verify.sh
 adapter-prompt-utf8/verify.sh
+changelog-fragments/cases/attribution.sh
 changelog-fragments/cases/footer.sh
 changelog-fragments/cases/parallel-branches.sh
 changelog-public-tags-selftest/verify.sh

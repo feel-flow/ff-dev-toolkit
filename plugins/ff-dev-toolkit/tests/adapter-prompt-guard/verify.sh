@@ -21,6 +21,13 @@
 # のは「ガードが届いている」ことまでで、実効性は実 CLI での完走確認を PR に記録する。
 #
 # 実 CLI・ネットワーク・課金は伴わない。書き込み不可の環境では skip。
+#
+# 型付き判定行（ADR-065）の出力契約: review プロンプトの Typed Verdict Lines 節の中核針と、
+# 例示行が共有パーサの厳密文法で有効な finding になること（文言と文法の片側 drift を挙動で赤にする）。
+# 変異検出: Typed Verdict Lines の見出しを外すと見出しの針が赤（2026-09-25 実測）。
+# 変異検出: 例示行の confidence を 0.85 へ変える（文法外）と例示行のパーサ照合が赤（2026-09-25 実測）。
+# 変異検出: プロンプトの例示行を囲む `~~~text` フェンスを外すと、プロンプト全文の抽出検査が fixture / code-review の 2 件とも赤（例示の架空 finding scripts/example.sh:42 が抽出される。2026-09-25 実測）。
+# 空振り検出: プロンプトから例示行を消すと「例示が無い（針が当たらない）」で赤（0 件一致を緑にしない。2026-09-25 実測）。
 
 set -euo pipefail
 
@@ -201,6 +208,88 @@ expect_contains "review: 再帰の理由を明記" "$REVIEW_PROMPT" "infinite re
 expect_contains "review: read-only を明記" "$REVIEW_PROMPT" "strictly read-only"
 expect_contains "review: 単一応答で完結することを明記" "$REVIEW_PROMPT" "single response"
 
+echo "== review: 型付き判定行（verdict:）の出力契約（ADR-065） =="
+
+# 針はすべてプロンプトの折り返しをまたがない 1 行内の部分文字列にする（生成物の折り返し
+# 位置を変えただけで偽赤にしない）。契約の中核（見出し・受理条件への追加・文法・
+# failure_scenario の条件・confidence の閾値と未確認扱い・none・散文行の維持）に 1 本ずつ張る
+expect_contains "review: Typed Verdict Lines 見出しが入る" "$REVIEW_PROMPT" "## Typed Verdict Lines (one per finding)"
+expect_contains "review: 受理条件は型付き判定行だけ（ADR-066）" "$REVIEW_PROMPT" "final message that contains at least one valid typed verdict line"
+expect_contains "review: 型付き判定行の無い報告は散文が揃っていても不受理（ADR-066）" "$REVIEW_PROMPT" "line is rejected as an incomplete result, however complete its severity"
+expect_contains "review: 受理と集計は判定行だけを読む（ADR-066）" "$REVIEW_PROMPT" "Acceptance and severity counting read"
+expect_contains "review: finding ごとにちょうど 1 行を要求" "$REVIEW_PROMPT" "add exactly one typed verdict"
+expect_contains "review: severity の列挙" "$REVIEW_PROMPT" "severity=critical|warning|suggestion|info,"
+expect_contains "review: confidence は 0-100 の整数" "$REVIEW_PROMPT" "confidence=<integer 0-100>"
+expect_contains "review: 強調・バッククォートの禁止" "$REVIEW_PROMPT" "No bold or italics, no backticks"
+expect_contains "review: failure_scenario=yes の条件（再現する入力・状態）" "$REVIEW_PROMPT" "failure_scenario=yes only when the finding names the input or state that"
+expect_contains "review: failure_scenario=yes の条件（観測できる誤動作）" "$REVIEW_PROMPT" "reproduces the problem AND the observable wrong behavior"
+expect_contains "review: confidence の報告閾値 80" "$REVIEW_PROMPT" "80 is the reporting threshold: findings below 80 are listed as"
+expect_contains "review: 80 未満は捨てずに未確認へ" "$REVIEW_PROMPT" "unconfirmed, not dropped"
+expect_contains "review: 指摘ゼロの型付き宣言" "$REVIEW_PROMPT" "    - verdict: none"
+expect_contains "review: 重大度見出し・件数行を残す" "$REVIEW_PROMPT" "Keep the severity headings and count lines"
+
+# プロンプトの例示行はパーサ（adapter-common.sh の _ff_severity_scan）の厳密文法を満たすこと
+# （文言側と文法側の片方だけが変わる drift を挙動で赤にする — 例示行を共有パーサへ流す）。
+# 行頭の字下げは文法が許すので、例示行をそのまま 1 行の本文として渡す
+VERDICT_EXAMPLE="$(printf '%s\n' "$REVIEW_PROMPT" | awk 'n == 0 && /^ *- verdict: severity=/ { n = 1; print }')"
+if [ -z "$VERDICT_EXAMPLE" ]; then
+  bad "review: プロンプトに型付き判定行の例示が無い（針が当たらない）"
+else
+  printf '%s\n' "$VERDICT_EXAMPLE" > "$TMP/verdict-example.md"
+  ex_rc=0
+  ex_out="$(
+    # shellcheck source=../../scripts/adapters/adapter-common.sh
+    source "$ADAPTER_COMMON"
+    typed_verdicts_extract "$TMP/verdict-example.md" 2>&1
+  )" || ex_rc=$?
+  if [ "$ex_rc" -eq 0 ] && [[ "$ex_out" == finding$'\t'* ]]; then
+    ok "review: プロンプトの例示行が共有パーサの厳密文法で有効な finding になる"
+  else
+    bad "review: プロンプトの例示行がパーサに採られない（rc=${ex_rc}: ${ex_out}）"
+  fi
+fi
+# 生成したプロンプト全文をそのまま共有パーサへ流すと型付き行は 0 件（rc=1）であること。
+# 例示がフェンスの外にあると、指示を言い直しただけの応答（プロンプトの引き写し）が型付き
+# 遵守として受理され、例示の架空の finding（scripts/example.sh:42）が抽出される。
+# fixture の観点と実観点（code-review — 観点側の Verdict Lines ブロックと Output Template を
+# 含む組み立て）の 2 本で見る。rc=0（有効行あり）も rc=2（未閉フェンス）も赤
+if ! REAL_REVIEW_PROMPT="$(PERSPECTIVE="$PLUGIN_ROOT/scripts/perspectives/review/code-review.md"; gen_prompt review)"; then
+  bad "review(code-review 観点): プロンプト生成自体が失敗した"
+  REAL_REVIEW_PROMPT=""
+fi
+for _pp_kind in fixture code-review; do
+  case "$_pp_kind" in
+    fixture)     printf '%s\n' "$REVIEW_PROMPT" > "$TMP/prompt-${_pp_kind}.md" ;;
+    code-review) printf '%s\n' "$REAL_REVIEW_PROMPT" > "$TMP/prompt-${_pp_kind}.md" ;;
+  esac
+  _pp_rc=0
+  _pp_out="$(
+    # shellcheck source=../../scripts/adapters/adapter-common.sh
+    source "$ADAPTER_COMMON"
+    typed_verdicts_extract "$TMP/prompt-${_pp_kind}.md" 2>/dev/null
+  )" || _pp_rc=$?
+  if [ ! -s "$TMP/prompt-${_pp_kind}.md" ] || ! grep -qF '## Typed Verdict Lines' "$TMP/prompt-${_pp_kind}.md"; then
+    bad "review(${_pp_kind}): 照合対象のプロンプトが空か契約節を持たない（針が当たらない）"
+  elif [ "$_pp_rc" -eq 1 ] && [ -z "$_pp_out" ]; then
+    ok "review(${_pp_kind}): プロンプト全文から型付き行は抽出されない（例示はフェンス内）"
+  else
+    bad "review(${_pp_kind}): プロンプト全文から型付き行が抽出される / 判定不能（rc=${_pp_rc}: ${_pp_out}）"
+  fi
+done
+
+printf '%s\n' '    - verdict: none' > "$TMP/verdict-none.md"
+none_rc=0
+none_out="$(
+  # shellcheck source=../../scripts/adapters/adapter-common.sh
+  source "$ADAPTER_COMMON"
+  typed_verdicts_extract "$TMP/verdict-none.md" 2>&1
+)" || none_rc=$?
+if [ "$none_rc" -eq 0 ] && [[ "$none_out" == none$'\t'* ]]; then
+  ok "review: プロンプトの none 例示（字下げつき）が共有パーサで指摘ゼロ宣言になる"
+else
+  bad "review: プロンプトの none 例示がパーサに採られない（rc=${none_rc}: ${none_out}）"
+fi
+
 # 境界宣言は perspective（プロジェクト側指示文の入口）より前に無ければならない
 # （先に読ませる意図の設計判断。前置と後置の効果差は未測定で、ここで固定するのは
 # 位置の一貫性）。行番号抽出は awk 1 本で行う — `grep -nF | head | cut` の形は、
@@ -276,6 +365,7 @@ if ! EXPLORE_PROMPT="$(gen_prompt explore)"; then
 fi
 expect_contains "explore: 境界セクションが生成される" "$EXPLORE_PROMPT" "## Execution Boundary (non-negotiable)"
 expect_contains "explore: read-only を明記" "$EXPLORE_PROMPT" "strictly read-only"
+expect_lacks "explore: 型付き判定行の契約を含まない（review 限定）" "$EXPLORE_PROMPT" "Typed Verdict Lines"
 
 echo "== implement: staging パスの伝達（Issue #392） =="
 
@@ -290,6 +380,7 @@ expect_contains "implement: staging の実パスがプロンプトに載る" "$I
 expect_contains "implement: staging 外への書き込み禁止を明記" "$IMPLEMENT_PROMPT" "the working tree is off limits"
 expect_lacks "implement: パスがあるとき退避文言（インライン出力）は出さない" "$IMPLEMENT_PROMPT" "emit the file contents inline"
 expect_lacks "implement: read-only 行を含まない（staging 書き込みと矛盾させない）" "$IMPLEMENT_PROMPT" "strictly read-only"
+expect_lacks "implement: 型付き判定行の契約を含まない（review 限定）" "$IMPLEMENT_PROMPT" "Typed Verdict Lines"
 
 # preamble と境界宣言が同じ分岐を向いていること。片方が「staging へ書け」、
 # もう片方が「書くな」だと、エージェントは矛盾を自分で解消して working tree へ行く。
@@ -386,6 +477,7 @@ ${CODEX_HELP_ARM}
 for a in "\$@"; do printf '%s\n' "\$a" >> "$TMP/argv.log"; done
 cat >> "$TMP/stdin.log"
 echo "- Suggestion: stub review output"
+echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
 SH
 chmod +x "$STUB/codex"
 
@@ -1049,6 +1141,7 @@ done
 cat >> "$DELIV/${cli}-stdin.log"
 if [ -n "\$pf" ] && [ -f "\$pf" ]; then cat "\$pf" >> "$DELIV/${cli}-stdin.log"; fi
 echo "- Suggestion: stub review output"
+echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
 SH
   chmod +x "$DELIV_BIN/$cli"
 done

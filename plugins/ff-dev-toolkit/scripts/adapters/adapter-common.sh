@@ -605,19 +605,33 @@ ${diff_content}"
   earlier turns is discarded. That final message must contain the complete
   review itself, never a summary of or a reference to earlier output
   (\"the review is above\" delivers nothing). The wrapper only accepts a
-  final message that contains at least one of: a severity count line (e.g.
-  \"Critical: 0 / Warning: 0 / Suggestion: 0\"), a severity-labeled finding
-  line, findings listed as bullets under a severity heading, or a standalone
-  zero-findings line (e.g. \"指摘なし\") — a final message without any of
-  these is rejected as an incomplete result. Do NOT wrap the report (or the
-  whole message) in a code fence: fenced content is treated as quotation,
-  not as the review."
+  final message that contains at least one valid typed verdict line (see
+  Typed Verdict Lines below), or the single line \"- verdict: none\" when
+  you report no findings. A final message without any valid typed verdict
+  line is rejected as an incomplete result, however complete its severity
+  headings, count lines (e.g. \"Critical: 0 / Warning: 0 / Suggestion: 0\")
+  or prose findings are. Do NOT wrap the report (or the whole message) in a
+  code fence: fenced content is treated as quotation, not as the review."
   fi
   # Finding Discipline（レビュー限定・オーバーエンジニアリング抑止。Issue #877 /
   # ADR-040）。AI レビュアーは個別最適に倒れ、失敗シナリオの無いガード追加を
   # Warning 以上へ膨らませる。全観点共通のこの層で「単純さは美点」「重大度
   # インフレ禁止」を宣言する。コードレビュー入口の規則であり、harness-review
   # の観点別判定（フォールバック欠落を Warning 例に含む）とは別物。
+  #
+  # 末尾の Typed Verdict Lines は型付き判定行（受理条件ヘッダの (t)。文法は ADR-065、
+  # 強制は ADR-066）の出力契約。文法は _ff_severity_scan の vd_head_re / vd_parse と同じもの
+  # を英語で書いている — ここを変えるときはパーサの文法と同時に変える。9 観点
+  # テンプレートの「## Verdict Lines（型付き判定行の契約）」は同じ契約の日本語版で、
+  # 本文の 9 ファイル一致は tests/review-severity-scope が固定する（観点ファイル
+  # だけを読む経路・注入層だけを読む経路のどちらからも契約が欠けないよう両側に置く）。
+  # failure_scenario=yes の条件は上の失敗シナリオの定義（入力・状態 + 観測可能な
+  # 誤動作）に揃え、confidence は閾値 80 未満を「捨てずに未確認へ」とする集約側の
+  # 扱いを先に告げて、閾値へ届かせるための切り上げを抑える。
+  # 例示行は `~~~text` フェンスの内側に置く — フェンスの外に置くと、プロンプトを言い
+  # 直しただけの応答が有効な型付き行を持つことになり、受理されたうえ例示の架空の
+  # finding が抽出される（プロンプト全文から型付き行が 0 件であることは
+  # tests/adapter-prompt-guard が固定する）。
   local finding_discipline=""
   if [[ "$task_type" == "review" ]]; then
     finding_discipline="
@@ -637,7 +651,42 @@ ${diff_content}"
   that bar is optional polish, not a defect.
 - The goal is better design, not a longer report: merge findings that stem
   from the same design decision into one, and do not restate resolved
-  prior-round findings."
+  prior-round findings.
+
+## Typed Verdict Lines (one per finding)
+
+- Directly under every finding you report, add exactly one typed verdict
+  line as its own list item, in plain text outside any code fence. The
+  fence below only marks the example in this prompt; in your report, write
+  the line itself outside any fence, one line per finding:
+  ~~~text
+    - verdict: severity=warning failure_scenario=yes confidence=85 file=scripts/example.sh line=42
+  ~~~
+- Grammar: a \"- \" bullet, the lowercase word verdict and a colon, then
+  only space-separated key=value tokens: severity=critical|warning|suggestion|info,
+  failure_scenario=yes|no, confidence=<integer 0-100>, and optionally
+  file=<path> and line=<positive integer>. No bold or italics, no backticks
+  around the line or its values, no spaces inside a value, nothing after
+  the last token.
+- severity is the finding's severity in your perspective's Severity
+  Classification, lowercased (Important maps to warning).
+- failure_scenario=yes only when the finding names the input or state that
+  reproduces the problem AND the observable wrong behavior, data loss, or
+  security impact it causes (the concrete failure scenario defined above);
+  otherwise failure_scenario=no.
+- confidence is your honest 0-100 confidence that the finding is real.
+  80 is the reporting threshold: findings below 80 are listed as
+  unconfirmed, not dropped, so do not round up to reach 80. Which findings
+  to report at all still follows your perspective's reporting rules.
+- When you report no findings at all, write this single line instead (again
+  outside any fence in your report):
+  ~~~text
+    - verdict: none
+  ~~~
+- Keep the severity headings and count lines of your Output Template as
+  well — they are for human readers. Acceptance and severity counting read
+  the verdict lines only: a report whose findings lack verdict lines is
+  rejected, not read from its prose."
   fi
   local boundary_section="## Execution Boundary (non-negotiable)
 
@@ -686,12 +735,50 @@ PROMPT
 # ■ 受理条件（正）— ここが唯一の定義。4 アダプタのゲートコメント・tests/run-all.sh の
 # 登録コメント・診断文（describe_cli_failure / fail_cli_task のバナーと body・各アダプタ
 # の ERROR 行）・公開 CHANGELOG は、この列挙への参照または同一列挙で書くこと（初版から
-# 2 度、記述ごとに条件がズレた）。診断文の英語正規形は
-# "no severity count/zero line, no severity-labeled finding line, and no finding
-# bullet under a severity heading"。
+# 2 度、記述ごとに条件がズレた）。診断文の英語正規形は下の定数
+# REVIEW_BODY_REFUSAL_PHRASE の 1 箇所だけに置き、describe_cli_failure / fail_cli_task /
+# 4 アダプタの ERROR 行 / 委譲経路の退避理由はこの定数を展開する（文面を複製しない）。
 #
-# コードフェンス外に、次のいずれかの**実体行**が 1 行でもあれば受理（rc=0）。
-# bullet は `-` / `*` / `+` の 3 種を等価に扱う。
+# **受理は型付き判定行だけ**（ADR-065 で導入し、ADR-066 で散文経路を受理と Critical
+# 判定から外した）。コードフェンス外に有効な (t) 行が 1 行でもあれば受理（rc=0）、
+# 1 行も無ければ不受理（rc=1）。散文の重大度行（下の (s1)〜(s4)）は、どれだけ
+# あっても受理の根拠にならない。bullet は `-` / `*` / `+` の 3 種を等価に扱う:
+#   (t) 型付き判定行 — コードフェンス外の bullet 行
+#       `- verdict: severity=<critical|warning|suggestion|info> failure_scenario=<yes|no>
+#        confidence=<0〜100 の整数> [file=<パス>] [line=<1 以上の整数>]`
+#       （キーは順不同・各 1 回・小文字。行はこの key=value の並びだけで構成する）、
+#       または指摘ゼロを型付きで宣言する `- verdict: none`。
+#   (t) が 1 行も無い本文は不受理（アダプタは missing-review-body の INCOMPLETE 成果物へ
+#   落とし、委譲経路は応答を退避する）。散文の重大度行だけの本文（下の散文の分類が
+#   実体行を見つけた本文）を拒否した回は、診断として
+#   `typed-verdict: prose-only review refused (no valid verdict line)` を stderr へ
+#   1 行出す（review_body_present の第 2 引数でラベルを渡すと
+#   `typed-verdict: <ラベル>: prose-only review refused (no valid verdict line)` の形に
+#   なる。アダプタは `<CLI 表示名>/<観点>`、ホスト委譲は `<レーン>/<観点>` を渡す。空
+#   ラベルはラベル部ごと省く）。rc は不受理のまま — 散文の分類は「レビュアーが型付き
+#   契約を無視して散文で書いた」ことを前置きだけの本文と区別して名指しする診断にだけ
+#   使い、受理を決めない（ADR-066。旧版の散文フォールバック警告はこの診断に置き換えた）。
+#   受理した回・散文の実体行も無い本文の不受理・Critical 検出・抽出のモードでは出さない。
+#   `verdict` を名乗る候補行 — 行頭（引用 `>`・bullet・番号付き `1.` / `1)`・無印の
+#   いずれか）の後に強調やバッククォートを挟んで `verdict` 語が来て、かつ行が `=` か
+#   `none` 語を含む行 — のうち文法を満たさないもの（必須キーの欠落・値域外・未知キー・
+#   重複キー・key=value でない語・強調や大文字の `verdict`・コロン欠落・番号付きや
+#   引用の中の行）は型付きとして採らず、`typed-verdict: line N: rejected (<理由コード>)`
+#   を stderr へ出す（黙って散文扱いにしない）。その行は散文の行分類（診断用）へは
+#   そのまま流れる。ただし不採用行が `severity=critical`（大小無視）を含むときは、
+#   Critical 検出だけは他の型付き行の判定より先に Critical ありへ倒す（fail-safe。
+#   診断に `counted as critical (fail-safe)` を添える）。受理判定と抽出は変えない。
+#   `=` も `none` も含まない行（`- **Verdict:** Approve` 等の散文）は候補にしない。
+#   フェンス内の (t) 行は引用として無視する（診断も出さない）。
+#
+# 以下は散文の行分類。ADR-066 以降は**診断だけ**に使う — 受理も Critical の有無も
+# 決めない。使い道は 3 つの診断: (1) 散文だけの本文を拒否した回の
+# `prose-only review refused`、(2) 有効な (t) 行が散文の Critical を覆した回の
+# `prose Critical finding overridden …`、(3) (t) 行の無い本文に散文の Critical が
+# あった回の `prose Critical finding in a body without typed verdict lines …`。
+# 分類の網羅は tests/severity-parser-intersection が診断の有無として固定する。
+# 下の記述の「受理」「発火」は旧版の意味のまま残してある — 診断が「散文の実体行
+# あり」「散文の Critical あり」と読む条件のこと:
 #
 # **強調の許容（s1 / s2 / s3 / s4 / c3 に共通。BEGIN ブロックの emph が唯一の実装）**:
 # 件数**値**とゼロ語は markdown 強調で囲まれていてもよい（`- Critical: **0**` /
@@ -779,6 +866,12 @@ PROMPT
 #     ため**受理しない**（集約側の CRITICAL 検出はこの形を引き続き検出する —
 #     受理と検出は別契約）
 #
+# 不受理の診断文の英語正規形（上の受理条件ヘッダの冒頭を参照）。describe_cli_failure /
+# fail_cli_task / 4 アダプタの ERROR 行 / 委譲経路の退避理由がこの 1 箇所を展開する。
+# 文面を変えるときはここだけを変える（tests/review-capture-fail-loud が成果物・アダプタの
+# ERROR 行・委譲経路の退避理由で照合する）
+REVIEW_BODY_REFUSAL_PHRASE='no valid typed verdict line (neither a `- verdict: severity=... failure_scenario=... confidence=...` line nor `- verdict: none`)'
+
 # ── 共有重大度行パーサー（Issue #908）──
 # 受理判定（review_body_present）と統合レポートの Critical 検出
 # （critical_findings_present — multi-agent.sh の CRITICAL_BLOCK 判定が呼ぶ）は、
@@ -793,12 +886,36 @@ PROMPT
 # が固定する。
 #
 # モードと終了コード:
-#   accept   — rc0: 上記受理条件を満たす実体行あり / rc1: なし。未閉フェンスは
-#              マスク放棄フォールバック（上記ヘッダ参照）
-#   critical — rc0: Critical の実所見あり / rc1: なし / rc20: 未閉フェンスで判定
-#              不能（ドメイン専用値 — awk 自身の異常終了 rc=2 と衝突させない。
-#              公開 rc への写像は critical_findings_present が行う）
-# critical モードの発火条件（行分類は accept と共有し、方針だけが異なる）:
+#   accept   — rc0: 有効な (t) 行あり / rc1: なし（散文の実体行だけの本文を含む）。
+#              (t) 行はフェンス外で読んだものだけを数える（未閉フェンスの内側では
+#              数えない）。散文の分類は拒否時の診断にだけ使う（未閉フェンスの本文は
+#              旧版のマスク放棄フォールバックの条件で「散文の実体行あり」と読む）
+#   critical — rc0: Critical あり（(t) 行の severity=critical、または不採用行の
+#              fail-safe）/ rc1: なし（(t) 行はあるが critical 0 件）/ rc20: 未閉
+#              フェンスで判定不能 / rc21: 有効な (t) 行が無く判定の根拠が無い
+#              （ドメイン専用値 — awk 自身の異常終了 rc=2 と衝突させない。公開 rc への
+#              写像は critical_findings_present が行う）
+#   verdicts — 有効な (t) 行をレコードとして stdout へ出す（typed_verdicts_extract
+#              の本体。書式は同関数のヘッダ）。rc0: 有効な (t) 行あり / rc1: なし /
+#              rc20: 未閉フェンス
+# 型付き判定行（(t)）の検出は 3 モードで同じフェンス追跡・同じ文法（BEGIN の vd_*）を
+# 使う。有効な (t) 行は散文の行分類へ流さない（`### Critical` 配下の
+# `- verdict: none` を c3 の実所見に数えない）。
+# critical モードの最優先は**不採用行の fail-safe**: 不採用にした候補行が
+# severity=critical を含む回は、他の判定を見ずに Critical あり（rc0）とする。
+# 次に**型付き**: 有効な (t) 行が 1 行でもあれば、Critical の有無は
+# (t) 行の severity=critical の件数だけで決める（`verdict: none` は 0 件）。
+# failure_scenario=no による降格はまだ掛けない（集約側の段で入れる）。散文側が
+# Critical を検出していたのに (t) 行が Critical 0 件だった回は、覆したことを
+# stderr へ 1 行出す（黙って消さない。verdicts モードでも同じ条件で出す）。
+# **(t) 行が無い本文は判定しない**（rc21 = 根拠なし。ADR-066）。散文の Critical を
+# 数えて決めることはしない — 受理が (t) 行を要求するので、ここへ来るのは拒否・失敗
+# した回の INCOMPLETE 成果物か、旧版で受理された結果だけ。扱いは呼び出し側が決める
+# （multi-agent.sh は未完了の観点なら本文から判定せず、完了扱いの結果なら安全側 =
+# Critical ありへ倒す）。散文の (c1)〜(c4) が Critical を見つけていた回は
+# `typed-verdict: prose Critical finding in a body without typed verdict lines (not counted)`
+# を stderr へ 1 行出す（verdicts モードでも同じ条件で出す）。
+# 散文の Critical の分類条件（診断用。行分類は accept と共有し、方針だけが異なる）:
 #   (c1) s1 件数行のうち、ラベルが critical で件数が 1 以上のもの（bullet 3 種・
 #        `**` 強調・先頭空白・全角コロン・Issues / Vulnerabilities / Gaps 修飾を
 #        受理側と同一に認める。明示ゼロ = 数値 0 とゼロ語 5 種は s1 と同じ境界で除外）
@@ -849,9 +966,68 @@ _ff_severity_scan() { # $1: ff_mode (accept|critical) / 本文: stdin または 
   # 独立に定義できないため found_any には含めない）。
   local ff_mode="$1"
   shift
-  awk -v ff_mode="$ff_mode" '
+  # 散文だけの本文を拒否した診断のラベル（accept モードだけが使う）。呼び出し側が
+  # _FF_SCAN_LABEL で渡す — 引数位置は本文ファイルに使っているため
+  awk -v ff_mode="$ff_mode" -v label="${_FF_SCAN_LABEL:-}" '
+    # ── 型付き判定行（(t)）の検証 ──
+    # 候補行（vd_cand_re）を厳密文法で読み、1 = 指摘 / 2 = `verdict: none` /
+    # 0 = 不採用 を返す。不採用の理由は名前付きのコードで集め、1 行の診断にまとめて
+    # stderr へ出す（黙って散文扱いにしない）。指摘のときは vd_sev / vd_fs / vd_conf /
+    # vd_file / vd_line に値を置く。
+    # 不採用の行が `severity=critical`（大小無視）を含むときは vd_rej_crit を数える。
+    # critical モードはこれを Critical ありへ倒す（fail-safe — 書式の崩れた Critical
+    # 宣言を、他の有効な型付き行や散文の判定で黙らせない）。受理判定と抽出の
+    # レコードには影響しない（不採用行はレコードに出さない）。
+    function vd_reject(why, line,    note) {
+      note = ""
+      if (tolower(line) ~ vd_rej_crit_re) {
+        vd_rej_crit++
+        if (!accept && !extract) note = " — counted as critical (fail-safe)"
+      }
+      printf "typed-verdict: line %d: rejected (%s)%s: %s\n", NR, why, note, substr(line, 1, 200) > "/dev/stderr"
+      return 0
+    }
+    function vd_parse(line,    rest, n, i, t, eqp, k, v, why, toks, hs, hf, hc, hfi, hl) {
+      if (line !~ vd_head_re) return vd_reject("malformed-head", line)
+      rest = line
+      sub(vd_head_re, "", rest)
+      sub(/[[:space:]]+$/, "", rest)
+      if (rest == "none") return 2
+      if (rest ~ /^none[[:space:]]/) return vd_reject("none-with-extra", line)
+      if (rest == "") return vd_reject("empty", line)
+      vd_sev = ""; vd_fs = ""; vd_conf = ""; vd_file = ""; vd_line = ""
+      hs = 0; hf = 0; hc = 0; hfi = 0; hl = 0
+      why = ""
+      n = split(rest, toks, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) {
+        t = toks[i]
+        eqp = index(t, "=")
+        if (eqp <= 1) { why = why ",stray-token"; continue }
+        k = substr(t, 1, eqp - 1)
+        v = substr(t, eqp + 1)
+        if (k == "severity")              { if (hs++) why = why ",duplicate-severity";         vd_sev = v }
+        else if (k == "failure_scenario") { if (hf++) why = why ",duplicate-failure_scenario"; vd_fs = v }
+        else if (k == "confidence")       { if (hc++) why = why ",duplicate-confidence";       vd_conf = v }
+        else if (k == "file")             { if (hfi++) why = why ",duplicate-file";            vd_file = v }
+        else if (k == "line")             { if (hl++) why = why ",duplicate-line";             vd_line = v }
+        else why = why ",unknown-key"
+      }
+      if (!hs) why = why ",missing-severity"
+      else if (vd_sev !~ /^(critical|warning|suggestion|info)$/) why = why ",bad-severity"
+      if (!hf) why = why ",missing-failure_scenario"
+      else if (vd_fs !~ /^(yes|no)$/) why = why ",bad-failure_scenario"
+      # confidence は 0〜100 の整数。桁数を 3 までに絞ってから数値比較する（巨大な
+      # 桁列を浮動小数へ変換しない。先頭ゼロの `085` は 85 として受ける）
+      if (!hc) why = why ",missing-confidence"
+      else if (vd_conf !~ /^[0-9]+$/ || length(vd_conf) > 3 || vd_conf + 0 > 100) why = why ",bad-confidence"
+      if (hfi && vd_file == "") why = why ",bad-file"
+      if (hl && vd_line !~ /^[1-9][0-9]*$/) why = why ",bad-line"
+      if (why != "") return vd_reject(substr(why, 2), line)
+      return 1
+    }
     BEGIN {
       accept = (ff_mode == "accept")
+      extract = (ff_mode == "verdicts")
       # ── 行分類の正規表現（共有フラグメントからここで 1 回だけ合成する）──
       # 語彙・境界（重大度ラベル・数値 / ゼロ語とその境界・bullet 種別・コロン形）の
       # 追加箇所はこの BEGIN ブロックだけ。判定側は分類フラグ cls / cls_zero /
@@ -917,6 +1093,20 @@ _ff_severity_scan() { # $1: ff_mode (accept|critical) / 本文: stdin または 
       # ATX 見出し: 先頭の字下げはスペース 0〜3 個のみ（CommonMark — スペース 4 個
       # 以上とタブ字下げは indented code であり見出しではない）
       head_re = "^ ? ? ?#+" sp
+      # ── 型付き判定行（(t)）の文法 — 語彙の追加箇所はここと vd_parse だけ ──
+      # 候補（vd_cand_re。小文字化した行へ当てる）は広めに取る: 行頭の任意空白の後に
+      # 引用 `>`（0 個以上）・bullet（- * +）/ 番号付き（`1.` / `1)`）/ 無印のいずれか、
+      # 任意の強調（* _）とバッククォート、そして `verdict` 語が来る行。区切り
+      # （`:` / `：` / `=`）の有無は問わない（コロン欠落・バッククォート囲み・番号付き・
+      # 引用内の行を診断なしに散文へ落とさないため）。ただし行が `=` か `none` 語を
+      # 含むときだけ候補にする（vd_cand_ok）— `- **Verdict:** Approve` のような散文
+      # レビューの行を候補にも診断にもしない。拾った行は厳密文法（vd_head_re。元の
+      # 行へ当てる）で読み、外れたら名前付きの診断を出す（malformed-head 等）。
+      vd_cand_re   = "^" sp "*(>" sp "*)*([-*+]" sp "+|[0-9]+[.)]" sp "+)?[*_`]*verdict([^a-z]|$)"
+      vd_none_word = "(^|[^a-z])none([^a-z]|$)"
+      vd_head_re   = "^" sp "*[-*+]" sp "+verdict:" sp "+"
+      # 不採用行の fail-safe（vd_reject 参照）。値側の強調・バッククォートも跨ぐ
+      vd_rej_crit_re = "severity" sp "*=" sp "*[*_`]*critical"
     }
     /^[[:space:]]*(```|~~~)/ {
       # CommonMark 準拠のフェンス追跡:
@@ -963,6 +1153,23 @@ _ff_severity_scan() { # $1: ff_mode (accept|critical) / 本文: stdin または 
         if (!(in_crit && lvl > crit_lvl)) { in_crit = is_crit; crit_lvl = lvl }
         crit_zero = 0   # ゼロ宣言による c3 抑止は次の見出しで解除する
         next
+      }
+      # ── 型付き判定行（(t)）— フェンス外の候補行だけを読む（フェンス内は引用）──
+      # 有効な行は数えて散文の行分類へは流さない。不採用の行は診断を出したうえで
+      # 散文の行分類へそのまま流す（散文経路の判定は (t) が無い本文と同じ）。
+      if (!fence && l ~ vd_cand_re && (index(l, "=") > 0 || l ~ vd_none_word)) {
+        vd_r = vd_parse($0)
+        if (vd_r == 1) {
+          vd_n++
+          if (vd_sev == "critical") vd_crit++
+          if (extract) printf "finding\t%d\t%s\t%s\t%d\t%s\t%s\n", NR, vd_sev, vd_fs, vd_conf + 0, vd_file, vd_line
+          next
+        }
+        if (vd_r == 2) {
+          vd_none++
+          if (extract) printf "none\t%d\n", NR
+          next
+        }
       }
       # ── 行分類（唯一の分類箇所 — 判定側はこのフラグだけを見る）──
       # cls: 1 = s1 件数行 / 2 = s2 ゼロ件報告行 / 3 = s3 ラベル付き指摘行
@@ -1015,28 +1222,97 @@ _ff_severity_scan() { # $1: ff_mode (accept|critical) / 本文: stdin または 
       }
     }
     END {
+      vd_typed = vd_n + vd_none
+      if (vd_n && vd_none) {
+        printf "typed-verdict: `verdict: none` and %d finding line(s) both present; findings are counted\n", vd_n > "/dev/stderr"
+      }
+      # 型付き行が散文の Critical を覆した回は名指しする（ADR-065 決定 6）。検出（critical）
+      # だけでなく抽出（verdicts）でも出す — 統合レポートの型付き経路は抽出だけを呼ぶので、
+      # 検出モードにしか無いと覆した事実が stderr から消える。条件は両モードで同じ 1 箇所:
+      # フェンスが閉じ、不採用行の fail-safe が立たず、有効な (t) 行があり、散文の行分類
+      # （c1〜c4。受理モード以外で計算）が Critical を見つけ、(t) 行の Critical が 0 件
+      if (!accept && fence == 0 && !vd_rej_crit && vd_typed && found && !vd_crit) {
+        print "typed-verdict: prose Critical finding overridden by typed verdict lines (0 critical)" > "/dev/stderr"
+      }
+      # (t) 行が無い本文の散文 Critical は数えずに名指しだけする（ADR-066）。条件は上と
+      # 同じ形で両モード共有: フェンスが閉じ、fail-safe が立たず、(t) 行が無く、散文の
+      # 分類が Critical を見つけた回
+      if (!accept && fence == 0 && !vd_rej_crit && !vd_typed && found) {
+        print "typed-verdict: prose Critical finding in a body without typed verdict lines (not counted)" > "/dev/stderr"
+      }
+      if (extract) {
+        if (fence != 0) exit 20
+        exit vd_typed ? 0 : 1
+      }
       if (accept) {
-        if (fence != 0) exit (found || found_any) ? 0 : 1
-        exit found ? 0 : 1
+        # 受理は型付き判定行だけ（ADR-066）。有効な (t) 行があれば受理、無ければ不受理
+        if (vd_typed) exit 0
+        prose_ok = (fence != 0) ? (found || found_any) : found
+        # 散文の実体行があるのに (t) 行が無い本文は、レビュアーが型付き契約を無視して
+        # 散文で書いた回。受理はしないが、前置きだけの本文と区別できるよう名指しの診断を
+        # 1 行出す。ラベル（`<CLI>/<観点>` 等）があれば名指しする。空ラベルで
+        # `typed-verdict: : …` にしない
+        if (prose_ok) print "typed-verdict: " (label != "" ? label ": " : "") "prose-only review refused (no valid verdict line)" > "/dev/stderr"
+        # 散文だけの本文の拒否はドメイン専用値 22 で返す（review_body_present が不受理 rc1 と
+        # 理由の種別へ写す。awk 自身の異常終了 rc=2 と衝突させない）
+        exit prose_ok ? 22 : 1
       }
       # 未閉フェンスはドメイン専用値 20 で返す — awk 自身の異常終了（構文エラー等は
       # rc=2）と衝突させない。公開 rc への写像は critical_findings_present が行う
       if (fence != 0) exit 20
-      exit found ? 0 : 1
+      # 不採用の verdict 行が severity=critical を含む回は、型付き・散文の判定より
+      # 先に Critical ありへ倒す（fail-safe。診断は vd_reject が出している）
+      if (vd_rej_crit) exit 0
+      if (vd_typed) {
+        # 型付き（降格はまだ掛けない）。散文側の Critical を覆した回の名指しは上で出した
+        exit vd_crit ? 0 : 1
+      }
+      # (t) 行が無い本文は判定の根拠が無い（ADR-066）。散文の Critical は数えない —
+      # 名指しの診断は上で出した。扱いは呼び出し側が決める
+      exit 21
     }
   ' "$@"
 }
 
-review_body_present() { # $1: captured review body / rc0 = 上記の受理条件を満たす
+# rc0: 受理 / rc1: 不受理（有効な (t) 行なし）/ rc2: 本文を解析できず不受理（awk の
+# 異常終了 — 壊れた UTF-8 で towc が失敗する等。「型付き行なし」とは別の理由として扱う）。
+# 不受理の種別は REVIEW_BODY_REFUSAL_KIND（none = 散文の実体行も無い / prose = 散文の
+# 重大度行だけ / unparsed = 解析できない）と REVIEW_BODY_REFUSAL_RC（awk の rc）へ残す。
+# アダプタは同じシェルで呼ぶので、失敗処理（fail_cli_task / review_body_refusal_clause）が
+# この 2 つを読んで理由の文面と理由コードを選ぶ。受理した回は空に戻す
+REVIEW_BODY_REFUSAL_KIND=""
+REVIEW_BODY_REFUSAL_RC=""
+review_body_present() { # $1: captured review body / $2: 警告ラベル（任意）/ rc0 = 上記の受理条件を満たす
   # 本文は引数で受け取る（ファイル経路を持たないため、下の「不可読ファイルが
-  # rc=1 へ化ける」fail-open の同型経路は無い）
-  printf '%s\n' "$1" | _ff_severity_scan accept
+  # rc=1 へ化ける」fail-open の同型経路は無い）。$2 は散文だけの本文を拒否した診断に載せる
+  # 名前（`<CLI 表示名>/<観点>` 等）で、判定には使わない
+  local rc=0
+  printf '%s\n' "$1" | _FF_SCAN_LABEL="${2:-}" _ff_severity_scan accept || rc=$?
+  REVIEW_BODY_REFUSAL_RC="$rc"
+  case "$rc" in
+    0)  REVIEW_BODY_REFUSAL_KIND=""; return 0 ;;
+    1)  REVIEW_BODY_REFUSAL_KIND="none"; return 1 ;;
+    22) REVIEW_BODY_REFUSAL_KIND="prose"; return 1 ;;
+    *)  REVIEW_BODY_REFUSAL_KIND="unparsed"; return 2 ;;
+  esac
 }
 
-# 統合レポートの Critical 検出（multi-agent.sh の CRITICAL_BLOCK 判定が呼ぶ）。
-# rc0: Critical の実所見あり / rc1: なし / rc2: 未閉フェンスで判定不能 /
-# rc3: 判定不能（不可読ファイル・awk 実行失敗）。rc2 以上の扱い（安全側 =
-# Critical ありへ倒す）は呼び出し側の方針。
+# 不受理の理由を 1 句で返す（アダプタの ERROR 行・委譲の退避理由が
+# `<主語> $(review_body_refusal_clause) — refusing it as a review result.` の形で使う）。
+# 直前の review_body_present が残した種別を読む。解析できなかった回は「型付き行が無い」と
+# 言わない — 本文に判定行があっても awk が落ちれば同じ不受理になるので、名指しを分ける
+review_body_refusal_clause() {
+  case "${REVIEW_BODY_REFUSAL_KIND:-}" in
+    unparsed) echo "could not be parsed as a review body (the parser exited with status ${REVIEW_BODY_REFUSAL_RC:-?}, e.g. invalid UTF-8)" ;;
+    *)        echo "contains ${REVIEW_BODY_REFUSAL_PHRASE}" ;;
+  esac
+}
+
+# 型付き判定行による Critical 検出（multi-agent.sh の不採用行 fail-safe の判定が呼ぶ）。
+# rc0: Critical あり（(t) 行の severity=critical・不採用行の fail-safe）/ rc1: なし /
+# rc2: 未閉フェンスで判定不能 / rc3: 判定不能（不可読ファイル・awk 実行失敗）/
+# rc4: 有効な (t) 行が無く判定の根拠が無い（散文の Critical は数えない — ADR-066）。
+# rc2 以上の扱いは呼び出し側の方針。
 critical_findings_present() { # $1: result file
   # 読めない・存在しないファイルを rc=1（Critical なし）に倒さない（fail-open
   # 防止）。ファイルは awk 自身に開かせる — シェルの `< "$1"` は redirect 失敗が
@@ -1047,7 +1323,34 @@ critical_findings_present() { # $1: result file
   case "$rc" in
     0 | 1) return "$rc" ;;
     20)    return 2 ;;  # awk のドメイン値（未閉フェンス）→ 公開 rc 2
+    21)    return 4 ;;  # awk のドメイン値（有効な (t) 行なし）→ 公開 rc 4
     *)     return 3 ;;  # awk 異常終了（構文・シグナル・open 失敗）= 判定不能
+  esac
+}
+
+# 型付き判定行（受理条件ヘッダの (t)）の抽出。受理・Critical 検出と同じ
+# _ff_severity_scan（同じフェンス追跡・同じ文法）の verdicts モードを呼ぶ。
+# stdout: 有効な (t) 行 1 行につき 1 レコード（タブ区切り）
+#   finding <行番号> <severity> <failure_scenario> <confidence> <file> <line>
+#   none    <行番号>
+#   （file / line は省略時に空欄。confidence は 10 進整数へ正規化する）
+# stderr: 不採用にした `verdict` 行ごとの `typed-verdict: line N: rejected (<理由>)`
+#   と、散文の Critical を (t) 行が覆した回（検出モードと同じ条件）の
+#   `typed-verdict: prose Critical finding overridden by typed verdict lines (0 critical)`、
+#   (t) 行が無い本文に散文の Critical があった回（同じく検出モードと同じ条件）の
+#   `typed-verdict: prose Critical finding in a body without typed verdict lines (not counted)`
+# rc0: 有効な (t) 行あり / rc1: なし（散文だけの本文を含む）/ rc2: 未閉フェンスで
+# 判定不能（それまでのレコードは出る）/ rc3: 判定不能（不可読ファイル・awk 実行失敗）。
+# critical_findings_present と同じく、読めないファイルを rc1（型付き行なし）へ
+# 倒さない。
+typed_verdicts_extract() { # $1: result file
+  [[ -r "$1" ]] || return 3
+  local rc=0
+  _ff_severity_scan verdicts "$1" || rc=$?
+  case "$rc" in
+    0 | 1) return "$rc" ;;
+    20)    return 2 ;;
+    *)     return 3 ;;
   esac
 }
 
@@ -1460,11 +1763,11 @@ delegate_task() { # <lane-id> <cli-display-name> <perspective> <prompt> <allowed
       elif delegation_body_carries_result_header "$body"; then
         delegation_set_aside_response "$dir" "$persp" rejected "$response_file" "$lane" \
           "the delegated response still carries a result header after the leading one was stripped (a preamble before the header, or several results concatenated); not adopting it." || return 1
-      elif [ "${TASK_TYPE:-review}" = "review" ] && ! review_body_present "$body"; then
+      elif [ "${TASK_TYPE:-review}" = "review" ] && ! review_body_present "$body" "${lane}/${persp}"; then
         # アダプタが CLI の出力へ掛けているのと**同じ**受理ゲート。委譲経路だけ
         # 緩めると、前置きだけの応答が「レビュー完了」として統合レポートへ載る。
         delegation_set_aside_response "$dir" "$persp" rejected "$response_file" "$lane" \
-          "the delegated response contains no severity count/zero line, no severity-labeled finding line, and no finding bullet under a severity heading — refusing it as a review result." || return 1
+          "the delegated response $(review_body_refusal_clause) — refusing it as a review result." || return 1
       else
         # 書き込みの成否は write_output の rc が答える（ENOSPC / read-only / 権限変更）。
         # `set -e` 下なので受け止めないと素の 1 で落ち、下の案内（ホストの応答がどこに
@@ -1703,14 +2006,16 @@ write_reason_file() { # $1: パス / $2: 書く内容 -- rc0 = 書けた, rc1 = 
 # したがって `record_timeout_reason X || fallback` は書かないこと — その `||` は発火しない。
 #
 # run_with_timeout 自身が書くのは timeout | orchestrator-error | command の 3 値。
-# アダプタが上書きで書く値（sandbox-refused | empty-output | missing-review-body）も
+# アダプタが上書きで書く値（sandbox-refused | empty-output | missing-review-body）と、
+# fail_cli_task が missing-review-body を種別で細分した値（missing-review-body-prose |
+# review-body-unparsed）も
 # ここを通る。許可値の検証はこの入口に一箇所で集約する — 文字列は疑似 Union であり、
 # 任意文字列を受けると typo した理由が describe_cli_failure / fail_cli_task の
 # case をすべて素通りして既定文言（「status 1 で落ちた」）へ黙って化ける。
 record_timeout_reason() {
   local reason="$1" f
   case "$reason" in
-    timeout|orchestrator-error|command|sandbox-refused|empty-output|missing-review-body) : ;;
+    timeout|orchestrator-error|command|sandbox-refused|empty-output|missing-review-body|missing-review-body-prose|review-body-unparsed) : ;;
     *)
       # 呼び出し側（アダプタ）のバグ。記録せず名指しして続行する。このとき残るのは
       # 「記録なし」ではなく、run_with_timeout が起動時に記録した command（CLI 自身
@@ -2078,8 +2383,9 @@ run_with_timeout() {
 # It is consulted first because the status alone is ambiguous — a CLI is free to
 # exit 124 or 125 itself, and only the reason separates that from our own verdict.
 # "missing-review-body" is the third adapter-recorded value (exit 0 with output,
-# but the output has no substantive review line — the acceptance conditions are
-# defined once, in review_body_present's header; Issue #893).
+# but the output has no valid typed verdict line — the acceptance conditions are
+# defined once, in review_body_present's header, and the phrase once, in
+# REVIEW_BODY_REFUSAL_PHRASE; Issue `#893` / ADR-066).
 describe_cli_failure() {
   local rc="$1" timeout_seconds="$2" reason="${3:-}"
 
@@ -2107,11 +2413,24 @@ describe_cli_failure() {
       return
       ;;
     missing-review-body)
-      # Exited 0 with output, but the captured output has no substantive review
-      # line (acceptance conditions: review_body_present's header — the phrase
-      # below is its canonical English form). The CLI may have emitted the
-      # review in an earlier, uncaptured turn (Issue #893).
-      echo "finished, but its captured output contains no severity count/zero line, no severity-labeled finding line, and no finding bullet under a severity heading — refused as a review result"
+      # Exited 0 with output, but the captured output has no valid typed verdict
+      # line (acceptance conditions: review_body_present's header; the phrase is
+      # REVIEW_BODY_REFUSAL_PHRASE, never restated here). The CLI may have emitted
+      # the review in an earlier, uncaptured turn (Issue `#893`), or written it in
+      # prose without the typed verdict lines the prompt requires (ADR-066).
+      echo "finished, but its captured output contains ${REVIEW_BODY_REFUSAL_PHRASE} — refused as a review result"
+      return
+      ;;
+    missing-review-body-prose)
+      # Same refusal, but the output was a prose-only review (severity lines without
+      # any typed verdict line): the reviewer ignored the typed-verdict contract.
+      echo "finished, but its captured output contains ${REVIEW_BODY_REFUSAL_PHRASE} (a prose-only review) — refused as a review result"
+      return
+      ;;
+    review-body-unparsed)
+      # The acceptance parser itself failed (e.g. invalid UTF-8 in the output), so
+      # whether a typed verdict line was present is unknown. Refused on the safe side.
+      echo "finished, but its captured output could not be parsed as a review body — refused as a review result"
       return
       ;;
   esac
@@ -2174,6 +2493,15 @@ fail_cli_task() {
   local kind reason
   kind="$(read_timeout_reason)"
   clear_timeout_reason
+  # 本文の不受理は、直前の review_body_present が残した種別で理由コードを細分する
+  # （散文だけのレビュー / 解析できない本文）。理由コードは成果物へ 1 行載せ、統合レポートの
+  # 「未確認 › 未完了の観点」がそれを読んで理由を名指しする
+  if [[ "$kind" == "missing-review-body" ]]; then
+    case "${REVIEW_BODY_REFUSAL_KIND:-}" in
+      prose)    kind="missing-review-body-prose" ;;
+      unparsed) kind="review-body-unparsed" ;;
+    esac
+  fi
   reason="$(describe_cli_failure "$rc" "$TIMEOUT" "$kind")"
 
   # Normalise the status at the process boundary. The orchestrator only sees this
@@ -2213,11 +2541,15 @@ fail_cli_task() {
 
   local body
   if [[ -n "$partial" ]]; then
-    if [[ "$kind" == "missing-review-body" ]]; then
+    if [[ "$kind" == "review-body-unparsed" ]]; then
+      body="The output that was captured (refused as a ${TASK_TYPE:-review} result because the acceptance parser could not read it — status ${REVIEW_BODY_REFUSAL_RC:-?}, e.g. invalid UTF-8; whether it had a typed verdict line is unknown):
+
+${partial}"
+    elif [[ "$kind" == "missing-review-body" || "$kind" == "missing-review-body-prose" ]]; then
       # The CLI was never stopped here — it finished, and this is everything it
       # gave us. Calling that "partial output before the CLI was stopped" would
       # send the reader after a crash or timeout that never happened.
-      body="The output that was captured (refused as a ${TASK_TYPE:-review} result because it contains no severity count/zero line, no severity-labeled finding line, and no finding bullet under a severity heading):
+      body="The output that was captured (refused as a ${TASK_TYPE:-review} result because it contains ${REVIEW_BODY_REFUSAL_PHRASE}):
 
 ${partial}"
     else
@@ -2248,8 +2580,11 @@ ${stderr_excerpt}
   # reader to the wrong place. Keep the INCOMPLETE contract, change the reason.
   local banner_detail="the CLI never reached its conclusion, so anything it had not gotten to is simply absent — read the gaps as unknown, not as clean"
   case "$kind" in
-    missing-review-body)
-      banner_detail="the CLI did finish, but its captured output contains no severity count/zero line, no severity-labeled finding line, and no finding bullet under a severity heading, so this perspective went effectively unreviewed — read it as unchecked, not as clean"
+    missing-review-body|missing-review-body-prose)
+      banner_detail="the CLI did finish, but its captured output contains ${REVIEW_BODY_REFUSAL_PHRASE}, so this perspective went effectively unreviewed — read it as unchecked, not as clean"
+      ;;
+    review-body-unparsed)
+      banner_detail="the CLI did finish, but its captured output could not be parsed, so this perspective went effectively unreviewed — read it as unchecked, not as clean"
       ;;
     sandbox-refused)
       banner_detail="the CLI did finish, but it ran outside the sandbox this adapter requires, so its findings are unverified and it may have modified the working tree — read this as unknown, not as clean"
@@ -2271,8 +2606,16 @@ ${stderr_excerpt}
   # 元の exit_rc（例 124）ではなく 125 で終えるのは、次に直すべきものが出力先だから
   # — 出力先が書けないうちは、どのタスクも同じ形で失敗し、時間を足しても直らない。
   # CLI 側の理由（timeout / crash）は上の ERROR 行に残してあるので失われない。
+  # 本文の不受理だけは理由コードを 1 行載せる（統合レポートの未完了の理由が読む。
+  # multi-agent.sh の review_task_incomplete_reason）
+  local reason_line=""
+  case "$kind" in
+    missing-review-body|missing-review-body-prose|review-body-unparsed)
+      reason_line="
+> Reason code: \`${kind}\`" ;;
+  esac
   if ! write_output "$OUTPUT_FILE" "$CLI_NAME" "$perspective_name" \
-    "> ⚠️ **INCOMPLETE — ${CLI_NAME} ${reason}.** This is not a finished ${TASK_TYPE:-review}: ${banner_detail}.
+    "> ⚠️ **INCOMPLETE — ${CLI_NAME} ${reason}.** This is not a finished ${TASK_TYPE:-review}: ${banner_detail}.${reason_line}
 
 ${body}" \
     "incomplete"; then

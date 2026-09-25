@@ -694,6 +694,23 @@ echo "✅ レビュー完了。出力先: $FF_REVIEW_OUTPUT"
 - 上書きは env `MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES`（空白またはカンマ区切り。**空文字の明示指定 = 全観点ブロック（旧挙動）**）> プロジェクト設定 `.claude/agent-config.yaml` の `review.critical_nonblock_perspectives`（1 文字列）> 既定、の順で解決されます
 - ゲート側の判定は**マーカー全文**の固定文字列一致（`grep -qF -- '<!-- CRITICAL_BLOCK -->'`、上のゲート例）が正です。裸の `CRITICAL_BLOCK` への部分一致は使わないでください — 連結されるレビュー本文には Verdict 語彙やマーカーの引用として同じ文字列が現れうるため、非ブロック観点だけの実行でも誤発火します。なお本文がマーカー行そのものを逐語で引用した場合は全文一致でも発火します（誤ブロック側 = 安全側の残余）。`CRITICAL_NONBLOCK` のマーカー名・注記本文はどちらの判定式にも掛からない形が保たれており、`tests/multi-agent-critical-marker/` が固定しています
 
+#### 型付き判定の集計
+
+観点結果の Critical 判定と集計は有効な型付き判定行（`- verdict: severity=… failure_scenario=… confidence=…` / 指摘ゼロなら `- verdict: none`）だけで決め、散文の重大度行（件数行・重大度ラベル付きの指摘行・重大度見出し配下の bullet）は読みません（受理も判定行だけ。散文だけの報告は INCOMPLETE — 下の「受理と強制」）。判定行が無い観点は散文から判定しません: 未完了の観点（拒否・失敗・タイムアウトの INCOMPLETE 成果物）は本文から判定せず「未確認 › 未完了の観点」で名指しし、完了扱いの結果（旧版で受理された結果の `--resume` 再利用など）は判定の根拠が無いものとして安全側（Critical あり）へ倒して名指しします。コードフェンスが閉じない結果・判定器を実行できない結果も安全側へ倒し、それぞれ別の文で名指しします。
+
+- **1 段降格**: `failure_scenario=no` の finding は Critical → Warning、Warning → Suggestion へ下げてから数えます（Suggestion / Info はそのまま）。`CRITICAL_BLOCK` / `CRITICAL_NONBLOCK` は降格**後**の重大度で決まります。書式の崩れた判定行が `severity=critical` を名乗る場合は、降格や件数に関わらず Critical ありとして扱います（fail-safe。レポートと stderr で名指し）
+- **集計節**: 統合レポートの末尾（マーカーの直前）に「型付き判定の集計」節を置き、観点ごとに降格後の重大度別件数・降格した件数・低信頼の件数を表で出します。散文の重大度行では Critical ありと読めるのに型付き行の Critical が 0 件だった観点も名指しします（stderr にも `typed-verdict: prose Critical finding overridden …` が出ます。散文は判定に使わず、判定行への書き漏らしを確かめるための診断です）
+- **未確認 › 低信頼の指摘**: confidence が閾値（既定 80）未満の finding を列挙します。報告から落とさず、「指摘なし」とは読みません。閾値は環境変数 `MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD` > `.claude/agent-config.yaml` の `review.confidence_threshold` > 既定 80 の順で解決し、0〜100 の整数以外は CLI を起動する前に名指しで止まります。code-review でテスト有効性の 3 形のタグ（`[TEST-VALIDITY:unreached]` / `[TEST-VALIDITY:coincidental]` / `[TEST-VALIDITY:one-sided]`）を前置した指摘（報告閾値の例外）は min(閾値, 50) で判定します（素の `[TEST-VALIDITY]` や他の語は通常の閾値。タグはその finding の範囲（判定行の親の指摘行、親が無ければ同じ字下げの指摘行から判定行まで）だけで探します）。信頼度は Critical 判定には掛けません（低信頼の Critical もブロックし、未確認として併記されます）
+- **未確認 › 未完了の観点**: 委譲待ち・失敗 / タイムアウト / 結果の拒否・スキップ・結果なしの観点を理由つきで列挙します（低信頼とは別の節）
+- **finding の記録**: 型付き経路で判定した観点ごとに `<出力先>/<cli>/<観点>.findings.tsv` を書きます。列は `cli` / `perspective` / `severity`（降格後）/ `failure_scenario` / `confidence` / `file` / `line` / `summary`（判定行の親の指摘行）/ `demoted_from`（降格したときの元の重大度、無ければ空）のタブ区切りで、1 行目がヘッダです。毎回の実行で作り直し（前回の記録・`--resume` で再利用した観点の記録を残さない）、観点を絞った実行ではプラン外の観点の記録を結果と一緒に `<cli>/previous/` へ退避します（読めない記録も名指しして退避し、ヘッダの違うものは動かさずにレポートで名指しします）
+
+##### 受理と強制（型付き判定行が無い報告）
+
+- **受理は型付き判定行だけ**: CLI 起動経路の 4 アダプタとホスト委譲経路は同じ共有関数（`review_body_present`）で本文を受理し、有効な型付き判定行が 1 行も無い報告は、重大度見出し・件数行・散文の指摘が揃っていても受理しません。アダプタは INCOMPLETE 成果物（`Status: incomplete`、捕捉した本文は保全）にして非 0 で終わり、委譲経路は応答を退避して handoff をやり直します。理由の文面は 1 箇所（`adapter-common.sh` の `REVIEW_BODY_REFUSAL_PHRASE`）から出ます
+- **散文だけの報告の診断**: 散文の重大度行はあるのに判定行が無い報告を拒否した回は、`typed-verdict: <CLI>/<観点>: prose-only review refused (no valid verdict line)` を stderr へ 1 行出します（前置きだけの応答と区別するため）。拒否・中断した本文の散文に Critical の記述があった観点は、判定には数えずにレポートの 1 行で名指しします
+- **書式の崩れた Critical 行**: 文法を満たさない `verdict` 行が `severity=critical` を名乗ると、その行は判定行として採らずに名指しの診断を出し、Critical 判定だけは Critical ありへ倒します（fail-safe）。判定行がほかに無ければ報告自体は不受理（INCOMPLETE）ですが、その未完了の観点でも Critical ありとして `CRITICAL_BLOCK` / `CRITICAL_NONBLOCK` の判定へ流し、集計節で名指しします
+- **不受理の理由コード**: INCOMPLETE 成果物には `> Reason code: \`…\`` の 1 行が載ります（`missing-review-body` = 判定行の無い出力 / `missing-review-body-prose` = 散文の重大度行だけのレビュー / `review-body-unparsed` = 出力を解析できない — 不正な UTF-8 で受理判定の awk が落ちた等）。統合レポートの「未確認 › 未完了の観点」はこのコードから理由を名指しします。解析できない出力は「判定行が無い」とは言わず、別の理由で不受理にします（不受理 = 安全側は同じ）
+
 ### 消費側の hook / ゲートから toolkit のスクリプトを解決する（`--print-toolkit-root`）
 
 上の pre-push 例は review 系 3 resource だけを固定版で呼ぶ、無人の厳格なゲートである。これとは別に、消費プロジェクトの hook / 検証スイートが toolkit の**別のスクリプト**（鮮度ゲートの記録を書く `record-gate-head.sh` など）を呼ぶ場面がある。そこで上の例の sidecar 読み込みブロックをコピーしてはならない。sidecar（`scripts/.ff-dev-toolkit-root`）は版ディレクトリの絶対 path を焼き込むため、plugin 更新で旧版のディレクトリが消えると、hook は消えた版を指したまま起動を続ける。呼び出し先が無いので記録だけが黙って止まり、ゲートは緑のまま `/close-issue` の鮮度照合が判定不能になる（実際に 2 回観測された事象）。setup の再実行で直るが、**plugin 更新のたびに再実行が要る構造**そのものは残る。
@@ -898,7 +915,8 @@ You've hit your individual spend limit · your session limit resets 10:10pm (Asi
 ### 受理の条件（ここは緩めない）
 
 - **同じプロンプトへの応答であること**: handoff 時にプロンプト本文の digest を `.delegated/<観点>.request` へ記録し、受理時に再計算して突き合わせる。diff・base・観点ファイル・`--description` のどれが動いても digest が変わるので、**前回の入力を見た結果が今回の結果として載ることはない**
-- **レビュー本文として成立していること**: CLI 起動経路と**同じ**受理ゲート（重大度の件数行 / 重大度ラベル付きの指摘行 / 重大度見出し配下の指摘 bullet のいずれか）を通す
+- **レビュー本文として成立していること**: CLI 起動経路と**同じ**受理ゲート（共有関数 `review_body_present`。有効な型付き判定行 `- verdict: …` / `- verdict: none` が 1 行以上あること）を通す。散文の重大度行だけの応答は受理せず、正規形の理由（`REVIEW_BODY_REFUSAL_PHRASE`）で退避して handoff をやり直し、CLI 起動経路と同じ拒否の診断を stderr へ 1 行出す（`typed-verdict: claude-code/<観点>: prose-only review refused (no valid verdict line)`。CLI 起動経路は `<CLI 表示名>/<観点>` を名指しする）
+- **型付き判定行の契約はプロンプトに入っている**: `prompt-file` は CLI 起動経路と同じ `build_prompt` の生成物で、finding ごとの型付き判定行（`- verdict: severity=… failure_scenario=… confidence=…`、指摘ゼロなら `- verdict: none`）を要求する `## Typed Verdict Lines` 節を含む。サブエージェントの応答は要約・整形せず、その行を含んだまま `output-file` へ書く — ホストが本文を書き直して型付き判定行を落とすと、その観点の応答は受理されない
 - `<!-- Status: incomplete -->` / `discarded` を名乗る応答は受理しない（失敗した実行のサルベージをホスト経由で「完成した結果」へ格上げしない）。判定は**本文全体**に掛ける — リビジョンガードが破棄した成果物は `> DISCARDED — …` バナーを前置してからヘッダーを続けるので、先頭 1 段落だけを見る形では素通りする
 - ヘッダーを剥がした後もまだ結果ヘッダーが残っている応答（前置きの後にヘッダーがある / 複数の結果を連結した）は受理しない。入れ子のヘッダーを持つ成果物になり、外側が complete を名乗りながら内側が別の status を名乗りうる
 - 受理は**書けたことを書いたファイル自身で確認してから**確定する。確認が取れなければホストの応答を消さずに残し、パスを名指しして止まる

@@ -90,6 +90,7 @@ cat > "$STUB/codex" <<'SH'
 cat > /dev/null
 echo "## Findings"
 echo "- Suggestion: stub result"
+echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
 SH
 chmod +x "$STUB/codex"
 

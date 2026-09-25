@@ -190,6 +190,7 @@ else
     "'.review.main"
     "'.review.sub"
     "'.review.critical_nonblock_perspectives"
+    "'.review.confidence_threshold"
     "'.exclude_clis"
     '.tasks.${TASK_TYPE}.mode'
     '.tasks.${TASK_TYPE}.cost_strategy'

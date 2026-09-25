@@ -509,6 +509,7 @@ if [ -f "$TMP/mutate-sleep" ]; then
 fi
 echo "## Findings"
 echo "- Suggestion: stub review"
+echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
 SH
 chmod +x "$STUB/codex"
 

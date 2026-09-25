@@ -859,6 +859,13 @@ else
     # 「受理される全形式の Critical 指摘行で検出が発火する」を行ごとに固定 +
     # 委譲の静的 pin。一時領域のみ（〜2 秒）。実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/severity-parser-intersection/verify.sh"
+    # レビュー finding の型付き判定行（`- verdict: ...` / `- verdict: none`）の文法と
+    # パーサ: 受理は「型付き or 散文」の二重、Critical 検出は型付き優先、欠落・値域外は
+    # 名指しの診断つきで不採用、フェンス内は引用として無視。3 つの公開入口
+    # （review_body_present / critical_findings_present / typed_verdicts_extract）を
+    # 通す。一時領域のみ（〜3 秒）。一時領域を作れなければ skip せず赤。
+    # 実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/typed-verdict-parser/verify.sh"
     # レビュー指摘の差分スコープ契約（Issue #556）: 全 review perspective のスコープ
     # 言及 + build_prompt(review) の [OUT-OF-DIFF] ラベル契約。一時 git リポジトリのみ
     # （〜2 秒）。実 CLI・ネットワーク・課金は伴わない。一時領域不可なら丸ごと ○ skip。
@@ -1308,7 +1315,6 @@ MISS_PROBE_BASELINE=(
   adapter-base-ref-freshness
   adapter-env-isolation-selftest
   adapter-model-args
-  adapter-prompt-guard
   adapter-prompt-utf8
   adapter-sandbox-contract
   agent-config-doc-sync
@@ -1318,7 +1324,6 @@ MISS_PROBE_BASELINE=(
   changelog-contract-selftest
   changelog-contract
   changelog-digest
-  changelog-fragments
   changelog-public-tags-selftest
   changelog-public-tags
   claude-hooks-path
@@ -1384,9 +1389,7 @@ MISS_PROBE_BASELINE=(
   release-required-selftest
   removal-sweep
   retrospective-ledger-freshness
-  review-capture-fail-loud
   review-diff-scope
-  review-severity-scope
   reviewer-pair
   roadmap-release-facts-selftest
   roadmap-release-facts

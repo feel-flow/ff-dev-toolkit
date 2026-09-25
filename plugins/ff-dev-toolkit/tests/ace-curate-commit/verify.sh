@@ -12,6 +12,7 @@
 # リポジトリで実行して振る舞いで固定する（下の「共通の書き込み口」節）。
 #
 # 空振り検出: 書き込み口が不在だと「共通の書き込み口」節の全ケースが赤になる（skip へ倒さない）。
+# 変異検出: add の鮮度検査の呼び出しを外す、または対象を default branch 以外へ広げると 13 が赤（2026-09-24 実測）。
 
 set -euo pipefail
 
@@ -626,6 +627,28 @@ else
     else
       echo "  ✗ commit type が引き継がれない（$(git log -1 --format=%s)）" >&2; exit 1
     fi
+
+    # 13. add の鮮度検査は default branch（直 push の経路）だけに掛かる。origin が先行していても、
+    #     PR 経由のブランチでは止めない。default branch では止まり、stage もしない
+    O="$KC_TMP/origin.git"; C="$KC_TMP/clone"; A="$KC_TMP/advance"
+    git init -q --bare "$O" && git -C "$R" push -q "$O" HEAD:refs/heads/main && git -C "$O" symbolic-ref HEAD refs/heads/main \
+      && git clone -q "$O" "$C" && git clone -q "$O" "$A" || exit 1
+    ff_git_fixture_init "$C" "Knowledge Test" "knowledge-test@example.com" >/dev/null && ff_git_fixture_init "$A" "Knowledge Test" "knowledge-test@example.com" >/dev/null || exit 1
+    printf '%s\n' 'advance' >>"$A/unrelated.txt" && git -C "$A" commit -qam advance && git -C "$A" push -q origin main || exit 1
+    cd "$C" || exit 1
+    git switch -q -c chore/ace-from-pr-1
+    printf '%s\n' '- pr' >>docs/08-knowledge/PLAYBOOK.md
+    rc=0; out="$(kc add --source ace --id ACE-9-13 --summary "要約P" -- docs/08-knowledge/PLAYBOOK.md 2>&1)" || rc=$?
+    kc discard >/dev/null; git reset -q; git checkout -q -- docs/08-knowledge/PLAYBOOK.md; git switch -q main
+    printf '%s\n' '- main' >>docs/08-knowledge/PLAYBOOK.md
+    rc2=0; err="$(kc add --source ace --id ACE-9-14 --summary "要約Q" -- docs/08-knowledge/PLAYBOOK.md 2>&1)" || rc2=$?
+    if [ "$rc" -eq 0 ] && [[ "$out" == *"KNOWLEDGE_PENDING=1"* ]] && [ "$rc2" -eq 1 ] && [[ "$err" == *"コミット遅れている"* ]] \
+      && [ -z "$(git diff --cached --name-only)" ] && [[ "$(kc status)" == *"KNOWLEDGE_PENDING=0"* ]]; then
+      echo "  ✓ add の鮮度検査は default branch だけに掛かる（PR 経由のブランチは止めず、遅れた default branch では stage せずに止まる）"
+    else
+      echo "  ✗ add の鮮度検査の範囲が違う（branch rc=${rc} / main rc=${rc2}: ${err}）" >&2; exit 1
+    fi
+    git checkout -q -- docs/08-knowledge/PLAYBOOK.md
 
     # 7. 合成 identity（テスト fixture の既定 identity）では commit しない。保留は残す
     F="$KC_TMP/fixture-id"

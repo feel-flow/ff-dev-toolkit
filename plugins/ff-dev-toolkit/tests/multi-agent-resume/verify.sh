@@ -97,7 +97,8 @@ printf '%s\n' \
   "invocation=\$n" \
   "" \
   "### Summary" \
-  "- Critical: 0"
+  "- Critical: 0" \
+  "- verdict: none"
 SH
 chmod +x "$STUB/codex"
 

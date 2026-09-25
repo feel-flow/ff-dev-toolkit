@@ -691,6 +691,7 @@ case "\$mode" in
     # まさにそれで、レビュー対象になれば生きた誤診源になる）。文脈語が揃っていても、
     # 行頭がエラーの体裁でなければ拾ってはいけない。
     echo "- Suggestion: document what happens when the prompt is too long for the model"
+    echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
     echo "  e.g. API Error: 400 {\"type\":\"invalid_request_error\"} prompt is too long <- これは本文の引用"
     echo "boom: stub failure" >&2
     exit 1
@@ -733,6 +734,7 @@ case "\$mode" in
   ok)
     echo "## Findings"
     echo "- Suggestion: stub review completed"
+    echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
     ;;
   quote-marker)
     # 完了レビューが本文でマーカー行を引用するケース（本ツールが自身のスクリプトを
@@ -742,6 +744,7 @@ case "\$mode" in
     echo "レポートの未完了判定はこの行と一致するかを見る:"
     echo "<!-- Status: incomplete -->"
     echo "- Suggestion: stub review completed"
+    echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
     ;;
   exit124)
     # 124 は慣習的に timeout 用だが、CLI が自分で返すことは禁じられていない

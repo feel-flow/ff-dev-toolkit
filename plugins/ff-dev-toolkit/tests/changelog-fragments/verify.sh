@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # CHANGELOG 断片の schema・materialize・並行 merge 契約（ADR-038 / Issue #764）。
+# 断片の段階の帰属検査（前版タグと同一内容の path の参照。cases/attribution.sh）も持つ。
+#
+# 変異検出: --check から断片の帰属検査の呼び出しを外すと cases/attribution.sh（前版と同一内容の path の参照が赤にならない）が赤（2026-09-24 実測）。
+# 変異検出: 共通 helper の同一 object 判定を常に偽へ倒すと cases/attribution.sh が赤。
+# 変異検出: 未コミットの変更がある path の除外を外すと cases/attribution.sh（作業ツリーで変えた path を誤帰属と読む）と live 断片 contract が赤。
+# 空振り検出: 公開側 clone が無い入力は赤にも黙った緑にもせず、判定しない旨の名指しの警告で通す（開発者の手元に clone が無いのは通常。リリース時の再判定が fail-closed で同じ判定を行う）。不在を赤へ倒す変異で cases/attribution.sh が赤になる（2026-09-24 実測）。
 set -euo pipefail
 
 # 鮮度分岐は「CI か否か」で比較基準の取り方を変える（cases/footer.sh 参照）。fixture が
@@ -515,6 +521,7 @@ if [[ "$before" == "$after" ]]; then ok "再実行で CHANGELOG byte 不変"; el
 if grep -Fq 'mktemp "$changelog_dir/' "$TARGET"; then ok "CHANGELOG と同一 filesystem に一時ファイルを作る"; else bad "原子的 rename の同一 filesystem 契約がない"; fi
 
 source "$SCRIPT_DIR/cases/parallel-branches.sh"
+source "$SCRIPT_DIR/cases/attribution.sh"
 
 echo "changelog-fragments: pass=$PASS fail=$FAIL total=$((PASS + FAIL))"
 if [[ "$FAIL" -ne 0 ]]; then exit 1; fi

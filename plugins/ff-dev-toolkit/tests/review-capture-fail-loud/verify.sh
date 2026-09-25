@@ -9,20 +9,26 @@
 # 統合レポートに完了として並んだ（#882 のセルフレビューで claude-code に観測）。
 #
 # 本 suite が固定するもの:
-#   (1) 判定 review_body_present の受理条件（正は adapter-common.sh の同関数ヘッダ）
-#       の両方向 —
-#       不合格: メタ記述のみ / 参照+件数復唱文 / 実体行の無い長文（バイト長は判定に
-#       使わない）/ 見出し単独 / 参照語付きラベル行 / フェンス引用の復唱 /
+#   (0) 型付き判定行の強制（ADR-066 / Issue `#1875`）— 受理は有効な型付き判定行
+#       （`- verdict: …` / `- verdict: none`）だけ。下の (1) の散文 fixture は**全件**
+#       review_body_present が不受理（rc1）を返すことを数えて照合し、1 件でも受理したら
+#       赤にする。型付き判定行を足した同じ本文は受理する
+#   (1) 散文の行分類（ADR-066 以降は受理を決めず、拒否時の診断
+#       `prose-only review refused` を出すかどうかだけを決める）の両方向 — check_body は
+#       「散文の分類が実体行ありと読むか」を診断の有無で返す:
+#       実体行なしと読む: メタ記述のみ / 参照+件数復唱文 / 実体行の無い長文（バイト長は
+#       判定に使わない）/ 見出し単独 / 参照語付きラベル行 / フェンス引用の復唱 /
 #       契約前の裸散文ゼロ報告 / 全文フェンス包み / 未閉フェンス+実体なし /
 #       Critical: 単独（コロン後空）/ bullet 無しのラベル+エラー文
-#       合格: 件数行（`CRITICAL: 0` を含む。参照注記付きでも veto されない）/
+#       実体行ありと読む: 件数行（`CRITICAL: 0` を含む。参照注記付きでも veto されない）/
 #       ゼロ件報告行（「指摘なし」等）/ ラベル付き指摘行（bullet / ** 接頭）/
 #       重大度見出し配下の bullet（comprehensive-review の指摘形）/
 #       契約準拠の散文+独立ゼロ行 / 未閉フェンス+実体あり（マスク放棄フォールバック）
 #   (2) claude-code アダプタの実走で、本文なし結果が非 0 終了 + INCOMPLETE 成果物
 #       （`Status: incomplete` ヘッダ + バナー + 捕捉出力の保全）になること。
 #       --task-type 省略時の既定（review）でも同じゲートが効くこと
-#   (3) 明示ゼロ報告は従来どおり exit 0 + `Status: complete` のままであること
+#   (3) 型付きの明示ゼロ報告（`- verdict: none` 付き）は exit 0 + `Status: complete`、
+#       散文だけの明示ゼロ報告は非 0 + INCOMPLETE（拒否の診断がアダプタの stderr へ届く）
 #   (4) ゲートは review スコープ — explore の短い出力を誤検知しないこと
 #   (5) ゲートが 4 アダプタ全部に常在すること（multi-agent-timeout の empty-output
 #       pin と同型の行順静的検査。behavioral ケースは claude-code しか通らないため、
@@ -85,6 +91,16 @@
 # LLM が集約指示に従うかは stub では測れない。ここで固定するのは検出ゲートと
 # 指示の存在までで、実効性は実 CLI での完走確認を Issue / PR に記録する。
 # 実 CLI・ネットワーク・課金は伴わない。書き込み不可の環境では skip。
+#
+# 変異検出: grok-cli アダプタの受理ゲートを共有関数 review_body_present の呼び出しから独自判定（`[[ -z "$result" ]]`）へ差し替えると、4 アダプタ pin の grok-cli 行が赤（2026-09-25 実測）。
+# 変異検出: codex-cli アダプタのゲートが診断ラベル（`${CLI_NAME}/${perspective_name}`）を渡さない形へ戻すと、4 アダプタ pin の codex-cli 行が赤（2026-09-25 実測）。
+# 変異検出（C4 / ADR-066。1 件ずつ当てて本 suite を走らせた 2026-09-25 実測）:
+#   受理モードを散文でも受理する形へ戻す → 「散文だけの fixture 14 件を受理した」・(c2) の INCOMPLETE・本文保全の 3 件赤。
+#   拒否の診断を外す → 散文の行分類の 13 件と (c2) の診断で 15 件赤。
+#   レビュー 1 巡目の fix（同日実測）: 理由コードの細分（fail_cli_task の prose / unparsed）を外す → (c4) の散文と (c5) が赤。
+#   review_body_present の awk 異常終了を rc1（型付き行なし）へ畳む → (c5) と (c6) が赤。
+#   describe_cli_failure の理由だけを旧文面の複製へ戻す → 正規形の照合（3 か所・describe の文）が赤（当初は出現行数 2 以上で見ていたため緑で、針を締めてから赤を確認した）。
+# 空振り検出: 不受理の正規形（REVIEW_BODY_REFUSAL_PHRASE）の文面を変える（書式変更）と正規形の照合 2 件（成果物・ERROR 行）が、拒否の診断の文面を変えると散文の行分類の 13 件と (c2) の診断が赤（期待の文面は実装を読まずに REFUSAL_PHRASE / PROSE_REFUSED_DIAG へ書いてある。2026-09-25 実測）。散文 fixture の照合が 20 件未満（節が空）なら強制の節が赤になる。
 
 set -euo pipefail
 
@@ -168,6 +184,10 @@ ZERO_REPORT="## Error Handling Analysis Results
 - SUGGESTION: 0
 - 根拠: 変更された catch 節・fallback は diff に存在しない"
 
+# 同じ明示ゼロ報告に型付きのゼロ宣言を足したもの（ADR-066 以降の正常系。complete のまま）。
+ZERO_REPORT_TYPED="${ZERO_REPORT}
+- verdict: none"
+
 # 見出しを持たない件数サマリ行だけの短い実指摘（行頭アンカーの合格側）。
 SHORT_FINDING="Warning: 1
 
@@ -228,15 +248,38 @@ FENCED_ECHO='レビューの形式は以下のとおりです。
 
 レビューの形式は以上のとおりです。'
 
-check_body() { # $1: 本文 / rc: review_body_present の rc
-  (
-    # shellcheck source=../../scripts/adapters/adapter-common.sh
-    source "$ADAPTER_COMMON"
-    review_body_present "$1"
-  )
+# 散文だけの本文を拒否した診断（adapter-common.sh の accept モードが出す 1 行）。
+# 期待は実装を読まずにここへ書く
+PROSE_REFUSED_DIAG='typed-verdict: prose-only review refused (no valid verdict line)'
+# 不受理の診断文の英語正規形（adapter-common.sh の REVIEW_BODY_REFUSAL_PHRASE）。同じく
+# 実装を読まずにここへ書く — 成果物・アダプタの ERROR 行・委譲の退避理由をこれで照合する
+REFUSAL_PHRASE='no valid typed verdict line (neither a `- verdict: severity=... failure_scenario=... confidence=...` line nor `- verdict: none`)'
+
+# check_body <本文> — rc0: 散文の分類が実体行ありと読む（review_body_present が拒否の
+# 診断を出す）/ rc1: 実体行なしと読む（診断なし）。本 suite の (1) の fixture はすべて
+# 散文だけなので、review_body_present 自体は常に不受理（rc1）でなければならない —
+# 受理した回は PROSE_ACCEPTED へ数え、節の末尾でまとめて赤にする（強制の退行）
+CHECK_BODY_CALLS=0
+PROSE_ACCEPTED=0
+check_body() {
+  local rc=0 err
+  CHECK_BODY_CALLS=$((CHECK_BODY_CALLS + 1))
+  err="$(
+    (
+      # shellcheck source=../../scripts/adapters/adapter-common.sh
+      source "$ADAPTER_COMMON"
+      review_body_present "$1"
+    ) 2>&1 >/dev/null
+  )" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    PROSE_ACCEPTED=$((PROSE_ACCEPTED + 1))
+    echo "    | 散文だけの本文を受理した: $(printf '%s' "$1" | head -1)" >&2
+    return 0
+  fi
+  [ "$err" = "$PROSE_REFUSED_DIAG" ]
 }
 
-echo "== 行単位構造検証（review_body_present）: 不合格側 =="
+echo "== 散文の行分類（拒否の診断）: 実体行なしと読む側 =="
 
 if check_body "$META_ONLY"; then
   bad "メタ記述だけの捕捉結果を本文ありと判定した（#882 の空振りを素通しする退行）"
@@ -455,7 +498,7 @@ else
   ok "全文フェンス包みは不受理（閉じたフェンス内は引用として数えない）"
 fi
 
-echo "== 行単位構造検証（review_body_present）: 合格側 =="
+echo "== 散文の行分類（拒否の診断）: 実体行ありと読む側 =="
 
 if check_body "$ZERO_REPORT"; then
   ok "明示ゼロ報告（CRITICAL: 0 の件数サマリ行）は本文あり"
@@ -523,6 +566,46 @@ else
   bad "契約準拠の散文ゼロ報告を本文なしと誤検知した（出力契約どおりの出力が落ちる）"
 fi
 
+echo "== 型付き判定行の強制（ADR-066） =="
+
+# 上の散文 fixture は 1 件も受理されない（受理は型付き判定行だけ）
+if [ "$CHECK_BODY_CALLS" -lt 20 ]; then
+  bad "散文 fixture の照合が ${CHECK_BODY_CALLS} 件しか走っていない（節が空振りしている）"
+elif [ "$PROSE_ACCEPTED" -eq 0 ]; then
+  ok "散文だけの fixture ${CHECK_BODY_CALLS} 件はすべて不受理（散文の実体行は受理の根拠にならない）"
+else
+  bad "散文だけの fixture ${PROSE_ACCEPTED} 件を受理した（型付き判定行の強制が外れている）"
+fi
+
+# 型付き判定行を足した同じ本文は受理する（受理の根拠は判定行）
+typed_accept() { # $1: ラベル / $2: 本文
+  if (
+    # shellcheck source=../../scripts/adapters/adapter-common.sh
+    source "$ADAPTER_COMMON"
+    review_body_present "$2"
+  ) 2>/dev/null; then
+    ok "$1"
+  else
+    bad "$1 — 受理されない"
+  fi
+}
+typed_accept "明示ゼロ報告 + verdict: none は受理" "$ZERO_REPORT_TYPED"
+typed_accept "重大度見出し配下の指摘 + 型付き判定行は受理" "$COMPREHENSIVE_FINDING
+  - verdict: severity=critical failure_scenario=yes confidence=90 file=scripts/foo.sh line=10"
+typed_accept "判定行だけ（散文の重大度行なし）でも受理" "- verdict: none"
+if (
+  # shellcheck source=../../scripts/adapters/adapter-common.sh
+  source "$ADAPTER_COMMON"
+  review_body_present "$FENCED_ECHO
+\`\`\`
+- verdict: none
+\`\`\`"
+) 2>/dev/null; then
+  bad "フェンス内の verdict: none だけの本文を受理した（引用は判定行に数えない）"
+else
+  ok "フェンス内の verdict: none だけの本文は不受理"
+fi
+
 echo "== 4 アダプタへのゲート常在（静的 pin） =="
 
 # behavioral ケース（下の実走）は claude-code しか通らない。multi-agent-timeout の
@@ -541,6 +624,16 @@ for adapter in claude-code codex-cli copilot-cli grok-cli; do
     ok "${adapter}: review 本文ゲートが stderr_log 破棄より前に常在する"
   else
     bad "${adapter}: review 本文ゲートが無いか並びが崩れている (gate=${gate_line:-なし} rm=${rm_line:-なし})"
+  fi
+  # 受理の判定は 4 アダプタとも共有関数 review_body_present（adapter-common.sh）に委ねる。
+  # 型付き判定行（ADR-065）の受理・強制（ADR-066）と拒否の診断はこの関数の中にしか無いので、
+  # アダプタが独自の判定へ戻ると、その CLI だけ型付き行を知らない受理になる。ゲート行を
+  # 完全一致の 1 行で固定する（ホスト委譲経路 delegate_task の同じ呼び出しは
+  # tests/multi-agent-host-delegation の (7) / (25) が挙動で固定する）
+  if grep -qxF 'if [[ "${TASK_TYPE:-review}" == "review" ]] && ! review_body_present "$result" "${CLI_NAME}/${perspective_name}"; then' "$f" 2>/dev/null; then
+    ok "${adapter}: 受理判定は共有関数 review_body_present へ委ねている（型付き / 散文の受理が 4 アダプタで同一）"
+  else
+    bad "${adapter}: 受理ゲートが共有関数 review_body_present の呼び出し行を持たない（独自判定への退行）"
   fi
 done
 
@@ -634,7 +727,8 @@ mkdir -p "$STUB" "$OUT"
 
 # stub claude: stdin（プロンプト）を読み切り、シナリオ指定の本文を最終出力として返す。
 printf '%s' "$META_ONLY"   > "$TMP/payload-meta.txt"
-printf '%s' "$ZERO_REPORT" > "$TMP/payload-zero.txt"
+printf '%s' "$ZERO_REPORT_TYPED" > "$TMP/payload-zero.txt"
+printf '%s' "$ZERO_REPORT" > "$TMP/payload-prose-zero.txt"
 cat > "$STUB/claude" <<SH
 #!/usr/bin/env bash
 cat >/dev/null
@@ -684,11 +778,20 @@ else
   else
     bad "捕捉済みの出力が成果物から消えている"
   fi
-  # 拒否理由の主張は実際の検査条件（構造マーカー不在）だけを述べること。
-  if grep -qF "no severity count/zero line, no severity-labeled finding line, and no finding bullet under a severity heading" "$OUT/meta.md"; then
-    ok "拒否理由が受理条件の正規形（実体行 3 種の不在）を名指しする"
+  # 拒否理由の主張は実際の検査条件（型付き判定行の不在）だけを述べること。
+  # 成果物のバナーと本文がどれも正規形を展開している（複製した文面が 1 か所だけ古いまま
+  # 残る形を拾うため、出現回数と describe_cli_failure の文を見る）
+  # バナーの理由（describe_cli_failure）・バナーの詳細・本文の見出しの 3 か所
+  if [ "$(grep -oF -- "$REFUSAL_PHRASE" "$OUT/meta.md" | wc -l | tr -d ' ')" -ge 3 ] \
+     && grep -qF -- "finished, but its captured output contains ${REFUSAL_PHRASE} — refused as a review result" "$OUT/meta.md"; then
+    ok "拒否理由が受理条件の正規形（型付き判定行の不在）をバナーの理由・詳細と本文の 3 か所で名指しする"
   else
     bad "成果物が拒否理由を受理条件の正規形で名指ししない（クラッシュ・タイムアウトと区別できない）"
+  fi
+  if grep -qF -- "contains ${REFUSAL_PHRASE} — refusing it as a review result" "$TMP/adapter-meta.log"; then
+    ok "アダプタの ERROR 行も同じ正規形で名指しする"
+  else
+    bad "アダプタの ERROR 行が正規形で名指ししない"
   fi
 fi
 
@@ -705,22 +808,70 @@ else
   bad "--task-type 省略時にゲートが効かない (rc=${DEFAULT_RC} status=$(header_status "$OUT/default.md" 2>/dev/null || echo 'ファイルなし'))"
 fi
 
-# (c) 明示ゼロ報告 → 従来どおり 0 + complete
+# (c) 型付きの明示ゼロ報告（verdict: none 付き）→ 0 + complete
 set +e
 run_adapter "$TMP/payload-zero.txt" "$OUT/zero.md" --task-type review \
   >"$TMP/adapter-zero.log" 2>&1
 ZERO_RC=$?
 set -e
 if [ "$ZERO_RC" -eq 0 ]; then
-  ok "明示ゼロ報告でアダプタが 0 で完走する"
+  ok "型付きの明示ゼロ報告でアダプタが 0 で完走する"
 else
-  bad "明示ゼロ報告がアダプタを非 0 にした (rc=${ZERO_RC}。根拠付き 0 件の正常系を壊した)"
+  bad "型付きの明示ゼロ報告がアダプタを非 0 にした (rc=${ZERO_RC}。根拠付き 0 件の正常系を壊した)"
   tail -10 "$TMP/adapter-zero.log" | sed 's/^/    | /' >&2
 fi
 if [ -f "$OUT/zero.md" ] && [ "$(header_status "$OUT/zero.md")" = "complete" ]; then
-  ok "明示ゼロ報告の成果物は Status: complete のまま"
+  ok "型付きの明示ゼロ報告の成果物は Status: complete"
 else
-  bad "明示ゼロ報告の成果物が complete でない: $(header_status "$OUT/zero.md" 2>/dev/null || echo 'ファイルなし')"
+  bad "型付きの明示ゼロ報告の成果物が complete でない: $(header_status "$OUT/zero.md" 2>/dev/null || echo 'ファイルなし')"
+fi
+
+# (c2) 散文だけの明示ゼロ報告（verdict 行なし）→ 非 0 + INCOMPLETE（ADR-066 で受理から
+# 外した — ADR-065 の段階移行中は散文フォールバックの警告つきで受理していた）。拒否の
+# 診断は共有関数が stderr へ出し、アダプタのログへ `<CLI 表示名>/<観点>` のラベル付きで届く
+# （観点名は fixture の perspective.md）
+set +e
+run_adapter "$TMP/payload-prose-zero.txt" "$OUT/prose-zero.md" --task-type review \
+  >"$TMP/adapter-prose-zero.log" 2>&1
+PROSE_ZERO_RC=$?
+set -e
+if [ "$PROSE_ZERO_RC" -ne 0 ] && [ -f "$OUT/prose-zero.md" ] \
+   && [ "$(header_status "$OUT/prose-zero.md")" = "incomplete" ]; then
+  ok "散文だけの明示ゼロ報告はアダプタが非 0 で INCOMPLETE 成果物にする (rc=${PROSE_ZERO_RC})"
+else
+  bad "散文だけの明示ゼロ報告が受理された (rc=${PROSE_ZERO_RC} status=$(header_status "$OUT/prose-zero.md" 2>/dev/null || echo 'ファイルなし'))"
+fi
+if grep -qxF 'typed-verdict: Claude Code/perspective: prose-only review refused (no valid verdict line)' "$TMP/adapter-prose-zero.log"; then
+  ok "散文だけの報告の拒否で名指しの診断がアダプタの stderr へ届く"
+else
+  bad "散文だけの報告を拒否したのに名指しの診断が無い"
+fi
+if grep -qF "INCOMPLETE" "$OUT/prose-zero.md" && grep -qF -- "- CRITICAL: 0" "$OUT/prose-zero.md"; then
+  ok "散文だけの報告の INCOMPLETE 成果物は捕捉した本文を保全する"
+else
+  bad "散文だけの報告の INCOMPLETE 成果物が本文を保全していない"
+fi
+
+# (c3) 型付き判定行だけの報告（散文の重大度行なし）→ 0 + complete、警告なし
+printf '%s\n' '## Code Review Results' '' \
+  '- [app.txt:2] change is untested' \
+  '  - verdict: severity=warning failure_scenario=yes confidence=85 file=app.txt line=2' \
+  > "$TMP/payload-typed.txt"
+set +e
+run_adapter "$TMP/payload-typed.txt" "$OUT/typed.md" --task-type review \
+  >"$TMP/adapter-typed.log" 2>&1
+TYPED_RC=$?
+set -e
+if [ "$TYPED_RC" -eq 0 ] && [ -f "$OUT/typed.md" ] && [ "$(header_status "$OUT/typed.md")" = "complete" ]; then
+  ok "型付き判定行だけの報告はアダプタを 0 で完走し complete になる"
+else
+  bad "型付き判定行だけの報告が受理されない (rc=${TYPED_RC} status=$(header_status "$OUT/typed.md" 2>/dev/null || echo 'ファイルなし'))"
+  tail -10 "$TMP/adapter-typed.log" | sed 's/^/    | /' >&2
+fi
+if grep -qF 'typed-verdict:' "$TMP/adapter-typed.log"; then
+  bad "型付き経路で受理したのに typed-verdict 診断が出た: $(grep -F 'typed-verdict:' "$TMP/adapter-typed.log")"
+else
+  ok "型付き経路の受理では typed-verdict 診断を出さない"
 fi
 
 # (d) explore はゲート対象外 — 短い自由書式の出力を誤検知しない
@@ -741,6 +892,67 @@ if [ -f "$OUT/explore.md" ] && [ "$(header_status "$OUT/explore.md")" = "complet
 else
   bad "explore の成果物が complete でない: $(header_status "$OUT/explore.md" 2>/dev/null || echo 'ファイルなし')"
 fi
+
+# (c4) 散文だけの報告の拒否は、成果物へ理由コード `missing-review-body-prose` を載せる
+#      （統合レポートの未完了の理由が読む。stderr だけにしない — ADR-066）
+if grep -qF -- '> Reason code: `missing-review-body-prose`' "$OUT/prose-zero.md" 2>/dev/null \
+   && grep -qF -- '(a prose-only review)' "$OUT/prose-zero.md" 2>/dev/null; then
+  ok "散文だけの報告の拒否は成果物のバナーと理由コードで名指しする"
+else
+  bad "散文だけの報告の拒否が成果物で名指しされない（理由コード / バナー）"
+fi
+if grep -qF -- '> Reason code: `missing-review-body`' "$OUT/meta.md" 2>/dev/null; then
+  ok "前置きだけの本文の拒否は理由コード missing-review-body（散文の拒否と区別する）"
+else
+  bad "前置きだけの本文の拒否に理由コード missing-review-body が無い"
+fi
+
+# (c5) 受理判定の awk が異常終了した本文（壊れた UTF-8 で towc が失敗する等）は「型付き判定行が
+#      無い」と言わず、解析できなかった理由で INCOMPLETE にする（不受理 = 安全側は維持）。
+#      awk の方言で壊れた UTF-8 が失敗しない環境があるので、受理モードの awk だけを落とす stub で
+#      決定的に作る。実際の壊れた UTF-8 は review_body_present 単体で下の (c6) が見る
+AWKSTUB="$TMP/awkstub"
+mkdir -p "$AWKSTUB"
+REAL_AWK_BIN="$(command -v awk)"
+cat > "$AWKSTUB/awk" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in ff_mode=accept) exit 2 ;; esac
+done
+exec "$REAL_AWK_BIN" "\$@"
+SH
+chmod +x "$AWKSTUB/awk"
+set +e
+( cd "$REPO" && run_isolated PATH="$AWKSTUB:$STUB:$PATH" FF_TEST_STUB_PAYLOAD="$TMP/payload-zero.txt" \
+    bash "$ADAPTERS_DIR/claude-code-adapter.sh" "$PERSPECTIVE" "$OUT/unparsed.md" \
+    --base develop --timeout 30 --task-type review ) >"$TMP/adapter-unparsed.log" 2>&1
+UNPARSED_RC=$?
+set -e
+if [ "$UNPARSED_RC" -ne 0 ] && [ "$(header_status "$OUT/unparsed.md" 2>/dev/null)" = "incomplete" ] \
+   && grep -qF -- '> Reason code: `review-body-unparsed`' "$OUT/unparsed.md" \
+   && grep -qF -- 'could not be parsed as a review body (the parser exited with status 2' "$TMP/adapter-unparsed.log" \
+   && ! grep -qF -- "$REFUSAL_PHRASE" "$OUT/unparsed.md"; then
+  ok "受理判定の awk が落ちた本文は解析不能の理由で INCOMPLETE（型付き判定行なしとは言わない）"
+else
+  bad "受理判定の awk が落ちた本文の扱いが違う (rc=${UNPARSED_RC} status=$(header_status "$OUT/unparsed.md" 2>/dev/null || echo 'ファイルなし'))"
+  tail -5 "$TMP/adapter-unparsed.log" | sed 's/^/    | /' >&2
+fi
+
+# (c6) 壊れた UTF-8 バイトを含む `- verdict: none` 本文。UTF-8 ロケールの BSD awk は towc で
+#      落ちる（2026-09-25 macOS で実測）→ rc2（解析不能）。落ちない awk では rc0（受理）。
+#      rc1（型付き判定行なし）へ化けないことを見る
+BROKEN_BODY="$(printf -- '- verdict: none\n\346\227 broken\n')"
+broken_rc=0
+(
+  # shellcheck source=../../scripts/adapters/adapter-common.sh
+  source "$ADAPTER_COMMON"
+  LC_ALL=en_US.UTF-8 review_body_present "$BROKEN_BODY"
+) 2>/dev/null || broken_rc=$?
+case "$broken_rc" in
+  2) ok "壊れた UTF-8 の本文は解析不能（rc2）として不受理（型付き判定行なしと区別する）" ;;
+  0) ok "壊れた UTF-8 の本文をこの awk は解析できる（rc0 で受理。解析不能の経路は (c5) が固定）" ;;
+  *) bad "壊れた UTF-8 の本文が rc=${broken_rc}（型付き判定行なしへ化けた）" ;;
+esac
 
 echo "== 成果物を書けなかった回の fail-loud（write_output の rc） =="
 
@@ -1212,7 +1424,7 @@ else
 fi
 # ホストの応答を置き、同じ入力で再実行する。書けない出力先は「ディレクトリが占有」で
 # 作る（chmod に依らないので root でも成立する）。
-printf '%s\n' "$ZERO_REPORT" > "$DELEG_DIR/perspective.response.md"
+printf '%s\n' "$ZERO_REPORT_TYPED" > "$DELEG_DIR/perspective.response.md"
 rm -f "$DELEG_OUT/d.md"
 mkdir -p "$DELEG_OUT/d.md"
 set +e
@@ -1271,7 +1483,7 @@ fi
 exit 0
 MVSHIM
 chmod +x "$MVSTUB/mv"
-printf '%s\n' "$ZERO_REPORT" > "$DELEG_DIR/perspective.response.md"
+printf '%s\n' "$ZERO_REPORT_TYPED" > "$DELEG_DIR/perspective.response.md"
 rm -rf "$DELEG_OUT/d.md"
 rm -f "$TMP/mv-stub-fired"
 set +e
@@ -1345,7 +1557,7 @@ fi
 exit 0
 MVSHIM2
 chmod +x "$MVSTUB/mv"
-printf '%s\n' "$ZERO_REPORT" > "$DELEG_DIR/perspective.response.md"
+printf '%s\n' "$ZERO_REPORT_TYPED" > "$DELEG_DIR/perspective.response.md"
 rm -rf "$DELEG_OUT/d.md"
 rm -f "$TMP/mv-stub-fired-gone"
 set +e

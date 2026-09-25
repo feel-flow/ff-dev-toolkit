@@ -164,6 +164,7 @@ if [ "\$(basename "\$0")" = "grok" ]; then
     "\$(pwd -P)" >> "$GROK_HOME_DIR/sandbox-events.jsonl"
 fi
 echo "- Suggestion: stub review output"
+echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
 SH
   chmod +x "$BIN/$cli"
 done

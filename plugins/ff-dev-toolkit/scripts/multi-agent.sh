@@ -3258,6 +3258,12 @@ clear_planned_outputs() {
       echo "ERROR: cannot clear previous result: ${cli_dir}/${persp_name}.md" >&2
       return 1
     fi
+    # 結果から導く finding の記録（review の型付き判定の集計が書く）も同じ理由で消す。
+    # レポート生成まで到達しなかった実行のあとに、前回の記録が今回のものとして残らない。
+    if ! rm -f "${cli_dir}/${persp_name}.findings.tsv"; then
+      echo "ERROR: cannot clear previous findings record: ${cli_dir}/${persp_name}.findings.tsv" >&2
+      return 1
+    fi
     if [[ "${TASK_TYPE:-review}" == "implement" ]]; then
       staging_dir="$(staging_dir_for "$cli_name" "$persp_name")"
       clear_staging_dir "$staging_dir" "the staging dir for ${cli_name}/${persp_name}" || return 1
@@ -3553,6 +3559,51 @@ quarantine_cli_results() { # <cli>
     moved_names="${moved_names:+${moved_names}, }${base%.md}"
   done
 
+  # finding の記録（<観点>.findings.tsv）も結果と同じ扱いで退避する。記録は結果本文から
+  # 導いた派生物なので、結果だけ退避すると `ls <cli>/` に前回の記録が今回のものとして
+  # 残る。動かすのは 1 行目が orchestrator の書くヘッダと一致するものだけ（利用者の
+  # ファイルは動かさない — 上の .md と同じ線引き）。件数は結果の退避件数に含めない。
+  # 読めない記録（権限・I/O）はヘッダを確かめられないが、黙って残すと前回の記録が今回の
+  # ものとして読まれる。移動はディレクトリの権限だけで済むので、名指しの警告を出して
+  # previous/ へ退避する（削除はしない）。移せなければ run を止める。ヘッダが一致しない・
+  # 通常ファイルでない（symlink 等）ものは動かさずに名指しする（.md の foreign と同じ）。
+  local tsv_first tsv_foreign=0
+  for file in "$resolved_cli"/*.findings.tsv; do
+    [[ -e "$file" || -L "$file" ]] || continue
+    base="${file##*/}"
+    plan_has_entry "${cli}:${base%.findings.tsv}" && continue
+    if [[ -L "$file" || ! -f "$file" ]]; then
+      tsv_foreign=$((tsv_foreign + 1))
+      continue
+    fi
+    if [[ -r "$file" ]]; then
+      tsv_first=""
+      IFS= read -r tsv_first < "$file" || true
+      if [[ "$tsv_first" != "$REVIEW_FINDINGS_TSV_HEADER" ]]; then
+        tsv_foreign=$((tsv_foreign + 1))
+        continue
+      fi
+    else
+      echo "  ⚠️ Cannot read a findings record from an earlier run: ${file}" >&2
+      echo "     Its header cannot be checked; moving it into previous/ so it is not read as this run's output." >&2
+    fi
+    if [[ -z "$resolved_prev" ]]; then
+      if ! mkdir -p "$prev_dir"; then
+        echo "ERROR: cannot create quarantine dir: ${prev_dir}" >&2
+        return 1
+      fi
+      resolved_prev="$(resolve_expected_dir "$prev_dir" "the quarantine dir")" || return 1
+    fi
+    if ! mv "$file" "${resolved_prev}/${base}"; then
+      echo "ERROR: cannot quarantine a previous run's findings record: ${file}" >&2
+      echo "       A previous run's findings would be read as this run's output." >&2
+      return 1
+    fi
+  done
+  if [[ "$tsv_foreign" -gt 0 ]]; then
+    note_unplanned_results "${cli}/ (${tsv_foreign} .findings.tsv file(s) this orchestrator did not write, or not a regular file — left in place, not this run's output)"
+  fi
+
   if [[ "$moved" -gt 0 ]]; then
     echo "  🧹 Moved ${moved} result(s) from a previous run into ${resolved_prev}: ${moved_names}" >&2
   fi
@@ -3569,7 +3620,7 @@ quarantine_cli_results() { # <cli>
 # `ls .review-results/` が前回実行の結果一式を今回の結果のように見せるので、
 # 結果ファイルを持つものを名指しする（本 Issue が塞いだ誤読の、ディレクトリ単位版）。
 report_unplanned_result_dirs() {
-  local dir cli count discarded file
+  local dir cli count discarded file tsv_count
   for dir in "$OUTPUT_DIR"/*/; do
     [[ -d "$dir" ]] || continue
     cli="${dir%/}"
@@ -3600,6 +3651,15 @@ report_unplanned_result_dirs() {
         fi
       fi
     done
+    tsv_count=0
+    for file in "${dir}"*.findings.tsv; do
+      if [[ -f "$file" || -L "$file" ]]; then
+        tsv_count=$((tsv_count + 1))
+      fi
+    done
+    if [[ "$tsv_count" -gt 0 ]]; then
+      note_unplanned_results "${cli}/ (${tsv_count} findings record(s) (.findings.tsv) from an earlier run — left untouched, not this run's output)"
+    fi
     if [[ "$count" -gt 0 ]]; then
       if [[ "$discarded" -gt 0 ]]; then
         note_unplanned_results "${cli}/ (${count} result file(s) from an earlier run, ${discarded} of them marked DISCARDED by that run — left untouched, not this run's output)"
@@ -6154,6 +6214,231 @@ resolve_critical_nonblock_perspectives() {
   printf '%s\n' "$v"
 }
 
+# ── 型付き判定行の集計（ADR-065 の C3 追記）──
+# 観点結果に有効な型付き判定行（`- verdict: severity=… failure_scenario=… confidence=…`）が
+# 1 行でもあれば、その観点の Critical 判定と集計は判定行（typed_verdicts_extract の
+# レコード）から決め、散文の重大度行は読まない。有効な行が 1 行も無い観点は散文から
+# 判定しない（ADR-066 で散文経路を撤去した）: 未完了の観点（拒否・失敗・タイムアウトの
+# INCOMPLETE 成果物）は本文から Critical を決めず「未確認 › 未完了の観点」に任せ、
+# 完了扱いの結果（受理は判定行を要求するので、旧版で受理された結果か手置きのものだけ）は
+# 判定の根拠が無いものとして安全側（Critical あり）へ倒す。
+#
+# 信頼度の報告閾値（既定 80）の解決順は resolve_critical_nonblock_perspectives と同じ形:
+#   env    MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD（空文字を含む不正値は名指しで停止する —
+#          閾値を黙って既定へ戻すと、利用者が下げたつもりの閾値で低信頼の列挙が変わる）
+#   config review.confidence_threshold（.claude/agent-config.yaml。不正値は名指しで停止。
+#          yq が無い・キーが無いときは既定 — load_config と同じ扱い）
+#   既定   80（code-review テンプレートの報告閾値と同じ）
+# 値は 0〜100 の整数。閾値未満の finding は報告から落とさず「未確認 › 低信頼の指摘」へ
+# 列挙する。code-review のテスト有効性の例外（3 形のタグ `[TEST-VALIDITY:unreached]` /
+# `[TEST-VALIDITY:coincidental]` / `[TEST-VALIDITY:one-sided]` のどれかを前置した指摘は
+# 信頼度 50 以上で報告する）はこの閾値の下でも維持する — 例外の finding には
+# min(閾値, 50) を当てる。素の `[TEST-VALIDITY]` や未知の語は例外にしない（通常の閾値）。
+DEFAULT_REVIEW_CONFIDENCE_THRESHOLD=80
+REVIEW_TEST_VALIDITY_THRESHOLD=50
+REVIEW_CONFIDENCE_THRESHOLD=""
+
+review_confidence_threshold_valid() { # <value> → rc0 = 0〜100 の整数
+  local v="$1"
+  [[ "$v" =~ ^[0-9]+$ ]] || return 1
+  [[ "${#v}" -le 3 ]] || return 1
+  [[ "$((10#$v))" -le 100 ]]
+}
+
+resolve_review_confidence_threshold() {
+  local v cfg
+  if [[ "${MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD+set}" == "set" ]]; then
+    v="$MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD"
+    if ! review_confidence_threshold_valid "$v"; then
+      echo "ERROR: MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD must be an integer from 0 to 100, got: '${v}'" >&2
+      echo "       Unset it to use review.confidence_threshold from the project config, or the default ${DEFAULT_REVIEW_CONFIDENCE_THRESHOLD}." >&2
+      return 1
+    fi
+  else
+    v="$DEFAULT_REVIEW_CONFIDENCE_THRESHOLD"
+    if [[ -f "$CONFIG_FILE" ]] && command -v yq &>/dev/null; then
+      cfg="$(yq -r '.review.confidence_threshold // ""' "$CONFIG_FILE" 2>/dev/null || true)"
+      if [[ -n "$cfg" && "$cfg" != "null" ]]; then
+        if ! review_confidence_threshold_valid "$cfg"; then
+          echo "ERROR: review.confidence_threshold in ${CONFIG_FILE} must be an integer from 0 to 100, got: '${cfg}'" >&2
+          return 1
+        fi
+        v="$cfg"
+      fi
+    fi
+  fi
+  printf '%s\n' "$((10#$v))"
+}
+
+# 観点 1 本の型付きレコードを集計する。
+#   <cli> <perspective> <result-file> <records-file> <threshold> <tsv-out> <lowconf-out>
+# records-file は typed_verdicts_extract の stdout（finding / none レコード）。
+# tsv-out へ finding ごとの記録（ヘッダ付き）、lowconf-out へ低信頼の列挙行を書き、
+# stdout へ「Critical Warning Suggestion Info 降格 低信頼」の件数を空白区切りで 1 行出す。
+#
+# 降格（ADR-065 決定 7）: failure_scenario=no の finding を 1 段下げる（Critical →
+# Warning、Warning → Suggestion。Suggestion / Info はそのまま）。件数と Critical 判定は
+# 降格後の重大度で数え、TSV の demoted_from に元の重大度を残す。
+# 信頼度は Critical 判定に掛けない — 降格後も Critical の finding は低信頼でもブロック
+# する（見落としより誤ブロック側へ倒す）。低信頼は「未確認」として別に列挙するだけ。
+#
+# finding の範囲は判定行から遡って、判定行より字下げの浅い最寄りの箇条書き（親の指摘行）
+# まで（観点テンプレートは「指摘の行の直下に判定行を 1 行置く」形を要求している）。親が
+# 無いときは直前の判定行・見出しまで。summary は親の指摘行（親が無ければ最寄りの行）から
+# 行頭の引用・箇条書き記号を剥がして取り、タブは空白へ置き換える。テスト有効性のタグは
+# この範囲の全行から探す（本文が折り返して判定行の直前にタグが無くても拾う）。
+# TSV の列は cli / perspective / severity（降格後）/ failure_scenario / confidence / file /
+# line / summary / demoted_from（降格したときの元の重大度。無ければ空）の順。
+REVIEW_FINDINGS_TSV_HEADER="$(printf 'cli\tperspective\tseverity\tfailure_scenario\tconfidence\tfile\tline\tsummary\tdemoted_from')"
+
+aggregate_typed_verdicts() {
+  local cli="$1" persp="$2" src="$3" records="$4" thr="$5" tsv_out="$6" low_out="$7"
+  local exc_thr="$REVIEW_TEST_VALIDITY_THRESHOLD"
+  if [[ "$thr" -lt "$exc_thr" ]]; then
+    exc_thr="$thr"
+  fi
+  printf '%s\n' "$REVIEW_FINDINGS_TSV_HEADER" > "$tsv_out" || return 1
+  : > "$low_out" || return 1
+  awk -F '\t' -v cli="$cli" -v persp="$persp" -v srcf="$src" -v thr="$thr" \
+    -v exc_thr="$exc_thr" -v tsv="$tsv_out" -v low="$low_out" '
+    function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    function indent_of(l,    m) { match(l, /^[[:space:]]*/); return RLENGTH }
+    function clean(l) {
+      sub(/\r$/, "", l)
+      l = trim(l)
+      while (l ~ /^>/) sub(/^>[[:space:]]*/, "", l)
+      sub(/^([-*+]|[0-9]+[.)])[[:space:]]+/, "", l)
+      gsub(/\t/, " ", l)
+      return trim(l)
+    }
+    # 判定行 n が属する finding の範囲を遡って決め、f_summary（summary 列）と f_tag（テスト
+    # 有効性の 3 形のタグの有無）を置く。遡りは直前の判定行・見出しで止める。範囲の先頭
+    # （finding の見出し行）は、判定行より字下げの浅い最寄りの箇条書き（親の指摘行）。親が
+    # 無い（判定行が字下げされていない・指摘行と同じ深さ）ときは、判定行と同じ字下げの
+    # 最寄りの箇条書き — それより上の同階層の箇条書き（前の finding の `- 理由:` 等）は
+    # 別の finding なので範囲に入れない。タグは範囲（先頭行〜判定行の直前）の全行から探す
+    # ので、本文が折り返して判定行の直前にタグが無くても拾い、別 finding のタグは拾わない。
+    function scan_finding(n,    i, l, ind, ind_v, head, sib, near, top) {
+      ind_v = indent_of(src[n]); head = 0; sib = 0; near = 0; f_tag = 0
+      for (i = n - 1; i >= 1; i--) {
+        l = src[i]
+        sub(/\r$/, "", l)
+        if (i in vline) break
+        if (l ~ /^[[:space:]]*#/) break
+        if (tolower(l) ~ /^[[:space:]>]*([-*+]|[0-9]+[.)])?[[:space:]]*[*_`]*verdict/) break
+        if (l ~ /^[[:space:]]*$/) continue
+        if (l ~ /^[[:space:]]*(```|~~~)/) continue
+        if (!near) near = i
+        if (l ~ /^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]/) {
+          ind = indent_of(l)
+          if (ind < ind_v) { head = i; break }
+          if (ind == ind_v && !sib) sib = i
+        }
+      }
+      if (!head) head = sib
+      top = head ? head : near
+      f_summary = top ? clean(src[top]) : ""
+      if (top) {
+        for (i = top; i < n; i++) {
+          if (src[i] ~ /\[TEST-VALIDITY:(unreached|coincidental|one-sided)\]/) { f_tag = 1; break }
+        }
+      }
+    }
+    function label(s) {
+      if (s == "critical") return "Critical"
+      if (s == "warning") return "Warning"
+      if (s == "suggestion") return "Suggestion"
+      return "Info"
+    }
+    BEGIN {
+      OFS = "\t"
+      while ((getline l < srcf) > 0) src[++nsrc] = l
+      close(srcf)
+    }
+    { rec[NR] = $0; if ($1 == "finding" || $1 == "none") vline[$2] = 1 }
+    END {
+      nc = nw = nsg = ni = nd = nl = 0
+      for (r = 1; r <= NR; r++) {
+        split(rec[r], f, "\t")
+        if (f[1] != "finding") continue
+        sev = f[3]; fs = f[4]; conf = f[5] + 0; from = ""
+        if (fs == "no") {
+          if (sev == "critical") { from = sev; sev = "warning" }
+          else if (sev == "warning") { from = sev; sev = "suggestion" }
+        }
+        scan_finding(f[2] + 0)
+        summ = f_summary
+        t = thr + 0
+        if (persp == "code-review" && f_tag) t = exc_thr + 0
+        if (sev == "critical") nc++
+        else if (sev == "warning") nw++
+        else if (sev == "suggestion") nsg++
+        else ni++
+        if (from != "") nd++
+        print cli, persp, sev, fs, conf, f[6], f[7], summ, from >> tsv
+        if (conf < t) {
+          nl++
+          pos = f[6]
+          if (pos != "" && f[7] != "") pos = pos ":" f[7]
+          line = "- " cli " / " persp " — " label(sev)
+          if (from != "") line = line "（" label(from) " から降格）"
+          line = line " / 信頼度 " conf "（閾値 " t "）"
+          if (pos != "") line = line " / `" pos "`"
+          if (summ != "") line = line " — " summ
+          print line >> low
+        }
+      }
+      printf "%d %d %d %d %d %d\n", nc, nw, nsg, ni, nd, nl
+    }
+  ' "$records"
+}
+
+# 型付き経路の fail-safe（ADR-065 決定 9 を集約側でも保つ）。書式の崩れた verdict 行が
+# severity=critical を名乗るなら、有効な型付き行の降格・件数に関わらず Critical ありへ
+# 倒す。判定式は複製しない — 有効な finding 行（レコードの行番号）を `- verdict: none` へ
+# 置き換えた写しを共有パーサー critical_findings_present へ通す。写しには型付き行
+# （none）が残るので散文の判定は効かず、有効な Critical も消えているので、rc0 になるのは
+# 不採用行の fail-safe だけになる。
+# rc0: 不採用の critical 行あり / rc1: なし / rc2: 判定不能（写しを作れない等）
+typed_verdict_failsafe_critical() { # <result-file> <records-file> <scratch-file>
+  local src="$1" records="$2" scratch="$3" rc=0
+  awk -F '\t' '
+    FNR == NR { if ($1 == "finding") drop[$2] = 1; next }
+    (FNR in drop) { print "- verdict: none"; next }
+    { print }
+  ' "$records" "$src" > "$scratch" || return 2
+  critical_findings_present "$scratch" 2>/dev/null || rc=$?
+  case "$rc" in
+    0 | 1) return "$rc" ;;
+    *)     return 2 ;;
+  esac
+}
+
+# 観点の「未完了」の理由。append_plan_sections が節へ未完了を名乗らせる判定と同じ順
+# （委譲待ち → 結果ファイルの incomplete ヘッダ → スキップ → 結果なし）で見る。
+# 空文字 = 未完了ではない。
+review_task_incomplete_reason() { # <cli> <perspective>
+  local cli="$1" persp="$2" result_file="${OUTPUT_DIR}/$1/$2.md"
+  if delegated_task_pending "${cli}/${persp}"; then
+    echo "ホストへ委譲したまま結果が未回収"
+  elif [[ -f "$result_file" ]]; then
+    if awk '/^$/ { exit } /^<!-- Status: incomplete -->$/ { found = 1 } END { exit found ? 0 : 1 }' "$result_file"; then
+      # 本文の不受理は fail_cli_task が成果物へ載せた理由コードで名指しする（ADR-066。
+      # 散文だけのレビューの拒否は、stderr だけでなくレポートからも読めるようにする）
+      case "$(awk -F '`' '/^> Reason code: `[a-z-]*`$/ { print $2; exit }' "$result_file" 2>/dev/null)" in
+        missing-review-body-prose) echo "結果の拒否: 散文の重大度行だけのレビュー（型付き判定行なし）" ;;
+        missing-review-body)       echo "結果の拒否: 型付き判定行の無い出力" ;;
+        review-body-unparsed)      echo "結果の拒否: 出力を解析できない（不正な UTF-8 など）" ;;
+        *)                         echo "CLI の失敗・タイムアウト・結果の拒否（途中までの出力のみ）" ;;
+      esac
+    fi
+  elif [[ -n "$(skipped_task_cause "${cli}/${persp}")" ]]; then
+    echo "同じ CLI の先行失敗によりスキップ"
+  else
+    echo "結果なし（CLI が結果を書く前に失敗）"
+  fi
+}
+
 
 # ── 委譲した実行のホストへの引き渡し ──
 #
@@ -6263,21 +6548,18 @@ HEADER
   # 掛けると (1) 1 本の CLI 出力の未閉フェンスが後続セクション全部を不可視にする
   # 越境マスク、(2) orchestrator 自身が書く節見出しの判定への混入、が構造的に生まれる。
   #
-  # 判定本体は共有重大度行パーサー critical_findings_present
-  # （adapters/adapter-common.sh の _ff_severity_scan、Issue #908）へ委譲する —
-  # アダプタ側の受理ゲート review_body_present と**同一の行分類**（CommonMark
-  # フェンス追跡・重大度行文法 s1〜s4・数値ゼロ / ゼロ語のゼロ件文法・参照語 veto）
-  # を参照し、Critical 発火条件（c1〜c4: critical ラベルの件数行 / 指摘行、critical
-  # 見出しスコープ配下の bullet、行頭 CRITICAL: マーカー）は同ファイルのヘッダが
-  # 正。ここへ判定式を複製しないこと — 独立実装だった間は、片側へ語彙・境界を
-  # 足すたびにズレて fail-open / 偽 BLOCK の両方向の非対称が再発した（Issue #893
-  # の 7 巡レビューで実測。受理と検出の積集合は tests/severity-parser-intersection
-  # が同一入力表で固定する）。
+  # 判定本体は共有パーサー（adapters/adapter-common.sh の _ff_severity_scan、
+  # Issue `#908`）の型付き判定行 — 抽出は typed_verdicts_extract、不採用行の fail-safe は
+  # critical_findings_present — へ委譲する。アダプタ側の受理ゲート review_body_present と
+  # **同一のフェンス追跡・同一の文法**を参照する。ここへ判定式を複製しないこと — 独立
+  # 実装だった間は、片側へ語彙・境界を足すたびにズレて fail-open / 偽 BLOCK の両方向の
+  # 非対称が再発した（Issue `#893` の 7 巡レビューで実測）。散文の重大度行（s1〜s4 /
+  # c1〜c4）は ADR-066 以降、判定に使わない（診断だけ）。
   #
   # フェンスが閉じないまま本文が終わる場合は判定不能（rc=2）として安全側（マーカー
-  # あり）へ倒す。判定を実行できない場合（rc=3: 不可読ファイル / awk 実行失敗 —
-  # rc の写像は critical_findings_present が行う）も同様に安全側へ倒し、診断を
-  # stderr へ残す。検出力は tests/multi-agent-critical-marker/ が stub CLI の
+  # あり）へ倒す。判定を実行できない場合（rc=3: 不可読ファイル / awk 実行失敗）と、
+  # 完了扱いの結果に型付き判定行が無い場合（rc=4: 根拠なし）も同様に安全側へ倒し、
+  # 診断を stderr へ残す。検出力は tests/multi-agent-critical-marker/ が stub CLI の
   # 実走で固定する。
   local crit_entry crit_seen="" crit_file crit_rc crit_found crit_persp
   local crit_block_hits="" crit_nonblock_hits="" crit_nonblock_set
@@ -6287,6 +6569,35 @@ HEADER
   # stderr にしか残らず、INCOMPLETE と同型の「空振りを所見と読む」誤読を生む。
   local crit_block_unparse="" crit_nonblock_unparse="" crit_target
   local crit_block_retained="" crit_nonblock_retained="" state_block state_nonblock state_series
+  # 型付き判定行の集計（ADR-065 の C3 追記。上の resolve_review_confidence_threshold 付近の
+  # コメントが正）。観点ごとに finding の記録（<cli>/<観点>.findings.tsv）を毎回作り直す —
+  # 前回の実行・--resume の再利用観点の記録が今回の本文と食い違わないよう、プランの観点は
+  # 判定の前に記録を消し、型付き経路で判定した観点だけ書き直す。
+  local conf_thr typed_tmp typed_rc typed_counts typed_rows="" typed_incomplete="" typed_failsafe="" typed_overrode=""
+  local typed_undecided="" typed_undecided_crit="" typed_nobasis="" typed_unfenced="" typed_unreadable=""
+  local tv_cli tv_tsv tv_reason tv_c tv_w tv_s tv_i tv_d tv_l tv_fs_rc tv_exc_thr
+  conf_thr="${REVIEW_CONFIDENCE_THRESHOLD:-}"
+  if [[ -z "$conf_thr" ]]; then
+    if ! conf_thr="$(resolve_review_confidence_threshold)"; then
+      rm -f "$report_file" 2>/dev/null || true
+      return 1
+    fi
+  fi
+  tv_exc_thr="$REVIEW_TEST_VALIDITY_THRESHOLD"
+  if [[ "$conf_thr" -lt "$tv_exc_thr" ]]; then
+    tv_exc_thr="$conf_thr"
+  fi
+  if ! typed_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ff-typed-verdicts.XXXXXX")" || [[ ! -d "$typed_tmp" ]]; then
+    echo "ERROR: cannot create a scratch dir for the typed verdict aggregation." >&2
+    rm -f "$report_file" 2>/dev/null || true
+    return 1
+  fi
+  if ! : > "${typed_tmp}/lowconf"; then
+    echo "ERROR: cannot write the typed verdict scratch file: ${typed_tmp}/lowconf" >&2
+    rm -rf "$typed_tmp" 2>/dev/null || true
+    rm -f "$report_file" 2>/dev/null || true
+    return 1
+  fi
   crit_nonblock_set="$(resolve_critical_nonblock_perspectives)"
   # 名簿の typo は「その観点が計画に現れない」だけでブロック側へ倒れる（fail closed）
   # ため実害はないが、意図した格下げが黙って効かないので診断を残す。
@@ -6300,6 +6611,19 @@ HEADER
     if [[ " $crit_seen " == *" $crit_entry "* ]]; then continue; fi
     crit_seen="$crit_seen $crit_entry"
     crit_persp="${crit_entry#*:}"
+    tv_cli="${crit_entry%%:*}"
+    tv_tsv="${OUTPUT_DIR}/${tv_cli}/${crit_persp}.findings.tsv"
+    if ! rm -f "$tv_tsv"; then
+      echo "ERROR: cannot clear the previous findings record: ${tv_tsv}" >&2
+      rm -rf "$typed_tmp" 2>/dev/null || true
+      rm -f "$report_file" 2>/dev/null || true
+      return 1
+    fi
+    tv_reason="$(review_task_incomplete_reason "$tv_cli" "$crit_persp")"
+    if [[ -n "$tv_reason" ]]; then
+      typed_incomplete="${typed_incomplete}- ${tv_cli} / ${crit_persp} — ${tv_reason}
+"
+    fi
     # A failed/timeout/skipped rerun did not prove resolution. Preserve that
     # perspective's prior classification instead of judging incomplete output.
     if task_left_perspective_unproven "${crit_entry%%:*}" "$crit_persp"; then
@@ -6323,12 +6647,86 @@ HEADER
     fi
     crit_file="${OUTPUT_DIR}/${crit_entry%%:*}/${crit_entry#*:}.md"
     [[ -f "$crit_file" ]] || continue
-    set +e
-    critical_findings_present "$crit_file"
-    crit_rc=$?
-    set -e
-    # 判定不能（rc=2: 未閉フェンス / rc=3 以上: 不可読ファイル・awk 失敗）は
-    # 「Critical あり」へ倒す。
+    # 型付き経路: 有効な判定行が 1 行でもあれば、降格後の重大度と不採用行の fail-safe で
+    # 決める。判定行が無い（rc1）本文は散文から判定しない（ADR-066）— 未完了の観点は
+    # 判定を出さず（未確認 › 未完了の観点で名指し済み）、完了扱いの結果は根拠なしとして
+    # 安全側へ倒す。未閉フェンス（rc2）・判定不能（rc3）は完了・未完了を問わず従来どおり
+    # 安全側へ倒し、レポートでは rc ごとに別の文で名指しする（どれも「散文で判定した」
+    # とは書かない）。
+    typed_rc=0
+    typed_verdicts_extract "$crit_file" >"${typed_tmp}/records" 2>"${typed_tmp}/diag" || typed_rc=$?
+    if [[ "$typed_rc" -eq 0 ]]; then
+      cat "${typed_tmp}/diag" >&2 2>/dev/null || true
+      if ! typed_counts="$(aggregate_typed_verdicts "$tv_cli" "$crit_persp" "$crit_file" \
+          "${typed_tmp}/records" "$conf_thr" "${typed_tmp}/tsv" "${typed_tmp}/low1")" \
+        || ! cat "${typed_tmp}/low1" >> "${typed_tmp}/lowconf" \
+        || ! mv "${typed_tmp}/tsv" "$tv_tsv"; then
+        echo "ERROR: cannot aggregate the typed verdict lines of ${crit_file} into ${tv_tsv}." >&2
+        rm -rf "$typed_tmp" 2>/dev/null || true
+        rm -f "$report_file" 2>/dev/null || true
+        return 1
+      fi
+      read -r tv_c tv_w tv_s tv_i tv_d tv_l <<< "$typed_counts"
+      typed_rows="${typed_rows}| ${tv_cli} / ${crit_persp} | ${tv_c} | ${tv_w} | ${tv_s} | ${tv_i} | ${tv_d} | ${tv_l} |
+"
+      tv_fs_rc=0
+      typed_verdict_failsafe_critical "$crit_file" "${typed_tmp}/records" "${typed_tmp}/scratch" || tv_fs_rc=$?
+      if [[ "$tv_fs_rc" -eq 0 ]]; then
+        echo "⚠️ typed verdict: ${crit_file} has a malformed verdict line naming severity=critical — counted as critical (fail-safe)" >&2
+        typed_failsafe="${typed_failsafe:+${typed_failsafe} }${tv_cli}/${crit_persp}"
+      fi
+      if [[ "$tv_c" -gt 0 || "$tv_fs_rc" -eq 0 ]]; then
+        crit_rc=0
+      elif [[ "$tv_fs_rc" -eq 1 ]]; then
+        crit_rc=1
+      else
+        crit_rc=3
+      fi
+      # 散文の Critical を型付き行が覆した観点（ADR-065 決定 6）。判定は共有パーサーの
+      # 抽出診断（検出モードと同じ条件で出る 1 行）に任せ、ここへ判定式を複製しない。
+      # stderr は上の diag 中継で出ているので、レポートにも 1 行残す（stderr だけだと
+      # レポート経由の読み手に届かない）
+      if grep -qF 'prose Critical finding overridden by typed verdict lines' "${typed_tmp}/diag" 2>/dev/null; then
+        typed_overrode="${typed_overrode:+${typed_overrode} }${tv_cli}/${crit_persp}"
+      fi
+    elif [[ "$typed_rc" -eq 1 && -n "$tv_reason" ]]; then
+      # 未完了の観点で判定行が無い: 本文（拒否した散文・途中までの出力）から Critical を
+      # 決めない。散文の Critical があった回は数えずに名指しだけする（診断は共有パーサー）。
+      # ただし書式の崩れた verdict 行が severity=critical を名乗る回は、ADR-065 決定 9 の
+      # fail-safe を未完了の観点でも保つ — 不採用行しか無い本文は受理されない（= 必ずここへ
+      # 来る）ので、ここで見ないと崩れた Critical 宣言がどこでも数えられない。判定式は複製
+      # せず共有パーサーの検出を使う（判定行なしは rc4、不採用の critical 行があれば rc0）
+      cat "${typed_tmp}/diag" >&2 2>/dev/null || true
+      tv_fs_rc=0
+      critical_findings_present "$crit_file" 2>/dev/null || tv_fs_rc=$?
+      if [[ "$tv_fs_rc" -eq 0 ]]; then
+        echo "⚠️ typed verdict: ${crit_file} has a malformed verdict line naming severity=critical — counted as critical (fail-safe)" >&2
+        typed_failsafe="${typed_failsafe:+${typed_failsafe} }${tv_cli}/${crit_persp}"
+        crit_rc=0
+      else
+        typed_undecided="${typed_undecided:+${typed_undecided} }${tv_cli}/${crit_persp}"
+        if grep -qF 'prose Critical finding in a body without typed verdict lines' "${typed_tmp}/diag" 2>/dev/null; then
+          typed_undecided_crit="${typed_undecided_crit:+${typed_undecided_crit} }${tv_cli}/${crit_persp}"
+        fi
+        continue
+      fi
+    else
+      cat "${typed_tmp}/diag" >&2 2>/dev/null || true
+      case "$typed_rc" in
+        1)
+          typed_nobasis="${typed_nobasis:+${typed_nobasis} }${tv_cli}/${crit_persp}"
+          echo "⚠️ CRITICAL_BLOCK 判定: ${crit_file} は完了扱いの結果なのに有効な型付き判定行が 1 行も無く、判定の根拠がありません（散文の重大度行は読みません — ADR-066）。根拠なしを Critical なしとして通さないため、安全側（Critical あり）に倒します" >&2
+          crit_rc=4 ;;
+        2)
+          typed_unfenced="${typed_unfenced:+${typed_unfenced} }${tv_cli}/${crit_persp}"
+          crit_rc=2 ;;
+        *)
+          typed_unreadable="${typed_unreadable:+${typed_unreadable} }${tv_cli}/${crit_persp}"
+          crit_rc=3 ;;
+      esac
+    fi
+    # 判定不能（rc=2: 未閉フェンス / rc=3: 不可読ファイル・awk 失敗 / rc=4: 完了扱いの
+    # 結果に判定行が無い）は「Critical あり」へ倒す。
     # 倒した先の重さ（ブロック / 非ブロック）はその観点の段階に従う — 非ブロック
     # 観点は Critical が実在してもブロックしない契約なので、判定不能をブロックまで
     # 格上げすると安全側を越えて旧挙動の誤ブロックが戻る。
@@ -6338,6 +6736,9 @@ HEADER
       1) : ;;
       2)
         echo "⚠️ CRITICAL_BLOCK 判定: ${crit_file} のコードフェンスが閉じておらず本文を判定しきれません。判定不能を Critical なしとして通さないため、安全側（Critical あり）に倒します" >&2
+        crit_found=unparse ;;
+      4)
+        # 診断は上の分岐で出した（判定行なし）
         crit_found=unparse ;;
       *)
         echo "⚠️ CRITICAL_BLOCK 判定を実行できませんでした（判定 rc=${crit_rc}: ${crit_file} — 不可読ファイルまたは判定器の実行失敗）。判定不能を Critical なしとして通さないため、安全側（Critical あり）に倒します" >&2
@@ -6361,6 +6762,81 @@ HEADER
       esac
     fi
   done <<< "$EXECUTION_PLAN"
+  # 集計節はマーカーより**前**に置く — 未解消 Critical のガードはレポート末尾 12 行
+  # （previous_report_has_critical_marker）だけからマーカーを読むので、後ろへ足すと
+  # マーカーが窓から押し出される。節の文言には未完了検査の語（大文字の英単語）も
+  # マーカー名も書かない — 消費側ゲートはレポート全体への部分一致でそれらを数える
+  # （multi-cli-review-orchestration.md の pre-push 例）。
+  if ! {
+    echo ""
+    echo "## 型付き判定の集計"
+    echo ""
+    echo "型付き判定行（\`verdict:\`）を持つ観点は、その行だけで重大度を数える。\`failure_scenario=no\` の finding は 1 段降格（Critical → Warning、Warning → Suggestion）した後の重大度で数え、Critical の判定もこの重大度で行う。信頼度の閾値は ${conf_thr}（code-review のテスト有効性の 3 形のタグ \`[TEST-VALIDITY:unreached|coincidental|one-sided]\` の指摘は ${tv_exc_thr}）。"
+    echo ""
+    if [[ -n "$typed_rows" ]]; then
+      echo "| 観点 | Critical | Warning | Suggestion | Info | うち降格 | うち低信頼 |"
+      echo "| --- | --- | --- | --- | --- | --- | --- |"
+      printf '%s' "$typed_rows"
+      echo ""
+      echo "finding ごとの記録: 出力先の \`<cli>/<観点>.findings.tsv\`（列: cli / perspective / severity / failure_scenario / confidence / file / line / summary / demoted_from）"
+    else
+      echo "型付き判定行を持つ観点はない。"
+    fi
+    if [[ -n "$typed_failsafe" ]]; then
+      echo ""
+      echo "書式の崩れた判定行が severity=critical を名乗っていたため、表の件数に関わらず Critical ありとして扱った観点（fail-safe）: ${typed_failsafe// /, }"
+    fi
+    if [[ -n "$typed_overrode" ]]; then
+      echo ""
+      echo "散文の重大度行では Critical ありと読めたが、型付き判定行の Critical が 0 件のため型付き行で判定した観点（散文側の Critical 指摘を判定行へ書き漏らしていないか確認する）: ${typed_overrode// /, }"
+    fi
+    if [[ -n "$typed_undecided" ]]; then
+      echo ""
+      echo "型付き判定行が無いため本文から重大度を判定しなかった未完了の観点（散文の重大度行は読まない。下の「未確認 › 未完了の観点」を参照）: ${typed_undecided// /, }"
+    fi
+    if [[ -n "$typed_undecided_crit" ]]; then
+      echo ""
+      echo "そのうち、拒否・中断した本文の散文に Critical の記述があった観点（判定には数えていない。再実行して型付き判定行で確かめる）: ${typed_undecided_crit// /, }"
+    fi
+    if [[ -n "$typed_nobasis" ]]; then
+      echo ""
+      echo "完了扱いの結果なのに型付き判定行が 1 行も無く、判定の根拠が無いため安全側（Critical あり）へ倒した観点（旧版で受理された結果の再利用など。再実行する）: ${typed_nobasis// /, }"
+    fi
+    if [[ -n "$typed_unfenced" ]]; then
+      echo ""
+      echo "コードフェンスが閉じておらず型付き判定行を読み切れないため安全側（Critical あり）へ倒した観点: ${typed_unfenced// /, }"
+    fi
+    if [[ -n "$typed_unreadable" ]]; then
+      echo ""
+      echo "結果を判定できなかった（不可読・判定器の実行失敗）ため安全側（Critical あり）へ倒した観点: ${typed_unreadable// /, }"
+    fi
+    echo ""
+    echo "### 未確認 › 低信頼の指摘"
+    echo ""
+    if [[ -s "${typed_tmp}/lowconf" ]]; then
+      echo "信頼度が閾値未満の finding。報告から落とさず、「指摘なし」とも読まない — 対応の前に裏取りする。"
+      echo ""
+      cat "${typed_tmp}/lowconf"
+    else
+      echo "なし"
+    fi
+    echo ""
+    echo "### 未確認 › 未完了の観点"
+    echo ""
+    if [[ -n "$typed_incomplete" ]]; then
+      echo "レビューを完了していない観点。この観点の沈黙は「指摘なし」ではなく未確認。"
+      echo ""
+      printf '%s' "$typed_incomplete"
+    else
+      echo "なし"
+    fi
+  } >> "$report_file"; then
+    echo "ERROR: cannot write the typed verdict aggregation to the integrated review report." >&2
+    rm -rf "$typed_tmp" 2>/dev/null || true
+    rm -f "$report_file" 2>/dev/null || true
+    return 1
+  fi
+  rm -rf "$typed_tmp" 2>/dev/null || true
   if [[ -n "$crit_block_hits" || -n "$crit_block_unparse" || -n "$crit_block_retained" ]]; then
     if ! {
       echo ""
@@ -6599,6 +7075,12 @@ main() {
   # 通過口（FF_REVIEW_ROUND_ACK=1 を起動コマンドの先頭へ）・無効化（FF_REVIEW_ROUND_LIMIT=0）の
   # 正本は tests/lib/review-round-counter.sh のヘッダ。ライブラリを読めない回は判定不能として
   # 警告だけ出して通す（fail-soft）。
+  # 信頼度の報告閾値は CLI を 1 つも起動する前に検証する — 不正値で課金した後の
+  # レポート生成で落ちる形にしない（parse_ignore_paths と同じ理由）。
+  if [[ "$TASK_TYPE" == "review" ]]; then
+    REVIEW_CONFIDENCE_THRESHOLD="$(resolve_review_confidence_threshold)" || exit 1
+  fi
+
   if [[ "$TASK_TYPE" == "review" ]]; then
     local round_lib="$SCRIPT_DIR/../tests/lib/review-round-counter.sh"
     # shellcheck source=../tests/lib/review-round-counter.sh

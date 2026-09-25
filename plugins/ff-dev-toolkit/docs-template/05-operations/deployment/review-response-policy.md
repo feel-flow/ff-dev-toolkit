@@ -27,6 +27,14 @@ PRレビュー結果に対する対応ルールを定義します。本ポリシ
 
 **重大度インフレの抑止**: 重大度は各レビュー観点の自己申告であり、そのまま修正義務へ直結する。対応表を適用する**前に**次を適用する。**新しいガード・抽象・フォールバック・防御コードの追加を求める指摘は、具体的な失敗シナリオ（再現する入力・状態と観測可能な誤動作）の提示がない限り Suggestion として扱う** — Warning 表記であっても本ポリシー上の扱いは Suggestion に落とす。ワークフローの基準は「止まらない・データを壊さない」であり、そこを超える堅牢化は任意の磨き込みであって欠陥ではない。独立した Warning を follow-up Issue へパーキングする運用は採用しない。
 
+**型付き判定行（Multi-CLI 分散レビュー・ホスト委譲）**: クロスモデルレビューの重大度は、レビュアーが finding ごとに書く型付き判定行（`- verdict: severity=critical|warning|suggestion|info failure_scenario=yes|no confidence=0〜100 [file=…] [line=…]`）だけで決まる。散文の重大度見出し・件数行は読み手のためのもので、受理にも判定にも使わない。規則の正本は [multi-cli-review-orchestration.md の「型付き判定の集計」](./multi-cli-review-orchestration.md#型付き判定の集計)で、ここでは対応に効く要点だけを挙げる:
+
+- **判定行が必須**: 指摘ゼロなら `- verdict: none` を書く。判定行が 1 行も無い報告は、見出しや件数行が揃っていても受理されず INCOMPLETE になる — 「指摘なし」ではなく**未確認**として扱い、再実行する
+- **`failure_scenario=no` は 1 段降格**: Critical → Warning、Warning → Suggestion へ下げてから対応表を当てる（上の重大度インフレの抑止を機械化したもの）。`CRITICAL_BLOCK` / `CRITICAL_NONBLOCK` も降格後の重大度で決まる
+- **confidence の閾値は 80**（env `MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD` > `.claude/agent-config.yaml` の `review.confidence_threshold` > 既定 80）: 閾値未満の finding は捨てずに「未確認 › 低信頼の指摘」へ並ぶ。対応の前に裏取りし、裏取りで実在が確かめられたら重大度どおりに対応する。信頼度は Critical の判定からは外さない
+- **「未確認」は 2 節**: 「未確認 › 低信頼の指摘」（閾値未満）と「未確認 › 未完了の観点」（委譲待ち・失敗・タイムアウト・拒否・スキップ・結果なし）を分けて読む。どちらも「指摘なし」ではない
+- **書式の崩れた Critical は安全側**: 文法を満たさない `verdict` 行が `severity=critical` を名乗ると、判定行としては採らずに Critical ありとして扱う（fail-safe）
+
 **重大度とスコープ判定は別軸**: 重大度は「どれだけ重要か」を表すもので、「その指摘への対応がこの PR に属するか」を決めない。対応が PR の明示的な設計判断・宣言した前提を覆すもの（今のままでは「誰かが望むより狭いものを出荷する」にあたるもの）は、Critical / Warning であっても PR 内の fix commit で処理せず、別 Issue に切り出して現行 PR は元のスコープで収束させる。「今のままでは間違ったものを出荷する」欠陥は従来どおり PR 内で修正する（切り分け基準と例外時のフォールバックは [git-workflow.md §レビュー指摘のスコープ判定](./git-workflow.md#レビュー指摘のスコープ判定欠陥か前提変更か)）。
 
 ---

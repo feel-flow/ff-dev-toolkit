@@ -9,19 +9,39 @@
 # （adapter-common.sh の _ff_severity_scan — 受理は accept モード、検出は
 # critical モード）へ一本化した。
 #
+# ADR-066（Issue `#1875`）以降の位置づけ: **散文経路の撤去の回帰記録**。受理は型付き判定行
+# （`- verdict: …`）だけになり、散文の重大度行は受理も Critical の有無も決めない。散文の
+# 行分類そのものは診断（拒否時の `prose-only review refused` と、判定行の無い本文の
+# `prose Critical finding in a body without typed verdict lines (not counted)`）にだけ残る。
+# 入力表の 2 列の期待（受理 = accept|reject / 検出 = fire|none|unparse）は**散文の分類が
+# その本文をどう読むか**の記録としてそのまま残し、row() が次の 2 点へ読み替えて照合する:
+#   - 判定: 散文だけの本文は常に不受理（rc1）で、検出は常に「根拠なし」（rc4。未閉フェンス
+#     の unparse 行だけ rc2）— 散文の読みがどうであれ、受理・Critical 判定へ届かない
+#   - 診断: 受理列が accept の行でだけ `prose-only review refused` が 1 行、検出列が fire の
+#     行でだけ `prose Critical finding in a body without typed verdict lines` が 1 行出る
+#     （分類の網羅は診断の有無として保つ — 撤去で分類の検査を黙って失わない）
+# 散文パーサの穴の bundle（Issue `#1765`）の子 1 / 子 2 の形は F 節で「判定に届かない」ことを
+# 固定する（撤去で superseded）。
+#
+# 変異検出（ADR-066。1 件ずつ当てた 2026-09-25 実測）: 受理を散文でも受理する形へ戻す → 92 件赤。
+#   検出の判定行なし（rc21）を散文の判定へ戻す → 103 件赤。rc21 の写像を rc1 へ変える → 103 件赤。
+#   拒否の診断を外す → 92 件赤。散文 Critical の診断（not counted）を外す → 45 件赤。
+#   レビュー 1 巡目の fix（同日実測）: 未完了の分岐の fail-safe 検査（critical_findings_present の rc0）を外す →
+#   委譲の静的 pin（結果ファイルを検出へ渡すのは fail-safe の 1 箇所だけ）が赤。
+#
 # 本 suite が固定するもの:
 #   (1) 積集合テーブル — 同じ入力表を**両側の公開入口**（review_body_present /
-#       critical_findings_present）へ流し、受理・検出の両期待を行ごとに固定する。
-#       とくに「受理される全形式の Critical 指摘行で検出が発火する」（Issue #908
-#       AC）を、bullet 3 種・** 強調・先頭空白・件数あり / なし・見出しスコープの
-#       全形式で網羅する。片側だけが独自実装へ戻る変異（忠実な旧実装への復帰を
-#       含む）は、旧実装と共有パーサーの挙動差がある行（* / + bullet の件数行、
-#       ** 強調・散文のラベル付き指摘行、サブ見出しスコープ等）で赤になる
+#       critical_findings_present）へ流し、上の読み替えで行ごとに照合する。
+#       旧版の「受理される全形式の Critical 指摘行で検出が発火する」（Issue `#908`
+#       AC）は、bullet 3 種・** 強調・先頭空白・件数あり / なし・見出しスコープの
+#       全形式で「受理側の診断と検出側の診断が揃って出る」ことへ読み替えて網羅する。
+#       片側だけが独自実装へ戻る変異は診断の食い違いで赤になり、散文経路を判定へ
+#       戻す変異は判定の rc（常に不受理 / 根拠なし）で赤になる
 #   (2) 検出だけが広い唯一の形（bullet 無しの行頭 CRITICAL: マーカー — 受理と
 #       検出は別契約）と、両側が揃って除外する形（明示ゼロ・ゼロ語・空所見語彙・
 #       参照語 veto 行）の境界
-#   (3) 委譲の静的 pin — multi-agent.sh の判定が critical_findings_present の
-#       呼び出しであり独自 awk（in_crit）の複製を持たないこと、adapter-common.sh
+#   (3) 委譲の静的 pin — multi-agent.sh の判定が typed_verdicts_extract の
+#       呼び出しで、結果ファイルを散文の検出へ渡さず、独自 awk（in_crit）の複製も持たないこと、adapter-common.sh
 #       の両入口が _ff_severity_scan の 2 モードへ委譲していること。テーブルは
 #       共有パーサーの挙動しか見ないため、呼び出しを外して独自実装へ戻す変異は
 #       テーブルだけでは検出できない — この pin が受け持つ（orchestrator 実走での
@@ -87,8 +107,13 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # row <ラベル> <accept 期待: accept|reject> <critical 期待: fire|none|unparse>
 # 本文は stdin。両側の**公開入口**を通す（_ff_severity_scan を直接呼ばない —
 # 入口が独自実装へ戻る変異を挙動で検出するため）。
+# 診断の文面（adapter-common.sh が出す 1 行）。期待は実装を読まずにここへ書く
+PROSE_REFUSED_DIAG='typed-verdict: prose-only review refused (no valid verdict line)'
+PROSE_CRIT_DIAG='typed-verdict: prose Critical finding in a body without typed verdict lines (not counted)'
+
 row() {
-  local label="$1" exp_a="$2" exp_c="$3" body rc_a rc_c got_a got_c a_ok c_ok
+  local label="$1" exp_a="$2" exp_c="$3" body rc_a rc_c got_a got_c want_rc_c
+  local n_ref n_crit want_ref=0 want_crit=0
   body="$(cat)"
   printf '%s\n' "$body" > "$TMP/row-body.md"
   rc_a=0
@@ -96,31 +121,35 @@ row() {
     # shellcheck source=../../scripts/adapters/adapter-common.sh
     source "$ADAPTER_COMMON"
     review_body_present "$body"
-  ) || rc_a=$?
+  ) 2>"$TMP/row-accept.err" || rc_a=$?
   rc_c=0
   (
     # shellcheck source=../../scripts/adapters/adapter-common.sh
     source "$ADAPTER_COMMON"
     critical_findings_present "$TMP/row-body.md"
-  ) || rc_c=$?
-  case "$rc_a" in
-    0) got_a="accept" ;;
-    *) got_a="reject" ;;
-  esac
+  ) 2>"$TMP/row-crit.err" || rc_c=$?
+  # 判定: 散文だけの本文は常に不受理・根拠なし（未閉フェンスの行だけ判定不能 rc2）
+  want_rc_c=4
+  [ "$exp_c" = "unparse" ] && want_rc_c=2
+  # 診断: 散文の分類の読み（表の 2 列）から出るべき行数を導く
+  [ "$exp_a" = "accept" ] && want_ref=1
+  [ "$exp_c" = "fire" ] && want_crit=1
+  n_ref="$(grep -cxF -- "$PROSE_REFUSED_DIAG" "$TMP/row-accept.err" || true)"
+  n_crit="$(grep -cxF -- "$PROSE_CRIT_DIAG" "$TMP/row-crit.err" || true)"
+  case "$rc_a" in 0) got_a="accept" ;; 1) got_a="reject" ;; *) got_a="error(rc=$rc_a)" ;; esac
   case "$rc_c" in
     0) got_c="fire" ;;
     1) got_c="none" ;;
     2) got_c="unparse" ;;
+    4) got_c="no-typed" ;;
     *) got_c="error(rc=$rc_c)" ;;
   esac
-  a_ok=0
-  c_ok=0
-  [ "$got_a" = "$exp_a" ] && a_ok=1
-  [ "$got_c" = "$exp_c" ] && c_ok=1
-  if [ "$a_ok" -eq 1 ] && [ "$c_ok" -eq 1 ]; then
-    ok "${label}: 受理=${exp_a} / 検出=${exp_c}"
+  if [ "$rc_a" -ne 1 ] || [ "$rc_c" -ne "$want_rc_c" ]; then
+    bad "${label}: 散文だけの本文が判定へ届いた（期待: 受理=reject 検出=rc${want_rc_c} / 実測: 受理=${got_a} 検出=${got_c}）"
+  elif [ "$n_ref" != "$want_ref" ] || [ "$n_crit" != "$want_crit" ]; then
+    bad "${label}: 散文の分類の読み（受理=${exp_a} 検出=${exp_c}）と診断が合わない（拒否の診断 ${n_ref} 行 / 期待 ${want_ref}、Critical の診断 ${n_crit} 行 / 期待 ${want_crit}）"
   else
-    bad "${label}: 期待(受理=${exp_a} 検出=${exp_c}) 実測(受理=${got_a} 検出=${got_c})"
+    ok "${label}: 不受理・判定なし（散文の読み: 受理=${exp_a} / 検出=${exp_c}）"
   fi
 }
 
@@ -767,6 +796,59 @@ row "未閉フェンス + 実体なし" reject unparse <<'BODY'
 （実体行はどこにも無いまま本文が終わる）
 BODY
 
+echo "== F. 散文パーサの穴の bundle（Issue \`#1765\`）の形は判定に届かない（ADR-066 で superseded） =="
+
+# 子 1（集約件数行で Critical が先頭でない → 散文の分類は Critical を見落とす）と
+# 子 2（`- **Critical:**` の空本文 → 散文の分類は受理・発火と読む）。散文の読みは上の
+# 表と同じく記録として残すが、どちらも不受理・判定なしで、判定を決めるのは型付き判定行
+# だけ。同じ本文に型付き判定行を足すと、散文の読みと無関係に型付き行どおりに決まる。
+row "子 1: - Warning: 0 / Critical: 2（散文は見落とす）" accept none <<'BODY'
+- Warning: 0 / Critical: 2
+BODY
+
+row "子 1: - **Suggestion:** 0 / **Critical:** 2（強調あり）" accept none <<'BODY'
+- **Suggestion:** 0 / **Critical:** 2
+BODY
+
+row "子 2: - **Critical:**（空本文。散文は受理・発火と読む）" accept fire <<'BODY'
+- **Critical:**
+BODY
+
+# typed_row <ラベル> <期待の検出 rc> — 本文は stdin。受理は常に rc0（型付き行あり）
+typed_row() {
+  local label="$1" want_c="$2" body rc_a rc_c
+  body="$(cat)"
+  printf '%s\n' "$body" > "$TMP/typed-body.md"
+  rc_a=0
+  (
+    # shellcheck source=../../scripts/adapters/adapter-common.sh
+    source "$ADAPTER_COMMON"
+    review_body_present "$body"
+  ) 2>/dev/null || rc_a=$?
+  rc_c=0
+  (
+    # shellcheck source=../../scripts/adapters/adapter-common.sh
+    source "$ADAPTER_COMMON"
+    critical_findings_present "$TMP/typed-body.md"
+  ) 2>/dev/null || rc_c=$?
+  if [ "$rc_a" -eq 0 ] && [ "$rc_c" -eq "$want_c" ]; then
+    ok "${label}: 受理・検出 rc=${rc_c}（型付き判定行どおり）"
+  else
+    bad "${label}: 期待(受理 rc0 / 検出 rc${want_c}) 実測(受理 rc${rc_a} / 検出 rc${rc_c})"
+  fi
+}
+
+typed_row "子 1 + 型付き Critical: 散文の見落としに関わらず Critical" 0 <<'BODY'
+- Warning: 0 / Critical: 2
+- [app.txt:2] 認証チェックの欠落
+  - verdict: severity=critical failure_scenario=yes confidence=90 file=app.txt line=2
+BODY
+
+typed_row "子 2 + verdict: none: 散文の空ラベルは発火しない" 1 <<'BODY'
+- **Critical:**
+- verdict: none
+BODY
+
 echo "== rc 契約（不可読ファイル・ドメイン rc の分離） =="
 
 # 開けない result file を rc=1（Critical なし）へ倒さない（fail-open 防止 —
@@ -785,18 +867,33 @@ else
   bad "存在しない result file が rc=${MISSING_RC}（rc=1 は fail-open / rc=2 は未閉フェンスと誤診）"
 fi
 
-# 未閉フェンスのドメイン rc=2 は上の unparse 行（E 節）が固定している。awk 内部の
-# ドメイン専用値（exit 20）が公開 rc へ漏れないことはその行の rc=2 一致が兼ねる。
+# 未閉フェンスのドメイン rc=2 は上の unparse 行（E 節）が、判定行なしの rc=4 は全行が
+# 固定している。awk 内部のドメイン専用値（exit 20 / 21）が公開 rc へ漏れないことは
+# その行の rc 一致が兼ねる。
 
 echo "== 委譲の静的 pin（テーブルが見ない「呼び出しの実在」） =="
 
 # multi-agent.sh の CRITICAL 判定が共有パーサーの呼び出しであること。テーブルは
 # adapter-common.sh の関数しか実行しないため、multi-agent.sh が独自 awk へ戻る
 # 変異はここで赤にする（実走の検出力は tests/multi-agent-critical-marker）。
-if grep -q 'critical_findings_present "\$crit_file"' "$MULTI_AGENT"; then
-  ok "multi-agent.sh の CRITICAL 判定は critical_findings_present の呼び出し"
+# ADR-066 以降の判定は型付き判定行の抽出（typed_verdicts_extract）で、結果ファイルを
+# 散文の検出（critical_findings_present "$crit_file"）へ渡す経路は持たない。
+if grep -q 'typed_verdicts_extract "\$crit_file"' "$MULTI_AGENT"; then
+  ok "multi-agent.sh の CRITICAL 判定は typed_verdicts_extract の呼び出し"
 else
-  bad "multi-agent.sh に critical_findings_present の呼び出しが無い（独自実装への復帰）"
+  bad "multi-agent.sh に typed_verdicts_extract の呼び出しが無い（独自実装への復帰）"
+fi
+# 結果ファイルを検出（critical_findings_present）へ渡してよいのは、判定行の無い未完了の
+# 観点で不採用行の fail-safe（rc0）だけを拾う 1 箇所だけ（ADR-066 レビュー 1 巡目）。検出は
+# 判定行なしに rc4 を返すので散文の Critical は数えないが、rc0 以外を判定へ流す形
+# （crit_rc へ代入する等）へ戻すと散文経路の復帰になる
+cfp_all="$(grep -c 'critical_findings_present "\$crit_file"' "$MULTI_AGENT" || true)"
+cfp_fs="$(grep -c 'critical_findings_present "\$crit_file" 2>/dev/null || tv_fs_rc=\$?' "$MULTI_AGENT" || true)"
+if [ "$cfp_all" = "1" ] && [ "$cfp_fs" = "1" ] \
+   && grep -q 'if \[\[ "\$tv_fs_rc" -eq 0 \]\]; then' "$MULTI_AGENT"; then
+  ok "multi-agent.sh が結果ファイルを検出へ渡すのは未完了の観点の fail-safe 1 箇所だけ（散文経路は撤去済み）"
+else
+  bad "multi-agent.sh が結果ファイルを検出へ渡す箇所が fail-safe 以外にある（撤去した散文経路の復帰。全 ${cfp_all} 箇所 / fail-safe 形 ${cfp_fs} 箇所）"
 fi
 
 if grep -q 'in_crit' "$MULTI_AGENT"; then

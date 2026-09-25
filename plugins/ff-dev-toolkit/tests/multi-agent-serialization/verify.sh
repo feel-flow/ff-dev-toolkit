@@ -125,6 +125,7 @@ if [ -f "$TMP/grok-fail-nth" ] && [ "\$n" -eq "\$(cat "$TMP/grok-fail-nth")" ]; 
 fi
 echo "## Findings"
 echo "- Suggestion: stub grok review"
+echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
 SH
 chmod +x "$STUB/grok"
 # copilot は置かない（未インストール扱い。metered で既定除外のためプランにも乗らない）。
@@ -147,6 +148,7 @@ cat > "$HOSTMOCK/copilot" <<SH
 echo "invoked \$\$" >> "$HOSTMOCK_LOG"
 echo "## Findings"
 echo "- Suggestion: host-mock copilot (should never run)"
+echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
 SH
 chmod +x "$HOSTMOCK/copilot"
 export PATH="$HOSTMOCK:$PATH"
@@ -196,6 +198,7 @@ done
 echo "end \$\$" >> "$CODEX_LOG"
 echo "## Findings"
 echo "- Suggestion: stub review"
+echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
 SH
 chmod +x "$STUB/codex"
 for name in claude; do
@@ -203,6 +206,7 @@ for name in claude; do
 #!/usr/bin/env bash
 echo "## Findings"
 echo "- Suggestion: stub review"
+echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
 SH
   chmod +x "$STUB/$name"
 done

@@ -36,6 +36,9 @@
 #  (22) 委譲待ちのあいだに結果パスへ現れたファイルを、本文にも Critical 判定にも採らない
 #  (23) 未応答のまま再実行しても曖昧さの印は消えず、清算後は正当な応答を受理する
 #  (24) 部分書き込み（ヘッダーだけ無事）を受理成功と判定しない
+#  (25) 型付き判定行（ADR-065）の契約が委譲プロンプトに載り、型付き行だけの応答を CLI 起動
+#       経路と同じ共有関数で受理する。散文だけの応答は受理せず（ADR-066）、正規形の理由で
+#       退避して `<レーン>/<観点>` を名指しした拒否の診断を出す（(5a)）
 #
 # 変異検出: task_is_delegated を常に偽へ倒すと (1)(2)(3)(4)(8)(12) が赤。
 #           delegate_task の digest 照合を素通しにすると (6) が赤。
@@ -47,6 +50,11 @@
 #           回収の「未応答の handoff があるときだけ」条件を外すと (21) が赤。
 #           superseded の持ち越しを「入力が変わったか」だけへ戻すと (23) が赤。
 #           delegation_output_written の本文一致検査を外すと (24) が赤。
+#           build_prompt の Typed Verdict Lines 見出しを外すと (25) のプロンプト検査が赤。
+#           C4（ADR-066）の変異（2026-09-25 実測）: 受理モードを散文でも受理する形へ戻すと (5a) の拒否・退避と (5) が赤（4 件）。
+#           拒否の診断を外すと (5a) の診断検査が赤。委譲の退避理由を正規形の定数から旧文面へ戻すと (5a) の理由検査が赤。
+#           レビュー 1 巡目の fix（同日実測）: review_body_present の awk 異常終了を rc1（型付き行なし）へ畳む、または
+#           委譲の退避理由を review_body_refusal_clause から正規形の固定文へ戻すと (5b) が赤。
 #
 # 実 CLI は 1 つも起動しない（claude / codex を stub で覆う）。書き込み不可の環境では skip。
 
@@ -137,12 +145,14 @@ echo "\$((n + 1))" > "$CLAUDE_COUNT"
 cat >/dev/null
 echo "- Critical: 0"
 echo "- Important: 0"
+echo "- verdict: none"
 SH
 cat > "$STUB/codex" <<'SH'
 #!/usr/bin/env bash
 cat >/dev/null
 echo "- Critical: 0"
 echo "- Important: 0"
+echo "- verdict: none"
 SH
 chmod +x "$STUB/claude" "$STUB/codex"
 
@@ -214,6 +224,15 @@ if [ -s "$PROMPT_FILE" ]; then
 else
   bad "プロンプトファイルが空／不在: ${PROMPT_FILE}"
 fi
+# (25) ホストへ渡すプロンプトは CLI 起動経路と同じ build_prompt の生成物なので、型付き
+# 判定行の出力契約もそのまま載っている（委譲経路だけ契約が欠けると、ホストの応答だけが
+# 不受理へ落ちる）。針は見出し 1 行（折り返しをまたがない）
+if grep -qF '## Typed Verdict Lines (one per finding)' "$PROMPT_FILE" \
+   && grep -qF -- '- verdict: none' "$PROMPT_FILE"; then
+  ok "(25) 委譲プロンプトに型付き判定行の契約（Typed Verdict Lines / verdict: none）が載っている"
+else
+  bad "(25) 委譲プロンプトに型付き判定行の契約が無い（ホスト経路だけ契約が欠ける）"
+fi
 if [ ! -e "$RESULT_FILE" ]; then
   ok "委譲待ちのあいだ結果ファイルは作られない（空振りを結果と読ませない）"
 else
@@ -243,6 +262,63 @@ else
   bad "拒否した応答の退避物が無い"
 fi
 
+echo "-- (5a) 散文だけの応答（型付き判定行なし）は受理しない（ADR-066） --"
+# CLI 起動経路と同じ共有関数（review_body_present）で拒否し、応答を退避して handoff を
+# やり直す。拒否の診断は `<レーン>/<観点>` のラベルで名指しされ、退避理由は不受理の
+# 正規形（adapter-common.sh の REVIEW_BODY_REFUSAL_PHRASE）を展開する
+rm -f "$REPO_PHYS"/.review-results/claude-code/.delegated/code-review.response.rejected.*.md
+cat > "$RESULT_FILE" <<'BODY'
+## Summary
+
+- Critical: 0
+- Important: 1
+
+### Important
+- [app.txt:2] change is untested
+BODY
+# shellcheck disable=SC2086
+run_ma proseonly $BASE_ARGS --cli claude-code --delegate-to-host
+if [ "$RUN_RC" -eq 3 ] && grep -qF -- 'the delegated response contains no valid typed verdict line (neither a `- verdict: severity=... failure_scenario=... confidence=...` line nor `- verdict: none`) — refusing it as a review result.' "$RUN_ERR"; then
+  ok "(5a) 散文だけの委譲応答を正規形の理由で拒否し、handoff をやり直す（rc=3）"
+else
+  bad "(5a) 散文だけの委譲応答が正規形の理由で拒否されていない（rc=${RUN_RC}）"
+fi
+if grep -qxF 'typed-verdict: claude-code/code-review: prose-only review refused (no valid verdict line)' "$RUN_ERR"; then
+  ok "(5a) 拒否の診断が <レーン>/<観点> を名指しする"
+else
+  bad "(5a) 散文だけの委譲応答を拒否したのに名指しの診断が無い"
+fi
+if ls "$REPO_PHYS"/.review-results/claude-code/.delegated/code-review.response.rejected.*.md >/dev/null 2>&1; then
+  ok "(5a) 拒否した散文の応答は捨てずに退避してある"
+else
+  bad "(5a) 拒否した散文の応答の退避物が無い"
+fi
+
+echo "-- (5b) 受理判定の awk が落ちた応答は解析不能の理由で退避する（型付き判定行なしと言わない） --"
+AWK5B="$TMP/awk5b"
+mkdir -p "$AWK5B"
+REAL_AWK5B="$(command -v awk)"
+cat > "$AWK5B/awk" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in ff_mode=accept) exit 2 ;; esac
+done
+exec "$REAL_AWK5B" "\$@"
+SH
+chmod +x "$AWK5B/awk"
+printf -- '- Critical: 0\n- verdict: none\n' > "$RESULT_FILE"
+REAL_STUB_PATH_5B="$STUB_PATH"
+STUB_PATH="$AWK5B:$STUB_PATH"
+# shellcheck disable=SC2086
+run_ma unparsed5b $BASE_ARGS --cli claude-code --delegate-to-host
+STUB_PATH="$REAL_STUB_PATH_5B"
+if [ "$RUN_RC" -eq 3 ] && grep -qF 'the delegated response could not be parsed as a review body (the parser exited with status 2' "$RUN_ERR" \
+   && ! grep -qF 'the delegated response contains no valid typed verdict line' "$RUN_ERR"; then
+  ok "(5b) 解析できない委譲応答を解析不能の理由で退避する（rc=3）"
+else
+  bad "(5b) 解析できない委譲応答の理由が違う（rc=${RUN_RC}）"
+fi
+
 echo "-- (5) ホストの書き戻しを受理し、CLI 起動経路と同じヘッダーで保存する --"
 cat > "$RESULT_FILE" <<'BODY'
 ## Summary
@@ -252,6 +328,7 @@ cat > "$RESULT_FILE" <<'BODY'
 
 ### Important
 - [app.txt:2] change is untested
+  - verdict: severity=warning failure_scenario=yes confidence=85 file=app.txt line=2
 BODY
 # shellcheck disable=SC2086
 run_ma adopt $BASE_ARGS --cli claude-code --delegate-to-host
@@ -294,13 +371,44 @@ else
   ok "受理した時点で受け渡しファイルを消費している"
 fi
 
+# (5) の応答は型付き判定行を持つので、受理で typed-verdict 診断は出ない
+if grep -qF 'typed-verdict:' "$RUN_ERR"; then
+  bad "(5) 型付きの委譲応答の受理で typed-verdict 診断が出た: $(grep -F 'typed-verdict:' "$RUN_ERR")"
+else
+  ok "(5) 型付きの委譲応答の受理では typed-verdict 診断を出さない"
+fi
+
+echo "-- (25) 型付き判定行だけの応答を委譲経路でも受理する --"
+# 散文の重大度行を 1 行も持たず、型付き判定行だけで成立する応答。CLI 起動経路と同じ
+# 共有関数で受理されること（委譲経路だけ型付き行を知らない、の退行を赤にする）
+# shellcheck disable=SC2086
+run_ma handoffT $BASE_ARGS --cli claude-code --delegate-to-host
+cat > "$RESULT_FILE" <<'BODY'
+## Code Review Results
+
+- [app.txt:2] change is untested (TYPEDONLY)
+  - verdict: severity=warning failure_scenario=yes confidence=85 file=app.txt line=2
+BODY
+# shellcheck disable=SC2086
+run_ma adoptT $BASE_ARGS --cli claude-code --delegate-to-host
+if [ "$RUN_RC" -eq 0 ] && result_header_ok "$RESULT_FILE" && grep -qF 'TYPEDONLY' "$RESULT_FILE"; then
+  ok "(25) 型付き判定行だけの委譲応答を受理し、同じヘッダーで保存する"
+else
+  bad "(25) 型付き判定行だけの委譲応答が受理されない（rc=${RUN_RC}）"
+fi
+if grep -qF 'typed-verdict:' "$RUN_ERR"; then
+  bad "(25) 型付き経路で受理したのに typed-verdict 診断が出た: $(grep -F 'typed-verdict:' "$RUN_ERR")"
+else
+  ok "(25) 型付き経路の受理では拒否の診断も不採用の診断も出ない"
+fi
+
 echo "-- (6) 別入力に対する応答は受理しない --"
 # shellcheck disable=SC2086
 run_ma handoff2 $BASE_ARGS --cli claude-code --delegate-to-host   # 新しい handoff を出す
 printf 'base\nchange\nmore\n' > app.txt
 git add app.txt
 git commit -qm "more"
-printf -- '- Critical: 0\n' > "$RESULT_FILE"
+printf -- '- Critical: 0\n- verdict: none\n' > "$RESULT_FILE"
 # shellcheck disable=SC2086
 run_ma stale $BASE_ARGS --cli claude-code --delegate-to-host
 if [ "$RUN_RC" -eq 3 ] && grep -qF 'written for a different input' "$RUN_ERR"; then
@@ -454,6 +562,7 @@ cat > "$CRITSTUB/claude" <<'SH'
 cat >/dev/null
 echo "### Critical Issues"
 echo "- [app.txt:2] boom"
+echo "  - verdict: severity=critical failure_scenario=yes confidence=90 file=app.txt line=2"
 echo "- Critical: 1"
 SH
 chmod +x "$CRITSTUB/claude"
@@ -516,6 +625,7 @@ cat > "$HDR_RESULT" <<'BODY'
 
 - Critical: 0
 - Important: 1
+- verdict: none
 - 本文の目印 HDRBODY
 BODY
 run_ma hdr2 --task review --mode cross-model --perspective code-review --base develop \
@@ -532,7 +642,7 @@ LOCK_OUT="$TMP/lock-results"
 LOCK_RESULT="$LOCK_OUT/claude-code/code-review.md"
 run_ma lock1 --task review --mode cross-model --perspective code-review --base develop \
   --cli claude-code --delegate-to-host --output-dir "$LOCK_OUT"
-printf -- '- Critical: 0\n' > "$LOCK_RESULT"
+printf -- '- Critical: 0\n- verdict: none\n' > "$LOCK_RESULT"
 chmod 555 "$LOCK_OUT/claude-code/.delegated"
 run_ma lock2 --task review --mode cross-model --perspective code-review --base develop \
   --cli claude-code --delegate-to-host --output-dir "$LOCK_OUT"
@@ -552,7 +662,7 @@ echo "-- (18) 結果パスの symlink は運ばない --"
 LINK_OUT="$TMP/link-results"
 LINK_RESULT="$LINK_OUT/claude-code/code-review.md"
 OUTSIDE="$TMP/outside-secret.md"
-printf -- '- Critical: 0\n- 外部ファイルの本文\n' > "$OUTSIDE"
+printf -- '- Critical: 0\n- verdict: none\n- 外部ファイルの本文\n' > "$OUTSIDE"
 run_ma link1 --task review --mode cross-model --perspective code-review --base develop \
   --cli claude-code --delegate-to-host --output-dir "$LINK_OUT"
 ln -s "$OUTSIDE" "$LINK_RESULT"
@@ -574,7 +684,7 @@ DROP_OUT="$TMP/drop-results"
 DROP_RESULT="$DROP_OUT/claude-code/code-review.md"
 run_ma drop1 --task review --mode cross-model --perspective code-review --base develop \
   --cli claude-code --delegate-to-host --output-dir "$DROP_OUT"
-printf -- '- Critical: 0\n- 目印 DROPBODY\n' > "$DROP_RESULT"
+printf -- '- Critical: 0\n- verdict: none\n- 目印 DROPBODY\n' > "$DROP_RESULT"
 : > "$CLAUDE_COUNT"
 run_ma drop2 --task review --mode cross-model --perspective code-review --base develop \
   --cli claude-code --output-dir "$DROP_OUT"
@@ -643,7 +753,7 @@ fi
 
 # 1 観点だけ答える
 MP_FIRST="$(mp_first_pending)"
-printf -- '- Critical: 0\n- 目印 MPBODY\n' > "$MP_OUT/claude-code/${MP_FIRST}.md"
+printf -- '- Critical: 0\n- verdict: none\n- 目印 MPBODY\n' > "$MP_OUT/claude-code/${MP_FIRST}.md"
 mp_run mp2 --resume
 MP_LEFT="$(mp_pending_count)"
 if [ "$MP_RC" -eq 3 ] && [ "$MP_LEFT" -eq $((MP_TOTAL - 1)) ]; then
@@ -659,7 +769,7 @@ fi
 
 # 残りを全部答えて締める
 for mp_persp in $(sed -n 's/^perspective=//p' "$MP_OUT_FILE"); do
-  printf -- '- Critical: 0\n- 目印 MPREST\n' > "$MP_OUT/claude-code/${mp_persp}.md"
+  printf -- '- Critical: 0\n- verdict: none\n- 目印 MPREST\n' > "$MP_OUT/claude-code/${mp_persp}.md"
 done
 mp_run mp3 --resume
 if [ "$MP_RC" -eq 0 ] && grep -qF 'MPBODY' "$MP_OUT/claude-code/${MP_FIRST}.md"; then
@@ -695,6 +805,7 @@ mkdir -p "$RACE_OUT/claude-code"
 } > "$RACE_OUT/claude-code/code-review.md"
 echo "- Critical: 0"
 echo "- Important: 0"
+echo "- verdict: none"
 SH
 chmod +x "$RACESTUB/codex"
 : > "$CLAUDE_COUNT"
@@ -744,7 +855,7 @@ else
   bad "入力変更で曖昧さの印が立たない"
 fi
 amb_run amb3                       # **応答が来ないまま**同じ入力で再実行
-printf -- '- Critical: 0\n- 遅れて届いた旧入力への応答\n' > "$AMB_RESULT"
+printf -- '- Critical: 0\n- verdict: none\n- 遅れて届いた旧入力への応答\n' > "$AMB_RESULT"
 amb_run amb4
 if [ "$AMB_RC" -eq 3 ] && grep -qF 'cannot be attributed to one prompt' "$AMB_ERR"; then
   ok "未応答の再実行を挟んでも、次の応答を曖昧として拒否する"
@@ -758,7 +869,7 @@ else
   bad "曖昧として拒否した応答が退避されていない"
 fi
 # 印を清算した後の正当な応答は受理される（拒否が居座らないこと）
-printf -- '- Critical: 0\n- 目印 AMBOK\n' > "$AMB_RESULT"
+printf -- '- Critical: 0\n- verdict: none\n- 目印 AMBOK\n' > "$AMB_RESULT"
 amb_run amb5
 if [ "$AMB_RC" -eq 0 ] && grep -qF 'AMBOK' "$AMB_RESULT"; then
   ok "1 度拒否したあとの応答は通常どおり受理される（印が居座らない）"

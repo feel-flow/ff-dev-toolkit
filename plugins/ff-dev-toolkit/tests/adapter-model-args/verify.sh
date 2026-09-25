@@ -103,6 +103,7 @@ for cli in claude codex copilot grok; do
     echo '  printf "RETROSPECTIVE_MODE=%s\n" "${RETROSPECTIVE_MODE-__unset__}" >> "$ENV_LOG"'
     echo 'fi'
     echo 'echo "- Suggestion: stub review output"'
+    echo 'echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"'
   } > "$WORK/bin/$cli"
   chmod +x "$WORK/bin/$cli"
 done
@@ -508,6 +509,7 @@ make_grok_stub() {
     echo 'printf "\n" >> "$ARGV_LOG"'
     echo "$1"
     echo 'echo "- Suggestion: stub review output"'
+    echo 'echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"'
   } > "$WORK/bin/grok"
   chmod +x "$WORK/bin/grok"
 }
