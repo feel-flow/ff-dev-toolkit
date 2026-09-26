@@ -342,6 +342,7 @@ function is_status(s) {
 #   (b) ゲート以降に `;` か `||` か単独の `&` が 1 つでもある
 # ただし終端が成否を運ぶ形（代入・制御構文・非フィルタ終端）なら、後段で使える形なので見ない。
 function gate_swallowed(m,   segs, seps, n, i, gi) {
+  if (index(m, "run-all.sh") == 0) return 0
   n = split_segments(m, segs, seps)
   if (n < 1) return 0
   gi = 0
@@ -455,6 +456,7 @@ function overwrites(line, var,   m0, m1, i, n, c, k, st, seg0, seg1, a, re) {
   return 0
 }
 function track_gate(line, start, m, swallowed,   segs, seps, n, n0, i, gi, last, v, only_and, t) {
+  if (g_state == 0 && g_pvar == "" && index(m, "run-all.sh") == 0) return
   n0 = split_segments(m, segs, seps)
   gi = 0
   for (i = 1; i <= n0; i++) if (seg_has_gate(segs[i])) { gi = i; break }
@@ -536,7 +538,7 @@ function unit_end() {
   g_state = 0
 }
 function analyze(line, start,   m, k, arr, i, hit, swallowed) {
-  if (mask(line, 1) ~ /\$\{?PIPESTATUS/) print start ":pipestatus:" line
+  if (index(line, "PIPESTATUS") && mask(line, 1) ~ /\$\{?PIPESTATUS/) print start ":pipestatus:" line
   m = strip_subst(mask(line))
   sub(/[[:space:]]*(;|&&|[|][|])[[:space:]]*$/, "", m)
   k = split(m, arr, SEP)
@@ -697,7 +699,8 @@ exit_code_check_tracked() {
   local repo_root="$1"
   local git_cmd="${FF_EXIT_CODE_GIT:-git}"
   local all_hits="" scan_errors="" skipped="" scanned=0
-  local list_file="" file hits rc kind
+  local list_file="" file hits rc kind batch_retry=0
+  local -a scan_files=() sh_paths=() md_paths=()
 
   if ! repo_root="$("$git_cmd" -C "$repo_root" rev-parse --show-toplevel 2>/dev/null)"; then
     printf 'EXIT_CODE_RESULT=error_repo SCANNED=0 HITS=0 ERRORS=1 SKIPPED=0\n'
@@ -744,27 +747,62 @@ exit_code_check_tracked() {
 "
       continue
     fi
-    set +e
+    scan_files+=("$file")
     if [ "$kind" -eq 2 ]; then
-      hits="$(exit_code_scan_bash_blocks "$repo_root/$file" 2>/dev/null)"
+      md_paths+=("$repo_root/$file")
     else
-      hits="$(exit_code_scan "$repo_root/$file" 2>/dev/null)"
-    fi
-    rc=$?
-    set -e
-    if [ "$rc" -ne 0 ]; then
-      scan_errors="${scan_errors}${file} (awk rc=${rc})
-"
-      continue
-    fi
-    scanned=$((scanned + 1))
-    if [ -n "$hits" ]; then
-      all_hits="${all_hits}${file}:
-${hits}
-"
+      sh_paths+=("$repo_root/$file")
     fi
   done <"$list_file"
   rm -f "$list_file"
+
+  # Keep shell and Markdown states in separate batches. The scanner closes its
+  # pending logical line/state at every file boundary and at EOF. A clean batch
+  # needs no per-file process; failures retry solely to retain named diagnostics.
+  for kind in sh md; do
+    rc=0
+    if [ "$kind" = sh ]; then
+      [ "${#sh_paths[@]}" -gt 0 ] || continue
+      hits="$(exit_code_scan "${sh_paths[@]}" 2>/dev/null)" || rc=$?
+    else
+      [ "${#md_paths[@]}" -gt 0 ] || continue
+      hits="$(exit_code_scan_bash_blocks "${md_paths[@]}" 2>/dev/null)" || rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+      scan_errors="${scan_errors}${kind} batch (awk rc=${rc})
+"
+      batch_retry=1
+    elif [ -n "$hits" ]; then
+      batch_retry=1
+    fi
+  done
+  if [ "$batch_retry" -eq 0 ]; then
+    scanned=${#scan_files[@]}
+  elif [ "${#scan_files[@]}" -gt 0 ]; then
+    for file in "${scan_files[@]}"; do
+      kind=0
+      _ff_exit_code_kind "$file" || kind=$?
+      set +e
+      if [ "$kind" -eq 2 ]; then
+        hits="$(exit_code_scan_bash_blocks "$repo_root/$file" 2>/dev/null)"
+      else
+        hits="$(exit_code_scan "$repo_root/$file" 2>/dev/null)"
+      fi
+      rc=$?
+      set -e
+      if [ "$rc" -ne 0 ]; then
+        scan_errors="${scan_errors}${file} (awk rc=${rc})
+"
+        continue
+      fi
+      scanned=$((scanned + 1))
+      if [ -n "$hits" ]; then
+        all_hits="${all_hits}${file}:
+${hits}
+"
+      fi
+    done
+  fi
 
   local skipped_n=0
   if [ -n "$skipped" ]; then

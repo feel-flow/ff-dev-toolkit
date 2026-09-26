@@ -645,7 +645,7 @@ run_docs_gate_mutation() {
       ;;
   esac
 
-  FF_DOCS_GATE_DOCS="$docs_copy" \
+  FF_DOCS_GATE_STOP_AFTER="$expected" FF_DOCS_GATE_DOCS="$docs_copy" \
     bash "$PLUGIN_ROOT/tests/docs-gates/verify.sh" >"$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ] && grep -qF "$expected" "$log"; then
     ok "$label"

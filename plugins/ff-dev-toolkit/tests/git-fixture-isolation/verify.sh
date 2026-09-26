@@ -412,6 +412,7 @@ shared-version-convergence/cases/claim-helper-failures.sh
 shared-version-convergence/cases/merge-races.sh
 shared-version-convergence/verify.sh
 sync-forbidden-patterns/verify.sh
+sync-sha-contract/footer-reuse-runtime.sh
 sync-sha-contract/release-runtime.sh
 sync-sha-contract/reuse-runtime.sh
 sync-sha-contract/src-sha-runtime.sh

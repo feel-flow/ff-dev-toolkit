@@ -48,6 +48,7 @@
 #
 # FF_DOCS_REPO_ROOT で対象リポジトリのルートを差し替えられる（selftest 用）。
 #
+# 空振り検出: selftest G7（正準表現全消去）/ G19（導出元消失）を赤として実測。
 # run-all-required: no — live docs 不在は正当な適用外。ゲートの検出力は対の selftest が必須名簿側で担保する
 
 set -euo pipefail
@@ -151,9 +152,7 @@ done
 # 展開後も 1 一致に含まれる数値は 1 つのまま（装飾クラスに数字を含めないため）。
 NUM_ERE='[*`]*[0-9]+[*`]*'
 #
-# 実装上の注意（性能）: 行ごとに grep を起動すると 1 万行 × 全 claim で 10 万プロセス
-# 規模になり、suite 単体で 10 分を超える。**ファイル単位で 1 回 grep して一致行だけを
-# 取り出し**、その数行に対してのみフィルタと数値抽出を行う。
+# 照合は文書単位の awk にまとめ、claim・一致行ごとの外部プロセスを起動しない。
 CLAIMS=(
   # 「調査時点」を含む行は歴史スナップショット（例: DECISIONS.md ADR-024 の
   # 「調査時点（2026-08-10、7 プラグイン・98 スキル）」）であり、現在値の主張では
@@ -181,28 +180,23 @@ CLAIMS=(
   # 見出し・マイルストーン名ごと指定して現在形の行を巻き込まないようにする
   # （現在形の記載は `（ADR-029）` のようにコロンを伴わない）。`M4.4:` だけでは
   # 将来の散文が同じ ID を含んだ瞬間にその行が黙って無検査になるので、行を一意にする
-  # ところまで伸ばす。**ニードルに `|` は書けない** — CLAIMS の 1 レコードが `|` 区切りで
-  # `cut -d'|' -f4/-f5` されるため、表行へ縛る目的で先頭に `| ` を足すと除外列と必須列が
+  # ところまで伸ばす。**ニードルに `|` は書けない** — CLAIMS の 1 レコードが
+  # `|` で分解されるため、表行へ縛る目的で先頭に `| ` を足すと除外列と必須列が
   # ずれて claim ごと壊れる（実測: 除外が必須条件に化けて照合対象が 1 行まで縮んだ）。
   "ACE ブロック上限|${D_ACE_BLOCK}|ブロック上限 %N%|## ADR-029:;M4.4: 件数ゲートの二段化|"
   "ACE 1 エントリ行数|${D_ENTRY_LINES}|エントリ %N% 行||"
   "ACE 昇格 Helpful|${D_PROMOTE}|Helpful >= %N%||昇格"
 )
 
-# claim ごとの ERE を照合用へ展開する（`%N%` → NUM_ERE）
-claim_ere() { # $1=claim 定義行
-  local raw
-  raw="$(printf '%s' "$1" | cut -d'|' -f3)"
-  printf '%s' "${raw//%N%/${NUM_ERE}}"
-}
-
 echo "== A2. claim 定義の自己検証（装飾許容が全 claim へ一様に効くこと）=="
 # `%N%` を使わず生の `[0-9]` を書いた claim は、装飾された記載をそのぶんだけ見逃す
 # （Issue #529 の穴が 1 claim だけ残る形）。claim を足すときの歯止めとしてここで弾く。
 BAD_CLAIMS=""
 for claim in "${CLAIMS[@]}"; do
-  c_name="$(printf '%s' "${claim}" | cut -d'|' -f1)"
-  c_raw="$(printf '%s' "${claim}" | cut -d'|' -f3)"
+  c_name="${claim%%|*}"
+  c_rest="${claim#*|}"
+  c_raw="${c_rest#*|}"
+  c_raw="${c_raw%%|*}"
   case "${c_raw}" in
     *'%N%'*) ;;
     *) BAD_CLAIMS="${BAD_CLAIMS}${c_name}（%N% が無い） " ; continue ;;
@@ -252,98 +246,96 @@ fi
 
 echo "== C. docs/ の手書き件数と実体の照合 =="
 
-# claim ごとの集計を「名前=hits:mismatch」の 1 行として持つ（bash 3.2 に連想配列がない）
+# 文書ごとに全 claim を 1 回の awk で照合する。数値・除外・必須文字列の
+# 意味論はそのまま、doc × claim × hit ごとの cut/grep/wc 起動をなくす。
+# 環境変数で渡すことで awk -v のバックスラッシュ再解釈を避ける。
+CLAIM_ROWS="$(printf '%s\n' "${CLAIMS[@]}")"
 TALLY=""
-tally_add() { # $1=claim index $2=hits の増分 $3=mismatch の増分
-  TALLY="${TALLY}${1} ${2} ${3}
-"
-}
-
-# 文書を外側、claim を内側に回す（本文の取り出しを 1 文書 1 回に抑える）
 while IFS= read -r rel; do
   [ -n "${rel}" ] || continue
-  # ff_docs_body ではなく claim 用の本文を使う（フェンス内の図に手書きした件数も
-  # 走査する。Issue #525。Changelog 境界の判定はフェンスを消したマスクで行われる）
+  # フェンス内の図も走査し、Changelog 境界は共有マスクで判定する。
   body="$(ff_docs_claim_body "${DOCS_ROOT}/${rel}")"
-  idx=0
-  for claim in "${CLAIMS[@]}"; do
-    idx=$((idx + 1))
-    c_expect="$(printf '%s' "${claim}" | cut -d'|' -f2)"
-    c_ere="$(claim_ere "${claim}")"
-    c_skip="$(printf '%s' "${claim}" | cut -d'|' -f4)"
-    c_need="$(printf '%s' "${claim}" | cut -d'|' -f5)"
-    [ -n "${c_expect}" ] || continue   # 導出失敗は A で赤にしている
-    matched="$(printf '%s\n' "${body}" | grep -E "${c_ere}" || true)"
-    [ -n "${matched}" ] || continue
-    while IFS= read -r line; do
-      [ -n "${line}" ] || continue
-      if [ -n "${c_skip}" ]; then
-        # `;` 区切りで**複数**の除外文字列を受ける（Issue #929）。1 つの claim が
-        # 「別概念の誤検知回避」と「歴史スナップショットの除外」を同時に要ることがある
-        # （suite 数 claim の `後続` と `調査時点`）。ここを 1 つに縛ると、足せない側が
-        # 表記回避へ逃げて検出面が静かに縮む（ACE-539-3 が挙げる 3 つの害そのもの）。
-        # 語分割は使うがパス名展開はしない（除外文字列に `*` が来ても cwd を見ない）。
-        _skip_hit=0
-        _skip_ifs="$IFS"
-        set -f
-        IFS=';'
-        # 区切りのタイポ（`;;` や前後の `;`）は空要素を生み（実測: `;後続;;調査時点;`
-        # → 4 要素中 2 つが空）、空文字列は `case *""*` で全行にマッチする = その
-        # claim の全行が skip される。**ここに空要素ガードは置かない** — 全行 skip は
-        # 下の `hits -eq 0` の fail-closed（「正準表現に 1 件も一致しません」）が必ず
-        # 赤にするため、ガードを足しても赤くなる経路が 1 本増えるだけで、退行の検出
-        # 結果は変わらない（実測: ガードを外しても selftest は赤のまま）。
-        for _skip_needle in ${c_skip}; do
-          case "${line}" in *"${_skip_needle}"*) _skip_hit=1; break ;; esac
-        done
-        IFS="$_skip_ifs"
-        set +f
-        [ "${_skip_hit}" -eq 0 ] || continue
-      fi
-      if [ -n "${c_need}" ]; then
-        case "${line}" in *"${c_need}"*) ;; *) continue ;; esac
-      fi
-      # 一致は**1 件ずつ read で受ける**。`for hit in $(...)` は単語分割に加えて
-      # パス名展開も通るため、装飾を許した ERE が返す `**68** suite` のような一致が
-      # glob として解釈される（Issue #529）。read なら空白も装飾記号もそのまま運べる。
-      while IFS= read -r hit; do
-        [ -n "${hit}" ] || continue
-        # 1 つの一致に数値が 2 つ以上入る ERE は claim 定義の誤り（どちらを比べるべきか
-        # 決まらない）。黙って先頭を採らず赤にする。
-        nums="$(printf '%s\n' "${hit}" | grep -oE '[0-9]+' | wc -l | tr -d ' ')"
-        if [ "${nums}" -ne 1 ]; then
-          c_name="$(printf '%s' "${claim}" | cut -d'|' -f1)"
-          echo "  ✗ ${c_name}: 正準表現が 1 一致に数値を ${nums} 個含みます（claim 定義の誤り）: ${hit}" >&2
-          tally_add "${idx}" 1 1
-          continue
-        fi
-        num="$(printf '%s\n' "${hit}" | grep -oE '[0-9]+')"
-        if [ "${num}" = "${c_expect}" ]; then
-          tally_add "${idx}" 1 0
-        else
-          tally_add "${idx}" 1 1
-          c_name="$(printf '%s' "${claim}" | cut -d'|' -f1)"
-          echo "  ✗ ${c_name}: ${rel} の記載 ${num} が実体 ${c_expect} と一致しません" >&2
-          printf '      %s\n' "${line}" >&2
-        fi
-      done < <(printf '%s\n' "${line}" | grep -oE "${c_ere}" || true)
-    done < <(printf '%s\n' "${matched}")
-  done
+  if ! doc_tally="$(printf '%s\n' "${body}" |
+    FF_DOCS_CLAIMS="$CLAIM_ROWS" FF_DOCS_NUM_ERE="$NUM_ERE" FF_DOCS_REL="$rel" awk '
+      BEGIN {
+        count = split(ENVIRON["FF_DOCS_CLAIMS"], records, "\n")
+        for (i = 1; i <= count; i++) {
+          split(records[i], fields, "|")
+          names[i] = fields[1]; expected[i] = fields[2]; patterns[i] = fields[3]
+          gsub(/%N%/, ENVIRON["FF_DOCS_NUM_ERE"], patterns[i])
+          skips[i] = fields[4]; needs[i] = fields[5]
+        }
+        rel = ENVIRON["FF_DOCS_REL"]
+      }
+      {
+        for (i = 1; i <= count; i++) {
+          if (expected[i] == "" || $0 !~ patterns[i]) continue
+          skip = 0
+          if (skips[i] != "") {
+            nskip = split(skips[i], needles, ";")
+            for (j = 1; j <= nskip; j++) {
+              # 空の除外文字列も元の shell と同じく全行に一致する。
+              # 全件除外は後段の hits == 0 で赤になる。
+              if (index($0, needles[j])) { skip = 1; break }
+            }
+          }
+          if (skip || (needs[i] != "" && !index($0, needs[i]))) continue
+          rest = $0
+          while (match(rest, patterns[i])) {
+            # 不正な ERE が空文字へ一致しても無限ループせず赤にする。
+            if (RLENGTH == 0) { hits[i]++; mismatch[i]++; break }
+            hit = substr(rest, RSTART, RLENGTH)
+            rest = substr(rest, RSTART + RLENGTH)
+            numbers = hit
+            nums = gsub(/[0-9]+/, "", numbers)
+            hits[i]++
+            if (nums != 1) {
+              mismatch[i]++
+              printf "  ✗ %s: 正準表現が 1 一致に数値を %d 個含みます（claim 定義の誤り）: %s\n", names[i], nums, hit > "/dev/stderr"
+              continue
+            }
+            match(hit, /[0-9]+/)
+            num = substr(hit, RSTART, RLENGTH)
+            # 数値比較へ暗黙変換させず、先頭 0 も元の文字列比較と同じにする。
+            if ("x" num != "x" expected[i]) {
+              mismatch[i]++
+              printf "  ✗ %s: %s の記載 %s が実体 %s と一致しません\n", names[i], rel, num, expected[i] > "/dev/stderr"
+              printf "      %s\n", $0 > "/dev/stderr"
+            }
+          }
+        }
+      }
+      END {
+        for (i = 1; i <= count; i++) printf "%d %d %d\n", i, hits[i], mismatch[i]
+      }
+    '
+  )"; then
+    bad "${rel}: claim の照合処理に失敗しました（fail-closed）"
+    continue
+  fi
+  TALLY="${TALLY}${doc_tally}
+"
 done < <(printf '%s\n' "${TARGET_DOCS}")
 
-# claim ごとに hits / mismatch を合計して判定する
+# 全 claim の集計を 1 回で行い、各行は shell の文字列分割で取り出す。
+SUMS="$(printf '%s\n' "$TALLY" | awk -v n="${#CLAIMS[@]}" '
+  { h[$1] += $2; m[$1] += $3 }
+  END { for (i = 1; i <= n; i++) printf "%d %d\n", h[i], m[i] }
+')"
 idx=0
 for claim in "${CLAIMS[@]}"; do
   idx=$((idx + 1))
-  c_name="$(printf '%s' "${claim}" | cut -d'|' -f1)"
-  c_expect="$(printf '%s' "${claim}" | cut -d'|' -f2)"
+  sums="${SUMS%%$'\n'*}"
+  SUMS="${SUMS#*$'\n'}"
+  c_name="${claim%%|*}"
+  c_rest="${claim#*|}"
+  c_expect="${c_rest%%|*}"
   if [ -z "${c_expect}" ]; then
     bad "${c_name}: 期待値が導出できていないため照合できません"
     continue
   fi
-  sums="$(printf '%s\n' "${TALLY}" | awk -v i="${idx}" '$1 == i { h += $2; m += $3 } END { printf "%d %d\n", h, m }')"
-  hits="$(printf '%s' "${sums}" | cut -d' ' -f1)"
-  mism="$(printf '%s' "${sums}" | cut -d' ' -f2)"
+  hits="${sums%% *}"
+  mism="${sums#* }"
   if [ "${hits}" -eq 0 ]; then
     bad "${c_name}: 正準表現に 1 件も一致しません（表現を変えたら本 suite も更新する。抽出の空振りを緑にしない）"
   elif [ "${mism}" -gt 0 ]; then

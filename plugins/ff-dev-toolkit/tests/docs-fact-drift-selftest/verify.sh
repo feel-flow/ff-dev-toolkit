@@ -74,12 +74,15 @@
 #   G32. 一致文字列に当たるファイルを cwd に置いた状態でも結果が変わらない → 緑。
 #        旧実装の `for hit in $(...)` は単語分割に加えパス名展開も通るため、装飾を許した
 #        一致が cwd のファイル名へ化けて、正しい記載が赤になる
+#   G36. 同一行の複数一致・先頭 0 のある値も全件を文字列比較する → 赤
+#   G37. claim 本文の境界を直接照合（FM / 図内の見出し / CRLF / 空入力 / 不在）
 #   G11. docs/MASTER.md が無いツリー → 行頭 `○ skip` で緑
 #
 # 「1 一致に数値が 2 つ以上」の claim 定義誤りは fixture から到達できない（claim の
 # ERE はゲート側に固定されており、いずれも 1 一致 1 数値）。将来 claim を追加した際の
 # 歯止めとしてゲート側に残してある検査で、ここでは測らない。
 #
+# 空振り検出: G7（正準表現全消去）/ G19（導出元消失）の理由付き赤と G37 の入力不在を実測。
 # 変異はすべて ASCII 行への perl / ファイル操作で行う。
 set -euo pipefail
 
@@ -135,7 +138,7 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # fixture: docs/ と、導出元（marketplace.json / plugins ツリー）を写す。
 # plugins/ 配下は SKILL.md / verify.sh / 導出に使うファイルだけを写して軽くする。
-make_fixture() {
+build_fixture_seed() {
   rm -rf "$TMP/root"
   mkdir -p "$TMP/root/.claude-plugin"
   cp -R "$REPO_ROOT/docs" "$TMP/root/docs"
@@ -163,6 +166,15 @@ make_fixture() {
     mkdir -p "$TMP/root/$(dirname "$rel")"
     cp "$REPO_ROOT/$rel" "$TMP/root/$rel"
   done
+}
+
+# 元ツリーの列挙・個別 mkdir/cp は 1 回だけ行い、ケースごとに独立したコピーへ戻す。
+# hardlink は使わない: in-place 編集・追記が seed や次のケースへ漏れるのを防ぐ。
+build_fixture_seed
+mv "$TMP/root" "$TMP/seed"
+make_fixture() {
+  rm -rf "$TMP/root"
+  cp -R "$TMP/seed" "$TMP/root"
 }
 
 # $1=ケース名 $2=期待（green / red）$3=赤のとき出力に必要な理由（ERE、省略可）
@@ -579,6 +591,22 @@ else
   grep '✗' "$TMP/out.log" | sed 's/^/    /' | head -6 >&2 || true
 fi
 
+echo "== G36. 一括照合でも全一致を文字列として比較する =="
+# 同じ行の先頭だけを見る退行と、awk の暗黙数値変換による先頭 0 の受理を防ぐ。
+make_fixture
+n_suites="$(find "$TMP/root/plugins/ff-dev-toolkit/tests" -mindepth 2 -maxdepth 2 -name verify.sh -type f | wc -l | tr -d ' ')"
+perl -i -pe 's/^## Changelog$/本文に '"$n_suites"' suite と 999 suite を併記する。\n\n$&/' \
+  "$TMP/root/docs/02-design/ARCHITECTURE.md"
+assert_present "$TMP/root/docs/02-design/ARCHITECTURE.md" "999 suite" "G36a" || true
+run_case "G36a 同一行の正しい値の後ろにある不一致も検出する" red "suite 数: [0-9]+ 件が実体"
+
+make_fixture
+cp "$TMP/root/docs/02-design/ARCHITECTURE.md" "$TMP/g36b-before.md"
+perl -i -pe 's/([0-9]+) suite/"0" . $1 . " suite"/ge' \
+  "$TMP/root/docs/02-design/ARCHITECTURE.md"
+assert_changed "$TMP/g36b-before.md" "$TMP/root/docs/02-design/ARCHITECTURE.md" "G36b" || true
+run_case "G36b 先頭 0 のある値も従来どおり文字列の不一致とする" red "suite 数: [0-9]+ 件が実体"
+
 echo "== G26. マスク出力の直接検査: コードスパン内の <!-- は開始でない（Issue #527 AC-1）=="
 # G18 は「間の記載が走査される」を本体経由で見るが、赤の理由がマーカーの有無に
 # よらないため、マスクそのものの判別力はここで固定する。fixture は here-doc を使わず
@@ -632,6 +660,36 @@ else
   bad "G27 CRLF のマスク出力が期待と違います（rc=${rc}）"
   # G26 と同じ理由で `|| true`（診断出力の非 0 で selftest 全体を中断させない）
   cat -A "$TMP/mask-crlf.actual" 2>/dev/null | sed 's/^/    /' | head -8 >&2 || true
+fi
+
+echo "== G37. claim 本文の境界を直接照合する =="
+# 境界用マスクと図を残すマスクの行番号対応を固定する。CRLF でも同じ期待値。
+printf '%s\r\n' '---' 'title: fixture' '---' 'KEEP' '```text' \
+  '## Changelog' '---' '```' 'AFTER <!-- hidden --> NOTE' '## Changelog' 'DROP' \
+  > "$TMP/claim-boundary.md"
+printf '%s\n' 'KEEP' '```text' '## Changelog' '---' '```' 'AFTER  NOTE' \
+  > "$TMP/claim-boundary.expected"
+if ff_docs_claim_body "$TMP/claim-boundary.md" > "$TMP/claim-boundary.actual" &&
+    cmp -s "$TMP/claim-boundary.expected" "$TMP/claim-boundary.actual"; then
+  ok "G37 FM と Changelog を除外し、CRLF の図と後続本文を保持"
+else
+  bad "G37 claim 本文の境界が期待と違います"
+fi
+printf '%s\n' '---' 'title: unclosed' '```text' '---' '```' 'DROP' \
+  > "$TMP/claim-unclosed.md"
+if ff_docs_claim_body "$TMP/claim-unclosed.md" > "$TMP/claim-unclosed.actual" &&
+    [ ! -s "$TMP/claim-unclosed.actual" ]; then
+  ok "G37 未閉鎖 FM は図内の --- で閉じない"
+else
+  bad "G37 未閉鎖 FM の本文が漏れました"
+fi
+: > "$TMP/claim-empty.md"
+if ff_docs_claim_body "$TMP/claim-empty.md" > "$TMP/claim-empty.actual" &&
+    [ ! -s "$TMP/claim-empty.actual" ] &&
+    ! ff_docs_claim_body "$TMP/claim-missing.md" > "$TMP/claim-missing.actual" 2>/dev/null; then
+  ok "G37 空入力は本文なし、入力不在は非 0"
+else
+  bad "G37 空入力または入力不在の判定が期待と違います"
 fi
 
 echo "== G21. 実体側を 1 件増やす（Issue #519 AC-2 の逆方向）=="

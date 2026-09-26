@@ -225,17 +225,19 @@ cat "$TMP/body.md"
 SH
 chmod +x "$STUB/codex"
 
-# --- stub: tail / git（既定は素通し。センチネルが在るときだけ失敗させる） ---
+# --- stub: tail / git（故障注入区間だけ wrapper を置く） ---
 # 未解消 Critical ガードの残り 3 分岐は「レポートを読めない」「現在の系列を
 # 特定できない」という環境側の故障で、レポート本文の細工では到達できない
 # （本文で作れるのは機械状態の破損まで）。失敗そのものを注入して実経路を通す。
-# 素通しを既定にしているので、センチネルを置かないケースは一切影響を受けない。
+# 通常区間は実 binary への symlink にし、呼び出しごとの Bash 起動を避ける。
+# PATH を /usr/bin:/bin へ限定するケースも、従来と同じ REAL_* の実体を使う。
+# 故障区間では wrapper へ差し替え、対象外の呼び出しは同じ実体へ素通しする。
 # 「レポートを読めない」のうち**実運用で起きる形**（権限）は chmod 000 で直接
 # 作るので、tail のセンチネルは chmod が効かない環境の代替と、抽出だけ成功した
 # 状態（マーカー検査だけが落ちる）の生成に使う。
 REAL_TAIL="$(command -v tail)"
 REAL_GIT="$(command -v git)"
-cat > "$STUB/tail" <<SH
+cat > "$TMP/tail-fault-wrapper" <<SH
 #!/usr/bin/env bash
 # multi-agent.sh がレポートを読む形は \`tail -n 12 <report>\` の 2 箇所だけ
 # （機械状態の抽出 → Critical マーカー検査）。N 回目**以降を全部**落とすので、
@@ -249,8 +251,9 @@ if [[ -f "$TMP/tail-fail-nth" && "\$*" == "-n 12 "*"integrated-report.md" ]]; th
 fi
 exec "$REAL_TAIL" "\$@"
 SH
-chmod +x "$STUB/tail"
-cat > "$STUB/git" <<SH
+chmod +x "$TMP/tail-fault-wrapper"
+ln -s "$REAL_TAIL" "$STUB/tail"
+cat > "$TMP/git-fault-wrapper" <<SH
 #!/usr/bin/env bash
 # current_review_series_id() の \`git symbolic-ref --quiet HEAD\` だけを落とす。
 # rc=1（detached）は正常系なので、rc!=1 のエラーを注入する。
@@ -278,7 +281,8 @@ if [[ -f "$TMP/git-symbolic-ref-fail-after" && "\$*" == "symbolic-ref --quiet HE
 fi
 exec "$REAL_GIT" "\$@"
 SH
-chmod +x "$STUB/git"
+chmod +x "$TMP/git-fault-wrapper"
+ln -s "$REAL_GIT" "$STUB/git"
 
 REPORT="$REPO/.review-results/integrated-report.md"
 MARKER='<!-- CRITICAL_BLOCK -->'
@@ -1387,7 +1391,11 @@ git switch -q feature/x
 # Guard call を外した変異は、同じ入力で部分再検証を通し、マーカーを
 # 最新レポートから消すことを実測する。
 MUTANT_PLUGIN="$TMP/mutant-plugin"
-cp -R "$PLUGIN_ROOT" "$MUTANT_PLUGIN"
+# 実 orchestrator / adapter / config / perspective と plugin-root guard・巡回カウンタを
+# そのまま複製する。MCP の node_modules は shell の変異に無関係なのでコピーしない。
+# 他の source / fixture は全件保持し、将来の依存追加でも写しだけ欠落させない。
+mkdir -p "$MUTANT_PLUGIN"
+tar -C "$PLUGIN_ROOT" --exclude='./mcp/node_modules' -cf - . | tar -C "$MUTANT_PLUGIN" -xf -
 sed '/capture_and_guard_unresolved_critical_state || return 2/d' \
   "$MULTI_AGENT" > "$MUTANT_PLUGIN/scripts/multi-agent.sh.mutant"
 mv "$MUTANT_PLUGIN/scripts/multi-agent.sh.mutant" "$MUTANT_PLUGIN/scripts/multi-agent.sh"
@@ -1774,6 +1782,10 @@ assert_recovery_hint "$TMP/recovery-empty-state.log" \
   'Inspect the Critical section of the leftover report, then add --fresh' \
   "マーカーと空状態の矛盾による中断も復帰手段を案内する"
 
+# 実 binary の symlink を先に外す（cp でリンク先を上書きしない）。
+rm "$STUB/tail"
+cp "$TMP/tail-fault-wrapper" "$STUB/tail"
+
 # 分岐 8: レポートファイルそのものを読めない（**実運用で起きる形**）。権限を
 # 落としただけの残骸は機械状態の抽出そのものが落ちるので、分岐 1（機械状態を
 # 解釈できない）と同じ入口に来る。ここが `add --fresh` を出すと、誰も読んでいない
@@ -1850,6 +1862,8 @@ assert_fresh_ruled_out "$TMP/recovery-unreadable-report-empty.log" \
   "読めないレポートは --fresh を出さない理由も案内する（空状態の経路）"
 
 rm -f "$TMP/tail-fail-nth" "$TMP/tail-calls"
+rm "$STUB/tail"
+ln -s "$REAL_TAIL" "$STUB/tail"
 
 # 「レポートを読めない」と断定してよいのは tail が落ちたときだけ。マーカー検査の
 # grep 自体が失敗しても（grep のエラー rc=2 / PATH 上の grep 不在 rc=127）、戻り値
@@ -1888,6 +1902,9 @@ if grep -qF 'The report file could not be read' "$TMP/recovery-grep-error.log"; 
 else
   ok "grep の失敗を「レポートを読めない」と断定しない"
 fi
+
+rm "$STUB/git"
+cp "$TMP/git-fault-wrapper" "$STUB/git"
 
 # 分岐 11: 現在のレビュー系列を特定できない（残骸ではなくリポジトリ側の故障）。
 : > "$TMP/git-symbolic-ref-fail"
@@ -2018,6 +2035,8 @@ rm -f "$TMP/git-symbolic-ref-calls"
 printf '1\n' > "$TMP/git-symbolic-ref-fail-after"
 run_sequence_step "$MULTI_AGENT" code-review "$TMP/report-no-series.log"
 rm -f "$TMP/git-symbolic-ref-fail-after" "$TMP/git-symbolic-ref-calls"
+rm "$STUB/git"
+ln -s "$REAL_GIT" "$STUB/git"
 if grep -qF 'cannot identify the current review series for the report.' "$TMP/report-no-series.log"; then
   ok "レポート生成側の系列特定失敗を実走で発火できている"
 else

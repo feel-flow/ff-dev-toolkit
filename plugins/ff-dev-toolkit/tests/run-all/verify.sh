@@ -73,6 +73,8 @@
 #           見出し行（MISS_PROBE_BASELINE=(）や SCRIPTS=( が改稿されて犠牲 suite を合成
 #           できない木を与えると 14b-0 が赤になる（以降の 14b は成立しないと明示する）。
 #
+# 空振り検出: 一括走査だけを exit 23 にした awk を与えると、個別再走査が成功しても error_scan を返す。空 tracked 一覧・未読・対象実体なし・空ファイルを挟む境界も batch controls で固定する。
+#
 # 使い方: bash plugins/ff-dev-toolkit/tests/run-all/verify.sh
 
 set -euo pipefail
@@ -1926,10 +1928,11 @@ _fast_all=$((_fast_run + _fast_excl))
 # 複製木は git リポジトリの外に在るので、dirty tree の起動ガードから見ると「汚れているか確認できない」
 # = fail-closed で停止する対象になる。ここで測りたいのはモード解決であってガードではないので明示的に
 # オプトアウトする（ガード自身の 4 ケースは case 39 が隔離した一時リポジトリで測る）。
+# モード行列は逐次実行する。並列の集計・順序・上限は case 30 / 32 で全件確認する。
 run_tree() {
   # 代入は "$@"（-u オプション列）の**後ろ**へ置く。env は最初の非オプション語より後を
   # コマンド引数として扱うため、代入を先頭に置くと以降の -u が env へ届かない。
-  if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP "$@" FF_RUN_ALL_ALLOW_DIRTY=1 \
+  if RUN_OUT="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_ALLOW_SKIP "$@" FF_RUN_ALL_ALLOW_DIRTY=1 FF_RUN_ALL_JOBS=1 \
     bash "$_fast_fx/run-all.sh" 2>&1)"; then RUN_RC=0; else RUN_RC=$?; fi
 }
 # 「全件が走った」「既定（高速モード）ぶんだけ走った」のサマリー行は 26-B 以降で繰り返し使う。
@@ -2265,7 +2268,7 @@ expect_has '^⚠️  FF_RUN_ALL_JOBS を解釈できません' "解釈できな�
 expect_has '^suites: total=2 run=2 passed=1 failed=0 skipped=1 not-run=0$' "解釈できない値でも実行は続行し、集計は変わらない"
 
 # run_runner はケース間の再現性のため既定で FF_RUN_ALL_JOBS=1 を注入する。したがって「未指定のとき
-# 何が選ばれるか」（CPU 数由来・上限 8・入れ子なら逐次）は素の環境で測る。
+# 何が選ばれるか」（CPU 数由来・上限 5・入れ子なら逐次）は素の環境で測る。
 _par_run_default() { # <env への追加指定...>（-u NAME でも NAME=VALUE でもよい）
   if _par_dflt_out="$(env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_JOBS "$@" \
     FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" \
@@ -2284,7 +2287,7 @@ else
   printf '%s\n' "$_par_dflt_out" | sed 's/^/    | /' >&2
 fi
 
-# 上限 8 は「1 桁かつ 8 以下」で縛る。16 コア機なら `同時実行数 16` になって落ちるので、上限を外す
+# 上限 5 は「1 桁かつ 5 以下」で縛る。16 コア機なら `同時実行数 16` になって落ちるので、上限を外す
 # 退行はここで赤くなる。論理 CPU が 1 の環境では並列にならないので、その回は告知が出ないことを
 # 主張する（機械の性質で分岐するが、どちらも「既定の解決結果」を測る）。
 _par_ncpu="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
@@ -2292,10 +2295,10 @@ case "$_par_ncpu" in
   ''|*[!0-9]*) _par_ncpu=1 ;;
 esac
 if [ "$_par_ncpu" -gt 1 ]; then
-  if [ "$(printf '%s\n' "$_par_dflt_out" | grep -c '^🧵 並列実行: 同時実行数 [1-8]（')" -gt 0 ]; then
-    ok "未指定の既定は 1〜8 の同時実行数へ解決される（上限 8 が効いている。論理 CPU=${_par_ncpu}）"
+  if [ "$(printf '%s\n' "$_par_dflt_out" | grep -c '^🧵 並列実行: 同時実行数 [1-5]（')" -gt 0 ]; then
+    ok "未指定の既定は 1〜5 の同時実行数へ解決される（上限 5 が効いている。論理 CPU=${_par_ncpu}）"
   else
-    bad "未指定の既定が 1〜8 の同時実行数にならない（論理 CPU=${_par_ncpu}）"
+    bad "未指定の既定が 1〜5 の同時実行数にならない（論理 CPU=${_par_ncpu}）"
     printf '%s\n' "$_par_dflt_out" | grep '^🧵' | sed 's/^/    | /' >&2
   fi
 else
@@ -3418,6 +3421,186 @@ else
   bad "node_test_scan を実行できません（末尾フラッシュ）"; NT_SELFTEST_OK=0
 fi
 
+# batch-scan-regressions:start
+# Batch controls exercise the real scanners with a fake tracked roster (no live git
+# mutation). Successful batches must inspect the same files; failed batches stay red.
+batch_scan_regressions() {
+  local fx out rc calls fn mode expected
+  fx="$(mktemp -d "${TMPDIR:-/tmp}/ff-batch-scan.XXXXXX")" || { bad "batch scan fixture を作れない"; return; }
+  local FIXTURE_BATCH_ROOT="$fx" FIXTURE_BATCH_REAL_AWK
+  FIXTURE_BATCH_REAL_AWK="$(command -v awk)"
+  local FIXTURE_BATCH_AWK_FAIL="" FIXTURE_BATCH_EMPTY_LIST=0
+  local FF_NODE_TEST_GIT="$fx/git-stub" FF_EXIT_CODE_GIT="$fx/git-stub"
+  local FF_NODE_TEST_AWK="$fx/awk-stub" FF_EXIT_CODE_AWK="$fx/awk-stub"
+  export FIXTURE_BATCH_ROOT FIXTURE_BATCH_REAL_AWK FIXTURE_BATCH_AWK_FAIL FIXTURE_BATCH_EMPTY_LIST
+  export FF_NODE_TEST_GIT FF_EXIT_CODE_GIT FF_NODE_TEST_AWK FF_EXIT_CODE_AWK
+  cat >"$fx/git-stub" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in
+  *' rev-parse '*) printf '%s\n' "$FIXTURE_BATCH_ROOT" ;;
+  *' ls-files '*)
+    [ "$FIXTURE_BATCH_EMPTY_LIST" = 0 ] || exit 0
+    while IFS= read -r file; do
+      case " $* " in *' -z '*) printf '%s\0' "$file" ;; *) printf '%s\n' "$file" ;; esac
+    done <"$FIXTURE_BATCH_ROOT/roster"
+    ;;
+  *) exit 97 ;;
+esac
+EOF
+  cat >"$fx/awk-stub" <<'EOF'
+#!/usr/bin/env bash
+n=0
+for arg in "$@"; do
+  case "$arg" in "$FIXTURE_BATCH_ROOT"/*) n=$((n + 1)) ;; esac
+done
+printf '%s\n' "$n" >>"$FIXTURE_BATCH_ROOT/calls"
+case "$FIXTURE_BATCH_AWK_FAIL" in
+  always) exit 23 ;;
+  batch) [ "$n" -le 1 ] || exit 23 ;;
+esac
+exec "$FIXTURE_BATCH_REAL_AWK" "$@"
+EOF
+  chmod +x "$fx/git-stub" "$fx/awk-stub"
+  printf '%s\n' a.sh b.sh SKILL.md >"$fx/roster"
+  printf ':\n' >"$fx/a.sh"
+  printf ':' >"$fx/b.sh"
+  printf '%s\n' '```bash' ':' '```' >"$fx/SKILL.md"
+  for fn in node_test_check_tracked exit_code_check_tracked; do
+    : >"$fx/calls"
+    rc=0; out="$($fn "$fx" 2>"$fx/err")" || rc=$?
+    calls="$(cat "$fx/calls")"
+    if [ "$fn" = node_test_check_tracked ]; then
+      expected='NODE_TEST_RESULT=ok SCANNED=2 HITS=0 ERRORS=0 SKIPPED=0'
+      mode=2
+    else
+      expected='EXIT_CODE_RESULT=ok SCANNED=3 HITS=0 ERRORS=0 SKIPPED=0'
+      mode=$'2\n1'
+    fi
+    if [ "$rc" -eq 0 ] && [ "$out" = "$expected" ] && [ "$calls" = "$mode" ]; then
+      ok "$fn: 正常な全対象を種別ごとの一括走査で検証（改行なし最終行も含む）"
+    else
+      bad "$fn: 一括走査の結果・対象件数・起動数が不正: rc=$rc out=[$out] calls=[$calls]"
+    fi
+    for FIXTURE_BATCH_AWK_FAIL in batch always; do
+      rc=0; out="$($fn "$fx" 2>"$fx/err")" || rc=$?
+      if [ "$rc" -ne 0 ] && [[ "$out" == *'_RESULT=error_scan '* ]] && [[ "$out" == *'ERRORS=1 '* ]]; then
+        ok "$fn: 走査器エラー（${FIXTURE_BATCH_AWK_FAIL}）を個別再走査後も保持"
+      else
+        bad "$fn: 走査器エラー（${FIXTURE_BATCH_AWK_FAIL}）が消えた: rc=$rc out=[$out]"
+      fi
+    done
+    FIXTURE_BATCH_AWK_FAIL=""
+    FIXTURE_BATCH_EMPTY_LIST=1
+    : >"$fx/calls"
+    rc=0; out="$($fn "$fx" 2>"$fx/err")" || rc=$?
+    if [ "$rc" -ne 0 ] && [[ "$out" == *'_RESULT=error_list '* ]] && [ ! -s "$fx/calls" ]; then
+      ok "$fn: 空の tracked 一覧は未走査のまま拒否"
+    else
+      bad "$fn: 空一覧が緑、または stdin を走査した: rc=$rc out=[$out]"
+    fi
+    FIXTURE_BATCH_EMPTY_LIST=0
+  done
+
+  # A following file must not supply a reporter pin or consume a prior file's rc.
+  printf '%s\n' 'node --test x \' >"$fx/a.sh"
+  : >"$fx/empty.sh"
+  printf '%s' '--test-reporter=spec' >"$fx/b.sh"
+  rc=0; out="$(node_test_scan "$fx/a.sh" "$fx/empty.sh" "$fx/b.sh")" || rc=$?
+  if [ "$rc" -eq 0 ] && [[ "$out" == '1:node-test-unpinned:'* ]]; then
+    ok "Node scan: 空ファイルを挟んでも前ファイルの末尾継続を独立して検査"
+  else
+    bad "Node scan: 次のファイルの pin が前のファイルの違反を隠した: [$out]"
+  fi
+  printf '%s\n' 'bash tests/run-all.sh' 'rc=$?' 'echo done' >"$fx/a.sh"
+  printf '%s' 'exit $rc' >"$fx/b.sh"
+  rc=0; out="$(exit_code_scan "$fx/a.sh" "$fx/empty.sh" "$fx/b.sh")" || rc=$?
+  if [ "$rc" -eq 0 ] && [[ "$out" == *'gate-exit-dropped:'* ]]; then
+    ok "Exit-code scan: 次のファイルは前ファイルが持ち越した rc を消費しない"
+  else
+    bad "Exit-code scan: ファイル境界で未伝播の rc が隠れた: [$out]"
+  fi
+  printf '%s\n' 'bash tests/run-all.sh' 'rc=$?' 'exit $rc' >"$fx/a.sh"
+  printf '%s' 'echo done' >"$fx/b.sh"
+  rc=0; out="$(exit_code_scan "$fx/a.sh" "$fx/empty.sh" "$fx/b.sh")" || rc=$?
+  if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    ok "Exit-code scan: 同一ファイル内で伝播した rc は後続ファイルへ持ち越さない"
+  else
+    bad "Exit-code scan: 伝播済みの状態がファイル境界を越えた: [$out]"
+  fi
+
+  # Force each scanner's hit path and preserve the original filename diagnostics.
+  for fn in node_test_check_tracked exit_code_check_tracked; do
+    if [ "$fn" = node_test_check_tracked ]; then
+      printf '%s' 'node --test x' >"$fx/a.sh"
+    else
+      printf '%s' 'bash tests/run-all.sh; echo done' >"$fx/a.sh"
+    fi
+    rc=0; out="$($fn "$fx" 2>"$fx/err")" || rc=$?
+    if [ "$rc" -ne 0 ] && [[ "$out" == *'_RESULT=hits '* ]] && grep -F 'a.sh:' "$fx/err" >/dev/null; then
+      ok "$fn: 一括検出した違反を個別走査で元ファイルへ帰属させる"
+    else
+      bad "$fn: 違反の終了コードまたはファイル名が消えた: rc=$rc out=[$out]"
+    fi
+    printf ':\n' >"$fx/a.sh"
+    chmod 000 "$fx/a.sh"
+    if [ -r "$fx/a.sh" ]; then
+      echo "  ○ skip: $fn の未読 probe は chmod 000 でも読める環境のため未実施"
+    else
+      rc=0; out="$($fn "$fx" 2>"$fx/err")" || rc=$?
+      if [ "$rc" -ne 0 ] && [[ "$out" == *'_RESULT=error_scan '* ]] && grep -F 'a.sh (unreadable)' "$fx/err" >/dev/null; then
+        ok "$fn: 読めない対象を一括成功へ混ぜない"
+      else
+        bad "$fn: 読めない対象の検査が成立しない: rc=$rc out=[$out]"
+      fi
+    fi
+    chmod 644 "$fx/a.sh"
+    printf '%s\n' missing.sh >"$fx/roster"
+    : >"$fx/calls"
+    rc=0; out="$($fn "$fx" 2>"$fx/err")" || rc=$?
+    if [ "$rc" -eq 0 ] && [[ "$out" == *'_RESULT=ok SCANNED=0 '*'SKIPPED=1' ]] && [ ! -s "$fx/calls" ]; then
+      ok "$fn: 実体の無い対象は未走査を報告し、空配列で stdin を読まない"
+    else
+      bad "$fn: 欠損対象を走査済みとした: rc=$rc out=[$out]"
+    fi
+    printf '%s\n' a.sh b.sh SKILL.md >"$fx/roster"
+  done
+  # Reuse every existing scanner probe to compare exact per-file output with the
+  # corresponding batch. This includes malformed endings and stateful rc probes.
+  local scanner prefix probe part_rc
+  local -a probe_files=()
+  for mode in node sh md; do
+    probe_files=()
+    case "$mode" in
+      node) scanner=node_test_scan; prefix=NT_PROBE_ ;;
+      sh) scanner=exit_code_scan; prefix=EXITCODE_PROBE_ ;;
+      md) scanner=exit_code_scan_bash_blocks; prefix=EXITCODE_PROBE_MD_ ;;
+    esac
+    : >"$fx/single.out"
+    rc=0
+    while IFS= read -r probe; do
+      case "$mode:$probe" in sh:EXITCODE_PROBE_MD_*) continue ;; esac
+      printf '%s\n' "${!probe}" >"$fx/$probe"
+      probe_files+=("$fx/$probe")
+      part_rc=0
+      "$scanner" "$fx/$probe" >>"$fx/single.out" || part_rc=$?
+      [ "$part_rc" -eq 0 ] || rc=$part_rc
+    done < <(compgen -A variable "$prefix")
+    if [ "${#probe_files[@]}" -eq 0 ]; then
+      bad "$scanner: 既存 probe 集合が空（比較不成立）"
+      continue
+    fi
+    "$scanner" "${probe_files[@]}" >"$fx/batch.out" || rc=$?
+    if [ "$rc" -eq 0 ] && cmp -s "$fx/single.out" "$fx/batch.out"; then
+      ok "$scanner: 既存 probe ${#probe_files[@]} 件の単独走査と一括走査の出力が一致"
+    else
+      bad "$scanner: 既存 probe の単独・一括走査が不一致（rc=${rc}）"
+    fi
+  done
+  rm -rf "$fx"
+}
+batch_scan_regressions
+# batch-scan-regressions:end
+
 if [ "$NT_SELFTEST_OK" -eq 1 ]; then
   NT_REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || NT_REPO_ROOT=""
   if [ -z "$NT_REPO_ROOT" ]; then
@@ -4025,6 +4208,19 @@ fi
 # cases ファイルへ置く（ADR-057 決定 2）。
 # shellcheck source=cases/changed-selection.sh
 . "$SCRIPT_DIR/cases/changed-selection.sh"
+
+# 明示パスでは dirname / basename の意味を維持する（既定一覧の高速化の回帰）。
+run_runner "$FIXTURES/pass//verify.sh"
+expect_rc 0 "連続スラッシュを含む明示パスも実行できる"
+expect_has '^== pass ==$' "明示パスの suite 名は dirname / basename と一致する"
+if RUN_OUT="$(cd "$FIXTURES/pass" && env -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL \
+  FF_RUN_ALL_JOBS=1 FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" bash "$RUNNER" verify.sh 2>&1)"; then
+  RUN_RC=0
+else
+  RUN_RC=$?
+fi
+expect_rc 0 "ディレクトリを付けない明示パスも実行できる"
+expect_has '^== \. ==$' "ディレクトリを付けない明示パスの suite 名は dot を保つ"
 
 rm -f "$RUN_GATE_RECORD"
 

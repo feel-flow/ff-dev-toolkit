@@ -40,7 +40,7 @@
 #      判定不能は exit 2（期待影響度の欠落・case 0 件・cache 空・判定セルが読めない・全 Issue が読めず 0 行・
 #      cache 非 JSON / 形 drift・数値オプション不正・未知オプション・AC 見出しの下に無い判定表・表の途中の表以外の行・
 #      判定が 2 列目でないヘッダ）。ファイル一覧が 100 件で切れた PR は skipped として数える。--summarize は過剰 / 過少と厳しい側 / 緩い側を分け、
-#      契約外の結果行を拒否する。tsx ランナーが起動できない環境はこの節だけ部分 skip
+#      契約外の結果行を拒否する。ローカル tsx 不在は冒頭で suite 全体を失敗させ、導入済み runner の起動 probe が失敗した場合はこの節だけ部分 skip
 #   J. 言語 A/B セット生成器（scripts/jev/build-lang-ab-sets.ts）は、生成済みセットへの後処理として
 #      「判定対象の言語だけが違う対」を作る。動かすのは state の各フィールドと候補文
 #      （questions.*.instructions.candidate）で、質問文（instructions.question）・criteria・expected・
@@ -61,7 +61,7 @@
 #      1 行に質問が 2 件以上・モード併用・未知オプション・同じフラグ 2 回・--with / --translations 欠落。
 #      コードスパンの対応規則は CommonMark（長さ N の列は長さ N の列とだけ対にする）。
 #      同梱の翻訳 fixture は SSOT 専用（docs/04-quality/jev-lang-ab/）なので、公開 checkout では
-#      J38 / J39 だけ部分 skip。tsx ランナーが起動できない環境はこの節だけ部分 skip
+#      J38 / J39 だけ部分 skip。ローカル tsx 不在は冒頭で suite 全体を失敗させ、導入済み runner の起動 probe が失敗した場合はこの節だけ部分 skip
 #   K. 切替入口（scripts/jev/jev-decide.sh）の二段構え。FF_JEV_MODE が on でない・判定点が名簿に無い
 #      （設定済みの空値は 0 件）ときは通信も記録もせず exit 12、on だけでは課金経路が開かない（FF_JEV_ENABLED
 #      無しは exit 11 disabled で記録だけ残す）、全質問の confidence が閾値以上のときだけ exit 0 adopt、
@@ -99,7 +99,8 @@
 # 変異検出: jev-decide.sh の `FF_JEV_MODE != on → exit 12` を削ると (K1 / K2 / K4 / K28d) が赤になる（2026-09-22 実測。250 件中 4 件失敗。K1 は通信 1 回・記録あり・adopt まで進み、K4 は K1 / K2 が残した記録で赤になり、K28d は off が依存検査（jq 不在 = 69）へ進んでしまう形が見える）。
 # 変異検出: 閾値検証の `> 0` を `>= 0` へ緩めると (K13h) が赤になる（2026-09-22 実測。250 件中 2 件失敗〔0 と 0.0〕。confidence 0 でも採る「全件採用」の設定を通さない）。
 #
-# 依存: bash 3.2 / jq / mktemp。一時領域を作れない環境は skip ではなく赤（suite 全体の
+# 空振り検出: lockfile で導入するローカル tsx 不在の複製配置は exit 1（npm ci の案内）を返す。
+# 依存: bash 3.2 / jq / mktemp / Node.js / npm ci 済みの mcp/node_modules。一時領域を作れない環境は skip ではなく赤（suite 全体の
 # skip 経路を持たない）。実作業ツリーには触れない（HOME・PATH・TMPDIR を隔離する）。
 set -uo pipefail
 
@@ -111,6 +112,16 @@ DECIDE="$PLUGIN_ROOT/scripts/jev/jev-decide.sh"
 SAME_ACTION_Q="$PLUGIN_ROOT/scripts/jev/questions/same-action.json"
 ACE_GEN="$PLUGIN_ROOT/scripts/jev/build-ace-eval-sets.ts"
 PROBE="$PLUGIN_ROOT/scripts/jev/fixtures/ja-en-choice-probe.jsonl"
+# 評価セット生成のたびに package manager の探索を繰り返さない。
+# lockfile で導入した runner を使い、実行可能性の probe は ace-run-ts.sh に残す。
+JEV_TS_RUNNER="$PLUGIN_ROOT/mcp/node_modules/.bin/tsx"
+if [ ! -x "$JEV_TS_RUNNER" ]; then
+  echo "✗ jev-adapter: tsx がありません。npm ci --prefix \"$PLUGIN_ROOT/mcp\" を実行してください" >&2
+  exit 1
+fi
+# PATH 経由なら checkout のパスに空白があっても runner 指定を語分割しない。
+export PATH="$PLUGIN_ROOT/mcp/node_modules/.bin:$PATH"
+export FF_ACE_TS_RUNNER=tsx
 
 PASS=0
 FAIL=0

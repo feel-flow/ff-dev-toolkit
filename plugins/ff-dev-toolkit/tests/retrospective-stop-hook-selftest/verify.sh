@@ -33,6 +33,14 @@ trap cleanup EXIT
 make_fixture() {
   local name="$1"
   local root="$TMP/$name/plugin"
+  # The verified baseline is immutable; copy it once per mutation, never link it.
+  # This retains fixture isolation without re-deriving/copying the hook roster 81 times.
+  if [ -n "${BASE:-}" ]; then
+    mkdir -p "$TMP/$name"
+    cp -R "$BASE" "$root"
+    printf '%s' "$root"
+    return
+  fi
   mkdir -p "$root/hooks" "$root/tests/retrospective-stop-hook" "$root/skills/retrospective"
   cp "$PLUGIN_ROOT/hooks/retrospective-stop.sh" "$root/hooks/retrospective-stop.sh"
   cp "$PLUGIN_ROOT/hooks/retrospective-context.sh" "$root/hooks/retrospective-context.sh"
@@ -85,12 +93,37 @@ if [ "$RC" -ne 0 ]; then
   exit 1
 fi
 echo "  ✓ baseline は green"
+if [ "${FF_RETRO_PROFILE:-0}" = 1 ]; then
+  printf '%s\n' "$OUT" | grep '^PROFILE ' || true
+fi
 if printf '%s' "$OUT" | grep -F "retrospective Stop hook: ${EXPECTED_CONSUMER_CHECKS} 件すべて成功" >/dev/null; then
   echo "  ✓ consumer の検査総数は ${EXPECTED_CONSUMER_CHECKS} 件"
 else
   echo "✗ consumer の検査総数が期待 ${EXPECTED_CONSUMER_CHECKS} 件と一致しません: $OUT" >&2
   exit 1
 fi
+
+# The selector is part of the safety gate: misspelled, absent, or empty selected
+# coverage must fail before it can turn a mutation into a vacuous green result.
+selector_rejects() {
+  local root="$1" group="$2" expected="$3" rc=0 output
+  output="$(bash "$root/tests/retrospective-stop-hook/verify.sh" --group "$group" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] || ! printf '%s\n' "$output" | grep -F "$expected" >/dev/null; then
+    echo "✗ selector probe failed: $group exit=$rc output=[$output]" >&2
+    exit 1
+  fi
+}
+selector_rejects "$BASE" nonexistent 'unknown retrospective group'
+ROOT="$(make_fixture selection-missing)"
+perl -0pi -e 's/selected\(\) \{[^\n]+/selected() { return 1; }/' "$ROOT/tests/retrospective-stop-hook/verify.sh"
+selector_rejects "$ROOT" contracts 'group selection ran 0 groups'
+ROOT="$(make_fixture selection-empty)"
+perl -0pi -e 's/if selected contracts; then\n.*?end_group contracts/if selected contracts; then\nbegin_group\nend_group contracts/s' "$ROOT/tests/retrospective-stop-hook/verify.sh"
+selector_rejects "$ROOT" contracts 'empty retrospective group'
+ROOT="$(make_fixture selection-empty-asdd)"
+: > "$ROOT/tests/retrospective-stop-hook/asdd.test.mjs"
+selector_rejects "$ROOT" asdd 'ASDD test count must be 7'
+echo '  ✓ group selection rejects unknown, missing, empty shell and empty Node coverage'
 
 # 変異検出の期待文字列（`✖ <テスト名>`）は node --test の reporter に依存する。既定の
 # reporter は Node のバージョンと stdout が TTY かで変わり（実測 2026-09-12: v22.20.0 は
@@ -163,36 +196,31 @@ expect_occurrences() { # <ファイル> <固定文字列> <期待数>
   fi
 }
 
-# 変異の検査は**登録してから並列に回す**。
-#
-# consumer 1 回が実測 21 秒（うち 3 秒は入力上限の契約を測る sleep で、これは契約そのもの
-# なので削れない）で、変異を直列だと数十分、並列エージェント下の高負荷では
-# 1 時間級を優に超える。**時間が理由で誰も回さない検査は、検出力ゼロの検査と同じ**なので、
-# 実行時間そのものを設計対象にする。
-#
-# 並列化できるのは fixture が変異ごとに隔離されているから（make_fixture が $TMP/<name>/plugin
-# を作り、consumer はその root だけを読む）。共有状態は無い。ここで変えるのは**実行の仕方**
-# だけで、変異の一覧・期待診断・判定条件はすべて元のまま — 登録ブロックには触らない。
-#
-# 出力は登録順に並べ直す（完了順にすると、同じ一覧でも実行のたびに並びが変わって前回との
-# 差分が読めない。run-all.sh の並列実行と同じ理由）。
+# Register isolated mutations, then run only the owning consumer group. The full
+# baseline still checks all 121 shell and 7 Node cases; all 81 original mutations
+# retain their expected diagnostics. On the expected failure the selected group may
+# stop early: unrelated remaining checks cannot add evidence for that mutation.
+# A copied baseline keeps fixtures isolated, and ordered spool collection keeps output
+# deterministic. FF_RETRO_PROFILE=1 exposes per-group and per-mutation timing.
 MUTATIONS=0
 JOB_N=0
 JOB_NAMES=()
 JOB_KINDS=()
 JOB_EXPECTED=()
 JOB_ROOTS=()
+JOB_GROUPS=()
 
-register_job() { # <kind: mutation> <name> <expected> <root>
+register_job() { # <kind: mutation> <name> <expected> <root> <group>
   JOB_KINDS+=("$1")
   JOB_NAMES+=("$2")
   JOB_EXPECTED+=("$3")
   JOB_ROOTS+=("$4")
+  JOB_GROUPS+=("$5")
   JOB_N=$((JOB_N + 1))
 }
 
 check_mutation() {
-  register_job mutation "$1" "$2" "$3"
+  register_job mutation "$1" "$2" "$3" "$4"
 }
 
 # 良性の変更（節外・節内フェンスへの散文追記）で赤くならないことは、節の切り出しを共通 lib へ
@@ -202,12 +230,12 @@ ROOT="$(make_fixture active-guard)"
 # `#1612` で再入ガードは判定モジュール側へ移った（shell の `!= "first"` は case へ）。
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'input.stop_hook_active || RETROSPECTIVE_DONE' 1
 perl -0pi -e 's/input\.stop_hook_active \|\| RETROSPECTIVE_DONE/RETROSPECTIVE_DONE/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "再入ガード削除" "stop_hook_active=true は再継続せず終了を許可" "$ROOT"
+check_mutation "再入ガード削除" "stop_hook_active=true は再継続せず終了を許可" "$ROOT" stop
 
 ROOT="$(make_fixture off-guard)"
 expect_occurrences "$ROOT/hooks/retrospective-stop.sh" 'case "$MODE" in' 2
 perl -0pi -e 's/case "\$MODE" in/case "auto" in/g' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "off ガード削除" "RETROSPECTIVE_MODE=off は自動振り返りを無効化" "$ROOT"
+check_mutation "off ガード削除" "RETROSPECTIVE_MODE=off は自動振り返りを無効化" "$ROOT" stop
 
 ROOT="$(make_fixture invalid-json)"
 # 変異は「壊す」ではなく「別の正しい答えを返す」形にすること。単に
@@ -215,25 +243,25 @@ ROOT="$(make_fixture invalid-json)"
 # hook 側の `|| exit 0` が拾って**無音 = 期待どおり**に見えてしまう（実測で空振り）。
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '    process.exit(2);' 1
 perl -0pi -e 's/  } catch \(_\) \{\n    process\.exit\(2\);\n  }/  } catch (_) {\n    finish("first");\n  }/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "不正 JSON fail-open 削除" "不正 JSON は fail-open" "$ROOT"
+check_mutation "不正 JSON fail-open 削除" "不正 JSON は fail-open" "$ROOT" stop
 
 ROOT="$(make_fixture registration)"
 perl -0pi -e 's/"Stop": \[/"StopDisabled": [/' "$ROOT/hooks/hooks.json"
-check_mutation "Stop 登録削除" "hooks.json の Stop 登録が不正" "$ROOT"
+check_mutation "Stop 登録削除" "hooks.json の Stop 登録が不正" "$ROOT" contracts
 
 ROOT="$(make_fixture context-registration)"
 perl -0pi -e 's/"UserPromptSubmit": \[/"UserPromptSubmitDisabled": [/' "$ROOT/hooks/hooks.json"
-check_mutation "UserPromptSubmit 登録削除" "hooks.json の UserPromptSubmit 登録が不正" "$ROOT"
+check_mutation "UserPromptSubmit 登録削除" "hooks.json の UserPromptSubmit 登録が不正" "$ROOT" contracts
 
 ROOT="$(make_fixture context-visible-warning)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '{"hookSpecificOutput"' 2
 perl -0pi -e 's/\{"hookSpecificOutput"/\{"systemMessage":"visible","hookSpecificOutput"/g' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "事前注入への表示用 Warning 混入" "UserPromptSubmit の事前注入契約が不正" "$ROOT"
+check_mutation "事前注入への表示用 Warning 混入" "UserPromptSubmit の事前注入契約が不正" "$ROOT" context
 
 ROOT="$(make_fixture context-off-guard)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'case "$MODE" in' 2
 perl -0pi -e 's/case "\$MODE" in/case "auto" in/g' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "事前注入の off ガード削除" "context hook も RETROSPECTIVE_MODE=off なら無効" "$ROOT"
+check_mutation "事前注入の off ガード削除" "context hook も RETROSPECTIVE_MODE=off なら無効" "$ROOT" context
 
 # 事前注入が載せるスキル本文の絶対パス。散文の針だけでは、実行される側（パスを組む分岐と
 # JSON エスケープ）を外す変異が緑で通る。倒れ方が「パスを足したつもりで注入契約ごと失う」
@@ -243,112 +271,112 @@ expect_occurrences "$ROOT/hooks/retrospective-context.sh" '%s%s"}}' 2
 # 既定分岐の文面は末尾に ACE_DEFER_TO_RETRO の案内（`#1841`）が続くので、散文ではなく
 # 書式と引数の並び（+ 直後の exit 0）だけで位置を決める
 perl -0pi -e 's/ %s%s"\}\}\\n. "\$FILING_CLAUSE" "\$SKILL_PATH_CLAUSE"\n\nexit 0/ %s"}}\\n\x27 "\$FILING_CLAUSE"\n\nexit 0/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "既定分岐からスキル経路を削除" "事前注入（__unset__）のスキル経路が不正" "$ROOT"
+check_mutation "既定分岐からスキル経路を削除" "事前注入（__unset__）のスキル経路が不正" "$ROOT" context-path
 
 ROOT="$(make_fixture context-skill-path-ask-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '%s%s"}}' 2
 perl -0pi -e 's/read-only\. %s%s"\}\}\\n. "\$FILING_CLAUSE" "\$SKILL_PATH_CLAUSE"\n    exit 0/read-only. %s"}}\\n\x27 "\$FILING_CLAUSE"\n    exit 0/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "ask 分岐からスキル経路を削除" "事前注入（ask）のスキル経路が不正" "$ROOT"
+check_mutation "ask 分岐からスキル経路を削除" "事前注入（ask）のスキル経路が不正" "$ROOT" context-path
 
 ROOT="$(make_fixture context-skill-path-backslash-unescaped)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '_ff_escaped="${_ff_skill_file//\\/\\\\}"' 1
 perl -0pi -e 's/_ff_escaped="\$\{_ff_skill_file\/\/\\\\\/\\\\\\\\\}"/_ff_escaped="\${_ff_skill_file}"/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "スキル経路のバックスラッシュ非エスケープ" "敵対的な root でスキル経路が壊れた" "$ROOT"
+check_mutation "スキル経路のバックスラッシュ非エスケープ" "敵対的な root でスキル経路が壊れた" "$ROOT" context-path
 
 ROOT="$(make_fixture context-skill-path-quote-unescaped)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '_ff_escaped="${_ff_escaped//\"/\\\"}"' 1
 perl -0pi -e 's/_ff_escaped="\$\{_ff_escaped\/\/\\"\/\\\\\\"\}"/_ff_escaped="\${_ff_escaped}"/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "スキル経路の引用符非エスケープ" "敵対的な root でスキル経路が壊れた" "$ROOT"
+check_mutation "スキル経路の引用符非エスケープ" "敵対的な root でスキル経路が壊れた" "$ROOT" context-path
 
 ROOT="$(make_fixture context-skill-path-cntrl-guard-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '*[[:cntrl:]]*) : ;;' 1
 perl -0pi -e 's/\*\[\[:cntrl:\]\]\*\) : ;;/*__never_matches__*) : ;;/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "スキル経路の制御文字ガード削除" "制御文字を含む root で注入が壊れた" "$ROOT"
+check_mutation "スキル経路の制御文字ガード削除" "制御文字を含む root で注入が壊れた" "$ROOT" context-path
 
 ROOT="$(make_fixture context-skill-path-existence-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'if [ -f "$_ff_skill_file" ]; then' 1
 perl -0pi -e 's/if \[ -f "\$_ff_skill_file" \]; then/if true; then/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "スキル経路の実在検査削除" "スキル経路の fallback が不正" "$ROOT"
+check_mutation "スキル経路の実在検査削除" "スキル経路の fallback が不正" "$ROOT" context-path
 
 # Issue #840: 非対話 codex exec の判定そのもの。判定を外す（常に注入する）と消費側の
 # スキップ検査が赤くなること = 変異赤化の常設実測。
 ROOT="$(make_fixture noninteractive-skip-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'codexHost && nonInteractive' 1
 perl -0pi -e 's/codexHost && nonInteractive/false/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "非対話スキップ判定の削除" "Codex 非対話（model + bypassPermissions）は事前注入をスキップ" "$ROOT"
+check_mutation "非対話スキップ判定の削除" "Codex 非対話（model + bypassPermissions）は事前注入をスキップ" "$ROOT" context
 
 # 判定の過拡大（permission_mode を見ずに model だけでスキップ）は、Codex 対話セッション
 # の注入を失う向きの退行。既存の Codex 事前注入検査（permission_mode なし入力）が捕まえる。
 ROOT="$(make_fixture noninteractive-overreach)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'codexHost && nonInteractive' 1
 perl -0pi -e 's/codexHost && nonInteractive/codexHost/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "非対話判定の過拡大（model だけでスキップ）" "Codex UserPromptSubmit の事前注入契約が不正" "$ROOT"
+check_mutation "非対話判定の過拡大（model だけでスキップ）" "Codex UserPromptSubmit の事前注入契約が不正" "$ROOT" context
 
 # Issue #840 レビュー指摘: 判別 node の入力上限を実質無効化（1 時間へ延長）すると、
 # stdin を閉じないホストの fixture が EOF まで待って skip し、fail-open が消える。
 ROOT="$(make_fixture context-input-bound-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '(Number(process.argv[1]) || 2) * 1000' 1
 perl -0pi -e 's/\(Number\(process\.argv\[1\]\) \|\| 2\) \* 1000/3600000/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "判別 node の入力上限を無効化" "stdin を閉じないホストでは入力上限で注入へ倒す（fail-open）" "$ROOT"
+check_mutation "判別 node の入力上限を無効化" "stdin を閉じないホストでは入力上限で注入へ倒す（fail-open）" "$ROOT" context
 
 # 異常終了 fallback（|| HOST_STATE="inject"）の削除: 非 0 終了の stub が途中まで出した
 # "skip" がそのまま採用され、fail-open が skip 方向へ反転する。
 ROOT="$(make_fixture context-exit-fallback-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '|| HOST_STATE="inject"' 1
 perl -0pi -e 's/ \|\| HOST_STATE="inject"//' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "判別 node 異常終了 fallback の削除" "判別 node が異常終了（skip 出力 + 非 0）でも注入へ倒す（fail-open）" "$ROOT"
+check_mutation "判別 node 異常終了 fallback の削除" "判別 node が異常終了（skip 出力 + 非 0）でも注入へ倒す（fail-open）" "$ROOT" context
 
 # skip の完全一致ガードを否定形（inject 以外は skip）へ緩めると、予期しない出力で
 # 注入が消える。
 ROOT="$(make_fixture context-hoststate-guard-loosened)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '[ "$HOST_STATE" = "skip" ]' 1
 perl -0pi -e 's/\[ "\$HOST_STATE" = "skip" \]/[ "\$HOST_STATE" != "inject" ]/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "HOST_STATE ガードの緩和" "判別 node の予期しない出力は skip と扱わない（fail-open）" "$ROOT"
+check_mutation "HOST_STATE ガードの緩和" "判別 node の予期しない出力は skip と扱わない（fail-open）" "$ROOT" context
 
 # JSON parse 失敗を skip へ倒す退行（catch 側だけを狙う。finish("inject") は 3 箇所
 # あるため前行ごと指定して一意に当てる）。
 ROOT="$(make_fixture context-parse-failure-to-skip)"
 perl -0pi -e 's/\} catch \(_\) \{\n    finish\("inject"\);/} catch (_) {\n    finish("skip");/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "parse 失敗の fail-open 反転" "途中で切れた不正 JSON は注入へ倒す（fail-open）" "$ROOT"
+check_mutation "parse 失敗の fail-open 反転" "途中で切れた不正 JSON は注入へ倒す（fail-open）" "$ROOT" context
 
 ROOT="$(make_fixture context-skill-routing)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'ff-dev-toolkit:retrospective' 2
 perl -0pi -e 's/ff-dev-toolkit:retrospective/ff-dev-toolkit:missing/g' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "事前注入のスキル経路破壊" "UserPromptSubmit の事前注入契約が不正" "$ROOT"
+check_mutation "事前注入のスキル経路破壊" "UserPromptSubmit の事前注入契約が不正" "$ROOT" context
 
 ROOT="$(make_fixture initial-decision)"
 perl -0pi -e 's/decision/decisionBroken/g' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "初回 decision 破壊" "初回 Stop の出力契約が不正" "$ROOT"
+check_mutation "初回 decision 破壊" "初回 Stop の出力契約が不正" "$ROOT" stop
 
 ROOT="$(make_fixture event-guard)"
 perl -0pi -e 's/  if \(input\.hook_event_name !== "Stop"\) process\.exit\(2\);\n//' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "イベント判別削除" "別イベントは fail-open" "$ROOT"
+check_mutation "イベント判別削除" "別イベントは fail-open" "$ROOT" stop
 
 ROOT="$(make_fixture boolean-guard)"
 perl -0pi -e 's/  if \(typeof input\.stop_hook_active !== "boolean"\) process\.exit\(2\);\n//' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "再入フラグ型判別削除" "再入フラグ欠損は fail-open" "$ROOT"
+check_mutation "再入フラグ型判別削除" "再入フラグ欠損は fail-open" "$ROOT" stop
 
 ROOT="$(make_fixture node-guard)"
 perl -0pi -e 's/if ! command -v node >\/dev\/null 2>&1; then/if false; then/' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "Node.js 前提ガード削除" "Node.js 不在の fail-open 通知が不正" "$ROOT"
+check_mutation "Node.js 前提ガード削除" "Node.js 不在の fail-open 通知が不正" "$ROOT" stop
 
 ROOT="$(make_fixture secondary-guard)"
 perl -0pi -e 's/input\.stop_hook_active \|\| RETROSPECTIVE_DONE\.test\(message\)/input.stop_hook_active/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "secondary guard 削除" "secondary guard が終了を許可" "$ROOT"
+check_mutation "secondary guard 削除" "secondary guard が終了を許可" "$ROOT" stop
 
 ROOT="$(make_fixture codex-host-guard)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'RETROSPECTIVE_DONE.test(message) || codexStop' 1
 perl -0pi -e 's/RETROSPECTIVE_DONE\.test\(message\) \|\| codexStop/RETROSPECTIVE_DONE.test(message)/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "Codex Stop の表示抑止ガード削除" "Codex Stop は Feedback を返さず事前注入に委ねる" "$ROOT"
+check_mutation "Codex Stop の表示抑止ガード削除" "Codex Stop は Feedback を返さず事前注入に委ねる" "$ROOT" stop
 
 ROOT="$(make_fixture ask-reentry)"
 expect_occurrences "$ROOT/hooks/retrospective-stop.sh" '  0:active)' 1
 perl -0pi -e 's/  0:active\)\n    exit 0\n    ;;/  0:active)\n    case "\$MODE" in [Aa][Ss][Kk]) ;; *) exit 0 ;; esac\n    ;;/' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "ask 再入ガード削除" "ask モードの継続中も再入せず終了を許可" "$ROOT"
+check_mutation "ask 再入ガード削除" "ask モードの継続中も再入せず終了を許可" "$ROOT" stop
 
 ROOT="$(make_fixture filesystem-side-effect)"
 perl -0pi -e 's{\A(#![^\n]*\n)}{$1: > "\$HOME/.ff-stop-state"\n}' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "filesystem marker 追加" "hook が filesystem へ副作用を作成" "$ROOT"
+check_mutation "filesystem marker 追加" "hook が filesystem へ副作用を作成" "$ROOT" contracts
 
 # --- Issue `#1612`: チェーン末尾判定 ---------------------------------------------
 # 判定の退行は 2 方向あり、**向きごとに別の変異で測る**。片方だけだと、もう一方は
@@ -357,119 +385,119 @@ check_mutation "filesystem marker 追加" "hook が filesystem へ副作用を�
 ROOT="$(make_fixture chain-tail-quiet-exit)"
 expect_occurrences "$ROOT/hooks/retrospective-stop.sh" '  0:no-tail)' 1
 perl -0pi -e 's/  0:no-tail\)/  0:__never_no_tail__)/' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "no-tail の無音終了削除（改修前の挙動へ戻る）" "質問・設計相談のターンは継続を返さない（AC1）" "$ROOT"
+check_mutation "no-tail の無音終了削除（改修前の挙動へ戻る）" "質問・設計相談のターンは継続を返さない（AC1）" "$ROOT" chain
 
 ROOT="$(make_fixture chain-tail-fail-open)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'if (verdict === "no-tail") return "no-tail";' 1
 perl -0pi -e 's/if \(verdict === "no-tail"\) return "no-tail";/return "no-tail";/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "判定不能を注入なしへ倒す（fail-closed 反転）" "ターン境界が読み取れない transcript は継続側へ倒す（fail-closed）" "$ROOT"
+check_mutation "判定不能を注入なしへ倒す（fail-closed 反転）" "ターン境界が読み取れない transcript は継続側へ倒す（fail-closed）" "$ROOT" chain
 
 ROOT="$(make_fixture chain-tail-loose-merge)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'const GH_PR_MERGE = ' 1
 perl -0pi -e 's/const GH_PR_MERGE = [^\n]*;/const GH_PR_MERGE = \/gh[ \\t]+pr[ \\t]+merge\/;/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "gh pr merge をコマンド位置で見なくする（引用の誤検出）" "gh pr merge を引用しただけのコマンドはチェーン末尾にしない" "$ROOT"
+check_mutation "gh pr merge をコマンド位置で見なくする（引用の誤検出）" "gh pr merge を引用しただけのコマンドはチェーン末尾にしない" "$ROOT" chain
 
 ROOT="$(make_fixture chain-tail-sidechain)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'entry.isSidechain === true' 1
 perl -0pi -e 's/entry\.isSidechain === true \|\| //' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "sidechain をターン境界に含める（末尾の痕跡を見落とす）" "sidechain の user 行はターン境界にしない" "$ROOT"
+check_mutation "sidechain をターン境界に含める（末尾の痕跡を見落とす）" "sidechain の user 行はターン境界にしない" "$ROOT" chain
 
 ROOT="$(make_fixture chain-tail-skill-name)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'TAIL_SKILLS.has(skillSegment(input.skill))' 1
 perl -0pi -e 's/TAIL_SKILLS\.has\(skillSegment\(input\.skill\)\)/false/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "Skill 実行の検出削除" "/ace-curate を実行したターンは従来どおり継続を返す（AC3）" "$ROOT"
+check_mutation "Skill 実行の検出削除" "/ace-curate を実行したターンは従来どおり継続を返す（AC3）" "$ROOT" chain
 
 ROOT="$(make_fixture chain-tail-explicit)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'return invokesTailCommand(prompt) ? "tail" : "no-tail";' 1
 perl -0pi -e 's/return invokesTailCommand\(prompt\) \? "tail" : "no-tail";/return "no-tail";/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "利用者の明示指定の検出削除" "利用者が /retrospective を明示したターンは継続を返す（AC4）" "$ROOT"
+check_mutation "利用者の明示指定の検出削除" "利用者が /retrospective を明示したターンは継続を返す（AC4）" "$ROOT" chain
 
 # 同一 message 内の位置比較（Issue `#1635`）。退行は両方向に起きうるので対で置く —
 # 片方だけだと「全部 done に倒す」「全部 tail に倒す」のどちらかが緑で通る。
 ROOT="$(make_fixture chain-tail-block-order-inverted)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'lastTail > lastRetrospective' 1
 perl -0pi -e 's/lastTail > lastRetrospective/lastTail < lastRetrospective/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "同一 message の位置比較を反転（振り返り後の末尾を見落とす）" "同一 message で振り返りの後に末尾が来たら、その末尾の分を要求する" "$ROOT"
+check_mutation "同一 message の位置比較を反転（振り返り後の末尾を見落とす）" "同一 message で振り返りの後に末尾が来たら、その末尾の分を要求する" "$ROOT" chain
 
 ROOT="$(make_fixture chain-tail-block-order-always-tail)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'lastTail > lastRetrospective' 1
 perl -0pi -e 's/lastTail > lastRetrospective/lastTail !== -1/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "位置比較を捨てて常に末尾優先（実施済みでも再要求）" "同一 message で末尾の後に振り返りが来たら実施済みとして扱う" "$ROOT"
+check_mutation "位置比較を捨てて常に末尾優先（実施済みでも再要求）" "同一 message で末尾の後に振り返りが来たら実施済みとして扱う" "$ROOT" chain
 
 # 前置集合と末尾の許可（Issue `#1635`）。狭める向きは文字・予約語ごとに 1 変異。
 # まとめて外すと、片方が壊れてももう片方の検査が赤になって空振りする。
 ROOT="$(make_fixture chain-tail-merge-prefix-backtick)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '[\n;&|(`{]' 1
 perl -0pi -e 's/\[\\n;&\|\(`\{\]/[\\n;&|({]/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "前置集合からバッククォートを外す" "バッククォートのコマンド置換にある gh pr merge を拾う" "$ROOT"
+check_mutation "前置集合からバッククォートを外す" "バッククォートのコマンド置換にある gh pr merge を拾う" "$ROOT" chain-command
 
 ROOT="$(make_fixture chain-tail-merge-prefix-brace)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '[\n;&|(`{]' 1
 perl -0pi -e 's/\[\\n;&\|\(`\{\]/[\\n;&|(`]/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "前置集合からブレースを外す" "ブレースグループ内の gh pr merge を拾う" "$ROOT"
+check_mutation "前置集合からブレースを外す" "ブレースグループ内の gh pr merge を拾う" "$ROOT" chain-command
 
 ROOT="$(make_fixture chain-tail-merge-keyword-bang)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '(?:(?:!|if|elif|else|while|until|then|do|time)[ \t]+)*' 1
 perl -0pi -e 's/\(\?:\(\?:!\|if\|elif\|else\|while\|until\|then\|do\|time\)/(?:(?:if|elif|else|while|until|then|do|time)/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "予約語から ! を外す" "! で否定された gh pr merge も実行として拾う" "$ROOT"
+check_mutation "予約語から ! を外す" "! で否定された gh pr merge も実行として拾う" "$ROOT" chain-command
 
 ROOT="$(make_fixture chain-tail-merge-keyword-if)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '(?:(?:!|if|elif|else|while|until|then|do|time)[ \t]+)*' 1
 perl -0pi -e 's/\(\?:\(\?:!\|if\|elif\|else\|while\|until\|then\|do\|time\)/(?:(?:!|elif|else|while|until|then|do|time)/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "予約語から if を外す" "if の条件部にある gh pr merge を拾う（then の直後は改行で既に拾えている）" "$ROOT"
+check_mutation "予約語から if を外す" "if の条件部にある gh pr merge を拾う（then の直後は改行で既に拾えている）" "$ROOT" chain-command
 
 ROOT="$(make_fixture chain-tail-merge-keyword-else)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '(?:(?:!|if|elif|else|while|until|then|do|time)[ \t]+)*' 1
 perl -0pi -e 's/\(\?:\(\?:!\|if\|elif\|else\|while\|until\|then\|do\|time\)/(?:(?:!|if|elif|while|until|then|do|time)/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "予約語から else を外す" "else の直後にある gh pr merge を拾う（if/then と同じ予約語クラス）" "$ROOT"
+check_mutation "予約語から else を外す" "else の直後にある gh pr merge を拾う（if/then と同じ予約語クラス）" "$ROOT" chain-command
 
 ROOT="$(make_fixture chain-tail-merge-tail-narrow)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'merge(?:[ \t\n]|$)' 1
 perl -0pi -e 's/merge\(\?:\[ \\t\\n\]\|\$\)/merge(?:[ \\t]|\$)/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "末尾から改行を外す（改修前の挙動へ戻る）" "引数なしで行末に来る gh pr merge も拾う" "$ROOT"
+check_mutation "末尾から改行を外す（改修前の挙動へ戻る）" "引数なしで行末に来る gh pr merge も拾う" "$ROOT" chain-command
 
 # 逆向き。末尾を否定先読みへ広げると `sed 's|gh pr merge|x|'` の `|` まで許し、この
 # リポジトリ自身の docs 編集をマージと読む（実装中に一度作り込んで実測した誤検出）。
 ROOT="$(make_fixture chain-tail-merge-tail-wide)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'merge(?:[ \t\n]|$)' 1
 perl -0pi -e 's/merge\(\?:\[ \\t\\n\]\|\$\)/merge(?![A-Za-z0-9_-])/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "末尾を否定先読みへ広げる（sed の区切りを誤検出）" "sed の | 区切りに挟まれた gh pr merge はチェーン末尾にしない" "$ROOT"
+check_mutation "末尾を否定先読みへ広げる（sed の区切りを誤検出）" "sed の | 区切りに挟まれた gh pr merge はチェーン末尾にしない" "$ROOT" chain-command
 
 ROOT="$(make_fixture chain-tail-module-missing)"
 perl -0pi -e 's/if \[ ! -f "\$CHAIN_TAIL_DETECTOR" \]; then/if false; then/' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "判定モジュール不在の診断削除（無言で自動振り返りが消える）" "判定モジュール不在は応答をブロックせず復旧ヒントを通知" "$ROOT"
+check_mutation "判定モジュール不在の診断削除（無言で自動振り返りが消える）" "判定モジュール不在は応答をブロックせず復旧ヒントを通知" "$ROOT" chain-recovery
 
 ROOT="$(make_fixture context-notification-guard)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'finish(notification ? "skip-notification" : "inject");' 1
 perl -0pi -e 's/finish\(notification \? "skip-notification" : "inject"\);/finish("inject");/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "通知ターンの事前注入抑止削除（OBS-187 初回へ戻る）" "task notification のターンには事前注入しない（AC2）" "$ROOT"
+check_mutation "通知ターンの事前注入抑止削除（OBS-187 初回へ戻る）" "task notification のターンには事前注入しない（AC2）" "$ROOT" context
 
 ROOT="$(make_fixture chain-tail-delivered)"
 # 位置比較への変更（Issue `#1635`）で、実施済みの検出は「その場で done を返す」から
 # 「最後の位置を覚える」へ移った。覚えるのをやめれば span 内の実施済みは消える。
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'if (deliveredRetrospective(blocks[b])) lastRetrospective = b;' 1
 perl -0pi -e 's/      if \(deliveredRetrospective\(blocks\[b\]\)\) lastRetrospective = b;\n//' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "span 内の実施済み判定を削除（通知のたびに再要求へ戻る）" "span 内で振り返りを出し終えていれば、同じ span の後続応答で再要求しない" "$ROOT"
+check_mutation "span 内の実施済み判定を削除（通知のたびに再要求へ戻る）" "span 内で振り返りを出し終えていれば、同じ span の後続応答で再要求しない" "$ROOT" chain
 
 ROOT="$(make_fixture chain-tail-delivered-too-wide)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'if (verdict === "done") return "active";' 1
 perl -0pi -e 's/if \(verdict === "done"\) return "active";/if (verdict === "done" || verdict === "tail") return "active";/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "実施済み判定をチェーン末尾全体へ広げる（未実施でも黙る）" "span 内に振り返りが無ければチェーン末尾として継続を要求する" "$ROOT"
+check_mutation "実施済み判定をチェーン末尾全体へ広げる（未実施でも黙る）" "span 内に振り返りが無ければチェーン末尾として継続を要求する" "$ROOT" chain
 
 ROOT="$(make_fixture chain-tail-merge-anchor)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '(?:^|[\n;&|(`{])' 1
 perl -0pi -e 's/\(\?:\^\|\[\\n;&\|\(`\{\]\)/(?:[\\n;&|(`{])/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "gh pr merge の行頭一致を落とす（ワークフローが実際に打つ形を見落とす）" "行頭の gh pr merge を拾う（ワークフローが実際に打つ形）" "$ROOT"
+check_mutation "gh pr merge の行頭一致を落とす（ワークフローが実際に打つ形を見落とす）" "行頭の gh pr merge を拾う（ワークフローが実際に打つ形）" "$ROOT" chain-command
 
 ROOT="$(make_fixture chain-tail-merge-prefix)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" '(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]*[ \t]+)*(?:[^\s]*\/)?' 1
 perl -0pi -e 's/\(\?:\[A-Za-z_\]\[A-Za-z0-9_\]\*=\[\^\\s\]\*\[ \\t\]\+\)\*\(\?:\[\^\\s\]\*\\\/\)\?//' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "環境代入・明示パスの前置を落とす" "環境代入と明示パスが前置された gh pr merge も拾う" "$ROOT"
+check_mutation "環境代入・明示パスの前置を落とす" "環境代入と明示パスが前置された gh pr merge も拾う" "$ROOT" chain-command
 
 ROOT="$(make_fixture chain-tail-slashcommand)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'block.name === "SlashCommand"' 1
 perl -0pi -e 's/block\.name === "SlashCommand"/false/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "SlashCommand 経路の検出削除" "SlashCommand 経由の /ace-curate も拾う" "$ROOT"
+check_mutation "SlashCommand 経路の検出削除" "SlashCommand 経由の /ace-curate も拾う" "$ROOT" chain-command
 
 # 誤検出側。prompt 全文を検索する実装へ戻すと、リポジトリのファイル名を口にした
 # ターンが全部チェーン末尾になる（実測でこの形の退行が入った）。
@@ -477,67 +505,67 @@ ROOT="$(make_fixture chain-tail-command-substring)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'const TAIL_COMMAND = ' 1
 perl -0pi -e 's/const TAIL_COMMAND = [^\n]*;/const TAIL_COMMAND = \/\\\/(?:[A-Za-z0-9_-]+:)?(?:ace-curate|merge-cleanup|retrospective)\\b\/;/' "$ROOT/hooks/retrospective-chain-tail.mjs"
 perl -0pi -e 's/  return TAIL_COMMAND\.test\(text\.trim\(\)\.split\(\/\\s\+\/\)\[0\] \|\| ""\);/  return TAIL_COMMAND.test(text);/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "コマンド形の判定を部分一致へ戻す（パス言及が末尾扱いになる）" "パスとしてコマンド名を含む prompt はチェーン末尾にしない" "$ROOT"
+check_mutation "コマンド形の判定を部分一致へ戻す（パス言及が末尾扱いになる）" "パスとしてコマンド名を含む prompt はチェーン末尾にしない" "$ROOT" chain-command
 
 ROOT="$(make_fixture chain-tail-tool-result-guard)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'if (content.some((block) => block && block.type === "tool_result")) return null;' 1
 perl -0pi -e 's/  if \(content\.some\(\(block\) => block && block\.type === "tool_result"\)\) return null;\n//' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "tool_result 判定の削除（text 付き tool_result が偽の境界になる）" "text を伴う tool_result エントリを境界にしない" "$ROOT"
+check_mutation "tool_result 判定の削除（text 付き tool_result が偽の境界になる）" "text を伴う tool_result エントリを境界にしない" "$ROOT" chain-boundary
 
 ROOT="$(make_fixture chain-tail-ismeta)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'entry.isMeta === true' 1
 perl -0pi -e 's/ \|\| entry\.isMeta === true//' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "isMeta 除外の削除（ホスト記帳が偽の境界になる）" "ホスト記帳の isMeta エントリを境界にしない" "$ROOT"
+check_mutation "isMeta 除外の削除（ホスト記帳が偽の境界になる）" "ホスト記帳の isMeta エントリを境界にしない" "$ROOT" chain-boundary
 
 ROOT="$(make_fixture chain-tail-skill-exact)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'TAIL_SKILLS.has(skillSegment(input.skill))' 1
 perl -0pi -e 's/TAIL_SKILLS\.has\(skillSegment\(input\.skill\)\)/[...TAIL_SKILLS].some((n) => skillSegment(input.skill).startsWith(n))/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "skill 名の完全一致を前方一致へ緩める" "名前が前方一致するだけの skill はチェーン末尾にしない" "$ROOT"
+check_mutation "skill 名の完全一致を前方一致へ緩める" "名前が前方一致するだけの skill はチェーン末尾にしない" "$ROOT" chain-boundary
 
 ROOT="$(make_fixture chain-tail-delivered-loose)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'RETROSPECTIVE_DELIVERED.test(block.text)' 1
 perl -0pi -e 's/RETROSPECTIVE_DELIVERED\.test\(block\.text\)/RETROSPECTIVE_DONE.test(block.text)/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "span 内の実施済み判定を 1 行報告まで広げる（散文の引用で黙る）" "散文が定型文を引用しただけでは実施済みと見なさない" "$ROOT"
+check_mutation "span 内の実施済み判定を 1 行報告まで広げる（散文の引用で黙る）" "散文が定型文を引用しただけでは実施済みと見なさない" "$ROOT" chain-boundary
 
 ROOT="$(make_fixture chain-tail-parse-failure)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'if (i === 0 && partialHead) continue;' 1
 perl -0pi -e 's/      if \(i === 0 && partialHead\) continue;\n      return "unknown";/      continue;/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "読めない行を全位置で読み飛ばす（判定不能を no-tail へ倒す）" "読めない行があれば、その手前を根拠に no-tail と断定しない" "$ROOT"
+check_mutation "読めない行を全位置で読み飛ばす（判定不能を no-tail へ倒す）" "読めない行があれば、その手前を根拠に no-tail と断定しない" "$ROOT" chain
 
 ROOT="$(make_fixture chain-tail-empty-model)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'typeof input.model === "string" && input.model !== ""' 1
 perl -0pi -e 's/typeof input\.model === "string" && input\.model !== ""/typeof input.model === "string"/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "空文字の model を Codex ホストと見なす" "空文字の model は Codex ホストと見なさない" "$ROOT"
+check_mutation "空文字の model を Codex ホストと見なす" "空文字の model は Codex ホストと見なさない" "$ROOT" chain-boundary
 
 ROOT="$(make_fixture stop-detector-rc-guard)"
 expect_occurrences "$ROOT/hooks/retrospective-stop.sh" 'if [ "$DETECTOR_RC" -eq 2 ]; then' 1
 perl -0pi -e 's/if \[ "\$DETECTOR_RC" -eq 2 \]; then/if [ "\$DETECTOR_RC" -ne 0 ]; then/' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "実行できないモジュールを fail-open 扱いへ戻す（無音で自動振り返りが止まる）" "読めない判定モジュールは無音にせず復旧ヒントを返す" "$ROOT"
+check_mutation "実行できないモジュールを fail-open 扱いへ戻す（無音で自動振り返りが止まる）" "読めない判定モジュールは無音にせず復旧ヒントを返す" "$ROOT" chain-recovery
 
 ROOT="$(make_fixture stop-detector-state-guard)"
 expect_occurrences "$ROOT/hooks/retrospective-stop.sh" '  0:first)' 1
 perl -0pi -e 's/  0:first\)\n    ;;\n  \*\)/  *)\n    ;;\n  __never_matches__)/' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "state 語の whitelist を catch-all へ戻す（未知の state が無音になる）" "未知の state 語も無音にせず復旧ヒントを返す" "$ROOT"
+check_mutation "state 語の whitelist を catch-all へ戻す（未知の state が無音になる）" "未知の state 語も無音にせず復旧ヒントを返す" "$ROOT" chain-recovery
 
 ROOT="$(make_fixture stop-failopen-noise)"
 expect_occurrences "$ROOT/hooks/retrospective-stop.sh" 'if [ "$DETECTOR_RC" -eq 2 ]; then' 1
 perl -0pi -e 's/if \[ "\$DETECTOR_RC" -eq 2 \]; then\n  exit 0\nfi/if false; then\n  exit 0\nfi/' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "設計どおりの fail-open にも復旧ヒントを出す（別イベントのたびに通知が飛ぶ）" "exit 2 は設計どおりの fail-open として無音で通す" "$ROOT"
+check_mutation "設計どおりの fail-open にも復旧ヒントを出す（別イベントのたびに通知が飛ぶ）" "exit 2 は設計どおりの fail-open として無音で通す" "$ROOT" chain-recovery
 
 ROOT="$(make_fixture context-notification-trim)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '.replace(/^\s+/, "")' 1
 perl -0pi -e 's/\.replace\(\/\^\\s\+\/, ""\)//' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "通知判定の先頭空白除去を落とす" "先頭に空白・改行がある通知でも抑止する" "$ROOT"
+check_mutation "通知判定の先頭空白除去を落とす" "先頭に空白・改行がある通知でも抑止する" "$ROOT" context
 
 ROOT="$(make_fixture chain-tail-single-stage)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'const CAP_STAGES = ' 1
 perl -0pi -e 's/const CAP_STAGES = [^\n]*;/const CAP_STAGES = [512 * 1024];/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-check_mutation "読み取り窓を広げない（長いターンが全部 fail-closed へ落ちる）" "初段の読み取り窓を超える長いターンでも境界まで遡って判定する" "$ROOT"
+check_mutation "読み取り窓を広げない（長いターンが全部 fail-closed へ落ちる）" "初段の読み取り窓を超える長いターンでも境界まで遡って判定する" "$ROOT" chain
 
 ROOT="$(make_fixture context-notification-substring)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'prompt.startsWith("<task-notification>")' 1
 perl -0pi -e 's/prompt\.startsWith\("<task-notification>"\)/prompt.includes("<task-notification>")/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "通知判定を前置一致から部分一致へ緩める" "通知トークンを途中で引用しただけの prompt には従来どおり注入（前置一致）" "$ROOT"
+check_mutation "通知判定を前置一致から部分一致へ緩める" "通知トークンを途中で引用しただけの prompt には従来どおり注入（前置一致）" "$ROOT" context
 
 # 節見出しの literal は消費側から採る（テスト側へ複製しない）。複製すると、見出しを
 # 改名したときに変異が無音の no-op へ変わり、`check_mutation` は「狙った診断で red に
@@ -562,7 +590,7 @@ ROOT="$(make_fixture skill-drift)"
 FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
   -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E(?:(?!\n## ).)*?\n\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外/${1}振り返り: 未完了/ms' \
   "$ROOT/skills/retrospective/SKILL.md"
-check_mutation "SKILL 定型文 drift（自動発火の判定リスト側）" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
+check_mutation "SKILL 定型文 drift（自動発火の判定リスト側）" "hook / SKILL.md の自動発火契約が drift" "$ROOT" contracts
 
 # 節に絞るだけでは足りない — **節内の散文**へ定型文を足したうえで判定リスト側を壊すと、
 # 節全体を見る実装では散文側の出現で満たされ、#931 が狭い範囲で再発する（クロスモデル
@@ -574,7 +602,7 @@ FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
   "$ROOT/skills/retrospective/SKILL.md"
 perl -0pi -e 's/^(\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外/${1}振り返り: 未完了/m' \
   "$ROOT/skills/retrospective/SKILL.md"
-check_mutation "節内の散文を残して判定リスト側を壊す" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
+check_mutation "節内の散文を残して判定リスト側を壊す" "hook / SKILL.md の自動発火契約が drift" "$ROOT" contracts
 
 # フェンス内へ番号付きの例示を置いたうえで本物の判定リスト側を壊すと、フェンスを除外しない実装、
 # あるいはフェンスの開閉を文字種・長さで区別しない簡易な除外では、例示側で照合が成立して緑になる。
@@ -585,14 +613,14 @@ FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
   "$ROOT/skills/retrospective/SKILL.md"
 perl -0pi -e 's/^(\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外(?=[^\n]*報告する)/${1}振り返り: 未完了/m' \
   "$ROOT/skills/retrospective/SKILL.md"
-check_mutation "フェンス内の番号付き例示を残して判定リスト側を壊す" "hook / SKILL.md の自動発火契約が drift" "$ROOT"
+check_mutation "フェンス内の番号付き例示を残して判定リスト側を壊す" "hook / SKILL.md の自動発火契約が drift" "$ROOT" contracts
 
 # 定型文の契約は**両側**（SKILL.md の判定リストと hook の出力）で成立する。SKILL 側だけを
 # 固定しても、hook 側の文字列が変わった drift は検出できない。
 ROOT="$(make_fixture hook-incomplete-report)"
 perl -0pi -e 's/振り返り: 今回は作業完了前のため対象外/振り返り: 未完了/g' \
   "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "hook 側 定型文 drift" "継続理由の必須境界が不足" "$ROOT"
+check_mutation "hook 側 定型文 drift" "継続理由の必須境界が不足" "$ROOT" stop
 
 # 事前注入が担う契約は `#1612` で入れ替わった。定型文はもう注入文に無いので、
 # 同じ位置で守るのは**発火条件そのもの**になる（旧: 定型文の綴り一致）。
@@ -600,15 +628,15 @@ ROOT="$(make_fixture context-chain-tail-drift)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'workflow chain tail' 2
 perl -0pi -e 's/workflow chain tail/workflow closeout/g' \
   "$ROOT/hooks/retrospective-context.sh"
-check_mutation "事前注入のチェーン末尾条件 drift" "UserPromptSubmit の事前注入契約が不正" "$ROOT"
+check_mutation "事前注入のチェーン末尾条件 drift" "UserPromptSubmit の事前注入契約が不正" "$ROOT" context
 
 ROOT="$(make_fixture stdin-timeout)"
 perl -0pi -e 's/INPUT_TIMEOUT_SECONDS=2/INPUT_TIMEOUT_SECONDS=5/' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "stdin 上限延長" "stdin 入力上限の決定的fixtureが失敗" "$ROOT"
+check_mutation "stdin 上限延長" "stdin 入力上限の決定的fixtureが失敗" "$ROOT" input
 
 ROOT="$(make_fixture ask-system-message)"
 perl -0pi -e 's/Automatic retrospective check before stop/Automatic retrospective before stop/' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "ask systemMessage drift" "ask モードの出力契約が不正" "$ROOT"
+check_mutation "ask systemMessage drift" "ask モードの出力契約が不正" "$ROOT" stop
 
 # ASDD ゲートの前置きを drain より前へ戻す退行。ゲートの早期終了はすべて exit 0 なので、
 # 前置きが先にあると stdin 未読のまま抜け、書き手（ホスト）が EPIPE / SIGPIPE を受ける。
@@ -617,12 +645,12 @@ check_mutation "ask systemMessage drift" "ask モードの出力契約が不正"
 ROOT="$(make_fixture stop-gate-before-drain)"
 perl -0pi -e 's{\A(\#![^\n]*\n)}{$1source "\${BASH_SOURCE[0]\%/*}/asdd-hook-gate.sh"; asdd_hook_enabled retrospective || exit 0\n}' \
   "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "Stop hook の ASDD ゲートを drain より前へ戻す" "retrospective-stop.sh の drain（node 不在）" "$ROOT"
+check_mutation "Stop hook の ASDD ゲートを drain より前へ戻す" "retrospective-stop.sh の drain（node 不在）" "$ROOT" drain
 
 ROOT="$(make_fixture context-gate-before-drain)"
 perl -0pi -e 's{\A(\#![^\n]*\n)}{$1source "\${BASH_SOURCE[0]\%/*}/asdd-hook-gate.sh"; asdd_hook_enabled retrospective || exit 0\n}' \
   "$ROOT/hooks/retrospective-context.sh"
-check_mutation "事前注入 hook の ASDD ゲートを drain より前へ戻す" "retrospective-context.sh の drain（node 不在）" "$ROOT"
+check_mutation "事前注入 hook の ASDD ゲートを drain より前へ戻す" "retrospective-context.sh の drain（node 不在）" "$ROOT" drain
 
 # 事前注入 hook の stdin 読み取りを node へ委譲したまま、判別を走らせない経路
 # （kill switch が off / node 不在）の shell drain を外す退行（この hook が他の hook と
@@ -630,7 +658,7 @@ check_mutation "事前注入 hook の ASDD ゲートを drain より前へ戻す
 ROOT="$(make_fixture context-no-node-drain-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" "IFS= read -r -t \"\$INPUT_TIMEOUT_SECONDS\" -d '' _" 1
 perl -0pi -e 's/IFS= read -r -t "\$INPUT_TIMEOUT_SECONDS" -d \x27\x27 _/:/' "$ROOT/hooks/retrospective-context.sh"
-check_mutation "node 不在時の shell drain 削除" "retrospective-context.sh の drain（node 不在）" "$ROOT"
+check_mutation "node 不在時の shell drain 削除" "retrospective-context.sh の drain（node 不在）" "$ROOT" drain
 
 # ここから 5 件はクロスモデルレビューの裁定に対応する常設実測。
 #
@@ -641,13 +669,13 @@ ROOT="$(make_fixture stop-drain-escalation-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-stop.sh" '[ "$READ_RC" -ne 0 ]' 1
 perl -0pi -e 's/\[ "\$READ_RC" -ne 0 \]/false/' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "Stop hook の discard 段を削除（bounded read へ戻す）" \
-  "retrospective-stop.sh の天井 drain（ゲート早期終了）" "$ROOT"
+  "retrospective-stop.sh の天井 drain（ゲート早期終了）" "$ROOT" drain
 
 ROOT="$(make_fixture context-drain-escalation-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '[ "$READ_RC" -ne 0 ]' 1
 perl -0pi -e 's/\[ "\$READ_RC" -ne 0 \]/false/' "$ROOT/hooks/retrospective-context.sh"
 check_mutation "事前注入 hook の discard 段を削除（bounded read へ戻す）" \
-  "retrospective-context.sh の天井 drain（off）" "$ROOT"
+  "retrospective-context.sh の天井 drain（off）" "$ROOT" drain
 
 # (2) 遅延 producer: 判別 node が入力上限で「答えを確定してから EOF まで捨てる」のを
 # やめ、上限でそのまま終了する形へ戻す退行。上限を過ぎてから書き始めるホストの書き手が
@@ -656,7 +684,7 @@ ROOT="$(make_fixture context-latch-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" 'setTimeout(latch,' 1
 perl -0pi -e 's/setTimeout\(latch,/setTimeout(() => finish("inject"),/' "$ROOT/hooks/retrospective-context.sh"
 check_mutation "判別 node が入力上限で drain を打ち切る" \
-  "retrospective-context.sh の遅延 producer drain" "$ROOT"
+  "retrospective-context.sh の遅延 producer drain" "$ROOT" drain
 
 # (3) kill switch（RETROSPECTIVE_MODE=off）の判定を判別 node より後ろへ戻す退行。
 # off でも毎プロンプト node が起動する（drain は残るので SIGPIPE は出ず、壁時間だけが
@@ -666,7 +694,7 @@ expect_occurrences "$ROOT/hooks/retrospective-context.sh" '[ "$RETROSPECTIVE_OFF
 perl -0pi -e 's/\[ "\$RETROSPECTIVE_OFF" -eq 0 \] && command -v node/command -v node/' \
   "$ROOT/hooks/retrospective-context.sh"
 check_mutation "kill switch の判定を判別 node より後ろへ戻す" \
-  "retrospective-context.sh: off なのに node が起動した" "$ROOT"
+  "retrospective-context.sh: off なのに node が起動した" "$ROOT" drain
 
 # (4) 空 stdin の早期 exit を drain の隣へ戻す退行。ASDD ゲートより前に抜けるので、
 # ゲートの stderr 診断（設定はあるが検証できない）が無検査のまま消える。
@@ -675,7 +703,7 @@ expect_occurrences "$ROOT/hooks/retrospective-stop.sh" 'READ_RC=$?' 1
 perl -0pi -e 's/READ_RC=\$\?\n/READ_RC=\$?\n[ -n "\$HOOK_INPUT" ] || exit 0\n/' \
   "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "空 stdin の早期 exit を ASDD ゲートより前へ戻す" \
-  "retrospective-stop.sh: 空 stdin でゲートの診断が消えた" "$ROOT"
+  "retrospective-stop.sh: 空 stdin でゲートの診断が消えた" "$ROOT" drain
 
 # 静音契約の名簿が縮む変異（崩壊床の検出力）。名簿は hooks.json から導出するので、
 # 縮めるには導出へ filter を足すしかない。hooks.json の登録と hooks/*.sh のゲート呼び出し
@@ -684,20 +712,56 @@ ROOT="$(make_fixture roster-shrunk)"
 expect_occurrences "$ROOT/tests/retrospective-stop-hook/asdd.test.mjs" '...registeredHooks()' 1
 perl -0pi -e 's/\.\.\.registeredHooks\(\)/...registeredHooks().filter(dropped => dropped !== "guard-effort-actual.sh")/' \
   "$ROOT/tests/retrospective-stop-hook/asdd.test.mjs"
-check_mutation "静音契約の名簿を 1 本減らす" "✖ roster is derived from hooks.json" "$ROOT"
+check_mutation "静音契約の名簿を 1 本減らす" "✖ roster is derived from hooks.json" "$ROOT" asdd
 
 # Issue #1451: FILING の ask 判定を大文字小文字・空白無視から厳密一致へ狭める退化。
 # 空白・大文字混在の別名検査（Stop 側）が赤になること。
 ROOT="$(make_fixture filing-ask-strict)"
 perl -0pi -e 's/\[Aa\]\[Ss\]\[Kk\]\)\n    FILING_CLAUSE/ask)\n    FILING_CLAUSE/' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "FILING の ask 別名判定の厳密化" "FILING の値の判定が不正" "$ROOT"
+check_mutation "FILING の ask 別名判定の厳密化" "FILING の値の判定が不正" "$ROOT" stop
 
 # 既定分岐の「承認を待たない」文言が承認待ちへ退化する変異。既定モードの positive grep が赤になること。
 # 同じ句は hook 冒頭のコメントにもあるため /g で全出現を置換する（先頭 1 件だけだとコメントが
 # 変わって注入文は無傷のまま、変異が空振りする）。
 ROOT="$(make_fixture filing-default-approval)"
 perl -0pi -e 's/without waiting for approval/after asking the user for approval/g' "$ROOT/hooks/retrospective-stop.sh"
-check_mutation "既定の起票文言が承認待ちへ退化" "継続理由の必須境界が不足" "$ROOT"
+check_mutation "既定の起票文言が承認待ちへ退化" "継続理由の必須境界が不足" "$ROOT" stop
+
+# A selected group must be green on the pristine baseline before its mutations run.
+# The full baseline alone cannot expose setup inherited from a preceding group.
+# Derive this roster from actual jobs so a newly used group cannot miss its control.
+[ "$JOB_N" -gt 0 ] || { echo "✗ positive group controls: no registered mutation groups" >&2; exit 1; }
+POSITIVE_GROUPS=""
+POSITIVE_GROUP_N=0
+for _retro_group in "${JOB_GROUPS[@]}"; do
+  case "$_retro_group" in
+    ''|all) echo "✗ positive group controls: expected one named group" >&2; exit 1 ;;
+  esac
+  case " $POSITIVE_GROUPS " in *" $_retro_group "*) continue ;; esac
+  _retro_control_rc=0
+  _retro_control_out="$(FF_RETRO_PROFILE=1 bash "$BASE/tests/retrospective-stop-hook/verify.sh" --group "$_retro_group" 2>&1)" || _retro_control_rc=$?
+  # Shell summaries count zero for the ASDD group, whose assertions run in Node.
+  # Each group's own profile counts both kinds; require exactly one nonempty group.
+  _retro_control_counts="$(printf '%s\n' "$_retro_control_out" | awk -v group="$_retro_group" '
+    $1 == "PROFILE" && $2 == "retrospective" {
+      total++
+      if ($3 == "group=" group && $4 ~ /^checks=[1-9][0-9]*$/) matched++
+    }
+    END { printf "%d:%d\n", total, matched }
+  ')"
+  if [ "$_retro_control_rc" -ne 0 ] || [ "$_retro_control_counts" != 1:1 ]; then
+    echo "✗ selected group baseline failed: group=$_retro_group exit=$_retro_control_rc coverage=$_retro_control_counts output=[$_retro_control_out]" >&2
+    exit 1
+  fi
+  POSITIVE_GROUPS="${POSITIVE_GROUPS} $_retro_group"
+  POSITIVE_GROUP_N=$((POSITIVE_GROUP_N + 1))
+  echo "  ✓ selected group baseline: $_retro_group"
+  if [ "${FF_RETRO_PROFILE:-0}" = 1 ]; then
+    printf '%s\n' "$_retro_control_out" | grep '^PROFILE ' || true
+  fi
+done
+[ "$POSITIVE_GROUP_N" -gt 0 ] || { echo "✗ positive group controls: no groups checked" >&2; exit 1; }
+echo "  ✓ all ${POSITIVE_GROUP_N} selected group baselines are green"
 
 # ── 登録した検査を並列に回す ─────────────────────────────────────────────────
 #
@@ -756,9 +820,10 @@ mkdir -p "$SPOOL" 2>/dev/null || {
 }
 
 run_job() { # <index>
-  local i="$1" root="${JOB_ROOTS[$1]}" rc=0 out
-  out="$(bash "$root/tests/retrospective-stop-hook/verify.sh" 2>&1)" || rc=$?
+  local i="$1" root="${JOB_ROOTS[$1]}" rc=0 out started=$SECONDS
+  out="$(bash "$root/tests/retrospective-stop-hook/verify.sh" --group "${JOB_GROUPS[$i]}" --expect-failure "${JOB_EXPECTED[$i]}" 2>&1)" || rc=$?
   printf '%s' "$out" > "$SPOOL/$i.out"
+  printf '%s' "$((SECONDS - started))" > "$SPOOL/$i.seconds"
   # rc は本文を書き終えた**後に** rename で置く。「rc ファイルの実在 = その出力が完成している」
   # を親が追加の同期なしに読めるようにするため（run-all.sh の spool と同じ規約）。
   printf '%s' "$rc" > "$SPOOL/$i.rc.tmp"
@@ -800,6 +865,9 @@ while [ "$_retro_i" -lt "$JOB_N" ]; do
   fi
   if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -F "$expected" >/dev/null; then
     echo "  ✓ $name を検出"
+    if [ "${FF_RETRO_PROFILE:-0}" = 1 ]; then
+      echo "PROFILE retrospective mutation=$_retro_i group=${JOB_GROUPS[$_retro_i]} seconds=$(cat "$SPOOL/$_retro_i.seconds")"
+    fi
     MUTATIONS=$((MUTATIONS + 1))
   else
     echo "✗ $name が狙った診断で red になりません: exit=$RC output=[$OUT]" >&2

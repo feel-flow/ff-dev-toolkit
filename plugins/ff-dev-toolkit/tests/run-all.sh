@@ -126,15 +126,15 @@
 # 出力は完了順ではなく**登録順**に suite 単位でまとめて出す（逐次実行と同じ並び。
 # 完了順にすると同じ suite 一覧でも実行のたびに並びが変わり、前回との差分が読めない）。
 #
-#   既定の同時実行数: 論理 CPU 数（上限 8）
+#   既定の同時実行数: 論理 CPU 数（上限 5）
 #   上書き: FF_RUN_ALL_JOBS=<1〜256 の整数>。`1` で逐次実行へ戻る。解釈できない値と
 #           上限超過は 1 行警告のうえ既定値で続行する（fail-safe 側）
 #   入れ子（外側の run-all.sh から suite として呼ばれた回）は、FF_RUN_ALL_JOBS を
 #   明示しない限り逐次で走る — 外側と内側で同時実行数が掛け算になるのを避ける
 #
-# 上限を 8 に置くのは、実時間の上限を見る suite があるため（multi-agent-timeout の
+# 上限を 5 に置くのは、並列負荷と実時間の上限を見る suite の競合を抑えるため（multi-agent-timeout の
 # 「早く終われば早く返る（< 8 秒）」など）。同時実行数を上げすぎると、その幅を負荷
-# 経由で食って «間違った理由で赤い» を作る。数値の実測は Issue #595 のコメントに残す
+# 経由で食って «間違った理由で赤い» を作る。数値の実測は Issue `#1907` の PR に残す
 # — ここへ書くと suite の増減で静かに腐る（ADR-034 のヘッダーが辿った形）。
 #
 # ── 経過秒（elapsed-sec / slowest）──────────────────────────────────────────
@@ -306,8 +306,36 @@ if [[ $# -gt 0 ]]; then
 else
   USING_DEFAULT_SCRIPTS=1
   SCRIPTS=(
-    # 一時ディレクトリも外部コマンドも要らない静的検査を先に置く（安価な順。
-    # 全 suite を実行するので、並び順は結果ではなく報告の読みやすさの問題）。
+
+    # 重い suite を先に投入し、最後の 1 本だけを待つ時間を減らす。検査対象は変えない。
+    "$SCRIPT_DIR/run-all/verify.sh"
+    # 統合レポートの CRITICAL_BLOCK 判定の構造検査（Issue `#272`）と観点別段階化の
+    # 契約検査（Issue `#645`）。一時 git リポジトリ + stub CLI で orchestrator を
+    # ケースごとに実走する（1 ケース数秒）。実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/multi-agent-critical-marker/verify.sh"
+    # docs-template の実行可能フェンスを抽出して fixture 実行する動的検査。
+    # 変異ケースを含むため、実時間の長い suite として先に投入する。
+    "$SCRIPT_DIR/docs-gates-runtime/verify.sh"
+    # 実タイムアウトの待機を他の検査と重ねる。末尾に残すと待機だけが壁時計へ加算される。
+    "$SCRIPT_DIR/multi-agent-timeout/verify.sh"
+    # tracked shell スクリプト全体の静的検査（Issue `#530`）。Markdown 側の
+    # markdownlint と対になる shell 側の lint ゲート。赤にするのは
+    # error 重大度のみ（構文エラーと抑制ディレクティブのパース不能。線引きの根拠は
+    # suite のヘッダ）。抑制ディレクティブの構文エラーは「そのファイルの静的検査が
+    # 丸ごと止まる」形なので、ゲートが無いと永久に気付けない。検出力は同 suite 内の
+    # fixture 2 本（不正ディレクティブ / 正しいディレクティブ + error 未満の指摘）で
+    # 常設実測する。shellcheck が PATH に無ければ丸ごと ○ skip（単体で〜14 秒）。
+    "$SCRIPT_DIR/shellcheck/verify.sh"
+    # Jev 判定アダプタ（scripts/jev/jev-judge.sh）と offline 評価ハーネス（jev-eval.sh）の
+    # 契約。PATH 先頭の偽 curl で呼び出しの形（-K - で設定を stdin 経由・argv にキーを
+    # 載せない）と HTTP ステータス種別ごとの終了コード・再試行・入力不正の不送信・
+    # ハーネスの fail-closed（空セット / 読めない行 / 判定失敗は集計しない）を実測する。
+    # 実網には出ない。jq と一時領域を要し、無ければ skip ではなく赤。
+    "$SCRIPT_DIR/jev-adapter/verify.sh"
+    # docs-fact-drift の検出力を、記載側 / 実体側の双方向の変異と対象外範囲（ACE 分割
+    # ファイル・Changelog 節）で実測する（Issue `#519`）。
+    "$SCRIPT_DIR/docs-fact-drift-selftest/verify.sh"
+    # 以下は既存の分類順に報告する。全 suite を必ず実行する。
     "$SCRIPT_DIR/skill-frontmatter/verify.sh"
     # 同梱resourceを使う全skillが、読み込み元rootを実行中に固定し、cache再探索や
     # 別version fallbackをしない契約を持つことをlive走査 + negative controlで固定する。
@@ -323,14 +351,6 @@ else
     # 新規違反を非 0・ファイル名付きで検出することを固定する（Issue #295）。
     "$SCRIPT_DIR/markdownlint/verify.sh"
     "$SCRIPT_DIR/markdownlint-selftest/verify.sh"
-    # tracked shell スクリプト全体の静的検査（Issue #530）。Markdown 側の
-    # markdownlint と対になる shell 側の lint ゲートなので直後に置く。赤にするのは
-    # error 重大度のみ（構文エラーと抑制ディレクティブのパース不能。線引きの根拠は
-    # suite のヘッダ）。抑制ディレクティブの構文エラーは「そのファイルの静的検査が
-    # 丸ごと止まる」形なので、ゲートが無いと永久に気付けない。検出力は同 suite 内の
-    # fixture 2 本（不正ディレクティブ / 正しいディレクティブ + error 未満の指摘）で
-    # 常設実測する。shellcheck が PATH に無ければ丸ごと ○ skip（単体で〜14 秒）。
-    "$SCRIPT_DIR/shellcheck/verify.sh"
     # case 11（*.sh MBCS）の fail-closed 経路をシームで自動回帰（Issue #312）。
     # skill-bash-blocks の直後: 同欠陥クラスの SKILL.md 側ガードと並べて報告する。
     "$SCRIPT_DIR/mbcs-guard-failclosed/verify.sh"
@@ -613,12 +633,6 @@ else
     "$SCRIPT_DIR/setup-ai-config/verify.sh"
     "$SCRIPT_DIR/asdd-runtime/verify.sh"
     "$SCRIPT_DIR/assess-impact/verify.sh"
-    # Jev 判定アダプタ（scripts/jev/jev-judge.sh）と offline 評価ハーネス（jev-eval.sh）の
-    # 契約。PATH 先頭の偽 curl で呼び出しの形（-K - で設定を stdin 経由・argv にキーを
-    # 載せない）と HTTP ステータス種別ごとの終了コード・再試行・入力不正の不送信・
-    # ハーネスの fail-closed（空セット / 読めない行 / 判定失敗は集計しない）を実測する。
-    # 実網には出ない。jq と一時領域を要し、無ければ skip ではなく赤。
-    "$SCRIPT_DIR/jev-adapter/verify.sh"
     # 決定木 v0（scripts/decision-tree/tree.tsv + route.sh / hooks/decision-tree.sh /
     # effort-report.sh --unreached-leaves）の到達性と契約。実 tree の静的検査（葉の実在・
     # 到達性・深さ ≤ 4・葉 ≤ 50・木に載っていないスキル / hook）を route.sh --check で通し、
@@ -683,11 +697,8 @@ else
     # 偽見出し無視 / 昇順 Changelog / PLAYBOOK 除外）で実測する（Issue #884）。
     "$SCRIPT_DIR/docs-version-changelog-selftest/verify.sh"
     # docs/ に手書きした件数・閾値と実体のドリフト検査。期待値はすべて実体から導出し、
-    # 正準表現に 1 件も一致しなければ赤（抽出の空振りを緑にしない。Issue #519）。
+    # 正準表現に 1 件も一致しなければ赤（抽出の空振りを緑にしない。Issue `#519`）。
     "$SCRIPT_DIR/docs-fact-drift/verify.sh"
-    # 上の gate の検出力を、記載側 / 実体側の双方向の変異と対象外範囲（ACE 分割
-    # ファイル・Changelog 節）で実測する（Issue #519）。
-    "$SCRIPT_DIR/docs-fact-drift-selftest/verify.sh"
     # docs/ のリリース表と CHANGELOG 実体の照合。docs-fact-drift は数値 claim 専用で
     # 版番号を見ないため、版・日付の乖離と「いまここ」を指す現在値マーカー（腐る書き方）
     # をこちらで弾く（Issue #841）。
@@ -695,9 +706,6 @@ else
     # 上の gate の検出力を、隔離 fixture への変異（日付ズレ・不在版・マーカー混入・
     # 書式変更による抽出空振り・CHANGELOG 欠落）で実測する（Issue #841）。
     "$SCRIPT_DIR/roadmap-release-facts-selftest/verify.sh"
-    # docs-template の実行可能フェンスを抽出して fixture 実行する動的検査。
-    # 一時作業領域を使うため静的検査の後、ネットワーク検査の前に置く。
-    "$SCRIPT_DIR/docs-gates-runtime/verify.sh"
     # アダプタが CLI へ渡す argv の実測。一時ディレクトリと stub CLI を使うが
     # 実 CLI・ネットワーク・課金は伴わない（〜2 秒）。静的検査の後、ネットワーク
     # 検査の前に置く。
@@ -811,10 +819,6 @@ else
     # resume と同じ「前回実行との関係」を扱うので直後に置く。
     # 環境都合で skip すると退避の検出力が丸ごと消えるため REQUIRED_SUITES に載せる。
     "$SCRIPT_DIR/multi-agent-stale-outputs/verify.sh"
-    # 統合レポートの CRITICAL_BLOCK 判定の構造検査（Issue #272）と観点別段階化の
-    # 契約検査（Issue #645）。一時 git リポジトリ + stub CLI で orchestrator を
-    # ケースごとに実走する（1 ケース数秒）。実 CLI・ネットワーク・課金は伴わない。
-    "$SCRIPT_DIR/multi-agent-critical-marker/verify.sh"
     # build_prompt の実行境界（再帰防止ガード）の回帰検査（Issue #263）。一時 git
     # リポジトリ + stub CLI（〜3 秒）。実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/adapter-prompt-guard/verify.sh"
@@ -1011,10 +1015,6 @@ else
     # ff-media-toolkit プラグインの suite（plugins/ff-media-toolkit/tests/run-all.sh）を
     # ラッパー経由で回す（ff-media-toolkit 導入時に追加）。node 20 以上が無い環境では丸ごと ○ skip。
     "$SCRIPT_DIR/ff-media-toolkit/verify.sh"
-    # 一時 git リポジトリ + stub CLI を使い、打ち切りや猶予期間の実測待ちを含むので
-    # 後ろに置く（単体で〜35 秒。数字を更新するときは実測してから直すこと）
-    "$SCRIPT_DIR/multi-agent-timeout/verify.sh"
-    "$SCRIPT_DIR/run-all/verify.sh"
     # 公開リポジトリ単体の checkout を合成して公開 suite セットを回す（ADR-068）。
     # 全件ゲートと同規模（macOS 実測で単体約 19 分・全件ゲート内の並列実行で約 36 分）なので run-all からは
     # 常に ○ skip し、公開同期の直前に scripts/release-dev-toolkit.sh の gate 段が FF_RUN_PUBLIC_LAYOUT=1 で明示起動する。
@@ -1067,7 +1067,7 @@ REQUIRED_SUITES=(
   markdownlint-selftest
   # shellcheck（外部バイナリ）が要る。抑制ディレクティブの構文エラーは「そのファイルの
   # 静的検査が静かに止まる」形で、他のどの suite も見ていない。黙って skip すると
-  # ゲートを入れた意味が丸ごと消えるので明示許可を要求する（Issue #530）。
+  # ゲートを入れた意味が丸ごと消えるので明示許可を要求する（Issue `#530`）。
   # 未導入環境では FF_RUN_ALL_ALLOW_SKIP=shellcheck が要る（brew/apt で導入可）。
   shellcheck
   # mcp/node_modules が要る。型検査ゲート 2 系統ぶんがここに乗っている（#372）
@@ -1338,8 +1338,6 @@ MISS_PROBE_BASELINE=(
   close-issue-shell-quote
   closing-keyword-guard
   cloud-env-setup
-  docs-fact-drift-selftest
-  docs-fact-drift
   docs-frontmatter-repo-selftest
   docs-frontmatter-repo
   docs-gates-runtime
@@ -1527,12 +1525,14 @@ check_suite_registration() {
   local disk_names=() registered=() missing=() name script
   for script in "$SCRIPT_DIR"/*/verify.sh; do
     [[ -f "$script" ]] || continue
-    disk_names+=("$(basename "$(dirname "$script")")")
+    name="${script%/*}"
+    disk_names+=("${name##*/}")
   done
   # 既定一覧そのものを読む（別配列に写すと写し忘れで乖離する）。この関数は
   # 既定一覧で走るときにしか呼ばれないので SCRIPTS が既定一覧に等しい。
   for script in "${SCRIPTS[@]}"; do
-    registered+=("$(basename "$(dirname "$script")")")
+    name="${script%/*}"
+    registered+=("${name##*/}")
   done
   # 走査が空なら「漏れなし」ではなく「検査が成立していない」
   if [[ "${#disk_names[@]}" -eq 0 ]]; then
@@ -2189,7 +2189,11 @@ ff_changed_select() { # <FF_RUN_ALL_CHANGED の値>
       esac
     done < <(printf '%s\n' "$derive_out")
     for script in "${SCRIPTS[@]}"; do
-      name="$(basename "$(dirname "$script")")"
+      if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
+        name="${script%/*}"; name="${name##*/}"
+      else
+        name="$(basename "$(dirname "$script")")"
+      fi
       found="走査対象のスクリプトが見つからない（fail-safe で常に選ぶ）"
       for ((e = 0; e < ${#derived_names[@]}; e++)); do
         if [[ "${derived_names[$e]}" == "$name" ]]; then
@@ -2245,12 +2249,19 @@ fi
 if [[ "$FAST_MODE" == "1" ]]; then
   FAST_KEPT=()
   for script in "${SCRIPTS[@]}"; do
-    suite_dir="$(dirname "$script")"
-    name="$(basename "$suite_dir")"
+    if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
+      suite_dir="${script%/*}"
+      name="${suite_dir##*/}"
+      suite_parent="${suite_dir%/*}"
+    else
+      suite_dir="$(dirname "$script")"
+      name="$(basename "$suite_dir")"
+      suite_parent="$(dirname "$suite_dir")"
+    fi
     if [[ "$name" == *-selftest ]]; then
       # 対になる本体 suite が実在するときだけ除外する。対が無い `-selftest` は live な
       # 検査を単独で担っており、除外するとその検査対象が無検査で通る（ADR-031）。
-      if [[ -f "$(dirname "$suite_dir")/${name%-selftest}/verify.sh" ]]; then
+      if [[ -f "$suite_parent/${name%-selftest}/verify.sh" ]]; then
         FAST_EXCLUDED+=("$name")
         continue
       fi
@@ -2445,8 +2456,12 @@ ff_consume() { # <name> <kind: run|missing|notexec|gone> <script> <rc>。本文�
   # 行頭マーカー（suite 全体の skip）とは別勘定にし、終了コードや REQUIRED_SUITES の
   # fail-closed 判定を変えない。awk は入力を最後まで読むため、大量出力でも grep -q の
   # SIGPIPE 反転を持ち込まない。
-  checks_skipped="$(printf '%s\n' "$FF_SUITE_OUTPUT" \
-    | awk '/^[[:space:]]+○ skip(:|$)/ { n++ } END { print n + 0 }')"
+  checks_skipped=0
+  # 必要な文字列が無い出力は一致が 0 件と確定する。数え方は元の正規表現を保つ。
+  if [[ "$FF_SUITE_OUTPUT" == *'○ skip'* ]]; then
+    checks_skipped="$(printf '%s\n' "$FF_SUITE_OUTPUT" \
+      | awk '/^[[:space:]]+○ skip(:|$)/ { n++ } END { print n + 0 }')"
+  fi
   if [[ "$checks_skipped" -gt 0 ]]; then
     CHECKS_SKIPPED_TOTAL=$((CHECKS_SKIPPED_TOTAL + checks_skipped))
     CHECKS_SKIPPED+=("${name}=${checks_skipped}")
@@ -2495,7 +2510,11 @@ ff_consume() { # <name> <kind: run|missing|notexec|gone> <script> <rc>。本文�
 ff_run_sequential() {
   local script name kind suite_rc _t0 _t1 _elapsed
   for script in "${SCRIPTS[@]}"; do
-    name="$(basename "$(dirname "$script")")"
+    if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
+      name="${script%/*}"; name="${name##*/}"
+    else
+      name="$(basename "$(dirname "$script")")"
+    fi
     kind="$(ff_suite_kind "$script")"
     FF_SUITE_OUTPUT=""
     suite_rc=0
@@ -2521,7 +2540,7 @@ ff_run_sequential() {
 # 並列実行。${SPOOL}（mktemp -d 済み）を要求する。
 ff_run_parallel() {
   local total="${#SCRIPTS[@]}"
-  local i next_launch=0 next_print=0 running=0 suite_rc _elapsed
+  local i next_launch=0 next_print=0 running=0 suite_rc _elapsed name
   # 配列名の DONE / PIDS を避けるのは shellcheck 対策。`DONE[$i]=1` が文頭に来ると
   # `done` キーワードの大文字違い（SC1081）+ `[` の前のスペース欠落（SC1069）と読まれる。
   local -a SUITE_KIND SUITE_PID SUITE_DONE
@@ -2583,6 +2602,11 @@ ff_run_parallel() {
     # 同じ suite 一覧でも実行のたびに並びが変わり、前回との差分が読めなくなる。
     while [[ "$next_print" -lt "$next_launch" ]] && [[ "${SUITE_DONE[$next_print]}" == "1" ]]; do
       i="$next_print"
+      if [[ "$USING_DEFAULT_SCRIPTS" == "1" ]]; then
+        name="${SCRIPTS[$i]%/*}"; name="${name##*/}"
+      else
+        name="$(basename "$(dirname "${SCRIPTS[$i]}")")"
+      fi
       next_print=$((next_print + 1))
       FF_SUITE_OUTPUT=""
       suite_rc=0
@@ -2594,7 +2618,7 @@ ff_run_parallel() {
           if _elapsed="$(cat "$SPOOL/$i.elapsed" 2>/dev/null)"; then
             case "$_elapsed" in
               ''|*[!0-9]*) ;;
-              *) ff_record_elapsed "$(basename "$(dirname "${SCRIPTS[$i]}")")" "$_elapsed" ;;
+              *) ff_record_elapsed "$name" "$_elapsed" ;;
             esac
           fi
           rm -f "$SPOOL/$i.out" "$SPOOL/$i.rc" "$SPOOL/$i.elapsed" 2>/dev/null || true
@@ -2604,7 +2628,7 @@ ff_run_parallel() {
           FF_SUITE_OUTPUT=""
         fi
       fi
-      ff_consume "$(basename "$(dirname "${SCRIPTS[$i]}")")" "${SUITE_KIND[$i]}" "${SCRIPTS[$i]}" "$suite_rc"
+      ff_consume "$name" "${SUITE_KIND[$i]}" "${SCRIPTS[$i]}" "$suite_rc"
     done
 
     if [[ "$next_print" -lt "$total" ]]; then
@@ -2663,7 +2687,7 @@ ff_detect_cpus() {
   printf '%s\n' "$n"
 }
 
-FF_JOBS_CAP=8
+FF_JOBS_CAP=5
 # 明示指定として受け付ける上限。桁数を先に見るのは、正規表現を通る巨大値をそのまま
 # 算術比較へ渡すと bash の整数が符号あり 64bit で折り返し、`-gt 1` が偽になって
 # **警告なしに逐次へ化ける**ため（同時に、桁数を見ないと 100000 並列の投入も通る）。

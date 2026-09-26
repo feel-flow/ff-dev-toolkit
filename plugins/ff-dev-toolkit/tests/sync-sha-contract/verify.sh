@@ -108,6 +108,7 @@
 # 変異検出: 照合の case を外して全ヒントを無条件に足すと release-runtime（codex の未知 skip の停止文に setup が混じる）が赤。
 # 変異検出: 許容表へ語尾を変えた typecheck 行（`…行いません（`）を足すとブロック内照合の針が赤（2026-09-25 実測）。
 # 変異検出: SKIP_HINTS へ `|` の無い要素を足すと要素形の針が赤。
+# 空振り検出: footer 分類器の成功状態照合を削除すると footer-reuse-runtime の empty / identical ケースが赤（2026-09-26 実測 exit 1）。内容証明なしの exit 0 は採用しない。
 # 空振り検出: FF_SYNC_SHA_SKILL へ存在しないパスを与えると (対象解決) が赤になる。明示指定の不在を skip へ倒さないため、実測は exit 1（○ skip ではない）。
 # 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT へ存在しないパスを与えると (対象解決) が赤になる（実測 exit 1）。リリーススクリプトを空ファイルへ差し替えると (7) の全針と release-runtime が赤になる。
 # 空振り検出: 検査対象を空ファイルへ差し替えると (1〜3 / 5 / 6 の全針) が赤になる。0 件一致を「不足なし」へ倒さないことの実測。
@@ -332,9 +333,9 @@ contains '非 0 なら**同期しない**' \
 contains 'CRON_NOTE=` が出ていれば、同期は続行してよいが週次 CI の異常として別途ユーザーへ報告する' \
   "healthy の回でも赤い cron をユーザーへ報告することが明記されている"
 contains '同じ 2 点を無条件に回し直す' \
-  "収束周回でもゲートを省略しない（旧 green 再利用機構の復活を防ぐ）"
+  "収束周回でも週次 CI と run-all を省略しない"
 contains 'footer 差分でも省略しない' \
-  "収束段落が footer 差分でのゲート省略を禁じている（旧 3 suite 充足への書き戻し検出。レビュー W1）"
+  "収束段落が footer 差分での週次 CI と run-all 省略を禁じている"
 release_contains '検査した tree と HEAD の tree が一致しない' \
   "dirty なまま得た green を「HEAD を検査済み」と扱わない"
 
@@ -768,7 +769,11 @@ release_contains 'ff_release_marker_try_reclaim "$MARKER_DIR"' \
 release_contains 'pub_ahead="$(git -C "$PUBLIC" rev-list --count origin/main..main)"' \
   "preflight が公開側の未 push の commit（前回の push 失敗の残り）を見る"
 release_contains 'if [[ "${rec%%:*}" == "$head" && ( "${rec#*:}" == full || "$gate_mode" == fast ) ]]; then' \
-  "gate 段は同じ HEAD で緑だった記録があるときだけ回し直さない（HEAD が動けば回す）"
+  "gate 段は同じ HEAD の成功記録を既存条件で再利用する（footer child は別の内容証明を要求）"
+release_contains 'if footer_gate_reusable "$rec" "$head"; then' \
+  "public-layout の再利用には footer の内容証明関数を通す"
+release_contains "has_line \"\$proof\" 'FULL_GATE_REUSE=CHANGELOG_FOOTER_ONLY' || return 1" \
+  "空出力・異なる状態・分類不能を public-layout の再利用へ倒さない"
 # sync 段: 同期元 SHA は同期スクリプトの記録から読み、HEAD と突合してから commit する（手順 4 と同じ契約）。
 RS_SYNC="$(release_line_of 'bash "$SYNC_SCRIPT" --target "$PUBLIC" || stop')"
 RS_READ="$(release_line_of 'src_sha="$(cat "$(git -C "$PUBLIC" rev-parse --absolute-git-dir)/ff-sync-src-sha" 2>/dev/null || true)"')"

@@ -25,7 +25,26 @@
 #   末尾から改行を外すと「引数なしで行末」が赤。
 #   末尾を否定先読みへ広げると「sed の | 区切り」が赤。
 # 空振り検出: 自動発火節の判定リストから未完了報告の定型文を変えた SKILL.md を与えると、hook / SKILL.md の自動発火契約の照合 1 件が赤になる（2026-09-23 実測。shell 検査 121 件中 1 件失敗。判定リストを壊したまま「契約あり」へ倒さない）。
+# 空振り検出: --group の未知値、選択関数が全群を外す写し、contracts 群の検査本体が空の写し、空の ASDD test file はいずれも exit 1（2026-09-26、selftest の selector probe で実測）。
 set -euo pipefail
+
+# Full runs remain the default. Mutation selftests select the owning group instead of
+# repeating every unrelated check. Unknown/empty groups must never become a green run.
+GROUP=all
+EXPECT_FAILURE=""
+if [ "$#" -gt 0 ]; then
+  { [ "$#" -eq 2 ] || [ "$#" -eq 4 ]; } && [ "$1" = --group ] || { echo "✗ expected --group <name> [--expect-failure <diagnostic>]" >&2; exit 1; }
+  GROUP="$2"
+  if [ "$#" -eq 4 ]; then
+    [ "$3" = --expect-failure ] && [ -n "$4" ] || { echo "✗ expected nonempty failure diagnostic" >&2; exit 1; }
+    EXPECT_FAILURE="$4"
+  fi
+fi
+case "$GROUP" in
+  all|context|context-path|stop|chain|chain-command|chain-boundary|chain-recovery|input|contracts|drain|asdd) ;;
+  *) echo "✗ unknown retrospective group: $GROUP" >&2; exit 1 ;;
+esac
+selected() { [ "$GROUP" = all ] || [ "$GROUP" = "$1" ]; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -75,7 +94,12 @@ REASON=""
 RC=0
 
 ok() { echo "  ✓ $1"; PASS=$((PASS + 1)); }
-bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
+bad() {
+  echo "  ✗ $1" >&2; FAIL=$((FAIL + 1))
+  # A mutation is proven once its exact expected diagnostic fails. Full baseline runs
+  # have no expected failure and always execute every original check.
+  if [ -n "$EXPECT_FAILURE" ] && [[ "$1" == *"$EXPECT_FAILURE"* ]]; then exit 1; fi
+}
 
 run_hook() {
   local input="$1" mode="${2-__unset__}" test_path="${3-$PATH}"
@@ -156,6 +180,26 @@ INCOMPLETE_REPORT='振り返り: 今回は作業完了前のため対象外'
 
 echo "== retrospective Stop hook =="
 
+
+GROUP_START=0
+GROUP_CHECKS=0
+GROUPS_RUN=0
+begin_group() { GROUP_START=$SECONDS; GROUP_CHECKS=$((PASS + FAIL)); GROUPS_RUN=$((GROUPS_RUN + 1)); }
+end_group() {
+  local count="${2:-$((PASS + FAIL - GROUP_CHECKS))}"
+  [ "$count" -gt 0 ] || { echo "✗ empty retrospective group: $1" >&2; exit 1; }
+  if [ "${FF_RETRO_PROFILE:-0}" = 1 ]; then
+    echo "PROFILE retrospective group=$1 checks=$count seconds=$((SECONDS - GROUP_START))"
+  fi
+}
+FIRST_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","stop_hook_active":false}'
+ACTIVE_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","stop_hook_active":true}'
+DONE_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t2","stop_hook_active":false,"last_assistant_message":"振り返り: 改善候補なし"}'
+CODEX_FIRST_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","stop_hook_active":false,"model":"gpt-5.6-sol"}'
+
+
+if selected context; then
+begin_group
 run_context_hook
 CONTEXT="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
 if [ "$RC" -eq 0 ] && [ -z "$ERR" ] \
@@ -342,6 +386,11 @@ else
   bad "ask モードの事前注入契約が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
 
+end_group context
+fi
+
+if selected context-path; then
+begin_group
 # Skill ツールを持たない subagent は SKILL.md の所在を自力で探すしかなく、
 # 注入文にも書いていなかった（導入先で 5 回・毎回 3〜6 呼び出しを探索に費やした実測）。
 # hooks.json が ${CLAUDE_PLUGIN_ROOT} で起動するので hook 自身が絶対パスを組める。
@@ -502,11 +551,11 @@ ERR="$(cat "$TEST_TMP/context-stderr" 2>/dev/null || true)"
 rm -f "$TEST_TMP/context-stderr"
 assert_silent_success "事前注入も FILING=ask より MODE=off が優先して無効"
 
-FIRST_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","stop_hook_active":false}'
-ACTIVE_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","stop_hook_active":true}'
-DONE_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t2","stop_hook_active":false,"last_assistant_message":"振り返り: 改善候補なし"}'
-CODEX_FIRST_INPUT='{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","stop_hook_active":false,"model":"gpt-5.6-sol"}'
+end_group context-path
+fi
 
+if selected stop; then
+begin_group
 run_hook "$CODEX_FIRST_INPUT"
 assert_silent_success "Codex Stop は Feedback を返さず事前注入に委ねる"
 
@@ -645,6 +694,9 @@ else
   bad "Node.js 不在の fail-open 通知が不正: exit=$RC output=[$OUT] stderr=[$ERR]"
 fi
 
+end_group stop
+fi
+
 # --- Issue `#1612`: 発火はチェーン末尾のターンだけ -------------------------------
 # 事前注入は応答生成の前に走るので、そのターンが `/ace-curate` まで到達するかを
 # 知りようがない（transcript はまだ 1 つ前のターンで終わっている）。判定を持てるのは
@@ -685,6 +737,8 @@ assert_continuation() {
   fi
 }
 
+if selected chain; then
+begin_group
 QUESTION_TRANSCRIPT="$(mk_transcript question <<'EOF'
 {"type":"user","isSidechain":false,"message":{"role":"user","content":"この設計どう思う？"}}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/x"}}]}}
@@ -875,6 +929,11 @@ EOF
 run_hook "$(stop_input_for "$SAME_MSG_TAIL_THEN_RETRO")"
 assert_silent_success "同一 message で末尾の後に振り返りが来たら実施済みとして扱う"
 
+end_group chain
+fi
+
+if selected chain-command; then
+begin_group
 # `gh pr merge` の一致点は 3 系統ある（行頭 / 区切りの直後 / 前置付き）。`&&` の 1 系統
 # だけを固定していると、**このリポジトリのワークフローが実際に打つ形**——行頭の
 # `gh pr merge <PR> --squash`——を落とす変異が緑で通る（実測）。3 系統すべてを置く。
@@ -1004,6 +1063,11 @@ EOF
 run_hook "$(stop_input_for "$BARE_SLASH_TRANSCRIPT")"
 assert_continuation "ラッパー無しのホストでは prompt 先頭トークンで明示指定を拾う"
 
+end_group chain-command
+fi
+
+if selected chain-boundary; then
+begin_group
 # tool_result の user エントリにホストが `<system-reminder>` のテキストを添えることが
 # ある。text だけを見て境界にすると、その手前のチェーン末尾を隠して黙る。
 TOOL_RESULT_TEXT_TRANSCRIPT="$(mk_transcript tool-result-text <<'EOF'
@@ -1046,6 +1110,11 @@ assert_continuation "散文が定型文を引用しただけでは実施済み�
 run_hook '{"hook_event_name":"Stop","session_id":"s1","stop_hook_active":false,"last_assistant_message":"ok","model":"","transcript_path":"/nonexistent"}'
 assert_continuation "空文字の model は Codex ホストと見なさない"
 
+end_group chain-boundary
+fi
+
+if selected chain-recovery; then
+begin_group
 # 判定を別モジュールへ出したので、hook は初めて「同梱ファイルが欠けている」形で壊れうる。
 # その壊れ方が無言だと、振り返りが黙って消えたことに誰も気づけない（この hook の唯一の
 # 仕事が「抜けに気づくこと」なので、最悪の失敗形）。応答はブロックせず、復旧ヒントを出す。
@@ -1117,6 +1186,11 @@ OUT="$(printf '%s' "$FIRST_INPUT" | env -u RETROSPECTIVE_MODE -u RETROSPECTIVE_F
 ERR="$(cat "$TEST_TMP/failopen-stderr" 2>/dev/null || true)"
 assert_silent_success "exit 2 は設計どおりの fail-open として無音で通す"
 
+end_group chain-recovery
+fi
+
+if selected input; then
+begin_group
 READ_STUB="$TEST_TMP/read-stub.bash"
 printf '%s\n' \
   'read() {' \
@@ -1170,6 +1244,11 @@ else
   bad "変異: timeout付き read は1件の想定（実際 ${TIMEOUT_READ_COUNT} 件）"
 fi
 
+end_group input
+fi
+
+if selected contracts; then
+begin_group
 # The plugin-root expression is intentionally matched as a literal contract.
 # shellcheck disable=SC2016
 if jq -e '.hooks.Stop | length == 1' "$HOOKS_JSON" >/dev/null 2>&1 \
@@ -1246,6 +1325,11 @@ else
   bad "hook が filesystem へ副作用を作成"
 fi
 
+end_group contracts
+fi
+
+if selected drain; then
+begin_group
 echo "retrospective hooks: ASDD ゲートの早期終了経路でも stdin を読み切る"
 # 任意 Hook を止めるゲート（hooks/asdd-hook-gate.sh）は stdin を消費しない設計なので、
 # 前置きが drain より前にあると「読まずに exit 0」する経路ができ、書き手がその場で
@@ -1393,12 +1477,24 @@ for gate_target in "$TARGET" "$CONTEXT_TARGET"; do
   fi
 done
 
+end_group drain
+fi
+
+if selected asdd; then
+begin_group
 # reporter を spec へ固定する。既定の reporter は Node のバージョンと stdout が TTY か
 # で変わる（実測 2026-09-12: v22.20.0 は非 TTY で TAP、v24.18.0 は spec）。self-test は
 # この出力を `$()` で捕捉する = 非 TTY なので、固定しないと「✖ <テスト名>」を期待する
 # 変異検出が Node 22 の CI だけで空振りし、ローカル緑 / CI 赤になる。
-node --test --test-reporter=spec "$SCRIPT_DIR/asdd.test.mjs"
-
+ASDD_OUT="$(node --test --test-reporter=spec "$SCRIPT_DIR/asdd.test.mjs" 2>&1)" || { printf '%s\n' "$ASDD_OUT"; exit 1; }
+printf '%s\n' "$ASDD_OUT"
+# Node's own count prevents an empty test file from becoming a green selected group.
+printf '%s\n' "$ASDD_OUT" | grep -Fx 'ℹ tests 7' >/dev/null || { echo '✗ ASDD test count must be 7' >&2; exit 1; }
+end_group asdd 7
+fi
+EXPECTED_GROUPS=1
+[ "$GROUP" != all ] || EXPECTED_GROUPS=11
+[ "$GROUPS_RUN" -eq "$EXPECTED_GROUPS" ] || { echo "✗ retrospective group selection ran $GROUPS_RUN groups; expected $EXPECTED_GROUPS" >&2; exit 1; }
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ retrospective Stop hook: ${FAIL} 件失敗（${PASS} 件成功）" >&2
   exit 1

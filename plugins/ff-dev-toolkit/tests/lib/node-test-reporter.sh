@@ -181,9 +181,16 @@ node_test_scan() {
       return hit
     }
     function scan(line, start,   m, nc) {
+      # Literal --test is necessary even inside a substitution. Filter only after
+      # logical-line joining, keeping continuations and EOF handling unchanged.
+      if (index(line, "--test") == 0) return
       m = mask(line)
       nc = strip_comment(line)
       if (scan_pairs(m, line, nc) || check_subst(m, line, nc)) print start ":node-test-unpinned:" line
+    }
+    FNR == 1 && NR > 1 {
+      if (joined != "") scan(joined, start_line)
+      joined = ""
     }
     {
       line = $0
@@ -202,6 +209,7 @@ node_test_check_tracked() {
   local git_cmd="${FF_NODE_TEST_GIT:-git}"
   local all_hits="" scan_errors="" skipped="" scanned=0
   local list="" file first hits rc
+  local -a scan_files=() scan_paths=()
 
   if ! repo_root="$("$git_cmd" -C "$repo_root" rev-parse --show-toplevel 2>/dev/null)"; then
     printf 'NODE_TEST_RESULT=error_repo SCANNED=0 HITS=0 ERRORS=1 SKIPPED=0\n'
@@ -245,22 +253,44 @@ node_test_check_tracked() {
           *) continue ;;
         esac ;;
     esac
-    set +e
-    hits="$(node_test_scan "$repo_root/$file" 2>/dev/null)"
-    rc=$?
-    set -e
-    if [ "$rc" -ne 0 ]; then
-      scan_errors="${scan_errors}${file} (awk rc=${rc})
+    scan_files+=("$file")
+    scan_paths+=("$repo_root/$file")
+  done < <(printf '%s\n' "$list")
+
+  # One clean batch avoids an awk process per tracked file. On hits or errors,
+  # retain the original per-file diagnostics. Never invoke an empty array: awk
+  # would read stdin. Preserve the API: an empty tracked roster fails above;
+  # no eligible/present files still reports SCANNED=0 (and any SKIPPED count).
+  if [ "${#scan_files[@]}" -gt 0 ]; then
+    rc=0
+    hits="$(node_test_scan "${scan_paths[@]}" 2>/dev/null)" || rc=$?
+    if [ "$rc" -eq 0 ] && [ -z "$hits" ]; then
+      scanned=${#scan_files[@]}
+    else
+      # A failed batch remains an error even if a later retry succeeds.
+      if [ "$rc" -ne 0 ]; then
+        scan_errors="${scan_errors}batch (awk rc=${rc})
 "
-      continue
-    fi
-    scanned=$((scanned + 1))
-    if [ -n "$hits" ]; then
-      all_hits="${all_hits}${file}:
+      fi
+      for file in "${scan_files[@]}"; do
+        set +e
+        hits="$(node_test_scan "$repo_root/$file" 2>/dev/null)"
+        rc=$?
+        set -e
+        if [ "$rc" -ne 0 ]; then
+          scan_errors="${scan_errors}${file} (awk rc=${rc})
+"
+          continue
+        fi
+        scanned=$((scanned + 1))
+        if [ -n "$hits" ]; then
+          all_hits="${all_hits}${file}:
 ${hits}
 "
+        fi
+      done
     fi
-  done < <(printf '%s\n' "$list")
+  fi
 
   local skipped_n=0
   if [ -n "$skipped" ]; then

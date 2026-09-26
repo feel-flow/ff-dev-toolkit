@@ -107,7 +107,14 @@ DOCS="${FF_DOCS_GATE_DOCS:-$PLUGIN_ROOT/docs-template}"
 PASS=0
 FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
-bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
+bad() {
+  echo "  ✗ $1" >&2
+  FAIL=$((FAIL + 1))
+  # 変異検査は狙った診断が出た時点で赤が確定する。通常実行は全診断を集める。
+  if [ -n "${FF_DOCS_GATE_STOP_AFTER:-}" ] && [[ "$1" == *"$FF_DOCS_GATE_STOP_AFTER"* ]]; then
+    exit 1
+  fi
+}
 
 # 節スコープ照合（見出しから次の見出しまでを切り出してから固定文字列を当てる）。
 # 文書全体の grep だけで「その節に在ること」を検査すると、規定を正本節から削除して
@@ -240,20 +247,18 @@ case "$review_resource_command_rc" in
       while IFS= read -r review_resource_command; do
         # 同じ行の後方やコメントへ正準形を足しても、前方の別rootを隠せないように
         # 正準pathをすべて除いてからresource参照が残るかを判定する。
-        unquoted_review_resource="$(printf '%s\n' "$review_resource_command" | sed \
-          -e 's#"${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent\.sh"##g' \
-          -e 's#"${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent\.sh"##g' \
-          -e 's#"${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review\.sh"##g')"
-        residual_review_resource="$(printf '%s\n' "$review_resource_command" | sed \
-          -e 's#${FF_DEV_TOOLKIT_ROOT}/scripts/setup-multi-agent\.sh##g' \
-          -e 's#${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent\.sh##g' \
-          -e 's#${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review\.sh##g')"
-        if grep -Eq \
-          '\$\{FF_DEV_TOOLKIT_ROOT\}/scripts/(setup-multi-agent|multi-agent|multi-review)\.sh' \
-          <<<"$unquoted_review_resource" \
-          || grep -Eq \
-          '/(setup-multi-agent|multi-agent|multi-review)\.sh([^[:alnum:]_.-]|$)' \
-          <<<"$residual_review_resource"; then
+        unquoted_review_resource="$review_resource_command"
+        residual_review_resource="$review_resource_command"
+        for review_resource_name in setup-multi-agent multi-agent multi-review; do
+          review_resource_path='${FF_DEV_TOOLKIT_ROOT}/scripts/'"${review_resource_name}.sh"
+          review_resource_quoted="\"${review_resource_path}\""
+          unquoted_review_resource="${unquoted_review_resource//"$review_resource_quoted"/}"
+          residual_review_resource="${residual_review_resource//"$review_resource_path"/}"
+        done
+        review_canonical_pattern='\$\{FF_DEV_TOOLKIT_ROOT\}/scripts/(setup-multi-agent|multi-agent|multi-review)\.sh'
+        review_residual_pattern='/(setup-multi-agent|multi-agent|multi-review)\.sh([^[:alnum:]_.-]|$)'
+        if [[ "$unquoted_review_resource" =~ $review_canonical_pattern ]] \
+          || [[ "$residual_review_resource" =~ $review_residual_pattern ]]; then
           bad "review resource command が固定 root の引用付き正準形ではない: ${review_resource_command}"
         fi
       done < <(printf '%s\n' "$review_resource_commands")
@@ -807,13 +812,18 @@ fi
 # selftest（cp するパス文字列を持つ）まで consumer に数えてしまう。
 if [ -f "$REPO_TESTING" ]; then
   ss_actual="$(
+    ss_files=()
     for _ss_v in "$PLUGIN_ROOT"/tests/*/verify.sh; do
-      [ -f "$_ss_v" ] || continue
-      if awk '/^\.[[:space:]].*lib\/section-scope\.sh/ { found = 1 } END { exit found ? 0 : 1 }' "$_ss_v"; then
-        _ss_d="${_ss_v%/verify.sh}"
-        printf '%s\n' "${_ss_d##*/}"
-      fi
-    done | LC_ALL=C sort
+      [ -f "$_ss_v" ] && ss_files+=("$_ss_v")
+    done
+    if [ "${#ss_files[@]}" -gt 0 ]; then
+      awk '/^\.[[:space:]].*lib\/section-scope\.sh/ && !seen[FILENAME]++ {
+        name = FILENAME
+        sub(/\/verify\.sh$/, "", name)
+        sub(/^.*\//, "", name)
+        print name
+      }' "${ss_files[@]}" | LC_ALL=C sort
+    fi
   )"
   ss_listed="$(awk '
     index($0, "移行済みの consumer suite は次の") == 1 { f = 1; next }

@@ -609,32 +609,32 @@ ff_docs_body() {
 # （ff_docs_body がフェンスを消す動機と同じ。docs-fact-drift-selftest G24 で固定）。
 # マスクは行数を保つので、境界の行番号は keep-fences 出力とそのまま対応する。
 ff_docs_claim_body() {
-  local f="$1" masked first fm_end cl_line
+  local f="$1" masked
   # 境界（Frontmatter 閉じ行・Changelog 見出し）は**両方ともマスク済み本文**から
   # 導出する。fm_end を原文から探すと、閉じない Frontmatter の後ろにフェンスで
   # 例示した `---` があるとき、その例示行を終端と取り違えて本文を出してしまう
   # （ff_docs_body はマスク後の走査なので出さない。PR レビューで検出）。
   # マスクは行数を保つので、行番号は keep-fences 出力とそのまま対応する。
-  masked="$(ff_docs_mask_spans "$f")"
-  # 先頭行の判定にパイプ（head -1）を使わない: 下流が先に閉じると上流の printf が
-  # SIGPIPE で死に、set -e の呼び出し側を殺す（run-all case 10 と同型）
-  first="${masked%%$'\n'*}"
-  fm_end=0
-  if [ "$first" = "---" ]; then
-    # awk で exit しない（printf 上流の SIGPIPE を避ける。ff_docs_body 参照）
-    fm_end="$(printf '%s\n' "$masked" | awk 'NR > 1 && /^---$/ && !e { e = NR } END { if (e) print e }')"
-    # 開始だけあって閉じない Frontmatter は「以降ぜんぶ Frontmatter」なので本文なし
-    # （ff_docs_body の in_fm が下りない挙動と同じ）
-    [ -n "$fm_end" ] || { return 0; }
-  fi
+  masked="$(ff_docs_mask_spans "$f")" || return 1
   # 見出し正規表現は ff_docs_mask_changelog / ff_docs_fm_verdict / ff_docs_body
   # と同一にすること（詳細は ff_docs_mask_changelog のコメント）。
-  cl_line="$(printf '%s\n' "$masked" | awk -v fe="$fm_end" \
-    'NR > fe && /^##[ \t]+Changelog[ \t]*$/ && !c { c = NR } END { if (c) print c }')"
-  [ -n "$cl_line" ] || cl_line=0
-  ff_docs_mask_spans "$f" keep-fences | awk -v fe="$fm_end" -v cl="$cl_line" '
-    NR <= fe            { next }
-    cl > 0 && NR >= cl  { next }
+  # 境界探索と本文抽出を 1 プロセスへまとめる。第 1 入力はフェンスを消した本文、
+  # 第 2 入力は図を残した本文。どちらも最後まで読み、上流を SIGPIPE で止めない。
+  # process substitution は read-only TMPDIR でも使える（here-string は使わない）。
+  ff_docs_mask_spans "$f" keep-fences | awk '
+    FILENAME == ARGV[1] {
+      if (FNR == 1 && $0 == "---") { in_fm = 1; next }
+      if (in_fm) {
+        if ($0 == "---") { fe = FNR; in_fm = 0 }
+        next
+      }
+      if (!cl && /^##[ \t]+Changelog[ \t]*$/) cl = FNR
+      next
+    }
+    # 閉じない Frontmatter は本文なし。フェンス中の --- では閉じない。
+    in_fm              { next }
+    FNR <= fe          { next }
+    cl > 0 && FNR >= cl { next }
     { print }
-  '
+  ' <(printf '%s\n' "$masked") -
 }

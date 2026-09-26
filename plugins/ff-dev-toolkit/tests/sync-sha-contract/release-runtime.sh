@@ -27,6 +27,7 @@ for need in "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" \
   "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh"; do
   [[ -f "$need" ]] || { echo "✗ オーケストレータの依存 lib がありません: $need" >&2; exit 1; }
 done
+bash "$SCRIPT_DIR/footer-reuse-runtime.sh" "$ORCH" || exit 1
 command -v jq >/dev/null 2>&1 || { echo "✗ jq がありません（オーケストレータの前提）" >&2; exit 1; }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/release-runtime.XXXXXX")"
@@ -241,6 +242,7 @@ STUB
 mkdir -p "$SSOT/scripts/lib" "$SSOT/plugins/ff-dev-toolkit/.claude-plugin" "$SSOT/plugins/ff-dev-toolkit/scripts/lib" \
   "$SSOT/plugins/ff-dev-toolkit/skills/demo" "$SSOT/plugins/ff-dev-toolkit/docs-template" "$SSOT/oss/ff-dev-toolkit" "$SSOT/changelog.d"
 cp "$ORCH" "$SSOT/scripts/release-dev-toolkit.sh"
+cp "$REPO_ROOT/scripts/check-full-gate-reuse.sh" "$SSOT/scripts/"
 chmod +x "$SSOT/scripts/release-dev-toolkit.sh"
 cp "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$SSOT/scripts/lib/"
 cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh" "$SSOT/plugins/ff-dev-toolkit/scripts/lib/"
@@ -361,6 +363,11 @@ if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "RELEASE_VERSION=0.
   ok "本実行が released / v0.32.0 で完了する"
 else
   bad "本実行が完了しない (rc=$RC)"; dump
+fi
+if [[ "$(count_runall)" -eq 2 && "$(wc -l <"$STATE/public-layout.log" | tr -d ' ')" -eq 1 ]] && has "footer 変更の内容証明"; then
+  ok "footer-only の収束では run-all は 2 回・public-layout は 1 回（限定ゲートは再実行）"
+else
+  bad "footer-only の収束で重いゲートを再実行した、または証拠が無い"; dump
 fi
 if grep -qx 'public-layout 1' "$STATE/public-layout.log" 2>/dev/null; then
   ok "gate 段が run-all の緑の後に public-layout を FF_RUN_PUBLIC_LAYOUT=1 で明示起動する（ADR-068）"
