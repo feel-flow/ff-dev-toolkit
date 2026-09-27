@@ -20,6 +20,47 @@
 
 ## [Unreleased]
 
+## [0.137.0] - 2026-09-28
+
+### 追加
+
+- `/pre-commit-check` の手順 8 に実行ビット検査を追加した。staged された suite の `tests/*/verify.sh` と `hooks/*.sh` の index 側 mode を `git diff --cached --raw` で読み、100644 のまま stage されたファイルを commit 前に名指しで赤にする（全件ゲートの末尾に `not run (not executable)` が出るまで気付かない手戻りを防ぐ）。対象が無い回は「対象なし」、判定材料を取得できない回は「実行ビット未検査」と明示し、どちらも「違反なし」とは報告しない。判定は `tests/lib/exec-bit-guard.sh` の `exec_bit_scan` が担い、回帰 suite `precommit-exec-bit` が隔離 git fixture で固定する。
+- 同梱 hook の `guard-exit-code.sh` と `asdd-hook-gate.sh` に実行ビットを付けた（起動は従来どおり `bash` 経由で、挙動は変わらない）。
+- Bash ツールを動かすシェルが zsh のとき、`-` で始まる語の `=` より右に未引用の glob 文字（`*` / `?` / `[`）がある形（`grep -rn x docs --include=*.md`）を実行前に止める PreToolUse hook `hooks/guard-zsh-glob.sh` を追加しました（Bash 集約入口 `run-bash-hooks.sh` 経由）。zsh は既定の `NOMATCH` でこの語を必ず 0 件の glob として評価し、コマンドが実行されません。停止文は検出した語と引用した書き換え案（`--include="*.md"`）を出します。引用済みの glob・一般のパス glob（`ls *.md`）・`case` パターン・`[[ ]]`・`noglob`・heredoc 本文・bash ホストでは止めません。抜け道はコマンド先頭の `FF_ZSH_GLOB_ACK=1`、無効化は `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1` です。
+- Write / Edit ツールで `.sh` ファイルを保存する直前に、同梱の静的検出器 3 本（`$VAR` 直後のマルチバイト展開 / `pipefail` 配下の `| grep -q` / 終了コードの誤読・握り潰し）を保存後の内容へ当てる PreToolUse hook `hooks/guard-shell-save.sh` を追加しました（matcher は `Write|Edit`）。保存前には無かった違反だけを抜け道付きで止め、既存の違反の持ち越しでは止めません。`.sh` なのに検出器を読めない・走査が失敗するなど判定できないときは理由付きで止めます。抜け道は hook の環境の `FF_SHELL_SAVE_ACK=1` です。Bash 経由の書き込みには届かないため、コミット前検査と全件ゲートの役割は変わりません。
+- GNU / BSD で意味が変わる短オプション（`stat -f` / `date -r`）を `||` の先頭側に置き、後ろの腕で同じコマンドの別方言へ倒す形を、tracked な shell ソース全体で静的に止める回帰 suite `tests/dialect-fallback` を追加しました。これまでの針は changelog 断片ライブラリ 1 ファイルにしか当たっておらず、同じ欠陥が別ファイルで再発していました。引用符の中の文字列（変異プローブ）とコメントは当たらない規則として明文化し、走査対象が 0 件・対象不在のときは「違反なし」ではなく検査不成立の赤にします。あわせて、テスト内の日時ヘルパーが BSD 形の `date -r` を先に試していた箇所を GNU 形先行へ直しました。
+- `multi-agent.sh` がレーンを並列に起動する直前に 1 分平均の load average を実測し、論理コア数 × 係数（既定 10）を超えていれば、実測値と判定を 1 行出してその実行を逐次へ倒すようにした。閾値以下では従来どおり何も出さずに並列で起動する。係数は `FF_MULTI_AGENT_LOAD_PER_CORE` で変えられ、`0` で判定を無効化する（整数以外は起動前に止まる）。閾値の根拠（高負荷でレビュー / fix の子が stall した実測）と、ホストが Agent / Task ツールでサブエージェントを直接起こす経路での実測手順は レビュー運用ガイド（`docs-template/05-operations/deployment/multi-cli-review-orchestration.md`）の負荷判定の節に置き、`git-workflow.md` ステップ6 から参照する。
+- 委譲の規定（`docs-template/05-operations/deployment/multi-cli-agent-orchestration.md`）へ「委譲先の作業ファイルを scratchpad の固有の置き場へ分ける」節を追加した。同じセッションのサブエージェントは親と一時ディレクトリを共有するため、PR 本文の下書きやコミットメッセージを汎用名で置くと並列の委譲先や親の下書きを上書きする。委譲プロンプトへ Issue 別・エージェント固有の置き場の実パスを常置文言として書き、親と同名の汎用名を共有の置き場の直下に使わせない。`multi-implement` スキルの重要ルールからこの節へ参照を張り、回帰 suite `docs-gates` が節の規定と参照を固定する。implement タスクの出力先はリポジトリルート配下という既存の境界を例外として明記した。
+- `/pre-commit-check` 手順 8 の固定表へ種別 D（リポジトリ直下の `docs/**/*.md` と `.version-claims/**`）を追加した。docs 仕様文書を stage した回は `docs-version-changelog`（frontmatter の `version` と Changelog 節の最大版の一致）と `docs-frontmatter-repo`（bump 幅と `changeImpact` の対応）を単体で回し、version bump の随伴漏れを全件ゲートの前に赤にする。種別 D が当たらない回は「対象なし」と 1 行で報告し、他の種別の判定は変えない。
+- 同じ手順で、docs 仕様文書を stage した回は同梱の version claim validator で version claim の再生成漏れを見る。既定ブランチが HEAD より先行している回は「違反なし」とせず、rebase 後の再実行を求める。
+- 公開対象（`scripts/sync-dev-toolkit-to-public.sh --list-targets` の配下）を stage したのに、既定ブランチとの分岐点以降に `changelog.d/` 断片を 1 つも足していない状態を commit 前に名指しで赤にする検査を追加した（`tests/lib/changelog-fragment-guard.sh` の `changelog_fragment_scan`）。同じ PR の前の commit で足した断片は数え、既定ブランチに既に在る他 PR の断片は数えない。同期手順が断片を要求しない変更（告知不要のメタ変更の allowlist・公開 CHANGELOG の footer 追従）と、断片を集約するリリース準備の回は対象外にする。公開対象一覧や比較 base を取得できない回は「断片未検査」と明示し、緑扱いにしない。
+- 固定表の種別 B（公開同期対象）に `skill-count-consistency` を追加し、公開面の正本へ分類していない `FF_*` 環境変数などを commit 前に拾う。
+
+### 変更
+
+- `/create-issue` の AI 工数推定で、補正元が無いときのレビュー対応分の既定値を「レビュー指摘の fix が何を作り直すか」で分ける。契約針の差し替え・要約再掲文書の同期・案内文の更新・コード 0 行の純削除は実装分の 1/3〜1/2、通常の実装は実装分と同額、偽陽性潰し分を積まない検査・ガードの新設は実装分の 1.5 倍以上から積む。並列で進める計画は壁時計の圧縮を根拠欄に明記し、規則の文言を変える変更は同じ規則を再掲する文書の本数を別項目で積む。
+- `/create-issue` の AC 粒度チェックに、マージ後にしか達成できない DoD を名指しして Refs 運用への切り替えか DoD からの除外を促す項目（先に `workflow_dispatch` のブランチ実行で AC に対応する処理が走り、マージ前に実測できないかを見る）と、AC が前提にする値・資料・配置を起票時に実測する項目を追加する。`/refine-issue` の観点「検証可能性」と `/close-issue` の post-merge 判定にも同じ前置きを置く。
+- `scripts/effort-report.sh` が乖離率の中央値の位置（`variance_median_position=in_band|underestimate|overestimate`、母集団 0 件は `(unmeasured)`）を出力する。`/retrospective` の較正トリガは、中央値が帯の外にある分布では帯を広げず推定手順側を直し、帯を引き直すのは中央値が帯内で裾だけ広い場合に限る。
+- `multi-agent.sh` の `--perspective` がカンマ区切り（`--perspective code-review,comment-analysis`）を受理するようにした。これまでは観点名全体が `unsafe perspective name` で拒否され、観点名自体が不正だと読めた。分割後の各語は従来どおり安全検査を通り、繰り返し指定（`--perspective a --perspective b`）とも併用できる。
+- `/close-issue` 手順 3（AC 照合）に上位視点の 1 条件「根拠は AC の指す対象を測っているか」を足しました。AC ごとに「根拠が測った対象 = AC が指す対象」を 1 行で書き、測る口が無い AC は他 AC の達成数に隠さず未達に倒します。bug 種別では原因を記録から名指しできなければ達成にせず、「原因未確定。次回読めるようにする計測を入れた / 入れていない」を完了報告に書きます（報告: https://github.com/feel-flow/ff-dev-toolkit/issues/114 、https://github.com/feel-flow/ff-dev-toolkit/issues/116）
+- レビュー→修正ループの 2 巡目の規定に条件を追加。1 巡目の fix が既存ロジックの再構成（探索範囲・分岐・検査順序の変更）を含む回は、親の直読と suite の再実行だけで済ませず、fix の差分だけを対象にクロスモデルのレビューを 1 本回す（2 巡上限の内側の 2 巡目として数え、3 巡目を起動しない規定は変えない）。再構成を伴う fix の指示には、隣接する別レコードへ漏れない陰性ケースを同じ fix で足すことを含める。`/multi-review` の収束判定の要約と PR レビュー対応ポリシーも同じ条件へ揃えた。
+- `finish.sh precheck` が PR のコミット一覧を `PR_COMMITS=短縮hash 件名` の行（`git log --format='%h %s' origin/base..head` と同じ行・順・件数）と出所 `PR_COMMITS_SOURCE=git|api|unavailable` で出すようになりました。`/close-issue` の完了報告（手順 6・8）の「主要コミット」欄はこの行を貼る欄になり、記憶から hash を書かせません（`KEYWORD_INSPECTED` と同じ型。報告: https://github.com/feel-flow/ff-dev-toolkit/issues/122）
+- 公開同期の手順書契約を検査する回帰 suite `sync-sha-contract` に、承認文の作り方の検査を追加した。リリース承認を求める前に全段の `release-dev-toolkit.sh --dry-run` を回し、その `PLAN:` 行と `RELEASE_VERSION=` を承認文へ転記する規定（完走した回だけ承認を求め、途中停止・`stopped`・`unavailable` では承認を求めず理由を報告する規定を含む）を段落の全文一致と位置で固定し、同期を提案する hook の提案文が dry-run の先行を求めることと、dry-run が次の版の `RELEASE_VERSION=` を出すことも固定する。同期手順を持たない公開 checkout ではこれまでどおり skip する。
+
+### 修正
+
+- レビュー走行中ガード（guard-review-in-flight）の Bash 書き込み走査が、書き込みの無い実行を止めていた偽陽性を是正した。スクリプト本文とコマンド行のコメントを実行コードとして読まない（引用符の中の `#` や `${x#y}` はコメントとして扱わない）。`sed -i '' 's/a b/c d/'` のような引用された 1 引数を空白で割らない。`/usr/bin/grep` などバイナリの直接実行を本文として読まない。`bash -n` は構文検査なので本文を読まない。
+- 既存スクリプトの本文の中で書き込み先を静的に判定できない形（変数展開で組んだパス）は止めず、本文にリテラルで書かれた作業ツリー内への書き込みだけを止めるようにした。コマンド行そのもので判定できない書き込みは従来どおり止める。本文が空・コメントだけ・字句解析に失敗した回は判定不能として止める。
+- サブエージェント経路のレーンにレビュー対象のツリー（依頼文が名指す同じリポジトリの worktree）を記録し、凍結はそのツリーに限るようにした。別 worktree のレビューが走っている間も、手元のツリーでの書き込み・commit・scratchpad への書き込みは止まらない。拒否理由には凍結の対象ツリーを表示する。レビュー対象の worktree で作業するセッションは、別の worktree に置かれたそのレビューのレーンでも従来どおり止まる。
+- 委譲レビューのレーンは、handoff が指定した結果ファイルが書かれた時点で解放するようにした（結果の回収コマンドそのものが凍結で止まっていた）。拒否理由が案内する復旧手順（ロック・レーンの削除、`FF_REVIEW_LOCK_OVERRIDE=1` の前置）がそのまま通ることを固定した。区間先頭の `FF_REVIEW_LOCK_OVERRIDE=1` が、起動したスクリプト本文の走査で打ち消されて効かなかった不具合も直した。
+- `command -p` / `timeout 秒数` / `env -u 名前` などのラッパの後ろにあるコマンドも走査するようにした（従来は判定を素通りしていた）。
+- 公開同期前の番号参照検査を固定する回帰 suite `sync-forbidden-patterns` に、heredoc の中に Markdown のコードフェンス記号を持つシェルスクリプトのケースを追加した。フェンスの許可規則（フェンスの内側はリンク化されないので通す）を Markdown ファイルにだけ掛け、それ以外のファイルではフェンス記号行に挟まれた追加行も file:line で名指しすることと、同じ形の Markdown は従来どおり通すことを対で固定し、拡張子による切り替えを外す変異と走査器側の切り替えを無視させる変異の両方で赤になることを実測する。suite ヘッダに空振り検出の宣言を追加した。
+- 回帰スイート `precommit-exec-bit` が、公開リポジトリ単体の checkout（リポジトリ直下の `scripts/` が無い配置）で赤になっていた不具合を直した。changelog 断片検査の節は開発元限定のスクリプトを前提にするため、公開 checkout ではその節だけを理由を明示してスキップし、実行ビット検査の節は従来どおり実行する。開発元の配置で前提のスクリプトが欠けている場合はスキップせず赤にする。
+
+### 削除
+
+- mcp サーバーの `package.json` から `smol-toml` の暫定 `overrides` を撤去した。上流の `markdownlint-cli2` 0.23.3 が `smol-toml` の固定先を修正版 1.8.0 へ上げたため、`markdownlint-cli2` をその版へ更新して解消した（`npm audit --package-lock-only` は 0 vulnerabilities のまま）。
+
 ## [0.136.0] - 2026-09-27
 
 ### 変更

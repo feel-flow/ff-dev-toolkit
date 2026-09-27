@@ -24,7 +24,7 @@
 #
 # 変異検出: knowledge-commit.sh の add から default branch の鮮度検査の呼び出しを外すと (H18 / H18b / H19) が赤、fetch 失敗を素通しへ倒すと (H19) が赤（2026-09-24 実測）。
 #
-# 空振り検出: scripts/finish.sh の写しで precheck の「PR 不在」「gh 不通」「実測の記録が無い」を rc 0 の緑へ倒す（die_env / undetermined の exit 2 を return 0 に）と (B1 / B2 / C1) が赤になる。全スキルが上限内の合成名簿で 1 本だけを 20,001 バイトにすると (L2)、1 本だけを消すと (L3) が赤になる（2026-09-24 実測。針が当たらない入力を緑にしない）。
+# 空振り検出: scripts/finish.sh の写しで precheck の「PR 不在」「gh 不通」「実測の記録が無い」を rc 0 の緑へ倒す（die_env / undetermined の exit 2 を return 0 に）と (B1 / B2 / C1) が赤になる。全スキルが上限内の合成名簿で 1 本だけを 20,001 バイトにすると (L2)、1 本だけを消すと (L3) が赤になる（2026-09-24 実測。針が当たらない入力を緑にしない）。finish.sh の写しで PR_COMMITS の出力行を消すと (A5 / C8 / C9 / F9)、`head -n 1` で 1 行に切ると (F9)、API 代替の `reverse` を外すと (F10)、fetch 失敗・git log 0 件・両方空の分岐を消すと (C11 / C10 / C12)、close-issue 手順 6 の主要コミット欄を `<hash> <件名>` の手書きへ戻すと (A6) が赤になる（2026-09-27 実測）。
 #
 # 実 gh・ネットワーク・課金は伴わない。一時ディレクトリを作れない環境は skip ではなく
 # 赤（この suite の検査は 1 件も成立していない）。
@@ -120,6 +120,23 @@ if awk '/ff-ace-protection-probe:start/ { s = 1 } /ff-ace-protection-probe:end/ 
   ok "A4: 保護判定 block（ff-ace-protection-probe マーカー）を持つ（tests/ace-curate-commit が抽出する）"
 else
   bad "A4: 保護判定 block のマーカーが無い"
+fi
+
+# 完了報告の「主要コミット」欄は precheck の PR_COMMITS を貼る欄（記憶から hash を書かせない）
+CLOSE_SKILL="$SKILLS_DIR/close-issue/SKILL.md"
+if has_text "$(cat "$TARGET")" "PR_COMMITS=<短縮 hash> <件名>" && has_text "$(cat "$TARGET")" "printf 'PR_COMMITS=%s"; then
+  ok "A5: finish.sh が PR_COMMITS の出力契約（ヘッダ）と出力行を持つ"
+else
+  bad "A5: finish.sh に PR_COMMITS の出力契約または出力行が無い"
+fi
+CLOSE_SKILL_TEXT="$(cat "$CLOSE_SKILL" 2>/dev/null || true)"
+if has_text "$CLOSE_SKILL_TEXT" "主要コミット: <手順 1 の PR_COMMITS をそのまま貼る>" \
+  && has_text "$CLOSE_SKILL_TEXT" "主要コミット: <手順 7 の PR_COMMITS をそのまま貼る>" \
+  && has_text "$CLOSE_SKILL_TEXT" '主要コミット欄は `PR_COMMITS` の行を貼り、**自分で hash を書かない**（`KEYWORD_INSPECTED` と同じ' \
+  && ! has_text "$CLOSE_SKILL_TEXT" "主要コミット: <hash>"; then
+  ok "A6: close-issue の完了報告（手順 6・8）の主要コミット欄は PR_COMMITS の転記で、自分で hash を書かない（KEYWORD_INSPECTED と同じ型）"
+else
+  bad "A6: close-issue の主要コミット欄が PR_COMMITS の転記になっていない（手書きの <hash> 欄が残る、または規定が無い）"
 fi
 
 # ── fixture: plugin root の写し（委譲先を stub に差し替えられるように） ─────────
@@ -327,6 +344,62 @@ else
   bad "C6: PR の素性が違う: ${OUT}"
 fi
 
+# 完了報告の「主要コミット」欄へ貼る PR_COMMITS: git log <base>..<head> と同じ行・同じ順・同じ件数
+EXPECT_COMMITS="$(g -C "$WORK" log --format='PR_COMMITS=%h %s' "origin/develop..${HEAD_OID}")"
+GOT_COMMITS="$(printf '%s\n' "$OUT" | awk 'index($0, "PR_COMMITS=") == 1')"
+EXPECT_COUNT="$(g -C "$WORK" rev-list --count "origin/develop..${HEAD_OID}")"
+GOT_COUNT="$(printf '%s\n' "$GOT_COMMITS" | awk 'NF { c++ } END { print c + 0 }')"
+if [ -n "$EXPECT_COMMITS" ] && [ "$GOT_COMMITS" = "$EXPECT_COMMITS" ] && [ "$GOT_COUNT" -eq "$EXPECT_COUNT" ] \
+  && has_line "$OUT" "PR_COMMITS_SOURCE=git" && has_line "$OUT" "PR_COMMITS=${HEAD_OID:0:7}"; then
+  ok "C8: PR_COMMITS は git log origin/<base>..<head> の %h %s と行・順・件数（${EXPECT_COUNT}）まで一致し、出所 git を名指しする"
+else
+  bad "C8: PR_COMMITS が git log と一致しない（期待 ${EXPECT_COUNT} 行 / 取得 ${GOT_COUNT} 行）: expect=[${EXPECT_COMMITS}] got=[${GOT_COMMITS}]"
+fi
+# 手元の git log が解決できない回は API の commits で代替し、出所を api と名指しする（空で黙って通さない）
+mkdir -p "$TMP/gitlogstub"
+REAL_GIT_FOR_LOG="$(command -v git)"
+printf '#!/usr/bin/env bash\nif [ "${1:-}" = log ]; then echo "fatal: stub log" >&2; exit 128; fi\nexec "%s" "$@"\n' "$REAL_GIT_FOR_LOG" >"$TMP/gitlogstub/git"
+chmod +x "$TMP/gitlogstub/git"
+RC=0; OUT="$( cd "$WORK" && PATH="$TMP/gitlogstub:$BIN:$PATH" bash "$FINISH" precheck 7 2>"$TMP/err" )" || RC=$?
+ERR="$(cat "$TMP/err")"
+if has_line "$OUT" "PR_COMMITS_SOURCE=api" && has_line "$OUT" "PR_COMMITS=${HEAD_OID:0:7} fix: #${REFN} x" \
+  && has_text "$ERR" "PR_COMMITS は API の commits から出します"; then
+  ok "C9: git log が解決できない回は API の commits で PR_COMMITS を出し、PR_COMMITS_SOURCE=api と stderr で名指しする"
+else
+  bad "C9: git log 失敗時の PR_COMMITS が違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
+# git log が 0 件で成功した回も git を正本にせず API へ回す
+printf '#!/usr/bin/env bash\nif [ "${1:-}" = log ]; then exit 0; fi\nexec "%s" "$@"\n' "$REAL_GIT_FOR_LOG" >"$TMP/gitlogstub/git"
+RC=0; OUT="$( cd "$WORK" && PATH="$TMP/gitlogstub:$BIN:$PATH" bash "$FINISH" precheck 7 2>"$TMP/err" )" || RC=$?
+ERR="$(cat "$TMP/err")"
+if has_line "$OUT" "PR_COMMITS_SOURCE=api" && has_line "$OUT" "PR_COMMITS=${HEAD_OID:0:7} fix: #${REFN} x" && has_text "$ERR" "が 0 件である"; then
+  ok "C10: git log が 0 件で成功した回も API で代替し、理由（0 件）を名指しする"
+else
+  bad "C10: git log 0 件の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+# fetch に失敗した回は手元の base が古い可能性があるので git を正本にしない
+printf '#!/usr/bin/env bash\nif [ "${1:-}" = fetch ]; then echo "fatal: stub fetch" >&2; exit 128; fi\nexec "%s" "$@"\n' "$REAL_GIT_FOR_LOG" >"$TMP/gitlogstub/git"
+RC=0; OUT="$( cd "$WORK" && PATH="$TMP/gitlogstub:$BIN:$PATH" bash "$FINISH" precheck 7 2>"$TMP/err" )" || RC=$?
+ERR="$(cat "$TMP/err")"
+if has_line "$OUT" "PR_COMMITS_SOURCE=api" && has_text "$ERR" "手元の base が古い可能性がある"; then
+  ok "C11: fetch に失敗した回は古い base での git log を正本にせず API で代替する"
+else
+  bad "C11: fetch 失敗時の PR_COMMITS が git のまま（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+# git も API も空なら unavailable（PR_COMMITS 行を 0 件で出し、黙って空を正本にしない）
+printf '#!/usr/bin/env bash\nif [ "${1:-}" = log ]; then echo "fatal: stub log" >&2; exit 128; fi\nexec "%s" "$@"\n' "$REAL_GIT_FOR_LOG" >"$TMP/gitlogstub/git"
+cp "$TMP/pr.json" "$TMP/pr-keep.json"
+jq '.commits = []' "$TMP/pr-keep.json" >"$TMP/pr.json"
+RC=0; OUT="$( cd "$WORK" && PATH="$TMP/gitlogstub:$BIN:$PATH" bash "$FINISH" precheck 7 2>"$TMP/err" )" || RC=$?
+ERR="$(cat "$TMP/err")"
+mv "$TMP/pr-keep.json" "$TMP/pr.json"
+if has_line "$OUT" "PR_COMMITS_SOURCE=unavailable" && ! has_line "$OUT" "PR_COMMITS=" && has_text "$ERR" "PR_COMMITS を出せません"; then
+  ok "C12: git log も API の commits も空なら PR_COMMITS_SOURCE=unavailable で PR_COMMITS を出さず、理由を名指しする"
+else
+  bad "C12: 取得不能の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+
 # 工数の実測記録（hook が書く TSV）があれば読む
 STATE="$TMP/state"
 mkdir -p "$STATE/metrics"
@@ -530,6 +603,37 @@ if has_line "$OUT" "MERGE_MESSAGE_GATE=ok" && has_line "$OUT" "KEYWORD_GATE=conf
   ok "F5: コミット由来の抵触は 2a では止めず、2b（実際に渡す文字列）をマージの条件にする"
 else
   bad "F5: 2a / 2b の分担が違う: ${OUT}"
+fi
+
+# PR_COMMITS は head のコミット数ぶん出る（先頭 1 行だけを出す退行を 1 コミットの fixture では拾えないため、
+# ここで 2 コミット目を積んで行・順・件数を見る。以降の cleanup / knowledge-commit はコミット数に依存しない）
+echo
+echo "== F'. precheck: 複数コミットの PR_COMMITS =="
+( cd "$WORK" && printf 'y\n' >y.txt && g add y.txt >/dev/null 2>&1 && g commit -qm "docs: second commit" >/dev/null 2>&1 \
+  && g push -q origin 'feature/#7-x' >/dev/null 2>&1 ) || bad "F9: 2 コミット目の fixture を作れません"
+HEAD_OID="$(g -C "$WORK" rev-parse HEAD)"
+write_pr_json "Closes #${PRN}" '[]'
+run_finish "$WORK" precheck 7
+EXPECT_COMMITS="$(g -C "$WORK" log --format='PR_COMMITS=%h %s' "origin/develop..${HEAD_OID}")"
+GOT_COMMITS="$(printf '%s\n' "$OUT" | awk 'index($0, "PR_COMMITS=") == 1')"
+GOT_COUNT="$(printf '%s\n' "$GOT_COMMITS" | awk 'NF { c++ } END { print c + 0 }')"
+if [ "$GOT_COUNT" -eq 2 ] && [ "$GOT_COMMITS" = "$EXPECT_COMMITS" ] && has_line "$OUT" "PR_COMMITS=${HEAD_OID:0:7} docs: second commit"; then
+  ok "F9: 2 コミットの PR では PR_COMMITS が 2 行、git log と同じ順（新しい順）で出る"
+else
+  bad "F9: 複数コミットの PR_COMMITS が git log と一致しない（取得 ${GOT_COUNT} 行）: expect=[${EXPECT_COMMITS}] got=[${GOT_COMMITS}]"
+fi
+# API 代替も git log と同じ順（新しい順）で出る。gh の commits は古い順で返るので、fixture もその順にする
+FIRST_OID="$(g -C "$WORK" rev-parse HEAD~1)"
+cp "$TMP/pr.json" "$TMP/pr-keep.json"
+jq --arg a "$FIRST_OID" --arg b "$HEAD_OID" --arg ha "fix: #${REFN} x" '.commits = [{oid: $a, messageHeadline: $ha, messageBody: "body"}, {oid: $b, messageHeadline: "docs: second commit", messageBody: ""}]' "$TMP/pr-keep.json" >"$TMP/pr.json"
+RC=0; OUT="$( cd "$WORK" && PATH="$TMP/gitlogstub:$BIN:$PATH" bash "$FINISH" precheck 7 2>"$TMP/err" )" || RC=$?
+mv "$TMP/pr-keep.json" "$TMP/pr.json"
+GOT_API="$(printf '%s\n' "$OUT" | awk 'index($0, "PR_COMMITS=") == 1')"
+EXPECT_API="$(printf 'PR_COMMITS=%s docs: second commit\nPR_COMMITS=%s fix: #%s x' "${HEAD_OID:0:7}" "${FIRST_OID:0:7}" "$REFN")"
+if has_line "$OUT" "PR_COMMITS_SOURCE=api" && [ "$GOT_API" = "$EXPECT_API" ]; then
+  ok "F10: API 代替の PR_COMMITS も git log と同じ新しい順で 2 行出る（gh の古い順をそのまま出さない）"
+else
+  bad "F10: API 代替の順序が git log と違う（rc=${RC}）: expect=[${EXPECT_API}] got=[${GOT_API}]"
 fi
 
 # ── G. cleanup ────────────────────────────────────────────────────────────────

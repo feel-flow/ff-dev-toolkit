@@ -11,10 +11,28 @@
 #   - ツリー外（scratchpad / `mktemp -d` / /tmp）への書き込みは止めない。走行中の規定が求める
 #     「対応は下書きに留めよ」を実行できなくなるため
 #   - レビュー出力先（`${ROOT}/.review-results/`）は編集系ツールと同じく止めない
-#   - 書き込み先を判定できない（変数展開・読めないスクリプト・stdin プログラム・未終端 heredoc・
-#     cd 先不明の相対パス・マーカー行に書き込み先リテラルが無い）ときは deny 側へ倒す（走行中に
-#     限る）。判定できないものを通すと、このガードが守る「レビュー対象と作業ツリーの一致」を
-#     ガード自身が破る
+#   - 「ツリー」は**凍結の対象ツリー**の集合（ff_write_scan_init の第 4 引数。既定は cwd のツリー）。
+#     hook はロックなら cwd のツリー、レーンならレーンに記録した対象ツリー（レビュー対象の worktree。
+#     tests/lib/review-lane-scope.sh）を渡す。別 worktree のレビューだけが走っている間は、cwd の
+#     ツリーへの書き込みも止めない（Issue `#1760` の追記。止めるのは対象ツリーを名指す書き込み）
+#   - 書き込み先を判定できない（変数展開・読めないスクリプト・stdin プログラム・cd 先不明の相対
+#     パス・マーカー行に書き込み先リテラルが無い）ときは、**コマンド行そのもの**（その場で組み立てた
+#     `-c` / heredoc / `$(…)` を含む）で、かつ cwd のツリーが凍結対象のときに限り deny 側へ倒す。
+#     既存ファイルの本文（`bash x.sh` / `./x.py` / `source x` / `< file`）の中の判定不能は止めない
+#     — 本文の書き込み先は実行時の変数・引数で組まれるのが普通で、判定不能は書き込みの兆候では
+#     ないため（OBS-183: 11 回の再発はすべて、書き込みの無い実行・ツリー外への書き込みを本文の
+#     判定不能で止めた形）。本文でもリテラルに判定できるツリー内への書き込みは止める。Bash 経由で
+#     ツリーが動いた場合の最終防御は multi-agent.sh のリビジョン検証（結果の破棄）が持つ
+#   - 走査そのものが成立しない入力（字句解析の失敗・本文が空またはコメントだけ・未終端 heredoc・
+#     字句解析器 / heredoc ヘルパの不在・マーカー走査の grep の失敗・バイナリ判別の失敗）は、
+#     ファイル本文の中でも別ツリーのレビュー中でも止める（ws_fail。針が当たらない入力を
+#     「書き込み無し」の緑へ畳まない）
+#   - コメントと heredoc 本文はデータとして落とす。語分割は引用符を保ち、引用符の外のリダイレクト
+#     演算子だけを独立した語にする（tests/lib/review-shell-lex.sh。`'s/a b/c d/'` を割らない）。
+#     `[[ … ]]` / `(( … ))` の中の `>` は比較演算子
+#   - 実行形式（Mach-O / ELF）の直接実行は本文を読まない（PATH から引いた同名コマンドと同じ扱い）。
+#     `bash -n`（構文検査）は実行しないので本文を読まない
+#   - 区間先頭の `FF_REVIEW_LOCK_OVERRIDE=1` は、その区間の入れ子の走査（本文の区間）で消えない
 #   - gitignore 済みのパスは**ツリー内でも止めない**。結果の破棄を決めるリビジョン指紋
 #     （scripts/adapters/adapter-common.sh の capture_repo_snapshot）は
 #     `git status --porcelain` / `git diff HEAD` / `git diff --cached` /
@@ -36,19 +54,25 @@
 #   - `cd` は相対パスの解決基準を動かす。サブシェル `( … )` と子シェル（`bash -c` / heredoc /
 #     `$(…)`）の中の `cd` は親へ漏らさない（`bash -c 'cd /tmp'; touch README.md` はツリー内）
 #   - 既知の限界: マーカー走査はヒューリスティック（`from os import remove as r` は見逃す）。
-#     空白を含むパスは素朴なトークン化で割れる。`python3 -m MOD` / `eval` / stdin から読む
-#     プログラム（`curl … | sh`）は本文が無いので判定不能側。`npm` / `make` 等のビルドは対象外
+#     `python3 -m MOD` / `eval` / stdin から読むプログラム（`curl … | sh`）は本文が無いので判定不能側。
+#     `npm` / `make` 等のビルドは対象外。ファイル本文の中の変数経由の書き込み（`D=$(git rev-parse
+#     --show-toplevel); echo x > "$D/f"`）は止めない側（上の線引き）。行の途中のコメント（python の
+#     `x = 1  # open("f", "w")`）は文字列と区別できないので落とさない（止める側）
 #
 # 公開関数（hook が呼ぶ）:
-#   ff_write_scan_init <ROOT_PHYS> <CWD_PHYS> <OUTPUT_DIR_NAME>
+#   ff_write_scan_init <ROOT_PHYS> <CWD_PHYS> <OUTPUT_DIR_NAME> [凍結対象ツリー（物理パス。改行区切り）]
 #   ff_write_scan <生コマンド> <HEREDOC_STATE: ok|unterminated|unavailable> <HEREDOC_CODE> <HEREDOC_BODIES>
 #     0 = 止める対象（WRITE_REASON に理由、WRITE_OVERRIDE に区間先頭の FF_REVIEW_LOCK_OVERRIDE=1 の有無）
 #     1 = 止めない
-# 依存: heredoc-strip.sh（入れ子の本文を落とすため。無ければ入れ子は判定不能側）。
+#     HEREDOC_STATE が unavailable（hook が heredoc ヘルパを読めない）なら判定不能として止める。
+#     それ以外は生コマンドから字句解析し直す（コメント中の `<<` を opener と誤認しない）
+# 依存: review-shell-lex.sh（コメント・heredoc の除去と語分割。読めなければ走査全体を判定不能へ倒す）。
 # 検査用の差し替え口: FF_WRITE_SCAN_GREP（マーカー走査の grep。失敗（不在 127 等）を
 # 「マーカー無し」に畳まず判定不能へ倒すことを suite で実測するため）。
 # FF_WRITE_SCAN_GIT（ignored 判定の git。起動できない回を「ignored」に畳まず deny 側へ
-# 倒すことを suite で実測するため）。
+# 倒すことを suite で実測するため）。FF_WRITE_SCAN_OD（バイナリ判別の od。判別できない回を
+# テキスト / バイナリのどちらにも畳まず止めることを suite で実測するため）。字句解析の awk の
+# 差し替え口 FF_LEX_AWK は review-shell-lex.sh のヘッダ。
 # 互換性: bash 3.2（stock macOS）。連想配列・readarray・=~ は使わない。
 
 WRITE_HIT=0
@@ -66,11 +90,49 @@ WS_SUB_DEPTH=0
 WS_RS="$(printf '\001')" # 区間の区切り（改行を含む区間を運ぶ。NUL は $(…) が落とすので使わない）
 WS_SUB_BASE=""
 WS_SUB_VARS=""
+# 凍結の対象ツリー（物理パス。改行区切り）。走行中ロック・レーンが守るのは「レビュー対象の
+# ツリーが静止していること」なので、書き込み先の包含はこの集合に対して判定する（Issue `#1760`）。
+# 既定は WS_ROOT_PHYS（cwd のツリー）1 本で、従来と同じ。
+WS_TREES=""
+# cwd のツリーが凍結の対象か（1 = 対象）。対象でないとき、書き込み先を判定できない形は
+# 止めない — 判定不能な書き込み（変数展開・cd 先不明の相対パス）が落ちる先は、ほぼ cwd の
+# ツリーであって、凍結されている別ツリーではない。別ツリーを名指しで書く形は判定できるので止まる。
+WS_CWD_PROTECTED=1
+# 既存ファイルの本文（`bash x.sh` / `./x.py` / `source x` / `< file`）を走査している深さ。
+# 0 より大きい間は、書き込み先を判定できない形を止めない（リテラルで判定できる書き込みだけを止める）。
+WS_IN_FILE=0
+# 止めなかった判定不能の最初の理由（診断用）
+WS_SOFT_NOTE=""
+# 字句解析ライブラリ（引用符を保つ語分割・コメント除去）。読めない回は走査全体を判定不能へ倒す。
+WS_LEX_OK=0
+# shellcheck source=./review-shell-lex.sh
+if . "${BASH_SOURCE[0]%/*}/review-shell-lex.sh" 2>/dev/null \
+  && [ "$(type -t ff_lex_tokens 2>/dev/null)" = "function" ] \
+  && [ "$(type -t ff_lex_code 2>/dev/null)" = "function" ] \
+  && [ "$(type -t ff_lex_bodies 2>/dev/null)" = "function" ]; then
+  WS_LEX_OK=1
+fi
 
-ff_write_scan_init() { # <ROOT_PHYS> <CWD_PHYS> <OUTPUT_DIR_NAME>
+ff_write_scan_init() { # <ROOT_PHYS> <CWD_PHYS> <OUTPUT_DIR_NAME> [凍結対象ツリー（改行区切り）]
+  local t
   WS_ROOT_PHYS="$1"
   WRITE_BASE="$2"
   WS_OUTPUT_DIR="${3:-.review-results}"
+  WS_TREES="${4:-}"
+  # 空行だけの集合（物理パスを引けなかった）は cwd のツリーへ倒す（空集合 = 何も守らない、にしない）
+  case "$WS_TREES" in
+    *[![:space:]]*) : ;;
+    *) WS_TREES="$1" ;;
+  esac
+  WS_CWD_PROTECTED=0
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    [ "$t" = "$WS_ROOT_PHYS" ] && WS_CWD_PROTECTED=1
+  done <<EOF
+$WS_TREES
+EOF
+  WS_IN_FILE=0
+  WS_SOFT_NOTE=""
   WRITE_HIT=0
   WRITE_REASON=""
   WRITE_OVERRIDE=0
@@ -264,12 +326,12 @@ resolve_target() { # <path token> → RESOLVED（物理パス）。判定不能�
 # 誤って名指しする** deny になり、利用者が ignored 免除の壊れた理由へ辿り着けない。
 WS_IGNORE_UNKNOWN=0
 WS_IGNORE_RC=""
-ws_target_ignored() { # <phys> → 0 = ignored
-  local rc
+ws_target_ignored() { # <phys> <そのツリーの物理パス> → 0 = ignored
+  local rc tree="${2:-$WS_ROOT_PHYS}"
   WS_IGNORE_UNKNOWN=0
   WS_IGNORE_RC=""
-  [ -n "$WS_ROOT_PHYS" ] || return 1
-  "${FF_WRITE_SCAN_GIT:-git}" -C "$WS_ROOT_PHYS" check-ignore -q -- "$1" >/dev/null 2>&1
+  [ -n "$tree" ] || return 1
+  "${FF_WRITE_SCAN_GIT:-git}" -C "$tree" check-ignore -q -- "$1" >/dev/null 2>&1
   rc=$?
   case "$rc" in
     0) return 0 ;;
@@ -282,11 +344,23 @@ ws_target_ignored() { # <phys> → 0 = ignored
   esac
 }
 
-# 免除に当たるか（0 = 免除 = 止めない）。ツリー外 / レビュー出力先 / gitignore 済みの 3 つ。
+# 免除に当たるか（0 = 免除 = 止めない）。凍結対象のどのツリーの外でもない / そのツリーの
+# レビュー出力先 / そのツリーで gitignore 済み、のいずれか。入れ子のツリー（本体の中に置いた
+# worktree）は**最も深い**包含ツリーで判定する（外側のツリーから見ると入れ子は未追跡に見えるため）。
+WS_HIT_TREE=""
 ws_target_exempt() { # <phys>
-  ws_path_within "$1" "$WS_ROOT_PHYS" || return 0
-  ws_path_within "$1" "${WS_ROOT_PHYS}/${WS_OUTPUT_DIR}" && return 0
-  ws_target_ignored "$1" && return 0
+  local t best=""
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    ws_path_within "$1" "$t" || continue
+    [ "${#t}" -gt "${#best}" ] && best="$t"
+  done <<EOF
+${WS_TREES:-$WS_ROOT_PHYS}
+EOF
+  WS_HIT_TREE="$best"
+  [ -n "$best" ] || return 0
+  ws_path_within "$1" "${best}/${WS_OUTPUT_DIR}" && return 0
+  ws_target_ignored "$1" "$best" && return 0
   return 1
 }
 
@@ -339,9 +413,8 @@ judge_target() { # <path token> <何の書き込みか> → 0 = hit
     /dev/null | /dev/stdout | /dev/stderr | /dev/tty | /dev/fd/*) return 1 ;;
   esac
   if ! resolve_target "$1"; then
-    WRITE_HIT=1
-    WRITE_REASON="書き込み先を判定できません（${RESOLVE_WHY}: ${1}。${2}）"
-    return 0
+    undeterminable "${RESOLVE_WHY}: ${1}。${2}"
+    return $?
   fi
   if target_in_tree "$RESOLVED"; then
     WRITE_HIT=1
@@ -356,7 +429,25 @@ judge_target() { # <path token> <何の書き込みか> → 0 = hit
   fi
   return 1
 }
+# 書き込み先を判定できない（0 = 止める / 1 = 止めない）。止めないのは次の 2 つだけ:
+#   - 既存ファイルの本文を走査している間（WS_IN_FILE > 0）。スクリプト本文の書き込み先は実行時に
+#     決まる変数・引数で組まれるのが普通で、静的に判定できないことは「書き込む」の兆候ではない
+#     （OBS-183: 11 回の再発はすべて、書き込みの無い実行・ツリー外への書き込みを本文の判定不能で
+#     止めた形）。本文のリテラルで判定できる書き込み（`echo x > README.md`）は従来どおり止める
+#   - cwd のツリーが凍結の対象でない（別 worktree のレビューだけが走っている）とき
+# コマンド行そのもの（その場で組み立てた `-c` / heredoc / パイプを含む）は従来どおり止める側。
 undeterminable() { # <理由>
+  if [ "${WS_IN_FILE:-0}" -gt 0 ] || [ "${WS_CWD_PROTECTED:-1}" -eq 0 ]; then
+    [ -n "$WS_SOFT_NOTE" ] || WS_SOFT_NOTE="$1"
+    return 1
+  fi
+  WRITE_HIT=1
+  WRITE_REASON="書き込み先を判定できません（${1}）"
+  return 0
+}
+# 走査そのものが成立しない（字句解析の失敗・検出器の失敗・ヘルパ不在）。針が当たらない入力を
+# 「書き込み無し」の緑へ畳まないため、ファイル本文の中でも・別ツリーのレビュー中でも止める側。
+ws_fail() { # <理由>
   WRITE_HIT=1
   WRITE_REASON="書き込み先を判定できません（${1}）"
   return 0
@@ -412,7 +503,7 @@ is_interp_head() { # <basename>
 # 区切り子: `;`（`;;` 含む）/ `&&` / `||` / `|`（`>|` は除く）/ 単独の `&`（リダイレクト由来の
 # `2>&1` `>&2` `&>` は除く）/ 改行。引用符の内側と `$(…)` / バッククォートの内側では割らない。
 ws_split_segments() { # <code> → 区間を \001 区切りで出す（引用符・置換が行をまたぐ区間は改行を含む）
-  printf '%s\n' "$1" | LC_ALL=C awk '
+  printf '%s\n' "$1" | LC_ALL=C "${FF_LEX_AWK:-awk}" '
     function emit(x) { printf "%s%s%c", kind, x, 1; kind = "S" }
     BEGIN { seg = ""; q = ""; depth = 0; kind = "N" }
     {
@@ -446,11 +537,20 @@ ws_split_segments() { # <code> → 区間を \001 区切りで出す（引用符
 }
 # `$(…)` とバッククォートの本文を 1 行 1 件で取り出す（入れ子は外側だけ）
 ws_extract_substs() { # <区間>
-  printf '%s\n' "$1" | LC_ALL=C awk '
+  printf '%s\n' "$1" | LC_ALL=C "${FF_LEX_AWK:-awk}" '
     {
-      s = $0; n = length(s); depth = 0; body = ""; q = ""
+      s = $0; n = length(s); depth = 0; body = ""; q = ""; iq = ""
       for (i = 1; i <= n; i++) {
         c = substr(s, i, 1); nx = substr(s, i + 1, 1)
+        # 本文の中の引用符で囲まれた括弧は数えない（awk / sed のプログラムを引数に取る置換）
+        if (depth > 0 && iq != "") {
+          body = body c
+          if (c == "\\" && iq == "\"") { body = body nx; i++ }
+          else if (c == iq) iq = ""
+          continue
+        }
+        if (depth > 0 && (c == "\047" || c == "\"")) { iq = c; body = body c; continue }
+        if (depth > 0 && c == "\\") { body = body c nx; i++; continue }
         if (depth == 0) {
           if (c == "\\") { i++; continue }
           if (c == "\047" && q == "") { q = c; continue }
@@ -487,9 +587,22 @@ ws_marker_re() { # <lang> → 正規表現を stdout
 }
 # マーカー行を全部返す。rc 0 = あり / 1 = なし / 2 = 走査失敗
 ws_marker_lines() { # <lang> <program>
-  local re out rc
+  local re out rc cre
   re="$(ws_marker_re "$1")" || return 1
-  out="$(printf '%s\n' "$2" | LC_ALL=C "${FF_WRITE_SCAN_GREP:-grep}" -E -- "$re" 2>/dev/null)"
+  # 行コメント（先頭が `#`。node は `//`）は実行されないデータなので、マーカーの走査から落とす
+  # （Issue `#1760`。`# open("x", "w") は使わない` の注記で止めない）。行の途中のコメントは
+  # 文字列と区別できないので残す（止める側）。
+  case "$1" in
+    node) cre='^[[:space:]]*//' ;;
+    *) cre='^[[:space:]]*#' ;;
+  esac
+  out="$(printf '%s\n' "$2" | LC_ALL=C "${FF_WRITE_SCAN_GREP:-grep}" -v -E -- "$cre" 2>/dev/null)"
+  rc=$?
+  case "$rc" in
+    0 | 1) : ;;
+    *) return 2 ;;
+  esac
+  out="$(printf '%s\n' "$out" | LC_ALL=C "${FF_WRITE_SCAN_GREP:-grep}" -E -- "$re" 2>/dev/null)"
   rc=$?
   case "$rc" in
     0) printf '%s\n' "$out"; return 0 ;;
@@ -511,7 +624,7 @@ ws_judge_program() {
   if [ "$lang" = "sh" ]; then
     if [ "$depth" -ge 2 ]; then
       undeterminable "入れ子のシェル実行が深すぎる（${hb}）"
-      return 0
+      return $?
     fi
     ws_scan_nested "$prog" $((depth + 1))
     return $?
@@ -521,7 +634,7 @@ ws_judge_program() {
   rc=$?
   case "$rc" in
     1) return 1 ;;
-    2) undeterminable "書き込みマーカーの走査（grep）に失敗"; return 0 ;;
+    2) ws_fail "書き込みマーカーの走査（grep）に失敗"; return 0 ;;
   esac
   re="$(ws_marker_re "$lang")"
   # マーカー行ごと・マーカーごとに書き込み先を判定する（最初の 1 つで許可しない）。
@@ -532,13 +645,18 @@ ws_judge_program() {
     rest="$line"
     while :; do
       marker="$(printf '%s' "$rest" | LC_ALL=C "${FF_WRITE_SCAN_GREP:-grep}" -Eo -- "$re" 2>/dev/null | head -n 1)"
-      [ -n "$marker" ] || break
+      if [ -z "$marker" ]; then
+        # マーカー行として選ばれた行（最初の抽出）から何も取れないのは検出器の異常
+        [ "$rest" = "$line" ] && { ws_fail "書き込みマーカーの抽出（grep -o）に失敗"; return 0; }
+        break
+      fi
       before="${rest%%"$marker"*}"
       after="${rest#*"$marker"}"
       case "$marker" in
         subprocess.* | os.system\(* | os.popen\(* | os.exec* | child_process* | execSync\(* | spawn* | system* | \`* | shutil.* | FileUtils.* | fileinput.*)
-          undeterminable "任意コマンド起動・対象を特定できないユーティリティを使う ${hb} プログラム（${marker}。${src}）"
-          return 0
+          undeterminable "任意コマンド起動・対象を特定できないユーティリティを使う ${hb} プログラム（${marker}。${src}）" && return 0
+          rest="$after"
+          continue
           ;;
         .* | write_text\(* | write_bytes\(*) lit="$(ws_trailing_literal "$before")" ;;
         open\(*) lit="$(ws_leading_literal "${marker#open(}")" ;;
@@ -548,8 +666,9 @@ ws_judge_program() {
         *) lit="" ;;
       esac
       if [ -z "$lit" ]; then
-        undeterminable "${hb} プログラムの書き込み先がリテラルではない（${marker}。${src}）"
-        return 0
+        undeterminable "${hb} プログラムの書き込み先がリテラルではない（${marker}。${src}）" && return 0
+        rest="$after"
+        continue
       fi
       judge_target "$lit" "${hb} プログラムの ${marker}（${src}）" && return 0
       rest="$after"
@@ -561,7 +680,7 @@ EOF
 }
 # インタプリタ区間: 本文を取り、判定する。<basename> <生の区間> <深さ> <args...>
 judge_interpreter() {
-  local hb="$1" raw="$2" depth="$3" a prog="" src="" valued script lang has_heredoc=0 stdin_file="" skip=0 nonopt=0
+  local hb="$1" raw="$2" depth="$3" a prog="" src="" valued script lang has_heredoc=0 stdin_file="" skip=0 nonopt=0 srcpath=""
   shift 3
   lang="$hb"
   case "$hb" in
@@ -608,7 +727,7 @@ judge_interpreter() {
   if [ -z "$src" ] && { [ "$hb" = "awk" ] || [ "$hb" = "gawk" ]; }; then
     for a in "$@"; do
       case "$a" in
-        -i | --in-place | -i*) undeterminable "awk の in-place 編集（${a}）"; return 0 ;;
+        -i | --in-place | -i*) undeterminable "awk の in-place 編集（${a}）"; return $? ;;
       esac
     done
     prog="${raw#*"$hb"}"
@@ -632,9 +751,10 @@ judge_interpreter() {
     if resolve_target "$stdin_file" && [ -f "$RESOLVED" ] && [ -r "$RESOLVED" ]; then
       prog="$(LC_ALL=C head -c 262144 "$RESOLVED" 2>/dev/null)"
       src="file"
+      srcpath="$RESOLVED"
     else
       undeterminable "stdin のファイルを読めない（${hb} < ${stdin_file}）"
-      return 0
+      return $?
     fi
   fi
   if [ -z "$src" ]; then
@@ -645,72 +765,153 @@ judge_interpreter() {
       ruby) valued="-e -r -I -E -C -x" ;;
       sh) valued="-o -O" ;;
     esac
+    # スクリプトより後ろの語はスクリプト自身の引数（`bash w.sh -n` の -n は bash のオプションではない）
     for a in "$@"; do
+      case "$a" in -*) : ;; *) break ;; esac
       case "$lang:$a" in
-        python*:-m) undeterminable "モジュール実行（${hb} -m）は本文を取れない"; return 0 ;;
+        python*:-m) undeterminable "モジュール実行（${hb} -m）は本文を取れない"; return $? ;;
         *:--version | *:-V | *:--help | *:-h | *:-version) return 1 ;;
+        # `bash -n <file>` は構文検査だけで何も実行しない（本文を読まない）
+        sh:-n) return 1 ;;
       esac
     done
     collect_nonopts "$valued" "$@"
     nonopt="${#NONOPTS[@]}"
     if [ "$nonopt" -eq 0 ] || [ "${NONOPTS[0]}" = "-" ]; then
       if [ "$has_heredoc" -eq 1 ]; then
-        [ "$HEREDOC_STATE" = "ok" ] || { undeterminable "heredoc を解析できない（${HEREDOC_STATE}）"; return 0; }
+        [ "$HEREDOC_STATE" = "ok" ] || { undeterminable "heredoc を解析できない（${HEREDOC_STATE}）"; return $?; }
         prog="$HEREDOC_BODIES"
         src="heredoc"
       else
         undeterminable "stdin から読むプログラム（${hb}。本文が無い）"
-        return 0
+        return $?
       fi
     else
       script="${NONOPTS[0]}"
       if ! resolve_target "$script"; then
         undeterminable "スクリプトのパスを解決できない（${RESOLVE_WHY}: ${script}）"
-        return 0
+        return $?
       fi
       if [ -f "$RESOLVED" ] && [ -r "$RESOLVED" ]; then
         prog="$(LC_ALL=C head -c 262144 "$RESOLVED" 2>/dev/null)"
         src="file"
+        srcpath="$RESOLVED"
       else
         undeterminable "スクリプトを読めない（${RESOLVED}）"
-        return 0
+        return $?
       fi
     fi
   fi
   case "$prog" in
-    '$'* | '`'*) undeterminable "${hb} の本文が変数展開・コマンド置換（${src}）"; return 0 ;;
+    '$'* | '`'*) undeterminable "${hb} の本文が変数展開・コマンド置換（${src}）"; return $? ;;
   esac
+  if [ "$src" = "file" ]; then
+    ws_judge_file_program "$hb" "$lang" "$prog" "$srcpath" "$depth"
+    return $?
+  fi
   ws_judge_program "$hb" "$lang" "$prog" "$src" "$depth"
 }
 
+# ---- 実行ファイルの種別 ----------------------------------------------------------------
+# 0 = バイナリ（Mach-O / ELF / 先頭 1 KiB に NUL を含む）/ 1 = テキスト / 2 = 判別できない。
+# 判別は `od` で先頭 4 バイトの magic を読み、NUL は `tr` で数える。どちらかが動かない回は 2
+# （テキストとみなして機械語を本文走査へ回すことも、バイナリとみなして読み飛ばすこともしない）。
+# 検査用の差し替え口: FF_WRITE_SCAN_OD（od の代替。判別不能を suite で実測するため）。
+ws_is_binary() { # <file>
+  local magic all nonul
+  magic="$(LC_ALL=C "${FF_WRITE_SCAN_OD:-od}" -An -tx1 -N4 "$1" 2>/dev/null)" || return 2
+  magic="$(printf '%s' "$magic" | tr -d ' \n\t')"
+  case "$magic" in
+    '') return 2 ;;
+    7f454c46 | cffaedfe | cefaedfe | feedface | feedfacf | cafebabe | bebafeca) return 0 ;;
+  esac
+  all="$(LC_ALL=C head -c 1024 "$1" 2>/dev/null | wc -c | tr -d ' ')" || return 2
+  nonul="$(LC_ALL=C head -c 1024 "$1" 2>/dev/null | LC_ALL=C tr -d '\000' | wc -c | tr -d ' ')" || return 2
+  case "$all:$nonul" in
+    *[!0-9:]* | :* | *:) return 2 ;;
+  esac
+  [ "$all" -eq "$nonul" ] && return 1
+  return 0
+}
+
 # ---- 1 区間 ----------------------------------------------------------------------------
-# <区間> <深さ> → 0 = hit
+# <区間> <深さ> → 0 = hit。WRITE_OVERRIDE に**この区間の**先頭の FF_REVIEW_LOCK_OVERRIDE=1 の有無を返す。
+# 区間の走査は入れ子（インタプリタの本文・`$(…)`）の区間を再帰的に走査するので、入れ子の区間が
+# 書いた WRITE_OVERRIDE（入れ子の区間には override が無い = 0）で外側の区間の override が上書き
+# される。そのため override の決定は区間ごとの退避・復元で持つ（上書きされたままだと、
+# `FF_REVIEW_LOCK_OVERRIDE=1 bash x.sh` の override が本文の走査で消え、案内どおりに前置しても
+# 通らない。OBS-183 の「override も効かず」の実体）。
+WS_SEG_OVR=0
 scan_segment() {
-  local seg="$1" depth="$2" toks n i tok t target inq hb head seg_override=0 a body
-  set -f
-  # shellcheck disable=SC2206 # 素朴な空白トークン化（意図的。glob は set -f で抑止）
-  toks=($seg)
-  set +f
-  n=${#toks[@]}
-  [ "$n" -gt 0 ] || return 1
-  # a) `$(…)` / バッククォートの本文はサブシェルとして先に走査する
-  while IFS= read -r body; do
-    [ -n "$body" ] || continue
-    if ws_scan_nested "$body" $((depth + 1)); then return 0; fi
+  local saved="$WS_SEG_OVR" rc
+  WS_SEG_OVR=0
+  ws_scan_segment_body "$@"
+  rc=$?
+  WRITE_OVERRIDE="$WS_SEG_OVR"
+  WS_SEG_OVR="$saved"
+  return $rc
+}
+ws_scan_segment_body() {
+  local seg="$1" depth="$2" toks n i tok t target inq hb head seg_override=0 a body lexed wrap="" lrc
+  # 語分割は引用符を保つ（`'s/a b/c d/'` を 1 語のまま扱う。Issue `#1868`）。引用符の外の
+  # リダイレクト演算子は独立した語として切り出されるので、`hi>f` / `2>/dev/null` も同じ形で読める。
+  # 字句解析に失敗した区間（引用符が閉じない）は断片を書き込み先として名指ししないよう、
+  # 判定不能として止める側へ倒す。
+  toks=()
+  lexed="$(ff_lex_tokens "$seg")"
+  lrc=$?
+  if [ "$lrc" -ne 0 ]; then
+    if [ "$lrc" -ne 12 ]; then
+      ws_fail "字句解析器が失敗（rc=${lrc}）"
+      return 0
+    fi
+    if [ "$depth" -eq 0 ]; then
+      ws_fail "字句解析に失敗（引用符が閉じていない区間: ${seg%%
+*}）"
+      return 0
+    fi
+    undeterminable "字句解析に失敗（入れ子の本文で引用符が閉じていない区間: ${seg%%
+*}）"
+    return $?
+  fi
+  while IFS= read -r -d "$WS_RS" tok; do
+    toks[${#toks[@]}]="$tok"
   done <<EOF
-$(ws_extract_substs "$seg")
+$lexed
+EOF
+  n=${#toks[@]}
+  # 空白でない区間から語が 1 つも出ないのは字句解析器の異常（空振りを「何もしない区間」へ畳まない）
+  [ "$n" -gt 0 ] || { ws_fail "字句解析器が語を返さない"; return 0; }
+  # a) `$(…)` / バッククォートの本文はサブシェルとして先に走査する
+  body="$(ws_extract_substs "$seg")" || { ws_fail "置換の本文の切り出し（awk）が失敗"; return 0; }
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    if ws_scan_nested "$a" $((depth + 1)); then return 0; fi
+  done <<EOF
+$body
 EOF
   # b) 前置き（グループ括弧・制御語・環境代入・ラッパ）を剥がし、区間先頭の override を確定する
   while [ "$n" -gt 0 ]; do
     case "${toks[$((n - 1))]}" in
-      ')' | '}' | ';' | '&' | ';;' | 'fi' | 'done' | 'esac') n=$((n - 1)) ;;
+      ')' | '))' | '}' | ';' | '&' | ';;' | 'fi' | 'done' | 'esac') n=$((n - 1)) ;;
       *) break ;;
     esac
   done
   i=0
   while [ "$i" -lt "$n" ]; do
     case "${toks[$i]}" in
-      '(' | '{' | '&' | '!' | do | then | else | elif | if | while | until | time | exec | builtin | env | command | sudo | nohup) i=$((i + 1)) ;;
+      '(' | '{' | '&' | '!' | do | then | else | elif | if | while | until) i=$((i + 1)) ;;
+      # ラッパの後ろのオプション（`command -p bash x` / `env -i` / `sudo -u u`）も剥がす。剥がさないと
+      # オプションを頭と読み、後ろのインタプリタ・書き込みコマンドを見ない（素通し）
+      time | exec | builtin | env | command | sudo | nohup | nice) wrap="${toks[$i]}"; i=$((i + 1)) ;;
+      # 関数定義（`f() { …` / `function f { …`）の名前と括弧は剥がし、本体の先頭コマンドを見る
+      function) i=$((i + 2)); [ "${toks[$i]:-}" = "(" ] && [ "${toks[$((i + 1))]:-}" = ")" ] && i=$((i + 2)) ;;
+      timeout | gtimeout) wrap="timeout"; i=$((i + 1)) ;;
+      [0-9]*)
+        # `timeout 600 cmd` の時間の語
+        if [ "$wrap" = "timeout" ]; then wrap="timeout-done"; i=$((i + 1)); continue; fi
+        break
+        ;;
       case)
         # `case x in pat) cmd` — パターン（`)` で終わる語）までを読み飛ばす
         i=$((i + 1))
@@ -721,52 +922,56 @@ EOF
       *')') i=$((i + 1)) ;; # case のパターン（`x)`）
       FF_REVIEW_LOCK_OVERRIDE=1) seg_override=1; i=$((i + 1)) ;;
       [A-Za-z_]*=*) i=$((i + 1)) ;;
-      *) break ;;
+      -*)
+        [ -n "$wrap" ] || break
+        case "$wrap:${toks[$i]}" in
+          env:-u | env:-C | env:-S | sudo:-u | sudo:-g | sudo:-C | sudo:-D | sudo:-h | sudo:-p | sudo:-r | sudo:-t | sudo:-U | \
+          timeout:-s | timeout:-k | timeout:--signal | timeout:--kill-after | nice:-n | nice:--adjustment) i=$((i + 2)) ;;
+          *) i=$((i + 1)) ;;
+        esac
+        ;;
+      *)
+        # 関数定義 `f ( )` の名前と括弧
+        if [ $((i + 2)) -lt "$n" ] && [ "${toks[$((i + 1))]}" = "(" ] && [ "${toks[$((i + 2))]}" = ")" ]; then
+          i=$((i + 3))
+          continue
+        fi
+        # 語分割で `)` が独立した語になった case のパターン（`x )` / `a|b )`）
+        if [ $((i + 1)) -lt "$n" ] && [ "${toks[$((i + 1))]}" = ")" ]; then
+          i=$((i + 2))
+          continue
+        fi
+        break
+        ;;
     esac
   done
   WRITE_OVERRIDE="$seg_override"
-  # c) リダイレクト（区間のどこにあっても書き込み）。引用文字列の内側は飛ばす
-  inq=""
+  WS_SEG_OVR="$seg_override"
+  # c) リダイレクト（区間のどこにあっても書き込み）。語分割が引用符の外の演算子だけを独立した語に
+  # するので、演算子の語の次の語が書き込み先。`[[ … ]]` / `(( … ))` の中の `>` / `<` は比較演算子。
+  # 書き込み先の位置に来た閉じ括弧・`;;`（`> )` は構文エラーで、ファイル名にはならない）は
+  # パスではない。`]` / `}` は `echo x > ]` で実在のファイル名になりうるので判定に回す（理由文に
+  # `<root>/]` が出たのは、素朴な語分割が引用符・置換の途中で語を割っていたため）
+  inq=0
   t=0
   while [ "$t" -lt "$n" ]; do
     tok="${toks[$t]}"
     t=$((t + 1))
-    if [ -n "$inq" ]; then
-      case "$tok" in *"$inq") inq="" ;; esac
-      continue
-    fi
     case "$tok" in
-      \'*\' | \"*\") continue ;;
-      \'?*) inq="'"; continue ;;
-      \"?*) inq='"'; continue ;;
-      '>(' | '>('*) undeterminable "プロセス置換への書き込み（>(…)）"; return 0 ;;
-      '>' | '>>' | '>|' | '&>' | '&>>' | [0-9]'>' | [0-9]'>>' | [0-9]'>|')
+      '((' | '[[') inq=1; continue ;;
+      '))' | ']]') inq=0; continue ;;
+    esac
+    [ "$inq" -eq 0 ] || continue
+    case "$tok" in
+      '>('*) undeterminable "プロセス置換への書き込み（>(…)）" && return 0 ;;
+      '>' | '>>' | '>|' | '&>' | '&>>' | [0-9]*'>' | [0-9]*'>>' | [0-9]*'>|' | '>&' | '&>&')
         [ "$t" -lt "$n" ] || continue
         target="${toks[$t]}"
         t=$((t + 1))
-        case "$target" in '&'*) continue ;; esac # `> &2` 形の fd 複製
+        case "$target" in '&'* | ')' | '))' | ';;') continue ;; esac
+        # `>&2` は語分割で 1 語になるので、ここへ来る `>&` の次の語は fd 番号でなければファイル
+        case "$tok:$target" in '>&:'[0-9]* | '>&:-' | '&>&:'[0-9]*) continue ;; esac
         judge_target "$target" "リダイレクト ${tok}" && return 0
-        ;;
-      '>&'* | [0-9]'>&'* | '&>&'*) : ;; # fd 複製・閉鎖
-      '>'\"* | '>'\'* | '>>'\"* | '>>'\'* | [0-9]'>'\"* | [0-9]'>'\'* | '&>'\"* | '&>'\'*)
-        # 引用符付きの密着形（`>"README.md"`）
-        t="${tok#[0-9]}"
-        t="${t#&}"
-        t="${t#>}"
-        t="${t#>}"
-        judge_target "$t" "リダイレクト >" && return 0
-        ;;
-      *\"* | *\'*) : ;; # 引用符を含む語（`"a>b"` 等）は判定しない
-      *'>'*)
-        # 密着形: `>file` / `2>file` / `&>file` / `hi>file`（語の途中の `>` も同じ）
-        a="${tok%%>*}"
-        target="${tok#"$a">}"
-        target="${target#>}"
-        target="${target#|}"
-        case "$target" in
-          '' | '&'*) : ;;
-          *) judge_target "$target" "リダイレクト >" && return 0 ;;
-        esac
         ;;
     esac
   done
@@ -781,9 +986,8 @@ EOF
     tok="${toks[$i]}"
     i=$((i + 1))
     case "$tok" in
-      '>' | '>>' | '>|' | '&>' | '&>>' | [0-9]'>' | [0-9]'>>' | [0-9]'>|') i=$((i + 1)); continue ;;
-      '*' | "*") : ;;
-      '>'* | '&>'* | [0-9]'>'*) continue ;;
+      '>' | '>>' | '>|' | '&>' | '&>>' | [0-9]*'>' | [0-9]*'>>' | [0-9]*'>|') i=$((i + 1)); continue ;;
+      '>'* | '&>'* | [0-9]*'>&'*) continue ;;
     esac
     set -- "$@" "$tok"
   done
@@ -792,11 +996,12 @@ EOF
       if [ "$#" -eq 0 ] || [ "$1" = "-" ]; then WRITE_BASE=""; return 1; fi
       a="$1"
       case "$a" in -*) shift; a="${1:-}" ;; esac
-      if [ -n "$a" ] && resolve_target "$a"; then WRITE_BASE="$RESOLVED"; else WRITE_BASE=""; fi
+      # 行き先が無い cd は失敗し、後続は元の場所で走るので、移動先へ動かさず「不明」へ倒す
+      if [ -n "$a" ] && resolve_target "$a" && [ -d "$RESOLVED" ]; then WRITE_BASE="$RESOLVED"; else WRITE_BASE=""; fi
       return 1
       ;;
     pushd | popd) WRITE_BASE=""; return 1 ;;
-    eval) undeterminable "eval は本文を静的に取れない"; return 0 ;;
+    eval) undeterminable "eval は本文を静的に取れない"; return $? ;;
     git)
       # 別リポジトリ指定（-C）は git 走査の担当。ここでは cwd のリポジトリへの書き込み系だけ
       for a in "$@"; do case "$a" in -C | --git-dir* | --work-tree*) return 1 ;; esac; done
@@ -804,7 +1009,7 @@ EOF
       [ "${#NONOPTS[@]}" -gt 0 ] || return 1
       case "${NONOPTS[0]}" in
         rm | mv | clean | commit | rebase | checkout | switch | merge | reset | apply | cherry-pick | revert | am | pull)
-          [ -n "$WRITE_BASE" ] || { undeterminable "git ${NONOPTS[0]}（cd 先が不明）"; return 0; }
+          [ -n "$WRITE_BASE" ] || { undeterminable "git ${NONOPTS[0]}（cd 先が不明）"; return $?; }
           if target_in_tree "$WRITE_BASE"; then
             WRITE_HIT=1
             WRITE_REASON="作業ツリー内へ書き込みます: ${WRITE_BASE}（git ${NONOPTS[0]}）"
@@ -875,7 +1080,7 @@ EOF
       dest="$(opt_value -t "$@")" || dest="$(opt_value --target-directory "$@")" || dest=""
       if [ -n "$dest" ]; then judge_target "$dest" "$hb" && return 0; return 1; fi
       collect_nonopts "$valued" "$@"
-      [ "${#NONOPTS[@]}" -ge 2 ] || { undeterminable "${hb} の書き込み先が無い"; return 0; }
+      [ "${#NONOPTS[@]}" -ge 2 ] || { undeterminable "${hb} の書き込み先が無い"; return $?; }
       judge_target "${NONOPTS[$((${#NONOPTS[@]} - 1))]}" "$hb" && return 0
       return 1
       ;;
@@ -1050,7 +1255,7 @@ EOF
       [ "${#NONOPTS[@]}" -gt 0 ] && wrapped="${NONOPTS[0]##*/}"
       if [ -n "$wrapped" ] && { is_write_head "$wrapped" || is_interp_head "$wrapped"; }; then
         undeterminable "xargs 経由の ${wrapped}（対象は stdin から来る）"
-        return 0
+        return $?
       fi
       return 1
       ;;
@@ -1063,8 +1268,20 @@ EOF
   # 言語を決め、本文をインタプリタと同じ規則で判定する。読めなければ判定不能
   case "$head" in
     */*)
-      local shebang="" lang2="sh"
+      local shebang="" lang2="sh" brc
       if resolve_target "$head" && [ -f "$RESOLVED" ] && [ -r "$RESOLVED" ]; then
+        # 実行形式（Mach-O / ELF 等のバイナリ）はスクリプトではない。本文として読むと機械語の
+        # 断片を「直接実行するスクリプト」と誤読して判定不能へ倒れる（`/usr/bin/grep` や、
+        # deny 文が案内する復旧手順の `rm` が止まった。Issue `#1792`）。既知の書き込みコマンドは
+        # 上の名前（basename）の分岐で argv を判定済みなので、ここへ来るバイナリは PATH から
+        # 引いた同名のコマンドと同じく読み取り側として通す。判別できない回は判定不能（止める側）。
+        ws_is_binary "$RESOLVED"
+        brc=$?
+        case "$brc" in
+          0) return 1 ;;
+          1) : ;;
+          *) ws_fail "実行ファイルがバイナリかを判別できない（${RESOLVED}）"; return 0 ;;
+        esac
         shebang="$(LC_ALL=C head -n 1 "$RESOLVED" 2>/dev/null)"
         case "$shebang" in
           '#!'*python*) lang2="python3" ;;
@@ -1079,11 +1296,11 @@ EOF
             esac
             ;;
         esac
-        ws_judge_program "$hb" "$lang2" "$(LC_ALL=C head -c 262144 "$RESOLVED" 2>/dev/null)" "file" "$depth"
+        ws_judge_file_program "$hb" "$lang2" "$(LC_ALL=C head -c 262144 "$RESOLVED" 2>/dev/null)" "$RESOLVED" "$depth"
         return $?
       fi
       case "$head" in
-        ./* | ../* | /*) undeterminable "直接実行するスクリプトを読めない（${head}）"; return 0 ;;
+        ./* | ../* | /*) undeterminable "直接実行するスクリプトを読めない（${head}）"; return $? ;;
       esac
       ;;
   esac
@@ -1094,20 +1311,48 @@ EOF
 # 入れ子（`bash -c '…'` / sh の heredoc 本文 / `$(…)`）は自分で heredoc を落とし、cd と変数の
 # 状態を親へ漏らさない。<生の本文> <深さ> → 0 = hit
 ws_scan_nested() {
-  local raw="$1" depth="$2" code rc base_saved vars_saved state_saved bodies_saved sub_saved
+  local raw="$1" depth="$2" code rc base_saved vars_saved state_saved bodies_saved sub_saved lrc
   base_saved="$WRITE_BASE"; vars_saved="$VAR_TABLE"; sub_saved="$WS_SUB_DEPTH"
   state_saved="$HEREDOC_STATE"; bodies_saved="$HEREDOC_BODIES"
-  if [ "$(type -t ff_heredoc_strip 2>/dev/null)" = "function" ]; then
-    code="$(ff_heredoc_strip "$raw")"
-    rc=$?
-    case "$rc" in
-      0) HEREDOC_STATE=ok; HEREDOC_BODIES="$(ff_heredoc_bodies "$raw" 2>/dev/null)" || HEREDOC_BODIES="" ;;
-      3) HEREDOC_STATE=unterminated; code="$raw" ;;
-      *) HEREDOC_STATE=unavailable; code="$raw" ;;
-    esac
-  else
+  # コメントと heredoc 本文は実行されないデータ（Issue `#1760`）。引用符・算術式を認識する字句解析
+  # （tests/lib/review-shell-lex.sh）で落とす: `echo "# x" > f` / `${x#foo} > f` の書き込みは残り、
+  # 引用符の中の `<<` を opener と誤認しない。字句解析が使えない・失敗した回は、断片を判定に
+  # 回さず判定不能（止める側。ファイル本文の中でも止める = ws_fail）へ倒す。
+  if [ "$WS_LEX_OK" -ne 1 ]; then
     HEREDOC_STATE=unavailable
     code="$raw"
+  else
+    code="$(ff_lex_code "$raw")"
+    lrc=$?
+    case "$lrc" in
+      0)
+        # 本文の取り出しの失敗を「本文が空」へ畳まない（heredoc のプログラムが空として通る）
+        if ! HEREDOC_BODIES="$(ff_lex_bodies "$raw")"; then
+          HEREDOC_BODIES=""
+          HEREDOC_STATE=unavailable
+        else
+          HEREDOC_STATE=ok
+        fi
+        ;;
+      13) HEREDOC_STATE=unterminated; code="$raw" ;;
+      12)
+        # 最上位（コマンド行そのもの）の失敗は走査が成立しない（止める側）。入れ子（`$(…)` の本文・
+        # `-c` の本文・ファイル本文の中の切り出し）は切り出しの近似が割った形でありうるので、
+        # 判定不能として扱う（ファイル本文の中では止めない）。ファイル本文**全体**の字句解析の
+        # 失敗は ws_judge_file_program が止める側で扱う。
+        if [ "$depth" -eq 0 ]; then
+          ws_fail "字句解析に失敗（引用符・コマンド置換が閉じていない）"
+          lrc=0
+        else
+          undeterminable "字句解析に失敗（入れ子の本文の引用符・コマンド置換が閉じていない）"
+          lrc=$?
+        fi
+        WRITE_BASE="$base_saved"; VAR_TABLE="$vars_saved"; WS_SUB_DEPTH="$sub_saved"
+        HEREDOC_STATE="$state_saved"; HEREDOC_BODIES="$bodies_saved"
+        return $lrc
+        ;;
+      *) HEREDOC_STATE=unavailable; code="$raw" ;;
+    esac
   fi
   WS_SUB_DEPTH=0
   ws_scan_code "$code" "$depth"
@@ -1120,13 +1365,16 @@ ws_scan_code() { # <heredoc 除去後の本文> <深さ> → 0 = hit
   local code="$1" depth="$2" segs seg rc=1 trimmed opened=0
   if [ "$HEREDOC_STATE" != "ok" ]; then
     case "$HEREDOC_STATE" in
-      unterminated) undeterminable "heredoc が終端していない（引用符・算術式の中の << を含む可能性）" ;;
-      *) undeterminable "heredoc 除去ヘルパを使えない（tests/lib/heredoc-strip.sh）" ;;
+      unterminated) ws_fail "heredoc が終端していない" ;;
+      *) ws_fail "字句解析ライブラリ（tests/lib/review-shell-lex.sh）または heredoc 除去ヘルパ（tests/lib/heredoc-strip.sh）を使えない" ;;
     esac
     return 0
   fi
   local kind base_before vars_before override_hit=0 prev_base="$WRITE_BASE" prev_vars="$VAR_TABLE"
-  segs="$(ws_split_segments "$code")"
+  segs="$(ws_split_segments "$code")" || { ws_fail "区間分割（awk）が失敗"; return 0; }
+  case "$code" in
+    *[![:space:]]*) [ -n "$segs" ] || { ws_fail "区間分割（awk）が区間を返さない"; return 0; } ;;
+  esac
   while IFS= read -r -d "$WS_RS" seg || [ -n "$seg" ]; do
     kind="${seg%%[!NSAOPB]*}"
     kind="${kind:0:1}"
@@ -1203,5 +1451,46 @@ ff_write_scan() { # <生コマンド> <HEREDOC_STATE> <HEREDOC_CODE> <HEREDOC_BO
   HEREDOC_CODE="$3"
   HEREDOC_BODIES="$4"
   WS_SUB_DEPTH=0
-  ws_scan_code "$HEREDOC_CODE" 0
+  WS_IN_FILE=0
+  # heredoc ヘルパを読めなかった回（hook 側の判定が unavailable）は従来どおり判定不能へ倒す。
+  # それ以外は生コマンドからコメントを落としてから heredoc を解き直す（コメント中の `<<` を
+  # opener と誤認して「未終端」へ倒さない）。
+  if [ "$HEREDOC_STATE" = "unavailable" ]; then
+    ws_scan_code "$HEREDOC_CODE" 0
+    return $?
+  fi
+  ws_scan_nested "$1" 0
+}
+# 既存ファイルの本文を判定する（WS_IN_FILE を 1 段深くして ws_judge_program を呼ぶ）。
+# <hb> <lang> <本文> <出所（表示用）> <深さ>
+ws_judge_file_program() {
+  local rc body lrc
+  body="$3"
+  # 本文全体の字句解析に失敗した回と、本文が空・コメントだけの回は、字句解析の取りこぼしと
+  # 区別できないので判定不能（止める側。針が当たらない入力を「書き込み無し」へ畳まない）。
+  if [ "$2" = "sh" ]; then
+    body="$(ff_lex_code "$3" 2>/dev/null)"
+    lrc=$?
+    if [ "$lrc" -ne 0 ]; then
+      # 読み込みの上限（先頭 256 KiB）で切り詰めた本文は、引用符・heredoc の途中で切れて
+      # 字句解析に失敗しうる。その失敗は入力ではなく切り詰めが作ったものなので、本文の
+      # 判定を諦める（ファイル本文の判定不能 = 止めない）。切り詰めていない本文の失敗は止める側。
+      if { [ "$lrc" -eq 12 ] || [ "$lrc" -eq 13 ]; } && [ -f "$4" ] \
+        && [ "$(LC_ALL=C wc -c < "$4" 2>/dev/null | tr -d ' ')" -gt 262144 ] 2>/dev/null; then
+        [ -n "$WS_SOFT_NOTE" ] || WS_SOFT_NOTE="本文が 256 KiB を超え、切り詰めた本文を字句解析できない（${4}）"
+        return 1
+      fi
+      ws_fail "スクリプト本文の字句解析に失敗（rc=${lrc}: ${4}）"
+      return 0
+    fi
+  fi
+  case "$body" in
+    *[![:space:]]*) : ;;
+    *) ws_fail "スクリプト本文が空、またはコメントだけ（${4}。字句解析の取りこぼしと区別できない）"; return 0 ;;
+  esac
+  WS_IN_FILE=$((WS_IN_FILE + 1))
+  ws_judge_program "$1" "$2" "$3" "file" "$5"
+  rc=$?
+  WS_IN_FILE=$((WS_IN_FILE - 1))
+  return $rc
 }

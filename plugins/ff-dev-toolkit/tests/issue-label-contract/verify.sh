@@ -76,6 +76,7 @@
 # 使い方: bash plugins/ff-dev-toolkit/tests/issue-label-contract/verify.sh
 #
 # 空振り検出: out-of-scope-issue の references/consolidation.md に `--assignee` 付き・ラベル無しの起票フェンスを足すと 101 件中 2 件、本線 SKILL.md に `console` フェンスの `$ gh issue create` を足すと 101 件中 1 件、references/filing.md から fixture の行全体一致行（`#### priority の判定基準`）を書き換えると 101 件中 1 件が赤になる（2026-09-23 実測。起票コマンドがラベル確認のファイルの外へ出る・フェンスの書式を変えて検出器の外へ出る・複製された契約行が片側だけ変わる変更を「契約あり」へ倒さない）。
+# 空振り検出: create-issue 手順 4 から「マージ前に達成できるか」の行を消すと 6 件（検査 11 の 5 件 + 検査 10 の集合差 1 件）、「AC が前提にする値・資料・配置を実測したか」の行を消すと 3 件（検査 11 の 2 件 + 集合差 1 件）、refine-issue の観点「検証可能性」の行を消すと 1 件、close-issue の references/ac-judgement.md の post-merge 前置きを消すと 2 件が赤になる（2026-09-27 実測。両ファイルから同時に消えて集合一致のまま緑になる形は検査 11 の実体固定が塞ぐ）。
 # 空振り検出: create-issue の本線 SKILL.md に `gh issue create` の起票フェンスを足すと 124 件中 1 件、references/estimation.md に引数付きの `gh label list` を足すと 124 件中 1 件、references/filing.md の fixture の行全体一致行（`#### priority の判定基準`）を書き換えると 124 件中 1 件、estimation.md を消して filing.md 以外の走査対象が本線だけへ縮むと 1 件が赤になる（2026-09-24 実測。起票コマンドが照合規則のファイルの外へ出る・複製された契約行が片側だけ変わる・走査対象が縮む変更を「契約あり」へ倒さない）。本線を 20,001 B へ膨らませると 131 件中 1 件、本線から「条件付きで読む references」節と filing.md / estimation.md へのリンクを消すと 1 件、references/sub/steps.md や references/.hidden.md に起票フェンスを置くと 131 件中 1 件が赤になる（2026-09-24 実測。本線が上限を超える・移設先へ導く経路が消える・glob の外へ置かれる変更を「契約あり」へ倒さない）。
 
 set -euo pipefail
@@ -1130,6 +1131,30 @@ else
     *)
       bad "変異（左列の重複）: 重複を検出しない（集合比較だけでは素通りする形）" "$mapping_added" ;;
   esac
+fi
+
+# ---- 11. post-merge にしか達成できない DoD と、AC の前提の実測（OBS-106 / OBS-017） ----
+# Closes 運用で「マージ後に〜」の DoD を書くと、/close-issue の AC 照合で「対象外」に落とすか
+# reopen するしかなくなる（post-merge 検証待ちは Refs 運用専用）。起票時（create-issue 手順 4）と
+# 事後の refine（refine-issue 観点「検証可能性」）の両方の入口で名指しさせる。項目名の集合一致は
+# 検査 10 が見るが、両ファイルから同時に消えると集合は一致したままなので、ここで実体を固定する。
+CI_AC_HEADING='### 4. 受け入れ条件（AC）の粒度チェック'
+section_contains "$CREATE_ISSUE" "$CI_AC_HEADING" '**マージ前に達成できるか**: マージ後にしか達成できない項目' "create-issue 手順 4: マージ後にしか達成できない項目を名指しする"
+section_contains "$CREATE_ISSUE" "$CI_AC_HEADING" 'Refs 運用へ切り替えるか DoD から外す' "create-issue 手順 4: Refs 運用への切り替えか DoD からの除外を促す"
+section_contains "$CREATE_ISSUE" "$CI_AC_HEADING" 'CI が `workflow_dispatch` を持つかを見て' "create-issue 手順 4: 倒す前にマージ前の実測手段（workflow_dispatch）を見る"
+section_contains "$CREATE_ISSUE" "$CI_AC_HEADING" 'AC に対応する処理が走る（ブランチ条件でスキップされない）かを確かめ' "create-issue 手順 4: 手動実行の存在だけでマージ前に測れると扱わない"
+section_contains "$CREATE_ISSUE" "$CI_AC_HEADING" '該当が無ければ問わずに通す' "create-issue 手順 4: 該当が無ければ既存フローを重くしない"
+section_contains "$CREATE_ISSUE" "$CI_AC_HEADING" '**AC が前提にする値・資料・配置を実測したか**' "create-issue 手順 4: AC の前提を起票時に実測する"
+section_contains "$CREATE_ISSUE" "$CI_AC_HEADING" '公開同期対象・生成物・gitignore 対象に当たらないか' "create-issue 手順 4: 名指しするパスの境界（公開同期・生成物・gitignore）を確かめる"
+contains "$REFINE_ISSUE" '`Closes` 運用の DoD にマージ後にしか達成できない項目があれば名指しし' "refine-issue 観点「検証可能性」: 同じ post-merge 判定を適用する"
+contains "$REFINE_ISSUE" '| マージ前に達成できるか | 観点「検証可能性」へ統合' "refine-issue 対応表: post-merge 判定を継承している"
+# 3 つ目の入口（/close-issue の AC 照合）。post-merge 検証待ちへ倒す前にマージ前の実測手段を見る
+CLOSE_AC_JUDGEMENT="$PLUGIN_ROOT/skills/close-issue/references/ac-judgement.md"
+if [ -f "$CLOSE_AC_JUDGEMENT" ]; then
+  section_contains "$CLOSE_AC_JUDGEMENT" '## post-merge 検証待ち' 'この判定へ倒す前に、その AC が本当にマージ後にしか測れないかを確かめる' "close-issue ac-judgement: post-merge 判定の前に workflow_dispatch での実測を見る"
+  section_contains "$CLOSE_AC_JUDGEMENT" '## post-merge 検証待ち' 'AC に対応する処理が実際に走り（ブランチ条件でスキップされていない）、AC が求める結果を確認できた場合に限る' "close-issue ac-judgement: 手動実行の成功だけでは達成にしない"
+else
+  bad "close-issue ac-judgement: 検査対象が見つからない（${CLOSE_AC_JUDGEMENT}）"
 fi
 
 echo ""

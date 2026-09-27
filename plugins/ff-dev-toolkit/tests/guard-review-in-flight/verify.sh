@@ -37,6 +37,15 @@
 #      multi-agent.sh の review 本体（multi-review.sh 経由・直接起動）も同じ記録で 3 巡目を exit 4 で止める /
 #      ask の出口は仮記録して PermissionDenied で取り消す / linked worktree 間で記録を共有する /
 #      ライブラリ不在は Bash の起動にも警告する
+#   O) 書き込み走査の偽陽性の是正（bundle `#1760` / `#1792` / `#1868`）: スクリプト本文・コマンド行の
+#      コメントを実行コードとして読まない（引用符の中の `#`・`${x#y}`・語中の `#` はコメントではない）/
+#      引用された 1 引数（`sed -i '' 's/a b/c d/'`）を割らない / バイナリの直接実行を本文として
+#      読まない / deny 文の復旧手順（rm -- ロック / rm -rf -- レーン / override 前置）がそのまま通る /
+#      委譲レーンは output-file の出現で解放 / レーンの対象ツリー（prompt が名指す worktree）の外への
+#      書き込み・cwd の git 書き込みは止めない / 既存ファイル本文の判定不能は止めず、リテラルの
+#      ツリー内書き込みは止める / 針が当たらない入力（本文が空・コメントだけ・字句解析の失敗・
+#      字句解析器の不在・バイナリ判別の失敗）は止める / override は入れ子の走査で消えない /
+#      `command -p` / `timeout N` / `env -u X` の後ろも走査する
 # あわせて hooks.json への登録を静的照合する。
 #
 # 変異検出（2026-09-12 実測。変異 → suite 実行 → 復元の 1 検査 1 変異。全 14 件赤）:
@@ -139,6 +148,22 @@
 #   multi-agent.sh の review 本体の巡回検査を外す → 4。記録を worktree ごとの git dir へ置く → 1（(n17)）。
 #   環境代入を剥がさない → 3。
 # 空振り検出: 巡回の記録が無い回を「0 巡」と見なして警告なしで通す変異（記録不在の rr_warn を消す）を入れると (n1) と (n11) の 2 件が赤になる（2026-09-24 実測。記録不在・読めない記録は判定不能 = 通す + 警告で固定し、黙って 0 巡から数えない）。
+# 変異検出（(o) 節。2026-09-27 実測。scripts/mutation-harness.sh、26 件すべて赤。数字は赤の針の件数）:
+#   字句解析: `#` を文脈なしでコメントにする（素朴な `#` 以降の除去）→ 4。コメント除去を外す → 4。
+#   語分割で引用符を保たない → 11。走査: バイナリ判別を外す → 1。判定不能を常に止める → 3。
+#   ファイル本文の判定不能を止める → 1。別ツリーのレビュー中の判定不能を止める → 2。本文が空・
+#   コメントだけを通す → 3。本文全体の字句解析の失敗を通す → 1。`[[ ]]` / `(( ))` の比較を
+#   リダイレクトと読む → 2。行コメントをマーカー走査から落とさない → 1。`$(…)` の切り出しで
+#   本文の引用符を見ない → 1。`bash -n` を本文として読む → 2。override を入れ子の走査で上書き
+#   させる → 1。ラッパのオプションを剥がさない → 2。
+#   hook: 対象ツリーの推定を外す → 11。対象ツリーを常に cwd のツリーにする → 10。委譲レーンの
+#   output-file による解放を外す → 1。git 走査で先行区間の cd を追わない → 1。
+#   セルフレビュー後の追加 4 件（同日）: `$(…)` の閉じ括弧の直後を語頭とみなす → 2。関数定義の
+#   名前と括弧を剥がさない → 1。レーンより古い結果でも委譲レーンを解放する → 2。行き先が不明な
+#   cd を cwd と読む → 1。
+#   Issue `#1935`（別 worktree に置かれたレーンの照合）: 別 worktree の置き場を読まない → 3。
+#   置き場のレーンを対象ツリーと照合せずに数える → 2。対象ツリーの集合を cwd のツリーに戻す → 13。
+# 空振り検出: 走査の針が当たらない入力（本文が空・コメントだけ / 本文全体の字句解析の失敗）を「書き込み無し」として通す変異（tests/lib/review-write-scan.sh の ws_judge_file_program の ws_fail の前に return 1 を置く）を入れると (o3) の「コメントだけの本文」「空の本文」「引用符が閉じない本文」が赤になる（2026-09-27 実測。字句解析の取りこぼしと区別できない入力を緑へ倒さない）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -2185,6 +2210,313 @@ assert_silent "(m) ロック無しでは tracked への Write も無音"
 run_hook "$(write_json "$REPO/build/note.md")" 'FF_WRITE_SCAN_GIT=/nonexistent/git'
 assert_silent "(m) ロック無しでは check-ignore 不能でも無音"
 rm -rf "$REPO/build/note.md" "$REPO/build/nb.ipynb"
+
+# ---------------------------------------------------------------------------
+# (o) 走査の偽陽性の是正（bundle `#1760` / `#1792` / `#1868`）。陰性針（書き込みの無い実行・
+# ツリー外・別 worktree への書き込みを止めない）と、陽性針（凍結対象のツリーへの書き込みは
+# 引き続き止める）を対で置く。判定の正本は tests/lib/review-write-scan.sh / review-shell-lex.sh /
+# review-lane-scope.sh のヘッダ。
+# ---------------------------------------------------------------------------
+echo "guard-review-in-flight: (o) 書き込み走査の偽陽性（コメント・引用引数・バイナリ・対象ツリー）"
+o_silent() { k_silent "$1" "$2" "${3:-$REPO}"; }
+o_deny() { k_deny "$1" "$2" "${3:-$REPO}"; }
+clear_lanes
+clear_lock
+write_lock "$LIVE_PID"
+O_DIR="$TEST_TMP/o-scripts"
+mkdir -p "$O_DIR"
+
+# --- (o1) Issue `#1760`: スクリプト本文のコメントは実行されないデータ ---
+cat > "$O_DIR/comments.sh" <<'OSH'
+#!/usr/bin/env bash
+# 使い方: echo x > :<水準語>
+# 例: tee README.md / sed -i s/a/b/ README.md / cat <<EOF
+ls "$1" # 末尾コメント > README.md
+OSH
+chmod +x "$O_DIR/comments.sh"
+o_silent "bash $O_DIR/comments.sh" "(o1) コメントに > / tee / sed -i / << の字面を持つスクリプトの bash 起動は止めない"
+o_silent "$O_DIR/comments.sh" "(o1) 同じスクリプトの直接実行も止めない"
+o_silent ". $O_DIR/comments.sh" "(o1) コメントに > を持つライブラリの source も止めない（実装中に受けた deny の再現）"
+o_silent "ls # > README.md" "(o1) コマンド行の末尾コメントの > はリダイレクトではない"
+case "$(printf '%s' "$REASON")" in
+  *':<水準語>'*) bad "(o1) 理由文がコメント中の語を名指ししている: [$REASON]" ;;
+  *) ok "(o1) 理由文にコメント中の語が出ない" ;;
+esac
+O_PYC="$(printf 'python3 - <<%sPY%s\n# open("README.md", "w") は使わない\nprint(1)\nPY\n' "'" "'")"
+o_silent "$O_PYC" "(o1) python プログラムの行コメント中の書き込みマーカーで止めない"
+O_PYW="$(printf 'python3 - <<%sPY%s\n# 注記\nopen("README.md", "w").write("x")\nPY\n' "'" "'")"
+o_deny "$O_PYW" "(o1) python プログラムのコード行の書き込みマーカーは従来どおり止める"
+
+# --- (o2) Issue `#1760`: コード側の書き込みは従来どおり止める（素朴な `#` 以降の除去へ戻すと赤）---
+printf '#!/bin/sh\necho "# x" > README.md\n' > "$O_DIR/dq-hash.sh"
+printf "#!/bin/sh\necho '#'; echo x > README.md\n" > "$O_DIR/sq-hash.sh"
+printf '#!/bin/sh\necho ${x#foo} > README.md\n' > "$O_DIR/param-hash.sh"
+printf '#!/bin/sh\necho a#b > README.md\n' > "$O_DIR/word-hash.sh"
+o_deny "bash $O_DIR/dq-hash.sh" "(o2) 二重引用符の中の # はコメントではない（本文の > README.md を止める）"
+case "$REASON" in
+  *"$REPO/README.md"*) ok "(o2) 理由文が本文の書き込み先の実パスを名指しする" ;;
+  *) bad "(o2) 理由文に書き込み先が無い: [$REASON]" ;;
+esac
+o_deny "bash $O_DIR/sq-hash.sh" "(o2) 単一引用符の中の # はコメントではない"
+o_deny "bash $O_DIR/param-hash.sh" "(o2) \${x#foo} の # はコメントではない"
+o_deny "bash $O_DIR/word-hash.sh" "(o2) 語の途中の # はコメントではない"
+o_deny "echo '#' > README.md" "(o2) コマンド行の引用された # の後ろのリダイレクトを止める"
+o_deny 'echo x $(true)# > README.md' "(o2) \$(…) の閉じ括弧に続く # は語の途中（コメントではない）"
+o_deny 'cat <(echo z)#x > README.md' "(o2) プロセス置換の閉じ括弧に続く # は語の途中"
+o_deny "$(printf 'echo a\\\n#b > README.md')" "(o2) 行継続で繋いだ行の先頭の # は語の途中"
+o_deny 'f() { rm README.md; }' "(o2) 関数定義の本体の書き込みを止める（f() の括弧を頭と読まない）"
+o_deny 'function f { sed -i s/a/b/ README.md; }' "(o2) function キーワードの関数定義の本体の書き込みを止める"
+o_deny 'echo x >& README.md' "(o2) >& <ファイル> は両ストリームのファイルへの書き込み"
+o_deny 'echo x >&README.md' "(o2) 密着した >&<ファイル> も書き込み"
+o_silent 'echo x >&2' "(o2) >&2 は fd の複製（書き込み先ではない）"
+o_silent "echo \"# x > y\" '# a > b'" "(o2) 引用符の中の > は書き込みではない"
+
+# --- (o3) 針が当たらない入力（本文が空・コメントだけ・字句解析の失敗・字句解析器の不在）は止める ---
+printf '# only comments > x\n# more\n' > "$O_DIR/only-comments.sh"
+: > "$O_DIR/empty.sh"
+printf "#!/bin/sh\necho 'unterminated > x\n" > "$O_DIR/unterminated.sh"
+o_deny "bash $O_DIR/only-comments.sh" "(o3) コメントだけの本文は判定不能として止める"
+case "$REASON" in
+  *'コメントだけ'*) ok "(o3) 理由文が「本文が空、またはコメントだけ」を名乗る" ;;
+  *) bad "(o3) 理由文が違う: [$REASON]" ;;
+esac
+o_deny "bash $O_DIR/empty.sh" "(o3) 空の本文は判定不能として止める"
+o_deny "bash $O_DIR/unterminated.sh" "(o3) 引用符が閉じない本文（字句解析の失敗）は止める"
+o_deny "echo 'unterminated > README.md" "(o3) コマンド行の字句解析の失敗は止める"
+run_hook "$(bash_json_at "bash $O_DIR/comments.sh" "$REPO")" "FF_LEX_AWK=/nonexistent/awk"
+assert_deny "(o3) 字句解析の awk が動かない回は、書き込みの無い起動も判定不能として止める"
+O_COPY="$TEST_TMP/o-nolex"
+mkdir -p "$O_COPY/hooks" "$O_COPY/tests/lib"
+cp "$TARGET" "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$O_COPY/hooks/"
+cp "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$O_COPY/hooks/" 2>/dev/null || true
+cp "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$PLUGIN_ROOT/tests/lib/review-write-scan.sh" "$O_COPY/tests/lib/"
+O_OUT="$(printf '%s' "$(bash_json_at "ls" "$REPO")" | bash "$O_COPY/hooks/guard-review-in-flight.sh" 2>/dev/null)"
+case "$(printf '%s' "$O_OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)" in
+  *'review-shell-lex.sh'*) ok "(o3) 字句解析ライブラリが無いと判定不能として止める（理由にライブラリ名を出す）" ;;
+  *) bad "(o3) 字句解析ライブラリ不在で素通し / 理由が違う: out=[$O_OUT]" ;;
+esac
+
+# --- (o4) Issue `#1868`: 引用された 1 引数を空白で割らない ---
+printf 'x\n' > "$TEST_OUT/pr.md"
+o_silent "sed -i '' 's/a b/c d/' $TEST_OUT/pr.md" "(o4) sed -i の引用された置換式の空白で割らない（ツリー外は止めない）"
+o_silent "sed -i '' 's/- \\[ \\] pre-push ゲート（fast-content レーン）/- [x] done/' $TEST_OUT/pr.md" "(o4) 置換式の中の [ ] / 全角括弧 / 空白を書き込み先として読まない"
+o_silent "sed -i '' 's/a > b | c/d/' $TEST_OUT/pr.md" "(o4) 置換式の中の > / | を演算子として読まない"
+o_silent "sed -i '' -E 's/^(a) x:/\\1 \`y\\2\`:/' $TEST_OUT/pr.md" "(o4) 単一引用符の中のバッククォートをコマンド置換として読まない（実装中に受けた deny の再現）"
+o_silent "perl -pi -e 's/a b/c d/' $TEST_OUT/pr.md" "(o4) perl -pi -e の引用されたプログラムの空白で割らない"
+o_silent "sed -i '' -e 's/実測 2026-09-23 \\/ head x/y/' -e 's/a b/c/' $TEST_OUT/pr.md" "(o4) -e の値の中の日付を書き込み先として読まない"
+o_deny "sed -i 's/a b/c/' src/app.txt" "(o4) 引用引数の外の operand が作業ツリー内なら従来どおり止める"
+case "$REASON" in
+  *"$REPO/src/app.txt"*) ok "(o4) 理由文は実在する書き込み先を名指しする" ;;
+  *) bad "(o4) 理由文が書き込み先を名指ししない: [$REASON]" ;;
+esac
+case "$REASON" in
+  *"$REPO/b/c"* | *"$REPO/d/"*) bad "(o4) 理由文が引用引数の断片を名指ししている: [$REASON]" ;;
+  *) ok "(o4) 理由文が引用引数の断片（<repo>/b/c）を名指ししない" ;;
+esac
+o_deny "perl -pi -e 's/a b/c d/' src/app.txt" "(o4) perl -pi の operand がツリー内なら止める"
+o_deny "echo hi>README.md" "(o4) 密着したリダイレクト（hi>README.md）は演算子として切り出して止める"
+o_silent "[ -d $TEST_OUT ] && echo x > \"$TEST_OUT/f\"" "(o4) [ … ] と組んだツリー外へのリダイレクトを止めない"
+case "$OUT" in
+  *'/]'*) bad "(o4) 出力に <path>/] の形が出た: [$OUT]" ;;
+  *) ok "(o4) 書き込み先に ] を連結しない" ;;
+esac
+o_silent "echo \"\$(printf '%s' ')' | sed 's/)/]/')\" > $TEST_OUT/f" "(o4) \$(…) の本文の引用符の中の ) で置換を切らない（切り出しが割れて判定不能へ倒れない）"
+o_silent "[[ a > b ]] && echo ok" "(o4) [[ … ]] の中の > は比較演算子"
+o_silent "(( 1 > 0 )) && echo ok" "(o4) (( … )) の中の > は比較演算子"
+
+# --- (o5) Issue `#1792`: バイナリの実行ファイルを本文として読まない / 復旧手順が通る ---
+O_BIN=""
+for c in /bin/ls /usr/bin/ls; do [ -x "$c" ] && { O_BIN="$c"; break; }; done
+if [ -n "$O_BIN" ]; then
+  o_silent "$O_BIN -la $TEST_OUT" "(o5) 絶対パスのバイナリ（${O_BIN}）は読み取りとして通す"
+  run_hook "$(bash_json_at "$O_BIN -la $TEST_OUT" "$REPO")" "FF_WRITE_SCAN_OD=/nonexistent/od"
+  assert_deny "(o5) バイナリかを判別できない回（od 不在）は判定不能として止める"
+else
+  bad "(o5) 検査に使うバイナリ（/bin/ls）が無い"
+fi
+printf '#!/bin/sh\necho x > README.md\n' > "$O_DIR/writer.sh"
+chmod +x "$O_DIR/writer.sh"
+o_deny "$O_DIR/writer.sh" "(o5) テキストのスクリプトの直接実行は従来どおり本文で判定する"
+o_silent "bash -n $O_DIR/writer.sh" "(o5) bash -n（構文検査のみ）は書き込みを持つ本文でも実行しないので通す"
+o_silent "FF_REVIEW_LOCK_OVERRIDE=1 bash $O_DIR/writer.sh" "(o5) 区間先頭の override は本文の走査（入れ子の区間）で消えない"
+o_deny "bash $O_DIR/writer.sh; FF_REVIEW_LOCK_OVERRIDE=1 true" "(o5) override の無い区間の本文の書き込みは止める"
+o_deny "command -p bash $O_DIR/writer.sh" "(o5) command -p の後ろのインタプリタも走査する"
+o_deny "timeout 60 bash $O_DIR/writer.sh" "(o5) timeout <秒> の後ろのインタプリタも走査する"
+o_deny "env -u HOME bash $O_DIR/writer.sh" "(o5) env -u NAME の後ろのインタプリタも走査する"
+o_deny "timeout -s KILL 5 rm README.md" "(o5) timeout -s <シグナル> <秒> の後ろも走査する"
+o_deny "nice -n 10 rm README.md" "(o5) nice -n <値> の後ろも走査する"
+o_deny "bash $O_DIR/writer.sh -n" "(o5) スクリプトより後ろの -n はスクリプトの引数（構文検査ではない）"
+o_deny "/bin/rm README.md" "(o5) 絶対パスの書き込みコマンド（/bin/rm）は argv で判定して止める"
+o_deny "/bin/cp $O_DIR/writer.sh README.md" "(o5) 絶対パスの /bin/cp の書き込み先がツリー内なら止める"
+# deny 文が案内する復旧手順 1)（rm -- ロック / rm -rf -- レーン置き場）と 2)（区間先頭の
+# FF_REVIEW_LOCK_OVERRIDE=1）を、文面から取り出してそのまま流す（文面と実挙動の一致）
+run_hook "$(agent_json pr-review-toolkit:code-reviewer Agent tu-o5)"
+o_deny "echo x > README.md" "(o5) 前提: ロック + レーンで書き込みを止める"
+O_RM_LOCK="$(printf '%s\n' "$REASON" | sed -n 's/^.*→ \(rm -- .*\)$/\1/p' | head -n 1)"
+O_RM_LANE="$(printf '%s\n' "$REASON" | sed -n 's/^.*→ \(rm -rf -- .*\)$/\1/p' | head -n 1)"
+if [ -n "$O_RM_LOCK" ] && [ -n "$O_RM_LANE" ]; then
+  o_silent "$O_RM_LOCK" "(o5) 案内 1) のロック削除コマンドがそのまま通る"
+  o_silent "$O_RM_LANE" "(o5) 案内 1) のレーン削除コマンドがそのまま通る"
+  o_silent "FF_REVIEW_LOCK_OVERRIDE=1 $O_RM_LANE" "(o5) 案内 2) の override を前置したレーン削除がそのまま通る"
+  o_silent "/bin/$O_RM_LANE" "(o5) 絶対パスの rm で案内 1) を打っても通る"
+else
+  bad "(o5) deny 文から復旧手順を取り出せない: lock=[$O_RM_LOCK] lane=[$O_RM_LANE]"
+fi
+clear_lanes
+o_silent "bash -n $PLUGIN_ROOT/tests/lib/review-write-scan.sh" "(o5) bash -n（構文検査のみ）は本文を読まずに通す"
+
+# --- (o6) Issue `#1792`: 委譲レーンは結果（output-file）が書かれたら解放する ---
+clear_lock
+clear_lanes
+O_DELEG="$REPO/.review-results/claude-code/.delegated"
+mkdir -p "$O_DELEG"
+printf '# prompt\n' > "$O_DELEG/o-review.prompt.md"
+O_RESULT="$REPO/.review-results/claude-code/o-review.md"
+rm -f "$O_RESULT"
+printf 'cli=claude-code\nperspective=o-review\noutput-file=%s\n' "$O_RESULT" > "$O_DELEG/o-review.request"
+run_hook "$(generic_agent_json "FF-REVIEW-DELEGATED: $O_DELEG/o-review.prompt.md" tu-o6)"
+O_LANE="$(ls -1 "$LANE_DIR"/tu-o6.*.lane 2>/dev/null | head -n 1)"
+if [ -n "$O_LANE" ] && grep -qx "output_file=$O_RESULT" "$O_LANE"; then
+  ok "(o6) 委譲レーンに handoff の output-file を記録する"
+else
+  bad "(o6) 委譲レーンに output-file が無い: [$(cat "$O_LANE" 2>/dev/null)]"
+fi
+o_deny "echo x > README.md" "(o6) 結果が書かれる前は委譲レーンで止める"
+[ -n "$O_LANE" ] && touch -t 202001010000 "$O_LANE"
+printf 'review body\n' > "$O_RESULT"
+run_hook "$(bash_json_at "echo x > README.md" "$REPO")"
+O_MSG_OK=0
+case "$MESSAGE" in *'output-file'*) O_MSG_OK=1 ;; esac
+if [ "$(lane_count)" -eq 0 ] && [ -z "$DECISION" ] && [ "$O_MSG_OK" -eq 1 ]; then
+  ok "(o6) 結果が書かれたら委譲レーンを解放し、解放したことを通知する"
+else
+  bad "(o6) 結果が書かれても委譲レーンが残る / 通知が無い: lanes=$(lane_count) decision=[$DECISION] msg=[$MESSAGE]"
+fi
+clear_lanes
+# 前の回の結果が残っている（レーンより古い）だけでは解放しない
+printf 'old result\n' > "$O_RESULT"
+touch -t 202001010000 "$O_RESULT"
+run_hook "$(generic_agent_json "FF-REVIEW-DELEGATED: $O_DELEG/o-review.prompt.md" tu-o6b)"
+o_deny "echo x > README.md" "(o6) レーンより古い結果（前の回の残り）では委譲レーンを解放しない"
+if [ "$(lane_count)" -eq 1 ]; then ok "(o6) 古い結果ではレーンが残る"; else bad "(o6) 古い結果でレーンが消えた: [$(lane_count)]"; fi
+rm -rf "$O_DELEG" "$O_RESULT"
+clear_lanes
+
+# --- (o7) bundle 追記 (a): 凍結の対象は「レビュー対象のツリー」---
+O_WT="$TEST_TMP/o-wt"
+git -C "$REPO" worktree add -q "$O_WT" -b o-scope-wt 2>/dev/null || true
+O_WT="$(cd "$O_WT" && pwd -P)"
+o_agent_json() { # <tool_use_id> <prompt>
+  jq -n --arg d "$REPO" --arg u "$1" --arg p "$2" \
+    '{tool_name: "Agent", tool_use_id: $u, tool_input: {subagent_type: "pr-review-toolkit:code-reviewer", description: "review", prompt: $p}, cwd: $d, hook_event_name: "PreToolUse"}'
+}
+run_hook "$(o_agent_json tu-o7 "Review the diff in $O_WT against develop.")"
+O_LANE="$(ls -1 "$LANE_DIR"/tu-o7.*.lane 2>/dev/null | head -n 1)"
+if [ -n "$O_LANE" ] && grep -qx "tree=$O_WT" "$O_LANE" && ! grep -qx "tree=$REPO" "$O_LANE"; then
+  ok "(o7) prompt が名指す worktree をレーンの対象ツリーとして記録する"
+else
+  bad "(o7) 対象ツリーの記録が違う: [$(cat "$O_LANE" 2>/dev/null)]"
+fi
+o_silent "echo x > README.md" "(o7) 別 worktree のレビュー中は cwd のツリーへの書き込みを止めない"
+o_silent "git commit --allow-empty -m x --dry-run" "(o7) 別 worktree のレビュー中は cwd の git 書き込みを止めない"
+o_silent "echo x > \$UNDEFINED_O7/f" "(o7) 別 worktree のレビュー中は判定不能な書き込み先を止めない"
+O_PY="$(printf 'python3 - "%s/README.md" <<%sPY%s\nimport sys\np=sys.argv[1]; s=open(p).read()\ns=s.replace("a","b")\nopen(p,"w").write(s)\nPY\n' "$O_WT" "'" "'")"
+o_silent "$O_PY" "(o7) 別 worktree のレビュー中は python heredoc の変数経由の書き込み（実装中に受けた deny の再現）を止めない"
+o_deny "echo x > $O_WT/README.md" "(o7) レビュー対象の worktree を名指す書き込みは止める"
+case "$REASON" in
+  *"凍結の対象ツリー: $O_WT"*) ok "(o7) 拒否理由が凍結の対象ツリーを名指しする" ;;
+  *) bad "(o7) 拒否理由に対象ツリーが無い: [$REASON]" ;;
+esac
+o_deny "git -C $O_WT commit -m x" "(o7) レビュー対象の worktree への git -C の書き込みは止める"
+# Issue `#1935`: レーンは起動側の cwd（本ツリー）に置かれる。レビュー対象の worktree を cwd とする
+# セッションからも、そのレーンで止まる（保護を弱めない）
+o_deny "echo x > README.md" "(o7) レビュー対象の worktree を cwd とするセッションの書き込みも、本ツリーに置かれたレーンで止める" "$O_WT"
+case "$REASON" in
+  *"置き場 $REPO"*) ok "(o7) 拒否理由がレーンの置き場（本ツリー）を名指しする" ;;
+  *) bad "(o7) 拒否理由に置き場が無い: [$REASON]" ;;
+esac
+o_deny "git commit -m x" "(o7) レビュー対象の worktree を cwd とする git 書き込みも止める" "$O_WT"
+o_deny "cd $O_WT && git commit -m x" "(o7) cd でレビュー対象の worktree へ移ってからの git 書き込みも止める"
+clear_lanes
+O_WT_OTHER="$TEST_TMP/o-wt-other"
+git -C "$REPO" worktree add -q "$O_WT_OTHER" -b o-scope-other 2>/dev/null || true
+O_WT_OTHER="$(cd "$O_WT_OTHER" && pwd -P)"
+run_hook "$(o_agent_json tu-o7x "Review the diff in $O_WT")"
+o_silent "echo x > README.md" "(o7) 別の worktree を cwd とするセッションは、他の worktree 向けのレーンで止めない" "$O_WT_OTHER"
+o_silent "git commit -m x" "(o7) 別の worktree を cwd とする git 書き込みも止めない" "$O_WT_OTHER"
+clear_lanes
+run_hook "$(o_agent_json tu-o7d "review the diff")"
+o_silent "cd $O_WT_OTHER && git add -A && git commit -q -m x" "(o7) cd で凍結対象外の worktree へ移ってからの git 書き込みは止めない（実装中に受けた deny の再現）"
+o_deny "git commit -m x" "(o7) 同じ状態で cwd のツリーでの git 書き込みは止める"
+o_deny "(cd $O_WT_OTHER && git status); git commit -m x" "(o7) サブシェルの cd は閉じ括弧の後ろの git へ漏らさない"
+git -C "$REPO" worktree remove --force "$O_WT_OTHER" 2>/dev/null || true
+git -C "$REPO" branch -q -D o-scope-other 2>/dev/null || true
+clear_lanes
+run_hook "$(o_agent_json tu-o7 "Review the diff in $O_WT against develop.")"
+run_hook "$(write_json "$O_WT/src/app.txt")"
+assert_deny "(o7) レビュー対象の worktree への Write は止める"
+run_hook "$(write_json "$REPO/src/app.txt")"
+assert_silent "(o7) cwd のツリーへの Write は止めない（対象外）"
+clear_lanes
+run_hook "$(o_agent_json tu-o7b "review the diff")"
+o_deny "echo x > README.md" "(o7) prompt にパスが無いレーンは従来どおり cwd のツリーを凍結する"
+o_deny "$O_PY" "(o7) cwd のツリーが凍結対象なら python heredoc の変数経由の書き込みは従来どおり止める"
+clear_lanes
+run_hook "$(o_agent_json tu-o7c "Review $O_WT; the base checkout is $REPO.")"
+o_deny "echo x > README.md" "(o7) 両方のツリーを名指す prompt は両方を凍結する（cwd 側）"
+o_deny "echo x > $O_WT/README.md" "(o7) 両方のツリーを名指す prompt は両方を凍結する（worktree 側）"
+clear_lanes
+# 対象ツリーの推定: worktree 配下のファイルパス + 全角句点 / ツリー外のパスだけなら cwd のツリー
+run_hook "$(o_agent_json tu-o7e "対象は $O_WT/src/app.txt。")"
+O_LANE="$(ls -1 "$LANE_DIR"/tu-o7e.*.lane 2>/dev/null | head -n 1)"
+if [ -n "$O_LANE" ] && grep -qx "tree=$O_WT" "$O_LANE"; then ok "(o7) worktree 配下のファイルパス（句点付き）から対象ツリーを推定する"; else bad "(o7) ファイルパスから推定できない: [$(cat "$O_LANE" 2>/dev/null)]"; fi
+clear_lanes
+run_hook "$(o_agent_json tu-o7f "See $TEST_OUT/notes.md")"
+O_LANE="$(ls -1 "$LANE_DIR"/tu-o7f.*.lane 2>/dev/null | head -n 1)"
+if [ -n "$O_LANE" ] && grep -qx "tree=$REPO" "$O_LANE"; then ok "(o7) ツリー外のパスだけの prompt は cwd のツリーを対象にする"; else bad "(o7) ツリー外パスの prompt の対象が違う: [$(cat "$O_LANE" 2>/dev/null)]"; fi
+clear_lanes
+# cd の行き先の解決（相対 / 不明 / サブシェル）
+run_hook "$(o_agent_json tu-o7g "Review $O_WT")"
+o_deny "cd ../o-wt && git commit -m x" "(o7) 相対パスの cd でレビュー対象へ移ってからの git 書き込みを止める"
+o_deny "cd \"\$UNDEFINED_O7\" && git commit -m x" "(o7) 行き先が不明な cd の後の git 書き込みは、凍結対象があれば止める"
+o_deny "(cd $O_WT && git commit -m x)" "(o7) サブシェルの cd でレビュー対象へ移ってからの git 書き込みを止める"
+clear_lanes
+write_lock "$LIVE_PID"
+o_deny "cd $TEST_TMP/no-such-dir-o7; git commit -m x" "(o7) 失敗する cd（行き先が無い）の後の git 書き込みは元の cwd で走るので止める"
+o_deny "cd $TEST_TMP/no-such-dir-o7; echo x > README.md" "(o7) 失敗する cd の後の相対パスの書き込みも止める"
+clear_lock
+clear_lanes
+run_hook "$(o_agent_json tu-o7h "Review $O_WT")"
+# ロックとレーンの併存: ロックは常に cwd のツリーを守る
+write_lock "$LIVE_PID"
+o_deny "echo x > README.md" "(o7) ロックが生きていれば、別ツリーのレーンと併存しても cwd のツリーを守る"
+o_deny "git commit -m x" "(o7) 同じく cwd の git 書き込みを止める"
+clear_lock
+clear_lanes
+# 旧版の hook が書いた（tree= を持たない）レーンは cwd のツリーを守る
+mkdir -p "$LANE_DIR"
+printf 'writer_pid=1\ntask=subagent-review\nhead=x\nstarted=x\nstarted_epoch=%s\nperspectives=pr-review-toolkit:code-reviewer\nagent_id=\n' "$(date -u +%s)" > "$LANE_DIR/legacy.1.1.lane"
+o_deny "echo x > README.md" "(o7) tree= を持たない旧形式のレーンは cwd のツリーを守る"
+o_deny "git commit -m x" "(o7) 旧形式のレーンで cwd の git 書き込みを止める"
+clear_lanes
+git -C "$REPO" worktree remove --force "$O_WT" 2>/dev/null || true
+git -C "$REPO" branch -q -D o-scope-wt 2>/dev/null || true
+
+# --- (o8) bundle 追記 (b): 読み取りだけのスクリプト起動を止めない ---
+write_lock "$LIVE_PID"
+printf '#!/usr/bin/env bash\nset -euo pipefail\nROOT="$(cd "$(dirname "$0")" && pwd)"\nfor f in "$ROOT"/*; do printf "%%s\\n" "$f"; done\n' > "$O_DIR/list-targets.sh"
+o_silent "bash $O_DIR/list-targets.sh --list-targets" "(o8) 変数で組んだパスを読むだけのスクリプトの起動を止めない"
+printf '#!/usr/bin/env bash\nLOG="$(mktemp -d)"\nsummary > "$LOG/s.txt"\necho x > "$1/out"\n' > "$O_DIR/var-writer.sh"
+o_silent "bash $O_DIR/var-writer.sh" "(o8) スクリプト本文の判定できない書き込み先（変数展開）は止めない"
+printf '#!/usr/bin/env bash\nD=%s\necho x > "$D/README.md"\n' "$REPO" > "$O_DIR/lit-writer.sh"
+o_deny "bash $O_DIR/lit-writer.sh" "(o8) スクリプト本文でリテラルに組んだツリー内への書き込みは止める"
+o_deny "echo x > \$UNDEFINED_O8/f" "(o8) コマンド行の判定できない書き込み先は、cwd のツリーが凍結対象なら止める"
+o_deny "bash $O_DIR/comments.sh; echo x > \$UNDEFINED_O8/f" "(o8) ファイル本文の免除はその本文の中だけ（後続のコマンド行の判定不能は止める）"
+# 256 KiB を超えて切り詰めた本文が字句解析に失敗する回は、本文の判定を諦める（止めない）
+{ printf "#!/bin/sh\nX='\n"; awk 'BEGIN { for (i = 0; i < 9000; i++) print "line-" i " padding padding padding" }'; printf "'\necho \"\$X\" > /dev/null\n"; } > "$O_DIR/huge.sh"
+o_silent "bash $O_DIR/huge.sh" "(o8) 256 KiB を超える本文の切り詰めが作った字句解析の失敗では止めない（決定を固定する）"
+clear_lock
+clear_lanes
 
 # ---------------------------------------------------------------------------
 # (n) 巡回カウンタ（tests/lib/review-round-counter.sh）。上限を超える巡の起動を deny し、

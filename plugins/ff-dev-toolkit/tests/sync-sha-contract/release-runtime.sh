@@ -304,9 +304,10 @@ origin_subjects() { git -C "$SSOT_ORIGIN" log --format=%s develop; }
 # パイプ + grep -q は pipefail 下で一致時に反転しうるので、出力を受けてから行単位で照合する
 origin_has_subject() { local s; s="$(origin_subjects)"; [[ $'\n'"$s"$'\n' == *$'\n'"$1"$'\n'* ]]; }
 drift_calls() { if [[ -f "$STATE/drift.log" ]]; then grep -c . "$STATE/drift.log"; else echo 0; fi; }
-iso_ago() { # $1=秒前 → ISO8601 UTC（BSD / GNU date）
+iso_ago() { # $1=秒前 → ISO8601 UTC（GNU / BSD date）
   local e=$(( $(date -u +%s) - $1 ))
-  date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ
+  # GNU 形が先: GNU の -r は --reference=FILE なので、BSD 形が先だと同名ファイルの mtime を返しうる（Issue `#1807`）
+  date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ
 }
 next_minor() { jq -r .version "$SSOT/plugins/ff-dev-toolkit/.claude-plugin/plugin.json" | awk -F. '{ print $1 "." ($2 + 1) ".0" }'; }
 commit_push() { # $1=メッセージ（作業ツリーの変更を develop へ push する）
@@ -332,6 +333,13 @@ head_before="$(git -C "$SSOT" rev-parse HEAD)"
 pub_before="$(git -C "$PUB_ORIGIN" rev-parse main)"
 run_orch --dry-run
 if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=dry-run"; then ok "dry-run は全段を回して exit 0 / RELEASE_RESULT=dry-run"; else bad "dry-run が完走しない (rc=$RC)"; dump; fi
+# 承認文はこの行を転記して作る（SKILL 手順 R「承認の求め方」。OBS-018 / `#1917`）。現版 0.31.0 ではなく
+# 模擬昇格後の次の版を出すこと — 現版を出すと承認文の版番号が適用段の実測とずれる
+if has "RELEASE_VERSION=0.32.0" && ! has "RELEASE_VERSION=0.31.0"; then
+  ok "dry-run の RELEASE_VERSION= は模擬昇格後の次の版（承認文へ転記する値）"
+else
+  bad "dry-run が次の版の RELEASE_VERSION= を出さない"; dump
+fi
 if [[ "$(stage_order)" == "preflight check prepare gate sync tag release footer report" ]]; then
   ok "dry-run の段の順序: preflight → check → prepare → gate → sync → tag → release → footer → report"
 else
@@ -919,6 +927,12 @@ if [[ -n "$HOOK" && -f "$HOOK" ]]; then
   rm -rf "$MARKER"
   OUT="$(hook_out)"
   if has "リリース（同期）しますか"; then ok "hook: 契約変更を含む未同期があれば提案する"; else bad "hook: 契約変更で提案しない"; dump; fi
+  # 提案文は承認を求める前に dry-run の実測値（PLAN: / RELEASE_VERSION=）を承認文へ転記させる（OBS-018 / `#1917`）
+  if has "先に scripts/release-dev-toolkit.sh --dry-run を回し、その PLAN: 行と RELEASE_VERSION= を承認文へ転記"; then
+    ok "hook: 提案文が承認前の dry-run と実測値の転記を求める"
+  else
+    bad "hook: 提案文に dry-run 先行の指示が無い"; dump
+  fi
   run_orch
   [[ "$RC" -eq 0 ]] || { bad "hook 用の前提リリースが完了しない (rc=$RC)"; dump; }
   printf '%s\n' '' '本文だけ' >>"$SSOT/plugins/ff-dev-toolkit/skills/demo/SKILL.md"

@@ -178,12 +178,74 @@ check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '静的 suite プリフ
 check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '❌ 実行できなかった' \
   '出力テンプレート: プリフライトの「実行できなかった」状態'
 
+# 手順 8 の実行ビット検査（Issue `#1741` / bundle `#1758` / OBS-206）。新規 suite / hook の
+# 実行ビット欠落を commit 前に赤にする呼び出し（exec_bit_scan）と、判定材料が取れない回を
+# 「違反なし」でも「対象なし」でもない「実行ビット未検査」として報告する規定を pin する。
+# exec_bit_scan の振る舞い（rc と出力の対応）は tests/precommit-exec-bit が fixture で固定する。
+PRE_COMMIT_EXECBIT_HEADING='#### 実行ビット検査（新規 suite / hook）'
+check_pre_commit_shell_step "$PRE_COMMIT_EXECBIT_HEADING" '[ -f "$f" ] || { echo "実行ビット未検査: $f がありません" >&2; exit 2; }; . "$f" || exit 2; exec_bit_scan "$r"' \
+  '実行ビット検査の呼び出しコマンド（exec_bit_scan）'
+check_pre_commit_shell_step "$PRE_COMMIT_EXECBIT_HEADING" 'git diff --cached --raw' \
+  '実行ビットの判定材料が index 側 mode（git diff --cached --raw）である規定'
+check_pre_commit_shell_step "$PRE_COMMIT_EXECBIT_HEADING" '| 2 | stderr の `実行ビット未検査: <理由>` |' \
+  '判定材料を取得できない回を「実行ビット未検査」として緑にしない規定'
+check_pre_commit_shell_step "$PRE_COMMIT_EXECBIT_HEADING" '| 0 | `exec-bit: none` | 対象なし（「違反なし」とは書かない） |' \
+  '対象なしを「違反なし」と書かない規定'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '### 実行ビット（新規 suite / hook）' \
+  '出力テンプレートの実行ビット節'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '❌ 実行ビット未検査' \
+  '出力テンプレート: 実行ビット未検査の状態'
+
+# 手順 8 の種別 D（docs 仕様文書）と version claim / changelog 断片（bundle `#1913` / OBS-259 /
+# OBS-190 / OBS-099）。D 行が 2 suite を名指しすること・B 行が skill-count-consistency を名指し
+# すること、D が当たらない回を他種別の判定へ波及させない規定、claim validator と
+# changelog_fragment_scan の呼び出し・判定不能の状態を pin する。changelog_fragment_scan の
+# 振る舞い（rc と出力の対応）は tests/precommit-exec-bit が fixture で固定する。
+check_pre_commit_shell_step "$PRE_COMMIT_TABLE_HEADING" '| D. docs 仕様文書 | リポジトリ直下の `docs/**/*.md`' \
+  '固定表の種別 D（リポジトリ直下の docs 仕様文書）'
+check_pre_commit_shell_step "$PRE_COMMIT_TABLE_HEADING" '| `docs-version-changelog` / `docs-frontmatter-repo` |' \
+  '種別 D が docs-version-changelog と docs-frontmatter-repo を名指しする'
+check_pre_commit_shell_step "$PRE_COMMIT_TABLE_HEADING" '| `sync-forbidden-patterns` / `skill-count-consistency` |' \
+  '種別 B が skill-count-consistency（FF_* 等の公開面分類）を名指しする'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '種別 D だけが当たらない回' \
+  '種別 D が当たらない回は「対象なし」と報告し A〜C の判定を変えない規定'
+PRE_COMMIT_VERSION_HEADING='#### version claim と changelog 断片'
+check_pre_commit_shell_step "$PRE_COMMIT_VERSION_HEADING" 'bash plugins/ff-dev-toolkit/scripts/check-version-claims.sh' \
+  'version claim の検査を同梱 claim validator へ委ねる呼び出し'
+check_pre_commit_shell_step "$PRE_COMMIT_VERSION_HEADING" '「HEAD より先行しています。rebase 後に再実行してください」なら' \
+  'claim validator の鮮度由来の非 0 を判定不能（rebase 後に再実行）として報告する規定'
+check_pre_commit_shell_step "$PRE_COMMIT_VERSION_HEADING" 'f="$r/plugins/ff-dev-toolkit/tests/lib/changelog-fragment-guard.sh"; if [ ! -d "$r/plugins/ff-dev-toolkit/tests" ]; then echo "changelog-fragment: none"; exit 0; fi;' \
+  'changelog 断片検査の lib の位置と非適用（消費側プロジェクト）の判定'
+check_pre_commit_shell_step "$PRE_COMMIT_VERSION_HEADING" '[ -f "$f" ] || { echo "断片未検査: $f がありません" >&2; exit 2; }; . "$f" || { echo "断片未検査: $f を読み込めません" >&2; exit 2; }; changelog_fragment_scan "$r"' \
+  'changelog 断片検査の呼び出しコマンド（changelog_fragment_scan）'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '--diff-filter=ACDMR -- docs .version-claims' \
+  '種別 D の振り分けに staged の削除も数える規定'
+check_pre_commit_shell_step "$PRE_COMMIT_VERSION_HEADING" '| 2 | stderr の `断片未検査: <理由>` |' \
+  '判定材料を取得できない回を「断片未検査」として緑にしない規定'
+check_pre_commit_shell_step "$PRE_COMMIT_VERSION_HEADING" '| 0 | `changelog-fragment: none` | 対象なし' \
+  '断片検査の対象なしを「違反なし」と書かない規定'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '### version 随伴（claim / changelog 断片）' \
+  '出力テンプレートの version 随伴節'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '❌ 断片未検査・claim 判定不能' \
+  '出力テンプレート: 断片未検査・claim 判定不能の状態'
+if [ -f "$PLUGIN_ROOT/scripts/check-version-claims.sh" ]; then
+  ok "pre-commit-check — 手順 8 が呼ぶ claim validator が実在する: scripts/check-version-claims.sh"
+else
+  bad "pre-commit-check — 手順 8 が呼ぶ claim validator がありません: scripts/check-version-claims.sh"
+fi
+if [ -f "$PLUGIN_ROOT/tests/lib/changelog-fragment-guard.sh" ]; then
+  ok "pre-commit-check — 手順 8 が読む断片検査 lib が実在する: tests/lib/changelog-fragment-guard.sh"
+else
+  bad "pre-commit-check — 手順 8 が読む断片検査 lib がありません: tests/lib/changelog-fragment-guard.sh"
+fi
+
 # 固定表（| 種別 | staged パスの条件 | 単体で回す suite |）の 3 列目が名指しする suite 名を
 # 実体（tests/<name>/verify.sh）と機械照合する。表が空・行が減った・suite 名を 1 つも
 # 持たない行があるときは「照合対象ゼロで緑」にならないよう fail-closed で赤にする。
 # 外部コマンドは awk だけを使う（本 suite は一時領域も jq 以外の外部コマンドも要らない
 # 純粋なファイル検査である。here-doc / here-string は一時ファイルを要求するので使わない）。
-PRE_COMMIT_TABLE_MIN_ROWS=3
+# 種別 A〜D の 4 系統（bundle `#1913` で D を追加）。
+PRE_COMMIT_TABLE_MIN_ROWS=4
 
 # want=rows: データ行数 / want=empty: suite 名を 1 つも持たない行番号 / want=names:
 # 重複除去した suite 名（空白区切り）。いずれも 1 行だけを返す。

@@ -50,6 +50,8 @@
 #   PR_NUMBER= PR_STATE= PR_IS_DRAFT= PR_HEAD_REF= PR_HEAD_OID= PR_BASE_REF= PR_TITLE=
 #   TARGET_REPO=owner/repo
 #   CLOSES=owner/repo#N（繰り返し） REFS=owner/repo#N（繰り返し） AUTO_CLOSE_UNRELIABLE=0|1
+#   PR_COMMITS_SOURCE=git|api|unavailable  PR_COMMITS=<短縮 hash> <件名>（繰り返し。`git log --format='%h %s'
+#     origin/<base>..<head>` と同じ行・同じ順。/close-issue 完了報告の「主要コミット」欄へ貼る。自分で書かない）
 #   KEYWORD_GATE=none|ok|conflict-title|conflict-commit  KEYWORD_INSPECTED=<行数>
 #   KEYWORD_CONFLICT=<origin>\t<issue>\t<text> / KEYWORD_SUGGEST=…（抵触があるとき）
 #   MERGE_MESSAGE_GATE=not-required|required|ok|conflict
@@ -496,8 +498,40 @@ cmd_precheck() {
 
   # 関係の分類（鮮度・コミット数）に使う ref を取り込む。失敗しても止めない — 鮮度照合側の
   # --fetch が同じことを試み、取れなければ RELATION=unknown として報告へ出る
+  local fetched=1
   git fetch -q origin "+refs/heads/${base_ref}:refs/remotes/origin/${base_ref}" "+refs/heads/${head_ref}:refs/remotes/origin/${head_ref}" >/dev/null 2>&1 \
-    || echo "⚠️  origin から ${base_ref} / ${head_ref} を取り込めませんでした（関係の分類が unknown になりえます）" >&2
+    || { fetched=0; echo "⚠️  origin から ${base_ref} / ${head_ref} を取り込めませんでした（関係の分類が unknown になりえます）" >&2; }
+
+  # ── 1b. PR のコミット一覧（完了報告の「主要コミット」欄へ貼る。hash を記憶から書かせない） ──
+  # 正本は手元の git log（base..head の実コミット。件名は %s）。git の結果を正本にしない回
+  # （先端 OID が空 = 右辺が手元 HEAD に化ける / fetch 失敗 = 古い base で余分なコミットを含みうる /
+  # git log の失敗・0 件）は API の commits で代替し、git log と同じ新しい順へ並べ替える。
+  # 出所は PR_COMMITS_SOURCE で名指しし、理由は stderr へ出す（空のまま黙って通さない）
+  local pr_commits_out="" pr_commits_source="git" pr_commits_why="" c_line jq_err
+  if [[ -z "$head_oid" ]]; then
+    pr_commits_why="PR の先端 OID（headRefOid）が空である"
+  elif [[ "$fetched" -ne 1 ]]; then
+    pr_commits_why="origin から ${base_ref} / ${head_ref} を取り込めず、手元の base が古い可能性がある"
+  elif ! pr_commits_out="$(git log --format='%h %s' "origin/${base_ref}..${head_oid}" 2>/dev/null)"; then
+    pr_commits_why="git log origin/${base_ref}..${head_oid} を手元で解決できない"
+  elif [[ -z "$pr_commits_out" ]]; then
+    pr_commits_why="git log origin/${base_ref}..${head_oid} が 0 件である"
+  fi
+  if [[ -n "$pr_commits_why" ]]; then
+    pr_commits_source="api"
+    jq_err="$(mktemp)" || die_env "一時ファイルを作れません" "TMPDIR を書ける場所へ向けて再実行する"
+    pr_commits_out="$(printf '%s' "$PR_JSON" | jq -r '(.commits // []) | reverse | .[] | (.oid[0:7] + " " + .messageHeadline)' 2>"$jq_err")" \
+      || { echo "⚠️  API の commits を読めません（jq: $(cat "$jq_err")）" >&2; pr_commits_out=""; }
+    rm -f "$jq_err"
+    if [[ -n "$pr_commits_out" ]]; then
+      echo "⚠️  ${pr_commits_why}ため、PR_COMMITS は API の commits から出します（件数は API の上限で切り詰められうる）" >&2
+    else
+      pr_commits_source="unavailable"
+      echo "⚠️  ${pr_commits_why}うえ、API の commits も空のため PR_COMMITS を出せません" >&2
+    fi
+  fi
+  echo "PR_COMMITS_SOURCE=${pr_commits_source}"
+  while IFS= read -r c_line; do [[ -n "$c_line" ]] && printf 'PR_COMMITS=%s\n' "$c_line"; done <<<"$pr_commits_out"
 
   # ── 2. closing keyword 抵触検査（Refs 群があるときだけ） ──
   local GUARD="$plugin_root/scripts/check-closing-keywords.sh"

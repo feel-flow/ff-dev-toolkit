@@ -66,8 +66,8 @@
 #   - Bash 書き込み走査（tests/lib/review-write-scan.sh。線引きと限界の正本はそのヘッダ）は
 #     ヒューリスティック: インタプリタ（python / node / perl / ruby / awk / sh 系）のプログラム
 #     本文はマーカー（`open(…"w")` / `write_text(` 等）で見るので、別名 import
-#     （`from os import remove as r`）や動的に組み立てた書き込みは見逃す。空白を含むパスは
-#     トークン化で割れる。`python3 -m MOD` / `eval` / stdin から読むプログラム（`curl … | sh`）
+#     （`from os import remove as r`）や動的に組み立てた書き込みは見逃す。語分割は引用符を保つ
+#     （tests/lib/review-shell-lex.sh）。`python3 -m MOD` / `eval` / stdin から読むプログラム（`curl … | sh`）
 #     は本文が無いので判定不能（走行中は deny 側）。`npm` / `make` 等のビルドツールが書く
 #     成果物は対象外
 #   - C の対応づけ（`SubagentStart`）は `agent_type` と「まだ対応づいていない最も古い
@@ -93,7 +93,15 @@
 #     `node_modules/.cache/**`）。ignored を通すのは、結果の破棄を決めるリビジョン指紋
 #     （capture_repo_snapshot）が ignored を原理的に見ないため — 止めても守るものが無く、
 #     `multi-review` が待ち時間に勧める作業（`gh` の出力を `tmp/` へ受ける形）だけが
-#     止まっていた（Issue `#1756`）。判定できない書き込み先は従来どおり deny 側
+#     止まっていた（Issue `#1756`）。判定できない書き込み先は deny 側（コマンド行に限る。既存
+#     ファイルの本文の中の判定不能は止めない。線引きの正本は走査ライブラリのヘッダ。Issue `#1760`）
+#   - **凍結の対象ツリーの外**への書き込み。レーンはレビュー対象のツリー（prompt が名指す同じ
+#     リポジトリの worktree。無ければ cwd のツリー）を `tree=` で持ち、別 worktree のレビューだけが
+#     走っている間は cwd のツリーでの書き込み・git 書き込みを止めない（Issue `#1760` の追記。
+#     判定は tests/lib/review-lane-scope.sh）。逆に、レビュー対象の worktree を cwd とする
+#     セッションは、別 worktree（起動側の cwd）に置かれた自分向けのレーンも数えて止まる（Issue
+#     `#1935`）。委譲レビューのレーンは handoff の output-file が
+#     レーンより後に書かれた時点で解放する（`--resume` の起動自体を止めない。Issue `#1792`）
 #   - `/dev/null` へのリダイレクト、読み取り専用の形（`sed -n` / `-i` の無い `sed` /
 #     `python3 -c 'print(1)'` / `node -e 'console.log(1)'` / 書き込みマーカーを含まない
 #     heredoc プログラム / マーカー行の書き込み先リテラルがツリー外のプログラム）。走行中ロックの目的は作業ツリーの静止であって下書きの禁止ではない
@@ -504,10 +512,49 @@ lane_key() {
   esac
 }
 
+# レーンへ足す行（先頭に改行を付けて出す）。<レーンの型>
+#   tree=<物理パス>   レビュー対象のツリー（複数可）。prompt が同じリポジトリの worktree を名指し
+#                     していればそれ、無ければ cwd のツリー。ライブラリを読めない回も cwd のツリー
+#   output_file=<パス> 委譲レビューの結果の書き先（handoff の request レコードの output-file=）
+lane_extra_fields() { # <lane_type>
+  local lib trees="" t prompt req of path
+  prompt="$(printf '%s' "$input" | jq -r '.tool_input.prompt // ""' 2>/dev/null)" || prompt=""
+  if [ "$1" != "delegated-review" ]; then
+    lib="${BASH_SOURCE[0]%/*}/../tests/lib/review-lane-scope.sh"
+    # shellcheck source=../tests/lib/review-lane-scope.sh
+    if [ -r "$lib" ] && . "$lib" 2>/dev/null && [ "$(type -t ff_lane_infer_trees 2>/dev/null)" = "function" ]; then
+      trees="$(ff_lane_infer_trees "$ROOT" "$prompt")" || trees=""
+    fi
+  fi
+  [ -n "$trees" ] || trees="$(phys_dir "$ROOT")"
+  while IFS= read -r t; do
+    [ -n "$t" ] && printf '\ntree=%s' "$t"
+  done <<EOF
+$trees
+EOF
+  if [ "$1" = "delegated-review" ]; then
+    while IFS= read -r path; do
+      case "$path" in "${REVIEW_DELEGATION_MARKER}: "*) : ;; *) continue ;; esac
+      path="${path#"${REVIEW_DELEGATION_MARKER}": }"
+      path="${path#"${path%%[![:space:]]*}"}"
+      path="${path%"${path##*[![:space:]]}"}"
+      req="${path%.prompt.md}.request"
+      of="$(sed -n 's/^output-file=//p' "$req" 2>/dev/null | head -n 1)"
+      [ -n "$of" ] && printf '\noutput_file=%s' "$of"
+      break
+    done <<EOF
+$prompt
+EOF
+  fi
+  return 0
+}
+
 # ── C) レーンの取得・対応づけ・解放・走査 ─────────────────────────────────
 LANE_LIVE=0
 LANE_SUMMARY=""
 LANE_RECLAIMED=0
+LANE_DONE=0   # 委譲レビューの結果が書かれたので解放したレーン数
+LANE_TREES="" # 生きているレーンの対象ツリー（物理パス。改行区切り）
 
 acquire_lane() { # <subagent_type>
   local key head_sha now f tmp existing lane_body
@@ -543,6 +590,9 @@ acquire_lane() { # <subagent_type>
   # 不正とみなして削除するのを防ぐ。
   lane_body="$(printf 'writer_pid=%s\ntask=%s\nhead=%s\nstarted=%s\nstarted_epoch=%s\nperspectives=%s\nagent_id=' \
     "$$" "subagent-review" "$head_sha" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$now" "$1")"
+  # 対象ツリー（Issue `#1760`。判定は tests/lib/review-lane-scope.sh）と、委譲レビューの結果の
+  # 書き先（出現で完了とみなす。Issue `#1792`）を足す。無い行は従来どおり cwd のツリー・寿命で扱う。
+  lane_body="${lane_body}$(lane_extra_fields "$1")"
   printf '%s\n' "$lane_body" > "$tmp" 2>/dev/null || {
     # 置き場が外から消された場合の 1 回だけの作り直し。
     mkdir -p "$LANE_DIR" 2>/dev/null
@@ -714,7 +764,7 @@ release_lane_by_key() {
 # 削除する — 解放イベントを取りこぼしても凍結が永続しないための出口。**回収したことは
 # 黙って済ませない**（LANE_RECLAIMED を立て、呼び出し側が systemMessage を出す）。
 scan_lanes() {
-  local f e t a now age limit
+  local f e t a now age limit of lt
   [ "$LANE_SAFE" -eq 1 ] || return 0
   [ -d "$LANE_DIR" ] || return 0
   now="$(date -u +%s 2>/dev/null)"
@@ -742,9 +792,22 @@ scan_lanes() {
       LANE_RECLAIMED=$((LANE_RECLAIMED + 1))
       continue
     fi
+    # 委譲レビューの結果がレーンより後に書かれていれば、そのレビューは終わっている（Issue `#1792`）。
+    # 回収（multi-agent.sh --resume）を待たずに解放する — 回収を起動するコマンド自体が、このレーンに
+    # 止められていた。
+    of="$(lane_field "$f" output_file)"
+    if [ -n "$of" ] && [ -f "$of" ] && [ "$of" -nt "$f" ]; then
+      rm -f "$f" 2>/dev/null
+      LANE_DONE=$((LANE_DONE + 1))
+      continue
+    fi
     t="$(lane_field "$f" perspectives)"
+    lt="$(sed -n 's/^tree=//p' "$f" 2>/dev/null)"
+    [ -n "$lt" ] || lt="$(phys_dir "$ROOT")"
+    LANE_TREES="${LANE_TREES}${lt}
+"
     LANE_LIVE=$((LANE_LIVE + 1))
-    LANE_SUMMARY="${LANE_SUMMARY}  - ${t:-unknown}（経過 ${age} 秒${a:+ / 対応づけ済み}）
+    LANE_SUMMARY="${LANE_SUMMARY}  - ${t:-unknown}（経過 ${age} 秒${a:+ / 対応づけ済み} / 対象 $(printf '%s' "$lt" | tr '\n' ' ')）
 "
   done
   # 中断された claim / tmp と、解放済み agent_id の記録も同じ上限で片づける。
@@ -862,6 +925,26 @@ fi
 # C のレーンを数える（A のロックを読んだあと・B の判定より前）。ここで数えた本数は
 # 「この呼び出しより前に開いたレーン」だけで、下で自分が取るレーンは含まない。
 scan_lanes
+# 別 worktree（レビューを起動したセッションの cwd）に置かれ、このツリーを対象とするレーンも数える
+# （Issue `#1935`。判定は tests/lib/review-lane-scope.sh。読めない回は従来どおり自分の置き場だけ）。
+LANE_SCOPE_LIB="${BASH_SOURCE[0]%/*}/../tests/lib/review-lane-scope.sh"
+# shellcheck source=../tests/lib/review-lane-scope.sh
+if [ "$LANE_SAFE" -eq 1 ] && [ -r "$LANE_SCOPE_LIB" ] && . "$LANE_SCOPE_LIB" 2>/dev/null \
+  && [ "$(type -t ff_lane_foreign_live 2>/dev/null)" = "function" ]; then
+  me_phys="$(phys_dir "$ROOT")"
+  if [ -n "$me_phys" ] && foreign="$(ff_lane_foreign_live "$ROOT" "$me_phys" "$LANE_MAX_AGE" "$LANE_PENDING_MAX_AGE")"; then
+    while IFS='	' read -r ft fa fw; do
+      [ -n "$fw" ] || continue
+      LANE_LIVE=$((LANE_LIVE + 1))
+      LANE_TREES="${LANE_TREES}${me_phys}
+"
+      LANE_SUMMARY="${LANE_SUMMARY}  - ${ft:-unknown}（経過 ${fa} 秒 / 置き場 ${fw}）
+"
+    done <<EOF
+$foreign
+EOF
+  fi
+fi
 
 # ── B) レビューエージェント起動時の dirty ガード（+ C のレーン取得） ────────
 if [ "$tool" = "Agent" ] || [ "$tool" = "Task" ]; then
@@ -960,9 +1043,44 @@ is_review_lock_type "$caller_agent_type" && exit 0
 # 走行中とみなせる材料が 1 つも無ければ従来どおり無音で通す。stale なロックが残って
 # いるだけの場合と、この呼び出しでレーンを回収した場合は、下で警告のみを出す経路へ進む。
 if [ "$lock_live" -ne 1 ] && [ "$LANE_LIVE" -eq 0 ] && [ -z "$lock_stale_reason" ] \
-  && [ "$LANE_RECLAIMED" -eq 0 ]; then
+  && [ "$LANE_RECLAIMED" -eq 0 ] && [ "$LANE_DONE" -eq 0 ]; then
   exit 0
 fi
+
+# 凍結の対象ツリー（Issue `#1760`）。A のロックは cwd のツリー（multi-agent.sh はそのツリーで走る）、
+# C のレーンは記録した対象ツリー。書き込み先の包含はこの集合で判定し、cwd のツリーが集合に無い
+# （別 worktree のレビューだけが走っている）ときは cwd での git 書き込みも・判定不能な書き込みも
+# 止めない。止めるのは対象ツリーを名指しする書き込みだけ。
+ROOT_PHYS_G="$(phys_dir "$ROOT")"
+[ -n "$ROOT_PHYS_G" ] || ROOT_PHYS_G="$ROOT"
+PROTECT_TREES="$(printf '%s\n' "$LANE_TREES" | awk 'NF')"
+[ "$lock_live" -eq 1 ] && PROTECT_TREES="${ROOT_PHYS_G}
+${PROTECT_TREES}"
+# 生きている材料があるのに集合が空（物理パスを引けなかった）なら cwd のツリーへ倒す
+if [ -z "$PROTECT_TREES" ] && { [ "$lock_live" -eq 1 ] || [ "$LANE_LIVE" -gt 0 ]; }; then
+  PROTECT_TREES="$ROOT_PHYS_G"
+fi
+within_protected() { # <物理パス> → どれかの対象ツリーの中か
+  local t
+  [ -n "$1" ] || return 0
+  while IFS= read -r t; do
+    [ -n "$t" ] && path_within "$1" "$t" && return 0
+  done <<EOF
+$PROTECT_TREES
+EOF
+  return 1
+}
+in_protected() { # <物理パス（ツリーの toplevel）>
+  local t
+  while IFS= read -r t; do
+    [ -n "$t" ] && [ "$t" = "$1" ] && return 0
+  done <<EOF
+$PROTECT_TREES
+EOF
+  return 1
+}
+CWD_PROTECTED=0
+in_protected "$ROOT_PHYS_G" && CWD_PROTECTED=1
 
 # ---- Bash 経由の書き込み走査（Issue `#1710`）---------------------------------------
 # 判定の本体は共有ライブラリ tests/lib/review-write-scan.sh（線引き・既知の限界の正本は
@@ -1013,7 +1131,7 @@ case "$tool" in
         && [ "$(type -t ff_write_scan_init 2>/dev/null)" = "function" ] \
         && [ "$(type -t resolve_target 2>/dev/null)" = "function" ] \
         && [ "$(type -t target_in_tree 2>/dev/null)" = "function" ]; then
-        ff_write_scan_init "$ROOT_PHYS" "$(phys_dir "$CWD")" "$OUTPUT_DIR_NAME"
+        ff_write_scan_init "$ROOT_PHYS" "$(phys_dir "$CWD")" "$OUTPUT_DIR_NAME" "$PROTECT_TREES"
         if resolve_target "$edit_path"; then
           target_in_tree "$RESOLVED"
           edit_tit_rc=$?
@@ -1072,8 +1190,47 @@ case "$tool" in
     cmd_override=0
     segments="$(printf '%s\n' "$code_only" | awk '{ gsub(/&&|\|\||;|\|/, "\n"); print }')"
     [ "$has_git" -eq 1 ] || segments=""
+    # 先行区間の `cd <dir>`（`cd <worktree> && git commit`）は後続の git の対象ツリーを動かす。
+    # 追わないと、別 worktree での commit を cwd のツリーの commit と読んで止める（Issue `#1760`）。
+    git_base="$CWD"
+    git_sub_saved=""
+    git_restore=0
     while IFS= read -r seg; do
       [ -n "$seg" ] || continue
+      # サブシェル `( cd X … )` の cd は閉じ括弧の後ろへ漏らさない
+      if [ "$git_restore" -eq 1 ]; then git_base="$git_sub_saved"; git_sub_saved=""; git_restore=0; fi
+      case "$seg" in *')' | *') ') [ -n "$git_sub_saved" ] && git_restore=1 ;; esac
+      set -f
+      # shellcheck disable=SC2206 # 素朴な空白トークン化（意図的。glob は set -f で抑止）
+      ctoks=($seg)
+      set +f
+      case "${ctoks[0]:-}" in '(' | '(cd' | '(pushd') [ -n "$git_sub_saved" ] || git_sub_saved="$git_base" ;; esac
+      # `(cd X` / `{ cd X` / `cd -- X` / `cd -P X` / `pushd X`。解決できない行き先（`$VAR` / `-` /
+      # 空白を含む引用パス）は「不明」（"?"）として持ち、cwd と取り違えない
+      cj=0
+      case "${ctoks[0]:-}" in '(' | '{') cj=1 ;; '(cd' | '(pushd') ctoks[0]="${ctoks[0]#(}" ;; esac
+      case "${ctoks[$cj]:-}" in
+        cd | pushd)
+          cj=$((cj + 1))
+          while :; do case "${ctoks[$cj]:-}" in -- | -P | -L | -e | -@) cj=$((cj + 1)) ;; *) break ;; esac; done
+          cdir="${ctoks[$cj]:-}"
+          cdir="${cdir#[\"\']}"
+          cdir="${cdir%[\"\']}"
+          if [ -z "$cdir" ] || [ $((cj + 1)) -lt "${#ctoks[@]}" ]; then
+            git_base="?"
+          else
+            case "$cdir" in
+              '~' | '~/'*) git_base="${HOME}${cdir#\~}" ;;
+              /*) git_base="$cdir" ;;
+              -* | *'$'* | '~'* | *'`'*) git_base="?" ;;
+              *) [ "$git_base" != "?" ] && git_base="${git_base}/${cdir}" ;;
+            esac
+            # 行き先が無い cd は失敗し、後続（`;` / `||` の後）は元の cwd で走る。移動した扱いにしない
+            [ "$git_base" = "?" ] || [ -d "$git_base" ] || git_base="?"
+          fi
+          continue
+          ;;
+      esac
       case "$seg" in
         *git*) : ;;
         *) continue ;;
@@ -1106,7 +1263,7 @@ case "$tool" in
       i=$((i + 1))
       # -C は「どのリポジトリを触る git か」を決めるので、飛ばさずに解決する
       # （guard-checkout-restore.sh と同じ: 絶対パスはそのまま、相対は hook 入力の cwd 基準）。
-      gitdir="$CWD"
+      gitdir="$git_base"
       while [ "$i" -lt "$n" ]; do
         case "${toks[$i]}" in
           -C)
@@ -1125,7 +1282,7 @@ case "$tool" in
               esac
               case "$cdir" in
                 /*) gitdir="$cdir" ;;
-                ?*) gitdir="$gitdir/$cdir" ;;
+                ?*) [ "$gitdir" = "?" ] || gitdir="$gitdir/$cdir" ;;
               esac
             fi
             i=$((i + 1))
@@ -1138,10 +1295,22 @@ case "$tool" in
       [ "$i" -lt "$n" ] || continue
       # ロックを持つのは cwd の toplevel だけ。別リポジトリ（別 worktree・別 clone）を
       # 指す git はこのレビューの結果を壊さないので対象外。
-      if [ "$gitdir" != "$CWD" ]; then
+      # 凍結の対象はツリー単位（Issue `#1760`）: 別 worktree のレビューだけが走っている間は cwd の
+      # git 書き込みを止めず、`git -C <対象の worktree>` は止める。
+      # 行き先が不明（`cd "$X"` の後）な git は、凍結対象のツリーが 1 つでもあれば止める側。
+      # toplevel を引けない回は、そのディレクトリがどれかの対象ツリーの中にあるかで決める。
+      if [ "$gitdir" = "?" ]; then
+        :
+      elif [ "$gitdir" != "$CWD" ]; then
         [ -d "$gitdir" ] || continue
-        seg_root="$(git -C "$gitdir" rev-parse --show-toplevel 2>/dev/null)" || continue
-        [ "$seg_root" = "$ROOT" ] || continue
+        if seg_root="$(git -C "$gitdir" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$seg_root" ]; then
+          seg_root="$(phys_dir "$seg_root")"
+          in_protected "$seg_root" || continue
+        else
+          within_protected "$(phys_dir "$gitdir")" || continue
+        fi
+      else
+        [ "$CWD_PROTECTED" -eq 1 ] || continue
       fi
       case "${toks[$i]}" in
         commit | rebase | checkout | switch | merge | reset | apply | cherry-pick | revert | am | pull) : ;;
@@ -1196,7 +1365,7 @@ EOF
       # shellcheck source=../tests/lib/review-write-scan.sh
       if [ -r "$WRITE_SCAN_LIB" ] && . "$WRITE_SCAN_LIB" 2>/dev/null \
         && [ "$(type -t ff_write_scan 2>/dev/null)" = "function" ]; then
-        ff_write_scan_init "$ROOT_PHYS" "$(phys_dir "$CWD")" "$OUTPUT_DIR_NAME"
+        ff_write_scan_init "$ROOT_PHYS" "$(phys_dir "$CWD")" "$OUTPUT_DIR_NAME" "$PROTECT_TREES"
         ff_write_scan "$cmd" "$HEREDOC_STATE" "$HEREDOC_CODE" "$HEREDOC_BODIES"
         write_scan_rc=$?
       else
@@ -1223,6 +1392,10 @@ guard_notes=""
 if [ -n "$lock_stale_reason" ]; then
   guard_notes="ℹ️ ff-dev-toolkit guard（レビュー走行中ロック）: 走行中とみなせないロックが残っています（${lock_stale_reason}）。
 ロックは次のレビュー実行が置き直しますが、気になる場合は削除してください: rm -- $(shq "$LOCK")
+"
+fi
+if [ "$LANE_DONE" -gt 0 ]; then
+  guard_notes="${guard_notes}ℹ️ ff-dev-toolkit guard（レビュー走行中レーン）: 委譲レビューの結果（output-file）が書かれたレーンを ${LANE_DONE} 本解放しました。
 "
 fi
 if [ "$LANE_RECLAIMED" -gt 0 ]; then
@@ -1260,6 +1433,10 @@ if [ "$LANE_LIVE" -gt 0 ]; then
   deny_head="${deny_head}ホストのサブエージェントによるレビューが ${LANE_LIVE} 本走行中です（未終端のレーン）。
 ${LANE_SUMMARY}一部のレビュアーが返ってきただけでは凍結は解けません。残っているレーンが 0 本になるまでこのガードは開きません。
   レーン置き場: ${LANE_DIR}
+"
+fi
+if [ -n "$PROTECT_TREES" ]; then
+  deny_head="${deny_head}  凍結の対象ツリー: $(printf '%s\n' "$PROTECT_TREES" | awk 'NF && !seen[$0]++' | tr '\n' ' ')（これらの外への書き込みは止めません）
 "
 fi
 if [ -n "$lock_stale_reason" ]; then

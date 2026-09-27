@@ -164,7 +164,20 @@ run_isolated() {
     echo "✗ run_isolated: 分離リストが空です（build_isolate_env を呼んでいない、または抽出結果が空）" >&2
     exit 1
   fi
-  env "${ISOLATE_ENV[@]}" "$@"
+  # FF_MULTI_AGENT_LOAD_PER_CORE=0: multi-agent.sh の起動前負荷判定（ホストの load
+  # average が閾値を超えると並列を逐次へ倒す）を止める。全件ゲート自体がホストの負荷を
+  # 上げるので、判定を生かしたままだと「並列で起動する」「待機行の直前にバナー」等を
+  # 固定する suite が負荷次第で赤になる。判定そのものは multi-agent-load-gate suite が
+  # 注入値で固定する。代入は "$@" より前に置く — env は後の代入が勝つので、ケース固有の
+  # FF_MULTI_AGENT_LOAD_PER_CORE=<n> はそのまま効く。ただし呼び出し側の先頭の `-u NAME`
+  # は env のオプションなので代入より前へ残す（代入の後ろに置くと env はそれをコマンド名と
+  # 読み、rc=127 で落ちる）。
+  local _ri_opts=()
+  while [ $# -ge 2 ] && [ "$1" = "-u" ]; do
+    _ri_opts+=("$1" "$2")
+    shift 2
+  done
+  env "${ISOLATE_ENV[@]}" ${_ri_opts[@]+"${_ri_opts[@]}"} FF_MULTI_AGENT_LOAD_PER_CORE=0 "$@"
 }
 
 # env -u が届かない経路（プロセス内 source）向け。ISOLATE_ENV は `-u NAME` の並びなので

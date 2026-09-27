@@ -1,0 +1,14 @@
+[
+  {
+    "number": 401,
+    "body": "## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_actual: 1.0h\n- effort_basis: 乖離率 1.00\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 402,
+    "body": "## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_actual: 1.4h\n- effort_basis: 乖離率 1.40（上限ちょうど・中央値になる）\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 403,
+    "body": "## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_actual: 2.5h\n- effort_basis: 乖離率 2.50\n<!-- ff-effort:end -->\n"
+  }
+]

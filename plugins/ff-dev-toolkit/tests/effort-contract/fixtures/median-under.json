@@ -1,0 +1,22 @@
+[
+  {
+    "number": 411,
+    "body": "## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_actual: 1.0h\n- effort_basis: 中心が過小側へずれた分布\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 412,
+    "body": "## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_actual: 1.33h\n- effort_basis: 中心が過小側へずれた分布\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 413,
+    "body": "## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_actual: 1.88h\n- effort_basis: 中心が過小側へずれた分布\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 414,
+    "body": "## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_actual: 2.5h\n- effort_basis: 中心が過小側へずれた分布\n<!-- ff-effort:end -->\n"
+  },
+  {
+    "number": 415,
+    "body": "## 工数見積もり（KPI 計測）\n\n<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 1.0h\n- effort_ai_actual: 3.0h\n- effort_basis: 中心が過小側へずれた分布\n<!-- ff-effort:end -->\n"
+  }
+]

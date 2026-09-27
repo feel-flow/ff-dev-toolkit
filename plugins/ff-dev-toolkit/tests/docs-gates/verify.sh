@@ -83,6 +83,12 @@
 #   （リポジトリ正本 docs/04-quality/TESTING.md の変異注入バッテリー）が担う。
 #   義務 needle を 0 組で呼ぶ変異（deleg_agents_reference_check）も赤。
 #
+# 空振り検出: 正本節の見出しを改名・削除すると節スコープの針が「見出しが 0 本」で赤、AGENTS.md の参照行を消すと「参照行が 0 行」で赤（2026-09-27 実測）、契約ディレクトリが空だと走査不成立で赤（2026-09-13 実測。0 件一致を緑にしない）。
+# 変異検出（contracts/delegation-scratchpad.tsv と作業ファイル置き場の AGENTS.md 参照行。2026-09-27 実測。赤転しなかった変異は無し）:
+#   正本節の 5 本の針の文言を 1 本ずつ言い換えると、その 1 件だけが赤。見出しの改名・節の削除で 6 件が赤（契約 5 件 + AGENTS.md 参照行の正本節不在 1 件）。
+#   multi-implement SKILL.md の参照リンクを外すと 1 件が赤。
+#   AGENTS.md の参照行の削除 / 義務本文の言い換え / 正本パスの誤記で、それぞれ 1 件が赤。
+#
 # Bash と、本プロジェクトの対応環境に標準搭載される grep / awk / sed / find を使う。
 # 一時ファイルを作らない読み取り専用 suite とし、docs の複製を伴う動的 smoke / mutation は
 # docs-gates-runtime が担うため、書き込み不可の環境でも本 suite 単体は完走できる。
@@ -908,9 +914,16 @@ docs-fact-drift
 npm ci の前提
 8 件の明示許可
 weekly-run-all.yml
+exec_bit_scan
+ff-dev-toolkit-script-root-guard:start
+SCRIPT_EXPECT_RC
+MIN_HANDOFF_LAUNCHES
+PUBLIC-SURFACE.md
+### Skills（N）
+expected_users
 FOLLOWUP_NEEDLES
     if [ "${#followups_missing[@]}" -eq 0 ]; then
-      ok "「新規 suite 追加の随伴先」節が随伴先 8 件をすべて保持"
+      ok "「新規 suite 追加の随伴先」節が随伴先 15 件（suite 8 件 + script / hook など 7 件。Issue `#1745` / `#1741`）をすべて保持"
     else
       bad "「新規 suite 追加の随伴先」節から随伴先が欠落しています:"
       printf '    %s\n' "${followups_missing[@]}" >&2
@@ -1668,6 +1681,9 @@ deleg_must_contain_section_file "$DELEG_SKILL" "$DELEG_SKILL_HEADING" \
   "multi-implement SKILL.md の委譲手順から親側（生存中の worktree を回収しない）の正本節へ到達できる"
 deleg_must_contain_section_file "$DELEG_SKILL" "$DELEG_SKILL_HEADING" "$DELEG_TIMEOUT_VALUE" \
   "multi-implement SKILL.md の委譲手順がタイムアウトの実値を持つ（リンクだけだと消費地点に届かない）"
+deleg_must_contain_section_file "$DELEG_SKILL" "$DELEG_SKILL_HEADING" \
+  "](../../docs-template/${DELEG_DOC}#委譲先の作業ファイルを-scratchpad-の固有の置き場へ分ける)" \
+  "multi-implement SKILL.md の委譲手順から作業ファイルの置き場の正本節へ到達できる"
 
 # 到達点 3: リポジトリ入口の AGENTS.md。スキルも配布文書も読まずにホストの Agent / Task
 # ツールで直接委譲するオーケストレータへ届く唯一の経路。節名だけを見ると、正本パスを
@@ -1698,6 +1714,13 @@ else
     deleg_agents_reference_check "$deleg_agents_rules" "$DELEG_WT_SECTION_NAME" "$DELEG_WT_HEADING" \
       "$DELEG_DOC" "親側（生存中の worktree を回収しない）" \
       '未コミット差分 0 件（clean）を回収の根拠にせず' \
+      '義務本文そのもの'
+    # 作業ファイルの置き場（OBS-039）。正本節の文言は contracts/delegation-scratchpad.tsv が
+    # 固定し、ここは入口の参照行（正本パス + 節名 + 義務本文）とパスの実測だけを受け持つ。
+    deleg_agents_reference_check "$deleg_agents_rules" '委譲先の作業ファイルを scratchpad の固有の置き場へ分ける' \
+      '## 委譲先の作業ファイルを scratchpad の固有の置き場へ分ける' \
+      "$DELEG_DOC" "作業ファイルの置き場" \
+      '親の作業ファイルと同名の汎用名（`pr-body.md` 等）を共有の置き場の直下に使わせない' \
       '義務本文そのもの'
     # 「タイムアウトの実値を書く」と述べるだけでは、その実値がここには無い。到達点 1・2 と
     # 同じ針で、入口にも値そのものが残ることを固定する。

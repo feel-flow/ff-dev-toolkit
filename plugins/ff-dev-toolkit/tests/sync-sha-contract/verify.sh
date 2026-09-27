@@ -113,6 +113,15 @@
 # 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT へ存在しないパスを与えると (対象解決) が赤になる（実測 exit 1）。リリーススクリプトを空ファイルへ差し替えると (7) の全針と release-runtime が赤になる。
 # 空振り検出: 検査対象を空ファイルへ差し替えると (1〜3 / 5 / 6 の全針) が赤になる。0 件一致を「不足なし」へ倒さないことの実測。
 #
+# 変異検出（(8) 承認文への dry-run 実測値の転記。OBS-018 / Issue `#1917`。2026-09-27 実測、変異 10 件と空振り 1 件すべて赤転 / SURVIVED 0 件）:
+# 変異検出: 「承認の求め方」段落の bullet を 1 本消す（not-needed / 途中停止）・行末へ反対の但し書きを足す・段落を HTML コメントで包むと、全文一致が赤（exit 1）。部分一致の針では 4 件とも緑だった（レビューで実測）。
+# 変異検出: 段落を手順書の末尾（Common Mistakes の後）へ移すと位置の針（手順 R と 0b の見出しの間）が赤。
+# 変異検出: finish() が dry-run のとき RELEASE_VERSION= を出さないようにすると release-runtime（次の版 0.32.0 を出す）が赤。
+# 変異検出: post-merge hook の提案文から dry-run 先行の文を削除すると (8)（出現と承認要求行の同居）と release-runtime の両方が赤。SessionStart hook では (8) が赤。
+# 変異検出: post-merge hook の ${PROPOSAL_TAIL} の使用箇所 1 つを別の文へ差し替えると使用箇所数（2）の針が赤。
+# 変異検出: SessionStart hook へ dry-run 先行を欠く言い換えの承認要求（「承認された場合のみ」）の notify を足すと承認要求行の同居の針が赤。
+# 空振り検出: SessionStart hook を不在にすると (8) が赤（exit 1。不在を 0 件一致の緑・skip へ倒さない）。段落が見つからない（見出し行が消えた）ときは空文字の比較へ倒さず「段落が無い」で赤にする。
+#
 # run-all-required: no — 同期スクリプトを持たない公開 checkout での skip は正当な適用外（SSOT 専用の検査）
 
 set -euo pipefail
@@ -159,6 +168,7 @@ if [[ ! -f "$RELEASE_SCRIPT" ]]; then
   exit 1
 fi
 POST_MERGE_HOOK="$REPO_ROOT/.claude/hooks/post-merge-dev-toolkit-sync.sh"
+SESSION_START_HOOK="$REPO_ROOT/.claude/hooks/session-start-sync-drift.sh"
 
 # 同期スクリプト側の検査対象。既定は上で解決した実体と同じで、FF_SYNC_SHA_SCRIPT で
 # 差し替えられる（変異実測用）。SKILL 側と同じく、明示指定の不在は skip ではなく失敗。
@@ -712,6 +722,78 @@ contains_exactly 'if [ -z "$TAGS" ] || [ -z "$RELS" ]; then UNVERIFIED=yes; brea
   "手順 7 が片側空のまま再取得を繰り返さず判定不能として抜ける"
 contains_exactly '`UNVERIFIED=yes` で抜けた = 判定不能。取りこぼしの有無を主張せず**中断してユーザーに報告する**' 1 \
   "手順 7 が判定不能を取りこぼし無しへ倒さないと明記している"
+
+# ── 8. 承認文は dry-run の実測値を転記して作る（OBS-018 / Issue `#1917`）───────
+# 公開同期の承認文へ段数・版番号を推定で書くと、適用段の実測と食い違って承認後に範囲の
+# 作り直しや訂正が出る（OBS-018 の 2026-09-02 / 09-04）。機構（--dry-run の PLAN: /
+# RELEASE_VERSION=）は在るので、手順 R の「承認の求め方」段落を丸ごと固定し、承認を促す
+# hook 2 本の提案文が dry-run 先行を求めることを固定する。hook は要旨（dry-run 先行・転記・
+# 推定禁止）だけを持ち、止まったときの扱いなど詳細は手順 R を指す。
+# 段落は部分一致ではなく全文一致で比べる — 同じ行へ反対の但し書きを足す・行を HTML コメントで
+# 包む・bullet を 1 本消すといった骨抜きは部分一致の針をすり抜ける（レビューで実測）。
+# 本節は (7) より前に置く（(7) の末尾で release-runtime を走らせるので、静的な針を先に出す）。
+echo "-- (8) 承認文への dry-run 実測値の転記 --"
+APPROVAL_BLOCK_EXPECTED="$(cat <<'APPROVAL_BLOCK_EOF'
+**承認の求め方（承認文は dry-run の実測値を転記して作る。OBS-018 / Issue `#1917`）**: ユーザーへ承認を求める**前に** `scripts/release-dev-toolkit.sh --dry-run`（`--only` を付けない全段の dry-run）を stdout と stderr の両方を受けて実行し、承認文にはその出力の `PLAN:` 行（実行予定コマンド。外向き操作を含む）と `RELEASE_VERSION=`（次の版番号）を**そのまま転記する**。段数・版番号を自分で推定して書かない — 承認時点で確定できる値を未確定のまま書くと、適用段の実測と食い違って承認後に範囲の作り直しや訂正が出る。
+
+- 承認を求めてよいのは、dry-run が `RELEASE_RESULT=dry-run`（exit 0）で終わり、`RELEASE_VERSION=` 行が出ていて、`dry-run はここで止める` の NOTE 行が無い回（全段を完走した回）だけ
+- preflight が書きかけの段を見つけた回は `RELEASE_RESULT=dry-run`（exit 0）でも途中で止まっており `RELEASE_VERSION=` が出ない。この回は承認を求めず、巻き戻しの `PLAN:` 行を報告し、巻き戻し後に dry-run を回し直して完走してから承認を求める
+- dry-run が `RELEASE_RESULT=stopped`（exit 1）または `RELEASE_RESULT=unavailable`（exit 2）で終わったら**承認を求めない**。stderr の `NG:` 行の停止理由と次の一手をユーザーへ報告して止まる
+- dry-run が `RELEASE_RESULT=not-needed` なら承認は不要（リリースするものが無い）。その旨だけを報告する
+- 承認後に本実行するまでに develop が進んだ（`git rev-parse HEAD` が dry-run 時と違う）ときは、dry-run を回し直して転記値を差し替えてから承認を取り直す
+APPROVAL_BLOCK_EOF
+)"
+APPROVAL_BLOCK_ACTUAL="$(awk 'index($0, "**承認の求め方（承認文は dry-run の実測値を転記して作る。") == 1 {f=1} f && index($0, "- 段は `preflight → check") == 1 {exit} f' "$SKILL")"
+# 末尾の空行は $(...) が落とすので、比較は両側とも末尾改行なしの文字列で行う
+if [[ -z "$APPROVAL_BLOCK_ACTUAL" ]]; then
+  bad "手順 R に「承認の求め方」段落が無い（dry-run 先行と PLAN: / RELEASE_VERSION= の転記の規定が消えた）"
+elif [[ "$APPROVAL_BLOCK_ACTUAL" == "$APPROVAL_BLOCK_EXPECTED" ]]; then
+  ok "手順 R の「承認の求め方」段落が全文一致（dry-run 先行・転記・完走の条件・途中停止・stopped / unavailable・not-needed・develop 前進）"
+else
+  bad "手順 R の「承認の求め方」段落が期待と違う（改訂したら本 suite の期待文も同じ PR で更新する）"
+  diff <(printf '%s\n' "$APPROVAL_BLOCK_EXPECTED") <(printf '%s\n' "$APPROVAL_BLOCK_ACTUAL") | sed 's/^/    | /' >&2 || true
+fi
+contains_exactly '**承認の求め方（承認文は dry-run の実測値を転記して作る。' 1 \
+  "「承認の求め方」段落が手順書に 1 箇所だけある"
+# 位置: 手順 R の見出しと次の手順（0b）の見出しの間。段落ごと別の節へ移す退行を止める
+_r_head="$(line_of '### R. リリース')"
+_approval="$(line_of '**承認の求め方（承認文は dry-run の実測値を転記して作る。')"
+_next_head="$(line_of '### 0b. 定期実行点ゲート')"
+if [[ -n "$_r_head" && -n "$_approval" && -n "$_next_head" && "$_r_head" -lt "$_approval" && "$_approval" -lt "$_next_head" ]]; then
+  ok "「承認の求め方」段落が手順 R の中にある"
+else
+  bad "「承認の求め方」段落が手順 R の中に無い（R=${_r_head:-なし} / 段落=${_approval:-なし} / 0b=${_next_head:-なし}）"
+fi
+SYNC_PROPOSAL_NEEDLE='先に scripts/release-dev-toolkit.sh --dry-run を回し、その PLAN: 行と RELEASE_VERSION= を承認文へ転記したうえで（段数・版番号を推定しない。dry-run が止まったときの扱いは .claude/skills/sync-dev-toolkit/SKILL.md 手順 R の「承認の求め方」）、ユーザーに「公開リポジトリ feel-flow/ff-dev-toolkit へリリース（同期）しますか？」と確認し'
+for _hook in "$POST_MERGE_HOOK" "$SESSION_START_HOOK"; do
+  _hook_name="${_hook##*/}"
+  if [[ ! -f "$_hook" ]]; then
+    bad "同期提案 hook がありません: ${_hook}（改名・移設したら本 suite のパスも更新する）"
+    continue
+  fi
+  _got="$(grep -cF -- "$SYNC_PROPOSAL_NEEDLE" "$_hook" || true)"
+  if [[ "$_got" == "1" ]]; then
+    ok "${_hook_name} の同期提案文が先に dry-run を回して承認文へ転記するよう求め、手順 R を指している"
+  else
+    bad "${_hook_name} の同期提案文に dry-run 先行の指示が無い（期待 1 箇所 / 実際 ${_got} 箇所）"
+  fi
+  # 承認を求める文（「しますか」「承認された場合のみ」）を持つ行は、必ず dry-run 先行の文と同じ行にある。
+  # 言い回しを変えた別経路の提案（dry-run 先行を欠く）を足す退行を止める
+  _stray="$(awk -v n="$SYNC_PROPOSAL_NEEDLE" '/^[[:space:]]*#/ {next} (index($0, "しますか") || index($0, "承認された場合のみ")) && !index($0, n) { print FILENAME ":" NR }' "$_hook")"
+  if [[ -z "$_stray" ]]; then
+    ok "${_hook_name} で承認を求める文はすべて dry-run 先行の文と同じ行にある"
+  else
+    bad "${_hook_name} に dry-run 先行を欠く承認要求の行がある: ${_stray}"
+  fi
+done
+# post-merge hook は提案文を PROPOSAL_TAIL に 1 回だけ定義し、提案する分岐（公開対象外 + 積み残し /
+# 公開対象の変更）の 2 箇所で使う。使用箇所を別の文へ差し替える退行は定義行の針では見えない
+_tail_uses="$(grep -cF -- '${PROPOSAL_TAIL}' "$POST_MERGE_HOOK" 2>/dev/null || true)"
+if [[ "$_tail_uses" == "2" ]]; then
+  ok "post-merge hook の提案する 2 分岐がともに PROPOSAL_TAIL（dry-run 先行の提案文）を使う"
+else
+  bad "post-merge hook の PROPOSAL_TAIL の使用箇所が 2 でない（実際 ${_tail_uses:-0} 箇所 — 提案文を差し替えた分岐が無いか）"
+fi
 
 # ── 7. リリーススクリプト（手順 0b / 5 / 8 の本体。ADR-063）───────────────────
 echo "-- (7) リリーススクリプトの段の順序と同期元 SHA の契約 --"

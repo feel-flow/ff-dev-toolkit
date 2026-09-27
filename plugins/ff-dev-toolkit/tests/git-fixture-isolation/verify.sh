@@ -391,6 +391,7 @@ merge-cleanup/verify.sh
 multi-agent-critical-marker/verify.sh
 multi-agent-host-delegation/verify.sh
 multi-agent-ignore-paths/verify.sh
+multi-agent-load-gate/verify.sh
 multi-agent-plan/verify.sh
 multi-agent-resume/verify.sh
 multi-agent-review-banner/verify.sh
@@ -400,6 +401,7 @@ multi-agent-skip-poisoned-cli/verify.sh
 multi-agent-stale-outputs/verify.sh
 multi-agent-timeout/verify.sh
 mutation-harness/verify.sh
+precommit-exec-bit/verify.sh
 release-required-selftest/verify.sh
 review-capture-fail-loud/verify.sh
 review-diff-scope/verify.sh

@@ -60,13 +60,13 @@ PR_NUMBER="${PR_NUMBER:?PR 番号を先に設定すること}"
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" precheck "${PR_NUMBER}"
 ```
 
-終了コード **0 = マージへ進める** / **1 = 止める**（理由と次の一手が stderr） / **2 = 判定不能・検査不成立**（PR 不在 / gh 不通 / 鮮度の判定不能。名指しされた項目と復帰手段に従う。鮮度は手順 7）。出力（`KEY=値`）の読み方:
+終了コード **0 = マージへ進める** / **1 = 止める**（理由と次の一手が stderr） / **2 = 判定不能・検査不成立**（名指しされた項目と復帰手段に従う。鮮度は手順 7）。出力（`KEY=値`）の読み方:
 
 - **ブランチガード（必須）**: `git branch --show-current` が `PR_HEAD_REF` と違えば `gh pr checkout $PR_NUMBER` で切り替えてから続行する（できなければ停止）
 - 対象 Issue は `CLOSES=owner/repo#N`（**Closes 運用** = `closingIssuesReferences` ∪ 本文の closing keyword）と `REFS=owner/repo#N`（**Refs 運用** = 本文の `Ref` / `Refs` のうち Closes 群に無いもの）。以降の `gh issue` には番号ではなく URL を渡す（同番号の別リポジトリ Issue を誤更新しない）
 - `closingIssuesReferences` は **PR 本文だけ**を見る（件名の `fix: #N` はマージで閉じるのに API に出ない）。空を理由に打ち切ると Refs 運用の PR が無検査で通る。拾う綴りは `Ref` / `Refs` のみ（`関連 #N` や裸の `#N` は拾わない）
 - 両群とも空（`PRECHECK=no-target`）なら「参照から検出できる対象 Issue はありません」と報告して終了する。**「この PR は Issue を閉じません」とは報告しない**（件名経由のクローズは検出の範囲外）。`AUTO_CLOSE_UNRELIABLE=1`（本文に keyword があるのに API が空）は照合を続行し、手順 8 で手動クローズを案内する
-- 複数 Issue は Issue ごとに手順 3〜6 を繰り返す。`bundle`（子を全件 1 PR で束ねる着手単位）は sub-issues 全件（`gh api --paginate repos/<owner>/<repo>/issues/<n>/sub_issues --jq '.[].number'`）へ照合を広げ、PR 本文の `Closes` に子と bundle が全部並んでいるかを検査する
+- 複数 Issue は Issue ごとに手順 3〜6 を繰り返す。`bundle` は sub-issues 全件（`gh api --paginate repos/<owner>/<repo>/issues/<n>/sub_issues --jq '.[].number'`）へ照合を広げ、PR 本文の `Closes` に子と bundle が全部並んでいるかを検査する
 
 ### 2. closing keyword 抵触検査（Refs 運用の Issue がある場合）
 
@@ -88,14 +88,15 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 post-merge 検証が残るため Issue は open のまま維持する。"
 ```
 
-`MERGE_MESSAGE_GATE=ok` の文字列は script が `MERGE_COMMAND` へ引用して載せる。**文字列を打ち直さずそのまま手順 7 へ持ち越す**（コピペこそが実際の再発経路）。Refs 群が 0 件なら 2a・2b は走らない。
+`MERGE_MESSAGE_GATE=ok` の文字列は script が `MERGE_COMMAND` へ引用して載せる。**文字列を打ち直さずそのまま手順 7 へ持ち越す**。Refs 群が 0 件なら 2a・2b は走らない。
 
 ### 3. AC 照合（判断）
 
 `gh issue view "$ISSUE_URL" --json title,body` / `gh pr diff "$PR_NUMBER"` / `gh pr view "$PR_NUMBER" --json body,statusCheckRollup,reviewDecision` を突き合わせる。
 
-- **Issue 本文は全文取得する**（`head` / `tail` で切らない。AC / DoD は末尾に多く、切ると「検査対象なしで緑」になる）
+- **Issue 本文は全文取得する**（`head` / `tail` で切らない。AC / DoD は末尾に多い）
 - 「テストがパスすること」系の DoD は diff だけで達成と判定せず、checks かテストコマンドの**実行結果**を根拠にする。**根拠が取得できない項目は「未達」扱い**
+- **根拠は AC の指す対象を測っているか**: AC ごとに「根拠が測った対象 = AC が指す対象」を 1 行で書き、測る口が無ければ「測れない」= 未達（他 AC の達成数で埋めない）。bug 種別の指す対象は原因 — 記録（ログ・再現）から名指しできなければ達成にせず「原因未確定。次回読めるようにする計測を入れた / 入れていない」を完了報告に書く
 
 | 判定 | 意味 |
 | --- | --- |
@@ -108,7 +109,7 @@ post-merge 検証が残るため Issue は open のまま維持する。"
 
 ### 4. 未達 AC の解消（自動修正ループ）
 
-未達 AC を満たす実装・テストを追加して fix commit を push し（直前に `git status --short` とメッセージの主張を突き合わせる）、**手順 1 に戻る**。停止してユーザーに確認するのは AC の達成に**仕様変更が必要**な場合だけ。**未達 AC が大きくても先送りしない**: 現 Issue の AC はスコープ外発見ではない。別 Issue へ移して「対象外」にせず、マージを停止して仕様変更の判断を求める。独立した発見だけを [スコープ外発見の三分岐](../../docs-template/05-operations/deployment/workflow-principles.md)へ渡す。
+未達 AC を満たす実装・テストを追加して fix commit を push し（直前の確認は references/ac-judgement.md）、**手順 1 に戻る**。停止してユーザーに確認するのは AC の達成に**仕様変更が必要**な場合だけ。**未達 AC が大きくても先送りしない**: 現 Issue の AC はスコープ外発見ではない。別 Issue へ移して「対象外」にせず、マージを停止して仕様変更の判断を求める。独立した発見だけを [スコープ外発見の三分岐](../../docs-template/05-operations/deployment/workflow-principles.md)へ渡す。
 
 ### 5. Issue 本文の更新（チェックボックス + 工数実績）
 
@@ -136,7 +137,7 @@ case $? in
   2) echo "✗ 検査が成立していない（マーカー構成の破損・baseline の異常）。送信しない" >&2; exit 2 ;;
   *) echo "✗ 上記以外の終了コード = 判定器を起動できていない。検査は成立していないので送信しない" >&2; exit 2 ;;
 esac
-# 4) 送信直前に updatedAt を再取得し、1) から変化していなければ送信（変化していたら 1) から）
+# 4) 送信直前に updatedAt を再取得し、変化していれば 1) から
 gh issue edit "$ISSUE_URL" --body-file "/tmp/issue-body-${ISSUE_NUMBER}.md"
 ```
 
@@ -159,7 +160,7 @@ gh issue comment "$ISSUE_URL" --body-file "/tmp/close-issue-report-${ISSUE_NUMBE
 
 | AC | 判定 | 根拠 |
 | --- | --- | --- |
-| Given ... When... Then | ✅ 達成 | [該当ファイル・テスト・検証コマンド] |
+| Given ... When... Then | ✅ 達成 | [該当ファイル・テスト・検証コマンド] / 測った対象: [AC が指す対象] |
 | ... | ➖ 対象外 | [理由と別 Issue 番号（あれば）] |
 | DoD: staging で ... | ⏳ post-merge 検証待ち | [マージ後に実測する手順と、閉じてよい条件] |
 
@@ -169,18 +170,18 @@ gh issue comment "$ISSUE_URL" --body-file "/tmp/close-issue-report-${ISSUE_NUMBE
 
 ### 参照
 
-- PR: #<PR番号> / 主要コミット: <hash> <件名>
+- PR: #<PR番号> / 主要コミット: <手順 1 の PR_COMMITS をそのまま貼る>
 ```
 
-乖離率が帯の外（`0.71` 未満 / `1.40` 超）なら「乖離の原因」は必須（帯の正本は references/effort.md）。AC 記載なしは照合をスキップした旨と実装サマリを、post-merge 検証待ちがあれば「マージ後も open のまま維持する」ことと閉じる手順を書く。
+主要コミット欄は `PR_COMMITS` の行を貼り、**自分で hash を書かない**（`KEYWORD_INSPECTED` と同じ。`PR_COMMITS_SOURCE` が `git` 以外ならその値を併記）。乖離率が帯の外なら「乖離の原因」は必須（帯は references/effort.md）。AC 記載なし・post-merge 検証待ちの書き方は references/ac-judgement.md。
 
 ### 7. ゲート実測鮮度の照合（マージ直前）
 
-fix commit を積んだ回や手順 1 から時間が経った回は、**マージ直前に `finish.sh precheck` をもう一度実行する**（Refs 運用は `--subject` / `--body` 付き）。script が checks の有無で分岐し（非空なら完了と成功を待ち、失敗ならマージへ進まない。空なら `CHECKS_REPORT` を報告へ）、照合直前に読み直した `headRefOid` を記録と照合する。根拠は [references/merge-gate.md](references/merge-gate.md)。判断点:
+fix commit を積んだ回や手順 1 から時間が経った回は、**マージ直前に `finish.sh precheck` をもう一度実行する**（Refs 運用は `--subject` / `--body` 付き）。script が checks の有無で分岐し、照合直前に読み直した `headRefOid` を記録と照合する。根拠は [references/merge-gate.md](references/merge-gate.md)。判断点:
 
 - **`FRESH_STATUS`**: 0 = 一致（`FRESH_REPORT` を報告へ）/ 1 = 不一致（止まる。`RELATION` に従って取り込んでゲートを回し直し、手順 1 へ）/ 2 = 判定不能（止めないが `FRESH_REASON` / `FRESH_ACTION` を**両方**報告へ。**2 で止めないのは意図的** — 記録の仕組みを持たないプロジェクトでは常態）/ 3 = 検査不成立（止める）
-- **`RERUN_FULL_GATE`**（判定不能のとき）: `yes`（汚れた木 / 記録なし / 部分実行で checks の裏付けなし）なら clean な木で全件ゲートを再実行して手順 1 へ。`no`（部分実行 + checks 全件成功）なら進む（**リリース前・契約面の変更時は除き**、その場合は全件ゲートを再実行する — script は rc 0 を返すのでここで判断する）。`see-action` は `FRESH_ACTION` に従う
-- **PR タイトルの件名規約（必須）**: タイトルが squash の件名になり**マージ後に直せない**。規約を満たしていなければ `gh pr edit "${PR_NUMBER}" --title "<規約に沿った件名>"` で直してから進む（Refs 運用の `--subject` も同じ）
+- **`RERUN_FULL_GATE`**（判定不能のとき）: `yes` は clean な木で全件ゲートを再実行して手順 1 へ。`no` は進む（**リリース前・契約面の変更時は除く** — script は rc 0 を返すのでここで判断）。`see-action` は `FRESH_ACTION` に従う
+- **PR タイトルの件名規約（必須）**: タイトルは squash の件名になり**マージ後に直せない**。規約外なら `gh pr edit "${PR_NUMBER}" --title "<規約に沿った件名>"` で直してから進む（Refs 運用の `--subject` も同じ）
 
 merge コマンドは script が生成する（`MERGE_COMMAND_BEGIN` 〜 `END`。base / head を別 worktree が保持していれば `--delete-branch` 無し + `&&` で繋いだリモートブランチ削除）。**この出力をそのまま手順 8 の報告へ貼り、書き写さない** — 人が打ち直した時点で 2b は何も保証しなくなる。
 
@@ -195,7 +196,7 @@ merge コマンドは script が生成する（`MERGE_COMMAND_BEGIN` 〜 `END`�
 - closing keyword 抵触検査: 対象なし（Closes 運用）
 - CI checks: <手順 7 の CHECKS_REPORT をそのまま貼る>
 - ゲート実測鮮度: <手順 7 の FRESH_REPORT をそのまま貼る>
-- 照合時の head SHA: <PR_HEAD_OID>
+- 照合時の head SHA: <PR_HEAD_OID> / 主要コミット: <手順 7 の PR_COMMITS をそのまま貼る>
 
 → マージに進めます:
 
@@ -213,4 +214,3 @@ merge コマンドは script が生成する（`MERGE_COMMAND_BEGIN` 〜 `END`�
 ## 注意事項
 
 - このコマンドは **Issue をクローズしない**（マージ時の `Closes #N` に任せる。Refs 運用の Issue を閉じるのは post-merge 検証を実測した人）。自動クローズは (1) クローズリンクのマージ (2) squash メッセージの closing keyword の 2 経路で、空 API を「閉じない」と読まない
-- 未達 AC を「あとで直す」ためにマージを先行させない

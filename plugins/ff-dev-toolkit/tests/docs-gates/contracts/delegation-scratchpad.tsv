@@ -1,0 +1,9 @@
+# 委譲先の作業ファイルを scratchpad の固有の置き場へ分ける契約（観測台帳 OBS-039 から昇格）。
+# 同じセッションのサブエージェントは親と scratchpad を共有するため、汎用名の作業ファイルは
+# 並列の委譲先や親の下書きを上書きする。規定が正本節から消える・節が改名されると、
+# 入口（AGENTS.md / CLAUDE.md）の参照が空の節を指す。針は正本節スコープで当てる。
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 委譲先の作業ファイルを scratchpad の固有の置き場へ分ける	ホストが提供する Agent / Task ツールで直接起こしたサブエージェントも含む	作業ファイル置き場の正本節が同梱スクリプト経由以外の委譲（ホストの Agent / Task ツール）も対象だと明記している
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 委譲先の作業ファイルを scratchpad の固有の置き場へ分ける	エージェント固有 ID>/` 配下に置く」を明記する	作業ファイル置き場の正本節が Issue 別・エージェント固有の置き場を委譲プロンプトの常置文言として持つ
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 委譲先の作業ファイルを scratchpad の固有の置き場へ分ける	親の作業ファイルと同名の汎用名を共有の置き場の直下に使わせない	作業ファイル置き場の正本節が親と同名の汎用名を禁じている
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 委譲先の作業ファイルを scratchpad の固有の置き場へ分ける	置き場の実パスを委譲プロンプトの中へ直接書く	作業ファイル置き場の正本節が置き場の実パスを委譲プロンプトへ直接書くことを要求している
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 委譲先の作業ファイルを scratchpad の固有の置き場へ分ける	エージェント固有の ID を置き場の名前へ加える	作業ファイル置き場の正本節が 1 Issue に複数の委譲先が付く場合の分け方を持つ

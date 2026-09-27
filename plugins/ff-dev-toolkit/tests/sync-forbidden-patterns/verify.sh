@@ -43,6 +43,9 @@
 #     解決より前に置く）。base ref を解決できない木は fail-closed
 #   - fence が閉じていないファイル（意図的な fixture が実在する）は走査を諦めず、
 #     fence 記号を潰した写しで走査し直す（閉じない fence の素通しを作らない）
+#   - fence 許可規則は Markdown（.md / .markdown）にだけ掛ける。heredoc の中に
+#     fence 記号を持つシェルスクリプトでは、fence 記号行に挟まれた追加行も名指し
+#     する（fence の内側＝安全として素通しにしない。同じ形の .md は従来どおり通す）
 #
 # 到達可能参照の allowlist（scripts/scan-unreachable-repo-refs.sh）は 2 つの形を見る。
 # `owner/repo#N` は owner を問わず全件、URL 形（`https://github.com/<org>/<repo>/...`
@@ -52,6 +55,11 @@
 # 成立しないため。API 形はホスト判定を緩めるのではなく `api.` だけを明示的に足した
 # もので、パスの文法が違う（`/repos/<owner>/<repo>` 以外は見ない）。本 suite は
 # 許可側（外部 owner・非リポジトリパス・サブドメイン）と禁止側を対で固定する。
+#
+# 空振り検出: 針が当たらない入力は (1) 拡張子による fence 切り替え（is_markdown ||
+#   scan_opts=(--no-fence)）が消えた検査側 (2) --no-fence を無視する走査器 (3) 書き換えで
+#   変異の注入点が消えた本体。(1)(2) は heredoc 内 fence の .sh 追加行が素通りして
+#   11-18 の本体ケースが赤、(3) は cmp で注入点の不在を検出して赤（2026-09-27 実測）。
 #
 # 本ファイルは公開同期対象。禁止パターンのリテラルを隣接して書かないこと
 # （隔離 fixture へ実行時に組み立てて流す。再現性のために実パスを戻すと
@@ -892,6 +900,84 @@ plugins/ff-dev-toolkit/doc.md:6' refs_run "$M_ALLOW"
   refs_run_extdiff() { GIT_EXTERNAL_DIFF=/usr/bin/true bash "$1/scripts/check-added-bare-refs.sh"; }
   expect_refs_rc "外部 diff ドライバ下でも追加行を取り違えず検出する" 1 \
     "plugins/ff-dev-toolkit/doc.md:2" refs_run_extdiff "$F_DETECT"
+
+  # 11-18. heredoc の中に fence 記号を持つシェルスクリプト。シェルに fence という
+  # 概念は無く、2 つの heredoc の fence 記号行に挟まれた行は Markdown 扱いだと
+  # 「閉じた fence の内側＝安全」として素通る（fail-open）。Markdown 以外は fence
+  # 許可規則を掛けずに走査し、挟まれた追加行を名指しする
+  F_HEREDOC="$TMP/refs-heredoc-fence"
+  refs_fixture_prepare "$F_HEREDOC"
+  printf '%s\n' '#!/usr/bin/env bash' > "$F_HEREDOC/plugins/ff-dev-toolkit/fixture.sh"
+  printf '%s\n' 'intro' > "$F_HEREDOC/plugins/ff-dev-toolkit/doc.md"
+  refs_fixture_commit "$F_HEREDOC"
+  {
+    printf '%s\n' "cat > a.md <<'EOF'"                  # 2
+    printf '%s\n' '```'                                 # 3: heredoc 内の fence 記号
+    printf '%s\n' 'EOF'                                 # 4
+    printf '%s\n' "# follow-up: see ${HASH}1234"        # 5: 検出する
+    printf '%s\n' "cat > b.md <<'EOF'"                  # 6
+    printf '%s\n' '```'                                 # 7: heredoc 内の fence 記号
+    printf '%s\n' 'EOF'                                 # 8
+  } >> "$F_HEREDOC/plugins/ff-dev-toolkit/fixture.sh"
+  # 対: 同じ形の Markdown（正しく閉じた fence の内側の番号）は従来どおり通す。
+  # 拡張子の判定は大文字小文字を問わず .markdown も含む（未追跡の新規ファイルで流す）
+  {
+    printf '%s\n' '```'                                 # 2
+    printf '%s\n' "# follow-up: see ${HASH}1234"        # 3: 通す
+    printf '%s\n' '```'                                 # 4
+  } >> "$F_HEREDOC/plugins/ff-dev-toolkit/doc.md"
+  printf '%s\n' 'intro' '```' "# follow-up: see ${HASH}1234" '```' \
+    > "$F_HEREDOC/plugins/ff-dev-toolkit/UPPER.MD"
+  printf '%s\n' 'intro' '```' "# follow-up: see ${HASH}1234" '```' \
+    > "$F_HEREDOC/plugins/ff-dev-toolkit/long.markdown"
+  expect_refs_only "heredoc 内に fence 記号を持つ .sh の追加行を名指しし、同じ形の .md は通す" 1 \
+    "plugins/ff-dev-toolkit/fixture.sh:5" "plugins/ff-dev-toolkit/doc.md:3" \
+    refs_run "$F_HEREDOC"
+  expect_refs_only "大文字の .MD も Markdown として fence の内側を通す" 1 \
+    "plugins/ff-dev-toolkit/fixture.sh:5" "UPPER.MD:" refs_run "$F_HEREDOC"
+  expect_refs_only ".markdown も Markdown として fence の内側を通す" 1 \
+    "plugins/ff-dev-toolkit/fixture.sh:5" "long.markdown:" refs_run "$F_HEREDOC"
+
+  # 11-18 変異 (a): 検査側の拡張子による切り替えを外すと .sh も Markdown 扱いになり、
+  # 同じ木が素通る（クリア）＝ 上のケースが赤になることを実測する
+  M_HEREDOC_SW="$TMP/refs-mutate-heredoc-switch"
+  cp -R "$F_HEREDOC" "$M_HEREDOC_SW"
+  LC_ALL=C sed 's/is_markdown "\$f" || scan_opts=(--no-fence)/:/' \
+    "$F_HEREDOC/scripts/check-added-bare-refs.sh" > "$M_HEREDOC_SW/scripts/check-added-bare-refs.sh"
+  if cmp -s "$F_HEREDOC/scripts/check-added-bare-refs.sh" "$M_HEREDOC_SW/scripts/check-added-bare-refs.sh"; then
+    bad "変異 (a) の注入点（拡張子による fence 切り替え）が見つからない"
+  else
+    expect_refs_rc "拡張子による fence 切り替えを外すと heredoc 内 fence の .sh が素通る（変異）" 0 \
+      "クリア" refs_run "$M_HEREDOC_SW"
+  fi
+
+  # 11-18 変異 (b): 走査器が --no-fence を無視すると同じく素通る
+  M_HEREDOC_SC="$TMP/refs-mutate-heredoc-scanner"
+  cp -R "$F_HEREDOC" "$M_HEREDOC_SC"
+  LC_ALL=C sed 's/if (!nofence \&\& /if (/' \
+    "$F_HEREDOC/scripts/scan-bare-issue-refs.sh" > "$M_HEREDOC_SC/scripts/scan-bare-issue-refs.sh"
+  if cmp -s "$F_HEREDOC/scripts/scan-bare-issue-refs.sh" "$M_HEREDOC_SC/scripts/scan-bare-issue-refs.sh"; then
+    bad "変異 (b) の注入点（走査器の --no-fence 分岐）が見つからない"
+  else
+    expect_refs_rc "走査器が --no-fence を無視すると heredoc 内 fence の .sh が素通る（変異）" 0 \
+      "クリア" refs_run "$M_HEREDOC_SC"
+  fi
+
+  # 11-19. 走査器の self-test（--no-fence の陽性と、同じ入力の既定モードが未閉 fence で
+  # 止まる対を含む）を本 suite から回す。走査器単体の self-test を呼ぶ常設経路が無いと、
+  # その対が壊れても何も赤にならない
+  set +e
+  scanner_selftest_out="$(bash "$SCANNER_SRC" --self-test 2>&1)"
+  scanner_selftest_rc=$?
+  set -e
+  if [[ "$scanner_selftest_rc" -eq 0 \
+    && "$scanner_selftest_out" == *"--no-fence は fence 記号行の後ろも走査する"* \
+    && "$scanner_selftest_out" == *"既定（Markdown 扱い）では同じ入力が未閉 fence の exit 2"* ]]; then
+    ok "bare 参照の走査器の self-test が --no-fence の対を固定している"
+  else
+    bad "bare 参照の走査器の self-test が失敗した、または --no-fence の対を持たない (rc=${scanner_selftest_rc})"
+    printf '%s\n' "$scanner_selftest_out" | sed 's/^/    | /' >&2
+  fi
 
   # 11-17. live: この作業ツリーの追加行がクリアであること（ゲート本体）。
   # rc=2（検査不成立）を skip へ降格しない — 唯一の常設呼び出し側でそれをやると、

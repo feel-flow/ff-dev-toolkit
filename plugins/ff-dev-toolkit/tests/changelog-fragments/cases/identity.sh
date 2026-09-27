@@ -11,6 +11,11 @@ extract_fn_body() { # $1=file $2=function name
   ' "$1"
 }
 
+# 針の分担（Issue `#1807`）: `stat -f … || stat -c …` のように BSD 形を `||` の先頭側に置く形は、
+# リポジトリ全体を母集団にした tests/dialect-fallback が止める（以前ここに在った
+# `stat -f '%d:%i'` / `stat -f '%Lp'` の直書き針と旧形コピーのプローブはそちらへ集約した）。
+# ここに残すのは `||` を持たない条件分岐の形（read_stat_format の `if … stat -c …; then … fi;
+# stat -f …`）の順序だけで、dialect-fallback の規則（`||` の腕の並び）はこの形に当たらない。
 stat_c_before_f() { # $1=file $2=function
   extract_fn_body "$1" "$2" | awk '
     /stat -c/ { if (!c) c=NR }
@@ -23,29 +28,6 @@ if stat_c_before_f "$TARGET_LIB" read_stat_format; then
   ok "read_stat_format は GNU stat -c を BSD stat -f より先に使う"
 else
   bad "read_stat_format の stat 実装順が GNU 非互換"
-fi
-
-# 旧形 `stat -f '%d:%i' ... || stat -c` を $(...) で受けると GNU で filesystem 統計が混ざる。
-# 現行は format を変数経由で渡すので、このリテラルは残ってはいけない。
-if grep -F "stat -f '%d:%i'" "$TARGET_LIB" >/dev/null; then
-  bad "read_file_identity が GNU では --file-system になる stat -f '%d:%i' を直書きする"
-else
-  ok "read_file_identity は GNU stat -f '%d:%i' の直書きを使わない"
-fi
-if grep -F "stat -f '%Lp'" "$TARGET_LIB" >/dev/null; then
-  bad "read_file_mode が GNU では --file-system になる stat -f '%Lp' を直書きする"
-else
-  ok "read_file_mode は GNU stat -f '%Lp' の直書きを使わない"
-fi
-
-cp "$TARGET_LIB" "$TMP/old-identity-lib.sh"
-printf '%s\n' "read_file_identity() { stat -f '%d:%i' \"\$1\" 2>/dev/null || stat -c '%d:%i' \"\$1\" 2>/dev/null; }" \
-  >> "$TMP/old-identity-lib.sh"
-if grep -F "stat -f '%d:%i'" "$TMP/old-identity-lib.sh" >/dev/null \
-    && ! grep -F "stat -f '%d:%i'" "$TARGET_LIB" >/dev/null; then
-  ok "stat -f 先行パターンの検出針は生産コードの旧形コピーで赤になる"
-else
-  bad "stat -f 先行パターンの検出針が生産コードの旧形コピーを見逃す"
 fi
 
 # shellcheck source=/dev/null

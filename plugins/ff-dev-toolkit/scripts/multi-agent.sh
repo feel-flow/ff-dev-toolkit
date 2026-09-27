@@ -39,10 +39,15 @@
 #                           A name that does not exist is rejected, not ignored.
 #   --list-perspectives     Print the perspectives available for --task and exit.
 #                           Builds no plan and starts no CLI.
-#   --perspective <name>    Run only this perspective (repeatable). In distributed
+#   --perspective <name>    Run only this perspective (repeatable; a comma-separated
+#                           list such as a,b is also accepted). In distributed
 #                           mode, only its owning CLI remains unless --cli is also
 #                           explicit; use --mode cross-model for model comparison.
-#   --parallel              Parallel execution (default)
+#   --parallel              Parallel execution (default). Right before the lanes
+#                           start, the 1-minute load average is measured; above
+#                           cores x FF_MULTI_AGENT_LOAD_PER_CORE (default 10, 0
+#                           disables) the run falls back to sequential and says so
+#                           in one line. At or below the threshold nothing is printed.
 #   --sequential            Sequential execution
 #   --output-dir <dir>      Output directory (auto-detected by task type)
 #   --base <branch>         Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop).
@@ -1560,7 +1565,17 @@ parse_args() {
           exit 2
         fi
         EXCLUDE_CLIS_FLAG="${EXCLUDE_CLIS_FLAG:+$EXCLUDE_CLIS_FLAG }$2"; shift 2 ;;
-      --perspective) PERSPECTIVE_FILTER="${PERSPECTIVE_FILTER:+$PERSPECTIVE_FILTER }$2"; shift 2 ;;
+      # カンマ区切り（--perspective a,b）も受理し、空白区切りの一覧へ畳む。繰り返し
+      # 指定（--perspective a --perspective b）と併用できる。分割後の各語は
+      # validate_requested_perspectives の is_safe_token を通る。
+      --perspective)
+        # 区切りだけの値（`,` 等）は観点 0 個に畳まれ、後段の「プランが空」まで原因が
+        # 名乗られないので、ここで名指しして止める。空文字（''）は従来どおり無指定扱い。
+        if [[ $# -ge 2 && -n "$2" && -z "${2//[, ]/}" ]]; then
+          echo "ERROR: --perspective に観点名がありません: '${2}'（カンマ区切りは a,b の形で渡してください）" >&2
+          exit 2
+        fi
+        PERSPECTIVE_FILTER="${PERSPECTIVE_FILTER:+$PERSPECTIVE_FILTER }${2//,/ }"; shift 2 ;;
       --exclude-perspective)
         if [[ $# -lt 2 ]]; then
           echo "ERROR: --exclude-perspective には観点名が必要です。" >&2
@@ -3268,6 +3283,102 @@ run_single_task() {
       bash "$adapter" "$perspective_file" "$output_file" \
         --base "$BASE_BRANCH" --timeout "$TIMEOUT" "${extra_args[@]}"
     fi )
+}
+
+# ── Host Load Gate（レーン起動前の load average 実測） ──
+# 同一ホストの負荷が高い状態で並列レーンを起こすと、子の CLI / サブエージェントが
+# 無進捗のまま stall して失敗し、再起動 1 回分の時間とトークンを失う。負荷源は自分の
+# 全件ゲートに限らず、同じホストで動く並行セッションでも同じ形で起きる。そこで並列
+# 起動の直前に 1 分平均の load average を実測し、コア数 × 係数を超えていれば今回の
+# 実行を逐次（--sequential 相当）へ倒す。閾値以下なら何も出さずに従来どおり並列。
+# 係数の既定 10 と根拠（load 295 / 16 コアで stall、150 / 16 コアで stall 0、1 コア
+# あたり 10 超で stall）の正本は docs-template/05-operations/deployment/
+# multi-cli-review-orchestration.md の「レーン起動前の負荷判定」節。
+# FF_MULTI_AGENT_LOAD_PER_CORE: 係数（6 桁までの非負整数）。0 で判定を無効化する。
+# FF_MULTI_AGENT_LOAD_SAMPLE: 内部（テストの注入口）。実測の代わりに使う値。
+LOAD_GATE_DEFAULT_PER_CORE=10
+
+# 係数の書式検査。main がプラン構築前（dry-run・--sequential・1 タスクでも）に 1 回だけ
+# 呼ぶ — execute_tasks の中で初めて弾くと、前回結果の削除・退避が済んだ後で止まる。
+# 6 桁上限は算術展開の桁あふれ（閾値が負になり常に逐次へ倒れる）を防ぐため。
+validate_load_gate_config() {
+  local per_core="${FF_MULTI_AGENT_LOAD_PER_CORE:-$LOAD_GATE_DEFAULT_PER_CORE}"
+  if [[ ! "$per_core" =~ ^[0-9]{1,6}$ ]]; then
+    echo "ERROR: FF_MULTI_AGENT_LOAD_PER_CORE は 6 桁までの非負整数で指定してください（0 で負荷判定を無効化）: '${per_core}'" >&2
+    return 2
+  fi
+}
+
+# sysctl は macOS では /usr/sbin にあり、PATH を絞った起動（CI・hook）では見えないことがある。
+load_gate_sysctl() {
+  if command -v sysctl >/dev/null 2>&1; then
+    LC_ALL=C sysctl "$@"
+  elif [[ -x /usr/sbin/sysctl ]]; then
+    LC_ALL=C /usr/sbin/sysctl "$@"
+  else
+    return 127
+  fi
+}
+
+# 1 分平均の load average を stdout へ 1 語で出す。取れなければ rc=1（何も出さない）。
+measure_load_average() {
+  local sample=""
+  if [[ -n "${FF_MULTI_AGENT_LOAD_SAMPLE:-}" ]]; then
+    sample="$FF_MULTI_AGENT_LOAD_SAMPLE"
+  elif [[ -r /proc/loadavg ]]; then
+    sample="$(awk '{print $1; exit}' /proc/loadavg 2>/dev/null)" || sample=""
+  else
+    # macOS: "{ 3.74 4.48 14.04 }"
+    sample="$(load_gate_sysctl -n vm.loadavg 2>/dev/null | awk '{gsub(/[{}]/, ""); print $1; exit}')" || sample=""
+  fi
+  [[ "$sample" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+  printf '%s\n' "$sample"
+}
+
+# 論理コア数を stdout へ出す。取れなければ rc=1。
+measure_cpu_cores() {
+  local cores=""
+  if command -v getconf >/dev/null 2>&1; then
+    cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || cores=""
+  fi
+  if [[ ! "$cores" =~ ^[1-9][0-9]*$ ]] && command -v nproc >/dev/null 2>&1; then
+    cores="$(nproc 2>/dev/null)" || cores=""
+  fi
+  if [[ ! "$cores" =~ ^[1-9][0-9]*$ ]]; then
+    cores="$(load_gate_sysctl -n hw.ncpu 2>/dev/null)" || cores=""
+  fi
+  [[ "$cores" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$cores"
+}
+
+# 並列実行の直前に 1 回だけ呼ぶ。係数の書式は validate_load_gate_config が検査済み。
+apply_load_gate() {
+  [[ "$PARALLEL" == "true" ]] || return 0
+  local task_count
+  task_count="$(printf '%s\n' "$EXECUTION_PLAN" | awk 'NF && !seen[$0]++' | wc -l | tr -d ' ')"
+  [[ "$task_count" -gt 1 ]] || return 0
+  local per_core="${FF_MULTI_AGENT_LOAD_PER_CORE:-$LOAD_GATE_DEFAULT_PER_CORE}"
+  per_core=$((10#$per_core))
+  [[ "$per_core" -gt 0 ]] || return 0
+  local load cores threshold
+  if ! load="$(measure_load_average)"; then
+    if [[ -n "${FF_MULTI_AGENT_LOAD_SAMPLE:-}" ]]; then
+      echo "ℹ️  負荷判定: FF_MULTI_AGENT_LOAD_SAMPLE が数値ではないため（'${FF_MULTI_AGENT_LOAD_SAMPLE}'）、並列のまま起動します。" >&2
+    else
+      echo "ℹ️  負荷判定: load average を実測できないため、並列のまま起動します。" >&2
+    fi
+    return 0
+  fi
+  if ! cores="$(measure_cpu_cores)"; then
+    echo "ℹ️  負荷判定: コア数を実測できないため、並列のまま起動します。" >&2
+    return 0
+  fi
+  threshold=$((cores * per_core))
+  if awk -v l="$load" -v t="$threshold" 'BEGIN { exit !(l > t) }'; then
+    PARALLEL=false
+    echo "⚠️  負荷判定: load average ${load} > 閾値 ${threshold}（${cores} コア × ${per_core}）— ${task_count} タスクを並列にせず逐次で実行します（FF_MULTI_AGENT_LOAD_PER_CORE で係数を変更、0 で無効）。" >&2
+  fi
+  return 0
 }
 
 # ── Path-Segment Safety ──
@@ -5052,6 +5163,9 @@ execute_tasks() {
     done <<< "$FULL_EXECUTION_PLAN"
     write_run_in_flight "$TASK_TYPE" "${REPO_SNAPSHOT_BEFORE%% *}" "$in_flight_perspectives"
   fi
+
+  # 並列起動の直前に負荷を実測する（閾値超なら今回だけ逐次へ倒す）。
+  apply_load_gate || return 2
 
   if [[ "$PARALLEL" == "true" ]]; then
     # ── 並列実行: CLI 間は並列、同一 CLI 内は逐次（Issue #251） ──
@@ -7556,6 +7670,8 @@ main() {
   validate_excluded_clis
   validate_requested_perspectives
   validate_excluded_perspectives
+  # 負荷判定の係数の書式。dry-run・--sequential・1 タスクの実行でも同じく弾く。
+  validate_load_gate_config || exit 2
 
   # ── レビュワーの参照・保存（プランを組む前に処理して終了する経路） ──
   #

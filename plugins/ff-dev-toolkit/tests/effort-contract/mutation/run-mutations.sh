@@ -153,6 +153,18 @@ echo "変異 9d: 「行全体が 1 個の HTML コメント」の内側ガード
 python3 "$MUTDIR/mut-suspect-multi.py"
 probe "1 行 2 コメントの取りこぼし（検査 4d）" "$REPORT" "git checkout -- '$REPORT'"
 
+echo "変異 9e: 中央値の位置の判定を開区間へ倒す（上限ちょうどを過小側へ）"
+python3 "$MUTDIR/mut-median-edge.py"
+probe "中央値が帯の端ちょうどのときの位置（検査 4h）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9g: 中央値の位置の下限側を開区間へ倒す（下限ちょうどを過大側へ）"
+python3 "$MUTDIR/mut-median-lower-edge.py"
+probe "中央値が下限ちょうどのときの位置（検査 4h）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9f: 母集団 0 件の (unmeasured) 分岐を外す"
+python3 "$MUTDIR/mut-median-empty.py"
+probe "空の母集団で中央値 0 を過大側と報告する（検査 4h）" "$REPORT" "git checkout -- '$REPORT'"
+
 # --- 以下 2 件は実ツリーを触らず一時 root へ注入する（検査 11/12 の実起動） ---
 inject_root() { # <estimation.md の中身を作る関数名> → 一時 root のパスを stdout
   local t; t="$(mktemp -d)"

@@ -87,10 +87,12 @@
 - `PreToolUse :: Bash :: hooks/guard-long-gate-background.sh`
 - `PreToolUse :: Bash :: hooks/guard-pr-followup.sh`
 - `PreToolUse :: Bash :: hooks/guard-sub-issue-id.sh`
+- `PreToolUse :: Bash :: hooks/guard-zsh-glob.sh`
 - `PreToolUse :: Bash :: hooks/record-effort-wallclock.sh`
 - `PreToolUse :: Bash :: hooks/run-bash-hooks.sh`
 - `PreToolUse :: Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task :: hooks/guard-review-in-flight.sh`
 - `PreToolUse :: Read|Skill :: hooks/record-instruction-bytes.sh`
+- `PreToolUse :: Write|Edit :: hooks/guard-shell-save.sh`
 - `SessionStart :: * :: hooks/auto-update-marketplace.sh`
 - `SessionStart :: * :: hooks/check-review-roster-drift.sh`
 - `SessionStart :: * :: hooks/check-skill-drift.sh`
@@ -102,7 +104,7 @@
 - `UserPromptSubmit :: - :: hooks/decision-tree.sh`
 - `UserPromptSubmit :: - :: hooks/retrospective-context.sh`
 
-Bash 専用の9実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
+Bash 専用の10実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
 
 子の処理枠は10秒、親の登録枠は集約の余裕を含め15秒とする。時間切れの子と不正な出力は診断して除外し、完了した他の判定を残す。集約自体の環境エラーは新たな拒否にせず、子の終了コード2だけをブロックとして伝播する。終了コード2と他の拒否が重なる場合は、他の拒否理由も stderr へ残す。
 
@@ -168,11 +170,14 @@ Bash 専用の9実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK`
 - `FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK`
+- `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD`
 - `FF_DISCARD_UNCOMMITTED`
 - `FF_EFFORT_ACTUAL_ACK`
 - `FF_EXIT_CODE_ACK`
 - `FF_LONG_GATE_BACKGROUND_ACK`
+- `FF_SHELL_SAVE_ACK`（`hooks/guard-shell-save.sh` の抜け道。Write / Edit にはコマンド先頭の環境代入が無いので、hook のプロセス環境で渡す）
 - `FF_SUB_ISSUE_ID_ACK`
+- `FF_ZSH_GLOB_ACK`
 - `FF_REVIEW_LOCK_OVERRIDE`
 - `FF_REVIEW_ROUND_ACK`
 
@@ -199,6 +204,7 @@ Bash 専用の9実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_MERGE_CLEANUP_TRANSCRIPTS`
 - `FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR`
 - `FF_MULTI_AGENT_IGNORE_PATHS`
+- `FF_MULTI_AGENT_LOAD_PER_CORE`（`multi-agent.sh` がレーン起動前に load average と比べる閾値の係数。閾値は論理コア数 × 係数、既定 10、`0` で負荷判定を無効化）
 - `FF_SWEEP_ARCHIVE_DIR`
 - `FF_SWEEP_PROJECTS_DIR`
 
@@ -264,11 +270,14 @@ Bash 専用の9実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_GH_STUB`
 - `FF_GOOD_ROOT`
 - `FF_GUARD_SCRIPT`
+- `FF_GUARD_SHELL_SAVE_LIB_DIR`
+- `FF_GUARD_SHELL_SAVE_TARGET`
 - `FF_HD_CMD`
 - `FF_HEREDOC_AWK`
 - `FF_HOST_ROOT`
 - `FF_JOBS_CAP`
 - `FF_JOBS_LIMIT`
+- `FF_LEX_AWK`
 - `FF_MBCS_AWK`
 - `FF_MBCS_GIT`
 - `FF_MEDIA_RENDER`（ff-media-toolkit の実レンダリング opt-in。`sync-sha-contract` がリリース gate の許容表の理由文として参照するだけで、配布物は読まない）
@@ -356,7 +365,9 @@ Bash 専用の9実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_WEEKLY_HEALTH_ACCEPT_DISPATCH`
 - `FF_WRITE_SCAN_GIT`
 - `FF_WRITE_SCAN_GREP`
+- `FF_WRITE_SCAN_OD`
 - `FF_X`
+- `FF_ZSH_GLOB_AWK`
 - `FF_YQ_MODE`
 
 #### 4-2-2. 配布実行物・配布文書に現れるもの
@@ -391,6 +402,7 @@ Bash 専用の9実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_JEV_NOUL_THRESHOLD`
 - `FF_JEV_PRICE_PER_MTOK_USD`
 - `FF_JEV_RETRY_BASE_SECONDS`
+- `FF_MULTI_AGENT_LOAD_SAMPLE`
 - `FF_MULTI_AGENT_REVIEW_SERIES_REASON_FILE`
 - `FF_PAIRS`
 - `FF_REVIEW_LOCK_MAX_AGE_SECONDS`

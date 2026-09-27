@@ -162,6 +162,7 @@ git diff  # 適用内容の確認
 - 委譲先のエージェントが完了報告を返したら、そのエージェントが background で起こした子プロセスの取り残しを確認して回収する。[Multi-CLI Agent Orchestration の「委譲先の完了後に残る background 子プロセス」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#委譲先の完了後に残る-background-子プロセス) に従う（探し方・検出コマンド・回収手順の正本はすべて同節。規定と検出コマンドの正本はここへ複製しない）
 - 委譲先に全件ゲート・依存インストール等の長時間コマンドを回させる場合は、[Multi-CLI Agent Orchestration の「委譲先に長時間コマンドを foreground で待たせる契約」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#委譲先に長時間コマンドを-foreground-で待たせる契約) に従い、起動プロンプトへ「長時間コマンドは Bash ツールの `timeout` へ `600000`（ミリ秒）を明示して foreground で待つ / background 実行オプション（`run_in_background` 等）を使わない」を実値ごと常置する。実値はリンクで代替しない — 貼られたプロンプトの中では相対リンクが解決せず、正本を読まない委譲先には値が届かない（規定はここへ複製しない。この経路に限らず、ホストの Agent / Task ツールで直接起こす委譲を含むエージェントへの委譲すべてが対象）
 - 委譲先へ渡した worktree を回収するときは、[Multi-CLI Agent Orchestration の「生存中の委譲先の worktree を回収しない」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#生存中の委譲先の-worktree-を回収しない) に従う。未コミット差分 0 件を回収の根拠にせず、成果の確認と生存判定の実測が揃ってから回収する（判定手順の正本は同節。ここへ複製しない）
+- 委譲先に作業ファイル（PR 本文の下書き・コミットメッセージ・ログ）を書かせる場合は、[Multi-CLI Agent Orchestration の「委譲先の作業ファイルを scratchpad の固有の置き場へ分ける」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#委譲先の作業ファイルを-scratchpad-の固有の置き場へ分ける) に従う。Issue 別・エージェント固有の置き場の実パスを起動プロンプトへ常置し、親と同名の汎用名を共有の置き場の直下に使わせない（規定の正本は同節。ここへ複製しない）
 - 実装結果はステージングディレクトリに出力 — ワーキングツリーに直接書き込まない
 - ワーキングツリーへの適用前にユーザー承認を得ること
 - 結果は `.implement-results/` に保存され、後から参照できます（生成ファイル本体は `<cli>/files/<perspective>/`）

@@ -63,7 +63,7 @@
 閾値 `0.71` / `1.40` は**実測分布から導出した値**である。出荷時の暫定値（`0.77` / `1.30`。「0.6d 予定に対し 0.75d は運用上の誤差だが 2 倍は前提が壊れている」という設計判断）は、2026-09-10 に 3 リポジトリ・母集団 78 件で較正して置き換えた。次に較正するときも同じ手順で引く:
 
 1. **母集団を取る**。`scripts/effort-report.sh --repo <owner/repo> --format kv` の `variance_population` が較正母集団で、その条件は集計器の除外規則と同一である — `effort_ai_actual` と `effort_ai_planned` がブロックの単位宣言どおりの正の数で記入されていること（`effort_unit: h` なら `N.Nh`、宣言の無い旧ブロックは `N.Nd` を 1d = 8h で人時へ正規化。乖離率は比なので単位に依らない）。次のものは母集団に入らない: `ff-effort` ブロック不在（`excluded_noblock`）／実績が未記入（`excluded_planned_only`）／**実績が複数 PR の加算更新の途中にあり同じキーが 2 行ある**・数値でない値・未知の単位宣言・未閉鎖ブロック（いずれも `excluded_malformed`）／単位宣言と値の単位の食い違い（`excluded_unit_mismatch`）。`suspect_marker` が 1 以上・`limit_reached=1` のまま較正しない（前者は本文が読めていない Issue が落ちている、後者は母集団が打ち切られている）
-2. **分位点を読む**。同じ出力の `variance_p10` / `variance_p25` / `variance_median` / `variance_p75` / `variance_p90`
+2. **分位点を読む**。同じ出力の `variance_p10` / `variance_p25` / `variance_median` / `variance_p75` / `variance_p90`。`variance_median_position` が `in_band` でなければ 3 以降へ進まない（中心がずれた分布は帯を引き直さず推定手順側を直す。分岐の正本は `/retrospective` の references/effort.md）
 3. **上限を引く**。`上限 = max(p75, 1/p25)` を小数第 2 位へ丸める。これで帯は「中央値を中心に p25〜p75 を包む乗法対称帯」になる
 4. **下限は上限の逆数**。`下限 = 1/上限` を小数第 2 位へ丸める。**乗法対称を崩さない**（加法的な ±x% にしない）
 5. **p10〜p90 を包む案は採らない**。実測では下側の裾が長く（78 件で p10 = 0.27）、p10 を包むと上限が 3.7 倍まで広がって「2 倍は前提が壊れている」という判定機能が消える。下側の裾は帯を広げて隠す対象ではなく、`/create-issue` の目安表・推定手順で詰める対象である

@@ -168,7 +168,7 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 
 ### Bash ガード（PreToolUse）
 
-プラグインをインストールすると、Bash ツールの実行前に 8 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
+プラグインをインストールすると、Bash ツールの実行前に 9 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-zsh-glob.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` と `guard-zsh-glob.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
 
 **未コミット変更ガード（`guard-checkout-restore.sh`）** — 未コミット変更のあるファイルへの `git checkout [--] <path>` / `git restore <path>` を検出し、変更消失の前に警告する。警告文は代替手段（`cp` バックアップ / `git stash push -- <file>` → `pop`）を案内する。ブランチ切り替え（`git checkout <branch>` / `git switch`）、clean・untracked なファイルへの復元、`git restore --staged`（worktree 非破壊）では発火しない。
 
@@ -223,6 +223,28 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 - **このガードだけは判定を完了できないとき fail-closed**（判定不能である旨を出して止める）。対象は検出器の欠落・破損、heredoc 除去ヘルパの欠落・破損、走査 `awk` の失敗、`jq` フィルタの実行失敗、検出器出力の解釈不能、ASDD ゲートの検証不能（`.asdd/config.json` があるのに node が無い・設定を読めない。機能を無効にした場合は従来どおり無音で通る）。ただしその面は `$?` / `PIPESTATUS` / ゲート綴りを含む**候補コマンドに限る**ので、検出器が壊れても無関係な Bash 呼び出しは止まらない
 - 引用符の扱い: 検出器は**単一引用符**とコメントを散文として伏せる。二重引用符の中も区切り子・コマンド名は伏せるが、`$?` と `PIPESTATUS` は実際に展開されるため判定対象に残る（散文として書くなら単一引用符を使う）
 - 既知の限界（素通しする形）: 末尾が裸の `&` で終わる background 起動の後続行（終了コードは `wait` が運ぶため追わない）・変数展開やコマンド置換で組み立てた綴り・heredoc 本文（データとして落とす）。改行で区切った 2 行目以降は `gate-exit-dropped` が行をまたいで判定する（`pipe-exit-read` も同様）
+
+**zsh 未引用 glob ガード（`guard-zsh-glob.sh`）** — Bash ツールを動かすシェルが zsh のとき、`-` で始まる語の `=` より右に未引用の glob 文字（`*` / `?` / `[`）がある形（`grep -rn x docs --include=*.md`）を実行前に停止する。zsh は既定で `NOMATCH` が有効で、この語全体を「`--include=` で始まるファイル名」を探す glob として評価するので、**cwd に `.md` があっても 0 件**になり（`--include=` で始まる名前のファイルが実在しない限り必ず）、`no matches found` でコマンドが実行されない（bash では同じ文字列が通るので、bash 前提で書いたコマンドが zsh のホストでだけ落ちる）。停止文は検出した語と引用した書き換え案（`--include="*.md"`）を出す。
+
+- 判定の正本は同梱の共有ヘルパ `tests/lib/zsh-glob-nomatch.sh`（この hook は走査面だけを持つ）。引用・エスケープした glob、`$(…)` などの展開結果、`case` のパターン、`[[ ]]` の中、`noglob` 前置、コメント、heredoc 本文は glob として評価されないので止めない。`$(…)` とバッククォートの中のコマンドは実行時に glob されるので走査する
+- 発火するのは zsh ホストだけ（`CLAUDE_CODE_SHELL`、無ければ `SHELL` の basename が `zsh`）。bash ホスト（Linux の既定・Windows の Git Bash）では同じ記法が正しく動くので止めない
+- 一般のパス glob（`ls *.md`）は cwd の中身次第でマッチするので対象外（呼び出し文字列だけでは真陽性と断定できない）
+- 通し方: `=` の右側を引用する、または bash 前提の手順を `bash <<'EOF' … EOF` で bash に渡す。`nonomatch` を設定済みのシェルなど誤検知の場合は、コマンドの**先頭**へ環境代入 `FF_ZSH_GLOB_ACK=1` を付けて再実行する
+- 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1`
+- `jq` 不在・JSON でない入力は素通しする。候補コマンド（`=` の右に glob 文字を含む）でヘルパを読めない・走査が失敗する・引用や展開が閉じないまま終わる・ASDD 設定を検証できないときは理由付きで停止する（fail-closed。面は候補コマンドに限る）
+- 既知の限界: 未引用 `$VAR` が単語分割されない形・語頭の `=word`・`$name:修飾子` など、glob 以外の zsh 固有の展開は対象外。変数やコマンド置換で組み立てた語の中身は見えない。区切り語を引用しない heredoc（`<<EOF`）の本文に書いた `$(…)` の中のコマンドも、heredoc 本文をデータとして落とすため見えない
+
+### shell 保存時ガード（PreToolUse / Write・Edit）
+
+**shell 保存時ガード（`guard-shell-save.sh`）** — Write / Edit ツールで `.sh` ファイルを保存する直前に、同梱の 3 つの静的検出器を保存後の内容へ当て、保存前には無かった違反が入るときに保存を止める（登録は `hooks/hooks.json` の `PreToolUse`・`Write|Edit` matcher）。検出器は全件ゲートの横断メタ検査と同じもので、この hook は判定規則を持たず**走査面だけを足す**。
+
+- `$VAR` の直後にマルチバイト文字が続く展開（`tests/lib/mbcs-guard.sh`）: bash 3.2 などは先頭バイトを変数名に取り込み、`set -u` 下では unbound variable で落ちる。`${VAR}` 形で書く
+- `pipefail` 配下でパイプの下流に置いた `grep -q`（`tests/lib/pipefail-grep-q.sh`）: 一致が不一致へ反転しうる。here-string / `case` / ファイルを直接渡す形へ書き換える（原理的に小さい payload だけ行末の `# pipefail-safe: <根拠>` で除外できる）
+- 終了コードの誤読・握り潰し（`tests/lib/exit-code-guard.sh`）: `| tail` の直後の `$?`、`PIPESTATUS`、ゲート起動の握り潰し。出力をファイルへ受けて `rc=$?` → `exit $rc` まで書く
+- 走査するのは保存後のファイル全体で、Edit は現在のファイルへ置換を当てた結果を組み立てる（`pipefail` の設定行が編集箇所の外にあっても判定できる）。既存の違反の持ち越しでは止めない
+- `.sh` 以外・JSON でない入力・`jq` 不在では素通しする。`.sh` なのに検出器を読めない・走査が失敗する・Edit 対象を読めないなど**判定を完了できないときは理由付きで止める**（fail-closed。面は `.sh` の保存に限る）
+- 抜け道: Write / Edit にはコマンド先頭の環境代入が無いため、hook のプロセス環境（ホストの env 設定・起動時の export）へ `FF_SHELL_SAVE_ACK=1` を渡す
+- 既知の限界: Bash 経由の書き込み（heredoc・スクリプトからの文字列置換・`sed -i`）は Write / Edit ではないので届かない。その経路はコミット前検査と全件ゲートが受け持つ。パスが `.sh` で終わらない shell スクリプト（拡張子なし・`.bash`）と MultiEdit は対象外。Edit の `old_string` が現在の内容にバイト一致しない（改行コードの差を除いても一致しない）ときは判定不能として止まるので、ファイルの現在の内容から写し直す
 
 ## 前提
 

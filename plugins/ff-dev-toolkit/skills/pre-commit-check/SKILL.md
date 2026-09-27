@@ -158,19 +158,26 @@ git diff --name-only -- <1) で得た staged パス>
 | 種別 | staged パスの条件 | 単体で回す suite |
 |---|---|---|
 | A. 配布 Markdown | `plugins/ff-dev-toolkit/docs-template/**/*.md` または `plugins/ff-dev-toolkit/skills/**/*.md` | `docs-gates` / `plugin-root-contract` |
-| B. 公開同期対象 | `plugins/ff-dev-toolkit/**`（種別 A も含む公開同期対象の全体）または `changelog.d/*.md` | `sync-forbidden-patterns` |
+| B. 公開同期対象 | `plugins/ff-dev-toolkit/**`（種別 A も含む公開同期対象の全体）または `changelog.d/*.md` | `sync-forbidden-patterns` / `skill-count-consistency` |
 | C. shell | `*.sh`（リポジトリ内の位置は問わない） | `run-all` / `shellcheck` |
+| D. docs 仕様文書 | リポジトリ直下の `docs/**/*.md`（`plugins/ff-dev-toolkit/docs-template/` は含まない）または `.version-claims/**` | `docs-version-changelog` / `docs-frontmatter-repo` |
+
+- 種別 B の `skill-count-consistency` は、公開面の正本 `PUBLIC-SURFACE.md` が列挙する skills / hooks / `FF_*` 環境変数と実体の一致を見る。新しい `FF_*` 名を足して公開面へ分類し忘れた状態を commit 前に拾う
+- 種別 D は frontmatter の `version` を bump したときの随伴漏れ（Changelog 節の `### [x.y.z]` 欠落 = `docs-version-changelog`、bump 幅と `changeImpact` の不一致 = `docs-frontmatter-repo`）を拾う（OBS-259 / OBS-142）。version claim の再生成漏れは suite ではなく下の「version claim と changelog 断片」で見る
 
 #### プリフライトの実行手順
 
-まず `git diff --cached --name-only --diff-filter=ACMR` で staged パスの一覧を取る（手順 7 と同じ入力）。一覧を上表の 3 種別へ振り分ける。1 ファイルが複数種別に該当してよい（`plugins/ff-dev-toolkit/skills/<名>/SKILL.md` は A と B、`plugins/ff-dev-toolkit/tests/<名>/verify.sh` は B と C に該当する）。該当した種別の suite を、重複を除いて 1 回ずつ単体で実行する:
+まず `git diff --cached --name-only --diff-filter=ACMR` で staged パスの一覧を取る（手順 7 と同じ入力）。一覧を上表の 4 種別へ振り分ける。1 ファイルが複数種別に該当してよい（`plugins/ff-dev-toolkit/skills/<名>/SKILL.md` は A と B、`plugins/ff-dev-toolkit/tests/<名>/verify.sh` は B と C に該当する）。該当した種別の suite を、重複を除いて 1 回ずつ単体で実行する:
 
 ```bash
 bash plugins/ff-dev-toolkit/tests/docs-gates/verify.sh
 bash plugins/ff-dev-toolkit/tests/plugin-root-contract/verify.sh
 bash plugins/ff-dev-toolkit/tests/sync-forbidden-patterns/verify.sh
+bash plugins/ff-dev-toolkit/tests/skill-count-consistency/verify.sh
 bash plugins/ff-dev-toolkit/tests/run-all/verify.sh
 bash plugins/ff-dev-toolkit/tests/shellcheck/verify.sh
+bash plugins/ff-dev-toolkit/tests/docs-version-changelog/verify.sh
+bash plugins/ff-dev-toolkit/tests/docs-frontmatter-repo/verify.sh
 ```
 
 判定順序は手順 7 と同じで、**実行できなかった**を先に切り分ける。suite ファイルが存在しない・依存コマンドが無い・suite 自身が「skip」と報告した場合は、終了コードが 0 でも**違反なしへ倒さない**。「実行できなかった」と「違反なし」を別の状態として報告し、緑扱いにせず commit へ進まない側の判定にする（fail-closed）。実行できた suite だけを終了コードで緑赤に分ける。
@@ -180,6 +187,60 @@ bash plugins/ff-dev-toolkit/tests/shellcheck/verify.sh
 - 実行できなかった suite があれば、suite 名と理由（不在 / 依存不足 / skip）を名指しする。この場合「違反なし」とは書かない
 - 赤い suite があれば、suite 名と、その suite が名指しした違反箇所（`ファイル:行`）を列挙し、commit へ進まない
 - 該当する種別が 1 つも無ければ「対象なし」として 1 行で報告し、他の手順の結果は変えない
+- 種別 D だけが当たらない回（staged に docs 仕様文書が無い）は、D の suite を回さず、下の「version claim」も「対象なし」と 1 行で報告する。A〜C の判定は変えない
+- 種別 D の振り分けに限り、staged の**削除**も数える（`git diff --cached --name-only --no-renames --diff-filter=ACDMR -- docs .version-claims`）。version 文書や claim だけを削除した回も claim validator の対象になる
+
+#### version claim と changelog 断片
+
+固定表と同じ「ソースリポジトリだけで成立する先行検査」として、suite では拾えない 2 つの随伴漏れを commit 前に見る。どちらも全件ゲートか同期手順まで進んでから初めて赤になっていたもので、単体なら数秒で終わる。
+
+**version claim（種別 D が当たった回だけ）。** version 付き文書の frontmatter を bump したのに `update-version-claim.sh` を回し忘れると、frontmatter 系 suite は緑のまま全件ゲートの `shared-version-convergence` だけが赤になる（OBS-190）。判定は同梱の claim validator へ委ね、ここに複製しない。validator は最新の既定ブランチ（`origin/HEAD`）と index の差分を読み、version 文書と claim の未 stage・未追跡の変更も拒否する:
+
+```bash
+bash plugins/ff-dev-toolkit/scripts/check-version-claims.sh
+```
+
+| 終了コード | 報告 |
+|---|---|
+| 0 | 違反なし（`✓ version claim は …一致しています`）。`○ version claim contract 未導入` は「対象なし」として報告する |
+| 1 | 違反あり。stderr の `✗` 行（claim の欠落・byte 不一致・未 stage）を名指しし、`bash plugins/ff-dev-toolkit/scripts/update-version-claim.sh --base origin/<既定ブランチ> --document <docs/文書.md>` で再生成して `git add` し直す。commit へ進まない |
+| 2 | 判定不能。stderr が「HEAD より先行しています。rebase 後に再実行してください」なら既定ブランチが進んでいるので rebase してから回し直す。それ以外（fetch 失敗・`origin/HEAD` 未解決）も「違反なし」とは書かず、commit へ進まない |
+
+**公開対象の changelog 断片（常に）。** 公開対象（`scripts/sync-dev-toolkit-to-public.sh --list-targets` の prefix 配下）を変更した PR は、同梱 tests の fixture だけの修正でも `changelog.d/` 断片を 1 つ足す。付け忘れは同期手順 R の `CHANGELOG_MISSING` で初めて止まり、準備 PR とリリース 1 周分が増える（OBS-099）。
+
+```bash
+bash -c 'r="$(git rev-parse --show-toplevel)" || { echo "断片未検査: git リポジトリのルートを解決できません" >&2; exit 2; }; f="$r/plugins/ff-dev-toolkit/tests/lib/changelog-fragment-guard.sh"; if [ ! -d "$r/plugins/ff-dev-toolkit/tests" ]; then echo "changelog-fragment: none"; exit 0; fi; [ -f "$f" ] || { echo "断片未検査: $f がありません" >&2; exit 2; }; . "$f" || { echo "断片未検査: $f を読み込めません" >&2; exit 2; }; changelog_fragment_scan "$r"'
+```
+
+断片として数えるのは、merge-base（`origin/HEAD` の指す既定ブランチ, HEAD）から index までに**追加**された `changelog.d/<名>.md`（`README.md` を除く）である。同じ PR の前の commit で足した断片も数えるので、レビュー対応の 2 コミット目以降を赤にしない。既定ブランチの先端に既に在る断片（他 PR の未消費断片）は数えない。公開対象の変更として数えないのは、同期手順 R が断片を要求しないもの — `scripts/check-release-required.sh` の `META_ALLOWLIST`（告知不要のメタ変更）と、リリース準備・footer 追従だけが書く公開 CHANGELOG — で、どちらも各スクリプトの定義を読み、ここへ複製しない。公開ファイルの削除も公開面の変更として数える。
+
+| 終了コード | 出力 | 報告 |
+|---|---|---|
+| 0 | `changelog-fragment: ok <N>` | 違反なし（断片 N 件） |
+| 0 | `changelog-fragment: none` | 対象なし（staged に公開対象の変更が無い。「違反なし」とは書かない） |
+| 0 | `changelog-fragment: consumed <N>` | 対象外（断片の削除・公開 CHANGELOG・`scripts/release-dev-toolkit.sh` の準備対象だけを stage した、断片を集約するリリース準備の回。準備対象外の公開変更が混ざれば消費と扱わない） |
+| 1 | `公開対象を変更したのに changelog.d/ 断片がありません: <先頭パス>（公開対象 <M> 件）` | 違反あり。`changelog.d/README.md` の書式で断片を足して `git add` する。commit へ進まない |
+| 2 | stderr の `断片未検査: <理由>` | 断片未検査。公開対象一覧を取得できない・比較 base を解決できず staged にも断片が無い・git が失敗した。緑とも違反なしとも報告せず、commit へ進まない |
+
+#### 実行ビット検査（新規 suite / hook）
+
+固定表と同じ「ソースリポジトリだけで成立する先行検査」として、staged された suite の `verify.sh` と hook の実行ビットを見る。Write ツール・リダイレクト・ファイル全体の再構成で作った `.sh` は mode 100644 になり、`tests/run-all.sh` は `-x` を suite の起動条件にしているので、欠落は全件ゲート 1 周の末尾に `not run (not executable)` として出るまで分からない（OBS-206）。随伴先としての位置づけは `docs/04-quality/TESTING.md` の「新規 suite 追加の随伴先」項目 10 が正本。
+
+- 対象は staged（ACMR）の `plugins/ff-dev-toolkit/tests/<suite>/verify.sh` と `plugins/ff-dev-toolkit/hooks/*.sh`。`tests/lib/*.sh` は source 前提なので対象外
+- 見るのは作業ツリーではなく **index 側の mode**（commit される mode）で、判定材料は `git diff --cached --raw`（`--summary` の `create mode` / `mode change` 行と同じ mode を、mode を変えていない修正も含めて全 staged エントリについて出す）
+
+```bash
+bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-toolkit/tests/lib/exec-bit-guard.sh"; if [ ! -d "$r/plugins/ff-dev-toolkit/tests" ]; then echo "exec-bit: none"; exit 0; fi; [ -f "$f" ] || { echo "実行ビット未検査: $f がありません" >&2; exit 2; }; . "$f" || exit 2; exec_bit_scan "$r"'
+```
+
+リポジトリルートを解決してから lib を読むので、サブディレクトリから呼んでもよい。`plugins/ff-dev-toolkit/tests/` を持たない消費側プロジェクトでは `exec-bit: none`（対象なし）を返し、tests はあるのに lib が無い回は「実行ビット未検査」（rc=2）にする — lib を読めなかった失敗を rc=1（違反あり）と取り違えない。
+
+| 終了コード | 出力 | 報告 |
+|---|---|---|
+| 0 | `exec-bit: ok <N>` | 違反なし（N 件すべて 100755） |
+| 0 | `exec-bit: none` | 対象なし（「違反なし」とは書かない） |
+| 1 | `<path>: <mode>（実行ビットなし）` | 違反あり。名指しされたファイルを `chmod +x` して `git add` し直す。commit へ進まない |
+| 2 | stderr の `実行ビット未検査: <理由>` | 実行ビット未検査。判定材料を取得できない・書式を読めない。緑とも違反なしとも報告せず、commit へ進まない |
 
 ### 9. 結果の出力
 
@@ -237,6 +298,24 @@ bash plugins/ff-dev-toolkit/tests/shellcheck/verify.sh
 - ❌ 実行できなかった（`suite 名` — 不在 / 依存不足 / skip。「違反なし」とは書かない、commit へ進まない）
   または
 - ❌ 判定不能（手順 6 の一致確認が不一致。「違反なし」とは書かない、commit へ進まない）
+
+### version 随伴（claim / changelog 断片）
+- ✅ 違反なし（`check-version-claims.sh` rc=0 / `changelog-fragment: ok N`）
+  または
+- ❌ 違反あり（claim validator の `✗` 行、または断片欠落の先頭パスを名指し。再生成・断片追加して `git add` し直すまで commit へ進まない）
+  または
+- ○ 対象なし（種別 D が当たらない回の claim / `changelog-fragment: none` / `consumed N`）
+  または
+- ❌ 断片未検査・claim 判定不能（`断片未検査: <理由>` / claim validator rc=2。既定ブランチが先行しているなら rebase 後に再実行。「違反なし」とは書かない、commit へ進まない）
+
+### 実行ビット（新規 suite / hook）
+- ✅ 違反なし（`exec-bit: ok N`）
+  または
+- ❌ 違反あり（`exec_bit_scan` が名指しした `<path>: <mode>` を列挙、`chmod +x` → `git add` し直すまで commit へ進まない）
+  または
+- ○ 対象なし（staged に `tests/*/verify.sh` も `hooks/*.sh` も無い／ソースリポジトリではない）
+  または
+- ❌ 実行ビット未検査（`git diff --cached --raw` を取得できない・読めない。「違反なし」とは書かない、commit へ進まない）
 
 ### サマリー
 - チェック項目: X/Y ✅

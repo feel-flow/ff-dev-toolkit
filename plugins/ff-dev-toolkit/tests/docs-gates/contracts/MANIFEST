@@ -3,6 +3,7 @@
 # 残ったファイルが 1 行でも返す限り件数側の検査に掛からないため。
 # 契約を足す / 消すときはここも同じ PR で直す（`#` 始まりと空行は無視）。
 bundle-work-unit.tsv
+delegation-scratchpad.tsv
 git-workflow-concurrent-session.tsv
 git-workflow-heredoc.tsv
 git-workflow-sub-issues.tsv

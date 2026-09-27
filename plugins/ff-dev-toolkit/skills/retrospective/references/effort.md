@@ -28,7 +28,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解
 
 | 出力 | 行動 |
 | ---- | ---- |
-| `variance_population` が 156 件（前回較正時の 2 倍）に到達、または `variance_out_of_band` ÷ `variance_population` が 0.60 を超える | **閾値 `0.71` / `1.40` と、`/create-issue` の目安表（`references/estimation.md`）の再較正を提案する**。この提案が唯一の発火点である。前回較正は 2026-09-10（3 リポジトリ合算 78 件・帯内率 51%）。手順は `/close-issue`「帯の較正手順」に従う（`variance_p25` / `variance_p75` から乗法対称帯を引き直す） |
+| `variance_population` が 156 件（前回較正時の 2 倍）に到達、または `variance_out_of_band` ÷ `variance_population` が 0.60 を超える | **閾値 `0.71` / `1.40` と、`/create-issue` の目安表（`references/estimation.md`）の再較正を提案する**。この提案が唯一の発火点である。前回較正は 2026-09-10（3 リポジトリ合算 78 件・帯内率 51%）。**直す側は `variance_median_position` の 1 条件で決める**: 中央値が帯の中心（1.0）から外れて帯の外にある（`underestimate` / `overestimate`）分布では**帯を広げず**、推定手順（`/create-issue` の目安表・既定値）側を直す。帯を広げるのは中央値が帯内で裾だけ広い（`in_band`）場合に限り、手順は `/close-issue`「帯の較正手順」に従う（`variance_p25` / `variance_p75` から乗法対称帯を引き直す）。中心がずれた分布で p25〜p75 を包むと、帯はずれを吸収する向きにしか動かず、系統的な過小・過大見積もりが帯内として記録されるようになる |
 | `suspect_marker` が 1 以上 | マーカーの綴りずれ・字下げ・行末空白。該当 Issue は書き戻し側でも集計側でも**永久に静かに落ちる**ので、**警告に列挙された番号**（`kv` 形式では `suspect_marker_issues`）の本文を直す。疑うのはマーカー形の行（行全体が 1 個の HTML コメントで `ff-effort` に言及しているもの）だけなので、ブロックの外で `ff-effort` という語を散文で説明しているだけの Issue はここに出ない |
 | `excluded_malformed` が多い | 記入書式の周知不足。`/create-issue` のテンプレ（SKILL.md 手順 6）か目安表（`references/estimation.md`）に問題がある可能性 |
 | `excluded_unit_mismatch` が 1 以上 | `effort_unit` の宣言と値の単位が食い違っている（宣言ありの `N.Nd`・宣言なしの `N.Nh`）。列挙された番号（`excluded_unit_mismatch_issues`）の本文を直す。宣言の無い旧ブロックの `N.Nd` は食い違いではなく、集計器が 1d = 8h で人時へ正規化して母集団に入れている |

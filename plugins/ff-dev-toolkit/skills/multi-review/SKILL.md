@@ -154,7 +154,7 @@ PR Review Response Policy に従い、Critical/Warning/妥当な Suggestion を�
 
 #### 3-7. fix ループの収束判定と打ち切り
 
-正本は [収束判定節](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#fix-ループの収束判定と打ち切り)。**上限は 2 巡**で（巡は起動時の HEAD で数え、PR 作成前の起動も消費する）、3 巡目は hook と `multi-agent.sh` の巡回カウンタが止める。2 巡目の fix は親の直読と suite の再実行で確認する。停止条件は既出の Critical / Warning を全解消し新規が無いこと（green（全指摘ゼロ）を待たない）。未解消のままマージしない。再開は追加上限を宣言して `FF_REVIEW_ROUND_ACK=1` で 1 巡ずつ通す。残件は `/out-of-scope-issue` へ（独立 Warning のパーキングはしない）。
+正本は [収束判定節](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#fix-ループの収束判定と打ち切り)。**上限は 2 巡**で（PR 作成前の起動も消費）、3 巡目は巡回カウンタが止める。2 巡目 fix は直読と suite 再実行で確認（1 巡目 fix が既存ロジックを再構成した回は fix 差分限定のクロスモデル 1 本を 2 巡目に回す）。停止条件は既出の Critical / Warning を全解消し新規が無いこと（green（全指摘ゼロ）を待たない）。再開は追加上限を宣言し `FF_REVIEW_ROUND_ACK=1` で 1 巡ずつ通す。残件は `/out-of-scope-issue` へ（独立 Warning のパーキングはしない）。
 
 ## 重要ルール
 

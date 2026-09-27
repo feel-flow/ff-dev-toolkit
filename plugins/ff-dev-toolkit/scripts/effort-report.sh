@@ -795,6 +795,13 @@ END {
   vp25 = (vn > 0) ? pctl(variances, vn, 0.25) : 0
   vp75 = (vn > 0) ? pctl(variances, vn, 0.75) : 0
   vp90 = (vn > 0) ? pctl(variances, vn, 0.90) : 0
+  # 中央値の位置は較正トリガの分岐の入力（/retrospective の references/effort.md）。
+  # 中央値が帯の外なら分布の中心がずれている（帯を広げず推定手順を直す）。帯内なら
+  # 裾だけが広い（帯の引き直しを検討する）。端ちょうどは帯内（out_of_band と同じ閉区間）
+  if (vn == 0) vpos = "(unmeasured)"
+  else if (vmed > upper + 0) vpos = "underestimate"
+  else if (vmed < lower + 0) vpos = "overestimate"
+  else vpos = "in_band"
   truncated = (from_gh == 1 && total >= limit + 0) ? 1 : 0
 
   if (format == "kv") {
@@ -821,6 +828,7 @@ END {
     printf "variance_p75=%.2f\n", vp75
     printf "variance_p90=%.2f\n", vp90
     printf "variance_out_of_band=%d\n", out_of_band
+    printf "variance_median_position=%s\n", vpos
     printf "suspect_marker=%d\n", suspect_n
     # 0 件でもキーは出す。存在しないキーと空値を消費側に区別させる
     printf "suspect_marker_issues=%s\n", suspect_kv
@@ -879,6 +887,9 @@ END {
     printf "p75:            %.2f\n", vp75
     printf "p90:            %.2f\n", vp90
     printf "閾値外（<%s または >%s）: %d 件 / %d 件\n", lower, upper, out_of_band, vn
+    if (vpos == "underestimate") printf "中央値の位置:   過小見積もり側（中央値 > %s。帯を広げず推定手順を直す）\n", upper
+    else if (vpos == "overestimate") printf "中央値の位置:   過大見積もり側（中央値 < %s。帯を広げず推定手順を直す）\n", lower
+    else printf "中央値の位置:   帯内（外れが多いなら裾が広い。帯の引き直しを検討する）\n"
   } else {
     printf "算出不能（予定と実績が揃った Issue がありません）\n"
   }

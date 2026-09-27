@@ -326,6 +326,12 @@ else
     # fixture 2 本（不正ディレクティブ / 正しいディレクティブ + error 未満の指摘）で
     # 常設実測する。shellcheck が PATH に無ければ丸ごと ○ skip（単体で〜14 秒）。
     "$SCRIPT_DIR/shellcheck/verify.sh"
+    # GNU / BSD で意味が変わる短オプション（stat -f / date -r）を `||` の先頭側に置き、後ろの腕で
+    # 同じコマンドの別方言へ倒す形を tracked shell ソース全体で静的に止める（Issue `#1807`）。
+    # 針が 1 ファイル（changelog 断片ライブラリ）にしか当たっておらず adapter-common.sh で
+    # 再発した（Issue `#1806`）ため、母集団をリポジトリ全体にした。検出器の陽性 / 陰性 fixture・
+    # 再発元を修正前の形へ戻したコピー・検査不成立の既定（0 件・対象不在）を毎回実測する。
+    "$SCRIPT_DIR/dialect-fallback/verify.sh"
     # Jev 判定アダプタ（scripts/jev/jev-judge.sh）と offline 評価ハーネス（jev-eval.sh）の
     # 契約。PATH 先頭の偽 curl で呼び出しの形（-K - で設定を stdin 経由・argv にキーを
     # 載せない）と HTTP ステータス種別ごとの終了コード・再試行・入力不正の不送信・
@@ -359,6 +365,10 @@ else
     # case 11（*.sh MBCS）の fail-closed 経路をシームで自動回帰（Issue #312）。
     # skill-bash-blocks の直後: 同欠陥クラスの SKILL.md 側ガードと並べて報告する。
     "$SCRIPT_DIR/mbcs-guard-failclosed/verify.sh"
+    # /pre-commit-check 手順 8 の実行ビット検査（tests/lib/exec-bit-guard.sh の exec_bit_scan）
+    # を隔離 git fixture で叩く（Issue `#1741` / OBS-206）。同じ commit 前ガード lib の回帰として
+    # mbcs-guard-failclosed の直後に置く。一時領域・git が無ければ skip せず赤（1 秒前後）。
+    "$SCRIPT_DIR/precommit-exec-bit/verify.sh"
     # 共通 lib tests/lib/section-scope.sh のフェンス状態機械（字下げ・チルダ・4 連・未閉じ）と
     # 見出し本数のガードを fixture 文書で直接叩く。consumer 文書はチルダ・未閉じを踏まないので、
     # その分岐はここでしか実行されない。一時領域が作れなければ skip せず赤で止める（1 秒未満）。
@@ -538,6 +548,17 @@ else
     # 限られること（検出器が壊れても復旧作業ができる）も併せて見る。判定を複製して
     # いないことは、検出器スタブへ向けたコピーで verdict が追随することで実測する。
     "$SCRIPT_DIR/guard-exit-code/verify.sh"
+    # PreToolUse（Write|Edit）の shell 保存時ガード（hooks/guard-shell-save.sh、観測台帳
+    # OBS-042 の対策。Issue `#1801`）。保存先が .sh のとき保存後の全体を組み立てて 3 検出器
+    # （mbcs-guard / pipefail-grep-q / exit-code-guard）を当て、保存前に無かった違反だけを
+    # deny する。Write / Edit・3 検出器それぞれの発火、.sh 以外と既存違反の持ち越しの素通し、
+    # FF_SHELL_SAVE_ACK の抜け道、検出器不在・走査失敗の fail-closed を stdin JSON fixture で固定する。
+    "$SCRIPT_DIR/guard-shell-save/verify.sh"
+    # PreToolUse（Bash）の zsh 未引用 glob ガード（hooks/guard-zsh-glob.sh、Issue `#1774`）。
+    # zsh ホストで `--flag=<未引用 glob>` を deny し、引用済み・一般のパス glob・case パターン・
+    # [[ ]]・noglob・heredoc 本文・bash ホストは素通しすることを stdin JSON fixture で固定し、
+    # 述語が真陽性とした形が実際の zsh で NOMATCH になることも実測する（zsh 不在なら Z 系のみ skip）。
+    "$SCRIPT_DIR/guard-zsh-glob/verify.sh"
     # 上の 5 本の Bash ガード（effort-actual / issue-labels / long-gate-background /
     # review-in-flight / exit-code）が共有する heredoc 除去ヘルパ（tests/lib/heredoc-strip.sh）
     # の契約: 正常終端は本文だけを落とし、未終端は rc 3 で生コマンドを返し、awk 失敗は
@@ -936,6 +957,11 @@ else
     # stub CLI で orchestrator を 4 回実走（単独実測 約 20 秒。詳細は suite README。
     # standard の逐次化変異は期限付きバリアで検出）。実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/multi-agent-serialization/verify.sh"
+    # レーン起動前の負荷判定（Issue `#1810`）と --perspective のカンマ区切り（Issue `#1833`）:
+    # 正本の規定行を節スコープで固定し、load average を注入値で与えて閾値超 → 逐次 /
+    # 閾値以下 → 無出力で並列 / 係数 0・不正・1 タスク・実測不能の各分岐を stub CLI で実走する。
+    # 負荷判定の呼び出しとカンマ分割を外す変異の検出も同じ実行内で実測する（単独 約 12 秒）。
+    "$SCRIPT_DIR/multi-agent-load-gate/verify.sh"
     # 実行中にレビュー対象（HEAD / ブランチ / 作業ツリー）が動いたときに結果を黙って
     # 返さないこと（公開 Issue #11）。diff の固定と前後のリビジョン検証を、一時 git
     # リポジトリ + stub CLI で実走して確かめる。ミューテーション 5 件つき（詳細は
@@ -1346,7 +1372,6 @@ MISS_PROBE_BASELINE=(
   docs-frontmatter-repo-selftest
   docs-frontmatter-repo
   docs-gates-runtime
-  docs-gates
   docs-scan-mirror
   docs-template-frontmatter-selftest
   docs-template-frontmatter
@@ -1411,7 +1436,6 @@ MISS_PROBE_BASELINE=(
   skill-frontmatter
   skill-references-existence
   sweep-orphan-transcripts
-  sync-forbidden-patterns
   update-check
   validate-docs-placeholders-selftest
   validate-docs-placeholders

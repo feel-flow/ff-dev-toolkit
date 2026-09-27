@@ -40,6 +40,8 @@
 # 変異検出: 空の単位宣言（`- effort_unit:`）を旧ブロックとして読むと 検査 4f の excluded_malformed=2 / population=6 が赤になる（mutation/mut-empty-unit.py）。
 # 変異検出: record-effort-wallclock.sh の Issue 番号抽出の `#` を任意に戻すと 検査 14c（`chore/2026-09-23-cleanup` を Issue として記録する）が赤になる（mutation/mut-hash-optional.py）。
 # 空振り検出: create-issue の references/estimation.md を消すと検査対象不在で exit 1、3 層参照の表を本線 SKILL.md へ戻して estimation.md から消すと 検査 9 の 3 件が赤になる（`--state closed` は補正手順の照会にも在るので残る）（2026-09-24 実測。置き場所を移した針が移動元の写しに当たって緑になる形を塞ぐ）。
+# 変異検出: effort-report.sh の中央値の位置の判定を `vmed >= upper` へ倒すと 検査 4h の median-edge（上限ちょうど 1.40 は in_band）、`vmed <= lower` へ倒すと median-lower-edge（下限ちょうど 0.71 は in_band）、母集団 0 件の (unmeasured) 分岐を外すと空入力がそれぞれ 1 件赤になる（mutation/mut-median-edge.py / mut-median-lower-edge.py / mut-median-empty.py）。
+# 空振り検出: references/estimation.md から既定値の表の「再置換で済む」行を消すと 検査 9b の 3 件、ガード新設の行を消すと 2 件、分岐の問い・同額の行・補正元優先の段落・並列・再掲文書・静的検出器の行を消すとそれぞれ 1 件、retrospective の較正トリガ行を消すと 3 件、close-issue の較正手順 2 を消すと 1 件が赤になる（2026-09-27 実測。規定を足した行が消えても緑のままになる形を塞ぐ）。
 # 空振り検出: --issue-metrics に存在しない記録ディレクトリを与えると (unmeasured) を出して exit 0 することを 検査 13a が固定し、0 を出す変異（mutation/mut-metrics-zero.py）で 13a が赤になる。
 #
 # 検査の書き方の規律（レビュー由来）:
@@ -137,7 +139,7 @@ done
 
 # fixture の消失を「検査が通った」に化けさせない。判定器は exit 2 を「ファイル不在」と
 # 「マーカー構成の破損」の両方に使うため、期待値 2 の検査は fixture が消えても通る。
-for _x in issues.json percentile.json suspect.json band-edge.json units.json body-base.md body-checkbox.md body-block.md \
+for _x in issues.json percentile.json suspect.json band-edge.json units.json median-under.json median-edge.json median-lower-edge.json body-base.md body-checkbox.md body-block.md \
           body-both.md body-outside.md body-marker-removed.md body-collision-base.md \
           body-collision-new.md body-reversed-base.md body-reversed-new.md body-unclosed.md; do
   [ -f "$FIX/$_x" ] || { echo "✗ fixture が見つかりません: $FIX/$_x" >&2; exit 1; }
@@ -336,6 +338,51 @@ out_has "$UKV" "gate_minutes_median_other=(unavailable)" "ゲート分は供給�
 out_lacks "$UKV" "review_rounds_median_all=0" "未配線の指標を 0 で出さない"
 out_has "$KV" "wallclock_median_h_all=(unmeasured)"   "実測を持つ Issue が 0 件なら (unmeasured)（0 と区別する）"
 
+echo "検査 4h: 中央値の位置（帯内 / 過小側 / 過大側）を較正トリガの分岐の入力として出す（behavioral）"
+# 較正トリガの発火時に「帯を広げる」か「推定手順を直す」かは中央値の位置で決める
+# （retrospective の references/effort.md）。3 方向と端・空の母集団を 1 つずつ固定する。
+# median-under.json は中心が過小側へずれた分布（p25 1.33 / 中央値 1.88 / p75 2.50。導入先で
+# 較正トリガが発火した分布の形）で、p25〜p75 を包む較正に倒すと帯がずれを吸収してしまう。
+MUKV="$(bash "$REPORT" --input "$FIX/median-under.json" --format kv 2>&1)"
+if [ $? -ne 0 ]; then
+  bad "median-under fixture で集計器が異常終了した: ${MUKV}"
+else
+  out_has "$MUKV" "variance_median=1.88" "median-under fixture の中央値 1.88"
+  out_has "$MUKV" $'variance_median_position=underestimate\n' "中央値が上限 1.40 を超える分布は過小見積もり側（underestimate）"
+fi
+out_has "$PKV" $'variance_median_position=overestimate\n' "中央値 0.55 が下限 0.71 未満の分布は過大見積もり側（overestimate）"
+out_has "$KV"  $'variance_median_position=in_band\n'      "中央値 1.25 は帯内（in_band）"
+MEKV="$(bash "$REPORT" --input "$FIX/median-edge.json" --format kv 2>&1)"
+if [ $? -ne 0 ]; then
+  bad "median-edge fixture で集計器が異常終了した: ${MEKV}"
+else
+  out_has "$MEKV" "variance_median=1.40" "median-edge fixture の中央値は上限ちょうど 1.40"
+  out_has "$MEKV" $'variance_median_position=in_band\n' "中央値が上限ちょうどなら帯内（variance_out_of_band と同じ閉区間）"
+fi
+MLKV="$(bash "$REPORT" --input "$FIX/median-lower-edge.json" --format kv 2>&1)"
+if [ $? -ne 0 ]; then
+  bad "median-lower-edge fixture で集計器が異常終了した: ${MLKV}"
+else
+  out_has "$MLKV" "variance_median=0.71" "median-lower-edge fixture の中央値は下限ちょうど 0.71"
+  out_has "$MLKV" $'variance_median_position=in_band\n' "中央値が下限ちょうどでも帯内（下限側も閉区間）"
+fi
+EMPTY_JSON="$(mktemp)" || { echo "✗ 一時ファイルを作成できません" >&2; exit 1; }
+printf '[]\n' > "$EMPTY_JSON"
+EKV="$(bash "$REPORT" --input "$EMPTY_JSON" --format kv 2>&1)"
+ETXT="$(bash "$REPORT" --input "$EMPTY_JSON" 2>&1)"
+rm -f "$EMPTY_JSON"
+out_lacks "$ETXT" "中央値の位置" "母集団 0 件の text 形式は中央値の位置を出さない（空の分布を帯内と書かない）"
+out_has "$EKV" $'variance_median_position=(unmeasured)\n' "母集団 0 件では (unmeasured)（中央値 0 を過大側と読まない）"
+MUTXT="$(bash "$REPORT" --input "$FIX/median-under.json" 2>&1)"
+if [ $? -ne 0 ]; then
+  bad "median-under fixture の text 形式で集計器が異常終了した: ${MUTXT}"
+else
+  out_has "$MUTXT" "中央値の位置:   過小見積もり側（中央値 > 1.40。帯を広げず推定手順を直す）" "text 形式に中央値の位置と行動が出る（過小側）"
+fi
+out_has "$PTXT" "中央値の位置:   過大見積もり側（中央値 < 0.71。帯を広げず推定手順を直す）" "text 形式に中央値の位置と行動が出る（過大側）"
+ITXT="$(bash "$REPORT" --input "$FIX/issues.json" 2>&1)"
+out_has "$ITXT" "中央値の位置:   帯内" "text 形式に中央値の位置が出る（帯内）"
+
 echo "検査 4c: 既定の出力形式（text）が実行できる"
 TXT="$(bash "$REPORT" --input "$FIX/issues.json" 2>&1)"
 if [ $? -ne 0 ]; then
@@ -453,6 +500,27 @@ contains "$CREATE_ESTIMATION" 'estimation` カテゴリ' "知見層: estimation 
 contains "$CREATE_ESTIMATION" "OBSERVATIONS.md" "パターン層: 観測台帳を引く"
 contains "$CREATE_ESTIMATION" "--state closed" "データ層: closed Issue の実績を引く"
 contains "$CREATE_ESTIMATION" "Kind: keep" "パターン層で keep も見る（片側参照にしない）"
+
+echo "検査 9b: レビュー対応分の既定値が fix の中身で分岐する（references/estimation.md）"
+# 既定値 1 本（実装分と同額）は、文言の再置換で済む PR では過大側へ、新設ガードでは過小側へ
+# 系統的に倒れた（OBS-160 / 導入先の観測台帳）。分岐の問い・3 行の比率・並列と再掲文書の積み方を固定する。
+contains "$CREATE_ESTIMATION" "レビュー指摘の fix が実装・ゲートのロジックの作り直しを伴うか" "既定値の前に fix の中身を問う"
+contains "$CREATE_ESTIMATION" "契約針の差し替え・要約再掲文書の同期・案内文の更新・コード 0 行の純削除" "再置換で済む形の列挙"
+contains "$CREATE_ESTIMATION" "実装分の **1/3〜1/2**" "再置換で済む形は実装分の 1/3〜1/2"
+contains "$CREATE_ESTIMATION" "観測台帳 OBS-160（実測 3 件で昇格" "1/3〜1/2 の根拠（OBS-160 の実測）"
+contains "$CREATE_ESTIMATION" "実装分の **1.5 倍以上**（下限）" "偽陽性潰し分を積まない検査・ガードの新設は実装分の 1.5 倍以上"
+contains "$CREATE_ESTIMATION" "その行には重ねない" "静的検出器の行（偽陽性潰し分あり）へ 1.5 倍を重ねない"
+contains "$CREATE_ESTIMATION" "| 実装の作り直しを伴う（通常の実装・修正） | 実装分と**同額** |" "通常の実装は実装分と同額（OBS-111）"
+contains "$CREATE_ESTIMATION" "補正元が見つかったときは表より補正元の実績比を優先する" "補正元の実績比が表の既定値より優先する"
+contains "$CREATE_ESTIMATION" 'その壁時計の圧縮を `effort_basis` に明記する' "並列計画では壁時計の圧縮を effort_basis に明記"
+contains "$CREATE_ESTIMATION" '同じ規則を再掲する生存文書を `grep` で数え上げ' "規則の文言変更は再掲文書の本数を別項目で積む"
+contains "$CREATE_ESTIMATION" "回避形への対応を 2 巡" "コマンド文字列型の検出器は回避形対応 2 巡"
+
+echo "検査 9c: 較正トリガの分岐が中央値の位置で決まる（retrospective / close-issue / 集計器）"
+contains "$RETRO" '直す側は `variance_median_position` の 1 条件で決める' "retrospective: 較正の分岐を中央値の位置 1 条件で書く"
+contains "$RETRO" "分布では**帯を広げず**、推定手順" "retrospective: 中央値が帯外なら帯を広げず推定手順を直す"
+contains "$RETRO" '中央値が帯内で裾だけ広い（`in_band`）場合に限り' "retrospective: 帯を広げるのは中央値が帯内の場合だけ"
+contains "$CLOSE" '`variance_median_position` が `in_band` でなければ 3 以降へ進まない' "close-issue: 較正手順が中央値の位置で止まる"
 
 echo "検査 10: retrospective に乖離 3 帯すべての記録先がある"
 contains "$RETRO" "過小見積もり" "帯: 過小"
