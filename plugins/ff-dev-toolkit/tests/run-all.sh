@@ -346,6 +346,11 @@ else
     # 検査（Issue #889）。同じ SKILL.md 横断走査なので skill-bash-blocks の直後に置く。
     # 検出力は同 suite 内の fixture（抽出・非検出・変種・解決の 4 系統）で毎回実測する。
     "$SCRIPT_DIR/skill-references-existence/verify.sh"
+    # 文書が「ファイルパス + 節名」の形（パスの直後の「」・の「」節）で指す見出しが、解決先の
+    # ファイルに実在するかの検査（Issue `#1826` / OBS-081）。節の移動・改名で参照だけが古い
+    # ファイルを指したまま残る取りこぼしを、同じ PR のうちに赤にする。参照の実在検査として
+    # skill-references-existence の直後に置く。抽出・解決・照合の検出力は一時領域の fixture で毎回実測する。
+    "$SCRIPT_DIR/section-ref-existence/verify.sh"
     # ルート設定で tracked Markdown 全体を lint し、DoD の「markdownlint エラーなし」を
     # 実行可能にする。依存は同梱 MCP の node_modules から借り、直後の selftest が
     # 新規違反を非 0・ファイル名付きで検出することを固定する（Issue #295）。
@@ -1834,12 +1839,24 @@ fi
 # 成立するうえ、倒れる向きが「黙って通す」なので気づけない。
 MCP_DIR="${FF_RUN_ALL_MCP_DIR:-$SCRIPT_DIR/../mcp}"
 MCP_NODE_MODULES="$MCP_DIR/node_modules"
-# **実在検査は消費側と同じ 1 点（.bin/esbuild）へ当てる**。ディレクトリの実在だけを見ると、
-# `npm ci --omit=dev` / `NODE_ENV=production` / 中断した install が作る「在るが足りない」を
-# 素通しする。その状態で下流 suite（mcp-dist-gate / live-ace-gates / ace-refine）は
-# 「npm install が不完全」で赤くなるので、ガードが分類すると宣言した環境の赤が、出力の
-# どこにも現れないまま十数分かけて出ることになる（述語がずれた側が黙る = いちばん避けたい形）。
+# 末尾の簡易案内で使うセンチネル。起動可否は下の npm ls で直接依存全体を検査する。
 MCP_ESBUILD="$MCP_NODE_MODULES/.bin/esbuild"
+# npm ls は package.json の要求範囲と展開済み直接依存を照合する（lock の完全一致検査ではない）。
+# lock 不在は npm ci で復元できないので判定不能として止める。
+# ACE-1327-2: production / omit / package-lock-only / global の設定による検査対象の変化を防ぐ。
+mcp_dependency_preflight() {
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "npm が PATH にありません（依存の判定不能）"
+    return 1
+  fi
+  if [[ ! -r "$MCP_DIR/package-lock.json" ]]; then
+    echo "package-lock.json が無いか読めません: $MCP_DIR/package-lock.json（依存の判定不能）"
+    return 1
+  fi
+  npm ls --prefix "$MCP_DIR" --depth=0 --include=dev --include=optional --include=peer \
+    --package-lock-only=false --global=false \
+    --json=false --parseable=false --long=false --color=false 2>&1
+}
 # 上書きは検査専用の口である。この PR 以前は末尾の案内 1 行しか動かさなかったが、いまは
 # **既定一覧を起動するかどうか**を決める。黙って効かせると無音の迂回路になるので 1 行名乗る
 # （suite は実パスを読み続けるため、上書きした回の赤 / skip はそのまま出る）。
@@ -1856,15 +1873,14 @@ case "${FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS:-}" in
 esac
 
 if [[ "$USING_DEFAULT_SCRIPTS" == "1" && "$ALLOW_MISSING_MCP_DEPS" != "1" \
-      && -f "$MCP_DIR/package.json" && ! -x "$MCP_ESBUILD" ]]; then
+      && -f "$MCP_DIR/package.json" ]] && ! MCP_DEPS_DIAGNOSTIC="$(mcp_dependency_preflight)"; then
   echo "✗ 環境が未整備です: 同梱 MCP の依存が揃っていないため既定一覧を実行しません（suite は 1 つも実行していません）" >&2
   if [[ -d "$MCP_NODE_MODULES" ]]; then
-    echo "    依存は展開されていますが必要なコマンドがありません: $MCP_ESBUILD" >&2
-    echo "    （npm ci --omit=dev / NODE_ENV=production / 中断した install で起きます。esbuild は devDependencies です）" >&2
+    echo "    依存は展開されていますが依存照合に失敗しました: $MCP_NODE_MODULES" >&2
   else
     echo "    見つからないパス: $MCP_NODE_MODULES" >&2
   fi
-  echo "  これは変更起因の赤ではありません。この状態で回すと ace-refine / live-ace-gates が esbuild 不在で失敗し、依存を要する残りの suite は必須 skip に落ちます（一覧: docs/04-quality/TESTING.md）。" >&2
+  printf '%s\n' "$MCP_DEPS_DIAGNOSTIC" >&2
   echo "  次を実行してから回し直してください: npm ci --prefix plugins/ff-dev-toolkit/mcp" >&2
   echo "  依存を入れずに回す意図なら FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 を付けて再実行してください（従来どおり赤 / skip のまま進みます）。" >&2
   # 終了コードは suite の失敗（1）と分ける。この Epic の主題は「環境の赤と変更起因の赤を
@@ -2877,8 +2893,8 @@ fi
 # （1）明示引数の実行（ガードの対象外）（2）FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1 のオプトアウト
 # （3）mcp/package.json を持たない checkout（公開配布物・fixture 複製。入れる先が無いので
 # ガードは掛からないが、node_modules を要る suite は skip する）。どれも案内が最後の手掛かりに
-# なるので消さない。判定対象は起動ガードで解決済み（述語も同じ .bin/esbuild へ揃える —
-# ここだけディレクトリの実在で見ると、install が不完全な回にガードと案内が同時に黙る）。
+# なるので消さない。判定対象は起動ガードで解決済み（末尾は esbuild の簡易案内だけを維持する。
+# 起動ガードは npm ls の診断で esbuild 以外の欠落も名指しする）。
 if [[ ! -x "$MCP_ESBUILD" && ( ${#SKIPPED[@]} -gt 0 || ${#FAILED[@]} -gt 0 ) ]]; then
   echo "○ 案内: 同梱 MCP の依存が揃っていないため一部 suite が skip / fail した可能性があります（未検出: ${MCP_ESBUILD}）。全件ゲート前に次を実行してください: npm ci --prefix plugins/ff-dev-toolkit/mcp"
 fi

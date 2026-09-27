@@ -85,7 +85,7 @@ GitHub Copilotのサブスクリプション購入とVS Code拡張機能のイ�
 - Copilot Chatの動作確認
 - MASTER.mdルール反映確認
 
-**詳細ガイド**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/03-usage-and-troubleshooting.md` の「Step 4: 動作確認」節（初期セット外・必要ならコピーする）
+**詳細ガイド**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/03-usage-and-troubleshooting.md` の「STEP 4: 動作確認」節（初期セット外・必要ならコピーする）
 
 ---
 
@@ -117,7 +117,7 @@ GitHub Copilotのサブスクリプション購入とVS Code拡張機能のイ�
 - `.vscode/settings.json`をチーム共有（オプション）
 - チームメンバーへの展開
 
-**詳細ガイド**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/03-usage-and-troubleshooting.md` の「Step 6: チーム共有」節（初期セット外・必要ならコピーする）
+**詳細ガイド**: `${CLAUDE_PLUGIN_ROOT}/docs-template/setup-guides/github-copilot/03-usage-and-troubleshooting.md` の「STEP 6: チーム共有」節（初期セット外・必要ならコピーする）
 
 ---
 

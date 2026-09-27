@@ -5,8 +5,8 @@
 # lib は多数の契約 suite が source するが、consumer 文書はチルダフェンス（`~~~`）と未閉じ
 # フェンスを踏まない（2026-09-23 実測）。その分岐と見出し本数のガード（0 本・2 本）は実文書経由
 # では一度も実行されず、退行しても consumer suite は緑のままなので、ここで直接の fixture として
-# 固定する。散文モード（`section_scope_extract_prose`）がフェンスの区切り行と中身を
-# 除くことも、4 連の中の 3 連・バッククォートの中の `~~~` を含めてここで見る。
+# 固定する。散文モード（`section_scope_extract_prose`）と行モード（`section_scope_fence_free_lines`）が
+# フェンスの区切り行と中身を除くことも、4 連の中の 3 連・バッククォートの中の `~~~` を含めてここで見る。
 # fixture のフェンス内に置く見出しは行頭に置く（字下げした見出しは lib がそもそも
 # 見出しと見なさないので、フェンスを追跡しなくても節が切れず、検査の識別力が無くなる）。lib の変異は一時領域へ写した
 # コピーにだけ当て、実作業ツリーには触れない。
@@ -15,7 +15,7 @@
 # 撤去したとき（Issue `#1824`）、lib を直接叩く検査はここにしか無かったので独立させた。
 # 対の selftest を持たない高速 suite として既定モードで毎回走る。
 #
-# 空振り検出: lib の公開関数 `section_scope_contains` / `section_scope_extract_prose` / `section_scope_heading_count` を別名へ改名した写しを与えると、18 件中 17 件が赤になる（2026-09-23 実測。残る 1 件は散文モード無効化の変異の判定で、入口が無い回も「散文だけが返らない」側＝赤の側へ倒れるので緑のまま。lib の入口が消えた状態を「検査なしの緑」へ倒さない）。
+# 空振り検出: lib の公開関数 `section_scope_contains` / `section_scope_extract_prose` / `section_scope_heading_count` / `section_scope_fence_free_lines` を別名へ改名した写しを与えると、22 件中 20 件が赤になる（2026-09-27 実測。残る 2 件は散文モード無効化・行モードのフェンス追跡破壊の変異の判定で、入口が無い回も「フェンス外だけが返らない」側＝赤の側へ倒れるので緑のまま。lib の入口が消えた状態を「検査なしの緑」へ倒さない）。
 #
 # 一時領域が作れない回は skip せず赤で止める（lib の検査が丸ごと消える経路を残さない）。
 
@@ -93,8 +93,10 @@ SS_UNCLOSED_BEFORE="$FIXTURE_ROOT/section-scope-unclosed-before.md"
 SS_PROBE="$FIXTURE_ROOT/section-scope-probe.sh"
 SS_PROSE_PROBE="$FIXTURE_ROOT/section-scope-prose-probe.sh"
 SS_COUNT_PROBE="$FIXTURE_ROOT/section-scope-count-probe.sh"
+SS_LINES_PROBE="$FIXTURE_ROOT/section-scope-lines-probe.sh"
 SS_DUP="$FIXTURE_ROOT/section-scope-duplicate-heading.md"
 SS_NOHEAD="$FIXTURE_ROOT/section-scope-no-heading.md"
+SS_INLINE="$FIXTURE_ROOT/section-scope-inline-backticks.md"
 
 # 同名見出しが 2 本ある文書。針は 2 本目の節にだけ置く — ガードが緩むと 2 つの節が連結され、
 # 1 本目の節から針が消えても緑になる（写しの節版）。
@@ -113,6 +115,20 @@ cat >"$SS_NOHEAD" <<'SS_NOHEAD_DOC'
 
 - 針B
 SS_NOHEAD_DOC
+
+# 行頭のインラインコード（3 連バッククォートで開いて同じ行で閉じる）はフェンスではない。
+# フェンスと取り違えると閉じが無いまま EOF に達し、節 A も節 B も検査不能になる。
+cat >"$SS_INLINE" <<'SS_INLINE_DOC'
+## 節A
+
+```x``` を行頭に書いた散文
+
+- 針A
+
+## 節B
+
+- 針B
+SS_INLINE_DOC
 
 cat >"$SS_FENCED" <<'SS_FENCED_DOC'
 ## 節A
@@ -194,6 +210,14 @@ set -euo pipefail
 section_scope_heading_count "$2" "$3"
 SS_COUNT_PROBE_SH
 
+cat >"$SS_LINES_PROBE" <<'SS_LINES_PROBE_SH'
+#!/usr/bin/env bash
+# $1=lib $2=文書。フェンス外の行を「行番号<TAB>行」でそのまま返す。
+set -euo pipefail
+. "$1"
+section_scope_fence_free_lines "$2"
+SS_LINES_PROBE_SH
+
 SS_OUT=""
 SS_RC=0
 run_section_scope() { # $1=文書 $2=見出し $3=needle
@@ -223,6 +247,22 @@ expect_heading_count() { # $1=文書 $2=見出し $3=期待 rc $4=期待する�
   else
     bad "${5}（rc=${SS_RC} / 期待 ${3}、出力: ${SS_OUT}）"
   fi
+}
+
+run_section_scope_lines() { # $1=文書
+  set +e
+  SS_OUT="$(bash "$SS_LINES_PROBE" "$SS_LIB" "$1" 2>&1)"
+  SS_RC=$?
+  set -e
+}
+
+# 行モードの判定。フェンス外の行が行番号付きで残り（3 行目の針A・節B の見出し）、4 種のフェンスの
+# 中身と区切り行がどれも出てこないこと。
+lines_are_clean() {
+  local tab
+  tab="$(printf '\t')"
+  [[ "$SS_RC" -eq 0 && "$SS_OUT" == *"3${tab}- 針A"* && "$SS_OUT" == *"${tab}## 節B"* \
+    && "$SS_OUT" != *"fenced-"* && "$SS_OUT" != *'```'* && "$SS_OUT" != *"~~~"* ]]
 }
 
 run_section_scope_prose() { # $1=文書 $2=見出し
@@ -265,6 +305,8 @@ expect_section_scope "$SS_DUP" "## 節A" "針2" 1 \
   "lib 回帰: 同名見出しが 2 本なら検査不能（節を連結しない）" "2 本あります"
 expect_section_scope "$SS_NOHEAD" "## 節A" "針B" 1 \
   "lib 回帰: 見出しが 0 本なら検査不能" "0 本あります"
+expect_section_scope "$SS_INLINE" "## 節A" "針A" 0 \
+  "lib 回帰: 行頭のインライン \`\`\`x\`\`\` をフェンスの開始と取り違えない"
 run_section_scope_prose "$SS_FENCED" "## 節A"
 if prose_is_clean; then
   ok "lib 回帰: 散文モードは 4 種のフェンスの区切り行と中身を除き散文だけを返す"
@@ -283,6 +325,18 @@ expect_heading_count "$SS_DUP" "## 節A" 0 "2" \
   "lib 回帰: 見出し本数は同名見出しを 2 本と数える"
 expect_heading_count "$SS_UNCLOSED_AFTER" "## 節B" 1 "検査不能" \
   "lib 回帰: 見出し本数も未閉じフェンスでは検査不能"
+run_section_scope_lines "$SS_FENCED"
+if lines_are_clean; then
+  ok "lib 回帰: 行モードは 4 種のフェンスを除いたフェンス外の行を行番号付きで返す"
+else
+  bad "lib 回帰: 行モードは 4 種のフェンスを除いたフェンス外の行を行番号付きで返す（rc=${SS_RC}: ${SS_OUT}）"
+fi
+run_section_scope_lines "$SS_UNCLOSED_AFTER"
+if [[ "$SS_RC" -eq 1 && "$SS_OUT" == *"検査不能"* && "$SS_OUT" != *"節B"* ]]; then
+  ok "lib 回帰: 行モードも未閉じフェンスでは検査不能で、行を 1 行も返さない"
+else
+  bad "lib 回帰: 行モードも未閉じフェンスでは検査不能で、行を 1 行も返さない（rc=${SS_RC}: ${SS_OUT}）"
+fi
 
 # 変異 1: フェンス開始で状態を立てない（状態機械を 1 箇所だけ壊す）。
 perl -pi -e 's{^(\s*)in_fence = 1$}{$1 . "in_fence = 0"}e' "$SS_LIB"
@@ -298,6 +352,12 @@ if assert_mutated "$SS_LIB" "$SRC_SECTION_SCOPE" "lib 変異: フェンス開始
     ok "lib 変異: フェンス追跡を壊すと見出し本数がフェンス内の例示を 1 本と数えて赤"
   else
     bad "lib 変異: フェンス追跡を壊しても見出し本数が変わらない（rc=${SS_RC}: ${SS_OUT}）"
+  fi
+  run_section_scope_lines "$SS_FENCED"
+  if lines_are_clean; then
+    bad "lib 変異: フェンス追跡を壊しても行モードがフェンスの中身を返さない — 行モードの回帰が効いていない"
+  else
+    ok "lib 変異: フェンス追跡を壊すと行モードにフェンスの中身が混ざって赤"
   fi
 fi
 cp "$SRC_SECTION_SCOPE" "$SS_LIB"

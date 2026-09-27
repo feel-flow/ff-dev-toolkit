@@ -30,7 +30,7 @@
 #           実行後の案内行（○ 案内: 同梱 MCP の依存が揃っていないため）の配線を外すと 41-F と
 #           case 37 が赤。判定対象の解決を起動ガード側へ移した変更の回帰はここで観測する。
 #           必須 skip の再現コマンドからオプトアウト前置を落とすと 41-G が赤。
-#           述語を `.bin/esbuild` の実行可能性からディレクトリの実在へ戻すと 41-H が赤
+#           述語を `.bin/esbuild` の実行可能性へ戻すと 41-M が赤
 #           （末尾の案内行の側で同じ退行をすると case 37 の partial-mcp が赤）。
 #           判定対象の上書きの告知を落とすと 41-I が赤、無条件化すると 39-A が赤。
 #           停止の終了コードを suite 失敗と同じ 1 へ戻すと 41-A / 41-E / 41-H が赤。
@@ -74,6 +74,8 @@
 #           できない木を与えると 14b-0 が赤になる（以降の 14b は成立しないと明示する）。
 #
 # 空振り検出: 一括走査だけを exit 23 にした awk を与えると、個別再走査が成功しても error_scan を返す。空 tracked 一覧・未読・対象実体なし・空ファイルを挟む境界も batch controls で固定する。
+#
+# 空振り検出: case 41 は npm ci 直後の正対照、esbuild が在るまま devDependency 欠落、npm 不在、lock 不在を実測し、後者は suite 未実行かつ rc 3 を要求する。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/run-all/verify.sh
 
@@ -3030,13 +3032,41 @@ else
 _mg_fx="${TMPDIR:-/tmp}/ff-run-all-mcp-deps-guard.$$"
 rm -rf "$_mg_fx"
 mkdir -p "$_mg_fx/repo/tests/mcp-guard-probe" "$_mg_fx/repo/tests/mcp-guard-required-probe" "$_mg_fx/repo/scripts" "$_mg_fx/mcp"
+# macOS の /var → /private/var を npm の lock 生成前に正規化する。
+_mg_fx="$(cd -P "$_mg_fx" && pwd -P)"
 _mg_rec="$_mg_fx/gate-record"
 _mg_mcp="$_mg_fx/mcp"                 # ランナーへ渡す判定対象（mcp パッケージのディレクトリ）
 _mg_nm="$_mg_mcp/node_modules"
-_mg_esbuild="$_mg_nm/.bin/esbuild"    # 実在を切り替える 1 点（消費側と同じ述語）
-_mg_pkg="$_mg_mcp/package.json"       # 「入れる先がある」ことの目印
-# 依存が揃った状態を作る（ディレクトリだけでは不十分 — 述語は .bin/esbuild の実行可能性を見る）
+_mg_esbuild="$_mg_nm/.bin/esbuild"
+_mg_pkg="$_mg_mcp/package.json"
+# ネットワークを使わない小さな実 npm fixture。センチネルだけを作る偽の正常系にしない。
+mkdir -p "$_mg_fx/probe-dep/package"
+printf '%s\n' '{"name":"preflight-probe-dev","version":"1.0.0"}' > "$_mg_fx/probe-dep/package/package.json"
+tar -czf "$_mg_fx/probe-dev.tgz" -C "$_mg_fx/probe-dep" package
+printf '%s\n' '{"name":"preflight-fixture","version":"1.0.0","devDependencies":{"preflight-probe-dev":"file:../probe-dev.tgz"}}' > "$_mg_pkg"
+if ! npm install --prefix "$_mg_mcp" --package-lock-only --ignore-scripts --offline --no-audit --no-fund > "$_mg_fx/npm-setup.log" 2>&1; then
+  cat "$_mg_fx/npm-setup.log"
+  bad "case 41: npm fixture の lock を作成できない"
+fi
+# 配布 MCP と同じ semver 宣言へ揃える。取得先だけローカル tarball のままにして offline を保つ。
+node - "$_mg_mcp" <<'FIXTURE_JSON'
+const fs = require('node:fs');
+const dir = process.argv[2];
+for (const file of ['package.json', 'package-lock.json']) {
+  const path = `${dir}/${file}`;
+  const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+  const root = file === 'package.json' ? data : data.packages[''];
+  root.devDependencies['preflight-probe-dev'] = '1.0.0';
+  fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
+}
+FIXTURE_JSON
+cp "$_mg_pkg" "$_mg_fx/package.json.saved"
 _mg_install_deps() {
+  cp "$_mg_fx/package.json.saved" "$_mg_pkg"
+  if ! npm ci --prefix "$_mg_mcp" --include=dev --ignore-scripts --offline --no-audit --no-fund > "$_mg_fx/npm-setup.log" 2>&1; then
+    cat "$_mg_fx/npm-setup.log"
+    bad "case 41: npm ci の正対照を準備できない"
+  fi
   mkdir -p "$_mg_nm/.bin"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$_mg_esbuild"
   chmod +x "$_mg_esbuild"
@@ -3110,7 +3140,7 @@ if [ "$_mg_setup_rc" -ne 0 ]; then
   bad "case 41: 一時 git リポジトリの fixture を作れない（ガードの実測ができていない）"
 else
   # 41-A: 入れる先（package.json）が在るのに node_modules が無い回は、suite を 1 つも実行せずに止まる。
-  : > "$_mg_pkg"
+  cp "$_mg_fx/package.json.saved" "$_mg_pkg"
   rm -rf "$_mg_nm"
   _mg_run
   expect_rc 3 "依存が無い既定一覧は環境分類の専用コード（3）で終わる（suite 失敗の 1 と区別できる）"
@@ -3150,7 +3180,7 @@ else
   expect_lacks '環境が未整備です' "入れる先が無い回はガードが発火しない"
 
   # 41-D: 明示のオプトアウトなら従来どおり走り、実行後の案内行（原因の名指し）は残る。
-  : > "$_mg_pkg"
+  cp "$_mg_fx/package.json.saved" "$_mg_pkg"
   rm -rf "$_mg_nm"
   _mg_run FF_RUN_ALL_ALLOW_MISSING_MCP_DEPS=1
   expect_rc 0 "オプトアウト付きなら依存が無くても従来どおり走る"
@@ -3177,13 +3207,46 @@ else
   # 41-H: install が不完全（node_modules は在るが .bin/esbuild が無い）な回も止める。
   # 述語をディレクトリの実在へ退行させるとここだけが赤くなる — npm ci --omit=dev / 中断した
   # install がこの状態を作り、下流 suite は「npm install が不完全」で赤くなる。
-  : > "$_mg_pkg"
+  cp "$_mg_fx/package.json.saved" "$_mg_pkg"
   rm -rf "$_mg_nm"
   mkdir -p "$_mg_nm"
   _mg_run
   expect_rc 3 "依存が在るが不完全な回も環境分類で止まる"
-  expect_has '依存は展開されていますが必要なコマンドがありません' "「在るが足りない」を「まるごと無い」と別の文言で名乗る"
+  expect_has '依存は展開されていますが依存照合に失敗しました' "「在るが足りない」を「まるごと無い」と別の文言で名乗る"
   expect_lacks '^FIXTURE-MCP-GUARD-EXECUTED$' "不完全な回も suite を 1 つも実行しない"
+
+  # 41-M: esbuild が在っても、任意の devDependency が欠ければ起動しない。
+  _mg_install_deps
+  rm -rf "$_mg_nm/preflight-probe-dev"
+  _mg_run FF_RUN_ALL_FULL=1 NODE_ENV=production npm_config_omit=dev npm_config_package_lock_only=true
+  expect_rc 3 "esbuild が在っても欠落した devDependency を検出する（敵対 npm 設定下）"
+  expect_has 'missing: preflight-probe-dev' "欠けた依存名を npm の診断で名指しする"
+  expect_lacks '^FIXTURE-MCP-GUARD-EXECUTED$' "依存欠落時は suite を実行しない"
+
+  # 41-N: 同じ敵対設定でも npm ci 直後は通る（無条件に赤い検査にしない）。
+  _mg_install_deps
+  _mg_run FF_RUN_ALL_FULL=1 NODE_ENV=production npm_config_omit=dev npm_config_package_lock_only=true
+  expect_rc 0 "npm ci 直後は設定に左右されず全件を開始する"
+  expect_has '^FIXTURE-MCP-GUARD-EXECUTED$' "正常系は suite を実行する"
+
+  # 41-O: npm だけを PATH から除く。npm 以外は同じ実行物を symlink で供給する。
+  mkdir -p "$_mg_fx/no-npm"
+  for _mg_cmd in bash basename dirname git awk grep sort sed head tail wc tr cut cat date; do
+    _mg_cmd_path="$(command -v "$_mg_cmd")"
+    ln -s "$_mg_cmd_path" "$_mg_fx/no-npm/$_mg_cmd"
+  done
+  _mg_run FF_RUN_ALL_FULL=1 PATH="$_mg_fx/no-npm"
+  expect_rc 3 "npm 不在は判定不能として rc 3"
+  expect_has 'npm が PATH にありません' "npm 不在を名指しする"
+  expect_lacks '^FIXTURE-MCP-GUARD-EXECUTED$' "npm 不在では suite を実行しない"
+
+  # 41-P: lock 不在を npm ls の成功で緑へ倒さない。
+  mv "$_mg_mcp/package-lock.json" "$_mg_fx/lock.saved"
+  _mg_run FF_RUN_ALL_FULL=1
+  expect_rc 3 "lock 不在は判定不能として rc 3"
+  expect_has 'package-lock.json が無いか読めません' "lock 不在を名指しする"
+  expect_lacks '^FIXTURE-MCP-GUARD-EXECUTED$' "lock 不在では suite を実行しない"
+  mv "$_mg_fx/lock.saved" "$_mg_mcp/package-lock.json"
 
   # 41-I: 判定対象の上書きが効いている回は 1 行名乗る（無音の迂回路にしない）。
   # この上書きは検査専用だが、ガードの発火可否を決めるようになったので、黙って効くと
@@ -3194,7 +3257,7 @@ else
 
   # 41-J: 依存が無くても、**登録漏れ（変更起因の赤）は先に出る**。ガードを登録照合の前へ戻すと
   # ここが赤になる。この PR が意図的に動かした配置で、順序を主張する唯一のケース。
-  : > "$_mg_pkg"
+  cp "$_mg_fx/package.json.saved" "$_mg_pkg"
   rm -rf "$_mg_nm"
   mkdir -p "$_mg_fx/repo/tests/mcp-guard-unlisted-probe"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$_mg_fx/repo/tests/mcp-guard-unlisted-probe/verify.sh"

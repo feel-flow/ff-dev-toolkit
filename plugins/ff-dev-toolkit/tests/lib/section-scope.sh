@@ -30,6 +30,12 @@
 #       本数を stdout へ出して 0。フェンスが閉じていなければ 1 を返し、理由 1 行を出す。
 #       見出しの実在・一意性だけを見たいときに使う（section_scope_extract は本文の空な節を
 #       「空です」で落とすので、直後に小節が続く見出しの実在確認には使えない）。
+#   section_scope_fence_free_lines FILE
+#       コードフェンスの外にある行（区切り行と中身を除く）を「行番号<TAB>行」で stdout へ
+#       出して 0。フェンスが閉じていなければ何も出さずに 1 を返し、理由 1 行を出す。
+#       文書全体からフェンス外の記述（見出しの一覧・本文中の参照）を拾いたい検査が使う
+#       （tests/section-ref-existence。見出しの一覧は行頭 `#` + 空白の行を選べば得られる）。
+#       フェンスの判定は他の公開関数と同じ状態機械を通る — 呼び出し側で追い直さない。
 #
 # 契約:
 #   - 見出しの一致本数が 1 本でなければ fail-closed。0 本 = 節が無い、2 本以上 =
@@ -77,7 +83,11 @@
 # 見出しが 2 本以上でも「先頭 1 本ぶんの本文」が漏れて誤って照合されることはない。
 # フェンス状態機械は tests/lib/mbcs-guard.sh の mbcs_scan_bash_blocks と同型
 # （開始フェンスの文字種と長さを記録し、同種・同長以上のフェンスだけを終了とみなす）。
+# 違いは 1 点だけで、バッククォートの開始行の残りにバッククォートがあればフェンスと見なさない
+# （行頭の ```x``` はインラインコード。bash ブロックだけを拾う mbcs 側には影響しない形なので揃えていない）。
 # 第 3 引数が 1 なら、フェンス（区切り行と中身）を節本文へ含めない（散文モード）。
+# 第 3 引数が 2 なら節を切り出さず、フェンス外の全行を「行番号<TAB>行」で集める（行モード）。
+# 1 行目は見出し本数の代わりに LINES を出す（未閉じフェンスの UNCLOSED_FENCE と区別する）。
 _section_scope_scan() {
   awk -v h="$1" -v prose="${3:-0}" '
     { sub(/\r$/, "") }
@@ -94,14 +104,22 @@ _section_scope_scan() {
         if (inside == 1 && prose != 1) body = body line "\n"
         next
       }
+      # バッククォートのフェンスは情報文字列にバッククォートを含められない（CommonMark）。
+      # 行頭に置いた ```x``` のようなインラインコードをフェンスの開始と取り違えない
+      # （取り違えると次の閉じフェンスまでの本文と見出しが丸ごと見えなくなる）。
+      opener = 0
       if (stripped ~ /^(```|~~~)/) {
         fence_char = substr(stripped, 1, 1)
         fence_len = 0
         while (substr(stripped, fence_len + 1, 1) == fence_char) fence_len++
+        opener = !(fence_char == "`" && index(substr(stripped, fence_len + 1), "`") > 0)
+      }
+      if (opener) {
         in_fence = 1
         if (inside == 1 && prose != 1) body = body line "\n"
         next
       }
+      if (prose == 2) { lines = lines FNR "\t" line "\n"; next }
       if (index(line, h) == 1) { n++; inside = 1; next }
       if (inside == 1 && line ~ /^#+ /) inside = 0
       if (inside == 1) body = body line "\n"
@@ -110,6 +128,7 @@ _section_scope_scan() {
       # EOF でフェンスが開いたままなら節の終端が決められない。見出し本数も本文も
       # 出さず、非数値を返して呼び出し側の「検査不能」経路（赤）へ落とす。
       if (in_fence == 1) { print "UNCLOSED_FENCE"; exit }
+      if (prose == 2) { print "LINES"; printf "%s", lines; exit }
       print n + 0
       printf "%s", body
     }
@@ -132,6 +151,23 @@ section_scope_heading_count() {
       ;;
   esac
   printf '%s\n' "$first"
+}
+
+section_scope_fence_free_lines() {
+  local scan first nl='
+'
+  if ! scan="$(_section_scope_scan "" "$1" 2)"; then
+    echo "$(basename "$1") は検査不能です（読めません）"
+    return 1
+  fi
+  first="${scan%%"$nl"*}"
+  if [ "$first" != "LINES" ]; then
+    echo "$(basename "$1") は検査不能です（コードフェンスが閉じていません）"
+    return 1
+  fi
+  case "$scan" in
+    *"$nl"*) printf '%s\n' "${scan#*"$nl"}" ;;
+  esac
 }
 
 section_scope_extract_prose() {
