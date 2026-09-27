@@ -126,6 +126,7 @@ answer	bash-guard	sub-issue-id	hook:guard-sub-issue-id
 answer	bash-guard	exit-code	hook:guard-exit-code
 answer	bash-guard	review-lock	hook:guard-review-in-flight
 answer	bash-guard	effort-wallclock	hook:record-effort-wallclock
+answer	bash-guard	batch	hook:run-bash-hooks
 answer	bash-guard	none	none
 
 node	session-start	select	起動時にどの検査か

@@ -1065,7 +1065,7 @@ HOOKJSON
   # 走査件数は固定床ではなく hooks.json の実体と突き合わせる。固定床（-ge N）は、
   # 「走査から漏れた 1 本 + 契約違反 1 本」を同時に吸収して緑にする（レビューで実測）。
   HOOKDRAIN_EXPECTED="$(jq -r '.hooks // {} | to_entries[] | .value[]? | .hooks[]? | .command // empty' \
-    "$HOOKDRAIN_FIXTURE/hooks/hooks.json" | awk '{ n=split($(0),w,/[[:space:]]+/); for(i=1;i<=n;i++){ gsub(/["\047]/,"",w[i]); if (w[i] ~ /\.sh$/) { sub(/.*\//,"",w[i]); print w[i]; break } } }' | sort -u | wc -l | tr -d ' ')"
+    "$HOOKDRAIN_FIXTURE/hooks/hooks.json" | awk '{ n=split($(0),w,/[[:space:]]+/); for(i=1;i<=n;i++){ gsub(/["\047]/,"",w[i]); if (w[i] ~ /\.sh$/) { sub(/.*\//,"",w[i]); print w[i] } } }' | sort -u | wc -l | tr -d ' ')"
   HOOKDRAIN_OUT="$(ff_hook_stdin_drain_scan "$HOOKDRAIN_FIXTURE" 2>&1)" && HOOKDRAIN_RC=0 || HOOKDRAIN_RC=$?
   HOOKDRAIN_COUNT="$(printf '%s\n' "$HOOKDRAIN_OUT" | awk -F'\t' '/^INSPECTED/ { print $2 }')"
   if [ "$HOOKDRAIN_RC" -eq 0 ] && [ -n "$HOOKDRAIN_COUNT" ] && [ "$HOOKDRAIN_COUNT" -eq "$HOOKDRAIN_EXPECTED" ]; then
@@ -1191,7 +1191,7 @@ fi
 # 後から足した SessionStart hook が無審査で通る（drain の走査側が名簿を持たないのと同じ理由）。
 HOOKBOUND_RESOLVED_RAW="$(jq -r '(.hooks.SessionStart // [])[] | .hooks[]? | .command // empty' \
   "$HOOKDRAIN_PLUGIN_ROOT/hooks/hooks.json" \
-  | awk '{ n=split($(0),w,/[[:space:]]+/); for(i=1;i<=n;i++){ gsub(/["\047]/,"",w[i]); if (w[i] ~ /\.sh$/) { sub(/.*\//,"",w[i]); print w[i]; break } } }')"
+  | awk '{ n=split($(0),w,/[[:space:]]+/); for(i=1;i<=n;i++){ gsub(/["\047]/,"",w[i]); if (w[i] ~ /\.sh$/) { sub(/.*\//,"",w[i]); print w[i] } } }')"
 HOOKBOUND_TARGETS="$(printf '%s\n' "$HOOKBOUND_RESOLVED_RAW" | grep -v '^$' | sort -u || true)"
 HOOKBOUND_COUNT="$(printf '%s\n' "$HOOKBOUND_TARGETS" | grep -c . || true)"
 # 「0 件なら赤」だけでは足りない。hooks.json の書き方が変わって**一部だけ**導出できなく
@@ -1226,7 +1226,7 @@ fi
 # live: 実体の hooks.json に登録された全 hook が契約を満たす
 HOOKDRAIN_LIVE="$(ff_hook_stdin_drain_scan "$HOOKDRAIN_PLUGIN_ROOT" 2>&1)" && HOOKDRAIN_LIVE_RC=0 || HOOKDRAIN_LIVE_RC=$?
 HOOKDRAIN_LIVE_EXPECTED="$(jq -r '.hooks // {} | to_entries[] | .value[]? | .hooks[]? | .command // empty' \
-  "$HOOKDRAIN_PLUGIN_ROOT/hooks/hooks.json" | awk '{ n=split($(0),w,/[[:space:]]+/); for(i=1;i<=n;i++){ gsub(/["\047]/,"",w[i]); if (w[i] ~ /\.sh$/) { sub(/.*\//,"",w[i]); print w[i]; break } } }' | sort -u | wc -l | tr -d ' ')"
+  "$HOOKDRAIN_PLUGIN_ROOT/hooks/hooks.json" | awk '{ n=split($(0),w,/[[:space:]]+/); for(i=1;i<=n;i++){ gsub(/["\047]/,"",w[i]); if (w[i] ~ /\.sh$/) { sub(/.*\//,"",w[i]); print w[i] } } }' | sort -u | wc -l | tr -d ' ')"
 HOOKDRAIN_LIVE_COUNT="$(printf '%s\n' "$HOOKDRAIN_LIVE" | awk -F'\t' '/^INSPECTED/ { print $2 }')"
 if [ "$HOOKDRAIN_LIVE_RC" -eq 0 ] && [ -n "$HOOKDRAIN_LIVE_COUNT" ] && [ "$HOOKDRAIN_LIVE_COUNT" -eq "$HOOKDRAIN_LIVE_EXPECTED" ]; then
   ok "case 44: 登録 hook ${HOOKDRAIN_LIVE_COUNT} 本すべてが stdin を読み切る契約を満たす（live）"
@@ -4284,6 +4284,13 @@ else
 fi
 expect_rc 0 "ディレクトリを付けない明示パスも実行できる"
 expect_has '^== \. ==$' "ディレクトリを付けない明示パスの suite 名は dot を保つ"
+
+# 集約入口の契約は既存の hook 登録検査と同じ suite で実測する。
+if bash "$SCRIPT_DIR/bash-hook-batch.sh"; then
+  ok "Bash 集約入口が登録・出力・大入力の契約を保つ"
+else
+  bad "Bash 集約入口の回帰検証が失敗"
+fi
 
 rm -f "$RUN_GATE_RECORD"
 

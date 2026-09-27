@@ -15,7 +15,7 @@ const plugin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..
 // self-test 側の sandbox 名簿も同じ正規表現を使う。片方だけが波括弧を要求していると、
 // `"$CLAUDE_PLUGIN_ROOT/hooks/x.sh"` と書いた登録がこちらの名簿には入るのに sandbox
 // へは copy されず、spawn 失敗という原因の読めない赤になる。
-const HOOK_COMMAND_PATTERN = /\$\{?CLAUDE_PLUGIN_ROOT\}?\/hooks\/([A-Za-z0-9._-]+\.sh)/;
+const HOOK_COMMAND_PATTERN = /\$\{?CLAUDE_PLUGIN_ROOT\}?\/hooks\/([A-Za-z0-9._-]+\.sh)/g;
 // 意図的に ASDD ゲートを通さない（= 無効化できない必須の）hook を登録したときだけ、
 // ここへ明示的に足す。空のままでも崩壊床は効く（下の roster テストを参照）。
 const ungatedHooks = new Set([]);
@@ -23,9 +23,9 @@ function registeredHooks() {
   const manifest = JSON.parse(readFileSync(path.join(plugin, 'hooks/hooks.json'), 'utf8'));
   const names = new Set();
   for (const matchers of Object.values(manifest.hooks)) for (const matcher of matchers) for (const entry of matcher.hooks) {
-    const matched = HOOK_COMMAND_PATTERN.exec(entry.command);
-    if (!matched) throw new Error(`hooks.json のコマンドから hook スクリプト名を導出できません: ${entry.command}`);
-    if (!ungatedHooks.has(matched[1])) names.add(matched[1]);
+    const matches = [...entry.command.matchAll(HOOK_COMMAND_PATTERN)];
+    if (matches.length === 0) throw new Error(`hooks.json のコマンドから hook スクリプト名を導出できません: ${entry.command}`);
+    for (const matched of matches) if (!ungatedHooks.has(matched[1])) names.add(matched[1]);
   }
   return [...names];
 }

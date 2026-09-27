@@ -383,8 +383,12 @@ else
   # J. Hooks。契約側は「発火イベント :: matcher :: 実体」の三つ組で照合する — 実体名だけを
   # 見ると、同じ hook を別イベントへ付け替える変更（一覧が破壊的変更と定義している）が
   # 集合として不変になり検出できない。matcher を持たないイベントは `-` に正規化する。
-  registered_triples="$(jq -r '.hooks | to_entries[] | .key as $e | .value[]? | (.matcher // "-") as $m | .hooks[]?.command | "\($e) :: \($m) :: \(.)"' "$HOOKS_JSON" 2>/dev/null \
-    | sed -E 's#^(.*) :: .*(hooks/[A-Za-z0-9_.-]+).*$#\1 :: \2#' | LC_ALL=C sort -u || true)"
+  # 集約入口では1 commandに複数のhookパスがある。最後の1本だけへ縮めない。
+  registered_triples="$(jq -r '.hooks | to_entries[] | .key as $e | .value[]? | (.matcher // "-") as $m | .hooks[]?.command | [$e, $m, .] | @tsv' "$HOOKS_JSON" 2>/dev/null \
+    | awk -F '\t' '{ cmd=$3; while (match(cmd, /hooks\/[A-Za-z0-9_.-]+/)) {
+        print $1 " :: " $2 " :: " substr(cmd, RSTART, RLENGTH)
+        cmd=substr(cmd, RSTART+RLENGTH)
+      } }' | LC_ALL=C sort -u || true)"
   registered_hooks="$(printf '%s\n' "$registered_triples" | { grep -oE 'hooks/[A-Za-z0-9_.-]+$' || true; } | sed 's#^hooks/##' | LC_ALL=C sort -u)"
   all_hooks="$(ls -1 "$HOOKS_DIR" 2>/dev/null | { grep -v '^hooks\.json$' || true; } | LC_ALL=C sort -u)"
   doc_hooks_contract="$(ff_surface_hook_triples "$SURFACE_DOC")"

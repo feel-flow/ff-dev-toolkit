@@ -787,10 +787,10 @@ else
   bad "hooks.json の PreToolUse（Bash matcher）に guard-exit-code.sh が無い"
 fi
 if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
-    | select(.command | contains("guard-exit-code.sh")) | select(.timeout == 10)' "$HOOKS_JSON" >/dev/null 2>&1; then
-  ok "hooks.json の timeout が兄弟ガードと同じ 10 秒"
+    | select(.command | contains("guard-exit-code.sh")) | select(.timeout == 15)' "$HOOKS_JSON" >/dev/null 2>&1; then
+  ok "hooks.json の timeout は子の10秒に集約余裕を加えた15秒"
 else
-  bad "hooks.json の guard-exit-code.sh に timeout: 10 が無い"
+  bad "hooks.json の guard-exit-code.sh に timeout: 15 が無い"
 fi
 DESC="$(jq -r '.description' "$HOOKS_JSON")"
 case "$DESC" in

@@ -88,6 +88,7 @@
 - `PreToolUse :: Bash :: hooks/guard-pr-followup.sh`
 - `PreToolUse :: Bash :: hooks/guard-sub-issue-id.sh`
 - `PreToolUse :: Bash :: hooks/record-effort-wallclock.sh`
+- `PreToolUse :: Bash :: hooks/run-bash-hooks.sh`
 - `PreToolUse :: Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task :: hooks/guard-review-in-flight.sh`
 - `PreToolUse :: Read|Skill :: hooks/record-instruction-bytes.sh`
 - `SessionStart :: * :: hooks/auto-update-marketplace.sh`
@@ -100,6 +101,10 @@
 - `SubagentStop :: - :: hooks/guard-review-in-flight.sh`
 - `UserPromptSubmit :: - :: hooks/decision-tree.sh`
 - `UserPromptSubmit :: - :: hooks/retrospective-context.sh`
+
+Bash 専用の9実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
+
+子の処理枠は10秒、親の登録枠は集約の余裕を含め15秒とする。時間切れの子と不正な出力は診断して除外し、完了した他の判定を残す。集約自体の環境エラーは新たな拒否にせず、子の終了コード2だけをブロックとして伝播する。終了コード2と他の拒否が重なる場合は、他の拒否理由も stderr へ残す。
 
 ### 2-2. 内部（入口から呼ばれる実装）
 

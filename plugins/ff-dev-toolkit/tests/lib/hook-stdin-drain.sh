@@ -70,6 +70,13 @@ ff_hook_stdin_drain_scan() { # <plugin root>
   ' "$hooks_json" 2>/dev/null)" || { echo "SCAN-ERROR: hooks.json を解析できません"; return 2; }
   [ -n "$cmds" ] || { echo "SCAN-ERROR: hooks.json に登録コマンドがありません（走査不成立）"; return 2; }
 
+  # 集約コマンドの引数に列挙した子も独立に走査する。入口だけで緑にしない。
+  cmds="$(printf '%s\n' "$cmds" | awk '
+    { original=$0; gsub(/["\047]/, " "); n=split($0,w,/[[:space:]]+/); found=0
+      for(i=1;i<=n;i++) if(w[i] ~ /\.sh$/) { print w[i]; found=1 }
+      if(!found) print original
+    }')"
+
   local line file base seen="" eff
   while IFS= read -r line; do
     [ -n "$line" ] || continue
