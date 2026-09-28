@@ -51,7 +51,7 @@ fi
 ## 実行ポリシー
 
 - **毎回実施・問いかけなし**: チェーン末尾に到達したら確認せずそのまま実施する（起票も既定では確認を挟まない）
-- **read-only**: 振り返り工程ではファイル編集・コミット・Issue 作成を行わない。書き込みが発生するのは、観測台帳への定型記録（作成・追記・Count 更新・[旧経路 Issue の取り込み](references/legacy-intake.md)）と、既存確認を完了した提案を起票する段（既定は承認を待たない。`RETROSPECTIVE_FILING=ask` のときだけ承認後）だけ
+- **read-only**: 振り返り工程ではファイル編集・コミット・Issue 作成を行わない。書き込みが発生するのは、観測台帳への定型記録（作成・追記・Count 更新・完了移行・[旧経路取り込み](references/legacy-intake.md)）と、既存確認を完了した提案を起票する段（既定は承認を待たない。`RETROSPECTIVE_FILING=ask` のみ承認後）だけ
 - **冒頭で入口規範の逆戻りを検査する**: `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/workflow-doctor.sh" --root "$(git rev-parse --show-toplevel)" --offline` の FAIL はチェックリスト 4 の観測
 
 ### 条件付きで読む references
@@ -59,7 +59,7 @@ fi
 | 読む条件 | ファイル | 内容 |
 | --- | --- | --- |
 | 提案が 1 件以上ある（閾値到達・特急レーン・台帳へ書き込めないリポジトリでの提案） | [references/filing.md](references/filing.md) | 既存確認・承認と起票・出力形式 |
-| 閾値到達エントリの昇格先を決める・`promoted` / `mitigated` のエントリへ再発を記録する・昇格を見送る | [references/promotion.md](references/promotion.md) | 起票先・再発対応・復帰条件 |
+| 閾値到達エントリの昇格先を決める・`promoted` / `mitigated` のエントリへ再発を記録する・昇格を見送る・発行済み Issue の対策完了を照合する | [references/promotion.md](references/promotion.md) | 状態遷移・再発 |
 | `ff-effort` ブロックを持つ Issue がこのセッションでマージされた、または前回の集計から `ff-effort` 付き Issue が増えた | [references/effort.md](references/effort.md) | 乖離の記録帯・集計 |
 | SSOT リポジトリで実行する（旧版が起票した `[observation]` Issue の残件は同ファイル手順 1 の検索で確かめる） | [references/legacy-intake.md](references/legacy-intake.md) | 旧経路の取り込み |
 | hook を変更する・自動発火の挙動を確かめる・入れ子の非対話起動を組む | [references/auto-trigger.md](references/auto-trigger.md) | 自動発火の判定規則 |
@@ -87,11 +87,13 @@ printenv RETROSPECTIVE_MODE
 
 ## 観察チェックリスト
 
-0. **promoted × open の突き合わせ（台帳の読み戻し）** — 観測を拾う**前**に、`Status` が `promoted` かつ昇格先 Issue が open のエントリを列挙し、そのセッションの事象と 1 件ずつ突き合わせる。再発していれば記録手順 2 に加え、[references/promotion.md](references/promotion.md) の promoted 再発時の動作を発火させる:
+0. **promoted × open の突き合わせ（台帳の読み戻し）** — 観測前に `promoted` × open とセッション事象を照合し、再発は記録手順 2 と [promotion.md](references/promotion.md) で扱う:
 
    ```bash
    FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --root "$(git rev-parse --show-toplevel)" --promoted-open
    ```
+
+   **発行済み Issue の完了照合** — 当セッションの完了 Issue・旧台帳は [promotion.md](references/promotion.md) へ。closed も照合対象。
 
 1. **品質ゲートの実行回数と重複・競合** — 回しすぎ、並行ビルド中の作業ツリー変更などの競合
 2. **レビュー指摘 → fix の手戻りループ** — スキル/テンプレの指示不足で防げたもの
@@ -119,8 +121,8 @@ printenv RETROSPECTIVE_MODE
 上「記録の前に base の先行を照合する」のフェンスを通してから手順 0 へ入る。
 
 0. **台帳の実在確認と作成**: `docs/08-knowledge/OBSERVATIONS.md` が無ければ `${FF_DEV_TOOLKIT_ROOT}/docs-template/08-knowledge/OBSERVATIONS.md` をコピーして作成する（作成した事実を報告する）。書き込めないリポジトリでは作成せず、観測を報告に残す
-1. 台帳を grep し、同じ主張のエントリを探す（同一性は「読者が取る実行可能なアクションが同一か」。`FF_JEV_MODE=on` のときだけ `scripts/jev/jev-decide.sh retro` を先に呼んでよい）
-2. **既存エントリあり** → `Count` を +1、`Last` を今日へ、観測メモを 1 行追記（**1 行 = 1 回**・**同一セッション・同一エントリは 1 回**・**既存エントリは遡及しない**）。`archived` の再発は `active` へ戻す。`mitigated` は [references/promotion.md](references/promotion.md) の復帰条件に当たるときだけ戻す
+1. 台帳を grep し、同じ主張を探す。`FF_JEV_MODE=on` なら [triage](references/ledger.md#triage) で先に選別する。`off` は呼び出さず従来経路・出力とバイト同一。
+2. **既存エントリあり** → `Count` を +1、`Last` を今日へ、観測メモを 1 行追記（**1 行 = 1 回**・**同一セッション・同一エントリは 1 回**・**既存エントリは遡及しない**）。`archived` の再発は `active` へ戻す。`mitigated` は [references/promotion.md](references/promotion.md) の再発分岐と復帰条件で扱う
 3. **既存エントリなし** → 台帳のエントリ形式（台帳ファイル冒頭に定義）で末尾へ追記する（script で当てるなら [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う）
 4. Keep は定着させる価値のある成功パターンだけを `Kind: keep` で記録し、アクションに繋がらない Keep は記録しない。Problem は「X すると Y の手戻りが起きる → Z せよ」の形。機微情報は引用しない
 

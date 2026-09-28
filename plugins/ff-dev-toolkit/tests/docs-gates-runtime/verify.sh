@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: docs-gates の正本参照検査ブロックを削除すると、無変異の対照は緑のまま drop-reference が赤（2026-09-28 実測）。
 #
 # docs-template のうち placeholder を含まず実行可能なゲート例を Markdown から抽出し、
 # fixture に対する exit code を実測する意味的回帰検査（Issue #157）。
@@ -13,11 +14,15 @@
 #   - 全ケースが期待 exit code なら 0、違反があれば非 0。
 #   - 一時作業領域を作れず検証本体を1件も実行できない場合のみ、行頭 `○ skip` + 0。
 #
-# 変異検出（リポジトリ正本 TESTING.md ゲートの層 = repo-testing-gate-cases.sh。
-# 2026-09-12 実測。検査 1 つにつき 1 変異で注入し、赤転しなかった変異は無し）:
-#   docs-gates 側の「新規検査を書いた直後の変異注入バッテリー」検査ブロックを `if false` へ
-#   倒すと drop-granularity / drop-one-command / drop-todo / drop-writeback / rename-heading の
-#   5 件が赤になる。正本不在の fail-closed ガードを bad → ok へ倒すと missing-testing が赤になる。
+# 変異検出（repo-testing-gate-cases.sh。2026-09-28 実測）:
+#   正本参照の削除・変更・重複 → 「正本参照が欠落・変更・重複」で赤。
+#   固有の実行手順の削除 → 「1 コマンド実行規定が欠落」で赤。
+#   汎用規定の再掲 → 「汎用規定が再掲」で赤。
+#   配布側の粒度の削除 → 「配布側が変異の粒度を定めている」で赤。
+#   配布側の TODO の削除 → 「配布側が赤転しなかった変異を検査追加の TODO と定めている」で赤。
+#   配布側の書き戻し先の削除 → 「配布側が結果の書き戻し先を定めている」で赤。
+#   節改名 → 「節を抽出できません」で赤。正本不在 → 「正本が見つかりません」で赤。
+#   対照: 無変異と固有の実測経路の良性追記は緑。
 #
 # macOS 標準 bash 3.2 + POSIX 標準ユーティリティで動かす。テスト対象の差し替えは
 # FF_DOCS_GATE_RUNTIME_DOCS=<docs-template root> で行い、変異テストに利用できる。

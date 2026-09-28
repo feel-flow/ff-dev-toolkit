@@ -59,9 +59,25 @@ git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
 - **同一セッション・同一エントリは 1 回**: 1 回の振り返り実行で、同じエントリへ計上する観測は最大 1 行（Count +1）。同じ原因がセッション内で繰り返した場合は 1 行に畳む。この上限は当該振り返りが実測した観測にだけ掛かり、旧経路の Issue 取り込み（[legacy-intake.md](legacy-intake.md)）と、Count を動かさない注記（対策が効いた実測・昇格記録）には掛けない
 - **既存エントリは遡及しない**: 過去の `Count` を、行内の「N 回」叙述から足し直したり、同一セッションの反復を遡って減らしたりしない。過去の値は当時の昇格判断の入力であり、後から単位を変えると既に起票した Issue の根拠が動く
 
-同一性は「読者が取る実行可能なアクションが同一か」で判定する（ACE の新規性バーと同じ基準。文言や事例が違っても導かれる行動が同じなら同一エントリ）。**Jev への切替（`FF_JEV_MODE`・既定 off・ADR-059）**: `FF_JEV_MODE=on` のときだけ、候補エントリごとに `scripts/jev/jev-decide.sh retro`（質問は `/ace-curate` の新規性判定と同じ `questions/same-action.json`）を先に呼んでよい。**exit 0 のときだけ**判定を採り（p ≥ 0.5 なら既存へ +1、全候補が p < 0.5 なら新規）、exit 10 / 11 / 12 は自分で判定する（二重走行しない）。exit 2 / 64 / 69 は黙って落とさず止めて直す。正本は `${FF_DEV_TOOLKIT_ROOT}/scripts/jev/README.md` §切替。
+同一性は「読者が取る実行可能なアクションが同一か」で判定する（ACE の新規性バーと同じ基準。文言や事例が違っても導かれる行動が同じなら同一エントリ）。**Jev への切替（`FF_JEV_MODE`・既定 off・ADR-059）**: `FF_JEV_MODE=on` のときだけ、本線の triage で分類していない候補エントリに限り `scripts/jev/jev-decide.sh retro`（質問は `/ace-curate` の新規性判定と同じ `questions/same-action.json`）を先に呼んでよい。**exit 0 のときだけ**判定を採り（p ≥ 0.5 なら既存へ +1、全候補が p < 0.5 なら新規）、exit 10 / 11 / 12 は自分で判定する（二重走行しない）。exit 2 / 64 / 69 は黙って落とさず止めて直す。正本は `${FF_DEV_TOOLKIT_ROOT}/scripts/jev/README.md` §切替。
 
-`Status` が `archived` のエントリが再発したら `active` へ戻す。`mitigated` のエントリは再発だけでは戻さず、[promotion.md](promotion.md) の「`active` への復帰条件」に当たるときだけ戻す。Keep の振り分け: ツールキットのスキル/テンプレ/hook、またはそのリポジトリの手順・テンプレへ定着させる価値のある成功パターンだけを `Kind: keep` で記録する。プロジェクト固有のコード・設計知見は台帳に書かず ACE 側へ回す。Problem は「X すると Y の手戻りが起きる → Z せよ」という知見の形で書く。機微情報は台帳エントリ・観測メモ・昇格 Issue 本文へも引用しない。
+`Status` が `archived` のエントリが再発したら `active` へ戻す。`mitigated` のエントリは [promotion.md](promotion.md) の元 Issue がある再発分岐／元 Issue がない見送り分の復帰条件で扱う。Keep の振り分け: ツールキットのスキル/テンプレ/hook、またはそのリポジトリの手順・テンプレへ定着させる価値のある成功パターンだけを `Kind: keep` で記録する。プロジェクト固有のコード・設計知見は台帳に書かず ACE 側へ回す。Problem は「X すると Y の手戻りが起きる → Z せよ」という知見の形で書く。機微情報は台帳エントリ・観測メモ・昇格 Issue 本文へも引用しない。
+
+## triage
+
+台帳を grep し、同じ主張のエントリを探す。`FF_JEV_MODE=on` のときだけ下の triage 入口を先に呼ぶ。`off` はこの節が存在しないのと同じで、呼び出さず従来経路の出力をバイト同一に保つ。exit 0 の分類は人が最終判断する。`reduces_to` の P / ACE ID は OBS ID ではなく、原則への帰着だけで OBS の存在・同一性を確定しない。core 文書の原則なら新 OBS を作らず証跡へ記録する。それ以外は上の同一性基準で台帳を照合し、同じ主張の OBS があれば Count +1、無ければ記録基準を満たす実測だけを原則参照付きの新 OBS として残す。`new_invariant` も同一性判断と記録へ進み、`one_off_measurement` は evidence 文書、`noise` は理由 1 行で破棄する。exit 10 / 11 / 12 は `top_k` と `measurement_hint` を参考に従来の判断へ戻る。triage 済み候補を `retro` へ再送しない。覆した判断は `decision_ids` の該当 ID を `triage-candidate.sh --overturn <id> --note <理由>` で記録する。原則の読み方・終了コードは [Jev README](../../../scripts/jev/README.md#知識候補の選別triage) が正本。
+
+triage 入口（`CANDIDATE` は観測候補 1 件の本文）:
+
+<!-- ff-triage-entry:start -->
+```bash
+if [ "${FF_JEV_MODE:-off}" = on ]; then
+  triage_rc=0
+  bash "${FF_DEV_TOOLKIT_ROOT}/scripts/jev/triage-candidate.sh" --candidate "$CANDIDATE" || triage_rc=$?
+  case "$triage_rc" in 0|10|11|12) ;; *) exit "$triage_rc" ;; esac
+fi
+```
+<!-- ff-triage-entry:end -->
 
 ## 書き込み（定型コミット）の根拠
 
@@ -73,8 +89,8 @@ git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
 
 ## 昇格閾値と特急レーン（根拠）
 
-- 昇格閾値の判定対象は `Status` が `active` のエントリに限る（`promoted` / `archived` / `mitigated` は「これ以上昇格提案を出さない」と決着済みの状態で、決着の理由だけが違う）
-- 起票先の分岐・`promoted` / `mitigated` の再発・見送りの書き戻しは [promotion.md](promotion.md)。`Kind: keep` の閾値到達は Issue ではなく**定着提案**（スキル・テンプレへの文言追加・手順化）として出す
+- 昇格閾値の判定対象は `Status` が `active` のエントリに限る（閾値だけで昇格を再提案しない。元 Issue がある `promoted` / `mitigated` の再発は [promotion.md](promotion.md) の追跡分岐で扱う）
+- 起票先の分岐・発行済み Issue の対策完了と旧台帳の移行・`promoted` / `mitigated` の再発・見送りの書き戻しは [promotion.md](promotion.md)。`Kind: keep` の閾値到達は Issue ではなく**定着提案**（スキル・テンプレへの文言追加・手順化）として出す
 - 特急レーン（データ破壊・広範な作業停止・セキュリティ）は閾値を待たずに起票を提案してよい。その場合も台帳へ記録し、提案に特急である理由を明示する。起票の実行は通常の昇格と同じく [filing.md](filing.md)「承認と起票」に従う（重大さの判断は理由の明示で利用者に見せ、起票は close で戻せる可逆操作として扱う）
 - 台帳の掃除: `Last` から 180 日を超えて `Count` が 1 のままのエントリは `Status` を `archived` へ変更してよい（定型書き込み）
 - **閾値は発火点であり、発火時に取った判断は状態として台帳へ書き戻す。** 放置すると次の到達で同じ判断を一から再演する。昇格を見送った判断は `mitigated` として書き戻す（ACE Playbook の件数上限を統合・抽象化へ回す ADR-047 と同じ原則で、閾値を緩めることでは代替できない）

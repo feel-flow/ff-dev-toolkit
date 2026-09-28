@@ -99,6 +99,7 @@
 # 変異検出: jev-decide.sh の `FF_JEV_MODE != on → exit 12` を削ると (K1 / K2 / K4 / K28d) が赤になる（2026-09-22 実測。250 件中 4 件失敗。K1 は通信 1 回・記録あり・adopt まで進み、K4 は K1 / K2 が残した記録で赤になり、K28d は off が依存検査（jq 不在 = 69）へ進んでしまう形が見える）。
 # 変異検出: 閾値検証の `> 0` を `>= 0` へ緩めると (K13h) が赤になる（2026-09-22 実測。250 件中 2 件失敗〔0 と 0.0〕。confidence 0 でも採る「全件採用」の設定を通さない）。
 #
+# 空振り検出: triage の同梱候補 fixture を空にすると L4 / L6 が赤、invariant.json を消すと対象不在で赤（2026-09-28、L 節を実測し各 exit 1）。重複原則 ID は L13 で exit 2 を要求する。
 # 空振り検出: lockfile で導入するローカル tsx 不在の複製配置は exit 1（npm ci の案内）を返す。
 # 依存: bash 3.2 / jq / mktemp / Node.js / npm ci 済みの mcp/node_modules。一時領域を作れない環境は skip ではなく赤（suite 全体の
 # skip 経路を持たない）。実作業ツリーには触れない（HOME・PATH・TMPDIR を隔離する）。
@@ -195,7 +196,9 @@ if [ -n "$hdr" ]; then
   esac
   printf '\r\n' >> "$hdr"
 fi
-if [ -f "$FAKE/body.$status" ]; then
+if [ -f "$FAKE/body.call.$n" ]; then
+  cat "$FAKE/body.call.$n"
+elif [ -f "$FAKE/body.$status" ]; then
   cat "$FAKE/body.$status"
 else
   printf '%s' '{"model":"jev-1.13.0","answers":{"dept":{"type":"choice","choice":"billing","probabilities":{"billing":0.88,"technical":0.12},"confidence":0.81},"urgent":{"type":"noul","noul":0.95},"level":{"type":"score","score":1.05,"legend":{"0":"Calm","1":"Frustrated","2":"Very angry"},"probabilities":{"0":0.0,"1":0.95,"2":0.05},"confidence":0.92}},"usage":{"input_tokens":300,"output_tokens":20}}'
@@ -1774,10 +1777,10 @@ DEFLOG2="$(ls "$ISO_HOME"/.local/state/ff-dev-toolkit/jev-decisions/nogit-*.json
 
 reset_fake 200
 run_decide_args FF_JEV_MODE=off -- --status
-[ "$RC" -eq 0 ] && grep -q '^JEV_MODE=off$' <<<"$OUT" && grep -q '^JEV_POINTS=novelty retro$' <<<"$OUT" && grep -q '^JEV_THRESHOLD=0.99$' <<<"$OUT" && grep -q '^JEV_MODEL=jev-1.13.0$' <<<"$OUT" && [ "$(calls)" -eq 0 ] \
-  && ok "K28 --status は実効設定（mode / 既定の名簿 novelty retro / 閾値 / 固定 model）を通信せずに出す" || bad "K28 rc=$RC out=$OUT"
+[ "$RC" -eq 0 ] && grep -q '^JEV_MODE=off$' <<<"$OUT" && grep -q '^JEV_POINTS=novelty retro triage$' <<<"$OUT" && grep -q '^JEV_THRESHOLD=0.99$' <<<"$OUT" && grep -q '^JEV_MODEL=jev-1.13.0$' <<<"$OUT" && [ "$(calls)" -eq 0 ] \
+  && ok "K28 --status は実効設定（mode / 既定の名簿 novelty retro triage / 閾値 / 固定 model）を通信せずに出す" || bad "K28 rc=$RC out=$OUT"
 run_decide_args FF_JEV_MODE=off -- --status --json
-[ "$RC" -eq 0 ] && [ "$(printf '%s' "$OUT" | jq -r '[.thresholds.novelty, .thresholds.retro, .threshold, .enabled, .points] | @tsv')" = "$(printf '0.6\t0.6\t0.99\tfalse\tnovelty retro')" ] \
+[ "$RC" -eq 0 ] && [ "$(printf '%s' "$OUT" | jq -r '[.thresholds.novelty, .thresholds.retro, .threshold, .enabled, .points] | @tsv')" = "$(printf '0.6\t0.6\t0.99\tfalse\tnovelty retro triage')" ] \
   && ok "K28b --status --json は thresholds / threshold / enabled / points を持つ" || bad "K28b rc=$RC out=$OUT"
 run_decide_args FF_JEV_MIN_CONFIDENCE=. -- --status --json
 [ "$RC" -eq 64 ] && ok "K28c --status も \".\" の閾値を exit 64 で止める（JSON 組み立て失敗を exit 0 にしない）" || bad "K28c rc=$RC out=$OUT"
@@ -1812,6 +1815,8 @@ else
   else bad "K30 fixture の質問文が生成器と食い違う"; fi
 fi
 rm -f "$FAKE/body.200"
+
+source "$SCRIPT_DIR/triage.sh" || { bad "triage section incomplete"; }
 
 # ================================================================================
 echo

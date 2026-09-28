@@ -172,6 +172,7 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK`
 - `FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK`
+- `FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD`
 - `FF_DISCARD_UNCOMMITTED`
 - `FF_EFFORT_ACTUAL_ACK`
@@ -180,6 +181,7 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_LONG_GATE_BACKGROUND_ACK`
 - `FF_SHELL_SAVE_ACK`（`hooks/guard-shell-save.sh` の抜け道。Write / Edit にはコマンド先頭の環境代入が無いので、hook のプロセス環境で渡す）
 - `FF_SUB_ISSUE_ID_ACK`
+- `FF_ZSH_EXPANSION_ACK`
 - `FF_ZSH_GLOB_ACK`
 - `FF_REVIEW_LOCK_OVERRIDE`
 - `FF_REVIEW_ROUND_ACK`
@@ -200,6 +202,7 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE`（`multi-agent.sh` が dispatch 前に古い codex-cli を自動更新するのを止める。`1` で無効）
 - `FF_JEV_MODE`
 - `FF_JEV_POINTS`
+- `FF_PRINCIPLES_GLOB`
 - `FF_MERGE_CLEANUP_IGNORE_PATHS`
 - `FF_MERGE_CLEANUP_MERGED_PR_LIMIT`
 - `FF_MERGE_CLEANUP_PROJECTS_DIR`

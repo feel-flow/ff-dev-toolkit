@@ -92,7 +92,10 @@ function fin(d,   w, f) {
   if (!started[d]) return
   w = wb[d]; f = wf[d]
   wb[d] = ""; wf[d] = ""; started[d] = 0
-  if (cs[d] == 1) { cs[d] = 2; return }
+  if (cs[d] == 1) {
+    if (mode == "expansion" && substr(w, 1, 1) == "=") check_expansion(w, f)
+    cs[d] = 2; return
+  }
   if (cs[d] == 2) { if (w == "in") cs[d] = 3; return }
   if (cs[d] == 3) { if (w == "esac") case_close(d); return }
   if (dbl[d]) { if (w == "]]") dbl[d] = 0; return }
@@ -104,8 +107,18 @@ function fin(d,   w, f) {
     if (is_reserved(w) || is_assign(w)) return
     cmdpos[d] = 0
   }
+  if (mode == "expansion") { check_expansion(w, f); return }
   if (ng[d]) return
   check(w, f)
+}
+# 警告は実値の推論ではなく、未引用 scalar の使用箇所。代入では分割しないのが正しい。
+function check_expansion(w, f,   k) {
+  if (substr(w, 1, 1) == "=" && substr(f, 1, 1) == "0" && length(w) > 1)
+    print "equals"
+  if (is_assign(w)) return
+  for (k = 1; k <= length(f); k++) {
+    if (substr(f, k, 1) == "v") { print "scalar"; return }
+  }
 }
 function check(w, f,   e, k, ch, rest, sug) {
   if (substr(w, 1, 1) != "-") return
@@ -181,7 +194,19 @@ END {
       if (c2 == SQ) { addc("", "1"); push("E"); i += 2; continue }
       if (substr(src, i, 3) == "$((") { addc("$", "1"); push("A"); ad[D] = 2; i += 3; continue }
       if (c2 == "(") { addc("$", "1"); push("U"); sub_[D] = 1; i += 2; continue }
-      if (c2 == "{") { addc("$", "1"); push("P"); pd[D] = 1; i += 2; continue }
+      if (c2 == "{") {
+        # 単純な ${NAME} だけを警告。${=NAME} / 配列 / 修飾子は利用者の明示意図として除外。
+        tail = substr(src, i)
+        if (mode == "expansion" && match(tail, /^\$\{[A-Za-z_][A-Za-z0-9_]*\}/)) {
+          addc(substr(tail, 1, RLENGTH), "v"); i += RLENGTH; continue
+        }
+        addc("$", "1"); push("P"); pd[D] = 1; i += 2; continue
+      }
+      if (mode == "expansion" && c2 ~ /^[A-Za-z_]$/) {
+        tail = substr(src, i)
+        match(tail, /^\$[A-Za-z_][A-Za-z0-9_]*/)
+        addc(substr(tail, 1, RLENGTH), "v"); i += RLENGTH; continue
+      }
       if (c2 != "" && index("*?@#$!-0123456789", c2) > 0) { addc("$" c2, "11"); i += 2; continue }
       addc("$", "1"); i++; continue
     }
@@ -240,4 +265,10 @@ END {
 
 ff_zsh_glob_scan() { # <cmd>
   printf '%s\n' "$1" | "${FF_ZSH_GLOB_AWK:-awk}" "$_FF_ZSH_GLOB_AWK_PROG"
+}
+
+# stdout: equals（停止候補）/ scalar（警告候補）、1 語につき各種別最大 1 行。rc は glob と共通。
+# 値やコマンド本文は出力しない。noglob は equals 展開を無効にしない。
+ff_zsh_expansion_scan() {
+  printf '%s\n' "$1" | "${FF_ZSH_GLOB_AWK:-awk}" -v mode=expansion "$_FF_ZSH_GLOB_AWK_PROG"
 }

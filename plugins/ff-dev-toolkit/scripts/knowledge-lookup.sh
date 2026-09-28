@@ -574,8 +574,8 @@ annotate_refs() { # <Issue 列の値> → "a(open) / b(closed) / skill:x"
 obs_status_label() {
   case "$1" in
     active) printf '%s' "未対策（active。蓄積中の落とし穴 — 回避策はエントリ本文の → 以降）" ;;
-    promoted) printf '%s' "対策 Issue あり（promoted。Issue 列の state を見る: open = 対応中 / closed = 対策済みまたは再発）" ;;
-    mitigated) printf '%s' "対策済み（mitigated。対策の所在は Issue 列 — 未対策として扱わない）" ;;
+    promoted) printf '%s' "対策 Issue あり（promoted。Issue 列の state を見る: open = 対応中 / closed = 完了照合前または対策後の再発（最新メモで区別））" ;;
+    mitigated) printf '%s' "対策済み（mitigated。元 Issue と所在は Issue 列。最新メモの未解消再発も確認する）" ;;
     archived) printf '%s' "休眠（archived。180 日以上再発なし）" ;;
     *) printf '%s' "状態不明（$1）" ;;
   esac

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# リポジトリ正本 docs/04-quality/TESTING.md に掛かる docs-gates 側の検出器を、隔離した
+# リポジトリ側の参照・固有手順と配布側の変異規定を守る docs-gates の検出器を、隔離した
 # 偽リポジトリ root で実測する層。verify.sh から source し run_repo_testing_gate_cases で実行する。
 #
 # なぜ必要か: docs-gates は「正本 TESTING.md に規定が在ること」を検査するが、その検査自体が
@@ -9,7 +9,7 @@
 #
 # 差し替え口の作り方: docs-gates の REPO_TESTING は $PLUGIN_ROOT/../../docs/04-quality/TESTING.md
 # 固定で、環境変数の口が無い。そこで偽 root の下に plugin root を組み直し、正本 docs/ だけを
-# 複製して変異させる。実リポジトリの正本には一切触れない。
+# 複製して変異させる。配布規定は plugin 内の写しを変異させ、実リポジトリには触れない。
 
 # 偽リポジトリ root を組む。docs-gates が repo root から読むのは docs/ と AGENTS.md、
 # それに plugins/ff-dev-toolkit だけ（AGENTS.md の参照先も plugins/ 配下を指す）。
@@ -35,11 +35,13 @@ _repo_testing_build_fake_root() {
       *)   cp -R "$entry" "$case_root/plugins/ff-dev-toolkit/$name" ;;
     esac
   done
-  cp -R "$real_repo_root/docs" "$case_root/docs"
-  cp "$real_repo_root/AGENTS.md" "$case_root/AGENTS.md"
+  if [ -f "$real_repo_root/docs/04-quality/TESTING.md" ]; then
+    cp -R "$real_repo_root/docs" "$case_root/docs"
+    cp "$real_repo_root/AGENTS.md" "$case_root/AGENTS.md"
+  fi
 }
 
-# $1 変異名 / $2 ラベル / $3 期待する検出メッセージ（空なら「変異なしで緑」を期待する control）
+# $1 変異名 / $2 ラベル / $3 期待する検出メッセージ（空なら無変異・良性変更の緑を期待する）
 run_repo_testing_gate_mutation() {
   local mutation="$1" label="$2" expected="$3"
   local case_root log testing rc=0
@@ -50,17 +52,27 @@ run_repo_testing_gate_mutation() {
   _repo_testing_build_fake_root "$case_root" "$REPO_TESTING_REAL_ROOT"
   testing="$case_root/docs/04-quality/TESTING.md"
 
-  # 変異は「要求 1 点につき 1 つ」。bullet 行を 1 本だけ落とす / 見出しを 1 つだけ改名する。
+  # 参照の欠落・変更・重複、規定の削除・再掲を個別に当てる。良性追記も対照にする。
   case "$mutation" in
     control) : ;;
-    drop-granularity)
-      _repo_testing_drop_bullet "$testing" '変異は検査 1 つにつき 1 つの粒度で並べる' ;;
+    benign-append)
+      _repo_testing_rewrite "$testing" '{ print } /^汎用規定の正本は配布テンプレート/ { print "- 実測ログは PR 本文から参照できる場所へ置く。" }' ;;
     drop-one-command)
-      _repo_testing_drop_bullet "$testing" '退避 → 変異 → suite 実行 → 復元を 1 コマンドにまとめる' ;;
+      _repo_testing_drop_line "$testing" '退避 → 変異 → suite 実行 → 復元を 1 コマンドにまとめる' ;;
+    drop-reference)
+      _repo_testing_drop_line "$testing" '汎用規定の正本は配布テンプレート' ;;
+    change-reference)
+      _repo_testing_rewrite "$testing" '/^汎用規定の正本は配布テンプレート/ { sub(/docs-template/, "wrong-template") } { print }' ;;
+    duplicate-reference)
+      _repo_testing_rewrite "$testing" '{ print } /^汎用規定の正本は配布テンプレート/ { print }' ;;
+    reintroduce-rule)
+      _repo_testing_rewrite "$testing" '{ print } /^汎用規定の正本は配布テンプレート/ { print "赤転しなかった変異は合格として扱う。" }' ;;
+    drop-granularity)
+      _repo_testing_drop_line "$case_root/plugins/ff-dev-toolkit/docs-template/04-quality/TESTING.md" '変異は検査 1 つにつき 1 つの粒度で並べる' ;;
     drop-todo)
-      _repo_testing_drop_bullet "$testing" '赤転しなかった変異は、そのまま検査追加の TODO にする' ;;
+      _repo_testing_drop_line "$case_root/plugins/ff-dev-toolkit/docs-template/04-quality/TESTING.md" '赤転しなかった変異は、そのまま検査追加の TODO にする' ;;
     drop-writeback)
-      _repo_testing_drop_bullet "$testing" '結果は当該 suite 自身の `verify.sh` ヘッダの「変異検出:」節へ書き戻す' ;;
+      _repo_testing_drop_line "$case_root/plugins/ff-dev-toolkit/docs-template/04-quality/TESTING.md" '結果は当該検査自身の先頭コメント（ヘッダ）へ書き戻す' ;;
     rename-heading)
       _repo_testing_rewrite "$testing" '
         $0 == "### 新規検査を書いた直後の変異注入バッテリー" { print "### 変異注入のやり方"; next }
@@ -83,7 +95,7 @@ run_repo_testing_gate_mutation() {
     if [ "$rc" -eq 0 ]; then
       ok "$label"
     else
-      bad "$label — 無変異の偽 root を docs-gates が拒否 (rc=${rc})"
+      bad "$label — 対照の偽 root を docs-gates が拒否 (rc=${rc})"
       sed -n '1,160p' "$log" >&2 || true
     fi
     return 0
@@ -97,24 +109,31 @@ run_repo_testing_gate_mutation() {
   fi
 }
 
-# 指定した固有語を含む bullet 行を 1 本だけ落とす（他の要求は残す）。
+# 指定した固有語を含む行を 1 本だけ落とす（他の要求は残す）。
 # 落ちなかった場合は「変異が当たっていないのに緑」を読む事故になるため fail-closed。
-_repo_testing_drop_bullet() {
+_repo_testing_drop_line() {
   local file="$1" needle="$2" before after
   before="$(grep -cF "$needle" "$file" || true)"
   if [ "$before" -ne 1 ]; then
     bad "変異の前提が崩れています: '${needle}' が ${before} 行（期待 1 行）: $file"
-    return 0
+    return 1
   fi
   grep -vF "$needle" "$file" >"$file.tmp"
   mv "$file.tmp" "$file"
   after="$(grep -cF "$needle" "$file" || true)"
-  [ "$after" -eq 0 ] || bad "変異が適用されていません: '${needle}' が残存: $file"
+  if [ "$after" -ne 0 ]; then
+    echo "✗ 変異が適用されていません: $needle: $file" >&2
+    return 1
+  fi
 }
 
 _repo_testing_rewrite() {
   local file="$1" program="$2"
   awk "$program" "$file" >"$file.tmp"
+  if cmp -s "$file" "$file.tmp"; then
+    echo "✗ 変異が対象へ届いていない: $file" >&2
+    return 1
+  fi
   mv "$file.tmp" "$file"
 }
 
@@ -123,29 +142,44 @@ run_repo_testing_gate_cases() {
 
   echo
   echo "== リポジトリ正本 TESTING.md ゲートの mutation 検査 =="
+  run_repo_testing_gate_mutation control \
+    "positive control: 無変異の偽リポジトリ root は docs-gates を通過" \
+    ""
+  run_repo_testing_gate_mutation drop-granularity \
+    "配布側の粒度の欠落を拒否する" \
+    "TESTING.md の配布側が変異の粒度を定めている"
+  run_repo_testing_gate_mutation drop-todo \
+    "配布側の TODO の欠落を拒否する" \
+    "TESTING.md の配布側が赤転しなかった変異を検査追加の TODO と定めている"
+  run_repo_testing_gate_mutation drop-writeback \
+    "配布側の書き戻し先の欠落を拒否する" \
+    "TESTING.md の配布側が結果の書き戻し先を定めている"
   if [ ! -f "$REPO_TESTING_REAL_ROOT/docs/04-quality/TESTING.md" ]; then
     ok "リポジトリ正本 TESTING.md ゲートの mutation 検査は適用外（正本 docs/ を持たない checkout。公開ミラー等）"
     return 0
   fi
 
-  run_repo_testing_gate_mutation control \
-    "positive control: 無変異の偽リポジトリ root は docs-gates を通過" \
+  run_repo_testing_gate_mutation benign-append \
+    "positive control: 固有の実測経路の良性追記は docs-gates を通過" \
     ""
-  run_repo_testing_gate_mutation drop-granularity \
-    "変異の粒度（検査 1 つにつき 1 つ）の要求が消える退行を拒否する" \
-    "「変異は検査 1 つにつき 1 つの粒度で並べる」を述べた bullet 行がありません"
   run_repo_testing_gate_mutation drop-one-command \
-    "退避 → 変異 → suite 実行 → 復元の一体化の要求が消える退行を拒否する" \
-    "「退避 → 変異 → suite 実行 → 復元を 1 コマンドにまとめる」を述べた bullet 行がありません"
-  run_repo_testing_gate_mutation drop-todo \
-    "赤転しなかった変異を TODO にする要求が消える退行を拒否する" \
-    "「赤転しなかった変異は検査追加の TODO にする」を述べた bullet 行がありません"
-  run_repo_testing_gate_mutation drop-writeback \
-    "verify.sh ヘッダ「変異検出:」節への書き戻しの要求が消える退行を拒否する" \
-    "「結果を当該 suite の verify.sh ヘッダ「変異検出:」節へ書き戻す」を述べた bullet 行がありません"
+    "固有の 1 コマンド実行規定の欠落を拒否する" \
+    "変異注入バッテリーの 1 コマンド実行規定が欠落している"
+  run_repo_testing_gate_mutation drop-reference \
+    "正本参照の削除を拒否する" \
+    "変異注入バッテリーの正本参照が欠落・変更・重複している"
+  run_repo_testing_gate_mutation change-reference \
+    "正本参照の変更を拒否する" \
+    "変異注入バッテリーの正本参照が欠落・変更・重複している"
+  run_repo_testing_gate_mutation duplicate-reference \
+    "正本参照の重複を拒否する" \
+    "変異注入バッテリーの正本参照が欠落・変更・重複している"
+  run_repo_testing_gate_mutation reintroduce-rule \
+    "汎用規定の再掲を拒否する" \
+    "変異注入バッテリーに配布側の汎用規定が再掲されている"
   run_repo_testing_gate_mutation rename-heading \
-    "節の改名で検査が空振りする退行を拒否する" \
-    "「新規検査を書いた直後の変異注入バッテリー」節が見つかりません"
+    "節の改名を拒否する" \
+    "変異注入バッテリーの節を抽出できません"
   run_repo_testing_gate_mutation missing-testing \
     "正本 TESTING.md の不在（改名）で検査群が丸ごと skip される fail-open を拒否する" \
     "リポジトリ正本が見つかりません"

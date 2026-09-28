@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# git-path-isolation: 固定 PATH は実 CLI / yq / 更新 CLI の混入と不在検査の偽緑を防ぐ。
+# git の親ディレクトリ全体は追加しない（同居する CLI も露出するため）。Xcode 障害時は
+# DEVELOPER_DIR=/Library/Developer/CommandLineTools bash plugins/ff-dev-toolkit/tests/review-wrapper-shim/verify.sh
+# を使う。正本: docs/04-quality/TESTING.md「ホスト git 障害時の切り分け」。
 #
 # review-wrapper-shim suite の検査ファイル（verify.sh から source される。単独実行不可）。
 # 範囲: 実体の multi-agent.sh を toolkit へ置いた codex 不在経路（--cli 除去・pair 主 reviewer の有無・CODEX_REVIEW_CODEX_BIN と委譲先の検出の整合・toolkit 未解決時の降格案内・CLI registry 由来の候補）。

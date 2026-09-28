@@ -116,7 +116,7 @@ run_hook() { # <command> [hook-path] [env NAME=VALUE ...]
   # 欠落系統の列挙は deny 文の 1 行目。以降の説明文にも「種別」「優先度」の語が
   # 出るため、系統の名指しを見る検査はこの行へスコープする（本文全体を針にすると
   # 「充足済みの系統を名指ししない」側が常に緑になり検出力を失う）。
-  MISSING_LINE="$(printf '%s\n' "$REASON" | head -1)"
+  MISSING_LINE="${REASON%%$'\n'*}"
 }
 
 assert_deny() { # <label>

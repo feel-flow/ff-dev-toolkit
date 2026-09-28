@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 空振り検出: 最初の perl のアンカーを存在しない文字列へ変えると未到達の診断で rc=1、無害なコメント追加へ変えると従来の検出力不足の診断で rc=1。現行 81 変異は全件検出（2026-09-28 実測）。
+# 空振り検出: 2 段変異 3 ケースの各段を存在しないアンカーへ変えると、全 6 通りで段名付き未到達診断・非 0。各無変異対照は 0（2026-09-28 実測）。
 # Mutation self-test for retrospective prompt/Stop hooks (Issues #583 / #616).
 # 空振り検出: consumer の判定リスト抽出を、散文モードからフェンス行で状態を反転するだけの簡易な除外へ戻した写しを与えると、「フェンス内の番号付き例示を残して判定リスト側を壊す」変異（4 連の中の 3 連・バッククォートの中の ~~~）が検出されず exit 1 で止まる（2026-09-23 実測。consumer が例示側の出現で緑に倒れる形を「検出した」扱いにしない）。
 set -euo pipefail
@@ -220,7 +222,16 @@ register_job() { # <kind: mutation> <name> <expected> <root> <group>
 }
 
 check_mutation() {
-  register_job mutation "$1" "$2" "$3" "$4"
+  # fixture 登録のたびに照合し、最初の未適用で consumer job の起動前に停止する。
+  # 旧 retrospective-contract-selftest の assert_mutated は ADR-060 で撤去済み。
+  # diff の 1（内容差）と 2（比較不能）を区別する。
+  local mutation_diff_rc=0
+  diff -qr "$BASE" "$3" >/dev/null || mutation_diff_rc=$?
+  case "$mutation_diff_rc" in
+    1) register_job mutation "$1" "$2" "$3" "$4" ;;
+    0) echo "✗ $1: 変異が対象へ届いていない（baseline と同一）" >&2; return 1 ;;
+    *) echo "✗ $1: 変異の適用を確認できません（比較失敗 rc=${mutation_diff_rc}）" >&2; return 1 ;;
+  esac
 }
 
 # 良性の変更（節外・節内フェンスへの散文追記）で赤くならないことは、節の切り出しを共通 lib へ
@@ -503,8 +514,8 @@ check_mutation "SlashCommand 経路の検出削除" "SlashCommand 経由の /ace
 # ターンが全部チェーン末尾になる（実測でこの形の退行が入った）。
 ROOT="$(make_fixture chain-tail-command-substring)"
 expect_occurrences "$ROOT/hooks/retrospective-chain-tail.mjs" 'const TAIL_COMMAND = ' 1
-perl -0pi -e 's/const TAIL_COMMAND = [^\n]*;/const TAIL_COMMAND = \/\\\/(?:[A-Za-z0-9_-]+:)?(?:ace-curate|merge-cleanup|retrospective)\\b\/;/' "$ROOT/hooks/retrospective-chain-tail.mjs"
-perl -0pi -e 's/  return TAIL_COMMAND\.test\(text\.trim\(\)\.split\(\/\\s\+\/\)\[0\] \|\| ""\);/  return TAIL_COMMAND.test(text);/' "$ROOT/hooks/retrospective-chain-tail.mjs"
+perl -0pi -e 's/const TAIL_COMMAND = [^\n]*;/const TAIL_COMMAND = \/\\\/(?:[A-Za-z0-9_-]+:)?(?:ace-curate|merge-cleanup|retrospective)\\b\/;/ or die "変異が対象へ届いていない: chain-tail-command-substring stage 1\n"' "$ROOT/hooks/retrospective-chain-tail.mjs"
+perl -0pi -e 's/  return TAIL_COMMAND\.test\(text\.trim\(\)\.split\(\/\\s\+\/\)\[0\] \|\| ""\);/  return TAIL_COMMAND.test(text);/ or die "変異が対象へ届いていない: chain-tail-command-substring stage 2\n"' "$ROOT/hooks/retrospective-chain-tail.mjs"
 check_mutation "コマンド形の判定を部分一致へ戻す（パス言及が末尾扱いになる）" "パスとしてコマンド名を含む prompt はチェーン末尾にしない" "$ROOT" chain-command
 
 ROOT="$(make_fixture chain-tail-tool-result-guard)"
@@ -598,9 +609,9 @@ check_mutation "SKILL 定型文 drift（自動発火の判定リスト側）" "h
 # 実測する。1 段目だけでは良性変更なので、2 段目の破壊とセットで初めて意味を持つ。
 ROOT="$(make_fixture in-section-prose-then-drift)"
 FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
-  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E\n)/${1}\n本節では `振り返り: 今回は作業完了前のため対象外` の扱いを説明する（節内の散文）。\n/m' \
+  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E\n)/${1}\n本節では `振り返り: 今回は作業完了前のため対象外` の扱いを説明する（節内の散文）。\n/m or die "変異が対象へ届いていない: in-section-prose-then-drift stage 1\n"' \
   "$ROOT/skills/retrospective/SKILL.md"
-perl -0pi -e 's/^(\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外/${1}振り返り: 未完了/m' \
+perl -0pi -e 's/^(\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外/${1}振り返り: 未完了/m or die "変異が対象へ届いていない: in-section-prose-then-drift stage 2\n"' \
   "$ROOT/skills/retrospective/SKILL.md"
 check_mutation "節内の散文を残して判定リスト側を壊す" "hook / SKILL.md の自動発火契約が drift" "$ROOT" contracts
 
@@ -609,9 +620,9 @@ check_mutation "節内の散文を残して判定リスト側を壊す" "hook / 
 # 例示は「4 連の中の 3 連」と「バッククォートの中の ~~~」の内側に置く（簡易版が閉じと誤判定する形）。
 ROOT="$(make_fixture fenced-numbered-example-then-drift)"
 FF_AUTOFIRE_HEADING="$AUTOFIRE_HEADING" perl -0pi \
-  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E\n)/${1}\n````text\n```\n2. 振り返り: 今回は作業完了前のため対象外\n```\n````\n\n```text\n~~~\n2. 振り返り: 今回は作業完了前のため対象外\n~~~\n```\n/m' \
+  -e 's/(^\Q$ENV{FF_AUTOFIRE_HEADING}\E\n)/${1}\n````text\n```\n2. 振り返り: 今回は作業完了前のため対象外\n```\n````\n\n```text\n~~~\n2. 振り返り: 今回は作業完了前のため対象外\n~~~\n```\n/m or die "変異が対象へ届いていない: fenced-numbered-example-then-drift stage 1\n"' \
   "$ROOT/skills/retrospective/SKILL.md"
-perl -0pi -e 's/^(\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外(?=[^\n]*報告する)/${1}振り返り: 未完了/m' \
+perl -0pi -e 's/^(\d+\. [^\n]*?)振り返り: 今回は作業完了前のため対象外(?=[^\n]*報告する)/${1}振り返り: 未完了/m or die "変異が対象へ届いていない: fenced-numbered-example-then-drift stage 2\n"' \
   "$ROOT/skills/retrospective/SKILL.md"
 check_mutation "フェンス内の番号付き例示を残して判定リスト側を壊す" "hook / SKILL.md の自動発火契約が drift" "$ROOT" contracts
 

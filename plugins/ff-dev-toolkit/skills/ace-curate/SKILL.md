@@ -74,7 +74,7 @@ read-only の抽出用 subagent があれば [references/extract-prompt.md](refe
 
 **domainの判定を先行する**: コード/テストだけならunverified、正式資料か確認者の承認があればconfirmed、矛盾はconflictingと両側の根拠を記録し、既存仕様や既存ACEを自動deprecatedにしない。Distilled-Toは収集時には付けない。評価ゲート: 再現性・影響度が「中」以上か（低→スキップ）/ **新規性があるか？**（「**読者が取る実行可能なアクションが既存エントリと同一か**」。同一なら `Helpful` +1 のみ。domainは主体・条件・例外・確認状態が違えば同一としない）/ **抽象度の下限を満たすか？**（固有名なしで書けるなら 1 段上げてから新規性を判定。上げすぎたら棄却）/ **一回性のインシデント叙述は Playbook に書かない**（TROUBLESHOOTING / runbook へ）。
 
-`FF_JEV_MODE=on` のときだけ新規性バーを Jev（`scripts/jev/jev-decide.sh novelty`）へ先に投げてよい。照合: PLAYBOOK.md の索引で似たタイトルが**他カテゴリにもないか**を確認し、近縁カテゴリの `playbook/<category>.md` を読む。**重複** → `Helpful` +1 / **矛盾（非domain）** → 既存を `deprecated` にして新エントリ / **新規** → Phase 3。**Reuse 記録の反映**: PR body の「参照して役立った」既存 ACE ID があれば `Helpful` を +1（候補 0 件でも行う）。
+`FF_JEV_MODE=on` の候補は [triage](references/curate.md#triage) で先に選別する。`off` は従来経路・出力とバイト同一。照合: PLAYBOOK.md の索引で似たタイトルが**他カテゴリにもないか**を確認し、近縁カテゴリの `playbook/<category>.md` を読む。**重複** → `Helpful` +1 / **矛盾（非domain）** → 既存を `deprecated` にして新エントリ / **新規** → Phase 3。**Reuse 記録の反映**: PR body の「参照して役立った」既存 ACE ID があれば `Helpful` を +1（候補 0 件でも行う）。
 
 ### 4. Phase 3: Curate（増分更新）
 

@@ -26,14 +26,15 @@
 # 環境変数（すべて任意。値は stdout / stderr に出さない）:
 #   FF_JEV_MODE                    off | on（既定 off。それ以外は exit 64）
 #   FF_JEV_POINTS                  on のとき Jev を使う判定点の名簿（空白またはカンマ区切り。
-#                                  既定 "novelty retro"。**設定済みの空値は「0 件」**で、全判定点が
+#                                  既定 "novelty retro triage"。**設定済みの空値は「0 件」**で、全判定点が
 #                                  従来経路になる — ACE-418-2。名簿に無い判定点は exit 12）
 #   FF_JEV_MIN_CONFIDENCE          採用の閾値（0〜1 の小数）。共通既定は 0.99（Choice / Score の confidence 向け。
 #                                  独立評価 priorbench/jev で精度が 0.99 で跳ぶ崖を根拠にした）。
-#                                  ただし Noul の判定点 novelty / retro は**組み込み既定 0.6** — Noul の
+#                                  ただし Noul の判定点 novelty / retro / triage は**組み込み既定 0.6** — Noul の
 #                                  confidence（|p−0.5|×2）は実測で最大 0.94 までしか出ず、0.99 だと採用率 0% に
 #                                  なる。0.6 は offline 評価（recent-candidates 225 件: ≥ 0.6 帯が占有 64% で
-#                                  一致 99.3%）から引いた（ADR-059。README 末尾の帯別表）。型を跨いで閾値を
+#                                  一致 99.3%）から引いた。triage では同型に合わせた初期値であり、分類精度の
+#                                  較正済み値ではない（ADR-059。README の帯別表）。型を跨いで閾値を
 #                                  流用しない（公式 jaggedness: Noul と Choice の閾値は互換でない）
 #   FF_JEV_MIN_CONFIDENCE_<POINT>  判定点別の上書き（<POINT> は判定点名を大文字化し `-` を `_` に）。
 #                                  解決順は 判定点別 env → 共通 env → 判定点の組み込み既定 → 共通既定
@@ -99,12 +100,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 JUDGE="$SCRIPT_DIR/jev-judge.sh"
 
 MODE="${FF_JEV_MODE:-off}"
-POINTS_DEFAULT="novelty retro"
+POINTS_DEFAULT="novelty retro triage"
 THRESHOLD_DEFAULT="0.99"
 # Noul の判定点の組み込み既定（ヘッダ「FF_JEV_MIN_CONFIDENCE」参照）。名前 → 閾値
 builtin_threshold() { # $1=判定点 → stdout（無ければ空）
   case "$1" in
-    novelty|retro) printf '%s\n' "0.6" ;;
+    novelty|retro|triage) printf '%s\n' "0.6" ;;
     *) printf '' ;;
   esac
 }

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# git-path-isolation: 固定 PATH は実 CLI / yq / 更新 CLI の混入と不在検査の偽緑を防ぐ。
+# git の親ディレクトリ全体は追加しない（同居する CLI も露出するため）。Xcode 障害時は
+# DEVELOPER_DIR=/Library/Developer/CommandLineTools bash plugins/ff-dev-toolkit/tests/docs-gates-runtime/verify.sh
+# を使う。正本: docs/04-quality/TESTING.md「ホスト git 障害時の切り分け」。
 # 配布文書の GitHub Actions 例から run step を抽出し、step 間の root 引き継ぎと
 # 配置・resource guard・review 起動を一時 workspace で連続実行する。
 

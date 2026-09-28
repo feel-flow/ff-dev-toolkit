@@ -1375,13 +1375,11 @@ MISS_PROBE_BASELINE=(
   cloud-env-setup
   docs-frontmatter-repo-selftest
   docs-frontmatter-repo
-  docs-gates-runtime
   docs-scan-mirror
   docs-template-frontmatter-selftest
   docs-template-frontmatter
   docs-version-changelog-selftest
   docs-version-changelog
-  git-fixture-isolation
   github-labels-setup
   guard-background-cwd
   guard-checkout-restore

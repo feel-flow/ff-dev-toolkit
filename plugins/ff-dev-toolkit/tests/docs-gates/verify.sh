@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 正本参照の削除・変更・重複、節の改名で赤。配布側の粒度・TODO・書き戻しの削除と旧規定の再掲も固有の診断で赤（2026-09-28 docs-gates-runtime 実測）。
 #
 # docs-template 内のゲート例（pre-push フック / CI / 判定スクリプト）が
 # fail-silent へ退行していないことの drift 検査（Issue #154）。
@@ -26,40 +27,18 @@
 #   - 文言 needle（散文アンカー）が red になった場合、文書の正当なリライトが
 #     原因なら本ファイルの needle も一緒に更新する。
 #
-# 固定するもの（リポジトリ正本 docs/04-quality/TESTING.md「新規検査を書いた直後の
-# 変異注入バッテリー」節。開発元 checkout のみ）:
-#   (1) 変異は検査 1 つにつき 1 つの粒度で並べる
-#   (2) 退避 → 変異 → suite 実行 → 復元を 1 コマンドにまとめる
-#   (3) 赤転しなかった変異は検査追加の TODO にする
-#   (4) 結果を当該 suite の verify.sh ヘッダ「変異検出:」節へ書き戻す
-#   (5) 正本が不在なら赤にする（`-f` だけで括ると検査が黙って skip する fail-open）
-#
-# 変異検出（2026-09-12 実測。検査 1 つにつき 1 変異で注入し、赤転しなかった変異は無し）:
-#   節から (1)〜(4) の bullet 行を 1 本ずつ落とすと、落とした 1 点だけが赤になる。
-#   節見出しを落とすと「節が見つかりません」が赤になる。
-#   REPO_TESTING のパスを実在しない名前へ変えると (5) が赤になる（旧実装では (1)〜(4) が
-#   `-f` ガードで黙って skip され、緑のまま通った）。
-# 固定するもの（配布テンプレート docs-template/04-quality/TESTING.md「変異注入の結果の
-# 読み方と書き戻し先」節。公開 checkout でも走る）:
-#   (6) 緑は「守られている」ではなく「誰も測っていない」ことの実測である
-#   (7) 赤転しなかった変異は検査追加の TODO にする
-#   (8) 赤にできない変異は消さずに理由とともに残す
-#   (9) 結果は当該検査自身の先頭コメントへ書き戻す
-#   (10) 同一対象への同時変異を避ける
-#   (11) 変異は書いた直後（コミット前）にその場で当てる
-#   (12) 未解消の TODO を残したままマージしない
-#   (13) 「理由を書けばマージしてよい」の抜け道を塞ぐ（検査を足せる変異は TODO が優先）
-#
-# 変異検出（2026-09-13 実測。変異は 1 件ずつ直列に当て、前後で対照を取る。赤転しなかった変異は無し）:
-#   (6)〜(13) の各 bullet 行を 1 本ずつ落とすと、落とした 1 点だけが赤になる。
-#   節を丸ごと落とすと 8 件が赤になる（針の数と一致する = 針どうしが重複していない証拠）。
-#   節の見出しだけを変えて本文をそのまま残しても 8 件が赤になる（針は節スコープで張ってある）。
-#   針を節スコープにする前は「緑 = 誰も測っていない」を Changelog の記述も満たしており、
-#   対象行を落としても緑だった（節を落として 4 件しか赤にならないことで気付いた）。
-#
-#   上の検査ブロック自体を無効化する変異は本 suite では測れない（静的 suite は自分の不在を
-#   測れない）。その層は tests/docs-gates-runtime/repo-testing-gate-cases.sh が担い、
-#   ブロックを `if false` へ倒すと docs-gates-runtime が 5 件赤になることを実測済み。
+# 汎用の変異注入規定は配布 TESTING.md を正本とし、リポジトリ側は参照と
+# 固有の結線だけを持つ。参照の欠落・変更・重複と旧規定の再掲を赤にする。
+# 正本 docs/ を持つ checkout で TESTING.md 自体が欠落した場合も赤にする。
+# 配布テンプレートの結果・書き戻し規定は節スコープで固定する。
+# 変異検出: 正本参照の削除・変更・重複で「正本参照が欠落・変更・重複」が赤。
+# 変異検出: 固有の実行手順を削除すると「1 コマンド実行規定が欠落」が赤。
+# 変異検出: 旧規定を再掲すると「汎用規定が再掲」が赤。
+# 変異検出: 配布側の粒度・TODO・書き戻し行を各々削除すると対応する節内検査が赤。
+# 変異検出: リポジトリ側の節改名は「節を抽出できません」、ファイル改名は「正本が見つかりません」で赤。
+# 上記は docs-gates-runtime の repo-testing-gate-cases.sh で実測（2026-09-28）。
+# 参照検査ブロック自体の削除はこの静的 suite だけでは測れない。同 runtime により、
+# 無変異の対照は緑のまま drop-reference が赤になることを実測済み（2026-09-28）。
 #
 # 変異検出（契約データランナー contracts/*.tsv。2026-09-13 実測。赤転しなかった変異は 1 件で、
 # その 1 件は下記のとおり設計上の下限）:
@@ -756,6 +735,8 @@ must_match "$f" '^[[:space:]]*python3 "\$MUT" \|\| exit 1' \
 # この 2 点が欠けている場所で、検出力ゼロの検査が「緑だから守られている」と読まれたまま残る。
 # 針は主張そのもの（散文アンカー）で持ち、bullet ごとに 1 本ずつ張る（1 本に畳むと、
 # 残りの主張が消えても緑のまま通る）。
+must_contain_section "$f" '### 変異注入の結果の読み方と書き戻し先' '変異は検査 1 つにつき 1 つの粒度で並べる' \
+  "TESTING.md の配布側が変異の粒度を定めている"
 must_contain_section "$f" '### 変異注入の結果の読み方と書き戻し先' '緑 = 守られているではなく、' \
   "TESTING.md の配布側が「緑は守られている証拠ではない」と書いている"
 must_contain_section "$f" '### 変異注入の結果の読み方と書き戻し先' '赤転しなかった変異は、そのまま検査追加の TODO にする' \
@@ -932,76 +913,32 @@ FOLLOWUP_NEEDLES
 fi
 
 # --- 04-quality/TESTING.md: 新規検査を書いた直後の変異注入バッテリー節（OBS-016） ---
-# 新規ゲートを書いた直後に変異注入で測ると検出力ゼロの検査が実際に出る、が累計 3 回
-# 実測されたことを受けて新設した節。「新規 suite 追加の随伴先」の直後に置いた手順が
-# 要求する 4 点（変異の粒度・退避復元の一体化・TODO 化・verify.sh ヘッダへの書き戻し）
-# を、散文の言い換えでは消えない固有語で固定する。
-#
-# needle は**要求ごとに 1 本の bullet 行へまとめて当てる**（節全体への固定文字列検査に
-# しない）。節スコープで足りるのは「節が在ること」までで、節全体に当てると (a) 要求の
-# 一部語句しか見ていない needle は条件を削っても生き残り、(b) 4 本の needle を別々の行へ
-# 散らしても緑になる。同一 bullet 行に共起することを要求すれば、要求 1 点を削る変異が
-# その 1 点だけを赤にする（= 検査 1 つにつき 1 変異で検出力を実測できる）。
+# 正本参照は URL・節名を含む行の完全一致と本数で固定し、曖昧な参照を許さない。
+# 固有の 1 コマンド手順は節内に残す。粒度・TODO・書き戻し規定は配布側で検査する。
+# 旧規定の再掲は節全体の固有語で拾う。固有の記法・実測経路だけの追記は対照で許可する。
 if [ -f "$REPO_TESTING" ]; then
-  extract_mutation_battery_section() {
-    awk '/^### 新規検査を書いた直後の変異注入バッテリー$/ { f = 1 }
-         f && !/^### 新規検査を書いた直後の変異注入バッテリー$/ && (/^## / || /^### /) { exit }
-         f { print }' "$1"
-  }
-  mutation_battery_section="$(extract_mutation_battery_section "$REPO_TESTING")"
-  if [ -z "$mutation_battery_section" ]; then
-    bad "「新規検査を書いた直後の変異注入バッテリー」節が見つかりません（見出しの改名か節の削除。fail-closed）"
+  mutation_battery_heading='### 新規検査を書いた直後の変異注入バッテリー'
+  mutation_battery_reference='汎用規定の正本は配布テンプレート [TESTING.md「変異注入の結果の読み方と書き戻し先」](../../plugins/ff-dev-toolkit/docs-template/04-quality/TESTING.md#変異注入の結果の読み方と書き戻し先)。本節では規定を複製せず、本リポジトリ固有の結線だけを記す。'
+  if mutation_battery_section="$(section_scope_extract "$REPO_TESTING" "$mutation_battery_heading")"; then
+    mutation_battery_reference_count="$(printf '%s\n' "$mutation_battery_section" | awk -v ref="$mutation_battery_reference" '$0 == ref { n++ } END { print n+0 }')"
+    if [ "$mutation_battery_reference_count" -eq 1 ]; then
+      ok "変異注入バッテリーは配布側の汎用規定を正本として参照する"
+    else
+      bad "変異注入バッテリーの正本参照が欠落・変更・重複している"
+    fi
+    if section_scope_contains "$REPO_TESTING" "$mutation_battery_heading" '退避 → 変異 → suite 実行 → 復元を 1 コマンドにまとめる' >/dev/null; then
+      ok "変異注入バッテリーは退避から復元までを 1 コマンドにまとめる"
+    else
+      bad "変異注入バッテリーの 1 コマンド実行規定が欠落している"
+    fi
+    # 旧規定の再掲を防ぐ。固有の記法・実測経路は本節に残せる。
+    if printf '%s\n' "$mutation_battery_section" | grep -E '検査 1 つにつき 1 つ|赤転しなかった変異|検査追加の TODO|ヘッダ.*書き戻す' >/dev/null; then
+      bad "変異注入バッテリーに配布側の汎用規定が再掲されている"
+    else
+      ok "変異注入バッテリーにはモノレポ固有の結線だけを置く"
+    fi
   else
-    # $1: 行, $2..: needle。すべて含む行だけを一致とみなす。
-    mutation_battery_line_has_all() {
-      local _mb_line="$1" _mb_needle
-      shift
-      for _mb_needle in "$@"; do
-        case "$_mb_line" in
-          *"$_mb_needle"*) : ;;
-          *) return 1 ;;
-        esac
-      done
-      return 0
-    }
-    # $1: 要求のラベル, $2..: 同一 bullet 行に共起していなければならない needle。
-    # set -e 下で呼び出し側を落とさないよう、失敗は bad() に計上して 0 で返す。
-    check_mutation_battery_requirement() {
-      local _mb_label="$1" _mb_line
-      shift
-      while IFS= read -r _mb_line; do
-        case "$_mb_line" in
-          '- '*) : ;;
-          *) continue ;;
-        esac
-        if mutation_battery_line_has_all "$_mb_line" "$@"; then
-          ok "「新規検査を書いた直後の変異注入バッテリー」節: ${_mb_label}"
-          return 0
-        fi
-      done <<MUTATION_BATTERY_SECTION
-$mutation_battery_section
-MUTATION_BATTERY_SECTION
-      bad "「新規検査を書いた直後の変異注入バッテリー」節に「${_mb_label}」を述べた bullet 行がありません（要求の削除・分割・言い換え）"
-      printf '    同一 bullet 行に必要: %s\n' "$*" >&2
-      return 0
-    }
-
-    check_mutation_battery_requirement '変異は検査 1 つにつき 1 つの粒度で並べる' \
-      '検査 1 つにつき 1 つの粒度' \
-      'まとめて複数箇所を同時に壊す' \
-      'どの検査がどの不変条件を守っているか判別できない'
-    check_mutation_battery_requirement '退避 → 変異 → suite 実行 → 復元を 1 コマンドにまとめる' \
-      '退避 → 変異 → suite 実行 → 復元' \
-      '1 コマンドにまとめる' \
-      '変異注入の適用確認'
-    check_mutation_battery_requirement '赤転しなかった変異は検査追加の TODO にする' \
-      '赤転しなかった変異' \
-      '検査追加の TODO' \
-      'TODO を残したまま新設 suite をマージしない'
-    check_mutation_battery_requirement '結果を当該 suite の verify.sh ヘッダ「変異検出:」節へ書き戻す' \
-      '`verify.sh` ヘッダの「変異検出:」節へ書き戻す' \
-      '# 変異検出: ' \
-      '変異ごとに 1 行'
+    bad "変異注入バッテリーの節を抽出できません: $mutation_battery_section"
   fi
 fi
 

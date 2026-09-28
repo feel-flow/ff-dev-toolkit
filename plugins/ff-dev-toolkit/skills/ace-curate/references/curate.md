@@ -31,9 +31,25 @@
 
 **一回性のインシデント叙述**: 特定障害のタイムライン・復旧ログ・環境固有の調査記録は再現性ゲート「低→スキップ」の適用対象であり、Playbook ではなく `docs/08-knowledge/TROUBLESHOOTING.md` や runbook へ記録する。Playbook に残すのは「次に同型の状況で使える主張」だけ。
 
+## triage
+
+`FF_JEV_MODE=on` のときだけ、新規性の判定前に次の triage 入口を呼ぶ（`CANDIDATE` は候補 1 件の本文）。原則の glob は `FF_PRINCIPLES_GLOB` で指定し、未指定・一致なしは live Playbook を使う。`off` はこの節が存在しないのと同じで、呼び出さず従来経路の出力をバイト同一に保つ。
+
+<!-- ff-triage-entry:start -->
+```bash
+if [ "${FF_JEV_MODE:-off}" = on ]; then
+  triage_rc=0
+  bash "${FF_DEV_TOOLKIT_ROOT}/scripts/jev/triage-candidate.sh" --candidate "$CANDIDATE" || triage_rc=$?
+  case "$triage_rc" in 0|10|11|12) ;; *) exit "$triage_rc" ;; esac
+fi
+```
+<!-- ff-triage-entry:end -->
+
+exit 0 の分類は人が最終判断し、`reduces_to` は該当原則へ畳む（ACE なら Helpful +1、core 文書なら証跡へ記録しカウンターを新設しない）。`new_invariant` だけを下の評価へ進め、`one_off_measurement` はプロジェクトの evidence 文書へ、`noise` は理由 1 行を残して捨てる。exit 10 / 11 / 12 は出力の `top_k` と `measurement_hint` を参考に従来の判断へ戻る。triage 済み候補を `novelty` へ再送しない（二重走行なし）。判断を覆した場合は出力の `decision_ids` の該当 ID を `triage-candidate.sh --overturn <id> --note <理由>` で記録する。原則の読み方・終了コードは [Jev README](../../../scripts/jev/README.md#知識候補の選別triage) が正本。
+
 ## Jev への切替（`FF_JEV_MODE`・既定 off・ADR-059）
 
-新規性バーの判定は `FF_JEV_MODE=on` のときだけ Jev（TypeSafe AI の System One Model）へ先に投げてよい。候補ごとに、照合で読み込むカテゴリ（候補カテゴリ + 似たタイトルが見つかったカテゴリ）の中から、候補と語の重なり（Jaccard 類似度。offline 評価の生成器 `build-ace-eval-sets.ts` の近傍選択と同じ）が大きい順に最大 5 件を近傍エントリとして選び、1 件ずつ state（`id` / `category` / `title` / `body`。日本語のまま）にして次を呼ぶ:
+triage 未実施の候補に限り、新規性バーの判定は `FF_JEV_MODE=on` のときだけ Jev（TypeSafe AI の System One Model）へ先に投げてよい。候補ごとに、照合で読み込むカテゴリ（候補カテゴリ + 似たタイトルが見つかったカテゴリ）の中から、候補と語の重なり（Jaccard 類似度。offline 評価の生成器 `build-ace-eval-sets.ts` の近傍選択と同じ）が大きい順に最大 5 件を近傍エントリとして選び、1 件ずつ state（`id` / `category` / `title` / `body`。日本語のまま）にして次を呼ぶ:
 
 ```bash
 # 判定点 novelty。質問 fixture は /retrospective の観測同一性判定と同一ファイル（基準が同じなので文言も 1 つ）

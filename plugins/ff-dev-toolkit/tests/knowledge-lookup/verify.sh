@@ -36,6 +36,7 @@
 #        主張ではない）
 #
 # 空振り検出: 両 store を置かない root を与えると K6 が rc=2 を要求し、台帳の見出しを `### OBS 001 …`（コロン無し）へ変えると K7 が `読み取り失敗` を要求する（2026-09-19 実測。スクリプト側の noentry 判定を `empty` へ倒す変異で K7 が赤、両不在の rc=2 を rc=0 へ倒す変異で K6 が赤）。
+# 空振り検出: promoted の closed 説明を旧「対策済みまたは再発」へ戻す／mitigated の未解消再発確認を旧説明へ戻すと各 rc=1、正常対照は38件pass（2026-09-28実測）。状態名の接頭辞だけが残っても意味の欠落を緑にしない。
 #
 # 変異検出（2026-09-19 実測。変異は 1 件ずつ当て、前後で対照を取る）:
 #           emit_obs の archived 除外を外すと 2 件赤（K2 と K11 の行数）。emit_obs の Status 抽出を
@@ -304,8 +305,8 @@ if [[ "${RC}" -eq 0 ]]; then ok "K1: 両 store で rc=0"; else bad "K1: rc=${RC}
 if id_under_group "有効（active）" "ACE-10-1"; then ok "K1: ACE active が有効グループに出る"; else bad "K1: ACE-10-1 が有効グループに無い"; fi
 if id_under_group "非推奨（deprecated" "ACE-10-2"; then ok "K1: ACE deprecated が非推奨グループに出る"; else bad "K1: ACE-10-2 が非推奨グループに無い"; fi
 if id_under_group "未対策（active" "OBS-001"; then ok "K1: 台帳 active が未対策グループに出る"; else bad "K1: OBS-001 が未対策グループに無い"; fi
-if id_under_group "対策 Issue あり（promoted" "OBS-003"; then ok "K1: 台帳 promoted が対策 Issue ありグループに出る"; else bad "K1: OBS-003 が promoted グループに無い"; fi
-if id_under_group "対策済み（mitigated" "OBS-005"; then ok "K1: 台帳 mitigated が対策済みグループに出る"; else bad "K1: OBS-005 が mitigated グループに無い"; fi
+if id_under_group "対策 Issue あり（promoted。Issue 列の state を見る: open = 対応中 / closed = 完了照合前または対策後の再発（最新メモで区別））" "OBS-003"; then ok "K1: 台帳 promoted が対策 Issue ありグループに出る"; else bad "K1: OBS-003 が promoted グループに無い"; fi
+if id_under_group "対策済み（mitigated。元 Issue と所在は Issue 列。最新メモの未解消再発も確認する）" "OBS-005"; then ok "K1: 台帳 mitigated が対策済みグループに出る"; else bad "K1: OBS-005 が mitigated グループに無い"; fi
 if id_under_group "未対策（active" "OBS-003" || id_under_group "未対策（active" "OBS-005"; then
   bad "K1: promoted / mitigated が未対策グループへ混ざっている"
 else

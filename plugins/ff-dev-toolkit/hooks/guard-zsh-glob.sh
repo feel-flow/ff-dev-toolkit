@@ -62,8 +62,8 @@
 #
 # ## 出力チャネルと抜け道
 #
-# PreToolUse でエージェントに届くのは `permissionDecision: "deny"` の理由文だけなので、
-# 抜け道付きの deny で返す。deny の JSON を組み立てる jq が失敗したら黙って許可に
+# glob / equals は `permissionDecision: "deny"`、scalar は systemMessage の警告で返す。
+# 追加検出の契約は tests/lib/zsh-expansion-guard.sh。deny の JSON を組み立てる jq が失敗したら黙って許可に
 # 落とさず、exit 2 + stderr のブロック経路へ落とす。
 #   - この呼び出しだけ通す: Bash ツールへ渡すコマンドの**先頭の語**を環境代入 `FF_ZSH_GLOB_ACK=1`
 #     にする（前に別の環境代入・文があると無効。引用値の中や途中の文に現れるだけでも無効）。
@@ -75,7 +75,7 @@
 # ## 既知の限界（素通しする形）
 #
 #   - 一般のパス glob（`ls *.md` / `ls a*.ts b*.mts`）— 述語の対象外（上記）
-#   - zsh 固有の他の展開（未引用 `$VAR` の単語分割なし・語頭の `=word`・`$name:修飾子`）
+#   - `$name:修飾子`。未引用 scalar と equals は zsh-expansion-guard.sh へ委ねる。
 #   - 変数やコマンド置換の結果として組み立てられる語（`$flag` の中身は見えない）
 #   - `nonomatch` / `null_glob` を設定済みのシェル（誤検知側。ACK で 1 手で通る）
 #   - 区切り語を引用しない heredoc（`<<EOF`）の本文に書いた `$(…)` の中のコマンド。zsh は
@@ -84,7 +84,7 @@
 #
 # 互換性: bash 3.2（stock macOS）。連想配列・readarray を使わない。
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1  このガードを無効化する
+#   FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1  追加の equals/scalar 検出も含む全体を無効化する
 
 # fail-open の面を持つため set -e / set -u は使わない。
 
@@ -119,6 +119,40 @@ case "${host_shell##*/}" in
   *) exit 0 ;;
 esac
 
+# 同じホスト入口で equals/scalar も検出する。警告は既存 glob の deny と JSON を分断しない。
+expansion_warning=""
+expansion_helper="${BASH_SOURCE[0]%/*}/../tests/lib/zsh-expansion-guard.sh"
+if [ "${FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD:-0}" = 1 ]; then
+  :
+elif [ -r "$expansion_helper" ]; then
+  expansion_rc=0
+  expansion_out="$(printf '%s' "$input" | bash "$expansion_helper")" || expansion_rc=$?
+  [ "$expansion_rc" -eq 0 ] || exit "$expansion_rc"
+  if [ -n "$expansion_out" ]; then
+    if printf '%s' "$expansion_out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+      printf '%s\n' "$expansion_out"
+      exit 0
+    fi
+    expansion_warning="$(printf '%s' "$expansion_out" | jq -r '.systemMessage // empty' 2>/dev/null)"
+  fi
+else
+  # helper 不在を検出0と混同しない。scalar-only は停止しない。
+  missing_cmd="$(printf '%s' "$input" | jq -r 'select(.tool_name == "Bash") | .tool_input.command | select(type == "string")' 2>/dev/null)"
+  case "$missing_cmd" in
+    =?* | *' ='?* | *$'\t='?* | *$'\n='?*)
+      missing_reason='zsh 展開ガード: 判定不能（helper 不在）。ff-dev-toolkit を更新・復旧するか FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1 で無効化してください。'
+      jq -n --arg m "$missing_reason" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $m}}' || { printf '%s\n' "$missing_reason" >&2; exit 2; }
+      exit 0 ;;
+  esac
+  case "$missing_cmd" in *'$'*) expansion_warning='zsh 展開ガード: helper が不在で未検査です。ff-dev-toolkit を更新・復旧してください。' ;; esac
+fi
+emit_expansion_warning() {
+  if [ -n "$expansion_warning" ]; then
+    jq -n --arg m "$expansion_warning" '{systemMessage: $m}' || printf '%s\n' "$expansion_warning" >&2
+  fi
+}
+trap emit_expansion_warning EXIT
+
 # ---- 安価な前置フィルタ（候補でなければ何も読まずに抜ける） -------------------------
 case "$input" in
   *=*) : ;;
@@ -140,14 +174,15 @@ esac
 
 deny() { # <reason>
   local out rc
-  out="$(jq -n --arg reason "$1" \
-    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null)"
+  out="$(jq -n --arg reason "$1" --arg warning "$expansion_warning" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}} + (if $warning != "" then {systemMessage: $warning} else {} end)' 2>/dev/null)"
   rc=$?
   if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
     printf '%s\n' "$1" >&2
     printf 'ff-dev-toolkit guard-zsh-glob: deny の JSON を組み立てられませんでした（jq rc=%s）。exit 2 でブロックします。\n' "$rc" >&2
     exit 2
   fi
+  expansion_warning=""
   printf '%s\n' "$out"
   exit 0
 }

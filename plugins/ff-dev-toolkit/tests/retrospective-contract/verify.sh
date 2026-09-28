@@ -46,6 +46,8 @@
 # SSOT 中央台帳の所在〔消費側文書〕と、事象の多重度とも読める `Count` の旧定義）。
 # 追記型の矛盾はレビューで見る前提とする。
 # 空振り検出: references/promotion.md から「closed 済み対策の再発時は、前の対策と同じ型を再提案しない」の箇条を削ると禁止と許可の対の針 2 件が赤、SKILL.md へ針の写しを 1 行足すと「重複」で 1 件が赤になる（2026-09-23 実測。197 件中 2 件 / 1 件失敗。規定が名前だけ残って中身が変わる変更と、写しで本体の欠落が隠れる変更を「契約あり」へ倒さない）。
+# 空振り検出: 完了移行節の見出し削除・closed 単独禁止行削除・元 Issue 保持行削除・本線の完了照合行削除・promotion.md 不在・旧「Issue を発行したか」定義の復元はすべて rc=1、初回正常対照は213件pass（2026-09-28実測）。節名だけ残す／本文が別節に残る空振りも緑にしない。
+# 空振り検出: 読み側 SKILL の closed 旧定義復元・未解消再発の確認削除・テンプレと台帳双方の promoted 旧定義復元・filing の対応中集約を mitigated へ反転すると各 rc=1、追加後の正常対照は217件pass（2026-09-28実測）。
 #
 # **検査 E のフェンスが実際にどう振る舞うかは本 suite の対象外**。引数の向き・pathspec の
 # cwd 依存・停止点の fail-open は文言では測れないので、tests/retrospective-ledger-freshness/
@@ -434,6 +436,24 @@ not_contains "$SKILL" "SSOT リポジトリへ \`[observation]\` 接頭辞の Is
 # なるため、**値域・所在の書式・判定からの除外・復帰条件**を個別の針で対にして固定する。
 contains "$SKILL" "**昇格閾値の判定対象は \`Status\` が \`active\` のエントリに限る**" "観測台帳: 閾値判定の対象は active に限る"
 contains "$REF_PROMOTION" "**\`mitigated\`（対策済み）**" "観測台帳: mitigated（対策済み）の定義"
+
+contains "$PLUGIN_ROOT/skills/knowledge-lookup/SKILL.md" '`closed` は完了照合前または対策後の再発' '読み側: closed だけで対策済みとはしない'
+contains "$PLUGIN_ROOT/skills/knowledge-lookup/SKILL.md" '最新メモに未解消再発・追跡先未確定があれば有効な対策として適用しない' '読み側: 未解消再発の確認'
+contains "$REF_FILING" '対応中の Issue への集約は `promoted`・対策反映を確認した見送りは `mitigated`' '見送り: 対応中の集約と対策完了を区別'
+
+# 発行済み対策の完了は Issue の close と同義ではない。正本の節を落としたり、
+# 見出しだけ残して条件を抜いた回も赤にする。旧「発行したか」定義は復元禁止。
+PROMOTION_COMPLETION_HEADING='## 発行済み Issue の対策完了と旧台帳の移行'
+section_contains "$REF_PROMOTION" "$PROMOTION_COMPLETION_HEADING" '**closed だけでは `mitigated` にしない**' '完了移行: close 単独で完了にしない'
+section_contains "$REF_PROMOTION" "$PROMOTION_COMPLETION_HEADING" '**元 Issue 番号を残し、対策の所在を併記する**' '完了移行: 元 Issue と所在の併記'
+section_contains "$REF_PROMOTION" "$PROMOTION_COMPLETION_HEADING" '**状態移行では `Count`・`First`・`Last` と既存の観測履歴を変えない**' '完了移行: 観測の計数と履歴を保持'
+section_contains "$REF_PROMOTION" "$PROMOTION_COMPLETION_HEADING" '移行を保留する' '完了移行: 不明や未解消再発を保留'
+section_contains "$REF_PROMOTION" "$PROMOTION_COMPLETION_HEADING" '`promoted` 全件の `Issue` 列を列挙' '完了移行: 旧台帳の母集団は現在の全件'
+contains "$SKILL" '**発行済み Issue の完了照合**' '完了移行: 振り返りから完了照合へ到達する'
+contains "$REF_PROMOTION" '**元 Issue がある `mitigated` も同じ再発分岐を使い、`Issue` 列を `なし` にしない**' '再発: 元 Issue ありは追跡参照を消さない'
+contains "$REF_PROMOTION" '元 Issue がない見送り分だけが対象' '再発: active 復帰の対象を分ける'
+contains "$REF_PROMOTION" '再開・既存 open への集約・regression 起票が実際に成立したら `promoted`' '再発: 実際の追跡先成立後に promoted へ戻す'
+not_contains "$REF_PROMOTION" '違いは**Issue を発行したか**' '完了移行: 発行の有無だけで分ける旧定義を復元しない'
 contains "$REF_PROMOTION" "\`skill:<スキル名>\`、文書なら \`doc:<path>#<アンカー>\`" "観測台帳: 対策の所在は接頭辞付きの書式で書く"
 contains "$REF_PROMOTION" "**昇格提案は再演しない**" "観測台帳: mitigated の再発で昇格提案を再演しない"
 contains "$REF_PROMOTION" "**\`active\` への復帰条件**" "観測台帳: mitigated から active への復帰条件"
@@ -576,10 +596,16 @@ else
 fi
 if [[ -n "$STATUS_DOMAIN_LINE" ]]; then
   case "$STATUS_DOMAIN_LINE" in
-    *'`mitigated`（対策済み'*)
+    *'`mitigated`（対策反映を確認済み'*)
       ok "観測台帳: 配布テンプレの Status 値域に mitigated がある" ;;
     *)
       bad "観測台帳: 配布テンプレの Status 値域に mitigated がある（不足: \`mitigated\`）" ;;
+  esac
+  case "$STATUS_DOMAIN_LINE" in
+    *'`promoted`（対策 Issue で追跡中・完了照合前'*)
+      ok "観測台帳: promoted は追跡中・完了照合前" ;;
+    *)
+      bad "観測台帳: promoted の完了照合前という定義が不足" ;;
   esac
   # 所在の接頭辞（`skill:` / `doc:`）は値域行と references/promotion.md の書式規定の両方に現れる。
   # 片側だけ変えると台帳の書式と正本の書式が静かに分かれるので、値域行から接頭辞
@@ -742,7 +768,7 @@ fi
 # 行ごとに「読む条件 + リンク」を針にし、表と references/ の実体を双方向に照合する。
 REF_ROUTES=(
   "filing.md|| 提案が 1 件以上ある（閾値到達・特急レーン・台帳へ書き込めないリポジトリでの提案） | [references/filing.md](references/filing.md) |"
-  "promotion.md|| 閾値到達エントリの昇格先を決める・\`promoted\` / \`mitigated\` のエントリへ再発を記録する・昇格を見送る | [references/promotion.md](references/promotion.md) |"
+  "promotion.md|| 閾値到達エントリの昇格先を決める・\`promoted\` / \`mitigated\` のエントリへ再発を記録する・昇格を見送る・発行済み Issue の対策完了を照合する | [references/promotion.md](references/promotion.md) |"
   "effort.md|| \`ff-effort\` ブロックを持つ Issue がこのセッションでマージされた、または前回の集計から \`ff-effort\` 付き Issue が増えた | [references/effort.md](references/effort.md) |"
   "legacy-intake.md|| SSOT リポジトリで実行する（旧版が起票した \`[observation]\` Issue の残件は同ファイル手順 1 の検索で確かめる） | [references/legacy-intake.md](references/legacy-intake.md) |"
   "auto-trigger.md|| hook を変更する・自動発火の挙動を確かめる・入れ子の非対話起動を組む | [references/auto-trigger.md](references/auto-trigger.md) |"

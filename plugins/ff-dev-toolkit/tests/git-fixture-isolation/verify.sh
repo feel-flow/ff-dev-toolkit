@@ -18,9 +18,17 @@
 #      未移行 allowlist 以外に無く、allowlist の stale entry は赤。ヘルパー利用箇所は lib を
 #      source している（-f ガードは verify.sh だけをコピーする selftest に限る）。
 #      既定 identity 文字列は lib と本 suite 以外に無い（静的照合）
+#   5. shell・実行可能ファイル・fixtures 内の通常ファイルにシステム git 直書きが無い。
+#      コメント行・Markdown・.probe 報告は除外。対象不在・空集合・読取器異常は赤。
 #   （経路 1 の再現有無は git 版依存のため info 表示のみで、判定に含めない）
 #
 # 一時領域を使うが実 CLI・ネットワーク・課金は伴わない。
+#
+# 変異検出: 2026-09-28。実 tree の shell fixture へシステム git 直書きを注入すると
+# 一時的に置いた git-path-mutant.sh:1 を名指しして rc=1、復元後 24/24 pass。scanner を return 0 へ変異すると
+# 再導入 3 種・対象不在・空集合・読取器異常の 6 件が赤。PATH の実 git dir 除去変異は対象外:
+# CLI 不在検査を守るため固定 PATH 維持を選択し、DEVELOPER_DIR 前置で検証する。
+# 空振り検出: 対象不在・空集合・awk 読取器異常は rc=2。scanner を no-op にする変異でも赤（上記実測）。
 #
 # run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
 
@@ -454,6 +462,104 @@ elif [ -z "$stray" ]; then
 else
   bad "fixture identity を lib 以外で直書きしている（ff_git_fixture_init の既定値を使うこと）:"
   printf '      %s\n' "$stray" >&2
+fi
+
+# ---- 5. fixture がシステム git の絶対パスへ戻る退行を止める --------
+# 禁止文字列は分割して生成する。検査自身も走査し、自己除外の穴を作らない。
+scan_system_git() {
+  local root="$1" file count=0 failed=0 rc
+  local forbidden='/usr/bin/'
+  forbidden="${forbidden}git"
+  if [ ! -d "$root" ]; then
+    echo "git-path: 対象不在: $root" >&2
+    return 2
+  fi
+  # find の失敗を process substitution や pipeline へ隠さない。
+  if ! find "$root" -name .probe -type d -prune -o -type f -print0 >"$TMP/git-path-files"; then
+    echo "git-path: 走査不能: $root" >&2
+    return 2
+  fi
+  while IFS= read -r -d '' file; do
+    case "$file" in *.md) continue ;; esac
+    case "$file" in
+      *.sh|*/fixtures/*) ;;
+      *) [ -x "$file" ] || continue ;;
+    esac
+    count=$((count + 1))
+    if [ ! -r "$file" ]; then
+      echo "git-path: 読み取り不能: $file" >&2
+      return 2
+    fi
+    rc=0
+    awk -v needle="$forbidden" '
+      /^[[:space:]]*#/ { next }
+      index($0, needle) { print FILENAME ":" FNR ": git-path: システム git 直書き"; bad=1 }
+      END { if (bad) exit 1 }
+    ' "$file" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) failed=1 ;;
+      *) echo "git-path: 読み取り検査不能: $file (rc=$rc)" >&2; return 2 ;;
+    esac
+  done <"$TMP/git-path-files"
+  if [ "$count" -eq 0 ]; then
+    echo "git-path: 対象集合が空: $root" >&2
+    return 2
+  fi
+  return "$failed"
+}
+if scan_system_git "$TESTS_DIR" >"$TMP/git-path-live.log" 2>&1; then
+  ok "tests/ の実行コードにシステム git 直書きがない"
+else
+  bad "tests/ のシステム git 直書き検査が失敗"
+  cat "$TMP/git-path-live.log" >&2
+fi
+
+GIT_SCAN_TREE="$TMP/git-path-tree"
+mkdir -p "$GIT_SCAN_TREE/fixtures/bin" "$GIT_SCAN_TREE/.probe"
+for kind in shell executable fixture; do
+  case "$kind" in
+    shell) probe="$GIT_SCAN_TREE/verify.sh" ;;
+    executable) probe="$GIT_SCAN_TREE/runner" ;;
+    fixture) probe="$GIT_SCAN_TREE/fixtures/bin/git" ;;
+  esac
+  printf 'exec /usr/bin/%s "$@"\n' git >"$probe"
+  [ "$kind" != executable ] || chmod +x "$probe"
+  rc=0
+  scan_system_git "$GIT_SCAN_TREE" >"$TMP/git-path-mutation.log" 2>&1 || rc=$?
+  if [ "$rc" -eq 1 ] && grep -qF "$probe:1: git-path:" "$TMP/git-path-mutation.log"; then
+    ok "システム git 再導入変異を検出: $kind"
+  else
+    bad "システム git 再導入変異を見逃した: $kind (rc=$rc)"
+  fi
+  rm "$probe"
+done
+printf '# /usr/bin/%s はコメント\nexec git "$@"\n' git >"$GIT_SCAN_TREE/verify.sh"
+printf '/usr/bin/%s\n' git >"$GIT_SCAN_TREE/README.md"
+printf 'exec /usr/bin/%s "$@"\n' git >"$GIT_SCAN_TREE/.probe/report.sh"
+if scan_system_git "$GIT_SCAN_TREE"; then
+  ok "復元後は緑、コメント行・Markdown・.probe 報告文は偽陽性なし"
+else
+  bad "復元後またはコメント・報告文で偽陽性"
+fi
+for kind in missing empty; do
+  scan_root="$TMP/git-path-$kind"
+  [ "$kind" != empty ] || mkdir -p "$scan_root"
+  rc=0
+  scan_system_git "$scan_root" >"$TMP/git-path-absent.log" 2>&1 || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    ok "git-path 対象の $kind は検査不能で赤"
+  else
+    bad "git-path 対象の $kind が赤にならない (rc=$rc)"
+  fi
+done
+# 権限を越える実行者でも決定的に読取器の異常終了を再現する。
+rc=0
+( awk() { return 2; }; scan_system_git "$GIT_SCAN_TREE" ) >"$TMP/git-path-read.log" 2>&1 || rc=$?
+if [ "$rc" -eq 2 ] && grep -q '読み取り検査不能' "$TMP/git-path-read.log"; then
+  ok "読取器の異常終了は検査不能で赤"
+else
+  bad "読取器の異常終了を緑へ倒した (rc=$rc)"
 fi
 
 echo ""

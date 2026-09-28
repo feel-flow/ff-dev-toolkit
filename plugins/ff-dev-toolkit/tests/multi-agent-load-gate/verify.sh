@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# git-path-isolation: 固定 PATH は実 CLI / yq / 更新 CLI の混入と不在検査の偽緑を防ぐ。
+# git の親ディレクトリ全体は追加しない（同居する CLI も露出するため）。Xcode 障害時は
+# DEVELOPER_DIR=/Library/Developer/CommandLineTools bash plugins/ff-dev-toolkit/tests/multi-agent-load-gate/verify.sh
+# を使う。正本: docs/04-quality/TESTING.md「ホスト git 障害時の切り分け」。
 #
 # multi-agent-load-gate: レーン起動前の負荷判定と --perspective のカンマ区切り（Issue `#1810` / `#1833`）。
 #

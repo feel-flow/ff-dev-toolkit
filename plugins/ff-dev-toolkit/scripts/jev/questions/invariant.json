@@ -1,0 +1,13 @@
+{
+  "invariant": {
+    "type": "noul",
+    "instructions": {
+      "candidate": "{{CANDIDATE}}",
+      "question": "Does the candidate state a condition that must remain true, or an action always to take or avoid under an explicit reusable condition, independently of the particular incident? A dated measurement or metadata alone is not an invariant."
+    },
+    "criteria": {
+      "true": "The candidate satisfies the stated definition.",
+      "false": "The candidate does not satisfy the stated definition."
+    }
+  }
+}

@@ -31,6 +31,7 @@
 # 変異検出: 判定ヘルパの case の入れ子の復元（case_close で積んだ状態へ戻す）を cs=0 に戻すと N6（入れ子の case の外側パターン）が赤になる（クロスモデルレビュー対応後に実測）。
 # 空振り検出: 判定ヘルパが存在しない配置（対象の不在）・走査の awk が失敗する（FF_ZSH_GLOB_AWK=false）・関数が無い（名前だけ残って中身が変わる）のいずれを与えても、候補コマンドは無音の素通しではなく判定不能の deny になり C1〜C3 が赤→緑を分ける（どの入力にも 0 件を返すヘルパでは F 系 21 形がすべて素通しになり赤になる。M4。引用が閉じないまま終わる入力（未終端）は走査未完了の rc 4 として C6 が判定不能の deny を要求する。実測 2026-09-27）。
 #
+# 空振り検出: expansion の不在・関数欠落・awk失敗は判定不能、空出力変異は陽性対照で赤。
 # run-all-required: no — jq 不在での skip を許容する（兄弟の hook suite と同じ判断）
 set -euo pipefail
 
@@ -57,6 +58,8 @@ fi
 
 # 利用者の環境（ホストのシェル・抜け道・opt-out）を引き継いで偽緑 / 偽赤にしない。
 unset CLAUDE_CODE_SHELL FF_ZSH_GLOB_ACK FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD FF_ZSH_GLOB_AWK
+# 既存 glob の契約を単独検査し、追加検出は X 節で有効化する。
+export FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1
 
 if _ff_mktemp_out="$(mktemp -d "${TMPDIR:-/tmp}/ff-guard-zsh-glob.XXXXXX" 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   TEST_TMP="$_ff_mktemp_out"
@@ -262,7 +265,7 @@ echo "guard-zsh-glob: C 判定不能（候補コマンドに限り fail-closed�
 make_tree() { # <dir>
   mkdir -p "$1/hooks" "$1/tests/lib"
   cp "$TARGET" "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$1/hooks/"
-  cp "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$SCAN_LIB" "$1/tests/lib/"
+  cp "$PLUGIN_ROOT/tests/lib/zsh-expansion-guard.sh" "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$SCAN_LIB" "$1/tests/lib/"
 }
 NOLIB="$TEST_TMP/nolib"
 make_tree "$NOLIB"
@@ -469,6 +472,116 @@ if [ "$m4_pass" -eq "${#FIRE_CASES[@]}" ]; then
 else
   bad "M4: 0 件ヘルパで素通しになったのは ${m4_pass}/${#FIRE_CASES[@]} 件"
 fi
+
+unset FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD
+echo "guard-zsh-glob: X equals / scalar expansion"
+EXP_TARGET="$PLUGIN_ROOT/tests/lib/zsh-expansion-guard.sh"
+[ -r "$EXP_TARGET" ] || { echo 'expansion helper missing/not readable' >&2; exit 1; }
+assert_warn() {
+  if [ "$RC" -eq 0 ] && [ -z "$DECISION" ] && printf '%s' "$OUT" | jq -e '.systemMessage | contains("単語分割")' >/dev/null; then
+    ok "$1"
+  else bad "$1: expected warning without deny"; fi
+}
+for c in 'case === in x) :;; esac' 'echo ===' '[ a == b ]' 'true; echo ===' 'true & echo ===' 'echo "ACK=1"; echo ===' 'X=1 echo ===' 'noglob echo ===' 'echo "$(echo ===)"' 'echo `echo ===`' 'echo =ls' $'echo \\\n==='; do
+  run_on "$EXP_TARGET" "$c"
+  assert_fire "equals deny: $c"
+done
+for c in 'echo "a << B ==="' 'echo "==="' "echo '==='" 'echo \===' 'X==1' 'export X==1' '[[ a == b ]]' 'case x in ==) echo y;; esac' '# echo ===' 'bash -c "echo ==="' $'cat <<\'EOF\'\necho === $VAR\nEOF'; do
+  run_on "$EXP_TARGET" "$c"
+  assert_pass "equals/scalar allow: $c"
+done
+for c in 'P="a b"; git grep x -- $P' 'set -- $r' '$G commit' 'echo ${P}' 'noglob echo $P' 'echo "$(echo $P)"' 'for p in $P; do echo "$p"; done'; do
+  run_on "$EXP_TARGET" "$c"
+  assert_warn "scalar warning: $c"
+done
+for c in 'echo "$P"' "echo '\$P'" 'P=$Q' 'export P=$Q' 'echo ${=P}' 'echo "${args[@]}"' '[[ $P == a ]]' '(( n = $P ))'; do
+  run_on "$EXP_TARGET" "$c"
+  assert_pass "scalar allow: $c"
+done
+for c in 'echo ===' 'echo $P'; do
+  run_on "$EXP_TARGET" "$c" SHELL=/bin/bash
+  assert_pass 'bash host'
+  run_on "$EXP_TARGET" "$c" CLAUDE_CODE_SHELL=/bin/bash
+  assert_pass 'explicit bash overrides zsh'
+  run_on "$EXP_TARGET" "$c" FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1
+  assert_pass 'skip'
+  run_on "$EXP_TARGET" "FF_ZSH_EXPANSION_ACK=1 $c"
+  assert_pass 'leading ACK'
+done
+run_on "$EXP_TARGET" 'echo ===' SHELL=/bin/bash CLAUDE_CODE_SHELL=/bin/zsh
+assert_fire 'explicit zsh overrides bash'
+for c in 'echo FF_ZSH_EXPANSION_ACK=1; echo ===' 'X=1 FF_ZSH_EXPANSION_ACK=1 echo ===' 'true; FF_ZSH_EXPANSION_ACK=1 echo ==='; do
+  run_on "$EXP_TARGET" "$c"
+  assert_fire 'embedded ACK not effective'
+done
+run_on "$EXP_TARGET" 'echo ===' FF_ZSH_GLOB_AWK=false
+assert_unavailable 'failed scanner denies equals candidate'
+run_on "$EXP_TARGET" 'echo $P' FF_ZSH_GLOB_AWK=false
+if [ "$RC" -eq 0 ] && [ -z "$DECISION" ] && [ -n "$OUT" ]; then ok 'scanner failure never denies scalar'; else bad 'scalar failure blocked'; fi
+for variant in absent no-function empty; do
+  xdir="$TEST_TMP/exp-$variant"
+  make_tree "$xdir"
+  cp "$EXP_TARGET" "$xdir/tests/lib/"
+  case "$variant" in
+    absent) rm "$xdir/tests/lib/zsh-glob-nomatch.sh" ;;
+    no-function) printf ':\n' > "$xdir/tests/lib/zsh-glob-nomatch.sh" ;;
+    empty) printf 'ff_zsh_expansion_scan() { return 0; }\n' > "$xdir/tests/lib/zsh-glob-nomatch.sh" ;;
+  esac
+  run_on "$xdir/tests/lib/zsh-expansion-guard.sh" 'echo ==='
+  if [ "$variant" = empty ]; then
+    if [ -z "$OUT" ]; then ok 'empty scanner mutant misses positive control (would turn X red)'; else bad 'empty mutation not applied'; fi
+  else assert_unavailable "expansion $variant"; fi
+done
+xdir="$TEST_TMP/exp-mut"
+make_tree "$xdir"
+cp "$EXP_TARGET" "$xdir/tests/lib/"
+sed 's/print "scalar"; return/return/' "$SCAN_LIB" > "$xdir/tests/lib/zsh-glob-nomatch.sh"
+run_on "$xdir/tests/lib/zsh-expansion-guard.sh" 'echo $P'
+if [ -z "$OUT" ]; then ok 'scalar removal mutant misses warning control'; else bad 'scalar mutant not applied'; fi
+if jq -e '[.hooks.PreToolUse[].hooks[].command | contains("/hooks/guard-zsh-glob.sh")] | any' "$HOOKS_JSON" >/dev/null; then ok 'expansion registered in hooks.json'; else bad 'expansion not registered'; fi
+if command -v zsh >/dev/null 2>&1; then
+  zrc=0
+  zout="$(zsh -fc 'echo ===; echo after' 2>&1)" || zrc=$?
+  if [ "$zrc" -ne 0 ] && [[ "$zout" == *'not found'* ]] && [[ "$zout" != *after* ]]; then ok 'actual zsh equals aborts remainder'; else bad 'zsh equals behavior'; fi
+  zout="$(zsh -fc 'echo "==="; echo after')"
+  if [[ "$zout" == *after* ]]; then ok 'quoting fixes equals'; else bad 'equals rewrite'; fi
+  zout="$(zsh -fc 'P="a b"; set -- $P; echo $#')"
+  bout="$(bash -c 'P="a b"; set -- $P; echo $#')"
+  if [ "$zout" = 1 ] && [ "$bout" = 2 ]; then ok 'actual scalar split differs zsh=1/bash=2'; else bad 'scalar splitting behavior'; fi
+else
+  echo '○ skip: zsh 不在のため equals/scalar の実シェル検証は未実施'
+fi
+
+for c in 'echo ===' 'echo $P'; do
+  run_on "$TARGET" "$c" FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1
+  assert_pass 'global glob skip disables expansion too'
+done
+xdir="$TEST_TMP/exp-dispatch-missing"
+make_tree "$xdir"
+rm "$xdir/tests/lib/zsh-expansion-guard.sh"
+run_on "$xdir/hooks/guard-zsh-glob.sh" 'echo ==='
+assert_unavailable 'registered expansion helper missing denies equals'
+run_on "$xdir/hooks/guard-zsh-glob.sh" 'echo $P'
+if [ "$RC" -eq 0 ] && [ -z "$DECISION" ] && printf '%s' "$OUT" | jq -se 'length == 1 and (.[0].systemMessage | length > 0)' >/dev/null; then ok 'missing dispatcher emits one warning'; else bad 'missing dispatcher warning'; fi
+xdir="$TEST_TMP/exp-asdd-unknown"
+make_tree "$xdir"
+printf 'asdd_hook_enabled() { return 2; }\n' > "$xdir/hooks/asdd-hook-gate.sh"
+for c in 'echo "a << B ==="' '[ "$x" = y ]' "jq '.a = 1'"; do
+  run_on "$xdir/hooks/guard-zsh-glob.sh" "$c"
+  assert_pass 'ASDD unknown does not deny quoted equals or single ='
+done
+run_on "$xdir/hooks/guard-zsh-glob.sh" 'echo ==='
+assert_unavailable 'ASDD unknown denies actual equals candidate'
+printf 'asdd_hook_enabled() { return 3; }\n' > "$xdir/hooks/asdd-hook-gate.sh"
+run_on "$xdir/hooks/guard-zsh-glob.sh" 'echo ==='
+assert_pass 'ASDD disabled is silent'
+run_on "$TARGET" 'echo $P'
+assert_warn 'registered entrypoint emits scalar warning'
+run_on "$TARGET" 'echo ==='
+assert_fire 'registered entrypoint denies equals'
+run_on "$TARGET" 'grep $P --include=*.md'
+assert_fire 'registered entrypoint merges glob deny and scalar warning'
+if printf '%s' "$OUT" | jq -se 'length == 1 and (.[0].systemMessage | contains("単語分割"))' >/dev/null; then ok 'one JSON includes both channels'; else bad 'multiple JSON or warning lost'; fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then

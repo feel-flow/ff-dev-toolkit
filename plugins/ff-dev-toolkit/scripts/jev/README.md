@@ -210,8 +210,8 @@ bash "$FF_DEV_TOOLKIT_ROOT/scripts/jev/jev-decide.sh" --overturn <決定 id> --n
 | --- | --- | --- |
 | `FF_JEV_ENABLED` | （未設定 = Off） | `1` で有効 |
 | `FF_JEV_MODE` | `off` | `on` で判定点の切替を有効化（`jev-decide.sh`）。`on` / `off` 以外は exit 64 |
-| `FF_JEV_POINTS` | `novelty retro` | `on` のとき Jev を使う判定点の名簿（空白 / カンマ区切り）。**設定済みの空値は 0 件**（全判定点が従来経路） |
-| `FF_JEV_MIN_CONFIDENCE` | 0.99（`novelty` / `retro` は組み込み 0.6） | 採用の閾値（0〜1）。判定点別は `FF_JEV_MIN_CONFIDENCE_<POINT>`（判定点名を大文字化、`-` は `_`）。解決順は 判定点別 env → 共通 env → 組み込み既定 → 0.99 |
+| `FF_JEV_POINTS` | `novelty retro triage` | `on` のとき Jev を使う判定点の名簿（空白 / カンマ区切り）。**設定済みの空値は 0 件**（全判定点が従来経路） |
+| `FF_JEV_MIN_CONFIDENCE` | 0.99（`novelty` / `retro` / `triage` は組み込み 0.6） | 採用の閾値（0〜1）。判定点別は `FF_JEV_MIN_CONFIDENCE_<POINT>`（判定点名を大文字化、`-` は `_`）。解決順は 判定点別 env → 共通 env → 組み込み既定 → 0.99 |
 | `FF_JEV_DECISION_LOG` | `${XDG_STATE_HOME:-~/.local/state}/ff-dev-toolkit/jev-decisions/<repo>-<hash>.jsonl` | 採用 / fallback の記録先（作業ツリーの外。`--status` の `JEV_LOG` が実効値）。書けなければ採用しない（exit 11） |
 | `TYPESAFE_API_KEY` / `TYPESAFE_API_KEY_FILE` | | キーの解決経路 1 / 2 |
 | `TYPESAFE_API_URL` | 公式エンドポイント | 差し替え用 |
@@ -233,3 +233,13 @@ bash "$FF_DEV_TOOLKIT_ROOT/scripts/jev/jev-decide.sh" --overturn <決定 id> --n
 - 判定主体の切替は `FF_JEV_MODE` の二段構えだけで行う（既定 `off`・閾値以上だけ採用・落ちたら従来経路・二重走行なし）。shadow 並走は行わず、評価は offline（`jev-eval.sh`）で済ませてから切り替える
 - 精度はベンダー自己申告を採らず、`jev-eval.sh` の表（特に confidence 帯別）で自前に測る
 - 質問（instructions / criteria / option 名）は英語、state（差分・Issue 本文・Playbook）は日本語のまま渡す。運用文書を Jev のために英語化しない。日本語の較正は `fixtures/ja-en-choice-probe.jsonl` で先に実測する
+
+## 知識候補の選別（triage）
+
+`triage-candidate.sh --candidate <本文> [--principles <glob>]` は生成物を作らず `### P-NNN: タイトル` から次の見出しまでを読み、ASCII 語と日本語 bigram の Jaccard 類似度で近い 5 件へ絞る。glob は `*` / `**` / `?`（空白は引用）を扱い、既定は `FF_PRINCIPLES_GLOB`。一致なし・見出しなしは stderr に通知し、作業リポジトリの live `docs/08-knowledge/PLAYBOOK.md` とリンク先 `playbook/*.md` へ戻る。archive / deprecated の ACE は候補にしない。コードフェンス中の例は見出しとして読まず、重複 ID・読めない入力は exit 2。空のレジストリは exit 11 の判定保留になる。
+
+`FF_JEV_MODE=on` かつ判定点が有効なら `same-action` → `invariant` → `one-off-measurement` の Noul を順に `jev-decide.sh triage` へ渡す。最初の肯定で `reduces_to` / `new_invariant` / `one_off_measurement`、すべて否定なら `noise`。三問目までに原則照合を最大 5 回行うため、最大 7 リクエスト / 候補（既存 adapter のリトライは別）。閾値 0.6 は既存 Noul 判定点に合わせた初期値で、この分類の実測から較正した値ではない。設定の優先順位は既存判定点と同じ。合成 confidence は通過した判定の最小値で、校正済みのカテゴリ確率ではない。
+
+stdout は JSON 1 行と `TRIAGE=<category>|<principle_id or null>|<confidence>`。JSON は `top_k`、実測マーカーの正規表現ヒント `measurement_hint`、採用した各段の `decision_ids` も持つ。exit 0 だけを採用候補とし、10（低確信）/ 11（API 等の失敗）/ 12（off・名簿外）は `undetermined|null|0` と候補一覧を返す。2 / 64 / 69 は入力・設定・依存を直す。候補未指定は usage と exit 2。
+
+スキルは off のときこの入口を呼ばず、従来出力とバイト同一に保つ。明示的に入口を off で起動した場合はローカルの候補とヒントだけを返し、通信も決定ログへの記録もしない。分類後の最終判断は人が行い、覆した段は `triage-candidate.sh --overturn <decision-id> --note <理由>`（既存 decide の記録）へ残す。fixture の fake 応答一致率は配線の検査であり、実モデルの精度を意味しない。

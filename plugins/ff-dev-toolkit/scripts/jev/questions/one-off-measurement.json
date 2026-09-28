@@ -1,0 +1,13 @@
+{
+  "one_off_measurement": {
+    "type": "noul",
+    "instructions": {
+      "candidate": "{{CANDIDATE}}",
+      "question": "Is the candidate a factual observation or dated measurement about a particular artifact or execution, rather than a rule constraining future action? Metadata, navigation labels and unsupported opinions alone are not measurements."
+    },
+    "criteria": {
+      "true": "The candidate satisfies the stated definition.",
+      "false": "The candidate does not satisfy the stated definition."
+    }
+  }
+}

@@ -7,7 +7,7 @@ description: Use when starting implementation or review and the change might hit
 
 観測台帳（`docs/08-knowledge/OBSERVATIONS.md`）は `/retrospective` が育てる store だが、**書くだけでなく引く store** である。ACE Playbook には「着手前の Playbook 参照」という読み出しの導線があるのに、台帳には無かった（Issue `#1778`）。同じセッションで ACE の知見は作業中に届き、台帳の同じ主張は振り返りの事後にしか突き合わされなかった。同じ主張が 10 回記録されているエントリは、記録が働いていることと、その記録が作業へ届いていないことを同時に示す。本スキルはその読み側を配線する。
 
-ACE と観測は粒度・寿命・状態が異なるので、**混ぜて返さない**。`promoted`（対策 Issue が既に在る）や `mitigated`（対策が別の場所に定義済み）を「未対策の落とし穴」として実装判断へ混入させないため、store ごと・状態ごとに分けて提示する。
+ACE と観測は粒度・寿命・状態が異なるので、**混ぜて返さない**。`promoted`（対策 Issue が既に在る）や `mitigated`（対策の反映を確認済み）を「未対策の落とし穴」として実装判断へ混入させないため、store ごと・状態ごとに分けて提示する。
 
 ## プラグインルートの固定（必須）
 
@@ -70,10 +70,11 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 | ACE Playbook | `deprecated` | 適用しない（後続エントリで置き換え済み） |
 | ACE Playbook | `archived` | `playbook/archive/` 配下の stale エントリ。`--include-archived` のときだけ出る。参考のみ |
 | 観測台帳 | `active` | **未対策**の落とし穴（蓄積中）。回避策はエントリ本文の `→` 以降 |
-| 観測台帳 | `promoted` | **対策 Issue あり**。Issue 列の state を見る — `open` は対応中（同じ落とし穴を踏んだら再発コメントの対象）、`closed` は対策済みまたはその後の再発 |
-| 観測台帳 | `mitigated` | **対策済み**。対策の所在（`owner/repo#N` / `skill:<名>` / `doc:<path>#<アンカー>`）が Issue 列にある。未対策として扱わない |
+| 観測台帳 | `promoted` | **対策 Issue あり**。Issue 列の state を見る — `open` は対応中（同じ落とし穴を踏んだら再発コメントの対象）、`closed` は完了照合前または対策後の再発（最新メモで区別し、close だけで対策済みとはしない） |
+| 観測台帳 | `mitigated` | **対策反映を確認済み**（昇格見送り・Issue 対応完了）。元 Issue と対策の所在（`owner/repo#N` / `skill:<名>` / `doc:<path>#<アンカー>`）が Issue 列にある。未対策として扱わない |
 | 観測台帳 | `archived` | 休眠（180 日以上再発なし）。`--include-archived` のときだけ出る |
 
+- `mitigated` でも最新メモに未解消再発・追跡先未確定があれば有効な対策として適用しない。完了照合・再発分岐の正本は [retrospective の promotion.md](../retrospective/references/promotion.md)。
 - `promoted` / `mitigated` を「まだ誰も対策していない」と読まないこと。対策があるのに独自の回避策を実装へ持ち込むと、対策の二重化になる
 - Issue state が `未確認` の参照は `gh` が使えなかった・失敗した・open 一覧が上限に達したのいずれか。`open` と読み替えず、必要なら `gh issue view` で個別に確かめる
 - ヒットした ACE エントリを実装で参照したら、git-workflow の規定どおりコミット本文・`implementation-notes.md` に ACE ID を記録する（`Helpful` カウンターと再利用計測の入力になる）。台帳エントリの参照は Count を動かさない（Count は再発の計上であり、参照の計上ではない）
