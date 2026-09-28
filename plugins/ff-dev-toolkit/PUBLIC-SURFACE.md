@@ -84,6 +84,7 @@
 - `PreToolUse :: Bash :: hooks/guard-effort-actual.sh`
 - `PreToolUse :: Bash :: hooks/guard-exit-code.sh`
 - `PreToolUse :: Bash :: hooks/guard-issue-labels.sh`
+- `PreToolUse :: Bash :: hooks/guard-literal-write.sh`
 - `PreToolUse :: Bash :: hooks/guard-long-gate-background.sh`
 - `PreToolUse :: Bash :: hooks/guard-pr-followup.sh`
 - `PreToolUse :: Bash :: hooks/guard-sub-issue-id.sh`
@@ -104,7 +105,7 @@
 - `UserPromptSubmit :: - :: hooks/decision-tree.sh`
 - `UserPromptSubmit :: - :: hooks/retrospective-context.sh`
 
-Bash 専用の10実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
+Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
 
 子の処理枠は10秒、親の登録枠は集約の余裕を含め15秒とする。時間切れの子と不正な出力は診断して除外し、完了した他の判定を残す。集約自体の環境エラーは新たな拒否にせず、子の終了コード2だけをブロックとして伝播する。終了コード2と他の拒否が重なる場合は、他の拒否理由も stderr へ残す。
 
@@ -163,6 +164,7 @@ Bash 専用の10実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS`
 - `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD`
+- `FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD`
@@ -174,6 +176,7 @@ Bash 専用の10実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_DISCARD_UNCOMMITTED`
 - `FF_EFFORT_ACTUAL_ACK`
 - `FF_EXIT_CODE_ACK`
+- `FF_LITERAL_WRITE_ACK`
 - `FF_LONG_GATE_BACKGROUND_ACK`
 - `FF_SHELL_SAVE_ACK`（`hooks/guard-shell-save.sh` の抜け道。Write / Edit にはコマンド先頭の環境代入が無いので、hook のプロセス環境で渡す）
 - `FF_SUB_ISSUE_ID_ACK`
@@ -225,6 +228,7 @@ Bash 専用の10実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_AMBIENT_GITHUB_ACTIONS`
 - `FF_ASDD_DRAIN_OUT`
 - `FF_ASDD_DRAIN_RC`
+- `FF_ASDD_GATE_RC`
 - `FF_ASDD_SKIP_MARKER`
 - `FF_AUTOFIRE_HEADING`
 - `FF_BAD_ROOT`
@@ -245,6 +249,8 @@ Bash 専用の10実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_DECOY_LIST`
 - `FF_DEV_TOOLKIT_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_COMMIT_IDENTITY_GUARD`
+- `FF_DEV_TOOLKIT_SKIP_FIXTURE_GUARD`
+- `FF_DEV_TOOLKIT_SKIP`
 - `FF_DOCS_AWK_STRIP_CR`
 - `FF_DOCS_CLAIMS`
 - `FF_DOCS_GATE_STOP_AFTER`
@@ -264,6 +270,7 @@ Bash 専用の10実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_FIXTURE_INTERNAL`
 - `FF_FIXTURE_KILL_PARENT`
 - `FF_FIXTURE_NEW`
+- `FF_FIXTURE_SEAM`
 - `FF_FROM`
 - `FF_GATE_RECORD`
 - `FF_GATE_START_HEAD`
@@ -278,6 +285,8 @@ Bash 専用の10実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_JOBS_CAP`
 - `FF_JOBS_LIMIT`
 - `FF_LEX_AWK`
+- `FF_LITERAL_WRITE_AWK`
+- `FF_LW_PRESET`
 - `FF_MBCS_AWK`
 - `FF_MBCS_GIT`
 - `FF_MEDIA_RENDER`（ff-media-toolkit の実レンダリング opt-in。`sync-sha-contract` がリリース gate の許容表の理由文として参照するだけで、配布物は読まない）
@@ -287,6 +296,8 @@ Bash 専用の10実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_NODE_ROOT_GUARD_QUIET`
 - `FF_NODE_TEST_AWK`
 - `FF_NODE_TEST_GIT`
+- `FF_NO_SUCH_ACK`
+- `FF_NOT_IN_HOOK`
 - `FF_NPM_LOG`
 - `FF_NPM_RC`
 - `FF_PARITY_REGISTRY`
@@ -299,6 +310,7 @@ Bash 専用の10実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_POLL_INTERVAL`
 - `FF_PROBE_LOCALE_CMD`
 - `FF_PUBLIC_LAYOUT_SUITES`
+- `FF_RUN_ALL`
 - `FF_RUN_PUBLIC_LAYOUT`
 - `FF_P`
 - `FF_REACHED_END`
@@ -366,6 +378,7 @@ Bash 専用の10実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_WRITE_SCAN_GIT`
 - `FF_WRITE_SCAN_GREP`
 - `FF_WRITE_SCAN_OD`
+- `FF_WRITE_SCAN`
 - `FF_X`
 - `FF_ZSH_GLOB_AWK`
 - `FF_YQ_MODE`

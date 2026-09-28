@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 集約入口の拒否・警告保存と実登録を検査する。
-# 空振り検出: 登録10本の欠落は赤。引数0件・存在しない/空の子は無検査を診断する。
+# 空振り検出: 登録11本の欠落は赤。引数0件・存在しない/空の子は無検査を診断する。
 set -euo pipefail
 ROOT="$(cd "${BASH_SOURCE[0]%/*}/../.." && pwd)"
 python3 - "$ROOT" <<'PY'
@@ -23,7 +23,7 @@ args = shlex.split(entry['command'].replace('${CLAUDE_PLUGIN_ROOT}', str(root)))
 expected = ['guard-checkout-restore', 'guard-pr-followup', 'guard-background-cwd',
             'guard-long-gate-background', 'guard-effort-actual', 'guard-issue-labels',
             'guard-sub-issue-id', 'guard-exit-code', 'guard-zsh-glob',
-            'record-effort-wallclock']
+            'guard-literal-write', 'record-effort-wallclock']
 assert args[:2] == ['bash', str(runner)]
 assert args[2:] == [str(root / 'hooks' / (name + '.sh')) for name in expected]
 assert entry['timeout'] == 15

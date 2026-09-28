@@ -559,6 +559,11 @@ else
     # [[ ]]・noglob・heredoc 本文・bash ホストは素通しすることを stdin JSON fixture で固定し、
     # 述語が真陽性とした形が実際の zsh で NOMATCH になることも実測する（zsh 不在なら Z 系のみ skip）。
     "$SCRIPT_DIR/guard-zsh-glob/verify.sh"
+    # PreToolUse（Bash）の literal-write ガード（hooks/guard-literal-write.sh、Issue `#1787`）。
+    # シェルの値が別言語のプログラムへ届かずファイル本文が無音で変わる形（perl -i の単一引用符
+    # プログラムのシェル変数の綴り / export しない代入を Perl の ENV ハッシュ / process.env で読む形）を deny し、
+    # エスケープ済み・export 済み・引用付き heredoc・Write ツールは素通しすることを固定する。
+    "$SCRIPT_DIR/guard-literal-write/verify.sh"
     # 上の 5 本の Bash ガード（effort-actual / issue-labels / long-gate-background /
     # review-in-flight / exit-code）が共有する heredoc 除去ヘルパ（tests/lib/heredoc-strip.sh）
     # の契約: 正常終端は本文だけを落とし、未終端は rc 3 で生コマンドを返し、awk 失敗は
@@ -1351,7 +1356,6 @@ MISS_PROBE_BASELINE=(
   ace-scripts-vitest
   adapter-argv-limit
   adapter-base-ref-freshness
-  adapter-env-isolation-selftest
   adapter-model-args
   adapter-prompt-utf8
   adapter-sandbox-contract

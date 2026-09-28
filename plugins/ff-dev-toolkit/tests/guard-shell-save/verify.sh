@@ -30,12 +30,19 @@
 # 空振り検出: どの入力にも 0 件を返す検出器スタブ（0 件一致。FF_GUARD_SHELL_SAVE_LIB_DIR で差し替え）を与えると F1〜F16・A2・C2・C8・M2・M3 の 27 件が赤になり、hook の実体が無いパス（対象の不在。FF_GUARD_SHELL_SAVE_TARGET）を与えると冒頭の実在検査で suite が rc=1 になる（実測 2026-09-27）。
 #
 # run-all-required: no — jq 不在での skip を許容する（兄弟の hook suite と同じ判断）
+# 空振り検出: 一時領域へ写す ASDD ゲートから scripts/asdd/（設定の検証本体）の複製を外すと、写したゲートの判定が rc=2（判定不能）になり D3a の 2 件と D4b の 1 件が赤（2026-09-28 実測、bundle `#1808`。D3 の drain 検査だけでは判定不能の分岐と無効の分岐を区別できない）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="${FF_GUARD_SHELL_SAVE_TARGET:-$PLUGIN_ROOT/hooks/guard-shell-save.sh}"
+# 差し替え口（変異の probe 用）は分離より前に読む — 分離名簿へ偶然入っても消えないように。
 LIB_SRC="${FF_GUARD_SHELL_SAVE_LIB_DIR:-$PLUGIN_ROOT/tests/lib}"
+# ホスト環境の解除変数・テストシーム（hook 実装とその参照先が読む FF_* / CLAUDE_*）を
+# 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
+# shellcheck source=../lib/adapter-env-isolation.sh
+. "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
+isolate_hook_env "FF_SHELL_SAVE_ACK" "$PLUGIN_ROOT/hooks/guard-shell-save.sh"
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
@@ -82,7 +89,8 @@ make_plugin() { # <dir> <lib-dir> [hook-file]
   local dir="$1" libs="$2" hook="${3:-$TARGET}"
   mkdir -p "$dir/hooks" "$dir/tests/lib"
   cp "$hook" "$dir/hooks/guard-shell-save.sh"
-  cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$dir/hooks/"
+  # ASDD の判定本体（scripts/asdd/）まで写す。hooks/ の 2 本だけでは判定が常に rc=2 になる。
+  ff_asdd_copy_gate "$dir"
   if [ -n "$libs" ]; then
     cp "$libs/mbcs-guard.sh" "$libs/pipefail-grep-q.sh" "$libs/exit-code-guard.sh" "$dir/tests/lib/"
   fi
@@ -357,6 +365,20 @@ else
   bad "D2: ASDD ゲート（node 不在）の drain: exit=${FF_ASDD_DRAIN_RC} out=[${FF_ASDD_DRAIN_OUT}]"
 fi
 if command -v node >/dev/null 2>&1; then
+  # D3 / D5 が測る分岐の裏取り: 一時領域へ写した hook のゲートが、fixture の設定を
+  # 判定不能（rc=2）ではなく無効（rc=3）/ 有効（rc=0）と読めていること（Issue `#1808` の追記）。
+  ff_asdd_gate_rc "$PLUG" "$ASDD_OFF" hooks
+  if [ "$FF_ASDD_GATE_RC" -eq 3 ]; then
+    ok "D3a: 写した hook の ASDD ゲートが features.hooks=false を無効（rc=3）と判定する"
+  else
+    bad "D3a: 写した hook の ASDD ゲートが features.hooks=false を rc=${FF_ASDD_GATE_RC} と判定（3 以外。2 なら scripts/asdd/ を写していない）"
+  fi
+  ff_asdd_gate_rc "$PLUG" "$ASDD_ON" hooks
+  if [ "$FF_ASDD_GATE_RC" -eq 0 ]; then
+    ok "D3a: 写した hook の ASDD ゲートが features.hooks=true を有効（rc=0）と判定する"
+  else
+    bad "D3a: 写した hook の ASDD ゲートが features.hooks=true を rc=${FF_ASDD_GATE_RC} と判定（0 以外）"
+  fi
   ff_asdd_drain_probe "$HOOK" "$ASDD_PAYLOAD" "$ASDD_OFF"
   if [ "$FF_ASDD_DRAIN_RC" -eq 0 ] && [ -z "$FF_ASDD_DRAIN_OUT" ]; then
     ok "D3: features.hooks=false（ゲートが無効と判定）でも stdin を読み切ってから無出力 exit 0"
@@ -370,6 +392,12 @@ if command -v node >/dev/null 2>&1; then
   OUT="$(cd "$ASDD_OFF" && printf '%s' "$ASDD_SH" | bash "$TARGET" 2>/dev/null)" || RC=$?
   _decode
   assert_pass "D4: features.hooks=false では .sh の保存も素通し"
+  # 同じ入力を一時領域へ写した hook で測る。ゲートが判定不能（rc=2）のままなら .sh は
+  # 判定不能の deny になるので、ここが緑であること自体が写しの ASDD 分岐が生きている証拠。
+  RC=0
+  OUT="$(cd "$ASDD_OFF" && printf '%s' "$ASDD_SH" | bash "$HOOK" 2>/dev/null)" || RC=$?
+  _decode
+  assert_pass "D4b: 写した hook でも features.hooks=false なら .sh の保存を素通し（無効分岐を実際に通る）"
 else
   echo "  ○ skip: node が無いため features.hooks=false 経路は未検査（guard-shell-save の ASDD ゲート無効判定）"
 fi

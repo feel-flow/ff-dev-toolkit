@@ -34,6 +34,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/hooks/guard-issue-labels.sh"
+# ホスト環境の解除変数・テストシーム（hook 実装とその参照先が読む FF_* / CLAUDE_*）を
+# 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
+# shellcheck source=../lib/adapter-env-isolation.sh
+. "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD" "$TARGET"
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"

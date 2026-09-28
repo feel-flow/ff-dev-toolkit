@@ -68,7 +68,9 @@
 #                   対にならない引用符（heredoc の外の散文 `Don't` 等）は、次の同じ
 #                   引用符までを 1 論理行として伏せる。結合は 20 物理行で打ち切り、超えたら
 #                   開いた行だけを従来どおり解析して残りは個別に流すので、伏せられる範囲は
-#                   最大 20 行に留まる（heredoc 本文はそもそも読み飛ばすので対象外）
+#                   最大 20 行に留まる。閉じないまま単位（ファイル・フェンス）が終わったときも
+#                   同じ再投入を行うので、末尾の 19 行以下も個別に解析される（Issue `#1805`。
+#                   heredoc 本文はそもそも読み飛ばすので対象外）
 #
 # 「出力整形フィルタ」= head / tail / less / more / cat / tee / wc（`| sudo tee x` /
 # `| command head -1` / `| LC_ALL=C wc -l` のように前置きが 1 段あっても同じ）。これらは測定対象の
@@ -403,40 +405,26 @@ function is_block_boundary(s,   w) {
   if (w ~ /^[})]/) return 1
   return 0
 }
-# この論理行のどこかの区間が変数 var を**消費**しているか。区間の境界は二重引用符を伏せた版
-# （mask(line)）で決め、参照の有無は二重引用符の中を残した版（mask(line, 1)）で見る —
-# `exit "$rc"` / `[ "$rc" -ne 0 ]` は引用符の中に参照がある。echo / printf だけの参照
-# （`echo "EXIT=$rc"` / `echo "$rc" > rcfile`）は診断であって消費ではない。
-function consumes(line, var,   m0, m1, i, n, c, k, st, seg, w, re) {
+# 変数 var に対して、この論理行で**最初に起きる**出来事を区間の実行順に返す。
+#   1 = 消費（echo / printf 以外の区間が参照する。参照の有無は二重引用符の中を残した版
+#       mask(line, 1) で見る — `exit "$rc"` / `[ "$rc" -ne 0 ]` は引用符の中に参照がある。
+#       echo / printf だけの参照（`echo "EXIT=$rc"` / `echo "$rc" > rcfile`）は診断であって
+#       消費ではない）
+#   2 = 上書き（`$?` 由来でも自己参照でもない値の代入。`rc=0`）
+#   0 = どちらも無い
+# 消費と上書きを「行のどこかに在るか」で別々に見ると、同じ行に `rc=0; exit $rc` と並んだとき
+# 参照（`exit $rc`）が先に追跡を解いてしまい、上書きへ到達しない（Issue `#1805`。codex-cli が
+# 3 回転連続で報告した偽陰性）。上書きの後の参照は上書き後の値を読むので、元の rc の消費ではない。
+# 区間の境界は mask(line) 上で取り、右辺の自己参照（`rc=${rc:-0}` / `rc=$((rc|x))`）の判定は
+# **同じ範囲の** mask(line, 1) スライスへ当てる。論理行全体へ当てると、同じ行の診断
+# （`echo "$rc"; rc=0`）が自己参照に見えて上書きを見逃す（codex-cli / grok-cli）。
+# `&&` / `||` の直後の代入は短絡で実行されないことがある（`false && rc=0; exit $rc` は元の rc を
+# 伝播する）ので、そこで打ち切らず印だけ付ける。後続の区間が参照すれば消費（1）、参照が無ければ
+# 上書き（2。行を分けた `cond && rc=0` を上書きと数える従来の判定と同じ）を返す。
+function var_event(line, var,   m0, m1, i, n, c, k, st, seg0, seg1, w, a, re, cond, ow) {
   m0 = mask(line); m1 = mask(line, 1)
   re = "[$][{]?" var "([^A-Za-z0-9_]|$)"
-  n = length(m0); st = 1
-  for (i = 1; i <= n + 1; i++) {
-    c = (i <= n) ? substr(m0, i, 1) : ";"
-    k = 0
-    if (c == ";") k = 1
-    else if (c == "&" && substr(m0, i + 1, 1) == "&") k = 2
-    else if (c == "|" && substr(m0, i + 1, 1) == "|") k = 2
-    else if (c == "&" && is_bg_amp(m0, i)) k = 1
-    if (k == 0) continue
-    seg = substr(m1, st, i - st)
-    if (seg ~ re || (seg ~ /^[[:space:]]*\(\(/ && seg ~ ("[^A-Za-z0-9_$]" var "[^A-Za-z0-9_]"))) {
-      w = strip_prefix(substr(m0, st, i - st))
-      sub(/[[:space:]].*$/, "", w); sub(/^.*\//, "", w)
-      if (w !~ /^(echo|printf)$/) return 1
-    }
-    st = i + k; i = i + k - 1
-  }
-  return 0
-}
-# 変数 var を `$?` 由来でも自己参照でもない値で上書きしている区間があるか（`rc=0`）。
-# 区間の境界は consumes と同じく mask(line) 上で取り、右辺の自己参照（`rc=${rc:-0}` /
-# `rc=$((rc|x))`）の判定は**同じ範囲の** mask(line, 1) スライスへ当てる。論理行全体へ当てると、
-# 同じ行の診断（`echo "$rc"; rc=0`）が自己参照に見えて上書きを見逃す（codex-cli / grok-cli）。
-function overwrites(line, var,   m0, m1, i, n, c, k, st, seg0, seg1, a, re) {
-  m0 = mask(line); m1 = mask(line, 1)
-  re = "[$][{]?" var "([^A-Za-z0-9_]|$)"
-  n = length(m0); st = 1
+  n = length(m0); st = 1; cond = 0; ow = 0
   for (i = 1; i <= n + 1; i++) {
     c = (i <= n) ? substr(m0, i, 1) : ";"
     k = 0
@@ -447,15 +435,24 @@ function overwrites(line, var,   m0, m1, i, n, c, k, st, seg0, seg1, a, re) {
     if (k == 0) continue
     seg0 = substr(m0, st, i - st)
     seg1 = substr(m1, st, i - st)
+    if (seg1 ~ re || (seg1 ~ /^[[:space:]]*\(\(/ && seg1 ~ ("[^A-Za-z0-9_$]" var "[^A-Za-z0-9_]"))) {
+      w = strip_prefix(seg0)
+      sub(/[[:space:]].*$/, "", w); sub(/^.*\//, "", w)
+      if (w !~ /^(echo|printf)$/) return 1
+    }
     a = assign_var(seg0)
     if (a == var && capture_var(seg0) == "" && seg1 !~ re) {
-      if (!(seg1 ~ /\(\(/ && seg1 ~ ("[^A-Za-z0-9_$]" var "[^A-Za-z0-9_]"))) return 1
+      if (!(seg1 ~ /\(\(/ && seg1 ~ ("[^A-Za-z0-9_$]" var "[^A-Za-z0-9_]"))) {
+        if (!cond) return 2
+        ow = 1
+      }
     }
+    cond = (k == 2) ? 1 : 0
     st = i + k; i = i + k - 1
   }
-  return 0
+  return ow ? 2 : 0
 }
-function track_gate(line, start, m, swallowed,   segs, seps, n, n0, i, gi, last, v, only_and, t) {
+function track_gate(line, start, m, swallowed,   segs, seps, n, n0, i, gi, last, v, only_and, t, ev) {
   if (g_state == 0 && g_pvar == "" && index(m, "run-all.sh") == 0) return
   n0 = split_segments(m, segs, seps)
   gi = 0
@@ -475,18 +472,28 @@ function track_gate(line, start, m, swallowed,   segs, seps, n, n0, i, gi, last,
   #    `[ "$rc" -eq 0 ] && <ゲート2>` — fast ゲートが緑なら全件を続ける自然な形）。判定を
   #    非ゲート行の側にだけ置くと、この形が「読まずに上書きした」と誤認されて hook が deny
   #    する（クロスモデルレビューで 3 回転続いた同クラスの指摘。分岐の順序を直して閉じた）。
-  if (g_pvar != "" && consumes(line, g_pvar)) g_pvar = ""
-  if (g_state == 2 && consumes(line, g_var)) g_state = 0
   # 保存変数を `$?` でも自分自身の参照でもない値で上書きする区間（`rc=0`）は、その時点で
   # 元の rc を失う（`rc=$?` ⏎ `rc=0` ⏎ `exit $rc` はプロセス 0 で終わる。codex-cli の実測）。
-  if (g_pvar != "" && overwrites(line, g_pvar)) { print g_pstart ":gate-exit-dropped:" g_pline; g_pvar = "" }
-  if (g_state == 2 && overwrites(line, g_var)) { print g_start ":gate-exit-dropped:" g_line; g_state = 0 }
+  # 消費と上書きは var_event が区間の実行順に判定する（同じ行の `rc=0; exit $rc` も上書き）。
+  if (g_pvar != "") {
+    ev = var_event(line, g_pvar)
+    if (ev == 2) print g_pstart ":gate-exit-dropped:" g_pline
+    if (ev != 0) g_pvar = ""
+  }
+  if (g_state == 2) {
+    ev = var_event(line, g_var)
+    if (ev == 2) print g_start ":gate-exit-dropped:" g_line
+    if (ev != 0) g_state = 0
+  }
   if (g_state == 1) {
     # `$?` を持ち越している。この行の先頭区間で読まなければ失われる（後段では読めない）。
     v = capture_var(segs[1])
     if (v != "") {
       g_state = 2; g_var = v
-      if (consumes(line, v)) g_state = 0
+      # 捕獲と同じ行の後続区間（`rc=$?; rc=0; exit $rc`）も実行順に見る
+      ev = var_event(line, v)
+      if (ev == 2) print g_start ":gate-exit-dropped:" g_line
+      if (ev != 0) g_state = 0
     } else if (is_status_exit(segs[1])) {
       g_state = 0
     } else if (is_status(segs[1]) && t !~ /^(echo|printf)([[:space:]]|$)/) {
@@ -553,7 +560,24 @@ function analyze(line, start,   m, k, arr, i, hit, swallowed) {
   track_gate(line, start, m, swallowed)
   prev_pipe = is_pipe(arr[k]) ? 1 : 0
 }
-function flush() { if (buf != "") { complete(buf, buf_start); buf = "" }; open_q = ""; q_n = 0 }
+# 論理行の確定（空行・コメント行・単位の終端）。引用符が閉じないまま単位の終端へ達したときは、
+# feed の 20 行打ち切りと**同じ再投入**を行う — 開いた行だけを 1 論理行として解析し、溜めた行は
+# 個別に流し直す。ここで溜めた行ごと 1 論理行として解析すると、ファイル末尾が「閉じない引用符 +
+# 19 行以下」の形だけ範囲内の違反が伏せられ、打ち切り経路と終端経路で境界が分かれていた
+# （Issue `#1805`）。流し直した行が再び引用符を開いても、1 回ごとに開いた行を 1 行消費するので
+# 再帰は必ず終わる。
+function flush(   i, n, keep, keepln) {
+  if (open_q != "" && buf != "") {
+    n = q_n
+    for (i = 1; i <= n; i++) { keep[i] = q_pend[i]; keepln[i] = q_pendln[i] }
+    q_n = 0; open_q = ""; buf = ""
+    complete(q_head, q_head_start)
+    for (i = 1; i <= n; i++) feed(keep[i], keepln[i])
+    flush()
+    return
+  }
+  if (buf != "") { complete(buf, buf_start); buf = "" }; open_q = ""; q_n = 0
+}
 # 論理行が確定した。heredoc の opener（`<<WORD` / `<<-WORD`。`<<<` は here-string）を
 # 引用符・置換を伏せた版で探し、区切り語（生の行の同じ位置から取る — mask は長さを保つ）を
 # 積んでから解析する。以降の物理行は区切り語だけの行が来るまで本文として読み飛ばす
@@ -580,13 +604,19 @@ function complete(logical, start,   m, pos, rest, tok, raw, dash) {
 # 単位の終端。heredoc が終端していないまま終わったら、それは `<<` の誤検出（または hook が
 # 共有ヘルパで本文と終端行を先に落とした入力）なので、読み飛ばした行を捨てずに heredoc
 # 認識を切って流し直す（共有ヘルパの「未終端は解析成功にしない」と同じ契約）。
+# 引用符の再投入（flush）が流し直した行の中で再び `<<` が開くことがあるので、heredoc と引用符の
+# どちらも残らなくなるまで繰り返す（1 回ごとに開いた行を消費するので必ず終わる。Issue `#1805`）。
 function unit_close(   i, n, keep, keepln) {
-  if (hd_n > 0) {
-    n = hd_cnt
-    for (i = 1; i <= n; i++) { keep[i] = hd_lines[i]; keepln[i] = hd_ln[i] }
-    hd_n = 0; hd_cnt = 0; hd_off = 1
-    for (i = 1; i <= n; i++) feed(keep[i], keepln[i])
-    hd_off = 0
+  while (hd_n > 0 || (open_q != "" && buf != "")) {
+    if (hd_n > 0) {
+      n = hd_cnt
+      for (i = 1; i <= n; i++) { keep[i] = hd_lines[i]; keepln[i] = hd_ln[i] }
+      hd_n = 0; hd_cnt = 0; hd_off = 1
+      for (i = 1; i <= n; i++) feed(keep[i], keepln[i])
+      hd_off = 0
+    } else {
+      flush()
+    }
   }
   flush(); unit_end()
 }

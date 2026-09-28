@@ -158,6 +158,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/hooks/guard-long-gate-background.sh"
+# ホスト環境の解除変数・テストシーム（hook 実装とその参照先が読む FF_* / CLAUDE_*）を
+# 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
+# shellcheck source=../lib/adapter-env-isolation.sh
+. "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD" "$TARGET"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 
 [ -f "$TARGET" ] || { echo "✗ guard-long-gate-background.sh が見つかりません: $TARGET" >&2; exit 1; }

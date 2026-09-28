@@ -164,11 +164,17 @@
 #   Issue `#1935`（別 worktree に置かれたレーンの照合）: 別 worktree の置き場を読まない → 3。
 #   置き場のレーンを対象ツリーと照合せずに数える → 2。対象ツリーの集合を cwd のツリーに戻す → 13。
 # 空振り検出: 走査の針が当たらない入力（本文が空・コメントだけ / 本文全体の字句解析の失敗）を「書き込み無し」として通す変異（tests/lib/review-write-scan.sh の ws_judge_file_program の ws_fail の前に return 1 を置く）を入れると (o3) の「コメントだけの本文」「空の本文」「引用符が閉じない本文」が赤になる（2026-09-27 実測。字句解析の取りこぼしと区別できない入力を緑へ倒さない）。
+# 空振り検出: ホスト環境へ解除変数（FF_REVIEW_LOCK_OVERRIDE=1 / FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1）を置いたまま先頭の isolate_hook_env を外すと 238 件が赤、分離ライブラリの unset を外しても 238 件が赤（2026-09-28 実測、bundle `#1808`）。同じホスト環境でガード本体の最終 emit_deny の前に exit 0 を置く変異は 228 件赤 — 分離が本物の deny 退行を隠さない。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/hooks/guard-review-in-flight.sh"
+# ホスト環境の解除変数・テストシーム（hook 実装とその参照先が読む FF_* / CLAUDE_*）を
+# 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
+# shellcheck source=../lib/adapter-env-isolation.sh
+. "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD FF_REVIEW_LOCK_OVERRIDE" "$TARGET"
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"

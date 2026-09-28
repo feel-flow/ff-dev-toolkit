@@ -168,7 +168,7 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 
 ### Bash ガード（PreToolUse）
 
-プラグインをインストールすると、Bash ツールの実行前に 9 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-zsh-glob.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` と `guard-zsh-glob.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
+プラグインをインストールすると、Bash ツールの実行前に 10 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-zsh-glob.sh` / `hooks/guard-literal-write.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` と `guard-zsh-glob.sh` と `guard-literal-write.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
 
 **未コミット変更ガード（`guard-checkout-restore.sh`）** — 未コミット変更のあるファイルへの `git checkout [--] <path>` / `git restore <path>` を検出し、変更消失の前に警告する。警告文は代替手段（`cp` バックアップ / `git stash push -- <file>` → `pop`）を案内する。ブランチ切り替え（`git checkout <branch>` / `git switch`）、clean・untracked なファイルへの復元、`git restore --staged`（worktree 非破壊）では発火しない。
 
@@ -222,6 +222,7 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1`
 - **このガードだけは判定を完了できないとき fail-closed**（判定不能である旨を出して止める）。対象は検出器の欠落・破損、heredoc 除去ヘルパの欠落・破損、走査 `awk` の失敗、`jq` フィルタの実行失敗、検出器出力の解釈不能、ASDD ゲートの検証不能（`.asdd/config.json` があるのに node が無い・設定を読めない。機能を無効にした場合は従来どおり無音で通る）。ただしその面は `$?` / `PIPESTATUS` / ゲート綴りを含む**候補コマンドに限る**ので、検出器が壊れても無関係な Bash 呼び出しは止まらない
 - 引用符の扱い: 検出器は**単一引用符**とコメントを散文として伏せる。二重引用符の中も区切り子・コマンド名は伏せるが、`$?` と `PIPESTATUS` は実際に展開されるため判定対象に残る（散文として書くなら単一引用符を使う）
+- 意図して赤にする形（正しく動く書き方でも止める。設計判断）: (1) ゲート直後の**引数なしの `exit` / `return`**（`bash …/run-all.sh > log 2>&1; exit` / 改行で分けた `exit` や `return` / `… || exit`）は伝播と見ない — ゲートがパイプ段や `&` の背後に在ると「直前のコマンド」がゲートでなくなり、伝播扱いにすると別の 5 形が無音になるため。(2) **`set -e` の到達は静的に追わない** — `set -e` 下の `bash …/run-all.sh > log 2>&1` ⏎ `後片付け`（`rm -f tmp` 等）は errexit で正しく止まる形だが赤にする（`pipefail` と同じ判断で、読み手が `set -e` の到達を追わなければ正しさが分からない形へは寄せない）。回避はどちらも同じで、ゲート直後で `rc=$?` と受け、後片付けや診断を挟んでから `exit $rc` で明示的に伝播させる（`FF_EXIT_CODE_ACK=1` の前置は、この書き換えができないときの最後の手段）
 - 既知の限界（素通しする形）: 末尾が裸の `&` で終わる background 起動の後続行（終了コードは `wait` が運ぶため追わない）・変数展開やコマンド置換で組み立てた綴り・heredoc 本文（データとして落とす）。改行で区切った 2 行目以降は `gate-exit-dropped` が行をまたいで判定する（`pipe-exit-read` も同様）
 
 **zsh 未引用 glob ガード（`guard-zsh-glob.sh`）** — Bash ツールを動かすシェルが zsh のとき、`-` で始まる語の `=` より右に未引用の glob 文字（`*` / `?` / `[`）がある形（`grep -rn x docs --include=*.md`）を実行前に停止する。zsh は既定で `NOMATCH` が有効で、この語全体を「`--include=` で始まるファイル名」を探す glob として評価するので、**cwd に `.md` があっても 0 件**になり（`--include=` で始まる名前のファイルが実在しない限り必ず）、`no matches found` でコマンドが実行されない（bash では同じ文字列が通るので、bash 前提で書いたコマンドが zsh のホストでだけ落ちる）。停止文は検出した語と引用した書き換え案（`--include="*.md"`）を出す。
@@ -233,6 +234,14 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1`
 - `jq` 不在・JSON でない入力は素通しする。候補コマンド（`=` の右に glob 文字を含む）でヘルパを読めない・走査が失敗する・引用や展開が閉じないまま終わる・ASDD 設定を検証できないときは理由付きで停止する（fail-closed。面は候補コマンドに限る）
 - 既知の限界: 未引用 `$VAR` が単語分割されない形・語頭の `=word`・`$name:修飾子` など、glob 以外の zsh 固有の展開は対象外。変数やコマンド置換で組み立てた語の中身は見えない。区切り語を引用しない heredoc（`<<EOF`）の本文に書いた `$(…)` の中のコマンドも、heredoc 本文をデータとして落とすため見えない
+
+**literal-write ガード（`guard-literal-write.sh`）** — シェルの値が別言語のプログラムへ届かず、ファイル本文が**無音で**変わる Bash 呼び出しを実行前に停止する。止めるのは 2 形: `perl -i` の単一引用符プログラムに入ったシェル変数の綴り（`perl -pi -e 's/x/"$REPO"/' f` の `$REPO` は Perl 変数として展開され、空文字になる）と、perl / node が `$ENV{NAME}` / `process.env.NAME` で読む名前を同じ呼び出しが `export` せずに代入している形（`ROW=…; perl -i -pe 'BEGIN{$r=$ENV{ROW}} …'` は空行を挿入する）。停止文は Write / Edit ツールか引用付き heredoc（`cat > <file> <<'EOF'`）への書き換えを案内する。
+
+- 判定の正本は同梱の共有ヘルパ `tests/lib/literal-write-scan.sh`。エスケープ済みの `\$NAME`、二重引用符のプログラム（シェルが先に展開する）、Perl 組み込み変数、`export` / 前置代入 / `set -a` 済みの名前、引数・PR 本文・コメントの中の綴りは止めない。`bash -c '…'` と `bash <<'EOF'` の中は入れ子として走査する
+- バッククォート・バックスラッシュ・非 ASCII で構文エラーになる型は対象外（書き込み前に大きな音で落ちる。導入先の実測で誤検知を抑えられなかった）
+- 通し方: 誤検知の場合（大文字始まりの Perl 変数を意図して書いた等）は、コマンドの**先頭**へ環境代入 `FF_LITERAL_WRITE_ACK=1` を付けて再実行する。無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_LITERAL_WRITE_GUARD=1`
+- `jq` 不在・JSON でない入力は素通しする。候補コマンドでヘルパを読めない・走査が失敗する・引用や heredoc が閉じないまま終わるときは理由付きで停止する（fail-closed。面は候補コマンドに限る）
+- 既知の限界: `$(…)` の中・`xargs` / `find -exec` の引数として起動する perl / node、ファイルや変数から読むプログラム、python（`os.environ[...]` は未定義なら `KeyError` で落ちる）は走査しない
 
 ### shell 保存時ガード（PreToolUse / Write・Edit）
 

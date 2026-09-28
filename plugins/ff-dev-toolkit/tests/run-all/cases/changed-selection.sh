@@ -4,7 +4,8 @@
 # case 47: 変更ベースの部分ゲート（FF_RUN_ALL_CHANGED。ADR-062）
 #
 # verify.sh から source される（ok / bad / expect_* / RUN_OUT / RUN_RC / RUNNER / TESTS_DIR を共有）。
-# verify.sh 本体が 4,000 行を超えているため、新しいケース群は cases ファイルへ置く（ADR-057 決定 2）。
+# 追加時点で verify.sh 本体が 4,000 行を超えていたため、新しいケース群として cases ファイルへ置いた
+# （ADR-057 決定 2。その後 Issue `#1805` で case 35 も切り出して本体は 4,000 行未満に戻した）。
 #
 # 既定一覧の形でしか効かないので、case 39 と同じく SCRIPTS / REQUIRED_SUITES /
 # MISS_PROBE_BASELINE を fixture の suite へ差し替えた複製ランナーを**隔離した一時 git

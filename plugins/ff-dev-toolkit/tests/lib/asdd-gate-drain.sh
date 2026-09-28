@@ -31,6 +31,15 @@
 #   ff_asdd_drain_probe_delayed <hook> <payload-file> <delay> <cwd> [NAME=VALUE ...]
 #     <delay> 秒待ってから書き始める書き手。hook の入力上限を過ぎてから書き出す
 #     ホストでも書き手が死なないことを測る。
+#   ff_asdd_copy_gate <plugin-dir>
+#     hook を一時領域へ写す suite 向けに、ASDD ゲート一式（hooks/asdd-hook-gate.sh /
+#     hooks/asdd-feature.mjs / 設定の検証本体 scripts/asdd/）を <plugin-dir> へ同じ相対配置で
+#     写す。asdd-feature.mjs は `../scripts/asdd/config.mjs` を読むので、hooks/ の 2 本だけを
+#     写すとコピー先の判定は常に rc=2（判定不能）になり、features.hooks=false の検査が
+#     無効分岐（rc=3）ではなく判定不能の分岐を測ってしまう（Issue `#1808` の追記）。
+#   ff_asdd_gate_rc <plugin-dir> <cwd> <feature>
+#     <cwd> で <plugin-dir>/hooks/asdd-hook-gate.sh の asdd_hook_enabled を呼び、戻り値を
+#     FF_ASDD_GATE_RC へ入れる。fixture が意図した分岐（0 / 3）へ届いていることの裏取り用。
 #
 # 天井を測る probe が要る理由（クロスモデルレビュー指摘）: 上の 200,000 バイトは
 # bash 組み込み read の速度（2026-09-12 実測 bash 3.2.57 / macOS で約 2.9 MB/s）でも
@@ -100,4 +109,20 @@ ff_asdd_drain_probe_delayed() { # <hook> <payload-file> <delay> <cwd> [NAME=VALU
   FF_ASDD_DRAIN_RC=0
   FF_ASDD_DRAIN_OUT="$({ cd "$cwd" && { sleep "$delay"; cat "$file"; } | env "$@" /bin/bash "$hook"; } 2>/dev/null)" \
     || FF_ASDD_DRAIN_RC=$?
+}
+
+FF_ASDD_GATE_RC=0
+ff_asdd_copy_gate() { # <plugin-dir>
+  local dest="$1" src
+  [ -n "$dest" ] || return 1
+  src="$(cd "${BASH_SOURCE[0]%/*}/../.." && pwd)" || return 1
+  mkdir -p "$dest/hooks" "$dest/scripts" || return 1
+  cp "$src/hooks/asdd-hook-gate.sh" "$src/hooks/asdd-feature.mjs" "$dest/hooks/" || return 1
+  rm -rf "$dest/scripts/asdd"
+  cp -R "$src/scripts/asdd" "$dest/scripts/asdd" || return 1
+}
+
+ff_asdd_gate_rc() { # <plugin-dir> <cwd> <feature>
+  FF_ASDD_GATE_RC=0
+  ( cd "$2" && . "$1/hooks/asdd-hook-gate.sh" && asdd_hook_enabled "$3" ) 2>/dev/null || FF_ASDD_GATE_RC=$?
 }

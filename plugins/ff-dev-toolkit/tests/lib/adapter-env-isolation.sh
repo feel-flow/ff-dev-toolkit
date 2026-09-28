@@ -35,6 +35,25 @@
 #     だけが持つ（Issue #769）。上の unset_isolated_vars と違い ISOLATE_ENV に依存
 #     せず、呼ぶ場所も gen_prompt サブシェルの内側でよい（固定名簿の unset だけで、
 #     ケース固有の前置代入を消す副作用は無い）。
+#   isolate_hook_env "SENTINEL..." HOOK
+#     guard 系 suite（hook を stdin JSON で駆動する suite）向けの入口（Issue `#1808`）。
+#     HOOK と、HOOK から辿れる同梱ファイル（本文に `/x.sh` の形で現れ、`hooks/` /
+#     `tests/lib/` / `scripts/` のどこかに実在するものを推移的に閉じた集合。変数経由の
+#     `"$HELPER_DIR/x.sh"` もファイル名で辿る）から
+#     _?(FF|CLAUDE)_[A-Z0-9_]+ を動的抽出して ISOLATE_ENV を組み、**現在のシェルで
+#     unset する**（build + unset_isolated_vars を 1 回で行う）。hook は解除変数
+#     （FF_DEV_TOOLKIT_SKIP_*_GUARD / FF_REVIEW_LOCK_OVERRIDE / FF_*_ACK）と
+#     テストシーム（FF_HEREDOC_AWK / FF_LEX_AWK / FF_WRITE_SCAN_* 等）を環境から読む
+#     ので、ホストに 1 つでも残っていると「deny される」前提の針が黙って崩れる
+#     （実測: FF_REVIEW_LOCK_OVERRIDE=1 で guard-review-in-flight が 229 件赤）。
+#     **呼ぶ場所は suite の先頭で 1 回**（unset_isolated_vars と同じ理由。ケース固有の
+#     `NAME=v bash "$TARGET"` / `env NAME=v ...` はその後に代入として届く）。
+#     SENTINEL は HOOK 自身の解除変数を渡す（抽出が空振りしたら fail-closed で止まる）。
+#     allowlist（env -i）にしない理由: 起動経路が run_hook 以外にも直書き・コピー先の
+#     hook・ff_asdd_drain_probe と多数あり、呼び出し点ごとの env -i は 1 箇所の書き漏れで
+#     穴が開く。PATH / HOME / TMPDIR / LANG を落とすと git / jq / node / awk の前提も
+#     崩れる（ACE-1818-4 の LC_ALL と同じ種類の非決定）。hook 実装が読む名前を実装から
+#     抽出する方式なら、hook へ新しいつまみを足しても名簿が黙って漏れない。
 #
 # 保証の境界（ここに書いていない保護は無い）:
 #   - **プレフィックスを持たない build_prompt の入力は unset_prompt_env_vars が落とす。**
@@ -64,6 +83,13 @@
 #     `build_isolate_env "MULTI_AGENT_CONFIG" "$MULTI_AGENT"` だけを呼ぶ suite は
 #     MULTI_AGENT_* しか分離していない）。名簿は suite ごとに非対称であり、
 #     アダプタを起動する suite は抽出源にアダプタ実装も渡すこと。
+#   - isolate_hook_env は例外で、HOOK の参照閉包に現れる FF_* / CLAUDE_* を全部落とす
+#     （hook の読む名前だけが抽出源なので、suite 自身の前提変数は通常現れない）。ただし
+#     FF_RUN_ALL_* と FF_REACHED_END は抽出されても名簿から外す（run-all の入れ子ガードと
+#     途中死センチネル。hook の注釈が綴りを引用するだけで名簿へ入るのを防ぐ）。参照先の
+#     ファイルが実在しない参照（hook が走査対象として名指しする利用者側のパス等）は
+#     辿らない。プレフィックスを持たない HOME / SHELL / TMPDIR は isolate_hook_env でも
+#     落とさない（suite が必要な値を各ケースで明示する）。
 #   - **FF_ 全体は対象にしない。** FF_RUN_ALL_NESTED（入れ子ガード）・
 #     FF_DEV_TOOLKIT_ROOT（シムの探索先）・FF_REACHED_END（途中死センチネル）など、
 #     取り除くと suite 自身の前提が壊れる変数が同じプレフィックスに同居している。
@@ -214,4 +240,80 @@ unset_isolated_vars() {
 # 直す — 呼び出し側 suite に手書きの複製を戻さないこと（Issue #769）。
 unset_prompt_env_vars() {
   unset DIFF_FILE STAGED_DIFF INCLUDE_DIFF CHANGED_FILES
+}
+
+# isolate_hook_env "SENTINEL..." HOOK — 公開関数の節を参照（Issue `#1808`）。
+isolate_hook_env() {
+  local sentinels="$1" hook="$2"
+  local IFS=$' \t\n'
+  local root f refs ref path raw var s seen grep_rc i j known
+  local files=()
+  if [ ! -f "$hook" ]; then
+    echo "✗ isolate_hook_env: hook が見つかりません: ${hook}（分離名簿を作れないため続行しない）" >&2
+    exit 1
+  fi
+  root="$(cd "${hook%/*}/.." && pwd)" || {
+    echo "✗ isolate_hook_env: プラグインルートを解決できません: ${hook}" >&2
+    exit 1
+  }
+  # 参照の推移閉包。files は訪問済み兼キュー（i が次に読む位置）。パスは配列で持つので
+  # checkout の置き場に空白を含んでも割れない。
+  files=("$hook")
+  i=0
+  while [ "$i" -lt "${#files[@]}" ]; do
+    f="${files[$i]}"
+    i=$((i + 1))
+    grep_rc=0
+    # 参照は「/ の直後のファイル名」で拾い、置き場の候補（hooks / tests/lib / scripts）の
+    # どこかに実在すれば辿る。`tests/lib/x.sh` のリテラルだけを見ると、
+    # `HELPER_DIR=".../tests/lib"` + `"$HELPER_DIR/x.sh"` の間接参照が注釈の綴りに頼る形になる。
+    refs="$(grep -ohE '/[A-Za-z0-9_.-]+\.sh' "$f")" || grep_rc=$?
+    if [ "$grep_rc" -gt 1 ]; then
+      echo "✗ isolate_hook_env: 参照の走査に失敗しました（grep rc=${grep_rc}）: ${f}" >&2
+      exit 1
+    fi
+    # refs の各語は抽出パターン上 /[A-Za-z0-9_.-]+\.sh に限られ、語分割・glob の危険はない。
+    for ref in $refs; do
+      for path in "${root}/hooks${ref}" "${root}/tests/lib${ref}" "${root}/scripts${ref}"; do
+        [ -f "$path" ] || continue
+        known=0
+        for ((j = 0; j < ${#files[@]}; j++)); do
+          [ "${files[$j]}" = "$path" ] && { known=1; break; }
+        done
+        [ "$known" -eq 1 ] || files+=("$path")
+      done
+    done
+  done
+  grep_rc=0
+  raw="$(grep -hoE '_?(FF|CLAUDE)_[A-Z0-9_]+' "${files[@]}")" || grep_rc=$?
+  if [ "$grep_rc" -gt 1 ]; then
+    echo "✗ isolate_hook_env: 変数名の抽出に失敗しました（grep rc=${grep_rc}）。部分的な読み取り失敗は分離名簿の黙った欠落になるため続行しない" >&2
+    exit 1
+  fi
+  ISOLATE_ENV=()
+  seen=" "
+  for var in $raw; do
+    case "$var" in FF_RUN_ALL_*|FF_REACHED_END) continue ;; esac
+    case "$seen" in *" $var "*) continue ;; esac
+    seen="${seen}${var} "
+    ISOLATE_ENV+=(-u "$var")
+  done
+  if [ -z "$sentinels" ]; then
+    echo "✗ isolate_hook_env: センチネルが空です（hook 自身の解除変数を 1 つ以上渡す）" >&2
+    exit 1
+  fi
+  for s in $sentinels; do
+    case "$s" in
+      *[!A-Z0-9_]*|'')
+        echo "✗ isolate_hook_env: センチネル名 '${s}' に変数名として不正な文字が含まれています（呼び出し側の指定ミス）" >&2
+        exit 1 ;;
+    esac
+    case "$seen" in
+      *" $s "*) : ;;
+      *)
+        echo "✗ isolate_hook_env: 分離名簿にセンチネル ${s} がありません。hook の改名か抽出の空振り。ホストからの分離を保証できないため続行しない" >&2
+        exit 1 ;;
+    esac
+  done
+  unset_isolated_vars
 }

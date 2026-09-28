@@ -36,6 +36,11 @@
 #     全件を続ける形は素通し」を赤にする（3 回転目の設計変更、2026-09-21 実測）
 #   - ブロック境界の判定を「行全体の完全一致の名簿」へ戻したコピーは「elif を挟む分岐は
 #     素通し」を赤にする（名簿方式が付属物のある形を取りこぼす、2026-09-21 実測）
+#   - 消費と上書きの判定順を「消費優先」へ戻したコピー（var_event が無条件の上書きの区間で
+#     即座に返さない）は「同じ行の上書き → 参照（rc=0; exit ${rc}）を deny」を赤にする
+#     （Issue `#1805`、2026-09-28 実測）
+#   - 単位終端（flush）での引用符結合の再投入を消したコピーは「閉じない引用符の後 19 行以下
+#     でも deny」を赤にする（Issue `#1805`、2026-09-28 実測）
 #   - 変異 7 の対象は 2026-09-21 に `*) [ "$sep_n" -eq 1 ] || launch_ok=0 ;;` の行へ移した
 #     （dropped は区切り 0 個のときだけ実値案を出す分岐を case で分けたため）
 #
@@ -48,6 +53,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/hooks/guard-exit-code.sh"
+# ホスト環境の解除変数・テストシーム（hook 実装とその参照先が読む FF_* / CLAUDE_*）を
+# 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
+# shellcheck source=../lib/adapter-env-isolation.sh
+. "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
+isolate_hook_env "FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD" "$TARGET"
 DETECTOR="$PLUGIN_ROOT/tests/lib/exit-code-guard.sh"
 HELPER="$PLUGIN_ROOT/tests/lib/heredoc-strip.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
@@ -662,6 +672,25 @@ rc=\$?
 echo \"\$rc\"; rc=0
 exit \$rc"
 assert_fire "同じ行に診断の参照と無条件上書きが同居しても上書きを見逃さない（判定は区間単位）"
+run_hook "$GATE > log 2>&1
+rc=\$?
+rc=0; exit \$rc"
+assert_fire "同じ行の上書き → 参照（rc=0; exit \${rc}）を deny（区間の実行順に判定する。Issue \`#1805\`）"
+run_hook "$GATE > log 2>&1
+rc=\$?; rc=0; exit \$rc"
+assert_fire "捕獲と同じ行の上書き → 参照（rc=\$?; rc=0; exit \${rc}）も deny"
+run_hook "$GATE > log 2>&1
+rc=\$?
+rc=\${rc:-0}; exit \$rc"
+assert_pass "自己参照する再代入（rc=\${rc:-0}）を同じ行に含む形は上書きではないので素通し"
+run_hook "$GATE > log 2>&1
+rc=\$?
+rc=\$((rc|0)); exit \$rc"
+assert_pass "自己参照する再代入（算術式）を同じ行に含む形も素通し"
+run_hook "$GATE > log 2>&1
+rc=\$?
+false && rc=0; exit \$rc"
+assert_pass "短絡で実行されないことがある代入（false && rc=0）の後の参照は消費として素通し"
 run_hook "$GATE > log 2>&1 && ok=1"
 assert_pass "&& の末尾代入（短絡でゲートの rc が残る）が単位の最終行でも素通し"
 run_hook "$GATE > log 2>&1 && ok=1
@@ -672,6 +701,14 @@ Don't panic
 EOF
 $GATE > log 2>&1; echo done"
 assert_fire "バックスラッシュ引用の区切り語（<<\\EOF）でも heredoc 本文を読み飛ばす"
+run_hook "echo 'open
+prose line
+$GATE > log 2>&1; echo done"
+assert_fire "閉じない引用符の後 19 行以下で終わる入力でも範囲内の事故形を deny（単位終端でも再投入する。Issue \`#1805\`）"
+run_hook "echo 'open
+cat <<EOF
+$GATE 2>&1 | tail -3"
+assert_fire "閉じない引用符の再投入で開いた未終端 heredoc の後続行も deny（再投入を繰り返す）"
 
 echo "guard-exit-code: fail-open（jq 以前・非 Bash・壊れた入力）"
 run_hook_on "$TARGET" 'echo ok'
@@ -939,6 +976,48 @@ exit \$rc"
     ok "変異検出: 境界判定を完全一致の名簿へ戻すと「elif を挟む分岐は素通し」は赤になる"
   else
     bad "名簿へ戻しても素通しのまま: decision=[$DECISION]"
+  fi
+fi
+cp "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"
+
+# 変異 11: 消費と上書きを実行順ではなく「消費を優先」へ戻す（Issue `#1805` の修正前の判定順）。
+# 無条件の上書きの区間でも即座に 2 を返さず印だけ付け、後続の参照があれば消費（1）を返すようにする
+# （短絡の直後の代入と同じ扱いを全区間へ広げる）。
+cp "$TARGET" "$MUT"
+awk '
+  /^function var_event\(/ { inf = 1 }
+  inf && /^        if \(!cond\) return 2$/ { print "        ow = 1"; hit++; next }
+  /^}$/ { inf = 0 }
+  { print }
+  END { if (hit != 1) exit 9 }
+' "$DETECTOR" > "$MUT_DIR/tests/lib/exit-code-guard.sh"
+if [ "$?" -ne 0 ]; then
+  bad "変異 11 が当たっていない（var_event の無条件上書きの return 2 行が見つからない）"
+else
+  run_hook_on "$MUT" "$GATE > log 2>&1
+rc=\$?
+rc=0; exit \$rc"
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
+    ok "変異検出: 消費を優先する判定順へ戻すと「同じ行の上書き → 参照を deny」は赤になる"
+  else
+    bad "消費優先へ戻しても deny のまま: decision=[$DECISION]"
+  fi
+fi
+cp "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"
+
+# 変異 12: 単位終端（flush）での引用符結合の再投入を消す（Issue `#1805` の修正前の終端経路）
+cp "$TARGET" "$MUT"
+sed 's/^  if (open_q != "" \&\& buf != "") {$/  if (0) {/' "$DETECTOR" > "$MUT_DIR/tests/lib/exit-code-guard.sh"
+if cmp -s "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"; then
+  bad "変異 12 が当たっていない（flush の再投入分岐の行が sed に一致しない）"
+else
+  run_hook_on "$MUT" "echo 'open
+prose line
+$GATE > log 2>&1; echo done"
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then
+    ok "変異検出: 単位終端の再投入を消すと「閉じない引用符の後 19 行以下でも deny」は赤になる"
+  else
+    bad "単位終端の再投入を消しても deny のまま: decision=[$DECISION]"
   fi
 fi
 cp "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"

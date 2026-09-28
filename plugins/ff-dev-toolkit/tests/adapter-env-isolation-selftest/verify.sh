@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Issue #439: 実行環境分離の検出力を、隔離コピーへの mutation で常設検証する。
+# 空振り検出: guard suite の glob が 0 件（tests/guard-* を退避）で「0 件しか見つからない」、hook の起動行を 1 つも認識できない guard suite で「針が当たらない入力」の赤になる（2026-09-28 実測、bundle `#1808`）。isolate_hook_env から推移的な参照の追跡・FF_RUN_ALL_* / FF_REACHED_END の除外・CLAUDE_* の抽出をそれぞれ外す 3 変異は、いずれも fixture hook の control が赤。参照の追跡をリテラルの置き場（tests/lib/ 等）の綴りだけに戻す変異も、変数経由の間接参照しか持たない fixture で赤。
 
 set -euo pipefail
 
@@ -371,6 +372,139 @@ cp "$SHIM_SUITE" "$MUTATED_SHIM"
 printf '%s\n' 'run_isolated true; bash "${PLACED}" --base develop' >> "$MUTATED_SHIM"
 expect_named_failure "review-wrapper-shim素起動mutationを名指ししてred" \
   "MUTATION review-wrapper-shim素起動" check_logical_wiring "$MUTATED_SHIM" shim
+
+
+# --- guard 系 suite のホスト環境分離（Issue `#1808`）---
+# isolate_hook_env は hook 実装とその参照閉包から FF_* / CLAUDE_* を抽出し、suite の先頭で
+# 1 回落とす。ここでは (1) ライブラリの意味論を fixture hook で、(2) 全 guard suite が先頭で
+# 呼んでいることを配線で、(3) 配線を外す変異が赤になることを固定する。
+make_hook_fixture() { # <dir>
+  local dir="$1"
+  mkdir -p "$dir/hooks" "$dir/tests/lib"
+  cat > "$dir/hooks/guard-fixture.sh" <<'HOOK'
+#!/usr/bin/env bash
+# shellcheck source=../tests/lib/fixture-lib.sh
+. "${BASH_SOURCE[0]%/*}/../tests/lib/fixture-lib.sh"
+[ "${FF_DEV_TOOLKIT_SKIP_FIXTURE_GUARD:-0}" = 1 ] && exit 0
+HOOK
+  cat > "$dir/tests/lib/fixture-lib.sh" <<'LIB'
+# 注釈だけが綴りを引用する: FF_RUN_ALL_NESTED / FF_REACHED_END（名簿へ入れない）
+# 実在しない参照: scripts/not-shipped.sh
+: "${FF_FIXTURE_SEAM:-}"
+# 推移的な参照を変数経由の間接参照だけで書く（リテラルの置き場の綴りを持たない）
+DEEP_DIR="${BASH_SOURCE[0]%/*}"
+: "$DEEP_DIR/fixture-deep.sh"
+LIB
+  printf '%s\n' ': "${CLAUDE_FIXTURE_DIR:-}"' > "$dir/tests/lib/fixture-deep.sh"
+}
+
+run_hook_isolation_control() { # [fixture dir]
+  local fix="${1:-$TMP/hook-fixture}"
+  make_hook_fixture "$fix"
+  FF_DEV_TOOLKIT_SKIP_FIXTURE_GUARD=host FF_FIXTURE_SEAM=host CLAUDE_FIXTURE_DIR=host \
+  FF_RUN_ALL_NESTED=keep FF_REACHED_END=keep bash -c '
+    set -euo pipefail
+    . "$1"
+    isolate_hook_env "FF_DEV_TOOLKIT_SKIP_FIXTURE_GUARD" "$2"
+    for v in FF_DEV_TOOLKIT_SKIP_FIXTURE_GUARD FF_FIXTURE_SEAM CLAUDE_FIXTURE_DIR; do
+      if [ -n "$(eval "printf %s \"\${$v+x}\"")" ]; then
+        echo "control: ホスト値 ${v} が残った（参照閉包の抽出漏れ）" >&2; exit 1
+      fi
+    done
+    [ "${FF_RUN_ALL_NESTED:-}" = keep ] && [ "${FF_REACHED_END:-}" = keep ] || {
+      echo "control: 保持すべき FF_RUN_ALL_* / FF_REACHED_END を落とした" >&2; exit 1
+    }
+    FF_DEV_TOOLKIT_SKIP_FIXTURE_GUARD=case bash -c "[ \"\$FF_DEV_TOOLKIT_SKIP_FIXTURE_GUARD\" = case ]" || {
+      echo "control: ケース固有の前置代入が hook へ届かない" >&2; exit 1
+    }
+  ' _ "$LIBRARY" "$fix/hooks/guard-fixture.sh"
+}
+
+run_hook_isolation_failure() { # <sentinel> <hook>
+  bash -c '. "$1"; isolate_hook_env "$2" "$3"; echo "exit 0 に抜けた"' _ "$LIBRARY" "$1" "$2"
+}
+
+# guard suite の配線: 有効行の isolate_hook_env が、hook を起動する最初の行より前にある。
+# 分離に渡す hook は suite が駆動する hook そのもの（"$TARGET" で、TARGET が
+# hooks/<suite 名>.sh を指す / または "$PLUGIN_ROOT/hooks/<suite 名>.sh"）であること。
+check_guard_wiring() { # <verify.sh>
+  local suite
+  suite="$(basename "$(dirname "$1")")"
+  awk -v suite="$suite" '
+    /^[[:space:]]*#/ { next }
+    /^TARGET=/ && index($0, "hooks/" suite ".sh") { target_ok = 1 }
+    /^isolate_hook_env[[:space:]]+"/ {
+      if (!iso) {
+        iso = NR
+        if ($0 ~ /"\$TARGET"[[:space:]]*$/) arg = "target"
+        else if (index($0, "\"$PLUGIN_ROOT/hooks/" suite ".sh\"")) arg = "explicit"
+      }
+      next
+    }
+    !use && (/(^|[^[:alnum:]_])(bash|env)[[:space:]][^#]*"\$(TARGET|HOOK)"/ || /^[[:space:]]*run_hook[[:space:]]/) { use = NR }
+    END {
+      if (!iso) { print "MUTATION hook分離除去: 先頭の isolate_hook_env が無い" > "/dev/stderr"; exit 1 }
+      if (!use) { print "hook の起動行を 1 つも認識できない（針が当たらない入力）" > "/dev/stderr"; exit 1 }
+      if (iso > use) { print "MUTATION hook分離除去: isolate_hook_env が最初の hook 起動より後ろ" > "/dev/stderr"; exit 1 }
+      if (arg == "" || (arg == "target" && !target_ok)) {
+        print "MUTATION hook分離の対象違い: isolate_hook_env の hook が hooks/" suite ".sh ではない" > "/dev/stderr"; exit 1
+      }
+    }
+  ' "$1"
+}
+
+check_all_guard_wiring() {
+  local verify n=0 bad_n=0
+  for verify in "$TESTS_DIR"/guard-*/verify.sh; do
+    [ -f "$verify" ] || continue
+    n=$((n + 1))
+    check_guard_wiring "$verify" || { echo "  未配線: $verify" >&2; bad_n=$((bad_n + 1)); }
+  done
+  if [ "$n" -lt 11 ]; then
+    echo "guard suite が ${n} 件しか見つからない（glob の空振りか配置の変更）" >&2
+    return 1
+  fi
+  [ "$bad_n" -eq 0 ]
+}
+
+echo "== hook env isolation (guard suites) =="
+expect_pass "isolate_hook_env: 参照閉包のホスト値を落とし、保持変数とケース固有の代入は通す" run_hook_isolation_control
+expect_pass "isolate_hook_env: 空白を含む置き場でも同じ意味論で動く" run_hook_isolation_control "$TMP/hook fixture with space"
+expect_named_failure "isolate_hook_env: 名簿に無いセンチネルを fail-closed" \
+  "分離名簿にセンチネル" run_hook_isolation_failure "FF_NOT_IN_HOOK" "$TMP/hook-fixture/hooks/guard-fixture.sh"
+expect_named_failure "isolate_hook_env: 空のセンチネルを fail-closed" \
+  "センチネルが空" run_hook_isolation_failure "" "$TMP/hook-fixture/hooks/guard-fixture.sh"
+expect_named_failure "isolate_hook_env: hook 不在を fail-closed" \
+  "hook が見つかりません" run_hook_isolation_failure "FF_X" "$TMP/hook-fixture/hooks/absent.sh"
+expect_pass "全 guard suite が hook 起動より前に isolate_hook_env を呼ぶ" check_all_guard_wiring
+
+GUARD_SUITE="$TESTS_DIR/guard-review-in-flight/verify.sh"
+MUTATED_GUARD="$TMP/guard-review-in-flight-no-isolation.sh"
+awk '!done && /^isolate_hook_env[[:space:]]+"/ { done = 1; next } { print } END { if (!done) exit 9 }' \
+  "$GUARD_SUITE" > "$MUTATED_GUARD" || { echo "✗ guard 分離除去 mutation を適用できません" >&2; exit 1; }
+expect_named_failure "guard suite から isolate_hook_env を外す mutation を名指ししてred" \
+  "MUTATION hook分離除去" check_guard_wiring "$MUTATED_GUARD"
+MUTATED_GUARD_LATE="$TMP/guard-review-in-flight-late-isolation.sh"
+awk '
+  !held && /^isolate_hook_env[[:space:]]+"/ { held = $0; next }
+  { print }
+  END { if (!held) exit 9; print held }
+' "$GUARD_SUITE" > "$MUTATED_GUARD_LATE" || { echo "✗ guard 分離後置 mutation を適用できません" >&2; exit 1; }
+expect_named_failure "isolate_hook_env を hook 起動の後ろへ移す mutation を名指ししてred" \
+  "MUTATION hook分離除去" check_guard_wiring "$MUTATED_GUARD_LATE"
+# 起動行の針が isolate_hook_env の行自身に当たって空振りしないこと（起動行を全部消すと赤）。
+MUTATED_GUARD_NOUSE_DIR="$TMP/nouse/guard-review-in-flight"
+mkdir -p "$MUTATED_GUARD_NOUSE_DIR"
+awk '/(bash|env)[^#]*"\$(TARGET|HOOK)"/ && !/^isolate_hook_env/ { next } /^[[:space:]]*run_hook[[:space:]]/ { next } { print }' \
+  "$GUARD_SUITE" > "$MUTATED_GUARD_NOUSE_DIR/verify.sh"
+expect_named_failure "hook の起動行を全部消した suite を針が当たらない入力として赤" \
+  "針が当たらない入力" check_guard_wiring "$MUTATED_GUARD_NOUSE_DIR/verify.sh"
+MUTATED_GUARD_OTHER_DIR="$TMP/other/guard-review-in-flight"
+mkdir -p "$MUTATED_GUARD_OTHER_DIR"
+awk '/^isolate_hook_env[[:space:]]+"/ { print "isolate_hook_env \"FF_X\" \"$PLUGIN_ROOT/hooks/guard-exit-code.sh\""; next } { print }' \
+  "$GUARD_SUITE" > "$MUTATED_GUARD_OTHER_DIR/verify.sh"
+expect_named_failure "別の hook を分離に渡す mutation を名指ししてred" \
+  "MUTATION hook分離の対象違い" check_guard_wiring "$MUTATED_GUARD_OTHER_DIR/verify.sh"
 
 echo
 if [ "$FAIL" -ne 0 ]; then
