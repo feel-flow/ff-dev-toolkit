@@ -29,6 +29,7 @@ V=plugins/ff-dev-toolkit/tests/effort-contract/verify.sh
 JUDGE=plugins/ff-dev-toolkit/scripts/check-issue-body-diff.sh
 REPORT=plugins/ff-dev-toolkit/scripts/effort-report.sh
 WC_HOOK=plugins/ff-dev-toolkit/hooks/record-effort-wallclock.sh
+RUNNER=plugins/ff-dev-toolkit/tests/run-all.sh
 MUTDIR=plugins/ff-dev-toolkit/tests/effort-contract/mutation
 
 for _dep in git python3 awk; do
@@ -101,9 +102,21 @@ echo "変異 8c: effort_unit: h のブロックの d 値を除外せず ×8 で�
 python3 "$MUTDIR/mut-unit-mismatch.py"
 probe "単位の食い違いの黙った合流（検査 4f）" "$REPORT" "git checkout -- '$REPORT'"
 
-echo "変異 8d: 未配線の巡回数を (unavailable) でなく 0 で出す"
+echo "変異 8d: --issue-metrics のゲート分の記録不在を (unmeasured) でなく 0 で出す"
 python3 "$MUTDIR/mut-unavailable.py"
-probe "未計測と 0 の合流（検査 4g）" "$REPORT" "git checkout -- '$REPORT'"
+probe "ゲート分の未計測と 0 の合流（検査 13h）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 8d2: ゲート分の読み手から repo 列の絞り込みを外す"
+python3 "$MUTDIR/mut-gate-repo-filter.py"
+probe "別リポジトリの同じ番号のゲート分の混入（検査 13h）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 8d4: 巡回記録の置き場走査を外す（削除済みブランチの記録が落ちる）"
+python3 "$MUTDIR/mut-rounds-store-scan.py"
+probe "削除済みブランチの巡の取りこぼし（検査 13i）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 8d3: run-all.sh のゲート分の記録呼び出しを消す（綴りだけ残る）"
+python3 "$MUTDIR/mut-gate-minutes-call.py"
+probe "ゲート分の未配線への退行（検査 14j）" "$RUNNER" "git checkout -- '$RUNNER'"
 
 echo "変異 8e: --issue-metrics の記録不在を (unmeasured) でなく 0 で出す"
 python3 "$MUTDIR/mut-metrics-zero.py"

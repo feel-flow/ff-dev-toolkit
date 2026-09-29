@@ -31,7 +31,11 @@
 # 変異検出: effort-report.sh の as_hours() の `v * 8` を `v` にすると（旧 d ブロックの正規化を外す）検査 4 の human_planned_total=192.0 / compression_denominator=50.4 と 検査 4f の human_planned_total=44.0 / ai_actual_total=13.5 が赤になる（mutation/mut-unit-normalize.py）。
 # 変異検出: effort-report.sh の as_hours() から `if (unit == "h") return -3` を外す（effort_unit: h のブロックの d 値を ×8 で黙って合流させる）と 検査 4f の population=5 / excluded_unit_mismatch=2 / 列挙 303,304 が赤になる（mutation/mut-unit-mismatch.py）。
 # 変異検出: effort-report.sh の as_hours() から `if (unit != "h") return -3` を外す（宣言の無いブロックの h 値を受理する）と 検査 4 の excluded_unit_mismatch=1 / population=6 と 検査 4f の excluded_unit_mismatch=2 が赤になる（mutation/mut-unit.py）。
-# 変異検出: effort-report.sh の review_rounds_median を (unavailable) でなく 0 で出すと 検査 4g が赤になる（mutation/mut-unavailable.py）。
+# 変異検出: effort-report.sh の --issue-metrics がゲート分の記録不在を (unmeasured) でなく 0 で出すと 検査 13h が赤になる（mutation/mut-unavailable.py）。
+# 変異検出: effort-report.sh のゲート分の読み手から repo 列の絞り込み（`$9 == repo`）を外すと 検査 13h（別リポジトリの同じ番号 55 の行が混ざり 22 分でなくなる）が赤になる（mutation/mut-gate-repo-filter.py）。
+# 変異検出: effort-report.sh の巡回記録の置き場走査（find … `<type><n>-…*.tsv`）を外すと 検査 13i（削除済みブランチの 2 本目が累積から落ちて 3 巡でなくなる）が赤になる（mutation/mut-rounds-store-scan.py）。
+# 変異検出: tests/run-all.sh の ff_record_gate_head 冒頭の `ff_record_gate_minutes` 呼び出し行を消すと 検査 14j（記録ブロックを単独で抽出して FF_GATE_RECORD=0 で走らせ gate.tsv 1 行を要求）が赤になる（mutation/mut-gate-minutes-call.py）。
+# 空振り検出: 巡回カウンタの記録ファイルが無い Issue・2 ブランチ中 1 本が壊れた Issue・ライブラリを読めない配置（tests/lib を持たない複製へ effort-report.sh を写して起動）・gate.tsv 不在は 検査 13h / 13i が (unmeasured) を要求し、0 や読めた分だけの合計を出す変異で赤になる。record-gate-minutes.sh は既定ブランチ・番号の無いブランチ・`#` の無い日付入りブランチ・opt-out で 1 行も書かないことを 検査 14i が、入れ子の実行（FF_ENTERED_NESTED=1）で書かないことを 検査 14j が行数で固定する（2026-09-29 実測。入れ子を数えると全件ゲート 1 周で explicit 141 行が積まれた）。
 # 変異検出: record-effort-wallclock.sh が記録置き場を作れないとき exit 2 で止めると 検査 14d が赤になる（mutation/mut-hook-failsoft.py）。
 # 変異検出: effort-report.sh の wall-clock の読み手から repo 列の絞り込み（`$7 == repo`）を外すと 検査 13b（別リポジトリ・repo 列なしの同じ番号 77 が混ざり 2.5h でなくなる）が赤になる（mutation/mut-repo-filter.py）。
 # 変異検出: バイト集計の 1 ファイル目判定を `FILENAME == first` から `FNR == NR` へ戻すと 検査 13e（wallclock.tsv 不在でバイトの記録を読み落とす）が赤になる（mutation/mut-fnr.py）。
@@ -334,9 +338,20 @@ out_has "$UKV" "wallclock_median_h_docs_only=1.5"     "docs-only クラスの中
 out_has "$UKV" "wallclock_median_h_small=0.5"         "10 行以下クラスの中央値"
 out_has "$UKV" "wallclock_median_h_other=8.5"         "それ以外クラスの中央値"
 out_has "$UKV" "instruction_bytes_median_all=300000"  "指示読み込みバイトの中央値（4 件・偶数件は上下 2 値の平均）"
-out_has "$UKV" "review_rounds_median_all=(unavailable)" "巡回数は供給源が未配線なので (unavailable)（0 と区別する）"
-out_has "$UKV" "gate_minutes_median_other=(unavailable)" "ゲート分は供給源が未配線なので (unavailable)"
-out_lacks "$UKV" "review_rounds_median_all=0" "未配線の指標を 0 で出さない"
+out_has "$UKV" "review_rounds_population_all=3"      "レビュー巡回数を持つ 3 件を集計（(unmeasured) の 308 と書式不正 1.5 の 310 は外す）"
+out_has "$UKV" "review_rounds_unmeasured=1"          "レビュー巡回数の (unmeasured) の件数を別に出す（0 と混ぜない）"
+out_has "$UKV" "review_rounds_malformed=1"           "レビュー巡回数の書式不正（310 の 1.5。巡は整数）を別に数える"
+out_has "$UKV" "review_rounds_median_all=1.0"        "レビュー巡回数の中央値（1,1,3 → 1.0）"
+out_has "$UKV" "review_rounds_median_small=1.0"      "10 行以下クラスのレビュー巡回数（306 の 1 巡。310 は書式不正で入らない）"
+out_has "$UKV" "review_rounds_median_other=3.0"      "それ以外クラスのレビュー巡回数（307 の 3 巡）"
+out_has "$UKV" "gate_minutes_population_all=3"       "ゲート分を持つ 3 件を集計（(unmeasured) の 308 と書式不正の 310 は外す。巡回数から独立）"
+out_has "$UKV" "gate_minutes_unmeasured=1"           "ゲート分の (unmeasured) の件数を別に出す"
+out_has "$UKV" "gate_minutes_malformed=1"            "ゲート分の書式不正（310 の 47分。単位付きは受けない）を別に数える"
+out_has "$UKV" "gate_minutes_median_all=12"          "ゲート分の中央値（5,12,60 → 12）"
+out_has "$UKV" "gate_minutes_median_small=12"        "10 行以下クラスのゲート分（306 の 12 分。310 は書式不正で入らない）"
+out_lacks "$UKV" "(unavailable)"                     "4 指標とも供給源が配線済みで、(unavailable) を 1 つも出さない"
+out_has "$KV" "review_rounds_median_all=(unmeasured)" "実測を持つ Issue が 0 件の巡回数は (unmeasured)（0 と区別する）"
+out_has "$KV" "gate_minutes_median_all=(unmeasured)"  "実測を持つ Issue が 0 件のゲート分は (unmeasured)"
 out_has "$KV" "wallclock_median_h_all=(unmeasured)"   "実測を持つ Issue が 0 件なら (unmeasured)（0 と区別する）"
 
 echo "検査 4h: 中央値の位置（帯内 / 過小側 / 過大側）を較正トリガの分岐の入力として出す（behavioral）"
@@ -691,6 +706,88 @@ mkdir -p "$MTMP/not-git"
 MOUT="$(_metrics 77 "$MTMP/m" "$MTMP/not-git")"
 out_has "$MOUT" "wallclock_actual_h=(unmeasured)" "13g: リポジトリを解決できなければ wall-clock は (unmeasured)"
 out_has "$MOUT" "instruction_bytes=(unmeasured)"  "13g: リポジトリを解決できなければ読み込みバイトは (unmeasured)"
+out_has "$MOUT" "review_rounds=(unmeasured)"      "13g: リポジトリを解決できなければ巡回数は (unmeasured)"
+out_has "$MOUT" "gate_minutes=(unmeasured)"       "13g: リポジトリを解決できなければゲート分は (unmeasured)"
+# 13h: ゲート分は gate.tsv（列: issue / gate / epoch / iso / seconds / mode / status / branch / repo）の
+# その Issue・そのリポジトリの行の秒を合算し、分（四捨五入）と回数で出す。別リポジトリの同じ番号・
+# 秒が数値でない行・別 Issue の行は採らない。記録が無い Issue は (unmeasured)（0 と区別する）
+MOUT="$(_metrics 77 "$MTMP/m" "$REPO_A")"
+out_has "$MOUT" "gate_minutes=(unmeasured)" "13h: gate.tsv が無い Issue のゲート分は (unmeasured)"
+out_has "$MOUT" "gate_runs=(unmeasured)"    "13h: gate.tsv が無い Issue のゲート回数は (unmeasured)"
+out_lacks "$MOUT" "gate_minutes=0"          "13h: 記録不在を 0 と書かない"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  55 gate 2000 t0 90 fast pass 'chore/#55-x' "$KEY_A" \
+  55 gate 3000 t1 1230 full fail 'chore/#55-x' "$KEY_A" \
+  56 gate 3000 t1 6000 full pass 'chore/#56-y' "$KEY_A" \
+  55 gate 3000 t1 abc full pass 'chore/#55-x' "$KEY_A" \
+  55 gate 4000 t2 36000 full pass 'chore/#55-other' "$KEY_B" \
+  58 gate 4000 t2 150 fast pass 'chore/#58-half' "$KEY_A" \
+  59 gate 4000 t2 20 fast pass 'chore/#59-tiny' "$KEY_A" > "$MTMP/m/gate.tsv"
+MOUT="$(_metrics 55 "$MTMP/m" "$REPO_A")"
+out_has "$MOUT" "gate_runs=2"     "13h: 秒が数値の行だけを回数に数える（abc の行と別 Issue・別リポジトリの行は採らない）"
+out_has "$MOUT" "gate_minutes=22" "13h: 90 + 1230 秒 = 22 分（四捨五入。別リポジトリの 36000 秒を混ぜない）"
+MOUT="$(_metrics 58 "$MTMP/m" "$REPO_A")"
+out_has "$MOUT" "gate_minutes=3"  "13h: 150 秒 = 2.5 分は 3 分へ切り上げる（awk の %.0f の偶数丸めで 2 にしない）"
+MOUT="$(_metrics 59 "$MTMP/m" "$REPO_A")"
+out_has "$MOUT" "gate_minutes=0"  "13h: 20 秒は 0 分（記録はあるので (unmeasured) ではない。gate_runs=1 が実測の印）"
+out_has "$MOUT" "gate_runs=1"     "13h: 0 分でも回数は 1"
+MOUT="$(_metrics 55 "$MTMP/m" "$REPO_B")"
+out_has "$MOUT" "gate_minutes=600" "13h: --repo-dir を替えると別リポジトリの同じ番号だけを読む"
+MOUT="$(_metrics 57 "$MTMP/m" "$REPO_A")"
+out_has "$MOUT" "gate_minutes=(unmeasured)" "13h: 行の無い Issue は gate.tsv があっても (unmeasured)"
+# 13i: レビュー巡回数は巡回カウンタの記録（<git common dir>/ff-review-rounds/<ブランチの鍵>.tsv）から、
+# その Issue のブランチ（wallclock.tsv の start 行の branch 列。無ければローカルブランチ名）の
+# 異なる HEAD の個数を合算する。鍵と読み方は書き手のライブラリ（tests/lib/review-round-counter.sh）を
+# source して同じ関数で解く。記録が無い・書式が壊れている・ライブラリが読めないときは (unmeasured)
+RR_LIB="$TESTS_DIR/lib/review-round-counter.sh"
+if [ -r "$RR_LIB" ]; then
+  # shellcheck source=../lib/review-round-counter.sh
+  . "$RR_LIB"
+  RR_STORE="$(cd "$KEY_A" && pwd -P)/ff-review-rounds"
+  mkdir -p "$RR_STORE"
+  _rr_key() { rr_sanitize "$1"; }
+  # 77 のブランチ fix/#77-a（wallclock.tsv の start 行）: 3 行だが HEAD は 2 種 → 2 巡
+  { printf '# ff-review-rounds v1\n'; printf '%s\t%s\t%s\n' 1 aaaaaaa1 100 1 aaaaaaa1 101 2 bbbbbbb2 200; } > "$RR_STORE/$(_rr_key 'fix/#77-a').tsv"
+  MOUT="$(_metrics 77 "$MTMP/m" "$REPO_A")"
+  out_has "$MOUT" "review_rounds=2" "13i: 巡回カウンタの記録から異なる HEAD の個数（3 行 / 2 種 → 2 巡）を読む"
+  # 78 は wallclock.tsv に start があるが記録ファイルが無い → (unmeasured)
+  MOUT="$(_metrics 78 "$MTMP/m" "$REPO_A")"
+  out_has "$MOUT" "review_rounds=(unmeasured)" "13i: 記録ファイルの無い Issue は (unmeasured)（0 と区別する）"
+  out_lacks "$MOUT" "review_rounds=0"          "13i: 記録不在を 0 と書かない"
+  # 91 は start 記録が無くローカルブランチ fix/#91-reflog だけがある → ブランチ名から鍵を引く
+  { printf '# ff-review-rounds v1\n'; printf '%s\t%s\t%s\n' 1 ccccccc3 300; } > "$RR_STORE/$(_rr_key 'fix/#91-reflog').tsv"
+  MOUT="$(_metrics 91 "$MTMP/m" "$REPO_A")"
+  out_has "$MOUT" "review_rounds=1" "13i: start 記録が無ければローカルブランチ名から鍵を引く"
+  # 書式の壊れた記録（ヘッダ違い）は (unmeasured)
+  printf 'not a header\n1\tddddddd4\t400\n' > "$RR_STORE/$(_rr_key 'fix/#78-b').tsv"
+  MOUT="$(_metrics 78 "$MTMP/m" "$REPO_A")"
+  out_has "$MOUT" "review_rounds=(unmeasured)" "13i: 書式の壊れた記録は (unmeasured)（黙って 0 巡にしない）"
+  # 同じ Issue の 2 本目のブランチ（start 記録なし・ローカルブランチだけ = git worktree add -b の形）は
+  # start 記録のブランチと併合して合算する。1 本でも壊れていれば読めた分だけを出さず (unmeasured)
+  git -C "$REPO_A" branch -q 'fix/#77-b' >/dev/null 2>&1
+  { printf '# ff-review-rounds v1\n'; printf '%s\t%s\t%s\n' 1 eeeeeee5 500; } > "$RR_STORE/$(_rr_key 'fix/#77-b').tsv"
+  MOUT="$(_metrics 77 "$MTMP/m" "$REPO_A")"
+  out_has "$MOUT" "review_rounds=3" "13i: start 記録のブランチ（2 巡）とローカルブランチだけの 2 本目（1 巡）を併合して合算する"
+  printf 'not a header\n' > "$RR_STORE/$(_rr_key 'fix/#77-b').tsv"
+  MOUT="$(_metrics 77 "$MTMP/m" "$REPO_A")"
+  out_has "$MOUT" "review_rounds=(unmeasured)" "13i: 2 本のうち 1 本が壊れていれば読めた分だけの合計（2）を出さず (unmeasured)"
+  out_lacks "$MOUT" "review_rounds=2"          "13i: 部分的に読めた合計を実測として出さない"
+  # 削除済みブランチ（start 記録なし・ローカルブランチも無い = 最初の PR の後片付けで消えた形）の
+  # 記録は置き場の走査で拾う。別 Issue（177）の記録は Issue 77 に当たらない
+  { printf '# ff-review-rounds v1\n'; printf '%s\t%s\t%s\n' 1 eeeeeee5 500; } > "$RR_STORE/$(_rr_key 'fix/#77-b').tsv"
+  git -C "$REPO_A" branch -q -D 'fix/#77-b' >/dev/null 2>&1
+  { printf '# ff-review-rounds v1\n'; printf '%s\t%s\t%s\n' 1 fffffff6 600 2 0000007 601; } > "$RR_STORE/$(_rr_key 'fix/#177-b').tsv"
+  MOUT="$(_metrics 77 "$MTMP/m" "$REPO_A")"
+  out_has "$MOUT" "review_rounds=3" "13i: ブランチを削除しても置き場の走査で 2 本目（1 巡）を拾い、fix177-b（Issue 177）は混ぜない"
+  # ライブラリを読めない配置（tests/lib を持たない複製へ写した effort-report.sh）は (unmeasured)
+  NOLIB="$MTMP/nolib"; mkdir -p "$NOLIB/scripts" "$NOLIB/.claude-plugin"
+  cp "$REPORT" "$NOLIB/scripts/effort-report.sh"; cp "$PLUGIN_ROOT/.claude-plugin/plugin.json" "$NOLIB/.claude-plugin/"
+  MOUT="$(bash "$NOLIB/scripts/effort-report.sh" --issue-metrics 91 --metrics-dir "$MTMP/m" --repo-dir "$REPO_A" 2>/dev/null)"
+  out_has "$MOUT" "review_rounds=(unmeasured)" "13i: 巡回カウンタのライブラリを読めない配置では記録があっても (unmeasured)（0 にしない）"
+  out_lacks "$MOUT" "review_rounds=1"          "13i: ライブラリ不在で鍵を自前で解かない"
+else
+  skip "13i: 巡回カウンタのライブラリが無い（${RR_LIB}）"
+fi
 
 echo "検査 14: wall-clock / 読み込みバイトの hook が記録し、書けないときは止めない（behavioral）"
 WC_HOOK="$PLUGIN_ROOT/hooks/record-effort-wallclock.sh"
@@ -790,7 +887,87 @@ fi
 contains "$FINISH" "--issue-metrics" "close-issue 5a が hook の記録の読み手を呼ぶ（finish.sh precheck 経由）"
 contains "$CLOSE" "effort_wallclock_actual" "close-issue 5a が wall-clock を書き戻す"
 contains "$CLOSE" "effort_instruction_bytes" "close-issue 5a が読み込みバイトを書き戻す"
+contains "$CLOSE" "effort_review_rounds" "close-issue 5a がレビュー巡回数を書き戻す"
+contains "$CLOSE" "effort_gate_minutes" "close-issue 5a がゲート分を書き戻す"
 contains "$CLOSE" "(unmeasured)" "close-issue 5a が記録なしを (unmeasured) と書く（0 と書かない）"
+# 14i: ゲート分の記録器（tests/run-all.sh が終了時に呼ぶ）。Issue 番号付きブランチでだけ 1 行書き、
+# 統合ブランチ・番号の無いブランチ・秒が数値でない・opt-out・Git 管理外では書かない（fail-soft）
+GM_REC="$PLUGIN_ROOT/scripts/record-gate-minutes.sh"
+RUNNER="$PLUGIN_ROOT/tests/run-all.sh"
+if [ -f "$GM_REC" ]; then
+  REPO_G="$MTMP/repoG"; GSTATE="$MTMP/state-g/metrics"
+  _mk_repo "$REPO_G" >/dev/null || { echo "✗ fixture リポジトリを作成できません: $REPO_G" >&2; exit 1; }
+  _gm() { bash "$GM_REC" --repo-dir "$REPO_G" --metrics-dir "$GSTATE" "$@" >/dev/null 2>&1; echo $?; }
+  _gm_rows() { [ -f "$GSTATE/gate.tsv" ] && awk 'END { print NR + 0 }' "$GSTATE/gate.tsv" || echo 0; }
+  git -C "$REPO_G" checkout -q -B develop >/dev/null 2>&1
+  [ "$(_gm --seconds 90 --status pass --mode fast)" = "0" ] && [ "$(_gm_rows)" = "0" ] \
+    && ok "14i: 番号の無い既定ブランチ（develop）では記録せず exit 0" || bad "14i: develop で記録した（rows=$(_gm_rows)）"
+  git -C "$REPO_G" checkout -q -b 'chore/2026-09-23-cleanup' >/dev/null 2>&1
+  _gm --seconds 90 --status pass --mode fast >/dev/null
+  [ "$(_gm_rows)" = "0" ] && ok "14i: # の無い日付入りブランチの 2026 を Issue 番号として記録しない" \
+    || bad "14i: 日付入りブランチで記録した: $(tr '\n\t' '; ' < "$GSTATE/gate.tsv" 2>/dev/null)"
+  git -C "$REPO_G" checkout -q -b 'chore/#66-gate' >/dev/null 2>&1
+  _gm --seconds 90 --status pass --mode fast >/dev/null
+  _gm --seconds 1230 --status fail --mode full >/dev/null
+  _gm --seconds abc --status pass --mode fast >/dev/null
+  FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS=1 bash "$GM_REC" --repo-dir "$REPO_G" --metrics-dir "$GSTATE" --seconds 5 >/dev/null 2>&1
+  bash "$GM_REC" --repo-dir "$MTMP/not-git" --metrics-dir "$GSTATE" --seconds 5 >/dev/null 2>&1
+  [ "$(_gm_rows)" = "2" ] && ok "14i: Issue 番号付きブランチで秒が数値の 2 回だけ記録（abc・opt-out・Git 管理外は書かない）" \
+    || bad "14i: 記録行数が期待と違う: $(_gm_rows)（期待 2）: $(tr '\n\t' '; ' < "$GSTATE/gate.tsv" 2>/dev/null)"
+  _gm_cols="$(awk -F '\t' 'NR == 2 { print $1 "|" $2 "|" $5 "|" $6 "|" $7 "|" $8 "|" ($9 != "" ? "repo" : "norepo") }' "$GSTATE/gate.tsv" 2>/dev/null)"
+  [ "$_gm_cols" = "66|gate|1230|full|fail|chore/#66-gate|repo" ] && ok "14i: 列は issue / gate / epoch / iso / seconds / mode / status / branch / repo（赤い回も記録する）" \
+    || bad "14i: 列が期待と違う: [${_gm_cols}]"
+  MOUT="$(_metrics 66 "$GSTATE" "$REPO_G")"
+  out_has "$MOUT" "gate_minutes=22" "14i: 記録器 → 読み手を 1 本通す（90 + 1230 秒 = 22 分）"
+  git -C "$REPO_G" checkout -q -b 'spike-no-issue' >/dev/null 2>&1
+  _gm --seconds 30 >/dev/null
+  [ "$(_gm_rows)" = "2" ] && ok "14i: 番号の無いブランチでは記録しない" || bad "14i: 番号の無いブランチで記録した（rows=$(_gm_rows)）"
+  [ "$(_gm --bogus)" = "2" ] && ok "14i: 未知の引数は使い方の誤りとして exit 2" || bad "14i: 未知の引数で exit 2 にならない"
+  # --branch は現在のブランチより優先する（run-all.sh は開始時のブランチを渡す）
+  _gm --seconds 60 --status pass --mode fast --branch 'fix/#68-start' >/dev/null
+  _gm_last="$(awk -F '\t' 'END { print $1 "|" $8 }' "$GSTATE/gate.tsv" 2>/dev/null)"
+  [ "$_gm_last" = "68|fix/#68-start" ] && ok "14i: --branch が現在のブランチ（spike-no-issue）より優先され Issue 68 として記録する" \
+    || bad "14i: --branch の優先が期待と違う: [${_gm_last}]"
+  # 14j: run-all.sh の記録ブロック（>>> ff-gate-record-block）を単独で抽出して走らせ、鮮度記録が
+  # 書かれない回（FF_GATE_RECORD=0）でもゲート分が記録されること・帰属先が開始時のブランチである
+  # こと・部分実行の緑が partial になることを固定する（呼び出しの綴りが残っているだけの状態では緑にしない）
+  BLOCK="$MTMP/gate-record-block.sh"
+  awk '/^# >>> ff-gate-record-block/ { grab = 1; next } /^# <<< ff-gate-record-block/ { grab = 0 } grab { print }' "$RUNNER" > "$BLOCK"
+  JSTATE="$MTMP/state-j"
+  mkdir -p "$REPO_G/tests" "$REPO_G/scripts"
+  cp "$GM_REC" "$REPO_G/scripts/record-gate-minutes.sh"
+  _run_block() { # <status> <using_default> <fast> → block 内の ff_record_gate_head を実行
+    ( cd "$REPO_G/tests" && env FF_DEV_TOOLKIT_STATE_DIR="$JSTATE" FF_GATE_RECORD=0 bash -c '
+        set -uo pipefail
+        SCRIPT_DIR="$1"; FF_GATE_START_EPOCH=$(( $(date +%s) - 120 )); FF_GATE_START_BRANCH="chore/#67-block"
+        USING_DEFAULT_SCRIPTS="$4"; FAST_MODE="$5"; CHANGED_MODE=0
+        PASSED=(a); FAILED=(); SKIPPED=(); NOT_RUN=(); FAST_EXCLUDED=(); REQUIRED_SKIPPED=(); STALE=()
+        . "$2" && ff_record_gate_head "$3"
+      ' _ "$REPO_G/tests" "$BLOCK" "$@" ) >/dev/null 2>&1
+  }
+  if [ "$(awk 'END { print NR + 0 }' "$BLOCK")" -ge 5 ]; then
+    _run_block pass 1 1
+    _j="$(awk -F '\t' 'NR == 1 { print $1 "|" ($5 >= 120 ? "sec>=120" : "sec<120") "|" $6 "|" $7 "|" $8 }' "$JSTATE/metrics/gate.tsv" 2>/dev/null)"
+    [ "$_j" = "67|sec>=120|fast|pass|chore/#67-block" ] && ok "14j: 記録ブロック単独で FF_GATE_RECORD=0 でもゲート分を開始ブランチ chore/#67-block へ記録する（鮮度記録から独立）" \
+      || bad "14j: 記録ブロック単独の記録が期待と違う: [${_j}]（期待 67|sec>=120|fast|pass|chore/#67-block）"
+    _run_block pass 0 0
+    _j="$(awk -F '\t' 'NR == 2 { print $6 "|" $7 }' "$JSTATE/metrics/gate.tsv" 2>/dev/null)"
+    [ "$_j" = "explicit|partial" ] && ok "14j: 明示引数の緑は鮮度記録と同じく explicit / partial で記録する" \
+      || bad "14j: 部分実行の写像が期待と違う: [${_j}]（期待 explicit|partial）"
+    _run_block fail 1 0
+    _j="$(awk -F '\t' 'NR == 3 { print $6 "|" $7 }' "$JSTATE/metrics/gate.tsv" 2>/dev/null)"
+    [ "$_j" = "full|fail" ] && ok "14j: 赤い回も full / fail で記録する" || bad "14j: 赤い回の記録が期待と違う: [${_j}]"
+    # 入れ子（suite が本ランナーを明示引数で再起動した回）は記録しない
+    FF_ENTERED_NESTED=1 _run_block pass 0 0
+    _j="$(awk 'END { print NR + 0 }' "$JSTATE/metrics/gate.tsv" 2>/dev/null)"
+    [ "$_j" = "3" ] && ok "14j: 入れ子の実行（FF_ENTERED_NESTED=1）は記録しない（外側の 1 回に含まれる）" \
+      || bad "14j: 入れ子の実行を記録した（rows=${_j}、期待 3）"
+  else
+    bad "14j: 記録ブロックを抽出できません（マーカー >>> ff-gate-record-block を確認）"
+  fi
+else
+  bad "14i: 記録器が見つかりません: ${GM_REC}"
+fi
 rm -rf "$MTMP"
 
 echo

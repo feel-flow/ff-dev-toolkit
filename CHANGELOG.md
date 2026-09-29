@@ -20,6 +20,16 @@
 
 ## [Unreleased]
 
+## [0.140.0] - 2026-09-29
+
+### 追加
+
+- `scripts/effort-report.sh` の速度 4 指標のうち未配線だった `review_rounds_*` / `gate_minutes_*` を供給源へ配線した。`--issue-metrics N` はレビュー巡回カウンタの記録（`ff-review-rounds/`）からその Issue のブランチの異なる HEAD の個数を `review_rounds=` として、`tests/run-all.sh` が終了時に新設の `scripts/record-gate-minutes.sh` で記録する `metrics/gate.tsv` からゲート所要分の合算を `gate_minutes=`（回数は `gate_runs=`）として出す。`/close-issue` は `effort_review_rounds:` / `effort_gate_minutes:` として Issue へ書き戻し、`--format kv` は変更クラス別の中央値を実値または `(unmeasured)` で出す（`(unavailable)` は出さなくなった）。
+
+### ドキュメント
+
+- ACE サイクル運用手順の「4. コミット」と観測台帳の記録規則を、素の `git commit` の例から共通の書き込み口（`finish.sh knowledge-commit`）の手順へ改めた。検査用の合成 identity（`fixture` / `*@example.invalid`）の停止は書き込み口の中にありホストの hook には依存しないので、手で `git commit` を打つとどのホストでもこの停止を素通りする
+
 ## [0.139.1] - 2026-09-29
 
 ### 修正

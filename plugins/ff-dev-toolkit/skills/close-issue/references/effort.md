@@ -6,7 +6,7 @@
 
 - **AI 実績は観測事実つきで申告する**。人時換算そのものは AI の判断だが、根拠となる観測可能な事実（`gh pr view "$PR_NUMBER" --json additions,deletions,commits,reviews` の差分行数・コミット数・レビュー往復回数・品質ゲートの実行回数）を必ず併記する。事実を伴わない数字は報告として不完全に扱う — 検証できない数字は KPI の母集団を汚す
 - **単位はブロックの宣言に従う**。`- effort_unit: h` 行のあるブロックは `N.Nh`（小数第 1 位まで、最小 1.0h。bundle の内訳は下の例外に従う）、宣言の無い旧ブロックは起票時と同じ `N.Nd`（1d = 8h）で書く。宣言と食い違う単位で書くと集計器が `excluded_unit_mismatch` として母集団から外す
-- **hook の実測を自己申告値と並記する**（`effort_ai_actual` を置き換えない）。値は `finish.sh precheck` の `EFFORT_<Issue番号>_*` 行（`scripts/effort-report.sh --issue-metrics <Issue番号>` の読み出し。記録は `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/` から作業中のリポジトリの行だけを読む）: `wallclock_actual_h` を `effort_wallclock_actual: N.Nh`（ブランチ作成からこの書き戻し時点 = マージ直前まで）、`instruction_bytes` を `effort_instruction_bytes: N`、`change_class` を `effort_change_class:`（`docs-only` / `small` / `other`）として書く。記録置き場が無い・読めない・hook を `FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS=1` で止めている等で値が `(unmeasured)` のときは、そのまま `(unmeasured)` と書く（0 と書かない・マージは止めない）。この 3 行は Issue 単位の累積値なので、1 Issue に複数 PR でも加算せず最新の値で置き換える
+- **hook の実測を自己申告値と並記する**（`effort_ai_actual` を置き換えない）。値は `finish.sh precheck` の `EFFORT_<Issue番号>_*` 行（`scripts/effort-report.sh --issue-metrics <Issue番号>` の読み出し。記録は `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/` から作業中のリポジトリの行だけを読む）: `wallclock_actual_h` を `effort_wallclock_actual: N.Nh`（ブランチ作成からこの書き戻し時点 = マージ直前まで）、`instruction_bytes` を `effort_instruction_bytes: N`、`review_rounds` を `effort_review_rounds: N`（レビュー巡回カウンタの記録から、その Issue のブランチで起動したレビューの異なる HEAD の個数 = 巡）、`gate_minutes` を `effort_gate_minutes: N`（`tests/run-all.sh` が終了時に記録した所要秒の合算を分にしたもの。回数は `gate_runs`）、`change_class` を `effort_change_class:`（`docs-only` / `small` / `other`）として書く。記録置き場が無い・読めない・hook を `FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS=1` で止めている等で値が `(unmeasured)` のときは、そのまま `(unmeasured)` と書く（0 と書かない・マージは止めない）。この 5 行は Issue 単位の累積値なので、1 Issue に複数 PR でも加算せず最新の値で置き換える
 - **人間の実績は書かない**（`effort_human_actual` という項目は作らない）。人間は実際には作業しないため実績は原理的に取れず、人間側は永久に予定（反実仮想）である
 - **乖離率はブロックに書かない**。`effort_ai_planned` と `effort_ai_actual` から導出できる値であり、下の加算ケースで静かに stale になる。乖離率は完了報告コメントと集計器がその都度計算する
 
@@ -41,6 +41,8 @@
 - effort_ai_actual: 11.2h
 - effort_wallclock_actual: 6.5h
 - effort_instruction_bytes: 431000
+- effort_review_rounds: 2
+- effort_gate_minutes: 47
 - effort_change_class: other
 - effort_evidence: diff +412/-88 / レビュー往復 2 / fix commit 2 / 全件ゲート 3 回
 - effort_basis: （起票時のまま）

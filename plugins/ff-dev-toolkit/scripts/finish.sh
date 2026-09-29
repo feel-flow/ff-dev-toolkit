@@ -22,7 +22,7 @@
 #      供給源（PR タイトル + 全コミットの件名と本文）へ当て、`--subject` / `--body` が
 #      渡された回は実際に渡す squash メッセージにも当てる（これがマージの条件）
 #   3. Closes 群の各 Issue について hook の実測記録（scripts/effort-report.sh --issue-metrics）を
-#      読み、書き戻し用の値（wall-clock / 読み込みバイト / 変更クラス）を出す
+#      読み、書き戻し用の値（wall-clock / 読み込みバイト / レビュー巡回数 / ゲート分 / 変更クラス）を出す
 #   4. checks の有無で分岐する: statusCheckRollup が非空なら `gh pr checks --watch --fail-fast`
 #      で完了と成功を待つ（失敗なら止まる。非 0 のうち API に到達できない回は check の失敗ではなく
 #      gh 不通として rc 2）。空なら待たず、報告文言だけを出す
@@ -612,7 +612,7 @@ cmd_precheck() {
         local n="${tok#*#}"
         FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "$plugin_root/scripts/effort-report.sh" --issue-metrics "$n" --repo-dir "$repo_root" 2>/dev/null \
           | awk -v n="$n" -F'=' 'NF >= 2 { key = $1; sub(/^[^=]*=/, ""); print "EFFORT_" n "_" key "=" $0 }' \
-          || echo "EFFORT_${n}_wallclock_actual_h=(unmeasured)"
+          || printf 'EFFORT_%s_%s=(unmeasured)\n' "$n" wallclock_actual_h "$n" instruction_bytes "$n" review_rounds "$n" gate_minutes
         echo "EFFORT_${n}_change_class=${change_class}" ;;
       *) echo "EFFORT_SKIPPED=${tok}（別リポジトリの Issue。記録は作業中のリポジトリの行だけを読む）" ;;
     esac

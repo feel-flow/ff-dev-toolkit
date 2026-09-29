@@ -230,17 +230,17 @@ ace_entry_count: N
 
 #### 4. コミット
 
-```bash
-# コミットメッセージ規則（件名は短く、カテゴリは body に置く — commitlint の header-max-length 対策）
-git commit \
-  -m "knowledge: ACE-438-1 Prisma findMany の N+1 防止" \
-  -m "Categories: performance"
+コミットは `/ace-curate` 手順 5 が共通の書き込み口（同梱 `scripts/finish.sh knowledge-commit` の `add` → `commit`）で作る。**素の `git commit` を手で打たない** — 書き込み口は commit の直前に検査用の合成 identity（`user.name=fixture` / `user.email=*@example.invalid`）を止め、コミット対象を記録したパスへ固定する。この停止はホストの hook に依存しないので、どのホスト（Claude Code / Codex / grok）でも同じように働く — 裏返せば、素の `git commit` にはどのホストでもこの停止が掛からない。合成 identity で止まったら、表示される復旧手順（`git config --local --unset user.name` / `user.email` で漏れた値を消す）に従う。
 
-# 複数エントリの場合
-git commit \
-  -m "knowledge: ACE-438-1..2 Prisma N+1 防止とモックの分離原則" \
-  -m "Categories: performance, testing"
+書き込み口が作るコミットメッセージ（件名は短く、カテゴリは body に置く — commitlint の header-max-length 対策）:
+
+```text
+knowledge: ACE-438-1 Prisma findMany の N+1 防止
+
+Categories: performance
 ```
+
+複数エントリの場合、件名は `knowledge: ACE-438-1 / ACE-438-2` のように ID を並べ、各要約を本文へ 1 行ずつ置く。
 
 push が non-fast-forward なら、remote のエントリと版ブロックを保全して rebase し、version / `ace_entry_count` / Changelog を最新 tree から再生成する。全ゲートを再実行して通常 push を最大 3 回再試行し、収束しなければ直列化を求めて停止する。force push は使わない。
 
@@ -408,6 +408,12 @@ ACE_REUSE_STALE_DAYS=120 npm run ace:reuse-report
 ---
 
 ## Changelog
+
+### [1.6.0] - 2026-09-29
+
+#### 変更
+
+- 「4. コミット」を素の `git commit` の例から共通の書き込み口（`finish.sh knowledge-commit`）の手順へ置き換えた。合成 identity の停止は書き込み口の中にあり（ホストの hook には無い）、手で `git commit` を打つとどのホストでも素通りするため
 
 ### [1.5.0] - 2026-09-24
 

@@ -239,6 +239,12 @@ export FF_RUN_ALL_NESTED=1
 # ゲート開始時の HEAD を控える。全件実行は長く、その間に commit があると終了時の HEAD は
 # 「一度も読んでいないツリー」になる。記録側へ渡して、動いていたら記録させない（Issue #880）。
 FF_GATE_START_HEAD="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+# ゲート開始時刻（epoch 秒）。終了時に所要秒を scripts/record-gate-minutes.sh へ渡し、Issue 番号
+# キーの「ゲート分」として ff-effort の速度指標の供給源にする（取れなければ記録しない）。
+FF_GATE_START_EPOCH="$(date +%s 2>/dev/null || true)"
+# 帰属先（ブランチ）も開始時に固定する。長いゲートの途中で checkout すると、終了時のブランチで
+# 引いた Issue 番号へ全時間が付く（統合ブランチへ移れば記録ごと消える）。
+FF_GATE_START_BRANCH="$(git -C "$SCRIPT_DIR" symbolic-ref --short -q HEAD 2>/dev/null || true)"
 
 # 走行中にランナー自身が書き換えられた実行を「緑」として観測させない（Issue #885）。
 # bash はスクリプトを一括で読まず**実行しながら読み進める**ため、走行中にファイルが
@@ -3014,8 +3020,22 @@ ff_stale_only_failed() {
   printf '%s' "${FAILED[*]}"
 }
 
+# 実行モード（記録の MODE=）。fast / full は既定一覧の丸ごと、changed / explicit は部分実行。
+# 変更ベースの選択（ADR-062）は既定一覧から絞った部分実行なので、明示引数と同じ側へ写す。
+# `:-0` は記録ブロックを単独で抽出して走らせる検査のため。
+ff_gate_mode() {
+  if [[ "${USING_DEFAULT_SCRIPTS:-0}" == "1" && "${CHANGED_MODE:-0}" != "1" ]]; then
+    if [[ "${FAST_MODE:-0}" == "1" ]]; then printf 'fast'; else printf 'full'; fi
+  else
+    if [[ "${CHANGED_MODE:-0}" == "1" ]]; then printf 'changed'; else printf 'explicit'; fi
+  fi
+}
+
 ff_record_gate_head() { # <pass|fail>
   local status="$1" recorder mode suites stale_only=""
+  # 所要秒の記録（ff-effort のゲート分）は鮮度記録とは独立 — 鮮度記録の可否
+  # （FF_GATE_RECORD=0 / 緑 0 件 / 記録器不在）に左右されないよう、その判定より先に呼ぶ
+  ff_record_gate_minutes "$status" "$(ff_gate_mode)"
   if [[ "${FF_GATE_RECORD:-1}" == "0" ]]; then
     echo "○ FF_GATE_RECORD=0 のためゲート実測対象を記録しません（マージ前の鮮度照合は「判定不能」になります）" >&2
     return 0
@@ -3031,10 +3051,8 @@ ff_record_gate_head() { # <pass|fail>
   suites=""
   # 変更ベースの選択（ADR-062）は既定一覧から絞った部分実行なので、明示引数と同じく partial へ
   # 写す（MODE=changed）。`:-0` は記録ブロックを単独で抽出して走らせる検査のため。
-  if [[ "$USING_DEFAULT_SCRIPTS" == "1" && "${CHANGED_MODE:-0}" != "1" ]]; then
-    if [[ "$FAST_MODE" == "1" ]]; then mode="fast"; else mode="full"; fi
-  else
-    if [[ "${CHANGED_MODE:-0}" == "1" ]]; then mode="changed"; else mode="explicit"; fi
+  mode="$(ff_gate_mode)"
+  if [[ "$mode" != "fast" && "$mode" != "full" ]]; then
     if [[ "$status" == "pass" ]]; then
       status="partial"
       # suite 名は**実際に緑で通ったものだけ**を挙げる。skip した suite を混ぜると
@@ -3056,6 +3074,31 @@ ff_record_gate_head() { # <pass|fail>
       --expect-head "${FF_GATE_START_HEAD:-}" \
       --result "passed=${#PASSED[@]} failed=${#FAILED[@]} skipped=${#SKIPPED[@]} not-run=${#NOT_RUN[@]} excluded=${#FAST_EXCLUDED[@]}" ) \
     || echo "⚠️  ゲート実測対象を記録できませんでした（マージ前の鮮度照合は「判定不能」になります）" >&2
+}
+
+# ゲート 1 回の所要秒を Issue 番号キーで記録する（ff-effort の「ゲート分」の供給源。
+# 読み手は scripts/effort-report.sh --issue-metrics）。鮮度記録（ff_record_gate_head の
+# 本体）とは独立で、鮮度記録が書かれない回（FF_GATE_RECORD=0 等）にも書く。記録できない
+# 回は黙って何もしない — 所要時間の記録は検証結果ではなく、欠けた回は読み手が
+# (unmeasured) として 0 と区別する。開始時刻・開始ブランチが取れていない回（記録ブロックを
+# 単独で抽出して走らせる検査を含む）、記録器が無い回、時計が戻った回はここで抜ける
+# （0 秒の偽の実測を書かない）。帰属先は開始時のブランチ（走行中の checkout に引きずられない）。
+# 部分実行（changed / explicit）の緑は鮮度記録と同じく partial として書く。
+# 入れ子の実行（suite が検証のために本ランナーを明示引数で再起動した回。FF_ENTERED_NESTED=1）は
+# 記録しない — 外側の 1 回に含まれる時間で、回数として数えると全件ゲート 1 周が 140 回の
+# 「ゲート」に化ける（実測: 1 周で explicit 141 行が積まれた）。
+ff_record_gate_minutes() { # <pass|fail> <mode>
+  local recorder="$SCRIPT_DIR/../scripts/record-gate-minutes.sh" t0 t1 sec status="$1" mode="$2"
+  [[ "${FF_ENTERED_NESTED:-0}" == "0" ]] || return 0
+  t0="${FF_GATE_START_EPOCH:-}"
+  [[ -n "$t0" && -n "${FF_GATE_START_BRANCH:-}" && -f "$recorder" ]] || return 0
+  t1="$(date +%s 2>/dev/null)" || return 0
+  case "$t0$t1" in *[!0-9]*) return 0 ;; esac
+  [[ "$t1" -ge "$t0" ]] || return 0
+  sec=$((t1 - t0))
+  if [[ "$status" == "pass" && "$mode" != "fast" && "$mode" != "full" ]]; then status="partial"; fi
+  bash "$recorder" --seconds "$sec" --status "$status" --mode "$mode" \
+    --branch "$FF_GATE_START_BRANCH" --repo-dir "$SCRIPT_DIR" >/dev/null 2>&1 || return 0
 }
 # <<< ff-gate-record-block
 

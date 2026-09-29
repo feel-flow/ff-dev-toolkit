@@ -143,7 +143,7 @@ printf 'ISSUE_URL=%s ISSUE_NUM=%s\n' "$ISSUE_URL" "$ISSUE_NUM"
 既存 Issue への着手時は、分岐前に本文の `<!-- ff-effort:begin -->` ブロック有無を確認する。無ければ `/create-issue` の工数ブロック契約（SKILL.md 手順 3・6。過去実績の3層参照と目安表は `references/estimation.md`）に従って見積もりを既存 Issue 本文へ追記し、既にあれば作り直さず着手を続行する。bundle では本体と子を確認し、既存の予定値を上書きしない。
 
 工数ブロックの単位は人時（`- effort_unit: h` を宣言し、値は `N.Nh`）。宣言の無い既存ブロックの人日（`N.Nd`）は書き換えない — 集計器が 1d = 8h で人時へ正規化する。ブランチ作成（`git checkout -b` / `git switch -c`）と `gh pr merge` は ff-dev-toolkit の hook（`hooks/record-effort-wallclock.sh`）がブランチ名の Issue 番号をキーに wall-clock の開始 / 終了として記録し、`/close-issue` が `effort_wallclock_actual` として書き戻す（記録先はリポジトリ外の `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/`。書けなくてもワークフローは止まらず、書き戻しが `(unmeasured)` になる）。ブランチ名に `#<Issue番号>` を入れないと開始が記録されない。
-hook に届くのは展開前のコマンド文字列なので、ブランチ名を変数で組む形（`git checkout -b "feature/#${ISSUE_NUM}-x"`）・`git worktree add -b`・`git branch -m` は記録されない（`/close-issue` の読み手はそのときブランチの reflog の最古エントリから開始を補い、引けなければ `(unmeasured)`）。下の例のようにブランチ名をリテラルで書く。
+hook に届くのは展開前のコマンド文字列なので、ブランチ名を変数で組む形（`git checkout -b "feature/#${ISSUE_NUM}-x"`）・`git worktree add -b`・`git branch -m` は記録されない（`/close-issue` の読み手はそのときブランチの reflog の最古エントリから開始を補い、引けなければ `(unmeasured)`）。下の例のようにブランチ名をリテラルで書く。残る 2 指標もブランチ名から辿る — レビュー巡回数はレビュー起動ごとの巡回カウンタ（`<git common dir>/ff-review-rounds/`。鍵はブランチ名で、読み手が Issue 番号からブランチを引く）から、ゲート分は `tests/run-all.sh` が終了時に `scripts/record-gate-minutes.sh` で残す所要秒（鍵は開始時のブランチ名の Issue 番号）からで、`/close-issue` が `effort_review_rounds:` / `effort_gate_minutes:` として書き戻す。統合ブランチ・番号の無いブランチで回したレビューとゲートはどの Issue にも数えない。
 
 ```bash
 # ブランチ作成

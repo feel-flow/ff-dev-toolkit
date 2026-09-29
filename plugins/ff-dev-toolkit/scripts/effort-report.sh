@@ -29,14 +29,18 @@
 #
 # 速度指標（--format kv の wallclock_* / instruction_bytes_* / review_rounds_* /
 # gate_minutes_*）は、/close-issue が書き戻す effort_wallclock_actual /
-# effort_instruction_bytes / effort_change_class を変更クラス別に集計する。供給源が
-# まだ配線されていない指標は `(unavailable)`、配線済みだが該当クラスに実測が無いものは
-# `(unmeasured)` を出し、どちらも 0 と区別する。
+# effort_instruction_bytes / effort_review_rounds / effort_gate_minutes / effort_change_class を
+# 変更クラス別に集計する。4 指標とも供給源は配線済みで、該当クラスに実測が無いものは
+# `(unmeasured)` を出し 0 と区別する（`(unavailable)` は出さない — 出たら供給源の配線が
+# 外れている）。
 #
-# --issue-metrics N は Issue 本文ではなく、hook が書くリポジトリ外の記録
+# --issue-metrics N は Issue 本文ではなく、hook / ゲートが書くリポジトリ外の記録
 # （${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/ の wallclock.tsv /
-# instruction-bytes.tsv）から 1 Issue 分の実測を読む（/close-issue の書き戻し元）。記録置き場は
-# リポジトリ横断で共有されるので、--repo-dir（既定はカレントのリポジトリ）の行だけを採る。
+# instruction-bytes.tsv / gate.tsv）と、レビュー巡回カウンタの記録（`<git common dir>/ff-review-rounds/`。
+# 書き手は tests/lib/review-round-counter.sh）から 1 Issue 分の実測を読む（/close-issue の書き戻し元）。
+# metrics/ の記録置き場はリポジトリ横断で共有されるので、--repo-dir（既定はカレントのリポジトリ）の
+# repo 列の行だけを採る。巡回カウンタの記録は git common dir 配下でリポジトリ固有なので、置き場の
+# パスそのものが絞り込みになる（鍵はブランチ名。Issue 番号は読み手がブランチを引くときにだけ使う）。
 #
 # 抽出に grep を使わない: grep は「不一致=1 / エラー=2」だが、別実装へ差し替えられた
 # 環境ではエラーでも 1 を返すことがあり、`rc<=1 なら正常` の判定が fail-open へ反転する。
@@ -338,8 +342,9 @@ Usage: effort-report.sh [options]
   --state STATE    all | open | closed（既定 all）
   --limit N        取得上限（既定 200）
   --format FORMAT  text（既定・日本語レポート） | kv（key=value の機械可読形式）
-  --issue-metrics N  Issue 本文を読まず、hook の記録から Issue N の wall-clock と
-                   指示読み込みバイトを kv で出す（記録が無ければ (unmeasured)。常に exit 0）
+  --issue-metrics N  Issue 本文を読まず、hook / ゲート / 巡回カウンタの記録から Issue N の
+                   wall-clock・指示読み込みバイト・レビュー巡回数・ゲート分を kv で出す
+                   （記録が無ければ (unmeasured)。常に exit 0）
   --metrics-dir DIR  hook の記録置き場（既定 ${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics）
   --repo-dir DIR   --issue-metrics で絞るリポジトリ（既定はカレントディレクトリのリポジトリ）。
                    記録置き場はリポジトリ横断で共有されるので、別リポジトリの同じ番号を混ぜない
@@ -444,7 +449,7 @@ metrics_issue_report() { # <issue> <metrics_dir> <repo_dir>
   printf 'metrics_dir=%s\n' "$dir"
   printf 'repo=%s\n' "${repo:-(unresolved)}"
   if [ -z "$repo" ] || [ -z "$now" ]; then
-    printf 'wallclock_source=(unmeasured)\nwallclock_start=(unmeasured)\nwallclock_end=(unmeasured)\nwallclock_actual_h=(unmeasured)\ninstruction_bytes=(unmeasured)\n'
+    printf 'wallclock_source=(unmeasured)\nwallclock_start=(unmeasured)\nwallclock_end=(unmeasured)\nwallclock_actual_h=(unmeasured)\ninstruction_bytes=(unmeasured)\nreview_rounds=(unmeasured)\ngate_runs=(unmeasured)\ngate_minutes=(unmeasured)\n'
     return 0
   fi
   local wc_src="/dev/null"
@@ -507,6 +512,98 @@ metrics_issue_report() { # <issue> <metrics_dir> <repo_dir>
   else
     printf 'instruction_bytes=(unmeasured)\n'
   fi
+  metrics_review_rounds "$issue" "$repo_dir" "$wc_src" "$repo"
+  metrics_gate_minutes "$issue" "$dir" "$repo"
+  return 0
+}
+
+# Issue のブランチ名を列挙する（改行区切り・重複除去）。hook の start 記録（wallclock.tsv の
+# branch 列）と、対象リポジトリのローカルブランチ `<type>/#<n>-…`（reflog の補いと同じ規則）を
+# **併合**する — 片方だけにすると、同じ Issue の別ブランチ（`git worktree add -b` は start を
+# 記録しない）の巡が累積から漏れる。どちらにも無ければ空。
+metrics_issue_branches() { # <issue> <repo_dir> <wc_src> <repo>
+  local issue="$1" dir="$2" wc_src="$3" repo="$4" from_wc="" from_git=""
+  from_wc="$(awk -F '\t' -v want="$issue" -v repo="$repo" \
+    '$1 == want && $2 == "start" && $7 == repo && $6 != "" { print $6 }' "$wc_src" 2>/dev/null)" || from_wc=""
+  if command -v git >/dev/null 2>&1; then
+    from_git="$(git -C "$dir" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null \
+      | awk -v n="$issue" '$0 ~ ("^[A-Za-z0-9_.-]+/#" n "([-_/].*)?$")')" || from_git=""
+  fi
+  printf '%s\n%s\n' "$from_wc" "$from_git" | awk 'NF && !seen[$0]++'
+  return 0
+}
+
+# レビュー巡回数: 巡回カウンタ（tests/lib/review-round-counter.sh）の記録
+# `<git common dir>/ff-review-rounds/<ブランチの鍵>.tsv` から、その Issue のブランチの
+# **異なる HEAD の個数**（= 巡）を合算する。鍵の作り方（rr_sanitize）と記録の読み方（rr_read）は
+# 書き手のライブラリを source して同じ関数を使う — 複製すると鍵の綴りがずれた瞬間に静かに
+# (unmeasured) へ落ちる。ライブラリが読めない・ブランチが分からない・記録が無いときは
+# (unmeasured)（0 と区別する）。複数ブランチのうち 1 本でも書式が壊れていれば全体を (unmeasured)
+# にする — 読めた分だけの合計を実測として出すと、欠けた巡が中央値へ静かに合流する。
+metrics_review_rounds() { # <issue> <repo_dir> <wc_src> <repo>
+  local issue="$1" dir="$2" wc_src="$3" repo="$4" lib store br key f total="" hit=0 broken=0
+  lib="$(dirname "${BASH_SOURCE[0]}")/../tests/lib/review-round-counter.sh"
+  if [ ! -r "$lib" ]; then
+    printf 'review_rounds=(unmeasured)\n'
+    return 0
+  fi
+  # shellcheck source=../tests/lib/review-round-counter.sh
+  if ! . "$lib" 2>/dev/null || [ "$(type -t rr_read 2>/dev/null)" != "function" ] \
+     || [ "$(type -t rr_sanitize 2>/dev/null)" != "function" ]; then
+    printf 'review_rounds=(unmeasured)\n'
+    return 0
+  fi
+  # 書き手（rr_store_dir）は物理パス（pwd -P）で置くので、読み手も同じ形へ寄せる
+  store="$(cd "$repo" 2>/dev/null && pwd -P 2>/dev/null)" || store=""
+  [ -n "$store" ] || { printf 'review_rounds=(unmeasured)\n'; return 0; }
+  store="${store%/}/ff-review-rounds"
+  # 記録ファイルの集合 = ブランチ名から引いた鍵 ∪ 置き場の走査（`<type><n>-…*.tsv`）。後者は
+  # 削除済みブランチ（start 記録が無く、最初の PR の後片付けで消えたもの）の記録を拾う —
+  # 鍵はブランチ名の `#` だけを落とすので `fix/#77-a` は `fix77-a…`。数字の直前を英字に限るので
+  # `fix177-b` は Issue 77 に当たらない。同じファイルは 1 回だけ読む
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    if rr_read "$f"; then
+      total=$(( ${total:-0} + RR_COUNT )); hit=1
+    else
+      broken=1
+    fi
+  done <<EOF
+$({
+    while IFS= read -r br; do
+      [ -n "$br" ] || continue
+      key="$(rr_sanitize "$br")"
+      [ -n "$key" ] && printf '%s\n' "$store/$key.tsv"
+    done <<EOB
+$(metrics_issue_branches "$issue" "$dir" "$wc_src" "$repo")
+EOB
+    [ -d "$store" ] && find "$store" -maxdepth 1 -type f -name '*.tsv' 2>/dev/null \
+      | awk -v n="$issue" -F/ '$NF ~ ("^[A-Za-z_]+" n "-.*\\.tsv$")'
+  } | awk 'NF && !seen[$0]++')
+EOF
+  if [ "$hit" -eq 1 ] && [ "$broken" -eq 0 ]; then printf 'review_rounds=%d\n' "$total"
+  else printf 'review_rounds=(unmeasured)\n'; fi
+  return 0
+}
+
+# ゲート分: tests/run-all.sh が終了時に scripts/record-gate-minutes.sh で書く gate.tsv
+# （列: issue / gate / epoch / iso / seconds / mode / status / branch / repo）から、その Issue ・
+# そのリポジトリの行の秒を合算して分で出す（端数は 0.5 分以上を切り上げ = 四捨五入。awk の
+# `%.0f` は偶数丸めで 90 秒が 2 分・150 秒が 2 分になるので使わない）。回数（gate_runs）も添える。
+# 行が無い・読めない・秒が数値でない（そういう行は数えない）ときは (unmeasured)（0 と区別する）。
+metrics_gate_minutes() { # <issue> <metrics_dir> <repo>
+  local issue="$1" dir="$2" repo="$3" f="$2/gate.tsv" out
+  if [ ! -f "$f" ] || [ ! -r "$f" ]; then
+    printf 'gate_runs=(unmeasured)\ngate_minutes=(unmeasured)\n'
+    return 0
+  fi
+  out="$(awk -F '\t' -v want="$issue" -v repo="$repo" '
+    $1 == want && $2 == "gate" && $9 == repo && $5 ~ /^[0-9]+$/ { total += $5; n++ }
+    END {
+      if (n > 0) { printf "gate_runs=%d\ngate_minutes=%d\n", n, int(total / 60 + 0.5) }
+      else print "gate_runs=(unmeasured)\ngate_minutes=(unmeasured)"
+    }' "$f" 2>/dev/null)" || out="$(printf 'gate_runs=(unmeasured)\ngate_minutes=(unmeasured)')"
+  printf '%s\n' "$out"
   return 0
 }
 
@@ -692,6 +789,8 @@ FNR == NR { if ($0 != "") { order[++total] = $0 + 0 } ; next }
   # しない）。重複した Issue は速度指標からだけ外す。
   else if (key == "effort_wallclock_actual")  { if (num in wc_raw) sp_dup[num] = 1; wc_raw[num] = val }
   else if (key == "effort_instruction_bytes") { if (num in ib_raw) sp_dup[num] = 1; ib_raw[num] = val }
+  else if (key == "effort_review_rounds")     { if (num in rr_raw) sp_dup[num] = 1; rr_raw[num] = val }
+  else if (key == "effort_gate_minutes")      { if (num in gm_raw) sp_dup[num] = 1; gm_raw[num] = val }
   else if (key == "effort_change_class")      { if (num in cc_raw) sp_dup[num] = 1; cc_raw[num] = val }
 }
 
@@ -707,6 +806,7 @@ END {
   noblock = 0; planned_only = 0; malformed = 0; no_hp = 0
   unit_mismatch = 0; mismatch_kv = ""; mismatch_txt = ""
   wc_unmeasured = 0; wc_malformed = 0; ib_unmeasured = 0; ib_malformed = 0
+  rr_unmeasured = 0; rr_malformed = 0; gm_unmeasured = 0; gm_malformed = 0
   population = 0; suspect_n = 0; suspect_kv = ""; suspect_txt = ""
   hp_total = 0; ap_total = 0; aa_total = 0
   pair_n = 0; pair_denom = 0; vn = 0; out_of_band = 0
@@ -754,6 +854,21 @@ END {
       else if (bv == "(unmeasured)" || bv == "(未記入)" || bv == "") { ib_unmeasured++ }
       else if (bv ~ /^[0-9]+$/) { sp_add("ib", "all", bv + 0); if (cls != "") sp_add("ib", cls, bv + 0) }
       else { ib_malformed++ }
+    }
+    # レビュー巡回数・ゲート分も同じ規則（整数のみ。互いに独立に集計する）
+    if (n in rr_raw) {
+      rv = trim(rr_raw[n])
+      if (sp_dup[n]) { rr_malformed++ }
+      else if (rv == "(unmeasured)" || rv == "(未記入)" || rv == "") { rr_unmeasured++ }
+      else if (rv ~ /^[0-9]+$/) { sp_add("rr", "all", rv + 0); if (cls != "") sp_add("rr", cls, rv + 0) }
+      else { rr_malformed++ }
+    }
+    if (n in gm_raw) {
+      gv = trim(gm_raw[n])
+      if (sp_dup[n]) { gm_malformed++ }
+      else if (gv == "(unmeasured)" || gv == "(未記入)" || gv == "") { gm_unmeasured++ }
+      else if (gv ~ /^[0-9]+$/) { sp_add("gm", "all", gv + 0); if (cls != "") sp_add("gm", cls, gv + 0) }
+      else { gm_malformed++ }
     }
 
     hp = (n in hp_raw) ? as_hours(hp_raw[n], unit) : -1
@@ -833,22 +948,28 @@ END {
     # 0 件でもキーは出す。存在しないキーと空値を消費側に区別させる
     printf "suspect_marker_issues=%s\n", suspect_kv
     printf "limit_reached=%d\n", truncated
-    # 速度指標（変更クラス別）。review_rounds / gate_minutes は供給源が未配線なので
-    # 常に (unavailable)。配線済みでも該当 0 件のクラスは (unmeasured)
+    # 速度指標（変更クラス別）。4 指標とも供給源は配線済みで、該当 0 件のクラスは
+    # (unmeasured)（0 と区別する。(unavailable) は出さない）
     printf "wallclock_unmeasured=%d\n", wc_unmeasured
     printf "wallclock_malformed=%d\n", wc_malformed
     printf "instruction_bytes_unmeasured=%d\n", ib_unmeasured
     printf "instruction_bytes_malformed=%d\n", ib_malformed
+    printf "review_rounds_unmeasured=%d\n", rr_unmeasured
+    printf "review_rounds_malformed=%d\n", rr_malformed
+    printf "gate_minutes_unmeasured=%d\n", gm_unmeasured
+    printf "gate_minutes_malformed=%d\n", gm_malformed
     split("docs_only small other all", classes, " ")
     for (ci = 1; ci <= 4; ci++) {
       c = classes[ci]
       printf "wallclock_population_%s=%d\n", c, sp_n["wc", c] + 0
       printf "instruction_bytes_population_%s=%d\n", c, sp_n["ib", c] + 0
+      printf "review_rounds_population_%s=%d\n", c, sp_n["rr", c] + 0
+      printf "gate_minutes_population_%s=%d\n", c, sp_n["gm", c] + 0
       printf "wallclock_median_h_%s=%s\n", c, class_stat("wc", c, "median", "%.1f")
       printf "wallclock_p75_h_%s=%s\n", c, class_stat("wc", c, "p75", "%.1f")
       printf "instruction_bytes_median_%s=%s\n", c, class_stat("ib", c, "median", "%.0f")
-      printf "review_rounds_median_%s=(unavailable)\n", c
-      printf "gate_minutes_median_%s=(unavailable)\n", c
+      printf "review_rounds_median_%s=%s\n", c, class_stat("rr", c, "median", "%.1f")
+      printf "gate_minutes_median_%s=%s\n", c, class_stat("gm", c, "median", "%.0f")
     }
     exit 0
   }
@@ -895,13 +1016,15 @@ END {
   }
 
   printf "\n## 速度指標（変更クラス別・/close-issue が書き戻した実測）\n\n"
-  printf "wall-clock 未計測 %d 件 / 書式不正 %d 件、指示読み込み 未計測 %d 件 / 書式不正 %d 件（いずれも集計から外す）\n", wc_unmeasured, wc_malformed, ib_unmeasured, ib_malformed
+  printf "wall-clock 未計測 %d 件 / 書式不正 %d 件、指示読み込み 未計測 %d 件 / 書式不正 %d 件、レビュー巡回 未計測 %d 件 / 書式不正 %d 件、ゲート分 未計測 %d 件 / 書式不正 %d 件（いずれも集計から外す）\n", wc_unmeasured, wc_malformed, ib_unmeasured, ib_malformed, rr_unmeasured, rr_malformed, gm_unmeasured, gm_malformed
   split("docs_only small other all", classes, " ")
   for (ci = 1; ci <= 4; ci++) {
     c = classes[ci]
-    printf "%-10s wall-clock n=%d 中央値 %s h・p75 %s h / 指示読み込み n=%d 中央値 %s B / レビュー巡回 (unavailable) / ゲート分 (unavailable)\n",
+    printf "%-10s wall-clock n=%d 中央値 %s h・p75 %s h / 指示読み込み n=%d 中央値 %s B / レビュー巡回 n=%d 中央値 %s / ゲート分 n=%d 中央値 %s\n",
       c, sp_n["wc", c] + 0, class_stat("wc", c, "median", "%.1f"), class_stat("wc", c, "p75", "%.1f"),
-      sp_n["ib", c] + 0, class_stat("ib", c, "median", "%.0f")
+      sp_n["ib", c] + 0, class_stat("ib", c, "median", "%.0f"),
+      sp_n["rr", c] + 0, class_stat("rr", c, "median", "%.1f"),
+      sp_n["gm", c] + 0, class_stat("gm", c, "median", "%.0f")
   }
 }
 ' "$NUMBERS" "$FLAT"

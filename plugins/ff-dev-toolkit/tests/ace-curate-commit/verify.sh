@@ -12,6 +12,7 @@
 # リポジトリで実行して振る舞いで固定する（下の「共通の書き込み口」節）。
 #
 # 空振り検出: 書き込み口が不在だと「共通の書き込み口」節の全ケースが赤になる（skip へ倒さない）。
+# 空振り検出: ace-cycle.md の「#### 4. コミット」見出しが見つからない・節が空なら赤（2026-09-29 実測: 見出しを改名すると赤）。
 # 変異検出: add の鮮度検査の呼び出しを外す、または対象を default branch 以外へ広げると 13 が赤（2026-09-24 実測）。
 
 set -euo pipefail
@@ -677,6 +678,27 @@ else
     bad "共通の書き込み口の振る舞いが期待と違う（rc=${kc_rc}）"
   fi
   rm -rf "$KC_TMP" "$KC_TMP.out"
+fi
+
+echo "== ACE サイクル手順書の「4. コミット」が書き込み口を指す（Issue \`#1789\`） =="
+# 合成 identity の停止は書き込み口（knowledge-commit.sh）の中にしか無いので、手順書が素の
+# `git commit` の実行例へ戻ると、それに従ったホストは停止を素通りする。配布テンプレートの節を読み、
+# 書き込み口への言及があり、行頭の `git commit` 実行例が無いことを見る
+CYCLE_DOC="$PLUGIN_ROOT/docs-template/05-operations/deployment/ace-cycle.md"
+cycle_sec="$(awk '/^#### 4\. コミット/{f=1;next} f&&/^#{2,4} /{exit} f' "$CYCLE_DOC" 2>/dev/null)" || cycle_sec=""
+if [ -z "$cycle_sec" ]; then
+  bad "ace-cycle.md の「#### 4. コミット」節を読めない（不在・見出し変更を緑へ倒さない）: $CYCLE_DOC"
+else
+  if grep -q 'finish\.sh knowledge-commit' <<<"$cycle_sec"; then
+    ok "「4. コミット」は共通の書き込み口（finish.sh knowledge-commit）を指す"
+  else
+    bad "「4. コミット」が共通の書き込み口（finish.sh knowledge-commit）を指していない"
+  fi
+  if grep -qE '^[[:space:]]*git commit' <<<"$cycle_sec"; then
+    bad "「4. コミット」に素の git commit の実行例が戻っている（合成 identity の停止を素通りする）"
+  else
+    ok "「4. コミット」に素の git commit の実行例が無い"
+  fi
 fi
 
 echo

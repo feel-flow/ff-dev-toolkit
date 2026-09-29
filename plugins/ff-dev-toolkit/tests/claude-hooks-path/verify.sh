@@ -810,6 +810,12 @@ EOF'
 commit -m x'
   gi_case allow "2>&1 付きの上書き commit は & で割れても通す" 'git -c user.name=A -c user.email=a@b.c commit -m x 2>&1'
   gi_case deny  "2>&1 付きの素の commit は止める" 'git commit -m x 2>&1'
+  # 分担（Issue `#1789`）: knowledge の書き込み口（finish.sh knowledge-commit）は script の内側で commit し、
+  # 合成 identity は lib/commit-identity-functions.sh が止める（hook の無い Codex / grok でも働く側）。
+  # hook がこの呼び出しまで deny すると同じ停止が二重になるので、先頭語が git でない書き込み口は通し、
+  # 同じ行に繋いだ素の git だけを止める
+  gi_case allow "knowledge の書き込み口（finish.sh knowledge-commit commit）は lib 側の停止に任せて通す" 'FF_DEV_TOOLKIT_ROOT="$R" bash "$R/scripts/finish.sh" knowledge-commit commit'
+  gi_case deny  "書き込み口の後ろに繋いだ素の git push は止める" 'bash "$R/scripts/finish.sh" knowledge-commit commit && git push origin develop'
 fi
 
 echo

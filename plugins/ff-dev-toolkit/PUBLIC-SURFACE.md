@@ -276,6 +276,8 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_FIXTURE_SEAM`
 - `FF_FROM`
 - `FF_GATE_RECORD`
+- `FF_GATE_START_BRANCH`
+- `FF_GATE_START_EPOCH`
 - `FF_GATE_START_HEAD`
 - `FF_GH_STUB`
 - `FF_GOOD_ROOT`
