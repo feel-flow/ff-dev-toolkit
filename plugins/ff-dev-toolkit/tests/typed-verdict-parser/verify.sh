@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: verification の skipped を passed に置換すると混在ケースが rc=1（2026-09-29 実測）。空入力・記録不在・書式変更は unknown を要求する。
 #
 # typed-verdict-parser: レビュー finding の型付き判定行（`- verdict: ...`）の文法と
 # パーサの契約（受理条件の正本は adapter-common.sh の「受理条件（正）」ヘッダの (t)）。
@@ -634,6 +635,51 @@ else
 fi
 
 echo
+# Verification uses the same fence tracker without changing verdict acceptance.
+# shellcheck source=../../scripts/adapters/adapter-common.sh
+. "$ADAPTER_COMMON"
+verification_case() {
+  local expected="$1" body="$2" actual
+  printf '%s\n' "$body" > "$TMP/verification.md"
+  actual="$(_ff_severity_scan verification "$TMP/verification.md")"
+  if [[ "$actual" == "$expected" ]]; then ok "verification: $expected"; else bad "verification: expected $expected, got $actual"; fi
+}
+verification_case passed '- verification: passed | npm run typecheck'
+verification_case failed '- verification: failed | npm test'
+verification_case failed $'- verification: passed | npm run typecheck\n- verification: failed | npm test'
+verification_case failed-skipped $'- verification: failed | npm test\n- verification: skipped | npm run ace:check'
+verification_case passed $'Verification\nVerification was limited to typecheck.\n- verification: passed | npm run typecheck'
+verification_case skipped $'- verification: passed | npm run typecheck\n- verification: skipped | npm run ace:check'
+verification_case none '- verification: none'
+verification_case unknown ''
+verification_case unknown 'Only prose verification, no typed records.'
+verification_case unknown '- verification: passed | '
+verification_case unknown $'- verification: passed | npm test\n- verification: skipped'
+verification_case unknown $'- verification: passed | npm test\n- verification: skipped: npm run ace:check'
+verification_case unknown $'- verification: passed | npm test\n1. verification: skipped | npm run ace:check'
+verification_case unknown $'- verification: passed | npm test\n2) verification: failed | npm run ace:check'
+verification_case unknown $'- verification: none\n- verification: passed | npm test'
+verification_case unknown $'```text\n- verification: passed | npm test\n```'
+verification_case unknown $'- verification: passed | npm test\n~~~'
+verification_case passed $'````text\n```\n- verification: skipped | ignored\n````\n- verification: passed | npm test'
+if review_verification_summary "$TMP/missing-verification.md" | grep -F '未確認' >/dev/null; then
+  ok 'verification: missing input is unknown'
+else
+  bad 'verification: missing input was not marked unknown'
+fi
+
+DIFF_FILE="$TMP/empty.diff"
+: > "$DIFF_FILE"
+TASK_TYPE=review build_prompt "$PLUGIN_ROOT/scripts/perspectives/review/comprehensive-review.md" develop > "$TMP/verification-prompt.md"
+if grep -F '## Verification Records' "$TMP/verification-prompt.md" >/dev/null &&
+   grep -F -- '- verification: skipped | npm run ace:check' "$TMP/verification-prompt.md" >/dev/null &&
+   [[ "$(_ff_severity_scan verification "$TMP/verification-prompt.md")" == unknown ]]; then
+  ok 'verification: shared review prompt requires records but fenced examples do not count'
+else
+  bad 'verification: shared prompt contract missing or examples counted'
+fi
+unset DIFF_FILE
+
 if [ $((PASS + FAIL)) -eq 0 ]; then
   echo "✗ typed-verdict-parser verify: 検査が 1 件も実行されていません" >&2
   FF_REACHED_END=1

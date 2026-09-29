@@ -1408,7 +1408,6 @@ MISS_PROBE_BASELINE=(
   multi-agent-host-delegation
   multi-agent-ignore-paths
   multi-agent-resume
-  multi-agent-review-banner
   multi-agent-revision-guard
   multi-agent-serialization
   multi-agent-skip-poisoned-cli

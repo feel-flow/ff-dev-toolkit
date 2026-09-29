@@ -6744,6 +6744,10 @@ append_plan_sections() {
           echo "Absence of a finding here means unchecked, not clean."
           echo ""
         fi
+        if [[ "$TASK_TYPE" == "review" ]]; then
+          review_verification_summary "$result_file"
+          echo ""
+        fi
         cat "$result_file"
       elif [[ -n "$(skipped_task_cause "${cli_name}/${perspective_name}")" ]]; then
         # スキップは「失敗して何も書けなかった」とは別の状態（Issue #1143）。

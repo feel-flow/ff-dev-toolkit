@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 統合レポートの verification 集約呼び出しを空操作へ置換すると追加ケースが rc=1（2026-09-29 実測）。
 # git-path-isolation: 固定 PATH は実 CLI / yq / 更新 CLI の混入と不在検査の偽緑を防ぐ。
 # git の親ディレクトリ全体は追加しない（同居する CLI も露出するため）。Xcode 障害時は
 # DEVELOPER_DIR=/Library/Developer/CommandLineTools bash plugins/ff-dev-toolkit/tests/multi-agent-review-banner/verify.sh
@@ -95,6 +96,12 @@ cat > /dev/null
 echo "## Findings"
 echo "- Suggestion: stub result"
 echo "  - verdict: severity=suggestion failure_scenario=no confidence=50"
+echo "## Verification"
+echo "### Executed"
+echo "- verification: passed | npm run typecheck"
+echo "### Skipped"
+echo "- verification: skipped | npm run ace:check"
+echo "EPERM: IPC unavailable in read-only sandbox"
 SH
 chmod +x "$STUB/codex"
 
@@ -135,6 +142,13 @@ else
 fi
 
 BANNER_COUNT="$(count_matches "$BANNER_PATTERN" "$TMP/review.err")"
+if grep -F '**検証: 一部未実施**' "$REPO/.review-results/integrated-report.md" >/dev/null &&
+   grep -F -- '- verification: skipped | npm run ace:check' "$REPO/.review-results/integrated-report.md" >/dev/null &&
+   grep -F -- '- verification: passed | npm run typecheck' "$REPO/.review-results/integrated-report.md" >/dev/null; then
+  ok 'verification: integrated report preserves executed/skipped records and marks skipped checks'
+else
+  bad 'verification: integrated report lost skipped status or command records'
+fi
 if [[ "$BANNER_COUNT" == "1" ]]; then
   ok "バナーが stderr へちょうど 1 回だけ出る"
 else

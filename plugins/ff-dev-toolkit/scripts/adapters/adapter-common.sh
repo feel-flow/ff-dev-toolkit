@@ -695,6 +695,32 @@ ${diff_content}"
   the verdict lines only: a report whose findings lack verdict lines is
   rejected, not read from its prose."
   fi
+  if [[ "$task_type" == "review" ]]; then
+    finding_discipline+="
+
+## Verification Records
+
+In your FINAL report include an ATX heading (## Verification), with separate
+Executed and Skipped subheadings. For each relevant command, emit one plain
+line outside code fences (replace these examples with actual commands):
+~~~text
+- verification: passed | npm run typecheck
+- verification: failed | npm test
+- verification: skipped | npm run ace:check
+~~~
+Use passed only for a command you ran successfully in THIS review; failed for
+an executed check that found a failure; skipped for a command you could not
+run or complete, including EPERM or sandbox denial. Explain exit codes and
+skip reasons in adjacent prose. Prior gate evidence is not your execution.
+If no verification command was run or identified, emit:
+~~~text
+- verification: none
+~~~
+Do not weaken the read-only boundary or retry with broader permissions.
+Only run commands allowed by the Execution Boundary; commands requiring
+writes, IPC, or unavailable permissions must be skipped and left for the
+parent to verify. A completed review or no findings does not mean checks passed."
+  fi
   local boundary_section="## Execution Boundary (non-negotiable)
 
 This prompt itself IS the ${task_type} task, running as a nested sub-agent
@@ -729,6 +755,23 @@ PROMPT
 }
 
 # ── Output Helpers ──
+
+# Verification is independent of review completion and finding severity.
+# Missing, malformed and unreadable records never imply successful checks.
+review_verification_summary() {
+  local state
+  if [[ ! -f "$1" || ! -r "$1" ]] || ! state="$(_ff_severity_scan verification "$1")"; then
+    state=unknown
+  fi
+  case "$state" in
+    passed) echo '**検証: 記録されたコマンドは実行済み・成功**' ;;
+    failed) echo '**検証: 実行済みの失敗あり** — 成功とは扱わない。' ;;
+    failed-skipped) echo '**検証: 実行済みの失敗あり・一部未実施** — 下記の verification 行を確認し、親担当が裏取りする。' ;;
+    skipped) echo '**検証: 一部未実施** — 未実施項目と失敗の有無は下記の verification 行を確認し、親担当が裏取りする。' ;;
+    none) echo '**検証: 未実施** — 実行記録なし。指摘なしを検証成功とは扱わない。' ;;
+    *) echo '**検証: 未確認** — 記録なし・書式不正・読み取り不能。検証成功とは扱わない。' ;;
+  esac
+}
 
 # ── Review-body fail-loud gate（Issue #893）──
 # 各アダプタが捕捉するのは CLI が stdout へ出した最終出力だけで、サブ CLI が
@@ -959,7 +1002,9 @@ REVIEW_BODY_REFUSAL_PHRASE='no valid typed verdict line (neither a `- verdict: s
 #        抑止は c3 だけに掛かる — c1 / c2 / c4 はゼロ宣言の後でも従来どおり発火する
 #   (c4) 行頭（列 0）の `CRITICAL:` マーカー行（明示ゼロ行を除く）。bullet 無しの
 #        この形は受理側の実体行ではない（受理と検出は別契約 — 検出だけが広い唯一の形)
-_ff_severity_scan() { # $1: ff_mode (accept|critical) / 本文: stdin または $2 のファイル
+_ff_severity_scan() { # $1: ff_mode (accept|critical|verdicts|verification) / 本文: stdin または $2 のファイル
+  # verification は共通フェンス追跡で実施記録だけを集約する。記録不在・不正は unknown、
+  # awk 自体の失敗は呼び出し側が unknown へ写像し、受理・重大度には影響しない。
   # awk は入力を読み切ってから終了する（早期 exit の SIGPIPE 反転を作らない）。
   # awk 自体の失敗は accept では rc 非 0 = 本文なし側（fail-loud）、critical では
   # 0/1/20 以外 = 判定不能側（wrapper が写像し、呼び出し側が Critical ありへ倒す）。
@@ -1145,6 +1190,20 @@ _ff_severity_scan() { # $1: ff_mode (accept|critical) / 本文: stdin または 
       # 下の実体行評価で扱う（フェンス内は !fence ガードで found が立たない）
     }
     {
+      if (ff_mode == "verification") {
+        if (fence) next
+        v = $0
+        sub(/^[[:space:]]*/, "", v)
+        sub(/[[:space:]]*$/, "", v)
+        if (v == "- verification: none") vn++
+        else if (v ~ /^- verification: (passed|failed|skipped) [|] [^[:space:]].*$/) {
+          split(v, vp, " ")
+          if (vp[3] == "passed") vok++
+          else if (vp[3] == "failed") vfail++
+          else vskip++
+        } else if (tolower(v) ~ /^(([-*+>]|[0-9]+[.)])[[:space:]]*)?[*_`]*verification[[:space:]]*:/) vbad++
+        next
+      }
       l = tolower($0)
       isref = (l ~ /前のターン|前述|報告済み|上記で報告|上記で完了|earlier turn|previous turn|reported above|reported earlier|see above/)
       if (!fence && l ~ head_re) {
@@ -1229,6 +1288,15 @@ _ff_severity_scan() { # $1: ff_mode (accept|critical) / 本文: stdin または 
       }
     }
     END {
+      if (ff_mode == "verification") {
+        if (fence || vbad || (vn && (vok + vfail + vskip)) || !(vn + vok + vfail + vskip)) print "unknown"
+        else if (vskip && vfail) print "failed-skipped"
+        else if (vskip) print "skipped"
+        else if (vfail) print "failed"
+        else if (vn) print "none"
+        else print "passed"
+        exit 0
+      }
       vd_typed = vd_n + vd_none
       if (vd_n && vd_none) {
         printf "typed-verdict: `verdict: none` and %d finding line(s) both present; findings are counted\n", vd_n > "/dev/stderr"
