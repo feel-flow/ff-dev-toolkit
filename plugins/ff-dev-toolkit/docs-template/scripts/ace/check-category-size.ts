@@ -39,6 +39,40 @@ const EXIT_OK = 0;
 const EXIT_THRESHOLD_EXCEEDED = 1;
 const EXIT_USAGE_ERROR = 2;
 
+const ENTRY_HEADING_NOT_FOUND_MESSAGE = "ACE エントリ見出し（### ACE-数字:）が見つかりません。";
+/**
+ * 0 件を正常と認める宣言が無いまま見出しが 0 件だったときの補足。導入直後の Playbook は
+ * `/ace-setup` Step 3（`/init-docs` の ACE 最小構成の配置からも呼ばれる）が `ace_entry_count: 0` を書くので、ここへ来るのは宣言と実体が食い違う形
+ * （書式変更で 1 件も読めない・宣言の書き忘れ）だけである。
+ */
+const ENTRY_HEADING_NOT_FOUND_HINT =
+  "エントリが 1 件も無い導入直後の Playbook なら、frontmatter のトップレベルに `ace_entry_count: 0` を宣言してください（宣言があるときだけ 0 件を正常として扱います）。";
+const FRONTMATTER_BLOCK_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/u;
+const DECLARED_ZERO_ENTRY_COUNT_PATTERN = /^ace_entry_count:[ \t]*(?:0|"0"|'0')[ \t]*$/mu;
+
+/**
+ * 索引 PLAYBOOK.md の frontmatter が「エントリ 0 件」を自分で宣言しているか。
+ *
+ * エントリ見出しが 1 件も無い状態は 2 通りある — `/ace-setup` / `/init-docs` 直後の正常な空 Playbook と、
+ * 見出しの書式が変わって 1 件も読めなくなった壊れた Playbook。見出しの走査だけでは区別
+ * できないので、トップレベルの `ace_entry_count: 0` という明示の宣言を根拠にする。宣言が
+ * 1 以上・欠落・ネスト配下・行内コメント付きのときは false を返し、呼び出し側は従来どおり
+ * エラーにする（判定不能を正常へ倒さない）。
+ *
+ * sync-playbook-frontmatter.ts の countActualEntries も本関数を消費する（件数ゲートと
+ * 同期検証で「0 件を認める条件」を二重に定義しない）。
+ */
+export function declaresZeroEntries(indexContent: string): boolean {
+  const block = FRONTMATTER_BLOCK_PATTERN.exec(indexContent);
+  if (block === null) return false;
+  return DECLARED_ZERO_ENTRY_COUNT_PATTERN.test(block[1]);
+}
+
+/** 宣言なしで見出しが 0 件だったときのエラー文言（件数ゲートと同期検証で共有する）。 */
+export function entryHeadingNotFoundMessage(): string {
+  return `${ENTRY_HEADING_NOT_FOUND_MESSAGE}${ENTRY_HEADING_NOT_FOUND_HINT}`;
+}
+
 /**
  * 索引 Category 列の指摘を 1 回の実行で名指しする上限。索引は数百行あり、列順を
  * 取り違えた curate は同じ形の行をまとめて作るため、全件を並べると他の警告が流れる。
@@ -1120,7 +1154,7 @@ export function analyzePlaybookMarkdown(
     }
     return {
       kind: "error",
-      message: "ACE エントリ見出し（### ACE-数字:）が見つかりません。",
+      message: entryHeadingNotFoundMessage(),
     };
   }
   const histogram: Record<string, number> = {};
@@ -1751,6 +1785,8 @@ export function main(): number {
   // 索引テーブルは PLAYBOOK.md 側にしかないので、その本文だけを後段の列検査へ渡す。
   // 全ファイルの本文を fileReports へ持たせないのは、索引以外の用途が無いため。
   let indexContent: string | undefined;
+  // filesToAnalyze は索引を先頭に置くので、カテゴリファイルを読む時点で確定している。
+  let declaredEmpty = false;
 
   for (const filePath of filesToAnalyze) {
     const content = readFileOrExit(filePath);
@@ -1759,11 +1795,13 @@ export function main(): number {
     }
     if (filePath === playbookPath) {
       indexContent = content;
+      declaredEmpty = declaresZeroEntries(content);
     }
     // 分割レイアウトでは索引ファイル・カテゴリファイルとも「このファイル単体は
-    // 0 件」でも異常ではない（総件数がゼロなら後段でまとめてエラーにする）。
+    // 0 件」でも異常ではない（総件数がゼロなら後段でまとめて判定する）。索引が 0 件を
+    // 宣言している導入直後の Playbook は、カテゴリファイルが 1 つも無くても同じ扱いにする。
     const analyzed = analyzePlaybookMarkdown(content, {
-      allowEmpty: subfiles.length > 0,
+      allowEmpty: subfiles.length > 0 || declaredEmpty,
     });
     if (analyzed.kind === "error") {
       console.error(`${filePath}: ${analyzed.message}`);
@@ -1811,8 +1849,10 @@ export function main(): number {
     console.error(merged.message);
     return EXIT_USAGE_ERROR;
   }
-  if (merged.totalEntries === 0) {
-    console.error("ACE エントリ見出し（### ACE-数字:）が見つかりません。");
+  // 0 件を正常と認めるのは索引が `ace_entry_count: 0` を宣言しているときだけ。
+  // 宣言が 1 以上・欠落のまま 0 件なら、書式変更で読めなくなった形と区別できないので止める。
+  if (merged.totalEntries === 0 && !declaredEmpty) {
+    console.error(entryHeadingNotFoundMessage());
     return EXIT_USAGE_ERROR;
   }
 
@@ -1925,7 +1965,12 @@ export function main(): number {
       );
     }
   }
-  console.log("カテゴリ別件数:\n" + formatHistogram(merged.histogram));
+  console.log(
+    "カテゴリ別件数:\n" +
+      (merged.totalEntries === 0
+        ? "（エントリ 0 件 — frontmatter の ace_entry_count: 0 の宣言どおり）"
+        : formatHistogram(merged.histogram)),
+  );
   // 件数の閾値は「超えたカテゴリの行」にしか現れないため、追記前に超過を予測したい呼び出し側
   // （/ace-curate の予測手順）は、目安以下のカテゴリでは上限を読む対象が存在しなかった。
   // 判定に使う 2 つの閾値を件数の状態に関わらず 1 行で出し、呼び出し側が閾値を自前で持たずに

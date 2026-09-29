@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   analyzePlaybookMarkdown,
+  declaresZeroEntries,
   blankCodeRegions,
   countBudgetExceptions,
   countHeaderLines,
@@ -2987,6 +2988,62 @@ describe("main（行数警告のみ・exit code 不変）", () => {
       expect(code).toBe(2);
     });
 
+    // /ace-setup 直後（エントリ 0 件・playbook/ ディレクトリ無し）。
+    describe("エントリ 0 件の Playbook", () => {
+      const emptyPlaybook = (countLine: string): string =>
+        `---\ntitle: "PLAYBOOK"\nversion: "1.0.0"\n${countLine}\n---\n\n# ACE Playbook\n\n## エントリ一覧\n`;
+
+      function writeIndexOnly(content: string): string {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-empty-"));
+        const indexPath = path.join(tmpDir, "PLAYBOOK.md");
+        fs.writeFileSync(indexPath, content);
+        return indexPath;
+      }
+
+      it("ace_entry_count: 0 の宣言があれば exit 0 で、閾値の行を出す", () => {
+        process.argv = ["node", "check-category-size.ts", writeIndexOnly(emptyPlaybook("ace_entry_count: 0"))];
+        const log = vi.spyOn(console, "log").mockImplementation(() => {});
+        const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        const code = main();
+
+        expect(code).toBe(0);
+        const out = log.mock.calls.flat().join("\n");
+        expect(out).toContain("総エントリ数: 0");
+        expect(out).toContain("エントリ 0 件・密度の監視対象外");
+        expect(out).toMatch(/ブロック上限: \d+ 件\/カテゴリ/u);
+        expect(err.mock.calls.flat().join("\n")).toBe("");
+      });
+
+      it.each([
+        ["1 以上の宣言", "ace_entry_count: 3"],
+        ["宣言の欠落", "tags: [ace]"],
+        ["ネスト配下の宣言", "metadata:\n  ace_entry_count: 0"],
+        ["行内コメント付きの宣言", "ace_entry_count: 0 # 初期値"],
+      ])("%s のまま見出しが 0 件なら exit 2（宣言なしの 0 件を正常へ倒さない）", (_label, countLine) => {
+        process.argv = ["node", "check-category-size.ts", writeIndexOnly(emptyPlaybook(countLine))];
+        const log = vi.spyOn(console, "log").mockImplementation(() => {});
+        const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        const code = main();
+
+        expect(code).toBe(2);
+        expect(err.mock.calls.flat().join("\n")).toContain("ACE エントリ見出し");
+        expect(log.mock.calls.flat().join("\n")).not.toContain("ブロック上限");
+      });
+
+      it("0 件の宣言があっても、空のカテゴリファイルだけの分割レイアウトは exit 0", () => {
+        const indexPath = writeSplitPlaybook(emptyPlaybook("ace_entry_count: 0"), {
+          "coding.md": "# まだ空\n",
+        });
+        process.argv = ["node", "check-category-size.ts", indexPath];
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        vi.spyOn(console, "error").mockImplementation(() => {});
+
+        expect(main()).toBe(0);
+      });
+    });
+
     it("カテゴリ件数ゲートは分割レイアウトでも合算値で判定する", () => {
       const indexPath = writeSplitPlaybook("# 索引\n", {
         "coding.md": "### ACE-1-1: a\n\n| Category | coding |\n| Origin | PR #1 |\n",
@@ -3001,5 +3058,31 @@ describe("main（行数警告のみ・exit code 不変）", () => {
 
       expect(code).toBe(1);
     });
+  });
+});
+
+describe("declaresZeroEntries", () => {
+  it.each([
+    ["裸の 0", "ace_entry_count: 0", true],
+    ["二重引用符の 0", 'ace_entry_count: "0"', true],
+    ["単一引用符の 0", "ace_entry_count: '0'", true],
+    ["CRLF", "ace_entry_count: 0\r", true],
+    ["1 以上", "ace_entry_count: 10", false],
+    ["00 のような別表記", "ace_entry_count: 00", false],
+    ["ネスト配下", "  ace_entry_count: 0", false],
+    ["行内コメント付き", "ace_entry_count: 0 # メモ", false],
+  ])("%s", (_label, line, expected) => {
+    const eol = line.endsWith("\r") ? "\r\n" : "\n";
+    const body = line.replace(/\r$/u, "");
+    const md = ["---", 'title: "PLAYBOOK"', body, "---", "", "# 本文", ""].join(eol);
+    expect(declaresZeroEntries(md)).toBe(expected);
+  });
+
+  it("frontmatter が無ければ false（本文中の同じ行を宣言と読まない）", () => {
+    expect(declaresZeroEntries("# 本文\n\nace_entry_count: 0\n")).toBe(false);
+  });
+
+  it("frontmatter の外（本文）にある宣言は読まない", () => {
+    expect(declaresZeroEntries("---\ntitle: x\n---\n\nace_entry_count: 0\n")).toBe(false);
   });
 });

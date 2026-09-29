@@ -1,7 +1,7 @@
 # ACE サイクル運用手順（Generate → Reflect → Curate ＋ 定期 Refine）
 
 > **Parent**: [DEPLOYMENT.md](../DEPLOYMENT.md) | **Workflow Step**: 10
-> **関連**: [knowledge-management.md](./knowledge-management.md) | [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) | [ACE フレームワーク概念](https://github.com/feel-flow/ai-spec-driven-development/blob/HEAD/docs/ACE_FRAMEWORK.md)
+> **関連**: [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) | [ACE フレームワーク概念](https://github.com/feel-flow/ai-spec-driven-development/blob/HEAD/docs/ACE_FRAMEWORK.md)
 
 ## ドメイン知識と指定資料
 
@@ -19,14 +19,14 @@ ACE (Agentic Context Engineering) サイクルは、マージ後・cleanup 後�
 
 ### 運用パターン
 
-ACE 知見コミットのマージ方針は **[git-workflow.md ステップ10 §運用パターン（マージ方針）](./git-workflow.md#ace-merge-policy)** を SSOT とする。要約：
+ACE 知見コミットのマージ方針は **git-workflow.md ステップ10 §運用パターン（マージ方針）** を SSOT とする（`/ace-setup` の配置対象外・`${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/git-workflow.md` からコピー）。要約：
 
 - **保護判定（必須）**: 直 push を試す前に `<default-branch>` の保護有無を確認する（branch protection API → rulesets API → 判定不能なら既定を試して拒否メッセージで切替）。
 - **既定（推奨）**: 保護されていない `<default-branch>` にのみ適用。`<default-branch>` に直接 commit + push（PLAYBOOK.md は append-only ＋ PRスコープ式 ID で衝突しない）。
 - **chore PR 経路**: 大人数チーム / 知見レビューを残したい場合は任意エスカレーション、**`<default-branch>` が保護されている場合は必須経路**。`chore/ace-from-pr-<PR番号>` の小 PR（commit type は commitlint の許容リストにより `chore` 等へ置換されうる）。
 - ここでの `<default-branch>` 直 push は `knowledge:`（または置換後の type）付き knowledge 単独コミット（PLAYBOOK・観測台帳の追記だけ。`/ace-curate` と `/retrospective` の両方が書いた回は共通の書き込み口 `scripts/knowledge-commit.sh` が 1 コミットに畳む）に限った意図的フローであり、ACE-012（うっかり `<default-branch>` 直 push の事故防止）とは別物。判定・commit type 置換の詳細は `/ace-curate` 手順5。
 
-**autonomous（任意）**: subagent と専用 worktree で ACE キャプチャを非同期化するパターン。導入は [ace-autonomous.md](./ace-autonomous.md) と ff-dev-toolkit プラグイン同梱の `docs-template/scripts/ace/` テンプレートを参照（Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)）。
+**autonomous（任意）**: subagent と専用 worktree で ACE キャプチャを非同期化するパターン。導入は ace-autonomous.md（`/ace-setup` の配置対象外・`${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/ace-autonomous.md` からコピー）と ff-dev-toolkit プラグイン同梱の `docs-template/scripts/ace/` テンプレートを参照（Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)）。
 
 **所要時間**: 5〜15分（AIツール支援あり）
 
@@ -387,12 +387,7 @@ ACE_REUSE_STALE_DAYS=120 npm run ace:reuse-report
 
 ### コミットメッセージの規則を忘れた
 
-**形式**: `knowledge: ACE-XXX [category] [summary]`
-**例**:
-
-- `knowledge: ACE-001 [coding] TypeScript strict mode の例外パターン`
-- `knowledge: ACE-002,ACE-003 [testing,security] モック分離、JWT検証`
-- `knowledge: ACE-004 [performance] helpful+1 (既存エントリ更新)`
+形式の正本は本書「[4. コミット](#4-コミット)」で、ここへ複製しない。コミットは手で組み立てず、`/ace-curate` 手順 5 の共通の書き込み口に作らせる。
 
 ---
 
@@ -400,14 +395,21 @@ ACE_REUSE_STALE_DAYS=120 npm run ace:reuse-report
 
 - **概念説明**: [ACE フレームワーク](https://github.com/feel-flow/ai-spec-driven-development/blob/HEAD/docs/ACE_FRAMEWORK.md) - ACE の理論的背景
 - **Playbook テンプレート**: [PLAYBOOK.md](../../08-knowledge/PLAYBOOK.md) - 運用ルールと索引の SSOT
-- **ナレッジ管理**: [knowledge-management.md](./knowledge-management.md) - GitHub Discussions ベースの管理
-- **autonomous 化**: [ace-autonomous.md](./ace-autonomous.md) - subagent + worktree（任意）
-- **Git ワークフロー**: [git-workflow.md](./git-workflow.md) - ワークフロー全体の中での位置づけ
+- **ナレッジ管理**: knowledge-management.md - GitHub Discussions ベースの管理（`/ace-setup` の配置対象外・`${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/knowledge-management.md` からコピー）
+- **autonomous 化**: ace-autonomous.md - subagent + worktree（任意。`/ace-setup` の配置対象外・`${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/ace-autonomous.md` からコピー）
+- **Git ワークフロー**: git-workflow.md - ワークフロー全体の中での位置づけ（`/ace-setup` の配置対象外・`${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/git-workflow.md` からコピー）
 - **親ドキュメント**: [DEPLOYMENT.md](../DEPLOYMENT.md) - 運用ガイド索引
 
 ---
 
 ## Changelog
+
+### [1.7.0] - 2026-09-29
+
+#### 変更
+
+- トラブルシューティング「コミットメッセージの規則を忘れた」を「4. コミット」への参照へ置き換えた（件名にカテゴリ（`[category]`）を置く旧形式の例が残り、同じ文書の中で正本と矛盾していた）
+- `/ace-setup` が配置しない文書（knowledge-management.md / git-workflow.md / ace-autonomous.md）への角括弧リンクを、コピー元を示す案内テキストへ置き換えた（配置直後の導入先でリンク切れになっていた）
 
 ### [1.6.0] - 2026-09-29
 

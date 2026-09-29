@@ -764,6 +764,114 @@ check(
   "PLAYBOOK の ACE_FRAMEWORK 参照が公開絶対 URL",
 );
 
+// /ace-setup が配置する 3 文書（ACE 配置セット）。初期セットとも「必要時にコピー」の単位とも
+// 別の配置集合で、/init-docs のステップ3-b と /ace-setup の Step 3 がこの 3 つだけを置く。
+// 配置直後の導入先で角括弧リンクが解決できるのは「初期セット + この 3 文書」の中だけなので、
+// それ以外への参照は案内テキストでなければならない。
+console.log("== ACE 配置セット（/ace-setup が配置する文書のリンク解決） ==");
+const ACE_PLACEMENT_SET = [
+  "docs/08-knowledge/PLAYBOOK.md",
+  "docs/05-operations/deployment/ace-cycle.md",
+  "docs/05-operations/deployment/ace-domain.md",
+];
+// /ace-setup Step 3 が配置時に落とす部分（見本エントリの索引行・テンプレート自身の Changelog）と、
+// 書き方の例示であるコードフェンスの中はリンクとして読まない。落とす規則は SKILL.md の文言と照合する
+function asPlacedByAceSetup(content) {
+  const lines = [];
+  let fence = null;
+  for (const line of content.split("\n")) {
+    if (/^## Changelog\s*$/.test(line) && fence === null) break;
+    const opened = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (opened !== null) {
+      if (fence === null) fence = opened[1][0];
+      else if (opened[1][0] === fence) fence = null;
+      lines.push("");
+      continue;
+    }
+    lines.push(fence !== null || /^\| ACE-000-/.test(line) ? "" : line);
+  }
+  return lines.join("\n");
+}
+const aceSetupSkill = readFileSync(join(pluginRoot, "skills/ace-setup/SKILL.md"), "utf8");
+const initDocsSkill = readFileSync(join(pluginRoot, "skills/init-docs/SKILL.md"), "utf8");
+check(
+  ACE_PLACEMENT_SET.every((p) => aceSetupSkill.includes(p) && initDocsSkill.includes(p)) &&
+    aceSetupSkill.includes("サンプルエントリ（`ACE-000-*`）は索引テーブルごと削除") &&
+    aceSetupSkill.includes("`ace-cycle.md` の Changelog セクションはテンプレート自身の改訂履歴なので削除") &&
+    aceSetupSkill.includes("Changelog セクションは `[1.0.0]` の初版のみ残す"),
+  "ACE 配置セットの 3 文書と配置時に落とす部分が /ace-setup・/init-docs の SKILL.md の記述と一致する",
+);
+const aceSameUnit = new Set(ACE_PLACEMENT_SET);
+const aceBroken = [];
+const aceOutside = [];
+let aceLinks = 0;
+const aceMissing = [];
+for (const deployed of ACE_PLACEMENT_SET) {
+  const templatePath = toTemplatePath(deployed);
+  if (templatePath === null || !existsSync(templatePath)) {
+    aceMissing.push(deployed);
+    continue;
+  }
+  const placed = asPlacedByAceSetup(readFileSync(templatePath, "utf8"));
+  aceLinks += [...placed.matchAll(relativeLink)].length;
+  const report = scanFile(deployed, placed, relative(pluginRoot, templatePath), aceSameUnit);
+  aceBroken.push(...report.brokenRelative);
+  aceOutside.push(...report.outsideInitialSet);
+}
+check(
+  aceSetupSkill.includes("既存の PLAYBOOK.md を上書きせずに不足分だけを追加する") &&
+    initDocsSkill.includes("`features.ace=false` のときは 3 文書とも作成しない"),
+  "0 件の既存 Playbook を上書きしない分岐（/ace-setup）と、ACE 無効時に配置しない分岐（/init-docs）が SKILL.md に在る",
+);
+check(aceMissing.length === 0, "ACE 配置セットの 3 文書が配布物に実在する", aceMissing.join(", "));
+check(aceBroken.length === 0, "ACE 配置セットの相対リンクが配布物の実体へ解決できる", aceBroken.join(" / "));
+check(
+  aceOutside.length === 0,
+  "ACE 配置セットの角括弧リンクが「初期セット + ACE 配置セット」の中で閉じている（外は案内テキスト）",
+  aceOutside.join(" / "),
+);
+// リンクをまとめて消す退行・走査が空振りする退行を違反 0 件と区別する下限（現状 14 件）
+const EXPECTED_ACE_LINKS = 14;
+check(
+  aceLinks >= EXPECTED_ACE_LINKS && EXPECTED_ACE_LINKS > 0,
+  `ACE 配置セットが展開先の文書へ ${EXPECTED_ACE_LINKS} 件以上リンクしている`,
+  `リンク ${aceLinks} 件`,
+);
+{
+  // 検出器の自己検証: 配置外へのリンクと実在しないリンクを報告し、落とす部分とフェンス内は読まない
+  const synthetic = [
+    "[out](./git-workflow.md) [in](./ace-domain.md) [init](../DEPLOYMENT.md) [none](./nowhere-1959.md)",
+    "| ACE-000-1 | 見本 | coding | [x](./git-workflow.md) |",
+    "```markdown",
+    "[fenced](./git-workflow.md)",
+    "```",
+    "## Changelog",
+    "[history](./git-workflow.md)",
+  ].join("\n");
+  const report = scanFile(
+    "docs/05-operations/deployment/ace-cycle.md",
+    asPlacedByAceSetup(synthetic),
+    "synthetic",
+    aceSameUnit,
+  );
+  check(
+    JSON.stringify(report.outsideInitialSet) === JSON.stringify(["synthetic -> docs/05-operations/deployment/git-workflow.md"]) &&
+      JSON.stringify(report.brokenRelative) === JSON.stringify(["synthetic -> ./nowhere-1959.md"]),
+    "ACE 配置セットの走査が配置外へのリンクと実在しないリンクを報告し、配置時に落とす部分とフェンス内を読まない",
+    JSON.stringify(report),
+  );
+}
+check(
+  !/knowledge: ACE-[0-9X]+(?:,ACE-[0-9]+)* \[/.test(aceCycle),
+  "ace-cycle に件名へカテゴリを置く旧形式のコミットメッセージ例が無い（形式の説明は「4. コミット」の 1 箇所）",
+);
+check(
+  !/(?<!ff-dev-toolkit )ADR-\d+/.test(asPlacedByAceSetup(playbook)) &&
+    !/(?<!ff-dev-toolkit )ADR-\d+/.test(asPlacedByAceSetup(aceCycle)) &&
+    /ff-dev-toolkit ADR-\d+/.test(asPlacedByAceSetup(playbook)),
+  "ACE 配置セットの ADR 参照が出典リポジトリを前置している（導入先の ADR 番号と区別できる）",
+);
+
 // 針ごとの変異は「検査そのものが消される」退化を検出できない（違反が無いツリーでは、
 // 判定を true へ書き換えても元々 pass なので緑のまま）。実行された検査の**総数**を
 // baseline で縛ると、検査を 1 つ消した時点で違反の有無に関係なく赤になる。
@@ -773,7 +881,7 @@ check(
 // 検査を足したらこの数も同じ PR で上げること（上げ忘れは「増やしたのに赤」で即わかる）。
 // 不等号ではなく**完全一致**にする — `>=` だと上げ忘れが緑で通り、baseline が実数より
 // 下にずれる。以後は「1 件足して 1 件消す」が検出されず、この針の目的自体が静かに失効する。
-const EXPECTED_CHECKS = 80;
+const EXPECTED_CHECKS = 89;
 const executed = pass + failures.length;
 check(
   executed === EXPECTED_CHECKS,

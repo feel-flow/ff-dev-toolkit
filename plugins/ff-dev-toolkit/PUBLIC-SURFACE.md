@@ -135,7 +135,7 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 | `docs/04-quality/TESTING.md` | 同上 | コア文書 |
 | `docs/05-operations/DEPLOYMENT.md` | 同上 | コア文書 |
 | `docs/06-reference/DECISIONS.md` | 同上 | コア文書 |
-| `docs/08-knowledge/PLAYBOOK.md` | `ace-setup` が生成する | ACE のナレッジ台帳の入口 |
+| `docs/08-knowledge/PLAYBOOK.md` | `init-docs` / `ace-setup` が生成する | ACE のナレッジ台帳の入口 |
 | `docs/08-knowledge/playbook/` | `ace-setup` が生成する | カテゴリ別台帳の置き場 |
 
 **内部（配置はされるが、パスを固定しない）**:

@@ -49,6 +49,7 @@ fi
 
 - git リポジトリで作業中であること
 - `docs/` ディレクトリと `docs/MASTER.md` が存在すること（`/init-docs` 済み推奨）
+- `/init-docs` は ACE の最小構成（本スキル Step 3 の 3 文書）も配置する。その場合に本スキルが担うのは Step 4 の AI ツール固有の設定と、配置先に無い文書の補完である（`08-knowledge/` の配置手順の正本は本スキル Step 3 で、`/init-docs` はそれを呼ぶ側）
 
 ## 手順（対話型セットアップフロー）
 
@@ -58,10 +59,12 @@ fi
 
 1. **`docs/` ディレクトリの存在確認** — 存在しない場合: 「`docs/` が見つかりません。先に `/init-docs` を実行してドキュメント構造を初期化してください」と表示し、**セットアップを中止**する
 2. **`docs/MASTER.md` の存在確認** — 存在しない場合: 同様に `/init-docs` の実行を推奨し、**セットアップを中止**する
-3. **PLAYBOOK.md の既存チェック** — `docs/08-knowledge/PLAYBOOK.md` が既に存在する場合、ユーザーに選択肢を提示:
-   - **(a) セットアップを中止** — 既存の PLAYBOOK.md を維持する
-   - **(c) 既存内容を保持して更新** — 下の「既存環境のdomain更新」へ進む。既存利用者への推奨。
-   - **(b) バックアップして続行** — 既存ファイルを `PLAYBOOK.md.bak` にリネームして新規作成する
+3. **PLAYBOOK.md の既存チェック** — `docs/08-knowledge/PLAYBOOK.md` が既に存在する場合は、まずエントリの有無を確かめる（frontmatter の `ace_entry_count` と `### ACE-` 見出し）:
+   - **エントリ 0 件（`/init-docs` が作成した直後の Playbook を含む）**: 選択肢を出さず、**既存の PLAYBOOK.md を上書きせずに不足分だけを追加する**。Step 2 の配置先はその PLAYBOOK.md の実配置から決め、Step 3 は配置先に無いファイル（`ace-cycle.md` / `ace-domain.md`）だけを配置する。Step 4（AI ツール固有の設定）は未設定の分を行う。Step 5 の「状態」列は PLAYBOOK.md を「スキップ（既存を保持）」とする
+   - **エントリが 1 件以上ある**: ユーザーに選択肢を提示する
+     - **(a) セットアップを中止** — 既存の PLAYBOOK.md を維持する
+     - **(c) 既存内容を保持して更新** — 下の「既存環境のdomain更新」へ進む。既存利用者への推奨。
+     - **(b) バックアップして続行** — 既存ファイルを `PLAYBOOK.md.bak` にリネームして新規作成する
 
 ### Step 2: 配置先の確認
 
@@ -83,7 +86,19 @@ fi
    - Frontmatter の `created` / `updated` を今日の日付、`ace_entry_count` を `0`、`version` を `1.0.0` にする
    - Changelog セクションは `[1.0.0]` の初版のみ残す
    - エントリ本体のカテゴリ別分割ファイル（`playbook/<category>.md`）は最初のエントリ追記時に `/ace-curate` が作成するため、この時点では作らなくてよい
-2. **ace-cycle.md** — `${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/ace-cycle.md` をコピーし、同じディレクトリに `ace-domain.md` も配置する（同梱契約への相対参照を保持）。独自配置ではPLAYBOOKと各文書間の相対リンクを実配置に合わせる
+2. **ace-cycle.md** — `${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/ace-cycle.md` をコピーし、同じディレクトリに `ace-domain.md` も配置する（同梱契約への相対参照を保持）。独自配置ではPLAYBOOKと各文書間の相対リンクを実配置に合わせる。コピー後に以下を調整する:
+   - `ace-cycle.md` の Changelog セクションはテンプレート自身の改訂履歴なので削除し、`[1.0.0] - <今日の日付>` の初版 1 件だけにする（`YYYY-MM-DD` のまま残さない）。`ace-domain.md` は Changelog を持たないので調整不要
+   - 配置した PLAYBOOK.md に残る `ff-dev-toolkit ADR-NNN` は**本プラグインのソースリポジトリの ADR** を指す出典表記で、導入先の `DECISIONS.md` の採番とは別体系である。導入先の ADR 番号へ読み替えたり、導入先の `DECISIONS.md` へ転記したりしない
+   - 配置対象外の文書（`git-workflow.md` / `ace-autonomous.md` / `knowledge-management.md`）への参照は、角括弧リンクではなくコピー元を示す案内テキストになっている。必要になった時点で案内のパスからコピーする（この 3 文書が配置先のリンクを切らないことは `tests/docs-template-portability/` が検証する）
+
+配置後は同梱ゲートで導入を確かめる。エントリ 0 件は frontmatter の `ace_entry_count: 0` の宣言があれば正常として扱われ、3 本とも exit 0 になる（宣言が 1 以上のまま見出しが 0 件なら exit 2 で止まる）:
+
+```bash
+ACE_GATES="${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace"
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${ACE_GATES}/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check &&
+  FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${ACE_GATES}/check-category-size.ts" docs/08-knowledge/PLAYBOOK.md &&
+  FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${ACE_GATES}/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md
+```
 
 ### Step 3-b: 形式ゲートの allowlist 初期化（既存プロジェクトのみ）
 

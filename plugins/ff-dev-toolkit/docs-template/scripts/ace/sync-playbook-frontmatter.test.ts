@@ -29,6 +29,28 @@ afterEach(() => {
   }
 });
 
+/** /ace-setup Step 3 が作る状態の最小形（見本エントリ無し・初版のみの Changelog）。 */
+const EMPTY_PLAYBOOK = `---
+title: "PLAYBOOK"
+version: "1.0.0"
+status: "approved"
+created: "2026-09-29"
+updated: "2026-09-29"
+owner: "@example"
+ace_entry_count: 0
+---
+
+# ACE Playbook
+
+## エントリ一覧
+
+## Changelog
+
+### [1.0.0] - 2026-09-29
+
+- 初版作成
+`;
+
 const SAMPLE_FM = `---
 title: "PLAYBOOK"
 version: "1.59.0"
@@ -236,6 +258,42 @@ describe("countActualEntries", () => {
     const r = countActualEntries(main, [emptySub]);
     expect(r.ok).toBe(false);
     if (r.ok === false) expect(r.message).toContain("ACE エントリ見出し");
+  });
+
+  // /ace-setup 直後の Playbook（エントリ 0 件・カテゴリファイル無し）。
+  it("索引が ace_entry_count: 0 を宣言していれば、総エントリ数 0 は ok（total 0）", () => {
+    const r = countActualEntries(EMPTY_PLAYBOOK, []);
+    expect(r).toEqual({ ok: true, total: 0 });
+  });
+
+  it("宣言が 1 以上なのに見出しが 0 件なら従来どおり error（壊れた Playbook を緑にしない）", () => {
+    const broken = EMPTY_PLAYBOOK.replace("ace_entry_count: 0", "ace_entry_count: 3");
+    const r = countActualEntries(broken, []);
+    expect(r.ok).toBe(false);
+    if (r.ok === false) {
+      expect(r.message).toContain("ACE エントリ見出し");
+      expect(r.message).toContain("ace_entry_count: 0");
+    }
+  });
+
+  it("0 件の宣言があっても、カテゴリファイルにエントリがあれば実数を返す（宣言で件数を上書きしない）", () => {
+    const sub = `### ACE-2-1: a\n| Category | coding |\n`;
+    const r = countActualEntries(EMPTY_PLAYBOOK, [sub]);
+    expect(r).toEqual({ ok: true, total: 1 });
+  });
+});
+
+describe("computeSync — エントリ 0 件の Playbook", () => {
+  it("記録 0 / 実数 0 は一致で、version↔Changelog・changeImpact も緑になる", () => {
+    const r = computeSync(EMPTY_PLAYBOOK, 0);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") {
+      expect(r.inSync).toBe(true);
+      expect(r.recordedCount).toBe(0);
+      expect(r.versionChangelogInSync).toBe(true);
+      expect(r.changeImpactValid).toBe(true);
+      expect(r.changes).toEqual([]);
+    }
   });
 });
 
@@ -1206,18 +1264,59 @@ describe("main (CLI contract)", () => {
     expect(output).toContain("実数 2");
   });
 
-  it("CLI の playbook/ 分割ファイル総件数 0 は usage error", () => {
+  it("CLI の playbook/ 分割ファイル総件数 0 は、宣言が 1 以上なら usage error", () => {
     const dir = tempDir();
     const playbook = path.join(dir, "PLAYBOOK.md");
     const subDir = path.join(dir, "playbook");
     fs.mkdirSync(subDir);
-    fs.writeFileSync(playbook, `---\nace_entry_count: 0\nupdated: "2026-01-01"\nversion: "1.0.0"\n---\n索引のみ\n`);
+    fs.writeFileSync(playbook, `---\nace_entry_count: 1\nupdated: "2026-01-01"\nversion: "1.0.0"\n---\n索引のみ\n`);
     fs.writeFileSync(path.join(subDir, "empty.md"), `# 空\nエントリ無し\n`);
 
     const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--check"]));
 
     expect(status).toBe(2);
     expect(output).toContain("ACE エントリ見出し");
+  });
+
+  // /ace-setup 直後の状態。0 件の宣言があれば集計不成立ではなく一致として通る。
+  it("CLI はエントリ 0 件を宣言した Playbook（カテゴリファイル無し）で exit 0 を返す", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    fs.writeFileSync(playbook, EMPTY_PLAYBOOK);
+
+    const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--check"]));
+
+    expect(output).toContain("実エントリ数: 0 / frontmatter 記録値: 0");
+    expect(output).toContain("✓ ace_entry_count は実数と一致しています。");
+    expect(status).toBe(0);
+  });
+
+  it("CLI は 0 件の宣言があっても、空のカテゴリファイルだけの分割レイアウトを集計不成立にしない", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const subDir = path.join(dir, "playbook");
+    fs.mkdirSync(subDir);
+    fs.writeFileSync(playbook, EMPTY_PLAYBOOK);
+    fs.writeFileSync(path.join(subDir, "empty.md"), `# 空\nエントリ無し\n`);
+
+    const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--check"]));
+
+    expect(output).not.toContain("ACE エントリ見出し");
+    expect(status).toBe(0);
+  });
+
+  it("CLI は 0 件の宣言のままカテゴリファイルにエントリがあれば、ドリフトとして exit 1 を返す（宣言で実数を上書きしない）", () => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const subDir = path.join(dir, "playbook");
+    fs.mkdirSync(subDir);
+    fs.writeFileSync(playbook, EMPTY_PLAYBOOK);
+    fs.writeFileSync(path.join(subDir, "coding.md"), `### ACE-2-1: b\n| Category | coding |\n`);
+
+    const { status, output } = withCapturedConsole(() => main(["node", "sync", playbook, "--check"]));
+
+    expect(status).toBe(1);
+    expect(output).toContain("実数 1");
   });
 
   it("CLI は playbook/CHANGELOG.md へ切り出した Changelog を探索して exit 0 を返す（Issue #949）", () => {

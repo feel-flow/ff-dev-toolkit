@@ -20,6 +20,20 @@
 
 ## [Unreleased]
 
+## [0.141.0] - 2026-09-29
+
+### 変更
+
+- init-docs が初期セット 20 ファイルに続けて ACE の最小構成（PLAYBOOK.md / ace-cycle.md / ace-domain.md）も配置するようにした。初回 PR のマージ後に ace-curate をそのまま実行できる。ASDD 2.0 設定で features.ace が false のときは配置しない
+- ace-setup は、エントリ 0 件の既存 Playbook（init-docs が作成したものを含む）を上書きせず、配置先に無い文書と AI ツール固有の設定だけを追加する。配置時に ace-cycle.md の Changelog をテンプレート自身の改訂履歴から初版 1 件へ置き換える手順と、配置後に同梱ゲートで導入を確かめる手順を加えた
+- Playbook テンプレートの ADR 参照へ出典リポジトリを前置した（ff-dev-toolkit ADR-047 など）。導入先の ADR と同じ採番体系に見えていた
+
+### 修正
+
+- 導入直後のエントリ 0 件の Playbook が、同梱の同期検証（sync-playbook-frontmatter）と件数ゲート（check-category-size）で exit 2 になり、最初の ace-curate が手順どおりでは止まっていた。frontmatter のトップレベルに ace_entry_count: 0 の宣言があるときは 0 件を正常として扱い、件数ゲートは閾値の行まで出して exit 0 になる。宣言が 1 以上または欠落のまま見出しが 0 件の Playbook は従来どおり exit 2 で止まる
+- ace-setup が配置する ace-cycle.md のトラブルシューティングに、件名へカテゴリを置く旧形式のコミットメッセージ例が残り、同じ文書の「4. コミット」と矛盾していた。「4. コミット」への参照へ置き換えた
+- ace-setup が配置する文書から、配置されない文書（git-workflow.md / ace-autonomous.md / knowledge-management.md / BEST_PRACTICES.md）への角括弧リンクを、コピー元を示す案内テキストへ置き換えた。配置直後の導入先でリンク切れになっていた
+
 ## [0.140.0] - 2026-09-29
 
 ### 追加

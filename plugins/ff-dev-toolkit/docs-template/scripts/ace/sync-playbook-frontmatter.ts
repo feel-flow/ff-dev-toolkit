@@ -48,7 +48,9 @@ import {
   analyzePlaybookMarkdown,
   blankCodeRegions,
   blankHtmlBlockComments,
+  declaresZeroEntries,
   discoverPlaybookSubfiles,
+  entryHeadingNotFoundMessage,
   mergeAnalyses,
   type AnalyzeSuccess,
 } from "./check-category-size";
@@ -532,9 +534,13 @@ export function countActualEntries(
   subfileContents: readonly string[],
 ): CountActualEntriesResult {
   const hasSubfiles = subfileContents.length > 0;
+  // 0 件を正常と認める条件は件数ゲートと同じ述語を使う。
+  const declaredEmpty = declaresZeroEntries(mainContent);
   const analyses: AnalyzeSuccess[] = [];
 
-  const mainAnalyzed = analyzePlaybookMarkdown(mainContent, { allowEmpty: hasSubfiles });
+  const mainAnalyzed = analyzePlaybookMarkdown(mainContent, {
+    allowEmpty: hasSubfiles || declaredEmpty,
+  });
   if (mainAnalyzed.kind === "error") {
     return { ok: false, message: mainAnalyzed.message };
   }
@@ -552,8 +558,8 @@ export function countActualEntries(
   if (merged.kind === "error") {
     return { ok: false, message: merged.message };
   }
-  if (merged.totalEntries === 0) {
-    return { ok: false, message: "ACE エントリ見出し（### ACE-数字:）が見つかりません。" };
+  if (merged.totalEntries === 0 && !declaredEmpty) {
+    return { ok: false, message: entryHeadingNotFoundMessage() };
   }
   return { ok: true, total: merged.totalEntries };
 }
