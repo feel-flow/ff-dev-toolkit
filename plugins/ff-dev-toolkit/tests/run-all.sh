@@ -1364,7 +1364,6 @@ MISS_PROBE_BASELINE=(
   adapter-base-ref-freshness
   adapter-model-args
   adapter-prompt-utf8
-  adapter-sandbox-contract
   agent-config-doc-sync
   asdd-runtime
   auto-update-hook
@@ -1419,7 +1418,6 @@ MISS_PROBE_BASELINE=(
   multi-agent-skip-poisoned-cli
   multi-agent-stale-outputs
   multi-agent-timeout
-  no-checks-merge-basis-contract
   no-hardcoded-model
   plugin-description-enumeration-selftest
   plugin-description-enumeration

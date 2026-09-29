@@ -24,8 +24,14 @@
 #   3. Closes 群の各 Issue について hook の実測記録（scripts/effort-report.sh --issue-metrics）を
 #      読み、書き戻し用の値（wall-clock / 読み込みバイト / レビュー巡回数 / ゲート分 / 変更クラス）を出す
 #   4. checks の有無で分岐する: statusCheckRollup が非空なら `gh pr checks --watch --fail-fast`
-#      で完了と成功を待つ（失敗なら止まる。非 0 のうち API に到達できない回は check の失敗ではなく
-#      gh 不通として rc 2）。空なら待たず、報告文言だけを出す
+#      で完了と成功を待つ。watch の非 0 後は checks の実値を読み直し、失敗があれば rc 1、
+#      未完了なら上限付きで再待機、判定不能なら rc 2。空なら待たず、報告文言だけを出す
+#   4b. PR のレビュースレッド（inline コメント。自動レビュー bot の指摘を含む）を GraphQL
+#      `reviewThreads` で全件読み、**返信の無いスレッド**（未 resolve で、起点の author 以外の投稿が
+#      無く、起点が PR 作者でないもの）を列挙する。1 件でもあれば手順 7 で止める（`PRECHECK=blocked`。
+#      判定は「返信があるか」だけで内容は見ない — 指摘への判定は人 / エージェントが返信で残す）。
+#      取得できない・応答を解釈できない回はスレッド 0 件へ倒さず rc 2（未返信の有無は未確定）。
+#      bot の指摘は PR 作成から十数分後に届くので、この読み取りは checks の待機の後（マージ直前）に置く
 #   5. 照合直前に PR を読み直し、判定に使った全フィールド（先端・本文・タイトル・コミット・
 #      closingIssuesReferences・ファイル・checks の有無ほか）を初回と比べる。差があれば rc 1 で
 #      止め、precheck を最初から再実行させる。一致すればリモート先端（headRefOid）をゲート実測の
@@ -58,6 +64,10 @@
 #   EFFORT_<N>_<key>=<値>（effort-report.sh --issue-metrics の kv をそのまま）
 #   EFFORT_<N>_change_class=docs-only|small|other
 #   CHECKS=none|passed|failed|unavailable  CHECKS_REPORT=<報告へ貼る文言>
+#   REVIEW_THREADS_SOURCE=graphql|unavailable  REVIEW_THREADS=<総数>  REVIEW_THREADS_UNANSWERED=<件数>（後 2 つは graphql のとき。
+#     unavailable の回は rc 2 で止まり、ページ上限・cursor 空・hasNextPage 不明の回も SOURCE=unavailable + rc 2）
+#   REVIEW_THREAD=<id>\t<path>:<line>\t<起点の author>\t<current|outdated>\t<本文の先頭 60 字>（未返信ごとに繰り返し。
+#     id は GraphQL の PullRequestReviewThread ノード ID で、返信は addPullRequestReviewThreadReply へ渡す）
 #   PR_SNAPSHOT=unchanged|changed  PR_SNAPSHOT_DIFF=<差のあったフィールド名,…>（changed のとき）
 #   FRESH_STATUS=0|2  FRESH_REPORT=<報告へ貼る文言>  FRESH_REASON= FRESH_ACTION=（2 のとき）
 #   RERUN_FULL_GATE=no|yes|see-action  RERUN_REASON=
@@ -70,7 +80,8 @@
 #   0  マージへ進める（FRESH_STATUS=0、または 2 でも RERUN_FULL_GATE=no）
 #   0  対象 Issue が無い（PRECHECK=no-target。以降の判定を行わない）
 #   1  止める（checks 失敗 / 判定の途中で PR が変わった / 鮮度不一致 / 改題で消せる抵触 / 実際に
-#      渡す squash メッセージの抵触 / Refs 群があるのに --subject と --body が無い）。理由と次の一手を stderr へ
+#      渡す squash メッセージの抵触 / Refs 群があるのに --subject と --body が無い / 返信の無い
+#      レビュースレッドがある）。理由と次の一手を stderr へ
 #   2  判定不能・検査不成立（PR 不在 / gh 不通（checks の取得を含む）/ jq 不在 / 鮮度照合の検査不成立、および
 #      FRESH_STATUS=2 で RERUN_FULL_GATE が no でない回）。判定できなかった項目を名指しし、
 #      復帰手段（何を直して再実行するか）を stderr へ出す。後者は MERGE_COMMAND も出す —
@@ -627,25 +638,118 @@ cmd_precheck() {
   if [[ "$rollup_count" == "0" ]]; then
     checks_report="この PR に登録された checks は無い。マージ可否はローカル全件ゲート + 鮮度照合で判定する"
   else
-    # checks が在るときだけ待つ（存在するので --watch は必ず終わる）。待機とマージは繋がない
-    if checks_out="$(gh pr checks "${PR_NUMBER}" --watch --fail-fast 2>&1)"; then
-      checks="passed"
-      checks_report="全 checks の完了と成功を確認済み（${rollup_count} 件）"
-    else
-      printf '%s\n' "${checks_out}" >&2
-      # 非 0 は check の失敗だけでなく通信・認証エラーでも返る。API への到達を確かめ直し、
-      # 届かなければ check の成否は未確定（失敗として扱わず、gh 不通を名指しする）
-      local reach_out
-      if ! reach_out="$(gh api rate_limit --jq .rate.remaining 2>&1)"; then
-        echo "CHECKS=unavailable"
-        die_env "gh pr checks が失敗し、GitHub API にも到達できません（gh 不通: ${reach_out}）。checks の成否は未確定" "gh auth status で認証を確かめ、ネットワーク・GH_HOST を確認してから finish.sh precheck を再実行する（check の失敗として扱わない）"
+    # watch の非 0 は通信エラーでも起きる。API 到達可否ではなく checks の実値で判定する。
+    # 未完了または取得不能が続いても無限に待たない。再待機は --watch 自身が行う。
+    local check_attempt=0 max_check_attempts=3 check_json check_total check_failed check_pending
+    while (( check_attempt < max_check_attempts )); do
+      check_attempt=$((check_attempt + 1))
+      if checks_out="$(gh pr checks "${PR_NUMBER}" --watch --fail-fast 2>&1)"; then
+        checks="passed"
+        checks_report="全 checks の完了と成功を確認済み（${rollup_count} 件）"
+        break
       fi
-      echo "CHECKS=failed"
-      die_stop "checks が未完了または失敗（${rollup_count} 件登録）" "赤い check を直して push し、finish.sh precheck を再実行する（マージへ進まない）"
+      printf '%s\n' "${checks_out}" >&2
+      if ! check_json="$(gh pr view "${PR_NUMBER}" --json statusCheckRollup 2>&1)" \
+        || ! printf '%s' "$check_json" | jq -e '(.statusCheckRollup | type) == "array"' >/dev/null 2>&1; then
+        continue
+      fi
+      check_total="$(printf '%s' "$check_json" | jq -r '.statusCheckRollup | length')"
+      check_failed="$(printf '%s' "$check_json" | jq -r '[.statusCheckRollup[] | select((.conclusion // .state // "" | ascii_upcase) as $s | ["FAILURE","ERROR","TIMED_OUT","ACTION_REQUIRED","STARTUP_FAILURE","CANCELLED","STALE"] | index($s)) | (.name // .context // "(名称不明)")] | join(", ")')"
+      if [[ -n "$check_failed" ]]; then
+        echo "CHECKS=failed"
+        die_stop "失敗した check: ${check_failed}" "赤い check を直して push し、finish.sh precheck を再実行する（マージへ進まない）"
+      fi
+      check_pending="$(printf '%s' "$check_json" | jq -r '[.statusCheckRollup[] | select((.conclusion // .state // "" | ascii_upcase) as $s | ["SUCCESS","NEUTRAL","SKIPPED"] | index($s) | not)] | length')"
+      if (( check_total > 0 && check_pending == 0 )); then
+        checks="passed"
+        checks_report="全 checks の完了と成功を確認済み（${check_total} 件）"
+        break
+      fi
+    done
+    if [[ "$checks" != "passed" ]]; then
+      echo "CHECKS=unavailable"
+      die_env "checks の成否は未確定（watch / checks 再取得が ${max_check_attempts} 回で完了せず）" "ネットワーク・認証と GitHub 上の checks の状態を確認してから finish.sh precheck を再実行する（check の失敗として扱わない）"
     fi
   fi
   echo "CHECKS=${checks}"
   echo "CHECKS_REPORT=${checks_report}"
+
+  # ── 4b. 返信の無いレビュースレッド（自動レビュー bot の inline を含む） ──
+  # /multi-review → /close-issue → merge のチェーンは PR に付いた bot の inline コメントをどこでも
+  # 読まない。bot は push の十数分後にレビューを付けるため、マージ直前のここで 1 回だけ全件読む
+  # （早すぎる確認の 0 件を「指摘なし」と読まない）。時点検査なので、この読み取りの後に届いた
+  # レビューは次の precheck まで見えない — レビューの「完了」を告げる汎用の信号は無く、待つ
+  # 機構は置かない（設計上の受容。references/merge-gate.md 2c）。判定は「返信があるか」だけで
+  # 内容は見ない。取得失敗・解釈不能はスレッド 0 件へ倒さず検査不成立（未返信の有無は未確定）。
+  local rt_query rt_json rt_err rt_after="" rt_page=0 rt_nodes="[]" rt_author="" rt_next rt_total rt_lines rt_unanswered rt_line
+  rt_query='query($owner: String!, $name: String!, $number: Int!, $after: String) {
+    repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+      author { login }
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { id isResolved isOutdated
+          comments(first: 100) { totalCount nodes { author { login } body path line originalLine } } } } } } }'
+  rt_err="$(mktemp)" || die_env "一時ファイルを作れません" "TMPDIR を書ける場所へ向けて再実行する"
+  while :; do
+    rt_page=$((rt_page + 1))
+    [[ "$rt_page" -le 50 ]] || { rm -f "$rt_err"; echo "REVIEW_THREADS_SOURCE=unavailable"; die_env "レビュースレッドのページ送りが 50 ページを超えました（PR #${PR_NUMBER}）" "スレッドを resolve して減らすか PR を分割してから finish.sh precheck を再実行する（0 件として扱わない）"; }
+    # JSON は stdout だけで受ける（stderr を混ぜると gh の警告で jq の型検査が落ち「解釈不能」に化ける）
+    if [[ -n "$rt_after" ]]; then
+      rt_json="$(gh api graphql -f query="$rt_query" -f owner="${TARGET_REPO%%/*}" -f name="${TARGET_REPO#*/}" -F number="$PR_NUMBER" -f after="$rt_after" 2>"$rt_err")"
+    else
+      rt_json="$(gh api graphql -f query="$rt_query" -f owner="${TARGET_REPO%%/*}" -f name="${TARGET_REPO#*/}" -F number="$PR_NUMBER" 2>"$rt_err")"
+    fi \
+      || { echo "REVIEW_THREADS_SOURCE=unavailable"; local rt_e; rt_e="$(cat "$rt_err")"; rm -f "$rt_err"; die_env "レビュースレッドを取得できません（gh api graphql: ${rt_e:-（stderr なし）}）。未返信の有無は未確定" "gh auth status で認証・到達を確かめて finish.sh precheck を再実行する（スレッド 0 件として扱わない）"; }
+    printf '%s' "$rt_json" | jq -e '.data.repository.pullRequest.reviewThreads.nodes | type == "array"' >/dev/null 2>&1 \
+      || { echo "REVIEW_THREADS_SOURCE=unavailable"; rm -f "$rt_err"; die_env "レビュースレッドの応答を解釈できません（reviewThreads.nodes が配列でない。応答の先頭: $(printf '%s' "$rt_json" | head -c 200 | tr '\n' ' ')）" "gh api graphql の応答（PR #${PR_NUMBER}）を確かめて finish.sh precheck を再実行する（スレッド 0 件として扱わない）"; }
+    [[ -n "$rt_author" ]] || rt_author="$(printf '%s' "$rt_json" | jq -r '.data.repository.pullRequest.author.login // ""')"
+    rt_nodes="$(printf '%s' "$rt_json" | jq -c --argjson acc "$rt_nodes" '$acc + .data.repository.pullRequest.reviewThreads.nodes')" \
+      || { rm -f "$rt_err"; die_env "レビュースレッドを畳み込めません（jq）" "gh api graphql の応答（PR #${PR_NUMBER}）を確かめて finish.sh precheck を再実行する"; }
+    # hasNextPage は true / false 以外（欠落・null）を「次ページ無し」へ倒さない（101 件目以降の未返信が消える）
+    rt_next="$(printf '%s' "$rt_json" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage | if type == "boolean" then tostring else "invalid" end')"
+    case "$rt_next" in
+      false) break ;;
+      true) : ;;
+      *) rm -f "$rt_err"; echo "REVIEW_THREADS_SOURCE=unavailable"; die_env "レビュースレッドの pageInfo.hasNextPage を読めません（PR #${PR_NUMBER}）" "gh api graphql の応答を確かめて finish.sh precheck を再実行する（0 件として扱わない）" ;;
+    esac
+    rt_after="$(printf '%s' "$rt_json" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // ""')"
+    [[ -n "$rt_after" ]] || { rm -f "$rt_err"; echo "REVIEW_THREADS_SOURCE=unavailable"; die_env "レビュースレッドの次ページの cursor が空です（PR #${PR_NUMBER}）" "gh api graphql の応答を確かめて finish.sh precheck を再実行する（0 件として扱わない）"; }
+  done
+  rm -f "$rt_err"
+  rt_total="$(printf '%s' "$rt_nodes" | jq 'length')"
+  # 未返信 = 未 resolve で、起点の author 以外の投稿が 1 件も無い（bot 自身の追記だけでは返信にならない）
+  # スレッド。起点が PR 作者のもの（作者自身のメモ）は数えない — ただし PR 作者を読めなかった回は
+  # 除外しない（作者不明で「作者のメモ」と同一視しない）。comments(first: 100) を超える長いスレッド
+  # （totalCount > 取得件数）は読めていない側に返信がありうるので未返信に数えない（totalCount で判定）。
+  # 行は id / path:line / 起点 author / current|outdated / 本文先頭 60 字
+  rt_lines="$(printf '%s' "$rt_nodes" | jq -r --arg author "$rt_author" '
+    .[] | select(.isResolved | not)
+    | select(.comments.totalCount <= (.comments.nodes | length))
+    | (.comments.nodes[0].author.login // "(unknown)") as $origin
+    | select(($author == "") or ($origin != $author))
+    | select(([.comments.nodes[] | (.author.login // "(unknown)")] | map(select(. != $origin)) | length) == 0)
+    | [ .id,
+        ((.comments.nodes[0].path // "-") + ":" + ((.comments.nodes[0].line // .comments.nodes[0].originalLine // 0) | tostring)),
+        $origin,
+        (if .isOutdated then "outdated" else "current" end),
+        ((.comments.nodes[0].body // "") | gsub("[\r\n\t]+"; " ") | .[0:60]) ] | @tsv')" \
+    || die_env "レビュースレッドの判定に失敗（jq）" "gh api graphql の応答（PR #${PR_NUMBER}）を確かめて finish.sh precheck を再実行する"
+  rt_unanswered="$(printf '%s\n' "$rt_lines" | awk 'NF { c++ } END { print c + 0 }')" || rt_unanswered=""
+  case "$rt_unanswered" in ''|*[!0-9]*) die_env "未返信スレッドの件数を数えられません（awk）" "awk が PATH に在ることを確かめて finish.sh precheck を再実行する" ;; esac
+  echo "REVIEW_THREADS_SOURCE=graphql"
+  echo "REVIEW_THREADS=${rt_total}"
+  echo "REVIEW_THREADS_UNANSWERED=${rt_unanswered}"
+  while IFS= read -r rt_line; do [[ -n "$rt_line" ]] && printf 'REVIEW_THREAD=%s\n' "$rt_line"; done <<<"$rt_lines"
+  # 件数ではなく行の有無で止める（数え損ねを黙って 0 にしない）。先着の停止理由があれば併記する
+  if [[ -n "$rt_lines" ]]; then
+    if [[ -z "$blocked_reason" ]]; then
+      blocked_reason="返信の無いレビュースレッドが ${rt_unanswered} 件あります（REVIEW_THREAD= 行。自動レビュー bot の指摘を含む）"
+      blocked_next="各スレッドへ判定（この PR で直す / follow-up Issue の番号 / 退ける理由）を返信するか resolve してから finish.sh precheck を再実行する（返信は GraphQL addPullRequestReviewThreadReply。内容の当否は返信で残す。返信せずにマージへ進まない）"
+    else
+      blocked_reason="${blocked_reason}／さらに返信の無いレビュースレッドが ${rt_unanswered} 件あります（REVIEW_THREAD= 行）"
+      blocked_next="${blocked_next}。あわせて各スレッドへ判定を返信するか resolve する"
+    fi
+  fi
 
   # ── 5. ゲート実測鮮度の照合（マージ直前） ──
   # 照合直前に読み直す — 先端だけでなく PR 全体を（手順 1 からの経過中 — checks の待機を含む — に先端・本文・タイトルが
@@ -689,6 +793,13 @@ cmd_precheck() {
       echo "FRESH_STATUS=1"
       echo "✗ 止める: リモート先端がゲート実測対象と一致しません（取り込んで測り直すこと）" >&2
       echo "  次の一手: 上の RELATION / ACTION に従って取り込み（force-push で押し切らない）、ゲートを回し直してから finish.sh precheck を再実行する" >&2
+      # 先着の停止理由（抵触・未返信スレッド）があれば併記する — 鮮度だけ直して再実行し、もう一度止まる
+      # 2 段停止を作らない
+      if [[ -n "$blocked_reason" ]]; then
+        echo "PRECHECK=blocked"
+        echo "  併発: ${blocked_reason}" >&2
+        echo "  併発の次の一手: ${blocked_next}" >&2
+      fi
       exit 1
       ;;
     2)

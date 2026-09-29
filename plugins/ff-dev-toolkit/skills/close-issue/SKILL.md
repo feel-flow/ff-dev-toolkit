@@ -63,10 +63,10 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 終了コード **0 = マージへ進める** / **1 = 止める**（理由と次の一手が stderr） / **2 = 判定不能・検査不成立**（名指しされた項目と復帰手段に従う。鮮度は手順 7）。出力（`KEY=値`）の読み方:
 
 - **ブランチガード（必須）**: `git branch --show-current` が `PR_HEAD_REF` と違えば `gh pr checkout $PR_NUMBER` で切り替えてから続行する（できなければ停止）
-- 対象 Issue は `CLOSES=owner/repo#N`（**Closes 運用** = `closingIssuesReferences` ∪ 本文の closing keyword）と `REFS=owner/repo#N`（**Refs 運用** = 本文の `Ref` / `Refs` のうち Closes 群に無いもの）。以降の `gh issue` には番号ではなく URL を渡す（同番号の別リポジトリ Issue を誤更新しない）
-- `closingIssuesReferences` は **PR 本文だけ**を見る（件名の `fix: #N` はマージで閉じるのに API に出ない）。空を理由に打ち切ると Refs 運用の PR が無検査で通る。拾う綴りは `Ref` / `Refs` のみ（`関連 #N` や裸の `#N` は拾わない）
+- 対象 Issue は `CLOSES=owner/repo#N`（**Closes 運用** = `closingIssuesReferences` ∪ 本文の closing keyword）と `REFS=owner/repo#N`（**Refs 運用** = 本文の `Ref` / `Refs` のうち Closes 群に無いもの）。以降の `gh issue` には URL を渡す（同番号の別リポジトリ Issue を誤更新しない）
+- `closingIssuesReferences` は **PR 本文だけ**を見る（件名の `fix: #N` はマージで閉じるのに API に出ない）。空を理由に打ち切ると Refs 運用の PR が無検査で通る。拾う綴りは `Ref` / `Refs` のみ（`関連 #N`・裸の `#N` は拾わない）
 - 両群とも空（`PRECHECK=no-target`）なら「参照から検出できる対象 Issue はありません」と報告して終了する。**「この PR は Issue を閉じません」とは報告しない**（件名経由のクローズは検出の範囲外）。`AUTO_CLOSE_UNRELIABLE=1`（本文に keyword があるのに API が空）は照合を続行し、手順 8 で手動クローズを案内する
-- 複数 Issue は Issue ごとに手順 3〜6 を繰り返す。`bundle` は sub-issues 全件（`gh api --paginate repos/<owner>/<repo>/issues/<n>/sub_issues --jq '.[].number'`）へ照合を広げ、PR 本文の `Closes` に子と bundle が全部並んでいるかを検査する
+- 複数 Issue は Issue ごとに手順 3〜6 を繰り返す。`bundle` は sub-issues 全件（`gh api --paginate repos/<owner>/<repo>/issues/<n>/sub_issues --jq '.[].number'`）へ照合を広げ、PR 本文の `Closes` に子と bundle が全部並ぶかを検査する
 
 ### 2. closing keyword 抵触検査（Refs 運用の Issue がある場合）
 
@@ -78,24 +78,20 @@ closing keyword は **squash commit のメッセージ**も走査されるので
 | **2b** | 実際に `gh pr merge` へ渡す `--subject` と `--body` | `MERGE_MESSAGE_GATE=ok / conflict / required` | **権威ある検査**。通ることがマージの条件 |
 
 - `conflict-title`: `gh pr edit "${PR_NUMBER}" --title "<Issue 参照を含まない件名>"` で改題して**手順 1 から再実行**（script は rc 1 で止まる）
-- `conflict-commit`: コミットは書き換えられないので 2a では止めず、`KEYWORD_SUGGEST` を参考に件名・本文を決めて 2b をマージの条件にする。Refs 運用では抵触が無くても両方明示が既定:
-
-```bash
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" precheck "${PR_NUMBER}" \
-  --subject "fix: 誤クローズを防ぐ検査を追加する (#${PR_NUMBER})" \
-  --body "Refs #${REFS_ISSUE}
-
-post-merge 検証が残るため Issue は open のまま維持する。"
-```
+- `conflict-commit`: コミットは書き換えられないので 2a では止めず、`KEYWORD_SUGGEST` を参考に件名・本文を決めて 2b をマージの条件にする。Refs 運用では抵触が無くても両方明示が既定（起動形は手順 1 と同じ）: `finish.sh precheck "${PR_NUMBER}" --subject "<件名 (#PR)>" --body "Refs #${REFS_ISSUE}（open 維持の理由）"`
 
 `MERGE_MESSAGE_GATE=ok` の文字列は script が `MERGE_COMMAND` へ引用して載せる。**文字列を打ち直さずそのまま手順 7 へ持ち越す**。Refs 群が 0 件なら 2a・2b は走らない。
+
+### 2c. 未返信のレビュースレッド
+
+script は checks の待機の後に GraphQL `reviewThreads` を全件読み、未 resolve・返信なし・起点が PR 作者でないスレッドを `REVIEW_THREADS_UNANSWERED=<件数>` と `REVIEW_THREAD=` 行で列挙し、1 件でもあれば `PRECHECK=blocked`（rc 1）。**内容は見ない** — 各スレッドへ判定（この PR で直す / follow-up Issue #N / 退ける理由）を返信してから手順 1 へ戻る。取得失敗は rc 2。詳細は references/merge-gate.md 2c。
 
 ### 3. AC 照合（判断）
 
 `gh issue view "$ISSUE_URL" --json title,body` / `gh pr diff "$PR_NUMBER"` / `gh pr view "$PR_NUMBER" --json body,statusCheckRollup,reviewDecision` を突き合わせる。
 
 - **Issue 本文は全文取得する**（`head` / `tail` で切らない。AC / DoD は末尾に多い）
-- 「テストがパスすること」系の DoD は diff だけで達成と判定せず、checks かテストコマンドの**実行結果**を根拠にする。**根拠が取得できない項目は「未達」扱い**
+- 「テストがパスすること」系の DoD は diff だけで達成と判定せず、checks かテストの**実行結果**を根拠にする。**根拠が取得できない項目は「未達」**
 - **根拠は AC の指す対象を測っているか**: AC ごとに「根拠が測った対象 = AC が指す対象」を 1 行で書き、測る口が無ければ「測れない」= 未達（他 AC の達成数で埋めない）。bug 種別の指す対象は原因 — 記録（ログ・再現）から名指しできなければ達成にせず「原因未確定。次回読めるようにする計測を入れた / 入れていない」を完了報告に書く
 
 | 判定 | 意味 |
@@ -121,21 +117,20 @@ post-merge 検証が残るため Issue は open のまま維持する。"
 
 #### 5b. 本文の書き換えと送信
 
-script で文字列パッチを当てる場合は [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。達成した AC は **Markdown タスクリスト記法の checked state（`- [ ]` → `- [x]`）**で書き換える（`☑` 等はタスクとして認識されない）:
+script のパッチは [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。達成した AC は **タスクリスト記法の checked state（`- [ ]` → `- [x]`）**で書き換える（`☑` 等は認識されない）:
 
 ```bash
 gh issue view "$ISSUE_URL" --json body,updatedAt   # 1) body を /tmp/issue-body-"${ISSUE_NUMBER}".md と同 .orig.md へ保存
-# 2) 達成と判定した AC の行だけを "- [ ]" → "- [x]" へ個別に置換（sed 等の一括置換は禁止）
-# 3) 機械判定（目視しない）: 変更行は (a) チェックボックス行 か (b) ff-effort:begin / end 行の間だけ。
-#    マーカー行の変更・削除は違反。パスと Issue 番号は :? で fail-closed
+# 2) 達成した AC の行だけを "- [ ]" → "- [x]" へ個別に置換（一括置換は禁止）
+# 3) 機械判定: 変更行はチェックボックス行か ff-effort:begin / end の間だけ（マーカー行の変更・削除は違反）
 JUDGE="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}/scripts/check-issue-body-diff.sh"
 ISSUE_NUMBER="${ISSUE_NUMBER:?Issue 番号を先に設定すること}"
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "$JUDGE" "/tmp/issue-body-${ISSUE_NUMBER}.orig.md" "/tmp/issue-body-${ISSUE_NUMBER}.md"
 case $? in
   0) : ;;  # 許可範囲内。4) の送信へ進む
-  1) echo "✗ 許可範囲外の変更。送信せず 2) の書き換えをやり直す" >&2; exit 1 ;;
-  2) echo "✗ 検査が成立していない（マーカー構成の破損・baseline の異常）。送信しない" >&2; exit 2 ;;
-  *) echo "✗ 上記以外の終了コード = 判定器を起動できていない。検査は成立していないので送信しない" >&2; exit 2 ;;
+  1) echo "✗ 許可範囲外の変更。送信せず 2) をやり直す" >&2; exit 1 ;;
+  2) echo "✗ 検査不成立（マーカー破損・baseline 異常）。送信しない" >&2; exit 2 ;;
+  *) echo "✗ 上記以外 = 判定器を起動できていない。送信しない" >&2; exit 2 ;;
 esac
 # 4) 送信直前に updatedAt を再取得し、変化していれば 1) から
 gh issue edit "$ISSUE_URL" --body-file "/tmp/issue-body-${ISSUE_NUMBER}.md"
@@ -145,7 +140,7 @@ gh issue edit "$ISSUE_URL" --body-file "/tmp/issue-body-${ISSUE_NUMBER}.md"
 
 ### 6. 完了報告コメントの投稿
 
-**日本語**で `--body-file` 投稿する。冒頭の識別マーカー `<!-- close-issue-report:PR-<PR番号> -->` を持つ既存コメントがあれば更新して重複を防ぐ:
+**日本語**で `--body-file` 投稿する。冒頭の識別マーカー `<!-- close-issue-report:PR-<PR番号> -->` を持つ既存コメントがあれば更新する:
 
 ```bash
 gh issue comment "$ISSUE_URL" --body-file "/tmp/close-issue-report-${ISSUE_NUMBER}.md"
@@ -173,11 +168,11 @@ gh issue comment "$ISSUE_URL" --body-file "/tmp/close-issue-report-${ISSUE_NUMBE
 - PR: #<PR番号> / 主要コミット: <手順 1 の PR_COMMITS をそのまま貼る>
 ```
 
-主要コミット欄は `PR_COMMITS` の行を貼り、**自分で hash を書かない**（`KEYWORD_INSPECTED` と同じ。`PR_COMMITS_SOURCE` が `git` 以外ならその値を併記）。乖離率が帯の外なら「乖離の原因」は必須（帯は references/effort.md）。AC 記載なし・post-merge 検証待ちの書き方は references/ac-judgement.md。
+主要コミット欄は `PR_COMMITS` の行を貼り、**自分で hash を書かない**（`KEYWORD_INSPECTED` と同じ。`PR_COMMITS_SOURCE` が `git` 以外なら併記）。乖離率が帯の外なら「乖離の原因」は必須（references/effort.md）。AC 記載なし・post-merge 検証待ちの書き方は references/ac-judgement.md。
 
 ### 7. ゲート実測鮮度の照合（マージ直前）
 
-fix commit を積んだ回や手順 1 から時間が経った回は、**マージ直前に `finish.sh precheck` をもう一度実行する**（Refs 運用は `--subject` / `--body` 付き）。script が checks の有無で分岐し、照合直前に読み直した `headRefOid` を記録と照合する。根拠は [references/merge-gate.md](references/merge-gate.md)。判断点:
+fix commit を積んだ回や手順 1 から時間が経った回は、**マージ直前に `finish.sh precheck` をもう一度実行する**（Refs 運用は `--subject` / `--body` 付き）。script が checks の有無で分岐し、読み直した `headRefOid` を記録と照合する（根拠は [references/merge-gate.md](references/merge-gate.md)）。判断点:
 
 - **`FRESH_STATUS`**: 0 = 一致（`FRESH_REPORT` を報告へ）/ 1 = 不一致（止まる。`RELATION` に従って取り込んでゲートを回し直し、手順 1 へ）/ 2 = 判定不能（止めないが `FRESH_REASON` / `FRESH_ACTION` を**両方**報告へ。**2 で止めないのは意図的** — 記録の仕組みを持たないプロジェクトでは常態）/ 3 = 検査不成立（止める）
 - **`RERUN_FULL_GATE`**（判定不能のとき）: `yes` は clean な木で全件ゲートを再実行して手順 1 へ。`no` は進む（**リリース前・契約面の変更時は除く** — script は rc 0 を返すのでここで判断）。`see-action` は `FRESH_ACTION` に従う
@@ -207,10 +202,10 @@ merge コマンドは script が生成する（`MERGE_COMMAND_BEGIN` 〜 `END`�
     gh issue view 46 --json state
 ```
 
-- Refs 運用は 1 行目に `/ post-merge 検証待ち 1）— **マージ後も open 維持**`、抵触検査に `✅ 2a 抵触なし（INSPECTED 7 行）/ 2b 抵触なし（INSPECTED 2 行）` を書く。`- CI checks: <手順 7 の CHECKS_REPORT をそのまま貼る>` と鮮度の欄は省略しない（判定不能でも）
-- `AUTO_CLOSE_UNRELIABLE=1` なら手動クローズの警告（references/merge-gate.md の定型文）を**必ず**添える。head SHA と merge コマンドは script の同じ実行が出した値にする
+- Refs 運用は 1 行目に `/ post-merge 検証待ち 1）— **マージ後も open 維持**`、抵触検査に `✅ 2a 抵触なし（INSPECTED 7 行）/ 2b 抵触なし（INSPECTED 2 行）` を書く。`- CI checks: <手順 7 の CHECKS_REPORT をそのまま貼る>` と鮮度の欄は判定不能でも省略しない
+- `AUTO_CLOSE_UNRELIABLE=1` なら手動クローズの警告（references/merge-gate.md の定型文）を**必ず**添える。head SHA と merge コマンドは同じ precheck 実行の値にする
 - **read-back は検査を追加しても省略しない** — 手順 2 は `GH-N` や完全 URL を見ないので、実際の state だけが最終証拠。期待と違えば `gh issue reopen` / `gh issue close` で復旧し、原因を記録する
 
 ## 注意事項
 
-- このコマンドは **Issue をクローズしない**（マージ時の `Closes #N` に任せる。Refs 運用の Issue を閉じるのは post-merge 検証を実測した人）。自動クローズは (1) クローズリンクのマージ (2) squash メッセージの closing keyword の 2 経路で、空 API を「閉じない」と読まない
+- このコマンドは **Issue をクローズしない**（マージ時の `Closes #N` に任せる。Refs 運用の Issue は post-merge 検証を実測した人が閉じる）。自動クローズは (1) クローズリンク (2) squash メッセージの closing keyword の 2 経路で、空 API を「閉じない」と読まない

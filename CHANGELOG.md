@@ -20,6 +20,17 @@
 
 ## [Unreleased]
 
+## [0.142.0] - 2026-09-30
+
+### 追加
+
+- `scripts/finish.sh precheck` が、checks の待機の後（マージ直前）に PR のレビュースレッド（inline コメント。自動レビュー bot の指摘を含む）を GraphQL `reviewThreads` で全件読み、返信の無いスレッド（未 resolve・返信なし・起点が PR 作者でない）を `REVIEW_THREADS_UNANSWERED=` と `REVIEW_THREAD=` 行で列挙する。1 件でもあれば `PRECHECK=blocked`（rc 1）で止め merge コマンドを出さない。取得失敗・解釈不能は 0 件へ倒さず rc 2。`/close-issue` は手順 2c として各スレッドへ判定（この PR で直す / follow-up Issue / 退ける理由）を返信してから再実行する規定を持つ（bot の指摘を読まずにマージして follow-up の 1 サイクルが増える手戻りの対策）。
+
+### 修正
+
+- adapter-sandbox-contract の一時ディレクトリ削除が実 CLI の終了後の書き込みと競合しても、検査結果の終了コードを保ち、掃除できない場合は警告と残存パスを表示します。
+- PR checks の待機中に一時的な通信エラーが起きても、checks の実際の状態を読み直して再待機します。失敗した check は名前を示し、状態を確定できない場合は判定不能として止めます。
+
 ## [0.141.0] - 2026-09-29
 
 ### 変更

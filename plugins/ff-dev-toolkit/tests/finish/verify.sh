@@ -3,7 +3,8 @@
 # tests/finish: PR の尾の固定手順を機械化した scripts/finish.sh の振る舞い契約。
 #
 # 対象は 3 サブコマンドと、尾の 4 スキル本線のバイト上限:
-#   precheck  — /close-issue 手順 2（closing keyword 抵触検査）と手順 7（checks の有無分岐・
+#   precheck  — /close-issue 手順 2（closing keyword 抵触検査）・手順 2c（返信の無いレビュー
+#               スレッド。GraphQL reviewThreads を stub で返す）と手順 7（checks の有無分岐・
 #               ゲート実測鮮度・merge コマンド生成）。gh は stub、鮮度の記録は同梱の
 #               record-gate-head.sh で本物を書く
 #   cleanup   — PR の実在と gh の到達を確かめてから scripts/merge-cleanup.sh へ委譲する
@@ -24,7 +25,10 @@
 #
 # 変異検出: knowledge-commit.sh の add から default branch の鮮度検査の呼び出しを外すと (H18 / H18b / H19) が赤、fetch 失敗を素通しへ倒すと (H19) が赤（2026-09-24 実測）。
 #
+# 空振り検出: レビュースレッドの取得失敗・解釈不能を「0 件」へ倒す（4b の die_env を `rt_nodes="[]"; break` に）と (T4 / T5) が赤、未返信の判定から作者除外・resolve 除外を外すと (T2)、「起点以外の投稿なし」を `totalCount == 1` へ戻すと (T2 の T_botself)、outdated を除外すると (T3)、blocked の設定行を消すと (T2 / T3 / T10) が赤になる。ページ送りを `hasNextPage // false` へ戻すと (T8b)、after= を渡さないと (T7)、cursor 空の die_env を外すと (T8)、4b を手順 4 の前へ動かすと (T9 / T9b)、鮮度不一致の分岐から併発の併記を消すと (D2c)、totalCount の照合を外すと (T12) が赤になる（2026-09-29 実測。針が当たらない入力 = 取得できない回を緑にしない）。
 # 空振り検出: scripts/finish.sh の写しで precheck の「PR 不在」「gh 不通」「実測の記録が無い」を rc 0 の緑へ倒す（die_env / undetermined の exit 2 を return 0 に）と (B1 / B2 / C1) が赤になる。全スキルが上限内の合成名簿で 1 本だけを 20,001 バイトにすると (L2)、1 本だけを消すと (L3) が赤になる（2026-09-24 実測。針が当たらない入力を緑にしない）。finish.sh の写しで PR_COMMITS の出力行を消すと (A5 / C8 / C9 / F9)、`head -n 1` で 1 行に切ると (F9)、API 代替の `reverse` を外すと (F10)、fetch 失敗・git log 0 件・両方空の分岐を消すと (C11 / C10 / C12)、close-issue 手順 6 の主要コミット欄を `<hash> <件名>` の手書きへ戻すと (A6) が赤になる（2026-09-27 実測）。
+# 空振り検出: watch 非 0 後の失敗 check の抽出を空にすると (D5 / D6c)、再待機上限を 1 回へ下げると (D6 / D6b) が赤になる（2026-09-29 実測）。
+# 空振り検出: watch 非 0 後の全成功を通す分岐を消すと (D6a)、checks 再取得不能時の再取得呼び出しを消すと (D7) が赤になる（2026-09-29 実測）。
 #
 # 実 gh・ネットワーク・課金は伴わない。一時ディレクトリを作れない環境は skip ではなく
 # 赤（この suite の検査は 1 件も成立していない）。
@@ -158,10 +162,16 @@ cat >"$BIN/gh" <<'STUB'
 #   STUB_GH_DOWN=1     … すべて「接続できない」で失敗（gh 不通）
 #   STUB_PR_MISSING=1  … pr view が PullRequest 不在で失敗
 #   STUB_PR_JSON=<path>… pr view が返す JSON（--jq があればそれで引く）
-#   STUB_CHECKS_FAIL=1 … pr checks --watch が失敗（API には到達できる = check の失敗）
-#   STUB_CHECKS_DOWN=1 … pr checks も api rate_limit も「接続できない」で失敗（checks の取得不能）
+#   STUB_CHECKS_FAIL=1 … pr checks --watch が失敗（実値は PR JSON に従う）
+#   STUB_CHECKS_DOWN=1 … pr checks と checks の再取得が失敗（取得不能）
+#   STUB_CHECKS_TIMEOUT=1 … watch が通信エラーで失敗（実値は PR JSON に従う）
+#   STUB_CHECKS_TIMEOUT_ONCE=<path> … 最初の watch だけ通信エラーで失敗
 #   STUB_PR_JSON_AFTER=<path> … pr checks の待機中に PR が編集された体で、STUB_PR_JSON を差し替える
 #   STUB_CLASSIC=200|404 / STUB_RULESETS=true|false … api の保護判定
+#   STUB_THREADS_JSON=<path> … api graphql（reviewThreads）が返す JSON（未設定ならスレッド 0 件）
+#   STUB_THREADS_DOWN=1     … api graphql だけ「接続できない」で失敗（他は到達できる）
+#   STUB_THREADS_BROKEN=1   … api graphql が nodes を持たない応答を返す（解釈不能）
+#   STUB_THREADS_JSON_PAGE2=<path> … 引数に after= が付いた 2 ページ目の呼び出しで返す JSON
 printf '%s\n' "$*" >>"${STUB_LOG:?}"
 if [ "${STUB_GH_DOWN:-0}" = "1" ]; then
   echo "error connecting to api.github.com" >&2
@@ -169,6 +179,9 @@ if [ "${STUB_GH_DOWN:-0}" = "1" ]; then
 fi
 case "$1 $2" in
   "pr view")
+    if [ "${STUB_CHECKS_DOWN:-0}" = "1" ] && [ "$5" = "statusCheckRollup" ]; then
+      echo "error connecting to api.github.com" >&2; exit 1
+    fi
     if [ "${STUB_PR_MISSING:-0}" = "1" ]; then
       echo "GraphQL: Could not resolve to a PullRequest with the number of $3. (repository.pullRequest)" >&2
       exit 1
@@ -183,6 +196,10 @@ case "$1 $2" in
   "pr checks")
     if [ -n "${STUB_PR_JSON_AFTER:-}" ]; then cp "$STUB_PR_JSON_AFTER" "${STUB_PR_JSON:?}"; fi
     if [ "${STUB_CHECKS_DOWN:-0}" = "1" ]; then echo "error connecting to api.github.com" >&2; exit 1; fi
+    if [ "${STUB_CHECKS_TIMEOUT_ONCE:-}" != "" ] && [ ! -f "$STUB_CHECKS_TIMEOUT_ONCE" ]; then
+      : >"$STUB_CHECKS_TIMEOUT_ONCE"; echo 'Post "https://api.github.com/graphql": operation timed out' >&2; exit 1
+    fi
+    if [ "${STUB_CHECKS_TIMEOUT:-0}" = "1" ]; then echo 'Post "https://api.github.com/graphql": operation timed out' >&2; exit 1; fi
     if [ "${STUB_CHECKS_FAIL:-0}" = "1" ]; then echo "X  lint  fail  1m" >&2; exit 1; fi
     echo "✓  lint  pass  1m"
     ;;
@@ -191,6 +208,12 @@ case "$1 $2" in
   "api "*)
     path="$2"
     case "$path" in
+      graphql)
+        if [ "${STUB_THREADS_DOWN:-0}" = "1" ]; then echo "error connecting to api.github.com" >&2; exit 1; fi
+        if [ "${STUB_THREADS_BROKEN:-0}" = "1" ]; then echo '{"data":{"repository":{"pullRequest":null}}}'; exit 0; fi
+        case "$*" in *after=*) if [ -n "${STUB_THREADS_JSON_PAGE2:-}" ]; then cat "$STUB_THREADS_JSON_PAGE2"; exit 0; fi ;; esac
+        if [ -n "${STUB_THREADS_JSON:-}" ]; then cat "$STUB_THREADS_JSON"; exit 0; fi
+        echo '{"data":{"repository":{"pullRequest":{"author":{"login":"alice"},"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
       rate_limit)
         if [ "${STUB_CHECKS_DOWN:-0}" = "1" ]; then echo "error connecting to api.github.com" >&2; exit 1; fi
         echo 5000 ;;
@@ -412,6 +435,162 @@ else
   bad "C7: 実測記録の読み出しが違う: ${OUT}"
 fi
 
+# ── C'. precheck: 返信の無いレビュースレッド（自動レビュー bot の inline） ─────
+echo
+echo "== C'. precheck: 未返信レビュースレッド（記録不在の状態で判定順を見る） =="
+write_pr_json "Closes #${PRN}" '[]'
+# スレッド JSON を組み立てる: 引数は "id|resolved|outdated|authors(カンマ区切り。null は author 無し)|path|line|body" の列。
+# 環境 THREADS_NEXT=<cursor> で hasNextPage:true、THREADS_PR_AUTHOR で PR 作者（既定 alice。null で author 無し）
+write_threads_json() { # <out> <spec...>
+  local out="$1"; shift
+  local spec nodes="[]"
+  for spec in "$@"; do
+    nodes="$(jq -c --argjson acc "$nodes" --arg s "$spec" '
+      ($s | split("|")) as $f
+      | ($f[3] | split(",")) as $authors
+      | $acc + [{ id: $f[0], isResolved: ($f[1] == "true"), isOutdated: ($f[2] == "true"),
+                  comments: { totalCount: ($authors | length),
+                              nodes: [ $authors[] as $a | { author: (if $a == "null" then null else { login: $a } end), path: $f[4], line: (if $f[5] == "null" then null else ($f[5] | tonumber) end), originalLine: 3, body: $f[6] } ] } }]' -n)"
+  done
+  jq -n --argjson nodes "$nodes" --arg next "${THREADS_NEXT:-}" --arg pa "${THREADS_PR_AUTHOR:-alice}" \
+    '{data:{repository:{pullRequest:{author:(if $pa == "null" then null else {login:$pa} end), reviewThreads:{pageInfo:{hasNextPage:($next != ""), endCursor:(if $next == "" then null else $next end)}, nodes:$nodes}}}}}' >"$out"
+}
+# T1: スレッド 0 件（stub 既定）→ 総数 0 / 未返信 0 で止めない（記録不在の undetermined はそのまま）
+run_finish "$WORK" precheck 7
+if has_line "$OUT" "REVIEW_THREADS_SOURCE=graphql" && has_line "$OUT" "REVIEW_THREADS=0" && has_line "$OUT" "REVIEW_THREADS_UNANSWERED=0" \
+  && ! has_line "$OUT" "REVIEW_THREAD=" && ! has_line "$OUT" "PRECHECK=blocked" && has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "T1: レビュースレッド 0 件は REVIEW_THREADS=0 / UNANSWERED=0 で止めず、merge コマンドを出す"
+else
+  bad "T1: スレッド 0 件の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+# T2: bot の未返信 1 件 + 返信済み 1 件 + resolve 済み 1 件 + 作者自身のメモ 1 件 → 未返信は 1 件だけ、blocked rc 1、merge コマンド無し
+write_threads_json "$TMP/threads.json" \
+  "T_bot|false|false|codex-bot|src/a.sh|12|P1: 末尾の発話が無言で失われる" \
+  "T_replied|false|false|codex-bot,alice|src/b.sh|3|P2: 名前が長い" \
+  "T_resolved|true|false|codex-bot|src/c.sh|8|P2: nit" \
+  "T_self|false|false|alice|src/d.sh|1|自分のメモ" \
+  "T_botself|false|false|codex-bot,codex-bot|src/f.sh|5|P1: bot 自身の追記だけ" \
+  "T_other|false|false|codex-bot,other-bot|src/g.sh|6|P2: 別 bot が続けただけ"
+STUB_THREADS_JSON="$TMP/threads.json" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "REVIEW_THREADS=6" && has_line "$OUT" "REVIEW_THREADS_UNANSWERED=2" \
+  && has_text "$OUT" "REVIEW_THREAD=T_bot	src/a.sh:12	codex-bot	current	P1: 末尾の発話が無言で失われる" \
+  && has_text "$OUT" "REVIEW_THREAD=T_botself	src/f.sh:5	codex-bot	current	P1: bot 自身の追記だけ" \
+  && ! has_text "$OUT" "REVIEW_THREAD=T_replied" && ! has_text "$OUT" "REVIEW_THREAD=T_resolved" && ! has_text "$OUT" "REVIEW_THREAD=T_self" && ! has_text "$OUT" "REVIEW_THREAD=T_other" \
+  && has_line "$OUT" "PRECHECK=blocked" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN" \
+  && has_text "$ERR" "返信の無いレビュースレッドが 2 件" && has_text "$ERR" "次の一手:" && has_text "$ERR" "addPullRequestReviewThreadReply"; then
+  ok "T2: 返信・resolve・作者自身のメモ・別 author の続きは除き、bot の未返信（自身の追記だけの形を含む）2 件を REVIEW_THREAD= で名指しして rc 1（PRECHECK=blocked、merge コマンド無し、返信は mutation を案内）"
+else
+  bad "T2: 未返信スレッドの扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+# T3: outdated（コードが変わった）スレッドも返信が無ければ未返信に数え、行に outdated と originalLine を出す
+write_threads_json "$TMP/threads-outdated.json" "T_old|false|true|codex-bot|src/e.sh|null|古い行への指摘"
+STUB_THREADS_JSON="$TMP/threads-outdated.json" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_text "$OUT" "REVIEW_THREAD=T_old	src/e.sh:3	codex-bot	outdated	古い行への指摘" && has_line "$OUT" "PRECHECK=blocked"; then
+  ok "T3: outdated のスレッドも未返信なら止め、行に outdated と originalLine を出す（コードが変わっても指摘は消えない）"
+else
+  bad "T3: outdated スレッドの扱いが違う（rc=${RC}）: ${OUT}"
+fi
+# T4: 取得失敗はスレッド 0 件へ倒さず rc 2 で名指し（他の API には到達できる回）
+STUB_THREADS_DOWN=1 run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "REVIEW_THREADS_SOURCE=unavailable" && ! has_line "$OUT" "REVIEW_THREADS=" \
+  && has_text "$ERR" "レビュースレッドを取得できません" && has_text "$ERR" "復帰:" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "T4: graphql の取得失敗は rc 2 で名指しし、スレッド 0 件として通さない（merge コマンドも出さない）"
+else
+  bad "T4: 取得失敗の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+# T5: 応答を解釈できない（nodes が無い）も同じく rc 2
+STUB_THREADS_BROKEN=1 run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "REVIEW_THREADS_SOURCE=unavailable" && has_text "$ERR" "レビュースレッドの応答を解釈できません"; then
+  ok "T5: 解釈できない応答は rc 2（0 件へ倒さない）"
+else
+  bad "T5: 解釈不能の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+# T6: 対象 Issue が無い PR ではスレッドを読まない（no-target は早期終了）
+write_pr_json "no issue reference" '[]'
+: >"$STUB_LOG"
+STUB_THREADS_JSON="$TMP/threads.json" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 0 ] && has_line "$OUT" "PRECHECK=no-target" && ! has_line "$OUT" "REVIEW_THREADS=" \
+  && ! awk 'index($0, "api graphql") == 1 { f = 1 } END { exit f ? 0 : 1 }' "$STUB_LOG"; then
+  ok "T6: 対象 Issue が無い PR では graphql を呼ばず no-target で終わる"
+else
+  bad "T6: no-target でスレッドを読んだ（rc=${RC}）: ${OUT}"
+fi
+write_pr_json "Closes #${PRN}" '[]'
+: >"$STUB_LOG"
+# T7: 2 ページ（1 ページ目 hasNextPage:true / endCursor C1 → after=C1 で 2 ページ目）を畳み、2 ページ目の未返信で止まる
+THREADS_NEXT=C1 write_threads_json "$TMP/threads-p1.json" "T_p1|false|false|codex-bot,alice|src/h.sh|1|返信済み"
+write_threads_json "$TMP/threads-p2.json" "T_p2|false|false|codex-bot|src/i.sh|2|2 ページ目の未返信"
+: >"$STUB_LOG"
+STUB_THREADS_JSON="$TMP/threads-p1.json" STUB_THREADS_JSON_PAGE2="$TMP/threads-p2.json" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "REVIEW_THREADS=2" && has_line "$OUT" "REVIEW_THREADS_UNANSWERED=1" && has_text "$OUT" "REVIEW_THREAD=T_p2" \
+  && awk 'index($0, "after=C1") > 0 { f = 1 } END { exit f ? 0 : 1 }' "$STUB_LOG"; then
+  ok "T7: hasNextPage:true は endCursor を after= に渡して次ページを読み、全ページを畳んで判定する"
+else
+  bad "T7: ページ送りが違う（rc=${RC}）: ${OUT} / $(cat "$STUB_LOG")"
+fi
+# T8: hasNextPage:true なのに endCursor が空 → rc 2（0 件へ倒さない）。hasNextPage が boolean でない応答も rc 2
+jq '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor = null' "$TMP/threads-p1.json" >"$TMP/threads-nocursor.json"
+STUB_THREADS_JSON="$TMP/threads-nocursor.json" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "REVIEW_THREADS_SOURCE=unavailable" && has_text "$ERR" "cursor が空" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "T8: 次ページがあるのに cursor が空なら rc 2（1 ページ目だけで判定しない）"
+else
+  bad "T8: cursor 空の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+jq 'del(.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage)' "$TMP/threads.json" >"$TMP/threads-nonext.json"
+STUB_THREADS_JSON="$TMP/threads-nonext.json" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "REVIEW_THREADS_SOURCE=unavailable" && has_text "$ERR" "hasNextPage を読めません"; then
+  ok "T8b: hasNextPage が欠落した応答は「次ページ無し」へ倒さず rc 2"
+else
+  bad "T8b: hasNextPage 欠落の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+# T9: checks があれば待機の後にスレッドを読む（順序）。checks が失敗した回は graphql を呼ばない
+write_pr_json "Closes #${PRN}" '[{"name":"lint","conclusion":"SUCCESS"}]'
+: >"$STUB_LOG"
+STUB_THREADS_JSON="$TMP/threads.json" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "CHECKS=passed" && has_line "$OUT" "REVIEW_THREADS_UNANSWERED=2" \
+  && awk 'index($0, "pr checks") == 1 { c = NR } index($0, "api graphql") == 1 && !g { g = NR } END { exit (c && g && c < g) ? 0 : 1 }' "$STUB_LOG"; then
+  ok "T9: checks の待機（pr checks）の後に reviewThreads（api graphql）を読む（順序を STUB_LOG で固定）"
+else
+  bad "T9: 読む順序が違う（rc=${RC}）: $(cat "$STUB_LOG")"
+fi
+: >"$STUB_LOG"
+write_pr_json "Closes #${PRN}" '[{"name":"lint","conclusion":"FAILURE"}]'
+STUB_CHECKS_FAIL=1 STUB_THREADS_JSON="$TMP/threads.json" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "CHECKS=failed" && ! has_line "$OUT" "REVIEW_THREADS=" \
+  && ! awk 'index($0, "api graphql") == 1 { f = 1 } END { exit f ? 0 : 1 }' "$STUB_LOG"; then
+  ok "T9b: checks が失敗した回はそこで止まり、スレッドを読まない"
+else
+  bad "T9b: checks 失敗時にスレッドを読んだ（rc=${RC}）: ${OUT}"
+fi
+write_pr_json "Closes #${PRN}" '[]'
+# T10: 先着の停止理由（Refs 運用で --subject / --body 無し）と未返信が併発しても、両方を stderr に併記し REVIEW_THREAD= 行も出す
+write_pr_json "Refs #${REFN}" '[]'
+STUB_THREADS_JSON="$TMP/threads.json" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "MERGE_MESSAGE_GATE=required" && has_line "$OUT" "REVIEW_THREADS_UNANSWERED=2" && has_text "$OUT" "REVIEW_THREAD=T_bot" \
+  && has_line "$OUT" "PRECHECK=blocked" && has_text "$ERR" "--subject / --body が無い" && has_text "$ERR" "さらに返信の無いレビュースレッドが 2 件"; then
+  ok "T10: squash メッセージ側の停止理由と未返信スレッドが併発した回は両方を併記して止める（片方だけ直して 2 段停止にならない）"
+else
+  bad "T10: 併発時の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+write_pr_json "Closes #${PRN}" '[]'
+# T11: PR 作者を読めない（author null）回は作者除外を行わず、author の無いコメントも未返信に数える
+THREADS_PR_AUTHOR=null write_threads_json "$TMP/threads-noauthor.json" "T_ghost|false|false|null|src/j.sh|4|削除済みアカウントの指摘" "T_alice|false|false|alice|src/k.sh|9|作者のメモ"
+STUB_THREADS_JSON="$TMP/threads-noauthor.json" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "REVIEW_THREADS_UNANSWERED=2" && has_text "$OUT" "REVIEW_THREAD=T_ghost	src/j.sh:4	(unknown)	current	削除済みアカウントの指摘" && has_text "$OUT" "REVIEW_THREAD=T_alice"; then
+  ok "T11: PR 作者を読めない回は作者除外を行わず（作者不明を「作者のメモ」と同一視しない）、author の無いコメントは (unknown) として数える"
+else
+  bad "T11: author 不明の扱いが違う（rc=${RC}）: ${OUT}"
+fi
+# T12: comments(first: 100) を超えるスレッド（totalCount > 取得件数）は、読めていない側に返信がありうるので未返信に数えない
+jq '(.data.repository.pullRequest.reviewThreads.nodes[] | select(.id == "T_bot") | .comments.totalCount) = 101' "$TMP/threads.json" >"$TMP/threads-long.json"
+STUB_THREADS_JSON="$TMP/threads-long.json" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "REVIEW_THREADS_UNANSWERED=1" && ! has_text "$OUT" "REVIEW_THREAD=T_bot	src/a.sh" && has_text "$OUT" "REVIEW_THREAD=T_botself"; then
+  ok "T12: totalCount が取得件数を超えるスレッドは未返信に数えない（101 件目の返信を見落として止めない）"
+else
+  bad "T12: 100 件超スレッドの扱いが違う（rc=${RC}）: ${OUT}"
+fi
+: >"$STUB_LOG"
+
 # ── D. precheck: 記録あり（一致 / 不一致 / 部分実行） ──────────────────────────
 echo
 echo "== D. precheck: ゲート実測鮮度 =="
@@ -439,6 +618,14 @@ if ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
 else
   bad "D2b: 不一致なのに MERGE_COMMAND を出した"
 fi
+# 鮮度不一致と未返信スレッドの併発: 鮮度で止まる回にも未返信の停止理由と次の一手を併記する（2 段停止にしない）
+STUB_THREADS_JSON="$TMP/threads.json" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "FRESH_STATUS=1" && has_line "$OUT" "REVIEW_THREADS_UNANSWERED=2" && has_line "$OUT" "PRECHECK=blocked" \
+  && has_text "$ERR" "併発: 返信の無いレビュースレッドが 2 件" && has_text "$ERR" "併発の次の一手:"; then
+  ok "D2c: 鮮度不一致で止まる回も未返信スレッドの停止理由と次の一手を併記し PRECHECK=blocked を出す"
+else
+  bad "D2c: 併発時に未返信の理由が出ない（rc=${RC}）: ${OUT} / ${ERR}"
+fi
 # 部分実行の記録 + checks 無し → 回し直し / + checks 成功 → 回し直さない
 record partial --suites alpha
 run_finish "$WORK" precheck 7
@@ -455,17 +642,55 @@ if [ "$RC" -eq 0 ] && has_line "$OUT" "CHECKS=passed" && has_line "$OUT" "RERUN_
 else
   bad "D4: 部分実行 + checks 成功の扱いが違う（rc=${RC}）: ${OUT}"
 fi
+write_pr_json "Closes #${PRN}" '[{"name":"lint","conclusion":"FAILURE"}]'
 STUB_CHECKS_FAIL=1 run_finish "$WORK" precheck 7
-if [ "$RC" -eq 1 ] && has_line "$OUT" "CHECKS=failed" && has_text "$ERR" "止める: checks が未完了または失敗"; then
-  ok "D5: checks が失敗すれば rc 1 で止める（鮮度照合へ進まない）"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "CHECKS=failed" && has_text "$ERR" "失敗した check: lint"; then
+  ok "D5: 実値に失敗 check があれば名前を出して rc 1 で止める"
 else
   bad "D5: checks 失敗の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
 fi
+write_pr_json "Closes #${PRN}" '[{"name":"lint","conclusion":"PENDING"}]'
+: >"$STUB_LOG"
+STUB_CHECKS_TIMEOUT_ONCE="$TMP/watch-once" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 0 ] && has_line "$OUT" "CHECKS=passed" \
+  && [ "$(awk 'index($0, "pr checks 7 --watch --fail-fast") == 1 { n++ } END { print n+0 }' "$STUB_LOG")" -eq 2 ]; then
+  ok "D6: 通信エラー後も実値が pending なら watch をやり直す"
+else
+  bad "D6: pending の再待機ができない（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+write_pr_json "Closes #${PRN}" '[{"name":"lint","conclusion":"SUCCESS"}]'
+: >"$STUB_LOG"
+STUB_CHECKS_TIMEOUT=1 run_finish "$WORK" precheck 7
+if [ "$RC" -eq 0 ] && has_line "$OUT" "CHECKS=passed" \
+  && [ "$(awk 'index($0, "pr checks 7 --watch --fail-fast") == 1 { n++ } END { print n+0 }' "$STUB_LOG")" -eq 1 ] \
+  && [ "$(awk 'index($0, "pr view 7 --json statusCheckRollup") == 1 { n++ } END { print n+0 }' "$STUB_LOG")" -eq 1 ]; then
+  ok "D6a: watch が通信エラーでも再取得した checks が全成功なら再待機せず通る"
+else
+  bad "D6a: 全成功の再取得を使えていない（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+write_pr_json "Closes #${PRN}" '[{"name":"lint","conclusion":"PENDING"}]'
+: >"$STUB_LOG"
+STUB_CHECKS_TIMEOUT=1 run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "CHECKS=unavailable" && ! has_text "$ERR" "赤い check" \
+  && [ "$(awk 'index($0, "pr checks 7 --watch --fail-fast") == 1 { n++ } END { print n+0 }' "$STUB_LOG")" -eq 3 ]; then
+  ok "D6b: 通信エラーが続けば上限で rc 2・成否未確定にする"
+else
+  bad "D6b: 再試行上限の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+write_pr_json "Closes #${PRN}" '[{"name":"lint","conclusion":"STALE"}]'
+STUB_CHECKS_FAIL=1 run_finish "$WORK" precheck 7
+if [ "$RC" -eq 1 ] && has_line "$OUT" "CHECKS=failed" && has_text "$ERR" "失敗した check: lint"; then
+  ok "D6c: terminal な STALE も失敗 check として名前を出す"
+else
+  bad "D6c: STALE の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+write_pr_json "Closes #${PRN}" '[{"name":"lint","conclusion":"PENDING"}]'
 # checks の取得が通信・認証で失敗した回は check の失敗と区別し、gh 不通を名指しする
+: >"$STUB_LOG"
 STUB_CHECKS_DOWN=1 run_finish "$WORK" precheck 7
-if [ "$RC" -eq 2 ] && has_line "$OUT" "CHECKS=unavailable" && ! has_line "$OUT" "CHECKS=failed" && has_text "$ERR" "gh 不通" && has_text "$ERR" "復帰:" \
-  && awk 'index($0, "api rate_limit") == 1 { f = 1 } END { exit f ? 0 : 1 }' "$STUB_LOG"; then
-  ok "D7: gh pr checks の非 0 で API にも到達できなければ rc 2・CHECKS=unavailable で gh 不通を名指しする（check の失敗にしない）"
+if [ "$RC" -eq 2 ] && has_line "$OUT" "CHECKS=unavailable" && ! has_line "$OUT" "CHECKS=failed" && has_text "$ERR" "成否は未確定" && has_text "$ERR" "復帰:" \
+  && [ "$(awk 'index($0, "pr view 7 --json statusCheckRollup") == 1 { n++ } END { print n+0 }' "$STUB_LOG")" -eq 3 ]; then
+  ok "D7: checks 再取得も失敗すれば rc 2・CHECKS=unavailable にする"
 else
   bad "D7: checks 取得不能の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
 fi

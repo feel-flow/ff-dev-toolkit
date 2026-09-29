@@ -44,6 +44,8 @@
 # 宣言 enum の provenance（転記元）は下のテーブルにコメントで残す。ここは
 # 「こうあってほしい値」ではなく **CLI 自身の出力の転記** であり、書き換えてよいのは
 # 実 CLI の出力が変わったときだけ。層 2 がその転記を機械照合する。
+# 掃除は削除競合を最大 3 回再試行し、残存時は警告とパスを出して検査 rc を保つ。
+# 空振り検出: 子プロセスが残らない通常回は 1 回で削除し、対象が既に無い回は削除を呼ばず成功扱い、検査途中の終了は末尾到達ガードが赤になる。
 
 set -euo pipefail
 
@@ -117,10 +119,27 @@ ensure_probe_root() {
 }
 
 FF_REACHED_END=0
+# 実 CLI が終了後も CODEX_HOME に書き込む場合があるため、削除の競合だけを
+# 短時間再試行する。取り残しはパスを警告に残し、検査の終了コードとは分ける。
+ff_remove_temp() { # <path>
+  local path="$1" attempt=1 error=""
+  [ -n "$path" ] || return 0
+  while [ "$attempt" -le 3 ]; do
+    [ -e "$path" ] || return 0
+    if error="$(rm -rf "$path" 2>&1)" && [ ! -e "$path" ]; then
+      return 0
+    fi
+    [ "$attempt" -eq 3 ] || sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  printf '⚠ %s verify: 一時ディレクトリを掃除できませんでした: %s\n' "$SUITE_NAME" "$path" >&2
+  [ -z "$error" ] || printf '  rm: %s\n' "$error" >&2
+  return 0
+}
 ff_cleanup() {
-  ff_rc=$?
-  rm -rf "$WORK"
-  if [ -n "$PROBE_ROOT" ]; then rm -rf "$PROBE_ROOT"; fi
+  local ff_rc=$?
+  ff_remove_temp "$WORK"
+  ff_remove_temp "$PROBE_ROOT"
   if [ "$FF_REACHED_END" != "1" ] && [ "$ff_rc" -eq 0 ]; then
     echo "✗ ${SUITE_NAME} verify: 末尾に到達せず終了した（set -e / set -u による途中死。残りのアサーションは 1 件も実行されていない）" >&2
     ff_rc=1

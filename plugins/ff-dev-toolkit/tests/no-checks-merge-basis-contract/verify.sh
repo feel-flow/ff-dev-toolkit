@@ -27,6 +27,7 @@
 # 途中で切れる。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/no-checks-merge-basis-contract/verify.sh
+# 空振り検出: merge-gate.md の「非 0 なら checks の実値を読み直します」を旧い即時停止へ変えると「watch 非 0 は checks の実値で判定する」が赤になる（2026-09-29 実測）。
 
 set -euo pipefail
 
@@ -131,6 +132,18 @@ file_contains_count "$FINISH" '== "0"' 1 \
 section_contains "$GATE_REF" "$SKILL_HEADING" \
   '--watch --fail-fast' \
   "非空時は --watch --fail-fast で完了を待つ"
+
+section_contains "$GATE_REF" "$SKILL_HEADING" \
+  '非 0 なら checks の実値を読み直します' \
+  "watch 非 0 は checks の実値で判定する"
+
+section_contains "$GATE_REF" "$SKILL_HEADING" \
+  '失敗した check がなく未完了なら上限 3 回まで再待機し' \
+  "通信エラー後の再待機に上限がある"
+
+section_contains "$GATE_REF" "$SKILL_HEADING" \
+  'CHECKS=unavailable` + rc 2' \
+  "上限到達は check 失敗と区別して判定不能にする"
 
 section_contains "$GATE_REF" "$SKILL_HEADING" \
   'マージへ進まない' \

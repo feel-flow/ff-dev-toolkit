@@ -21,14 +21,39 @@
 
 `--subject` と `--body` を両方明示した squash merge のメッセージは**その 2 つだけで決まる**（コミットメッセージは畳み込まれない。実測で確認済み）。片方でも省略すると、リポジトリ設定（`squash_merge_commit_title` / `squash_merge_commit_message`）に応じて PR タイトルやコミットメッセージが供給源になる。だから Refs 運用では抵触の有無に関わらず両方明示が既定で、`--subject` / `--body` を渡さなければ script は `MERGE_MESSAGE_GATE=required` で止まる。検査を通った文字列は script が `MERGE_COMMAND` へ引用して載せる — **文字列を打ち直さずそのまま手順 7 へ持ち越す**（`--subject` のコピペこそが実際の再発経路。人が打ち直した時点で、そこが検査とマージの間の継ぎ目になり 2b は何も保証しなくなる）。
 
+### 2c. 返信の無いレビュースレッド（自動レビュー bot の inline を含む）
+
+`/multi-review` → `/close-issue` → `gh pr merge` のチェーンは、PR に付いた自動レビュー bot（GitHub の Codex connector 等）の inline コメントをどこでも読まなかった。bot は PR 作成・push の数分〜十数分後にレビューを付け、`/multi-review` とは別の指摘を出すので、読まずにマージすると P1 が未反映のまま残り、follow-up の 1 サイクル（起票 → PR → レビュー → マージ）が増える（導入先で 3 回実測。気づいたのはいずれもマージ後の `/ace-curate` の報告）。
+
+script は checks の待機の**後**（マージ直前）に GraphQL `reviewThreads` を全ページ読み、**未返信のスレッド**を列挙する。早すぎる確認の 0 件を「指摘なし」と読まないため、読む時点はここに固定する（PR 作成直後に読み直さない）。
+
+| 出力 | 意味 |
+| --- | --- |
+| `REVIEW_THREADS_SOURCE=graphql / unavailable` | 読めたか。`unavailable` は取得失敗・解釈不能・ページ上限（50 ページ）・cursor 空・`hasNextPage` 不明で、rc 2（**スレッド 0 件へ倒さない**。未返信の有無は未確定。この回は総数・件数の行も出ない） |
+| `REVIEW_THREADS=<総数>` / `REVIEW_THREADS_UNANSWERED=<件数>` | 総数と未返信の件数 |
+| `REVIEW_THREAD=<id>\t<path>:<line>\t<起点の author>\t<current\|outdated>\t<本文の先頭 60 字>` | 未返信 1 件につき 1 行。`<id>` は GraphQL の `PullRequestReviewThread` ノード ID（`PRRT_…`）で、REST の `pulls/<n>/comments/<id>/replies` には渡せない（そちらはコメントの数値 id） |
+
+**未返信** = 未 resolve で、**起点の author 以外の投稿が 1 件も無く**（bot 自身の追記だけでは返信にならない）、起点が PR 作者でないスレッド。返信済み・resolve 済み・作者自身のメモは数えない（PR 作者を読めなかった回は作者除外を行わない。コメントが 100 件を超えるスレッドは読めていない側に返信がありうるので数えない）。`outdated`（指摘した行のコードがその後変わった）も返信が無ければ数える — コードが変わっても指摘は消えない。判定は「返信があるか」だけで**内容は見ない**: 指摘の当否は人 / エージェントがスレッドへの返信で残す（この PR で直す / follow-up Issue の番号 / 退ける理由）。
+
+1 件でもあれば手順 7 で `PRECHECK=blocked`（rc 1）になり merge コマンドは出ない（squash メッセージの抵触など先着の停止理由があれば併記される。鮮度不一致で先に止まる回も `PRECHECK=blocked` と未返信の次の一手を併記する）。次の一手は各スレッドへ返信するか resolve してから `finish.sh precheck` を再実行する。返信は `REVIEW_THREAD=` の `<id>` をそのまま GraphQL の mutation へ渡す（`docs-template/05-operations/deployment/git-workflow.md` のスレッド返信と同じ形）:
+
+```bash
+gh api graphql -f query='mutation($id: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $id, body: $body }) { comment { id } } }' \
+  -f id='<REVIEW_THREAD の id>' -f body='この PR で直す: <commit> / follow-up: owner/repo#N / 退ける理由: …'
+```
+
+返信で「この PR で直す」を選んだ回は fix commit を積むので、手順 4 と同じく手順 1 から回し直す（鮮度記録も動く）。
+
+**時点検査の限界（設計上の受容）**: script が読むのは precheck 実行時点のスレッドで、その後に届いた bot のレビューは次の precheck まで見えない。レビューの「完了」を告げる汎用の信号は無く（bot は PR 作成・push の数分〜十数分後に非同期で付ける）、待つ機構は置かない。`/close-issue` は checks の待機の後 = マージ直前に 1 回だけ読む位置に固定し、precheck から merge までの間を空けない（fix commit を積んだら手順 1 へ戻るので、そのたびに読み直す）。
+
 #### CI checks の有無による分岐（待つか、ローカルゲートを根拠にするか）
 
 script は対象 PR に checks が登録されているかを先に確認します。**既定は PR トリガーの CI がある形**で、checks の完了と成功がマージの根拠になります。PR トリガーの CI を持たないリポジトリでは `gh pr checks --watch` が `no checks reported` を返して即終了するため、これを CI 通過と早合点してはいけません。`statusCheckRollup` の登録を待つ自作の待機ループは、checks が存在しない repo では永遠に終わりません。
 
-- `statusCheckRollup` が**非空**の場合（PR トリガーの CI がある既定の形）は、全 checks の完了と成功を確認してからマージへ進みます。`--watch --fail-fast` で完了を待ち、失敗（rc 非 0）ならそこで止まります（`CHECKS=failed`。マージへ進まない）。**checks の成功がマージの根拠で、ローカルの全件ゲートはリリース前（タグ / Release の作成前）と契約面の変更時に限ります** — 通常の PR のローカル検証は部分ゲート（プロジェクトが変更ベースの選択を持つならその実行）で足ります
+- `statusCheckRollup` が**非空**の場合（PR トリガーの CI がある既定の形）は、全 checks の完了と成功を確認してからマージへ進みます。`--watch --fail-fast` で完了を待ち、非 0 なら checks の実値を読み直します。失敗した check があれば `CHECKS=failed` + rc 1 で止め、名前を示します（マージへ進まない）。**checks の成功がマージの根拠で、ローカルの全件ゲートはリリース前（タグ / Release の作成前）と契約面の変更時に限ります** — 通常の PR のローカル検証は部分ゲート（プロジェクトが変更ベースの選択を持つならその実行）で足ります
 - `statusCheckRollup` が**空配列**（`null` も同じ扱い）の場合（PR トリガーの CI を持たないリポジトリ）、checks の完了を待たずに次へ進み、`CHECKS_REPORT` の文言（「この PR に登録された checks は無い。マージ可否はローカル全件ゲート + 鮮度照合で判定する」）をそのまま手順 8 の完了報告へ明記します。マージ可否はローカル全件ゲートの実行結果と鮮度照合だけを根拠にします
 - `gh pr view` 自体が失敗した場合は、分岐を決められない＝検査が成立していないため停止します（取得失敗を「checks 無し」へ倒さない）
-- `gh pr checks` の非 0 は check の失敗だけでなく通信・認証エラーでも返ります。script は API への到達（`gh api rate_limit`）を確かめ直し、届かなければ `CHECKS=unavailable` + rc 2（gh 不通を名指し。check の失敗として扱わない）、届けば `CHECKS=failed` + rc 1 です
+- `gh pr checks` の非 0 は check の失敗だけでなく通信・認証エラーでも返ります。失敗した check がなく未完了なら上限 3 回まで再待機し、checks の成否を確定できないまま上限に達したら `CHECKS=unavailable` + rc 2 で止めます。通信エラーだけを check の失敗として扱いません
 - checks の待機を挟むので、script は照合直前に PR を読み直し、判定に使った全フィールド（先端・本文・タイトル・コミット・`closingIssuesReferences`・ファイル・checks の有無ほか）を初回と比べます。差があれば `PR_SNAPSHOT=changed` と `PR_SNAPSHOT_DIFF`（差のあるフィールド名）を出して rc 1 で止まるので、`finish.sh precheck` を**最初から**再実行します（途中の出力を流用しない — 待機中に足された `Refs` や改題は初回の抵触検査を通っていない）
 
 #### ゲート実測鮮度そのものの照合
