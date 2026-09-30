@@ -40,6 +40,17 @@
 # 合わせて決めた type を、合流先の `/retrospective` が既定の knowledge で上書きしない）。
 # `commit --type` の明示が最優先。
 #
+# commit-msg hook のドライラン: 件名を組み立てたら、stage・保留記録・commit より前にリポジトリの
+# prepare-commit-msg → commit-msg hook（`git rev-parse --git-path hooks/<名>` が指す実行可能ファイル。
+# core.hooksPath を反映するので husky の `.husky/_` も同じ経路で見つかる）へ `git commit -m` と同じ順で
+# 件名ファイルを渡して exit code を見る。拒否されたら hook の出力（要求形式）をそのまま stderr へ出して
+# exit 4 で止まる。`add` は stage も保留記録も作らない（finish.sh の `--claim` 経由では文書と claim の
+# stage は残る）ので、`discard` 無しで `add --type <type>` の再実行か、書いたパスへ固定した手での
+# コミット（`git commit -m <件名> -- <パス>`）へ移れる。
+# `commit` の拒否では保留記録を残す。hook が無い・実行可能でないリポジトリは従来どおり。件名を
+# hook の出力から組み立て直すことはしない — リポジトリの契約（hook）を真実源にし、通らない件名を
+# 作らないところまでを持つ。
+#
 # 保留記録は作業ツリーの git ディレクトリ配下（`ff-knowledge-pending`）に置く。作業ツリーの
 # 内容ではないのでコミットにも公開にも出ない。worktree ごとに別の記録になる。
 #
@@ -48,8 +59,9 @@
 # Claude Code の PreToolUse ガードは script の内側の commit と他ホストの経路には届かないため。
 #
 # 出力（stdout、`KEY=値` は行頭一致）:
-#   add:    KNOWLEDGE_PENDING=<件数>
-#   commit: KNOWLEDGE_COMMIT=<sha>|none / KNOWLEDGE_SUBJECT=<件名> / KNOWLEDGE_ENTRIES=<件数>
+#   add:    KNOWLEDGE_PENDING=<件数>（hook でドライランした回は KNOWLEDGE_SUBJECT=<hook 通過後の件名> も）
+#   commit: KNOWLEDGE_COMMIT=<sha>|none / KNOWLEDGE_SUBJECT=<commit された件名> / KNOWLEDGE_ENTRIES=<件数>
+#   add / commit の hook 拒否: KNOWLEDGE_COMMIT=hook-rejected / KNOWLEDGE_SUBJECT=<件名> / KNOWLEDGE_HOOK=<hook のパス>
 #   status: KNOWLEDGE_PENDING=<件数> / KNOWLEDGE_PENDING_BRANCH= / KNOWLEDGE_PENDING_BASE= と `  <source> <ID> <要約>` 行
 #   discard: KNOWLEDGE_DISCARDED=<件数>
 #
@@ -59,6 +71,7 @@
 #      いる add）。保留記録は残す
 #   2  使い方の誤り・環境不備（git 管理外・パスがリポジトリ外 / 不在・lib 不在・origin/<default> を
 #      fetch / 解決できない add）
+#   4  commit-msg hook が組み立てた件名を拒否した（add は stage も保留記録も作らない。commit は保留記録を残す）
 #
 # 実装上の制約: macOS 標準の bash 3.2 で動くこと（連想配列・readarray を使わない）。
 
@@ -305,6 +318,78 @@ assert_default_branch_fresh() {
   fi
 }
 
+# 件名と本文を E 行（`E<TAB>source<TAB>id<TAB>summary<TAB>categories`）から組み立てる。add のドライランと
+# commit が同じ関数を通るので、ドライランで確かめた件名と commit する件名がずれない。
+# 引数: <E 行（改行区切り）> <commit type>。結果は msg_subject / msg_body / msg_count へ入れる
+compose_message() {
+  local lines="$1" t="$2" ordered categories
+  # ace → obs の順、同じ source の中は与えた順
+  ordered="$(printf '%s\n' "$lines" | awk -F '\t' '$1=="E" && $2=="ace"'; printf '%s\n' "$lines" | awk -F '\t' '$1=="E" && $2=="obs"')"
+  msg_count="$(printf '%s\n' "$ordered" | awk -F '\t' '$1=="E" {n++} END {print n+0}')"
+  categories="$(printf '%s\n' "$ordered" | awk -F '\t' '$5 != "" { s = s (s == "" ? "" : ", ") $5 } END { print s }')"
+  if [[ "$msg_count" -eq 1 ]]; then
+    msg_subject="$(printf '%s\n' "$ordered" | awk -F '\t' -v t="$t" '{print t ": " $3 " " $4}')"
+    msg_body=""
+  else
+    msg_subject="$(printf '%s\n' "$ordered" | awk -F '\t' -v t="$t" '{ s = s (NR > 1 ? " / " : "") $3 } END { print t ": " s }')"
+    msg_body="$(printf '%s\n' "$ordered" | awk -F '\t' '{print "- " $3 " " $4}')"
+  fi
+  [[ -z "$categories" ]] || msg_body="${msg_body:+$msg_body$'\n\n'}Categories: ${categories}"
+}
+
+HOOK_REJECTED_RC=4
+dry_run_subject=""
+# リポジトリの hook（git が commit で実際に呼ぶもの）の絶対パス。無い・実行可能でなければ空。
+# `--git-path hooks/<名>` は core.hooksPath（相対なら作業ツリーのルート基準）と linked worktree の
+# 共通 git ディレクトリを git 自身の規則で解決する。git は実行可能でない hook を呼ばないので同じ条件で見る
+# 引数: <hook 名>
+repo_hook() {
+  local p
+  p="$(git -C "$repo_root" rev-parse --git-path "hooks/$1" 2>/dev/null)" || return 0
+  case "$p" in /*) ;; *) p="$repo_root/$p" ;; esac
+  if [[ -f "$p" && -x "$p" ]]; then printf '%s\n' "$p"; fi
+  return 0
+}
+# 組み立てた件名・本文を、`git commit -m` と同じ順（prepare-commit-msg → commit-msg）で hook へドライランで
+# 通す。prepare-commit-msg が件名ファイルを書き換える構成（ブランチ名から Issue 番号を差し込む等）では、
+# 書き換え後の内容を commit-msg へ渡す。通れば（hook が無ければ）0 で戻る。拒否されたら hook の出力を
+# そのまま示し、HOOK_REJECTED_RC で終わる。
+# 引数: <件名> <本文> <止まった後の案内>
+commit_msg_dry_run() {
+  local subject="$1" body="$2" hint="$3" prepare hook msg_file out="" rc=0
+  dry_run_subject=""
+  prepare="$(repo_hook prepare-commit-msg)"
+  hook="$(repo_hook commit-msg)"
+  [[ -n "$prepare" || -n "$hook" ]] || return 0
+  msg_file="$(mktemp "${git_dir}/ff-knowledge-msg.XXXXXX")" || die_env "commit-msg hook へ渡す件名ファイルを作れません（${git_dir}）"
+  { printf '%s\n' "$subject"; [[ -z "$body" ]] || printf '\n%s\n' "$body"; } >"$msg_file" \
+    || { rm -f "$msg_file"; die_env "commit-msg hook へ渡す件名ファイルへ書けません: ${msg_file}"; }
+  # git と同じく作業ツリーのルートで、メッセージファイルのパスを第 1 引数にして呼ぶ（prepare-commit-msg は
+  # `-m` のときと同じく第 2 引数に message を渡す。非 0 なら git も commit を中止する）
+  if [[ -n "$prepare" ]]; then
+    out="$(cd "$repo_root" && "$prepare" "$msg_file" message </dev/null 2>&1)" || { rc=$?; hook="$prepare"; }
+  fi
+  if [[ "$rc" -eq 0 && -n "$hook" ]]; then
+    out="$(cd "$repo_root" && "$hook" "$msg_file" </dev/null 2>&1)" || rc=$?
+  fi
+  # hook（主に prepare-commit-msg）が書き換えた後の件名。git が commit する件名はこちら
+  dry_run_subject="$(awk 'NR == 1 { print; exit }' "$msg_file" 2>/dev/null)" || dry_run_subject=""
+  dry_run_subject="${dry_run_subject:-$subject}"
+  rm -f "$msg_file"
+  [[ "$rc" -ne 0 ]] || return 0
+  echo "KNOWLEDGE_COMMIT=hook-rejected"
+  echo "KNOWLEDGE_SUBJECT=${dry_run_subject}"
+  echo "KNOWLEDGE_HOOK=${hook}"
+  {
+    echo "✗ ${hook##*/} hook が件名を拒否しました（rc=${rc}）: ${dry_run_subject}"
+    echo "  hook: ${hook}"
+    echo "  hook の出力:"
+    printf '%s\n' "$out" | sed 's/^/    /'
+    echo "  ${hint}"
+  } >&2
+  exit "$HOOK_REJECTED_RC"
+}
+
 cmd="${1:-}"
 [[ -n "$cmd" ]] || usage
 shift
@@ -356,6 +441,15 @@ case "$cmd" in
         *) die_env "パスがリポジトリの外です: $p" ;;
       esac
     done
+    # stage と保留記録より前に、この add の後で commit が作る件名を commit-msg hook へ通す（通らない件名の
+    # 保留を作らない）。既存の保留（同じ source と ID は 1 件）と、add で記録済みの commit type を合わせる
+    prospective="$( { [[ ! -s "$pending" ]] || awk -F '\t' '$1=="E"' "$pending"; printf 'E\t%s\t%s\t%s\t%s\n' "$source" "$id" "$summary" "$category"; } \
+      | awk -F '\t' '!seen[$2 FS $3]++')"
+    prospective_type="$add_type"
+    [[ -n "$prospective_type" || ! -s "$pending" ]] || prospective_type="$(awk -F '\t' '$1=="T" { t = $2 } END { print t }' "$pending")"
+    compose_message "$prospective" "${prospective_type:-knowledge}"
+    commit_msg_dry_run "$msg_subject" "$msg_body" \
+      "保留記録は作っていません（discard は不要。finish.sh の --claim 経由では文書と claim の stage は残る）。type だけの不一致なら add --type <type> で再実行し、Issue 番号など件名の形そのものを求める hook なら、書いたパスへ固定した git commit -m <規約どおりの件名> -- <書いたパス> で手でコミットしてください"
     git -C "$repo_root" add -- "${rel_paths[@]}" || die_stop "stage できません: ${rel_paths[*]}"
     if [[ ! -s "$pending" ]]; then
       printf 'M\t%s\t%s\t%s\n' "$(current_branch)" "$(git -C "$repo_root" rev-parse HEAD)" "$(date +%s)" >"$pending" \
@@ -379,6 +473,8 @@ case "$cmd" in
         || die_stop "保留記録へ書けません: $pending"
     fi
     echo "KNOWLEDGE_PENDING=$(entry_count)"
+    # hook でドライランした回だけ、hook 通過後の件名（commit が作る件名の見込み）を出す（hook の無い回の出力は従来どおり）
+    [[ -z "$dry_run_subject" ]] || echo "KNOWLEDGE_SUBJECT=${dry_run_subject}"
     ;;
 
   freshness)
@@ -455,15 +551,10 @@ case "$cmd" in
       type="$(awk -F '\t' '$1=="T" { t = $2 } END { print t }' "$pending")"
       type="${type:-knowledge}"
     fi
-    categories="$(printf '%s\n' "$entries" | awk -F '\t' '$5 != "" { s = s (s == "" ? "" : ", ") $5 } END { print s }')"
-    if [[ "$count" -eq 1 ]]; then
-      subject="$(printf '%s\n' "$entries" | awk -F '\t' -v t="$type" '{print t ": " $3 " " $4}')"
-      body=""
-    else
-      subject="$(printf '%s\n' "$entries" | awk -F '\t' -v t="$type" '{ s = s (NR > 1 ? " / " : "") $3 } END { print t ": " s }')"
-      body="$(printf '%s\n' "$entries" | awk -F '\t' '{print "- " $3 " " $4}')"
-    fi
-    [[ -z "$categories" ]] || body="${body:+$body$'\n\n'}Categories: $categories"
+    compose_message "$entries" "$type"
+    subject="$msg_subject" body="$msg_body"
+    commit_msg_dry_run "$subject" "$body" \
+      "保留記録は残してあります。type だけの不一致なら commit --type <type> で再実行し、件名の形そのものを求める hook なら discard してから、記録したパスへ固定した git commit -m <規約どおりの件名> -- <記録したパス> で手でコミットしてください"
     ff_commit_identity_check "$repo_root" || exit 1
     msg_args=(-m "$subject")
     [[ -z "$body" ]] || msg_args+=(-m "$body")
@@ -472,8 +563,10 @@ case "$cmd" in
     fi
     sha="$(git -C "$repo_root" rev-parse HEAD)" || die_stop "commit 後の HEAD を解決できません"
     rm -f "$pending" || die_stop "commit は完了しましたが保留記録を消せません（二重コミットを防ぐため手で消してください）: $pending"
+    # hook（prepare-commit-msg 等）が書き換えた後の、実際に commit された件名を出す
+    committed_subject="$(git -C "$repo_root" log -1 --format=%s "$sha" 2>/dev/null)" || committed_subject=""
     echo "KNOWLEDGE_COMMIT=$sha"
-    echo "KNOWLEDGE_SUBJECT=$subject"
+    echo "KNOWLEDGE_SUBJECT=${committed_subject:-$subject}"
     echo "KNOWLEDGE_ENTRIES=$count"
     ;;
 

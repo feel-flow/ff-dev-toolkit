@@ -79,6 +79,7 @@
 導入先のセッションで発火する入口です。削除・改名・**発火イベントの変更**は破壊的変更です。そのため一覧は `発火イベント :: matcher :: 実体` の三つ組で持ちます（matcher を持たないイベントは `-`）。実体のファイル名だけを並べると、同じ実体を別イベントへ付け替える変更が集合として不変になり、検査が素通りします。
 
 - `PermissionDenied :: - :: hooks/guard-review-in-flight.sh`
+- `PostToolUse :: Bash :: hooks/guard-zsh-glob.sh`
 - `PreToolUse :: Bash :: hooks/guard-background-cwd.sh`
 - `PreToolUse :: Bash :: hooks/guard-checkout-restore.sh`
 - `PreToolUse :: Bash :: hooks/guard-effort-actual.sh`

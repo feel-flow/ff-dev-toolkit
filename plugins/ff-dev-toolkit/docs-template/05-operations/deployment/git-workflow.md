@@ -1346,13 +1346,13 @@ GitHub Discussions への記録に加え、ACE Playbook への構造化記録を
 
 > このセクションが ACE 知見コミットのマージ方針の **SSOT**。ace-cycle.md / `/ace-curate` 手順5 はここを参照する。
 
-**保護判定（必須・直 push を試す前に行う）**: `<default-branch>` が保護されているかを確認する（branch protection API → rulesets API → いずれも判定不能なら既定を試して拒否メッセージで PR 経路へ切替。手順の詳細は `/ace-curate` 手順5）。保護されている場合は下の既定（直 push）を試みず、chore PR 経路（必須）を使う。
+**保護判定（必須・直 push を試す前に行う）**: `<default-branch>` に直 push を止める保護があるかを確認する（branch protection API → rulesets API → いずれも判定不能なら既定を試して拒否メッセージで PR 経路へ切替。手順の詳細は `/ace-curate` 手順5 の references/curate.md）。直 push を止める保護の中身 — classic の PR 必須・必須チェック・push 制限・署名必須・読み取り専用、または rulesets の `pull_request` type — があるときだけ下の既定（直 push）を試みず、chore PR 経路（必須）を使う。force push の禁止だけの classic 保護は `finish.sh knowledge-commit probe` が `classic=protected-no-pr` と出し、rulesets にも `pull_request` type が無ければ `protection=unprotected`（直 push）になる。
 
-**既定（推奨）— `<default-branch>` 直マージ**: 保護されていない `<default-branch>` にのみ適用。マージ・cleanup 後の `<default-branch>` で `/ace-curate <PR番号>` を実行し、PLAYBOOK.md 追記を **`<default-branch>` に直接 commit + push** する。PLAYBOOK.md は append-only で構造化されており、ID も PRスコープ式（[エントリID規則](../../08-knowledge/PLAYBOOK.md#エントリid規則)）で衝突しないため、ACE 1 サイクル分の小さな知見追加を毎回 PR 化するのは過剰なオーバーヘッド。
+**既定（推奨）— `<default-branch>` 直マージ**: 直 push を止める保護の無い `<default-branch>` にのみ適用（force push の禁止だけの保護は対象に含む）。マージ・cleanup 後の `<default-branch>` で `/ace-curate <PR番号>` を実行し、PLAYBOOK.md 追記を **`<default-branch>` に直接 commit + push** する。PLAYBOOK.md は append-only で構造化されており、ID も PRスコープ式（[エントリID規則](../../08-knowledge/PLAYBOOK.md#エントリid規則)）で衝突しないため、ACE 1 サイクル分の小さな知見追加を毎回 PR 化するのは過剰なオーバーヘッド。
 
 **knowledge コミットの書き込み口（共通）**: `/ace-curate` の PLAYBOOK 追記と `/retrospective` の観測台帳（`OBSERVATIONS.md`）追記は、同梱の `scripts/finish.sh knowledge-commit`（`add` → `commit` → `push`。実体は `scripts/knowledge-commit.sh` で、claim の再生成 `add --claim`・保護判定 `probe`・直 push・PR 経由 `pr` も同じ入口が持つ）で commit を作る。同じセッションで両方が書いた回は 1 コミット（`knowledge: ACE-… / OBS-…`）に畳み、片方だけなら従来どおりの件名の単独コミットになる。commit は記録したパス（PLAYBOOK・台帳と各 claim）へ固定し、コードの変更を含めない。commit の直前に検査用の合成 identity（`fixture` / `*@example.invalid`）を止める。`/ace-curate` は既定ではその場で commit し、チェーンの起動元（振り返りの事前注入 hook の文面）が `ACE_DEFER_TO_RETRO=1` を指示した回だけ `add` までで止める。`/retrospective` はモード判定の直後に保留を確かめ、振り返りを実施しない回でも回収する。
 
-**chore PR 経路**: 大人数チーム、または知見内容自体をレビューに残したい場合は任意エスカレーション、**`<default-branch>` が保護されている場合は必須経路**。`<default-branch>` から `chore/ace-from-pr-<PR番号>` ブランチを切り、PLAYBOOK.md 追記を小さい chore PR として PR レビュー → squash merge する（保護判定・commitlint type 置換の詳細は `/ace-curate` 手順5）。
+**chore PR 経路**: 大人数チーム、または知見内容自体をレビューに残したい場合は任意エスカレーション、**`<default-branch>` に直 push を止める保護がある場合は必須経路**。`<default-branch>` から `chore/ace-from-pr-<PR番号>` ブランチを切り、PLAYBOOK.md 追記を小さい chore PR として PR レビュー → squash merge する（保護判定・commitlint type 置換の詳細は `/ace-curate` 手順5）。
 
 > **ACE-012 との関係（混同しないこと）**: ACE-012 は _うっかり_ feature 作業を `<default-branch>` に直接 push してしまう事故（ブランチ切り替わりの見落とし）を防ぐルール。一方、本セクションの「`<default-branch>` 直マージ」は `knowledge:`（または commitlint type 許容リストにより置換された type）プレフィックス付きの **knowledge 単独コミット**（PLAYBOOK・観測台帳の追記だけを含む。両方を書いた回は上の書き込み口が 1 コミットに畳む）に限定した _意図的・承認済み_ のフローであり、両者は別物。ACE-012 は引き続き有効（deprecated にしない）。
 

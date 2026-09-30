@@ -153,7 +153,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### 5. コミット
 
-**既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。**保護判定（必須・直 push を試す前に行う）**は `probe`: `protected` → PR 経由 / `unprotected` → 直 push / `unknown` → 既定を試す（拒否は rc 3 で PR 経由へ）。commitlint（`header-max-length`・type 許容リスト）で `knowledge` が非許容なら prefix だけを置き換える。全文は [references/curate.md](references/curate.md)。追記を script で当てるなら [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
+**既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。**保護判定（必須・直 push を試す前に行う）**は `probe`: `protected` → PR 経由 / `unprotected` → 直 push / `unknown` → 既定を試す（拒否は rc 3 で PR 経由へ）。`classic=protected-no-pr` は rulesets に PR 必須が無ければ `unprotected`。commitlint（`header-max-length`・type 許容リスト）で `knowledge` が非許容なら prefix だけを置き換える。全文は [references/curate.md](references/curate.md)。追記を script で当てるなら [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
 
 ```bash
 commit_type="knowledge"   # commitlint で knowledge が非許容なら chore 等へ（要約・Categories: body は不変）

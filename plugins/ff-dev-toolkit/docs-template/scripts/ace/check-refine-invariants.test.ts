@@ -1491,6 +1491,180 @@ describe("main", () => {
   });
 });
 
+/**
+ * 単一ファイル構成（エントリが索引 PLAYBOOK.md 本体にあり、playbook/ には archive だけ）。
+ * live を subfile だけから集めると、compact は「live に見出しが無い」で必ず赤になり、
+ * archive / merge の「live に残っている」判定は空集合に対して空振りしていた
+ * （https://github.com/feel-flow/ff-dev-toolkit/issues/128）。
+ * 圧縮した ACE-41-3 を `## Changelog` 直前の最後のエントリに置き、次のレベル 2 見出しで
+ * ブロックが止まることも同時に固定する（止まらないと本文比較が Changelog を巻き込む）。
+ */
+describe("main — 単一ファイル構成（索引 PLAYBOOK.md を live に含める）", () => {
+  const originalArgv = process.argv;
+  let tmpDir = "";
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  const SINGLE_FILE_CHANGELOG_COMPACT = [
+    "## Changelog",
+    "",
+    "### [1.140.0] - 2026-08-14",
+    "",
+    "- Compacted: ACE-41-3（本文は逐語無改変）",
+    "",
+  ].join("\n");
+
+  function writeSingleFile(opts: {
+    body: string;
+    changelog: string;
+    archiveProcess: string;
+    archiveTesting?: string;
+  }): string {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-refine-inv-single-"));
+    const knowledge = path.join(tmpDir, "docs", "08-knowledge");
+    const archiveDir = path.join(knowledge, "playbook", "archive");
+    fs.mkdirSync(archiveDir, { recursive: true });
+    const playbookPath = path.join(knowledge, "PLAYBOOK.md");
+    fs.writeFileSync(
+      playbookPath,
+      ["# ACE Playbook", "", "## エントリ一覧", "", opts.body, opts.changelog].join("\n"),
+    );
+    fs.writeFileSync(path.join(archiveDir, "process.md"), opts.archiveProcess);
+    if (opts.archiveTesting !== undefined) {
+      fs.writeFileSync(path.join(archiveDir, "testing.md"), opts.archiveTesting);
+    }
+    process.argv = ["node", "check-refine-invariants.ts", playbookPath];
+    return playbookPath;
+  }
+
+  function run(): { code: number; errors: string } {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const code = main();
+    return { code, errors: err.mock.calls.flat().join("\n") };
+  }
+
+  it("本文に実在する ID を Compacted に記録すると exit 0", () => {
+    writeSingleFile({
+      body: LIVE_TARGET + LIVE_CANONICAL,
+      changelog: SINGLE_FILE_CHANGELOG_COMPACT,
+      archiveProcess: ARCHIVE_VARIANT_B,
+    });
+    const { code, errors } = run();
+    expect(errors).toBe("");
+    expect(code).toBe(0);
+  });
+
+  it("負の対照: live の Date を archive と食い違わせると exit 1", () => {
+    writeSingleFile({
+      body: LIVE_TARGET + LIVE_CANONICAL.replace("| Date | 2026-07-07 |", "| Date | 2026-07-08 |"),
+      changelog: SINGLE_FILE_CHANGELOG_COMPACT,
+      archiveProcess: ARCHIVE_VARIANT_B,
+    });
+    const { code, errors } = run();
+    expect(code).toBe(1);
+    expect(errors).toContain("compact ACE-41-3: Date が一致しない");
+  });
+
+  it("Archived の ID が本体に残っていれば「live に残っている」で exit 1", () => {
+    writeSingleFile({
+      body: LIVE_TARGET + LIVE_CANONICAL,
+      changelog: SINGLE_FILE_CHANGELOG_COMPACT.replace(
+        "- Compacted: ACE-41-3（本文は逐語無改変）",
+        "- Compacted: ACE-41-3（本文は逐語無改変）\n- Archived: ACE-41-3（helpful=0・stale）",
+      ),
+      archiveProcess: ARCHIVE_COMPACTED_THEN_ARCHIVED,
+    });
+    const { code, errors } = run();
+    expect(code).toBe(1);
+    expect(errors).toContain("archive ACE-41-3: Archived と記録されているのに live に残っている");
+  });
+
+  // フェンス内の例示見出しは境界にしない（第 2 変種の本文比較は live / archive とも同じ例示を含む）。
+  const FENCED_EXAMPLE = [
+    "```markdown",
+    "## 例示",
+    "",
+    "### ACE-99-1: 例示",
+    "```",
+    "",
+    "例示の後ろの本文。",
+    "",
+  ].join("\n");
+  const withExample = (block: string, example: string): string =>
+    block.replace("**Insight**: 複数ファイルを機械的にコピーすると一部だけ完了する。\n", `**Insight**: 複数ファイルを機械的にコピーすると一部だけ完了する。\n\n${example}`);
+
+  it("本文のフェンス内の `##` / `### ACE-` 例示を境界にせず exit 0", () => {
+    writeSingleFile({
+      body: LIVE_TARGET + withExample(LIVE_CANONICAL, FENCED_EXAMPLE),
+      changelog: SINGLE_FILE_CHANGELOG_COMPACT,
+      archiveProcess: withExample(ARCHIVE_VARIANT_B, FENCED_EXAMPLE),
+    });
+    const { code, errors } = run();
+    expect(errors).not.toContain("ACE-99-1");
+    expect(errors).toBe("");
+    expect(code).toBe(0);
+  });
+
+  // 上の exit 0 は live / archive が同じ位置で切れても緑になるので、境界の誤りは
+  // 「例示の後ろの本文差分が比較から外れる」側でしか観測できない。その向きを固定する。
+  it("フェンス内の `##` の後ろで live 本文を変えると exit 1（フェンス内見出しを境界にしない）", () => {
+    writeSingleFile({
+      body:
+        LIVE_TARGET +
+        withExample(LIVE_CANONICAL, FENCED_EXAMPLE.replace("例示の後ろの本文。", "壊した本文。")),
+      changelog: SINGLE_FILE_CHANGELOG_COMPACT,
+      archiveProcess: withExample(ARCHIVE_VARIANT_B, FENCED_EXAMPLE),
+    });
+    const { code, errors } = run();
+    expect(code).toBe(1);
+    expect(errors).toContain("compact ACE-41-3: 第 2 変種なのに");
+    expect(errors).not.toContain("ACE-99-1");
+  });
+
+  it("HTML コメント内の `##` の後ろで live 本文を変えると exit 1（コメント内見出しを境界にしない）", () => {
+    const commented = "<!--\n## 例示（コメント）\n-->\n\n例示の後ろの本文。\n";
+    writeSingleFile({
+      body:
+        LIVE_TARGET +
+        withExample(LIVE_CANONICAL, commented.replace("例示の後ろの本文。", "壊した本文。")),
+      changelog: SINGLE_FILE_CHANGELOG_COMPACT,
+      archiveProcess: withExample(ARCHIVE_VARIANT_B, commented),
+    });
+    const { code, errors } = run();
+    expect(code).toBe(1);
+    expect(errors).toContain("compact ACE-41-3: 第 2 変種なのに");
+  });
+
+  it("Merged の統合元が本体に残っていれば「live に残っている」で exit 1", () => {
+    const LIVE_SOURCE_430_1 = ARCHIVE_MERGED.replace(
+      "> Merged into: [ACE-404-2](../testing.md#ace-404-2)（2026-08-14 /ace-refine）\n\n",
+      "",
+    ).replace("| Status | merged |", "| Status | active |");
+    writeSingleFile({
+      body: LIVE_SOURCE_430_1 + LIVE_TARGET,
+      changelog: [
+        "## Changelog",
+        "",
+        "- Merged: ACE-430-1 → ACE-404-2（Helpful 1 を合算）",
+        "",
+      ].join("\n"),
+      archiveProcess: "",
+      archiveTesting: ARCHIVE_MERGED,
+    });
+    const { code, errors } = run();
+    expect(code).toBe(1);
+    expect(errors).toContain("merge ACE-430-1 → ACE-404-2: 統合元が live に残っている");
+  });
+});
+
 describe("parseChangelogOperations — Codex レビュー追補（Issue #1030）", () => {
   it("コードフェンス内の偽 `## Changelog` を節境界として採用しない", () => {
     const content = [

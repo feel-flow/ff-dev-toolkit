@@ -118,6 +118,18 @@ echo "変異 8d3: run-all.sh のゲート分の記録呼び出しを消す（綴
 python3 "$MUTDIR/mut-gate-minutes-call.py"
 probe "ゲート分の未配線への退行（検査 14j）" "$RUNNER" "git checkout -- '$RUNNER'"
 
+echo "変異 8d5: run-all.sh のゲート分の記録から走行中マーカーによる入れ子判定を外す"
+python3 "$MUTDIR/mut-gate-marker-nested.py"
+probe "env を隔離した入れ子の多重記録への退行（検査 14j）" "$RUNNER" "git checkout -- '$RUNNER'"
+
+echo "変異 8d6: run-all.sh から走行中マーカーの書き手の呼び出しを消す（関数定義は残る）"
+python3 "$MUTDIR/mut-gate-marker-set-call.py"
+probe "マーカーを置かない状態への退行（検査 14j の env -i 経路）" "$RUNNER" "git checkout -- '$RUNNER'"
+
+echo "変異 8d7: 走行中マーカーの書き手からロケール / TZ の固定を外す"
+python3 "$MUTDIR/mut-gate-marker-locale.py"
+probe "ロケール差による開始時刻の不一致（検査 14j）" "$RUNNER" "git checkout -- '$RUNNER'"
+
 echo "変異 8e: --issue-metrics の記録不在を (unmeasured) でなく 0 で出す"
 python3 "$MUTDIR/mut-metrics-zero.py"
 probe "記録不在の 0 化（検査 13a）" "$REPORT" "git checkout -- '$REPORT'"
@@ -177,6 +189,59 @@ probe "中央値が下限ちょうどのときの位置（検査 4h）" "$REPORT
 echo "変異 9f: 母集団 0 件の (unmeasured) 分岐を外す"
 python3 "$MUTDIR/mut-median-empty.py"
 probe "空の母集団で中央値 0 を過大側と報告する（検査 4h）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9h: --deploy-check が配備の行のキー名を読まなくなる"
+python3 "$MUTDIR/mut-deploy-key.py"
+probe "配備の行の記入を missing と誤読する（検査 5b）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9i: --deploy-check から雛形のプレースホルダ判定を外す"
+python3 "$MUTDIR/mut-deploy-unfilled.py"
+probe "雛形のままの配備の行を記入済みと読む（検査 5b）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9j: --deploy-check が読めない本文を記入済みへ倒す"
+python3 "$MUTDIR/mut-deploy-unavailable.py"
+probe "読めない本文の present 化（検査 5b）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9k: --deploy-check から空値の判定を外す"
+python3 "$MUTDIR/mut-deploy-empty.py"
+probe "空値の配備の行を記入済みと読む（検査 5b）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9l: --deploy-check の未閉鎖判定を外す"
+python3 "$MUTDIR/mut-deploy-unclosed.py"
+probe "end の無いブロックを malformed にしない（検査 5b）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9m: --deploy-check の判定順を「不在 → 破損」へ戻す"
+python3 "$MUTDIR/mut-deploy-endonly.py"
+probe "end だけの本文を noblock へ倒す（検査 5b）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9n: --deploy-check の trim から全角空白を外す"
+python3 "$MUTDIR/mut-deploy-fullwidth.py"
+probe "全角空白つきの（未記入）を記入済みと読む（検査 5b）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9o: --deploy-check から全角括弧の（未記入）の判定を外す"
+python3 "$MUTDIR/mut-deploy-fullwidth-paren.py"
+probe "全角括弧の（未記入）を記入済みと読む（検査 5b）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9p: close-issue の照合手順から取得した本文の確定（mv）を外す"
+CLOSE_EFFORT=plugins/ff-dev-toolkit/skills/close-issue/references/effort.md
+python3 "$MUTDIR/mut-deploy-step-order.py"
+probe "5a の時点で入力未作成のまま判定器を当てる（検査 5b の統合ケース）" "$CLOSE_EFFORT" "git checkout -- '$CLOSE_EFFORT'"
+
+echo "変異 9q: close-issue の照合手順で gh の取得失敗時に unavailable を報告しない"
+python3 "$MUTDIR/mut-deploy-gh-fail.py"
+probe "取得失敗を黙って流す（検査 5b の gh 失敗ケース）" "$CLOSE_EFFORT" "git checkout -- '$CLOSE_EFFORT'"
+
+echo "変異 9r: --deploy-check の排他を --issue-metrics / --unreached-leaves だけへ戻す"
+python3 "$MUTDIR/mut-deploy-opt-exclusive.py"
+probe "--input 等との併用を黙って無視する（検査 5b）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9s: --deploy-check から 2 組目のブロックの検出を外す"
+python3 "$MUTDIR/mut-deploy-twoblocks.py"
+probe "2 組目のブロックを malformed にしない（検査 5b）" "$REPORT" "git checkout -- '$REPORT'"
+
+echo "変異 9t: --deploy-check からブロック外の end の検出を外す"
+python3 "$MUTDIR/mut-deploy-extraend.py"
+probe "余分な end を malformed にしない（検査 5b）" "$REPORT" "git checkout -- '$REPORT'"
 
 # --- 以下 2 件は実ツリーを触らず一時 root へ注入する（検査 11/12 の実起動） ---
 inject_root() { # <estimation.md の中身を作る関数名> → 一時 root のパスを stdout

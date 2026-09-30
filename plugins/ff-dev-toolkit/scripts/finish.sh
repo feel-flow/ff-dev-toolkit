@@ -95,7 +95,8 @@
 #   fixture identity ガード内蔵）を呼ぶ。`add --claim <文書>` は `.version-claims/` を持つリポジトリで
 #   claim を再生成し、記録パスへ claim を足してから検証（scripts/check-version-claims.sh）する。
 #   probe は default branch の保護判定（`protection=protected|unprotected|unknown`。gh が無ければ API を
-#   呼ばず unknown）、push は直 push の
+#   呼ばず unknown。classic の保護は PR 必須・必須チェック・push 制限・署名必須・読み取り専用のどれかが
+#   あるときだけ protected、force push の禁止だけなら `classic=protected-no-pr` で rulesets の判定へ）、push は直 push の
 #   固定手順（detached HEAD なら `HEAD:<default>`、push 出力の `-> <default>` 照合、保護ルールで
 #   拒否されたら exit 3 + KNOWLEDGE_PUSH=protected）、pr は PR 経由（ブランチ作成 → push → gh pr
 #   create → ローカル default branch を origin へ戻す）。push と pr はどちらも、ブランチ作成・push より前に
@@ -965,10 +966,20 @@ kc_probe() {
     # 確定させず、必ず rulesets API も確認してから最終判定する。
     # 代入行を単独の simple command にすると set -e 下で失敗時に次行の $? 取得へ
     # 到達できず無音で中断するため（実測）、代入自体を && / || で分岐させて安全にする。
+    # 200 でも直 push を PR 必須にするとは限らない（force push の禁止だけの保護は直 push が通る）。
+    # 直 push を止める項目 — required_pull_request_reviews / required_status_checks /
+    # restrictions（未設定は応答に現れず jq では null）と、署名必須・読み取り専用
+    # （required_signatures / lock_branch は `{enabled: false}` の形で返るので .enabled を読む）—
+    # のどれかがあるときだけ protected とし、どれも無ければ protected-no-pr として rulesets の
+    # 判定へ進む。中身を読めない回（jq の結果が true / false 以外）は unknown に倒す（既定を試し拒否で切替）。
     classic="unknown"
-    classic_out="$(gh api "repos/${owner_repo}/branches/${default_branch}/protection" 2>&1 >/dev/null)" && classic_rc=0 || classic_rc=$?
+    classic_out="$(gh api "repos/${owner_repo}/branches/${default_branch}/protection" --jq '([.required_pull_request_reviews, .required_status_checks, .restrictions] | any(. != null)) or (.required_signatures.enabled // false) or (.lock_branch.enabled // false)' 2>&1)" && classic_rc=0 || classic_rc=$?
     if [[ "$classic_rc" -eq 0 ]]; then
-      classic="protected"
+      if [[ "$classic_out" == "true" ]]; then
+        classic="protected"
+      elif [[ "$classic_out" == "false" ]]; then
+        classic="protected-no-pr"
+      fi
     elif [[ "$classic_out" == *404* ]]; then
       classic="none"
     fi
@@ -989,7 +1000,7 @@ kc_probe() {
     fi
     if [[ "$classic" == "protected" || "$rulesets" == "protected" ]]; then
       protection="protected"
-    elif [[ "$classic" == "none" && "$rulesets" == "none" ]]; then
+    elif [[ ( "$classic" == "none" || "$classic" == "protected-no-pr" ) && "$rulesets" == "none" ]]; then
       protection="unprotected"
     fi
   fi
@@ -1043,7 +1054,10 @@ kc_push() {
     cat "${push_log}"
     # 保護判定が unknown だった、または判定後に設定が変わった TOCTOU の受け皿。拒否理由が
     # 保護ルールなら PR 経由へ切り替える（commit はできているので再 stage・再 commit はしない）
-    if awk 'index($0, "Changes must be made through a pull request") || index($0, "push declined due to repository rule violations") { f = 1 } END { exit f ? 0 : 1 }' "${push_log}"; then
+    # classic 保護による拒否全般（GH006 `Protected branch update failed`。必須チェック
+    # `Required status check "<名>" is failing` や署名必須もこの行を伴う）と push の制限
+    # （`not authorized to push`）による拒否も PR 経由へ寄せる（probe の判定が外れた回の安全網）
+    if awk 'index($0, "Changes must be made through a pull request") || index($0, "push declined due to repository rule violations") || index($0, "Protected branch update failed") || index($0, "Required status check") || index($0, "not authorized to push") { f = 1 } END { exit f ? 0 : 1 }' "${push_log}"; then
       rm -f "${push_log}"
       echo "KNOWLEDGE_PUSH=protected"
       echo "✗ push が保護ルールで拒否されました（default branch が保護されています）。finish.sh knowledge-commit pr --branch <名> --title <件名> で PR 経由へ切り替える（commit は残っている）" >&2

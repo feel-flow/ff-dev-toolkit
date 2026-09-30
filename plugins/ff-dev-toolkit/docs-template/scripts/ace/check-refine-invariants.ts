@@ -690,11 +690,27 @@ function resolveMergeSurvivor(
   return current;
 }
 
-/** 見出し単位でエントリブロックを切る（次見出し直前まで）。 */
+/**
+ * 見出し単位でエントリブロックを切る（次のエントリ見出し、またはレベル 1〜2 見出しの直前まで）。
+ *
+ * 境界はコード領域と HTML コメントを空白化した行で判定する（その中の例示見出しを境界にしない —
+ * 他の ACE パーサと同じ除外規則）。レベル 1〜2 見出しで止めるのは、live に索引
+ * `PLAYBOOK.md` も含めるため: 単一ファイル構成では最後のエントリの直後に `## Changelog`
+ * が続き、止めないとその節が最後のエントリ本文へ吸収されて本文比較が崩れる。
+ */
 export function splitEntryBlocks(content: string, filePath: string): EntryBlock[] {
   const lines = content.split("\n");
+  // parseChangelogOperations と同じ順序（blankCodeRegions → コメント空白化）で、フェンスと
+  // HTML コメント内の偽見出しを境界にしない。
+  const boundaryLines = blankHtmlBlockComments(blankCodeRegions(content).text).split("\n");
   const starts: { index: number; id: string; title: string }[] = [];
+  const sectionBreaks: number[] = [];
   for (let i = 0; i < lines.length; i++) {
+    if (/^#{1,2}\s/u.test(boundaryLines[i])) {
+      sectionBreaks.push(i);
+      continue;
+    }
+    if (!new RegExp(entryHeadingSource("non-capturing"), "u").test(boundaryLines[i])) continue;
     const match = lines[i].match(
       new RegExp(entryHeadingSource("capture-id") + String.raw`(.*)$`, "u"),
     );
@@ -702,7 +718,9 @@ export function splitEntryBlocks(content: string, filePath: string): EntryBlock[
     starts.push({ index: i, id: match[1], title: match[2].trim() });
   }
   return starts.map((start, idx) => {
-    const end = idx + 1 < starts.length ? starts[idx + 1].index : lines.length;
+    const nextEntry = idx + 1 < starts.length ? starts[idx + 1].index : lines.length;
+    const nextSection = sectionBreaks.find((line) => line > start.index) ?? lines.length;
+    const end = Math.min(nextEntry, nextSection);
     return {
       id: start.id,
       title: start.title,
@@ -1072,7 +1090,11 @@ export function main(): number {
   let liveFiles: string[];
   let archiveFiles: string[];
   try {
-    liveFiles = discoverPlaybookSubfiles(playbookPath);
+    // 索引 PLAYBOOK.md 自身も live に含める（check-entry-format / ace-refine-report と同じ
+    // 「索引 + subfile」の規則）。単一ファイル構成ではエントリが索引本体にあり、subfile だけを
+    // 見ると compact は「live に見出しが無い」で必ず赤、archive / merge の「live に残っている」
+    // 判定は空集合に対して空振りする。分割構成の索引はエントリ見出しを持たないので結果は変わらない。
+    liveFiles = [playbookPath, ...discoverPlaybookSubfiles(playbookPath)];
     archiveFiles = discoverArchiveFiles(playbookPath);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);

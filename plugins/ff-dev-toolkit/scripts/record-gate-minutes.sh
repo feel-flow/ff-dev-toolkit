@@ -18,6 +18,12 @@
 #   `effort_gate_minutes:` として Issue へ書き戻す。record-gate-head.sh（鮮度記録）とは
 #   別物で、こちらは「何分掛かったか」だけを持つ。
 #
+# 1 行 = ゲート 1 回（読み手の gate_runs は行数）。呼び出し側の run-all.sh は、利用者が起動した回
+#   （既定一覧 fast / full、変更ベース changed、手で suite を渡した explicit）を 1 回 1 行で書き、
+#   suite が検証のために本ランナーを再起動した入れ子の回は呼ばない。入れ子の判定は環境変数
+#   （FF_RUN_ALL_NESTED）と、env を隔離した再起動でも落ちない実体（外側の run-all.sh が git dir の
+#   ff-dev-toolkit/run-all-in-flight/<PID> に置く走行中マーカーを祖先プロセスに持つか）の両方で行う。
+#
 # 記録先: ${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/gate.tsv
 #   1 行 1 レコードの追記専用 TSV。列は issue / event(gate) / epoch / iso8601 / seconds /
 #   mode / status / branch / repo。repo は `--repo-dir` の `git rev-parse --path-format=absolute

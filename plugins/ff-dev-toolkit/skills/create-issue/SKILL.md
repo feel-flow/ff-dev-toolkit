@@ -178,6 +178,7 @@ ACE Playbook（`docs/08-knowledge/PLAYBOOK.md`）があれば索引を対象領�
 - effort_unit: h
 - effort_human_planned: [N.Nh]
 - effort_ai_planned: [N.Nh]
+- effort_deploy: [誰がどこで反映し、成否を誰がどう確認するか（不要なら「なし（コードのみ・反映を伴わない）」）]
 - effort_ai_actual: (未記入)
 - effort_basis: [3 経路の参照結果（無かった経路も）/ 実装分 + レビュー対応分（+ 偽陽性潰し分）の内訳 / 補正元の Issue と比率（無ければ既定値）/ 往復で作り直しうる中身 / 幅とその理由]
 <!-- ff-effort:end -->
@@ -186,6 +187,7 @@ ACE Playbook（`docs/08-knowledge/PLAYBOOK.md`）があれば索引を対象領�
 工数ブロックの契約:
 
 - マーカー行 `<!-- ff-effort:begin -->` / `<!-- ff-effort:end -->` は**この綴りのまま**書く（`/close-issue` と `effort-report.sh` がこの 2 行で切り出すので、綴りが違うと集計から静かに落ちる）
+- `effort_deploy` は**必須**。反映を伴わない変更も空欄にせず `なし（コードのみ・反映を伴わない）` と書く。他人に渡す反映も成否確認の担当を書き、その分を `effort_ai_planned` に積む（未記入は `/close-issue` が指摘。集計器は読まない）
 - `effort_ai_actual` は `(未記入)` で起票し、マージ直前に `/close-issue` が書き戻す。`effort_unit: h` 行は消さない（無いと旧形式の人日として読まれる）
 - 乖離率など導出できる値は置かない（計算は `/close-issue` の「5a. 工数実績の算出」）。`effort_human_actual` も作らない
 

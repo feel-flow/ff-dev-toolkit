@@ -2787,6 +2787,47 @@ if [[ "$JOBS" -gt 1 && ${#SCRIPTS[@]} -gt 1 ]]; then
   fi
 fi
 
+# 走行中マーカー（ゲート分の記録から入れ子の実行を除くための実体）。env を隔離して本ランナーを
+# 再起動する suite（`env -u FF_RUN_ALL_NESTED` / `env -i`）では FF_ENTERED_NESTED が届かず、
+# 入れ子の回が 1 回ずつ「ゲート」として gate.tsv へ積まれる（実測: 全件ゲート 1 周で explicit
+# 60〜70 行）。環境変数は隔離で落ちるが、プロセスの親子関係は落ちない。そこで suite を走らせる
+# 直前に、このリポジトリの git dir（鮮度記録 gate-record と同じ ff-dev-toolkit/ 配下。worktree
+# ごと）へ自分の PID 名のファイルを置き、中身に自分の開始時刻（ps -o lstart=）を書く。記録側
+# （ff_gate_marker_nested）は「祖先プロセスのマーカーが在る」回を入れ子として記録しない。
+#
+# 後片付けは記録ブロックの直後で明示的に行う（EXIT トラップは置かない — spool と同じ理由で
+# 途中死の rc を 0 に化けさせる）。途中で死んだ回の残骸は次の回がここで掃く（PID が生きて
+# いないもの）。PID の再利用で残骸が別プロセスを指しても、開始時刻が一致しないので入れ子に
+# 誤判定しない。git dir が無い・書けない・ps が無い回は何もしない（従来の環境変数の判定だけ
+# が残る。ゲートは止めない）。入れ子（FF_ENTERED_NESTED=1）の回は置かない。
+#
+# 開始時刻は `LC_ALL=C TZ=UTC0` で取る（読む側 ff_gate_marker_nested も同じ）。lstart の表記は
+# ロケールと TZ で変わり、外側（利用者の ja_JP.UTF-8）と env を隔離した子（C.UTF-8 へ固定される）
+# で同じプロセスの開始時刻が別の文字列になる。LC_TIME だけでは LC_ALL に負ける。開始時刻を
+# 取れない回はマーカーを置かない（空のマーカーは空同士で一致して入れ子に誤判定しうる）。
+GATE_MARKER_FILE=""
+# >>> ff-gate-marker-block（tests/effort-contract/verify.sh 14j がこの関数定義を抽出して、
+# 親プロセスで置いたマーカーを子の記録ブロックが入れ子と判定することを実測する。範囲は関数定義だけ）
+ff_gate_marker_set() {
+  local dir f p start
+  [[ "${FF_ENTERED_NESTED:-0}" == "0" ]] || return 0
+  dir="$(git -C "$SCRIPT_DIR" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
+  [[ -n "$dir" ]] || return 0
+  dir="$dir/ff-dev-toolkit/run-all-in-flight"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  for f in "$dir"/*; do
+    p="${f##*/}"
+    case "$p" in '' | *[!0-9]*) continue ;; esac
+    kill -0 "$p" 2>/dev/null || rm -f "$f" 2>/dev/null || true
+  done
+  start="$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$$" 2>/dev/null)" || return 0
+  [[ -n "$start" ]] || return 0
+  printf '%s\n' "$start" > "$dir/$$" 2>/dev/null || return 0
+  GATE_MARKER_FILE="$dir/$$"
+}
+# <<< ff-gate-marker-block
+ff_gate_marker_set
+
 if [[ ${#SCRIPTS[@]} -eq 0 ]]; then
   # 変更ベースの選択で交差が 0 件だった回だけがここへ来る（それ以外の 0 件は上流で止まる）。
   # 実行したのは登録照合（メタ検査）だけであることをサマリーで名乗る。
@@ -3084,10 +3125,12 @@ ff_record_gate_head() { # <pass|fail>
 # 部分実行（changed / explicit）の緑は鮮度記録と同じく partial として書く。
 # 入れ子の実行（suite が検証のために本ランナーを明示引数で再起動した回。FF_ENTERED_NESTED=1）は
 # 記録しない — 外側の 1 回に含まれる時間で、回数として数えると全件ゲート 1 周が 140 回の
-# 「ゲート」に化ける（実測: 1 周で explicit 141 行が積まれた）。
+# 「ゲート」に化ける（実測: 1 周で explicit 141 行が積まれた）。env を隔離して再起動された回は
+# FF_ENTERED_NESTED が届かないので、祖先の走行中マーカー（ff_gate_marker_set）でも判定する。
 ff_record_gate_minutes() { # <pass|fail> <mode>
   local recorder="$SCRIPT_DIR/../scripts/record-gate-minutes.sh" t0 t1 sec status="$1" mode="$2"
   [[ "${FF_ENTERED_NESTED:-0}" == "0" ]] || return 0
+  ! ff_gate_marker_nested || return 0
   t0="${FF_GATE_START_EPOCH:-}"
   [[ -n "$t0" && -n "${FF_GATE_START_BRANCH:-}" && -f "$recorder" ]] || return 0
   t1="$(date +%s 2>/dev/null)" || return 0
@@ -3098,7 +3141,36 @@ ff_record_gate_minutes() { # <pass|fail> <mode>
   bash "$recorder" --seconds "$sec" --status "$status" --mode "$mode" \
     --branch "$FF_GATE_START_BRANCH" --repo-dir "$SCRIPT_DIR" >/dev/null 2>&1 || return 0
 }
+
+# 祖先プロセスのどれかが、このリポジトリの git dir に走行中マーカーを置いているか（置いたのが
+# 外側の run-all.sh = 自分は入れ子）。マーカーの名前は PID、中身はその開始時刻（ps -o lstart=）で、
+# PID が一致しても開始時刻が違えば PID の再利用とみなして一致させない。自分自身のマーカーは
+# 祖先ではないので数えない（辿り始めは親）。判定できない回（git dir・マーカー置き場・ps が
+# 無い）は「入れ子ではない」を返す — 記録を落とすより従来どおり 1 行書く側へ倒す。
+ff_gate_marker_nested() {
+  local dir pid="$PPID" i=0 want have
+  dir="$(git -C "$SCRIPT_DIR" rev-parse --absolute-git-dir 2>/dev/null)" || return 1
+  dir="$dir/ff-dev-toolkit/run-all-in-flight"
+  [[ -d "$dir" ]] || return 1
+  while [[ "$i" -lt 64 ]]; do
+    case "$pid" in '' | *[!0-9]*) return 1 ;; esac
+    [[ "$pid" -gt 1 ]] || return 1
+    if [[ -f "$dir/$pid" ]]; then
+      want="$(< "$dir/$pid")" 2>/dev/null || want=""
+      # 書く側（ff_gate_marker_set）と同じ LC_ALL=C TZ=UTC0 で取る。空同士は一致とみなさない
+      have="$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$pid" 2>/dev/null)" || have=""
+      [[ -z "$want" || "$want" != "$have" ]] || return 0
+    fi
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" || return 1
+    i=$((i + 1))
+  done
+  return 1
+}
 # <<< ff-gate-record-block
+
+# 走行中マーカーの後片付け（置いた回だけ）。祖先判定は自分のマーカーを見ないので、
+# 自分の記録より先に消してよい — 下の 2 つの exit 経路の両方を 1 箇所で覆える
+[[ -z "$GATE_MARKER_FILE" ]] || rm -f "$GATE_MARKER_FILE" 2>/dev/null || true
 
 if [[ ${#FAILED[@]} -gt 0 || ${#NOT_RUN[@]} -gt 0 || ${#REQUIRED_SKIPPED[@]} -gt 0 ]]; then
   ff_record_gate_head fail

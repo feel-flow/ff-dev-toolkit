@@ -22,8 +22,8 @@ ACE (Agentic Context Engineering) サイクルは、マージ後・cleanup 後�
 ACE 知見コミットのマージ方針は **git-workflow.md ステップ10 §運用パターン（マージ方針）** を SSOT とする（`/ace-setup` の配置対象外・`${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/git-workflow.md` からコピー）。要約：
 
 - **保護判定（必須）**: 直 push を試す前に `<default-branch>` の保護有無を確認する（branch protection API → rulesets API → 判定不能なら既定を試して拒否メッセージで切替）。
-- **既定（推奨）**: 保護されていない `<default-branch>` にのみ適用。`<default-branch>` に直接 commit + push（PLAYBOOK.md は append-only ＋ PRスコープ式 ID で衝突しない）。
-- **chore PR 経路**: 大人数チーム / 知見レビューを残したい場合は任意エスカレーション、**`<default-branch>` が保護されている場合は必須経路**。`chore/ace-from-pr-<PR番号>` の小 PR（commit type は commitlint の許容リストにより `chore` 等へ置換されうる）。
+- **既定（推奨）**: 直 push を止める保護の無い `<default-branch>` にのみ適用（force push の禁止だけの classic 保護は `classic=protected-no-pr` で、rulesets にも `pull_request` type が無ければ直 push。判定は git-workflow.md の保護判定）。`<default-branch>` に直接 commit + push（PLAYBOOK.md は append-only ＋ PRスコープ式 ID で衝突しない）。
+- **chore PR 経路**: 大人数チーム / 知見レビューを残したい場合は任意エスカレーション、**`<default-branch>` に直 push を止める保護（classic の PR 必須・必須チェック・push 制限・署名必須・読み取り専用、または rulesets の `pull_request` type）がある場合は必須経路**。`chore/ace-from-pr-<PR番号>` の小 PR（commit type は commitlint の許容リストにより `chore` 等へ置換されうる）。
 - ここでの `<default-branch>` 直 push は `knowledge:`（または置換後の type）付き knowledge 単独コミット（PLAYBOOK・観測台帳の追記だけ。`/ace-curate` と `/retrospective` の両方が書いた回は共通の書き込み口 `scripts/knowledge-commit.sh` が 1 コミットに畳む）に限った意図的フローであり、ACE-012（うっかり `<default-branch>` 直 push の事故防止）とは別物。判定・commit type 置換の詳細は `/ace-curate` 手順5。
 
 **autonomous（任意）**: subagent と専用 worktree で ACE キャプチャを非同期化するパターン。導入は ace-autonomous.md（`/ace-setup` の配置対象外・`${FF_DEV_TOOLKIT_ROOT}/docs-template/05-operations/deployment/ace-autonomous.md` からコピー）と ff-dev-toolkit プラグイン同梱の `docs-template/scripts/ace/` テンプレートを参照（Issue [#367](https://github.com/feel-flow/ai-spec-driven-development/issues/367)）。

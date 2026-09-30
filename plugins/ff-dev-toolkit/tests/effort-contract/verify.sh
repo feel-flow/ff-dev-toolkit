@@ -35,6 +35,8 @@
 # 変異検出: effort-report.sh のゲート分の読み手から repo 列の絞り込み（`$9 == repo`）を外すと 検査 13h（別リポジトリの同じ番号 55 の行が混ざり 22 分でなくなる）が赤になる（mutation/mut-gate-repo-filter.py）。
 # 変異検出: effort-report.sh の巡回記録の置き場走査（find … `<type><n>-…*.tsv`）を外すと 検査 13i（削除済みブランチの 2 本目が累積から落ちて 3 巡でなくなる）が赤になる（mutation/mut-rounds-store-scan.py）。
 # 変異検出: tests/run-all.sh の ff_record_gate_head 冒頭の `ff_record_gate_minutes` 呼び出し行を消すと 検査 14j（記録ブロックを単独で抽出して FF_GATE_RECORD=0 で走らせ gate.tsv 1 行を要求）が赤になる（mutation/mut-gate-minutes-call.py）。
+# 変異検出: tests/run-all.sh の ff_record_gate_minutes から走行中マーカーの判定行（`! ff_gate_marker_nested || return 0`）を消すと 検査 14j（祖先の走行中マーカーがある env 隔離の入れ子で行数 3 を要求）が赤になる（mutation/mut-gate-marker-nested.py）。
+# 変異検出: tests/run-all.sh の `ff_gate_marker_set` 呼び出し行を消すと 検査 14j（本物の run-all.sh を env -i で子起動して gate.tsv 1 行を要求）が、書き手の `LC_ALL=C TZ=UTC0` 固定を外すと 検査 14j（書き手 ja_JP.UTF-8 / 読み手 C.UTF-8 + Asia/Tokyo で行数 3 を要求）が赤になる（mutation/mut-gate-marker-set-call.py / mut-gate-marker-locale.py）。
 # 空振り検出: 巡回カウンタの記録ファイルが無い Issue・2 ブランチ中 1 本が壊れた Issue・ライブラリを読めない配置（tests/lib を持たない複製へ effort-report.sh を写して起動）・gate.tsv 不在は 検査 13h / 13i が (unmeasured) を要求し、0 や読めた分だけの合計を出す変異で赤になる。record-gate-minutes.sh は既定ブランチ・番号の無いブランチ・`#` の無い日付入りブランチ・opt-out で 1 行も書かないことを 検査 14i が、入れ子の実行（FF_ENTERED_NESTED=1）で書かないことを 検査 14j が行数で固定する（2026-09-29 実測。入れ子を数えると全件ゲート 1 周で explicit 141 行が積まれた）。
 # 変異検出: record-effort-wallclock.sh が記録置き場を作れないとき exit 2 で止めると 検査 14d が赤になる（mutation/mut-hook-failsoft.py）。
 # 変異検出: effort-report.sh の wall-clock の読み手から repo 列の絞り込み（`$7 == repo`）を外すと 検査 13b（別リポジトリ・repo 列なしの同じ番号 77 が混ざり 2.5h でなくなる）が赤になる（mutation/mut-repo-filter.py）。
@@ -45,8 +47,11 @@
 # 変異検出: record-effort-wallclock.sh の Issue 番号抽出の `#` を任意に戻すと 検査 14c（`chore/2026-09-23-cleanup` を Issue として記録する）が赤になる（mutation/mut-hash-optional.py）。
 # 空振り検出: bundle 規定の欠落・同じ針の写し残存は一致行数 0 / 2 以上で赤。規定 13 行を個別削除して各 exit 1、写し 1 行追加も exit 1（2026-09-28 実測）。
 # 空振り検出: create-issue の references/estimation.md を消すと検査対象不在で exit 1、3 層参照の表を本線 SKILL.md へ戻して estimation.md から消すと 検査 9 の 3 件が赤になる（`--state closed` は補正手順の照会にも在るので残る）（2026-09-24 実測。置き場所を移した針が移動元の写しに当たって緑になる形を塞ぐ）。
-# 変異検出: effort-report.sh の中央値の位置の判定を `vmed >= upper` へ倒すと 検査 4h の median-edge（上限ちょうど 1.40 は in_band）、`vmed <= lower` へ倒すと median-lower-edge（下限ちょうど 0.71 は in_band）、母集団 0 件の (unmeasured) 分岐を外すと空入力がそれぞれ 1 件赤になる（mutation/mut-median-edge.py / mut-median-lower-edge.py / mut-median-empty.py）。
+# 変異検出: effort-report.sh の中央値の位置の判定を `vmed >= upper` へ倒すと 検査 4h の median-edge（上限ちょうど 2.00 は in_band）、`vmed <= lower` へ倒すと median-lower-edge（下限ちょうど 0.50 は in_band）、母集団 0 件の (unmeasured) 分岐を外すと空入力がそれぞれ 1 件赤になる（mutation/mut-median-edge.py / mut-median-lower-edge.py / mut-median-empty.py）。
 # 空振り検出: references/estimation.md から既定値の表の「再置換で済む」行を消すと 検査 9b の 3 件、ガード新設の行を消すと 2 件、分岐の問い・同額の行・補正元優先の段落・並列・再掲文書・静的検出器の行を消すとそれぞれ 1 件、retrospective の較正トリガ行を消すと 3 件、close-issue の較正手順 2 を消すと 1 件が赤になる（2026-09-27 実測。規定を足した行が消えても緑のままになる形を塞ぐ）。
+# 空振り検出: references/estimation.md から補正元の同種判定の「設計判断の有無」・補正元優先の限定・OBS-267 の出所・照合面の係数・OBS-147 の出所・照合面と再置換の境界の前半・後半・文書同期の行・その最小値 1.0h の句・決定 Issue の見直しの 10 針のいずれか 1 つを消すと 検査 9b の該当 1 件が赤になる（2026-09-30 実測。足した規定が消えても緑のままになる形を塞ぐ）。
+# 変異検出: effort-report.sh --deploy-check のキー名照合を外すと（配備の行を読まない）検査 5b の「なし」・記入済みの 2 件、プレースホルダ（全体が [ … ]）の判定を外すと雛形のまま = unfilled の 1 件、読めない本文を present へ倒すと unavailable の 1 件、空値の判定を外すと空値の 1 件、未閉鎖判定（inblock）を外すと end の無いブロックの 1 件、判定順を「不在 → 破損」へ戻すと end だけの本文の 1 件、trim から全角空白を外す・全角括弧の（未記入）の判定を外すと全角の（未記入）の 1 件、close-issue の照合手順から取得した本文の確定（mv）を外すと統合ケース（5a の位置での単独実行）の 1 件、gh 失敗時の unavailable 報告を外すと gh 失敗ケースの 1 件、排他を --issue-metrics / --unreached-leaves だけへ戻すと --input 併用の 1 件、2 組目のブロックの検出を外すと 1 件、ブロック外の end の検出を外すと余分な end・end だけの本文の 2 件が赤になる（mutation/mut-deploy-key.py / mut-deploy-unfilled.py / mut-deploy-unavailable.py / mut-deploy-empty.py / mut-deploy-unclosed.py / mut-deploy-endonly.py / mut-deploy-fullwidth.py / mut-deploy-fullwidth-paren.py / mut-deploy-step-order.py / mut-deploy-gh-fail.py / mut-deploy-opt-exclusive.py / mut-deploy-twoblocks.py / mut-deploy-extraend.py）。
+# 空振り検出: create-issue の雛形から配備の行を消す・ブロックを切り出せない形にすると 検査 5b が「切り出せません」で赤になる。既存 fixture へ配備の行を 1 件も注入できない（マーカーの綴りが変わった）ときも「注入が成立していない」で赤にし、集計が変わらないことを空の比較で緑にしない。
 # 空振り検出: --issue-metrics に存在しない記録ディレクトリを与えると (unmeasured) を出して exit 0 することを 検査 13a が固定し、0 を出す変異（mutation/mut-metrics-zero.py）で 13a が赤になる。
 #
 # 検査の書き方の規律（レビュー由来）:
@@ -201,15 +206,30 @@ contains "$REPORT" '^[0-9]+(\.[0-9]+)?h$' "effort-report.sh: 人時 h を読む�
 # 文字列の存在だけでなく、正規化と除外を behavioral に見る（検査 4 / 4f の fixture）
 
 echo "検査 3: 閾値定数が 3 箇所で一致する"
-# 値は 2026-09-10 に 3 リポジトリ 78 件で較正したもの（旧 0.77 / 1.30 は暫定値）。
+# 値は 2026-09-30 に 5 リポジトリ 234 件で較正したもの（前回 2026-09-10 の 0.71 / 1.40、出荷時の暫定値 0.77 / 1.30 を置き換えた）。
 # 較正のたびにここも動く。動かし忘れると 3 箇所一致が崩れて赤になる（それが狙い）。
 for _f in "$CLOSE" "$RETRO" "$REPORT"; do
   _n="$(basename "$(dirname "$_f")")"
   [ "$_f" = "$RETRO" ] && _n="retrospective"
-  contains "$_f" "0.71" "${_n}: 下限 0.71"
-  contains "$_f" "1.40" "${_n}: 上限 1.40"
+  contains "$_f" "0.50" "${_n}: 下限 0.50"
+  contains "$_f" "2.00" "${_n}: 上限 2.00"
 done
-contains "$CLOSE" '1/1.40' "close-issue: 0.71 が 1/1.40 の丸め（乗法的対称）である導出"
+contains "$CLOSE" '1/2.00' "close-issue: 0.50 が 1/2.00（乗法的対称）である導出"
+# 数字の出現だけでは、較正の経緯を書いた行（前回の値・導出式）が針に当たり、規則の行だけが
+# 旧値へ戻っても緑になる（2026-09-30 実測: retrospective の記録帯の表 3 行を 0.71 / 1.40 へ戻しても
+# 上の 2 件は緑のまま）。規則を持つ行そのものを針にする。
+contains "$CLOSE"  '（`0.50` 未満 または `2.00` 超）にある場合、「乖離の原因」は必須' "close-issue: 原因記録を必須にする規則の行が 0.50 / 2.00"
+contains "$RETRO"  '| `2.00` 超 | 過小見積もり |'            "retrospective: 記録帯の表（過小）が 2.00 超"
+contains "$RETRO"  '| `0.50` 〜 `2.00`（端を含む） | **当たり** |' "retrospective: 記録帯の表（当たり）が 0.50〜2.00"
+contains "$RETRO"  '| `0.50` 未満 | 過大見積もり |'          "retrospective: 記録帯の表（過大）が 0.50 未満"
+contains "$REPORT" 'VARIANCE_LOWER="0.50"' "effort-report.sh: VARIANCE_LOWER の定義が 0.50"
+contains "$REPORT" 'VARIANCE_UPPER="2.00"' "effort-report.sh: VARIANCE_UPPER の定義が 2.00"
+# 上限 2.00 は「2 倍は前提が壊れている」の線と重なる。帯の外（原因記録の必須化）と 2 倍超
+# （前提の見直し）の役割分担を 2 文書で同じ文言に保つ（片方だけ書き換わると判定がずれる）。
+for _f in "$CLOSE" "$RETRO"; do
+  _n="close-issue"; [ "$_f" = "$RETRO" ] && _n="retrospective"
+  contains "$_f" '**帯の外と 2 倍超は役割が違う**: 帯の外（`0.50` 未満 または `2.00` 超）は「乖離の原因」の記録を必須にする線、2 倍超（乖離率 `2.00` 超。2026-09-30 の較正では上限と一致）は原因の記録に加えて見積もりの前提（スコープの切り方・推定手順）そのものを見直す線である' "${_n}: 帯の外と 2 倍超の役割分担が同じ文言で書かれている"
+done
 
 echo "検査 3c: 較正手順が再現できる形で書かれている"
 # 帯を「実測分布から導出した」と書くだけでは、次の較正で同じ値が引けない。
@@ -243,7 +263,7 @@ else
   out_has "$KV" "compression_denominator=50.4" "対の AI 実績 6.3d = 50.4h"
   out_has "$KV" "compression_ratio=3.81"       "圧縮率 192.0/50.4 = 3.81（比なので単位に依らない）"
   out_has "$KV" "variance_median=1.25"         "乖離率 中央値 1.25（奇数件・丸めのタイに乗らない）"
-  out_has "$KV" "variance_out_of_band=2"       "閾値外 2 件（0.50 と 2.00 のみ）"
+  out_has "$KV" "variance_out_of_band=2"       "閾値外 2 件（0.40 と 2.50 のみ）"
   out_has "$KV" "suspect_marker=1"             "マーカー綴りずれの近傍検出 1 件"
 fi
 
@@ -254,7 +274,7 @@ echo "検査 4b: nearest-rank の分位点が最大値・中央値と区別さ�
 # p10 / p25 / p75 は帯の較正に使う統計量（close-issue の較正手順が名指ししている）。
 # 出力が消えると較正手順が「実行できない手順」になるが、帯の 3 箇所一致（検査 3）は
 # 緑のままなので気づけない。分位点の【存在】と【切り上げ規則】の両方をここで固定する。
-# fixture は 0.1〜0.9 + 外れ値 5.0 の 10 件で、切り上げを落とすと p25 が 0.20、
+# fixture は 0.1〜0.9（中央 2 件は 0.44 / 0.46。中央値を下限 0.50 未満へ置く）+ 外れ値 5.0 の 10 件で、切り上げを落とすと p25 が 0.20、
 # p75 が 0.70 へずれる（p10 / p90 は ceil と floor が一致するのでずれない）。
 PKV="$(bash "$REPORT" --input "$FIX/percentile.json" --format kv 2>&1)"
 if [ $? -ne 0 ]; then
@@ -263,7 +283,7 @@ else
   out_has "$PKV" "variance_population=10" "percentile fixture は 10 件"
   out_has "$PKV" "variance_p10=0.10"      "p10 は 1 番目の 0.10"
   out_has "$PKV" "variance_p25=0.30"      "p25 は ceil(2.5)=3 番目の 0.30（切り捨ての 0.20 ではない）"
-  out_has "$PKV" "variance_median=0.55"   "中央値 (0.5+0.6)/2 = 0.55"
+  out_has "$PKV" "variance_median=0.45"   "中央値 (0.44+0.46)/2 = 0.45"
   out_has "$PKV" "variance_p75=0.80"      "p75 は ceil(7.5)=8 番目の 0.80（切り捨ての 0.70 ではない）"
   out_has "$PKV" "variance_p90=0.90"      "p90 は 9 番目の 0.90（最大値 5.00 ではない）"
 fi
@@ -278,14 +298,14 @@ else
   PTXT_1="$(printf '%s' "$PTXT" | tr -s ' ')"
   out_has "$PTXT_1" "p10: 0.10"    "text 形式の p10 が 0.10"
   out_has "$PTXT_1" "p25: 0.30"    "text 形式の p25 が 0.30"
-  out_has "$PTXT_1" "中央値: 0.55" "text 形式の中央値が 0.55"
+  out_has "$PTXT_1" "中央値: 0.45" "text 形式の中央値が 0.45"
   out_has "$PTXT_1" "p75: 0.80"    "text 形式の p75 が 0.80"
   out_has "$PTXT_1" "p90: 0.90"    "text 形式の p90 が 0.90"
 fi
 
 echo "検査 4e: 帯の端ちょうどは帯内に数える（behavioral）"
 # 帯の端が開区間になると、較正で決めた下限・上限そのものを持つ Issue が「閾値外」と
-# 報告される。fixture は下限ちょうど 0.71 / 上限ちょうど 1.40 / そのすぐ外 0.70 / 1.41 の
+# 報告される。fixture は下限ちょうど 0.50 / 上限ちょうど 2.00 / そのすぐ外 0.49 / 2.01 の
 # 4 件で、閾値外は 2 件でなければならない。較正で帯を動かしたらこの fixture も動かす
 # （動かし忘れは赤で出る — 端の値が帯の外へ落ちるため）。
 BKV="$(bash "$REPORT" --input "$FIX/band-edge.json" --format kv 2>&1)"
@@ -293,7 +313,7 @@ if [ $? -ne 0 ]; then
   bad "band-edge fixture で集計器が異常終了した: ${BKV}"
 else
   out_has "$BKV" "variance_population=4"  "band-edge fixture は 4 件"
-  out_has "$BKV" "variance_out_of_band=2" "端ちょうど（0.71 / 1.40）は帯内、そのすぐ外（0.70 / 1.41）だけが閾値外"
+  out_has "$BKV" "variance_out_of_band=2" "端ちょうど（0.50 / 2.00）は帯内、そのすぐ外（0.49 / 2.01）だけが閾値外"
 fi
 
 echo "検査 4f: 人時ブロックと旧 d ブロックの混在（正規化と単位の食い違いの除外・behavioral）"
@@ -357,29 +377,29 @@ out_has "$KV" "wallclock_median_h_all=(unmeasured)"   "実測を持つ Issue が
 echo "検査 4h: 中央値の位置（帯内 / 過小側 / 過大側）を較正トリガの分岐の入力として出す（behavioral）"
 # 較正トリガの発火時に「帯を広げる」か「推定手順を直す」かは中央値の位置で決める
 # （retrospective の references/effort.md）。3 方向と端・空の母集団を 1 つずつ固定する。
-# median-under.json は中心が過小側へずれた分布（p25 1.33 / 中央値 1.88 / p75 2.50。導入先で
-# 較正トリガが発火した分布の形）で、p25〜p75 を包む較正に倒すと帯がずれを吸収してしまう。
+# median-under.json は中心が過小側へずれた分布（p25 1.33 / 中央値 2.25 / p75 2.50。導入先で
+# 較正トリガが発火した分布の形を、中央値が上限 2.00 を超える位置へずらしたもの）で、p25〜p75 を包む較正に倒すと帯がずれを吸収してしまう。
 MUKV="$(bash "$REPORT" --input "$FIX/median-under.json" --format kv 2>&1)"
 if [ $? -ne 0 ]; then
   bad "median-under fixture で集計器が異常終了した: ${MUKV}"
 else
-  out_has "$MUKV" "variance_median=1.88" "median-under fixture の中央値 1.88"
-  out_has "$MUKV" $'variance_median_position=underestimate\n' "中央値が上限 1.40 を超える分布は過小見積もり側（underestimate）"
+  out_has "$MUKV" "variance_median=2.25" "median-under fixture の中央値 2.25"
+  out_has "$MUKV" $'variance_median_position=underestimate\n' "中央値が上限 2.00 を超える分布は過小見積もり側（underestimate）"
 fi
-out_has "$PKV" $'variance_median_position=overestimate\n' "中央値 0.55 が下限 0.71 未満の分布は過大見積もり側（overestimate）"
+out_has "$PKV" $'variance_median_position=overestimate\n' "中央値 0.45 が下限 0.50 未満の分布は過大見積もり側（overestimate）"
 out_has "$KV"  $'variance_median_position=in_band\n'      "中央値 1.25 は帯内（in_band）"
 MEKV="$(bash "$REPORT" --input "$FIX/median-edge.json" --format kv 2>&1)"
 if [ $? -ne 0 ]; then
   bad "median-edge fixture で集計器が異常終了した: ${MEKV}"
 else
-  out_has "$MEKV" "variance_median=1.40" "median-edge fixture の中央値は上限ちょうど 1.40"
+  out_has "$MEKV" "variance_median=2.00" "median-edge fixture の中央値は上限ちょうど 2.00"
   out_has "$MEKV" $'variance_median_position=in_band\n' "中央値が上限ちょうどなら帯内（variance_out_of_band と同じ閉区間）"
 fi
 MLKV="$(bash "$REPORT" --input "$FIX/median-lower-edge.json" --format kv 2>&1)"
 if [ $? -ne 0 ]; then
   bad "median-lower-edge fixture で集計器が異常終了した: ${MLKV}"
 else
-  out_has "$MLKV" "variance_median=0.71" "median-lower-edge fixture の中央値は下限ちょうど 0.71"
+  out_has "$MLKV" "variance_median=0.50" "median-lower-edge fixture の中央値は下限ちょうど 0.50"
   out_has "$MLKV" $'variance_median_position=in_band\n' "中央値が下限ちょうどでも帯内（下限側も閉区間）"
 fi
 EMPTY_JSON="$(mktemp)" || { echo "✗ 一時ファイルを作成できません" >&2; exit 1; }
@@ -393,9 +413,9 @@ MUTXT="$(bash "$REPORT" --input "$FIX/median-under.json" 2>&1)"
 if [ $? -ne 0 ]; then
   bad "median-under fixture の text 形式で集計器が異常終了した: ${MUTXT}"
 else
-  out_has "$MUTXT" "中央値の位置:   過小見積もり側（中央値 > 1.40。帯を広げず推定手順を直す）" "text 形式に中央値の位置と行動が出る（過小側）"
+  out_has "$MUTXT" "中央値の位置:   過小見積もり側（中央値 > 2.00。帯を広げず推定手順を直す）" "text 形式に中央値の位置と行動が出る（過小側）"
 fi
-out_has "$PTXT" "中央値の位置:   過大見積もり側（中央値 < 0.71。帯を広げず推定手順を直す）" "text 形式に中央値の位置と行動が出る（過大側）"
+out_has "$PTXT" "中央値の位置:   過大見積もり側（中央値 < 0.50。帯を広げず推定手順を直す）" "text 形式に中央値の位置と行動が出る（過大側）"
 ITXT="$(bash "$REPORT" --input "$FIX/issues.json" 2>&1)"
 out_has "$ITXT" "中央値の位置:   帯内" "text 形式に中央値の位置が出る（帯内）"
 
@@ -442,6 +462,119 @@ fi
 echo "検査 5: close-issue はブロック不在で fail-open する"
 contains "$CLOSE_MAIN" "ブロック不在のためスキップ" "スキップ時の報告文言"
 contains "$CLOSE_MAIN" "マージは止めない" "マージを止めない旨"
+
+echo "検査 5b: 配備の行（effort_deploy）は必須・未記入は close-issue が指摘・集計器は読まない"
+# 書く側（create-issue の雛形）・指摘する側（close-issue の reference）・判定器（effort-report.sh
+# --deploy-check）の 3 箇所の照合と、判定器の behavioral。雛形の行をそのまま判定器へ当てるので、
+# 雛形のプレースホルダの形を変えて判定器が「記入済み」と読むようになるドリフトも赤になる。
+contains "$CREATE" "- effort_deploy: " "create-issue: 雛形に配備の行がある"
+contains "$CREATE" "なし（コードのみ・反映を伴わない）" "create-issue: 反映を伴わない変更の「なし」の書き方"
+contains "$CLOSE" "--deploy-check" "close-issue: 配備の行の判定器を呼ぶ"
+contains "$CLOSE" "配備の行が未記入" "close-issue: 未記入の指摘文言"
+contains "$CLOSE" "- effort_deploy: " "close-issue: 書き戻し例のブロックに配備の行がある"
+contains "$REPORT" "--deploy-check" "effort-report.sh: --deploy-check モード"
+DTMP="$(mktemp -d)" || { echo "✗ 一時ディレクトリを作成できません" >&2; exit 1; }
+_deploy() { bash "$REPORT" --deploy-check "$1" 2>/dev/null; }
+# 雛形のブロック（begin〜end）を create-issue から切り出す。切り出せなければ判定器の検査が成立しない
+awk -v b="$BEGIN_MARK" -v e="$END_MARK" '$0 == b { grab = 1 } grab { print } $0 == e { grab = 0 }' "$CREATE" > "$DTMP/tmpl.md"
+if awk -v b="$BEGIN_MARK" '$0 == b { n++ } END { exit !(n == 1) }' "$DTMP/tmpl.md" \
+   && awk '/^- effort_deploy: / { n++ } END { exit !(n == 1) }' "$DTMP/tmpl.md"; then
+  _d="$(_deploy "$DTMP/tmpl.md")"
+  [ "$_d" = "effort_deploy=unfilled" ] && ok "5b: 雛形のままの配備の行は unfilled（指摘対象）" \
+    || bad "5b: 雛形のままの配備の行の判定が期待と違う: [${_d}]（期待 effort_deploy=unfilled）"
+  awk '/^- effort_deploy: / { print "- effort_deploy: なし（コードのみ・反映を伴わない）"; next } { print }' "$DTMP/tmpl.md" > "$DTMP/none.md"
+  _d="$(_deploy "$DTMP/none.md")"
+  [ "$_d" = "effort_deploy=present" ] && ok "5b: 「なし（コードのみ・反映を伴わない）」は記入済み（指摘しない）" \
+    || bad "5b: 「なし」の明示の判定が期待と違う: [${_d}]（期待 effort_deploy=present）"
+  awk '/^- effort_deploy: / { print "- effort_deploy: 実装者が本番 Worker へ反映し、成否は実装者が本番ログで確認する"; next } { print }' "$DTMP/tmpl.md" > "$DTMP/filled.md"
+  _d="$(_deploy "$DTMP/filled.md")"
+  [ "$_d" = "effort_deploy=present" ] && ok "5b: 担当と確認方法を書いた配備の行は記入済み" \
+    || bad "5b: 記入済みの判定が期待と違う: [${_d}]（期待 effort_deploy=present）"
+  # 新キーを消すと指摘が出る（DoD の「新キーを消す」操作を fixture 側で固定する）
+  awk '!/^- effort_deploy: /' "$DTMP/filled.md" > "$DTMP/missing.md"
+  _d="$(_deploy "$DTMP/missing.md")"
+  [ "$_d" = "effort_deploy=missing" ] && ok "5b: 配備の行を消したブロックは missing（指摘対象）" \
+    || bad "5b: 配備の行が無いブロックの判定が期待と違う: [${_d}]（期待 effort_deploy=missing）"
+  awk '/^- effort_deploy: / { print "- effort_deploy: (未記入)"; next } { print }' "$DTMP/tmpl.md" > "$DTMP/unset.md"
+  _d="$(_deploy "$DTMP/unset.md")"
+  [ "$_d" = "effort_deploy=unfilled" ] && ok "5b: (未記入) は unfilled" || bad "5b: (未記入) の判定が期待と違う: [${_d}]"
+  awk '{ print } /^- effort_deploy: / { print }' "$DTMP/filled.md" > "$DTMP/dup.md"
+  _d="$(_deploy "$DTMP/dup.md")"
+  [ "$_d" = "effort_deploy=malformed" ] && ok "5b: 配備の行の重複は malformed" || bad "5b: 重複の判定が期待と違う: [${_d}]"
+  # 値が空（キーの後ろに何も無い）
+  awk '/^- effort_deploy: / { print "- effort_deploy:"; next } { print }' "$DTMP/tmpl.md" > "$DTMP/empty.md"
+  _d="$(_deploy "$DTMP/empty.md")"
+  [ "$_d" = "effort_deploy=unfilled" ] && ok "5b: 値が空の配備の行は unfilled" || bad "5b: 空値の判定が期待と違う: [${_d}]"
+  # 全角空白に挟まれた全角括弧の（未記入）
+  awk '/^- effort_deploy: / { print "- effort_deploy:　（未記入）　"; next } { print }' "$DTMP/tmpl.md" > "$DTMP/fullwidth.md"
+  _d="$(_deploy "$DTMP/fullwidth.md")"
+  [ "$_d" = "effort_deploy=unfilled" ] && ok "5b: 全角空白 + 全角括弧の（未記入）は unfilled" || bad "5b: 全角の（未記入）の判定が期待と違う: [${_d}]"
+  # 閉じていないブロック（end 行の欠落）
+  awk -v e="$END_MARK" '$0 != e' "$DTMP/filled.md" > "$DTMP/unclosed.md"
+  _d="$(_deploy "$DTMP/unclosed.md")"
+  [ "$_d" = "effort_deploy=malformed" ] && ok "5b: end の無いブロックは malformed" || bad "5b: 未閉鎖の判定が期待と違う: [${_d}]"
+  # end だけの本文（begin より前の end。集計本体も malformed と扱う形）
+  printf '本文\n%s\n' "$END_MARK" > "$DTMP/endonly.md"
+  _d="$(_deploy "$DTMP/endonly.md")"
+  [ "$_d" = "effort_deploy=malformed" ] && ok "5b: end だけの本文は malformed（noblock へ倒さない）" || bad "5b: end だけの本文の判定が期待と違う: [${_d}]"
+  # 統合: close-issue の reference の照合手順（手順 5a の中で本文を .orig.md へ保存してから当てる）を
+  # そのまま抽出して走らせ、記入済みの本文で present が出ること（入力未作成の unavailable にならない）
+  awk '/^## 配備の行/ { sec = 1; next } sec && /^## / { sec = 0 } sec && /^```bash$/ { f = 1; next } sec && f && /^```$/ { f = 0; exit } sec && f { print }' "$CLOSE" > "$DTMP/step.sh"
+  mkdir -p "$DTMP/bin" "$DTMP/tmp"
+  printf '#!/bin/sh\ncat "%s"\n' "$DTMP/filled.md" > "$DTMP/bin/gh"; chmod +x "$DTMP/bin/gh"
+  if awk '/--deploy-check/ { d++ } /gh issue view/ { s++ } END { exit !(d == 1 && s == 1) }' "$DTMP/step.sh"; then
+    _step="$(awk -v t="$DTMP/tmp/" '{ gsub("/tmp/", t); print }' "$DTMP/step.sh")"
+    _d="$(PATH="$DTMP/bin:$PATH" ISSUE_URL=x ISSUE_NUMBER=5 FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash -c "$_step" 2>/dev/null)"
+    [ "$_d" = "effort_deploy=present" ] && ok "5b: close-issue の照合手順を 5a の位置で単独実行して present（.orig.md を先に保存している）" \
+      || bad "5b: close-issue の照合手順の単独実行が期待と違う: [${_d}]（期待 effort_deploy=present）"
+    # gh の取得失敗（stub が非 0）: 空ファイルを noblock と読まず unavailable を報告する。前回の
+    # 成功で残った .orig.md（記入済み）があっても、それを読んで present にしない
+    printf '#!/bin/sh\nexit 1\n' > "$DTMP/bin/gh"
+    _d="$(PATH="$DTMP/bin:$PATH" ISSUE_URL=x ISSUE_NUMBER=5 FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash -c "$_step" 2>/dev/null)"
+    [ "$_d" = "effort_deploy=unavailable" ] && ok "5b: 照合手順で gh が失敗したら unavailable（空の本文を noblock と読まない）" \
+      || bad "5b: gh 失敗時の照合手順の出力が期待と違う: [${_d}]（期待 effort_deploy=unavailable）"
+  else
+    bad "5b: close-issue の reference から照合手順（本文の取得 1 行 + --deploy-check 1 行）を抽出できません"
+  fi
+  # 2 組目のブロック・閉じたブロックの後の余分な end は、どの値を読むべきか決まらないので malformed
+  # 2 組目は配備の行を持たない形にする（両方に持たせるとキーの重複で malformed になり、2 組目の検出を測れない）
+  { cat "$DTMP/filled.md"; printf '%s\n- effort_unit: h\n%s\n' "$BEGIN_MARK" "$END_MARK"; } > "$DTMP/twoblocks.md"
+  _d="$(_deploy "$DTMP/twoblocks.md")"
+  [ "$_d" = "effort_deploy=malformed" ] && ok "5b: 2 組目のブロックは malformed" || bad "5b: 2 組目のブロックの判定が期待と違う: [${_d}]"
+  { cat "$DTMP/filled.md"; printf '%s\n' "$END_MARK"; } > "$DTMP/extraend.md"
+  _d="$(_deploy "$DTMP/extraend.md")"
+  [ "$_d" = "effort_deploy=malformed" ] && ok "5b: 閉じたブロックの後の余分な end は malformed" || bad "5b: 余分な end の判定が期待と違う: [${_d}]"
+else
+  bad "5b: create-issue の雛形からブロック（配備の行 1 行を含む）を切り出せません"
+fi
+# 針が当たらない入力: ブロック不在は noblock（指摘しない = 5a のスキップ）、読めない本文は
+# unavailable（present へ倒さない）。どちらも exit 0（マージを止めない）
+printf 'ブロックの無い本文\n' > "$DTMP/noblock.md"
+_d="$(_deploy "$DTMP/noblock.md")"
+[ "$_d" = "effort_deploy=noblock" ] && ok "5b: ブロック不在は noblock" || bad "5b: ブロック不在の判定が期待と違う: [${_d}]"
+_d="$(bash "$REPORT" --deploy-check "$DTMP/does-not-exist.md" 2>/dev/null)"; _rc=$?
+[ "$_d" = "effort_deploy=unavailable" ] && [ "$_rc" = "0" ] && ok "5b: 読めない本文は unavailable・exit 0（記入済みへ倒さない・止めない）" \
+  || bad "5b: 読めない本文の判定が期待と違う: [${_d}] rc=${_rc}"
+bash "$REPORT" --deploy-check "$DTMP/noblock.md" --issue-metrics 1 >/dev/null 2>&1
+[ "$?" = "2" ] && ok "5b: --deploy-check と --issue-metrics の同時指定は exit 2" || bad "5b: 同時指定が使い方の誤りにならない"
+# 集計側のオプション（--input / --format）との併用も黙って無視せず exit 2
+_d="$(bash "$REPORT" --deploy-check "$DTMP/noblock.md" --input "$FIX/issues.json" --format kv 2>/dev/null)"; _rc=$?
+[ "$_rc" = "2" ] && [ -z "$_d" ] && ok "5b: --deploy-check と --input / --format の同時指定は exit 2（判定も集計も出さない）" \
+  || bad "5b: --deploy-check と --input の同時指定が期待と違う: rc=${_rc} out=[${_d}]"
+# 集計器は新キーを無視する: 既存 fixture の全ブロックへ配備の行を足しても kv 出力が 1 字も変わらない
+_ins="$(jq '[.[] | (.body // "") | [scan("<!-- ff-effort:begin -->\n")] | length] | add' "$FIX/issues.json" 2>/dev/null)"
+jq '[.[] | .body = ((.body // "") | gsub("<!-- ff-effort:begin -->\n"; "<!-- ff-effort:begin -->\n- effort_deploy: なし（コードのみ・反映を伴わない）\n"))]' \
+  "$FIX/issues.json" > "$DTMP/issues-deploy.json" 2>/dev/null
+_kv_without="$(bash "$REPORT" --input "$FIX/issues.json" --format kv 2>/dev/null)"
+_kv_with="$(bash "$REPORT" --input "$DTMP/issues-deploy.json" --format kv 2>/dev/null)"
+if [ "${_ins:-0}" -ge 1 ] 2>/dev/null && [ -n "$_kv_without" ]; then
+  [ "$_kv_with" = "$_kv_without" ] && ok "5b: 既存 fixture の ${_ins} ブロックへ配備の行を足しても集計（kv 全行）が変わらない" \
+    || bad "5b: 配備の行の有無で集計が変わった（新キーを無視していない）"
+  out_has "$_kv_with" "population=6" "5b: 配備の行ありの fixture でも母集団 6 件（検査 4 と同じ）"
+else
+  bad "5b: 配備の行の注入が成立していない（挿入箇所 ${_ins:-?} / 集計出力の有無）"
+fi
+rm -rf "$DTMP"
 
 echo "検査 6: create-issue の「非対話モードでも工数は推定してよい」非対称"
 contains "$CREATE" "非対話モードでも推定してよい" "非対称の明示"
@@ -531,6 +664,18 @@ contains "$CREATE_ESTIMATION" "補正元が見つかったときは表より補�
 contains "$CREATE_ESTIMATION" 'その壁時計の圧縮を `effort_basis` に明記する' "並列計画では壁時計の圧縮を effort_basis に明記"
 contains "$CREATE_ESTIMATION" '同じ規則を再掲する生存文書を `grep` で数え上げ' "規則の文言変更は再掲文書の本数を別項目で積む"
 contains "$CREATE_ESTIMATION" "回避形への対応を 2 巡" "コマンド文字列型の検出器は回避形対応 2 巡"
+# 補正元の同種判定・照合面の分・文書同期の行は、どれも既定値 1 本が一方向へ倒れた導入先の実測から
+# 足した規定（設計判断の有無は過大側 5 件、照合面は過小側 3 件、文書同期は過大側 3 件）。
+contains "$CREATE_ESTIMATION" "同じ変更の質・**設計判断の有無**が一致する" "補正元の同種判定に設計判断の有無の一致を含める"
+contains "$CREATE_ESTIMATION" "設計判断の有無が一致する補正元に限る" "補正元優先は設計判断の有無が一致する補正元に限る"
+contains "$CREATE_ESTIMATION" "（導入先の観測台帳 OBS-267。判断込みの補正元の比率を持ち込んだ実測 5 件" "設計判断の有無の出所（OBS-267 の実測 5 件）"
+contains "$CREATE_ESTIMATION" "**食い違い 1 件あたり 0.15〜0.6h**" "挙動を述べる新しい主張は見込む食い違い 1 件ごとに照合面の分を積む"
+contains "$CREATE_ESTIMATION" "導入先の観測台帳（OBS-147）の実測 3 件" "照合面の係数の出所（OBS-147 の実測 3 件）"
+contains "$CREATE_ESTIMATION" "挙動を述べる主張を新しく書くものには、既定値の表の「文言・ファイルの再置換で済む」" "照合面と再置換の既定の境界"
+contains "$CREATE_ESTIMATION" "再置換の既定を当ててよいのは、書き換えが既存の主張の差し替え・写しに留まり" "再置換の既定を当ててよい条件"
+contains "$CREATE_ESTIMATION" "| 文書同期・決定記録の docs Issue（ADR 1 件 + 複数文書の注記） |" "文書同期・決定記録の docs Issue の行"
+contains "$CREATE_ESTIMATION" "和が最小値 1.0h を下回るときは最小値を置く" "文書同期の行も最小値 1.0h を下回らない"
+contains "$CREATE_ESTIMATION" "未決の論点数を数え直して AI 予定を見直す" "決定 Issue は着手時に未決の論点数で見直す"
 
 echo "検査 9d: bundle の固定費を一度だけ記録する"
 # 写しが本体の欠落を隠さないよう、一致行はちょうど 1 行を要求する（ACE-1825-1）。
@@ -962,6 +1107,86 @@ if [ -f "$GM_REC" ]; then
     _j="$(awk 'END { print NR + 0 }' "$JSTATE/metrics/gate.tsv" 2>/dev/null)"
     [ "$_j" = "3" ] && ok "14j: 入れ子の実行（FF_ENTERED_NESTED=1）は記録しない（外側の 1 回に含まれる）" \
       || bad "14j: 入れ子の実行を記録した（rows=${_j}、期待 3）"
+    # env を隔離した入れ子（FF_ENTERED_NESTED が届かない回）: 書く側（>>> ff-gate-marker-block の
+    # ff_gate_marker_set）をこの suite 自身（子の祖先）の PID で実行し、子の記録ブロックが入れ子と
+    # 判定することを測る。書く側は利用者のロケール（ja_JP.UTF-8）、読む側は env 隔離の子が固定される
+    # C.UTF-8 と別の TZ — lstart の表記が変わっても一致すること（LC_ALL=C TZ=UTC0 の固定）を含む
+    MBLOCK="$MTMP/gate-marker-block.sh"
+    awk '/^# >>> ff-gate-marker-block/ { grab = 1; next } /^# <<< ff-gate-marker-block/ { grab = 0 } grab { print }' "$RUNNER" > "$MBLOCK"
+    _jm_dir="$(git -C "$REPO_G" rev-parse --absolute-git-dir 2>/dev/null)/ff-dev-toolkit/run-all-in-flight"
+    _mset() { # [NAME=VALUE ...] → 本 suite のシェル（$$）として ff_gate_marker_set を実行し、置いたファイルを stdout
+      ( SCRIPT_DIR="$REPO_G/tests"; FF_ENTERED_NESTED=0; GATE_MARKER_FILE=""
+        for _kv in "$@"; do export "${_kv?}"; done
+        . "$MBLOCK" && ff_gate_marker_set; printf '%s' "$GATE_MARKER_FILE" ) 2>/dev/null
+    }
+    # ps が開始時刻を返さない環境を作る偽の ps（ppid の問い合わせは本物へ渡す）
+    mkdir -p "$MTMP/fakeps"
+    printf '#!/bin/sh\ncase "$*" in *lstart*) exit 1 ;; esac\nexec /bin/ps "$@"\n' > "$MTMP/fakeps/ps"
+    chmod +x "$MTMP/fakeps/ps"
+    if [ "$(awk 'END { print NR + 0 }' "$MBLOCK")" -lt 5 ]; then
+      bad "14j: 走行中マーカーの書き手を抽出できません（マーカー >>> ff-gate-marker-block を確認）"
+    elif [ -z "$(LC_ALL=C ps -o lstart= -p "$$" 2>/dev/null)" ]; then
+      skip "14j: ps -o lstart= が使えないため env 隔離の入れ子を検査できません（記録側はこの環境で環境変数の判定だけに倒れる）"
+    else
+      _jm_file="$(_mset LC_ALL=ja_JP.UTF-8 TZ=UTC0)"
+      if [ "$_jm_file" = "$_jm_dir/$$" ] && [ -s "$_jm_file" ]; then
+        ok "14j: ff_gate_marker_set が git dir の ff-dev-toolkit/run-all-in-flight/<PID> へ開始時刻を書く"
+      else
+        bad "14j: ff_gate_marker_set のマーカーが期待と違う: [${_jm_file}]（期待 ${_jm_dir}/$$ が非空）"
+      fi
+      LC_ALL=C.UTF-8 TZ=Asia/Tokyo FF_ENTERED_NESTED=0 _run_block pass 0 0
+      _j="$(awk 'END { print NR + 0 }' "$JSTATE/metrics/gate.tsv" 2>/dev/null)"
+      [ "$_j" = "3" ] && ok "14j: env を隔離した入れ子（祖先の走行中マーカーあり・書き手 ja_JP.UTF-8 / 読み手 C.UTF-8 + Asia/Tokyo）は記録しない" \
+        || bad "14j: env を隔離した入れ子を記録した（rows=${_j}、期待 3。ロケール / TZ の固定を確認）"
+      # PID が同じでも開始時刻が違うマーカー（前回の異常終了の残骸が再利用 PID を指す形）では
+      # 入れ子にしない — 手で回した明示実行を従来どおり 1 行記録する
+      printf 'stale\n' > "$_jm_dir/$$"
+      FF_ENTERED_NESTED=0 _run_block pass 0 0
+      _j="$(awk -F '\t' 'END { print NR "|" $6 "|" $7 }' "$JSTATE/metrics/gate.tsv" 2>/dev/null)"
+      [ "$_j" = "4|explicit|partial" ] && ok "14j: 開始時刻の合わない残骸マーカーでは入れ子にせず、明示実行を explicit / partial で 1 行記録する" \
+        || bad "14j: 残骸マーカーで記録が期待と違う: [${_j}]（期待 4|explicit|partial）"
+      # 開始時刻を取れない（ps が失敗する）とき: 書く側はマーカーを置かず、読む側は空同士を一致させない
+      rm -f "$_jm_dir/$$"
+      _jm_file="$(_mset PATH="$MTMP/fakeps:$PATH")"
+      { [ -z "$_jm_file" ] && [ ! -e "$_jm_dir/$$" ]; } && ok "14j: 開始時刻を取れない回は走行中マーカーを置かない" \
+        || bad "14j: 開始時刻を取れないのにマーカーを置いた: [${_jm_file}]"
+      : > "$_jm_dir/$$"
+      PATH="$MTMP/fakeps:$PATH" FF_ENTERED_NESTED=0 _run_block pass 0 0
+      _j="$(awk 'END { print NR + 0 }' "$JSTATE/metrics/gate.tsv" 2>/dev/null)"
+      [ "$_j" = "5" ] && ok "14j: 空のマーカーと取れない開始時刻（空同士）を一致させず、明示実行を記録する" \
+        || bad "14j: 空同士の一致で入れ子扱いにした（rows=${_j}、期待 5）"
+      rm -f "$_jm_dir/$$"
+    fi
+    # 本物の経路: fixture リポジトリに複製した run-all.sh を外側で起動し、その suite が `env -i`
+    # （PATH / HOME / 記録置き場だけを渡す）で同じ run-all.sh を子として再起動する。gate.tsv は外側の
+    # 1 行だけで、終了後にマーカーが残らないこと（ff_gate_marker_set の呼び出しと後片付けの配線）
+    REPO_E="$MTMP/repoE"; ESTATE="$MTMP/state-e"
+    if _mk_repo "$REPO_E" >/dev/null; then
+      mkdir -p "$REPO_E/tests/lib" "$REPO_E/tests/leaf" "$REPO_E/tests/child" "$REPO_E/scripts"
+      cp "$RUNNER" "$REPO_E/tests/run-all.sh"
+      cp "$GM_REC" "$REPO_E/scripts/record-gate-minutes.sh"
+      [ ! -f "$PLUGIN_ROOT/tests/lib/utf8-locale.sh" ] || cp "$PLUGIN_ROOT/tests/lib/utf8-locale.sh" "$REPO_E/tests/lib/"
+      printf '#!/usr/bin/env bash\necho "✓ leaf: pass"\n' > "$REPO_E/tests/leaf/verify.sh"
+      printf '%s\n' '#!/usr/bin/env bash' 'd="$(cd "$(dirname "$0")/.." && pwd)"' \
+        'env -i PATH="$PATH" HOME="$HOME" FF_DEV_TOOLKIT_STATE_DIR="$FF_DEV_TOOLKIT_STATE_DIR" bash "$d/run-all.sh" "$d/leaf/verify.sh" >/dev/null 2>&1 || exit 1' \
+        'echo "✓ child: pass"' > "$REPO_E/tests/child/verify.sh"
+      chmod +x "$REPO_E/tests/leaf/verify.sh" "$REPO_E/tests/child/verify.sh"
+      git -C "$REPO_E" add -A >/dev/null 2>&1 && git -C "$REPO_E" commit -q -m fixture >/dev/null 2>&1
+      git -C "$REPO_E" checkout -q -b 'chore/#69-nested' >/dev/null 2>&1
+      env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL -u FF_RUN_ALL_CHANGED \
+        FF_DEV_TOOLKIT_STATE_DIR="$ESTATE" FF_GATE_RECORD=0 FF_RUN_ALL_JOBS=1 \
+        bash "$REPO_E/tests/run-all.sh" "$REPO_E/tests/child/verify.sh" >"$MTMP/e2e.log" 2>&1
+      _e_rc=$?
+      _j="$(awk -F '\t' '{ n++; last = $1 "|" $6 "|" $7 } END { print n + 0 "|" last }' "$ESTATE/metrics/gate.tsv" 2>/dev/null)"
+      _e_left="$(ls "$(git -C "$REPO_E" rev-parse --absolute-git-dir)/ff-dev-toolkit/run-all-in-flight" 2>/dev/null | wc -l | tr -d ' ')"
+      { [ "$_e_rc" = "0" ] && [ "$_j" = "1|69|explicit|partial" ]; } \
+        && ok "14j: 本物の run-all.sh が env -i で子を再起動しても gate.tsv は外側の 1 行（explicit / partial）だけ" \
+        || bad "14j: env -i の入れ子経路の記録が期待と違う: rc=${_e_rc} [${_j}]（期待 rc=0 1|69|explicit|partial）: $(tail -3 "$MTMP/e2e.log" | tr '\n' ' ')"
+      [ "$_e_left" = "0" ] && ok "14j: 外側の run-all.sh は終了時に走行中マーカーを消す" \
+        || bad "14j: 走行中マーカーが残った（${_e_left} 件）"
+    else
+      bad "14j: fixture リポジトリを作成できません: $REPO_E"
+    fi
   else
     bad "14j: 記録ブロックを抽出できません（マーカー >>> ff-gate-record-block を確認）"
   fi

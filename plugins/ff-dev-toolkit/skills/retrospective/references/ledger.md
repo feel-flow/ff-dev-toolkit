@@ -81,7 +81,8 @@ fi
 
 ## 書き込み（定型コミット）の根拠
 
-- 台帳の書き込みは `knowledge:` prefix の単独コミット（`/ace-curate` の Playbook 直コミットと同格の定型書き込み。承認は不要だが、記録した内容は振り返り結果で必ず報告する）。commit は書き込み口（`finish.sh knowledge-commit commit`）が、記録したパスへ固定した `git commit -- <path>…` で行う（`git add` + pathspec 無しの `git commit` にしない — 索引に載った無関係な変更が単独コミットへ紛れ込んで直 push されるのを、この形だけが防ぐ）。素の `git commit` を自分で打たない — 合成 identity の停止もこの書き込み口の中にあり、素の commit にはどのホストでも掛からない
+- 台帳の書き込みは `knowledge:` prefix の単独コミット（`/ace-curate` の Playbook 直コミットと同格の定型書き込み。承認は不要だが、記録した内容は振り返り結果で必ず報告する）。commit は書き込み口（`finish.sh knowledge-commit commit`）が、記録したパスへ固定した `git commit -- <path>…` で行う（`git add` + pathspec 無しの `git commit` にしない — 索引に載った無関係な変更が単独コミットへ紛れ込んで直 push されるのを、この形だけが防ぐ）。素の `git commit` を自分で打たない — 合成 identity の停止もこの書き込み口の中にあり、素の commit にはどのホストでも掛からない。唯一の例外は下の hook 拒否後の手コミットで、それも記録したパスへ固定した `git commit -m "<件名>" -- <パス>` の形に限る
+- 書き込み口は件名を組み立てた直後、stage・保留記録・commit より前にリポジトリの prepare-commit-msg → commit-msg hook へ件名をドライランで通す。`add` / `commit` が rc 4（`KNOWLEDGE_COMMIT=hook-rejected`）で止まったら hook が件名を拒否している — `add` の拒否は保留を作らない（`--claim` 経由では文書と claim の stage は残る）ので `discard` は要らない。表示された要求形式に合わせ、type だけの不一致なら `--type` で再実行し、Issue 番号必須など件名の形そのものを求める hook なら、`git config user.name` / `user.email` が合成 identity でないことを確かめてから `git commit -m "<規約どおりの件名>" -- docs/08-knowledge/OBSERVATIONS.md` で手でコミットする（扱いの正本は `/ace-curate` の references/curate.md「コミットメッセージ規約」）
 - push が non-fast-forward で拒否されたら、上の復帰手順へ戻る — `git pull --ff-only` で取り込み、記録手順 0 から記録内容を作り直す。OBS ID の採番し直しだけで push を再試行しない（照合から push までの間に同じ主張が別セッションで記録されていれば、同一性判定を引き直さない限り重複エントリが残る）
 - **ローカルに未 push のコミットがある回は、それらも同じ push で統合ブランチへ送られる**。台帳のコミットを単独に保つのは commit の pathspec だけで、push の粒度はブランチである。デフォルト統合ブランチ上に意図しないローカルコミットが無いことを記録の前に確かめる
 - 導入先から SSOT や配布元へ観測を Issue で受け渡す経路（`[observation]` 接頭辞の受け渡し便）は**廃止**した。観測は作業中リポジトリの台帳で閉じ、他リポジトリへ渡すのは閾値到達後の起票だけにする。旧版が残した `[observation]` Issue は、SSOT で実行するときだけ [legacy-intake.md](legacy-intake.md) に従って取り込む

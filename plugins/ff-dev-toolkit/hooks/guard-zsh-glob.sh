@@ -63,6 +63,8 @@
 # ## 出力チャネルと抜け道
 #
 # glob / equals は `permissionDecision: "deny"`、scalar は systemMessage の警告で返す。
+# systemMessage はエージェントへ届かないので、同じ hook を PostToolUse（Bash）にも登録し、
+# scalar だけを `hookSpecificOutput.additionalContext` で実行後に返す（止めない）。
 # 追加検出の契約は tests/lib/zsh-expansion-guard.sh。deny の JSON を組み立てる jq が失敗したら黙って許可に
 # 落とさず、exit 2 + stderr のブロック経路へ落とす。
 #   - この呼び出しだけ通す: Bash ツールへ渡すコマンドの**先頭の語**を環境代入 `FF_ZSH_GLOB_ACK=1`
@@ -122,6 +124,31 @@ esac
 # 同じホスト入口で equals/scalar も検出する。警告は既存 glob の deny と JSON を分断しない。
 expansion_warning=""
 expansion_helper="${BASH_SOURCE[0]%/*}/../tests/lib/zsh-expansion-guard.sh"
+
+# ---- PostToolUse（Bash）: 未引用 scalar の警告をエージェントの文脈へ届ける ----------------
+# PreToolUse の systemMessage は利用者の画面にしか出ずエージェントへ届かない。同じ判定
+# （zsh-expansion-guard.sh。判定本体は二重化しない）を実行後に当て、scalar だけを
+# hookSpecificOutput.additionalContext で返す。glob / equals の停止は PreToolUse の担当なので
+# ここでは走らせない。実行は既に終わっているので、どの失敗経路でも止めない（fail-soft）:
+# jq 不在・JSON でない入力・helper の異常終了は無音、helper 不在は `$` を含むコマンドに限り
+# 未検査である旨を additionalContext で知らせる。
+case "$input" in
+  *'"PostToolUse"'*)
+    if command -v jq >/dev/null 2>&1 \
+      && [ "$(printf '%s' "$input" | jq -r '.hook_event_name // empty' 2>/dev/null)" = PostToolUse ]; then
+      [ "${FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD:-0}" = 1 ] && exit 0
+      if [ -r "$expansion_helper" ]; then
+        printf '%s' "$input" | bash "$expansion_helper" 2>/dev/null || true
+      else
+        post_cmd="$(printf '%s' "$input" | jq -r 'select(.tool_name == "Bash") | .tool_input.command | select(type == "string")' 2>/dev/null)"
+        case "$post_cmd" in
+          *'$'*) jq -n '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: "zsh 展開ガード: helper が不在で直前の Bash 呼び出しの未引用変数を未検査です。ff-dev-toolkit を更新・復旧してください。"}}' ;;
+        esac
+      fi
+      exit 0
+    fi
+    ;;
+esac
 if [ "${FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD:-0}" = 1 ]; then
   :
 elif [ -r "$expansion_helper" ]; then

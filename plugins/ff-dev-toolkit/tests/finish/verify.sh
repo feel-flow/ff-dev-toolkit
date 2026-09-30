@@ -29,6 +29,7 @@
 # 空振り検出: scripts/finish.sh の写しで precheck の「PR 不在」「gh 不通」「実測の記録が無い」を rc 0 の緑へ倒す（die_env / undetermined の exit 2 を return 0 に）と (B1 / B2 / C1) が赤になる。全スキルが上限内の合成名簿で 1 本だけを 20,001 バイトにすると (L2)、1 本だけを消すと (L3) が赤になる（2026-09-24 実測。針が当たらない入力を緑にしない）。finish.sh の写しで PR_COMMITS の出力行を消すと (A5 / C8 / C9 / F9)、`head -n 1` で 1 行に切ると (F9)、API 代替の `reverse` を外すと (F10)、fetch 失敗・git log 0 件・両方空の分岐を消すと (C11 / C10 / C12)、close-issue 手順 6 の主要コミット欄を `<hash> <件名>` の手書きへ戻すと (A6) が赤になる（2026-09-27 実測）。
 # 空振り検出: watch 非 0 後の失敗 check の抽出を空にすると (D5 / D6c)、再待機上限を 1 回へ下げると (D6 / D6b) が赤になる（2026-09-29 実測）。
 # 空振り検出: watch 非 0 後の全成功を通す分岐を消すと (D6a)、checks 再取得不能時の再取得呼び出しを消すと (D7) が赤になる（2026-09-29 実測）。
+# 空振り検出: knowledge-commit push の rc 3 判定から `Protected branch update failed`（署名必須の拒否）・`Required status check`・`not authorized to push` の針を 1 つずつ外すと、それぞれ対応する H7b が rc=1 で赤になる（2026-09-30 実測）。
 #
 # 実 gh・ネットワーク・課金は伴わない。一時ディレクトリを作れない環境は skip ではなく
 # 赤（この suite の検査は 1 件も成立していない）。
@@ -955,6 +956,28 @@ if [ "$RC" -eq 3 ] && has_line "$OUT" "KNOWLEDGE_PUSH=protected" && has_text "$E
 else
   bad "H7: 保護拒否の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
 fi
+# classic 保護の拒否全般（GH006）・必須チェック・push 制限による拒否も PR 経由（rc 3）へ寄せる（probe の
+# 判定が外れた回の安全網）。各針を単独で当てるため、GH006 行は署名必須のケースにだけ付ける。
+# 必須チェックの文言は GitHub Docs「Troubleshooting required status checks」の例、push 制限の文言は推定
+for _h7_msg in 'Required status check \"ci\" is expected.' "You're not authorized to push to this branch." \
+  'GH006: Protected branch update failed for refs/heads/develop.|Commits must have verified signatures.'; do
+  {
+    printf '#!/usr/bin/env bash\n'
+    _h7_rest="$_h7_msg"
+    while :; do
+      printf 'echo "remote: error: %s" >&2\n' "${_h7_rest%%|*}"
+      [[ "$_h7_rest" == *"|"* ]] || break
+      _h7_rest="${_h7_rest#*|}"
+    done
+    printf 'exit 1\n'
+  } >"$TMP/origin.git/hooks/pre-receive"
+  run_finish "$KW" knowledge-commit push
+  if [ "$RC" -eq 3 ] && has_line "$OUT" "KNOWLEDGE_PUSH=protected"; then
+    ok "H7b: 「${_h7_msg}」の拒否も rc 3・KNOWLEDGE_PUSH=protected で PR 経由へ"
+  else
+    bad "H7b: 「${_h7_msg}」の拒否が rc 3 にならない（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+done
 rm -f "$TMP/origin.git/hooks/pre-receive"
 # PR 経由: default branch 上の commit をブランチへ移し、push → gh pr create → local default を origin へ戻す
 run_finish "$KW" knowledge-commit pr --branch chore/ace-from-pr-7 --title "knowledge: OBS-3 要約3"

@@ -14,6 +14,7 @@
 #   Z. zsh 固有: 述語が真陽性と断定した形は実際に zsh で NOMATCH になり、書き換え案は通る。
 #      素通しさせる形は zsh で NOMATCH にならない（zsh が無いホストでは skip）
 #   M. 変異検出
+#   P. PostToolUse（Bash）: 同じ判定の未引用 scalar を additionalContext でエージェントへ返し、止めない
 #
 # 変異検出: hook のホスト判定（zsh | zsh-*) の分岐）を bash にも当たるよう書き換えたコピーは AC4（bash ホストでは発火しない）と同形の検査を赤にする（M1）。
 # 変異検出: 判定ヘルパの `case` パターン除外（cs[d] == 3 の語を読み飛ばす行）を消したコピーは N 系の case パターン検査と同形の検査を赤にする（M2）。
@@ -32,6 +33,7 @@
 # 空振り検出: 判定ヘルパが存在しない配置（対象の不在）・走査の awk が失敗する（FF_ZSH_GLOB_AWK=false）・関数が無い（名前だけ残って中身が変わる）のいずれを与えても、候補コマンドは無音の素通しではなく判定不能の deny になり C1〜C3 が赤→緑を分ける（どの入力にも 0 件を返すヘルパでは F 系 21 形がすべて素通しになり赤になる。M4。引用が閉じないまま終わる入力（未終端）は走査未完了の rc 4 として C6 が判定不能の deny を要求する。実測 2026-09-27）。
 #
 # 空振り検出: expansion の不在・関数欠落・awk失敗は判定不能、空出力変異は陽性対照で赤。
+# 空振り検出: PostToolUse は実行済みなので判定器不在・走査失敗（FF_ZSH_GLOB_AWK=false）・JSON でない入力のどれでも止めず（fail-soft）、判定器不在と走査失敗は `$` を含む呼び出しに限り「未検査 / 判定不能」を additionalContext で返して検出 0 件と区別する（P4）。scalar 判定を消した scanner の変異は PostToolUse の陽性対照を黙らせる（P5）。
 # run-all-required: no — jq 不在での skip を許容する（兄弟の hook suite と同じ判断）
 set -euo pipefail
 
@@ -582,6 +584,74 @@ assert_fire 'registered entrypoint denies equals'
 run_on "$TARGET" 'grep $P --include=*.md'
 assert_fire 'registered entrypoint merges glob deny and scalar warning'
 if printf '%s' "$OUT" | jq -se 'length == 1 and (.[0].systemMessage | contains("単語分割"))' >/dev/null; then ok 'one JSON includes both channels'; else bad 'multiple JSON or warning lost'; fi
+
+echo "guard-zsh-glob: P PostToolUse additionalContext（scalar 警告をエージェントへ届ける）"
+# run_post <hook> <command> [NAME=VALUE ...] — PostToolUse の入力（tool_response 付き）で駆動する。
+run_post() {
+  local hook="$1" cmd="$2" json
+  shift 2
+  json="$(jq -n --arg c "$cmd" --arg d "$TEST_TMP" \
+    '{tool_name: "Bash", tool_input: {command: $c}, tool_response: {stdout: "", stderr: ""}, cwd: $d, hook_event_name: "PostToolUse"}')"
+  RC=0
+  OUT="$(printf '%s' "$json" | env SHELL=/bin/zsh "$@" bash "$hook" 2>/dev/null)" || RC=$?
+}
+assert_context() { # <label> <needle>
+  if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -se --arg n "$2" 'length == 1 and (.[0] | .hookSpecificOutput.hookEventName == "PostToolUse" and (.hookSpecificOutput.additionalContext | contains($n)) and (has("systemMessage") | not) and (.hookSpecificOutput | has("permissionDecision") | not))' >/dev/null 2>&1; then
+    ok "$1"
+  else bad "$1: exit=$RC out=[$OUT]"; fi
+}
+assert_silent() { # <label>
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok "$1"; else bad "$1: exit=$RC out=[$OUT]"; fi
+}
+for c in 'set -- $t' 'P="a b"; git grep x -- $P' 'for t in "a b"; do set -- $t; done' 'echo === $P' 'grep $P --include=*.md'; do
+  run_post "$TARGET" "$c"
+  assert_context "P1 scalar は実行後に additionalContext で届く（止めない）: $c" '単語分割'
+done
+for c in 'echo "$P"' 'git status --short' 'echo ===' 'grep -rn x --include=*.md .' "echo '\$P'" $'cat <<\'EOF\'\necho $VAR\nEOF'; do
+  run_post "$TARGET" "$c"
+  assert_silent "P2 未引用 scalar を含まない呼び出しには何も足さない: $c"
+done
+run_post "$TARGET" 'set -- $t' SHELL=/bin/bash
+assert_silent 'P3 bash ホストでは PostToolUse も無音'
+run_post "$TARGET" 'FF_ZSH_EXPANSION_ACK=1 set -- $t'
+assert_silent 'P3 先頭の FF_ZSH_EXPANSION_ACK=1 は PostToolUse も免除する'
+run_post "$TARGET" 'set -- $t' FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1
+assert_silent 'P3 FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1 で PostToolUse も無効'
+run_post "$TARGET" 'set -- $t' FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1
+assert_silent 'P3 FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1 で PostToolUse も無効'
+# 空振り（判定器不在・走査失敗・JSON でない入力）は実行を止めない（fail-soft）。
+run_post "$TARGET" 'set -- $t'
+assert_context 'P1 検出した経路は空振りの可能性を前置する' '空振り'
+run_post "$TARGET" 'set -- $t' FF_ZSH_GLOB_AWK=false
+assert_context 'P4 走査失敗でも止めず $ を含む呼び出しに未検査を知らせる' '判定不能'
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("空振り") | not' >/dev/null 2>&1; then
+  ok 'P4 判定不能の通知は検出したかのような前置を付けない'
+else bad "P4 判定不能の通知に検出の前置が付いている: [$OUT]"; fi
+for c in 'echo ===' 'git log --format=%H -1'; do
+  run_post "$TARGET" "$c" FF_ZSH_GLOB_AWK=false
+  assert_silent "P4 走査失敗でも \$ を含まない呼び出しには何も足さない: $c"
+done
+run_post "$TARGET" "echo 'abc --x=1"
+assert_silent 'P4 未終端でも $ を含まない呼び出しには何も足さない'
+xdir="$TEST_TMP/post-missing"
+make_tree "$xdir"
+rm "$xdir/tests/lib/zsh-expansion-guard.sh"
+run_post "$xdir/hooks/guard-zsh-glob.sh" 'set -- $t'
+assert_context 'P4 判定器不在は $ を含む呼び出しに未検査を知らせる' '未検査'
+run_post "$xdir/hooks/guard-zsh-glob.sh" 'git status --short'
+assert_silent 'P4 判定器不在でも $ を含まない呼び出しは無音'
+RC=0
+OUT="$(printf 'not json "PostToolUse"' | env SHELL=/bin/zsh bash "$TARGET" 2>/dev/null)" || RC=$?
+assert_silent 'P4 JSON でない入力は無音で通す'
+# 判定本体の共有: scanner の scalar 判定を消した変異は PreToolUse と同じく PostToolUse も黙らせる。
+xdir="$TEST_TMP/post-mut"
+make_tree "$xdir"
+sed 's/print "scalar"; return/return/' "$SCAN_LIB" > "$xdir/tests/lib/zsh-glob-nomatch.sh"
+run_post "$xdir/hooks/guard-zsh-glob.sh" 'set -- $t'
+if [ -z "$OUT" ]; then ok 'P5 scalar 判定を消した変異は PostToolUse の陽性対照を黙らせる（判定を共有している）'; else bad 'P5 PostToolUse が共有判定以外で警告している'; fi
+if jq -e '[.hooks.PostToolUse[]? | select(.matcher == "Bash") | .hooks[]?.command | contains("/hooks/guard-zsh-glob.sh")] | any' "$HOOKS_JSON" >/dev/null; then
+  ok 'P6 hooks.json の PostToolUse（Bash matcher）に guard-zsh-glob.sh が登録されている'
+else bad 'P6 hooks.json の PostToolUse（Bash matcher）に guard-zsh-glob.sh が無い'; fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then

@@ -215,14 +215,14 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 2
 # 中断コードは本スクリプトの契約の 2（起動の仕方が正しくない）。1 は入力の取得・展開の
 # 失敗で、集計へ進んだうえでの失敗を意味するので、ガードの停止とは分ける。
 
-# 閾値の正本は skills/close-issue/SKILL.md（工数実績セクションの規則）。
+# 閾値の正本は skills/close-issue/references/effort.md（工数実績セクションの規則）。
 # ここと skills/retrospective/references/effort.md が複製で、tests/effort-contract が 3 箇所の
 # 一致を機械照合する。変えるときは 3 箇所すべてを同時に直すこと。
 #
-# 2026-09-10 に 3 リポジトリ 78 件で較正した値（旧 0.77 / 1.30 は暫定値）。
-# 上限は母集団の p75 = 1.40、下限はその逆数 1/1.40 = 0.71。導出手順は正本側にある。
-VARIANCE_LOWER="0.71"
-VARIANCE_UPPER="1.40"
+# 2026-09-30 に 5 リポジトリ 234 件で較正した値（前回 2026-09-10 は 0.71 / 1.40、出荷時の暫定値は 0.77 / 1.30）。
+# 上限は max(p75 = 1.38, 1/p25 = 1/0.50) = 2.00、下限はその逆数 1/2.00 = 0.50。導出手順は正本側にある。
+VARIANCE_LOWER="0.50"
+VARIANCE_UPPER="2.00"
 
 # --- 決定木の葉の到達（hooks/decision-tree.sh が Stop で書く leaves.tsv の読み手）-----------
 # Issue の集計とは独立した別モード。記録の置き場は Wave 0 の wall-clock / 読み込みバイト記録と
@@ -353,6 +353,9 @@ Usage: effort-report.sh [options]
                    --metrics-dir / --repo-dir / --format も効く。--issue-metrics とは同時に指定できない。
                    引数の誤り以外は常に exit 0）
   --days N         --unreached-leaves の期間（既定 14）
+  --deploy-check FILE  Issue 本文 1 件（FILE）の ff-effort ブロックに配備の行（effort_deploy）が
+                   記入されているかを `effort_deploy=<状態>` の 1 行で出す（/close-issue の指摘の入力。
+                   集計は行わない。他のオプション（--input / --repo / --format 等を含む）とは同時に指定できない。引数の誤り以外は常に exit 0）
   -h, --help       この使い方を表示する
 USAGE
 }
@@ -371,8 +374,15 @@ METRICS_DIR="${FF_DEV_TOOLKIT_STATE_DIR:-${HOME:-}/.config/ff-dev-toolkit}/metri
 REPO_DIR="."
 UNREACHED_LEAVES=0
 DAYS="14"
+DEPLOY_CHECK=""
+# --deploy-check 以外に指定されたオプション（--deploy-check は単独でしか使えない。併用を黙って無視しない）
+OTHER_OPTS=""
 
 while [ $# -gt 0 ]; do
+  case "$1" in
+    --deploy-check|-h|--help) ;;
+    *) OTHER_OPTS="${OTHER_OPTS:+${OTHER_OPTS} }$1" ;;
+  esac
   case "$1" in
     --input)  need_value "$1" $#; INPUT="$2"; shift 2 ;;
     --repo)   need_value "$1" $#; REPO="$2"; shift 2 ;;
@@ -384,6 +394,7 @@ while [ $# -gt 0 ]; do
     --repo-dir) need_value "$1" $#; REPO_DIR="$2"; shift 2 ;;
     --unreached-leaves) UNREACHED_LEAVES=1; shift ;;
     --days)   need_value "$1" $#; DAYS="$2"; shift 2 ;;
+    --deploy-check) need_value "$1" $#; DEPLOY_CHECK="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "不明な引数: $1" >&2; usage; exit 2 ;;
   esac
@@ -607,11 +618,73 @@ metrics_gate_minutes() { # <issue> <metrics_dir> <repo>
   return 0
 }
 
+# --- 配備の行（effort_deploy）の記入確認（1 Issue 分の本文）---------------------
+# 配備の行は /create-issue が必須項目として書かせ、/close-issue が未記入を完了報告で指摘する。
+# 集計（下の本体）はこのキーを読まない — 既存 Issue の遡及付与を強制せず、パース結果を
+# 変えないため。ここは指摘の入力だけを作り、マージは止めない（常に exit 0）。
+# 状態は 6 値で、「指摘しない」のは present（「なし（…）」の明示を含む）と noblock だけ:
+#   present     … 値が記入されている
+#   unfilled    … キーはあるが値が空（全角空白だけを含む）・`(未記入)` / `（未記入）`・雛形のプレースホルダ（全体が [ … ]）のまま
+#   missing     … ブロックはあるがキーが無い
+#   noblock     … ff-effort ブロックが無い（工数記録の対象外。5a のスキップと同じ fail-open）
+#   malformed   … 未閉鎖・begin より前の end（end だけの本文を含む）・2 組目のブロック・キーの重複
+#   unavailable … 本文ファイルを読めない（読めないことを present へ倒さない）
+# マーカーとキーの読み方は本体の集計と同じ（行全体一致・行末 CR を落とす・`- key: value`）。
+deploy_check_report() { # <本文ファイル>
+  local f="$1" out
+  if [ ! -f "$f" ] || [ ! -r "$f" ]; then
+    echo "effort_deploy=unavailable"
+    return 0
+  fi
+  out="$(awk '
+    # 全角空白（U+3000）も空白として落とす（値が全角空白だけの行を記入済みと読まない）
+    function trim(s) { sub(/^([ \t]|　)+/, "", s); sub(/([ \t]|　)+$/, "", s); return s }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      if (line == "<!-- ff-effort:begin -->") { if (hasblock) broken = 1; inblock = 1; hasblock = 1; next }
+      if (line == "<!-- ff-effort:end -->") { if (!inblock) broken = 1; inblock = 0; next }
+      if (!inblock) next
+      if (line !~ /^-[ ]*[a-z_]+[ ]*:/) next
+      colon = index(line, ":")
+      key = substr(line, 1, colon - 1)
+      sub(/^-[ ]*/, "", key); key = trim(key)
+      if (key != "effort_deploy") next
+      if (seen) broken = 1
+      seen = 1
+      val = trim(substr(line, colon + 1))
+    }
+    END {
+      # 構成の破損を不在より先に見る。end だけの本文（begin より前の end）は集計本体でも
+      # malformed で、noblock へ倒すと指摘から漏れる
+      if (inblock || broken) { print "malformed"; exit }
+      if (!hasblock) { print "noblock"; exit }
+      if (!seen) { print "missing"; exit }
+      if (val == "" || val == "(未記入)" || val == "（未記入）" || val ~ /^\[.*\]$/) { print "unfilled"; exit }
+      print "present"
+    }' "$f" 2>/dev/null)" || out=""
+  case "$out" in
+    present|unfilled|missing|noblock|malformed) echo "effort_deploy=${out}" ;;
+    *) echo "effort_deploy=unavailable" ;;
+  esac
+  return 0
+}
+
 # 記録を読む 2 つのモードは排他（同時指定は出力の形が決まらないので使い方の誤り）
 if [ -n "$ISSUE_METRICS" ] && [ "$UNREACHED_LEAVES" -eq 1 ]; then
   echo "--issue-metrics と --unreached-leaves は同時に指定できません" >&2
   usage
   exit 2
+fi
+
+if [ -n "$DEPLOY_CHECK" ]; then
+  if [ -n "$OTHER_OPTS" ]; then
+    echo "--deploy-check は他のオプションと同時に指定できません: ${OTHER_OPTS}" >&2
+    usage
+    exit 2
+  fi
+  deploy_check_report "$DEPLOY_CHECK"
+  exit 0
 fi
 
 if [ -n "$ISSUE_METRICS" ]; then
@@ -785,6 +858,8 @@ FNR == NR { if ($0 != "") { order[++total] = $0 + 0 } ; next }
   else if (key == "effort_ai_planned") { if (num in ap_raw) broken[num] = 1; ap_raw[num] = val }
   else if (key == "effort_ai_actual")  { if (num in aa_raw) broken[num] = 1; aa_raw[num] = val }
   else if (key == "effort_unit")       { if (num in unit_raw) broken[num] = 1; unit_raw[num] = val }
+  # 配備の行（effort_deploy）はここで読まない。記入の有無は --deploy-check が別に判定し、
+  # 集計の母集団・除外件数へは影響させない（既存 Issue の遡及付与を強制しない）。
   # 速度指標のキーは重複しても Issue 全体を malformed にしない（乖離率の母集団を巻き添えに
   # しない）。重複した Issue は速度指標からだけ外す。
   else if (key == "effort_wallclock_actual")  { if (num in wc_raw) sp_dup[num] = 1; wc_raw[num] = val }

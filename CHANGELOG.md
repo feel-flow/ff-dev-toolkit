@@ -20,6 +20,33 @@
 
 ## [Unreleased]
 
+## [0.143.0] - 2026-09-30
+
+### 追加
+
+- `/create-issue` の `ff-effort` ブロックに配備の行 `effort_deploy`（誰がどこで反映し、成否を誰がどう確認するか。反映を伴わない変更は「なし（コードのみ・反映を伴わない）」）を必須項目として追加した。`/close-issue` は `effort-report.sh --deploy-check` で未記入を判定して完了報告へ 1 行で指摘する（マージは止めない）。集計器はこのキーを読まないので、既存 Issue の集計結果は変わらない（報告: https://github.com/feel-flow/ff-dev-toolkit/issues/126）
+
+### 変更
+
+- 工数の乖離率の帯を実測 234 件（5 導入先の合算・中央値 1.00 は帯内）で引き直し、下限 0.71 / 上限 1.40 から下限 0.50 / 上限 2.00 へ変更しました（`/close-issue` と `/retrospective` の references/effort.md、`scripts/effort-report.sh` の 3 箇所）。帯の外は「乖離の原因」の記録を必須にする線、2 倍超（上限超）は見積もりの前提を見直す線として役割を分けて書きました。次の再較正の発火条件（母集団の件数）は 468 件になります。
+
+### 修正
+
+- zsh ホストで未引用の `$VAR` を含む Bash 呼び出しの警告が、利用者の画面にしか出ない `systemMessage` だけでエージェントに届かず、同じ誤りで 1 往復を失っていた問題を直しました。`guard-zsh-glob.sh` を `PostToolUse`（`Bash`）にも登録し、同じ判定の未引用 scalar を実行後に `hookSpecificOutput.additionalContext` でエージェントの文脈へ返します。実行は止めず、未引用 scalar を含まない呼び出しには何も足しません。判定器の不在や走査の失敗でも止めず、`$` を含む呼び出しに限り未検査である旨を同じ経路で知らせます。
+- `tests/run-all.sh` のゲート分の記録（`metrics/gate.tsv`）が、環境変数を隔離して本ランナーを再起動する suite の入れ子の回を 1 回ずつ積んでいた（全件ゲート 1 周で `explicit` 行が数十件増え、`gate_runs` が実回数を返さない）のを直しました。外側の実行が git dir に走行中マーカー（PID と開始時刻）を置き、祖先プロセスにマーカーを持つ回を入れ子として記録しません。手で suite を渡した明示実行は従来どおり 1 行記録します。
+- `finish.sh knowledge-commit probe` が classic の branch protection の中身を見るようになった。`required_pull_request_reviews` / `required_status_checks` / `restrictions` がどれも未設定で、署名必須・読み取り専用（`required_signatures` / `lock_branch`）も無効な保護（force push の禁止だけ等）は `classic=protected-no-pr` とし、rulesets に `pull_request` type が無ければ `protection=unprotected` と判定して知見コミットを直 push で届ける。これらのどれかが設定されていれば従来どおり `protected`、中身を読めなければ `unknown`。
+- `finish.sh knowledge-commit push` が classic 保護の拒否全般（`Protected branch update failed`）、必須チェック（`Required status check`）、push の制限（`not authorized to push`）による拒否も終了コード 3（`KNOWLEDGE_PUSH=protected`）として PR 経由へ切り替えるようになった。
+- `/ace-refine` の結果不変条件ゲート `check-refine-invariants.ts` が、live として索引 `PLAYBOOK.md` 本体も走査するようにした（形式ゲート・refine レポートと同じ「索引 + subfile」の規則）。単一ファイル構成の PLAYBOOK で圧縮を `- Compacted:` に記録すると全 ID が「live に見出しが無い」で必ず失敗していた問題と、`- Archived:` / `- Merged:` の統合元が本体に残っていても検出されなかった空振りを解消した。エントリの区切りはレベル 1〜2 見出しでも止まるため、最後のエントリの本文に `## Changelog` 節が混ざらない。
+- `finish.sh knowledge-commit` の書き込み口が、件名を組み立てた直後に stage・保留記録・commit より前にリポジトリの commit-msg hook（core.hooksPath / husky を含む）へ件名をドライランで通すようにした。Issue 番号必須などの hook に拒否されると、hook の出力（要求形式）を示して rc 4（`KNOWLEDGE_COMMIT=hook-rejected`）で止まる。`add` の拒否は stage も保留記録も作らないので、`discard` 無しで `--type` の再実行か手でのコミットへ移れる。hook の無いリポジトリの挙動は変わらない（報告: https://github.com/feel-flow/ff-dev-toolkit/issues/125 ）
+
+### ドキュメント
+
+- `/create-issue` の工数見積もり規定（`references/estimation.md`）に 3 件の規定を追加しました。レビュー対応分の補正元は、「設計判断を含むか / 着手時点で確定済みの判断を写すだけか」まで一致するものに限ります。規律・運用文書の PR で補正元が無いときは、「照合面の分」を積みます。実装や外部の挙動を述べる新しい主張を数え、照合で食い違いが出る見込み件数（既定は主張数の 1/3、暫定）に 1 件あたり 0.15〜0.6h を掛けます。その場合は「文言の再置換で済む」の既定を当てません。AI 工数の目安表には、文書同期・決定記録の docs Issue を「文書数 × 2〜5 分 + レビュー 2 系統の反映 20〜40 分」で積む行を足しました。決定 Issue に着手するときは、未決の論点数で AI 予定を見直す手順も加えています。
+
+### セキュリティ
+
+- MCP サーバの推移的依存 ip-address を 10.7.2 へ更新し、NAT64 local-use range を識別しない勧告 GHSA-2vr4-cq9g-pvrc（影響範囲 10.2.0 から 10.5.0）を解消しました。
+
 ## [0.142.0] - 2026-09-30
 
 ### 追加

@@ -13,7 +13,9 @@
 #
 # 空振り検出: 書き込み口が不在だと「共通の書き込み口」節の全ケースが赤になる（skip へ倒さない）。
 # 空振り検出: ace-cycle.md の「#### 4. コミット」見出しが見つからない・節が空なら赤（2026-09-29 実測: 見出しを改名すると赤）。
+# 空振り検出: finish.sh の写しで保護判定の jq から 3 項目判定を外すと（PR 必須 / 必須チェック / push 制限の 3 ケース）、署名必須・読み取り専用を外すとそれぞれ 1 ケース、protected-no-pr で rulesets を見ないと（3 項目とも未設定 / null / null + rulesets PR 必須の 3 ケース）、protected-no-pr を protected と出すと（未設定 / null の 2 ケース）、probe を非 0 で終わらせると全 14 ケースが赤になる（判定行は完全一致・終了コードも照合。2026-09-30 実測）。
 # 変異検出: add の鮮度検査の呼び出しを外す、または対象を default branch 以外へ広げると 13 が赤（2026-09-24 実測）。
+# 変異検出: add の commit-msg hook ドライランの呼び出しを外すと 14 が赤（保留記録が作られ stage が残る）、commit 側を外すと 15 が赤、prepare-commit-msg の呼び出しを外すと 16 が赤、add のドライランが保留の type を引き継がないと 15 が赤、commit の KNOWLEDGE_SUBJECT を hook 前の件名に戻すと 16 が赤（2026-09-30 実測）。
 
 set -euo pipefail
 
@@ -212,6 +214,10 @@ expect_contains_in "$RULES_FILE" \
   '既定を試し、push が `Changes must be made through a pull request` または `push declined due to repository rule violations` で拒否されたら PR 経由へ切り替える' \
   "gh 不在・権限不足で判定不能な場合の二段構えフォールバック（拒否メッセージでの切替）"
 
+expect_contains_in "$RULES_FILE" \
+  'どれも無ければ（force push の禁止だけ等）`classic=protected-no-pr` として rulesets の判定へ進み、rulesets に `pull_request` type が無い場合のみ `unprotected` になる' \
+  "classic の保護は中身（PR 必須・必須チェック・push 制限・署名必須・読み取り専用）と rulesets の併用で判定すると説明している"
+
 expect_contains \
   '**default branch が保護されている場合はこの経路が必須**' \
   "保護リポジトリで PR 経由が任意ではなく必須になる明示"
@@ -372,12 +378,27 @@ fi
 if [[ "${1:-}" == "api" ]]; then
   path="${2:-}"
   if [[ "$path" == */branches/*/protection ]]; then
-    if [[ "${MOCK_CLASSIC:-404}" == "200" ]]; then
-      echo '{}'
-      exit 0
+    # 200 系は実 API の応答形（未設定の項目は応答に現れない）を返し、finish.sh が渡す --jq 式を
+    # 実 jq で評価する（式そのものの誤りも赤にする）。
+    # required_signatures / lock_branch は未設定でも `{"enabled":false}` の形で返る
+    base='"url":"https://api.github.com/repos/acme/widgets/branches/develop/protection","allow_force_pushes":{"enabled":false},"required_signatures":{"enabled":false},"lock_branch":{"enabled":false}'
+    case "${MOCK_CLASSIC:-404}" in
+      200-force-push-only) body="{${base}}" ;;
+      200-nulls) body="{${base},\"required_pull_request_reviews\":null,\"required_status_checks\":null,\"restrictions\":null}" ;;
+      200-pr) body="{${base},\"required_pull_request_reviews\":{\"required_approving_review_count\":1}}" ;;
+      200-checks) body="{${base},\"required_status_checks\":{\"strict\":true,\"contexts\":[\"ci\"]}}" ;;
+      200-restrictions) body="{${base},\"restrictions\":{\"users\":[],\"teams\":[],\"apps\":[]}}" ;;
+      200-signatures) body="{${base},\"required_signatures\":{\"enabled\":true}}" ;; # 後勝ちの重複キーで上書き
+      200-lock) body="{${base},\"lock_branch\":{\"enabled\":true}}" ;;
+      200-garbage) echo 'not-json-bool'; exit 0 ;;
+      *) echo "gh: HTTP ${MOCK_CLASSIC:-404}: not found" >&2; exit 1 ;;
+    esac
+    if [[ "${3:-}" == "--jq" ]]; then
+      printf '%s' "$body" | jq -r "$4"
+    else
+      printf '%s\n' "$body"
     fi
-    echo "gh: HTTP ${MOCK_CLASSIC:-404}: not found" >&2
-    exit 1
+    exit 0
   fi
   if [[ "$path" == */rules/branches/* ]]; then
     case "${MOCK_RULESETS:-empty}" in
@@ -415,26 +436,39 @@ run_probe() {
   # 失敗時に次行へ到達できず無音で中断する（実測）。probe.sh 自体は他の SKILL.md
   # 手順と同じく set -e 有無どちらでも安全な書き方が要求されるため、ここで
   # set -e を有効にして実行することでその退行を検出する。
+  # probe の終了コードは PROBE_RC へ残す（非 0 を握り潰さず assert_probe で赤にする）
+  local rc=0
   MOCK_CLASSIC="$mock_classic" MOCK_RULESETS="$mock_rulesets" PATH="$PROBE_DIR:$PATH" \
-    bash -c 'set -euo pipefail; . "$1"' -- "$PROBE_DIR/probe.sh" 2>&1 || true
+    bash -c 'set -euo pipefail; . "$1"' -- "$PROBE_DIR/probe.sh" >"$PROBE_DIR/out" 2>&1 || rc=$?
+  PROBE_RC="$rc"
 }
 
 assert_probe() {
-  local label="$1" mock_classic="$2" mock_rulesets="$3" expected="$4" output
-  output="$(run_probe "$mock_classic" "$mock_rulesets")"
-  case "$output" in
-    *"protection=${expected}"*)
-      ok "$label"
-      ;;
-    *)
-      bad "$label — 期待 protection=${expected}、実際の出力: ${output}"
-      ;;
-  esac
+  local label="$1" mock_classic="$2" mock_rulesets="$3" expected="$4" output line
+  run_probe "$mock_classic" "$mock_rulesets"
+  output="$(cat "$PROBE_DIR/out")"
+  # 判定行を完全に切り出して照合する（部分一致だと protection=protected が
+  # protection=protected-no-pr 等の別値にも当たる）
+  line="$(awk '/^protection=/ { sub(/ .*/, ""); print; exit }' "$PROBE_DIR/out")"
+  if [ "$PROBE_RC" -eq 0 ] && [ "$line" = "protection=${expected}" ]; then
+    ok "$label"
+  else
+    bad "$label — 期待 protection=${expected}（rc 0）、実際 rc=${PROBE_RC} の出力: ${output}"
+  fi
 }
 
 assert_probe "classic 404 + rulesets 非該当（pull_request 無し） → unprotected" 404 empty unprotected
 assert_probe "classic 404 + rulesets に pull_request あり → protected（rulesets のみで保護されたブランチを見逃さない）" 404 nonempty protected
-assert_probe "classic 200 → protected" 200 empty protected
+assert_probe "classic 200 + 3 項目のうち PR 必須あり → protected" 200-pr empty protected
+assert_probe "classic 200 + 3 項目のうち必須チェックあり → protected" 200-checks empty protected
+assert_probe "classic 200 + 3 項目のうち push 制限あり → protected" 200-restrictions empty protected
+assert_probe "classic 200 + 3 項目とも未設定（force push の禁止だけ） → unprotected（直 push 可）" 200-force-push-only empty unprotected
+assert_probe "classic 200 + 3 項目とも null → unprotected（直 push 可）" 200-nulls empty unprotected
+assert_probe "classic 200 + 3 項目とも null でも rulesets に pull_request あり → protected" 200-nulls nonempty protected
+assert_probe "classic 200 + 署名必須（required_signatures.enabled） → protected" 200-signatures empty protected
+assert_probe "classic 200 + 読み取り専用（lock_branch.enabled） → protected" 200-lock empty protected
+assert_probe "classic 200 だが中身を読めない（true / false 以外） → unknown" 200-garbage empty unknown
+assert_probe "classic 401 → unknown（判定不能）" 401 empty unknown
 assert_probe "classic 403 かつ rulesets 403 → unknown（判定不能。既定を試して push 拒否メッセージで切替）" 403 403 unknown
 assert_probe "classic 404 + rulesets が non_fast_forward のみ（pull_request 無し） → unprotected（force-push 禁止だけでは既定フローを変えない。AC3）" 404 non_fast_forward unprotected
 
@@ -650,6 +684,109 @@ else
       echo "  ✗ add の鮮度検査の範囲が違う（branch rc=${rc} / main rc=${rc2}: ${err}）" >&2; exit 1
     fi
     git checkout -q -- docs/08-knowledge/PLAYBOOK.md
+
+    # 14. commit-msg hook のドライラン。Issue 番号必須の hook（core.hooksPath 経由）は add を stage・保留記録の
+    #     前に exit 4 で止め、hook の出力を示す。discard 無しで手コミットへ移れる
+    H="$KC_TMP/hook-reject"
+    new_repo "$H" "Knowledge Test" "knowledge-test@example.com"
+    cd "$H" || exit 1
+    mkdir -p .githooks
+    printf '%s\n' '#!/bin/sh' 'grep -qE "^[a-z]+: #[0-9]+ " "$1" && exit 0' \
+      'echo "Required format: <type>: #<issue> <subject>"; exit 1' >.githooks/commit-msg
+    chmod +x .githooks/commit-msg
+    git config core.hooksPath .githooks
+    printf '%s\n' '- obs' >>docs/08-knowledge/OBSERVATIONS.md
+    before="$(commits "$H")"
+    rc=0; out="$(kc add --source obs --id OBS-14 --summary "要約R" -- docs/08-knowledge/OBSERVATIONS.md 2>"$KC_TMP/hook.err")" || rc=$?
+    pend="$(git rev-parse --absolute-git-dir)/ff-knowledge-pending"
+    if [ "$rc" -eq 4 ] && [[ "$out" == *"KNOWLEDGE_COMMIT=hook-rejected"* ]] && grep -q 'Required format: <type>: #<issue>' "$KC_TMP/hook.err" \
+      && [ ! -e "$pend" ] && [ -z "$(git diff --cached --name-only)" ] && [ "$(commits "$H")" -eq "$before" ]; then
+      echo "  ✓ 拒否する commit-msg hook: add は stage も保留記録も作らず exit 4 で止まり、hook の要求形式を示す"
+    else
+      echo "  ✗ 拒否する hook で add が止まらない・痕跡を残す（rc=${rc} pending=$([ -e "$pend" ] && echo あり || echo なし) staged=$(git diff --cached --name-only)）" >&2; exit 1
+    fi
+    rc=0; { n=14 && git commit -qm "chore: #${n} OBS-14 要約R" -- docs/08-knowledge/OBSERVATIONS.md; } >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ] && [ "$(commits "$H")" -eq $((before + 1)) ] && [[ "$(kc status)" == *"KNOWLEDGE_PENDING=0"* ]]; then
+      echo "  ✓ 拒否の後は discard 無しで、書いたパスへ固定した規約どおりの件名の手コミット（git commit -- <path>）へ移れる"
+    else
+      echo "  ✗ 拒否の後に手コミットへ移れない（rc=${rc}）" >&2; exit 1
+    fi
+
+    # 15. 通る commit-msg hook（\$GIT_DIR/hooks）: add のドライランが commit と同じ件名で hook を呼び、従来どおり
+    #     commit する。保留がある 2 件目の add は畳んだ件名（ID 列）でドライランする。commit で type を差し替えた
+    #     件名が拒否されたら exit 4 で止まって hook の出力を示し、保留は残して --type の再実行で通る
+    P="$KC_TMP/hook-pass"
+    new_repo "$P" "Knowledge Test" "knowledge-test@example.com"
+    cd "$P" || exit 1
+    hooks_dir="$(git rev-parse --absolute-git-dir)/hooks"
+    mkdir -p "$hooks_dir"
+    printf '%s\n' '#!/bin/sh' 'head -n 1 "$1" >>"$(git rev-parse --absolute-git-dir)/seen-subjects"' \
+      'grep -qE "^(knowledge|chore): " "$1" && exit 0' 'echo "type must be knowledge or chore"; exit 1' >"$hooks_dir/commit-msg"
+    chmod +x "$hooks_dir/commit-msg"
+    seen="$(git rev-parse --absolute-git-dir)/seen-subjects"
+    printf '%s\n' '- obs' >>docs/08-knowledge/OBSERVATIONS.md
+    rc=0; out="$(kc add --source obs --id OBS-15 --summary "要約S" -- docs/08-knowledge/OBSERVATIONS.md 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ] && [[ "$out" == *"KNOWLEDGE_PENDING=1"* ]] && [ "$(tail -n 1 "$seen")" = 'knowledge: OBS-15 要約S' ]; then
+      echo "  ✓ 通る commit-msg hook: add は commit と同じ件名でドライランし、従来どおり保留を作る"
+    else
+      echo "  ✗ 通る hook で add が進まない・ドライランが呼ばれない（rc=${rc}）" >&2; exit 1
+    fi
+    printf '%s\n' '- playbook' >>docs/08-knowledge/PLAYBOOK.md
+    rc=0; out="$(kc add --source obs --id OBS-15b --summary "要約T" -- docs/08-knowledge/PLAYBOOK.md 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ] && [[ "$out" == *"KNOWLEDGE_PENDING=2"* ]] && [ "$(tail -n 1 "$seen")" = 'knowledge: OBS-15 / OBS-15b' ]; then
+      echo "  ✓ 保留がある 2 件目の add は、畳んだ件名（knowledge: <ID> / <ID>）でドライランする"
+    else
+      echo "  ✗ 2 件目の add のドライラン件名が畳んだ形でない（rc=${rc} seen=$(tail -n 1 "$seen")）" >&2; exit 1
+    fi
+    before="$(commits "$P")"
+    rc=0; out="$(kc commit --type feat 2>"$KC_TMP/hook15.err")" || rc=$?
+    if [ "$rc" -eq 4 ] && [[ "$out" == *"KNOWLEDGE_COMMIT=hook-rejected"* ]] && grep -q 'type must be knowledge or chore' "$KC_TMP/hook15.err" \
+      && [ "$(commits "$P")" -eq "$before" ] && [[ "$(kc status)" == *"KNOWLEDGE_PENDING=2"* ]]; then
+      rc=0; kc commit --type chore >/dev/null 2>&1 || rc=$?
+      if [ "$rc" -eq 0 ] && [ "$(git log -1 --format=%s)" = "chore: OBS-15 / OBS-15b" ]; then
+        echo "  ✓ commit の件名を hook が拒否したら exit 4 で止まって保留を残し、--type の再実行で通る"
+      else
+        echo "  ✗ hook 拒否の後の --type 再実行が通らない（rc=${rc}）" >&2; exit 1
+      fi
+    else
+      echo "  ✗ commit で hook が拒否した件名を止めない（rc=${rc}）" >&2; exit 1
+    fi
+    # 1 件目を add --type chore、2 件目を type 無しで add → 2 件目のドライランも記録済みの type（chore）を使う
+    printf '%s\n' '- obs16' >>docs/08-knowledge/OBSERVATIONS.md
+    kc add --source obs --id OBS-16 --summary "要約U" --type chore -- docs/08-knowledge/OBSERVATIONS.md >/dev/null 2>&1
+    printf '%s\n' '- playbook17' >>docs/08-knowledge/PLAYBOOK.md
+    rc=0; kc add --source obs --id OBS-17 --summary "要約V" -- docs/08-knowledge/PLAYBOOK.md >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ] && [ "$(tail -n 1 "$seen")" = 'chore: OBS-16 / OBS-17' ]; then
+      echo "  ✓ type 無しの 2 件目の add は、保留に記録した type（chore）の件名でドライランする"
+    else
+      echo "  ✗ 2 件目の add のドライランが記録済みの type を引き継がない（rc=${rc} seen=$(tail -n 1 "$seen")）" >&2; exit 1
+    fi
+    kc discard >/dev/null; git reset -q; git checkout -q -- docs/08-knowledge
+
+    # 16. prepare-commit-msg がブランチ名から Issue 番号を件名へ差し込み、commit-msg がそれを検証する構成。
+    #     ドライランは git commit -m と同じ順（prepare-commit-msg → commit-msg）で通すので add も commit も通る
+    Q="$KC_TMP/hook-prepare"
+    new_repo "$Q" "Knowledge Test" "knowledge-test@example.com"
+    cd "$Q" || exit 1
+    hooks_dir="$(git rev-parse --absolute-git-dir)/hooks"
+    mkdir -p "$hooks_dir"
+    printf '%s\n' '#!/bin/sh' 'b="$(git symbolic-ref --short HEAD)"; n="${b#*#}"; n="${n%%-*}"' \
+      'sed "1s/^\([a-z-]*\): /\1: #$n /" "$1" >"$1.tmp" && mv "$1.tmp" "$1"' >"$hooks_dir/prepare-commit-msg"
+    printf '%s\n' '#!/bin/sh' 'grep -qE "^[a-z]+: #[0-9]+ " "$1" && exit 0' \
+      'echo "Required format: <type>: #<issue> <subject>"; exit 1' >"$hooks_dir/commit-msg"
+    chmod +x "$hooks_dir/prepare-commit-msg" "$hooks_dir/commit-msg"
+    n=16; git switch -q -c "chore/#${n}-hook"
+    printf '%s\n' '- obs' >>docs/08-knowledge/OBSERVATIONS.md
+    rc=0; out="$(kc add --source obs --id OBS-18 --summary "要約W" -- docs/08-knowledge/OBSERVATIONS.md 2>&1)" || rc=$?
+    rc2=0; out2="$(kc commit 2>/dev/null)" || rc2=$?
+    if [ "$rc" -eq 0 ] && [[ "$out" == *"KNOWLEDGE_PENDING=1"* ]] && [ "$rc2" -eq 0 ] \
+      && [ "$(git log -1 --format=%s)" = "knowledge: #${n} OBS-18 要約W" ] \
+      && grep -qx "KNOWLEDGE_SUBJECT=knowledge: #${n} OBS-18 要約W" <<<"$out" \
+      && grep -qx "KNOWLEDGE_SUBJECT=knowledge: #${n} OBS-18 要約W" <<<"$out2"; then
+      echo "  ✓ prepare-commit-msg が件名へ Issue 番号を差し込む構成: ドライランは prepare-commit-msg → commit-msg の順で通し、add も commit も通る（KNOWLEDGE_SUBJECT は hook 通過後の件名）"
+    else
+      echo "  ✗ prepare-commit-msg を通したドライラン・件名の出力が期待と違う（add rc=${rc} commit rc=${rc2} 件名=$(git log -1 --format=%s) add出力=${out} commit出力=${out2:-}）" >&2; exit 1
+    fi
 
     # 7. 合成 identity（テスト fixture の既定 identity）では commit しない。保留は残す
     F="$KC_TMP/fixture-id"
