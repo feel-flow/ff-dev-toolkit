@@ -34,6 +34,11 @@
 #   G27. skills/ を持つのに plugin.json が無いディレクトリ → 赤（登録漏れの実体）
 #   G28. トークン抽出の grep が実行エラー（rc≥2）を返す → 赤（抽出失敗を「列挙しない
 #        description」に化けさせない fail-closed）
+#   G29. plugin.json の description が 501 文字（列挙は保ったまま）→ 赤。ファイル名と
+#        実測文字数を出す（Issue `#1989`。文字数はコードポイント単位。詰め物は 3 バイト文字
+#        なので G31 の 500 文字は UTF-8 で 1400 バイトを超え、バイト数で数える退行は G31 が赤になる）
+#   G30. marketplace.json 側が 501 文字 → 赤（G29 の対称。片側だけ数える退行を固定）
+#   G31. 両側とも 500 文字ちょうど → 緑（境界。上限を 499 へ寄せる・バイト数で数える退行を固定）
 #
 # baseline には 4 プラグインを置く: 全列挙 2 件（うち 1 件は部分文字列の罠を含む名前）、
 # 非列挙 1 件、部分列挙を免除される ff-dev-toolkit 1 件。免除名簿・非列挙名簿は本体に
@@ -487,6 +492,54 @@ if [ "$RC" -ne 0 ] && [[ "$OUT" == *"トークン抽出に失敗しました（g
   ok "G28: トークン抽出の実行エラーを赤にできる（fail-closed）"
 else
   bad "G28: 抽出失敗が「列挙しない description」として素通りしました（rc=${RC}）: $OUT"
+fi
+
+# G29〜G31: 文字数上限（Issue `#1989`）。列挙を保ったまま日本語の詰め物で長さだけを変え、
+# 列挙検査（B〜D）の赤と混同しないようにする。詰め物 1 文字は UTF-8 で 3 バイト。
+pad_to() {
+  # $1=基底文 $2=目標文字数（コードポイント）。基底文に「あ」を足して目標長にする
+  local base="$1" target="$2" len
+  len="$(jq -rn --arg s "$base" '$s | length')"
+  if [ "$len" -gt "$target" ]; then
+    echo "pad_to: 基底文（${len} 文字）が目標 ${target} 文字より長い（fixture の前提が崩れている）" >&2
+    return 1
+  fi
+  jq -rn --arg s "$base" --argjson n "$((target - len))" '$s + ("あ" * $n)'
+}
+LONG_P="$(pad_to "$ALPHA_P" 501)"
+LONG_M="$(pad_to "$ALPHA_M" 501)"
+EDGE_P="$(pad_to "$ALPHA_P" 500)"
+EDGE_M="$(pad_to "$ALPHA_M" 500)"
+
+build_fixture "$FIX"
+set_plugin_desc "$FIX" alpha "$LONG_P"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"alpha: plugin.json の description が 500 文字を超えています（実測 501 文字。claude.ai のマーケットプレイス同期が除外する）"* ]] \
+   && [[ "$OUT" != *"marketplace.json の description が 500 文字を超えています"* ]]; then
+  ok "G29: plugin.json の 501 文字を赤にでき、ファイル名と実測文字数を出す"
+else
+  bad "G29: plugin.json の超過が素通りしました（rc=${RC}）: $OUT"
+fi
+
+build_fixture "$FIX"
+set_market_desc "$FIX" alpha "$LONG_M"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"alpha: marketplace.json の description が 500 文字を超えています（実測 501 文字。claude.ai のマーケットプレイス同期が除外する）"* ]] \
+   && [[ "$OUT" != *"plugin.json の description が 500 文字を超えています"* ]]; then
+  ok "G30: marketplace.json の 501 文字を赤にできる（片側だけ数える退行を許さない）"
+else
+  bad "G30: marketplace.json の超過が素通りしました（rc=${RC}）: $OUT"
+fi
+
+build_fixture "$FIX"
+set_plugin_desc "$FIX" alpha "$EDGE_P"
+set_market_desc "$FIX" alpha "$EDGE_M"
+run_target "$FIX"
+if [ "$RC" -eq 0 ] && [[ "$OUT" == *"alpha: plugin.json の description は 500 文字以内（500 文字）"* ]] \
+   && [[ "$OUT" == *"alpha: marketplace.json の description は 500 文字以内（500 文字）"* ]]; then
+  ok "G31: 500 文字ちょうどは緑（境界。UTF-8 では 1400 バイト超なので、バイト数で数える退行は赤になる）"
+else
+  bad "G31: 500 文字ちょうどが赤になった、または文字数の報告が無い（rc=${RC}）: $OUT"
 fi
 
 echo

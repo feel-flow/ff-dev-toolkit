@@ -21,6 +21,14 @@
 # story-spine-abt の実例で `claude plugin validate` が検出したが、本 suite にはこの
 # 検査自体が無く、grep 系の機械照合をすり抜けていた）。
 #
+# description の文字数上限（1024）も全プラグイン対象にする（Issue `#1989`）。claude.ai の
+# マーケットプレイス同期は skill の description を 1024 文字で打ち切って警告を出すが、
+# Claude Code はファイルの全文を読むためローカルでは何も赤くならず、配布面だけが静かに
+# 劣化する（out-of-scope-issue が 1046 文字で実測）。数え方はコードポイント単位
+# （jq の `length`。claude.ai 側の単位は未公開で、バイト数で数えると日本語を含む
+# description は上限の 1/3 で赤になり、UTF-16 単位との差は BMP 外文字を含まない限り
+# 出ない）。囲みクォートは値に含めない。
+#
 # 一方、次の 5 検査は ff-dev-toolkit 固有のアーキテクチャ判断（他ホスト（Codex CLI 等）
 # からもスクリプト実体を直接叩ける形にする移植性方針、Issue #141 の
 # commands/*.md → skills/*/SKILL.md 単一正本移行、観測台帳 OBS-042 発の
@@ -50,6 +58,8 @@ REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 PLUGINS_DIR="$REPO_ROOT/plugins"
 MARKET="$REPO_ROOT/.claude-plugin/marketplace.json"
 FF_SKILLS_DIR="$PLUGIN_ROOT/skills"
+# claude.ai のマーケットプレイス同期が skill description に課す上限（文字数。ヘッダー参照）
+SKILL_DESC_MAX=1024
 
 [ -d "$PLUGINS_DIR" ] || { echo "✗ plugins ディレクトリが見つかりません: $PLUGINS_DIR" >&2; exit 1; }
 [ -d "$FF_SKILLS_DIR" ] || { echo "✗ ff-dev-toolkit の skills ディレクトリが見つかりません: $FF_SKILLS_DIR" >&2; exit 1; }
@@ -454,6 +464,41 @@ for file in "${SKILL_FILES[@]}"; do
         continue
         ;;
     esac
+  fi
+
+  # description の文字数上限（claude.ai 同期の 1024。ヘッダー参照）。囲みクォートは
+  # 値に含めない（末尾が同じ引用符のときだけ剥がす）。ブロックスカラー（`>` / `|`。
+  # chomping 指示子付きを含む）は値が次行以降に続くので、字下げされた継続行を集めて
+  # 数える — 1 行目だけを数えると「1 文字」になり、上限検査が fail-open になる。
+  # 空行は段落区切りとして値の一部なので、空行で集計を打ち切らない（空行で止めると
+  # 2 段落目以降が数から落ち、同じく fail-open になる）。空行自体は数に入れない。
+  # 超過は `continue` で以降の検査（標準外キー等）を飛ばす（他の違反と同じ扱い）。
+  # jq の length はコードポイント単位で数える。
+  desc_unquoted="$description_value"
+  case "$desc_unquoted" in
+    '>'*|'|'*)
+      desc_unquoted="$(printf '%s\n' "$frontmatter" | awk '
+        /^[[:space:]]*description:/ { f = 1; next }
+        f && /^[[:space:]]+[^[:space:]]/ { sub(/^[[:space:]]+/, ""); printf "%s%s", (n++ ? " " : ""), $0; next }
+        f && /^[[:space:]]*$/ { next }
+        f { exit }
+      ')"
+      ;;
+    *)
+      if [ "$first_char" = '"' ] || [ "$first_char" = "'" ]; then
+        last_char="${desc_unquoted: -1}"
+        desc_unquoted="${desc_unquoted#?}"
+        if [ "$last_char" = "$first_char" ]; then desc_unquoted="${desc_unquoted%?}"; fi
+      fi
+      ;;
+  esac
+  if ! desc_len="$(jq -rn --arg s "$desc_unquoted" '$s | length')"; then
+    bad "$name — description の文字数を数えられませんでした（jq）"
+    continue
+  fi
+  if [ "$desc_len" -gt "$SKILL_DESC_MAX" ]; then
+    bad "$name — description が ${SKILL_DESC_MAX} 文字を超えています（実測 ${desc_len} 文字。claude.ai のマーケットプレイス同期が ${SKILL_DESC_MAX} 文字で打ち切る）"
+    continue
   fi
 
   unsupported_keys="$(printf '%s\n' "$frontmatter" | awk -F: '

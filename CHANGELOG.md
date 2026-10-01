@@ -20,6 +20,12 @@
 
 ## [Unreleased]
 
+## [0.144.1] - 2026-10-01
+
+### 修正
+
+- skill の description が 1024 文字、plugin の description が 500 文字を超えると claude.ai のマーケットプレイス同期が警告付きで除外する問題に対応しました。out-of-scope-issue の description を上限内へ短縮し、`skill-frontmatter` と `plugin-description-enumeration` が同じ超過を全件ゲートで赤にします（文字数はコードポイント単位）。
+
 ## [0.144.0] - 2026-09-30
 
 ### セキュリティ

@@ -36,6 +36,12 @@
 #   D. 実在しないスキル名を挙げていない（改名・削除の取り残し）。免除プラグインにも効く。
 #      対象は英字を含む小文字ハイフン語のみ（下記の限界を参照）
 #   E. 部分列挙を免除したプラグインが、件数側の別ゲートで担保され続けていること
+#   F. 両側の description が claude.ai のマーケットプレイス同期の上限 500 文字以内
+#      （Issue `#1989`。超過すると同期がそのプラグインを警告付きで除外するが、Claude Code
+#      はローカルで全文を読むため何も赤くならない。diagram-frameworks が plugin.json
+#      562 / marketplace 532 文字で実測）。免除プラグインにも効く。数え方はコードポイント
+#      単位（jq の `length`。claude.ai 側の単位は未公開で、バイト数だと日本語の description
+#      は上限の 1/3 で赤になる）
 #
 # スキル名の照合は部分文字列ではなく**極大トークンの集合演算**で行う。`proofread` は
 # `proofread-japanese` の部分文字列なので、素朴な substring 照合だと
@@ -106,6 +112,9 @@ docs-template
 multi-agent'
 
 GREP_BIN="${FF_PLUGIN_DESC_GREP:-grep}"
+
+# claude.ai のマーケットプレイス同期が plugin description に課す上限（文字数。検査 F）
+PLUGIN_DESC_MAX=500
 
 command -v jq >/dev/null 2>&1 || { echo "✗ jq is required" >&2; exit 1; }
 [ -f "$MARKET" ] || { echo "✗ marketplace.json が見つかりません: ${MARKET}" >&2; exit 1; }
@@ -248,6 +257,20 @@ while IFS= read -r name; do
     bad "${name}: marketplace.json の description を取得できません"
     continue
   fi
+
+  # F. 文字数上限（両側。免除プラグインにも効く。他の検査は続行する）
+  for side in plugin marketplace; do
+    if [ "$side" = plugin ]; then desc_v="$pdesc"; file_v="plugin.json"; else desc_v="$mdesc"; file_v="marketplace.json"; fi
+    if ! desc_len="$(jq -rn --arg s "$desc_v" '$s | length')"; then
+      bad "${name}: ${file_v} の description の文字数を数えられませんでした（jq）"
+      continue
+    fi
+    if [ "$desc_len" -gt "$PLUGIN_DESC_MAX" ]; then
+      bad "${name}: ${file_v} の description が ${PLUGIN_DESC_MAX} 文字を超えています（実測 ${desc_len} 文字。claude.ai のマーケットプレイス同期が除外する）"
+    else
+      ok "${name}: ${file_v} の description は ${PLUGIN_DESC_MAX} 文字以内（${desc_len} 文字）"
+    fi
+  done
 
   skills=''
   for d in "$PLUGINS_DIR/$name"/skills/*/; do
