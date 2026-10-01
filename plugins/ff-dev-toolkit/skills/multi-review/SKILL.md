@@ -102,7 +102,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### 2a. claude-code レーンのホスト委譲（`--delegate-to-host`）
 
-`claude` CLI の利用枠だけが尽きたとき、**ホストが Claude のときだけ**そのレーンを自セッションのサブエージェントで走らせられる（正本は [該当節](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#host-delegation)）。`--delegate-to-host` で実行（`--fresh` と併用不可。終了コード **3** = 委譲待ち）→ handoff の `prompt-file` を**書き換えずに**サブエージェントへ渡し、応答は finding ごとの `- verdict:` 行（指摘ゼロは `- verdict: none`）を残したまま `output-file` へ書く → **同じコマンドに `--resume` を足して**再実行（付け忘れると再委譲が収束しない）。
+`claude` CLI の利用枠だけが尽き、**ホストが Claude のときだけ**、そのレーンを自セッションのサブエージェントで走らせる（正本は [該当節](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#host-delegation)）。`--delegate-to-host` で実行（`--fresh` 併用不可。終了コード **3** = 委譲待ち）→ handoff の `prompt-file` を**書き換えずに**サブエージェントへ渡し、`- verdict:` 行（指摘ゼロは `- verdict: none`）を残して `output-file` へ書く → **同じコマンドに `--resume` を足して**再実行。
 
 ### レビュー待ち時間の使い方
 
@@ -112,7 +112,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 走行中の deny の例外として、**通る書き込み先は 3 つ: 作業ツリーの外（scratchpad / `mktemp -d` / `/tmp`）・`.review-results/`・gitignore 済みのパス**（`gh ... > tmp/<slug>/body.md` など）。復旧は deny 理由文の `rm` か、Bash の区間先頭の `FF_REVIEW_LOCK_OVERRIDE=1`。非対話で起動を自動化するときは `FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1`。
 
-**失敗・タイムアウト時**: 実行時 fallback は無い。部分出力は `Status: incomplete` で残り、**未完了の節は「指摘なし」ではなく「未確認」と読むこと。** 🔑 / 💳 / 🚫 なら主担当のみで完了する。未完了観点だけの再実行:
+**失敗・タイムアウト時**: 実行時 fallback は無い。部分出力は `Status: incomplete` で残り、**未完了の節は「指摘なし」ではなく「未確認」と読むこと。** `claude-code` だけが 💳 でホストが Claude なら先に **2a の委譲**を使う。他の 🔑 / 💳 / 🚫 は主担当のみで完了する。未完了観点だけの再実行:
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --resume --timeout 1800

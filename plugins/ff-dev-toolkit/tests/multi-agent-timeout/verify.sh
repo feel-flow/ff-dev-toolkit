@@ -712,6 +712,11 @@ case "\$mode" in
     echo "Error: monthly limit reached for this account" >&2
     exit 1
     ;;
+  weekly-limit)
+    # claude-code の実測文言。credits / balance の語も usage / spend も含まない。
+    echo "You've hit your weekly limit · resets 8pm (Asia/Tokyo)" >&2
+    exit 1
+    ;;
   monthly-token-limit)
     # 課金側の上限。「token limit」という語を共有するが、これは残高の話であって
     # プロンプト長の話ではない（Claude 1 / Codex 1）。billing の材料を奪わないこと。
@@ -1159,7 +1164,7 @@ fi
 # 利用枠の上限（spend / usage / monthly limit）も billing（単一 CLI 基準線への整合）。基準線が主担当
 # 1 モデルになった今（ADR-053）、この分類は「その回は単一で正常完了」の判定に直結する。
 # 語彙 1 つにつき fixture 1 本 — 語彙を 1 つ外す変異がその fixture だけで赤になる。
-for limit_mode in spend-limit usage-limit monthly-limit; do
+for limit_mode in spend-limit usage-limit monthly-limit weekly-limit; do
   echo "$limit_mode" > "$TMP/codex-mode"
   read -r RC EL <<<"$(run_orchestrator 60)"
   if [[ "$RC" -ne 0 ]] && grep -q '💳' "$TMP/run.log" \
@@ -1175,6 +1180,204 @@ for limit_mode in spend-limit usage-limit monthly-limit; do
     bad "billing(${limit_mode}): 利用枠の上限を認証切れまたはプロンプト超過として案内している"
   fi
 done
+
+# ── claude-code レーンの利用枠切れ → ホスト委譲の案内 ──
+# 利用枠切れの claude-code レーンは、同じ CLI の再実行（同じアカウントの枠）でも codex 代替
+# （モデル多様性が潰れる）でも直らない。ホストが Claude Code（CLAUDECODE=1）のときだけ
+# --delegate-to-host → --resume の手順を個別案内より先に出し、それ以外のホストでは従来案内の
+# ままにする。CLAUDECODE はこの suite を Claude Code から回すと継承されるので、両側とも
+# 明示する（env に任せると、実行したホストで結果が変わる）。
+cp "$STUB/claude" "$TMP/claude-stub.orig"
+cat > "$STUB/claude" <<SH
+#!/usr/bin/env bash
+touch "$TMP/invoked-claude"
+cat >/dev/null
+case "\$(cat "$TMP/claude-mode")" in
+  weekly-stderr) echo "You've hit your weekly limit · resets 8pm (Asia/Tokyo)" >&2; exit 1 ;;
+  # claude -p は API エラーを stdout へ出すことがある（プロンプト超過の形 1 と同じ）
+  weekly-stdout) echo "You've hit your weekly limit · resets 8pm (Asia/Tokyo)"; exit 1 ;;
+  # 部分出力が告知文を**引用**するだけの失敗。行頭が告知文の体裁でなければ billing にしない
+  weekly-quoted) echo "- Suggestion: handle the message \"You've hit your weekly limit\""; echo "boom: stub failure" >&2; exit 1 ;;
+  # 本文がフェンスで告知文を引用する形。CLI 出力の最初の行は告知文ではない（行頭一致だけでは当たる）
+  weekly-fenced) printf '%s\n' '\`\`\`text' "You've hit your weekly limit · resets 8pm (Asia/Tokyo)" '\`\`\`'; echo "boom: stub failure" >&2; exit 1 ;;
+  # 告知文を stderr に出したまま止まらない形。時間切れ（124）は billing の語があっても断定しない
+  weekly-hang) echo "You've hit your weekly limit · resets 8pm (Asia/Tokyo)" >&2; sleep 30 >/dev/null 2>&1; exit 1 ;;
+  *) echo "boom: stub failure" >&2; exit 1 ;;
+esac
+SH
+chmod +x "$STUB/claude"
+
+run_ma_claude() { # $1: set | unset（CLAUDECODE）/ $2..: multi-agent.sh の引数 / 出力: rc
+  local cc="$1" rc=0
+  shift
+  rm -f "$TMP/invoked-"*
+  set +e
+  if [[ "$cc" == "set" ]]; then
+    run_isolated PATH="$STUB:$PATH" CLAUDECODE=1 bash "$MULTI_AGENT" "$@" >"$TMP/run.log" 2>&1
+  else
+    run_isolated -u CLAUDECODE PATH="$STUB:$PATH" bash "$MULTI_AGENT" "$@" >"$TMP/run.log" 2>&1
+  fi
+  rc=$?
+  set -e
+  echo "$rc"
+}
+
+run_claude_lane() { # $1: set | unset（CLAUDECODE）/ 出力: rc
+  local rc=0
+  rm -f "$TMP/invoked-"*
+  set +e
+  if [[ "$1" == "set" ]]; then
+    run_isolated PATH="$STUB:$PATH" CLAUDECODE=1 bash "$MULTI_AGENT" \
+      --task review --cli claude-code --perspective code-review \
+      --base develop --timeout 60 >"$TMP/run.log" 2>&1
+  else
+    run_isolated -u CLAUDECODE PATH="$STUB:$PATH" bash "$MULTI_AGENT" \
+      --task review --cli claude-code --perspective code-review \
+      --base develop --timeout 60 >"$TMP/run.log" 2>&1
+  fi
+  rc=$?
+  set -e
+  echo "$rc"
+}
+
+for cm in weekly-stderr weekly-stdout; do
+  echo "$cm" > "$TMP/claude-mode"
+  RC="$(run_claude_lane set)"
+  if [[ "$RC" -ne 0 ]] && [ -e "$TMP/invoked-claude" ] && grep -q '💳' "$TMP/run.log"; then
+    ok "delegate(${cm}): claude-code の利用枠切れを残高切れとして切り分ける(rc=${RC})"
+  else
+    bad "delegate(${cm}): claude-code の利用枠切れが一般的な失敗のまま(rc=${RC})"
+    tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+  fi
+  if grep -q '🤝' "$TMP/run.log" \
+    && grep -qF -- '--cli claude-code --perspective code-review --delegate-to-host' "$TMP/run.log" \
+    && grep -qF -- '--cli claude-code --perspective code-review --delegate-to-host --resume' "$TMP/run.log"; then
+    ok "delegate(${cm}): Claude ホストでは --delegate-to-host → --resume の 2 段の手順を出す"
+  else
+    bad "delegate(${cm}): Claude ホストなのに委譲の手順が出ない"
+    tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+  fi
+  # 委譲の手順は --fresh と併用できない（multi-agent.sh が exit 2 で拒否する）。案内のコマンド
+  # 自身が --fresh を持たないこと。
+  if [ -z "$(grep -E -- '--delegate-to-host' "$TMP/run.log" | grep -v 'never with --fresh' | grep -F -- '--fresh')" ]; then
+    ok "delegate(${cm}): 案内のコマンドに --fresh を付けない"
+  else
+    bad "delegate(${cm}): 案内のコマンドが --fresh と --delegate-to-host を併用している"
+  fi
+  # 順序が要件。同じ CLI の再実行・代替 CLI の個別案内を先に読ませると、利用枠切れには
+  # 効かない手順へ流れる（実測）。
+  DLG_LINE="$(grep -n '🤝' "$TMP/run.log" | head -1 | cut -d: -f1)"
+  RETRY_LINE="$(grep -n 'No runtime fallback was attempted' "$TMP/run.log" | head -1 | cut -d: -f1)"
+  if [[ -n "$DLG_LINE" && -n "$RETRY_LINE" && "$DLG_LINE" -lt "$RETRY_LINE" ]]; then
+    ok "delegate(${cm}): 委譲の手順が個別の再実行案内より先に出る"
+  else
+    bad "delegate(${cm}): 案内順が逆（delegate=${DLG_LINE} retry=${RETRY_LINE}）"
+  fi
+done
+
+# Claude 以外のホスト（CLAUDECODE なし）では従来案内のまま。
+echo weekly-stderr > "$TMP/claude-mode"
+RC="$(run_claude_lane unset)"
+if grep -q '💳' "$TMP/run.log" && ! grep -q '🤝' "$TMP/run.log" \
+  && ! grep -qF -- '--delegate-to-host' "$TMP/run.log"; then
+  ok "delegate(非 Claude ホスト): 委譲の手順を出さず従来案内のまま(rc=${RC})"
+else
+  bad "delegate(非 Claude ホスト): Claude 以外のホストに委譲を案内している、または 💳 が消えた(rc=${RC})"
+  tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+# 利用枠切れ以外の失敗（クラッシュ）では Claude ホストでも委譲を案内しない。
+for cm in crash weekly-quoted weekly-fenced; do
+  echo "$cm" > "$TMP/claude-mode"
+  RC="$(run_claude_lane set)"
+  if ! grep -q '🤝' "$TMP/run.log" && ! grep -q '💳' "$TMP/run.log"; then
+    ok "delegate(${cm}): 利用枠切れでない失敗に委譲を案内しない(rc=${RC})"
+  else
+    bad "delegate(${cm}): 利用枠切れでない失敗に 🤝 / 💳 を出している(rc=${RC})"
+    tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+  fi
+done
+
+# 時間切れ（124）は stderr に告知文があっても委譲を断定しない（⏱ の補足に留める）。
+echo weekly-hang > "$TMP/claude-mode"
+RC="$(run_ma_claude set --task review --cli claude-code --perspective code-review --base develop --timeout 3)"
+if [[ "$RC" -ne 0 ]] && ! grep -q '🤝' "$TMP/run.log"; then
+  ok "delegate(124): 時間切れには委譲を案内しない(rc=${RC})"
+else
+  bad "delegate(124): 時間切れで委譲を断定している(rc=${RC})"
+  tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+# 逐次 2 観点: 1 観点目が利用枠切れ → 2 観点目はスキップ（同じ CLI の残りは同じ理由で落ちる）
+# → 🤝 の 1 本のコマンドに両観点が載る（スキップ側は skipped_task_cause の経路）。
+echo weekly-stdout > "$TMP/claude-mode"
+RC="$(run_ma_claude set --task review --cli claude-code --perspective code-review \
+  --perspective security-analysis --sequential --base develop --timeout 60)"
+DLG_CMD="$(grep -F -- '--delegate-to-host' "$TMP/run.log" | grep -vF -- '--resume' | grep -vF 'never with' | head -1)"
+if grep -q '⏭' "$TMP/run.log" \
+  && [[ "$DLG_CMD" == *"--perspective code-review"* && "$DLG_CMD" == *"--perspective security-analysis"* ]]; then
+  ok "delegate(逐次 2 観点): スキップした観点も含めて 1 本の委譲コマンドに載る(rc=${RC})"
+else
+  bad "delegate(逐次 2 観点): スキップ側の観点が委譲コマンドに載らない(rc=${RC}) cmd=${DLG_CMD}"
+  tail -30 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+if [[ "$(grep -cF -- '--delegate-to-host --resume' "$TMP/run.log")" -eq 1 ]]; then
+  ok "delegate(逐次 2 観点): 委譲の案内は観点ごとに繰り返さず 1 回だけ出る"
+else
+  bad "delegate(逐次 2 観点): 委譲の案内が観点の数だけ重複している"
+fi
+
+# 「主担当のみで完了」の判定（末尾行モード）には stdout 側の告知を数えない。pair で主担当が
+# 完走し、副（claude-code）が利用枠切れで落ちた回: stderr 形は主担当のみで完了（rc 0）+ 🤝、
+# stdout 形は部分出力が残るので完了扱いにしない（その中の指摘を誰も読まなくなる）。
+echo ok > "$TMP/codex-mode"
+for cm in weekly-stderr weekly-stdout; do
+  echo "$cm" > "$TMP/claude-mode"
+  # 主担当・副は環境変数で固定する（利用者の保存設定に左右されないため）
+  rm -f "$TMP/invoked-"*
+  set +e
+  run_isolated PATH="$STUB:$PATH" CLAUDECODE=1 \
+    MULTI_AGENT_REVIEW_MAIN=codex-cli MULTI_AGENT_REVIEW_SUB=claude-code MULTI_AGENT_CROSS_REVIEW=auto \
+    bash "$MULTI_AGENT" --task review --mode pair --perspective comprehensive-review \
+      --perspective code-review --base develop --timeout 60 >"$TMP/run.log" 2>&1
+  RC=$?
+  set -e
+  if [[ "$cm" == "weekly-stderr" ]]; then
+    if [[ "$RC" -eq 0 ]] && grep -qF 'Completed with the main reviewer' "$TMP/run.log" && grep -q '🤝' "$TMP/run.log"; then
+      ok "delegate(pair/stderr): 副の利用枠切れは主担当のみで完了し、委譲の案内も出す(rc=${RC})"
+    else
+      bad "delegate(pair/stderr): 主担当のみの完了か委譲の案内が欠けた(rc=${RC})"
+      tail -30 "$TMP/run.log" | sed 's/^/    | /' >&2
+    fi
+  else
+    if [[ "$RC" -ne 0 ]] && ! grep -qF 'Completed with the main reviewer' "$TMP/run.log"; then
+      ok "delegate(pair/stdout): stdout 側の告知は主担当のみの完了に数えない(rc=${RC})"
+    else
+      bad "delegate(pair/stdout): 部分出力が残る失敗を主担当のみの完了にしている(rc=${RC})"
+      tail -30 "$TMP/run.log" | sed 's/^/    | /' >&2
+    fi
+  fi
+done
+
+# 委譲は claude-code レーンだけ。codex の利用枠切れを Claude ホストへ回すとクロスモデルの
+# 独立性が潰れるので、CLAUDECODE=1 でも codex レーンには出さない。
+echo weekly-limit > "$TMP/codex-mode"
+rm -f "$TMP/invoked-"*
+set +e
+run_isolated PATH="$STUB:$PATH" CLAUDECODE=1 bash "$MULTI_AGENT" \
+  --task review --cli codex-cli --perspective code-review \
+  --base develop --timeout 60 >"$TMP/run.log" 2>&1
+RC=$?
+set -e
+if grep -q '💳' "$TMP/run.log" && ! grep -q '🤝' "$TMP/run.log"; then
+  ok "delegate(codex レーン): codex の利用枠切れには委譲を案内しない(rc=${RC})"
+else
+  bad "delegate(codex レーン): claude-code 以外のレーンへ委譲を案内している(rc=${RC})"
+  tail -25 "$TMP/run.log" | sed 's/^/    | /' >&2
+fi
+
+cp "$TMP/claude-stub.orig" "$STUB/claude"
+chmod +x "$STUB/claude"
 
 # 走査範囲の陰性対照。判定材料は CLI stderr であって、保全された部分出力ではない。
 echo crash-quoting > "$TMP/codex-mode"

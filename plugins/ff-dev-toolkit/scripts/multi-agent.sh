@@ -5897,12 +5897,14 @@ classify_cli_failure_cause() { # <result-file> [tail] → "auth" | "billing" | "
     # claude-code 文言 `You've hit your individual spend limit` は credits / balance の語を
     # 含まず、分類が空（従来案内）に落ちていた。基準線が主担当 1 モデルになった今（ADR-053 決定 1）は
     # billing の分類が「その回は単一で正常完了」の判定に直結するので、上限系の語も採る。
+    # `weekly limit` は claude-code の実測文言 `You've hit your weekly limit · resets 8pm (Asia/Tokyo)`。
+    # 同じく credits / balance の語を含まない。
     # `token limit` は採らない — `_PROMPT_TOO_LONG_RE` の `(context|prompt|input).*token limit` と重なる（`prompt_too_long_matches` の文脈語要求参照）。
     # パイプにしないのは `set -o pipefail` 下で grep -q が先頭付近で早期終了すると
     # printf が EPIPE で死に、パイプライン rc=141 が「不一致」に化けるため（実測: 先頭に
     # unauthorized を置いた 640KB 入力が LOST）。真陽性が読み解けない形で落ちる。
     if grep -qiE \
-      'out of credits|no credits|insufficient credit|credit balance|balance exhausted|insufficient_quota|payment required|spend limit|spending limit|all available credits|usage limit|monthly limit|(http|status|code)[^0-9]{0,10}402|402[^0-9]{0,12}(payment|http|status)' <<<"$stderr_section"; then
+      'out of credits|no credits|insufficient credit|credit balance|balance exhausted|insufficient_quota|payment required|spend limit|spending limit|all available credits|usage limit|monthly limit|weekly limit|(http|status|code)[^0-9]{0,10}402|402[^0-9]{0,12}(payment|http|status)' <<<"$stderr_section"; then
       printf 'billing\n'
       return 0
     fi
@@ -5930,6 +5932,23 @@ classify_cli_failure_cause() { # <result-file> [tail] → "auth" | "billing" | "
   # `prompt is too long (invalid_request_error)` も同じ事実）。
   if prompt_too_long_matches "$partial_section" partial; then
     printf 'prompt-too-long\n'
+    return 0
+  fi
+  # 利用枠切れの claude-code 形。`claude -p` は API エラーを stdout へ出す
+  # ことがある（上のプロンプト超過と同じ形）ので、stderr 側の語彙だけでは拾えない回が
+  # ある。部分出力はレビュー本文でもありうる（告知文をフェンスや引用で載せた本文に当たる
+  # と、同じ CLI の残りの観点を誤ってスキップしてレビューごと失う）ので、照合するのは
+  # **CLI 出力の最初の非空行**（成果物の「Partial output captured …」見出しの直後）が
+  # 告知文の体裁（`You've hit your … limit`）で始まる回だけに限る。
+  # この分類は案内（💳 / 🤝）と同じ CLI の残りタスクのスキップに効く。末尾行モード
+  # （「主担当のみで完了」の判定）はここまで来ないので、そちらには数えない。
+  local first_output_line
+  first_output_line="$(LC_ALL=C awk '
+      found && $0 !~ /^[[:space:]]*$/ { print; exit }
+      /^Partial output captured before the CLI was stopped:$/ { found = 1 }
+    ' <<<"$partial_section" 2>/dev/null)" || first_output_line=""
+  if grep -qiE "^(you've|you have) hit your [[:alpha:] ]*limit" <<<"$first_output_line"; then
+    printf 'billing\n'
     return 0
   fi
   return 0
@@ -6365,6 +6384,30 @@ ensure_codex_cli_current() {
 # commands they would otherwise have wanted the tool to run behind their back,
 # so print them: same CLI with more time, or the configured substitute — named
 # explicitly, with its cost tier, as a choice rather than a surprise.
+# ホスト委譲で走らせ直せる claude-code の観点（空白区切り。無ければ空）。条件は 4 つ:
+# review であること、今回の実行が委譲していないこと（委譲中はそもそも CLI を起動しない）、
+# ホストが Claude Code であること（Claude Code は自身が起動するシェルへ CLAUDECODE=1 を
+# 渡す。他ホストへ委譲すると別モデルで claude-code レーンを埋めることになる）、そして
+# 落ちた理由が利用枠切れ（billing）であること。時間切れ（124）は billing の語が stderr に
+# あっても断定しない（個別案内の ⏱ 分岐と同じ扱い）。
+host_delegable_perspectives() {
+  [[ "$TASK_TYPE" == "review" && "$DELEGATE_TO_HOST" != "true" ]] || return 0
+  [[ "${CLAUDECODE:-}" == "1" ]] || return 0
+  local entry task rc cause out=""
+  for entry in $FAILED_TASKS $SKIPPED_TASKS; do
+    task="${entry%:*}"
+    rc="${entry##*:}"
+    [[ "${task%%/*}" == "$DELEGATION_LANE" ]] || continue
+    cause="$(skipped_task_cause "$task")"
+    if [[ -z "$cause" && "$rc" != "124" ]]; then
+      cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${task}.md")"
+    fi
+    [[ "$cause" == "billing" ]] || continue
+    case " ${out} " in *" ${task#*/} "*) ;; *) out="${out:+${out} }${task#*/}" ;; esac
+  done
+  [[ -z "$out" ]] || printf '%s\n' "$out"
+}
+
 print_failure_advice() {
   # スキップは FAILED_TASKS に載せない（実行していないものを「終了コード付きの失敗」
   # として記録すると、rc を読む全分岐が 4 つ目の意味を持つことになる）。案内は必要
@@ -6413,6 +6456,25 @@ print_failure_advice() {
       echo "${ptl_prefix}${ptl_line}" >&2
       ptl_prefix="      "
     done < <(prompt_too_long_advice_lines)
+  fi
+
+  # claude-code レーンの利用枠切れは、ホストが Claude Code なら --delegate-to-host で
+  # ホストのセッションに走らせられる。下の個別案内（同じ CLI の再実行・
+  # codex 代替）はどちらも利用枠切れには効かない — 前者は同じアカウントの枠を使い、
+  # 後者はクロスモデルの独立性を潰す — ので、個別案内より**先に**出す。
+  local delegable_persps
+  delegable_persps="$(host_delegable_perspectives)"
+  if [[ -n "$delegable_persps" ]]; then
+    local dp dp_args=""
+    for dp in $delegable_persps; do dp_args="${dp_args} --perspective ${dp}"; done
+    echo "" >&2
+    echo "   🤝 ${DELEGATION_LANE} — the claude CLI's account is out of quota, but this host is a" >&2
+    echo "      Claude Code session whose own account can run the lane. Re-run with" >&2
+    echo "      --delegate-to-host (never with --fresh), run each handoff prompt in a read-only" >&2
+    echo "      subagent, write its answer to the output-file the handoff names, then re-run" >&2
+    echo "      the same command with --resume added:" >&2
+    echo "       ${self} --cli ${DELEGATION_LANE}${dp_args} --delegate-to-host" >&2
+    echo "       ${self} --cli ${DELEGATION_LANE}${dp_args} --delegate-to-host --resume" >&2
   fi
 
   echo "" >&2
@@ -6469,7 +6531,7 @@ print_failure_advice() {
         fi
         ;;
       billing)
-        echo "     💳 ${cli} — the CLI stderr says its credits / usage balance are exhausted." >&2
+        echo "     💳 ${cli} — the CLI output says its credits / usage balance are exhausted." >&2
         echo "        No amount of retrying or extra time changes that; either restore billing" >&2
         echo "        for this CLI or use the substitute below." >&2
         ;;
