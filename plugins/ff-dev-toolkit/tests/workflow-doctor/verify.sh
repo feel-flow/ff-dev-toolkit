@@ -7,6 +7,10 @@
 #       節の欠落は WARN、必須語の欠落は FAIL、Stop hook の旧 reminder は FAIL、grep 失敗は FAIL。
 #       --offline で gh を使わない（ネットワークに出ない）。
 #
+# 空振り検出: 強制起票の言い換えや別名のスコープ外節を入力し、検出しない旧実装では fixture 2d / 3b が赤。別のスコープ外節だけに必須語がある負対照も固定する。
+#
+# 変異検出（2026-10-02）: 追加語族の除去で 2d / 4c が赤。見出しを旧名限定へ戻すと 3b が赤、次のスコープ外節を連結すると 3c が赤。
+#
 # 変異検出（2026-09-16 実測。赤転しなかった変異は無し）:
 #   OLD_PATTERN から `|口にした時点で.*起票` を落とす → fixture 2b（第 3 選択肢だけの旧文言）が赤
 #   hook 検査の `! grep -q 'YAGNI'` を外す → fixture 4b（即起票の語を残しつつ YAGNI を持つ reminder）が誤って FAIL になり赤
@@ -108,6 +112,39 @@ printf '%s\n' '# global' '- **スコープ外**: デフォルトは即 Issue 起
 out="$("${DOCTOR[@]}" --root "$d" --global-claude "$TEST_TMP/global-old.md" --settings "$d/.claude/settings.json" --offline 2>&1)"; rc=$?
 if [ "$rc" -eq 1 ] && grep -qE $'^FAIL\t1\t.*global-old\\.md:[0-9]+:' <<<"$out"; then ok "グローバル CLAUDE.md の旧文言 → FAIL 1"; else bad "グローバル側の旧文言を検知できない（rc=${rc}）"; fi
 
+# 2d. 実測した旧ルールの言い換えは、対象ファイルと一致行を必ず FAIL 1 へ出す。
+for rule in \
+  'スコープ外の問題を見つけた場合は、即座に GitHub Issue を作成する。' \
+  'スコープ外は即座にGitHub Issueを作成する。' \
+  'スコープ外の発見はIssue化して即続行' \
+  'スコープ外の発見は Issue 化して即続行' \
+  'スコープ外の発見はissue化して即続行' \
+  '即座に Issue を作成する' \
+  '即座にIssueを作成する' \
+  '即座に GitHub Issue を起票する' \
+  '即座にGitHub Issueを起票する' \
+  '即座に Issue を起票する' \
+  '即座にIssueを起票する' \
+  '即座にGitHub issueを作成する' \
+  '「別Issue」と言ったら即座に `/out-of-scope-issue` で起票する' \
+  '別Issue化を口にした/書いた時点で起票する'; do
+  d="$(make_root variants "$GOOD_CLAUDE" "$rule")"
+  out="$(run_doctor "$d")"; rc=$?
+  if [ "$rc" -eq 1 ] && grep -qE $'^FAIL\t1\t.*AGENTS\\.md:1:' <<<"$out"; then
+    ok "旧ルールの言い換え → FAIL 1: $rule"
+  else
+    bad "旧ルールの言い換えを検知できない（rc=${rc}）: $rule"
+  fi
+done
+
+# 2e. 正規4段ルールと、その意味を変えないスキル呼出し文は誤検出しない。
+d="$(make_root positive "$GOOD_CLAUDE" 'YAGNI → 同 PR インライン → 既存 bundle へ追記 → bundle 単位で新規起票。
+判定は /out-of-scope-issue を通し、必要と判断した場合だけ GitHub Issue を作成する。
+即座に起票せず、YAGNI → インライン → bundle 追記 → bundle 単位で Issue を起票。
+Critical は即座に修正し、前提を覆す指摘は別 Issue を作成して切り出す。')"
+out="$(run_doctor "$d")"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q $'^OK\t1\t' <<<"$out"; then ok "正規4段と条件付き起票 → OK 1"; else bad "正規4段を旧ルールとして誤検出（rc=${rc}）"; fi
+
 # 3. 節が無い → WARN 2（rc=0）/ 節はあるが YAGNI が無い → FAIL 2（rc=1）
 d="$(make_root nosection '# CLAUDE.md
 
@@ -119,6 +156,31 @@ if [ "$rc" -eq 0 ] && grep -q $'^WARN\t2\t.*節が無い' <<<"$out"; then ok "�
 d="$(make_root noyagni "$(printf '%s\n' "$GOOD_CLAUDE" | sed 's/YAGNI: 追跡しない/追跡しない/')")"
 out="$(run_doctor "$d")"; rc=$?
 if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t2\t.*YAGNI が無い' <<<"$out"; then ok "節から YAGNI が消えた → FAIL 2"; else bad "YAGNI の欠落を検知できない（rc=${rc}）"; fi
+
+# 3b. 別見出しでも必須語を検査し、後続節の語では欠落を埋めない。
+for heading in '## スコープ外問題の取り扱い' '## スコープ外の発見と対応'; do
+  d="$(make_root aliases "$heading
+必須語のない旧節
+## 後続節
+YAGNI bundle")"
+  out="$(run_doctor "$d")"; rc=$?
+  if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t2\t.*YAGNI が無い' <<<"$out" && grep -q $'^FAIL\t2\t.*bundle が無い' <<<"$out"; then
+    ok "別見出しの欠落 → FAIL 2: $heading"
+  else
+    bad "別見出しを未導入と誤判定、または後続節で補完（rc=${rc}）: $heading"
+  fi
+  d="$(make_root aliases-good "${GOOD_CLAUDE/## スコープ外の発見/$heading}")"
+  out="$(run_doctor "$d")"; rc=$?
+  if [ "$rc" -eq 0 ] && grep -q $'^OK\t2\t.*bundle あり' <<<"$out"; then ok "別見出しの正規4段 → OK 2: $heading"; else bad "別見出しの正規4段を検査できない（rc=${rc}）"; fi
+done
+
+# 3c. 次の節もスコープ外見出しでも、先行節の欠落をその語で埋めない。
+d="$(make_root two-sections '## スコープ外の発見
+必須語なし
+## スコープ外問題の取り扱い
+YAGNI bundle')"
+out="$(run_doctor "$d")"; rc=$?
+if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t2\t.*YAGNI が無い' <<<"$out" && grep -q $'^FAIL\t2\t.*bundle が無い' <<<"$out"; then ok "次のスコープ外節で先行欠落を埋めない → FAIL 2"; else bad "スコープ外の2節を連結して欠落を補完（rc=${rc}）"; fi
 
 # 4. Stop hook の reminder が旧形（即起票だけで YAGNI 無し）→ FAIL 3 / YAGNI を持つ reminder → OK 3
 d="$(make_root hook "$GOOD_CLAUDE")"
@@ -143,6 +205,23 @@ else
   out="$(run_doctor "$d")"; rc=$?
   if grep -q $'^SKIP\t3\t' <<<"$out"; then ok "jq 不在では hook 検査が SKIP（緑にしない）"; else bad "jq 不在で hook 検査が SKIP にならない"; fi
   ok "（jq 不在のため hook の正例は未検証 — 件数合わせ）"
+fi
+
+# 4c. 追加した語族は Stop hook の inline / script のどちらにも届く。
+if command -v jq >/dev/null 2>&1; then
+  d="$(make_root hook-variants "$GOOD_CLAUDE")"
+  mkdir -p "$d/hooks"
+  for rule in '即座に GitHub Issue を作成する' 'スコープ外の発見はIssue化して即続行'; do
+    hook_settings "echo $rule" "$d/.claude/settings.json" || bad "fixture が有効 JSON にならない"
+    out="$(run_doctor "$d")"; rc=$?
+    if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t3\t.*command 文字列' <<<"$out"; then ok "追加語族の inline hook → FAIL 3: $rule"; else bad "追加語族が inline hook に届かない（rc=${rc}）"; fi
+    printf '%s\n' '#!/usr/bin/env bash' "# $rule" > "$d/hooks/guard.sh"
+    hook_settings "bash $d/hooks/guard.sh" "$d/.claude/settings.json" || bad "fixture が有効 JSON にならない"
+    out="$(run_doctor "$d")"; rc=$?
+    if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t3\t.*'"$d/hooks/guard.sh" <<<"$out"; then ok "追加語族の script hook → FAIL 3: $rule"; else bad "追加語族が script hook に届かない（rc=${rc}）"; fi
+  done
+else
+  printf '%s\n' '  ○ jq 不在のため追加語族の hook 検査は未検証'
 fi
 
 # 5. --offline の 4〜6 は SKIP として数える（緑にしない）。jq 不在の環境では検査 3 も SKIP になるので期待値を 1 足す

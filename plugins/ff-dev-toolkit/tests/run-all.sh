@@ -1445,7 +1445,6 @@ MISS_PROBE_BASELINE=(
   validate-docs-placeholders-selftest
   validate-docs-placeholders
   weekly-health-contract
-  workflow-doctor
   worktree-preflight-contract
 )
 

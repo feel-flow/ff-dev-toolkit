@@ -56,8 +56,8 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 | 番号 | 検査 | 見る場所 | ずれの例（導入先で実測） | 重大度 |
 | --- | --- | --- | --- | --- |
-| 1 | 判定順の矛盾 | CLAUDE.md / AGENTS.md / `.cursor/**`(.md, .mdc) / `.github/copilot-instructions.md` / グローバル CLAUDE.md | 「issue化必須」「口にした時点で必ず起票」「デフォルトは即 Issue 起票」 | FAIL |
-| 2 | 節の必須語 | CLAUDE.md「## スコープ外の発見」節 | `YAGNI` / `bundle` の欠落（節が無ければ WARN） | FAIL / WARN |
+| 1 | 判定順の矛盾 | CLAUDE.md / AGENTS.md / `.cursor/**`(.md, .mdc) / `.github/copilot-instructions.md` / グローバル CLAUDE.md | 「issue化必須」「口にした時点で必ず起票」「デフォルトは即 Issue 起票」「即座に GitHub Issue を作成」「Issue化して即続行」 | FAIL |
+| 2 | 節の必須語 | CLAUDE.md の「## スコープ外」で始まる節（「スコープ外問題の取り扱い」等も対象） | `YAGNI` / `bundle` の欠落（節が無ければ WARN） | FAIL / WARN |
 | 3 | hook の文言 | settings.json（3 件の既定対象）の Stop hook の command 文字列と、それが参照するスクリプト（複数可） | reminder が「STEP3 = gh issue create で即起票」で既存 bundle への追記が無い / command 文字列そのものに旧文言 | FAIL |
 | 4 | 起票の受け皿 | `gh issue list --label bundle --state open` | open な bundle が 0 件（統合先が無く新規へ落ちる） | WARN |
 | 5 | ラベルの実在 | `gh label list --limit 200` | `bundle` / `epic` / `follow-up` の不在、優先度ラベル（`priority:*` または `P<n>-*`）の不在（`/setup-github-labels` を案内） | WARN |
@@ -66,7 +66,8 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 - 出力は 1 行 1 所見（`<LEVEL>\t<番号>\t<所見>`）。`FIXTEXT` 行は置換案。末尾に `SUMMARY fail=<n> warn=<n> skip=<n>`
 - 終了コード: **0** = FAIL 0 件 / **1** = FAIL あり / **2** = 対象（`--root`）を解決できない（検査不成立。緑と読まない）
-- 検査 1 の検査語は固定文字列と `.*` だけで書く（多バイトの文字クラスは BSD grep の C ロケールで一致 0 件 = fail-open になる。導入先の実測）。`grep` の rc≥2 は FAIL として報告し「0 件」に畳まない
+- 検査 2 は最初の該当節を次の `##` 見出しまで読む。後続のスコープ外節の必須語で先行節の欠落を補わない。
+- 検査 1 は英字の大文字・小文字を区別しない。「即座に」の直後が Issue / GitHub Issue の実測形を検出し、「即座に修正」等の別述語と後段の Issue 作成を結び付けない。検査語は固定文字列と `.*` だけで書く（多バイトの文字クラスは BSD grep の C ロケールで一致 0 件 = fail-open になる。導入先の実測）。`grep` の rc≥2 は FAIL として報告し「0 件」に畳まない
 
 ## 結果の読み方と直し方
 

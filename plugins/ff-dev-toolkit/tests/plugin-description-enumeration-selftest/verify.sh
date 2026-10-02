@@ -542,6 +542,25 @@ else
   bad "G31: 500 文字ちょうどが赤になった、または文字数の報告が無い（rc=${RC}）: $OUT"
 fi
 
+build_fixture "$FIX"
+pj="$FIX/plugins/alpha/.claude-plugin/plugin.json"
+jq '.repository = "https://github.com/example/alpha"' "$pj" > "$pj.tmp"
+mv "$pj.tmp" "$pj"
+market_edit "$FIX" alpha '.source = {source: "github", repo: "example/alpha"}'
+run_target "$FIX"
+if [ "$RC" -eq 0 ]; then
+  ok "G32: manifest と一致する GitHub 配布元は緑"
+else
+  bad "G32: 正しい GitHub 配布元が赤（rc=${RC}）: $OUT"
+fi
+market_edit "$FIX" alpha '.source.repo = "example/other"'
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"source が"* ]]; then
+  ok "G33: manifest と異なる GitHub 配布元は赤"
+else
+  bad "G33: GitHub 配布元の不一致が素通り（rc=${RC}）: $OUT"
+fi
+
 echo
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ plugin-description-enumeration-selftest: ${FAIL} 件失敗（pass ${PASS}）" >&2

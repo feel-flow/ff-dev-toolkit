@@ -12,9 +12,9 @@
 # 検査（7 項目。7 は INFO のみ。番号は SKILL.md の表と同じ）:
 #   1. 判定順の矛盾   — 入口文書（CLAUDE.md / AGENTS.md / .cursor/ / copilot-instructions / グローバル CLAUDE.md）
 #                       に「発見 = 起票」の旧文言が無いこと
-#   2. 節の必須語     — CLAUDE.md「## スコープ外の発見」節に YAGNI と bundle が在ること（節が無ければ WARN）
+#   2. 節の必須語     — CLAUDE.md の「## スコープ外」で始まる節に YAGNI と bundle が在ること（節が無ければ WARN）
 #   3. hook の文言    — settings.json の Stop hook の command 文字列と、それが参照するスクリプトの reminder が
-#                       「即起票」だけで YAGNI を持たない形になっていないこと
+#                       検査 1 と同じ「発見 = 起票」の旧文言だけで YAGNI を持たない形になっていないこと
 #   4. 起票の受け皿   — `bundle` ラベルの open Issue が在ること（無ければ統合先が無く新規へ落ちる）
 #   5. ラベルの実在   — bundle / epic / follow-up / priority:* が在ること
 #   6. 親無し Issue   — open Issue のうち parent が無く epic / bundle でもないものの件数
@@ -242,7 +242,7 @@ emit() { # level no message
 # ---- 1. 判定順の矛盾（旧文言） --------------------------------------------------
 # 文字クラスは使わない（BSD grep は C ロケールで多バイトの [^。] を解釈できず一致 0 件 = fail-open。
 # 導入先で実測）。固定文字列と .* だけで書く。
-OLD_PATTERN='issue化必須|必ず起票|口にした時点で.*起票|即 Issue 起票|即起票'
+OLD_PATTERN='issue化必須|必ず起票|口にした時点で.*起票|即 Issue 起票|即起票|即座に GitHub Issue を作成|即座にGitHub Issueを作成|即座に Issue を作成|即座にIssueを作成|即座に GitHub Issue を起票|即座にGitHub Issueを起票|即座に Issue を起票|即座にIssueを起票|Issue化して即続行|Issue 化して即続行|と言ったら即座に.*起票|口にした/書いた時点.*起票'
 targets=()
 for f in CLAUDE.md AGENTS.md .github/copilot-instructions.md; do
   [ -f "$ROOT/$f" ] && targets+=("$ROOT/$f")
@@ -254,7 +254,7 @@ fi
 if [ ${#targets[@]} -eq 0 ]; then
   emit WARN 1 "入口文書が 1 つも無い（CLAUDE.md / AGENTS.md / .cursor/ / copilot-instructions / グローバル CLAUDE.md）"
 else
-  hits="$(grep -nHE "$OLD_PATTERN" "${targets[@]}" 2>&1)"; rc=$?
+  hits="$(grep -niHE "$OLD_PATTERN" "${targets[@]}" 2>&1)"; rc=$?
   if [ "$rc" -ge 2 ]; then
     emit FAIL 1 "grep が失敗した（rc=${rc}）: $(printf '%s' "$hits" | head -1)"
   elif [ "$rc" -eq 0 ]; then
@@ -271,15 +271,15 @@ fi
 
 # ---- 2. 節の必須語 ---------------------------------------------------------------
 if [ -f "$ROOT/CLAUDE.md" ]; then
-  section="$(awk '/^## スコープ外の発見/{flag=1; print; next} /^## /{if(flag){exit}} flag{print}' "$ROOT/CLAUDE.md")"
+  section="$(awk '/^## / && flag{exit} /^## スコープ外/{flag=1} flag{print}' "$ROOT/CLAUDE.md")"
   if [ -z "$section" ]; then
-    emit WARN 2 "CLAUDE.md に「## スコープ外の発見」節が無い（判定順を書く場所が無い。4 段の定型文を置く）"
+    emit WARN 2 "CLAUDE.md に「## スコープ外」で始まる節が無い（判定順を書く場所が無い。4 段の定型文を置く）"
   else
     for word in YAGNI bundle; do
       if grep -q "$word" <<<"$section"; then
-        emit OK 2 "「スコープ外の発見」節に ${word} あり"
+        emit OK 2 "「スコープ外」節に ${word} あり"
       else
-        emit FAIL 2 "「スコープ外の発見」節に ${word} が無い（判定順が YAGNI 先行・bundle 既定から外れている）"
+        emit FAIL 2 "「スコープ外」節に ${word} が無い（判定順が YAGNI 先行・bundle 既定から外れている）"
       fi
     done
   fi
@@ -292,7 +292,7 @@ fi
 #   0 = 旧文言なし / 1 = 「発見 = 起票」の旧文言があり YAGNI を持たない / 2 = STEP3 が gh issue create で即起票のままで bundle への追記が無い
 judge_reminder() { # $1 text
   local t="$1"
-  if grep -qE "$OLD_PATTERN" <<<"$t" && ! grep -q 'YAGNI' <<<"$t"; then return 1; fi
+  if grep -qiE "$OLD_PATTERN" <<<"$t" && ! grep -q 'YAGNI' <<<"$t"; then return 1; fi
   if grep -q 'gh issue create で即起票' <<<"$t" && ! grep -q 'bundle' <<<"$t"; then return 2; fi
   return 0
 }

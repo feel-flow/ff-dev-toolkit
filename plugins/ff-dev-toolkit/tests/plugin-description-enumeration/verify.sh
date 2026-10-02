@@ -245,7 +245,17 @@ while IFS= read -r name; do
   # source は必須。`// ""` で欠落を許すと「marketplace のエントリが当該ディレクトリを
   # 指す」という対応付けの前提が、最もありそうな壊れ方（フィールド欠落）で fail-open する。
   src="$(jq -r --arg n "$name" '.plugins[] | select(.name == $n) | .source // ""' "$MARKET")"
-  if [ "$src" != "./plugins/$name" ]; then
+  # 限定生成した公開リポジトリから配布する場合は、manifest の repository と照合する。
+  remote_ok=false
+  if jq -e --arg n "$name" --arg repo "$(jq -r '.repository // ""' "$pj")" '
+    .plugins[] | select(.name == $n) | .source |
+    type == "object" and .source == "github" and
+    (.repo | type == "string" and test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")) and
+    ("https://github.com/" + .repo == $repo)
+  ' "$MARKET" >/dev/null 2>&1; then
+    remote_ok=true
+  fi
+  if [ "$src" != "./plugins/$name" ] && [ "$remote_ok" != true ]; then
     bad "${name}: marketplace.json の source が ./plugins/${name} と一致しません（実測: ${src:-未設定}）"
   fi
 
