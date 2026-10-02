@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { DOCUMENTS, FEATURES, projectPath, validateConfig, loadConfig } from './config.mjs';
 
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -155,7 +156,41 @@ export function apply(root, config, options) {
     return { changed: result.changes.map(c => c.file), retained: result.retained, adopted: result.adopted };
   } finally { fs.closeSync(fd); fs.unlinkSync(lock); }
 }
-export function check(root) {
+// multiReview needs no project file: multi-agent.sh runs on the bundled default when
+// .claude/agent-config.yaml is absent, and requiring that file sent adopters to copy the bundled
+// default whole, plugin-internal comments included. The requirement is what /multi-review
+// itself starts from: --print-reviewers succeeds (0 = main set, 3 = unset), detects >= 1 CLI,
+// and a saved main reviewer is among them (pair mode stops otherwise).
+const MULTI_AGENT = fileURLToPath(new URL('../multi-agent.sh', import.meta.url));
+const PROBE_TIMEOUT_MS = 60000;
+const PROBE = 'multi-agent.sh --task review --print-reviewers';
+// Only these two stderr messages mean "no usable CLI"; any other failure (config error, plugin-root
+// guard, timeout) is named as a probe failure so the user is not sent to install a CLI.
+const NO_CLI = /No AI CLIs are installed|every installed CLI was excluded/;
+export function judgeMultiReviewProbe(result) {
+  const values = Object.fromEntries((result.stdout ?? '').split('\n').filter(line => line.includes('=')).map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1).trim()]));
+  const available = (values.available ?? '').split(/\s+/).filter(Boolean);
+  if (!result.error && (result.status === 0 || result.status === 3)) {
+    if (!available.length) return `Selected multiReview requires an available AI CLI (${PROBE} exit ${result.status}): no AI CLI detected`;
+    if (values.main && !available.includes(values.main)) return `Selected multiReview: main reviewer '${values.main}' (${values.main_source ?? 'unknown source'}) is not installed (available: ${available.join(' ')}). Install it, or pick another with ${PROBE.replace('--print-reviewers', '--set-reviewers main=<cli>')}`;
+    return null;
+  }
+  const how = result.error?.code === 'ETIMEDOUT' ? `timed out after ${PROBE_TIMEOUT_MS / 1000}s`
+    : result.error ? `could not start bash (${result.error.code ?? result.error.message})`
+    : result.status !== null ? `exit ${result.status}` : `killed by ${result.signal}`;
+  const lines = (result.stderr ?? '').split('\n').map(line => line.trim()).filter(Boolean);
+  // ERROR: first; ❌ (the plugin-root guard's cause lines) only when there is none, because
+  // CLI detection also prints ❌ status lines ahead of its ERROR: block.
+  const errorAt = lines.findIndex(line => line.startsWith('ERROR:'));
+  const from = errorAt >= 0 ? errorAt : lines.findIndex(line => line.startsWith('❌'));
+  const detail = (from >= 0 ? lines.slice(from).join('; ') : lines.at(-1) ?? '').slice(0, 500);
+  const reason = detail ? `: ${detail}` : '';
+  return NO_CLI.test(result.stderr ?? '') ? `Selected multiReview requires an available AI CLI (${PROBE} ${how})${reason}` : `Selected multiReview probe failed (${PROBE} ${how})${reason}`;
+}
+export function probeMultiReview(root) {
+  return judgeMultiReviewProbe(spawnSync('bash', [MULTI_AGENT, '--task', 'review', '--print-reviewers'], { cwd: root, encoding: 'utf8', timeout: PROBE_TIMEOUT_MS }));
+}
+export function check(root, { probeMultiReview: probe = probeMultiReview } = {}) {
   const config = loadConfig(root);
   if (!config) return { mode: 'legacy', initialized: false, implementationReady: false, releaseReady: 'not-assessed', errors: [] };
   const previous = state(root), errors = [];
@@ -166,12 +201,13 @@ export function check(root) {
     else if (!previous.files[file] || digest(current) !== previous.files[file]) errors.push(`Changed or unmanaged: ${file}`);
   }
   if (content(root, '.asdd/apply.lock') !== null) errors.push('Initialization lock remains: inspect interrupted work before retry');
-  const requirements = { ace: 'docs/08-knowledge/PLAYBOOK.md', multiReview: '.claude/agent-config.yaml', ci: '.github/workflows' };
+  const requirements = { ace: 'docs/08-knowledge/PLAYBOOK.md', ci: '.github/workflows' };
   const capabilities = {};
   for (const feature of FEATURES) {
     capabilities[feature] = !config.features[feature] ? 'disabled' : 'configured-unverified';
     if (config.features[feature] && requirements[feature] && !fs.existsSync(projectPath(root, requirements[feature]))) errors.push(`Selected ${feature} requires setup: ${requirements[feature]}`);
   }
+  if (config.features.multiReview) { const error = probe(root); if (error) errors.push(error); }
   const pending = config.decisions.filter(d => ['proposed', 'unresolved'].includes(d.status)).map(d => d.topic);
   // Generated document shells still require substantive human/agent review, even with no pending decisions.
   const unfinished = config.documents.filter(id => content(root, DOCUMENTS[id])?.includes('未決。初期化で文書の入口'));

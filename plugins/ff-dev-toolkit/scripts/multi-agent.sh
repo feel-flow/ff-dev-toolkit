@@ -2615,7 +2615,7 @@ warn_unappliable_sandbox() {
   echo "                     （どちらもその 1 回の引数。次回省けば同じ警告が出ます）" >&2
   echo "           恒久:     この機械で毎回同じなら、上の Config: に表示された設定ファイル" >&2
   echo "                     （通常はプロジェクトの .claude/agent-config.yaml。plugin default と出ているなら" >&2
-  echo "                     同梱の agent-config.yaml をそこへ写して作る。読み取りに yq が必要）に" >&2
+  echo "                     同梱の agent-config.yaml は写さず、次の 1 行だけでそこに新しく作る。読み取りに yq が必要）に" >&2
   echo "                     次の 1 行を置く（以後の実行すべてから外れる。--cli ${cli} で 1 回だけ戻せる）:" >&2
   echo "                       exclude_clis: \"${cli}\"" >&2
   echo "                     既に exclude_clis があるならキーを増やさず、同じ 1 文字列へ空白区切りで足す" >&2

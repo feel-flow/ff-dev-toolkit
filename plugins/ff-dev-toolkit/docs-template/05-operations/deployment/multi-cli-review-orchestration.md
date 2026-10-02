@@ -442,9 +442,9 @@ ff_require_toolkit_root && echo "ff-dev-toolkit plugin resources: OK"
 
 ### Step 2: 設定ファイルのカスタマイズ
 
-消費プロジェクトの `.claude/agent-config.yaml` を環境に合わせて編集します。初期設定が必要な場合は `${FF_DEV_TOOLKIT_ROOT}/scripts/agent-config.yaml` を雛形として使います。
+既定のままなら設定ファイルは不要です（`.claude/agent-config.yaml` が無ければ同梱の既定で動きます）。既定から変えたいキーがあるときだけ、消費プロジェクトの `.claude/agent-config.yaml` に**そのキーだけ**を書きます。`${FF_DEV_TOOLKIT_ROOT}/scripts/agent-config.yaml` を丸ごと写さないでください — plugin 内を指すコメントまで導入先へ入ります。最小のファイルで足りる理由は [Multi-CLI Agent Orchestration の「実際に読まれるキー」](./multi-cli-agent-orchestration.md#実際に読まれるキー)。
 
-> **Note**: 現行の `multi-agent.sh` が project config から読み込むのは `version` / `mode` / `parallel` / `review.*` と、`version: "2.0"` のときだけ `tasks.<task>.{mode,cost_strategy,timeout,output_dir}`。`version` が `2.0` でない場合は v1 形式としてトップレベルの `cost_strategy` / `timeout` / `output_dir` を読む。`agents` / `fallback` は配布側レジストリの写しであり、消費プロジェクトで変更しても実行へ反映されない。パースペクティブ割り当てを変える場合は plugin 側の変更として提案し、cache を直接編集しない。
+> **Note**: 書くキーが `tasks.*` なら、同じファイルに `version: "2.0"` も書く — `version: "2.0"` のときだけ `tasks.<task>.{mode,cost_strategy,timeout,output_dir}` が読まれる。読まれるキーの一覧（`exclude_clis` / `review.*` を含む）と、`agents` / `fallback` が読まれないことは上記リンク先の正本を参照する。パースペクティブ割り当てを変える場合は plugin 側の変更として提案し、cache を直接編集しない。
 
 ```yaml
 version: "2.0"

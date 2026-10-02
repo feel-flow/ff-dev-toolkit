@@ -133,11 +133,11 @@ else
 fi
 
 WEEKLY_WF="$REPO_ROOT/.github/workflows/weekly-run-all.yml"
-# SSOT 側の checkout 直後の段（origin/HEAD の設置など）は、週次と PR トリガー CI が共有する
-# ローカル action に置いてある（ADR-062）。本文契約と公開側との突き合わせはその action へ当て、
-# 両 workflow が checkout の直後にその action を呼んでいること（配線）を別に確かめる。
+# SSOT 側の checkout 直後の段（origin/HEAD の設置など）は、週次 workflow が呼ぶローカル action に
+# 置いてある（ADR-062 で切り出し。ADR-072 で PR トリガー CI を廃止し、呼び出し元は週次だけ）。
+# 本文契約と公開側との突き合わせはその action へ当て、週次が checkout の直後にその action を
+# 呼んでいること（配線）を別に確かめる。
 SSOT_SETUP="$REPO_ROOT/.github/actions/run-all-setup/action.yml"
-PR_WF="$REPO_ROOT/.github/workflows/pr-run-all.yml"
 # 公開側 workflow も同じ actions/checkout を使い、同じランナー特性
 # （refs/remotes/origin/HEAD を置かない）に晒される。本文契約を SSOT 側にしか掛けないと、
 # step 名だけを見る後段の突き合わせでは拾えない片側劣化 — name を保ったまま fetch の
@@ -146,20 +146,41 @@ PUBLIC_WF="$REPO_ROOT/oss/ff-dev-toolkit/.github/workflows/weekly-public-run-all
 if [[ -f "$WEEKLY_WF" ]]; then
   # 共有 action の不在は「本文契約が当たる先が無い」なので名指しで赤にする（無音で抜けない）。
   [[ -f "$SSOT_SETUP" ]] || bad "共有セットアップ action が見つからない（origin/HEAD の本文契約が空振りする）: ${SSOT_SETUP#"$REPO_ROOT"/}"
-  # 配線: 両 workflow とも checkout の直後の step が共有 action であること。action だけ正しくても
+  # 配線: 週次 workflow の checkout の直後の step が共有 action であること。action だけ正しくても
   # workflow が呼ばなくなれば、ランナー特性の対策は実行されない。
-  for _wf in "$WEEKLY_WF" "$PR_WF"; do
-    _wf_label="${_wf#"$REPO_ROOT"/}"
-    _next_step="$(awk '
-      /^      - uses: actions\/checkout@/ { region = 1; next }
-      region && /^      - (uses|name): / { print; exit }
-    ' "$_wf" 2>/dev/null)"
-    if [[ "$_next_step" == '      - uses: ./.github/actions/run-all-setup' ]]; then
-      ok "${_wf_label} は checkout の直後に共有セットアップ action を呼ぶ"
-    else
-      bad "${_wf_label} が checkout の直後に共有セットアップ action を呼んでいない（実際: ${_next_step:-抽出できない}）"
+  _wf_label="${WEEKLY_WF#"$REPO_ROOT"/}"
+  _next_step="$(awk '
+    /^      - uses: actions\/checkout@/ { region = 1; next }
+    region && /^      - (uses|name): / { print; exit }
+  ' "$WEEKLY_WF" 2>/dev/null)"
+  if [[ "$_next_step" == '      - uses: ./.github/actions/run-all-setup' ]]; then
+    ok "${_wf_label} は checkout の直後に共有セットアップ action を呼ぶ"
+  else
+    bad "${_wf_label} が checkout の直後に共有セットアップ action を呼んでいない（実際: ${_next_step:-抽出できない}）"
+  fi
+  # ADR-072: 本リポジトリの GitHub Actions は週次だけ。PR / push で起動する workflow を置かない
+  # （private リポジトリで PR の push ごとに課金されるため PR トリガーの部分ゲートを廃止した）。
+  # 週次の配線と同じ `.github/workflows/` を見る検査なのでここに置く。走査対象が 0 件・読めない回は
+  # 「無かった」と読まず赤にする（週次の実在は上の分岐が保証しているので、0 件は列挙の失敗）。
+  _wf_count=0
+  _wf_triggered=()
+  for _wf in "$REPO_ROOT"/.github/workflows/*.yml "$REPO_ROOT"/.github/workflows/*.yaml; do
+    [[ -f "$_wf" ]] || continue
+    _wf_count=$((_wf_count + 1))
+    if ! _wf_hits="$(grep -nE '^[[:space:]]*(pull_request|pull_request_target|push|merge_group)[[:space:]]*:|^on:[[:space:]]*.*(pull_request|push|merge_group)' "$_wf")"; then
+      [[ -r "$_wf" ]] || _wf_triggered+=("${_wf#"$REPO_ROOT"/}: 読めない")
+      continue
     fi
+    _wf_triggered+=("${_wf#"$REPO_ROOT"/}: ${_wf_hits%%$'\n'*}")
   done
+  if [[ "$_wf_count" -eq 0 ]]; then
+    bad "workflow を 1 件も列挙できない（週次 workflow は在るのに走査が空振りしている）"
+  elif [[ "${#_wf_triggered[@]}" -eq 0 ]]; then
+    ok ".github/workflows/ の ${_wf_count} 件に PR / push トリガーの workflow が無い（ADR-072: Actions は週次だけ）"
+  else
+    bad "PR / push で起動する workflow がある（ADR-072: 本リポジトリの Actions は週次だけ）:"
+    printf '    %s\n' "${_wf_triggered[@]}" >&2
+  fi
   for _wf in "$SSOT_SETUP" "$PUBLIC_WF"; do
     # 公開側の不在は後段の突き合わせが名指しで赤にする（ここで重ねて報告しない）。
     [[ -f "$_wf" ]] || continue

@@ -103,7 +103,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" node "${FF_DEV_TOOLKIT_ROOT}/script
 
 既存文書・AI設定をそのまま引き継ぐ移行では、内容と選択設定の整合を先に確認する。必要な変更だけを差分編集し、合意・既存ルール・手編集が残ることを確認してから、引き継ぐファイルの相対パスと現在のSHA-256を対応させたJSONを作る（例: `{"AGENTS.md":"確認したファイルの64桁ハッシュ"}`）。この実値ファイルを `ASDD_REVIEWED_ADOPTION` とし、previewとapplyの両方に `--adopt "$ASDD_REVIEWED_ADOPTION"` を追加する。採用対象は選択文書とAI入口に限定され、確認後に内容が変われば停止する。引継ぎ済み文書は再設定でも生成テンプレートで置換しない。設定の変更に応じて必要な内容をレビューし、手編集後は改めて対象hashを照合する。移行時の矛盾を解消せずhashだけ承認してはならない。
 
-任意機能は対応する既存スキルで必要部分だけを構築する。`ace` がtrueの場合だけ `ace-setup`、`multiReview` がtrueの場合だけMulti-CLIセットアップを進める。スキルの複製・ミラーは作らず、ネイティブのプラグイン導入を利用する。Hook未対応のホストや未設定のCIを稼働中と報告しない。
+任意機能は対応する既存スキルで必要部分だけを構築する。`ace` がtrueの場合だけ `ace-setup`、`multiReview` がtrueの場合だけMulti-CLIセットアップを進める。`multiReview` の `--check` は `multi-agent.sh --task review --print-reviewers` が成立し（設定の誤りもここで止まる）、AI CLIを1つ以上検出でき、保存済みの主レビュワーがあれば導入済みであることを見る。`.claude/agent-config.yaml` は要求しない。同梱の既定を丸ごと写さない。スキルの複製・ミラーは作らず、ネイティブのプラグイン導入を利用する。Hook未対応のホストや未設定のCIを稼働中と報告しない。
 
 ## 5. 日常作業へ引き継ぐ
 

@@ -128,7 +128,7 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 | --- | --- | --- |
 | `scripts/codex-review.sh` | `scripts/setup-multi-agent.sh` が配置する | クロスモデルレビューの入口シム（単一ファイル配布） |
 | `scripts/.ff-dev-toolkit-root` | `scripts/setup-multi-agent.sh` が配置する | シムがオーケストレータを解決するためのサイドカー（Git 管理しない） |
-| `.claude/agent-config.yaml` | **利用者が任意で置く**（`scripts/setup-multi-agent.sh` はコピー手順を表示するだけで、ファイルは置かない） | レビュー担当・CLI 構成のプロジェクト上書き。在れば同梱の既定より優先して読まれる |
+| `.claude/agent-config.yaml` | **利用者が任意で置く**（`scripts/setup-multi-agent.sh` はファイルを置かない。既定のままなら不要で、変えたいキーがあるときだけそのキーを書いた最小のファイルを置くよう案内する） | レビュー担当・CLI 構成のプロジェクト上書き。在れば同梱の既定より優先して読まれる |
 | `docs/MASTER.md` | `init-docs` / `asdd-init` が生成する | 仕様文書の入口。`validate-docs` が名前で参照する |
 | `docs/01-context/PROJECT.md` | 同上 | コア文書 |
 | `docs/02-design/ARCHITECTURE.md` | 同上 | コア文書 |

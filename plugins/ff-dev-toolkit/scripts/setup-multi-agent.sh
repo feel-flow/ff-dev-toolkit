@@ -908,8 +908,15 @@ print_summary() {
     echo "    主 = メインで使う CLI / 副 = もう1つの CLI（省略可）"
     echo "    保存するのは CLI 名だけ。モデルは各 CLI 自身の設定に委ねます"
     echo ""
-    echo "  # 設定カスタマイズ（プロジェクト側 override が同梱デフォルトより優先）"
-    echo "  cp \"$SCRIPT_DIR/agent-config.yaml\" .claude/agent-config.yaml && vim .claude/agent-config.yaml"
+    # 同梱の既定を丸ごと写す案内は出さない。写すと plugin 内を指すコメントまで
+    # 導入先へ入り、導入先のレビューで指摘される。既定のままなら project 側のファイルは要らない。
+    echo "  # 設定カスタマイズ（既定のままなら不要 — .claude/agent-config.yaml が無ければ同梱の既定で動きます）"
+    echo "  # 既定から変えたいキーがあるときだけ、そのキーだけを書いた最小のファイルを置きます（既にあるならそのファイルへキーを足す）。例:"
+    echo "  [ -e .claude/agent-config.yaml ] || { mkdir -p .claude && printf 'review:\\n  confidence_threshold: 70\\n' > .claude/agent-config.yaml; }"
+    echo "    project の .claude/agent-config.yaml は同梱の既定と統合されず、丸ごと置き換わります"
+    echo "    書かなかったキーは組み込みの既定（同梱の既定と同じ値）で動くので、変えるキーだけで足ります"
+    echo "    tasks.<task>.* を書くときは同じファイルに version: \"2.0\" も書きます（無いと tasks.* は読まれません）"
+    echo "    読まれるキーの正本: プラグイン同梱 docs-template/05-operations/deployment/multi-cli-agent-orchestration.md「実際に読まれるキー」"
     echo ""
     echo "詳細: プラグイン同梱 docs-template/05-operations/deployment/multi-cli-review-orchestration.md"
     echo ""

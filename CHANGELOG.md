@@ -20,6 +20,17 @@
 
 ## [Unreleased]
 
+## [0.146.0] - 2026-10-02
+
+### 変更
+
+- 同梱テスト `tests/changelog-fragments` の配線検査: 開発元リポジトリの GitHub Actions が週次だけになり PR トリガーの workflow が無くなったため、「checkout の直後に共有セットアップ action を呼ぶ」の確認対象を週次 workflow だけにした。あわせて、開発元リポジトリの workflow 定義に PR / push で起動するものが無いことを確かめる検査を足した（公開リポジトリと導入先では週次 workflow が無いので走らない）。導入先の挙動は変わらない
+
+### 修正
+
+- `/asdd-init` の `--check`: `features.multiReview=true` の要件から project の `.claude/agent-config.yaml` を外した。`multi-agent.sh` はこのファイルが無くても同梱の既定で動くため、写す必要の無いファイルを要求していた。代わりに `multi-agent.sh --task review --print-reviewers` が成立し、AI CLI を 1 つ以上検出でき、保存済みの主レビュワーがあればそれが導入済みであることを要件にする（CLI が 1 つも無い・主レビュワーが未導入のときは理由付きで errors を返す。設定の誤りやタイムアウトなど CLI 以外の失敗は「probe failed」として原因を名指しする）
+- `setup-multi-agent.sh` の完了案内: 同梱の `agent-config.yaml` を丸ごと `cp` する案内をやめた。写すと plugin 内を指すコメントまで導入先へ入り、導入先のレビューで指摘されていた。既定のままならファイルは不要で、変えたいキーがあるときだけ、そのキーだけを書いた最小のファイルを置くよう案内する（project 側のファイルは同梱の既定と統合されず丸ごと置き換わるが、書かなかったキーは同梱の既定と同じ組み込み既定で動く）
+
 ## [0.145.0] - 2026-10-02
 
 ### 変更
