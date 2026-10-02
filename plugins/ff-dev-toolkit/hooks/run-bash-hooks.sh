@@ -22,6 +22,14 @@ else
 fi
 pids=()
 timer=""
+# 拒否された呼び出しは前段の生成も走っていない。各ガードの理由文は違反形だけを示すため、
+# 前段のファイルが在る前提で次の呼び出しを組む往復を集約側の1行で防ぐ。
+not_run_note='この呼び出しは 1 つも実行されていません（同じ呼び出しの前段で作るつもりだったファイル・書き込みも存在しません）。生成と、ガードに当たる反映は別の呼び出しに分けて再実行してください。'
+finish() {
+  # exit 2 ではホストは stderr を理由文として示すため、その末尾へ1回だけ足す。
+  [ "$blocking" -ne 2 ] || printf '%s\n' "$not_run_note" >&2
+  exit "$blocking"
+}
 is_running() {
   # Bash のジョブ表で生存を確認し、回収済み PID の再利用先を kill しない。
   local active
@@ -102,7 +110,7 @@ done
 kill "$timer" 2>/dev/null || true
 wait "$timer" 2>/dev/null || true
 timer=""
-[ "${#outputs[@]}" -gt 0 ] || exit "$blocking"
+[ "${#outputs[@]}" -gt 0 ] || finish
 # 複数 JSON をそのまま連結するとホストが読めない。deny > ask > allow とし、
 # 全理由・警告を残す。壊れた1本の出力で他の判定まで失わないよう個別に検証する。
 valid=()
@@ -123,8 +131,11 @@ else
   echo 'ff-dev-toolkit: 解釈できない hook 出力を除外しました' >&2
 fi
 done
-[ "${#valid[@]}" -gt 0 ] || exit "$blocking"
-merged="$(jq -s '
+[ "${#valid[@]}" -gt 0 ] || finish
+# exit 2 の経路は finish が stderr 末尾へ足すため、JSON 側では重ねない。
+deny_note="$not_run_note"
+[ "$blocking" -ne 2 ] || deny_note=""
+merged="$(jq -s --arg note "$deny_note" '
   [.[].hookSpecificOutput // empty] as $decisions
   | ([.[].systemMessage // empty] | join("\n")) as $messages
   | (if $messages == "" then {} else {systemMessage: $messages} end)
@@ -133,13 +144,15 @@ merged="$(jq -s '
         hookEventName: "PreToolUse",
         permissionDecision: (if any($decisions[]; .permissionDecision == "deny") then "deny"
           elif any($decisions[]; .permissionDecision == "ask") then "ask" else "allow" end),
-        permissionDecisionReason: ([$decisions[].permissionDecisionReason] | join("\n"))
+        permissionDecisionReason: ([$decisions[].permissionDecisionReason]
+          + (if $note != "" and any($decisions[]; .permissionDecision == "deny") then [$note] else [] end)
+          | join("\n"))
       }} end)
-' "${valid[@]}")" || { echo 'ff-dev-toolkit: hook の結果を集約できません' >&2; exit "$blocking"; }
+' "${valid[@]}")" || { echo 'ff-dev-toolkit: hook の結果を集約できません' >&2; finish; }
 if [ "$blocking" -eq 2 ]; then
   # exit 2 ではホストは stdout を採用しないため、他の子の復旧案内も stderr へ運ぶ。
   printf '%s\n' "$merged" >&2
 else
   printf '%s\n' "$merged"
 fi
-exit "$blocking"
+finish

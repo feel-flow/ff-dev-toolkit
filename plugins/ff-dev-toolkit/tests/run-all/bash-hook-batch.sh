@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 集約入口の拒否・警告保存と実登録を検査する。
 # 空振り検出: 登録11本の欠落は赤。引数0件・存在しない/空の子は無検査を診断する。
+# 変異検出: 拒否時の未実行注記を JSON の permissionDecisionReason から外す / 終了コード2の stderr 末尾から外す / 出力0件 / 解釈できる出力0件の経路で finish を通さず exit する、の4変異がそれぞれ赤（2026-10-02 実測）。
 set -euo pipefail
 ROOT="$(cd "${BASH_SOURCE[0]%/*}/../.." && pwd)"
 python3 - "$ROOT" <<'PY'
@@ -104,6 +105,21 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
             assert '拒否1' in result.stderr
         else:
             assert json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'] == 'deny'
+    # 拒否時だけ、前段も未実行である旨が理由文の末尾に1回付く。
+    note = ('この呼び出しは 1 つも実行されていません（同じ呼び出しの前段で作るつもりだった'
+            'ファイル・書き込みも存在しません）。生成と、ガードに当たる反映は別の呼び出しに分けて'
+            '再実行してください。')
+    reason = json.loads(run([deny, ask, deny2]).stdout)['hookSpecificOutput']['permissionDecisionReason']
+    assert reason.splitlines()[-1] == note and reason.count(note) == 1, reason
+    blocked = stub('blocked', 'echo 止めた >&2\nexit 2')
+    for hooks in ([blocked], [blocked, deny], [blocked, warning],
+                  [blocked, stub('unparsable', 'echo invalid')]):
+        result = run(hooks)
+        assert result.returncode == 2 and result.stderr.splitlines()[-1] == note, result.stderr
+        assert result.stderr.count(note) == 1 and note not in result.stdout, result.stderr
+    for hooks in ([allow], [allow, ask], [ask], [warning], [silent], [stub('failure', 'exit 1')]):
+        result = run(hooks)
+        assert note not in result.stdout + result.stderr, (hooks, result.stdout, result.stderr)
     for body in ('echo invalid', 'echo null', 'echo "[]"', 'echo "{\\"unknown\\":true}"'):
         result = run([stub('invalid', body), deny])
         assert result.returncode == 0 and '除外' in result.stderr
@@ -134,9 +150,10 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     result = run(args[2:], json.dumps(payload))
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'] == 'deny'
+    assert json.loads(result.stdout)['hookSpecificOutput']['permissionDecisionReason'].endswith(note)
     payload['tool_input']['command'] = 'gh api repos/o/r/issues/1/sub_issues -f sub_issue_id=123'
     result = run(args[2:], json.dumps(payload))
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'] == 'deny'
-print('✅ bash-hook-batch: 登録・大入力・拒否優先・全警告・子失敗・実ガード検証 passed')
+print('✅ bash-hook-batch: 登録・大入力・拒否優先・全警告・未実行注記・子失敗・実ガード検証 passed')
 PY
