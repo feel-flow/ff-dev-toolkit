@@ -108,6 +108,7 @@
 # 変異検出: 照合の case を外して全ヒントを無条件に足すと release-runtime（codex の未知 skip の停止文に setup が混じる）が赤。
 # 変異検出: 許容表へ語尾を変えた typecheck 行（`…行いません（`）を足すとブロック内照合の針が赤（2026-09-25 実測）。
 # 変異検出: SKIP_HINTS へ `|` の無い要素を足すと要素形の針が赤。
+# 変異検出: 許容表から OS 限定（Windows の Git Bash でだけ成立する検査）の行を消すと (7) の針と release-runtime（OS 限定の skip で止まる）が赤。
 # 空振り検出: footer 分類器の成功状態照合を削除すると footer-reuse-runtime の empty / identical ケースが赤（2026-09-26 実測 exit 1）。内容証明なしの exit 0 は採用しない。
 # 空振り検出: FF_SYNC_SHA_SKILL へ存在しないパスを与えると (対象解決) が赤になる。明示指定の不在を skip へ倒さないため、実測は exit 1（○ skip ではない）。
 # 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT へ存在しないパスを与えると (対象解決) が赤になる（実測 exit 1）。リリーススクリプトを空ファイルへ差し替えると (7) の全針と release-runtime が赤になる。
@@ -389,6 +390,10 @@ release_contains "'に対応する compare リンク行が無いためスキッ�
 # 表に載せず、停止文の次の一手だけを名指しする（SKIP_HINTS）。表へ typecheck を足す退行と、ヒント表ごと消す退行の両方を止める。
 release_contains "'FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません'" \
   "許容表に明示 opt-in の実レンダリング（ff-media-toolkit render-smoke）がある"
+# OS 限定の検査（Windows の Git Bash でしか入力を作れないもの）は Linux / macOS で必ず skip になる。
+# 表から消えると主作業機のリリースが gate 段で止まる（Issue `#2033`）
+release_contains "'Windows の Git Bash でだけ成立する検査のため未実行'" \
+  "許容表に OS 限定（Windows の Git Bash でだけ成立する検査）がある"
 # 配列ブロック（`NAME=(` 〜 行頭 `)`）の中だけを見る。ファイル全体の grep だと、SKIP_HINTS の要素（同じ理由文 + `|`）や
 # 語尾を変えた要素（`…行いません（`）で禁止針が外れる
 release_block() { awk -v n="$1" '$0 ~ ("^" n "=\\($") {f=1; next} f && /^\)$/ {exit} f' "$RELEASE_SCRIPT"; }
@@ -432,6 +437,21 @@ for _pair in \
 done
 contains '| `ff-media-toolkit/tests/render-smoke`: FF_MEDIA_RENDER=1 が未設定 | 明示 opt-in |' \
   "手順 0b の許容表に render-smoke の opt-in skip の行がある"
+# OS 限定の理由文（Issue `#2033`）。表に載せた文言を出す suite の集合を完全一致で固定する — 出す側の文言が
+# 変わると gate は Linux / macOS で毎回止まり、別の suite が文言を使い回すと表を編集しないまま許容が広がる。
+# どちらもこの針の更新（= レビュー）を経る。grep が失敗して空になった回も一致しないので赤になる
+_os_emitters="$(grep -rlF -- 'Windows の Git Bash でだけ成立する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
+  | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
+_os_emitters_want="$(printf '%s\n' plugins/ff-dev-toolkit/tests/ace-curate-commit/verify.sh plugins/ff-dev-toolkit/tests/guard-review-in-flight/verify.sh)"
+if [[ "$_os_emitters" == "$_os_emitters_want" ]]; then
+  ok "OS 限定の理由文を出す suite が guard-review-in-flight と ace-curate-commit だけである（表の文言が実出力にある）"
+else
+  bad "OS 限定の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。許容表と SKILL.md の表を見直す）: [${_os_emitters}]"
+fi
+contains '| `guard-review-in-flight`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
+  "手順 0b の許容表に OS 限定（guard-review-in-flight の (w1)〜(w5)）の行がある"
+contains '| `ace-curate-commit`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
+  "手順 0b の許容表に OS 限定（ace-curate-commit の 6b の別名ケース）の行がある"
 contains '`ff-media-toolkit/tests/typecheck` の `node_modules` 不在' \
   "手順 0b が ff-media の setup 前の typecheck を環境 skip（許容しない）として名指ししている"
 # 旧方式（ADR-034 決定 2 + Issue #830 の green 再利用機構）の復活禁止。針は散文を

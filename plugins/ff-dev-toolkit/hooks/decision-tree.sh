@@ -83,6 +83,9 @@ meta="$(printf '%s' "$input" | jq -r '
   (.session_id // ""),
   (.cwd // ""),
   (.transcript_path // "")' 2>/dev/null)" || unmeasured "hook 入力が JSON として読めません"
+# Windows の jq.exe は改行を \r\n で出す。`$(…)` が落とすのは末尾だけなので、値の区切りに
+# 残る \r を落とす（落とさないと event が `UserPromptSubmit\r` になり無記録で終わる。Issue `#2017`）。
+meta="${meta//$'\r'/}"
 meta_rest="$meta"
 FIELD=""
 pop_field() {

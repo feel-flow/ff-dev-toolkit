@@ -29,8 +29,8 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import { EXCERPT_PADDING_CHARS, MAX_CONSECUTIVE_TRANSPORT_ERRORS } from './constants.js';
-import { splitSections } from './utils.js';
-import { buildDocsState, resolveDocsPath, DocsState } from './indexer.js';
+import { splitSections, toPosixSeparators } from './utils.js';
+import { buildDocsState, resolveDocsPath, projectRelative, DocsState } from './indexer.js';
 
 const SERVER_NAME = 'spec-docs';
 const SERVER_VERSION = '1.0.0';
@@ -168,8 +168,10 @@ server.registerTool(
     },
   },
   withDocsState((state, { prefix }: { prefix?: string }) => {
-    const rels = state.mdFiles.map((f) => path.relative(PROJECT_ROOT, f));
-    return jsonResult(prefix ? rels.filter((r) => r.startsWith(prefix)) : rels);
+    const rels = state.mdFiles.map((f) => projectRelative(PROJECT_ROOT, f));
+    // A Windows client may still send `docs\02-design\`; match it against the
+    // `/`-separated results the same way as `docs/02-design/` (Issue `#2016`).
+    return jsonResult(prefix ? rels.filter((r) => r.startsWith(toPosixSeparators(prefix, path.sep))) : rels);
   }),
 );
 

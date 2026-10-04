@@ -239,7 +239,7 @@ bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-to
 |---|---|---|
 | 0 | `exec-bit: ok <N>` | 違反なし（N 件すべて 100755） |
 | 0 | `exec-bit: none` | 対象なし（「違反なし」とは書かない） |
-| 1 | `<path>: <mode>（実行ビットなし）` | 違反あり。名指しされたファイルを `chmod +x` して `git add` し直す。commit へ進まない |
+| 1 | `<path>: <mode>（実行ビットなし）` | 違反あり。名指しされたファイルを `chmod +x` して `git add` し直す（`core.fileMode=false` の Windows では `chmod` が index に届かないので `git update-index --chmod=+x <path>`）。commit へ進まない |
 | 2 | stderr の `実行ビット未検査: <理由>` | 実行ビット未検査。判定材料を取得できない・書式を読めない。緑とも違反なしとも報告せず、commit へ進まない |
 
 ### 9. 結果の出力
@@ -311,7 +311,7 @@ bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-to
 ### 実行ビット（新規 suite / hook）
 - ✅ 違反なし（`exec-bit: ok N`）
   または
-- ❌ 違反あり（`exec_bit_scan` が名指しした `<path>: <mode>` を列挙、`chmod +x` → `git add` し直すまで commit へ進まない）
+- ❌ 違反あり（`exec_bit_scan` が名指しした `<path>: <mode>` を列挙、`chmod +x` → `git add` し直すまで commit へ進まない。`core.fileMode=false` の Windows では `git update-index --chmod=+x <path>`）
   または
 - ○ 対象なし（staged に `tests/*/verify.sh` も `hooks/*.sh` も無い／ソースリポジトリではない）
   または

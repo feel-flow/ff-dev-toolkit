@@ -242,6 +242,11 @@ case "$EVENT" in
 esac
 
 CWD="$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null)"
+# Windows の Claude Code は cwd を `C:\repo` の形で渡す。Git Bash / Cygwin では ROOT（git が返す
+# `C:/repo`）と同じ区切りへ寄せる（相対パスを CWD へ繋いだ結果を ROOT と前方一致で比べるため。Issue `#2018`）
+case "${OSTYPE:-}:$CWD" in
+  msys*:[A-Za-z]:\\* | cygwin*:[A-Za-z]:\\*) CWD="${CWD//\\//}" ;;
+esac
 [ -d "$CWD" ] || CWD="$(pwd)"
 
 command -v git >/dev/null 2>&1 || exit 0
@@ -390,8 +395,17 @@ phys_dir() { # <dir> → 物理パス（失敗は空）
   (cd "$1" 2>/dev/null && pwd -P 2>/dev/null)
 }
 path_within() { # <phys> <root_phys>
-  case "$1" in
-    "$2" | "$2"/*) return 0 ;;
+  local p="$1" r="$2"
+  # Windows（NTFS）は大文字小文字を区別しない。pwd -P は打った綴りのまま返すので、Git Bash /
+  # Cygwin では小文字へ揃えて比べる（tests/lib/review-write-scan.sh の ws_path_within と同じ。Issue `#2018`）
+  case "${OSTYPE:-}" in
+    msys* | cygwin*)
+      p="$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')"
+      r="$(printf '%s' "$r" | tr '[:upper:]' '[:lower:]')"
+      ;;
+  esac
+  case "$p" in
+    "$r" | "$r"/*) return 0 ;;
   esac
   return 1
 }
@@ -519,6 +533,7 @@ lane_key() {
 lane_extra_fields() { # <lane_type>
   local lib trees="" t prompt req of path
   prompt="$(printf '%s' "$input" | jq -r '.tool_input.prompt // ""' 2>/dev/null)" || prompt=""
+  prompt="${prompt//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
   if [ "$1" != "delegated-review" ]; then
     lib="${BASH_SOURCE[0]%/*}/../tests/lib/review-lane-scope.sh"
     # shellcheck source=../tests/lib/review-lane-scope.sh
@@ -964,6 +979,7 @@ if [ "$tool" = "Agent" ] || [ "$tool" = "Task" ]; then
     # 名簿外でも、委譲レビュー（--delegate-to-host）の起動ならレーンを取る。判定材料は
     # prompt だけなので、取れない版のハーネスでは何も起きない（fail-open）。
     agent_prompt="$(printf '%s' "$input" | jq -r '.tool_input.prompt // ""' 2>/dev/null)" || agent_prompt=""
+    agent_prompt="${agent_prompt//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
     if [ -n "$agent_prompt" ] && is_delegated_review_prompt "$agent_prompt"; then
       lane_target=1
       # 委譲レビューのレーンは**専用の型名**で記帳する。汎用の subagent_type をそのまま
@@ -1105,11 +1121,26 @@ case "$tool" in
     # 入らなかった（= notebook の書き込みは出力先へでも deny され、委譲レビューが
     # 自分の結果を書けない自己デッドロックが残っていた）。
     edit_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // ""' 2>/dev/null)" || edit_path=""
-    case "$edit_path" in
-      /*) : ;;
-      ?*) edit_path="${CWD}/${edit_path}" ;;
+    # Windows の Claude Code は `C:\repo\x.md` の形で渡す。Git Bash / Cygwin では区切りを / へ寄せ、
+    # ドライブ付きを絶対パスとして扱う。寄せないと CWD の後ろへ繋がれてツリー内に化け、ツリー外や
+    # `.review-results\` への書き込みまで deny していた（Issue `#2018`）。ツール入力の JSON の値は
+    # シェルを通らないので、Bash の語と違ってバックスラッシュはそのまま区切りとして読んでよい
+    edit_drive=0
+    case "${OSTYPE:-}" in
+      msys* | cygwin*)
+        case "$edit_path" in
+          [A-Za-z]:\\* | [A-Za-z]:/*) edit_path="${edit_path//\\//}"; edit_drive=1 ;;
+        esac
+        ;;
     esac
     case "$edit_path" in
+      /*) : ;;
+      ?*) [ "$edit_drive" -eq 1 ] || edit_path="${CWD}/${edit_path}" ;;
+    esac
+    case "$edit_path" in
+      # `..` / `.` を含む未正規化のパスは早抜けさせない（`.review-results/../src/x` がツリー内の
+      # 書き込みのまま免除される）。下の resolve_target で物理パスへ解決してから判定する
+      */../* | */./* | */.. | */.) : ;;
       "${ROOT}/${OUTPUT_DIR_NAME}/"*) exit 0 ;;
     esac
     # 出力先の外でも、**レビュー対象の指紋に映らない書き込み先**は止めない。判定面は
@@ -1154,6 +1185,7 @@ case "$tool" in
     ;;
   Bash)
     cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)" || exit 0
+    cmd="${cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
     [ -n "$cmd" ] || exit 0
     # heredoc 本文（`<<` / `<<-` のトークン以降、終端行まで）は実行されるコマンドでは
     # なくデータなので、判定対象から落とす。`cat <<'EOF' > notes.md` の本文に
@@ -1214,6 +1246,7 @@ case "$tool" in
           cj=$((cj + 1))
           while :; do case "${ctoks[$cj]:-}" in -- | -P | -L | -e | -@) cj=$((cj + 1)) ;; *) break ;; esac; done
           cdir="${ctoks[$cj]:-}"
+          craw="$cdir"
           cdir="${cdir#[\"\']}"
           cdir="${cdir%[\"\']}"
           if [ -z "$cdir" ] || [ $((cj + 1)) -lt "${#ctoks[@]}" ]; then
@@ -1222,6 +1255,15 @@ case "$tool" in
             case "$cdir" in
               '~' | '~/'*) git_base="${HOME}${cdir#\~}" ;;
               /*) git_base="$cdir" ;;
+              # Windows のドライブ付き絶対パス（Git Bash / Cygwin のときだけ。Issue `#2018`）。引用符なしの
+              # `C:\x` は bash がバックスラッシュを落として `C:x` へ cd するので、行き先を不明にする
+              [A-Za-z]:\\* | [A-Za-z]:/*)
+                case "${OSTYPE:-}:$craw" in
+                  msys*:[A-Za-z]:/* | cygwin*:[A-Za-z]:/* | msys*:[\"\']* | cygwin*:[\"\']*) git_base="${cdir//\\//}" ;;
+                  msys*:* | cygwin*:*) git_base="?" ;;
+                  *) [ "$git_base" != "?" ] && git_base="${git_base}/${cdir}" ;;
+                esac
+                ;;
               -* | *'$'* | '~'* | *'`'*) git_base="?" ;;
               *) [ "$git_base" != "?" ] && git_base="${git_base}/${cdir}" ;;
             esac
@@ -1270,6 +1312,7 @@ case "$tool" in
             i=$((i + 1))
             if [ "$i" -lt "$n" ]; then
               cdir="${toks[$i]}"
+              craw="$cdir"
               case "$cdir" in
                 \"*\")
                   cdir="${cdir#\"}"
@@ -1282,6 +1325,15 @@ case "$tool" in
               esac
               case "$cdir" in
                 /*) gitdir="$cdir" ;;
+                # Windows のドライブ付き絶対パス（Git Bash / Cygwin のときだけ。Issue `#2018`）。引用符なしの
+                # `C:\x` は bash がバックスラッシュを落とすので、行き先を不明にする
+                [A-Za-z]:\\* | [A-Za-z]:/*)
+                  case "${OSTYPE:-}:$craw" in
+                    msys*:[A-Za-z]:/* | cygwin*:[A-Za-z]:/* | msys*:[\"\']* | cygwin*:[\"\']*) gitdir="${cdir//\\//}" ;;
+                    msys*:* | cygwin*:*) gitdir="?" ;;
+                    *) [ "$gitdir" = "?" ] || gitdir="$gitdir/$cdir" ;;
+                  esac
+                  ;;
                 ?*) [ "$gitdir" = "?" ] || gitdir="$gitdir/$cdir" ;;
               esac
             fi

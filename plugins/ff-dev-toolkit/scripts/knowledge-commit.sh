@@ -263,6 +263,8 @@ identity_lib="$self_dir/lib/commit-identity-functions.sh"
 . "$identity_lib"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || die_env "git リポジトリの中で実行してください（cwd: ${PWD}）"
+# git が返した綴りのまま控える。渡されたパスがリポジトリ内かは、同じく git の出力どうしで比べる（add）
+repo_top="$repo_root"
 repo_root="$(CDPATH='' cd -P -- "$repo_root" && pwd -P)" || die_env "リポジトリルートを解決できません"
 git_dir="$(git rev-parse --absolute-git-dir 2>/dev/null)" || die_env "git ディレクトリを解決できません"
 pending="$git_dir/ff-knowledge-pending"
@@ -434,12 +436,21 @@ case "$cmd" in
     for p in "${paths[@]}"; do
       ! has_bad_chars "$p" || die_env "パスにタブ・改行は使えません"
       [[ -e "$p" ]] || die_env "パスが存在しません: $p"
-      dir="$(CDPATH='' cd -P -- "$(dirname -- "$p")" 2>/dev/null && pwd -P)" || die_env "パスを解決できません: $p"
-      abs="$dir/$(basename -- "$p")"
-      case "$abs" in
-        "$repo_root"/*) rel_paths+=("${abs#"$repo_root"/}") ;;
-        *) die_env "パスがリポジトリの外です: $p" ;;
-      esac
+      # リポジトリ内かどうかと相対位置は git に出させる。cwd を起点に cd -P + pwd -P した文字列を
+      # リポジトリのルートと前方一致で比べると、Windows の Git Bash（MSYS）の mount 配下（%TEMP% は
+      # /tmp）では同じ場所が 2 つの名前を持ち、入ってきた経路によって「外」と判定された（Issue `#2032`）
+      p_dir="$(dirname -- "$p")"
+      # 1 回の起動で 3 行を取る（Windows はプロセス起動が遅い）。--is-inside-work-tree も見るのは、GIT_DIR と
+      # GIT_WORK_TREE を export した環境では、作業ツリーの外でも --show-toplevel が GIT_WORK_TREE を返すため
+      p_info="$(git -C "$p_dir" rev-parse --is-inside-work-tree --show-toplevel --show-prefix 2>/dev/null)" \
+        || die_env "パスがリポジトリの外です（git の作業ツリーに無い）: ${p}"
+      # ルート直下では prefix 行が空で、$() が末尾の空行を落とす。here-string は末尾に改行を足すので 3 回 read で受ける
+      p_inside="" p_top="" p_prefix=""
+      { IFS= read -r p_inside; IFS= read -r p_top; IFS= read -r p_prefix || :; } <<<"$p_info"
+      # linked worktree・submodule・入れ子のリポジトリは、物理的にはこの checkout の中にあっても別の作業ツリー
+      [[ "$p_inside" == true && "$p_top" == "$repo_top" ]] \
+        || die_env "パスがリポジトリの外です: ${p}（パスの作業ツリー: ${p_top:-なし} / このリポジトリ: ${repo_top}）"
+      rel_paths+=("${p_prefix}$(basename -- "$p")")
     done
     # stage と保留記録より前に、この add の後で commit が作る件名を commit-msg hook へ通す（通らない件名の
     # 保留を作らない）。既存の保留（同じ source と ID は 1 件）と、add で記録済みの commit type を合わせる

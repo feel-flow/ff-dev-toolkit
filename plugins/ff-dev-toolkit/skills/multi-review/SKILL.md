@@ -150,7 +150,7 @@ PR Review Response Policy に従い、Critical/Warning/妥当な Suggestion を�
 
 #### 3-6. fix 後の再検証（部分再検証）
 
-単一観点に閉じた fix は `--perspective <観点名>` で再検証してよい。条件は [部分再検証](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#fix-ループの部分再検証--reviewers-限定再実行) が正本。
+単一観点の fix は `--perspective` で再検証可。条件は [部分再検証](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#fix-ループの部分再検証--reviewers-限定再実行) が正本。consumer の `--evidence` / prior / continuation は同文書の「Consumer の review evidence」を参照。
 
 #### 3-7. fix ループの収束判定と打ち切り
 
@@ -160,6 +160,6 @@ PR Review Response Policy に従い、Critical/Warning/妥当な Suggestion を�
 
 - ステップ1の dry-run 確認なしにステップ2を実行しないこと
 - fallback は CLI **未インストール**時のプラン構築だけで、実行時エラーには効かない
-- 設定のカスタマイズ: プロジェクト側に `.claude/agent-config.yaml` を置くとプラグイン同梱のデフォルト設定より優先される。**どのキーが実際に読まれるか**の正本は [Multi-CLI Agent Orchestration の「実際に読まれるキー」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#実際に読まれるキー)（説明をここへ複製しない）
+- 設定のカスタマイズ: `.claude/agent-config.yaml` は同梱設定より優先。**どのキーが実際に読まれるか**の正本は [Multi-CLI Agent Orchestration の「実際に読まれるキー」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#実際に読まれるキー)（説明をここへ複製しない）
 - モデルを明示指定するときは [references/model-selection.md](references/model-selection.md) を読む
 - 常駐ツールが書き込むリポジトリでリビジョンガードが毎回発火するときは [references/ignore-paths.md](references/ignore-paths.md) を読む

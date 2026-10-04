@@ -193,6 +193,11 @@ if [ "$jq_rc" -ne 0 ]; then
   file_path=""
   deny_unavailable "入力を取り出せませんでした（jq rc=${jq_rc}）"
 fi
+# Windows の jq.exe は改行を \r\n で出す。tool_name と file_path の区切りに残る \r を落とす
+# （落とさないと `Write\r` で判定対象外へ落ちる。Issue `#2017`）。content / old_string / new_string は
+# 保存前のファイル（生のバイト列）と比べるので落とさない — 落とすと CRLF の .sh への Write で、
+# 既存の違反が保存後にだけ現れたように見えて誤って deny する
+JQ_VALUE="${JQ_VALUE//$'\r'/}"
 nl='
 '
 tool_name="${JQ_VALUE%%"$nl"*}"

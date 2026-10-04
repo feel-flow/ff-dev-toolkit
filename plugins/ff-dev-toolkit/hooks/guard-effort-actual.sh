@@ -142,6 +142,7 @@ command -v gh >/dev/null 2>&1 || exit 0
 command -v awk >/dev/null 2>&1 || exit 0
 
 cmd="$(printf '%s' "$input" | jq -r 'if .tool_name == "Bash" then (.tool_input.command // "") else "" end' 2>/dev/null)" || exit 0
+cmd="${cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
 [ -n "$cmd" ] || exit 0
 case "$cmd" in
   *merge*) : ;;
@@ -335,6 +336,7 @@ fi
 
 pr_number="$(printf '%s' "$pr_json" | jq -r '.number // empty' 2>/dev/null)" || exit 0
 pr_body="$(printf '%s' "$pr_json" | jq -r '.body // ""' 2>/dev/null)" || exit 0
+pr_body="${pr_body//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
 [ -n "$pr_number" ] || exit 0
 
 # ---- 閉じる Issue の集合（GitHub が解決済みの参照を正本にする）----------------
@@ -349,6 +351,7 @@ closing_numbers="$(printf '%s' "$pr_json" | jq -r '
       | select(.number != null and ((.url // "") | startswith($base + "/issues/")))
       | .number
     end' 2>/dev/null)" || closing_numbers=""
+closing_numbers="${closing_numbers//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
 
 # ---- PR 本文から Issue 参照を集める（closing keyword を書かない `Refs` 運用の PR）--
 # 閉じる集合が取れたときは本文を走査しない。走査すると長命の tracking / Epic Issue への
@@ -454,6 +457,7 @@ while IFS= read -r num; do
   issue_state="$(printf '%s' "$issue_json" | jq -r '.state // ""' 2>/dev/null)"
   [ "$issue_state" = "CLOSED" ] && continue
   issue_body="$(printf '%s' "$issue_json" | jq -r '.body // ""' 2>/dev/null)"
+  issue_body="${issue_body//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
   [ -n "$issue_body" ] || continue
   if is_effort_unfilled "$issue_body"; then
     unfilled="${unfilled:+$unfilled, }#${num}"

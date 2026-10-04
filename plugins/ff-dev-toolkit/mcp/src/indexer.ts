@@ -13,7 +13,19 @@ import fs from 'fs';
 import path from 'path';
 import { SPEC_STATUS, SpecStatus } from './constants.js';
 import { SectionIndexEntry, SpecIndexResult, SpecRecordMeta, Glossary } from './types.js';
-import { splitSections, parseFrontMatter, buildGlossary } from './utils.js';
+import { splitSections, parseFrontMatter, buildGlossary, toPosixSeparators } from './utils.js';
+
+/** The `path` members projectRelative needs; tests pass `path.win32`. */
+type PathApi = Pick<typeof path, 'relative' | 'sep'>;
+
+/**
+ * Project-root-relative path of `file`, with `/` separators on every platform
+ * (Issue `#2016`). Every path a tool returns goes through here, so list_docs,
+ * search and the spec index agree with each other and with the
+ * `docs/02-design/` form the tool descriptions document.
+ */
+export const projectRelative = (projectRoot: string, file: string, p: PathApi = path): string =>
+  toPosixSeparators(p.relative(projectRoot, file), p.sep);
 
 export const readFileSafe = (p: string): string => {
   try {
@@ -174,7 +186,7 @@ export interface DocsState {
 
 export const buildSearchIndex = (files: string[], projectRoot: string): SectionIndexEntry[] =>
   files.flatMap((f) => {
-    const rel = path.relative(projectRoot, f);
+    const rel = projectRelative(projectRoot, f);
     const text = readFileSafe(f);
     const sections = splitSections(text);
     if (!sections.length) return [{ file: rel, title: path.basename(f), content: text }];
@@ -191,7 +203,7 @@ export const buildSpecIndex = (specsDir: string, projectRoot: string): SpecIndex
   const errors: SpecIndexResult['errors'] = [];
   for (const f of files) {
     const { meta, body } = parseFrontMatter(readFileSafe(f));
-    const rel = path.relative(projectRoot, f);
+    const rel = projectRelative(projectRoot, f);
     const spec: SpecRecordMeta = { ...(meta as Record<string, unknown>), file: rel, body };
     const errs: string[] = [];
     const status = typeof spec.status === 'string' ? spec.status : undefined;

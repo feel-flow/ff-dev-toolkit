@@ -144,8 +144,18 @@ ws_phys_dir() { # <dir> → 物理パス（失敗は空）
   (cd "$1" 2>/dev/null && pwd -P 2>/dev/null)
 }
 ws_path_within() { # <phys> <root_phys>
-  case "$1" in
-    "$2" | "$2"/*) return 0 ;;
+  local p="$1" r="$2"
+  # Windows（NTFS）は大文字小文字を区別しない。Git Bash の pwd -P は打った綴りのまま返し、git は
+  # 実際の綴りを返すので、綴りの大小だけが違う同じパスをツリー外と読まないよう、Git Bash / Cygwin
+  # では小文字へ揃えて比べる（揃えないとツリー内への書き込みが凍結をすり抜ける。Issue `#2018`）
+  case "${OSTYPE:-}" in
+    msys* | cygwin*)
+      p="$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')"
+      r="$(printf '%s' "$r" | tr '[:upper:]' '[:lower:]')"
+      ;;
+  esac
+  case "$p" in
+    "$r" | "$r"/*) return 0 ;;
   esac
   return 1
 }
@@ -251,7 +261,7 @@ ${name}=${value}"
 
 # ---- パス --------------------------------------------------------------------------
 resolve_target() { # <path token> → RESOLVED（物理パス）。判定不能は 1 + RESOLVE_WHY
-  local t d rest leaf pd
+  local t d rest leaf pd ws_drive
   t="$(unquote1 "$1")"
   RESOLVED=""
   RESOLVE_WHY=""
@@ -263,6 +273,30 @@ resolve_target() { # <path token> → RESOLVED（物理パス）。判定不能�
     '') RESOLVE_WHY="空のパス"; return 1 ;;
     '~' | '~/'*) t="${HOME}${t#\~}" ;;
     '~'*) RESOLVE_WHY="~user 形式"; return 1 ;;
+  esac
+  # Windows のドライブ付き絶対パス（`C:\x` / `C:/x`。Git Bash / Cygwin のときだけ扱う。Issue `#2018`）。
+  # Claude Code は Windows でツール入力をこの形で渡し、Git Bash の cd もそのまま受け付ける。区切りを
+  # / へ寄せて絶対パスとして扱い、下の祖先探索はドライブの根（`C:/`）で止める。物理化は従来どおり
+  # cd + pwd -P に任せる（`/c/x` へ自前で書き換えない — `/C/x` は pwd -P が `/C/x` のまま返し、
+  # ROOT_PHYS の `/c/x` と食い違う）。
+  # **引用符なしの `C:\x` は絶対パスにしない。** bash は引用符の外のバックスラッシュを落とし、
+  # `C:x`（cwd からの相対）として実行する。ここで `C:/x` と読むと、ツリー内への書き込みが
+  # ツリー外に見えて凍結をすり抜ける。bash と同じくバックスラッシュを落として相対として扱う
+  ws_drive=0
+  case "${OSTYPE:-}" in
+    msys* | cygwin*)
+      case "$t" in
+        [A-Za-z]:\\* | [A-Za-z]:/*)
+          case "$1" in
+            \"*\" | \'*\') t="${t//\\//}" ;;
+            *) t="${t//\\/}" ;;
+          esac
+          ;;
+      esac
+      case "$t" in
+        [A-Za-z]:/* | [A-Za-z]:) ws_drive=1 ;;
+      esac
+      ;;
   esac
   # glob は最初のメタ文字の手前で切り、ディレクトリ部分だけを見る（`rm -rf x/*` は x）
   case "$t" in
@@ -278,8 +312,13 @@ resolve_target() { # <path token> → RESOLVED（物理パス）。判定不能�
   case "$t" in
     /*) : ;;
     *)
-      [ -n "$WRITE_BASE" ] || { RESOLVE_WHY="cd 先が不明な相対パス"; return 1; }
-      t="${WRITE_BASE}/${t}"
+      if [ "$ws_drive" -eq 1 ]; then
+        # ドライブの根（`C:/` の末尾の / を上で落とした形）
+        if [ "${#t}" -eq 2 ]; then t="${t}/"; fi
+      else
+        [ -n "$WRITE_BASE" ] || { RESOLVE_WHY="cd 先が不明な相対パス"; return 1; }
+        t="${WRITE_BASE}/${t}"
+      fi
       ;;
   esac
   # 存在する最深の祖先を物理化し、残り（未作成のパス・末端）はそのまま繋ぐ（末端の symlink は
@@ -291,6 +330,11 @@ resolve_target() { # <path token> → RESOLVED（物理パス）。判定不能�
     d="${d%/*}"
     [ -n "$d" ] || d=/
     rest="${leaf}/${rest}"
+    # ドライブの根（`C:`）で止める。`C:` は Git Bash でディレクトリと判定されないため、
+    # 止めないと `/` まで遡って `/C:/x` という存在しないパスを作る
+    case "$d" in
+      [A-Za-z]:) d="${d}/"; break ;;
+    esac
     [ "$d" = "/" ] && break
   done
   pd="$(ws_phys_dir "$d")"

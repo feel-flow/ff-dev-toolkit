@@ -77,9 +77,21 @@ PLUGIN_ROOT="${BASH_SOURCE[0]%/*}/.."
 FILE=""
 case "$TOOL" in
   Read)
+    # Windows の Claude Code は `C:\repo\docs\x.md` の形で渡す。区切りを / へ寄せ、ドライブ付きを
+    # 絶対パスとして扱う（寄せないと下の `*/docs/*.md` に当たらず、無言で記録が落ちていた。Issue `#2018`）
+    # （Git Bash / Cygwin のときだけ扱う。ツール入力の JSON の値はシェルを通らないので、
+    # バックスラッシュはそのまま区切りとして読んでよい）
+    win_drive=0
+    case "${OSTYPE:-}" in
+      msys* | cygwin*)
+        case "$TARGET" in
+          [A-Za-z]:\\* | [A-Za-z]:/*) TARGET="${TARGET//\\//}"; win_drive=1 ;;
+        esac
+        ;;
+    esac
     case "$TARGET" in
       /*) FILE="$TARGET" ;;
-      *) FILE="$CWD/$TARGET" ;;
+      *) if [ "$win_drive" -eq 1 ]; then FILE="$TARGET"; else FILE="$CWD/$TARGET"; fi ;;
     esac
     case "$FILE" in
       */skills/*/SKILL.md | */references/*.md | */docs/*.md) : ;;

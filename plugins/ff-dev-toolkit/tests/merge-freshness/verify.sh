@@ -722,8 +722,13 @@ fi
 
 # 記録の失敗が検証結果の失敗に化けないこと（警告文言の存在ではなく終了コードで測る）。
 SIM_FAIL_RC=0
-FF_GATE_RECORD_FILE="/dev/null/not-a-dir/rec" bash "$SIM" "$SIM_REPO/tests" 1 1 3 pass 0 >/dev/null 2>&1 || SIM_FAIL_RC=$?
+# 書けない先は、一時領域の通常ファイルを親に見立てたパスで作る（`/dev/null/…` は Windows の Git Bash では
+# C:\dev\null\… として実在のディレクトリが作られ、作業機に副作用を残す。Issue `#2022`）
+: > "$WORK/not-a-dir"
+FF_GATE_RECORD_FILE="$WORK/not-a-dir/rec" bash "$SIM" "$SIM_REPO/tests" 1 1 3 pass 0 >/dev/null 2>&1 || SIM_FAIL_RC=$?
 [[ "$SIM_FAIL_RC" -eq 0 ]] && ok "記録できなくても実行の終了コードは変わらない" || bad "記録失敗で rc=${SIM_FAIL_RC}（期待 0）"
+# 書けたのに rc 0 の回（修正前の Windows）を緑にしない: 親が通常ファイルのまま残り、記録が無いことを見る
+[[ -f "$WORK/not-a-dir" && ! -e "$WORK/not-a-dir/rec" ]] && ok "書けない先には何も作られない" || bad "書けない先の親が通常ファイルでなくなった、または記録が作られた"
 
 rm -f "$SIM_REC"
 FF_GATE_RECORD_FILE="$SIM_REC" bash "$SIM" "$SIM_REPO/tests" 1 0 0 pass 0 >/dev/null 2>&1

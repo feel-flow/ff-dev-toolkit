@@ -108,6 +108,9 @@ fi
 #   STUB_WORKFLOW_CREATED  workflow の created_at（空文字を指定できるよう `:-` ではなく `-` で既定を当てる）
 #   STUB_SCHEDULE_RUNS     event=schedule の workflow_runs 配列 JSON（既定 []）
 #   STUB_DISPATCH_RUNS     event=workflow_dispatch の workflow_runs 配列 JSON（既定 []）
+#   STUB_SCHEDULE_RUNS_FILE / STUB_DISPATCH_RUNS_FILE
+#                          同じ配列 JSON をファイルで渡す（大きな fixture 用。指定があれば上より優先。
+#                          読めなければ非 0 で失敗する）
 #   STUB_FAIL_META / STUB_FAIL_WORKFLOW / STUB_FAIL_SCHEDULE / STUB_FAIL_DISPATCH / STUB_FAIL_LOG
 #                          当該エンドポイントを非 0 で失敗させる
 #   STUB_BROKEN_META / STUB_BROKEN_WORKFLOW / STUB_BROKEN_SCHEDULE
@@ -134,11 +137,22 @@ case "$args" in
       printf '%s\n' '{"workflow_runs": [ {"id":'
       exit 0
     fi
+    # 大きな fixture はファイルで渡す（Linux では環境変数 1 つも 128KB を超えると exec が失敗する）
+    if [ -n "${STUB_SCHEDULE_RUNS_FILE:-}" ]; then
+      runs="$(cat "$STUB_SCHEDULE_RUNS_FILE")" || { echo "gh: stub fixture unreadable" >&2; exit 1; }
+      printf '{"workflow_runs": %s}\n' "$runs"
+      exit 0
+    fi
     printf '{"workflow_runs": %s}\n' "${STUB_SCHEDULE_RUNS:-[]}"
     exit 0
     ;;
   *runs?event=workflow_dispatch*)
     [ "${STUB_FAIL_DISPATCH:-0}" = 1 ] && { echo "gh: stubbed dispatch runs failure" >&2; exit 1; }
+    if [ -n "${STUB_DISPATCH_RUNS_FILE:-}" ]; then
+      runs="$(cat "$STUB_DISPATCH_RUNS_FILE")" || { echo "gh: stub fixture unreadable" >&2; exit 1; }
+      printf '{"workflow_runs": %s}\n' "$runs"
+      exit 0
+    fi
     printf '{"workflow_runs": %s}\n' "${STUB_DISPATCH_RUNS:-[]}"
     exit 0
     ;;
@@ -655,6 +669,33 @@ if [[ $'\n'"$OUT"$'\n' == *$'\n'"HEALTH=healthy"$'\n'* ]]; then
   ok "消費側と同じ行包含判定で HEALTH=healthy を受理できる"
 else
   bad "消費側の行包含判定が空振りする: $(dump)"
+fi
+
+# --- ケース 12: 実行履歴の JSON が大きくても判定が成立する（Issue `#2031`）------------
+# 実 API の run は 1 件 14KB ほどあり、workflow_dispatch の履歴 13 件で 184KB、schedule の 5 件で
+# 64KB になった。jq へコマンドライン引数で渡すと、Linux の引数 1 つの上限（128KB）や Windows の
+# コマンドライン全体の上限（32,767 文字）を超えて jq が起動できず HEALTH=unknown へ倒れていた。
+# schedule と workflow_dispatch の両方を 140KB を超える履歴にして、ケース 1 と同じ判定になることを
+# 確かめる（片側だけを大きくすると、もう片側だけが引数渡しへ戻る退行を見逃す）。fixture はファイルで
+# 渡す（環境変数 1 つにも同じ上限があるため）。
+BIG_SCHEDULE="$TMP/big-schedule.json"
+BIG_DISPATCH="$TMP/big-dispatch.json"
+jq -cn --argjson r "$(mkrun 111 completed '"failure"' develop "$D2" "$D2" schedule)" \
+  '[$r + {pad: ("x" * 150000)}]' > "$BIG_SCHEDULE"
+jq -cn --argjson r "$(mkrun 221 completed '"success"' develop "$D1" "$D1" workflow_dispatch)" \
+  '[$r + {pad: ("x" * 150000)}]' > "$BIG_DISPATCH"
+_big_sched="$(wc -c < "$BIG_SCHEDULE" | tr -d ' ')"
+_big_disp="$(wc -c < "$BIG_DISPATCH" | tr -d ' ')"
+if [ "${_big_sched:-0}" -gt 140000 ] && [ "${_big_disp:-0}" -gt 140000 ]; then
+  STUB_SCHEDULE_RUNS_FILE="$BIG_SCHEDULE" STUB_DISPATCH_RUNS_FILE="$BIG_DISPATCH" \
+    STUB_LOG_TOTALS="221=207 111=101" run_checker
+  if [ "$RC" -eq 0 ] && has_line 'HEALTH=healthy' && has_line 'EVIDENCE_RUN_ID=221'; then
+    ok "140KB を超える実行履歴（schedule ${_big_sched} / dispatch ${_big_disp} バイト）でも結合で落ちず、HEALTH=healthy と判定する"
+  else
+    bad "大きな実行履歴で判定が成立しない (rc=$RC): $(dump)"
+  fi
+else
+  bad "大きな実行履歴の fixture を作れていない（schedule ${_big_sched:-0} / dispatch ${_big_disp:-0} バイト。この検査は何も測っていない）"
 fi
 
 echo

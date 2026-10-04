@@ -78,6 +78,7 @@ esac
 command -v jq >/dev/null 2>&1 || exit 0
 
 cmd="$(printf '%s' "$input" | jq -r 'if .tool_name == "Bash" then (.tool_input.command // "") else "" end' 2>/dev/null)" || exit 0
+cmd="${cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
 [ -n "$cmd" ] || exit 0
 case "$cmd" in
   *gh*) : ;;
@@ -199,11 +200,23 @@ if command -v perl >/dev/null 2>&1; then
 fi
 
 if [ -n "$body_file" ]; then
+  body_file_raw="$body_file"
   body_file="$(strip_quotes "$body_file")"
   if [ "$body_file" != "-" ]; then
+    # Windows のドライブ付き絶対パス（Git Bash / Cygwin のときだけ。Issue `#2018`）。引用符付きと `/` 区切りは
+    # 絶対パス。引用符なしの `C:\x` は bash がバックスラッシュを落とした `C:x`（cwd からの相対）を gh へ渡す
+    win_drive=0
+    case "${OSTYPE:-}" in
+      msys* | cygwin*)
+        case "$body_file_raw" in
+          [A-Za-z]:\\*) body_file="${body_file//\\/}" ;;
+          *) case "$body_file" in [A-Za-z]:\\* | [A-Za-z]:/*) body_file="${body_file//\\//}"; win_drive=1 ;; esac ;;
+        esac
+        ;;
+    esac
     case "$body_file" in
       /*) : ;;
-      *) [ -d "$CWD" ] && body_file="$CWD/$body_file" ;;
+      *) [ "$win_drive" -eq 1 ] || { [ -d "$CWD" ] && body_file="$CWD/$body_file"; } ;;
     esac
     if [ -f "$body_file" ] && [ -r "$body_file" ]; then
       file_text="$(cat "$body_file" 2>/dev/null)" || file_text=""

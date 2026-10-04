@@ -1,0 +1,2 @@
+# フェンス変種の fixture は CRLF 行末そのものが検査対象。行末変換を無効化して \r を保つ
+extract-variants.md -text

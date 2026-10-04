@@ -1,5 +1,20 @@
 import { describe, it, expect } from 'vitest';
-import { splitSections, parseScalar, parseFrontMatter, buildGlossary, maskNonGlossaryLines, maskClosedSpans } from '../src/utils.js';
+import { splitSections, parseScalar, parseFrontMatter, buildGlossary, maskNonGlossaryLines, maskClosedSpans, toPosixSeparators } from '../src/utils.js';
+
+// ---------- toPosixSeparators (Issue `#2016`) ----------
+describe('toPosixSeparators', () => {
+  it('Windows の区切り（\\）を / へ寄せる', () => {
+    expect(toPosixSeparators('docs\\specs\\spec-001.md', '\\')).toBe('docs/specs/spec-001.md');
+  });
+
+  it('list_docs の prefix（docs\\02-design\\）も同じ形へ寄せる', () => {
+    expect(toPosixSeparators('docs\\02-design\\', '\\')).toBe('docs/02-design/');
+  });
+
+  it('区切りが / のときは入力をそのまま返す（POSIX のファイル名に含まれる \\ を壊さない）', () => {
+    expect(toPosixSeparators('docs/a\\b.md', '/')).toBe('docs/a\\b.md');
+  });
+});
 
 // ---------- splitSections ----------
 describe('splitSections', () => {

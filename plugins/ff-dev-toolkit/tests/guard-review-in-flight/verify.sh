@@ -178,6 +178,8 @@ isolate_hook_env "FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD FF_REVIEW_LOCK_OVER
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
+# shellcheck source=../lib/crlf-jq-shim.sh
+. "$SCRIPT_DIR/../lib/crlf-jq-shim.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 
@@ -2116,6 +2118,59 @@ K_OUT="$(printf '%s' "$(bash_json_at "tee README.md" "$REPO")" | bash "$K_COPY2/
 [ -z "$K_OUT" ] && ok "(k) 走査ライブラリ不在でもロック無しは無音" || bad "(k) 走査ライブラリ不在 + ロック無しで出力: [$K_OUT]"
 rm -f "$REPO/patch.py" "$REPO/read.py" "$REPO/fix.js" "$REPO/fix.sh" "$REPO/patch2"
 
+# Windows では後段（(m) の壊れた symlink の作成）で suite が中断するため、ここへ置く。
+# ---- Windows（Git Bash）: ドライブ付きのパス表記（Issue `#2018`）----
+# Windows の Claude Code は file_path / cwd を `C:\repo\x.md` の形で渡す。修正前の hook は
+# これを相対パスと読んで CWD の後ろへ繋ぎ、ツリー外や出力先への Write まで deny していた
+# （2026-10-04 に Windows 実機で測定）。ドライブ付きのパスは Linux / macOS には存在しないので、
+# この区間は Git Bash でだけ走る。
+echo "guard-review-in-flight: Windows のドライブ付きパス表記"
+case "$(uname -s 2>/dev/null)" in
+  MINGW* | MSYS* | CYGWIN*)
+    clear_lanes
+    write_lock "$LIVE_PID"
+    mkdir -p "$OUTSIDE"
+    WIN_REPO="$(cygpath -w "$REPO")"
+    WIN_OUTSIDE="$(cygpath -w "$OUTSIDE")"
+    win_write_json() { jq -n --arg p "$1" --arg d "$WIN_REPO" \
+      '{tool_name: "Write", tool_input: {file_path: $p, content: "x"}, cwd: $d, hook_event_name: "PreToolUse"}'; }
+    run_hook "$(win_write_json "${WIN_REPO}\\.review-results\\note.md")"
+    assert_silent "(w1) C:\\…\\.review-results\\ への Write は通す（出力先の免除が効く）"
+    run_hook "$(win_write_json "${WIN_OUTSIDE}\\draft.md")"
+    assert_silent "(w2) ツリー外（C:\\…）への Write は通す"
+    run_hook "$(win_write_json "${WIN_REPO}\\src\\app.txt")"
+    assert_deny "(w3) ツリー内（C:\\…\\src\\app.txt）への Write は deny のまま"
+    # (w4) 引用符なしの `C:\x` は bash がバックスラッシュを落として `C:x`（cwd からの相対）として
+    # 実行する。ツリー外の絶対パスと読むと凍結をすり抜ける（レビューで実測された後退）
+    win_bash_json() { jq -n --arg c "$1" --arg d "$WIN_REPO" \
+      '{tool_name: "Bash", tool_input: {command: $c}, cwd: $d, hook_event_name: "PreToolUse"}'; }
+    run_hook "$(win_bash_json "printf x > ${WIN_OUTSIDE}\\a.txt")"
+    assert_deny "(w4) 引用符なしの C:\\… へのリダイレクトは deny（bash は C:… の相対パスへ書く）"
+    run_hook "$(win_bash_json "cd ${WIN_OUTSIDE}; printf x > notes.md")"
+    assert_deny "(w4) 引用符なしの cd C:\\… の後の書き込みは deny（cd は失敗し、書き込みはツリー内で起きる）"
+    run_hook "$(win_bash_json "printf x > '${WIN_OUTSIDE}\\b.txt'")"
+    assert_silent "(w4) 引用符付きの 'C:\\…' はツリー外の絶対パスとして通す"
+    # (w5) NTFS は大文字小文字を区別しない。綴りの大小だけが違うツリー内のパスをツリー外と読まない
+    WIN_REPO_LC="$(printf '%s' "$WIN_REPO" | tr '[:upper:]' '[:lower:]')"
+    run_hook "$(win_write_json "${WIN_REPO_LC}\\src\\app.txt")"
+    assert_deny "(w5) 大文字小文字だけが違うツリー内のパスへの Write も deny"
+    clear_lock
+    ;;
+  *)
+    # 理由文はリリースの gate 段の許容表（OS 限定）と同じ文言にそろえる。変えると Linux / macOS のリリースが止まる
+    echo "  ○ skip: (w1)〜(w5) はドライブ付きのパスを扱う、Windows の Git Bash でだけ成立する検査のため未実行"
+    ;;
+esac
+
+# (w6) 出力先の免除の早抜けは、`..` / `.` を含む未正規化のパスに使わない（どの OS でも）。
+# `.review-results/../src/app.txt` はツリー内の tracked ファイルで、早抜けすると凍結をすり抜ける
+clear_lanes
+write_lock "$LIVE_PID"
+run_hook "$(jq -n --arg p "$REPO/.review-results/../src/app.txt" --arg d "$REPO" \
+  '{tool_name: "Write", tool_input: {file_path: $p, content: "x"}, cwd: $d, hook_event_name: "PreToolUse"}')"
+assert_deny "(w6) .review-results/../ を経由するツリー内のパスへの Write は deny"
+clear_lock
+
 echo "guard-review-in-flight: (m) 指紋に映らない書き込み先は止めない（Issue \`#1756\`）"
 # 走行中に止める根拠は「レビュー対象の指紋が動くこと」。指紋（adapter-common.sh の
 # capture_repo_snapshot）は status / diff HEAD / diff --cached / ls-files --exclude-standard の
@@ -2644,6 +2699,23 @@ run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
 assert_n_deny "(n6) 通過口は 1 回限り — 次の HEAD（4 巡目）は再び deny"
 run_hook "$(ack_agent_json "$(printf 'review the diff\nFF_REVIEW_ROUND_ACK=1\n')")" "$N_DEF"
 assert_silent "(n6) Agent は prompt の行頭の単独行 FF_REVIEW_ROUND_ACK=1 で 1 回だけ通す"
+# Windows の jq.exe（改行を \r\n で出す）でも、prompt の最後の行以外に置いた通過口が効く（Issue `#2017`）。
+# 上の検査は通過口を最後の行に置くので、jq が CRLF でも `\r` が付かず、取りこぼしを検出できない。
+n_commit "fix round 4"
+crlf_rc=0
+ff_crlf_jq_shim "$TEST_TMP/crlf-jq-bin" "$(command -v jq)" || crlf_rc=$?
+if [ "$crlf_rc" -eq 2 ]; then
+  echo "  ○ skip: perl が無いため CRLF の jq を再現できません（(n6) の CRLF 検査は未実行）"
+elif [ "$crlf_rc" -ne 0 ]; then
+  bad "(n6) CRLF の jq シムを作れませんでした（rc=${crlf_rc}）"
+else
+  crlf_json="$(ack_agent_json "$(printf 'FF_REVIEW_ROUND_ACK=1\nreview the diff\n')")"
+  SAVED_PATH="$PATH"
+  PATH="$TEST_TMP/crlf-jq-bin:$PATH"
+  run_hook "$crlf_json" "$N_DEF"
+  PATH="$SAVED_PATH"
+  assert_silent "(n6) CRLF の jq でも、prompt の先頭行の FF_REVIEW_ROUND_ACK=1 で 5 巡目を 1 回だけ通す"
+fi
 
 # --- 上限の値（既定 2 / 上書き / 0 で無効）---
 n_reset

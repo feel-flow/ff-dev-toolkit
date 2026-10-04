@@ -63,6 +63,8 @@ HELPER="$PLUGIN_ROOT/tests/lib/heredoc-strip.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
+# shellcheck source=../lib/crlf-jq-shim.sh
+. "$SCRIPT_DIR/../lib/crlf-jq-shim.sh"
 
 [ -f "$TARGET" ] || { echo "✗ guard-exit-code.sh が見つかりません: $TARGET" >&2; exit 1; }
 [ -f "$DETECTOR" ] || { echo "✗ 検出器が見つかりません: $DETECTOR" >&2; exit 1; }
@@ -1021,6 +1023,30 @@ $GATE > log 2>&1; echo done"
   fi
 fi
 cp "$DETECTOR" "$MUT_DIR/tests/lib/exit-code-guard.sh"
+
+# ---- Windows の jq.exe（改行を \r\n で出す）でも同じ判定になる（Issue `#2017`）----
+# hook は tool_name と command を改行で連結して 1 回の jq で取り出す。修正前は先頭が `Bash\r` に
+# なって case に当たらず、黙って素通りしていた（2026-10-03 に Windows 実機で deny が出ないことを
+# 実測）。シムは Linux / macOS でも同じ値を再現するので、ここは修正前の hook で赤になる。
+echo "guard-exit-code: CRLF を出す jq でも同じ判定"
+CRLF_BIN="$TEST_TMP/crlf-jq-bin"
+crlf_rc=0
+ff_crlf_jq_shim "$CRLF_BIN" "$JQ_BIN" || crlf_rc=$?
+if [ "$crlf_rc" -eq 2 ]; then
+  echo "  ○ skip: perl が無いため CRLF の jq を再現できません（この 3 検査は未実行）"
+elif [ "$crlf_rc" -ne 0 ]; then
+  bad "CRLF の jq シムを作れませんでした（rc=${crlf_rc}）"
+else
+  SAVED_PATH="$PATH"
+  PATH="$CRLF_BIN:$PATH"
+  run_hook "$GATE 2>&1 | tail -20"
+  assert_fire "CRLF の jq でも、末尾 | tail で終端する形を deny"
+  run_hook 'npm test 2>&1 | tail -20; echo "EXIT=$?"'
+  assert_fire "CRLF の jq でも、フィルタ終端の直後で \$? を読む形を deny"
+  run_hook "$GATE > log 2>&1; rc=\$?; echo \"EXIT=\$rc\"; exit \$rc"
+  assert_pass "CRLF の jq でも、推奨形（診断を出してから伝播）は素通し"
+  PATH="$SAVED_PATH"
+fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then

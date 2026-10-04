@@ -73,6 +73,7 @@ esac
 command -v jq >/dev/null 2>&1 || exit 0
 
 cmd="$(printf '%s' "$input" | jq -r 'if .tool_name == "Bash" then (.tool_input.command // "") else "" end' 2>/dev/null)" || exit 0
+cmd="${cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
 [ -n "$cmd" ] || exit 0
 case "$cmd" in
   *git*) : ;;
@@ -190,9 +191,21 @@ analyze_segment() {
         if [ "$i" -lt "$n" ]; then
           local cdir
           cdir="$(strip_quotes "${toks[$i]}")"
+          # Windows のドライブ付き絶対パス（Git Bash / Cygwin のときだけ。Issue `#2018`）。引用符付きと
+          # `/` 区切りは絶対パス。引用符なしの `C:\x` は bash がバックスラッシュを落として `C:x`（cwd からの
+          # 相対）として渡すので、同じく落として相対として扱う
+          local win_drive=0
+          case "${OSTYPE:-}" in
+            msys* | cygwin*)
+              case "${toks[$i]}" in
+                [A-Za-z]:\\*) cdir="${cdir//\\/}" ;;
+                *) case "$cdir" in [A-Za-z]:\\* | [A-Za-z]:/*) cdir="${cdir//\\//}"; win_drive=1 ;; esac ;;
+              esac
+              ;;
+          esac
           case "$cdir" in
             /*) gitdir="$cdir" ;;
-            ?*) gitdir="$gitdir/$cdir" ;;
+            ?*) if [ "$win_drive" -eq 1 ]; then gitdir="$cdir"; else gitdir="$gitdir/$cdir"; fi ;;
           esac
         fi
         i=$((i + 1))

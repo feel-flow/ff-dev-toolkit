@@ -21463,6 +21463,7 @@ var splitSections = (markdown) => {
   if (current.title || current.buf.length) sections.push({ file: "", title: current.title, content: current.buf.join("\n") });
   return sections;
 };
+var toPosixSeparators = (p, sep) => sep === "/" ? p : p.split(sep).join("/");
 var parseScalar = (val) => {
   const t = val.trim();
   if (t === "[]") return [];
@@ -21582,6 +21583,7 @@ var buildGlossary = (md) => {
 // src/indexer.ts
 import fs from "fs";
 import path from "path";
+var projectRelative = (projectRoot, file, p = path) => toPosixSeparators(p.relative(projectRoot, file), p.sep);
 var readFileSafe = (p) => {
   try {
     return fs.readFileSync(p, "utf-8");
@@ -21659,7 +21661,7 @@ var containedPath = (p, root) => {
   return isWithinRealRoot(p, realRoot) ? p : null;
 };
 var buildSearchIndex = (files, projectRoot) => files.flatMap((f) => {
-  const rel = path.relative(projectRoot, f);
+  const rel = projectRelative(projectRoot, f);
   const text = readFileSafe(f);
   const sections = splitSections(text);
   if (!sections.length) return [{ file: rel, title: path.basename(f), content: text }];
@@ -21673,7 +21675,7 @@ var buildSpecIndex = (specsDir, projectRoot) => {
   const errors = [];
   for (const f of files) {
     const { meta, body } = parseFrontMatter(readFileSafe(f));
-    const rel = path.relative(projectRoot, f);
+    const rel = projectRelative(projectRoot, f);
     const spec = { ...meta, file: rel, body };
     const errs = [];
     const status = typeof spec.status === "string" ? spec.status : void 0;
@@ -21813,8 +21815,8 @@ server.registerTool(
     }
   },
   withDocsState((state, { prefix }) => {
-    const rels = state.mdFiles.map((f) => path2.relative(PROJECT_ROOT, f));
-    return jsonResult(prefix ? rels.filter((r) => r.startsWith(prefix)) : rels);
+    const rels = state.mdFiles.map((f) => projectRelative(PROJECT_ROOT, f));
+    return jsonResult(prefix ? rels.filter((r) => r.startsWith(toPosixSeparators(prefix, path2.sep))) : rels);
   })
 );
 server.registerTool(

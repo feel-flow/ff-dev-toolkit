@@ -10,6 +10,11 @@ def relative_path:
     elif startswith("/") or (split("/") | any(. == ".." or . == "." or . == ""))
       or test("[\u0000-\u001f\u007f?#\\\\]") then error("unsafe path") else . end;
 
+# contents API の URL 用に、区切りの / を残して各要素をエンコードする。呼び出し側の jq プログラム
+# 引数へ書くと、Windows の Git Bash（MSYS）が native の jq.exe へ渡す引数の "/" を Windows パスへ
+# 書き換えて区切りまで %2F になる（Issue `#2019`）。このファイルは -L で読まれるので書き換えを受けない。
+def uri_path: split("/") | map(@uri) | join("/");
+
 def source_location($parent; $root):
   if type == "string" then
     . as $source | ($root | relative_path) as $prefix

@@ -908,6 +908,15 @@ else
     [ "$RC" -eq 2 ] && ok "I16 --out だけ（入力の指定なし）は exit 2" || bad "I16 rc=$RC"
     gen2 --close-issue-cache "$SYNCACHE" --out "$WORK/j3" --bogus 1
     [ "$RC" -eq 2 ] && grep -q 'bogus' <<<"$ERR" && ok "I17 未知のオプションは exit 2 で名指し" || bad "I17 rc=$RC err=$ERR"
+    # Node の execFileSync("gh") は Windows では PATHEXT で .exe を探すので、PATH 先頭の拡張子なしの
+    # bash スタブを素通りして本物の gh.exe（利用者の認証）を起動する（ACE-2025-2。Issue `#2022` で実際に
+    # GraphQL へ届いた）。Windows（Git Bash / Cygwin）では偽 gh の検査を理由付きで飛ばし、本物の gh を
+    # 1 回も起動しない
+    case "${OSTYPE:-}" in
+      msys* | cygwin*) FAKE_GH_USABLE=0 ;;
+      *) FAKE_GH_USABLE=1 ;;
+    esac
+    if [ "$FAKE_GH_USABLE" -eq 1 ]; then
     # 偽 gh: fetch は cache にだけ書き、報告コメントの PR 番号から pr view を引く
     FAKEGH="$WORK/fakegh"; mkdir -p "$FAKEGH"
     cat > "$FAKEGH/gh" <<'EOF'
@@ -952,6 +961,9 @@ EOF
     cp "$FAKEGH/gh.ok" "$FAKEGH/gh"; mkdir -p "$WORK/c5"; printf '{}\n' > "$WORK/c5/issue-999.json"
     OUT="$(FAKE_GH_LOG="$WORK/gh.log" PATH="$FAKEGH:$PATH" FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$RUNNER" "$GEN2" --fetch-closed-issues 2 --repo o/r --cache "$WORK/c5" 2>"$WORK/gen2.err")"; RC=$?
     [ "$RC" -eq 0 ] && [ ! -f "$WORK/c5/issue-999.json" ] && [ -f "$WORK/c5/issue-201.json" ] && ok "I20c 既存 cache は成功時に丸ごと置き換える" || bad "I20c rc=$RC ls=$(ls "$WORK/c5" | tr '\n' ' ')"
+    else
+      echo "  ○ skip: I18〜I20c は偽 gh（bash スタブ）を Node から起動する検査で、Windows の Node は PATHEXT で本物の gh.exe を起動するため未実行（本物の gh を呼ばない）"
+    fi
     # --summarize
     cat > "$WORK/ai-results.jsonl" <<'EOF'
 {"id":"ai-a","group":"LOW","answers":[{"qid":"impact","expected":0,"predicted":0,"raw":0.2,"confidence":0.9}]}
@@ -1054,6 +1066,7 @@ EOF
     cp "$SYNCACHE/issue-101.json" "$SYNCACHE4/"
     gen2 --close-issue-cache "$SYNCACHE4" --out "$WORK/j8"
     [ "$RC" -eq 0 ] && grep -q 'issues=2 .* skipped_files_truncated=1 ' <<<"$OUT" && [ "$(jq -r 'select(.issue==114) | .id' "$WORK/j8/close-issue.jsonl" | wc -l | tr -d ' ')" -eq 0 ] && ok "I35 ファイル一覧が切れた PR の Issue は state に載せず skipped として数える" || bad "I35 rc=$RC out=$OUT"
+    if [ "$FAKE_GH_USABLE" -eq 1 ]; then
     # 偽 gh: 完了報告が 2 件ある Issue は最後の 1 件、pr view の files が 100 件なら files_truncated、--cache の末尾 / でも既存 cache を置き換える
     cat > "$FAKEGH/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -1077,6 +1090,9 @@ EOF
     OUT="$(FAKE_GH_LOG="$WORK/gh.log" PATH="$FAKEGH:$PATH" FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$RUNNER" "$GEN2" --fetch-closed-issues 2 --repo o/r --cache "$WORK/c7" 2>"$WORK/gen2.err")"; RC=$?; ERR="$(cat "$WORK/gen2.err")"
     [ "$RC" -eq 2 ] && grep -q 'comments' <<<"$ERR" && grep -q '201' <<<"$ERR" && [ ! -d "$WORK/c7" ] && ok "I37 gh の JSON に comments が無ければ Issue 番号を名指しして exit 2（TypeError の文面にしない）" || bad "I37 rc=$RC err=$ERR"
     cp "$FAKEGH/gh.ok" "$FAKEGH/gh"
+    else
+      echo "  ○ skip: I36・I37 は偽 gh（bash スタブ）を Node から起動する検査で、Windows の Node は PATHEXT で本物の gh.exe を起動するため未実行（本物の gh を呼ばない）"
+    fi
   fi
 fi
 
@@ -1187,7 +1203,14 @@ else
     else bad "J9 0=$RC_ZERO 非整数=$RC"; fi
     lab --extract "$LABSET" --out "$WORK/nodir/deep/out.jsonl" --count 2 --group original
     RC_OK_DIR="$RC"
-    lab --extract "$LABSET" --out "/dev/null/impossible.jsonl" --count 2 --group original
+    # 書けない先は、一時領域の通常ファイルを親に見立てたパスで作る（`/dev/null/…` は Windows の Git Bash では
+    # C:\dev\null\… として実在のディレクトリが作られ、作業機に副作用を残す。Issue `#2022`）。MSYS は途中に
+    # 通常ファイルを含むパスを変換できずにそのまま Node へ渡し、Node は /tmp/… をドライブ直下（C:\tmp\…）と
+    # して書いてしまうので、変換は cygpath で先に済ませる
+    : > "$WORK/not-a-dir"
+    UNWRITABLE_OUT="$WORK/not-a-dir/impossible.jsonl"
+    if command -v cygpath >/dev/null 2>&1; then UNWRITABLE_OUT="$(cygpath -m "$WORK")/not-a-dir/impossible.jsonl"; fi
+    lab --extract "$LABSET" --out "$UNWRITABLE_OUT" --count 2 --group original
     if [ "$RC_OK_DIR" -eq 0 ] && [ "$RC" -eq 2 ] && grep -q '\-\-out へ書けません' <<<"$ERR"; then
       ok "J10 --out は親ディレクトリを作るが、書けない先は exit 2（未捕捉例外の rc=1 で終わらない）"
     else bad "J10 作成=$RC_OK_DIR 書けない=$RC err=$ERR"; fi

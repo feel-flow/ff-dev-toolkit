@@ -19,6 +19,18 @@ export const splitSections = (markdown: string): SectionIndexEntry[] => {
   return sections;
 };
 
+/**
+ * Rewrite a path that uses `sep` as its separator to `/` separators.
+ *
+ * Tool results promise project-root-relative paths in the `docs/02-design/x.md`
+ * form (the list_docs prefix example), but `path.relative` returns
+ * `\`-separated paths on Windows (Issue `#2016`). `sep` is a parameter rather
+ * than `path.sep` so the Windows behaviour is testable on any host. With `/`
+ * the input is returned unchanged, so a POSIX file name containing `\` stays
+ * intact.
+ */
+export const toPosixSeparators = (p: string, sep: string): string => (sep === '/' ? p : p.split(sep).join('/'));
+
 /** Parse a YAML-like scalar value. */
 export const parseScalar = (val: string): unknown => {
   const t = val.trim();

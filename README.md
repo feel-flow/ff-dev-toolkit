@@ -112,6 +112,14 @@ Desktop の旧版はローカルの自動更新では解消しないため、Des
 - 通知の間隔は環境変数 `FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED`（秒・既定 86400）で変更できます。0 を指定すると毎セッション通知します
 - 通知を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1` を設定してください
 
+### Windows（Git Bash）での WSL 案内
+
+Windows の Git Bash 上で Claude Code を使っていると、セッション開始時に WSL での利用をすすめる案内を 1 日 1 回表示します。Git Bash ではプロセスの起動が遅く hook の所要時間が長くなり、symlink やパス表記の違いで一部の検査が成立しないためです。WSL（Ubuntu など）の中で `claude` を起動し、リポジトリを WSL のファイルシステムへ clone して使うと、Linux / macOS と同じ条件で動きます。
+
+- Linux / macOS / WSL の中では何も表示せず、判定のために外部プロセスを起動しません
+- WSL の PATH には既定で Windows 側の PATH が足されるため、Windows 版の CLI が見えて判定が揺れることがあります。`/etc/wsl.conf` の `[interop]` に `appendWindowsPath=false` を書くと外せます
+- 案内を止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1` を設定してください
+
 ### マーケットプレイス自動更新
 
 セッション開始時に、登録済みマーケットプレイスの更新（`claude plugin marketplace update` 引数なし）と本プラグイン本体の更新を、バックグラウンド（async）で自動実行します。サードパーティマーケットプレイスは既定では自動更新されないため、この hook を含む版へ一度更新すれば、以降は各自の `autoUpdate` 設定に依存せず最新へ追従します。

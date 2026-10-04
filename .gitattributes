@@ -1,0 +1,5 @@
+# テキストの行末は LF に固定する。core.autocrlf=true（Git for Windows の既定）の環境でも、作業ツリーと
+# プラグインのインストール実体を Linux / macOS と同じバイト列にする。意図して CRLF にしている fixture は、
+# それぞれの fixtures ディレクトリの .gitattributes で -text にしている。
+# 開発元のリポジトリの root にも同じ規則の .gitattributes がある。規則を変えるときは両方を同じにする
+* text=auto eol=lf

@@ -3,10 +3,22 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import url from 'url';
-import { buildDocsState, listMarkdown, resolveWithinRoot, resolveDocsPath } from '../src/indexer.js';
+import { buildDocsState, listMarkdown, resolveWithinRoot, resolveDocsPath, projectRelative } from '../src/indexer.js';
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const PROJECT_FIXTURE = path.resolve(__dirname, 'fixtures/project');
+
+// path.win32 を渡して Windows の path.relative を再現する。Linux の CI でも
+// 修正前（path.relative をそのまま返す実装）は赤になる（Issue `#2016`）。
+describe('projectRelative', () => {
+  it('Windows でも / 区切りの project-root 相対パスを返す', () => {
+    expect(projectRelative('C:\\proj', 'C:\\proj\\docs\\specs\\spec-001.md', path.win32)).toBe('docs/specs/spec-001.md');
+  });
+
+  it('POSIX では path.relative の結果と同じ', () => {
+    expect(projectRelative('/proj', '/proj/docs/02-design/API.md', path.posix)).toBe('docs/02-design/API.md');
+  });
+});
 
 describe('buildDocsState', () => {
   const state = buildDocsState(PROJECT_FIXTURE);

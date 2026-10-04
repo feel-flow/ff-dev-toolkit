@@ -60,6 +60,7 @@ asdd_hook_enabled hooks || exit 0
 #
 # 環境変数:
 #   FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1  更新チェックを無効化する（ユーザー向け）
+#   FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1    Windows の Git Bash での WSL 案内を無効化する（ユーザー向け。Issue `#2030`）
 #   以下はテストシーム（tests/update-check/verify.sh が実ネットワークに触れずに
 #   本スクリプトを駆動するための注入口。通常運用で設定する必要はない）:
 #   FF_DEV_TOOLKIT_UPDATE_REPO_URL      参照先リポジトリ URL の上書き
@@ -79,7 +80,61 @@ asdd_hook_enabled hooks || exit 0
 # fail-open のため set -e は使わない。set -u も、未定義変数参照が非 0 終了で
 # フックを汚すため使わない（参照はすべて ${VAR:-default} 形で行う）。
 
-# ---- オプトアウト（キャッシュ読み書き含め一切の処理より先） -----------------
+# ---- Windows の Git Bash での WSL 案内（Issue `#2030`） ---------------------------
+# Git Bash（MSYS / Cygwin）上のときだけ、WSL での利用をすすめる案内を 1 日 1 回出す。判定と文言は
+# scripts/lib/wsl-notice.sh（全件ゲートの冒頭案内と共有）が持つ。hook を新設せずここへ畳むのは、
+# 決定木（scripts/decision-tree/tree.tsv）の葉が上限 50 に達しており、hook 1 本で 51 件になるため。
+#   - 更新チェックのオプトアウトより前で判定する（無効化は FF_DEV_TOOLKIT_SKIP_WSL_NOTICE で独立）
+#   - lib が読めない配置（古い配布物・fixture コピー）では WSL 案内だけを飛ばし、更新通知は従来どおり
+#   - Linux / macOS / WSL の中では判定（bash 組み込みの OSTYPE）だけで抜け、プロセスを起動しない
+#   - 記録（<cache>/wsl-notice）は出力の直前に書き、書けたときだけ出す（間引きは記録で成り立つ）。
+#     timeout の SIGKILL で打ち切られた回は記録が残らないので、次のセッションで出し直す。SIGTERM では
+#     EXIT trap が走るので、打ち切られやすい取得（git ls-remote）の最中は出さない（wsl_hold。出力を
+#     読まれないまま記録だけ残ると、その日は二度と出ない）
+#   - 出力は JSON 1 つ: 更新通知を出す回は同じ JSON へ並べ、出さずに終わる回は EXIT trap が出す
+wsl_msg=""
+wsl_ctx=""
+wsl_now=""
+wsl_emitted=0
+wsl_hold=0
+wsl_cache_dir="${FF_DEV_TOOLKIT_UPDATE_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME:-}/.cache}/ff-dev-toolkit}"
+wsl_lib="${BASH_SOURCE[0]%/*}/../scripts/lib/wsl-notice.sh"
+if [ "${FF_DEV_TOOLKIT_SKIP_WSL_NOTICE:-0}" != "1" ] && [ -f "$wsl_lib" ] \
+  && source "$wsl_lib" 2>/dev/null && ff_host_is_msys "${OSTYPE:-}"; then
+  # 現在時刻は bash 組み込みで取る。%(...)T の無い bash 3.2 だけ date へ落とす（ここは Git Bash /
+  # Cygwin の経路なので、外部プロセスを起動しても Linux / macOS の費用にはならない）
+  printf -v wsl_now '%(%s)T' -1 2>/dev/null || wsl_now=""
+  case "$wsl_now" in '' | *[!0-9]*) wsl_now="$(date +%s 2>/dev/null)" || wsl_now="" ;; esac
+  case "$wsl_now" in
+    '' | *[!0-9]*) : ;;
+    *)
+      if ff_wsl_notice_due "$wsl_cache_dir/wsl-notice" "$wsl_now" 86400; then
+        wsl_msg="$(ff_wsl_notice_system_message)"
+        wsl_ctx="$(ff_wsl_notice_context)"
+      fi
+      ;;
+  esac
+fi
+# 案内の記録。書けたときだけ 0。記録の場所がディレクトリ化した病的状態は除去する — 放置すると
+# 書けないまま毎回黙り、案内が二度と出ない（notified の [ -d ] 除去と同じ理由）
+wsl_record() {
+  [ -n "$wsl_msg" ] || return 1
+  mkdir -p "$wsl_cache_dir" 2>/dev/null || return 1
+  [ -d "$wsl_cache_dir/wsl-notice" ] && rm -rf "$wsl_cache_dir/wsl-notice" 2>/dev/null
+  printf '%s\n' "$wsl_now" 2>/dev/null > "$wsl_cache_dir/wsl-notice" || return 1
+}
+# 更新通知を出さずに終わる経路（オプトアウト・キャッシュ命中・最新版など）で、WSL 案内だけを出す
+wsl_emit_only() {
+  [ "$wsl_hold" = 0 ] || return 0
+  [ "$wsl_emitted" = 0 ] || return 0
+  wsl_emitted=1
+  wsl_record || return 0
+  printf '{"systemMessage":"%s","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' \
+    "$wsl_msg" "$wsl_ctx"
+}
+[ -z "$wsl_msg" ] || trap wsl_emit_only EXIT
+
+# ---- 更新チェックのオプトアウト（更新チェックのキャッシュ読み書きを含め、以降の処理より先） ----
 if [ "${FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK:-0}" = "1" ]; then
   exit 0
 fi
@@ -201,9 +256,12 @@ if [ -z "$latest" ]; then
   # 認証プロンプト封じ: 対象は public リポジトリなので、認証を求められる状況は
   # すべて異常系。プロンプトで固まるくらいなら即失敗させ、無音で抜ける
   # （fail マーカーは上で書いてあるので TTL 内は再試行しない）。
+  # 取得中は timeout で打ち切られやすいので、WSL 案内の EXIT trap を止めておく（上の WSL 案内の節）
+  wsl_hold=1
   tags="$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/bin/false \
     GIT_SSH_COMMAND='ssh -oBatchMode=yes' \
     git ls-remote --tags "$repo_url" 2>/dev/null)" || tags=""
+  wsl_hold=0
 
   [ -z "$tags" ] && exit 0
 
@@ -268,8 +326,18 @@ fi
 # 「更新して」と言われたときに正しいコマンドを案内できるようにする。
 # marketplace 名はユーザーのローカル登録名に依存するため固定しない
 # （引数なしの `claude plugin marketplace update` は全 marketplace を更新する）。
-printf '{"systemMessage":"📦 ff-dev-toolkit v%s が利用可能です（現在 v%s）。自動更新 hook が有効なら裏で更新済みのことがあり、新しい会話の開始で反映されます。手動更新: claude plugin marketplace update → claude plugin list で登録 ID を確認 → claude plugin update その ID","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"ff-dev-toolkit の新バージョン v%s が公開されています（インストール済みは v%s）。同梱の自動更新 hook（auto-update-marketplace.sh）が有効な環境では、この更新は既にバックグラウンドで実行済みのことがあり、その場合は新しい会話を開始するだけで反映される（本通知は現在版が変わるまで日次で続く）。ユーザーが手動更新を希望したら次の手順を案内すること: (1) claude plugin marketplace update （引数なし。marketplace 名はユーザーの登録名に依存するため） (2) claude plugin list で登録 ID を確認する。ID は プラグイン名@marketplace名 の形式で、素の名前を渡すと Plugin not found で失敗する (3) claude plugin update に (2) で確認した ID を渡す (4) 適用には Claude Code の再起動が必要。ただし既存の会話を再開すると古いプラグインのスナップショットへ再接続されるため、新しい会話を開始すること。変更点は https://github.com/feel-flow/ff-dev-toolkit/blob/main/CHANGELOG.md を参照。この通知を止めたい場合は環境変数 FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1 を設定する。"}}\n' \
-  "$latest" "$current" "$latest" "$current"
+# WSL 案内が出る回は同じ JSON の末尾へ並べる（JSON は 1 回の実行で 1 つ）。'\n\n' は JSON の
+# エスケープとして埋め込む（%s の引数は printf のエスケープ解釈を受けない）。この後は EXIT trap が
+# WSL 案内だけの JSON を重ねて出さないよう、記録の成否に関わらず出力済みにする
+wsl_sys_tail=""
+wsl_ctx_tail=""
+if [ "$wsl_emitted" = 0 ] && wsl_record; then
+  wsl_sys_tail='\n\n'"$wsl_msg"
+  wsl_ctx_tail='\n\n'"$wsl_ctx"
+fi
+wsl_emitted=1
+printf '{"systemMessage":"📦 ff-dev-toolkit v%s が利用可能です（現在 v%s）。自動更新 hook が有効なら裏で更新済みのことがあり、新しい会話の開始で反映されます。手動更新: claude plugin marketplace update → claude plugin list で登録 ID を確認 → claude plugin update その ID%s","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"ff-dev-toolkit の新バージョン v%s が公開されています（インストール済みは v%s）。同梱の自動更新 hook（auto-update-marketplace.sh）が有効な環境では、この更新は既にバックグラウンドで実行済みのことがあり、その場合は新しい会話を開始するだけで反映される（本通知は現在版が変わるまで日次で続く）。ユーザーが手動更新を希望したら次の手順を案内すること: (1) claude plugin marketplace update （引数なし。marketplace 名はユーザーの登録名に依存するため） (2) claude plugin list で登録 ID を確認する。ID は プラグイン名@marketplace名 の形式で、素の名前を渡すと Plugin not found で失敗する (3) claude plugin update に (2) で確認した ID を渡す (4) 適用には Claude Code の再起動が必要。ただし既存の会話を再開すると古いプラグインのスナップショットへ再接続されるため、新しい会話を開始すること。変更点は https://github.com/feel-flow/ff-dev-toolkit/blob/main/CHANGELOG.md を参照。この通知を止めたい場合は環境変数 FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1 を設定する。%s"}}\n' \
+  "$latest" "$current" "$wsl_sys_tail" "$latest" "$current" "$wsl_ctx_tail"
 
 # 通知済みを記録（書き込み失敗は fail-open: 次セッションで再通知されるだけ）。
 # notified がディレクトリ化した病的状態は除去する — 放置すると mv がその中へ潜り込んで

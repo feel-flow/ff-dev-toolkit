@@ -30,6 +30,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$PLUGIN_ROOT/hooks/auto-update-marketplace.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
+# shellcheck source=../lib/crlf-jq-shim.sh
+. "$SCRIPT_DIR/../lib/crlf-jq-shim.sh"
 
 [[ -f "$TARGET" ]] || { echo "✗ hooks/auto-update-marketplace.sh がありません" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "○ skip: jq が無いため auto-update-hook を検証できません（検査は1件も実行されていません）"; exit 0; }
@@ -190,6 +192,32 @@ else
 fi
 
 echo
+# ---- Windows の jq.exe（改行を \r\n で出す）でも scope を正しく渡す（Issue `#2017`）----
+# hook は「ID scope」の行を jq の複数行出力から 1 行ずつ読む。修正前は最後の行以外の scope が
+# `user\r` になり、`--scope "user\r"` を渡していた（どのインストールでも更新が失敗する）。
+CRLF_BIN="$TMP/crlf-jq-bin"
+crlf_rc=0
+ff_crlf_jq_shim "$CRLF_BIN" "$(command -v jq)" || crlf_rc=$?
+if [[ "$crlf_rc" -eq 2 ]]; then
+  echo "  ○ skip: perl が無いため CRLF の jq を再現できません（この 1 検査は未実行）"
+elif [[ "$crlf_rc" -ne 0 ]]; then
+  bad "CRLF の jq シムを作れませんでした（rc=${crlf_rc}）"
+else
+  : > "$CALLS"
+  rm -f "$TMP/stamps"/*
+  SAVED_PATH="$PATH"
+  PATH="$CRLF_BIN:$PATH"
+  run_hook
+  PATH="$SAVED_PATH"
+  if [[ "$RC" -eq 0 ]] \
+    && grep -q -- "plugin update -y --scope user ff-dev-toolkit@marketplace-a" "$CALLS" \
+    && grep -q -- "plugin update -y --scope project ff-dev-toolkit@marketplace-b" "$CALLS"; then
+    ok "CRLF の jq でも、JSON 由来の ID ごとに正しい scope で本体 update を発行する"
+  else
+    bad "CRLF の jq で scope が崩れた（rc=${RC} / calls: $(tr '\n' ';' < "$CALLS")）"
+  fi
+fi
+
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ auto-update-hook verify: ${FAIL} 件失敗 / ${PASS} 件成功" >&2
   REACHED_END=1

@@ -141,6 +141,7 @@ case "$input" in
         printf '%s' "$input" | bash "$expansion_helper" 2>/dev/null || true
       else
         post_cmd="$(printf '%s' "$input" | jq -r 'select(.tool_name == "Bash") | .tool_input.command | select(type == "string")' 2>/dev/null)"
+        post_cmd="${post_cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
         case "$post_cmd" in
           *'$'*) jq -n '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: "zsh 展開ガード: helper が不在で直前の Bash 呼び出しの未引用変数を未検査です。ff-dev-toolkit を更新・復旧してください。"}}' ;;
         esac
@@ -161,10 +162,12 @@ elif [ -r "$expansion_helper" ]; then
       exit 0
     fi
     expansion_warning="$(printf '%s' "$expansion_out" | jq -r '.systemMessage // empty' 2>/dev/null)"
+    expansion_warning="${expansion_warning//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
   fi
 else
   # helper 不在を検出0と混同しない。scalar-only は停止しない。
   missing_cmd="$(printf '%s' "$input" | jq -r 'select(.tool_name == "Bash") | .tool_input.command | select(type == "string")' 2>/dev/null)"
+  missing_cmd="${missing_cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
   case "$missing_cmd" in
     =?* | *' ='?* | *$'\t='?* | *$'\n='?*)
       missing_reason='zsh 展開ガード: 判定不能（helper 不在）。ff-dev-toolkit を更新・復旧するか FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1 で無効化してください。'
@@ -226,6 +229,7 @@ deny_unavailable() { # <理由>
 
 jq_rc=0
 cmd="$(printf '%s' "$input" | jq -r 'if (type == "object") and (.tool_name == "Bash") then ((.tool_input // {}) | if type == "object" then (.command // "") else "" end) else "" end | if type == "string" then . else "" end' 2>/dev/null)" || jq_rc=$?
+cmd="${cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
 if [ "$jq_rc" -ne 0 ]; then
   # rc=5 は入力が JSON でない（対象外として素通し）。それ以外はフィルタ自体の失敗。
   [ "$jq_rc" -eq 5 ] && exit 0

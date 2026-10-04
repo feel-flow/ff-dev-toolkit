@@ -10,13 +10,14 @@
 #       review-route.sh --files docs/a.md --lines 12
 #
 # 出力（stdout。行頭一致で機械可読）:
-#   route.sh の DT_* 行をそのまま通したうえで、次の 3 行を足す:
+#   route.sh の DT_* 行をそのまま通したうえで、次の 4 行を足す:
 #   REVIEW_ROUTE=fast|full|none
 #   REVIEW_LANES=parent-read+codex:1 | codex:1+claude:4 | host
 #       fast … 親（オーケストレータ）が diff を直読し、Codex を 1 レーンだけ起動する（Claude の
 #              4 観点は起動しない）
 #       full … 現行の 5 レーン（Codex 1 + Claude 4 観点）
 #       none … レーン構成をホストが判定する（判定理由を完了報告へ 1 行で添える）
+#   REVIEW_REQUIRED_PERSPECTIVES=comma-separated admission coverage (none: empty)
 #   REVIEW_REPORT_LINE=経路: <route>（根拠: <理由> / <N> 行）
 #       <理由> は DT_REASON の写像（docs-only → docs のみ / small-diff → 小さい差分 /
 #       contract-change:<path> → 契約 path <path> / implementation → 実装変更 / no-files → 変更 0 件 /
@@ -254,5 +255,11 @@ case "$route" in
 esac
 echo "REVIEW_ROUTE=${route}"
 echo "REVIEW_LANES=${lanes}"
+case "$route" in
+  fast) required="comprehensive-review" ;;
+  full) required="comprehensive-review,code-review,error-handler-hunt,test-analysis,comment-analysis" ;;
+  *) required="" ;;
+esac
+echo "REVIEW_REQUIRED_PERSPECTIVES=${required}"
 echo "REVIEW_REPORT_LINE=経路: ${route}（根拠: ${why} / ${lines_text}）"
 exit "$RC"

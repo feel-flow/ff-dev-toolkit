@@ -113,6 +113,113 @@ run "$WORK/public/scripts/check-plugin-versions.sh" /bin/bash
 [ "$RC" = 2 ] && cmp "$WORK/expected.json" "$WORK/report.json" || exit 1
 PASS=$((PASS + 1)); echo '✓ 公開 root layout と /bin/bash で同じ結果'
 
+# Windows の Git Bash（MSYS）は native の jq.exe へ渡す引数のうち "/" を Windows パスへ書き換える
+# （jq -rn '"/"' が C:/Program Files/Git/ を出す）。その書き換えを再現するシムを PATH 先頭へ置き、
+# jq プログラムの引数へ "/" を書いた退行を Linux / macOS でも赤にする（Issue `#2019`）。
+# シムが再現するのは "/" のリテラルと単独の / の引数だけで、MSYS の規則全体は模倣しない。
+# "/x" のような形まで書き換えると、fixture の projectPath:"/example" を含む --argjson まで変わって
+# 誤って赤になる（実物の MSYS はこの JSON を書き換えない）。
+# 実物の jq はシムの作成時に解決する（実行時に PATH から引くとシム自身を呼んで再帰する）。
+mkdir -p "$WORK/msys-bin"
+{
+  printf '#!/usr/bin/env bash\nREAL_JQ=%q\nMSYS_CALLS=%q\n' "$(command -v jq)" "$WORK/msys-calls"
+  cat <<'SHIM'
+printf 'call\n' >> "$MSYS_CALLS"
+q='"/"'; r='"C:/Program Files/Git/"'
+args=()
+for a in "$@"; do
+  [ "$a" = / ] && a='C:/Program Files/Git/'
+  args+=("${a//"$q"/$r}")
+done
+exec "$REAL_JQ" "${args[@]}"
+SHIM
+} > "$WORK/msys-bin/jq"
+chmod +x "$WORK/msys-bin/jq"
+# シムが書き換えていなければ、この検査は何も測っていない（リテラルと単独の / の両方を確かめる）
+[ "$("$WORK/msys-bin/jq" -rn '"/"')" = 'C:/Program Files/Git/' ] || { echo 'msys jq shim does not rewrite "/"' >&2; exit 1; }
+[ "$("$WORK/msys-bin/jq" -rn --arg s / '$s')" = 'C:/Program Files/Git/' ] || { echo 'msys jq shim does not rewrite a lone /' >&2; exit 1; }
+: > "$WORK/msys-calls"
+SAVED_PATH="$PATH"
+PATH="$WORK/msys-bin:$PATH"
+run
+PATH="$SAVED_PATH"
+# SUT が PATH を固定したり jq を絶対パスで呼んだりすると、シムを通らないまま緑になる。通った証拠を残す
+[ -s "$WORK/msys-calls" ] || { echo 'SUT が MSYS シムの jq を一度も呼んでいない（検査が空振りしている）' >&2; exit 1; }
+[ "$RC" = 2 ] && cmp "$WORK/expected.json" "$WORK/report.json" || { echo 'MSYS の引数変換の下で結果が変わった' >&2; exit 1; }
+PASS=$((PASS + 1)); echo '✓ MSYS の引数変換（"/" の書き換え）の下でも同じ結果'
+
+# Desktop セッションの既定の置き場（--sessions-dir なし）。OS の分岐は bash 組み込みの OSTYPE で決まり、
+# 環境変数では偽装できない（bash が起動時に設定し直す）。BASH_ENV のファイルは OSTYPE の初期化の後に
+# 読まれるので、そこで代入して Windows / macOS / Linux の分岐をどのホストでも通す（Issue `#2034`）。
+for os in msys linux-gnu darwin23; do printf 'OSTYPE=%s\n' "$os" > "$WORK/benv-$os"; done
+# 継ぎ目が効いていなければ、以下の検査は何も測っていない
+[ "$(BASH_ENV="$WORK/benv-msys" bash -c 'printf %s "$OSTYPE"')" = msys ] || { echo 'BASH_ENV で OSTYPE を差し替えられない' >&2; exit 1; }
+desktop_rows() { jq -c '[.results[]|select(.layer=="desktop")|{plugin,session,status}]|sort' "$1"; }
+desktop_rows "$WORK/expected.json" > "$WORK/desktop-expected"
+[ "$(jq length "$WORK/desktop-expected")" = 4 ] || { echo 'Desktop の基準行が 4 件ではない' >&2; exit 1; }
+run_default() { # os appdata localappdata home
+  RC=0
+  env BASH_ENV="$WORK/benv-$1" APPDATA="$2" LOCALAPPDATA="$3" HOME="$4" \
+    bash "$SUT" --config-dir "$WORK/config" --json > "$WORK/report.json" 2> "$WORK/stderr" || RC=$?
+  [ ! -s "$WORK/stderr" ] || { cat "$WORK/stderr" >&2; exit 1; }
+  [ "$RC" = 2 ] || { echo "既定の置き場の検査が exit 2 で終わらない: $RC" >&2; exit 1; }
+}
+same_desktop() { # 検査結果があるのに「保存先なし」を注記する退行（実在しない候補を除かない）も赤にする
+  if [ "$(desktop_rows "$WORK/report.json")" = "$(cat "$WORK/desktop-expected")" ] \
+    && jq -e '[.notes[]|select(contains("保存先なし"))]|length==0' "$WORK/report.json" >/dev/null; then
+    PASS=$((PASS + 1)); printf '✓ %s\n' "$1"
+  else printf '✗ %s\n' "$1" >&2; desktop_rows "$WORK/report.json" >&2; exit 1; fi
+}
+sessions_copy() { mkdir -p "$1"; cp -R "$WORK/sessions/." "$1/"; }
+W="$WORK/win"
+# Windows の通常版: %APPDATA%\Claude だけにある
+sessions_copy "$W/c1/Roaming/Claude/local-agent-mode-sessions"
+mkdir -p "$W/c1/Local"
+run_default msys "$W/c1/Roaming" "$W/c1/Local" "$W/nohome"
+same_desktop 'Windows: %APPDATA% の置き場を既定で検査'
+# MSIX 版をアプリの外から見た形: LocalCache の下だけにある
+mkdir -p "$W/c2/Roaming"
+sessions_copy "$W/c2/Local/Packages/Claude_test/LocalCache/Roaming/Claude/local-agent-mode-sessions"
+run_default msys "$W/c2/Roaming" "$W/c2/Local" "$W/nohome"
+same_desktop 'Windows: MSIX 版の LocalCache の置き場を既定で検査'
+# MSIX 版をアプリの中から見た形: 2 つの候補が同じディレクトリの別名（綴りも違う）
+sessions_copy "$W/c3/Local/Packages/Claude_test/LocalCache/Roaming/Claude/local-agent-mode-sessions"
+run_default msys "$W/c3/Local/Packages/Claude_test/LocalCache/./Roaming" "$W/c3/Local" "$W/nohome"
+same_desktop 'Windows: 同じ実体の 2 つの候補は 1 回だけ数える'
+# 別々の実体がどちらも在る（インストール形態を切り替えた後など）: 両方を検査する
+mkdir -p "$W/c4/Roaming/Claude/local-agent-mode-sessions" "$W/c4/Local/Packages/Claude_test/LocalCache/Roaming/Claude/local-agent-mode-sessions"
+cp -R "$WORK/sessions/session A" "$W/c4/Roaming/Claude/local-agent-mode-sessions/"
+cp -R "$WORK/sessions/session B" "$W/c4/Local/Packages/Claude_test/LocalCache/Roaming/Claude/local-agent-mode-sessions/"
+run_default msys "$W/c4/Roaming" "$W/c4/Local" "$W/nohome"
+same_desktop 'Windows: 別々の実体はどちらも検査する'
+# 置き場そのものが symlink（Windows ではジャンクション）でも中を検査する。find の既定は起点の symlink を
+# 辿らないので、-H が無いと注記も出さずに 0 件で終わる。Git Bash の ln -s は既定でコピーを作るので mklink /J を使う
+c5_real="$W/c5/Local/Packages/Claude_test/LocalCache/Roaming/Claude/local-agent-mode-sessions"
+c5_link="$W/c5/Roaming/Claude/local-agent-mode-sessions"
+sessions_copy "$c5_real"
+mkdir -p "$W/c5/Roaming/Claude"
+case "${OSTYPE:-}" in
+  msys* | cygwin*)
+    # MSYS は native の exe へ渡す /J を Windows のパスへ書き換えるので、変換を止めて渡す
+    MSYS_NO_PATHCONV=1 cmd /c mklink /J "$(cygpath -w "$c5_link")" "$(cygpath -w "$c5_real")" >/dev/null 2>&1 \
+      || { echo 'mklink /J でジャンクションを作れない（この検査は何も測っていない）' >&2; exit 1; } ;;
+  *) ln -s "$c5_real" "$c5_link" ;;
+esac
+[ -L "$c5_link" ] || { echo '置き場の symlink（ジャンクション）を作れない（この検査は何も測っていない）' >&2; exit 1; }
+run_default msys "$W/c5/Roaming" "$W/c5/Local" "$W/nohome"
+same_desktop 'Windows: 置き場が symlink（ジャンクション）でも中を検査する'
+# どの候補も無い（APPDATA / LOCALAPPDATA が空の環境を含む）: 従来どおり「対象なし」を注記する
+run_default msys "" "" "$W/nohome"
+check 'Windows: 置き場が無ければ Desktop 対象なしを注記' '([.results[]|select(.layer=="desktop")]|length)==0 and any(.notes[]; contains("保存先なし"))'
+# macOS は ~/Library の置き場だけを見る。APPDATA に置き場があっても使わない
+# （APPDATA には session A だけの置き場を渡す。macOS が APPDATA を読む退行は 2 行か 6 行になって赤）
+sessions_copy "$W/machome/Library/Application Support/Claude/local-agent-mode-sessions"
+run_default darwin23 "$W/c4/Roaming" "$W/c1/Local" "$W/machome"
+same_desktop 'macOS: ~/Library の置き場だけを既定で検査'
+# Linux は従来どおり（Windows の候補を見ない）
+run_default linux-gnu "$W/c1/Roaming" "$W/c1/Local" "$W/nohome"
+check 'Linux: Windows の置き場を見ず、Desktop 対象なしを注記' '([.results[]|select(.layer=="desktop")]|length)==0 and any(.notes[]; contains("保存先なし"))'
+
 # 不正 compare が「最新」に化けない。成功していた対象と同居させる。
 jq --arg key "repos/example/catalog/compare/$SHA_LAST...$SHA_NEW" '.[$key]={status:"ahead"}' "$WORK/responses.json" > "$WORK/next"
 mv "$WORK/next" "$WORK/responses.json"

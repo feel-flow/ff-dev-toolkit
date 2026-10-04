@@ -12,6 +12,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import url from 'url';
 import { STDIO_DEFAULT_MAX_BUFFER_SIZE } from '@modelcontextprotocol/sdk/shared/stdio.js';
@@ -370,7 +371,9 @@ describe('a stdin read error is fatal', () => {
     // A write-only fd as fd 0 is the deterministic trigger: the first read()
     // fails with EBADF and Node emits 'error' on process.stdin. (A directory
     // fd does NOT work — it reads as a clean EOF, exit 0, no error event.)
-    const writeOnlyStdin = fs.openSync('/dev/null', 'w');
+    // os.devNull, not '/dev/null': on Windows the literal path is C:\dev\null,
+    // a real file outside the temp area (Issue `#2022`).
+    const writeOnlyStdin = fs.openSync(os.devNull, 'w');
     const child = spawn(process.execPath, [DIST], {
       cwd: PROJECT_FIXTURE,
       stdio: [writeOnlyStdin, 'pipe', 'pipe'],

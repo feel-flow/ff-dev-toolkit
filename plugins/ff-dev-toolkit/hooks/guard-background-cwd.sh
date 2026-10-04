@@ -165,6 +165,10 @@ meta="$(printf '%s' "$input" | jq -r '
   (if (.tool_input.run_in_background // false) == true then "true" else "" end),
   (.cwd // ""),
   (.tool_input.command // "")' 2>/dev/null)" || exit 0
+# Windows の jq.exe は改行を \r\n で出す。`$(…)` が落とすのは末尾だけなので、値の区切りと
+# command 内の改行に残る \r を落とす（落とさないと tool が `Bash\r` になり、ガードが
+# 黙って素通りする。Issue `#2017`）。
+meta="${meta//$'\r'/}"
 
 meta_rest="$meta"
 FIELD=""
@@ -298,6 +302,9 @@ starts_with_absolute_cd() {
   esac
   case "$arg" in
     /*) return 0 ;;                # 絶対パス（`cd -P /abs` のようにオプション付きも含む）
+    # Windows のドライブ付き絶対パス（`cd C:/x` / `cd 'C:\x'`）。Git Bash では cd がそのまま
+    # 受け付けるので、`/c/x` と同じく絶対として扱う（Issue `#2017` / `#2018`）
+    [A-Za-z]:/* | [A-Za-z]:\\*) return 0 ;;
     '$('* | '`'*) return 0 ;;      # コマンド置換（git rev-parse --show-toplevel 等）
     '$'* | '~'*) return 0 ;;       # 変数展開・チルダ展開（hook では評価できない）
     *) return 1 ;;
@@ -343,7 +350,7 @@ starts_with_relative_cd() {
   esac
   case "$word" in
     "") return 1 ;;
-    /* | '$('* | '`'* | '$'* | '~'*) return 1 ;;   # 絶対・置換・展開は absolute 側が扱う
+    /* | [A-Za-z]:/* | [A-Za-z]:\\* | '$('* | '`'* | '$'* | '~'*) return 1 ;;   # 絶対（Windows のドライブ付きを含む）・置換・展開は absolute 側が扱う
     *) return 0 ;;
   esac
 }
@@ -354,11 +361,11 @@ segment_is_cwd_independent() { # <segment>
   case "$HEAD_WORD" in
     # 空セグメントと、分割で残る制御構文の閉じ
     "" | "done" | "fi" | "esac" | "}" | ")") return 0 ;;
-    /*) return 0 ;; # 絶対パスの実行（`/abs/bin/x`）
+    /* | [A-Za-z]:/* | [A-Za-z]:\\*) return 0 ;; # 絶対パスの実行（`/abs/bin/x`。Windows の `C:/x` を含む）
   esac
-  # 第 1 引数が絶対パス（`bash /abs/script.sh`）
+  # 第 1 引数が絶対パス（`bash /abs/script.sh`。Windows の `bash C:/x.sh` を含む）
   case "$HEAD_REST" in
-    /*) return 0 ;;
+    /* | [A-Za-z]:/* | [A-Za-z]:\\*) return 0 ;;
   esac
   starts_with_absolute_cd "$HEAD_CMD" && return 0
   case "$HEAD_WORD" in

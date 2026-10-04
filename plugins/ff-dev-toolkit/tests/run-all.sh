@@ -218,6 +218,18 @@ if [ -f "$SCRIPT_DIR/lib/utf8-locale.sh" ]; then
   ff_ensure_utf8_locale
 fi
 
+# Windows の Git Bash（MSYS / Cygwin）では全件ゲートが完走しないことがあるので、WSL で流す手順を
+# 冒頭に案内する（Issue `#2030`）。実行は止めない。Linux / macOS では何も出さない（判定は bash
+# 組み込みの OSTYPE だけ）。lib が無い fixture コピーでは素通しする（上のロケールと同じ扱い）。
+# 入れ子の run-all（公開レイアウトの検査など）では外側が出し済みなので繰り返さない。
+if [ "${FF_RUN_ALL_NESTED:-0}" = "0" ] && [ -f "$SCRIPT_DIR/../scripts/lib/wsl-notice.sh" ]; then
+  # shellcheck source=../scripts/lib/wsl-notice.sh
+  . "$SCRIPT_DIR/../scripts/lib/wsl-notice.sh"
+  if ff_host_is_msys "${OSTYPE:-}"; then
+    ff_run_all_msys_notice "${OSTYPE:-}" "$(git -C "$SCRIPT_DIR/.." rev-parse --show-prefix 2>/dev/null || true)"
+  fi
+fi
+
 # 入れ子で既定 suite 一覧を走らせると、自己テスト → 本ランナー → 自己テスト … と
 # 無限再帰する（merge-cleanup の一時 git リポジトリ生成まで巻き込んで暴走する）。
 # 明示引数付きの入れ子だけを許し、引数なしの入れ子は fail-closed で止める。
@@ -978,6 +990,7 @@ else
     # リポジトリ + stub CLI で実走して確かめる。ミューテーション 5 件つき（詳細は
     # suite README）。実 CLI・ネットワーク・課金は伴わない。
     "$SCRIPT_DIR/multi-agent-revision-guard/verify.sh"
+    "$SCRIPT_DIR/review-evidence/verify.sh"
     # リビジョンガードのツリー変化判定パス除外（Issue #747）: FF_MULTI_AGENT_IGNORE_PATHS
     # と既定 .superpowers/** の除外が効くこと・除外の外は従来どおり破棄すること・
     # 空/空白パターンの fail-closed。一時 git リポジトリ + stub CLI で実走し、
@@ -1083,6 +1096,8 @@ fi
 # のときだけで、既定実行では「除外した selftest のうち何件が必須名簿掲載か」をサマリーが
 # 名指しする（意図した除外であることは変わらないが、重みが読めるようにする）。
 REQUIRED_SUITES=(
+  # Consumer ready の証跡束縛を検証する唯一の suite。
+  review-evidence
   # 緩めた本文差分述語（チェックボックス + ff-effort ブロックだけを許可）の behavioral
   # 検証を持つ唯一の suite。jq 不在で丸ごと skip されると、安全ゲートが本当に
   # マーカー外の編集を弾くかを誰も見なくなる（Issue #1136）。

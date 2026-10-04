@@ -20,6 +20,38 @@
 
 ## [Unreleased]
 
+## [0.148.0] - 2026-10-05
+
+### 追加
+
+- Added: producer-owned review evidence、先行レビュー順序・部分再レビュー系譜の共通検証を追加。consumer はレポートへ刻印せず ready を検証できる。
+- Windows の Git Bash 上で動いているときだけ、WSL での利用をすすめる案内を出すようになった。セッション開始時の更新通知 hook が 1 日 1 回、理由と切り替え方を表示し（`FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1` で止められる）、全件ゲート `run-all.sh` も冒頭で WSL での流し方を案内する（実行は止めない）。Linux / macOS / WSL の中では何も出さず、判定のために外部プロセスを起動しない。
+
+### 変更
+
+- リポジトリの root に `.gitattributes`（`* text=auto eol=lf`）を追加した。`core.autocrlf=true`（Git for Windows の既定）の環境でも、作業ツリーとプラグインのインストール実体のテキストが LF になる。意図して CRLF にしている fixture は、fixtures ディレクトリの `.gitattributes` で `-text` にしている。既存の checkout は、未コミットの変更を commit か stash してから、リポジトリの root で `git rm -r --cached -q .` と `git reset --hard` を実行すると LF で取り直せる（untracked のファイルは残る。`git add --renormalize .` は index だけを直すので、作業ツリーの CRLF は残る）。
+
+### 修正
+
+- レビュー証跡の最終検証で、指定した出力先と証跡のレポート実体が一致することを確認し、別出力先から成功証跡だけを流用する経路を拒否。先行レビュー・部分再レビューの別出力先参照は維持。
+- 同梱の spec-docs MCP が、Windows でも `docs/02-design/API.md` の形（`/` 区切り）でパスを返すようになった。従来は `list_docs` / `search` / spec 索引のパスがバックスラッシュ区切りになり、`list_docs` の prefix にツール説明の例どおり `docs/02-design/` を渡すと 0 件になっていた。Windows では、prefix を `docs\02-design\` の形で渡しても同じ結果になる。
+- Windows（Git Bash）で native の jq.exe を使っているとき、終了コードの握り潰し・background の cwd・長時間ゲート・`.sh` 保存時の検査の各ガードが、警告も出さずに素通りしていた問題を直した。jq.exe は改行を `\r\n` で出すため、複数の値を改行でつないで取り出すと先頭の値が `Bash\r` になり、判定対象外として扱われていた。hook は取り込んだ値から `\r` を落としてから判定する。
+- 同じ原因で、実績未記入の Issue を閉じるマージの停止が複数 Issue のうち最後以外を読み飛ばしていた点、decision-tree が UserPromptSubmit を記録しなかった点、マーケットプレイス自動更新が `--scope` に `\r` 付きの値を渡していた点、`route.sh --check` が誤って赤になっていた点、`triage-candidate.sh` の live PLAYBOOK fallback が常に失敗していた点、レビューの巡回上限の通過口 `FF_REVIEW_ROUND_ACK=1` が prompt の最後の行以外では効かなかった点も直した。
+- background の cwd ガードが、Windows のドライブ付き絶対パス（`cd C:/x` / `cd 'C:\x'`）を相対パスの cd と誤判定しないようにした。
+- Windows（Git Bash）で、レビュー走行中ガード（guard-review-in-flight）が、本来は許可するリポジトリ外への書き込みと `.review-results\` への書き込みまで止めていた問題を直した。Claude Code は Windows でパスを `C:\repo\x.md` の形で渡すため、相対パスと読まれて作業ツリー内の書き込みとして扱われていた。ドライブ付きのパス（`C:\x` / `C:/x`）を絶対パスとして扱い、区切りを `/` へ寄せてから判定する。
+- 同じ原因で、`finish.sh` の precheck が自分の worktree を別の保持者と読み、Windows では毎回 `--delete-branch` を外したマージコマンドを出していた点、指示ファイルの読み込みバイト数の記録（record-instruction-bytes）が何も記録しなかった点、`triage-candidate.sh` の原則 glob が常に空振りしていた点を直した。checkout / restore ガードと PR follow-up ガードも、ドライブ付きのパスを正しく辿るようにした。
+- レビュー走行中ガードが、出力先（`.review-results`）の中から `..` でツリー内へ戻るパスへの書き込みを、出力先への書き込みとして通していた点を直した（Windows に限らない）。あわせて Windows では、引用符なしの `C:\x`（bash は `C:x` という相対パスとして扱う）や、大文字小文字だけが違うツリー内のパスを、ツリー外として通さないようにした。
+- `/check-plugin-versions` が Windows の Git Bash でも各プラグインの参照版を取得するようになった。従来は Git Bash が jq へ渡す引数の `"/"` を Windows のパスへ書き換えるため、GitHub から取得するファイルのパスの区切りまでエンコードされ、全行が「確認不可」になっていた。
+- Windows（Git Bash）で同梱のテストを回したときに、作業機へ副作用を残したり本物の gh を呼んだりしないようにした。`jev-adapter` と `merge-freshness` の「書けない先」を一時領域の中のパスにし（`/dev/null/…` が `C:\dev\null\…` として作られていた。Node へ渡すパスは `cygpath -m` で先に変換する）、`mcp` のテストは null デバイスを `os.devNull` で開く。`jev-adapter` の偽 gh を使う検査は、Node が本物の `gh.exe` を起動してしまう Windows では理由付きで飛ばす。`run-all` の hook 一括実行の検査は、Python を UTF-8 モードで動かし、Git Bash の `bash` を絶対パスで起動するようにした（素の `bash` は WSL の `bash.exe` になっていた）。
+- `/pre-commit-check` の実行ビットの案内に、`core.fileMode=false` の Windows では `git update-index --chmod=+x` を使うことを足した。
+- `finish.sh precheck`（`/close-issue`）が、PR 本文やレビュースレッドの本文が大きい PR で判定不能（`PRECHECK=undetermined`）にならなくなった。読み直した PR の比較とレビュースレッドの畳み込みで、JSON を jq の引数ではなく標準入力で渡す。Windows の Git Bash では 10KB を超える本文で `Argument list too long` になっていた。
+- 同梱の週次 CI 健全性判定の回帰テストに、schedule と workflow_dispatch の両方の実行履歴が 140KB を超えても判定が成立することの検査を足した。大きな fixture はファイルで渡す（環境変数 1 つにも引数と同じ大きさの上限があるため）。
+- `/ace-curate` と `/retrospective` の knowledge commit が、Windows の Git Bash で `%TEMP%` 配下の clone から実行したときに「パスがリポジトリの外です」で止まらなくなった。渡されたパスがリポジトリ内かどうかを、cwd の綴りではなく git の出力で判定する。
+- 同じ判定で、checkout の中にある別の作業ツリー（linked worktree・submodule・入れ子のリポジトリ）のパスを、knowledge commit の `add` の時点で「パスがリポジトリの外です」として拒否するようになった。エラー文には、パスの作業ツリーとこのリポジトリの両方を出す。
+- 同梱の回帰テストのうち Windows の Git Bash でだけ成立する検査が、Linux / macOS で出す skip の理由文を「Windows の Git Bash でだけ成立する検査のため未実行」にそろえた。リリース前のゲートはこの文言を OS 限定の構造的な skip として扱い、環境の不足による skip とは区別して止めない。
+- `/check-plugin-versions` が Windows（Git Bash）で Claude Desktop のセッションを既定で検査するようになった。`%APPDATA%\Claude\local-agent-mode-sessions` と、MSIX 版のアプリが使う `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\local-agent-mode-sessions` のうち実在するものを読み、同じ実体の別名は 1 回だけ数える。これまでは macOS の置き場だけを見ていたため、Windows では「Desktop セッション保存先なし（検査対象なし）」の注記で終わっていた。
+- Desktop セッションの置き場そのものが symlink（Windows ではジャンクション）のときも、中のセッションを検査するようになった。これまでは注記も出さずに 0 件で終わっていた。
+
 ## [0.147.0] - 2026-10-03
 
 ### 変更

@@ -162,6 +162,8 @@ TARGET="$PLUGIN_ROOT/hooks/guard-long-gate-background.sh"
 # 先頭で 1 回落とす。ケース固有の `NAME=v bash "$TARGET"` はこの後に代入として届く（Issue `#1808`）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
+# shellcheck source=../lib/crlf-jq-shim.sh
+. "$SCRIPT_DIR/../lib/crlf-jq-shim.sh"
 isolate_hook_env "FF_DEV_TOOLKIT_SKIP_LONG_GATE_BACKGROUND_GUARD" "$TARGET"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 
@@ -702,6 +704,30 @@ MATCHER_OK="$(jq -r '[.hooks.PreToolUse[]? | select((.matcher // "") | test("Bas
   | .hooks[]?.command // empty] | map(select(test("guard-long-gate-background\\.sh"))) | length' "$HOOKS_JSON" 2>/dev/null || echo 0)"
 [ "$MATCHER_OK" = "1" ] && ok "(10b) Bash matcher のブロックに載っている" \
   || bad "(10b) Bash matcher のブロックに載っていません: $MATCHER_OK"
+
+# ---- Windows の jq.exe（改行を \r\n で出す）でも同じ判定になる（Issue `#2017`）----
+# hook は 7 フィールドを改行で連結して 1 回の jq で取り出す。修正前は tool_name が `Bash\r` に
+# なって判定対象外へ落ち、黙って素通りしていた（2026-10-03 に Windows 実機で測定）。シムは
+# Linux / macOS でも同じ値を再現するので、ここは修正前の hook で赤になる。
+echo "guard-long-gate-background: CRLF を出す jq でも同じ判定"
+CRLF_BIN="$TEST_TMP/crlf-jq-bin"
+crlf_rc=0
+ff_crlf_jq_shim "$CRLF_BIN" "$(command -v jq)" || crlf_rc=$?
+if [ "$crlf_rc" -eq 2 ]; then
+  echo "  ○ skip: perl が無いため CRLF の jq を再現できません（この 2 検査は未実行）"
+elif [ "$crlf_rc" -ne 0 ]; then
+  bad "CRLF の jq シムを作れませんでした（rc=${crlf_rc}）"
+else
+  crlf_deny_payload="$(payload "$GATE" general-purpose true "")"
+  crlf_pass_payload="$(payload "$GATE" general-purpose false 600000)"
+  SAVED_PATH="$PATH"
+  PATH="$CRLF_BIN:$PATH"
+  run_hook "$crlf_deny_payload"
+  assert_deny "(11a) CRLF の jq でも、子 + run-all.sh + run_in_background:true は deny"
+  run_hook "$crlf_pass_payload"
+  assert_silent "(11b) CRLF の jq でも、子 + timeout=600000（要求値ちょうど）は素通し"
+  PATH="$SAVED_PATH"
+fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then

@@ -174,7 +174,7 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-SESSIONS_DIR="$HOME/Library/Application Support/Claude/local-agent-mode-sessions"
+SESSIONS_DIR_ARG=""
 FORMAT=text
 CATALOG_COMPLETE=1
 usage() {
@@ -185,7 +185,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --config-dir|--sessions-dir)
       [ "$#" -ge 2 ] && [ -n "$2" ] || { usage >&2; exit 1; }
-      if [ "$1" = --config-dir ]; then CONFIG_DIR="$2"; else SESSIONS_DIR="$2"; fi
+      if [ "$1" = --config-dir ]; then CONFIG_DIR="$2"; else SESSIONS_DIR_ARG="$2"; fi
       shift 2 ;;
     --json) FORMAT=json; shift ;;
     --help|-h) usage; exit 0 ;;
@@ -196,6 +196,55 @@ for dependency in jq gh; do
   command -v "$dependency" >/dev/null 2>&1 || { echo "必要なコマンドがありません: $dependency" >&2; exit 1; }
 done
 [ -r "$SCRIPT_DIR/lib/plugin-versions.jq" ] || { echo '判定ライブラリがありません' >&2; exit 1; }
+
+# Desktop セッションの既定の置き場の候補を、OS の種別と環境の値（引数）から 1 行ずつ出す。
+# Windows（Git Bash / Cygwin）は %APPDATA%\Claude\local-agent-mode-sessions と、MSIX 版のアプリが
+# 仮想化して書く %LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\local-agent-mode-sessions
+# の両方。それ以外は macOS の置き場（Linux には Desktop が無く、従来どおり「対象なし」になる）。
+# 値を引数で受けるので、suite は OSTYPE を差し替えて Linux / macOS でも Windows の選び方を検査できる。
+desktop_sessions_candidates() { # ostype home appdata localappdata
+  local d
+  case "$1" in
+    msys*|cygwin*)
+      [ -z "$3" ] || printf '%s\n' "$3/Claude/local-agent-mode-sessions"
+      if [ -n "$4" ]; then
+        for d in "$4"/Packages/Claude_*/LocalCache/Roaming/Claude/local-agent-mode-sessions; do
+          [ ! -e "$d" ] || printf '%s\n' "$d"
+        done
+      fi ;;
+    *) printf '%s\n' "$2/Library/Application Support/Claude/local-agent-mode-sessions" ;;
+  esac
+}
+to_posix_path() {
+  case "${OSTYPE:-}" in
+    msys*|cygwin*) if command -v cygpath >/dev/null 2>&1; then cygpath -u "$1"; return; fi ;;
+  esac
+  printf '%s\n' "$1"
+}
+# --sessions-dir があればそれだけを見る。無ければ実在する候補を全部見る。MSIX 版のアプリ（とその子の
+# Git Bash）からは 2 つの候補が同じディレクトリの別名になるので、同じ実体（-ef = device と inode が
+# 同じ）は 1 回だけ数える。別々の実体がどちらも在るとき（インストール形態を切り替えた後など）は、
+# 古いほうにだけ残ったセッションを見落とさないよう両方を検査する。
+SESSIONS_DIRS=()
+if [ -n "$SESSIONS_DIR_ARG" ]; then
+  SESSIONS_DIRS=("$SESSIONS_DIR_ARG")
+else
+  appdata=""; localappdata=""
+  [ -z "${APPDATA:-}" ] || appdata="$(to_posix_path "$APPDATA")"
+  [ -z "${LOCALAPPDATA:-}" ] || localappdata="$(to_posix_path "$LOCALAPPDATA")"
+  first_candidate=""
+  while IFS= read -r candidate; do
+    [ -n "$first_candidate" ] || first_candidate="$candidate"
+    [ -e "$candidate" ] || continue
+    duplicate=0
+    for kept in ${SESSIONS_DIRS[@]+"${SESSIONS_DIRS[@]}"}; do
+      if [ "$candidate" -ef "$kept" ]; then duplicate=1; fi
+    done
+    [ "$duplicate" = 1 ] || SESSIONS_DIRS+=("$candidate")
+  done < <(desktop_sessions_candidates "${OSTYPE:-}" "$HOME" "$appdata" "$localappdata")
+  # 1 つも実在しなければ、先頭の候補で従来どおり「保存先なし」を注記する
+  [ "${#SESSIONS_DIRS[@]}" -gt 0 ] || SESSIONS_DIRS=("$first_candidate")
+fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/plugin-versions.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 printf '{}\n' > "$WORK/cache.json"
@@ -253,7 +302,8 @@ build_catalog() {
     if ! loc="$(location "$source")"; then CATALOG_COMPLETE=0; continue; fi
     repo="$(field "$loc" '.repo')"; ref="$(field "$loc" '.ref')"; path="$(field "$loc" '.path')"
     [ -z "$path" ] || path="$path/"
-    path="$(jq -rn --arg p "${path}.claude-plugin/marketplace.json" '$p|split("/")|map(@uri)|join("/")')"
+    # エンコードはモジュール側の uri_path で行う。jq プログラムの引数へ "/" を書かない（Issue `#2019`）
+    path="$(jql -rn --arg p "${path}.claude-plugin/marketplace.json" 'include "plugin-versions"; $p|uri_path')"
     if ! manifest="$(api "repos/$repo/contents/$path" "$ref")"; then CATALOG_COMPLETE=0; continue; fi
     if ! jq -e '.plugins | type == "array"' "$manifest" >/dev/null 2>&1; then CATALOG_COMPLETE=0; continue; fi
     if ! jq -e '.plugins | all(.[]; type == "object" and (.name|type == "string" and length > 0))' "$manifest" >/dev/null 2>&1; then
@@ -288,7 +338,7 @@ check_row() {
   repo="$(field "$loc" '.repo')"; path="$(field "$loc" '.path')"; ref="$(field "$loc" '.ref')"
   ROW="$(jq -c --argjson loc "$loc" '. + {source:$loc}' <<< "$ROW")"
   local manifest_path="${path:+$path/}.claude-plugin/plugin.json"
-  manifest_path="$(jq -rn --arg p "$manifest_path" '$p|split("/")|map(@uri)|join("/")')"
+  manifest_path="$(jql -rn --arg p "$manifest_path" 'include "plugin-versions"; $p|uri_path')"
   if ! remote="$(api "repos/$repo/contents/$manifest_path" "$ref")"; then emit unknown 'GitHub plugin.json を取得できません'; return; fi
   if ! jq -e --arg name "$name" 'type == "object" and .name == $name' "$remote" >/dev/null 2>&1; then
     emit unknown 'GitHub plugin.json の形式または名前が不一致'; return
@@ -347,14 +397,16 @@ check_installed() {
   done < "$WORK/installed-entries.jsonl"
 }
 
-check_desktop() {
-  local rpm manifest file entry id name market version sha session
-  if [ ! -e "$SESSIONS_DIR" ]; then note 'Desktop セッション保存先なし（検査対象なし）'; return; fi
+check_desktop() { # sessions_dir
+  local sessions_dir="$1" rpm manifest file entry id name market version sha session
+  if [ ! -e "$sessions_dir" ]; then note 'Desktop セッション保存先なし（検査対象なし）'; return; fi
   ROW='{"layer":"desktop","plugin":"(sessions)"}'
-  if [ ! -d "$SESSIONS_DIR" ]; then emit unknown 'Desktop セッション保存先がディレクトリではありません'; return; fi
-  if ! find "$SESSIONS_DIR" -type d -name rpm -print0 > "$WORK/rpms" 2> "$WORK/scan-error"; then emit unknown 'Desktop セッション走査に失敗（一部のみ検査）'; fi
+  if [ ! -d "$sessions_dir" ]; then emit unknown 'Desktop セッション保存先がディレクトリではありません'; return; fi
+  # -H: 置き場そのものが symlink（Windows ではジャンクションも symlink に見える）でも中へ降りる。find の既定は
+  # 起点の symlink を辿らず、注記も unknown も出さずに 0 件で終わる
+  if ! find -H "$sessions_dir" -type d -name rpm -print0 > "$WORK/rpms" 2> "$WORK/scan-error"; then emit unknown 'Desktop セッション走査に失敗（一部のみ検査）'; fi
   while IFS= read -r -d '' rpm; do
-    session="${rpm#"$SESSIONS_DIR"/}"; session="${session%/rpm}"
+    session="${rpm#"$sessions_dir"/}"; session="${session%/rpm}"
     manifest="$rpm/manifest.json"
     ROW="$(jq -cn --arg session "$session" '{layer:"desktop",plugin:"(manifest)",session:$session}')"
     if ! jq -e '.plugins|type == "array" and all(.[]; type == "object")' "$manifest" >/dev/null 2>&1; then
@@ -397,7 +449,7 @@ else
 fi
 build_catalog
 check_installed
-check_desktop
+for sessions_dir in "${SESSIONS_DIRS[@]}"; do check_desktop "$sessions_dir"; done
 jq -s --slurpfile notes "$WORK/notes.jsonl" '
   map(if .layer == "desktop" and .status == "outdated" then . + {action:"ローカル更新では解消できません。Desktop でプラグインを再登録し、新しいセッションで再検査してください。"} else . end)
   | {results:., summary:{total:length,outdated:map(select(.status=="outdated"))|length,

@@ -239,6 +239,9 @@ rr_agent_is_launch() {
   RR_ACK=0
   subagent="$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // ""' 2>/dev/null)"
   prompt="$(printf '%s' "$input" | jq -r '.tool_input.prompt // ""' 2>/dev/null)"
+  # Windows の jq.exe は改行を \r\n で出す。落とさないと、最後の行以外に置いた
+  # FF_REVIEW_ROUND_ACK=1 が `…=1\r` になって一致せず、抜け道が効かない（Issue `#2017`）
+  prompt="${prompt//$'\r'/}"
   if ! is_review_lock_type "$subagent"; then
     [ -n "$prompt" ] && is_delegated_review_prompt "$prompt" || return 1
   fi
@@ -316,6 +319,8 @@ rr_store_dir() { # <repo root>
   [ -n "$c" ] || return 1
   case "$c" in
     /*) : ;;
+    # Windows の git は linked worktree で `C:/repo/.git` を返す（Git Bash / Cygwin のときだけ。Issue `#2018`）
+    [A-Za-z]:/*) case "${OSTYPE:-}" in msys* | cygwin*) : ;; *) c="$1/$c" ;; esac ;;
     *) c="$1/$c" ;;
   esac
   c="$(cd "$c" 2>/dev/null && pwd -P 2>/dev/null)" || return 1

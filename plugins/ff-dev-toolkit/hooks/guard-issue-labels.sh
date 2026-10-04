@@ -133,6 +133,7 @@ tool="$(printf '%s' "$input" | jq -r '.tool_name // ""' 2>/dev/null)" || exit 0
 [ "$tool" = "Bash" ] || exit 0
 
 cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)" || exit 0
+cmd="${cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
 [ -n "$cmd" ] || exit 0
 case "$cmd" in
   *issue*) : ;;

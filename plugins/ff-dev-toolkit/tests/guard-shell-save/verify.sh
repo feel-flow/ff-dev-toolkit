@@ -45,6 +45,8 @@ LIB_SRC="${FF_GUARD_SHELL_SAVE_LIB_DIR:-$PLUGIN_ROOT/tests/lib}"
 isolate_hook_env "FF_SHELL_SAVE_ACK" "$PLUGIN_ROOT/hooks/guard-shell-save.sh"
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
+# shellcheck source=../lib/crlf-jq-shim.sh
+. "$SCRIPT_DIR/../lib/crlf-jq-shim.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 
 [ -f "$TARGET" ] || { echo "✗ guard-shell-save.sh が見つかりません: ${TARGET}" >&2; exit 1; }
@@ -493,6 +495,25 @@ else
   else
     bad "M4: 集合比較でも deny のまま: decision=[${DECISION}]"
   fi
+fi
+
+# ---- Windows の jq.exe（改行を \r\n で出す）でも同じ判定になる（Issue `#2017`）----
+# hook は tool_name と file_path を "\n" で連結して `jq -j` で取り出す。修正前は tool_name が
+# `Write\r` になって判定対象外へ落ち、fail-closed の設計なのに黙って素通りしていた
+# （2026-10-03 に Windows 実機で測定）。シムは hook の呼び出しにだけ PATH で差す。
+echo "guard-shell-save: CRLF を出す jq でも同じ判定"
+CRLF_BIN="$TEST_TMP/crlf-jq-bin"
+crlf_rc=0
+ff_crlf_jq_shim "$CRLF_BIN" "$(command -v jq)" || crlf_rc=$?
+if [ "$crlf_rc" -eq 2 ]; then
+  echo "  ○ skip: perl が無いため CRLF の jq を再現できません（この 2 検査は未実行）"
+elif [ "$crlf_rc" -ne 0 ]; then
+  bad "CRLF の jq シムを作れませんでした（rc=${crlf_rc}）"
+else
+  run_json "$HOOK" "$(write_json "$WORK/tests/x/verify.sh" "$(printf '%s\n' '#!/usr/bin/env bash' "$MB_BAD")")" "PATH=$CRLF_BIN:$PATH"
+  assert_fire "W1: CRLF の jq でも、Write で \$VAR 直後のマルチバイトを含む verify.sh は deny"
+  run_json "$HOOK" "$(write_json "$WORK/tests/x/notes.md" "$MB_BAD")" "PATH=$CRLF_BIN:$PATH"
+  assert_pass "W2: CRLF の jq でも、.sh 以外への保存は止めない"
 fi
 
 echo

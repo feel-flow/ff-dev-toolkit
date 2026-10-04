@@ -295,6 +295,10 @@ meta="$(printf '%s' "$input" | jq -r '
   (if (.tool_input.timeout | type) == "number" then (.tool_input.timeout | tostring) else "" end),
   (.session_id // ""),
   (.tool_input.command // "")' 2>/dev/null)" || exit 0
+# Windows の jq.exe は改行を \r\n で出す。`$(…)` が落とすのは末尾だけなので、値の区切りと
+# command 内の改行に残る \r を落とす（落とさないと tool_name が `Bash\r` になり、ガードが
+# 黙って素通りする。Issue `#2017`）。
+meta="${meta//$'\r'/}"
 
 meta_rest="$meta"
 FIELD=""

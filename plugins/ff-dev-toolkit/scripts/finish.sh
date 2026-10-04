@@ -704,7 +704,12 @@ cmd_precheck() {
     printf '%s' "$rt_json" | jq -e '.data.repository.pullRequest.reviewThreads.nodes | type == "array"' >/dev/null 2>&1 \
       || { echo "REVIEW_THREADS_SOURCE=unavailable"; rm -f "$rt_err"; die_env "レビュースレッドの応答を解釈できません（reviewThreads.nodes が配列でない。応答の先頭: $(printf '%s' "$rt_json" | head -c 200 | tr '\n' ' ')）" "gh api graphql の応答（PR #${PR_NUMBER}）を確かめて finish.sh precheck を再実行する（スレッド 0 件として扱わない）"; }
     [[ -n "$rt_author" ]] || rt_author="$(printf '%s' "$rt_json" | jq -r '.data.repository.pullRequest.author.login // ""')"
-    rt_nodes="$(printf '%s' "$rt_json" | jq -c --argjson acc "$rt_nodes" '$acc + .data.repository.pullRequest.reviewThreads.nodes')" \
+    # 畳み込んだ配列は標準入力で渡す。jq の引数（--argjson）に載せると、スレッドの本文が積もった配列が
+    # Linux の引数 1 つの上限（128KB）や Windows のコマンドライン全体の上限（約 32KB。Git Bash から起動する
+    # jq では UTF-8 のバイト数で効く）を超え、jq が起動できずに判定不能へ倒れる（Issue `#2029`）
+    rt_nodes="$(printf '%s\n%s\n' "$rt_nodes" "$rt_json" \
+      | jq -cs 'if length == 2 and (.[0] | type == "array") then .[0] + .[1].data.repository.pullRequest.reviewThreads.nodes
+                else error("unexpected review thread pages") end')" \
       || { rm -f "$rt_err"; die_env "レビュースレッドを畳み込めません（jq）" "gh api graphql の応答（PR #${PR_NUMBER}）を確かめて finish.sh precheck を再実行する"; }
     # hasNextPage は true / false 以外（欠落・null）を「次ページ無し」へ倒さない（101 件目以降の未返信が消える）
     rt_next="$(printf '%s' "$rt_json" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage | if type == "boolean" then tostring else "invalid" end')"
@@ -763,8 +768,13 @@ cmd_precheck() {
   # スナップショットなので、fetch を忘れた回に「古い先端 == 古い実測対象」で一致してしまう。
   local PR_JSON_AGAIN snap_before snap_after snap_diff
   PR_JSON_AGAIN="$(gh_pr_view_or_die "$PR_NUMBER" "$PR_FIELDS")" || exit $?
+  # 2 つのスナップショットは標準入力で渡す（PR 本文を含むので、引数に載せると上の畳み込みと同じ上限で
+  # jq が起動できない。Issue `#2029`。Windows で 10KB 超の本文から実測）
   snap_before="$(pr_snapshot <<<"$PR_JSON")" && snap_after="$(pr_snapshot <<<"$PR_JSON_AGAIN")" \
-    && snap_diff="$(jq -rn --argjson a "$snap_before" --argjson b "$snap_after" '[$a | keys[] as $k | select($a[$k] != $b[$k]) | $k] | join(",")')" \
+    && snap_diff="$(printf '%s\n%s\n' "$snap_before" "$snap_after" \
+      | jq -rs 'if length == 2 and (.[0] | type == "object") and (.[1] | type == "object")
+                then .[0] as $a | .[1] as $b | [$a | keys[] as $k | select($a[$k] != $b[$k]) | $k] | join(",")
+                else error("unexpected snapshots") end')" \
     || die_env "PR の読み直し結果を初回と比べられません（jq）" "gh pr view ${PR_NUMBER} --json ${PR_FIELDS} の出力を確かめる"
   if [[ -n "$snap_diff" ]]; then
     echo "PR_SNAPSHOT=changed"
@@ -848,15 +858,21 @@ cmd_precheck() {
   # base / head ブランチが別の worktree に保持されていれば --delete-branch を付けない
   # （マージ後にローカルで base へ切り替えられず、リモートブランチ削除まで到達しない）。
   # 一覧が取れない回は保持者 0 とみなさず（fail-open で --delete-branch 付きを出さない）、生成しない
-  local wt_list wt_path="" wt_branch="" base_held="" head_held="" line
+  local wt_list wt_path="" wt_phys="" wt_branch="" base_held="" head_held="" line
   wt_list="$(git worktree list --porcelain 2>&1)" \
     || die_env "worktree の一覧を取得できません（git worktree list: ${wt_list}）。保持者を判定できないため merge コマンドを生成しない" "git worktree list --porcelain が通る状態（壊れた worktree は git worktree prune）に直してから finish.sh precheck を再実行する"
   while IFS= read -r line; do
     case "$line" in
-      "worktree "*) wt_path="${line#worktree }"; wt_branch="" ;;
+      "worktree "*)
+        wt_path="${line#worktree }"; wt_branch=""
+        # repo_root は pwd -P の物理パス。git はパスを別の綴りで返しうる（Windows の Git Bash では
+        # `C:/repo` に対して repo_root が `/c/repo`）ので、同じく物理パスへ揃えてから比べる。揃えないと
+        # 自分の worktree を保持者と読み、毎回 --delete-branch を落としていた（Issue `#2018`）。
+        # 解決できない（消えた worktree）ときは綴りのまま比べる
+        wt_phys="$(CDPATH='' cd -P -- "$wt_path" 2>/dev/null && pwd -P)" || wt_phys="$wt_path" ;;
       "branch refs/heads/"*)
         wt_branch="${line#branch refs/heads/}"
-        [[ "$wt_path" == "$repo_root" ]] && continue
+        [[ "$wt_phys" == "$repo_root" ]] && continue
         [[ "$wt_branch" == "$base_ref" ]] && base_held="$wt_path"
         [[ "$wt_branch" == "$head_ref" ]] && head_held="$wt_path" ;;
     esac

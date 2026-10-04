@@ -51,6 +51,8 @@ isolate_hook_env "FF_DEV_TOOLKIT_SKIP_BACKGROUND_CWD_GUARD" "$TARGET"
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
+# shellcheck source=../lib/crlf-jq-shim.sh
+. "$SCRIPT_DIR/../lib/crlf-jq-shim.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 
 [ -f "$TARGET" ] || { echo "✗ guard-background-cwd.sh が見つかりません: $TARGET" >&2; exit 1; }
@@ -620,6 +622,45 @@ if command -v node >/dev/null 2>&1; then
   fi
 else
   echo "  ○ skip: node が無いため features.hooks=false 経路は未検査（guard-background-cwd の ASDD ゲート無効判定）"
+fi
+
+# ---- Windows: ドライブ付き絶対パスと、jq.exe の \r\n 出力（Issue `#2017` / `#2018`）----
+# Git Bash では `cd C:/x` / `cd 'C:\x'` がそのまま絶対パスとして通る。修正前の hook はこれを
+# 相対 cd と読み、linked worktree のあるリポジトリで deny していた（jq の \r\n で hook ごと
+# 素通りしていた間は表に出なかった。2026-10-03 に Windows 実機で測定）。
+echo "guard-background-cwd: Windows のドライブ付き絶対パス / CRLF を出す jq"
+if [ "$WT_READY" -eq 1 ]; then
+  run_hook 'cd C:/work/repo && npm test' "$WTMAIN" false
+  assert_silent "経路 B + cd C:/…（ドライブ付き絶対パス）は相対 cd として扱わない"
+  run_hook "cd 'C:\\work\\repo' && npm test" "$WTMAIN" false
+  assert_silent "経路 B + cd 'C:\\…'（バックスラッシュ区切り）も相対 cd として扱わない"
+  run_hook 'bash C:/work/run.sh' "$WTMAIN" false
+  assert_silent "経路 B + 第 1 引数がドライブ付き絶対パス（bash C:/…）は cwd 非依存として扱う"
+else
+  echo "  ○ skip: linked worktree の fixture を作れないため、ドライブ付き絶対パスの 3 検査は未実行"
+fi
+
+# hook は 4 フィールドを改行で連結して 1 回の jq で取り出す。修正前は tool が `Bash\r` になって
+# 判定対象外へ落ち、黙って素通りしていた。シムは Linux / macOS でも同じ値を再現する。
+CRLF_BIN="$TEST_TMP/crlf-jq-bin"
+crlf_rc=0
+ff_crlf_jq_shim "$CRLF_BIN" "$(command -v jq)" || crlf_rc=$?
+if [ "$crlf_rc" -eq 2 ]; then
+  echo "  ○ skip: perl が無いため CRLF の jq を再現できません（この 2 検査は未実行）"
+elif [ "$crlf_rc" -ne 0 ]; then
+  bad "CRLF の jq シムを作れませんでした（rc=${crlf_rc}）"
+else
+  SAVED_PATH="$PATH"
+  PATH="$CRLF_BIN:$PATH"
+  run_hook 'npm test' "$MONO"
+  assert_warn "CRLF の jq でも、モノレポ + background + 非絶対 cd は警告する"
+  if [ "$WT_READY" -eq 1 ]; then
+    run_hook 'cd docs/notes && npm test' "$WTMAIN" false
+    assert_deny "CRLF の jq でも、経路 B + 相対 cd は deny"
+  else
+    echo "  ○ skip: linked worktree の fixture を作れないため、CRLF の jq での経路 B は未実行"
+  fi
+  PATH="$SAVED_PATH"
 fi
 
 echo

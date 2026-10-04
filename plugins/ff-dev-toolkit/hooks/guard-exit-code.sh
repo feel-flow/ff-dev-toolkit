@@ -282,6 +282,10 @@ if [ "$jq_rc" -ne 0 ]; then
   [ "$jq_rc" -eq 5 ] && exit 0
   deny_unavailable "コマンド本文を取り出せませんでした（jq rc=${jq_rc}）"
 fi
+# Windows の jq.exe は改行を \r\n で出す。`$(…)` が落とすのは末尾だけなので、値の区切りと
+# command 内の改行に残る \r を落とす（落とさないと `Bash\r` が下の case に当たらず、
+# ガードが黙って素通りする。Issue `#2017`）。
+meta="${meta//$'\r'/}"
 
 case "$meta" in
   Bash"$nl"*) cmd="${meta#Bash"$nl"}" ;;

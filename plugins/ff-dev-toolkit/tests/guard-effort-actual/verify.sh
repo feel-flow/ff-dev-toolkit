@@ -35,6 +35,8 @@ isolate_hook_env "FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD" "$TARGET"
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
+# shellcheck source=../lib/crlf-jq-shim.sh
+. "$SCRIPT_DIR/../lib/crlf-jq-shim.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 
 [ -f "$TARGET" ] || { echo "✗ guard-effort-actual.sh が見つかりません: $TARGET" >&2; exit 1; }
@@ -711,6 +713,34 @@ if command -v node >/dev/null 2>&1; then
   fi
 else
   echo "  ○ skip: node が無いため features.hooks=false 経路は未検査（guard-effort-actual の ASDD ゲート無効判定）"
+fi
+
+# ---- Windows の jq.exe（改行を \r\n で出す）でも同じ判定になる（Issue `#2017`）----
+# 閉じる Issue の番号は jq の複数行出力を 1 行ずつ読む。修正前は最後の行以外が `900\r` に
+# なり、`gh issue view` が失敗して読み飛ばされていた（PR 46 は未記入の `#900` が先頭で、
+# 記入済みの `#904` が最後なので、修正前の hook では素通りする）。jq のラッパーは実体を
+# 絶対パスで exec するので、この区間だけ委譲先をシムへ差し替え、終わったら元へ戻す。
+echo "guard-effort-actual: CRLF を出す jq でも同じ判定"
+CRLF_BIN="$TEST_TMP/crlf-jq-bin"
+crlf_rc=0
+ff_crlf_jq_shim "$CRLF_BIN" "$REAL_JQ" || crlf_rc=$?
+if [ "$crlf_rc" -eq 2 ]; then
+  echo "  ○ skip: perl が無いため CRLF の jq を再現できません（この 2 検査は未実行）"
+elif [ "$crlf_rc" -ne 0 ]; then
+  bad "CRLF の jq シムを作れませんでした（rc=${crlf_rc}）"
+else
+  cp "$BIN_DIR/jq" "$TEST_TMP/jq-wrapper.orig"
+  cat > "$BIN_DIR/jq" <<STUB
+#!/usr/bin/env bash
+[ -n "\${FF_STUB_DIR:-}" ] && printf '%s\n' "\$*" >> "\$FF_STUB_DIR/jq-calls.log"
+exec "$CRLF_BIN/jq" "\$@"
+STUB
+  chmod +x "$BIN_DIR/jq"
+  run_hook "gh pr merge 46 --squash"
+  assert_fire "CRLF の jq でも、複数 Issue を閉じる PR の先頭側の未記入を見落とさない"
+  run_hook "gh pr merge 45 --squash"
+  assert_pass "CRLF の jq でも、実績が記入済みなら停止しない"
+  cp "$TEST_TMP/jq-wrapper.orig" "$BIN_DIR/jq"
 fi
 
 echo

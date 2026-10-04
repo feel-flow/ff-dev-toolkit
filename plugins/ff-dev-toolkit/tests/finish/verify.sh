@@ -529,6 +529,39 @@ if [ "$RC" -eq 1 ] && has_line "$OUT" "REVIEW_THREADS=2" && has_line "$OUT" "REV
 else
   bad "T7: ページ送りが違う（rc=${RC}）: ${OUT} / $(cat "$STUB_LOG")"
 fi
+# T7b: スレッド本文が積もって 140KB を超えても畳み込みで落ちない。jq の引数（--argjson）で畳むと、Linux の
+# 引数 1 つの上限（128KB）や Windows のコマンドライン全体の上限（約 32KB。Git Bash から起動する jq では UTF-8 のバイト数で効く）を超えて判定不能（rc 2）へ倒れる。
+# 大きな本文はファイルから足す（write_threads_json の --arg に載せると fixture の側が同じ上限で落ちる）
+head -c 150000 /dev/zero | tr '\0' 'x' >"$TMP/big.txt"
+jq --rawfile big "$TMP/big.txt" '.data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes[0].body += $big' \
+  "$TMP/threads-p1.json" >"$TMP/threads-big-p1.json"
+jq --rawfile big "$TMP/big.txt" '.data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes[0].body += $big' \
+  "$TMP/threads-p2.json" >"$TMP/threads-big-p2.json"
+big_bytes="$(wc -c <"$TMP/threads-big-p1.json" | tr -d ' ')"
+if [ "${big_bytes:-0}" -gt 140000 ]; then
+  STUB_THREADS_JSON="$TMP/threads-big-p1.json" STUB_THREADS_JSON_PAGE2="$TMP/threads-big-p2.json" run_finish "$WORK" precheck 7
+  if [ "$RC" -eq 1 ] && has_line "$OUT" "REVIEW_THREADS=2" && has_line "$OUT" "REVIEW_THREADS_UNANSWERED=1" && has_text "$OUT" "REVIEW_THREAD=T_p2"; then
+    ok "T7b: 140KB を超えるスレッド本文（1 ページ ${big_bytes} バイト）でも全ページを畳んで判定する"
+  else
+    bad "T7b: 大きなスレッド本文で畳み込みが成立しない（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+else
+  bad "T7b: 大きなスレッドの fixture を作れていない（${big_bytes:-0} バイト。この検査は何も測っていない）"
+fi
+# T7c: PR 本文が 140KB を超えても、読み直しの比較（PR_SNAPSHOT）で落ちない（同じ上限。導入先で 10KB 超の本文から実測）
+jq --rawfile big "$TMP/big.txt" '.body += "\n" + $big' "$TMP/pr.json" >"$TMP/pr-big.json" && cp "$TMP/pr-big.json" "$TMP/pr.json"
+pr_bytes="$(wc -c <"$TMP/pr.json" | tr -d ' ')"
+if [ "${pr_bytes:-0}" -gt 140000 ]; then
+  run_finish "$WORK" precheck 7
+  if has_line "$OUT" "PR_SNAPSHOT=unchanged" && has_text "$OUT" "MERGE_COMMAND_BEGIN" && ! has_text "$ERR" "初回と比べられません"; then
+    ok "T7c: 140KB を超える PR 本文（${pr_bytes} バイト）でも読み直しの比較が成立し、merge コマンドを出す"
+  else
+    bad "T7c: 大きな PR 本文で読み直しの比較が成立しない（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+else
+  bad "T7c: 大きな PR 本文の fixture を作れていない（${pr_bytes:-0} バイト。この検査は何も測っていない）"
+fi
+write_pr_json "Closes #${PRN}" '[]'
 # T8: hasNextPage:true なのに endCursor が空 → rc 2（0 件へ倒さない）。hasNextPage が boolean でない応答も rc 2
 jq '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor = null' "$TMP/threads-p1.json" >"$TMP/threads-nocursor.json"
 STUB_THREADS_JSON="$TMP/threads-nocursor.json" run_finish "$WORK" precheck 7
@@ -606,6 +639,21 @@ if [ "$RC" -eq 0 ] && has_line "$OUT" "FRESH_STATUS=0" && has_text "$OUT" "FRESH
 else
   bad "D1: 一致の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
 fi
+# D1b: 記録が一致していれば、PR 本文が 140KB を超えても rc 0・PRECHECK=ready（読み直しの比較で判定不能へ倒れない）
+cp "$TMP/pr.json" "$TMP/pr-saved.json"
+jq --rawfile big "$TMP/big.txt" '.body += "\n" + $big' "$TMP/pr-saved.json" >"$TMP/pr.json"
+pr_bytes="$(wc -c <"$TMP/pr.json" | tr -d ' ')"
+if [ "${pr_bytes:-0}" -gt 140000 ]; then
+  run_finish "$WORK" precheck 7
+  if [ "$RC" -eq 0 ] && has_line "$OUT" "PRECHECK=ready" && has_line "$OUT" "PR_SNAPSHOT=unchanged"; then
+    ok "D1b: 140KB を超える PR 本文（${pr_bytes} バイト）でも、記録が一致すれば rc 0・PRECHECK=ready"
+  else
+    bad "D1b: 大きな PR 本文で判定が成立しない（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+else
+  bad "D1b: 大きな PR 本文の fixture を作れていない（${pr_bytes:-0} バイト。この検査は何も測っていない）"
+fi
+cp "$TMP/pr-saved.json" "$TMP/pr.json"
 # 不一致: 記録を base（先端の祖先）で書く
 ( cd "$WORK" && g checkout -q --detach "$BASE_OID" ) && record pass && ( cd "$WORK" && g checkout -q 'feature/#7-x' )
 run_finish "$WORK" precheck 7

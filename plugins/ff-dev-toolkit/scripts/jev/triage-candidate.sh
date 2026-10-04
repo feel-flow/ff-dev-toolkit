@@ -38,7 +38,14 @@ append_entries() {
     'include "triage-registry"; entries($text; $source; $kind)[]' >> "$WORK/entries.jsonl"
 }
 if [ -n "$PATTERN" ]; then
-  case "$PATTERN" in /*) ;; ./*) PATTERN="$PWD/${PATTERN#./}" ;; *) PATTERN="$PWD/$PATTERN" ;; esac
+  # Windows のドライブ付き絶対パス（`C:/x/**/*.md`）は Git Bash / Cygwin のときだけ絶対パスとして扱う（Issue `#2018`）
+  win_drive=0
+  case "${OSTYPE:-}" in
+    msys* | cygwin*) case "$PATTERN" in [A-Za-z]:\\* | [A-Za-z]:/*) PATTERN="${PATTERN//\\//}"; win_drive=1 ;; esac ;;
+  esac
+  if [ "$win_drive" -eq 0 ]; then
+    case "$PATTERN" in /*) ;; ./*) PATTERN="$PWD/${PATTERN#./}" ;; *) PATTERN="$PWD/$PATTERN" ;; esac
+  fi
   if [ -f "$PATTERN" ]; then
     append_entries "$PATTERN" principle || exit 2
   else
@@ -46,11 +53,16 @@ if [ -n "$PATTERN" ]; then
     base="${prefix%/*}"
     [ -n "$base" ] || base=/
     if [ -d "$base" ]; then
-      regex="$(jq -nr -L "$SCRIPT_DIR" --arg p "$PATTERN" 'include "triage-registry"; $p | glob_regex')" || exit 2
+      # パターンとファイルパスは引数ではなく標準入力・ファイルの中身で渡す。Windows の Git Bash は
+      # native の jq.exe へ渡す引数のうち `/c/x` の形を `C:/x` へ書き換えるので、片方だけが
+      # 書き換わると `^/c/x/…` の正規表現が `C:/x/…` のパスに一致せず、glob が常に空振りしていた
+      # （Issue `#2018`）。標準入力とファイルの中身はこの書き換えを受けない
+      regex="$(printf '%s' "$PATTERN" | jq -Rrs -L "$SCRIPT_DIR" 'include "triage-registry"; glob_regex')" || exit 2
+      printf '%s' "$regex" > "$WORK/glob-regex" || exit 2
       find "$base" -type d \( -name .git -o -name node_modules \) -prune -o -type f -name '*.md' -print0 > "$WORK/files" || exit 2
       while IFS= read -r -d '' file; do
         rc=0
-        jq -ne --arg p "$file" --arg re "$regex" '$p | test($re)' >/dev/null || rc=$?
+        printf '%s' "$file" | jq -Rse --rawfile re "$WORK/glob-regex" 'test($re)' >/dev/null || rc=$?
         case "$rc" in 0) append_entries "$file" principle || exit 2 ;; 1) ;; *) exit 2 ;; esac
       done < "$WORK/files"
     fi
@@ -63,6 +75,7 @@ if [ ! -s "$WORK/entries.jsonl" ]; then
     append_entries "$playbook" ace || exit 2
     jq -Rrs '[scan("\\]\\((?:\\./)?(playbook/[^)#]+\\.md)(?:#[^)]*)?\\)") | .[0] | select(contains("archive/") | not)] | unique[]' "$playbook" > "$WORK/links" || exit 2
     while IFS= read -r link; do
+      link="${link%$'\r'}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
       case "$link" in *'..'*) echo 'triage: invalid playbook link' >&2; exit 2 ;; esac
       append_entries "${playbook%/*}/$link" ace || exit 2
     done < "$WORK/links"

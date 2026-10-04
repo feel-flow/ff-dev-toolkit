@@ -61,6 +61,8 @@ QFILE="$PLUGIN_ROOT/scripts/jev/questions/root.json"
 PRINCIPLES="$PLUGIN_ROOT/docs-template/05-operations/deployment/workflow-principles.md"
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
+# shellcheck source=../lib/crlf-jq-shim.sh
+. "$SCRIPT_DIR/../lib/crlf-jq-shim.sh"
 # shellcheck source=../lib/git-fixture.sh
 . "$SCRIPT_DIR/../lib/git-fixture.sh"
 
@@ -631,6 +633,40 @@ RC=0
 OUT="$(env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT bash "$H_NOROUTER/scripts/review-route.sh" --files docs/a.md 2>/dev/null)" || RC=$?
 assert_review_route "H9 決定木のルータが無い配置でも none / host と判定不能の報告行を出して exit 2" \
   2 none "host" "経路: none（根拠: 判定不能（決定木のルータがありません） / 行数不明）"
+
+# ============================================================================
+# Windows の jq.exe（改行を \r\n で出す）でも同じ判定になる（Issue `#2017`）。
+# hook は event / session_id / cwd / transcript_path を改行で連結して 1 回の jq で取り出し、
+# --check は criteria の keys[] を複数行で受け取る。修正前は event が `UserPromptSubmit\r`
+# になって無記録で終わり、--check は option の集合が一致せず赤になっていた。
+echo "decision-tree I: CRLF を出す jq でも同じ判定"
+CRLF_BIN="$TEST_TMP/crlf-jq-bin"
+crlf_rc=0
+ff_crlf_jq_shim "$CRLF_BIN" "$(command -v jq)" || crlf_rc=$?
+if [ "$crlf_rc" -eq 2 ]; then
+  echo "  ○ skip: perl が無いため CRLF の jq を再現できません（この 2 検査は未実行）"
+elif [ "$crlf_rc" -ne 0 ]; then
+  bad "CRLF の jq シムを作れませんでした（rc=${crlf_rc}）"
+else
+  SAVED_PATH="$PATH"
+  PATH="$CRLF_BIN:$PATH"
+  run_check "$TREE" "$PLUGIN_ROOT"
+  PATH="$SAVED_PATH"
+  if [ "$RC" -eq 0 ]; then
+    ok "I1 CRLF の jq でも、実 tree の静的検査（criteria fixture との照合を含む）が通る"
+  else
+    bad "I1 CRLF の jq で実 tree の静的検査が赤: rc=$RC err=[$ERR]"
+  fi
+  STATE="$TEST_TMP/state-crlf"
+  rm -rf "$STATE"
+  run_hook "$(json_ups crlf1 "$GITFIX")" "PATH=$CRLF_BIN:$PATH"
+  crlf_route="$(awk -F'\t' 'NR == 1 { print $3 }' "$STATE/metrics/sessions/crlf1.route" 2>/dev/null || true)"
+  if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ "$crlf_route" = "fast" ]; then
+    ok "I2 CRLF の jq でも、UserPromptSubmit は根の答え（fast）をセッション記録へ置く"
+  else
+    bad "I2 CRLF の jq で UserPromptSubmit が記録しない: rc=$RC out=[$OUT] err=[$ERR] route=[$crlf_route]"
+  fi
+fi
 
 echo ""
 if [ "$FAIL" -gt 0 ]; then

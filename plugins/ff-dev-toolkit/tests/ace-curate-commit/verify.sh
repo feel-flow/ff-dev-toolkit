@@ -16,6 +16,8 @@
 # 空振り検出: finish.sh の写しで保護判定の jq から 3 項目判定を外すと（PR 必須 / 必須チェック / push 制限の 3 ケース）、署名必須・読み取り専用を外すとそれぞれ 1 ケース、protected-no-pr で rulesets を見ないと（3 項目とも未設定 / null / null + rulesets PR 必須の 3 ケース）、protected-no-pr を protected と出すと（未設定 / null の 2 ケース）、probe を非 0 で終わらせると全 14 ケースが赤になる（判定行は完全一致・終了コードも照合。2026-09-30 実測）。
 # 変異検出: add の鮮度検査の呼び出しを外す、または対象を default branch 以外へ広げると 13 が赤（2026-09-24 実測）。
 # 変異検出: add の commit-msg hook ドライランの呼び出しを外すと 14 が赤（保留記録が作られ stage が残る）、commit 側を外すと 15 が赤、prepare-commit-msg の呼び出しを外すと 16 が赤、add のドライランが保留の type を引き継がないと 15 が赤、commit の KNOWLEDGE_SUBJECT を hook 前の件名に戻すと 16 が赤（2026-09-30 実測）。
+# 空振り検出: 6b の別名ケースは、Windows の Git Bash で fixture の別名（mount の /tmp/… とドライブの /c/…）を作れないと赤（同じ綴りへ戻して緑にしない）。他の OS では別名を作れないので、理由付きの部分 skip を出す（2026-10-04）。
+# 変異検出: knowledge-commit.sh を develop の版（cwd 起点の cd -P + pwd -P の前方一致）へ戻すと、Windows の Git Bash で 6b の別名ケースが赤。add のトップレベル照合を外すと 6c が赤（linked worktree・兄弟のリポジトリの同じ相対位置のパスを受理する）（2026-10-04 実測）。
 
 set -euo pipefail
 
@@ -584,6 +586,64 @@ else
     else
       echo "  ✗ 不正な add を受理した（rc=${rc} / ${rc2}）" >&2; exit 1
     fi
+
+    # 6b. リポジトリ内かどうかと相対位置は git の出力で決まる（Issue `#2032`）。cwd の綴りに依存しない:
+    #     サブディレクトリからの相対パスは正しい位置で stage し、`../` でルートの外へ出るパスは拒否する。
+    #     Windows の Git Bash では %TEMP% が /tmp として mount され、同じ場所が 2 つの名前を持つので、
+    #     別名（/c/… の綴り）から入っても通ることを確かめる。他の OS には別名が無いので同じ綴りで入る
+    printf '%s\n' 'outside' >"$KC_TMP/outside.md"
+    rc=0; kc add --source ace --id ACE-9-20 --summary s -- ../outside.md >/dev/null 2>&1 || rc=$?
+    printf '%s\n' '- sub' >>docs/08-knowledge/PLAYBOOK.md
+    rc3=0; (cd docs/08-knowledge && kc add --source ace --id ACE-9-21 --summary s -- PLAYBOOK.md >/dev/null 2>&1) || rc3=$?
+    if [ "$rc" -eq 2 ] && [ "$rc3" -eq 0 ] \
+      && [ "$(git diff --cached --name-only)" = 'docs/08-knowledge/PLAYBOOK.md' ]; then
+      echo "  ✓ ../ でルートの外へ出るパスは exit 2、サブディレクトリからの相対パスは正しい位置で stage する"
+    else
+      echo "  ✗ 相対パスの扱いが不正（../ rc=${rc} / サブディレクトリ rc=${rc3} / staged: $(git diff --cached --name-only | tr '\n' ' ')）" >&2; exit 1
+    fi
+    kc discard >/dev/null 2>&1; git reset -q; git checkout -q -- docs/08-knowledge/PLAYBOOK.md
+    case "${OSTYPE:-}" in
+      msys*)
+        # fixture の別名を作る。mount 配下（/tmp/…）ならドライブの綴り（/c/…）、ドライブの綴りなら mount の綴り。
+        # cygpath -u は mount の綴りへ戻すので、ドライブの綴りは cygpath -m から自前で組み立てる。別名を作れない
+        # （cygpath が無い・mount 配下に無い）ときは同じ綴りへ戻して緑にせず、何も測れないことを赤にする
+        alias_root=""
+        if command -v cygpath >/dev/null 2>&1 && _win="$(cygpath -m "$R")" && [[ "$_win" == [A-Za-z]:/* ]]; then
+          alias_root="/$(printf '%s' "${_win:0:1}" | tr '[:upper:]' '[:lower:]')${_win:2}"
+          [ "$alias_root" != "$R" ] || alias_root="$(cygpath -u "$_win")"
+        fi
+        if [ -z "$alias_root" ] || [ "$alias_root" = "$R" ]; then
+          echo "  ✗ fixture（${R}）の別名を作れない（cygpath が無いか、mount の配下に無い。別名ケースは何も測れていない）" >&2; exit 1
+        fi
+        printf '%s\n' '- alias' >>docs/08-knowledge/PLAYBOOK.md
+        rc=0; (cd "$alias_root" && kc add --source ace --id ACE-9-22 --summary s -- docs/08-knowledge/PLAYBOOK.md >/dev/null 2>&1) || rc=$?
+        if [ "$rc" -eq 0 ] && [[ "$(kc status)" == *"KNOWLEDGE_PENDING=1"* ]]; then
+          echo "  ✓ cwd の綴り（${R} の別名 ${alias_root}）に依存せず、リポジトリ内のパスを受理する"
+        else
+          echo "  ✗ cwd の綴り（${R} の別名 ${alias_root}）によってリポジトリ内のパスを外と判定した（rc=${rc}）" >&2; exit 1
+        fi
+        kc discard >/dev/null 2>&1; git reset -q; git checkout -q -- docs/08-knowledge/PLAYBOOK.md
+        ;;
+      *)
+        echo "  ○ skip: 6b の別名ケースは %TEMP% の mount の別名（/tmp と /c/…）を使う、Windows の Git Bash でだけ成立する検査のため未実行"
+        ;;
+    esac
+
+    # 6c. 別の git の作業ツリー（この checkout の中の linked worktree・兄弟のリポジトリ）にある、同じ相対位置の
+    #     パスは外として拒否する。トップレベルの照合を外すと、相対位置だけが一致して本体の同名ファイルを
+    #     stage・記録する。stage が空なだけでは見逃す（本体の同名ファイルが無変更だと git add は何もせずに通る）
+    git worktree add -q "$R/.wt/x" -b kc-wt-6c >/dev/null 2>&1
+    new_repo "$KC_TMP/other"
+    printf '%s\n' '- wt' >>"$R/.wt/x/docs/08-knowledge/PLAYBOOK.md"
+    printf '%s\n' '- other' >>"$KC_TMP/other/docs/08-knowledge/PLAYBOOK.md"
+    rc=0; kc add --source ace --id ACE-9-23 --summary s -- .wt/x/docs/08-knowledge/PLAYBOOK.md >/dev/null 2>&1 || rc=$?
+    rc2=0; kc add --source ace --id ACE-9-24 --summary s -- ../other/docs/08-knowledge/PLAYBOOK.md >/dev/null 2>&1 || rc2=$?
+    if [ "$rc" -eq 2 ] && [ "$rc2" -eq 2 ] && [[ "$(kc status)" == *"KNOWLEDGE_PENDING=0"* ]] && [ -z "$(git diff --cached --name-only)" ]; then
+      echo "  ✓ 6c: 別の作業ツリー（linked worktree・兄弟のリポジトリ）の同じ相対位置のパスは exit 2 で保留を作らない"
+    else
+      echo "  ✗ 6c: 別の作業ツリーのパスを受理した（worktree rc=${rc} / 兄弟のリポジトリ rc=${rc2} / $(kc status | head -1)）" >&2; exit 1
+    fi
+    kc discard >/dev/null 2>&1; git reset -q; git worktree remove --force "$R/.wt/x"; git branch -q -D kc-wt-6c; rm -rf "$R/.wt"
 
     # 8. 別ブランチで記録した保留は commit しない（--force で通す）。古い保留は discard で捨てる
     printf '%s\n' '- ace4' >>docs/08-knowledge/PLAYBOOK.md

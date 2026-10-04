@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Sourced by verify.sh after the existing adapter cases. No real network/key reads.
+# shellcheck source=../lib/crlf-jq-shim.sh
+. "$SCRIPT_DIR/../lib/crlf-jq-shim.sh"
 TRIAGE="$PLUGIN_ROOT/scripts/jev/triage-candidate.sh"
 CASES="$PLUGIN_ROOT/scripts/jev/fixtures/triage-cases.jsonl"
 PRINCIPLES="$PLUGIN_ROOT/scripts/jev/fixtures/triage-principles.md"
@@ -109,6 +111,29 @@ TRIAGE_CWD="$WORK/consumer" run_triage off --candidate x --principles "$WORK/no-
 [ "$RC" -eq 12 ] && [[ "$ERR" == *'live PLAYBOOK.md'* ]] && \
   printf '%s' "$TRIAGE_JSON" | jq -e '[.top_k[].id]==["ACE-900-1","ACE-900-2","ACE-900-3","ACE-900-4","ACE-900-5"]' >/dev/null \
   && ok 'L10 unmatched glob falls back to live playbook' || bad "L10 rc=$RC err=$ERR"
+# Windows の jq.exe（改行を \r\n で出す）でも live PLAYBOOK の fallback が読める（Issue `#2017`）。
+# リンクの一覧は jq の複数行出力を 1 行ずつ読む。修正前は最後の行以外が `playbook/live.md\r`
+# になって開けず、fallback が常に rc=2 で終わっていた。シムは最後の行に \r を付けないので、
+# リンクを 2 本持つ fixture で先頭側を測る。
+mkdir -p "$WORK/consumer-crlf/docs/08-knowledge/playbook"
+printf '# Live index\n[a](playbook/live.md)\n[b](playbook/live2.md)\n' > "$WORK/consumer-crlf/docs/08-knowledge/PLAYBOOK.md"
+cp "$WORK/consumer/docs/08-knowledge/playbook/live.md" "$WORK/consumer-crlf/docs/08-knowledge/playbook/live.md"
+printf '### ACE-901-1: second live rule\n| Status | active |\nbody\n' > "$WORK/consumer-crlf/docs/08-knowledge/playbook/live2.md"
+crlf_rc=0
+ff_crlf_jq_shim "$WORK/crlf-jq-bin" "$(command -v jq)" || crlf_rc=$?
+if [ "$crlf_rc" -eq 2 ]; then
+  echo "  ○ skip: perl が無いため CRLF の jq を再現できません（L10b は未実行）"
+elif [ "$crlf_rc" -ne 0 ]; then
+  bad "L10b CRLF の jq シムを作れませんでした（rc=${crlf_rc}）"
+else
+  SAVED_PATH="$PATH"
+  PATH="$WORK/crlf-jq-bin:$PATH"
+  TRIAGE_CWD="$WORK/consumer-crlf" run_triage off --candidate x --principles "$WORK/no-match/**/*.md"
+  PATH="$SAVED_PATH"
+  [ "$RC" -eq 12 ] && [[ "$ERR" == *'live PLAYBOOK.md'* ]] \
+    && printf '%s' "$TRIAGE_JSON" | jq -e '[.top_k[].id] | index("ACE-900-1") != null' >/dev/null \
+    && ok 'L10b CRLF jq still reads every live playbook link' || bad "L10b rc=$RC err=$ERR"
+fi
 mkdir -p "$WORK/principles/nested"
 cp "$PRINCIPLES" "$WORK/principles/nested/p.md"
 run_triage off --candidate x --principles "$WORK/principles/**/*.md"

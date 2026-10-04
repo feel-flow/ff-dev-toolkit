@@ -49,6 +49,9 @@
 #                           disables) the run falls back to sequential and says so
 #                           in one line. At or below the threshold nothing is printed.
 #   --sequential            Sequential execution
+#   --evidence              Emit producer-owned branch-review evidence (python3 required)
+#   --require-prior-review <json>  Verify prior review before execution
+#   --continue-review <json>  Explicit partial revalidation of a successful review
 #   --output-dir <dir>      Output directory (auto-detected by task type)
 #   --base <branch>         Base branch for diff (default: auto-detect from origin/HEAD, fallback: develop).
 #                           A bare branch name resolves to whichever of the local ref and
@@ -1210,6 +1213,10 @@ OUTPUT_DIR=""
 # Whether --output-dir was given, so the retry advice can carry it (the value
 # itself is always set later by apply_task_defaults, so it cannot be inferred).
 OUTPUT_DIR_EXPLICIT=false
+REVIEW_EVIDENCE=false
+REVIEW_EVIDENCE_PRIOR=""
+REVIEW_EVIDENCE_PARENT=""
+REVIEW_EVIDENCE_START=""
 # この実行の diff を固定したファイル。create_fixed_diff が埋め、run_single_task が
 # 全アダプタへ --diff-file として配る。diff を持たないタスク（description だけの
 # explore など）では空のまま = 従来どおりアダプタ側の判断に委ねる。
@@ -1585,6 +1592,9 @@ parse_args() {
       --list-perspectives) LIST_PERSPECTIVES=true; shift ;;
       --parallel)    PARALLEL=true; shift ;;
       --sequential)  PARALLEL=false; shift ;;
+      --evidence) REVIEW_EVIDENCE=true; shift ;;
+      --require-prior-review) REVIEW_EVIDENCE=true; REVIEW_EVIDENCE_PRIOR="$2"; shift 2 ;;
+      --continue-review) REVIEW_EVIDENCE=true; REVIEW_EVIDENCE_PARENT="$2"; shift 2 ;;
       --output-dir)  OUTPUT_DIR="$2"; OUTPUT_DIR_EXPLICIT=true; shift 2 ;;
       # 名前をそのまま受ける。鮮度解決は parse_args の最後で最終 base に 1 回だけ
       # 掛ける（finalize_base_branch）。ここで解決すると、init 側の既定 base の解決と
@@ -1623,6 +1633,14 @@ parse_args() {
   if [[ "$STAGED_DIFF" == "true" && "$BASE_BRANCH_EXPLICIT" == "true" ]]; then
     echo "ERROR: --staged and an explicit base (--base / MULTI_AGENT_BASE_BRANCH) are mutually exclusive." >&2
     echo "       Choose the staged index or a base-branch diff; they are different review scopes." >&2
+    exit 2
+  fi
+  if [[ "$RESUME" == true && ( -n "$REVIEW_EVIDENCE_PRIOR" || -n "$REVIEW_EVIDENCE_PARENT" ) ]]; then
+    echo "ERROR: --resume cannot be combined with prior/continued review evidence; tasks must run after the prior review." >&2
+    exit 2
+  fi
+  if [[ "$FRESH" == true && ( -n "$REVIEW_EVIDENCE_PARENT" || -n "$REVIEW_EVIDENCE_PRIOR" ) ]]; then
+    echo "ERROR: --fresh cannot be combined with prior/continued evidence; it archives the evidence lineage." >&2
     exit 2
   fi
   if [[ "$FRESH" == "true" && "$RESUME" == "true" ]]; then
@@ -3173,6 +3191,9 @@ create_fixed_diff() {
 # CLI エージェントは作業ツリーのファイルを読み、implement はそこへ書きうるので、
 # 対象が動けば結果の意味が変わるのは同じ。
 capture_baseline_and_fix_diff() {
+  if [[ "$REVIEW_EVIDENCE" == true && ( "$IN_GIT_REPO" != true || "$TASK_TYPE" != review || "$STAGED_DIFF" == true ) ]]; then
+    echo "ERROR: --evidence requires a Git branch review" >&2; return 1
+  fi
   [[ "$IN_GIT_REPO" == "true" ]] || return 0
 
   local exclude before after
@@ -3199,6 +3220,17 @@ capture_baseline_and_fix_diff() {
   fi
 
   REPO_SNAPSHOT_BEFORE="$after"
+  if [[ "$REVIEW_EVIDENCE" == true ]]; then
+    REVIEW_EVIDENCE_START="${OUTPUT_DIR}/.evidence-start.$$.json"
+    local evidence_args=(begin --file "$REVIEW_EVIDENCE_START" --output "$OUTPUT_DIR"
+      --base "$BASE_BRANCH" --plan "${FULL_EXECUTION_PLAN:-$EXECUTION_PLAN}" --main "${REVIEW_MAIN:-}")
+    [[ -z "$REVIEW_EVIDENCE_PRIOR" ]] || evidence_args+=(--prior "$REVIEW_EVIDENCE_PRIOR")
+    [[ -z "$REVIEW_EVIDENCE_PARENT" ]] || evidence_args+=(--parent "$REVIEW_EVIDENCE_PARENT")
+    python3 "$SCRIPT_DIR/review-evidence.py" "${evidence_args[@]}" || return 1
+    # Once this run begins successfully, discard the previous ready receipt.
+    # A begin failure keeps the old receipt, which still only proves its own subject.
+    rm -f "${OUTPUT_DIR}/review-evidence.json" || return 1
+  fi
   return 0
 }
 
@@ -7961,6 +7993,26 @@ main() {
   finalize_resume_cache || exit 1
 
   generate_report || exit 1
+  if [[ "$REVIEW_EVIDENCE" == true ]]; then
+    evidence_results="${OUTPUT_DIR}/.evidence-results.$$"
+    : > "$evidence_results" || exit 1
+    while IFS= read -r evidence_task; do
+      [[ -n "$evidence_task" ]] || continue
+      evidence_cli="${evidence_task%%:*}"
+      evidence_persp="${evidence_task#*:}"
+      evidence_status=complete
+      if [[ -n "$(review_task_incomplete_reason "$evidence_cli" "$evidence_persp")" ]]; then
+        evidence_status=incomplete
+        if [[ -n "$(unavailable_cross_task_cause "${evidence_cli}/${evidence_persp}")" ]]; then
+          evidence_status=unavailable
+        fi
+      fi
+      printf '%s\t%s\n' "$evidence_task" "$evidence_status" >> "$evidence_results" || exit 1
+    done <<< "${FULL_EXECUTION_PLAN:-$EXECUTION_PLAN}"
+    python3 "$SCRIPT_DIR/review-evidence.py" finish --file "$REVIEW_EVIDENCE_START" \
+      --output "$OUTPUT_DIR" --results "$evidence_results" || exit 1
+    rm -f "$REVIEW_EVIDENCE_START" "$evidence_results" || exit 1
+  fi
 
   echo "" >&2
   if [[ -n "$DELEGATED_TASKS" ]]; then

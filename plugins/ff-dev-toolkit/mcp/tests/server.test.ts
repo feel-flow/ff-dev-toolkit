@@ -56,6 +56,13 @@ describe('spec-docs server over stdio (fixture project)', () => {
     expect(hits[0].file.startsWith('docs/')).toBe(true);
   });
 
+  it('list_docs filters by the documented docs/02-design/ prefix', async () => {
+    // On Windows the paths used to come back as docs\02-design\..., so the
+    // prefix from the tool description matched nothing (Issue `#2016`).
+    const res = await client.callTool({ name: 'list_docs', arguments: { prefix: 'docs/02-design/' } });
+    expect(parseText(res)).toEqual(['docs/02-design/ARCHITECTURE.md', 'docs/02-design/DOMAIN.md']);
+  });
+
   it('search applies the declared default limit (5) and enforces the max (20)', async () => {
     // Guards the argument-validation layer itself: if the schema default were
     // lost, `limit` would be undefined and slice(0, undefined) returns every

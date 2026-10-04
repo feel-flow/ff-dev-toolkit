@@ -48,9 +48,13 @@ fi
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-plugin-versions.sh" --json
 ```
 
-既定では `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/` の登録ファイルと
-`$HOME/Library/Application Support/Claude/local-agent-mode-sessions/` を読む。
-別環境を調べるときだけ `--config-dir PATH` と `--sessions-dir PATH` を渡す。
+既定では `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/` の登録ファイルと、Desktop のセッションの置き場を読む。
+置き場は macOS では `$HOME/Library/Application Support/Claude/local-agent-mode-sessions/`。
+Windows（Git Bash）では `%APPDATA%\Claude\local-agent-mode-sessions\` と、MSIX 版のアプリが使う
+`%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\local-agent-mode-sessions\` のうち、実在するものをすべて読む。
+MSIX 版のアプリの中からは 2 つが同じディレクトリの別名に見えるので、同じ実体は 1 回だけ数える。
+別々の実体がどちらも在るとき（インストール形態を切り替えた後など）は両方を検査する。
+別環境を調べるときだけ `--config-dir PATH` と `--sessions-dir PATH` を渡す（`--sessions-dir` を渡すと、その 1 か所だけを読む）。
 一時ファイル以外は書き換えない。更新コマンドや Desktop 操作へ自動的に進まない。
 
 ## 結果の読み方

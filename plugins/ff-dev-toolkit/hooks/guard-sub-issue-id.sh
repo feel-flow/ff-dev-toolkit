@@ -82,6 +82,7 @@ esac
 command -v jq >/dev/null 2>&1 || exit 0
 
 cmd="$(printf '%s' "$input" | jq -r 'if .tool_name == "Bash" then (.tool_input.command // "") else "" end' 2>/dev/null)" || exit 0
+cmd="${cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
 [ -n "$cmd" ] || exit 0
 case "$cmd" in
   *gh*) : ;;

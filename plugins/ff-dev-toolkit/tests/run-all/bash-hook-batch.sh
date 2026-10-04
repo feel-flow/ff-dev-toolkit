@@ -4,19 +4,24 @@
 # 変異検出: 拒否時の未実行注記を JSON の permissionDecisionReason から外す / 終了コード2の stderr 末尾から外す / 出力0件 / 解釈できる出力0件の経路で finish を通さず exit する、の4変異がそれぞれ赤（2026-10-02 実測）。
 set -euo pipefail
 ROOT="$(cd "${BASH_SOURCE[0]%/*}/../.." && pwd)"
-python3 - "$ROOT" <<'PY'
+# -X utf8: Windows の Python の既定は cp932 で、子の日本語の stderr の復号でも落ちる（Issue `#2022`）
+python3 -X utf8 - "$ROOT" <<'PY'
 import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 
+# Windows のプロセス起動は PATH より先に System32 を探し、素の 'bash' は WSL の bash.exe になる。
+# 子へ渡すパスも '/' 区切りにする（'\' だけのパスでは子の "${BASH_SOURCE%/*}" が効かない）。
+BASH = shutil.which('bash') or 'bash'
 root = Path(sys.argv[1])
 runner = root / 'hooks/run-bash-hooks.sh'
-config = json.loads((root / 'hooks/hooks.json').read_text())
+config = json.loads((root / 'hooks/hooks.json').read_text(encoding='utf-8'))  # Windows の既定は cp932
 group = next(g for g in config['hooks']['PreToolUse'] if g['matcher'] == 'Bash')
 assert len(group['hooks']) == 1, 'ホスト入口が1本ではない'
 entry = group['hooks'][0]
@@ -25,8 +30,9 @@ expected = ['guard-checkout-restore', 'guard-pr-followup', 'guard-background-cwd
             'guard-long-gate-background', 'guard-effort-actual', 'guard-issue-labels',
             'guard-sub-issue-id', 'guard-exit-code', 'guard-zsh-glob',
             'guard-literal-write', 'record-effort-wallclock']
-assert args[:2] == ['bash', str(runner)]
-assert args[2:] == [str(root / 'hooks' / (name + '.sh')) for name in expected]
+# Path 同士で比べる（Windows では hooks.json から組んだ文字列だけ '/' と '\' が混ざる）
+assert args[0] == 'bash' and Path(args[1]) == runner
+assert [Path(a) for a in args[2:]] == [root / 'hooks' / (name + '.sh') for name in expected]
 assert entry['timeout'] == 15
 assert sum(len(g['hooks']) for g in config['hooks']['PreToolUse']
            if 'Bash' in g['matcher'].split('|')) == 2
@@ -39,16 +45,17 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
         if key.split('_')[:4] == ['FF', 'DEV', 'TOOLKIT', 'SKIP'] or key == 'FF_EXIT_CODE_ACK':
             env.pop(key)
     env['TMPDIR'] = str(temp)
-    env['CLAUDE_PLUGIN_ROOT'] = str(root)
+    env['CLAUDE_PLUGIN_ROOT'] = root.as_posix()
 
     def run(hooks, payload='{}'):
-        return subprocess.run(['bash', str(runner), *map(str, hooks)], input=payload,
-                              text=True, capture_output=True, env=env, cwd=temp, timeout=15)
+        return subprocess.run([BASH, runner.as_posix(), *(Path(h).as_posix() for h in hooks)],
+                              input=payload, text=True, capture_output=True, env=env, cwd=temp,
+                              timeout=15)
 
     def stub(name, body):
         path = temp / (name + '.sh')
         # 早期終了する子でも親は先に大入力を読み終えている必要がある。
-        path.write_text('#!/usr/bin/env bash\n' + body + '\n')
+        path.write_text('#!/usr/bin/env bash\n' + body + '\n', newline='\n')
         return path
 
     def output(name, value):
@@ -129,7 +136,7 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     assert json.loads(run([delayed, warning]).stdout)['systemMessage'] == '遅い\n注意1'
     # 子へ umask を上書きせず、タイムアウトした1本だけを無視して拒否を届ける。
     mode = stub('mode', 'umask >&2')
-    direct = subprocess.run(['bash', str(mode)], capture_output=True, text=True)
+    direct = subprocess.run([BASH, mode.as_posix()], capture_output=True, text=True)
     assert run([mode]).stderr == direct.stderr
     slow = stub('slow', 'while :; do :; done')
     start = time.monotonic()

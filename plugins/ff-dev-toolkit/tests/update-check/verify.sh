@@ -24,7 +24,7 @@
 #     SIGKILL でも fail が残ることを stub git で証明）
 #   - オフライン（到達不能）時は無出力 + exit 0 + fail キャッシュ記録
 #   - 到達可能だが SemVer タグが 1 件も無いリポジトリでは通知せず fail が残る
-#   - FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1 はキャッシュ作成すら行わず即終了
+#   - FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1 はキャッシュ作成すら行わず即終了（WSL 案内を止めた状態。案内は第 17 節）
 #   - SemVer 3 要素でないタグ（v1.2.3-rc.1 等）の除外（peeled ref は fixture の
 #     annotated tag で ls-remote 出力に並ぶ状態を作っている。$ アンカー除去の
 #     退行はこの rc タグ検査が拾う）
@@ -33,6 +33,13 @@
 #     "ok - <ts>" 形。いずれもネットワーク経路へ落ちて上書き）
 #   - 非数値 TTL 環境変数は既定値へフォールバックし stderr を汚さない
 #   - hooks.json の静的整合（JSON 構文・SessionStart 登録・スクリプト実在・timeout）
+#   - 本 hook へ畳んだ Windows の Git Bash での WSL 案内（判定と文言は scripts/lib/wsl-notice.sh。
+#     Issue `#2030`）: Git Bash / Cygwin の判定、1 日 1 回の間引きと壊れた記録の扱い、文言が JSON へ
+#     そのまま埋め込めること、全件ゲートの冒頭案内、判定が外部コマンドを起動しないこと、更新通知との
+#     並べ方（JSON 1 つ）・2 つの無効化の独立・取得失敗・記録できない回・記録の自己修復・lib が無い配置、
+#     Git Bash 以外では案内しないこと。
+#     1〜16 は WSL 案内を止めて流す（run_hook の既定。Git Bash でも「完全無出力」の検査を保つため）。
+#     OSTYPE は BASH_ENV のファイルで切り替え、案内を出す側も出さない側もどのホストでも回す
 #
 # すべての経路で exit 0 と stderr 無出力を検査する（fail-open 契約。非 0 exit や
 # stderr 漏れはユーザーのセッション起動を汚すため、それ自体が回帰）。
@@ -171,6 +178,7 @@ run_hook() {
     -u FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED \
     FF_DEV_TOOLKIT_UPDATE_REPO_URL="$repo" \
     FF_DEV_TOOLKIT_UPDATE_CACHE_DIR="$cache" \
+    FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1 \
     "$@" bash "$HOOK" 2>"$TMP/stderr")" || RC=$?
   ERR="$(cat "$TMP/stderr" 2>/dev/null || true)"
 }
@@ -690,6 +698,198 @@ if [ -x "$TARGET" ]; then
   ok "check-update.sh: 実行権限がある"
 else
   bad "check-update.sh: 実行権限が無い"
+fi
+
+# ---- 17. WSL 案内（check-update.sh へ畳んだ案内と scripts/lib/wsl-notice.sh。Issue `#2030`） ----
+# bash は起動時に OSTYPE を設定し直すので、環境変数では msys を偽装できない。判定と間引きは lib の
+# 関数へ値を引数で渡して全ホストで検査し、hook 本体は実行中のホストの OSTYPE のまま動かす
+# （Linux / macOS では「何も出さない」側、Windows の Git Bash では「1 日 1 回出す」側を実物で見る）。
+WSL_LIB="$PLUGIN_ROOT/scripts/lib/wsl-notice.sh"
+if [ -f "$WSL_LIB" ]; then
+  # shellcheck source=../../scripts/lib/wsl-notice.sh
+  . "$WSL_LIB"
+  for v in msys cygwin; do
+    if ff_host_is_msys "$v"; then ok "WSL 案内: ${v} を Git Bash / Cygwin と判定する"; else bad "WSL 案内: ${v} を判定できない"; fi
+  done
+  for v in linux-gnu linux-musl darwin23 ""; do
+    if ff_host_is_msys "$v"; then bad "WSL 案内: '${v}' を Git Bash と誤判定した"; else ok "WSL 案内: '${v}' は対象外"; fi
+  done
+
+  # 1 日 1 回の間引き（現在時刻も引数で渡す）
+  WST="$TMP/wsl-stamp"
+  rm -f "$WST"
+  if ff_wsl_notice_due "$WST" 1000000 86400; then ok "WSL 案内: 記録が無ければ案内する"; else bad "WSL 案内: 記録が無いのに案内しない"; fi
+  printf '%s\n' 999000 > "$WST"
+  if ff_wsl_notice_due "$WST" 1000000 86400; then bad "WSL 案内: 1 日以内に再び案内した"; else ok "WSL 案内: 1 日以内は案内しない"; fi
+  printf '%s\n' 913600 > "$WST"
+  if ff_wsl_notice_due "$WST" 1000000 86400; then ok "WSL 案内: 1 日たてば再び案内する"; else bad "WSL 案内: 1 日たっても案内しない"; fi
+  printf '%s' 999000 > "$WST"
+  if ff_wsl_notice_due "$WST" 1000000 86400; then bad "WSL 案内: 改行の無い記録を読めない"; else ok "WSL 案内: 改行の無い記録も読む"; fi
+  # 壊れた記録・未来の時刻（時計のずれ）は案内する側へ倒す（黙ると二度と出なくなる）
+  for corrupt in garbage "999000 junk" "" 1000100 0999999999999; do
+    printf '%s\n' "$corrupt" > "$WST"
+    if ff_wsl_notice_due "$WST" 1000000 86400; then ok "WSL 案内: 壊れた記録（${corrupt:-空}）は案内する側へ倒す"; else bad "WSL 案内: 壊れた記録（${corrupt:-空}）で黙った"; fi
+  done
+
+  # 文言は JSON の文字列へそのまま埋め込むので、" と \ と制御文字を含めない。止め方を名指しする
+  for fn in ff_wsl_notice_system_message ff_wsl_notice_context; do
+    t="$("$fn")"
+    case "$t" in
+      *'"'* | *'\'*) bad "WSL 案内: ${fn} の文言に \" か \\ がある（JSON が壊れる）" ;;
+      *) if [[ "$t" == *[[:cntrl:]]* ]]; then bad "WSL 案内: ${fn} の文言に制御文字がある"
+         elif [[ "$t" == *WSL* && "$t" == *FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1* ]]; then ok "WSL 案内: ${fn} は JSON へ埋め込める形で、WSL と止め方を名指しする"
+         else bad "WSL 案内: ${fn} が WSL か止め方を名指ししない"; fi ;;
+    esac
+  done
+
+  # 全件ゲートの冒頭案内: msys / cygwin のときだけ stderr へ出す（stdout の集計行を汚さない）
+  WOUT="$(ff_run_all_msys_notice msys 'plugins/ff-dev-toolkit/' 2>/dev/null)"
+  WERR="$(ff_run_all_msys_notice msys 'plugins/ff-dev-toolkit/' 2>&1 >/dev/null)"
+  if [ -z "$WOUT" ] && [[ "$WERR" == *WSL* && "$WERR" == *'npm ci --prefix plugins/ff-dev-toolkit/mcp'* \
+    && "$WERR" == *'bash plugins/ff-dev-toolkit/tests/run-all.sh'* && "$WERR" == *appendWindowsPath=false* ]]; then
+    ok "WSL 案内: 全件ゲートの冒頭案内は stderr に WSL での手順（npm ci → run-all）と PATH の注意を出す"
+  else
+    bad "WSL 案内: 全件ゲートの冒頭案内が不正（stdout=[${WOUT}] stderr=[${WERR}]）"
+  fi
+  WALL="$(ff_run_all_msys_notice linux-gnu 'plugins/ff-dev-toolkit/' 2>&1)"
+  if [ -z "$WALL" ]; then ok "WSL 案内: Linux では全件ゲートの冒頭に何も出さない"; else bad "WSL 案内: Linux で冒頭案内が出た: ${WALL}"; fi
+
+  # 判定と間引き（lib）は外部コマンドを起動しない。PATH を空にしても同じ結果になることで確かめる
+  # （Linux / macOS の全セッションに割り込む判定なので、ここでプロセスを起動しない）
+  mkdir -p "$TMP/empty-path"
+  if ( PATH="$TMP/empty-path"
+       ff_host_is_msys msys && ! ff_host_is_msys linux-gnu \
+         && printf '%s\n' 999000 > "$WST" && ! ff_wsl_notice_due "$WST" 1000000 86400 ) 2>/dev/null; then
+    ok "WSL 案内: 判定と間引き（lib）は PATH が空でも動く（外部コマンドを起動しない）"
+  else
+    bad "WSL 案内: 判定か間引きが PATH 上のコマンドに頼っている"
+  fi
+
+  # hook 本体（check-update.sh）。lib を持つ fixture のプラグイン構造へコピーし、記録先を一時領域へ隔離する。
+  # OSTYPE は BASH_ENV のファイルで切り替える。bash は OSTYPE を初期化した後に BASH_ENV を読むので、
+  # 環境変数と違って代入が効く。これで案内を出す側（msys）と出さない側（linux-gnu）の両方を、どのホスト
+  # でも実物の hook で回す（リリースの gate を回す macOS / Linux でも msys の分岐が検査される）
+  WFIX="$TMP/wsl-plugin"
+  mkdir -p "$WFIX/hooks" "$WFIX/scripts/lib" "$WFIX/.claude-plugin"
+  cp "$TARGET" "$WFIX/hooks/check-update.sh"
+  cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$WFIX/hooks/asdd-hook-gate.sh"
+  cp "$WSL_LIB" "$WFIX/scripts/lib/wsl-notice.sh"
+  printf 'OSTYPE=msys\n' > "$TMP/bashenv-msys"
+  printf 'OSTYPE=linux-gnu\n' > "$TMP/bashenv-linux"
+  wsl_set_version() {
+    printf '{\n  "name": "ff-dev-toolkit",\n  "version": "%s"\n}\n' "$1" > "$WFIX/.claude-plugin/plugin.json"
+  }
+  run_wsl_hook() { # <msys|linux> <repo_url> <cache_dir> [追加の env VAR=VALUE ...]（WSL 案内は既定で有効にする）
+    local os="$1" repo="$2" cache="$3"
+    shift 3
+    RC=0
+    OUT="$(env -u CLAUDE_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK \
+      -u FF_DEV_TOOLKIT_UPDATE_TTL_OK -u FF_DEV_TOOLKIT_UPDATE_TTL_FAIL \
+      -u FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED \
+      FF_DEV_TOOLKIT_UPDATE_REPO_URL="$repo" FF_DEV_TOOLKIT_UPDATE_CACHE_DIR="$cache" \
+      BASH_ENV="$TMP/bashenv-$os" FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=0 "$@" \
+      bash "$WFIX/hooks/check-update.sh" </dev/null 2>"$TMP/stderr")" || RC=$?
+    ERR="$(cat "$TMP/stderr" 2>/dev/null || true)"
+  }
+  # 継ぎ目そのものが効いていること。効いていなければ以降は実行中のホストの OS しか測らない
+  if [ "$(BASH_ENV="$TMP/bashenv-msys" bash -c 'printf %s "$OSTYPE"')" = msys ] \
+    && [ "$(BASH_ENV="$TMP/bashenv-linux" bash -c 'printf %s "$OSTYPE"')" = linux-gnu ]; then
+    ok "WSL 案内: BASH_ENV で OSTYPE を msys / linux-gnu へ切り替えられる（全ホストで両側を検査する継ぎ目）"
+  else
+    bad "WSL 案内: BASH_ENV で OSTYPE を切り替えられない（以降の検査は片側しか測らない）"
+  fi
+  wsl_only_json() { # 出力が WSL 案内だけの JSON 1 つか
+    [ "$(printf '%s' "$OUT" | jq -s 'length' 2>/dev/null)" = "1" ] \
+      && printf '%s' "$OUT" | jq -e '(.systemMessage | contains("WSL") and (contains("📦") | not)) and .hookSpecificOutput.hookEventName == "SessionStart" and (.hookSpecificOutput.additionalContext | contains("WSL"))' >/dev/null 2>&1
+  }
+
+  # 案内を出す側（msys）
+  wsl_set_version "99.0.0"
+  run_wsl_hook msys "$REPO" "$TMP/wsl-cache1"
+  assert_clean "WSL 案内（msys）: 更新が無い回"
+  if wsl_only_json && [ -s "$TMP/wsl-cache1/wsl-notice" ]; then
+    ok "WSL 案内（msys）: 更新が無い回は WSL 案内だけを JSON 1 つで出し、記録を残す"
+  else
+    bad "WSL 案内（msys）: 更新が無い回の出力が不正（out=[${OUT}]）"
+  fi
+  run_wsl_hook msys "$REPO" "$TMP/wsl-cache1"
+  assert_clean "WSL 案内（msys）: 同じ日の 2 回目"
+  if [ -z "$OUT" ]; then ok "WSL 案内（msys）: 同じ日の 2 回目は何も出さない"; else bad "WSL 案内（msys）: 2 回目も出た（out=[${OUT}]）"; fi
+  wsl_set_version "0.13.3"
+  run_wsl_hook msys "$REPO" "$TMP/wsl-cache2"
+  assert_clean "WSL 案内（msys）: 更新通知と同じ回"
+  if [ "$(printf '%s' "$OUT" | jq -s 'length' 2>/dev/null)" = "1" ] \
+    && printf '%s' "$OUT" | jq -e '(.systemMessage | contains("📦") and contains("WSL")) and (.hookSpecificOutput.additionalContext | contains("claude plugin update") and contains("WSL"))' >/dev/null 2>&1; then
+    ok "WSL 案内（msys）: 更新通知と同じ回は 1 つの JSON へ並べる"
+  else
+    bad "WSL 案内（msys）: 更新通知と並べた出力が不正（out=[${OUT}]）"
+  fi
+  wsl_set_version "99.0.0"
+  run_wsl_hook msys "$REPO" "$TMP/wsl-cache3" FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1
+  assert_clean "WSL 案内（msys）: 無効化"
+  if [ -z "$OUT" ] && [ ! -e "$TMP/wsl-cache3/wsl-notice" ]; then
+    ok "WSL 案内（msys）: FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=1 で案内も記録もしない"
+  else
+    bad "WSL 案内（msys）: 無効化が効かない（out=[${OUT}]）"
+  fi
+  run_wsl_hook msys "$REPO" "$TMP/wsl-cache4" FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK=1
+  assert_clean "WSL 案内（msys）: 更新チェックの無効化"
+  if wsl_only_json && [ ! -e "$TMP/wsl-cache4/update-check" ]; then
+    ok "WSL 案内（msys）: 更新チェックを止めても WSL 案内は独立して出る（更新チェックのキャッシュは作らない）"
+  else
+    bad "WSL 案内（msys）: 更新チェックの無効化が WSL 案内まで止めた、または更新チェックが走った（out=[${OUT}]）"
+  fi
+  run_wsl_hook msys "$TMP/no-such-repo.git" "$TMP/wsl-cache5"
+  assert_clean "WSL 案内（msys）: 取得に失敗した回"
+  if wsl_only_json; then
+    ok "WSL 案内（msys）: 更新の取得に失敗した回も、終わり際に WSL 案内だけを出す"
+  else
+    bad "WSL 案内（msys）: 取得に失敗した回の出力が不正（out=[${OUT}]）"
+  fi
+  # 記録できない（記録先の親がファイル）回は出さない。出すと毎セッション出続ける
+  printf 'x\n' > "$TMP/wsl-cache-is-file"
+  run_wsl_hook msys "$REPO" "$TMP/wsl-cache-is-file"
+  assert_clean "WSL 案内（msys）: 記録できない回"
+  if [ -z "$OUT" ]; then ok "WSL 案内（msys）: 記録できない回は案内しない"; else bad "WSL 案内（msys）: 記録できないのに案内した（out=[${OUT}]）"; fi
+  # 記録の場所がディレクトリ化した病的状態は除去して自己修復する（放置すると二度と出ない）
+  mkdir -p "$TMP/wsl-cache6/wsl-notice"
+  run_wsl_hook msys "$REPO" "$TMP/wsl-cache6"
+  assert_clean "WSL 案内（msys）: 記録がディレクトリ"
+  if wsl_only_json && [ -f "$TMP/wsl-cache6/wsl-notice" ]; then
+    ok "WSL 案内（msys）: 記録の場所がディレクトリでも除去して案内し、記録を作り直す"
+  else
+    bad "WSL 案内（msys）: 記録の場所がディレクトリのとき自己修復しない（out=[${OUT}]）"
+  fi
+  # lib が無い配置（既定の FIX）では WSL 案内だけを飛ばし、更新通知は従来どおり
+  set_version "0.13.3"
+  run_hook "$REPO" "$TMP/wsl-cache7" FF_DEV_TOOLKIT_SKIP_WSL_NOTICE=0 BASH_ENV="$TMP/bashenv-msys"
+  assert_clean "WSL 案内（msys）: lib が無い配置"
+  if printf '%s' "$OUT" | jq -e '.systemMessage | contains("📦") and (contains("WSL") | not)' >/dev/null 2>&1 \
+    && [ ! -e "$TMP/wsl-cache7/wsl-notice" ]; then
+    ok "WSL 案内（msys）: lib が無い配置では WSL 案内だけを飛ばし、更新通知は従来どおり出す"
+  else
+    bad "WSL 案内（msys）: lib が無い配置の出力が不正（out=[${OUT}]）"
+  fi
+
+  # 案内を出さない側（linux-gnu。WSL の中もこれ）
+  wsl_set_version "99.0.0"
+  run_wsl_hook linux "$REPO" "$TMP/wsl-cache8"
+  assert_clean "WSL 案内（linux）: 更新が無い回"
+  if [ -z "$OUT" ] && [ ! -e "$TMP/wsl-cache8/wsl-notice" ]; then
+    ok "WSL 案内（linux）: 案内を出さず、記録も作らない"
+  else
+    bad "WSL 案内（linux）: 案内した（out=[${OUT}]）"
+  fi
+  wsl_set_version "0.13.3"
+  run_wsl_hook linux "$REPO" "$TMP/wsl-cache9"
+  assert_clean "WSL 案内（linux）: 更新通知の回"
+  if printf '%s' "$OUT" | jq -e '.systemMessage | contains("📦") and (contains("WSL") | not)' >/dev/null 2>&1; then
+    ok "WSL 案内（linux）: 更新通知には WSL 案内を並べない"
+  else
+    bad "WSL 案内（linux）: 更新通知が不正（out=[${OUT}]）"
+  fi
+else
+  bad "WSL 案内: lib（${WSL_LIB}）が見つからない"
 fi
 
 # ---- 集計 --------------------------------------------------------------------

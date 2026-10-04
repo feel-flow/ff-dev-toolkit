@@ -78,6 +78,7 @@ updated_any=0
 if command -v jq >/dev/null 2>&1; then
   pairs="$(claude plugin list --json </dev/null 2>/dev/null \
     | jq -r '.[] | select(.id | startswith("ff-dev-toolkit@")) | "\(.id) \(.scope // "user")"' 2>/dev/null)" || pairs=""
+  pairs="${pairs//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
   if [ -n "$pairs" ]; then
     while read -r id scope; do
       [ -n "$id" ] || continue

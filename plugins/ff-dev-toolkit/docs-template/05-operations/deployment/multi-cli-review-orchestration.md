@@ -245,6 +245,26 @@ guard は bundled manifest の先頭 `name` marker、通常 directory の `scrip
 
 ---
 
+## Consumer の review evidence
+
+ready / merge の前にレビュー対象を機械照合する consumer は `multi-review.sh --evidence` を使う（branch review・clean worktree・Python 3 が必要）。実行開始時の repository root / remote / branch / HEAD / base SHA / diff を保存し、リビジョン照合とレポート生成の後で `review-evidence.json` と `.evidence/<run-id>/report.md` を生成する。Markdown レポートには consumer が追記しない。レポート生成まで到達した Critical・未完了の evidence も診断用に残るが verifier は通さない。開始前の拒否やリビジョン変更による破棄では新規 evidence は発行しない。開始検証に失敗した場合、旧証跡は旧 run のものとして残る。
+
+```bash
+python3 "$FF_DEV_TOOLKIT_ROOT/scripts/review-evidence.py" verify \
+  --file .review-results/review-evidence.json --output .review-results \
+  --base origin/develop --required <required-perspectives>
+```
+
+`review-route.sh` の `REVIEW_REQUIRED_PERSPECTIVES` が変更クラスの必要観点。`none` はホストが必要観点を決める。consumer は観点数や CLI 本数を独自に固定しない。利用不可の sub CLI は既存の主担当完了規則でのみ許容する。verify の CSV は許容済み観点を含む admission coverage で、実行一覧ではない。実際の実施状態は evidence の results を読み、unavailable を実レビュー済みと報告しない。
+
+先行レビューが必要な consumer は gitignore 済みの `.review-results/precheck` または repository 外の output-dir で先行レビューを `--evidence` 付きで実行し、通常レビューへ `--require-prior-review <prior-evidence.json>` を渡す。同一 HEAD/base/repository の合格証跡を CLI 起動前に検証し、その run の開始より先に完了した証拠を通常 evidence に保持する。consumer verifier は `--prior-required security-analysis,type-design-analysis,test-analysis` 等で対象観点を要求できる。対象パスの選択は consumer の責務。新ブランチでは出力全体を先行レビューより前に一度退避する。継続中は先行 output でも `--fresh` を使わず、保存済み archive を維持する。
+
+全体レビューを一度通した後、[部分再検証](#fix-ループの部分再検証--reviewers-限定再実行)の条件を満たす fix は、前回 evidence を別ファイルに保存して `--continue-review <previous-evidence.json>` と対象観点を指定する。verifier は同一系列・固定 base・祖先 HEAD・既存観点の部分集合・保存レポートのハッシュ・Critical 不在を照合する。部分再検証の意味的な適格性はホストが同節に従って判断する（任意の新実装を部分再検証として通さない）。境界差分では各新 HEAD に先行レビューを必要とする。古い evidence を手で編集しない。系譜を退避する `--fresh` は継続時に使えない。先行・継続証跡と `--resume` / `--fresh` の併用も拒否する（開始前のキャッシュを完了順序の証明にしない）。
+
+これはユーザーのローカル成果物の取り違えや意図しない改変を検出する契約であり、署名済み attestation ではない。ローカルユーザー自身が evidence と report を共に偽造する脅威は防がない。主担当の対話レビューを実行したことの自動証明にも使わない。
+
+---
+
 ## クロスモデルレビュー（推奨パターン）
 
 担当の選択（主担当・別 CLI を加える条件・失敗時の継続）は [レビュー担当の選択と利用制限時の継続](./self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従います。以下の Codex コマンドは Claude が主担当の場合の例です。

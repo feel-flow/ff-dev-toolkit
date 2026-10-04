@@ -342,6 +342,7 @@ EOF
     if ! jopts="$(jq -r --arg id "$cid" '.[$id] | select(.type == "choice") | .criteria | keys[]' "$qfile" 2>/dev/null | LC_ALL=C sort)" || [ -z "$jopts" ]; then
       echo "  ✗ choice node ${cid} の fixture が choice 型の criteria を持っていません: scripts/jev/questions/${cid}.json" >&2; n_violations=$((n_violations + 1)); continue
     fi
+    jopts="${jopts//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
     if [ "$opts" != "$jopts" ]; then
       echo "  ✗ choice node ${cid} の答えの集合と fixture の option が一致しません（木: $(printf '%s' "$opts" | tr '\n' ' ') / fixture: $(printf '%s' "$jopts" | tr '\n' ' ')）" >&2; n_violations=$((n_violations + 1))
     fi
