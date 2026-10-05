@@ -24,6 +24,10 @@
 #   予約語から `else` を外すと「else の直後」が赤。
 #   末尾から改行を外すと「引数なしで行末」が赤。
 #   末尾を否定先読みへ広げると「sed の | 区切り」が赤。
+# 変異検出（上限切れの判定 / Issue `#2020`）:
+#   rc > 128 の判定を外す（SECONDS の差だけで見る元の形）と、壁時計が戻る回の再現で捨て読みを飛ばして
+#   書き手が SIGPIPE を受ける。この変異は suite 自身が流して赤を確かめ、再現（BASH_ENV の read の包み）が
+#   効いていない回もここで赤になる（2026-10-05 実測）。
 # 空振り検出: 自動発火節の判定リストから未完了報告の定型文を変えた SKILL.md を与えると、hook / SKILL.md の自動発火契約の照合 1 件が赤になる（2026-09-23 実測。shell 検査 121 件中 1 件失敗。判定リストを壊したまま「契約あり」へ倒さない）。
 # 空振り検出: --group の未知値、選択関数が全群を外す写し、contracts 群の検査本体が空の写し、空の ASDD test file はいずれも exit 1（2026-09-26、selftest の selector probe で実測）。
 set -euo pipefail
@@ -1364,7 +1368,7 @@ for drain_target in "$TARGET" "$CONTEXT_TARGET"; do
 done
 
 echo "retrospective hooks: 天井（数 MB）と遅延 producer でも書き手を殺さない"
-# 上の 200,000 バイトは bash 組み込み read の速度（2026-09-12 実測 bash 3.2.57 /
+# 上の 100,000 バイトは bash 組み込み read の速度（2026-09-12 実測 bash 3.2.57 /
 # macOS で約 2.9 MB/s）でも入力上限 2 秒に収まるため、「上限で諦めて部分入力を捨てる」
 # 実装でも緑になる = 天井を測っていない（クロスモデルレビュー指摘）。天井は上限の外側
 # （約 6 MB 以上）、遅延 producer は上限の外側（時間軸。入力上限を過ぎてから書き始める
@@ -1418,6 +1422,100 @@ for drain_target in "$TARGET" "$CONTEXT_TARGET"; do
   fi
 done
 rm -f "$STOP_HUGE_FILE" "$CONTEXT_HUGE_FILE" "$STOP_SMALL_FILE" "$CONTEXT_SMALL_FILE"
+
+echo "retrospective hooks: 上限で捨て読みした回は、入力を使えていないことを stderr に残す"
+# 入力上限を過ぎてから書き始める書き手は、組み込みの read が上限まで何も受け取れず、残りを node が
+# 捨て読みする。捨てたバイト数が 0 でなければ、その回の判定は入力を使えていないので stderr へ残す
+# （Windows の Git Bash では組み込みの read がパイプから約 25 KB/秒しか読めず、54 KB 程度の入力でも
+# この経路に入っていた。Issue `#2020`）。すぐ書く書き手と、何も書かずに stdin を開いたままの書き手
+# では出さない。decision-tree.sh も同じ捨て読みを持つので、ここで一緒に測る。
+DIAG_PAYLOAD="$TEST_TMP/diag-payload.json"
+printf '%s' '{"hook_event_name":"Stop","stop_hook_active":false,"session_id":"s1"}' > "$DIAG_PAYLOAD"
+DIAG_STATE="$TEST_TMP/diag-state"
+mkdir -p "$DIAG_STATE"
+for diag_target in "$TARGET" "$PLUGIN_ROOT/hooks/decision-tree.sh"; do
+  diag_name="$(basename "$diag_target")"
+  DIAG_RC=0
+  DIAG_ERR="$( { { sleep "$DRAIN_DELAY_SECONDS"; cat "$DIAG_PAYLOAD"; } \
+    | (cd "$TEST_TMP" && env RETROSPECTIVE_MODE= FF_DEV_TOOLKIT_STATE_DIR="$DIAG_STATE" /bin/bash "$diag_target" 2>&1 >/dev/null); } )" \
+    || DIAG_RC=$?
+  diag_bytes="$(wc -c < "$DIAG_PAYLOAD" | tr -d ' ')"
+  if [ "$DIAG_RC" -eq 0 ] && [[ "$DIAG_ERR" == *"$diag_name"*stdin*" $diag_bytes "* ]]; then
+    ok "$diag_name: 上限の後に届いた入力を捨て読みした回は、捨てたバイト数を stderr に残す"
+  else
+    bad "$diag_name: 上限で捨て読みしたのに stderr に残さない: rc=$DIAG_RC stderr=[$DIAG_ERR]"
+  fi
+  DIAG_RC=0
+  DIAG_ERR="$( { cat "$DIAG_PAYLOAD" \
+    | (cd "$TEST_TMP" && env RETROSPECTIVE_MODE= FF_DEV_TOOLKIT_STATE_DIR="$DIAG_STATE" /bin/bash "$diag_target" 2>&1 >/dev/null); } )" \
+    || DIAG_RC=$?
+  if [ "$DIAG_RC" -eq 0 ] && [[ "$DIAG_ERR" != *"$diag_name"*stdin* ]]; then
+    ok "$diag_name: 上限内に読み切った回は捨て読みの診断を出さない"
+  else
+    bad "$diag_name: 上限内に読み切ったのに捨て読みの診断を出した: rc=$DIAG_RC stderr=[$DIAG_ERR]"
+  fi
+  DIAG_RC=0
+  DIAG_ERR="$( { sleep "$DRAIN_DELAY_SECONDS" \
+    | (cd "$TEST_TMP" && env RETROSPECTIVE_MODE= FF_DEV_TOOLKIT_STATE_DIR="$DIAG_STATE" /bin/bash "$diag_target" 2>&1 >/dev/null); } )" \
+    || DIAG_RC=$?
+  if [ "$DIAG_RC" -eq 0 ] && [[ "$DIAG_ERR" != *"$diag_name"*stdin* ]]; then
+    ok "$diag_name: 何も書かずに stdin を開いたままの書き手では捨て読みの診断を出さない"
+  else
+    bad "$diag_name: 何も書かない書き手で捨て読みの診断を出した: rc=$DIAG_RC stderr=[$DIAG_ERR]"
+  fi
+done
+
+echo "retrospective hooks: 時間切れの後に壁時計が戻っても、上限で切れた回として捨て読みする"
+# SECONDS は壁時計に従い、WSL2 は時刻の同期で壁時計を動かす。rc 142 で時間切れになったのに SECONDS の
+# 差が 1 の回が 50 回中 2 回あり、捨て読みを飛ばして書き手が SIGPIPE を受けていた（Issue `#2020`）。
+# BASH_ENV のファイルで組み込みの read を包み、時間切れ（rc > 128）の直後に SECONDS を読み取り前の値へ
+# 戻して、その回を毎回再現する。bash 3.2 は時間切れを rc 1 で返すので、この再現は成り立たない。
+CLOCK_STEP_ENV="$TEST_TMP/clock-step-env.sh"
+printf '%s\n' 'read() {' '  builtin read "$@"' '  local _rc=$?' \
+  '  if [ "$_rc" -gt 128 ] && [ -n "${DRAIN_STARTED:-}" ]; then SECONDS=$DRAIN_STARTED; fi' \
+  '  return "$_rc"' '}' > "$CLOCK_STEP_ENV"
+clock_step_probe() { # <hook> <RETROSPECTIVE_MODE の値>。DIAG_RC / DIAG_ERR に結果を入れる
+  DIAG_RC=0
+  DIAG_ERR="$( { { sleep "$DRAIN_DELAY_SECONDS"; cat "$DIAG_PAYLOAD"; } \
+    | (cd "$TEST_TMP" && env BASH_ENV="$CLOCK_STEP_ENV" RETROSPECTIVE_MODE="$2" FF_DEV_TOOLKIT_STATE_DIR="$DIAG_STATE" /bin/bash "$1" 2>&1 >/dev/null); } )" \
+    || DIAG_RC=$?
+}
+clock_bash_major="$(/bin/bash -c 'printf "%s" "${BASH_VERSINFO[0]}"')"
+if [ "${clock_bash_major:-0}" -lt 4 ]; then
+  echo "  ○ skip: 壁時計が戻る回の再現は、時間切れを rc 1 で返す /bin/bash ${clock_bash_major:-?} 系（4 未満）では成立しないため未実行"
+else
+  for clock_target in "$TARGET" "$PLUGIN_ROOT/hooks/decision-tree.sh"; do
+    clock_name="$(basename "$clock_target")"
+    clock_step_probe "$clock_target" ""
+    if [ "$DIAG_RC" -eq 0 ] && [[ "$DIAG_ERR" == *"$clock_name"*stdin* ]]; then
+      ok "$clock_name: 時間切れの後に壁時計が戻っても捨て読みし、診断を残す"
+    else
+      bad "$clock_name: 時間切れの後に壁時計が戻ると捨て読みを飛ばす: rc=$DIAG_RC stderr=[$DIAG_ERR]"
+    fi
+  done
+  clock_step_probe "$CONTEXT_TARGET" off
+  if [ "$DIAG_RC" -eq 0 ]; then
+    ok "retrospective-context.sh: RETROSPECTIVE_MODE=off で時間切れの後に壁時計が戻っても書き手が SIGPIPE を受けない"
+  else
+    bad "retrospective-context.sh: RETROSPECTIVE_MODE=off で時間切れの後に壁時計が戻ると捨て読みを飛ばす: rc=$DIAG_RC"
+  fi
+  # 変異: rc > 128 の判定を外す（SECONDS だけで見る元の形）と、同じ再現で書き手が SIGPIPE を受ける。
+  # 再現が効いていない（SECONDS が戻っていない）回は変異も緑になるので、ここが再現の針も兼ねる
+  CLOCK_MUT="$TEST_TMP/clock-mut/hooks/retrospective-stop.sh"
+  mkdir -p "${CLOCK_MUT%/*}"
+  sed 's/\[ "\$READ_RC" -gt 128 \]/false/' "$TARGET" > "$CLOCK_MUT"
+  if grep -qF '{ false \' "$CLOCK_MUT"; then
+    clock_step_probe "$CLOCK_MUT" ""
+    if [ "$DIAG_RC" -ne 0 ] || [[ "$DIAG_ERR" != *stdin* ]]; then
+      ok "壁時計の変異: rc > 128 の判定を外すと捨て読みを飛ばして検出できる（rc=${DIAG_RC}）"
+    else
+      bad "壁時計の変異: rc > 128 の判定を外しても捨て読みする（再現が効いていない。検出力なし）"
+    fi
+  else
+    bad "壁時計の変異が当たっていない（rc > 128 の判定が見つからない）"
+  fi
+fi
+rm -rf "$DIAG_PAYLOAD" "$DIAG_STATE"
 
 echo "retrospective hooks: RETROSPECTIVE_MODE=off は判別 node を起動しない"
 # kill switch が判別 node より後ろにあると、off でも毎プロンプト node が起動する

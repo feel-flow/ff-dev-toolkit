@@ -42,22 +42,38 @@ HOOK_INPUT=""
 # already degraded on that path (it only emits the recovery hint below), so the
 # builtin bound is where it stops.
 #
-# SECONDS (whole seconds, a bash builtin) is what separates "the bound ended the
-# read" from "EOF ended it". The return code cannot: bash 3.2 reports a timeout
-# as rc 1 and drops the partial input — the same rc EOF produces (bash 5 reports
-# rc > 128 and keeps it, so neither rc nor the variable is portable evidence).
+# Two signals separate "the bound ended the read" from "EOF ended it", and either
+# one is enough. bash 4 and later report a timeout as rc > 128. bash 3.2 reports
+# it as rc 1 and drops the partial input — the same rc EOF produces — so there
+# SECONDS (whole seconds, a bash builtin) decides. SECONDS alone is not enough:
+# it follows the wall clock, which WSL2 steps while it syncs time, and a read
+# that timed out with rc 142 showed a SECONDS difference of 1 in 2 of 50 runs —
+# the hook then skipped the drain and the late writer died on SIGPIPE (Issue `#2020`).
 DRAIN_STARTED=$SECONDS
 IFS= read -r -t "$INPUT_TIMEOUT_SECONDS" -d '' HOOK_INPUT
 READ_RC=$?
-if [ "$READ_RC" -ne 0 ] && [ "$((SECONDS - DRAIN_STARTED))" -ge "$INPUT_TIMEOUT_SECONDS" ] \
+if { [ "$READ_RC" -gt 128 ] \
+     || { [ "$READ_RC" -ne 0 ] && [ "$((SECONDS - DRAIN_STARTED))" -ge "$INPUT_TIMEOUT_SECONDS" ]; }; } \
   && command -v node >/dev/null 2>&1; then
-  node -e '
-const stop = () => process.exit(0);
+  # The drain reports how many bytes it threw away. Any byte means the payload did not fit in
+  # the bound and this response was judged without its input, so say so on stderr instead of
+  # skipping silently: Git Bash on Windows moves a pipe through the builtin at about 25 KB/s and
+  # cut a 54 KB payload at the bound (Issue `#2020`). A host that keeps stdin open without
+  # writing drains 0 bytes and stays quiet.
+  DRAINED_BYTES="$(node -e '
+let n = 0;
+let stopped = false;
+// Exit only after the count is flushed: stdout on a POSIX pipe is asynchronous.
+const stop = () => { if (stopped) return; stopped = true; process.stdout.write(String(n), () => process.exit(0)); };
 const timer = setTimeout(stop, Number(process.argv[1]) * 1000 || 2000);
-process.stdin.on("data", () => {});
+process.stdin.on("data", chunk => { n += chunk.length; });
 process.stdin.on("error", stop);
 process.stdin.on("end", () => { clearTimeout(timer); stop(); });
-' "$DRAIN_TIMEOUT_SECONDS" >/dev/null 2>&1 || true
+' "$DRAIN_TIMEOUT_SECONDS" 2>/dev/null)" || DRAINED_BYTES=""
+  case "$DRAINED_BYTES" in
+    '' | 0 | *[!0-9]*) ;;
+    *) echo "ff-dev-toolkit: retrospective-stop.sh could not read stdin within ${INPUT_TIMEOUT_SECONDS}s and discarded the remaining ${DRAINED_BYTES} bytes; this response was judged without its input" >&2 ;;
+  esac
 fi
 
 # The ASDD gate goes AFTER the drain above. Every early exit the gate produces

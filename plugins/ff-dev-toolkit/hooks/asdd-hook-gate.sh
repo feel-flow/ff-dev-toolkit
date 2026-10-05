@@ -74,9 +74,13 @@
 # The rc 1 path (this helper) and the rc 2 path (asdd-feature.mjs) print a
 # diagnostic to stderr; an unexpected node failure ("anything else") does not.
 asdd_hook_enabled() {
-  local feature="$1" root="${PWD}" parent gate
+  local feature="$1" root="${PWD}" parent gate base
   while :; do
-    if [ -e "$root/.asdd/config.json" ] || [ -L "$root/.asdd/config.json" ] || [ -L "$root/.asdd" ]; then
+    # "${root%/}" so the walk never builds "//.asdd": Git Bash reads a leading "//" as a UNC
+    # share (\\.asdd), which costs a network lookup per hook from a cwd outside git and now and
+    # then reports the file as present (Issue `#2020`).
+    base="${root%/}"
+    if [ -e "$base/.asdd/config.json" ] || [ -L "$base/.asdd/config.json" ] || [ -L "$base/.asdd" ]; then
       if ! command -v node >/dev/null 2>&1; then
         echo 'ff-dev-toolkit: ASDD 設定を検証できないため任意Hookを停止しました（Node.js が必要です）' >&2
         return 1
@@ -86,7 +90,7 @@ asdd_hook_enabled() {
       return $?
     fi
     # Do not inherit another repository's policy through a parent directory.
-    [ -e "$root/.git" ] && return 0
+    [ -e "$base/.git" ] && return 0
     parent="${root%/*}"
     [ -n "$parent" ] || parent=/
     [ "$root" = "$parent" ] && return 0

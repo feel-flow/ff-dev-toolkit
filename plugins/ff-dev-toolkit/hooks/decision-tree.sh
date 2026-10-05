@@ -44,21 +44,36 @@
 # 上限付きで読む（hooks.json の timeout 5 秒を 2 秒の入力段 + 2 秒の捨て読み段へ割る。stdin を
 # 開いたまま書かないホストでも hook が自分の予算内で終わる）。上限で切れた回は node があれば
 # EOF まで捨て読みして書き手の EPIPE を防ぐ（asdd-hook-gate.sh の stdin contract (c)）。
+# 上限で切れたかは、bash 4 以降の rc > 128 か、SECONDS の差（rc では見分けられない bash 3.2 用）の
+# どちらかで判定する。SECONDS は壁時計に従い、WSL2 は時刻の同期で壁時計を動かすので、rc 142 で
+# 切れたのに差が 1 の回があった（50 回中 2 回。捨て読みを飛ばして書き手が SIGPIPE。Issue `#2020`）。
 INPUT_TIMEOUT_SECONDS=2
 DRAIN_TIMEOUT_SECONDS=2
 input=""
 DRAIN_STARTED=$SECONDS
 IFS= read -r -t "$INPUT_TIMEOUT_SECONDS" -d '' input
 READ_RC=$?
-if [ "$READ_RC" -ne 0 ] && [ "$((SECONDS - DRAIN_STARTED))" -ge "$INPUT_TIMEOUT_SECONDS" ] \
+if { [ "$READ_RC" -gt 128 ] \
+     || { [ "$READ_RC" -ne 0 ] && [ "$((SECONDS - DRAIN_STARTED))" -ge "$INPUT_TIMEOUT_SECONDS" ]; }; } \
   && command -v node >/dev/null 2>&1; then
-  node -e '
-const stop = () => process.exit(0);
+  # 捨て読みしたバイト数を受け取り、1 バイトでも捨てた回（= 入力を上限内に読み切れず、この回の判定に
+  # 使えていない）は stderr へ残す。Windows の Git Bash は組み込みの read がパイプから約 25 KB/秒しか
+  # 読めず、約 54 KB で打ち切って黙って素通ししていた（Issue `#2020`）。stdin を開いたまま書かない
+  # ホストは 0 バイトなので出さない
+  DRAINED_BYTES="$(node -e '
+let n = 0;
+let stopped = false;
+// 数を書き切ってから終わる（POSIX のパイプへの stdout は非同期）
+const stop = () => { if (stopped) return; stopped = true; process.stdout.write(String(n), () => process.exit(0)); };
 const timer = setTimeout(stop, Number(process.argv[1]) * 1000 || 2000);
-process.stdin.on("data", () => {});
+process.stdin.on("data", chunk => { n += chunk.length; });
 process.stdin.on("error", stop);
 process.stdin.on("end", () => { clearTimeout(timer); stop(); });
-' "$DRAIN_TIMEOUT_SECONDS" >/dev/null 2>&1 || true
+' "$DRAIN_TIMEOUT_SECONDS" 2>/dev/null)" || DRAINED_BYTES=""
+  case "$DRAINED_BYTES" in
+    '' | 0 | *[!0-9]*) ;;
+    *) echo "ff-dev-toolkit: decision-tree.sh は stdin を ${INPUT_TIMEOUT_SECONDS} 秒で読み切れず、残り ${DRAINED_BYTES} バイトを捨てました（この回の入力は判定に使えていません）" >&2 ;;
+  esac
 fi
 
 # ASDD ゲートは drain より後（ゲートの早期終了は exit 0 で、先に置くと未読のまま抜ける経路ができる）。

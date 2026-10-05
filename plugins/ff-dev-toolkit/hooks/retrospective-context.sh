@@ -154,14 +154,15 @@ else
   # it in milliseconds under its own bound. With no node there is no bounded
   # fast reader available, so the builtin bound is where it stops.
   #
-  # SECONDS (whole seconds, a bash builtin) is what separates "the bound ended
-  # the read" from "EOF ended it". The return code cannot: bash 3.2 reports a
-  # timeout as rc 1 and drops the partial input — the same rc EOF produces
-  # (bash 5 reports rc > 128 and keeps it, so neither is portable evidence).
+  # Either signal says "the bound ended the read": rc > 128 (bash 4 and later)
+  # or a SECONDS difference at the bound (bash 3.2 reports a timeout as rc 1,
+  # the same rc EOF produces). SECONDS alone follows the wall clock, which WSL2
+  # steps while it syncs time; see retrospective-stop.sh (Issue `#2020`).
   DRAIN_STARTED=$SECONDS
   IFS= read -r -t "$INPUT_TIMEOUT_SECONDS" -d '' _
   READ_RC=$?
-  if [ "$READ_RC" -ne 0 ] && [ "$((SECONDS - DRAIN_STARTED))" -ge "$INPUT_TIMEOUT_SECONDS" ] \
+  if { [ "$READ_RC" -gt 128 ] \
+       || { [ "$READ_RC" -ne 0 ] && [ "$((SECONDS - DRAIN_STARTED))" -ge "$INPUT_TIMEOUT_SECONDS" ]; }; } \
     && command -v node >/dev/null 2>&1; then
     node -e '
 const stop = () => process.exit(0);

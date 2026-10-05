@@ -211,8 +211,24 @@
 # 空・壊れた環境で command not found → stdin 未読のまま exit 0 となり、書き手（ホスト）が
 # EPIPE / SIGPIPE を受ける（既存 2 ガードと同じ修正）。opt-out も
 # stdin を読み切ってから抜ける。-d '' は EOF で非 0 を返すが input には内容が入っている。
+#
+# bash 5 以降は -N でまとめて読む。-d '' はパイプから 1 バイトずつ読むので、プロセスの重い
+# Windows（Git Bash の bash 5）では 300KB の Write で読み取りだけに 1 秒以上かかり、レビュー走行中の
+# 判定と合わせて登録 timeout（10 秒）を超えると、大きな Write が凍結を素通りしていた（Issue `#2020`）。
+# -N は指定した文字数か EOF まで読むので、1 MiB ずつ EOF まで繰り返す（最後の端数は EOF で非 0 が
+# 返っても変数に入る）。-N は 4.1 からで、4.x には -N の不具合（4.3 で修正）と多バイト文字の途中切れ
+# （5.0 で修正）があるので、5 未満（macOS の 3.2 を含む）は従来どおり -d '' で読む。
 input=""
-IFS= read -r -d '' input || true
+if [ "${BASH_VERSINFO[0]:-3}" -ge 5 ]; then
+  _ff_chunk=""
+  while IFS= read -r -N 1048576 _ff_chunk; do
+    input="$input$_ff_chunk"
+  done
+  input="$input$_ff_chunk"
+  unset _ff_chunk
+else
+  IFS= read -r -d '' input || true
+fi
 
 # ASDD ゲートはこの drain より後に置く。ゲートの早期終了（.asdd 設定があり node が
 # 無い / 当該 feature が無効 / ヘルパ自体が読めない）は exit 0 なので、ゲートを先頭へ

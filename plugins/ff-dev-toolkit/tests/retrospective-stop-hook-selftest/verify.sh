@@ -8,7 +8,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONSUMER="$PLUGIN_ROOT/tests/retrospective-stop-hook/verify.sh"
-EXPECTED_CONSUMER_CHECKS=121
+EXPECTED_CONSUMER_CHECKS=131
+# 壁時計が戻る回の再現（4 件。Issue `#2020`）は、時間切れを rc 1 で返す /bin/bash 4 未満では consumer が skip する
+if [ "$(/bin/bash -c 'printf "%s" "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)" -lt 4 ]; then
+  EXPECTED_CONSUMER_CHECKS=127
+fi
 
 command -v perl >/dev/null 2>&1 || { echo "○ skip: perl が無いため retrospective Stop hook self-test をスキップ"; exit 0; }
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
@@ -163,7 +167,8 @@ echo "  ✓ consumer は node --test の reporter を固定している"
 #       `Number(process.argv[1]) * 1000 || 2000` と別形にしてあり、この数え方に入らない）/
 #     `|| HOST_STATE="inject"`（context.sh: 1）/ `[ "$HOST_STATE" = "skip" ]`（context.sh: 1）/
 #     `IFS= read -r -t "$INPUT_TIMEOUT_SECONDS" -d '' _`（context.sh: 1）/
-#     `[ "$READ_RC" -ne 0 ]`（stop.sh: 1 / context.sh: 1）/ `READ_RC=$?`（stop.sh: 1）/
+#     `[ "$READ_RC" -ne 0 ]` と `[ "$READ_RC" -gt 128 ]`（stop.sh: 1 / context.sh: 1。discard 段を殺す変異は
+#       両方を false にする — 片方だけでは残った枝で捨て読みが続く。Issue `#2020`）/ `READ_RC=$?`（stop.sh: 1）/
 #     `setTimeout(latch,`（context.sh: 1）/ `[ "$RETROSPECTIVE_OFF" -eq 0 ]`（context.sh: 1）/
 #     `...registeredHooks()`（asdd.test.mjs: 1）
 #   `finish("inject")` は context.sh に 3 箇所あるが、変異は前後の行ごと指定して一意に当てている
@@ -199,7 +204,7 @@ expect_occurrences() { # <ファイル> <固定文字列> <期待数>
 }
 
 # Register isolated mutations, then run only the owning consumer group. The full
-# baseline still checks all 121 shell and 7 Node cases; all 81 original mutations
+# baseline still checks all 131 shell and 7 Node cases; all 81 original mutations
 # retain their expected diagnostics. On the expected failure the selected group may
 # stop early: unrelated remaining checks cannot add evidence for that mutation.
 # A copied baseline keeps fixtures isolated, and ordered spool collection keeps output
@@ -675,16 +680,18 @@ check_mutation "node 不在時の shell drain 削除" "retrospective-context.sh 
 #
 # (1) 天井: bounded read で諦める形へ戻す退行。入力上限（2 秒）を過ぎたあとの discard
 # 段を殺すと、bash の逐次読み（~265 KB/s）では数 MB を読み切れず書き手が SIGPIPE で
-# 死ぬ。200,000 バイトの probe だけでは上限内に収まるため緑のまま = 天井を測れない。
+# 死ぬ。100,000 バイトの probe だけでは上限内に収まるため緑のまま = 天井を測れない。
 ROOT="$(make_fixture stop-drain-escalation-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-stop.sh" '[ "$READ_RC" -ne 0 ]' 1
-perl -0pi -e 's/\[ "\$READ_RC" -ne 0 \]/false/' "$ROOT/hooks/retrospective-stop.sh"
+expect_occurrences "$ROOT/hooks/retrospective-stop.sh" '[ "$READ_RC" -gt 128 ]' 1
+perl -0pi -e 's/\[ "\$READ_RC" -ne 0 \]/false/; s/\[ "\$READ_RC" -gt 128 \]/false/' "$ROOT/hooks/retrospective-stop.sh"
 check_mutation "Stop hook の discard 段を削除（bounded read へ戻す）" \
   "retrospective-stop.sh の天井 drain（ゲート早期終了）" "$ROOT" drain
 
 ROOT="$(make_fixture context-drain-escalation-removed)"
 expect_occurrences "$ROOT/hooks/retrospective-context.sh" '[ "$READ_RC" -ne 0 ]' 1
-perl -0pi -e 's/\[ "\$READ_RC" -ne 0 \]/false/' "$ROOT/hooks/retrospective-context.sh"
+expect_occurrences "$ROOT/hooks/retrospective-context.sh" '[ "$READ_RC" -gt 128 ]' 1
+perl -0pi -e 's/\[ "\$READ_RC" -ne 0 \]/false/; s/\[ "\$READ_RC" -gt 128 \]/false/' "$ROOT/hooks/retrospective-context.sh"
 check_mutation "事前注入 hook の discard 段を削除（bounded read へ戻す）" \
   "retrospective-context.sh の天井 drain（off）" "$ROOT" drain
 

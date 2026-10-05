@@ -550,23 +550,42 @@ issue_state() { # <owner/repo#N> → open|closed|未確認
     printf 'closed\n'
   fi
 }
-# Issue 列（` / ` 区切り）を要素ごとに `ref(state)` へ展開する。owner/repo#N 形だけ state を引く。
+# Issue 列（` / ` 区切り）の各要素から owner/repo#N だけを抽出し、参照直後へ state を付ける。
+# 注記や空白の無い区切りは表示用に残し、gh の repo / number には渡さない。
 # `skill:` / `doc:` / `なし` はそのまま。`#N` だけの旧形式（リポジトリ修飾なし）は解決せず `未確認`。
-annotate_refs() { # <Issue 列の値> → "a(open) / b(closed) / skill:x"
-  local col="$1" out="" item="" st=""
-  [ -n "${col}" ] || { printf '%s' ""; return 0; }
+annotate_refs() { # <Issue 列の値> → annotated_refs / refs_has_open / refs_has_unresolved
+  local col="$1" out="" item="" st="" rest="" annotated="" ref=""
+  local ref_pattern='[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+'
+  annotated_refs=""; refs_has_open=0; refs_has_unresolved=0
+  [ -n "${col}" ] || return 0
   while IFS= read -r item; do
     item="$(printf '%s' "${item}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     [ -n "${item}" ] || continue
     case "${item}" in
-      */*#[0-9]*)
-        st="$(issue_state "${item}")"
-        item="${item}(${st})" ;;
-      \#[0-9]*) item="${item}(未確認: リポジトリ修飾なし)" ;;
+      skill:*|doc:*|なし) ;;
+      *)
+        rest="${item}"; annotated=""
+        while [[ "${rest}" =~ ${ref_pattern} ]]; do
+          ref="${BASH_REMATCH[0]}"
+          st="$(issue_state "${ref}")"
+          case "${st}" in
+            open) refs_has_open=1 ;;
+            未確認) refs_has_unresolved=1 ;;
+          esac
+          annotated="${annotated}${rest%%"${ref}"*}${ref}(${st})"
+          rest="${rest#*"${ref}"}"
+        done
+        if [ -n "${annotated}" ]; then
+          item="${annotated}${rest}"
+        else
+          case "${item}" in
+            \#[0-9]*) item="${item}(未確認: リポジトリ修飾なし)"; refs_has_unresolved=1 ;;
+          esac
+        fi ;;
     esac
     if [ -z "${out}" ]; then out="${item}"; else out="${out} / ${item}"; fi
   done < <(printf '%s\n' "${col}" | awk 'BEGIN { RS = " / " } { gsub(/\n/, ""); if ($0 != "") print }')
-  printf '%s' "${out}"
+  annotated_refs="${out}"
 }
 
 # ── 出力 ──────────────────────────────────────────────────────────────────────
@@ -606,6 +625,7 @@ emit_ace() { # <entries file> <forced status or ""> → stdout 行を状態別�
 }
 emit_obs() { # <entries file> → 行を追加。副作用: OBS_IDS
   local file="$1" st kind count last issue refs id title src block rel
+  local annotated_refs refs_has_open refs_has_unresolved
   [ -s "${file}" ] || return 0
   while IFS=$'\037' read -r id title src block <&3; do
     st="$(meta_of "${block}" Status)"; [ -n "${st}" ] || st="unknown"
@@ -614,13 +634,14 @@ emit_obs() { # <entries file> → 行を追加。副作用: OBS_IDS
     count="$(meta_of "${block}" Count)"
     last="$(meta_of "${block}" Last)"
     issue="$(meta_of "${block}" Issue)"
-    refs=""
+    refs=""; refs_has_open=0; refs_has_unresolved=0
     case "${st}" in
-      promoted|mitigated) refs="$(annotate_refs "${issue}")" ;;
+      promoted|mitigated) annotate_refs "${issue}"; refs="${annotated_refs}" ;;
       *) refs="${issue}" ;;
     esac
     case "${src}" in "${ROOT}"/*) rel="${src#"${ROOT}"/}" ;; *) rel="${src}" ;; esac
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${st}" "${id}" "Kind=${kind:-?} Count=${count:-?} Last=${last:-?} Issue=${refs:-なし}" "${title}" "${rel}#$(printf '%s' "${id}" | tr 'A-Z' 'a-z')" "obs" >>"${TMP}/rows"
+    # 内部列 7/8 に判定用 state を持つ。公開 text / tsv は従来の表示列だけを返す。
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${st}" "${id}" "Kind=${kind:-?} Count=${count:-?} Last=${last:-?} Issue=${refs:-なし}" "${title}" "${rel}#$(printf '%s' "${id}" | tr 'A-Z' 'a-z')" "obs" "${refs_has_open}" "${refs_has_unresolved}" >>"${TMP}/rows"
     printf '%s\n' "${id}" >>"${TMP}/obs-ids"
   done 3<"${file}"
 }
@@ -653,13 +674,13 @@ record_word() { # <state> <ids file> <不在の語>
 }
 
 if [ "${MODE}" = "promoted-open" ]; then
-  # promoted の全件を state 付きで並べ、open または 未確認 を含むものだけ出す。
+  # promoted を取得した state / 修飾なしの未確認で絞る。表示注記の state は判定に使わない。
   emit_obs "${OBS_ENTRIES}"
   awk -F '\t' 'BEGIN { OFS = "\t" } $6 == "obs" && $1 == "promoted" { print }' "${TMP}/rows" >"${TMP}/promoted"
-  awk -F '\t' 'index($3, "(open)") > 0 || index($3, "(未確認") > 0 { print }' "${TMP}/promoted" >"${TMP}/promoted-open"
+  awk -F '\t' '$7 == 1 || $8 == 1 { print }' "${TMP}/promoted" >"${TMP}/promoted-open"
   total="$(awk 'END { print NR }' "${TMP}/promoted")"
   hit="$(awk 'END { print NR }' "${TMP}/promoted-open")"
-  unresolved="$(awk -F '\t' 'index($3, "(未確認") > 0 { c++ } END { print c + 0 }' "${TMP}/promoted")"
+  unresolved="$(awk -F '\t' '$8 == 1 { c++ } END { print c + 0 }' "${TMP}/promoted")"
   if [ "${FORMAT}" = "tsv" ]; then
     awk -F '\t' 'BEGIN { OFS = "\t" } { print $6, $2, $1, $3, $4, $5 }' "${TMP}/promoted-open"
   else

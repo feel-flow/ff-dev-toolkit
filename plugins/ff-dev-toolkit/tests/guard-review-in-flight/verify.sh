@@ -418,6 +418,24 @@ case "$REASON" in
   *FF_REVIEW_LOCK_OVERRIDE*) ok "(a) 拒否理由が解除手段を案内する" ;;
   *) bad "(a) 拒否理由に解除手段が無い: [$REASON]" ;;
 esac
+
+echo "guard-review-in-flight: (a2) 1 MiB を超える入力も読み切って判定する（Issue \`#2020\`）"
+# bash 4 以降は stdin を read -N で 1 MiB ずつ EOF まで読む（-d '' はパイプから 1 バイトずつ読み、Windows では
+# 300KB の Write で 1 秒以上かかっていた）。最初の塊しか残さない退行だと JSON が途中で切れて jq が読めず、
+# 素通し（exit 0・無出力）になる。本文の後ろに cwd と hook_event_name が来る形にして、切れたら読めないようにする。
+# fixture は --rawfile でファイルから組み立てる（--arg に載せると fixture の側が引数の上限で落ちる）
+head -c 2500000 /dev/zero | tr '\0' 'x' > "$TEST_TMP/big-content.txt"
+jq -n --arg d "$REPO" --rawfile c "$TEST_TMP/big-content.txt" \
+  '{tool_name: "Write", tool_input: {file_path: "src/big.txt", content: $c}, cwd: $d, hook_event_name: "PreToolUse"}' \
+  > "$TEST_TMP/big-write.json"
+big_write_bytes="$(wc -c < "$TEST_TMP/big-write.json" | tr -d ' ')"
+if [ "${big_write_bytes:-0}" -gt 2097152 ]; then
+  run_hook "$(cat "$TEST_TMP/big-write.json")"
+  assert_deny "(a2) 2 MiB を超える Write（${big_write_bytes} バイト）も読み切って deny する"
+else
+  bad "(a2) 大きな Write の fixture を作れていない（${big_write_bytes:-0} バイト。この検査は何も測っていない）"
+fi
+rm -f "$TEST_TMP/big-content.txt" "$TEST_TMP/big-write.json"
 # 編集系ツール（Edit / Write）は hook のセッション環境を継承するだけで、環境変数を
 # その場で足せない。tool 非依存の復旧手順（ロックの実体を rm する）が先に来ること。
 # パスに空白や glob が入りうるので、案内はそのまま貼って実行できる引用形で出す。

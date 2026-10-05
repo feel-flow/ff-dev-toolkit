@@ -37,6 +37,9 @@
 #           ガードを登録照合の前・dirty ガードの前へ移すと 41-J / 41-K が赤。
 #           発火条件から USING_DEFAULT_SCRIPTS を落とすと case 37 の partial-mcp が赤。
 #           （位置と適用範囲は述語より退行しやすいので、全 3 方向を実測で固定してある）
+# 変異検出（case 48 / asdd-hook-gate の遡り）: ルートで '//' を作る元の形（base="$root"）へ戻した写しを
+#           case 48 自身が流し、'//' が xtrace に現れることを確かめる。遡りがルートの '/.asdd' まで
+#           届かない回（一時領域が git 管理下・xtrace が取れない）は針が当たらないので赤。
 #
 # 変異検出（case 45 / suite 単位の経過秒）:
 #           elapsed-sec 行を出さなくすると 45-A / 45-B が赤。
@@ -3833,6 +3836,52 @@ else
 fi
 expect_rc 0 "ディレクトリを付けない明示パスも実行できる"
 expect_has '^== \. ==$' "ディレクトリを付けない明示パスの suite 名は dot を保つ"
+
+echo ""
+echo "== case 48: asdd-hook-gate はルートまで遡っても '//' で始まるパスを検査しない =="
+# Windows の Git Bash は先頭の '//' を UNC（\\.asdd）と読み、git 管理外の cwd から hook を起動するたびに
+# ネットワーク上の共有を照会して遅くなり、ときどき設定ありと判定していた（Issue `#2020`）。
+# git 管理外の一時ディレクトリを cwd にして xtrace を取り、遡りがルートの '/.asdd' まで届いたこと（針）と、
+# '//' で始まるパスを作っていないことを見る。
+# $1 = asdd-hook-gate.sh。ASDD_WALK_TRACE に xtrace を入れる
+asdd_walk_trace() {
+  ASDD_WALK_TRACE="$(cd "$ASDD_WALK_DIR" && bash -xc '. "$1"; asdd_hook_enabled hooks' _ "$1" 2>&1 >/dev/null)" || :
+}
+ASDD_WALK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ff-asdd-walk.XXXXXX" 2>&1)" || ASDD_WALK_DIR=""
+if [ -z "$ASDD_WALK_DIR" ] || [ ! -d "$ASDD_WALK_DIR" ]; then
+  bad "case 48: 一時領域を作成できず、遡りを実測できません: $ASDD_WALK_DIR"
+else
+  asdd_walk_trace "$TESTS_DIR/../hooks/asdd-hook-gate.sh"
+  case "$ASDD_WALK_TRACE" in
+    *' -e /.asdd/config.json '*) asdd_walk_reached=1 ;;
+    *) asdd_walk_reached=0 ;;
+  esac
+  case "$ASDD_WALK_TRACE" in
+    *'//.asdd'* | *'//.git'*) asdd_walk_unc=1 ;;
+    *) asdd_walk_unc=0 ;;
+  esac
+  if [ "$asdd_walk_unc" -eq 1 ]; then
+    bad "asdd-hook-gate が '//' で始まるパスを検査している（Windows では UNC になる）"
+  elif [ "$asdd_walk_reached" -eq 0 ]; then
+    bad "case 48: 遡りがルートの '/.asdd' まで届いていない（一時領域が git 管理下、または xtrace が取れていない）"
+  else
+    ok "asdd-hook-gate はルートの '/.asdd' まで遡り、'//' で始まるパスを作らない"
+  fi
+  # 変異: ルートで '//' を作る元の形へ戻すと赤になる（検査の検出力）
+  cp "$TESTS_DIR/../hooks/asdd-hook-gate.sh" "$ASDD_WALK_DIR/gate-mut.sh"
+  sed 's/^    base="\${root%\/}"$/    base="$root"/' "$ASDD_WALK_DIR/gate-mut.sh" > "$ASDD_WALK_DIR/gate-mut.sh.new"
+  mv -f "$ASDD_WALK_DIR/gate-mut.sh.new" "$ASDD_WALK_DIR/gate-mut.sh"
+  if grep -qx '    base="$root"' "$ASDD_WALK_DIR/gate-mut.sh"; then
+    asdd_walk_trace "$ASDD_WALK_DIR/gate-mut.sh"
+    case "$ASDD_WALK_TRACE" in
+      *'//.asdd'*) ok "case 48 の変異: ルートで '//' を作る形へ戻すと検出できる" ;;
+      *) bad "case 48 の変異: ルートで '//' を作る形へ戻しても '//' が xtrace に現れない（検出力なし）" ;;
+    esac
+  else
+    bad "case 48 の変異が当たっていない（base の代入行が見つからない）"
+  fi
+  rm -rf "$ASDD_WALK_DIR"
+fi
 
 # 集約入口の契約は既存の hook 登録検査と同じ suite で実測する。
 if bash "$SCRIPT_DIR/bash-hook-batch.sh"; then

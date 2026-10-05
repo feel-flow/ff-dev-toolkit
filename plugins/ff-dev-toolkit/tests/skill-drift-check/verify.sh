@@ -19,8 +19,15 @@
 #     それぞれ報告を消す（検出力の実測）
 #   - 登録 ID 形式の案内を除く変異は形式説明だけを消し、欠落スキル /
 #     検出不能の報告は残す（単独で赤）
+#   - 外部コマンドの起動回数が、他プラグインとスキルの件数に比例しない（9 節）
 #
 # すべての経路で exit 0 と stderr 無出力を検査する（fail-open 契約）。
+#
+# 空振り検出: 9 節は、起動を記録するシムが 10 個未満しか作れない・記録して本物へ委ねない・30 件側の記録に sort が
+#   無い（シムを通っていない）ときに赤（同じ回数どうしの比較が何も測っていない状態を緑にしない。2026-10-04）。
+#   サブシェル数の比較は、xtrace に現れた PID が 2 種類未満（BASH_ENV の PS4 が効いていない）なら赤。
+# 変異検出: スキル 1 件ごとに basename を起動する形へ戻すと、9 節で 30 件側の起動回数が増えて赤。他プラグインの名前を
+#   "$(...)" で受ける形（fork だけで外部コマンドは起こさない）へ戻すと、30 件側のサブシェル数が増えて赤（2026-10-04 実測）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -508,7 +515,7 @@ fi
 
 # ---- 8. 検出力の変異注入 ------------------------------------------------------
 DIFF_NEEDLE='if [ -n "$missing_joined" ]; then'
-COEXIST_NEEDLE='cat "$work/installs" > "$work/installs.report"'
+COEXIST_NEEDLE='installs_report="$installs"'
 # check-skill-drift.sh のコメント行に ID_NEEDLE と同一文字列を置かない
 # （ACE-156-1。この suite のコメントでは変数名で指す）。
 # 検出不能案内と掃除手順の 2 箇所。
@@ -609,7 +616,7 @@ else
   exit 1
 fi
 cat > "$TMP/mut-coexist.sed" << 'MUT_COEXIST'
-s/cat "\$work\/installs" > "\$work\/installs.report"/head -n 1 "$work\/installs" > "$work\/installs.report"/
+s/^installs_report="\$installs"$/installs_report="${installs%%"$NL"*}$NL"/
 MUT_COEXIST
 sed_hits="$(grep -cF "$COEXIST_NEEDLE" "$HOOK" || true)"
 if [ "$sed_hits" -ne 1 ]; then
@@ -620,7 +627,7 @@ sed -f "$TMP/mut-coexist.sed" "$HOOK" > "$HOOK.mut"
 mv -f "$HOOK.mut" "$HOOK"
 after_hits="$(grep -cF "$COEXIST_NEEDLE" "$HOOK" || true)"
 if [ "$after_hits" -ne 0 ]; then
-  echo "✗ 併存列挙の変異が当たっていません（元の cat 行が残っている）" >&2
+  echo "✗ 併存列挙の変異が当たっていません（元のコピー行が残っている）" >&2
   exit 1
 fi
 run_hook \
@@ -766,6 +773,146 @@ if [ -z "$SAME_OUT" ]; then
 else
   bad "ロード中コピー検査: 一致しているのに通知した: $(printf '%s' "$SAME_OUT" | head -c 200)"
 fi
+
+# ---- 9. 外部コマンドの起動回数が件数に比例しない（Issue `#2020`）-------------------
+# プロセス起動 1 回が 0.1 秒を超える Windows（Git Bash）では、plugin.json 172 件・スキル 186 件の 1 件ごとに
+# grep / sed / basename を起動していた版が 56 秒かかり、登録 timeout（5 秒）を超えていた。よく使う外部
+# コマンドを「起動を記録してから本物へ委ねる」シムにして PATH の先頭に置き、他プラグインとスキルの件数
+# だけを 10 倍に変えた 2 つの fixture で、起動回数が変わらないことを確かめる。
+SHIM="$TMP/count-shim"
+mkdir -p "$SHIM"
+shimmed=0
+for c in basename dirname grep sed head tail cat sort comm mv cut tr wc mktemp rm awk jq node realpath readlink find uniq expr; do
+  real="$(command -v "$c" 2>/dev/null)" || continue
+  case "$real" in /*) ;; *) continue ;; esac
+  {
+    printf '#!/bin/sh\n'
+    printf 'printf "%%s\\n" %s >> "${SPAWN_COUNT_LOG:?}"\n' "$c"
+    printf 'exec "%s" "$@"\n' "$real"
+  } > "$SHIM/$c"
+  chmod +x "$SHIM/$c"
+  shimmed=$((shimmed + 1))
+done
+# シムが記録して本物へ委ねていなければ、以下の比較は何も測っていない
+: > "$TMP/count-selftest.log"
+if [ "$shimmed" -ge 10 ] \
+  && [ "$(printf 'x\n' | SPAWN_COUNT_LOG="$TMP/count-selftest.log" PATH="$SHIM:$PATH" sort)" = x ] \
+  && [ "$(cat "$TMP/count-selftest.log")" = sort ]; then
+  ok "起動回数: シムが ${shimmed} 個のコマンドで起動を記録して本物へ委ねる"
+else
+  bad "起動回数: シムが働いていない（${shimmed} 個 / 記録: $(cat "$TMP/count-selftest.log" 2>/dev/null)）"
+fi
+count_fixture() {
+  # $1=名前  $2=件数（他プラグインの数 = スキルの数）
+  local base="$TMP/count-$1" i skills=""
+  for i in $(seq 1 "$2"); do skills="$skills s$i"; done
+  # shellcheck disable=SC2086
+  make_plugin "$base/repo/plugins/ff-dev-toolkit" "0.40.0" $skills
+  # shellcheck disable=SC2086
+  make_plugin "$base/claude/plugins/cache/mp/ff-dev-toolkit/0.40.0" "0.40.0" $skills
+  for i in $(seq 1 "$2"); do
+    make_named_plugin "$base/claude/plugins/cache/mp/other-$i/1.0.0" "other-$i" "1.0.0" s1
+    make_named_plugin "$base/claude/plugins/marketplaces/mp$i/plugins/other-m$i" "other-m$i" "1.0.0" s1
+  done
+}
+count_spawns() {
+  # $1=名前  $2=hook。COUNT に起動回数、OUT / RC に結果を入れる
+  : > "$TMP/count-$1.log"
+  HOOK="$2"
+  # ロード中のコピーも fixture のインストール実体にする（渡さないと実物のスキル一覧と差分が出て通知が出る）
+  run_hook \
+    PATH="$SHIM:$PATH" SPAWN_COUNT_LOG="$TMP/count-$1.log" \
+    CLAUDE_PLUGIN_ROOT="$TMP/count-$1/claude/plugins/cache/mp/ff-dev-toolkit/0.40.0" \
+    FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$TMP/count-$1/repo" \
+    FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$TMP/count-$1/claude"
+  COUNT="$(wc -l < "$TMP/count-$1.log" | tr -d ' ')"
+}
+count_fixture small 3
+count_fixture large 30
+count_spawns small "$TARGET"
+small_count="$COUNT"; small_out="$OUT"; small_rc="$RC"
+count_spawns large "$TARGET"
+large_count="$COUNT"; large_out="$OUT"; large_rc="$RC"
+if [ "$small_rc" -eq 0 ] && [ "$large_rc" -eq 0 ] && [ -z "$small_out$large_out" ] \
+  && [ "$small_count" -eq "$large_count" ] && grep -qx sort "$TMP/count-large.log"; then
+  ok "起動回数: 他プラグインとスキルを 3 件から 30 件にしても外部コマンドの起動は ${large_count} 回のまま"
+else
+  bad "起動回数が件数に比例している、または fixture が一致していない（3 件: ${small_count} 回 rc=${small_rc} / 30 件: ${large_count} 回 rc=${large_rc}）: $(sort "$TMP/count-large.log" | uniq -c | tr '\n' ' ')"
+fi
+# 変異: スキル 1 件ごとに basename を起動する形へ戻すと、30 件側だけ起動回数が増える
+MUT_ROOT="$TMP/mut-spawn/plugin"
+prepare_mut_plugin "$MUT_ROOT"
+cat > "$TMP/mut-spawn.sed" << 'MUT_SPAWN'
+s/^    base="\${d%\/}"$/    base="$(basename "$d")"/
+MUT_SPAWN
+sed -f "$TMP/mut-spawn.sed" "$MUT_ROOT/hooks/check-skill-drift.sh" > "$MUT_ROOT/hooks/check-skill-drift.sh.mut"
+mv -f "$MUT_ROOT/hooks/check-skill-drift.sh.mut" "$MUT_ROOT/hooks/check-skill-drift.sh"
+if grep -qF 'base="$(basename "$d")"' "$MUT_ROOT/hooks/check-skill-drift.sh"; then
+  count_spawns small "$MUT_ROOT/hooks/check-skill-drift.sh"
+  mut_small="$COUNT"
+  count_spawns large "$MUT_ROOT/hooks/check-skill-drift.sh"
+  mut_large="$COUNT"
+  if [ "$mut_large" -gt "$mut_small" ]; then
+    ok "起動回数の変異: スキルごとに basename を起動すると 3 件 ${mut_small} 回 → 30 件 ${mut_large} 回に増えて検出できる"
+  else
+    bad "起動回数の変異: スキルごとに basename を起動しても回数が変わらない（${mut_small} / ${mut_large}。検出力なし）"
+  fi
+else
+  bad "起動回数の変異が当たっていない（base の取り出し行が見つからない）"
+fi
+# サブシェル（fork）の数も件数に比例しない: 外部コマンドを起こさない "$(...)" も、1 件ごとに fork すれば
+# Windows では同じく遅い（fork 1 回 ≒ 33 ms）。シムでは見えないので、xtrace の行頭に BASHPID を出して
+# 現れた PID の種類を数える。PS4 は BASH_ENV のファイルで渡す（環境変数の PS4 は bash 4.4 以降の root では
+# 引き継がれない）。BASHPID は bash 4.0 から。
+TRACE_ENV="$TMP/trace-env.sh"
+printf '%s\n' "PS4='+\${BASHPID} '" 'set -x' > "$TRACE_ENV"
+count_subshells() {
+  # $1=fixture 名  $2=hook。SUBSHELLS に xtrace（stderr）へ現れた PID の種類数を入れる
+  HOOK="$2"
+  run_hook \
+    BASH_ENV="$TRACE_ENV" \
+    CLAUDE_PLUGIN_ROOT="$TMP/count-$1/claude/plugins/cache/mp/ff-dev-toolkit/0.40.0" \
+    FF_DEV_TOOLKIT_SKILL_DRIFT_REPO_ROOT="$TMP/count-$1/repo" \
+    FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME="$TMP/count-$1/claude"
+  SUBSHELLS="$(sed -n 's/^+*\([0-9][0-9]*\) .*/\1/p' "$TMP/stderr" | sort -u | wc -l | tr -d ' ')"
+}
+trace_bash_major="$(bash -c 'printf "%s" "${BASH_VERSINFO[0]}"')"
+if [ "${trace_bash_major:-0}" -lt 4 ]; then
+  echo "  ○ skip: サブシェル数の検査は BASHPID の無い bash ${trace_bash_major:-?} 系（4.0 未満）では成立しないため未実行"
+else
+  count_subshells small "$TARGET"
+  sub_small="$SUBSHELLS"
+  count_subshells large "$TARGET"
+  sub_large="$SUBSHELLS"
+  # 2 種類未満は xtrace が取れていない（サブシェルを 1 つも観測できない計測は何も測っていない）
+  if [ "$sub_small" -ge 2 ] && [ "$sub_large" -eq "$sub_small" ]; then
+    ok "サブシェル数: 他プラグインとスキルを 3 件から 30 件にしても xtrace に現れる PID は ${sub_large} 種類のまま"
+  else
+    bad "サブシェル数が件数に比例している、または xtrace が取れていない（3 件: ${sub_small} 種類 / 30 件: ${sub_large} 種類。2 種類未満は計測不成立）"
+  fi
+  # 変異: 他プラグインの名前を "$(...)" で受ける形（外部コマンドは起こさず fork だけ）へ戻すと 30 件側だけ増える
+  MUT_FORK_ROOT="$TMP/mut-fork/plugin"
+  prepare_mut_plugin "$MUT_FORK_ROOT"
+  cat > "$TMP/mut-fork.sed" << 'MUT_FORK'
+s/^  read_json_string "\$json" name$/  JSON_VALUE="$(read_json_string "$json" name; printf '%s' "$JSON_VALUE")"/
+MUT_FORK
+  sed -f "$TMP/mut-fork.sed" "$MUT_FORK_ROOT/hooks/check-skill-drift.sh" > "$MUT_FORK_ROOT/hooks/check-skill-drift.sh.mut"
+  mv -f "$MUT_FORK_ROOT/hooks/check-skill-drift.sh.mut" "$MUT_FORK_ROOT/hooks/check-skill-drift.sh"
+  if grep -qF 'JSON_VALUE="$(read_json_string "$json" name;' "$MUT_FORK_ROOT/hooks/check-skill-drift.sh"; then
+    count_subshells small "$MUT_FORK_ROOT/hooks/check-skill-drift.sh"
+    mut_sub_small="$SUBSHELLS"
+    count_subshells large "$MUT_FORK_ROOT/hooks/check-skill-drift.sh"
+    mut_sub_large="$SUBSHELLS"
+    if [ "$mut_sub_large" -gt "$mut_sub_small" ]; then
+      ok "サブシェル数の変異: 名前を \"\$(...)\" で受けると 3 件 ${mut_sub_small} 種類 → 30 件 ${mut_sub_large} 種類に増えて検出できる"
+    else
+      bad "サブシェル数の変異: 名前を \"\$(...)\" で受けても種類数が変わらない（${mut_sub_small} / ${mut_sub_large}。検出力なし）"
+    fi
+  else
+    bad "サブシェル数の変異が当たっていない（名前の読み取り行が見つからない）"
+  fi
+fi
+HOOK="$TARGET"
 
 echo
 echo "skill-drift-check: passed=$PASS failed=$FAIL"

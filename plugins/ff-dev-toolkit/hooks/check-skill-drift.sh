@@ -10,8 +10,9 @@
 # 無限に待たないため**。無上限の `read -d ''` は EOF が来るまで戻らず、実測では
 # 3 本とも 6 秒経っても戻らなかった（上限付きなら 0.1 秒台で抜ける）。上限は本 hook の
 # 登録 timeout（hooks.json: 5 秒）より十分小さい値に置く。本 hook は自分の処理だけで
-# 実測 3.9 秒（登録 timeout の 79%）を使うため、上限は 1 秒に置いている — 上限が timeout を
-# 超えるとホストの kill が先に来て、その kill が drain の防いでいる EPIPE を渡す。
+# 実測 3.9 秒（登録 timeout の 79%）を使っていたため、上限は 1 秒に置いている — 上限が timeout を
+# 超えるとホストの kill が先に来て、その kill が drain の防いでいる EPIPE を渡す（判定を組み込みへ
+# 移した後は、プロセス起動の遅い Windows でも処理は 1 秒前後。Issue `#2020`）。
 #
 # `cat` を使わないのは、PATH が空・壊れた環境で command not found となり
 # stdin 未読のまま exit 0 する経路がそこから開くため。
@@ -65,21 +66,56 @@ if [ "${FF_DEV_TOOLKIT_SKIP_SKILL_DRIFT_CHECK:-0}" = "1" ]; then
   exit 0
 fi
 
+# 判定と値の抜き出しは bash の組み込みだけで行い、外部コマンドもサブシェルも起動しない。プロセス起動が
+# 遅い Windows（Git Bash）では、plugin.json 172 件・スキル 186 件の 1 件ごとに grep / sed / basename を
+# 起動していたため 56 秒かかり、登録 timeout（5 秒）を超えていた（Issue `#2020`）。文字クラスは範囲ではなく
+# 列挙で書く（ロケールによっては範囲が非 ASCII を含み、JSON へ埋め込む名前の whitelist が緩むため）。
+ASCII_DIGITS='0123456789'
+ASCII_LOWER='abcdefghijklmnopqrstuvwxyz'
+ASCII_UPPER='ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+NL='
+'
+
 is_semver() {
-  printf '%s' "${1:-}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+  local v="${1:-}"
+  case "$v" in
+    '' | .* | *. | *..* | *[!"$ASCII_DIGITS".]*) return 1 ;;
+  esac
+  [ "${v//[$ASCII_DIGITS]/}" = ".." ]
 }
 
 is_skill_name() {
-  printf '%s' "${1:-}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_-]*$'
+  case "${1:-}" in
+    '' | [!"$ASCII_DIGITS$ASCII_UPPER$ASCII_LOWER"]* | *[!"$ASCII_DIGITS$ASCII_UPPER$ASCII_LOWER"_-]*) return 1 ;;
+  esac
+  return 0
 }
 
 is_plugin_name() {
-  printf '%s' "${1:-}" | grep -Eq '^[a-z0-9][a-z0-9-]*$'
+  case "${1:-}" in
+    '' | [!"$ASCII_DIGITS$ASCII_LOWER"]* | *[!"$ASCII_DIGITS$ASCII_LOWER"-]*) return 1 ;;
+  esac
+  return 0
 }
 
-extract_json_string() {
-  # $1=file $2=key。整形済み 1 行 1 キーの plugin.json を前提とする（check-update.sh と同じ）。
-  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$1" 2>/dev/null | head -n 1
+read_json_string() {
+  # $1=file $2=key。整形済み 1 行 1 キーの plugin.json を前提とする（check-update.sh と同じ）。最初に
+  # `"key": "値"` の形で当たった行の値を JSON_VALUE に入れる（$(...) で受けるとサブシェルを fork する）。
+  local line rest
+  JSON_VALUE=""
+  [ -r "${1:-}" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in *"\"$2\""*) ;; *) continue ;; esac
+    rest="${line#*\"$2\"}"
+    rest="${rest#"${rest%%[![:space:]]*}"}"
+    case "$rest" in :*) rest="${rest#:}" ;; *) continue ;; esac
+    rest="${rest#"${rest%%[![:space:]]*}"}"
+    case "$rest" in \"*\"*) ;; *) continue ;; esac
+    rest="${rest#\"}"
+    JSON_VALUE="${rest%%\"*}"
+    return 0
+  done < "$1"
+  return 0
 }
 
 json_escape() {
@@ -97,7 +133,8 @@ fi
 own_json="$own_root/.claude-plugin/plugin.json"
 [ -f "$own_json" ] || exit 0
 
-plugin_name="$(extract_json_string "$own_json" name)"
+read_json_string "$own_json" name
+plugin_name="$JSON_VALUE"
 is_plugin_name "$plugin_name" || plugin_name="ff-dev-toolkit"
 is_plugin_name "$plugin_name" || exit 0
 
@@ -114,28 +151,43 @@ repo_plugin="$repo_root/plugins/$plugin_name"
 repo_json="$repo_plugin/.claude-plugin/plugin.json"
 repo_version=""
 if [ -f "$repo_json" ]; then
-  repo_version="$(extract_json_string "$repo_json" version)"
+  read_json_string "$repo_json" version
+  repo_version="$JSON_VALUE"
 fi
 is_semver "$repo_version" || repo_version="unknown"
 
-# ---- 作業領域（comm 用）。作れなければ fail-open --------------------------------
-work="$(mktemp -d 2>/dev/null)" || exit 0
-trap 'rm -rf "$work"' EXIT
-
-list_skills_into() {
-  # $1=plugin root  $2=outfile
-  : > "$2"
+# ---- スキル名の一覧 --------------------------------------------------------------
+# 一覧は「名前 + 改行」を並べた文字列で持ち、集合演算も組み込みで行う。一時ファイル・パイプ・
+# sort / comm を使うと、インストール実体 1 件ごとに fork が数回走り、Windows ではそれだけで
+# 数秒かかる。並べ替えはリポジトリ側の一覧に 1 回だけ行う（差分の出力順を決めるのはこの一覧）。
+skills_of() {
+  # $1=plugin root。SKILLS に「名前\n」の並びを入れる
+  local d base
+  SKILLS=""
   [ -d "$1/skills" ] || return 0
   for d in "$1/skills"/*/; do
     [ -d "$d" ] || continue
     [ -f "${d}SKILL.md" ] || continue
-    base="$(basename "$d")"
+    base="${d%/}"
+    base="${base##*/}"
     is_skill_name "$base" || continue
-    printf '%s\n' "$base"
-  done | LC_ALL=C sort -u > "$2"
+    SKILLS="$SKILLS$base$NL"
+  done
 }
 
-list_skills_into "$repo_plugin" "$work/repo_skills"
+has_line() {
+  # $1=「値\n」の並び  $2=値
+  case "$NL$1" in
+    *"$NL$2$NL"*) return 0 ;;
+  esac
+  return 1
+}
+
+skills_of "$repo_plugin"
+repo_skills=""
+if [ -n "$SKILLS" ]; then
+  repo_skills="$(printf '%s' "$SKILLS" | LC_ALL=C sort -u)$NL" || exit 0
+fi
 
 # ---- インストール実体の列挙 ----------------------------------------------------
 claude_home="${FF_DEV_TOOLKIT_SKILL_DRIFT_CLAUDE_HOME:-}"
@@ -143,59 +195,58 @@ if [ -z "$claude_home" ]; then
   claude_home="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 fi
 
-: > "$work/installs"
-: > "$work/seen"
-: > "$work/union_skills"
+installs=""      # 「version<TAB>正規化したパス\n」を見つけた順に並べる
+install_count=0
+union_skills=""  # 全インストール実体のスキル名の和集合（「名前\n」の並び）
+seen_list=""
+orig_pwd="$PWD"
 
 add_install() {
-  # $1=plugin root（未正規化）
-  local root json name ver canon
+  # $1=plugin root（未正規化）。他プラグインの大半は、組み込みの判定と名前の比較だけで抜ける
+  local root json ver canon rest s
   root="${1:-}"
   [ -n "$root" ] && [ -d "$root" ] || return 0
   json="$root/.claude-plugin/plugin.json"
   [ -f "$json" ] || return 0
-  name="$(extract_json_string "$json" name)"
-  [ "$name" = "$plugin_name" ] || return 0
-  canon="$(cd "$root" 2>/dev/null && pwd -P)" || return 0
-  if grep -Fxq "$canon" "$work/seen" 2>/dev/null; then
-    return 0
-  fi
-  printf '%s\n' "$canon" >> "$work/seen"
-  ver="$(extract_json_string "$json" version)"
+  read_json_string "$json" name
+  [ "$JSON_VALUE" = "$plugin_name" ] || return 0
+  # 実体の正規化は、名前が一致した実体だけで組み込みの cd -P で行う（サブシェルを起こさない）
+  cd -P -- "$root" 2>/dev/null || return 0
+  canon="$PWD"
+  cd -- "$orig_pwd" 2>/dev/null || exit 0
+  has_line "$seen_list" "$canon" && return 0
+  seen_list="$seen_list$canon$NL"
+  read_json_string "$json" version
+  ver="$JSON_VALUE"
   is_semver "$ver" || ver="unknown"
-  # 1 行 1 件。path にタブは来ない前提（pwd -P）。version と path を TAB 区切り。
-  printf '%s\t%s\n' "$ver" "$canon" >> "$work/installs"
-  list_skills_into "$canon" "$work/one_skills"
-  if [ -s "$work/one_skills" ]; then
-    cat "$work/union_skills" "$work/one_skills" 2>/dev/null | LC_ALL=C sort -u > "$work/union_skills.next" 2>/dev/null
-    mv -f "$work/union_skills.next" "$work/union_skills" 2>/dev/null
-  fi
+  # 1 行 1 件。path にタブは来ない前提（cd -P）。version と path を TAB 区切り。
+  installs="$installs$ver	$canon$NL"
+  install_count=$((install_count + 1))
+  skills_of "$canon"
+  rest="$SKILLS"
+  while [ -n "$rest" ]; do
+    s="${rest%%"$NL"*}"
+    rest="${rest#*"$NL"}"
+    has_line "$union_skills" "$s" || union_skills="$union_skills$s$NL"
+  done
 }
 
 # cache: ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/
 for plugin_json in "$claude_home"/plugins/cache/*/*/*/.claude-plugin/plugin.json; do
   [ -f "$plugin_json" ] || continue
-  add_install "$(cd "$(dirname "$plugin_json")/.." 2>/dev/null && pwd)"
+  add_install "${plugin_json%/.claude-plugin/plugin.json}"
 done
 
 # marketplace checkout: ~/.claude/plugins/marketplaces/<mp>/plugins/<plugin>/
 for plugin_json in "$claude_home"/plugins/marketplaces/*/plugins/*/.claude-plugin/plugin.json; do
   [ -f "$plugin_json" ] || continue
-  add_install "$(cd "$(dirname "$plugin_json")/.." 2>/dev/null && pwd)"
+  add_install "${plugin_json%/.claude-plugin/plugin.json}"
 done
 
 # このセッションが実際に読むルート（cache と別実体を指しうる）
 if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
   add_install "$CLAUDE_PLUGIN_ROOT"
 fi
-
-install_count=0
-if [ -s "$work/installs" ]; then
-  install_count="$(wc -l < "$work/installs" | tr -d ' ')"
-fi
-case "$install_count" in
-  '' | *[!0-9]*) install_count=0 ;;
-esac
 
 emit_json() {
   # $1=systemMessage  $2=additionalContext
@@ -214,13 +265,25 @@ if [ "$install_count" -eq 0 ]; then
   exit 0
 fi
 
+join_missing() {
+  # $1=リポジトリ側の一覧（並べ替え済み）  $2=照合先の一覧。$1 にあって $2 に無い名前を、$1 の順で
+  # 「, 」区切りにして JOINED に入れる
+  local rest s
+  JOINED=""
+  rest="$1"
+  while [ -n "$rest" ]; do
+    s="${rest%%"$NL"*}"
+    rest="${rest#*"$NL"}"
+    has_line "$2" "$s" && continue
+    JOINED="${JOINED:+$JOINED, }$s"
+  done
+}
+
 # ---- スキル集合差分（mutation target: missing_joined を空にすると検出が落ちる） --
 missing_joined=""
-if [ -s "$work/repo_skills" ]; then
-  comm -23 "$work/repo_skills" "$work/union_skills" > "$work/missing" 2>/dev/null || : > "$work/missing"
-  if [ -s "$work/missing" ]; then
-    missing_joined="$(tr '\n' ',' < "$work/missing" | sed 's/,$//; s/,/, /g')"
-  fi
+if [ -n "$repo_skills" ]; then
+  join_missing "$repo_skills" "$union_skills"
+  missing_joined="$JOINED"
 fi
 
 # --- skill-set-diff (mutation target) ---
@@ -252,13 +315,10 @@ fi
 # v0.14.0 も 3 件持っていた）。この経路が抜けても、どのインストール実体にも無い場合は上の
 # union 差分が受け止める。
 loaded_missing_joined=""
-if [ -s "$work/repo_skills" ] && [ -n "${own_root:-}" ] && [ -d "$own_root/skills" ]; then
-  list_skills_into "$own_root" "$work/loaded_skills"
-  comm -23 "$work/repo_skills" "$work/loaded_skills" > "$work/loaded_missing" 2>/dev/null \
-    || : > "$work/loaded_missing"
-  if [ -s "$work/loaded_missing" ]; then
-    loaded_missing_joined="$(tr '\n' ',' < "$work/loaded_missing" | sed 's/,$//; s/,/, /g')"
-  fi
+if [ -n "$repo_skills" ] && [ -n "${own_root:-}" ] && [ -d "$own_root/skills" ]; then
+  skills_of "$own_root"
+  join_missing "$repo_skills" "$SKILLS"
+  loaded_missing_joined="$JOINED"
 fi
 
 # --- loaded-set-diff (mutation target: loaded_missing_joined を空にすると検出が落ちる) ---
@@ -271,12 +331,15 @@ fi
 # 併存はユニーク version が 2 以上のときだけ。同一 version の cache と
 # marketplace checkout は Claude Code の通常構成なので無音にする。
 uniq_versions=0
-if [ -s "$work/installs" ]; then
-  uniq_versions="$(cut -f1 "$work/installs" 2>/dev/null | LC_ALL=C sort -u | wc -l | tr -d ' ')"
-fi
-case "$uniq_versions" in
-  '' | *[!0-9]*) uniq_versions=0 ;;
-esac
+seen_versions=""
+rest="$installs"
+while [ -n "$rest" ]; do
+  line="${rest%%"$NL"*}"
+  rest="${rest#*"$NL"}"
+  has_line "$seen_versions" "${line%%	*}" && continue
+  seen_versions="$seen_versions${line%%	*}$NL"
+  uniq_versions=$((uniq_versions + 1))
+done
 drift_coexist=0
 if [ "$uniq_versions" -gt 1 ]; then
   drift_coexist=1
@@ -288,21 +351,23 @@ if [ "$drift_skill_set" -eq 0 ] && [ "$drift_loaded_set" -eq 0 ] && [ "$drift_co
   exit 0
 fi
 
-# 列挙は全件コピーしてから読む。head -n 1 へ退行させる変異がここを潰す。
-copy_install_list_for_report() {
-  cat "$work/installs" > "$work/installs.report" 2>/dev/null
-}
-copy_install_list_for_report
+# 列挙は全件コピーしてから読む。先頭の 1 件だけへ退行させる変異がここを潰す。
+installs_report="$installs"
 
 install_lines=""
-while IFS="$(printf '\t')" read -r ver path; do
+rest="$installs_report"
+while [ -n "$rest" ]; do
+  line="${rest%%"$NL"*}"
+  rest="${rest#*"$NL"}"
+  ver="${line%%	*}"
+  path="${line#*	}"
   [ -n "$path" ] || continue
   if [ -n "$install_lines" ]; then
     install_lines="${install_lines}; ${path} (v${ver})"
   else
     install_lines="${path} (v${ver})"
   fi
-done < "$work/installs.report"
+done
 
 sys=""
 ctx=""

@@ -30,11 +30,13 @@
 #   K17. コードフェンス内の記入例（テンプレートの `### OBS-XXX:` / `### ACE-XXX:`）を実エントリとして
 #        返さない。テンプレート直後の空 store は 0 件 / empty、記入例だけ残して実見出しを壊した台帳は
 #        rc=2（記入例で認識件数を作らない）
+#   K19. 注記付きの複数 Issue は参照だけで state を引き、注記・非 Issue 参照・修飾なしを保持し、表示注記は判定に使わない
 #   K18. live エントリが無い Playbook（全件 archive 済み）でも --include-archived で archive を返す
 #   K16. gh が stdin を読み切ってもエントリが欠けない（read ループは fd 3・gh は `</dev/null` の
 #        二重防御。片方を外しても欠けないため変異では赤にならない — 契約の固定であって検出力の
 #        主張ではない）
 #
+# 空振り検出: 参照抽出を 0 件一致へ変える／判定を表示注記へ戻す／doc: の無照会を外す各変異で K19 が赤（rc=1）、前後の正常対照は46件成功（2026-10-05実測）。参照の不検出・注記の誤読・非 Issue の誤照会を緑にしない。
 # 空振り検出: 両 store を置かない root を与えると K6 が rc=2 を要求し、台帳の見出しを `### OBS 001 …`（コロン無し）へ変えると K7 が `読み取り失敗` を要求する（2026-09-19 実測。スクリプト側の noentry 判定を `empty` へ倒す変異で K7 が赤、両不在の rc=2 を rc=0 へ倒す変異で K6 が赤）。
 # 空振り検出: promoted の closed 説明を旧「対策済みまたは再発」へ戻す／mitigated の未解消再発確認を旧説明へ戻すと各 rc=1、正常対照は38件pass（2026-09-28実測）。状態名の接頭辞だけが残っても意味の欠落を緑にしない。
 #
@@ -466,6 +468,91 @@ if [[ "${RC}" -eq 0 ]] && id_under_group "アーカイブ（playbook/archive" "A
   ok "K18: live エントリが無い Playbook でも --include-archived で archive を返す"
 else
   bad "K18: live が空だと archive が出ない（rc=${RC}）"; printf '%s\n' "${OUT}" | grep -E 'ACE-|RECORD|SUMMARY' | sed 's/^/    | /' >&2 || true
+fi
+
+# ── K19: 注記付き参照（注記を表示に残して state を引く） ─────────────────────────────────────────
+ROOT12="${TMP}/annotated-refs"; mkdir -p "${ROOT12}/docs/08-knowledge"
+unqualified_ref="$(printf '#%s' 7)"
+note_open_ref="$(printf '#%s(open)' 2)"
+note_unresolved_ref="$(printf '#%s(未確認)' 3)"
+cat >"${ROOT12}/docs/08-knowledge/OBSERVATIONS.md" <<EOF
+# 振り返り観測台帳
+
+## エントリ一覧
+
+### OBS-101: annotated references
+
+| Status | promoted | Issue | feel-flow/ff-dev-toolkit#1（closed）/ feel-flow/ff-dev-toolkit#2(open) / Other.Owner/re_po.name#3（説明） |
+
+### OBS-102: non-issue references
+
+| Status | promoted | Issue | skill:close-issue / doc:docs/06-reference/DECISIONS.md#2026-10-05 / なし |
+
+### OBS-103: unqualified reference
+
+| Status | promoted | Issue | ${unqualified_ref} |
+
+### OBS-104: stale annotation
+
+| Status | promoted | Issue | feel-flow/ff-dev-toolkit#1(open) |
+
+### OBS-105: state-like notes
+
+| Status | promoted | Issue | feel-flow/ff-dev-toolkit#1（旧メモ: ${note_open_ref}、${note_unresolved_ref}） |
+
+### OBS-106: annotated unqualified reference
+
+| Status | promoted | Issue | ${unqualified_ref}（注記） |
+
+### OBS-107: unqualified reference with old state
+
+| Status | promoted | Issue | ${unqualified_ref}(open) |
+EOF
+STUB_BIN3="${TMP}/bin-annotated"; mkdir -p "${STUB_BIN3}"
+GH_REPO_LOG="${TMP}/annotated-gh-repos"
+cat >"${STUB_BIN3}/gh" <<'EOF'
+#!/usr/bin/env bash
+repo=""
+while [ $# -gt 0 ]; do
+  case "$1" in --repo) repo="$2"; shift 2 ;; *) shift ;; esac
+done
+printf '%s\n' "${repo}" >>"${GH_REPO_LOG}"
+case "${repo}" in
+  feel-flow/ff-dev-toolkit) printf '%s\n' 2 ;;
+  Other.Owner/re_po.name) printf '%s\n' 3 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "${STUB_BIN3}/gh"
+set +e
+OUT="$(GH_REPO_LOG="${GH_REPO_LOG}" PATH="${STUB_BIN3}:${PATH}" "${LOOKUP[@]}" --root "${ROOT12}" --promoted-open 2>&1)"; RC=$?
+set -e
+if [[ "${RC}" -eq 0 ]] && out_has 'feel-flow/ff-dev-toolkit#1(closed)（closed）/ feel-flow/ff-dev-toolkit#2(open)(open)' && out_has 'Other.Owner/re_po.name#3(open)（説明）'; then
+  ok "K19: 各参照の state を解決し、注記と区切りを保持する"
+else
+  bad "K19: 注記付きの複数参照を解決できない（rc=${RC}）"
+fi
+if [[ -f "${GH_REPO_LOG}" ]] && [[ "$(cat "${GH_REPO_LOG}")" = "$(printf '%s\n' feel-flow/ff-dev-toolkit Other.Owner/re_po.name)" ]]; then
+  ok "K19: gh には抽出した repo だけを渡し、repo ごとに 1 回取得する"
+else
+  bad "K19: gh の repo が壊れている、余分な呼び出しがある、または呼ばれていない"
+fi
+if out_has 'OBS-103' && out_has "${unqualified_ref}(未確認: リポジトリ修飾なし)"; then
+  ok "K19: #N だけの参照は修飾なしの未確認を保持する"
+else
+  bad "K19: 修飾なしの参照が隠れた、または解決された"
+fi
+if out_has 'OBS-104'; then bad "K19: 古い (open) 注記を現在の open state と誤認している"; else ok "K19: closed の参照に古い (open) 注記があっても列挙しない"; fi
+if out_has 'OBS-105'; then bad "K19: 注記中の別番号の open / 未確認を現在の state と誤認している"; else ok "K19: 注記中の別番号の state は判定に使わない"; fi
+if out_has 'OBS-106' && out_has 'OBS-107'; then ok "K19: 注記付きの修飾なし参照も未確認として列挙する"; else bad "K19: 注記付きの修飾なし参照が隠れた"; fi
+if out_has 'SUMMARY promoted=7 open_or_unresolved=4 unresolved=3'; then ok "K19: SUMMARY は表示注記に左右されず取得した state を数える"; else bad "K19: SUMMARY が注記の state に左右されている"; fi
+set +e
+OUT="$(GH_REPO_LOG="${GH_REPO_LOG}" PATH="${STUB_BIN3}:${PATH}" "${LOOKUP[@]}" --root "${ROOT12}" --format tsv references 2>&1)"; RC=$?
+set -e
+if [[ "${RC}" -eq 0 ]] && out_has 'Issue=skill:close-issue / doc:docs/06-reference/DECISIONS.md#2026-10-05 / なし' && [[ "$(cat "${GH_REPO_LOG}")" = "$(printf '%s\n' feel-flow/ff-dev-toolkit Other.Owner/re_po.name feel-flow/ff-dev-toolkit Other.Owner/re_po.name)" ]]; then
+  ok "K19: skill: / doc: / なしは state を付けずそのまま表示する"
+else
+  bad "K19: 非 Issue 参照の表示が変わった（rc=${RC}）"
 fi
 
 echo ""

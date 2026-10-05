@@ -1452,7 +1452,6 @@ MISS_PROBE_BASELINE=(
   shellcheck
   skill-count-consistency-selftest
   skill-count-consistency
-  skill-drift-check
   skill-frontmatter
   skill-references-existence
   sweep-orphan-transcripts

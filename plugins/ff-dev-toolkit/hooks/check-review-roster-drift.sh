@@ -138,25 +138,54 @@ emit_undetermined_and_exit() { # <理由>
   exit 0
 }
 
+# 版の写しごとの判定は bash の組み込みだけで行う（外部コマンドもサブシェルも起動しない）。プロセス起動が
+# 遅い Windows（Git Bash）では、写し 1 件ごとの sed / grep / awk だけで秒単位になり、登録 timeout（5 秒）の
+# 境界に乗っていた（Issue `#2020`。check-skill-drift.sh と同じ形）。文字クラスは範囲ではなく列挙で書く。
+ASCII_DIGITS='0123456789'
+ASCII_LOWER='abcdefghijklmnopqrstuvwxyz'
+ASCII_UPPER='ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
 is_semver() {
-  printf '%s' "${1:-}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+  local v="${1:-}"
+  case "$v" in
+    '' | .* | *. | *..* | *[!"$ASCII_DIGITS".]*) return 1 ;;
+  esac
+  [ "${v//[$ASCII_DIGITS]/}" = ".." ]
 }
 
-# $1 > $2 なら真。数値比較なので 0.9.9 < 0.10.0 を正しく扱う（check-update.sh と同形）。
+# $1 > $2 なら真（どちらも is_semver を通った値）。数値比較なので 0.9.9 < 0.10.0 を正しく扱う
+# （check-update.sh と同形）。10# は先頭の 0 を 8 進数と読ませないため。
 version_gt() {
-  awk -v a="$1" -v b="$2" 'BEGIN {
-    split(a, x, "."); split(b, y, ".")
-    for (i = 1; i <= 3; i++) {
-      if (x[i] + 0 > y[i] + 0) exit 0
-      if (x[i] + 0 < y[i] + 0) exit 1
-    }
-    exit 1
-  }'
+  local a="$1" b="$2" x y i
+  for i in 1 2 3; do
+    x="${a%%.*}"
+    y="${b%%.*}"
+    a="${a#*.}"
+    b="${b#*.}"
+    [ "$((10#$x))" -gt "$((10#$y))" ] && return 0
+    [ "$((10#$x))" -lt "$((10#$y))" ] && return 1
+  done
+  return 1
 }
 
-extract_json_string() {
-  # $1=file $2=key。整形済み 1 行 1 キーの plugin.json を前提とする（check-skill-drift.sh と同じ）。
-  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$1" 2>/dev/null | head -n 1
+read_json_string() {
+  # $1=file $2=key。整形済み 1 行 1 キーの plugin.json を前提とする（check-skill-drift.sh と同じ）。最初に
+  # `"key": "値"` の形で当たった行の値を JSON_VALUE に入れる（$(...) で受けるとサブシェルを fork する）。
+  local line rest
+  JSON_VALUE=""
+  [ -r "${1:-}" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in *"\"$2\""*) ;; *) continue ;; esac
+    rest="${line#*\"$2\"}"
+    rest="${rest#"${rest%%[![:space:]]*}"}"
+    case "$rest" in :*) rest="${rest#:}" ;; *) continue ;; esac
+    rest="${rest#"${rest%%[![:space:]]*}"}"
+    case "$rest" in \"*\"*) ;; *) continue ;; esac
+    rest="${rest#\"}"
+    JSON_VALUE="${rest%%\"*}"
+    return 0
+  done < "$1"
+  return 0
 }
 
 hook_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd -P)" || hook_dir=""
@@ -192,7 +221,11 @@ for _t in $roster_line; do
   reviewer_plugin="$_p"
 done
 set +f
-printf '%s' "$reviewer_plugin" | grep -Eq '^[a-z0-9][a-z0-9-]*$' \
+case "$reviewer_plugin" in
+  '' | [!"$ASCII_DIGITS$ASCII_LOWER"]* | *[!"$ASCII_DIGITS$ASCII_LOWER"-]*) reviewer_plugin_ok=0 ;;
+  *) reviewer_plugin_ok=1 ;;
+esac
+[ "$reviewer_plugin_ok" -eq 1 ] \
   || emit_undetermined_and_exit "名簿からレビュアー実体の所在（プラグイン名の接頭辞）を一意に決められません: ${roster_line}"
 
 # ---- インストール実体（レビュアー群のディレクトリ）の列挙 -----------------------
@@ -312,7 +345,8 @@ for _gdir in "$claude_home"/plugins/cache/*/"$reviewer_plugin"; do
     [ -d "$_root" ] || continue
     _copies="${_copies}${_root}
 "
-    _ver="$(extract_json_string "$_root/.claude-plugin/plugin.json" version)"
+    read_json_string "$_root/.claude-plugin/plugin.json" version
+    _ver="$JSON_VALUE"
     is_semver "$_ver" || _ver="${_root##*/}"
     is_semver "$_ver" || _ver=""
     [ -n "$_ver" ] || continue
@@ -348,7 +382,9 @@ fi
 sanitize_names() { # <空白区切りの名前列>
   local out="" n
   for n in ${1:-}; do
-    printf '%s' "$n" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_:.-]*$' || continue
+    case "$n" in
+      [!"$ASCII_DIGITS$ASCII_UPPER$ASCII_LOWER"]* | *[!"$ASCII_DIGITS$ASCII_UPPER$ASCII_LOWER"_:.-]*) continue ;;
+    esac
     out="${out}${n} "
   done
   printf '%s' "$out"

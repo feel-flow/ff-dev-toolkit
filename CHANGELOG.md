@@ -20,6 +20,17 @@
 
 ## [Unreleased]
 
+## [0.148.1] - 2026-10-05
+
+### 修正
+
+- プロセス起動の遅い Windows（Git Bash）で hook が登録 timeout を超えないようにした。`check-skill-drift.sh` は判定と値の抜き出しを bash の組み込みへ移し、外部コマンドの起動がプラグインとスキルの件数に比例しなくなった（実機の Windows で 62.7 秒 → 1.0 秒、出力は同じ）。`check-review-roster-drift.sh` も版の写しごとの判定を組み込みへ移した（3.6 秒 → 2.1 秒）。
+- レビューの凍結ガード（`guard-review-in-flight.sh`）は、bash 5 以降では stdin を 1 MiB ずつまとめて読む。Windows で大きな Write（2.5MB）を判定するのに 16 秒かかって登録 timeout を超え、凍結を素通りしていた（修正後 6.8 秒）。
+- `retrospective-stop.sh` と `decision-tree.sh` は、入力を上限の秒数内に読み切れず捨て読みした回に、入力を判定に使えていないことを stderr に残すようになった（これまでは黙って素通ししていた）。あわせて `retrospective-context.sh` も含めた 3 本で、上限で切れたかを bash 4 以降の終了コード（128 超）でも判定する。壁時計の秒の差だけで見ていたので、時刻の同期で壁時計が動く WSL2 では 50 回中 2 回、上限で切れたのに捨て読みを飛ばし、書き手が SIGPIPE を受けていた。
+- ASDD 設定の有無を確かめる hook 共通の判定（`asdd-hook-gate.sh`）が、git 管理外の cwd からルートまで遡ったときに `//.asdd/config.json` を検査しないようにした。Git Bash は先頭の `//` をネットワーク上の共有（UNC）と読むので、hook のたびに照会が走って遅くなり、ときどき設定ありと誤って判定していた。
+- `knowledge-lookup` が観測台帳の Issue 列に含まれる注記を保持したまま各 Issue 参照の状態を解決するよう修正。`--promoted-open` は古い注記に含まれる状態ではなく、取得した状態で絞り込みます。
+- テスト共有 fixture `tests/lib/asdd-gate-drain.sh` の `ff_asdd_big_payload` を 200,000 バイトから 100,000 バイトへ下げた。パイプバッファ（64 KiB）を超えている限り「stdin を読まずに抜ける hook」の検出力は変わらず、上限付きで読む hook（`retrospective-stop.sh` / `retrospective-context.sh` / `decision-tree.sh`）の node 不在経路が組み込みの `read -d ''` だけで読み切る時間が約半分（WSL の実測で 1.1〜1.5 秒から 0.55〜0.75 秒）になり、並行実行の負荷で 2 秒の上限を超えて書き手が SIGPIPE を受ける揺れが消える。hook 側を bash 5 の `read -N` へ寄せる案は、`-t` と併用すると 1 バイトずつの読みに戻って 3 倍弱の改善に留まることを実測して見送った。
+
 ## [0.148.0] - 2026-10-05
 
 ### 追加
