@@ -29,7 +29,7 @@
 #                       無ければ <root> 配下の PLAYBOOK.md を探索し、候補が 1 件だけならそれを採る）
 #   --ledger <path>     観測台帳（既定: <root>/docs/08-knowledge/OBSERVATIONS.md。探索の規則は同上）
 #   --all               キーワードを AND で照合する（既定は OR）
-#   --include-archived  ACE の playbook/archive/ 配下と、台帳の `archived` エントリも返す
+#   --include-archived  ACE の playbook/archive/（と _archive/）配下と、台帳の `archived` エントリも返す
 #   --offline           gh を使わない（promoted の Issue state は全件 `未確認` になる）
 #   --format text|tsv   出力形式（既定 text。tsv は 1 行 1 エントリの機械可読）
 #
@@ -403,8 +403,11 @@ store_is_empty() { # <索引ファイル> <走査対象ファイル...>
 }
 
 # ── ACE Playbook の走査対象 ─────────────────────────────────────────────────
-# 索引ファイル自身（単一ファイル配置ではエントリが索引に同居する）+ 同階層 playbook/*.md。
-# archive/ は --include-archived のときだけ加える。
+# 索引ファイル自身（単一ファイル配置ではエントリが索引に同居する）+ 同階層 playbook/ 配下の *.md。
+# playbook/ 配下はサブディレクトリも辿る（件数ゲート check-category-size の discoverPlaybookSubfiles と
+# 同じ範囲）。退避先（名前が archive / _archive のディレクトリ）と . 始まりのディレクトリは
+# 深さを問わず辿らない。シンボリックリンクの *.md も拾う（TS 側も種別を問わず拾う）。
+# 退避先の *.md は --include-archived のときだけ、同じく深さを問わず加える。
 ACE_FILES="${TMP}/ace-files"; : >"${ACE_FILES}"
 ACE_ENTRIES="${TMP}/ace-entries"; : >"${ACE_ENTRIES}"
 ACE_ARCHIVE_ENTRIES="${TMP}/ace-archive-entries"; : >"${ACE_ARCHIVE_ENTRIES}"
@@ -412,7 +415,8 @@ if [ "${ACE_STATE}" = "ok" ]; then
   ace_dir="${ACE_INDEX%/*}"
   printf '%s\n' "${ACE_INDEX}" >>"${ACE_FILES}"
   if [ -d "${ace_dir}/playbook" ]; then
-    find "${ace_dir}/playbook" -maxdepth 1 -type f -name '*.md' 2>/dev/null | LC_ALL=C sort >>"${ACE_FILES}" || true
+    find "${ace_dir}/playbook" -mindepth 1 -type d \( -name archive -o -name _archive -o -name '.*' \) -prune \
+      -o \( -type f -o -type l \) -name '*.md' -print 2>/dev/null | LC_ALL=C sort >>"${ACE_FILES}" || true
   fi
   unreadable=""
   while IFS= read -r f; do
@@ -429,9 +433,12 @@ if [ "${ACE_STATE}" = "ok" ]; then
     if [ ! -s "${ACE_ENTRIES}" ]; then
       if store_is_empty "${ACE_INDEX}" "${files[@]}"; then ACE_STATE="empty"; else ACE_STATE="noentry"; fi
     fi
-    if [ "${INCLUDE_ARCHIVED}" -eq 1 ] && [ -d "${ace_dir}/playbook/archive" ]; then
+    if [ "${INCLUDE_ARCHIVED}" -eq 1 ]; then
       arch=()
-      while IFS= read -r f; do [ -n "${f}" ] && arch+=("${f}"); done < <(find "${ace_dir}/playbook/archive" -maxdepth 1 -type f -name '*.md' 2>/dev/null | LC_ALL=C sort)
+      if [ -d "${ace_dir}/playbook" ]; then
+        while IFS= read -r f; do [ -n "${f}" ] && arch+=("${f}"); done < <(find "${ace_dir}/playbook" -mindepth 1 -type d -name '.*' -prune \
+          -o \( -type f -o -type l \) -name '*.md' \( -path '*/archive/*' -o -path '*/_archive/*' \) -print 2>/dev/null | LC_ALL=C sort)
+      fi
       if [ "${#arch[@]}" -gt 0 ]; then
         extract_entries ACE "${arch[@]}" >"${ACE_ARCHIVE_ENTRIES}"
       fi

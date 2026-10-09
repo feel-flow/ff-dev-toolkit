@@ -331,6 +331,32 @@ describe("parseAbstractionEntries", () => {
     ]);
     expect(entries.find((entry) => entry.id === "ACE-902-2")?.category).toBe("testing");
   });
+
+  it("旧テーブル形式の | **カテゴリ** | 行からもカテゴリを取る（check-category-size と同じ定義）", () => {
+    const warnings: string[] = [];
+    const entries = parseAbstractionEntries(
+      [
+        "### ACE-950-1: 旧テーブル形式のエントリ",
+        "",
+        "| 項目         | 値                  |",
+        "| ------------ | ------------------- |",
+        "| **カテゴリ** | Content Collections |",
+        "| **helpful**  | 0                   |",
+        "",
+        "**洞察**: 本文。",
+        "",
+        "### ACE-950-2: 強調なしの日本語ラベル",
+        "",
+        "| カテゴリ | coding |",
+        "",
+        "本文。",
+        "",
+      ].join("\n"),
+      (message: string) => warnings.push(message),
+    );
+    expect(entries.map((entry) => entry.category)).toEqual(["Content Collections", "coding"]);
+    expect(warnings.filter((message) => message.includes("Category 行が見つかりません"))).toEqual([]);
+  });
 });
 
 describe("エントリ範囲の打ち切り（Changelog 混入）", () => {

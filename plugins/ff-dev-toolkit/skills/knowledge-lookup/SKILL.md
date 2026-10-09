@@ -68,7 +68,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 | --- | --- | --- |
 | ACE Playbook | `active` | 有効な知見。適用条件が合えばそのまま従う |
 | ACE Playbook | `deprecated` | 適用しない（後続エントリで置き換え済み） |
-| ACE Playbook | `archived` | `playbook/archive/` 配下の stale エントリ。`--include-archived` のときだけ出る。参考のみ |
+| ACE Playbook | `archived` | `playbook/archive/`（と `_archive/`）配下の stale エントリ。`--include-archived` のときだけ出る。参考のみ |
 | 観測台帳 | `active` | **未対策**の落とし穴（蓄積中）。回避策はエントリ本文の `→` 以降 |
 | 観測台帳 | `promoted` | **対策 Issue あり**。Issue 列の state を見る — `open` は対応中（同じ落とし穴を踏んだら再発コメントの対象）、`closed` は完了照合前または対策後の再発（最新メモで区別し、close だけで対策済みとはしない） |
 | 観測台帳 | `mitigated` | **対策反映を確認済み**（昇格見送り・Issue 対応完了）。元 Issue と対策の所在（`owner/repo#N` / `skill:<名>` / `doc:<path>#<アンカー>`）が Issue 列にある。未対策として扱わない |

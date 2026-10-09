@@ -14,7 +14,7 @@
  *   明示指定したときのみ従来どおり固定上限として扱う（エスケープハッチ・後方互換）。
  *   分割レイアウトでは索引 PLAYBOOK.md は監視対象外（索引・Changelog はエントリ増加で
  *   伸びるため。Issue #212 / ADR-016）。
- * - PLAYBOOK.md と同階層に `playbook/*.md`（カテゴリ別分割ファイル）がある場合は
+ * - PLAYBOOK.md と同階層の `playbook/` 配下に `*.md`（カテゴリ別分割ファイル）がある場合は
  *   自動検出し、集計・行数チェックの対象に含める（分割レイアウト）。
  * - 1 エントリブロック内に Category 行が 2 本以上あるとき、および閉じていないコードフェンスが
  *   あるときは usage error で落とす（Issue #340）。どちらも「見出しとして認識されないブロックが
@@ -26,9 +26,10 @@
  *   Category と食い違う行（＝列順を取り違えてタイトル文が入った行）が無いかを検査し、
  *   警告のみ出す（終了コードは変えない）。ID 列・カテゴリ列の位置はどちらもヘッダ行から
  *   読む（導入先ごとに列順が違う）。
- * - `playbook/archive/` 配下（/ace-refine が退避した原文）は集計対象に**含めない**。
- *   discoverPlaybookSubfiles が playbook/ 直下の *.md のみを非再帰で走査するのは
- *   この除外を実現する仕様であり、再帰化してはならない。
+ * - `playbook/` 配下はサブディレクトリも再帰で走査する（カテゴリをサブディレクトリへ分けた
+ *   導入先のエントリを黙って落とさないため）。ただし退避先のディレクトリ
+ *   （名前が `archive` / `_archive`。/ace-refine の退避先は `playbook/archive/`）は深さを問わず
+ *   集計対象に**含めない**。除外は名前で決める（PLAYBOOK_ARCHIVE_DIR_NAMES）。
  * 実行例: npx --yes tsx scripts/ace/check-category-size.ts path/to/PLAYBOOK.md
  */
 import * as fs from "node:fs";
@@ -211,6 +212,18 @@ const ACE_ENTRY_HEADER_PATTERN = new RegExp(entryHeadingSource("non-capturing"),
  */
 const ENTRY_HEADING_ID_PATTERN = new RegExp(entryHeadingSource("capture-id"), "u");
 /**
+ * Category メタセル（`| Category | 値 |`）の**ソース文字列**。行頭アンカーは消費側が付ける
+ * （ace-abstraction-report.ts はこの値を import する。フラグを付けたインスタンスを共有しない
+ * 理由は CATEGORY_TABLE_LINE_PATTERN のコメント参照）。
+ *
+ * ラベルは `Category` のほかに旧テーブル形式の `カテゴリ` を受け、どちらも `**` 強調を許す。
+ * 旧テーブル形式（`| 項目 | 値 |` の表に `| **カテゴリ** | Content Collections |` を置く形）は
+ * 導入先の Playbook 全体がこの形であることが多く、`Category` だけを見ると全ブロックが
+ * 「解析できない」になって件数ゲートが rc=2 で構造的に止まる。
+ * 値は従来どおり第 2 セルで、前後の空白は trimCategoryValue が落とす。
+ */
+export const CATEGORY_CELL_SOURCE = String.raw`\|\s*(?:\*\*)?(?:Category|カテゴリ)(?:\*\*)?\s*\|\s*([^|]+)\|`;
+/**
  * Category 行。1 セグメント内の**本数**を数えるため matchAll で走らせる（Issue #340）。
  *
  * `g` を落とすと `matchAll` は TypeError を投げるので、その方向の変異は静かには壊れない。
@@ -220,7 +233,28 @@ const ENTRY_HEADING_ID_PATTERN = new RegExp(entryHeadingSource("capture-id"), "u
  * 「本数はもう要らないので boolean で十分」という将来の単純化がこの形になりやすい。
  * 消費側を増やすときは matchAll のままにするか、関数内で正規表現を生成すること。
  */
-const CATEGORY_TABLE_LINE_PATTERN = /^\|\s*Category\s*\|\s*([^|]+)\|/gim;
+const CATEGORY_TABLE_LINE_PATTERN = new RegExp(`^${CATEGORY_CELL_SOURCE}`, "gimu");
+/** Category 行を解析できないブロックをエラーメッセージで名指しする上限（残りは件数だけ出す）。 */
+const UNPARSABLE_LIST_LIMIT = 10;
+
+/** 解析できないブロックの一覧（`ACE ID（行番号）`）を、上限まで名指しする 1 文にする。 */
+function describeUnparsable(unparsable: readonly string[]): string {
+  const shown = unparsable.slice(0, UNPARSABLE_LIST_LIMIT).join(" / ");
+  const rest =
+    unparsable.length > UNPARSABLE_LIST_LIMIT
+      ? ` ほか ${String(unparsable.length - UNPARSABLE_LIST_LIMIT)} 件`
+      : "";
+  return `Category 行を解析できない ACE ブロックがあります（${String(unparsable.length)} 件: ${shown}${rest}）。`;
+}
+
+/**
+ * 構造エラー（未閉フェンス・Category 行 2 本・空値）で走査を打ち切るとき、それまでに集めた
+ * 解析できないブロックを捨てずに併記する。捨てると、直して再実行した 2 周目で初めて
+ * 一覧が出てくる（全件名指しの約束が、エラーの並び順で破れる）。
+ */
+function alsoUnparsable(unparsable: readonly string[]): string {
+  return unparsable.length > 0 ? `このほか、${describeUnparsable(unparsable)}` : "";
+}
 /**
  * フェンス開始行（``` / ~~~ の 3 本以上。以降は情報文字列）。
  *
@@ -243,15 +277,99 @@ const FENCE_CLOSE_PATTERN = /^[ \t]*(`{3,}|~{3,})[ \t]*$/u;
  * 判定には使わない。呼び出し側が trim 済みの行を渡すのでインデントは問わない。
  */
 const ANY_HEADING_LINE_PATTERN = /^#{1,6}\s/u;
+/** findHtmlCommentSpans の 1 件。`end` は排他（`source.slice(start, end)` が span 全体）。 */
+export type HtmlCommentSpan = Readonly<{ readonly start: number; readonly end: number }>;
+
 /**
- * 閉じた HTML ブロックコメント span の**ソース文字列**。
- * ace-refine-report.ts はこの値を import する（同名の重複定義を置かない）。
+ * 閉じた HTML コメント span（`<!--` 〜 最初の `-->`）を先頭から列挙する。
+ * ace-refine-report.ts はこの関数を import する（同じ判定の私製コピーを置かない）。
  *
- * 正規表現インスタンスではなくソースを export するのは、`g` 付きインスタンスを共有すると
- * `.test()` / `.exec()` の呼び出しで lastIndex がモジュール境界を越えて持ち越されるため
- * （CATEGORY_TABLE_LINE_PATTERN のコメント参照）。フラグは消費側が付ける。
+ * **インラインコードスパンの中の `<!--` はコメントの開始として扱わない**。
+ * 素の正規表現 `<!--[\s\S]*?-->` で探すと、本文が `` `<!--` `` と書式を説明しただけで
+ * ずっと後ろの `-->`（ACE INSERTION POINT のマーカー等）と対になり、間の約 1000 行が
+ * 空白化された（実測）。巻き込まれたフェンスの閉じ行も消えるので、診断は
+ * 「その手前のフェンスが閉じていない」という無関係な位置を名指しする。
+ *
+ * 走査は左から 1 回で、先に始まった構造が勝つ（CommonMark と同じ優先順位）:
+ * バックティック列が先なら**同じ行の中で同じ長さの**列までをコードとして飛ばし、
+ * `<!--` が先ならコメントとして `-->` まで取る（コメント内のバックティックは数えない）。
+ * 長さの合う相手が無いバックティック列は 1 文字の本文として扱う（blankInlineCodeSpans と
+ * 同じ fail-open）。バックスラッシュでエスケープされたバックティックはコードスパンを開かない
+ * （閉じ側はコードスパンの中なのでエスケープを見ない。CommonMark と同じ）。`-->` の無い `<!--` 以降にはコメントが成立しないので走査を終える
+ * （正規表現版と同じ「閉じたコメントのみ」の意味論）。
+ *
+ * **残る限界**: 複数行にまたがるコードスパン（CommonMark は許す）とフェンスの中の
+ * 閉じない `<!--` は拾えない。フェンスを先に見ないのは、フェンス検出側
+ * （blankCodeRegions）がコメント空白化後のテキストを前提にしているため。
  */
-export const HTML_COMMENT_SPAN_SOURCE = String.raw`<!--[\s\S]*?-->`;
+export function findHtmlCommentSpans(source: string): HtmlCommentSpan[] {
+  const spans: HtmlCommentSpan[] = [];
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === "`" && isBackslashEscaped(source, i)) {
+      // `\`` はバックティックの文字そのもの（CommonMark のエスケープ）。コードスパンを
+      // 開かないので 1 文字だけ本文として進め、残りの列は次の周回でトークン化する。
+      // ここで開始と見なすと、コメント内のバックティックと対になって本物のコメントを
+      // 見落とし、コメント内の追記例の見出しを実エントリとして数える。
+      i += 1;
+      continue;
+    }
+    if (ch === "`") {
+      let runEnd = i;
+      while (runEnd < source.length && source[runEnd] === "`") {
+        runEnd += 1;
+      }
+      const closeEnd = findClosingBacktickRun(source, runEnd, runEnd - i);
+      i = closeEnd ?? runEnd;
+      continue;
+    }
+    if (ch === "<" && source.startsWith("<!--", i)) {
+      const close = source.indexOf("-->", i + 4);
+      if (close === -1) {
+        break;
+      }
+      spans.push({ start: i, end: close + 3 });
+      i = close + 3;
+      continue;
+    }
+    i += 1;
+  }
+  return spans;
+}
+
+/** `index` の直前に奇数個のバックスラッシュが連続していれば true（エスケープされている）。 */
+function isBackslashEscaped(source: string, index: number): boolean {
+  let count = 0;
+  for (let k = index - 1; k >= 0 && source[k] === "\\"; k--) {
+    count += 1;
+  }
+  return count % 2 === 1;
+}
+
+/**
+ * `from` 以降・同じ行の中で、長さがちょうど `length` のバックティック列を探し、
+ * その列の直後の位置を返す。無ければ undefined。列はトークン単位で見る
+ * （長い列の一部を相手にしない。blankInlineCodeSpans のコメント参照）。
+ */
+function findClosingBacktickRun(source: string, from: number, length: number): number | undefined {
+  let j = from;
+  while (j < source.length && source[j] !== "\n") {
+    if (source[j] !== "`") {
+      j += 1;
+      continue;
+    }
+    let runEnd = j;
+    while (runEnd < source.length && source[runEnd] === "`") {
+      runEnd += 1;
+    }
+    if (runEnd - j === length) {
+      return runEnd;
+    }
+    j = runEnd;
+  }
+  return undefined;
+}
 /**
  * エントリの anchor 行（`<a id="ace-…"></a>`）。エントリブロックの始点を見出しより
  * 手前へ広げるのに使う。ace-refine-report.ts はこの値を import する。
@@ -549,7 +667,6 @@ export function countBudgetExceptions(content: string): BudgetExceptionTally {
   // block 切り出し」で 2 回計算しない（公開 Issue #12 の Suggestion）。境界ロジックが
   // 重要な箇所なので、単一計算に寄せて将来変更時のズレを防ぐ。
   const entryStarts = headerIndices.map(startIndexOf);
-  const spanPattern = new RegExp(HTML_COMMENT_SPAN_SOURCE, "gu");
   let declared = 0;
   headerIndices.forEach((headerIndex, order) => {
     let rangeEnd =
@@ -581,8 +698,8 @@ export function countBudgetExceptions(content: string): BudgetExceptionTally {
     // テキストに対して行う（`lines` はコード領域だけを空白化済み。`blankedLines` を
     // 使うとマーカーごと消えて常に 0 件になる）。
     const block = lines.slice(entryStarts[order], end + 1).join("\n");
-    for (const span of block.matchAll(spanPattern)) {
-      if (span[0].includes(BUDGET_EXCEPTION_MARKER)) {
+    for (const span of findHtmlCommentSpans(block)) {
+      if (block.slice(span.start, span.end).includes(BUDGET_EXCEPTION_MARKER)) {
         declared += 1;
         break;
       }
@@ -638,7 +755,13 @@ export function deriveMaxLines(input: {
  * `[^\n]` に変わると、その利用者だけ境界が静かにずれる — 単一源はここに置く）。
  */
 export function blankHtmlBlockComments(source: string): string {
-  return source.replace(new RegExp(HTML_COMMENT_SPAN_SOURCE, "gu"), blankNonNewline);
+  let result = "";
+  let last = 0;
+  for (const span of findHtmlCommentSpans(source)) {
+    result += source.slice(last, span.start) + blankNonNewline(source.slice(span.start, span.end));
+    last = span.end;
+  }
+  return result + source.slice(last);
 }
 
 /**
@@ -1159,6 +1282,7 @@ export function analyzePlaybookMarkdown(
   }
   const histogram: Record<string, number> = {};
   const entryCategories: Record<string, string> = {};
+  const unparsable: string[] = [];
 
   for (const entry of entries) {
     // 本文が例示する追記テンプレート（フェンス内の `| Category | … |`）を数えない。
@@ -1183,16 +1307,18 @@ export function analyzePlaybookMarkdown(
         message:
           `${String(line)} 行目に始まる、閉じていないコードフェンス（\`\`\` / ~~~）を含む ACE ブロックがあります。` +
           "以降の本文が走査対象から外れ、そこにあるエントリが件数からも Category 集計からも" +
-          "静かに消えます。フェンスを閉じてください。",
+          "静かに消えます。フェンスを閉じてください。" +
+          alsoUnparsable(unparsable),
       };
     }
     const scannable = blanked.text;
     const matches = [...scannable.matchAll(CATEGORY_TABLE_LINE_PATTERN)];
     if (matches.length === 0) {
-      return {
-        kind: "error",
-        message: "Category 行を解析できない ACE ブロックがあります。",
-      };
+      // 最初の 1 件で返さず全件を集める。1 件ずつ直して再実行させると、全ブロックが同じ理由で
+      // 落ちている導入先（実測で 27 ファイル・約 780 件）では原因が書式だと分からない。
+      const id = ENTRY_HEADING_ID_PATTERN.exec(entry.text)?.[1] ?? "ID 不明";
+      unparsable.push(`${id}（${String(entry.startLine + 1)} 行目）`);
+      continue;
     }
     // 1 ブロックに Category 行が 2 本以上あるのは、見出しとして認識されなかった
     // ブロックが直前のエントリへ吸収された形（split がそこで切れなかった）。
@@ -1220,7 +1346,8 @@ export function analyzePlaybookMarkdown(
           `（1 ブロック内に Category 行が ${String(matches.length)} 本あります）。` +
           `検出した Category 値: ${values}。${locator}` +
           `見出しの ID が正準形（check-category-size.ts の ACE_ENTRY_ID_SOURCE）から外れていないか、` +
-          `Category 行が重複していないかを確認してください。`,
+          `Category 行が重複していないかを確認してください。` +
+          alsoUnparsable(unparsable),
       };
     }
     const categoryKey = trimCategoryValue(matches[0][1] ?? "");
@@ -1230,7 +1357,7 @@ export function analyzePlaybookMarkdown(
     if (categoryKey === "") {
       return {
         kind: "error",
-        message: "Category の値が空の ACE ブロックがあります。",
+        message: "Category の値が空の ACE ブロックがあります。" + alsoUnparsable(unparsable),
       };
     }
     incrementHistogram(histogram, categoryKey);
@@ -1241,6 +1368,16 @@ export function analyzePlaybookMarkdown(
     if (entryId !== undefined && entryCategories[entryId] === undefined) {
       entryCategories[entryId] = categoryKey;
     }
+  }
+
+  if (unparsable.length > 0) {
+    return {
+      kind: "error",
+      message:
+        describeUnparsable(unparsable) +
+        "Category 行は `| Category | <値> |`（旧テーブル形式なら `| **カテゴリ** | <値> |`）の形で、" +
+        "コードフェンスの外に置いてください。",
+    };
   }
 
   return {
@@ -1614,19 +1751,45 @@ export function scanIndexCategoryColumn(
 }
 
 /**
+ * live の走査から外す退避先ディレクトリの名前。`archive` は /ace-refine の退避先、
+ * `_archive` は導入先が手で作る退避先の表記揺れ。深さを問わず、この名前のディレクトリは
+ * 配下ごと走査しない（原文を verbatim 保全する場所なので、数えると二重計上になる）。
+ */
+export const PLAYBOOK_ARCHIVE_DIR_NAMES: readonly string[] = ["archive", "_archive"];
+
+/**
  * PLAYBOOK.md と同階層の `playbook/` ディレクトリにあるカテゴリ別分割ファイルを検出する。
  * ディレクトリが無い場合は空配列（＝単一ファイルの旧レイアウト）を返す。
+ * サブディレクトリは再帰で辿る。退避先（PLAYBOOK_ARCHIVE_DIR_NAMES）と
+ * `.` 始まりのディレクトリは辿らない。シンボリックリンクのディレクトリも辿らない（循環を避ける）。
+ * 戻り値はフルパスのソート済み配列で、check-entry-format の形式ゲートもこの関数で走査範囲を決める。
  */
 export function discoverPlaybookSubfiles(playbookPath: string): string[] {
   const subDir = path.join(path.dirname(playbookPath), "playbook");
   if (!fs.existsSync(subDir) || !fs.statSync(subDir).isDirectory()) {
     return [];
   }
-  return fs
-    .readdirSync(subDir)
-    .filter((entry: string) => entry.endsWith(".md"))
-    .map((entry: string) => path.join(subDir, entry))
-    .sort();
+  const found: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      // `.md` で終わる名前は種別を問わず拾う（非再帰だった頃と同じ）。ディレクトリでも拾うので、
+      // 読み込み側が EISDIR で名指しして止まる — 黙って辿り込んで件数を変えるより読めない入力として出す。
+      if (entry.name.endsWith(".md")) {
+        found.push(fullPath);
+        continue;
+      }
+      if (
+        entry.isDirectory() &&
+        !entry.name.startsWith(".") &&
+        !PLAYBOOK_ARCHIVE_DIR_NAMES.includes(entry.name)
+      ) {
+        walk(fullPath);
+      }
+    }
+  };
+  walk(subDir);
+  return found.sort();
 }
 
 /**

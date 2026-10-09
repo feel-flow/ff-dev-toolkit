@@ -29,7 +29,7 @@ model: inherit
 
 環境変数 `ACE_SUBAGENT_AUTO_MERGE=1` のときのみ、プロジェクトが定義した **4 ガード**（path whitelist / 検証コマンド / タイトル・ブランチ規約 / 削除比チェック）を **すべて**満たした場合に限り、`gh pr merge --squash` を実行してよい。
 
-それ以外は **draft PR まで**とし、人間の確認を待つ。
+それ以外は **draft PR まで**とし、人間の確認を待つ。draft PR はコマンド先頭へ `FF_PR_DRAFT_ACK=1` を付けて作る（`FF_PR_DRAFT_ACK=1 gh pr create --draft …`）。ff-dev-toolkit の PreToolUse ガードは通常の作業の Draft PR を止めるので、人の確認待ちという理由があるこの Draft だけを抜け道で通す。
 
 ## 禁止事項
 

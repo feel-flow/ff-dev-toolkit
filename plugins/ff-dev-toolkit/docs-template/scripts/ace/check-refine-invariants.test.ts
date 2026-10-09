@@ -9,6 +9,7 @@ import {
   extractMetaFields,
   evaluateRefineInvariants,
   isArchivedMergedIntoHref,
+  isLiveMergedIntoHref,
   isVariantBCompact,
   main,
   mergedIntoTarget,
@@ -1970,5 +1971,23 @@ describe("parseChangelogOperations — Codex レビュー追補（Issue #1030）
     const promoted = parseChangelogOperations("- Promoted: なし（ACE-1-1, ACE-2-1） :-)\n");
     expect(promoted.promotedIds).toEqual([]);
     expect(promoted.malformedPromoted).toEqual(["- Promoted: なし（ACE-1-1, ACE-2-1） :-)"]);
+  });
+});
+
+describe("isLiveMergedIntoHref", () => {
+  it("playbook/ 直下のカテゴリファイルを指す ../<category>.md#ace-xxx を受ける", () => {
+    expect(isLiveMergedIntoHref("../coding.md#ace-7-2", "ACE-7-2")).toBe(true);
+  });
+
+  it("サブディレクトリのカテゴリファイルを指す ../<dir>/<category>.md#ace-xxx も受ける", () => {
+    expect(isLiveMergedIntoHref("../process/review.md#ace-7-2", "ACE-7-2")).toBe(true);
+    expect(isLiveMergedIntoHref("../a/b/review.md#ace-7-2", "ACE-7-2")).toBe(true);
+  });
+
+  it("アンカー違い・live 基準でない形・親ディレクトリへの脱出は受けない", () => {
+    expect(isLiveMergedIntoHref("../process/review.md#ace-7-3", "ACE-7-2")).toBe(false);
+    expect(isLiveMergedIntoHref("./review.md#ace-7-2", "ACE-7-2")).toBe(false);
+    expect(isLiveMergedIntoHref("../../review.md#ace-7-2", "ACE-7-2")).toBe(false);
+    expect(isLiveMergedIntoHref("../process/../review.md#ace-7-2", "ACE-7-2")).toBe(false);
   });
 });

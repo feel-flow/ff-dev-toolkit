@@ -2,12 +2,13 @@
 # workflow-doctor（導入先の入口規範とスキルの判定順の矛盾検査）の回帰テスト。
 #
 # 2 層で固定する（assess-impact の形に倣う）:
-#   (A) 生成器規則のドリフト — SKILL.md の検査表に 7 項目が在り、--fix を持たない契約が書かれていること
+#   (A) 生成器規則のドリフト — SKILL.md の検査表に 11 項目が在り、--fix を持たない契約が書かれていること
 #   (B) fixture — 「issue化必須」を含む CLAUDE.md で FAIL 1 が該当行を名指しし rc=1、直した fixture で rc=0。
 #       節の欠落は WARN、必須語の欠落は FAIL、Stop hook の旧 reminder は FAIL、grep 失敗は FAIL。
 #       --offline で gh を使わない（ネットワークに出ない）。
 #
 # 空振り検出: 強制起票の言い換えや別名のスコープ外節を入力し、検出しない旧実装では fixture 2d / 3b が赤。別のスコープ外節だけに必須語がある負対照も固定する。
+# 空振り検出（Issue `#2089`）: 契約表の行が当たらない入力でも緑に倒さない — Draft / 特定 CLI の常時必須の旧文言は FAIL 8 / 9 を名指しで要求し（検査が無い旧実装では fixture 7 / 8 が赤）、否定・条件付きの文は OK を要求する。提案の根拠が 0 件の入力では「提案なし」の 1 行を要求し（空の提案節は 10c が赤）、gh が失敗した Draft 一覧は SKIP 11 を要求する（0 件の OK に畳む実装は 11 が赤）。
 #
 # 変異検出（2026-10-02）: 追加語族の除去で 2d / 4c が赤。見出しを旧名限定へ戻すと 3b が赤、次のスコープ外節を連結すると 3c が赤。
 #
@@ -45,7 +46,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ---- (A) SKILL.md の生成器規則 ---------------------------------------------------
-for needle in "| 1 | 判定順の矛盾" "| 2 | 節の必須語" "| 3 | hook の文言" "| 4 | 起票の受け皿" "| 5 | ラベルの実在" "| 6 | 親無し Issue" "| 7 | 環境変数"; do
+for needle in "| 1 | 判定順の矛盾" "| 2 | 節の必須語" "| 3 | hook の文言" "| 4 | 起票の受け皿" "| 5 | ラベルの実在" "| 6 | 親無し Issue" "| 7 | 環境変数" "| 8 | Draft PR" "| 9 | レビュー担当" "| 10 | 入口のパリティ" "| 11 | Draft の実態"; do
   if grep -qF "$needle" "$SKILL"; then ok "SKILL.md の検査表に「${needle#| }」がある"; else bad "SKILL.md の検査表に「${needle#| }」が無い"; fi
 done
 # shellcheck disable=SC2016  # バッククォートを含む固定文字列（展開しないのが正）
@@ -224,11 +225,11 @@ else
   printf '%s\n' '  ○ jq 不在のため追加語族の hook 検査は未検証'
 fi
 
-# 5. --offline の 4〜6 は SKIP として数える（緑にしない）。jq 不在の環境では検査 3 も SKIP になるので期待値を 1 足す
+# 5. --offline の 4〜6・11 は SKIP として数える（緑にしない）。jq 不在の環境では検査 3 も SKIP になるので期待値を 1 足す
 d="$(make_root offline "$GOOD_CLAUDE")"
 out="$(run_doctor "$d")"
-if command -v jq >/dev/null 2>&1; then want_skip=3; else want_skip=4; fi
-if grep -q "^SUMMARY fail=0 warn=0 skip=${want_skip}\$" <<<"$out"; then ok "--offline で 4〜6 が SKIP ${want_skip} 件として数えられる"; else bad "--offline の SKIP 計上が違う: $(printf '%s' "$out" | tail -1)"; fi
+if command -v jq >/dev/null 2>&1; then want_skip=4; else want_skip=5; fi
+if grep -q "^SUMMARY fail=0 warn=0 skip=${want_skip}\$" <<<"$out"; then ok "--offline で 4〜6・11 が SKIP ${want_skip} 件として数えられる"; else bad "--offline の SKIP 計上が違う: $(printf '%s' "$out" | tail -1)"; fi
 
 # 5b. settings.json が壊れている（末尾カンマ）→ FAIL 3（jq の失敗を「設定は無い」に畳まない）
 if command -v jq >/dev/null 2>&1; then
@@ -289,6 +290,117 @@ else
   ok "（jq 不在のため elif 経路 2 件の検査は未検証 — 件数合わせ）"
   ok "（jq 不在のため issue化必須 の検査は未検証 — 件数合わせ）"
 fi
+
+# 7. 検査 8（Draft PR の旧文言）: 作る指示は FAIL 8 + FIXTEXT、否定・廃止を述べる行は OK 8
+for rule in \
+  'PR は Draft PR で作成し、レビュー後に Ready にする' \
+  'PR はドラフトPRで作る' \
+  'gh pr create --draft --base develop' \
+  'gh pr create -d --fill' \
+  'gh pr ready 12 --undo' \
+  'Push and open it as a draft PR.' \
+  'PR はドラフト PR として出す'; do
+  d="$(make_root draft "$GOOD_CLAUDE" "$rule")"
+  out="$(run_doctor "$d")"; rc=$?
+  if [ "$rc" -eq 1 ] && grep -qE $'^FAIL\t8\t.*AGENTS\\.md:1:' <<<"$out" && grep -q $'^FIXTEXT\t8\t.*gh pr ready' <<<"$out"; then
+    ok "Draft の旧文言 → FAIL 8 + FIXTEXT: $rule"
+  else
+    bad "Draft の旧文言を検知できない（rc=${rc}）: $rule"
+  fi
+done
+d="$(make_root draft-ok "$GOOD_CLAUDE" 'PR は通常 PR として作る（Draft にしない。gh pr create に --draft を付けない）。
+DraftPR をやめて通常 PR にした。')"
+out="$(run_doctor "$d")"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q $'^OK\t8\t' <<<"$out"; then ok "Draft の否定・廃止の文 → OK 8（誤検出しない）"; else bad "Draft の否定文を旧文言として誤検出（rc=${rc}）"; fi
+
+# 8. 検査 9（レビュー担当）: 特定 CLI の常時必須は FAIL 9、条件付きは OK 9
+d="$(make_root review-cli "$GOOD_CLAUDE")"
+printf '%s\n' '# global' '4. **Self-Review with PR Review Toolkit + Codex CLI (MANDATORY before PR)**' > "$TEST_TMP/global-review.md"
+out="$("${DOCTOR[@]}" --root "$d" --global-claude "$TEST_TMP/global-review.md" --settings "$d/.claude/settings.json" --offline 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && grep -qE $'^FAIL\t9\t.*global-review\\.md:2:' <<<"$out" && grep -q $'^FIXTEXT\t9\t.*self-review\\.md' <<<"$out"; then ok "特定 CLI のレビューを常時必須 → FAIL 9 + FIXTEXT"; else bad "特定 CLI の常時必須を検知できない（rc=${rc}）"; fi
+d="$(make_root review-cond "$GOOD_CLAUDE" 'セルフレビューは主担当が行い、Codex が使えるときだけクロスレビューを足す（必須にしない）。
+Codex は必須ではない（optional）。
+Codex CLI のインストールは必須（/opt/homebrew/bin/codex）。')"
+out="$(run_doctor "$d")"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q $'^OK\t9\t旧文言' <<<"$out"; then ok "条件付きのクロスレビュー・レビュー以外の必須 → OK 9（誤検出しない）"; else bad "条件付きのクロスレビューかレビュー以外の必須を誤検出（rc=${rc}）"; fi
+
+# 9. 検査 9 (b) と提案: レビュー用 npm script が package.json に無い → FAIL 9 + そのリポジトリの入口を挙げた SUGGEST 9
+d="$(make_root npm-missing "$GOOD_CLAUDE" '- クロスレビューは npm run code-review:codex -- --base develop で起動する
+- 判定ロジックは npm run code-review:test で検証する')"
+out="$(run_doctor "$d")"; rc=$?
+if [ "$rc" -eq 1 ] && grep -qE $'^FAIL\t9\t.*npm run code-review:codex .*package\\.json が無い' <<<"$out"; then ok "package.json が無い → FAIL 9（npm run code-review:codex）/ rc=1"; else bad "存在しない npm script を検知できない（rc=${rc}）"; fi
+if grep -qE $'^SUGGEST\t9\t.*/multi-review.*\t根拠: .*npm run code-review:codex.*multi-agent\\.sh が在る' <<<"$out"; then ok "SUGGEST 9 が /multi-review を根拠付きで挙げる"; else bad "SUGGEST 9 が出ない / 根拠が無い: $(grep '^SUGGEST' <<<"$out" | head -2)"; fi
+if ! grep -qE $'^SUGGEST\t9\t.*code-review:test' <<<"$out"; then ok "検査用 script（code-review:test）には代わりの起動口を提案しない"; else bad "検査用 script に起動口を提案している"; fi
+mkdir -p "$d/scripts"; printf '#!/usr/bin/env bash\n' > "$d/scripts/codex-review.sh"
+out="$(run_doctor "$d")"
+if grep -qE $'^SUGGEST\t9\t.*bash scripts/codex-review\\.sh' <<<"$out"; then ok "リポジトリに scripts/codex-review.sh が在る → そちらを提案する"; else bad "リポジトリ固有の入口を提案しない: $(grep '^SUGGEST' <<<"$out" | head -1)"; fi
+d="$(make_root npm-cond "$GOOD_CLAUDE" '- package.json に code-review:codex があるリポジトリは npm run code-review:codex、無ければ /multi-review')"
+out="$(run_doctor "$d")"
+if grep -q $'^INFO\t9\t条件付き.* 1 行は数えない' <<<"$out" && ! grep -q $'^WARN\t9\t' <<<"$out" && ! grep -q $'^SUGGEST\t9\t' <<<"$out"; then ok "同じ行に条件を書いた参照 → INFO 9（WARN・提案にしない）"; else bad "条件付きの参照を WARN にしている: $(grep -E $'\t9\t' <<<"$out" | tr '\n' ' ')"; fi
+d="$(make_root npm-present "$GOOD_CLAUDE" 'クロスレビューは npm run code-review:codex で起動する')"
+printf '%s\n' '{"scripts":{"code-review:codex":"bash scripts/codex-review.sh"}}' > "$d/package.json"
+out="$(run_doctor "$d")"
+if grep -q $'^OK\t9\tnpm run code-review:codex は package.json に在る' <<<"$out" && ! grep -q $'^SUGGEST\t9\t' <<<"$out"; then ok "package.json に在る script → OK 9 / 提案なし"; else bad "実在する script を誤って FAIL / 提案（$(grep -E $'\t9\t' <<<"$out" | head -2 | tr '\n' ' ')）"; fi
+printf '%s\n' '{"scripts":{"build":"tsc"}}' > "$d/package.json"
+out="$(run_doctor "$d")"; rc=$?
+if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t9\t.*scripts に code-review:codex が無い' <<<"$out"; then ok "package.json はあるが script が無い → FAIL 9（scripts に無い）"; else bad "scripts に無い script を検知できない（rc=${rc}）: $(grep -E $'\t9\t' <<<"$out" | tr '\n' ' ')"; fi
+if command -v jq >/dev/null 2>&1; then
+  printf '%s\n' '{"scripts":{"code-review:codex":"x"},}' > "$d/package.json"
+  out="$(run_doctor "$d")"; rc=$?
+  if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t9\t.*解析できない' <<<"$out" && ! grep -q 'が無い' <<<"$(grep -E $'\t9\t' <<<"$out")" && ! grep -q $'^SUGGEST\t9\t' <<<"$out"; then ok "壊れた package.json → FAIL 9（解析できない。「script が無い」と提案にしない）"; else bad "壊れた package.json を「script が無い」に畳んでいる（rc=${rc}）: $(grep -E $'\t9\t' <<<"$out" | tr '\n' ' ')"; fi
+else
+  ok "（jq 不在のため壊れた package.json の検査は未検証 — 件数合わせ）"
+fi
+
+# 10. 検査 10（入口のパリティ）: AGENTS.md にだけ契約語が無い → WARN 10
+d="$(make_root parity "$GOOD_CLAUDE" '# AGENTS.md
+スコープ外は bundle へ追記する。')"
+out="$(run_doctor "$d")"
+if grep -q $'^WARN\t10\tYAGNI が CLAUDE.md にだけ在る' <<<"$out" && grep -q $'^OK\t10\t.*bundle の有無が揃っている' <<<"$out"; then ok "YAGNI が CLAUDE.md にだけ在る → WARN 10（bundle は OK 10）"; else bad "入口のパリティずれを検知できない: $(grep -E $'\t10\t' <<<"$out" | tr '\n' ' ')"; fi
+
+# 10b. AGENTS.md が無く、PATH に codex が在る → SUGGEST 10（PATH 上の実在パスを根拠に出す）
+mkdir -p "$TEST_TMP/fakebin"
+printf '#!/bin/sh\nexit 0\n' > "$TEST_TMP/fakebin/codex"; chmod +x "$TEST_TMP/fakebin/codex"
+d="$(make_root no-agents "$GOOD_CLAUDE")"
+out="$(PATH="$TEST_TMP/fakebin:$PATH" run_doctor "$d")"
+s10="$(grep -E $'^SUGGEST\t10\tAGENTS\\.md を置き' <<<"$out")"
+if grep -qF "根拠: PATH に codex(${TEST_TMP}/fakebin/codex)" <<<"$s10"; then ok "AGENTS.md が無く codex が在る → SUGGEST 10（PATH の実在を根拠に）"; else bad "AGENTS.md の追加を提案しない: $(grep '^SUGGEST' <<<"$out" | head -1)"; fi
+
+# 10b'. CLAUDE.md が無く AGENTS.md だけ、PATH に claude が在る → SUGGEST 10（CLAUDE.md の追加）
+printf '#!/bin/sh\nexit 0\n' > "$TEST_TMP/fakebin/claude"; chmod +x "$TEST_TMP/fakebin/claude"
+d="$TEST_TMP/agents-only"; mkdir -p "$d/.claude"; printf '{}\n' > "$d/.claude/settings.json"; printf '%s\n' "$GOOD_CLAUDE" > "$d/AGENTS.md"
+out="$(PATH="$TEST_TMP/fakebin:$PATH" run_doctor "$d")"
+s10="$(grep -E $'^SUGGEST\t10\tCLAUDE\\.md を置き' <<<"$out")"
+if grep -q $'^INFO\t10\tCLAUDE\\.md が無い' <<<"$out" && grep -qF "根拠: PATH に claude(${TEST_TMP}/fakebin/claude)" <<<"$s10"; then ok "AGENTS.md だけで claude が在る → INFO 10 + SUGGEST 10（CLAUDE.md の追加）"; else bad "CLAUDE.md の追加を提案しない: $(grep -E $'\t10\t' <<<"$out" | tr '\n' ' ')"; fi
+
+# 10c. 根拠となる実測が無い → 「提案なし」を明示する（空の提案節で緑に見せない）。CLAUDE.md / AGENTS.md を揃えて検査 10 の提案を出さない
+d="$(make_root nosuggest "$GOOD_CLAUDE" "$GOOD_CLAUDE")"
+out="$(run_doctor "$d")"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q $'^SUGGEST\t-\t提案なし（根拠となる実測なし）$' <<<"$out" && [ "$(grep -c '^SUGGEST' <<<"$out")" -eq 1 ]; then ok "提案の根拠が無い → 「提案なし」を 1 行だけ明示"; else bad "提案なしを明示しない / 余分な提案（rc=${rc}）: $(grep '^SUGGEST' <<<"$out" | tr '\n' ' ')"; fi
+if [ "$(tail -1 <<<"$out" | cut -c1-8)" = "SUMMARY " ]; then ok "SUGGEST は SUMMARY の前に出る（SUMMARY が最終行）"; else bad "SUMMARY が最終行でない"; fi
+
+# 11. 検査 11（Draft PR の実態）: gh のスタブで Draft 一覧を返す。knowledge: の ACE PR は数えない
+mkdir -p "$TEST_TMP/ghbin"
+cat > "$TEST_TMP/ghbin/gh" <<'STUB'
+#!/bin/sh
+# --jq を解釈しないスタブ: doctor の各呼び出しへ jq 適用後の出力を直接返す
+case "$*" in
+  *"pr list"*"--draft"*) [ -n "${GH_STUB_FAIL:-}" ] && exit 1; [ -n "${GH_STUB_NO_DRAFT:-}" ] && exit 0; printf '12\tfeat: x\n13\tknowledge: ACE-1\n' ;;
+  *"label list"*) printf 'bundle\nepic\nfollow-up\npriority:high\n' ;;
+  *"issue list"*"bundle"*) printf '0\n' ;;
+  *"api --paginate"*) printf '5\n7\n' ;;
+  *"api graphql"*) printf '5\n7\n' ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$TEST_TMP/ghbin/gh"
+d="$(make_root drafts "$GOOD_CLAUDE" "$GOOD_CLAUDE")"
+out="$(PATH="$TEST_TMP/ghbin:$PATH" "${DOCTOR[@]}" --root "$d" --global-claude "$NOGLOBAL" --settings "$d/.claude/settings.json" --repo o/r 2>&1)"
+if grep -q $'^WARN\t11\t.*[#]12（' <<<"$out" && ! grep -q $'^WARN\t11\t.*[#]13' <<<"$out" && grep -q $'^INFO\t11\t.*1 件は除外' <<<"$out"; then ok "Draft PR 12 → WARN 11（knowledge: の 13 は除外して INFO）"; else bad "Draft の実態を検知できない: $(grep -E $'\t11\t' <<<"$out" | tr '\n' ' ')"; fi
+if grep -qE $'^SUGGEST\t11\t.*gh pr ready.*[#]12.*\t根拠: gh pr list --draft' <<<"$out"; then ok "SUGGEST 11 が gh pr ready を根拠付きで挙げる"; else bad "SUGGEST 11 が出ない: $(grep '^SUGGEST' <<<"$out" | tr '\n' ' ')"; fi
+if grep -q $'^WARN\t4\t.*bundle が 0 件' <<<"$out" && grep -qE $'^SUGGEST\t6\t.*link-sub-issues\\.sh.*\t根拠: open な bundle が 0 件 / 親無しの open Issue が 2 件' <<<"$out"; then ok "bundle 0 件 + 親無し 2 件 → SUGGEST 6（link-sub-issues.sh を根拠付きで）"; else bad "検査 4・6 の組み合わせの提案が出ない: $(grep -E $'\t(4|6)\t' <<<"$out" | tr '\n' ' ')"; fi
+out="$(GH_STUB_FAIL=1 PATH="$TEST_TMP/ghbin:$PATH" "${DOCTOR[@]}" --root "$d" --global-claude "$NOGLOBAL" --settings "$d/.claude/settings.json" --repo o/r 2>&1)"
+if grep -q $'^SKIP\t11\t.*取得できない' <<<"$out"; then ok "gh の失敗 → SKIP 11（Draft 0 件と断定しない）"; else bad "gh の失敗を 0 件に畳んでいる: $(grep -E $'\t11\t' <<<"$out" | tr '\n' ' ')"; fi
 
 # 6. --root が無い → rc=2（検査不成立）。handoff env は中和済みなので、root ガードではなく引数解決で 2 が出る
 out="$("${DOCTOR[@]}" --root "$TEST_TMP/does-not-exist" --offline 2>&1)"; rc=$?

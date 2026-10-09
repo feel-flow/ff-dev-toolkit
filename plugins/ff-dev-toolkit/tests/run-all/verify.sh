@@ -44,11 +44,22 @@
 # 変異検出（case 45 / suite 単位の経過秒）:
 #           elapsed-sec 行を出さなくすると 45-A / 45-B が赤。
 #           未実行（missing / not-executable）を elapsed-sec へ混ぜると 45-A が赤。
-#           1 秒かかる suite を 0 秒で出すと 45-B / 45-C が赤。
+#           2 秒かかる suite を 0 秒で出すと 45-B / 45-C が赤。
 #           合成入力の降順ソートを外す・0 秒を残す・上限 8 を外すと 45-F が赤。
 #           計測行の echo または ff_emit_elapsed 呼び出しを ff-summary-head-block の
 #           内側へ移すと 45-E が赤。
 #           date 不能をテスト失敗へ倒すと 45-D が赤。
+#           ff_record_elapsed を no-op にすると 45-A / 45-B / 45-C が赤。
+#
+# 変異検出（case 30 / 並列実行の同時実行数。Issue `#2062`）:
+#           並列経路の起動直後に `wait $!` を挟んで逐次化すると「並列実行（同時実行数 2）で
+#           suite が実際に上限の 2 本まで同時に走り…」が赤（最大同時 1）。同時実行数の上限を
+#           外すと同じ検査が赤（最大同時 4）。後半の組の重なりと、空いたスロットへの投入の速さは
+#           測らない（所要時間の比較をやめた対価。Issue `#2062`）。
+# 空振り検出: case 30 の probe ログが作れない・読めない・開始 / 終了行が本数に揃わない回は、
+#           緑へ倒さず赤にする。slow-a〜d の `_log` を空に固定して probe を書かせない
+#           （環境変数が届かない形）と、並列・逐次の 2 件が「開始 / 終了 / 最大同時 = 0 0 0」で赤
+#           （2026-10-05 WSL 実測）。逐次側の「2 本は重ならない」が probe の数え方の対照。
 #
 # 変異検出（case 42 / 鮮度バケット）:
 #           鮮度マーカーの実体を改名すると suite 冒頭のマーカー契約検査が赤（fixture は照合側
@@ -1752,16 +1763,39 @@ else
   printf '%s\n' "$_par_par_out" | sed 's/^/    | /' >&2
 fi
 
-# 4 本の slow fixture は 1 秒かけて HEAD / TAIL の 2 行を出す。完了順にストリームする実装だと HEAD が
+# 4 本の slow fixture は 2 秒かけて HEAD / TAIL の 2 行を出す。完了順にストリームする実装だと HEAD が
 # 並んでから TAIL が並ぶ形になり、HEAD と TAIL の隣接が崩れる。**同時実行数（2）より多い 4 本を
 # 渡す**のは、空いたスロットへ後続を投入する経路を通すため — 本数を同時実行数以下にすると再充填が
-# 一度も起きず、「3 本目以降が起動されない / 無限ループする」退行を丸ごと見逃す。所要時間は整数秒で
-# 測る（bash 3.2 に小数秒の時計が無い）。逐次は約 4 秒・2 並列は約 2 秒なので取り違えない。
-_par_t0="$SECONDS"
+# 一度も起きず、「3 本目以降が起動されない / 無限ループする」退行を丸ごと見逃す。
+#
+# 並列で走ったことは所要時間の比較ではなく、fixture が probe ログへ追記する開始 / 終了行から数えた
+# **最大同時実行数**で確かめる（Issue `#2062`）。所要時間の比較は、全件ゲートの 12 並列の中では並列側も
+# CPU を取れずに逐次へ近づき、さらに壁時計の巻き戻し（WSL2 の時刻同期）で逐次側が実際より短く出て
+# 「並列 3s / 逐次 3s」の偽赤を出した。rendezvous（fixture の冒頭説明）で 2 本目の開始を 1 本目の
+# 終了前に揃えるので、正しい並列実行の最大同時実行数は負荷によらず 2、逐次化した退行では 1 になる。
+_par_probe_stats() { # <log> -> stdout "<開始行数> <終了行数> <最大同時実行数>"。読めなければ非 0
+  awk '
+    $1 == "S" { s++; cur++; if (cur > max) max = cur }
+    $1 == "E" { e++; cur-- }
+    END { printf "%d %d %d\n", s, e, max }
+  ' "$1"
+}
+_par_probe_dir=""
+if _par_probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/run-all-probe.XXXXXX" 2>&1)" \
+  && [ -d "$_par_probe_dir" ]; then
+  : >"$_par_probe_dir/parallel.log"
+  : >"$_par_probe_dir/sequential.log"
+else
+  bad "case 30: probe ログの一時領域を作成できず、同時実行数を実測できません: ${_par_probe_dir}"
+  _par_probe_dir=""
+fi
+
+export FF_RUN_ALL_PROBE_LOG="${_par_probe_dir:+$_par_probe_dir/parallel.log}"
+export FF_RUN_ALL_PROBE_RENDEZVOUS=1
 RUN_JOBS=2 run_runner \
   "$FIXTURES/slow-a/verify.sh" "$FIXTURES/slow-b/verify.sh" \
   "$FIXTURES/slow-c/verify.sh" "$FIXTURES/slow-d/verify.sh"
-_par_elapsed=$((SECONDS - _par_t0))
+unset FF_RUN_ALL_PROBE_LOG FF_RUN_ALL_PROBE_RENDEZVOUS
 _par_slow_out="$RUN_OUT"
 
 expect_rc 0 "並列実行で 4 本すべてが pass なら rc=0"
@@ -1796,16 +1830,29 @@ else
   printf '%s\n' "$_par_order" | sed 's/^/    | /' >&2
 fi
 
-_par_t0="$SECONDS"
-RUN_JOBS=1 run_runner \
-  "$FIXTURES/slow-a/verify.sh" "$FIXTURES/slow-b/verify.sh" \
-  "$FIXTURES/slow-c/verify.sh" "$FIXTURES/slow-d/verify.sh"
-_par_seq_elapsed=$((SECONDS - _par_t0))
+# 逐次側は probe の数え方そのものの対照（重なりの無い実行を 1 と数える）。rendezvous を付けると
+# 1 本目が上限まで待つので付けない。2 本で足りる（4 本にしても同時実行数は変わらず 4 秒延びるだけ）。
+if [ -n "$_par_probe_dir" ]; then
+  export FF_RUN_ALL_PROBE_LOG="$_par_probe_dir/sequential.log"
+  RUN_JOBS=1 run_runner "$FIXTURES/slow-a/verify.sh" "$FIXTURES/slow-b/verify.sh"
+  unset FF_RUN_ALL_PROBE_LOG
 
-if [ "$_par_elapsed" -lt "$_par_seq_elapsed" ]; then
-  ok "同一 suite 一覧で並列実行の方が短い（並列 ${_par_elapsed}s < 逐次 ${_par_seq_elapsed}s）"
-else
-  bad "並列実行が逐次実行より短くならない（並列 ${_par_elapsed}s / 逐次 ${_par_seq_elapsed}s）"
+  # ログが無い・読めない・開始 / 終了が本数に揃わない回は、針が当たっていないので赤（緑へ倒さない）。
+  if _par_probe_par="$(_par_probe_stats "$_par_probe_dir/parallel.log" 2>&1)" \
+    && [ "$_par_probe_par" = "4 4 2" ]; then
+    ok "並列実行（同時実行数 2）で suite が実際に上限の 2 本まで同時に走り、3 本以上は重ならない（開始 / 終了 / 最大同時 = ${_par_probe_par}）"
+  else
+    bad "並列実行の最大同時実行数が 2 ではない、または probe ログが揃わない（開始 / 終了 / 最大同時 = ${_par_probe_par:-空}。期待 4 4 2）"
+    sed 's/^/    | /' "$_par_probe_dir/parallel.log" >&2 2>/dev/null || true
+  fi
+  if _par_probe_seq="$(_par_probe_stats "$_par_probe_dir/sequential.log" 2>&1)" \
+    && [ "$_par_probe_seq" = "2 2 1" ]; then
+    ok "逐次実行の 2 本は重ならない（開始 / 終了 / 最大同時 = ${_par_probe_seq}）"
+  else
+    bad "逐次実行の最大同時実行数が 1 ではない、または probe ログが揃わない（開始 / 終了 / 最大同時 = ${_par_probe_seq:-空}。期待 2 2 1）"
+    sed 's/^/    | /' "$_par_probe_dir/sequential.log" >&2 2>/dev/null || true
+  fi
+  rm -rf "$_par_probe_dir"
 fi
 
 echo ""
@@ -3353,9 +3400,11 @@ expect_has '^elapsed-sec: fail=[0-9][0-9]* pass=[0-9][0-9]* skip=[0-9][0-9]*$' \
 expect_lacks 'not-executable=' "実行ビットの無い suite を elapsed-sec に載せない"
 expect_lacks 'missing=' "存在しない suite を elapsed-sec に載せない"
 
-# 45-B: 1 秒かかる suite は逐次でも 1 以上。
+# 45-B: 2 秒かかる suite は逐次でも 1 以上。fixture を 2 秒にしてあるのは壁時計の巻き戻しの余裕
+# （fixtures/slow-a/verify.sh の冒頭。Issue `#2062`）。判定を「1 以上」から緩めない — 0 を出す退行を
+# 捕まえるのはこの下限だけ。
 RUN_JOBS=1 run_runner "$FIXTURES/slow-a/verify.sh"
-expect_rc 0 "1 秒かかる suite の逐次実行は rc=0"
+expect_rc 0 "2 秒かかる suite の逐次実行は rc=0"
 _el_sec="$(printf '%s\n' "$RUN_OUT" | awk '/^elapsed-sec: / {
   for (i = 2; i <= NF; i++) if ($i ~ /^slow-a=/) { split($i, a, "="); print a[2] }
 }')"
@@ -3366,7 +3415,7 @@ else
 fi
 expect_has '^slowest: slow-a=' "1 秒以上の suite がある回は slowest に載せる"
 
-# 45-C: 並列経路でも 1 秒以上を出し、4 本すべてが slowest に載る（同時実行数より多い本数）。
+# 45-C: 並列経路でも 2 秒かかる suite を 1 秒以上で出し、4 本すべてが slowest に載る（同時実行数より多い本数）。
 RUN_JOBS=2 run_runner \
   "$FIXTURES/slow-a/verify.sh" "$FIXTURES/slow-b/verify.sh" \
   "$FIXTURES/slow-c/verify.sh" "$FIXTURES/slow-d/verify.sh"
@@ -3397,7 +3446,7 @@ for _el_name in slow-a slow-b slow-c slow-d; do
   esac
 done
 if [ "$_el_slowest_ok" -eq 1 ]; then
-  ok "slowest に 1 秒の 4 本がすべて載る（上限 8）"
+  ok "slowest に 2 秒かかる 4 本がすべて載る（上限 8）"
 else
   bad "slowest に 4 本が揃っていない: ${_el_slowest}"
 fi

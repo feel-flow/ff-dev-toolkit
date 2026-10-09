@@ -37,6 +37,16 @@
 #   - `--fill` / インタラクティブ入力 / web での本文入力（body 系フラグ無し）
 #   - コマンド文字列と body-file 内容以外の場所に本文が組み立てられる場合
 #
+# Draft PR の作成（Issue `#2089`）: 同じコマンド位置の判定を再利用し、`gh pr create --draft` / `-d` / `--draft=true` と
+# `gh pr ready --undo`（通常 PR を Draft へ戻す）も抜け道付き deny で止める。契約は「通常 PR として作る
+# （Draft にしない）」（docs-template の git-workflow.md ステップ5 / ADR-053・ADR-054）で、入口文書の旧規定や
+# 手癖で Draft のまま残る事象が導入先で出ていた。Draft はあとから `gh pr ready` で戻せるので取り返せない
+# 損失ではないが、Draft のままだとマージまで進むノンストップフローが止まる。止める理由と次の一手を
+# エージェントへ届ける経路が deny の理由文しか無いので、警告ではなく抜け道付き deny にする。
+# 抜け道: gh より前の環境代入 `FF_PR_DRAFT_ACK=1`（引数の中の同じ文字列では通さない。ACE の自律フローのように、人の確認待ちという理由がある
+# Draft だけに使う）。素朴な空白分割なので、`--title "x -d y"` のように引用内に単独の `-d` がある形は
+# 誤って止まりうる（そのときも同じ抜け道で通す）。
+#
 # 設計原則:
 #   - fail-open: 全 Bash 呼び出しに割り込むため、自身の不具合や解析不能な形では
 #     黙って許可（exit 0・無出力）に倒す。jq が無い環境も同様。
@@ -44,7 +54,8 @@
 #     無ければ全文フォールバックで動く。
 #
 # 環境変数:
-#   FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1  このガードを無効化する
+#   FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1  このガードを無効化する（Draft PR の検出も含む）
+#   FF_PR_DRAFT_ACK=1（コマンド先頭の環境代入）  Draft PR の検出だけをその 1 回通す
 
 # fail-open のため set -e / set -u は使わない。
 
@@ -105,15 +116,19 @@ strip_quotes() {
 # ---- コマンド位置の `gh pr create|edit` を含むセグメントを特定する -------------
 # 見つかったら GH_TOKS にそのセグメントのトークン列を積む。
 GH_FOUND=0
+GH_SUB=""
+GH_ACK=0
 GH_TOKS=()
 
 find_gh_segment() {
   local toks=("$@")
-  local n=${#toks[@]} i=0 t
+  local n=${#toks[@]} i=0 t ack=0 j
   while [ "$i" -lt "$n" ]; do
     t="$(strip_quotes "${toks[$i]}")"
     case "$t" in
       [A-Za-z_]*=*)
+        # Draft の抜け道は gh より前の環境代入だけで受ける（引数の中の同じ文字列では通さない）
+        [ "$t" = "FF_PR_DRAFT_ACK=1" ] && ack=1
         i=$((i + 1))
         continue
         ;;
@@ -139,10 +154,22 @@ find_gh_segment() {
   [ $((i + 2)) -lt "$n" ] || return 0
   [ "$(strip_quotes "${toks[$((i + 1))]}")" = "pr" ] || return 0
   case "$(strip_quotes "${toks[$((i + 2))]}")" in
-    create | edit) : ;;
+    create | edit) GH_SUB="$(strip_quotes "${toks[$((i + 2))]}")" ;;
+    ready)
+      # ready は --undo（Draft へ戻す）のときだけ確定させる。素の ready で確定させると、最初に見つかった
+      # セグメントで判定が終わり、`gh pr ready 12 && gh pr create --draft` の後段を検査しなくなる
+      j=$((i + 3))
+      while [ "$j" -lt "$n" ]; do
+        [ "$(strip_quotes "${toks[$j]}")" = "--undo" ] && break
+        j=$((j + 1))
+      done
+      [ "$j" -lt "$n" ] || return 0
+      GH_SUB=ready
+      ;;
     *) return 0 ;;
   esac
   GH_FOUND=1
+  GH_ACK="$ack"
   GH_TOKS=("${toks[@]}")
   return 0
 }
@@ -164,6 +191,28 @@ $segments
 EOF
 
 [ "$GH_FOUND" -eq 1 ] || exit 0
+
+# ---- Draft PR の作成・Draft への戻し（Issue `#2089`） ------------------------------
+draft_flag=""
+for t in "${GH_TOKS[@]}"; do
+  t="$(strip_quotes "$t")"
+  case "$GH_SUB:$t" in
+    create:--draft | create:-d | create:--draft=true) draft_flag="gh pr create $t" ;;
+    ready:--undo) draft_flag="gh pr ready --undo" ;;
+  esac
+done
+if [ -n "$draft_flag" ] && [ "$GH_ACK" -eq 0 ]; then
+  reason="⚠️ ff-dev-toolkit guard（Draft PR）: \`${draft_flag}\` は PR を Draft にします。契約は「通常 PR として作る（Draft にしない）」です（docs-template/05-operations/deployment/git-workflow.md ステップ5・ADR-053 / ADR-054）。Draft のままだと、マージまで続くフローがそこで止まります。
+次のいずれかで再実行してください:
+  1) Draft のフラグを外して通常 PR として作る（gh pr ready --undo なら実行しない）
+  2) 人の確認待ちという理由がある Draft（ACE の自律フロー等）だけは、コマンドの**先頭**へ FF_PR_DRAFT_ACK=1 を付けて再実行する
+既に Draft の PR は gh pr ready <番号> で通常 PR へ戻せます。入口文書（CLAUDE.md / AGENTS.md）に Draft の指示が残っていないかは /workflow-doctor の検査 8 で確かめられます。
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 を設定します（フォローアップ宣言の検出も止まります）。"
+  jq -n --arg reason "$reason" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
+  exit 0
+fi
+# ready（--undo）は本文フラグを持たないので、下の body フラグ判定で素通しになる（フォローアップ宣言の判定は create / edit だけ）
 
 # 本文を渡すフラグが無い形（--fill / インタラクティブ / web）は判定できない
 has_body_flag=0

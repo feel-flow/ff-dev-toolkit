@@ -176,7 +176,7 @@ export function findDuplicateAnchors(content: string): string[] {
 /**
  * PLAYBOOK.md と同階層の `playbook/archive/` にあるファイルを検出する。
  * ディレクトリが無い場合は空配列（＝`/ace-refine` 未実行）を返す。
- * `check-category-size` の discoverPlaybookSubfiles と同じく**非再帰**で走査する。
+ * **非再帰**で走査する（live 側の discoverPlaybookSubfiles はサブディレクトリを辿るが、退避先は直下だけ）。
  */
 export function discoverArchiveFiles(playbookPath: string): string[] {
   const archiveDir = path.join(path.dirname(playbookPath), "playbook", "archive");

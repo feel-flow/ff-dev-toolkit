@@ -1482,7 +1482,7 @@ clock_step_probe() { # <hook> <RETROSPECTIVE_MODE の値>。DIAG_RC / DIAG_ERR �
 }
 clock_bash_major="$(/bin/bash -c 'printf "%s" "${BASH_VERSINFO[0]}"')"
 if [ "${clock_bash_major:-0}" -lt 4 ]; then
-  echo "  ○ skip: 壁時計が戻る回の再現は、時間切れを rc 1 で返す /bin/bash ${clock_bash_major:-?} 系（4 未満）では成立しないため未実行"
+  echo "  ○ skip: 壁時計が戻る回の再現（/bin/bash ${clock_bash_major:-?} 系は時間切れを rc 1 で返す）は、bash 4 以上でだけ成立する検査のため未実行"
 else
   for clock_target in "$TARGET" "$PLUGIN_ROOT/hooks/decision-tree.sh"; do
     clock_name="$(basename "$clock_target")"

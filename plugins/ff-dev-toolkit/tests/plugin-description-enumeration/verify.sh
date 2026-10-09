@@ -99,7 +99,11 @@ fi
 # 無登録で通すと、公開文言の統一などで両側から同時にスキル名が消えた改稿を緑にしてしまう
 # （部分列挙が名簿 + 担保ゲートを要求しているのに、全件非列挙だけ無宣言で通るのは非対称）。
 # book-toolkit: 収録スキルを日本語ラベル（総合校正 / 日本語校正 …）で書いている。
-DEFAULT_NON_ENUM='book-toolkit'
+# ff-privacy-check: 単一スキルのプラグインで、marketplace.json は「1 コマンド」、plugin.json は「plugin」と
+#   説明し、どちらもスキル名を挙げない。plugin.json は別の公開リポジトリへ同期されるので、文言を
+#   変えると公開側の更新になる。
+DEFAULT_NON_ENUM='book-toolkit
+ff-privacy-check'
 NON_ENUM_ALLOWED="${FF_PLUGIN_DESC_NON_ENUM-$DEFAULT_NON_ENUM}"
 if [ -n "${FF_PLUGIN_DESC_NON_ENUM+x}" ]; then
   echo "⚠ FF_PLUGIN_DESC_NON_ENUM で非列挙名簿を差し替えています" >&2

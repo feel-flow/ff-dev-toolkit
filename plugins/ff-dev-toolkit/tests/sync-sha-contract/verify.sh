@@ -109,6 +109,7 @@
 # 変異検出: 許容表へ語尾を変えた typecheck 行（`…行いません（`）を足すとブロック内照合の針が赤（2026-09-25 実測）。
 # 変異検出: SKIP_HINTS へ `|` の無い要素を足すと要素形の針が赤。
 # 変異検出: 許容表から OS 限定（Windows の Git Bash でだけ成立する検査）の行を消すと (7) の針と release-runtime（OS 限定の skip で止まる）が赤。
+# 変異検出: 許容表から bash 版限定（bash 4 以上でだけ成立する検査）の行を消すと (7) の針と release-runtime（bash 版限定の skip で止まる）が赤（2026-10-07 実測）。
 # 空振り検出: footer 分類器の成功状態照合を削除すると footer-reuse-runtime の empty / identical ケースが赤（2026-09-26 実測 exit 1）。内容証明なしの exit 0 は採用しない。
 # 空振り検出: FF_SYNC_SHA_SKILL へ存在しないパスを与えると (対象解決) が赤になる。明示指定の不在を skip へ倒さないため、実測は exit 1（○ skip ではない）。
 # 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT へ存在しないパスを与えると (対象解決) が赤になる（実測 exit 1）。リリーススクリプトを空ファイルへ差し替えると (7) の全針と release-runtime が赤になる。
@@ -394,6 +395,10 @@ release_contains "'FF_MEDIA_RENDER=1 が未設定のため実レンダリング�
 # 表から消えると主作業機のリリースが gate 段で止まる（Issue `#2033`）
 release_contains "'Windows の Git Bash でだけ成立する検査のため未実行'" \
   "許容表に OS 限定（Windows の Git Bash でだけ成立する検査）がある"
+# bash 版限定の検査（bash 4 以上でしか成立しないもの）は macOS の /bin/bash 3.2 で必ず skip になる。
+# 表から消えると macOS からのリリースが gate 段で止まる（Issue `#2077`）
+release_contains "'bash 4 以上でだけ成立する検査のため未実行'" \
+  "許容表に bash 版限定（bash 4 以上でだけ成立する検査）がある"
 # 配列ブロック（`NAME=(` 〜 行頭 `)`）の中だけを見る。ファイル全体の grep だと、SKIP_HINTS の要素（同じ理由文 + `|`）や
 # 語尾を変えた要素（`…行いません（`）で禁止針が外れる
 release_block() { awk -v n="$1" '$0 ~ ("^" n "=\\($") {f=1; next} f && /^\)$/ {exit} f' "$RELEASE_SCRIPT"; }
@@ -452,6 +457,17 @@ contains '| `guard-review-in-flight`: Windows の Git Bash でだけ成立する
   "手順 0b の許容表に OS 限定（guard-review-in-flight の (w1)〜(w5)）の行がある"
 contains '| `ace-curate-commit`: Windows の Git Bash でだけ成立する検査のため未実行 | OS 限定 |' \
   "手順 0b の許容表に OS 限定（ace-curate-commit の 6b の別名ケース）の行がある"
+# bash 版限定の理由文（Issue `#2077`）。OS 限定と同じく、文言を出す suite の集合を完全一致で固定する
+_bash4_emitters="$(grep -rlF -- 'bash 4 以上でだけ成立する検査のため未実行' "$REPO_ROOT"/plugins/*/tests 2>/dev/null \
+  | grep -v '/tests/sync-sha-contract/' | sed "s|^$REPO_ROOT/||" | sort)" || true
+_bash4_emitters_want="$(printf '%s\n' plugins/ff-dev-toolkit/tests/retrospective-stop-hook/verify.sh plugins/ff-dev-toolkit/tests/skill-drift-check/verify.sh)"
+if [[ "$_bash4_emitters" == "$_bash4_emitters_want" ]]; then
+  ok "bash 版限定の理由文を出す suite が retrospective-stop-hook と skill-drift-check だけである（表の文言が実出力にある）"
+else
+  bad "bash 版限定の理由文を出す suite の集合が想定と違う（文言の変更か使い回し。許容表と SKILL.md の表を見直す）: [${_bash4_emitters}]"
+fi
+contains '| `retrospective-stop-hook` / `skill-drift-check`: bash 4 以上でだけ成立する検査のため未実行 | bash 版限定 |' \
+  "手順 0b の許容表に bash 版限定（retrospective-stop-hook / skill-drift-check）の行がある"
 contains '`ff-media-toolkit/tests/typecheck` の `node_modules` 不在' \
   "手順 0b が ff-media の setup 前の typecheck を環境 skip（許容しない）として名指ししている"
 # 旧方式（ADR-034 決定 2 + Issue #830 の green 再利用機構）の復活禁止。針は散文を

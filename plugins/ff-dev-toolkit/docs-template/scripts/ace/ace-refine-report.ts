@@ -26,7 +26,7 @@ import {
   blankCodeRegions,
   blankFencedCodeBlocks,
   blankHtmlBlockComments,
-  HTML_COMMENT_SPAN_SOURCE,
+  findHtmlCommentSpans,
   SECTION_HEADING_LINE_PATTERN,
   discoverPlaybookSubfiles,
   entryHeadingSource,
@@ -132,13 +132,6 @@ type MeasurementSweep =
       readonly byFile: ReadonlyMap<string, ReliableEntryLineMeasurementResult>;
     }>;
 
-/**
- * 閉じた HTML コメント span のみマッチ（parsePlaybookEntries の stripHtmlBlockComments と同じ意味論）。
- * ソースは check-category-size.ts に一本化してある（#343）— countBudgetExceptions が
- * 同じ条件で例外宣言を数えるため、書き写すと片方だけ広げたときに件数が静かにずれる。
- */
-const COMMENT_SPAN_PATTERN = new RegExp(HTML_COMMENT_SPAN_SOURCE, "gu");
-
 function countNewlinesBefore(content: string, offset: number): number {
   const matches = content.slice(0, offset).match(/\n/gu);
   return matches ? matches.length : 0;
@@ -180,9 +173,11 @@ function maskCommentSpans(content: string): MaskedContent {
   const scannable = blanked.text;
   let masked = "";
   let last = 0;
-  for (const match of content.matchAll(COMMENT_SPAN_PATTERN)) {
-    const start = match.index ?? 0;
-    const span = match[0];
+  // 閉じた HTML コメント span の判定は check-category-size.ts に一本化してある —
+  // countBudgetExceptions が同じ条件で例外宣言を数えるため、書き写すと
+  // 片方だけ広げたときに件数が静かにずれる。インラインコード中の `<!--` は開始と見なさない。
+  for (const { start, end } of findHtmlCommentSpans(content)) {
+    const span = content.slice(start, end);
     masked += content.slice(last, start);
     if (
       span.includes(BUDGET_EXCEPTION_MARKER) &&
@@ -217,8 +212,9 @@ const SECTION_HEADING_PATTERN = SECTION_HEADING_LINE_PATTERN;
  * 閉じた HTML コメント内の見出し（テンプレートの追記例）はエントリとして数えないが、
  * 行数の計測自体は原文の行に対して行う（圧縮判断は「ファイル上の占有行数」が対象のため）。
  * 制約: 見出し行の末尾に同一行コメントが付いていても計測対象になる（span マスクは
- * コメント部分だけを空白化するため）。コードスパン内の `<!-- ... -->` も**範囲計測の
- * マスクとしては**コメント扱いになる（既知の限界。エントリ照合が件数の乖離を検出する）。
+ * コメント部分だけを空白化するため）。同じ行で閉じるコードスパン内の `<!--` はコメントの
+ * 開始と見なさない（findHtmlCommentSpans）。複数行にまたがるコードスパンと、フェンス内の
+ * 閉じない `<!--` は拾えない（既知の限界。エントリ照合が件数の乖離を検出する）。
  * ただし `hasException` の判定はコードスパン・フェンスを除外する（maskCommentSpans 参照。
  * Issue #347）— こちらは countBudgetExceptions と一致していないと、上限だけが片側で
  * 2 倍になるため。
@@ -571,10 +567,17 @@ export function extractPromotionSection(patternsContent: string): string {
  * `ACE-20-1` を抑止することはない。
  */
 export function isListedInPatterns(patternsContent: string, id: string): boolean {
-  const section = extractPromotionSection(patternsContent).replace(
-    /<!--[\s\S]*?-->/gu,
-    "",
-  );
+  // コメントの判定は findHtmlCommentSpans に揃える（素の正規表現だと、本文の
+  // インラインコード中の `<!--` が後方の `-->` と対になり、間の収載ごと消える）。
+  // 空白化ではなく除去なのは従来どおり（行頭の `出典:` / `###` 判定を崩さないため）。
+  const promotionSection = extractPromotionSection(patternsContent);
+  let section = "";
+  let last = 0;
+  for (const span of findHtmlCommentSpans(promotionSection)) {
+    section += promotionSection.slice(last, span.start);
+    last = span.end;
+  }
+  section += promotionSection.slice(last);
   const sourceLine = new RegExp(
     `^出典:\\s*\\[${escapeRegExp(id)}\\]\\([^\\)]+\\)`,
     "mu",

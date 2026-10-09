@@ -32,11 +32,14 @@
 #        rc=2（記入例で認識件数を作らない）
 #   K19. 注記付きの複数 Issue は参照だけで state を引き、注記・非 Issue 参照・修飾なしを保持し、表示注記は判定に使わない
 #   K18. live エントリが無い Playbook（全件 archive 済み）でも --include-archived で archive を返す
+#   K20. playbook/ のサブディレクトリにあるエントリも返す（件数ゲートと同じ走査範囲。Issue `#2082`）。
+#        退避先 _archive/（入れ子を含む）と . 始まりのディレクトリは既定で辿らず、退避先は --include-archived で出る
 #   K16. gh が stdin を読み切ってもエントリが欠けない（read ループは fd 3・gh は `</dev/null` の
 #        二重防御。片方を外しても欠けないため変異では赤にならない — 契約の固定であって検出力の
 #        主張ではない）
 #
 # 空振り検出: 参照抽出を 0 件一致へ変える／判定を表示注記へ戻す／doc: の無照会を外す各変異で K19 が赤（rc=1）、前後の正常対照は46件成功（2026-10-05実測）。参照の不検出・注記の誤読・非 Issue の誤照会を緑にしない。
+# 空振り検出: knowledge-lookup.sh の find を -maxdepth 1 へ戻す変異で K20 のサブディレクトリ検出が赤、prune から _archive を外す変異で K20 の既定除外が赤（2026-10-08 実測）。
 # 空振り検出: 両 store を置かない root を与えると K6 が rc=2 を要求し、台帳の見出しを `### OBS 001 …`（コロン無し）へ変えると K7 が `読み取り失敗` を要求する（2026-09-19 実測。スクリプト側の noentry 判定を `empty` へ倒す変異で K7 が赤、両不在の rc=2 を rc=0 へ倒す変異で K6 が赤）。
 # 空振り検出: promoted の closed 説明を旧「対策済みまたは再発」へ戻す／mitigated の未解消再発確認を旧説明へ戻すと各 rc=1、正常対照は38件pass（2026-09-28実測）。状態名の接頭辞だけが残っても意味の欠落を緑にしない。
 #
@@ -553,6 +556,39 @@ if [[ "${RC}" -eq 0 ]] && out_has 'Issue=skill:close-issue / doc:docs/06-referen
   ok "K19: skill: / doc: / なしは state を付けずそのまま表示する"
 else
   bad "K19: 非 Issue 参照の表示が変わった（rc=${RC}）"
+fi
+
+# ── K20: サブディレクトリのエントリと _archive/ ─────────────────────────────────
+ROOT13="${TMP}/subdirs"; make_playbook "${ROOT13}"
+mkdir -p "${ROOT13}/docs/08-knowledge/playbook/process/_archive" "${ROOT13}/docs/08-knowledge/playbook/_archive" "${ROOT13}/docs/08-knowledge/playbook/.obsidian"
+for spec in "process/review.md:20-1:hydration のレビュー観点" "_archive/old.md:21-1:hydration の退避済み" ".obsidian/x.md:22-1:hydration の設定メモ" "process/_archive/old.md:23-1:hydration の入れ子の退避済み"; do
+  rel="${spec%%:*}"; rest="${spec#*:}"; id="${rest%%:*}"; title="${rest#*:}"
+  {
+    echo "# sub"; echo ""; echo "### ACE-${id}: ${title}"; echo ""
+    echo "| Category | process |"; echo "| Status | active |"; echo ""; echo "---"
+  } >"${ROOT13}/docs/08-knowledge/playbook/${rel}"
+done
+run_lookup "${ROOT13}" --offline hydration
+if [[ "${RC}" -eq 0 ]] && out_has "ACE-20-1"; then
+  ok "K20: playbook/ のサブディレクトリのエントリを返す"
+else
+  bad "K20: サブディレクトリのエントリが出ない（rc=${RC}）"
+fi
+if out_has "ACE-21-1" || out_has "ACE-22-1" || out_has "ACE-23-1"; then
+  bad "K20: _archive/（入れ子を含む）か . 始まりのディレクトリが既定で出ている"
+else
+  ok "K20: _archive/（入れ子を含む）と . 始まりのディレクトリは既定で辿らない"
+fi
+run_lookup "${ROOT13}" --offline --include-archived hydration
+if id_under_group "アーカイブ（playbook/archive" "ACE-21-1" && id_under_group "アーカイブ（playbook/archive" "ACE-23-1"; then
+  ok "K20: --include-archived で _archive/ と入れ子の退避先もアーカイブグループに出る"
+else
+  bad "K20: --include-archived でも _archive/ の ACE-21-1 か入れ子の ACE-23-1 が出ない"
+fi
+if out_has "ACE-22-1"; then
+  bad "K20: --include-archived で . 始まりのディレクトリまで出ている"
+else
+  ok "K20: --include-archived でも . 始まりのディレクトリは辿らない"
 fi
 
 echo ""

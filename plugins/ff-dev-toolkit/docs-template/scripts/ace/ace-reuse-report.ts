@@ -1,14 +1,14 @@
 /**
  * ACE 知見の再利用計測レポート（Issue #453）。
  * - git log（`knowledge:` キュレーションコミットを除く）から各 ACE エントリへの参照を集計
- * - PLAYBOOK.md（＋分割レイアウト時は playbook/*.md）内のエントリ間相互参照（Related / 本文リンク）を集計
+ * - PLAYBOOK.md（＋分割レイアウト時は playbook/ 配下の *.md）内のエントリ間相互参照（Related / 本文リンク）を集計
  * - エントリごとに参照回数 / 最終参照日 / Helpful カウンターとの乖離を Markdown 表で出力
  * - 長期間参照のないエントリを「Archive 候補」として列挙（Issue #455 の入力データ）
  *
  * 読み取り専用 — PLAYBOOK もリポジトリ履歴も変更しない。gh API 非依存（オフライン動作）。
  * git log は PLAYBOOK が属するリポジトリ（`git -C <playbookのディレクトリ>`）に対して実行し、
  * カレントディレクトリや hook 由来の GIT_DIR に影響されない。
- * PLAYBOOK.md と同階層に `playbook/*.md` がある場合（Issue #15 分割レイアウト）は自動検出し、
+ * PLAYBOOK.md と同階層の `playbook/` 配下に `*.md` がある場合（サブディレクトリを含む分割レイアウト）は自動検出し、
  * 索引ファイル + 全サブファイルの結合コンテンツを集計対象にする（check-category-size.ts と同じ検出ロジック）。
  * 実行例: npx --yes tsx docs-template/scripts/ace/ace-reuse-report.ts docs-template/08-knowledge/PLAYBOOK.md
  */

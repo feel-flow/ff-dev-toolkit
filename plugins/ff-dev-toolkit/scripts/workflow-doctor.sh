@@ -9,9 +9,13 @@
 # 膨らんだ。スキルは「増やさない」設計なのに入口が「必ず増やす」と書かれている状態は、スキル側からは
 # 見えない。本スクリプトはその前提を read-only で検査し、ずれを重大度つきで報告する。
 #
-# 検査（7 項目。7 は INFO のみ。番号は SKILL.md の表と同じ）:
+# 同じ型の上書き（入口文書の旧規定がスキルの契約を上書きする）は判定順以外でも起きる — グローバル CLAUDE.md が
+# 「Codex レビューを常に必須」と書き、そのリポジトリに無い `npm run code-review:codex` を指示していた（Issue `#2089`）。
+# 入口文書の旧文言は「契約表」（scan_contract の 1 行 = 1 契約）で検査し、契約を足すときは行を足す。
+#
+# 検査（11 項目。7 は INFO のみ。番号は SKILL.md の表と同じ）:
 #   1. 判定順の矛盾   — 入口文書（CLAUDE.md / AGENTS.md / .cursor/ / copilot-instructions / グローバル CLAUDE.md）
-#                       に「発見 = 起票」の旧文言が無いこと
+#                       に「発見 = 起票」の旧文言が無いこと（契約表の 1 行目）
 #   2. 節の必須語     — CLAUDE.md の「## スコープ外」で始まる節に YAGNI と bundle が在ること（節が無ければ WARN）
 #   3. hook の文言    — settings.json の Stop hook の command 文字列と、それが参照するスクリプトの reminder が
 #                       検査 1 と同じ「発見 = 起票」の旧文言だけで YAGNI を持たない形になっていないこと
@@ -19,8 +23,18 @@
 #   5. ラベルの実在   — bundle / epic / follow-up / priority:* が在ること
 #   6. 親無し Issue   — open Issue のうち parent が無く epic / bundle でもないものの件数
 #   7. 環境変数       — RETROSPECTIVE_FILING（自動起票の既定を利用者が把握しているか）
+#   8. Draft PR       — 入口文書に「Draft PR で作る」指示が無いこと（契約表。否定文は除外）
+#   9. レビュー担当   — 入口文書が特定の CLI のレビューを常に必須にしていないこと（契約表）と、入口文書が
+#                       指示するレビュー用 `npm run <script>` がこのリポジトリの package.json に実在すること
+#  10. 入口のパリティ — CLAUDE.md と AGENTS.md の両方があるとき、契約の必須語（YAGNI / bundle）の有無が揃うこと
+#  11. Draft の実態   — 自分が author の open な Draft PR が残っていないこと（`knowledge:` の ACE PR は除く）
 #
-# 4〜6 は gh を使う。`--offline` で飛ばす（結果は SKIP として数え、緑にはしない）。
+# 4〜6 と 11 は gh を使う。`--offline` で飛ばす（結果は SKIP として数え、緑にはしない）。
+#
+# 最後に「提案」を出す: 検査中に実測したこのリポジトリの事実（package.json の scripts・同梱スクリプトの在処・
+# PATH 上の CLI・Draft PR の番号など）から、`SUGGEST\t<番号>\t<提案>\t根拠: <実測>` 行を出す。根拠となる実測が
+# 1 件も無ければ `SUGGEST\t-\t提案なし（根拠となる実測なし）` を明示する（空の提案節を緑に見せない）。
+# SUGGEST は FAIL / WARN / SKIP に数えず、終了コードも変えない。適用はしない（read-only）。
 # `--fix` は持たない（意図的）。CLAUDE.md の節を定型文へ置換する自動修正は、導入先の文脈（節の前後・
 # 他節からの参照）を壊しうるので、置換案を FIXTEXT 行で印字し、適用は人が行う。
 #
@@ -29,11 +43,11 @@
 #     --root           導入先リポジトリのルート（既定: cwd から git rev-parse --show-toplevel）
 #     --global-claude  グローバル CLAUDE.md のパス（既定: $CLAUDE_CONFIG_DIR/CLAUDE.md、無ければ ~/.claude/CLAUDE.md）
 #     --settings       Stop hook を読む settings.json（繰り返し可。既定: <root>/.claude/settings.json、<root>/.claude/settings.local.json、$CLAUDE_CONFIG_DIR/settings.json）
-#     --offline        gh を使う検査（4〜6）を SKIP にする
+#     --offline        gh を使う検査（4〜6・11）を SKIP にする
 #     --repo           gh の対象（既定: origin から解決）
 #
 # 出力: 1 行 1 所見 `<LEVEL>\t<番号>\t<所見>`（LEVEL は FAIL / WARN / INFO / OK / SKIP）。FIXTEXT 行は置換案。
-#       末尾に `SUMMARY fail=<n> warn=<n> skip=<n>`。
+#       SUGGEST 行は提案（SUMMARY の直前にまとめて出す）。末尾に `SUMMARY fail=<n> warn=<n> skip=<n>`。
 # 終了コード: 0 = FAIL 0 件 / 1 = FAIL あり / 2 = 対象を解決できない（検査不成立）
 # ff-dev-toolkit-script-root-guard:start
 # plugin root 固定ガード（script 側）。同じ停止を skill 本文の契約節も述べているが、
@@ -234,9 +248,17 @@ if [ ${#SETTINGS[@]} -eq 0 ]; then
 fi
 
 FAIL=0; WARN=0; SKIP=0
+# 検査 4・6 の結果（提案の組み立てに使う。gh を使わない回は未計測のまま）
+BUNDLE_OPEN=""; ORPHAN_COUNT=0
 emit() { # level no message
   printf '%s\t%s\t%s\n' "$1" "$2" "$3"
   case "$1" in FAIL) FAIL=$((FAIL + 1)) ;; WARN) WARN=$((WARN + 1)) ;; SKIP) SKIP=$((SKIP + 1)) ;; esac
+}
+# 提案は検査の途中で積み、SUMMARY の直前にまとめて出す（所見の行と混ぜない）。根拠は実測した事実だけを書く
+SUGGESTIONS=""
+suggest() { # no proposal evidence
+  SUGGESTIONS="${SUGGESTIONS}$(printf 'SUGGEST\t%s\t%s\t根拠: %s' "$1" "$2" "$3")
+"
 }
 
 # ---- 1. 判定順の矛盾（旧文言） --------------------------------------------------
@@ -251,23 +273,55 @@ if [ -d "$ROOT/.cursor" ]; then
   while IFS= read -r f; do targets+=("$f"); done < <(find "$ROOT/.cursor" -type f \( -name '*.md' -o -name '*.mdc' \) | sort)
 fi
 [ -f "$GLOBAL_CLAUDE" ] && targets+=("$GLOBAL_CLAUDE")
-if [ ${#targets[@]} -eq 0 ]; then
-  emit WARN 1 "入口文書が 1 つも無い（CLAUDE.md / AGENTS.md / .cursor/ / copilot-instructions / グローバル CLAUDE.md）"
-else
-  hits="$(grep -niHE "$OLD_PATTERN" "${targets[@]}" 2>&1)"; rc=$?
-  if [ "$rc" -ge 2 ]; then
-    emit FAIL 1 "grep が失敗した（rc=${rc}）: $(printf '%s' "$hits" | head -1)"
-  elif [ "$rc" -eq 0 ]; then
+
+# 契約表の 1 行を検査する。旧文言（pattern）に当たる行から、否定・廃止を述べる行（exempt。空なら除外しない）を
+# 落として FAIL にする。行を名指しする書式（path:line:本文）と grep の rc≥2 を FAIL にする扱いは全契約で共通。
+# require / exempt は**本文だけ**に当てる。`grep -H` の「path:line:本文」へ当てると、パスに語が含まれる
+# だけで一致する（fixture のディレクトリ名 review-cond が require の review に当たって誤検出した — 実測）。
+scan_contract() { # no pattern exempt label fixtext [require]
+  local no="$1" pattern="$2" exempt="$3" label="$4" fixtext="$5" require="${6:-}" hits="" out rc f l text
+  if [ ${#targets[@]} -eq 0 ]; then
+    # 同じ 1 つの事実を契約の数だけ WARN にしない（件数が水増しされる）。WARN は検査 1 の 1 件だけ
+    if [ "$no" = 1 ]; then
+      emit WARN "$no" "入口文書が 1 つも無い（CLAUDE.md / AGENTS.md / .cursor/ / copilot-instructions / グローバル CLAUDE.md）"
+    else
+      emit INFO "$no" "入口文書が無いため未検査（検査 1 の WARN を参照）"
+    fi
+    return
+  fi
+  for f in "${targets[@]}"; do
+    out="$(grep -niE "$pattern" "$f" 2>&1)"; rc=$?
+    if [ "$rc" -ge 2 ]; then
+      emit FAIL "$no" "grep が失敗した（rc=${rc}）: $(printf '%s' "$out" | head -1)"
+      return
+    fi
+    [ "$rc" -eq 0 ] || continue
+    while IFS= read -r l; do
+      [ -n "$l" ] || continue
+      text="${l#*:}"
+      # require は「同じ行にこの語も在ること」（1 つの ERE で語順の組み合わせを書かずに連言を表す）
+      if [ -n "$require" ] && ! grep -qiE "$require" <<<"$text"; then continue; fi
+      if [ -n "$exempt" ] && grep -qiE "$exempt" <<<"$text"; then continue; fi
+      hits="${hits}${f}:${l}
+"
+    done <<EOF
+$out
+EOF
+  done
+  if [ -n "$hits" ]; then
     while IFS= read -r line; do
-      [ -n "$line" ] && emit FAIL 1 "「発見 = 起票」の旧文言: ${line}"
+      [ -n "$line" ] && emit FAIL "$no" "${label}: ${line}"
     done <<EOF
 $hits
 EOF
-    printf 'FIXTEXT\t1\t%s\n' "判定順を YAGNI → 同 PR インライン → 既存 bundle へ追記 → bundle 単位で新規 の 4 段へ書き換える（正本: docs-template/05-operations/deployment/git-workflow.md「bundle（子を全件 1 PR で束ねる着手単位）」と out-of-scope-issue §1.2〜§3.1）"
+    printf 'FIXTEXT\t%s\t%s\n' "$no" "$fixtext"
   else
-    emit OK 1 "旧文言 0 件（対象 ${#targets[@]} ファイル）"
+    emit OK "$no" "旧文言 0 件（対象 ${#targets[@]} ファイル）"
   fi
-fi
+}
+
+scan_contract 1 "$OLD_PATTERN" "" "「発見 = 起票」の旧文言" \
+  "判定順を YAGNI → 同 PR インライン → 既存 bundle へ追記 → bundle 単位で新規 の 4 段へ書き換える（正本: docs-template/05-operations/deployment/git-workflow.md「bundle（子を全件 1 PR で束ねる着手単位）」と out-of-scope-issue §1.2〜§3.1）"
 
 # ---- 2. 節の必須語 ---------------------------------------------------------------
 if [ -f "$ROOT/CLAUDE.md" ]; then
@@ -382,8 +436,8 @@ else
       if grep -qxF bundle <<<"$labels"; then
         n="$(gh issue list --repo "$REPO" --state open --label bundle --limit 200 --json number --jq 'length' 2>/dev/null || echo "")"
         if [ -z "$n" ]; then emit SKIP 4 "bundle の open Issue を取得できない"
-        elif [ "$n" -eq 0 ]; then emit WARN 4 "open な bundle が 0 件（統合先が無く、発見が新規の単独 Issue へ落ちる）"
-        else emit OK 4 "open な bundle ${n} 件"; fi
+        elif [ "$n" -eq 0 ]; then BUNDLE_OPEN=0; emit WARN 4 "open な bundle が 0 件（統合先が無く、発見が新規の単独 Issue へ落ちる）"
+        else BUNDLE_OPEN="$n"; emit OK 4 "open な bundle ${n} 件"; fi
       else
         emit WARN 4 "bundle ラベルが無いため受け皿を作れない"
       fi
@@ -414,6 +468,7 @@ else
         emit SKIP 6 "GraphQL で parent を取得できない"
       else
         c="$(printf '%s\n' "$orphans" | grep -c '.' || true)"
+        ORPHAN_COUNT="$c"
         if [ "$c" -gt 0 ]; then
           emit WARN 6 "親無し（parent 無し・epic / bundle でもない）の open Issue が ${c} 件: $(printf '%s' "$orphans" | tr '\n' ' ')"
         else
@@ -429,6 +484,182 @@ if [ -n "${RETROSPECTIVE_FILING:-}" ]; then
   emit INFO 7 "RETROSPECTIVE_FILING=${RETROSPECTIVE_FILING}"
 else
   emit INFO 7 "RETROSPECTIVE_FILING 未設定（/retrospective の既定は承認を待たずに自動起票。止めるなら ask）"
+fi
+
+# ---- 8. Draft PR（契約表） --------------------------------------------------------
+# 正本は「通常 PR として作る（Draft にしない）」。否定・廃止を述べる行（「Draft にしない」「--draft を付けない」
+# 「DraftPR をやめて」）は旧文言ではないので exempt で落とす。検査 1 と同じく文字クラスは使わない。
+DRAFT_PATTERN='gh pr create.*--draft|gh pr create.* -d( |$)|gh pr ready.*--undo|draft ?PR ?(を作|で作|として作|で出|として出|にする)|ドラフト ?PR ?(を作|で作|として作|で出|として出|にする)|(create|open) (a )?draft (PR|pull request)|as (a )?draft (PR|pull request)'
+DRAFT_EXEMPT='しない|禁止|廃止|やめ|使わない|作らない|付けない|つけない|出さない|not |never |don.t |no longer'
+scan_contract 8 "$DRAFT_PATTERN" "$DRAFT_EXEMPT" "Draft PR を作る旧文言" \
+  "PR は通常 PR として作る（Draft にしない）。既に Draft の PR は gh pr ready <番号> で通常 PR へ戻す（正本: docs-template/05-operations/deployment/git-workflow.md「ステップ5: Pull Request作成」— ADR-053 / ADR-054）"
+
+# ---- 9. レビュー担当（契約表 + レビュー用 npm script の実在） ------------------------------
+# (a) 特定の CLI のレビューを常に必須にする旧文言。正本は「主担当（作業しているホスト）がセルフレビューし、
+#     別 CLI が使えるときだけクロスレビューを 1 本足す」。CLI 名と必須の語が同じ行に在り（語順は問わない）、
+#     かつレビューの語も在る行を拾い、条件付き・廃止を述べる行は落とす。
+REVIEW_CLI_PATTERN='(codex|copilot|grok|gemini).*(必須|mandatory|always|必ず)|(必須|mandatory|always|必ず).*(codex|copilot|grok|gemini)'
+REVIEW_EXEMPT='使える|利用可能|available|あれば|任意|optional|廃止|しない|不要|使わない|ないとき|無いとき|fallback'
+scan_contract 9 "$REVIEW_CLI_PATTERN" "$REVIEW_EXEMPT" "特定 CLI のレビューを常に必須にする旧文言" \
+  "レビューは主担当（作業しているホスト）がセルフレビューし、別 CLI が使えるときだけクロスレビューを 1 本足す — Claude が主担当ならホストのサブエージェント、Codex が主担当なら Codex（特定 CLI を常に必須にしない。正本: docs-template/05-operations/deployment/self-review.md「レビュー担当の選択と利用制限時の継続」）" \
+  'review|レビュー'
+
+# (b) 入口文書が指示するレビュー用 npm script が、このリポジトリの package.json に実在するか。グローバル CLAUDE.md は
+#     全リポジトリへ効くので、あるリポジトリにだけ在る script を指示すると、他のリポジトリでは指示どおりに動けない
+#     （SSOT リポジトリで実測: package.json が無いのに `npm run code-review:codex` を必須にしていた）。
+#     ルートの package.json だけを見る（monorepo の下位 package は対象外。名前に review を含む script に限る）。
+#     同じ行に「script が在るリポジトリでは」のような条件が書かれた参照は、リポジトリ差を書き分けた正しい形なので
+#     数えない（条件の語は行単位で見る。次の行に条件を書いた参照は数える — 既知の限界）。
+NPM_REVIEW_RE='npm run [A-Za-z0-9:_.-]*review[A-Za-z0-9:_.-]*'
+NPM_COND_RE='(在る|ある|有る)リポジトリ|がある場合|が在る場合|が有る場合|if (it )?(exists|present)|when (it )?(exists|present)'
+TOOLKIT_SCRIPTS="$(CDPATH= cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
+if [ ${#targets[@]} -gt 0 ]; then
+  refs=""; rrc=0; cond_lines=0
+  for f in "${targets[@]}"; do
+    out="$(grep -nE "$NPM_REVIEW_RE" "$f" 2>&1)"; rc=$?
+    if [ "$rc" -ge 2 ]; then rrc="$rc"; refs="$out"; break; fi
+    [ "$rc" -eq 0 ] || continue
+    while IFS= read -r l; do
+      [ -n "$l" ] || continue
+      text="${l#*:}"
+      if grep -qiE "$NPM_COND_RE" <<<"$text"; then cond_lines=$((cond_lines + 1)); continue; fi
+      while IFS= read -r m; do
+        [ -n "$m" ] && refs="${refs}${f}"$'\t'"${m#npm run }"$'\n'
+      done < <(grep -oE "$NPM_REVIEW_RE" <<<"$text")
+    done <<EOF
+$out
+EOF
+  done
+  [ "$cond_lines" -gt 0 ] && emit INFO 9 "条件付き（script が在るリポジトリでは等）のレビュー用 npm run 参照 ${cond_lines} 行は数えない"
+  if [ "$rrc" -ge 2 ]; then
+    emit FAIL 9 "grep が失敗した（rc=${rrc}）: $(printf '%s' "$refs" | head -1)"
+  elif [ -z "$refs" ]; then
+    emit OK 9 "入口文書に無条件のレビュー用 npm run 参照なし"
+  else
+    pkg="$ROOT/package.json"
+    seen=""
+    while IFS="$(printf '\t')" read -r file script; do
+      [ -n "$script" ] || continue
+      case " $seen " in *" ${file}|${script} "*) continue ;; esac
+      seen="$seen ${file}|${script}"
+      present=0
+      if [ -f "$pkg" ]; then
+        if command -v jq >/dev/null 2>&1; then
+          # jq -e の rc: 0 = キーあり / 1 = キーなし / それ以外 = 解析できない。壊れた package.json を
+          # 「script が無い」に畳むと、正しい入口文書を書き換えさせる誤った FAIL と提案になる
+          jq -e --arg s "$script" '(.scripts // {}) | has($s)' "$pkg" >/dev/null 2>&1; jrc=$?
+          case "$jrc" in
+            0) present=1 ;;
+            1) : ;;
+            *) emit FAIL 9 "${pkg} を解析できない（jq rc=${jrc}）— npm run ${script} の実在を判定しない（${file}）"; continue ;;
+          esac
+        else
+          # jq が無い環境は文字列の有無で近似する（scripts 以外の欄に同じ文字列があると「在る」と読む — 既知の限界）
+          grep -qF "\"${script}\"" "$pkg" && present=1
+        fi
+      fi
+      if [ "$present" -eq 1 ]; then
+        emit OK 9 "npm run ${script} は package.json に在る（${file}）"
+        continue
+      fi
+      if [ -f "$pkg" ]; then why="${pkg} の scripts に ${script} が無い"; else why="${pkg} が無い"; fi
+      # 条件の無い参照だけが残っているので、このリポジトリでは指示どおりに動けない — 契約違反として FAIL
+      emit FAIL 9 "入口文書（${file}）が指示する npm run ${script} はこのリポジトリで動かない（${why}）"
+      # 代わりに使える入口を、このリポジトリに実在するものから選んで提案する（推測で名前を作らない）。
+      # `code-review:test` のような検査用 script はレビューの起動口ではないので、代わりの起動口を提案しない
+      case "$script" in *test*) continue ;; esac
+      if [ -f "$ROOT/scripts/codex-review.sh" ]; then
+        suggest 9 "このリポジトリでは npm run ${script} の代わりに bash scripts/codex-review.sh でクロスレビューを起動する" "${file} が npm run ${script} を指示 / ${why} / ${ROOT}/scripts/codex-review.sh が在る"
+      else
+        suggest 9 "このリポジトリでは npm run ${script} の代わりに /multi-review でセルフレビュー + クロスレビューを起動する（同梱 scripts/multi-agent.sh --task review --cli <CLI> --base <base>。主担当はホスト自身）" "${file} が npm run ${script} を指示 / ${why} / ${ROOT}/scripts/codex-review.sh も無い / 同梱の ${TOOLKIT_SCRIPTS}/multi-agent.sh が在る"
+      fi
+    done <<EOF
+$refs
+EOF
+  fi
+fi
+
+# ---- 10. 入口 2 文書のパリティ ------------------------------------------------------
+# Claude Code は CLAUDE.md だけを、Codex / grok は AGENTS.md だけを読む。片方にしか契約が無いと、もう一方の
+# ホストでは契約が存在しないのと同じになる。
+found_clis() { # 引数の CLI 名のうち PATH に在るものを「名前(パス)」で列挙する
+  local out="" c p
+  for c in "$@"; do
+    p="$(command -v "$c" 2>/dev/null)" && out="${out:+$out, }${c}(${p})"
+  done
+  printf '%s' "$out"
+}
+if [ -f "$ROOT/CLAUDE.md" ] && [ -f "$ROOT/AGENTS.md" ]; then
+  for word in YAGNI bundle; do
+    grep -q "$word" "$ROOT/CLAUDE.md"; in_c=$?
+    grep -q "$word" "$ROOT/AGENTS.md"; in_a=$?
+    # rc≥2（読めない）を「語が無い」と同じに扱わない — 両方読めないと「揃っている」の OK になる
+    if [ "$in_c" -ge 2 ] || [ "$in_a" -ge 2 ]; then
+      emit SKIP 10 "CLAUDE.md / AGENTS.md を読めないため ${word} のパリティは未検査"
+      continue
+    fi
+    in_c=$((1 - in_c)); in_a=$((1 - in_a))
+    if [ "$in_c" -eq "$in_a" ]; then
+      emit OK 10 "CLAUDE.md と AGENTS.md で ${word} の有無が揃っている"
+    elif [ "$in_c" -eq 1 ]; then
+      emit WARN 10 "${word} が CLAUDE.md にだけ在る（AGENTS.md を読む Codex / grok には契約が届かない）"
+    else
+      emit WARN 10 "${word} が AGENTS.md にだけ在る（CLAUDE.md を読む Claude Code には契約が届かない）"
+    fi
+  done
+elif [ -f "$ROOT/CLAUDE.md" ]; then
+  emit INFO 10 "AGENTS.md が無い（Codex / grok は CLAUDE.md を読まない）"
+  clis="$(found_clis codex grok)"
+  [ -n "$clis" ] && suggest 10 "AGENTS.md を置き、CLAUDE.md と同じ契約（判定順・Draft にしない・レビュー担当）を書く" "PATH に ${clis} が在るのに ${ROOT}/AGENTS.md が無い"
+elif [ -f "$ROOT/AGENTS.md" ]; then
+  emit INFO 10 "CLAUDE.md が無い（Claude Code は AGENTS.md を読まない）"
+  clis="$(found_clis claude)"
+  [ -n "$clis" ] && suggest 10 "CLAUDE.md を置き、AGENTS.md と同じ契約（判定順・Draft にしない・レビュー担当）を書く" "PATH に ${clis} が在るのに ${ROOT}/CLAUDE.md が無い"
+else
+  emit INFO 10 "CLAUDE.md / AGENTS.md のどちらも無いためパリティは未検査"
+fi
+
+# ---- 11. Draft PR の実態（gh） ------------------------------------------------------
+# 入口文書が正しくても、旧版のスキルや手癖で作られた Draft が残っていれば契約は守られていない。
+# `knowledge:` の ACE PR は自律フローの人の確認待ち（ace-capture の契約）なので数えない。
+if [ "$OFFLINE" -eq 1 ]; then
+  emit SKIP 11 "--offline のため未検査（Draft PR の実態）"
+elif ! command -v gh >/dev/null 2>&1; then
+  emit SKIP 11 "gh が無いため未検査"
+elif [ -z "$REPO" ]; then
+  emit SKIP 11 "対象リポジトリを解決できない（--repo OWNER/REPO を指定）"
+else
+  drafts="$(gh pr list --repo "$REPO" --state open --draft --author '@me' --limit 200 --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>/dev/null)"; drc=$?
+  if [ "$drc" -ne 0 ]; then
+    emit SKIP 11 "Draft PR の一覧を取得できない（gh rc=${drc}）— 有無を断定しない"
+  else
+    stray=""; ace=0
+    while IFS="$(printf '\t')" read -r num title; do
+      [ -n "$num" ] || continue
+      case "$title" in knowledge:*) ace=$((ace + 1)) ;; *) stray="${stray:+$stray }#${num}" ;; esac
+    done <<EOF
+$drafts
+EOF
+    if [ -n "$stray" ]; then
+      emit WARN 11 "自分が author の open な Draft PR: ${stray}（契約は通常 PR）"
+      suggest 11 "Draft のまま残っている PR を通常 PR へ戻す: gh pr ready <番号>（対象: ${stray}）。作り方の出所は検査 8 の入口文書と、Draft を付けて作る手元のスクリプト・エイリアスを確かめる" "gh pr list --draft --author @me（${REPO}）が ${stray} を返した"
+    else
+      emit OK 11 "自分が author の open な Draft PR は 0 件（${REPO}）"
+    fi
+    [ "$ace" -gt 0 ] && emit INFO 11 "knowledge: の ACE PR の Draft ${ace} 件は除外（自律フローの人の確認待ち）"
+  fi
+fi
+
+# 受け皿が無いのに親無し Issue が溜まっている（検査 4・6 の組み合わせ）
+if [ "${BUNDLE_OPEN:-}" = 0 ] && [ "${ORPHAN_COUNT:-0}" -gt 0 ]; then
+  suggest 6 "テーマごとに create-issue --bundle で bundle を立て、親無しの Issue を scripts/link-sub-issues.sh で子へ付け替える（根拠の無いものは YAGNI コメントで close）" "open な bundle が 0 件 / 親無しの open Issue が ${ORPHAN_COUNT} 件（${REPO}）"
+fi
+
+# ---- 提案 ---------------------------------------------------------------------------
+if [ -n "$SUGGESTIONS" ]; then
+  printf '%s' "$SUGGESTIONS"
+else
+  printf 'SUGGEST\t-\t%s\n' "提案なし（根拠となる実測なし）"
 fi
 
 printf 'SUMMARY fail=%d warn=%d skip=%d\n' "$FAIL" "$WARN" "$SKIP"

@@ -183,6 +183,7 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_EXIT_CODE_ACK`
 - `FF_LITERAL_WRITE_ACK`
 - `FF_LONG_GATE_BACKGROUND_ACK`
+- `FF_PR_DRAFT_ACK`（`hooks/guard-pr-followup.sh` の Draft PR 検出だけを通すコマンド先頭の環境代入）
 - `FF_SHELL_SAVE_ACK`（`hooks/guard-shell-save.sh` の抜け道。Write / Edit にはコマンド先頭の環境代入が無いので、hook のプロセス環境で渡す）
 - `FF_SUB_ISSUE_ID_ACK`
 - `FF_ZSH_EXPANSION_ACK`
@@ -338,6 +339,8 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_RUN_ALL_MCP_DIR`
 - `FF_RUN_ALL_MCP_NODE_MODULES`
 - `FF_RUN_ALL_NESTED`
+- `FF_RUN_ALL_PROBE_LOG`
+- `FF_RUN_ALL_PROBE_RENDEZVOUS`
 - `FF_SCRIPT_ROOT_GUARD_QUIET`
 - `FF_SELFMUT_TARGET`
 - `FF_SELF_FINGERPRINT_START`

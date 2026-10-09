@@ -10,7 +10,10 @@ import {
   DEFAULT_WARN_ENTRIES_PER_CATEGORY,
   deriveMaxLines,
   discoverPlaybookSubfiles,
+  PLAYBOOK_ARCHIVE_DIR_NAMES,
+  blankHtmlBlockComments,
   findFencedCanonicalHeadings,
+  findHtmlCommentSpans,
   isDirectExecution,
   isOverLineThreshold,
   main,
@@ -75,6 +78,154 @@ describe("analyzePlaybookMarkdown", () => {
     if (result.kind === "ok") {
       expect(result.totalEntries).toBe(1);
       expect(result.histogram.coding).toBe(1);
+    }
+  });
+
+  it("旧テーブル形式（| 項目 | 値 | + | **カテゴリ** | … |）も集計される（導入先の Playbook 全体がこの形のことがある）", () => {
+    // 導入先の実ファイルの形（列幅の空白詰め・値に空白を含む）。
+    const md = `
+## エントリ詳細
+
+### ACE-021: 旧形式のエントリ
+
+| 項目         | 値                  |
+| ------------ | ------------------- |
+| **カテゴリ** | Content Collections |
+| **helpful**  | 2                   |
+| **harmful**  | 0                   |
+
+**洞察**: 本文。
+
+### ACE-1822-1: 旧形式の PR スコープ式 ID
+
+| 項目         | 値                  |
+| ------------ | ------------------- |
+| **カテゴリ** | Content Collections |
+| **helpful**  | 0                   |
+`;
+
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.totalEntries).toBe(2);
+      expect(result.histogram).toEqual({ "Content Collections": 2 });
+      expect(result.entryCategories["ACE-021"]).toBe("Content Collections");
+    }
+  });
+
+  it("ラベルの表記ゆれ（強調なしの カテゴリ / 強調付きの Category）も Category 行として数える", () => {
+    const md = `
+### ACE-30-1: 強調なしの日本語ラベル
+
+| カテゴリ | coding |
+
+### ACE-30-2: 強調付きの英語ラベル
+
+| **Category** | process |
+`;
+
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.histogram).toEqual({ coding: 1, process: 1 });
+    }
+  });
+
+  it("本文に カテゴリ 列見出しの素の表があると Category 行 2 本として吸収エラーにする（拡張の境界を固定）", () => {
+    // `| Category | … |` を本文の表見出しに書いた場合と同じ扱い。ラベルを広げた分だけ
+    // この形も赤くなる — 黙って 2 本目を無視する方向には倒さない。
+    const md = `
+### ACE-31-1: 本文に表を持つエントリ
+
+| Category | coding |
+
+| カテゴリ | 件数 |
+| --- | --- |
+| coding | 3 |
+`;
+
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("Category 行が 2 本");
+    }
+  });
+
+  it("Category 行を解析できないブロックは全件を ID と行番号で名指しする", () => {
+    const md = [
+      "### ACE-40-1: 正常",
+      "",
+      "| Category | coding |",
+      "",
+      "### ACE-40-2: 壊れている 1",
+      "",
+      "| 種別 | coding |",
+      "",
+      "### ACE-40-3: 壊れている 2",
+      "",
+      "| Origin | なし |",
+      "",
+    ].join("\n");
+
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("Category 行を解析できない");
+      expect(result.message).toContain("2 件");
+      expect(result.message).toContain("ACE-40-2（5 行目）");
+      expect(result.message).toContain("ACE-40-3（9 行目）");
+      expect(result.message).not.toContain("ACE-40-1");
+    }
+  });
+
+  it("後ろのブロックの構造エラーで打ち切っても、それまでに集めた解析できないブロックを併記する", () => {
+    const md = [
+      "### ACE-42-1: 解析できない",
+      "",
+      "| 種別 | coding |",
+      "",
+      "### ACE-42-2: 値が空",
+      "",
+      "| Category |  |",
+      "",
+    ].join("\n");
+
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("Category の値が空");
+      expect(result.message).toContain("このほか、Category 行を解析できない ACE ブロックがあります（1 件: ACE-42-1（1 行目））");
+    }
+  });
+
+  it("ちょうど上限件数のときは「ほか」を付けない", () => {
+    const md = Array.from(
+      { length: 10 },
+      (_, index) => `### ACE-43-${String(index + 1)}: 壊れている\n\n| Origin | なし |\n`,
+    ).join("\n");
+
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("10 件");
+      expect(result.message).toContain("ACE-43-10（");
+      expect(result.message).not.toContain("ほか");
+    }
+  });
+
+  it("解析できないブロックの名指しは上限で打ち切り、残りを件数で出す", () => {
+    const md = Array.from(
+      { length: 12 },
+      (_, index) => `### ACE-41-${String(index + 1)}: 壊れている\n\n| Origin | なし |\n`,
+    ).join("\n");
+
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("12 件");
+      expect(result.message).toContain("ACE-41-10（");
+      expect(result.message).not.toContain("ACE-41-11（");
+      expect(result.message).toContain("ほか 2 件");
     }
   });
 
@@ -816,22 +967,74 @@ describe("discoverPlaybookSubfiles", () => {
     ]);
   });
 
-  it("playbook/archive/ 配下（/ace-refine の退避先）は検出しない（非再帰の仕様固定）", () => {
+  it("サブディレクトリの .md も再帰で拾い、フルパスのソート済みで返す", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-split-"));
     const playbookPath = path.join(tmpDir, "PLAYBOOK.md");
     fs.writeFileSync(playbookPath, "# index\n");
     const subDir = path.join(tmpDir, "playbook");
-    const archiveDir = path.join(subDir, "archive");
-    fs.mkdirSync(archiveDir, { recursive: true });
-    fs.writeFileSync(path.join(subDir, "coding.md"), "");
-    fs.writeFileSync(
-      path.join(archiveDir, "coding.md"),
-      "### ACE-1-1: アーカイブ済みエントリ\n\n| Category | coding |\n",
-    );
+    fs.mkdirSync(path.join(subDir, "process", "nested"), { recursive: true });
+    fs.mkdirSync(path.join(subDir, "astro-patterns"));
+    fs.writeFileSync(path.join(subDir, "tooling.md"), "");
+    fs.writeFileSync(path.join(subDir, "process", "review.md"), "");
+    fs.writeFileSync(path.join(subDir, "process", "index.md"), "");
+    fs.writeFileSync(path.join(subDir, "process", "nested", "deep.md"), "");
+    fs.writeFileSync(path.join(subDir, "astro-patterns", "routing.md"), "");
+    fs.writeFileSync(path.join(subDir, "process", "notes.txt"), "");
 
-    // archive 配下がここに混ざると ace_entry_count・カテゴリ件数ゲート・reuse 集計へ
-    // 二重計上される。/ace-refine のアーカイブ設計はこの非再帰走査に依存している。
-    expect(discoverPlaybookSubfiles(playbookPath)).toEqual([path.join(subDir, "coding.md")]);
+    const expected = [
+      path.join(subDir, "astro-patterns", "routing.md"),
+      path.join(subDir, "process", "index.md"),
+      path.join(subDir, "process", "nested", "deep.md"),
+      path.join(subDir, "process", "review.md"),
+      path.join(subDir, "tooling.md"),
+    ].sort();
+    expect(discoverPlaybookSubfiles(playbookPath)).toEqual(expected);
+  });
+
+  it.each(PLAYBOOK_ARCHIVE_DIR_NAMES)(
+    "退避先 playbook/%s/ 配下は深さを問わず検出しない（再帰化しても archive は二重計上しない）",
+    (archiveName: string) => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-split-"));
+      const playbookPath = path.join(tmpDir, "PLAYBOOK.md");
+      fs.writeFileSync(playbookPath, "# index\n");
+      const subDir = path.join(tmpDir, "playbook");
+      const archiveDir = path.join(subDir, archiveName);
+      const nestedArchiveDir = path.join(subDir, "process", archiveName);
+      fs.mkdirSync(archiveDir, { recursive: true });
+      fs.mkdirSync(nestedArchiveDir, { recursive: true });
+      fs.writeFileSync(path.join(subDir, "coding.md"), "");
+      fs.writeFileSync(path.join(subDir, "process", "review.md"), "");
+      const archived = "### ACE-1-1: アーカイブ済みエントリ\n\n| Category | coding |\n";
+      fs.writeFileSync(path.join(archiveDir, "coding.md"), archived);
+      fs.writeFileSync(path.join(nestedArchiveDir, "review.md"), archived);
+
+      // archive 配下がここに混ざると ace_entry_count・カテゴリ件数ゲート・reuse 集計へ
+      // 二重計上される。/ace-refine のアーカイブ設計は名前による除外に依存している。
+      expect(discoverPlaybookSubfiles(playbookPath)).toEqual(
+        [path.join(subDir, "coding.md"), path.join(subDir, "process", "review.md")].sort(),
+      );
+    },
+  );
+
+  it("退避先の名前は archive と _archive の 2 つに固定する", () => {
+    expect([...PLAYBOOK_ARCHIVE_DIR_NAMES]).toEqual(["archive", "_archive"]);
+  });
+
+  it("名前が似ているだけのディレクトリ（archived / archive-old）と . 始まりのディレクトリ", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-split-"));
+    const playbookPath = path.join(tmpDir, "PLAYBOOK.md");
+    fs.writeFileSync(playbookPath, "# index\n");
+    const subDir = path.join(tmpDir, "playbook");
+    for (const dir of ["archived", "archive-old", ".obsidian"]) {
+      fs.mkdirSync(path.join(subDir, dir), { recursive: true });
+      fs.writeFileSync(path.join(subDir, dir, "a.md"), "");
+    }
+
+    // archive の除外は完全一致の名前だけ。似た名前は live として数える（黙って落とさない）。
+    // . 始まりはエディタ等の設定置き場なので辿らない。
+    expect(discoverPlaybookSubfiles(playbookPath)).toEqual(
+      [path.join(subDir, "archive-old", "a.md"), path.join(subDir, "archived", "a.md")].sort(),
+    );
   });
 });
 
@@ -1980,6 +2183,132 @@ describe("blankCodeRegions", () => {
       };
       expect(offsets(blankCodeRegions(sample).text)).toEqual(offsets(sample));
     }
+  });
+});
+
+/**
+ * インラインコードの中の `<!--` が後方の `-->` と対になり、間の行を
+ * まとめて空白化していた。実測（feelflow-website-2026 の content-ops.md）では
+ * 約 1000 行が消え、巻き込まれたフェンスの閉じ行も消えるため「手前のフェンスが
+ * 閉じていない」という無関係な位置を名指しして rc=2 になった。
+ */
+describe("findHtmlCommentSpans（インラインコード中の <!-- を開始と見なさない）", () => {
+  const fence = "```";
+  // 再現形: フェンスの中の 1 行が `` `<!--` `` を書式説明として含み、ずっと後ろに
+  // ACE INSERTION POINT の閉じたコメントがある。
+  const reproduction = [
+    "# Content Ops",
+    "",
+    "### ACE-1-1: 書式を説明するエントリ",
+    "",
+    "| Category | content-ops | Origin | なし |",
+    "",
+    `${fence}markdown`,
+    "見出しの直前に `<!--` を書かない",
+    fence,
+    "",
+    "---",
+    "",
+    "### ACE-1-2: 後続のエントリ",
+    "",
+    "| Category | content-ops | Origin | なし |",
+    "",
+    "<!-- ace-line-budget-exception: 後続エントリの本物の宣言 -->",
+    "",
+    "---",
+    "",
+    "<!-- ACE INSERTION POINT: content-ops -->",
+    "",
+  ].join("\n");
+
+  it("再現形で後続エントリを空白化せず、未閉フェンスと誤診断しない", () => {
+    const result = analyzePlaybookMarkdown(reproduction);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.histogram["content-ops"]).toBe(2);
+    }
+    expect(scanUnclosedFence(reproduction).found).toBe(false);
+  });
+
+  it("コメントとして取るのは本物の宣言と INSERTION POINT の 2 本だけ", () => {
+    const spans = findHtmlCommentSpans(reproduction).map((s) => reproduction.slice(s.start, s.end));
+    expect(spans).toEqual([
+      "<!-- ace-line-budget-exception: 後続エントリの本物の宣言 -->",
+      "<!-- ACE INSERTION POINT: content-ops -->",
+    ]);
+  });
+
+  it("空白化は長さと行数を保ち、インラインコード中の <!-- を残す", () => {
+    const blanked = blankHtmlBlockComments(reproduction);
+    expect(blanked.length).toBe(reproduction.length);
+    expect(blanked.split("\n").length).toBe(reproduction.split("\n").length);
+    expect(blanked).toContain("`<!--`");
+    expect(blanked).toContain("### ACE-1-2: 後続のエントリ");
+    expect(blanked).not.toContain("ACE INSERTION POINT");
+  });
+
+  it("check と refine が同じ宣言を数える（相互一致）", () => {
+    expect(countBudgetExceptions(reproduction).declared).toBe(1);
+    const refineIds = measureEntryLines(reproduction)
+      .measurements.filter((m) => m.hasException)
+      .map((m) => m.id);
+    expect(refineIds).toEqual(["ACE-1-2"]);
+  });
+
+  it("コメント内のバックティックは数えず、コメントを丸ごと取る", () => {
+    const md = "<!-- 例: `code` と ``` -->\n本文";
+    expect(findHtmlCommentSpans(md)).toEqual([{ start: 0, end: md.indexOf("-->") + 3 }]);
+  });
+
+  it("対にならないバックティック列はコメント検出を妨げない", () => {
+    const md = "単独の ` 記号 <!-- 宣言 --> 本文";
+    const spans = findHtmlCommentSpans(md).map((s) => md.slice(s.start, s.end));
+    expect(spans).toEqual(["<!-- 宣言 -->"]);
+  });
+
+  it("長さの違うバックティック列どうしは対にしない", () => {
+    // `` の中の ` は閉じではない。2 連の閉じまでがコードなので <!-- は開始にならない。
+    const md = "``a ` <!-- b`` -->";
+    expect(findHtmlCommentSpans(md)).toEqual([]);
+  });
+
+  it("コードスパンは行をまたがない（次の行の <!-- はコメントとして取る）", () => {
+    const md = "`開きっぱなし\n<!-- 宣言 -->";
+    const spans = findHtmlCommentSpans(md).map((s) => md.slice(s.start, s.end));
+    expect(spans).toEqual(["<!-- 宣言 -->"]);
+  });
+
+  it("エスケープされたバックティックはコードスパンを開かず、後続のコメントを取る", () => {
+    // `\`` とコメント内のバックティックを対にすると、コメント内の追記例が実エントリになる。
+    const md = [
+      "\\` <!-- 追記例 `literal`",
+      "### ACE-1-99: コメント内の見出し",
+      "| Category | coding | Origin | なし |",
+      "-->",
+      "",
+      "### ACE-1-1: 実エントリ",
+      "",
+      "| Category | coding | Origin | なし |",
+      "",
+    ].join("\n");
+    const spans = findHtmlCommentSpans(md).map((s) => md.slice(s.start, s.end));
+    expect(spans).toHaveLength(1);
+    expect(spans[0]).toContain("ACE-1-99");
+    const result = analyzePlaybookMarkdown(md);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.histogram.coding).toBe(1);
+    }
+  });
+
+  it("偶数個のバックスラッシュの後のバックティックはコードスパンを開く", () => {
+    const md = "\\\\`<!--` 本文 <!-- 宣言 -->";
+    const spans = findHtmlCommentSpans(md).map((s) => md.slice(s.start, s.end));
+    expect(spans).toEqual(["<!-- 宣言 -->"]);
+  });
+
+  it("閉じない <!-- 以降はコメントを作らない（正規表現版と同じ意味論）", () => {
+    expect(findHtmlCommentSpans("<!-- 閉じない\n本文 <!-- x")).toEqual([]);
   });
 });
 

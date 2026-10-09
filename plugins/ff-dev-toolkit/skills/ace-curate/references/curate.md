@@ -143,7 +143,8 @@ fetch が失敗した回は、停止メッセージの末尾へ git が出した
 ```bash
 git checkout -b "$ACE_BRANCH"
 commit_type="knowledge"
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --claim docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>" --type "${commit_type}" -- docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md || exit 1
+# playbook/ 配下は変更・追加したファイルだけを渡す（サブディレクトリのカテゴリファイルへの Helpful +1 も拾う。glob の playbook/*.md は直下しか当たらない）
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --claim docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>" --type "${commit_type}" -- docs/08-knowledge/PLAYBOOK.md $(git ls-files -mo --exclude-standard docs/08-knowledge/playbook) || exit 1
 # PR 経由は別ブランチへの commit なので /retrospective へ合流させず、ここで commit する
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit commit --type "${commit_type}" || exit 1
 # push -u → upstream の照合（origin/${ACE_BRANCH}）→ gh pr create --base <default-branch> → ローカル default branch を origin へ戻す

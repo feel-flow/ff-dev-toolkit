@@ -740,6 +740,20 @@ describe("findPromotionCandidates", () => {
     expect(findPromotionCandidates(deprecated, null, 5)).toEqual([]);
   });
 
+  it("収載判定はインラインコード中の <!-- で後続の収載を消さない", () => {
+    const patterns = [
+      "### 書式のパターン",
+      "",
+      "見出しの直前に `<!--` を書かない。",
+      "",
+      "出典: [ACE-21-1](../08-knowledge/playbook/process.md#ace-21-1)",
+      "",
+      "<!-- 次の昇格はここへ追記 -->",
+      "",
+    ].join("\n");
+    expect(isListedInPatterns(patterns, "ACE-21-1")).toBe(true);
+  });
+
   it("収載判定はパターン本文 + 出典リンクの組（完全 ID。ACE-20-10 の収載が ACE-20-1 を抑止しない）", () => {
     const patterns = [
       "### 長い ID のパターン",
@@ -1205,7 +1219,7 @@ describe("main（fixture E2E）", () => {
       "- ACE-90-1: 旧テーブル形式の stale エントリ（Category: coding / Date: 2026-01-01 / Helpful: 0 / 統合元: ACE-279-7）",
     );
     expect(excluded).toContain("check-refine-invariants");
-    // archive のエントリ自体は live 扱いしない（discoverPlaybookSubfiles は非再帰）
+    // archive のエントリ自体は live 扱いしない（discoverPlaybookSubfiles は archive / _archive を辿らない）
     expect(report).not.toContain("ACE-279-7: 統合された側の原文");
   });
 });

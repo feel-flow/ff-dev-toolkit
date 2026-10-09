@@ -173,6 +173,42 @@ assert_pass "コマンド位置に無い gh（echo の文字列）は素通し"
 run_hook "gh pr create --title t --body \"$BODY_MARKER\"" "$TEST_TMP" 'FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1'
 assert_pass "FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 で無効化できる"
 
+echo "guard-pr-followup: Draft PR（作成・Draft への戻し）"
+run_hook "gh pr create --draft --base develop --title t --body \"$BODY_PLAIN\""
+assert_fire "gh pr create --draft（本文は通常）→ Draft として止める"
+case "$REASON" in
+  *"Draft PR"*FF_PR_DRAFT_ACK=1*"gh pr ready"*) ok "Draft の警告文が契約・抜け道・gh pr ready を案内する" ;;
+  *) bad "Draft の警告文に契約・抜け道・gh pr ready の案内が揃わない: [$REASON]" ;;
+esac
+run_hook 'gh pr create -d --fill'
+assert_fire "gh pr create -d（body フラグなし）→ 本文の有無に関係なく止める"
+run_hook 'gh pr create --draft=true --fill'
+assert_fire "gh pr create --draft=true → 止める"
+run_hook 'gh pr ready 12 --undo'
+assert_fire "gh pr ready --undo（通常 PR を Draft へ戻す）→ 止める"
+run_hook 'env GH_HOST=github.com gh pr create --draft --fill'
+assert_fire "env ラッパー越しの gh pr create --draft → 止める"
+run_hook 'FF_PR_DRAFT_ACK=1 gh pr create --draft --fill'
+assert_pass "先頭の FF_PR_DRAFT_ACK=1 で Draft の検出だけを通す"
+run_hook "FF_PR_DRAFT_ACK=1 gh pr create --draft --title t --body \"$BODY_MARKER\""
+assert_fire "FF_PR_DRAFT_ACK=1 でもフォローアップ宣言の判定は残る"
+run_hook 'gh pr ready 12'
+assert_pass "gh pr ready（Draft の解除）は止めない"
+run_hook 'gh pr ready 12 && gh pr create --draft --fill'
+assert_fire "素の gh pr ready の後段の gh pr create --draft も検査する（最初のセグメントで判定を終えない）"
+run_hook "gh pr ready 12 && gh pr create --title t --body \"$BODY_MARKER\""
+assert_fire "素の gh pr ready の後段のフォローアップ宣言も検査する"
+run_hook 'gh pr create --draft --title "FF_PR_DRAFT_ACK=1" --fill'
+assert_fire "引数の中の FF_PR_DRAFT_ACK=1 では Draft を通さない（gh より前の環境代入だけが抜け道）"
+run_hook 'env FF_PR_DRAFT_ACK=1 gh pr create --draft --fill'
+assert_pass "env ラッパーの環境代入 FF_PR_DRAFT_ACK=1 は抜け道として通す"
+run_hook "echo 'gh pr create --draft --fill'"
+assert_pass "コマンド位置に無い Draft（echo の文字列）は素通し"
+run_hook 'gh pr create --fill' "$TEST_TMP" 'FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1'
+assert_pass "（対照）無効化した状態の通常 PR は素通し"
+run_hook 'gh pr create --draft --fill' "$TEST_TMP" 'FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1'
+assert_pass "FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 は Draft の検出も止める"
+
 echo "guard-pr-followup: fail-open"
 RC=0
 OUT="$(printf 'not-json' | bash "$TARGET" 2>/dev/null)" || RC=$?

@@ -878,7 +878,7 @@ count_subshells() {
 }
 trace_bash_major="$(bash -c 'printf "%s" "${BASH_VERSINFO[0]}"')"
 if [ "${trace_bash_major:-0}" -lt 4 ]; then
-  echo "  ○ skip: サブシェル数の検査は BASHPID の無い bash ${trace_bash_major:-?} 系（4.0 未満）では成立しないため未実行"
+  echo "  ○ skip: サブシェル数の検査（bash ${trace_bash_major:-?} 系には BASHPID が無い）は、bash 4 以上でだけ成立する検査のため未実行"
 else
   count_subshells small "$TARGET"
   sub_small="$SUBSHELLS"

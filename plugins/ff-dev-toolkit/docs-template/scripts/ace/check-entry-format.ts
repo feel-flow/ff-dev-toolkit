@@ -15,13 +15,14 @@
  * その値は著者が手で書くフィールドなので**偶然満たせてしまう**（`/ace-refine` の再整形でも
  * 動く）。allowlist に載っていない ID は偶然通れない。
  *
- * 形式ゲートは索引 `PLAYBOOK.md` と `playbook/*.md` を走査する。一覧モードは指定された
- * ディレクトリ直下の `*.md` を走査する。どちらも非再帰で、`playbook/archive/` は原文を
+ * 形式ゲートは索引 `PLAYBOOK.md` と `playbook/` 配下の `*.md`（サブディレクトリを含む。
+ * 範囲は件数ゲートと同じ discoverPlaybookSubfiles が決める）を走査する。一覧モードは指定された
+ * ディレクトリ直下の `*.md` を非再帰で走査する。退避先（`playbook/archive/` など）は原文を
  * verbatim 保全する場所であり、旧形式であることが正常なので**巻き込まない**。
  *
  * **導入時の allowlist 初期化（Issue #839）**。旧形式エントリを抱えた既存プロジェクトへ
  * 本ゲートを後から入れると、allowlist が無いために既存全件が違反として拒否される。
- * `--init-allowlist` は形式ゲートと**同じ走査範囲**（索引 + `playbook/*.md`）で旧形式 ID を
+ * `--init-allowlist` は形式ゲートと**同じ走査範囲**（索引 + `playbook/` 配下の `*.md`）で旧形式 ID を
  * 数え、その集合だけを allowlist へ書き出す。挙動は fail-closed に寄せてある:
  * - allowlist が無く旧形式 0 件 → **ファイルを作らない**（不在 = strict が正しい既定）
  * - allowlist が無く旧形式あり → その ID だけを書き出す（新規プロジェクトには何も起きない）
@@ -75,6 +76,7 @@ import {
   ACE_ENTRY_ID_SHAPE,
   blankFencedCodeBlocks,
   blankHtmlBlockComments,
+  discoverPlaybookSubfiles,
   entryHeadingSource,
   findFencedCanonicalHeadings,
 } from "./check-category-size";
@@ -450,19 +452,6 @@ export function parseAllowlist(content: string): string[] {
     .filter((line: string) => line !== "" && !line.startsWith("#"));
 }
 
-/** `playbook/` 直下の `*.md` を非再帰で列挙する（`archive/` を巻き込まない）。 */
-function discoverCategoryFiles(playbookPath: string): string[] {
-  const subDir = path.join(path.dirname(playbookPath), "playbook");
-  if (!fs.existsSync(subDir) || !fs.statSync(subDir).isDirectory()) {
-    return [];
-  }
-  return fs
-    .readdirSync(subDir)
-    .filter((entry: string) => entry.endsWith(".md"))
-    .map((entry: string) => path.join(subDir, entry))
-    .sort();
-}
-
 function resolveAllowlistPath(playbookPath: string): string {
   const fromEnv = process.env.ACE_LEGACY_FORMAT_ALLOWLIST;
   if (fromEnv && fromEnv.trim() !== "") {
@@ -559,14 +548,17 @@ export function listLegacyEntryIds(directoryPath: string): readonly RecognizedAc
 }
 
 /**
- * 形式ゲートの走査対象（索引 `PLAYBOOK.md` + `playbook/*.md`）。
+ * 形式ゲートの走査対象（索引 `PLAYBOOK.md` + `playbook/` 配下の `*.md`）。
+ *
+ * カテゴリファイルの列挙は件数ゲートの discoverPlaybookSubfiles をそのまま使う。独自に列挙すると、
+ * 件数ゲートが数えるのに形式・ID 一意性を誰も検査しないエントリが生まれる。
  *
  * 形式ゲートと allowlist 初期化はこの 1 つの関数を共有する。範囲が食い違うと、
  * 初期化が数えなかった旧形式エントリをゲートが違反として拒否する（あるいはその逆で、
  * ゲートが見ない ID を allowlist へ書き込む）という**導入直後に必ず踏む**ずれになる。
  */
 function collectPlaybookFiles(playbookPath: string): string[] {
-  const categoryFiles = discoverCategoryFiles(playbookPath);
+  const categoryFiles = discoverPlaybookSubfiles(playbookPath);
   // 索引 PLAYBOOK.md 自身も常に走査する — 件数ゲート・refine・reuse の 3 者は索引の
   // 内容を集計対象に含めるため、索引だけ形式ゲートから外すと「認識して数えるが、
   // どのゲートも形式が不正とは言わない」経路（#339 が閉じる穴そのもの）が部分移行中の
@@ -836,7 +828,7 @@ export function main(argv: readonly string[] = process.argv): ExitCode {
   console.log(
     `allowlist: ${allowlistPath}（${fs.existsSync(allowlistPath) ? `${String(allowlist.length)} 件` : "不在 = strict"}）`,
   );
-  console.log(`走査対象: ${String(filesToScan.length)} ファイル（playbook/archive/ は対象外）`);
+  console.log(`走査対象: ${String(filesToScan.length)} ファイル（退避先 archive / _archive は対象外）`);
 
   const violations: string[] = [];
   const domainViolations: string[] = [];

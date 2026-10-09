@@ -204,6 +204,8 @@ if [[ -f "$RELEASE_RT_STATE/runall.media-typecheck-skip" ]]; then echo "    ○ 
 if [[ -f "$RELEASE_RT_STATE/runall.media-render-skip" ]]; then echo "    ○ skip: FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません（検査は1件も実行されていません）"; fi
 # OS 限定の検査が Linux / macOS で出す skip（guard-review-in-flight の (w1)〜(w5) と同じ文言。Issue `#2033`）
 if [[ -f "$RELEASE_RT_STATE/runall.os-limited-skip" ]]; then echo "  ○ skip: (w1)〜(w5) はドライブ付きのパスを扱う、Windows の Git Bash でだけ成立する検査のため未実行"; fi
+# bash 版限定の検査が macOS 標準の bash 3.2 で出す skip（retrospective-stop-hook / skill-drift-check と同じ文言。Issue `#2077`）
+if [[ -f "$RELEASE_RT_STATE/runall.bash4-limited-skip" ]]; then echo "  ○ skip: サブシェル数の検査（bash 3 系には BASHPID が無い）は、bash 4 以上でだけ成立する検査のため未実行"; fi
 echo "suites: total=3 run=3 passed=3 failed=0 skipped=0 not-run=0"
 [[ -f "$RELEASE_RT_STATE/runall.no-skipline" ]] || echo "checks-skipped: total=1 suites=1"
 exit 0
@@ -524,11 +526,13 @@ else
   bad "2 行同時の回で止まらない・許容行が未知に混じる (rc=$RC render=${render_n} typecheck=${typecheck_n})"; dump
 fi
 rm -f "$STATE/runall.media-typecheck-skip"
-# OS 限定の skip も同じ回に出す。主作業機（Linux / macOS）の run-all では必ず出る行なので、これで止まるとリリースが進まない
+# OS 限定の skip（Linux / macOS の run-all で必ず出る）と bash 版限定の skip（macOS 標準の bash 3.2 で出る）も同じ回に出す。
+# どちらかで止まるとリリースが進まない。フラグを分け、停止文でどちらが残っていたかを名指しする
 : >"$STATE/runall.os-limited-skip"
+: >"$STATE/runall.bash4-limited-skip"
 run_orch
-if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=0.33.0" && has "Windows の Git Bash でだけ成立する検査のため未実行"; then ok "typecheck の原因を取り除いた再実行は、opt-in の render-smoke skip と OS 限定の skip が残っていても v0.33.0 まで完了する（許容表にある）"; else bad "再実行で完了しない（render-smoke の opt-in skip か OS 限定の skip で止まった可能性） (rc=$RC)"; dump; fi
-rm -f "$STATE/runall.media-render-skip" "$STATE/runall.os-limited-skip"
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=0.33.0" && has "Windows の Git Bash でだけ成立する検査のため未実行" && has "bash 4 以上でだけ成立する検査のため未実行"; then ok "typecheck の原因を取り除いた再実行は、opt-in の render-smoke skip・OS 限定・bash 版限定の skip が残っていても v0.33.0 まで完了する（許容表にある）"; else bad "再実行で完了しない（render-smoke の opt-in skip か OS 限定・bash 版限定の skip で止まった可能性。出力に OS 限定=$(has "Windows の Git Bash でだけ成立する検査のため未実行" && echo あり || echo なし) / bash 版限定=$(has "bash 4 以上でだけ成立する検査のため未実行" && echo あり || echo なし)） (rc=$RC)"; dump; fi
+rm -f "$STATE/runall.media-render-skip" "$STATE/runall.os-limited-skip" "$STATE/runall.bash4-limited-skip"
 
 echo "-- release: 進行中のサイクル（in-flight 印） --"
 MARKER="$SSOT/.git/ff-release-in-flight"

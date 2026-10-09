@@ -110,7 +110,7 @@ expect_fixed_count \
   "合流の既定は即 commit（明示シグナル ACE_DEFER_TO_RETRO=1 があるときだけ /retrospective へ合流させる）"
 
 expect_fixed_count_routes \
-  '--type "${commit_type}" -- docs/08-knowledge/PLAYBOOK.md docs/08-knowledge/playbook/*.md' \
+  '--type "${commit_type}" -- docs/08-knowledge/PLAYBOOK.md $(git ls-files -mo --exclude-standard docs/08-knowledge/playbook)' \
   2 \
   "commit type を add で保留へ記録する（合流先の commit が既定の knowledge で上書きしない）"
 

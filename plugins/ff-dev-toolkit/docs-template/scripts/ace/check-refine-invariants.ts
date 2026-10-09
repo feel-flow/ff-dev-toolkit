@@ -639,18 +639,21 @@ export function mergedIntoHref(block: string): string | null {
   return match ? match[1] : null;
 }
 
-/** archive から live を指す正準形 `../<category>.md#ace-xxx`。 */
+/**
+ * archive から live を指す正準形 `../<category>.md#ace-xxx`。live のカテゴリファイルはサブディレクトリにも
+ * 置けるので、`../<dir>/<category>.md#ace-xxx` も受ける（archive 側は `playbook/archive/` 直下のまま）。
+ */
 export function isLiveMergedIntoHref(href: string, targetId: string): boolean {
   const anchor = `ace-${targetId.slice("ACE-".length).toLowerCase()}`;
   return new RegExp(
-    String.raw`^\.\./[\w-]+\.md#${escapeRegExp(anchor)}$`,
+    String.raw`^\.\./(?:[\w-]+/)*[\w-]+\.md#${escapeRegExp(anchor)}$`,
     "u",
   ).test(href);
 }
 
 /**
  * 統合先が後日アーカイブされた場合の着地判定。**形ではなく解決先**を見る。
- * archive ファイルは `playbook/archive/` 直下の非再帰なので、
+ * archive ファイルは `playbook/archive/` 直下の非再帰なので（live 側はサブディレクトリも辿る）、
  * ファイル名なしの `#ace-xxx` は統合元と**同じファイル**のときだけ正しく、
  * 別ファイルなら統合先の実ファイル名 `<category>.md#ace-xxx`（`./` は付けても良い）でなければ着地しない。
  * `../` 始まりは live 基準なので受けない — 着地が archive へ移った後も live を指し続けると

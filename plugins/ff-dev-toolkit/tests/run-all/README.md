@@ -79,7 +79,7 @@ green」。healthy を確認できない回は全件で代替 — ADR-039）。`
 | case 26 | （run-all.sh を一時複製 tree へコピーし引数なしで実行。stub の導出材料は `FF_RUN_ALL_DUMP_DECLARATIONS=1` から受け取る。26-A〜26-H） | 既定一覧の統合動作とモード行列（既定＝高速モード除外／`FF_RUN_ALL_FULL=1`／`FF_RUN_ALL_FAST=0`／矛盾する同時指定／不正値／必須 suite の skip が fail-closed のまま）を実測する |
 | case 27 | pass, pass-selftest, orphan-selftest（`FF_RUN_ALL_FAST=1`） | 対になる本体 suite を持たない `-selftest` は高速モードでも実行される。単独実行でも「0 件実行」の経路には落ちず、除外 0 件のサマリー文言が出て、名指しが 1 件も除外されなければ警告しない |
 | case 29 | （run-all.sh を一時複製し、走行中に末尾を書き換える疑似 suite） | 走行中にランナー自身が書き換えられた実行はサマリー行を出さず非 0 で終わる（証拠に使えない旨も報告）。指紋照合とサマリー出力が同一関数に同居することも静的に固定する |
-| case 30 | fail, pass, skip, not-executable, missing（`FF_RUN_ALL_JOBS=1` と `4` を比較）／slow-a〜d（`FF_RUN_ALL_JOBS=2`、同時実行数より多い 4 本） | 並列実行でも終了コードと出力（告知行・空行を除く全文）が逐次実行と一致する。出力は suite 単位でまとまり、見出しは完了順ではなく登録順に並び、逐次より短く終わる（スロット再充填の経路も通す） |
+| case 30 | fail, pass, skip, not-executable, missing（`FF_RUN_ALL_JOBS=1` と `4` を比較）／slow-a〜d（`FF_RUN_ALL_JOBS=2`、同時実行数より多い 4 本） | 並列実行でも終了コードと出力（告知行・空行を除く全文）が逐次実行と一致する。出力は suite 単位でまとまり、見出しは完了順ではなく登録順に並び、最大同時実行数が上限の 2 に届き、3 以上にならない（fixture の probe ログから数える。保証するのは「2 本が実際に重なる」と「上限を超えない」までで、後半の組が重なることや、空いたスロットへすぐ投入する速さは測らない。所要時間の比較は負荷と壁時計の巻き戻しで揺れるので使わない。Issue `#2062`）。スロット再充填の経路も通す |
 | case 32 | pass, skip（`FF_RUN_ALL_JOBS=` 1 / zero / 未指定 / 上限超過値） | `FF_RUN_ALL_JOBS` の解決を実測する。`1` は逐次へ復帰、解釈できない値は 1 行警告して継続。未指定時は CPU 由来の値へ解決される（上限 8）。入れ子実行は明示指定が無ければ逐次。上限を超える値は警告のうえ既定へ倒す |
 | case 34 | pass, kill-wrapper, skip（`FF_RUN_ALL_JOBS=2`） | rc を残さず子プロセスが消えた suite は passed でも failed でもなく **not-run** に数えられる。後続 suite の実行も止まらない |
 | case 36 | （tests 直下の verify.sh とリポジトリ直下の scripts/*.sh の静的監査 + 変異 fixture） | テンプレート付き `mktemp -d ... 2>&1` が成功経路で実体（`-d`）を検査しない形の再混入ガード。同一行・代入直後 8 行以内の多行形も検査済みに含める。走査 30 件未満はこの検査自体が不成立。成功経路の `-d` 検査を落とした複製を未検査として検出することも実測する |
@@ -158,7 +158,7 @@ tests/run-all/
     ├── not-executable/verify.sh     # mode 644（実行ビットなしでコミット）
     ├── exit-guard/bare-trap.sh      # 素の `trap 'rm -rf ...' EXIT`（case 12 の検出器 self-test 用対照）
     ├── kill-wrapper/verify.sh       # 並列ラッパー subshell を SIGKILL し、rc を残さず消える経路を作る
-    └── slow-a/ … slow-d/verify.sh   # 1 秒かけて HEAD/TAIL 2 行を出す（並列実行の隣接・所要時間の検証用）
+    └── slow-a/ … slow-d/verify.sh   # 2 秒かけて HEAD/TAIL 2 行を出す（並列実行の隣接・同時実行数・経過秒の検証用）
 ```
 
 `fixtures/missing/verify.sh` は**意図的に存在しません**。`verify.sh` がそのパスを渡すことで、
@@ -225,6 +225,9 @@ FF_RUN_ALL_FULL=1 bash plugins/ff-dev-toolkit/tests/run-all.sh
   | elapsed-sec を出さない / 未実行を混ぜる | case 45-A |
   | 合成入力の降順・0 秒除外・上限 8 を外す | case 45-F |
   | 計測行を指紋ブロックの内側へ移す | case 45-E |
+  | `ff_record_elapsed` を no-op にする | case 45-A / 45-B / 45-C |
+  | 記録する秒を常に 0 にする（2 秒かかる suite を 0 秒で出す） | case 45-B / 45-C |
+  | 並列経路の起動直後に `wait $!` を挟んで逐次化する | case 30（最大同時実行数 1） |
   | `tests/lib/exit-code-guard.sh` の `is_pipe` を常に 0 へ倒す（パイプ終端を認識しなくする） | case 35 |
   | 同梱 MCP 依存ガードの発火条件を常に偽へ倒す | case 41-A |
   | ガードの述語から `mcp/package.json` の実在を落とす | 既定一覧を回す case 26 / 39 / 40 と case 41（fixture 複製は mcp を持たないため巻き添えで止まる） |

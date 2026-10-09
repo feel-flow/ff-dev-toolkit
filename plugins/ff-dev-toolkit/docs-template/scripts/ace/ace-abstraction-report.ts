@@ -31,6 +31,7 @@
 import * as fs from "node:fs";
 import {
   blankFencedCodeBlocks,
+  CATEGORY_CELL_SOURCE,
   blankHtmlBlockComments,
   discoverPlaybookSubfiles,
   entryHeadingSource,
@@ -106,8 +107,8 @@ const HORIZONTAL_RULE_LINE = /^\s*---+\s*$/u;
 const ANCHOR_LINE = /^\s*<a id="[^"]*"><\/a>\s*$/iu;
 /** `##` 見出し（Changelog 等の後続セクション） */
 const SECTION_HEADING = /^##\s/u;
-/** Category メタセル */
-const CATEGORY_CELL = /^\s*\|\s*Category\s*\|\s*([^|]+)\|/imu;
+/** Category メタセル（ラベルの表記ゆれの正本は check-category-size の CATEGORY_CELL_SOURCE） */
+const CATEGORY_CELL = new RegExp(String.raw`^\s*${CATEGORY_CELL_SOURCE}`, "imu");
 /** ACE エントリ間の相互参照リンク（固有名ではなく索引。シグナルから除外する） */
 const ACE_CROSS_REFERENCE_LINK = /\[ACE-[^\]]*\]\([^)]*\)/gu;
 /** インラインコードスパン */

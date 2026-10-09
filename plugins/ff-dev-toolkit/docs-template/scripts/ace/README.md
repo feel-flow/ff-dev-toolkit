@@ -81,7 +81,7 @@ PLAYBOOK のコード領域除外は `blankCodeRegions` で実装し、`ace-refi
 
 環境変数 `ACE_MAX_PLAYBOOK_LINES` を**明示指定したときのみ**、導出をやめて固定上限として扱います（エスケープハッチ・後方互換）。値が **非数値または 1 未満**のときは既定値 `800` にフォールバックし警告します。**分割レイアウトでは索引 `PLAYBOOK.md` は行数監視対象外**で、`playbook/*.md`（カテゴリ本体）のみを警告対象にします（索引・Changelog はエントリ増加で伸びるため。Issue #212 / ADR-016）。
 
-指定した PLAYBOOK.md と同階層に `playbook/*.md`（カテゴリ別分割ファイル）がある場合は自動検出し、索引ファイル + 全サブファイルを合算してカテゴリ件数・総行数を集計します（ファイルごとの行数も個別に報告）。`playbook/archive/` 配下（`/ace-refine` の退避先）は集計対象に含めません。分割レイアウトの詳細は `docs-template/08-knowledge/PLAYBOOK.md` の「ファイル分割ルール」節を参照してください。
+指定した PLAYBOOK.md と同階層に `playbook/` 配下の `*.md`（カテゴリ別分割ファイル。サブディレクトリも辿ります）がある場合は自動検出し、索引ファイル + 全サブファイルを合算してカテゴリ件数・総行数を集計します（ファイルごとの行数も個別に報告）。名前が `archive` / `_archive` のディレクトリ（`/ace-refine` の退避先 `playbook/archive/` と、導入先が手で作った退避先）の配下は、深さを問わず集計対象に含めません。分割レイアウトの詳細は `docs-template/08-knowledge/PLAYBOOK.md` の「ファイル分割ルール」節を参照してください。
 
 ## check-archive-links.ts の実行
 
@@ -127,7 +127,7 @@ npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
 - allowlist ファイルが**無ければ strict**（旧形式は全て赤）。fail-open にすると allowlist を消すだけでゲートが黙って無効化されます
 - 検出は 3 マーカーの OR: メタ表ヘッダ（`| フィールド | 値 |`）、Markdown テーブルの区切り行、`**Insight**` / `**Context**` / `**Action**` の太字ラベル。「メタ表だけ正準化され本文は Insight のまま」というハイブリッドを取りこぼさないための冗長です
 - allowlist にあるのに旧形式でなくなった ID / live に存在しない ID は**警告のみ**（`/ace-refine` の正準化と allowlist の掃除を同一 PR に強制してゲートが refine をブロックすることを避けるため）
-- 走査対象は `playbook/*.md` 直下のみ（非再帰）。`playbook/archive/` は原文を verbatim 保全する場所で旧形式が正常なので巻き込みません
+- 走査対象は `playbook/` 配下の `*.md`（サブディレクトリを含む。件数ゲート `check-category-size` と同じ範囲）。退避先の `archive/` / `_archive/` は原文を verbatim 保全する場所で旧形式が正常なので巻き込みません
 - `### ACE-` で始まるのに正準の見出し形（`### <ID>: <タイトル>`）へ一致しない行も**非ゼロ終了**です（Issue #617）。`### ACE-1.:` のような行はエントリの境界にならず、本文が直前のエントリへ吸収されて件数からも消えるうえ、直前が allowlist 済みなら旧形式マーカー入りでも通ってしまいます。テンプレートのプレースホルダ（`### ACE-XXX:`）はコードフェンスで囲んでください（フェンス内は走査対象外）
   - 候補の判定だけは**行頭の空白と `###` 直後の空白の省略を許します**（`   ### ACE-1-1:` / `###ACE-1-1:` も赤）。どちらも書き手はエントリ見出しのつもりですが認識器は取らず、実際に吸収を起こす形だからです。**認識器（`ACE_ENTRY_HEADER_LINE`）の側は生の行のまま**にしてください — こちらまで空白に寛容にすると吸収を起こす形が「正常なエントリ」として通り、件数ゲートとの境界だけが食い違って沈黙します。`####` 以上は候補にしません（本文中の小見出しを巻き込むと偽陽性になります）
 - 同じエントリ ID が走査対象に 2 つ以上あるときも**非ゼロ終了**です（Issue #617）。ID はアンカー・索引の参照先・allowlist・再利用カウンタのキーなので、重複すると allowlist 済み ID を再利用した旧形式の新規追記が通ります。報告は同一ファイル内でも場所を特定できるよう、ファイル名 + 行番号（`coding.md: 10 行目 / 30 行目`）で出します。なお**重複 ID は allowlist 掃除警告の抑制対象ではありません**（重複しても `seenIds` は欠けず、掃除案内は正しいままなので、抑制すると本来出るべき案内が消えます）
@@ -142,7 +142,7 @@ npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
 npx --yes tsx scripts/ace/check-entry-format.ts --init-allowlist docs/08-knowledge/PLAYBOOK.md
 ```
 
-- 走査範囲は形式ゲートと**同一**（索引 `PLAYBOOK.md` + `playbook/*.md` 直下。`playbook/archive/` は対象外）。範囲が食い違うと、初期化が数えなかった旧形式をゲートが拒否する形で導入直後に必ず踏みます
+- 走査範囲は形式ゲートと**同一**（索引 `PLAYBOOK.md` + `playbook/` 配下の `*.md`。退避先の `archive/` / `_archive/` は対象外）。範囲が食い違うと、初期化が数えなかった旧形式をゲートが拒否する形で導入直後に必ず踏みます
 - 出力先は形式ゲートと同じ解決規則（既定は PLAYBOOK.md と同階層の `legacy-format-allowlist.txt`。`ACE_LEGACY_FORMAT_ALLOWLIST` で上書き可）
 - **旧形式 0 件ならファイルを作りません**（不在 = strict が正しい既定であり、空ファイルは「allowlist を運用している」という誤った外観だけを残します）
 - **既存 allowlist は上書きしません**。旧形式 ID 集合と一致すれば書き込まず exit 0（冪等 — 再実行の差分はゼロ）、一致しなければ差分を出して exit 1 です。和集合で吸収しないのは、それが「旧形式を新規追記してから初期化を回せば通る」抜け道そのものだからです

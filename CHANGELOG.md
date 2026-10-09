@@ -20,6 +20,26 @@
 
 ## [Unreleased]
 
+## [0.149.0] - 2026-10-07
+
+### 追加
+
+- `/workflow-doctor` が見る契約を「スコープ外の判定順」1 つから広げた。入口文書の旧文言は契約表（`scan_contract` の 1 行 = 1 契約）で検査し、検査 8（Draft PR で作る指示。「Draft にしない」等の否定文は除く）・検査 9（特定 CLI のレビューを常に必須にする行と、入口文書が条件なしで指示するレビュー用の `npm run` script がそのリポジトリの package.json に無いこと。同じ行に条件を書いた参照は数えない）・検査 10（CLAUDE.md と AGENTS.md の契約語のパリティ）・検査 11（自分が author の open な Draft PR の残存。`knowledge:` の ACE PR は除外）を足した。既存の検査 1〜7 の判定と出力は変えていない
+- 診断の最後に提案を出すようにした。スクリプトは検査中に実測した事実から `SUGGEST` 行（検査番号・提案・実測した根拠の 3 欄）を SUMMARY の直前に出し（例: package.json に無い `npm run code-review:codex` → そのリポジトリに在る `scripts/codex-review.sh` か `/multi-review`）、根拠が無ければ「提案なし」を明示する。SKILL.md はホストがリポジトリの文脈と合わせて提案を最大 3 件（根拠・変更案・適用先）に絞る手順を持つ。SUGGEST は件数にも終了コードにも数えない
+- PreToolUse の `hooks/guard-pr-followup.sh` が `gh pr create --draft` / `-d` / `--draft=true` と `gh pr ready --undo` を抜け道付き deny で止めるようになった（契約は「通常 PR として作る」）。人の確認待ちという理由がある Draft（ACE の自律フロー等）はコマンド先頭の `FF_PR_DRAFT_ACK=1` で通す。`FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1` はこの検出も含めて止める
+
+### 変更
+
+- 内部検査 `plugin-description-enumeration` の非列挙許容名簿に ff-privacy-check を追加した（単一スキルを「1 コマンド」として説明する書き方を許容する。公開物の挙動は変わらない）。
+
+### 修正
+
+- テストランナー自身の検査（`tests/run-all/verify.sh`）の計時ケースが、全件ゲートの中で揺れて赤になる問題を直した。原因は CPU 負荷ではなく壁時計の巻き戻しで、WSL2 は時刻同期で壁時計を 0.2〜0.7 秒ずつ戻すため、`sleep 1` を挟んだ `date +%s` の整数差が負荷の有無にかかわらず 240 回中 4 回 0 になっていた。経過秒の検査に使う疑似 suite を 2 秒にして、「1 秒以上」の判定を緩めずに余裕を取った。「並列実行の方が逐次より短い」という所要時間の比較は、疑似 suite が書く開始・終了の記録から数えた最大同時実行数（並列 2 本・逐次 1 本）の判定へ置き換えた。2 本目の開始を 1 本目の終了前に揃える待ち合わせを入れたので、負荷で起動が遅れても判定は変わらない。
+- macOS（`/bin/bash` 3.2）でリリースの gate 段が止まらないよう、bash 4 以上でしか成立しない検査（`retrospective-stop-hook` の壁時計の巻き戻しの再現、`skill-drift-check` のサブシェル数の検査）の skip 理由文を「bash 4 以上でだけ成立する検査のため未実行」にそろえ、bash 版限定の skip として扱うようにした。bash 4 以上の環境では従来どおり実行される。
+- `check-category-size` が旧テーブル形式の Category 行（`| 項目 | 値 |` の表に置く `| **カテゴリ** | … |`）を数えず、その形の Playbook で `/ace-curate` のブロック上限ゲートが rc=2 で毎回止まっていた。Category 行のラベルとして `Category` / `カテゴリ`（どちらも `**` 強調可）を受けるようにし、`ace-abstraction-report` も同じ定義を使うようにした。Category 行を解析できないブロックがあるときは、最初の 1 件で止めずに全件を ACE ID と行番号で名指しする。
+- ACE スクリプト共通の HTML コメント空白化（`blankHtmlBlockComments`）が、インラインコードの中に書いたコメント開始記号をコメントの開始と見なし、ずっと後ろのコメント終端（`ACE INSERTION POINT` のマーカー等）と対にして間の行をまとめて空白化していた。巻き込まれたフェンスの閉じ行も消えるため、`check-category-size` は無関係な位置を「閉じていないコードフェンス」と名指しして rc=2 で止まっていた。コメントの検出を左から 1 回の走査（同じ行の同じ長さのバックティック列で閉じるコードスパンを先に飛ばし、エスケープされたバックティックは開始と見なさない）へ置き換え、`ace-refine-report` の例外宣言の判定と PATTERNS.md の収載判定も同じ関数を使うようにした。
+- ACE スクリプトが Playbook のカテゴリファイルを探すとき、`playbook/` の直下だけを見ていた。カテゴリをサブディレクトリへ分けた導入先では、そのエントリが件数ゲート（`check-category-size`）・frontmatter 同期・refine / reuse レポートから黙って漏れ、エラーにならず rc=0 の偽の緑になっていた。共通の探索 `discoverPlaybookSubfiles` をサブディレクトリまで辿るようにし、名前が `archive` / `_archive` のディレクトリ（退避先）と `.` 始まりのディレクトリは深さを問わず辿らない。形式ゲート `check-entry-format` は独自の列挙をやめて同じ探索を使い、件数ゲートが数えるのに形式と ID の一意性を誰も検査しないエントリを作らない。`/knowledge-lookup` も同じ範囲で引き、`--include-archived` では `_archive/` も返す。
+
 ## [0.148.1] - 2026-10-05
 
 ### 修正

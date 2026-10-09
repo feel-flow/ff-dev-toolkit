@@ -893,7 +893,12 @@ export function main(argv: readonly string[] = process.argv): number {
 
   // 分割レイアウト（Issue #949）: playbook/CHANGELOG.md があれば Changelog 探索の
   // fallback として渡す（エントリ集計側は従来どおり全 subfile を合算する）。
-  const splitChangelogIndex = subfiles.findIndex((p) => path.basename(p) === "CHANGELOG.md");
+  // `playbook/` 直下の CHANGELOG.md だけを採る。探索はサブディレクトリも辿るので、basename だけで
+  // 探すと `playbook/<dir>/CHANGELOG.md` を版の出どころと取り違える。
+  const splitChangelogDir = path.join(path.dirname(playbookPath), "playbook");
+  const splitChangelogIndex = subfiles.findIndex(
+    (p) => path.basename(p) === "CHANGELOG.md" && path.dirname(p) === splitChangelogDir,
+  );
   const splitChangelogContent =
     splitChangelogIndex >= 0 ? subfileContents[splitChangelogIndex] : undefined;
 

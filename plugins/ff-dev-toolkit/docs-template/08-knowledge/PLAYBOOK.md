@@ -1,9 +1,9 @@
 ---
 title: "PLAYBOOK"
-version: "1.80.0"
+version: "1.81.0"
 status: "approved"
 created: "2026-03-10"
-updated: "2026-09-29"
+updated: "2026-10-08"
 changeImpact: medium
 owner: "@fffokazaki"
 ace_entry_count: 3
@@ -37,7 +37,7 @@ GitHub Discussions が「人間が読むためのナラティブ（物語的記�
 | **追記の新規性バー**               | 判定は「**読者が取る実行可能なアクションが既存エントリと同一か**」（`/ace-refine` の統合判定と同一基準）。同一なら新規追加せず `Helpful` +1。**追記件数の上限は設けない**。件数を減らせるのは archive と統合の 2 つだが、**archive の供給は「作成から閾値日数の経過 かつ（git 参照が無い または 最終参照から閾値日数の経過）かつ `helpful === 0`」**に限られるため、均衡は入口で作る（ff-dev-toolkit ADR-033） |
 | **追記の抽象度の下限**             | 判定は「**適用条件が固有名なしで書けるか**」（ff-dev-toolkit ADR-047）。本文（タイトル・適用条件・アクション）の固有名（Issue/PR 番号・ファイルパス・特定コマンド/API/スクリプト名）のうち、**別の名前へ置き換えても主張とアクションが成立するもの**は 1 段上の性質へ書き直す。置き換えると処方が導出できない固有名は残す。**例示としての固有名は常に残してよい**。過度な抽象化は新規性バーを逆向きに使って棄却する（下の「抽象度の下限と棄却基準」を見ること）。機械ゲートではない — `ace-abstraction-report.ts` が候補を出し、判定は `/ace-curate` の新規性バーで行う |
 | **定期 Refine**                    | 月次または件数・行数ゲート発火時に `/ace-refine` で stale アーカイブ・圧縮・統合・昇格を実行（dry-run → 承認 → 適用）。stale 閾値は**作成からの経過と最終参照からの経過の両方**に適用される（`ACE_REUSE_STALE_DAYS`）。**実施可能件数は `/ace-refine` 側で見る** — `ace-reuse-report` の候補数は `helpful === 0` で絞る前の母数 |
-| **アーカイブの扱い**               | `playbook/archive/` 配下は `ace_entry_count`・カテゴリ件数ゲート・reuse 集計の対象外。参照リンクが切れていたら archive を ID で grep して探す |
+| **アーカイブの扱い**               | 退避先の `playbook/archive/`（導入先が手で作った `_archive/` も同じ扱い）配下は `ace_entry_count`・カテゴリ件数ゲート・reuse 集計の対象外。参照リンクが切れていたら archive を ID で grep して探す |
 | **Frontmatter更新**                | エントリ追加時に `version`, `updated`, `changeImpact`（minor 上げ = `medium`）, `ace_entry_count` を更新（`ace_entry_count` は live エントリ数 = archive を数えない） |
 | **コミット規則**                   | 件名 `knowledge: ACE-XXX <要約>`、カテゴリは commit body の `Categories:` 行に記録                                             |
 
@@ -86,7 +86,7 @@ ACE エントリ ID は **PRスコープ式** を採用する（このセクシ�
 - **妥当な形状**（機械ゲート `check-entry-format` が強制する）: `ACE-` + 省略可の `i` + 数字列（`-` 区切りで複数段可）。旧連番形式（`ACE-001` / `ACE-1071` — 3 桁ちょうどは先頭ゼロ可、4 桁以上は先頭ゼロ不可）と 3 段以上（`ACE-1-2-3`）は妥当。**禁止**: 二重ハイフン（`ACE-337--1`）・アンダースコア（`ACE-1_9`）・英字 suffix（`ACE-01a` / `ACE-438-1a`）・連番の無い単段（`ACE-1` / `ACE-01` / `ACE-0001` / `ACE-i425` — 単段を許すのは旧連番形式だけで、PR 由来・Issue 由来とも連番が必須。`ACE-0001` は 4 桁以上で先頭ゼロなので旧連番形式ではない）。枝番が要る場合は suffix ではなく `-<連番>` を 1 段増やす（suffix を許すと、参照走査の単語境界の都合で同じエントリが suffix の有無で 2 通りに参照され、Helpful カウンターと stale 判定が分裂する）。
 - **見本用の予約**: `ACE-000-*` は本テンプレート同梱の見本エントリ専用に予約する。対応する PR は存在しないため、実プロジェクトでは採番しない（見本を消せば `ACE-000-*` も消える）。
 - **既存 ID の扱い**: 旧 `ACE-{連番}` 形式（`ACE-001`〜。3 桁ちょうど、または 999 を超えて 4 桁以上）のエントリは **改名しない**。旧連番形式と新 PRスコープ式は恒久的に共存する（参照・anchor 互換の維持。旧採番のまま 999 を超えて 4 桁へ到達した導入先も改名しない — 形状ゲートは先頭ゼロ無しの 4 桁以上も通す）。ID にファイル位置の情報は持たせないため、分割後も ID はそのまま維持する。
-- **ID の一意性**（機械ゲート `check-entry-format` が強制する）: 走査対象（索引 `PLAYBOOK.md` + `playbook/*.md` 直下）で同じ ID を 2 回以上使わない。ID は anchor・索引の参照先・allowlist・再利用カウンタのキーであり、重複すると「allowlist 済み ID を再利用した旧形式の新規追記が通る」「参照リンクがどちらか一方にしか飛ばない」形で静かに壊れる。`playbook/archive/` は対象外（`/ace-refine` の compact は live と archive の両方に同じ ID を残すのが正常）。
+- **ID の一意性**（機械ゲート `check-entry-format` が強制する）: 走査対象（索引 `PLAYBOOK.md` + `playbook/` 配下の `*.md`。サブディレクトリを含み、退避先の `archive/` / `_archive/` は除く）で同じ ID を 2 回以上使わない。ID は anchor・索引の参照先・allowlist・再利用カウンタのキーであり、重複すると「allowlist 済み ID を再利用した旧形式の新規追記が通る」「参照リンクがどちらか一方にしか飛ばない」形で静かに壊れる。`playbook/archive/` は対象外（`/ace-refine` の compact は live と archive の両方に同じ ID を残すのが正常）。
 - **見出し行は正準形で**（機械ゲート `check-entry-format` が強制する）: `### <ID>: <タイトル>` の形（`###` の後に半角スペース 1 個、行頭にインデントを置かない）。この形を外れた見出しはエントリの境界として認識されず、本文が直前のエントリへ**吸収**される（件数から消え、旧形式マーカーの検査も直前のエントリの allowlist 判定に乗る）ため、フェンス外の `### ACE-` 行が正準形と一致しなければ fail-loud に拒否する。
 
 ---
@@ -169,7 +169,7 @@ ACE エントリ ID は **PRスコープ式** を採用する（このセクシ�
 - **GitHub 上でテーブル描画されない**: ヘッダ行・区切り行を持たないため、パイプ行はプレーンテキストとして表示される。Playbook は AI が参照するための構造化文書であり、これは意図した仕様（markdownlint / Prettier が警告する場合は当該ブロックに `<!-- prettier-ignore -->` を付与する局所抑制で対応 — ACE-011 の適用）
 - **行数バジェット**: 1 エントリ 15 行以内（anchor 行〜終端 `---`）。反直感的な詳細が必要な場合のみ `<!-- ace-line-budget-exception: 理由 -->` を 1 行添えて 30 行以内
 - **旧形式との共存**: 旧テーブル形式（`| フィールド | 値 |` ヘッダ + **Insight**/**Context**/**Action** ブロック）のエントリは読み取り互換として共存させる（改稿は `/ace-refine` の圧縮操作のみが行う）。新規追記には使わない
-- **形式は機械ゲートで強制される**: `scripts/ace/check-entry-format.ts` が `playbook/*.md` 直下を走査し、PLAYBOOK.md と同階層の `legacy-format-allowlist.txt` に無い旧形式エントリを見つけると exit 1 でブロックする（allowlist ファイルが無ければ旧形式は全て赤 = strict）。**新規追記のために allowlist へ ID を足さない**（allowlist は既存エントリの互換維持のためのものであり、新規追記の抜け道ではない）。`/ace-refine` の allowlist 削除は変種で分岐する（完全正準化なら削除、ハイブリッド残置なら削除しない。手順は `/ace-refine` R3-e step 6）。`playbook/archive/` は原文を verbatim 保全する場所なので走査対象外
+- **形式は機械ゲートで強制される**: `scripts/ace/check-entry-format.ts` が `playbook/` 配下の `*.md`（サブディレクトリを含む。件数ゲートと同じ範囲）を走査し、PLAYBOOK.md と同階層の `legacy-format-allowlist.txt` に無い旧形式エントリを見つけると exit 1 でブロックする（allowlist ファイルが無ければ旧形式は全て赤 = strict）。**新規追記のために allowlist へ ID を足さない**（allowlist は既存エントリの互換維持のためのものであり、新規追記の抜け道ではない）。`/ace-refine` の allowlist 削除は変種で分岐する（完全正準化なら削除、ハイブリッド残置なら削除しない。手順は `/ace-refine` R3-e step 6）。`playbook/archive/` は原文を verbatim 保全する場所なので走査対象外
 
 ### 記述ガイドライン
 
@@ -223,7 +223,7 @@ ACE エントリ ID は **PRスコープ式** を採用する（このセクシ�
 1. 該当カテゴリのサブファイルが無ければ、下記テンプレートで作成する
 2. エントリ本体をカテゴリファイル末尾に追記する
 3. PLAYBOOK.md の索引テーブルへエントリID + タイトル + 参照先を追加する
-4. Frontmatter の `ace_entry_count` は live エントリ（`playbook/` 直下）の合計を維持する。`playbook/archive/` 配下は数えない（集計スクリプトは `playbook/` 直下の `*.md` のみを非再帰で走査するため、archive は自動的に対象外になる）
+4. Frontmatter の `ace_entry_count` は live エントリ（`playbook/` 配下。サブディレクトリを含む）の合計を維持する。退避先の `playbook/archive/` / `_archive/` 配下は数えない（集計スクリプトは名前が `archive` / `_archive` のディレクトリを辿らないため、自動的に対象外になる）
 
 ### 新規カテゴリファイルのテンプレート
 
@@ -277,6 +277,12 @@ ACE エントリ ID は **PRスコープ式** を採用する（このセクシ�
 | ACE-000-3 | 【見本】行数バジェット例外の宣言 — 反直感的な詳細が 15 行に収まらないときだけ使う | testing | [playbook/testing.md#ace-000-3](./playbook/testing.md#ace-000-3) |
 
 ## Changelog
+
+### [1.81.0] - 2026-10-08
+
+#### 変更
+
+- 走査範囲の記述（§アーカイブの扱い・§ID の一意性・§形式ゲート・`ace_entry_count` の集計）を、`playbook/` 配下のサブディレクトリも辿る挙動へ揃えた。退避先として辿らないのは名前が `archive` / `_archive` のディレクトリ（深さを問わない）。これまでの「`playbook/` 直下のみ・非再帰」では、カテゴリをサブディレクトリへ分けた導入先のエントリが件数ゲートから黙って漏れていた
 
 ### [1.80.0] - 2026-09-29
 
