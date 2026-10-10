@@ -20,6 +20,12 @@
 
 ## [Unreleased]
 
+## [0.149.1] - 2026-10-10
+
+### 修正
+
+- 同梱レビューシム `scripts/templates/codex-review.sh` のコメントが、上流の ACE エントリを裸の ID（2 箇所）で引いていた。シムは導入先の `scripts/` へ byte identity で配置されるため、導入先の ACE citation gate から「自分の Playbook の未解決引用」に見え、しかも導入先ではコメントを直すと identity 検査が赤になって直せなかった。2 箇所を「ff-dev-toolkit 開発元の ACE Playbook」と明示し、経緯は導入先から辿れる公開リポジトリ（https://github.com/feel-flow/ff-dev-toolkit ）の固定 SHA permalink で指す形へ改め、ID リテラルを本文から外した。導入先は `setup-multi-agent.sh` で shim を更新した後、0.149.0 の shim 用に置いていた凍結例外を外せる。配置後の shim に裸の ACE ID が戻ると `tests/review-wrapper-shim` が赤になる
+
 ## [0.149.0] - 2026-10-07
 
 ### 追加

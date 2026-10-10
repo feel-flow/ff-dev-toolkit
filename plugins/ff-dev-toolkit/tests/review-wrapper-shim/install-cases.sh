@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # review-wrapper-shim suite の検査ファイル（verify.sh から source される。単独実行不可）。
-# 範囲: 本番経路（FF_DEV_TOOLKIT_ROOT 未設定）での setup による配置: main 経由の配置・冪等・揮発パス警告・CRLF 正規化・失敗の rc 伝播・偽オーケストレータの拒否。
+# 範囲: 本番経路（FF_DEV_TOOLKIT_ROOT 未設定）での setup による配置: main 経由の配置・冪等・揮発パス警告・CRLF 正規化・失敗の rc 伝播・偽オーケストレータの拒否・配置物の上流 ACE 引用の修飾。
 # 依存: run_isolated_shim / ${SETUP}。${FAKE} / ${PLACED} / ${SIDECAR} をここで定義し、**後続の 2 ファイルが参照する**。
 # source 順は verify.sh の一覧が正本。fixture・関数・変数は同一プロセスで共有され、
 # 後続ファイルは先行ファイルが作った fixture を参照するので、順序を入れ替えない。
@@ -571,3 +571,37 @@ else
   ok "setup: TMPDIR 空でも恒久パスを揮発と誤判定しない"
 fi
 
+
+# (11) 導入先へ配られた shim が上流の ACE ID を裸で持たない。
+# shim は導入先の scripts/ へ byte identity で置かれるので、裸の `ACE-<n>-<n>` は導入先の
+# citation gate から「自分の Playbook の未解決引用」に見える。しかも導入先ではコメントを
+# 直せない（identity 検査が赤になる）。上流の知見は開発元の名前と、導入先から辿れる
+# 公開リポジトリの固定 SHA permalink で指す（非公開の開発リポジトリへの URL は導入先から
+# 辿れず、公開同期の禁止対象でもあるので、混入も赤にする。名前はこのファイル自体が禁止
+# パターンに当たらないよう分割して組み立てる）。
+# 照合の針は「大文字の `ACE-` の直後に数字、または `i` + 数字」で始まる語すべて。導入先の
+# 検出正規表現 `ACE-(?:i\d+-\d+|\d+(?:-\d+)?)`（大文字小文字を区別）より広く取り、右端は
+# 見ない（広げて増えるのは赤だけ）。配置物が読めない・grep 自体が失敗した回は緑にしない。
+if [ ! -r "$PLACED" ]; then
+  bad "配置: 引用検査の対象 $PLACED を読めない（配置が消えた / パス変更）"
+else
+  _private_repo="$(printf '%s/%s/%s%s' 'github.com' 'feel-flow' 'feelflow-' 'plugins')"
+  _ace_rc=0
+  _ace_hits="$(grep -nE 'ACE-i?[0-9]' "$PLACED")" || _ace_rc=$?
+  _pin_rc=0
+  grep -qE 'https://github\.com/feel-flow/ff-dev-toolkit/blob/[0-9a-f]{40}/' "$PLACED" || _pin_rc=$?
+  _priv_rc=0
+  grep -qF "$_private_repo" "$PLACED" || _priv_rc=$?
+  if [ "$_ace_rc" -gt 1 ] || [ "$_pin_rc" -gt 1 ] || [ "$_priv_rc" -gt 1 ]; then
+    bad "配置: 引用検査の grep が失敗した (ace=$_ace_rc pin=$_pin_rc private=$_priv_rc)"
+  elif [ "$_ace_rc" -eq 0 ]; then
+    bad "配置: shim が裸の ACE ID を持ち、導入先で未解決引用になる"
+    printf '%s\n' "$_ace_hits" | sed 's/^/    | /' >&2
+  elif [ "$_priv_rc" -eq 0 ]; then
+    bad "配置: shim が非公開の開発リポジトリの URL を持つ（導入先から辿れない）"
+  elif [ "$_pin_rc" -ne 0 ]; then
+    bad "配置: 公開リポジトリの固定 SHA permalink が無い（出典が消えた / ブランチ名の可動リンクへ戻った）"
+  else
+    ok "配置: shim は上流 ACE を裸の ID で引かず、公開リポジトリの固定 SHA permalink で指す"
+  fi
+fi

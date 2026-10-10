@@ -31,6 +31,9 @@
 # 振る舞い（オプションの写し・拒否・skip）は stub の multi-agent.sh で実測する。
 # 空振り検出: 版読み取り代入の `|| true` 4 箇所を持つ旧正本を
 #   静的針へ通すと4件一致、新正本は0件。grep の実行失敗も緑にしない。
+#   install-cases (11) の引用検査（2026-10-10 実測）: template へ `ACE-70-2` を戻す / `ACE-i3`
+#   を足す / permalink の SHA を `main` へ / 非公開リポジトリの URL を足す / permalink を消す
+#   の各変異で 1 件ずつ赤。配置物が読めない回・grep が失敗した回も緑にしない。
 #
 # **stub で測れるのは argv の形まで**。委譲先が実際にプランを出すか・何本の CLI を
 # 検出するかは実体の multi-agent.sh でしか測れないので、codex 不在の --dry-run 経路は

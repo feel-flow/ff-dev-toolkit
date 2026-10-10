@@ -20,7 +20,7 @@ AI CLI を直接起動しないこと、オプション・環境変数を黙っ�
 | `recovery-mode-cases.sh` | recovery モードフラグ（`--all-perspectives` / `--mode` / `--resume` / `--fresh`）と staged 経路の歯止め | なし（`$WORK/review-context.txt` をここで作り、`toolkit-root-resolution-cases.sh` が参照する） |
 | `base-ref-diff-guard-cases.sh` | diff サイズ歯止めの計測基準 ref が委譲先（`resolve_base_branch_ref`）と一致すること | なし（`$DIFF_REPO` をここで作り、`perspective-list-diff-threshold-cases.sh` が参照する） |
 | `option-env-mapping-cases.sh` | `--reviewers` の写像・未対応オプションの拒否と案内・旧ラッパー env の写像と通知 | なし |
-| `install-cases.sh` | 本番経路（`FF_DEV_TOOLKIT_ROOT` 未設定）での配置: main 経由・冪等・揮発パス警告・CRLF 正規化・失敗の rc 伝播・偽オーケストレータの拒否 | **`$FAKE` / `$PLACED` / `$SIDECAR` をここで定義する** |
+| `install-cases.sh` | 本番経路（`FF_DEV_TOOLKIT_ROOT` 未設定）での配置: main 経由・冪等・揮発パス警告・CRLF 正規化・失敗の rc 伝播・偽オーケストレータの拒否・配置物が上流 ACE を裸の ID で引かないこと | **`$FAKE` / `$PLACED` / `$SIDECAR` をここで定義する** |
 | `toolkit-root-resolution-cases.sh` | cache 解決順・版整合・`--print-toolkit-root`・プラグインルート指定・配置先の既定 | `install-cases.sh` の `$FAKE` / `$PLACED` / `$SIDECAR`、`recovery-mode-cases.sh` の `$WORK/review-context.txt` |
 | `legacy-compat-help-cases.sh` | 旧観点名の互換（写像表の逐一検査）・env 経由の観点リスト・pnpm の `--` 透過・`--opt=value`・`--help`・配置の原子性 | `install-cases.sh` の `$FAKE` / `$PLACED` |
 | `perspective-list-diff-threshold-cases.sh` | 観点の一覧と除外・diff サイズ閾値と timeout の旧 env 写像・`--workdir` の拒否 | `base-ref-diff-guard-cases.sh` の `$DIFF_REPO` |
