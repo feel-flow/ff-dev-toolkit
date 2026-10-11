@@ -21,9 +21,14 @@
 #  10. base を保持する別 worktree が clean なら、worktree と ignored file を残したまま
 #      detached へ退避し、呼び出し元が最新 base ブランチへ復帰する
 #  11. 対象 PR のリモートブランチが既に無い場合は、lease 拒否と誤判定しない
+#  11b. (6.6b / 公開 ff-dev-toolkit#137) その場合、通常実行でも削除前の照合
+#       （ls-remote --exit-code）で止まり、削除 push 自体を実行しない（mock git の
+#       push 呼び出し記録で見る。消えた ref への削除 push も pre-push を起動するため）
+#  11c. (6.6c) 削除前の照合そのものが失敗したら、push せず「消えた」とも推測せず
+#       失敗として記録する（fail-closed）
 #  12. 対象 PR のリモートブランチが別 OID で存在する場合は、lease 拒否として保護する
 #  13. lease 拒否後の ref 再取得に失敗した場合は、失敗として記録し後続 Step を続行する
-#      （このケースの対象 ref は origin に無いため、非削除の検証は項目 14 が担う）
+#      （照合は match で通し、push の lease 拒否から再取得へ落とす。ref は消さない）
 #  14. lease 拒否後の ref が期待 OID のままなら、原因不明として記録し後続 Step を続行する
 #  15. ref 再取得が成功し stderr に警告だけ出ても、空の stdout を存在と誤判定しない
 #  15b. Step 4 の削除失敗を Step 6 の取り残し掃除が再試行して成功した場合、
@@ -73,6 +78,8 @@
 #  30. 削除しなかった dirty worktree のトランスクリプトには触れない
 #  31. 削除 push は SKIP_SIMPLE_GIT_HOOKS=1 を付け、env が無いと拒否する
 #      pre-push fixture の下でもリモート削除が完了する
+#  31b. (公開 ff-dev-toolkit#137) 削除 push は HUSKY=0 も付け、fixture hook の husky
+#       runner 判定（`[ "${HUSKY-}" = "0" ]`）が skip 側になる。静的検査も両 env を要求する
 #  32. 未コミット変更ガードのパス除外（FF_MERGE_CLEANUP_IGNORE_PATHS）
 #      32.1  除外パスだけが dirty なら Step 1 を通過し、無視した変更を件数と一覧で
 #            報告する（パターンは複数指定し、2 要素目も効くことを見る）
@@ -135,6 +142,9 @@
 #      gh / jq の存在確認より前に効く。引数なしは使い方を表示して非 0 で終わる。
 #      通常実行の削除と終了コード契約は従来どおり。連鎖予告なし / OID 照合なし /
 #      -d の基準を現在 HEAD へ / 依存確認を --help より前へ、の 4 mutant で検出力を実測する
+#      (46.9 / 公開 ff-dev-toolkit#137) 通常実行の削除前の照合も dry-run と同じ判定関数を
+#      通る — 判定を常時 match にした mutant を通常実行で走らせると、消えた ref へ削除
+#      push する（原本はしない）ことで実測する
 #
 # あわせて静的検査として、bash 3.2 で変数名にマルチバイト文字が取り込まれる書き方
 # （"$VAR" の直後に全角文字を直付けする形）が merge-cleanup.sh と本 suite 自身に無いことを
@@ -256,8 +266,10 @@ mbcs_assert_clean "$TARGET" "merge-cleanup.sh"
 mbcs_assert_clean "$SCRIPT_DIR/verify.sh" "本 suite (tests/merge-cleanup/verify.sh)"
 
 # $1: 検査するファイル。delete_remote_branch_with_lease 内の git push が
-# すべて「同一物理行の prefix 代入 SKIP_SIMPLE_GIT_HOOKS=1」なら 0。
-# コメント内・XSKIP_・=10 は受理しない。env と git push は同じ行に置くこと。
+# すべて「同一物理行の prefix 代入 SKIP_SIMPLE_GIT_HOOKS=1 と HUSKY=0」なら 0。
+# コメント内・XSKIP_ / XHUSKY・=10 / =00 は受理しない。env と git push は同じ行に置くこと。
+# HUSKY=0 は husky v9 の runner（`.husky/_/h`）が本体を呼ばずに exit 0 する値
+# （公開 ff-dev-toolkit#137。SKIP_SIMPLE_GIT_HOOKS だけでは husky の consumer に効かない）。
 delete_push_sets_skip_hooks() {
   awk '
     /^delete_remote_branch_with_lease\(\)/ { in_fn = 1 }
@@ -267,13 +279,14 @@ delete_push_sets_skip_hooks() {
       line = $0
       sub(/#.*/, "", line)
       if (line !~ /(^|[^=[:alnum:]_])SKIP_SIMPLE_GIT_HOOKS=1[[:space:]]/) missing = 1
+      if (line !~ /(^|[^=[:alnum:]_])HUSKY=0[[:space:]]/) missing = 1
     }
     END { if (seen && !missing) exit 0; exit 1 }
   ' "$1"
 }
 
 echo ""
-echo "== 静的検査: 削除 push の SKIP_SIMPLE_GIT_HOOKS =="
+echo "== 静的検査: 削除 push の SKIP_SIMPLE_GIT_HOOKS / HUSKY =="
 
 SKIP_HOOKS_PROBE="$TMP/skip-hooks-probe.sh"
 write_skip_hooks_probe() {
@@ -290,41 +303,61 @@ if ! delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
 else
   bad "検出器が env 無しの git push を見逃す — 以降の静的検査は信用しないこと"
 fi
-write_skip_hooks_probe 'LC_ALL=C SKIP_SIMPLE_GIT_HOOKS=1 git push --force-with-lease="refs/heads/$branch:$expected" origin ":refs/heads/$branch"'
+write_skip_hooks_probe 'LC_ALL=C SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 git push --force-with-lease="refs/heads/$branch:$expected" origin ":refs/heads/$branch"'
 if delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
   ok "検出器が env 付きの git push を誤検出しない（self-test）"
 else
   bad "検出器が env 付きの git push を誤検出する"
 fi
-write_skip_hooks_probe 'git push --no-verify origin ":refs/heads/$branch" # SKIP_SIMPLE_GIT_HOOKS=1'
+write_skip_hooks_probe 'git push --no-verify origin ":refs/heads/$branch" # SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0'
 if ! delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
-  ok "検出器がコメント内の SKIP_SIMPLE_GIT_HOOKS=1 を受理しない（self-test）"
+  ok "検出器がコメント内の env を受理しない（self-test）"
 else
-  bad "検出器がコメント内の SKIP_SIMPLE_GIT_HOOKS=1 を受理する"
+  bad "検出器がコメント内の env を受理する"
 fi
-write_skip_hooks_probe 'XSKIP_SIMPLE_GIT_HOOKS=1 git push origin ":refs/heads/$branch"'
+write_skip_hooks_probe 'XSKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 git push origin ":refs/heads/$branch"'
 if ! delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
   ok "検出器が XSKIP_SIMPLE_GIT_HOOKS=1 を受理しない（self-test）"
 else
   bad "検出器が XSKIP_SIMPLE_GIT_HOOKS=1 を受理する"
 fi
-write_skip_hooks_probe 'SKIP_SIMPLE_GIT_HOOKS=10 git push origin ":refs/heads/$branch"'
+write_skip_hooks_probe 'SKIP_SIMPLE_GIT_HOOKS=10 HUSKY=0 git push origin ":refs/heads/$branch"'
 if ! delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
   ok "検出器が SKIP_SIMPLE_GIT_HOOKS=10 を受理しない（self-test）"
 else
   bad "検出器が SKIP_SIMPLE_GIT_HOOKS=10 を受理する"
 fi
+# HUSKY 側の self-test（公開 ff-dev-toolkit#137）。SKIP_SIMPLE_GIT_HOOKS=1 だけの旧形を
+# 受理しないこと = husky の consumer でフルゲートが走る形へ戻したら赤になること。
+write_skip_hooks_probe 'LC_ALL=C SKIP_SIMPLE_GIT_HOOKS=1 git push --force-with-lease="refs/heads/$branch:$expected" origin ":refs/heads/$branch"'
+if ! delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
+  ok "検出器が HUSKY=0 の無い旧形の git push を検出できる（self-test）"
+else
+  bad "検出器が HUSKY=0 の無い git push を見逃す"
+fi
+write_skip_hooks_probe 'SKIP_SIMPLE_GIT_HOOKS=1 XHUSKY=0 git push origin ":refs/heads/$branch"'
+if ! delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
+  ok "検出器が XHUSKY=0 を受理しない（self-test）"
+else
+  bad "検出器が XHUSKY=0 を受理する"
+fi
+write_skip_hooks_probe 'SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=00 git push origin ":refs/heads/$branch"'
+if ! delete_push_sets_skip_hooks "$SKIP_HOOKS_PROBE"; then
+  ok "検出器が HUSKY=00 を受理しない（self-test）"
+else
+  bad "検出器が HUSKY=00 を受理する"
+fi
 
 if delete_push_sets_skip_hooks "$TARGET"; then
-  ok "delete_remote_branch_with_lease の git push に SKIP_SIMPLE_GIT_HOOKS=1 がある"
+  ok "delete_remote_branch_with_lease の git push に SKIP_SIMPLE_GIT_HOOKS=1 と HUSKY=0 がある"
 else
-  bad "delete_remote_branch_with_lease の git push に SKIP_SIMPLE_GIT_HOOKS=1 が無い"
+  bad "delete_remote_branch_with_lease の git push に SKIP_SIMPLE_GIT_HOOKS=1 / HUSKY=0 が揃っていない"
 fi
 # --no-verify / hooksPath 無効化 / export は契約外。env の command-scoped 代入だけを許す。
 if awk '
   /^delete_remote_branch_with_lease\(\)/ { in_fn = 1 }
   in_fn && /^}/ { in_fn = 0 }
-  in_fn && /--no-verify|core\.hooksPath|GIT_CONFIG_COUNT|export[[:space:]]+SKIP_SIMPLE_GIT_HOOKS/ { bad = 1 }
+  in_fn && /--no-verify|core\.hooksPath|GIT_CONFIG_COUNT|export[[:space:]]+(SKIP_SIMPLE_GIT_HOOKS|HUSKY)/ { bad = 1 }
   END { exit bad ? 1 : 0 }
 ' "$TARGET"; then
   ok "delete_remote_branch_with_lease に --no-verify / hooksPath 無効化 / export が無い"
@@ -1027,15 +1060,38 @@ chmod +x "$MOCK/gh"
 REAL_GIT="$(command -v git)"
 cat > "$MOCK/git" <<SH
 #!/usr/bin/env bash
+# 6.6b / 6.6c / 40.x: 削除 push を「実行しなかった」ことを文言ではなく呼び出しで見るための記録
+# （公開 ff-dev-toolkit#137）。mock が push を横取りする分岐より前に置き、全 push を残す。
+if [ "\${1:-}" = "push" ]; then
+  printf '%s\n' "\$*" >> "$TMP/git-push-calls.log"
+fi
+# 6.6c: 削除前の照合（ls-remote --exit-code）そのものを失敗させる。フラグはケースの
+# 直前に作り直後に消すので、他の run へは漏れない。
+if [ -f "$TMP/precheck-fail.enabled" ] \
+  && [ "\$*" = "ls-remote --exit-code --heads origin refs/heads/feature/#12-already-removed" ]; then
+  echo "simulated pre-check failure" >&2
+  exit 128
+fi
+# 6.8: 削除前の照合（--exit-code 付き）は素通しで match にし、push の lease 拒否後の
+# 再取得（--exit-code 無し）だけを失敗させる。照合と push の間の競合で再取得へ
+# 落ちる経路の再現で、push 自体は ref を消さずに stale info を返す。
 if [ "\$*" = "ls-remote --heads origin refs/heads/feature/#14-recheck-fails" ]; then
   echo "simulated remote re-check failure" >&2
+  exit 1
+fi
+if [[ "\$*" == "push --force-with-lease=refs/heads/feature/#14-recheck-fails:"* ]]; then
+  echo "simulated stale info after the pre-check matched" >&2
   exit 1
 fi
 if [[ "\$*" == push\ --force-with-lease=refs/heads/feature/\#15-same-oid:* ]]; then
   echo "simulated stale info for same OID" >&2
   exit 1
 fi
+# 6.10: 削除前の照合では ref が在り（match）、push の瞬間には消えている競合を再現する。
+# 実際に消してから stale info を返し、再取得（下の warning 付き空 stdout）へ落とす。
 if [[ "\$*" == push\ --force-with-lease=refs/heads/feature/\#16-warning-missing:* ]]; then
+  SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 "$REAL_GIT" push -q origin \
+    --delete 'feature/#16-warning-missing'
   echo "simulated stale info for missing ref" >&2
   exit 1
 fi
@@ -1233,8 +1289,16 @@ git push -q origin 'feature/#31-hook-probe'
 HOOK_PATH="$TMP/work/.git/hooks/pre-push"
 HOOK_LOG="$TMP/pre-push-hook.log"
 : > "$HOOK_LOG"
+# husky の consumer も同じ hook で模す: husky v9 の runner（`.husky/_/h`）は
+# `[ "\${HUSKY-}" = "0" ] && exit 0` で本体を呼ばない。その判定と同じ式を通した結果を
+# 記録だけする（止めない — fixture 組み立ての push は SKIP_SIMPLE_GIT_HOOKS=1 だけで通す）。
 cat > "$HOOK_PATH" <<HOOK
 #!/bin/sh
+if [ "\${HUSKY-}" = "0" ]; then
+  printf 'husky=skip\n' >> "$HOOK_LOG"
+else
+  printf 'husky=run\n' >> "$HOOK_LOG"
+fi
 if [ "\${SKIP_SIMPLE_GIT_HOOKS:-}" = "1" ]; then
   printf 'skip=1\n' >> "$HOOK_LOG"
   exit 0
@@ -1246,13 +1310,20 @@ HOOK
 chmod +x "$HOOK_PATH"
 
 set +e
-env -u SKIP_SIMPLE_GIT_HOOKS git push -q origin --delete 'feature/#31-hook-probe' >/dev/null 2>&1
+env -u SKIP_SIMPLE_GIT_HOOKS -u HUSKY git push -q origin --delete 'feature/#31-hook-probe' >/dev/null 2>&1
 HOOK_BLOCK_RC=$?
 set -e
 if [ "$HOOK_BLOCK_RC" -ne 0 ] && remote_has 'feature/#31-hook-probe'; then
   ok "fixture hook は SKIP_SIMPLE_GIT_HOOKS 無しの削除 push を拒否する（self-test）"
 else
   bad "fixture hook が削除 push を拒否しない — 以降の削除成功はゲート回避の証拠にならない"
+fi
+# 31b の対照: HUSKY を外した push では、hook の husky 判定が run 側になる（self-test）。
+# これが出ないと、31b の husky=skip は「hook が常に skip と書く」だけでも緑になる。
+if grep -q '^husky=run$' "$HOOK_LOG"; then
+  ok "fixture hook の husky 判定は HUSKY 無しの push を run と記録する（self-test）"
+else
+  bad "fixture hook の husky 判定が HUSKY 無しの push を run と記録しない — 31b は空振りする"
 fi
 # 取り残し照合の mock に載せないので Step 6 は触らない。リモートに残してよい。
 
@@ -1306,7 +1377,9 @@ fi
 rm -f "$BASE_OWNER/base-owner-dirty.txt"
 
 set +e
-PATH="$MOCK:$PATH" bash "$TARGET" 10 > "$TMP/run.log" 2>&1
+# 呼び出し元の hook 抑止 env を持ち込まない（CI や開発シェルで HUSKY=0 が export されて
+# いると、削除 push 側から HUSKY=0 を外しても 31b が緑のまま空振りする）
+PATH="$MOCK:$PATH" env -u SKIP_SIMPLE_GIT_HOOKS -u HUSKY bash "$TARGET" 10 > "$TMP/run.log" 2>&1
 EXIT_CODE=$?
 set -e
 
@@ -1332,6 +1405,16 @@ if [ "${HOOK_SKIPS:-0}" -ge 2 ] && [ "${HOOK_BLOCKS:-0}" -eq 0 ]; then
   ok "削除 push で fixture hook が SKIP_SIMPLE_GIT_HOOKS=1 を見て skip した"
 else
   bad "fixture hook の skip ログが期待どおりでない (skip=${HOOK_SKIPS:-0} block=${HOOK_BLOCKS:-0})"
+fi
+# 31b. 同じ削除 push で husky の runner 判定も skip 側へ倒れる（HUSKY=0 が hook まで届く。
+# 公開 ff-dev-toolkit#137）。件数を SKIP_SIMPLE_GIT_HOOKS 側と突き合わせ、0 件一致を緑にしない。
+HOOK_HUSKY_SKIPS="$(grep -c '^husky=skip$' "$HOOK_LOG" 2>/dev/null || true)"
+HOOK_HUSKY_RUNS="$(grep -c '^husky=run$' "$HOOK_LOG" 2>/dev/null || true)"
+if [ "${HOOK_HUSKY_SKIPS:-0}" -ge 2 ] && [ "${HOOK_HUSKY_SKIPS:-0}" -eq "${HOOK_SKIPS:-0}" ] \
+  && [ "${HOOK_HUSKY_RUNS:-0}" -eq 0 ]; then
+  ok "削除 push で fixture hook の husky 判定（HUSKY=0）も skip 側になった"
+else
+  bad "削除 push の環境に HUSKY=0 が届いていない (husky-skip=${HOOK_HUSKY_SKIPS:-0} husky-run=${HOOK_HUSKY_RUNS:-0} skip=${HOOK_SKIPS:-0})"
 fi
 
 # 3. OID 不一致（マージ後 push あり）は削除されない
@@ -1472,7 +1555,26 @@ else
   bad "clean な base 所有 worktree の退避または呼び出し元の develop 復帰に失敗"
 fi
 
+# push の呼び出し記録（mock git）が実際に効いていることの self-test。run 10 は対象 PR の
+# head を削除 push で消しているので、記録に 1 行以上あるはず。0 件だと 6.6b / 6.6c の
+# 「push しなかった」は記録が空なだけの空振りになる。
+# awk で数える（grep -c は 0 件一致で非 0 終了し、set -e 下の代入で suite ごと落ちる）。
+# 記録が読めないときに 0 を返さない — 「push しなかった」の緑へ倒れるため。awk の失敗は
+# 空文字になり、呼び出し側の数値比較がエラーで偽になる（= bad）。
+push_calls_for() {
+  # $1: ブランチ名 / $2: 何行目より後を見るか（0 = 全体）
+  awk -v ref="refs/heads/$1" -v from="$2" \
+    'NR > from && index($0, ref) { n++ } END { print n + 0 }' "$TMP/git-push-calls.log"
+}
+push_calls_lines() { awk 'END { print NR + 0 }' "$TMP/git-push-calls.log"; }
+if [ "$(push_calls_for 'feature/#10-target' 0)" -ge 1 ]; then
+  ok "mock git の push 呼び出し記録が効いている（run 10 の削除 push が載る。self-test）"
+else
+  bad "mock git の push 呼び出し記録が空 — 6.6b / 6.6c の「push しない」は空振りになる"
+fi
+
 # 6.6 リモート ref が既に無い場合、`stale info` を lease 拒否と誤表示しない。
+PUSH_LINES_BEFORE_12="$(push_calls_lines)"
 set +e
 PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-12.log" 2>&1
 EXIT_12=$?
@@ -1483,6 +1585,41 @@ if [ "$EXIT_12" -eq 2 ] \
   ok "削除済みリモート branch を already removed と判定"
 else
   bad "削除済みリモート branch の判定が期待どおりでない (exit=$EXIT_12)"
+fi
+
+# 6.6b 本番実行でも、消えた ref へは削除 push 自体を行わない（公開 ff-dev-toolkit#137）。
+#      消えた ref への削除 push も pre-push hook を起動し、空の stdin のため consumer の
+#      「削除だけならスキップ」判定が効かずフルゲートが走る。文言ではなく push の
+#      呼び出し記録で見る（照合を外して push → stale info → 再取得に戻しても、
+#      サマリーは同じ already_missing になり文言では区別できない）。
+if [ "$(push_calls_for 'feature/#12-already-removed' "$PUSH_LINES_BEFORE_12")" -eq 0 ] \
+  && grep -q "削除前の照合（git ls-remote）: origin に feature/#12-already-removed が無いため、削除 push は行いません" "$TMP/run-12.log" \
+  && grep -q "リモートブランチ (feature/#12-already-removed): already_missing" "$TMP/run-12.log"; then
+  ok "消えた ref には本番実行でも削除 push を行わず already_missing で終わる"
+else
+  bad "消えた ref へ削除 push を実行した、または already_missing にならない (push=$(push_calls_for 'feature/#12-already-removed' "$PUSH_LINES_BEFORE_12"))"
+fi
+
+# 6.6c 削除前の照合そのものが失敗したら（通信・認証。ls-remote --exit-code が 2 以外の
+#      非 0）、ref が無いとも在るとも読まず、削除 push をせずに失敗として記録する
+#      （fail-closed。dry-run の error と同じ判定）。
+: > "$TMP/precheck-fail.enabled"
+PUSH_LINES_BEFORE_12C="$(push_calls_lines)"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 12 > "$TMP/run-12c.log" 2>&1
+EXIT_12C=$?
+set -e
+rm -f "$TMP/precheck-fail.enabled"
+if [ "$EXIT_12C" -eq 2 ] \
+  && [ "$(push_calls_for 'feature/#12-already-removed' "$PUSH_LINES_BEFORE_12C")" -eq 0 ] \
+  && grep -q "削除前の照合（git ls-remote --exit-code）に失敗したため、削除 push は行っていません" "$TMP/run-12c.log" \
+  && grep -q "simulated pre-check failure" "$TMP/run-12c.log" \
+  && grep -q "feature/#12-already-removed: リモート削除失敗" "$TMP/run-12c.log" \
+  && grep -q "リモートブランチ (feature/#12-already-removed): failed" "$TMP/run-12c.log" \
+  && ! grep -q "リモートブランチは既に削除されていました" "$TMP/run-12c.log"; then
+  ok "削除前の照合が失敗したら push せず、消えたと推測せずに失敗として記録する（fail-closed）"
+else
+  bad "削除前の照合失敗の扱いが期待どおりでない (exit=$EXIT_12C push=$(push_calls_for 'feature/#12-already-removed' "$PUSH_LINES_BEFORE_12C"))"
 fi
 
 # 6.7 ref が別 OID で存在する真の競合は、従来どおり lease 拒否で保護する。
@@ -1508,6 +1645,10 @@ SKIP_SIMPLE_GIT_HOOKS=1 git push -qu origin 'feature/#19-gone-after-fail'
 SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin --delete 'feature/#19-gone-after-fail'
 # Step 6 が削除に成功する取り残しも同時に置く（対象 PR 以外の成功の影響を見る）
 SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_LEFTOVER23:refs/heads/feature/#23-leftover-for-14"
+# 対象 PR の head を期待 OID で origin に置く。削除前の照合は match になり、mock の
+# push が stale info を返して再取得へ落ちる（照合と push の間の競合）。ref が無いままだと
+# 照合が missing で短絡し、再取得の経路を 1 度も通らない（公開 ff-dev-toolkit#137 以後）。
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_TARGET:refs/heads/feature/#14-recheck-fails"
 set +e
 PATH="$MOCK:$PATH" bash "$TARGET" 14 > "$TMP/run-14.log" 2>&1
 EXIT_14=$?
@@ -1516,11 +1657,14 @@ if [ "$EXIT_14" -eq 2 ] \
   && grep -q "remote re-check failed" "$TMP/run-14.log" \
   && grep -q "simulated remote re-check failure" "$TMP/run-14.log" \
   && grep -q "feature/#14-recheck-fails: リモート削除失敗" "$TMP/run-14.log" \
-  && grep -q "結果: PARTIAL" "$TMP/run-14.log"; then
-  ok "lease 拒否後の ref 再取得失敗を失敗として記録し PARTIAL で報告"
+  && grep -q "結果: PARTIAL" "$TMP/run-14.log" \
+  && remote_has 'feature/#14-recheck-fails'; then
+  ok "lease 拒否後の ref 再取得失敗を失敗として記録し PARTIAL で報告（ref は消していない）"
 else
   bad "ref 再取得失敗の報告が期待どおりでない (exit=$EXIT_14)"
 fi
+# 後続の run が取り残しとして扱わないよう片付ける（MERGED 一覧には載っていない名前）
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin --delete 'feature/#14-recheck-fails'
 
 # 6.8d 再試行されない対象 PR は failed のまま残る。かつ同じ run で別ブランチの削除が
 #      成功しても、対象 PR のサマリー行は書き換わらない（更新条件の 2 つのガード）。
@@ -1574,11 +1718,19 @@ else
 fi
 
 # 6.10 stdout が空なら、成功時の stderr 警告を ref 存在と誤読しない。
+# 削除前の照合を match で通すため ref を期待 OID で置き、mock の push がそれを消してから
+# stale info を返す（照合と push の間に消える競合）。push が実際に呼ばれたことまで見て、
+# 照合の missing で短絡した（= 再取得の経路を通っていない）緑を拒む。
+SKIP_SIMPLE_GIT_HOOKS=1 git push -q origin "$OID_TARGET:refs/heads/feature/#16-warning-missing"
+PUSH_LINES_BEFORE_16="$(push_calls_lines)"
 set +e
 PATH="$MOCK:$PATH" bash "$TARGET" 16 > "$TMP/run-16.log" 2>&1
 EXIT_16=$?
 set -e
 if [ "$EXIT_16" -eq 2 ] \
+  && [ "$(push_calls_for 'feature/#16-warning-missing' "$PUSH_LINES_BEFORE_16")" -ge 1 ] \
+  && ! grep -q "削除前の照合（git ls-remote）: origin に feature/#16-warning-missing が無いため" "$TMP/run-16.log" \
+  && ! remote_has 'feature/#16-warning-missing' \
   && grep -q "リモートブランチは既に削除されていました" "$TMP/run-16.log" \
   && ! grep -q "マージ後に更新されています" "$TMP/run-16.log"; then
   ok "成功時 stderr 警告を ref 存在と誤読せず already removed と判定"
@@ -3595,7 +3747,7 @@ MUTANT_CHAIN="$TMP/merge-cleanup-mutant-chain.sh"
 MUTANT_VERDICT="$TMP/merge-cleanup-mutant-verdict.sh"
 MUTANT_BASEREF="$TMP/merge-cleanup-mutant-baseref.sh"
 sed 's|^dry_virtual_prune_gone_branches() {$|dry_virtual_prune_gone_branches() { return 0|' "$TARGET" > "$MUTANT_CHAIN"
-sed 's|^dry_remote_delete_verdict() {$|dry_remote_delete_verdict() { printf "match\\t%s\\n" "$2"; return 0|' "$TARGET" > "$MUTANT_VERDICT"
+sed 's|^remote_delete_verdict() {$|remote_delete_verdict() { printf "match\\t%s\\n" "$2"; return 0|' "$TARGET" > "$MUTANT_VERDICT"
 sed 's|"\$DRY_MERGED_BASE_REF"|HEAD|g' "$TARGET" > "$MUTANT_BASEREF"
 if ! cmp -s "$TARGET" "$MUTANT_CHAIN" && ! cmp -s "$TARGET" "$MUTANT_VERDICT" \
   && ! cmp -s "$TARGET" "$MUTANT_BASEREF"; then
@@ -3712,6 +3864,30 @@ elif cmp -s "$TMP/dry-guards.txt" "$TMP/real-guards.txt"; then
 else
   bad "--dry-run のガード判定が通常実行と食い違う"
   { diff "$TMP/dry-guards.txt" "$TMP/real-guards.txt" | head -20 | sed 's/^/     /' >&2 || true; }
+fi
+
+# 46.9 (公開 ff-dev-toolkit#137) 通常実行の削除前の照合が、dry-run と同じ判定関数
+#      （remote_delete_verdict）を通ることの検出力。46.7 の mutant（判定を常に match に
+#      する）を --dry-run を外して、head が既に無い PR 65 に走らせる。原本は push せず、
+#      mutant は削除 push を実行する — 通常実行が別の判定を持っていれば mutant は通常
+#      実行を変えられず、この差は出ない。他の run の前提を崩さないよう suite の最後に置く。
+PUSH_LINES_BEFORE_65="$(push_calls_lines)"
+set +e
+PATH="$MOCK:$PATH" bash "$TARGET" 65 > "$TMP/run-real-65.log" 2>&1
+set -e
+# 原本の件数は mutant を走らせる前に確定させる（後から数えると mutant の push まで含む）
+PUSH_CALLS_65="$(push_calls_for "$DRY_ALREADY" "$PUSH_LINES_BEFORE_65")"
+PUSH_LINES_BEFORE_65M="$(push_calls_lines)"
+set +e
+PATH="$MOCK:$PATH" bash "$MUTANT_VERDICT" 65 > "$TMP/run-real-65-mut-verdict.log" 2>&1
+set -e
+PUSH_CALLS_65M="$(push_calls_for "$DRY_ALREADY" "$PUSH_LINES_BEFORE_65M")"
+if [ "$PUSH_CALLS_65" -eq 0 ] \
+  && grep -qF "削除前の照合（git ls-remote）: origin に ${DRY_ALREADY} が無いため" "$TMP/run-real-65.log" \
+  && [ "$PUSH_CALLS_65M" -ge 1 ]; then
+  ok "通常実行の削除前の照合は dry-run と同じ判定関数を通る（常時 match の mutant だけが消えた ref へ push する）"
+else
+  bad "通常実行と dry-run の実在判定が同じ関数を通っていない、または mutant の差が観測できない (original=${PUSH_CALLS_65} mutant=${PUSH_CALLS_65M})"
 fi
 
 echo ""

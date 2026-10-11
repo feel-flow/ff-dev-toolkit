@@ -46,8 +46,10 @@
 #      付けず、リモートブランチ削除を `gh pr merge … && git push …` の 1 コマンドで添える（merge が
 #      失敗した回に削除だけが走らない）。削除は同一リポジトリの PR に限り
 #      （fork の PR は `HEAD_DELETE=skipped-fork`）、照合した先端 OID を lease に載せる
-#      （`git push origin --force-with-lease=refs/heads/<head>:<OID> :refs/heads/<head>`。
-#      マージ後に同名ブランチが再利用されていればサーバー側で拒否される）
+#      （`SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 git push origin --force-with-lease=refs/heads/<head>:<OID> :refs/heads/<head>`。
+#      マージ後に同名ブランチが再利用されていればサーバー側で拒否される。env はコード変更を
+#      運ばない削除 push で consumer の simple-git-hooks / husky のフルゲートを起動しないため —
+#      merge-cleanup.sh の削除 push と同じ。公開 ff-dev-toolkit#137）
 #      （`gh pr merge --delete-branch` は成功後にローカルで base へ切り替えようとして失敗し、
 #      リモートブランチ削除まで到達しない）。件名・本文は単引用で包み、`printf '%q'` は使わない
 #      （非 UTF-8 ロケールで日本語を壊す）
@@ -901,7 +903,8 @@ cmd_precheck() {
   if [[ "$head_delete" == "lease" ]]; then
     q "--force-with-lease=refs/heads/${head_ref}:${REMOTE_HEAD}" >/dev/null && q ":refs/heads/${head_ref}" >/dev/null \
       || die_env "引用に失敗（sed が使えない）。merge コマンドを生成しない" "sed を PATH に戻して再実行する"
-    delete_tail="$(printf ' \\\n  && git push origin %s %s' "$(q "--force-with-lease=refs/heads/${head_ref}:${REMOTE_HEAD}")" "$(q ":refs/heads/${head_ref}")")"
+    # 削除 push はコード変更を運ばないので consumer の pre-push フルゲートを起動しない env を付ける
+    delete_tail="$(printf ' \\\n  && SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 git push origin %s %s' "$(q "--force-with-lease=refs/heads/${head_ref}:${REMOTE_HEAD}")" "$(q ":refs/heads/${head_ref}")")"
   fi
   echo "MERGE_COMMAND_BEGIN"
   if [[ "$have_subject" -eq 1 ]]; then

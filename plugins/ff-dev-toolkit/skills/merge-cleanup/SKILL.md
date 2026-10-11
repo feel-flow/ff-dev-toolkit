@@ -66,7 +66,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 1. **未コミット変更ガード** — あれば中断してユーザーに分類判断を仰ぐ（`git restore` / `git clean` は実行しない）。常駐ツールが書き続けるパスは `FF_MERGE_CLEANUP_IGNORE_PATHS` で対象外にできる（下記）
 2. **対象 PR の情報取得** — state / head / base / headRefOid / fork 判定。**MERGED でなければ破壊的処理の前に中断**（番号の打ち間違い対策）
 3. **base ブランチ復帰 + 最新化** — `baseRefName` へ `git switch` し `fetch --prune` + `pull --ff-only`。別 worktree が base を保持していれば、clean のときだけ同じ HEAD の detached へ退避して worktree を残し、dirty なら触らず中断する
-4. **対象 PR のリモートブランチ削除** — same-repo かつ open PR で head 再利用されていない場合に `--force-with-lease=<ref>:<期待OID>` で削除（照合と削除の間の push はサーバー側で原子的に拒否 = TOCTOU 対策）。削除 push は `SKIP_SIMPLE_GIT_HOOKS=1` 付き
+4. **対象 PR のリモートブランチ削除** — same-repo かつ open PR で head 再利用されていない場合に `--force-with-lease=<ref>:<期待OID>` で削除（照合と削除の間の push はサーバー側で原子的に拒否 = TOCTOU 対策）。push の前に `--dry-run` と同じ判定（`git ls-remote --exit-code`）で ref の実在と OID 一致を確かめ、ref が無い・OID が違う・照合できないときは削除 push を行わない（消えた ref への削除 push も pre-push hook を起動し、空の stdin のため consumer の「削除だけならスキップ」判定が効かずフルゲートが走る）。削除 push は `SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0` 付き（simple-git-hooks / husky の consumer のフルゲートを起動しない）
 5. **`[gone]` ローカルブランチ + 関連 worktree の削除** — worktree は clean を確認してから。`-D` は (名前, ローカル OID) が MERGED PR の head と一致する場合のみ。マージ済みと機械確認できたエージェント worktree（`claude agent` ロック + 使い捨てパス `.review-results/` の untracked だけ）は unlock → 個別除去 → force なしの `git worktree remove` で片付ける
 6. **削除した worktree のトランスクリプト回収** — jsonl の `cwd` 照合を通ったものだけを検証済み `tar.gz` へアーカイブしてから元を消す（既存の孤児は `/sweep-orphan-transcripts`）
 7. **リモート取り残しのガード付き自動削除** — (名前, OID) が MERGED PR の head と一致 / fork 由来でない / 保護ブランチでない / open PR で未使用 の全ガードを通過したものだけ lease 付きで削除。ガード情報の取得に 1 つでも失敗したら削除しない（fail-closed）
@@ -127,7 +127,7 @@ gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/fix/%23NNNN-<slug>
 
 ## 安全原則（スクリプトが保証すること）
 
-保護ブランチはローカル・リモートとも絶対に削除しない／未コミット変更を勝手に消さない／他セッションの作業ブランチを切り替えない・worktree を消さない／ガード情報の取得失敗は fail-closed（「取得失敗 = 削除中止」）／トランスクリプトは推測で消さない（`cwd` 照合 + 検証済みアーカイブ）／失敗を握りつぶさない（PARTIAL）／リモート削除の失敗で掃除全体を止めない（消せなかったことは記録して続行）／削除 push で consumer の simple-git-hooks フルゲートを起動しない。
+保護ブランチはローカル・リモートとも絶対に削除しない／未コミット変更を勝手に消さない／他セッションの作業ブランチを切り替えない・worktree を消さない／ガード情報の取得失敗は fail-closed（「取得失敗 = 削除中止」）／トランスクリプトは推測で消さない（`cwd` 照合 + 検証済みアーカイブ）／失敗を握りつぶさない（PARTIAL）／リモート削除の失敗で掃除全体を止めない（消せなかったことは記録して続行）／削除 push で consumer の simple-git-hooks / husky のフルゲートを起動しない（消えた ref へは削除 push 自体を行わない）。
 
 ## プロジェクト固有処理の拡張ポイント（optional）
 

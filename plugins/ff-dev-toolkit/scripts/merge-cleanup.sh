@@ -41,9 +41,14 @@
 #     FF_MERGE_CLEANUP_PROTECT_BRANCHES で運用に合わせて変更できる（Issue #1056）
 #   - リモート削除は --force-with-lease=<ref>:<期待OID> で行い、照合と削除の間の
 #     push 競合（TOCTOU）をサーバー側で原子的に拒否させる
-#   - 削除 push はコード変更を運ばないため SKIP_SIMPLE_GIT_HOOKS=1 を付ける
-#     （consumer の simple-git-hooks フルゲートを起動しない）。core.hooksPath の
-#     一時無効化は他の guard まで落とすので使わない
+#   - 削除 push はコード変更を運ばないため SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 を付ける
+#     （consumer の simple-git-hooks / husky のフルゲートを起動しない）。
+#     core.hooksPath の一時無効化と --no-verify は他の guard まで落とすので使わない
+#   - 対象 PR の head の削除 push は、dry-run と同じ判定（remote_delete_verdict の
+#     read-only な ls-remote --exit-code）で ref の実在と OID 一致を確かめてから行う。
+#     ref が無ければ push しない — 消えた ref への削除 push も pre-push を起動し、
+#     git は空の stdin を渡すため consumer の「削除だけならスキップ」判定が効かない
+#     （公開 ff-dev-toolkit#137。実測で約 10〜12 分のフルゲート）
 #   - ローカル [gone] ブランチの -D（強制削除）は (名前, ローカル OID) が
 #     MERGED PR の head と一致する場合に限定（[gone] だけではマージ済みの証明にならない）
 #   - ガードに必要な情報の取得に失敗したら削除せずスキップ（fail-closed）
@@ -672,15 +677,16 @@ command -v gh >/dev/null 2>&1 || die "gh CLI が必要です（https://cli.githu
 command -v jq >/dev/null 2>&1 || die "jq が必要です"
 
 # リモート削除の共通関数: --force-with-lease で「期待 OID のときだけ」削除する。
-# 削除 push はコード変更を運ばないため SKIP_SIMPLE_GIT_HOOKS=1 を付ける
-# （consumer の simple-git-hooks フルゲートを起動しない）。
-# core.hooksPath の一時無効化は他の guard まで落とすので使わない。
+# 削除 push はコード変更を運ばないため SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 を付ける
+# （consumer の simple-git-hooks / husky のフルゲートを起動しない。husky v9 の runner
+# `.husky/_/h` は HUSKY=0 で本体を呼ばずに exit 0 する）。
+# core.hooksPath の一時無効化と --no-verify は他の guard まで落とすので使わない。
 # 戻り値 0=削除 / 2=既に無い / 3=lease 拒否（競合 push あり） / 1=その他失敗
 delete_remote_branch_with_lease() {
   # $1: branch / $2: expected OID
   local branch="$1" expected="$2" out="" remote_out="" remote_err="" remote_stderr="" remote_oid=""
   # エラーメッセージの文言照合があるため LC_ALL=C でロケール固定
-  if out="$(LC_ALL=C SKIP_SIMPLE_GIT_HOOKS=1 git push --force-with-lease="refs/heads/$branch:$expected" \
+  if out="$(LC_ALL=C SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 git push --force-with-lease="refs/heads/$branch:$expected" \
       origin ":refs/heads/$branch" 2>&1)"; then
     return 0
   fi
@@ -760,19 +766,21 @@ dry_run_skip() {
   printf '  [dry-run] 実行しません: %s\n' "$*"
 }
 
-# dry-run で「実行したらこの ref は消えるのか」を副作用なしで判定する。
-# 実行時の削除は --force-with-lease=<ref>:<PR head OID> なので、origin 側の ref が
-# 無い / OID が違えば**実行しても消えない**。headRefOid を取得できたことだけを根拠に
+# 「削除 push したらこの ref は消えるのか」を副作用なしで判定する。
+# 削除は --force-with-lease=<ref>:<PR head OID> なので、origin 側の ref が
+# 無い / OID が違えば**push しても消えない**。headRefOid を取得できたことだけを根拠に
 # 削除対象と書くと、再利用された同名ブランチや既に消えた ref まで「実行時は消える」と
 # 過剰に予告することになる。判定基準はマージ後手順（skills/merge-cleanup/SKILL.md と
 # docs-template/05-operations/deployment/git-workflow.md の「削除の前に、残っている ref が
 # その PR の head と同一であることを確認する」）と同じで、実装をその規範へ揃える。
 # read-only の ls-remote だけを使い、ref は 1 つも書き換えない。
+# dry-run の予告と実行時の Step 4 の両方がこの関数を通る（実在判定を 1 つに保つ。
+# 実行時は missing / mismatch なら push 自体を行わない — 公開 ff-dev-toolkit#137）。
 # stdout: "match<TAB><現OID>" / "mismatch<TAB><現OID>" / "missing<TAB>" / "error<TAB><詳細>"
-dry_remote_delete_verdict() {
+remote_delete_verdict() {
   # $1: branch / $2: 期待 OID
   local branch="$1" expected="$2" out="" rc=0 oid=""
-  local err="$WORK_TMP/dry_remote_verdict_error"
+  local err="$WORK_TMP/remote_delete_verdict_error"
   # --exit-code は「ref なし」を 2 で返す。通信・認証の失敗（128 等）と区別しないと、
   # 出力が空になるだけの失敗を「消えている」と読んでしまう。
   set +e
@@ -1399,7 +1407,7 @@ elif [ "$DRY_RUN" = "1" ]; then
   # --force-with-lease で origin 側の OID を照合するため、ref が無い / OID が違えば
   # 実行しても消えない。headRefOid が取れたことだけを根拠に would_delete と書くと、
   # 再利用された同名ブランチや既に消えた ref を過剰に予告することになる。
-  DRY_PR_HEAD_VERDICT="$(dry_remote_delete_verdict "$PR_HEAD" "$PR_HEAD_OID")"
+  DRY_PR_HEAD_VERDICT="$(remote_delete_verdict "$PR_HEAD" "$PR_HEAD_OID")"
   # 区切りはタブ。リテラルのタブを ${} の中へ直書きすると読み手に見えないので cut で割る
   DRY_PR_HEAD_REMOTE_OID="$(printf '%s' "$DRY_PR_HEAD_VERDICT" | cut -f2-)"
   case "$(printf '%s' "$DRY_PR_HEAD_VERDICT" | cut -f1)" in
@@ -1428,10 +1436,36 @@ elif [ "$DRY_RUN" = "1" ]; then
   esac
 else
   echo "🗑️  リモートブランチ削除: $PR_HEAD (PR #$PR_NUM: $PR_TITLE)"
-  set +e
-  delete_remote_branch_with_lease "$PR_HEAD" "$PR_HEAD_OID"
-  rc=$?
-  set -e
+  # 削除 push の前に、dry-run と同じ判定で ref の実在と OID 一致を確かめる
+  # （公開 ff-dev-toolkit#137）。消えた ref への削除 push も pre-push hook を起動し、
+  # git は更新する ref が無いので hook へ空の stdin を渡す。consumer の「削除だけなら
+  # スキップ」判定（全行の local sha が 0 のとき）は行が無いと成り立たず、フル
+  # ゲートが走る。match のときだけ push し、それ以外は push せずに delete_remote_
+  # branch_with_lease と同じ戻り値へ写して下の分岐を共有する。push 時の
+  # stale info 再取得は残す — 照合と push の間に ref が消える / 進む競合は残るため。
+  PR_HEAD_VERDICT="$(remote_delete_verdict "$PR_HEAD" "$PR_HEAD_OID")"
+  PR_HEAD_VERDICT_DETAIL="$(printf '%s' "$PR_HEAD_VERDICT" | cut -f2-)"
+  case "$(printf '%s' "$PR_HEAD_VERDICT" | cut -f1)" in
+    match)
+      set +e
+      delete_remote_branch_with_lease "$PR_HEAD" "$PR_HEAD_OID"
+      rc=$?
+      set -e
+      ;;
+    missing)
+      echo "  ℹ️  削除前の照合（git ls-remote）: origin に $PR_HEAD が無いため、削除 push は行いません。"
+      rc=2
+      ;;
+    mismatch)
+      echo "  ℹ️  削除前の照合（git ls-remote）: origin の現 OID ${PR_HEAD_VERDICT_DETAIL} ≠ PR #$PR_NUM の head ${PR_HEAD_OID} のため、削除 push は行いません（push しても lease に拒否される）。"
+      rc=3
+      ;;
+    *)
+      printf '削除前の照合（git ls-remote --exit-code）に失敗したため、削除 push は行っていません: %s\n' \
+        "$PR_HEAD_VERDICT_DETAIL" > "$WORK_TMP/last_push_error"
+      rc=1
+      ;;
+  esac
   case "$rc" in
     0)
       echo "  ✓ removed: $PR_HEAD"
@@ -2091,7 +2125,8 @@ fi
 #   3. 保護ブランチ名でない
 #   4. open PR の head として再利用されていない
 # 削除自体も --force-with-lease で「照合した OID のときだけ」実行する（TOCTOU 対策）。
-# 削除は delete_remote_branch_with_lease（SKIP_SIMPLE_GIT_HOOKS=1）経由。
+# 削除は delete_remote_branch_with_lease（SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0）経由。
+# 候補は直前の ls-remote 一覧に載った (名前, OID) なので、Step 4 の事前照合は重ねない。
 # ガード情報の取得に失敗している場合は Step 6 全体をスキップする（fail-closed）
 
 echo ""

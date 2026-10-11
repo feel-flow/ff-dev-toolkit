@@ -1046,7 +1046,7 @@ esac
 
 ゲート通過後にマージする。**Issue を閉じてよいか（`Closes` 運用）／open のまま維持するか（`Refs` 運用）でテンプレートを使い分ける**:
 
-**マージ前に `git worktree list` で base ブランチの保持を確認する**。`gh pr merge --delete-branch` はマージ成功後にローカルで base（`develop` 等）へ切り替えようとするため、base が他 worktree に保持されていると **PR はマージ済みなのにリモートブランチ削除まで到達せずに失敗**する（エラーは worktree の話しかせず、リモートブランチが残ったことに気付けない）。`finish.sh precheck` はこの保持を `git worktree list --porcelain` で実測し、保持されていれば `--delete-branch` を付けない merge コマンドへ、merge の成功時だけ走るリモートブランチ削除（`&& git push origin --force-with-lease=refs/heads/<head>:<OID> :refs/heads/<head>`）を繋いだ 1 コマンドを生成する（`DELETE_BRANCH_MODE=separate-push`）。手動で行う場合の分割手順:
+**マージ前に `git worktree list` で base ブランチの保持を確認する**。`gh pr merge --delete-branch` はマージ成功後にローカルで base（`develop` 等）へ切り替えようとするため、base が他 worktree に保持されていると **PR はマージ済みなのにリモートブランチ削除まで到達せずに失敗**する（エラーは worktree の話しかせず、リモートブランチが残ったことに気付けない）。`finish.sh precheck` はこの保持を `git worktree list --porcelain` で実測し、保持されていれば `--delete-branch` を付けない merge コマンドへ、merge の成功時だけ走るリモートブランチ削除（`&& SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 git push origin --force-with-lease=refs/heads/<head>:<OID> :refs/heads/<head>`）を繋いだ 1 コマンドを生成する（`DELETE_BRANCH_MODE=separate-push`）。手動で行う場合の分割手順:
 
 ```bash
 # base が他 worktree に保持されている場合の分割手順

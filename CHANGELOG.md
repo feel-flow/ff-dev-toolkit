@@ -20,6 +20,13 @@
 
 ## [Unreleased]
 
+## [0.149.2] - 2026-10-11
+
+### 修正
+
+- `/merge-cleanup` の通常実行が、既に消えた head ブランチにも削除 push を試みていた。消えた ref への削除 push も pre-push hook を起動し、git は更新する ref が無いので hook へ空の stdin を渡すため、導入先の「削除だけならスキップ」判定が効かず、pre-push のフルゲート（実測で約 10〜12 分）が走っていた。削除 push の前に `--dry-run` と同じ判定（`git ls-remote --exit-code`）で ref の実在と OID 一致を確かめ、ref が無い・OID が違う・照合できないときは push しないようにした（照合の失敗は「消えた」と推測せず失敗として記録する）。報告: https://github.com/feel-flow/ff-dev-toolkit/issues/137
+- 削除 push の環境に `HUSKY=0` を足した（従来は `SKIP_SIMPLE_GIT_HOOKS=1` だけで、husky の導入先では pre-push の本体が走っていた）。`/close-issue` の precheck（`finish.sh precheck`）が生成する merge コマンドの削除 push にも、同じ `SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0` を付けた
+
 ## [0.149.1] - 2026-10-10
 
 ### 修正

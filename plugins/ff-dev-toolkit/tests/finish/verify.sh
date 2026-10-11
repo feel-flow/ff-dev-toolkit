@@ -777,7 +777,7 @@ run_finish "$WORK" precheck 7
 if has_line "$OUT" "DELETE_BRANCH_MODE=separate-push" && has_line "$OUT" "BASE_HELD_BY=" \
   && has_text "$OUT" "gh pr merge 7 --squash --match-head-commit ${HEAD_OID}" && ! has_text "$OUT" "--delete-branch" \
   && has_line "$OUT" "HEAD_DELETE=lease" \
-  && has_text "$OUT" "git push origin '--force-with-lease=refs/heads/feature/#7-x:${HEAD_OID}' ':refs/heads/feature/#7-x'" \
+  && has_text "$OUT" "&& SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 git push origin '--force-with-lease=refs/heads/feature/#7-x:${HEAD_OID}' ':refs/heads/feature/#7-x'" \
   && ! has_text "$OUT" "--delete "; then
   ok "E1: base を別 worktree が保持していれば --delete-branch 無し + 別行の lease 付き削除（照合した先端 OID と一致するときだけ消える）"
 else
@@ -787,16 +787,23 @@ fi
 E_CMD="$(printf '%s\n' "$OUT" | awk '/^MERGE_COMMAND_BEGIN$/ { c = 1; next } /^MERGE_COMMAND_END$/ { c = 0 } c')"
 mkdir -p "$TMP/chainbin"
 printf '#!/usr/bin/env bash\nexit "${CHAIN_GH_RC:?}"\n' >"$TMP/chainbin/gh"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"${CHAIN_GIT_LOG:?}"\n' >"$TMP/chainbin/git"
+# E4b: 削除 push が受け取った hook 抑止 env も残す（公開 ff-dev-toolkit#137）
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"${CHAIN_GIT_LOG:?}"\nprintf "%%s|%%s\\n" "${SKIP_SIMPLE_GIT_HOOKS-unset}" "${HUSKY-unset}" >>"${CHAIN_GIT_LOG:?}.env"\n' >"$TMP/chainbin/git"
 chmod +x "$TMP/chainbin/gh" "$TMP/chainbin/git"
-: >"$TMP/chain-fail.log"; : >"$TMP/chain-ok.log"
+: >"$TMP/chain-fail.log"; : >"$TMP/chain-ok.log"; : >"$TMP/chain-ok.log.env"
 ( CHAIN_GH_RC=1 CHAIN_GIT_LOG="$TMP/chain-fail.log" PATH="$TMP/chainbin:$PATH" bash -c "$E_CMD" ) >/dev/null 2>&1 || true
-( CHAIN_GH_RC=0 CHAIN_GIT_LOG="$TMP/chain-ok.log" PATH="$TMP/chainbin:$PATH" bash -c "$E_CMD" ) >/dev/null 2>&1 || true
+# 呼び出し元の env を持ち込まない（外で HUSKY=0 が export されていると E4b が空振りする）
+( CHAIN_GH_RC=0 CHAIN_GIT_LOG="$TMP/chain-ok.log" PATH="$TMP/chainbin:$PATH" env -u SKIP_SIMPLE_GIT_HOOKS -u HUSKY bash -c "$E_CMD" ) >/dev/null 2>&1 || true
 if [ ! -s "$TMP/chain-fail.log" ] \
   && has_line "$(cat "$TMP/chain-ok.log")" "push origin --force-with-lease=refs/heads/feature/#7-x:${HEAD_OID} :refs/heads/feature/#7-x"; then
   ok "E4: 生成した merge コマンドを実走すると、gh pr merge が非 0 の回は git push（ブランチ削除）が走らず、0 の回だけ走る"
 else
   bad "E4: ブランチ削除が merge の成功に条件付けられていない: cmd=${E_CMD} / fail-log=$(cat "$TMP/chain-fail.log") / ok-log=$(cat "$TMP/chain-ok.log")"
+fi
+if has_line "$(cat "$TMP/chain-ok.log.env")" "1|0"; then
+  ok "E4b: 生成した削除 push は SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 で走る（consumer の simple-git-hooks / husky のフルゲートを起動しない）"
+else
+  bad "E4b: 削除 push に hook 抑止 env が届いていない: env-log=$(cat "$TMP/chain-ok.log.env")"
 fi
 # fork の PR: origin の同名ブランチは別物なので削除コマンドを生成しない
 PR_CROSS=true write_pr_json "Closes #${PRN}" '[]'
