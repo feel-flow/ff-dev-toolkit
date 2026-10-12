@@ -109,6 +109,7 @@ fetch が失敗した回は、停止メッセージの末尾へ git が出した
 
 - ヘッダ行・区切り行を持たないメタ 4 行は GitHub 上ではテーブルとして描画されない（AI ファースト文書として意図した仕様。詳細は PLAYBOOK.md §エントリテンプレート）
 - 旧テーブル形式（`| フィールド | 値 |` + Insight/Context/Action）のエントリは**読み取り互換として共存**させる。重複時の `Helpful` +1 は、旧形式なら `| Helpful | n |` 行、新形式なら `| Helpful | n | Harmful | m |` 行の n を +1 する
+- Changelog の `#### カウンター更新` には **ID ごとに 1 行**を書く（`- ACE-X: Helpful +1（理由）` / `- ACE-X: Helpful +1 ×N（理由）` / `- ACE-X: Helpful +1 — 理由`）。同じ理由でも ID が 3 つなら 3 行にする。複数 ID を `- Helpful +1: ACE-A / ACE-B（理由）` の形へ束ねると Jev の評価セット生成器（`scripts/jev/build-ace-eval-sets.ts` の `parseChangelog`）が exit 2 で止まり、書き込み口の `add` が同じ判定（`scripts/lib/playbook-changelog-functions.sh`）でその行を名指しして止まる。`#### 変更` / `#### 更新` など他の見出しの配下は読まないが、カウンター更新を他の見出しへ逃がさない
 - 既存の ID なしエントリ（`## [Pattern] ...` 形式等）や旧連番エントリ（3 桁・4 桁以上とも）は改名・書き換えしない（エントリID規則「既存 ID の扱い」）。採番ルールの SSOT は PLAYBOOK.md §エントリID規則
 - 機械同期する場合はプロジェクトの `ace:bump-playbook-frontmatter`（`--write --bump-version`。**minor +1**）。count のみ直すなら `ace:sync-playbook-frontmatter`。`--write` は変更済みなのに `changeImpact` が欠落している場合 `medium` を自動追記する（`/validate-docs` が「変更済みなのに未記録」を赤にするため放置しない）
 

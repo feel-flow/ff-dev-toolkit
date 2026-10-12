@@ -76,6 +76,7 @@
 # 空振り検出: jev-eval.sh の空セット検査を無効化すると (E1) が赤になる（2026-09-20 実測。後段の「有効な行なし」検査も exit 2 なので rc では見分けられず、E1 は「評価セットが空です」の文言一致で赤にしている）。
 # 空振り検出: 合成 Playbook の Changelog 見出しを別綴りにすると (H14) が「行が 1 件も読めない」を要求して赤になる（2026-09-20 実測。0 件を「セット 0 件で成功」へ倒さない）。
 # 空振り検出: 合成 Playbook の Helpful 行を契約外の括弧にすると (H15) が赤になる（2026-09-20 実測。読めない行を黙って落として母集団を縮めない）。
+# 空振り検出: 書き込み口の shell 判定（scripts/lib/playbook-changelog-functions.sh）で見出し drift の 0 行・`## Changelog` 無しを ok へ倒すと (H23 drift / H23 nochangelog) が生成器の判定不能（exit 2）と食い違って赤になる（2026-10-11 実測。契約形の行 0 件を緑へ倒さない）。
 # 空振り検出: 判断点生成器の判定セル分類で読めない形を achieved へ倒すと (I11) が赤になる（2026-09-21 実測。150 件中 1 件失敗。読めない判定を達成にしない）。
 # 空振り検出: 判断点生成器の「セット 0 行なら exit 2」を外すと (I10 / I29) が赤になる（2026-09-21 実測。150 件中 2 件失敗。全 Issue が読めないのを成功にしない）。
 # 空振り検出: 同梱の assess-impact fixtures ディレクトリを空にすると (I26) が「case 0 件 = exit 2」側へ倒れて赤になる（2026-09-21 実測。150 件中 1 件失敗。fixture の消失を 0 件の緑にしない）。
@@ -810,6 +811,51 @@ EOF
       else bad "H22 rc=$RC out=$OUT err=$ERR"; fi
     else
       echo "  ○ skip: リポジトリ側の docs/08-knowledge/PLAYBOOK.md が無いため H22 だけ実行していません（配布先 checkout。合成 fixture の H1〜H21 は実行済み）"
+    fi
+    # H23 書き込み口の shell 判定（scripts/lib/playbook-changelog-functions.sh。knowledge-commit.sh add が呼ぶ）は
+    #     parseChangelog と同じ入力で同じ判定になる（Issue `#2107`）。合成 fixture（契約形 / 契約外の括弧 / 束ね形 /
+    #     見出し drift / Changelog 無し）と実 PLAYBOOK を両方へ通し、生成器の終了コード + stderr の文言から分けた判定と
+    #     shell 側の VERDICT を突き合わせる。期待値も固定する（両方が同じ向きに壊れても緑にしない）
+    PBLIB="$PLUGIN_ROOT/scripts/lib/playbook-changelog-functions.sh"
+    mkdir -p "$WORK/bundled/playbook"; cp "$SYN/playbook/testing.md" "$WORK/bundled/playbook/"
+    sed 's/^- ACE-10-1: Helpful +1（.*$/- Helpful +1: ACE-10-1 \/ ACE-10-2（束ね形）/' "$SYN/PLAYBOOK.md" > "$WORK/bundled/PLAYBOOK.md"
+    if [ ! -f "$PBLIB" ]; then
+      bad "H23 書き込み口の判定 lib が無い: $PBLIB"
+    elif ! grep -q '^- Helpful +1: ACE-10-1 / ACE-10-2' "$WORK/bundled/PLAYBOOK.md"; then
+      bad "H23 束ね形 fixture を作れていない（sed のアンカーが合成 Playbook の Helpful 行に当たらない）"
+    else
+      h23_case() { # $1=ラベル $2=PLAYBOOK $3=期待判定（ok / unreadable-helpful / no-changelog / no-rows）
+        local gen_verdict shell_verdict shell_rc=0 want_rc
+        gen --playbook "$2" --out "$WORK/h23-$1"
+        if [ "$RC" -eq 0 ]; then gen_verdict=ok
+        elif [ "$RC" -eq 2 ] && grep -q 'Helpful +1 を含むのに契約の形で読めない' <<<"$ERR"; then gen_verdict=unreadable-helpful
+        elif [ "$RC" -eq 2 ] && grep -q 'Changelog がありません' <<<"$ERR"; then gen_verdict=no-changelog
+        elif [ "$RC" -eq 2 ] && grep -q '1 件も読めません' <<<"$ERR"; then gen_verdict=no-rows
+        else gen_verdict="other(rc=$RC)"; fi
+        shell_verdict="$(
+          # shellcheck source=../../scripts/lib/playbook-changelog-functions.sh
+          . "$PBLIB"
+          if ff_playbook_changelog_helpful_check "$2" >/dev/null; then rc=0; else rc=$?; fi
+          printf '%s' "${FF_PLAYBOOK_CHANGELOG_VERDICT:-（空）}"
+          exit "$rc"
+        )" || shell_rc=$?
+        case "$3" in ok) want_rc=0 ;; unreadable-helpful) want_rc=1 ;; *) want_rc=2 ;; esac
+        if [ "$gen_verdict" = "$3" ] && [ "$shell_verdict" = "$3" ] && [ "$shell_rc" -eq "$want_rc" ]; then
+          ok "H23 ${1}: 生成器と書き込み口の判定が一致（${3} / shell rc=${shell_rc}）"
+        else
+          bad "H23 ${1}: 生成器=${gen_verdict} 書き込み口=${shell_verdict}（rc=${shell_rc}） 期待=${3}"
+        fi
+      }
+      h23_case synth "$SYN/PLAYBOOK.md" ok
+      h23_case badhelp "$WORK/badhelp/PLAYBOOK.md" unreadable-helpful
+      h23_case bundled "$WORK/bundled/PLAYBOOK.md" unreadable-helpful
+      h23_case drift "$WORK/drift/PLAYBOOK.md" no-rows
+      h23_case nochangelog "$WORK/nochangelog/PLAYBOOK.md" no-changelog
+      if [ -f "$PLAYBOOK_REAL" ]; then
+        h23_case real "$PLAYBOOK_REAL" ok
+      else
+        echo "  ○ skip: リポジトリ側の docs/08-knowledge/PLAYBOOK.md が無いため H23 real だけ実行していません（配布先 checkout。合成 fixture の 5 件は実行済み）"
+      fi
     fi
   fi
 fi

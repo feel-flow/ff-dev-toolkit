@@ -15,6 +15,8 @@
 #      素通しさせる形は zsh で NOMATCH にならない（zsh が無いホストでは skip）
 #   M. 変異検出
 #   P. PostToolUse（Bash）: 同じ判定の未引用 scalar を additionalContext でエージェントへ返し、止めない
+#   X. equals / scalar expansion（Issue `#1942`）: `===` の equals 展開（not found）による中断と未引用 scalar の単語分割差を判定し、
+#      zsh が無いホストでは実シェルでの確認だけを Z 系と同じ検査単位の skip にする（suite 全体の skip にしない）
 #
 # 変異検出: hook のホスト判定（zsh | zsh-*) の分岐）を bash にも当たるよう書き換えたコピーは AC4（bash ホストでは発火しない）と同形の検査を赤にする（M1）。
 # 変異検出: 判定ヘルパの `case` パターン除外（cs[d] == 3 の語を読み飛ばす行）を消したコピーは N 系の case パターン検査と同形の検査を赤にする（M2）。
@@ -34,7 +36,7 @@
 #
 # 空振り検出: expansion の不在・関数欠落・awk失敗は判定不能、空出力変異は陽性対照で赤。
 # 空振り検出: PostToolUse は実行済みなので判定器不在・走査失敗（FF_ZSH_GLOB_AWK=false）・JSON でない入力のどれでも止めず（fail-soft）、判定器不在と走査失敗は `$` を含む呼び出しに限り「未検査 / 判定不能」を additionalContext で返して検出 0 件と区別する（P4）。scalar 判定を消した scanner の変異は PostToolUse の陽性対照を黙らせる（P5）。
-# run-all-required: no — jq 不在での skip を許容する（兄弟の hook suite と同じ判断）
+# run-all-required: no — jq 不在での skip を許容する（兄弟の hook suite と同じ判断。suite 全体の skip 経路は jq 不在だけで、zsh 不在は Z / X 系の検査単位 skip）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -551,7 +553,9 @@ if command -v zsh >/dev/null 2>&1; then
   bout="$(bash -c 'P="a b"; set -- $P; echo $#')"
   if [ "$zout" = 1 ] && [ "$bout" = 2 ]; then ok 'actual scalar split differs zsh=1/bash=2'; else bad 'scalar splitting behavior'; fi
 else
-  echo '○ skip: zsh 不在のため equals/scalar の実シェル検証は未実施'
+  # 検査単位の skip。行頭（列 0）の `○ skip` は run-all に suite 全体の skip と読まれ、実際に走った
+  # X 系の検査が報告から消える（公開週次 CI では許容名簿外の skip として赤。Issue `#2102`）。
+  echo '  ○ skip: zsh が無いため X 系の実シェル検証（equals / scalar の zsh での実測）は未検査'
 fi
 
 for c in 'echo ===' 'echo $P'; do

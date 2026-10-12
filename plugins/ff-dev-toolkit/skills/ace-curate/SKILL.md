@@ -128,7 +128,7 @@ domainでは同梱契約の4行形式でEvidence / Verification / Distill-Toを�
 
 #### 4-c / 4-d / 4-e. Frontmatter・Changelog・行数バジェット
 
-`version` は新規エントリ追加で **minor +1**（カウンター更新のみは不変）、`updated` を今日へ、`changeImpact` は `medium`。`ace_entry_count` は merged tree の live エントリ実数から再計算する。Changelog は `## Changelog` 先頭へ当該版のブロック（version を上げたのに Changelog が空、を禁止）。各エントリのブロック行数は **15 行以内**（`<!-- ace-line-budget-exception: 理由 -->` 付きでも **30 行以内**）を自分で数える。
+`version` は新規エントリ追加で **minor +1**（カウンター更新のみは不変）、`updated` を今日へ、`changeImpact` は `medium`。`ace_entry_count` は merged tree の live エントリ実数から再計算する。Changelog は `## Changelog` 先頭へ当該版のブロック（空を禁止）。`#### カウンター更新` は 1 行 1 ID。各エントリのブロック行数は **15 行以内**（`<!-- ace-line-budget-exception: 理由 -->` 付きでも **30 行以内**）を自分で数える。
 
 #### 4-f. 同期検証（必須）
 

@@ -18,6 +18,8 @@
 # 変異検出: add の commit-msg hook ドライランの呼び出しを外すと 14 が赤（保留記録が作られ stage が残る）、commit 側を外すと 15 が赤、prepare-commit-msg の呼び出しを外すと 16 が赤、add のドライランが保留の type を引き継がないと 15 が赤、commit の KNOWLEDGE_SUBJECT を hook 前の件名に戻すと 16 が赤（2026-09-30 実測）。
 # 空振り検出: 6b の別名ケースは、Windows の Git Bash で fixture の別名（mount の /tmp/… とドライブの /c/…）を作れないと赤（同じ綴りへ戻して緑にしない）。他の OS では別名を作れないので、理由付きの部分 skip を出す（2026-10-04）。
 # 変異検出: knowledge-commit.sh を develop の版（cwd 起点の cd -P + pwd -P の前方一致）へ戻すと、Windows の Git Bash で 6b の別名ケースが赤。add のトップレベル照合を外すと 6c が赤（linked worktree・兄弟のリポジトリの同じ相対位置のパスを受理する）（2026-10-04 実測）。
+# 空振り検出: 17 の fixture で `## Changelog` を落とす・`#### 追加` / `#### カウンター更新` の見出しを別綴りにすると、書き込み口は契約形の行 0 件を緑へ倒さず exit 2（判定不能）で止まり stage も保留記録も作らない（2026-10-11 実測。lib の END で no-rows を ok へ倒すと 17 の判定不能ケースが赤）。
+# 変異検出: knowledge-commit.sh の add から Changelog 判定の呼び出しを外すと 17 の束ね形ケース（直接・finish.sh 経由）が赤、lib の Helpful 正規表現から `×N` の選択肢を外すと 17 の契約形ケースが赤、節の判定を外して全見出しの配下を読むと 17 の `#### 変更` ケースが赤（2026-10-11 実測）。
 
 set -euo pipefail
 
@@ -491,7 +493,9 @@ else
     new_repo() { # $1=dir [$2=name $3=email]
       ff_git_fixture_init "$1" ${2:+"$2"} ${3:+"$3"} || return 1
       mkdir -p "$1/docs/08-knowledge/playbook"
-      printf '%s\n' '# playbook' >"$1/docs/08-knowledge/PLAYBOOK.md"
+      # 書き込み口は stage 対象の PLAYBOOK.md の Changelog を parseChangelog と同じ形で読む（17）。`## Changelog` が無い・
+      # 追加 / カウンター更新の行が 0 件の fixture は判定不能（exit 2）で止まるので、基線に版ブロックと追加行を 1 件置く
+      printf '%s\n' '# playbook' '' '## Changelog' '' '### [1.0.0] - 2026-01-01' '' '#### 追加' '' '- ACE-0-1: 基線' >"$1/docs/08-knowledge/PLAYBOOK.md"
       printf '%s\n' '# a' >"$1/docs/08-knowledge/playbook/a.md"
       printf '%s\n' '# obs' >"$1/docs/08-knowledge/OBSERVATIONS.md"
       printf '%s\n' 'x' >"$1/unrelated.txt"
@@ -847,6 +851,67 @@ else
     else
       echo "  ✗ prepare-commit-msg を通したドライラン・件名の出力が期待と違う（add rc=${rc} commit rc=${rc2} 件名=$(git log -1 --format=%s) add出力=${out} commit出力=${out2:-}）" >&2; exit 1
     fi
+
+    # 17. stage 対象の PLAYBOOK.md の Changelog「#### カウンター更新」配下の Helpful +1 行は、Jev の生成器
+    #     （scripts/jev/build-ace-eval-sets.ts の parseChangelog）が受理する 1 行 1 ID の契約形だけを通す（Issue `#2107`）。
+    #     束ね形は exit 1 で行番号つきに名指しして stage も保留記録も作らない。契約形 3 種は通る。`#### 変更` など
+    #     対象外の見出しの配下は読まない（実 PLAYBOOK の既存行を赤にしない）。`## Changelog` 無し・見出し drift で
+    #     行が 0 件は判定不能（exit 2）。PLAYBOOK.md 以外（OBSERVATIONS.md）は見ない。finish.sh 経由も同じ判定
+    V="$KC_TMP/helpful"
+    new_repo "$V" "Knowledge Test" "knowledge-test@example.com"
+    cd "$V" || exit 1
+    pb() { printf '%s\n' '# playbook' '' '## Changelog' '' '### [1.1.0] - 2026-01-02' '' "$@" >docs/08-knowledge/PLAYBOOK.md; }
+    pend="$(git rev-parse --absolute-git-dir)/ff-knowledge-pending"
+    pb '#### カウンター更新' '' '- Helpful +1: ACE-1-1 / ACE-1-2（レビュー対応で参照）、ACE-1-3（設計で参照）'
+    rc=0; err="$(kc add --source ace --id ACE-17-1 --summary "要約X" -- docs/08-knowledge/PLAYBOOK.md 2>&1)" || rc=$?
+    if [ "$rc" -eq 1 ] && [[ "$err" == *"docs/08-knowledge/PLAYBOOK.md:9: - Helpful +1: ACE-1-1 / ACE-1-2"* ]] && [[ "$err" == *"1 行 1 ID"* ]] \
+      && [ ! -e "$pend" ] && [ -z "$(git diff --cached --name-only)" ]; then
+      echo "  ✓ 17: カウンター更新配下の束ね形（複数 ID を 1 行）は exit 1 で行番号つきに名指しし、stage も保留記録も作らない"
+    else
+      echo "  ✗ 17: 束ね形を止めない・名指ししない・痕跡を残す（rc=${rc} pending=$([ -e "$pend" ] && echo あり || echo なし) staged=$(git diff --cached --name-only) err=${err}）" >&2; exit 1
+    fi
+    rc=0; err="$(FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$FINISH" knowledge-commit add --source ace --id ACE-17-1 --summary "要約X" -- docs/08-knowledge/PLAYBOOK.md 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ] && [[ "$err" == *"docs/08-knowledge/PLAYBOOK.md:9: - Helpful +1: ACE-1-1 / ACE-1-2"* ]] && [ ! -e "$pend" ] && [ -z "$(git diff --cached --name-only)" ]; then
+      echo "  ✓ 17: finish.sh knowledge-commit add 経由でも同じ行を名指しして止まる（rc=${rc}）"
+    else
+      echo "  ✗ 17: finish.sh 経由で束ね形が通る・名指ししない（rc=${rc} err=${err}）" >&2; exit 1
+    fi
+    pb '#### カウンター更新' '' '- ACE-1-1: Helpful +1（レビュー対応で参照）' '- ACE-1-2: Helpful +1 ×2（設計で参照）' '- ACE-1-3: Helpful +1 — 実装で参照'
+    rc=0; out="$(kc add --source ace --id ACE-17-2 --summary "要約Y" -- docs/08-knowledge/PLAYBOOK.md 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ] && [[ "$out" == *"KNOWLEDGE_PENDING=1"* ]] && [ "$(git diff --cached --name-only)" = 'docs/08-knowledge/PLAYBOOK.md' ]; then
+      echo "  ✓ 17: 契約形 3 種（（理由）/ ×N（理由）/ — 理由）は通り、従来どおり stage と保留記録を作る"
+    else
+      echo "  ✗ 17: 契約形を止めた（rc=${rc} out=${out}）" >&2; exit 1
+    fi
+    kc discard >/dev/null; git reset -q
+    pb '#### 追加' '' '- ACE-1-9: 追加行' '' '#### 変更' '' '- Helpful +1: ACE-1-1 / ACE-1-2（対象外の見出しの配下）'
+    rc=0; out="$(kc add --source ace --id ACE-17-3 --summary "要約Z" -- docs/08-knowledge/PLAYBOOK.md 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ] && [[ "$out" == *"KNOWLEDGE_PENDING=1"* ]]; then
+      echo "  ✓ 17: カウンター更新以外の見出し（#### 変更）配下の束ね形は読まない（parseChangelog と同じ範囲）"
+    else
+      echo "  ✗ 17: 対象外の見出しの配下を赤にした（rc=${rc} out=${out}）" >&2; exit 1
+    fi
+    kc discard >/dev/null; git reset -q
+    printf '%s\n' '# playbook' '' '- Helpful +1: ACE-1-1 / ACE-1-2（Changelog の外）' >docs/08-knowledge/PLAYBOOK.md
+    rc=0; err="$(kc add --source ace --id ACE-17-4 --summary "要約W" -- docs/08-knowledge/PLAYBOOK.md 2>&1)" || rc=$?
+    rc2=0
+    pb '#### Counters' '' '- ACE-1-1: Helpful +1（見出しの綴りが違う）'
+    err2="$(kc add --source ace --id ACE-17-5 --summary "要約V" -- docs/08-knowledge/PLAYBOOK.md 2>&1)" || rc2=$?
+    if [ "$rc" -eq 2 ] && [[ "$err" == *"Changelog がありません"* ]] && [ "$rc2" -eq 2 ] && [[ "$err2" == *"1 件も読めません"* ]] \
+      && [ ! -e "$pend" ] && [ -z "$(git diff --cached --name-only)" ]; then
+      echo "  ✓ 17: ## Changelog が無い・見出し drift で行が 0 件の PLAYBOOK.md は判定不能（exit 2）で止め、stage も保留記録も作らない"
+    else
+      echo "  ✗ 17: 判定不能の入力を通した（no-changelog rc=${rc} / drift rc=${rc2}）" >&2; exit 1
+    fi
+    git checkout -q -- docs/08-knowledge/PLAYBOOK.md
+    printf '%s\n' '- Helpful +1: ACE-1-1 / ACE-1-2（台帳の行は対象外）' >>docs/08-knowledge/OBSERVATIONS.md
+    rc=0; out="$(kc add --source obs --id OBS-17 --summary "要約U" -- docs/08-knowledge/OBSERVATIONS.md 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ] && [[ "$out" == *"KNOWLEDGE_PENDING=1"* ]]; then
+      echo "  ✓ 17: PLAYBOOK.md 以外（OBSERVATIONS.md）の束ね形は検査の対象外"
+    else
+      echo "  ✗ 17: OBSERVATIONS.md を検査した（rc=${rc} out=${out}）" >&2; exit 1
+    fi
+    kc discard >/dev/null; git reset -q; git checkout -q -- docs/08-knowledge
 
     # 7. 合成 identity（テスト fixture の既定 identity）では commit しない。保留は残す
     F="$KC_TMP/fixture-id"

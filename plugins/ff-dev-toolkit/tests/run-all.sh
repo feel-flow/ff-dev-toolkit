@@ -575,7 +575,8 @@ else
     # PreToolUse（Bash）の zsh 未引用 glob ガード（hooks/guard-zsh-glob.sh、Issue `#1774`）。
     # zsh ホストで `--flag=<未引用 glob>` を deny し、引用済み・一般のパス glob・case パターン・
     # [[ ]]・noglob・heredoc 本文・bash ホストは素通しすることを stdin JSON fixture で固定し、
-    # 述語が真陽性とした形が実際の zsh で NOMATCH になることも実測する（zsh 不在なら Z 系のみ skip）。
+    # 述語が真陽性とした形が実際の zsh で NOMATCH になることも実測する（zsh 不在なら Z / X 系の
+    # 実シェル検証だけを検査単位で skip する。suite 全体の skip は jq 不在だけ）。
     "$SCRIPT_DIR/guard-zsh-glob/verify.sh"
     # PreToolUse（Bash）の literal-write ガード（hooks/guard-literal-write.sh、Issue `#1787`）。
     # シェルの値が別言語のプログラムへ届かずファイル本文が無音で変わる形（perl -i の単一引用符

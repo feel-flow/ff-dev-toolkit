@@ -223,10 +223,13 @@ ace_entry_count: N
 #### カウンター更新
 
 - ACE-YYY: Helpful +1（[理由]）
+- ACE-ZZZ: Helpful +1 ×2（[理由]）
+- ACE-WWW: Helpful +1 — [理由]
 ```
 
 - カウンター更新が無ければ `#### カウンター更新` は省略
 - カウンター更新のみの curate では新版を作らず、最新版ブロックへ追記する
+- `#### カウンター更新` 配下は **1 行 1 ID**（上の 3 形のいずれか）。複数 ID を `- Helpful +1: ACE-A / ACE-B（理由）` のように 1 行へ束ねない — Jev の評価セット生成器（ff-dev-toolkit 同梱 `scripts/jev/build-ace-eval-sets.ts`）がその行を読めず exit 2 で止まり、「4. コミット」の `finish.sh knowledge-commit add` も同じ判定で行を名指しして止まる（`#### 変更` など他の見出しの配下は読まない）
 
 #### 4. コミット
 
@@ -403,6 +406,12 @@ ACE_REUSE_STALE_DAYS=120 npm run ace:reuse-report
 ---
 
 ## Changelog
+
+### [1.8.0] - 2026-10-11
+
+#### 変更
+
+- 「3b. Changelog の更新」へ `#### カウンター更新` の 1 行 1 ID の契約形（3 形）を明記し、複数 ID を 1 行へ束ねた行は Jev の評価セット生成器と `finish.sh knowledge-commit add` が止めることを書いた（束ね形がリリースの全件ゲートまで届いて赤になった）
 
 ### [1.7.0] - 2026-09-29
 

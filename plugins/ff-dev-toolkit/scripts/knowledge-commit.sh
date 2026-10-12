@@ -261,6 +261,10 @@ identity_lib="$self_dir/lib/commit-identity-functions.sh"
 [[ -f "$identity_lib" && ! -L "$identity_lib" ]] || die_env "identity 判定 lib が無いか symlink です: $identity_lib"
 # shellcheck source=lib/commit-identity-functions.sh
 . "$identity_lib"
+playbook_lib="$self_dir/lib/playbook-changelog-functions.sh"
+[[ -f "$playbook_lib" && ! -L "$playbook_lib" ]] || die_env "PLAYBOOK Changelog 判定 lib が無いか symlink です: $playbook_lib"
+# shellcheck source=lib/playbook-changelog-functions.sh
+. "$playbook_lib"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || die_env "git リポジトリの中で実行してください（cwd: ${PWD}）"
 # git が返した綴りのまま控える。渡されたパスがリポジトリ内かは、同じく git の出力どうしで比べる（add）
@@ -451,6 +455,29 @@ case "$cmd" in
       [[ "$p_inside" == true && "$p_top" == "$repo_top" ]] \
         || die_env "パスがリポジトリの外です: ${p}（パスの作業ツリー: ${p_top:-なし} / このリポジトリ: ${repo_top}）"
       rel_paths+=("${p_prefix}$(basename -- "$p")")
+    done
+    # stage と保留記録より前に、stage 対象の PLAYBOOK.md の Changelog「#### カウンター更新」配下の Helpful +1 行が
+    # Jev の契約の形（1 行 1 ID。lib/playbook-changelog-functions.sh）かを見る。契約外の行はここで止めないと、
+    # 全件ゲート（tests/jev-adapter H22）まで届かず、リリースの 1 周（約 10 分 + 再実行）を払う（Issue `#2107`）。
+    # 判定不能（## Changelog が無い・行が 1 件も読めない）も素通しにしない — parseChangelog が exit 2 にする入力
+    for p in "${rel_paths[@]}"; do
+      [[ "${p##*/}" == PLAYBOOK.md ]] || continue
+      playbook_out="$(ff_playbook_changelog_helpful_check "$repo_root/$p")" && continue
+      playbook_rc=$?
+      if [[ "$playbook_rc" -eq 1 ]]; then
+        {
+          echo "✗ ${p} の Changelog「#### カウンター更新」配下に、Helpful +1 を含むのに契約の形で読めない行があります（stage も保留記録も作っていません）:"
+          # パスを sed のスクリプトへ埋め込まない（`|` や `\` を含むパスで式が壊れる）。1 行ずつ前置して出す
+          while IFS= read -r playbook_line; do
+            [[ -n "$playbook_line" ]] || continue
+            printf '    %s:%s\n' "$p" "$playbook_line"
+          done <<<"$playbook_out"
+          echo "  契約の形は 1 行 1 ID: \`- ACE-X: Helpful +1（理由）\` / \`- ACE-X: Helpful +1 ×N（理由）\` / \`- ACE-X: Helpful +1 — 理由\`。"
+          echo "  複数 ID を 1 行へ束ねず（\`- Helpful +1: ACE-A / ACE-B（…）\` は不可）、ID ごとに行を分けてから add し直してください（正本: scripts/jev/build-ace-eval-sets.ts の parseChangelog）"
+        } >&2
+        exit 1
+      fi
+      die_env "${p} の Changelog を判定できません: ${playbook_out}（stage も保留記録も作っていません）"
     done
     # stage と保留記録より前に、この add の後で commit が作る件名を commit-msg hook へ通す（通らない件名の
     # 保留を作らない）。既存の保留（同じ source と ID は 1 件）と、add で記録済みの commit type を合わせる

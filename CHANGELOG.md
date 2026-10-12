@@ -20,6 +20,18 @@
 
 ## [Unreleased]
 
+## [0.150.0] - 2026-10-13
+
+### 修正
+
+- `guard-zsh-glob` suite が zsh の無いホストで出していた equals / scalar の実シェル検証の skip を、行頭の `○ skip`（suite 全体の skip）からインデント付きの検査単位 skip へ直した。従来は zsh 不在の Linux ランナーで約 200 件の検査が走ったあとに suite 全体が skip と数えられ、公開リポジトリの週次 run-all が許容名簿に無い skip として赤になっていた（報告: https://github.com/feel-flow/ff-dev-toolkit/issues/131 ）。ヘッダの `run-all-required` 宣言にも、suite 全体の skip 経路が jq 不在だけであることを明記した
+- `scripts/knowledge-commit.sh add`（`finish.sh knowledge-commit add` 経由を含む）が、stage 対象の `PLAYBOOK.md` の Changelog「`#### カウンター更新`」配下に `Helpful +1` を含むのに 1 行 1 ID の契約形（`- ACE-X: Helpful +1（理由）` / `- ACE-X: Helpful +1 ×N（理由）` / `- ACE-X: Helpful +1 — 理由`）でない行があると、その行番号を名指しして exit 1 で止まり、stage も保留記録も作らない。従来は複数 ID を 1 行へ束ねた行がリリースの全件ゲート（`jev-adapter` の実 PLAYBOOK 検査）まで届いて初めて赤になっていた。`## Changelog` が無い・追加 / カウンター更新の行が 1 件も読めない PLAYBOOK は判定不能として exit 2 で止まる（Jev の評価セット生成器 `build-ace-eval-sets.ts` と同じ判定。判定の shell 再現は `scripts/lib/playbook-changelog-functions.sh`、両者の一致は `tests/jev-adapter` H23 が固定する）
+- `/ace-curate` の `SKILL.md` / `references/curate.md` と `plugins/ff-dev-toolkit/docs-template/05-operations/deployment/ace-cycle.md`「3b. Changelog の更新」に、カウンター更新の 1 行 1 ID の契約形を明記した
+
+### ドキュメント
+
+- `docs-template/05-operations/deployment/git-workflow.md` の「AIに渡す前の確認ポイント」に 4 つ目「前提の鮮度」を追加した。起票から時間が経った Issue に着手する前に、本文が名指しする経路・ファイル・部品・外部の決定を今の実装と照らし、食い違えば作り始める前に扱い（閉じる・範囲を変える・AC を直す）を確かめる
+
 ## [0.149.2] - 2026-10-11
 
 ### 修正
