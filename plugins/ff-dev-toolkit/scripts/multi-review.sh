@@ -19,7 +19,11 @@
 #                          この起動に限って指定する）/ none = ホストの判定に任せる（渡された引数どおり）。
 #                          省略は none と同じ。fast / full とレーン構成を決める `--mode` / `--cli` /
 #                          `--perspective` / `--exclude-cli` / `--exclude-perspective` の併用は exit 2
-#                          （fast は `--delegate-to-host` も exit 2 — 委譲する claude-code レーンが無い）。
+#                          （fast は `--delegate-to-host` / `=<cli>` も exit 2 — fast はレーン構成を codex-cli の comprehensive-review に固定し、委譲フラグとは併用しない。`=codex-cli` も拒否する）。
+#                          full に `--delegate-to-host=<cli>`（codex-cli / grok-cli）を添えると主が
+#                          ホストのレーンになり、主の 4 観点をホストのサブエージェントで走らせる。
+#                          副は codex-cli（ホストが Codex なら claude-code、無ければ grok-cli）（Issue `#2118`）。
+#                          拒否は何も起動しないので、前の実行の結果を読まないよう注記を stderr に添える。
 # 巡回の上限:              exec 先の multi-agent.sh の review 本体が数える（exit 4。正本は
 #                          tests/lib/review-round-counter.sh のヘッダ）。1 巡だけ通すのは
 #                          `FF_REVIEW_ROUND_ACK=1 bash …/multi-review.sh …`、無効化は
@@ -213,6 +217,17 @@ while [ $# -gt 0 ]; do
     *) ARGS+=("$1"); shift ;;
   esac
 done
+# 拒否は 1 タスクも起動しない。.review-results/ に前の実行の結果（Status: complete と当時の verdict）が
+# 残っていると、それを今回の結果として読み違える（OBS-350）。拒否のたびに同じ注記を添え、レーン指定を
+# 拒否した回だけ部分再検証の形も示す（委譲の併用を拒否した回はレーンを絞る場面ではない）
+route_reject() { # <ERROR 行の本文> [lanes]
+  echo "ERROR: $1" >&2
+  echo "  nothing was run — any files under .review-results/ are from a previous run; do not read them as this run's." >&2
+  if [ "${2:-}" = lanes ]; then
+    echo "  For a partial re-check of specific lanes, use: --route none --cli <CLI> --perspective <name>" >&2
+  fi
+  exit 2
+}
 route_rejects_lane_args() { # <route> <拒否する追加の引数...>
   local route="$1" a x
   shift
@@ -220,14 +235,12 @@ route_rejects_lane_args() { # <route> <拒否する追加の引数...>
     case "$a" in
       --mode | --mode=* | --cli | --cli=* | --perspective | --perspective=* | --exclude-cli | --exclude-cli=* \
         | --exclude-perspective | --exclude-perspective=*)
-        echo "ERROR: --route ${route} decides the lanes itself; drop ${a} (or use --route none)" >&2
-        exit 2
+        route_reject "--route ${route} decides the lanes itself; drop ${a} (or use --route none)" lanes
         ;;
     esac
     for x in "$@"; do
       if [ "$a" = "$x" ]; then
-        echo "ERROR: --route ${route} cannot be combined with ${a}" >&2
-        exit 2
+        route_reject "--route ${route} cannot be combined with ${a}"
       fi
     done
   done
@@ -235,16 +248,31 @@ route_rejects_lane_args() { # <route> <拒否する追加の引数...>
 case "$ROUTE" in
   '' | none) : ;;
   fast)
-    route_rejects_lane_args fast --delegate-to-host
+    route_rejects_lane_args fast --delegate-to-host --delegate-to-host=claude-code --delegate-to-host=codex-cli --delegate-to-host=grok-cli
     ARGS+=(--mode cross-model --cli codex-cli --perspective comprehensive-review)
     echo "ℹ️  --route fast: Codex 1 lane only (--mode cross-model --cli codex-cli --perspective comprehensive-review)" >&2
     ;;
   full)
     route_rejects_lane_args full
+    # 主レーンはホスト自身のモデル。`--delegate-to-host=<cli>`（codex-cli / grok-cli）を渡すと主が
+    # そのレーンになり、主の 4 観点をホストのサブエージェントで走らせる（claude が無い環境でも
+    # full を組める。headless の `grok -p` は typed verdict を欠きやすいので、grok を主にするのは
+    # 委譲時だけ）。副は主と違うモデルにする（Issue `#2118`）
+    full_main=claude-code
+    for a in ${ARGS[@]+"${ARGS[@]}"}; do
+      case "$a" in
+        --delegate-to-host=*) full_main="${a#--delegate-to-host=}" ;;
+      esac
+    done
+    # 副はホストと違うモデル。既定は codex-cli、ホストが Codex なら claude（導入済みなら）か grok
+    full_sub=codex-cli
+    if [ "$full_main" = codex-cli ]; then
+      if command -v claude >/dev/null 2>&1; then full_sub=claude-code; else full_sub=grok-cli; fi
+    fi
     ARGS+=(--mode pair --perspective comprehensive-review --perspective code-review --perspective error-handler-hunt
       --perspective test-analysis --perspective comment-analysis)
-    export MULTI_AGENT_REVIEW_MAIN=claude-code MULTI_AGENT_REVIEW_SUB=codex-cli MULTI_AGENT_CROSS_REVIEW=auto
-    echo "ℹ️  --route full: 5 lanes (claude-code: code-review / error-handler-hunt / test-analysis / comment-analysis + codex-cli: comprehensive-review)" >&2
+    export MULTI_AGENT_REVIEW_MAIN="$full_main" MULTI_AGENT_REVIEW_SUB="$full_sub" MULTI_AGENT_CROSS_REVIEW=auto
+    echo "ℹ️  --route full: 5 lanes (${full_main}: code-review / error-handler-hunt / test-analysis / comment-analysis + ${full_sub}: comprehensive-review)" >&2
     ;;
   *) echo "ERROR: --route must be fast|full|none (got: ${ROUTE})" >&2; exit 2 ;;
 esac

@@ -153,9 +153,12 @@ SCRIPT_NAME="$(basename "$0")"
 
 # ── オーケストレータの解決 ──────────────────────────────────────────────────────
 #
-# 探索順は FF_DEV_TOOLKIT_ROOT（環境変数）→ Codex plugin cache → Claude plugin
-# cache → 同じディレクトリのサイドカー。両 cache を横断して semantic version の
-# 最大を選び、同じ版が両方にある場合だけ Codex cache を優先する。どれも解決
+# 探索順は FF_DEV_TOOLKIT_ROOT（環境変数）→ Codex plugin cache / Claude plugin
+# cache / grok の導入実体 → 同じディレクトリのサイドカー。3 つの導入先を横断して
+# semantic version の最大を選び、同じ版が複数にある場合は Codex → Claude → grok の
+# 順で優先する（grok は Issue `#2119` で追加。grok は ~/.grok/installed-plugins/
+# ff-dev-toolkit-<識別子>/ へ版名の無いディレクトリで導入するので、版は manifest で読む。
+# 置き場は grok 自身の規約どおり GROK_HOME（既定 ~/.grok）配下）。どれも解決
 # できなければ推測で走らずに落とす。
 #
 # **このファイルへパスを焼き込まない**理由が 3 つある:
@@ -242,12 +245,13 @@ canonical_toolkit_root() {
   fi
 }
 
-select_cache_toolkit() {
-  local cache_root="$1" root version best_root="" best_version=""
+select_cache_toolkit() { # <cache-root> [<glob: 既定は */ff-dev-toolkit/*>]
+  local cache_root="$1" pattern="${2:-*/ff-dev-toolkit/*}" root version best_root="" best_version=""
   SELECTED_CACHE_ROOT=""
   SELECTED_CACHE_VERSION=""
   [ -d "$cache_root" ] || return 1
-  for root in "$cache_root"/*/ff-dev-toolkit/*; do
+  # shellcheck disable=SC2231 # pattern は固定の glob（呼び出し側の定数）で、展開させるのが目的
+  for root in "$cache_root"/$pattern; do
     [ -d "$root" ] || continue
     if ! version="$(toolkit_manifest_version "$root" 2>/dev/null)" || [ -z "$version" ]; then
       echo "WARNING: ff-dev-toolkit cache 候補の安定版 version を読めないためスキップします: $root" >&2
@@ -303,7 +307,8 @@ usable_orchestrator() {
 
 resolve_toolkit() {
   local root version sidecar sidecar_value="" codex_cache claude_cache
-  local codex_root="" codex_version="" claude_root="" claude_version=""
+  local codex_root="" codex_version="" claude_root="" claude_version="" grok_root="" grok_version=""
+  local best_root="" best_version="" best_source=""
   RESOLVED_ORCHESTRATOR=""
   RESOLVED_TOOLKIT_ROOT=""
   RESOLVED_TOOLKIT_VERSION=""
@@ -337,12 +342,23 @@ resolve_toolkit() {
     claude_root="$SELECTED_CACHE_ROOT"
     claude_version="$SELECTED_CACHE_VERSION"
   fi
-  if [ -n "$codex_root" ] && { [ -z "$claude_root" ] || ! semver_is_newer "$claude_version" "$codex_version"; }; then
-    set_resolved_toolkit "$codex_root" "$codex_version" "codex-cache"
-    return $?
+  # GROK_HOME も HOME も無い環境（set -u）では grok の置き場を推測しない — Codex / Claude の解決を巻き添えにしない
+  local grok_home="${GROK_HOME:-}"
+  [ -n "$grok_home" ] || { [ -z "${HOME:-}" ] || grok_home="${HOME}/.grok"; }
+  if [ -n "$grok_home" ] && select_cache_toolkit "${grok_home}/installed-plugins" "ff-dev-toolkit-*"; then
+    grok_root="$SELECTED_CACHE_ROOT"
+    grok_version="$SELECTED_CACHE_VERSION"
   fi
-  if [ -n "$claude_root" ]; then
-    set_resolved_toolkit "$claude_root" "$claude_version" "claude-cache"
+  # 優先順（同じ版なら先が勝つ）: Codex → Claude → grok。より新しい版だけが後ろから上書きする
+  if [ -n "$codex_root" ]; then best_root="$codex_root"; best_version="$codex_version"; best_source="codex-cache"; fi
+  if [ -n "$claude_root" ] && { [ -z "$best_root" ] || semver_is_newer "$claude_version" "$best_version"; }; then
+    best_root="$claude_root"; best_version="$claude_version"; best_source="claude-cache"
+  fi
+  if [ -n "$grok_root" ] && { [ -z "$best_root" ] || semver_is_newer "$grok_version" "$best_version"; }; then
+    best_root="$grok_root"; best_version="$grok_version"; best_source="installed-by-grok"
+  fi
+  if [ -n "$best_root" ]; then
+    set_resolved_toolkit "$best_root" "$best_version" "$best_source"
     return $?
   fi
 
@@ -448,7 +464,7 @@ load_resolved_toolkit() {
   fi
   if [ "$resolve_rc" -ne 0 ]; then
     echo "ERROR: multi-agent.sh が見つかりません。" >&2
-    echo "       探索順: FF_DEV_TOOLKIT_ROOT → Codex/Claude cache の最大版（同版は Codex 優先）→ ${FF_ROOT_SIDECAR_PATH}" >&2
+    echo "       探索順: FF_DEV_TOOLKIT_ROOT → Codex/Claude cache・grok の導入実体（${GROK_HOME:-~/.grok}/installed-plugins）の最大版（同版は Codex → Claude → grok）→ ${FF_ROOT_SIDECAR_PATH}" >&2
     if [ -f "$FF_ROOT_SIDECAR_PATH" ]; then
       echo "       サイドカーは在りますが、指す先に multi-agent.sh がありません" >&2
       echo "       記録値: $(sidecar_recorded_value "$FF_ROOT_SIDECAR_PATH")" >&2
@@ -1266,7 +1282,7 @@ print_claude_fallback_notice() { # $1: 理由 / $2: toolkit（multi-agent.sh）�
     if [ "$resolve_rc" -eq 2 ] && [ -n "${FF_DEV_TOOLKIT_ROOT:-}" ]; then
       echo "     1. FF_DEV_TOOLKIT_ROOT を修正するか unset する（この変数は cache / サイドカーより先に勝つので、setup-multi-agent.sh の再実行では解決先が変わりません）" >&2
       echo "        現在値: ${FF_DEV_TOOLKIT_ROOT}" >&2
-      echo "        unset すれば Codex/Claude cache → サイドカーの探索へ進めます。拒否の理由は上の ERROR 行が示しています。" >&2
+      echo "        unset すれば Codex/Claude cache・grok の導入実体 → サイドカーの探索へ進めます。拒否の理由は上の ERROR 行が示しています。" >&2
     else
       echo "     1. setup-multi-agent.sh を再実行して toolkit を配置し直す（解決できるまで別 CLI への再配分も実行できない）" >&2
     fi

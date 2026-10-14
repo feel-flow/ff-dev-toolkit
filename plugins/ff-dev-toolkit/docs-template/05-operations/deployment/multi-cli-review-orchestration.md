@@ -36,7 +36,7 @@ handoff の producer は skill を実行する AI host である。Claude Code �
 
 キャッシュ全体を探索したり、version 名を並べ替えて別版へ切り替えたりしない。次の resolver + guard を、以下に続く直接実行例より前に同じ shell へ読み込む。Claude Code / Codex / grok CLI の host は、上記の値をこの fence の実行環境へ渡すこと。初回 setup は読み込み済み skill を持つ Claude Code / Codex / grok CLI の host セッションからだけ実行する。単独ターミナルで setup 前の状態から plugin を探索する手順は提供しない。setup 後の単独ターミナルは Codex-only 互換シムを使い、固定版の pair / distributed review は skill を再呼び出して実行する。machine-local sidecar の手動 source は対話ターミナル向けに提供せず、後述の永続 hook の handoff にだけ使う。root が未設定、または更新で resource が消えた場合は別版へフォールバックせず status 2 を返す。
 
-このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowが `FF_DEV_TOOLKIT_ROOT` 経由で起動する同梱scriptである。後者は `check-closing-keywords.sh`（Issueクローズキーワードの手動検査）に加え、`check-merge-freshness.sh`（マージ前の鮮度検査）・`update-version-claim.sh` / `check-version-claims.sh`（version claimの生成と検証）・`mutation-harness.sh`（PR作成前の変異表の実行）を含む。呼び出す側の案内だけが増えて対象の列挙が追従しない状態を作らないため、Git Workflowから同梱scriptを新たに呼ぶときはこの列挙も同時に更新する。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は Codex cache → Claude cache の semantic version 最大を sidecar より先に選ぶ（Issue `#623` の互換動作）。そのため plugin 更新直後は、端末の互換シムが新 cache、pre-push が更新前の sidecar を使う状態がある。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
+このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowが `FF_DEV_TOOLKIT_ROOT` 経由で起動する同梱scriptである。後者は `check-closing-keywords.sh`（Issueクローズキーワードの手動検査）に加え、`check-merge-freshness.sh`（マージ前の鮮度検査）・`update-version-claim.sh` / `check-version-claims.sh`（version claimの生成と検証）・`mutation-harness.sh`（PR作成前の変異表の実行）を含む。呼び出す側の案内だけが増えて対象の列挙が追従しない状態を作らないため、Git Workflowから同梱scriptを新たに呼ぶときはこの列挙も同時に更新する。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は Codex cache → Claude cache → grok の導入実体（`${GROK_HOME:-~/.grok}/installed-plugins/ff-dev-toolkit-*`。Issue `#2119`）の semantic version 最大を sidecar より先に選ぶ（同じ版なら Codex → Claude → grok の順。Issue `#623` の互換動作）。そのため plugin 更新直後は、端末の互換シムが新 cache、pre-push が更新前の sidecar を使う状態がある。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
 
 消費側の hook / ゲートが toolkit の**別のスクリプト**（`record-gate-head.sh` など）を呼ぶときは、sidecar を自前で読まず、シムの `--print-toolkit-root` で同じ解決器を使う（下の「消費側の hook / ゲートから toolkit のスクリプトを解決する」）。
 
@@ -739,7 +739,7 @@ echo "✅ レビュー完了。出力先: $FF_REVIEW_OUTPUT"
 
 上の pre-push 例は review 系 3 resource だけを固定版で呼ぶ、無人の厳格なゲートである。これとは別に、消費プロジェクトの hook / 検証スイートが toolkit の**別のスクリプト**（鮮度ゲートの記録を書く `record-gate-head.sh` など）を呼ぶ場面がある。そこで上の例の sidecar 読み込みブロックをコピーしてはならない。sidecar（`scripts/.ff-dev-toolkit-root`）は版ディレクトリの絶対 path を焼き込むため、plugin 更新で旧版のディレクトリが消えると、hook は消えた版を指したまま起動を続ける。呼び出し先が無いので記録だけが黙って止まり、ゲートは緑のまま `/close-issue` の鮮度照合が判定不能になる（実際に 2 回観測された事象）。setup の再実行で直るが、**plugin 更新のたびに再実行が要る構造**そのものは残る。
 
-配置済みの `scripts/codex-review.sh`（シム）は `--print-toolkit-root` で解決結果だけを返す。解決順と fail closed はレビュー時と**完全に同じ**（`FF_DEV_TOOLKIT_ROOT` → Codex / Claude plugin cache の semantic version 最大 → sidecar。別実装ではなく同じ関数を通る）で、stdout には解決したプラグインルートが 1 行だけ出る。`ℹ️ ff-dev-toolkit version=… source=… root=…` は stderr の診断行であり、消費側がパースする契約ではない。
+配置済みの `scripts/codex-review.sh`（シム）は `--print-toolkit-root` で解決結果だけを返す。解決順と fail closed はレビュー時と**完全に同じ**（`FF_DEV_TOOLKIT_ROOT` → Codex / Claude plugin cache・grok の導入実体の semantic version 最大 → sidecar。別実装ではなく同じ関数を通る）で、stdout には解決したプラグインルートが 1 行だけ出る。`ℹ️ ff-dev-toolkit version=… source=… root=…` は stderr の診断行であり、消費側がパースする契約ではない。
 
 ```sh
 # 消費プロジェクトの hook / 検証スイートから toolkit のスクリプトを解決する例
@@ -774,6 +774,8 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 # シム（codex-review.sh）経由では --reviewers で同じ限定ができる
 bash scripts/codex-review.sh --base develop --reviewers comment-analysis
 ```
+
+部分再検証には `--route fast` / `--route full` を付けない（付けるなら `--route none`）。経路はレーンを自分で決めるので、`--cli` / `--perspective` などレーン構成を決める引数（`--mode` / `--exclude-cli` / `--exclude-perspective` を含む）との併用を exit 2 で拒否する。拒否された回は 1 タスクも起動しておらず、`.review-results/` に残っているのは前の実行の結果である — exit 2（拒否）の回は結果を読まない。
 
 **部分再検証の適用条件（すべて満たすときだけ）**:
 
@@ -887,9 +889,17 @@ grep -A 5 "Critical" .review-results/integrated-report.md
 
 <a id="host-delegation"></a>
 
-## claude-code レーンのホスト委譲（`--delegate-to-host`）
+## ホスト自身のレーンのホスト委譲（`--delegate-to-host[=<cli>]`）
 
-review 専用。`claude-code` レーンだけ **CLI を起動せず**、実行をホスト（このスキルを動かしている Claude のセッション）へ返す選択肢。既定（フラグなし）は従来どおり `claude` を spawn するので、指定しなければ何も変わらない。
+review 専用。**ホスト自身のモデルのレーン 1 本だけ**を **CLI を起動せず**、実行をホスト（このスキルを動かしている Claude Code / Codex / grok のセッション）へ返し、ホストの**サブエージェント**で走らせる選択肢。対象レーンはフラグの値で決まる（Issue `#2118` で `codex-cli` / `grok-cli` へ一般化）:
+
+| ホスト | フラグ | 委譲レーン | サブエージェント |
+| --- | --- | --- | --- |
+| Claude Code | `--delegate-to-host`（= `--delegate-to-host=claude-code`） | `claude-code` | Agent ツール |
+| Codex | `--delegate-to-host=codex-cli` | `codex-cli` | `spawn_agent`（`multi_agent` 機能。codex 0.162 で stable・既定 ON） |
+| grok | `--delegate-to-host=grok-cli` | `grok-cli` | `spawn_subagent`（`explore` 型。深さ 1） |
+
+それ以外の値は exit 1 で拒否する。既定（フラグなし）は従来どおり `claude` を spawn するので、指定しなければ何も変わらない。
 
 ### いつ使うか
 
@@ -904,20 +914,24 @@ You've hit your individual spend limit · your session limit resets 10:10pm (Asi
 
 同じ実行で `codex-cli` は完走し、ホストのセッションも問題なく動作していた。`claude auth` には**呼び出し単位のアカウント選択が無い**（実測 / claude 2.1.263。`login` / `logout` / `status` のみ）ので、`logout` → `login` というグローバルな切り替え以外に手段が無く、CLI 側では解決できない。`MULTI_AGENT_MODEL_CLAUDE_CODE` はモデル指定であってアカウント指定ではない。
 
+grok をホストにした場合は別の動機がある: `grok -p`（headless）のレビューレーンが型付き判定行を含む本文を返さず `missing-review-body` で落ちる（OBS-351）。grok セッション内（`GROK_AGENT` が立つ）で grok-cli レーンが失敗すると、`--delegate-to-host=grok-cli` で再実行するコマンドが案内される。
+
 このフラグは**既存の案内（`codex-cli` を substitute として実行し直す / `claude auth login`）を置き換えるものではなく、選択肢を 1 つ足すもの**。
 
 ### 何が変わり、何が変わらないか
 
 | | 委譲経路 |
 | --- | --- |
-| 変わる | `claude-code` レーンで CLI プロセスを 1 つも起動しない。そのレーンのタスクは「委譲待ち（pending）」として報告される |
+| 変わる | 委譲レーン（既定 `claude-code`、`=codex-cli` / `=grok-cli` で指定）で CLI プロセスを 1 つも起動しない。そのレーンのタスクは「委譲待ち（pending）」として報告される |
 | 変わらない | プラン構築・プロンプト生成・固定 diff・タイムアウトの受け渡し・他レーンの実行・統合レポートの生成・既定の挙動（フラグなし） |
 
-対象は `claude-code` レーンだけ。ホストが Claude である前提に依存するので、他レーンを同じ経路へ流すと「複数の**違う**モデルを同じ diff に当てる」という本ツールの目的が黙って失われる（レポート上は観点が埋まったまま、実体はホスト 1 モデルの多重実行になる）。`codex-cli` / `grok-cli` をホストにして動かしている場合は、委譲先が存在しないのでこのフラグは使えない（`--exclude-cli claude-code` か、従来どおりの CLI 起動を使う）。
+対象はホスト自身のレーン 1 本だけ。他レーンを同じ経路へ流すと「複数の**違う**モデルを同じ diff に当てる」という本ツールの目的が黙って失われる（レポート上は観点が埋まったまま、実体はホスト 1 モデルの多重実行になる）。ホストと違うモデルのレーンを指定しないこと（`--delegate-to-host=codex-cli` を Claude ホストで使う等）— スクリプトはホストの種別を検証できないので、ここは運用の規範になる。
+
+**`--route full` との組み合わせ**: `multi-review.sh --route full --delegate-to-host=<cli>` は主（4 観点）をホストのレーン、副（`comprehensive-review` のクロスレビュー）を別モデル（`codex-cli`。ホストが Codex なら `claude-code`、未導入なら `grok-cli`）にする。`--route fast` とは併用不可（exit 2）。
 
 ### 手順（同じコマンドを 2 回）
 
-1. **1 回目**: 通常のレビュー引数に `--delegate-to-host` を足して実行する。他レーンはそのまま走り、`claude-code` レーンはプロンプトが書き出されて **stdout に handoff ブロック**が出る。終了コードは **3**（委譲待ち。失敗の 1 とは別の値）
+1. **1 回目**: 通常のレビュー引数に `--delegate-to-host` を足して実行する。他レーンはそのまま走り、委譲レーンはプロンプトが書き出されて **stdout に handoff ブロック**が出る。終了コードは **3**（委譲待ち。失敗の 1 とは別の値）
 
    ```bash
    ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --delegate-to-host
@@ -950,7 +964,7 @@ You've hit your individual spend limit · your session limit resets 10:10pm (Asi
 ### 併用できないもの・止まるところ
 
 - **`--fresh` とは併用できない**（起動時に拒否する）。`--fresh` は出力ディレクトリの中身をホストの結果も受け渡しファイルもまとめて `.prev-<時刻>/` へ退避するので、2 回目が毎回新しい handoff になって収束せず、しかも完了済みのレビューが一度も読まれないまま退避される。掃除したいときは先に委譲なしで `--fresh` を 1 回走らせる
-- **委譲を指定したまま結果を残した状態で、フラグを落として再実行すると中断する**。その結果パスはこの実行がクリアする対象そのものなので、素通しにするとホストの成果物が 1 行の通知も無く消え、そのうえ枯渇していて動かない CLI が起動される。再実行するか、案内される `rm` で委譲を明示的に放棄する
+- **委譲を指定したまま結果を残した状態で、フラグを落として（または別レーンの委譲で）再実行すると中断する**。その結果パスはこの実行がクリアする対象そのものなので、素通しにするとホストの成果物が 1 行の通知も無く消え、そのうえ枯渇していて動かない CLI が起動される。再実行するか、案内される `rm` で委譲を明示的に放棄する
 - **入力が変わったまま古い handoff の応答が届くと、1 回だけ拒否する**。前の handoff が未応答のうちに入力が変わって新しい handoff を出していた場合、遅れて届いた応答がどちらのプロンプトに対するものか決められない（digest は「今のプロンプト」と「最後に出した handoff」しか比べていない）。この曖昧さを検出した回は受理せず退避し、handoff を出し直して対応を 1 対 1 へ戻す
 
 ### 受理の条件（ここは緩めない）
@@ -972,7 +986,7 @@ You've hit your individual spend limit · your session limit resets 10:10pm (Asi
 
 ### 受け渡しファイルの置き場所
 
-`<output-dir>/claude-code/.delegated/` 配下（`<観点>.prompt.md` / `<観点>.request` / 受理しなかった応答の退避）。ドット始まりなので、前回結果の退避（`<cli>/*.md` だけを見る）にも「Not part of this run」の名指し（ドット始まりを外す）にも掛からない。`--fresh` を付けた実行では出力ディレクトリの他の中身と一緒に退避される。
+`<output-dir>/<委譲レーン>/.delegated/` 配下（`<観点>.prompt.md` / `<観点>.request` / 受理しなかった応答の退避）。ドット始まりなので、前回結果の退避（`<cli>/*.md` だけを見る）にも「Not part of this run」の名指し（ドット始まりを外す）にも掛からない。`--fresh` を付けた実行では出力ディレクトリの他の中身と一緒に退避される。
 
 ---
 

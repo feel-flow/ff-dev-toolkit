@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 空振り検出: docs-gates の正本参照検査ブロックを削除すると、無変異の対照は緑のまま drop-reference が赤（2026-09-28 実測）。
+# 空振り検出（Issue `#2119`、2026-10-13 実測）: シムの grok 導入実体の探索を無効化すると grok の 3 ケース（新しい版の選択・grok だけで解決・既定 $HOME/.grok）が赤、Claude の採用条件を「grok が在れば常に Claude」へ変えると同版 Codex 優先のケースが赤。無変異は緑。
 #
 # docs-template のうち placeholder を含まず実行可能なゲート例を Markdown から抽出し、
 # fixture に対する exit code を実測する意味的回帰検査（Issue #157）。

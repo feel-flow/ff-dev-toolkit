@@ -40,6 +40,8 @@
 #  (22) 委譲待ちのあいだに結果パスへ現れたファイルを、本文にも Critical 判定にも採らない
 #  (23) 未応答のまま再実行しても曖昧さの印は消えず、清算後は正当な応答を受理する
 #  (24) 部分書き込み（ヘッダーだけ無事）を受理成功と判定しない
+#  (26) codex-cli / grok-cli ホストの委譲と、ホストのレーンでない値の拒否・別レーンの未回収 handoff の保護・
+#       grok ホストでの委譲案内（Issue `#2118`）
 #  (25) 型付き判定行（ADR-065）の契約が委譲プロンプトに載り、型付き行だけの応答を CLI 起動
 #       経路と同じ共有関数で受理する。散文だけの応答は受理せず（ADR-066）、正規形の理由で
 #       退避して `<レーン>/<観点>` を名指しした拒否の診断を出す（(5a)）
@@ -158,7 +160,8 @@ echo "- Critical: 0"
 echo "- Important: 0"
 echo "- verdict: none"
 SH
-chmod +x "$STUB/claude" "$STUB/codex"
+cp "$STUB/codex" "$STUB/copilot"
+chmod +x "$STUB/claude" "$STUB/codex" "$STUB/copilot"
 
 # 空ファイル（起動 0 回）でも必ず数値を返す。`cat` の素の結果を使うと空文字になり、
 # 比較が「0 と等しくない」へ倒れて、起動していないのに起動したと報告する。
@@ -487,13 +490,13 @@ fi
 echo "-- (10) 委譲に対応しないアダプタは --delegate-dir を拒否する --"
 DENY_RC=0
 run_isolated PATH="$STUB_PATH" HOME="$TMP/home" \
-  bash "$CODEX_ADAPTER" "$PLUGIN_ROOT/perspectives/review/code-review.md" \
+  bash "$PLUGIN_ROOT/scripts/adapters/copilot-cli-adapter.sh" "$PLUGIN_ROOT/perspectives/review/code-review.md" \
   "$TMP/deny.md" --base develop --delegate-dir "$TMP/deny-dir" \
   > "$TMP/out.deny" 2> "$TMP/err.deny" || DENY_RC=$?
 if [ "$DENY_RC" -ne 0 ] && grep -qF 'not supported by' "$TMP/err.deny"; then
-  ok "codex-cli アダプタは --delegate-dir を拒否する（黙って無視しない）"
+  ok "copilot-cli アダプタ（非ホストレーン）は --delegate-dir を拒否する（黙って無視しない）"
 else
-  bad "codex-cli アダプタが --delegate-dir を受理した（効かないつまみ / モデル独立性の黙った喪失）"
+  bad "copilot-cli アダプタが --delegate-dir を受理した（効かないつまみ / モデル独立性の黙った喪失）"
 fi
 
 echo "-- (11) 適用範囲の外は拒否する --"
@@ -717,6 +720,14 @@ else
   bad "--fresh と併用できてしまう（rc=${RUN_RC}）— 完了済みレビューが読まれないまま退避され、handoff が繰り返される"
 fi
 
+run_ma freshgrok --task review --cli grok-cli --perspective code-review --base develop \
+  --delegate-to-host=grok-cli --fresh --output-dir "$TMP/fresh-grok"
+if [ "$RUN_RC" -eq 2 ] && grep -qF 're-run with --delegate-to-host=grok-cli and no --fresh' "$RUN_ERR"; then
+  ok "=grok-cli と --fresh の拒否案内は渡したレーンを保つ（素のフラグ = claude-code へ戻さない）"
+else
+  bad "=grok-cli と --fresh の拒否案内がレーンを落とした: rc=${RUN_RC}"
+fi
+
 echo "-- (21) 複数観点の部分受理と --resume での収束 --"
 # 分散プランの claude-code は registry 上 3 観点を持つ。1 観点ずつ答える通常の進み方で
 # handoff 件数が減り、受理済みが再委譲されないことを見る（--resume なしだと
@@ -920,6 +931,61 @@ fi
 if [ "$PARTIAL_OK" -eq 2 ]; then
   ok "受理した本文と書けた本文の一致まで確かめている（部分書き込みを成功にしない）"
 fi
+
+echo "-- (26) codex-cli / grok-cli ホストの委譲（Issue \`#2118\`） --"
+for LANE in codex-cli grok-cli; do
+  LOD="$TMP/od-${LANE}"
+  run_ma "host-${LANE}" --task review --cli "$LANE" --perspective code-review --base develop \
+    --delegate-to-host="$LANE" --output-dir "$LOD"
+  LOD_PHYS="$(cd "$LOD" 2>/dev/null && pwd -P || echo "$LOD")"
+  if [ "$RUN_RC" -eq 3 ] && grep -qF "cli=${LANE}" "$RUN_OUT" \
+     && grep -qF "prompt-file=${LOD_PHYS}/${LANE}/.delegated/code-review.prompt.md" "$RUN_OUT"; then
+    ok "--delegate-to-host=${LANE} は ${LANE} レーンを handoff する（rc=3）"
+  else
+    bad "--delegate-to-host=${LANE} が handoff しない: rc=${RUN_RC} / $(tail -3 "$RUN_ERR" | tr '\n' ' ')"
+  fi
+done
+run_ma host-bad --task review --cli codex-cli --perspective code-review --base develop \
+  --delegate-to-host=copilot-cli
+if [ "$RUN_RC" -eq 1 ] && [ ! -s "$RUN_OUT" ]; then
+  ok "ホストのレーンでない値（copilot-cli）は exit 1 で拒否する"
+else
+  bad "--delegate-to-host=copilot-cli を拒否しない: rc=${RUN_RC}"
+fi
+
+XOD="$TMP/od-xlane"
+# shellcheck disable=SC2086 # BASE_ARGS は語分割して渡す固定の引数列
+run_ma xlane1 $BASE_ARGS --delegate-to-host --output-dir "$XOD"
+XRC1=$RUN_RC
+# shellcheck disable=SC2086 # 同上
+run_ma xlane2 $BASE_ARGS --delegate-to-host=codex-cli --output-dir "$XOD" --resume
+if [ "$XRC1" -eq 3 ] && [ "$RUN_RC" -eq 1 ] && grep -qF 'unfinished host delegation exists for: claude-code/' "$RUN_ERR"; then
+  ok "別レーンの委譲で再実行しても、未回収の claude-code handoff を消さずに中断する"
+else
+  bad "別レーンの委譲が未回収の handoff を守らない: rc1=${XRC1} rc2=${RUN_RC}"
+fi
+
+GROKFAIL="$TMP/grokfail-bin"
+mkdir -p "$GROKFAIL"
+printf '#!/usr/bin/env bash\ncat >/dev/null 2>&1\necho "preamble only"\nexit 1\n' > "$GROKFAIL/grok"
+chmod +x "$GROKFAIL/grok"
+for GA in 1 ""; do
+  GRC=0
+  run_isolated PATH="$GROKFAIL:$STUB_PATH" HOME="$TMP/home" GROK_AGENT="$GA" \
+    bash "$MULTI_AGENT" --task review --cli grok-cli --perspective code-review --base develop \
+    --output-dir "$TMP/od-grokfail-${GA:-none}" > "$TMP/out.grokfail" 2> "$TMP/err.grokfail" || GRC=$?
+  if [ -n "$GA" ]; then
+    if [ "$GRC" -ne 0 ] && grep -qF -- '--cli grok-cli --perspective code-review --delegate-to-host=grok-cli --resume' "$TMP/err.grokfail"; then
+      ok "grok ホスト（GROK_AGENT あり）で grok-cli が落ちると --delegate-to-host=grok-cli の手順を案内する"
+    else
+      bad "grok ホストで grok-cli が落ちても委譲の案内が出ない: rc=${GRC}"
+    fi
+  elif grep -qF -- '--delegate-to-host=grok-cli' "$TMP/err.grokfail"; then
+    bad "grok ホストでない実行に grok-cli 委譲を案内した（委譲先のセッションが無い）"
+  else
+    ok "GROK_AGENT が無い実行では grok-cli 委譲を案内しない"
+  fi
+done
 
 echo ""
 echo "  PASS=${PASS} FAIL=${FAIL}"

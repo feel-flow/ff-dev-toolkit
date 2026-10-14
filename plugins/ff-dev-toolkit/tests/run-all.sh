@@ -516,6 +516,10 @@ else
     # Issue #771）。宣言マーカーと Issue 参照の共起判定・no-followup 抜け道・
     # --body-file / heredoc 経由・既知の限界の素通しを stdin JSON fixture で固定する。
     "$SCRIPT_DIR/guard-pr-followup/verify.sh"
+    # grok CLI 向け hook 展開（scripts/grok/sync-hooks.sh）と tool_name 正規化シム
+    # （scripts/grok/hook-shim.sh、Issue `#2116`）。生成物のイベント集合・置換・シム経由起動と、
+    # grok 形式の入力で展開後の guard が deny することを一時領域で固定する。
+    "$SCRIPT_DIR/grok-hooks-sync/verify.sh"
     # PreToolUse（Bash）の background cwd ガード（hooks/guard-background-cwd.sh）。
     # モノレポ判定・background 判定・先頭コマンドの絶対 cd 判定の 3 条件と、警告が
     # ブロックでない（systemMessage のみ）ことを stdin JSON fixture で固定する。

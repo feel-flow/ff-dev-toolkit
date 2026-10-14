@@ -149,6 +149,30 @@ if [ "$RC" -eq 0 ] && [ "${OUT#*"route --check:"}" != "$OUT" ]; then
 else
   bad "A1 route.sh --check が緑でない: rc=$RC out=[$OUT] err=[$ERR]"
 fi
+# A1b: awk の実装差で葉の件数が変わらない。mawk は `a[k] = (k in a) ? … : …` の左辺を右辺より
+# 先に作るため、答えの列の先頭に空の答えが入り、空の行き先を葉に数えていた（Issue `#2120`）。
+# 手元にある awk 実装（mawk / gawk / original-awk）ごとに awk を差し替えて同じ要約を求める。
+_awk_impls=""
+for _impl in mawk gawk original-awk; do
+  command -v "$_impl" >/dev/null 2>&1 && _awk_impls="$_awk_impls $_impl"
+done
+if [ -n "$_awk_impls" ]; then
+  _awk_ref="${OUT#✓ route --check: }"
+  _awk_bad=""
+  for _impl in $_awk_impls; do
+    mkdir -p "$TEST_TMP/awk-$_impl"
+    ln -sf "$(command -v "$_impl")" "$TEST_TMP/awk-$_impl/awk"
+    _awk_out="$(PATH="$TEST_TMP/awk-$_impl:$PATH" bash "$ROUTER" --check 2>&1)" || _awk_bad="$_awk_bad $_impl(rc≠0: $_awk_out)"
+    [ "${_awk_out#✓ route --check: }" = "$_awk_ref" ] || _awk_bad="$_awk_bad $_impl([${_awk_out}])"
+  done
+  if [ -z "$_awk_bad" ]; then
+    ok "A1b awk の実装を差し替えても同じ要約（${_awk_impls# }）"
+  else
+    bad "A1b awk の実装で --check の結果が変わる:${_awk_bad}"
+  fi
+else
+  echo "  ○ skip: mawk / gawk / original-awk のいずれも無いため A1b（awk 実装差）は未検査"
+fi
 
 LEAVES="$(bash "$ROUTER" --leaves 2>/dev/null)" || LEAVES=""
 n_leaves="$(printf '%s\n' "$LEAVES" | awk 'NF { n++ } END { print n + 0 }')"

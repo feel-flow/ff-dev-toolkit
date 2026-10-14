@@ -278,8 +278,10 @@ fi
 # 落として FAIL にする。行を名指しする書式（path:line:本文）と grep の rc≥2 を FAIL にする扱いは全契約で共通。
 # require / exempt は**本文だけ**に当てる。`grep -H` の「path:line:本文」へ当てると、パスに語が含まれる
 # だけで一致する（fixture のディレクトリ名 review-cond が require の review に当たって誤検出した — 実測）。
-scan_contract() { # no pattern exempt label fixtext [require]
-  local no="$1" pattern="$2" exempt="$3" label="$4" fixtext="$5" require="${6:-}" hits="" out rc f l text
+# strip は「行の一部だけが旧文言に見える注記」を本文から取り除いてから pattern を当て直す。exempt は行全体を
+# 落とすので、注記を exempt にすると同じ行の本物の旧文言まで隠れる（レビューで実測）。strip は注記の部分だけを消す。
+scan_contract() { # no pattern exempt label fixtext [require] [strip]
+  local no="$1" pattern="$2" exempt="$3" label="$4" fixtext="$5" require="${6:-}" strip="${7:-}" hits="" out rc f l text stripped
   if [ ${#targets[@]} -eq 0 ]; then
     # 同じ 1 つの事実を契約の数だけ WARN にしない（件数が水増しされる）。WARN は検査 1 の 1 件だけ
     if [ "$no" = 1 ]; then
@@ -299,6 +301,11 @@ scan_contract() { # no pattern exempt label fixtext [require]
     while IFS= read -r l; do
       [ -n "$l" ] || continue
       text="${l#*:}"
+      # sed が失敗した行は注記を消さずに元の本文で判定する（空文字列にして黙って落とさない）
+      if [ -n "$strip" ] && stripped="$(printf '%s\n' "$text" | sed -E "s/${strip}//g")"; then
+        text="$stripped"
+        grep -qiE "$pattern" <<<"$text" || continue
+      fi
       # require は「同じ行にこの語も在ること」（1 つの ERE で語順の組み合わせを書かずに連言を表す）
       if [ -n "$require" ] && ! grep -qiE "$require" <<<"$text"; then continue; fi
       if [ -n "$exempt" ] && grep -qiE "$exempt" <<<"$text"; then continue; fi
@@ -499,10 +506,22 @@ scan_contract 8 "$DRAFT_PATTERN" "$DRAFT_EXEMPT" "Draft PR を作る旧文言" \
 #     別 CLI が使えるときだけクロスレビューを 1 本足す」。CLI 名と必須の語が同じ行に在り（語順は問わない）、
 #     かつレビューの語も在る行を拾い、条件付き・廃止を述べる行は落とす。
 REVIEW_CLI_PATTERN='(codex|copilot|grok|gemini).*(必須|mandatory|always|必ず)|(必須|mandatory|always|必ず).*(codex|copilot|grok|gemini)'
-REVIEW_EXEMPT='使える|利用可能|available|あれば|任意|optional|廃止|しない|不要|使わない|ないとき|無いとき|fallback'
+#     除外語の「在れば / 有れば」は「あれば」の表記揺れ（NPM_COND_RE と揃える）。「`@` 必須」は @copilot の @ 記号への
+#     注記で CLI への必須指定ではないが、旧文言と同じ行に並びやすい（「Copilot レビューは必須（`@` 必須）」）ので、
+#     exempt ではなく strip で注記の部分だけを消して判定し直す（@ の直後に CLI 名が続く「@codex 必須」は消さない）。
+#     同じ形の注記に、シェルのリダイレクト・演算子で始まる code span への「必須」がある（「codex exec … stdin が
+#     TTY でない場合は `</dev/null` が必須」。導入先の CLAUDE.md で実測。助詞は「が / は / を」と無しを受ける）。code span の先頭が `<` `>` `|` `&` なら
+#     CLI 名ではないので注記として消す（先頭が英字や @ の「`codex` 必須」「`@codex` 必須」は消さない。`/` は
+#     sed の区切りと衝突するので先頭文字に含めない）。リダイレクト先は 1 トークンなので、空白（スペース・タブ
+#     を含む `[[:space:]]`）を含む span（「`< /dev/null codex exec review` 必須」のようなコマンド全体への必須指定）
+#     は消さない（クロスレビュー指摘。半角スペースだけを禁止するとタブ区切りがすり抜ける）。助詞の省略は `(が)?` と
+#     括る — 素の `が?` は C ロケールで多バイト文字の最後の 1 バイトだけが省略可能になり、助詞の無い形で strip が
+#     効かない（実測）。
+REVIEW_EXEMPT='使える|利用可能|available|あれば|在れば|有れば|任意|optional|廃止|しない|不要|使わない|ないとき|無いとき|fallback'
+REVIEW_STRIP='`?@`? ?必須|`[<>|&][^`[:space:]]*` ?(が|は|を)?必須'
 scan_contract 9 "$REVIEW_CLI_PATTERN" "$REVIEW_EXEMPT" "特定 CLI のレビューを常に必須にする旧文言" \
   "レビューは主担当（作業しているホスト）がセルフレビューし、別 CLI が使えるときだけクロスレビューを 1 本足す — Claude が主担当ならホストのサブエージェント、Codex が主担当なら Codex（特定 CLI を常に必須にしない。正本: docs-template/05-operations/deployment/self-review.md「レビュー担当の選択と利用制限時の継続」）" \
-  'review|レビュー'
+  'review|レビュー' "$REVIEW_STRIP"
 
 # (b) 入口文書が指示するレビュー用 npm script が、このリポジトリの package.json に実在するか。グローバル CLAUDE.md は
 #     全リポジトリへ効くので、あるリポジトリにだけ在る script を指示すると、他のリポジトリでは指示どおりに動けない

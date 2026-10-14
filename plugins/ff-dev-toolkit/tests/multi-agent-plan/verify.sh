@@ -8,6 +8,7 @@
 # 実 CLI は起動せず、stub の存在だけを command -v で検出させた dry-run を使う。
 #
 # 空振り検出: sandbox probe の増分を数えられない入力（イベントログの置き場がディレクトリ・親ディレクトリを検索できない・probe 中にログが縮む・GROK_HOME も HOME も無い・probe の mktemp が失敗する）を黙る側へ倒すと「undetermined」系が赤になる。2026-09-25 実測（123 件中）: 不活性判定を目印 grep だけの旧形へ戻す（rc=0・目印なしで即 return 0）と 9 件（inert 4 件 + undetermined 5 件）、増分ではなく「ログに ProfileApplied があるか」で判定すると 1 件、未作成の判定から親ディレクトリの検索可否の確認を外すと 1 件、ProfileApplied 以外の行も数えると 1 件、縮みを合計でしか見ないと 1 件（旧置き場だけが縮むケース）、mktemp 失敗で黙ると 1 件が赤になる。親ディレクトリ検索不可のケースは root 等 chmod 000 を越えて検索できる実行者では部分 skip になる。
+# 空振り検出（Issue `#2113`）: --route の拒否は exit 2 だけでなく注記を要求する — 拒否メッセージから「nothing was run」の行か部分再検証の形の行を消した変異、部分再検証の形を委譲の拒否にも出す変異は、どれも注記照合が赤（実測）。注記が 1 形でも欠ければ、その形の名前を赤の理由に並べる。
 #
 # run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
 
@@ -1525,7 +1526,7 @@ run_route() { # $1: output file, $2..: multi-review args
   ) >"$output" 2>&1
 }
 plan_lanes() { # $1: log → 実計画に載った CLI レーンの名前（1 行 1 件）
-  awk '/Execution Plan:/ { p = 1 } p && /^   [a-z][a-z-]* \[[a-z]*\]:$/ { sub(/^   /, ""); sub(/ \[.*$/, ""); print }' "$1"
+  awk '/Execution Plan:/ { p = 1 } p && /^   [a-z][a-z-]* \[[a-z-]*\]:$/ { sub(/^   /, ""); sub(/ \[.*$/, ""); print }' "$1"
 }
 plan_perspectives() { # $1: log → 実計画の観点（1 行 1 件）
   awk '/Execution Plan:/ { p = 1 } p && /^     - / { sub(/^     - /, ""); print }' "$1"
@@ -1543,13 +1544,23 @@ ROUTE_FULL_LOG="$TMP/route-full.log"
 ROUTE_FULL_USER_LOG="$TMP/route-full-user.log"
 ROUTE_FULL_WANT="claude-code:code-review claude-code:comment-analysis claude-code:error-handler-hunt claude-code:test-analysis codex-cli:comprehensive-review"
 plan_lane_pairs() { # $1: log → 「CLI:観点」を整列して空白区切り 1 行
-  awk '/Execution Plan:/ { p = 1 } p && /^   [a-z][a-z-]* \[[a-z]*\]:$/ { c = $1 } p && /^     - / { print c ":" $2 }' "$1" | sort | tr '\n' ' ' | sed 's/ $//'
+  awk '/Execution Plan:/ { p = 1 } p && /^   [a-z][a-z-]* \[[a-z-]*\]:$/ { c = $1 } p && /^     - / { print c ":" $2 }' "$1" | sort | tr '\n' ' ' | sed 's/ $//'
 }
 if run_route "$ROUTE_FULL_LOG" --route full && [ "$(plan_lane_pairs "$ROUTE_FULL_LOG")" = "$ROUTE_FULL_WANT" ]; then
   ok "--route full の実計画は 5 レーン（claude-code の 4 観点 + codex-cli の comprehensive-review）"
 else
   bad "--route full の実計画が 5 レーンではない: [$(plan_lane_pairs "$ROUTE_FULL_LOG")]"
   cat "$ROUTE_FULL_LOG"
+fi
+# --route full に --delegate-to-host=grok-cli を添えると主がホストのレーン（grok-cli）、副が codex-cli になる（Issue `#2118`）
+ROUTE_FULL_GROK_LOG="$TMP/route-full-grok.log"
+ROUTE_FULL_GROK_WANT="codex-cli:comprehensive-review grok-cli:code-review grok-cli:comment-analysis grok-cli:error-handler-hunt grok-cli:test-analysis"
+if run_route "$ROUTE_FULL_GROK_LOG" --route full --delegate-to-host=grok-cli \
+  && [ "$(plan_lane_pairs "$ROUTE_FULL_GROK_LOG")" = "$ROUTE_FULL_GROK_WANT" ]; then
+  ok "--route full --delegate-to-host=grok-cli は主 grok-cli の 4 観点 + 副 codex-cli の comprehensive-review"
+else
+  bad "--route full --delegate-to-host=grok-cli の実計画が違う: [$(plan_lane_pairs "$ROUTE_FULL_GROK_LOG")]"
+  cat "$ROUTE_FULL_GROK_LOG"
 fi
 # 利用者設定（主・副・単一固定）が別でも、--route full は同じ 5 レーンになる
 if (
@@ -1573,6 +1584,37 @@ if [ "$ROUTE_CONFLICT_RC" -eq 2 ] && grep -q -- '--route fast decides the lanes 
   ok "--route fast とレーン構成の明示（--cli 等）の併用・未知の経路名は exit 2（黙って片方へ倒さない）"
 else
   bad "--route の誤用が exit 2 にならない: conflict=${ROUTE_CONFLICT_RC} bad=${ROUTE_BAD_RC}"
+fi
+# 拒否は 1 タスクも起動しないので、.review-results/ には前の実行の結果が残る。拒否メッセージがそれと
+# 部分再検証の形を告げないと、残った結果を今回の結果として読む（OBS-350 で実測: --route full --cli で rc 2 の直後、
+# 前の巡の Warning を読んだ）。観測した形（--route full --cli）と既存の拒否 3 形で、注記が出ることを固定する
+#     拒否が前の実行の結果に触れないこと（注記が事実であること）も、目印のファイルが内容ごと残ることで固定する
+mkdir -p "$REPO/.review-results/codex-cli"
+printf 'previous-run-marker\n' > "$REPO/.review-results/codex-cli/comprehensive-review.md"
+ROUTE_FULL_CLI_RC=0
+run_route "$TMP/route-full-cli.log" --route full --cli codex-cli --perspective comprehensive-review || ROUTE_FULL_CLI_RC=$?
+ROUTE_FAST_DELEGATE_RC=0
+run_route "$TMP/route-fast-delegate.log" --route fast --delegate-to-host=grok-cli || ROUTE_FAST_DELEGATE_RC=$?
+route_marker="(消えた)"
+[ -f "$REPO/.review-results/codex-cli/comprehensive-review.md" ] && route_marker="$(cat "$REPO/.review-results/codex-cli/comprehensive-review.md")"
+rm -rf "$REPO/.review-results"
+route_note_missing=""
+for log in route-full-cli route-conflict route-full-conflict route-fast-delegate; do
+  if ! grep -qF 'nothing was run — any files under .review-results/ are from a previous run' "$TMP/$log.log"; then
+    route_note_missing="${route_note_missing} ${log}"
+  fi
+done
+# 部分再検証の形はレーン指定を拒否した回だけに出す（委譲の併用を拒否した回はレーンを絞る場面ではない）
+for log in route-full-cli route-conflict route-full-conflict; do
+  grep -qF -- '--route none --cli <CLI> --perspective <name>' "$TMP/$log.log" || route_note_missing="${route_note_missing} ${log}(部分再検証の形)"
+done
+if grep -qF -- '--route none --cli <CLI>' "$TMP/route-fast-delegate.log"; then route_note_missing="${route_note_missing} route-fast-delegate(余計な部分再検証の形)"; fi
+if [ "$ROUTE_FULL_CLI_RC" -eq 2 ] && [ "$ROUTE_FAST_DELEGATE_RC" -eq 2 ] && [ -z "$route_note_missing" ] \
+  && grep -qF -- '--route fast cannot be combined with --delegate-to-host' "$TMP/route-fast-delegate.log" \
+  && [ "$route_marker" = "previous-run-marker" ]; then
+  ok "--route の拒否は exit 2 のまま「何も実行していない・.review-results/ は前の実行」を告げ、レーン指定の拒否にだけ部分再検証の形を示し、前の結果に触れない"
+else
+  bad "--route の拒否の注記・前回結果の保持が崩れた: full-cli=${ROUTE_FULL_CLI_RC} fast-delegate=${ROUTE_FAST_DELEGATE_RC} marker=[${route_marker}] 不足:${route_note_missing}"
 fi
 
 echo ""

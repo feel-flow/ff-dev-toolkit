@@ -391,6 +391,7 @@ decision-tree/verify.sh
 docs-gates-runtime/ci-example-cases.sh
 effort-contract/verify.sh
 finish/verify.sh
+grok-hooks-sync/verify.sh
 guard-checkout-restore/verify.sh
 guard-review-in-flight/verify.sh
 markdownlint-selftest/verify.sh

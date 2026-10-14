@@ -41,7 +41,7 @@ readonly CLI_LANE="claude-code"
 # ── Parse Arguments ──
 
 # 委譲の受理を opt-in する（adapter-common.sh の parse_adapter_args が検査する）。
-# 委譲はホストが Claude であることに依存するので、このアダプタだけが立てる。
+# 委譲できるのはホスト自身のレーンだけ（Claude Code ホスト → このレーン）。
 ADAPTER_SUPPORTS_DELEGATION=true
 
 parse_adapter_args "$@"
@@ -89,35 +89,7 @@ get_allowed_tools() {
 # CLI を 1 つも起動しない経路。プロンプト構築とツール許可の決定までは起動経路と共通で、
 # 実行だけをホストへ返す。ここで分岐するのは "🔍 Running" の進捗表示より**前** —
 # 起動していないのに起動したと名乗るログを残さないため。
-if [[ -n "${DELEGATE_DIR:-}" ]]; then
-  delegate_rc=0
-  delegate_task "$CLI_LANE" "$CLI_NAME" "$perspective_name" "$prompt" "$(get_allowed_tools)" \
-    || delegate_rc=$?
-  case "$delegate_rc" in
-    0) exit 0 ;;
-    "$DELEGATION_PENDING_EXIT_CODE") exit "$DELEGATION_PENDING_EXIT_CODE" ;;
-    # 壊れているのは委譲の受け渡しではなく成果物の出力先。ここを汎用の
-    # orchestrator エラーへ流すと、(1) 壊れている対象を名指しせず「ホストへ渡せな
-    # かった」という誤った理由が残り、(2) fail_cli_task 経由で write_output を踏み
-    # 直す（書けない先へ INCOMPLETE 成果物を書きに行く）。ENOSPC の部分書き込みなら
-    # その誤った理由の短い成果物が実際に書けてしまい、ホストの実結果が response
-    # ファイルに在るまま統合レポートへ載る。
-    "$DELEGATION_OUTPUT_WRITE_EXIT_CODE")
-      fail_output_write "$perspective_name" "$OUTPUT_FILE"
-      ;;
-    # 書けたが読み戻しが一致しない。122 と同じく汎用の orchestrator エラーへは流さない
-    # （write_output を踏み直して、内容が違うと分かったばかりの成果物を上書きする）。
-    # 122 とも分けるのは、残っている状態が「無い」と「在るが違う」で次の一手が変わるため。
-    "$DELEGATION_OUTPUT_READBACK_EXIT_CODE")
-      fail_output_readback "$perspective_name" "$OUTPUT_FILE" \
-        "${DELEGATE_DIR}/${perspective_name}.response.md"
-      ;;
-    *)
-      fail_orchestrator_error "$perspective_name" \
-        "cannot hand the ${TASK_TYPE:-review} to the host through ${DELEGATE_DIR} (see the error above)."
-      ;;
-  esac
-fi
+run_host_delegation_or_continue "$CLI_LANE" "$CLI_NAME" "$perspective_name" "$prompt" "$(get_allowed_tools)"
 
 # ── Execute Task ──
 

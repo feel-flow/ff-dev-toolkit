@@ -122,7 +122,7 @@ run_extracted_consumer_command() {
   fi
   if (
     cd "$consumer"
-    unset CODEX_HOME CLAUDE_CONFIG_DIR
+    unset CODEX_HOME CLAUDE_CONFIG_DIR GROK_HOME
     if [ -n "$explicit_config" ]; then
       MULTI_AGENT_CONFIG="$explicit_config"
       export MULTI_AGENT_CONFIG
@@ -161,7 +161,7 @@ run_resolved_consumer_command() {
         ;;
       *) exit 2 ;;
     esac
-    unset MULTI_AGENT_CONFIG CODEX_HOME CLAUDE_CONFIG_DIR
+    unset MULTI_AGENT_CONFIG CODEX_HOME CLAUDE_CONFIG_DIR GROK_HOME
     FF_DEV_TOOLKIT_PROJECT_ROOT="$consumer"
     PATH="$entrypoint_path" HOME="$entrypoint_home"
     export PATH HOME FF_DEV_TOOLKIT_PROJECT_ROOT
@@ -461,7 +461,7 @@ run_consumer_command_smoke() {
   mkdir -p "$ENTRYPOINT_CONSUMER/nested"
   if (
     cd "$ENTRYPOINT_CONSUMER/nested"
-    unset FF_DEV_TOOLKIT_ROOT MULTI_AGENT_CONFIG CODEX_HOME CLAUDE_CONFIG_DIR
+    unset FF_DEV_TOOLKIT_ROOT MULTI_AGENT_CONFIG CODEX_HOME CLAUDE_CONFIG_DIR GROK_HOME
     PATH="$ENTRYPOINT_PATH" HOME="$ENTRYPOINT_HOME" \
       bash ../scripts/codex-review.sh --dry-run >"$shim_log" 2>&1
   ) && grep -qF 'Dry run complete' "$shim_log" \
@@ -481,7 +481,7 @@ run_consumer_command_smoke() {
   broken_sidecar_rc=0
   (
     cd "$ENTRYPOINT_CONSUMER/nested"
-    unset FF_DEV_TOOLKIT_ROOT MULTI_AGENT_CONFIG CODEX_HOME CLAUDE_CONFIG_DIR
+    unset FF_DEV_TOOLKIT_ROOT MULTI_AGENT_CONFIG CODEX_HOME CLAUDE_CONFIG_DIR GROK_HOME
     PATH="$ENTRYPOINT_PATH" HOME="$ENTRYPOINT_HOME" \
       bash ../scripts/codex-review.sh --dry-run \
       >"$ENTRYPOINT_ROOT/generated-shim-broken-sidecar.log" 2>&1

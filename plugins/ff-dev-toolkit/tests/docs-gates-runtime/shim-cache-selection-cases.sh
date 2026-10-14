@@ -37,8 +37,10 @@ run_shim_cache_selection() {
   # 「ローカル（codex あり）は緑・クラウド（codex なし）だけ rc=4 で赤」という見えない退行が
   # 戻る（Phase B がまさにそれだった）。呼び出し元の local 変数を動的スコープで参照する。
   run_shim_cache_case() { # $1: ログの出力先 / 戻り値: シムの rc
-    (cd "$consumer" && unset FF_DEV_TOOLKIT_ROOT && \
-      CODEX_HOME="$codex_home" CLAUDE_CONFIG_DIR="$claude_home" \
+    # shim_default_grok=1 のときは GROK_HOME を外し、既定（$HOME/.grok）側を通す
+    (cd "$consumer" && unset FF_DEV_TOOLKIT_ROOT && export GROK_HOME="$root/home/.grok" && \
+      { [ -z "${shim_default_grok:-}" ] || unset GROK_HOME; } && \
+      HOME="$root/home" CODEX_HOME="$codex_home" CLAUDE_CONFIG_DIR="$claude_home" \
       CODEX_REVIEW_CODEX_BIN="$stub_codex" \
       SHIM_SELECTION_RESULT="$result" bash scripts/codex-review.sh --dry-run) \
       >"$1" 2>&1
@@ -73,6 +75,68 @@ run_shim_cache_selection() {
     ok "shimは同一versionの両cacheではCodex cacheを優先する"
   else
     bad "shimが同一version時のCodex cache優先順位を保持しない (rc=${rc})"
+  fi
+
+  # grok の導入実体（~/.grok/installed-plugins/ff-dev-toolkit-<識別子>/。Issue `#2119`）
+  local grok_dir="$root/home/.grok/installed-plugins"
+  make_shim_cache_candidate "$grok_dir/ff-dev-toolkit-aaaa1111" 1.0.0 grok-1.0.0
+  rc=0
+  run_shim_cache_case "$root/grok-tie.log" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(sed -n '1p' "$result")" = codex-1.0.0 ]; then
+    ok "shimは同一versionならgrokの導入実体よりCodex cacheを優先する"
+  else
+    bad "shimが同一version時にgrokの導入実体をCodex cacheより優先した (rc=${rc})"
+  fi
+  make_shim_cache_candidate "$grok_dir/ff-dev-toolkit-bbbb2222" 1.1.0 grok-1.1.0
+  rc=0
+  run_shim_cache_case "$root/grok-newer.log" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(sed -n '1p' "$result")" = grok-1.1.0 ]; then
+    ok "shimはgrokの導入実体も横断してsemantic version最大を選ぶ"
+  else
+    bad "shimがgrokの導入実体を候補にしない、または版を比べない (rc=${rc})"
+  fi
+  rm -rf "$codex_home" "$claude_home" "$grok_dir/ff-dev-toolkit-aaaa1111"
+  rc=0
+  run_shim_cache_case "$root/grok-only.log" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(sed -n '1p' "$result")" = grok-1.1.0 ]; then
+    ok "FF_DEV_TOOLKIT_ROOTもCodex/Claude cacheも無くgrokの導入実体だけがあれば、sidecarより先にそれを選ぶ"
+  else
+    bad "grokの導入実体だけの環境でシムが解決しない (rc=${rc})"
+  fi
+  local shim_default_grok=1
+  rc=0
+  run_shim_cache_case "$root/grok-default-home.log" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(sed -n '1p' "$result")" = grok-1.1.0 ]; then
+    ok "GROK_HOME未設定なら既定の\$HOME/.grok/installed-pluginsを見る"
+  else
+    bad "GROK_HOME未設定時に既定の\$HOME/.grokを見ない (rc=${rc})"
+  fi
+  shim_default_grok=""
+  make_shim_cache_candidate "$claude_cache/1.1.0" 1.1.0 claude-1.1.0
+  # GROK_HOME も HOME も無い（set -u）環境でも Codex / Claude の解決は落ちない
+  rc=0
+  (cd "$consumer" && unset FF_DEV_TOOLKIT_ROOT GROK_HOME HOME && CLAUDE_CONFIG_DIR="$claude_home" CODEX_HOME="$codex_home" \
+    CODEX_REVIEW_CODEX_BIN="$stub_codex" SHIM_SELECTION_RESULT="$result" bash "$consumer/scripts/codex-review.sh" --print-toolkit-root) \
+    >"$root/no-home.log" 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ] && ! grep -q 'unbound variable' "$root/no-home.log"; then
+    ok "GROK_HOMEもHOMEも無い環境でもClaude cacheで解決する（grokの置き場を推測しない）"
+  else
+    bad "GROK_HOME/HOME未設定でシムが落ちた (rc=${rc}): $(tail -1 "$root/no-home.log")"
+  fi
+  rc=0
+  run_shim_cache_case "$root/claude-grok-tie.log" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(sed -n '1p' "$result")" = claude-1.1.0 ]; then
+    ok "Codexが無いとき同一versionならgrokよりClaude cacheを優先する"
+  else
+    bad "同一version時にgrokの導入実体がClaude cacheより優先された (rc=${rc})"
+  fi
+  make_shim_cache_candidate "$claude_cache/1.2.0" 1.2.0 claude-1.2.0
+  rc=0
+  run_shim_cache_case "$root/claude-newer-than-grok.log" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(sed -n '1p' "$result")" = claude-1.2.0 ]; then
+    ok "より新しいClaude cacheをgrokの導入実体が上書きしない"
+  else
+    bad "grokの導入実体がより新しいClaude cacheを上書きした (rc=${rc})"
   fi
 
   # 起動口の単一化を機械で守る。読めない回を「違反ゼロ」と同じ緑にしないため、対象が

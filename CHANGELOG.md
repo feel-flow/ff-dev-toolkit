@@ -20,6 +20,25 @@
 
 ## [Unreleased]
 
+## [0.151.0] - 2026-10-14
+
+### 追加
+
+- grok CLI で ff-dev-toolkit の hooks を発火させる生成スクリプト `scripts/grok/sync-hooks.sh` を同梱した。grok は plugin の hooks を認識するだけで実行しないため、プラグインの hook 登録（hooks.json）を global hook ファイル `~/.grok/hooks/ff-dev-toolkit.json` へ展開する。プラグインを更新したら再実行する。`--check` で展開が最新かを確かめられる
+- grok が hook 入力に渡すツール名（`run_terminal_command` など）を Claude Code の名前（`Bash` など）へ写すシム `scripts/grok/hook-shim.sh` を同梱した。展開した hook はこのシム経由で起動するので、Bash ガードが grok 上でも発火する
+- multi-review のホスト委譲を Codex / grok ホストへ広げた。`--delegate-to-host=codex-cli` / `--delegate-to-host=grok-cli` で、ホスト自身のレーンを CLI 起動ではなくホストのサブエージェント（Codex は spawn_agent、grok は spawn_subagent）で走らせる。引数なしの `--delegate-to-host` は従来どおり claude-code
+- `--route full` に `--delegate-to-host=codex-cli` などのホスト指定 を添えると主がホストのレーンになり、副（クロスレビュー）は別モデルのレーンになる
+- grok セッション内で grok-cli レーンが失敗したとき、`--delegate-to-host=grok-cli` で再実行するコマンドを案内する
+- 配置済みの `scripts/codex-review.sh`（互換シム）が、grok CLI の導入実体（`GROK_HOME`、既定 `~/.grok` の `installed-plugins/ff-dev-toolkit-*`）も解決候補にする。`FF_DEV_TOOLKIT_ROOT` を export しなくても grok だけで導入した環境でオーケストレータが見つかる。Codex / Claude の plugin cache と横断して版の最大を選び、同じ版なら Codex、Claude、grok の順で優先する。サイドカーより先に見る点は従来の cache と同じ
+- 導入先の更新手順: シムの内容を pin している導入先は、toolkit 更新後に setup を再実行してシムを置き直し（skill から起動する場合はその実行部、grok だけの環境では `bash "$(ls -d "${GROK_HOME:-$HOME/.grok}"/installed-plugins/ff-dev-toolkit-* | tail -n 1)/scripts/setup-multi-agent.sh"`）、pin（シムの内容ハッシュを固定するテストなど）を新しい内容へ更新する
+
+### 修正
+
+- `workflow-doctor` の検査 9（特定 CLI のレビューを常に必須にする旧文言）が、「素の `codex exec` を自分で組み立てない … stdin が TTY でない場合はリダイレクトが必須」のように、シェルのリダイレクト（stdin を /dev/null へつなぐ code span）への「必須」の注記が CLI 名・レビューの語と同じ行に並ぶ行を FAIL にしていた誤検知を直した。リダイレクト記号・パイプ・アンパサンドで始まり空白を含まない code span への「必須」は注記として行から取り除いてから判定する。同じ行に並ぶ本物の常時必須（「Codex レビューは必須（stdin のリダイレクトが必須）」）や、英字で始まる「`codex` 必須」、リダイレクトで始まるが空白を含むコマンド全体への必須指定は従来どおり FAIL にする
+- `workflow-doctor` の検査 9（特定 CLI のレビューを常に必須にする旧文言）が、現行の契約どおりの文言を FAIL にしていた誤検知を直した。漢字表記の「在れば」「有れば」を条件として扱い、`@copilot` の `@` 記号への「必須」の注記は行から取り除いてから判定する。注記と同じ行に書かれた本物の常時必須（「Copilot レビューは必須（`@` 必須）」）や、「`@codex` 必須」、素の「のみ」による限定は、従来どおり FAIL にする
+- `multi-review.sh` の `--route fast` / `--route full` が `--cli` / `--perspective` などの併用を拒否するとき（exit 2）、何も実行していないことと、`.review-results/` に残っているのは前の実行の結果であることを併せて表示するようにした。レーン指定を拒否したときは、部分再検証の形（`--route none` に `--cli` と `--perspective` で対象を絞る形）も示す。拒否の直後に残った結果を今回の結果として読み違えるのを防ぐ。部分再検証の手順書にも、`--route fast|full` と併用しない旨を足した
+- 決定木の静的検査 `route.sh --check` が、mawk を既定の awk とする環境（Debian / Ubuntu など）で葉を 1 件多く数え、「葉が 51 件で上限 50 を超えています」で失敗していたのを直した。答えの一覧を作る代入が mawk では初回から空の答えを先頭に入れていた。葉の件数と上限は変わらない
+
 ## [0.150.0] - 2026-10-13
 
 ### 修正

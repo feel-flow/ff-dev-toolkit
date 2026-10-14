@@ -77,10 +77,13 @@
 #                           sibling <dir>.prev-* did not match that ignore pattern and
 #                           got swept into commits. Cannot be combined with --resume.
 #   --include-diff          Include diff in implement prompts
-#   --delegate-to-host      Review only. Start NO claude CLI for the claude-code lane:
-#                           build its prompts as usual and hand execution back to the host,
-#                           which runs them in its own session and writes each result to
-#                           <output-dir>/claude-code/<perspective>.md. Re-run the SAME
+#   --delegate-to-host[=<cli>]
+#                           Review only. Start NO CLI for the host's own lane (default
+#                           claude-code; =codex-cli / =grok-cli when the host is Codex /
+#                           grok CLI): build its
+#                           prompts as usual and hand execution back to the host, which runs
+#                           them in its own session (subagents) and writes each result to
+#                           <output-dir>/<cli>/<perspective>.md. Re-run the SAME
 #                           command to adopt those results and finish the report. Every
 #                           other lane runs unchanged, and the default (no flag) still
 #                           spawns the CLI. See "Host delegation" below.
@@ -119,15 +122,17 @@
 #   CLI is logged into. When only that account is out of quota, the lane cannot run even
 #   though the host session is still working on a different account, and `claude auth`
 #   has no per-invocation account selection — so the CLI side cannot fix it.
-#   What changes: for claude-code only, no CLI is started. The prompt this run would have
-#   sent is written to <output-dir>/claude-code/.delegated/<perspective>.prompt.md together
+#   (grok host: headless `grok -p` lanes return no review body; Issue `#2118`.)
+#   What changes: for the delegated lane only (claude-code by default, or the
+#   --delegate-to-host=<cli> value), no CLI is started. The prompt this run would have
+#   sent is written to <output-dir>/<lane>/.delegated/<perspective>.prompt.md together
 #   with a request record, and the orchestrator prints a handoff block on STDOUT naming the
 #   prompt file and the result path. The task is reported as DELEGATED (pending) — never as
 #   a failure, and never as a covered perspective.
 #   What does NOT change: plan construction, prompt construction, every other lane, the
 #   integrated report, and the default behaviour without the flag.
 #   Finishing the round trip: the host writes its result to
-#   <output-dir>/claude-code/<perspective>.md and RE-RUNS THE SAME COMMAND (add --resume to
+#   <output-dir>/<lane>/<perspective>.md and RE-RUNS THE SAME COMMAND (add --resume to
 #   keep the other lanes' results). A result is adopted only when it answers THIS run's
 #   prompt — the request record holds the prompt digest and a response built from a different
 #   input is set aside under .delegated/ with a named path instead of being adopted or
@@ -135,8 +140,10 @@
 #   passes the same review-body acceptance gate, so the report cannot tell the two apart.
 #   Exit status: 3 while any delegated task is still pending (distinct from 1 = a task
 #   failed, so "waiting for the host" is never read as "the review failed").
-#   Scope: claude-code only. The host is Claude, so routing another lane through it would
-#   silently collapse the cross-model independence this tool exists to provide.
+#   Scope: the host's own lane only — claude-code (default), codex-cli or grok-cli
+#   (--delegate-to-host=<cli>; the host runs each prompt in its own subagent: Claude Code's
+#   Agent tool, Codex's spawn_agent, grok's spawn_subagent). Routing a lane of a different model through the host would silently
+#   collapse the cross-model independence this tool exists to provide.
 #
 # Review round limit (review only):
 #   A review run on the same branch at a new HEAD is one "round". The third round
@@ -552,16 +559,26 @@ get_cli_model_env_vars() {
 #     `$ALL_CLIS` と書くか括弧を外すこと
 
 # ── ホスト委譲の対象レーン ──
-# ホストは Claude なので、委譲できるのは claude-code レーンだけ。他レーンを同じ経路へ
-# 流すと「複数の *違う* モデルを同じ diff に当てる」という本ツールの目的が黙って消える
-# （レポート上は観点が埋まったまま、実体はホスト 1 モデルの多重実行になる）。
-# 一覧ではなく単一値にしてあるのは、拡張の余地を残すと「どのレーンなら委譲してよいか」の
-# 判断がレジストリ側へ逃げて、上の理由が書かれていない場所で緩むため。
+# 委譲できるのは**ホスト自身のモデルのレーン 1 本だけ**: Claude Code がホストなら claude-code
+# （Agent ツール）、Codex CLI なら codex-cli（multi_agent の spawn_agent）、grok CLI なら grok-cli
+# （spawn_subagent）。`--delegate-to-host=<cli>` で指定する（Issue `#2118`）。ホストと違う
+# モデルのレーンを同じ経路へ流すと「複数の *違う* モデルを同じ diff に当てる」という本ツールの
+# 目的が黙って消える（レポート上は観点が埋まったまま、実体はホスト 1 モデルの多重実行になる）。
+# 1 実行で委譲するのは単一値。許す値は下の case に閉じ、レジストリ側へ判断を逃がさない。
+# grok-cli を足した理由: `grok -p` の headless 起動は最初のターンの前置きだけが捕捉されて
+# typed verdict を欠く（missing-review-body）ことが多く、grok がホストのときはセッション内の
+# サブエージェント（spawn_subagent）で同じプロンプトを走らせる方が確実に本文が返る。
 #
 # registry の境界（上の sentinel）の**外**に置く: 境界内は $ALL_CLIS と固定値を返す
 # case lookup だけに保つ契約で、tests/lib/cli-registry-parser.sh が制限文法として
 # 静的解析する（cli_sandbox_probe_supported と同じ理由）。
-readonly DELEGATION_LANE="claude-code"
+DELEGATION_LANE="claude-code"
+delegation_lane_allowed() { # <cli> → rc0 = --delegate-to-host=<cli> で委譲してよいレーン
+  case "$1" in
+    claude-code | codex-cli | grok-cli) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 task_is_delegated() { # <cli> → rc0 = この実行でホストへ委譲するレーン
   [[ "$DELEGATE_TO_HOST" == "true" && "$1" == "$DELEGATION_LANE" ]]
@@ -1605,6 +1622,14 @@ parse_args() {
       --fresh)       FRESH=true; shift ;;
       --dry-run)     DRY_RUN=true; shift ;;
       --delegate-to-host) DELEGATE_TO_HOST=true; shift ;;
+      --delegate-to-host=*)
+        DELEGATE_TO_HOST=true
+        DELEGATION_LANE="${1#--delegate-to-host=}"
+        if ! delegation_lane_allowed "$DELEGATION_LANE"; then
+          echo "ERROR: --delegate-to-host=${DELEGATION_LANE}: only the host's own lane can be delegated (claude-code, codex-cli or grok-cli)." >&2
+          exit 1
+        fi
+        shift ;;
       --print-reviewers) PRINT_REVIEWERS=true; shift ;;
       --set-reviewers)   SET_REVIEWERS="$2"; shift 2 ;;
       --timeout)     TIMEOUT="$2"; shift 2 ;;
@@ -1666,7 +1691,7 @@ parse_args() {
     echo "       handoff files) before they can be collected, so the delegation never converges." >&2
     echo "       Clean once without delegating, then delegate:" >&2
     echo "         1) run with --fresh and --exclude-cli ${DELEGATION_LANE} (or --dry-run) to clear" >&2
-    echo "         2) re-run with --delegate-to-host and no --fresh" >&2
+    echo "         2) re-run with --delegate-to-host=${DELEGATION_LANE} and no --fresh" >&2
     exit 2
   fi
 
@@ -4932,11 +4957,11 @@ run_cli_group() { # $1: cli / $2: status dir
     # 処理中だったかはこの行でしか相関できない（逐次ブランチの ▶ 表示と対）。
     echo "▶ ${cli} → ${persp} (serialized)" >&2
     run_task_recorded "$cli" "$persp" "$sdir" || return 1
-    # 委譲レーンの rc（DELEGATION_PENDING_EXIT_CODE）がここへ来ない前提は、claude-code が
-    # premium tier で、このワーカーが minimize_cost × flat-rate のときしか使われないこと
-    # （get_cli_cost_tier / execute_tasks の serialized_clis 判定）に依っている。tier を
-    # 変えると委譲待ちが「CLI 単位の決定的失敗」と分類され、そのレーンの残り観点が
-    # まとめてスキップされる — 暗黙の依存なので明示しておく。
+    # 委譲レーンの rc（DELEGATION_PENDING_EXIT_CODE = 123）はここへ来うる（flat-rate の
+    # grok-cli を minimize_cost で委譲した場合。Issue `#2118`）。委譲待ちは成果物を書かないので
+    # classify_cli_failure_cause が空を返し、cli_failure_is_deterministic（auth / billing /
+    # model-unsupported だけを採る）に掛からない — 残り観点はスキップされない。この分類を
+    # 広げるときは 123 を除外すること（委譲待ちを「CLI 単位の決定的失敗」にしない）。
     if [[ "${LAST_TASK_RC:-0}" -ne 0 && "${LAST_TASK_RC:-0}" -ne 124 ]]; then
       cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${cli}/${persp}.md")"
       if cli_failure_is_deterministic "$cause"; then
@@ -4972,9 +4997,10 @@ record_task_skipped() { # $1: cli / $2: perspective / $3: cause / $4: status dir
 # CLI が起動される。フラグの取り違えはこの手順で最も起きやすい操作なので、消す前に止める。
 #
 # 「委譲が未完了である」ことの印は request ファイル（受理時に消える）。これが残っている
-# 観点が今回のプランに居て、かつ委譲が指定されていなければ中断する。
+# 観点が今回のプランに居て、それが今回の委譲レーン以外（委譲なしの実行ではすべてのレーン）
+# なら中断する。同じレーンの委譲の再実行は回収へ進む。
 guard_outstanding_delegations() {
-  [[ "$DELEGATE_TO_HOST" != "true" ]] || return 0
+  # 委譲中の実行でも、別レーンの未回収 handoff は守る（Issue `#2118`: レーンが可変になったため）
   [[ -n "${OUTPUT_DIR:-}" ]] || return 0
   local entry cli persp req outstanding=""
   while IFS= read -r entry; do
@@ -4983,13 +5009,19 @@ guard_outstanding_delegations() {
     persp="${entry#*:}"
     req="$(delegate_dir_for "$cli")/${persp}.request"
     [[ -f "$req" ]] || continue
+    if [[ "$DELEGATE_TO_HOST" == "true" && "$cli" == "$DELEGATION_LANE" ]]; then continue; fi
     outstanding="${outstanding:+${outstanding} }${cli}/${persp}"
   done <<< "$EXECUTION_PLAN"
   [[ -n "$outstanding" ]] || return 0
   echo "ERROR: an unfinished host delegation exists for: ${outstanding}" >&2
-  echo "       This run was started WITHOUT --delegate-to-host, so it would clear those result" >&2
+  echo "       This run was started without --delegate-to-host for that lane, so it would clear those result" >&2
   echo "       paths (destroying anything the host wrote there) and start the CLI instead." >&2
-  echo "       Either re-run with --delegate-to-host to finish the round trip, or abandon the" >&2
+  local resume_flag="--delegate-to-host"
+  case " ${outstanding}" in
+    *" grok-cli/"*) resume_flag="--delegate-to-host=grok-cli" ;;
+    *" codex-cli/"*) resume_flag="--delegate-to-host=codex-cli" ;;
+  esac
+  echo "       Either re-run with ${resume_flag} to finish the round trip, or abandon the" >&2
   echo "       delegation by removing its handoff files:" >&2
   local abandon_entry abandon_cli abandon_persp
   for abandon_entry in $outstanding; do
@@ -6336,6 +6368,8 @@ codex_update_state_file() {
 # 止める理由ではないが、どちらも 1 行で名指しする。
 ensure_codex_cli_current() {
   plan_lists_cli codex-cli || return 0
+  # 委譲するレーンの CLI は起動しないので、更新（グローバル install と最大 300 秒の待ち）もしない（Issue `#2118`）
+  if task_is_delegated codex-cli; then return 0; fi
   if [[ "${FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE:-}" == "1" ]]; then
     echo "ℹ️  codex-cli version check skipped (FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE=1)." >&2
     return 0
@@ -6416,6 +6450,23 @@ ensure_codex_cli_current() {
 # commands they would otherwise have wanted the tool to run behind their back,
 # so print them: same CLI with more time, or the configured substitute — named
 # explicitly, with its cost tier, as a choice rather than a surprise.
+# ホスト委譲で走らせ直せる grok-cli の観点（空白区切り。無ければ空）。条件: review で、
+# 今回の実行が委譲しておらず、ホストが grok CLI のセッション（GROK_AGENT が立つ）で、
+# grok-cli のタスクが落ちたこと。失敗理由は問わない（時間切れ 124 も含む）— headless の
+# 捕捉が前置きだけになる失敗は再実行で直らないことが多く、ホストのサブエージェントなら
+# 理由に依らず同じプロンプトを走らせ直せる（Issue `#2118`）。
+grok_host_delegable_perspectives() {
+  [[ "$TASK_TYPE" == "review" && "$DELEGATE_TO_HOST" != "true" ]] || return 0
+  [[ -n "${GROK_AGENT:-}" ]] || return 0
+  local entry task out=""
+  for entry in $FAILED_TASKS; do
+    task="${entry%:*}"
+    [[ "${task%%/*}" == "grok-cli" ]] || continue
+    case " ${out} " in *" ${task#*/} "*) ;; *) out="${out:+${out} }${task#*/}" ;; esac
+  done
+  [[ -z "$out" ]] || printf '%s\n' "$out"
+}
+
 # ホスト委譲で走らせ直せる claude-code の観点（空白区切り。無ければ空）。条件は 4 つ:
 # review であること、今回の実行が委譲していないこと（委譲中はそもそも CLI を起動しない）、
 # ホストが Claude Code であること（Claude Code は自身が起動するシェルへ CLAUDECODE=1 を
@@ -6507,6 +6558,23 @@ print_failure_advice() {
     echo "      the same command with --resume added:" >&2
     echo "       ${self} --cli ${DELEGATION_LANE}${dp_args} --delegate-to-host" >&2
     echo "       ${self} --cli ${DELEGATION_LANE}${dp_args} --delegate-to-host --resume" >&2
+  fi
+
+  # grok CLI がホスト（GROK_AGENT が立つ）で grok-cli レーンが落ちた回は、同じ CLI の再実行より
+  # ホストのサブエージェントへの委譲が効く（headless の捕捉が前置きだけになる失敗は再実行で
+  # 直らないことが多い。Issue `#2118`）。個別案内より先に出す。
+  local grok_persps
+  grok_persps="$(grok_host_delegable_perspectives)"
+  if [[ -n "$grok_persps" ]]; then
+    local gp gp_args=""
+    for gp in $grok_persps; do gp_args="${gp_args} --perspective ${gp}"; done
+    echo "" >&2
+    echo "   🤝 grok-cli — this host is a grok CLI session. Run the lane in the host instead:" >&2
+    echo "      re-run with --delegate-to-host=grok-cli (never with --fresh), run each handoff" >&2
+    echo "      prompt in a read-only subagent (spawn_subagent), write its answer to the" >&2
+    echo "      output-file the handoff names, then re-run the same command with --resume added:" >&2
+    echo "       ${self} --cli grok-cli${gp_args} --delegate-to-host=grok-cli" >&2
+    echo "       ${self} --cli grok-cli${gp_args} --delegate-to-host=grok-cli --resume" >&2
   fi
 
   echo "" >&2

@@ -171,7 +171,11 @@ check_tree() {
       if (key in target) { print "違反: node " node " の答え " ans " が重複しています"; bad++ }
       target[key] = tgt
       acount[node]++
-      alist[node] = (node in alist) ? alist[node] "\n" ans : ans
+      # 判定と代入を 1 文にしない。mawk（Debian / Ubuntu の既定 awk）は左辺の alist[node] を
+      # 右辺より先に作るため、初回でも `node in alist` が真になり、先頭に空の答えが入って
+      # 空の行き先を葉として 1 件多く数えていた（Issue `#2120`）
+      if (node in alist) alist[node] = alist[node] "\n" ans
+      else alist[node] = ans
       if (ans == "none") { nonecount[node]++; if (tgt != "none") { print "違反: node " node " の none の行き先が none ではありません: " tgt; bad++ } }
       else if (tgt == "none") { print "違反: node " node " の答え " ans " が none へ落ちています（none 以外の答えは葉かノードを指す）"; bad++ }
       else if (tgt !~ /^(node:[a-z][a-z0-9-]*|skill:[a-z][a-z0-9-]*|hook:[a-z][a-z0-9-]*|doc:[^#]+#.+)$/) { print "違反: node " node " の答え " ans " の行き先の形が不正です: " tgt; bad++ }

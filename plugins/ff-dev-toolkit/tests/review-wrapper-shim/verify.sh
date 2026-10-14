@@ -75,6 +75,9 @@
 #   増分検査 + 未 source cases の照合）を 1 件足して 274。別 suite 化しなかった理由は ADR-052。
 
 set -euo pipefail
+# grok の導入実体（GROK_HOME/installed-plugins）もシムの解決候補（Issue `#2119`）。走行ホストの
+# ~/.grok を拾わないよう、空の置き場へ固定する（各ケースは CODEX_HOME / CLAUDE_CONFIG_DIR だけを差し替える）
+export GROK_HOME="${TMPDIR:-/tmp}/ff-review-wrapper-shim-no-grok-$$"  # 作らない（存在しない置き場 = 候補なし）
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"

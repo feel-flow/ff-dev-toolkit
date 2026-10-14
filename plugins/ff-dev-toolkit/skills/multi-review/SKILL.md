@@ -100,9 +100,9 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 **レビュー起動から全 CLI が終端（応答・失敗・タイムアウトのいずれか）に達するまで、オーケストレータ側で作業ツリーを変更しないこと**。変化を検知すると結果は DISCARDED になるが、変更して戻した場合や gitignore 済みパスは見えず、凍結の代わりになる機構ではない。サブエージェント（Review Toolkit 等）経路も同じで、そちらは結果を DISCARDED にする機構が無いので hook `guard-review-in-flight.sh` がレーンを開き、終端まで編集と git 書き込みを deny する（`fast` は Claude のレーンを開かない）。worktree 隔離の起動既定について、その規定（隔離時の凍結の扱いを含む）は [Git Workflow ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要) を正本とする（本書は再掲しない）。隔離は、外部 CLI を同一ツリーで実行する本スキルの経路には適用されず、こちらの凍結はそのまま守る。解放イベントを取りこぼしても、開始済みレーンは `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`（既定 14400 秒）、未開始のレーンは `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`（既定 1800 秒）を過ぎると自動回収され、systemMessage で通知される。
 
-### 2a. claude-code レーンのホスト委譲（`--delegate-to-host`）
+### 2a. ホスト自身のレーンのホスト委譲
 
-`claude` CLI の利用枠だけが尽き、**ホストが Claude のときだけ**、そのレーンを自セッションのサブエージェントで走らせる（正本は [該当節](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#host-delegation)）。`--delegate-to-host` で実行（`--fresh` 併用不可。終了コード **3** = 委譲待ち）→ handoff の `prompt-file` を**書き換えずに**サブエージェントへ渡し、`- verdict:` 行（指摘ゼロは `- verdict: none`）を残して `output-file` へ書く → **同じコマンドに `--resume` を足して**再実行。
+`--delegate-to-host[=<cli>]` でホスト自身のレーンだけを自セッションのサブエージェントで走らせる（Codex `=codex-cli` / grok `=grok-cli`。正本は [該当節](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#host-delegation)）。`--route full` 併用で主＝ホスト、副＝別モデル。`--fresh` / `--route fast` 併用不可。終了コード **3** = 委譲待ち → 各 `prompt-file` を**そのまま** 1 観点 1 サブエージェントへ渡し、最終メッセージを無加工で `output-file` へ書く → **同じコマンドに `--resume` を足して**再実行。
 
 ### レビュー待ち時間の使い方
 

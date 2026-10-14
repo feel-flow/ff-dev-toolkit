@@ -1643,8 +1643,9 @@ fail_output_readback() { # <perspective_name> <output_file> <response_file>
 # （個別に条件を足す形は、足し忘れた 1 つが「別の入力への応答を今回の結果として採用する」
 # 静かな誤りになる）。一致しない応答は**捨てず**に名前を変えて残し、handoff をやり直す。
 #
-# 委譲は claude-code レーン専用（オーケストレータ側で束縛する）。ホストは Claude なので、
-# 他レーンを同じ経路へ流すとモデル独立性が黙って失われる — 「別モデルのクロスレビュー」
+# 委譲はホスト自身のレーン 1 本だけ（claude-code / codex-cli / grok-cli。オーケストレータ側で
+# 束縛し、アダプタは ADAPTER_SUPPORTS_DELEGATION で opt-in する）。他モデルのレーンを同じ経路へ
+# 流すとモデル独立性が黙って失われる — 「別モデルのクロスレビュー」
 # という本ツールの目的そのものを裏切る。
 
 # プロンプト本文の digest。git は本ツールの前提（diff を取るのに要る）で、
@@ -1769,6 +1770,46 @@ delegation_output_written() { # <output-file> <受理した本文>
   awk 'NR == 1 { ok = ($0 ~ /^<!-- Multi-CLI .* Result -->$/); exit } END { exit ok ? 0 : 1 }' "$file" || return 1
   written="$(delegation_strip_result_header "$file")" || return 1
   [ "$written" = "$expected" ]
+}
+
+# ── ホスト委譲の分岐（委譲対応アダプタ共通。Issue `#2118`）──
+#
+# CLI を 1 つも起動しない経路。プロンプト構築とツール許可の決定までは起動経路と共通で、
+# 実行だけをホストへ返す。呼び出し側は "🔍 Running" の進捗表示より**前**に呼ぶ —
+# 起動していないのに起動したと名乗るログを残さないため。DELEGATE_DIR が空なら何もせず返る。
+# 委譲した回はこの関数の中で exit する（受理 0 / 委譲待ち DELEGATION_PENDING_EXIT_CODE /
+# 出力先の失敗は fail_output_*）。
+run_host_delegation_or_continue() { # <lane-id> <cli-display-name> <perspective> <prompt> <allowed-tools>
+  [[ -n "${DELEGATE_DIR:-}" ]] || return 0
+  local delegate_rc=0
+  delegate_task "$1" "$2" "$3" "$4" "$5" || delegate_rc=$?
+  case "$delegate_rc" in
+    0) exit 0 ;;
+    "$DELEGATION_PENDING_EXIT_CODE") exit "$DELEGATION_PENDING_EXIT_CODE" ;;
+    # 壊れているのは委譲の受け渡しではなく成果物の出力先。汎用の orchestrator エラーへ
+    # 流すと、壊れている対象を名指しせず、書けない先へ INCOMPLETE 成果物を書きに行く。
+    "$DELEGATION_OUTPUT_WRITE_EXIT_CODE")
+      fail_output_write "$3" "$OUTPUT_FILE"
+      ;;
+    # 書けたが読み戻しが一致しない。122 と分けるのは「無い」と「在るが違う」で次の一手が変わるため。
+    "$DELEGATION_OUTPUT_READBACK_EXIT_CODE")
+      fail_output_readback "$3" "$OUTPUT_FILE" "${DELEGATE_DIR}/${3}.response.md"
+      ;;
+    *)
+      fail_orchestrator_error "$3" \
+        "cannot hand the ${TASK_TYPE:-review} to the host through ${DELEGATE_DIR} (see the error above)."
+      ;;
+  esac
+}
+
+# 委譲経路（--delegate-dir）は CLI を起動しないので、導入検査を飛ばしてよいかを引数から判定する。
+# 導入検査を引数解析より前に置くアダプタ（codex / grok）用。
+adapter_args_request_delegation() { # "$@"
+  local a
+  for a in "$@"; do
+    [[ "$a" == "--delegate-dir" || "$a" == --delegate-dir=* ]] && return 0
+  done
+  return 1
 }
 
 delegate_task() { # <lane-id> <cli-display-name> <perspective> <prompt> <allowed-tools>
@@ -3014,8 +3055,9 @@ parse_adapter_args() {
   if [[ -n "$DELEGATE_DIR" ]]; then
     if [[ "${ADAPTER_SUPPORTS_DELEGATION:-false}" != "true" ]]; then
       echo "ERROR: --delegate-dir is not supported by $(basename "$0")." >&2
-      echo "       Host delegation exists for the claude-code lane only (the host is Claude);" >&2
-      echo "       routing another lane through it would silently lose model independence." >&2
+      echo "       Host delegation exists only for a lane the host itself can run (claude-code /" >&2
+      echo "       codex-cli / grok-cli); routing another lane through it would silently lose" >&2
+      echo "       model independence." >&2
       return 2
     fi
     if [[ "$TASK_TYPE" != "review" ]]; then

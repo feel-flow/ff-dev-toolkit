@@ -11,6 +11,9 @@
 #   --timeout <seconds>       Timeout in seconds (default: 900; the orchestrator always passes this explicitly)
 #   --task-type <type>        review | explore | implement (default: review)
 #   --description <text>      Task description (for explore/implement)
+#   --delegate-dir <dir>      Host delegation (review only, Issue `#2118`): when this CLI is the host,
+#                             hand the prompt to the host's own subagent instead of starting the CLI
+#                             (--delegate-to-host=codex-cli; see adapter-common.sh run_host_delegation_or_continue).
 #   --staging-dir <dir>       Absolute, existing, writable dir the agent writes generated
 #                             files into (implement only; the orchestrator always passes it)
 #   --inline-output           implement without a staging dir: the CLI reports file contents
@@ -29,10 +32,17 @@ source "${SCRIPT_DIR}/adapter-common.sh"
 
 readonly CLI_NAME="Codex CLI"
 readonly CLI_COMMAND="codex"
+# オーケストレータ側のレーン識別子（委譲の handoff が名乗る）
+readonly CLI_LANE="codex-cli"
+# ホスト委譲の受理を opt-in する: このレーンを、同じモデルのホスト（Codex CLI の spawn_agent）のサブエージェントで
+# 走らせる経路（--delegate-to-host=codex-cli）。adapter-common.sh の parse_adapter_args が検査する
+# shellcheck disable=SC2034 # adapter-common.sh（source 先）が読む
+ADAPTER_SUPPORTS_DELEGATION=true
 
 # ── Preflight ──
 
-if ! cli_available "$CLI_COMMAND"; then
+# 委譲経路（--delegate-dir）は CLI を起動しないので導入を要求しない（Issue `#2118`）
+if ! adapter_args_request_delegation "$@" && ! cli_available "$CLI_COMMAND"; then
   echo "ERROR: ${CLI_NAME} (${CLI_COMMAND}) is not installed." >&2
   echo "Install: npm install -g @openai/codex" >&2
   exit 1
@@ -248,6 +258,10 @@ sandbox_config_args() {
     workspace-write) printf '%s\n%s\n' "-c" "sandbox_workspace_write.network_access=false" ;;
   esac
 }
+
+# ── Host Delegation ──
+# 起動経路と同じプロンプトをホストへ返す（"🔍 Running" より前。adapter-common.sh 参照）
+run_host_delegation_or_continue "$CLI_LANE" "$CLI_NAME" "$perspective_name" "$prompt" "Read,Grep,Glob,Bash(git diff*)"
 
 # ── Execute Task ──
 
