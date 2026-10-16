@@ -480,15 +480,39 @@ elif [ "${searched}" -eq 0 ]; then
 fi
 
 # ── メタの取り出し ──────────────────────────────────────────────────────────
-# ブロック（\036 区切り）から `| <key> | <value>` の値を返す。無ければ空。
-meta_of() { # <block> <key>
-  printf '%s' "$1" | tr '\036' '\n' | awk -v key="$2" -F '|' '
+# エントリ一覧（extract_entries の出力）の全エントリについて、ブロック（\036 区切り）から
+# `| <key> | <value>` の値を指定キーの順に取り出し、1 エントリ 1 行で返す。awk 1 回で全件を
+# 処理し、後段の出力ループ（emit_ace / emit_obs）ではエントリごとに外部プロセスを起動しない。
+# Windows の Git Bash（MSYS）ではプロセス起動 1 回が 0.1 秒を超え、エントリごとに値ごとの
+# `$(printf | tr | awk)` を起動していた形は、約 350 件の台帳の --promoted-open で 6 分を超えた
+# （WSL では同じ処理が 8 秒）。台帳は単調に伸びるので、件数に比例する起動は残さない。
+# 値の規則（旧 meta_of と同じ）: 各行を `|` で分けた 2〜NF-1 番目の欄のうち、前後の空白を除いて
+# キーと一致した最初の欄の、次の欄の値（前後の空白を除く）。行は文書順に見て最初に一致した
+# 行を採る。無ければ空。
+# 出力: `id<US>title<US>file<US>anchor<US>値1<US>…<US>値n<US>.`。anchor は id の英小文字化
+# （id は英数字とハイフンだけなので tolower と `tr 'A-Z' 'a-z'` は一致する）。末尾の `.` は番兵で、
+# 最後の値が空でも read の欄がずれないようにする。
+entries_meta() { # <entries file> <key>...
+  local file="$1" IFS=' '
+  shift
+  awk -F '\037' -v keys="$*" '
+    BEGIN { nk = split(keys, want, " ") }
     {
-      for (i = 2; i < NF; i++) {
-        k = $i; gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
-        if (k == key) { v = $(i + 1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); print v; exit }
+      nl = split($4, lines, "\036")
+      row = $1 "\037" $2 "\037" $3 "\037" tolower($1)
+      for (k = 1; k <= nk; k++) {
+        v = ""; found = 0
+        for (j = 1; j <= nl && !found; j++) {
+          nf = split(lines[j], f, "|")
+          for (i = 2; i < nf; i++) {
+            name = f[i]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+            if (name == want[k]) { v = f[i + 1]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); found = 1; break }
+          }
+        }
+        row = row "\037" v
       }
-    }'
+      print row "\037."
+    }' "${file}"
 }
 
 # ── キーワード照合 ──────────────────────────────────────────────────────────
@@ -517,56 +541,82 @@ filter_entries() { # stdin: entries / stdout: matched entries
 # `owner/repo#N` を repo ごとに集め、open 一覧を 1 回だけ取得する。open 一覧に無い番号は
 # closed とみなす（存在しない番号も closed 側に落ちる — open かどうかだけが判断に要るため）。
 # gh が無い / 失敗 / 一覧が上限に達した repo は、その repo の参照をすべて `未確認` にする。
-STATE_CACHE="${TMP}/issue-state"; : >"${STATE_CACHE}"   # 行: owner/repo#N<TAB>open|closed|未確認
-REPO_STATUS="${TMP}/repo-status"; : >"${REPO_STATUS}"   # 行: owner/repo<TAB>ok|fail
+# 参照ごとの判定は外部プロセスを起動しない（メタの取り出しの節と同じ理由）。repo ごとの結果は
+# 並行配列に持つ（bash 3.2 は連想配列を持たない）。open 番号の集合は ` 1 2 3 ` の形の文字列で、
+# 番号は先頭の 0 を落として持つ（旧実装の awk の数値比較 `$1 == n` と同じ一致にする）。
+REPO_NAMES=(); REPO_STATES=(); REPO_OPEN=()
 OPEN_LIMIT=1000
-fetch_open_set() { # <owner/repo> → 一時ファイルへ open 番号を書き、ok/fail を記録
-  local repo="$1" out="" count=0
-  out="${TMP}/open-$(printf '%s' "${repo}" | tr '/' '_')"
+strip_zeros() { # <数字列> → strip_zeros_result（先頭の 0 を落とす。全部 0 なら 0）
+  strip_zeros_result="${1#"${1%%[!0]*}"}"
+  [ -n "${strip_zeros_result}" ] || strip_zeros_result=0
+}
+fetch_open_set() { # <owner/repo> → REPO_NAMES / REPO_STATES（ok|fail）/ REPO_OPEN へ 1 組追記する
+  local repo="$1" out="" count=0 n="" set=" " strip_zeros_result=""
+  out="${TMP}/open-${repo//\//_}"
+  REPO_NAMES+=("${repo}")
   if [ "${OFFLINE}" -eq 1 ] || ! command -v gh >/dev/null 2>&1; then
-    printf '%s\tfail\n' "${repo}" >>"${REPO_STATUS}"
+    REPO_STATES+=(fail); REPO_OPEN+=(" ")
     return 0
   fi
   # stdin を閉じる: gh は対話入力を待ちうるため、呼び出し元の read ループの入力を渡さない
   # （ループ側も fd 3 で読むので二重の防御。片方だけでも欠けはしないが、両方外さない）。
   if ! gh issue list --repo "${repo}" --state open --limit "${OPEN_LIMIT}" --json number --jq '.[].number' >"${out}" 2>"${out}.err" </dev/null; then
-    printf '%s\tfail\n' "${repo}" >>"${REPO_STATUS}"
+    REPO_STATES+=(fail); REPO_OPEN+=(" ")
     printf 'gh issue list --repo %s に失敗しました（該当参照は 未確認 として扱います）: %s\n' "${repo}" "$(head -n 1 "${out}.err" 2>/dev/null)" >&2
     return 0
   fi
   count="$(awk 'END { print NR }' "${out}")"
   if [ "${count}" -ge "${OPEN_LIMIT}" ]; then
-    printf '%s\tfail\n' "${repo}" >>"${REPO_STATUS}"
+    REPO_STATES+=(fail); REPO_OPEN+=(" ")
     printf 'gh issue list --repo %s の open 一覧が上限 %s 件に達しました（打ち切りの可能性があるため 未確認 として扱います）\n' "${repo}" "${OPEN_LIMIT}" >&2
     return 0
   fi
-  printf '%s\tok\n' "${repo}" >>"${REPO_STATUS}"
+  # 各行の最初の欄（前後の空白・CR を除く）を集合へ入れる。数字列でない欄はそのまま持つ。
+  while IFS= read -r n || [ -n "${n}" ]; do
+    n="${n#"${n%%[![:space:]]*}"}"
+    n="${n%%[[:space:]]*}"
+    [ -n "${n}" ] || continue
+    case "${n}" in *[!0-9]*) ;; *) strip_zeros "${n}"; n="${strip_zeros_result}" ;; esac
+    set="${set}${n} "
+  done <"${out}"
+  REPO_STATES+=(ok); REPO_OPEN+=("${set}")
 }
-issue_state() { # <owner/repo#N> → open|closed|未確認
-  local repo="${1%#*}" num="${1##*#}" status="" out=""
-  status="$(awk -F '\t' -v r="${repo}" '$1 == r { print $2; exit }' "${REPO_STATUS}")"
-  if [ -z "${status}" ]; then
+issue_state() { # <owner/repo#N> → issue_state_result へ open|closed|未確認
+  local repo="${1%#*}" num="${1##*#}" i=0 idx=-1 strip_zeros_result=""
+  while [ "${i}" -lt "${#REPO_NAMES[@]}" ]; do
+    if [ "${REPO_NAMES[${i}]}" = "${repo}" ]; then idx="${i}"; break; fi
+    i=$((i + 1))
+  done
+  if [ "${idx}" -lt 0 ]; then
     fetch_open_set "${repo}"
-    status="$(awk -F '\t' -v r="${repo}" '$1 == r { print $2; exit }' "${REPO_STATUS}")"
+    idx=$((${#REPO_NAMES[@]} - 1))
   fi
-  if [ "${status}" != "ok" ]; then printf '未確認\n'; return 0; fi
-  out="${TMP}/open-$(printf '%s' "${repo}" | tr '/' '_')"
-  if awk -v n="${num}" '$1 == n { found = 1 } END { exit found ? 0 : 1 }' "${out}"; then
-    printf 'open\n'
-  else
-    printf 'closed\n'
-  fi
+  if [ "${REPO_STATES[${idx}]}" != "ok" ]; then issue_state_result="未確認"; return 0; fi
+  strip_zeros "${num}"
+  case "${REPO_OPEN[${idx}]}" in
+    *" ${strip_zeros_result} "*) issue_state_result="open" ;;
+    *) issue_state_result="closed" ;;
+  esac
 }
 # Issue 列（` / ` 区切り）の各要素から owner/repo#N だけを抽出し、参照直後へ state を付ける。
 # 注記や空白の無い区切りは表示用に残し、gh の repo / number には渡さない。
 # `skill:` / `doc:` / `なし` はそのまま。`#N` だけの旧形式（リポジトリ修飾なし）は解決せず `未確認`。
+# 要素への分割と前後の空白の除去は bash の組み込みだけで行う（区切りは左から最初の ` / `。
+# 空の要素・空白だけの要素は捨てる）。
 annotate_refs() { # <Issue 列の値> → annotated_refs / refs_has_open / refs_has_unresolved
-  local col="$1" out="" item="" st="" rest="" annotated="" ref=""
+  local col="$1" out="" item="" st="" rest="" annotated="" ref="" items="" more=1
   local ref_pattern='[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+'
+  local issue_state_result=""
   annotated_refs=""; refs_has_open=0; refs_has_unresolved=0
   [ -n "${col}" ] || return 0
-  while IFS= read -r item; do
-    item="$(printf '%s' "${item}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  items="${col}"
+  while [ "${more}" -eq 1 ]; do
+    case "${items}" in
+      *" / "*) item="${items%%" / "*}"; items="${items#*" / "}" ;;
+      *) item="${items}"; more=0 ;;
+    esac
+    item="${item#"${item%%[![:space:]]*}"}"
+    item="${item%"${item##*[![:space:]]}"}"
     [ -n "${item}" ] || continue
     case "${item}" in
       skill:*|doc:*|なし) ;;
@@ -574,7 +624,8 @@ annotate_refs() { # <Issue 列の値> → annotated_refs / refs_has_open / refs_
         rest="${item}"; annotated=""
         while [[ "${rest}" =~ ${ref_pattern} ]]; do
           ref="${BASH_REMATCH[0]}"
-          st="$(issue_state "${ref}")"
+          issue_state "${ref}"
+          st="${issue_state_result}"
           case "${st}" in
             open) refs_has_open=1 ;;
             未確認) refs_has_unresolved=1 ;;
@@ -591,7 +642,7 @@ annotate_refs() { # <Issue 列の値> → annotated_refs / refs_has_open / refs_
         fi ;;
     esac
     if [ -z "${out}" ]; then out="${item}"; else out="${out} / ${item}"; fi
-  done < <(printf '%s\n' "${col}" | awk 'BEGIN { RS = " / " } { gsub(/\n/, ""); if ($0 != "") print }')
+  done
   annotated_refs="${out}"
 }
 
@@ -615,32 +666,28 @@ ace_status_label() {
   esac
 }
 
+# emit_ace / emit_obs はメタを entries_meta で先に取り出し（awk 1 回）、ループ内では外部プロセスを
+# 起動しない。取り出した一覧は入力と同じ一時領域に `<入力>.meta` として置く。
 emit_ace() { # <entries file> <forced status or ""> → stdout 行を状態別に並べる。副作用: ACE_IDS へ ID を追記
-  local file="$1" forced="$2" st="" cat="" helpful="" loc="" anchor="" rel="" id title src block
-  local line=""
+  local file="$1" forced="$2" st="" cat="" helpful="" loc="" anchor="" rel="" id title src end
   [ -s "${file}" ] || return 0
-  while IFS=$'\037' read -r id title src block <&3; do
-    if [ -n "${forced}" ]; then st="${forced}"; else st="$(meta_of "${block}" Status)"; [ -n "${st}" ] || st="unknown"; fi
-    cat="$(meta_of "${block}" Category)"
-    helpful="$(meta_of "${block}" Helpful)"
-    anchor="$(printf '%s' "${id}" | tr 'A-Z' 'a-z')"
+  entries_meta "${file}" Status Category Helpful >"${file}.meta"
+  while IFS=$'\037' read -r id title src anchor st cat helpful end <&3; do
+    if [ -n "${forced}" ]; then st="${forced}"; else [ -n "${st}" ] || st="unknown"; fi
     case "${src}" in "${ROOT}"/*) rel="${src#"${ROOT}"/}" ;; *) rel="${src}" ;; esac
     loc="${rel}#${anchor}"
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${st}" "${id}" "Category=${cat:-?} Helpful=${helpful:-?}" "${title}" "${loc}" "ace" >>"${TMP}/rows"
     printf '%s\n' "${id}" >>"${TMP}/ace-ids"
-  done 3<"${file}"
+  done 3<"${file}.meta"
 }
 emit_obs() { # <entries file> → 行を追加。副作用: OBS_IDS
-  local file="$1" st kind count last issue refs id title src block rel
+  local file="$1" st kind count last issue refs id title src anchor rel end
   local annotated_refs refs_has_open refs_has_unresolved
   [ -s "${file}" ] || return 0
-  while IFS=$'\037' read -r id title src block <&3; do
-    st="$(meta_of "${block}" Status)"; [ -n "${st}" ] || st="unknown"
+  entries_meta "${file}" Status Kind Count Last Issue >"${file}.meta"
+  while IFS=$'\037' read -r id title src anchor st kind count last issue end <&3; do
+    [ -n "${st}" ] || st="unknown"
     if [ "${INCLUDE_ARCHIVED}" -eq 0 ] && [ "${st}" = "archived" ] && [ "${MODE}" = "search" ]; then continue; fi
-    kind="$(meta_of "${block}" Kind)"
-    count="$(meta_of "${block}" Count)"
-    last="$(meta_of "${block}" Last)"
-    issue="$(meta_of "${block}" Issue)"
     refs=""; refs_has_open=0; refs_has_unresolved=0
     case "${st}" in
       promoted|mitigated) annotate_refs "${issue}"; refs="${annotated_refs}" ;;
@@ -648,9 +695,9 @@ emit_obs() { # <entries file> → 行を追加。副作用: OBS_IDS
     esac
     case "${src}" in "${ROOT}"/*) rel="${src#"${ROOT}"/}" ;; *) rel="${src}" ;; esac
     # 内部列 7/8 に判定用 state を持つ。公開 text / tsv は従来の表示列だけを返す。
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${st}" "${id}" "Kind=${kind:-?} Count=${count:-?} Last=${last:-?} Issue=${refs:-なし}" "${title}" "${rel}#$(printf '%s' "${id}" | tr 'A-Z' 'a-z')" "obs" "${refs_has_open}" "${refs_has_unresolved}" >>"${TMP}/rows"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${st}" "${id}" "Kind=${kind:-?} Count=${count:-?} Last=${last:-?} Issue=${refs:-なし}" "${title}" "${rel}#${anchor}" "obs" "${refs_has_open}" "${refs_has_unresolved}" >>"${TMP}/rows"
     printf '%s\n' "${id}" >>"${TMP}/obs-ids"
-  done 3<"${file}"
+  done 3<"${file}.meta"
 }
 
 : >"${TMP}/rows"; : >"${TMP}/ace-ids"; : >"${TMP}/obs-ids"

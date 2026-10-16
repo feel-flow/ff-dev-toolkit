@@ -20,6 +20,22 @@
 
 ## [Unreleased]
 
+## [0.152.0] - 2026-10-16
+
+### 追加
+
+- `finish.sh precheck` に `--gate-record` を追加し、別の checkout（WSL の clone など）で回したゲートの記録ファイルのパスを渡せるようにしました。照合は `check-merge-freshness.sh` の新しい `--record-from-other-checkout` で行い、記録のブランチ名だけを照合から外します。一致は記録の `COMMIT` が PR の先端と同じで、`STATUS=pass`・`DIRTY=no`・そのコミットが手元に実在するときだけで、`COMMIT` が先端と食い違えば従来どおり不一致で止まります。読めないパスは名指しで止まり、既定の記録へは戻りません。既定パスや `FF_GATE_RECORD_FILE` の記録には従来どおりブランチ照合を掛けます。
+
+### 変更
+
+- 週次 public run-all ワークフローが参照する actions/setup-node を v7.1.0 の commit SHA へ更新した
+- 同期整合の suite（sync-sha-contract）に、開発元リポジトリの同期提案 hook が、公開対象を変えたのに CHANGELOG 断片を含まない PR のマージをその場で通知し、判定材料が取れない回は「判定不能」と書くことを検証するケースを追加しました。公開 checkout では従来どおり対象外として skip されます。
+
+### 修正
+
+- ACE Playbook 整理の不変条件検査スクリプト（check-refine-invariants）が、PLAYBOOK.md・カテゴリ別ファイル・アーカイブ・PATTERNS.md のいずれかが CRLF 改行のときにエントリ見出しを 1 件も認識できず、全エントリを「見出しが無い」として失敗していた問題を修正した。Git for Windows の既定（core.autocrlf=true）で checkout した導入先で、/ace-refine 適用後の検証が赤になっていた。読み込み時に改行を LF へ正規化するようにし、LF の入力では挙動を変えていない
+- `knowledge-lookup.sh` が Windows の Git Bash で極端に遅く、約 350 件の観測台帳に対する `--promoted-open` が `--offline` の有無にかかわらず 6 分を超えていた問題を修正しました。原因は gh の呼び出しではなく、出力ループがエントリごと・メタ値ごとに `awk` / `tr` / `sed` を起動していたことで、Git Bash（MSYS）ではプロセス起動 1 回に 0.1 秒以上かかります。メタ値を awk 1 回でまとめて取り出し、Issue 列の分割と state の照合を bash の組み込みだけで行うようにしたことで、同じ台帳で約 2 秒になりました（WSL では 8 秒から 1 秒未満）。出力は変更前とバイト一致します
+
 ## [0.151.0] - 2026-10-14
 
 ### 追加

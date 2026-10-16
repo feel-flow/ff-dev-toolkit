@@ -5,7 +5,7 @@
 # skill 本文に残し、機械で決まる部分だけをここで実行して `KEY=値` で報告する。
 #
 # 使い方:
-#   finish.sh precheck <PR番号> [--subject <件名> --body <本文>]
+#   finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>]
 #   finish.sh cleanup [--dry-run] <PR番号>
 #   finish.sh knowledge-commit add    [--claim <文書>] <knowledge-commit.sh add の引数>
 #   finish.sh knowledge-commit commit [--type <type>] [--force]
@@ -37,7 +37,11 @@
 #      止め、precheck を最初から再実行させる。一致すればリモート先端（headRefOid）をゲート実測の
 #      記録と照合する
 #      （scripts/check-merge-freshness.sh --fetch）。0 = 一致 / 1 = 不一致（止める）/
-#      2 = 判定不能（止めないが REASON / ACTION を報告へ載せる）/ 3 = 検査不成立（止める）
+#      2 = 判定不能（止めないが REASON / ACTION を報告へ載せる）/ 3 = 検査不成立（止める）。
+#      `--gate-record <パス>` を渡した回は、別 checkout（WSL の clone など）で回したゲートの記録を
+#      `--record <パス> --record-from-other-checkout` で照合する（記録のブランチ名だけを照合から外し、
+#      一致の報告に記録のパスとブランチを添える）。パスが読めなければ gh を呼ぶ前に rc 2 で
+#      名指しして止まり、既定の記録へは戻さない
 #   6. 判定不能のとき全件ゲートを回し直すべきかを出す（RERUN_FULL_GATE）。記録が部分実行で
 #      checks が全件成功した回だけ `no`。「汚れた木で測った」「記録が無い」は checks が成功して
 #      いても `yes`。それ以外の理由は `see-action`（ACTION に従う）
@@ -290,7 +294,7 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 2
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: finish.sh precheck <PR番号> [--subject <件名> --body <本文>]
+Usage: finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gate-record <記録のパス>]
        finish.sh cleanup [--dry-run] <PR番号>
        finish.sh knowledge-commit add [--claim <文書>] --source ace|obs --id <ID> --summary <要約> [--category <c>] [--type <t>] -- <path>...
        finish.sh knowledge-commit commit [--type <t>] [--force]
@@ -376,11 +380,12 @@ pr_snapshot() { # stdin: gh pr view の JSON → stdout: 正規化した JSON
 
 # ── precheck ───────────────────────────────────────────────────────────────────
 cmd_precheck() {
-  local PR_NUMBER="" MERGE_SUBJECT="" MERGE_BODY="" have_subject=0 have_body=0
+  local PR_NUMBER="" MERGE_SUBJECT="" MERGE_BODY="" have_subject=0 have_body=0 GATE_RECORD="" have_gate_record=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --subject) [[ $# -ge 2 ]] || usage; MERGE_SUBJECT="$2"; have_subject=1; shift 2 ;;
       --body) [[ $# -ge 2 ]] || usage; MERGE_BODY="$2"; have_body=1; shift 2 ;;
+      --gate-record) [[ $# -ge 2 ]] || usage; GATE_RECORD="$2"; have_gate_record=1; shift 2 ;;
       -h|--help) usage ;;
       -*) echo "✗ 不明な引数: $1" >&2; usage ;;
       *) [[ -z "$PR_NUMBER" ]] || usage; PR_NUMBER="$1"; shift ;;
@@ -388,6 +393,12 @@ cmd_precheck() {
   done
   is_pr_number "$PR_NUMBER" || die_env "PR 番号が数字ではありません: ${PR_NUMBER:-（空）}" "finish.sh precheck <PR番号> の形で渡す"
   [[ "$have_subject" -eq "$have_body" ]] || die_env "--subject と --body は両方渡す（片方だけだと squash メッセージの供給源がリポジトリ設定へ戻る）" "両方を渡して再実行する"
+  # 別 checkout の記録は checks の待機より前に読めることを確かめる。読めないまま進むと、待機の
+  # 後で検査不成立になるだけでなく、ここで黙って既定の記録へ戻る実装に化けても気付けない
+  if [[ "$have_gate_record" -eq 1 ]]; then
+    [[ -n "$GATE_RECORD" && -f "$GATE_RECORD" && -r "$GATE_RECORD" ]] \
+      || die_env "--gate-record の記録を読めません（存在しない・ファイルでない・読み取り権限が無い）: ${GATE_RECORD:-（空）}" "別 checkout の記録のパス（WSL の clone なら \`git rev-parse --absolute-git-dir\` の下の ff-dev-toolkit/gate-record を //wsl.localhost/<distro>/… で）を確かめて再実行する。既定の記録へは戻さない"
+  fi
   need_cmd gh "gh をインストールして gh auth login を済ませる"
   need_cmd jq "jq をインストールする"
   need_repo
@@ -788,18 +799,31 @@ cmd_precheck() {
   REMOTE_HEAD="$(printf '%s' "$PR_JSON_AGAIN" | jq -r '.headRefOid // ""')"
   [[ -n "$REMOTE_HEAD" ]] || die_env "リモート先端（headRefOid）が空です" "gh pr view ${PR_NUMBER} --json headRefOid の出力を確かめる"
   FRESHNESS="$plugin_root/scripts/check-merge-freshness.sh"
-  FRESH_OUT="$(FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${FRESHNESS}" --remote-head "${REMOTE_HEAD}" --fetch)"
+  # --gate-record は別 checkout（WSL の clone など）で回したゲートの記録。照合も報告もその記録で
+  # 行い、ブランチ照合だけを外す宣言を添える（外すのは明示した記録だけ。既定パス・
+  # FF_GATE_RECORD_FILE の記録には従来どおり掛かる）
+  local -a fresh_record_args=() print_record_args=()
+  if [[ "$have_gate_record" -eq 1 ]]; then
+    fresh_record_args=(--record "${GATE_RECORD}" --record-from-other-checkout)
+    print_record_args=(--record "${GATE_RECORD}")
+  fi
+  FRESH_OUT="$(FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${FRESHNESS}" --remote-head "${REMOTE_HEAD}" --fetch ${fresh_record_args[@]+"${fresh_record_args[@]}"})"
   FRESH_STATUS=$?
   case "${FRESH_STATUS}" in
     0)
       # 一致。報告には実測の素性（ゲート名・モード）も載せる — 高速モードの記録を
       # 「全件実行で通した」と読ませないため（モードは合否には使わない）
-      FRESH_RECORD="$(FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${FRESHNESS}" --print-record 2>/dev/null || true)"
-      local fresh_gate fresh_mode fresh_result
+      FRESH_RECORD="$(FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${FRESHNESS}" --print-record ${print_record_args[@]+"${print_record_args[@]}"} 2>/dev/null || true)"
+      local fresh_gate fresh_mode fresh_result fresh_branch
       fresh_gate="$(printf '%s\n' "${FRESH_RECORD}" | sed -n 's/^GATE=//p')"
       fresh_mode="$(printf '%s\n' "${FRESH_RECORD}" | sed -n 's/^MODE=//p')"
       fresh_result="$(printf '%s\n' "${FRESH_RECORD}" | sed -n 's/^RESULT=//p')"
       FRESH_REPORT="✅ 一致（${fresh_gate:-ゲート不明} / モード ${fresh_mode:-不明} / ${fresh_result:-結果不明}）"
+      if [[ "$have_gate_record" -eq 1 ]]; then
+        # 別 checkout の記録で通したことを報告に残す（手元の記録で測ったと読ませない）
+        fresh_branch="$(printf '%s\n' "${FRESH_RECORD}" | sed -n 's/^BRANCH=//p' | head -n 1)"
+        FRESH_REPORT="${FRESH_REPORT} — 別 checkout の記録: ${GATE_RECORD}（BRANCH=${fresh_branch:-不明}）"
+      fi
       ;;
     1)
       printf '%s\n' "${FRESH_OUT}" >&2

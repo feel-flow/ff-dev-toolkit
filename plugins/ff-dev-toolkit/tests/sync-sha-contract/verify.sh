@@ -124,6 +124,13 @@
 # 変異検出: SessionStart hook へ dry-run 先行を欠く言い換えの承認要求（「承認された場合のみ」）の notify を足すと承認要求行の同居の針が赤。
 # 空振り検出: SessionStart hook を不在にすると (8) が赤（exit 1。不在を 0 件一致の緑・skip へ倒さない）。段落が見つからない（見出し行が消えた）ときは空文字の比較へ倒さず「段落が無い」で赤にする。
 #
+# 変異検出（changelog-fragment-runtime。同期提案 hook の changelog 断片の欠落通知。Issue `#2150` / OBS-099。2026-10-16 実測、変異 12 件と空振り 4 件すべて赤転 / SURVIVED 0 件。初回は CHANGELOG 本体の例外と is_bot の 2 件が SURVIVED で、ケースを足して赤転を確認）:
+# 変異検出: 断片判定の関数を no-op にすると欠落・bot 案内・名指しの 6 ケースが赤。最後の同期提案の文から断片の通知を外すと同じ 6 ケースが赤。
+# 変異検出: 変更ファイル取得・公開対象一覧・PR 照会の各失敗の通知から判定不能の文を外すと、それぞれの判定不能ケースが赤。
+# 変異検出: changelog.d の下位ディレクトリを断片に数える・CHANGELOG 本体の例外を外す・断片の要る範囲へ同期スクリプトを含める・メタ allowlist を無視する、のいずれも対応ケースが赤。
+# 変異検出: bot の判定から login の形（[bot] / app/）を外す、または author.is_bot を無視すると bot 案内のケースが赤。hook の allowlist へ 1 件足すと正本との一致が赤。
+# 空振り検出: hook を不在・空ファイルにすると changelog-fragment-runtime が赤（exit 1。skip へ倒さない）。allowlist の配列名を変える・正本を空にすると「allowlist を読めない」で赤（0 件を一致へ倒さない）。
+#
 # run-all-required: no — 同期スクリプトを持たない公開 checkout での skip は正当な適用外（SSOT 専用の検査）
 
 set -euo pipefail
@@ -929,6 +936,19 @@ else
   sed 's/^/    | /' "$_release_rt_err" >&2
 fi
 rm -f "$_release_rt_err"
+
+# 同期提案 hook の changelog 断片の欠落通知（Issue `#2150` / OBS-099）。hook の不在は skip ではなく赤
+# （本 suite は SSOT 専用で、SSOT には hook が在るはず）。
+_cf_rt_err="$(mktemp "${TMPDIR:-/tmp}/sync-sha-changelog-fragment.XXXXXX")"
+_cf_rt_rc=0
+bash "$SCRIPT_DIR/changelog-fragment-runtime.sh" "$POST_MERGE_HOOK" "$REPO_ROOT/scripts/check-release-required.sh" >"$_cf_rt_err" 2>&1 || _cf_rt_rc=$?
+if [[ "$_cf_rt_rc" -eq 0 ]]; then
+  ok "同期提案 hook の changelog 断片の欠落通知（欠落・揃い・公開対象外・判定不能・allowlist の一致）: $(tail -n 1 "$_cf_rt_err")"
+else
+  bad "同期提案 hook の changelog 断片の欠落通知が壊れている (rc=${_cf_rt_rc})"
+  sed 's/^/    | /' "$_cf_rt_err" >&2
+fi
+rm -f "$_cf_rt_err"
 
 echo
 if [[ "$FAIL" -gt 0 ]]; then

@@ -1493,6 +1493,113 @@ describe("main", () => {
 });
 
 /**
+ * CRLF 入力。`core.autocrlf=true` の導入先では PLAYBOOK / playbook subfile /
+ * archive / PATTERNS.md が CRLF で checkout される。エントリ見出しの判定が `\r` を残した行で行われると、
+ * 全 ID が「見出しが無い」になる。fixture は LF の定数から実行時に CRLF へ変換する
+ * （.gitattributes が eol=lf なので CRLF ファイルはコミットしない）。
+ */
+describe("main — CRLF 入力（core.autocrlf=true の導入先で CRLF のまま checkout された入力）", () => {
+  const originalArgv = process.argv;
+  let tmpDir = "";
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  const toCrlf = (text: string): string => text.replace(/\n/gu, "\r\n");
+
+  type Eol = Readonly<{ live: boolean; archive: boolean }>;
+  const ALL_LF: Eol = { live: false, archive: false };
+
+  /** live（索引 PLAYBOOK.md / subfile / PATTERNS.md）と archive の改行を独立に選んで実行する。 */
+  function runWith(
+    eol: Eol,
+    opts?: { liveProcess?: string; archiveProcess?: string; archived?: boolean },
+  ): { code: number; errors: string } {
+    // 1 テスト内で LF / CRLF を続けて走らせるので、前回の spy の呼び出し履歴と tmpDir を持ち越さない
+    vi.restoreAllMocks();
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-refine-inv-crlf-"));
+    const knowledge = path.join(tmpDir, "docs", "08-knowledge");
+    const playbookDir = path.join(knowledge, "playbook");
+    const archiveDir = path.join(playbookDir, "archive");
+    const patternsDir = path.join(tmpDir, "docs", "03-implementation");
+    fs.mkdirSync(archiveDir, { recursive: true });
+    fs.mkdirSync(patternsDir, { recursive: true });
+    const live = (text: string): string => (eol.live ? toCrlf(text) : text);
+    const archive = (text: string): string => (eol.archive ? toCrlf(text) : text);
+    const playbookPath = path.join(knowledge, "PLAYBOOK.md");
+    fs.writeFileSync(playbookPath, live(opts?.archived ? PLAYBOOK_WITH_ARCHIVED : PLAYBOOK_CHANGELOG));
+    fs.writeFileSync(
+      path.join(playbookDir, "process.md"),
+      live(opts?.archived ? "" : (opts?.liveProcess ?? LIVE_CANONICAL)),
+    );
+    fs.writeFileSync(path.join(playbookDir, "testing.md"), live(LIVE_TARGET));
+    fs.writeFileSync(
+      path.join(archiveDir, "process.md"),
+      archive(
+        opts?.archiveProcess ?? (opts?.archived ? ARCHIVE_COMPACTED_THEN_ARCHIVED : ARCHIVE_VARIANT_B),
+      ),
+    );
+    fs.writeFileSync(path.join(archiveDir, "testing.md"), archive(ARCHIVE_MERGED));
+    fs.writeFileSync(path.join(patternsDir, "PATTERNS.md"), live(PATTERNS_LISTED));
+    process.argv = ["node", "check-refine-invariants.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const code = main();
+    return { code, errors: err.mock.calls.flat().join("\n") };
+  }
+
+  it.each([
+    ["live と archive が両方 CRLF", { live: true, archive: true }],
+    ["live だけ CRLF", { live: true, archive: false }],
+    ["archive だけ CRLF", { live: false, archive: true }],
+  ] as const)("%s でも LF と同じく exit 0・違反 0 件", (_label, eol) => {
+    const { code, errors } = runWith(eol);
+    expect(errors).toBe("");
+    expect(code).toBe(0);
+  });
+
+  it("Archived（compact → 後日 archive）の fixture も CRLF で exit 0", () => {
+    const { code, errors } = runWith({ live: true, archive: true }, { archived: true });
+    expect(errors).toBe("");
+    expect(code).toBe(0);
+  });
+
+  it.each([
+    ["live と archive が両方 CRLF", { live: true, archive: true }],
+    ["live だけ CRLF", { live: true, archive: false }],
+    ["archive だけ CRLF", { live: false, archive: true }],
+  ] as const)("%s で live 本文を壊すと LF と同じ違反を報告して exit 1", (_label, eol) => {
+    const broken = { liveProcess: LIVE_CANONICAL.replace("一部だけ完了する。", "壊した。") };
+    const lf = runWith(ALL_LF, broken);
+    expect(lf.code).toBe(1);
+    expect(lf.errors).toContain("ACE-41-3");
+    const crlf = runWith(eol, broken);
+    expect(crlf.code).toBe(1);
+    expect(crlf.errors).toBe(lf.errors);
+  });
+
+  it.each([
+    ["live と archive が両方 CRLF", { live: true, archive: true }],
+    ["live だけ CRLF", { live: true, archive: false }],
+    ["archive だけ CRLF", { live: false, archive: true }],
+  ] as const)("%s で archive に原文が無い ID は LF と同じ違反で exit 1", (_label, eol) => {
+    const lf = runWith(ALL_LF, { archiveProcess: "" });
+    expect(lf.code).toBe(1);
+    expect(lf.errors).toContain("compact ACE-41-3");
+    const crlf = runWith(eol, { archiveProcess: "" });
+    expect(crlf.code).toBe(1);
+    expect(crlf.errors).toBe(lf.errors);
+  });
+});
+
+/**
  * 単一ファイル構成（エントリが索引 PLAYBOOK.md 本体にあり、playbook/ には archive だけ）。
  * live を subfile だけから集めると、compact は「live に見出しが無い」で必ず赤になり、
  * archive / merge の「live に残っている」判定は空集合に対して空振りしていた

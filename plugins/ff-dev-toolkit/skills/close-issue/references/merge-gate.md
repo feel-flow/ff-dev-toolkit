@@ -78,6 +78,8 @@ script は対象 PR に checks が登録されているかを先に確認しま�
 
 記録の `BRANCH` が現在の名前付きブランチと異なる場合は、コミット照合より前に **`UNDETERMINED`（exit 2）** を返す（別ブランチの古い記録は同一ブランチへの追加 push の証拠ではない。SHA が同一でも一致へ昇格させない）。`BRANCH` が欠落・空・`HEAD`・`(unknown)`、または現在が detached HEAD なら、別ブランチと断定せず従来のコミット照合を行う。
 
+別の checkout（Windows の作業機なら WSL の clone）で全件ゲートを回した回は、`finish.sh precheck <PR番号> --gate-record <その clone の記録のパス>` で記録を明示する。明示した記録に限ってブランチ照合を外し、一致は「`COMMIT` が `headRefOid` と同じ・`STATUS=pass`・`DIRTY=no`・そのコミットが手元に実在」のときだけになる（`COMMIT` が食い違えば `FRESH_STATUS=1` で止まる。読めないパスは rc 2 で名指しして止まり、既定の記録へは戻らない）。記録は WSL 側の `git rev-parse --absolute-git-dir` の下の `ff-dev-toolkit/gate-record` にあり、Git Bash からは `//wsl.localhost/<distro>/home/...` の形で渡す。
+
 鮮度照合が判定不能（`FRESH_STATUS=2`）で、かつ `FRESH_REASON` が「汚れた木で測った / 記録が無い / 記録が部分実行である」のいずれかなら（`RERUN_FULL_GATE=yes`）、clean な作業ツリーで全件ゲートを再実行してから改めて照合します（記録の仕組みを持たないプロジェクトではこの限りではなく、2 でマージを止めない既存規定も変わりません）。**ただし `FRESH_REASON` が「記録が部分実行である」で、かつ checks が非空で全件成功した回に限り、リリース前と契約面の変更時を除き再実行しません**（`RERUN_FULL_GATE=no`） — PR の checks がリモート先端（base へのマージ結果）を実測しており、部分ゲートの記録で判定不能になるのは想定どおりだからです。「汚れた木で測った / 記録が無い」は checks が成功していても従来どおり全件ゲートを再実行します（checks がローカルの検証スイートを回しているとは限らないため）。それ以外の理由は `RERUN_FULL_GATE=see-action`（`FRESH_ACTION` に従う）。
 
 未達 AC の修正ループで fix commit を push した場合、修正前の記録とは不一致になる。**ゲートを回し直してから**マージへ進む。

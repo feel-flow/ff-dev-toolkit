@@ -26,6 +26,13 @@
 #   D. SKILL.md / git-workflow.md / 本リポジトリ側 DEPLOYMENT.md の契約文言が
 #      スクリプトの振る舞いから drift していないこと。DoD が文章側にも要求している
 #
+# 空振り検出: 別 checkout の記録（--record-from-other-checkout）について、ブランチ照合の除外を
+# 宣言に関係なく常に効かせると「宣言なしの --record / FF_GATE_RECORD_FILE / 既定パスの写しは
+# 別ブランチで判定不能」が、常に効かせないと「別 checkout の記録の一致（exit 0）/ 不一致（exit 1）」が、
+# 宣言時の不一致を判定不能へ緩めると「COMMIT が先端と食い違えば exit 1」が赤になる（2026-10-16 実測）。
+# リポジトリ外で宣言時の判定不能（elif）を消すと「リポジトリ外では別 checkout の記録を一致にしない」が、
+# --print-record との併用の拒否を消すと「宣言を黙って捨てない」が赤になる（2026-10-16 実測）。
+#
 # 配置差: 公開リポジトリもモノレポと同じ `plugins/ff-dev-toolkit/` 構造を保つが、
 # **リポジトリ側の `docs/` を持たない**。配布物とスキルは常に検査し、`docs/` は存在する
 # ときだけ検査する（workflow-tier と同じ流儀）。
@@ -389,6 +396,136 @@ run_check --bogus-flag
 [[ "$RC" -eq 3 ]] && ok "不明な引数は検査不成立" || bad "不明引数で exit ${RC}（期待 3）"
 run_check --remote-head
 [[ "$RC" -eq 3 ]] && ok "値の無いオプションは検査不成立" || bad "値なしオプションで exit ${RC}（期待 3）"
+
+# --- 別 checkout の記録（--record-from-other-checkout）---
+# Windows の作業機では全件ゲートを WSL の clone で回すので、記録はその clone の git dir に
+# 書かれる。clone 側は別名のブランチ / worktree のことがあり、ブランチ名は実測対象の同一性と
+# 無関係になる。明示した記録に限って **ブランチ照合だけ**を外し、照合の鍵を
+# 「COMMIT == リモート先端・STATUS=pass・DIRTY=no・手元に実在」へ寄せる。
+# 既定パス / FF_GATE_RECORD_FILE / 宣言なしの --record は従来どおりブランチ照合を掛ける。
+REPO_X="$(new_repo repo-x)"
+OTHER_CO="$WORK/repo-x-other"
+git_q clone -q "$REPO_X" "$OTHER_CO" >/dev/null 2>&1
+git_q -C "$OTHER_CO" checkout -q -b wt-other >/dev/null 2>&1
+( cd "$OTHER_CO" && bash "$RECORD" --gate "tests/run-all.sh" --mode full --result "passed=9" >/dev/null 2>&1 )
+OTHER_REC="$(git_q -C "$OTHER_CO" rev-parse --absolute-git-dir)/ff-dev-toolkit/gate-record"
+cd "$REPO_X"
+CX="$(git_q rev-parse HEAD)"
+BRANCH_X="$(git_q symbolic-ref --short HEAD)"
+if [[ -f "$OTHER_REC" ]] && grep -qxF "BRANCH=wt-other" "$OTHER_REC" && grep -qxF "COMMIT=${CX}" "$OTHER_REC" \
+  && [[ "$BRANCH_X" != "wt-other" ]]; then
+  ok "fixture: 別 checkout（別名のブランチ）で clean な pass の記録を書けた"
+else
+  bad "fixture: 別 checkout の記録を作れていない（以下の検査は何も測っていない）: ${OTHER_REC}"
+fi
+
+run_check --remote-head "$CX" --record "$OTHER_REC" --record-from-other-checkout
+[[ "$RC" -eq 0 ]] && ok "別 checkout の記録: 別名のブランチでも COMMIT==先端・pass・clean なら一致（exit 0）" \
+  || bad "別 checkout の一致で exit ${RC}（期待 0）: ${OUT}"
+[[ -z "$OUT" && -z "$ERR" ]] && ok "別 checkout の記録の一致も無出力（exit 0 の契約を崩さない）" \
+  || bad "別 checkout の一致で出力があります: ${OUT}${ERR}"
+
+# 宣言なしでは従来どおり（ブランチ照合を外すのは明示した記録だけ）
+run_check --remote-head "$CX" --record "$OTHER_REC"
+[[ "$RC" -eq 2 ]] && ok "宣言なしの --record は従来どおり別ブランチで判定不能" || bad "宣言なしの --record で exit ${RC}（期待 2）"
+out_has "$OUT" "記録は別ブランチのものです（記録: wt-other" "宣言なしの --record の理由が別ブランチの記録"
+RC=0; OUT="$(FF_GATE_RECORD_FILE="$OTHER_REC" bash "$CHECK" --remote-head "$CX" 2>/dev/null)" || RC=$?
+[[ "$RC" -eq 2 ]] && ok "FF_GATE_RECORD_FILE 経由の同じ記録は従来どおり別ブランチで判定不能" \
+  || bad "FF_GATE_RECORD_FILE 経由で exit ${RC}（期待 2）"
+out_has "$OUT" "記録は別ブランチのものです" "FF_GATE_RECORD_FILE 経由の理由が別ブランチの記録"
+X_DEFAULT_REC="$(bash "$RECORD" --print-path)"
+mkdir -p "$(dirname "$X_DEFAULT_REC")"
+cp "$OTHER_REC" "$X_DEFAULT_REC"
+run_check --remote-head "$CX"
+[[ "$RC" -eq 2 ]] && ok "既定パスへ写した同じ記録は従来どおり別ブランチで判定不能" || bad "既定パスの写しで exit ${RC}（期待 2）"
+out_has "$OUT" "記録は別ブランチのものです" "既定パスの写しの理由が別ブランチの記録"
+RC=0; OUT="$(FF_GATE_RECORD_FILE="$OTHER_REC" bash "$CHECK" --remote-head "$CX" --record-from-other-checkout 2>/dev/null)" || RC=$?
+[[ "$RC" -eq 3 ]] && ok "--record を伴わない宣言は検査不成立（環境変数・既定パスの記録をブランチ照合から外さない）" \
+  || bad "--record なしの宣言で exit ${RC}（期待 3）"
+rm -f "$X_DEFAULT_REC"
+
+# COMMIT が先端と食い違えば従来の不一致経路（このモードを理由に判定不能へ緩めない）
+git_q commit -q --allow-empty -m cx2 >/dev/null 2>&1
+CX2="$(git_q rev-parse HEAD)"
+run_check --remote-head "$CX2" --record "$OTHER_REC" --record-from-other-checkout
+[[ "$RC" -eq 1 ]] && ok "別 checkout の記録でも COMMIT が先端と食い違えば exit 1 で止める" \
+  || bad "別 checkout の不一致で exit ${RC}（期待 1）: ${OUT}"
+out_has "$OUT" "FRESHNESS=MISMATCH" "別 checkout の不一致は MISMATCH"
+out_has "$OUT" "RELATION=ancestor" "別 checkout の不一致にも関係の分類を付ける"
+out_has "$OUT" "別 checkout の記録: ${OTHER_REC}" "不一致の REASON が別 checkout の記録とそのパスを名指しする"
+run_check --remote-head "$ABSENT" --record "$OTHER_REC" --record-from-other-checkout
+[[ "$RC" -eq 1 ]] && ok "手元に無い先端との食い違いも exit 1（判定不能へ格下げしない）" \
+  || bad "別 checkout × 未知の先端で exit ${RC}（期待 1）"
+
+# 汚れた木・部分実行・失敗・解釈不能は従来どおり判定不能
+OTHER_HAND="$WORK/other-checkout-hand/gate-record"
+mkdir -p "$(dirname "$OTHER_HAND")"
+other_rec() { # <STATUS> <DIRTY> [COMMIT]
+  printf 'RECORD_VERSION=1\nSTATUS=%s\nCOMMIT=%s\nBRANCH=wt-other\nDIRTY=%s\nGATE=tests/run-all.sh\nMODE=full\nSUITES=alpha\n' \
+    "$1" "${3:-$CX}" "$2" > "$OTHER_HAND"
+}
+other_rec pass no
+run_check --remote-head "$CX" --record "$OTHER_HAND" --record-from-other-checkout
+[[ "$RC" -eq 0 ]] && ok "別 checkout の手書き記録（pass / clean / 実在）は一致" || bad "手書きの一致で exit ${RC}（期待 0）: ${OUT}"
+other_rec pass yes
+run_check --remote-head "$CX" --record "$OTHER_HAND" --record-from-other-checkout
+[[ "$RC" -eq 2 ]] && ok "別 checkout の記録でも DIRTY=yes は判定不能" || bad "別 checkout × DIRTY=yes で exit ${RC}（期待 2）"
+out_has "$OUT" "作業ツリーが汚れて" "DIRTY=yes の理由が汚れた木"
+out_has "$OUT" "別 checkout の記録: ${OTHER_HAND}" "判定不能の REASON が別 checkout の記録とそのパスを名指しする"
+other_rec partial no
+run_check --remote-head "$CX" --record "$OTHER_HAND" --record-from-other-checkout
+[[ "$RC" -eq 2 ]] && ok "別 checkout の記録でも STATUS=partial は判定不能" || bad "別 checkout × partial で exit ${RC}（期待 2）"
+out_has "$OUT" "記録は部分実行です" "partial の理由が部分実行"
+other_rec fail no
+run_check --remote-head "$CX" --record "$OTHER_HAND" --record-from-other-checkout
+[[ "$RC" -eq 2 ]] && ok "別 checkout の記録でも STATUS=fail は判定不能" || bad "別 checkout × fail で exit ${RC}（期待 2）"
+out_has "$OUT" "直近のゲートが失敗しています" "fail の理由がゲートの失敗"
+other_rec bogus no
+run_check --remote-head "$CX" --record "$OTHER_HAND" --record-from-other-checkout
+[[ "$RC" -eq 2 ]] && ok "別 checkout の記録でも未知の STATUS は判定不能" || bad "別 checkout × 未知 STATUS で exit ${RC}（期待 2）"
+other_rec pass no "$ABSENT"
+run_check --remote-head "$ABSENT" --record "$OTHER_HAND" --record-from-other-checkout
+[[ "$RC" -eq 2 ]] && ok "別 checkout の記録でも手元に無いコミットは一致へ昇格しない" || bad "別 checkout × 不在コミットで exit ${RC}（期待 2）"
+out_has "$OUT" "実測対象のコミットが手元にありません" "不在コミットの理由が手元に無いこと"
+
+# 存在しない・ファイルでないパスは名指しで検査不成立（既定の記録へ黙って戻さない）。
+# 既定パスには先端と一致する clean な記録を置いておく — 黙って戻れば exit 0 になる針。
+bash "$RECORD" --gate g >/dev/null 2>&1
+run_check --remote-head "$CX2"
+[[ "$RC" -eq 0 ]] && ok "fixture: 既定パスに先端と一致する記録がある（戻れば緑になる状態）" || bad "fixture: 既定パスの記録が一致しない（exit ${RC}）"
+run_check --remote-head "$CX2" --record "$WORK/no-such-dir/gate-record" --record-from-other-checkout
+[[ "$RC" -eq 3 ]] && ok "別 checkout の記録が存在しなければ検査不成立（exit 3。既定の記録へ戻さない）" || bad "存在しない別 checkout の記録で exit ${RC}（期待 3）"
+out_has "$OUT" "$WORK/no-such-dir/gate-record" "存在しない記録のパスを名指しする"
+run_check --remote-head "$CX2" --record "$WORK" --record-from-other-checkout
+[[ "$RC" -eq 3 ]] && ok "別 checkout の記録がディレクトリなら検査不成立（exit 3）" || bad "ディレクトリを渡して exit ${RC}（期待 3）"
+rm -f "$X_DEFAULT_REC"
+run_check --remote-head "$CX" --measured "$CX" --record "$OTHER_REC" --record-from-other-checkout
+[[ "$RC" -eq 3 ]] && ok "--measured と別 checkout の宣言の併用は検査不成立（自己申告は記録を読まない）" \
+  || bad "--measured と宣言の併用で exit ${RC}（期待 3）"
+# --print-record は照合しないので宣言が効かない。黙って捨てて rc 0 で読み出すと、宣言が
+# 効いたと読み違えた呼び出し側がそのまま進む。
+run_check --print-record --record "$OTHER_REC" --record-from-other-checkout
+[[ "$RC" -eq 3 ]] && ok "--print-record と別 checkout の宣言の併用は検査不成立（宣言を黙って捨てない）" \
+  || bad "--print-record と宣言の併用で exit ${RC}（期待 3）: ${OUT}"
+out_has "$OUT" "--print-record と --record-from-other-checkout は併用できません" "併用の拒否理由を述べる"
+
+# リポジトリの外では、記録のコミットが手元に実在するかを確かめられない。ブランチ照合を
+# 外した代わりの鍵なので、確かめられないまま一致にしない（宣言なしの経路はリポジトリ外で
+# 実在確認を省くが、宣言ありでは省かない）。親の git を拾わないよう探索の天井を張る。
+OUTSIDE_DIR="$WORK/not-a-repo"
+mkdir -p "$OUTSIDE_DIR"
+other_rec pass no
+if ( cd "$OUTSIDE_DIR" && GIT_CEILING_DIRECTORIES="$WORK" git rev-parse --git-dir >/dev/null 2>&1 ); then
+  bad "fixture: リポジトリ外のつもりのディレクトリが git の中です（この検査は何も測っていない）: ${OUTSIDE_DIR}"
+else
+  ok "fixture: リポジトリ外のディレクトリを用意できた"
+fi
+RC=0
+OUT="$(cd "$OUTSIDE_DIR" && GIT_CEILING_DIRECTORIES="$WORK" bash "$CHECK" --remote-head "$CX" --record "$OTHER_HAND" --record-from-other-checkout 2>/dev/null)" || RC=$?
+[[ "$RC" -eq 2 ]] && ok "リポジトリ外では別 checkout の記録を一致にしない（実在を確かめられないので判定不能）" \
+  || bad "リポジトリ外 × 別 checkout の記録で exit ${RC}（期待 2）: ${OUT}"
+out_has "$OUT" "git リポジトリの外では、別 checkout の記録のコミットが手元に実在するかを確かめられません" \
+  "リポジトリ外の判定不能の理由を述べる"
 
 cd "$TESTS_DIR"
 

@@ -1056,8 +1056,15 @@ export function evaluateRefineInvariants(input: {
   return violations;
 }
 
+/**
+ * 読み込みの境界で CRLF を LF へ正規化する。`core.autocrlf=true` の導入先では
+ * PLAYBOOK / subfile / archive / PATTERNS.md が CRLF で checkout される。以降の解析
+ * （`splitEntryBlocks`・Changelog・PATTERNS 収載判定）はすべて LF を前提に行末アンカー
+ * （`(.*)$` など）で判定しており、`\r` が残ると全エントリ見出しを見失う。
+ * 本文の逐語比較も LF 同士で行うため、片側だけ CRLF でも比較が崩れない。
+ */
 function readOrThrow(filePath: string): string {
-  return fs.readFileSync(filePath, "utf8");
+  return fs.readFileSync(filePath, "utf8").replace(/\r\n/gu, "\n");
 }
 
 function collectBlocks(files: readonly string[]): EntryBlock[] {

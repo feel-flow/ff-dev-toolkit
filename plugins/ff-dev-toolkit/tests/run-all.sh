@@ -1428,7 +1428,6 @@ MISS_PROBE_BASELINE=(
   mcp-typecheck
   mcp-vitest
   merge-cleanup
-  merge-freshness
   multi-agent-critical-marker
   multi-agent-host-delegation
   multi-agent-ignore-paths

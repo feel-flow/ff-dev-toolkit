@@ -5,7 +5,8 @@
 # 使い方:
 # --- usage:start ---
 #   check-merge-freshness.sh --remote-head <SHA40> [--measured <SHA40>]
-#                            [--record <パス>] [--fetch] [--remote <名前>]
+#                            [--record <パス> [--record-from-other-checkout]]
+#                            [--fetch] [--remote <名前>]
 #   check-merge-freshness.sh --print-record [--record <パス>]
 #
 #   --remote-head  マージ対象 PR の先端（`gh pr view --json headRefOid --jq .headRefOid`）
@@ -14,6 +15,11 @@
 #                  当たったからといって、この引数で緑に付け替えないこと（実在しない SHA は
 #                  一致経路で弾くが、「汚れた木で測ったのに clean と申告する」は防げない）
 #   --record       記録ファイルのパス（既定は record-gate-head.sh --print-path と同じ）
+#   --record-from-other-checkout
+#                  --record の記録は別の checkout（WSL の clone など）で測ったものだと宣言する。
+#                  記録の BRANCH と現在のブランチの照合だけを外し、一致は「COMMIT == --remote-head・
+#                  STATUS=pass・DIRTY=no・そのコミットが手元に実在」のときだけ。記録が読めなければ
+#                  検査不成立（exit 3）。--record を伴わない宣言・--measured / --print-record との併用も検査不成立
 #   --fetch        関係の分類前に `git fetch <remote>` を行う（リモートのコミットが
 #                  手元に無いと ancestor / divergent を区別できないため）
 #   --remote       fetch 先のリモート名（既定 origin）
@@ -61,7 +67,8 @@
 #   2 = 判定不能（記録が無い / 別ブランチの記録 / 汚れた木で測った / **部分実行の記録である** /
 #       記録の内容を信頼できない）。マージは止めないが、「実測対象を特定できないため
 #       マージ前の再実行を推奨」と **完了報告へ明示する**。静かに素通りさせないことが
-#       この終了コードの役割
+#       この終了コードの役割。`--record-from-other-checkout` で明示した記録だけは
+#       「別ブランチの記録」をこの理由に数えない（それ以外の理由は同じ）
 #
 #       部分実行（`STATUS=partial`）は「リモート先端 == 実測対象」が成り立っていても
 #       判定不能へ倒す。名指しした suite しか回っていない記録を全件緑へ昇格させないため
@@ -75,7 +82,8 @@
 #       **判定（判定不能）は正しく、文言だけが不正確**である（バグ報告として立てる前に
 #       照合器の版を確認すること）。判別子を STATUS へ置いたのは、まさにこの
 #       「知らない版でも構造的に昇格できない」性質を取るためである
-#   3 = 検査不成立（使い方の誤り・git 不在・SHA 形式不正）。停止する
+#   3 = 検査不成立（使い方の誤り・git 不在・SHA 形式不正・`--record-from-other-checkout` で
+#       渡した記録を読めない）。停止する
 #
 #   2 で止めないのは、記録の仕組みを持たないプロジェクトでは判定不能が常態であり、
 #   そこで無条件にマージを止めると検査ごと迂回されるため。見逃しのコストが高い窓
@@ -281,6 +289,12 @@ RECORD_PATH=""
 DO_FETCH=0
 PRINT_RECORD=0
 REMOTE_NAME="origin"
+# --record の記録が別の checkout で測ったものか（--record-from-other-checkout）。
+# 立っているときだけブランチ照合を外す。外すのは明示した記録だけで、既定パスや
+# FF_GATE_RECORD_FILE の記録には従来どおり掛ける（同じ checkout の古い記録を区別する
+# 手段がブランチ名しか無いのはそちらの経路だから）。
+OTHER_CHECKOUT=0
+OTHER_CHECKOUT_NOTE=""
 
 # 記録が部分実行（STATUS=partial）だったか。一致判定の**後**に見る（理由は下の
 # 部分性の判定を参照）。--measured を明示した経路では記録を読まないので 0 のまま。
@@ -294,7 +308,7 @@ SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 usage_error() {
   printf 'FRESHNESS=ERROR\n'
   printf 'REASON=%s\n' "$*"
-  printf 'ACTION=%s\n' "使い方: check-merge-freshness.sh --remote-head <SHA40> [--measured <SHA40>] [--record <パス>] [--fetch]。検査は成立していないので一致として扱わないこと"
+  printf 'ACTION=%s\n' "使い方: check-merge-freshness.sh --remote-head <SHA40> [--measured <SHA40>] [--record <パス> [--record-from-other-checkout]] [--fetch]。検査は成立していないので一致として扱わないこと"
   exit 3
 }
 
@@ -305,6 +319,7 @@ while [[ $# -gt 0 ]]; do
     --record)      [[ $# -ge 2 ]] || usage_error "--record に値がありません"; RECORD_PATH="$2"; shift 2 ;;
     --remote)      [[ $# -ge 2 ]] || usage_error "--remote に値がありません"; REMOTE_NAME="$2"; shift 2 ;;
     --fetch)       DO_FETCH=1; shift ;;
+    --record-from-other-checkout) OTHER_CHECKOUT=1; shift ;;
     --print-record) PRINT_RECORD=1; shift ;;
     -h|--help)     sed -n '/^# --- usage:start/,/^# --- usage:end/p' "$SELF"; exit 0 ;;
     *) usage_error "不明な引数: $1" ;;
@@ -321,6 +336,11 @@ is_sha40() {
 
 # --print-record は照合を行わない読み出し専用の入口。報告に実測モードやゲート名を
 # 載せるために使う（一致時の無出力を崩さずに、記録の中身を報告へ回す手段）。
+# 照合しないので別 checkout の宣言は効きようがない。黙って捨てず、組み合わせごと拒否する
+# （宣言が効いたと読み違えた呼び出し側を検査不成立で止める）。
+if [[ "$PRINT_RECORD" -eq 1 && "$OTHER_CHECKOUT" -eq 1 ]]; then
+  usage_error "--print-record と --record-from-other-checkout は併用できません（--print-record は照合せず、宣言は効きません。--print-record --record <パス> で読み出すこと）"
+fi
 if [[ "$PRINT_RECORD" -eq 1 ]]; then
   command -v git >/dev/null 2>&1 || usage_error "git が見つかりません"
   if [[ -z "$RECORD_PATH" ]]; then
@@ -363,6 +383,20 @@ if [[ -n "$MEASURED" ]]; then
     || usage_error "--measured は 40 桁の完全な SHA で渡してください（受領: ${MEASURED}）"
 fi
 
+# 別 checkout の宣言は「明示した記録ファイル」にだけ付く。--record が無いと、照合は既定パスか
+# FF_GATE_RECORD_FILE の記録を読み、ブランチ照合を外してはいけない記録の照合を外すことになる。
+# 存在しない・読めない記録は判定不能（exit 2）ではなく検査不成立にする — 明示した記録が
+# 読めないのは入力の誤りで、判定不能の「記録が無い」は呼び出し側でマージコマンドの生成へ進む。
+if [[ "$OTHER_CHECKOUT" -eq 1 ]]; then
+  [[ -n "$RECORD_PATH" ]] \
+    || usage_error "--record-from-other-checkout は --record <パス> と併せて渡してください（既定パス・FF_GATE_RECORD_FILE の記録にはブランチ照合を掛けたままにする）"
+  [[ -z "$MEASURED" ]] \
+    || usage_error "--record-from-other-checkout と --measured は併用できません（--measured は記録を読みません）"
+  [[ -f "$RECORD_PATH" && -r "$RECORD_PATH" ]] \
+    || usage_error "別 checkout の記録を読めません（存在しない・ファイルでない・読み取り権限が無い）: ${RECORD_PATH}"
+  OTHER_CHECKOUT_NOTE="（別 checkout の記録: ${RECORD_PATH}）"
+fi
+
 command -v git >/dev/null 2>&1 || usage_error "git が見つかりません"
 
 undetermined() { # <reason> <action>
@@ -371,7 +405,9 @@ undetermined() { # <reason> <action>
   # 操作者の手元に残らないと、次の一手が「とりあえず再実行」しか無くなる）。
   [[ -z "$MEASURED" ]] || printf 'MEASURED=%s\n' "$MEASURED"
   printf 'REMOTE=%s\n' "$REMOTE_HEAD"
-  printf 'REASON=%s\n' "$1"
+  # 別 checkout の記録なら、その出所を理由に添える（報告を読む人が、どの記録で
+  # 判定不能になったのかを手元の記録と取り違えないため）。
+  printf 'REASON=%s%s\n' "$1" "$OTHER_CHECKOUT_NOTE"
   printf 'ACTION=%s\n' "$2"
   exit 2
 }
@@ -408,6 +444,9 @@ if [[ -z "$MEASURED" ]]; then
   # 赤が鮮度分類の suite だけで説明できた回の suite 名（run-all が書く。旧記録には行が無い）。
   # 案内の材料であって判定の根拠ではない — 一致・不一致の判定には使わない。
   RECORD_STALE_ONLY="$(sed -n 's/^STALE_ONLY_FAILED=//p' "$RECORD_PATH" 2>/dev/null | head -n 1)"
+  if [[ "$OTHER_CHECKOUT" -eq 1 ]]; then
+    OTHER_CHECKOUT_NOTE="（別 checkout の記録: ${RECORD_PATH} / 記録の BRANCH: ${RECORD_BRANCH:-なし}）"
+  fi
 
   is_sha40 "${RECORD_COMMIT:-}" \
     || undetermined "記録のコミットが読めません（COMMIT=${RECORD_COMMIT:-なし}）: ${RECORD_PATH}" \
@@ -471,8 +510,15 @@ if [[ -z "$MEASURED" ]]; then
   # SHA の一致・関係分類より前に分離する（同じ SHA でも別ブランチなら判定不能）。
   # 記録の HEAD / (unknown) や detached checkout は別ブランチと断定できないので、
   # 従来のコミット照合を維持する。--measured 明示時はこの記録経路を通らない。
+  #
+  # 例外は --record-from-other-checkout で明示した記録だけ。別の checkout（WSL の clone など）の
+  # ブランチ名は実測対象の同一性と無関係で（別名の worktree で回すのは普通）、照合を掛けると
+  # 正しい記録が常に判定不能になる。この照合が区別していた「同じ checkout に残った別ブランチの
+  # 古い記録」は、明示した記録では問題にならない — 何を渡したかは呼び出し側が名指ししており、
+  # 一致は COMMIT == API の先端・STATUS=pass・DIRTY=no・手元に実在、の全部が揃ったときだけ。
+  # 不一致はこのモードでも下の分類へ進み exit 1 で止まる（判定不能へ緩めない）。
   CURRENT_BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-  if [[ -n "$CURRENT_BRANCH" && -n "$RECORD_BRANCH" \
+  if [[ "$OTHER_CHECKOUT" -ne 1 && -n "$CURRENT_BRANCH" && -n "$RECORD_BRANCH" \
     && "$RECORD_BRANCH" != "HEAD" && "$RECORD_BRANCH" != "(unknown)" \
     && "$RECORD_BRANCH" != "$CURRENT_BRANCH" ]]; then
     undetermined "記録は別ブランチのものです（記録: ${RECORD_BRANCH} / 現在: ${CURRENT_BRANCH}）" \
@@ -489,10 +535,16 @@ if [[ "$MEASURED" == "$REMOTE_HEAD" ]]; then
   # この検査を比較より**前**に置いてはいけない。不一致（= 止めるべき状態）まで
   # 「手元に無いから判定不能」へ格下げされ、証拠がより弱いケースがより弱い判定を
   # 返す逆転が起きる。リポジトリの外から呼ばれた場合は確認しようがないので行わない。
-  if git rev-parse --git-dir >/dev/null 2>&1 \
-    && ! git cat-file -e "${MEASURED}^{commit}" 2>/dev/null; then
-    undetermined "実測対象のコミットが手元にありません（MEASURED=${MEASURED}）" \
-                 "実測対象を特定できないため、マージ前にゲートを再実行すること"
+  # ただし別 checkout の記録では、手元での実在が一致の条件そのもの（ブランチ照合を外した
+  # 代わりの鍵）なので、確認できなければ一致にしない。
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    if ! git cat-file -e "${MEASURED}^{commit}" 2>/dev/null; then
+      undetermined "実測対象のコミットが手元にありません（MEASURED=${MEASURED}）" \
+                   "実測対象を特定できないため、マージ前にゲートを再実行すること"
+    fi
+  elif [[ "$OTHER_CHECKOUT" -eq 1 ]]; then
+    undetermined "git リポジトリの外では、別 checkout の記録のコミットが手元に実在するかを確かめられません" \
+                 "マージ対象のリポジトリの作業ツリーで再実行すること"
   fi
 
   # 部分実行の記録は、リモート先端と一致していても全件緑へ**昇格しない**。
@@ -563,6 +615,6 @@ printf 'FRESHNESS=MISMATCH\n'
 printf 'MEASURED=%s\n' "$MEASURED"
 printf 'REMOTE=%s\n' "$REMOTE_HEAD"
 printf 'RELATION=%s\n' "$RELATION"
-printf 'REASON=%s\n' "$REASON"
+printf 'REASON=%s%s\n' "$REASON" "$OTHER_CHECKOUT_NOTE"
 printf 'ACTION=%s\n' "$ACTION"
 exit 1

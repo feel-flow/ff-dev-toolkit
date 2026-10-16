@@ -27,6 +27,7 @@
 #
 # 空振り検出: レビュースレッドの取得失敗・解釈不能を「0 件」へ倒す（4b の die_env を `rt_nodes="[]"; break` に）と (T4 / T5) が赤、未返信の判定から作者除外・resolve 除外を外すと (T2)、「起点以外の投稿なし」を `totalCount == 1` へ戻すと (T2 の T_botself)、outdated を除外すると (T3)、blocked の設定行を消すと (T2 / T3 / T10) が赤になる。ページ送りを `hasNextPage // false` へ戻すと (T8b)、after= を渡さないと (T7)、cursor 空の die_env を外すと (T8)、4b を手順 4 の前へ動かすと (T9 / T9b)、鮮度不一致の分岐から併発の併記を消すと (D2c)、totalCount の照合を外すと (T12) が赤になる（2026-09-29 実測。針が当たらない入力 = 取得できない回を緑にしない）。
 # 空振り検出: scripts/finish.sh の写しで precheck の「PR 不在」「gh 不通」「実測の記録が無い」を rc 0 の緑へ倒す（die_env / undetermined の exit 2 を return 0 に）と (B1 / B2 / C1) が赤になる。全スキルが上限内の合成名簿で 1 本だけを 20,001 バイトにすると (L2)、1 本だけを消すと (L3) が赤になる（2026-09-24 実測。針が当たらない入力を緑にしない）。finish.sh の写しで PR_COMMITS の出力行を消すと (A5 / C8 / C9 / F9)、`head -n 1` で 1 行に切ると (F9)、API 代替の `reverse` を外すと (F10)、fetch 失敗・git log 0 件・両方空の分岐を消すと (C11 / C10 / C12)、close-issue 手順 6 の主要コミット欄を `<hash> <件名>` の手書きへ戻すと (A6) が赤になる（2026-09-27 実測）。
+# 空振り検出: precheck --gate-record の照合から --record-from-other-checkout の宣言を外すと (GR2 / GR3 / GR4)、gh より前のパス確認を外すと (GR5)、それに加えて読めないパスを黙って既定の記録へ戻すと (GR5。rc 0 の緑になる) が赤になる（2026-10-16 実測）。
 # 空振り検出: watch 非 0 後の失敗 check の抽出を空にすると (D5 / D6c)、再待機上限を 1 回へ下げると (D6 / D6b) が赤になる（2026-09-29 実測）。
 # 空振り検出: watch 非 0 後の全成功を通す分岐を消すと (D6a)、checks 再取得不能時の再取得呼び出しを消すと (D7) が赤になる（2026-09-29 実測）。
 # 空振り検出: knowledge-commit push の rc 3 判定から `Protected branch update failed`（署名必須の拒否）・`Required status check`・`not authorized to push` の針を 1 つずつ外すと、それぞれ対応する H7b が rc=1 で赤になる（2026-09-30 実測）。
@@ -767,6 +768,83 @@ else
   bad "D6: 汚れた木の扱いが違う（rc=${RC}）: ${OUT}"
 fi
 record pass
+
+# ── D'. precheck --gate-record: 別 checkout（WSL の clone など）の記録 ────────────
+echo
+echo "== D'. precheck --gate-record: 別 checkout の記録 =="
+write_pr_json "Closes #${PRN}" '[]'
+OTHER_CO="$TMP/other-clone"
+g clone -q "$TMP/origin.git" "$OTHER_CO" >/dev/null 2>&1 \
+  && g -C "$OTHER_CO" checkout -q -b wt-elsewhere "$HEAD_OID" >/dev/null 2>&1 \
+  || bad "GR0: 別 checkout の fixture を作れません（以下の検査は何も測っていない）"
+other_record() { # <status> [extra args]
+  ( cd "$OTHER_CO" && bash "$PLUGIN_ROOT/scripts/record-gate-head.sh" --gate tests/run-all.sh --status "$1" --mode full "${@:2}" >/dev/null 2>&1 )
+}
+other_record pass
+GATE_REC="$(g -C "$OTHER_CO" rev-parse --absolute-git-dir)/ff-dev-toolkit/gate-record"
+if [ -f "$GATE_REC" ] && has_line "$(cat "$GATE_REC")" "BRANCH=wt-elsewhere" && has_line "$(cat "$GATE_REC")" "COMMIT=${HEAD_OID}"; then
+  ok "GR0: 別名のブランチの別 checkout で、PR の先端に対する clean な pass の記録を書けた"
+else
+  bad "GR0: 別 checkout の記録が想定と違う: ${GATE_REC}"
+fi
+# 明示指定なし（FF_GATE_RECORD_FILE）で同じ記録を読むと従来どおり別ブランチで判定不能
+FF_GATE_RECORD_FILE="$GATE_REC" run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_line "$OUT" "FRESH_STATUS=2" && has_text "$OUT" "FRESH_REASON=記録は別ブランチのものです（記録: wt-elsewhere"; then
+  ok "GR1: FF_GATE_RECORD_FILE で渡した別 checkout の記録は従来どおり別ブランチで判定不能（ブランチ照合を外さない）"
+else
+  bad "GR1: FF_GATE_RECORD_FILE 経由の扱いが違う（rc=${RC}）: ${OUT}"
+fi
+run_finish "$WORK" precheck 7 --gate-record "$GATE_REC"
+if [ "$RC" -eq 0 ] && has_line "$OUT" "FRESH_STATUS=0" && has_line "$OUT" "PRECHECK=ready" \
+  && has_text "$OUT" "FRESH_REPORT=✅ 一致（tests/run-all.sh / モード full" \
+  && has_text "$OUT" "別 checkout の記録: ${GATE_REC}" && has_text "$OUT" "BRANCH=wt-elsewhere"; then
+  ok "GR2: --gate-record の別 checkout の記録が先端と一致すれば FRESH_STATUS=0（報告に記録の出所・パス・ブランチを載せる）"
+else
+  bad "GR2: --gate-record の一致の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+# 記録の COMMIT が PR の先端と食い違えば不一致で止まる
+g -C "$OTHER_CO" checkout -q -B wt-elsewhere "$BASE_OID" >/dev/null 2>&1 && other_record pass
+run_finish "$WORK" precheck 7 --gate-record "$GATE_REC"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "FRESH_STATUS=1" && has_text "$ERR" "止める: リモート先端がゲート実測対象と一致しません" \
+  && has_text "$ERR" "別 checkout の記録: ${GATE_REC}" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "GR3: --gate-record の記録が先端と食い違えば FRESH_STATUS=1 で止める（判定不能へ緩めない）"
+else
+  bad "GR3: --gate-record の不一致の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+# 汚れた木で測った記録は判定不能のまま（回し直す）
+g -C "$OTHER_CO" checkout -q -B wt-elsewhere "$HEAD_OID" >/dev/null 2>&1
+printf 'dirty\n' >"$OTHER_CO/dirty.txt"
+other_record pass
+rm -f "$OTHER_CO/dirty.txt"
+run_finish "$WORK" precheck 7 --gate-record "$GATE_REC"
+if [ "$RC" -eq 2 ] && has_line "$OUT" "FRESH_STATUS=2" && has_line "$OUT" "RERUN_FULL_GATE=yes" && has_text "$OUT" "汚れていました" \
+  && has_text "$OUT" "別 checkout の記録: ${GATE_REC}"; then
+  ok "GR4: --gate-record でも汚れた木の記録は判定不能・回し直し（理由に記録の出所を添える）"
+else
+  bad "GR4: --gate-record × 汚れた木の扱いが違う（rc=${RC}）: ${OUT}"
+fi
+# 存在しないパス: 名指しで止まり、既定の記録（WORK には先端と一致する pass がある）へ戻さない。
+# gh へ到達する前に止める（checks の待機を挟まない）
+: >"$STUB_LOG"
+run_finish "$WORK" precheck 7 --gate-record "$TMP/no-such/gate-record"
+if [ "$RC" -eq 2 ] && has_text "$ERR" "$TMP/no-such/gate-record" && has_text "$ERR" "復帰:" \
+  && ! has_line "$OUT" "FRESH_STATUS=" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN" && [ ! -s "$STUB_LOG" ]; then
+  ok "GR5: --gate-record のパスが無ければ rc 2 で名指しして止まる（既定の記録へ戻さない・gh を呼ばない）"
+else
+  bad "GR5: 存在しない --gate-record の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+run_finish "$WORK" precheck 7 --gate-record
+if [ "$RC" -eq 2 ] && has_text "$ERR" "Usage: finish.sh precheck"; then
+  ok "GR6: --gate-record に値が無ければ使い方を出して rc 2"
+else
+  bad "GR6: 値の無い --gate-record の扱いが違う（rc=${RC}）: ${ERR}"
+fi
+run_finish "$WORK" precheck 7
+if [ "$RC" -eq 0 ] && has_line "$OUT" "FRESH_STATUS=0" && ! has_text "$OUT" "別 checkout"; then
+  ok "GR7: --gate-record を渡さなければ従来どおり手元の記録で照合する（報告に別 checkout の文言を足さない）"
+else
+  bad "GR7: --gate-record なしの挙動が変わった（rc=${RC}）: ${OUT}"
+fi
 
 # ── E. precheck: base を別 worktree が保持 ────────────────────────────────────
 echo

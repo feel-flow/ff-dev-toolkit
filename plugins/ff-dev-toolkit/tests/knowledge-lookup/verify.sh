@@ -35,12 +35,15 @@
 #   K20. playbook/ のサブディレクトリにあるエントリも返す（件数ゲートと同じ走査範囲。Issue `#2082`）。
 #        退避先 _archive/（入れ子を含む）と . 始まりのディレクトリは既定で辿らず、退避先は --include-archived で出る
 #   K16. gh が stdin を読み切ってもエントリが欠けない（read ループは fd 3・gh は `</dev/null` の
-#        二重防御。片方を外しても欠けないため変異では赤にならない — 契約の固定であって検出力の
-#        主張ではない）
+#        二重防御。片方だけ外しても欠けないため単独の変異では赤にならず、両方外すと赤になる）
+#   K21. awk / tr / sed の起動回数がエントリ数に比例しない（4 件と 40 件の台帳で同じ回数。キーワード
+#        検索と --promoted-open の両方）。Windows の Git Bash ではプロセス起動 1 回が 0.1 秒を超え、
+#        エントリごとの起動は約 350 件の台帳の --promoted-open を 6 分超にしていた
 #
 # 空振り検出: 参照抽出を 0 件一致へ変える／判定を表示注記へ戻す／doc: の無照会を外す各変異で K19 が赤（rc=1）、前後の正常対照は46件成功（2026-10-05実測）。参照の不検出・注記の誤読・非 Issue の誤照会を緑にしない。
 # 空振り検出: knowledge-lookup.sh の find を -maxdepth 1 へ戻す変異で K20 のサブディレクトリ検出が赤、prune から _archive を外す変異で K20 の既定除外が赤（2026-10-08 実測）。
 # 空振り検出: 両 store を置かない root を与えると K6 が rc=2 を要求し、台帳の見出しを `### OBS 001 …`（コロン無し）へ変えると K7 が `読み取り失敗` を要求する（2026-09-19 実測。スクリプト側の noentry 判定を `empty` へ倒す変異で K7 が赤、両不在の rc=2 を rc=0 へ倒す変異で K6 が赤）。
+# 空振り検出: K21 は変更前の実装（エントリごとに meta_of の `$(printf | tr | awk)` を起動）へ戻すと 2 件赤（promoted-open 4 件 74 回 / 40 件 650 回、検索 84 回 / 660 回）、annotate_refs の空白除去だけを要素ごとの sed へ戻す変異でも 2 件赤（15 回 / 69 回）。shim が 1 回も呼ばれない回は「測れていない」として赤にする（2026-10-16 Git Bash 実測）。
 # 空振り検出: promoted の closed 説明を旧「対策済みまたは再発」へ戻す／mitigated の未解消再発確認を旧説明へ戻すと各 rc=1、正常対照は38件pass（2026-09-28実測）。状態名の接頭辞だけが残っても意味の欠落を緑にしない。
 #
 # 変異検出（2026-09-19 実測。変異は 1 件ずつ当て、前後で対照を取る）:
@@ -52,9 +55,11 @@
 #           extract_entries のフェンス判定を無効化する（フェンス行を検出しない正規表現へ変える）と
 #           K17 が 2 件赤（テンプレートの記入例が実エントリとして返り、実見出しを壊した台帳が rc=0 になる。
 #           2026-09-19 のクロスモデルレビューで codex-cli / grok-cli が独立に再現した欠陥の回帰）。
-#           赤転しなかった変異: gh の `</dev/null` を外す / read ループを fd 3 から stdin へ戻す
-#           （単独でも両方でも K16 は緑 — stub が読むのは annotate_refs 内側の process substitution
-#           で、外側のエントリ一覧ではない。防御として残すが検出力は主張しない）。
+#           2026-10-16 の再実測（annotate_refs の process substitution を無くし、gh が emit_obs の
+#           read ループと同じシェルで起動されるようになった後）: gh の `</dev/null` と emit_obs の
+#           fd 3 を両方外すと K16 が赤（stub がエントリ一覧の残りを読み切る）。片方だけ外す変異は
+#           それぞれ緑（もう片方の防御が効く）。それ以前は stub が読むのが annotate_refs 内側の
+#           process substitution だったため、両方外しても K16 は緑だった。
 #
 # 依存: bash・awk・find・mktemp。gh は PATH 先頭の stub で差し替える（実 gh は呼ばない）。
 # 一時領域を作れない環境では suite 全体を ○ skip する。
@@ -590,6 +595,61 @@ if out_has "ACE-22-1"; then
 else
   ok "K20: --include-archived でも . 始まりのディレクトリは辿らない"
 fi
+
+# ── K21: 外部プロセスの起動回数がエントリ数に比例しない ─────────────────────────
+# Windows の Git Bash（MSYS）ではプロセス起動 1 回が 0.1 秒を超え、エントリごとに awk / tr / sed を
+# 起動する形は約 350 件の台帳で 6 分を超えた。awk / tr / sed を数える shim を PATH 先頭に置き、
+# エントリ 4 件と 40 件の台帳で起動回数が同じであることを見る（キーワード検索と --promoted-open の両方。
+# promoted / mitigated の Issue 列の解決を通すため gh も stub にする）。
+make_scale_ledger() { # <root> <件数>
+  local root="$1" n="$2" i=0 st=""
+  mkdir -p "${root}/docs/08-knowledge"
+  {
+    printf '%s\n' "# 振り返り観測台帳" "" "## エントリ一覧" ""
+    while [[ "${i}" -lt "${n}" ]]; do
+      i=$((i + 1))
+      case $((i % 4)) in 0) st="promoted" ;; 1) st="mitigated" ;; 2) st="active" ;; *) st="archived" ;; esac
+      printf '### OBS-%03d: scale hydration %s\n\n| Kind | problem | Count | 1 |\n| First | 2026-09-01 | Last | 2026-09-02 |\n| Status | %s | Issue | feel-flow/ff-dev-toolkit#1846 / feel-flow/ff-dev-toolkit#%s（注記） / skill:x |\n\nbody\n\n---\n\n' "${i}" "${i}" "${st}" "${i}"
+    done
+  } >"${root}/docs/08-knowledge/OBSERVATIONS.md"
+}
+SPAWN_BIN="${TMP}/bin-spawn"; mkdir -p "${SPAWN_BIN}"
+make_gh_stub "${SPAWN_BIN}" normal
+for tool in awk tr sed; do
+  real="$(command -v "${tool}")"
+  cat >"${SPAWN_BIN}/${tool}" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "${tool}" >>"\${KL_SPAWN_LOG}"
+exec "${real}" "\$@"
+EOF
+  chmod +x "${SPAWN_BIN}/${tool}"
+done
+spawn_count() { # <root> <args...> → SPAWN_N（awk / tr / sed の起動回数）/ RC
+  local root="$1" log="${TMP}/spawn.log"; shift
+  : >"${log}"
+  set +e
+  OUT="$(KL_SPAWN_LOG="${log}" PATH="${SPAWN_BIN}:${PATH}" "${LOOKUP[@]}" --root "${root}" "$@" 2>&1)"; RC=$?
+  set -e
+  SPAWN_N="$(wc -l <"${log}" | tr -d ' ')"
+}
+ROOT14="${TMP}/scale-small"; make_scale_ledger "${ROOT14}" 4
+ROOT15="${TMP}/scale-large"; make_scale_ledger "${ROOT15}" 40
+for mode in promoted-open search; do
+  if [[ "${mode}" = "promoted-open" ]]; then set -- --promoted-open; else set -- --include-archived hydration; fi
+  spawn_count "${ROOT14}" "$@"; small_n="${SPAWN_N}"; small_rc="${RC}"
+  spawn_count "${ROOT15}" "$@"; large_n="${SPAWN_N}"; large_rc="${RC}"
+  if [[ "${small_rc}" -ne 0 || "${large_rc}" -ne 0 ]]; then
+    bad "K21 (${mode}): 実行に失敗（rc=${small_rc} / ${large_rc}）"; printf '%s\n' "${OUT}" | tail -n 5 | sed 's/^/    | /' >&2
+  elif [[ "${small_n}" -eq 0 ]]; then
+    # shim を 1 回も通らないなら数えられていない（PATH 経由で起動していない等）。緑にしない。
+    bad "K21 (${mode}): awk / tr / sed の shim が 1 回も呼ばれていない（起動回数を測れていない）"
+  elif [[ "${small_n}" -eq "${large_n}" ]]; then
+    ok "K21 (${mode}): awk / tr / sed の起動回数がエントリ数に比例しない（4 件 / 40 件ともに ${small_n} 回）"
+  else
+    bad "K21 (${mode}): 起動回数がエントリ数で変わる（4 件 ${small_n} 回 / 40 件 ${large_n} 回）"
+  fi
+done
+set --
 
 echo ""
 if [[ "${FAIL}" -eq 0 ]]; then

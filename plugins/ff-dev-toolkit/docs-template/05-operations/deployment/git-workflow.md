@@ -1021,6 +1021,8 @@ checks が無いと判った場合はローカル全件ゲート + 鮮度照合�
 # （multi-cli-review-orchestration.md「消費側の hook / ゲートから toolkit のスクリプトを解決する」）。
 # 直下の check-merge-freshness.sh は root 照合ガードの対象なので、こちらは従来どおり
 # FF_DEV_TOOLKIT_ROOT の同一行 handoff で呼ぶ（別経路であって置き換えではない）
+# 別の checkout（WSL の clone など）で回したゲートの記録を使う回は、--fetch の後へ
+# `--record <その記録のパス> --record-from-other-checkout` を足す（下の「別 checkout の記録」を参照）
 FRESH_OUT="$(FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-merge-freshness.sh" \
   --remote-head "$(gh pr view "${PR_NUMBER}" --json headRefOid --jq .headRefOid)" \
   --fetch)"
@@ -1043,6 +1045,8 @@ esac
 ただし**同じコミットに全件緑の記録が既にあれば、部分実行で上書きされない**（`pass@X` は `partial@X` の上位互換の証拠であり、置き換えは安全側への寄与がゼロの情報の純減になるため）。同一ブランチで全件ゲートを回した後にレビュー対応で名指し suite を 1 本回した、という並びは exit 0 のままである。赤い実行は同じコミットでも従来どおり前回の緑を無効化する。
 
 マージ対象 PR のブランチを checkout して照合する。記録の `BRANCH` が現在の名前付きブランチと異なる場合は、SHA が同一でも別ブランチの記録として `UNDETERMINED` / exit 2 を返す。記録側のブランチ名を含む `REASON` と現在のブランチでの再実測を勧める `ACTION` を報告する。同一ブランチの分岐は従来どおり exit 1 で止める。ブランチ情報不明時と `--measured` 明示時の扱いを含む詳細は `skills/close-issue/SKILL.md` 手順7を参照する。
+
+例外は**別 checkout の記録**（Windows の作業機で全件ゲートを WSL の clone で回した、など）として明示した記録だけで、ブランチ名では判定不能にしない。渡し方は `finish.sh precheck <PR番号> --gate-record <記録のパス>`、直接呼ぶなら `check-merge-freshness.sh --record <記録のパス> --record-from-other-checkout`。ブランチ名の代わりに、記録の `COMMIT` が PR の先端（`headRefOid`）と同じ・`STATUS=pass`・`DIRTY=no`・そのコミットが手元に実在することをすべて求め、`COMMIT` が食い違えば exit 1 で止める。読めないパスは検査不成立（exit 3）で、既定の記録へは戻らない。既定の記録先（環境変数で差し替えた記録先を含む）の記録には、従来どおりブランチ名の照合を掛ける。
 
 比較の材料には **API の値（`headRefOid`）を使う**。`git rev-parse origin/<branch>` は前回 fetch 時点のスナップショットなので、fetch を忘れた回・失敗した回に「古い先端 == 古い実測対象」で一致してしまい、いちばん守りたい経路で fail-open する。`--fetch` は関係の分類（祖先か / 未 push か / 分岐か）にだけ使う。
 
