@@ -37,7 +37,7 @@ concurrency:
 jobs:
   run-public-suites:
     runs-on: ubuntu-latest
-    # job の timeout は全 step の timeout 合計（先行 21 分 + 本体 40 分）より長く取る。
+    # job の timeout は全 step の timeout 合計（先行 26 分 + 本体 40 分）より長く取る。
     # job 側 timeout で cancel されると if: failure() の起票 step ごと殺され、
     # 通知契約が破れる — ハングは各 step の timeout が先に失敗へ倒し、起票まで届く。
     timeout-minutes: 75
@@ -142,12 +142,29 @@ jobs:
           test "$(command -v yq)" = /usr/local/bin/yq
           yq --version | grep -q 'mikefarah'
 
+      # zsh は guard-zsh-glob の Z 系（実際の zsh での NOMATCH 実測）と X 系（equals /
+      # scalar の実シェル検証）が使う。ubuntu-latest のランナーイメージは zsh を同梱しないため、
+      # 入れないとこの 2 系統は検査単位の ○ skip に倒れ、CI では一度も走らない（緑のまま
+      # checks-skipped の内訳にだけ残る）。ディストリの apt（署名付きリポジトリ）から入れ、
+      # 導入後も実在を確かめて失敗はこの step の赤にする。下の preflight も zsh を要求する。
+      - name: Install zsh (real-shell checks of guard-zsh-glob)
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          if ! command -v zsh >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends zsh
+          fi
+          command -v zsh >/dev/null 2>&1 \
+            || { echo "::error::zsh が無い — apt の zsh 導入に失敗した（guard-zsh-glob の実 zsh 検証が走らない）"; exit 1; }
+          zsh --version
+
       # suite が「ツール不在 → ○ skip」へ静かに倒れると、赤の理由がログから読みにくい。
       - name: Preflight required tools
         timeout-minutes: 2
         run: |
           missing=0
-          for c in node perl jq yq shellcheck git; do
+          for c in node perl jq yq shellcheck git zsh; do
             if ! command -v "$c" >/dev/null 2>&1; then
               echo "::error::required tool missing: $c"
               missing=1

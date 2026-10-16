@@ -20,6 +20,19 @@
 
 ## [Unreleased]
 
+## [0.153.0] - 2026-10-17
+
+### 修正
+
+- 公開リポジトリの週次 run-all（`weekly-public-run-all`）が ubuntu ランナーへ apt で zsh を入れ、preflight でも zsh の実在を要求するようにした。ランナーイメージは zsh を同梱しないため、`guard-zsh-glob` suite の実 zsh 検証（Z 系の NOMATCH 実測と X 系の equals / scalar の実シェル検証）が検査単位の skip になり、週次 CI では一度も走っていなかった。zsh の導入に失敗した回は suite の skip へ黙って倒れず、その step と preflight の赤になる（報告: https://github.com/feel-flow/ff-dev-toolkit/issues/131 ）
+
+### セキュリティ
+
+- 同梱 MCP サーバー（spec-docs）の依存を更新し、修正版が公開されている脆弱性 5 件を解消した: proxy-addr を 2.0.7 から 2.0.8 へ（GHSA-jqcg-44mw-7w3h、critical、修正版 2.0.8 以上）、source-map-js を 1.2.1 から 1.2.2 へ（GHSA-68fv-2mgg-jv7q、high、修正版 1.2.2 以上）、@modelcontextprotocol/sdk を 1.30.0 から 1.32.1 へ（GHSA-6qxp-vccf-f47h、high、修正版 1.31.0 以上）、smol-toml を 1.8.0 から 1.9.1 へ（GHSA-r4xh-jqrq-34v2、moderate、修正版 1.9.0 以上）、katex を 0.16.47 から 0.18.10 へ（GHSA-238p-pmpm-9mq7、low、修正版 0.18.2 以上）。更新後の `npm audit --package-lock-only --omit=dev` は 0 件
+- proxy-addr / source-map-js / @modelcontextprotocol/sdk は依存元の宣言範囲内で更新した。smol-toml は markdownlint-cli2 0.23.3（最新）が脆弱な 1.8.0 を厳密指定し、katex は markdownlint が使う micromark-extension-math 3.1.0（最新）が 0.16 系だけを宣言しているため、どちらも上位版の更新では解決しない。そこで package.json の overrides を原因の依存元配下に限定して置いた（markdownlint-cli2 配下の smol-toml を 1.9.0 以上へ、micromark-extension-math 配下の katex を 0.18.2 以上の 0.18 系へ）。markdownlint の Markdown 解析と TOML 設定の読み込みが更新後も動くことは実測で確認している。上流がそれぞれ修正版を引くようになったら（markdownlint-cli2 が smol-toml 1.9.0 以上を指定する、micromark-extension-math が katex 0.18.2 以上を許す）overrides は外せる
+- 今回更新した依存のうち配布バンドル `mcp/dist/index.js` に含まれるのは @modelcontextprotocol/sdk だけである（SDK が使う ajv や zod なども同梱されるが、今回の更新で版は変わっていない）。SDK から同梱されるのはサーバー側と共通部分のモジュールで、勧告の対象である OAuth クライアントのモジュールは配布物に含まれないが、SDK の更新を取り込むため dist を再ビルドして更新した。proxy-addr（stdio-only の配布物では読み込まれない HTTP サーバー経路）と、開発時のみ使う source-map-js / smol-toml / katex は配布物に含まれない
+- 開発依存の braces（markdownlint-cli2 の globbing 経由）には高深刻度の勧告 GHSA-vfj7-8cjw-p6xm が出ているが、修正版が公開されていない（最新版 3.0.3 が影響範囲に含まれる）ため残している。配布物には含まれず、lint 対象のパスを指定するのはリポジトリの開発者自身である
+
 ## [0.152.0] - 2026-10-16
 
 ### 追加
