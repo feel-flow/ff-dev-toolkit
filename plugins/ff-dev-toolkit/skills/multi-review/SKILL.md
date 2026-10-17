@@ -96,7 +96,7 @@ CLI・観点・モード・タイムアウト・警告を報告する。✅ は 
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --route <REVIEW_ROUTE の値> $ARGUMENTS
 ```
 
-タイムアウトはデフォルト **900秒/CLI**（`--timeout` で上書き）。background で待つときは `sleep` や自作ループで空回りせず、Monitor を armed してから停止し、完了通知で再開する。
+タイムアウトは既定 **900秒/CLI**（`--timeout` で上書き）。待ち時間の作業は起動前に列挙して起動と同じメッセージで着手し、尽きたら `sleep` で空回りせず Monitor で完了通知を待つ。
 
 **レビュー起動から全 CLI が終端（応答・失敗・タイムアウトのいずれか）に達するまで、オーケストレータ側で作業ツリーを変更しないこと**。変化を検知すると結果は DISCARDED になるが、変更して戻した場合や gitignore 済みパスは見えず、凍結の代わりになる機構ではない。サブエージェント（Review Toolkit 等）経路も同じで、そちらは結果を DISCARDED にする機構が無いので hook `guard-review-in-flight.sh` がレーンを開き、終端まで編集と git 書き込みを deny する（`fast` は Claude のレーンを開かない）。worktree 隔離の起動既定について、その規定（隔離時の凍結の扱いを含む）は [Git Workflow ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要) を正本とする（本書は再掲しない）。隔離は、外部 CLI を同一ツリーで実行する本スキルの経路には適用されず、こちらの凍結はそのまま守る。解放イベントを取りこぼしても、開始済みレーンは `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`（既定 14400 秒）、未開始のレーンは `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`（既定 1800 秒）を過ぎると自動回収され、systemMessage で通知される。
 
@@ -120,7 +120,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### 3. 結果分析と修正提案
 
-結果は `.review-results/` に保存され、後から参照できる。今回のプラン外の CLI ディレクトリと `previous/` は今回の結果ではない（正本は [結果の確認](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#結果の確認)）。
+結果は `.review-results/` に保存される。今回のプラン外の CLI ディレクトリと `previous/` は今回の結果ではない（正本は [結果の確認](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#結果の確認)）。
 
 #### 3-1. 結果ファイルの読み込み（サブエージェント委譲が既定）
 

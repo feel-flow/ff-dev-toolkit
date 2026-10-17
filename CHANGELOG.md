@@ -20,6 +20,26 @@
 
 ## [Unreleased]
 
+## [0.154.0] - 2026-10-17
+
+### 変更
+
+- `docs-template/05-operations/deployment/` に SBOM の運用文書 `sbom.md`（SBOM を依存関係から自動生成する成果物として扱う生成・保存・利用の手順）と、外部連携のキー一覧の運用文書 `key-inventory.md`（人が運用事実を確認して書く管理文書のテンプレートと運用ルール）を追加した。どちらも初期セット・必須ゲートには含めず、`docs-template/MASTER.md` の品質・セキュリティの節から相互に参照する 2 文書を一緒にコピーする案内と、`DEPLOYMENT.md` の構成表・検索クエリマッピングから到達できる
+- `docs-template/03-implementation/PATTERNS.md` の §3「エラーハンドリング」の本文を新設の `03-implementation/ERRORS.md`（`AppError` 階層・`ErrorCategory`・`normalizeExternalError()` の正典）へ移し、§3 を索引にした。`/init-docs` の初期セットに `ERRORS.md` を加えて 21 ファイルにし、FALLBACK.md・CONVENTIONS.md・INTEGRATIONS.md・VALIDATION.md・TypeScript 雛形・`.github` のエラーハンドリング skill / agent などの参照を `ERRORS.md` へ張り替えた
+- `docs-template/03-implementation/INTEGRATIONS.md` を 800 行以下へ分割した。AI 開発ツール（Claude Code / GitHub Copilot / Cursor）の設定例を新設の `03-implementation/AI_TOOL_INTEGRATION.md`（初期セット外）へ、統合テストのモック注入例を `04-quality/TESTING.md` §3「外部サービス統合テスト（モック注入）」へ移した
+- 公開方法論リポジトリ側の `docs-template/` で先行していた `MASTER.md` / `PATTERNS.md` / `TESTING.md` / `DEPLOYMENT.md` の追記を同梱版へ統合した。`MASTER.md` の文書サイズの閾値には、ACE Playbook は件数由来の行数上限を優先して固定の行数では分割しない、という行数の例外を新しく加えた（分割レイアウトでは `playbook/` 配下のカテゴリファイルが対象で、索引は行数監視の対象外）。あわせて Playbook の Frontmatter の例外を、単一ファイル・分割のどちらのレイアウトでも成り立つ書き方に整理した
+- `docs-template/03-implementation/FALLBACK.md` のフォールバック禁止カテゴリ「上流の恒久的な拒否」を専用クラスを持たない 4xx（400 / 422 等）に限定し、適用判断ガイドの表へ同じ行を加えて「DB/API通信エラー」行を一時障害（5xx / 429 / ステータス不明）に限定した。`INTEGRATIONS.md` の一括メール送信の例には、宛先が 1 件でも不正だとチャンク全員が 400 で失敗することを明記し、突合キューへチャンク番号と上流のステータスを渡して 400 と 413 を区別できるようにした
+
+### 修正
+
+- エラー処理テンプレートで原因不明の外部エラーをフォールバック禁止にし、AWS SDK v3 / Got の HTTP ステータス判定、元の cause 保持、明示的な本番環境だけのフォールバック、決済テストのモック固定と失敗例を整備。
+- 標準タイムアウトと DynamoDB 固有のスロットリングを区別し、同梱スキル・兄弟文書と Logger の unknown 受け取り契約も正典へ揃える。
+- 同梱の docs-template/05-operations/DEPLOYMENT.md の変更履歴に残っていた裸の URL をリンク記法に改め、Markdown の bare URL 検査（markdownlint の MD034）で拒否されないようにした
+
+### ドキュメント
+
+- Git Workflow ステップ6 に、レビュー起動前に待ち時間の準備作業（PR 本文・完了報告の下書き、AC の取得、参照文書の確認）を列挙し、起動と同じメッセージで着手する規定を追加しました。準備が尽きた後は状況報告だけのターンを重ねず、完了通知で再開します。`multi-review` スキルの手順 2 にも同じ趣旨の 1 文を置いています。
+
 ## [0.153.0] - 2026-10-17
 
 ### 修正

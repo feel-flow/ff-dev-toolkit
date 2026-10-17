@@ -27,7 +27,7 @@
 #   G21. 引用符付きキー（`"version":`）の重複 → 赤・理由は「重複キー」
 #   G22. created だけ雛形・updated は実日付（前後比較のスキップ境界） → 緑
 #   G23〜G25. status の正当値 review / approved / deprecated → 各々緑
-#             （`draft` は初期セット全 20 文書の値なので G1 baseline が測っている）
+#             （`draft` は初期セット全 21 文書の値なので G1 baseline が測っている）
 #   G26. status が `done`（specs 側スキーマの中間状態） → 赤・理由は「status が値域」
 #   G27. `## Changelog` を Frontmatter 内へ移動 → `#` 始まりを本文らしい行として赤
 #
@@ -79,7 +79,7 @@ FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
-# 初期セット 20 ファイル（本体 suite と同一の一覧）
+# 初期セット 21 ファイル（本体 suite と同一の一覧）
 INITIAL_SET=(
   "MASTER.md"
   "01-context/PROJECT.md"
@@ -93,6 +93,7 @@ INITIAL_SET=(
   "03-implementation/INTEGRATIONS.md"
   "03-implementation/DECISION_TREE.md"
   "03-implementation/FALLBACK.md"
+  "03-implementation/ERRORS.md"
   "04-quality/TESTING.md"
   "04-quality/VALIDATION.md"
   "05-operations/DEPLOYMENT.md"
@@ -103,7 +104,7 @@ INITIAL_SET=(
   "07-project-management/RISKS.md"
 )
 
-# fixture を（再）構築する。実リポジトリの初期セット 20 件と init-docs SKILL.md を
+# fixture を（再）構築する。実リポジトリの初期セット 21 件と init-docs SKILL.md を
 # そのまま写す（baseline が実体と乖離しない）。
 make_fixture() {
   rm -rf "$TMP/root"
@@ -279,7 +280,7 @@ perl -i -pe 's/^created: ".*"$/created: "2026-01-02"/; s/^updated: ".*"$/updated
 run_case "G20 DEPLOYMENT.md の updated が created より前" red "より前です"
 
 echo "== G23〜G26. status 値域の全境界（正当 4 値 / 中間状態 2 値） =="
-# `draft` は初期セット 20 文書すべてがその値なので G1 baseline が緑を測っている。
+# `draft` は初期セット 21 文書すべてがその値なので G1 baseline が緑を測っている。
 # 残る 3 値と、混ぜてはいけない中間状態 2 値をここで個別に固定する。
 make_fixture
 perl -i -pe 's/^status: ".*"$/status: "review"/' "$TMP/root/docs-template/01-context/PROJECT.md"

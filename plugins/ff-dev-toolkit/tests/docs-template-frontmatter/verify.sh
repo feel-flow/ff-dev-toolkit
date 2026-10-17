@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# docs-template 初期セット 20 文書の構造契約検査（Issue #509）。
+# docs-template 初期セット 21 文書の構造契約検査。
 #
-# /init-docs の初期セット 20 ファイルは全数が YAML Frontmatter（必須6フィールド）と
-# 文書末尾の `## Changelog` セクションを持つ、という規則を #509 で確立した。しかし
+# /init-docs の初期セット 21 ファイルは全数が YAML Frontmatter（必須6フィールド）と
+# 文書末尾の `## Changelog` セクションを持つ、という規則を確立した。しかし
 # /validate-docs の拡張文書チェックは「Frontmatter を持つ場合のみ検証」のオプトイン
 # 設計なので、テンプレートから Frontmatter が欠落する回帰が起きると、生成された
-# docs は再び検証対象から静かに漏れる（#509 以前の状態への逆戻り）。この規則は
+# docs は再び検証対象から静かに漏れる（規則を確立する以前の状態への逆戻り）。この規則は
 # 他のどの suite も守っていないため、本 suite が fail-closed で固定する。
 #
 # 検査:
-#   A. 初期セット 20 ファイルが実在する（欠落 = 赤）
+#   A. 初期セット 21 ファイルが実在する（欠落 = 赤）
 #   B. skills/init-docs/SKILL.md のディレクトリ構造ツリー（ステップ2 のフェンス）と
 #      本 suite の一覧が集合として一致する（SKILL 側だけ増減 = 赤。一覧の複製 drift
 #      を fail-closed で検出する）
@@ -36,6 +36,10 @@
 #
 # FF_DOCS_TEMPLATE_ROOT でプラグインルートを差し替えられる（selftest 用。
 # 直下に docs-template/ と skills/init-docs/SKILL.md がある前提）。
+#
+# 空振り検出: 初期セットの 1 文書（03-implementation/ERRORS.md）を削除すると A が赤になる（2026-10-17 実測）。
+# 空振り検出: SKILL.md のツリーから 03-implementation/ERRORS.md の行だけを消すと B が赤になる（一覧との集合が一致しない。2026-10-17 実測）。
+# 空振り検出: 03-implementation/ERRORS.md の `## Changelog` 見出しを改名すると C が赤になる（2026-10-17 実測）。ツリーが空・SKILL.md 不在の赤は docs-template-frontmatter-selftest が固定している。
 
 set -euo pipefail
 
@@ -59,7 +63,7 @@ FAIL=0
 ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
-# 初期セット 20 ファイル（skills/init-docs/SKILL.md ステップ2 のツリーの複製。
+# 初期セット 21 ファイル（skills/init-docs/SKILL.md ステップ2 のツリーの複製。
 # 検査 B が SKILL 側との集合一致を fail-closed で照合する）
 INITIAL_SET=(
   "MASTER.md"
@@ -74,6 +78,7 @@ INITIAL_SET=(
   "03-implementation/INTEGRATIONS.md"
   "03-implementation/DECISION_TREE.md"
   "03-implementation/FALLBACK.md"
+  "03-implementation/ERRORS.md"
   "04-quality/TESTING.md"
   "04-quality/VALIDATION.md"
   "05-operations/DEPLOYMENT.md"
@@ -84,11 +89,11 @@ INITIAL_SET=(
   "07-project-management/RISKS.md"
 )
 
-echo "== A. 初期セット 20 ファイルの実在 =="
-if [ "${#INITIAL_SET[@]}" -eq 20 ]; then
-  ok "一覧の件数が 20"
+echo "== A. 初期セット 21 ファイルの実在 =="
+if [ "${#INITIAL_SET[@]}" -eq 21 ]; then
+  ok "一覧の件数が 21"
 else
-  bad "一覧の件数が 20 ではありません: ${#INITIAL_SET[@]}"
+  bad "一覧の件数が 21 ではありません: ${#INITIAL_SET[@]}"
 fi
 for rel in "${INITIAL_SET[@]}"; do
   if [ -f "$TEMPLATE_DIR/$rel" ]; then

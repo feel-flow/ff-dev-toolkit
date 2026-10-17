@@ -1,190 +1,20 @@
 ---
 title: "INTEGRATIONS"
-version: "1.2.0"
+version: "1.4.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-08"
-changeImpact: "medium"
+updated: "2026-10-17"
+changeImpact: "low"
 ---
 
 # INTEGRATIONS.md - 統合・連携ガイド
 
 > 本文の言語・設計・レビュー・テスト設定は候補例。プロジェクトの目的・リスク・既存構成に合わせて推奨理由を示し、合意済みのものだけを採用する。ASDD 2.0では `.asdd/config.json` の文書・機能選択を優先し、ACE・振り返り・複数AIレビューを無効時に追加しない。
 
-## 1. AI開発ツール統合
+## 1. 外部サービス一覧
 
-### 1.1 Claude Skills統合
-
-Claude Code を使用している場合、AI仕様駆動開発専用のスキルをインストールすることで、ドキュメント管理を自動化できます。
-
-#### スキルのインストール
-
-Claude Codeで以下のプロンプトを実行することで、AI仕様駆動開発スキルが自動生成されます：
-
-```
-Claude Code用のスキルを作成したいです。
-
-【目的】
-AI仕様駆動開発の方法論に基づいて、プロジェクトのドキュメント構造を自動管理するスキルを作成
-
-【参考資料】
-- 公式リポジトリ: https://github.com/feel-flow/ai-spec-driven-development
-- 方法論ドキュメント: https://github.com/feel-flow/ai-spec-driven-development/blob/develop/ai_spec_driven_development.md
-
-【実装してほしい機能】
-1. プロジェクト初期化（フォルダ構造の自動生成）
-2. ドキュメント構造の検証と自動補修
-3. 新規ドキュメントの適切な配置支援
-4. ドキュメント更新時の影響度評価
-5. MASTER.md索引の自動更新
-6. Frontmatterメタデータの自動挿入
-7. 用語集・決定記録の管理
-8. コミット前の検証チェックリスト実行
-```
-
-#### スキルの機能
-
-インストール後、以下の機能が自動的に利用可能になります：
-
-| 機能                 | トリガープロンプト                           | 実行内容                                                         |
-| -------------------- | -------------------------------------------- | ---------------------------------------------------------------- |
-| プロジェクト初期化   | 「AI仕様駆動開発を導入したい」               | docs/フォルダ構造とMASTER.mdなど必須ファイルを自動生成           |
-| 新規ドキュメント追加 | 「[トピック]のドキュメントを追加したい」     | Decision Matrixに基づき適切なフォルダに配置、Frontmatter自動挿入 |
-| ドキュメント更新     | 「[ファイル名]を変更したい」                 | 影響度評価、バージョン更新、CHANGELOG連携を自動実行              |
-| 構造検証             | 「コミット前にドキュメントをチェックしたい」 | フォルダ完全性、命名規約、メタデータ、リンク整合性を検証         |
-| 用語管理             | 「GLOSSARYに[用語]を追加したい」             | 統一フォーマットで用語定義を追加、重複チェック                   |
-| 決定記録             | 「[決定内容]をDECISIONSに記録したい」        | ADRフォーマットで決定記録を追加                                  |
-
-#### 導入メリット
-
-- **手作業ゼロ**: フォルダ構造、Frontmatter、索引更新などを自動化
-- **一貫性保証**: Decision Matrixと命名規約を常に適用
-- **影響度評価**: 変更時の影響度を自動判定、CHANGELOG連携
-- **検証自動化**: コミット前の構造検証をワンコマンドで実行
-- **チーム標準化**: スキルを共有することでチーム全体の標準化を実現
-
-#### 使用例
-
-```bash
-# プロジェクト初期化
-Claude: 「このプロジェクトにAI仕様駆動開発を導入したい」
-
-# 出力例:
-# ✓ docs/フォルダ構造を生成
-# ✓ docs/MASTER.md 作成
-# ✓ docs/01-context/PROJECT.md 作成
-# ✓ 必須8文書を生成
-# ✓ Frontmatter挿入完了
-
-# 新規ドキュメント追加
-Claude: 「データベース設計のドキュメントを追加したい」
-
-# 出力例:
-# Decision Matrixを適用...
-# → 「設計/構造」に該当: 02-design/
-# ✓ docs/02-design/DATABASE.md 作成
-# ✓ Frontmatter挿入（id: database-design, version: 1.0.0）
-# ✓ MASTER.md索引を更新
-
-# コミット前検証
-Claude: 「コミット前にドキュメントをチェックしたい」
-
-# 出力例:
-# [完全性チェック] ✓ 8フォルダ存在
-# [必須ファイル] ✓ 8文書存在
-# [メタデータ] ✓ Frontmatter正常
-# [命名規約] ✓ 違反なし
-# [整合性] ⚠ GLOSSARY未定義用語: 3件
-# 検証結果: ⚠ WARNING（コミット可能）
-```
-
-#### トラブルシューティング
-
-| 問題                    | 解決方法                                       |
-| ----------------------- | ---------------------------------------------- |
-| スキルが起動しない      | プロンプトに「AI仕様駆動開発」を明示的に含める |
-| Decision Matrixが不正確 | 「Decision Matrixで判断してください」と明示    |
-| Frontmatter欠落         | Frontmatterの形式を明示的に指定                |
-| 影響度評価が不正確      | 「changeImpact: high」など影響度を明示         |
-
-詳細なガイドとトラブルシューティングについては、[Claude Code公式ドキュメント](https://docs.claude.com/en/docs/claude-code)を参照してください。
-
----
-
-### 1.2 GitHub Copilot統合
-
-GitHub Copilotを使用する場合は、MASTER.mdをワークスペースルートに配置し、以下の設定を `.github/copilot-instructions.md` に追加します：
-
-```markdown
-# Copilot Instructions
-
-このプロジェクトはAI仕様駆動開発方法論に従っています。
-
-## 必須参照ドキュメント
-
-コード生成前に以下を参照してください：
-
-1. docs/MASTER.md - プロジェクト全体のルールと技術スタック
-2. docs/01-context/PROJECT.md - ビジョンと要件
-3. docs/02-design/ARCHITECTURE.md - システム設計
-4. docs/03-implementation/PATTERNS.md - 実装パターン
-
-## コード生成ルール
-
-- 意味のある値の定数化（採用時）（定数化または設定注入）
-- 型安全性の徹底
-- エラーハンドリングパターンの適用
-- テストコードの同時生成
-
-詳細は docs/MASTER.md を参照してください。
-```
-
----
-
-### 1.3 Cursor統合
-
-> **注**: Cursor 向け設定は `/setup-ai-config` の生成対象ではない（issue #240）。Cursor を併用する場合に**手で用意するための手順**として残している。`.mdc` は先頭の YAML フロントマターが必須で、`.cursor/rules/` 配下の `.md` は無視される点に注意。
-
-Cursor を使用する場合は、現行の Project Rules 形式 `.cursor/rules/spec-driven.mdc`（先頭に YAML フロントマター、`alwaysApply: true`）を作成し、以下を追加します。Legacy の `.cursorrules`（ルート単一ファイル）は後方互換のための互換オプションです：
-
-```
----
-description: AI仕様駆動開発の標準ルール
-alwaysApply: true
----
-
-# AI仕様駆動開発ルール
-
-このプロジェクトはAI仕様駆動開発方法論に従っています。
-
-## 必須読み込みドキュメント
-
-@docs/MASTER.md
-@docs/01-context/PROJECT.md
-@docs/02-design/ARCHITECTURE.md
-@docs/03-implementation/PATTERNS.md
-
-## コード生成制約
-
-- 合意した対象の定数化
-- 型安全性の徹底
-- PATTERNS.mdのエラーハンドリングパターンを適用
-- テストコードを同時生成
-
-## 命名規則
-
-- 変数: camelCase
-- 定数: UPPER_SNAKE_CASE
-- 型/インターフェース: PascalCase
-- ファイル: コンポーネントはPascalCase、それ以外はcamelCase
-```
-
----
-
-## 2. 外部サービス統合
-
-### 統合サービス一覧
+AI開発ツール（Claude Code / GitHub Copilot / Cursor）の設定例は `docs/03-implementation/AI_TOOL_INTEGRATION.md`（初期セット外。必要になった時点で `${CLAUDE_PLUGIN_ROOT}/docs-template/03-implementation/AI_TOOL_INTEGRATION.md` からコピーする。`${CLAUDE_PLUGIN_ROOT}` がない環境では、同じ相対パスを [公開テンプレート配布元](https://github.com/feel-flow/ff-dev-toolkit/tree/HEAD/plugins/ff-dev-toolkit/docs-template) から、利用する配布版に合わせたタグで取得する）を参照。
 
 | サービス名       | 用途               | 統合方式       | 認証方式    | 環境        |
 | ---------------- | ------------------ | -------------- | ----------- | ----------- |
@@ -208,7 +38,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 });
 
 // 決済の上流障害（Stripe API 障害・接続断）。category は transient（再試行対象）。
-// エラークラスは PATTERNS.md「エラーハンドリング」の AppError 階層を継承する
+// エラークラスは ERRORS.md の AppError 階層を継承する
 class PaymentError extends AppError {
   readonly category: ErrorCategory = "transient";
   constructor(message: string, options?: AppErrorOptions) {
@@ -330,7 +160,7 @@ app.post(
       res.json({ received: true });
     } catch (error) {
       // 業務処理（DB 書き込み等）の失敗は HTTP ステータスを持たないので
-      // normalizeExternalError には通さない（一意制約違反が transient に化ける）。
+      // normalizeExternalError には通さず、リポジトリ層で意味を保って写す。
       // AppError はそのまま、それ以外は InternalError（cause 付き）にする
       const normalized =
         error instanceof AppError
@@ -360,7 +190,7 @@ import sgMail from "@sendgrid/mail";
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 // 意味のある値の定数化（採用時）: 意味のある値は名前付き定数に切り出す（MASTER.md）
-const SENDGRID_MAX_MESSAGES_PER_BATCH = 1000; // 件。SendGrid の 1 リクエスト上限
+const SENDGRID_MAX_MESSAGES_PER_BATCH = 1000; // 件。SendGrid の 1 リクエスト上限（sendMultiple では宛先 = personalization の数）
 const SENDGRID_BATCH_INTERVAL_MS = 1000; // ms。レート制限を避けるバッチ間の待機
 
 // メール送信の上流障害（transient）。cause に SendGrid のレスポンス（status / body）を保持する
@@ -437,8 +267,11 @@ class EmailService {
     for (const [chunkIndex, chunk] of chunks.entries()) {
       try {
         // send(配列) は各メールを個別に並列送信するためチャンク内で部分成功が起き、
-        // 「チャンク単位の成否」が実態と合わなくなる。sendMultiple は 1 リクエストで
-        // 複数宛先へ送る（同一本文の一括送信）ので、チャンク = 1 リクエストの成否になる
+        // 「チャンク単位の成否」が実態と合わなくなる。sendMultiple（= send(data, true)）は
+        // `to` を宛先ごとの personalization に展開して 1 リクエストで送る（他の宛先が
+        // To ヘッダに見えない）ので、チャンク = 1 リクエストの成否になる。
+        // 裏返しとして、1 件でも不正な宛先があるとリクエスト全体が 400 で拒否され
+        // チャンク全員が失敗する — 宛先はチャンク化前に検証・正規化しておくこと
         await sgMail.sendMultiple({
           to: chunk,
           from: this.FROM_EMAIL,
@@ -492,7 +325,7 @@ class EmailService {
   }
 }
 
-// 呼び出し例（reconciliationQueue は §8 キューシステム統合の Bull キュー相当）。
+// 呼び出し例（reconciliationQueue は §8 QueueService と同じ要領で定義した突合用キュー。本文では未定義）。
 // 判別可能ユニオンなので、never 付き switch で分岐すればステータスの追加に
 // コンパイルで気づける（戻り値を捨てれば TS は何も言わない — 捨てないこと）
 const result = await emailService.sendBulkEmail(recipients, subject, content);
@@ -504,12 +337,22 @@ switch (result.status) {
     // 切れた」（宛先には届いている）ケースも含まれ、category だけを根拠に再送すると
     // 二重送信になる。メール送信は上流で重複排除できない副作用なので（FALLBACK.md
     // 「副作用のある再試行は冪等キーで重複排除できる場合のみ」）、成否不明のチャンクは
-    // 送信記録（SendGrid Event Webhook 等）と突合してから未達分だけを再送する
+    // 送信記録（SendGrid Event Webhook 等）と突合してから未達分だけを再送する。
+    // chunkIndex と upstreamStatus も渡す — 400（宛先不正: 他の宛先だけ再送）と
+    // 413（本文過大: 分割して再送）は errorCode が同じ UPSTREAM_REJECTED で区別できない。
+    // 前提: 元の宛先リストが永続化されチャンク化が決定的であること。失敗宛先はログに
+    // 出さない（PII）ので、enqueue 前に落ちた場合はループ内の error ログに残る
+    // chunkIndex から宛先を復元する
     await reconciliationQueue.add({
       failedChunks: result.failedChunks.map((c) => ({
+        chunkIndex: c.chunkIndex,
         recipients: c.recipients,
         errorCode: c.error.code,
         category: c.error.category,
+        upstreamStatus:
+          c.error instanceof UpstreamRejectedError
+            ? c.error.upstreamStatus
+            : undefined,
       })),
     });
     break;
@@ -932,60 +775,37 @@ class MetricsService {
 }
 ```
 
-## 10. 統合テスト
-
-### 統合テスト戦略
-
-```typescript
-// モックサービス
-class MockPaymentService implements IPaymentService {
-  async createPaymentIntent(amount: number): Promise<PaymentIntent> {
-    return {
-      id: "pi_test_123",
-      amount,
-      status: "succeeded",
-    };
-  }
-}
-
-// 統合テスト
-describe("Payment Integration", () => {
-  let app: Application;
-
-  beforeAll(async () => {
-    // テスト環境でモックサービスを注入
-    container.register("PaymentService", {
-      useClass:
-        process.env.NODE_ENV === "test" ? MockPaymentService : PaymentService,
-    });
-
-    app = await createApp();
-  });
-
-  it("should process payment successfully", async () => {
-    const response = await request(app)
-      .post("/payments")
-      .send({
-        amount: 1000,
-        currency: "usd",
-      })
-      .expect(200);
-
-    expect(response.body).toHaveProperty("paymentIntentId");
-  });
-});
-```
-
-## 11. エラーハンドリングと再試行
+## 10. エラーハンドリングと再試行
 
 外部サービス呼び出しのエラー処理は、次の正典に従う（本ファイル内で別実装を作らない）:
 
-- **エラー型と正規化**: [PATTERNS.md](./PATTERNS.md)「エラーハンドリング」— `AppError` 階層（`cause` 付き）と `normalizeExternalError()`。外部 SDK の生エラーは境界で必ず正規化する
+- **エラー型と正規化**: [ERRORS.md](./ERRORS.md) — `AppError` 階層（`cause` 付き）と `normalizeExternalError()`。外部 SDK の生エラーは境界で必ず正規化する
 - **再試行**: [FALLBACK.md](./FALLBACK.md) §4「再試行ユーティリティ」— `retryWithBackoff(fn, { operation })`。再試行可否の判定（禁止カテゴリは再試行しない）・Jitter・試行ごとのログを内蔵する。副作用のある呼び出しは冪等キー付きでのみ再試行する（§2 決済システム統合の `createPaymentIntent`）
 - **フォールバック**: [FALLBACK.md](./FALLBACK.md) §4 `fallbackInProdOnly()` — AppError 以外は deny-by-default でスロー
+- **統合テスト**: [TESTING.md](../04-quality/TESTING.md) §3「外部サービス統合テスト（モック注入）」— 外部サービスをモック実装に差し替えて結合を検証する
 - **ログ**: [PATTERNS.md](./PATTERNS.md)「ログパターン」の `Logger` 規約 — `error(message, error, meta?)` / `warn|info(message, meta?)`
 
 ## Changelog
+
+### [1.4.1] - 2026-10-17
+
+#### 修正
+
+- DB 境界の説明を原因不明エラーの新分類へ合わせる
+
+### [1.4.0] - 2026-10-17
+
+#### 変更
+
+- §3 の `sendBulkEmail()` の例に、`sendMultiple` が宛先を personalization に展開すること、宛先が 1 件でも不正だと 400 でチャンク全員が失敗することを明記した。突合キューへ `chunkIndex` と `upstreamStatus` を渡し、400（宛先不正）と 413（本文過大）を区別できるようにした（[ai-spec-driven-development#514](https://github.com/feel-flow/ai-spec-driven-development/issues/514) の同梱版への移植）
+- §1 の `AI_TOOL_INTEGRATION.md` への案内に、`${CLAUDE_PLUGIN_ROOT}` がない環境（Codex / grok や直接利用）向けの公開配布元からの取得先を併記した（MASTER.md の「テンプレート直接利用」と同じ書き方）
+
+### [1.3.0] - 2026-10-16
+
+#### 変更
+
+- 800 行以下へ分割した（[ai-spec-driven-development#511](https://github.com/feel-flow/ai-spec-driven-development/issues/511) の分割を同梱版へ適用）。§1「AI開発ツール統合」を `03-implementation/AI_TOOL_INTEGRATION.md`（初期セット外）へ移設して所在を案内し、§10「統合テスト」を TESTING.md §3「外部サービス統合テスト（モック注入）」へ移設した。重複していた「2.」見出しは §1「外部サービス一覧」にまとめ、旧 §11 を §10 にした
+- エラー型の正典の参照を PATTERNS.md §3 から ERRORS.md へ張り替えた（[ai-spec-driven-development#550](https://github.com/feel-flow/ai-spec-driven-development/issues/550)）
 
 ### [1.2.0] - 2026-09-08
 

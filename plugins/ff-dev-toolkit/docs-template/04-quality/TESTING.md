@@ -1,11 +1,11 @@
 ---
 title: "TESTING"
-version: "1.3.1"
+version: "1.5.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-26"
-changeImpact: "low"
+updated: "2026-10-17"
+changeImpact: "medium"
 ---
 
 # TESTING.md - テスト戦略ガイド
@@ -243,6 +243,63 @@ describe("UserRepository Integration", () => {
       const user = await repository.findByEmail("notfound@example.com");
       expect(user).toBeNull();
     });
+  });
+});
+```
+
+### 外部サービス統合テスト（モック注入）
+
+決済・メール等の外部サービス（`docs/03-implementation/INTEGRATIONS.md`）は、DI コンテナでモック実装に差し替えて結合を検証する。
+
+```typescript
+// モックサービス
+class MockPaymentService implements IPaymentService {
+  failure?: AppError;
+
+  async createPaymentIntent(amount: number): Promise<PaymentIntent> {
+    if (this.failure) throw this.failure;
+    return {
+      id: "pi_test_123",
+      amount,
+      status: "succeeded",
+    };
+  }
+}
+
+// 統合テスト
+describe("Payment Integration", () => {
+  let app: Application;
+  let payment: MockPaymentService;
+
+  beforeEach(async () => {
+    // NODE_ENV に依存せず、テストでは常に新しいモックを注入する
+    payment = new MockPaymentService();
+    container.register("PaymentService", { useValue: payment });
+
+    app = await createApp();
+  });
+
+  it("should process payment successfully", async () => {
+    const response = await request(app)
+      .post("/payments")
+      .send({
+        amount: 1000,
+        currency: "usd",
+      })
+      .expect(200);
+
+    expect(response.body).toHaveProperty("paymentIntentId");
+  });
+
+  it("should report payment failure without returning success", async () => {
+    payment.failure = new UpstreamError("Payment provider unavailable");
+    // API は AppError.statusCode を返す契約。実プロジェクトのレスポンス契約に合わせる
+    const response = await request(app)
+      .post("/payments")
+      .send({ amount: 1000, currency: "usd" })
+      .expect(502);
+
+    expect(response.body).not.toHaveProperty("paymentIntentId");
   });
 });
 ```
@@ -723,7 +780,19 @@ echo "変異適用: OK"       # 報告には検査結果と並べてこの成否
 
 ## Changelog
 
+### [1.5.0] - 2026-10-17
+
+#### 修正
+
+- 外部サービス統合テストは環境値に依存せずモックを登録し、決済失敗時に成功を返さないケースを追加する
+
 - 2026-09-08 追記: プラグイン変数がない直接利用でも取得できる公開配布元を明記（ai-spec-driven-development#525）。
+
+### [1.4.0] - 2026-10-16
+
+#### 追加
+
+- §3 に「外部サービス統合テスト（モック注入）」節を追加（INTEGRATIONS.md の「統合テスト」節を移設。[ai-spec-driven-development#511](https://github.com/feel-flow/ai-spec-driven-development/issues/511)）。公開配布元で 1.3.0 として記録した追記を本版へ統合した。版番号は両系統の最大を超える値にした
 
 ### [1.3.1] - 2026-09-26
 

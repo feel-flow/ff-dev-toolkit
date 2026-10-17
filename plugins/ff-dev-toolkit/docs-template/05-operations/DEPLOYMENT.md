@@ -1,11 +1,11 @@
 ---
 title: "DEPLOYMENT"
-version: "1.5.1"
+version: "1.7.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-18"
-changeImpact: "medium"
+updated: "2026-10-17"
+changeImpact: "low"
 ---
 
 # DEPLOYMENT.md - デプロイメント・運用ガイド
@@ -40,6 +40,8 @@ changeImpact: "medium"
 | `deployment/review-response-policy.md`            | PRレビュー対応ポリシー                            | ⭐⭐⭐⭐ -     |
 | `deployment/workflow-principles.md`               | ワークフロー運用原則（各原則＋TodoWrite）         | ⭐⭐⭐⭐ -     |
 | `deployment/monitoring.md`                        | モニタリング                                      | ⭐⭐ -         |
+| `deployment/sbom.md`                              | SBOM（自動生成する部品表）の生成・保存・利用      | ⭐⭐ -         |
+| `deployment/key-inventory.md`                     | 外部連携のキー一覧（人が確認する管理文書）        | ⭐⭐ -         |
 
 ## 🚀 クイックスタート（30秒で理解）
 
@@ -285,6 +287,8 @@ PRマージ後のブランチ切り替え忘れを防ぐため、セッション
 | CI/CD設定                | `deployment/ci-cd.md`                             | GitHub Actions       |
 | インフラ構成             | `deployment/infrastructure.md`                    | Terraform            |
 | モニタリング             | `deployment/monitoring.md`                        | CloudWatch           |
+| SBOM・部品の影響調査     | `deployment/sbom.md`                              | 全体                 |
+| 外部連携のキー一覧       | `deployment/key-inventory.md`                     | 全体                 |
 
 ### AIツール向けプロンプトテンプレート
 
@@ -302,6 +306,18 @@ PRマージ後のブランチ切り替え忘れを防ぐため、セッション
 ## Changelog
 
 - 2026-09-08 追記: プラグイン変数がない直接利用でも取得できる公開配布元を明記（ai-spec-driven-development#525）。
+
+### [1.7.1] - 2026-10-17
+
+#### 修正
+
+- 1.4.1 の記述にあった裸の URL をリンク記法に改めた（Markdown の bare URL 検査に通るように。内容は変えていない）
+
+### [1.7.0] - 2026-10-16
+
+#### 追加
+
+- 構成表と検索クエリマッピングに `deployment/sbom.md`（SBOM の生成・保存・利用）と `deployment/key-inventory.md`（外部連携のキー一覧）を追加（[ai-spec-driven-development#540](https://github.com/feel-flow/ai-spec-driven-development/issues/540) / [ai-spec-driven-development#541](https://github.com/feel-flow/ai-spec-driven-development/issues/541)）。公開配布元で 1.5.0・1.6.0 として記録した追記を本版へ統合した。版番号は両系統の最大を超える値にした
 
 ### [1.5.1] - 2026-09-18
 
@@ -322,7 +338,7 @@ PRマージ後のブランチ切り替え忘れを防ぐため、セッション
 - §自動振り返り に、入れ子で起動された非対話の `claude -p` は hook 入力に print / headless 相当の
   フィールドが無く hook 側で判別できないため、**起動側が子プロセスの環境へ `RETROSPECTIVE_MODE=off` を
   載せて**抑止する、という利用者向けの契約を追記した
-  （https://github.com/feel-flow/ff-dev-toolkit/issues/94）。
+  （[ff-dev-toolkit#94](https://github.com/feel-flow/ff-dev-toolkit/issues/94)）。
 
 ### [1.4.0] - 2026-09-08
 

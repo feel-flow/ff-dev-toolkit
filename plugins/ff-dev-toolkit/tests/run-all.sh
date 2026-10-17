@@ -708,7 +708,7 @@ else
     # 上の gate の検出力を、マスク実装の除外範囲の拡大 / 縮小で実測する。
     # perl 不在または一時領域不可なら丸ごと ○ skip。
     "$SCRIPT_DIR/validate-docs-placeholders-selftest/verify.sh"
-    # docs-template 初期セット 20 文書の構造契約（Frontmatter 必須6フィールド +
+    # docs-template 初期セット 21 文書の構造契約（Frontmatter 必須6フィールド +
     # 文末 Changelog + init-docs SKILL ツリーとの集合一致）。/validate-docs の
     # 拡張文書チェックはオプトイン設計なので、テンプレートの Frontmatter 欠落は
     # この gate だけが守る。外部コマンド不要の静的検査（Issue #509）。
@@ -716,7 +716,7 @@ else
     # init-docs/SKILL.md 置換ポリシーの「ステップ1で埋まるプレースホルダー一覧」が
     # 同梱テンプレートの実体から乖離していないことを固定する（Issue #1317）。
     "$SCRIPT_DIR/init-docs-placeholder-list/verify.sh"
-    # 配布先レイアウトで .github 配下と初期セット 20 文書のリンク・references・inline path
+    # 配布先レイアウトで .github 配下と初期セット 21 文書のリンク・references・inline path
     # が解決し、初期セット内文書が初期セット外へ角括弧リンクを張っていないこと（Issue #1319）、
     # init-docs + ace-setup で露出したテンプレート 8 欠陥が戻らないことを固定する
     # （Issue #981）。Node.js 組み込み API のみを使う静的検査。
@@ -1402,7 +1402,6 @@ MISS_PROBE_BASELINE=(
   docs-frontmatter-repo
   docs-scan-mirror
   docs-template-frontmatter-selftest
-  docs-template-frontmatter
   docs-version-changelog-selftest
   docs-version-changelog
   github-labels-setup

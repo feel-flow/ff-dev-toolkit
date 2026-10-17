@@ -186,7 +186,7 @@ ff_docs_fm_close_line() {
 
 # Frontmatter / Changelog 構造の判定。stdout に "OK" または "NG:<理由>" を出す。
 # 消費者は tests/docs-frontmatter-repo/（対象プロジェクトの docs/）と
-# tests/docs-template-frontmatter/（docs-template の初期セット 20 文書）の 2 本。
+# tests/docs-template-frontmatter/（docs-template の初期セット 21 文書）の 2 本。
 #
 # 検査内容:
 #   先頭行が --- / Frontmatter が閉じている / 必須6フィールドが引用符付きで揃う /

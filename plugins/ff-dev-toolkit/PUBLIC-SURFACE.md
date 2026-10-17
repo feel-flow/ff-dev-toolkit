@@ -143,7 +143,7 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 
 **内部（配置はされるが、パスを固定しない）**:
 
-- `docs/` の初期セットのうちコア文書以外（`01-context/CONSTRAINTS.md` / `02-design/DOMAIN.md` / `02-design/API.md` / `02-design/DATABASE.md` / `03-implementation/PATTERNS.md` / `03-implementation/INTEGRATIONS.md` / `03-implementation/DECISION_TREE.md` / `03-implementation/FALLBACK.md` / `04-quality/VALIDATION.md` / `06-reference/GLOSSARY.md` / `07-project-management/ROADMAP.md` / `07-project-management/TASKS.md` / `07-project-management/RISKS.md`）— 生成後は導入先の資産で、toolkit は名前で固定しません
+- `docs/` の初期セットのうちコア文書以外（`01-context/CONSTRAINTS.md` / `02-design/DOMAIN.md` / `02-design/API.md` / `02-design/DATABASE.md` / `03-implementation/PATTERNS.md` / `03-implementation/INTEGRATIONS.md` / `03-implementation/DECISION_TREE.md` / `03-implementation/FALLBACK.md` / `03-implementation/ERRORS.md` / `04-quality/VALIDATION.md` / `06-reference/GLOSSARY.md` / `07-project-management/ROADMAP.md` / `07-project-management/TASKS.md` / `07-project-management/RISKS.md`）— 生成後は導入先の資産で、toolkit は名前で固定しません
 - `scripts/ace/` の検査スクリプト — 配置は任意で、未配置なら同梱ランナー経由で同じ検査を実行します。したがって導入先が依存する固定パスではありません
 
 配布物の側のパス（`plugins/ff-dev-toolkit/scripts/` などの同梱物の位置）は、導入先が直接呼ぶ入口だけが契約です。導入先は skill 経由か、上のシム経由で到達します。

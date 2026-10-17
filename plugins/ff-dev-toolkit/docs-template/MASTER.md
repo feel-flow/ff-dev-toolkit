@@ -1,11 +1,11 @@
 ---
 title: "MASTER"
-version: "1.9.2"
+version: "1.11.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-29"
-changeImpact: "low"
+updated: "2026-10-16"
+changeImpact: "medium"
 ---
 
 # AI駆動開発マスタードキュメント
@@ -343,6 +343,7 @@ AIツールがランタイム・依存のバージョンを選定する際は、
 - **バリデーションエラー**: フィールド単位でのリアルタイム表示
 - **予期しないエラー**: エラーバウンダリーでキャッチし、エラー画面表示
 - **ログ記録**: 構造化ログで詳細を記録（個人情報は除外）
+- **エラー型**: `AppError` 階層と外部境界の正規化（詳細: [ERRORS.md](./03-implementation/ERRORS.md)）
 - **フォールバック戦略**: 開発環境ではFail-Fast、本番環境でのみGraceful Degradation（詳細: [FALLBACK.md](./03-implementation/FALLBACK.md)）
 
 ## セキュリティ要件
@@ -517,6 +518,7 @@ metrics:
 
 - SETUP_GITHUB_COPILOT.md — GitHub Copilot設定（約30分）。`${CLAUDE_PLUGIN_ROOT}/docs-template/SETUP_GITHUB_COPILOT.md` からコピー
 - SETUP_CLAUDE_CODE.md — Claude Code設定（約40分）。`${CLAUDE_PLUGIN_ROOT}/docs-template/SETUP_CLAUDE_CODE.md` からコピー
+- 03-implementation/AI_TOOL_INTEGRATION.md — AI開発ツール（Claude Code / GitHub Copilot / Cursor）から仕様文書を参照させる設定例（INTEGRATIONS.md から分離）。`${CLAUDE_PLUGIN_ROOT}/docs-template/03-implementation/AI_TOOL_INTEGRATION.md` からコピー
 
 ### 既存プロジェクト向け（初期セット外・必要時にコピー）
 
@@ -540,6 +542,7 @@ metrics:
 コア7以外に、次を参照すると品質ゲートとレビュー観点が揃いやすい。
 
 - 04-quality/GUARDRAILS_THREE_LAYERS.md（ガードレール3層: 仕様・自動チェック・人間レビュー）と 04-quality/SECURITY_REVIEW_CHECKLIST.md（セキュリティレビューチェックリスト。PR用）— 相互に参照するので 2 文書を一緒にコピーする。`${CLAUDE_PLUGIN_ROOT}/docs-template/04-quality/GUARDRAILS_THREE_LAYERS.md` と `${CLAUDE_PLUGIN_ROOT}/docs-template/04-quality/SECURITY_REVIEW_CHECKLIST.md` からコピー
+- 05-operations/deployment/sbom.md（SBOM の生成・保存・利用。SBOM 本体は依存関係から生成する成果物で手で編集しない — 人が書くのはこの運用文書。継続運用・外部公開で採用を検討する）と 05-operations/deployment/key-inventory.md（外部連携のキー一覧のテンプレートと運用ルール。SBOM が依存部品から生成する成果物であるのに対し、キー一覧は運用事実を人が確認して書く管理文書。どちらも秘密の値の保管庫ではない。実際の一覧はアクセス制限したプロジェクト文書に置き、本テンプレートや公開リポジトリに混ぜない）— 相互に参照するので 2 文書を一緒にコピーする。`${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/sbom.md` と `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/deployment/key-inventory.md` からコピー
 
 ### ナレッジベース（初期セット外・PLAYBOOK.md は `/init-docs` と `/ace-setup` が配置）
 
@@ -594,6 +597,8 @@ AI: DEPLOYMENT.md（索引）→ deployment/self-review.md を読み込み
 | 1200 行超 | **分割を必須** |
 
 > 親（索引）+ 子（詳細）への分割手順・分割しない判断・実例は organizational-rollout/document-splitting.md（初期セット外・組織展開ガイド一式として `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/ORGANIZATIONAL_ROLLOUT.md` と `${CLAUDE_PLUGIN_ROOT}/docs-template/05-operations/organizational-rollout/` からコピー）を SSOT とする。
+>
+> **例外**: ACE Playbook（`docs/08-knowledge/PLAYBOOK.md`。分割レイアウトでは `playbook/<category>.md` が対象で、索引は行数監視の対象外）の行数は上表ではなく、PLAYBOOK.md の運用ルールが定める件数由来の上限（密度の指標）を優先する。固定の 800 / 1200 行での分割はしない。
 
 ### 簡潔化の原則
 
@@ -636,7 +641,7 @@ AI: DEPLOYMENT.md（索引）→ deployment/self-review.md を読み込み
 
 > **注**: `docs/specs/` 配下の仕様ファイルには Spec Kit 運用ガイドの Front Matter スキーマ（6ステータス: draft/review/approved/implementing/done/deprecated）を適用すること。上記 Frontmatter ルールはコア7文書および拡張文書に適用される。
 >
-> **例外**: `08-knowledge/OBSERVATIONS.md`（`/retrospective` の観測台帳）と `08-knowledge/playbook/**`（ACE Playbook の分割ファイル）は機械管理の蓄積ファイルであり、Frontmatter を付与しない（文書レベルのメタデータは索引側または運用スキル側が持つ）。
+> **例外**: `08-knowledge/OBSERVATIONS.md`（`/retrospective` の観測台帳）は Frontmatter を付与しない。ACE の `08-knowledge/PLAYBOOK.md`（カテゴリ別に分割したレイアウトでは索引）は Frontmatter を持つ。分割したカテゴリファイル（`08-knowledge/playbook/**`。`archive/` を含む）は機械管理の蓄積ファイルであり、Frontmatter を付与しない（文書レベルのメタデータは索引側または運用スキル側が持つ）。
 
 必須フィールド:
 
@@ -729,6 +734,20 @@ Changelog エントリには以下のカテゴリを使用する（[Keep a Chang
 ## Changelog
 
 - 2026-09-08 追記: プラグイン変数がない直接利用でも取得できる公開配布元を明記（ai-spec-driven-development#525）。
+
+### [1.11.0] - 2026-10-16
+
+#### 追加
+
+- 「品質・セキュリティ」に SBOM の運用文書（`05-operations/deployment/sbom.md`）とキー一覧の運用文書（`05-operations/deployment/key-inventory.md`）を追加。SBOM 本体は手で編集しない生成物、キー一覧は人が運用事実を確認して書く管理文書という役割の違いを明記し、相互に参照する 2 文書を 1 つのコピー単位にした（[ai-spec-driven-development#540](https://github.com/feel-flow/ai-spec-driven-development/issues/540) / [ai-spec-driven-development#541](https://github.com/feel-flow/ai-spec-driven-development/issues/541)）
+- 「AIツール初期設定ガイド」に `03-implementation/AI_TOOL_INTEGRATION.md`（INTEGRATIONS.md から分離した AI 開発ツールの設定例）を追加（[ai-spec-driven-development#511](https://github.com/feel-flow/ai-spec-driven-development/issues/511)）
+- エラーハンドリング方針に「エラー型」（`AppError` 階層と外部境界の正規化。正典は ERRORS.md）を追加（[ai-spec-driven-development#550](https://github.com/feel-flow/ai-spec-driven-development/issues/550)）
+- 文書サイズの閾値に、ACE Playbook は件数由来の行数上限を優先し固定行数で分割しない、という例外を追加（[ai-spec-driven-development#487](https://github.com/feel-flow/ai-spec-driven-development/issues/487)）
+
+#### 変更
+
+- Frontmatter の例外を、PLAYBOOK.md（分割レイアウトでは索引）は Frontmatter を持ち、OBSERVATIONS.md と分割したカテゴリファイル（`playbook/**`）は持たない、と単一ファイル・分割のどちらのレイアウトでも成り立つ書き方に整理した（[ai-spec-driven-development#487](https://github.com/feel-flow/ai-spec-driven-development/issues/487)）
+- 公開配布元で 1.9.0・1.10.0 として記録した追記を本版へ統合した。版番号は両系統の最大を超える値にした
 
 ### [1.9.2] - 2026-09-29
 

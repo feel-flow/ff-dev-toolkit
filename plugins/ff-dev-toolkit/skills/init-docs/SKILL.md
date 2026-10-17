@@ -9,7 +9,7 @@ description: AI仕様駆動開発のコア7文書 + 拡張フォルダ構造を�
 
 最初に[共通設定契約](../asdd-init/references/configuration.md)を読み、`scripts/asdd/config.mjs` の `loadConfig(root)` で対象プロジェクトの `.asdd/config.json` を検証する。以下の従来手順より、合意済みの文書構成・機能スイッチ・ワークフローを優先する。設定なしは従来互換、不正設定は自動処理を止めて診断する。
 
-2.0導入済みの場合は [asdd-init](../asdd-init/SKILL.md) の差分再設定経路を使う。合意済みの情報を再質問せず、選択した文書とツールの薄い入口だけを生成する。以下の20ファイル一括展開やMulti-CLIの自動配置は実行しない。Copilotなど設定形式の対象外ツールを明示依頼された場合は、共通MASTERへの薄い入口を別途提案し、対応済みツールと混同しない。
+2.0導入済みの場合は [asdd-init](../asdd-init/SKILL.md) の差分再設定経路を使う。合意済みの情報を再質問せず、選択した文書とツールの薄い入口だけを生成する。以下の21ファイル一括展開やMulti-CLIの自動配置は実行しない。Copilotなど設定形式の対象外ツールを明示依頼された場合は、共通MASTERへの薄い入口を別途提案し、対応済みツールと混同しない。
 
 プロジェクトに AI仕様駆動開発のコア7文書 + 拡張フォルダ構造をセットアップします。
 
@@ -80,7 +80,8 @@ docs/
 │   ├── CONVENTIONS.md
 │   ├── INTEGRATIONS.md
 │   ├── DECISION_TREE.md
-│   └── FALLBACK.md
+│   ├── FALLBACK.md
+│   └── ERRORS.md
 ├── 04-quality/
 │   ├── TESTING.md
 │   └── VALIDATION.md
@@ -95,7 +96,7 @@ docs/
     └── RISKS.md
 ```
 
-> **補足**: `00-planning/`（企画・PoC テンプレート）と `08-knowledge/`（ACE Playbook）は初期セット 20 ファイルに含めない。`00-planning/` は必要になった時点で `${FF_DEV_TOOLKIT_ROOT}/docs-template/00-planning/` からコピーする。`08-knowledge/` は初期セットとは別枠で、下の「3-b. ACE 最小構成の配置」が作成する。`03-implementation/DECISION_TREE.md` と `FALLBACK.md` は、`PATTERNS.md`・`MASTER.md` のコード生成ルール・エラーハンドリング方針から無条件に参照されるため初期セットに含める。
+> **補足**: `00-planning/`（企画・PoC テンプレート）と `08-knowledge/`（ACE Playbook）は初期セット 21 ファイルに含めない。`00-planning/` は必要になった時点で `${FF_DEV_TOOLKIT_ROOT}/docs-template/00-planning/` からコピーする。`08-knowledge/` は初期セットとは別枠で、下の「3-b. ACE 最小構成の配置」が作成する。`03-implementation/DECISION_TREE.md`・`FALLBACK.md`・`ERRORS.md` は、`PATTERNS.md`・`MASTER.md` のコード生成ルール・エラーハンドリング方針から無条件に参照されるため初期セットに含める。`ERRORS.md` はエラー型（`AppError` 階層・外部境界の正規化）の正典で、`PATTERNS.md` §3 はその索引になっている。`MASTER.md`・`PATTERNS.md`・`FALLBACK.md`・`INTEGRATIONS.md` が `ERRORS.md` へリンクするため、初期セットから外すと展開先でリンクが切れる。`CONVENTIONS.md`・`VALIDATION.md` もコード例のコメントで正典として名指しする。
 
 ### 3. テンプレートの適用
 
@@ -105,7 +106,7 @@ docs/
 
 **Frontmatter 規則（仕様文書と補助文書の線引き）**:
 
-- 初期セット 20 ファイルのテンプレートは**すべて** YAML Frontmatter（必須6フィールド: `title` / `version` / `status` / `owner` / `created` / `updated`）と文書末尾の `## Changelog` セクションを持つ（`/validate-docs` の Frontmatter スキーマチェックと整合）。テンプレートを追加・改訂する際もこの規則を維持する。規則は `tests/docs-template-frontmatter/` が fail-closed で検証する
+- 初期セット 21 ファイルのテンプレートは**すべて** YAML Frontmatter（必須6フィールド: `title` / `version` / `status` / `owner` / `created` / `updated`）と文書末尾の `## Changelog` セクションを持つ（`/validate-docs` の Frontmatter スキーマチェックと整合）。テンプレートを追加・改訂する際もこの規則を維持する。規則は `tests/docs-template-frontmatter/` が fail-closed で検証する
 - `changeImpact` は初版では省略し、初回変更時に Frontmatter へ追加する（MASTER.md の文書管理ルール準拠）
 - Frontmatter を要求するのは仕様文書（初期セット + 仕様系拡張文書）のみ。補助文書（`GETTING_STARTED*.md`・`SETUP_*.md`・索引/案内系の README・`05-operations/deployment/` 配下の運用ガイド・`setup-guides/` 等）には付与しない — `/validate-docs` の Frontmatter スキーマチェックも補助文書を検査対象外としている。仕様系の雛形群を説明する README（例: `03-implementation/templates/README.md`）が Frontmatter を持つのは例外として許容する
 - 文書内のドメイン履歴表（`CONSTRAINTS.md` の制約変更履歴・`ROADMAP.md` のロードマップ変更履歴等）は、文書レベルの `## Changelog` とは別物として併存してよい。ただしテンプレートの例示行に初版以外のエントリを置かない — `/validate-docs` は「更新履歴に初版以外のエントリがある」ことを changeImpact 要求の根拠にするため、初期化直後の文書が誤って ❌ になる
@@ -141,7 +142,7 @@ Git Workflow のチェーンは PR マージ後に `/ace-curate` を呼び、`/a
 - **配置するもの**: `docs/08-knowledge/PLAYBOOK.md`（エントリ 0 件）/ `docs/05-operations/deployment/ace-cycle.md` / `docs/05-operations/deployment/ace-domain.md` の 3 文書
 - **配置手順**: [ace-setup](../ace-setup/SKILL.md) の「Step 3: ファイル配置」をデフォルトの配置先でそのまま実行する（見本エントリの削除・`ace_entry_count: 0`・Changelog の初版化・配置後のゲート確認を含む。手順の正本は ace-setup で、ここへ複製しない）。`owner` と日付はステップ1の情報を使い、ACE のために追加の質問はしない
 - **配置しない場合**: `.asdd/config.json` で `features.ace=false` のときは 3 文書とも作成しない。既に `docs/08-knowledge/PLAYBOOK.md` がある場合も上書きしない
-- **初期セットとの関係**: 3 文書は初期セット 20 ファイルの外で、ステップ3の Frontmatter 規則・プレースホルダー表・初期セット外参照の規則（`tests/docs-template-frontmatter/` / `tests/init-docs-placeholder-list/` / `tests/docs-template-portability/` の初期セット検査）の対象に加えない。3 文書の配置後のリンク解決は `tests/docs-template-portability/` の「ACE 配置セット」の検査が別に見る
+- **初期セットとの関係**: 3 文書は初期セット 21 ファイルの外で、ステップ3の Frontmatter 規則・プレースホルダー表・初期セット外参照の規則（`tests/docs-template-frontmatter/` / `tests/init-docs-placeholder-list/` / `tests/docs-template-portability/` の初期セット検査）の対象に加えない。3 文書の配置後のリンク解決は `tests/docs-template-portability/` の「ACE 配置セット」の検査が別に見る
 - **このステップで行わないこと**: AI ツール固有の設定（`CLAUDE.md` / `AGENTS.md` への「着手前に `/knowledge-lookup` を引く」の配線など）は `/ace-setup` の Step 4 が担う。ステップ5の完了報告で `/ace-setup` の実行を案内する
 
 ### 4. MASTER.md のカスタマイズ
@@ -152,7 +153,7 @@ MASTER.md は特に重要です。以下を必ず反映してください:
 - **技術スタック要約**: FE/BE/DB/Infra
 - **守るべきルール**: 命名規則、エラーハンドリング方針、テスト方針
 - **情報不足時の必須確認プロトコル**: そのまま含める（MASTER.md テンプレートの実見出しは「情報不足時の必須確認プロトコル」）
-- **ドキュメント索引リンク**: 作成した各ドキュメントへの相対パス。テンプレートの索引が挙げる初期セット内ファイルはコア7文書のみなので、**初期セットのコア7以外の全ファイル（現在13ファイル）へのリンクは「初期セットのその他文書」等の小節として索引に追記する**（この追記は「テンプレート構造を変更しない」ルールの例外として認められる）。ステップ3-b で ACE 最小構成を配置した場合は、その 3 文書へのリンクも同じ小節へ追記する
+- **ドキュメント索引リンク**: 作成した各ドキュメントへの相対パス。テンプレートの索引が挙げる初期セット内ファイルはコア7文書のみなので、**初期セットのコア7以外の全ファイル（現在14ファイル。初期セット 21 からコア 7 を引いた数）へのリンクは「初期セットのその他文書」等の小節として索引に追記する**（この追記は「テンプレート構造を変更しない」ルールの例外として認められる）。ステップ3-b で ACE 最小構成を配置した場合は、その 3 文書へのリンクも同じ小節へ追記する
 
 ### 5. 完了報告
 

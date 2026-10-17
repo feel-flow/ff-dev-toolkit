@@ -13,7 +13,7 @@ export const ERROR_CODE_EXAMPLE = "EXAMPLE_ERROR" as const;
 // 正典の HTTP_STATUS と同じ形（必要な分だけ列挙する）
 export const HTTP_STATUS = { INTERNAL_SERVER_ERROR: 500 } as const;
 
-// 正典は docs/03-implementation/PATTERNS.md「エラーハンドリング」。署名を揃えること
+// 正典は docs/03-implementation/ERRORS.md。署名を揃えること
 // （引数順は message, code, statusCode, options）。
 export type AppErrorOptions = { cause?: unknown };
 export type ErrorCategory = "never-fallback" | "transient" | "permanent";

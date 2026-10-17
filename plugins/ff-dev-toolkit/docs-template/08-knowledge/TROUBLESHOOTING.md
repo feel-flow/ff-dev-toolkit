@@ -260,9 +260,9 @@
            signal: AbortSignal.timeout(EXTERNAL_API_TIMEOUT_MS),
          });
 
-         // ステータスを落として Error を投げる（あるいは何も投げずに抜ける）と、
-         // normalizeExternalError がすべて transient に化けて 401 / 404 まで
-         // 再試行される。境界では status を持たせて投げる（03-implementation/PATTERNS.md）
+         // ステータスを落として Error を投げると、
+         // normalizeExternalError が原因不明として拒否し、HTTP の分類情報も失われる。
+         // 暗黙に undefined を返さず、境界では status を持たせて投げる（03-implementation/ERRORS.md）
          if (!response.ok) {
            throw normalizeExternalError({
              status: response.status,
@@ -475,9 +475,9 @@
    }
 
    // JWT 検証のエラーは HTTP ステータスを持たないため normalizeExternalError には
-   // 通さない。あの関数はステータスを読めないエラーを UpstreamError（transient）へ
-   // 倒すので、署名不正や期限切れのトークンが再試行と本番フォールバックの対象になる。
-   // ステータスを持たない境界は専用マッパーで写す（03-implementation/PATTERNS.md
+   // 通さない。署名不正や期限切れは通信障害ではなく、
+   // 専用の never-fallback 型へ写して意味を保つ。
+   // ステータスを持たない境界は専用マッパーで写す（03-implementation/ERRORS.md
    // 「外部境界のエラー正規化」）。写す先はすべて never-fallback カテゴリにする
    function toTokenVerificationError(error: unknown): AppError {
      if (error instanceof AppError) return error;

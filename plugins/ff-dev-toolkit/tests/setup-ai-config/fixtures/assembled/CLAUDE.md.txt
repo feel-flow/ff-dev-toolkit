@@ -14,7 +14,7 @@
 ## Coding Standards
 [docs/03-implementation/PATTERNS.md から抽出]
 - 命名規則
-- エラーハンドリング方針
+- エラーハンドリング方針（エラー型と正規化は docs/03-implementation/ERRORS.md から抽出）
 - 合意した定数化の対象と判断基準
 
 ## Build Commands

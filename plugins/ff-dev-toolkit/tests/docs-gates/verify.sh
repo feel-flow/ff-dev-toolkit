@@ -68,6 +68,12 @@
 #   multi-implement SKILL.md の参照リンクを外すと 1 件が赤。
 #   AGENTS.md の参照行の削除 / 義務本文の言い換え / 正本パスの誤記で、それぞれ 1 件が赤。
 #
+# 空振り検出（contracts/review-wait-prep.tsv と multi-review SKILL.md 手順 2 の 1 文。2026-10-17 実測）: ステップ6 の見出し
+# 「セルフレビューの実行方法」を改名すると節スコープの針 4 本が「見出しが 0 本」で赤。SKILL.md は $DOCS の外なので
+# 契約 TSV へ載せず本 suite の multi-review ブロックが絶対パスで照合する（docs-gates-runtime は docs-template だけを複製する）。
+# 変異検出（同上。赤転しなかった変異は無し）: git-workflow の段落削除 / 着手手段を「起動後に始める」へ書き換え /
+#   尽きた後の待ち方の削除 / 段落をステップ6 の節外へ移動 / 各文の末尾を「〜が望ましい」へ弱める / SKILL.md 手順 2 の 1 文の削除・末尾の弱化。
+#
 # Bash と、本プロジェクトの対応環境に標準搭載される grep / awk / sed / find を使う。
 # 一時ファイルを作らない読み取り専用 suite とし、docs の複製を伴う動的 smoke / mutation は
 # docs-gates-runtime が担うため、書き込み不可の環境でも本 suite 単体は完走できる。
@@ -1212,6 +1218,15 @@ else
     ok "レビュー待ち時間の使い方が禁止側の理由（DISCARDED・未解消判定）を明記している"
   else
     bad "レビュー待ち時間の使い方の禁止側の理由が見つかりません"
+  fi
+  # 待ち時間の準備作業（起動前に列挙し、起動と同じメッセージで着手する）。正本は Git Workflow
+  # ステップ6（contracts/review-wait-prep.tsv が節スコープで固定）で、本線はバイト上限があるため
+  # 手順 2 の 1 文だけを持つ。その 1 文が消えると、レビューを起動する本線から段取りが落ちる。
+  if grep -qF '待ち時間の作業は起動前に列挙して起動と同じメッセージで着手し、尽きたら `sleep` で空回りせず Monitor で完了通知を待つ。' \
+      "$MULTI_REVIEW_SKILL"; then
+    ok "multi-review SKILL.md 手順 2 が待ち時間の作業の起動前列挙と同メッセージ着手を明記している"
+  else
+    bad "multi-review SKILL.md 手順 2 に待ち時間の作業の起動前列挙と同メッセージ着手が見つかりません"
   fi
   # 通る書き込み先（ガードの許可条件）の明記。hooks/guard-review-in-flight.sh と
   # tests/lib/review-write-scan.sh の `target_in_tree` が持つ 3 つと同じ集合で、

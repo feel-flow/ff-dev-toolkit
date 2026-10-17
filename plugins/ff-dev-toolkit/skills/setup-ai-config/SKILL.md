@@ -61,6 +61,7 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 - `docs/01-context/PROJECT.md` または `docs/01-business/PROJECT.md` — 要件
 - `docs/02-design/ARCHITECTURE.md` — アーキテクチャ
 - `docs/03-implementation/PATTERNS.md` — コーディング規約
+- `docs/03-implementation/ERRORS.md` — エラー型と外部境界の正規化（エラーハンドリング方針の抽出元。`PATTERNS.md` §3 はその索引）
 
 ファイルが見つからない場合は、ユーザーに情報を確認してください。
 
@@ -116,7 +117,7 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 ## Coding Standards
 [docs/03-implementation/PATTERNS.md から抽出]
 - 命名規則
-- エラーハンドリング方針
+- エラーハンドリング方針（エラー型と正規化は docs/03-implementation/ERRORS.md から抽出）
 - 合意した定数化の対象と判断基準
 
 ## Build Commands

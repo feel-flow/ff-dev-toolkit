@@ -1,0 +1,12 @@
+# レビュー待ち時間の準備作業: 起動前に列挙し、起動と同じターンで着手する（導入先の観測台帳から昇格）。
+# 並列レビューを起動してから待機中の作業を考え始めると、完了通知を待つだけの状況報告ターンが
+# 残る（導入先で 12 回再発）。正本は Git Workflow ステップ6 の段落で、規定が消える・骨抜きになる・
+# ステップ6 の外へ移ると、起動前の段取りが散文から落ちる。multi-review SKILL.md 側の 1 文は
+# docs-template の外にあるため、ここではなく verify.sh の multi-review ブロックが絶対パスで照合する
+# （docs-gates-runtime は docs-template だけを複製して本ランナーを回すので、../skills/ は解決できない）。
+# 変異検出（2026-10-17 実測。赤転しなかった変異は無し）: 段落削除 / 着手手段を「起動後に始める」へ書き換え /
+# 尽きた後の待ち方の削除 / 段落をステップ6 の節外へ移動 / 各文の末尾を「〜が望ましい」へ弱める（針は句点・直後の語まで取る）。
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	**凍結中にやる準備作業はレビュー起動の前に列挙し、起動と同じターンで着手する**: 起動コマンドを出す前に	Git Workflow ステップ6 が準備作業の起動前列挙と同ターン着手を要求する
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	起動と同じメッセージの並列 tool call で始める。	Git Workflow ステップ6 が準備作業の着手手段（起動と同じメッセージの並列 tool call）を明記する
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	列挙した作業が尽きたら、状況報告だけのターンを重ねずに Monitor を armed して停止し、完了通知で再開する（`sleep` や自作の待機ループは代わりにならない）。	Git Workflow ステップ6 が準備作業の尽きた後の待ち方を定める
+section	05-operations/deployment/git-workflow.md	#### セルフレビューの実行方法	[multi-review の「レビュー待ち時間の使い方」](../../../skills/multi-review/SKILL.md#レビュー待ち時間の使い方) を正本とする。	Git Workflow ステップ6 の準備作業規定が作業の範囲を multi-review の待ち時間節へ委ねる

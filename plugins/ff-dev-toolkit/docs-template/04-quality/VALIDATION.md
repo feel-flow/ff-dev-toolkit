@@ -1,10 +1,10 @@
 ---
 title: "VALIDATION"
-version: "1.1.0"
+version: "1.1.1"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-06"
+updated: "2026-10-16"
 changeImpact: "medium"
 ---
 
@@ -71,7 +71,7 @@ function validateUserRegistration(data: unknown) {
     return { success: true, data: validatedData };
   } catch (error) {
     if (error instanceof z.ZodError) {
-      // ValidationDetail は PATTERNS.md「エラーハンドリング」の定義を import する（`./errors`）
+      // ValidationDetail は ERRORS.md の定義を import する（`./errors`）
       const details: ValidationDetail[] = error.errors.map((e) => ({
         field: e.path.join("."),
         message: e.message,
@@ -533,7 +533,7 @@ interface ValidationReport {
     failed: number;
     warnings: number;
   };
-  // 運用チェック結果の型。入力検証の ValidationDetail（PATTERNS.md「エラーハンドリング」、
+  // 運用チェック結果の型。入力検証の ValidationDetail（ERRORS.md、
   // field / message / constraint）とは別物で、名前も分ける（同名・別形状の並立を避ける）
   details: ValidationCheckDetail[];
 }
@@ -587,6 +587,12 @@ class ValidationReporter {
 ```
 
 ## Changelog
+
+### [1.1.1] - 2026-10-16
+
+#### 変更
+
+- `ValidationDetail` の定義元の参照を PATTERNS.md §3 から ERRORS.md へ張り替えた（[ai-spec-driven-development#550](https://github.com/feel-flow/ai-spec-driven-development/issues/550)）
 
 ### [1.1.0] - 2026-09-06
 

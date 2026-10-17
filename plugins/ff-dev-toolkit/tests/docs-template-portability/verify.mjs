@@ -8,6 +8,8 @@ import { dirname, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { copyLeakLines, copyTokenPattern, copyUnitsFromMaster } from "./copy-units.mjs";
 
+import { verifyErrorExamples } from "./error-examples.mjs";
+
 const suiteDir = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = resolve(suiteDir, "../..");
 const templateRoot = join(pluginRoot, "docs-template");
@@ -45,7 +47,7 @@ function deployedLocation(file) {
   return join("docs", rel);
 }
 
-// /init-docs が初期配置する 20 ファイル（skills/init-docs/SKILL.md「2. ディレクトリ構造の作成」の
+// /init-docs が初期配置する 21 ファイル（skills/init-docs/SKILL.md「2. ディレクトリ構造の作成」の
 // 手書きスナップショット）。docs/ 配下のリンクは「展開先に必ず在る」初期セット内に限る。
 // 初期セット外（05-operations/deployment/ や 03-implementation/templates/ 等）は
 // inline code のパスで所在を案内する。
@@ -62,6 +64,7 @@ const INITIAL_SET = new Set([
   "docs/03-implementation/INTEGRATIONS.md",
   "docs/03-implementation/DECISION_TREE.md",
   "docs/03-implementation/FALLBACK.md",
+  "docs/03-implementation/ERRORS.md",
   "docs/04-quality/TESTING.md",
   "docs/04-quality/VALIDATION.md",
   "docs/05-operations/DEPLOYMENT.md",
@@ -472,12 +475,13 @@ check(issueAndPrTemplates.length > 0, "Issue / PR テンプレートが検査対
 check(bodyRelativeLinks.length === 0, "Issue / PR 本文に相対リンクがない", bodyRelativeLinks.join("; "));
 
 console.log("== B. 8 欠陥の内容契約 ==");
-// 禁止カテゴリはエラークラスの列挙（allowlist）ではなく、各クラスが PATTERNS.md で宣言する
+// 禁止カテゴリはエラークラスの列挙（allowlist）ではなく、各クラスが ERRORS.md（PATTERNS.md §3 から
+// 移設したエラー型の正典）で宣言する
 // category（"never-fallback"）で判定する。列挙方式だと新しいエラー型の追加漏れが黙って
 // フォールバック対象になるため、契約は「5 クラスが never-fallback を宣言し、FALLBACK が
 // category で判定する」に置き換える。
 const fallback = text("03-implementation/FALLBACK.md");
-const patterns = text("03-implementation/PATTERNS.md");
+const errors = text("03-implementation/ERRORS.md");
 for (const errorType of [
   "UnauthorizedError",
   "ForbiddenError",
@@ -488,13 +492,54 @@ for (const errorType of [
   const declared = new RegExp(
     `class ${errorType} extends AppError \\{\\n\\s*readonly category: ErrorCategory = "never-fallback";`,
   );
-  check(declared.test(patterns), `PATTERNS の ${errorType} が never-fallback を宣言する`);
+  check(declared.test(errors), `ERRORS の ${errorType} が never-fallback を宣言する`);
 }
 check(
   fallback.includes('error.category === "never-fallback"'),
   "FALLBACK の禁止カテゴリ判定が category 宣言に基づく（クラス列挙を持たない）",
 );
 check(!fallback.includes("NEVER_FALLBACK_ERRORS"), "FALLBACK に旧 allowlist（NEVER_FALLBACK_ERRORS）が残っていない");
+
+// PATTERNS.md §3 は ERRORS.md への索引で、ERRORS.md §3 が正典のエラーハンドリング例を持つ。
+// 検査は §3 の範囲（`## 3.` の見出しから `## 4.` の見出しの手前まで）だけに掛ける — ファイル
+// 全体に掛けると、§3 へエラークラス定義が戻っても別の節の記述で否定の針が濁る。
+// 範囲を切り出せない入力（見出しの欠落・改名・番号の付け替え・見出しだけで本文が空）は
+// 空文字を返し、下の範囲の実在の検査で赤にする。否定の針（クラス定義が無い）も範囲が
+// 空なら赤に倒す — 空の範囲に対する「含まない」は、何も検査せずに緑になるため。
+function numberedSection(content, number) {
+  const start = content.search(new RegExp(`^## ${number}\\. `, "m"));
+  if (start === -1) return "";
+  const rest = content.slice(start);
+  const end = rest.search(new RegExp(`^## ${number + 1}\\. `, "m"));
+  if (end === -1) return "";
+  const section = rest.slice(0, end);
+  const body = section.slice(section.indexOf("\n") + 1);
+  return body.trim() === "" ? "" : section;
+}
+const patternsErrorsIndex = numberedSection(text("03-implementation/PATTERNS.md"), 3);
+const errorsHandling = numberedSection(errors, 3);
+check(patternsErrorsIndex !== "", "PATTERNS の §3（`## 3.`〜`## 4.`）を本文付きで切り出せる");
+check(
+  patternsErrorsIndex.includes("[ERRORS.md](./ERRORS.md)"),
+  "PATTERNS の §3 が ERRORS.md へリンクする索引である",
+);
+check(
+  patternsErrorsIndex !== "" && !/class \w+ extends AppError/.test(patternsErrorsIndex),
+  "PATTERNS の §3 にエラークラスの定義が戻っていない（定義は ERRORS.md に置く）",
+);
+check(errorsHandling !== "", "ERRORS の §3（`## 3.`〜`## 4.`）を本文付きで切り出せる");
+// AppError を InternalError へ降格させると never-fallback が permanent に化け、
+// fallbackInProdOnly が本番で握りつぶす。そのまま返す分岐の実在を固定する
+check(
+  /if \(error instanceof AppError\) \{\n\s*return Result\.fail\(error\);/.test(errorsHandling),
+  "ERRORS の §3 のエラーハンドリング例が AppError をそのまま返す（降格させない）",
+);
+
+await verifyErrorExamples({
+  errors, fallback, patterns: text("03-implementation/PATTERNS.md"),
+  testing: text("04-quality/TESTING.md"),
+  skill: text(".github/skills/error-handling-standards/SKILL.md"),
+}, check);
 
 const conventions = text("03-implementation/CONVENTIONS.md");
 const integrations = text("03-implementation/INTEGRATIONS.md");
@@ -545,7 +590,7 @@ for (const [label, rel] of [
     !/\berror\.message\b/.test(block),
     `08-knowledge/${label} の catch 節が unknown な error から直接 .message を読まない`,
   );
-  // normalizeExternalError は HTTP ステータスを持つ境界専用（PATTERNS.md）。
+  // normalizeExternalError は HTTP ステータスを持つ境界専用（ERRORS.md）。
   // ステータスを読めないエラーは UpstreamError（transient）へ倒れるため、
   // JWT 検証失敗をここへ通すと署名不正のトークンが再試行・本番フォールバックの
   // 対象になる。専用マッパー経由であることを両方向で固定する
@@ -651,7 +696,7 @@ if (heredocStart !== -1 && heredocEnd !== -1) {
     "SETUP_CLAUDE_CODE の heredoc の外のリンクと inline code パスが展開先で解決する",
     outsideBrokenLinks.join(" / "),
   );
-  // 解決するだけでは足りない。/init-docs が展開するのは初期セットの 20 文書だけなので、
+  // 解決するだけでは足りない。/init-docs が展開するのは初期セットの 21 文書だけなので、
   // 初期セット外へ Markdown リンクを張るとコピー直後にリンク切れになる（配布ツリーには
   // 実体が在るので上の解決検査は通ってしまう）。初期セット外はコピー元パス付きの案内
   // テキストで示す — MASTER.md が「初期セット外・必要時にコピー」の文書に採っている形。
@@ -728,9 +773,9 @@ check(copyScan.guides.length === 0, "「必要時にコピー」の文書が案�
 const copyLinks = copyScan.links;
 // 解決検査はリンク 0 件でも緑になる。リンクをまとめて消す退行・対象がまとめて外れる退行を
 // 違反 0 件と区別する下限（件数は不等号 — 足すのは正常な変更で、縛りたいのは消える側。
-// 現状 19 文書・リンク 77 件。文書は SETUP_CLAUDE_CODE を含み、リンクは専用検査の側で数える同書を除く）
-const EXPECTED_COPY_DOCS = 19;
-const EXPECTED_COPY_LINKS = 77;
+// 現状 22 文書・リンク 82 件。文書は SETUP_CLAUDE_CODE を含み、リンクは専用検査の側で数える同書を除く）
+const EXPECTED_COPY_DOCS = 22;
+const EXPECTED_COPY_LINKS = 82;
 check(
   copyMembers.length >= EXPECTED_COPY_DOCS && copyLinks >= EXPECTED_COPY_LINKS,
   `「必要時にコピー」の文書が ${EXPECTED_COPY_DOCS} 件以上あり、展開先の文書へ ${EXPECTED_COPY_LINKS} 件以上リンクしている`,
@@ -881,7 +926,7 @@ check(
 // 検査を足したらこの数も同じ PR で上げること（上げ忘れは「増やしたのに赤」で即わかる）。
 // 不等号ではなく**完全一致**にする — `>=` だと上げ忘れが緑で通り、baseline が実数より
 // 下にずれる。以後は「1 件足して 1 件消す」が検出されず、この針の目的自体が静かに失効する。
-const EXPECTED_CHECKS = 89;
+const EXPECTED_CHECKS = 96;
 const executed = pass + failures.length;
 check(
   executed === EXPECTED_CHECKS,

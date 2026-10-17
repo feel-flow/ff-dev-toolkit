@@ -1,11 +1,11 @@
 ---
 title: "CONVENTIONS"
-version: "1.2.0"
+version: "1.2.2"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-09-08"
-changeImpact: "medium"
+updated: "2026-10-17"
+changeImpact: "low"
 ---
 
 # CONVENTIONS.md - コーディング規約
@@ -307,9 +307,8 @@ async function fetchUser(id: string): Promise<User> {
     }
     return user;
   } catch (error) {
-    // Logger 規約（PATTERNS.md §9）: error(message, error: Error, meta?)
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.error("Failed to fetch user", err, { id });
+    // Logger 規約（PATTERNS.md §9）: error(message, error: unknown, meta?)
+    logger.error("Failed to fetch user", error, { id });
     throw error;
   }
 }
@@ -329,7 +328,7 @@ async function fetchDashboard(userId: string): Promise<Dashboard> {
 ### エラーハンドリング
 
 ```typescript
-// エラークラスは PATTERNS.md「エラーハンドリング」の AppError 階層を正典とする。
+// エラークラスは ERRORS.md の AppError 階層を正典とする。
 // ここで別定義を作らない（同名・別形状のクラスが並立すると、どちらが正か
 // 判断できなくなる）。ValidationError.details は ValidationDetail[]
 // （field / message / constraint?）で、any は使わない。
@@ -349,9 +348,8 @@ try {
   }
 
   // 予期しないエラー（cause で元エラーを保持する）
-  const err = error instanceof Error ? error : new Error(String(error));
-  logger.error("Unexpected error", err);
-  throw new InternalError("Processing failed", { cause: err });
+  logger.error("Unexpected error", error);
+  throw new InternalError("Processing failed", { cause: error });
 }
 ```
 
@@ -709,6 +707,18 @@ function processUserInput(input: unknown): void {
 ```
 
 ## Changelog
+
+### [1.2.2] - 2026-10-17
+
+#### 修正
+
+- Logger の unknown 受け取り契約へ追随し、元の cause を文字列化しない
+
+### [1.2.1] - 2026-10-16
+
+#### 変更
+
+- エラーハンドリング例の正典の参照を PATTERNS.md §3 から ERRORS.md へ張り替えた（[ai-spec-driven-development#550](https://github.com/feel-flow/ai-spec-driven-development/issues/550)）
 
 ### [1.2.0] - 2026-09-08
 
