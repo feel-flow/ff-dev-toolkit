@@ -20,6 +20,7 @@
 #   4. 対象 PR のリモートブランチ削除（same-repo かつ open PR 未使用、--force-with-lease で OID 一致時のみ）
 #   5. [gone] ローカルブランチ + 関連 worktree の削除
 #      （dirty worktree は保護。-D は MERGED PR head と OID 一致するブランチのみ）
+#   5.4 worktree 未使用・マージ証拠・origin 同名 ref 不在を満たす worktree-agent-* の削除
 #   5.5 削除した worktree のトランスクリプト回収（cwd 照合のうえ tar.gz へアーカイブ）
 #   6. リモート取り残しブランチのガード付き自動削除（fail-closed）
 #   7. 最終検証と結果サマリー
@@ -52,7 +53,8 @@
 #   - ローカル [gone] ブランチの -D（強制削除）は (名前, ローカル OID) が
 #     MERGED PR の head と一致する場合に限定（[gone] だけではマージ済みの証明にならない）
 #   - ガードに必要な情報の取得に失敗したら削除せずスキップ（fail-closed）
-#   - dirty な worktree・upstream なしの孤児ブランチは削除しない（警告のみ）
+#   - dirty な worktree は削除しない。upstream なしの孤児ブランチも警告のみ。
+#     例外は Step 5.4 の全条件で安全性を確認した worktree-agent-* だけ
 #   - 未コミット変更ガードのパス除外（FF_MERGE_CLEANUP_IGNORE_PATHS）が効くのは
 #     「中断しても何も消えない」ガードだけ（Step 1 / Step 3）。worktree 削除前の
 #     clean 確認（Step 5）は対象外で、除外指定があっても dirty なら削除しない
@@ -615,6 +617,7 @@ print_usage() {
 このスクリプトが削除するもの（--dry-run を付けない場合）:
   - 対象 PR のリモートブランチ（origin。--force-with-lease で OID 一致時のみ）
   - [gone] ローカルブランチと、それを保持する worktree（clean のときだけ）
+  - worktree 未使用・マージ証拠・origin 同名 ref 不在を満たす worktree-agent-*
   - 削除した worktree だけが使っていた Claude Code のトランスクリプト
     （既定は削除ではなく tar.gz へのアーカイブ）
   - リモート取り残しのマージ済みブランチ（(名前, OID) 照合を通ったものだけ）
@@ -850,6 +853,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)" || die "git リポジトリ内で�
 # 集計用（bash 3.2 の set -u では空配列の "${arr[@]}" 展開がエラーになるため、
 # 参照時は必ず ${#arr[@]} でガードする）
 DELETED_BRANCHES=()
+DELETED_AGENT_BRANCHES=()
 DELETED_WORKTREES=()
 DELETED_WORKTREE_REALS=()
 DELETED_LEFTOVERS=()
@@ -1308,6 +1312,7 @@ fi
 # open 一覧:   「同じ head を open PR が再利用していないか」ガード（Step 4/6）
 GUARDS_OK=1
 MERGED_LIST="$WORK_TMP/merged.list"   # "name<TAB>oid"（same-repo PR のみ）
+AGENT_MERGED_OIDS="$WORK_TMP/agent_merged_oids.list"
 OPEN_LIST="$WORK_TMP/open.list"       # "name"
 
 # 大きめのリポジトリではこの取得が数分かかることがある（feelflow-website-2026 の
@@ -1316,7 +1321,7 @@ OPEN_LIST="$WORK_TMP/open.list"       # "name"
 GH_MERGED_JSON=""
 GH_OPEN_JSON=""
 echo "⏳ ガード情報を取得しています: マージ済み PR 一覧（照合上限: ${MERGED_PR_LIMIT} 件）..."
-if ! GH_MERGED_JSON="$(gh pr list --state merged --limit "$MERGED_PR_LIMIT" --json headRefName,headRefOid,isCrossRepository 2>&1)"; then
+if ! GH_MERGED_JSON="$(gh pr list --state merged --limit "$MERGED_PR_LIMIT" --json headRefName,headRefOid,isCrossRepository,baseRefName 2>&1)"; then
   echo "⚠️ マージ済み PR 一覧の取得に失敗しました（fail-closed で縮退）: $GH_MERGED_JSON"
   GUARDS_OK=0
 else
@@ -1335,6 +1340,10 @@ else
       | jq -r '.[] | select(.isCrossRepository | not) | "\(.headRefName)\t\(.headRefOid)"' \
       | sort -u > "$MERGED_LIST"
     printf '%s' "$GH_OPEN_JSON" | jq -r '.[].headRefName' | sort -u > "$OPEN_LIST"
+    printf '%s' "$GH_MERGED_JSON" | jq -r --arg base "$PR_BASE" '
+      .[] | select(.isCrossRepository == false and .baseRefName == $base)
+      | .headRefOid | select(type == "string" and test("^[0-9a-fA-F]{40}$"))
+    ' | sort -u > "$AGENT_MERGED_OIDS"
   fi
 fi
 
@@ -1828,6 +1837,71 @@ else
     fi
   done <<< "$GONE_BRANCHES"
 fi
+
+# ---- Step 5.4: 取り残されたエージェントブランチの削除 ------------------------
+# agent-branch-cleanup:start
+# [gone] にならない初期ブランチだけの取り残しも扱う。worktree はこの経路で
+# unlock / remove しない。名前だけで実行中の委譲先を片付けないための境界。
+AGENT_BRANCHES=""
+if ! AGENT_BRANCHES="$(git for-each-ref --format='%(refname:short)' 'refs/heads/worktree-agent-*' 2>"$WORK_TMP/agent_refs.err")"; then
+  FAILED_ITEMS+=("worktree-agent-*: ローカルブランチ一覧の取得失敗により削除未実施")
+elif [ -n "$AGENT_BRANCHES" ]; then
+  AGENT_WORKTREES="$WORK_TMP/agent_worktrees.list"
+  AGENT_WORKTREES_OK=1
+  if ! git worktree list --porcelain > "$AGENT_WORKTREES" 2>"$WORK_TMP/agent_worktrees.err" \
+    || [ -s "$WORK_TMP/agent_worktrees.err" ] \
+    || ! grep -q '^worktree ' "$AGENT_WORKTREES"; then
+    AGENT_WORKTREES_OK=0
+  fi
+  # この機能は常に base を基準にする。他セッションの HEAD はマージ証拠にしない。
+  AGENT_BASE_REF="refs/heads/$PR_BASE"
+  if [ "$DRY_RUN" = "1" ] && git rev-parse --verify --quiet "refs/remotes/origin/$PR_BASE" >/dev/null 2>&1; then
+    AGENT_BASE_REF="refs/remotes/origin/$PR_BASE"
+  fi
+  echo "🧹 worktree-agent-* ローカルブランチの削除候補を確認します:"
+  while IFS= read -r branch; do
+    [ -n "$branch" ] || continue
+    AGENT_SKIP=""
+    AGENT_LOCAL_OID=""
+    if is_protected_branch "$branch"; then
+      AGENT_SKIP="保護ブランチ"
+    elif [ "$AGENT_WORKTREES_OK" != "1" ]; then
+      AGENT_SKIP="worktree 一覧を確認できない（fail-closed）"
+    elif grep -qxF "branch refs/heads/$branch" "$AGENT_WORKTREES"; then
+      AGENT_SKIP="worktree が保持中（削除・unlock しない）"
+    elif ! AGENT_LOCAL_OID="$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null)"; then
+      AGENT_SKIP="ローカル OID を確認できない（fail-closed）"
+    elif ! git merge-base --is-ancestor "$AGENT_LOCAL_OID" "$AGENT_BASE_REF" 2>/dev/null; then
+      if [ "$GUARDS_OK" != "1" ] || ! grep -qxF "$AGENT_LOCAL_OID" "$AGENT_MERGED_OIDS"; then
+        AGENT_SKIP="base の祖先ではなく、同じ base の MERGED PR head OID とも一致しない"
+      fi
+    fi
+    if [ -z "$AGENT_SKIP" ]; then
+      AGENT_REMOTE_RC=0
+      git ls-remote --exit-code --heads origin "refs/heads/$branch" > "$WORK_TMP/agent_remote.out" 2>"$WORK_TMP/agent_remote.err" || AGENT_REMOTE_RC=$?
+      case "$AGENT_REMOTE_RC" in
+        2) if [ -s "$WORK_TMP/agent_remote.out" ] || [ -s "$WORK_TMP/agent_remote.err" ]; then
+             AGENT_SKIP="origin の同名 ref の不存在を確認できない（fail-closed）"
+           fi ;;
+        0) AGENT_SKIP="origin に同名 ref が存在する" ;;
+        *) AGENT_SKIP="origin の同名 ref を照合できない（fail-closed）" ;;
+      esac
+    fi
+    if [ -n "$AGENT_SKIP" ]; then
+      echo "  ⚠️ skip: ${branch}: ${AGENT_SKIP}"
+      SKIPPED_LEFTOVERS+=("${branch}: ${AGENT_SKIP}")
+    elif [ "$DRY_RUN" = "1" ]; then
+      echo "  ✓ (dry-run) 削除候補のエージェントブランチ: $branch"
+      DELETED_AGENT_BRANCHES+=("$branch")
+    elif AGENT_DEL_OUT="$(git branch -D "$branch" 2>&1)"; then
+      echo "  ✓ エージェントブランチを削除: $branch"
+      DELETED_AGENT_BRANCHES+=("$branch")
+    else
+      FAILED_ITEMS+=("${branch}: エージェントブランチ削除失敗 (${AGENT_DEL_OUT})")
+    fi
+  done <<< "$AGENT_BRANCHES"
+fi
+# agent-branch-cleanup:end
 
 # ---- Step 5.5: 削除した worktree のトランスクリプト回収 -----------------------
 #
@@ -2396,6 +2470,7 @@ case "$PR_REMOTE_RESULT" in
 esac
 echo "- 対象 PR のリモートブランチ ($PR_HEAD): $PR_REMOTE_RESULT — リモートブランチの削除: ${PR_REMOTE_HUMAN}"
 echo "- ${DELETED_LABEL}[gone] ローカルブランチ: ${#DELETED_BRANCHES[@]} 本${DELETED_BRANCHES[*]+ (${DELETED_BRANCHES[*]})}"
+echo "- ${DELETED_LABEL}エージェントブランチ: ${#DELETED_AGENT_BRANCHES[@]} 本${DELETED_AGENT_BRANCHES[*]+ (${DELETED_AGENT_BRANCHES[*]})}"
 echo "- ${DELETED_LABEL}worktree: ${#DELETED_WORKTREES[@]} 個${DELETED_WORKTREES[*]+ (${DELETED_WORKTREES[*]})}"
 if [ -n "$TRANSCRIPT_STEP_NOTE" ]; then
   echo "- worktree トランスクリプトの回収: $TRANSCRIPT_STEP_NOTE"

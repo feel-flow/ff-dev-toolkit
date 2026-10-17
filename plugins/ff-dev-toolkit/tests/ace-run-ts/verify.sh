@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #
+# 空振り検出: ドライブ付き自己位置・対象抽出 0 件は赤、probe 不在・空は rc=2（修正前の PWD 前置方式でドライブ表記 2 ケース赤を実測）。
 # ace-run-ts: 同梱 ACE ゲートの runner 解決層の挙動検査（Issue #879）。
 #
 # 背景: /ace-curate の手順 4-f は未導入プロジェクト向けに `npx --yes tsx <同梱パス>`
@@ -504,6 +505,67 @@ case "${EP_RC}:${EP_OUT}" in
     ok "空の probe も破損として exit 2（tsx 導入案内の誤診へ倒れない）" ;;
   *)
     bad "空の probe が破損扱いになっていません（rc=${EP_RC} / 出力: ${EP_OUT}）" ;;
+esac
+
+
+# ドライブ表記の起動を Linux/macOS でも再現する。BASH_SOURCE の自己位置だけを
+# 差し替え、cd のドライブマッピングは Git Bash と同じ物理ディレクトリを返す。
+# runner 本体・probe 読み取り・候補起動は実物を通す（単なる文字列検査にしない）。
+for DRIVE_SELF in 'C:/plugin with space/scripts/ace-run-ts.sh' 'C:\plugin with space\scripts\ace-run-ts.sh'; do
+  DRIVE_COPY="${SANDBOX}/drive-runner.sh"
+  awk '
+    /^_self="\$\{BASH_SOURCE\[0\]:-\}"$/ {
+      print "_self=\"${test_drive_self}\""; n++; next
+    }
+    { print }
+    END { if (n != 1) exit 1 }
+  ' "$RUNNER_ABS" > "$DRIVE_COPY" || { bad "自己位置の差し替え対象が一意でない"; exit 1; }
+  # probe は cd マッピング先（SPACED_PLUGIN）の既存配置から読む。
+  DRIVE_ENV="${SANDBOX}/drive-env.sh"
+  printf 'test_drive_self=%q\ntest_drive_dir=%q\n' "$DRIVE_SELF" "$SPACED_PLUGIN" > "$DRIVE_ENV"
+  printf '%s\n' 'cd() {' \
+    '  local last="${@: -1}"' \
+    '  case "$last" in' \
+    '    "C:/plugin with space/scripts" | "C:\plugin with space\scripts") builtin cd -- "$test_drive_dir" ;;' \
+    '    "D:/missing/scripts") return 1 ;;' \
+    '    *) builtin cd "$@" ;;' \
+    '  esac' \
+    '}' >> "$DRIVE_ENV"
+  DRIVE_RC=0
+  DRIVE_OUT="$(cd "$NOBIN" && PATH="$(_bin_with tsx)" OSTYPE=msys \
+    BASH_ENV="$DRIVE_ENV" \
+    "$BASH_ABS" "$DRIVE_COPY" "$STUB_TS" 2>&1)" || DRIVE_RC=$?
+  case "$DRIVE_RC:$DRIVE_OUT" in
+    0:*'RAN tsx argc=1'*) ok "ドライブ付き自己位置から隣の probe を読み候補を実行する: $DRIVE_SELF" ;;
+    *) bad "ドライブ付き自己位置の解決失敗（rc=$DRIVE_RC / ${DRIVE_OUT}）" ;;
+  esac
+done
+
+
+# 相対パス起動とスラッシュ無しの起動も、runner には絶対 probe パスを渡す。
+for RELATIVE_SELF in 'ace-run-ts.sh' 'scripts/ace-run-ts.sh'; do
+  RELATIVE_CWD="$SPACED_PLUGIN"
+  [ "$RELATIVE_SELF" = 'ace-run-ts.sh' ] || RELATIVE_CWD="${SPACED_PLUGIN%/*}"
+  RELATIVE_RC=0
+  RELATIVE_OUT="$(cd "$RELATIVE_CWD" && PATH="$(_bin_with tsx)" \
+    "$BASH_ABS" "$RELATIVE_SELF" "$STUB_TS" 2>&1)" || RELATIVE_RC=$?
+  case "$RELATIVE_RC:$RELATIVE_OUT" in
+    0:*'RAN tsx argc=1'*) ok "相対パス起動でも probe を解決する: $RELATIVE_SELF" ;;
+    *) bad "相対パス起動の解決失敗（rc=$RELATIVE_RC / ${RELATIVE_OUT}）" ;;
+  esac
+done
+# ディレクトリの解決不能は probe 不在や runner 不在と区別し、候補を起動しない。
+printf 'test_drive_self=%q\n' 'D:/missing/scripts/ace-run-ts.sh' >> "$DRIVE_ENV"
+MISSING_DIR_RC=0
+MISSING_DIR_OUT="$(cd "$NOBIN" && PATH="$(_bin_with tsx)" OSTYPE=msys BASH_ENV="$DRIVE_ENV" \
+  "$BASH_ABS" "$DRIVE_COPY" "$STUB_TS" 2>&1)" || MISSING_DIR_RC=$?
+case "$MISSING_DIR_RC:$MISSING_DIR_OUT" in
+  2:*'本スクリプトのディレクトリを解決できません'*)
+    case "$MISSING_DIR_OUT" in
+      *'RAN '*) bad '解決不能なのに候補を起動した' ;;
+      *) ok 'ディレクトリ解決不能は診断付き rc=2 で候補を起動しない' ;;
+    esac ;;
+  *) bad "ディレクトリ解決不能の診断が違う（rc=$MISSING_DIR_RC / ${MISSING_DIR_OUT}）" ;;
 esac
 
 echo

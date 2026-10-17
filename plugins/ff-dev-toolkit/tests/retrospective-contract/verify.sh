@@ -483,7 +483,7 @@ section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
   "**記録手順 0 より前に照合する。**" \
   "台帳の base 先行ガード: 照合点は記録内容を作る前"
 section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
-  '`git pull --ff-only` で取り込む' \
+  '`git pull --ff-only origin <default-branch>` で取り込む' \
   "台帳の base 先行ガード: 取り込みは ff-only（rebase / merge で作りかけを残さない）"
 section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
   '`--rebase` / merge で取り込まない' \

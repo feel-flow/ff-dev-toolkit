@@ -112,6 +112,28 @@ test('malformed, unsupported, and symlink config stop automation with a nonblock
   const target = path.join(root, 'outside.json'); writeFileSync(target, JSON.stringify(configuration())); symlinkSync(target, path.join(root, '.asdd/config.json'));
   assert.match(run(root, retrospectiveHooks[0]).stderr, /ASDD.*検証できない/);
 });
+// Issue `#2183`: deleting only config.json used to read as "no ASDD" and
+// revived the hooks the user had disabled. The state does not say which features were on.
+test('generation state left without config stops automation instead of reviving hooks', t => {
+  const root = fixture(t);
+  for (const name of ['managed.json', 'apply.lock']) {
+    writeFileSync(path.join(root, '.asdd', name), '{}');
+    for (const hook of retrospectiveHooks) {
+      const result = run(root, hook); assert.equal(result.status, 0); assert.equal(result.stdout, ''); assert.match(result.stderr, /ASDD.*検証できない/);
+    }
+    rmSync(path.join(root, '.asdd', name));
+  }
+  // A dangling link is still state left behind (the -L probe), and missing Node must not
+  // turn the half-removed state back into automatic injection either.
+  symlinkSync(path.join(root, 'missing-target'), path.join(root, '.asdd/managed.json'));
+  assert.match(run(root, retrospectiveHooks[0]).stderr, /ASDD.*検証できない/);
+  const noNode = run(root, retrospectiveHooks[0], { PATH: '/nonexistent' });
+  assert.equal(noNode.status, 0); assert.equal(noNode.stdout, ''); assert.match(noNode.stderr, /Node.js/);
+  rmSync(path.join(root, '.asdd/managed.json'));
+  // An empty .asdd directory carries no state and keeps the legacy behavior.
+  mkdirSync(path.join(root, '.git'));
+  assert.match(run(root, retrospectiveHooks[0]).stdout, /ff-dev-toolkit:retrospective/);
+});
 test('ASDD config with missing Node does not fall back to automatic injection', t => {
   const root = fixture(t); save(root, configuration());
   const result = run(root, retrospectiveHooks[0], { PATH: '/nonexistent' });

@@ -57,7 +57,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 - **前提ツール**: 認証済み `gh` CLI と `jq`（不足していれば冒頭で中断して案内する）。PR 不在・gh 不通は委譲前に **rc 1** で名指しし、復帰手段を出す（黙って 0 で終わらない。委譲先の PARTIAL = rc 2 とは重ねない）
 - **`--dry-run`**（`finish.sh cleanup --dry-run <PR>`）: 1 つも削除せず、「実行した場合に削除されるリモートブランチ・ローカルブランチ・worktree・リモート取り残し」を一覧表示して終わる。保護ブランチ・dirty worktree・fail-closed な縮退の判定は通常実行とまったく同じで、dry-run だけ緩まない。見送った prune とリモート削除の連鎖は read-only の `git ls-remote` で予測して一覧へ含める。動作検証・導入先での初回実行など、確認したい 1 点のためにツールの全副作用を引き受けたくない場面で使う
-- **実行する cwd**: 対象 PR のブランチを保持する**リンクされた** worktree を cwd にしたまま実行すると、破壊的処理の前に中断する（その cwd では掃除対象自身を削除できないため）。案内には main worktree のパスと再実行コマンドが出る。main worktree から・他セッションの作業ブランチ（下記の掃除モード）・detached HEAD・base 保持からの実行は完走する
+- **実行する cwd**: 対象PRのheadを保持するリンクworktreeでは破壊的処理の前に中断する。他セッションのcheckoutは変更せず、下のworktree手順からswitchなし掃除へ進む。detached HEADは通常モードでbase復帰を試みるため、掃除の退避先にはしない。
 - **`disable-model-invocation` は意図的に付けない**。実行部が 1 行なのでフラグはスクリプト直叩きで迂回でき破壊的操作を防げない一方、フルオートチェーンが本スキルの実行を求めているため可用性だけが落ちる（ACE-147-1。回帰防止は `tests/skill-frontmatter/verify.sh`）
 - マージ前の base 追随・リベース後の送信は [Git Workflow](../../docs-template/05-operations/deployment/git-workflow.md#base-の取り込みとリベース後の送信) に従う（本スキルが行うマージ済みブランチの削除とは別の手順）
 
@@ -85,6 +85,11 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 ## 呼び出し元が base でも PR head でもないブランチにいる場合 — switch なし掃除モード
 
 並列セッション運用で主 checkout が他セッションの作業ブランチを保持したまま呼ばれた場合、スクリプトは**ブランチ切り替えを伴わない掃除モード**で続行する: base への復帰・`pull --ff-only` は行わず（最新化は `git fetch origin <base>:<base>` を試み、拒否されたらスキップして報告）、base を保持する worktree は detach も削除もせず報告だけ、リモート削除・`[gone]` 掃除・worktree 削除・トランスクリプト回収・取り残し検証は通常どおり実施する。呼び出し元が dirty でも中断しない（このモードは呼び出し元に一切触れない）。未実施項目はサマリーに名指しで載る（意図的な見送いなので PARTIAL には数えない）。detached HEAD からの実行は通常モード。
+
+### worktreeセッションの経路
+
+自分のcleanなworktreeは[手順](references/worktree-session.md)へ進む。他checkoutは変更しない。
+
 
 ## マージ実行時の注意 — base ブランチが他 worktree に保持されている場合
 

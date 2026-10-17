@@ -128,7 +128,7 @@ perl -0pi -e 's/if selected contracts; then\n.*?end_group contracts/if selected 
 selector_rejects "$ROOT" contracts 'empty retrospective group'
 ROOT="$(make_fixture selection-empty-asdd)"
 : > "$ROOT/tests/retrospective-stop-hook/asdd.test.mjs"
-selector_rejects "$ROOT" asdd 'ASDD test count must be 7'
+selector_rejects "$ROOT" asdd 'ASDD test count must be 8'
 echo '  ✓ group selection rejects unknown, missing, empty shell and empty Node coverage'
 
 # 変異検出の期待文字列（`✖ <テスト名>`）は node --test の reporter に依存する。既定の

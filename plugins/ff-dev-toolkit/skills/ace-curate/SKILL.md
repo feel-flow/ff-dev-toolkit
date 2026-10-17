@@ -52,7 +52,7 @@ fi
 
 ## 前提と引数
 
-- PR経路はマージ済みの PR、資料単独経路は `--source` と `--issue` の両方。`docs/08-knowledge/PLAYBOOK.md` が存在し、現在のブランチが `<default-branch>` または `chore/ace-from-*`。実行はマージ後・cleanup 後
+- PR経路はマージ済みの PR、資料単独経路は `--source` と `--issue` の両方。`docs/08-knowledge/PLAYBOOK.md` が存在し、ブランチは `<default-branch>` / `chore/ace-from-*` または最新origin/defaultのdetached（[手順](references/curate.md#worktreeセッションからの知見記録)）。マージ・cleanup 後に実行
 - `$ARGUMENTS` — `[PR番号] [--source <資料パスまたはURL>]... [--issue <番号>]`。無指定なら最新マージ済みPR。資料単独はsourceとissueが必須。不正な入力は変更前に拒否し、資料は明示指定範囲だけを読み、取得失敗は未確認として報告する。ドメイン知識の正本は [ACE ドメイン知識契約](../../docs-template/05-operations/deployment/ace-domain.md)
 - sourceは1要素のままACE_ARGS配列へ設定し `$ARGUMENTS` をevalしない。入力検証は同梱 `ace-curate-input.ts`（ACE_MODE / PR_NUMBER / ISSUE_NUMBER を出す。exit 2なら変更しない）:
 
@@ -84,7 +84,7 @@ read-only の抽出用 subagent があれば [references/extract-prompt.md](refe
 
 #### 4-b-0. 追記前にブロック上限の超過を予測する（必須・停止点）
 
-curate は増やす操作しか持たず、ブロックゲート（`check-category-size` の exit 1）に当たっても自分では直せない（`/ace-refine` の承認必須は正しく、変えない）。したがって**超える前に止める** — この節が 4-b より前にあること自体が停止点。
+`/ace-curate` は追加のみ。整理に必要な `/ace-refine` の承認必須は正しく、変えないため、**超える前に止める**。
 
 ```bash
 # 閾値も件数の数え方も二重に持たない（正本は check-category-size）

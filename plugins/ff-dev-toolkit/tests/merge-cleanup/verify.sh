@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 #
 # merge-cleanup.sh の破壊的経路の回帰テスト。
+# 空振り検出: agent branch専用fixtureが削除処理の欠落・祖先判定欠落・worktree判定欠落・remote判定欠落を赤にする。
+# worktree一覧の不在・空・警告とremote照合失敗はfixtureでskip理由と残存を実測する。
 #
 # 一時 git リポジトリ（bare origin + clone）と mock gh で以下を検証する:
 #   1. 対象 PR のリモートブランチが削除される（OID 一致）
@@ -3896,6 +3898,38 @@ if [ "$FAIL" -gt 0 ]; then
   tail -40 "$TMP/run.log" >&2
   exit 1
 fi
+
+# 本体とは別の最小 fixture でも削除・skip を実測する。処理を除いた mutant が
+# 赤になることを検証し、候補集合ゼロや名前だけ残った実装を成功へ倒さない。
+if bash "$SCRIPT_DIR/agent-branches.sh" "$TARGET"; then
+  ok "worktree-agent ブランチの削除条件・dry-run・fail-closed"
+else
+  bad "worktree-agent ブランチの回帰"
+  exit 1
+fi
+for mutation in missing ancestor worktree remote; do
+  AGENT_MUTANT="$TMP/agent-mutant-${mutation}.sh"
+  awk -v mutation="$mutation" '
+    /^# agent-branch-cleanup:start/ { inside = 1 }
+    inside && mutation == "missing" { if ($0 ~ /^# agent-branch-cleanup:end/) inside = 0; next }
+    inside && mutation == "ancestor" && /elif ! git merge-base --is-ancestor/ { print "    elif false; then"; next }
+    inside && mutation == "worktree" && /elif grep -qxF "branch refs/ { print "    elif false; then"; next }
+    inside && mutation == "remote" && /AGENT_REMOTE_RC=0/ { print "      AGENT_REMOTE_RC=2"; next }
+    inside && mutation == "remote" && /git ls-remote --exit-code --heads origin/ { next }
+    { print }
+    /^# agent-branch-cleanup:end/ { inside = 0 }
+  ' "$TARGET" > "$AGENT_MUTANT"
+  if cmp -s "$TARGET" "$AGENT_MUTANT"; then
+    bad "agent mutant ${mutation} が原本と同一（空振り）"
+    exit 1
+  fi
+  if bash "$SCRIPT_DIR/agent-branches.sh" "$AGENT_MUTANT" > "$TMP/agent-mutant-${mutation}.log" 2>&1; then
+    bad "agent mutant ${mutation} が生き残った"
+    exit 1
+  else
+    ok "agent mutant ${mutation} をfixtureが赤にする"
+  fi
+done
 
 echo "✓ merge-cleanup verify: 全 $PASS 件 pass"
 FF_REACHED_END=1

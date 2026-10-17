@@ -75,9 +75,26 @@ function is_reserved(w) {
 function is_assign(w) {
   return (w ~ /^[A-Za-z_][A-Za-z0-9_]*[+]?=/)
 }
+# 一覧の根拠は直前の standalone 代入だけ。値は評価しない。
+function clear_lists(   k) { for (k in lists) delete lists[k] }
+function clear_pending(   k) { for (k in pending) delete pending[k] }
+function statement(d, commit,   k) {
+  if (d != 0 || par[d] != 0) { clear_lists(); clear_pending(); return }
+  if (commit && cmdpos[d]) {
+    for (k in pending) lists[k] = pending[k]
+  } else clear_lists()
+  clear_pending()
+}
+function remember_list(w, f, d,   e, name, value) {
+  if (d != 0 || par[d] != 0) return
+  e = index(w, "="); name = substr(w, 1, e - 1)
+  if (name !~ /^[A-Za-z_][A-Za-z0-9_]*$/) { clear_lists(); return }
+  value = substr(w, e + 1)
+  pending[name] = (value ~ /[ \t\n]/ || substr(f, e + 1) ~ /c/)
+}
 function sep(c) {
-  # 語の区切り（コマンド位置へ戻す区切り子）
   fin(wc[D])
+  statement(wc[D], 0)
   cmdpos[wc[D]] = 1
   ng[wc[D]] = 0
 }
@@ -104,7 +121,10 @@ function fin(d,   w, f) {
     if (w == "[[") { dbl[d] = 1; return }
     if (w == "esac" && cs[d] == 4) { case_close(d); return }
     if (w == "noglob") { ng[d] = 1; return }
-    if (is_reserved(w) || is_assign(w)) return
+    if (is_assign(w)) { if (mode == "expansion") remember_list(w, f, d); return }
+    if (is_reserved(w)) { clear_lists(); clear_pending(); return }
+    # 前置代入はこの引数展開の値を確定しない。
+    for (list_name in pending) { clear_lists(); clear_pending(); break }
     cmdpos[d] = 0
   }
   if (mode == "expansion") { check_expansion(w, f); return }
@@ -112,10 +132,14 @@ function fin(d,   w, f) {
   check(w, f)
 }
 # 警告は実値の推論ではなく、未引用 scalar の使用箇所。代入では分割しないのが正しい。
-function check_expansion(w, f,   k) {
+function check_expansion(w, f,   k, name) {
   if (substr(w, 1, 1) == "=" && substr(f, 1, 1) == "0" && length(w) > 1)
     print "equals"
   if (is_assign(w)) return
+  if (wc[D] == 0 && par[0] == 0 && w ~ /^\$[A-Za-z_][A-Za-z0-9_]*$|^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/ && f ~ /^v+$/) {
+    name = w; sub(/^\$\{?/, "", name); sub(/}$/, "", name)
+    if (lists[name]) { print "scalar-list"; return }
+  }
   for (k = 1; k <= length(f); k++) {
     if (substr(f, k, 1) == "v") { print "scalar"; return }
   }
@@ -172,11 +196,11 @@ END {
     if (s == "D") {
       if (c == "\\") { addc(substr(src, i + 1, 1), "1"); i += 2; continue }
       if (c == "\"") { pop(); i++; continue }
-      if (c == "`") { addc("$", "1"); push("K"); i++; continue }
+      if (c == "`") { addc("$", mode == "expansion" ? "c" : "1"); push("K"); i++; continue }
       if (c == "$") {
         c2 = substr(src, i + 1, 1)
         if (substr(src, i, 3) == "$((") { addc("$", "1"); push("A"); ad[D] = 2; i += 3; continue }
-        if (c2 == "(") { addc("$", "1"); push("U"); sub_[D] = 1; i += 2; continue }
+        if (c2 == "(") { addc("$", mode == "expansion" ? "c" : "1"); push("U"); sub_[D] = 1; i += 2; continue }
         if (c2 == "{") { addc("$", "1"); push("P"); pd[D] = 1; i += 2; continue }
       }
       addc(c, "1"); i++; continue
@@ -193,7 +217,7 @@ END {
       c2 = substr(src, i + 1, 1)
       if (c2 == SQ) { addc("", "1"); push("E"); i += 2; continue }
       if (substr(src, i, 3) == "$((") { addc("$", "1"); push("A"); ad[D] = 2; i += 3; continue }
-      if (c2 == "(") { addc("$", "1"); push("U"); sub_[D] = 1; i += 2; continue }
+      if (c2 == "(") { addc("$", mode == "expansion" ? "c" : "1"); push("U"); sub_[D] = 1; i += 2; continue }
       if (c2 == "{") {
         # 単純な ${NAME} だけを警告。${=NAME} / 配列 / 修飾子は利用者の明示意図として除外。
         tail = substr(src, i)
@@ -210,7 +234,7 @@ END {
       if (c2 != "" && index("*?@#$!-0123456789", c2) > 0) { addc("$" c2, "11"); i += 2; continue }
       addc("$", "1"); i++; continue
     }
-    if (c == "`") { addc("$", "1"); push("K"); i++; continue }
+    if (c == "`") { addc("$", mode == "expansion" ? "c" : "1"); push("K"); i++; continue }
     if (c == "#" && !started[wc[D]]) {
       while (i <= n && substr(src, i, 1) != "\n") i++
       continue
@@ -218,11 +242,13 @@ END {
     if (c == " " || c == "\t") { fin(wc[D]); i++; continue }
     if (c == "\n") {
       fin(wc[D])
+      statement(wc[D], 1)
       if (cs[D] != 2 && cs[D] != 3) { cmdpos[D] = 1; ng[D] = 0 }
       i++; continue
     }
     if (c == ";") {
       fin(wc[D])
+      statement(wc[D], 1)
       c2 = substr(src, i + 1, 1)
       if (c2 == ";" || c2 == "&" || c2 == "|") { if (cs[D] == 4) cs[D] = 3; i += 2 } else i++
       cmdpos[D] = 1; ng[D] = 0
@@ -236,12 +262,13 @@ END {
     }
     if (c == "<" || c == ">") {
       fin(wc[D])
-      if (substr(src, i + 1, 1) == "(") { addc("$", "1"); push("U"); sub_[D] = 1; i += 2; continue }
+      if (substr(src, i + 1, 1) == "(") { addc("$", mode == "expansion" ? "c" : "1"); push("U"); sub_[D] = 1; i += 2; continue }
       while (i <= n && index("<>&|!", substr(src, i, 1)) > 0) i++
       continue
     }
     if (c == "(") {
       fin(wc[D])
+      clear_lists(); clear_pending()
       if (cs[D] == 3) { i++; continue }
       if (cmdpos[D] && substr(src, i + 1, 1) == "(") { push("A"); ad[D] = 2; i += 2; continue }
       par[D]++; cmdpos[D] = 1; ng[D] = 0

@@ -54,12 +54,18 @@
 # distinct outcomes, and callers that care must read the value, not just the
 # truthiness:
 #
-#   0  enabled  — no ASDD config up to the nearest .git, or config says on
+#   0  enabled  — neither ASDD config nor generation state up to the nearest
+#                 .git, or config says on
 #   3  disabled — .asdd/config.json exists and features.hooks (or the named
 #                 feature) is false. Intentional, silent pass-through.
-#   1  cannot verify — .asdd/config.json exists but `node` is not on PATH
+#   1  cannot verify — ASDD config or generation state exists but `node` is
+#                      not on PATH
 #   2  cannot verify — node ran but the config could not be loaded/validated
-#                      (asdd-feature.mjs exit 2)
+#                      (asdd-feature.mjs exit 2). This includes generation
+#                      state (.asdd/managed.json / .asdd/apply.lock) left
+#                      without .asdd/config.json (Issue `#2183`):
+#                      the state does not record which features were chosen,
+#                      so it is neither "legacy" (0) nor "disabled" (3).
 #   anything else — cannot verify (node itself failed in an unexpected way)
 #
 # `asdd_hook_enabled hooks || exit 0` folds 3 and the "cannot verify" values
@@ -80,7 +86,10 @@ asdd_hook_enabled() {
     # share (\\.asdd), which costs a network lookup per hook from a cwd outside git and now and
     # then reports the file as present (Issue `#2020`).
     base="${root%/}"
-    if [ -e "$base/.asdd/config.json" ] || [ -L "$base/.asdd/config.json" ] || [ -L "$base/.asdd" ]; then
+    # The generation-state names mirror GENERATION_STATE in scripts/asdd/config.mjs.
+    if [ -e "$base/.asdd/config.json" ] || [ -L "$base/.asdd/config.json" ] || [ -L "$base/.asdd" ] \
+      || [ -e "$base/.asdd/managed.json" ] || [ -L "$base/.asdd/managed.json" ] \
+      || [ -e "$base/.asdd/apply.lock" ] || [ -L "$base/.asdd/apply.lock" ]; then
       if ! command -v node >/dev/null 2>&1; then
         echo 'ff-dev-toolkit: ASDD 設定を検証できないため任意Hookを停止しました（Node.js が必要です）' >&2
         return 1

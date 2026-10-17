@@ -1587,8 +1587,8 @@ begin_group
 ASDD_OUT="$(node --test --test-reporter=spec "$SCRIPT_DIR/asdd.test.mjs" 2>&1)" || { printf '%s\n' "$ASDD_OUT"; exit 1; }
 printf '%s\n' "$ASDD_OUT"
 # Node's own count prevents an empty test file from becoming a green selected group.
-printf '%s\n' "$ASDD_OUT" | grep -Fx 'ℹ tests 7' >/dev/null || { echo '✗ ASDD test count must be 7' >&2; exit 1; }
-end_group asdd 7
+printf '%s\n' "$ASDD_OUT" | grep -Fx 'ℹ tests 8' >/dev/null || { echo '✗ ASDD test count must be 8' >&2; exit 1; }
+end_group asdd 8
 fi
 EXPECTED_GROUPS=1
 [ "$GROUP" != all ] || EXPECTED_GROUPS=11

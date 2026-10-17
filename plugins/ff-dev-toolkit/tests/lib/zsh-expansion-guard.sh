@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # zsh の equals 展開を deny、未引用 scalar を警告する。
 # 判定本体は既存 lexer を共有する。入力コマンドは評価しない。
-# 実値・配列型・setopt の状態は不明なので scalar は決して deny しない。
+# 値不明の scalar は警告だけ。同一呼び出しの直前代入が一覧を示す形だけ事前停止する。
 # heredoc 本文と引用された子シェルのプログラムは対象外。
 # FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1 で無効化。
-# 呼び出し先頭の FF_ZSH_EXPANSION_ACK=1 は今回だけ両方を免除する。
+# 呼び出し先頭の FF_ZSH_EXPANSION_ACK=1 / FF_ZSH_GLOB_ACK=1 は今回だけ両方を免除する。
 # 出口は入力の hook_event_name で切り替える。PreToolUse は equals を deny、scalar を
 # systemMessage（利用者の画面だけに出てエージェントへ届かない）で返す。PostToolUse は
 # 同じ判定の scalar を hookSpecificOutput.additionalContext（エージェントの文脈へ届く
@@ -25,7 +25,7 @@ ack="$cmd"
 while :; do
   case "$ack" in ' '* | $'\t'* | $'\n'*) ack="${ack#?}" ;; *) break ;; esac
 done
-case "$ack" in 'FF_ZSH_EXPANSION_ACK=1 '* | $'FF_ZSH_EXPANSION_ACK=1\t'*) exit 0 ;; esac
+case "$ack" in 'FF_ZSH_EXPANSION_ACK=1 '* | $'FF_ZSH_EXPANSION_ACK=1\t'* | 'FF_ZSH_GLOB_ACK=1 '* | $'FF_ZSH_GLOB_ACK=1\t'*) exit 0 ;; esac
 
 warn() {
   if [ "$hook_event" = PostToolUse ]; then
@@ -91,6 +91,7 @@ if [ "$asdd_rc" -ne 0 ]; then
   esac
 fi
 case "$hits" in
+  *scalar-list*) deny 'zsh の同一呼び出しで一覧値を代入した変数を未引用引数へ渡しています。単語分割されず1引数になり、ファイル一覧が空振りする可能性があります。複数引数は配列 "${args[@]}" / xargs / bash の引用付き heredoc、単一引数は "$VAR" を選んでください。共通の FF_ZSH_GLOB_ACK=1 も呼び出し先頭で使えます。' ;;
   *equals*) deny 'zsh の未引用の = 始まりの語はコマンドパス展開となり、not found で後続も実行されない場合があります。echo "===" / [ a "==" b ] のように語を引用してください。意図的な =cmd や NO_EQUALS 設定時は抜け道を使えます。' ;;
   *scalar*) warn "${scalar_prefix}"'zsh の未引用 $VAR / ${VAR} は既定で単語分割されません。空白を含む値を複数引数として渡す意図なら配列と "${args[@]}"、または bash の引用付き heredoc を使ってください。単一引数の意図なら "$VAR" と引用してください。この警告は実値・配列型を判定せず、コマンドを停止しません。' ;;
 esac

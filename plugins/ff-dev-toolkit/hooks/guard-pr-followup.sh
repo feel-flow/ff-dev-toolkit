@@ -281,18 +281,21 @@ fi
 # 抜け道: 理由付きの明示マーカー（起票不要の正当な判断。理由は必須）
 printf '%s' "$text" | grep -Eq '<!--[[:space:]]*no-followup:[[:space:]]*[^[:space:]].*-->' && exit 0
 
+# ATX 見出しは欄の名前なので、宣言マーカーの照合からだけ除く。
+# Issue 参照と no-followup は見出し内でも有効なので元の text で照合する。
+declarations="$(printf '%s\n' "$text" | sed -E '/^ {0,3}#{1,6}([[:blank:]]|$)/d')"
 # 宣言マーカーの検出（見つかったものを警告文へ列挙する）
 found=""
 add_found() {
   found="${found:+$found / }$1"
 }
-printf '%s' "$text" | grep -q 'スコープ外' && add_found 'スコープ外'
-printf '%s' "$text" | grep -Eq '別[[:space:]]?[Ii]ssue' && add_found '別Issue'
-printf '%s' "$text" | grep -q '別対応' && add_found '別対応'
-printf '%s' "$text" | grep -q '後で対応' && add_found '後で対応'
-printf '%s' "$text" | grep -q '別途' && add_found '別途'
-printf '%s' "$text" | grep -Eiq 'follow[- ]?up' && add_found 'follow-up'
-printf '%s' "$text" | grep -Eiq 'out of scope' && add_found 'out of scope'
+printf '%s' "$declarations" | grep -q 'スコープ外' && add_found 'スコープ外'
+printf '%s' "$declarations" | grep -Eq '別[[:space:]]?[Ii]ssue' && add_found '別Issue'
+printf '%s' "$declarations" | grep -q '別対応' && add_found '別対応'
+printf '%s' "$declarations" | grep -q '後で対応' && add_found '後で対応'
+printf '%s' "$declarations" | grep -q '別途' && add_found '別途'
+printf '%s' "$declarations" | grep -Eiq 'follow[- ]?up' && add_found 'follow-up'
+printf '%s' "$declarations" | grep -Eiq 'out of scope' && add_found 'out of scope'
 
 [ -n "$found" ] || exit 0
 

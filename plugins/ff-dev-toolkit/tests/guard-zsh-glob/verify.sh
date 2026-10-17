@@ -37,6 +37,7 @@
 # 空振り検出: expansion の不在・関数欠落・awk失敗は判定不能、空出力変異は陽性対照で赤。
 # 空振り検出: PostToolUse は実行済みなので判定器不在・走査失敗（FF_ZSH_GLOB_AWK=false）・JSON でない入力のどれでも止めず（fail-soft）、判定器不在と走査失敗は `$` を含む呼び出しに限り「未検査 / 判定不能」を additionalContext で返して検出 0 件と区別する（P4）。scalar 判定を消した scanner の変異は PostToolUse の陽性対照を黙らせる（P5）。
 # run-all-required: no — jq 不在での skip を許容する（兄弟の hook suite と同じ判断。suite 全体の skip 経路は jq 不在だけで、zsh 不在は Z / X 系の検査単位 skip）
+# 変異検出: Issue `#2181` の scalar-list を従来scalarへ戻すと、一覧引数の陽性対照がdenyを失い赤（2026-10-17実測）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -494,7 +495,7 @@ for c in 'echo "a << B ==="' 'echo "==="' "echo '==='" 'echo \===' 'X==1' 'expor
   run_on "$EXP_TARGET" "$c"
   assert_pass "equals/scalar allow: $c"
 done
-for c in 'P="a b"; git grep x -- $P' 'set -- $r' '$G commit' 'echo ${P}' 'noglob echo $P' 'echo "$(echo $P)"' 'for p in $P; do echo "$p"; done'; do
+for c in 'git grep x -- $P' 'set -- $r' '$G commit' 'echo ${P}' 'noglob echo $P' 'echo "$(echo $P)"' 'for p in $P; do echo "$p"; done'; do
   run_on "$EXP_TARGET" "$c"
   assert_warn "scalar warning: $c"
 done
@@ -656,6 +657,23 @@ if [ -z "$OUT" ]; then ok 'P5 scalar 判定を消した変異は PostToolUse の
 if jq -e '[.hooks.PostToolUse[]? | select(.matcher == "Bash") | .hooks[]?.command | contains("/hooks/guard-zsh-glob.sh")] | any' "$HOOKS_JSON" >/dev/null; then
   ok 'P6 hooks.json の PostToolUse（Bash matcher）に guard-zsh-glob.sh が登録されている'
 else bad 'P6 hooks.json の PostToolUse（Bash matcher）に guard-zsh-glob.sh が無い'; fi
+
+
+# 同じ呼び出しで確定した一覧だけを停止対象にする（公開 `#139` / Issue `#2181`）。
+unset FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD
+for list_cmd in 'FILES="a.md b.md"; npx prettier --check $FILES' 'FILES="a.md b.md"; git add ${FILES}' 'P="a b"; git grep x -- $P' 'FILES=$(git diff --name-only); npx eslint $FILES' 'FILES=`git diff --name-only`; git add $FILES'; do
+  run_hook "$list_cmd"
+  assert_fire 'L1 同じ呼び出しで代入した一覧の未引用引数を停止'
+done
+for safe_cmd in 'FILES="a.md b.md"; git add "$FILES"' 'FILES="a.md b.md"; git add "${FILES[@]}"' 'FILES="one.md"; git add $FILES' 'git add $FILES' 'FILES="a.md b.md"; FILES=one.md; git add $FILES' 'FILES="a.md b.md" git status; git add $FILES' 'echo "FILES=a b"; git add $FILES' '(FILES="a.md b.md"); git add $FILES' 'FILES="a.md b.md"; bash -c '\''git add $FILES'\'''; do
+  run_hook "$safe_cmd"
+  if [ "$RC" -eq 0 ] && [ "$DECISION" != deny ]; then ok 'L2 引用・値不明・単一値・別スコープは新しい停止対象外'; else bad "L2 誤停止: $safe_cmd"; fi
+done
+# ACK は環境変数ではなく、呼び出し先頭の語を契約とする。
+run_hook 'FF_ZSH_GLOB_ACK=1 FILES="a.md b.md"; git add $FILES'
+if [ "$DECISION" != deny ]; then ok 'L3 共通 ACK で一覧停止を免除'; else bad 'L3 ACK が効かない'; fi
+run_hook 'FILES="a.md b.md"; git add $FILES' SHELL=/bin/bash
+assert_pass 'L4 bash ホストは一覧停止の対象外'
 
 echo
 if [ "$FAIL" -gt 0 ]; then

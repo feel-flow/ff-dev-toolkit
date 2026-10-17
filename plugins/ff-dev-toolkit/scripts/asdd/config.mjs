@@ -69,7 +69,30 @@ export function validateConfig(config) {
   }
   return config;
 }
+// Generation state that outlives its configuration is a half-removed migration, not a
+// legacy project: reading it as null would silently re-enable the features the user
+// had turned off. hooks/asdd-hook-gate.sh probes the same files.
+export const GENERATION_STATE = Object.freeze(['.asdd/managed.json', '.asdd/apply.lock']);
+export const ORPHAN_STATE_CODE = 'ASDD_ORPHAN_STATE';
 export function loadConfig(root) {
   const file = projectPath(root, '.asdd/config.json');
-  return fs.existsSync(file) ? validateConfig(JSON.parse(fs.readFileSync(file, 'utf8'))) : null;
+  if (fs.existsSync(file)) return validateConfig(JSON.parse(fs.readFileSync(file, 'utf8')));
+  const remaining = GENERATION_STATE.filter(name => fs.lstatSync(projectPath(root, name), { throwIfNoEntry: false }));
+  if (!remaining.length) return null;
+  // The generator takes the lock exclusively, so re-applying cannot run until it is cleared.
+  const recovery = remaining.includes('.asdd/apply.lock')
+    ? 'An initialization was interrupted: inspect the generated files, remove .asdd/apply.lock, then restore .asdd/config.json from history or re-apply the agreed settings with asdd-init'
+    : 'Restore .asdd/config.json from history or re-apply the agreed settings with asdd-init';
+  const error = new Error(`.asdd/config.json is missing while generation state remains (${remaining.join(', ')}). ${recovery}. To return to the legacy setup instead, review the generated files and remove .asdd/`);
+  error.code = ORPHAN_STATE_CODE;
+  error.recorded = recordedConfig(root);
+  throw error;
+}
+// The last applied configuration, as kept in the generation state. Best effort: callers use
+// it only to refuse silently dropping features, so an unreadable record yields null.
+function recordedConfig(root) {
+  try {
+    const state = JSON.parse(fs.readFileSync(projectPath(root, '.asdd/managed.json'), 'utf8'));
+    return validateConfig(JSON.parse(state.originals['.asdd/config.json']));
+  } catch { return null; }
 }

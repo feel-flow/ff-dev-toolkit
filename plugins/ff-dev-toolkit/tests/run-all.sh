@@ -1374,7 +1374,6 @@ REQUIRED_SUITES=(
 MISS_PROBE_BASELINE=(
   ace-curate-fallback-exec
   ace-line-budget-docs
-  ace-run-ts
   ace-scripts-mirror-selftest
   ace-scripts-mirror
   ace-scripts-typecheck-selftest
@@ -1409,7 +1408,6 @@ MISS_PROBE_BASELINE=(
   guard-checkout-restore
   guard-effort-actual
   guard-long-gate-background
-  guard-pr-followup
   guard-sub-issue-id
   host-route-parity
   init-docs-placeholder-list
@@ -1426,7 +1424,6 @@ MISS_PROBE_BASELINE=(
   mcp-typecheck-selftest
   mcp-typecheck
   mcp-vitest
-  merge-cleanup
   multi-agent-critical-marker
   multi-agent-host-delegation
   multi-agent-ignore-paths

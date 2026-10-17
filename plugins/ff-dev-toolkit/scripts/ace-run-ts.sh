@@ -251,11 +251,20 @@ if [[ -z "$_self" ]]; then
   echo "  ファイルパスを指定して起動してください（例: bash <plugin>/scripts/ace-run-ts.sh <script.ts>）。" >&2
   exit 2
 fi
-[[ "$_self" == */* ]] || _self="./$_self"
-# 相対パスのまま候補へ渡してはならない。cwd を移して子プロセスを起動するラッパーでは
-# probe を読めず、**実際には動く候補が黙って落ちて次の候補へ倒れる**（誤診の種）。
-[[ "$_self" == /* ]] || _self="${PWD}/${_self#./}"
-PROBE_TS="${_self%/*}/ace-run-ts-probe.ts"
+# Windows の区切りを揃えてから、root ガード / finish.sh と同じ cd -P で
+# 物理ディレクトリへ解決する。ドライブ付き絶対パスへ PWD を前置しない。
+case "${OSTYPE:-}" in
+  msys* | cygwin*)
+    case "$_self" in [A-Za-z]:\\* | [A-Za-z]:/*) _self="${_self//\\//}" ;; esac
+    ;;
+esac
+case "$_self" in */*) _self_dir="${_self%/*}" ;; *) _self_dir="." ;; esac
+if ! _self_dir="$(CDPATH= cd -P -- "$_self_dir" 2>/dev/null && pwd -P)"; then
+  echo "✗ 本スクリプトのディレクトリを解決できません: ${_self}" >&2
+  exit 2
+fi
+# cwd を移す runner にも絶対パスを渡す。
+PROBE_TS="${_self_dir}/ace-run-ts-probe.ts"
 PROBE_SENTINEL="ACE_RUN_TS_PROBE_OK"
 # sentinel を探すだけでは足りない。sentinel は probe の**ソースに平文で含まれる**ので、
 # 「渡されたファイルの内容を表示するだけ」の候補（`cat` のような形）や、help / エラー文へ

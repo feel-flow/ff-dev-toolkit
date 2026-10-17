@@ -21,6 +21,9 @@
 # 空振り検出: 17 の fixture で `## Changelog` を落とす・`#### 追加` / `#### カウンター更新` の見出しを別綴りにすると、書き込み口は契約形の行 0 件を緑へ倒さず exit 2（判定不能）で止まり stage も保留記録も作らない（2026-10-11 実測。lib の END で no-rows を ok へ倒すと 17 の判定不能ケースが赤）。
 # 変異検出: knowledge-commit.sh の add から Changelog 判定の呼び出しを外すと 17 の束ね形ケース（直接・finish.sh 経由）が赤、lib の Helpful 正規表現から `×N` の選択肢を外すと 17 の契約形ケースが赤、節の判定を外して全見出しの配下を読むと 17 の `#### 変更` ケースが赤（2026-10-11 実測）。
 
+# 空振り検出: 18 は PR 問い合わせ失敗・空・不正値で branch #N のみを採り、解決元無しは version claim・ID・要約の数字を推測せず rc4 / stage・保留無しを確認する（2026-10-17 実測）。
+# 変異検出: PR 問い合わせを常に失敗へ変える・候補から chore/docs を外す・解決した Issue の保留保存を外すと、それぞれ 18 が赤（2026-10-17 実測）。
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -851,6 +854,122 @@ else
     else
       echo "  ✗ prepare-commit-msg を通したドライラン・件名の出力が期待と違う（add rc=${rc} commit rc=${rc2} 件名=$(git log -1 --format=%s) add出力=${out} commit出力=${out2:-}）" >&2; exit 1
     fi
+
+    # 18. 元の件名が hook を通る回だけはバイト同一。拒否時は branch の出典 PR → closing Issue、
+    #     次に branch の #N を使う。ACE-ID と version claim には PR の根拠を求めない。
+    S="$KC_TMP/subject-resolution"
+    new_repo "$S" "Knowledge Test" "knowledge-test@example.com"
+    cd "$S" || exit 1
+    mkdir -p .githooks "$KC_TMP/subject-bin"
+    git config core.hooksPath .githooks
+    cat >"$KC_TMP/subject-bin/gh" <<'GH'
+#!/bin/sh
+printf '%s\n' "$*" >>"$SUBJECT_GH_LOG"
+case "$SUBJECT_GH_MODE" in
+  ok) printf '5341\n' ;;
+  empty) printf '\n' ;;
+  malformed) printf 'not-an-issue\n' ;;
+  fail) exit 1 ;;
+  unavailable) exit 127 ;;
+esac
+GH
+    chmod +x "$KC_TMP/subject-bin/gh"
+    export SUBJECT_GH_LOG="$KC_TMP/subject-gh.log" SUBJECT_GH_MODE=ok
+    : >"$SUBJECT_GH_LOG"
+    export PATH="$KC_TMP/subject-bin:$PATH"
+    cat >.githooks/commit-msg <<'HOOK'
+#!/bin/sh
+grep -qE '^chore: #[0-9]+ ' "$1" && exit 0
+echo 'Required format: chore: #<issue> <subject>'; exit 1
+HOOK
+    chmod +x .githooks/commit-msg
+    subject_pr=5342 closing_issue=5341 branch_issue=2103 unrelated_number=5744
+    git switch -q -c "chore/ace-from-pr-${subject_pr}"
+    printf '%s\n' '- resolved ace' >>docs/08-knowledge/PLAYBOOK.md
+    rc=0; out="$(env -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "$FINISH" knowledge-commit add --claim docs/08-knowledge/PLAYBOOK.md --source ace --id ACE-1804 --summary '解決した要約' --category tooling --type knowledge -- docs/08-knowledge/PLAYBOOK.md 2>"$KC_TMP/subject.err")" || rc=$?
+    if [ "$rc" -ne 0 ] || ! grep -qx "KNOWLEDGE_SUBJECT=chore: #${closing_issue} ACE-1804 解決した要約" <<<"$out" \
+      || ! grep -q 'pr view 5342 --json closingIssuesReferences' "$SUBJECT_GH_LOG"; then
+      echo "  ✗ PR の closing Issue と許容 type を解決できない（rc=${rc} out=${out}）" >&2; exit 1
+    fi
+    # add で解決した Issue/type は保存し、合流の add / commit が gh 障害で失わない。
+    export SUBJECT_GH_MODE=fail
+    printf '%s\n' '- resolved obs' >>docs/08-knowledge/OBSERVATIONS.md
+    kc add --source obs --id OBS-2103 --summary '合流' -- docs/08-knowledge/OBSERVATIONS.md >/dev/null
+    kc commit >/dev/null
+    resolved_body="$(git log -1 --format=%b)"
+    if [ "$(git log -1 --format=%s)" != "chore: #${closing_issue} ACE-1804 / OBS-2103" ] \
+      || ! grep -qx 'Categories: tooling' <<<"$resolved_body"; then
+      echo '  ✗ 解決した Issue/type または Categories を合流 commit が失った' >&2; exit 1
+    fi
+    echo '  ✓ 出典 PR → closing Issue と hook の許容 type を解決し、合流 commit まで保存する'
+
+    # claim が無い OBS 単独経路も branch #N で解決する。PR 問い合わせ失敗/空/不正値も同じ fallback。
+    for mode in fail empty malformed; do
+      git switch -q -c "chore/ace-from-pr-${subject_pr}-#${branch_issue}-$mode"
+      export SUBJECT_GH_MODE="$mode"
+      printf '%s\n' "- $mode" >>docs/08-knowledge/OBSERVATIONS.md
+      kc add --source obs --id "OBS-$mode" --summary 'branch 解決' --type chore -- docs/08-knowledge/OBSERVATIONS.md >/dev/null
+      kc commit >/dev/null
+      if [ "$(git log -1 --format=%s)" != "chore: #${branch_issue} OBS-$mode branch 解決" ]; then
+        echo "  ✗ PR 問い合わせ $mode 時に branch #N へ fallback しない" >&2; exit 1
+      fi
+    done
+    echo '  ✓ claim 無しの OBS も branch #N を解決する（gh 失敗・空・不正値は番号を採らない）'
+
+    # version claim は PR origin を持たない。ID/要約中の数字も番号として流用しない。
+    git switch -q -c chore/no-source
+    mkdir -p .version-claims/docs/08-knowledge
+    printf '%s\n' 'document=docs/08-knowledge/OBSERVATIONS.md' 'base=ABSENT' >.version-claims/docs/08-knowledge/OBSERVATIONS.md.claim
+    printf '%s\n' '- unresolved' >>docs/08-knowledge/OBSERVATIONS.md
+    rc=0; out="$(kc add --source obs --id OBS-5744 --summary "#${unrelated_number} は解決元でない" -- docs/08-knowledge/OBSERVATIONS.md 2>/dev/null)" || rc=$?
+    if [ "$rc" -ne 4 ] || ! grep -qx KNOWLEDGE_COMMIT=hook-rejected <<<"$out" \
+      || [[ "$(kc status)" != *KNOWLEDGE_PENDING=0* ]] || [ -n "$(git diff --cached --name-only)" ]; then
+      echo '  ✗ 解決元無しを fail-closed に止めない・数字を推測した・痕跡を残した' >&2; exit 1
+    fi
+    git checkout -q -- docs/08-knowledge/OBSERVATIONS.md
+    echo '  ✓ 解決元無しは version claim・ID・要約の番号を推測せず rc4、stage/保留無し'
+
+    # gh 実行不能かつ #N 無しは PR 番号を Issue として流用せず停止する。
+    git switch -q -c chore/ace-from-pr-9999
+    printf '%s\n' '- missing gh' >>docs/08-knowledge/OBSERVATIONS.md
+    export SUBJECT_GH_MODE=unavailable
+    rc=0; kc add --source obs --id OBS-no-gh --summary '不在' -- docs/08-knowledge/OBSERVATIONS.md >"$KC_TMP/no-gh.out" 2>/dev/null || rc=$?
+    [ "$rc" -eq 4 ] && [[ "$(kc status)" == *KNOWLEDGE_PENDING=0* ]] && [ -z "$(git diff --cached --name-only)" ] || {
+      echo '  ✗ gh 実行不能時に PR 番号を Issue へ流用した・保留を残した' >&2; exit 1;
+    }
+    git checkout -q -- docs/08-knowledge/OBSERVATIONS.md
+    echo '  ✓ gh 実行不能で解決元が無ければ PR 番号を流用せず rc4'
+
+    # Issue を要求しない hook は既存の stdout と件名を維持し、不要な gh も呼ばない。
+    printf '%s\n' '#!/bin/sh' 'exit 0' >.githooks/commit-msg
+    before_calls="$(wc -l <"$SUBJECT_GH_LOG")"
+    printf '%s\n' '- unchanged' >>docs/08-knowledge/OBSERVATIONS.md
+    out="$(kc add --source obs --id OBS-legacy --summary '従来形' -- docs/08-knowledge/OBSERVATIONS.md)"
+    expected="$(printf 'KNOWLEDGE_PENDING=1\nKNOWLEDGE_SUBJECT=knowledge: OBS-legacy 従来形')"
+    [ "$out" = "$expected" ] && [ "$(wc -l <"$SUBJECT_GH_LOG")" = "$before_calls" ] || {
+      echo '  ✗ 従来の hook 通過時の stdout を変えた・不要な PR 問い合わせをした' >&2; exit 1;
+    }
+    kc commit >/dev/null
+    [ "$(git log -1 --format=%s)" = 'knowledge: OBS-legacy 従来形' ] || exit 1
+    # 保留が旧形式でも、commit 時に hook の要求が変われば同じ解決経路を通す。
+    printf '%s\n' '- late rule' >>docs/08-knowledge/OBSERVATIONS.md
+    kc add --source obs --id OBS-late --summary 'commit 解決' -- docs/08-knowledge/OBSERVATIONS.md >/dev/null
+    git switch -q -c "chore/#${branch_issue}-late"
+    # branch 変更が保留 stale を引き起こすので、この fixture だけ明示 --force で旧保留を検証する。
+    printf '%s\n' '#!/bin/sh' 'grep -qE "^chore: #[0-9]+ " "$1"' >.githooks/commit-msg
+    kc commit --force >/dev/null
+    [ "$(git log -1 --format=%s)" = "chore: #${branch_issue} OBS-late commit 解決" ] || {
+      echo '  ✗ commit 単独の Issue/type 解決が add と異なる' >&2; exit 1;
+    }
+    # type-enum のみの制約。chore も不可なら docs を検証し、Issue は足さない。
+    printf '%s\n' '#!/bin/sh' 'grep -q "^docs: " "$1"' >.githooks/commit-msg
+    printf '%s\n' '- docs type' >>docs/08-knowledge/OBSERVATIONS.md
+    kc add --source obs --id OBS-docs --summary '許容 type' --type knowledge -- docs/08-knowledge/OBSERVATIONS.md >/dev/null
+    kc commit >/dev/null
+    [ "$(git log -1 --format=%s)" = 'docs: OBS-docs 許容 type' ] || {
+      echo '  ✗ type 制約だけの hook で docs を選ばない・不要な Issue を足した' >&2; exit 1;
+    }
+    echo '  ✓ 従来件名/stdout はバイト同一、type 制約のみなら chore/docs を hook で検証する'
 
     # 17. stage 対象の PLAYBOOK.md の Changelog「#### カウンター更新」配下の Helpful +1 行は、Jev の生成器
     #     （scripts/jev/build-ace-eval-sets.ts の parseChangelog）が受理する 1 行 1 ID の契約形だけを通す（Issue `#2107`）。

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #
+# 空振り検出: 並列規定を空・旧文言へ戻すと壁時計と総人時の検査が赤。換算基準の句だけを消す変異も赤（2026-10-17 実測）。
 # effort-contract: 工数 KPI 計測基盤（Issue #1136）の契約検査。
 #
 # 守っている事故:
@@ -661,7 +662,8 @@ contains "$CREATE_ESTIMATION" "実装分の **1.5 倍以上**（下限）" "偽�
 contains "$CREATE_ESTIMATION" "その行には重ねない" "静的検出器の行（偽陽性潰し分あり）へ 1.5 倍を重ねない"
 contains "$CREATE_ESTIMATION" "| 実装の作り直しを伴う（通常の実装・修正） | 実装分と**同額** |" "通常の実装は実装分と同額（OBS-111）"
 contains "$CREATE_ESTIMATION" "補正元が見つかったときは表より補正元の実績比を優先する" "補正元の実績比が表の既定値より優先する"
-contains "$CREATE_ESTIMATION" 'その壁時計の圧縮を `effort_basis` に明記する' "並列計画では壁時計の圧縮を effort_basis に明記"
+contains "$CREATE_ESTIMATION" '壁時計の短縮は別に記録し、最長レーンだけを総人時として採用しない。' "並列計画では壁時計と総人時を区別する"
+contains "$CREATE_ESTIMATION" '人時換算の基準・担当数・重複除外を `effort_basis` に書く。' "並列計画では人時換算の基準を effort_basis に明記する"
 contains "$CREATE_ESTIMATION" '同じ規則を再掲する生存文書を `grep` で数え上げ' "規則の文言変更は再掲文書の本数を別項目で積む"
 contains "$CREATE_ESTIMATION" "回避形への対応を 2 巡" "コマンド文字列型の検出器は回避形対応 2 巡"
 # 補正元の同種判定・照合面の分・文書同期の行は、どれも既定値 1 本が一方向へ倒れた導入先の実測から

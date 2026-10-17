@@ -113,6 +113,13 @@ timer=""
 [ "${#outputs[@]}" -gt 0 ] || finish
 # 複数 JSON をそのまま連結するとホストが読めない。deny > ask > allow とし、
 # 全理由・警告を残す。壊れた1本の出力で他の判定まで失わないよう個別に検証する。
+reject_rewrite() {
+  if ! jq -n --arg reason "$1 $not_run_note" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'; then
+    printf '%s\n' "$1 $not_run_note" >&2
+    exit 2
+  fi
+  exit 0
+}
 valid=()
 for output in "${outputs[@]}"; do
 if jq -es '
@@ -122,12 +129,19 @@ if jq -es '
     (has("hookSpecificOutput") and
       (.hookSpecificOutput | type != "object" or
         .hookEventName != "PreToolUse" or
-        (.permissionDecision != "deny" and .permissionDecision != "ask" and .permissionDecision != "allow") or
-        (.permissionDecisionReason | type != "string"))))
+        (has("permissionDecision") and
+          ((.permissionDecision != "deny" and .permissionDecision != "ask" and .permissionDecision != "allow") or
+           (.permissionDecisionReason | type != "string"))) or
+        (has("updatedInput") and (.updatedInput | type != "object" or (.command | type != "string" or length == 0))) or
+        (has("additionalContext") and (.additionalContext | type != "string")) or
+        (has("permissionDecision") == false and has("updatedInput") == false and has("additionalContext") == false))))
   then false else length > 0 end
 ' "$output" >/dev/null 2>&1; then
   valid[${#valid[@]}]="$output"
 else
+  if jq -es 'any(.[]; .hookSpecificOutput? | type == "object" and has("updatedInput"))' "$output" >/dev/null 2>&1; then
+    reject_rewrite 'ff-dev-toolkit: 書き換え hook の出力を解釈できないため停止しました。'
+  fi
   echo 'ff-dev-toolkit: 解釈できない hook 出力を除外しました' >&2
 fi
 done
@@ -136,10 +150,12 @@ done
 deny_note="$not_run_note"
 [ "$blocking" -ne 2 ] || deny_note=""
 merged="$(jq -s --arg note "$deny_note" '
-  [.[].hookSpecificOutput // empty] as $decisions
+  [.[].hookSpecificOutput // empty | select(has("permissionDecision"))] as $decisions
   | ([.[].systemMessage // empty] | join("\n")) as $messages
   | (if $messages == "" then {} else {systemMessage: $messages} end)
-  + (if ($decisions | length) == 0 then {} else
+  + (if ([.[].hookSpecificOutput.additionalContext // empty] | length) == 0 then {} else
+      {hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: ([.[].hookSpecificOutput.additionalContext // empty] | join("\n"))}} end)
+  * (if ($decisions | length) == 0 then {} else
       {hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: (if any($decisions[]; .permissionDecision == "deny") then "deny"
@@ -149,6 +165,44 @@ merged="$(jq -s --arg note "$deny_note" '
           | join("\n"))
       }} end)
 ' "${valid[@]}")" || { echo 'ff-dev-toolkit: hook の結果を集約できません' >&2; finish; }
+# 互いに異なる書き換えは合成しない。1案だけを全ガードへ再投入してから採用する。
+rewrites="$(jq -cs '[.[].hookSpecificOutput.updatedInput // empty] | unique' "${valid[@]}")" || reject_rewrite '書き換え案を集約できません。'
+rewrite_count="$(printf '%s' "$rewrites" | jq 'length')"
+if [ "$rewrite_count" -gt 0 ] && [ "$blocking" -ne 2 ] \
+  && ! printf '%s' "$merged" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null; then
+  [ "$rewrite_count" -eq 1 ] || reject_rewrite 'ff-dev-toolkit: 競合する入力書き換えがあるため停止しました。'
+  [ "${ff_bash_hooks_revalidated:-0}" != 1 ] || reject_rewrite 'ff-dev-toolkit: 書き換え後の入力がさらに書き換えを必要とするため停止しました。'
+  rewritten_input="$(printf '%s' "$rewrites" | jq -c '.[0]')"
+  # tool_input の command 以外は落とさず、timeout/description 等もそのまま保持する。
+  if ! printf '%s' "$input" | jq -e --argjson update "$rewritten_input" \
+    '(.tool_input | del(.command)) == ($update | del(.command))' >/dev/null; then
+    reject_rewrite 'ff-dev-toolkit: command 以外を変える書き換えは自動適用しません。'
+  fi
+  next_input="$(printf '%s' "$input" | jq -c --argjson update "$rewritten_input" '.tool_input = $update')" || reject_rewrite '再検査入力を作成できません。'
+  recheck_rc=0
+  printf '%s' "$next_input" | ff_bash_hooks_revalidated=1 bash "${BASH_SOURCE[0]}" "$@" > "$batch_dir/rechecked.json" || recheck_rc=$?
+  if [ "$recheck_rc" -ne 0 ]; then
+    blocking=2
+    printf '%s\n' 'ff-dev-toolkit: 書き換え後の再検査が失敗したため停止しました。' >&2
+    finish
+  fi
+  rechecked="$(cat "$batch_dir/rechecked.json")"
+  [ -n "$rechecked" ] || rechecked='{}'
+  printf '%s' "$rechecked" | jq -e 'type == "object"' >/dev/null || reject_rewrite '書き換え後の再検査出力が不正です。'
+  merged="$(printf '%s' "$merged" | jq --argjson checked "$rechecked" --argjson update "$rewritten_input" '
+    . as $original
+    | . * $checked
+    | .systemMessage = ([$original.systemMessage // empty, $checked.systemMessage // empty] | unique | join("\n"))
+    | if .systemMessage == "" then del(.systemMessage) else . end
+    | .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hookEventName: "PreToolUse"})
+    | .hookSpecificOutput.additionalContext = ([$original.hookSpecificOutput.additionalContext // empty, $checked.hookSpecificOutput.additionalContext // empty] | join("\n"))
+    | if .hookSpecificOutput.permissionDecision == "deny" then .
+      else .hookSpecificOutput.updatedInput = $update
+        | .hookSpecificOutput.additionalContext += "\n全ガードの再検査を通過した入力書き換えを採用しました。コマンドはまだ実行していません。" end
+    | if $original.hookSpecificOutput.permissionDecision == "ask" and .hookSpecificOutput.permissionDecision != "deny"
+      then .hookSpecificOutput.permissionDecision = "ask" | .hookSpecificOutput.permissionDecisionReason = $original.hookSpecificOutput.permissionDecisionReason else . end
+  ')" || reject_rewrite '再検査の結果を集約できません。'
+fi
 if [ "$blocking" -eq 2 ]; then
   # exit 2 ではホストは stdout を採用しないため、他の子の復旧案内も stderr へ運ぶ。
   printf '%s\n' "$merged" >&2

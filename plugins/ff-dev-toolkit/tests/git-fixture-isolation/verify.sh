@@ -396,6 +396,7 @@ guard-checkout-restore/verify.sh
 guard-review-in-flight/verify.sh
 markdownlint-selftest/verify.sh
 mbcs-guard-failclosed/verify.sh
+merge-cleanup/agent-branches.sh
 merge-cleanup/verify.sh
 multi-agent-critical-marker/verify.sh
 multi-agent-host-delegation/verify.sh

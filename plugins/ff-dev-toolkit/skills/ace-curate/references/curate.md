@@ -90,9 +90,22 @@ git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
 }
 ```
 
-fetch が失敗した回は、停止メッセージの末尾へ git が出した原因をそのまま付ける（git の stderr は remote URL を含みうるので、表示の前に `https://user:token@host/` 形の資格情報部だけを `***` へ伏せる）。remote が先行していた場合は**追記前に** `git pull --ff-only`（直 push フロー）または `git rebase origin/<default-branch>`（専用ブランチ）で取り込む。fresh read は同時 read を防がない。直 push の最終境界は手順 5 の non-fast-forward である。
+fetch が失敗した回は、停止メッセージの末尾へ git が出した原因をそのまま付ける（git の stderr は remote URL を含みうるので、表示の前に `https://user:token@host/` 形の資格情報部だけを `***` へ伏せる）。remote が先行していた場合は**追記前に** `git pull --ff-only origin <default-branch>`（直 push フロー。detachedでもremote/branchを明示）または `git rebase origin/<default-branch>`（専用ブランチ）で取り込む。fresh read は同時 read を防がない。直 push の最終境界は手順 5 の non-fast-forward である。
 
 `.version-claims` contract があるリポジトリでは、**直 push / PR のどちらでも** PLAYBOOK.md と同じ commit で `.version-claims/docs/08-knowledge/PLAYBOOK.md.claim` を `document` / `version` / `change` の3行だけへ更新する（手順 5 の `finish.sh knowledge-commit add --claim docs/08-knowledge/PLAYBOOK.md` が `scripts/update-version-claim.sh` で最新 base/current の blob ID から生成し、`scripts/check-version-claims.sh` で検証してから記録パスへ足す）。version 不変のカウンター更新でも `change` は更新するため、直 push と進行中 PR の交差も claim conflict で止まる。祖先検査後に同じ文書の別更新が先行しても、claim の content conflict で停止させ、最新 base から version / `ace_entry_count` / Changelog / claim を再生成する（claim の片寄せ・削除で競合を解消しない）。
+
+## worktreeセッションからの知見記録
+
+`/merge-cleanup <PR番号>` のswitchなし掃除が済んだ自分のworktreeで、**知見を書き始める前**に実施する。他worktreeへ移動せず、そこにあるdefaultや作業ブランチを切り替えない。
+
+1. `git status --porcelain` が空であること、`finish.sh knowledge-commit status` でadd保留が無いことを確認する。未pushの成果は元のブランチへ保持し、先に解決する。保留のあるブランチを切り替えない。
+2. `git symbolic-ref --quiet --short refs/remotes/origin/HEAD` から `origin/<default-branch>` を確定する。未設定なら `git remote set-head origin --auto` を実施して再確認し、解決失敗は停止する。PRのbaseをdefaultと決めつけない。
+3. `git fetch origin "+refs/heads/<default-branch>:refs/remotes/origin/<default-branch>"` が成功してから、`git switch --detach origin/<default-branch>`。現在のHEADと取得したrefが同じことを実測する。`reset --hard`を使わず、他worktreeのdefaultは動かさない。
+4. PR番号を明示して抽出・共有値の鮮度検査・編集・検証を行い、同じdetached HEADで `finish.sh knowledge-commit add` → `commit` → `push` を使う。pushは実装どおり `HEAD:<default-branch>` を送る。素の `git push origin <default-branch>` はローカルbranch refを送るため代用しない。送信SHA・到達・CIを本書の「直 push の実測ガード」で確認する。
+
+追記前にremoteが先行したら、detachedでは `git pull --ff-only origin <default-branch>` とremote/branchを明示して取り込み、採番・版確定からやり直す。knowledgeのadd保留がある場合は同じHEADで先にcommitするか、既存の保留復帰手順を使い、保留を持ったままswitchしない。push後のnon-fast-forwardは後段の再試行規則に従う。
+
+**保護時のPR経路**: `probe` がprotectedなら知見のadd前に一意の `chore/ace-from-*`（台帳のみは `chore/retro-from-*`）を自分のdetached HEADから `git switch -c` で作り、同じadd・検証・commitを行う。unknownから直pushを試してrc 3になった場合は、commitを保ったまま一意の知見ブランチを作る。いずれもdefaultを別worktreeが保持する経路では、`finish.sh knowledge-commit pr` は使わず、`git push -u origin HEAD` → `gh pr create --base <default-branch> --head <作成した知見ブランチ> --title <件名> --body-file <固有の本文ファイル>` と明示する。現行pr helperは最後にローカルdefaultのref復帰を試みるため、別worktreeが保持するとPR作成後に失敗する。手動pushの前もfetch成功と `origin/<default-branch>` がHEADの祖先であることを確認し、`git rev-list --count origin/<default-branch>..HEAD` が1、差分パスが今回のPLAYBOOK・カテゴリ本文・台帳・対応claimだけ、commit件名が知見記録であることを実測する。いずれかを満たさなければ送信せず停止する。保護判定・commitの対象限定・内容検証・PRのレビューとマージは省略せず、他worktreeのdetachを復帰手段にしない。実際に使ったPR経路と到達状態を報告する。
 
 ## 索引テーブルの列順（4-b）
 
@@ -121,7 +134,7 @@ fetch が失敗した回は、停止メッセージの末尾へ git が出した
 
 **既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。`<default-branch>` に直接 commit + push する。
 
-**コミットメッセージ規約**: コミット前に対象リポジトリの規約を確認する。確認対象は (1) commitlint の `header-max-length` — 件名を上限内に収め、カテゴリが複数でも件名には列挙せず、commit body に記録する。要約だけで上限を超える場合は要約を短くするかコミットを分割する — に加え、(2) **type の許容リスト**。参照先: `commitlint.config.*` / `.commitlintrc*` / `package.json` の `commitlint` キー / husky・simple-git-hooks の `commit-msg` hook。`knowledge` が許容 type に含まれない場合は、プロジェクト規約の type（例 `chore`）へ件名の prefix だけを置き換える（件名の要約・body の `Categories:` 記録はそのまま維持する。例: `chore: ACE-<PR番号>-<連番> <要約>`）。書き込み口は件名を組み立てた直後、stage・保留記録・commit より前にリポジトリの prepare-commit-msg → commit-msg hook（core.hooksPath を反映した `git rev-parse --git-path hooks/<名>`。husky も同じ経路）へ `git commit -m` と同じ順で件名をドライランで通し、拒否されたら hook の出力（要求形式）を示して rc 4（`KNOWLEDGE_COMMIT=hook-rejected`）で止まる。`add` の拒否は保留記録を作らない（`--claim` 経由では文書と claim の stage は残る）ので `discard` は要らない — type だけの不一致なら `add --type` で再実行し、Issue 番号必須など件名の形そのものを求める hook なら、書いたパスへ固定した `git commit -m "<規約どおりの件名>" -- <書いたパス>` で手でコミットする（pathspec 無しの `git commit` にしない）。
+**コミットメッセージ規約**: コミット前に対象リポジトリの規約を確認する。確認対象は (1) commitlint の `header-max-length` — 件名を上限内に収め、カテゴリが複数でも件名には列挙せず、commit body に記録する。要約だけで上限を超える場合は要約を短くするかコミットを分割する — に加え、(2) **type の許容リスト**。参照先: `commitlint.config.*` / `.commitlintrc*` / `package.json` の `commitlint` キー / husky・simple-git-hooks の `commit-msg` hook。`knowledge` が許容 type に含まれない場合は、プロジェクト規約の type（例 `chore`）へ件名の prefix だけを置き換える（件名の要約・body の `Categories:` 記録はそのまま維持する。例: `chore: ACE-<PR番号>-<連番> <要約>`）。書き込み口は件名を組み立てた直後、stage・保留記録・commit より前にリポジトリの prepare-commit-msg → commit-msg hook（core.hooksPath を反映した `git rev-parse --git-path hooks/<名>`。husky も同じ経路）へ `git commit -m` と同じ順で件名をドライランで通す。元の件名が通れば件名・出力は従来どおり。拒否された既定 `knowledge` は `chore` → `docs` の候補も同じ hook で検証し、Issue が必要ならブランチの `ace-from-pr-N` → PR の closing Issue 先頭、次にブランチ自身の `#N` を解決して `<type>: #<issue> <ID> <要約>` を検証する（`--claim` は version claim 用で PR origin は持たず、ACE-ID・要約の数字も解決元にしない）。選んだ Issue/type は保留へ保存して合流先の commit が引き継ぐ。明示された非 `knowledge` type は置換しない。解決元が無い・どの候補も拒否される場合だけ hook の出力（要求形式）を示して rc 4（`KNOWLEDGE_COMMIT=hook-rejected`）で止まる。`add` の拒否は保留記録を作らない（`--claim` 経由では文書と claim の stage は残る）ので `discard` は要らない — 解決に失敗した場合だけ、表示された規約を確認して `add --type` で再実行するか、書いたパスへ固定した `git commit -m "<規約どおりの件名>" -- <書いたパス>` で手でコミットする（pathspec 無しの `git commit` にしない）。
 
 **文字列パッチと commit の突き合わせ（必須）**: PLAYBOOK・文書への追記を script で当てる場合は [Markdown 文字列パッチ規律](../../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従い、`add` の前に `git status --short` で意図したファイルのみが変わっていることを述語で突き合わせる。書き込み口は `add` 時の blob hash を記録し、その後に同じファイルへ入った別の編集を commit へ吸い込まない。
 

@@ -62,7 +62,7 @@
 #
 # ## 出力チャネルと抜け道
 #
-# glob / equals は `permissionDecision: "deny"`、scalar は systemMessage の警告で返す。
+# glob / equals と同じ呼び出しの直前代入が示す一覧scalarは deny。値不明scalarは警告。
 # systemMessage はエージェントへ届かないので、同じ hook を PostToolUse（Bash）にも登録し、
 # scalar だけを `hookSpecificOutput.additionalContext` で実行後に返す（止めない）。
 # 追加検出の契約は tests/lib/zsh-expansion-guard.sh。deny の JSON を組み立てる jq が失敗したら黙って許可に

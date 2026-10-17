@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Runtime contract for the PR follow-up declaration guard hook (Issue #771).
 #
+# 空振り検出: 対象 hook 不在は赤。見出し除外を外した変異で見出し除外の 4 ケースが赤、本文宣言は deny を維持する。
+# 変異検出: 見出し除外を外す変異で見出し除外の 4 ケースが赤（実測）。境界を緩める変異も回帰検査で検出する。
 # 配布物 hooks/guard-pr-followup.sh を stdin JSON で直接駆動し、Issue #771 の AC
 # 各ケース（マーカーあり参照なし→警告 / 参照あり→非警告 / no-followup 抜け道 /
 # 通常本文 / gh pr edit / --body-file・heredoc 経由 / 既知の限界の素通し）を固定する。
@@ -91,6 +93,35 @@ assert_pass() { # <label>
     bad "$1: exit=$RC out=[$OUT]"
   fi
 }
+
+
+# 見出しは欄の名前で、本文の宣言とは区別する。参照は見出し内でも有効。
+for body in '## スコープ外のインライン修正
+- なし' '  ### スコープ外のインライン修正
+- 同じ PR で表記を修正' '###### Follow-up
+なし'; do
+  printf '%s\n' "$body" > "$TEST_TMP/headings.md"
+  run_hook "gh pr edit 1 --body-file '$TEST_TMP/headings.md'"
+  assert_pass '見出しだけの検出語はフォローアップ宣言に数えない'
+done
+printf '%s\n' '## スコープ外のインライン修正' 'スコープ外の件は別 Issue で対応' > "$TEST_TMP/headings.md"
+run_hook "gh pr edit 1 --body-file '$TEST_TMP/headings.md'"
+assert_fire '見出し下の本物の宣言に参照が無ければ止める'
+printf '%s\n' '## 参照 `#123`' 'スコープ外の件は別 Issue で対応' > "$TEST_TMP/headings.md"
+run_hook "gh pr edit 1 --body-file '$TEST_TMP/headings.md'"
+assert_pass '見出し内の Issue 参照も有効に保つ'
+
+
+# ATX 見出しでない境界は、本文の宣言として検査する。
+for body in '    ## スコープ外の件は別対応' '#スコープ外は別対応' '####### follow-up は別対応'; do
+  printf '%s\n' "$body" > "$TEST_TMP/heading-boundaries.md"
+  run_hook "gh pr edit 1 --body-file '$TEST_TMP/heading-boundaries.md'"
+  assert_fire '見出し対象外の字下げ・空白無し・7個の # は宣言に残す'
+done
+# 見出し全体を欄名と扱う契約なので、見出し自身に宣言を書いた形も除外される。
+printf '%s\n' '### Follow-up: 残りは後で対応' > "$TEST_TMP/heading-boundaries.md"
+run_hook "gh pr edit 1 --body-file '$TEST_TMP/heading-boundaries.md'"
+assert_pass '見出し自身の宣言も除外する契約を固定する'
 
 BODY_MARKER='## Summary
 残りはスコープ外なので別対応とする。'

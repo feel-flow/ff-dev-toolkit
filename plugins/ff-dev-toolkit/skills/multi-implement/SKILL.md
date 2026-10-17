@@ -9,7 +9,7 @@ description: 複数の AI CLI を並列実行して実装タスクを分担す�
 
 ## 実行前の effort 選択
 
-[作業別 effort の選択](../../docs-template/05-operations/deployment/effort-selection.md) を読み、明示設定を維持したうえで、その呼び出しの effort と理由を決める。CLI 起動とネイティブ委譲の指定手段・確認境界も同文書を正本とする。
+[作業別 effort の選択](../../docs-template/05-operations/deployment/effort-selection.md) を読み、明示設定を維持したうえで、その呼び出しの effort と理由を決める。CLI 起動とネイティブ委譲の指定手段・確認境界も同文書を正本とする。ネイティブ委譲では同文書の「役割配分とタスク単位レビュー」「並行ブリーフで親が先に固定するもの」も適用する（モデル継承・明示指定優先）。
 
 ## プラグインルートの固定（必須）
 

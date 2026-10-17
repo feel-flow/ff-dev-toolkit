@@ -46,7 +46,7 @@ fi
 
 ## 位置づけ — ACE との責務分離
 
-`/ace-curate` はプロジェクト知見を ACE Playbook へ、本スキルはプロセス/ツール/スキルのメタ知見を作業中リポジトリの観測台帳へ記録し、閾値到達で Issue 昇格する。ワークフローチェーンの末尾に位置する: `/merge-cleanup` → `/ace-curate` → `/retrospective`。**別スキル**なので PR を伴わない作業の後にも単独で呼べる。プロジェクト固有のコード知見は本スキルで扱わず、`/ace-curate`（または ACE Playbook への追記）へ回す。
+`/ace-curate` はプロジェクト知見を ACE Playbook へ、本スキルはプロセス/ツール/スキルのメタ知見を作業中リポジトリの観測台帳へ記録し、閾値到達で Issue 昇格する。ワークフローチェーンの末尾に位置する: `/merge-cleanup` → `/ace-curate` → `/retrospective`。**別スキル**なので PR なしでも呼べる。プロジェクト固有のコード知見は本スキルで扱わず、`/ace-curate`（または ACE Playbook への追記）へ回す。
 
 ## 実行ポリシー
 
@@ -114,7 +114,7 @@ printenv RETROSPECTIVE_MODE
 
 ### 記録の前に base の先行を照合する
 
-並行セッションが先に更新していると同一性判定・`Count`・OBS ID が古い台帳から決まる。**記録手順 0 より前に照合する。** [references/ledger.md](references/ledger.md) の照合フェンス（clean な台帳 → 明示 refspec で fetch → 祖先検査。失敗は stale 値へ fallback せず停止）を通す。先行していたら「取り込んでから記録を作り直す」（`git pull --ff-only` で取り込む。`--force` / `--force-with-lease` で先行セッションを上書きしない。`--rebase` / merge で取り込まない。OBS ID は**取り込んだ後の**台帳の最大連番 +1 で採番する）。台帳自身に未コミットの変更があって止まった回は**復帰可能**である。復帰できないまま停止した場合は台帳へ書かず観測を報告に残す。**ただし「提案の閾値」は通常どおり適用する**。デフォルト統合ブランチ以外に居る回は、記録の前にそのブランチへ戻る。
+並行更新で同一性・`Count`・OBS ID が古くなるため**記録手順 0 より前に照合する。** [references/ledger.md](references/ledger.md) の照合フェンス（clean な台帳 → 明示 refspec で fetch → 祖先検査。失敗は stale 値へ fallback せず停止）を通す。先行していたら「取り込んでから記録を作り直す」（`git pull --ff-only origin <default-branch>` で取り込む。`--force` / `--force-with-lease` で先行セッションを上書きしない。`--rebase` / merge で取り込まない。OBS ID は**取り込んだ後の**台帳の最大連番 +1 で採番する）。台帳自身に未コミットの変更があって止まった回は**復帰可能**である。復帰できないまま停止した場合は台帳へ書かず観測を報告に残す。**ただし「提案の閾値」は通常どおり適用する**。デフォルト統合ブランチ以外に居る回は、記録の前にそのブランチへ戻るか、[detached手順](../ace-curate/references/curate.md#worktreeセッションからの知見記録)へ進む。
 
 ### 記録手順
 

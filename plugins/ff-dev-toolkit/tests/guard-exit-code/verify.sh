@@ -48,6 +48,7 @@
 #
 # run-all-required: no — jq 不在での skip を許容する（jq が無いと hook 自身が fail-open で
 # 何もしないため、検査対象の振る舞いが存在しない）
+# 変異検出: Issue `#2182` の実行rc伝播削除・集約再検査削除は rewrite.sh の実行/deny検査が赤。修正前hookを同ハーネスへ与えても赤（2026-10-17実測）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -1054,6 +1055,7 @@ if [ "$FAIL" -gt 0 ]; then
   REACHED_END=1
   exit 1
 fi
+bash "$SCRIPT_DIR/rewrite.sh"
 echo "✅ guard-exit-code: all ${PASS} checks passed"
 REACHED_END=1
 exit 0

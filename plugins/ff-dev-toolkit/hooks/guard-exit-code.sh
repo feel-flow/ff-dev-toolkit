@@ -119,11 +119,9 @@
 #
 # ## 出力チャネル
 #
-# PreToolUse には「実行を許しつつ agent に警告文を見せる」チャネル（`additionalContext`）
-# が無く、`systemMessage` は利用者向けの表示チャネルで**エージェントのコンテキストには
-# 入らない**（`guard-background-cwd.sh` がこの非対称を実測で確認し deny へ寄せた経緯を
-# 持つ）。行動を変えるのはエージェント自身なので、届く唯一のチャネルである
-# `permissionDecision: "deny"` の `permissionDecisionReason` で返す。
+# PreToolUse の additionalContext は書き換え通知に使う。systemMessage は利用者向けで
+# エージェントのコンテキストには入らないため、未解決の違反は deny で返す（`guard-background-cwd.sh` がこの非対称を実測で確認し deny へ寄せた経緯を
+# 持つ）。未解決の違反は `permissionDecision: "deny"` の理由文で復旧方法を返す。
 #
 # **その JSON を組み立てる `jq` が失敗したら、黙って許可に落ちない。** stdout が空の
 # exit 0 は「異議なし」と同義で、判定不能を緑と読む形そのものになる。PreToolUse には
@@ -357,6 +355,23 @@ scan_rc=$?
 [ "$scan_rc" -eq 0 ] || deny_unavailable "検出器の走査が失敗しました（rc=${scan_rc}）"
 
 [ -n "$hits" ] || exit 0
+
+# 入力書き換えを確認した Claude hook 環境だけが対象。他ホストは従来の deny。
+# allow を返さず、ホストの通常の権限判定を保つ。全tool_inputを複製する。
+if [ "${CLAUDECODE:-}" = 1 ] && [ -n "${CLAUDE_PROJECT_DIR:-}" ] \
+  && [ -z "${GROK_PLUGIN_ROOT:-}" ] \
+  && printf '%s' "$input" | jq -e '.hook_event_name == "PreToolUse" and (has("model") | not)' >/dev/null 2>&1; then
+  rewrite_helper="${BASH_SOURCE[0]%/*}/../tests/lib/exit-code-rewrite.sh"
+  if [ -r "$rewrite_helper" ] && source "$rewrite_helper" \
+    && [ "$(type -t ff_exit_code_rewrite)" = function ]; then
+    rewritten="$(ff_exit_code_rewrite "$cmd")" || rewritten=""
+    if [ -n "$rewritten" ]; then
+      printf '%s' "$input" | jq --arg command "$rewritten" \
+        '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {command: $command}), additionalContext: "終了コードガード: 単一パイプの出力を一時ログへ受け、表示後に測定コマンドの終了コードを返す書き換え候補を作成しました。採用・実行は再検査と通常の権限判定に従います。"}}' || deny_unavailable '書き換え JSON を組み立てられません'
+      exit 0
+    fi
+  fi
+fi
 
 # ---- deny 本文の組み立て（実値で案内する） -------------------------------------
 

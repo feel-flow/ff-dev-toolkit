@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
-import { DOCUMENTS, validateConfig, loadConfig, projectPath } from '../../scripts/asdd/config.mjs';
+import { isDeepStrictEqual } from 'node:util';
+import { DOCUMENTS, validateConfig, loadConfig, projectPath, ORPHAN_STATE_CODE } from '../../scripts/asdd/config.mjs';
 import { apply, plan, check, judgeMultiReviewProbe } from '../../scripts/asdd/generate.mjs';
 
 export const config = () => ({
@@ -148,6 +149,28 @@ test('check is read-only and setting-free projects stay legacy', t => {
   assert.equal(result.initialized, true);
   assert.equal(fs.statSync(path.join(root, '.asdd/config.json')).mtimeMs, before);
   assert.throws(() => execFileSync(process.execPath, [cli.pathname, '--root', root, '--check', '--apply'], { stdio: 'pipe' }));
+});
+test('generation state without config is not legacy: check fails read-only, re-apply recovers', t => {
+  const root = temporary(t), selected = config();
+  apply(root, selected);
+  fs.rmSync(path.join(root, '.asdd/config.json'));
+  assert.throws(() => loadConfig(root), error => error.code === ORPHAN_STATE_CODE && /\.asdd\/managed\.json/.test(error.message)
+    && !/remove \.asdd\/apply\.lock/.test(error.message) && isDeepStrictEqual(error.recorded, selected));
+  const cli = new URL('../../scripts/asdd/cli.mjs', import.meta.url);
+  const result = spawnSync(process.execPath, [cli.pathname, '--root', root, '--check'], { encoding: 'utf8' });
+  assert.equal(result.status, 1); assert.equal(result.stdout, ''); assert.match(result.stderr, /config\.json is missing/);
+  assert.deepEqual(fs.readdirSync(path.join(root, '.asdd')), ['managed.json']);
+  // The generator reads its own state, so re-applying the agreed settings restores the pair.
+  assert.deepEqual(apply(root, selected).changed, ['.asdd/config.json']);
+  assert.equal(check(root).initialized, true);
+  // A lock left by an interrupted first apply counts as generation state too.
+  const locked = temporary(t); fs.mkdirSync(path.join(locked, '.asdd')); fs.writeFileSync(path.join(locked, '.asdd/apply.lock'), '');
+  // The generator takes the lock exclusively, so the guidance must clear it before re-applying.
+  assert.throws(() => check(locked), error => error.code === ORPHAN_STATE_CODE && /remove \.asdd\/apply\.lock/.test(error.message) && error.recorded === null);
+  assert.throws(() => apply(locked, config()), /EEXIST/);
+  // Removing .asdd/ entirely is the way back to the legacy setup; an empty directory stays legacy.
+  fs.rmSync(path.join(root, '.asdd'), { recursive: true }); fs.mkdirSync(path.join(root, '.asdd'));
+  assert.equal(loadConfig(root), null); assert.equal(check(root).mode, 'legacy');
 });
 test('foreign files and interrupted locks never get overwritten', t => {
   const root = temporary(t); fs.writeFileSync(path.join(root, 'AGENTS.md'), 'Existing rules');
