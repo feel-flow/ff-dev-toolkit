@@ -8,7 +8,7 @@ import { dirname, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { copyLeakLines, copyTokenPattern, copyUnitsFromMaster } from "./copy-units.mjs";
 
-import { verifyErrorExamples } from "./error-examples.mjs";
+import { verifyErrorExamples, verifyPerformanceExample } from "./error-examples.mjs";
 
 const suiteDir = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = resolve(suiteDir, "../..");
@@ -541,6 +541,10 @@ await verifyErrorExamples({
   skill: text(".github/skills/error-handling-standards/SKILL.md"),
 }, check);
 
+await verifyPerformanceExample({ errors, patterns: text("03-implementation/PATTERNS.md"),
+  performance: text("08-knowledge/best-practices/03-performance-and-operations.md"),
+}, check);
+
 const conventions = text("03-implementation/CONVENTIONS.md");
 const integrations = text("03-implementation/INTEGRATIONS.md");
 check(!conventions.includes("public details: any[]"), "CONVENTIONS の any 例を除去");
@@ -926,7 +930,7 @@ check(
 // 検査を足したらこの数も同じ PR で上げること（上げ忘れは「増やしたのに赤」で即わかる）。
 // 不等号ではなく**完全一致**にする — `>=` だと上げ忘れが緑で通り、baseline が実数より
 // 下にずれる。以後は「1 件足して 1 件消す」が検出されず、この針の目的自体が静かに失効する。
-const EXPECTED_CHECKS = 96;
+const EXPECTED_CHECKS = 97;
 const executed = pass + failures.length;
 check(
   executed === EXPECTED_CHECKS,

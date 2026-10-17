@@ -159,6 +159,8 @@ async function processUsersSequentially(userIds: string[]): Promise<User[]> {
 
 ```typescript
 import winston from "winston";
+// PATTERNS.md §9 の serializeError を共通 logger モジュールから公開する
+import { serializeError } from "./logger";
 
 const logger = winston.createLogger({
   level: "info",
@@ -176,27 +178,25 @@ const logger = winston.createLogger({
 // アプリケーションログ
 class UserService {
   async createUser(userData: CreateUserRequest): Promise<Result<User>> {
-    logger.info("Creating user", {
-      email: userData.email,
-      requestId: req.id,
-    });
+    // 個人情報（メールアドレス等）はログに含めない（error-handling-standards SKILL.md）。
+    // 追跡には requestId と、作成後に確定する userId を使う
+    // （req はリクエストコンテキストとして呼び出し側から受け取る前提の簡略表記）
+    logger.info("Creating user", { requestId: req.id });
 
     try {
       const user = await this.userRepository.create(userData);
 
       logger.info("User created successfully", {
         userId: user.id,
-        email: user.email,
         requestId: req.id,
       });
 
       return { success: true, data: user };
     } catch (error) {
-      // Logger 規約（PATTERNS.md §9）: error(message, error: unknown, meta?)。
-      // 元の値を第 2 引数で渡せば Logger 側が serializeError で構造化する
-      logger.error("Failed to create user", error, {
-        // 個人情報（メールアドレス等）はログに含めない（error-handling-standards SKILL.md）
-        userId: userData.id,
+      // Winston の meta 引数へ、共通 serializeError の結果を明示して渡す。
+      // 作成に失敗した時点では userId は確定していないので requestId で追跡する
+      logger.error("Failed to create user", {
+        error: serializeError(error),
         requestId: req.id,
       });
 

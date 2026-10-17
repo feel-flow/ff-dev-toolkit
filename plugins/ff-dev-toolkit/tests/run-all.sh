@@ -32,8 +32,8 @@
 #     「針が当たらない入力の既定」節。Issue `#1665`）
 #   - 終了コード: 失敗 or 未実行が 1 件でもあれば 1、それ以外は 0。ただし passed が
 #     0 で skipped だけの場合も 1（検証が 1 件も成立していない状態を緑にしない）
-#     起動ガード（後述の dirty tree 検査など）で suite を 1 件も実行せずに終わる回も 1
-#     を返す（サマリー行は出ない。「非 0 = 失敗」だけを見て緑と誤読しないこと）
+#     起動ガードで suite を 1 件も実行せずに終わる回は、dirty tree 検査は 1、root handoff
+#     の混入・MCP 依存不足は 3 を返す（サマリー行は出ない。未実行を合格と読まないこと）
 #
 # 引数に suite のパスを渡すと、既定の一覧ではなくその一覧だけを実行する。
 # tests/run-all/verify.sh が疑似 suite を渡して本ランナー自身の挙動を検証するための
@@ -1792,6 +1792,18 @@ if [[ "${FF_RUN_ALL_CHECK_REGISTRATION:-0}" == "1" ]]; then
   check_suite_registration
   exit $?
 fi
+
+# >>> root-handoff-preflight
+# root 固定は resource 単体の契約。全件・明示 suite へ継承すると隔離 fixture が親の実体を読む。
+if [[ -n "${FF_DEV_TOOLKIT_ROOT:-}" ]]; then
+  echo "✗ 起動環境: FF_DEV_TOOLKIT_ROOT が継承されています（suite は1つも実行していません）" >&2
+  echo "  resource 単体への root 固定を suite 全体へ継承しないでください。値は表示しません。" >&2
+  printf '  解除して再実行: env -u FF_DEV_TOOLKIT_ROOT bash %q\n' "$SCRIPT_DIR/run-all.sh" >&2
+  echo "  明示 suite 引数があれば、同じ引数を末尾へ追加してください。" >&2
+  exit 3
+fi
+# <<< root-handoff-preflight
+
 
 # ── 作業ツリーの汚れで既定一覧の起動を止める（fail-closed）───────────────────
 # 既定一覧の実行は「このコミットを実測した」という記録（scripts/record-gate-head.sh）を

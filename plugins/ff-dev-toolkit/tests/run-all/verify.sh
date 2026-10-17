@@ -37,6 +37,7 @@
 #           ガードを登録照合の前・dirty ガードの前へ移すと 41-J / 41-K が赤。
 #           発火条件から USING_DEFAULT_SCRIPTS を落とすと case 37 の partial-mcp が赤。
 #           （位置と適用範囲は述語より退行しやすいので、全 3 方向を実測で固定してある）
+# 空振り検出: case 49 の root 条件が不在・改名・0 件一致なら赤。診断条件を常に偽へ変えた写しでは起動前停止の probe が赤になることを実測する。
 # 変異検出（case 48 / asdd-hook-gate の遡り）: ルートで '//' を作る元の形（base="$root"）へ戻した写しを
 #           case 48 自身が流し、'//' が xtrace に現れることを確かめる。遡りがルートの '/.asdd' まで
 #           届かない回（一時領域が git 管理下・xtrace が取れない）は針が当たらないので赤。
@@ -3930,6 +3931,93 @@ else
     bad "case 48 の変異が当たっていない（base の代入行が見つからない）"
   fi
   rm -rf "$ASDD_WALK_DIR"
+fi
+
+# case 49: resource の root handoff を suite 全体へ渡した回は起動前に止める。
+echo "== case 49: root handoff の継承を起動境界で検出する =="
+HANDOFF_DIR="$(mktemp -d "${TMPDIR:-/tmp}/root-handoff.XXXXXX" 2>&1)" || HANDOFF_DIR=""
+if [ -z "$HANDOFF_DIR" ] || [ ! -d "$HANDOFF_DIR" ]; then
+  bad "case 49: 一時領域を作れず root handoff の起動境界を実測できません"
+else
+cp "$RUNNER" "$HANDOFF_DIR/run-all.sh"
+cat > "$HANDOFF_DIR/sentinel.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'launched\n' >> "$ROOT_PROBE_SENTINEL"
+SH
+chmod +x "$HANDOFF_DIR/sentinel.sh"
+
+handoff_probe() {
+  local runner="$1" mode="$2" rc=0 output
+  rm -f "$HANDOFF_DIR/sentinel"
+  if [ "$mode" = default ]; then
+    output="$(env -u FF_RUN_ALL_NESTED FF_DEV_TOOLKIT_ROOT=handoff-sensitive-value ROOT_PROBE_SENTINEL="$HANDOFF_DIR/sentinel" FF_GATE_RECORD=0 bash "$runner" 2>&1)" || rc=$?
+  else
+    output="$(FF_DEV_TOOLKIT_ROOT=handoff-sensitive-value ROOT_PROBE_SENTINEL="$HANDOFF_DIR/sentinel" FF_GATE_RECORD=0 bash "$runner" "$HANDOFF_DIR/sentinel.sh" 2>&1)" || rc=$?
+  fi
+  [[ "$rc" -eq 3 && ! -e "$HANDOFF_DIR/sentinel" \
+    && "$output" == *FF_DEV_TOOLKIT_ROOT* && "$output" == *'env -u FF_DEV_TOOLKIT_ROOT'* \
+    && "$output" != *handoff-sensitive-value* ]]
+}
+for _handoff_mode in default explicit; do
+  if handoff_probe "$HANDOFF_DIR/run-all.sh" "$_handoff_mode"; then
+    ok "root handoff / ${_handoff_mode}: rc3・suite未起動・変数名と解除方法・値を非表示"
+  else
+    bad "root handoff / ${_handoff_mode}: 起動前停止の契約が崩れた"
+  fi
+done
+
+for _handoff_env in unset empty; do
+  rm -f "$HANDOFF_DIR/sentinel"
+  _handoff_rc=0
+  if [ "$_handoff_env" = unset ]; then
+    env -u FF_DEV_TOOLKIT_ROOT ROOT_PROBE_SENTINEL="$HANDOFF_DIR/sentinel" FF_GATE_RECORD=0 bash "$HANDOFF_DIR/run-all.sh" "$HANDOFF_DIR/sentinel.sh" > "$HANDOFF_DIR/clean.out" 2>&1 || _handoff_rc=$?
+  else
+    FF_DEV_TOOLKIT_ROOT='' ROOT_PROBE_SENTINEL="$HANDOFF_DIR/sentinel" FF_GATE_RECORD=0 bash "$HANDOFF_DIR/run-all.sh" "$HANDOFF_DIR/sentinel.sh" > "$HANDOFF_DIR/clean.out" 2>&1 || _handoff_rc=$?
+  fi
+  if [[ "$_handoff_rc" -eq 0 && -s "$HANDOFF_DIR/sentinel" ]]; then
+    ok "root handoff / ${_handoff_env}: 明示suiteは従来どおり実行される"
+  else
+    bad "root handoff / ${_handoff_env}: 正常実行を誤拒否した"
+  fi
+done
+
+# 既定・検査専用モードはトップレベル起動を測るため、外側の入れ子防止フラグだけ解除する。
+# suite を実行しない宣言ダンプ・登録照合は、実体のツリーで従来の早期終了を測る。
+for _handoff_meta in FF_RUN_ALL_DUMP_DECLARATIONS FF_RUN_ALL_CHECK_REGISTRATION; do
+  if env -u FF_RUN_ALL_NESTED FF_DEV_TOOLKIT_ROOT=handoff-sensitive-value "${_handoff_meta}=1" bash "$TESTS_DIR/run-all.sh" > "$HANDOFF_DIR/meta.out" 2>&1 && [ -s "$HANDOFF_DIR/meta.out" ]; then
+    ok "root handoff: ${_handoff_meta} の検査専用モードを誤拒否しない"
+  else
+    bad "root handoff: ${_handoff_meta} の早期終了が失敗・空振り"
+  fi
+done
+
+# 診断と同じ root 固定を、同梱 resource 単体で使う正規経路は止めない。
+_handoff_plugin="$(cd "$TESTS_DIR/.." && pwd -P)"
+if FF_DEV_TOOLKIT_ROOT="$_handoff_plugin" bash "$_handoff_plugin/scripts/finish.sh" knowledge-commit status > "$HANDOFF_DIR/resource.out" 2>&1; then
+  ok "root handoff: resource 単体の正規な固定契約を維持"
+else
+  bad "root handoff: resource 単体の正規経路が失敗"
+fi
+
+# 針の不在・改名・書式変更は成功と読まない。診断を外した写しは検査が落ちることも実測する。
+# 変異の対象となるシェル変数式を展開せず照合する。
+# shellcheck disable=SC2016
+_handoff_predicate='if [[ -n "${FF_DEV_TOOLKIT_ROOT:-}" ]]; then'
+if [ "$(grep -cFx -- "$_handoff_predicate" "$RUNNER")" -eq 1 ]; then
+  # 本文中の変数式を変異対象のリテラルとして扱う。
+  # shellcheck disable=SC2016
+  sed 's/^if \[\[ -n "${FF_DEV_TOOLKIT_ROOT:-}" \]\]; then$/if false; then/' "$RUNNER" > "$HANDOFF_DIR/mutant.sh"
+  if cmp -s "$RUNNER" "$HANDOFF_DIR/mutant.sh"; then
+    bad "root handoff: 診断除去の変異が適用されていない"
+  elif handoff_probe "$HANDOFF_DIR/mutant.sh" explicit; then
+    bad "root handoff: 診断を除去しても検査が緑（検出力なし）"
+  else
+    ok "root handoff: 診断除去の変異は起動前停止の検査を赤にする"
+  fi
+else
+  bad "root handoff: 対象の条件が不在・重複・改名（空振り）"
+fi
+rm -rf "$HANDOFF_DIR"
 fi
 
 # 集約入口の契約は既存の hook 登録検査と同じ suite で実測する。

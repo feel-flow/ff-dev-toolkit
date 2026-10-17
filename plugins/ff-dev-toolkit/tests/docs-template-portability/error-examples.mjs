@@ -150,6 +150,30 @@ export async function verifyErrorExamples(documents, check) {
       assert.equal(result.error.cause.status, 401);
       assert.equal(result.error.cause.payload, "original");
     })()`, context);
+    // §5 の良い例をそのまま関数へ入れる。外部境界を InternalError に戻す変異も検出する。
+    const skillCatch = block(skill, "// ✅ 良い例: 外部 SDK / HTTP の境界");
+    const resultExample = skillCatch.split("// ❌ 悪い例:")[0];
+    const throwMarker = "// ✅ 外部境界で再スローするなら";
+    assert.equal(skillCatch.split(throwMarker).length, 2, "external rethrow example must exist exactly once");
+    run(`async function skillExternalResult() { ${resultExample} }
+      async function skillExternalThrow() { ${skillCatch.slice(skillCatch.indexOf(throwMarker))} }
+      async function riskyOperation() { throw globalThis.externalOriginal; }`, context);
+    await run(`(async () => {
+      for (const original of [new TypeError("Failed to fetch"), { status: 401 }, "raw", null]) {
+        globalThis.externalOriginal = original;
+        const result = await skillExternalResult();
+        assert.equal(result.error.category, "never-fallback");
+        assert.equal(result.error.cause, original);
+        process.env.NODE_ENV = "production";
+        assert.throws(() => fallbackInProdOnly("fallback", result.error), (thrown) => thrown === result.error);
+        await assert.rejects(() => skillExternalThrow(), (thrown) =>
+          thrown.category === "never-fallback" && thrown.cause === original);
+      }
+      const known = new NotFoundError("known");
+      globalThis.externalOriginal = known;
+      assert.equal((await skillExternalResult()).error, known);
+      await assert.rejects(() => skillExternalThrow(), (thrown) => thrown === known);
+    })()`, context);
     run(block(patterns, "async function fetchUserWithPosts("), context);
     await run(`assert.rejects(() => fetchUserWithPosts("user"), (error) =>
       error.cause.status === 403 && error.cause.payload === "original")`, context);
@@ -197,5 +221,75 @@ export async function verifyErrorExamples(documents, check) {
     check(true, "決済テスト例の実行: 環境未設定/test/production のすべてでモック DI・成功と失敗");
   } catch (error) {
     check(false, "配布エラー処理例の実行契約（例の不在・空・改名・意味の変更も赤）", error.stack);
+  }
+}
+
+// 手動移植する兄弟文書も実コードを通し、主要文書だけの成功で見落とさない。
+export async function verifyPerformanceExample(documents, check) {
+  try {
+    const captured = [];
+    const capturedInfo = [];
+    const context = createContext({
+      assert,
+      req: { id: "request-test" },
+      captured, capturedInfo,
+      winston: {
+        createLogger: () => ({
+          info(_message, meta) { capturedInfo.push(meta); },
+          error(...args) {
+            assert.equal(args.length, 2, "Winston receives structured meta");
+            captured.push(args[1]);
+          },
+        }),
+        format: { combine() {}, timestamp() {}, errors() {}, json() {} },
+        transports: { File: class {} },
+      },
+    });
+    run(block(documents.errors, "abstract class AppError"), context);
+    run(block(documents.errors, "function normalizeExternalError("), context);
+    run(block(documents.patterns, "interface Logger {"), context);
+    run(
+      block(
+        documents.performance,
+        "const logger = winston.createLogger({",
+      ).replace(/^import .*;\n/gm, ""),
+      context,
+    );
+    await run(
+      `(async () => {
+      for (const original of [{ status: 503, body: { reason: "upstream" } }, new Error("failure"), "failure", null]) {
+        const service = new UserService();
+        service.userRepository = { create: async () => { throw original; } };
+        captured.length = 0; capturedInfo.length = 0;
+        const result = await service.createUser({ email: "must-not-log@example.test" });
+        assert.equal(result.success, false);
+        assert.equal(result.error, original);
+        assert.equal(captured.length, 1);
+        assert.deepEqual(captured[0].error, serializeError(original));
+        assert.equal(captured[0].requestId, "request-test");
+        assert.equal(Object.hasOwn(captured[0], "userId"), false);
+        assert.ok(!JSON.stringify([...captured, ...capturedInfo]).includes("must-not-log@example.test"));
+      }
+      const created = { id: "created-user", email: "must-not-log@example.test" };
+      const successService = new UserService();
+      successService.userRepository = { create: async () => created };
+      captured.length = 0; capturedInfo.length = 0;
+      const success = await successService.createUser({ email: created.email });
+      assert.equal(success.success, true);
+      assert.equal(success.data, created);
+      assert.equal(captured.length, 0);
+      assert.equal(capturedInfo.length, 2);
+      assert.equal(capturedInfo[1].userId, "created-user");
+      assert.ok(capturedInfo.every((meta) => meta.requestId === "request-test"));
+      assert.ok(!JSON.stringify(capturedInfo).includes(created.email));
+    })()`,
+      context,
+    );
+    check(
+      true,
+      "性能ガイドの失敗経路: 元の unknown 返却・Winston構造化ログ・requestId",
+    );
+  } catch (error) {
+    check(false, "性能ガイドの実コード実行", error.stack);
   }
 }
