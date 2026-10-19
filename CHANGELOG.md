@@ -20,6 +20,17 @@
 
 ## [Unreleased]
 
+## [0.158.0] - 2026-10-19
+
+### 変更
+
+- リリース用オーケストレータの回帰 fixture（`plugins/ff-dev-toolkit/tests/sync-sha-contract/release-runtime.sh`）に、タグを打たなかった中間版を畳み込む GitHub Release の本文・件名（中間版ごとの節と分類件数の合算）と、ゲート走行中に既定ブランチが公開対象・リリース機構・断片の外だけ進んだ回の続行と、それらに触れる前進での停止を検査するケースを足し、`plugins/ff-dev-toolkit/tests/sync-sha-contract/verify.sh` の承認範囲の期待文を更新した（開発元リポジトリ専用の検査で、公開 checkout では従来どおり skip される）
+
+### 修正
+
+- `check-refine-invariants` の compact 照合が、旧メタ表の日本語キー（カテゴリ、ソース、日付、ステータスなど）を正準英語と同じフィールドとして読むようにした。archive に Status 行が無いエントリは live の active または deprecated を一致とみなす。行があるのに値が違う場合は従来どおり違反になる。
+- 操作ログが `playbook/CHANGELOG.md` へ分かれているとき、本体に Changelog 節が無い、または版見出しが無い場合はその分割ファイルを走査する。版見出しはフェンスと HTML コメントの外だけを数える。本体に版見出しがあるときは分割側を読まず、索引行の検査は常に PLAYBOOK.md 本体を見る。
+
 ## [0.157.0] - 2026-10-19
 
 ### 変更

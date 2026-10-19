@@ -5,7 +5,11 @@
  * - compact: Changelog 記載 ID は archive にあり、後続 merge の統合元でも `- Archived:` 記載でも
  *   なければ live にもある。第 2 変種は provenance・メタ表を除く本文が逐語一致
  *   （統合先になった ID は本文 1 文追記があり得るので本文比較しない）。
- *   Category / Origin / Date / Status は一致、Helpful / Harmful は live >= archive
+ *   Category / Origin / Date / Status は一致、Helpful / Harmful は live >= archive。
+ *   キーは正準英語に加え、`**` を外した旧テーブル形式の別名も読む
+ *   （カテゴリ、ソース / source / 発見元、日付 / created、helpful、harmful、
+ *   ステータス / status / 状態）。archive に Status 行が無いときは live の
+ *   active / deprecated を一致とみなす（行があるのに値が違うときは違反）
  * - merge: 統合元は live / 索引から消え、archive で一意、Status=merged、
  *   Merged into の着地が live の active、カウンターは合算下限を満たす
  * - archive: Changelog の `- Archived:` 記載 ID は archive で一意・`> Archived:` provenance を持ち、
@@ -14,6 +18,10 @@
  *
  * 走査対象は **`## Changelog` 節だけ**（次のレベル 2 見出し直前まで）。エントリ本文が
  * refine 運用を解説して同形 bullet を書いても操作として採用しない（Issue #1030）。
+ * 節の探索は本体を優先する。本体に節が無い、または節はあるが版見出し（`### [x.y.z]`）が
+ * 無いときは `playbook/CHANGELOG.md`（直下だけ）を読む。版見出しはフェンスと HTML
+ * コメントの外だけを数える。採用したときはログに出典を付ける。
+ * 索引行の検査は本体のまま（Issue `#2130`、ACE-1110-2）。
  * 同節の中では `- Compacted:` は括弧書きの外、`- Promoted:` / `- Archived:` はコロン直後の
  * ID 列だけを読む。どのラベルも ID どうしの区切りは `,` / `、` に限り、それ以外で並べた行は
  * malformed として拒否する（Issue #1184）。同一の `- Merged: X → Y` が複数行あっても 1 操作として数える。
@@ -57,6 +65,42 @@ const META_FIELDS = [
   "Harmful",
   "Status",
 ] as const;
+/**
+ * 正準英語キーに加える旧テーブル形式の別名（Issue `#2130`）。
+ * 比較前にセルの `**` を外す（`| **カテゴリ** |`）。英語の大文字小文字は別名に書いたものだけを受ける。
+ * `g` フラグは付けない。モジュール定数の global 正規表現は `lastIndex` を呼び出しの間で持ち越す。
+ */
+const META_FIELD_LABELS: {
+  readonly [K in (typeof META_FIELDS)[number]]: readonly string[];
+} = {
+  Category: ["Category", "カテゴリ"],
+  Origin: ["Origin", "ソース", "source", "発見元"],
+  Date: ["Date", "日付", "created"],
+  Helpful: ["Helpful", "helpful"],
+  Harmful: ["Harmful", "harmful"],
+  Status: ["Status", "ステータス", "status", "状態"],
+};
+/** archive に Status 行が無い compact で、live 側として受理する値。 */
+const COMPACT_STATUS_WHEN_ARCHIVE_OMITS = new Set<string>(["active", "deprecated"]);
+
+function metaLabelPattern(labels: readonly string[]): RegExp {
+  const alternation = labels.map((label) => escapeRegExp(label)).join("|");
+  return new RegExp(
+    String.raw`\|\s*(?:\*\*)?(?:${alternation})(?:\*\*)?\s*\|\s*([^|\n]+)\|`,
+    "u",
+  );
+}
+
+const META_FIELD_PATTERNS: {
+  readonly [K in (typeof META_FIELDS)[number]]: RegExp;
+} = {
+  Category: metaLabelPattern(META_FIELD_LABELS.Category),
+  Origin: metaLabelPattern(META_FIELD_LABELS.Origin),
+  Date: metaLabelPattern(META_FIELD_LABELS.Date),
+  Helpful: metaLabelPattern(META_FIELD_LABELS.Helpful),
+  Harmful: metaLabelPattern(META_FIELD_LABELS.Harmful),
+  Status: metaLabelPattern(META_FIELD_LABELS.Status),
+};
 const VARIANT_B_MARKER = "メタ表のみ正準フォーマットへ再整形";
 /**
  * ID 列の区切りとして許す並び。`Archived:` / `Promoted:` / `Compacted:` の 3 ラベルが
@@ -130,6 +174,8 @@ const CHANGELOG_LABEL_PREFIXES = [
   "- Archived:",
 ] as const;
 const CHANGELOG_HEADING_PATTERN = /^##\s+Changelog\s*$/u;
+/** 本体の Changelog が空スタブでなく実体だとみなす版見出し。`### [x.y.z]`。 */
+const CHANGELOG_VERSION_HEADING_PATTERN = /^###\s+\[[0-9]+\.[0-9]+\.[0-9]+\]/u;
 const LEVEL2_HEADING_LINE_PATTERN = /^##\s+/u;
 const HAS_LEVEL2_HEADING_PATTERN = /^##\s+/mu;
 const INDEX_ROW_PATTERN = (id: string): RegExp =>
@@ -550,12 +596,22 @@ export function parseChangelogOperations(playbookContent: string): ChangelogOper
 export function extractMetaFields(segment: string): MetaFields {
   const fields = {} as Record<(typeof META_FIELDS)[number], string | null>;
   for (const field of META_FIELDS) {
-    const match = segment.match(
-      new RegExp(String.raw`\|\s*${field}\s*\|\s*([^|\n]+)\|`, "u"),
-    );
+    const match = segment.match(META_FIELD_PATTERNS[field]);
     fields[field] = match ? match[1].trim() : null;
   }
   return fields;
+}
+
+/**
+ * compact の Status 一致。archive に行が無い旧テーブル形式は、live の
+ * `active` / `deprecated` を受理する。行が在って値が違うときは受理しない。
+ */
+function compactStatusMatches(live: string | null, archive: string | null): boolean {
+  // 行が無い（null）同士は一致にしない。省略を許すのは live の active / deprecated だけ。
+  if (archive === null) {
+    return live !== null && COMPACT_STATUS_WHEN_ARCHIVE_OMITS.has(live);
+  }
+  return live === archive;
 }
 
 function isProvenanceLine(line: string): boolean {
@@ -748,11 +804,16 @@ function firstBlock(blocks: readonly EntryBlock[], id: string): EntryBlock | und
 
 export function evaluateRefineInvariants(input: {
   readonly playbookContent: string;
+  /**
+   * 操作の走査元。省略時は playbookContent。
+   * 分割レイアウトでは `playbook/CHANGELOG.md` の内容を渡し、索引行の検査は playbookContent のまま行う。
+   */
+  readonly changelogContent?: string;
   readonly liveBlocks: readonly EntryBlock[];
   readonly archiveBlocks: readonly EntryBlock[];
   readonly patternsContent: string | null;
 }): string[] {
-  const ops = parseChangelogOperations(input.playbookContent);
+  const ops = parseChangelogOperations(input.changelogContent ?? input.playbookContent);
   const liveIds = new Set(input.liveBlocks.map((b) => b.id));
   const archiveIds = new Set(input.archiveBlocks.map((b) => b.id));
   const mergedSources = new Set(ops.mergedPairs.map((p) => p.source));
@@ -804,7 +865,11 @@ export function evaluateRefineInvariants(input: {
     const liveMeta = extractMetaFields(live.text);
     const archiveMeta = extractMetaFields(archived.text);
     for (const field of ["Category", "Origin", "Date", "Status"] as const) {
-      if (liveMeta[field] !== archiveMeta[field]) {
+      const matches =
+        field === "Status"
+          ? compactStatusMatches(liveMeta.Status, archiveMeta.Status)
+          : liveMeta[field] === archiveMeta[field];
+      if (!matches) {
         violations.push(
           `compact ${id}: ${field} が一致しない（live=${liveMeta[field] ?? "∅"} / archive=${archiveMeta[field] ?? "∅"}）`,
         );
@@ -1067,12 +1132,48 @@ function readOrThrow(filePath: string): string {
   return fs.readFileSync(filePath, "utf8").replace(/\r\n/gu, "\n");
 }
 
+function formatReadError(error: unknown): string {
+  if (error instanceof Error) {
+    const filePath = (error as Error & { path?: unknown }).path;
+    return typeof filePath === "string" && filePath !== ""
+      ? `${filePath}: ${error.message}`
+      : error.message;
+  }
+  return String(error);
+}
+
 function collectBlocks(files: readonly string[]): EntryBlock[] {
   const blocks: EntryBlock[] = [];
   for (const filePath of files) {
-    blocks.push(...splitEntryBlocks(readOrThrow(filePath), filePath));
+    let text: string;
+    try {
+      text = readOrThrow(filePath);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${filePath}: ${message}`);
+    }
+    blocks.push(...splitEntryBlocks(text, filePath));
   }
   return blocks;
+}
+
+function lineMatches(content: string, pattern: RegExp): boolean {
+  return content.split("\n").some((line) => pattern.test(line));
+}
+
+/**
+ * 本体の Changelog を操作の正本にするか。
+ * レベル 2 見出しが無い断片は全文を Changelog とみなす（単体テストの 1 行入力）。
+ * 節が無い、または版見出しの無い空スタブは分割 `playbook/CHANGELOG.md` へ譲る。
+ */
+function bodyChangelogAuthoritative(content: string): boolean {
+  // 操作走査と同じくフェンスと HTML コメントを除く。空スタブの例示に版見出しがあると、
+  // 分割側の操作を見ないまま Compacted 0 で通る。
+  const masked = blankHtmlBlockComments(blankCodeRegions(content).text);
+  if (!HAS_LEVEL2_HEADING_PATTERN.test(masked)) return true;
+  const section = extractChangelogSection(masked);
+  if (section === "") return false;
+  return lineMatches(section, CHANGELOG_VERSION_HEADING_PATTERN);
 }
 
 export function main(): number {
@@ -1112,19 +1213,49 @@ export function main(): number {
     return EXIT_USAGE_ERROR;
   }
 
-  const liveBlocks = collectBlocks(liveFiles);
-  const archiveBlocks = collectBlocks(archiveFiles);
+  let liveBlocks: EntryBlock[];
+  let archiveBlocks: EntryBlock[];
+  try {
+    // `.md` で終わるディレクトリ（playbook/CHANGELOG.md がディレクトリ等）は discover が
+    // 拾う。読み込み側で名指しして止める（黙って辿ると件数が変わる）。
+    liveBlocks = collectBlocks(liveFiles);
+    archiveBlocks = collectBlocks(archiveFiles);
+  } catch (error: unknown) {
+    console.error(`読み込み失敗: ${formatReadError(error)}`);
+    return EXIT_USAGE_ERROR;
+  }
   const patternsPath = resolvePatternsPath(playbookPath, process.env.ACE_PATTERNS_PATH);
   const patternsContent = fs.existsSync(patternsPath) ? readOrThrow(patternsPath) : null;
 
-  const ops = parseChangelogOperations(playbookContent);
+  let changelogContent = playbookContent;
+  let changelogSource: "body" | "split" = "body";
+  if (!bodyChangelogAuthoritative(playbookContent)) {
+    const splitPath = path.join(path.dirname(playbookPath), "playbook", "CHANGELOG.md");
+    if (fs.existsSync(splitPath)) {
+      let splitText: string;
+      try {
+        splitText = readOrThrow(splitPath);
+      } catch (error: unknown) {
+        console.error(`読み込み失敗: ${splitPath}: ${formatReadError(error)}`);
+        return EXIT_USAGE_ERROR;
+      }
+      if (lineMatches(splitText, CHANGELOG_HEADING_PATTERN)) {
+        changelogContent = splitText;
+        changelogSource = "split";
+      }
+    }
+  }
+
+  const ops = parseChangelogOperations(changelogContent);
   console.log(`Playbook: ${playbookPath}`);
+  const splitSuffix = changelogSource === "split" ? "（playbook/CHANGELOG.md）" : "";
   console.log(
-    `Changelog 操作: Compacted ${String(ops.compactedIds.length)} / Merged ${String(ops.mergedPairs.length)} / Promoted ${String(ops.promotedIds.length)} / Archived ${String(ops.archivedIds.length)}`,
+    `Changelog 操作: Compacted ${String(ops.compactedIds.length)} / Merged ${String(ops.mergedPairs.length)} / Promoted ${String(ops.promotedIds.length)} / Archived ${String(ops.archivedIds.length)}${splitSuffix}`,
   );
 
   const violations = evaluateRefineInvariants({
     playbookContent,
+    ...(changelogSource === "split" ? { changelogContent } : {}),
     liveBlocks,
     archiveBlocks,
     patternsContent,

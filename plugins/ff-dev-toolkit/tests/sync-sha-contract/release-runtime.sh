@@ -23,7 +23,7 @@ HOOK="${2:-}"
 [[ -n "$ORCH" && -f "$ORCH" ]] || { echo "✗ オーケストレータがありません: ${ORCH:-<未指定>}" >&2; exit 1; }
 ORCH_DIR="$(cd "$(dirname "$ORCH")" && pwd -P)"
 REPO_ROOT="$(cd "$ORCH_DIR/.." && pwd -P)"
-for need in "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" \
+for need in "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/scripts/lib/release-gate-advance-functions.sh" \
   "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh"; do
   [[ -f "$need" ]] || { echo "✗ オーケストレータの依存 lib がありません: $need" >&2; exit 1; }
 done
@@ -193,7 +193,70 @@ echo "stub digest $1..$2"
 STUB
   write_stub "$r/plugins/ff-dev-toolkit/tests/run-all.sh" <<'STUB'
 #!/usr/bin/env bash
+# 明示引数 = gate 段が鮮度の赤だった suite だけを再検査する呼び出し（Issue `#2202`）。名指しの件数で緑に完走する
+# （recheck.red = 鮮度以外の赤 / recheck.skip = 名指しの suite が suite 単位で skip して exit 0）
+if [[ $# -gt 0 ]]; then
+  echo "recheck ${FF_RUN_ALL_FULL:-0} $*" >>"$RELEASE_RT_STATE/recheck.log"
+  if [[ -f "$RELEASE_RT_STATE/recheck.red" ]]; then
+    rm -f "$RELEASE_RT_STATE/recheck.red"
+    echo "suites: total=$# run=$# passed=$(($# - 1)) failed=1 skipped=0 not-run=0"
+    echo "checks-skipped: total=0 suites=0"
+    echo "✗ failed: changelog-fragments" >&2
+    exit 1
+  fi
+  if [[ -f "$RELEASE_RT_STATE/recheck.skip" ]]; then
+    rm -f "$RELEASE_RT_STATE/recheck.skip"
+    echo "suites: total=$# run=$# passed=$(($# - 1)) failed=0 skipped=1 not-run=0"
+    echo "checks-skipped: total=0 suites=0"
+    exit 0
+  fi
+  echo "suites: total=$# run=$# passed=$# failed=0 skipped=0 not-run=0"
+  echo "checks-skipped: total=0 suites=0"
+  exit 0
+fi
 echo "run ${FF_RUN_ALL_FULL:-0}" >>"$RELEASE_RT_STATE/runall.log"
+# ゲート走行中に並行セッションの PR が develop へ入った回: 別 clone から origin へ push し、base の先行で
+# 鮮度分類の suite が赤になった run-all の出力を本物と同じ行の形で出す（kind = 前進が触れる path の種類）
+if [[ -f "$RELEASE_RT_STATE/runall.advance" ]]; then
+  kind="$(cat "$RELEASE_RT_STATE/runall.advance")"
+  rm -f "$RELEASE_RT_STATE/runall.advance"
+  side="$RELEASE_RT_STATE/side"
+  # moved = 走行中に同じ checkout で公開対象を変えるコミットが作られ origin へ push された回（検査した HEAD と
+  # 再検査の起点がずれる。固定しないと、分類も検査もしていないコミットごと進めて緑にする）
+  if [[ "$kind" == moved ]]; then
+    self="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
+    printf '%s\n' "- moved during gate" >>"$self/plugins/ff-dev-toolkit/scripts/moved.txt"
+    git -C "$self" add -A
+    git -C "$self" -c user.name="Same Checkout" -c user.email=same@example.com commit -qm "moved during gate"
+    git -C "$self" push -q origin HEAD:refs/heads/develop
+  fi
+  [[ -d "$side/.git" ]] || git clone -q "$RELEASE_RT_SSOT_ORIGIN" "$side"
+  git -C "$side" fetch -q origin && git -C "$side" checkout -q -B develop origin/develop
+  case "$kind" in
+    public) f=plugins/ff-dev-toolkit/scripts/side.txt ;;
+    tooling) f=scripts/side-tool.txt ;;
+    changelog) f=changelog.d/990.added.side.md ;;
+    *) f=plugins/ff-media-toolkit/side.txt ;;
+  esac
+  mkdir -p "$side/${f%/*}"
+  printf '%s\n' "- side ${kind}" >>"$side/$f"
+  git -C "$side" add -A
+  git -C "$side" -c user.name="Side Session" -c user.email=side@example.com commit -qm "side: ${kind}"
+  git -C "$side" push -q origin develop
+  git -C "$side" rev-parse HEAD >"$RELEASE_RT_STATE/side.sha"
+  echo "  ○ skip: estimation カテゴリファイルは未作成（stub）"
+  extra=""
+  [[ "$kind" != mixed ]] || extra=" other-suite"
+  # miscount = 名指しは鮮度の 2 suite だけだが会計行の failed が合わない（完走の証拠にならない）
+  failed_n=2; [[ "$kind" != mixed && "$kind" != miscount ]] || failed_n=3
+  echo "suites: total=4 run=4 passed=$((4 - failed_n)) failed=${failed_n} skipped=0 not-run=0"
+  echo "checks-skipped: total=1 suites=1"
+  # notrun = 起動できなかった suite が同じ回に混ざる（鮮度だけでは説明できない）
+  [[ "$kind" != notrun ]] || echo "✗ not run (suite を起動できなかった): other-suite (not executable)" >&2
+  echo "✗ failed: changelog-fragments shared-version-convergence${extra}" >&2
+  echo "✗ stale (base が先行しているための赤を含む): changelog-fragments shared-version-convergence" >&2
+  exit 1
+fi
 [[ ! -f "$RELEASE_RT_STATE/runall.empty" ]] || exit 0
 m="$(git -C "$(dirname "$0")" rev-parse --absolute-git-dir)/ff-release-in-flight/info"
 [[ ! -f "$m" ]] || cp "$m" "$RELEASE_RT_STATE/marker-seen"
@@ -240,6 +303,11 @@ STUB
 if [[ -f "$RELEASE_RT_STATE/fragments.fail-once" ]]; then rm -f "$RELEASE_RT_STATE/fragments.fail-once"; echo "✗ changelog-fragments verify: stub 失敗" >&2; exit 1; fi
 echo "✓ changelog-fragments verify"
 STUB
+  # gate 段の鮮度の再検査が名指しする suite の実在（中身は run-all の stub が明示引数の呼び出しとして代行する）
+  write_stub "$r/plugins/ff-dev-toolkit/tests/shared-version-convergence/verify.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "✓ shared-version-convergence verify"
+STUB
 }
 
 # ── fixture: 疑似 SSOT ───────────────────────────────────────────────────────
@@ -248,7 +316,7 @@ mkdir -p "$SSOT/scripts/lib" "$SSOT/plugins/ff-dev-toolkit/.claude-plugin" "$SSO
 cp "$ORCH" "$SSOT/scripts/release-dev-toolkit.sh"
 cp "$REPO_ROOT/scripts/check-full-gate-reuse.sh" "$SSOT/scripts/"
 chmod +x "$SSOT/scripts/release-dev-toolkit.sh"
-cp "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$SSOT/scripts/lib/"
+cp "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/scripts/lib/release-gate-advance-functions.sh" "$SSOT/scripts/lib/"
 cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh" "$SSOT/plugins/ff-dev-toolkit/scripts/lib/"
 build_ssot_stubs "$SSOT"
 printf '{\n  "name": "ff-dev-toolkit",\n  "version": "0.31.0",\n  "description": "fixture"\n}\n' \
@@ -292,7 +360,7 @@ git -C "$PUB" fetch -q --tags origin "+refs/heads/main:refs/remotes/origin/main"
 git -C "$PUB" checkout -q -b main origin/main
 printf '%s\n' v0.31.0 >"$STATE/releases"
 
-export RELEASE_RT_STATE="$STATE" RELEASE_RT_PUBLIC="$PUB"
+export RELEASE_RT_STATE="$STATE" RELEASE_RT_PUBLIC="$PUB" RELEASE_RT_SSOT_ORIGIN="$SSOT_ORIGIN"
 export PATH="$STUB_BIN:$PATH"
 
 OUT="" RC=0
@@ -459,6 +527,17 @@ if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=0.32.1" && has "RELEASE_STAGE=gate 
   ok "再実行は二重 bump せず、同じ HEAD のゲートを回し直さずに（footer 後の 1 回だけ）続きから完了する"
 else
   bad "再実行が続きから進まない (rc=$RC run-all: ${runs_before}→${runs_mid}→${runs_after})"; dump
+fi
+# 中間版の無いリリースの本文・件名は中間版対応（Issue `#2202`）の前とバイト同一（回帰の針。期待値は変更前の
+# スクリプトで同じ fixture を流した出力）
+expected_notes="$(printf '%s\n' '## 概要' '' 'v0.32.1 の変更（修正 1）。' '' '' '### 修正' '' '- 不具合を直した' '' \
+  '- CHANGELOG: https://github.com/feel-flow/ff-dev-toolkit/blob/v0.32.1/CHANGELOG.md' \
+  '- compare: https://github.com/feel-flow/ff-dev-toolkit/compare/v0.32.0...v0.32.1')"
+if [[ "$(cat "$STATE/title-v0.32.1" 2>/dev/null)" == "v0.32.1 — 修正 1" && "$(cat "$STATE/notes-v0.32.1" 2>/dev/null)" == "$expected_notes" ]]; then
+  ok "中間版の無いリリースの件名・本文は従来どおり（新版の節だけ・件名は新版の分類件数）"
+else
+  bad "中間版の無いリリースの件名・本文が従来と違う"
+  { cat "$STATE/title-v0.32.1"; cat "$STATE/notes-v0.32.1"; } 2>/dev/null | sed 's/^/    | /' >&2
 fi
 
 echo "-- release: 止まるべき状態 --"
@@ -881,6 +960,263 @@ else
   bad "report 段の非 green を released にした (rc=$RC)"; dump
 fi
 rm -f "$STATE/tags.skip-at"
+
+echo "-- release: タグを打たなかった中間版を畳み込む Release --"
+# 版を進めたがタグを打たないまま次の版が積まれた状態（v0.156.0 → v0.157.0 の実例）を作る。中間版 2 つを
+# 新しい順に並べ、分類の重なり（追加は両方・修正は片方）で件数の合算と並びを確かめる
+CURV="$(jq -r .version "$SSOT/plugins/ff-dev-toolkit/.claude-plugin/plugin.json")"
+IV1="$(next_minor)"
+IV2="$(printf '%s\n' "$IV1" | awk -F. '{ print $1 "." ($2 + 1) ".0" }')"
+NEWV="$(printf '%s\n' "$IV2" | awk -F. '{ print $1 "." ($2 + 1) ".0" }')"
+awk -v n="$NEWV" -v a="$IV2" -v b="$IV1" '
+  { print }
+  $0 == "## [Unreleased]" && !done {
+    print ""; print "## [" n "] - 2026-10-19"; print ""; print "### 変更"; print ""; print "- 新版の変更"
+    print ""; print "## [" a "] - 2026-10-18"; print ""; print "### 追加"; print ""; print "- 中間版 2 の追加"
+    print ""; print "## [" b "] - 2026-10-17"; print ""; print "### 追加"; print ""; print "- 中間版 1 の追加"; print ""; print "### 修正"; print ""; print "- 中間版 1 の修正"
+    done = 1
+  }' "$SSOT/oss/ff-dev-toolkit/CHANGELOG.md" >"$TMP/cl" && mv "$TMP/cl" "$SSOT/oss/ff-dev-toolkit/CHANGELOG.md"
+jq --arg v "$NEWV" '.version = $v' "$SSOT/plugins/ff-dev-toolkit/.claude-plugin/plugin.json" >"$TMP/pj" \
+  && mv "$TMP/pj" "$SSOT/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
+printf '%s\n' '# config' "toolkit_version: \"$NEWV\"" >"$SSOT/plugins/ff-dev-toolkit/scripts/agent-config.yaml"
+commit_push "release: intermediate versions"
+run_orch --dry-run
+if [[ "$RC" -eq 0 ]] && has "--notes-file <版節 + 中間版 v${IV2}・v${IV1} の節 + CHANGELOG / compare リンク>"; then
+  ok "dry-run の Release の PLAN 行が、畳み込む中間版を名指しする"
+else
+  bad "dry-run の Release の PLAN 行に中間版が出ない (rc=$RC)"; dump
+fi
+run_orch
+expected_notes="$(printf '%s\n' '## 概要' '' "本リリースはタグを打っていない v${IV2}・v${IV1} の変更を含みます。" '' \
+  "v${NEWV} の変更（変更 1）、v${IV2} の変更（追加 1）、v${IV1} の変更（追加 1 / 修正 1）。" '' \
+  '' '### 変更' '' '- 新版の変更' \
+  '' "## v${IV2} の変更（タグを打っていない中間版・2026-10-18）" '' '### 追加' '' '- 中間版 2 の追加' \
+  '' "## v${IV1} の変更（タグを打っていない中間版・2026-10-17）" '' '### 追加' '' '- 中間版 1 の追加' '' '### 修正' '' '- 中間版 1 の修正' \
+  '' "- CHANGELOG: https://github.com/feel-flow/ff-dev-toolkit/blob/v${NEWV}/CHANGELOG.md" \
+  "- compare: https://github.com/feel-flow/ff-dev-toolkit/compare/v${CURV}...v${NEWV}")"
+if [[ "$RC" -eq 0 ]] && has "RELEASE_VERSION=${NEWV}" && [[ "$(cat "$STATE/notes-v${NEWV}" 2>/dev/null)" == "$expected_notes" ]]; then
+  ok "中間版を畳み込む Release の本文は、新版の節に続けて中間版ごとの節（版番号・日付の見出し付き・新しい順）を含む"
+else
+  bad "中間版を畳み込む Release の本文が期待と違う (rc=$RC)"; dump
+  cat "$STATE/notes-v${NEWV}" 2>/dev/null | sed 's/^/    | /' >&2
+fi
+if [[ "$(cat "$STATE/title-v${NEWV}" 2>/dev/null)" == "v${NEWV} — 変更 1 / 追加 2 / 修正 1（v${IV2}・v${IV1} を含む）" ]]; then
+  ok "中間版を畳み込む Release の件名は、新版と中間版の分類件数の合算で、合算であることを件名に書く"
+else
+  bad "中間版を畳み込む Release の件名が期待と違う: $(cat "$STATE/title-v${NEWV}" 2>/dev/null)"
+fi
+if ! git -C "$PUB_ORIGIN" rev-parse --verify --quiet "refs/tags/v${IV1}" >/dev/null \
+  && ! git -C "$PUB_ORIGIN" rev-parse --verify --quiet "refs/tags/v${IV2}" >/dev/null \
+  && ! grep -qx "v${IV1}" "$STATE/releases" && ! grep -qx "v${IV2}" "$STATE/releases"; then
+  ok "中間版にはタグも Release も作らない（取りこぼし検査はタグの無い版を数えない）"
+else
+  bad "中間版にタグを打った"
+fi
+# --summary を付けた回も、畳み込んだ版を件名の末尾に書く（要約が件数を置き換えても中間版の存在は件名から読める）
+IV3="$(next_minor)"
+NEWV2="$(printf '%s\n' "$IV3" | awk -F. '{ print $1 "." ($2 + 1) ".0" }')"
+awk -v n="$NEWV2" -v a="$IV3" '
+  { print }
+  $0 == "## [Unreleased]" && !done {
+    print ""; print "## [" n "] - 2026-10-20"; print ""; print "### 修正"; print ""; print "- 新版の修正"
+    print ""; print "## [" a "] - 2026-10-19"; print ""; print "### 追加"; print ""; print "- 中間版 3 の追加"
+    done = 1
+  }' "$SSOT/oss/ff-dev-toolkit/CHANGELOG.md" >"$TMP/cl" && mv "$TMP/cl" "$SSOT/oss/ff-dev-toolkit/CHANGELOG.md"
+jq --arg v "$NEWV2" '.version = $v' "$SSOT/plugins/ff-dev-toolkit/.claude-plugin/plugin.json" >"$TMP/pj" \
+  && mv "$TMP/pj" "$SSOT/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
+printf '%s\n' '# config' "toolkit_version: \"$NEWV2\"" >"$SSOT/plugins/ff-dev-toolkit/scripts/agent-config.yaml"
+commit_push "release: intermediate version with summary"
+run_orch --summary "要約"
+if [[ "$RC" -eq 0 && "$(cat "$STATE/title-v${NEWV2}" 2>/dev/null)" == "v${NEWV2} — 要約（v${IV3} を含む）" ]] \
+  && grep -qx "## v${IV3} の変更（タグを打っていない中間版・2026-10-19）" "$STATE/notes-v${NEWV2}"; then
+  ok "--summary を付けた中間版の Release も、件名の末尾に畳み込んだ版を書き、本文に中間版の節を載せる"
+else
+  bad "--summary を付けた中間版の Release の件名・本文が期待と違う (rc=$RC): $(cat "$STATE/title-v${NEWV2}" 2>/dev/null)"; dump
+fi
+
+echo "-- release: 承認後の develop の前進の分類（--advance-check） --"
+# 承認した HEAD からの前進を neutral / public / tooling / changelog の 4 分類（+ 両方・前進なし・分岐・判定不能）で
+# 確かめる。SKILL「承認の求め方」の再承認不要の条件 (a) を機械で決める口で、gate 段の鮮度の再検査も同じ判定
+# （advance_scope）を引く
+advance_commit() { # $1=path $2=メッセージ（公開対象の changes.txt を足さない直コミット。.sh へはコメント行を足す）
+  mkdir -p "$SSOT/${1%/*}"
+  if [[ "$1" == *.sh ]]; then printf '# %s\n' "$2" >>"$SSOT/$1"; else printf '%s\n' "- $2" >>"$SSOT/$1"; fi
+  git -C "$SSOT" add -A
+  git -C "$SSOT" commit -qm "$2"
+  git -C "$SSOT" push -q origin develop
+}
+# リリース機構（後段が実行する scripts/ 配下。同期スクリプト・lib）の変更は tooling（gate と dry-run が見ていない
+# スクリプトで同期・footer 追従をしないため）
+for _case in "neutral|plugins/ff-media-toolkit/notes.txt|0" "public|plugins/ff-dev-toolkit/scripts/notes.txt|1" \
+  "tooling|scripts/sync-dev-toolkit-to-public.sh|1" "tooling|scripts/lib/notes.sh|1" "changelog|changelog.d/991.added.notes.md|1"; do
+  _kind="${_case%%|*}"; _rest="${_case#*|}"; _path="${_rest%%|*}"; _want_rc="${_rest#*|}"
+  _from="$(git -C "$SSOT" rev-parse HEAD)"
+  advance_commit "$_path" "advance: ${_kind}"
+  run_orch --advance-check "$_from"
+  if [[ "$RC" -eq "$_want_rc" ]] && has "ADVANCE=${_kind}" && has "ADVANCE_RANGE=${_from:0:12}.." \
+    && { [[ "$_kind" == neutral ]] && ! has "ADVANCE_PATH=" || has "ADVANCE_PATH=${_path}"; }; then
+    ok "--advance-check: ${_path} だけの前進は ADVANCE=${_kind}（rc=${_want_rc}）"
+  else
+    bad "--advance-check: ${_kind} の前進の分類が違う (rc=$RC)"; dump
+  fi
+done
+# 公開対象と changelog.d の両方に触れる前進は public（公開対象を優先して名指しする）
+_from="$(git -C "$SSOT" rev-parse HEAD)"
+advance_commit "changelog.d/992.added.both.md" "advance: both (fragment)"
+advance_commit "plugins/ff-dev-toolkit/scripts/notes.txt" "advance: both (public)"
+run_orch --advance-check "$_from"
+if [[ "$RC" -eq 1 ]] && has "ADVANCE=public" && has "ADVANCE_PATH=plugins/ff-dev-toolkit/scripts/notes.txt" && has "ADVANCE_PATH=changelog.d/992.added.both.md"; then
+  ok "--advance-check: 公開対象と changelog.d の両方に触れる前進は ADVANCE=public（触れた path を両方出す）"
+else
+  bad "--advance-check: 両方に触れる前進の分類が違う (rc=$RC)"; dump
+fi
+run_orch --advance-check "$(git -C "$SSOT" rev-parse HEAD)"
+if [[ "$RC" -eq 0 ]] && has "ADVANCE=none"; then ok "--advance-check: 前進が無ければ ADVANCE=none（rc=0）"; else bad "--advance-check: 前進なしの分類が違う (rc=$RC)"; dump; fi
+run_orch --advance-check deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+if [[ "$RC" -eq 2 ]] && has "ADVANCE=unknown" && has "REASON=承認した HEAD"; then
+  ok "--advance-check: 解決できない HEAD は ADVANCE=unknown（rc=2。再承認不要の根拠にしない）"
+else
+  bad "--advance-check: 解決できない HEAD の扱いが違う (rc=$RC)"; dump
+fi
+# origin/develop の祖先でない承認 HEAD（develop が書き換えられた回）は分岐として再承認側へ倒す
+_sibling="$(git -C "$SSOT" commit-tree "HEAD^{tree}" -p "HEAD~1" -m "sibling of HEAD")"
+_state_before="$(cat "$SSOT/.git/ff-release-state" 2>/dev/null)"
+run_orch --advance-check "$_sibling"
+if [[ "$RC" -eq 1 ]] && has "ADVANCE=diverged" && [[ "$(cat "$SSOT/.git/ff-release-state" 2>/dev/null)" == "$_state_before" ]] \
+  && [[ ! -d "$SSOT/.git/ff-release-in-flight" && -z "$(git -C "$SSOT" status --porcelain)" ]]; then
+  ok "--advance-check: 祖先でない HEAD は ADVANCE=diverged（rc=1）。記録・in-flight 印・作業ツリーに書き込まない"
+else
+  bad "--advance-check: 分岐の扱いが違う、または何かを書き換えた (rc=$RC)"; dump
+fi
+# 再承認不要の条件 (b)(c) が neutral の前進で実際に成り立つこと: 前進の前後で dry-run の RELEASE_VERSION が同じで、
+# PLAN 行は SHA（16 進 7〜40 桁）を伏せると一致する（条件が満たせない規定にしない）
+plan_lines() { printf '%s\n' "$OUT" | awk '/^PLAN: /' | sed -E 's/[0-9a-f]{7,40}/<sha>/g'; }
+run_orch --dry-run
+_plan_before="$(plan_lines)"; _ver_before="$(printf '%s\n' "$OUT" | awk -F= '/^RELEASE_VERSION=/ { print $2 }')"; _rc_before="$RC"
+advance_commit "plugins/ff-media-toolkit/notes.txt" "advance: neutral after approval"
+run_orch --dry-run
+if [[ "$_rc_before" -eq 0 && "$RC" -eq 0 && -n "$_plan_before" && "$(plan_lines)" == "$_plan_before" ]] \
+  && [[ -n "$_ver_before" && "$(printf '%s\n' "$OUT" | awk -F= '/^RELEASE_VERSION=/ { print $2 }')" == "$_ver_before" ]]; then
+  ok "neutral の前進の前後で dry-run の RELEASE_VERSION が同じで、PLAN 行は SHA 以外一致する（再承認不要の条件 (b)(c) が成立しうる）"
+else
+  bad "neutral の前進の前後で dry-run の版または PLAN 行が SHA 以外でも変わる (rc=${_rc_before}→${RC})"
+  diff <(printf '%s\n' "$_plan_before") <(plan_lines) | sed 's/^/    | /' >&2 || true
+fi
+# 積んだ前進（公開対象・断片を含む）を 1 回のリリースで片付けて、以降のケースの起点を揃える
+run_orch
+[[ "$RC" -eq 0 ]] || { bad "--advance-check の前進を片付けるリリースが完了しない (rc=$RC)"; dump; }
+
+echo "-- release: gate 走行中の develop の前進（鮮度の赤） --"
+# neutral の前進（公開対象・リリース機構・changelog.d の外だけ）: HEAD を origin/develop へ進め、鮮度で赤だった suite
+# だけを再検査して続行する
+printf '%s\n' '- 前進の検査' >"$SSOT/changelog.d/120.added.advance.md"
+commit_push "feat: advance"
+printf 'neutral\n' >"$STATE/runall.advance"
+: >"$STATE/recheck.log"
+run_orch
+side_sha="$(cat "$STATE/side.sha" 2>/dev/null || true)"
+gate_ok_sha="$(awk -F= '$1 == "GATE_OK" { v = $2 } END { sub(/:.*/, "", v); print v }' "$SSOT/.git/ff-release-state")"
+if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "公開対象・リリース機構・changelog.d の外だけ進んだ" && has "GATE_STALE_RECHECK=green" \
+  && [[ -n "$side_sha" ]] && git -C "$SSOT" merge-base --is-ancestor "$side_sha" HEAD \
+  && grep -qx "recheck 0 plugins/ff-dev-toolkit/tests/changelog-fragments/verify.sh plugins/ff-dev-toolkit/tests/shared-version-convergence/verify.sh" "$STATE/recheck.log" \
+  && [[ "$(grep -c . "$STATE/recheck.log")" -eq 1 ]] && git -C "$SSOT" merge-base --is-ancestor "$side_sha" "$gate_ok_sha"; then
+  ok "neutral の前進で鮮度の赤になった gate は、HEAD を進めて鮮度の suite だけを同じモードで再検査し、続行して released になる"
+else
+  bad "neutral の前進で gate が続行しない、または再検査の範囲・記録が違う (rc=$RC)"; dump
+  sed 's/^/    | recheck: /' "$STATE/recheck.log" >&2
+fi
+# 公開対象・リリース機構に触れる前進と changelog.d だけの前進は、版・公開内容・後段のスクリプト・断片が変わりうるので
+# 従来どおり止める。
+# 各ケースの前に SSOT を origin へ追従させる（期待どおりに進まなかった回も、後続のケースを最後まで測るため）
+sync_ssot() { git -C "$SSOT" pull -q --ff-only origin develop; }
+for _kind in public tooling changelog; do
+  sync_ssot
+  printf '%s\n' "- 前進 ${_kind}" >"$SSOT/changelog.d/121.added.advance-${_kind}.md"
+  commit_push "feat: advance ${_kind}"
+  printf '%s\n' "$_kind" >"$STATE/runall.advance"
+  : >"$STATE/recheck.log"
+  pub_before="$(git -C "$PUB_ORIGIN" rev-parse main)"
+  run_orch
+  case "$_kind" in public) _label="公開対象" ;; tooling) _label="リリース機構（scripts/）" ;; *) _label=" changelog.d " ;; esac
+  if [[ "$RC" -eq 1 ]] && has "NG: [gate] ゲート走行中に develop が${_label}を変えるコミットで進んだ" \
+    && [[ ! -s "$STATE/recheck.log" && "$(git -C "$PUB_ORIGIN" rev-parse main)" == "$pub_before" ]]; then
+    ok "gate 走行中の ${_kind} の前進は鮮度の赤を再検査で片付けず、同期せずに止まる"
+  else
+    bad "gate 走行中の ${_kind} の前進で止まらない、または再検査・同期した (rc=$RC)"; dump
+  fi
+  run_orch
+  # changelog.d の前進が足した断片は版の準備より後に届いたので、その版の footer 周回が「新しい変更が入った」で
+  # 止まり、次の実行が次の版として集約する（既存の挙動。ここでは以降のケースの起点を揃える後片付け）
+  if [[ "$_kind" == changelog && "$RC" -eq 1 ]] && has "footer 追従の間に新しい公開対象の変更が develop へ入った"; then run_orch; fi
+  [[ "$RC" -eq 0 ]] || { bad "${_kind} の前進で止まった後の再実行が完了しない (rc=$RC)"; dump; }
+done
+# 鮮度の赤に変更起因の赤が混ざる回は、前進が neutral でも従来どおり止める
+sync_ssot
+printf '%s\n' '- 前進 mixed' >"$SSOT/changelog.d/122.added.advance-mixed.md"
+commit_push "feat: advance mixed"
+printf 'mixed\n' >"$STATE/runall.advance"
+: >"$STATE/recheck.log"
+run_orch
+if [[ "$RC" -eq 1 ]] && has "NG: [gate] run-all が失敗した — 同期しない" && [[ ! -s "$STATE/recheck.log" ]]; then
+  ok "鮮度以外の赤が混ざる回は、前進が neutral でも再検査せずに止まる"
+else
+  bad "鮮度以外の赤が混ざる回で止まらない、または再検査した (rc=$RC)"; dump
+fi
+run_orch
+[[ "$RC" -eq 0 ]] || { bad "鮮度以外の赤で止まった後の再実行が完了しない (rc=$RC)"; dump; }
+sync_ssot
+# 鮮度だけでは説明できない出力（起動できなかった suite の混入・会計行の件数不一致）は再検査へ回さない
+for _kind in notrun miscount; do
+  sync_ssot
+  printf '%s\n' "- 前進 ${_kind}" >"$SSOT/changelog.d/123.added.advance-${_kind}.md"
+  commit_push "feat: advance ${_kind}"
+  printf '%s\n' "$_kind" >"$STATE/runall.advance"
+  : >"$STATE/recheck.log"
+  run_orch
+  if [[ "$RC" -eq 1 ]] && has "NG: [gate] run-all が失敗した — 同期しない" && [[ ! -s "$STATE/recheck.log" ]]; then
+    ok "鮮度の赤に ${_kind} が混ざる出力は鮮度と読まず、再検査せずに止まる"
+  else
+    bad "${_kind} の出力を鮮度として再検査した、または止まらない (rc=$RC)"; dump
+  fi
+  run_orch
+  [[ "$RC" -eq 0 ]] || { bad "${_kind} で止まった後の再実行が完了しない (rc=$RC)"; dump; }
+done
+# 再検査の出口: 鮮度以外の赤・suite 単位の skip（明示引数の run-all は必須 suite の skip を赤にしない）は止める
+for _case in "red|鮮度で赤だった suite を進めた HEAD で再検査しても赤" "skip|鮮度の再検査の完走サマリー"; do
+  _flag="${_case%%|*}"; _msg="${_case#*|}"
+  sync_ssot
+  printf '%s\n' "- 再検査 ${_flag}" >"$SSOT/changelog.d/124.added.recheck-${_flag}.md"
+  commit_push "feat: recheck ${_flag}"
+  printf 'neutral\n' >"$STATE/runall.advance"
+  : >"$STATE/recheck.${_flag}"
+  : >"$STATE/recheck.log"
+  pub_before="$(git -C "$PUB_ORIGIN" rev-parse main)"
+  run_orch
+  if [[ "$RC" -eq 1 ]] && has "NG: [gate] ${_msg}" && [[ "$(grep -c . "$STATE/recheck.log")" -eq 1 && "$(git -C "$PUB_ORIGIN" rev-parse main)" == "$pub_before" ]]; then
+    ok "鮮度の再検査が ${_flag} の回は緑と読まず、同期せずに止まる"
+  else
+    bad "鮮度の再検査が ${_flag} の回に止まらない、または同期した (rc=$RC)"; dump
+  fi
+  rm -f "$STATE/recheck.${_flag}"
+  run_orch
+  [[ "$RC" -eq 0 ]] || { bad "再検査 ${_flag} で止まった後の再実行が完了しない (rc=$RC)"; dump; }
+done
+# 走行中に同じ checkout で HEAD が動いた回: 検査した HEAD から分類も検査もしていない tree を緑にしない
+sync_ssot
+printf '%s\n' '- 前進 moved' >"$SSOT/changelog.d/125.added.advance-moved.md"
+commit_push "feat: advance moved"
+printf 'moved\n' >"$STATE/runall.advance"
+: >"$STATE/recheck.log"
+pub_before="$(git -C "$PUB_ORIGIN" rev-parse main)"
+run_orch
+if [[ "$RC" -eq 1 ]] && has "NG: [gate] 鮮度の再検査の前に HEAD が検査した" && [[ ! -s "$STATE/recheck.log" && "$(git -C "$PUB_ORIGIN" rev-parse main)" == "$pub_before" ]]; then
+  ok "run-all の走行中に HEAD が動いた回は、鮮度の赤でも再検査せず・同期せずに止まる"
+else
+  bad "走行中に HEAD が動いた回に止まらない、または再検査・同期した (rc=$RC)"; dump
+fi
+run_orch
+[[ "$RC" -eq 0 ]] || { bad "HEAD が動いて止まった後の再実行が完了しない (rc=$RC)"; dump; }
+sync_ssot
 
 echo "-- release: 粒度（--due） --"
 run_orch --due

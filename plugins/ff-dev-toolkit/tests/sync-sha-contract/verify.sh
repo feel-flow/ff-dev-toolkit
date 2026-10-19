@@ -131,6 +131,13 @@
 # 変異検出: bot の判定から login の形（[bot] / app/）を外す、または author.is_bot を無視すると bot 案内のケースが赤。hook の allowlist へ 1 件足すと正本との一致が赤。
 # 空振り検出: hook を不在・空ファイルにすると changelog-fragment-runtime が赤（exit 1。skip へ倒さない）。allowlist の配列名を変える・正本を空にすると「allowlist を読めない」で赤（0 件を一致へ倒さない）。
 #
+# 変異検出（release-runtime の gate 走行中の develop の前進と中間版の Release。Issue `#2202`。2026-10-19 実測、判定と lib を写した検査用ツリーへ 1 件ずつ注入して変異 11 件すべて赤転 / SURVIVED 0 件）:
+# 変異検出: advance_scope が公開対象に触れる前進を neutral へ倒すと、--advance-check の public / 両方のケースと gate の public 前進のケースが赤。リリース機構（scripts/）に触れる前進を neutral へ倒すと --advance-check の tooling 2 ケース（同期スクリプト・lib）と gate の tooling 前進のケースが、changelog.d だけの前進を neutral へ倒すと --advance-check の changelog ケースと gate の changelog 前進のケースが赤。
+# 変異検出: stale_only_suites が「failed がすべて stale」の照合を省くと mixed のケースが、not run / 必須 skip の行の照合を省くと notrun のケースが赤。gate が鮮度の赤を再検査へ回さない（従来の即停止へ戻す）と neutral の前進のケースと止め方の文言を見る 3 ケース（public / tooling / changelog）ほか計 8 ケースが赤。
+# 変異検出: 再検査の完走判定から passed=n の照合を外すと、名指しの suite が suite 単位で skip した再検査のケースが赤。recover_stale_gate へ検査した HEAD ではなく読み直した HEAD を渡す（旧挙動）と、走行中に同じ checkout で公開対象のコミットが push された moved のケースが赤（変異下では検査していないコミットごと released まで進む）。
+# 変異検出: Release 本文から中間版の節を落とすと中間版の本文ケースと --summary ケースが、件名の件数を新版だけに戻すと件名ケースが、件名の（vX を含む）を --summary の既定値の内側へ戻すと --summary ケースが赤。中間版の無いリリースの本文・件名の全文一致は変更前のスクリプトでも緑（回帰の針）。
+# 空振り検出: run-all の鮮度行の文言が変わった（stale_only_suites の照合を別の見出しへ差し替えた）回は鮮度と読まず、gate は再検査せずに「run-all が失敗した」で止まる（neutral の前進のケースほか 8 ケースが赤 = 止める側。2026-10-19 実測）。--advance-check は解決できない HEAD で ADVANCE=unknown・exit 2（判定不能を neutral へ倒さない）。
+#
 # run-all-required: no — 同期スクリプトを持たない公開 checkout での skip は正当な適用外（SSOT 専用の検査）
 
 set -euo pipefail
@@ -783,7 +790,8 @@ APPROVAL_BLOCK_EXPECTED="$(cat <<'APPROVAL_BLOCK_EOF'
 - preflight が書きかけの段を見つけた回は `RELEASE_RESULT=dry-run`（exit 0）でも途中で止まっており `RELEASE_VERSION=` が出ない。この回は承認を求めず、巻き戻しの `PLAN:` 行を報告し、巻き戻し後に dry-run を回し直して完走してから承認を求める
 - dry-run が `RELEASE_RESULT=stopped`（exit 1）または `RELEASE_RESULT=unavailable`（exit 2）で終わったら**承認を求めない**。stderr の `NG:` 行の停止理由と次の一手をユーザーへ報告して止まる
 - dry-run が `RELEASE_RESULT=not-needed` なら承認は不要（リリースするものが無い）。その旨だけを報告する
-- 承認後に本実行するまでに develop が進んだ（`git rev-parse HEAD` が dry-run 時と違う）ときは、dry-run を回し直して転記値を差し替えてから承認を取り直す
+- 承認後に本実行するまでに develop が進んだ（`git rev-parse HEAD` が dry-run 時と違う）ときは、`scripts/release-dev-toolkit.sh --advance-check <dry-run 時の HEAD>` で前進を分類し、dry-run を回し直す。次の 3 条件をすべて満たせば**再承認なしで本実行へ進んでよい**（承認した外向き操作の中身が変わらないため。v0.157.0 で一度だけ出した条件付き承認を恒常化した。Issue `#2202`）: (a) `ADVANCE=neutral`（新しいコミットが公開対象 = `--list-targets` の prefix・リリース機構 = 後段が実行する `scripts/` 配下・`changelog.d` を 1 ファイルも変えない） (b) 回し直した dry-run の `RELEASE_VERSION=` が承認時と同じ (c) `PLAN:` 行が、同期 commit の件名に入る SSOT の SHA 以外は承認時と同一。どれか 1 つでも外れたら（`ADVANCE=public` / `tooling` / `changelog` / `diverged`・版が変わった・SHA 以外の PLAN 行が変わった）従来どおり転記値を差し替えてから承認を取り直す
+- 本実行の gate 段の**走行中**に develop が進んだ回は、スクリプトが同じ判定 (a) で扱う（承認の取り直しは要らない）: run-all の赤がすべて鮮度分類（`✗ stale`）の suite で、前進が neutral なら HEAD を origin/develop へ進めて鮮度の suite だけを同じモードで再検査し、緑なら続行する（`GATE_STALE_RECHECK=green` の行が出る）。公開対象・リリース機構・`changelog.d` のどれかに触れる前進と鮮度以外の赤は従来どおり止まる
 APPROVAL_BLOCK_EOF
 )"
 APPROVAL_BLOCK_ACTUAL="$(awk 'index($0, "**承認の求め方（承認文は dry-run の実測値を転記して作る。") == 1 {f=1} f && index($0, "- 段は `preflight → check") == 1 {exit} f' "$SKILL")"
@@ -791,7 +799,7 @@ APPROVAL_BLOCK_ACTUAL="$(awk 'index($0, "**承認の求め方（承認文は dry
 if [[ -z "$APPROVAL_BLOCK_ACTUAL" ]]; then
   bad "手順 R に「承認の求め方」段落が無い（dry-run 先行と PLAN: / RELEASE_VERSION= の転記の規定が消えた）"
 elif [[ "$APPROVAL_BLOCK_ACTUAL" == "$APPROVAL_BLOCK_EXPECTED" ]]; then
-  ok "手順 R の「承認の求め方」段落が全文一致（dry-run 先行・転記・完走の条件・途中停止・stopped / unavailable・not-needed・develop 前進）"
+  ok "手順 R の「承認の求め方」段落が全文一致（dry-run 先行・転記・完走の条件・途中停止・stopped / unavailable・not-needed・develop 前進と再承認不要の 3 条件・gate 走行中の前進）"
 else
   bad "手順 R の「承認の求め方」段落が期待と違う（改訂したら本 suite の期待文も同じ PR で更新する）"
   diff <(printf '%s\n' "$APPROVAL_BLOCK_EXPECTED") <(printf '%s\n' "$APPROVAL_BLOCK_ACTUAL") | sed 's/^/    | /' >&2 || true

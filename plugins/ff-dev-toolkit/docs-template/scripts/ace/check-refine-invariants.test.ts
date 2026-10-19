@@ -47,6 +47,24 @@ const ARCHIVE_VARIANT_B = [
   "",
 ].join("\n");
 
+/** 旧テーブル形式（日本語キー・太字・Status 行なし）。第 2 変種の原文。 */
+const ARCHIVE_LEGACY_JA = [
+  "### ACE-41-3: 並列委任は完了報告だけでは足りない",
+  "",
+  "> Compacted: 2026-08-14（live 側はメタ表のみ正準フォーマットへ再整形。本文は逐語同一で無改変。本エントリが原文）",
+  "",
+  "| フィールド | 値 |",
+  "| ---------- | -- |",
+  "| **カテゴリ** | process |",
+  "| **ソース** | " + "PR #" + "41 |",
+  "| **日付** | 2026-07-07 |",
+  "| **helpful** | 4 |",
+  "| **harmful** | 0 |",
+  "",
+  "**Insight**: 複数ファイルを機械的にコピーすると一部だけ完了する。",
+  "",
+].join("\n");
+
 const PLAYBOOK_CHANGELOG = [
   "## エントリ一覧",
   "",
@@ -205,6 +223,47 @@ describe("extractMetaFields / extractComparableBody", () => {
     expect(meta).toEqual(extractMetaFields(LIVE_CANONICAL));
   });
 
+  it("日本語キーと太字を正準フィールドへ読み、Status 行が無ければ null", () => {
+    expect(extractMetaFields(ARCHIVE_LEGACY_JA)).toEqual({
+      Category: "process",
+      Origin: "PR #" + "41",
+      Date: "2026-07-07",
+      Helpful: "4",
+      Harmful: "0",
+      Status: null,
+    });
+  });
+
+  it.each([
+    ["ソース", "Origin"],
+    ["source", "Origin"],
+    ["発見元", "Origin"],
+    ["日付", "Date"],
+    ["created", "Date"],
+    ["helpful", "Helpful"],
+    ["harmful", "Harmful"],
+    ["ステータス", "Status"],
+    ["status", "Status"],
+    ["状態", "Status"],
+  ] as const)("別名 %s を %s として読む（太字も可）", (label, field) => {
+    const meta = extractMetaFields(`| **${label}** | value |\n`);
+    expect(meta[field]).toBe("value");
+  });
+
+  it("同じフィールドは最初の行を採用する", () => {
+    const meta = extractMetaFields("| **カテゴリ** | process |\n| Category | testing |\n");
+    expect(meta.Category).toBe("process");
+  });
+
+  it("別名でない日本語ラベルは読まない", () => {
+    expect(extractMetaFields("| 分類 | process |").Category).toBeNull();
+  });
+
+  it("空白だけの値は空文字、空セルは null", () => {
+    expect(extractMetaFields("| Category |   |").Category).toBe("");
+    expect(extractMetaFields("| Category ||").Category).toBeNull();
+  });
+
   it("provenance とメタ表を除く本文が live / archive で一致する", () => {
     expect(extractComparableBody(LIVE_CANONICAL)).toBe(
       extractComparableBody(ARCHIVE_VARIANT_B),
@@ -276,6 +335,101 @@ describe("evaluateRefineInvariants", () => {
     expect(violations.some((v) => v.includes("ACE-41-3") && v.includes("Helpful"))).toBe(
       true,
     );
+  });
+
+  it("日本語キーで Status 行が無い第 2 変種は違反 0", () => {
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_CHANGELOG,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_LEGACY_JA), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("日本語キーでも Helpful の減少を検出する", () => {
+    const decreased = LIVE_CANONICAL.replace("| Helpful | 4 |", "| Helpful | 3 |");
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_CHANGELOG,
+      liveBlocks: [...blocksOf(decreased), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_LEGACY_JA), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("ACE-41-3") && v.includes("Helpful"))).toBe(
+      true,
+    );
+  });
+
+  it("archive に Status が無く live が deprecated でも違反にしない", () => {
+    const live = LIVE_CANONICAL.replace("| Status | active |", "| Status | deprecated |");
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_CHANGELOG,
+      liveBlocks: [...blocksOf(live), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_LEGACY_JA), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.filter((v) => v.includes("Status"))).toEqual([]);
+  });
+
+  it("archive に Status が無く live にも行が無いときは不一致", () => {
+    const live = LIVE_CANONICAL.replace("| Status | active |\n", "");
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_CHANGELOG,
+      liveBlocks: [...blocksOf(live), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_LEGACY_JA), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(
+      violations.some(
+        (v) =>
+          v.includes("ACE-41-3") &&
+          v.includes("Status") &&
+          v.includes("live=∅") &&
+          v.includes("archive=∅"),
+      ),
+    ).toBe(true);
+  });
+
+  it("archive に Status が無く live が merged のときは不一致", () => {
+    const live = LIVE_CANONICAL.replace("| Status | active |", "| Status | merged |");
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_CHANGELOG,
+      liveBlocks: [...blocksOf(live), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(ARCHIVE_LEGACY_JA), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(
+      violations.some((v) => v.includes("ACE-41-3") && v.includes("Status") && v.includes("archive=∅")),
+    ).toBe(true);
+  });
+
+  it("archive のステータス行が live と違えば不一致", () => {
+    const archived = ARCHIVE_LEGACY_JA.replace(
+      "| **harmful** | 0 |",
+      "| **harmful** | 0 |\n| **ステータス** | deprecated |",
+    );
+    const violations = evaluateRefineInvariants({
+      playbookContent: PLAYBOOK_CHANGELOG,
+      liveBlocks: [...blocksOf(LIVE_CANONICAL), ...blocksOf(LIVE_TARGET)],
+      archiveBlocks: [...blocksOf(archived), ...blocksOf(ARCHIVE_MERGED)],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("ACE-41-3") && v.includes("Status"))).toBe(true);
+  });
+
+  it("changelogContent の操作を読み、索引は playbookContent を見る", () => {
+    const body = PLAYBOOK_CHANGELOG.split("## Changelog")[0] ?? "";
+    const violations = evaluateRefineInvariants({
+      playbookContent: body + LIVE_INDEX_ROW_41_3,
+      changelogContent: PLAYBOOK_WITH_ARCHIVED,
+      liveBlocks: blocksOf(LIVE_TARGET),
+      archiveBlocks: [
+        ...blocksOf(ARCHIVE_COMPACTED_THEN_ARCHIVED),
+        ...blocksOf(ARCHIVE_MERGED),
+      ],
+      patternsContent: PATTERNS_LISTED,
+    });
+    expect(violations.some((v) => v.includes("索引テーブルに残っている"))).toBe(true);
   });
 
   it("Changelog Compacted ID が archive に無いと違反", () => {
@@ -1489,6 +1643,201 @@ describe("main", () => {
     delete process.env.ACE_PLAYBOOK_PATH;
     vi.spyOn(console, "error").mockImplementation(() => {});
     expect(main()).toBe(2);
+  });
+
+  it("日本語キーで Status 行の無い第 2 変種は exit 0", () => {
+    const playbookPath = writeRepo();
+    fs.writeFileSync(
+      path.join(path.dirname(playbookPath), "playbook", "archive", "process.md"),
+      ARCHIVE_LEGACY_JA,
+    );
+    process.argv = ["node", "check-refine-invariants.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(main()).toBe(0);
+    expect(err.mock.calls.flat().join("\n")).toBe("");
+  });
+
+  it("日本語キーでも Category の値のずれは exit 1", () => {
+    const playbookPath = writeRepo();
+    fs.writeFileSync(
+      path.join(path.dirname(playbookPath), "playbook", "archive", "process.md"),
+      ARCHIVE_LEGACY_JA.replace("| **カテゴリ** | process |", "| **カテゴリ** | testing |"),
+    );
+    process.argv = ["node", "check-refine-invariants.ts", playbookPath];
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(main()).toBe(1);
+    expect(err.mock.calls.flat().join("\n")).toContain("Category");
+  });
+});
+
+describe("main — 分割 Changelog（playbook/CHANGELOG.md）", () => {
+  const originalArgv = process.argv;
+  let tmpDir = "";
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = "";
+    }
+  });
+
+  const BODY_WITHOUT_CHANGELOG = PLAYBOOK_CHANGELOG.split("## Changelog")[0] ?? "";
+  const EMPTY_STUB = `${BODY_WITHOUT_CHANGELOG}## Changelog\n\n切り出し先は playbook/CHANGELOG.md\n`;
+  const SPLIT_CHANGELOG = PLAYBOOK_CHANGELOG.slice(PLAYBOOK_CHANGELOG.indexOf("## Changelog"));
+
+  function writeSplit(opts: {
+    readonly body: string;
+    readonly changelog?: string;
+    readonly changelogRel?: string;
+    readonly archiveProcess?: string;
+    readonly liveProcess?: string;
+    readonly crlfChangelog?: boolean;
+  }): string {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ace-refine-inv-split-"));
+    const knowledge = path.join(tmpDir, "docs", "08-knowledge");
+    const playbookDir = path.join(knowledge, "playbook");
+    const archiveDir = path.join(playbookDir, "archive");
+    const patternsDir = path.join(tmpDir, "docs", "03-implementation");
+    fs.mkdirSync(archiveDir, { recursive: true });
+    fs.mkdirSync(patternsDir, { recursive: true });
+    const playbookPath = path.join(knowledge, "PLAYBOOK.md");
+    fs.writeFileSync(playbookPath, opts.body);
+    fs.writeFileSync(path.join(playbookDir, "process.md"), opts.liveProcess ?? LIVE_CANONICAL);
+    fs.writeFileSync(path.join(playbookDir, "testing.md"), LIVE_TARGET);
+    fs.writeFileSync(
+      path.join(archiveDir, "process.md"),
+      opts.archiveProcess ?? ARCHIVE_VARIANT_B,
+    );
+    fs.writeFileSync(path.join(archiveDir, "testing.md"), ARCHIVE_MERGED);
+    fs.writeFileSync(path.join(patternsDir, "PATTERNS.md"), PATTERNS_LISTED);
+    if (opts.changelog !== undefined) {
+      const rel = opts.changelogRel ?? "CHANGELOG.md";
+      const changelogPath = path.join(playbookDir, rel);
+      fs.mkdirSync(path.dirname(changelogPath), { recursive: true });
+      const text = opts.crlfChangelog ? opts.changelog.replace(/\n/gu, "\r\n") : opts.changelog;
+      fs.writeFileSync(changelogPath, text);
+    }
+    process.argv = ["node", "check-refine-invariants.ts", playbookPath];
+    return playbookPath;
+  }
+
+  function run(): { code: number; errors: string; logs: string } {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const code = main();
+    return {
+      code,
+      errors: err.mock.calls.flat().join("\n"),
+      logs: log.mock.calls.flat().join("\n"),
+    };
+  }
+
+  it("本体に節が無いとき playbook/CHANGELOG.md の操作を検査する", () => {
+    writeSplit({ body: BODY_WITHOUT_CHANGELOG, changelog: SPLIT_CHANGELOG });
+    const { code, errors, logs } = run();
+    expect(errors).toBe("");
+    expect(code).toBe(0);
+    expect(logs).toContain("Compacted 1");
+    expect(logs).toContain("（playbook/CHANGELOG.md）");
+  });
+
+  it("版見出しの無い空スタブでも分割側を読む", () => {
+    writeSplit({ body: EMPTY_STUB, changelog: SPLIT_CHANGELOG });
+    const { code, errors, logs } = run();
+    expect(errors).toBe("");
+    expect(code).toBe(0);
+    expect(logs).toContain("（playbook/CHANGELOG.md）");
+  });
+
+  it("フェンス内の版見出しだけでは本体を正本にしない", () => {
+    const fencedStub = `${EMPTY_STUB}\n\`\`\`\n### [1.0.0] - 2026-01-01\n\`\`\`\n`;
+    writeSplit({ body: fencedStub, changelog: SPLIT_CHANGELOG });
+    const { code, errors, logs } = run();
+    expect(errors).toBe("");
+    expect(code).toBe(0);
+    expect(logs).toContain("Compacted 1");
+    expect(logs).toContain("（playbook/CHANGELOG.md）");
+  });
+
+  it("HTML コメント内の版見出しだけでは本体を正本にしない", () => {
+    const commentedStub = `${EMPTY_STUB}\n<!--\n### [1.0.0] - 2026-01-01\n-->\n`;
+    writeSplit({ body: commentedStub, changelog: SPLIT_CHANGELOG });
+    const { code, errors, logs } = run();
+    expect(errors).toBe("");
+    expect(code).toBe(0);
+    expect(logs).toContain("Compacted 1");
+    expect(logs).toContain("（playbook/CHANGELOG.md）");
+  });
+
+  it("分割側を読んでいるので Category のずれは exit 1", () => {
+    writeSplit({
+      body: BODY_WITHOUT_CHANGELOG,
+      changelog: SPLIT_CHANGELOG,
+      archiveProcess: ARCHIVE_VARIANT_B.replace("| Category   | process |", "| Category   | testing |"),
+    });
+    const { code, errors } = run();
+    expect(code).toBe(1);
+    expect(errors).toContain("Category");
+  });
+
+  it("本体に版見出しがあるときは分割側の Compacted を読まない", () => {
+    const extra = `${SPLIT_CHANGELOG}- Compacted: ACE-999-1\n`;
+    writeSplit({ body: PLAYBOOK_CHANGELOG, changelog: extra });
+    const { code, errors, logs } = run();
+    expect(errors).toBe("");
+    expect(code).toBe(0);
+    expect(logs).not.toContain("playbook/CHANGELOG.md");
+  });
+
+  it("サブディレクトリの CHANGELOG.md は読まない", () => {
+    writeSplit({
+      body: BODY_WITHOUT_CHANGELOG,
+      changelog: "## Changelog\n\n### [1.140.0] - 2026-08-14\n\n- Compacted: ACE-999-1\n",
+      changelogRel: path.join("notes", "CHANGELOG.md"),
+    });
+    const { code, logs } = run();
+    expect(code).toBe(0);
+    expect(logs).toContain("Compacted 0");
+    expect(logs).not.toContain("playbook/CHANGELOG.md");
+  });
+
+  it("CRLF の分割 Changelog でも操作を数える", () => {
+    writeSplit({
+      body: BODY_WITHOUT_CHANGELOG,
+      changelog: SPLIT_CHANGELOG,
+      crlfChangelog: true,
+    });
+    const { code, errors, logs } = run();
+    expect(errors).toBe("");
+    expect(code).toBe(0);
+    expect(logs).toContain("Compacted 1");
+  });
+
+  it("playbook/CHANGELOG.md がディレクトリなら exit 2", () => {
+    const playbookPath = writeSplit({ body: BODY_WITHOUT_CHANGELOG });
+    fs.mkdirSync(path.join(path.dirname(playbookPath), "playbook", "CHANGELOG.md"));
+    const { code, errors } = run();
+    expect(code).toBe(2);
+    expect(errors).toContain("CHANGELOG.md");
+  });
+
+  it("分割 Changelog でも索引の残存は本体を見て違反にする", () => {
+    const archivedChangelog = PLAYBOOK_WITH_ARCHIVED.slice(
+      PLAYBOOK_WITH_ARCHIVED.indexOf("## Changelog"),
+    );
+    writeSplit({
+      body: BODY_WITHOUT_CHANGELOG,
+      changelog: archivedChangelog,
+      liveProcess: "",
+      archiveProcess: ARCHIVE_COMPACTED_THEN_ARCHIVED,
+    });
+    const { code, errors } = run();
+    expect(code).toBe(1);
+    expect(errors).toContain("索引テーブルに残っている");
   });
 });
 
