@@ -20,6 +20,14 @@
 #   deny 理由文から `scripts/link-sub-issues.sh` を消したコピーは、抜け道案内
 #   の検査を赤にする。
 #
+# GitHub MCP 経路（sub_issue_write）も同じ suite で固定する: 実測したツール名を 2 つのサーバー名の形
+# （mcp__github__ / mcp__plugin_github_github__）で駆動し、文字列で渡した sub_issue_id / after_id の deny と数値の素通し・hook の環境変数で読む抜け道・
+# gh が PATH に無くても判定すること（型は tool_input だけで決まる）・針が当たらない入力（判定表にないツール名・名簿にないサーバー・
+# tool_input の欠落 / 型違い）を素通しではなく理由付きの systemMessage にすること・hooks.json の MCP matcher を
+# Claude Code と同じアンカー無し正規表現として照合すること（tests/lib/github-mcp-fixture.sh）。
+# 空振り検出: MCP の振り分け（`*mcp__*` の case）を無効にすると MCP 入力が素通しへ倒れて 18 件が赤、サーバー名簿からプラグイン同梱の形を落とすと 5 件が赤、jq 不在の通知を無音にすると 1 件が赤（2026-10-19 実測）。
+# 変異検出: 文字列型の判定を外すと 10 件、hooks.json の matcher から末尾の `$` を外すと近い名前（sub_issue_writes）に当たって 2 件、matcher の server 区間に名簿にない候補を足すと 1 件、通知から additionalContext を外すと 6 件、gh を外す fixture が bash を残さないと Linux 配置の再現で 1 件が赤（2026-10-19 実測）。
+#
 # run-all-required: no — jq 不在での skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側）
 set -euo pipefail
 
@@ -33,6 +41,8 @@ TARGET="$PLUGIN_ROOT/hooks/guard-sub-issue-id.sh"
 isolate_hook_env "FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD" "$TARGET"
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
+# shellcheck source=../lib/github-mcp-fixture.sh
+. "$SCRIPT_DIR/../lib/github-mcp-fixture.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 
 [ -f "$TARGET" ] || { echo "✗ guard-sub-issue-id.sh が見つかりません: $TARGET" >&2; exit 1; }
@@ -186,6 +196,99 @@ assert_pass "FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1 で無効化できる"
 run_hook 'echo FF_SUB_ISSUE_ID_ACK=1; gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1'
 assert_fire "ACK が別コマンドに居るだけでは無効（gh api の直前だけ）"
 
+echo "guard-sub-issue-id: GitHub MCP 経路（sub_issue_write）"
+# 実測したツール名（GitHub 公式リモート MCP の tools/list）を 2 つのサーバー名の形で駆動する。
+# fixture の cwd は /tmp（`gh` / `-f` を含まない）なので、MCP 分岐を Bash 用の前置フィルタより
+# 後ろへ動かすと、下の deny 検査はすべて素通しへ倒れて赤になる。
+MESSAGE=""
+run_mcp() { ff_mcp_run "$TARGET" "$@"; }
+MCP_ADD='{"method":"add","owner":"acme","repo":"widgets","issue_number":10,"sub_issue_id":"5307014088"}'
+run_mcp mcp__plugin_github_github__sub_issue_write "$MCP_ADD"
+assert_fire "AC3: プラグイン同梱サーバーの sub_issue_write へ sub_issue_id を文字列で渡すと deny"
+MCP_REASON="$REASON"
+case "$REASON" in
+  *'`sub_issue_id`'*'JSON の数値'*) ok "AC3: deny 文がフィールド名と「JSON の数値で渡す（MCP の整数型指定）」を案内する" ;;
+  *) bad "AC3: 数値で渡す案内が無い: [$REASON]" ;;
+esac
+case "$REASON" in
+  *'scripts/link-sub-issues.sh'*) ok "AC3: deny 文が link-sub-issues.sh を案内する" ;;
+  *) bad "AC3: link-sub-issues.sh の案内が無い: [$REASON]" ;;
+esac
+case "$REASON" in
+  *'hook の環境変数 FF_SUB_ISSUE_ID_ACK=1'*) ok "AC3: 抜け道は同じ変数名を hook の環境変数として案内する（コマンド先頭の環境代入は MCP では付けられない）" ;;
+  *) bad "AC3: MCP 経路の抜け道の案内が無い: [$REASON]" ;;
+esac
+run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1'
+if [ "${MCP_REASON##*$'\n'}" = "${REASON##*$'\n'}" ] && [ -n "${REASON##*$'\n'}" ]; then
+  ok "AC3: ガード無効化の案内行は Bash 経路の deny と同じ文言"
+else
+  bad "AC3: 末尾の案内行が Bash 経路とずれている: mcp=[${MCP_REASON##*$'\n'}] bash=[${REASON##*$'\n'}]"
+fi
+run_mcp mcp__github__sub_issue_write "$MCP_ADD"
+assert_fire "AC3: 利用者が server キー github で設定したサーバーでも deny"
+run_mcp mcp__github__sub_issue_write '{"method":"reprioritize","owner":"acme","repo":"widgets","issue_number":10,"sub_issue_id":5307014088,"after_id":"1"}'
+assert_fire "AC3: 同じ API の after_id を文字列で渡しても deny"
+case "$REASON" in
+  *'`after_id`'*) ok "AC3: deny 文が文字列だったフィールド（after_id）を名指しする" ;;
+  *) bad "AC3: after_id を名指ししていない: [$REASON]" ;;
+esac
+run_mcp mcp__github__sub_issue_write '{"method":"add","owner":"acme","repo":"widgets","issue_number":10,"sub_issue_id":5307014088}'
+assert_pass "数値で渡した sub_issue_id は素通し"
+run_mcp mcp__github__sub_issue_write '{"method":"reprioritize","owner":"acme","repo":"widgets","issue_number":10,"sub_issue_id":5307014088,"before_id":"2"}'
+assert_fire "AC3: 同じ API の before_id を文字列で渡しても deny"
+case "$REASON" in
+  *'`before_id`'*) ok "AC3: deny 文が文字列だったフィールド（before_id）を名指しする" ;;
+  *) bad "AC3: before_id を名指ししていない: [$REASON]" ;;
+esac
+run_mcp mcp__github__sub_issue_write "$MCP_ADD" FF_SUB_ISSUE_ID_ACK=1
+ff_mcp_assert_message "抜け道: hook の環境変数 FF_SUB_ISSUE_ID_ACK=1 で通し、セッション全体に効く抜け道で通したことを毎回知らせる" "FF_SUB_ISSUE_ID_ACK=1"
+run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1' "$TEST_TMP" 'FF_SUB_ISSUE_ID_ACK=1'
+assert_fire "hook の環境変数 FF_SUB_ISSUE_ID_ACK=1 は Bash 経路を通さない（Bash 経路の抜け道はコマンド先頭の環境代入だけ）"
+run_mcp mcp__github__sub_issue_write "$MCP_ADD" FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1
+assert_pass "FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1 は MCP 経路も止める"
+if NOGH_PATH="$(ff_path_without_gh "$TEST_TMP/nogh-bin" jq)"; then
+  run_mcp mcp__github__sub_issue_write "$MCP_ADD" PATH="$NOGH_PATH"
+  assert_fire "gh が PATH に無くても判定する（型は tool_input だけで決まり、gh を使わない）"
+else
+  bad "gh だけを外した PATH を作れない（gh が残る・bash が消える）ため、gh 不在の検査が成立しない"
+fi
+run_mcp mcp__github__sub_issue_write "$MCP_ADD" PATH=/nonexistent
+ff_mcp_assert_message "jq が PATH に無ければ、GitHub MCP の呼び出しを検査しなかったことを知らせて通す" "jq が PATH に無い"
+# fixture 自身の検査: Linux の CI では gh と bash が同じ /usr/bin にあり /bin もそこを指す。
+# その配置を 1 ディレクトリで再現し、gh だけを外して bash は残せることを確かめる（macOS の
+# 開発機では gh と bash が別のディレクトリにあるので、この配置を作らないと崩れても緑のまま）
+LINUX_BIN="$TEST_TMP/linux-usr-bin"
+mkdir -p "$LINUX_BIN"
+for c in bash env sh jq mkdir ln; do
+  c_path="$(command -v "$c")" && ln -sf "$c_path" "$LINUX_BIN/$c"
+done
+printf '#!/bin/sh\nexit 0\n' > "$LINUX_BIN/gh"
+chmod +x "$LINUX_BIN/gh"
+if SIM_PATH="$(PATH="$LINUX_BIN" ff_path_without_gh "$TEST_TMP/linux-shim" jq)" \
+  && ! PATH="$SIM_PATH" command -v gh >/dev/null 2>&1 && PATH="$SIM_PATH" command -v bash >/dev/null 2>&1; then
+  run_mcp mcp__github__sub_issue_write "$MCP_ADD" PATH="$SIM_PATH"
+  assert_fire "fixture: gh と bash が同じディレクトリにだけ在る配置（Linux の CI）でも、gh だけを外した PATH で hook を動かせる"
+else
+  bad "fixture: gh と bash が同じディレクトリにだけ在る配置で、gh だけを外した PATH を作れない（bash まで消える）"
+fi
+echo "guard-sub-issue-id: GitHub MCP 経路の針が当たらない入力（素通しではなく理由付きの systemMessage）"
+run_mcp mcp__github__sub_issue_writes "$MCP_ADD"
+ff_mcp_assert_message "判定表にないツール名（綴りの揺れ）は理由を出して通す" "判定表"
+run_mcp mcp__linear__sub_issue_write "$MCP_ADD"
+ff_mcp_assert_message "サーバー名が名簿にないツールは理由を出して通す" "判定表"
+run_mcp mcp__github__sub_issue_write '{"method":"add","owner":"acme","repo":"widgets","issue_number":10}'
+ff_mcp_assert_message "sub_issue_id の欠落は理由を出して通す" "sub_issue_id"
+run_mcp mcp__github__sub_issue_write '{"method":"add","owner":"acme","repo":"widgets","issue_number":10,"sub_issue_id":true}'
+ff_mcp_assert_message "数値でも文字列でもない sub_issue_id は理由を出して通す" "sub_issue_id"
+run_mcp mcp__github__sub_issue_write '"add"'
+ff_mcp_assert_message "オブジェクトでない tool_input は理由を出して通す" "sub_issue_id"
+run_hook 'gh api --method POST repos/acme/widgets/issues/10/sub_issues -f sub_issue_id=1 # mcp__github__sub_issue_write'
+assert_fire "Bash の呼び出しは文字列に mcp__ を含んでも Bash 経路で判定する"
+case "$REASON" in
+  *'-F '*) ok "Bash 経路の deny 文（-F の案内）のまま" ;;
+  *) bad "Bash の呼び出しが MCP 経路の文言になっている: [$REASON]" ;;
+esac
+
 echo "guard-sub-issue-id: fail-open"
 RC=0
 OUT="$(printf 'not-json' | bash "$TARGET" 2>/dev/null)" || RC=$?
@@ -224,6 +327,19 @@ case "$DESC" in
   *sub_issue_id*) ok "hooks.json の description が sub_issue_id ガードに言及する" ;;
   *) bad "hooks.json の description に sub_issue_id の記述が無い" ;;
 esac
+case "$DESC" in
+  *sub_issue_write*) ok "hooks.json の description が GitHub MCP の sub_issue_write に言及する" ;;
+  *) bad "hooks.json の description に GitHub MCP 経路（sub_issue_write）の記述が無い" ;;
+esac
+while IFS= read -r line; do
+  case "$line" in
+    OK\ *) ok "MCP matcher: ${line#OK }" ;;
+    SKIP\ *) echo "  ○ skip: ${line#SKIP }" ;;
+    *) bad "MCP matcher: ${line#NG }" ;;
+  esac
+done <<EOF
+$(ff_github_mcp_matcher_check "$HOOKS_JSON" guard-sub-issue-id.sh sub_issue_write)
+EOF
 
 echo "guard-sub-issue-id: ASDD ゲートの早期終了経路でも stdin を読み切る"
 ASDD_ON="$TEST_TMP/asdd-hooks-on"

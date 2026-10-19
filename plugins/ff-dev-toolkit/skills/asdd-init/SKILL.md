@@ -107,4 +107,4 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" node "${FF_DEV_TOOLKIT_ROOT}/script
 
 ## 5. 日常作業へ引き継ぐ
 
-「初期構築が完了」「実装可能」「利用・公開可能」を別々に報告する。未決事項、手編集との衝突、接続・同期が未完了の機能を明記する。次からは [asdd-work](../asdd-work/SKILL.md) で、通常の依頼・状況確認・再開を行う。導入済みプロジェクトで `init-docs` / `setup-ai-config` を呼んでも、この設定を引き継ぐ。
+「初期構築が完了」「実装可能」「利用・公開可能」「配布・公開完了」を、[方法論の到達点](https://github.com/feel-flow/ai-spec-driven-development/blob/develop/docs/ASDD_2_0.md#6-適合と公開状態)の証拠に沿って別々に報告する。`--check` の結果は前の3つの判断材料で、「配布・公開完了」は判定しない。「配布・公開完了」は対象の版・配布先・実際の利用経路で反映を確認できたときだけ報告し、配布しない構成では判定対象外と明記する。未決事項、手編集との衝突、接続・同期が未完了の機能を明記する。次からは [asdd-work](../asdd-work/SKILL.md) で、通常の依頼・状況確認・再開を行う。導入済みプロジェクトで `init-docs` / `setup-ai-config` を呼んでも、この設定を引き継ぐ。

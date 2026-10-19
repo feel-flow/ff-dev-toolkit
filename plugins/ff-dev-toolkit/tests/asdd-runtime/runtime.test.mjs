@@ -32,6 +32,50 @@ test('minimal project previews without writing; generates both hosts and is repe
   assert.equal(check(root).capabilities.ace, 'disabled');
   assert.match(fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8'), /docs\/MASTER.md/);
 });
+test('generated MASTER common rules name the four methodology milestones', t => {
+  const root = temporary(t);
+  apply(root, config());
+  const rules = fs.readFileSync(path.join(root, 'docs/MASTER.md'), 'utf8').split('## 共通ルール\n')[1]?.split('\n## ')[0];
+  assert.ok(rules, 'common rules section is missing');
+  // The enumeration itself, in methodology order: the last milestone recurs later in the same rule.
+  const milestones = ['初期構築が完了', '実装可能', '利用・公開可能', '配布・公開完了'].map(m => `「${m}」`).join('');
+  assert.ok(rules.includes(`${milestones}を区別`), rules);
+  assert.match(rules, /配布先・公開先で反映を確認したときだけ報告/);
+  assert.match(rules, /配布・公開しない構成では判定対象外/);
+  // The asdd-init completion report uses the same enumeration; drift between the two stays red.
+  const skill = fs.readFileSync(new URL('../../skills/asdd-init/SKILL.md', import.meta.url), 'utf8');
+  assert.ok(skill.includes(milestones), 'asdd-init SKILL.md no longer lists the same milestones');
+});
+test('reconfiguring a deployment from the previous rule wording updates it and keeps distant edits', t => {
+  const previousRule = '- 提案中・未決の内容を必須ルールや完了として扱わない。初期構築・実装準備・利用公開の状態を区別する。\n';
+  const deploy = edit => {
+    const root = temporary(t), selected = config();
+    apply(root, selected);
+    const master = path.join(root, 'docs/MASTER.md'), managedFile = path.join(root, '.asdd/managed.json');
+    const managed = JSON.parse(fs.readFileSync(managedFile, 'utf8'));
+    const current = managed.originals['docs/MASTER.md'];
+    const rule = current.split('\n').find(line => line.includes('「配布・公開完了」を区別'));
+    assert.ok(rule, 'generated rule line is missing');
+    // Rewrite the recorded generation and the file as the previous generator left them.
+    const old = current.replace(`${rule}\n`, previousRule);
+    managed.originals['docs/MASTER.md'] = old;
+    managed.files['docs/MASTER.md'] = crypto.createHash('sha256').update(old).digest('hex');
+    fs.writeFileSync(managedFile, `${JSON.stringify(managed, null, 2)}\n`);
+    fs.writeFileSync(master, edit(old));
+    return { root, selected, master };
+  };
+  const untouched = deploy(text => text);
+  assert.deepEqual(apply(untouched.root, untouched.selected).changed, ['docs/MASTER.md']);
+  assert.match(fs.readFileSync(untouched.master, 'utf8'), /「配布・公開完了」を区別/);
+  const appended = deploy(text => `${text}\n利用者の追記\n`);
+  apply(appended.root, appended.selected);
+  assert.match(fs.readFileSync(appended.master, 'utf8'), /「配布・公開完了」を区別[\s\S]*利用者の追記/);
+  // An edit on the line right after the changed rule overlaps it, so reconfiguration stops without writing.
+  const adjacent = deploy(text => text.replace('- 秘密情報を出力', '- 顧客名は伏せる。秘密情報を出力'));
+  const before = fs.readFileSync(adjacent.master, 'utf8');
+  assert.throws(() => apply(adjacent.root, adjacent.selected), /競合/);
+  assert.equal(fs.readFileSync(adjacent.master, 'utf8'), before);
+});
 test('conflicting hand edits block replacement with no partial writes', t => {
   const root = temporary(t), selected = config();
   apply(root, selected);

@@ -212,15 +212,18 @@ bash plugins/ff-dev-toolkit/scripts/check-version-claims.sh
 bash -c 'r="$(git rev-parse --show-toplevel)" || { echo "断片未検査: git リポジトリのルートを解決できません" >&2; exit 2; }; f="$r/plugins/ff-dev-toolkit/tests/lib/changelog-fragment-guard.sh"; if [ ! -d "$r/plugins/ff-dev-toolkit/tests" ]; then echo "changelog-fragment: none"; exit 0; fi; [ -f "$f" ] || { echo "断片未検査: $f がありません" >&2; exit 2; }; . "$f" || { echo "断片未検査: $f を読み込めません" >&2; exit 2; }; changelog_fragment_scan "$r"'
 ```
 
+数えた断片はその場で**帰属照合**もする（OBS-221）。断片の staged 内容が backtick で参照する path を公開側最新タグと照合し、今回変えていない（タグと同一内容の）path を参照していれば違反にする — リリース時の `ATTRIBUTION_DRIFT` と同じ判定（`plugins/ff-dev-toolkit/scripts/lib/changelog-attribution-functions.sh`）を commit 前へ移したもの。staged で変えた path と、HEAD の内容が公開タグと違う path（同じ PR の前の commit や未リリースの他 PR で変えたもの）は変更済みとして扱う。作業ツリーだけの編集は commit に入らないので変更済みとしない。最新タグは公開リポジトリ（`FF_RELEASE_CHECK_PUBLIC_URL`）の ls-remote で決め、公開側 clone（`FF_RELEASE_CHECK_PUBLIC`、既定 `~/GitHub/FEEL-FLOW/ff-dev-toolkit`）がそのタグを持てば clone で、無ければそのタグだけを一時領域へ depth 1 で取得して照合する。公開リポジトリへ届かない回だけ clone の最新タグで照合する。断片に path 形の参照が無ければ取得しない。
+
 断片として数えるのは、merge-base（`origin/HEAD` の指す既定ブランチ, HEAD）から index までに**追加**された `changelog.d/<名>.md`（`README.md` を除く）である。同じ PR の前の commit で足した断片も数えるので、レビュー対応の 2 コミット目以降を赤にしない。既定ブランチの先端に既に在る断片（他 PR の未消費断片）は数えない。公開対象の変更として数えないのは、同期手順 R が断片を要求しないもの — `scripts/check-release-required.sh` の `META_ALLOWLIST`（告知不要のメタ変更）と、リリース準備・footer 追従だけが書く公開 CHANGELOG — で、どちらも各スクリプトの定義を読み、ここへ複製しない。公開ファイルの削除も公開面の変更として数える。
 
 | 終了コード | 出力 | 報告 |
 |---|---|---|
-| 0 | `changelog-fragment: ok <N>` | 違反なし（断片 N 件） |
+| 0 | `changelog-fragment: ok <N>` | 違反なし（断片 N 件。照合した相手、または照合不要の旨は stderr の `帰属検査:` 行） |
 | 0 | `changelog-fragment: none` | 対象なし（staged に公開対象の変更が無い。「違反なし」とは書かない） |
 | 0 | `changelog-fragment: consumed <N>` | 対象外（断片の削除・公開 CHANGELOG・`scripts/release-dev-toolkit.sh` の準備対象だけを stage した、断片を集約するリリース準備の回。準備対象外の公開変更が混ざれば消費と扱わない） |
 | 1 | `公開対象を変更したのに changelog.d/ 断片がありません: <先頭パス>（公開対象 <M> 件）` | 違反あり。`changelog.d/README.md` の書式で断片を足して `git add` する。commit へ進まない |
-| 2 | stderr の `断片未検査: <理由>` | 断片未検査。公開対象一覧を取得できない・比較 base を解決できず staged にも断片が無い・git が失敗した。緑とも違反なしとも報告せず、commit へ進まない |
+| 1 | `ATTRIBUTION_PATH=<token> -> <公開 path> …` と `✗ <断片>: 前版 v<tag> と同一内容の path を backtick で参照している（…）` | 帰属違反。名指しの path はこの PR が（staged でも先行 commit でも）変えていない。本当に変えたファイルを指すつもりならそのファイルの path へ直し、そうでなければ backtick を外して役割名で書き、`git add` し直す。commit へ進まない |
+| 2 | stderr の `断片未検査: <理由>` | 断片未検査。公開対象一覧を取得できない・比較 base を解決できず staged にも断片が無い・git が失敗した・帰属照合の helper を読めない・公開側最新タグを clone からも公開リポジトリからも引けない。緑とも違反なしとも報告せず、commit へ進まない |
 
 #### 実行ビット検査（新規 suite / hook）
 

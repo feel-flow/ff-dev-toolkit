@@ -95,6 +95,10 @@
 - `PreToolUse :: Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task :: hooks/guard-review-in-flight.sh`
 - `PreToolUse :: Read|Skill :: hooks/record-instruction-bytes.sh`
 - `PreToolUse :: Write|Edit :: hooks/guard-shell-save.sh`
+- `PreToolUse :: ^mcp__(github|plugin_github_github)__(create_pull_request|update_pull_request)$ :: hooks/guard-pr-followup.sh`
+- `PreToolUse :: ^mcp__(github|plugin_github_github)__issue_write$ :: hooks/guard-issue-labels.sh`
+- `PreToolUse :: ^mcp__(github|plugin_github_github)__merge_pull_request$ :: hooks/guard-effort-actual.sh`
+- `PreToolUse :: ^mcp__(github|plugin_github_github)__sub_issue_write$ :: hooks/guard-sub-issue-id.sh`
 - `SessionStart :: * :: hooks/auto-update-marketplace.sh`
 - `SessionStart :: * :: hooks/check-review-roster-drift.sh`
 - `SessionStart :: * :: hooks/check-skill-drift.sh`
@@ -105,6 +109,8 @@
 - `SubagentStop :: - :: hooks/guard-review-in-flight.sh`
 - `UserPromptSubmit :: - :: hooks/decision-tree.sh`
 - `UserPromptSubmit :: - :: hooks/retrospective-context.sh`
+
+`^mcp__` で始まる 4 本は、GitHub MCP の同じ操作（PR のマージ・Issue の起票・sub-issue の追加・PR の作成 / 更新）に Bash 経路と同じガードを当てる Claude Code 向けの登録で、ガードごとに 1 本ずつ別の matcher を持つ（PR の作成 / 更新の 2 ツールは 1 本を共有。Codex / grok では MCP 呼び出しの `tool_name` と発火が未実測のため保証しない）。
 
 Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
 
@@ -183,7 +189,7 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_EXIT_CODE_ACK`
 - `FF_LITERAL_WRITE_ACK`
 - `FF_LONG_GATE_BACKGROUND_ACK`
-- `FF_PR_DRAFT_ACK`（`hooks/guard-pr-followup.sh` の Draft PR 検出だけを通すコマンド先頭の環境代入）
+- `FF_PR_DRAFT_ACK`（`hooks/guard-pr-followup.sh` の Draft PR 検出だけを通すコマンド先頭の環境代入。GitHub MCP 経路では hook の環境変数として読み、セッション全体の GitHub MCP 呼び出しに効く）
 - `FF_SHELL_SAVE_ACK`（`hooks/guard-shell-save.sh` の抜け道。Write / Edit にはコマンド先頭の環境代入が無いので、hook のプロセス環境で渡す）
 - `FF_SUB_ISSUE_ID_ACK`
 - `FF_ZSH_EXPANSION_ACK`
@@ -326,6 +332,7 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_REACHED_END`
 - `FF_REAL_CKSUM`
 - `FF_RELEASE_CHECK_PUBLIC`
+- `FF_RELEASE_CHECK_PUBLIC_URL`（`/pre-commit-check` の断片帰属照合が公開側 clone の無い回に最新タグを引く公開リポジトリの URL。既定は ff-dev-toolkit の公開リポジトリ）
 - `FF_RETRO_PROFILE`
 - `FF_RETRO_SELFTEST_JOBS`
 - `FF_RUN_ALL_ALLOW_DIRTY`

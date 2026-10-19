@@ -57,25 +57,28 @@ changelog_tree_entry() {
 }
 
 # The attribution judgement shared by the release gate (check-release-required: the new version
-# section) and the fragment gate (materialize --check: each changelog.d fragment). A path-like
+# section), the fragment gate (materialize --check: each changelog.d fragment) and the pre-commit
+# fragment check (tests/lib/changelog-fragment-guard.sh: the fragments the PR adds). A path-like
 # backtick whose object at the SSOT HEAD equals the latest public tag was not changed by this
 # release, so naming it in the new section is a misattribution suspect. Directory markers such as
 # .github/ compare tree objects (ls-tree -t).
 #   $1 = SSOT root  $2 = public clone  $3 = latest tag (X.Y.Z)  $4 = body text
 #   $5 = 1: a path with uncommitted changes in the SSOT working tree counts as changed (the
 #        fragment stage is often checked before the change and its fragment are committed)
+#        2: only a path with staged changes (index differs from HEAD) counts as changed — the
+#        pre-commit check judges what will be committed, so a working-tree-only edit does not count
 # stdout: one "ATTRIBUTION_PATH=<token> -> <public path> (v<tag> と同一 object)" per suspect,
 #         or a single "ATTRIBUTION_UNAVAILABLE=<reason>" line.
 # return: 0 = no suspect / 1 = suspects / 2 = cannot judge (never reported as clean).
 changelog_attribution_scan() {
   local root="$1" public="$2" ver="$3" body="$4" dirty_exempt="${5:-0}"
-  local paths public_tree candidate_tree token candidate from to from_oid to_oid to_src count=0
+  local paths public_tree candidate_tree token candidate from to from_oid to_oid to_src staged_rc count=0
   paths="$(extract_paths "$body")" || { echo "ATTRIBUTION_UNAVAILABLE=path-like backtick の抽出に失敗"; return 2; }
   [[ -n "$paths" ]] || return 0
   public_tree="$(git -C "$public" ls-tree -r -t "refs/tags/v${ver}" 2>/dev/null)" \
     || { echo "ATTRIBUTION_UNAVAILABLE=公開タグ v${ver} の tree を取得できない"; return 2; }
   candidate_tree="$(git -C "$root" ls-tree -r -t HEAD -- plugins/ff-dev-toolkit oss/ff-dev-toolkit 2>/dev/null)" \
-    || { echo "ATTRIBUTION_UNAVAILABLE=リリース候補 HEAD の tree を取得できない"; return 2; }
+    || { echo "ATTRIBUTION_UNAVAILABLE=SSOT 側 HEAD の tree を取得できない"; return 2; }
   while IFS= read -r token; do
     [[ -n "$token" ]] || continue
     while IFS= read -r candidate; do
@@ -96,6 +99,15 @@ changelog_attribution_scan() {
       if [[ -n "$from_oid" && "$from_oid" == "$to_oid" ]]; then
         if [[ "$dirty_exempt" == 1 && -n "$(git -C "$root" status --porcelain -- "$to_src" 2>/dev/null)" ]]; then
           break
+        fi
+        if [[ "$dirty_exempt" == 2 ]]; then
+          staged_rc=0
+          git -C "$root" diff --cached --quiet -- "$to_src" 2>/dev/null || staged_rc=$?
+          case "$staged_rc" in
+            0) ;;
+            1) break ;;
+            *) echo "ATTRIBUTION_UNAVAILABLE=staged 変更の有無を判定できない: $token"; return 2 ;;
+          esac
         fi
         printf 'ATTRIBUTION_PATH=%s -> %s (v%s と同一 object)\n' "$token" "$candidate" "$ver"
         count=$((count + 1))

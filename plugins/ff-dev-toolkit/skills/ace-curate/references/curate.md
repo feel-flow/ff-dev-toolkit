@@ -4,7 +4,7 @@
 
 ## 配置先の解決（最初に実施）
 
-既存 AGENTS.md / CLAUDE.md / docs 索引の ACE 配置記録と `ACE_PLAYBOOK_PATH` から、実在する PLAYBOOK を解決する。明示環境変数があればそれを優先し、なければ記録済み配置、記録がない場合だけ `docs/08-knowledge/PLAYBOOK.md` を使う。記録が矛盾する場合は変更前に報告する。repo 外・symlink で repo 外へ出る配置は編集しない。独自配置では前提確認・検索・採番・全ゲート引数・`add` のパス・frontmatter・version claim の document と claim パス・索引相対リンクをすべて解決した配置へ置換してから実行する。固定パスをそのまま実行して第二の Playbook を作らない。ゲート引数は明示した実配置を使い、環境変数を既定引数で上書きしない。
+解決は同梱 `scripts/knowledge-lookup.sh --resolve-playbook` に任せ、規則を手で再現しない（規則の正本は同スクリプトの `resolve_playbook`。`/knowledge-lookup` の着手前参照と同じ関数で、片方だけ直って食い違うことを構造で防ぐ）。順は `ACE_PLAYBOOK_PATH` → 記録済み配置（root の AGENTS.md / CLAUDE.md / `docs/MASTER.md` に書かれた `PLAYBOOK.md` のパスのうち実在するもの）→ 既定 `docs/08-knowledge/PLAYBOOK.md` → root 配下の探索（`docs-template/` は探索からだけ外す）。出力は `ACE_PLAYBOOK=`（絶対パス）/ `ACE_PLAYBOOK_REL=`（root 相対。root の外なら空）/ `ACE_PLAYBOOK_SOURCE=` / `ACE_PLAYBOOK_STATE=` の 4 行。`STATE=ambiguous`（記録の矛盾、既定パスに実体があるのに記録が別を指す、探索の複数候補）と `absent` は変更前に報告して止める。`ACE_PLAYBOOK_REL` が空（repo 外）・symlink で repo 外へ出る配置は編集しない。独自配置では前提確認・検索・採番・全ゲート引数・`add` のパス・frontmatter・version claim の document と claim パス・索引相対リンクをすべて解決した配置へ置換してから実行する。固定パスをそのまま実行して第二の Playbook を作らない。ゲート引数は明示した実配置を使い、環境変数を既定引数で上書きしない。
 
 ## curate 側のハードルール（`/ace-refine` との分担）
 
@@ -14,6 +14,8 @@
 - 形式ゲートが赤なら、追記したエントリをコンパクト正準フォーマットへ書き直す。`legacy-format-allowlist.txt` に新規 ID を足して通すことはしない（allowlist は既存エントリの読み取り互換のためのものであり、新規追記の抜け道ではない）
 
 ## 同梱 TypeScript ゲートの runner（4-b-0 / 4-f）
+
+4-f の「`scripts/ace/<同名>` が実在」はファイルごとに確かめる。別の npm script が指す配下（例: Playbook を `docs-template/` に置くリポジトリの `docs-template/scripts/ace/`）にスクリプトが一部あっても、同期検証・形式ゲートのスクリプトが同居しているとは限らない。推測で起動すると `ERR_MODULE_NOT_FOUND` で 1 往復する。
 
 同梱テンプレートを叩く経路で `npx --yes tsx` を直接書かない。root package に `tsx` binary が無い workspace 環境では `tsx: command not found` でゲートに到達できず、手作業照合へ戻る動きが実測で起きた。`ace-run-ts.sh` は候補を**実際に起動して**確かめながら次の順で解決する — `FF_ACE_TS_RUNNER`（明示指定。`pnpm --filter <pkg> exec tsx` のような複数語も可） → PATH の `tsx` → 上位ディレクトリを含む `node_modules/.bin/tsx` → `pnpm` / `yarn` の `exec` → `npx --yes tsx`。どれも起動できなければ exit 3 で停止する（黙って手作業へ戻さない）。
 

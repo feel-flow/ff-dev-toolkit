@@ -2,13 +2,15 @@
 
 AI仕様駆動開発（AI-SDD）の公式実装となる Claude Code / Codex プラグイン。ドキュメント初期化から開発進行のゲート管理・影響度評価・クロスモデルレビュー・ナレッジ蓄積までを、Skills / MCP サーバーの組み合わせで統制します。
 
-書籍『AI仕様駆動開発 公式ガイド』第2部（公式実装リファレンス）の対象実装です。方法論そのもの（コア7文書スキーマ・原則）は [ai-spec-driven-development](https://github.com/feel-flow/ai-spec-driven-development) を参照してください。
+書籍『AI仕様駆動開発 公式ガイド』第3部（公式実装リファレンス）の対象実装です。方法論そのもの（コア7文書スキーマ・原則）は [ai-spec-driven-development](https://github.com/feel-flow/ai-spec-driven-development) を参照してください。
 
 ## AI仕様駆動開発2.0の入口
 
 `asdd-init` で目的・完成条件・市民開発／開発者向けの進め方を合意する。必要な文書だけを生成し、共通MASTERからCLAUDE.md・AGENTS.mdを薄く接続する。日常作業は `asdd-work`、再設定や整合確認は `asdd-init` を使う。
 
-`.asdd/config.json` を正本とし、新規構成はACE・自動振り返りを初期無効にする。複数AIレビュー・Hook・CIも個別に選ぶ。設定のない既存プロジェクトは従来動作を維持する。無効な機能は催促せず、初期構築・実装準備・公開準備を区別して報告する。
+`.asdd/config.json` を正本とし、新規構成はACE・自動振り返りを初期無効にする。複数AIレビュー・Hook・CIも個別に選ぶ。設定のない既存プロジェクトは従来動作を維持する。ただし、`.asdd/config.json` がなく生成管理情報（`.asdd/managed.json` または `.asdd/apply.lock`）だけが残る状態は設定なしではない。v0.155.0 以降は移行の中断か取り消し漏れとして不正設定に扱い、`asdd-init --check` は非0で終了して復旧方法を示し、任意Hookは診断を出して停止する（旧版との違いと復旧は[移行ガイド §4](https://github.com/feel-flow/ai-spec-driven-development/blob/develop/docs/ASDD_2_0_MIGRATION.md#4-日常利用再設定復旧)）。
+
+無効な機能は催促せず、「初期構築が完了」「実装可能」「利用・公開可能」「配布・公開完了」を区別して報告する。配布しない構成では「配布・公開完了」を判定しない。
 
 ## インストール
 
@@ -55,6 +57,8 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 
 | ワークフロースキル | 用途 |
 |---|---|
+| `/asdd-init` | AI仕様駆動開発2.0の対話型セットアップ。市民開発／開発者向け、文書・AI設定・任意機能を合意し、差分再設定と `--check` に対応 |
+| `/asdd-work` | 依頼・再開・状況確認を業務の言葉で進め、合意したIssue・成果物の履歴を記録 |
 | `/init-docs` | AI仕様駆動開発のコア7文書 + 拡張フォルダ構造を初期化 |
 | `/validate-docs` | ドキュメント構造の検証（必須3文書、残る4文書は未作成なら N/A） |
 | `/assess-impact` | 変更の影響度評価 |

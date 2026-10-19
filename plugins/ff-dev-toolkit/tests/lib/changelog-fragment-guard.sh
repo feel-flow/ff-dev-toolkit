@@ -35,15 +35,31 @@
 #          CHANGELOG が staged で、残りの公開パスが release-dev-toolkit.sh の準備対象
 #          （`PLUGIN_JSON=` / `AGENT_CONFIG=`）だけなら、断片を集約した回として対象外
 #          （`changelog-fragment: consumed <N>`）にする。準備対象を読めなければこの扱いをしない
+#       6. 3. で数えた断片の帰属照合（Issue `#2127` / OBS-221）: 断片の staged 内容（index）が
+#          backtick で参照する path を公開側最新タグと照合し、同一内容（今回変えていない path）なら
+#          違反にする。判定本体は plugins/ff-dev-toolkit/scripts/lib/changelog-attribution-functions.sh
+#          の changelog_attribution_scan（リリース時の ATTRIBUTION_DRIFT と同じ 1 箇所）を
+#          dirty_exempt=2 で呼ぶ — staged で変えた path と、HEAD の object が公開タグと違う path
+#          （同じ PR の前の commit や、未リリースの他 PR で変えたもの）は変更済みとして扱う。作業ツリー
+#          だけの編集は commit に入らないので変更済みとしない。最新タグは公開リポジトリ
+#          （FF_RELEASE_CHECK_PUBLIC_URL、既定 https://github.com/feel-flow/ff-dev-toolkit.git）の
+#          ls-remote で決め、公開側 clone（FF_RELEASE_CHECK_PUBLIC、既定 ~/GitHub/FEEL-FLOW/ff-dev-toolkit）
+#          がそのタグを持てば clone で、無ければそのタグだけを一時 bare repo へ depth 1 で取って照合する。
+#          公開リポジトリへ届かない回だけ clone の最新タグで照合する。どちらも引けない・helper を
+#          読めない回は判定不能（rc=2）へ倒す。断片に path 形の参照が無ければ取得しない
 #
 # 出力と終了コード:
-#   rc=0  stdout `changelog-fragment: ok <N>`        公開対象の変更に対し断片 N 件（1 以上）
+#   rc=0  stdout `changelog-fragment: ok <N>`        公開対象の変更に対し断片 N 件（1 以上）。帰属照合も通過
+#                                                    （照合した相手、または照合不要の旨は stderr の `帰属検査:` 行）
 #   rc=0  stdout `changelog-fragment: none`          staged に数える公開対象の変更が無い（「違反なし」ではなく「対象なし」）
 #   rc=0  stdout `changelog-fragment: consumed <N>`  断片を集約するリリース準備の回（N は削除した断片数）
 #   rc=1  stdout `公開対象を変更したのに changelog.d/ 断片がありません: <先頭パス>（公開対象 <M> 件）`
+#   rc=1  stdout `ATTRIBUTION_PATH=<token> -> <公開 path> (v<tag> と同一 object)` 行と
+#         `✗ <断片>: 前版 v<tag> と同一内容の path を backtick で参照している（…）` 行（帰属違反）
 #   rc=2  stderr `断片未検査: <理由>`   判定材料を取得できない。緑とも違反なしとも報告しない
 #         （リポジトリではない・公開対象一覧を取得できない / 空・git が失敗した・
-#         比較 base を解決できず staged にも断片が無い・一時領域を作れない）
+#         比較 base を解決できず staged にも断片が無い・一時領域を作れない・
+#         帰属照合の helper を読めない・公開側最新タグを clone からも公開リポジトリからも引けない）
 
 # _cfg_array_items <file> <配列名> — `名=(` から `)` までの "..." 要素を 1 行ずつ出す
 _cfg_array_items() {
@@ -59,6 +75,103 @@ _cfg_array_items() {
 _cfg_scalar() {
   [ -f "$1" ] || return 0
   awk -F'"' -v name="$2" '$0 ~ "^" name "=\"" { print $2; exit }' "$1"
+}
+
+# _changelog_fragment_attribution <root> <tmp> — <tmp>/frags（1 行 1 断片のルート相対パス）の
+# staged 内容を公開側最新タグと照合する。rc=0 違反なし / 1 違反（stdout に名指し）/ 2 判定不能（stderr）
+_changelog_fragment_attribution() {
+  local root="$1" tmp="$2" lib clone public url refs remote_tag="" clone_tag="" tag="" src="" path out arc
+  local paths reason suspects=0 has_paths=0 n=0
+  # 公開リポジトリへの到達が詰まった回に黙って待ち続けない（低速が 30 秒続けば打ち切る）。
+  local -a net=(-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30)
+  lib="$root/plugins/ff-dev-toolkit/scripts/lib/changelog-attribution-functions.sh"
+  if [ ! -f "$lib" ] || ! . "$lib" || ! declare -F changelog_attribution_scan >/dev/null; then
+    echo "断片未検査: 帰属照合の判定 helper を読めません: ${lib}" >&2
+    return 2
+  fi
+  # 断片の本文は commit される index 側から読む（作業ツリーだけの書き換えで通さない）。
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    n=$((n + 1))
+    if ! git -C "$root" show ":${path}" >"$tmp/body.${n}" 2>"$tmp/err"; then
+      echo "断片未検査: 断片の staged 内容を読めません: ${path}: $(cat "$tmp/err" 2>/dev/null)" >&2
+      return 2
+    fi
+    if ! paths="$(extract_paths "$(cat "$tmp/body.${n}")")"; then
+      echo "断片未検査: 断片の path 形の参照を抽出できません: ${path}" >&2
+      return 2
+    fi
+    [ -z "$paths" ] || has_paths=1
+  done <"$tmp/frags"
+  if [ "$has_paths" -eq 0 ]; then
+    echo "帰属検査: 断片 ${n} 件に path 形の参照なし（公開タグを引かない）" >&2
+    return 0
+  fi
+  # 最新タグは公開リポジトリの ls-remote で決める（手元 clone の最終 fetch が古いと、古いタグとの
+  # 照合で誤帰属を見逃す）。clone がそのタグを持っていれば clone で照合し、無ければ一時 bare repo へ
+  # そのタグだけを depth 1 で取る。公開リポジトリへ届かない回だけ clone の最新タグで照合する。
+  clone="${FF_RELEASE_CHECK_PUBLIC:-${HOME:-}/GitHub/FEEL-FLOW/ff-dev-toolkit}"
+  url="${FF_RELEASE_CHECK_PUBLIC_URL:-https://github.com/feel-flow/ff-dev-toolkit.git}"
+  if git -C "$clone" rev-parse --git-dir >/dev/null 2>&1; then
+    clone_tag="$(changelog_latest_semver_tag "$clone" 2>/dev/null)" || clone_tag=""
+  fi
+  if refs="$(GIT_TERMINAL_PROMPT=0 git "${net[@]}" ls-remote --tags --refs "$url" 2>"$tmp/err")"; then
+    remote_tag="$(printf '%s\n' "$refs" | awk '$2 ~ /^refs\/tags\/v[0-9]+\.[0-9]+\.[0-9]+$/ { sub(/^refs\/tags\/v/, "", $2); print $2 }' \
+      | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+    if [ -z "$remote_tag" ]; then
+      echo "断片未検査: 帰属照合の公開タグを引けません（${url} に SemVer タグがありません）" >&2
+      return 2
+    fi
+    tag="$remote_tag"
+    if [ -n "$clone_tag" ] && git -C "$clone" rev-parse -q --verify "refs/tags/v${tag}^{commit}" >/dev/null 2>&1; then
+      public="$clone"; src="公開側 clone ${clone}"
+    else
+      public="$tmp/public.git"
+      if ! git init -q --bare "$public" 2>"$tmp/err"; then
+        echo "断片未検査: 公開タグ取得用の一時 repo を作れません: $(cat "$tmp/err" 2>/dev/null)" >&2
+        return 2
+      fi
+      if ! GIT_TERMINAL_PROMPT=0 git "${net[@]}" -C "$public" fetch -q --depth 1 --no-tags "$url" \
+        "refs/tags/v${tag}:refs/tags/v${tag}" 2>"$tmp/err"; then
+        echo "断片未検査: 帰属照合の公開タグ v${tag} を取得できません（${url}）: $(cat "$tmp/err" 2>/dev/null)" >&2
+        return 2
+      fi
+      src="公開リポジトリ ${url}"
+    fi
+  elif [ -n "$clone_tag" ]; then
+    tag="$clone_tag"; public="$clone"
+    src="公開側 clone ${clone}（${url} へ届かないため clone の最新タグ。clone が古いと見逃しうる）"
+  else
+    if [ -d "$clone" ]; then
+      reason="公開側 clone ${clone} に SemVer タグが無く"
+    else
+      reason="公開側 clone ${clone} が無く"
+    fi
+    echo "断片未検査: 帰属照合の公開タグを引けません（${reason}、${url} の ls-remote が失敗）: $(cat "$tmp/err" 2>/dev/null)" >&2
+    return 2
+  fi
+  n=0
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    n=$((n + 1))
+    arc=0
+    # dirty_exempt=2: staged で変えた path だけを変更済みとして扱う（作業ツリーだけの編集は commit に入らない）。
+    out="$(changelog_attribution_scan "$root" "$public" "$tag" "$(cat "$tmp/body.${n}")" 2)" || arc=$?
+    case "$arc" in
+      0) ;;
+      1)
+        printf '%s\n' "$out"
+        printf '✗ %s: 前版 v%s と同一内容の path を backtick で参照している（誤帰属の疑い。今回変えた path へ書き換えるか、変えていないものは backtick を外して役割名で書く）\n' "$path" "$tag"
+        suspects=1 ;;
+      *)
+        reason="$(printf '%s\n' "$out" | awk '/^ATTRIBUTION_UNAVAILABLE=/ { sub(/^ATTRIBUTION_UNAVAILABLE=/, ""); print; exit }')"
+        echo "断片未検査: ${path} の帰属を判定できません — ${reason:-判定 helper が rc=${arc} を返した}" >&2
+        return 2 ;;
+    esac
+  done <"$tmp/frags"
+  [ "$suspects" -eq 0 ] || return 1
+  echo "帰属検査: 断片 ${n} 件を ${src} の v${tag} と照合（違反なし）" >&2
+  return 0
 }
 
 changelog_fragment_scan() {
@@ -189,12 +302,17 @@ EOF
       continue
     fi
     frag=$((frag + 1))
+    printf '%s\n' "$path" >>"$tmp/frags"
   done <"$tmp/add"
-  rm -rf "$tmp"
   if [ "$frag" -gt 0 ]; then
+    rc=0
+    _changelog_fragment_attribution "$root" "$tmp" || rc=$?
+    rm -rf "$tmp"
+    [ "$rc" -eq 0 ] || return "$rc"
     echo "changelog-fragment: ok ${frag}"
     return 0
   fi
+  rm -rf "$tmp"
   if [ -z "$base" ]; then
     if [ -z "$default_ref" ]; then
       echo "断片未検査: origin/HEAD を解決できず比較 base が無く、staged にも断片がありません（公開対象 ${hit} 件。先頭: ${first}）" >&2

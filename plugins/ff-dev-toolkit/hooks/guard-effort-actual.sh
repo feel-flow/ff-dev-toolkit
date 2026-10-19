@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #
-# 工数実績 未記入マージガード（PreToolUse / Bash）。
+# 工数実績 未記入マージガード（PreToolUse / Bash・GitHub MCP）。
 #
 # `gh pr merge` が閉じようとしている Issue の本文に `ff-effort` ブロックが
 # **あるのに** `effort_ai_actual` が未記入のままなら、マージ前に停止する。
@@ -87,16 +87,32 @@
 #     打ち切りは fail-open（照会しなかった Issue は無かったものとして扱う）で、
 #     上限に達したこと自体は deny の理由にしない
 #
+# GitHub MCP 経路（PreToolUse / `merge_pull_request`）:
+#   hooks.json は MCP のツール名を matcher に持つエントリからも本ガードを起動する。tool_input の
+#   owner / repo / pullNumber を `gh pr merge <番号> --repo <owner>/<repo>` へ写して上の判定へ流すので、
+#   閉じる Issue の解決・未記入の定義・deny 文は Bash 経路と同じ（違うのは抜け道の案内 1 行だけ）。
+#   PR / Issue の本文を読むのは gh のままなので、gh が無い・照会に失敗した・照会上限を超えた・
+#   tool_input を読めない・判定表にないツール名・jq 不在のときは止めずに通し、省略した理由を
+#   systemMessage（利用者）と additionalContext（エージェントの文脈）に出す（黙って通さない）。
+#   振り分けは共有ヘルパ tests/lib/github-mcp-route.sh の ff_github_mcp_route_input。
+#   抜け道は hook の環境変数 `FF_EFFORT_ACTUAL_ACK=1`（MCP の呼び出しにはコマンド先頭の環境代入を
+#   付けられないため）。hook の環境は Claude Code の起動時に決まるので、その 1 回ではなくセッション
+#   全体の GitHub MCP 呼び出しに効く。通したときも毎回知らせる。
+#
 # 設計原則:
 #   - fail-open: 全 Bash 呼び出しに割り込むため、自身の不具合や解析不能な形、
 #     `gh` / `jq` 不在では黙って許可（exit 0・無出力）に倒す。検査不能を
-#     「違反」と読み替えない。
+#     「違反」と読み替えない。GitHub MCP 経路だけは、判定を省略した理由を出して通す
+#     （無出力にしない）。
 #   - 互換性: bash 3.2（stock macOS）互換。連想配列・readarray を使わない。
 #     大文字小文字の吸収と本文の走査は `LC_ALL=C awk` で行う（grep は不一致と
 #     エラーの区別が実装依存で、fail-open が fail-closed へ反転しうる）。
 #
 # 環境変数:
 #   FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1  このガードを無効化する
+#   FF_EFFORT_ACTUAL_ACK=1  Bash 経路ではコマンド先頭の環境代入（その 1 回だけ）、GitHub MCP 経路では
+#                           hook の環境変数（セッション全体）として読む抜け道。hook の環境の値は
+#                           MCP 経路だけが読み、Bash 経路は通さない
 #   FF_EFFORT_ACTUAL_GUARD_MAX_ISSUES          1 回の判定で照会する Issue の上限
 #     （既定 5。`0` / 空 / 数値でない値は既定へ正規化する。`0` をそのまま受けると
 #     最初の 1 件も照会せずガードが全無効化され、無効化の経路が opt-out と 2 つに割れる）
@@ -124,7 +140,72 @@ asdd_hook_enabled hooks || exit 0
 
 [ "${FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD:-0}" = "1" ] && exit 0
 
-# 安価な前置フィルタ（jq / gh / awk を 1 度も起動せずに非該当を落とす）。
+# ---- GitHub MCP 経路（merge_pull_request）------------------------------------
+# MCP の呼び出しにはコマンド文字列が無い。tool_input の owner / repo / pullNumber を同じ意味の
+# `gh pr merge <番号> --repo <owner>/<repo>` へ写し、下の Bash 経路の判定へそのまま流す
+# （閉じる Issue の解決・未記入の定義を 2 系統へ複製しない）。写すのは数字と英数記号だけに
+# 限った値なので、組み立てた文字列の解釈が入力でずれることはない（実行もしない）。
+# Bash 経路と違うのは、判定を省略した理由を systemMessage で必ず出すこと（gh 不在・gh の照会
+# 失敗・tool_input を読めない）。Bash 経路では gh を叩くのは利用者のコマンド自身なので失敗が
+# 目に見えるが、MCP 経路では gh を使えなくてもマージが通るため、黙って通すとガードが効いて
+# いないことに誰も気づけない。
+GUARD_ROUTE=bash
+mcp_skip() { # <理由>  MCP 経路では省略した理由を出して通す。Bash 経路は従来どおり無音で通す
+  [ "$GUARD_ROUTE" = "mcp" ] && ff_github_mcp_note "工数実績" "$1"
+  exit 0
+}
+# MCP の入力は `gh` を含まないので、下の前置フィルタより前で振り分ける（後ろに置くと MCP の
+# 入力が jq を起動する前に素通しで落ちる）。振り分け（tool_name の読み取り・判定表の照合）は
+# 共有ヘルパの ff_github_mcp_route_input。
+case "$input" in
+  *mcp__*)
+    # shellcheck source=../tests/lib/github-mcp-route.sh
+    if . "${BASH_SOURCE[0]%/*}/../tests/lib/github-mcp-route.sh" 2>/dev/null; then
+      ff_github_mcp_route_input "工数実績" merge_pull_request
+    else
+      case "$input" in
+        *'"tool_name":"mcp__'* | *'"tool_name": "mcp__'*)
+          printf '%s\n' '{"systemMessage":"ℹ️ ff-dev-toolkit guard（工数実績・GitHub MCP）: 判定ヘルパ tests/lib/github-mcp-route.sh を読めないため、GitHub MCP の呼び出しを検査せずに通しました。"}'
+          exit 0
+          ;;
+      esac
+    fi
+    ;;
+esac
+if [ "$GUARD_ROUTE" = "mcp" ]; then
+  # 抜け道: MCP の呼び出しにはコマンド先頭の環境代入を付けられないので、hook の環境変数で受ける。
+  # セッション全体に効くので、通したことは毎回知らせる。
+  if [ "${FF_EFFORT_ACTUAL_ACK:-0}" = "1" ]; then
+    mcp_skip "hook の環境変数 FF_EFFORT_ACTUAL_ACK=1 により、${MCP_TOOL_NAME} が閉じる Issue の工数実績を確認せずに通しました。この設定は Claude Code のセッション全体（GitHub MCP の呼び出しすべて）に効くので、済んだら外して再起動してください。"
+  fi
+  mcp_target="$(printf '%s' "$input" | jq -r '
+    .tool_input | select(type == "object")
+    | [(.owner | strings), (.repo | strings), (.pullNumber | if type == "number" then tostring else strings end)]
+    | select(length == 3) | join(" ")' 2>/dev/null)" || mcp_target=""
+  mcp_target="${mcp_target//$'\r'/}"
+  mcp_owner="${mcp_target%% *}"
+  mcp_rest="${mcp_target#* }"
+  mcp_repo="${mcp_rest%% *}"
+  mcp_pr="${mcp_rest#* }"
+  case "$mcp_owner:$mcp_repo:$mcp_pr" in
+    *[!A-Za-z0-9._:-]* | :* | *::* | *: | *:*:*:*) mcp_pr="" ;;
+  esac
+  case "$mcp_pr" in
+    '' | *[!0-9]*)
+      mcp_skip "${MCP_TOOL_NAME} の tool_input から owner / repo / pullNumber を読めないため、閉じる Issue の工数実績を検査せずに通しました。"
+      ;;
+  esac
+  command -v gh >/dev/null 2>&1 \
+    || mcp_skip "gh が PATH に無いため、${mcp_owner}/${mcp_repo} の PR ${mcp_pr} が閉じる Issue の工数実績（ff-effort ブロックの effort_ai_actual）を確認せずに通しました。PR と Issue の本文は gh でしか読めません。"
+  command -v awk >/dev/null 2>&1 \
+    || mcp_skip "awk が PATH に無いため、${mcp_owner}/${mcp_repo} の PR ${mcp_pr} が閉じる Issue の工数実績を確認せずに通しました。"
+  input="$(printf '%s' "$input" | jq -c --arg c "gh pr merge ${mcp_pr} --repo ${mcp_owner}/${mcp_repo}" \
+    '{tool_name: "Bash", tool_input: {command: $c}, cwd: (.cwd // "")}' 2>/dev/null)" \
+    || mcp_skip "${MCP_TOOL_NAME} の入力を判定用に組み立てられないため、閉じる Issue の工数実績を検査せずに通しました。"
+fi
+
+# 安価な前置フィルタ（jq / gh / awk を 1 度も起動せずに非該当を落とす。例外は `mcp__` を含む入力で、
+# 上の振り分けが tool_name を読むために jq を 1 回起動する）。
 # 「素通しした」だけでは前置で落ちたのか後段の解析で落ちたのかを区別できないため、
 # suite は jq / awk をログ付きスタブへ差し替えて**起動回数 0** で固定する
 # （この前置を削る変異は、その起動回数で赤になる）。
@@ -163,11 +244,11 @@ CWD="$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null)"
 # 捨てずにそのまま走査する。
 HEREDOC_HELPER="${BASH_SOURCE[0]%/*}/../tests/lib/heredoc-strip.sh"
 # shellcheck source=../tests/lib/heredoc-strip.sh
-. "$HEREDOC_HELPER" 2>/dev/null || exit 0
+. "$HEREDOC_HELPER" 2>/dev/null || mcp_skip "判定ヘルパ tests/lib/heredoc-strip.sh を読めないため、閉じる Issue の工数実績を検査せずに通しました。"
 code_only="$(ff_heredoc_strip "$cmd")"
 case $? in
   0 | 3) : ;;
-  *) exit 0 ;;
+  *) mcp_skip "判定ヘルパ tests/lib/heredoc-strip.sh の走査が失敗したため、閉じる Issue の工数実績を検査せずに通しました。" ;;
 esac
 [ -n "$code_only" ] || exit 0
 case "$code_only" in
@@ -328,16 +409,19 @@ if [ -n "$REPO" ]; then
 fi
 
 if [ -n "$SELECTOR" ]; then
-  pr_json="$(cd "$CWD" 2>/dev/null && gh pr view "$SELECTOR" ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json number,body,url,closingIssuesReferences 2>/dev/null)" || exit 0
+  pr_json="$(cd "$CWD" 2>/dev/null && gh pr view "$SELECTOR" ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json number,body,url,closingIssuesReferences 2>/dev/null)" \
+    || mcp_skip "${REPO} の PR ${SELECTOR} を gh で読めない（認証切れ・オフライン・PR が見つからない）ため、閉じる Issue の工数実績を確認せずに通しました。"
 else
-  pr_json="$(cd "$CWD" 2>/dev/null && gh pr view ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json number,body,url,closingIssuesReferences 2>/dev/null)" || exit 0
+  pr_json="$(cd "$CWD" 2>/dev/null && gh pr view ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json number,body,url,closingIssuesReferences 2>/dev/null)" \
+    || mcp_skip "${REPO} の PR ${SELECTOR} を gh で読めない（認証切れ・オフライン・PR が見つからない）ため、閉じる Issue の工数実績を確認せずに通しました。"
 fi
-[ -n "$pr_json" ] || exit 0
+[ -n "$pr_json" ] || mcp_skip "${REPO} の PR ${SELECTOR} を gh で読めない（認証切れ・オフライン・PR が見つからない）ため、閉じる Issue の工数実績を確認せずに通しました。"
 
-pr_number="$(printf '%s' "$pr_json" | jq -r '.number // empty' 2>/dev/null)" || exit 0
-pr_body="$(printf '%s' "$pr_json" | jq -r '.body // ""' 2>/dev/null)" || exit 0
+pr_unparsed="${REPO} の PR ${SELECTOR} を gh で読めたが内容を解釈できないため、閉じる Issue の工数実績を確認せずに通しました。"
+pr_number="$(printf '%s' "$pr_json" | jq -r '.number // empty' 2>/dev/null)" || mcp_skip "$pr_unparsed"
+pr_body="$(printf '%s' "$pr_json" | jq -r '.body // ""' 2>/dev/null)" || mcp_skip "$pr_unparsed"
 pr_body="${pr_body//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
-[ -n "$pr_number" ] || exit 0
+[ -n "$pr_number" ] || mcp_skip "$pr_unparsed"
 
 # ---- 閉じる Issue の集合（GitHub が解決済みの参照を正本にする）----------------
 # PR と同じリポジトリの Issue だけに絞る（別リポジトリの番号を現リポジトリの番号として
@@ -446,13 +530,22 @@ is_effort_unfilled() {
 }
 
 unfilled=""
+# MCP 経路だけが使う: gh で読めなかった Issue（Bash 経路は従来どおり読み飛ばすだけ）
+unread=""
+truncated=0
 count=0
 while IFS= read -r num; do
   [ -n "$num" ] || continue
   count=$((count + 1))
-  [ "$count" -gt "$MAX_ISSUES" ] && break
-  issue_json="$(cd "$CWD" 2>/dev/null && gh issue view "$num" ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json body,state 2>/dev/null)" || continue
-  [ -n "$issue_json" ] || continue
+  if [ "$count" -gt "$MAX_ISSUES" ]; then
+    truncated=1
+    break
+  fi
+  issue_json="$(cd "$CWD" 2>/dev/null && gh issue view "$num" ${GH_ARGS[0]:+"${GH_ARGS[@]}"} --json body,state 2>/dev/null)" || issue_json=""
+  if [ -z "$issue_json" ]; then
+    unread="${unread:+$unread, }#${num}"
+    continue
+  fi
   # 既に CLOSED の Issue は対象外（`/close-issue <PR番号>` が効かず停止が恒久化する）
   issue_state="$(printf '%s' "$issue_json" | jq -r '.state // ""' 2>/dev/null)"
   [ "$issue_state" = "CLOSED" ] && continue
@@ -466,13 +559,24 @@ done <<EOF
 $issue_numbers
 EOF
 
-[ -n "$unfilled" ] || exit 0
+if [ -z "$unfilled" ]; then
+  [ -z "$unread" ] || mcp_skip "${REPO} の PR ${pr_number} が閉じる Issue（${unread}）を gh で読めないため、その Issue の工数実績を確認せずに通しました。"
+  [ "$truncated" -eq 0 ] || mcp_skip "${REPO} の PR ${pr_number} が閉じる Issue が照会上限（${MAX_ISSUES} 件）を超えたため、上限より後の Issue の工数実績を確認せずに通しました。"
+  exit 0
+fi
+
+# 抜け道の案内だけが経路で違う（MCP の呼び出しにはコマンド先頭の環境代入を付けられない）
+if [ "$GUARD_ROUTE" = "mcp" ]; then
+  bypass_line="2) 実績を書き戻さずに進める場合は、gh で FF_EFFORT_ACTUAL_ACK=1 gh pr merge ${pr_number} --repo ${REPO} を実行する（その 1 回だけ通る）。gh を使えないなら、hook の環境変数 FF_EFFORT_ACTUAL_ACK=1 を設定してから同じ呼び出しを再実行する（GitHub MCP の呼び出しにはコマンド先頭の環境代入を付けられないため。Claude Code を起動するシェルで export し、再起動する。その 1 回ではなくセッション全体の GitHub MCP 呼び出しに効くので、済んだら外して再起動する）"
+else
+  bypass_line="2) 実績を書き戻さずに進める場合は、対象コマンドの先頭へ環境代入を付けて再実行する: FF_EFFORT_ACTUAL_ACK=1 gh pr merge ..."
+fi
 
 reason="⛔ ff-dev-toolkit guard（工数実績が未記入のままのマージ）: この PR が閉じる Issue（${unfilled}）の本文には ff-effort ブロックがありますが、effort_ai_actual が未記入です。
 このままマージすると Issue は閉じますが実績は空のままで、scripts/effort-report.sh の較正母集団から excluded_planned_only として静かに落ちます。
 次のいずれかで再実行してください:
   1) AI エージェントへ /close-issue ${pr_number} を実行し、AC 照合と工数実績の書き戻しを済ませてから同じマージコマンドを実行する（推奨）
-  2) 実績を書き戻さずに進める場合は、対象コマンドの先頭へ環境代入を付けて再実行する: FF_EFFORT_ACTUAL_ACK=1 gh pr merge ...
+  ${bypass_line}
 ff-effort ブロックが無い Issue はこのガードの対象外です（遡及付与は強制しません）。
 このガード自体を止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1 を設定します。"
 

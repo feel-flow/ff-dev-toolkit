@@ -39,6 +39,18 @@
 #           「5-1 ∪ 5-2」= 母集団、排他性を見る。母集団は字句では境界を引けない（ローカル
 #           変数・出力行のキーが大半）ため、「5-0」が宣言する接頭辞系統と単独名に限る。
 #           宣言・一覧・走査のいずれかが空・失敗なら fail-closed で赤
+#   M. README のスキル表に並ぶ名前の集合 = skills/*/SKILL.md を持つディレクトリの集合
+#      （両方向）。公開 README は「### Skills（N）」節、root README（リポジトリ直下）は
+#      「#### ff-dev-toolkit」節の中で、見出しセルが「スキル」か「ワークフロースキル」の
+#      表だけを読む。検査 G は見出しの件数しか見ないので、見出しを直して表に行を足し
+#      忘れても緑だった（公開 README は見出し 27 に対し表 25 行、root README は
+#      workflow-doctor の行が無いまま公開された）。件数ではなく集合で照合するのは、
+#      行数を保ったまま名前だけ古い行が残る形を件数の一致が素通りさせるため。コード
+#      フェンスの中は読まない（フェンス本文の `# コメント` 行で節を閉じない）。節・表が
+#      見つからない、フェンスが閉じていない、第 1 列を読めない行がある、同じ名前の行が
+#      複数ある、のいずれも赤。他プラグインの README の表は対象外
+#
+# 空振り検出: 表見出しセルを改稿して表を 1 つも認識できない公開 README・ff-dev-toolkit 節の無い root README・コードフェンスが閉じていない公開 README・見出し「### Skills（N）」の無い公開 README を与えると、それぞれ検査 M・M・M・G が赤になる（selftest の G33 / G36 / G39 / G15 で実測）。
 #
 # 数値の抽出は fail-closed: パターンが 0 件・2 件以上の一致なら赤にする。説明文の
 # 書式変更で抽出が空振りし、緑のまま検査が無効化するのを防ぐ。件数そのものは
@@ -65,10 +77,11 @@ PLUGIN_JSON="$ROOT/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
 ROOT_MARKET="$ROOT/.claude-plugin/marketplace.json"
 OSS_MARKET="$ROOT/oss/ff-dev-toolkit/.claude-plugin/marketplace.json"
 OSS_README="$ROOT/oss/ff-dev-toolkit/README.md"
+ROOT_README="$ROOT/README.md"
 
 command -v jq >/dev/null 2>&1 || { echo "✗ jq is required" >&2; exit 1; }
 
-for path in "$SKILLS_DIR" "$PLUGIN_JSON" "$ROOT_MARKET" "$OSS_MARKET" "$OSS_README"; do
+for path in "$SKILLS_DIR" "$PLUGIN_JSON" "$ROOT_MARKET" "$OSS_MARKET" "$OSS_README" "$ROOT_README"; do
   [ -e "$path" ] || { echo "✗ 対象が見つかりません: $path" >&2; exit 1; }
 done
 
@@ -78,11 +91,19 @@ ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # --- A. 実スキル数（SKILL.md を持つディレクトリのみ数える） ---
+# 名前の集合（ACTUAL_SKILL_SET）も同じ走査で作り、検査 I と M が共有する（数え方を
+# 1 か所に置き、補助ファイルを数えない性質を全検査で揃える）。
 ACTUAL=0
+ACTUAL_SKILL_SET=""
 for d in "$SKILLS_DIR"/*/; do
   [ -d "$d" ] || continue
-  [ -f "${d}SKILL.md" ] && ACTUAL=$((ACTUAL + 1))
+  if [ -f "${d}SKILL.md" ]; then
+    ACTUAL=$((ACTUAL + 1))
+    ACTUAL_SKILL_SET="${ACTUAL_SKILL_SET}$(basename "$d")
+"
+  fi
 done
+ACTUAL_SKILL_SET="$(printf '%s' "$ACTUAL_SKILL_SET" | LC_ALL=C sort -u)"
 if [ "$ACTUAL" -lt 1 ]; then
   echo "✗ skills/ に SKILL.md を持つディレクトリが 1 件もありません: $SKILLS_DIR" >&2
   exit 1
@@ -228,6 +249,103 @@ else
   bad "oss README: Skills（${got}） ≠ 実数 $ACTUAL"
 fi
 
+# --- M. README のスキル表の名前集合 = 実スキルの集合 ---
+# G は見出しの件数だけを見るので、見出しを直して表に行を足し忘れても緑のまま通った。
+# 表の行は件数ではなく名前の集合で照合する（行数を保ったまま古い名前が残る形を、件数の
+# 一致は素通りさせる）。読む範囲は節（開始行と同じか浅いレベルの見出しで閉じる）と、
+# 見出しセルが「スキル」か「ワークフロースキル」の表に限る — 同じ節の MCP の表や、別
+# プラグインの節のスキル表を拾わないため。コードフェンスの中は先に取り除いてから読む
+# （フェンス本文の `# コメント` 行を見出しと読むと節がそこで閉じ、表が 1 つも無いという
+# 原因違いの赤になる）。フェンスの判定は tests/lib/section-scope.sh の状態機械に任せ、
+# ここで開閉を追い直さない。
+#
+# stdin=フェンスの外の README 本文 $1=節の開始行（行全体の ERE。literal の多バイト +
+# ASCII クラスのみ）。1 行 1 件で SECTION（節の開始ごと）/ TABLE（認識した表ごと）/
+# NAME <名前> / BAD <行>（第 1 列が `name` / `/name` でない行・区切り行の無い表見出し）を
+# 返す。awk は 0 件でも rc=0 なので、set -euo pipefail 下でも 0 件一致で無診断 abort にならない。
+readme_skill_rows() {
+  LC_ALL=C awk -v start="$1" '
+    function heading_level(line) { if (match(line, /^#+ /)) return RLENGTH - 1; return 0 }
+    BEGIN { insec = 0; startlvl = 0; mode = 0 }
+    {
+      lvl = heading_level($0)
+      if (insec && lvl > 0 && lvl <= startlvl) { insec = 0; mode = 0 }
+      if (!insec && $0 ~ start) { insec = 1; startlvl = lvl; mode = 0; print "SECTION"; next }
+      if (!insec) next
+      if (mode == 0) {
+        if ($0 ~ /^\| *(スキル|ワークフロースキル) *\|/) { mode = 1; hdr = $0; print "TABLE" }
+        next
+      }
+      if (mode == 1) {
+        if ($0 ~ /^\|[ :|-]+$/) { mode = 2; next }
+        mode = 0; print "BAD " hdr "（直後に区切り行がありません）"; next
+      }
+      if ($0 !~ /^\|/) { mode = 0; next }
+      split($0, cells, "|")
+      cell = cells[2]
+      gsub(/^ +| +$/, "", cell)
+      if (cell ~ /^`\/?[a-z0-9][a-z0-9-]*`$/) {
+        gsub(/[`\/]/, "", cell)
+        print "NAME " cell
+      } else {
+        print "BAD " $0
+      }
+    }
+  '
+}
+
+# 改行区切りの集合を空白区切りの 1 行へ（末尾に空白を残さない）。
+join_words() { awk 'NF { printf "%s%s", sep, $0; sep = " " }'; }
+
+# shellcheck source=../lib/section-scope.sh
+. "$SCRIPT_DIR/../lib/section-scope.sh"
+
+# $1=README $2=表示ラベル $3=節の開始行（ERE） $4=節の表示名（診断用）
+check_skill_table() {
+  local readme="$1" label="$2" start="$3" section_label="$4" rows fence_free
+  local n_sections n_tables names unreadable dups table_set only_table only_actual
+  # フェンスの外の行を先に取り出す。失敗（フェンスが閉じていない・読めない）は理由が
+  # stdout に出るので、パイプへ流さず受けてから名指しする（流すと理由が本文の 1 行として
+  # 読まれて失われる）。
+  if ! fence_free="$(section_scope_fence_free_lines "$readme")"; then
+    bad "${label}: ${fence_free}（fail-closed）"
+    return 0
+  fi
+  if ! rows="$(printf '%s\n' "$fence_free" | cut -f2- | readme_skill_rows "$start")"; then
+    bad "${label}: スキル表の走査に失敗しました（検査不成立。fail-closed）"
+    return 0
+  fi
+  n_sections="$(printf '%s\n' "$rows" | awk '$0 == "SECTION" { n++ } END { print n + 0 }')"
+  n_tables="$(printf '%s\n' "$rows" | awk '$0 == "TABLE" { n++ } END { print n + 0 }')"
+  if [ "$n_sections" -eq 0 ]; then
+    bad "${label}: ${section_label}が見つかりません（見出しを変えた場合は本 suite も更新すること。fail-closed）"
+    return 0
+  fi
+  if [ "$n_tables" -eq 0 ]; then
+    bad "${label}: ${section_label}にスキル表（見出しセルが「スキル」か「ワークフロースキル」の表）が 1 つもありません（書式を変えた場合は本 suite も更新すること。fail-closed）"
+    return 0
+  fi
+  names="$(printf '%s\n' "$rows" | awk 'sub(/^NAME /, "")')"
+  unreadable="$(printf '%s\n' "$rows" | awk 'sub(/^BAD /, "") { printf "%s%s", sep, $0; sep = " ／ " }')"
+  if [ -n "$unreadable" ]; then
+    bad "${label}: スキル表の第 1 列を読めない行があります（\`name\` か \`/name\` の形で書くこと）: ${unreadable}"
+  fi
+  dups="$(printf '%s\n' "$names" | awk 'NF' | LC_ALL=C sort | LC_ALL=C uniq -d | join_words)"
+  if [ -n "$dups" ]; then
+    bad "${label}: スキル表に同じ名前の行が複数あります: ${dups}"
+  fi
+  table_set="$(printf '%s\n' "$names" | awk 'NF' | LC_ALL=C sort -u)"
+  if [ "$table_set" = "$ACTUAL_SKILL_SET" ]; then
+    ok "${label}: スキル表の $(printf '%s\n' "$names" | awk 'NF { n++ } END { print n + 0 }') 行が実体と一致"
+  else
+    only_table="$(comm -23 <(printf '%s\n' "$table_set") <(printf '%s\n' "$ACTUAL_SKILL_SET") | join_words)"
+    only_actual="$(comm -13 <(printf '%s\n' "$table_set") <(printf '%s\n' "$ACTUAL_SKILL_SET") | join_words)"
+    bad "${label}: スキル表が実体と一致しません（表にだけある: ${only_table:-なし}／実体にだけある: ${only_actual:-なし}）"
+  fi
+}
+check_skill_table "$OSS_README" "oss README" '^### Skills（[0-9]+）$' "「### Skills（N）」節"
+check_skill_table "$ROOT_README" "root README（ff-dev-toolkit 節）" '^#### ff-dev-toolkit$' "「#### ff-dev-toolkit」節"
+
 # --- H. 公開 README の「Bash ガード」紹介文（本数と実体名） ---
 # 「### Bash ガード（PreToolUse）」の導入文（本数・実体名）も G と同じ構造の
 # 手書き複製で、hooks.json 側にガードを追加・削除しても README 側は追従しない
@@ -366,14 +484,7 @@ elif [ ! -d "$HOOKS_DIR" ]; then
 else
   # I. Skills（起動名はすべて契約。内部扱いの skill は無い）
   doc_skills="$(ff_surface_skills "$SURFACE_DOC")"
-  actual_skills=""
-  for d in "$SKILLS_DIR"/*/; do
-    [ -d "$d" ] || continue
-    [ -f "${d}SKILL.md" ] || continue
-    actual_skills="${actual_skills}$(basename "$d")
-"
-  done
-  actual_skills="$(printf '%s' "$actual_skills" | LC_ALL=C sort -u)"
+  actual_skills="$ACTUAL_SKILL_SET"
   if [ -z "$doc_skills" ]; then
     bad "PUBLIC-SURFACE.md: 「## 公開面 1: Skills」節から skill 名を 1 件も抽出できません（見出しか書式を変えた場合は本 suite も更新すること）"
   else

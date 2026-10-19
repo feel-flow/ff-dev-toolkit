@@ -88,7 +88,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 | 2 | 検索不成立 — 両 store とも不在、または在るのに読めない・エントリ見出し（`### ACE-…:` / `### OBS-NNN:`）を 1 件も認識できない（書式変更を 0 件ヒットの緑へ倒さない） |
 | 3 | plugin root ガードの停止（handoff と実体位置の不一致・消えた root）。「ff-dev-toolkit更新後にこのskillを再呼び出してください」の案内に従う。検索不成立（2）とは別の番号にしてあるので、3 を「検索した結果」と読まない |
 
-store の実配置は既定パス（`docs/08-knowledge/PLAYBOOK.md` / `OBSERVATIONS.md`）の不在だけで「未導入」と結論せず、root 配下を探索して候補が 1 件ならそれを採る。複数候補は曖昧として採らず、`--playbook` / `--ledger` の明示を求める（推測で 1 つを選ばない）。
+store の実配置は既定パス（`docs/08-knowledge/PLAYBOOK.md` / `OBSERVATIONS.md`）の不在だけで「未導入」と結論しない。ACE Playbook は `--playbook` → `ACE_PLAYBOOK_PATH` → 記録済み配置（`AGENTS.md` / `CLAUDE.md` / `docs/MASTER.md` に書かれた `PLAYBOOK.md` のパス）→ 既定パス → root 配下の探索の順で解決する。この順は `/ace-curate` / `/ace-refine` の「配置先の解決」と同じで、両スキルは `--resolve-playbook` で本スクリプトの同じ関数を呼ぶ。観測台帳は既定パス → 探索。探索は候補が 1 件ならそれを採り、複数候補は曖昧として採らず `--playbook` / `--ledger` の明示を求める（推測で 1 つを選ばない）。`docs-template/` 配下は探索からだけ外す — 記録・環境変数で名指しされた `docs-template/08-knowledge/PLAYBOOK.md`（テンプレ配布リポジトリの実体）は採る。
 
 ## 導入先での配線
 

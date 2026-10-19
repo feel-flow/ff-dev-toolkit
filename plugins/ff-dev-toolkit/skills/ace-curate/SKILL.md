@@ -48,7 +48,13 @@ fi
 
 ## 配置先の解決（最初に実施）
 
-既存の ACE 配置記録と `ACE_PLAYBOOK_PATH` から実在する PLAYBOOK を解決する（規則は [references/curate.md](references/curate.md)「配置先の解決」）。以降の `docs/08-knowledge/PLAYBOOK.md`、`docs/08-knowledge/playbook/` は**既定配置の例**で、独自配置では全パスを実配置へ置換してから実行する。
+`/knowledge-lookup` と同じ resolver で解く（規則: [curate.md](references/curate.md)）:
+
+```bash
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --resolve-playbook
+```
+
+`ACE_PLAYBOOK_STATE=ok` 以外は変更前に止めて報告する。以降の `docs/08-knowledge/` 配下は**既定配置の例**で、`ACE_PLAYBOOK_REL` が違えば置換する。
 
 ## 前提と引数
 
@@ -135,12 +141,12 @@ domainでは同梱契約の4行形式でEvidence / Verification / Distill-Toを�
 SSOT はプロジェクトの ACE 運用文書（例 `docs/05-operations/deployment/ace-cycle.md`）で、以下は無い場合の fallback。同期検証・形式ゲートそれぞれ、**プロジェクトの状態に合う 1 本だけを実行する**:
 
 ```bash
-# 同期検証 — 1 本だけ: (1) npm script 登録済み / (2) scripts/ace/ あり / (3) 無ければ同梱
+# 同期検証 — 1 本だけ: (1) npm script 登録済み / (2) scripts/ace/<同名> が実在 / (3) 無ければ同梱
 npm run ace:check-playbook-frontmatter
 npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check
 
-# 形式ゲート（旧テーブル形式でないこと）— 1 本だけ: (1) scripts/ace/ あり / (2) 無ければ同梱
+# 形式ゲート（旧テーブル形式でないこと）— 1 本だけ: (1) scripts/ace/<同名> が実在 / (2) 無ければ同梱
 npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md
 ```

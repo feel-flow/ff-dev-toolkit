@@ -1406,9 +1406,7 @@ MISS_PROBE_BASELINE=(
   github-labels-setup
   guard-background-cwd
   guard-checkout-restore
-  guard-effort-actual
   guard-long-gate-background
-  guard-sub-issue-id
   host-route-parity
   init-docs-placeholder-list
   issue-label-supply
@@ -1451,7 +1449,6 @@ MISS_PROBE_BASELINE=(
   severity-parser-intersection
   shellcheck
   skill-count-consistency-selftest
-  skill-count-consistency
   skill-frontmatter
   skill-references-existence
   sweep-orphan-transcripts

@@ -30,6 +30,10 @@
 #   効いていない回もここで赤になる（2026-10-05 実測）。
 # 空振り検出: 自動発火節の判定リストから未完了報告の定型文を変えた SKILL.md を与えると、hook / SKILL.md の自動発火契約の照合 1 件が赤になる（2026-09-23 実測。shell 検査 121 件中 1 件失敗。判定リストを壊したまま「契約あり」へ倒さない）。
 # 空振り検出: --group の未知値、選択関数が全群を外す写し、contracts 群の検査本体が空の写し、空の ASDD test file はいずれも exit 1（2026-09-26、selftest の selector probe で実測）。
+# 空振り検出: Grok の user_message_chunk を Claude の user 境界へ写す処理を外すと「Grok の質問ターンは継続を返さない」が赤になる（境界が読めず fail-closed で継続側へ倒れる。2026-10-18）。
+# 空振り検出: tool_call_update を tool_call と同じ経路へ流す（kind のガードを外す）と「Grok の tool_call_update 本文はチェーン末尾にしない」が赤になる。fixture が title と rawInput を持つので、ガードが無いと継続側へ倒れる（2026-10-18）。
+# 空振り検出: 隣接 user chunk の連結を外すと「Grok で /retrospective が2つの user chunk に分かれていても継続を返す」が赤になる（新しい断片だけが境界になり no-tail。2026-10-18）。
+# 空振り検出: 未完成の連結を末尾コマンドの接頭辞として残す分岐（isTailCommandPrefix）を外すと「Grok で /retrospective が3つの user chunk に分かれていても継続を返す」が赤になる（2 分割は完成した連結だけで通り、3 分割の途中が落ちて no-tail。2026-10-19 実測。1 件失敗）。
 set -euo pipefail
 
 # Full runs remain the default. Mutation selftests select the owning group instead of
@@ -932,6 +936,161 @@ EOF
 )"
 run_hook "$(stop_input_for "$SAME_MSG_TAIL_THEN_RETRO")"
 assert_silent_success "同一 message で末尾の後に振り返りが来たら実施済みとして扱う"
+
+# Grok Build（実測 2026-10-18、grok 0.2.93）は Claude JSONL を書かない。
+# updates.jsonl は ACP の session/update、chat_history.jsonl は content / tool_calls
+# （arguments は JSON 文字列）。境界も痕跡も読めないと fail-closed で毎ターン継続する。
+GROK_QUESTION_TRANSCRIPT="$(mk_transcript grok-question <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"振り返りが毎回入るのがおかしい"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"grep","rawInput":{"pattern":"SKILL.md","path":"/repo/plugins/ff-dev-toolkit/skills/retrospective/SKILL.md"},"_meta":{"x.ai/tool":{"name":"grep"}}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_QUESTION_TRANSCRIPT")"
+assert_no_continuation "Grok の質問ターンは継続を返さない"
+
+GROK_QUOTED_TRANSCRIPT="$(mk_transcript grok-quoted-merge <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hook の実装を読んで"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"run_terminal_command","rawInput":{"command":"grep -n 'gh pr merge' hooks/retrospective-chain-tail.mjs"},"_meta":{"x.ai/tool":{"name":"run_terminal_command"}}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_QUOTED_TRANSCRIPT")"
+assert_no_continuation "Grok の引用コマンドはチェーン末尾にしない"
+
+GROK_UPDATE_OUTPUT_TRANSCRIPT="$(mk_transcript grok-update-output <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"この設計どう思う？"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","title":"run_terminal_command","rawInput":{"command":"gh pr merge 1 --squash"},"_meta":{"x.ai/tool":{"name":"run_terminal_command"}},"content":"手順:\ngh pr merge 1 --squash\n","output":"gh pr merge 1 --squash"}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_UPDATE_OUTPUT_TRANSCRIPT")"
+assert_no_continuation "Grok の tool_call_update 本文はチェーン末尾にしない"
+
+GROK_AUTOTRIGGER_TRANSCRIPT="$(mk_transcript grok-autotrigger-read <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"この設計どう思う？"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"read_file","rawInput":{"target_file":"/repo/plugins/ff-dev-toolkit/skills/retrospective/references/auto-trigger.md"},"_meta":{"x.ai/tool":{"name":"read_file"}}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_AUTOTRIGGER_TRANSCRIPT")"
+assert_no_continuation "Grok が auto-trigger.md を読んでもチェーン末尾にしない"
+
+GROK_NOTICE_TRANSCRIPT="$(mk_transcript grok-notice <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"実装を進めて"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"run_terminal_command","rawInput":{"command":"gh pr merge 1 --squash"},"_meta":{"x.ai/tool":{"name":"run_terminal_command"}}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"<system-reminder>\nmonitor finished"}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_NOTICE_TRANSCRIPT")"
+assert_no_continuation "Grok の通知チャンクは境界であり、手前の末尾を現ターンにしない"
+
+GROK_MERGE_TRANSCRIPT="$(mk_transcript grok-merge <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"実装を進めて"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"run_terminal_command","rawInput":{"command":"gh pr merge 1 --squash"},"_meta":{"x.ai/tool":{"name":"run_terminal_command"}}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_MERGE_TRANSCRIPT")"
+assert_continuation "Grok の run_terminal_command で pr merge を実行したターンは継続を返す"
+
+GROK_SLASH_TRANSCRIPT="$(mk_transcript grok-slash <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"/retrospective"}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_SLASH_TRANSCRIPT")"
+assert_continuation "Grok の利用者が /retrospective を送ったターンは継続を返す"
+
+GROK_SPLIT_SLASH_TRANSCRIPT="$(mk_transcript grok-split-slash <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"/retro"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"spective"}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_SPLIT_SLASH_TRANSCRIPT")"
+assert_continuation "Grok で /retrospective が2つの user chunk に分かれていても継続を返す"
+
+GROK_SPLIT_SLASH3_TRANSCRIPT="$(mk_transcript grok-split-slash3 <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"/retro"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"spec"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"tive"}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_SPLIT_SLASH3_TRANSCRIPT")"
+assert_continuation "Grok で /retrospective が3つの user chunk に分かれていても継続を返す"
+
+GROK_NOT_PREFIX_TRANSCRIPT="$(mk_transcript grok-not-prefix <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"/re"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"port"}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_NOT_PREFIX_TRANSCRIPT")"
+assert_no_continuation "Grok の隣接 chunk が末尾コマンドの接頭辞でなければ継続しない"
+
+GROK_PREFIX_SNAPSHOT_TRANSCRIPT="$(mk_transcript grok-prefix-snapshot <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"/retro"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"/retrospective"}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_PREFIX_SNAPSHOT_TRANSCRIPT")"
+assert_continuation "Grok の prefix snapshot は新しい完全な /retrospective を境界にする"
+
+GROK_SKILL_READ_TRANSCRIPT="$(mk_transcript grok-skill-read <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"実装を進めて"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"read_file","rawInput":{"target_file":"/repo/plugins/ff-dev-toolkit/skills/ace-curate/SKILL.md"},"_meta":{"x.ai/tool":{"name":"read_file"}}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_SKILL_READ_TRANSCRIPT")"
+assert_continuation "Grok が ace-curate の SKILL.md を読んだターンは継続を返す"
+
+GROK_RETRO_READ_TRANSCRIPT="$(mk_transcript grok-retro-read <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"実装を進めて"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"read_file","rawInput":{"target_file":"/repo/plugins/ff-dev-toolkit/skills/retrospective/SKILL.md"},"_meta":{"x.ai/tool":{"name":"read_file"}}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_RETRO_READ_TRANSCRIPT")"
+assert_continuation "Grok が retrospective の SKILL.md を読んだターンは継続を返す"
+
+GROK_DELIVERED_TRANSCRIPT="$(mk_transcript grok-delivered <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"実装を進めて"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"read_file","rawInput":{"target_file":"/repo/plugins/ff-dev-toolkit/skills/ace-curate/SKILL.md"},"_meta":{"x.ai/tool":{"name":"read_file"}}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## セッション振り返り\n記録: OBS-000"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"後片付けも終わりました"}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_DELIVERED_TRANSCRIPT")"
+assert_silent_success "Grok の応答チャンクで振り返りを出し終えていれば再要求しない"
+
+GROK_SPLIT_HEADING_TRANSCRIPT="$(mk_transcript grok-split-heading <<'EOF'
+{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"実装を進めて"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"read_file","rawInput":{"target_file":"/repo/plugins/ff-dev-toolkit/skills/ace-curate/SKILL.md"},"_meta":{"x.ai/tool":{"name":"read_file"}}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## セッション"}}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"振り返り"}}}}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_SPLIT_HEADING_TRANSCRIPT")"
+assert_continuation "Grok の分割された見出しは実施済みにせず、末尾の継続を返す"
+
+GROK_CHAT_MERGE_TRANSCRIPT="$(mk_transcript grok-chat-merge <<'EOF'
+{"type":"user","content":[{"type":"text","text":"実装を進めて"}]}
+{"type":"assistant","content":"merge します","tool_calls":[{"id":"c1","name":"run_terminal_command","arguments":"{\"command\":\"gh pr merge 1 --squash\"}"}]}
+{"type":"user","synthetic_reason":"system_reminder","content":[{"type":"text","text":"<system-reminder>monitor</system-reminder>"}]}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_CHAT_MERGE_TRANSCRIPT")"
+assert_continuation "Grok chat_history の synthetic_reason 行は、奥の pr merge を隠さない"
+
+GROK_CHAT_QUESTION_TRANSCRIPT="$(mk_transcript grok-chat-question <<'EOF'
+{"type":"user","content":[{"type":"text","text":"実装を進めて"}]}
+{"type":"assistant","content":"merge します","tool_calls":[{"id":"c1","name":"run_terminal_command","arguments":"{\"command\":\"gh pr merge 1 --squash\"}"}]}
+{"type":"user","synthetic_reason":"compaction_meta","content":[{"type":"text","text":"summary of the previous turn"}]}
+{"type":"user","content":[{"type":"text","text":"この設計どう思う？"}]}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_CHAT_QUESTION_TRANSCRIPT")"
+assert_no_continuation "Grok chat_history の通常の質問は、より古い pr merge を現ターンにしない"
+
+GROK_CHAT_RETRO_THEN_MERGE="$(mk_transcript grok-chat-retro-then-merge <<'EOF'
+{"type":"user","content":[{"type":"text","text":"Epic を片付けて"}]}
+{"type":"assistant","content":"## セッション振り返り\nPR1 の分。\n","tool_calls":[{"id":"c1","name":"run_terminal_command","arguments":"{\"command\":\"gh pr merge 2 --squash\"}"}]}
+EOF
+)"
+run_hook "$(stop_input_for "$GROK_CHAT_RETRO_THEN_MERGE")"
+assert_continuation "Grok chat_history の同一 record では本文の振り返りの後の pr merge を要求する"
 
 end_group chain
 fi

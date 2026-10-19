@@ -21,6 +21,13 @@
 # 通ってしまうため、前置の前後で起動されるコマンド（jq / awk）の**起動回数 0** を
 # 直接固定する。
 #
+# GitHub MCP 経路（merge_pull_request）も同じ suite で固定する: 実測したツール名を 2 つのサーバー名の形
+# （mcp__github__ / mcp__plugin_github_github__）で駆動し、tool_input の owner / repo / pullNumber で PR を引いた deny（Bash 経路と抜け道の 1 行だけが違う文言）・hook の環境変数で読む抜け道・
+# gh 不在・照会失敗・Issue を読めないときに止めずに省略を systemMessage で出すこと・針が当たらない入力（判定表にないツール名・名簿にないサーバー・
+# tool_input の欠落 / 型違い）を素通しではなく理由付きの systemMessage にすること・hooks.json の MCP matcher を
+# Claude Code と同じアンカー無し正規表現として照合すること（tests/lib/github-mcp-fixture.sh）。
+# 空振り検出: MCP の振り分け（`*mcp__*` の case）を無効にすると MCP 入力が素通しへ倒れて 18 件が赤（2026-10-19 実測）。gh 不在の理由出しを無音の exit へ変えると AC4 が、Issue を読めなかった理由出しを無音にすると 1 件が、判定表にないツール名の理由出しを無音にすると 2 件が赤（2026-10-18 実測）。
+#
 # run-all-required: no — jq 不在での skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側）
 set -euo pipefail
 
@@ -37,6 +44,8 @@ isolate_hook_env "FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD" "$TARGET"
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
 # shellcheck source=../lib/crlf-jq-shim.sh
 . "$SCRIPT_DIR/../lib/crlf-jq-shim.sh"
+# shellcheck source=../lib/github-mcp-fixture.sh
+. "$SCRIPT_DIR/../lib/github-mcp-fixture.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 
 [ -f "$TARGET" ] || { echo "✗ guard-effort-actual.sh が見つかりません: $TARGET" >&2; exit 1; }
@@ -342,6 +351,8 @@ write_pr 62 "$(closes_body 918)" 62 "918"
 write_pr 63 "$(closes_body 919)" 63 "919"
 write_issue 920 "$BLOCK_EMPTY_UNIT"
 write_pr 64 "$(closes_body 920)" 64 "920"
+# GitHub MCP 経路: 閉じる Issue の本文を gh で読めない PR（Issue のスタブを置かない）
+write_pr 65 "$(closes_body 921)" 65 "921"
 
 OUT=""
 RC=0
@@ -644,6 +655,106 @@ case "$REASON" in
   *) bad "AC6: Refs 先の Issue 番号が停止メッセージに無い: [$REASON]" ;;
 esac
 
+echo "guard-effort-actual: GitHub MCP 経路（merge_pull_request）"
+# 実測したツール名（GitHub 公式リモート MCP の tools/list）を 2 つのサーバー名の形で駆動する。
+# fixture の cwd は /tmp（`gh` を含まない）なので、MCP 分岐を Bash 用の前置フィルタ（*gh*）より
+# 後ろへ動かすと、下の deny 検査はすべて素通しへ倒れて赤になる。
+MESSAGE=""
+# Issue 参照は組み立てる（公開同期の番号短縮形検査に fixture の番号を拾わせない）
+UNFILLED_REF="$(printf '%s%s' '#' 900)"
+UNREAD_REF="$(printf '%s%s' '#' 921)"
+run_mcp() { # <tool_name> <tool_input の JSON> [env NAME=VALUE ...]
+  local name="$1" tool_input="$2"
+  shift 2
+  : > "$STUB_DIR/gh-calls.log"
+  : > "$STUB_DIR/jq-calls.log"
+  : > "$STUB_DIR/awk-calls.log"
+  ff_mcp_run "$TARGET" "$name" "$tool_input" PATH="$BIN_DIR:$PATH" FF_STUB_DIR="$STUB_DIR" "$@"
+}
+run_mcp mcp__plugin_github_github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42,"merge_method":"squash"}'
+assert_fire "AC1: プラグイン同梱サーバーの merge_pull_request で、閉じる Issue の実績が未記入なら deny"
+MCP_REASON="$REASON"
+if grep -qx 'pr view 42 --repo acme/widgets --json number,body,url,closingIssuesReferences' "$STUB_DIR/gh-calls.log"; then
+  ok "AC1: tool_input の owner / repo / pullNumber で PR を引く（cwd のリポジトリに依存しない）"
+else
+  bad "AC1: gh pr view の引数が tool_input と対応しない: [$(tr '\n' ';' < "$STUB_DIR/gh-calls.log")]"
+fi
+case "$REASON" in
+  *"$UNFILLED_REF"*'/close-issue 42'*'hook の環境変数 FF_EFFORT_ACTUAL_ACK=1'*) ok "AC1: deny 文が未記入の Issue・/close-issue・同じ変数名の抜け道（hook の環境変数）を案内する" ;;
+  *) bad "AC1: MCP 経路の deny 文に案内が揃わない: [$REASON]" ;;
+esac
+run_hook "gh pr merge 42 --squash"
+mcp_rest="$(printf '%s\n' "$MCP_REASON" | grep -v '^  2) ')"
+bash_rest="$(printf '%s\n' "$REASON" | grep -v '^  2) ')"
+if [ -n "$bash_rest" ] && [ "$mcp_rest" = "$bash_rest" ] && [ "$MCP_REASON" != "$REASON" ]; then
+  ok "AC1: deny 文は gh pr merge のときと同じ文言で、抜け道の案内（選択肢 2）の 1 行だけが違う"
+else
+  bad "AC1: deny 文が Bash 経路とずれている: mcp=[$MCP_REASON] bash=[$REASON]"
+fi
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}'
+assert_fire "AC1: server キー github で設定したサーバーでも deny"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":"42"}'
+assert_fire "pullNumber を数字の文字列で渡しても同じ PR として判定する"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":45}'
+assert_pass "実績が記入済みなら止めない"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":44}'
+assert_pass "ff-effort ブロックが無い Issue は対象外"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}' FF_EFFORT_ACTUAL_ACK=1
+ff_mcp_assert_message "抜け道: hook の環境変数 FF_EFFORT_ACTUAL_ACK=1 で通し、セッション全体に効く抜け道で通したことを毎回知らせる" "FF_EFFORT_ACTUAL_ACK=1"
+assert_no_gh_call "抜け道で通すときは gh を 1 度も呼ばない"
+run_hook "gh pr merge 42 --squash" FF_EFFORT_ACTUAL_ACK=1
+assert_fire "hook の環境変数 FF_EFFORT_ACTUAL_ACK=1 は Bash 経路を通さない（Bash 経路の抜け道はコマンド先頭の環境代入だけ）"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}' FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1
+assert_pass "FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1 は MCP 経路も止める"
+echo "guard-effort-actual: GitHub MCP 経路で gh を使えないとき（止めずに理由を出す）"
+NOGH_DIR="$TEST_TMP/nogh-wrappers"
+mkdir -p "$NOGH_DIR"
+cp "$BIN_DIR/jq" "$BIN_DIR/awk" "$NOGH_DIR/"
+if NOGH_BASE="$(ff_path_without_gh "$TEST_TMP/nogh-shim" sed grep tr)"; then
+  : > "$STUB_DIR/gh-calls.log"
+  ff_mcp_run "$TARGET" mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}' PATH="$NOGH_DIR:$NOGH_BASE" FF_STUB_DIR="$STUB_DIR"
+  ff_mcp_assert_message "AC4: gh が PATH に無ければ止めずに、判定を省略したことを systemMessage で出す" "gh が PATH に無い"
+else
+  bad "gh だけを外した PATH を作れない（gh が残る・bash が消える）ため、AC4 の検査が成立しない"
+fi
+# awk だけが無い PATH（bash / env と jq のラッパー・gh のスタブだけを置く）
+NOAWK_DIR="$TEST_TMP/noawk-bin"
+mkdir -p "$NOAWK_DIR"
+cp "$BIN_DIR/jq" "$BIN_DIR/gh" "$NOAWK_DIR/"
+ln -sf "$(command -v bash)" "$NOAWK_DIR/bash"
+ln -sf "$(command -v env)" "$NOAWK_DIR/env"
+ff_mcp_run "$TARGET" mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}' PATH="$NOAWK_DIR" FF_STUB_DIR="$STUB_DIR"
+ff_mcp_assert_message "awk が PATH に無ければ止めずに理由を出す" "awk が PATH に無い"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}' PATH=/nonexistent
+ff_mcp_assert_message "jq が PATH に無ければ、GitHub MCP の呼び出しを検査しなかったことを知らせて通す" "jq が PATH に無い"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":57}' FF_EFFORT_ACTUAL_GUARD_MAX_ISSUES=1
+ff_mcp_assert_message "照会上限を超えた Issue を照会しなかったときは止めずに理由を出す" "照会上限"
+run_hook "gh pr merge 57 --squash" FF_EFFORT_ACTUAL_GUARD_MAX_ISSUES=1
+assert_pass "Bash 経路の照会上限の打ち切りは従来どおり無音"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}' FF_STUB_FAIL=1
+ff_mcp_assert_message "gh の照会が失敗する（認証切れ・オフライン相当）なら止めずに理由を出す" "gh で読めない"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":65}'
+ff_mcp_assert_message "閉じる Issue の本文を gh で読めなければ止めずに理由を出す" "$UNREAD_REF"
+run_hook "gh pr merge 65 --squash"
+assert_pass "Bash 経路で閉じる Issue を読めないときは従来どおり無音"
+echo "guard-effort-actual: GitHub MCP 経路の針が当たらない入力（素通しではなく理由付きの systemMessage）"
+run_mcp mcp__github__merge_pull_requests '{"owner":"acme","repo":"widgets","pullNumber":42}'
+ff_mcp_assert_message "判定表にないツール名（綴りの揺れ）は理由を出して通す" "判定表"
+run_mcp mcp__linear__merge_pull_request '{"owner":"acme","repo":"widgets","pullNumber":42}'
+ff_mcp_assert_message "サーバー名が名簿にないツールは理由を出して通す" "判定表"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme","repo":"widgets"}'
+ff_mcp_assert_message "pullNumber の欠落は理由を出して通す" "pullNumber"
+run_mcp mcp__github__merge_pull_request '{"owner":"acme widgets","repo":"widgets","pullNumber":42}'
+ff_mcp_assert_message "owner に使えない文字があれば理由を出して通す" "owner"
+run_mcp mcp__github__merge_pull_request '[42]'
+ff_mcp_assert_message "オブジェクトでない tool_input は理由を出して通す" "pullNumber"
+run_hook "gh pr merge 42 --squash # mcp__github__merge_pull_request"
+assert_fire "Bash の呼び出しは文字列に mcp__ を含んでも Bash 経路で判定する"
+case "$REASON" in
+  *'FF_EFFORT_ACTUAL_ACK=1 gh pr merge ...'*) ok "Bash 経路の deny 文（コマンド先頭の環境代入の案内）のまま" ;;
+  *) bad "Bash の呼び出しが MCP 経路の文言になっている: [$REASON]" ;;
+esac
+
 echo "guard-effort-actual: hooks.json 登録の静的照合"
 if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
     | select(.command | contains("guard-effort-actual.sh"))' "$HOOKS_JSON" >/dev/null 2>&1; then
@@ -660,6 +771,19 @@ if [ -n "$REGISTERED_TIMEOUT" ] && [ "$REGISTERED_TIMEOUT" = "$PEER_TIMEOUT" ]; 
 else
   bad "timeout が既存ガードと揃っていない: 本ガード=[$REGISTERED_TIMEOUT] guard-pr-followup=[$PEER_TIMEOUT]"
 fi
+case "$(jq -r '.description' "$HOOKS_JSON")" in
+  *merge_pull_request*) ok "hooks.json の description が GitHub MCP の merge_pull_request に言及する" ;;
+  *) bad "hooks.json の description に GitHub MCP 経路（merge_pull_request）の記述が無い" ;;
+esac
+while IFS= read -r line; do
+  case "$line" in
+    OK\ *) ok "MCP matcher: ${line#OK }" ;;
+    SKIP\ *) echo "  ○ skip: ${line#SKIP }" ;;
+    *) bad "MCP matcher: ${line#NG }" ;;
+  esac
+done <<EOF
+$(ff_github_mcp_matcher_check "$HOOKS_JSON" guard-effort-actual.sh merge_pull_request)
+EOF
 
 echo "guard-effort-actual: close-issue の fail-open 契約が残っていること"
 SKILL="$PLUGIN_ROOT/skills/close-issue/SKILL.md"

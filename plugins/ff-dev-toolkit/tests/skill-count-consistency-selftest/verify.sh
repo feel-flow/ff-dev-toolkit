@@ -43,9 +43,27 @@
 #   G27. 宣言系統の非 FF_ 環境変数を公開文書と実行物へ足し、一覧に載せない → 赤
 #   G28. 宣言した単独名が配布物から消えた（宣言だけ残った）→ 赤
 #   G29. 5-0 節の見出しを改稿すると診断つきで赤（宣言の空振りを緑にしない）
+#   G30. 公開 README の表から行を 1 つ落とし、見出しの件数は実数のまま → 赤（検査 M。
+#        見出しを直して表に行を足し忘れた形。検査 G は件数しか見ないので緑のまま）
+#   G31. 行数は保ったまま、実体の無い名前の行へ差し替える → 赤（名前だけ変わって件数は
+#        同じ形。件数の照合では検出できない）
+#   G32. root README の ff-dev-toolkit 節から行を 1 つ落とす → 赤（公開 README を見る
+#        検査だけでは、もう一方の複製の欠落が見えない）
+#   G33. 表の見出しセルを改稿して表を 1 つも認識できない → 診断つきで赤（fail-closed。
+#        書式変更で 0 行になったまま「欠落なし」の緑へ倒さない）
+#   G34. 同じ名前の行が 2 つある → 赤（集合へ畳むと重複が消える）
+#   G35. 第 1 列を `name` / `/name` 以外の形で書いた行 → 赤（読めない行を黙って捨てない）
+#   G36. root README に ff-dev-toolkit 節が無い → 診断つきで赤（fail-closed）
+#   G37. root README そのものが無い → 何が無いかを名指しして赤
+#   G38. ff-dev-toolkit 節がより浅い見出しで閉じ、その後に表がある → 緑（節の外を読まない）
+#   G39. コードフェンスが閉じていない → フェンスの診断を名指しして赤（fail-closed）
+#   G40. 表見出しの直後に区切り行が無い → 見出し行を名指しして赤
 #
 # baseline の内訳は「・区切りの個別列挙（2 件）+ 数値グループ（1 件）」を含み、
 # 実リポジトリの説明文が依存する ・分割の名前数カウントを G1 で常時実測する。
+# baseline の README は 2 種類の表見出し（スキル / ワークフロースキル）と `/name` 形の行を
+# 持ち、root README は節の外の表と節の中の MCP 表を持つ。どちらも節の先頭に行頭 `#` の
+# コメントを含むコードフェンスを置く。読む範囲の境界とフェンスの扱いも G1 で常時実測する。
 #
 # 書き込み不可の環境（read-only チェックアウト等）では skip して成功扱いにする。
 set -euo pipefail
@@ -102,8 +120,27 @@ GUARD_INTRO_2='### Bash ガード（PreToolUse）
 Bash ツールの実行前に 2 つのガードが自動で有効になる（実体は `hooks/guard-alpha.sh` / `hooks/guard-beta.sh`）。
 '
 
+# スキル表は検査 M の baseline を兼ねる。2 種類の見出しセル（スキル / ワークフロースキル）と
+# `/name` 形の行を含め、実 README と同じ書き分けを常時実測する。$2 を渡すと既定の 3 行の
+# 代わりにその表本文（見出しセル込み）を使う。
+SKILL_TABLES_3='| スキル | 用途 |
+|---|---|
+| `alpha` | 参考: ### Skills（99）という表記を本文に含む |
+
+| ワークフロースキル | 用途 |
+|---|---|
+| `/beta` | 2 つ目の表 |
+| `/gamma` | 2 つ目の表 |'
+
+# 節の先頭のコードフェンスは行頭 `#` のコメントを持つ。フェンスを見出しとして読むと節が
+# そこで閉じて表を 1 つも読めなくなるので、フェンスの扱いも baseline で常時実測する。
+FENCE_WITH_COMMENT='```bash
+# 例: 導入（フェンスの中の行頭 # は見出しではない）
+claude plugin install example
+```'
+
 readme_body() {
-  printf '# ff-dev-toolkit\n\n## 収録内容\n\n### Skills（%s）\n\n| スキル | 用途 |\n|---|---|\n| `alpha` | 参考: ### Skills（99）という表記を本文に含む |\n\n%s\n' "$1" "$GUARD_INTRO_2"
+  printf '# ff-dev-toolkit\n\n## 収録内容\n\n### Skills（%s）\n\n%s\n\n%s\n\n%s\n' "$1" "$FENCE_WITH_COMMENT" "${2:-$SKILL_TABLES_3}" "$GUARD_INTRO_2"
 }
 README_BODY_NONE='# ff-dev-toolkit
 
@@ -111,6 +148,14 @@ README_BODY_NONE='# ff-dev-toolkit
 
 件数の記載なし。
 '
+
+# root README（リポジトリ直下 README.md）の ff-dev-toolkit 節の最小再現。$1 を渡すと既定の
+# 3 行の代わりにその表本文を使う。節の中の MCP 表と、節の外（別プラグインの節）の
+# スキル表を混ぜ、読む範囲が節と表見出しで閉じていることを baseline から常時実測する
+# （境界が外れると zeta / spec-docs が「表にだけある」として赤になる）。
+root_readme_body() {
+  printf '# fixture-marketplace\n\n## 収録プラグイン\n\n#### ff-dev-toolkit\n\n%s\n\n%s\n\n| MCP サーバー | 用途 |\n|---|---|\n| `spec-docs` | 表見出しが違うので読まない |\n\n##### クイックスタート\n\n| フェーズ | 使うもの |\n|---|---|\n| 着手 | `zeta` |\n\n#### other-plugin\n\n| スキル | 用途 |\n|---|---|\n| `zeta` | 節の外なので読まない |\n' "$FENCE_WITH_COMMENT" "${1:-$SKILL_TABLES_3}"
+}
 
 # hooks.json の PreToolUse・Bash matcher を $2... の名前（拡張子なし）で組み立てる。
 # $1=root。デフォルト（build_fixture から呼ぶとき）は GUARD_INTRO_2 と対の alpha/beta。
@@ -195,9 +240,11 @@ SURFACE
 
 build_fixture() {
   # $1=root $2=root marketplace の desc $3=oss marketplace の desc $4=plugin.json の desc
-  # $5=oss README の本文（省略時は件数 3 の整合した見出し）
+  # $5=oss README の本文（省略時は件数 3 の整合した見出しと 3 行の表）
+  # $6=root README の本文（省略時は 3 行の表を持つ ff-dev-toolkit 節）
   local root="$1" rdesc="$2" odesc="$3" pdesc="$4"
   local rbody="${5:-$(readme_body 3)}"
+  local root_rbody="${6:-$(root_readme_body)}"
   rm -rf "$root"
   mkdir -p "$root/plugins/ff-dev-toolkit/skills/alpha" \
            "$root/plugins/ff-dev-toolkit/skills/beta" \
@@ -216,6 +263,7 @@ build_fixture() {
   jq -n --arg d "$odesc" '{plugins: [{name: "ff-dev-toolkit", description: $d}]}' \
     > "$root/oss/ff-dev-toolkit/.claude-plugin/marketplace.json"
   printf '%s\n' "$rbody" > "$root/oss/ff-dev-toolkit/README.md"
+  printf '%s\n' "$root_rbody" > "$root/README.md"
   write_hooks_json "$root" alpha beta
   # hooks.json に登録しない実体（検査 J の「内部」側）と、その中の FF_*（検査 K の内部側。
   # 配布実行物にしか現れないので判定規則の連言を満たさず、契約にはならない）
@@ -267,10 +315,12 @@ FIX="$TMP/fixture"
 # G1: baseline 緑
 build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3"
 run_target "$FIX"
-# README の検査行まで要求する — 検査 G の呼び出しごと削る変異を baseline でも捕まえる
+# README の検査行まで要求する — 検査 G / M の呼び出しごと削る変異を baseline でも捕まえる
 # （本文中の「### Skills（99）」を拾わない行頭 anchor もここで常時実測する）
-if [ "$RC" -eq 0 ] && [[ "$OUT" == *"oss README: Skills（3） = 実数 3"* ]]; then
-  ok "G1: 整合した baseline が緑（README の件数検査を含む）"
+if [ "$RC" -eq 0 ] && [[ "$OUT" == *"oss README: Skills（3） = 実数 3"* ]] \
+   && [[ "$OUT" == *"oss README: スキル表の 3 行が実体と一致"* ]] \
+   && [[ "$OUT" == *"root README（ff-dev-toolkit 節）: スキル表の 3 行が実体と一致"* ]]; then
+  ok "G1: 整合した baseline が緑（README の件数検査と 2 つの README のスキル表検査を含む）"
 else
   bad "G1: baseline が赤 / README 検査が走っていません（rc=${RC}）: $OUT"
 fi
@@ -602,6 +652,153 @@ if [ "$RC" -ne 0 ] && [[ "$OUT" == *"「### 5-0.」節から非 FF_ の接頭辞
   ok "G29: 5-0 節の見出し改稿を診断つきで赤にできる"
 else
   bad "G29: 5-0 節の見出し改稿が赤になりませんでした（rc=${RC}）: $OUT"
+fi
+
+# 検査 M（README のスキル表 = 実体）の fixture。いずれも見出しの件数・説明文は実数 3 の
+# まま整合させ、表だけをずらす（検査 G は件数しか見ないので、ここで M が赤にならなければ
+# 誰も赤にしない）。
+TABLES_NO_GAMMA='| スキル | 用途 |
+|---|---|
+| `alpha` | 1 つ目の表 |
+
+| ワークフロースキル | 用途 |
+|---|---|
+| `/beta` | 2 つ目の表 |'
+TABLES_GHOST='| スキル | 用途 |
+|---|---|
+| `alpha` | 1 つ目の表 |
+
+| ワークフロースキル | 用途 |
+|---|---|
+| `/beta` | 2 つ目の表 |
+| `/ghost` | 実体の無い名前 |'
+
+# G30: 公開 README の表から gamma の行が落ち、見出しは「Skills（3）」のまま → 赤。
+# 見出しだけ直して表に行を足し忘れた形（検査 G は緑のまま）。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" "$(readme_body 3 "$TABLES_NO_GAMMA")"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"oss README: Skills（3） = 実数 3"* ]] \
+   && [[ "$OUT" == *"oss README: スキル表が実体と一致しません（表にだけある: なし／実体にだけある: gamma）"* ]]; then
+  ok "G30: 見出しの件数は合ったまま表から行が落ちた状態を赤にできる"
+else
+  bad "G30: 表の行の欠落が緑のまま素通りしました（rc=${RC}）: $OUT"
+fi
+
+# G31: 行数は 3 のまま、gamma の行を実体の無い ghost へ差し替える → 赤（件数の照合では
+# 検出できない、名前だけが変わる形）。両方向の名指しまで要求する。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" "$(readme_body 3 "$TABLES_GHOST")"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"oss README: スキル表が実体と一致しません（表にだけある: ghost／実体にだけある: gamma）"* ]]; then
+  ok "G31: 行数を保った名前の差し替えを両方向の名指しで赤にできる"
+else
+  bad "G31: 名前の差し替えが緑のまま素通りしました（rc=${RC}）: $OUT"
+fi
+
+# G32: root README の ff-dev-toolkit 節から gamma の行が落ちる → 赤（公開 README は整合）。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" "$(readme_body 3)" "$(root_readme_body "$TABLES_NO_GAMMA")"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"oss README: スキル表の 3 行が実体と一致"* ]] \
+   && [[ "$OUT" == *"root README（ff-dev-toolkit 節）: スキル表が実体と一致しません（表にだけある: なし／実体にだけある: gamma）"* ]]; then
+  ok "G32: root README の表の欠落を赤にできる（公開 README だけを見る検査では見えない側）"
+else
+  bad "G32: root README の表の欠落が緑のまま素通りしました（rc=${RC}）: $OUT"
+fi
+
+# G33: 表の見出しセルを両方とも改稿し、表を 1 つも認識できない → 診断つきで赤（fail-closed）。
+# 0 行のまま「欠落なし」へ倒れたり、set -euo pipefail の無診断 abort になったりしない。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" \
+  "$(readme_body 3 "$(printf '%s\n' "$SKILL_TABLES_3" | sed -e 's/^| スキル | 用途 |$/| 名前 | 用途 |/' -e 's/^| ワークフロースキル | 用途 |$/| コマンド | 用途 |/')")"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"oss README: 「### Skills（N）」節にスキル表"*"1 つもありません"* ]] \
+   && [[ "$OUT" == *"skill-count-consistency: "*"件失敗"* ]]; then
+  ok "G33: 表見出しの改稿で表を認識できない回を診断つきで赤にできる（fail-closed）"
+else
+  bad "G33: 表を認識できない回が赤になりませんでした（rc=${RC}）: $OUT"
+fi
+
+# G34: 同じ名前の行が 2 つ → 赤。集合へ畳むと重複が消えて実体と一致するので、別に見る。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" \
+  "$(readme_body 3 "${SKILL_TABLES_3}
+| \`/alpha\` | 重複行 |")"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"oss README: スキル表に同じ名前の行が複数あります: alpha"* ]]; then
+  ok "G34: 同じ名前の重複行を赤にできる"
+else
+  bad "G34: 重複行が緑のまま素通りしました（rc=${RC}）: $OUT"
+fi
+
+# G35: 正しい 3 行は残したまま、第 1 列が `name` / `/name` でない行を足す → 赤。
+# 名前の集合は実体と一致したままなので、読めない行を黙って捨てると緑になる。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" \
+  "$(readme_body 3 "${SKILL_TABLES_3}
+| **delta** | 書式の違う行 |")"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"oss README: スキル表の第 1 列を読めない行があります"*"**delta**"* ]]; then
+  ok "G35: 第 1 列を読めない行を名指しで赤にできる"
+else
+  bad "G35: 第 1 列を読めない行が緑のまま素通りしました（rc=${RC}）: $OUT"
+fi
+
+# G36: root README に ff-dev-toolkit 節が無い → 診断つきで赤（fail-closed）。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" "$(readme_body 3)" \
+  "$(root_readme_body | sed 's/^#### ff-dev-toolkit$/#### ff-dev-toolkit-renamed/')"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"root README（ff-dev-toolkit 節）: 「#### ff-dev-toolkit」節が見つかりません"* ]] \
+   && [[ "$OUT" == *"skill-count-consistency: "*"件失敗"* ]]; then
+  ok "G36: root README の節が見つからない回を診断つきで赤にできる（fail-closed）"
+else
+  bad "G36: root README の節が無い回が赤になりませんでした（rc=${RC}）: $OUT"
+fi
+
+# G37: root README そのものが無い → 何が無いかを名指しして赤（対象の不在を、走査側の
+# 失敗や 0 件の緑へ吸収させない）。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3"
+rm -f "$FIX/README.md"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"対象が見つかりません: $FIX/README.md"* ]]; then
+  ok "G37: root README の不在を名指しで赤にできる"
+else
+  bad "G37: root README の不在が名指しの赤になりませんでした（rc=${RC}）: $OUT"
+fi
+
+# G38: root README の ff-dev-toolkit 節（####）が、より浅い見出し（###）で閉じ、その後に
+# スキル表がある → 緑のまま（節の外の zeta を読まない）。同じレベルの見出しでしか節を
+# 閉じない退行（<= を == へ）は、baseline（#### で閉じる）では検出できない。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" "$(readme_body 3)" \
+  "$(root_readme_body | sed 's/^#### other-plugin$/### 別の系統/')"
+run_target "$FIX"
+if [ "$RC" -eq 0 ] && [[ "$OUT" == *"root README（ff-dev-toolkit 節）: スキル表の 3 行が実体と一致"* ]]; then
+  ok "G38: より浅い見出しで節を閉じ、その後の表を読まない"
+else
+  bad "G38: 浅い見出しの後の表まで読みました（rc=${RC}）: $OUT"
+fi
+
+# G39: 公開 README のコードフェンスが閉じていない → フェンスの診断を名指しして赤
+# （fail-closed。フェンスの中と外を決められないまま読み進めて緑・原因違いの赤にしない）。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" \
+  "$(readme_body 3)
+\`\`\`bash
+echo 閉じていないフェンス"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"oss README: README.md は検査不能です（コードフェンスが閉じていません）"* ]]; then
+  ok "G39: 閉じていないコードフェンスを名指しで赤にできる（fail-closed）"
+else
+  bad "G39: 閉じていないコードフェンスが名指しの赤になりませんでした（rc=${RC}）: $OUT"
+fi
+
+# G40: 表見出しの直後に区切り行が無い（Markdown の表として成立しない）→ 見出し行を名指しして赤。
+# 区切り行の位置に空行が来ても、診断が空にならないことを固定する。
+build_fixture "$FIX" "$ROOT_DESC_3" "$ROOT_DESC_3" "$PLUGIN_DESC_3" \
+  "$(readme_body 3 "${SKILL_TABLES_3}
+
+| ワークフロースキル | 用途 |
+
+| \`/delta\` | 区切り行の無い表 |")"
+run_target "$FIX"
+if [ "$RC" -ne 0 ] && [[ "$OUT" == *"oss README: スキル表の第 1 列を読めない行があります"*"| ワークフロースキル | 用途 |（直後に区切り行がありません）"* ]]; then
+  ok "G40: 区切り行の無い表見出しを名指しで赤にできる"
+else
+  bad "G40: 区切り行の無い表見出しが名指しの赤になりませんでした（rc=${RC}）: $OUT"
 fi
 
 echo

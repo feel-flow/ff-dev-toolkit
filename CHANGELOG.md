@@ -20,6 +20,40 @@
 
 ## [Unreleased]
 
+## [0.157.0] - 2026-10-19
+
+### 変更
+
+- `asdd-init` が生成するプロジェクト案内（MASTER）の「共通ルール」で、完了状態の列挙を方法論の 4 つの到達点「初期構築が完了」「実装可能」「利用・公開可能」「配布・公開完了」にそろえました。「配布・公開完了」は配布先・公開先で反映を確認したときだけ報告し、配布・公開しない構成では判定対象外とします
+- 既存の導入先で `asdd-init` を再設定すると、案内のこの 1 行が更新として差分に出ます。案内を手編集していなければそのまま更新されます。この行とその直前・直後の行から離れた箇所の手編集（共通ルールの末尾や案内の末尾への追記など）は保持されます。この行・直前の行・直後の行を手編集している場合と、この行の直前・直後へ行を挿入している場合は競合として止まり、何も書き換えません。それらの行を生成時の文言へ戻し、手編集した文言は共通ルールの末尾や案内の末尾など離れた位置へ移してから再適用してください
+- 既存の案内を引き継いで（`--adopt` で）導入した場合、案内は生成テンプレートで置き換えないため、この行は追加されません。必要なら手で反映してください。手で反映した後の再設定は競合として止まるので、反映後の内容の SHA-256 を `--adopt` へ渡し直してください
+
+## [0.156.0] - 2026-10-19
+
+### 変更
+
+- Claude Code で GitHub MCP のツール（GitHub 公式のリモート MCP / 公式 github プラグイン）を使って PR のマージ・Issue の起票・sub-issue の追加・PR の作成 / 更新をしたときにも、`gh` を使う Bash 経路と同じ PreToolUse ガードが同じ判定で効くようになった。`hooks/hooks.json` に、ガードごとに 1 本の matcher（`mcp__github__` / `mcp__plugin_github_github__` で始まる `merge_pull_request` / `issue_write` / `sub_issue_write` / `create_pull_request` と `update_pull_request`）でガードを登録する
+- 止める条件は Bash 経路と同じ（文言もラベルの渡し方と抜け道の案内を除いて同じ）: 工数実績が未記入の Issue を閉じるマージ、種別 / 優先度ラベルの無い起票、`sub_issue_id` などの integer フィールドを文字列で渡す sub-issue の追加、`draft: true` の PR 作成と Draft への戻し、Issue 参照の無いフォローアップ宣言。抜け道は同じ変数名を hook の環境変数として読む（MCP の呼び出しにはコマンド先頭の環境代入を付けられないため、Claude Code を起動するシェルで export して再起動する）。hook の環境の値はその 1 回ではなくセッション全体の GitHub MCP 呼び出しに効くので、抜け道で通したことは毎回表示する
+- PR / Issue の本文やラベル一覧を読む判定は引き続き `gh` を使う。GitHub MCP 経路で `gh` が PATH に無い・照会に失敗した・照会結果を信用できない（ラベル一覧が空・上限到達など）・入力を読めない・判定表にないツール名・`jq` が無いときは止めずに、判定を省略したことを systemMessage とエージェントの文脈（additionalContext）の両方へ出す（Bash 経路の同じ状況は従来どおり無音で通す）。サーバー名の名簿と振り分けは `tests/lib/github-mcp-route.sh`、各ガードが受け持つツール名はガード本体と matcher に置く
+- MCP 経路のガードは Claude Code だけが対象。Codex / grok は MCP 呼び出しの tool_name と PreToolUse の発火が未実測のため保証しない。server キーを github 以外の名前で登録した GitHub MCP は matcher に当たらない
+
+### 修正
+
+- `/pre-commit-check` の changelog 断片検査（`tests/lib/changelog-fragment-guard.sh`）が、その PR で追加した断片の帰属照合も commit 前に行うようになった。断片の staged 内容が backtick で参照する path が公開側最新タグと同一内容（今回変えていない）なら、断片名と path を名指しして止める。これまでは同じ判定がリリース準備の確認段まで走らず、断片の書き直しのためにリリースが止まっていた
+- 変更済みとして扱うのは、staged で変えた path と、HEAD の内容が公開タグと違う path。作業ツリーだけの編集は commit に入らないので変更済みとしない（帰属判定の共通 helper に staged だけを見るモードを足した）
+- 最新タグは公開リポジトリ（`FF_RELEASE_CHECK_PUBLIC_URL`、既定は ff-dev-toolkit の公開リポジトリ）の ls-remote で決め、公開側 clone（`FF_RELEASE_CHECK_PUBLIC`）がそのタグを持てば clone で、無ければそのタグだけを一時領域へ取得して照合する。公開リポジトリへ届かない回は clone の最新タグで照合し、どちらも引けない回は「断片未検査」として commit へ進まない側に倒す。断片に path 形の参照が無ければ取得しない
+- knowledge-lookup が `ACE_PLAYBOOK_PATH` と記録済み配置（AGENTS.md / CLAUDE.md / docs/MASTER.md に書かれた PLAYBOOK.md のパス）を読むようにした。Playbook の実体を docs-template 配下に置くリポジトリで「Playbook なし」と誤報告しなくなる。`--resolve-playbook` で解決結果だけを出せるようにし、/ace-curate・/ace-refine の「配置先の解決」も同じ関数を使う。
+- Grok Build の Stop が、チェーン末尾でないターンでも振り返りの継続を要求しなくなった。`hooks/retrospective-chain-tail.mjs` が updates.jsonl（境界は user_message_chunk、実行痕跡は tool_call の rawInput）と chat_history.jsonl（tool_calls の arguments は JSON 文字列）を、これまでと同じチェーン末尾判定へ正規化する。質問、通知、tool_call_update の出力、引用だけのコマンドは無音で終わる。コマンド位置の pr merge、利用者の /retrospective、ace-curate / merge-cleanup / retrospective の SKILL.md を read_file したターンだけ継続する。隣接する user chunk が末尾コマンドを分けていても、連結して復元できるときは継続する。途中の断片がまだコマンドでなくても、末尾コマンドの接頭辞である間は連結を続ける。接頭辞でない連結は新しい断片だけを境界にする。Codex の model 付き Stop は従来どおり無音のまま。
+- ホスト別の補足 `skills/retrospective/references/auto-trigger.md` を、この Stop が Claude 互換入力で走る実測に合わせた。古い grok CLI で plugin hook が discovery のみだった記載は README のプラットフォーム表に残している。
+
+### ドキュメント
+
+- README「AI仕様駆動開発2.0の入口」の「設定のない既存プロジェクトは従来動作を維持する」に、設定ファイルがなく生成管理情報（`.asdd/managed.json` または `.asdd/apply.lock`）だけが残る状態は設定なしではなく、v0.155.0 以降は不正設定として扱う例外を追記しました。完了状態の報告も、方法論と同じ「初期構築が完了」「実装可能」「利用・公開可能」「配布・公開完了」の 4 つにそろえました
+- README のスキル表に `asdd-init` と `asdd-work` を追加し、見出しの件数と表の行をそろえました。書籍の部の番号を第3部（公式実装リファレンス）に直しました
+- `asdd-init` の完了報告を方法論の 4 つの到達点に分けました。「配布・公開完了」は `--check` では判定せず、対象の版・配布先・実際の利用経路で反映を確認できたときだけ報告し、配布しない構成では判定対象外と明記します
+- `validate-docs` の 2.0 の段階判定も同じ呼び名にそろえ、「配布・公開完了」は文書から判定できないため対象外であることを明記しました
+- 収録スキル数の整合検査に、README のスキル表に並ぶ名前と実際のスキルの集合を照合する検査を追加しました。表に行を足し忘れたとき、実体の無い名前の行が残ったとき、表を読み取れないときに赤になります
+
 ## [0.155.0] - 2026-10-18
 
 ### 修正

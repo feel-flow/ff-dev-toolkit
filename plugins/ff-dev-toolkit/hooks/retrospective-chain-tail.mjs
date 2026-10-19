@@ -45,6 +45,28 @@
 // chain tail. The cost is one continuation prompt. Backtick is in the leading
 // set because POSIX command substitution is an invocation (Issue `#1635`);
 // markdown inline code uses the same character and therefore joins this class.
+//
+// Grok Build (measured 2026-10-18, grok 0.2.93) sends this same Stop input
+// with no `model`, and `transcript_path` is not Claude JSONL. updates.jsonl is
+// ACP `session/update`: a `user_message_chunk` is the turn boundary and a
+// `tool_call` rawInput is evidence. chat_history.jsonl is top-level `content`
+// / `tool_calls`, and `arguments` is a JSON string. Both are normalized into
+// the Claude entry shape so the scan below stays the one decision. A
+// `tool_call_update` (it carries tool output) and a row with a non-empty
+// `synthetic_reason` are neither a boundary nor evidence. Adjacent user chunks
+// are not a token stream: across 436 local sessions the only adjacent pairs
+// (2) were a short prefix followed by the complete prompt, and
+// `agent_message_chunk` was never adjacent. The newer prompt stays the
+// boundary. Concatenate while the join is a tail command or still a prefix of one
+// (`/retro` + `spec` + `tive`). A finished newer prompt replaces the older
+// fragment. Joining every pair would turn `/retro` + `/retrospective` into a
+// non-command. Agent text is not
+// joined: a false "already delivered" drops the retrospective. Grok has no
+// Skill tool, so `read_file` / `Read` of exactly
+// `skills/{ace-curate,merge-cleanup,retrospective}/SKILL.md` is
+// skill-execution evidence. Unrecognized transcripts still have no boundary
+// and fail closed. Codex's `model` short-circuit is unchanged: absence of
+// `model` is not a host identity, because Claude Code omits it too.
 
 import fs from "node:fs";
 
@@ -183,6 +205,184 @@ const assistantBlocks = (entry) => {
 const deliveredRetrospective = (block) =>
   block && block.type === "text" && typeof block.text === "string" && RETROSPECTIVE_DELIVERED.test(block.text);
 
+// Grok Build records. Normalized into the Claude `{type, message}` shape so
+// boundaryText / assistantBlocks / isChainTailTool stay the only matchers.
+// `null` means "this record is not a boundary and not evidence" (skip it).
+const TAIL_SKILL_FILE = /(?:^|\/)skills\/(ace-curate|merge-cleanup|retrospective)\/SKILL\.md$/;
+
+const parseToolArguments = (value) => {
+  if (value && typeof value === "object") return value;
+  if (typeof value !== "string" || value === "") return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+};
+
+const toolUseFromRaw = (name, raw) => {
+  if (!raw || typeof raw !== "object") return null;
+  if ((name === "run_terminal_command" || name === "Bash") && typeof raw.command === "string") {
+    return { type: "tool_use", name: "Bash", input: { command: raw.command } };
+  }
+  if ((name === "Skill" || name === "skill") && typeof raw.skill === "string") {
+    return { type: "tool_use", name: "Skill", input: { skill: raw.skill } };
+  }
+  if (name === "SlashCommand" && typeof raw.command === "string") {
+    return { type: "tool_use", name: "SlashCommand", input: { command: raw.command } };
+  }
+  if (name === "read_file" || name === "Read") {
+    const filePath = ["target_file", "file_path", "path"]
+      .map((key) => raw[key])
+      .find((value) => typeof value === "string");
+    const segment = typeof filePath === "string" ? TAIL_SKILL_FILE.exec(filePath) : null;
+    if (!segment) return null;
+    // `/retrospective` is a tail command, not a TAIL_SKILLS member. Emit the
+    // slash form so the existing command matcher sees it.
+    if (segment[1] === "retrospective") {
+      return { type: "tool_use", name: "SlashCommand", input: { command: "/retrospective" } };
+    }
+    return { type: "tool_use", name: "Skill", input: { skill: segment[1] } };
+  }
+  return null;
+};
+
+const grokChunkText = (update) => {
+  const content = update.content;
+  if (typeof content === "string") return content;
+  if (content && typeof content === "object" && typeof content.text === "string") return content.text;
+  return "";
+};
+
+const normalizeGrokUpdate = (update) => {
+  const kind = update.sessionUpdate;
+  if (kind === "user_message_chunk") {
+    const text = grokChunkText(update);
+    if (text === "") return null;
+    return { type: "user", message: { content: text } };
+  }
+  if (kind === "agent_message_chunk") {
+    const text = grokChunkText(update);
+    if (text === "") return null;
+    return { type: "assistant", message: { content: [{ type: "text", text }] } };
+  }
+  // tool_call_update carries file bodies and command output. Only the
+  // invocation record is evidence.
+  if (kind !== "tool_call") return null;
+  const metaTool = update._meta && update._meta["x.ai/tool"];
+  const name =
+    (metaTool && typeof metaTool.name === "string" && metaTool.name) ||
+    (typeof update.title === "string" ? update.title : "");
+  const block = toolUseFromRaw(name, update.rawInput);
+  if (!block) return null;
+  return { type: "assistant", message: { content: [block] } };
+};
+
+const normalizeGrokChat = (entry) => {
+  if (entry.type === "reasoning" || entry.type === "tool_result" || entry.type === "system") return null;
+  if (entry.type === "user") {
+    // compaction summaries and system reminders sit after the real prompt.
+    // Treating the newest one as the boundary hides a tail behind it.
+    if (typeof entry.synthetic_reason === "string" && entry.synthetic_reason !== "") return null;
+    const content = entry.content;
+    if (typeof content === "string" || Array.isArray(content)) {
+      return { type: "user", message: { content } };
+    }
+    return null;
+  }
+  if (entry.type !== "assistant") return null;
+  const blocks = [];
+  if (typeof entry.content === "string" && entry.content !== "") {
+    blocks.push({ type: "text", text: entry.content });
+  }
+  const calls = Array.isArray(entry.tool_calls) ? entry.tool_calls : [];
+  for (const call of calls) {
+    const raw = parseToolArguments(call && call.arguments);
+    const name = call && typeof call.name === "string" ? call.name : "";
+    const block = toolUseFromRaw(name, raw);
+    if (block) blocks.push(block);
+  }
+  if (blocks.length === 0) return null;
+  return { type: "assistant", message: { content: blocks } };
+};
+
+const normalizeRecord = (entry) => {
+  if (!entry || typeof entry !== "object") return entry;
+  // Claude JSONL. Presence of `message` is the discriminator, not absence of
+  // some other field.
+  if (entry.message) return entry;
+  const update = entry.params && entry.params.update;
+  if (update && typeof update === "object" && typeof update.sessionUpdate === "string") {
+    return normalizeGrokUpdate(update);
+  }
+  if (
+    entry.type === "user" ||
+    entry.type === "assistant" ||
+    entry.type === "reasoning" ||
+    entry.type === "tool_result" ||
+    entry.type === "system"
+  ) {
+    return normalizeGrokChat(entry);
+  }
+  return entry;
+};
+
+// Newest-first already stops on the newer user chunk. Pull in adjacent older
+// user chunks only to recover a tail command that the newer fragment hides.
+// A prefix snapshot keeps the newer text. A tool call, a blank line, or an
+// unreadable line ends the run, so an older turn cannot leak into this one.
+// Names accepted by TAIL_COMMAND. A fragment is kept only while the joined
+// token is still a prefix of one of these. Growing past all of them
+// (`/retrospective-stop.sh`) stops the accumulation.
+const TAIL_COMMAND_NAMES = ["ace-curate", "merge-cleanup", "retrospective"];
+
+const isTailCommandPrefix = (text) => {
+  if (typeof text !== "string") return false;
+  const token = text.trim().split(/\s+/)[0] || "";
+  if (token === "/") return true;
+  if (!token.startsWith("/")) return false;
+  const body = token.slice(1);
+  const colon = body.lastIndexOf(":");
+  const name = colon === -1 ? body : body.slice(colon + 1);
+  if (name === "") return false;
+  if (colon !== -1 && !/^[A-Za-z0-9_-]+:$/.test(body.slice(0, colon + 1))) return false;
+  return TAIL_COMMAND_NAMES.some((cmd) => cmd.startsWith(name));
+};
+
+const mergeUserChunk = (older, newer) => {
+  if (newer.startsWith(older)) return newer;
+  if (invokesTailCommand(newer)) return newer;
+  const joined = older + newer;
+  if (invokesTailCommand(joined) || isTailCommandPrefix(joined)) return joined;
+  return newer;
+};
+
+const coalesceUserPrompt = (lines, index, newest) => {
+  const older = [];
+  for (let j = index - 1; j >= 0; j -= 1) {
+    const line = lines[j];
+    if (!line) break;
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch (_) {
+      break;
+    }
+    const normalized = normalizeRecord(parsed);
+    if (normalized === null) break;
+    const text = boundaryText(normalized);
+    if (text === null) break;
+    older.push(text);
+  }
+  if (older.length === 0) return newest;
+  let acc = older[older.length - 1];
+  for (let k = older.length - 2; k >= 0; k -= 1) {
+    acc = mergeUserChunk(acc, older[k]);
+  }
+  return mergeUserChunk(acc, newest);
+};
+
 // Scan one tail slice newest-first. Returns "tail", "done", "no-tail",
 // "unknown" (a record that cannot be read, so nothing further can be claimed),
 // or null when the slice ran out before the turn boundary appeared (the caller
@@ -216,6 +416,9 @@ const scanSlice = (text, partialHead) => {
       if (i === 0 && partialHead) continue;
       return "unknown";
     }
+    const normalized = normalizeRecord(entry);
+    if (normalized === null) continue;
+    entry = normalized;
     // Entries are walked newest-first; within one entry, POSITION decides.
     // An ordinary assistant message is `[text][tool_use]`, so a retrospective
     // followed by a chain-tail tool_use means the tail is still owed, while a
@@ -243,8 +446,11 @@ const scanSlice = (text, partialHead) => {
     if (lastRetrospective !== -1 || lastTail !== -1) {
       return lastTail > lastRetrospective ? "tail" : "done";
     }
-    const prompt = boundaryText(entry);
-    if (prompt !== null) return invokesTailCommand(prompt) ? "tail" : "no-tail";
+    let prompt = boundaryText(entry);
+    if (prompt !== null) {
+      prompt = coalesceUserPrompt(lines, i, prompt);
+      return invokesTailCommand(prompt) ? "tail" : "no-tail";
+    }
   }
   return null;
 };

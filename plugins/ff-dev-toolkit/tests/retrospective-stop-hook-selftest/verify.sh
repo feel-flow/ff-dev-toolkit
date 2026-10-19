@@ -8,10 +8,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONSUMER="$PLUGIN_ROOT/tests/retrospective-stop-hook/verify.sh"
-EXPECTED_CONSUMER_CHECKS=131
+EXPECTED_CONSUMER_CHECKS=149
 # 壁時計が戻る回の再現（4 件。Issue `#2020`）は、時間切れを rc 1 で返す /bin/bash 4 未満では consumer が skip する
+# 149 / 145 は Grok transcript の検査 18 件を加えたあとの実測（2026-10-18）
 if [ "$(/bin/bash -c 'printf "%s" "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)" -lt 4 ]; then
-  EXPECTED_CONSUMER_CHECKS=127
+  EXPECTED_CONSUMER_CHECKS=145
 fi
 
 command -v perl >/dev/null 2>&1 || { echo "○ skip: perl が無いため retrospective Stop hook self-test をスキップ"; exit 0; }

@@ -47,6 +47,24 @@
 #     scripts/ はあるが真実源が無い・docs/ だけ・真実源が 1 本欠け → broken（F0 で赤。skip へ倒さない）。Issue `#1938`
 #  F-ran. リポジトリ直下に scripts/ が在るのに F 系を最後まで実行しなかった回は赤
 #
+# 断片の帰属照合（changelog_fragment_scan の手順 6。Issue `#2127` / OBS-221。公開側は fixture の
+# clone と file:// の公開リポジトリ。既定は両方とも不在に固定し、実 clone とネットワークへ出ない）:
+#  A1. 変えていない公開ファイルを backtick で参照する断片 → rc=1、ATTRIBUTION_PATH 行と断片名を名指し
+#      （clone 無し → 公開リポジトリの最新 SemVer タグ。v0.9.0 / v0.11.0-rc1 を最新と取り違えない）
+#  A1b. 公開側 clone が在れば clone で判定 / A1c. clone に SemVer タグが無ければ公開リポジトリへ
+#  A7. 作業ツリーだけ直して stage しない断片は index の内容で判定（rc=1）
+#  A3. clone も公開リポジトリも引けない / A4. SemVer タグが無い / A5. 判定 helper が無い → rc=2「断片未検査」
+#  A2. staged で変えた path → ok / A2b. 同じ PR の前の commit で変えた path → ok
+#  A6. path 形の参照が無い断片は公開タグを引かず ok / A9. base に在る他 PR の断片は照合しない
+#  A3b. タグの無い clone + 公開リポジトリ不達 → rc=2（clone の状態を「タグが無い」と名指し）
+#  A10. 参照先を作業ツリーだけで変えて stage しない → 変更済みとしない（rc=1）
+#  A11. 最新タグを持たない古い clone は使わず、公開リポジトリの最新タグで判定（rc=1）
+#  A12〜A14. タグの fetch・断片の staged 内容の読み取りが失敗 / 判定 helper が判定不能 → rc=2
+#  A16. 参照先の staged 変更の有無を判定できない → rc=2 / A15. 断片 2 件のうち違反した断片だけを名指し
+#
+# 変異検出: 帰属照合の呼び出しを外すと (A1)(A1b)(A1c)(A7)(A3)(A4)(A2)(A6)(A5) が、最新タグを文字列順の sort で選ぶと・SemVer 以外のタグも拾うと (A1)(A1c)(A7)(A2) が、断片を作業ツリーから読むと (A7) が、dirty_exempt を 0 にすると (A2)(A9)(A15)(A16) が、公開側 clone を使わないと (A1b) が赤になる（2026-10-18 実測）。dirty_exempt を 2（staged だけ）から 1（未コミット全般）へ戻すと (A10) が、ls-remote の最新タグを見ずに clone の最新タグを先に使うと (A11) が、複数断片の本文と断片名の対応を崩すと (A15) が赤になる（2026-10-18 実測）。
+# 空振り検出: 帰属照合は、公開側 clone も公開リポジトリも引けない（A3）・SemVer タグが無い（A4）・判定 helper が無い（A5）入力で rc=2 の「断片未検査」になり ok を出さない。各取得失敗を rc=0 へ倒す変異で (A3)(A4)(A5) がそれぞれ赤になる。タグの fetch 失敗・断片の staged 内容の読み取り失敗・判定 helper の判定不能（rc=2）・staged 変更の有無の判定失敗を素通しへ倒す変異で (A12)(A13)(A14)(A16) がそれぞれ赤になる（2026-10-18 実測）。断片 0 件の入力は照合へ入らず、公開対象の変更があれば rc=1（F1）、無ければ none（F5）のままで ok にならない。
+#
 # 空振り検出: staged に対象が 1 件も無い入力（検査 6・7）を与えると ok ではなく none を返し、判定材料の取得失敗・リポジトリ外・NUL 区切りでない出力・未解決の衝突（検査 8・9・10・14）を与えると rc=2 の「実行ビット未検査」になる（none の緑へ倒さない）。none を ok 0 と報告する変異で (6)(7) が、NUL で終端しない断片を読み飛ばす変異で (10) が赤になる。
 # 変異検出: 対象判定から verify.sh のパターンを外すと (1)(2)(4)(12)(15) が赤になる。
 # 変異検出: 対象判定から hooks のパターンを外すと (3a)(3b)(5)(11)(13) が赤になる。
@@ -423,6 +441,9 @@ new_pub_repo() {
   # 除外集合の真実源（META_ALLOWLIST / CHANGELOG= / PLUGIN_JSON= / AGENT_CONFIG=）は実物を置く。
   # lib は awk で読むだけで実行しないので、実物の書式が変われば fixture の判定がそのまま赤になる。
   cp "$REPO_SCRIPTS/check-release-required.sh" "$REPO_SCRIPTS/release-dev-toolkit.sh" "$dir/scripts/"
+  # 帰属照合（手順 6）の判定 helper も実物を置く（lib はこれを repo ルートから読む）。
+  mkdir -p "$dir/plugins/ff-dev-toolkit/scripts/lib"
+  cp "$ATTRIBUTION_LIB" "$dir/plugins/ff-dev-toolkit/scripts/lib/"
   git -C "$dir" add -A
   git -C "$dir" commit -q -m scaffold
   git -C "$dir" update-ref refs/remotes/origin/develop HEAD
@@ -464,6 +485,11 @@ done
 
 FRAG_REPO_ROOT="$(cd "$TESTS_DIR/../../.." && pwd)"
 REPO_SCRIPTS="$FRAG_REPO_ROOT/scripts"
+ATTRIBUTION_LIB="$TESTS_DIR/../scripts/lib/changelog-attribution-functions.sh"
+# 帰属照合は公開側 clone → 公開リポジトリの順に最新タグを引く。開発者の実 clone とネットワークへ
+# 出ないよう、既定は「どちらも無い」に固定し、A 系だけが fixture の clone / file:// を渡す。
+export FF_RELEASE_CHECK_PUBLIC="$TMP/no-public-clone"
+export FF_RELEASE_CHECK_PUBLIC_URL="file://$TMP/no-public-remote"
 FRAG_LAYOUT="$(frag_layout "$FRAG_REPO_ROOT")"
 FRAG_RAN=0
 case "$FRAG_LAYOUT" in
@@ -826,6 +852,278 @@ for pair in "D:staged の断片削除を取得できません:stub-fail-d" "A:�
     bad "F13-${label}. --diff-filter=${label} の取得失敗の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
   fi
 done
+
+# =============================================================================
+# 断片の帰属照合（手順 6。Issue `#2127` / OBS-221）
+# =============================================================================
+# 公開リポジトリの fixture（公開 layout: plugins/ff-dev-toolkit/ 配下）。v0.10.0 が最新で、
+# skills/x/SKILL.md・scripts/y.sh の内容は SSOT fixture の base と同一。v0.9.0 と v0.11.0-rc1 は
+# SKILL.md の内容が違う（文字列順の sort・SemVer 以外のタグを拾う変異で A1 が緑へ倒れる）。
+ATTR_SKILL='plugins/ff-dev-toolkit/skills/x/SKILL.md'
+ATTR_Y='plugins/ff-dev-toolkit/scripts/y.sh'
+ATTR_FRAG='changelog.d/2127.fixed.attr.md'
+PUBSRC="$TMP/pubsrc"
+ff_git_fixture_init "$PUBSRC" >/dev/null || { echo "✗ 公開 fixture を初期化できません: $PUBSRC" >&2; exit 1; }
+mkdir -p "$PUBSRC/plugins/ff-dev-toolkit/skills/x" "$PUBSRC/plugins/ff-dev-toolkit/scripts"
+printf 'old skill\n' > "$PUBSRC/$ATTR_SKILL"
+printf 'y v1\n' > "$PUBSRC/$ATTR_Y"
+git -C "$PUBSRC" add -A && git -C "$PUBSRC" commit -q -m v0.9.0 && git -C "$PUBSRC" tag v0.9.0
+printf 'skill v1\n' > "$PUBSRC/$ATTR_SKILL"
+git -C "$PUBSRC" add -A && git -C "$PUBSRC" commit -q -m v0.10.0 && git -C "$PUBSRC" tag v0.10.0
+printf 'skill rc\n' > "$PUBSRC/$ATTR_SKILL"
+git -C "$PUBSRC" add -A && git -C "$PUBSRC" commit -q -m rc && git -C "$PUBSRC" tag v0.11.0-rc1
+PUB_URL="file://$PUBSRC"
+# タグはあるが SemVer が 1 つも無い公開リポジトリ
+PUBSRC_NOTAG="$TMP/pubsrc-notag"
+ff_git_fixture_init "$PUBSRC_NOTAG" >/dev/null || { echo "✗ 公開 fixture を初期化できません: $PUBSRC_NOTAG" >&2; exit 1; }
+: > "$PUBSRC_NOTAG/README.md"
+git -C "$PUBSRC_NOTAG" add -A && git -C "$PUBSRC_NOTAG" commit -q -m init && git -C "$PUBSRC_NOTAG" tag release-1
+
+# new_attr_repo <name> → base に公開 fixture と同一内容の SKILL.md / y.sh を持つ SSOT fixture
+new_attr_repo() {
+  local dir
+  dir="$(new_pub_repo "$1")"
+  mkdir -p "$dir/plugins/ff-dev-toolkit/skills/x"
+  printf 'skill v1\n' > "$dir/$ATTR_SKILL"
+  printf 'y v1\n' > "$dir/$ATTR_Y"
+  git -C "$dir" add -A
+  git -C "$dir" commit -q -m same-as-public
+  git -C "$dir" update-ref refs/remotes/origin/develop HEAD
+  printf '%s' "$dir"
+}
+
+# run_attr <clone> <url> <repo> — 公開側の取得元を指定して changelog_fragment_scan を呼ぶ
+run_attr() {
+  RC=0
+  OUT="$(FF_RELEASE_CHECK_PUBLIC="$1" FF_RELEASE_CHECK_PUBLIC_URL="$2" changelog_fragment_scan "$3" 2>"$TMP/err")" || RC=$?
+  ERR="$(cat "$TMP/err")"
+}
+
+has_line() { grep -Fqx -- "$2" <<<"$1"; }
+has_text() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
+
+ATTR_HIT="ATTRIBUTION_PATH=skills/x/SKILL.md -> ${ATTR_SKILL} (v0.10.0 と同一 object)"
+ATTR_NAME="✗ ${ATTR_FRAG}: 前版 v0.10.0 と同一内容の path を backtick で参照している"
+
+# ---- A1: 変えていない公開ファイルを参照する断片（clone 無し → 公開リポジトリ）→ rc=1 ----------------
+R="$(new_attr_repo a1)"
+stage_file "$R" "$ATTR_Y"
+printf -- '- `skills/x/SKILL.md` の挙動を直した\n' > "$R/$ATTR_FRAG"
+git -C "$R" add "$ATTR_FRAG"
+run_attr "$TMP/no-public-clone" "$PUB_URL" "$R"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "$ATTR_HIT" && has_text "$OUT" "$ATTR_NAME"; then
+  ok "A1. 変えていない path を参照する断片は rc=1 で断片名と path を名指しする（公開リポジトリの最新 SemVer タグ v0.10.0 と照合）"
+else
+  bad "A1. 帰属違反の判定が違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A1b: 公開側 clone が在ればそれを使う（公開リポジトリへ出ない）------------------------------------
+git clone -q "$PUBSRC" "$TMP/pub-clone" 2>/dev/null
+run_attr "$TMP/pub-clone" "file://$TMP/no-public-remote" "$R"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "$ATTR_HIT" && has_text "$OUT" "$ATTR_NAME"; then
+  ok "A1b. 公開側 clone が在れば clone の最新タグと照合する（公開リポジトリが引けなくても判定する）"
+else
+  bad "A1b. clone 経由の判定が違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A1c: clone に SemVer タグが無ければ公開リポジトリへ倒す ---------------------------------------
+git clone -q "$PUBSRC_NOTAG" "$TMP/notag-clone" 2>/dev/null
+run_attr "$TMP/notag-clone" "$PUB_URL" "$R"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "$ATTR_HIT"; then
+  ok "A1c. clone に SemVer タグが無ければ公開リポジトリの最新タグで判定する"
+else
+  bad "A1c. タグの無い clone の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A7: 判定は index（commit される内容）で行う --------------------------------------------------
+printf -- '- 役割名だけで書いた\n' > "$R/$ATTR_FRAG"   # 作業ツリーだけ直して stage しない
+run_attr "$TMP/no-public-clone" "$PUB_URL" "$R"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "$ATTR_HIT"; then
+  ok "A7. 作業ツリーだけ直して stage しない断片は index の内容で判定する（rc=1）"
+else
+  bad "A7. index 側の判定が違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A3: clone も公開リポジトリも引けない → rc=2（違反なしと報告しない）------------------------------
+printf -- '- `skills/x/SKILL.md` の挙動を直した\n' > "$R/$ATTR_FRAG"
+git -C "$R" add "$ATTR_FRAG"
+run_attr "$TMP/no-public-clone" "file://$TMP/no-public-remote" "$R"
+if [ "$RC" -eq 2 ] && [ -z "$OUT" ] && has_text "$ERR" "断片未検査: 帰属照合の公開タグを引けません"; then
+  ok "A3. 公開側 clone も公開リポジトリも引けなければ rc=2 で「断片未検査」（ok を出さない）"
+else
+  bad "A3. 公開タグ取得失敗の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A4: 公開リポジトリに SemVer タグが無い → rc=2 ------------------------------------------------
+run_attr "$TMP/no-public-clone" "file://$PUBSRC_NOTAG" "$R"
+if [ "$RC" -eq 2 ] && [ -z "$OUT" ] && has_text "$ERR" "SemVer タグがありません"; then
+  ok "A4. 公開リポジトリに SemVer タグが無ければ rc=2 で「断片未検査」"
+else
+  bad "A4. SemVer タグ不在の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A2: 今回 staged で変えた path を参照する断片 → ok -------------------------------------------
+R="$(new_attr_repo a2)"
+stage_file "$R" "$ATTR_Y"
+printf -- '- `scripts/y.sh` の挙動を直した\n' > "$R/$ATTR_FRAG"
+git -C "$R" add "$ATTR_FRAG"
+run_attr "$TMP/no-public-clone" "$PUB_URL" "$R"
+if [ "$RC" -eq 0 ] && [ "$OUT" = "changelog-fragment: ok 1" ] && has_text "$ERR" "帰属検査: 断片 1 件を 公開リポジトリ ${PUB_URL} の v0.10.0 と照合（違反なし）"; then
+  ok "A2. staged で変えた path を参照する断片は緑（照合した相手を stderr に出す）"
+else
+  bad "A2. 変えた path の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A2b: 同じ PR の前の commit で変えた path も変更済みとして扱う ----------------------------------
+git -C "$R" commit -q -m change-y
+stage_file "$R" "$PUB_PATH"
+run_attr "$TMP/no-public-clone" "$PUB_URL" "$R"
+if [ "$RC" -eq 0 ] && [ "$OUT" = "changelog-fragment: ok 1" ]; then
+  ok "A2b. 前の commit で変えた path を参照する断片も緑（HEAD の object がタグと違う）"
+else
+  bad "A2b. 前の commit で変えた path の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A6: path 形の参照が無い断片は公開タグを引かない -------------------------------------------------
+R="$(new_attr_repo a6)"
+stage_file "$R" "$ATTR_Y"
+printf -- '- 断片の帰属照合を commit 前へ移した\n' > "$R/$ATTR_FRAG"
+git -C "$R" add "$ATTR_FRAG"
+run_attr "$TMP/no-public-clone" "file://$TMP/no-public-remote" "$R"
+if [ "$RC" -eq 0 ] && [ "$OUT" = "changelog-fragment: ok 1" ] && has_text "$ERR" "path 形の参照なし"; then
+  ok "A6. path 形の参照が無い断片は公開タグを引かずに緑（取得元が無くても止めない）"
+else
+  bad "A6. path 形の参照なしの扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A9: 他 PR の未消費断片（base に在る）は照合しない -----------------------------------------------
+R="$(new_attr_repo a9)"
+printf -- '- `skills/x/SKILL.md` の挙動を直した\n' > "$R/changelog.d/9999.fixed.other.md"
+git -C "$R" add -A
+git -C "$R" commit -q -m other-pr-fragment
+git -C "$R" update-ref refs/remotes/origin/develop HEAD
+stage_file "$R" "$ATTR_Y"
+printf -- '- `scripts/y.sh` の挙動を直した\n' > "$R/$ATTR_FRAG"
+git -C "$R" add "$ATTR_FRAG"
+run_attr "$TMP/no-public-clone" "$PUB_URL" "$R"
+if [ "$RC" -eq 0 ] && [ "$OUT" = "changelog-fragment: ok 1" ]; then
+  ok "A9. base に在る他 PR の断片は照合しない（この PR の断片だけを見る）"
+else
+  bad "A9. 他 PR の断片の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A5: 判定 helper が無い → rc=2 -----------------------------------------------------------
+R="$(new_attr_repo a5)"
+git -C "$R" rm -q plugins/ff-dev-toolkit/scripts/lib/changelog-attribution-functions.sh
+git -C "$R" commit -q -m drop-lib
+git -C "$R" update-ref refs/remotes/origin/develop HEAD
+stage_file "$R" "$ATTR_Y"
+printf -- '- 断片の帰属照合を commit 前へ移した\n' > "$R/$ATTR_FRAG"
+git -C "$R" add "$ATTR_FRAG"
+run_attr "$TMP/no-public-clone" "$PUB_URL" "$R"
+if [ "$RC" -eq 2 ] && [ -z "$OUT" ] && has_text "$ERR" "断片未検査: 帰属照合の判定 helper を読めません"; then
+  ok "A5. 帰属照合の判定 helper が無ければ rc=2 で「断片未検査」（照合を飛ばした緑にしない）"
+else
+  bad "A5. helper 不在の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A3b: タグの無い clone が在り公開リポジトリへ届かない → rc=2、clone は「無い」ではなく「タグが無い」と書く --
+R="$(new_attr_repo a3b)"
+stage_file "$R" "$ATTR_Y"
+printf -- '- `skills/x/SKILL.md` の挙動を直した\n' > "$R/$ATTR_FRAG"
+git -C "$R" add "$ATTR_FRAG"
+run_attr "$TMP/notag-clone" "file://$TMP/no-public-remote" "$R"
+if [ "$RC" -eq 2 ] && [ -z "$OUT" ] && has_text "$ERR" "SemVer タグが無く"; then
+  ok "A3b. タグの無い clone + 公開リポジトリ不達は rc=2 で、clone の状態（タグが無い）を正しく名指しする"
+else
+  bad "A3b. タグの無い clone + 不達の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A10: 参照先を作業ツリーだけで変えて stage しない → 変更済みとしない（rc=1）--------------------------
+printf 'y edited\n' >> "$R/$ATTR_Y"   # y.sh は stage 済みの変更あり。SKILL.md を作業ツリーだけで変える
+printf 'skill wt only\n' >> "$R/$ATTR_SKILL"
+run_attr "$TMP/no-public-clone" "$PUB_URL" "$R"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "$ATTR_HIT"; then
+  ok "A10. 参照先の作業ツリーだけの編集は commit に入らないので変更済みとしない（rc=1）"
+else
+  bad "A10. 未 stage の参照先の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A11: 古い clone（最新タグを持たない）は使わず公開リポジトリの最新タグで照合する ---------------------------
+git clone -q "$PUBSRC" "$TMP/stale-clone" 2>/dev/null
+git -C "$TMP/stale-clone" tag -d v0.10.0 v0.11.0-rc1 >/dev/null
+R="$(new_attr_repo a11)"
+stage_file "$R" "$ATTR_Y"
+printf -- '- `skills/x/SKILL.md` の挙動を直した\n' > "$R/$ATTR_FRAG"
+git -C "$R" add "$ATTR_FRAG"
+run_attr "$TMP/stale-clone" "$PUB_URL" "$R"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "$ATTR_HIT"; then
+  ok "A11. 最新タグを持たない古い clone では照合せず、公開リポジトリの最新タグ v0.10.0 で判定する"
+else
+  bad "A11. 古い clone の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A12〜A14: 取得・読み取り・判定の途中失敗 → rc=2（PATH 先頭の git stub）----------------------------------
+write_word_stub() { # <dir> <失敗させるサブコマンド>
+  mkdir -p "$1"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'for a in "$@"; do\n'
+    printf '  if [ "$a" = "%s" ]; then echo "fatal: stub %s" >&2; exit 128; fi\n' "$2" "$2"
+    printf 'done\n'
+    printf 'exec "%s" "$@"\n' "$REAL_GIT"
+  } > "$1/git"
+  chmod 755 "$1/git"
+}
+write_word_stub "$TMP/stub-fetch" fetch
+write_word_stub "$TMP/stub-show" show
+write_word_stub "$TMP/stub-lstree" ls-tree
+for spec in "A12:stub-fetch:公開タグ v0.10.0 を取得できません:タグの fetch が失敗した" \
+            "A13:stub-show:断片の staged 内容を読めません:断片の staged 内容を読めなかった" \
+            "A14:stub-lstree:の帰属を判定できません:判定 helper が判定不能を返した"; do
+  label="${spec%%:*}"; rest="${spec#*:}"; stub="${rest%%:*}"; rest="${rest#*:}"; want="${rest%%:*}"; what="${rest#*:}"
+  RC=0
+  OUT="$(PATH="$TMP/${stub}:$PATH" FF_RELEASE_CHECK_PUBLIC="$TMP/no-public-clone" FF_RELEASE_CHECK_PUBLIC_URL="$PUB_URL" changelog_fragment_scan "$R" 2>"$TMP/err")" || RC=$?
+  ERR="$(cat "$TMP/err")"
+  if [ "$RC" -eq 2 ] && [ -z "$OUT" ] && has_text "$ERR" "断片未検査: " && has_text "$ERR" "$want"; then
+    ok "${label}. ${what}ら rc=2 で「断片未検査」（ok を出さない）"
+  else
+    bad "${label}. ${what}回の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+  fi
+done
+
+# ---- A16: 参照先の staged 変更の有無（git diff --cached --quiet）を判定できない → rc=2 ------------------------
+mkdir -p "$TMP/stub-cached-quiet"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'd=0; q=0\n'
+  printf 'for a in "$@"; do [ "$a" = diff ] && d=1; [ "$a" = --quiet ] && q=1; done\n'
+  printf 'if [ "$d" = 1 ] && [ "$q" = 1 ]; then echo "fatal: stub diff --quiet" >&2; exit 128; fi\n'
+  printf 'exec "%s" "$@"\n' "$REAL_GIT"
+} > "$TMP/stub-cached-quiet/git"
+chmod 755 "$TMP/stub-cached-quiet/git"
+RC=0
+OUT="$(PATH="$TMP/stub-cached-quiet:$PATH" FF_RELEASE_CHECK_PUBLIC="$TMP/no-public-clone" FF_RELEASE_CHECK_PUBLIC_URL="$PUB_URL" changelog_fragment_scan "$R" 2>"$TMP/err")" || RC=$?
+ERR="$(cat "$TMP/err")"
+if [ "$RC" -eq 2 ] && [ -z "$OUT" ] && has_text "$ERR" "staged 変更の有無を判定できない"; then
+  ok "A16. 参照先の staged 変更の有無を判定できなければ rc=2（変更済み扱いの緑へ倒さない）"
+else
+  bad "A16. staged 変更判定の失敗の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
+
+# ---- A15: 断片 2 件のうち 2 件目だけが違反 → 2 件目だけを名指しする（本文と断片名の対応）-----------------------
+R="$(new_attr_repo a15)"
+stage_file "$R" "$ATTR_Y"
+printf -- '- `scripts/y.sh` の挙動を直した\n' > "$R/changelog.d/2127.fixed.aaa.md"
+printf -- '- `skills/x/SKILL.md` の挙動を直した\n' > "$R/changelog.d/2127.fixed.zzz.md"
+git -C "$R" add changelog.d
+run_attr "$TMP/no-public-clone" "$PUB_URL" "$R"
+if [ "$RC" -eq 1 ] && has_line "$OUT" "$ATTR_HIT" && has_text "$OUT" "✗ changelog.d/2127.fixed.zzz.md: " \
+  && ! has_text "$OUT" "changelog.d/2127.fixed.aaa.md"; then
+  ok "A15. 断片が複数でも違反した断片だけを名指しする（本文と断片名の対応が崩れない）"
+else
+  bad "A15. 複数断片の名指しが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
+fi
 FRAG_RAN=1
 fi
 

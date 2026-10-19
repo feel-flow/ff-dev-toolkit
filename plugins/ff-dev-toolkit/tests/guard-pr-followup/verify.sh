@@ -9,6 +9,14 @@
 # 警告文自体が抜け道（no-followup マーカー）と gh issue create を案内する契約も検査し、
 # hooks.json の PreToolUse 登録を静的照合する。
 #
+# GitHub MCP 経路（create_pull_request / update_pull_request）も同じ suite で固定する: 実測したツール名を 2 つのサーバー名の形
+# （mcp__github__ / mcp__plugin_github_github__）で駆動し、draft: true の deny（作成・Draft への戻し）と body のフォローアップ宣言の判定（Bash 経路と同一の deny 文）・hook の環境変数で読む抜け道・
+# gh が PATH に無くても判定すること・針が当たらない入力（判定表にないツール名・名簿にないサーバー・
+# tool_input の欠落 / 型違い）を素通しではなく理由付きの systemMessage にすること・hooks.json の MCP matcher を
+# Claude Code と同じアンカー無し正規表現として照合すること（tests/lib/github-mcp-fixture.sh）。
+# 空振り検出: MCP の振り分け（`*mcp__*` の case）を無効にすると MCP 入力が素通しへ倒れて 19 件が赤（2026-10-19 実測）。
+# 変異検出: draft: true の判定を常に偽にすると 8 件（2026-10-18 実測）、抜け道で通した通知を無音にすると 1 件が赤（2026-10-19 実測）。
+#
 # run-all-required: no — jq 不在での skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側）
 set -euo pipefail
 
@@ -23,6 +31,8 @@ isolate_hook_env "FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD" "$TARGET"
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
+# shellcheck source=../lib/github-mcp-fixture.sh
+. "$SCRIPT_DIR/../lib/github-mcp-fixture.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 
 [ -f "$TARGET" ] || { echo "✗ guard-pr-followup.sh が見つかりません: $TARGET" >&2; exit 1; }
@@ -240,6 +250,100 @@ assert_pass "（対照）無効化した状態の通常 PR は素通し"
 run_hook 'gh pr create --draft --fill' "$TEST_TMP" 'FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1'
 assert_pass "FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 は Draft の検出も止める"
 
+echo "guard-pr-followup: GitHub MCP 経路（create_pull_request / update_pull_request）"
+# 実測したツール名（GitHub 公式リモート MCP の tools/list）を 2 つのサーバー名の形で駆動する。
+# fixture の cwd は /tmp（`gh` を含まない）なので、MCP 分岐を Bash 用の前置フィルタ（*gh*）より
+# 後ろへ動かすと、下の deny 検査はすべて素通しへ倒れて赤になる。
+MESSAGE=""
+run_mcp() { ff_mcp_run "$TARGET" "$@"; }
+mcp_pr_input() { # <追加フィールドの JSON オブジェクト>
+  jq -cn --argjson x "$1" '{owner: "acme", repo: "widgets", title: "t", head: "feature/x", base: "develop"} + $x'
+}
+run_mcp mcp__plugin_github_github__create_pull_request "$(mcp_pr_input '{"draft":true}')"
+assert_fire "コメント追記の AC: プラグイン同梱サーバーの create_pull_request で draft: true は deny"
+MCP_REASON="$REASON"
+case "$REASON" in
+  *'create_pull_request（draft: true）'*'hook の環境変数 FF_PR_DRAFT_ACK=1'*) ok "deny 文が対象（draft: true）と、同じ変数名の抜け道を hook の環境変数として案内する" ;;
+  *) bad "MCP 経路の Draft の deny 文に対象・抜け道の案内が揃わない: [$REASON]" ;;
+esac
+run_hook "gh pr create --draft --base develop --title t --body \"$BODY_PLAIN\""
+# 1 行目の対象表示と 2 つの選択肢だけが経路で違い、契約の説明・末尾の案内は同じ文言
+mcp_head="${MCP_REASON%%$'\n'*}"
+bash_head="${REASON%%$'\n'*}"
+if [ "${mcp_head#*\` }" = "${bash_head#*\` }" ] && [ "${MCP_REASON#*$'\n  2) '*$'\n'}" = "${REASON#*$'\n  2) '*$'\n'}" ]; then
+  ok "Draft の deny 文は Bash 経路と同じ文言（対象の表示と選択肢 1・2 以外）"
+else
+  bad "Draft の deny 文が Bash 経路とずれている: mcp=[$MCP_REASON] bash=[$REASON]"
+fi
+run_mcp mcp__github__create_pull_request "$(mcp_pr_input '{"draft":true}')"
+assert_fire "server キー github で設定したサーバーの create_pull_request でも draft: true は deny"
+run_mcp mcp__github__create_pull_request "$(mcp_pr_input '{"draft":"true"}')"
+assert_fire "draft を文字列 \"true\" で渡しても deny"
+run_mcp mcp__github__update_pull_request '{"owner":"acme","repo":"widgets","pullNumber":12,"draft":true}'
+assert_fire "update_pull_request の draft: true（gh pr ready --undo 相当）は deny"
+case "$REASON" in
+  *'update_pull_request（draft: true）'*) ok "deny 文が update_pull_request を名指しする" ;;
+  *) bad "update_pull_request の名指しが無い: [$REASON]" ;;
+esac
+run_mcp mcp__github__update_pull_request '{"owner":"acme","repo":"widgets","pullNumber":12,"draft":false}'
+assert_pass "update_pull_request の draft: false（Draft の解除）は止めない"
+run_mcp mcp__github__create_pull_request "$(mcp_pr_input '{}')"
+assert_pass "draft も body も無い create_pull_request は素通し"
+run_mcp mcp__github__create_pull_request "$(mcp_pr_input '{"draft":true}')" FF_PR_DRAFT_ACK=1
+ff_mcp_assert_message "抜け道: hook の環境変数 FF_PR_DRAFT_ACK=1 で Draft の検出だけを通し、セッション全体に効く抜け道で通したことを毎回知らせる" "FF_PR_DRAFT_ACK=1"
+run_mcp mcp__github__create_pull_request "$(mcp_pr_input "$(jq -cn --arg b "$BODY_MARKER" '{draft: true, body: $b}')")" FF_PR_DRAFT_ACK=1
+assert_fire "FF_PR_DRAFT_ACK=1 でも本文のフォローアップ宣言の判定は残る"
+if [ "$(printf '%s' "$OUT" | jq -s 'length' 2>/dev/null)" = "1" ]; then
+  ok "抜け道の通知と deny を同時に出さない（hook の出力は JSON 1 つ）"
+else
+  bad "hook の出力が JSON 1 つでない（ホストが読めない）: [$OUT]"
+fi
+run_hook 'gh pr create --draft --fill' "$TEST_TMP" 'FF_PR_DRAFT_ACK=1'
+assert_fire "hook の環境変数 FF_PR_DRAFT_ACK=1 は Bash 経路を通さない（Bash 経路の抜け道はコマンド先頭の環境代入だけ）"
+run_mcp mcp__github__create_pull_request "$(mcp_pr_input '{"draft":true}')" FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1
+assert_pass "FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 は MCP 経路も止める"
+if NOGH_PATH="$(ff_path_without_gh "$TEST_TMP/nogh-bin" jq grep sed)"; then
+  run_mcp mcp__github__create_pull_request "$(mcp_pr_input '{"draft":true}')" PATH="$NOGH_PATH"
+  assert_fire "gh が PATH に無くても Draft を判定する（tool_input だけで決まり、gh を使わない）"
+else
+  bad "gh だけを外した PATH を作れない（gh が残る・bash が消える）ため、gh 不在の検査が成立しない"
+fi
+mcp_body_input() { jq -cn --arg b "$1" '{owner: "acme", repo: "widgets", title: "t", head: "feature/x", base: "develop", body: $b}'; }
+run_mcp mcp__github__create_pull_request "$(mcp_body_input "$BODY_MARKER")"
+assert_fire "body のフォローアップ宣言（Issue 参照なし）は Bash 経路と同じく deny"
+MCP_REASON="$REASON"
+run_hook "gh pr create --title t --body \"$BODY_MARKER\""
+if [ -n "$REASON" ] && [ "$MCP_REASON" = "$REASON" ]; then
+  ok "フォローアップ宣言の deny 文は Bash 経路と同一"
+else
+  bad "フォローアップ宣言の deny 文が Bash 経路と違う: mcp=[$MCP_REASON] bash=[$REASON]"
+fi
+run_mcp mcp__github__update_pull_request "$(jq -cn --arg b "$BODY_MARKER" '{owner: "acme", repo: "widgets", pullNumber: 12, body: $b}')"
+assert_fire "update_pull_request の body（gh pr edit 相当）にも同じ判定を当てる"
+run_mcp mcp__github__create_pull_request "$(mcp_body_input "$BODY_WITH_REF")"
+assert_pass "body に Issue 参照があれば素通し"
+run_mcp mcp__github__create_pull_request "$(mcp_body_input "$BODY_NO_FOLLOWUP")"
+assert_pass "body の no-followup マーカーで通る"
+run_mcp mcp__github__create_pull_request "$(mcp_body_input "$BODY_PLAIN")"
+assert_pass "通常の body は素通し"
+echo "guard-pr-followup: GitHub MCP 経路の針が当たらない入力（素通しではなく理由付きの systemMessage）"
+run_mcp mcp__github__create_pull_requests "$(mcp_pr_input '{"draft":true}')"
+ff_mcp_assert_message "判定表にないツール名（綴りの揺れ）は理由を出して通す" "判定表"
+run_mcp mcp__linear__create_pull_request "$(mcp_pr_input '{"draft":true}')"
+ff_mcp_assert_message "サーバー名が名簿にないツールは理由を出して通す" "判定表"
+run_mcp mcp__github__create_pull_request '"draft"'
+ff_mcp_assert_message "オブジェクトでない tool_input は理由を出して通す" "オブジェクト"
+run_mcp mcp__github__create_pull_request "$(mcp_pr_input '{"body":123}')"
+ff_mcp_assert_message "文字列でない body は理由を出して通す" "文字列でない"
+run_mcp mcp__github__create_pull_request "$(mcp_pr_input '{"draft":true}')" PATH=/nonexistent
+ff_mcp_assert_message "jq が PATH に無ければ、GitHub MCP の呼び出しを検査しなかったことを知らせて通す" "jq が PATH に無い"
+run_hook 'gh pr create --draft --fill # mcp__github__create_pull_request'
+assert_fire "Bash の呼び出しは文字列に mcp__ を含んでも Bash 経路で判定する"
+case "$REASON" in
+  *'`gh pr create --draft`'*) ok "Bash 経路の deny 文（gh pr create --draft の名指し）のまま" ;;
+  *) bad "Bash の呼び出しが MCP 経路の文言になっている: [$REASON]" ;;
+esac
+
 echo "guard-pr-followup: fail-open"
 RC=0
 OUT="$(printf 'not-json' | bash "$TARGET" 2>/dev/null)" || RC=$?
@@ -277,6 +381,19 @@ if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
 else
   bad "hooks.json の PreToolUse（Bash matcher）に guard-pr-followup.sh が無い"
 fi
+case "$(jq -r '.description' "$HOOKS_JSON")" in
+  *create_pull_request*update_pull_request*) ok "hooks.json の description が GitHub MCP の create_pull_request / update_pull_request に言及する" ;;
+  *) bad "hooks.json の description に GitHub MCP 経路（create_pull_request / update_pull_request）の記述が無い" ;;
+esac
+while IFS= read -r line; do
+  case "$line" in
+    OK\ *) ok "MCP matcher: ${line#OK }" ;;
+    SKIP\ *) echo "  ○ skip: ${line#SKIP }" ;;
+    *) bad "MCP matcher: ${line#NG }" ;;
+  esac
+done <<EOF
+$(ff_github_mcp_matcher_check "$HOOKS_JSON" guard-pr-followup.sh create_pull_request update_pull_request)
+EOF
 
 echo "guard-pr-followup: ASDD ゲートの早期終了経路でも stdin を読み切る"
 # 任意 Hook を止めるゲート（hooks/asdd-hook-gate.sh）は stdin を消費しない設計なので、

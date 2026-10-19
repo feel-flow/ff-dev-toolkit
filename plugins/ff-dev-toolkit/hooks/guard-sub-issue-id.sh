@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #
-# sub-issues API の integer フィールドを `-f` で送るガード（PreToolUse / Bash、
+# sub-issues API の integer フィールドを `-f` で送るガード（PreToolUse / Bash・GitHub MCP、
 # 観測台帳 OBS-052 の対策）。
 #
 # `gh api -f sub_issue_id=<値>` は値を常に文字列で送る。GitHub の
@@ -34,13 +34,31 @@
 #     ことがある。素朴な分割では取りこぼしうるので fail-open）
 #   - `xargs` / `find -exec` 経由で組み立てられる gh（トークン列に現れない）
 #
+# GitHub MCP 経路（PreToolUse / `sub_issue_write`）:
+#   hooks.json は MCP のツール名を matcher に持つエントリからも本ガードを起動する。
+#   tool_input は JSON なので型がそのまま見える。`-f` と同じ「integer を文字列で送る」形は
+#   `sub_issue_id` / `after_id` / `before_id` の型が string であることとして判定し、同じ理由の
+#   deny で止める（案内は数値で渡す・`link-sub-issues.sh`・抜け道）。gh は使わない。振り分けは
+#   共有ヘルパ tests/lib/github-mcp-route.sh の ff_github_mcp_route_input。
+#   抜け道は hook の環境変数 `FF_SUB_ISSUE_ID_ACK=1`（MCP の呼び出しにはコマンド先頭の
+#   環境代入を付けられないため）。hook の環境は Claude Code の起動時に決まるので、その 1 回では
+#   なくセッション全体の GitHub MCP 呼び出しに効く。抜け道で通したとき・判定できない入力
+#   （判定表にないツール名・`sub_issue_id` の欠落・数値でも文字列でもない値・jq 不在）のときは
+#   素通しせず、理由を systemMessage（利用者）と additionalContext（エージェントの文脈）に出して
+#   通す。ホストが inputSchema に沿って型を強制する場合、実際のセッションでは文字列が届かない
+#   ことがある（stdin fixture では検証済み、実セッションは未実測）。
+#
 # 設計原則:
 #   - fail-open: 全 Bash 呼び出しに割り込むため、自身の不具合や解析不能な形、
-#     jq 不在では黙って許可（exit 0・無出力）に倒す。
+#     jq 不在では黙って許可（exit 0・無出力）に倒す。GitHub MCP 経路だけは、判定を省略した
+#     理由を出して通す（無出力にしない）。
 #   - 互換性: bash 3.2（stock macOS）互換。連想配列・readarray を使わない。
 #
 # 環境変数:
 #   FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1  このガードを無効化する
+#   FF_SUB_ISSUE_ID_ACK=1  Bash 経路ではコマンド先頭の環境代入（その 1 回だけ）、GitHub MCP 経路では
+#                          hook の環境変数（セッション全体）として読む抜け道。hook の環境の値は
+#                          MCP 経路だけが読み、Bash 経路は通さない
 
 # fail-open のため set -e / set -u は使わない。
 
@@ -65,13 +83,69 @@ asdd_hook_enabled hooks || exit 0
 
 [ "${FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD:-0}" = "1" ] && exit 0
 
+# ---- GitHub MCP 経路（sub_issue_write）--------------------------------------
+# 振り分け（tool_name の読み取り・判定表の照合）は共有ヘルパの ff_github_mcp_route_input。
+# ここは受け持つツールの tool_input の判定だけを持ち、判定して必ず exit する。
+guard_mcp_route() {
+  local verdict reason
+  # 文字列で渡された integer フィールドを先に探す（`-f` と同じ失敗の形）。無ければ
+  # sub_issue_id の有無と型を見る。
+  verdict="$(printf '%s' "$input" | jq -r '
+    .tool_input as $t
+    | if ($t | type) != "object" then "unreadable"
+      else
+        ([("sub_issue_id", "after_id", "before_id") | select(($t[.] | type) == "string")] | .[0])
+        // (if ($t.sub_issue_id | type) == "number" then "ok" else "unreadable" end)
+      end' 2>/dev/null)" || verdict="unreadable"
+  verdict="${verdict//$'\r'/}"
+  case "$verdict" in
+    ok) exit 0 ;;
+    sub_issue_id | after_id | before_id) : ;;
+    *)
+      ff_github_mcp_note "sub-issue の integer フィールド" "${MCP_TOOL_NAME} の tool_input から sub_issue_id を数値として読めない（欠落・数値でも文字列でもない値・オブジェクトでない入力）ため、型を検査せずに通しました。"
+      exit 0
+      ;;
+  esac
+  if [ "${FF_SUB_ISSUE_ID_ACK:-0}" = "1" ]; then
+    ff_github_mcp_note "sub-issue の integer フィールド" "hook の環境変数 FF_SUB_ISSUE_ID_ACK=1 により、${MCP_TOOL_NAME} へ文字列で渡した \`${verdict}\` を止めずに通しました。この設定は Claude Code のセッション全体（GitHub MCP の呼び出しすべて）に効くので、済んだら外して再起動してください。"
+    exit 0
+  fi
+  reason="⚠️ ff-dev-toolkit guard（sub-issues API の integer フィールドを文字列で送る）: GitHub MCP の sub_issue_write へ \`${verdict}\` を文字列で渡しています。GitHub の sub-issues API は integer を要求するため 422 で落ちます（\`gh api -f ${verdict}=\` と同じ失敗です）。次のいずれかで再実行してください:
+  1) \`${verdict}\` を JSON の数値（引用符なし）で渡す（MCP の整数型指定。sub_issue_id は Issue 番号ではなく Issue の ID）
+  2) gh が使える環境なら、同梱の \`FF_DEV_TOOLKIT_ROOT=\"\${FF_DEV_TOOLKIT_ROOT}\" bash \"\${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh\" --repo OWNER/REPO <parent> <child>...\` を使う（綴りが 1 箇所に固定され、失敗時は HTTP 本文を出す）
+  3) 意図的に文字列で送る場合は、hook の環境変数 FF_SUB_ISSUE_ID_ACK=1 を設定してから再実行する（GitHub MCP の呼び出しにはコマンド先頭の環境代入を付けられないため。Claude Code を起動するシェルで export し、再起動する。その 1 回ではなくセッション全体の GitHub MCP 呼び出しに効くので、済んだら外して再起動する）
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1 を設定します。"
+  jq -n --arg reason "$reason" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
+  exit 0
+}
+
+# MCP の入力は `gh` も `-f` も含まないので、下の Bash 用の前置フィルタより前で振り分ける
+# （後ろに置くと MCP の入力が jq を起動する前に素通しで落ちる）。
+case "$input" in
+  *mcp__*)
+    # shellcheck source=../tests/lib/github-mcp-route.sh
+    if . "${BASH_SOURCE[0]%/*}/../tests/lib/github-mcp-route.sh" 2>/dev/null; then
+      ff_github_mcp_route_input "sub-issue の integer フィールド" sub_issue_write
+      [ "$GUARD_ROUTE" = "mcp" ] && guard_mcp_route
+    else
+      case "$input" in
+        *'"tool_name":"mcp__'* | *'"tool_name": "mcp__'*)
+          printf '%s\n' '{"systemMessage":"ℹ️ ff-dev-toolkit guard（sub-issue の integer フィールド・GitHub MCP）: 判定ヘルパ tests/lib/github-mcp-route.sh を読めないため、GitHub MCP の呼び出しを検査せずに通しました。"}'
+          exit 0
+          ;;
+      esac
+    fi
+    ;;
+esac
+
 # 安価な前置フィルタ。`-f` / `--raw-field` と対象キーの両方を含まない入力は即終了。
 case "$input" in
   *gh*) : ;;
   *) exit 0 ;;
 esac
 case "$input" in
-  *-f*|*--raw-field*) : ;;
+  *-f*) : ;; # `--raw-field` も `-f` を含むので同じ分岐で拾う
   *) exit 0 ;;
 esac
 case "$input" in
@@ -227,7 +301,7 @@ EOF
 
 reason="⚠️ ff-dev-toolkit guard（gh api の -f は integer フィールドを文字列で送る）: \`-f ${FIRE_KEY}=\` は値を常に文字列で送り、GitHub の sub-issues API は integer を要求するため 422 で全件落ちます。次のいずれかで再実行してください:
   1) \`-F ${FIRE_KEY}=\` に直す（型付き。integer / boolean / null を正しく送る）
-  2) 同梱の \`FF_DEV_TOOLKIT_ROOT="\${FF_DEV_TOOLKIT_ROOT}" bash "\${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo OWNER/REPO <parent> <child>...\` を使う（綴りが 1 箇所に固定され、失敗時は HTTP 本文を出す）
+  2) 同梱の \`FF_DEV_TOOLKIT_ROOT=\"\${FF_DEV_TOOLKIT_ROOT}\" bash \"\${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh\" --repo OWNER/REPO <parent> <child>...\` を使う（綴りが 1 箇所に固定され、失敗時は HTTP 本文を出す）
   3) 意図的に文字列で送る場合は、対象コマンドの先頭へ環境代入を付けて再実行する: FF_SUB_ISSUE_ID_ACK=1 gh api ...
 このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD=1 を設定します。"
 

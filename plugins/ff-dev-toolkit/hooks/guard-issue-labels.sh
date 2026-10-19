@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #
-# 起票ラベル契約ガード（PreToolUse / Bash）。
+# 起票ラベル契約ガード（PreToolUse / Bash・GitHub MCP）。
 #
 # `out-of-scope-issue` / `create-issue` の verify-then-skip 契約（実在確認のうえ
 # 種別 / 優先度 / `follow-up` を付与する）は SKILL.md に書かれた**手順**であり、
@@ -61,7 +61,8 @@
 # 起票そのものを不能にするため。
 #
 # ── 判定の流れ ────────────────────────────────────────────────────────────
-#   0. tool_name が Bash（それ以外は無音）
+#   0. tool_name が Bash か、GitHub MCP の issue_write（method: create）。それ以外は無音
+#      （MCP の入力は下の「GitHub MCP 経路」のとおり同じ意味の gh issue create へ写してから 1 以降へ流す）
 #   1. heredoc 本文（`<<` / `<<-` のトークン以降、終端行まで）を落とし、行末 `\` の
 #      行継続を次行と連結する。`cat <<'EOF' > note.md` の本文に `gh issue create ...`
 #      と書いただけでは発火しない。終端行の直後に続く実コマンドは落とさない
@@ -82,14 +83,29 @@
 #     過半を覆うファミリが 1 つに定まらない限り採らない（fail-open 側へ倒す）
 #   - 過半を覆うファミリが 2 つ以上あるリポジトリ（どれを優先度軸と読むべきか決まらない）
 #
+# ── GitHub MCP 経路（PreToolUse / `issue_write` の method: create）────────────────
+# hooks.json は MCP のツール名を matcher に持つエントリからも本ガードを起動する。振り分けは
+# 共有ヘルパ tests/lib/github-mcp-route.sh の ff_github_mcp_route_input。tool_input の owner / repo /
+# labels を同じ意味の `gh issue create --repo <owner>/<repo> --label <名前>...` へ写して上の判定へ
+# 流すので、軸別表・否定名簿・別命名の優先度・ラベル一覧の信用判定は Bash 経路と同じ。
+# `method: update` は起票ではないので無音。違うのは、gh が無い・ラベル一覧を信用できない
+# （照会失敗・空・上限到達）・正本を読めない・tool_input を読めない（method / owner / repo の欠落、
+# labels が文字列の配列でない、カンマや改行を含むラベル名）・判定表にないツール名・jq 不在のときに、
+# 止めずに通して理由を systemMessage（利用者）と additionalContext（エージェントの文脈）に出すこと。
+# MCP の呼び出しにはコマンド先頭の環境代入を付けられないので、deny 文の抜け道は gh での 1 回分と、
+# hook の環境の FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1（ガードの無効化そのもの。セッションの間
+# Bash 経路も止まる）を案内する。
+#
 # 設計原則:
 #   - fail-open: 全 Bash 呼び出しに割り込むため、解析不能・jq/gh 不在・抽出失敗では
-#     黙って許可（exit 0・無出力）へ倒す
+#     黙って許可（exit 0・無出力）へ倒す。GitHub MCP 経路だけは、判定を省略した理由を
+#     出して通す（無出力にしない）
 #   - 互換性: bash 3.2（stock macOS）互換。連想配列・readarray・=~ は使わない
 #
 # 環境変数:
 #   FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1  このガードを無効化する。対象コマンド先頭の
-#                                            環境代入としても効く（案内する抜け道）
+#                                            環境代入としても効く（案内する抜け道）。hook の環境に
+#                                            置くと Bash 経路・GitHub MCP 経路の両方が止まる
 
 # fail-open のため set -e / set -u は使わない。
 
@@ -114,6 +130,64 @@ asdd_hook_enabled hooks || exit 0
 
 [ "${FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD:-0}" = "1" ] && exit 0
 
+# ---- GitHub MCP 経路（issue_write の method: create）---------------------------
+# MCP の呼び出しにはコマンド文字列が無い。tool_input の owner / repo / labels を同じ意味の
+# `gh issue create --repo <owner>/<repo> --label <名前>...` へ写し、下の Bash 経路の判定へ
+# そのまま流す（軸別表・否定名簿・別命名の優先度・ラベル一覧の信用判定を 2 系統へ複製しない）。
+# 値は jq の @sh で引用するので、ラベル名の空白や引用符で判定がずれることはない（実行もしない）。
+# gh の `--label` はカンマで分割されるので、カンマ・改行を含むラベル名は同じ意味に写せない。
+# その形と、owner / repo / method を読めない入力は判定を省略し、理由を systemMessage で出す。
+# Bash 経路と違うのは、gh が無い・ラベル一覧の照会に失敗したときも理由を出すこと（MCP 経路では
+# gh を使えなくても起票が通るため、黙って通すとガードが効いていないことに誰も気づけない）。
+GUARD_ROUTE=bash
+mcp_skip() { # <理由>  MCP 経路では省略した理由を出して通す。Bash 経路は従来どおり無音で通す
+  [ "$GUARD_ROUTE" = "mcp" ] && ff_github_mcp_note "起票ラベル契約" "$1"
+  exit 0
+}
+# 下の `gh` 不在での終了と tool_name の検査（Bash 以外は落とす）より前で振り分ける（後ろに
+# 置くと MCP の入力が素通しで落ちる）。振り分け（tool_name の読み取り・判定表の照合）は
+# 共有ヘルパの ff_github_mcp_route_input。
+case "$input" in
+  *mcp__*)
+    # shellcheck source=../tests/lib/github-mcp-route.sh
+    if . "${BASH_SOURCE[0]%/*}/../tests/lib/github-mcp-route.sh" 2>/dev/null; then
+      ff_github_mcp_route_input "起票ラベル契約" issue_write
+    else
+      case "$input" in
+        *'"tool_name":"mcp__'* | *'"tool_name": "mcp__'*)
+          printf '%s\n' '{"systemMessage":"ℹ️ ff-dev-toolkit guard（起票ラベル契約・GitHub MCP）: 判定ヘルパ tests/lib/github-mcp-route.sh を読めないため、GitHub MCP の呼び出しを検査せずに通しました。"}'
+          exit 0
+          ;;
+      esac
+    fi
+    ;;
+esac
+if [ "$GUARD_ROUTE" = "mcp" ]; then
+  mcp_method="$(printf '%s' "$input" | jq -r '.tool_input | select(type == "object") | .method | strings' 2>/dev/null)" || mcp_method=""
+  mcp_method="${mcp_method//$'\r'/}"
+  case "$mcp_method" in
+    create) : ;;
+    # 既存 Issue の更新は起票ではない（gh issue edit と同じく本ガードの対象外）
+    update) exit 0 ;;
+    *) mcp_skip "${MCP_TOOL_NAME} の tool_input から method（create / update）を読めないため、起票ラベルを検査せずに通しました。" ;;
+  esac
+  mcp_cmd="$(printf '%s' "$input" | jq -r '
+    .tool_input as $t
+    | if (($t.owner | type) != "string") or (($t.repo | type) != "string")
+        or (($t.owner | test("^[A-Za-z0-9._-]+$")) | not) or (($t.repo | test("^[A-Za-z0-9._-]+$")) | not) then empty
+      elif ($t.labels != null)
+        and ((($t.labels | type) != "array") or any($t.labels[]; (type != "string") or test("[,\n\r]"))) then empty
+      else "gh issue create --repo " + (($t.owner + "/" + $t.repo) | @sh)
+        + ([($t.labels // [])[] | " --label " + @sh] | join(""))
+      end' 2>/dev/null)" || mcp_cmd=""
+  mcp_cmd="${mcp_cmd//$'\r'/}"
+  [ -n "$mcp_cmd" ] \
+    || mcp_skip "${MCP_TOOL_NAME} の tool_input から owner / repo / labels を読めない（欠落・labels が文字列の配列でない・カンマや改行を含むラベル名）ため、起票ラベルを検査せずに通しました。"
+  input="$(printf '%s' "$input" | jq -c --arg c "$mcp_cmd" \
+    '{tool_name: "Bash", tool_input: {command: $c}, cwd: (.cwd // "")}' 2>/dev/null)" \
+    || mcp_skip "${MCP_TOOL_NAME} の入力を判定用に組み立てられないため、起票ラベルを検査せずに通しました。"
+fi
+
 # 安価な前置フィルタ（jq を起動する前に非該当を落とす）。語の連接ではなく 2 語の
 # 共起で見るのは、`gh  issue  create` のような空白の揺れで取りこぼさないため。
 case "$input" in
@@ -127,7 +201,8 @@ esac
 
 # jq / gh のどちらかが無ければ判定材料を作れない。stdin は上で読み切ってある。
 command -v jq >/dev/null 2>&1 || exit 0
-command -v gh >/dev/null 2>&1 || exit 0
+# MCP 経路は gh が無くても、与えられたラベルだけで足りる判定（3 系統が揃っている）までは進める
+command -v gh >/dev/null 2>&1 || [ "$GUARD_ROUTE" = "mcp" ] || exit 0
 
 tool="$(printf '%s' "$input" | jq -r '.tool_name // ""' 2>/dev/null)" || exit 0
 [ "$tool" = "Bash" ] || exit 0
@@ -148,7 +223,7 @@ CWD="$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null)"
 [ -d "$CWD" ] || CWD="$(pwd)"
 
 SKILL_MD="${BASH_SOURCE[0]%/*}/../skills/setup-github-labels/SKILL.md"
-[ -f "$SKILL_MD" ] || exit 0
+[ -f "$SKILL_MD" ] || mcp_skip "ラベル名の正本 skills/setup-github-labels/SKILL.md を読めないため、起票ラベルを検査せずに通しました。"
 
 # 種別の否定名簿を作るための正本 2 つ（どちらも既存。hook 内へ名前は持たない）。
 # 読めなければ名簿は空のまま = 種別判定を緩める側へ倒す。
@@ -425,8 +500,8 @@ URGENCY_NAMES="$(extract_axis_labels '緊急度')"
 CLASSIFY_NAMES="$(extract_axis_labels '分類の補完')"
 
 # 正本を読めなければ何も主張しない（名前を hook 内へ持たないので代替が無い）
-[ -n "$PRIORITY_NAMES" ] || exit 0
-[ -n "$CLASSIFY_NAMES" ] || exit 0
+[ -n "$PRIORITY_NAMES" ] || mcp_skip "ラベル名の正本（setup-github-labels の軸別表）から優先度を読めないため、起票ラベルを検査せずに通しました。"
+[ -n "$CLASSIFY_NAMES" ] || mcp_skip "ラベル名の正本（setup-github-labels の軸別表）から分類の補完を読めないため、起票ラベルを検査せずに通しました。"
 
 # 優先度の名前空間接頭辞も正本から導く（消費プロジェクト固有の `priority:*` を
 # 「優先度あり」と読むための緩い網。厳格照合と二段構えにする）。
@@ -722,10 +797,13 @@ fi
 
 # ---- 5) 対象リポジトリのラベル実在確認（信用できなければ止めない）-------------
 LABEL_LIMIT=200
+command -v gh >/dev/null 2>&1 \
+  || mcp_skip "gh が PATH に無いため、${repo_arg} への issue_write（method: create）の labels に種別 / 優先度があるかを、対象リポジトリのラベル一覧と照合せずに通しました。"
+label_list_failed="gh label list が失敗した（認証切れ・オフライン・リポジトリが見つからない）ため、${repo_arg} への issue_write（method: create）の labels を対象リポジトリのラベル一覧と照合せずに通しました。"
 if [ -n "$repo_arg" ]; then
-  repo_labels="$(gh label list --repo "$repo_arg" --limit "$LABEL_LIMIT" --json name --jq '.[].name' 2>/dev/null)" || exit 0
+  repo_labels="$(gh label list --repo "$repo_arg" --limit "$LABEL_LIMIT" --json name --jq '.[].name' 2>/dev/null)" || mcp_skip "$label_list_failed"
 else
-  repo_labels="$(cd "$CWD" 2>/dev/null && gh label list --limit "$LABEL_LIMIT" --json name --jq '.[].name' 2>/dev/null)" || exit 0
+  repo_labels="$(cd "$CWD" 2>/dev/null && gh label list --limit "$LABEL_LIMIT" --json name --jq '.[].name' 2>/dev/null)" || mcp_skip "$label_list_failed"
 fi
 # 空の出力（1 件も無いリポジトリと絞り込み不発を区別できない）と上限到達
 # （その先にあるラベルの不在を主張できない）は「照会失敗」として扱う。
@@ -735,9 +813,9 @@ fi
 # 残すのは、両 SKILL.md が「失敗 / 空 / 上限到達」の 3 条件を並べて定めており、
 # コード側でも 3 条件を並べて書いておかないと後段の実装を変えたときに「空」の扱いだけ
 # 静かに落ちるため。suite の当該ラベルも「回帰の針ではない」と明記してある。
-[ -n "$repo_labels" ] || exit 0
-label_count="$(printf '%s\n' "$repo_labels" | grep -c '' 2>/dev/null)" || exit 0
-[ "$label_count" -lt "$LABEL_LIMIT" ] || exit 0
+[ -n "$repo_labels" ] || mcp_skip "gh label list の出力が空だった（ラベルが 1 件も無い・絞り込みが効かない）ため、${repo_arg} への issue_write（method: create）の labels を対象リポジトリのラベル一覧と照合せずに通しました。"
+label_count="$(printf '%s\n' "$repo_labels" | grep -c '' 2>/dev/null)" || mcp_skip "$label_list_failed"
+[ "$label_count" -lt "$LABEL_LIMIT" ] || mcp_skip "対象リポジトリ ${repo_arg} のラベルが取得上限（${LABEL_LIMIT} 件）に達し、一覧の全体を確認できないため、issue_write（method: create）の labels を照合せずに通しました。"
 
 priority_available=0
 type_available=0
@@ -785,12 +863,25 @@ add_missing() { missing="${missing:+$missing / }$1"; }
 [ "$has_type" -eq 0 ] && [ "$type_available" -eq 1 ] && add_missing "種別（例: ${type_example}）"
 [ "$has_priority" -eq 0 ] && [ "$priority_available" -eq 1 ] && add_missing "優先度（例: ${priority_example}）"
 
+# ラベルの渡し方と抜け道の案内だけが経路で違う（MCP の呼び出しにはコマンド先頭の環境代入を付けられない）
+if [ "$GUARD_ROUTE" = "mcp" ]; then
+  label_target="GitHub MCP の issue_write（method: create）に渡す labels "
+  add_line="2) 上の系統を labels へ足す（対象リポジトリで実在を確認済みの例を上に添えています）"
+  skip_line="3) 意図的にラベル無しで起票する場合は、gh で FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 gh issue create ... を実行する（その 1 回だけ通る）。gh を使えないなら hook の環境変数 FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 を設定して再起動してから再実行する（GitHub MCP の呼び出しにはコマンド先頭の環境代入を付けられないため。この変数はガードの無効化そのもので、セッションの間 Bash 経路の gh issue create も含めて止まるので、済んだら外して再起動する）"
+  followup_hint="labels に ${FOLLOWUP_NAME} も足してください"
+else
+  label_target="gh issue create に付ける --label "
+  add_line="2) 上の系統を --label で足す（対象リポジトリで実在を確認済みの例を上に添えています）"
+  skip_line="3) 意図的にラベル無しで起票する場合は FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 を先頭に置いて再実行する"
+  followup_hint="--label ${FOLLOWUP_NAME} も付けてください"
+fi
+
 if [ -n "$missing" ]; then
-  reason="⚠️ ff-dev-toolkit guard（起票ラベル契約・警告）: gh issue create に付ける --label に、次の系統が見つかりません: ${missing}
+  reason="⚠️ ff-dev-toolkit guard（起票ラベル契約・警告）: ${label_target}に、次の系統が見つかりません: ${missing}
 無ラベルの Issue は backlog 一覧で種別も優先度も読めず、「今どれを拾うべきか」を Issue を 1 件ずつ開かないと判断できなくなります。次のいずれかで再実行してください:
   1) 起票スキル経由にする（PR レビュー・実装から派生した発見なら /out-of-scope-issue、着手前の起票なら /create-issue。どちらも実在確認のうえラベルを付けます）
-  2) 上の系統を --label で足す（対象リポジトリで実在を確認済みの例を上に添えています）
-  3) 意図的にラベル無しで起票する場合は FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 を先頭に置いて再実行する
+  ${add_line}
+  ${skip_line}
 このガード自体を止める場合も環境変数 FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 を設定します。"
   jq -n --arg reason "$reason" \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
@@ -801,7 +892,7 @@ fi
 if [ "$has_followup" -eq 0 ] && [ "$followup_available" -eq 1 ]; then
   # 文面で種別 / 優先度の充足を主張しない。ここへ来る経路には「付いている」場合と
   # 「対象リポジトリにその系統が実在せず要求しなかった」場合の両方がある。
-  jq -n --arg m "ℹ️ ff-dev-toolkit guard（起票ラベル契約）: この起票が PR レビュー・実装から派生した発見なら、--label ${FOLLOWUP_NAME} も付けてください（out-of-scope-issue の契約）。着手前の起票（create-issue 相当）なら不要です。" \
+  jq -n --arg m "ℹ️ ff-dev-toolkit guard（起票ラベル契約）: この起票が PR レビュー・実装から派生した発見なら、${followup_hint}（out-of-scope-issue の契約）。着手前の起票（create-issue 相当）なら不要です。" \
     '{systemMessage: $m}' 2>/dev/null
   exit 0
 fi

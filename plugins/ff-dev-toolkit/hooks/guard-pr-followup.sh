@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #
-# PR フォローアップ宣言ガード（PreToolUse / Bash、Issue #771）。
+# PR フォローアップ宣言ガード（PreToolUse / Bash・GitHub MCP、Issue `#771`）。
 #
 # `gh pr create` / `gh pr edit` が渡そうとする PR 本文に「スコープ外」等の
 # フォローアップ宣言マーカーがあるのに、Issue 参照（`#<数字>` または Issue URL）が
@@ -47,15 +47,30 @@
 # Draft だけに使う）。素朴な空白分割なので、`--title "x -d y"` のように引用内に単独の `-d` がある形は
 # 誤って止まりうる（そのときも同じ抜け道で通す）。
 #
+# GitHub MCP 経路（PreToolUse / `create_pull_request` / `update_pull_request`）:
+#   hooks.json は MCP のツール名を matcher に持つエントリからも本ガードを起動する。
+#   `draft: true` は Draft PR の作成（create）・Draft への戻し（update。`gh pr ready --undo` 相当）として
+#   同じ deny で止め、`body` には Bash 経路と同じフォローアップ宣言の判定を当てる（判定と deny 文は
+#   関数で共有する）。gh は使わない。振り分けは共有ヘルパ tests/lib/github-mcp-route.sh の
+#   ff_github_mcp_route_input。Draft の抜け道は hook の環境変数 `FF_PR_DRAFT_ACK=1`（MCP の呼び出しには
+#   コマンド先頭の環境代入を付けられないため）で、hook の環境は Claude Code の起動時に決まるので、
+#   その 1 回ではなくセッション全体の GitHub MCP 呼び出しに効く。フォローアップ宣言の抜け道は本文の
+#   Issue 参照 / `<!-- no-followup: 理由 -->` のまま。抜け道で通したとき・判定できない入力（判定表に
+#   ないツール名・オブジェクトでない tool_input・文字列でない body・jq 不在）のときは素通しせず、
+#   理由を systemMessage（利用者）と additionalContext（エージェントの文脈）に出して通す。
+#
 # 設計原則:
 #   - fail-open: 全 Bash 呼び出しに割り込むため、自身の不具合や解析不能な形では
-#     黙って許可（exit 0・無出力）に倒す。jq が無い環境も同様。
+#     黙って許可（exit 0・無出力）に倒す。jq が無い環境も同様。GitHub MCP 経路だけは、
+#     判定を省略した理由を出して通す（無出力にしない）。
 #   - 互換性: bash 3.2（stock macOS）互換。perl は本文抽出の精度向上にだけ使い、
 #     無ければ全文フォールバックで動く。
 #
 # 環境変数:
 #   FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1  このガードを無効化する（Draft PR の検出も含む）
 #   FF_PR_DRAFT_ACK=1（コマンド先頭の環境代入）  Draft PR の検出だけをその 1 回通す
+#     （GitHub MCP 経路では hook の環境変数として読み、セッション全体の GitHub MCP 呼び出しに効く。
+#     hook の環境の値は MCP 経路だけが読み、Bash 経路は通さない）
 
 # fail-open のため set -e / set -u は使わない。
 
@@ -79,6 +94,111 @@ fi
 asdd_hook_enabled hooks || exit 0
 
 [ "${FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD:-0}" = "1" ] && exit 0
+
+# Draft PR の deny（Bash 経路と GitHub MCP 経路で共有。違うのは対象の表示と 2 つの選択肢だけ）。
+deny_draft() { # <対象の表示> <選択肢 1> <選択肢 2>
+  local reason
+  reason="⚠️ ff-dev-toolkit guard（Draft PR）: \`${1}\` は PR を Draft にします。契約は「通常 PR として作る（Draft にしない）」です（docs-template/05-operations/deployment/git-workflow.md ステップ5・ADR-053 / ADR-054）。Draft のままだと、マージまで続くフローがそこで止まります。
+次のいずれかで再実行してください:
+  1) ${2}
+  2) ${3}
+既に Draft の PR は gh pr ready <番号> で通常 PR へ戻せます。入口文書（CLAUDE.md / AGENTS.md）に Draft の指示が残っていないかは /workflow-doctor の検査 8 で確かめられます。
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 を設定します（フォローアップ宣言の検出も止まります）。"
+  jq -n --arg reason "$reason" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
+  exit 0
+}
+
+# フォローアップ宣言の判定（Bash 経路と GitHub MCP 経路で共有）。止めるときは deny を出して
+# exit し、止めないときは何も出さずに呼び出し元へ戻る（後始末と終了は呼び出し元が持つ）。
+judge_followup_text() { # <判定対象テキスト>
+  local text="$1" declarations found="" reason
+  # 抜け道: 理由付きの明示マーカー（起票不要の正当な判断。理由は必須）
+  printf '%s' "$text" | grep -Eq '<!--[[:space:]]*no-followup:[[:space:]]*[^[:space:]].*-->' && return 0
+
+  # ATX 見出しは欄の名前なので、宣言マーカーの照合からだけ除く。
+  # Issue 参照と no-followup は見出し内でも有効なので元の text で照合する。
+  declarations="$(printf '%s\n' "$text" | sed -E '/^ {0,3}#{1,6}([[:blank:]]|$)/d')"
+  # 宣言マーカーの検出（見つかったものを警告文へ列挙する）
+  printf '%s' "$declarations" | grep -q 'スコープ外' && found="${found:+$found / }スコープ外"
+  printf '%s' "$declarations" | grep -Eq '別[[:space:]]?[Ii]ssue' && found="${found:+$found / }別Issue"
+  printf '%s' "$declarations" | grep -q '別対応' && found="${found:+$found / }別対応"
+  printf '%s' "$declarations" | grep -q '後で対応' && found="${found:+$found / }後で対応"
+  printf '%s' "$declarations" | grep -q '別途' && found="${found:+$found / }別途"
+  printf '%s' "$declarations" | grep -Eiq 'follow[- ]?up' && found="${found:+$found / }follow-up"
+  printf '%s' "$declarations" | grep -Eiq 'out of scope' && found="${found:+$found / }out of scope"
+
+  [ -n "$found" ] || return 0
+
+  # Issue 参照があれば宣言は起票に結びついているとみなす
+  printf '%s' "$text" | grep -Eq '#[0-9]+' && return 0
+  printf '%s' "$text" | grep -Eq 'https?://[^[:space:]]+/issues/[0-9]+' && return 0
+
+  reason="⚠️ ff-dev-toolkit guard（フォローアップ宣言の起票漏れ・警告）: PR 本文にフォローアップ宣言（検出マーカー: ${found}）がありますが、Issue 参照（#<番号> または Issue URL）が見つかりません。
+宣言だけ残して起票しないと、あとから気づいて起票する手戻りになります。次のいずれかで再実行してください:
+  1) 先に gh issue create で起票し、発行された Issue 番号（#NNN）を PR 本文に記載する
+  2) 起票不要と判断した場合は、本文に <!-- no-followup: 理由 --> を追記する（理由は必須）
+  3) 宣言自体が不要なら本文から外す
+このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 を設定します。"
+
+  jq -n --arg reason "$reason" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
+  exit 0
+}
+
+# ---- GitHub MCP 経路（create_pull_request / update_pull_request）---------------
+# 振り分け（tool_name の読み取り・判定表の照合）は共有ヘルパの ff_github_mcp_route_input。ここは
+# 受け持つツールの tool_input の判定だけを持ち、判定して必ず exit する。PR 本文は
+# tool_input.body にそのまま入っているので、コマンド文字列からの抽出は要らず、gh も使わない。
+guard_mcp_route() {
+  local draft body ack_note=""
+  if ! printf '%s' "$input" | jq -e '.tool_input | type == "object"' >/dev/null 2>&1; then
+    ff_github_mcp_note "PR 作成" "${MCP_TOOL_NAME} の tool_input がオブジェクトとして読めないため、Draft とフォローアップ宣言を検査せずに通しました。"
+    exit 0
+  fi
+  # `draft: true` は create では Draft で作る、update では通常 PR を Draft へ戻す（gh pr ready --undo 相当）。
+  # draft: false（update で Draft から戻す）と省略は止めない。
+  draft="$(printf '%s' "$input" | jq -r '.tool_input.draft | if . == true or . == "true" then "true" else "" end' 2>/dev/null)" || draft=""
+  draft="${draft//$'\r'/}"
+  if [ "$draft" = "true" ]; then
+    if [ "${FF_PR_DRAFT_ACK:-0}" != "1" ]; then
+      deny_draft "${MCP_TOOL}（draft: true）" \
+        'draft を外す（false にするか省略する）。通常 PR を Draft へ戻す update_pull_request（draft: true）なら実行しない' \
+        '人の確認待ちという理由がある Draft（ACE の自律フロー等）だけは、hook の環境変数 FF_PR_DRAFT_ACK=1 を設定してから再実行する（GitHub MCP の呼び出しにはコマンド先頭の環境代入を付けられないため。Claude Code を起動するシェルで export し、再起動する。その 1 回ではなくセッション全体の GitHub MCP 呼び出しに効くので、済んだら外して再起動する）'
+    fi
+    # 抜け道で通した通知は、本文の判定が止めなかったときだけ出す（hook の出力は JSON 1 つ）
+    ack_note="hook の環境変数 FF_PR_DRAFT_ACK=1 により、${MCP_TOOL_NAME} の draft: true を止めずに通しました。この設定は Claude Code のセッション全体（GitHub MCP の呼び出しすべて）に効くので、済んだら外して再起動してください。"
+  fi
+  if ! printf '%s' "$input" | jq -e '.tool_input.body | type == "string" or type == "null"' >/dev/null 2>&1; then
+    ff_github_mcp_note "PR 作成" "${ack_note:+${ack_note} }${MCP_TOOL_NAME} の tool_input.body が文字列でないため、フォローアップ宣言を検査せずに通しました。"
+    exit 0
+  fi
+  body="$(printf '%s' "$input" | jq -r '.tool_input.body // "" | strings' 2>/dev/null)" || body=""
+  body="${body//$'\r'/}"
+  # 本文を渡さない呼び出し（タイトルだけの更新など）は判定するものが無い
+  [ -z "$body" ] || judge_followup_text "$body"
+  [ -z "$ack_note" ] || ff_github_mcp_note "PR 作成" "$ack_note"
+  exit 0
+}
+
+# MCP の入力は `gh` を含まないので、下の Bash 用の前置フィルタ（*gh*）より前で振り分ける
+# （後ろに置くと MCP の入力が jq を起動する前に素通しで落ちる）。
+case "$input" in
+  *mcp__*)
+    # shellcheck source=../tests/lib/github-mcp-route.sh
+    if . "${BASH_SOURCE[0]%/*}/../tests/lib/github-mcp-route.sh" 2>/dev/null; then
+      ff_github_mcp_route_input "PR 作成" create_pull_request update_pull_request
+      [ "$GUARD_ROUTE" = "mcp" ] && guard_mcp_route
+    else
+      case "$input" in
+        *'"tool_name":"mcp__'* | *'"tool_name": "mcp__'*)
+          printf '%s\n' '{"systemMessage":"ℹ️ ff-dev-toolkit guard（PR 作成・GitHub MCP）: 判定ヘルパ tests/lib/github-mcp-route.sh を読めないため、GitHub MCP の呼び出しを検査せずに通しました。"}'
+          exit 0
+          ;;
+      esac
+    fi
+    ;;
+esac
 
 # 安価な前置フィルタ
 case "$input" in
@@ -202,15 +322,9 @@ for t in "${GH_TOKS[@]}"; do
   esac
 done
 if [ -n "$draft_flag" ] && [ "$GH_ACK" -eq 0 ]; then
-  reason="⚠️ ff-dev-toolkit guard（Draft PR）: \`${draft_flag}\` は PR を Draft にします。契約は「通常 PR として作る（Draft にしない）」です（docs-template/05-operations/deployment/git-workflow.md ステップ5・ADR-053 / ADR-054）。Draft のままだと、マージまで続くフローがそこで止まります。
-次のいずれかで再実行してください:
-  1) Draft のフラグを外して通常 PR として作る（gh pr ready --undo なら実行しない）
-  2) 人の確認待ちという理由がある Draft（ACE の自律フロー等）だけは、コマンドの**先頭**へ FF_PR_DRAFT_ACK=1 を付けて再実行する
-既に Draft の PR は gh pr ready <番号> で通常 PR へ戻せます。入口文書（CLAUDE.md / AGENTS.md）に Draft の指示が残っていないかは /workflow-doctor の検査 8 で確かめられます。
-このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 を設定します（フォローアップ宣言の検出も止まります）。"
-  jq -n --arg reason "$reason" \
-    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
-  exit 0
+  deny_draft "$draft_flag" \
+    'Draft のフラグを外して通常 PR として作る（gh pr ready --undo なら実行しない）' \
+    '人の確認待ちという理由がある Draft（ACE の自律フロー等）だけは、コマンドの**先頭**へ FF_PR_DRAFT_ACK=1 を付けて再実行する'
 fi
 # ready（--undo）は本文フラグを持たないので、下の body フラグ判定で素通しになる（フォローアップ宣言の判定は create / edit だけ）
 
@@ -278,39 +392,5 @@ fi
 # 本文をどこからも抽出できなければコマンド全文へフォールバックする
 [ -n "$text" ] || text="$cmd"
 
-# 抜け道: 理由付きの明示マーカー（起票不要の正当な判断。理由は必須）
-printf '%s' "$text" | grep -Eq '<!--[[:space:]]*no-followup:[[:space:]]*[^[:space:]].*-->' && exit 0
-
-# ATX 見出しは欄の名前なので、宣言マーカーの照合からだけ除く。
-# Issue 参照と no-followup は見出し内でも有効なので元の text で照合する。
-declarations="$(printf '%s\n' "$text" | sed -E '/^ {0,3}#{1,6}([[:blank:]]|$)/d')"
-# 宣言マーカーの検出（見つかったものを警告文へ列挙する）
-found=""
-add_found() {
-  found="${found:+$found / }$1"
-}
-printf '%s' "$declarations" | grep -q 'スコープ外' && add_found 'スコープ外'
-printf '%s' "$declarations" | grep -Eq '別[[:space:]]?[Ii]ssue' && add_found '別Issue'
-printf '%s' "$declarations" | grep -q '別対応' && add_found '別対応'
-printf '%s' "$declarations" | grep -q '後で対応' && add_found '後で対応'
-printf '%s' "$declarations" | grep -q '別途' && add_found '別途'
-printf '%s' "$declarations" | grep -Eiq 'follow[- ]?up' && add_found 'follow-up'
-printf '%s' "$declarations" | grep -Eiq 'out of scope' && add_found 'out of scope'
-
-[ -n "$found" ] || exit 0
-
-# Issue 参照があれば宣言は起票に結びついているとみなす
-printf '%s' "$text" | grep -Eq '#[0-9]+' && exit 0
-printf '%s' "$text" | grep -Eq 'https?://[^[:space:]]+/issues/[0-9]+' && exit 0
-
-reason="⚠️ ff-dev-toolkit guard（フォローアップ宣言の起票漏れ・警告）: PR 本文にフォローアップ宣言（検出マーカー: ${found}）がありますが、Issue 参照（#<番号> または Issue URL）が見つかりません。
-宣言だけ残して起票しないと、あとから気づいて起票する手戻りになります。次のいずれかで再実行してください:
-  1) 先に gh issue create で起票し、発行された Issue 番号（#NNN）を PR 本文に記載する
-  2) 起票不要と判断した場合は、本文に <!-- no-followup: 理由 --> を追記する（理由は必須）
-  3) 宣言自体が不要なら本文から外す
-このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_PR_FOLLOWUP_GUARD=1 を設定します。"
-
-jq -n --arg reason "$reason" \
-  '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}' 2>/dev/null
-
+judge_followup_text "$text"
 exit 0

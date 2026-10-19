@@ -22,11 +22,18 @@
 #                       台帳の `Status | promoted` エントリのうち、リンク先 Issue が open のものを
 #                       列挙する（`/retrospective` 観察チェックリスト第 0 項の入力）。state を
 #                       確認できなかった参照は隠さず `未確認` として列挙する（fail-closed）。
+#   配置の解決         knowledge-lookup.sh --resolve-playbook [--root <dir>] [--playbook <path>]
+#                       ACE Playbook の実配置だけを解決し、`ACE_PLAYBOOK=` / `ACE_PLAYBOOK_REL=` /
+#                       `ACE_PLAYBOOK_SOURCE=` / `ACE_PLAYBOOK_STATE=` の 4 行を出す（0 = 確定 /
+#                       2 = 不在・曖昧・読み取り失敗）。/ace-curate・/ace-refine の「配置先の解決」が
+#                       この出力を読む — キーワード検索と同じ関数で解決するので、規則が食い違わない。
 #
 # オプション:
 #   --root <dir>        対象リポジトリのルート（既定: cwd から git rev-parse --show-toplevel、無ければ cwd）
-#   --playbook <path>   ACE Playbook の索引ファイル（既定: <root>/docs/08-knowledge/PLAYBOOK.md。
-#                       無ければ <root> 配下の PLAYBOOK.md を探索し、候補が 1 件だけならそれを採る）
+#   --playbook <path>   ACE Playbook の索引ファイル。省略時は ACE_PLAYBOOK_PATH → 記録済み配置
+#                       （AGENTS.md・CLAUDE.md・docs/MASTER.md に書かれた PLAYBOOK.md のパス）→
+#                       <root>/docs/08-knowledge/PLAYBOOK.md → <root> 配下の探索（候補が 1 件だけなら
+#                       採る。docs-template/ は探索だけから外す）の順で解決する（resolve_playbook）
 #   --ledger <path>     観測台帳（既定: <root>/docs/08-knowledge/OBSERVATIONS.md。探索の規則は同上）
 #   --all               キーワードを AND で照合する（既定は OR）
 #   --include-archived  ACE の playbook/archive/（と _archive/）配下と、台帳の `archived` エントリも返す
@@ -228,6 +235,7 @@ usage() {
   knowledge-lookup.sh [--root DIR] [--playbook PATH] [--ledger PATH] [--all]
                       [--include-archived] [--offline] [--format text|tsv] <キーワード>...
   knowledge-lookup.sh --promoted-open [--root DIR] [--ledger PATH] [--offline] [--format text|tsv]
+  knowledge-lookup.sh --resolve-playbook [--root DIR] [--playbook PATH]
 USAGE
 }
 
@@ -251,6 +259,7 @@ while [ $# -gt 0 ]; do
     --offline) OFFLINE=1; shift ;;
     --format) [ $# -ge 2 ] || { usage; exit 1; }; FORMAT="$2"; shift 2 ;;
     --promoted-open) MODE="promoted-open"; shift ;;
+    --resolve-playbook) MODE="resolve-playbook"; shift ;;
     -h|--help) usage; exit 1 ;;
     --) shift; while [ $# -gt 0 ]; do KEYWORDS+=("$1"); shift; done ;;
     -*) printf '未知のオプション: %s\n' "$1" >&2; usage; exit 1 ;;
@@ -264,8 +273,8 @@ if [ "${MODE}" = "search" ] && [ "${#KEYWORDS[@]}" -eq 0 ]; then
   usage
   exit 1
 fi
-if [ "${MODE}" = "promoted-open" ] && [ "${#KEYWORDS[@]}" -gt 0 ]; then
-  printf '%s\n' "--promoted-open はキーワードを取りません" >&2
+if [ "${MODE}" != "search" ] && [ "${#KEYWORDS[@]}" -gt 0 ]; then
+  printf -- '--%s はキーワードを取りません\n' "${MODE}" >&2
   exit 1
 fi
 
@@ -316,23 +325,194 @@ resolve_store() { # <既定の相対パス> <ファイル名> <明示パス>
   return 3
 }
 
-# 各 store の状態: ok / absent / ambiguous / unreadable / noentry
-ACE_STATE="absent"; ACE_INDEX=""
-OBS_STATE="absent"; OBS_FILE=""
-if [ "${MODE}" = "search" ]; then
-  if ACE_INDEX="$(resolve_store "docs/08-knowledge/PLAYBOOK.md" "PLAYBOOK.md" "${PLAYBOOK}")"; then
-    ACE_STATE="ok"
+# ── ACE Playbook の配置解決（/ace-curate・/ace-refine と共有する唯一の resolver） ──────
+# 優先順: --playbook → ACE_PLAYBOOK_PATH → 記録済み配置 → 既定パス → 探索。
+# /ace-curate・/ace-refine は `--resolve-playbook` モードでこの関数を呼ぶ。規則を各スキルの
+# 散文へ複製すると片方だけが直る — ace-curate が記録済み配置を読むようになった後も、本
+# スクリプトは既定パスと探索しか見ず、Playbook の実体を docs-template/ に置くリポジトリで
+# 「Playbook なし」と報告し続けた（Issue `#2142`）。
+# 記録済み配置: root の AGENTS.md・CLAUDE.md・docs/MASTER.md（docs 索引）に書かれた、
+# `PLAYBOOK.md` で終わるパス（リンク先・バッククォート・地の文を問わない。`#` 以降は落ちる）。
+# root 相対と記載ファイルのディレクトリ相対の両方で試し、実在する通常ファイルだけを採る。
+# 採らないもの: ファイル自体が symlink のもの（途中のディレクトリの symlink は実体へ解決し、root 内
+# なら採る）・root の外・oss/・node_modules/・.git/ の配下と、plugin が同梱する配布テンプレート
+# （`.claude-plugin/plugin.json` を持つディレクトリ直下の docs-template/）。記載の絶対パス・`~` は
+# root / 記載ファイルの下へ連結して解くので実在せず、構造上採られない（ホスト固有のパスを記録にしない）。
+# 判定（候補 = 重複を除いた実在候補）:
+#   - 候補 0 件 → 既定パス → 探索へ進む
+#   - 既定パスに実体がある → 候補が既定パスを含めばそれを採る（他の候補は旧配置の注記と読む）。
+#     含まなければ記録と実体の矛盾として曖昧（記録が 1 件でも、旧配置のスタブを指している
+#     かもしれないので既定パスを黙って置き換えない）
+#   - 既定パスに実体が無い → 候補 1 件なら確定、2 件以上なら記録の矛盾として曖昧
+# docs-template/ を一律に外す prune は最後の探索段だけに掛け、記録段は plugin 同梱テンプレートに
+# 限って外す — 記録・環境変数で名指しされた docs-template/ 配下の Playbook まで外すと、テンプレ
+# 配布リポジトリの実体が常に不在になる。記載ファイルを読めなかった回は戻り値 2（読み取り失敗）。
+# 出力: `<source><TAB><path>`（source = explicit / env / recorded:<記載ファイル> / default / search）
+# 戻り値: 0 = 確定 / 1 = 不在 / 2 = 記載ファイルの読み取り失敗 / 3 = 曖昧（stderr に候補）
+ace_record_candidate() { # <path> → 採れる候補なら canonical なパスを stdout へ
+  local p="$1" d="" pre=""
+  [ -f "${p}" ] && [ ! -L "${p}" ] || return 1
+  d="$(CDPATH= cd -P -- "${p%/*}" 2>/dev/null && pwd -P)" || return 1
+  case "${d}/" in "${ROOT}/"*) ;; *) return 1 ;; esac
+  case "${d}/" in "${ROOT}/oss/"*|*/node_modules/*|*/.git/*) return 1 ;; esac
+  case "${d}/" in
+    */docs-template/*)
+      pre="${d}/"; pre="${pre%%/docs-template/*}"
+      [ -f "${pre}/.claude-plugin/plugin.json" ] && return 1
+      ;;
+  esac
+  printf '%s/%s\n' "${d}" "${p##*/}"
+}
+resolve_playbook() {
+  local env_path="${ACE_PLAYBOOK_PATH:-}" rec="" src="" tok="" base="" c="" seen="" n=0 first_src="" first="" def=""
+  local nl='
+'
+  if [ -n "${PLAYBOOK}" ]; then
+    printf 'explicit\t%s\n' "${PLAYBOOK}"
+    return 0
+  fi
+  # 空白だけの値は未設定と同じ（check-entry-format.ts の ACE_PLAYBOOK_PATH 解決と揃える。
+  # 相対パスは同じく cwd 基準）。設定されていれば実在を問わず採る — 読めなければ呼び出し側が
+  # 読み取り失敗にする（明示の名指しを探索で上書きしない）。
+  if [ -n "${env_path//[[:space:]]/}" ]; then
+    printf 'env\t%s\n' "${env_path}"
+    return 0
+  fi
+  for rec in AGENTS.md CLAUDE.md docs/MASTER.md; do
+    [ -f "${ROOT}/${rec}" ] && [ -r "${ROOT}/${rec}" ] || continue
+    printf '%s\n' "${rec}" >>"${TMP}/ace-record-files"
+  done
+  if [ -s "${TMP}/ace-record-files" ]; then
+    while IFS= read -r rec; do
+      # トークンは 2 通りに切り出す: ASCII のパス文字だけ（「（docs-template/…）」の全角括弧を
+      # 含めない）と、区切り文字（空白・括弧・引用符等）まで（`docs-template/知見/PLAYBOOK.md` の
+      # ような非 ASCII を含むパスを途中で切らない）。どちらかが実在するパスになり、残りは実在確認で落ちる。
+      LC_ALL=C awk -v rec="${rec}" '
+        function emit(re,   line, tok) {
+          line = $0
+          while (match(line, re)) {
+            tok = substr(line, RSTART, RLENGTH)
+            line = substr(line, RSTART + RLENGTH)
+            if (line ~ /^[A-Za-z0-9_]/) continue   # PLAYBOOK.mdx などの途中一致は採らない
+            printf "%s\t%s\n", rec, tok
+          }
+        }
+        { emit("[A-Za-z0-9_./~-]*PLAYBOOK\\.md"); emit("[^][()<>\"`|*,; \t\047]*PLAYBOOK\\.md") }
+      ' "${ROOT}/${rec}" || { printf '記録済み配置を読めません: %s\n' "${rec}" >&2; return 2; }
+    done <"${TMP}/ace-record-files" >"${TMP}/ace-record-tokens"
+    while IFS="${TAB}" read -r src tok; do
+      base="${ROOT}/${src}"; base="${base%/*}"
+      for c in "${ROOT}/${tok}" "${base}/${tok}"; do
+        c="$(ace_record_candidate "${c}")" || continue
+        case "${nl}${seen}" in *"${nl}${c}${nl}"*) continue ;; esac
+        seen="${seen}${c}${nl}"
+        printf '%s\t%s\n' "${src}" "${c}" >>"${TMP}/ace-record-hits"
+        n=$((n + 1))
+        if [ "${n}" -eq 1 ]; then first="${c}"; first_src="${src}"; fi
+      done
+    done <"${TMP}/ace-record-tokens"
+  fi
+  if [ "${n}" -gt 0 ] && def="$(ace_record_candidate "${ROOT}/docs/08-knowledge/PLAYBOOK.md")"; then
+    src="$(awk -F '\t' -v c="${def}" '$2 == c { print $1; exit }' "${TMP}/ace-record-hits")"
+    if [ -n "${src}" ]; then
+      if [ "${n}" -gt 1 ]; then
+        printf '記録済み配置の候補 %s 件のうち既定パスを採りました（他の記載は採りません）:\n' "${n}" >&2
+        awk -F '\t' -v c="${def}" '$2 != c { printf "    %s（記載: %s）\n", $2, $1 }' "${TMP}/ace-record-hits" >&2
+      fi
+      printf 'recorded:%s\t%s\n' "${src}" "${def}"
+      return 0
+    fi
+    printf '記録済み配置と既定パスの実体（%s）が食い違い、確定できません（記録を実配置へ揃えるか、--playbook / ACE_PLAYBOOK_PATH で指定してください）:\n' "${def}" >&2
+    awk -F '\t' '{ printf "    %s（記載: %s）\n", $2, $1 }' "${TMP}/ace-record-hits" >&2
+    return 3
+  fi
+  if [ "${n}" -eq 1 ]; then
+    printf 'recorded:%s\t%s\n' "${first_src}" "${first}"
+    return 0
+  fi
+  if [ "${n}" -gt 1 ]; then
+    printf 'PLAYBOOK.md の記録済み配置が %s 件あり確定できません（記録を 1 つに揃えるか、--playbook / ACE_PLAYBOOK_PATH で指定してください）:\n' "${n}" >&2
+    awk -F '\t' '{ printf "    %s（記載: %s）\n", $2, $1 }' "${TMP}/ace-record-hits" >&2
+    return 3
+  fi
+  if c="$(resolve_store "docs/08-knowledge/PLAYBOOK.md" "PLAYBOOK.md" "")"; then
+    if [ "${c}" = "${ROOT}/docs/08-knowledge/PLAYBOOK.md" ]; then src="default"; else src="search"; fi
+    printf '%s\t%s\n' "${src}" "${c}"
+    return 0
   else
-    case $? in 3) ACE_STATE="ambiguous" ;; *) ACE_STATE="absent" ;; esac
+    return $?
+  fi
+}
+
+# 各 store の状態: ok / absent / ambiguous / unreadable / noentry
+TAB="$(printf '\t')"
+ACE_STATE="absent"; ACE_INDEX=""; ACE_SOURCE=""
+OBS_STATE="absent"; OBS_FILE=""
+if [ "${MODE}" = "search" ] || [ "${MODE}" = "resolve-playbook" ]; then
+  if ACE_RESOLVED="$(resolve_playbook)"; then
+    ACE_STATE="ok"
+    ACE_SOURCE="${ACE_RESOLVED%%"${TAB}"*}"
+    ACE_INDEX="${ACE_RESOLVED#*"${TAB}"}"
+  else
+    case $? in 3) ACE_STATE="ambiguous" ;; 1) ACE_STATE="absent" ;; *) ACE_STATE="unreadable" ;; esac
   fi
 fi
+# 明示指定・既定パスが存在しても読めなければ「読み取り失敗」（未導入へ吸収しない）
+if [ "${ACE_STATE}" = "ok" ] && { [ ! -f "${ACE_INDEX}" ] || [ ! -r "${ACE_INDEX}" ]; }; then ACE_STATE="unreadable"; fi
+# 検索・解決のどちらへ分かれる前にも、ディレクトリを cd -P で実体化した絶対パスへ揃える。
+# `ACE_PLAYBOOK_PATH=PLAYBOOK.md` のようなファイル名だけの指定を相対のまま持つと、検索側の
+# `${ACE_INDEX%/*}` がファイル名自身を返し、カテゴリファイル（playbook/）の探索先を取り違える。
+# ファイル名（symlink ならリンク自身の名前）は変えない。
+if [ "${ACE_STATE}" = "ok" ]; then
+  ace_dir="$(CDPATH= cd -P -- "$(dirname -- "${ACE_INDEX}")" 2>/dev/null && pwd -P)" || ace_dir=""
+  if [ -n "${ace_dir}" ]; then ACE_INDEX="${ace_dir}/${ACE_INDEX##*/}"; else ACE_STATE="unreadable"; fi
+fi
+
+# ── --resolve-playbook: 解決結果だけを出して終える ───────────────────────────
+# /ace-curate・/ace-refine が「配置先の解決」で読む契約。KEY=VALUE の 4 行を必ず出す。
+# STATE が ok 以外の回も 4 行を出す: absent / ambiguous では ACE_PLAYBOOK は空、unreadable では
+# 名指しされたパス（読めなかった対象の報告用）。成否は STATE と終了コードで読む
+# （0 = 確定 / 2 = 不在・曖昧・読み取り失敗）。
+# ACE_PLAYBOOK_REL は実体が root の内側にあると確かめられたときだけ出す。編集してよいかの判定を
+# REL に一本化するため、パスは相対・絶対を問わずディレクトリを cd -P で実体化してから root と
+# 比べる（`/repo/../shared/…` や `/tmp` ↔ `/private/tmp` の表記差で内外を取り違えない）。
+# ファイル自体が symlink なら 1 段だけ辿り、その実体も root 内のときだけ REL を出す。
+if [ "${MODE}" = "resolve-playbook" ]; then
+  ace_rel=""
+  if [ "${ACE_STATE}" = "ok" ]; then
+    ace_dir="${ACE_INDEX%/*}"
+    if [ -n "${ace_dir}" ]; then
+      ace_abs="${ACE_INDEX}"
+      ace_real="${ace_abs}"
+      if [ -L "${ace_abs}" ]; then
+        ace_link="$(readlink -- "${ace_abs}" 2>/dev/null)" || ace_link=""
+        case "${ace_link}" in "") ace_real="" ;; /*) ace_real="${ace_link}" ;; *) ace_real="${ace_dir}/${ace_link}" ;; esac
+        if [ -n "${ace_real}" ]; then
+          ace_real_dir="$(CDPATH= cd -P -- "$(dirname -- "${ace_real}")" 2>/dev/null && pwd -P)" || ace_real_dir=""
+          ace_real="${ace_real_dir:+${ace_real_dir}/${ace_real##*/}}"
+          # 多段の symlink は辿らない（実体を確かめられないので repo 外と同じく REL を出さない）
+          if [ -z "${ace_real_dir}" ] || [ -L "${ace_real}" ]; then ace_real=""; fi
+        fi
+      fi
+      case "${ace_abs}" in
+        "${ROOT}/"*) case "${ace_real}" in "${ROOT}/"*) ace_rel="${ace_abs#"${ROOT}"/}" ;; esac ;;
+      esac
+      ACE_INDEX="${ace_abs}"
+    fi
+  fi
+  printf 'ACE_PLAYBOOK=%s\n' "${ACE_INDEX}"
+  printf 'ACE_PLAYBOOK_REL=%s\n' "${ace_rel}"
+  printf 'ACE_PLAYBOOK_SOURCE=%s\n' "${ACE_SOURCE}"
+  printf 'ACE_PLAYBOOK_STATE=%s\n' "${ACE_STATE}"
+  [ "${ACE_STATE}" = "ok" ] && exit 0
+  exit 2
+fi
+
 if OBS_FILE="$(resolve_store "docs/08-knowledge/OBSERVATIONS.md" "OBSERVATIONS.md" "${LEDGER}")"; then
   OBS_STATE="ok"
 else
   case $? in 3) OBS_STATE="ambiguous" ;; *) OBS_STATE="absent" ;; esac
 fi
-# 明示指定・既定パスが存在しても読めなければ「読み取り失敗」（未導入へ吸収しない）
-if [ "${ACE_STATE}" = "ok" ] && { [ ! -f "${ACE_INDEX}" ] || [ ! -r "${ACE_INDEX}" ]; }; then ACE_STATE="unreadable"; fi
 if [ "${OBS_STATE}" = "ok" ] && { [ ! -f "${OBS_FILE}" ] || [ ! -r "${OBS_FILE}" ]; }; then OBS_STATE="unreadable"; fi
 
 # ── エントリの切り出し（共通 awk） ───────────────────────────────────────────

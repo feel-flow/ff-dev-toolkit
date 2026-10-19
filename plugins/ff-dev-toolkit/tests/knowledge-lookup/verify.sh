@@ -39,12 +39,28 @@
 #   K21. awk / tr / sed の起動回数がエントリ数に比例しない（4 件と 40 件の台帳で同じ回数。キーワード
 #        検索と --promoted-open の両方）。Windows の Git Bash ではプロセス起動 1 回が 0.1 秒を超え、
 #        エントリごとの起動は約 350 件の台帳の --promoted-open を 6 分超にしていた
+#   K22. 記録済み配置（AGENTS.md のリンク先・docs/MASTER.md の記載ファイル相対リンク）が指す
+#        docs-template/08-knowledge/PLAYBOOK.md を ok として検索し、--resolve-playbook も同じ配置を返す（Issue `#2142`）
+#   K23. ACE_PLAYBOOK_PATH の Playbook を採る。実在しない値は読み取り失敗（探索で上書きしない）、
+#        --playbook が優先、空白だけの値は未設定と同じ
+#   K24. 記録も環境変数も無い回は docs-template/ を探索で採らない。記録が plugin 同梱テンプレート
+#        （.claude-plugin/plugin.json を持つ dir 直下の docs-template/）を指しても採らない
+#   K25. 記録済み配置が 2 件なら曖昧（rc=2 / STATE=ambiguous）。既定パスを含むなら既定パスを採る。
+#        既定パスに実体があるのに記録がそれを含まなければ、記録が 1 件でも曖昧
+#   K26. /ace-curate・/ace-refine が knowledge-lookup.sh --resolve-playbook を呼び、検索と解決が同じ配置を返す
+#   K27. 記録段は root の外・ファイル自体の symlink・node_modules/・絶対パスの記載を候補に数えない
+#   K29. ファイル名だけの ACE_PLAYBOOK_PATH でも playbook/ のカテゴリファイルを引き、非 ASCII を含む記録パスを切らない
+#   K28. --resolve-playbook の出力契約（unreadable の PATH、相対指定の REL、root 内外は実体で判定、
+#        symlink ファイルは実体が root 内のときだけ REL、キーワード拒否）
 #
 # 空振り検出: 参照抽出を 0 件一致へ変える／判定を表示注記へ戻す／doc: の無照会を外す各変異で K19 が赤（rc=1）、前後の正常対照は46件成功（2026-10-05実測）。参照の不検出・注記の誤読・非 Issue の誤照会を緑にしない。
 # 空振り検出: knowledge-lookup.sh の find を -maxdepth 1 へ戻す変異で K20 のサブディレクトリ検出が赤、prune から _archive を外す変異で K20 の既定除外が赤（2026-10-08 実測）。
 # 空振り検出: 両 store を置かない root を与えると K6 が rc=2 を要求し、台帳の見出しを `### OBS 001 …`（コロン無し）へ変えると K7 が `読み取り失敗` を要求する（2026-09-19 実測。スクリプト側の noentry 判定を `empty` へ倒す変異で K7 が赤、両不在の rc=2 を rc=0 へ倒す変異で K6 が赤）。
 # 空振り検出: K21 は変更前の実装（エントリごとに meta_of の `$(printf | tr | awk)` を起動）へ戻すと 2 件赤（promoted-open 4 件 74 回 / 40 件 650 回、検索 84 回 / 660 回）、annotate_refs の空白除去だけを要素ごとの sed へ戻す変異でも 2 件赤（15 回 / 69 回）。shim が 1 回も呼ばれない回は「測れていない」として赤にする（2026-10-16 Git Bash 実測）。
 # 空振り検出: promoted の closed 説明を旧「対策済みまたは再発」へ戻す／mitigated の未解消再発確認を旧説明へ戻すと各 rc=1、正常対照は38件pass（2026-09-28実測）。状態名の接頭辞だけが残っても意味の欠落を緑にしない。
+# 空振り検出: resolve_playbook へ 1 件ずつ当てた 9 変異 — 記録段の削除・記録段で docs-template を一律除外・plugin 同梱テンプレートの除外を外す・曖昧時に先頭を採る・既定パス優先を外す・env 段の削除・env の空白判定を外す・旧 resolve_store へ戻す・記載ファイル相対の解決を外す — がすべて K22〜K26 のいずれかで赤（1〜12 件）、正常対照は 69 件成功（2026-10-18 実測）。
+# 空振り検出: レビュー対応後の 7 変異 — 記録段の symlink 除外・root 前置照合・node_modules 除外を外す、記録 1 件で実在する既定パスを置き換える、--resolve-playbook の絶対パス実体化を外す、symlink ファイルの実体確認を外す — がそれぞれ K25 / K27 / K28 で赤（1〜2 件）、正常対照は 82 件成功（2026-10-18 実測）。awk が読める記載ファイルで失敗する分岐（読み取り失敗の rc=2）は再現手段が無く未検査。
+# 空振り検出: 検索・解決の前に ACE_INDEX を実体化する処理を外すと K28 が 4 件赤、非 ASCII まで含める 2 本目のトークン抽出を外すと K29 が赤（rc=2 / absent）、正常対照は 84 件成功（2026-10-18 実測）。
 #
 # 変異検出（2026-09-19 実測。変異は 1 件ずつ当て、前後で対照を取る）:
 #           emit_obs の archived 除外を外すと 2 件赤（K2 と K11 の行数）。emit_obs の Status 抽出を
@@ -290,7 +306,8 @@ EOF
 # 対象スクリプトの root ガードが「handoff と実体位置の不一致」で rc=3 を返し、全ケースが赤になる
 # （grok-cli のレビューで実測: 継承ありで 30 件失敗 / env -u で 35 件成功）。workflow-doctor 等の
 # suite と同じく handoff を落として起動する。
-LOOKUP=(env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKILL_FILE bash "${TARGET}")
+# ACE_PLAYBOOK_PATH も落とす — 外の環境に設定があると、全ケースの Playbook がそれに置き換わる。
+LOOKUP=(env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKILL_FILE -u ACE_PLAYBOOK_PATH bash "${TARGET}")
 run_lookup() { # <root> <args...> → OUT / RC（stdout+stderr を OUT へ）
   local root="$1"; shift
   set +e
@@ -650,6 +667,191 @@ for mode in promoted-open search; do
   fi
 done
 set --
+
+# ── K22〜K25: ACE Playbook の配置解決（resolve_playbook。Issue `#2142`） ────────────────
+# 優先順 --playbook → ACE_PLAYBOOK_PATH → 記録済み配置 → 既定パス → 探索。テンプレ配布リポジトリ
+# （実体が docs-template/08-knowledge/ に在る）で「Playbook なし」と報告していた欠陥の回帰を見る。
+make_template_playbook() { # <root> — Playbook の実体を docs-template/08-knowledge/ へ置く
+  local root="$1"
+  make_playbook "${root}"
+  mkdir -p "${root}/docs-template"
+  mv "${root}/docs/08-knowledge" "${root}/docs-template/08-knowledge"
+}
+run_resolve() { # <root> [args...] → OUT / RC（stdout だけ。KEY=VALUE の 4 行）
+  local root="$1"; shift
+  set +e
+  OUT="$("${LOOKUP[@]}" --root "${root}" --resolve-playbook "$@" 2>/dev/null)"
+  RC=$?
+  set -e
+}
+run_with_env() { # <ACE_PLAYBOOK_PATH> <root> <args...> → OUT / RC
+  local envp="$1" root="$2"; shift 2
+  set +e
+  OUT="$(env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKILL_FILE ACE_PLAYBOOK_PATH="${envp}" bash "${TARGET}" --root "${root}" "$@" 2>&1)"
+  RC=$?
+  set -e
+}
+kv() { printf '%s\n' "${OUT}" | awk -v k="$1=" 'index($0, k) == 1 { print substr($0, length(k) + 1); exit }'; }
+
+# K22: 記録済み配置（AGENTS.md のリンク先）から docs-template/ 配下の実体を採る（AC1）
+ROOT22="${TMP}/template-recorded"; make_template_playbook "${ROOT22}"; make_ledger "${ROOT22}"
+printf '%s\n' '採番ルールの SSOT は [PLAYBOOK.md §エントリID規則](docs-template/08-knowledge/PLAYBOOK.md#エントリid規則)。' >"${ROOT22}/AGENTS.md"
+run_lookup "${ROOT22}" --offline hydration
+if [[ "${RC}" -eq 0 ]] && out_has "== ACE Playbook（docs-template/08-knowledge/PLAYBOOK.md） ==" && out_has "ace_state=ok" \
+  && out_has "ACE-10-1" && ! out_has "Playbook なし"; then
+  ok "K22: 記録済み配置の docs-template/08-knowledge/PLAYBOOK.md を ok として検索する"
+else
+  bad "K22: 記録済み配置の Playbook を引けない（rc=${RC}）"; printf '%s\n' "${OUT}" | grep -E '^(== ACE|RECORD|SUMMARY)' | sed 's/^/    | /' >&2 || true
+fi
+run_resolve "${ROOT22}"
+if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_STATE)" = "ok" ]] && [[ "$(kv ACE_PLAYBOOK_SOURCE)" = "recorded:AGENTS.md" ]] \
+  && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs-template/08-knowledge/PLAYBOOK.md" ]]; then
+  ok "K22: --resolve-playbook は recorded:AGENTS.md と root 相対パスを返す"
+else
+  bad "K22: --resolve-playbook の出力が違う（rc=${RC}）"; printf '%s\n' "${OUT}" | sed 's/^/    | /' >&2
+fi
+# 記録は記載ファイルのディレクトリ相対でも解く（docs/MASTER.md の `./…`）
+ROOT22m="${TMP}/template-recorded-master"; make_template_playbook "${ROOT22m}"; mkdir -p "${ROOT22m}/docs"
+printf '%s\n' '- [PLAYBOOK.md](../docs-template/08-knowledge/PLAYBOOK.md) - ACE 知見' >"${ROOT22m}/docs/MASTER.md"
+run_resolve "${ROOT22m}"
+if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_SOURCE)" = "recorded:docs/MASTER.md" ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs-template/08-knowledge/PLAYBOOK.md" ]]; then
+  ok "K22: docs/MASTER.md の記載ファイル相対リンクを解く"
+else
+  bad "K22: 記載ファイル相対の記録を解けない（rc=${RC}）"; printf '%s\n' "${OUT}" | sed 's/^/    | /' >&2
+fi
+
+# K23: ACE_PLAYBOOK_PATH（AC1 の環境変数側）と、明示の優先・読めない指定の扱い
+ROOT23="${TMP}/template-env"; make_template_playbook "${ROOT23}"; make_ledger "${ROOT23}"
+run_with_env "${ROOT23}/docs-template/08-knowledge/PLAYBOOK.md" "${ROOT23}" --offline hydration
+if [[ "${RC}" -eq 0 ]] && out_has "ace_state=ok" && out_has "ACE-10-1"; then ok "K23: ACE_PLAYBOOK_PATH の Playbook を ok として検索する"; else bad "K23: ACE_PLAYBOOK_PATH が効かない（rc=${RC}）"; fi
+run_with_env "${ROOT23}/docs-template/08-knowledge/PLAYBOOK.md" "${ROOT23}" --resolve-playbook
+if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_SOURCE)" = "env" ]]; then ok "K23: --resolve-playbook は SOURCE=env"; else bad "K23: env の SOURCE が違う（rc=${RC}）"; fi
+run_with_env "${ROOT23}/no-such/PLAYBOOK.md" "${ROOT23}" --offline hydration
+if [[ "${RC}" -eq 0 ]] && out_has "ace=読み取り失敗（ファイルを読めない）"; then ok "K23: 実在しない ACE_PLAYBOOK_PATH は読み取り失敗（探索で上書きしない）"; else bad "K23: 実在しない ACE_PLAYBOOK_PATH の扱い（rc=${RC}）"; fi
+run_with_env "${ROOT23}/no-such/PLAYBOOK.md" "${ROOT23}" --resolve-playbook --playbook "${ROOT23}/docs-template/08-knowledge/PLAYBOOK.md"
+if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_SOURCE)" = "explicit" ]]; then ok "K23: --playbook は ACE_PLAYBOOK_PATH より優先"; else bad "K23: --playbook が優先されない（rc=${RC}）"; fi
+run_with_env "   " "${ROOT22}" --resolve-playbook
+if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_SOURCE)" = "recorded:AGENTS.md" ]]; then ok "K23: 空白だけの ACE_PLAYBOOK_PATH は未設定と同じ"; else bad "K23: 空白だけの ACE_PLAYBOOK_PATH を値として扱った（rc=${RC}）"; fi
+
+# K24: 記録も環境変数も無い回は従来どおり探索し、docs-template/ の配布テンプレートを採らない（AC2）
+ROOT24="${TMP}/template-unrecorded"; make_template_playbook "${ROOT24}"; make_ledger "${ROOT24}"
+run_lookup "${ROOT24}" --offline hydration
+if [[ "${RC}" -eq 0 ]] && out_has "ace=Playbook なし" && ! out_has "ACE-10-1"; then ok "K24: 記録なしの docs-template/ 配下は探索で採らない"; else bad "K24: 記録なしで docs-template/ を採った（rc=${RC}）"; fi
+# plugin 同梱の配布テンプレート（.claude-plugin/plugin.json を持つ dir 直下の docs-template/）は記録されていても採らない
+ROOT24p="${TMP}/bundled-template"; make_playbook "${ROOT24p}"; make_ledger "${ROOT24p}"
+make_template_playbook "${TMP}/bundled-src"; mkdir -p "${ROOT24p}/plugins/kit/.claude-plugin"
+printf '{"name":"kit"}\n' >"${ROOT24p}/plugins/kit/.claude-plugin/plugin.json"
+mv "${TMP}/bundled-src/docs-template" "${ROOT24p}/plugins/kit/docs-template"
+printf '%s\n' '雛形は `plugins/kit/docs-template/08-knowledge/PLAYBOOK.md`。' >"${ROOT24p}/AGENTS.md"
+run_resolve "${ROOT24p}"
+if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_SOURCE)" = "default" ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs/08-knowledge/PLAYBOOK.md" ]]; then
+  ok "K24: 記録が plugin 同梱テンプレートを指しても既定パスの実体を採る"
+else
+  bad "K24: plugin 同梱テンプレートを記録として採った（rc=${RC}）"; printf '%s\n' "${OUT}" | sed 's/^/    | /' >&2
+fi
+
+# K25: 記録の矛盾は曖昧（推測で選ばない）。既定パスが候補に含まれるなら既定パスを採る
+ROOT25="${TMP}/recorded-conflict"; make_template_playbook "${ROOT25}"; make_ledger "${ROOT25}"
+mkdir -p "${ROOT25}/docs/old"; cp "${ROOT25}/docs-template/08-knowledge/PLAYBOOK.md" "${ROOT25}/docs/old/PLAYBOOK.md"
+printf '%s\n' '`docs-template/08-knowledge/PLAYBOOK.md`' >"${ROOT25}/AGENTS.md"
+printf '%s\n' '`docs/old/PLAYBOOK.md`' >"${ROOT25}/CLAUDE.md"
+run_lookup "${ROOT25}" --offline hydration
+if [[ "${RC}" -eq 0 ]] && out_has "ace=読み取り失敗（配置が曖昧" && ! out_has "ACE-10-1"; then ok "K25: 記録済み配置が 2 件なら曖昧として採らない"; else bad "K25: 矛盾した記録から 1 つを選んだ（rc=${RC}）"; fi
+run_resolve "${ROOT25}"
+if [[ "${RC}" -eq 2 ]] && [[ "$(kv ACE_PLAYBOOK_STATE)" = "ambiguous" ]] && [[ -z "$(kv ACE_PLAYBOOK)" ]]; then ok "K25: --resolve-playbook は rc=2 / STATE=ambiguous"; else bad "K25: 曖昧時の --resolve-playbook（rc=${RC}）"; fi
+ROOT25d="${TMP}/recorded-default-and-stub"; make_playbook "${ROOT25d}"; make_ledger "${ROOT25d}"
+printf '%s\n' '# moved' >"${ROOT25d}/docs/PLAYBOOK.md"
+printf '%s\n' '- [PLAYBOOK.md](./08-knowledge/PLAYBOOK.md)（旧 `docs/PLAYBOOK.md` はリダイレクト）' >"${ROOT25d}/docs/MASTER.md"
+run_resolve "${ROOT25d}"
+if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs/08-knowledge/PLAYBOOK.md" ]]; then ok "K25: 既定パスを含む複数の記録は既定パスを採る（旧配置の注記で退行しない）"; else bad "K25: 既定パスを含む記録で既定を採らない（rc=${RC}）"; fi
+
+# 既定パスに実体があるのに記録がそれを含まない → 記録が 1 件でも 2 件でも曖昧（既定パスを黙って置き換えない）
+ROOT25e="${TMP}/recorded-conflict-with-default"; make_template_playbook "${ROOT25e}"; make_playbook "${ROOT25e}"; make_ledger "${ROOT25e}"
+mkdir -p "${ROOT25e}/docs/old"; printf '%s\n' '# moved' >"${ROOT25e}/docs/old/PLAYBOOK.md"
+printf '%s\n' '`docs-template/08-knowledge/PLAYBOOK.md`' >"${ROOT25e}/AGENTS.md"
+printf '%s\n' '`docs/old/PLAYBOOK.md`' >"${ROOT25e}/CLAUDE.md"
+run_resolve "${ROOT25e}"
+if [[ "${RC}" -eq 2 ]] && [[ "$(kv ACE_PLAYBOOK_STATE)" = "ambiguous" ]]; then ok "K25: 既定パスが実在し記録 2 件がそれを含まなければ曖昧"; else bad "K25: 既定パスが実在する記録の矛盾で 1 つを選んだ（rc=${RC}）"; fi
+rm -f "${ROOT25e}/AGENTS.md"
+run_resolve "${ROOT25e}"
+if [[ "${RC}" -eq 2 ]] && [[ "$(kv ACE_PLAYBOOK_STATE)" = "ambiguous" ]]; then ok "K25: 既定パスが実在し記録 1 件がスタブを指すなら曖昧（スタブへ切り替えない）"; else bad "K25: 1 件の記録で実在する既定パスを置き換えた（rc=${RC} / $(kv ACE_PLAYBOOK_REL)）"; fi
+
+# K27: 記録段の除外（root の外・ファイル自体の symlink・node_modules/・絶対パス）
+ROOT27="${TMP}/recorded-excluded"; make_ledger "${ROOT27}"
+make_template_playbook "${TMP}/outside-src"; mkdir -p "${TMP}/outside"; cp "${TMP}/outside-src/docs-template/08-knowledge/PLAYBOOK.md" "${TMP}/outside/PLAYBOOK.md"
+mkdir -p "${ROOT27}/docs/kb" "${ROOT27}/node_modules/x" "${ROOT27}/docs/abs"
+cp "${TMP}/outside/PLAYBOOK.md" "${ROOT27}/docs/abs/PLAYBOOK.md"
+ln -s "${TMP}/outside/PLAYBOOK.md" "${ROOT27}/docs/kb/PLAYBOOK.md"
+cp "${TMP}/outside/PLAYBOOK.md" "${ROOT27}/node_modules/x/PLAYBOOK.md"
+for rec in '../outside/PLAYBOOK.md' 'docs/kb/PLAYBOOK.md' 'node_modules/x/PLAYBOOK.md' "${ROOT27}/docs/abs/PLAYBOOK.md"; do
+  printf '`%s`\n' "${rec}" >"${ROOT27}/AGENTS.md"
+  run_resolve "${ROOT27}"
+  # 記録として採らないことを見る（docs/abs/ の実体は探索段が拾ってよい）
+  case "$(kv ACE_PLAYBOOK_SOURCE)" in
+    recorded:*) bad "K27: 記録 ${rec} を採った（rc=${RC} / $(kv ACE_PLAYBOOK_SOURCE)）" ;;
+    *) ok "K27: 記録 ${rec##*/../} は候補に数えない（SOURCE=$(kv ACE_PLAYBOOK_SOURCE)）" ;;
+  esac
+done
+
+# K28: --resolve-playbook の出力契約（unreadable の PATH・相対指定の REL・root 内外の判定・symlink・キーワード拒否）
+run_with_env "${ROOT23}/no-such/PLAYBOOK.md" "${ROOT23}" --resolve-playbook
+if [[ "${RC}" -eq 2 ]] && [[ "$(kv ACE_PLAYBOOK_STATE)" = "unreadable" ]] && [[ "$(kv ACE_PLAYBOOK)" = "${ROOT23}/no-such/PLAYBOOK.md" ]] && [[ -z "$(kv ACE_PLAYBOOK_REL)" ]]; then
+  ok "K28: 読めない指定は rc=2 / STATE=unreadable で、名指しされたパスを出し REL は空"
+else
+  bad "K28: unreadable の出力契約（rc=${RC}）"; printf '%s\n' "${OUT}" | sed 's/^/    | /' >&2
+fi
+set +e
+OUT="$(cd "${ROOT23}" && "${LOOKUP[@]}" --root "${ROOT23}" --resolve-playbook --playbook docs-template/08-knowledge/PLAYBOOK.md 2>/dev/null)"; RC=$?
+set -e
+if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs-template/08-knowledge/PLAYBOOK.md" ]]; then ok "K28: cwd 相対の --playbook も root 相対の REL を返す"; else bad "K28: 相対指定の REL（rc=${RC} / $(kv ACE_PLAYBOOK_REL)）"; fi
+run_with_env "${ROOT27}/../outside/PLAYBOOK.md" "${ROOT27}" --resolve-playbook
+if [[ "${RC}" -eq 0 ]] && [[ -z "$(kv ACE_PLAYBOOK_REL)" ]]; then ok "K28: root/../ 経由で外へ出る絶対パスは REL を出さない"; else bad "K28: root の外を REL として返した（$(kv ACE_PLAYBOOK_REL)）"; fi
+run_with_env "${ROOT27}/docs/kb/PLAYBOOK.md" "${ROOT27}" --resolve-playbook
+if [[ "${RC}" -eq 0 ]] && [[ -z "$(kv ACE_PLAYBOOK_REL)" ]]; then ok "K28: root の外を指す symlink ファイルは REL を出さない"; else bad "K28: 外を指す symlink を REL として返した（$(kv ACE_PLAYBOOK_REL)）"; fi
+mkdir -p "${ROOT27}/docs/real"; cp "${TMP}/outside/PLAYBOOK.md" "${ROOT27}/docs/real/PLAYBOOK.md"; ln -s ../real/PLAYBOOK.md "${ROOT27}/docs/kb/IN.md"
+run_with_env "${ROOT27}/docs/kb/IN.md" "${ROOT27}" --resolve-playbook
+if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs/kb/IN.md" ]]; then ok "K28: root 内を指す symlink ファイルは REL を出す"; else bad "K28: root 内の symlink の REL（$(kv ACE_PLAYBOOK_REL)）"; fi
+ln -s "${ROOT23}" "${TMP}/alias-root"
+run_with_env "${TMP}/alias-root/docs-template/08-knowledge/PLAYBOOK.md" "${ROOT23}" --resolve-playbook
+if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs-template/08-knowledge/PLAYBOOK.md" ]]; then ok "K28: symlink 経由の表記でも root 内の絶対パスは REL を出す"; else bad "K28: 表記差で root 内を外扱いした（$(kv ACE_PLAYBOOK_REL)）"; fi
+run_lookup "${ROOT1}" --resolve-playbook hydration
+if [[ "${RC}" -eq 1 ]]; then ok "K28: --resolve-playbook はキーワードを取らない（rc=1）"; else bad "K28: --resolve-playbook がキーワードを受け付けた（rc=${RC}）"; fi
+
+# K29: ファイル名だけの指定でもカテゴリファイルを引く／非 ASCII を含む記録パスを途中で切らない
+set +e
+OUT="$(cd "${ROOT23}/docs-template/08-knowledge" && env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKILL_FILE ACE_PLAYBOOK_PATH=PLAYBOOK.md bash "${TARGET}" --root "${ROOT23}" --offline hydration 2>&1)"; RC=$?
+set -e
+if [[ "${RC}" -eq 0 ]] && out_has "ACE-10-1" && out_has "== ACE Playbook（docs-template/08-knowledge/PLAYBOOK.md） =="; then
+  ok "K29: ACE_PLAYBOOK_PATH=PLAYBOOK.md（ファイル名だけ）でも playbook/ のエントリを引く"
+else
+  bad "K29: ファイル名だけの指定でカテゴリファイルを引けない（rc=${RC}）"; printf '%s\n' "${OUT}" | grep -E '^(== ACE|RECORD)' | sed 's/^/    | /' >&2 || true
+fi
+ROOT29="${TMP}/recorded-non-ascii"; make_playbook "${TMP}/non-ascii-src"; mkdir -p "${ROOT29}/docs-template"
+mv "${TMP}/non-ascii-src/docs/08-knowledge" "${ROOT29}/docs-template/知見"
+printf '%s\n' 'SSOT は [PLAYBOOK](docs-template/知見/PLAYBOOK.md#id)（`docs-template/知見/PLAYBOOK.md`）。' >"${ROOT29}/AGENTS.md"
+run_resolve "${ROOT29}"
+if [[ "${RC}" -eq 0 ]] && [[ "$(kv ACE_PLAYBOOK_REL)" = "docs-template/知見/PLAYBOOK.md" ]] && [[ "$(kv ACE_PLAYBOOK_SOURCE)" = "recorded:AGENTS.md" ]]; then
+  ok "K29: 非 ASCII を含む記録パスを途中で切らずに採る"
+else
+  bad "K29: 非 ASCII を含む記録パスを採れない（rc=${RC} / $(kv ACE_PLAYBOOK_STATE) / $(kv ACE_PLAYBOOK_REL)）"
+fi
+
+# K26: /ace-curate・/ace-refine が同じ resolver を呼び、検索と解決が同じ配置を返す（AC3）
+for f in skills/ace-curate/SKILL.md skills/ace-refine/SKILL.md; do
+  if grep -qF -- 'bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --resolve-playbook' "${PLUGIN_ROOT}/${f}"; then
+    ok "K26: ${f} は knowledge-lookup.sh --resolve-playbook で配置を解決する"
+  else
+    bad "K26: ${f} が共通 resolver（knowledge-lookup.sh --resolve-playbook）を呼んでいない"
+  fi
+done
+if grep -qF -- '--resolve-playbook' "${PLUGIN_ROOT}/skills/ace-curate/references/curate.md"; then ok "K26: curate.md「配置先の解決」は共通 resolver を正本にする"; else bad "K26: curate.md が共通 resolver を参照していない"; fi
+same_n=0
+for r in "${ROOT22}" "${ROOT22m}" "${ROOT24p}" "${ROOT25d}" "${ROOT1}"; do
+  run_resolve "${r}"; rel="$(kv ACE_PLAYBOOK_REL)"
+  run_lookup "${r}" --offline zzz-no-such-word
+  if [[ -n "${rel}" ]] && out_has "== ACE Playbook（${rel}） =="; then same_n=$((same_n + 1)); else bad "K26: ${r##*/} で検索と --resolve-playbook の配置が食い違う（resolve=${rel:-空}）"; fi
+done
+if [[ "${same_n}" -eq 5 ]]; then ok "K26: 5 fixture すべてで検索と --resolve-playbook が同じ配置を返す"; fi
 
 echo ""
 if [[ "${FAIL}" -eq 0 ]]; then

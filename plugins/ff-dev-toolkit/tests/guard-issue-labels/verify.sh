@@ -26,6 +26,14 @@
 # gh は fixtures/bin の stub に解決させる。stub は `label list` 以外を非 0 で拒否する
 # ので、想定外の gh 呼び出しを足すと赤になる。
 #
+# GitHub MCP 経路（issue_write の method: create）も同じ suite で固定する: 実測したツール名を 2 つのサーバー名の形
+# （mcp__github__ / mcp__plugin_github_github__）で駆動し、tool_input の labels を gh issue create の --label と同じ判定へ流した deny（ラベルの渡し方と抜け道の行だけが違う文言）・hook の環境変数で読む抜け道・
+# gh 不在・gh label list の失敗で止めずに省略を systemMessage で出すこと・針が当たらない入力（判定表にないツール名・名簿にないサーバー・
+# tool_input の欠落 / 型違い）を素通しではなく理由付きの systemMessage にすること・hooks.json の MCP matcher を
+# Claude Code と同じアンカー無し正規表現として照合すること（tests/lib/github-mcp-fixture.sh）。
+# 空振り検出: MCP の振り分け（`*mcp__*` の case）を無効にすると MCP 入力が素通しへ倒れて 20 件が赤（2026-10-19 実測）、gh 不在の理由出しを無音の exit へ変えると AC4 が赤（2026-10-18 実測）。ラベル一覧が空・取得上限到達の理由出しをそれぞれ無音の exit へ変えると各 1 件が赤（2026-10-19 実測）。
+# 変異検出: ラベル名の @sh 引用を外すと空白を含むラベル名のケースが赤（2026-10-18 実測）。
+#
 # run-all-required: no — jq 不在での skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。既存の Bash ガード suite と同じ扱い）
 # 空振り検出: 検査対象 hooks/guard-issue-labels.sh を「exit 0 だけ」の空ファイルへ差し替えると 53 件が赤になる（2026-09-18 実測。先頭は AC1「type 系も priority 系も無い起票は停止する」。対象の不在・0 件出力を「違反なし」へ倒さないことの実測）。
 # 空振り検出: 軸別表の優先度行から名前空間を落とす（`priority:critical` → `critical`）と、水準語の抽出が 0 件になって 23 件が赤になる（2026-09-18 実測。AC1「欠落系統に優先度が無い」/ AC2「type はあるが priority が無い起票は停止する」/ 別命名の全 deny 検査。書式変更による抽出空振りを「違反なし」へ畳まない）。
@@ -42,6 +50,8 @@ isolate_hook_env "FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD" "$TARGET"
 # ASDD ゲートが早期終了する経路でも stdin を読み切ることを測る共有ヘルパー
 # shellcheck source=../lib/asdd-gate-drain.sh
 . "$SCRIPT_DIR/../lib/asdd-gate-drain.sh"
+# shellcheck source=../lib/github-mcp-fixture.sh
+. "$SCRIPT_DIR/../lib/github-mcp-fixture.sh"
 GATE_LIB="$PLUGIN_ROOT/hooks/asdd-hook-gate.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 LABEL_SKILL="$PLUGIN_ROOT/skills/setup-github-labels/SKILL.md"
@@ -444,6 +454,94 @@ else
   bad "壊れた stdin JSON: exit=$RC out=[$OUT]"
 fi
 
+echo "guard-issue-labels: GitHub MCP 経路（issue_write の method: create）"
+# 実測したツール名（GitHub 公式リモート MCP の tools/list）を 2 つのサーバー名の形で駆動する。
+# MCP 分岐を Bash 用の前置フィルタ（tool_name が Bash でなければ落とす）より後ろへ動かすと、
+# 下の deny 検査はすべて素通しへ倒れて赤になる。
+run_mcp() { ff_mcp_run "$TARGET" "$@"; }
+mcp_issue_input() { # <labels の JSON 配列（省略時はキーごと無し）>
+  if [ -n "${1:-}" ]; then
+    jq -cn --argjson l "$1" '{method: "create", owner: "acme", repo: "widgets", title: "t", labels: $l}'
+  else
+    jq -cn '{method: "create", owner: "acme", repo: "widgets", title: "t"}'
+  fi
+}
+run_mcp mcp__plugin_github_github__issue_write "$(mcp_issue_input '["bug"]')"
+assert_deny "AC2: プラグイン同梱サーバーの issue_write（create）で優先度が無ければ deny"
+MCP_REASON="$REASON"
+case "${REASON%%$'\n'*}" in
+  *'issue_write（method: create）に渡す labels'*'優先度'*) ok "AC2: deny 文の 1 行目が MCP のラベルの渡し方と欠落系統（優先度）を名指しする" ;;
+  *) bad "AC2: deny 文の 1 行目が MCP 経路の形でない: [${REASON%%$'\n'*}]" ;;
+esac
+case "$REASON" in
+  *'labels へ足す'*'hook の環境変数 FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1'*) ok "AC2: 抜け道は同じ変数名を hook の環境変数として案内する（コマンド先頭の環境代入は MCP では付けられない）" ;;
+  *) bad "AC2: MCP 経路の抜け道の案内が無い: [$REASON]" ;;
+esac
+run_hook 'gh issue create --title t --label bug'
+mcp_rest="$(printf '%s\n' "$MCP_REASON" | sed -e '1s/^.*に、//' -e '/^  [23]) /d')"
+bash_rest="$(printf '%s\n' "$REASON" | sed -e '1s/^.*に、//' -e '/^  [23]) /d')"
+if [ -n "$bash_rest" ] && [ "$mcp_rest" = "$bash_rest" ]; then
+  ok "AC2: deny 文は gh issue create のときと同じ文言（ラベルの渡し方と選択肢 2・3 以外）"
+else
+  bad "AC2: deny 文が Bash 経路とずれている: mcp=[$MCP_REASON] bash=[$REASON]"
+fi
+run_mcp mcp__github__issue_write "$(mcp_issue_input)"
+assert_deny "AC2: server キー github で設定したサーバーで labels が無ければ deny"
+case "${REASON%%$'\n'*}" in
+  *'種別'*'優先度'*) ok "AC2: labels が無ければ種別と優先度の両方を名指しする" ;;
+  *) bad "AC2: 欠落系統の名指しが揃わない: [${REASON%%$'\n'*}]" ;;
+esac
+run_mcp mcp__github__issue_write "$(mcp_issue_input '["bug","priority:high","follow-up"]')"
+assert_silent "3 系統が揃っていれば無音"
+run_mcp mcp__github__issue_write "$(mcp_issue_input '["bug","priority:high"]')"
+assert_message_only "follow-up の欠落は止めずに案内だけ出す"
+case "$MESSAGE" in
+  *'labels に follow-up も足して'*) ok "follow-up の案内が MCP のラベルの渡し方で書かれている" ;;
+  *) bad "follow-up の案内が MCP 経路の形でない: [$MESSAGE]" ;;
+esac
+run_mcp mcp__github__issue_write "$(mcp_issue_input '["good first issue","priority:high","follow-up"]')"
+assert_deny "空白を含むラベル名も 1 つの名前として読む（デフォルトの非種別ラベルは種別を充足しない）"
+run_mcp mcp__github__issue_write '{"method":"update","owner":"acme","repo":"widgets","issue_number":3,"labels":[]}'
+assert_silent "method: update（既存 Issue の更新）は起票ではないので無音"
+run_mcp mcp__github__issue_write "$(mcp_issue_input '["bug"]')" FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1
+assert_silent "抜け道: hook の環境変数 FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD=1 で通る"
+echo "guard-issue-labels: GitHub MCP 経路で gh を使えないとき（止めずに理由を出す）"
+if NOGH_PATH="$(ff_path_without_gh "$TEST_TMP/nogh-bin" jq awk sed grep tr head cut)"; then
+  run_mcp mcp__github__issue_write "$(mcp_issue_input '["bug"]')" PATH="$NOGH_PATH"
+  ff_mcp_assert_message "AC4: gh が PATH に無ければ止めずに、判定を省略したことを systemMessage で出す" "gh が PATH に無い"
+  run_mcp mcp__github__issue_write "$(mcp_issue_input '["bug","priority:high","follow-up"]')" PATH="$NOGH_PATH"
+  assert_silent "gh が無くても、3 系統が揃っていれば（ラベル一覧を読む必要が無いので）無音"
+else
+  bad "gh だけを外した PATH を作れない（gh が残る・bash が消える）ため、AC4 の検査が成立しない"
+fi
+run_mcp mcp__github__issue_write "$(mcp_issue_input '["bug"]')" FF_STUB_LABELS_MODE=fail
+ff_mcp_assert_message "gh label list が失敗したら止めずに理由を出す（Bash 経路は無音のまま）" "gh label list が失敗"
+run_mcp mcp__github__issue_write "$(mcp_issue_input '["bug"]')" FF_STUB_LABELS_MODE=empty
+ff_mcp_assert_message "gh label list の出力が空なら止めずに理由を出す（Bash 経路は無音のまま）" "出力が空"
+run_mcp mcp__github__issue_write "$(mcp_issue_input '["bug"]')" FF_STUB_LABELS_MODE=limit
+ff_mcp_assert_message "ラベルが取得上限に達していたら止めずに理由を出す（Bash 経路は無音のまま）" "取得上限"
+run_mcp mcp__github__issue_write "$(mcp_issue_input '["bug"]')" PATH=/nonexistent
+ff_mcp_assert_message "jq が PATH に無ければ、GitHub MCP の呼び出しを検査しなかったことを知らせて通す" "jq が PATH に無い"
+echo "guard-issue-labels: GitHub MCP 経路の針が当たらない入力（素通しではなく理由付きの systemMessage）"
+run_mcp mcp__github__issue_writes "$(mcp_issue_input '["bug"]')"
+ff_mcp_assert_message "判定表にないツール名（綴りの揺れ）は理由を出して通す" "判定表"
+run_mcp mcp__linear__issue_write "$(mcp_issue_input '["bug"]')"
+ff_mcp_assert_message "サーバー名が名簿にないツールは理由を出して通す" "判定表"
+run_mcp mcp__github__issue_write '{"owner":"acme","repo":"widgets","title":"t","labels":["bug"]}'
+ff_mcp_assert_message "method の欠落は理由を出して通す" "method"
+run_mcp mcp__github__issue_write '{"method":"create","repo":"widgets","title":"t","labels":["bug"]}'
+ff_mcp_assert_message "owner の欠落は理由を出して通す" "owner"
+run_mcp mcp__github__issue_write '{"method":"create","owner":"acme","repo":"widgets","title":"t","labels":"bug"}'
+ff_mcp_assert_message "labels が配列でなければ理由を出して通す" "labels"
+run_mcp mcp__github__issue_write "$(mcp_issue_input '["bug,priority:high"]')"
+ff_mcp_assert_message "カンマを含むラベル名（gh の --label と同じ意味に写せない）は理由を出して通す" "カンマ"
+run_hook 'gh issue create --title t --label bug # mcp__github__issue_write'
+assert_deny "Bash の呼び出しは文字列に mcp__ を含んでも Bash 経路で判定する"
+case "${REASON%%$'\n'*}" in
+  *'gh issue create に付ける --label'*) ok "Bash 経路の deny 文（--label の渡し方）のまま" ;;
+  *) bad "Bash の呼び出しが MCP 経路の文言になっている: [${REASON%%$'\n'*}]" ;;
+esac
+
 echo "guard-issue-labels: ラベル名の正本が軸別表であることの変異注入"
 if ! command -v perl >/dev/null 2>&1; then
   echo "  ○ skip: perl が無いため変異注入を実行できません（部分 skip）"
@@ -592,8 +690,10 @@ echo "guard-issue-labels: 前置フィルタの静的照合（ACE-1076-2）"
 # jq を起動する前に非該当を落とす前置フィルタは純粋な短絡で、削っても後段が同じ判定を
 # 持つため**振る舞いでは検出できない**（実測: 3 か所どれを削っても suite は緑のまま）。
 # 構造上そうなるので、位置と中身を静的に固定する。
-prefilter_line="$(grep -n 'case "\$input" in' "$TARGET" | head -1 | cut -d: -f1)"
-jq_line="$(grep -n 'command -v jq' "$TARGET" | head -1 | cut -d: -f1)"
+# 起点は Bash 経路の前置フィルタの見出し行。その前に GitHub MCP 経路の振り分け（`*mcp__*` の
+# case と jq）があるので、最初の `case "$input" in` / `command -v jq` を起点にすると MCP 側を測る。
+prefilter_line="$(grep -n '^# 安価な前置フィルタ' "$TARGET" | head -1 | cut -d: -f1)"
+jq_line="$(grep -n '^command -v jq >/dev/null 2>&1 || exit 0' "$TARGET" | head -1 | cut -d: -f1)"
 if [ -n "$prefilter_line" ] && [ -n "$jq_line" ] && [ "$prefilter_line" -lt "$jq_line" ]; then
   ok "前置フィルタ（\$input の case）が command -v jq より前に在る"
   pre_block="$(sed -n "${prefilter_line},$((jq_line - 1))p" "$TARGET")"
@@ -624,6 +724,19 @@ if [ "$guard_timeout" = 15 ]; then
 else
   bad "集約親の timeout が15秒ではありません（${guard_timeout:-なし}）"
 fi
+case "$(jq -r '.description' "$HOOKS_JSON")" in
+  *issue_write*) ok "hooks.json の description が GitHub MCP の issue_write に言及する" ;;
+  *) bad "hooks.json の description に GitHub MCP 経路（issue_write）の記述が無い" ;;
+esac
+while IFS= read -r line; do
+  case "$line" in
+    OK\ *) ok "MCP matcher: ${line#OK }" ;;
+    SKIP\ *) echo "  ○ skip: ${line#SKIP }" ;;
+    *) bad "MCP matcher: ${line#NG }" ;;
+  esac
+done <<EOF
+$(ff_github_mcp_matcher_check "$HOOKS_JSON" guard-issue-labels.sh issue_write)
+EOF
 
 echo "guard-issue-labels: ASDD ゲートの早期終了経路でも stdin を読み切る"
 # 任意 Hook を止めるゲート（hooks/asdd-hook-gate.sh）は stdin を消費しない設計なので、
