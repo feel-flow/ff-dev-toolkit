@@ -49,7 +49,10 @@
 #                           disables) the run falls back to sequential and says so
 #                           in one line. At or below the threshold nothing is printed.
 #   --sequential            Sequential execution
-#   --evidence              Emit producer-owned branch-review evidence (python3 required)
+#   --evidence              Emit producer-owned branch-review evidence (python3 required).
+#                           review-evidence.py is read once at start and both ends of the
+#                           evidence run from those bytes, so a plugin update that deletes
+#                           the start root while CLIs run cannot break the finish
 #   --require-prior-review <json>  Verify prior review before execution
 #   --continue-review <json>  Explicit partial revalidation of a successful review
 #   --output-dir <dir>      Output directory (auto-detected by task type)
@@ -1234,6 +1237,15 @@ REVIEW_EVIDENCE=false
 REVIEW_EVIDENCE_PRIOR=""
 REVIEW_EVIDENCE_PARENT=""
 REVIEW_EVIDENCE_START=""
+# --evidence の producer（review-evidence.py）を開始時に読んだバイト列と、その sha256。
+# pin_review_evidence_producer が埋め、begin / finish はどちらもこのバイト列を実行する。
+REVIEW_EVIDENCE_PRODUCER_PATH=""
+REVIEW_EVIDENCE_PRODUCER=""
+REVIEW_EVIDENCE_PRODUCER_SHA256=""
+# critical_nonblock_perspectives を開始時に 1 回だけ解決した値（resolve_critical_nonblock_at_start）。
+# 空集合（env の空文字 = 全観点ブロック）と未解決を区別するため、解決済みの印を別に持つ。
+REVIEW_CRITICAL_NONBLOCK_SET=""
+REVIEW_CRITICAL_NONBLOCK_RESOLVED=false
 # この実行の diff を固定したファイル。create_fixed_diff が埋め、run_single_task が
 # 全アダプタへ --diff-file として配る。diff を持たないタスク（description だけの
 # explore など）では空のまま = 従来どおりアダプタ側の判断に委ねる。
@@ -3201,6 +3213,128 @@ create_fixed_diff() {
   return 0
 }
 
+# ── review evidence の producer を開始時に固定する ──
+#
+# evidence の begin（タスク起動前）と finish（全 CLI の完走後）は同じ review-evidence.py を
+# 使う。ファイルをパスで 2 回開く形だと、レビュー中の plugin 更新で開始時の root（版ごとの
+# cache）が消えたとき、完走した結果があるのに finish だけが「ファイルが無い」で落ち、
+# 全観点の再実行になる（導入先で 3 回実測）。完走後に plugin の root から必ず読む
+# ファイルはこれ 1 本だけなので、開始時に固定 root から 1 回だけ読み、begin と finish の
+# 両方をそのバイト列から実行する。
+#
+# ADR-036 との関係: 読むのは開始時に固定した root の実体そのもの。別の場所へのコピー・
+# 他の版の探索・sidecar への切替は作らず、バイト列はこのプロセスのメモリにだけ持つ
+# （ADR-073）。読めなければ CLI を 1 つも起動する前に、root 消失と同じ文言で止める。
+# バイト列は argv（`-c`）ではなく標準入力（`python3 -I -`）で渡す。argv は Windows の
+# CreateProcess 上限（約 32 KB）・MSYS の引数変換・ロケールでの復号を受ける。Python は
+# 標準入力のプログラムを読み切ってから実行するので、子の git が標準入力を待つことはない。
+# `-I`（隔離モード）は必須: `-` でも sys.path の先頭へ cwd（レビュー対象のリポジトリ）が
+# 入り、対象に json.py などがあると標準ライブラリの import を乗っ取られる（ファイル実行
+# では先頭が scripts/ なので起きなかった）。
+pin_review_evidence_producer() {
+  local helper="${SCRIPT_DIR}/review-evidence.py" content="" sha reason=""
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: --evidence requires python3, which is not on PATH." >&2
+    return 1
+  fi
+  # 末尾の改行まで保つため番兵を足して読む（$(...) は末尾の改行を落とす）。`&&` なので
+  # cat が失敗すれば番兵は付かず、置換の終了コードは cat のものになる。symlink と空ファイルは
+  # resource guard と同じく拒否する（空の producer は begin / finish が何もせず 0 で返る）。
+  if [[ -L "$helper" ]]; then
+    reason="symlink です"
+  elif [[ ! -f "$helper" ]]; then
+    reason="ありません"
+  elif [[ ! -s "$helper" ]]; then
+    reason="0 バイトです"
+  elif ! content="$(cat -- "$helper" && printf x)" || [[ "$content" != *x ]]; then
+    reason="読み取れません"
+  fi
+  if [[ -n "$reason" ]]; then
+    {
+      echo "❌ ff-dev-toolkit更新後にこのskillを再呼び出してください（review evidence の producer が${reason}）"
+      echo "   対象のファイル: ${helper}"
+      echo "   cache を手で直さず、plugin を更新・再導入してから skill を呼び直してください。"
+      echo "   別のインストール領域へ切り替えて実行しないこと — version混在と未リリースWIPの実行になります。"
+      echo "   CLI はまだ 1 つも起動していません。"
+    } >&2
+    return 2
+  fi
+  content="${content%x}"
+  if ! sha="$(printf '%s' "$content" | python3 -I -c 'import hashlib, sys; sys.stdout.write(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')" \
+    || [[ ! "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "ERROR: cannot compute the digest of the review evidence producer: ${helper}" >&2
+    return 1
+  fi
+  REVIEW_EVIDENCE_PRODUCER_PATH="$helper"
+  REVIEW_EVIDENCE_PRODUCER="$content"
+  REVIEW_EVIDENCE_PRODUCER_SHA256="$sha"
+}
+
+# 固定したバイト列で review-evidence.py を実行する。begin はその digest を記録し、finish は
+# 同じ digest を示さないと拒否される（begin と finish が同じ producer だったことの照合）。
+run_review_evidence() { # <action> <引数...>
+  if [[ -z "$REVIEW_EVIDENCE_PRODUCER_SHA256" ]]; then
+    echo "ERROR: the review evidence producer was not pinned at start (orchestrator bug)." >&2
+    return 1
+  fi
+  printf '%s' "$REVIEW_EVIDENCE_PRODUCER" | python3 -I - "$@" --producer-sha256 "$REVIEW_EVIDENCE_PRODUCER_SHA256"
+}
+
+# 開始時の plugin root が実行中に変わったら名指しする。見張るのは `multi-agent.sh` の存在と、
+# `review-evidence.py` の存在・内容の 2 点だけで、ほかのファイルの変化は検知しない。CLI の
+# 完走後の工程は（この診断の読み取りを除いて）この root から何も読まないので、レポートと
+# evidence は開始時に読んだものだけで仕上がる。案内するのは次のコマンドの前に skill を
+# 呼び直すことだけで、他の版は探さない（ADR-036）。
+report_plugin_root_change() {
+  local changed="" current
+  if [[ ! -f "${SCRIPT_DIR}/multi-agent.sh" ]]; then
+    changed="${SCRIPT_DIR}/multi-agent.sh is gone"
+  fi
+  if [[ -n "$REVIEW_EVIDENCE_PRODUCER_PATH" ]]; then
+    if [[ ! -f "$REVIEW_EVIDENCE_PRODUCER_PATH" ]]; then
+      changed="${changed:+${changed}; }${REVIEW_EVIDENCE_PRODUCER_PATH} is gone"
+    elif ! current="$(cat -- "$REVIEW_EVIDENCE_PRODUCER_PATH" 2>/dev/null && printf x)" \
+      || [[ "${current%x}" != "$REVIEW_EVIDENCE_PRODUCER" ]]; then
+      changed="${changed:+${changed}; }${REVIEW_EVIDENCE_PRODUCER_PATH} no longer reads back as the bytes read at start"
+    fi
+  fi
+  [[ -n "$changed" ]] || return 0
+  echo "" >&2
+  echo "ℹ️  The plugin root this run started from changed while it ran: ${changed}." >&2
+  if [[ -n "$REVIEW_EVIDENCE_PRODUCER_PATH" ]]; then
+    echo "   The evidence will be finished by the review-evidence.py read at start (sha256 ${REVIEW_EVIDENCE_PRODUCER_SHA256}); no other installed version is used." >&2
+  else
+    echo "   The report was built only from what this run read at start; no other installed version is used." >&2
+  fi
+  echo "   Before the next command, re-invoke the skill so the host resolves the plugin root again (ff-dev-toolkit更新後にこのskillを再呼び出してください)." >&2
+}
+
+# finish が証跡を書けなかったとき、理由（直前の ERROR 行）に続けて、残したもの・再実行の範囲を
+# 示す。残したファイルは診断用で、手で receipt に組み立てない（verify は署名の無いローカルの
+# 出自記録を照合するだけで、手で組み立てた receipt を見分けられない）。
+print_evidence_finish_failure() { # <results file> <report sha256>
+  local task
+  {
+    echo ""
+    echo "❌ Review evidence was not issued for this run; no review-evidence.json was written (reason: the ERROR line above)."
+    echo "   Kept as they were, for inspection only:"
+    echo "     start record (subject and plan): ${REVIEW_EVIDENCE_START}"
+    echo "     task results: $1"
+    echo "     report: ${OUTPUT_DIR}/integrated-report.md (sha256 $2)"
+    echo "   Do not edit or assemble these into a receipt — a receipt must come from finish (verify checks local"
+    echo "   provenance only and cannot tell a hand-assembled one apart)."
+    echo "   Re-run scope: run the same command again. With plain --evidence (no --require-prior-review /"
+    echo "   --continue-review) you may drop --fresh and add --resume: finished tasks are reused only while"
+    echo "   HEAD, base, the diff, --description, the plan and models, and the toolkit files are all unchanged."
+    echo "   Otherwise every planned task runs again:"
+    while IFS= read -r task; do
+      if [[ -n "$task" ]]; then
+        echo "     ${task}"
+      fi
+    done <<< "${FULL_EXECUTION_PLAN:-$EXECUTION_PLAN}"
+  } >&2
+}
+
 # ── 基準スナップショットの取得と diff 固定（この 2 つは隣接させる） ──
 #
 # 基準を先に離れた場所で取ると、基準取得から diff 固定までのあいだに「動いて元へ戻る」
@@ -3251,7 +3385,7 @@ capture_baseline_and_fix_diff() {
       --base "$BASE_BRANCH" --plan "${FULL_EXECUTION_PLAN:-$EXECUTION_PLAN}" --main "${REVIEW_MAIN:-}")
     [[ -z "$REVIEW_EVIDENCE_PRIOR" ]] || evidence_args+=(--prior "$REVIEW_EVIDENCE_PRIOR")
     [[ -z "$REVIEW_EVIDENCE_PARENT" ]] || evidence_args+=(--parent "$REVIEW_EVIDENCE_PARENT")
-    python3 "$SCRIPT_DIR/review-evidence.py" "${evidence_args[@]}" || return 1
+    run_review_evidence "${evidence_args[@]}" || return 1
     # Once this run begins successfully, discard the previous ready receipt.
     # A begin failure keeps the old receipt, which still only proves its own subject.
     rm -f "${OUTPUT_DIR}/review-evidence.json" || return 1
@@ -6983,6 +7117,27 @@ resolve_critical_nonblock_perspectives() {
   printf '%s\n' "$v"
 }
 
+# 名簿の typo は「その観点が計画に現れない」だけでブロック側へ倒れる（fail closed）
+# ため実害はないが、意図した格下げが黙って効かないので診断を残す。
+warn_unknown_critical_nonblock() { # <名簿>
+  local p
+  for p in $1; do
+    if [[ -z "$(resolve_perspective_file "$p")" ]]; then
+      echo "⚠️ critical_nonblock_perspectives の '${p}' は存在しない観点名です（typo?）。未知の名前は無視され、載っていない観点は従来どおりブロックします" >&2
+    fi
+  done
+}
+
+# review の実行は名簿を開始時に 1 回だけ解決し、レポート生成はその値を使う。
+# 生成時に読み直すと、レビュー中の plugin 更新で既定 config（${SCRIPT_DIR}/agent-config.yaml）
+# が消えたとき黙って組み込み既定へ落ち、観点ファイルの存在確認も偽の typo 警告を出す。
+# これで CLI の完走後の工程は、root 変化の診断（report_plugin_root_change）を除いて plugin の root から何も読まない。
+resolve_critical_nonblock_at_start() {
+  REVIEW_CRITICAL_NONBLOCK_SET="$(resolve_critical_nonblock_perspectives)"
+  REVIEW_CRITICAL_NONBLOCK_RESOLVED=true
+  warn_unknown_critical_nonblock "$REVIEW_CRITICAL_NONBLOCK_SET"
+}
+
 # ── 型付き判定行の集計（ADR-065 の C3 追記）──
 # 観点結果に有効な型付き判定行（`- verdict: severity=… failure_scenario=… confidence=…`）が
 # 1 行でもあれば、その観点の Critical 判定と集計は判定行（typed_verdicts_extract の
@@ -7368,14 +7523,12 @@ HEADER
     rm -f "$report_file" 2>/dev/null || true
     return 1
   fi
-  crit_nonblock_set="$(resolve_critical_nonblock_perspectives)"
-  # 名簿の typo は「その観点が計画に現れない」だけでブロック側へ倒れる（fail closed）
-  # ため実害はないが、意図した格下げが黙って効かないので診断を残す。
-  for crit_persp in $crit_nonblock_set; do
-    if [[ -z "$(resolve_perspective_file "$crit_persp")" ]]; then
-      echo "⚠️ critical_nonblock_perspectives の '${crit_persp}' は存在しない観点名です（typo?）。未知の名前は無視され、載っていない観点は従来どおりブロックします" >&2
-    fi
-  done
+  if [[ "$REVIEW_CRITICAL_NONBLOCK_RESOLVED" == true ]]; then
+    crit_nonblock_set="$REVIEW_CRITICAL_NONBLOCK_SET"
+  else
+    crit_nonblock_set="$(resolve_critical_nonblock_perspectives)"
+    warn_unknown_critical_nonblock "$crit_nonblock_set"
+  fi
   while IFS= read -r crit_entry; do
     [[ -z "$crit_entry" ]] && continue
     if [[ " $crit_seen " == *" $crit_entry "* ]]; then continue; fi
@@ -7859,6 +8012,18 @@ main() {
     exit $?
   fi
 
+  # 信頼度の報告閾値は CLI を 1 つも起動する前に検証する — 不正値で課金した後の
+  # レポート生成で落ちる形にしない（parse_ignore_paths と同じ理由）。
+  if [[ "$TASK_TYPE" == "review" ]]; then
+    REVIEW_CONFIDENCE_THRESHOLD="$(resolve_review_confidence_threshold)" || exit 1
+    resolve_critical_nonblock_at_start
+  fi
+  # evidence の producer は開始時に読み、begin / finish の両方をそのバイト列で実行する。
+  # 読めない回は巡を数える前・CLI を 1 つも起動する前に止める。
+  if [[ "$REVIEW_EVIDENCE" == true ]]; then
+    pin_review_evidence_producer || exit $?
+  fi
+
   # ── レビュー巡回の上限（全ホスト共通の経路）──
   # 同じブランチで異なる HEAD に対するレビューの起動を巡として数え、上限（既定 2 巡）を超える巡は
   # 何も起動せず exit 4 で止める。hook（guard-review-in-flight.sh）と同じライブラリ・同じ記録を
@@ -7866,12 +8031,6 @@ main() {
   # 通過口（FF_REVIEW_ROUND_ACK=1 を起動コマンドの先頭へ）・無効化（FF_REVIEW_ROUND_LIMIT=0）の
   # 正本は tests/lib/review-round-counter.sh のヘッダ。ライブラリを読めない回は判定不能として
   # 警告だけ出して通す（fail-soft）。
-  # 信頼度の報告閾値は CLI を 1 つも起動する前に検証する — 不正値で課金した後の
-  # レポート生成で落ちる形にしない（parse_ignore_paths と同じ理由）。
-  if [[ "$TASK_TYPE" == "review" ]]; then
-    REVIEW_CONFIDENCE_THRESHOLD="$(resolve_review_confidence_threshold)" || exit 1
-  fi
-
   if [[ "$TASK_TYPE" == "review" ]]; then
     local round_lib="$SCRIPT_DIR/../tests/lib/review-round-counter.sh"
     # shellcheck source=../tests/lib/review-round-counter.sh
@@ -8061,7 +8220,16 @@ main() {
   finalize_resume_cache || exit 1
 
   generate_report || exit 1
+  report_plugin_root_change
   if [[ "$REVIEW_EVIDENCE" == true ]]; then
+    # 生成した直後のレポートの digest。finish はアーカイブするバイト列とこれを照合する
+    # （生成から finish までの間の書き換えを、受理される証跡へ持ち込まない）。
+    if ! evidence_report_sha="$(python3 -I -c 'import hashlib, sys; sys.stdout.write(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' \
+      "${OUTPUT_DIR}/integrated-report.md")" || [[ ! "$evidence_report_sha" =~ ^[0-9a-f]{64}$ ]]; then
+      echo "ERROR: cannot take the digest of the generated report: ${OUTPUT_DIR}/integrated-report.md" >&2
+      print_evidence_finish_failure "(not written)" "unavailable"
+      exit 1
+    fi
     evidence_results="${OUTPUT_DIR}/.evidence-results.$$"
     : > "$evidence_results" || exit 1
     while IFS= read -r evidence_task; do
@@ -8077,8 +8245,17 @@ main() {
       fi
       printf '%s\t%s\n' "$evidence_task" "$evidence_status" >> "$evidence_results" || exit 1
     done <<< "${FULL_EXECUTION_PLAN:-$EXECUTION_PLAN}"
-    python3 "$SCRIPT_DIR/review-evidence.py" finish --file "$REVIEW_EVIDENCE_START" \
-      --output "$OUTPUT_DIR" --results "$evidence_results" || exit 1
+    if ! run_review_evidence finish --file "$REVIEW_EVIDENCE_START" --output "$OUTPUT_DIR" \
+      --results "$evidence_results" --report-sha256 "$evidence_report_sha"; then
+      print_evidence_finish_failure "$evidence_results" "$evidence_report_sha"
+      exit 1
+    fi
+    # rc 0 は receipt を書いたことの代わりにならない（何もしない producer でも 0 で返る）。
+    if [[ ! -s "${OUTPUT_DIR}/review-evidence.json" ]]; then
+      echo "ERROR: review evidence finish returned success but wrote no receipt: ${OUTPUT_DIR}/review-evidence.json" >&2
+      print_evidence_finish_failure "$evidence_results" "$evidence_report_sha"
+      exit 1
+    fi
     rm -f "$REVIEW_EVIDENCE_START" "$evidence_results" || exit 1
   fi
 

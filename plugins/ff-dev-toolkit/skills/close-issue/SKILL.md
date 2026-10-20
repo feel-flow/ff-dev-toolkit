@@ -9,7 +9,7 @@ description: マージ直前に PR が閉じる Issue の受け入れ条件（AC
 
 最初に[共通設定契約](../asdd-init/references/configuration.md)を読み、`scripts/asdd/config.mjs` の `loadConfig(root)` で対象プロジェクトの `.asdd/config.json` を検証する。以下の従来手順より、合意済みの文書構成・機能スイッチ・ワークフローを優先する。設定なしは従来互換、不正設定は自動処理を止めて診断する。
 
-合意した確認方法だけを適用する。カバレッジ80%、Result pattern、strict、定数化などの推奨を未合意のゲートにしない。ACE・振り返り・複数AIレビューの無効設定を尊重し、チェーン末尾にも追加しない。市民開発のIssue中心運用では、既存の組織ルールを保ちつつ、未採用のPR・7文書を必須化しない。
+合意した確認方法だけを適用する。未合意の推奨をゲートにせず、無効にした ACE・振り返り・複数AIレビューをチェーンへ足さない。
 
 PR 作成後・`gh pr merge` の**前**に実行し、PR が閉じる Issue の受け入れ条件（AC）を照合する。固定手順（対象 Issue の検出・closing keyword 抵触検査・工数の実測・checks の分岐・ゲート実測鮮度・merge コマンド生成）は同梱 `scripts/finish.sh precheck` が実行する。
 
@@ -56,6 +56,7 @@ fi
 ### 1. 固定手順の実行（対象 Issue の検出 + 前提の検査）
 
 ```bash
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-shebang-cr.sh" || exit $?
 PR_NUMBER="${PR_NUMBER:?PR 番号を先に設定すること}"
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" precheck "${PR_NUMBER}"
 ```

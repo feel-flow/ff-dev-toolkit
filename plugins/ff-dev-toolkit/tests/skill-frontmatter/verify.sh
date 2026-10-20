@@ -183,10 +183,16 @@ check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '実行できなかっ�
   '「実行できなかった」と「違反なし」を区別する fail-closed の記述'
 check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '違反なしへ倒さない' \
   'suite 不在・依存不足・skip を違反なしへ倒さない規定'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" 'ff_host_is_msys' \
+  'MSYS では字下げした部分 skip も実行できなかったとする判定'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" 'WSL のホームディレクトリ配下へ clone' \
+  'MSYS で実行できなかったときの次の一手'
 check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '静的 suite プリフライト' \
   '出力テンプレートの静的 suite プリフライト節'
 check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '❌ 実行できなかった' \
   '出力テンプレート: プリフライトの「実行できなかった」状態'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" 'WSL のホームディレクトリ配下へ clone' \
+  '出力テンプレートが WSL の次の一手を名指しする'
 
 # 手順 8 の実行ビット検査（Issue `#1741` / bundle `#1758` / OBS-206）。新規 suite / hook の
 # 実行ビット欠落を commit 前に赤にする呼び出し（exec_bit_scan）と、判定材料が取れない回を

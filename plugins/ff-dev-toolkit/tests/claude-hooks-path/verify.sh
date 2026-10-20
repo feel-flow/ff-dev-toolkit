@@ -35,6 +35,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+# shellcheck source=../lib/msys-case.sh
+if [ -f "$SCRIPT_DIR/../lib/msys-case.sh" ]; then
+  . "$SCRIPT_DIR/../lib/msys-case.sh"
+  ff_msys_case_selftest || exit 1
+fi
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
 SETTINGS="${REPO_ROOT:+$REPO_ROOT/.claude/settings.json}"
 
@@ -712,6 +717,9 @@ else
   make_stub "$RG/scripts/sync-dev-toolkit-to-public.sh" "plugins/ff-dev-toolkit"
   git init -q "$RG"
   for n in session-start-sync-drift.sh session-start-dependabot-health.sh; do
+    if declare -F ff_skip_msys_case >/dev/null 2>&1 && ff_skip_msys_case "${OSTYPE:-}" "最小 PATH の ${n} は実行ファイルのコピーが DLL を読めず rc=127 になる"; then
+      continue
+    fi
     rc=0
     (cd "$RG" && env -u CLAUDE_PROJECT_DIR -u GIT_DIR -u GIT_WORK_TREE -u SYNC_DRIFT_BASE_OVERRIDE -u DEPENDABOT_HEALTH_GH \
       GIT_CEILING_DIRECTORIES="$TMP" PATH="$NOGH_BIN" bash "$RG/.claude/hooks/$n") \
@@ -806,8 +814,12 @@ EOF'
   gi_case deny  '実 identity の cwd でも -c "user.email=<合成>" は止める（引数全体の引用）' "git -c user.name=A -c \"user.email=$(git -C "$GI_FX" config --get user.email)\" commit -m x" "$GI_OK"
   gi_case allow "引数全体を引用した -c 'user.name=A B' -c 'user.email=…' の両方指定は通す" "git -c 'user.name=A B' -c 'user.email=a@b.c' commit -m x"
   gi_case deny  "単独 & の後ろの git commit は止める" 'true & git commit -m x'
-  gi_case deny  "バックスラッシュ継続行で分かれた git / commit は止める" 'git \
+  if declare -F ff_skip_msys_case >/dev/null 2>&1 && ff_skip_msys_case "${OSTYPE:-}" "バックスラッシュ継続行は jq が改行に CR を足すため commit として結合できない"; then
+    :
+  else
+    gi_case deny  "バックスラッシュ継続行で分かれた git / commit は止める" 'git \
 commit -m x'
+  fi
   gi_case allow "2>&1 付きの上書き commit は & で割れても通す" 'git -c user.name=A -c user.email=a@b.c commit -m x 2>&1'
   gi_case deny  "2>&1 付きの素の commit は止める" 'git commit -m x 2>&1'
   # 分担（Issue `#1789`）: knowledge の書き込み口（finish.sh knowledge-commit）は script の内側で commit し、

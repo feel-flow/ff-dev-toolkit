@@ -57,6 +57,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+# shellcheck source=../lib/msys-case.sh
+if [ -f "$SCRIPT_DIR/../lib/msys-case.sh" ]; then
+  . "$SCRIPT_DIR/../lib/msys-case.sh"
+  ff_msys_case_selftest || exit 1
+fi
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd -P)"
 REGISTRY="$REPO_ROOT/docs/06-reference/HOST-PARITY.md"
@@ -353,24 +358,29 @@ else
   fi
 
   # Codex 入口は相対 symlink であること。実体コピーは正本の複製になり、黙ってドリフトする。
-  for name in $codex_names; do
-    link="$REPO_ROOT/$codex_dir/$name"
-    expected="../../$canon_dir/$name"
-    if [ ! -L "$link" ]; then
-      bad "Codex 入口が symlink ではありません: ${codex_dir}/${name}（SKILL.md のコピーは作らない）"
-      continue
-    fi
-    actual="$(readlink "$link")"
-    if [ "$actual" != "$expected" ]; then
-      bad "Codex 入口の向き先が不正です: ${codex_dir}/${name} は ${actual}（期待: ${expected}）"
-      continue
-    fi
-    if [ ! -f "$link/SKILL.md" ] || [ ! "$link/SKILL.md" -ef "$REPO_ROOT/$canon_dir/$name/SKILL.md" ]; then
-      bad "Codex 入口が正本と同一の SKILL.md を参照していません: ${codex_dir}/${name}"
-      continue
-    fi
-    ok "Codex 入口 ${name} が正本への相対 symlink"
-  done
+  # 名前の集合比較は上で済ませている。symlink 自体は MSYS ではコピーとして展開される。
+  if declare -F ff_skip_msys_case >/dev/null 2>&1 && ff_skip_msys_case "${OSTYPE:-}" "Codex 入口はコピーとして展開され symlink 検査が成立しない"; then
+    :
+  else
+    for name in $codex_names; do
+      link="$REPO_ROOT/$codex_dir/$name"
+      expected="../../$canon_dir/$name"
+      if [ ! -L "$link" ]; then
+        bad "Codex 入口が symlink ではありません: ${codex_dir}/${name}（SKILL.md のコピーは作らない）"
+        continue
+      fi
+      actual="$(readlink "$link")"
+      if [ "$actual" != "$expected" ]; then
+        bad "Codex 入口の向き先が不正です: ${codex_dir}/${name} は ${actual}（期待: ${expected}）"
+        continue
+      fi
+      if [ ! -f "$link/SKILL.md" ] || [ ! "$link/SKILL.md" -ef "$REPO_ROOT/$canon_dir/$name/SKILL.md" ]; then
+        bad "Codex 入口が正本と同一の SKILL.md を参照していません: ${codex_dir}/${name}"
+        continue
+      fi
+      ok "Codex 入口 ${name} が正本への相対 symlink"
+    done
+  fi
 
   # 入口検査スクリプトが持つ名簿（手で維持している写し）。片側だけ増えると、
   # 2 件目以降のスキルが検査されないまま「入口検査は緑」になる。

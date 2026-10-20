@@ -348,6 +348,13 @@ gh_pr_view_or_die() { # <PR番号> <--json フィールド> → stdout に JSON
     local text
     text="$(cat "$err")"; rm -f "$err"
     case "$text" in
+      *"Unknown JSON field"*)
+        # 古い gh が field を知らない回は、どの実行ファイルが答えたかを出す（WSL の PATH 上の古い
+        # gh を、利用者が別の gh と取り違えないため。Issue `#2212` / OBS-376）
+        local gh_path gh_ver
+        gh_path="$(command -v gh 2>/dev/null)" || gh_path=""
+        gh_ver="$(gh --version 2>&1 | head -n 1)" || gh_ver=""
+        die_env "gh が PR #${pr} の JSON field を知りません（gh: ${text}）。使った gh: ${gh_path:-パスを解決できません}（gh --version: ${gh_ver:-版を読めません}）" "この gh を JSON field に対応する新しい版へ替えるか、新しい版の gh が git を読める作業ツリーで再実行する。実際に選ばれる gh は type -a gh で確かめる（WSL の bash は gh.exe を gh として選ばない）" ;;
       *"Could not resolve to a PullRequest"*|*"no pull requests found"*|*"not found"*|*"Not Found"*)
         die_env "PR #${pr} が見つかりません（gh: ${text})" "番号を確かめて再実行する（PR 番号省略時は現在のブランチの PR を対象にする skill 側の検出を使う）" ;;
       *)

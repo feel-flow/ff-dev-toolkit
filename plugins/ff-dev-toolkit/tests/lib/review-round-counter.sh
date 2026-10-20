@@ -26,6 +26,13 @@
 #     （行数ではない。並列起動が同じ巡を 2 行書いても 1 巡）
 #   - **PR 作成前のレビュー（実装途中の proactive な起動）も巡を消費する**。印で区別はしない。
 #     使い切った後に PR のレビューを回す必要があれば、下の通過口で 1 巡ずつ通す
+#   - **数えるのは現在の HEAD の系列の巡だけ**（Issue `#2094`）。記録された HEAD が現在の HEAD の
+#     祖先でなければ（`git merge-base --is-ancestor` が rc 1）、その記録は巡に数えない。
+#     rebase・amend などで履歴を作り直した後に、作り直す前の HEAD で回した巡が新しい系列の巡として
+#     残り、作り直した系列の 1 回目の fix の再レビューを 3 巡目として止めないため。祖先関係にある
+#     HEAD の巡は従来どおり数える（上限そのものは弱めない）。祖先判定が rc 1 以外で失敗した記録
+#     （オブジェクトが無い・git が失敗した）は**数える側**（止める側）へ倒す。記録ファイルの行は
+#     消さない（数えないだけ。系列を戻せば再び数える）
 #
 # 母集団（巡に数える起動）:
 #   - agent（hook だけ）: hook がレーンを取る対象と同じ集合（名簿の型 / 委譲レビューの prompt）。
@@ -87,6 +94,7 @@ RR_ACK=0
 RR_PENDING_FILE=""
 RR_PENDING_ROUND=""
 RR_PENDING_HEAD=""
+RR_DROPPED=0
 
 RR_HEADER="# ff-review-rounds v1"
 
@@ -274,6 +282,30 @@ rr_read() { # <file>
   return 0
 }
 
+# RR_HEADS を現在の HEAD の系列（祖先または同一）の記録だけへ絞る。RR_HEADS / RR_COUNT を
+# 設定し直し、外した件数を RR_DROPPED に置く。祖先でないと確定した記録（rc 1）だけを外し、
+# 判定に失敗した記録（rc 1 以外）は数える側へ残す（Issue `#2094`）。
+rr_filter_lineage() { # <repo root> <現在の HEAD>
+  local h rc kept="" n=0
+  RR_DROPPED=0
+  while IFS= read -r h; do
+    [ -n "$h" ] || continue
+    rc=0
+    git -C "$1" merge-base --is-ancestor "$h" "$2" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 1 ]; then
+      RR_DROPPED=$((RR_DROPPED + 1))
+      continue
+    fi
+    kept="${kept}${h}
+"
+    n=$((n + 1))
+  done <<EOF
+$RR_HEADS
+EOF
+  RR_HEADS="$kept"
+  RR_COUNT="$n"
+}
+
 rr_append() { # <file> <round> <head>
   local now tmp
   now="$(date -u +%s 2>/dev/null)"
@@ -344,7 +376,7 @@ rr_is_integration_branch() { # <repo root> <branch>
 # 判定の本体。起動であることは呼び出し側が確かめてある。RR_VERDICT / RR_NOTE / RR_REASON と、
 # 通すときに記録する内容（RR_PENDING_*）を設定する。記録そのものは ff_review_round_commit。
 rr_judge() { # <repo root>
-  local root="$1" limit branch head key dir file next short residual rounds_list h k
+  local root="$1" limit branch head key dir file next short residual dropped rounds_list h k
   limit="$(rr_limit)"
   branch="$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null)"
   if [ -z "$branch" ]; then
@@ -384,6 +416,7 @@ rr_judge() { # <repo root>
   done <<EOF
 $RR_HEADS
 EOF
+  rr_filter_lineage "$root" "$head"
   next=$((RR_COUNT + 1))
   if [ "$next" -le "$limit" ] || [ "${RR_ACK:-0}" -eq 1 ]; then
     RR_PENDING_FILE="$file"
@@ -402,10 +435,13 @@ EOF
 $RR_HEADS
 EOF
   residual="$(ff_review_round_residual "$file")"
+  dropped=""
+  [ "${RR_DROPPED:-0}" -gt 0 ] && dropped="${RR_DROPPED} 件（現在の HEAD の祖先でない = rebase などで作り直す前の系列の巡）"
   RR_VERDICT="deny"
   RR_REASON="⚠️ ff-dev-toolkit guard（レビュー巡回の上限）: ブランチ ${branch} で ${next} 巡目のレビューを起動しようとしています。上限は ${limit} 巡です（${limit} 巡目の fix の後にレビューを重ねない）。
 ${rounds_list}  今回の起動: HEAD ${short}
-${residual:+  残件: ${residual}
+${dropped:+  数えていない記録: ${dropped}
+}${residual:+  残件: ${residual}
 }残件はこれ以上の巡で拾わず、/out-of-scope-issue の bundle 統合へ流してください（判定順は YAGNI → 同 PR でインライン修正 → 既存の open bundle へ追記 → bundle 単位で新規起票）。未解消の Critical / Warning がある間はマージしません（解消は修正か記録付き棄却。${limit} 巡目の fix の確認は親の直読と対象 suite の再実行で行い、結果を PR 本文へ残す）。
 方針転換などでこの 1 巡だけ通す必要がある場合（通した巡も記録されるので、次の巡でまた止まります）:
   - Bash: 起動コマンドの先頭へ環境代入を付ける → FF_REVIEW_ROUND_ACK=1 bash …/multi-review.sh …

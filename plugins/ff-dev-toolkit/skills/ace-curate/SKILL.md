@@ -11,7 +11,7 @@ description: マージ済み PR または指定資料から根拠付きの業務
 
 `features.ace=false` のとき、ワークフローからの自動実行・Playbook作成・収集・整理を行わない。ユーザーがACEを明示依頼した場合は依頼範囲で実行するが、永続設定を勝手に変更しない。完了後の振り返りも `features.retrospective` が有効な場合だけ自動実行する。
 
-マージ後・cleanup 後に PR から知見を抽出し ACE Playbook へ追記する。判断は本文が持ち、固定手順（claim・stage・commit・保護判定・push・PR 経由）は同梱 `scripts/finish.sh knowledge-commit` が実行する。規則の全文は [references/curate.md](references/curate.md)。
+知見を ACE Playbook へ追記する。固定手順は同梱 `scripts/finish.sh knowledge-commit`。全文は [references/curate.md](references/curate.md)。
 
 **domainは通常curateの標準収集対象です。** 引数なし・PR番号のみでも他の知見と同時に評価し、opt-inを要求しません。根拠がある未確認知識もunverifiedで収集し、確認済みになるまで収集自体を待たせません。
 
@@ -162,6 +162,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 **既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。**保護判定（必須・直 push を試す前に行う）**は `probe`: `protected` → PR 経由 / `unprotected` → 直 push / `unknown` → 既定を試す（拒否は rc 3 で PR 経由へ）。`classic=protected-no-pr` は rulesets に PR 必須が無ければ `unprotected`。commitlint（`header-max-length`・type 許容リスト）で `knowledge` が非許容なら prefix だけを置き換える。全文は [references/curate.md](references/curate.md)。追記を script で当てるなら [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
 
 ```bash
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-shebang-cr.sh" || exit $?
 commit_type="knowledge"   # commitlint で knowledge が非許容なら chore 等へ（要約・Categories: body は不変）
 probe_out="$(FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit probe)" || { echo "保護判定が成立しない（rc=$?）。停止" >&2; exit 1; }
 case "$probe_out" in *"protection=protected"*) protected=1 ;; *) protected=0 ;; esac

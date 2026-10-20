@@ -64,6 +64,12 @@ def subject(base, output):
                     ['git', 'diff', '--binary', base + '...HEAD'])).hexdigest())
 
 
+def sha256_arg(value, name):
+    if value and (len(value) != 64 or any(c not in '0123456789abcdef' for c in value)):
+        raise ValueError('invalid ' + name)
+    return value
+
+
 def tasks_csv(value):
     values = value.split(',') if value else []
     if any(not x or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-' for c in x)
@@ -84,7 +90,8 @@ def inspect(record, seen=None):
     if digest(record['report']) != record['report_sha256']:
         raise ValueError('review report changed')
     text = Path(record['report']).read_text()
-    if text.splitlines()[0] != '# Multi-CLI Review — Integrated Report':
+    # Escaped to keep the source ASCII.
+    if text.splitlines()[0] != '# Multi-CLI Review \u2014 Integrated Report':
         raise ValueError('not an integrated review report')
     if '<!-- CRITICAL_BLOCK -->' in text.splitlines():
         raise ValueError('blocking Critical in review evidence')
@@ -150,7 +157,9 @@ def verify(record, args, historical=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    # The producer runs this file from bytes pinned at start, fed on stdin (`python3 -I -`),
+    # where argv[0] is '-'; keep usage messages naming the file in both forms.
+    parser = argparse.ArgumentParser(prog='review-evidence.py', description=__doc__)
     parser.add_argument('action', choices=['begin', 'finish', 'verify'])
     parser.add_argument('--file', required=True)
     parser.add_argument('--output', required=True)
@@ -162,7 +171,16 @@ def main():
     parser.add_argument('--parent', default='')
     parser.add_argument('--required', default='')
     parser.add_argument('--prior-required', default='')
+    # begin / finish only (verify ignores both). Digest of the producer bytes the
+    # orchestrator pinned at start: once begin records one, finish must present the same
+    # one. Provenance, not part of the verified subject.
+    parser.add_argument('--producer-sha256', default='')
+    # Digest of integrated-report.md taken right after the orchestrator generated it.
+    parser.add_argument('--report-sha256', default='')
     args = parser.parse_args()
+    if args.action != 'verify':
+        sha256_arg(args.producer_sha256, 'producer digest')
+        sha256_arg(args.report_sha256, 'report digest')
     if args.action == 'begin':
         prior = load(args.prior) if args.prior else None
         parent = load(args.parent) if args.parent else None
@@ -174,20 +192,35 @@ def main():
         if not plan or len(set(plan)) != len(plan) or any(
                 len(task.split(':')) != 2 or not all(task.split(':')) for task in plan):
             raise ValueError('missing review plan')
-        write(args.file, dict(schema=1, id=uuid.uuid4().hex,
-                             subject=subject(args.base, args.output), plan=plan, main=args.main,
-                             prior=prior, parent=parent, started_ns=time.time_ns()))
+        record = dict(schema=1, id=uuid.uuid4().hex,
+                      subject=subject(args.base, args.output), plan=plan, main=args.main,
+                      prior=prior, parent=parent, started_ns=time.time_ns())
+        if args.producer_sha256:
+            record['producer_sha256'] = args.producer_sha256
+        write(args.file, record)
     elif args.action == 'finish':
         record = load(args.file)
+        if not isinstance(record, dict):
+            raise ValueError('invalid review evidence start record')
+        if record.get('producer_sha256', '') != args.producer_sha256:
+            raise ValueError('review evidence producer changed between begin and finish')
         if subject(record['subject']['base_ref'], args.output) != record['subject']:
             raise ValueError('repository changed during review')
         rows = [row.split('\t') for row in Path(args.results).read_text().splitlines()]
         if any(len(row) != 2 for row in rows) or len({row[0] for row in rows}) != len(rows):
             raise ValueError('invalid/duplicate task result')
+        # The task set must be the begin plan; the states stay verify's to judge (an
+        # unsuccessful run is still recorded, and verify refuses it).
+        if {row[0] for row in rows} != set(record['plan']):
+            raise ValueError('task results do not match the review plan')
         report = Path(args.output) / 'integrated-report.md'
+        # Read once: the bytes compared with the generation-time digest are the bytes archived.
+        content = report.read_bytes()
+        if args.report_sha256 and hashlib.sha256(content).hexdigest() != args.report_sha256:
+            raise ValueError('integrated report changed after it was generated')
         archive = Path(args.output) / '.evidence' / record['id'] / 'report.md'
         archive.parent.mkdir(parents=True, exist_ok=True)
-        archive.write_bytes(report.read_bytes())
+        archive.write_bytes(content)
         archive.chmod(0o600)
         record.update(results=dict(rows), report=str(archive.resolve()),
                       source_report=str(report.resolve()), report_sha256=digest(archive),

@@ -3,6 +3,11 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 . "$SCRIPT_DIR/../lib/git-fixture.sh"
+# shellcheck source=../lib/msys-case.sh
+if [ -f "$SCRIPT_DIR/../lib/msys-case.sh" ]; then
+  . "$SCRIPT_DIR/../lib/msys-case.sh"
+  ff_msys_case_selftest || exit 1
+fi
 ORCH="${1:?release script required}"
 ORCH="$(cd "$(dirname "$ORCH")" && pwd -P)/$(basename "$ORCH")"
 REPO_ROOT="$(cd "$(dirname "$ORCH")/.." && pwd -P)"
@@ -89,6 +94,9 @@ expect no 'untracked input' footer_gate_reusable "$BASE:full" "$HEAD_OK"
 rm extra
 # Amend preserves a single parent but alters the checked contents: no names-only proof.
 for mutation in body other mode suffix; do
+  if [ "$mutation" = "mode" ] && declare -F ff_skip_msys_case >/dev/null 2>&1 && ff_skip_msys_case "${OSTYPE:-}" "footer の mode 差は core.fileMode=false で index に届かず内容差として測れない"; then
+    continue
+  fi
   git reset -q --hard "$HEAD_OK"
   case "$mutation" in
     body) sed 's/- body/- changed body/' "$CHANGELOG" >"$TMP/new"; cp "$TMP/new" "$CHANGELOG" ;;

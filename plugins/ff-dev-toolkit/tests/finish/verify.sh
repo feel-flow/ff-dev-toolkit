@@ -19,6 +19,8 @@
 #               SKILL.md が上限内であること。
 #               汎用の検査は本 suite の 1 箇所だけが持つ（各 suite へ複製しない。個別の検査が残る
 #               suite はそのまま）
+#   shebang CR — scripts/check-shebang-cr.sh は finish.sh を実行する前に shebang 行だけを見る。
+#               CR なら rc 2、LF と後続行だけの CR は通過、読めない対象は rc 2（S）
 #
 # 前提崩れ（PR 不在・gh 不通・記録不在）は黙って 0 で終わらず、判定不能を名指しした
 # 非 0 と復帰手段を出す — これを空振り検出の針にする。
@@ -31,6 +33,9 @@
 # 空振り検出: watch 非 0 後の失敗 check の抽出を空にすると (D5 / D6c)、再待機上限を 1 回へ下げると (D6 / D6b) が赤になる（2026-09-29 実測）。
 # 空振り検出: watch 非 0 後の全成功を通す分岐を消すと (D6a)、checks 再取得不能時の再取得呼び出しを消すと (D7) が赤になる（2026-09-29 実測）。
 # 空振り検出: knowledge-commit push の rc 3 判定から `Protected branch update failed`（署名必須の拒否）・`Required status check`・`not authorized to push` の針を 1 つずつ外すと、それぞれ対応する H7b が rc=1 で赤になる（2026-09-30 実測）。
+# 空振り検出: check-shebang-cr.sh の読めない対象の exit 2 を exit 0 にすると (S4) が赤になる（2026-10-19 実測。欠落パスが rc 0 の緑になる）。
+# 空振り検出: finish.sh の gh_pr_view_or_die から未知の JSON field の分岐を消すと (B2b) が赤になる（2026-10-20 実測。gh 不通の汎用文へ落ちてパスと版が出ない）。
+# 変異検出: shebang 行の CR で止まる exit 2 を exit 0 にすると (S1) が赤、成功時の exit 0 を exit 2 にすると LF の写しを止めて (S2) が赤になる（2026-10-19 実測）。
 #
 # 実 gh・ネットワーク・課金は伴わない。一時ディレクトリを作れない環境は skip ではなく
 # 赤（この suite の検査は 1 件も成立していない）。
@@ -105,6 +110,202 @@ has_text() { # <text> <部分一致の針>
   awk -v n="$2" 'index($0, n) { f = 1 } END { exit f ? 0 : 1 }' <<<"$1"
 }
 
+# ── S. shebang 行の CR を、対象を実行する前に止める ───────────────────────────
+echo
+echo "== S. shebang 行の CR（実行前） =="
+SHEBANG_CHECK="$PLUGIN_ROOT/scripts/check-shebang-cr.sh"
+if [ ! -f "$SHEBANG_CHECK" ]; then
+  bad "S0: check-shebang-cr.sh がありません（不在を skip にしない）"
+else
+  if syntax_err="$(bash -n "$SHEBANG_CHECK" 2>&1)"; then
+    ok "S0: check-shebang-cr.sh が bash -n を通る"
+  else
+    bad "S0: check-shebang-cr.sh が bash -n を通らない"
+    printf '%s\n' "$syntax_err" | sed 's/^/    | /' >&2
+  fi
+  SHEBANG_TMP="$TMP/shebang"
+  mkdir -p "$SHEBANG_TMP"
+  run_shebang_check() {
+    RC=0
+    OUT="$(env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT bash "$SHEBANG_CHECK" "$@" 2>"$SHEBANG_TMP/err")" || RC=$?
+    ERR="$(cat "$SHEBANG_TMP/err" 2>/dev/null || true)"
+  }
+  shebang_blob() { printf '%s%s' "$OUT" "$ERR"; }
+  denies_kernel_noise() {
+    local blob="$1"
+    local cr_bytes=$'bash\r'
+    if has_text "$blob" "syntax error"; then return 1; fi
+    if has_text "$blob" 'bash\r'; then return 1; fi
+    # bash と CR の連続バイト。パイプへ grep -q すると上流が SIGPIPE で反転する。
+    case "$blob" in
+      *"$cr_bytes"*) return 1 ;;
+    esac
+    return 0
+  }
+
+  printf '#!/usr/bin/env bash\r\n' >"$SHEBANG_TMP/cr.sh"
+  IFS= read -r shebang_first <"$SHEBANG_TMP/cr.sh" || true
+  case "$shebang_first" in
+    *$'\r'*) ok "S1 fixture: shebang 行に CR がある" ;;
+    *) bad "S1 fixture: shebang 行に CR が無い（検査が成立しない）" ;;
+  esac
+  run_shebang_check "$SHEBANG_TMP/cr.sh"
+  if [ "$RC" -eq 2 ] \
+    && has_text "$ERR" "$SHEBANG_TMP/cr.sh" \
+    && has_text "$ERR" "index から LF で checkout" \
+    && has_text "$ERR" "autocrlf の効かない worktree" \
+    && denies_kernel_noise "$(shebang_blob)"; then
+    ok "S1: shebang 行の CR は対象を実行せず rc 2 でパスと checkout を名指しする"
+  else
+    bad "S1: CR の写しを rc 2 で止めていない（rc=${RC}）: ${ERR}"
+  fi
+
+  printf '#!/usr/bin/env bash\nprintf "ARGHANDLING\\n"\nexit 2\n' >"$SHEBANG_TMP/lf.sh"
+  run_shebang_check "$SHEBANG_TMP/lf.sh"
+  if [ "$RC" -eq 0 ] && denies_kernel_noise "$(shebang_blob)"; then
+    ok "S2: LF の shebang ではこの検査は止まらない"
+  else
+    bad "S2: LF の写しを止めた（rc=${RC}）: ${ERR}"
+  fi
+  rc=0
+  lf_out="$(bash "$SHEBANG_TMP/lf.sh" 2>&1)" || rc=$?
+  if [ "$rc" -eq 2 ] && has_text "$lf_out" "ARGHANDLING"; then
+    ok "S2b: 検査のあと LF の写しの引数処理（ARGHANDLING / rc 2）へ進む"
+  else
+    bad "S2b: LF の写しの引数処理へ進んでいない（rc=${rc}）: ${lf_out}"
+  fi
+  run_shebang_check
+  if [ "$RC" -eq 0 ]; then
+    ok "S2c: 引数なしは兄弟の finish.sh を止めない"
+  else
+    bad "S2c: 引数なしが兄弟の finish.sh を止めた（rc=${RC}）: ${ERR}"
+  fi
+  run_shebang_check "$TARGET"
+  if [ "$RC" -eq 0 ]; then
+    ok "S2d: 実体の finish.sh をパスで渡しても止まらない"
+  else
+    bad "S2d: 実体の finish.sh を止めた（rc=${RC}）: ${ERR}"
+  fi
+  rc=0
+  fin_out="$(env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT bash "$TARGET" 2>&1)" || rc=$?
+  if [ "$rc" -eq 2 ] && has_text "$fin_out" "Usage:"; then
+    ok "S2e: 検査のあと finish.sh の引数処理（Usage / rc 2）へ進む"
+  else
+    bad "S2e: finish.sh の引数処理へ進んでいない（rc=${rc}）: ${fin_out}"
+  fi
+
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "has\rinside"\n' >"$SHEBANG_TMP/later.sh"
+  later_all="$(cat "$SHEBANG_TMP/later.sh")"
+  IFS= read -r shebang_first <"$SHEBANG_TMP/later.sh" || true
+  case "$later_all" in
+    *$'\r'*) later_has_cr=1 ;;
+    *) later_has_cr=0 ;;
+  esac
+  case "$shebang_first" in
+    *$'\r'*) later_shebang_cr=1 ;;
+    *) later_shebang_cr=0 ;;
+  esac
+  if [ "$later_has_cr" -eq 1 ] && [ "$later_shebang_cr" -eq 0 ]; then
+    ok "S3 fixture: CR は shebang 行より後だけにある"
+  else
+    bad "S3 fixture: CR の位置が shebang 行より後だけになっていない"
+  fi
+  run_shebang_check "$SHEBANG_TMP/later.sh"
+  if [ "$RC" -eq 0 ]; then
+    ok "S3: shebang より後の文字列の中だけの CR では止まらない"
+  else
+    bad "S3: 後続行だけの CR で止めた（rc=${RC}）: ${ERR}"
+  fi
+
+  run_shebang_check "$SHEBANG_TMP/missing-shebang-target"
+  if [ "$RC" -eq 2 ] \
+    && has_text "$ERR" "$SHEBANG_TMP/missing-shebang-target" \
+    && has_text "$ERR" "読めません" \
+    && has_text "$ERR" "検査が成立しません" \
+    && ! has_text "$ERR" "index から LF で checkout"; then
+    ok "S4: 欠落パスは rc 2 で読めなかったことを名指しする（checkout 案内にしない）"
+  else
+    bad "S4: 欠落パスが検査不成立になっていない（rc=${RC}）: ${ERR}"
+  fi
+  mkdir -p "$SHEBANG_TMP/not-a-file"
+  run_shebang_check "$SHEBANG_TMP/not-a-file"
+  if [ "$RC" -eq 2 ] && has_text "$ERR" "読めません" && ! has_text "$ERR" "index から LF で checkout"; then
+    ok "S4b: ディレクトリは通常ファイルとして読めたことにしない"
+  else
+    bad "S4b: ディレクトリを通した（rc=${RC}）: ${ERR}"
+  fi
+  printf '#!/usr/bin/env bash\n' >"$SHEBANG_TMP/noread.sh"
+  chmod a-r "$SHEBANG_TMP/noread.sh" || true
+  if [ ! -r "$SHEBANG_TMP/noread.sh" ]; then
+    run_shebang_check "$SHEBANG_TMP/noread.sh"
+    if [ "$RC" -eq 2 ] && has_text "$ERR" "読めません"; then
+      ok "S4c: 読めないファイルは rc 2（成立したことにしない）"
+    else
+      bad "S4c: 読めないファイルを通した（rc=${RC}）: ${ERR}"
+    fi
+    chmod u+r "$SHEBANG_TMP/noread.sh" || true
+  else
+    ok "S4c: この環境では chmod a-r が読めなくならない（欠落パスの S4 が針）"
+  fi
+  run_shebang_check ""
+  if [ "$RC" -eq 2 ] && has_text "$ERR" "（パスが無い）" && has_text "$ERR" "読めません"; then
+    ok "S4d: 空のパスは読めなかったことを名指しする"
+  else
+    bad "S4d: 空のパスを通した（rc=${RC}）: ${ERR}"
+  fi
+
+  : >"$SHEBANG_TMP/empty.sh"
+  run_shebang_check "$SHEBANG_TMP/empty.sh"
+  if [ "$RC" -eq 0 ]; then
+    ok "S3b: 空ファイルの shebang 行には CR が無く、止まらない"
+  else
+    bad "S3b: 空ファイルで止めた（rc=${RC}）: ${ERR}"
+  fi
+
+  check_line='FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-shebang-cr.sh" || exit $?'
+  : >"$SHEBANG_TMP/skill-list"
+  find "$SKILLS_DIR" -name SKILL.md -type f | sort >"$SHEBANG_TMP/skill-list"
+  skill_hits=0
+  while IFS= read -r skill; do
+    [ -n "$skill" ] || continue
+    if ! grep -qF 'scripts/finish.sh' "$skill"; then
+      continue
+    fi
+    skill_hits=$((skill_hits + 1))
+    skill_name="${skill#"$SKILLS_DIR"/}"
+    line_n="$(grep -cFx "$check_line" "$skill" || true)"
+    if [ "$line_n" -ne 1 ]; then
+      bad "S5: ${skill_name} の検査行が ${line_n} 件（1 件であること）"
+      continue
+    fi
+    check_ln="$(grep -nFx "$check_line" "$skill" | head -n 1 | cut -d: -f1)"
+    launch_n="$(grep -cF 'bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh"' "$skill" || true)"
+    if [ "$launch_n" -lt 1 ]; then
+      bad "S5: ${skill_name} に finish.sh の起動行が無い"
+      continue
+    fi
+    grep -nF 'bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh"' "$skill" >"$SHEBANG_TMP/launch-lines"
+    order_bad=0
+    while IFS= read -r launch_line; do
+      [ -n "$launch_line" ] || continue
+      launch_ln="${launch_line%%:*}"
+      if [ "$launch_ln" -le "$check_ln" ]; then
+        order_bad=1
+      fi
+    done <"$SHEBANG_TMP/launch-lines"
+    if [ "$order_bad" -eq 0 ]; then
+      ok "S5: ${skill_name} は finish.sh の起動より前に検査行が 1 件ある"
+    else
+      bad "S5: ${skill_name} の検査行が finish.sh の起動より前に無い"
+    fi
+  done <"$SHEBANG_TMP/skill-list"
+  if [ "$skill_hits" -ge 4 ]; then
+    ok "S5b: finish.sh に触れる SKILL.md は ${skill_hits} 件（4 件未満を緑にしない）"
+  else
+    bad "S5b: finish.sh に触れる SKILL.md が ${skill_hits} 件（検査対象が縮んでいる）"
+  fi
+fi
+
 # ── A. 静的契約 ───────────────────────────────────────────────────────────────
 echo "== A. 静的契約 =="
 if syntax_err="$(bash -n "$TARGET" 2>&1)"; then
@@ -163,6 +364,8 @@ cat >"$BIN/gh" <<'STUB'
 # テスト用 stub gh。環境で応答を切り替える:
 #   STUB_GH_DOWN=1     … すべて「接続できない」で失敗（gh 不通）
 #   STUB_PR_MISSING=1  … pr view が PullRequest 不在で失敗
+#   STUB_PR_UNKNOWN_FIELD=1 … pr view が未知の JSON field で失敗（古い gh）
+#   --version              … 常に stub の版を出す（STUB_GH_DOWN=1 ではこの前に失敗する）
 #   STUB_PR_JSON=<path>… pr view が返す JSON（--jq があればそれで引く）
 #   STUB_CHECKS_FAIL=1 … pr checks --watch が失敗（実値は PR JSON に従う）
 #   STUB_CHECKS_DOWN=1 … pr checks と checks の再取得が失敗（取得不能）
@@ -179,8 +382,16 @@ if [ "${STUB_GH_DOWN:-0}" = "1" ]; then
   echo "error connecting to api.github.com" >&2
   exit 1
 fi
+if [ "${1:-}" = "--version" ]; then
+  echo "gh version 2.45.0-stub (2024-01-01)"
+  exit 0
+fi
 case "$1 $2" in
   "pr view")
+    if [ "${STUB_PR_UNKNOWN_FIELD:-0}" = "1" ]; then
+      printf 'Unknown JSON field: "closingIssuesReferences"\nAvailable fields:\n  number\n  state\n' >&2
+      exit 1
+    fi
     if [ "${STUB_CHECKS_DOWN:-0}" = "1" ] && [ "$5" = "statusCheckRollup" ]; then
       echo "error connecting to api.github.com" >&2; exit 1
     fi
@@ -294,6 +505,18 @@ if [ "$RC" -eq 2 ] && has_text "$ERR" "gh 不通" && has_text "$ERR" "復帰:"; 
   ok "B2: gh 不通は rc 2 で gh を名指しし、復帰手段を出す"
 else
   bad "B2: gh 不通の扱いが違う（rc=${RC}）: ${ERR}"
+fi
+STUB_PR_UNKNOWN_FIELD=1 run_finish "$WORK" precheck 7
+if [ "$RC" -eq 2 ] && has_text "$ERR" "Unknown JSON field" && has_text "$ERR" "使った gh: ${BIN}/gh" \
+  && has_text "$ERR" "gh version 2.45.0-stub" && has_text "$ERR" "復帰:" && ! has_text "$OUT" "PR_STATE="; then
+  ok "B2b: 未知の JSON field で落ちた gh は rc 2 で、使った gh のパスと gh --version を名指しし、PR_STATE= を出さない"
+else
+  bad "B2b: 未知の JSON field の扱いが違う（rc=${RC}）: err=${ERR} out=${OUT}"
+fi
+if has_text "$ERR" "Program Files"; then
+  bad "B2b: 復帰文が Program Files の gh を PATH の先頭へ置く回避を次の一手にしている: ${ERR}"
+else
+  ok "B2b: 復帰文は Program Files の gh を PATH の先頭へ置く回避を次の一手にしない"
 fi
 RC=0; ERR="$( cd "$WORK" && PATH="$NOGH_BIN" bash "$FINISH" precheck 7 2>&1 >/dev/null )" || RC=$?
 if [ "$RC" -eq 2 ] && has_text "$ERR" "gh が見つかりません"; then

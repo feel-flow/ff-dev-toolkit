@@ -75,6 +75,11 @@ REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)
 if [ -f "$SCRIPT_DIR/../lib/git-fixture.sh" ]; then
   . "$SCRIPT_DIR/../lib/git-fixture.sh"
 fi
+# shellcheck source=../lib/msys-case.sh
+if [ -f "$SCRIPT_DIR/../lib/msys-case.sh" ]; then
+  . "$SCRIPT_DIR/../lib/msys-case.sh"
+  ff_msys_case_selftest || exit 1
+fi
 
 SYNC="${REPO_ROOT:+$REPO_ROOT/scripts/sync-dev-toolkit-to-public.sh}"
 # 到達不能参照の走査器。同期スクリプトを写す fixture はこれも要る
@@ -267,8 +272,12 @@ expect_hit "live --check-only は PUBLIC_TARGETS 作業ツリーの混入を fil
 mkdir -p "$TMP/link"
 printf '%s\n' 'safe' > "$TMP/link/ok.md"
 ln -s ok.md "$TMP/link/alias.md"
-expect_hit "symlink 混入は相対パスを名指しして非 0 にする" "alias.md" \
-  run_check --scan-dir "$TMP/link"
+if declare -F ff_skip_msys_case >/dev/null 2>&1 && ff_skip_msys_case "${OSTYPE:-}" "symlink はコピーになり相対パスの指摘が成立しない"; then
+  :
+else
+  expect_hit "symlink 混入は相対パスを名指しして非 0 にする" "alias.md" \
+    run_check --scan-dir "$TMP/link"
+fi
 
 # FIFO は走査対象にならないうえ、grep -r が open した時点で書き手が来るまで
 # 無言でブロックする（検査が返らない = 可用性の fail-open）。symlink と同じく
@@ -419,9 +428,13 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   mkdir -p "$TMP/unreadable"
   printf '%s\n' 'secret' > "$TMP/unreadable/locked.txt"
   chmod 000 "$TMP/unreadable/locked.txt"
-  expect_hit_reason "読めないファイルは専用の診断で非 0 にする" "locked.txt" \
-    "検査対象を読めません" \
-    run_check --scan-dir "$TMP/unreadable"
+  if declare -F ff_skip_msys_case >/dev/null 2>&1 && ff_skip_msys_case "${OSTYPE:-}" "chmod 000 でも読めて読めない診断が成立しない"; then
+    :
+  else
+    expect_hit_reason "読めないファイルは専用の診断で非 0 にする" "locked.txt" \
+      "検査対象を読めません" \
+      run_check --scan-dir "$TMP/unreadable"
+  fi
   chmod 644 "$TMP/unreadable/locked.txt"
 else
   echo "  ⚠ root 実行のため、読めないファイルの診断は観測していません"

@@ -111,6 +111,9 @@
 # 変異検出: 許容表から OS 限定（Windows の Git Bash でだけ成立する検査）の行を消すと (7) の針と release-runtime（OS 限定の skip で止まる）が赤。
 # 変異検出: 許容表から bash 版限定（bash 4 以上でだけ成立する検査）の行を消すと (7) の針と release-runtime（bash 版限定の skip で止まる）が赤（2026-10-07 実測）。
 # 空振り検出: footer 分類器の成功状態照合を削除すると footer-reuse-runtime の empty / identical ケースが赤（2026-09-26 実測 exit 1）。内容証明なしの exit 0 は採用しない。
+# 空振り検出: MSYS 部分 skip の理由文を許容表へ足すと「環境 skip が許容表の要素」が赤（2026-10-19 実測。実ブロックは不一致でなく、理由文を足したブロックは不一致で赤）。
+# 空振り検出: 呼び出し 4 ファイルから ff_skip_msys_case を消すと呼び出し針が赤（0 件を緑へ倒さない。2026-10-19 実測、4 ファイルとも赤。不在ファイルも赤）。
+# 空振り検出: ヘルパの字下げした skip 行を消すと形の針が赤（2026-10-19 実測。理由文が残っていても字下げ行が無いと赤）。
 # 空振り検出: FF_SYNC_SHA_SKILL へ存在しないパスを与えると (対象解決) が赤になる。明示指定の不在を skip へ倒さないため、実測は exit 1（○ skip ではない）。
 # 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT へ存在しないパスを与えると (対象解決) が赤になる（実測 exit 1）。リリーススクリプトを空ファイルへ差し替えると (7) の全針と release-runtime が赤になる。
 # 空振り検出: 検査対象を空ファイルへ差し替えると (1〜3 / 5 / 6 の全針) が赤になる。0 件一致を「不足なし」へ倒さないことの実測。
@@ -424,10 +427,17 @@ elif [[ "$_allowed_block" == *'node_modules が無いため型検査を行いま
 else
   ok "setup 前の typecheck（環境 skip）を許容表の要素にしていない（ブロック内照合）"
 fi
+if [[ "$_allowed_block" == *'MSYS では成立しない検査のため未実行'* ]]; then
+  bad "MSYS で成立しない検査（環境 skip）が許容表の要素になっている"
+elif [[ -n "$_allowed_block" ]]; then
+  ok "MSYS で成立しない検査（環境 skip）を許容表の要素にしていない"
+fi
 release_contains 'SKIP_HINTS=(' \
   "許容表に無い skip の理由行ごとに次の一手を名指しするヒント表がある"
 release_contains "'node_modules が無いため型検査を行いません|bash plugins/ff-media-toolkit/scripts/ff-media.sh setup" \
   "ヒント表が ff-media の setup 前の typecheck skip に ff-media.sh setup を名指しする"
+release_contains "'MSYS では成立しない検査のため未実行|WSL のホームディレクトリ配下へ clone し、npm ci --prefix plugins/ff-dev-toolkit/mcp の後に同じ suite の verify.sh を bash で回す（/mnt/c 配下では回さない）'" \
+  "ヒント表が MSYS で成立しない検査の skip に WSL での再実行を名指しする"
 # ヒント表の要素は `<理由>|<案内>` の形（`|` の無い要素は照合側が飛ばすので、黙って効かない要素を表に残さない）
 _hint_elems="$(release_block SKIP_HINTS | grep -E "^[[:space:]]*'" || true)"
 _hint_bad="$(printf '%s\n' "$_hint_elems" | grep -vF '|' | grep -c . || true)"
@@ -484,6 +494,27 @@ contains '| `retrospective-stop-hook` / `skill-drift-check`: bash 4 以上でだ
   "手順 0b の許容表に bash 版限定（retrospective-stop-hook / skill-drift-check）の行がある"
 contains '`ff-media-toolkit/tests/typecheck` の `node_modules` 不在' \
   "手順 0b が ff-media の setup 前の typecheck を環境 skip（許容しない）として名指ししている"
+contains '`MSYS では成立しない検査のため未実行` は環境 skip で、許容表には載せない' \
+  "手順 0b が MSYS で成立しない検査を環境 skip（許容しない）として名指ししている"
+_msys_reason='MSYS では成立しない検査のため未実行'
+_msys_helper="$REPO_ROOT/plugins/ff-dev-toolkit/tests/lib/msys-case.sh"
+if [[ -f "$_msys_helper" ]] && grep -qF -- "$_msys_reason" "$_msys_helper" && grep -qF -- '  ○ skip:' "$_msys_helper"; then
+  ok "MSYS 部分 skip の理由文と字下げがヘルパにある"
+else
+  bad "MSYS 部分 skip のヘルパが無い、理由文が違う、または字下げした skip 行が無い"
+fi
+for _msys_site in \
+  plugins/ff-dev-toolkit/tests/sync-forbidden-patterns/verify.sh \
+  plugins/ff-dev-toolkit/tests/host-route-parity/verify.sh \
+  plugins/ff-dev-toolkit/tests/sync-sha-contract/footer-reuse-runtime.sh \
+  plugins/ff-dev-toolkit/tests/claude-hooks-path/verify.sh
+do
+  if [[ -f "$REPO_ROOT/$_msys_site" ]] && grep -qF -- 'ff_skip_msys_case' "$REPO_ROOT/$_msys_site"; then
+    ok "ff_skip_msys_case の呼び出しがある: ${_msys_site}"
+  else
+    bad "ff_skip_msys_case の呼び出しが無い（0 件を緑へ倒さない）: ${_msys_site}"
+  fi
+done
 # 旧方式（ADR-034 決定 2 + Issue #830 の green 再利用機構）の復活禁止。針は散文を
 # 誤検出しない最小限の広さにする — 現 SKILL の散文言及は backtick 内の `FULL_GATE_SHA`
 # （代入の `=` を含まない）だけで、check-full-gate-reuse への言及は無い（実測）。

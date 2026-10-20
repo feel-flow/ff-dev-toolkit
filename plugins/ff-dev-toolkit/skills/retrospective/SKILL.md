@@ -11,7 +11,7 @@ description: ワークフローチェーンの末尾（/merge-cleanup → /ace-c
 
 `features.retrospective=false` のとき、ワークフローからの自動実行・起動の催促・「対象外」などの定型報告を行わない。ユーザーがこの振り返りを明示依頼した場合だけ、設定を変えず単発実行する。以下の「毎回」は設定なし、または自動振り返りを選んだ場合に限る。
 
-セッションで**実際に起きた**ことを KPT の観点で振り返り、Problem（手戻り・無駄時間・過剰動作）と Keep（定着させる価値のある成功パターン）を観測台帳へ記録する。Issue を起票するのは原則として閾値に到達した再発だけ。確認を挟まず毎回実施し、ノイズは台帳と提案側の閾値で絞る。台帳の定型コミットは同梱 `scripts/finish.sh knowledge-commit` が行う。
+セッションの Problem と Keep を観測台帳へ記録する。起票は閾値到達の再発に限る。台帳の定型コミットは同梱 `scripts/finish.sh knowledge-commit` が行う。
 
 ## プラグインルートの固定（必須）
 
@@ -127,6 +127,10 @@ printenv RETROSPECTIVE_MODE
 4. Keep は定着させる価値のある成功パターンだけを `Kind: keep` で記録し、アクションに繋がらない Keep は記録しない。Problem は「X すると Y の手戻りが起きる → Z せよ」の形。機微情報は引用しない
 
 ### 書き込み（定型コミット）
+
+```bash
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-shebang-cr.sh" || exit $?
+```
 
 台帳へ直接追記し、`knowledge:` prefix の単独コミットとしてデフォルト統合ブランチへ commit + push する（承認は不要だが、記録した内容は振り返り結果で必ず報告する）。commit は共通の書き込み口 — `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --source obs --id <OBS-ID> --summary <要約> -- docs/08-knowledge/OBSERVATIONS.md` の後に `commit` → `push`（rc 3 は保護ルールで `/ace-curate` 手順 5 と同じく PR 経由へ）。書き込み口は `git commit -- docs/08-knowledge/OBSERVATIONS.md` の形で記録したパスへ固定する。同じセッションで `/ace-curate` が `add` だけで止めた保留があれば、同じ `commit` が両方を 1 コミット（`knowledge: ACE-… / OBS-…`）に畳む。観測を記録しない回でも保留があれば `commit` → `push` を行う。
 

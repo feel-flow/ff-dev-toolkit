@@ -10,7 +10,7 @@ allowed-tools: ["Bash"]
 
 最初に[共通設定契約](../asdd-init/references/configuration.md)を読み、`scripts/asdd/config.mjs` の `loadConfig(root)` で対象プロジェクトの `.asdd/config.json` を検証する。以下の従来手順より、合意済みの文書構成・機能スイッチ・ワークフローを優先する。設定なしは従来互換、不正設定は自動処理を止めて診断する。
 
-合意した確認方法だけを適用する。カバレッジ80%、Result pattern、strict、定数化などの推奨を未合意のゲートにしない。ACE・振り返り・複数AIレビューの無効設定を尊重し、チェーン末尾にも追加しない。市民開発のIssue中心運用では、既存の組織ルールを保ちつつ、未採用のPR・7文書を必須化しない。
+合意した確認方法だけを適用する。未合意の推奨をゲートにせず、無効にした ACE・振り返り・複数AIレビューをチェーンへ足さない。
 
 Git Workflow のマージ後クリーンアップを 1 コマンドで実施する project-agnostic な実装。実体は同梱 `scripts/merge-cleanup.sh`（全ステップが 1 プロセスで走り、途中結果が最終サマリーまで正しく引き継がれる）で、`scripts/finish.sh cleanup` が PR の実在と gh の到達を確かめてから委譲する。本文が持つのは呼び出しと、終了コード・サマリーの読み方（判断点）だけ。挙動の全文は `merge-cleanup.sh` のヘッダにある。
 
@@ -52,6 +52,7 @@ fi
 **引数**: `$ARGUMENTS`（マージされた PR 番号、例: `1234`）。**必須** — `delete_branch_on_merge = false` のリポジトリではリモートブランチが残るため、PR 番号から head ref を引いて明示削除する。`bundle`（子 Issue を全件 1 PR で束ねた着手単位）でも渡す番号は**その 1 本の PR**だけ。
 
 ```bash
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-shebang-cr.sh" || exit $?
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" cleanup $ARGUMENTS
 ```
 

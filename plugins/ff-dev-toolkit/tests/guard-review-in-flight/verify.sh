@@ -36,7 +36,8 @@
 #      ask の出口では記録しない / 配布文書の起動形（if ! ・行継続・timeout / nice・--task 無し）も数える /
 #      multi-agent.sh の review 本体（multi-review.sh 経由・直接起動）も同じ記録で 3 巡目を exit 4 で止める /
 #      ask の出口は仮記録して PermissionDenied で取り消す / linked worktree 間で記録を共有する /
-#      ライブラリ不在は Bash の起動にも警告する
+#      ライブラリ不在は Bash の起動にも警告する / 現在の HEAD の祖先でない記録（rebase などで作り直す前の
+#      系列の巡）は数えず、祖先判定に失敗した記録は数える側へ倒す（Issue `#2094`）
 #   O) 書き込み走査の偽陽性の是正（bundle `#1760` / `#1792` / `#1868`）: スクリプト本文・コマンド行の
 #      コメントを実行コードとして読まない（引用符の中の `#`・`${x#y}`・語中の `#` はコメントではない）/
 #      引用された 1 引数（`sed -i '' 's/a b/c d/'`）を割らない / バイナリの直接実行を本文として
@@ -147,6 +148,8 @@
 #   → 1。PermissionDenied で仮記録を取り消さない → 1。ライブラリ不在の Bash 起動を無警告にする → 1。
 #   multi-agent.sh の review 本体の巡回検査を外す → 4。記録を worktree ごとの git dir へ置く → 1（(n17)）。
 #   環境代入を剥がさない → 3。
+# 変異検出（(n19)。Issue `#2094`。2026-10-20 実測。1 件ずつ作業ツリーへ適用して本 suite、2 件すべて赤）:
+#   rr_judge から rr_filter_lineage の呼び出しを外す → 3。祖先判定の失敗（rc 1 以外）も数えない側へ倒す → 1。
 # 空振り検出: 巡回の記録が無い回を「0 巡」と見なして警告なしで通す変異（記録不在の rr_warn を消す）を入れると (n1) と (n11) の 2 件が赤になる（2026-09-24 実測。記録不在・読めない記録は判定不能 = 通す + 警告で固定し、黙って 0 巡から数えない）。
 # 変異検出（(o) 節。2026-09-27 実測。scripts/mutation-harness.sh、26 件すべて赤。数字は赤の針の件数）:
 #   字句解析: `#` を文脈なしでコメントにする（素朴な `#` 以降の除去）→ 4。コメント除去を外す → 4。
@@ -3051,6 +3054,48 @@ run_hook "$(bash_json 'env FOO=bar bash /x/scripts/multi-review.sh --base develo
 assert_n_deny "(n18) env のオプションと代入の後ろの起動も 3 巡目で deny"
 run_hook "$(bash_json 'env -u X FF_REVIEW_ROUND_ACK=1 bash /x/scripts/multi-review.sh --base develop')" "$N_DEF"
 assert_silent "(n18) env の後ろの FF_REVIEW_ROUND_ACK=1 も区間先頭の通過口として効く"
+n_reset
+
+# --- 現在の HEAD の祖先でない記録（rebase などで作り直す前の系列の巡）は数えない（Issue `#2094`）---
+# rebase の代わりに `reset --hard HEAD~1` で履歴を作り直す（空コミットだけなので作業ツリーは動かない）。
+# 作り直す前の HEAD A は、作り直した系列の HEAD B1 / B2 / B3 の祖先ではない。
+git -C "$REPO" switch -q -c feature/n-lineage
+n_commit "lineage a1"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+git -C "$REPO" reset -q --hard HEAD~1
+n_commit "lineage b1 (rebuilt)"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+assert_silent "(n19) 作り直した系列の 1 回目のレビューは、作り直す前の巡があっても上限内として通る"
+n_commit "lineage b2 (fix 1)"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+assert_silent "(n19) 作り直した系列の 2 回目（1 回目の fix の再レビュー）は 3 巡目として止めない"
+if [ "$(n_heads)" = "3" ]; then
+  ok "(n19) 祖先でない記録も記録ファイルからは消さない（数えないだけ）"
+else
+  bad "(n19) 記録の行数が想定と違う: heads=[$(n_heads)]"
+fi
+n_commit "lineage b3 (fix 2)"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+assert_n_deny "(n19) 祖先関係にある HEAD の 3 回目は従来どおり deny（上限そのものは弱めない）"
+case "$REASON" in
+  *'3 巡目'*'数えていない記録: 1 件'*) ok "(n19) deny 文が祖先でないため数えなかった記録の件数を出す" ;;
+  *) bad "(n19) deny 文に数えなかった記録の件数が無い: reason=[$REASON]" ;;
+esac
+n_reset
+# 祖先判定に失敗した記録（オブジェクトが無い HEAD）は数える側（止める側）へ倒す
+n_commit "lineage c1"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+N_F="$(n_file)"
+printf '2\t%s\t0\n' "0123456789abcdef0123456789abcdef01234567" >> "$N_F"
+n_commit "lineage c2"
+run_hook "$(n_agent pr-review-toolkit:code-reviewer)" "$N_DEF"
+assert_n_deny "(n19) 祖先判定に失敗した記録（存在しない HEAD）は数える側へ倒し、3 巡目として deny する"
+# 除外 0 件（RR_DROPPED=0）のときは件数行そのものを出さない。ガードを外すとこの否定が赤になる。
+case "$REASON" in
+  *'数えていない記録'*) bad "(n19) 除外 0 件なのに deny 文が件数行を出す: reason=[$REASON]" ;;
+  *) ok "(n19) 除外 0 件の deny 文は件数行を出さない" ;;
+esac
+git -C "$REPO" switch -q feature/n-rounds
 n_reset
 
 echo
