@@ -20,6 +20,16 @@
 
 ## [Unreleased]
 
+## [0.160.0] - 2026-10-21
+
+### 変更
+
+- `scripts/adapters/adapter-common.sh` の本体を、責務ごとの構成ファイル `scripts/lib/adapter-common-git.sh`、`scripts/lib/adapter-common-review.sh`、`scripts/lib/adapter-common-output.sh`、`scripts/lib/adapter-common-cli.sh` へ分けた。入口のパス・引数・出力・終了コードは変わらず、入口は開始時に構成ファイルを決まった順で 1 回だけ読む。構成ファイルが読めないときは、CLI を 1 つも起動する前に終了コード 2 で止まる。
+- `--resume` の入力 identity は `scripts/lib/multi-agent-outputs.sh` で adapter-common の構成ファイルも数える。構成ファイルだけが変わった回は、古い結果を再利用しない。
+- `scripts/merge-cleanup.sh` の削除処理を `scripts/lib/merge-cleanup-pre.sh`、`scripts/lib/merge-cleanup-remote.sh`、`scripts/lib/merge-cleanup-local.sh` へ分けた。入口のパス・引数・出力・終了コードは変わらず、削除を始める前に構成ファイルを読む。読めないときは何も削除せず終了コード 1 で止まる。
+- `hooks/guard-review-in-flight.sh` の判定本体を `tests/lib/review-in-flight-judge.sh` へ分けた。hook の拒否 JSON と終了コードは変わらず、判定ファイルが読めないときは許可せず拒否する。
+- `scripts/setup-multi-agent.sh` の yq 処理を `scripts/lib/setup-yq.sh` へ分けた。入口のパス・引数・出力・終了コードは変わらず、構成ファイルが読めないときは設定を書き換える前に終了コード 2 で止まる。
+
 ## [0.159.0] - 2026-10-21
 
 ### 追加

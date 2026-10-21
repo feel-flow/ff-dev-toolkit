@@ -6,6 +6,7 @@
 # run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
 #
 # 空振り検出: compute_resume_identity から構成ファイル（scripts/lib/multi-agent-*.sh）の hash を外すと「構成ファイルの変更時に古い結果を再利用した」が赤（2026-10-20 実測）。直前の「入力が同じなら8観点すべてを再利用」が再利用の起きる入力であることを毎回測るので、この赤は identity の欠落からだけ来る。
+# 空振り検出: compute_resume_identity から adapter-common の構成ファイル（ADAPTER_COMMON_PARTS）の hash ループだけを外すと、「adapter-common の構成ファイルの変更時に古い結果を再利用した（resume identity が入口しか見ていない）」の 1 件だけが赤になる（2026-10-21 実測。成功 22。直前の「入力が同じなら8観点すべてを再利用」は緑のまま）。
 
 set -euo pipefail
 
@@ -300,6 +301,19 @@ if run_review "$TMP/orchestrator-part-change.log" 120 true 8 \
   ok "構成ファイル（scripts/lib/multi-agent-*.sh）の変更で8観点すべてを新規実行"
 else
   bad "構成ファイルの変更時に古い結果を再利用した（resume identity が入口しか見ていない）"
+fi
+
+# adapter-common.sh の構成ファイルも同じ identity に入る。入口だけを hash する形へ戻ると、
+# 本体の変更が古い結果の再利用を止めない。変更は shebang の直後（末尾は読み込み完了の印）。
+_ac_part="$FIXTURE_PLUGIN/scripts/lib/adapter-common-git.sh"
+{ head -n 1 "$_ac_part"; printf '%s\n' '# identity change'; tail -n +2 "$_ac_part"; } > "$_ac_part.new"
+mv "$_ac_part.new" "$_ac_part"
+if run_review "$TMP/adapter-part-change.log" 120 true 8 \
+  && [[ "$(count_invocations)" -eq 82 ]] \
+  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 8 ]]; then
+  ok "構成ファイル（scripts/lib/adapter-common-*.sh）の変更で8観点すべてを新規実行"
+else
+  bad "adapter-common の構成ファイルの変更時に古い結果を再利用した（resume identity が入口しか見ていない）"
 fi
 
 echo ""

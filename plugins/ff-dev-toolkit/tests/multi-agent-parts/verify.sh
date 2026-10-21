@@ -25,8 +25,16 @@
 #      起動していない」の判定が空振りしていないことの正対照）
 #   E. registry の境界外検査が構成ファイルにも掛かる: get_cli_* の定義・ALL_CLIS への書き込み・
 #      registry 区間そのものを構成ファイルへ置くと、cli_registry_load が名指しで拒否する
+#   F. adapter-common.sh の分割: 入口と scripts/lib/adapter-common-*.sh が 1200 行以下。
+#      構成ファイルは shebang・pipefail 継承の宣言・末尾の読み込み完了の印を持ち、
+#      root guard の写しと adapter-common.sh の読み直しとコマンドとしての source を持たない。
+#      本文に元からある trap は禁止しない。構成ファイルが不在・空・途中で切れている・
+#      symlink のとき、入口の source が rc=2 と ADR-036 の案内
+#      （「CLI はまだ 1 つも起動していません。」）で止まる。揃った入口の source は
+#      rc=0 で cli_available を定義する
 #
 # 空振り検出: 名簿の区間を消した入口では ma_sources_load が「名簿（1 件以上）が見つかりません」で赤、構成ファイルが 0 本の写しでは「名簿の構成ファイルがありません」で赤（どちらも本 suite の (A) / (E) 末尾で毎回実測する）。(C) の source 検査は、構成ファイルの関数の中へ `source x` を足した写しで赤になる（毎回実測する）。
+# 空振り検出: 入口の「ファイルが無い」分岐を外した写しを与えると、「構成ファイルの不在: rc=2 と読み込み部の案内で止まらない」の 1 件だけが赤になる（2026-10-21 実測。成功 59。判定は rc=2 のまま、針「がありません」が外れ、次の分岐の「が 0 バイトです」になる。CLI は起動しない）。
 # 依存は bash 3.2・POSIX ユーティリティ・mktemp。一時領域が無いと (D) / (E) と空振りの実測が
 # 成立しないので、skip せず赤にする。
 
@@ -42,6 +50,8 @@ MASTER_SPLIT_LIMIT=1200
 . "$SCRIPT_DIR/../lib/multi-agent-sources.sh"
 # shellcheck source=../lib/cli-registry-parser.sh
 . "$SCRIPT_DIR/../lib/cli-registry-parser.sh"
+# shellcheck source=../lib/adapter-common-sources.sh
+. "$SCRIPT_DIR/../lib/adapter-common-sources.sh"
 
 PASS=0
 FAIL=0
@@ -212,10 +222,20 @@ expect_stop() {
   rm -f "$LAUNCH_MARK"
   rc=0
   run_copy "$dir" "$log" "${STOP_PROBE_ARGS[@]}" || rc=$?
+  # 置き場は adapter-common.sh と共有する。orchestrator は loader より前に
+  # adapter-common.sh を source するので、symlink の置き場はそちらが先に止める。
+  # 案内の主体はどちらか一方。ファイル単位の理由は multi-agent.sh のまま。
+  local subject_hit=0
+  if grep -F "ff-dev-toolkit更新後にこのskillを再呼び出してください（multi-agent.sh の構成ファイル${reason}）" "$log" >/dev/null; then
+    subject_hit=1
+  fi
+  if grep -F "ff-dev-toolkit更新後にこのskillを再呼び出してください（adapter-common.sh の構成ファイル${reason}）" "$log" >/dev/null; then
+    subject_hit=1
+  fi
   if [ "$rc" -eq 2 ] \
-    && grep -qF "ff-dev-toolkit更新後にこのskillを再呼び出してください（multi-agent.sh の構成ファイル${reason}）" "$log" \
-    && grep -qF '別のインストール領域へ切り替えて実行しないこと' "$log" \
-    && ! grep -qF 'plugin rootが固定値と一致しません' "$log" \
+    && [ "$subject_hit" -eq 1 ] \
+    && grep -F '別のインストール領域へ切り替えて実行しないこと' "$log" >/dev/null \
+    && ! grep -F 'plugin rootが固定値と一致しません' "$log" >/dev/null \
     && [ ! -e "$LAUNCH_MARK" ]; then
     ok "${label}: CLI を起動する前に rc=2 と再呼び出しの案内で止まる（root guard の停止ではない）"
   else
@@ -231,9 +251,31 @@ if ! msys_skip "構成ファイルの symlink（ln -s がコピーになる）";
   expect_stop "構成ファイルが symlink" "が symlink です" symlink sh -c 'mv multi-agent-plan.sh plan.real && ln -s plan.real multi-agent-plan.sh'
 fi
 if ! msys_skip "置き場 scripts/lib の symlink（ln -s がコピーになる）"; then
-  # 置き場ごと別の場所（別のインストール領域を模す）へ向ける。構成ファイル自体は通常ファイル
+  # 置き場ごと別の場所（別のインストール領域を模す）へ向ける。構成ファイル自体は通常ファイル。
+  # 通常の起動は adapter-common.sh が先に止まる（共有の置き場を source 時に見る）。
   expect_stop "置き場 scripts/lib が symlink" "の置き場が通常のディレクトリではないか symlink です" libdir \
     sh -c 'cd .. && mv lib lib.elsewhere && ln -s lib.elsewhere lib'
+  # multi-agent.sh 自身の分岐は、adapter-common.sh が先に exit するため通常経路では到達しない。
+  # 入口を検査だけの stub に差し替えると、その分岐が残っていることを測れる。
+  dir="$TMP/broken-libdir-ma"
+  log="$TMP/stop-libdir-ma.log"
+  rm -rf "$dir"
+  make_copy "$dir"
+  printf '%s\n' '#!/usr/bin/env bash' '# stub: 置き場の検査を multi-agent.sh に残す' ':' \
+    > "$dir/scripts/adapters/adapter-common.sh"
+  ( cd "$dir/scripts/lib" && sh -c 'cd .. && mv lib lib.elsewhere && ln -s lib.elsewhere lib' )
+  rm -f "$LAUNCH_MARK"
+  rc=0
+  run_copy "$dir" "$log" "${STOP_PROBE_ARGS[@]}" || rc=$?
+  if [ "$rc" -eq 2 ] \
+    && grep -qF 'ff-dev-toolkit更新後にこのskillを再呼び出してください（multi-agent.sh の構成ファイルの置き場が通常のディレクトリではないか symlink です）' "$log" \
+    && grep -qF '別のインストール領域へ切り替えて実行しないこと' "$log" \
+    && [ ! -e "$LAUNCH_MARK" ]; then
+    ok "置き場 scripts/lib が symlink: adapter-common を stub にすると multi-agent.sh の案内で止まる"
+  else
+    bad "置き場 scripts/lib が symlink: multi-agent.sh 自身の案内で止まらない (rc=${rc})"
+    tail -8 "$log" | sed 's/^/    | /' >&2
+  fi
 fi
 expect_stop "構成ファイルが空" "が 0 バイトです" empty sh -c ': > multi-agent-lanes.sh'
 # 関数の境界で切れたファイルは構文としては読めてしまう（定義が足りないまま CLI が走り、完走後に
@@ -312,6 +354,105 @@ if ( ma_sources_load "$EMPTY" ) >/dev/null 2>&1; then
 else
   ok "空振りの実測: 構成ファイルが 0 本の写しは ma_sources_load が拒否する"
 fi
+
+echo "== (F) adapter-common.sh の構成ファイル =="
+AC_ENTRY="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
+ac_sources_load "$AC_ENTRY"
+for f in "${AC_SOURCES[@]}"; do
+  n="$(wc -l < "$f" | tr -d ' ')"
+  if [ "$n" -le "$MASTER_SPLIT_LIMIT" ]; then
+    ok "${f#"$PLUGIN_ROOT"/}: ${n} 行"
+  else
+    bad "${f#"$PLUGIN_ROOT"/}: ${n} 行（${MASTER_SPLIT_LIMIT} 行を超えた。責務ごとに構成ファイルを分け直す — 手順は ADR-075）"
+  fi
+done
+_ac_i=0
+for f in "${AC_SOURCES[@]}"; do
+  if [ "$_ac_i" -eq 0 ]; then
+    _ac_i=1
+    continue
+  fi
+  name="${f##*/}"
+  problems=""
+  IFS= read -r first < "$f" || first=""
+  [ "$first" = "#!/usr/bin/env bash" ] || problems="${problems} 1行目がshebangでない"
+  grep -q '^# pipefail-inherited:' "$f" || problems="${problems} pipefail-inherited宣言が無い"
+  last="$(awk 'NF { l = $0 } END { print l }' "$f")"
+  [ "$last" = "_ac_part_loaded=\"${name}\"" ] || problems="${problems} 最後の行が読み込み完了の印でない"
+  if grep -q 'ff-dev-toolkit-script-root-guard:' "$f"; then
+    problems="${problems} root-guardの写しがある"
+  fi
+  if grep -qE '^[[:space:]]*(source|\.)[[:space:]].*adapter-common\.sh' "$f"; then
+    problems="${problems} adapter-common.shを読み直している"
+  fi
+  if grep -qE '^set[[:space:]]' "$f"; then
+    problems="${problems} トップレベルにsetがある"
+  fi
+  if has_source_command "$f"; then
+    problems="${problems} sourceがある"
+  fi
+  if [ -z "$problems" ]; then
+    ok "${name}: shebang・pipefail 継承の宣言・末尾の読み込み完了の印あり、guard の写し / adapter-common の読み直し / トップレベルの set / source なし"
+  else
+    bad "${name}:${problems}"
+  fi
+done
+
+rc=0
+ac_out="$(bash -c 'set -euo pipefail; . "$1"; declare -F cli_available' _ "$AC_ENTRY" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ] && [[ "$ac_out" == *cli_available* ]]; then
+  ok "正対照: 入口を source すると rc=0 で cli_available が定義される"
+else
+  bad "正対照: 入口の source が rc=0 で cli_available を定義しない (rc=${rc})"
+  printf '%s\n' "$ac_out" | tail -6 | sed 's/^/    | /' >&2
+fi
+
+# <ラベル> <「構成ファイル」に続く理由の文言> <写しの名前> <写しの lib で壊すコマンド...>
+ac_expect_stop() {
+  local label="$1" reason="$2" name="$3" dir log rc
+  shift 3
+  dir="$TMP/ac-broken-$name"
+  log="$TMP/ac-stop-$name.log"
+  rm -rf "$dir"
+  mkdir -p "$dir/adapters" "$dir/lib"
+  cp "$AC_ENTRY" "$dir/adapters/adapter-common.sh"
+  cp "$PLUGIN_ROOT"/scripts/lib/adapter-common-*.sh "$dir/lib/"
+  ( cd "$dir/lib" && "$@" )
+  rc=0
+  bash -c 'set -euo pipefail; . "$1"' _ "$dir/adapters/adapter-common.sh" >"$log" 2>&1 || rc=$?
+  if [ "$rc" -eq 2 ] \
+    && grep -qF "ff-dev-toolkit更新後にこのskillを再呼び出してください（adapter-common.sh の構成ファイル${reason}）" "$log" \
+    && grep -qF 'CLI はまだ 1 つも起動していません。' "$log" \
+    && grep -qF '別のインストール領域へ切り替えて実行しないこと' "$log"; then
+    ok "${label}: source の時点で rc=2 と再呼び出しの案内で止まる"
+  else
+    bad "${label}: rc=2 と読み込み部の案内で止まらない (rc=${rc})"
+    tail -8 "$log" | sed 's/^/    | /' >&2
+  fi
+}
+ac_expect_stop "構成ファイルの不在" "がありません" missing rm -f adapter-common-git.sh
+ac_expect_stop "構成ファイルが空" "が 0 バイトです" empty sh -c ': > adapter-common-review.sh'
+ac_expect_stop "構成ファイルが関数の境界で切れている" "が末尾まで読めていません（最後の行が読み込み完了の印ではありません）" truncated \
+  sh -c 'grep -v "^_ac_part_loaded=" adapter-common-git.sh > cut.tmp && mv cut.tmp adapter-common-git.sh'
+ac_expect_stop "構成ファイルが関数の途中で切れている" "が末尾まで読めていません（最後の行が読み込み完了の印ではありません）" midfunc \
+  sh -c 'n="$(grep -n "^cli_available() {" adapter-common-git.sh | cut -d: -f1)" && [ -n "$n" ] && head -n "$((n + 2))" adapter-common-git.sh > cut.tmp && mv cut.tmp adapter-common-git.sh'
+if ! msys_skip "adapter-common の構成ファイルの symlink（ln -s がコピーになる）"; then
+  ac_expect_stop "構成ファイルが symlink" "が symlink です" symlink \
+    sh -c 'mv adapter-common-cli.sh cli.real && ln -s cli.real adapter-common-cli.sh'
+fi
+if ! msys_skip "adapter-common の置き場 lib の symlink（ln -s がコピーになる）"; then
+  ac_expect_stop "置き場 lib が symlink" "の置き場が通常のディレクトリではないか symlink です" libdir \
+    sh -c 'cd .. && mv lib lib.elsewhere && ln -s lib.elsewhere lib'
+fi
+ac_probe="$TMP/ac-readable-probe"
+: > "$ac_probe"
+chmod 000 "$ac_probe"
+if [ -r "$ac_probe" ]; then
+  echo "  ○ skip: adapter-common の構成ファイルが読めない場合（mode 000 でも読める実行者。root か MSYS で走っている）"
+else
+  ac_expect_stop "構成ファイルが読めない" "を読み取れません" unreadable chmod 000 adapter-common-output.sh
+fi
+chmod 600 "$ac_probe"
 
 echo
 echo "multi-agent-parts: pass=${PASS} fail=${FAIL}"

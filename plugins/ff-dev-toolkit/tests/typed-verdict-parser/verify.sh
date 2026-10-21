@@ -71,6 +71,9 @@ ADAPTER_COMMON="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
   echo "✗ 対象ファイルが見つかりません: $ADAPTER_COMMON" >&2
   exit 1
 }
+# shellcheck source=../lib/adapter-common-sources.sh
+. "$SCRIPT_DIR/../lib/adapter-common-sources.sh"
+ac_sources_load "$ADAPTER_COMMON"
 
 if _ff_mktemp_out="$(mktemp -d 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
   TMP="$_ff_mktemp_out"
@@ -617,7 +620,7 @@ fi
 
 echo "== E. 委譲と BSD awk 互換の静的 pin =="
 
-if grep -q '_ff_severity_scan verdicts' "$ADAPTER_COMMON"; then
+if grep -q '_ff_severity_scan verdicts' "${AC_SOURCES[@]}"; then
   ok "typed_verdicts_extract は _ff_severity_scan verdicts へ委譲する（フェンス追跡を共有）"
 else
   bad "typed_verdicts_extract が共有パーサーへ委譲していない（フェンス追跡の第二実装）"
@@ -625,7 +628,7 @@ fi
 
 # (t) の文法部品（vd_cand_re / vd_none_word / vd_head_re / vd_rej_crit_re）と vd_parse の正規表現に interval 表記
 # （{n} / {n,m}）が無いこと。BSD awk は interval の対応に依存できない。
-vd_lines="$(grep -E 'vd_(cand|head|rej_crit)_re *=|vd_none_word *=|vd_(sev|fs|conf|line) !~' "$ADAPTER_COMMON" || true)"
+vd_lines="$(grep -hE 'vd_(cand|head|rej_crit)_re *=|vd_none_word *=|vd_(sev|fs|conf|line) !~' "${AC_SOURCES[@]}" || true)"
 if [ -z "$vd_lines" ]; then
   bad "(t) の文法部品の定義行が見つからない（針が当たらない）"
 elif grep -qE '\{[0-9]+(,[0-9]*)?\}' <<<"$vd_lines"; then

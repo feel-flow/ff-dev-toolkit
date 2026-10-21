@@ -1012,9 +1012,12 @@ else
   clear_mutations
 fi
 
-# M2: 不在 DIFF_FILE で従来取得へフォールバックさせる → 固定が無意味になるはず
-perl -0pi -e 's/echo "ERROR: --diff-file is missing or unreadable: \$\{DIFF_FILE\}" >&2/get_diff_content "\$base_branch"; return 0/' "$MUTANT_COMMON"
-if cmp -s "$MUTANT_COMMON" "$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"; then
+# M2: 不在 DIFF_FILE で従来取得へフォールバックさせる → 固定が無意味になるはず。
+# 行は構成ファイル側にある。入口の写しを source すると、loader がその写しの隣の
+# 構成ファイルを読む（入口だけを書き換えると変異が当たらない）。
+MUTANT_GIT="$MUTANT_ROOT/scripts/lib/adapter-common-git.sh"
+perl -0pi -e 's/echo "ERROR: --diff-file is missing or unreadable: \$\{DIFF_FILE\}" >&2/get_diff_content "\$base_branch"; return 0/' "$MUTANT_GIT"
+if cmp -s "$MUTANT_GIT" "$PLUGIN_ROOT/scripts/lib/adapter-common-git.sh"; then
   bad "M2: ミューテーションを適用できなかった（被検体と同一。検査が無意味）"
 else
   # **別プロセス**で読み込む。本 suite は既に adapter-common.sh を source しており、
@@ -1048,8 +1051,8 @@ MUTANT_COMMON_M3="$TMP/adapter-common-status-only.sh"
 # 行を削除すると空の if ブロックになって構文エラーで落ちる（＝変異ではなく破壊）。
 # no-op へ置換して、挙動だけが変わった状態を作る。
 perl -pe 's/^(\s*)git diff (?:HEAD|--cached) -- "\$\{pathspec\[\@\]\}" \|\| exit 1$/$1:/' \
-  "$PLUGIN_ROOT/scripts/adapters/adapter-common.sh" > "$MUTANT_COMMON_M3"
-if cmp -s "$MUTANT_COMMON_M3" "$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"; then
+  "$PLUGIN_ROOT/scripts/lib/adapter-common-git.sh" > "$MUTANT_COMMON_M3"
+if cmp -s "$MUTANT_COMMON_M3" "$PLUGIN_ROOT/scripts/lib/adapter-common-git.sh"; then
   bad "M3: ミューテーションを適用できなかった（被検体と同一。検査が無意味）"
 else
   reset_repo
@@ -1079,8 +1082,8 @@ fi
 # **除外を渡さない比較ではこの退行を検出できない**（この suite が実際に踏んでいた穴）。
 MUTANT_COMMON_M4="$TMP/adapter-common-no-cd.sh"
 perl -pe 's/^(\s*)cd "\$root" \|\| exit 1$/$1:/' \
-  "$PLUGIN_ROOT/scripts/adapters/adapter-common.sh" > "$MUTANT_COMMON_M4"
-if cmp -s "$MUTANT_COMMON_M4" "$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"; then
+  "$PLUGIN_ROOT/scripts/lib/adapter-common-git.sh" > "$MUTANT_COMMON_M4"
+if cmp -s "$MUTANT_COMMON_M4" "$PLUGIN_ROOT/scripts/lib/adapter-common-git.sh"; then
   bad "M4: ミューテーションを適用できなかった（被検体と同一。検査が無意味）"
 else
   reset_repo
@@ -1110,8 +1113,8 @@ fi
 # index だけが動く変化（--staged レビューが読む面）が見逃されるはず。
 MUTANT_COMMON_M5="$TMP/adapter-common-no-cached.sh"
 perl -pe 's/^(\s*)git diff --cached -- "\$\{pathspec\[\@\]\}" \|\| exit 1$/$1:/' \
-  "$PLUGIN_ROOT/scripts/adapters/adapter-common.sh" > "$MUTANT_COMMON_M5"
-if cmp -s "$MUTANT_COMMON_M5" "$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"; then
+  "$PLUGIN_ROOT/scripts/lib/adapter-common-git.sh" > "$MUTANT_COMMON_M5"
+if cmp -s "$MUTANT_COMMON_M5" "$PLUGIN_ROOT/scripts/lib/adapter-common-git.sh"; then
   bad "M5: ミューテーションを適用できなかった（被検体と同一。検査が無意味）"
 else
   reset_repo

@@ -1452,7 +1452,6 @@ MISS_PROBE_BASELINE=(
   roadmap-release-facts-selftest
   roadmap-release-facts
   root-instructions-parity
-  setup-multi-agent-yq
   severity-parser-intersection
   shellcheck
   skill-count-consistency-selftest

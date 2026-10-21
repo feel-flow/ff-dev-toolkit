@@ -660,6 +660,12 @@ compute_resume_identity() {
     fi
   fi
 
+  # adapter-common.sh の構成ファイルも identity に入る。配列が無いのに入口だけを
+  # hash すると、構成ファイルの変更が古い結果の再利用を止めない（ADR-075）。
+  if [[ -z "${ADAPTER_COMMON_PARTS+x}" || "${#ADAPTER_COMMON_PARTS[@]}" -eq 0 ]]; then
+    return 1
+  fi
+
   {
     printf 'identity-version=%s\n' "$RESUME_IDENTITY_VERSION"
     printf 'task=%s\nmode=%s\nstrategy=%s\n' "$TASK_TYPE" "$MODE" "$STRATEGY"
@@ -678,6 +684,10 @@ compute_resume_identity() {
       hash_file_or_missing "orchestrator-part:${part##*/}" "$part"
     done
     hash_file_or_missing adapter-common "$ADAPTER_COMMON"
+    # 構成ファイル（adapter-common.sh が source する本体）も入口と並べて算入する。
+    for part in "${ADAPTER_COMMON_PARTS[@]}"; do
+      hash_file_or_missing "adapter-common-part:${part##*/}" "$part"
+    done
     if [[ -n "$FIXED_DIFF_FILE" ]]; then
       hash_file_or_missing fixed-diff "$FIXED_DIFF_FILE"
     else

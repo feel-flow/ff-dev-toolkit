@@ -70,6 +70,8 @@ ADAPTER_COMMON="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 # shellcheck source=../lib/multi-agent-sources.sh
 . "$SCRIPT_DIR/../lib/multi-agent-sources.sh"
+# shellcheck source=../lib/adapter-common-sources.sh
+. "$SCRIPT_DIR/../lib/adapter-common-sources.sh"
 
 [ -f "$ADAPTER_COMMON" ] || {
   echo "✗ 対象ファイルが見つかりません: $ADAPTER_COMMON" >&2
@@ -79,6 +81,7 @@ MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
   echo "✗ 対象ファイルが見つかりません: $MULTI_AGENT" >&2
   exit 1
 }
+ac_sources_load "$ADAPTER_COMMON"
 
 # mktemp の失敗理由を捨てない（review-capture-fail-loud と同じ扱い）。
 if _ff_mktemp_out="$(mktemp -d 2>&1)" && [ -d "$_ff_mktemp_out" ]; then
@@ -907,13 +910,13 @@ else
   ok "multi-agent.sh は判定 awk の複製（in_crit）を持たない"
 fi
 
-if grep -q '_ff_severity_scan accept' "$ADAPTER_COMMON"; then
+if grep -q '_ff_severity_scan accept' "${AC_SOURCES[@]}"; then
   ok "review_body_present は _ff_severity_scan accept へ委譲する"
 else
   bad "review_body_present が共有パーサーへ委譲していない（受理側の独自実装への復帰）"
 fi
 
-if grep -q '_ff_severity_scan critical' "$ADAPTER_COMMON"; then
+if grep -q '_ff_severity_scan critical' "${AC_SOURCES[@]}"; then
   ok "critical_findings_present は _ff_severity_scan critical へ委譲する"
 else
   bad "critical_findings_present が共有パーサーへ委譲していない（検出側の独自実装への復帰）"

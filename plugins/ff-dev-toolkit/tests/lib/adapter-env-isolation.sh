@@ -84,6 +84,9 @@
 #     `build_isolate_env "MULTI_AGENT_CONFIG" "$MULTI_AGENT"` だけを呼ぶ suite は
 #     MULTI_AGENT_* しか分離していない）。名簿は suite ごとに非対称であり、
 #     アダプタを起動する suite は抽出源にアダプタ実装も渡すこと。
+#     渡したファイルの basename が adapter-common.sh のときは、入口の
+#     ADAPTER_COMMON_PARTS も同じ抽出に含める。FF_TIMEOUT_* は構成ファイル側に
+#     あり、入口だけを見ると分離が空になる（ADR-075）。
 #   - isolate_hook_env は例外で、HOOK の参照閉包に現れる FF_* / CLAUDE_* を全部落とす
 #     （hook の読む名前だけが抽出源なので、suite 自身の前提変数は通常現れない）。ただし
 #     FF_RUN_ALL_* と FF_REACHED_END は抽出されても名簿から外す（run-all の入れ子ガードと
@@ -130,16 +133,49 @@
 # 運用注記: 本ファイルは source される前提（実行ビット不要）。呼び出し側は
 # `# shellcheck source=` directive で本ファイルを指す。
 
+# 変異試験は本ファイルだけを一時ディレクトリへ写す。隣に helper が無い写しでは
+# source しない（adapter-common.sh を渡したときだけ fail-closed で止める）。
+_ff_ac_sources_lib="${BASH_SOURCE[0]%/*}/adapter-common-sources.sh"
+if [ -f "$_ff_ac_sources_lib" ]; then
+  # shellcheck source=adapter-common-sources.sh
+  . "$_ff_ac_sources_lib"
+fi
+unset _ff_ac_sources_lib
+
 build_isolate_env() {
   local sentinels="$1"; shift
   local IFS=$' \t\n'
   local raw var s seen grep_rc=0
+  local arg base scan_i part
+  local scan_files=()
+  # 入口 adapter-common.sh を渡した呼び出しは、構成ファイルを渡し忘れても
+  # FF_TIMEOUT_* の分離が空にならない。basename が adapter-common.sh のときだけ辿る
+  # （selftest の fixture など別名のファイルは対象外）。
+  for arg in "$@"; do
+    scan_files+=("$arg")
+    base="${arg##*/}"
+    if [ "$base" = "adapter-common.sh" ]; then
+      if ! declare -F ac_sources_load >/dev/null 2>&1; then
+        echo "✗ build_isolate_env: adapter-common.sh の構成ファイルを辿る helper がありません（分離が入口だけで空になる）" >&2
+        exit 1
+      fi
+      ac_sources_load "$arg"
+      scan_i=0
+      for part in "${AC_SOURCES[@]}"; do
+        if [ "$scan_i" -eq 0 ]; then
+          scan_i=1
+          continue
+        fi
+        scan_files+=("$part")
+      done
+    fi
+  done
   # FF_MULTI_AGENT を独立の選択肢として先に並べる。MULTI_AGENT だけだと
   # FF_MULTI_AGENT_IGNORE_PATHS から `_MULTI_AGENT_IGNORE_PATHS`（実在しない名前）を
   # 切り出し、名簿には載るのに実体（FF_ 付き）が素通りする — ホストがこの変数を
   # export していると revision-guard 系 suite の判定が変わり、env 汚染が製品退行として
   # 誤報告される（Issue #747。_FF_TIMEOUT_* の取りこぼしと同じ形）。
-  raw="$(grep -hoE '_?(FF_MULTI_AGENT|MULTI_AGENT|FF_TIMEOUT)_[A-Z0-9_]+' "$@")" || grep_rc=$?
+  raw="$(grep -hoE '_?(FF_MULTI_AGENT|MULTI_AGENT|FF_TIMEOUT)_[A-Z0-9_]+' "${scan_files[@]}")" || grep_rc=$?
   if [ "$grep_rc" -gt 1 ]; then
     echo "✗ 実装からの MULTI_AGENT_* / FF_MULTI_AGENT_* / FF_TIMEOUT_* 抽出が失敗しました（grep rc=${grep_rc}）。部分的な読み取り失敗は分離リストの黙った欠落になるため続行しない" >&2
     exit 1

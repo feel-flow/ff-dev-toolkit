@@ -2,6 +2,7 @@
 #
 # merge-cleanup.sh の破壊的経路の回帰テスト。
 # 空振り検出: agent branch専用fixtureが削除処理の欠落・祖先判定欠落・worktree判定欠落・remote判定欠落を赤にする。
+# 空振り検出: 入口の「ファイルが無い」分岐を外した写しを与えると、「構成ファイルを読めない入口が削除前に止まっていない（mode=missing）」の 1 件だけが赤になる（2026-10-21 実測。成功は残り全部。判定は exit 1 のまま、針「がありません」が外れ、次の分岐の「が 0 バイトです」になる。削除へは進まない）。
 # worktree一覧の不在・空・警告とremote照合失敗はfixtureでskip理由と残存を実測する。
 #
 # 一時 git リポジトリ（bare origin + clone）と mock gh で以下を検証する:
@@ -255,7 +256,7 @@ mbcs_assert_clean() {
   fi
 }
 
-# 検査対象は merge-cleanup.sh と本 suite 自身の 2 つ。suite 自身を外すと、verify.sh を
+# 検査対象は入口 merge-cleanup.sh、構成ファイル 3 本、本 suite 自身。suite 自身を外すと、verify.sh を
 # 編集した本人が単体実行では自分の違反に気付けず、repo 横断ガード（tests/run-all/verify.sh
 # の case 11）まで持ち越される。しかも違反が失敗報告の文言に入った場合は、静的検査を
 # すり抜けたまま実行時に `unbound variable` で suite が途中死する。二重に見えるが役割は
@@ -266,6 +267,87 @@ mbcs_assert_clean() {
 # 裸で書くと `PASS（` を参照して suite が途中死する。
 mbcs_assert_clean "$TARGET" "merge-cleanup.sh"
 mbcs_assert_clean "$SCRIPT_DIR/verify.sh" "本 suite (tests/merge-cleanup/verify.sh)"
+MC_PARTS=(
+  "$PLUGIN_ROOT/scripts/lib/merge-cleanup-pre.sh"
+  "$PLUGIN_ROOT/scripts/lib/merge-cleanup-remote.sh"
+  "$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh"
+)
+for _mc_lib in "${MC_PARTS[@]}"; do
+  mbcs_assert_clean "$_mc_lib" "構成ファイル ${_mc_lib##*/}"
+done
+
+echo "== 静的検査: 入口と構成ファイルは 1200 行以下 =="
+for _mc_size in "$TARGET" "${MC_PARTS[@]}"; do
+  _mc_n="$(wc -l < "$_mc_size")"
+  _mc_n="${_mc_n// /}"
+  if [ "$_mc_n" -le 1200 ]; then
+    ok "${_mc_size##*/} は 1200 行以下（${_mc_n} 行）"
+  else
+    bad "${_mc_size##*/} が 1200 行を超えている（${_mc_n} 行）"
+  fi
+done
+
+# 構成ファイルが読めない入口は、削除へ進む前に exit 1 で止まる（PARTIAL の 2 ではない）。
+# 入口だけを別ディレクトリへ置く。lib を置かない / 空 / 末尾を壊す / symlink の 4 通り。
+stage_cleanup_mutant() { # <dir>
+  mkdir -p "$1/lib"
+  cp "$TARGET" "$1/merge-cleanup.sh"
+  cp "${MC_PARTS[@]}" "$1/lib/"
+}
+refuse_cleanup_unreadable() { # <mode> <needle>
+  local mode="$1" needle="$2" dir entry rc before
+  dir="$(mktemp -d)"
+  mkdir -p "$dir/lib" "$dir/repo" "$dir/bin"
+  printf '#!/bin/sh\nexit 0\n' > "$dir/bin/gh"
+  printf '#!/bin/sh\nexit 0\n' > "$dir/bin/jq"
+  chmod +x "$dir/bin/gh" "$dir/bin/jq"
+  cp "$TARGET" "$dir/merge-cleanup.sh"
+  entry="$dir/merge-cleanup.sh"
+  git -C "$dir/repo" init -q
+  ff_git_fixture_init "$dir/repo" "Refuse Test" "refuse@example.com" >/dev/null
+  printf 'keep\n' > "$dir/repo/keep.txt"
+  git -C "$dir/repo" add keep.txt
+  git -C "$dir/repo" commit -qm keep
+  git -C "$dir/repo" switch -qc keep-me
+  before="$(git -C "$dir/repo" rev-parse HEAD)"
+  case "$mode" in
+    missing) ;;
+    empty) : > "$dir/lib/merge-cleanup-pre.sh" ;;
+    cut)
+      cp "$PLUGIN_ROOT/scripts/lib/merge-cleanup-pre.sh" "$dir/lib/merge-cleanup-pre.sh"
+      printf '\n# cut\n' >> "$dir/lib/merge-cleanup-pre.sh"
+      ;;
+    symlink)
+      cp "$PLUGIN_ROOT/scripts/lib/merge-cleanup-pre.sh" "$dir/lib/merge-cleanup-pre.real"
+      ln -s merge-cleanup-pre.real "$dir/lib/merge-cleanup-pre.sh"
+      ;;
+    *)
+      bad "refuse mode ${mode} は未定義"
+      rm -rf "$dir"
+      return
+      ;;
+  esac
+  set +e
+  ( cd "$dir/repo" && PATH="$dir/bin:$PATH" bash "$entry" 1 >"$dir/out" 2>&1 )
+  rc=$?
+  set -e
+  if [ "$rc" -eq 1 ] \
+    && grep -F -q -- "$needle" "$dir/out" \
+    && grep -F -q -- "まだ何も削除していません。" "$dir/out" \
+    && [ "$(git -C "$dir/repo" rev-parse HEAD)" = "$before" ] \
+    && git -C "$dir/repo" show-ref --verify --quiet refs/heads/keep-me; then
+    ok "構成ファイルが読めないときは削除前に exit 1（mode=${mode}）"
+  else
+    bad "構成ファイルを読めない入口が削除前に止まっていない（mode=${mode} rc=${rc}）"
+    sed -n '1,20p' "$dir/out" >&2 || true
+  fi
+  rm -rf "$dir"
+}
+echo "== 構成ファイルが読めないときは削除前に止まる =="
+refuse_cleanup_unreadable missing "がありません"
+refuse_cleanup_unreadable empty "が 0 バイトです"
+refuse_cleanup_unreadable cut "読み込み完了の印ではありません"
+refuse_cleanup_unreadable symlink "が symlink です"
 
 # $1: 検査するファイル。delete_remote_branch_with_lease 内の git push が
 # すべて「同一物理行の prefix 代入 SKIP_SIMPLE_GIT_HOOKS=1 と HUSKY=0」なら 0。
@@ -2373,9 +2455,11 @@ fi
 # 40.2 変異テスト: null 照合を無効化した mutant を実際に走らせ、旧文言（誤帰属）へ
 #      退行することを実測する。40.1 の green 条件（新文言あり・旧文言なし）が
 #      mutant では両方裏返る = この fixture は mutant を赤にできる、という検出力の証明。
-MUTANT_703="$TMP/merge-cleanup-mutant-703.sh"
-sed "s|%s\\\\tnull|%s\\\\tXnull|" "$TARGET" > "$MUTANT_703"
-if ! cmp -s "$TARGET" "$MUTANT_703"; then
+stage_cleanup_mutant "$TMP/mutant-703"
+sed "s|%s\\\\tnull|%s\\\\tXnull|" "$TMP/mutant-703/lib/merge-cleanup-local.sh" > "$TMP/mutant-703/lib/merge-cleanup-local.new"
+mv "$TMP/mutant-703/lib/merge-cleanup-local.new" "$TMP/mutant-703/lib/merge-cleanup-local.sh"
+MUTANT_703="$TMP/mutant-703/merge-cleanup.sh"
+if ! cmp -s "$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh" "$TMP/mutant-703/lib/merge-cleanup-local.sh"; then
   ok "mutant が生成できた（null 照合の無効化。self-test）"
 else
   bad "mutant が原本と同一 — 変異テストは何も検証していない"
@@ -2640,8 +2724,14 @@ case "$WT59_LOCK_LINE" in
     ;;
 esac
 
-# 43.7 静的検査: `git worktree remove --force` を本体に持たない（TOCTOU の穴の再混入防止）
-if ! grep -qE 'git worktree remove --force' "$TARGET"; then
+# 43.7 静的検査: `git worktree remove --force` を入口と構成ファイルに持たない（TOCTOU の穴の再混入防止）
+MC_FORCE_HITS=0
+for _mc_force in "$TARGET" "${MC_PARTS[@]}"; do
+  if grep -qE 'git worktree remove --force' "$_mc_force"; then
+    MC_FORCE_HITS=1
+  fi
+done
+if [ "$MC_FORCE_HITS" -eq 0 ]; then
   ok "merge-cleanup.sh は git worktree remove --force を使わない（静的検査）"
 else
   bad "merge-cleanup.sh に git worktree remove --force が再混入している"
@@ -3745,14 +3835,23 @@ else
 fi
 
 # 46.7 変異テスト（すべて dry-run のみ。通常実行の前に走らせて、比較材料を揃える）
-MUTANT_CHAIN="$TMP/merge-cleanup-mutant-chain.sh"
-MUTANT_VERDICT="$TMP/merge-cleanup-mutant-verdict.sh"
-MUTANT_BASEREF="$TMP/merge-cleanup-mutant-baseref.sh"
-sed 's|^dry_virtual_prune_gone_branches() {$|dry_virtual_prune_gone_branches() { return 0|' "$TARGET" > "$MUTANT_CHAIN"
-sed 's|^remote_delete_verdict() {$|remote_delete_verdict() { printf "match\\t%s\\n" "$2"; return 0|' "$TARGET" > "$MUTANT_VERDICT"
-sed 's|"\$DRY_MERGED_BASE_REF"|HEAD|g' "$TARGET" > "$MUTANT_BASEREF"
+stage_cleanup_mutant "$TMP/mutant-chain"
+stage_cleanup_mutant "$TMP/mutant-verdict"
+stage_cleanup_mutant "$TMP/mutant-baseref"
+sed 's|^dry_virtual_prune_gone_branches() {$|dry_virtual_prune_gone_branches() { return 0|' \
+  "$TMP/mutant-chain/merge-cleanup.sh" > "$TMP/mutant-chain/merge-cleanup.new"
+mv "$TMP/mutant-chain/merge-cleanup.new" "$TMP/mutant-chain/merge-cleanup.sh"
+sed 's|^remote_delete_verdict() {$|remote_delete_verdict() { printf "match\\t%s\\n" "$2"; return 0|' \
+  "$TMP/mutant-verdict/merge-cleanup.sh" > "$TMP/mutant-verdict/merge-cleanup.new"
+mv "$TMP/mutant-verdict/merge-cleanup.new" "$TMP/mutant-verdict/merge-cleanup.sh"
+sed 's|"\$DRY_MERGED_BASE_REF"|HEAD|g' \
+  "$TMP/mutant-baseref/lib/merge-cleanup-local.sh" > "$TMP/mutant-baseref/lib/merge-cleanup-local.new"
+mv "$TMP/mutant-baseref/lib/merge-cleanup-local.new" "$TMP/mutant-baseref/lib/merge-cleanup-local.sh"
+MUTANT_CHAIN="$TMP/mutant-chain/merge-cleanup.sh"
+MUTANT_VERDICT="$TMP/mutant-verdict/merge-cleanup.sh"
+MUTANT_BASEREF="$TMP/mutant-baseref/merge-cleanup.sh"
 if ! cmp -s "$TARGET" "$MUTANT_CHAIN" && ! cmp -s "$TARGET" "$MUTANT_VERDICT" \
-  && ! cmp -s "$TARGET" "$MUTANT_BASEREF"; then
+  && ! cmp -s "$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh" "$TMP/mutant-baseref/lib/merge-cleanup-local.sh"; then
   ok "mutant 3 種を生成できた（連鎖予告なし / OID 照合なし / -d の基準を現在 HEAD へ。self-test）"
 else
   bad "mutant が原本と同一 — 変異テストは何も検証していない"
@@ -3908,7 +4007,8 @@ else
   exit 1
 fi
 for mutation in missing ancestor worktree remote; do
-  AGENT_MUTANT="$TMP/agent-mutant-${mutation}.sh"
+  AGENT_DIR="$TMP/agent-mutant-${mutation}"
+  stage_cleanup_mutant "$AGENT_DIR"
   awk -v mutation="$mutation" '
     /^# agent-branch-cleanup:start/ { inside = 1 }
     inside && mutation == "missing" { if ($0 ~ /^# agent-branch-cleanup:end/) inside = 0; next }
@@ -3918,8 +4018,10 @@ for mutation in missing ancestor worktree remote; do
     inside && mutation == "remote" && /git ls-remote --exit-code --heads origin/ { next }
     { print }
     /^# agent-branch-cleanup:end/ { inside = 0 }
-  ' "$TARGET" > "$AGENT_MUTANT"
-  if cmp -s "$TARGET" "$AGENT_MUTANT"; then
+  ' "$AGENT_DIR/lib/merge-cleanup-local.sh" > "$AGENT_DIR/lib/merge-cleanup-local.new"
+  mv "$AGENT_DIR/lib/merge-cleanup-local.new" "$AGENT_DIR/lib/merge-cleanup-local.sh"
+  AGENT_MUTANT="$AGENT_DIR/merge-cleanup.sh"
+  if cmp -s "$PLUGIN_ROOT/scripts/lib/merge-cleanup-local.sh" "$AGENT_DIR/lib/merge-cleanup-local.sh"; then
     bad "agent mutant ${mutation} が原本と同一（空振り）"
     exit 1
   fi

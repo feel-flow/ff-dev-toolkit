@@ -6,6 +6,15 @@
 # source 順は verify.sh の一覧が正本。fixture・関数・変数は同一プロセスで共有され、
 # 後続ファイルは先行ファイルが作った fixture を参照するので、順序を入れ替えない。
 
+# 入口は scripts/lib/setup-yq.sh を開始時に source する。写しに lib が無いと、
+# ラッパーを書く前に exit 2 で止まる。
+copy_setup_script() { # <scripts ディレクトリ>
+  local dest="$1"
+  mkdir -p "$dest/lib"
+  cp "$SETUP" "$dest/setup-multi-agent.sh"
+  cp "${SETUP%/*}/lib/setup-yq.sh" "$dest/lib/setup-yq.sh"
+}
+
 echo "-- 本番経路（FF_DEV_TOOLKIT_ROOT を設定しない） --"
 
 # ここまでの検査は（toolkit 未解決を測る RUN_SHIM_NO_ROOT の 2 件を除き）FF_DEV_TOOLKIT_ROOT を
@@ -13,7 +22,7 @@ echo "-- 本番経路（FF_DEV_TOOLKIT_ROOT を設定しない） --"
 # 「配置されたシムが自力でオーケストレータへ到達できるか」を一度も通らない。
 FAKE="$WORK/fake-toolkit"
 mkdir -p "$FAKE/scripts/templates" "$FAKE/.claude-plugin" "$WORK/consumer2"
-cp "$SETUP" "$FAKE/scripts/setup-multi-agent.sh"
+copy_setup_script "$FAKE/scripts"
 cp "$SHIM" "$FAKE/scripts/templates/codex-review.sh"
 cat > "$FAKE/.claude-plugin/plugin.json" <<'JSON'
 {
@@ -268,7 +277,7 @@ echo "-- setup: sidecar 修復の検証・揮発パス警告・行末正規化�
 # 上書きしないこと。
 BADKIT="$WORK/bad-toolkit"
 mkdir -p "$BADKIT/scripts/templates"
-cp "$SETUP" "$BADKIT/scripts/setup-multi-agent.sh"
+copy_setup_script "$BADKIT/scripts"
 cp "$SHIM" "$BADKIT/scripts/templates/codex-review.sh"
 : > "$BADKIT/scripts/multi-agent.sh"   # 0 バイト = シムの usable_orchestrator が拒否する形
 BAD_TGT="$WORK/consumer-bad"
@@ -331,7 +340,7 @@ fi
 # tracked ファイルが CRLF で上書きされて全行 diff になり、.bak が実行のたびに増える。
 CRLF_KIT="$WORK/crlf-toolkit"
 mkdir -p "$CRLF_KIT/scripts/templates" "$CRLF_KIT/.claude-plugin"
-cp "$SETUP" "$CRLF_KIT/scripts/setup-multi-agent.sh"
+copy_setup_script "$CRLF_KIT/scripts"
 cp "$FAKE/scripts/multi-agent.sh" "$CRLF_KIT/scripts/multi-agent.sh"
 cp "$FAKE/scripts/agent-config.yaml" "$CRLF_KIT/scripts/agent-config.yaml"
 cp "$FAKE/.claude-plugin/plugin.json" "$CRLF_KIT/.claude-plugin/plugin.json"
@@ -430,7 +439,7 @@ fi
 # exit 0 スクリプト。2 語の grep だけだと usable と誤認して記録する（レビュー実測）。
 FAKEORCH_KIT="$WORK/fakeorch-toolkit"
 mkdir -p "$FAKEORCH_KIT/scripts/templates"
-cp "$SETUP" "$FAKEORCH_KIT/scripts/setup-multi-agent.sh"
+copy_setup_script "$FAKEORCH_KIT/scripts"
 cp "$SHIM" "$FAKEORCH_KIT/scripts/templates/codex-review.sh"
 cat > "$FAKEORCH_KIT/scripts/multi-agent.sh" <<'SH'
 #!/usr/bin/env bash
@@ -456,7 +465,7 @@ fi
 # 読めるため、その場合だけ部分 skip）。
 UNREAD_KIT="$WORK/unread-toolkit"
 mkdir -p "$UNREAD_KIT/scripts/templates"
-cp "$SETUP" "$UNREAD_KIT/scripts/setup-multi-agent.sh"
+copy_setup_script "$UNREAD_KIT/scripts"
 cp "$SHIM" "$UNREAD_KIT/scripts/templates/codex-review.sh"
 cp "$FAKE/scripts/multi-agent.sh" "$UNREAD_KIT/scripts/multi-agent.sh"
 chmod 000 "$UNREAD_KIT/scripts/multi-agent.sh"
@@ -485,7 +494,7 @@ chmod 644 "$UNREAD_KIT/scripts/multi-agent.sh"
 # なる（レビュー実測: cmp -s が rc=0 を返した）。
 GATE_KIT="$WORK/gate-toolkit"
 mkdir -p "$GATE_KIT/scripts/templates"
-cp "$SETUP" "$GATE_KIT/scripts/setup-multi-agent.sh"
+copy_setup_script "$GATE_KIT/scripts"
 cp "$FAKE/scripts/multi-agent.sh" "$GATE_KIT/scripts/multi-agent.sh"
 cp "$SHIM" "$GATE_KIT/scripts/templates/codex-review.sh"
 chmod 000 "$GATE_KIT/scripts/templates/codex-review.sh"

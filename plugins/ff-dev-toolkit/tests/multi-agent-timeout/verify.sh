@@ -66,6 +66,9 @@ done
 # 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
 # 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
 ma_sources_load "${MULTI_AGENT%/*}"
+# shellcheck source=../lib/adapter-common-sources.sh
+. "$SCRIPT_DIR/../lib/adapter-common-sources.sh"
+ac_sources_load "$ADAPTER_COMMON"
 build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE FF_TIMEOUT_KILL_GRACE MULTI_AGENT_CROSS_REVIEW" \
   "${MA_SOURCES[@]}" "$PLUGIN_ROOT"/scripts/adapters/*.sh
 
@@ -138,7 +141,7 @@ done
 # アダプタ単独実行時の既定（orchestrator は常に --timeout を明示で渡すため、この値は
 # 直叩き専用）。ここが 300 のまま残ると、ヘッダーが案内している使い方だけが
 # Issue #152 の原因値で動き続ける。
-ADAPTER_DEFAULT="$(grep -E '^[[:space:]]*TIMEOUT="\$\{REVIEW_TIMEOUT:-[0-9]+\}"' "$ADAPTER_COMMON" \
+ADAPTER_DEFAULT="$(grep -hE '^[[:space:]]*TIMEOUT="\$\{REVIEW_TIMEOUT:-[0-9]+\}"' "${AC_SOURCES[@]}" \
   | sed -E 's/.*REVIEW_TIMEOUT:-([0-9]+).*/\1/')"
 if [[ "$ADAPTER_DEFAULT" == "$CANON" ]]; then
   ok "adapter-common.sh の REVIEW_TIMEOUT 既定が一致 (${ADAPTER_DEFAULT})"
@@ -522,24 +525,25 @@ fi
 # 含むため）。判定は入力を読み切る `grep -c` で行い、`grep -q` の早期終了が上流を
 # SIGPIPE で殺して pipefail のもとで結果を反転させる事故を避ける（ACE-149）。
 # `-k` 付きに限らず `timeout <秒> cmd` 形式の委譲も捕まえる。
-DELEGATES="$(grep -vE '^[[:space:]]*#' "$ADAPTER_COMMON" \
+DELEGATES="$(grep -hvE '^[[:space:]]*#' "${AC_SOURCES[@]}" \
   | grep -cE '(^|[^A-Za-z_-])(timeout|gtimeout)[[:space:]]+(-k[[:space:]]|-[[:alnum:]]|"?\$|[0-9])' || true)"
 if [[ "$DELEGATES" -eq 0 ]]; then
   ok "supervisor は単一実装（ホストにより未検査になる経路が無い）"
 else
   bad "adapter-common.sh が timeout(1) へ委譲する分岐を持っている（終了コードで期限発火と外部 kill を判別できない）"
-  grep -vE '^[[:space:]]*#' "$ADAPTER_COMMON" | grep -nE '(^|[^A-Za-z_-])(timeout|gtimeout)[[:space:]]' >&2 || true
+  grep -hvE '^[[:space:]]*#' "${AC_SOURCES[@]}" | grep -nE '(^|[^A-Za-z_-])(timeout|gtimeout)[[:space:]]' >&2 || true
 fi
 
 # marker は signal より前に書かれること。後ろだと、親が子を回収して watchdog を
 # 停止するのが書き込みより先になり得て、timeout が crash として誤報告される。
 # この順序は競合の窓が極端に狭く、160 回の mutation 実行でも再現しなかったため
 # 行動テストでは固定できない（実測に基づく試行回数を出せない）。静的に固定する。
+MARKER_FILE="$(ac_source_holding 'sleep "$timeout_seconds"')"
 MARKER_ORDER="$(awk '
   /^[[:space:]]*sleep "\$timeout_seconds"/ { inwd = 1; next }
   inwd && /printf .timeout. >"\$marker"/   { print "marker"; exit }
   inwd && /kill -TERM/                      { print "kill"; exit }
-' "$ADAPTER_COMMON")"
+' "$MARKER_FILE")"
 if [[ "$MARKER_ORDER" == "marker" ]]; then
   ok "watchdog は marker を signal より前に書く（timeout の crash 誤報告を防ぐ順序）"
 else

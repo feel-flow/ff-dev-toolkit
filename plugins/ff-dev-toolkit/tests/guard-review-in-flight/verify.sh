@@ -126,6 +126,7 @@
 #
 # run-all-required: no — jq / git 不在での skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。既存の Bash ガード suite と同じ扱い）
 # 空振り検出: 検査対象 hooks/guard-review-in-flight.sh を「exit 0 だけ」の空ファイルへ差し替えると (a)〜(m) の 188 件が赤になる（2026-09-18 実測。先頭は (a)「Edit が deny される」。対象の不在・無出力を「発火しないのが正しい」へ倒さないことの実測）。
+# 空振り検出: 入口の「ファイルが無い」分岐を外した写しを与えると、(k)「判定ライブラリ不在の理由が違う」の 1 件だけが赤になる（2026-10-21 実測。成功 574。判定は deny のまま、針「ファイルがありません」が外れる。許可側へは倒さない）。
 # 空振り検出: ignored 判定の rc 分岐で 127 を ignored 側へ畳む変異（tests/lib/review-write-scan.sh の `0) return 0` へ `127) return 0` を足す）を入れると (m)「check-ignore を起動できない回は ignored と読まずに deny」と (m)「Bash 経路でも check-ignore 不能なら deny」の 2 件が赤になる（2026-09-18 実測。判定の口が失敗した回を「ignored」へ畳むと許可側へ緩むため、起動不能を deny 側で固定している）。
 # 変異検出（(n) 巡回カウンタ。2026-09-24 実測。scripts/mutation-harness.sh で 1 件ずつ作業ツリーの写しへ
 # 適用 → 内容ハッシュで適用確認 → 本 suite。15 件すべて赤、誤検知確認 1 件は緑。数字は赤になった針の件数）:
@@ -2116,12 +2117,14 @@ cp "$TARGET" "$K_COPY/hooks/guard-review-in-flight.sh"
 cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$K_COPY/hooks/"
 cp "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$K_COPY/hooks/" 2>/dev/null || true
 cp "$PLUGIN_ROOT/tests/lib/review-write-scan.sh" "$K_COPY/tests/lib/"
+cp "$PLUGIN_ROOT/tests/lib/review-in-flight-judge.sh" "$K_COPY/tests/lib/"
 K_COPY2="$TEST_TMP/k-noscanlib"
 mkdir -p "$K_COPY2/hooks" "$K_COPY2/tests/lib"
 cp "$TARGET" "$K_COPY2/hooks/guard-review-in-flight.sh"
 cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$K_COPY2/hooks/"
 cp "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$K_COPY2/hooks/" 2>/dev/null || true
 cp "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$K_COPY2/tests/lib/"
+cp "$PLUGIN_ROOT/tests/lib/review-in-flight-judge.sh" "$K_COPY2/tests/lib/"
 write_lock "$LIVE_PID"
 K_OUT="$(printf '%s' "$(bash_json_at "tee $TEST_OUT/x" "$REPO")" | bash "$K_COPY/hooks/guard-review-in-flight.sh" 2>/dev/null)"
 case "$(printf '%s' "$K_OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" in
@@ -2143,6 +2146,22 @@ K_OUT="$(printf '%s' "$(bash_json_at "tee $TEST_OUT/x" "$REPO")" | bash "$K_COPY
 [ -z "$K_OUT" ] && ok "(k) ヘルパ不在でもロック無しは無音（fail-open 経路は変えない）" || bad "(k) ヘルパ不在 + ロック無しで出力: [$K_OUT]"
 K_OUT="$(printf '%s' "$(bash_json_at "tee README.md" "$REPO")" | bash "$K_COPY2/hooks/guard-review-in-flight.sh" 2>/dev/null)"
 [ -z "$K_OUT" ] && ok "(k) 走査ライブラリ不在でもロック無しは無音" || bad "(k) 走査ライブラリ不在 + ロック無しで出力: [$K_OUT]"
+# 判定ライブラリが読めない回は、ロックが無くても許可側へ倒さない（判定できないまま通さない）。
+J_COPY="$TEST_TMP/j-nojudge"
+mkdir -p "$J_COPY/hooks" "$J_COPY/tests/lib"
+cp "$TARGET" "$J_COPY/hooks/guard-review-in-flight.sh"
+cp "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$J_COPY/hooks/"
+cp "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$J_COPY/hooks/" 2>/dev/null || true
+J_OUT="$(printf '%s' "$(bash_json_at "tee $TEST_OUT/x" "$REPO")" | bash "$J_COPY/hooks/guard-review-in-flight.sh" 2>/dev/null)"
+case "$(printf '%s' "$J_OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" in
+  deny)
+    case "$(printf '%s' "$J_OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)" in
+      *'ファイルがありません'*) ok "(k) 判定ライブラリが無いとロック無しの書き込みも deny（許可側へ倒さない）" ;;
+      *) bad "(k) 判定ライブラリ不在の理由が違う: [$J_OUT]" ;;
+    esac
+    ;;
+  *) bad "(k) 判定ライブラリ不在で素通し: out=[$J_OUT]" ;;
+esac
 rm -f "$REPO/patch.py" "$REPO/read.py" "$REPO/fix.js" "$REPO/fix.sh" "$REPO/patch2"
 
 # Windows では後段（(m) の壊れた symlink の作成）で suite が中断するため、ここへ置く。
@@ -2377,7 +2396,7 @@ O_COPY="$TEST_TMP/o-nolex"
 mkdir -p "$O_COPY/hooks" "$O_COPY/tests/lib"
 cp "$TARGET" "$PLUGIN_ROOT/hooks/asdd-hook-gate.sh" "$O_COPY/hooks/"
 cp "$PLUGIN_ROOT/hooks/asdd-feature.mjs" "$O_COPY/hooks/" 2>/dev/null || true
-cp "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$PLUGIN_ROOT/tests/lib/review-write-scan.sh" "$O_COPY/tests/lib/"
+cp "$PLUGIN_ROOT/tests/lib/heredoc-strip.sh" "$PLUGIN_ROOT/tests/lib/review-write-scan.sh" "$PLUGIN_ROOT/tests/lib/review-in-flight-judge.sh" "$O_COPY/tests/lib/"
 O_OUT="$(printf '%s' "$(bash_json_at "ls" "$REPO")" | bash "$O_COPY/hooks/guard-review-in-flight.sh" 2>/dev/null)"
 case "$(printf '%s' "$O_OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)" in
   *'review-shell-lex.sh'*) ok "(o3) 字句解析ライブラリが無いと判定不能として止める（理由にライブラリ名を出す）" ;;

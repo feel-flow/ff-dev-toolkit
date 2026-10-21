@@ -181,10 +181,13 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 # stub の multi-agent.sh: 受け取った argv を 1 引数 1 行で記録する。
 PROJ="$WORK/proj"
 TOOLKIT="$PROJ/toolkit"
-mkdir -p "$PROJ/scripts" "$TOOLKIT/scripts/templates" "$TOOLKIT/scripts/adapters" "$TOOLKIT/.claude-plugin"
+mkdir -p "$PROJ/scripts" "$TOOLKIT/scripts/templates" "$TOOLKIT/scripts/adapters" "$TOOLKIT/scripts/lib" "$TOOLKIT/.claude-plugin"
 # シムは diff サイズの計測基準を委譲先と同じ実装（resolve_base_branch_ref）で解決する。
 # stub 側にも**実体**を置く（写しを書くと、本体が変わっても stub だけ古いまま緑になる）。
+# 入口は構成ファイルを隣の lib から読む。入口だけを置くと source が exit 2 になり、
+# 基準解決が WARNING 経由の別経路へ落ちて検査が黙って弱まる。
 cp "$PLUGIN_ROOT/scripts/adapters/adapter-common.sh" "$TOOLKIT/scripts/adapters/adapter-common.sh"
+cp "$PLUGIN_ROOT"/scripts/lib/adapter-common-*.sh "$TOOLKIT/scripts/lib/"
 cp "$SHIM" "$PROJ/scripts/codex-review.sh"
 cp "$SHIM" "$TOOLKIT/scripts/templates/codex-review.sh"
 chmod +x "$PROJ/scripts/codex-review.sh"

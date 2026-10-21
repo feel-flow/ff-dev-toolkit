@@ -43,7 +43,7 @@ source "$PLUGIN_ROOT/tests/lib/multi-agent-sources.sh"
 # 渡した FILE... の中に現れる名前だけ」）。センチネルは抽出源ごとに 1 本ずつ:
 #   MULTI_AGENT_CONFIG          → multi-agent.sh
 #   MULTI_AGENT_MODEL_GROK_CLI  → grok-cli-adapter.sh
-#   FF_TIMEOUT_KILL_GRACE       → adapter-common.sh
+#   FF_TIMEOUT_KILL_GRACE       → adapter-common.sh（入口を渡すと構成ファイルも抽出する）
 ADAPTERS_DIR="$PLUGIN_ROOT/scripts/adapters"
 # 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
 # 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる

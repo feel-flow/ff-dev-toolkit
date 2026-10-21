@@ -578,13 +578,17 @@ if REL_PREFIX="$(git -C "$PLUGIN_ROOT" rev-parse --show-prefix 2>/dev/null)"; th
   bad "M0: plugin 配下の相対位置（rev-parse --show-prefix）を解決できない"
   REL_PREFIX=""
 fi
-ADAPTER="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
 FIXED_LINE='  n="$(stat -c %h "$1" 2>/dev/null)" || n="$(stat -f %l "$1" 2>/dev/null)" || return 1'
 OLD_LINE='  n="$(stat -f %l "$1" 2>/dev/null || stat -c %h "$1" 2>/dev/null)" || return 1'
+# 修正後の行は構成ファイル側にある。入口だけを変異すると針が当たらない。
+# shellcheck source=../lib/adapter-common-sources.sh
+. "$SCRIPT_DIR/../lib/adapter-common-sources.sh"
+ac_sources_load "$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
+ADAPTER="$(ac_source_holding "$FIXED_LINE")"
 if [ ! -f "$ADAPTER" ]; then
-  bad "M1: 変異の母体 adapter-common.sh が無い（${ADAPTER}）"
+  bad "M1: 変異の母体が無い（${ADAPTER}）"
 elif ! grep -Fx -- "$FIXED_LINE" "$ADAPTER" >/dev/null; then
-  bad "M1: adapter-common.sh に修正後の行が無く変異を当てられない（行が変わったら FIXED_LINE / OLD_LINE を追随させる）"
+  bad "M1: ${ADAPTER#"$PLUGIN_ROOT"/} に修正後の行が無く変異を当てられない（行が変わったら FIXED_LINE / OLD_LINE を追随させる）"
 else
   awk -v fixed="$FIXED_LINE" -v old="$OLD_LINE" '$0 == fixed { print old; next } { print }' "$ADAPTER" > "$TMP/adapter-old.sh"
   m_rc=0

@@ -238,7 +238,7 @@ scan_helper_default() {
   awk '
     /\$\{3:-[^}]/                                   { print "HELPER_DEFAULT:" FNR; next }
     /\$\{![A-Za-z_][A-Za-z0-9_]*:-[^}]/             { print "HELPER_DEFAULT:" FNR; next }
-  ' "$1"
+  ' "$@"
 }
 
 echo "== ラッパーのモデル slug 固定検査 =="
@@ -414,17 +414,24 @@ fi
 
 # ---- 横断検査 3: ヘルパー定義の既定値 -------------------------------------------
 HELPER_FILE="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
+# shellcheck source=../lib/adapter-common-sources.sh
+. "$SCRIPT_DIR/../lib/adapter-common-sources.sh"
 if [ ! -f "$HELPER_FILE" ]; then
   bad "ヘルパー定義が見つかりません: ${HELPER_FILE#"$PLUGIN_ROOT"/}（改名したなら HELPER_FILE を更新すること）"
 else
-  helper_codes="$(scan_helper_default "$HELPER_FILE")" \
-    || { echo "✗ ヘルパー定義 scanner 自体が失敗しました: $HELPER_FILE" >&2; exit 1; }
-  if [ -z "$helper_codes" ]; then
-    ok "ヘルパー定義（add_model_arg）が既定値を持たない"
+  ac_sources_load "$HELPER_FILE"
+  if ! grep -q '^add_model_arg()' "${AC_SOURCES[@]}"; then
+    bad "add_model_arg() が入口と構成ファイルのどこにも無い（既定値検査が空振りする）"
   else
-    bad "${HELPER_FILE#"$PLUGIN_ROOT"/} のヘルパー定義が既定値を持っている:"
-    printf '%s\n' "$helper_codes" | sed 's/^/    | /' >&2
-    echo "    定義側の既定値は呼び出し側が無傷でも全アダプタに効きます（ACE-70-2）" >&2
+    helper_codes="$(scan_helper_default "${AC_SOURCES[@]}")" \
+      || { echo "✗ ヘルパー定義 scanner 自体が失敗しました: $HELPER_FILE" >&2; exit 1; }
+    if [ -z "$helper_codes" ]; then
+      ok "ヘルパー定義（add_model_arg）が既定値を持たない"
+    else
+      bad "${HELPER_FILE#"$PLUGIN_ROOT"/} のヘルパー定義が既定値を持っている:"
+      printf '%s\n' "$helper_codes" | sed 's/^/    | /' >&2
+      echo "    定義側の既定値は呼び出し側が無傷でも全アダプタに効きます（ACE-70-2）" >&2
+    fi
   fi
 fi
 

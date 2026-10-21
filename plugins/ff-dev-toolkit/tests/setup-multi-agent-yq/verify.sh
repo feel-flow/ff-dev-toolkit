@@ -8,14 +8,17 @@
 # - macOS Homebrew 経路（brew install yq）を残す
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/setup-multi-agent-yq/verify.sh
+# 空振り検出: 入口の「ファイルが無い」分岐を外した写しを与えると、mode=missing の検査（針「がありません」）が赤になる。
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SETUP="$PLUGIN_ROOT/scripts/setup-multi-agent.sh"
+SETUP_YQ="$PLUGIN_ROOT/scripts/lib/setup-yq.sh"
 
 [ -f "$SETUP" ] || { echo "✗ setup-multi-agent.sh が見つかりません: $SETUP" >&2; exit 1; }
+[ -f "$SETUP_YQ" ] || { echo "✗ setup-yq.sh が見つかりません: $SETUP_YQ" >&2; exit 1; }
 
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正な
 # パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に誤帰属し、
@@ -58,17 +61,31 @@ echo "== setup-multi-agent yq 導入・検証契約 =="
 
 # ---- 静的検査 ----------------------------------------------------------------
 
-if syntax_err="$(bash -n "$SETUP" 2>&1)"; then
-  ok "setup-multi-agent.sh が bash として構文的に妥当（bash -n）"
+if syntax_err="$(bash -n "$SETUP" "$SETUP_YQ" 2>&1)"; then
+  ok "setup-multi-agent.sh と setup-yq.sh が bash として構文的に妥当（bash -n）"
 else
-  bad "setup-multi-agent.sh が bash -n を通らない"
+  bad "setup-multi-agent.sh または setup-yq.sh が bash -n を通らない"
   printf '%s\n' "$syntax_err" | sed 's/^/    | /' >&2
+fi
+
+setup_lines="$(wc -l < "$SETUP" | tr -d ' ')"
+yq_lines="$(wc -l < "$SETUP_YQ" | tr -d ' ')"
+if [ "$setup_lines" -le 1200 ] && [ "$yq_lines" -le 1200 ]; then
+  ok "入口 ${setup_lines} 行・setup-yq.sh ${yq_lines} 行（どちらも 1200 行以下）"
+else
+  bad "1200 行を超えている（入口 ${setup_lines} / setup-yq.sh ${yq_lines}）"
+fi
+if ! grep -q 'lib/setup-yq.sh' "$SETUP"; then
+  bad "入口が setup-yq.sh を source していない"
+else
+  ok "入口が setup-yq.sh を source する"
 fi
 
 # distro パッケージへ yq を投げると Ubuntu 等で別実装が入る（本 Issue の本体）。
 # 実行文だけを見る。print_info / コメントでの否定言及（「apt は非対応」等）は除外する。
+# 入口だけを見ると、導入処理を lib へ移しただけでこの検査が緑のまま残る。
 DISTRO_YQ_HITS="$(
-  grep -nE 'apt-get +.*install|apt +.*install|yum +.*install|dnf +.*install|pacman +-[Ss]' "$SETUP" \
+  grep -nE 'apt-get +.*install|apt +.*install|yum +.*install|dnf +.*install|pacman +-[Ss]' "$SETUP" "$SETUP_YQ" \
     | grep -i 'yq' \
     | grep -vE 'print_|#|注意|非対応|別実装|パッケージ' \
     || true
@@ -91,26 +108,26 @@ fi
 # install 行は**実行行の形**（行頭空白 + `brew install yq` + 行末/空白）で見る。素の
 # `/brew install yq/` は分岐内のコメントや echo の文字列にも一致し、実行行を消して
 # 文字列だけ残す変異が緑のまま通る。
-if grep -qE '^[[:space:]]*brew\)' "$SETUP" \
-  && awk '/^[[:space:]]*brew\)/{f=1} f && /^[[:space:]]*brew[[:space:]]+install[[:space:]]+yq([[:space:]]|$)/{found=1} f && /^[[:space:]]*\*\)/{exit} END{exit !found}' "$SETUP"; then
-  ok "Homebrew 導入分岐（brew) + brew install yq）が残っている"
+if grep -qE '^[[:space:]]*brew\)' "$SETUP_YQ" \
+  && awk '/^[[:space:]]*brew\)/{f=1} f && /^[[:space:]]*brew[[:space:]]+install[[:space:]]+yq([[:space:]]|$)/{found=1} f && /^[[:space:]]*\*\)/{exit} END{exit !found}' "$SETUP_YQ"; then
+  ok "Homebrew 導入分岐（brew) + brew install yq）が setup-yq.sh に残っている"
 else
-  bad "Homebrew 導入分岐（brew) + brew install yq）が消えている"
+  bad "Homebrew 導入分岐（brew) + brew install yq）が setup-yq.sh から消えている"
 fi
 
-if grep -q 'github.com/mikefarah/yq' "$SETUP" && grep -q 'releases/latest/download' "$SETUP"; then
+if grep -q 'github.com/mikefarah/yq' "$SETUP_YQ" && grep -q 'releases/latest/download' "$SETUP_YQ"; then
   ok "GitHub release 導入が Mike Farah 公式 URL を参照する"
 else
   bad "GitHub release 導入が Mike Farah 公式 URL を参照していない"
 fi
 
-if grep -q 'export PATH="${dir}:${PATH}"' "$SETUP" && grep -q 'hash -r' "$SETUP"; then
+if grep -q 'export PATH="${dir}:${PATH}"' "$SETUP_YQ" && grep -q 'hash -r' "$SETUP_YQ"; then
   ok "導入後に PATH 先頭化と hash -r がある"
 else
   bad "導入後の PATH 先頭化 / hash -r が無い（stale yq が勝ち続ける）"
 fi
 
-if grep -q 'yq_version_is_mikefarah_v4\|version v4\.' "$SETUP" && grep -q 'yq_capability_probe' "$SETUP"; then
+if grep -q 'yq_version_is_mikefarah_v4\|version v4\.' "$SETUP_YQ" && grep -q 'yq_capability_probe' "$SETUP_YQ"; then
   ok "version（Mike Farah v4）と capability probe の検証関数がある"
 else
   bad "version / capability probe の検証関数が無い"
@@ -391,6 +408,57 @@ else
   bad "check_and_install_dependencies が非互換 yq を通した（rc=${DEP_RC}）"
   printf '%s\n' "$DEP_OUT" | sed 's/^/    | /' >&2
 fi
+
+# 構成ファイルが読めないときは、ラッパーとサイドカーを書く前に exit 2 で止まる。
+# 入口だけを temp へ置き、配置先に既存のシムを置いて、それが変わらないことを見る。
+refuse_setup_part() { # <missing|empty|cut|symlink>
+  local mode="$1" needle="" dir rc before after
+  dir="$TMP/refuse-$mode"
+  mkdir -p "$dir/scripts/lib" "$dir/target/scripts"
+  cp "$SETUP" "$dir/scripts/setup-multi-agent.sh"
+  printf 'keep\n' > "$dir/target/scripts/codex-review.sh"
+  case "$mode" in
+    missing) needle="がありません" ;;
+    empty)
+      : > "$dir/scripts/lib/setup-yq.sh"
+      needle="が 0 バイトです"
+      ;;
+    cut)
+      cp "$SETUP_YQ" "$dir/scripts/lib/setup-yq.sh"
+      printf '\n# cut\n' >> "$dir/scripts/lib/setup-yq.sh"
+      needle="読み込み完了の印ではありません"
+      ;;
+    symlink)
+      cp "$SETUP_YQ" "$dir/scripts/lib/setup-yq.real"
+      ln -s setup-yq.real "$dir/scripts/lib/setup-yq.sh"
+      needle="が symlink です"
+      ;;
+    *)
+      bad "refuse_setup_part の mode が不明: $mode"
+      return
+      ;;
+  esac
+  before="$(cksum "$dir/target/scripts/codex-review.sh")"
+  set +e
+  env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT \
+    INSTALL_WRAPPERS_TARGET="$dir/target" \
+    bash "$dir/scripts/setup-multi-agent.sh" --skip-install \
+    >"$dir/out" 2>"$dir/err"
+  rc=$?
+  set -e
+  after="$(cksum "$dir/target/scripts/codex-review.sh")"
+  if [ "$rc" -eq 2 ] && [ "$before" = "$after" ] && grep -F -q "$needle" "$dir/err" \
+     && grep -F -q '設定はまだ書き換えていません' "$dir/err"; then
+    ok "読めない構成ファイルは設定を書く前に exit 2（${mode}）"
+  else
+    bad "読めない構成ファイルを exit 2 で止めていない（mode=${mode} rc=${rc}）"
+    sed 's/^/    | /' "$dir/err" >&2
+  fi
+}
+refuse_setup_part missing
+refuse_setup_part empty
+refuse_setup_part cut
+refuse_setup_part symlink
 
 # ---- サマリー ----------------------------------------------------------------
 echo
