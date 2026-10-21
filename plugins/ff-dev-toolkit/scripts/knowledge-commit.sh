@@ -257,13 +257,37 @@ USAGE
 die_env() { echo "✗ $1" >&2; exit 2; }
 die_stop() { echo "✗ $1" >&2; exit 1; }
 
+# 同梱スクリプトを source する直前に、shebang 行だけを読む。検査を別ファイルへ委譲しない
+# （委譲先自身が CRLF だと、止める前に壊れる）。対象は起動せず、ファイルも書き換えない。
+# 呼び出しは現在のシェルに置く（パイプラインやコマンド置換の中だと exit が親に届かない）。
+# finish.sh の同名関数と本文を揃える。
+assert_bundled_shebang_lf() {
+  local target="${1:-}" shown="${1:-}" shebang_line=""
+  if [ -z "$shown" ]; then
+    shown="（パスが無い）"
+  fi
+  if [ -z "$target" ] || [ ! -f "$target" ] || [ ! -r "$target" ]; then
+    printf '%s\n' "check-shebang-cr: ${shown} を読めません。shebang 行の検査が成立しません" >&2
+    exit 2
+  fi
+  IFS= read -r shebang_line <"$target" || true
+  case "$shebang_line" in
+    *$'\r'*)
+      printf '%s\n' "check-shebang-cr: ${target} の shebang 行に CR があります。index から LF で checkout し直すか、autocrlf の効かない worktree で実行してください" >&2
+      exit 2
+      ;;
+  esac
+}
+
 self_dir="$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || die_env "script の配置を解決できません"
 identity_lib="$self_dir/lib/commit-identity-functions.sh"
 [[ -f "$identity_lib" && ! -L "$identity_lib" ]] || die_env "identity 判定 lib が無いか symlink です: $identity_lib"
+assert_bundled_shebang_lf "$identity_lib"
 # shellcheck source=lib/commit-identity-functions.sh
 . "$identity_lib"
 playbook_lib="$self_dir/lib/playbook-changelog-functions.sh"
 [[ -f "$playbook_lib" && ! -L "$playbook_lib" ]] || die_env "PLAYBOOK Changelog 判定 lib が無いか symlink です: $playbook_lib"
+assert_bundled_shebang_lf "$playbook_lib"
 # shellcheck source=lib/playbook-changelog-functions.sh
 . "$playbook_lib"
 

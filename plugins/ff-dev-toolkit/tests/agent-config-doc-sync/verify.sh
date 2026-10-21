@@ -42,6 +42,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$PLUGIN_ROOT/tests/lib/multi-agent-sources.sh"
 SSOT_DOC="$PLUGIN_ROOT/docs-template/05-operations/deployment/multi-cli-agent-orchestration.md"
 
 SKILLS=(multi-review multi-explore multi-implement setup-ai-config)
@@ -174,12 +176,18 @@ fi
 if [ ! -r "$MULTI_AGENT" ]; then
   bad "multi-agent.sh を読み取れない: $MULTI_AGENT"
 else
+  # yq の読み取り式は入口と構成ファイル（scripts/lib/multi-agent-*.sh。開始時に source される
+  # 本体。ADR-075）に散らばる。入口だけを読むと「読まれる」側が赤、「読まれない」側は
+  # 黙って緑になる
+  ma_sources_load "${MULTI_AGENT%/*}"
   YQ_LINES=""
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      *yq*) YQ_LINES="${YQ_LINES}${line}"$'\n' ;;
-    esac
-  done < "$MULTI_AGENT"
+  for src in "${MA_SOURCES[@]}"; do
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        *yq*) YQ_LINES="${YQ_LINES}${line}"$'\n' ;;
+      esac
+    done < "$src"
+  done
 
   # 読まれると主張するキーの読み取り式（トップレベルは「'.key」の形で v2 の
   # tasks.* と区別する。${TASK_TYPE} は single quote 内なので展開されない）

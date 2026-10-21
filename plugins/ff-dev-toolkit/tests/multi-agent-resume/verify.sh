@@ -4,6 +4,8 @@
 # （Issue #586）。実 CLI は使わず、逐次実行する codex stub の起動回数で再利用を測る。
 #
 # run-all-required: no — 一時領域が無い環境の skip を許容する（一時領域依存 suite の必須判断で名簿へ載せなかった側。必須へ昇格するなら REQUIRED_SUITES へ移す）
+#
+# 空振り検出: compute_resume_identity から構成ファイル（scripts/lib/multi-agent-*.sh）の hash を外すと「構成ファイルの変更時に古い結果を再利用した」が赤（2026-10-20 実測）。直前の「入力が同じなら8観点すべてを再利用」が再利用の起きる入力であることを毎回測るので、この赤は identity の欠落からだけ来る。
 
 set -euo pipefail
 
@@ -16,6 +18,8 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$SCRIPT_DIR/../lib/multi-agent-sources.sh"
 
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ
 # 警告文が混入し、以後の処理が原因不明の失敗に化けるため。
@@ -49,8 +53,11 @@ FIXTURE_PLUGIN="$TMP/plugin"
 mkdir -p "$FIXTURE_PLUGIN"
 cp -R "$PLUGIN_ROOT/scripts" "$FIXTURE_PLUGIN/scripts"
 MULTI_AGENT="$FIXTURE_PLUGIN/scripts/multi-agent.sh"
-build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE" \
-  "$MULTI_AGENT" "$FIXTURE_PLUGIN"/scripts/adapters/*.sh
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "${MULTI_AGENT%/*}"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CROSS_REVIEW" \
+  "${MA_SOURCES[@]}" "$FIXTURE_PLUGIN"/scripts/adapters/*.sh
 
 REPO="$TMP/repo"
 STUB="$TMP/bin"
@@ -268,6 +275,31 @@ if run_review "$TMP/perspective-set-change.log" 120 true 8 \
   ok "perspective集合変更で新しい8観点計画をすべて実行"
 else
   bad "perspective集合変更時に古い集合の結果を再利用した"
+fi
+
+# 構成ファイル（scripts/lib/multi-agent-*.sh。multi-agent.sh が開始時に source する本体。
+# ADR-075）も orchestrator の一部として identity に入る。入口だけを hash する形へ戻ると、
+# 本体の変更が古い結果の再利用を止めない。先に「同じ入力なら全観点を再利用する」ことを
+# 測り、差が構成ファイルの変更から来ていることを示す。
+if run_review "$TMP/orchestrator-part-unchanged.log" 120 true 8 \
+  && [[ "$(count_invocations)" -eq 66 ]] \
+  && [[ "$(grep -c '^\*\*Result source:\*\* reused$' "$REPORT")" -eq 8 ]]; then
+  ok "入力が同じなら8観点すべてを再利用（構成ファイル変更の比較の前提）"
+else
+  bad "入力が同じなのに再利用されない（構成ファイル変更の比較が成立しない）"
+fi
+
+# 変更は shebang の直後へ入れる。末尾へ足すと、最後の行が読み込み完了の印でなくなり入口が
+# 「途中で切れている」として止まる（構成ファイルの契約。ADR-075）
+_part="$FIXTURE_PLUGIN/scripts/lib/multi-agent-report.sh"
+{ head -n 1 "$_part"; printf '%s\n' '# identity change'; tail -n +2 "$_part"; } > "$_part.new"
+mv "$_part.new" "$_part"
+if run_review "$TMP/orchestrator-part-change.log" 120 true 8 \
+  && [[ "$(count_invocations)" -eq 74 ]] \
+  && [[ "$(grep -c '^\*\*Result source:\*\* executed$' "$REPORT")" -eq 8 ]]; then
+  ok "構成ファイル（scripts/lib/multi-agent-*.sh）の変更で8観点すべてを新規実行"
+else
+  bad "構成ファイルの変更時に古い結果を再利用した（resume identity が入口しか見ていない）"
 fi
 
 echo ""

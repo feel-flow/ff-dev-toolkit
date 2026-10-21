@@ -20,14 +20,15 @@ multi-agent.sh --task review|explore|implement [options]
 
 ### コンポーネント
 
-| コンポーネント      | 説明                                                 |
-| ------------------- | ---------------------------------------------------- |
-| `multi-agent.sh`    | 統一オーケストレーター                               |
-| `multi-review.sh`   | 後方互換ラッパー（→ multi-agent.sh --task review）   |
-| `adapter-common.sh` | 共通ユーティリティ（prompt構築、出力、タイムアウト） |
-| `*-adapter.sh`      | CLI固有の薄いラッパー（4つ）                         |
-| `perspectives/`     | タスクタイプ別プロンプトテンプレート                 |
-| `agent-config.yaml` | 設定ファイル（v2.0）                                 |
+| コンポーネント          | 説明                                                                                       |
+| ----------------------- | ------------------------------------------------------------------------------------------ |
+| `multi-agent.sh`        | 統一オーケストレーター（入口。使い方のヘッダー（--help）・CLI レジストリ・タスク種別の既定・main） |
+| `lib/multi-agent-*.sh`  | オーケストレーターの本体（責務ごとの構成ファイル。入口が開始時に読む。直接起動しない）     |
+| `multi-review.sh`       | 後方互換ラッパー（→ multi-agent.sh --task review）                                         |
+| `adapter-common.sh`     | 共通ユーティリティ（prompt構築、出力、タイムアウト）                                       |
+| `*-adapter.sh`          | CLI固有の薄いラッパー（4つ）                                                               |
+| `perspectives/`         | タスクタイプ別プロンプトテンプレート                                                       |
+| `agent-config.yaml`     | 設定ファイル（v2.0）                                                                       |
 
 ## タスクタイプ
 

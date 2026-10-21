@@ -15,7 +15,8 @@
 #
 # fixture の suite（プラグインルート = plugins/ff）:
 #   chg-docs-probe     … docs/alpha.md と docs/delta.md を参照する
-#   chg-script-probe   … scripts/beta.sh を参照する
+#   chg-script-probe   … scripts/beta.sh と scripts/multi-agent.sh を参照する（後者は 47-K の
+#                        「構成ファイルの変更を入口の変更として交差させる」規則の対象）
 #   chg-required-probe … docs/gamma.md を参照する（必須名簿の材料だけを持つ）
 #   chg-tree-probe     … プラグインルートそのもの（plugins/ff）だけを参照する（ツリー全体の走査を模す）
 #
@@ -56,6 +57,7 @@ cat > "$_chg_plug/tests/chg-script-probe/verify.sh" <<'PROBE'
 #!/usr/bin/env bash
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BETA="$ROOT/scripts/beta.sh"
+ENTRY="$ROOT/scripts/multi-agent.sh"
 echo "CHG-SCRIPT-PROBE-EXECUTED"
 exit 0
 PROBE
@@ -278,6 +280,24 @@ _chg_run FF_RUN_ALL_CHANGED="$_chg_base"
 expect_rc 0 "47-I: プラグイン直下の変更の実行が rc=0"
 expect_has '^🎯   chg-tree-probe ← plugins/ff/zz-new.txt ← ' "47-I: プラグインルートを参照する suite は配下の変更で選ばれる"
 expect_has '^suites: selected=1 registered=4$' "47-I: 祖先 token を持たない suite は選ばない"
+
+# 47-K: multi-agent.sh の構成ファイル（scripts/lib/multi-agent-*.sh。ADR-075）の変更は入口
+# scripts/multi-agent.sh の変更としても交差し、入口を参照する suite を選ぶ。根拠には実際に
+# 変わった構成ファイルを出す。構成ファイルではない scripts/lib の変更は入口として扱わない。
+_chg_step "構成ファイルを変える" "mkdir -p plugins/ff/scripts/lib && printf '# part\\n' > plugins/ff/scripts/lib/multi-agent-zz.sh"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_base"
+expect_rc 0 "47-K: 構成ファイルの変更の実行が rc=0"
+expect_has '^🎯   chg-script-probe ← plugins/ff/scripts/lib/multi-agent-zz.sh（multi-agent.sh の構成ファイル。入口の変更として交差） ← ' "47-K: 構成ファイルの変更で入口を参照する suite を選び、変わった構成ファイルを根拠に出す"
+expect_has '^CHG-SCRIPT-PROBE-EXECUTED$' "47-K: 入口を参照する suite が実行される"
+_chg_step "構成ファイルではない lib を変える" "mkdir -p plugins/ff/scripts/lib && printf '# lib\\n' > plugins/ff/scripts/lib/other-zz.sh"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_base"
+expect_rc 0 "47-K: 構成ファイルではない lib の変更の実行が rc=0"
+expect_lacks '^CHG-SCRIPT-PROBE-EXECUTED$' "47-K: 構成ファイルではない scripts/lib の変更は入口の変更として扱わない"
+_chg_step "入口と構成ファイルを同時に変える" "mkdir -p plugins/ff/scripts/lib && printf '# part\\n' > plugins/ff/scripts/lib/multi-agent-zz.sh && printf '# entry\\n' > plugins/ff/scripts/multi-agent.sh"
+_chg_run FF_RUN_ALL_CHANGED="$_chg_base"
+expect_rc 0 "47-K: 入口と構成ファイルを同時に変えた実行が rc=0"
+expect_has '^🎯   chg-script-probe ← plugins/ff/scripts/multi-agent.sh ← ' "47-K: 入口も変わった回は根拠に入口そのものを出す"
+expect_lacks '入口の変更として交差' "47-K: 入口も変わった回は構成ファイルの注記を付けない"
 
 # 47-J: FF_RUN_ALL_CHANGED の `0` と空値は未設定と同じ（quiet に既定の高速モード。FF_RUN_ALL_FULL=0 と
 # 同じ規約）。解釈できない値は base として解決を試み、解決できなければ 47-F のとおり全件へ倒れる。

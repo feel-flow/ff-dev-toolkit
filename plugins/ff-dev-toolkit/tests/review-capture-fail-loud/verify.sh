@@ -125,8 +125,13 @@ ADAPTERS_DIR="$PLUGIN_ROOT/scripts/adapters"
 # 1 つ — 片方のソースだけ引数から落ちる形を単一センチネルでは検出できない）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_CLAUDE_CODE" \
-  "$PLUGIN_ROOT/scripts/multi-agent.sh" "$ADAPTERS_DIR"/*.sh
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$SCRIPT_DIR/../lib/multi-agent-sources.sh"
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "$PLUGIN_ROOT/scripts"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_CLAUDE_CODE MULTI_AGENT_CROSS_REVIEW" \
+  "${MA_SOURCES[@]}" "$ADAPTERS_DIR"/*.sh
 
 # mktemp の失敗理由を捨てない（adapter-prompt-guard と同じ扱い。read-only 以外の
 # 原因を「書き込み可能な環境で再実行」に誤帰属させない）。

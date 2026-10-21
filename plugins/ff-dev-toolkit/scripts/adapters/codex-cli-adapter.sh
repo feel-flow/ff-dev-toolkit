@@ -180,7 +180,7 @@ get_sandbox_mode() {
 # Tracked separately as Issue #900.
 #
 # `--skip-git-repo-check` is deliberately NOT passed: validate_implement_output_boundary
-# (multi-agent.sh) already forces the staging dir to live under REPO_ROOT, so the
+# (multi-agent.sh; defined in scripts/lib/multi-agent-prepare.sh) already forces the staging dir to live under REPO_ROOT, so the
 # working root is inside a git repository and the check passes.
 #
 # Note the asymmetry with grok, which is documented at get_sandbox_profile in

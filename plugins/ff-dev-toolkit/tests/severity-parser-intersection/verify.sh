@@ -68,6 +68,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 ADAPTER_COMMON="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$SCRIPT_DIR/../lib/multi-agent-sources.sh"
 
 [ -f "$ADAPTER_COMMON" ] || {
   echo "✗ 対象ファイルが見つかりません: $ADAPTER_COMMON" >&2
@@ -878,7 +880,10 @@ echo "== 委譲の静的 pin（テーブルが見ない「呼び出しの実在�
 # 変異はここで赤にする（実走の検出力は tests/multi-agent-critical-marker）。
 # ADR-066 以降の判定は型付き判定行の抽出（typed_verdicts_extract）で、結果ファイルを
 # 散文の検出（critical_findings_present "$crit_file"）へ渡す経路は持たない。
-if grep -q 'typed_verdicts_extract "\$crit_file"' "$MULTI_AGENT"; then
+# 静的 pin は入口と構成ファイル（scripts/lib/multi-agent-*.sh。開始時に source される本体。
+# ADR-075）の全部へ掛け、件数も全体で数える（第二実装が別ファイルへ戻る形を見逃さない）
+ma_sources_load "${MULTI_AGENT%/*}"
+if grep -q 'typed_verdicts_extract "\$crit_file"' "${MA_SOURCES[@]}"; then
   ok "multi-agent.sh の CRITICAL 判定は typed_verdicts_extract の呼び出し"
 else
   bad "multi-agent.sh に typed_verdicts_extract の呼び出しが無い（独自実装への復帰）"
@@ -887,16 +892,16 @@ fi
 # 観点で不採用行の fail-safe（rc0）だけを拾う 1 箇所だけ（ADR-066 レビュー 1 巡目）。検出は
 # 判定行なしに rc4 を返すので散文の Critical は数えないが、rc0 以外を判定へ流す形
 # （crit_rc へ代入する等）へ戻すと散文経路の復帰になる
-cfp_all="$(grep -c 'critical_findings_present "\$crit_file"' "$MULTI_AGENT" || true)"
-cfp_fs="$(grep -c 'critical_findings_present "\$crit_file" 2>/dev/null || tv_fs_rc=\$?' "$MULTI_AGENT" || true)"
+cfp_all="$(ma_sources_cat | grep -c 'critical_findings_present "\$crit_file"' || true)"
+cfp_fs="$(ma_sources_cat | grep -c 'critical_findings_present "\$crit_file" 2>/dev/null || tv_fs_rc=\$?' || true)"
 if [ "$cfp_all" = "1" ] && [ "$cfp_fs" = "1" ] \
-   && grep -q 'if \[\[ "\$tv_fs_rc" -eq 0 \]\]; then' "$MULTI_AGENT"; then
+   && grep -q 'if \[\[ "\$tv_fs_rc" -eq 0 \]\]; then' "${MA_SOURCES[@]}"; then
   ok "multi-agent.sh が結果ファイルを検出へ渡すのは未完了の観点の fail-safe 1 箇所だけ（散文経路は撤去済み）"
 else
   bad "multi-agent.sh が結果ファイルを検出へ渡す箇所が fail-safe 以外にある（撤去した散文経路の復帰。全 ${cfp_all} 箇所 / fail-safe 形 ${cfp_fs} 箇所）"
 fi
 
-if grep -q 'in_crit' "$MULTI_AGENT"; then
+if grep -q 'in_crit' "${MA_SOURCES[@]}"; then
   bad "multi-agent.sh に判定 awk の複製（in_crit）が残っている（共有パーサーと並ぶ第二実装）"
 else
   ok "multi-agent.sh は判定 awk の複製（in_crit）を持たない"

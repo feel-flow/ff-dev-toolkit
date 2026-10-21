@@ -47,12 +47,17 @@ ADAPTERS_DIR="$PLUGIN_ROOT/scripts/adapters"
 
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$SCRIPT_DIR/../lib/multi-agent-sources.sh"
 # orchestrator も起動する suite なので、アダプタ変数だけでなく orchestrator 専用の
 # 変数も -u の対象へ入れる（lib の契約どおり 2 本渡す）。これが無いと、利用者が
 # MULTI_AGENT_CONFIG を export しているだけで本 suite が環境依存で赤くなる
 # — 実測: `mode: pair` を書いた config を指すと implement 実行が rc=1 で落ちる。
-build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_CLAUDE_CODE" \
-  "$PLUGIN_ROOT/scripts/multi-agent.sh" "$ADAPTERS_DIR"/*.sh
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "$PLUGIN_ROOT/scripts"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_CLAUDE_CODE MULTI_AGENT_CROSS_REVIEW" \
+  "${MA_SOURCES[@]}" "$ADAPTERS_DIR"/*.sh
 
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正な
 # パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に誤帰属し、

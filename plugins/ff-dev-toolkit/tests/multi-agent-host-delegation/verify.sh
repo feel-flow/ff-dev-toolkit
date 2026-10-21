@@ -85,8 +85,13 @@ done
 
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_CLAUDE_CODE" \
-  "$MULTI_AGENT" "$PLUGIN_ROOT"/scripts/adapters/*.sh
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$SCRIPT_DIR/../lib/multi-agent-sources.sh"
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "${MULTI_AGENT%/*}"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_CLAUDE_CODE MULTI_AGENT_CROSS_REVIEW" \
+  "${MA_SOURCES[@]}" "$PLUGIN_ROOT"/scripts/adapters/*.sh
 unset_isolated_vars
 
 # rc=0 でも -d を検査する — 2>&1 の合流は「成功 + stderr 警告」の環境で変数へ

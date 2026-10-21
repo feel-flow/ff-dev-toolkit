@@ -38,8 +38,13 @@ ADAPTER_COMMON="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
 # **存在検査より後に置くこと**（先に置くと被検体不在の診断が抽出失敗に化ける）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$PLUGIN_ROOT/tests/lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG" \
-  "$MULTI_AGENT" "$PLUGIN_ROOT"/scripts/adapters/*.sh
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$PLUGIN_ROOT/tests/lib/multi-agent-sources.sh"
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "${MULTI_AGENT%/*}"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CROSS_REVIEW" \
+  "${MA_SOURCES[@]}" "$PLUGIN_ROOT"/scripts/adapters/*.sh
 
 PASS=0
 FAIL=0

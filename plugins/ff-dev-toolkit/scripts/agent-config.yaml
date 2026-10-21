@@ -2,7 +2,7 @@
 # See: docs-template/05-operations/deployment/multi-cli-review-orchestration.md
 
 version: "2.0"
-toolkit_version: "0.158.1"
+toolkit_version: "0.159.0"
 
 # ── Global Defaults ──
 # mode はタスク単位でも指定できる（tasks.<task>.mode）。ここはその既定。
@@ -73,7 +73,7 @@ tasks:
 #  cross_review: auto
 #  # CRITICAL_BLOCK を立てない「非ブロック観点」名簿の上書き（1 文字列、空白または
 #  # カンマ区切り。YAML リストは不可）。既定は multi-agent.sh の
-#  # DEFAULT_CRITICAL_NONBLOCK_PERSPECTIVES。env
+#  # DEFAULT_CRITICAL_NONBLOCK_PERSPECTIVES（scripts/lib/multi-agent-report-body.sh）。env
 #  # MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES が設定されていればそちらが優先
 #  critical_nonblock_perspectives: "comment-analysis test-analysis type-design-analysis code-simplification"
 #  # 信頼度の報告閾値（0〜100 の整数、既定 80）。型付き判定行の confidence がこれ未満の

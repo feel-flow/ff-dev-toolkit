@@ -149,8 +149,13 @@ MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 # 実行環境の MULTI_AGENT_* から分離する（Issue #374 / #378 の共通機構）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD FF_MULTI_AGENT_REVIEW_SERIES_REASON_FILE" \
-  "$MULTI_AGENT" "$PLUGIN_ROOT"/scripts/adapters/*.sh
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$SCRIPT_DIR/../lib/multi-agent-sources.sh"
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "${MULTI_AGENT%/*}"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CRITICAL_NONBLOCK_PERSPECTIVES MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD FF_MULTI_AGENT_REVIEW_SERIES_REASON_FILE MULTI_AGENT_CROSS_REVIEW" \
+  "${MA_SOURCES[@]}" "$PLUGIN_ROOT"/scripts/adapters/*.sh
 
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正な
 # パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に誤帰属し、
@@ -1400,10 +1405,14 @@ MUTANT_PLUGIN="$TMP/mutant-plugin"
 # 他の source / fixture は全件保持し、将来の依存追加でも写しだけ欠落させない。
 mkdir -p "$MUTANT_PLUGIN"
 tar -C "$PLUGIN_ROOT" --exclude='./mcp/node_modules' -cf - . | tar -C "$MUTANT_PLUGIN" -xf -
+# 注入先はその行を持つファイル（multi-agent.sh は本体を scripts/lib/multi-agent-*.sh へ分けて
+# 開始時に source する。ADR-075）。ma_source_holding が入口と構成ファイルの全体からちょうど 1 つを
+# 選び、見つからなければ suite を止める。写しの同じ相対パスへ注入する。
+MUTANT_TARGET="$(ma_source_holding 'capture_and_guard_unresolved_critical_state || return 2')"
+MUTANT_TARGET="$MUTANT_PLUGIN/${MUTANT_TARGET#"$PLUGIN_ROOT"/}"
 sed '/capture_and_guard_unresolved_critical_state || return 2/d' \
-  "$MULTI_AGENT" > "$MUTANT_PLUGIN/scripts/multi-agent.sh.mutant"
-mv "$MUTANT_PLUGIN/scripts/multi-agent.sh.mutant" "$MUTANT_PLUGIN/scripts/multi-agent.sh"
-chmod +x "$MUTANT_PLUGIN/scripts/multi-agent.sh"
+  "$MUTANT_TARGET" > "$MUTANT_TARGET.mutant"
+mv "$MUTANT_TARGET.mutant" "$MUTANT_TARGET"
 run_sequence_step "$MUTANT_PLUGIN/scripts/multi-agent.sh" comment-analysis "$TMP/unresolved-mutant.log"
 if [[ "$SEQUENCE_RC" -eq 0 && -f "$REPORT" ]] \
   && grep -qF 'sentinel-omitted-perspective' "$REPORT" \
@@ -2072,12 +2081,12 @@ fi
 # どちらも空白にしない**ため（測れない層を黙って落とすと、案内が消えても誰も気づかない）。
 # 針は**中断分岐の案内に固有の文言**で持つ。「ルートが読めない」だけだと、レポート側の
 # 短い診断行にも同じ語が出るので、中断分岐の案内を削っても緑のまま通る（実測）。
-if grep -qF 'The project root is gone or unreadable: ${REPO_ROOT}. Restore it' "$MULTI_AGENT"; then
+if grep -qF 'The project root is gone or unreadable: ${REPO_ROOT}. Restore it' "${MA_SOURCES[@]}"; then
   ok "系列を特定できない中断にプロジェクトルート不在の案内がある（静的）"
 else
   bad "プロジェクトルート不在の案内（中断分岐の復帰手段）が無い"
 fi
-if grep -qF 'record_review_series_failure repo-root' "$MULTI_AGENT"; then
+if grep -qF 'record_review_series_failure repo-root' "${MA_SOURCES[@]}"; then
   ok "プロジェクトルート不在が専用の理由として区別されている（静的）"
 else
   bad "プロジェクトルート不在が理由として区別されていない"
@@ -2108,8 +2117,8 @@ ALLOWED_REASONS="$({ awk '
     n = split(lbl, parts, "|")
     for (i = 1; i <= n; i++) print parts[i]
   }
-' "$MULTI_AGENT" || true; } | LC_ALL=C sort -u)"
-CALLED_REASONS="$({ grep -oE 'record_review_series_failure [a-z][a-z-]*;' "$MULTI_AGENT" || true; } \
+' "${MA_SOURCES[@]}" || true; } | LC_ALL=C sort -u)"
+CALLED_REASONS="$({ grep -hoE 'record_review_series_failure [a-z][a-z-]*;' "${MA_SOURCES[@]}" || true; } \
   | sed 's/^record_review_series_failure //; s/;$//' | LC_ALL=C sort -u)"
 CONSUMER_ROWS="$({ awk '
   /case "\$\(review_series_failure_reason\)" in/ { blk++; inblk = 1; next }
@@ -2121,7 +2130,7 @@ CONSUMER_ROWS="$({ awk '
     sub(/\)$/, "", lbl)
     print blk "\t" lbl
   }
-' "$MULTI_AGENT" || true; })"
+' "${MA_SOURCES[@]}" || true; })"
 
 if [[ -z "$ALLOWED_REASONS" || -z "$CALLED_REASONS" || -z "$CONSUMER_ROWS" ]]; then
   bad "失敗理由の許可値／記録地点／消費側ブロックのいずれかを抽出できない（対応検査が空振りしている）"
@@ -2164,7 +2173,7 @@ SERIES_FN_BODY="$({ awk '
   /^current_review_series_id\(\)/ { inblk = 1 }
   inblk                            { print }
   inblk && /^\}/                   { inblk = 0 }
-' "$MULTI_AGENT" || true; })"
+' "${MA_SOURCES[@]}" || true; })"
 SERIES_FAIL_RETURNS="$(printf '%s\n' "$SERIES_FN_BODY" | { grep -oE 'return 1' || true; } | awk 'END { print NR + 0 }')"
 SERIES_RECORDS="$(printf '%s\n' "$SERIES_FN_BODY" | { grep -oE 'record_review_series_failure [a-z][a-z-]*;' || true; } | awk 'END { print NR + 0 }')"
 if [[ "$SERIES_FAIL_RETURNS" -lt 1 ]]; then

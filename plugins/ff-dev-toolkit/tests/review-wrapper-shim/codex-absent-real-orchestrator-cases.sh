@@ -39,6 +39,11 @@ REAL_ORCH_TOOLKIT="$WORK/toolkit-real-orchestrator"
 cp -R "$TOOLKIT" "$REAL_ORCH_TOOLKIT"
 cp "$PLUGIN_ROOT/scripts/multi-agent.sh" "$REAL_ORCH_TOOLKIT/scripts/multi-agent.sh"
 chmod +x "$REAL_ORCH_TOOLKIT/scripts/multi-agent.sh"
+# 実体の multi-agent.sh は本体を構成ファイル（scripts/lib/multi-agent-*.sh。ADR-075）から開始時に
+# source し、読めなければ CLI 検出より前に rc=2 で止まる。入口だけを置くとプランが 1 つも
+# 出ないので、構成ファイルも一緒に置く。
+mkdir -p "$REAL_ORCH_TOOLKIT/scripts/lib"
+cp "$PLUGIN_ROOT"/scripts/lib/multi-agent-*.sh "$REAL_ORCH_TOOLKIT/scripts/lib/"
 # 主 reviewer の 3 つ目の出所（プロジェクト設定 <cwd の git root>/.claude/agent-config.yaml
 # の review.main）を切り離す。run_shim の既定 cwd はこのリポジトリの root なので、ここに
 # review.main 付きの agent-config.yaml が置かれた日に「未設定」fixture が pair へ倒れて

@@ -20,6 +20,22 @@
 
 ## [Unreleased]
 
+## [0.159.0] - 2026-10-21
+
+### 追加
+
+- 社内専用プラグインの suite を回すラッパー `tests/ff-agent-press/verify.sh` を追加した。公開 checkout にはプラグイン本体も marketplace の掲載も無いので常に skip し、公開週次の run-all の除外名簿にも既存の社内専用プラグインのラッパーと並べて載せた。配布物の挙動は変わらない。
+
+### 変更
+
+- `scripts/multi-agent.sh` の本体を、責務ごとの構成ファイル `scripts/lib/multi-agent-*.sh` 12 本へ分けた。入口のパス・引数・出力・終了コードは変わらず、入口は開始時に構成ファイルを決まった順で 1 回だけ読む。CLI の完走後の工程は plugin の root から何も読まない。
+- 構成ファイルが読めないとき（置き場の `scripts/lib` が symlink、構成ファイルが無い・symlink・空・読めない・途中で切れている）は、CLI を 1 つも起動する前に、plugin root の固定ガードと同じ案内（plugin を更新してから skill を呼び直す）で終了コード 2 になる。別のインストール領域の版を探して切り替えることはしない。
+- `--resume` の入力 identity は構成ファイルも数えるようになった。構成ファイルだけが変わった回も、古い結果を再利用しない。
+
+### 修正
+
+- `finish.sh` と `knowledge-commit.sh` は、同梱スクリプトを exec または source する直前に shebang 行だけを読む。shebang に CR があるファイルは起動せず、終了コード 2 でそのパスを名指しし、index から LF で checkout し直すか、autocrlf の効かない worktree で実行するよう案内して止まる。shebang が LF で、CR が後続行の文字列の中だけにあるファイルは止めない。
+
 ## [0.158.1] - 2026-10-20
 
 ### 修正

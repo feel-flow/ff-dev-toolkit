@@ -47,8 +47,13 @@ done
 
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_CLAUDE_CODE" \
-  "$ORCHESTRATOR" "$ADAPTERS_DIR"/*.sh
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$SCRIPT_DIR/../lib/multi-agent-sources.sh"
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "${ORCHESTRATOR%/*}"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_CLAUDE_CODE MULTI_AGENT_CROSS_REVIEW" \
+  "${MA_SOURCES[@]}" "$ADAPTERS_DIR"/*.sh
 
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正なパス・
 # quota 超過など）まで同じ skip 文言に潰れ、壊れた TMPDIR が suite を exit 0 で
@@ -271,13 +276,15 @@ fi
 # 使わないことを、環境非依存に固定しておく。
 # コメント行（この退行を説明している行そのもの）は除く。行番号を付けたまま
 # 先頭の空白を落として `#` 判定する — `grep -v ':#'` 型の除外は、コロンを含む
-# コード行を巻き込んで検出を静かに殺す。
+# コード行を巻き込んで検出を静かに殺す。走査は入口と構成ファイル（scripts/lib/multi-agent-*.sh。
+# multi-agent.sh が開始時に source する本体。ADR-075）の全部 — 入口だけを見ると、構成ファイルへ
+# 戻った printf '%q' を素通しする（不在の検査なので、読み漏らしは緑になる）。
 LOCALE_QUOTE_HITS="$(awk '
   index($0, "printf \x27%q\x27") {
     line = $0
     sub(/^[ \t]+/, "", line)
-    if (substr(line, 1, 1) != "#") printf "%d:%s\n", NR, $0
-  }' "$ORCHESTRATOR")"
+    if (substr(line, 1, 1) != "#") printf "%s:%d:%s\n", FILENAME, FNR, $0
+  }' "${MA_SOURCES[@]}")"
 if [ -n "$LOCALE_QUOTE_HITS" ]; then
   bad "orchestrator が printf '%q' を使っている（引用がロケール依存に戻っている）"
   printf '%s\n' "$LOCALE_QUOTE_HITS" | sed 's/^/    | /' >&2

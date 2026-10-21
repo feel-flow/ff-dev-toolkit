@@ -189,6 +189,12 @@ MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 [ -f "$TARGET" ] || { echo "✗ guard-review-in-flight.sh が見つかりません: $TARGET" >&2; exit 1; }
 [ -f "$HOOKS_JSON" ] || { echo "✗ hooks.json が見つかりません: $HOOKS_JSON" >&2; exit 1; }
 [ -f "$MULTI_AGENT" ] || { echo "✗ multi-agent.sh が見つかりません: $MULTI_AGENT" >&2; exit 1; }
+# 本文の針（関数の有無・切り出し）は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の
+# 全部へ掛ける。multi-agent.sh は本体を構成ファイルへ分けて開始時に source する（ADR-075）ので、
+# 入口だけを読むと関数が見つからない。
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$PLUGIN_ROOT/tests/lib/multi-agent-sources.sh"
+ma_sources_load "${MULTI_AGENT%/*}"
 # 巡回カウンタ（(n) 節）の入力をホストの環境から隔離する。(a)〜(m) は巡回上限と直交する契約
 # （凍結・dirty・レーン）を測るので上限を 0（無効）へ固定し、(n) だけが区間ごとに外して
 # 既定値で測る。有効のままだと、レーンを消すたびに「記録が無い」警告が無音の針へ混ざる。
@@ -1091,14 +1097,14 @@ for ev in SubagentStart SubagentStop PermissionDenied; do
 done
 
 echo "guard-review-in-flight: orchestrator 側の契約（ロックの書き出しと必ずの削除）"
-if grep -q 'write_run_in_flight' "$MULTI_AGENT" && grep -q 'remove_run_in_flight' "$MULTI_AGENT"; then
+if grep -q 'write_run_in_flight' "${MA_SOURCES[@]}" && grep -q 'remove_run_in_flight' "${MA_SOURCES[@]}"; then
   ok "multi-agent.sh がロックの書き出しと削除を持つ"
 else
   bad "multi-agent.sh に write_run_in_flight / remove_run_in_flight が無い"
 fi
 # grep -q はパイプ入力を早期終了するので書き手へ SIGPIPE が飛ぶ（run-all の
 # 再混入ガードが禁じている形）。抜き出した本文を変数へ入れてから照合する。
-EXIT_TRAP_BODY="$(awk '/^output_lock_exit\(\)/,/^}/' "$MULTI_AGENT")"
+EXIT_TRAP_BODY="$(awk '/^output_lock_exit\(\)/,/^}/' "${MA_SOURCES[@]}")"
 case "$EXIT_TRAP_BODY" in
   *remove_run_in_flight*) EXIT_TRAP_CALLS_REMOVE=1 ;;
   *) EXIT_TRAP_CALLS_REMOVE=0 ;;
@@ -1375,7 +1381,7 @@ if [ "$(lane_count)" -eq 1 ]; then
     OUTPUT_DIR="$REPO/.review-results"
     DELEGATE_TO_HOST=true
     # 回収本体は委譲状態を要求するので、レーン解放の関数だけを取り出して回す。
-    eval "$(awk '/^release_delegated_review_lanes\(\) \{/{f=1} f{print} f && /^\}$/{exit}' "$MULTI_AGENT")"
+    eval "$(awk '/^release_delegated_review_lanes\(\) \{/{f=1} f{print} f && /^\}$/{exit}' "${MA_SOURCES[@]}")"
     release_delegated_review_lanes )
   if [ "$(lane_count)" -eq 0 ]; then
     ok "(h15) 委譲結果の回収で委譲レーンが解放される（正常完了の出口）"
@@ -1391,7 +1397,7 @@ clear_lanes
 run_hook "$(agent_json 'pr-review-toolkit:code-reviewer' Agent tu-d11)"
 ( set -e
   OUTPUT_DIR="$REPO/.review-results"
-  eval "$(awk '/^release_delegated_review_lanes\(\) \{/{f=1} f{print} f && /^\}$/{exit}' "$MULTI_AGENT")"
+  eval "$(awk '/^release_delegated_review_lanes\(\) \{/{f=1} f{print} f && /^\}$/{exit}' "${MA_SOURCES[@]}")"
   release_delegated_review_lanes )
 if [ "$(lane_count)" -eq 1 ]; then
   ok "(h15) 回収の解放は委譲レーンだけを消す（名簿の型のレーンは残る）"
@@ -1404,7 +1410,7 @@ clear_lanes
 # ならない。ファイル全体を grep すると、handoff 行が消えても説明文側の同じ語が残るだけで
 # 緑になる（実際に識別へ効くのは handoff 行だけ）。
 _marker_hook="$(sed -n 's/^REVIEW_DELEGATION_MARKER="\(.*\)"$/\1/p' "$TARGET" | head -n 1)"
-_handoff_body="$(awk '/^print_delegation_handoff\(\) \{/{f=1} f{print} f && /^\}$/{exit}' "$MULTI_AGENT")"
+_handoff_body="$(awk '/^print_delegation_handoff\(\) \{/{f=1} f{print} f && /^\}$/{exit}' "${MA_SOURCES[@]}")"
 case "$_marker_hook" in
   FF-*[A-Z]*) : ;;
   *) bad "(h15) 委譲マーカーが FF- 接頭辞の識別子でない: [${_marker_hook}]（自由文字列と衝突しやすい弱い語は使わない）" ;;

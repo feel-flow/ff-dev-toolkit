@@ -41,8 +41,13 @@ CODEX_BARRIER_PARTIES=3
 
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE" \
-  "$MULTI_AGENT" "$PLUGIN_ROOT"/scripts/adapters/*.sh
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$SCRIPT_DIR/../lib/multi-agent-sources.sh"
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "${MULTI_AGENT%/*}"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CROSS_REVIEW" \
+  "${MA_SOURCES[@]}" "$PLUGIN_ROOT"/scripts/adapters/*.sh
 
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正な
 # パス・quota 超過など）まで「書き込み可能な環境で再実行してください」に誤帰属し、
@@ -357,14 +362,24 @@ MUTATED_MULTI_AGENT="$MUTATED_PLUGIN/scripts/multi-agent.sh"
 MUTATION_MATCH='      if [[ "$STRATEGY" == "minimize_cost" && "$(get_cli_cost_tier "$group_cli")" == "flat-rate" ]]; then'
 # shellcheck disable=SC2016 # 同上
 MUTATION_REPLACEMENT='      if [[ "$STRATEGY" == "minimize_cost" && ( "$(get_cli_cost_tier "$group_cli")" == "flat-rate" || "$(get_cli_cost_tier "$group_cli")" == "standard" ) ]]; then'
-MUTATION_MATCHES="$(awk -v target="$MUTATION_MATCH" '$0 == target { count++ } END { print count + 0 }' "$MUTATED_MULTI_AGENT")"
+# 対象行は入口と構成ファイル（scripts/lib/multi-agent-*.sh。multi-agent.sh が開始時に
+# source する本体。ADR-075）の全体で数え、持っているファイルの写しへ注入する。
+MUTATION_MATCHES=0
+MUTATION_FILE=""
+for _src in "${MA_SOURCES[@]}"; do
+  _copy="$MUTATED_PLUGIN/${_src#"$PLUGIN_ROOT"/}"
+  _n="$(awk -v target="$MUTATION_MATCH" '$0 == target { count++ } END { print count + 0 }' "$_copy")"
+  if [[ "$_n" -gt 0 ]]; then
+    MUTATION_MATCHES=$((MUTATION_MATCHES + _n))
+    MUTATION_FILE="$_copy"
+  fi
+done
 MUTATION_APPLIED=0
 if [[ "$MUTATION_MATCHES" -eq 1 ]]; then
   awk -v target="$MUTATION_MATCH" -v replacement="$MUTATION_REPLACEMENT" \
-    '{ if ($0 == target) $0 = replacement; print }' "$MUTATED_MULTI_AGENT" \
-    > "$MUTATED_MULTI_AGENT.tmp"
-  mv "$MUTATED_MULTI_AGENT.tmp" "$MUTATED_MULTI_AGENT"
-  chmod +x "$MUTATED_MULTI_AGENT"
+    '{ if ($0 == target) $0 = replacement; print }' "$MUTATION_FILE" \
+    > "$MUTATION_FILE.tmp"
+  mv "$MUTATION_FILE.tmp" "$MUTATION_FILE"
   MUTATION_APPLIED=1
   ok "逐次化変異が tier 条件へ 1 回だけ適用された"
 else

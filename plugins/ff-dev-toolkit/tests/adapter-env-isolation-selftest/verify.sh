@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Issue #439: 実行環境分離の検出力を、隔離コピーへの mutation で常設検証する。
 # 空振り検出: guard suite の glob が 0 件（tests/guard-* を退避）で「0 件しか見つからない」、hook の起動行を 1 つも認識できない guard suite で「針が当たらない入力」の赤になる（2026-09-28 実測、bundle `#1808`）。isolate_hook_env から推移的な参照の追跡・FF_RUN_ALL_* / FF_REACHED_END の除外・CLAUDE_* の抽出をそれぞれ外す 3 変異は、いずれも fixture hook の control が赤。参照の追跡をリテラルの置き場（tests/lib/ 等）の綴りだけに戻す変異も、変数経由の間接参照しか持たない fixture で赤。
+# 空振り検出: isolate_hook_env から multi-agent の構成ファイル（scripts/lib/multi-agent-*.sh）の解決を外すと、参照閉包の control が「ホスト値 FF_FIXTURE_PART が残った」で赤（2026-10-20 実測）。構成ファイルではない scripts/lib の lib を辿らないこと（FF_FIXTURE_LIB_ONLY が残る）が対照。
 
 set -euo pipefail
 
@@ -267,8 +268,8 @@ check_timeout_sentinels() {
     echo "MUTATION センチネル部分欠落: 有効なbuild_isolate_env呼び出しが1件ではない" >&2
     return 1
   }
-  if [ "$sentinels" != "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE FF_TIMEOUT_KILL_GRACE" ]; then
-    echo "MUTATION センチネル部分欠落: multi-agent-timeoutの3センチネルが揃っていない（got=${sentinels}）" >&2
+  if [ "$sentinels" != "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE FF_TIMEOUT_KILL_GRACE MULTI_AGENT_CROSS_REVIEW" ]; then
+    echo "MUTATION センチネル部分欠落: multi-agent-timeoutの4センチネルが揃っていない（got=${sentinels}）" >&2
     return 1
   fi
 }
@@ -314,7 +315,7 @@ expect_pass "不正文字を含むセンチネルを拒否" check_invalid_sentin
 expect_pass "対象外prefixのセンチネルを拒否" check_invalid_sentinel "FF_RUN_ALL_NESTED" "形ではありません"
 expect_pass "現callsite名簿はreview-wrapper-shimを含む21 suite" check_consumer_roster
 expect_pass "全orchestrator/shim起動がrun_isolatedを通る" check_all_wiring
-expect_pass "multi-agent-timeoutの3センチネルが揃う" check_timeout_sentinels "$TIMEOUT_SUITE"
+expect_pass "multi-agent-timeoutの4センチネルが揃う" check_timeout_sentinels "$TIMEOUT_SUITE"
 expect_pass "unset_isolated_varsはprobeより前に1回だけ" check_unset_placement "$TIMEOUT_SUITE"
 expect_pass "先頭unset後もケース固有の前置代入が届く" run_probe_contract top
 
@@ -330,8 +331,8 @@ expect_named_failure "run_isolated除去mutationを名指ししてred" \
 
 MUTATED_TIMEOUT_SENTINEL="$TMP/multi-agent-timeout-no-sentinel.sh"
 awk '
-  !changed && /build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE FF_TIMEOUT_KILL_GRACE"/ {
-    print "# build_isolate_env \"MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE FF_TIMEOUT_KILL_GRACE\""
+  !changed && /build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE FF_TIMEOUT_KILL_GRACE MULTI_AGENT_CROSS_REVIEW"/ {
+    print "# build_isolate_env \"MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE FF_TIMEOUT_KILL_GRACE MULTI_AGENT_CROSS_REVIEW\""
     sub(/ MULTI_AGENT_CODEX_PROFILE/, "")
     changed = 1
   }
@@ -380,7 +381,7 @@ expect_named_failure "review-wrapper-shim素起動mutationを名指ししてred"
 # 呼んでいることを配線で、(3) 配線を外す変異が赤になることを固定する。
 make_hook_fixture() { # <dir>
   local dir="$1"
-  mkdir -p "$dir/hooks" "$dir/tests/lib"
+  mkdir -p "$dir/hooks" "$dir/tests/lib" "$dir/scripts/lib"
   cat > "$dir/hooks/guard-fixture.sh" <<'HOOK'
 #!/usr/bin/env bash
 # shellcheck source=../tests/lib/fixture-lib.sh
@@ -394,23 +395,32 @@ HOOK
 # 推移的な参照を変数経由の間接参照だけで書く（リテラルの置き場の綴りを持たない）
 DEEP_DIR="${BASH_SOURCE[0]%/*}"
 : "$DEEP_DIR/fixture-deep.sh"
+# scripts/lib は multi-agent.sh の構成ファイル（multi-agent-*.sh）だけを辿る（ADR-075）
+: "$DEEP_DIR/../../scripts/lib/multi-agent-fixture.sh"
+: "$DEEP_DIR/../../scripts/lib/plain-fixture.sh"
 LIB
   printf '%s\n' ': "${CLAUDE_FIXTURE_DIR:-}"' > "$dir/tests/lib/fixture-deep.sh"
+  printf '%s\n' ': "${FF_FIXTURE_PART:-}"' > "$dir/scripts/lib/multi-agent-fixture.sh"
+  printf '%s\n' ': "${FF_FIXTURE_LIB_ONLY:-}"' > "$dir/scripts/lib/plain-fixture.sh"
 }
 
 run_hook_isolation_control() { # [fixture dir]
   local fix="${1:-$TMP/hook-fixture}"
   make_hook_fixture "$fix"
   FF_DEV_TOOLKIT_SKIP_FIXTURE_GUARD=host FF_FIXTURE_SEAM=host CLAUDE_FIXTURE_DIR=host \
+  FF_FIXTURE_PART=host FF_FIXTURE_LIB_ONLY=keep \
   FF_RUN_ALL_NESTED=keep FF_REACHED_END=keep bash -c '
     set -euo pipefail
     . "$1"
     isolate_hook_env "FF_DEV_TOOLKIT_SKIP_FIXTURE_GUARD" "$2"
-    for v in FF_DEV_TOOLKIT_SKIP_FIXTURE_GUARD FF_FIXTURE_SEAM CLAUDE_FIXTURE_DIR; do
+    for v in FF_DEV_TOOLKIT_SKIP_FIXTURE_GUARD FF_FIXTURE_SEAM CLAUDE_FIXTURE_DIR FF_FIXTURE_PART; do
       if [ -n "$(eval "printf %s \"\${$v+x}\"")" ]; then
         echo "control: ホスト値 ${v} が残った（参照閉包の抽出漏れ）" >&2; exit 1
       fi
     done
+    [ "${FF_FIXTURE_LIB_ONLY:-}" = keep ] || {
+      echo "control: multi-agent の構成ファイルではない scripts/lib の lib まで閉包へ入れた" >&2; exit 1
+    }
     [ "${FF_RUN_ALL_NESTED:-}" = keep ] && [ "${FF_REACHED_END:-}" = keep ] || {
       echo "control: 保持すべき FF_RUN_ALL_* / FF_REACHED_END を落とした" >&2; exit 1
     }

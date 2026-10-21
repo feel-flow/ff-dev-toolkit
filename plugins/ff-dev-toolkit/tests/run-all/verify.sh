@@ -100,6 +100,12 @@
 #
 # 空振り検出: case 41 は npm ci 直後の正対照、esbuild が在るまま devDependency 欠落、npm 不在、lock 不在を実測し、後者は suite 未実行かつ rc 3 を要求する。
 #
+# 変異検出（case 47 の 47-K / 構成ファイルの変更を入口の変更として交差。ADR-075）:
+#           ff_changed_select の構成ファイル（scripts/lib/multi-agent-*.sh）→ 入口の交差を外すと
+#           47-K の「構成ファイルの変更で入口を参照する suite を選び…」と「入口を参照する suite が
+#           実行される」が赤（2026-10-20 実測）。構成ファイルではない lib の変更で選ばれないことが対照。
+# 空振り検出: pipefail_grep_q_scan が行頭の継承宣言（# pipefail-inherited:）を読まない写しでは「検出器が継承宣言を読まない」が赤（2026-10-20 実測）。値の中の同じ文言で設定扱いにしないことが対照。
+#
 # 使い方: bash plugins/ff-dev-toolkit/tests/run-all/verify.sh
 
 set -euo pipefail
@@ -3732,6 +3738,19 @@ if _pg_nopf="$(printf '%s\n' "$PG_PROBE_BAD" | pipefail_grep_q_scan)"; then
 else
   bad "pipefail_grep_q_scan を実行できません（pipefail 未設定の入力）"; PG_SELFTEST_OK=0
 fi
+
+# 自分では pipefail を張らず source 元から継承するファイル（multi-agent.sh の構成ファイル。
+# ADR-075）は、行頭の継承宣言で設定行と同じに扱う。行頭以外（代入の値の中）の同じ文言では
+# 設定扱いにしない。
+PG_INHERIT_DECL="# pipefail-inherited: self-test"
+pg_expect_lines "${PG_INHERIT_DECL}
+$PG_PROBE_BAD" hit 2 \
+  "検出器が行頭の継承宣言（pipefail-inherited）を設定行と同じに扱う（self-test）" \
+  "検出器が継承宣言を読まない — source 元から pipefail を継承するファイルが無検査になる"
+pg_expect_lines "x=\"${PG_INHERIT_DECL}\"
+$PG_PROBE_BAD" nohit 2 \
+  "検出器は行頭以外の継承宣言の文言を設定扱いにしない（self-test）" \
+  "検出器が値の中の継承宣言で検査を有効にする — 文字列で包むだけで対象が変わる"
 
 if [ "$PG_SELFTEST_OK" -eq 1 ]; then
   PG_REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || PG_REPO_ROOT=""

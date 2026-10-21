@@ -360,7 +360,7 @@ load_perspective() {
 # review / gate evidence; for explore and implement it is the task description.
 # Staging dir is read from STAGING_DIR variable (implement only; see Issue #392)
 
-# プロンプトの最終行。multi-agent.sh の classify_cli_failure_cause は、
+# プロンプトの最終行。multi-agent.sh の classify_cli_failure_cause（scripts/lib/multi-agent-failure.sh）は、
 # stderr へプロンプトをエコーする CLI（codex）の抜粋からこの行の最後の出現より後ろ
 # だけを読む — エコーされた diff 内の語を CLI の失敗と誤読しないため。文言を変える
 # ときはこの 1 箇所だけを変える（分類器は同じ変数を読む）。
@@ -550,7 +550,7 @@ ${diff_content}"
   # ファイル操作の行だけ task-type で切り替える。
   # 注意: **プロンプトとファイル操作権限の整合について**、新しい task-type を足す
   # ときは (1) 上の preamble の case、(2) 各アダプタの task-type 分岐、(3) staging
-  # パスを渡すかどうか（multi-agent.sh の run_single_task）を同時に揃えること。
+  # パスを渡すかどうか（multi-agent.sh の run_single_task。scripts/lib/multi-agent-prepare.sh）を同時に揃えること。
   # (2) の関数名はアダプタごとに違う: codex は get_sandbox_mode、grok は
   # get_sandbox_profile、**claude-code は
   # get_allowed_tools**（Write/Edit を許すかどうかが唯一の書き込みゲート。"sandbox"
@@ -2817,7 +2817,7 @@ ${stderr_fence}"
   # — 出力先が書けないうちは、どのタスクも同じ形で失敗し、時間を足しても直らない。
   # CLI 側の理由（timeout / crash）は上の ERROR 行に残してあるので失われない。
   # 本文の不受理だけは理由コードを 1 行載せる（統合レポートの未完了の理由が読む。
-  # multi-agent.sh の review_task_incomplete_reason）
+  # multi-agent.sh の review_task_incomplete_reason。scripts/lib/multi-agent-report-body.sh）
   local reason_line=""
   case "$kind" in
     missing-review-body|missing-review-body-prose|review-body-unparsed)

@@ -366,7 +366,8 @@ REVIEW_LOCK_TYPES="${FF_REVIEW_SUBAGENT_LOCK_TYPES:-pr-review-toolkit:code-revie
 # レビュー以外の委譲まで凍結してしまう。そこで「何の型で起動したか」ではなく
 # **何を渡されたか**で識別する: 委譲プロンプトのパス、または handoff がホストへ載せるよう
 # 求めるマーカーが `prompt` に在れば、その起動はレビューである。
-# マーカーは multi-agent.sh の handoff 文と対。片方だけ変えると識別が静かに外れるので、
+# マーカーは multi-agent.sh の handoff 文（scripts/lib/multi-agent-report-body.sh の
+# print_delegation_handoff）と対。片方だけ変えると識別が静かに外れるので、
 # tests/guard-review-in-flight が両者の綴りの一致を検査する。
 REVIEW_DELEGATION_MARKER="FF-REVIEW-DELEGATED"
 
@@ -1006,7 +1007,7 @@ if [ "$tool" = "Agent" ] || [ "$tool" = "Task" ]; then
       # その結果このレーンは agent 系イベントでは解放されない（`SubagentStop` に相関 ID が
       # 無く、汎用型では正しい委譲先を識別できないので、早く解ける側へ倒さない）。
       # 出口は 3 つ: 起動が拒否された回は `PermissionDenied` の同一鍵、正常に終わった回は
-      # **委譲結果の回収**（multi-agent.sh の collect_delegated_responses。回収の到達が
+      # **委譲結果の回収**（multi-agent.sh の collect_delegated_responses。scripts/lib/multi-agent-execute.sh。回収の到達が
       # 「委譲したレビューは終わった」の宣言）、どちらも来なければ未対応レーンの寿命上限。
       lane_type="delegated-review"
     fi

@@ -21,6 +21,8 @@
 #               suite はそのまま）
 #   shebang CR — scripts/check-shebang-cr.sh は finish.sh を実行する前に shebang 行だけを見る。
 #               CR なら rc 2、LF と後続行だけの CR は通過、読めない対象は rc 2（S）
+#               finish.sh と knowledge-commit.sh は、同梱スクリプトを exec または source する直前に
+#               同じ検査を現在のシェルで行う。SKILL.md の呼び出し行は増やさない（S5c / S6-S10）
 #
 # 前提崩れ（PR 不在・gh 不通・記録不在）は黙って 0 で終わらず、判定不能を名指しした
 # 非 0 と復帰手段を出す — これを空振り検出の針にする。
@@ -36,6 +38,7 @@
 # 空振り検出: check-shebang-cr.sh の読めない対象の exit 2 を exit 0 にすると (S4) が赤になる（2026-10-19 実測。欠落パスが rc 0 の緑になる）。
 # 空振り検出: finish.sh の gh_pr_view_or_die から未知の JSON field の分岐を消すと (B2b) が赤になる（2026-10-20 実測。gh 不通の汎用文へ落ちてパスと版が出ない）。
 # 変異検出: shebang 行の CR で止まる exit 2 を exit 0 にすると (S1) が赤、成功時の exit 0 を exit 2 にすると LF の写しを止めて (S2) が赤になる（2026-10-19 実測）。
+# 空振り検出: finish.sh と knowledge-commit.sh の assert_bundled_shebang_lf で、shebang 行の CR の exit 2 を return 0 にすると (S7 / S8) が赤になる（2026-10-21 実測。S7 は rc 2 のまま exec まで進み、stderr に /usr/bin/env の ‘bash\r’（バックスラッシュと r）と「version claim を再生成できません」が出る。S8 は source して syntax error を出し rc 0 になる）。
 #
 # 実 gh・ネットワーク・課金は伴わない。一時ディレクトリを作れない環境は skip ではなく
 # 赤（この suite の検査は 1 件も成立していない）。
@@ -109,6 +112,17 @@ has_line() { # <text> <行頭一致の針>
 has_text() { # <text> <部分一致の針>
   awk -v n="$2" 'index($0, n) { f = 1 } END { exit f ? 0 : 1 }' <<<"$1"
 }
+# カーネル / env は shebang の CR を CR バイトではなく ‘bash\r’（バックスラッシュと r の 2 文字）と書く。
+# awk -v は \r を CR バイトへ解釈するので、その針は当たらない。針はプログラム文字列に置く。
+# パイプ先が途中で閉じると上流が SIGPIPE になるため、awk は入力を最後まで読む。
+denies_kernel_noise() { # <text> → syntax error も bash\r も無ければ 0
+  local blob="$1"
+  if has_text "$blob" "syntax error"; then return 1; fi
+  if printf '%s' "$blob" | awk 'BEGIN { f = 1 } index($0, "bash\\r") || index($0, "bash\r") { f = 0 } END { exit f }'; then
+    return 1
+  fi
+  return 0
+}
 
 # ── S. shebang 行の CR を、対象を実行する前に止める ───────────────────────────
 echo
@@ -131,17 +145,6 @@ else
     ERR="$(cat "$SHEBANG_TMP/err" 2>/dev/null || true)"
   }
   shebang_blob() { printf '%s%s' "$OUT" "$ERR"; }
-  denies_kernel_noise() {
-    local blob="$1"
-    local cr_bytes=$'bash\r'
-    if has_text "$blob" "syntax error"; then return 1; fi
-    if has_text "$blob" 'bash\r'; then return 1; fi
-    # bash と CR の連続バイト。パイプへ grep -q すると上流が SIGPIPE で反転する。
-    case "$blob" in
-      *"$cr_bytes"*) return 1 ;;
-    esac
-    return 0
-  }
 
   printf '#!/usr/bin/env bash\r\n' >"$SHEBANG_TMP/cr.sh"
   IFS= read -r shebang_first <"$SHEBANG_TMP/cr.sh" || true
@@ -303,6 +306,74 @@ else
     ok "S5b: finish.sh に触れる SKILL.md は ${skill_hits} 件（4 件未満を緑にしない）"
   else
     bad "S5b: finish.sh に触れる SKILL.md が ${skill_hits} 件（検査対象が縮んでいる）"
+  fi
+  got_skills=""
+  got_n=0
+  while IFS= read -r skill; do
+    [ -n "$skill" ] || continue
+    if grep -qFx "$check_line" "$skill"; then
+      rel="${skill#"$SKILLS_DIR"/}"
+      rel="${rel%/SKILL.md}"
+      got_skills="${got_skills}${rel}"$'\n'
+      got_n=$((got_n + 1))
+    fi
+  done <"$SHEBANG_TMP/skill-list"
+  got_sorted="$(printf '%s' "$got_skills" | awk 'NF { print }' | sort | tr '\n' ' ')"
+  if [ "$got_n" -eq 4 ] && [ "$got_sorted" = "ace-curate close-issue merge-cleanup retrospective " ]; then
+    ok "S5c: check-shebang-cr.sh の呼び出しは ace-curate / close-issue / merge-cleanup / retrospective の 4 ファイル各 1 行のまま"
+  else
+    bad "S5c: 呼び出しが 4 ファイル各 1 行のままではない（${got_n}: ${got_sorted})"
+  fi
+
+  # 起動行の直前に検査が無いと、CRLF の同梱スクリプトを exec / source してから死ぬ。
+  KC_SCRIPT="$PLUGIN_ROOT/scripts/knowledge-commit.sh"
+  launch_gaps="$(awk '
+    index($0, "FF_DEV_TOOLKIT_ROOT=\"${plugin_root}\"") {
+      found = 0
+      for (i = 1; i <= 4; i++) {
+        if (NR - i >= 1 && index(line[NR - i], "assert_bundled_shebang_lf")) found = 1
+      }
+      if (!found) print NR
+      launches++
+    }
+    { line[NR] = $0 }
+    END { printf "%d\n", launches + 0 }
+  ' "$TARGET")"
+  launch_n="${launch_gaps%%$'\n'*}"
+  launch_rest="${launch_gaps#*$'\n'}"
+  if [ "$launch_n" -eq 11 ] && [ "$launch_rest" = "$launch_n" ]; then
+    ok "S6: finish.sh の同梱スクリプト起動 11 件は、直前 4 行以内に shebang 検査がある"
+  else
+    bad "S6: finish.sh の起動が検査の直前に無い、または件数が 11 でない（件数=${launch_n} 欠落行=${launch_rest})"
+  fi
+  source_gaps="$(awk '
+    index($0, ". \"$identity_lib\"") || index($0, ". \"$playbook_lib\"") {
+      found = 0
+      for (i = 1; i <= 4; i++) {
+        if (NR - i >= 1 && index(line[NR - i], "assert_bundled_shebang_lf")) found = 1
+      }
+      if (!found) print NR
+      launches++
+    }
+    { line[NR] = $0 }
+    END { printf "%d\n", launches + 0 }
+  ' "$KC_SCRIPT")"
+  source_n="${source_gaps%%$'\n'*}"
+  source_rest="${source_gaps#*$'\n'}"
+  if [ "$source_n" -eq 2 ] && [ "$source_rest" = "$source_n" ]; then
+    ok "S6b: knowledge-commit.sh の source 2 件は、直前 4 行以内に shebang 検査がある"
+  else
+    bad "S6b: knowledge-commit.sh の source が検査の直前に無い、または件数が 2 でない（件数=${source_n} 欠落行=${source_rest})"
+  fi
+  extract_shebang_fn() {
+    awk '/^assert_bundled_shebang_lf\(\) \{/,/^}$/' "$1"
+  }
+  fn_finish="$(extract_shebang_fn "$TARGET")"
+  fn_kc="$(extract_shebang_fn "$KC_SCRIPT")"
+  if [ -n "$fn_finish" ] && [ "$fn_finish" = "$fn_kc" ]; then
+    ok "S6c: 実行側の shebang 検査関数は finish.sh と knowledge-commit.sh で同じ本文"
+  else
+    bad "S6c: shebang 検査関数が無い、または 2 ファイルで本文が違う"
   fi
 fi
 
@@ -1516,6 +1587,130 @@ else
   bad "H11: 合成 identity で止まらない（rc=${RC}）: ${ERR}"
 fi
 unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
+
+# ── S7-S10. exec / source の直前で shebang 行の CR だけを止める ───────────────
+echo
+echo "== S7. 実行側の shebang CR =="
+CHECKOUT_MSG="index から LF で checkout し直すか、autocrlf の効かない worktree で実行してください"
+shebang_noise() { denies_kernel_noise "$1"; }
+cp "$ROOT/scripts/update-version-claim.sh" "$TMP/uvc-s.bak"
+cp "$ROOT/scripts/check-version-claims.sh" "$TMP/cvc-s.bak"
+cp "$ROOT/scripts/lib/commit-identity-functions.sh" "$TMP/idf-s.bak"
+SR="$TMP/shebang-run"
+if g clone -q "$TMP/origin.git" "$SR" >/dev/null 2>&1 && g -C "$SR" remote set-head origin develop >/dev/null 2>&1; then
+  ok "S7-0: shebang 用の clone がある"
+else
+  bad "S7-0: shebang 用の clone を作れません（S7-S10 は根拠にならない）"
+fi
+mkdir -p "$SR/.version-claims"
+self_shown="$(CDPATH='' cd -P -- "$ROOT/scripts" && pwd -P)"
+plugin_shown="$(CDPATH='' cd -P -- "$self_shown/.." && pwd -P)"
+uvc_shown="${plugin_shown}/scripts/update-version-claim.sh"
+lib_shown="${self_shown}/lib/commit-identity-functions.sh"
+
+printf '#!/usr/bin/env bash\r\n' >"$ROOT/scripts/update-version-claim.sh"
+printf 'printf "syntax error\\n"\ntouch "%s/.shebang-ran"\n' "$SR" >>"$ROOT/scripts/update-version-claim.sh"
+chmod +x "$ROOT/scripts/update-version-claim.sh"
+rm -f "$SR/.shebang-ran"
+IFS= read -r shebang_first <"$ROOT/scripts/update-version-claim.sh" || true
+case "$shebang_first" in
+  *$'\r'*) ok "S7 fixture: update-version-claim.sh の shebang 行に CR がある" ;;
+  *) bad "S7 fixture: shebang 行に CR が無い（検査が成立しない）" ;;
+esac
+printf -- '- s7\n' >>"$SR/docs/08-knowledge/OBSERVATIONS.md"
+run_finish "$SR" knowledge-commit add --claim docs/08-knowledge/OBSERVATIONS.md --source obs --id OBS-70 --summary "s7" -- docs/08-knowledge/OBSERVATIONS.md
+# 検査を return 0 にすると、案内を出したあとでも exec まで進む。env は CR を
+# ‘bash\r’（バックスラッシュと r）と書き、続く die_env が
+# 「version claim を再生成できません」で rc 2 を出す。どちらかが stderr にあれば、
+# 起動前に止まった回と区別できる。
+if [ "$RC" -eq 2 ] \
+  && has_text "$ERR" "$uvc_shown" \
+  && has_text "$ERR" "$CHECKOUT_MSG" \
+  && shebang_noise "${OUT}${ERR}" \
+  && ! has_text "$ERR" "version claim を再生成できません" \
+  && [ ! -e "$SR/.shebang-ran" ]; then
+  ok "S7: knowledge-commit は update-version-claim.sh の shebang CR を起動前に rc 2 で止める"
+else
+  bad "S7: update-version-claim.sh の shebang CR を起動前に止めていない（rc=${RC}）: ${ERR}"
+fi
+cp "$TMP/uvc-s.bak" "$ROOT/scripts/update-version-claim.sh"
+chmod +x "$ROOT/scripts/update-version-claim.sh"
+
+printf '#!/usr/bin/env bash\r\nf() {\r\n:\r\n}\r\n' >"$ROOT/scripts/lib/commit-identity-functions.sh"
+IFS= read -r shebang_first <"$ROOT/scripts/lib/commit-identity-functions.sh" || true
+case "$shebang_first" in
+  *$'\r'*) ok "S8 fixture: commit-identity-functions.sh の shebang 行に CR がある" ;;
+  *) bad "S8 fixture: shebang 行に CR が無い（検査が成立しない）" ;;
+esac
+RC=0
+OUT="$(cd "$SR" && env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT bash "$ROOT/scripts/knowledge-commit.sh" status 2>"$TMP/err")" || RC=$?
+ERR="$(cat "$TMP/err")"
+if [ "$RC" -eq 2 ] \
+  && has_text "$ERR" "$lib_shown" \
+  && has_text "$ERR" "$CHECKOUT_MSG" \
+  && shebang_noise "${OUT}${ERR}"; then
+  ok "S8: knowledge-commit.sh は source 直前に identity lib の shebang CR を rc 2 で止める"
+else
+  bad "S8: identity lib の shebang CR を source 前に止めていない（rc=${RC}）: ${ERR}"
+fi
+cp "$TMP/idf-s.bak" "$ROOT/scripts/lib/commit-identity-functions.sh"
+
+printf '#!/usr/bin/env bash\n' >"$ROOT/scripts/update-version-claim.sh"
+printf 'printf "%%s\\n" "has\rinside" >/dev/null\n' >>"$ROOT/scripts/update-version-claim.sh"
+printf 'touch "%s/.shebang-ran"\n' "$SR" >>"$ROOT/scripts/update-version-claim.sh"
+printf '%s\n' 'd=""; while [ $# -gt 0 ]; do case "$1" in --document) d="$2"; shift 2 ;; *) shift ;; esac; done' >>"$ROOT/scripts/update-version-claim.sh"
+printf '%s\n' 'mkdir -p "$(dirname ".version-claims/$d.claim")"; printf "stub\n" >".version-claims/$d.claim"' >>"$ROOT/scripts/update-version-claim.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$ROOT/scripts/check-version-claims.sh"
+chmod +x "$ROOT/scripts/update-version-claim.sh" "$ROOT/scripts/check-version-claims.sh"
+later_all="$(cat "$ROOT/scripts/update-version-claim.sh")"
+IFS= read -r shebang_first <"$ROOT/scripts/update-version-claim.sh" || true
+case "$shebang_first" in *$'\r'*) s9_shebang=1 ;; *) s9_shebang=0 ;; esac
+case "$later_all" in *$'\r'*) s9_any=1 ;; *) s9_any=0 ;; esac
+if [ "$s9_any" -eq 1 ] && [ "$s9_shebang" -eq 0 ]; then
+  ok "S9 fixture: CR は update-version-claim.sh の shebang 行より後だけにある"
+else
+  bad "S9 fixture: CR の位置が shebang 行より後だけになっていない"
+fi
+rm -f "$SR/.shebang-ran"
+rm -rf "$SR/.version-claims"
+mkdir -p "$SR/.version-claims"
+printf -- '- s9\n' >>"$SR/docs/08-knowledge/OBSERVATIONS.md"
+run_finish "$SR" knowledge-commit add --claim docs/08-knowledge/OBSERVATIONS.md --source obs --id OBS-90 --summary "s9" -- docs/08-knowledge/OBSERVATIONS.md
+if [ "$RC" -eq 0 ] && [ -e "$SR/.shebang-ran" ] \
+  && ! has_text "$ERR" "shebang 行に CR" \
+  && ! has_text "$ERR" "$CHECKOUT_MSG"; then
+  ok "S9: shebang より後の文字列だけの CR では update-version-claim.sh を止めない"
+else
+  bad "S9: 後続行だけの CR で止めた、またはスクリプトが走っていない（rc=${RC}）: ${ERR}"
+fi
+run_finish "$SR" knowledge-commit discard
+git -C "$SR" reset -q >/dev/null 2>&1 || true
+cp "$TMP/uvc-s.bak" "$ROOT/scripts/update-version-claim.sh"
+cp "$TMP/cvc-s.bak" "$ROOT/scripts/check-version-claims.sh"
+chmod +x "$ROOT/scripts/update-version-claim.sh" "$ROOT/scripts/check-version-claims.sh"
+
+cp "$TMP/idf-s.bak" "$ROOT/scripts/lib/commit-identity-functions.sh"
+printf ': "has\rinside"\n' >>"$ROOT/scripts/lib/commit-identity-functions.sh"
+later_all="$(cat "$ROOT/scripts/lib/commit-identity-functions.sh")"
+IFS= read -r shebang_first <"$ROOT/scripts/lib/commit-identity-functions.sh" || true
+case "$shebang_first" in *$'\r'*) s10_shebang=1 ;; *) s10_shebang=0 ;; esac
+case "$later_all" in *$'\r'*) s10_any=1 ;; *) s10_any=0 ;; esac
+if [ "$s10_any" -eq 1 ] && [ "$s10_shebang" -eq 0 ]; then
+  ok "S10 fixture: CR は identity lib の shebang 行より後だけにある"
+else
+  bad "S10 fixture: CR の位置が shebang 行より後だけになっていない"
+fi
+RC=0
+OUT="$(cd "$SR" && env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT bash "$ROOT/scripts/knowledge-commit.sh" status 2>"$TMP/err")" || RC=$?
+ERR="$(cat "$TMP/err")"
+if [ "$RC" -eq 0 ] && has_line "$OUT" "KNOWLEDGE_PENDING=" \
+  && ! has_text "$ERR" "shebang 行に CR" \
+  && ! has_text "$ERR" "$CHECKOUT_MSG"; then
+  ok "S10: shebang より後の文字列だけの CR では identity lib の source を止めない"
+else
+  bad "S10: 後続行だけの CR で source を止めた（rc=${RC}）: ${OUT} / ${ERR}"
+fi
+cp "$TMP/idf-s.bak" "$ROOT/scripts/lib/commit-identity-functions.sh"
 
 # ── L. 尾の 4 スキルの本線バイト上限（名簿は本 suite が持つ） ─────────────────
 echo

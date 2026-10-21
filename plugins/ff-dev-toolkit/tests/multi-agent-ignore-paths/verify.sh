@@ -44,8 +44,13 @@ ADAPTER_COMMON="$PLUGIN_ROOT/scripts/adapters/adapter-common.sh"
 # **存在検査より後に置くこと**（先に置くと被検体不在の診断が抽出失敗に化ける）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$PLUGIN_ROOT/tests/lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG FF_MULTI_AGENT_IGNORE_PATHS" \
-  "$MULTI_AGENT" "$PLUGIN_ROOT"/scripts/adapters/*.sh
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$PLUGIN_ROOT/tests/lib/multi-agent-sources.sh"
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "${MULTI_AGENT%/*}"
+build_isolate_env "MULTI_AGENT_CONFIG FF_MULTI_AGENT_IGNORE_PATHS MULTI_AGENT_CROSS_REVIEW" \
+  "${MA_SOURCES[@]}" "$PLUGIN_ROOT"/scripts/adapters/*.sh
 
 PASS=0
 FAIL=0
@@ -483,10 +488,21 @@ rm -rf "$MUTANT_ROOT"
 mkdir -p "$MUTANT_ROOT"
 cp -R "$PLUGIN_ROOT/scripts" "$MUTANT_ROOT/scripts"
 MUTANT_MULTI_AGENT="$MUTANT_ROOT/scripts/multi-agent.sh"
+# 変異は入口と全構成ファイルへ同じ置換を掛ける（multi-agent.sh は本体を
+# scripts/lib/multi-agent-*.sh へ分けて開始時に source する。ADR-075）。対象の行がどの
+# ファイルにあるかに依存させない。1 ファイルも変わらなければ rc 1（注入できていない）。
+mutate_all() { # <perl -0pi の置換式>
+  local expr="$1" f rel changed=1
+  for f in "${MA_SOURCES[@]}"; do
+    rel="${f#"$PLUGIN_ROOT"/}"
+    perl -0pi -e "$expr" "$MUTANT_ROOT/$rel"
+    cmp -s "$MUTANT_ROOT/$rel" "$f" || changed=0
+  done
+  return "$changed"
+}
 
 # M1: 空パターンの拒否を外す → 空パターン指定が通ってしまうはず
-perl -0pi -e 's/if \[\[ -z "\$item" \]\]; then/if false; then/' "$MUTANT_MULTI_AGENT"
-if cmp -s "$MUTANT_MULTI_AGENT" "$PLUGIN_ROOT/scripts/multi-agent.sh"; then
+if ! mutate_all 's/if \[\[ -z "\$item" \]\]; then/if false; then/'; then
   bad "M1: ミューテーションを適用できなかった（被検体と同一。検査が無意味）"
 else
   reset_repo
@@ -503,8 +519,7 @@ fi
 # M2: 除外 pathspec の受け渡しを外す → 既定 .superpowers/ の書き込みで破棄されるはず
 rm -rf "$MUTANT_ROOT/scripts"
 cp -R "$PLUGIN_ROOT/scripts" "$MUTANT_ROOT/scripts"
-perl -0pi -e 's/ "\$\{IGNORE_EXCLUDE_PATHSPECS\[\@\]\}"//g' "$MUTANT_MULTI_AGENT"
-if cmp -s "$MUTANT_MULTI_AGENT" "$PLUGIN_ROOT/scripts/multi-agent.sh"; then
+if ! mutate_all 's/ "\$\{IGNORE_EXCLUDE_PATHSPECS\[\@\]\}"//g'; then
   bad "M2: ミューテーションを適用できなかった（被検体と同一。検査が無意味）"
 else
   reset_repo
@@ -524,8 +539,7 @@ fi
 # （git は破片を rc=0 で受け付けるため、拒否が無いと他のどの段でも止まらない）
 rm -rf "$MUTANT_ROOT/scripts"
 cp -R "$PLUGIN_ROOT/scripts" "$MUTANT_ROOT/scripts"
-perl -0pi -e 's/\*\\\[\*\|\*\\\]\*\)/__ff_mutated_never__)/' "$MUTANT_MULTI_AGENT"
-if cmp -s "$MUTANT_MULTI_AGENT" "$PLUGIN_ROOT/scripts/multi-agent.sh"; then
+if ! mutate_all 's/\*\\\[\*\|\*\\\]\*\)/__ff_mutated_never__)/'; then
   bad "M3: ミューテーションを適用できなかった（被検体と同一。検査が無意味）"
 else
   reset_repo

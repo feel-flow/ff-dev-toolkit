@@ -46,7 +46,12 @@ PERSPECTIVES_DIR="$PLUGIN_ROOT/scripts/perspectives/review"
 # 「multi-agent.sh が見つかりません」が隠れる（既存の存在検査が事実上デッドコードになる）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 source "$PLUGIN_ROOT/tests/lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG" "$MULTI_AGENT"
+# shellcheck source=../lib/multi-agent-sources.sh
+source "$PLUGIN_ROOT/tests/lib/multi-agent-sources.sh"
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "${MULTI_AGENT%/*}"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CROSS_REVIEW" "${MA_SOURCES[@]}"
 
 PASS=0
 FAIL=0

@@ -337,6 +337,27 @@ need_bundled() { # <scripts/ からの相対パス>
   [[ -f "$plugin_root/scripts/$1" && ! -L "$plugin_root/scripts/$1" ]] \
     || die_env "同梱 script が無いか symlink です: ${plugin_root}/scripts/$1" "ff-dev-toolkit を再導入してから skill を呼び直す（cache や別 checkout を探さない）"
 }
+# 同梱スクリプトを exec する直前に、shebang 行だけを読む。検査を別ファイルへ委譲しない
+# （委譲先自身が CRLF だと、止める前に壊れる）。対象は起動せず、ファイルも書き換えない。
+# 呼び出しは現在のシェルに置く（パイプラインやコマンド置換の中だと exit が親に届かない）。
+# knowledge-commit.sh の同名関数と本文を揃える。
+assert_bundled_shebang_lf() {
+  local target="${1:-}" shown="${1:-}" shebang_line=""
+  if [ -z "$shown" ]; then
+    shown="（パスが無い）"
+  fi
+  if [ -z "$target" ] || [ ! -f "$target" ] || [ ! -r "$target" ]; then
+    printf '%s\n' "check-shebang-cr: ${shown} を読めません。shebang 行の検査が成立しません" >&2
+    exit 2
+  fi
+  IFS= read -r shebang_line <"$target" || true
+  case "$shebang_line" in
+    *$'\r'*)
+      printf '%s\n' "check-shebang-cr: ${target} の shebang 行に CR があります。index から LF で checkout し直すか、autocrlf の効かない worktree で実行してください" >&2
+      exit 2
+      ;;
+  esac
+}
 is_pr_number() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; return 0; }
 
 # gh の失敗を「PR 不在」と「gh 不通（認証・通信・その他）」へ分けて名指しする
@@ -589,6 +610,7 @@ cmd_precheck() {
     [[ "$expected_commits" -eq "$actual_commits" ]] \
       || { rm -f "$SURFACE"; die_env "コミット取得が切り詰められています（期待 ${expected_commits} / 取得 ${actual_commits}）" "PR のコミット数を減らす（squash）か、gh の版を上げてから再実行する"; }
     GATE_OUT="$(mktemp)" || { rm -f "$SURFACE"; die_env "一時ファイルを作れません" "TMPDIR を書ける場所へ向けて再実行する"; }
+    assert_bundled_shebang_lf "${GUARD}"
       FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${GUARD}" --repo "${TARGET_REPO}" "${refs_args[@]}" ${closes_args[@]+"${closes_args[@]}"} <"${SURFACE}" >"${GATE_OUT}"
     gate_status=$?
       rm -f "$SURFACE"
@@ -615,6 +637,7 @@ cmd_precheck() {
     echo "KEYWORD_GATE=${keyword_gate}"
     # 2b. 実際に渡す squash メッセージの検査（これがマージの条件）。Refs 運用では両方明示が既定
     if [[ "$have_subject" -eq 1 ]]; then
+      assert_bundled_shebang_lf "${GUARD}"
           printf 'merge-subject\t%s\nmerge-body\t%s\n' "${MERGE_SUBJECT}" "${MERGE_BODY}" \
         | FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${GUARD}" --repo "${TARGET_REPO}" "${refs_args[@]}" ${closes_args[@]+"${closes_args[@]}"} >/dev/null
       gate_status=$?
@@ -642,6 +665,7 @@ cmd_precheck() {
     case "$tok" in
       "${repo_l}#"*)
         local n="${tok#*#}"
+        assert_bundled_shebang_lf "$plugin_root/scripts/effort-report.sh"
         FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "$plugin_root/scripts/effort-report.sh" --issue-metrics "$n" --repo-dir "$repo_root" 2>/dev/null \
           | awk -v n="$n" -F'=' 'NF >= 2 { key = $1; sub(/^[^=]*=/, ""); print "EFFORT_" n "_" key "=" $0 }' \
           || printf 'EFFORT_%s_%s=(unmeasured)\n' "$n" wallclock_actual_h "$n" instruction_bytes "$n" review_rounds "$n" gate_minutes
@@ -814,12 +838,14 @@ cmd_precheck() {
     fresh_record_args=(--record "${GATE_RECORD}" --record-from-other-checkout)
     print_record_args=(--record "${GATE_RECORD}")
   fi
+  assert_bundled_shebang_lf "${FRESHNESS}"
   FRESH_OUT="$(FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${FRESHNESS}" --remote-head "${REMOTE_HEAD}" --fetch ${fresh_record_args[@]+"${fresh_record_args[@]}"})"
   FRESH_STATUS=$?
   case "${FRESH_STATUS}" in
     0)
       # 一致。報告には実測の素性（ゲート名・モード）も載せる — 高速モードの記録を
       # 「全件実行で通した」と読ませないため（モードは合否には使わない）
+      assert_bundled_shebang_lf "${FRESHNESS}"
       FRESH_RECORD="$(FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${FRESHNESS}" --print-record ${print_record_args[@]+"${print_record_args[@]}"} 2>/dev/null || true)"
       local fresh_gate fresh_mode fresh_result fresh_branch
       fresh_gate="$(printf '%s\n' "${FRESH_RECORD}" | sed -n 's/^GATE=//p')"
@@ -986,6 +1012,7 @@ cmd_cleanup() {
   echo "CLEANUP_PR=${PR_NUMBER}"
   echo "CLEANUP_PR_STATE=${pr_state}"
   # MERGED でない PR は委譲先が破壊的処理の前に中断する（番号の打ち間違い対策。判定は 1 箇所に置く）
+  assert_bundled_shebang_lf "${plugin_root}/scripts/merge-cleanup.sh"
   FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${plugin_root}/scripts/merge-cleanup.sh" ${dry[@]+"${dry[@]}"} "$PR_NUMBER"
   local rc=$?
   echo "CLEANUP_RC=${rc}"
@@ -1220,11 +1247,13 @@ kc_add() {
   if [[ ${#claim_docs[@]} -gt 0 && -d "$repo_root/.version-claims" ]]; then
     # default branch の鮮度は claim の再生成・stage より前に確かめる（遅れていれば何も変えずに止まる。
     # claim の無い add は書き込み口の add 自身が先頭で同じ検査をする）
+    assert_bundled_shebang_lf "${plugin_root}/scripts/knowledge-commit.sh"
     FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${plugin_root}/scripts/knowledge-commit.sh" freshness || return $?
     need_bundled update-version-claim.sh
     need_bundled check-version-claims.sh
     default_branch="$(kc_default_branch)" || exit 2
     for doc in "${claim_docs[@]}"; do
+      assert_bundled_shebang_lf "${plugin_root}/scripts/update-version-claim.sh"
       FF_DEV_TOOLKIT_ROOT="${plugin_root}" "${plugin_root}/scripts/update-version-claim.sh" --base "origin/${default_branch}" --document "$doc" \
         || die_env "version claim を再生成できません: ${doc}" "origin/${default_branch} を取り込んでから再実行する"
       [[ -f "$repo_root/.version-claims/${doc}.claim" ]] || die_env "claim が生成されていません: .version-claims/${doc}.claim" "update-version-claim.sh の出力を確かめる"
@@ -1244,12 +1273,14 @@ kc_add() {
     done
     index_before="$(git -C "$repo_root" ls-files --stage -- "${claim_paths[@]}" 2>/dev/null)" || index_before=""
     git -C "$repo_root" add -- "${claim_paths[@]}" || die_env "claim と文書を stage できません" "パスを確かめて再実行する"
+    assert_bundled_shebang_lf "${plugin_root}/scripts/check-version-claims.sh"
     if ! FF_DEV_TOOLKIT_ROOT="${plugin_root}" "${plugin_root}/scripts/check-version-claims.sh" --root "$repo_root"; then
       git -C "$repo_root" reset -q -- "${claim_paths[@]}" 2>/dev/null || true
       [[ -z "$index_before" ]] || printf '%s\n' "$index_before" | git -C "$repo_root" update-index --index-info
       die_stop "version claim の検証が赤です（保留・stage は変更していません）" "claim と文書を直してから finish.sh knowledge-commit add --claim を再実行する"
     fi
   fi
+  assert_bundled_shebang_lf "${plugin_root}/scripts/knowledge-commit.sh"
   FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${plugin_root}/scripts/knowledge-commit.sh" add ${args[@]+"${args[@]}"} -- ${pathspecs[@]+"${pathspecs[@]}"} || return $?
   return 0
 }
@@ -1263,6 +1294,7 @@ cmd_knowledge_commit() {
   case "$sub" in
     add) kc_add "$@" ;;
     commit|status|discard)
+      assert_bundled_shebang_lf "${plugin_root}/scripts/knowledge-commit.sh"
       FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${plugin_root}/scripts/knowledge-commit.sh" "$sub" "$@" ;;
     probe) [[ $# -eq 0 ]] || usage; kc_probe ;;
     push) [[ $# -eq 0 ]] || usage; kc_push ;;

@@ -11,7 +11,7 @@
 
 > **モデル選択の方針**: 各アダプタは**モデルを選ばない**。どのモデルを使うかは各 CLI 自身の設定（`~/.codex/config.toml` など）へ委譲し、環境変数が設定されているときだけフラグを組み立てる。アダプタにモデル slug の既定値を持たせると、その値がユーザーの CLI 設定と 2 重化して必ず古くなり、しかもユーザー設定を黙って上書きする。実装パターンと実害の記録は [REVIEW_AGENT_CREATION_GUIDE.md の「モデル指定は『既定値を持たない』」](../../06-reference/REVIEW_AGENT_CREATION_GUIDE.md#モデル指定は既定値を持たない) を参照。
 
-> **同梱 vs 利用側スクリプト**: プラグインが配布するのは `scripts/setup-multi-agent.sh` / `scripts/multi-agent.sh` / `scripts/multi-review.sh` / `scripts/adapters/*` / `scripts/perspectives/` / `scripts/agent-config.yaml`。加えて `scripts/templates/codex-review.sh`（`multi-agent.sh` へ委譲する薄いシム）が同梱され、`setup-multi-agent.sh` が消費プロジェクトの `scripts/codex-review.sh` へ配置する（Issue #406）。`setup-automated-review.sh` / `setup-multi-review.sh` / `review-common.sh` / `review-prompts.sh` と、`codex-review.sh` **以外**の単体ラッパー（`claude-review.sh` / `copilot-review.sh` / `grok-review.sh` 等）は**同梱されない**。下の「方法1」は消費プロジェクトが自前で組む構成例であり、セットアップ後に自動で現れるファイルではない。
+> **同梱 vs 利用側スクリプト**: プラグインが配布するのは `scripts/setup-multi-agent.sh` / `scripts/multi-agent.sh`（本体は入口が開始時に読む `scripts/lib/multi-agent-*.sh`）/ `scripts/multi-review.sh` / `scripts/adapters/*` / `scripts/perspectives/` / `scripts/agent-config.yaml`。加えて `scripts/templates/codex-review.sh`（`multi-agent.sh` へ委譲する薄いシム）が同梱され、`setup-multi-agent.sh` が消費プロジェクトの `scripts/codex-review.sh` へ配置する（Issue `#406`）。`setup-automated-review.sh` / `setup-multi-review.sh` / `review-common.sh` / `review-prompts.sh` と、`codex-review.sh` **以外**の単体ラッパー（`claude-review.sh` / `copilot-review.sh` / `grok-review.sh` 等）は**同梱されない**。下の「方法1」は消費プロジェクトが自前で組む構成例であり、セットアップ後に自動で現れるファイルではない。
 
 ### システム構成
 
@@ -132,7 +132,8 @@ chmod +x .husky/pre-commit scripts/review-common.sh scripts/review-prompts.sh \
 
 ```
 <FF_DEV_TOOLKIT_ROOT>/scripts/
-├── multi-agent.sh            # Multi-CLI オーケストレーター
+├── multi-agent.sh            # Multi-CLI オーケストレーター（入口）
+├── lib/multi-agent-*.sh      # オーケストレーターの本体（入口が開始時に読む構成ファイル）
 ├── multi-review.sh           # レビュー用ラッパー（→ multi-agent.sh --task review）
 ├── setup-multi-agent.sh      # 依存確認・導入
 ├── agent-config.yaml         # タスク設定（CLI レジストリは multi-agent.sh が正本）

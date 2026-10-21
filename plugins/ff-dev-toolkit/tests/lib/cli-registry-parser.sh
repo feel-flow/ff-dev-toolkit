@@ -3,31 +3,49 @@
 # multi-agent.sh の CLI registry を実行せずに読み取る共有 helper。
 # Bash 3.2 互換のため associative array は使わず、検証済み TSV を保持する。
 # 呼び出し元は set -euo pipefail 下を想定する。
+#
+# cli_registry_load <multi-agent.sh> [構成ファイル...]
+#   registry（2 つの sentinel に挟まれた区間）は第 1 引数の入口にだけ置ける。続く引数は
+#   multi-agent.sh が開始時に source する構成ファイル（scripts/lib/multi-agent-*.sh。
+#   ADR-075）で、境界外の検査（ALL_CLIS への書き込み・get_cli_* の定義を拒否する。実行時の入力で
+#   戻り値が変わる get_cli_perspectives だけは許す）を入口と同じ規則で掛ける。構成ファイルを渡さないと、そこでの再定義は shell 実行時に
+#   正本を上書きするのに検査が当たらない。
 
 CLI_REGISTRY_DATA=""
 CLI_REGISTRY_ERROR=""
 ALL_CLIS=""
 
-cli_registry_load() { # <multi-agent.sh>
-  local source_file="$1" parsed first_line prefix
+cli_registry_load() { # <multi-agent.sh> [構成ファイル...]
+  local source_file="$1" parsed first_line prefix extra
+  shift
   CLI_REGISTRY_DATA=""
   CLI_REGISTRY_ERROR=""
   ALL_CLIS=""
 
-  if [ ! -f "$source_file" ]; then
-    CLI_REGISTRY_ERROR="対象ファイルが見つかりません: ${source_file}"
-    return 1
-  fi
+  for extra in "$source_file" "$@"; do
+    if [ ! -f "$extra" ]; then
+      CLI_REGISTRY_ERROR="対象ファイルが見つかりません: ${extra}"
+      return 1
+    fi
+  done
 
   # shell source を eval/source しない。sentinel 間を完全な制限文法として解析し、
   # ALL_CLIS と単純 lookup の case arm だけを TSV データへ変換する。
   # 許可されない行は境界内のどこにあっても拒否し、ファイル全体を追加走査して
   # registry symbol の境界外再定義も拒否する。
   if ! parsed="$(LC_ALL=C awk '
+    # 位置は入口なら従来どおり "line N"、構成ファイルなら "<basename> line N" と書く。
+    function location(n,    name) {
+      if (source_file_of[n] == entry_file) return "line " source_fnr[n]
+      name = source_file_of[n]
+      sub(/^.*\//, "", name)
+      return name " line " source_fnr[n]
+    }
+
     function add_error(message, line_number, source_line) {
       error_count++
       if (line_number > 0) {
-        errors[error_count] = "line " line_number ": " message ": " source_line
+        errors[error_count] = location(line_number) ": " message ": " source_line
       } else {
         errors[error_count] = message
       }
@@ -133,8 +151,12 @@ cli_registry_load() { # <multi-agent.sh>
       allowed_outside["get_cli_perspectives"] = 1
     }
 
+    FNR == 1 && entry_file == "" { entry_file = FILENAME }
+
     {
       source[NR] = $0
+      source_file_of[NR] = FILENAME
+      source_fnr[NR] = FNR
       if ($0 == start_sentinel) {
         start_count++
         if (!start_line) start_line = NR
@@ -150,6 +172,8 @@ cli_registry_load() { # <multi-agent.sh>
         add_error("multi-agent.sh のレジストリ境界が一意ではありません（開始=" (start_count + 0) "件 / 終了=" (end_count + 0) "件）", 0, "")
       } else if (start_line >= end_line) {
         add_error("multi-agent.sh のレジストリ境界が正順ではありません（開始行=" start_line " / 終了行=" end_line "）", 0, "")
+      } else if (source_file_of[start_line] != entry_file || source_file_of[end_line] != entry_file) {
+        add_error("multi-agent.sh のレジストリ境界が入口にありません（開始=" location(start_line) " / 終了=" location(end_line) "）。registry は入口に置く（templates/codex-review.sh と本 parser が入口だけを読む）", 0, "")
       } else {
         state = "top"
         current_function = ""
@@ -285,7 +309,8 @@ cli_registry_load() { # <multi-agent.sh>
 
           line = source[line_number]
           logical_start = line_number
-          while (line ~ /\\$/ && line_number < NR) {
+          # 行継続はファイルをまたいで畳まない（別ファイルの行は別の論理行）
+          while (line ~ /\\$/ && line_number < NR && source_file_of[line_number + 1] == source_file_of[logical_start]) {
             sub(/\\$/, "", line)
             line_number++
             line = line source[line_number]
@@ -310,7 +335,7 @@ cli_registry_load() { # <multi-agent.sh>
       print "@all\t" all_clis
       for (record_index = 1; record_index <= record_count; record_index++) print records[record_index]
     }
-  ' "$source_file" 2>&1)"; then
+  ' "$source_file" "$@" 2>&1)"; then
     CLI_REGISTRY_ERROR="$parsed"
     return 1
   fi

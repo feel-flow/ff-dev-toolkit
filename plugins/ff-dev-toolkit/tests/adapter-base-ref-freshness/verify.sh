@@ -18,12 +18,15 @@
 #   (8) 分岐時は解決がローカルを維持し、混入件数つきの鮮度警告が残る
 #   (9) 選択行は 1 実行につき 1 行だけ（使わない既定 base の行を出さない）
 #  (10) レビュー系列 ID は base の鮮度で変わらない（pull しただけで別系列にしない）
-#       被検体は multi-agent.sh の写しを丸ごと source し、stderr の漏れも測る
+#       被検体は multi-agent.sh の写しを丸ごと source し、stderr の漏れも測る。写しは
+#       入口だけで、本体の構成ファイル（scripts/lib/multi-agent-*.sh。ADR-075）は $0 が指す
+#       実体の scripts/ から読まれる
 #  (11) 祖先関係を確認できないとき（rc が 0/1 以外）は「判定できなかった」と名乗る
 #  (12) アダプタ直叩き（parse_adapter_args）の --base も同じ解決を通る
 #
-# 変異検出: 写し（multi-agent.sh）から review_series_reason_file() の定義を消すと (10c) が
-#   `command not found` で赤になる。旧形（関数 2 つの sed 部分抽出）へ戻しても同じ行で赤。
+# 変異検出: 構成ファイル scripts/lib/multi-agent-critical.sh から review_series_reason_file() の定義を
+#   消すと (10c) が `command not found` で赤になる（2026-10-20 実測。写しは入口だけなので、構成
+#   ファイルは実体側で消す）。旧形（関数 2 つの sed 部分抽出）へ戻しても同じ行で赤。
 #   写しの `main "$@"` 行が別の形になると (10a) が赤、系列 ID が空になり (10b) も赤。
 #
 # ネットワークには触らない（fetch でリモートへ出ない）。書き込み不可の環境では skip。

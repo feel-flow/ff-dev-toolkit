@@ -201,15 +201,20 @@ DYNAMIC_PERSPECTIVES="review/code-review review/comprehensive-review"
 # ── multi-agent.sh の registry を shell として実行せず静的に読む ─────────────
 #
 # 共有 parser（tests/lib/cli-registry-parser.sh）で sentinel 間の全行を制限文法として検証し、
-# case arm をデータ化する。ファイル全体で registry symbol の境界外再定義も拒否する。
+# case arm をデータ化する。入口と構成ファイル（scripts/lib/multi-agent-*.sh。multi-agent.sh が
+# 開始時に source する）の全体で registry symbol の境界外再定義も拒否する。構成ファイルを
+# 渡さないと、そこでの再定義は実行時に正本を上書きするのに検査が当たらない。
 # mutable な本番 source を eval/source しないので、境界内に副作用を注入されても
 # テストプロセスから実行される経路が無い。
 REGISTRY_PARSER="$PLUGIN_ROOT/tests/lib/cli-registry-parser.sh"
 [ -f "$REGISTRY_PARSER" ] || { echo "✗ registry parser が見つかりません: $REGISTRY_PARSER" >&2; exit 1; }
 # shellcheck disable=SC1090,SC1091 # runtime-checked repo-local shared helper
 . "$REGISTRY_PARSER"
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$PLUGIN_ROOT/tests/lib/multi-agent-sources.sh"
+ma_sources_load "$PLUGIN_ROOT/scripts"
 
-if ! cli_registry_load "$MULTI_AGENT"; then
+if ! cli_registry_load "${MA_SOURCES[@]}"; then
   echo "✗ multi-agent.sh の registry を安全に静的解析できません" >&2
   printf '  %s\n' "$CLI_REGISTRY_ERROR" >&2
   exit 1

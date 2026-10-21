@@ -61,8 +61,13 @@ done
 # 単一センチネルでは検出できない。方式の詳細は lib 側ヘッダー参照。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE FF_TIMEOUT_KILL_GRACE" \
-  "$MULTI_AGENT" "$PLUGIN_ROOT"/scripts/adapters/*.sh
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$SCRIPT_DIR/../lib/multi-agent-sources.sh"
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "${MULTI_AGENT%/*}"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CODEX_PROFILE FF_TIMEOUT_KILL_GRACE MULTI_AGENT_CROSS_REVIEW" \
+  "${MA_SOURCES[@]}" "$PLUGIN_ROOT"/scripts/adapters/*.sh
 
 # ホスト由来の値を **suite の先頭で 1 回だけ** 落とす。probe() は `( source ...; 関数 )`
 # の形でプロセス内から run_with_timeout を呼ぶため env -u が構造的に届かず、そこだけ

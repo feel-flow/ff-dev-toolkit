@@ -43,8 +43,13 @@ done
 
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$SCRIPT_DIR/../lib/adapter-env-isolation.sh"
-build_isolate_env "FF_MULTI_AGENT_LOAD_PER_CORE MULTI_AGENT_CODEX_PROFILE" \
-  "$MULTI_AGENT" "$PLUGIN_ROOT"/scripts/adapters/*.sh
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$SCRIPT_DIR/../lib/multi-agent-sources.sh"
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "${MULTI_AGENT%/*}"
+build_isolate_env "FF_MULTI_AGENT_LOAD_PER_CORE MULTI_AGENT_CODEX_PROFILE MULTI_AGENT_CROSS_REVIEW" \
+  "${MA_SOURCES[@]}" "$PLUGIN_ROOT"/scripts/adapters/*.sh
 
 PASS=0
 FAIL=0
@@ -86,7 +91,7 @@ if /usr/bin/grep -qF 'multi-cli-review-orchestration.md#lane-load-gate' "$GIT_WO
 else
   bad "git-workflow.md から lane-load-gate 節への参照が無い"
 fi
-IMPL_DEFAULT="$(awk -F= '/^LOAD_GATE_DEFAULT_PER_CORE=/ { print $2; exit }' "$MULTI_AGENT")"
+IMPL_DEFAULT="$(awk -F= '/^LOAD_GATE_DEFAULT_PER_CORE=/ { print $2; exit }' "${MA_SOURCES[@]}")"
 if [ "$IMPL_DEFAULT" = "10" ]; then
   ok "実装の既定係数（LOAD_GATE_DEFAULT_PER_CORE=10）が正本と一致"
 else
@@ -350,10 +355,19 @@ MUT_MA="$MUT/scripts/multi-agent.sh"
 
 apply_mutation() {
   # $1: 対象行（完全一致） $2: 置換行（空なら削除）
-  local n
-  n="$(awk -v t="$1" '$0 == t { c++ } END { print c + 0 }' "$MULTI_AGENT")"
+  # 対象行は入口と構成ファイル（scripts/lib/multi-agent-*.sh。multi-agent.sh が開始時に
+  # source する本体。ADR-075）の全体でちょうど 1 件であること。写しを毎回作り直し、その行を
+  # 持つファイルの同じ相対パスへ書く（前の変異を次の変異へ持ち越さない）。
+  local n=0 c f target="" rel
+  for f in "${MA_SOURCES[@]}"; do
+    c="$(awk -v t="$1" '$0 == t { c++ } END { print c + 0 }' "$f")"
+    if [ "$c" -gt 0 ]; then n=$((n + c)); target="$f"; fi
+  done
   [ "$n" -eq 1 ] || { bad "変異の対象行が ${n} 件（期待 1）: $1"; return 1; }
-  awk -v t="$1" -v r="$2" '$0 == t { if (r != "") print r; next } { print }' "$MULTI_AGENT" > "$MUT_MA"
+  rm -rf "$MUT/scripts"
+  cp -R "$PLUGIN_ROOT/scripts" "$MUT/scripts"
+  rel="${target#"$PLUGIN_ROOT"/}"
+  awk -v t="$1" -v r="$2" '$0 == t { if (r != "") print r; next } { print }' "$target" > "$MUT/$rel"
 }
 
 # shellcheck disable=SC2016 # コピー先で評価させる literal

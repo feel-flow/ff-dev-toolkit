@@ -38,8 +38,13 @@ MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 # 実行環境の MULTI_AGENT_* からの分離（共有ライブラリの既定作法）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 . "$PLUGIN_ROOT/tests/lib/adapter-env-isolation.sh"
-build_isolate_env "MULTI_AGENT_CONFIG" \
-  "$MULTI_AGENT" "$PLUGIN_ROOT"/scripts/adapters/*.sh
+# shellcheck source=../lib/multi-agent-sources.sh
+. "$PLUGIN_ROOT/tests/lib/multi-agent-sources.sh"
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "${MULTI_AGENT%/*}"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_CROSS_REVIEW" \
+  "${MA_SOURCES[@]}" "$PLUGIN_ROOT"/scripts/adapters/*.sh
 
 PASS=0
 FAIL=0
@@ -266,10 +271,15 @@ MUTANT_ROOT="$TMP/mutant"
 mkdir -p "$MUTANT_ROOT/scripts"
 cp -R "$PLUGIN_ROOT/scripts/." "$MUTANT_ROOT/scripts/"
 MUTANT_MULTI_AGENT="$MUTANT_ROOT/scripts/multi-agent.sh"
+# 注入先はバナー行を持つファイル（multi-agent.sh は本体を scripts/lib/multi-agent-*.sh へ
+# 分けて開始時に source する。ADR-075）。写しの同じ相対パスへ注入する。
+# shellcheck disable=SC2016 # 写しの中で評価される literal
+BANNER_SOURCE="$(ma_source_holding 'HEAD: ${banner_head}）" >&2')"
+MUTANT_BANNER_SOURCE="$MUTANT_ROOT/${BANNER_SOURCE#"$PLUGIN_ROOT"/}"
 
-perl -pi -e 's/^(\s*)echo "⚠️.*HEAD: \$\{banner_head\}）" >&2$/$1:/' "$MUTANT_MULTI_AGENT"
+perl -pi -e 's/^(\s*)echo "⚠️.*HEAD: \$\{banner_head\}）" >&2$/$1:/' "$MUTANT_BANNER_SOURCE"
 
-if cmp -s "$MUTANT_MULTI_AGENT" "$PLUGIN_ROOT/scripts/multi-agent.sh"; then
+if cmp -s "$MUTANT_BANNER_SOURCE" "$BANNER_SOURCE"; then
   bad "ミューテーションを適用できなかった（被検体と同一。検査が無意味）"
 else
   rm -rf "$REPO/.review-results"

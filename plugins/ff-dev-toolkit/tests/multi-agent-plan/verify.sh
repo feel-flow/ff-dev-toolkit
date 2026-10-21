@@ -34,6 +34,8 @@ MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 # 「multi-agent.sh が見つかりません」が隠れる（既存の存在検査が事実上デッドコードになる）。
 # shellcheck source=../lib/adapter-env-isolation.sh
 source "$PLUGIN_ROOT/tests/lib/adapter-env-isolation.sh"
+# shellcheck source=../lib/multi-agent-sources.sh
+source "$PLUGIN_ROOT/tests/lib/multi-agent-sources.sh"
 # 抽出源には**アダプタ実装も渡す**。この suite の dry-run は sandbox probe 経由で
 # grok アダプタを実際に起動する（アダプタは adapter-common.sh を source する）ので、
 # orchestrator だけを渡すと MULTI_AGENT_MODEL_GROK_CLI / FF_TIMEOUT_* がホストから
@@ -43,8 +45,11 @@ source "$PLUGIN_ROOT/tests/lib/adapter-env-isolation.sh"
 #   MULTI_AGENT_MODEL_GROK_CLI  → grok-cli-adapter.sh
 #   FF_TIMEOUT_KILL_GRACE       → adapter-common.sh
 ADAPTERS_DIR="$PLUGIN_ROOT/scripts/adapters"
-build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_GROK_CLI FF_TIMEOUT_KILL_GRACE" \
-  "$MULTI_AGENT" \
+# 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
+# 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
+ma_sources_load "${MULTI_AGENT%/*}"
+build_isolate_env "MULTI_AGENT_CONFIG MULTI_AGENT_MODEL_GROK_CLI FF_TIMEOUT_KILL_GRACE MULTI_AGENT_CROSS_REVIEW" \
+  "${MA_SOURCES[@]}" \
   "$ADAPTERS_DIR/grok-cli-adapter.sh" \
   "$ADAPTERS_DIR/adapter-common.sh"
 
@@ -623,15 +628,17 @@ fi
 # なるため、振る舞いで測れない。ここは**要求そのものを構造で固定**する —
 # 「除外はすべてのプラン構築経路に効く」。add_to_plan の呼び出しは複数あり、初版は
 # 5/7 にしかガードが無く、pair の総合観点と cross-model が素通りしていた（実測）。
-# 各呼び出しの直前 6 行以内に perspective_excluded があることを求める。
+# 各呼び出しの直前 6 行以内に perspective_excluded があることを求める。走査は入口と構成ファイル
+# （scripts/lib/multi-agent-*.sh。開始時に source される本体。ADR-075）の全部で、件数も全体で数える。
 _unguarded="$(awk '
+  FNR == 1 { for (i = 1; i <= 6; i++) p[i] = ""; prev = "" }
   { for (i = 6; i > 1; i--) p[i] = p[i-1]; p[1] = prev; prev = $0 }
   /add_to_plan / {
     guarded = 0
     for (i = 1; i <= 6; i++) if (p[i] ~ /perspective_excluded/) guarded = 1
-    if (!guarded) print NR ": " $0
-  }' "$MULTI_AGENT")"
-_sites="$(grep -c "add_to_plan " "$MULTI_AGENT" || true)"
+    if (!guarded) print FILENAME ":" FNR ": " $0
+  }' "${MA_SOURCES[@]}")"
+_sites="$(ma_sources_cat | grep -c "add_to_plan " || true)"
 if [ "${_sites:-0}" -lt 6 ]; then
   bad "add_to_plan の呼び出しを ${_sites} 箇所しか見つけられなかった（この検査が成立していない）"
 elif [ -z "$_unguarded" ]; then

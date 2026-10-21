@@ -38,7 +38,8 @@
 #   isolate_hook_env "SENTINEL..." HOOK
 #     guard 系 suite（hook を stdin JSON で駆動する suite）向けの入口（Issue `#1808`）。
 #     HOOK と、HOOK から辿れる同梱ファイル（本文に `/x.sh` の形で現れ、`hooks/` /
-#     `tests/lib/` / `scripts/` のどこかに実在するものを推移的に閉じた集合。変数経由の
+#     `tests/lib/` / `scripts/`（と multi-agent.sh の構成ファイル `scripts/lib/multi-agent-*.sh`）の
+#     どこかに実在するものを推移的に閉じた集合。変数経由の
 #     `"$HELPER_DIR/x.sh"` もファイル名で辿る）から
 #     _?(FF|CLAUDE)_[A-Z0-9_]+ を動的抽出して ISOLATE_ENV を組み、**現在のシェルで
 #     unset する**（build + unset_isolated_vars を 1 回で行う）。hook は解除変数
@@ -246,7 +247,7 @@ unset_prompt_env_vars() {
 isolate_hook_env() {
   local sentinels="$1" hook="$2"
   local IFS=$' \t\n'
-  local root f refs ref path raw var s seen grep_rc i j known
+  local root f refs ref path lib_path raw var s seen grep_rc i j known
   local files=()
   if [ ! -f "$hook" ]; then
     echo "✗ isolate_hook_env: hook が見つかりません: ${hook}（分離名簿を作れないため続行しない）" >&2
@@ -265,7 +266,11 @@ isolate_hook_env() {
     i=$((i + 1))
     grep_rc=0
     # 参照は「/ の直後のファイル名」で拾い、置き場の候補（hooks / tests/lib / scripts）の
-    # どこかに実在すれば辿る。`tests/lib/x.sh` のリテラルだけを見ると、
+    # どこかに実在すれば辿る。scripts/lib は multi-agent.sh の構成ファイル（`/multi-agent-*.sh`。
+    # 開始時に source される本体。ADR-075）に限って候補へ足す。外すと、分割前は
+    # multi-agent.sh 1 本から拾えていた変数名が名簿から黙って落ちる。scripts/lib 全体へ
+    # 広げると、分割と関係のない lib 経由の参照（wsl-notice.sh → hooks/check-update.sh 等）
+    # まで閉包へ入り、suite が前提にしている変数まで消える。`tests/lib/x.sh` のリテラルだけを見ると、
     # `HELPER_DIR=".../tests/lib"` + `"$HELPER_DIR/x.sh"` の間接参照が注釈の綴りに頼る形になる。
     refs="$(grep -ohE '/[A-Za-z0-9_.-]+\.sh' "$f")" || grep_rc=$?
     if [ "$grep_rc" -gt 1 ]; then
@@ -274,7 +279,9 @@ isolate_hook_env() {
     fi
     # refs の各語は抽出パターン上 /[A-Za-z0-9_.-]+\.sh に限られ、語分割・glob の危険はない。
     for ref in $refs; do
-      for path in "${root}/hooks${ref}" "${root}/tests/lib${ref}" "${root}/scripts${ref}"; do
+      lib_path=""
+      case "$ref" in /multi-agent-*.sh) lib_path="${root}/scripts/lib${ref}" ;; esac
+      for path in "${root}/hooks${ref}" "${root}/tests/lib${ref}" "${root}/scripts${ref}" ${lib_path:+"$lib_path"}; do
         [ -f "$path" ] || continue
         known=0
         for ((j = 0; j < ${#files[@]}; j++)); do

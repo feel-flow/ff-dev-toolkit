@@ -1008,6 +1008,11 @@ else
     # ワーク・課金は伴わない。破棄ロジック自体は multi-agent-revision-guard の
     # 担当で、ここでは触れない。
     "$SCRIPT_DIR/multi-agent-review-banner/verify.sh"
+    # multi-agent.sh の分割の契約（ADR-075）: 入口の MULTI_AGENT_PARTS と scripts/lib/multi-agent-*.sh の
+    # 一致・各ファイル 1200 行以下・構成ファイルの形・読めない構成ファイルで CLI 起動前に rc=2 で
+    # 止まること（写しで実測）・registry の境界外検査が構成ファイルにも掛かること。stub CLI だけで、
+    # 実 CLI・ネットワーク・課金は伴わない。
+    "$SCRIPT_DIR/multi-agent-parts/verify.sh"
     # 同梱 MCP サーバーの実検査 4 本。node_modules が無い環境ではいずれも ○ skip
     # （型検査の 2 本は node が PATH に無い環境でも ○ skip。tsc の shebang が node を
     # 要求するため、環境都合の失敗を型エラーと混ぜないための分岐）。
@@ -1075,6 +1080,9 @@ else
     # ff-media-toolkit プラグインの suite（plugins/ff-media-toolkit/tests/run-all.sh）を
     # ラッパー経由で回す（ff-media-toolkit 導入時に追加）。node 20 以上が無い環境では丸ごと ○ skip。
     "$SCRIPT_DIR/ff-media-toolkit/verify.sh"
+    # ff-agent-press プラグインの suite（plugins/ff-agent-press/tests/run-all.sh）を
+    # ラッパー経由で回す（ff-agent-press 導入時に追加）。node 20 以上が無い環境では丸ごと ○ skip。
+    "$SCRIPT_DIR/ff-agent-press/verify.sh"
     # 公開リポジトリ単体の checkout を合成して公開 suite セットを回す（ADR-068）。
     # 全件ゲートと同規模（macOS 実測で単体約 19 分・全件ゲート内の並列実行で約 36 分）なので run-all からは
     # 常に ○ skip し、公開同期の直前に scripts/release-dev-toolkit.sh の gate 段が FF_RUN_PUBLIC_LAYOUT=1 で明示起動する。
@@ -1425,7 +1433,6 @@ MISS_PROBE_BASELINE=(
   multi-agent-critical-marker
   multi-agent-host-delegation
   multi-agent-ignore-paths
-  multi-agent-resume
   multi-agent-revision-guard
   multi-agent-serialization
   multi-agent-skip-poisoned-cli
@@ -2151,6 +2158,7 @@ ff_changed_surface_hit() { # <変更パス> <名簿の要素（リポジトリ�
 # ff_changed_fallback で全件実行へ倒す（理由付き）。
 ff_changed_select() { # <FF_RUN_ALL_CHANGED の値>
   local req="$1" top top_abs plugin_abs plugin_rel base_ref base_sha mb files extra p e
+  local derive_files alias_entry alias_from="" entry_changed=0
   local script name found line derive_out
   local -a scan_files=() selected=() derived_names=() derived_evs=()
   if [[ "$req" == -* ]]; then
@@ -2224,6 +2232,24 @@ ff_changed_select() { # <FF_RUN_ALL_CHANGED の値>
     done
   done < <(printf '%s\n' "$files")
 
+  # multi-agent.sh の構成ファイル（scripts/lib/multi-agent-*.sh。入口が開始時に source する本体。
+  # ADR-075）の変更は、入口 scripts/multi-agent.sh の変更としても交差させる。入口を名指して実走し
+  # 本文を読む suite は構成ファイルの path を持たないので、そのままでは選ばれない。根拠の行には
+  # 実際に変わった構成ファイルを出す。
+  derive_files="$files"
+  alias_entry="${plugin_rel}scripts/multi-agent.sh"
+  while IFS= read -r p; do
+    case "$p" in
+      "$alias_entry") entry_changed=1 ;;
+      "${plugin_rel}scripts/lib/multi-agent-"*.sh) [[ -n "$alias_from" ]] || alias_from="$p" ;;
+    esac
+  done < <(printf '%s\n' "$files")
+  if [[ -n "$alias_from" && "$entry_changed" -eq 0 ]]; then
+    derive_files="${derive_files}"$'\n'"${alias_entry}"
+  else
+    alias_from=""
+  fi
+
   CHANGED_REGISTERED="${#SCRIPTS[@]}"
   if [[ "$CHANGED_FILE_COUNT" -gt 0 ]]; then
     while IFS= read -r p; do
@@ -2234,7 +2260,7 @@ ff_changed_select() { # <FF_RUN_ALL_CHANGED の値>
       ff_changed_fallback "参照パスを導出する走査対象が 0 件（tests/ を読めない）"
       return 0
     fi
-    if ! derive_out="$(FF_CHG_FILES="$files" FF_CHG_TESTS_PREFIX="${plugin_rel}tests/" FF_CHG_TESTS_DIR="$SCRIPT_DIR" \
+    if ! derive_out="$(FF_CHG_FILES="$derive_files" FF_CHG_TESTS_PREFIX="${plugin_rel}tests/" FF_CHG_TESTS_DIR="$SCRIPT_DIR" \
       ff_changed_derive "${scan_files[@]}")"; then
       ff_changed_fallback "参照パスの導出に失敗した（読めないファイルがある可能性）"
       return 0
@@ -2268,6 +2294,9 @@ ff_changed_select() { # <FF_RUN_ALL_CHANGED の値>
           break
         fi
       done
+      if [[ -n "$alias_from" && "$found" == "${alias_entry} ← "* ]]; then
+        found="${alias_from}（multi-agent.sh の構成ファイル。入口の変更として交差） ← ${found#"${alias_entry} ← "}"
+      fi
       if [[ -n "$found" ]]; then
         selected+=("$script")
         CHANGED_EVIDENCE+=("${name} ← ${found}")
