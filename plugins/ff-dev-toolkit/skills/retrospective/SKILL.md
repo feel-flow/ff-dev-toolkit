@@ -63,7 +63,7 @@ fi
 | `ff-effort` ブロックを持つ Issue がこのセッションでマージされた、または前回の集計から `ff-effort` 付き Issue が増えた | [references/effort.md](references/effort.md) | 乖離の記録帯・集計 |
 | SSOT リポジトリで実行する（旧版が起票した `[observation]` Issue の残件は同ファイル手順 1 の検索で確かめる） | [references/legacy-intake.md](references/legacy-intake.md) | 旧経路の取り込み |
 | hook を変更する・自動発火の挙動を確かめる・入れ子の非対話起動を組む | [references/auto-trigger.md](references/auto-trigger.md) | 自動発火の判定規則 |
-| 台帳へ記録する（照合フェンスを通す）・base が先行して止まった・Count の数え方に迷う | [references/ledger.md](references/ledger.md) | 照合フェンス・Count の単位・根拠 |
+| 台帳記録・knowledge 保留の回収・base 先行・Count の確認 | [references/ledger.md](references/ledger.md) | 照合・保留合流・送信・Count |
 
 ## ask / off モード（保険）
 
@@ -75,7 +75,7 @@ printenv RETROSPECTIVE_MODE
 
 出力が `ask` なら ask モード、`off` または上記の別名なら自動発火のみ無効。未設定・それ以外の値なら既定モード。**off モード**: 事前注入と Stop fallback はどちらも動作せず、明示指定だけ実行する。
 
-**モードを判定した直後に、保留中の knowledge 追記を確かめる**: `finish.sh knowledge-commit status` の `KNOWLEDGE_PENDING=` が 1 以上なら（`/ace-curate` が `add` までで止めた追記）、振り返りを実施しない回（off モード・ask で断られた回）でも `commit` → push を行う。実施する回は下「書き込み」の `commit` が観測台帳と合わせて 1 コミットに畳む。`RETROSPECTIVE_MODE` は**実施**、`RETROSPECTIVE_FILING` は**起票**のスイッチ（`ask` で承認待ち式）で、2 つは独立している。
+**モードを判定した直後に、保留中の knowledge 追記を確かめる**: `finish.sh knowledge-commit status` の `KNOWLEDGE_PENDING=` が 1 以上なら（`/ace-curate` が `add` までで止めた追記）、振り返りを実施しない回（off モード・ask で断られた回）でも `commit` → 送信を行う（経路は [ledger.md](references/ledger.md#保留の合流と送信経路)）。実施する回は下「書き込み」の `commit` が観測台帳と合わせて 1 コミットに畳む。`RETROSPECTIVE_MODE` は**実施**、`RETROSPECTIVE_FILING` は**起票**のスイッチ（`ask` で承認待ち式）で、2 つは独立している。
 
 ## 自動発火（事前注入 + Stop fallback）
 
@@ -114,7 +114,7 @@ printenv RETROSPECTIVE_MODE
 
 ### 記録の前に base の先行を照合する
 
-並行更新で同一性・`Count`・OBS ID が古くなるため**記録手順 0 より前に照合する。** [references/ledger.md](references/ledger.md) の照合フェンス（clean な台帳 → 明示 refspec で fetch → 祖先検査。失敗は stale 値へ fallback せず停止）を通す。先行していたら「取り込んでから記録を作り直す」（`git pull --ff-only origin <default-branch>` で取り込む。`--force` / `--force-with-lease` で先行セッションを上書きしない。`--rebase` / merge で取り込まない。OBS ID は**取り込んだ後の**台帳の最大連番 +1 で採番する）。台帳自身に未コミットの変更があって止まった回は**復帰可能**である。復帰できないまま停止した場合は台帳へ書かず観測を報告に残す。**ただし「提案の閾値」は通常どおり適用する**。デフォルト統合ブランチ以外に居る回は、記録の前にそのブランチへ戻るか、[detached手順](../ace-curate/references/curate.md#worktreeセッションからの知見記録)へ進む。
+並行更新で同一性・`Count`・OBS ID が古くなるため**記録手順 0 より前に照合する。** [references/ledger.md](references/ledger.md) の照合フェンス（clean な台帳 → 明示 refspec で fetch → 祖先検査。失敗は stale 値へ fallback せず停止）を通す。先行していたら「取り込んでから記録を作り直す」（`git pull --ff-only origin <default-branch>` で取り込む。`--force` / `--force-with-lease` で先行セッションを上書きしない。`--rebase` / merge で取り込まない。OBS ID は**取り込んだ後の**台帳の最大連番 +1 で採番する）。台帳自身に未コミットの変更があって止まった回は**復帰可能**である。復帰できないまま停止した場合は台帳へ書かず観測を報告に残す。**ただし「提案の閾値」は通常どおり適用する**。保留中の知見ブランチは維持する。それ以外の非 default は [ledger.md](references/ledger.md#保留の合流と送信経路) の準備に従う。
 
 ### 記録手順
 
@@ -132,7 +132,7 @@ printenv RETROSPECTIVE_MODE
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-shebang-cr.sh" || exit $?
 ```
 
-台帳へ直接追記し、`knowledge:` prefix の単独コミットとしてデフォルト統合ブランチへ commit + push する（承認は不要だが、記録した内容は振り返り結果で必ず報告する）。commit は共通の書き込み口 — `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --source obs --id <OBS-ID> --summary <要約> -- docs/08-knowledge/OBSERVATIONS.md` の後に `commit` → `push`（rc 3 は保護ルールで `/ace-curate` 手順 5 と同じく PR 経由へ）。書き込み口は `git commit -- docs/08-knowledge/OBSERVATIONS.md` の形で記録したパスへ固定する。同じセッションで `/ace-curate` が `add` だけで止めた保留があれば、同じ `commit` が両方を 1 コミット（`knowledge: ACE-… / OBS-…`）に畳む。観測を記録しない回でも保留があれば `commit` → `push` を行う。
+台帳へ追記し、`knowledge:` prefix の単独コミットを共通の書き込み口で作る（承認不要。記録内容は振り返り結果で必ず報告する）— `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --source obs --id <OBS-ID> --summary <要約> -- docs/08-knowledge/OBSERVATIONS.md` の後に `commit`。書き込み口は `git commit -- docs/08-knowledge/OBSERVATIONS.md` の形で記録したパスへ固定する。同じセッションで `/ace-curate` が `add` だけで止めた保留があれば、同じ `commit` が両方を 1 コミット（`knowledge: ACE-… / OBS-…`）に畳む。送信は [ledger.md の分岐](references/ledger.md#保留の合流と送信経路)に従い、default / detached は `push`、既存知見ブランチは実測名で `pr` を使う。観測を記録しない回も同じ規則で保留を回収する。
 
 - push が non-fast-forward で拒否されたら復帰手順へ戻り **記録手順 0 から記録内容を作り直す**（採番し直しだけで再試行しない。検出点は上の照合で、push は最終境界）
 - **ローカルに未 push のコミットがある回は、それらも同じ push で統合ブランチへ送られる**。意図しないローカルコミットが無いことを先に確かめる

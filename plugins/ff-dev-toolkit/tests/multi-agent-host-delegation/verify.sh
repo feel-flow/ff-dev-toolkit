@@ -21,7 +21,7 @@
 #   (4) 統合レポートが当該観点を DELEGATED として載せ、かつ INCOMPLETE を名乗る
 #       （消費側ゲートはこの語で未完了を判定する）
 #   (5) ホストが所定パスへ書いた結果を再実行が受理し、CLI 起動経路と同じヘッダーで保存する
-#   (6) 別入力に対する応答は受理せず、退避先を名指しして handoff をやり直す
+#   (6) 別 HEAD の応答は新世代へ採らず、旧世代の証跡を元のパスに保つ
 #   (7) レビュー本文として成立しない応答（重大度行なし）は受理しない
 #   (8) `claude` が未導入でも委譲経路は成立する（観点が fallback CLI へ再配分されない）
 #   (9) 既定（フラグ無し）は従来どおり CLI を起動する — 委譲は既定の挙動を変えない
@@ -32,13 +32,19 @@
 #  (14) 前回の未解消 Critical は、委譲待ちの観点について保持される（pre-push ゲートの fail-open 防止）
 #  (15) 自分で incomplete / discarded を名乗る応答は受理しない（本文全体を走査する）
 #  (16) 正規ヘッダー付きの応答はヘッダーを二重にせず受理する
-#  (17) 回収に失敗した実行は fail-loud で止まり、ホストの成果物を結果パスに残す
-#  (18) 結果パスの symlink は運ばない（指し先を本文として受理しない）
+#  (17) 採用結果を書けない実行は fail-loud で止まり、世代別のホスト応答を残す
+#  (18) 応答パスの symlink は受理しない（指し先を本文として受理しない）
 #  (19) 委譲を残したままフラグを落とした実行は、結果を消す前に中断する
 #  (20) --fresh との併用は拒否する（回収より前に退避され収束しないため）
 #  (21) 複数観点の部分受理が --resume で収束する（受理済みが再委譲されない）
 #  (22) 委譲待ちのあいだに結果パスへ現れたファイルを、本文にも Critical 判定にも採らない
-#  (23) 未応答のまま再実行しても曖昧さの印は消えず、清算後は正当な応答を受理する
+#  (23) 新 HEAD の応答は最初の resume で採用し、遅い旧世代の応答を混ぜない
+#  (23b) 単独 adapter の legacy digest / superseded 保護も維持する
+#  (27) 同 HEAD の description / wrapper route 違いは全成果物・起動数を変えず拒否する
+#  (28) metadata の欠落・破損等は同 HEAD / 新 HEAD の両方で証跡を守って停止する
+#  (29) state 不在の plan 外 CLI symlink は辿らず、対象レーンの実行を続ける
+#  (30) 保存 manifest の委譲レーンは今回の plan 外でも unsafe symlink を拒否する
+#  (31) state 保存後・dispatch 前の中断は同じ世代で再開し、次1回の応答を採用する
 #  (24) 部分書き込み（ヘッダーだけ無事）を受理成功と判定しない
 #  (26) codex-cli / grok-cli ホストの委譲と、ホストのレーンでない値の拒否・別レーンの未回収 handoff の保護・
 #       grok ホストでの委譲案内（Issue `#2118`）
@@ -47,20 +53,20 @@
 #       退避して `<レーン>/<観点>` を名指しした拒否の診断を出す（(5a)）
 #
 # 変異検出: task_is_delegated を常に偽へ倒すと (1)(2)(3)(4)(8)(12) が赤。
-#           delegate_task の digest 照合を素通しにすると (6) が赤。
 #           review_body_present の呼び出しを外すと (7) が赤。
 #           delegation_response_declares_incomplete の走査を先頭 1 段落へ戻すと (15) が赤。
 #           task_left_perspective_unproven から委譲待ちを外すと (14) が赤。
-#           collect_delegated_responses の return 1 を警告へ落とすと (17) が赤。
 #           Critical 判定ループの委譲待ちガードを外すと (22) が赤。
 #           回収の「未応答の handoff があるときだけ」条件を外すと (21) が赤。
-#           superseded の持ち越しを「入力が変わったか」だけへ戻すと (23) が赤。
 #           delegation_output_written の本文一致検査を外すと (24) が赤。
 #           build_prompt の Typed Verdict Lines 見出しを外すと (25) のプロンプト検査が赤。
 #           C4（ADR-066）の変異（2026-09-25 実測）: 受理モードを散文でも受理する形へ戻すと (5a) の拒否・退避と (5) が赤（4 件）。
 #           拒否の診断を外すと (5a) の診断検査が赤。委譲の退避理由を正規形の定数から旧文面へ戻すと (5a) の理由検査が赤。
 #           レビュー 1 巡目の fix（同日実測）: review_body_present の awk 異常終了を rc1（型付き行なし）へ畳む、または
 #           委譲の退避理由を review_body_refusal_clause から正規形の固定文へ戻すと (5b) が赤。
+# 空振り検出: metadata整合性拡張前の(23)(23b)(27)(28)(29)(30)は無変異34/0。同HEADの早期照合を無効化すると30/4（description/routeの無変更拒否・初回command表示・1回回復）、generationを固定すると31/3（世代分離・B初回採用・旧証跡保全）へ赤転（2026-10-22 実測）。各変異は独立fixtureへ1回だけ適用し、前後SHA256とrc・赤assertionを記録。
+# 空振り検出: (29)(30)は現行2/0。全CLIを検査した修正前snapshotでは(29)だけ赤1/1、保存manifestの委譲laneを拾う条件を外す単一変異では(30)だけ赤1/1（2026-10-22 実測）。無関係なsymlinkのskipと、保存委譲laneの拒否を相互の対照として固定。
+# 空振り検出: metadata整合性拡張後の(23)(28)(31)は無変異44/0。headとmanifestの照合だけを外すとvalid-headの4件が赤40/4、generationとgeneration-hashの照合だけを外すとvalid-generation/有効hash差替の8件が赤36/8（2026-10-22 実測）。同/新HEAD・元argv/description落ちを測り、新HEAD正常退役・state-only再開と次1回採用は両変異でも緑。各変異の1回適用・前後SHA256・rcを記録。
 #
 # 実 CLI は 1 つも起動しない（claude / codex を stub で覆う）。書き込み不可の環境では skip。
 
@@ -148,7 +154,10 @@ git commit -qm "change"
 STUB="$TMP/bin"
 mkdir -p "$STUB"
 CLAUDE_COUNT="$TMP/claude-count"
+CODEX_COUNT="$TMP/codex-count"
+export FF_TEST_CODEX_COUNT="$CODEX_COUNT"
 : > "$CLAUDE_COUNT"
+: > "$CODEX_COUNT"
 cat > "$STUB/claude" <<SH
 #!/usr/bin/env bash
 n=\$( (cat "$CLAUDE_COUNT" 2>/dev/null || echo 0) )
@@ -161,6 +170,7 @@ SH
 cat > "$STUB/codex" <<'SH'
 #!/usr/bin/env bash
 cat >/dev/null
+printf 'codex\n' >> "${FF_TEST_CODEX_COUNT:?}"
 echo "- Critical: 0"
 echo "- Important: 0"
 echo "- verdict: none"
@@ -177,6 +187,23 @@ claude_launch_count() {
     '' | *[!0-9]*) echo 0 ;;
     *) echo "$n" ;;
   esac
+}
+codex_launch_count() { wc -l < "$CODEX_COUNT" | tr -d ' '; }
+
+# 世代の識別子は実装から作り直さず、ホストへ返したレコードから読む。
+handoff_field() { # <stdout> <key> [perspective] [cli]
+  awk -v key="$2" -v perspective="${3:-code-review}" -v cli="${4:-claude-code}" '
+    function emit() { if (f["cli"] == cli && f["perspective"] == perspective && f[key] != "") print f[key] }
+    /^--- task ---$/ { emit(); for (k in f) delete f[k]; next }
+    /^<<<END-FF-DELEGATED-TASKS>>>$/ { emit(); for (k in f) delete f[k]; next }
+    /^[A-Za-z-]+=/ { k=$0; sub(/=.*/, "", k); v=$0; sub(/^[^=]*=/, "", v); f[k]=v }
+  ' "$1"
+}
+tree_hashes() { # <output-dir>。一覧と全バイトの両方を比較する（空集合も記録）。
+  ( cd "$1" && find . \( -type f -o -type l \) -print | LC_ALL=C sort | while IFS= read -r file; do
+      printf '%s ' "$file"
+      if [ -L "$file" ]; then printf 'symlink='; readlink "$file"; else git hash-object "$file"; fi
+    done )
 }
 
 # handoff は物理パス（orchestrator が OUTPUT_DIR を pwd -P で解決する）で名乗る。
@@ -196,7 +223,12 @@ run_ma() {
   RUN_ERR="$TMP/err.${OUT_N}.${label}"
   RUN_RC=0
   run_isolated PATH="$STUB_PATH" HOME="$TMP/home" \
-    bash "$MULTI_AGENT" "$@" > "$RUN_OUT" 2> "$RUN_ERR" || RUN_RC=$?
+    FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash "${MA_ENTRY:-$MULTI_AGENT}" "$@" > "$RUN_OUT" 2> "$RUN_ERR" || RUN_RC=$?
+  local prompt response
+  prompt="$(handoff_field "$RUN_OUT" prompt-file)"
+  response="$(handoff_field "$RUN_OUT" output-file)"
+  if [ -n "$prompt" ]; then PROMPT_FILE="$prompt"; fi
+  if [ -n "$response" ]; then RESPONSE_FILE="$response"; fi
 }
 
 BASE_ARGS="--task review --mode cross-model --perspective code-review --base develop"
@@ -217,7 +249,6 @@ else
   bad "委譲待ちの終了コードが 3 ではない: rc=${RUN_RC}"
 fi
 
-PROMPT_FILE="$REPO_PHYS/.review-results/claude-code/.delegated/code-review.prompt.md"
 RESULT_FILE="$REPO_PHYS/.review-results/claude-code/code-review.md"
 if grep -qF '<<<FF-DELEGATED-TASKS>>>' "$RUN_OUT" \
    && grep -qF '<<<END-FF-DELEGATED-TASKS>>>' "$RUN_OUT"; then
@@ -225,12 +256,19 @@ if grep -qF '<<<FF-DELEGATED-TASKS>>>' "$RUN_OUT" \
 else
   bad "handoff ブロックが stdout に無い（ホストが読む唯一の経路）"
 fi
-if grep -qF "prompt-file=${PROMPT_FILE}" "$RUN_OUT" \
-   && grep -qF "output-file=${RESULT_FILE}" "$RUN_OUT"; then
+if [ -n "${PROMPT_FILE:-}" ] && [ -n "${RESPONSE_FILE:-}" ] \
+   && grep -qF "prompt-file=${PROMPT_FILE}" "$RUN_OUT" \
+   && grep -qF "output-file=${RESPONSE_FILE}" "$RUN_OUT" \
+   && [ "$RESPONSE_FILE" = "${PROMPT_FILE%.prompt.md}.response.md" ]; then
   ok "handoff が prompt-file と output-file を絶対パスで名指ししている"
 else
   bad "handoff に prompt-file / output-file が無い（ホストは何をどこへ書けばよいか分からない）"
 fi
+case "${RESPONSE_FILE:-}" in
+  "$REPO_PHYS/.review-results/claude-code/.delegated/generations/"*'/code-review.response.md')
+    ok "ホスト応答の受け皿は世代別で、canonical 結果とは別のパス" ;;
+  *) bad "世代別の応答パスが handoff に無い: ${RESPONSE_FILE:-missing}" ;;
+esac
 if [ -s "$PROMPT_FILE" ]; then
   ok "プロンプトがファイルとして書き出されている: ${PROMPT_FILE}"
 else
@@ -260,7 +298,7 @@ else
 fi
 
 echo "-- (7) レビュー本文として成立しない応答は受理しない --"
-printf 'looks fine to me\n' > "$RESULT_FILE"
+printf 'looks fine to me\n' > "$RESPONSE_FILE"
 # shellcheck disable=SC2086
 run_ma reject $BASE_ARGS --cli claude-code --delegate-to-host
 if [ "$RUN_RC" -eq 3 ] && grep -qF 'refusing it as a review result' "$RUN_ERR"; then
@@ -268,7 +306,7 @@ if [ "$RUN_RC" -eq 3 ] && grep -qF 'refusing it as a review result' "$RUN_ERR"; 
 else
   bad "重大度行を含まない応答が拒否されていない（rc=${RUN_RC}）"
 fi
-if ls "$REPO_PHYS"/.review-results/claude-code/.delegated/code-review.response.rejected.*.md >/dev/null 2>&1; then
+if ls "${PROMPT_FILE%.prompt.md}".response.rejected.*.md >/dev/null 2>&1; then
   ok "拒否した応答は捨てずに退避してある（ホストが払った実行の証跡）"
 else
   bad "拒否した応答の退避物が無い"
@@ -278,8 +316,8 @@ echo "-- (5a) 散文だけの応答（型付き判定行なし）は受理しな
 # CLI 起動経路と同じ共有関数（review_body_present）で拒否し、応答を退避して handoff を
 # やり直す。拒否の診断は `<レーン>/<観点>` のラベルで名指しされ、退避理由は不受理の
 # 正規形（adapter-common.sh の REVIEW_BODY_REFUSAL_PHRASE）を展開する
-rm -f "$REPO_PHYS"/.review-results/claude-code/.delegated/code-review.response.rejected.*.md
-cat > "$RESULT_FILE" <<'BODY'
+rm -f "${PROMPT_FILE%.prompt.md}".response.rejected.*.md
+cat > "$RESPONSE_FILE" <<'BODY'
 ## Summary
 
 - Critical: 0
@@ -300,7 +338,7 @@ if grep -qxF 'typed-verdict: claude-code/code-review: prose-only review refused 
 else
   bad "(5a) 散文だけの委譲応答を拒否したのに名指しの診断が無い"
 fi
-if ls "$REPO_PHYS"/.review-results/claude-code/.delegated/code-review.response.rejected.*.md >/dev/null 2>&1; then
+if ls "${PROMPT_FILE%.prompt.md}".response.rejected.*.md >/dev/null 2>&1; then
   ok "(5a) 拒否した散文の応答は捨てずに退避してある"
 else
   bad "(5a) 拒否した散文の応答の退避物が無い"
@@ -318,7 +356,7 @@ done
 exec "$REAL_AWK5B" "\$@"
 SH
 chmod +x "$AWK5B/awk"
-printf -- '- Critical: 0\n- verdict: none\n' > "$RESULT_FILE"
+printf -- '- Critical: 0\n- verdict: none\n' > "$RESPONSE_FILE"
 REAL_STUB_PATH_5B="$STUB_PATH"
 STUB_PATH="$AWK5B:$STUB_PATH"
 # shellcheck disable=SC2086
@@ -332,7 +370,7 @@ else
 fi
 
 echo "-- (5) ホストの書き戻しを受理し、CLI 起動経路と同じヘッダーで保存する --"
-cat > "$RESULT_FILE" <<'BODY'
+cat > "$RESPONSE_FILE" <<'BODY'
 ## Summary
 
 - Critical: 0
@@ -395,7 +433,7 @@ echo "-- (25) 型付き判定行だけの応答を委譲経路でも受理する
 # 共有関数で受理されること（委譲経路だけ型付き行を知らない、の退行を赤にする）
 # shellcheck disable=SC2086
 run_ma handoffT $BASE_ARGS --cli claude-code --delegate-to-host
-cat > "$RESULT_FILE" <<'BODY'
+cat > "$RESPONSE_FILE" <<'BODY'
 ## Code Review Results
 
 - [app.txt:2] change is untested (TYPEDONLY)
@@ -414,24 +452,27 @@ else
   ok "(25) 型付き経路の受理では拒否の診断も不採用の診断も出ない"
 fi
 
-echo "-- (6) 別入力に対する応答は受理しない --"
+echo "-- (6) 別 HEAD の応答は新しい世代に採らない --"
 # shellcheck disable=SC2086
-run_ma handoff2 $BASE_ARGS --cli claude-code --delegate-to-host   # 新しい handoff を出す
+run_ma handoff2 $BASE_ARGS --cli claude-code --delegate-to-host
+OLD_RESPONSE="$RESPONSE_FILE"
+printf -- '- Critical: 0\n- verdict: none\n- OLDHEAD_ONLY\n' > "$OLD_RESPONSE"
+OLD_RESPONSE_HASH="$(git hash-object "$OLD_RESPONSE")"
 printf 'base\nchange\nmore\n' > app.txt
 git add app.txt
 git commit -qm "more"
-printf -- '- Critical: 0\n- verdict: none\n' > "$RESULT_FILE"
 # shellcheck disable=SC2086
 run_ma stale $BASE_ARGS --cli claude-code --delegate-to-host
-if [ "$RUN_RC" -eq 3 ] && grep -qF 'written for a different input' "$RUN_ERR"; then
-  ok "入力が変わった後の応答は受理せず、handoff をやり直す"
+if [ "$RUN_RC" -eq 3 ] && [ "$RESPONSE_FILE" != "$OLD_RESPONSE" ] \
+   && ! grep -qF OLDHEAD_ONLY "$REPORT"; then
+  ok "入力が変わった後は別世代を handoff し、旧応答をレポートへ採らない"
 else
-  bad "別入力への応答が受理されている（rc=${RUN_RC}）— 今回の diff を見ていない結果がレポートに載る"
+  bad "別入力への応答が新世代へ混ざる（rc=${RUN_RC}）"
 fi
-if ls "$REPO_PHYS"/.review-results/claude-code/.delegated/code-review.response.stale.*.md >/dev/null 2>&1; then
-  ok "受理しなかった応答は退避先に残る（削除しない）"
+if [ -f "$OLD_RESPONSE" ] && [ "$(git hash-object "$OLD_RESPONSE")" = "$OLD_RESPONSE_HASH" ]; then
+  ok "受理しなかった旧世代の応答は元のパスとバイトを保つ"
 else
-  bad "受理しなかった応答が消えている"
+  bad "受理しなかった旧世代の応答が改変・削除された"
 fi
 
 echo "-- (8) claude 未導入でも委譲経路は成立する（fallback 再配分が起きない）--"
@@ -455,7 +496,7 @@ fi
 # 分散プランでの claude-code の持ち観点（registry 由来）は 3 件。fallback 再配分が
 # 起きていれば、この 3 件は codex-cli の結果として現れる。
 NOCLAUDE_PROMPTS=0
-for f in "$FRESH_OUT"/claude-code/.delegated/*.prompt.md; do
+for f in "$FRESH_OUT"/claude-code/.delegated/generations/*/*.prompt.md; do
   [ -f "$f" ] && NOCLAUDE_PROMPTS=$((NOCLAUDE_PROMPTS + 1))
 done
 if [ "$NOCLAUDE_PROMPTS" -ge 2 ]; then
@@ -464,7 +505,7 @@ else
   bad "claude 未導入で claude-code の観点が消えた（プロンプト ${NOCLAUDE_PROMPTS} 件）"
 fi
 NOCLAUDE_REASSIGNED=0
-for f in "$FRESH_OUT"/claude-code/.delegated/*.prompt.md; do
+for f in "$FRESH_OUT"/claude-code/.delegated/generations/*/*.prompt.md; do
   [ -f "$f" ] || continue
   b="${f##*/}"; b="${b%.prompt.md}"
   [ -e "$FRESH_OUT/codex-cli/${b}.md" ] && NOCLAUDE_REASSIGNED=$((NOCLAUDE_REASSIGNED + 1))
@@ -597,12 +638,11 @@ fi
 
 echo "-- (15) 自分で incomplete / discarded を名乗る応答は受理しない --"
 INC_OUT="$TMP/inc-results"
-INC_RESULT="$INC_OUT/claude-code/code-review.md"
 run_ma inc1 --task review --mode cross-model --perspective code-review --base develop \
   --cli claude-code --delegate-to-host --output-dir "$INC_OUT"
 # revision guard が破棄した成果物と同じ形（バナー前置 → 空行 → ヘッダー）。
 # 先頭 1 段落しか見ない判定はここを素通りする。
-cat > "$INC_RESULT" <<'BODY'
+cat > "$RESPONSE_FILE" <<'BODY'
 > DISCARDED — the repository changed while this run was in flight.
 
 <!-- Multi-CLI Review Result -->
@@ -627,7 +667,7 @@ HDR_OUT="$TMP/hdr-results"
 HDR_RESULT="$HDR_OUT/claude-code/code-review.md"
 run_ma hdr1 --task review --mode cross-model --perspective code-review --base develop \
   --cli claude-code --delegate-to-host --output-dir "$HDR_OUT"
-cat > "$HDR_RESULT" <<'BODY'
+cat > "$RESPONSE_FILE" <<'BODY'
 <!-- Multi-CLI Review Result -->
 <!-- CLI: Claude Code -->
 <!-- Perspective: code-review -->
@@ -649,43 +689,44 @@ else
   bad "ヘッダー付き応答の正規化が壊れている（rc=${RUN_RC} / ヘッダー ${HDR_COUNT} 個）"
 fi
 
-echo "-- (17) 回収に失敗した実行は fail-loud で止まり、ホストの成果物を残す --"
+echo "-- (17) 受理結果を書けない実行は fail-loud でホスト応答を残す --"
 LOCK_OUT="$TMP/lock-results"
-LOCK_RESULT="$LOCK_OUT/claude-code/code-review.md"
 run_ma lock1 --task review --mode cross-model --perspective code-review --base develop \
   --cli claude-code --delegate-to-host --output-dir "$LOCK_OUT"
-printf -- '- Critical: 0\n- verdict: none\n' > "$LOCK_RESULT"
-chmod 555 "$LOCK_OUT/claude-code/.delegated"
+LOCK_RESPONSE="$RESPONSE_FILE"
+printf -- '- Critical: 0\n- verdict: none\n' > "$LOCK_RESPONSE"
+chmod 555 "$LOCK_OUT/claude-code"
 run_ma lock2 --task review --mode cross-model --perspective code-review --base develop \
   --cli claude-code --delegate-to-host --output-dir "$LOCK_OUT"
-chmod 755 "$LOCK_OUT/claude-code/.delegated"
-if [ "$RUN_RC" -ne 0 ] && grep -qF 'cannot collect the host-written result' "$RUN_ERR"; then
-  ok "回収に失敗したら fail-loud で止まる"
+chmod 755 "$LOCK_OUT/claude-code"
+if [ "$RUN_RC" -ne 0 ] && grep -qE 'could not be written|cannot write|Permission denied' "$RUN_ERR"; then
+  ok "受理結果の書込失敗は fail-loud で止まる"
 else
-  bad "回収の失敗が握り潰された（rc=${RUN_RC}）— ホストの成果物が直後に削除される"
+  bad "受理結果の書込失敗が握り潰された（rc=${RUN_RC}）"
 fi
-if [ -f "$LOCK_RESULT" ]; then
-  ok "止まった実行はホストの成果物を結果パスに残す"
+if [ -f "$LOCK_RESPONSE" ] && grep -qF -- '- verdict: none' "$LOCK_RESPONSE"; then
+  ok "止まった実行はホスト応答を世代別の受け皿に残す"
 else
   bad "ホストの成果物が消えた（作り直させることになる）"
 fi
 
-echo "-- (18) 結果パスの symlink は運ばない --"
+echo "-- (18) 応答パスの symlink は採らない --"
 LINK_OUT="$TMP/link-results"
-LINK_RESULT="$LINK_OUT/claude-code/code-review.md"
 OUTSIDE="$TMP/outside-secret.md"
 printf -- '- Critical: 0\n- verdict: none\n- 外部ファイルの本文\n' > "$OUTSIDE"
+OUTSIDE_HASH="$(git hash-object "$OUTSIDE")"
 run_ma link1 --task review --mode cross-model --perspective code-review --base develop \
   --cli claude-code --delegate-to-host --output-dir "$LINK_OUT"
-ln -s "$OUTSIDE" "$LINK_RESULT"
+ln -s "$OUTSIDE" "$RESPONSE_FILE"
 run_ma link2 --task review --mode cross-model --perspective code-review --base develop \
   --cli claude-code --delegate-to-host --output-dir "$LINK_OUT"
-if [ "$RUN_RC" -eq 3 ] && grep -qF 'Not collecting a symlink at a delegated result path' "$RUN_ERR"; then
-  ok "結果パスの symlink は運ばず名指しする（指し先を本文として受理しない）"
+if [ "$RUN_RC" -ne 0 ] && grep -qiE 'symlink|unsafe delegation file' "$RUN_ERR" \
+   && ! grep -qF '外部ファイルの本文' "$LINK_OUT/integrated-report.md"; then
+  ok "応答パスの symlink を名指しして拒否し、外部本文を受理しない"
 else
-  bad "結果パスの symlink が運ばれた（rc=${RUN_RC}）— 出力先の外のファイルが complete なレビュー本文になる"
+  bad "応答パスの symlink が採用された（rc=${RUN_RC}）"
 fi
-if [ -f "$OUTSIDE" ] && grep -qF '外部ファイルの本文' "$OUTSIDE"; then
+if [ -f "$OUTSIDE" ] && [ "$(git hash-object "$OUTSIDE")" = "$OUTSIDE_HASH" ]; then
   ok "symlink の指し先は触られていない"
 else
   bad "symlink の指し先が改変・削除された"
@@ -696,6 +737,7 @@ DROP_OUT="$TMP/drop-results"
 DROP_RESULT="$DROP_OUT/claude-code/code-review.md"
 run_ma drop1 --task review --mode cross-model --perspective code-review --base develop \
   --cli claude-code --delegate-to-host --output-dir "$DROP_OUT"
+DROP_RESULT="$RESPONSE_FILE"
 printf -- '- Critical: 0\n- verdict: none\n- 目印 DROPBODY\n' > "$DROP_RESULT"
 : > "$CLAUDE_COUNT"
 run_ma drop2 --task review --mode cross-model --perspective code-review --base develop \
@@ -773,7 +815,7 @@ fi
 
 # 1 観点だけ答える
 MP_FIRST="$(mp_first_pending)"
-printf -- '- Critical: 0\n- verdict: none\n- 目印 MPBODY\n' > "$MP_OUT/claude-code/${MP_FIRST}.md"
+printf -- '- Critical: 0\n- verdict: none\n- 目印 MPBODY\n' > "$(handoff_field "$MP_OUT_FILE" output-file "$MP_FIRST")"
 mp_run mp2 --resume
 MP_LEFT="$(mp_pending_count)"
 if [ "$MP_RC" -eq 3 ] && [ "$MP_LEFT" -eq $((MP_TOTAL - 1)) ]; then
@@ -789,7 +831,7 @@ fi
 
 # 残りを全部答えて締める
 for mp_persp in $(sed -n 's/^perspective=//p' "$MP_OUT_FILE"); do
-  printf -- '- Critical: 0\n- verdict: none\n- 目印 MPREST\n' > "$MP_OUT/claude-code/${mp_persp}.md"
+  printf -- '- Critical: 0\n- verdict: none\n- 目印 MPREST\n' > "$(handoff_field "$MP_OUT_FILE" output-file "$mp_persp")"
 done
 mp_run mp3 --resume
 if [ "$MP_RC" -eq 0 ] && grep -qF 'MPBODY' "$MP_OUT/claude-code/${MP_FIRST}.md"; then
@@ -851,51 +893,78 @@ else
   bad "未検証ファイルが CRITICAL_BLOCK の判定に使われた（2 つの消費者が同じパスで別判断になる）"
 fi
 
-echo "-- (23) 未応答のまま再実行しても、曖昧さの印は消えない --"
-# A の handoff → 入力を B へ変える（印が立つ）→ **応答が来ないまま** B で再実行
-# → ここで印が 0 へ戻ると、遅れて届いた A への応答が B の結果として受理される。
+echo "-- (23) 未完了の旧世代と新 HEAD の応答を分離する --"
 AMB_OUT="$TMP/amb-results"
 AMB_RESULT="$AMB_OUT/claude-code/code-review.md"
 amb_run() {
-  AMB_RC=0
-  run_isolated PATH="$STUB_PATH" HOME="$TMP/home" \
-    bash "$MULTI_AGENT" --task review --mode cross-model --perspective code-review \
-    --base develop --cli claude-code --delegate-to-host --output-dir "$AMB_OUT" \
-    > "$TMP/out.$1" 2> "$TMP/err.$1" || AMB_RC=$?
-  AMB_ERR="$TMP/err.$1"
+  local label="$1"; shift
+  run_ma "$label" --task review --mode cross-model --perspective code-review --base develop \
+    --cli claude-code --cli codex-cli --delegate-to-host --output-dir "$AMB_OUT" "$@"
+  AMB_RC="$RUN_RC"; AMB_ERR="$RUN_ERR"
 }
-amb_run amb1                       # 入力 A の handoff
+amb_run amb1
+AMB_A="$RESPONSE_FILE"
 printf 'base\nchange\namb\n' > app.txt
 git add app.txt
-git commit -qm "amb input change"  # 入力 B へ
-amb_run amb2                       # 印が立つ（未応答のまま入力が変わった）
-if grep -qF 'the input changed while the previous handoff was outstanding' "$AMB_ERR"; then
-  ok "入力変更で曖昧さの印が立つ"
+git commit -qm "amb input change"
+amb_run amb2
+AMB_B="$RESPONSE_FILE"
+if [ "$AMB_RC" -eq 3 ] && [ "$AMB_A" != "$AMB_B" ] \
+   && grep -qiE 'unadopted|not adopted|未採用' "$AMB_ERR"; then
+  ok "新 HEAD は旧未完了を未採用と報告し、別世代を handoff する"
 else
-  bad "入力変更で曖昧さの印が立たない"
+  bad "新 HEAD の世代分離または旧未完了の報告が無い"
 fi
-amb_run amb3                       # **応答が来ないまま**同じ入力で再実行
-printf -- '- Critical: 0\n- verdict: none\n- 遅れて届いた旧入力への応答\n' > "$AMB_RESULT"
-amb_run amb4
-if [ "$AMB_RC" -eq 3 ] && grep -qF 'cannot be attributed to one prompt' "$AMB_ERR"; then
-  ok "未応答の再実行を挟んでも、次の応答を曖昧として拒否する"
+amb_run amb3 --resume
+if [ "$AMB_RC" -eq 3 ] && [ "$AMB_B" = "$RESPONSE_FILE" ]; then
+  ok "未応答の同入力 resume は同じ世代の受け皿を保つ"
 else
-  bad "再実行で印が消え、旧入力への応答が受理されうる（rc=${AMB_RC}）"
-  grep -E 'Adopted|⚠️' "$AMB_ERR" | head -3 | sed 's/^/    /'
+  bad "未応答の resume が別の受け皿へ移った"
 fi
-if ls "$AMB_OUT"/claude-code/.delegated/code-review.response.ambiguous.*.md >/dev/null 2>&1; then
-  ok "曖昧として拒否した応答は退避先に残る"
+printf -- '- Critical: 0\n- verdict: none\n- LATE_HEAD_A\n' > "$AMB_A"
+AMB_A_HASH="$(git hash-object "$AMB_A")"
+printf -- '- Critical: 0\n- verdict: none\n- HEAD_B_ONLY\n' > "$AMB_B"
+AMB_SUB_HASH="$(git hash-object "$AMB_OUT/codex-cli/code-review.md")"
+AMB_LAUNCHES="$(codex_launch_count)"
+amb_run amb4 --resume
+if [ "$AMB_RC" -eq 0 ] && grep -qF HEAD_B_ONLY "$AMB_RESULT" \
+   && ! grep -qF LATE_HEAD_A "$AMB_OUT/integrated-report.md"; then
+  ok "新世代 B は最初の resume で採用し、遅い A を混ぜない"
 else
-  bad "曖昧として拒否した応答が退避されていない"
+  bad "新世代 B が初回 resume で採用されない、または A が混入（rc=${AMB_RC}）"
 fi
-# 印を清算した後の正当な応答は受理される（拒否が居座らないこと）
-printf -- '- Critical: 0\n- verdict: none\n- 目印 AMBOK\n' > "$AMB_RESULT"
-amb_run amb5
-if [ "$AMB_RC" -eq 0 ] && grep -qF 'AMBOK' "$AMB_RESULT"; then
-  ok "1 度拒否したあとの応答は通常どおり受理される（印が居座らない）"
+if [ -f "$AMB_A" ] && [ "$(git hash-object "$AMB_A")" = "$AMB_A_HASH" ] \
+   && [ "$(codex_launch_count)" = "$AMB_LAUNCHES" ] \
+   && [ "$(git hash-object "$AMB_OUT/codex-cli/code-review.md")" = "$AMB_SUB_HASH" ]; then
+  ok "旧世代の証跡と完了済み副 CLI の結果を保ち、追加起動しない"
 else
-  bad "曖昧さの印が居座り、正当な応答まで拒否し続ける（rc=${AMB_RC}）"
+  bad "旧世代の証跡または副 CLI の完了結果が変わった"
 fi
+
+echo "-- (23b) 単独 adapter の legacy digest / superseded 保護を保つ --"
+LEGACY_CHECK=0
+if ( set -euo pipefail
+  . "$PLUGIN_ROOT/scripts/adapters/adapter-common.sh" >/dev/null 2>&1
+  DELEGATE_DIR="$TMP/legacy-digest"; OUTPUT_FILE="$TMP/legacy-result.md"; TASK_TYPE=review
+  delegate_task claude-code 'Claude Code' code-review 'prompt A' Read || :
+  printf -- '- verdict: none\n- LEGACY_DIFFERENT_INPUT\n' > "$DELEGATE_DIR/code-review.response.md"
+  delegate_task claude-code 'Claude Code' code-review 'prompt B' Read || :
+  compgen -G "$DELEGATE_DIR/code-review.response.stale.*.md" >/dev/null || exit 1
+  DELEGATE_DIR="$TMP/legacy-adapter"
+  delegate_task claude-code 'Claude Code' code-review 'prompt A' Read || :
+  delegate_task claude-code 'Claude Code' code-review 'prompt B' Read || :
+  delegate_task claude-code 'Claude Code' code-review 'prompt B' Read || :
+  grep -qx 'superseded=1' "$DELEGATE_DIR/code-review.request" || exit 1
+  printf -- '- verdict: none\n- LEGACY_OLD\n' > "$DELEGATE_DIR/code-review.response.md"
+  delegate_task claude-code 'Claude Code' code-review 'prompt B' Read || :
+  compgen -G "$DELEGATE_DIR/code-review.response.ambiguous.*.md" >/dev/null || exit 1
+  printf -- '- verdict: none\n- LEGACY_NEW\n' > "$DELEGATE_DIR/code-review.response.md"
+  delegate_task claude-code 'Claude Code' code-review 'prompt B' Read || exit 1
+  grep -qF LEGACY_NEW "$OUTPUT_FILE"
+) > "$TMP/legacy-adapter.stdout" 2> "$TMP/legacy-adapter.stderr"; then LEGACY_CHECK=1; fi
+if [ "$LEGACY_CHECK" -eq 1 ] && grep -qF 'cannot be attributed to one prompt' "$TMP/legacy-adapter.stderr"; then
+  ok "単独 adapter は未応答の再実行でも旧応答を曖昧として拒否し、その次の正当応答を採る"
+else bad "単独 adapter の digest / superseded 清算が退行した"; fi
 
 echo "-- (24) 本文まで書けたことを確かめてから応答を消す --"
 # write_output は cat の失敗を rc へ載せないので、ヘッダーだけ書けて本文の途中で
@@ -942,9 +1011,8 @@ for LANE in codex-cli grok-cli; do
   LOD="$TMP/od-${LANE}"
   run_ma "host-${LANE}" --task review --cli "$LANE" --perspective code-review --base develop \
     --delegate-to-host="$LANE" --output-dir "$LOD"
-  LOD_PHYS="$(cd "$LOD" 2>/dev/null && pwd -P || echo "$LOD")"
   if [ "$RUN_RC" -eq 3 ] && grep -qF "cli=${LANE}" "$RUN_OUT" \
-     && grep -qF "prompt-file=${LOD_PHYS}/${LANE}/.delegated/code-review.prompt.md" "$RUN_OUT"; then
+     && [ -s "$(handoff_field "$RUN_OUT" prompt-file code-review "$LANE")" ]; then
     ok "--delegate-to-host=${LANE} は ${LANE} レーンを handoff する（rc=3）"
   else
     bad "--delegate-to-host=${LANE} が handoff しない: rc=${RUN_RC} / $(tail -3 "$RUN_ERR" | tr '\n' ' ')"
@@ -991,6 +1059,202 @@ for GA in 1 ""; do
     ok "GROK_AGENT が無い実行では grok-cli 委譲を案内しない"
   fi
 done
+
+echo "-- (27) description / wrapper route の付け忘れは書換え前に止まり、元 argv 1 回で回復 --"
+RECOVERY_DESC="日本語の受入条件
+\"引用\" と 'single' と \$literal を保持"
+RECOVERY_OUT="$TMP/recovery-results"
+RECOVERY_ARGS=(--route full --base develop --delegate-to-host --description "$RECOVERY_DESC"
+  --output-dir "$RECOVERY_OUT" --sequential)
+MA_ENTRY="$PLUGIN_ROOT/scripts/multi-review.sh"
+run_ma recovery-initial "${RECOVERY_ARGS[@]}"
+RECOVERY_HANDOFF="$RUN_OUT"
+if [ "$RUN_RC" -eq 3 ] && [ "$(grep -c '^--- task ---$' "$RUN_OUT")" -eq 4 ]; then
+  ok "前提: 実体 multi-review.sh --route full が主4観点を委譲する"
+else bad "wrapper full の初回委譲に到達しない（rc=${RUN_RC}）"; fi
+for recovery_persp in $(sed -n 's/^perspective=//p' "$RECOVERY_HANDOFF"); do
+  printf -- '- Critical: 0\n- verdict: none\n- RECOVERY_ORIGINAL\n' \
+    > "$(handoff_field "$RECOVERY_HANDOFF" output-file "$recovery_persp")"
+done
+RECOVERY_SUB="$RECOVERY_OUT/codex-cli/comprehensive-review.md"
+RECOVERY_SUB_HASH="$(git hash-object "$RECOVERY_SUB")"
+tree_hashes "$RECOVERY_OUT" > "$TMP/recovery-before.hashes"
+RECOVERY_CODEX="$(codex_launch_count)"; RECOVERY_CLAUDE="$(claude_launch_count)"
+run_ma recovery-description-omitted --route full --base develop --delegate-to-host \
+  --output-dir "$RECOVERY_OUT" --sequential --resume
+tree_hashes "$RECOVERY_OUT" > "$TMP/recovery-after-description.hashes"
+if [ "$RUN_RC" -ne 0 ] && grep -qF -- '--resume input differs from the initial host delegation at the same HEAD.' "$RUN_ERR" \
+   && cmp -s "$TMP/recovery-before.hashes" "$TMP/recovery-after-description.hashes" \
+   && [ "$(codex_launch_count)" = "$RECOVERY_CODEX" ] && [ "$(claude_launch_count)" = "$RECOVERY_CLAUDE" ]; then
+  ok "description 落ちは応答/request/prompt/report/cacheを不変のまま拒否し、CLI追加起動0"
+else bad "description 落ちが成果物を変えた、CLIを起動した、または照合へ到達しない"; fi
+if grep -qF 'Repeat the initial command (including --route and --description)' "$RUN_ERR" \
+   && grep -qF -- '--route' "$RUN_ERR" && grep -qF full "$RUN_ERR" \
+   && grep -qF '日本語の受入条件' "$RUN_ERR" && grep -qF '"引用"' "$RUN_ERR" \
+   && grep -qF 'single' "$RUN_ERR" && grep -qF '$literal を保持' "$RUN_ERR"; then
+  ok "拒否は初回 route と改行・引用・日本語を含む description をコマンドで示す"
+else bad "拒否の初回コマンド表示から route または description が落ちた"; fi
+run_ma recovery-route-omitted --base develop --delegate-to-host --description "$RECOVERY_DESC" \
+  --output-dir "$RECOVERY_OUT" --sequential --resume
+tree_hashes "$RECOVERY_OUT" > "$TMP/recovery-after-route.hashes"
+if [ "$RUN_RC" -ne 0 ] && grep -qF -- '--resume input differs from the initial host delegation at the same HEAD.' "$RUN_ERR" \
+   && cmp -s "$TMP/recovery-before.hashes" "$TMP/recovery-after-route.hashes" \
+   && [ "$(codex_launch_count)" = "$RECOVERY_CODEX" ] && [ "$(claude_launch_count)" = "$RECOVERY_CLAUDE" ]; then
+  ok "wrapper route 落ちも全成果物不変・CLI追加起動0で拒否する"
+else bad "wrapper route 落ちが成果物を変えた、CLIを起動した、または照合へ到達しない"; fi
+run_ma recovery-original-once "${RECOVERY_ARGS[@]}" --resume
+if [ "$RUN_RC" -eq 0 ] && [ "$(grep -c 'RECOVERY_ORIGINAL' "$RECOVERY_OUT/integrated-report.md")" -eq 4 ] \
+   && [ "$(codex_launch_count)" = "$RECOVERY_CODEX" ] \
+   && [ "$(git hash-object "$RECOVERY_SUB")" = "$RECOVERY_SUB_HASH" ]; then
+  ok "元 argv の次1回で4観点を採用し、副CLIの結果・起動数を保つ"
+else bad "元 argv 1回で回復しない、または完了済み副CLIを壊す（rc=${RUN_RC}）"; fi
+unset MA_ENTRY
+
+echo "-- (28) metadata の legacy / 欠落 / 壊れ / 重複 / symlink は証跡を守る --"
+for state_mode in same-head new-head; do
+STATE_SOURCE="$TMP/state-${state_mode}-source-results"
+STATE_DESC="state integrity original description"
+run_ma state-source --task review --mode cross-model --perspective code-review --base develop \
+  --cli claude-code --cli codex-cli --delegate-to-host --description "$STATE_DESC" --output-dir "$STATE_SOURCE"
+if [ "$RUN_RC" -ne 3 ]; then bad "${state_mode}: metadata比較の初回handoffに到達しない"; continue; fi
+STATE_RESPONSE_REL="${RESPONSE_FILE#"$(cd "$STATE_SOURCE" && pwd -P)"/}"
+printf -- '- Critical: 0\n- verdict: none\n- STATE_EVIDENCE\n' > "$RESPONSE_FILE"
+if [ "$state_mode" = new-head ]; then git commit --allow-empty -qm "metadata new HEAD"; fi
+for state_case in legacy orphan-state missing-metadata missing-manifest missing-invocation broken duplicate nul symlink request-duplicate request-nul valid-head valid-generation generation-hash missing-generation-hash; do
+  STATE_ARGV_MODES="original"
+  case "$state_case" in valid-head|valid-generation|generation-hash|missing-generation-hash) STATE_ARGV_MODES="original omitted-description" ;; esac
+  for state_argv in $STATE_ARGV_MODES; do
+  STATE_OUT="$TMP/state-${state_case}-results"
+  # request内の絶対pathを保つため、コピーを同じ場所へ戻してから壊す。
+  cp -R "$STATE_SOURCE" "$STATE_OUT"
+  STATE_BACKUP="$TMP/state-backup-${state_case}"
+  mv "$STATE_SOURCE" "$STATE_BACKUP"
+  mv "$STATE_OUT" "$STATE_SOURCE"
+  case "$state_case" in
+    legacy)
+      mkdir -p "$STATE_SOURCE/claude-code/.delegated"
+      printf 'prompt-digest=legacy\n' > "$STATE_SOURCE/claude-code/.delegated/code-review.request"
+      rm -rf "$STATE_SOURCE/.delegation-state" ;;
+    orphan-state) rm -rf "$STATE_SOURCE/.delegation-state" ;;
+    missing-generation-hash)
+      sed '/^generation-hash=/d' "$STATE_SOURCE/.delegation-state/metadata" > "$TMP/state-metadata-new"
+      mv "$TMP/state-metadata-new" "$STATE_SOURCE/.delegation-state/metadata" ;;
+    missing-*) rm -f "$STATE_SOURCE/.delegation-state/${state_case#missing-}" ;;
+    valid-head)
+      STATE_OTHER_HEAD="$(git rev-parse develop)"
+      sed "s/^head=.*/head=${STATE_OTHER_HEAD}/" "$STATE_SOURCE/.delegation-state/metadata" > "$TMP/state-metadata-new"
+      mv "$TMP/state-metadata-new" "$STATE_SOURCE/.delegation-state/metadata" ;;
+    valid-generation)
+      sed 's/^generation=.*/generation=g-1-2-3/' "$STATE_SOURCE/.delegation-state/metadata" > "$TMP/state-metadata-new"
+      mv "$TMP/state-metadata-new" "$STATE_SOURCE/.delegation-state/metadata" ;;
+    generation-hash)
+      STATE_OTHER_HASH="$(printf 'different generation\n' | git hash-object --stdin)"
+      sed "s/^generation-hash=.*/generation-hash=${STATE_OTHER_HASH}/" "$STATE_SOURCE/.delegation-state/metadata" > "$TMP/state-metadata-new"
+      mv "$TMP/state-metadata-new" "$STATE_SOURCE/.delegation-state/metadata" ;;
+    broken) printf 'this is not metadata\n' > "$STATE_SOURCE/.delegation-state/metadata" ;;
+    duplicate) cat "$STATE_SOURCE/.delegation-state/metadata" > "$TMP/metadata-copy"
+      cat "$TMP/metadata-copy" >> "$STATE_SOURCE/.delegation-state/metadata" ;;
+    nul) printf '\000' >> "$STATE_SOURCE/.delegation-state/metadata" ;;
+    request-duplicate) printf 'cli=claude-code\n' >> "$STATE_SOURCE/${STATE_RESPONSE_REL%.response.md}.request" ;;
+    request-nul) printf '\000' >> "$STATE_SOURCE/${STATE_RESPONSE_REL%.response.md}.request" ;;
+    symlink) mv "$STATE_SOURCE/.delegation-state/metadata" "$TMP/metadata-link-target"
+      ln -s "$TMP/metadata-link-target" "$STATE_SOURCE/.delegation-state/metadata" ;;
+  esac
+  tree_hashes "$STATE_SOURCE" > "$TMP/state-${state_case}-before.hashes"
+  STATE_CODEX="$(codex_launch_count)"; STATE_CLAUDE="$(claude_launch_count)"
+  STATE_REPLAY_ARGS=(--task review --mode cross-model --perspective code-review --base develop
+    --cli claude-code --cli codex-cli --delegate-to-host --output-dir "$STATE_SOURCE" --resume)
+  [ "$state_argv" != original ] || STATE_REPLAY_ARGS+=(--description "$STATE_DESC")
+  run_ma "state-${state_case}-${state_argv}" "${STATE_REPLAY_ARGS[@]}"
+  tree_hashes "$STATE_SOURCE" > "$TMP/state-${state_case}-after.hashes"
+  if [ "$RUN_RC" -ne 0 ] && grep -qF 'cannot safely resume the saved host delegation:' "$RUN_ERR" \
+     && cmp -s "$TMP/state-${state_case}-before.hashes" "$TMP/state-${state_case}-after.hashes" \
+     && [ "$(codex_launch_count)" = "$STATE_CODEX" ] && [ "$(claude_launch_count)" = "$STATE_CLAUDE" ] \
+     && grep -qF STATE_EVIDENCE "$STATE_SOURCE/$STATE_RESPONSE_REL"; then
+    ok "${state_mode}/${state_case}/${state_argv}: metadata拒否・全証跡不変・CLI追加起動0"
+  else bad "${state_mode}/${state_case}/${state_argv}: metadataがfail closedでない、または証跡を変えた（rc=${RUN_RC}）"; fi
+  rm -rf "$STATE_SOURCE"
+  mv "$STATE_BACKUP" "$STATE_SOURCE"
+  done
+done
+done
+
+echo "-- (29) state の無い plan 外 CLI の symlink は辿らず、対象レーンを続行する --"
+UNPLANNED_OUT="$TMP/unplanned-symlink-results"
+UNPLANNED_TARGET="$TMP/unplanned-external"
+mkdir -p "$UNPLANNED_OUT" "$UNPLANNED_TARGET"
+printf 'UNPLANNED_EXTERNAL_EVIDENCE\n' > "$UNPLANNED_TARGET/code-review.md"
+ln -s "$UNPLANNED_TARGET" "$UNPLANNED_OUT/claude-code"
+UNPLANNED_HASH="$(git hash-object "$UNPLANNED_TARGET/code-review.md")"
+UNPLANNED_CODEX="$(codex_launch_count)"; UNPLANNED_CLAUDE="$(claude_launch_count)"
+run_ma unplanned-symlink --task review --mode cross-model --perspective code-review --base develop \
+  --cli codex-cli --output-dir "$UNPLANNED_OUT"
+if [ "$RUN_RC" -eq 0 ] && [ -f "$UNPLANNED_OUT/codex-cli/code-review.md" ] \
+   && grep -qF '<!-- Status: complete -->' "$UNPLANNED_OUT/codex-cli/code-review.md" \
+   && [ "$(codex_launch_count)" -eq $((UNPLANNED_CODEX + 1)) ] \
+   && [ "$(claude_launch_count)" = "$UNPLANNED_CLAUDE" ] \
+   && [ -L "$UNPLANNED_OUT/claude-code" ] \
+   && [ "$(readlink "$UNPLANNED_OUT/claude-code")" = "$UNPLANNED_TARGET" ] \
+   && [ "$(git hash-object "$UNPLANNED_TARGET/code-review.md")" = "$UNPLANNED_HASH" ]; then
+  ok "無関係な unplanned symlink と外部証跡を保ち、codex-only plan が完走する"
+else bad "無関係な unplanned symlink を拒否・追随した、または対象レーンが完走しない（rc=${RUN_RC}）"; fi
+
+echo "-- (30) plan から外れた保存済み委譲レーンの symlink を見落とさない --"
+SAVED_OUT="$TMP/saved-lane-results"
+run_ma saved-lane-initial --task review --mode cross-model --perspective code-review --base develop \
+  --cli claude-code --delegate-to-host --output-dir "$SAVED_OUT"
+SAVED_RESPONSE="$RESPONSE_FILE"
+printf -- '- verdict: none\n- SAVED_LANE_EVIDENCE\n' > "$SAVED_RESPONSE"
+SAVED_EXTERNAL="$TMP/saved-lane-external"
+mv "$SAVED_OUT/claude-code" "$SAVED_EXTERNAL"
+ln -s "$SAVED_EXTERNAL" "$SAVED_OUT/claude-code"
+tree_hashes "$SAVED_OUT" > "$TMP/saved-lane-before.hashes"
+tree_hashes "$SAVED_EXTERNAL" > "$TMP/saved-external-before.hashes"
+SAVED_CODEX="$(codex_launch_count)"; SAVED_CLAUDE="$(claude_launch_count)"
+run_ma saved-lane-removed --task review --mode cross-model --perspective code-review --base develop \
+  --cli codex-cli --output-dir "$SAVED_OUT" --resume
+tree_hashes "$SAVED_OUT" > "$TMP/saved-lane-after.hashes"
+tree_hashes "$SAVED_EXTERNAL" > "$TMP/saved-external-after.hashes"
+if [ "$RUN_RC" -ne 0 ] && grep -qF 'cannot safely resume the saved host delegation:' "$RUN_ERR" \
+   && grep -qF '/claude-code' "$RUN_ERR" \
+   && cmp -s "$TMP/saved-lane-before.hashes" "$TMP/saved-lane-after.hashes" \
+   && cmp -s "$TMP/saved-external-before.hashes" "$TMP/saved-external-after.hashes" \
+   && [ "$(codex_launch_count)" = "$SAVED_CODEX" ] && [ "$(claude_launch_count)" = "$SAVED_CLAUDE" ] \
+   && grep -qF SAVED_LANE_EVIDENCE "$SAVED_RESPONSE"; then
+  ok "保存 manifest の委譲laneは現plan外でも拒否し、未回収handoff・応答・cacheを保つ"
+else bad "保存 manifest の委譲laneをplan外として見落とし、証跡を変えた（rc=${RUN_RC}）"; fi
+
+echo "-- (31) state 保存後・dispatch 前の中断は同じ世代で再開できる --"
+STATE_ONLY_OUT="$TMP/state-only-results"
+STATE_ONLY_ARGS=(--task review --mode cross-model --perspective code-review --base develop
+  --cli claude-code --cli codex-cli --delegate-to-host --description "state-only original"
+  --output-dir "$STATE_ONLY_OUT" --sequential)
+run_ma state-only-initial "${STATE_ONLY_ARGS[@]}"
+STATE_ONLY_GENERATION="$(sed -n 's/^generation=//p' "$STATE_ONLY_OUT/.delegation-state/metadata")"
+STATE_ONLY_IDENTITY="$(sed -n 's/^identity=//p' "$STATE_ONLY_OUT/.delegation-state/metadata")"
+# state publish は dispatch より先。捕捉済み fixed diff は残し、dispatch の生成物だけを除く。
+rm -rf "$STATE_ONLY_OUT/claude-code" "$STATE_ONLY_OUT/codex-cli" "$STATE_ONLY_OUT/.resume-cache"
+rm -f "$STATE_ONLY_OUT/integrated-report.md"
+STATE_ONLY_CODEX="$(codex_launch_count)"; STATE_ONLY_CLAUDE="$(claude_launch_count)"
+run_ma state-only-resume "${STATE_ONLY_ARGS[@]}" --resume
+if [ "$RUN_RC" -eq 3 ] && [ -n "$STATE_ONLY_GENERATION" ] \
+   && [ "$(sed -n 's/^generation=//p' "$STATE_ONLY_OUT/.delegation-state/metadata")" = "$STATE_ONLY_GENERATION" ] \
+   && [ "$(sed -n 's/^identity=//p' "$STATE_ONLY_OUT/.delegation-state/metadata")" = "$STATE_ONLY_IDENTITY" ] \
+   && [ "$RESPONSE_FILE" = "${PROMPT_FILE%.prompt.md}.response.md" ] && [ -s "$PROMPT_FILE" ] \
+   && [ "$(codex_launch_count)" -eq $((STATE_ONLY_CODEX + 1)) ] \
+   && [ "$(claude_launch_count)" = "$STATE_ONLY_CLAUDE" ] \
+   && ! grep -qF 'cannot safely resume the saved host delegation:' "$RUN_ERR"; then
+  ok "正常なstate-onlyは同じgeneration/identityでhandoffを再作成する"
+else bad "正常なstate-onlyを破損扱いした、または別世代へ移した（rc=${RUN_RC}）"; fi
+printf -- '- verdict: none\n- STATE_ONLY_ADOPTED\n' > "$RESPONSE_FILE"
+STATE_ONLY_SUB_HASH="$(git hash-object "$STATE_ONLY_OUT/codex-cli/code-review.md")"
+STATE_ONLY_CODEX="$(codex_launch_count)"
+run_ma state-only-adopt "${STATE_ONLY_ARGS[@]}" --resume
+if [ "$RUN_RC" -eq 0 ] && grep -qF STATE_ONLY_ADOPTED "$STATE_ONLY_OUT/claude-code/code-review.md" \
+   && [ "$(codex_launch_count)" = "$STATE_ONLY_CODEX" ] \
+   && [ "$(git hash-object "$STATE_ONLY_OUT/codex-cli/code-review.md")" = "$STATE_ONLY_SUB_HASH" ]; then
+  ok "state-only再開後の応答は次1回で採用し、副CLIの結果を保つ"
+else bad "state-only再開後の応答が次1回で採用されない（rc=${RUN_RC}）"; fi
 
 echo ""
 echo "  PASS=${PASS} FAIL=${FAIL}"

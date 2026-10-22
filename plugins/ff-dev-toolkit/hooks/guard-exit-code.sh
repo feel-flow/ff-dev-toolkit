@@ -31,13 +31,15 @@
 # **どの形を違反とみなすかの判定を 1 つも持たない**。タグの意味・誤検出の除外条件・
 # 対象フィルタの集合はすべて検出器側の正本に従う。
 #
-# **例外は下の `GATE_NAME`** — 候補の前置フィルタは検出器を source する前に走る必要が
+# **例外は下の既定名簿 `GATE_NAME`** — 候補の前置フィルタは検出器を source する前に走る必要が
 # あり（後述の fail-closed の面を候補コマンドへ限るため）、そのとき検出器の関数はまだ
-# 読めない。そこでゲート名簿の綴りだけをここへ写している。**検出器の `is_gate_launch` へ
-# 2 本目のゲートを足すときは、この hook の `GATE_NAME` も併せて直すこと**（直さないと、
+# 読めない。そこで既定ゲート名簿の綴りだけをここへ写している。**検出器の `is_gate_launch` へ
+# 2 本目の既定ゲートを足すときは、この hook の `GATE_NAME` も併せて直すこと**（直さないと、
 # その名前のコマンドは前置フィルタで無音 exit 0 になり、走査面だけが静かに欠ける。
 # セルフレビューで 3 者が独立に指摘し、常に hit を返す検出器スタブで実測した）。
 # 綴りが一致していることは `tests/guard-exit-code/verify.sh` が静的に照合する。
+# 導入先の追加宣言は同じ環境変数から読むので、GATE_NAME へは複製せず、先頭語だけを
+# 候補フィルタへ渡す（正確な起動判定は共有検出器。下の関数の注記を参照）。
 #
 # 止めるのは検出器が出す 4 タグすべてである。いずれも OBS-003 の同じクラス
 # （「赤い結果が緑として観測される」）で、タグを選り分けること自体が検出器の判定を
@@ -174,6 +176,8 @@
 #
 # 環境変数:
 #   FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD=1  このガードを無効化する
+#   FF_EXIT_CODE_GUARD_GATES  導入先の追加ゲート。改行区切りの literal command prefix。
+#     hook プロセスの環境に export する。形式と照合契約は検出器ヘッダが正本。
 
 # set -e / set -u は使わない（判定の途中終了を自前で扱うため）。
 
@@ -210,6 +214,60 @@ esac
 # 複製している」を参照。verify.sh が静的に照合する）。
 GATE_NAME='run-all.sh'
 
+# 候補判定は full literal prefix と語境界だけを見る。shellの引用・wrapperの解釈は共有検出器へ残す。
+consumer_gate_normalize() {
+  local text="$1" trim=$' \t\r'
+  text="${text#"${text%%[!$trim]*}"}"
+  text="${text%"${text##*[!$trim]}"}"
+  text="${text//$'\t'/ }"
+  while :; do
+    case "$text" in *'  '*) text="${text//  / }" ;; *) break ;; esac
+  done
+  _ff_consumer_gate_text="$text"
+}
+
+# raw JSONでは宣言の先頭語を粗く探すだけにする。Unicode/escapeの表記差はjqでの抽出後に扱う。
+# backslashより前だけを見るのも過大近似。JSON本文を解析/正規化せず、実command側で絞る。
+has_raw_consumer_gate_candidate() {
+  local candidate remaining="${FF_EXIT_CODE_GUARD_GATES:-}" newline=$'\n' backslash='\'
+  while [ -n "$remaining" ]; do
+    case "$remaining" in
+      *"$newline"*) candidate="${remaining%%"$newline"*}"; remaining="${remaining#*"$newline"}" ;;
+      *) candidate="$remaining"; remaining='' ;;
+    esac
+    consumer_gate_normalize "$candidate"
+    candidate="$_ff_consumer_gate_text"
+    [ -n "$candidate" ] || continue
+    # JSON Unicode escape では先頭語自体も字面から失われる。確定は抽出後の門へ残す。
+    case "$1" in *'\u'*) return 0 ;; esac
+    candidate="${candidate%% *}"
+    candidate="${candidate%%"$backslash"*}"
+    case "$1" in *"$candidate"*) return 0 ;; esac
+  done
+  return 1
+}
+
+has_consumer_gate_candidate() {
+  local candidate remaining="${FF_EXIT_CODE_GUARD_GATES:-}" newline=$'\n' haystack='' ready=0
+  local before=$' \n;|&(){}"' after=$' \n;|&(){}"<>'
+  while [ -n "$remaining" ]; do
+    case "$remaining" in
+      *"$newline"*) candidate="${remaining%%"$newline"*}"; remaining="${remaining#*"$newline"}" ;;
+      *) candidate="$remaining"; remaining='' ;;
+    esac
+    consumer_gate_normalize "$candidate"
+    candidate="$_ff_consumer_gate_text"
+    [ -n "$candidate" ] || continue
+    if [ "$ready" -eq 0 ]; then
+      consumer_gate_normalize "$1"
+      haystack=" $_ff_consumer_gate_text "
+      ready=1
+    fi
+    case "$haystack" in *["$before"]"$candidate"["$after"]*) return 0 ;; esac
+  done
+  return 1
+}
+
 # 安価な前置フィルタ。ここを通らない入力は検出器を読まずに無音で通すので、
 # fail-closed の面が全 Bash 呼び出しへ広がらない。
 case "$input" in
@@ -218,7 +276,7 @@ case "$input" in
 esac
 case "$input" in
   *'$?'*|*PIPESTATUS*|*"$GATE_NAME"*) : ;;
-  *) exit 0 ;;
+  *) has_raw_consumer_gate_candidate "$input" || exit 0 ;;
 esac
 
 # jq 自体の不在は fail-open（上の理由）。
@@ -303,6 +361,12 @@ case "$ack_probe" in
   'FF_EXIT_CODE_ACK=1 '*|'FF_EXIT_CODE_ACK=1	'*) exit 0 ;;
 esac
 
+# rawのcwd/transcriptだけに宣言があっても停止しない。実commandで対象を絞ってから故障を扱う。
+case "$cmd" in
+  *'$?'*|*PIPESTATUS*|*"$GATE_NAME"*) : ;;
+  *) has_consumer_gate_candidate "$cmd" || exit 0 ;;
+esac
+
 # ASDD ゲートが検証不能を返した回は、候補コマンド（前置フィルタ通過）に限りここで止める。
 # 「機能無効」と同じ素通しに畳むと、このガードの fail-closed 契約と食い違う（Issue `#1684`）。
 # ACK 抜け道の判定より後に置く — deny 文が案内する「先頭へ FF_EXIT_CODE_ACK=1」が効く位置。
@@ -338,7 +402,7 @@ fi
 # 検出器へ渡さない）。
 case "$code_only" in
   *'$?'*|*PIPESTATUS*|*"$GATE_NAME"*) : ;;
-  *) exit 0 ;;
+  *) has_consumer_gate_candidate "$code_only" || exit 0 ;;
 esac
 
 # ---- 判定（検出器の再利用） ----------------------------------------------------

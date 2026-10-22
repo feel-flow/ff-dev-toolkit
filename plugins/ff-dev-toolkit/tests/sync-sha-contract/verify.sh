@@ -143,6 +143,10 @@
 #
 # run-all-required: no — 同期スクリプトを持たない公開 checkout での skip は正当な適用外（SSOT 専用の検査）
 
+# 変異検出: in-flight の固定時計18ケースは実runtimeのblock/helperを抜き出した単体で19 pass / 0 fail、実runtime全体は115 pass / 0 fail（2026-10-22）。
+# 変異検出: 負年齢の下限を0/-299/-301へ各単独変更すると4/2/2件、有効期限の上限削除/>=化で各2件、PID生存照合を除くと2件、異hostを同host扱いすると4件が赤（単体、全7変異 exit 1。構文検査は通過）。
+# 空振り検出: 同じ実runtime block/helperの単体で、case helperと実libの不在・読取不能・同名空・関数名消失の8入力、およびcase集合0は各0 pass / 1 fail・exit 1（2026-10-22）。正常18件に届かない入力を緑へ倒さない。
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

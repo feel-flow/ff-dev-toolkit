@@ -50,7 +50,7 @@ line_number() {
 }
 
 extract_rule_block() {
-  awk '
+  LC_ALL=C awk '
     $0 == "#### 行数バジェット例外の有効条件" { capture = 1 }
     capture && /^###[#]* / && $0 != "#### 行数バジェット例外の有効条件" { exit }
     capture { print }

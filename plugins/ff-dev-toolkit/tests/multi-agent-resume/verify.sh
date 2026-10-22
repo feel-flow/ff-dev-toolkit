@@ -7,6 +7,7 @@
 #
 # 空振り検出: compute_resume_identity から構成ファイル（scripts/lib/multi-agent-*.sh）の hash を外すと「構成ファイルの変更時に古い結果を再利用した」が赤（2026-10-20 実測）。直前の「入力が同じなら8観点すべてを再利用」が再利用の起きる入力であることを毎回測るので、この赤は identity の欠落からだけ来る。
 # 空振り検出: compute_resume_identity から adapter-common の構成ファイル（ADAPTER_COMMON_PARTS）の hash ループだけを外すと、「adapter-common の構成ファイルの変更時に古い結果を再利用した（resume identity が入口しか見ていない）」の 1 件だけが赤になる（2026-10-21 実測。成功 22。直前の「入力が同じなら8観点すべてを再利用」は緑のまま）。
+# 空振り検出: hash_resume_config の正規版行除外を無効にすると、新回帰15件の無変異15/0から13/2へ赤転（canonical-version-only / crlf-version-only。2026-10-22 実測）。同root再利用・custom/重複/不正/NULのrawhash・非metadata差・adapter差・成果物対照は緑のまま。
 
 set -euo pipefail
 
@@ -53,6 +54,8 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 FIXTURE_PLUGIN="$TMP/plugin"
 mkdir -p "$FIXTURE_PLUGIN"
 cp -R "$PLUGIN_ROOT/scripts" "$FIXTURE_PLUGIN/scripts"
+mkdir -p "$FIXTURE_PLUGIN/.claude-plugin"
+cp "$PLUGIN_ROOT/.claude-plugin/plugin.json" "$FIXTURE_PLUGIN/.claude-plugin/plugin.json"
 MULTI_AGENT="$FIXTURE_PLUGIN/scripts/multi-agent.sh"
 # 抽出源は入口と構成ファイル（scripts/lib/multi-agent-*.sh）の全部。MULTI_AGENT_CROSS_REVIEW は
 # 構成ファイルにだけ現れるので、構成ファイルを渡し忘れると fail-closed で止まる
@@ -135,7 +138,7 @@ run_review() { # <log> <timeout> <resume:true|false> [perspective count] [base]
   done
   (
     cd "$REPO"
-    run_isolated PATH="$STUB:$PATH" bash "$MULTI_AGENT" "${args[@]}"
+    run_isolated FF_DEV_TOOLKIT_ROOT="$FIXTURE_PLUGIN" PATH="$STUB:$PATH" bash "$MULTI_AGENT" "${args[@]}"
   ) >"$log" 2>&1
 }
 
@@ -321,7 +324,7 @@ echo ""
 cp "$STUB/codex" "$STUB/claude"
 for effort in medium medium high; do
   before="$(count_invocations)"
-  if ( cd "$REPO" && run_isolated PATH="$STUB:$PATH" MULTI_AGENT_CLAUDE_EFFORT="$effort" \
+  if ( cd "$REPO" && run_isolated FF_DEV_TOOLKIT_ROOT="$FIXTURE_PLUGIN" PATH="$STUB:$PATH" MULTI_AGENT_CLAUDE_EFFORT="$effort" \
     bash "$MULTI_AGENT" --task review --cli claude-code --perspective code-review --base develop \
     --config "$CONFIG_FILE" --output-dir "$TMP/claude-results" --resume --sequential ); then
     after="$(count_invocations)"
@@ -330,6 +333,140 @@ for effort in medium medium high; do
   else bad "Claude effort resume failed"; fi
   previous_effort="$effort"
 done
+
+echo "== 既定 config の正規版行だけを除外する =="
+# 2 root は scripts / manifest / helper を同じ入力から固定し、消費側 Git は別に置く。
+# SKILL.md は写さず、CLI / yq は fixture stub、設定は隔離 HOME に固定する。
+VERSION_A="$TMP/version-a"
+VERSION_B="$TMP/version-b"
+for version_root in "$VERSION_A" "$VERSION_B"; do
+  mkdir -p "$version_root/.claude-plugin" "$version_root/tests"
+  cp -R "$PLUGIN_ROOT/scripts" "$version_root/scripts"
+  cp -R "$PLUGIN_ROOT/tests/lib" "$version_root/tests/lib"
+  cp "$PLUGIN_ROOT/.claude-plugin/plugin.json" "$version_root/.claude-plugin/plugin.json"
+done
+VERSION_PRISTINE="$TMP/version-pristine.yaml"
+cp "$VERSION_A/scripts/agent-config.yaml" "$VERSION_PRISTINE"
+VERSION_REPO="$TMP/version-repo"
+ff_git_fixture_init "$VERSION_REPO" "version-resume-test" "test@example.com"
+git -C "$VERSION_REPO" config commit.gpgsign false
+git -C "$VERSION_REPO" switch -q -c develop
+printf 'base\n' > "$VERSION_REPO/app.txt"
+git -C "$VERSION_REPO" add app.txt
+git -C "$VERSION_REPO" commit -qm init
+git -C "$VERSION_REPO" switch -q -c feature/version
+printf 'base\nchange\n' > "$VERSION_REPO/app.txt"
+git -C "$VERSION_REPO" add app.txt
+git -C "$VERSION_REPO" commit -qm change
+VERSION_OUT="$TMP/version-results"
+VERSION_CONFIG=""
+VERSION_BIN="$TMP/version-bin"
+mkdir -p "$VERSION_BIN"
+cp "$STUB/codex" "$VERSION_BIN/codex"
+# 本節は YAML parser の検査ではなく identity の検査。明示 config が「yq不在」で
+# 拒否される別経路を閉じ、version 2 の空の既定値を返す決定的な parser stub を使う。
+cat > "$VERSION_BIN/yq" <<'YQ'
+#!/usr/bin/env bash
+if [ "${1:-}" = '.' ]; then [ -r "${2:-}" ]; exit; fi
+case "${2:-}" in '.version // "1.0"') printf '2.0\n' ;; *) printf '\n' ;; esac
+YQ
+chmod +x "$VERSION_BIN/yq"
+version_run() { # <label> <root> [extra args]
+  local label="$1" root="$2"; shift 2
+  local args=(--task review --mode distributed --sequential --cli codex-cli --base develop
+    --perspective code-review --perspective test-analysis --output-dir "$VERSION_OUT" --resume)
+  [ -z "$VERSION_CONFIG" ] || args+=(--config "$VERSION_CONFIG")
+  ( cd "$VERSION_REPO" && run_isolated FF_DEV_TOOLKIT_ROOT="$root" HOME="$TMP/version-home" \
+    PATH="$VERSION_BIN:/usr/bin:/bin:/usr/sbin:/sbin" bash "$root/scripts/multi-agent.sh" "${args[@]}" "$@" ) \
+    > "$TMP/version-${label}.log" 2>&1
+}
+version_ids() { find "$VERSION_OUT/.resume-cache" -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort; }
+version_expect_new() { # <label> <root> [extra args]
+  local label="$1" root="$2" before ids; shift 2
+  before="$(count_invocations)"; ids="$(version_ids)"
+  if version_run "$label" "$root" "$@" && [ "$(count_invocations)" -eq $((before + 2)) ] \
+     && [ "$(version_ids)" != "$ids" ] \
+     && [ "$(grep -c '^\*\*Result source:\*\* executed$' "$VERSION_OUT/integrated-report.md")" -eq 2 ]; then
+    ok "${label}: identity が変わり全2観点を再実行"
+  else bad "${label}: 古い identity を再利用した、または再実行へ到達しない"; fi
+}
+version_expect_reuse() { # <label> <root>
+  local label="$1" root="$2" before ids result_hash
+  before="$(count_invocations)"; ids="$(version_ids)"
+  result_hash="$(git hash-object "$VERSION_OUT/codex-cli/code-review.md")"
+  if version_run "$label" "$root" && [ "$(count_invocations)" -eq "$before" ] \
+     && [ "$(version_ids)" = "$ids" ] \
+     && [ "$(git hash-object "$VERSION_OUT/codex-cli/code-review.md")" = "$result_hash" ] \
+     && [ "$(grep -c '^\*\*Result source:\*\* reused$' "$VERSION_OUT/integrated-report.md")" -eq 2 ]; then
+    ok "${label}: 同じ identity の全2観点を再利用し、追加 CLI 起動0・結果不変"
+  else bad "${label}: 同じ入力の完了結果を再利用しない"; fi
+}
+version_change() { perl -0pi -e 's/^toolkit_version: "[0-9]+\.[0-9]+\.[0-9]+"/toolkit_version: "999.0.1"/m' "$1"; }
+version_run initial "$VERSION_A" || bad "版行の比較の初回が完走しない"
+version_expect_reuse same-root "$VERSION_A"
+version_change "$VERSION_B/scripts/agent-config.yaml"
+VERSION_ROOT_DIFF="$(diff -qr "$VERSION_A" "$VERSION_B" || true)"
+VERSION_CONFIG_DIFF="$(diff -u "$VERSION_A/scripts/agent-config.yaml" "$VERSION_B/scripts/agent-config.yaml" || true)"
+if [ "$(printf '%s\n' "$VERSION_ROOT_DIFF" | wc -l | tr -d ' ')" -eq 1 ] \
+   && [ "$(grep -c '^[+-][^+-]' <<< "$VERSION_CONFIG_DIFF")" -eq 2 ] \
+   && grep -q '^+toolkit_version: "999.0.1"' <<< "$VERSION_CONFIG_DIFF"; then
+  ok "2 root の差は bundled config 正規版行の1行だけ"
+else bad "2 root の版行比較が他ファイル・他バイトを含む"; fi
+version_expect_reuse canonical-version-only "$VERSION_B"
+printf '\n# non-version byte\n' >> "$VERSION_B/scripts/agent-config.yaml"
+version_expect_new bundled-comment "$VERSION_B"
+perl -0pi -e 's/^parallel: true$/parallel: false/m' "$VERSION_B/scripts/agent-config.yaml"
+version_expect_new bundled-effective-key "$VERSION_B"
+
+# custom config の版行、重複・不正・NUL入りの bundled config は丸ごとの hash を使う。
+VERSION_OUT="$TMP/version-custom-results"
+VERSION_CONFIG="$TMP/custom-agent-config.yaml"
+cp "$VERSION_PRISTINE" "$VERSION_CONFIG"
+version_run custom-initial "$VERSION_A" || bad "custom config の比較初回が失敗"
+version_change "$VERSION_CONFIG"
+version_expect_new custom-version "$VERSION_A"
+VERSION_CONFIG=""
+for version_case in duplicate malformed indented nul; do
+  cp "$VERSION_PRISTINE" "$VERSION_A/scripts/agent-config.yaml"
+  case "$version_case" in
+    duplicate) printf '\ntoolkit_version: "111.0.0"\n' >> "$VERSION_A/scripts/agent-config.yaml" ;;
+    malformed) perl -0pi -e 's/^toolkit_version:.*$/toolkit_version: "broken"/m' "$VERSION_A/scripts/agent-config.yaml" ;;
+    indented) perl -0pi -e 's/^toolkit_version:/  toolkit_version:/m' "$VERSION_A/scripts/agent-config.yaml" ;;
+    nul) printf '\000' >> "$VERSION_A/scripts/agent-config.yaml" ;;
+  esac
+  cp "$VERSION_A/scripts/agent-config.yaml" "$VERSION_B/scripts/agent-config.yaml"
+  VERSION_OUT="$TMP/version-${version_case}-results"
+  version_run "${version_case}-initial" "$VERSION_A" || bad "${version_case}: 比較初回が失敗"
+  case "$version_case" in
+    malformed) perl -0pi -e 's/"broken"/"still-broken"/' "$VERSION_B/scripts/agent-config.yaml" ;;
+    indented) perl -0pi -e 's/^  toolkit_version:.*$/  toolkit_version: "999.0.1"/m' "$VERSION_B/scripts/agent-config.yaml" ;;
+    *) version_change "$VERSION_B/scripts/agent-config.yaml" ;;
+  esac
+  version_expect_new "${version_case}-rawhash" "$VERSION_B"
+done
+
+cp "$VERSION_PRISTINE" "$VERSION_A/scripts/agent-config.yaml"
+perl -0pi -e 's/\n/\r\n/g; s/\r\n\z//' "$VERSION_A/scripts/agent-config.yaml"
+if [ "$(LC_ALL=C tr -cd '\r' < "$VERSION_A/scripts/agent-config.yaml" | wc -c | tr -d ' ')" -gt 0 ] \
+   && [ "$(tail -c 1 "$VERSION_A/scripts/agent-config.yaml" | od -An -tu1 | tr -d ' ')" != 10 ]; then
+  ok "CRLF・末尾LFなしの fixture が実際にそのバイト列を持つ"
+else bad "CRLF・末尾LFなしの fixture が成立していない"; fi
+cp "$VERSION_A/scripts/agent-config.yaml" "$VERSION_B/scripts/agent-config.yaml"
+VERSION_OUT="$TMP/version-crlf-results"
+version_run crlf-initial "$VERSION_A" || bad "CRLF・末尾LFなしの比較初回が失敗"
+version_change "$VERSION_B/scripts/agent-config.yaml"
+version_expect_reuse crlf-version-only "$VERSION_B"
+printf ' ' >> "$VERSION_B/scripts/agent-config.yaml"
+version_expect_new crlf-eof-nonmetadata-byte "$VERSION_B"
+printf '\n# adapter identity byte\n' >> "$VERSION_B/scripts/adapters/codex-cli-adapter.sh"
+version_expect_new adapter-entry "$VERSION_B"
+# ignored 成果物は同じ Git 入力の対照。review 出力は未追跡でも指紋の対象外。
+mkdir -p "$VERSION_REPO/.git/info" "$VERSION_REPO/ignored-gate"
+printf 'ignored-gate/\n' >> "$VERSION_REPO/.git/info/exclude"
+printf 'cache\n' > "$VERSION_REPO/ignored-gate/build.cache"
+mkdir -p "$VERSION_REPO/.review-results"
+printf 'report artifact\n' > "$VERSION_REPO/.review-results/untracked-artifact"
+version_expect_reuse ignored-untracked-artifacts "$VERSION_B"
 
 echo "== 結果 =="
 echo "PASS: $PASS"

@@ -172,6 +172,9 @@ collect_delegated_responses() {
   [[ "$DELEGATE_TO_HOST" == "true" ]] || return 0
   local entry cli persp dir src dst collected=0 names=""
   release_delegated_review_lanes
+  # New handoffs advertise the generation response slot directly. A late legacy/final
+  # path write must never be relabelled as a response to the current generation.
+  [[ -z "$DELEGATION_GENERATION" ]] || return 0
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
     cli="${entry%%:*}"
@@ -243,25 +246,15 @@ execute_tasks() {
   # --fresh must run after the lock and before the unresolved-Critical guard,
   # so leftover reports are no longer the guard's input.
   archive_previous_outputs_if_fresh || return 2
-  # The previous report is the evidence this guard validates. Run it before
-  # clear_previous_integrated_report and before any result file is changed.
-  capture_and_guard_unresolved_critical_state || return 2
-  # An all-clear prior report is stale once this run starts. An unresolved prior
-  # report remains the durable guard state until a new report proves resolution,
-  # so clear_previous_integrated_report deliberately preserves that case.
-  clear_previous_integrated_report || return 2
-  # 結果ディレクトリの解決検査は**<cli>/ 配下へ触る最初の操作より前**に一括で行う
-  # （Issue `#537` / `#654`）。この下の resume 書き戻し（cp）・clear_planned_outputs
-  # （rm -f）・退避（mv）はどれも `${OUTPUT_DIR}/<cli>/` を素通りするので、検査を
-  # 退避の中に置くと <cli> が外向き symlink のときに検査到達前へ書き込み・削除が
-  # 済んでしまう。all-clear の統合レポート削除より後に置く。未解消レポートは次回
-  # ガードの状態なので、この検査が落ちても保持する（上の例外規則）。
+  # Read and compare delegation state before changing any report, response, handoff or cache.
   validate_planned_result_dirs || return 2
-  # 未完了の委譲を残したままフラグを落とした実行は、ここで止める（消す前に）。
+  load_delegation_state || return 2
   guard_outstanding_delegations || return 2
-  # 回収は「今回のプランの対象を消す」より前でなければならない。<cli>/ の解決検査
-  # （validate_planned_result_dirs）の直後に置くのは、symlink 越しの <cli>/ に対して
-  # mv を撃たないため。
+  prepare_resume_input || return 2
+  guard_and_select_delegation_generation || return 2
+  # Keep the existing unresolved-Critical guard before report/result cleanup.
+  capture_and_guard_unresolved_critical_state || return 2
+  clear_previous_integrated_report || return 2
   collect_delegated_responses || return 2
   # A task without prompt diff must not inherit the previous review's fixed diff.
   # Diff-bearing tasks overwrite the file in create_fixed_diff below; removing it

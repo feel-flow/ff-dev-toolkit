@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# 空振り検出: ドライブ付き自己位置・対象抽出 0 件は赤、probe 不在・空は rc=2（修正前の PWD 前置方式でドライブ表記 2 ケース赤を実測）。
+# 空振り検出: ドライブ付き自己位置・対象抽出 0 件は赤、probe 不在・空は rc=2（修正前の PWD 前置方式でドライブ表記 2 ケース赤を実測）。 pnpm の probe/本番抑止を各1箇所戻すと5/4件が赤、runner 空・補助ケース不在/空/実行0件も赤を実測。
 # ace-run-ts: 同梱 ACE ゲートの runner 解決層の挙動検査（Issue #879）。
 #
 # 背景: /ace-curate の手順 4-f は未導入プロジェクト向けに `npx --yes tsx <同梱パス>`
@@ -26,6 +26,9 @@
 # ACE-86-2: here-string / heredoc を使わない。
 
 set -uo pipefail
+# pnpm の環境 fixture は補助ケース内で作る。bash 3.2 の local unset が外側の
+# export 値を再露出させないよう、この suite の子プロセスだけ未指定へ正規化する。
+unset pnpm_config_verify_deps_before_run
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TESTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -289,6 +292,20 @@ case "${RES_OUT}" in
   *"runner=npx --yes tsx"*) ok "ローカル候補が全滅したときだけ npx --yes tsx へ落ちる" ;;
   *)                        bad "npx --yes tsx が選ばれていません（出力: ${RES_OUT}）" ;;
 esac
+
+# 暗黙 install の回帰は同じ隔離 PATH・実 runner を通す。補助ケースの欠落を緑にしない。
+PNPM_CASES="${SCRIPT_DIR}/pnpm-no-install-cases.sh"
+if [ ! -r "$PNPM_CASES" ] || [ ! -s "$PNPM_CASES" ]; then
+  bad "pnpm 暗黙 install の検査ケースが存在しないか空です: $PNPM_CASES"
+  exit 1
+fi
+PNPM_CASES_BEFORE=$((PASS + FAIL))
+# shellcheck source=pnpm-no-install-cases.sh
+source "$PNPM_CASES"
+if [ "$((PASS + FAIL))" -le "$PNPM_CASES_BEFORE" ]; then
+  bad "pnpm 暗黙 install の検査が 1 件も実行されていません"
+  exit 1
+fi
 
 # --- ラッパーがフラグを消費する候補を採用しない（Issue #932）------------------
 # yarn 1.x を模した shim。`--version` を**自分で消費して** exit 0 を返すが、実際の

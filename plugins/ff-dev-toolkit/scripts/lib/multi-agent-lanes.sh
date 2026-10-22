@@ -40,7 +40,11 @@ task_is_delegated() { # <cli> → rc0 = この実行でホストへ委譲する�
 # （quarantine_cli_results は <cli>/*.md だけを見る）にも「今回の結果ではない」報告
 # （report_unplanned_result_dirs はドット始まりを外す）にも掛からない。
 delegate_dir_for() { # <cli>
-  printf '%s\n' "${OUTPUT_DIR}/${1}/.delegated"
+  if [[ -n "${DELEGATION_GENERATION:-}" ]]; then
+    printf '%s\n' "${OUTPUT_DIR}/${1}/.delegated/generations/${DELEGATION_GENERATION}"
+  else
+    printf '%s\n' "${OUTPUT_DIR}/${1}/.delegated"
+  fi
 }
 
 # 回収済み（= ホストが今回書いた）応答が待っている観点か。

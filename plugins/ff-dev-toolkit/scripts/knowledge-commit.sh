@@ -580,7 +580,7 @@ case "$cmd" in
       printf 'M\t%s\t%s\t%s\n' "$(current_branch)" "$(git -C "$repo_root" rev-parse HEAD)" "$(date +%s)" >"$pending" \
         || die_stop "保留記録へ書けません: $pending"
     fi
-    if [[ -f "$pending" ]] && awk -F '\t' -v s="$source" -v i="$id" '$1=="E" && $2==s && $3==i {f=1} END{exit !f}' "$pending"; then
+    if [[ -f "$pending" ]] && LC_ALL=C awk -F '\t' -v s="$source" -v i="$id" '$1=="E" && $2==s && $3==i {f=1} END{exit !f}' "$pending"; then
       echo "ℹ 同じエントリは記録済みです（${source} ${id}）。未記録のパスだけを足します"
     else
       printf 'E\t%s\t%s\t%s\t%s\n' "$source" "$id" "$summary" "$category" >>"$pending" \
@@ -589,7 +589,7 @@ case "$cmd" in
     for p in "${rel_paths[@]}"; do
       h="$(git -C "$repo_root" hash-object -- "$p")" || die_stop "内容の hash を取れません: $p"
       # 同じパスの再 add は hash を今の内容へ更新する（最後に add した内容を commit する）
-      awk -F '\t' -v p="$p" 'BEGIN { OFS = FS } !($1 == "P" && $2 == p)' "$pending" >"$pending.tmp" && mv "$pending.tmp" "$pending" \
+      LC_ALL=C awk -F '\t' -v p="$p" 'BEGIN { OFS = FS } !($1 == "P" && $2 == p)' "$pending" >"$pending.tmp" && mv "$pending.tmp" "$pending" \
         || die_stop "保留記録へ書けません: $pending"
       printf 'P\t%s\t%s\n' "$p" "$h" >>"$pending" || die_stop "保留記録へ書けません: $pending"
     done

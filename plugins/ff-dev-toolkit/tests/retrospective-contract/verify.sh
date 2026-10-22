@@ -48,6 +48,7 @@
 # 空振り検出: references/promotion.md から「closed 済み対策の再発時は、前の対策と同じ型を再提案しない」の箇条を削ると禁止と許可の対の針 2 件が赤、SKILL.md へ針の写しを 1 行足すと「重複」で 1 件が赤になる（2026-09-23 実測。197 件中 2 件 / 1 件失敗。規定が名前だけ残って中身が変わる変更と、写しで本体の欠落が隠れる変更を「契約あり」へ倒さない）。
 # 空振り検出: 完了移行節の見出し削除・closed 単独禁止行削除・元 Issue 保持行削除・本線の完了照合行削除・promotion.md 不在・旧「Issue を発行したか」定義の復元はすべて rc=1、初回正常対照は213件pass（2026-09-28実測）。節名だけ残す／本文が別節に残る空振りも緑にしない。
 # 空振り検出: 読み側 SKILL の closed 旧定義復元・未解消再発の確認削除・テンプレと台帳双方の promoted 旧定義復元・filing の対応中集約を mitigated へ反転すると各 rc=1、追加後の正常対照は217件pass（2026-09-28実測）。
+# 空振り検出: ledger.md 不在・保留送信節の見出し喪失・既存知見ブランチの pr を push へ反転・detached 保留の表記照合喪失は各 rc=1（2026-10-22 実測）。対象不在・0 件一致・名前だけ残す経路逆転を緑にしない。
 #
 # **検査 E のフェンスが実際にどう振る舞うかは本 suite の対象外**。引数の向き・pathspec の
 # cwd 依存・停止点の fail-open は文言では測れないので、tests/retrospective-ledger-freshness/
@@ -177,7 +178,7 @@ preflight_contains() {
 
 echo "== retrospective 契約検査 =="
 
-REQUIRED_FILES=("$SKILL" "$REF_FILING" "$REF_PROMOTION" "$REF_LEGACY" "$REF_AUTOTRIGGER" "$REF_EFFORT" "$ACE_CURATE" "$GIT_WORKFLOW" "$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
+REQUIRED_FILES=("$SKILL" "$REF_FILING" "$REF_PROMOTION" "$REF_LEGACY" "$REF_AUTOTRIGGER" "$REF_EFFORT" "$REF_LEDGER" "$ACE_CURATE" "$GIT_WORKFLOW" "$WORKFLOW_PRINCIPLES" "$DEPLOYMENT" "$OSS_README")
 if [[ "$IS_MONOREPO" -eq 1 ]]; then
   REQUIRED_FILES+=("$ROOT_README")
 fi
@@ -497,8 +498,8 @@ section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
   '**ただし「提案の閾値」は通常どおり適用する**' \
   "台帳の base 先行ガード: 停止時も提案の閾値の免除は受けない"
 section_contains "$SKILL" "$LEDGER_PREGATE_SECTION" \
-  'デフォルト統合ブランチ以外に居る回は、記録の前にそのブランチへ戻る' \
-  "台帳の base 先行ガード: 非デフォルトブランチでは戻ってから記録する"
+  '保留中の知見ブランチは維持する' \
+  "台帳の base 先行ガード: 保留を持つ知見ブランチを切り替えない"
 section_contains "$SKILL" "### 記録手順" \
   '上「記録の前に base の先行を照合する」のフェンスを通してから手順 0 へ入る' \
   "記録手順: 手順 0 の前に照合フェンスを通す"
@@ -533,7 +534,7 @@ section_contains "$SKILL" "### 書き込み（定型コミット）" \
 # 台帳のパスは 3 箇所（ガードのフェンス・記録手順 0・書き込み節の commit 形）に独立した
 # リテラルで現れる。片方だけ変えると「照合したパスと書き込むパスが違う」状態になるので、
 # 節から抽出したフェンスのパスを基準に、残り 2 箇所と一致することを見る。
-LEDGER_PATH_IN_GUARD="$(awk -v sec="$REF_LEDGER_PREGATE_SECTION" '
+LEDGER_PATH_IN_GUARD="$(LC_ALL=C awk -v sec="$REF_LEDGER_PREGATE_SECTION" '
   $0 == sec { in_sec = 1; next }
   in_sec && /^#/ { in_sec = 0 }
   in_sec && /:\(top\)/ {
@@ -560,8 +561,24 @@ section_contains "$SKILL" "### 書き込み（定型コミット）" \
   "同じ \`commit\` が両方を 1 コミット（\`knowledge: ACE-… / OBS-…\`）に畳む" \
   "書き込み節が /ace-curate の保留と観測を 1 コミットへ畳む"
 section_contains "$SKILL" "## ask / off モード（保険）" \
-  "振り返りを実施しない回（off モード・ask で断られた回）でも \`commit\` → push を行う" \
+  "振り返りを実施しない回（off モード・ask で断られた回）でも \`commit\` → 送信を行う" \
   "モード判定の直後に保留中の knowledge 追記を回収する（振り返りを実施しない回でも取り残さない）"
+
+# 保留の解消先はモードや観測件数で変えず、開始ブランチのまま送信経路を選ぶ。
+LEDGER_DELIVERY_SECTION='## 保留の合流と送信経路'
+for delivery_needle in \
+  '取得成功時の空名は `(detached)` として `KNOWLEDGE_PENDING_BRANCH` と照合する' \
+  '**保留を作った同じブランチを維持し、default / detached へ切り替えない**' \
+  '同じブランチで照合フェンスを通し、OBS を `add` してから共通の `commit` で ACE と畳む' \
+  '**観測 0 件・off モード・ask 拒否でも、保留を同じブランチで commit し、同じ送信分岐を使う**' \
+  '**default / detached は `knowledge-commit push`**' \
+  '**既存知見ブランチは push を試さず `knowledge-commit pr`**' \
+  '--branch "${knowledge_branch}"' \
+  '共通 commit の件名を `git log -1 --format=%s` で実測' \
+  '**既存知見ブランチからの pr は local default と他 worktree を変更しない**'; do
+  section_contains "$REF_LEDGER" "$LEDGER_DELIVERY_SECTION" "$delivery_needle" \
+    "保留の送信経路: ${delivery_needle}"
+done
 
 # 節スコープ針は**節そのものの位置**を見ない。ガード節を見出しごと記録手順の後ろへ移すと、
 # 「記録内容を作る前に照合する」という AC を失ったまま針が全件緑で通る（実測）。見出しの
@@ -824,7 +841,7 @@ REFERENCED_HEADINGS=(
 for heading in "${REFERENCED_HEADINGS[@]}"; do
   # awk は読めないファイルで非 0 を返し set -e で止まる（cat | grep -c の || true は読み取り
   # 失敗を握り潰して残りのファイルだけで数えてしまう）。
-  n="$(awk -v h="$heading" '{ sub(/\r$/, "") } $0 == h { c++ } END { print c + 0 }' "$SKILL" "$SKILL_REFS"/*.md)"
+  n="$(LC_ALL=C awk -v h="$heading" '{ sub(/\r$/, "") } $0 == h { c++ } END { print c + 0 }' "$SKILL" "$SKILL_REFS"/*.md)"
   once_verdict "$n" "$heading" "外部参照される見出し: ${heading#\#* }"
 done
 

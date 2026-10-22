@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 抽出先 scripts/lib/finish-precheck.sh を空にすると323/0から322/1となり、--issue-metrics の呼び出しの針が赤になる（2026-10-22 実測。既存 partial skip2件は別枠）。
 #
 # 空振り検出: 並列規定を空・旧文言へ戻すと壁時計と総人時の検査が赤。換算基準の句だけを消す変異も赤（2026-10-17 実測）。
 # effort-contract: 工数 KPI 計測基盤（Issue #1136）の契約検査。
@@ -88,7 +89,8 @@ CREATE_ESTIMATION="$PLUGIN_ROOT/skills/create-issue/references/estimation.md"
 # scripts/finish.sh precheck が呼ぶ。
 CLOSE="$PLUGIN_ROOT/skills/close-issue/references/effort.md"
 CLOSE_MAIN="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
-FINISH="$PLUGIN_ROOT/scripts/finish.sh"
+# precheck 本体の実際の配置を検査する（入口に残る名前だけでは緑にしない）。
+FINISH="$PLUGIN_ROOT/scripts/lib/finish-precheck.sh"
 # 乖離帯と集計手順は retrospective の条件付き reference へ切り出してある（本線の SKILL.md は
 # 帯を持たない）。ラベルは dirname から導くと `references` に化けるので下で名前を固定する。
 RETRO="$PLUGIN_ROOT/skills/retrospective/references/effort.md"

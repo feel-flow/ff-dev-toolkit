@@ -86,7 +86,7 @@
 #                           grok CLI): build its
 #                           prompts as usual and hand execution back to the host, which runs
 #                           them in its own session (subagents) and writes each result to
-#                           <output-dir>/<cli>/<perspective>.md. Re-run the SAME
+#                           generation-specific output-file named in the handoff. Re-run the SAME
 #                           command to adopt those results and finish the report. Every
 #                           other lane runs unchanged, and the default (no flag) still
 #                           spawns the CLI. See "Host delegation" below.
@@ -128,17 +128,20 @@
 #   (grok host: headless `grok -p` lanes return no review body; Issue `#2118`.)
 #   What changes: for the delegated lane only (claude-code by default, or the
 #   --delegate-to-host=<cli> value), no CLI is started. The prompt this run would have
-#   sent is written to <output-dir>/<lane>/.delegated/<perspective>.prompt.md together
+#   sent is written to <output-dir>/<lane>/.delegated/generations/<generation>/<perspective>.prompt.md together
 #   with a request record, and the orchestrator prints a handoff block on STDOUT naming the
-#   prompt file and the result path. The task is reported as DELEGATED (pending) — never as
+#   prompt file and the generation response path. The task is reported as DELEGATED (pending) — never as
 #   a failure, and never as a covered perspective.
 #   What does NOT change: plan construction, prompt construction, every other lane, the
 #   integrated report, and the default behaviour without the flag.
 #   Finishing the round trip: the host writes its result to
-#   <output-dir>/<lane>/<perspective>.md and RE-RUNS THE SAME COMMAND (add --resume to
-#   keep the other lanes' results). A result is adopted only when it answers THIS run's
+#   generation-specific output-file named in the handoff and RE-RUNS THE SAME COMMAND. Normally add
+#   --resume to keep the other lanes' results. With prior/continued evidence, write ALL delegated
+#   responses first and re-run without --resume; other lanes run again. A result is adopted only when it answers THIS run's
 #   prompt — the request record holds the prompt digest and a response built from a different
-#   input is set aside under .delegated/ with a named path instead of being adopted or
+#   input is refused before handoff/report/cache changes on same-HEAD --resume. New HEADs use
+#   separate .delegated/generations/<generation>/ response paths, preserving old responses.
+#   Invalid response bodies are set aside under that generation with a named path instead of being adopted or
 #   deleted. An adopted result is rewritten with the same header the spawned path writes and
 #   passes the same review-body acceptance gate, so the report cannot tell the two apart.
 #   Exit status: 3 while any delegated task is still pending (distinct from 1 = a task
@@ -664,6 +667,7 @@ MULTI_AGENT_PARTS=(
   "${SCRIPT_DIR}/lib/multi-agent-plan.sh"
   "${SCRIPT_DIR}/lib/multi-agent-prepare.sh"
   "${SCRIPT_DIR}/lib/multi-agent-outputs.sh"
+  "${SCRIPT_DIR}/lib/multi-agent-delegation-state.sh"
   "${SCRIPT_DIR}/lib/multi-agent-critical.sh"
   "${SCRIPT_DIR}/lib/multi-agent-execute.sh"
   "${SCRIPT_DIR}/lib/multi-agent-failure.sh"
@@ -712,6 +716,7 @@ unset -f ma_refuse_part
 # ── Main ──
 main() {
   local emoji
+  INVOCATION_DISPLAY="$(format_initial_invocation "$0" "$@")"
 
   # Two-pass parsing: extract --config and --task first
   local prev_flag=""
@@ -1052,11 +1057,27 @@ main() {
     echo "      subagent-stop event carries no correlation id, so a generic type cannot be matched" >&2
     echo "      back to this review without risking the release of someone else's lane." >&2
     echo "   2) Write each result to the output-file path named with it." >&2
-    echo "   3) Re-run this command WITH --resume to adopt them and regenerate the report." >&2
-    echo "      --resume is not optional here beyond saving the other lanes' work: without it this" >&2
-    echo "      run clears every planned result first, so perspectives already adopted in an earlier" >&2
-    echo "      round are cleared too and handed back out again — a lane with several perspectives" >&2
-    echo "      never converges." >&2
+    if [[ -n "$REVIEW_EVIDENCE_PRIOR" || -n "$REVIEW_EVIDENCE_PARENT" ]]; then
+      echo "   3) Wait until ALL pending delegated responses have been written, then re-run the" >&2
+      echo "      original command below WITHOUT --resume. Prior/continued evidence forbids --resume" >&2
+      echo "      so that cached work cannot stand in for tasks run after the prior review." >&2
+      echo "   Re-run command:" >&2
+      printf '      %s\n' "$INVOCATION_DISPLAY" >&2
+      echo "      Keep the original model/config-selection environment; this command does not restore it." >&2
+      echo "      Every non-delegated task runs again. Do not re-run after only some responses:" >&2
+      echo "      without --resume, already adopted results are cleared and delegated again." >&2
+      echo "      If only part of the batch was adopted, keep this output directory intact." >&2
+      echo "      Choose an external or gitignored directory so the evidence worktree stays clean." >&2
+      echo "      Restart with a new empty --output-dir appended to the original command; keep every" >&2
+      echo "      other argument and the original environment. Run ALL newly generated prompts," >&2
+      echo "      write the entire new batch, then re-run that new command WITHOUT --resume." >&2
+    else
+      echo "   3) Re-run this command WITH --resume to adopt them and regenerate the report." >&2
+      echo "      --resume is not optional here beyond saving the other lanes' work: without it this" >&2
+      echo "      run clears every planned result first, so perspectives already adopted in an earlier" >&2
+      echo "      round are cleared too and handed back out again — a lane with several perspectives" >&2
+      echo "      never converges." >&2
+    fi
     echo "   Report so far (delegated perspectives are marked INCOMPLETE): ${OUTPUT_DIR}/integrated-report.md" >&2
     echo "" >&2
     print_delegation_handoff

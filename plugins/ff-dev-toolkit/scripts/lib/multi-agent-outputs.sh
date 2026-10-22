@@ -635,7 +635,7 @@ staging_root_state() { # <files-root>
 hash_file_or_missing() { # <label> <path>
   local label="$1" path="$2" digest
   if [[ -f "$path" ]]; then
-    digest="$(git hash-object "$path" 2>/dev/null)" || return 1
+    digest="$(git hash-object --no-filters "$path" 2>/dev/null)" || return 1
     printf '%s=%s\n' "$label" "$digest"
   else
     printf '%s=(missing)\n' "$label"
@@ -648,7 +648,50 @@ hash_text_value() { # <label> <value>
   printf '%s=%s\n' "$label" "$digest"
 }
 
-compute_resume_identity() {
+# Preserve every byte except one strict root-level bundled release metadata line.
+# read's exit code records whether LF was present; CR remains part of each line.
+emit_resume_config_bytes() { # <strip-version: true|false>
+  local strip="$1" line rc check
+  local version_re='^toolkit_version: "[0-9]+\.[0-9]+\.[0-9]+"$'
+  while :; do
+    line=''; rc=0
+    IFS= read -r line || rc=$?
+    [[ "$rc" -eq 0 || -n "$line" ]] || break
+    check="${line%$'\r'}"
+    if [[ "$strip" != true || ! "$check" =~ $version_re ]]; then
+      printf '%s' "$line" || return 1
+      if [[ "$rc" -eq 0 ]]; then printf '\n' || return 1; fi
+    fi
+    [[ "$rc" -eq 0 ]] || break
+  done < "$CONFIG_FILE"
+}
+
+hash_resume_config() {
+  local raw roundtrip line check count=0 valid=0 digest
+  local LC_ALL=C
+  local version_re='^toolkit_version: "[0-9]+\.[0-9]+\.[0-9]+"$'
+  [[ -f "$CONFIG_FILE" ]] || { hash_file_or_missing config "$CONFIG_FILE"; return; }
+  raw="$(git hash-object --no-filters "$CONFIG_FILE")" || return 1
+  if [[ "$CONFIG_PROVENANCE" == plugin && "$CONFIG_FILE" == "${SCRIPT_DIR}/agent-config.yaml" && ! -L "$CONFIG_FILE" ]]; then
+    # A byte-for-byte roundtrip rejects NUL and any other bytes Bash could not retain.
+    roundtrip="$(emit_resume_config_bytes false | git hash-object --stdin)" || return 1
+    if [[ "$roundtrip" == "$raw" ]]; then
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        check="${line%$'\r'}"
+        if [[ "$check" =~ ^[[:space:]]*toolkit_version[[:space:]]*: ]]; then count=$((count + 1)); fi
+        if [[ "$check" =~ $version_re ]]; then valid=$((valid + 1)); fi
+      done < "$CONFIG_FILE"
+      if [[ "$count" -eq 1 && "$valid" -eq 1 ]]; then
+        digest="$(emit_resume_config_bytes true | git hash-object --stdin)" || return 1
+        printf 'config=%s\n' "$digest"
+        return 0
+      fi
+    fi
+  fi
+  printf 'config=%s\n' "$raw"
+}
+
+compute_resume_input_manifest() {
   local plan_sorted entry cli persp env_name env_value part head_oid="" base_oid=""
   plan_sorted="$(printf '%s\n' "$EXECUTION_PLAN" | LC_ALL=C sort -u)"
   if [[ "$IN_GIT_REPO" == "true" ]]; then
@@ -669,27 +712,30 @@ compute_resume_identity() {
   {
     printf 'identity-version=%s\n' "$RESUME_IDENTITY_VERSION"
     printf 'task=%s\nmode=%s\nstrategy=%s\n' "$TASK_TYPE" "$MODE" "$STRATEGY"
+    printf 'wrapper-route=%s\ndelegation=%s:%s\n' "$WRAPPER_ROUTE" "$DELEGATE_TO_HOST" "$DELEGATION_LANE"
     # 解決結果ではなく指定された名前を使う。解決結果を混ぜると、ローカル base を
     # pull しただけで origin/develop → develop と名乗りが変わり、同じ入力の再実行が
     # 「別の入力」に見えて resume が丸ごと無効化される（base-oid が実体の変化を見る）。
     printf 'base-ref=%s\nbase-oid=%s\nhead=%s\n' "$BASE_BRANCH_IDENTITY" "$base_oid" "$head_oid"
     printf 'staged=%s\ninclude-diff=%s\n' "$STAGED_DIFF" "$INCLUDE_DIFF"
-    hash_text_value description "$DESCRIPTION"
+    hash_text_value description "$DESCRIPTION" || return 1
     printf '%s\n' "$plan_sorted" | sed 's/^/plan=/'
-    hash_file_or_missing config "$CONFIG_FILE"
-    hash_file_or_missing orchestrator "${SCRIPT_DIR}/multi-agent.sh"
+    hash_resume_config || return 1
+    hash_file_or_missing orchestrator "${SCRIPT_DIR}/multi-agent.sh" || return 1
     # 構成ファイル（開始時に source した本体。ADR-075）も orchestrator の一部として算入する。
     # 入口だけを見ると、構成ファイルの変更が古い結果の再利用を止めない
     for part in "${MULTI_AGENT_PARTS[@]}"; do
-      hash_file_or_missing "orchestrator-part:${part##*/}" "$part"
+      hash_file_or_missing "orchestrator-part:${part##*/}" "$part" || return 1
     done
-    hash_file_or_missing adapter-common "$ADAPTER_COMMON"
+    hash_file_or_missing adapter-common "$ADAPTER_COMMON" || return 1
     # 構成ファイル（adapter-common.sh が source する本体）も入口と並べて算入する。
     for part in "${ADAPTER_COMMON_PARTS[@]}"; do
-      hash_file_or_missing "adapter-common-part:${part##*/}" "$part"
+      hash_file_or_missing "adapter-common-part:${part##*/}" "$part" || return 1
     done
-    if [[ -n "$FIXED_DIFF_FILE" ]]; then
-      hash_file_or_missing fixed-diff "$FIXED_DIFF_FILE"
+    if [[ -n "$RESUME_FIXED_DIFF_HASH" ]]; then
+      printf 'fixed-diff=%s\n' "$RESUME_FIXED_DIFF_HASH"
+    elif [[ -n "$FIXED_DIFF_FILE" ]]; then
+      hash_file_or_missing fixed-diff "$FIXED_DIFF_FILE" || return 1
     else
       printf '%s\n' 'fixed-diff=(none)'
     fi
@@ -697,16 +743,50 @@ compute_resume_identity() {
       [[ -n "$entry" ]] || continue
       cli="${entry%%:*}"
       persp="${entry#*:}"
-      hash_file_or_missing "adapter:${cli}" "$(get_cli_adapter "$cli")"
-      hash_file_or_missing "perspective:${TASK_TYPE}:${persp}" "$(resolve_perspective_file "$persp")"
+      hash_file_or_missing "adapter:${cli}" "$(get_cli_adapter "$cli")" || return 1
+      hash_file_or_missing "perspective:${TASK_TYPE}:${persp}" "$(resolve_perspective_file "$persp")" || return 1
       for env_name in $(get_cli_model_env_vars "$cli"); do
-        eval "env_value=\${${env_name}-}"
-        hash_text_value "env:${env_name}" "$env_value"
+        env_value="${!env_name-}"
+        hash_text_value "env:${env_name}" "$env_value" || return 1
       done
     done <<EOF
 $plan_sorted
 EOF
-  } | git hash-object --stdin 2>/dev/null
+  }
+}
+
+
+compute_resume_identity() {
+  compute_resume_input_manifest | git hash-object --stdin
+}
+
+prepare_resume_input() {
+  RESUME_FIXED_DIFF_HASH=''
+  if [[ "$IN_GIT_REPO" == true && ( "$TASK_TYPE" == review || "$INCLUDE_DIFF" == true ) ]]; then
+    RESUME_FIXED_DIFF_HASH="$(get_diff_content "$BASE_BRANCH" | git hash-object --stdin)" || return 1
+  fi
+  RESUME_INPUT_MANIFEST="$(compute_resume_input_manifest)" || return 1
+  RESUME_IDENTITY="$(printf '%s\n' "$RESUME_INPUT_MANIFEST" | git hash-object --stdin)" || return 1
+  [[ -n "$RESUME_IDENTITY" ]]
+}
+
+print_resume_manifest_changes() { # <prior manifest> <current manifest>; bounded labels, no values
+  local prior="$1" current="$2" line key side other changed='' count=0 seen=' '
+  for side in "$current" "$prior"; do
+    if [[ "$side" == "$current" ]]; then other="$prior"; else other="$current"; fi
+    while IFS= read -r line; do
+      key="${line%%=*}"
+      [[ "$seen" != *" ${key} "* ]] || continue
+      if ! printf '%s\n' "$other" | LC_ALL=C awk -v needle="$line" '$0 == needle { found=1; exit } END { exit found ? 0 : 1 }'; then
+        seen="${seen}${key} "
+        count=$((count + 1))
+        if [[ "$count" -le 8 ]]; then changed="${changed}${changed:+, }${key}"; fi
+      fi
+    done <<< "$side"
+  done
+  if [[ "$count" -gt 8 ]]; then changed="${changed}, ..."; fi
+  [[ "$count" -eq 0 ]] || printf '       Resume input components changed (%s): %s\n' "$count" "$changed" >&2
+  return 0
 }
 
 cache_task_result() { # <cli> <perspective>
@@ -716,7 +796,7 @@ cache_task_result() { # <cli> <perspective>
   cache_dir="${RESUME_CACHE_DIR}/${cli}"
   cache_file="${cache_dir}/${persp}.md"
   mkdir -p "$cache_dir" || return 1
-  digest="$(git hash-object "$source_file" 2>/dev/null)" || return 1
+  digest="$(git hash-object --no-filters "$source_file" 2>/dev/null)" || return 1
   cp "$source_file" "${cache_file}.tmp.$$" || return 1
   printf '%s\n' "$digest" >"${cache_file}.hash.tmp.$$" || return 1
   mv "${cache_file}.tmp.$$" "$cache_file" || return 1
@@ -725,13 +805,22 @@ cache_task_result() { # <cli> <perspective>
 
 restore_cached_result() { # <cli> <perspective>
   local cli="$1" persp="$2" cache_file expected actual target
+  CACHE_MISS_REASON=pending
   [[ ! -e "${RESUME_CACHE_DIR}/.pending" ]] || return 1
   cache_file="${RESUME_CACHE_DIR}/${cli}/${persp}.md"
-  [[ -f "$cache_file" && -f "${cache_file}.hash" ]] || return 1
+  CACHE_MISS_REASON=missing-result
+  [[ -f "$cache_file" ]] || return 1
+  CACHE_MISS_REASON=missing-hash
+  [[ -f "${cache_file}.hash" ]] || return 1
+  CACHE_MISS_REASON=unreadable-hash
   expected="$(cat "${cache_file}.hash" 2>/dev/null)" || return 1
+  CACHE_MISS_REASON=invalid-hash
   [[ "$expected" =~ ^[0-9a-f]+$ ]] || return 1
-  actual="$(git hash-object "$cache_file" 2>/dev/null)" || return 1
+  CACHE_MISS_REASON=unreadable-result
+  actual="$(git hash-object --no-filters "$cache_file" 2>/dev/null)" || return 1
+  CACHE_MISS_REASON=hash-mismatch
   [[ "$actual" == "$expected" ]] || return 1
+  CACHE_MISS_REASON=restore-write-failed
   target="${OUTPUT_DIR}/${cli}/${persp}.md"
   mkdir -p "$(dirname "$target")" || return 1
   cp "$cache_file" "$target" || return 1
@@ -742,31 +831,59 @@ prepare_resume_execution_plan() {
   FULL_EXECUTION_PLAN="$EXECUTION_PLAN"
   REUSED_TASKS=""
   EXECUTED_TASKS=""
-  RESUME_IDENTITY="$(compute_resume_identity)" || {
-    echo "ERROR: cannot compute the resume input identity." >&2
+  local actual_manifest captured_diff prior_manifest
+  if [[ -n "$FIXED_DIFF_FILE" ]]; then
+    captured_diff="$(git hash-object --no-filters "$FIXED_DIFF_FILE")" || return 1
+    [[ "$captured_diff" == "$RESUME_FIXED_DIFF_HASH" ]] || {
+      echo 'ERROR: the fixed diff changed after the resume input guard; refusing dispatch.' >&2
+      return 1
+    }
+  fi
+  actual_manifest="$(compute_resume_input_manifest)" || return 1
+  [[ "$actual_manifest" == "$RESUME_INPUT_MANIFEST" ]] || {
+    echo 'ERROR: the resume input changed after the early guard; refusing dispatch.' >&2
     return 1
   }
-  [[ -n "$RESUME_IDENTITY" ]] || {
-    echo "ERROR: computed an empty resume input identity." >&2
-    return 1
-  }
+  save_delegation_state || return 1
   RESUME_CACHE_DIR="${OUTPUT_DIR}/.resume-cache/${RESUME_IDENTITY}"
+  local cache_path
+  for cache_path in "${OUTPUT_DIR}/.resume-cache" "$RESUME_CACHE_DIR"; do
+    if [[ -L "$cache_path" || ( -e "$cache_path" && ! -d "$cache_path" ) ]]; then
+      echo "ERROR: unsafe resume cache directory: ${cache_path}" >&2
+      return 1
+    fi
+  done
+  for cache_path in "${RESUME_CACHE_DIR}/inputs" "${OUTPUT_DIR}/.resume-cache/last-inputs"; do
+    if [[ -L "$cache_path" || ( -e "$cache_path" && ! -f "$cache_path" ) ]]; then
+      echo "ERROR: unsafe resume diagnostic path: ${cache_path}" >&2
+      return 1
+    fi
+  done
   mkdir -p "$RESUME_CACHE_DIR" || {
     echo "ERROR: cannot create resume cache: ${RESUME_CACHE_DIR}" >&2
     return 1
   }
 
+  # Keep inspectable component hashes for unexplained misses (OBS-383); no cause is inferred.
+  if [[ "$RESUME" == true && -f "${OUTPUT_DIR}/.resume-cache/last-inputs" && ! -L "${OUTPUT_DIR}/.resume-cache/last-inputs" ]]; then
+    prior_manifest="$(cat "${OUTPUT_DIR}/.resume-cache/last-inputs")" || return 1
+    print_resume_manifest_changes "$prior_manifest" "$RESUME_INPUT_MANIFEST"
+  fi
+  printf '%s\n' "$RESUME_INPUT_MANIFEST" > "${RESUME_CACHE_DIR}/inputs" || return 1
+  printf '%s\n' "$RESUME_INPUT_MANIFEST" > "${OUTPUT_DIR}/.resume-cache/last-inputs" || return 1
+
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
     cli="${entry%%:*}"
     persp="${entry#*:}"
+    CACHE_MISS_REASON=response-waiting
     if [[ "$RESUME" == "true" ]] && ! delegated_response_waiting "$cli" "$persp" \
        && restore_cached_result "$cli" "$persp"; then
       REUSED_TASKS="${REUSED_TASKS:+$REUSED_TASKS }${cli}/${persp}"
       echo "  ♻️  Reused: ${cli}/${persp}" >&2
     else
       if [[ "$RESUME" == "true" ]]; then
-        echo "  ▶ Resume executes: ${cli}/${persp} (no valid completed cache)" >&2
+        echo "  ▶ Resume executes: ${cli}/${persp} (no valid completed cache; reason=${CACHE_MISS_REASON})" >&2
       fi
       active_plan="${active_plan:+$active_plan
 }${entry}"

@@ -1057,23 +1057,21 @@ esac
 
 ゲート通過後にマージする。**Issue を閉じてよいか（`Closes` 運用）／open のまま維持するか（`Refs` 運用）でテンプレートを使い分ける**:
 
-**マージ前に `git worktree list` で base ブランチの保持を確認する**。`gh pr merge --delete-branch` はマージ成功後にローカルで base（`develop` 等）へ切り替えようとするため、base が他 worktree に保持されていると **PR はマージ済みなのにリモートブランチ削除まで到達せずに失敗**する（エラーは worktree の話しかせず、リモートブランチが残ったことに気付けない）。`finish.sh precheck` はこの保持を `git worktree list --porcelain` で実測し、保持されていれば `--delete-branch` を付けない merge コマンドへ、merge の成功時だけ走るリモートブランチ削除（`&& SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 git push origin --force-with-lease=refs/heads/<head>:<OID> :refs/heads/<head>`）を繋いだ 1 コマンドを生成する（`DELETE_BRANCH_MODE=separate-push`）。手動で行う場合の分割手順:
+**マージ前に `git worktree list` で base / head ブランチの保持を確認する**。`finish.sh precheck` は保持を `git worktree list --porcelain` で実測し、保持されていれば既存の worktree 互換経路として `--delete-branch` を付けない merge と、成功時だけ走る head 削除処理を `&&` で繋いだ 1 コマンドを生成する（`DELETE_BRANCH_MODE=separate-push`）。この経路では照合済み head OID の lease を明示する。生成コマンドは `--repo` を明示するため、gh v2.102.0 はローカルブランチの切替・削除を行わず、その後始末は `/merge-cleanup` が担当する。**`MERGE_COMMAND_BEGIN` 〜 `MERGE_COMMAND_END` の出力をそのまま実行する**。他セッションの worktree は削除せず、保持者のパスと状態を報告して処分はユーザー判断に委ねる。
 
-```bash
-# base が他 worktree に保持されている場合の分割手順
-git worktree list                                  # 保持者の特定（他セッションの worktree は削除しない。
-                                                   # パス・clean/dirty・最終更新を報告し、処分はユーザー判断）
-gh pr merge ${PR_NUMBER} --squash \
-  --match-head-commit "${VERIFIED_HEAD_SHA}"       # --delete-branch を付けない
-git push origin --delete "<headブランチ>"          # リモートは自分で消す
-git switch --detach origin/develop                 # base を掴まずに退避（git switch develop は必ず失敗する）
-```
+merge 対象は取得済みのホストを含むリポジトリ URL を引用した `--repo` へ固定する。実行時の cwd・`GH_REPO`・`GH_HOST`・gh の既定ホストへ選び直さない。同一リポジトリの PR では、削除処理が生成時に固定した consumer root の `origin` へ exact ref を照会する。リポジトリの `delete_branch_on_merge` 設定から削除の要否を推測せず、ref が既に無ければ push せず成功、PR head と同じ OID なら `--force-with-lease=refs/heads/<head>:<OID>` 付きで削除、別 OID なら警告して保全する。削除 push が拒否された回も再照会し、自動削除との競合による不在や別 OID への更新を区別する。照会不能・応答不正・期待 OID が残ったままの削除失敗は非 0 で終わるため、その終了コードだけで merge の失敗とは読まず、PR の state と残存 ref を確認する。fork PR は従来どおり `HEAD_DELETE=skipped-fork` で削除を生成しない。
 
-完了報告には「リモートブランチを削除したか」を `gh pr merge` の成否とは**別項目**で明示する（`/merge-cleanup` のサマリーも同じ項目を出す）。
+| `HEAD_DELETE_RESULT` | 削除処理の結果（いずれも exit 0） |
+| --- | --- |
+| `deleted` | 期待 OID の ref を lease 付きで削除した |
+| `already-missing` | ref は既に存在しない（GitHub の自動削除を含む） |
+| `preserved-different-oid` | 同名 ref が別 OID のため削除せず保全した |
+
+削除本文は生成済みコマンドに含まれるため、実行時の cwd やマージ後の plugin 更新・除去に依存しない。`SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0` は削除 push だけに付く。完了報告には「リモートブランチを削除したか」を merge の成否とは**別項目**で明示し、上の結果を載せる（`/merge-cleanup` のサマリーも同じ項目を出す）。
 
 #### `--delete-branch` の部分失敗の読み方とリモート個別削除
 
-base ではなく**削除対象の head ブランチ自体**が別の worktree（サブエージェント用など）でチェックアウトされている場合も、`gh pr merge --squash --delete-branch` は部分的に失敗する。出力に残るのは `failed to delete local branch ... used by worktree at ...` の 1 行だけで、これだけを見るとマージそのものが失敗したように読めるが、**マージとリモートブランチ削除は成功していることがある**（失敗しているのはローカルブランチの削除だけで、マージ・リモート削除は別工程のため影響を受けない）。
+過去の `--repo` を明示しない経路では、**削除対象の head ブランチ自体**が別の worktree（サブエージェント用など）でチェックアウトされている場合に、`gh pr merge --squash --delete-branch` の部分失敗が観測された。その回の出力に残ったのは `failed to delete local branch ... used by worktree at ...` の 1 行だけで、これだけを見るとマージそのものが失敗したように読めるが、**マージとリモートブランチ削除は成功していることがある**（失敗しているのはローカルブランチの削除だけで、マージ・リモート削除は別工程のため影響を受けない）。現在の生成コマンドは `--repo` を明示し、gh v2.102.0 のローカル後処理を行わない。
 
 判定は出力の文言ではなく実測で行う:
 
@@ -1082,21 +1080,7 @@ base ではなく**削除対象の head ブランチ自体**が別の worktree�
 
 1 と 2 の終了コード `2` を満たせば、この失敗は「マージが失敗した」ことも「リモートにブランチが残っている」ことも意味しない。ローカルブランチ・保持している worktree の後始末は `/merge-cleanup` に任せてよい。
 
-終了コード `0`（残存）だったときだけ個別に削除する。**削除の前に、残っている ref がその PR の head と同一であることを確認する**。マージ後に同名ブランチが再利用されて新しいコミットが push されていることがあり、OID を照合せずに消すと別作業を削除する:
-
-```bash
-REMOTE_OID="$(git ls-remote --heads origin '<head ブランチ>' | cut -f1)"
-PR_HEAD_OID="$(gh pr view ${PR_NUMBER} --json headRefOid --jq .headRefOid)"
-[ "$REMOTE_OID" = "$PR_HEAD_OID" ] || { echo "ブランチが再利用されている。削除しない"; exit 1; }
-```
-
-これは Step 5 の worktree 自動削除が使う「(名前, ローカル OID) が MERGED PR の head と一致」と同じ証拠基準で、削除の対象が本当にマージ済みのものだと機械的に示す。
-
-一致したら削除する。**ブランチ名に含まれる `#`（Issue/PR 番号を使った命名規則）は `%23` へエンコードする**。素の `#` を渡すと `gh api` 側で URL のフラグメント区切りとして解釈され、`#` 以降が送信対象のパスから欠落した不正な ref 名になるため、`-X DELETE` は 422 で失敗する:
-
-```bash
-gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/fix/%23NNNN-<slug>
-```
+終了コード `0`（残存）のときも `/merge-cleanup <PR番号>` を使う。対象 PR の head OID と一致する ref だけを lease 付きで削除し、同名ブランチの再利用は保全する。照合不能・削除未完了を成功扱いにせず、サマリーの理由から復旧する。
 
 ```bash
 # /close-issue 完了報告の「照合時の head SHA」を転記する

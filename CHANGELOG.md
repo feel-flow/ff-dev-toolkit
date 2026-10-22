@@ -20,6 +20,48 @@
 
 ## [Unreleased]
 
+## [0.161.0] - 2026-10-22
+
+### 追加
+
+- `/gh-auth-doctor` スキルと `scripts/gh-auth-doctor.sh` を追加した。gh の HTTP 401（Bad credentials）や未ログインに当たったとき、文脈ごとに `gh api user` を実行して認証の状態を表で出し、壊れている文脈にだけ復旧手順を出す。Windows（Git Bash）ではこのシェル・PowerShell・WSL の 3 文脈、Mac / Linux では 1 文脈を測る。gh・PowerShell・`wsl.exe` の不在、WSL の起動失敗、応答なし（`--probe-timeout`）、ログイン名として読めない出力は「判定不能」として扱い、ok にしない。環境変数のトークン（`GH_TOKEN` / `GITHUB_TOKEN`、GitHub Enterprise Server では `GH_ENTERPRISE_TOKEN` / `GITHUB_ENTERPRISE_TOKEN`）が原因の 401 には、device flow ではなく環境変数を直す案内を出す。どの文脈にもログアウトは案内しない
+- 同スクリプトの `login` サブコマンドは、このシェルの gh で device flow を非対話で起動し、one-time code と URL だけを出力して利用者のブラウザ承認を待ち、完了後に `gh api user` で read-back する。トークンは読まず、出力も保存もしない。WSL の gh は PowerShell から打つ `wsl -d` 形式の `gh auth login` と `gh auth setup-git` を案内する
+- `/init-docs` の従来経路で、仕様の正本へ案内するルートの `AGENTS.md` を生成する。既存入口を保護し、Claude Code の直接読取条件と必要時の import 互換方法を案内する。
+
+### 修正
+
+- 終了コードガードへ `FF_EXIT_CODE_GUARD_GATES` で改行区切りの導入先ゲートを追加できるようにしました。宣言した `npm run ci:local` なども診断で終了コードを潰す形を停止し、rc を保存して最後に exit する形を案内します。未宣言時の挙動は従来どおりです。
+- リリース進行中の印を判定する回帰検査へ、固定時計で負の年齢の許容境界、PIDの生存・死亡、異なるホストと有効期限を確かめるケースを追加した。
+- review shim の内容不一致に、行末 CR を正規化した双方の内容識別子と、同じ版番号でも内容差が起こる理由・setup 再実行／正規リリース版選択の対処を表示する。識別子を取得できない場合は値を補わず取得不可と報告する。
+- 既存の知見ブランチから knowledge PR を作成するとき、default branch の未 push コミットと別 worktree を変更せず、PR 作成の成功を正しく返す。default branch から開始した場合の復帰処理は維持する。
+- ACE の追記を保留した知見ブランチを維持し、振り返りの観測と共通コミットへまとめて同じブランチから PR を作る手順に揃える。
+- マージ後の head 削除で ref の実在と OID を照会し、自動削除済みなら成功、別 OID なら保全、一致する ref だけを lease 付きで削除する。削除拒否後も再照会し、通信失敗や削除未完了は非 0 で報告する。
+- 生成済みマージコマンドに削除処理を含め、マージ先をホストを含む取得済みリポジトリ URL、削除先を生成元リポジトリへ固定する。実行時の作業ディレクトリ・gh の既定ホストやマージ後のプラグイン更新・除去に左右されずに後処理を行う。gh v2.102.0 が明示的な `--repo` の下で行わないローカル後処理は `/merge-cleanup` が担当する。
+- `--resume` は、正規の同梱 config の `toolkit_version` 行だけが違い、ほかの入力が同じ場合に完了済みの結果を再利用する。config の実効キー、アダプタ、観点、オーケストレータと各構成ファイルなどの変更は引き続き古い結果の再利用を止める。明示指定の config は全体を比較する。
+- ホスト委譲の同じ HEAD の `--resume` は、初回と入力が違えば応答・handoff・レポート・キャッシュを書き換える前に停止し、`--route` と `--description` を含む初回のコマンドを表示する。元の引数へ戻した次の 1 回で応答を受理できる。
+- 新しい HEAD の委譲は世代別の応答先を使い、旧未完了の委譲を未採用として報告する。旧世代の遅延応答と新世代の応答を分け、新しい応答を最初の `--resume` で受理する。初回記録が不明・不正な場合は既存ファイルを変更せず停止する。
+- `scripts/review-evidence.py` は証跡 JSON、統合レポート、タスク結果を UTF-8 で読む。既定の encoding が UTF-8 でない Python でも、1 行目に U+2014 を含む統合レポートを持つ先行証跡と継続証跡の検証が、文字コードのエラーで止まらない。`python3 -I` は `PYTHONUTF8` を無視するため、その環境変数だけでは回避できない。
+- 同じスクリプトの証跡 JSON の書き込みも UTF-8 を指定する。`ensure_ascii=False` のままロケールの encoding で書くと、読み込み側の UTF-8 と往復しない。
+- macOS の英語ロケールでも日本語の見出し・ラベル・未記入値・パスを区別し、集合の異なる要素を潰さないよう比較コマンドの照合順序を固定した（`hooks/guard-issue-labels.sh`、`scripts/effort-report.sh`、`scripts/merge-cleanup.sh`、`tests/locale-comparison/verify.sh`）。
+- 開発元リポジトリ（SSOT）専用の `claude-hooks-path` suite（公開チェックアウトでは従来どおり skip）が、高負荷の全件ゲートでまれに rc=141 で赤になっていた原因を直した。開発元側の hook 起動コマンドと SessionStart hook が、早期 exit の前に stdin を読み切らずに抜けていたためで、開発元側でどの経路も読み切ってから抜けるようにした（同梱 hook の挙動は変わらない）。あわせて suite に、読み手が抜けた後の stdin の残りバイト数で読み切りを確かめるケースを足した。読み手と書き手の順序や読み手の速さに依らずに検出でき、経路と素通しの検査は stdin をファイルから渡す形に分けた
+- 同じく開発元専用の `claude-hooks-path` と `public-dependabot-health` が、開発元側の SessionStart hook を直接起動する箇所で閉じた stdin を渡すようにした。hook は stdin を読み切ってから処理するので、suite の stdin（端末や開いたままの pipe）を引き継ぐと終わらない
+- detached HEAD の linked worktree からマージ後の掃除を実行した場合、ブランチ切り替えを伴わない掃除モードを使い、base を保持する別 worktree の HEAD を変更しない。dry-run も同じ判定を使い、base 復帰の見送りを結果に示す。
+- 先行・継続 review evidence とホスト委譲を併用した際、全応答を揃えて元のコマンドを `--resume` なしで再実行する案内を stderr と統合レポートに表示する。一部だけ採用した場合は、新しい空の出力先で全委譲を開始し直す手順を案内する。既存の証跡順序・キャッシュ再利用の拒否は維持する。
+- finish の機械出力を色設定から保護し、gh の JSON 読み取り前に FORCE_COLOR・CLICOLOR_FORCE・CLICOLOR を子プロセス内で除去する。
+- ACE runner の自動 pnpm 候補で probe と検証実行の暗黙 install を抑止し、依存のない呼び出し元へ空 lockfile と node_modules を残さず既存 workspace の tsx を解決する。
+
+### ドキュメント
+
+- `/gh-auth-doctor` の SKILL.md が、WSL の gh を探す場所として実装に無い linuxbrew の bin を挙げていたのを、実装どおり `~/.local/bin` だけに直した
+
+### セキュリティ
+
+- 同梱 MCP サーバー（spec-docs）の依存を更新し、修正版が公開されている脆弱性 7 件を解消した: vite を 8.2.2 から 8.3.5 へ（GHSA-587h-7wmj-h5pm、high / GHSA-698v-4r3x-3vcv、moderate / GHSA-r825-w8mm-5pxw、moderate。いずれも vite が同梱する launch-editor の勧告で、修正版は 8.2 系が 8.2.4 以上・8.3 系が 8.3.3 以上。採用した 8.3.5 はどの影響範囲にも含まれない）、hono を 4.13.7 から 4.13.13 へ（GHSA-5r4p-p66f-jhc7、moderate、修正版 4.13.11 以上）、markdown-it を 15.0.1 から 15.0.3 へ（GHSA-r7fv-28h4-cvq7、high、修正版 15.0.2 以上 / GHSA-gfr2-rv44-r23c、high / GHSA-vfgh-jcmw-g37q、low、修正版 15.0.3 以上）。更新後の `npm audit --package-lock-only --omit=dev` は 0 件
+- vite（vitest 経由）と hono（@modelcontextprotocol/sdk 経由）は依存元の宣言範囲内で更新した。markdown-it は markdownlint-cli2 0.23.3 が脆弱な 15.0.1 を厳密指定していたため、markdown-it 15.0.3 と smol-toml 1.9.1 を厳密指定する markdownlint-cli2 0.24.0 へ上げた。これに伴い markdownlint 本体も 0.41.1 から 0.42.0 へ上がる（MD011 / MD018 / MD020 / MD043 / MD051 / MD055 / MD060 の判定改善と front matter の問題報告を含む）が、既存の Markdown に新しい指摘が出ないことは実測で確認している
+- markdownlint-cli2 0.24.0 が smol-toml の修正版を引くようになったため、前回の依存更新で置いた markdownlint-cli2 配下の smol-toml の overrides を撤去した（smol-toml は 1.9.1 のまま）。micromark-extension-math 配下の katex の overrides は残している。markdownlint 0.42.0 も katex 0.16 系だけを宣言する micromark-extension-math 3.1.0 を厳密指定しているためで、micromark-extension-math（または markdownlint が引く版）が katex 0.18.2 以上を許すようになったら外せる
+- 今回更新した依存はいずれも同梱 MCP サーバーの配布バンドル（ビルド済みの dist）に含まれず、配布バンドルは変わらない。hono は SDK の Streamable HTTP トランスポートが使う依存で、stdio だけを使う配布物には同梱されない。vite と markdown-it は開発時のみ使う
+- 開発依存の braces（markdownlint-cli2 の globbing 経由、GHSA-vfj7-8cjw-p6xm、high）は修正版が今も公開されていない（最新版 3.0.3 が影響範囲に含まれる）ため残している。配布物には含まれず、lint 対象のパスを指定するのはリポジトリの開発者自身である
+
 ## [0.160.0] - 2026-10-21
 
 ### 変更

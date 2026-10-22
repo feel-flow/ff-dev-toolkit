@@ -180,6 +180,19 @@ EXITCODE_PROBE_MD_TEXT="${EXITCODE_FENCE}text
 ${EXITCODE_PROBE_TAIL}
 ${EXITCODE_FENCE}"
 
+# 自己検証の宣言は隔離し、実tracked走査には呼び出し元の値とexport属性を戻す。
+_ec_saved_gate_set=${FF_EXIT_CODE_GUARD_GATES+x}
+_ec_saved_gate_value=${FF_EXIT_CODE_GUARD_GATES-}
+_ec_saved_gate_exported=0
+_ec_gate_decl=$(declare -p FF_EXIT_CODE_GUARD_GATES 2>/dev/null) || _ec_gate_decl=
+_ec_gate_flags=${_ec_gate_decl#declare -}
+_ec_gate_flags=${_ec_gate_flags%% *}
+case "$_ec_gate_flags" in *x*) _ec_saved_gate_exported=1 ;; esac
+unset FF_EXIT_CODE_GUARD_GATES
+exitcode_consumer_scan() {
+  FF_EXIT_CODE_GUARD_GATES=$'\nnpm run ci:local\npnpm validate:app\n' exit_code_scan "$@"
+}
+
 EXITCODE_SELFTEST_OK=1
 exitcode_expect() { # $1: 走査関数 / $2: probe / $3: hit|nohit / $4: 期待タグ（空可） / $5: 成立時の名 / $6: 不成立時の名
   # `_ec_out=$(...)` を素で書くと awk の非 0 が pipefail 経由で代入文の終了コードに乗り、
@@ -205,6 +218,27 @@ exitcode_expect() { # $1: 走査関数 / $2: probe / $3: hit|nohit / $4: 期待�
     EXITCODE_SELFTEST_OK=0
   fi
 }
+
+EXITCODE_CONSUMER_CASES=0
+exitcode_consumer_expect() {
+  EXITCODE_CONSUMER_CASES=$((EXITCODE_CONSUMER_CASES + 1))
+  exitcode_expect "$@"
+}
+# Consumer gates: same declared gate, unsafe / propagated / undeclared, plus prefix boundaries.
+exitcode_consumer_expect exitcode_consumer_scan 'npm run ci:local > log 2>&1; echo "exit=$?"; tail log' hit gate-exit-swallowed \
+  "consumer gate 宣言あり: echo/tail 終端を検出する（AC1）" "consumer gate 宣言ありの危険形を取りこぼす"
+exitcode_consumer_expect exitcode_consumer_scan 'npm run ci:local > log 2>&1; rc=$?; tail log; exit $rc' nohit "" \
+  "consumer gate 宣言あり: rc を伝播すれば素通し（AC2）" "consumer gate の rc 伝播を誤検出する"
+exitcode_consumer_expect exit_code_scan 'npm run ci:local > log 2>&1; echo "exit=$?"; tail log' nohit "" \
+  "consumer gate 宣言なし: 従来どおり素通し（AC3）" "consumer gate 宣言なしの互換性が壊れた"
+exitcode_consumer_expect exitcode_consumer_scan 'FULL_UNIT=1 timeout 600 pnpm validate:app > log; tail log' hit gate-exit-swallowed \
+  "consumer gate の追加宣言・環境代入・wrapper も検出する" "consumer gate の wrapper 起動を取りこぼす"
+exitcode_consumer_expect exitcode_consumer_scan $'npm run ci:local > log\nrc=$?\ntail log' hit gate-exit-dropped \
+  "consumer gate の改行後の rc 脱落も検出する" "consumer gate の論理行追跡へ到達していない"
+exitcode_consumer_expect exitcode_consumer_scan 'npm run ci:locality > log; tail log' nohit "" \
+  "consumer gate 名の前方一致をしない" "consumer gate の lookalike を誤検出する"
+exitcode_consumer_expect exitcode_consumer_scan "printf '%s' 'npm run ci:local > log; tail log'" nohit "" \
+  "consumer gate が引用中のデータなら素通し" "consumer gate の引用データを起動と誤検出する"
 
 exitcode_expect exit_code_scan "$EXITCODE_PROBE_HEAD" hit pipe-exit-read \
   "終了コード検出器が \`| head\` の直後の \$? を検出できる（self-test）" \
@@ -466,6 +500,17 @@ else
     done
   fi
   rm -rf "$_gx_fx"
+fi
+
+# 自己検証の成否に関わらず実走査の前に戻す。文字列を再評価せず、末尾改行も保持する。
+unset FF_EXIT_CODE_GUARD_GATES
+if [ "$_ec_saved_gate_set" = x ]; then
+  FF_EXIT_CODE_GUARD_GATES="$_ec_saved_gate_value"
+fi
+if [ "$_ec_saved_gate_exported" -eq 1 ]; then
+  export FF_EXIT_CODE_GUARD_GATES
+elif [ "$_ec_saved_gate_set" = x ]; then
+  export -n FF_EXIT_CODE_GUARD_GATES
 fi
 
 if [ "$EXITCODE_SELFTEST_OK" -eq 1 ]; then

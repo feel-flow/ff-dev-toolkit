@@ -92,7 +92,7 @@ EXPECTED_PERSPECTIVES=(
 # h3 (`###`) では閉じない — 将来ブロック内へサブ見出しが入っても節ごと比較するため、
 # 終端は Severity Classification 節を抜ける h2 見出しに限定する。
 extract_rules_block() { # <ファイル> / stdout: ブロック本文
-  awk -v h="$RULES_HEADING" '
+  LC_ALL=C awk -v h="$RULES_HEADING" '
     $0 == h { if (opened) reopened = 1; opened = 1; inside = 1; next }
     inside && /^## / { inside = 0; closed = 1 }
     inside { print }
@@ -107,7 +107,7 @@ extract_rules_block() { # <ファイル> / stdout: ブロック本文
 to_lower() { printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 extract_h2_section() { # <完全一致の h2 見出し> <ファイル> / stdout: 節本文
-  awk -v h="$1" '
+  LC_ALL=C awk -v h="$1" '
     /^[[:space:]]*(```|~~~)/ { fence = !fence }
     !fence && $0 == h { if (opened) reopened = 1; opened = 1; inside = 1; next }
     inside && !fence && /^## / { inside = 0 }
@@ -665,7 +665,7 @@ for name in "${EXPECTED_PERSPECTIVES[@]}"; do
     continue
   fi
   # (a) 位置: Output Template より前（フェンス外の h2 行番号で比べる）
-  v_line="$(awk -v h="$VERDICT_HEADING" '/^[[:space:]]*(```|~~~)/ { f = !f } !f && $0 == h { n = NR } END { if (n) print n }' "$file")"
+  v_line="$(LC_ALL=C awk -v h="$VERDICT_HEADING" '/^[[:space:]]*(```|~~~)/ { f = !f } !f && $0 == h { n = NR } END { if (n) print n }' "$file")"
   o_line="$(awk '/^[[:space:]]*(```|~~~)/ { f = !f } !f && $0 == "## Output Template" { n = NR } END { if (n) print n }' "$file")"
   if [ -n "$v_line" ] && [ -n "$o_line" ] && [ "$v_line" -lt "$o_line" ]; then
     ok "$name — 型付き判定行の共通ブロックが Output Template より前にある"

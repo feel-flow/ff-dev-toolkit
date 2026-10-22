@@ -179,7 +179,7 @@ fix commit を積んだ回や手順 1 から時間が経った回は、**マー�
 - **`RERUN_FULL_GATE`**（判定不能のとき）: `yes` は clean な木で全件ゲートを再実行して手順 1 へ。`no` は進む（**リリース前・契約面の変更時は除く** — script は rc 0 を返すのでここで判断）。`see-action` は `FRESH_ACTION` に従う
 - **PR タイトルの件名規約（必須）**: タイトルは squash の件名になり**マージ後に直せない**。規約外なら `gh pr edit "${PR_NUMBER}" --title "<規約に沿った件名>"` で直してから進む（Refs 運用の `--subject` も同じ）
 
-merge コマンドは script が生成する（`MERGE_COMMAND_BEGIN` 〜 `END`。base / head を別 worktree が保持していれば `--delete-branch` 無し + `&&` で繋いだリモートブランチ削除）。**この出力をそのまま手順 8 の報告へ貼り、書き写さない** — 人が打ち直した時点で 2b は何も保証しなくなる。
+`MERGE_COMMAND_BEGIN` 〜 `END` の出力をそのまま実行し、手順 8 へ貼る。**書き写さない**（2b は何も保証しなくなる）。base / head を別 worktree が保持する回は、merge 成功後だけ ref を照会し、不在は成功・別 OID は保全・一致は lease 削除となる。`HEAD_DELETE_RESULT` と非 0 の読み方は [Git Workflow](../../docs-template/05-operations/deployment/git-workflow.md#ステップ8-マージmerge) に従う。
 
 ### 8. 完了報告
 

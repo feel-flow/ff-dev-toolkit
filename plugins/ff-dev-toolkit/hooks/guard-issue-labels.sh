@@ -472,7 +472,7 @@ given_labels="$(printf '%s' "$given_labels" | sed 's/^[[:space:]]*//; s/[[:space
 # `tests/github-labels-setup/verify.sh` の extract_skill_axis_names と同じ表・同じ
 # トークン文法にスコープし、軸（行頭セル）で絞り込む点だけを足している。
 extract_axis_labels() { # <軸名>
-  awk -v want="$1" '
+  LC_ALL=C awk -v want="$1" '
     /^\|[[:space:]]*軸[[:space:]]*\|/ { on = 1; next }
     on && !/^\|/ { on = 0 }
     on {

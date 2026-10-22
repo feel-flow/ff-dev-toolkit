@@ -204,6 +204,16 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 2
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Display only: never execute or source saved invocation text. Capture before --route is consumed.
+review_invocation_quote() {
+  local s="$1" sq="'" esc="'\\''"
+  if [[ -n "$s" && "$s" != *[!A-Za-z0-9._/:=@%+-]* ]]; then printf '%s' "$s"
+  else printf "'%s'" "${s//$sq/$esc}"; fi
+}
+REVIEW_INVOCATION="bash $(review_invocation_quote "$0")"
+for invocation_arg in "$@"; do
+  REVIEW_INVOCATION="${REVIEW_INVOCATION} $(review_invocation_quote "$invocation_arg")"
+done
 ROUTE=""
 ARGS=()
 while [ $# -gt 0 ]; do
@@ -277,4 +287,5 @@ case "$ROUTE" in
   *) echo "ERROR: --route must be fast|full|none (got: ${ROUTE})" >&2; exit 2 ;;
 esac
 
-exec bash "$SCRIPT_DIR/multi-agent.sh" --task review ${ARGS[@]+"${ARGS[@]}"}
+exec bash "$SCRIPT_DIR/multi-agent.sh" --task review ${ARGS[@]+"${ARGS[@]}"} \
+  --wrapper-route "${ROUTE:-none}" --invocation-display "$REVIEW_INVOCATION"

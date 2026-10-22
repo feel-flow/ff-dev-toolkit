@@ -642,6 +642,21 @@ if [[ "$RC" -eq 0 ]] && has "残骸の in-flight 印を回収しました" && ha
 else
   bad "残骸の印で止まる、または完了しない (rc=$RC)"; dump
 fi
+# Fixed-clock boundary cases use the real library already copied into the SSOT fixture.
+RELEASE_CLOCK_SKEW_CASES=0
+CLOCK_SKEW_CASES_FILE="$SCRIPT_DIR/release-clock-skew-cases.sh"
+if [ ! -f "$CLOCK_SKEW_CASES_FILE" ] || [ ! -r "$CLOCK_SKEW_CASES_FILE" ] || [ ! -s "$CLOCK_SKEW_CASES_FILE" ]; then
+  bad "clock-skew casesが無い/読めない/空"
+elif ! . "$CLOCK_SKEW_CASES_FILE"; then
+  bad "clock-skew casesをsourceできない"
+elif [ "$(type -t release_clock_skew_cases)" != function ]; then
+  bad "clock-skew cases関数が無い"
+elif release_clock_skew_cases "$SSOT/scripts/lib/release-in-flight-functions.sh" "$TMP/clock-skew-marker" "$dead_pid"; then
+  if [ "$RELEASE_CLOCK_SKEW_CASES" -gt 0 ]; then ok "clock-skewのケース集合は空でない"; else bad "clock-skewのケース集合が空"; fi
+else
+  bad "clock-skew casesの準備/実行に失敗した"
+fi
+
 # 判定と回収の間に別の取得者が入ると、回収は失敗して新しい印を残す（CAS）
 (
   . "$SSOT/scripts/lib/release-in-flight-functions.sh"

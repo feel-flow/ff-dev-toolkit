@@ -583,7 +583,7 @@ reset_ssot
 # S21: 昇格後の版節（bump 済み）で未変更の path を参照 → ATTRIBUTION_DRIFT（helper へ移した判定の回帰）
 printf '%s\n' 'readme' >> "$SSOT_FIX/oss/ff-dev-toolkit/README.md"
 write_changelog_promoted
-awk '{ if ($0 == "- 新しい変更") print "- 新しい変更（`skills/demo/SKILL.md`）"; else print }' "$SSOT_FIX/$CHANGELOG_REL" > "$TMP/cl.attr"
+LC_ALL=C awk '{ if ($0 == "- 新しい変更") print "- 新しい変更（`skills/demo/SKILL.md`）"; else print }' "$SSOT_FIX/$CHANGELOG_REL" > "$TMP/cl.attr"
 mv "$TMP/cl.attr" "$SSOT_FIX/$CHANGELOG_REL"
 write_plugin_json "0.32.0"
 commit_fix "S21"

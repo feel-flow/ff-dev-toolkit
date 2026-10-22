@@ -42,7 +42,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 
 ## 収録内容
 
-### Skills（27）
+### Skills（28）
 
 | スキル | 用途 |
 |---|---|
@@ -50,6 +50,7 @@ Claude（Web / デスクトップ）の管理画面にある「GitHubから同�
 | `harness-review` | エージェントハーネス設計のレビュー。アンチパターンカタログと観点チェックリストに基づく設計評価 |
 | `out-of-scope-issue` | スコープ外の発見を `YAGNI（対応も Issue 化もしない）→ 軽微ならインライン修正 → Issue 化` の順で判定。Issue 化前に類似 Issue を検索し、同じ完了条件ならコメントで集約。本文 AC は明示許可と競合確認がある場合だけ最小追記し、独立する場合だけ関連 Issue を作成 |
 | `check-plugin-versions` | GitHub・Claude Code 登録・Desktop セッションの版を読み取り専用で照合。更新ありと確認不可を区別する |
+| `gh-auth-doctor` | gh の 401 / 未ログインに当たったとき、文脈ごと（Windows ではこのシェル・PowerShell・WSL、Mac / Linux では 1 つ）に `gh api user` で認証を測り、壊れている文脈にだけ復旧手順を出す。このシェルは device flow でコードを提示して直す。ログアウトは案内しない |
 | `workflow-doctor` | 導入先の入口規範（CLAUDE.md / AGENTS.md / .cursor / グローバル CLAUDE.md / Stop hook）が out-of-scope-issue の判定順（YAGNI → インライン → 既存 bundle へ追記 → bundle 単位で新規）を上書きしていないかを read-only で検査。旧文言・節の必須語・bundle の受け皿・ラベル・親無し Issue を重大度付きで報告し、置換案を印字する（--fix は持たない） |
 | `removal-sweep` | 撤去（機能・設定・UI 要素の削除）PR の残存参照を 3 系統（識別子 / 表示文言 / 構造セレクタ・モック応答）で走査するチェックリスト。E2E がデプロイ済み成果物を指す構成の警告を含む |
 
@@ -173,7 +174,7 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 - 判定は `bash scripts/decision-tree/route.sh`（bash + awk。LLM を経由せずミリ秒で返る）。引数なしは cwd の差分（base は `origin/HEAD` → `origin/develop`、`--base` / `WORKFLOW_TIER_BASE` で指定）、`--files <path>...` / `--files-from <file|->` は path 一覧で判定する。stdout の `DT_ROUTE=fast|full|none` 行が契約で、`DT_REASON=` / `DT_SOURCE=` / `DT_FILES=` / `DT_LINES=` / `DT_TARGET=` が続く。判定不能は `DT_ROUTE=none` + exit 2
 - 規則（既定の `FF_JEV_MODE=off`。`tree.tsv` の `rule root` 行が値を持つ）: 契約 path（`hooks/hooks.json` / `PUBLIC-SURFACE.md` / plugin manifest / `SKILL.md` など）を含めば full → 全 path が docs（`*.md` / `docs/` / `changelog.d/` / `.version-claims/`）なら fast → 変更行数が 10 以下なら fast → それ以外は full。変更ファイルが 0 件なら none。off では Jev を呼ばず、既存の発火（`SKILL.md` の description / hook の matcher）に何も足さない
 - `FF_JEV_MODE=on` かつ `FF_JEV_POINTS` に `route` を含めると、根（choice 型ノード）は先に `scripts/jev/jev-decide.sh` へ criteria（`scripts/jev/questions/root.json`）を渡し、confidence が閾値（Choice の共通既定 0.99。判定点別の上書きは `scripts/jev/jev-decide.sh` のヘッダのとおり）以上のときだけ採用する。閾値未満と Jev の失敗は none（ホスト判定へ）、名簿に無ければ規則判定へ落ちる二段構え
-- `route.sh --check` が木の静的検査（実在しない葉・到達不能なノード・木に載っていないスキル / hook・深さ 5 以上・葉 51 以上・`none` の欠落・同じ規則キーの重複を赤にする）、`--leaves` が葉の一覧、`--walk <答え>...` が根からの辿りを出す
+- `route.sh --check` が木の静的検査（実在しない葉・到達不能なノード・木に載っていないスキル / hook・深さ 5 以上・葉 56 以上・`none` の欠落・同じ規則キーの重複を赤にする）、`--leaves` が葉の一覧、`--walk <答え>...` が根からの辿りを出す
 - hook `hooks/decision-tree.sh` は `UserPromptSubmit` でルータを cwd に当てて根の答えをセッション記録へ置き（stdout 無出力）、`Stop` で到達した葉（根の答え・transcript に残る Skill 起動・自身）を Issue 番号と repo（cwd の `git rev-parse --path-format=absolute --git-common-dir`。工数の実測記録と同じ列）付きで `${FF_DEV_TOOLKIT_STATE_DIR:-$HOME/.config/ff-dev-toolkit}/metrics/leaves.tsv` へ追記する（1 行 1 レコード・追記専用・同じセッションの同じ葉は 1 行）。Skill 起動として採るのは Skill ツールの `tool_use`（`"name":"Skill"` + `"input":{"skill":"…"}`）とスラッシュコマンド（`<command-name>/ff-dev-toolkit:<名></command-name>`）の 2 形だけで、本文に `"skill":"…"` の文字列があるだけでは採らない。どちらの痕跡も無い transcript は 0 件ではなく `(unmeasured)`。Issue 番号はブランチ名 `<type>/#<番号>-<slug>` から取る。記録が書けない・読めない・repo を引けないときは止めず、stderr に `(unmeasured)` を残す
 - 読み手は `bash scripts/effort-report.sh --unreached-leaves [--days N] [--metrics-dir DIR] [--repo-dir DIR]`（既定 14 日・カレントのリポジトリ）。repo 列が一致する行だけを採り、期間内に記録の無い葉を列挙する。記録が無い・読めないときは `(unmeasured)` と出す（0 件の到達にしない）。**既知の残差（v0）**: 列挙できるのは skill の葉と根の答えだけで、各 hook の発火と doc の葉の参照は記録の供給源が未配線のため、到達 0 ではなく `(unavailable)` 件数で出る（0 と区別する）
 - 止めたい場合は環境変数 `FF_DEV_TOOLKIT_SKIP_DECISION_TREE=1` を設定してください。plugin hooks が発火しないホストでは `route.sh` を手で呼ぶ

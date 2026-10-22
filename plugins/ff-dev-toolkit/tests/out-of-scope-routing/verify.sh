@@ -471,7 +471,7 @@ for pair in "${REFERENCED_HEADINGS[@]}"; do
   elsewhere=""
   for other in "$SKILL" "$SKILL_REFS"/*.md; do
     [[ "$other" == "$SKILL_DIR/$home" ]] && continue
-    n="$(awk -v h="$heading" '{ sub(/\r$/, "") } $0 == h { c++ } END { print c + 0 }' "$other")"
+    n="$(LC_ALL=C awk -v h="$heading" '{ sub(/\r$/, "") } $0 == h { c++ } END { print c + 0 }' "$other")"
     [[ "$n" -eq 0 ]] || elsewhere="${elsewhere}${other#"$SKILL_DIR"/} "
   done
   if [[ -z "$elsewhere" ]]; then

@@ -261,7 +261,7 @@ report_unreached_leaves() { # $1=days $2=format $3=metrics_dir $4=repo_dir
   # 到達した葉（期間内・対象 repo）の集合を「kind:name」の行で作る
   local reached=""
   if [ "$source" = "$leaves" ]; then
-    reached="$(awk -F'\t' -v cutoff="$cutoff" -v repo="$repo" '
+    reached="$(LC_ALL=C awk -F'\t' -v cutoff="$cutoff" -v repo="$repo" '
       NF != 8 || $2 !~ /^[0-9]+$/ { bad++; next }
       $8 != repo { next }
       { total++ }
@@ -466,11 +466,11 @@ metrics_issue_report() { # <issue> <metrics_dir> <repo_dir>
   local wc_src="/dev/null"
   [ -f "$wc_file" ] && [ -r "$wc_file" ] && wc_src="$wc_file"
   # start 行が無ければ reflog から補う（hook の start が優先。補った値は source=reflog で区別する）
-  if ! awk -F '\t' -v want="$issue" -v repo="$repo" \
+  if ! LC_ALL=C awk -F '\t' -v want="$issue" -v repo="$repo" \
       '$1 == want && $2 == "start" && $7 == repo { f = 1 } END { exit f ? 0 : 1 }' "$wc_src" 2>/dev/null; then
     fb="$(metrics_reflog_start "$repo_dir" "$issue")"
   fi
-  wc_out="$(awk -F '\t' -v want="$issue" -v repo="$repo" -v now="$now" -v fb="$fb" '
+  wc_out="$(LC_ALL=C awk -F '\t' -v want="$issue" -v repo="$repo" -v now="$now" -v fb="$fb" '
     $1 == want && $7 == repo && $2 == "start" && $3 ~ /^[0-9]+$/ {
       if (start == "" || $3 + 0 < start + 0) { start = $3 + 0; start_iso = $4 }
     }
@@ -498,7 +498,7 @@ metrics_issue_report() { # <issue> <metrics_dir> <repo_dir>
     # 1 ファイル目（wallclock.tsv。無ければ /dev/null）でセッションごとの開始 Issue を数え、
     # 2 ファイル目で合算する。1 ファイル目の判定は FILENAME で行う — `FNR == NR` は 1 ファイル目が
     # 空だと 2 ファイル目まで 1 ファイル目扱いになり、バイトの記録が丸ごと読まれない
-    awk -F '\t' -v want="$issue" -v repo="$repo" -v first="$wc_src" '
+    LC_ALL=C awk -F '\t' -v want="$issue" -v repo="$repo" -v first="$wc_src" '
       FILENAME == first {
         if ($2 == "start" && $5 != "" && $7 == repo) {
           if (!(($5 SUBSEP $1) in seen)) { seen[$5, $1] = 1; nissue[$5]++ }
@@ -534,7 +534,7 @@ metrics_issue_report() { # <issue> <metrics_dir> <repo_dir>
 # 記録しない）の巡が累積から漏れる。どちらにも無ければ空。
 metrics_issue_branches() { # <issue> <repo_dir> <wc_src> <repo>
   local issue="$1" dir="$2" wc_src="$3" repo="$4" from_wc="" from_git=""
-  from_wc="$(awk -F '\t' -v want="$issue" -v repo="$repo" \
+  from_wc="$(LC_ALL=C awk -F '\t' -v want="$issue" -v repo="$repo" \
     '$1 == want && $2 == "start" && $7 == repo && $6 != "" { print $6 }' "$wc_src" 2>/dev/null)" || from_wc=""
   if command -v git >/dev/null 2>&1; then
     from_git="$(git -C "$dir" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null \
@@ -608,7 +608,7 @@ metrics_gate_minutes() { # <issue> <metrics_dir> <repo>
     printf 'gate_runs=(unmeasured)\ngate_minutes=(unmeasured)\n'
     return 0
   fi
-  out="$(awk -F '\t' -v want="$issue" -v repo="$repo" '
+  out="$(LC_ALL=C awk -F '\t' -v want="$issue" -v repo="$repo" '
     $1 == want && $2 == "gate" && $9 == repo && $5 ~ /^[0-9]+$/ { total += $5; n++ }
     END {
       if (n > 0) { printf "gate_runs=%d\ngate_minutes=%d\n", n, int(total / 60 + 0.5) }
@@ -636,7 +636,7 @@ deploy_check_report() { # <本文ファイル>
     echo "effort_deploy=unavailable"
     return 0
   fi
-  out="$(awk '
+  out="$(LC_ALL=C awk '
     # 全角空白（U+3000）も空白として落とす（値が全角空白だけの行を記入済みと読まない）
     function trim(s) { sub(/^([ \t]|　)+/, "", s); sub(/([ \t]|　)+$/, "", s); return s }
     {
@@ -736,7 +736,7 @@ jq -r '.[] | .number' "$RAW" > "$NUMBERS" \
   || { echo "Issue 番号の取得に失敗しました" >&2; exit 1; }
 
 # --- 集計 ---------------------------------------------------------------
-awk -v lower="$VARIANCE_LOWER" -v upper="$VARIANCE_UPPER" -v format="$FORMAT" \
+LC_ALL=C awk -v lower="$VARIANCE_LOWER" -v upper="$VARIANCE_UPPER" -v format="$FORMAT" \
     -v limit="$LIMIT" -v from_gh="$([ -n "$INPUT" ] && echo 0 || echo 1)" '
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
 

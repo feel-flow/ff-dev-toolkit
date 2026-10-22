@@ -306,10 +306,10 @@ grep -rlE "$CFG_RE" "$TESTS_DIR" --include='*.sh' \
 if [ "$scan_rc" -ge 2 ]; then
   bad "静的照合の grep が rc=$scan_rc で失敗（走査不能。fail-closed）: $(cat "$TMP/direct.raw")"
 else
-  grep -v -F "$LIB" "$TMP/direct.raw" | grep -v -F "$SCRIPT_DIR/" | sed "s#^$TESTS_DIR/##" | sed '/^$/d' | sort -u >"$TMP/hits.txt" || true
-  printf '%s\n' "$allowlist" | sed '/^$/d' | sort -u >"$TMP/allow.txt"
-  comm -23 "$TMP/hits.txt" "$TMP/allow.txt" >"$TMP/unmigrated.txt" || true
-  comm -13 "$TMP/hits.txt" "$TMP/allow.txt" >"$TMP/stale.txt" || true
+  grep -v -F "$LIB" "$TMP/direct.raw" | grep -v -F "$SCRIPT_DIR/" | sed "s#^$TESTS_DIR/##" | sed '/^$/d' | LC_ALL=C sort -u >"$TMP/hits.txt" || true
+  printf '%s\n' "$allowlist" | sed '/^$/d' | LC_ALL=C sort -u >"$TMP/allow.txt"
+  LC_ALL=C comm -23 "$TMP/hits.txt" "$TMP/allow.txt" >"$TMP/unmigrated.txt" || true
+  LC_ALL=C comm -13 "$TMP/hits.txt" "$TMP/allow.txt" >"$TMP/stale.txt" || true
   unmigrated="$(cat "$TMP/unmigrated.txt")"
   stale="$(cat "$TMP/stale.txt")"
   allow_n="$(grep -c . "$TMP/allow.txt" || true)"
@@ -338,7 +338,7 @@ printf '%s\n' '# isolation' >"$SCAN_TREE/git-fixture-isolation/verify.sh"
 scan_rc=0
 grep -rlE "$CFG_RE" "$SCAN_TREE" --include='*.sh' >"$TMP/scan.raw" 2>&1 || scan_rc=$?
 grep -v -F "$SCAN_TREE/lib/git-fixture.sh" "$TMP/scan.raw" | grep -v -F "$SCAN_TREE/git-fixture-isolation/" \
-  | sed "s#^$SCAN_TREE/##" | sed '/^$/d' | sort -u >"$TMP/scan-hits.txt" || true
+  | sed "s#^$SCAN_TREE/##" | sed '/^$/d' | LC_ALL=C sort -u >"$TMP/scan-hits.txt" || true
 if [ "$scan_rc" -lt 2 ] && [ "$(cat "$TMP/scan-hits.txt")" = "evil/verify.sh" ]; then
   ok "静的照合は fixture 以外の identity（test@example.com）も未移行として拾う"
 else
@@ -346,8 +346,8 @@ else
 fi
 : >"$TMP/scan-allow-empty.txt"
 printf '%s\n' "gone/verify.sh" >"$TMP/scan-allow-stale.txt"
-comm -13 "$TMP/scan-hits.txt" "$TMP/scan-allow-empty.txt" >"$TMP/scan-stale-empty.txt" || true
-comm -13 "$TMP/scan-hits.txt" "$TMP/scan-allow-stale.txt" >"$TMP/scan-stale.txt" || true
+LC_ALL=C comm -13 "$TMP/scan-hits.txt" "$TMP/scan-allow-empty.txt" >"$TMP/scan-stale-empty.txt" || true
+LC_ALL=C comm -13 "$TMP/scan-hits.txt" "$TMP/scan-allow-stale.txt" >"$TMP/scan-stale.txt" || true
 if [ ! -s "$TMP/scan-stale-empty.txt" ] && [ "$(cat "$TMP/scan-stale.txt")" = "gone/verify.sh" ]; then
   ok "allowlist が空なら stale は出ず、ヒットしない entry は stale として赤になる"
 else
@@ -390,6 +390,7 @@ claude-hooks-path/verify.sh
 decision-tree/verify.sh
 docs-gates-runtime/ci-example-cases.sh
 effort-contract/verify.sh
+finish/merge-delete-cases.sh
 finish/verify.sh
 grok-hooks-sync/verify.sh
 guard-checkout-restore/verify.sh
@@ -397,6 +398,7 @@ guard-review-in-flight/verify.sh
 markdownlint-selftest/verify.sh
 mbcs-guard-failclosed/verify.sh
 merge-cleanup/agent-branches.sh
+merge-cleanup/detached-caller.sh
 merge-cleanup/verify.sh
 multi-agent-critical-marker/verify.sh
 multi-agent-host-delegation/verify.sh

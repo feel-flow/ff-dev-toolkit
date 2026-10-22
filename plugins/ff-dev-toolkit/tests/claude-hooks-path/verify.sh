@@ -30,6 +30,9 @@
 # settings.json の存在と対象 hook の定義数のみ（公開リポジトリ等では ○ skip）。定義が
 # あるのに hook 実体や drift checker が無いのは SSOT 側の事故なので fail-closed で名指しする。
 #
+# 空振り検出: settings.json・4 本すべての起動コマンド定義・jq のどれかが無い checkout は ○ skip（run-all-required: no で許容）、定義の一部・hook 実体・marker の欠落は名指しの赤、stdin を読み切らずに抜けた読み手は残りバイト数で赤（ケース 3c / 7b / 11b。読み手の速さに依らない）。
+# 変異検出: 起動コマンド 4 本から drain を外すと 3c の 8 件、そのうえ git を 0.3 秒遅くしても同じ 8 件、session-start の hook 2 本から外すと 7b / 11b の 4 件、sync-drift の drain をルート解決の早期 exit より下へ動かすと 11b の 1 件が赤（2026-10-22 実測。4 本すべての定義を消した写しは ○ skip）。
+#
 # run-all-required: no — SSOT リポジトリ専用の検査で、.claude/settings.json を持たない配布先 checkout での skip は正当な適用外
 
 set -euo pipefail
@@ -155,14 +158,39 @@ get_command() { # $1: hook 名 / stdout: settings.json の実コマンド文字�
 # 実行は sh -c — hook コマンドの実行契約に合わせる（resolver は POSIX sh の範囲で
 # 書かれており、bash 拡張に依存しないことの検査を兼ねる）。stdin には既知の
 # hook JSON を流し、hook 本体への素通し（stdin 契約）を検査可能にする。
+# stdin はファイルから渡す（経路と素通しの検査を、読み手と書き手の順序に左右させない）。
+# stdin を読み切ってから抜けるか（drain 契約）は run_cmd_drain が見る。
 HOOK_STDIN='{"tool_input":{"command":"claude-hooks-path fixture"}}'
+printf '%s' "$HOOK_STDIN" > "$TMP/hook-stdin.json"
 run_cmd() {
   local cmd="$1" dir="$2" envmode="$3"
   if [ "$envmode" = "unset" ]; then
-    (cd "$dir" && printf '%s' "$HOOK_STDIN" | env -u CLAUDE_PROJECT_DIR -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" sh -c "$cmd") >"$TMP/out.log" 2>"$TMP/err.log"
+    (cd "$dir" && env -u CLAUDE_PROJECT_DIR -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" sh -c "$cmd" < "$TMP/hook-stdin.json") >"$TMP/out.log" 2>"$TMP/err.log"
   else
-    (cd "$dir" && printf '%s' "$HOOK_STDIN" | env -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" CLAUDE_PROJECT_DIR="$envmode" sh -c "$cmd") >"$TMP/out.log" 2>"$TMP/err.log"
+    (cd "$dir" && env -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" CLAUDE_PROJECT_DIR="$envmode" sh -c "$cmd" < "$TMP/hook-stdin.json") >"$TMP/out.log" 2>"$TMP/err.log"
   fi
+}
+
+# run_cmd_drain <コマンド> <cwd> <env指定: unset|パス>
+# stdin を受ける側はどの早期 exit でも先に EOF まで読み切る契約（ACE-1331-1）を、読み手が抜けた
+# 後に stdin がどれだけ残ったかで直接測る。stdin は suite が開いたファイル記述子（fd 8）を読み手と
+# 共有させるので、読み手が読んだぶんだけ共有のオフセットが進み、抜けた後の残り（DRAIN_LEFT バイト）が
+# 0 なら読み切っている。実運用の pipe では読まずに抜けると書き手が SIGPIPE で死ぬが、それは読み手と
+# 書き手の順序次第でしか表に出ない（素の pipe では低頻度、書き手を遅らせても読み手がその遅延より
+# 遅ければ緑へ倒れる）ので、契約そのものを順序に依らない形で見る（Issue `#2261`）。
+DRAIN_LEFT=""
+run_cmd_drain() {
+  local cmd="$1" dir="$2" envmode="$3" rc=0
+  exec 8<"$TMP/hook-stdin.json"
+  if [ "$envmode" = "unset" ]; then
+    (cd "$dir" && env -u CLAUDE_PROJECT_DIR -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" sh -c "$cmd" <&8) >"$TMP/out.log" 2>"$TMP/err.log" || rc=$?
+  else
+    (cd "$dir" && env -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" CLAUDE_PROJECT_DIR="$envmode" sh -c "$cmd" <&8) >"$TMP/out.log" 2>"$TMP/err.log" || rc=$?
+  fi
+  # wc はファイル記述子ではなく pipe から数えさせる（通常ファイルの stdin だと st_size から数える実装がある）
+  DRAIN_LEFT="$(cat <&8 | wc -c | tr -d ' ')"
+  exec 8<&-
+  return "$rc"
 }
 
 NONGIT="$TMP/nongit"
@@ -246,6 +274,25 @@ for name in $HOOK_NAMES; do
     ok "${name}: hook 不在はルート未解決と区別して名指しされる"
   else
     bad "${name}: hook 不在の診断が区別されない (rc=$rc)"
+    cat "$TMP/out.log" "$TMP/err.log" | sed 's/^/    | /' >&2
+  fi
+
+  # 3c. 3 / 3b の skip 経路は stdin を EOF まで読み切ってから抜ける（drain 契約。run_cmd_drain を参照）。
+  #     診断は 3 / 3b と同じく stdout の additionalContext と stderr の両方へ出ること
+  rc=0; run_cmd_drain "$CMD" "$NONGIT" unset || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$DRAIN_LEFT" = 0 ] \
+    && /usr/bin/grep -q 'root unresolved' "$TMP/out.log" && /usr/bin/grep -q 'root unresolved' "$TMP/err.log"; then
+    ok "${name}: 解決不能の経路は stdin を読み切ってから抜ける（残り 0 バイト）"
+  else
+    bad "${name}: 解決不能の経路が stdin を読み切らずに抜ける（残り ${DRAIN_LEFT:-不明} バイト / rc=${rc}）"
+    cat "$TMP/out.log" "$TMP/err.log" | sed 's/^/    | /' >&2
+  fi
+  rc=0; run_cmd_drain "$CMD" "$NONGIT" "$ROOT_M" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$DRAIN_LEFT" = 0 ] \
+    && /usr/bin/grep -q 'hook file missing' "$TMP/out.log" && /usr/bin/grep -q 'hook file missing' "$TMP/err.log"; then
+    ok "${name}: hook 不在の経路は stdin を読み切ってから抜ける（残り 0 バイト）"
+  else
+    bad "${name}: hook 不在の経路が stdin を読み切らずに抜ける（残り ${DRAIN_LEFT:-不明} バイト / rc=${rc}）"
     cat "$TMP/out.log" "$TMP/err.log" | sed 's/^/    | /' >&2
   fi
 
@@ -387,15 +434,29 @@ ran_any() { # $1: ルート / $2: hook 名
 # run_real <コマンド> <cwd> <env指定: unset|パス>
 # 実 hook を起動する版。PATH に stub bin を前置して実ネットワークへ出さない。
 # stdin は post-merge の入口条件（`gh pr merge` を含む Bash コマンド）を満たす形。
+# run_cmd と同じくファイルから渡す。hook 本体の drain 契約は run_real_drain が見る。
 REAL_STDIN='{"tool_input":{"command":"gh pr merge 999 --squash"}}'
+printf '%s' "$REAL_STDIN" > "$TMP/real-stdin.json"
 run_real() {
   local cmd="$1" dir="$2" envmode="$3"
   rm -f "$STUB_BIN/gh.ran" "$STUB_BIN/gh.pwd"
   if [ "$envmode" = "unset" ]; then
-    (cd "$dir" && printf '%s' "$REAL_STDIN" | env -u CLAUDE_PROJECT_DIR -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" PATH="$STUB_BIN:$PATH" sh -c "$cmd") >"$TMP/out.log" 2>"$TMP/err.log"
+    (cd "$dir" && env -u CLAUDE_PROJECT_DIR -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" PATH="$STUB_BIN:$PATH" sh -c "$cmd" < "$TMP/real-stdin.json") >"$TMP/out.log" 2>"$TMP/err.log"
   else
-    (cd "$dir" && printf '%s' "$REAL_STDIN" | env -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" CLAUDE_PROJECT_DIR="$envmode" PATH="$STUB_BIN:$PATH" sh -c "$cmd") >"$TMP/out.log" 2>"$TMP/err.log"
+    (cd "$dir" && env -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" CLAUDE_PROJECT_DIR="$envmode" PATH="$STUB_BIN:$PATH" sh -c "$cmd" < "$TMP/real-stdin.json") >"$TMP/out.log" 2>"$TMP/err.log"
   fi
+}
+
+# run_real_drain <コマンド> <cwd> <パス>
+# run_real と同じ環境で起動し、抜けた後の stdin の残りを DRAIN_LEFT に入れる（run_cmd_drain と同じ測り方）。
+run_real_drain() {
+  local cmd="$1" dir="$2" envmode="$3" rc=0
+  rm -f "$STUB_BIN/gh.ran" "$STUB_BIN/gh.pwd"
+  exec 8<"$TMP/real-stdin.json"
+  (cd "$dir" && env -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="$TMP" CLAUDE_PROJECT_DIR="$envmode" PATH="$STUB_BIN:$PATH" sh -c "$cmd" <&8) >"$TMP/out.log" 2>"$TMP/err.log" || rc=$?
+  DRAIN_LEFT="$(cat <&8 | wc -c | tr -d ' ')"
+  exec 8<&-
+  return "$rc"
 }
 
 echo
@@ -431,6 +492,18 @@ for name in $BODY_HOOK_NAMES; do
     ok "${name}: cwd が非 git でも CLAUDE_PROJECT_DIR 側のスクリプトを実行する"
   else
     bad "${name}: cwd が非 git のとき指定ルート側のスクリプトが実行されない（未実行:${miss:- なし} rc=${rc}）"
+    cat "$TMP/out.log" "$TMP/err.log" | sed 's/^/    | /' >&2
+  fi
+
+  # 7b. hook 本体も stdin を EOF まで読み切る（drain 契約。run_cmd_drain を参照）。ケース 7 と同じ
+  #     配置（処理を最後まで通す経路）で、処理が同じく完了することも見る。早期 exit の側はケース 11b
+  rm -f "$RA/scripts"/*.ran
+  rc=0; run_real_drain "$CMD" "$NONGIT" "$RA" || rc=$?
+  miss="$(missing_markers "$RA" "$name")"
+  if [ "$rc" -eq 0 ] && [ "$DRAIN_LEFT" = 0 ] && [ -z "$miss" ]; then
+    ok "${name}: hook 本体は stdin を読み切ってから処理を終える（残り 0 バイト）"
+  else
+    bad "${name}: hook 本体が stdin を読み切らずに抜ける、または処理が完了しない（残り ${DRAIN_LEFT:-不明} バイト / 未実行:${miss:- なし} / rc=${rc}）"
     cat "$TMP/out.log" "$TMP/err.log" | sed 's/^/    | /' >&2
   fi
 
@@ -558,6 +631,18 @@ GHOST_ALERTS=0"
     ok "${name}: hook がリポジトリ外にあるときはスキップを可視化する（無音にしない）"
   else
     bad "${name}: リポジトリ外配置のスキップが可視化されない (rc=${rc})"
+    cat "$TMP/out.log" "$TMP/err.log" | sed 's/^/    | /' >&2
+  fi
+
+  # 11b. 本体で最も早く到達できる早期 exit（hook の配置からルートを解決できない）でも stdin を
+  #      読み切ってから抜ける。7b は処理を最後まで通す経路しか通らないので、drain をこの exit より
+  #      下へ動かす退行はここでしか赤にならない（drain 契約。run_cmd_drain を参照）
+  rc=0; run_real_drain "$CMD" "$NONGIT" "$RN" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$DRAIN_LEFT" = 0 ] \
+    && /usr/bin/grep -q 'リポジトリルートを解決できなかった' "$TMP/out.log"; then
+    ok "${name}: ルート解決不能の早期 exit でも stdin を読み切ってから抜ける（残り 0 バイト）"
+  else
+    bad "${name}: ルート解決不能の早期 exit が stdin を読み切らずに抜ける（残り ${DRAIN_LEFT:-不明} バイト / rc=${rc}）"
     cat "$TMP/out.log" "$TMP/err.log" | sed 's/^/    | /' >&2
   fi
 done
@@ -720,9 +805,10 @@ else
     if declare -F ff_skip_msys_case >/dev/null 2>&1 && ff_skip_msys_case "${OSTYPE:-}" "最小 PATH の ${n} は実行ファイルのコピーが DLL を読めず rc=127 になる"; then
       continue
     fi
+    # hook は stdin を EOF まで読み切るので、ホストと同じく閉じる stdin を渡す（開いたままだと終わらない）
     rc=0
     (cd "$RG" && env -u CLAUDE_PROJECT_DIR -u GIT_DIR -u GIT_WORK_TREE -u SYNC_DRIFT_BASE_OVERRIDE -u DEPENDABOT_HEALTH_GH \
-      GIT_CEILING_DIRECTORIES="$TMP" PATH="$NOGH_BIN" bash "$RG/.claude/hooks/$n") \
+      GIT_CEILING_DIRECTORIES="$TMP" PATH="$NOGH_BIN" bash "$RG/.claude/hooks/$n" < "$TMP/hook-stdin.json") \
       >"$TMP/out.log" 2>"$TMP/err.log" || rc=$?
     ctx="$(jq -r '.hookSpecificOutput.additionalContext // empty' "$TMP/out.log" 2>/dev/null || true)"
     if [ "$rc" -eq 0 ] && /usr/bin/grep -q 'gh 不在のため検査をスキップ' <<<"$ctx" \

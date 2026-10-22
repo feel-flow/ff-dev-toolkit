@@ -31,6 +31,7 @@
 #
 # run-all-required: no — jq 不在での skip を許容する（兄弟の hook suite と同じ判断）
 # 空振り検出: 一時領域へ写す ASDD ゲートから scripts/asdd/（設定の検証本体）の複製を外すと、写したゲートの判定が rc=2（判定不能）になり D3a の 2 件と D4b の 1 件が赤（2026-09-28 実測、bundle `#1808`。D3 の drain 検査だけでは判定不能の分岐と無効の分岐を区別できない）。
+# 空振り検出: consumer保存回帰の集合を0件へ替えると、実ケースのfocused集合境界が1件赤・rc=1。正常は4/0、共有検出器への宣言受渡しを外す単独変異は宣言あり危険形だけ1件赤・rc=1（構文はいずれも0、2026-10-22）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -256,6 +257,22 @@ case "$REASON" in
   *'exit $rc'*) ok "F8: 終了コードの deny 本文が exit \$rc までの伝播を案内する" ;;
   *) bad "F8: exit \$rc の案内が無い: [${REASON}]" ;;
 esac
+
+# 同じ共有検出器を使う保存時のconsumer宣言。実内容のdeclared/undeclared/safeを固定する。
+CONSUMER_SAVE_CASES=0
+consumer_save_cases() {
+  run_json "$HOOK" "$(write_json "$WORK/scripts/consumer.sh" 'make ci > log; tail log')" 'FF_EXIT_CODE_GUARD_GATES=make ci'
+  assert_fire "consumer宣言ありの危険形を保存時もdenyする"
+  CONSUMER_SAVE_CASES=$((CONSUMER_SAVE_CASES + 1))
+  run_json "$HOOK" "$(write_json "$WORK/scripts/consumer.sh" 'make ci > log; tail log')"
+  assert_pass "consumer宣言なしの同じ保存内容は既定互換"
+  CONSUMER_SAVE_CASES=$((CONSUMER_SAVE_CASES + 1))
+  run_json "$HOOK" "$(write_json "$WORK/scripts/consumer.sh" 'make ci > log; rc=$?; tail log; exit $rc')" 'FF_EXIT_CODE_GUARD_GATES=make ci'
+  assert_pass "consumer宣言ありでもrc伝播する保存内容はallowする"
+  CONSUMER_SAVE_CASES=$((CONSUMER_SAVE_CASES + 1))
+}
+consumer_save_cases
+if [ "$CONSUMER_SAVE_CASES" -gt 0 ]; then ok "consumer saveのケース集合は空でない"; else bad "consumer saveのケース集合が空"; fi
 
 echo "guard-shell-save: 非発火側（N）"
 run_json "$HOOK" "$(write_json "$WORK/tests/x/verify.sh" "$(printf '%s\n' '#!/usr/bin/env bash' "$MB_GOOD")")"

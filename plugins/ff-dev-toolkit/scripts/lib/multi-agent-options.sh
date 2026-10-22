@@ -366,10 +366,24 @@ REUSED_TASKS=""
 EXECUTED_TASKS=""
 # 2: 構成ファイル（MULTI_AGENT_PARTS）を orchestrator と並べて identity へ算入した（ADR-075）
 # 3: adapter-common.sh の構成ファイル（ADAPTER_COMMON_PARTS）も同じ形で算入した（ADR-075）
-RESUME_IDENTITY_VERSION=3
+RESUME_IDENTITY_VERSION=4
 RESUME_IDENTITY=""
 RESUME_CACHE_DIR=""
 RESUME_CACHE_PENDING=""
+RESUME_INPUT_MANIFEST=""
+RESUME_FIXED_DIFF_HASH=""
+CACHE_MISS_REASON=""
+INVOCATION_DISPLAY=""
+WRAPPER_ROUTE="direct"
+DELEGATION_GENERATION=""
+DELEGATION_STATE_DIR=""
+DELEGATION_PREVIOUS_HEAD=""
+DELEGATION_PREVIOUS_IDENTITY=""
+DELEGATION_PREVIOUS_GENERATION=""
+DELEGATION_PREVIOUS_INVOCATION=""
+DELEGATION_PREVIOUS_MANIFEST=""
+DELEGATION_UNADOPTED_NOTES=""
+DELEGATION_STATE_NEW=false
 
 # 同じ output-dir を使う別 orchestrator との排他。成果物は run-id で分離せず、利用者が
 # 従来どおり固定パスから読める契約を保つ代わりに、1 output-dir = 1 active run とする。
@@ -413,6 +427,10 @@ finalize_base_branch() {
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --invocation-display) INVOCATION_DISPLAY="$2"; shift 2 ;;
+      --wrapper-route)
+        case "${2:-}" in none|fast|full) WRAPPER_ROUTE="$2" ;; *) echo 'ERROR: invalid wrapper route' >&2; exit 2 ;; esac
+        shift 2 ;;
       --task)        TASK_TYPE="$2"; shift 2 ;;
       --description) DESCRIPTION="$2"; shift 2 ;;
       --include-diff) INCLUDE_DIFF=true; shift ;;

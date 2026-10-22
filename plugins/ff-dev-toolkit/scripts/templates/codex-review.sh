@@ -271,8 +271,18 @@ select_cache_toolkit() { # <cache-root> [<glob: 既定は */ff-dev-toolkit/*>]
   SELECTED_CACHE_VERSION="$best_version"
 }
 
+# 比較と同じ行末正規化を行い、ファイルの末尾 LF も含めて stream のまま識別する。
+# git は diff の既存前提。-w は使わず、失敗や空出力を内容 ID にしない。
+normalized_content_id() {
+  local path="$1" digest
+  [ -f "$path" ] && [ -r "$path" ] || return 1
+  digest="$(LC_ALL=C sed $'s/\r$//' "$path" | git hash-object --stdin)" || return 1
+  [ -n "$digest" ] || return 1
+  printf 'git-blob:%s\n' "$digest"
+}
+
 verify_toolkit_identity() {
-  local root="$1" version="$2" config_version template
+  local root="$1" version="$2" config_version template template_id shim_id
   template="$root/scripts/templates/codex-review.sh"
   # 比較は行末を正規化して行う（Issue #658）。Windows の plugin cache はテンプレートを
   # CRLF で持つことがあり、setup は配置時に LF へ正規化する。byte 比較のままだと、
@@ -281,9 +291,20 @@ verify_toolkit_identity() {
   # `tr -d '\r'` は本文中の CR も消すため、CR の有無だけ違う別内容を同一版と
   # 誤認する（setup 側 setup_strip_cr と同じ判定）。
   if [ ! -r "$template" ] || ! cmp -s <(sed $'s/\r$//' "$0") <(sed $'s/\r$//' "$template"); then
-    echo "ERROR: 解決した ff-dev-toolkit と配置済み shim の版が一致しません。" >&2
+    if ! template_id="$(normalized_content_id "$template")"; then template_id="(取得不可)"; fi
+    if ! shim_id="$(normalized_content_id "$0")"; then shim_id="(取得不可)"; fi
+    if [ "$template_id" = "(取得不可)" ] || [ "$shim_id" = "(取得不可)" ]; then
+      echo "ERROR: template と配置済み shim の内容の一致を確認できません（内容 ID を取得できません）。" >&2
+    else
+      echo "ERROR: 解決した ff-dev-toolkit の template と配置済み shim が内容不一致です。" >&2
+    fi
+    echo "       同じ版番号でも、未リリースの変更などで内容が異なる場合があります。" >&2
     echo "       toolkit=${root} version=${version}" >&2
-    echo "       bash ${root}/scripts/setup-multi-agent.sh を再実行してください。" >&2
+    echo "       template=${template} content-id=${template_id}" >&2
+    echo "       shim=$0 content-id=${shim_id}" >&2
+    echo "       content-id は行末の CR だけを除いた Git blob の識別子です。" >&2
+    echo "       使用する toolkit を確認し、bash \"${root}/scripts/setup-multi-agent.sh\" を再実行してください。" >&2
+    echo "       正規リリース版を使う場合は、対象版の toolkit を導入・明示して同じ setup を再実行してください。" >&2
     return 2
   fi
   if ! config_version="$(sed -nE 's/^toolkit_version:[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' "$root/scripts/agent-config.yaml" 2>/dev/null)" \

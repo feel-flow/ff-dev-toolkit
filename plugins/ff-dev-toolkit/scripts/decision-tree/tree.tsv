@@ -16,10 +16,11 @@
 #   rule    <node-id>   <キー>   <値>
 #     choice ノードの機械判定規則。root の 3 キーは route.sh のヘッダが意味を持つ
 #
-# 制約（--check が固定する）: 深さ（root から葉までの辺数）≤ 4、葉 ≤ 50、
+# 制約（--check が固定する）: 深さ（root から葉までの辺数）≤ 4、葉 ≤ 55、
 # 実在しない葉 / 到達不能なノード / 木に載っていないスキル・hook / 同じ (node, key) の rule の重複 /
 # 未知の rule キーはいずれも赤。葉の上限は「27 スキル + 起票時の 16 hook + 熟慮へ + アーカイブ候補
-# = 45」から、Wave 0 が hook を 2 本足したぶんを含めて 50 へ置いた（深さの上限は据え置き）。
+# = 45」から、Wave 0 が hook を 2 本足したぶんを含めて 50 へ置いた。28 本目のスキル（gh-auth-doctor）で
+# 「28 スキル + 22 hook + 熟慮へ = 51」になったので、上限だけを 55 へ補正した（深さの上限は据え置き）。
 
 # ---- 根: 経路分岐（fast / full / none）------------------------------------------------
 # 規則の評価順（route.sh）: contract-path に当たる path が 1 つでもあれば full →
@@ -101,6 +102,7 @@ answer	setup	labels	skill:setup-github-labels
 answer	setup	docs-validate	skill:validate-docs
 answer	setup	plugin-versions	skill:check-plugin-versions
 answer	setup	entry-rules	skill:workflow-doctor
+answer	setup	gh-auth	skill:gh-auth-doctor
 answer	setup	none	none
 
 # ---- hook（ホストのイベントで走る葉）-----------------------------------------------------

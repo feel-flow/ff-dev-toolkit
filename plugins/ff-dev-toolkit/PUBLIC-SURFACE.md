@@ -53,6 +53,7 @@
 - `check-plugin-versions`
 - `close-issue`
 - `create-issue`
+- `gh-auth-doctor`
 - `harness-review`
 - `init-docs`
 - `knowledge-lookup`
@@ -199,6 +200,8 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 
 #### hooks の閾値・対象
 
+- `FF_EXIT_CODE_GUARD_GATES`（終了コードガードへ追加する導入先ゲート。改行区切りの literal command prefix。hook プロセスの環境へ export する。未設定時は既定互換）
+
 - `FF_DEV_TOOLKIT_STATE_DIR`（工数の実測記録の置き場の親。既定 `$HOME/.config/ff-dev-toolkit`）
 - `FF_DEV_TOOLKIT_UPDATE_TTL_NOTIFIED`
 - `FF_LONG_GATE_FOREGROUND_TIMEOUT_MS`
@@ -344,6 +347,7 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_RUN_ALL_DUMP_DECLARATIONS`
 - `FF_RUN_ALL_ELAPSED_FIXTURE`
 - `FF_RUN_ALL_FAST`
+- `FF_RELEASE_IN_FLIGHT_MAX_AGE`
 - `FF_RUN_ALL_JOBS`
 - `FF_RUN_ALL_MCP_DIR`
 - `FF_RUN_ALL_MCP_NODE_MODULES`
@@ -385,6 +389,7 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_SYNC_SHA_RELEASE_SCRIPT`
 - `FF_SYNC_SHA_SCRIPT`
 - `FF_SYNC_SHA_SKILL`
+- `FF_TEST_CODEX_COUNT`（委譲レビュー検査の CLI stub 起動数ファイル）
 - `FF_TEST_MODEL_SET`
 - `FF_TEST_MODEL_UNSET`
 - `FF_TEST_MODE`

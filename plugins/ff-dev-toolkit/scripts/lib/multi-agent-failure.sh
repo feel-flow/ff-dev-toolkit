@@ -374,7 +374,7 @@ ensure_diff_size_summary() { # DIFF_SIZE_SUMMARY を "N bytes across M changed f
   # 案内が実際より大きなファイル数を名指しする。ヘッダー行はパス対ごとに一意なので、
   # 行を dedup してから数えれば distinct なファイル数になる。
   # `grep` は 0 件で rc=1 を返す（= 変更 0 件という正当な観測）ので rc は見ない。
-  files="$( { grep '^diff --git ' "$FIXED_DIFF_FILE" 2>/dev/null || true; } | sort -u | wc -l | tr -d '[:space:]')" || files=""
+  files="$( { grep '^diff --git ' "$FIXED_DIFF_FILE" 2>/dev/null || true; } | LC_ALL=C sort -u | wc -l | tr -d '[:space:]')" || files=""
   if [[ "$files" =~ ^[0-9]+$ ]]; then
     DIFF_SIZE_SUMMARY="${bytes} bytes across ${files} changed file(s)"
   else

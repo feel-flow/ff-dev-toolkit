@@ -38,7 +38,7 @@ git merge-base --is-ancestor "origin/${default_branch}" HEAD || {
 
 ## 照合の根拠（記録の前に base の先行を見る理由）
 
-台帳は**デフォルト統合ブランチの共有文書**で、`/retrospective` はそこへ直接 commit + push する。並行セッションが先に更新していると、同一性判定・`Count` +1・OBS ID 採番がいずれも古い台帳から決まる。push の non-fast-forward は**最終境界であって検出点ではない**（弾かれた時点で記録内容は作られており、`Count` が二重に増えうる）。台帳から決まる値は `/ace-curate` の「共有値の確定前ガード」と同じく base の先行を見てから決める。fetch 失敗の停止メッセージには git が出した原因を付ける（remote URL の資格情報部だけ `***` へ伏せる）。
+台帳は**デフォルト統合ブランチの共有文書**で、`/retrospective` は知見単独コミットを直 push または知見 PR で届ける。並行セッションが先に更新していると、同一性判定・`Count` +1・OBS ID 採番がいずれも古い台帳から決まる。push の non-fast-forward は**最終境界であって検出点ではない**（弾かれた時点で記録内容は作られており、`Count` が二重に増えうる）。台帳から決まる値は `/ace-curate` の「共有値の確定前ガード」と同じく base の先行を見てから決める。fetch 失敗の停止メッセージには git が出した原因を付ける（remote URL の資格情報部だけ `***` へ伏せる）。
 
 > **`/ace-curate` との述語差（意図的）**: clean tree の検査を**台帳のパスへ絞っている**。台帳の書き込みは 1 ファイルの単独コミットで commit を pathspec へ固定しているため、作業ツリー全体の clean を要求すると、作業中に単独実行した振り返りが先行の無い状態でも記録できなくなる。base の先行を見る向きは `/ace-curate` と同一。
 
@@ -78,6 +78,16 @@ if [ "${FF_JEV_MODE:-off}" = on ]; then
 fi
 ```
 <!-- ff-triage-entry:end -->
+
+## 保留の合流と送信経路
+
+モード判定直後に `knowledge-commit status` を読み、保留がある場合は、現在のブランチ名を取得し、取得成功時の空名は `(detached)` として `KNOWLEDGE_PENDING_BRANCH` と照合する。不一致や取得失敗は停止し、**保留を作った同じブランチを維持し、default / detached へ切り替えない**。既存の `chore/ace-from-*` / `chore/retro-from-*` は知見ブランチとして扱う。他の非 default ブランチで保留があれば、切り替えず保留の復帰手順で解決する。保留が無い非 default は、記録前に default へ戻るか [worktree セッションの準備](../../ace-curate/references/curate.md#worktreeセッションからの知見記録)を通す。他 worktree の default を切り替えない。
+
+- 観測を書く回は、同じブランチで照合フェンスを通し、OBS を `add` してから共通の `commit` で ACE と畳む。既存知見ブランチの保留を先に commit して別コミットに分けない。
+- **観測 0 件・off モード・ask 拒否でも、保留を同じブランチで commit し、同じ送信分岐を使う**。保留も観測も無ければ送信しない。
+- **default / detached は `knowledge-commit push`**。保護による rc 3 は `/ace-curate` 手順 5 の PR 経路へ進む。detached からは commit を保った知見ブランチを作って `pr` を呼ぶ。他の非 0 は停止して原因を解決する。
+- **既存知見ブランチは push を試さず `knowledge-commit pr`**。`knowledge_branch="$(git branch --show-current)"` の成功と `chore/ace-from-*` / `chore/retro-from-*` への一致を確認し、その実測名を `--branch "${knowledge_branch}"` に渡す。title は共通 commit の件名を `git log -1 --format=%s` で実測する（`commit` が返した `KNOWLEDGE_SUBJECT` でもよい）。placeholder を渡さず、body は同一セッションの知見記録であることを示す。既に PR があれば重複作成せず、その到達状態を確認する。
+- **既存知見ブランチからの pr は local default と他 worktree を変更しない**。helper の default 復帰は default から知見ブランチを作った回だけ。送信範囲ガード・PR のレビューとマージは省略せず、実際の経路と到達状態を報告する。
 
 ## 書き込み（定型コミット）の根拠
 

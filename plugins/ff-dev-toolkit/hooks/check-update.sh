@@ -83,7 +83,7 @@ asdd_hook_enabled hooks || exit 0
 # ---- Windows の Git Bash での WSL 案内（Issue `#2030`） ---------------------------
 # Git Bash（MSYS / Cygwin）上のときだけ、WSL での利用をすすめる案内を 1 日 1 回出す。判定と文言は
 # scripts/lib/wsl-notice.sh（全件ゲートの冒頭案内と共有）が持つ。hook を新設せずここへ畳むのは、
-# 決定木（scripts/decision-tree/tree.tsv）の葉が上限 50 に達しており、hook 1 本で 51 件になるため。
+# 決定木（scripts/decision-tree/tree.tsv）の葉が当時の上限 50 に達しており、hook 1 本で 51 件になったため（上限はその後 55 へ補正した）。
 #   - 更新チェックのオプトアウトより前で判定する（無効化は FF_DEV_TOOLKIT_SKIP_WSL_NOTICE で独立）
 #   - lib が読めない配置（古い配布物・fixture コピー）では WSL 案内だけを飛ばし、更新通知は従来どおり
 #   - Linux / macOS / WSL の中では判定（bash 組み込みの OSTYPE）だけで抜け、プロセスを起動しない

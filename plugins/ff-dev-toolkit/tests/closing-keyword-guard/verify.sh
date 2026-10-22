@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 抽出先 scripts/lib/finish-precheck.sh を空にすると必須ファイル非空の確認で rc1 になる（2026-10-22 実測。入口に名前だけが残っても参照抽出を検査したことにしない）。
 #
 # closing keyword 抵触検査の回帰テスト。
 #
@@ -32,7 +33,8 @@ SKILL="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
 # scripts/finish.sh precheck が実行し、2a / 2b の根拠散文と手動クローズの警告文は
 # references/merge-gate.md、AC 陳腐化の判定規則は references/ac-judgement.md へ置いてある。
 # 針は規定が実際に置かれたファイルへ張る。
-FINISH="$PLUGIN_ROOT/scripts/finish.sh"
+# precheck 本体の実際の配置を検査する（入口に残る名前だけでは緑にしない）。
+FINISH="$PLUGIN_ROOT/scripts/lib/finish-precheck.sh"
 GATE_REF="$PLUGIN_ROOT/skills/close-issue/references/merge-gate.md"
 AC_REF="$PLUGIN_ROOT/skills/close-issue/references/ac-judgement.md"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
@@ -562,7 +564,8 @@ contains "$SKILL" '--body "Refs #${REFS_ISSUE}' "Refs 運用の merge 本文が 
 # 日本語を壊すため置換した（回帰は tests/close-issue-shell-quote が見る）。ここが見るのは
 # 「literal ではなく変数展開で組み立てる」という契約なので、引用方式が変わっても変わらない。
 contains "$FINISH" '--subject %s' "merge コマンドを検査済み変数から組み立てる"
-contains "$FINISH" '"$(q "${MERGE_SUBJECT}")" "$(q "${MERGE_BODY}")"' "生成に 2b で検査した変数をそのまま展開する"
+contains "$FINISH" 'quoted_merge_subject="$(q "$MERGE_SUBJECT")" && quoted_merge_body="$(q "$MERGE_BODY")"' "2b で検査した変数を事前引用する"
+contains "$FINISH" '"$quoted_merge_subject" "$quoted_merge_body"' "生成に 2b の検査後に引用した変数をそのまま展開する"
 # merge コマンドの生成は手順 7（鮮度照合の後）へ移した。`--match-head-commit` へ渡して
 # よい先端は照合を通った値だけで、2b の時点では確定しないため（Issue #880）。ここが
 # 見ているのは「報告へ貼るのは生成物であって書き写しではない」という契約で、

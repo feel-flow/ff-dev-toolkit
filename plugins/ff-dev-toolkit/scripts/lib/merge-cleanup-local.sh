@@ -710,10 +710,10 @@ else
     REMOTE_LIST="$WORK_TMP/remote.list"   # "name<TAB>oid"
     printf '%s\n' "$LS_REMOTE_OUT" \
       | awk -F'\t' '{ sub("refs/heads/", "", $2); print $2 "\t" $1 }' \
-      | sort -u > "$REMOTE_LIST"
+      | LC_ALL=C sort -u > "$REMOTE_LIST"
 
     # (名前, OID) 完全一致のみ候補にする。OID も控えて lease 付き削除に使う
-    LEFTOVER="$(comm -12 "$MERGED_LIST" "$REMOTE_LIST")"
+    LEFTOVER="$(LC_ALL=C comm -12 "$MERGED_LIST" "$REMOTE_LIST")"
 
     if [ -z "$LEFTOVER" ]; then
       # 対象 PR の削除をスキップしていた場合、その head は照合に一致しないまま
@@ -875,7 +875,7 @@ if [ "$CURRENT_BRANCH" != "$PR_BASE" ]; then
   if [ "$DRY_RUN" = "1" ]; then
     echo "ℹ️ dry-run のため ${PR_BASE} への復帰は行っていません: ${CURRENT_BRANCH:-（detached）}"
   elif [ "$NO_SWITCH_MODE" = "1" ]; then
-    echo "ℹ️ 呼び出し元のブランチを保持したままです: ${CURRENT_BRANCH}（switch なし掃除モードのため base への復帰は行っていません）"
+    echo "ℹ️ 呼び出し元のブランチを保持したままです: ${CURRENT_BRANCH:-（detached HEAD）}（switch なし掃除モードのため base への復帰は行っていません）"
   else
     echo "⚠️ 現在のブランチが $PR_BASE ではありません: $CURRENT_BRANCH"
   fi

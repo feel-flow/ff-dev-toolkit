@@ -8,7 +8,7 @@
 
 extract_yaml_fence() {
   local source="$1" heading="$2" output="$3"
-  awk -v heading="$heading" '
+  LC_ALL=C awk -v heading="$heading" '
     $0 == heading { found_heading = 1; next }
     found_heading && !in_fence && $0 ~ /^#{1,6}[[:space:]]/ { exit 2 }
     found_heading && !in_fence && $0 == "```yaml" { in_fence = 1; next }
@@ -20,7 +20,7 @@ extract_yaml_fence() {
 
 extract_yaml_run_step() {
   local yaml="$1" name="$2" output="$3"
-  awk -v wanted="$name" '
+  LC_ALL=C awk -v wanted="$name" '
     $0 == "      - name: " wanted { in_step = 1; next }
     in_run && /^      - name:/ { exit(found ? 0 : 2) }
     in_step && /^      - name:/ { exit 2 }
@@ -44,7 +44,7 @@ extract_yaml_run_step() {
 
 extract_yaml_named_step() {
   local yaml="$1" name="$2" output="$3"
-  awk -v wanted="$name" '
+  LC_ALL=C awk -v wanted="$name" '
     $0 == "      - name: " wanted { in_step = 1 }
     in_step && found && /^      - (name:|uses:)/ { exit 0 }
     in_step { print; found = 1 }

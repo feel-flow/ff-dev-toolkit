@@ -30,8 +30,13 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+# Evidence files are UTF-8. That covers the Path text reads in this file:
+# evidence JSON (load), the integrated report (inspect; its title contains
+# U+2014), and task results (finish). python3 -I ignores PYTHONUTF8, so the
+# locale encoding must not decode those files. git stdout (subprocess
+# text=True) stays on the locale decoder; those payloads are ASCII identifiers.
 def load(path):
-    return json.loads(Path(path).read_text())
+    return json.loads(Path(path).read_text(encoding='utf-8'))
 
 
 def write(path, value):
@@ -39,7 +44,10 @@ def write(path, value):
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + '.' + uuid.uuid4().hex)
     try:
-        tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
+        # ensure_ascii=False would follow the locale without an explicit encoding,
+        # and the UTF-8 reads above would not round-trip.
+        tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n',
+                       encoding='utf-8')
         tmp.chmod(0o600)
         os.replace(tmp, target)
     finally:
@@ -89,7 +97,7 @@ def inspect(record, seen=None):
     seen.add(rid)
     if digest(record['report']) != record['report_sha256']:
         raise ValueError('review report changed')
-    text = Path(record['report']).read_text()
+    text = Path(record['report']).read_text(encoding='utf-8')
     # Escaped to keep the source ASCII.
     if text.splitlines()[0] != '# Multi-CLI Review \u2014 Integrated Report':
         raise ValueError('not an integrated review report')
@@ -206,7 +214,7 @@ def main():
             raise ValueError('review evidence producer changed between begin and finish')
         if subject(record['subject']['base_ref'], args.output) != record['subject']:
             raise ValueError('repository changed during review')
-        rows = [row.split('\t') for row in Path(args.results).read_text().splitlines()]
+        rows = [row.split('\t') for row in Path(args.results).read_text(encoding='utf-8').splitlines()]
         if any(len(row) != 2 for row in rows) or len({row[0] for row in rows}) != len(rows):
             raise ValueError('invalid/duplicate task result')
         # The task set must be the begin plan; the states stay verify's to judge (an

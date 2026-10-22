@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 抽出先 scripts/lib/finish-precheck.sh を空にすると 277/0 から267/10となり、鮮度分岐の切り出し0行・停止と報告・生成先端の針が赤になる（2026-10-22 実測）。
 #
 # merge-freshness: マージ直前の鮮度ゲート（「リモート先端 == ゲート実測対象」）の回帰検査。
 #
@@ -57,7 +58,8 @@ RUNNER="$TESTS_DIR/run-all.sh"
 SKILL="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
 # 鮮度照合の分岐（終了コードごとの停止 / 報告文字列）と merge コマンドの生成は scripts/finish.sh
 # precheck が実行し、根拠の散文は references/merge-gate.md に置く。針は規定が置かれた先へ張る。
-FINISH="$PLUGIN_ROOT/scripts/finish.sh"
+# precheck 本体の実際の配置を検査する（入口に残る名前だけでは緑にしない）。
+FINISH="$PLUGIN_ROOT/scripts/lib/finish-precheck.sh"
 GATE_REF="$PLUGIN_ROOT/skills/close-issue/references/merge-gate.md"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 DEPLOYMENT="$ROOT/docs/05-operations/DEPLOYMENT.md"
@@ -1119,7 +1121,7 @@ contains "$FINISH" '「全件実行で通した」と読ませないため' "高
 # ロケールで日本語を壊すため置換した。回帰は tests/close-issue-shell-quote が見る）。
 # ここが見ているのは「生成が照合した先端 REMOTE_HEAD を使う」ことなので、引用方式が
 # 変わっても契約は変わらない。
-contains "$FINISH" '"${PR_NUMBER}" "${REMOTE_HEAD}" "${DELETE_FLAG:-}" "$(q "${MERGE_SUBJECT}")"' "merge コマンドの生成が照合した先端を使う"
+contains "$FINISH" '"${PR_NUMBER}" "$quoted_target_repo" "${REMOTE_HEAD}" "${DELETE_FLAG:-}" "$quoted_merge_subject"' "merge コマンドの生成が照合した先端を使う"
 
 contains "$WORKFLOW" "ff-dev-toolkit-merge-freshness-contract:start" "git-workflow に鮮度ゲートの契約ブロックがある"
 contains "$WORKFLOW" "check-merge-freshness.sh" "git-workflow が検査スクリプトを名指ししている"

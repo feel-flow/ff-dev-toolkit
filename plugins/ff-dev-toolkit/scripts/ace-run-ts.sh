@@ -323,6 +323,7 @@ _probe() { # <argv...> -> 0 なら使える
 }
 
 RUNNER=()
+RUNNER_PNPM_NO_INSTALL=0
 
 # 1. 明示指定。空白区切りの複数語を受ける（`pnpm --filter <pkg> exec tsx` の形）。
 #    word splitting はここでだけ意図的に使う。
@@ -373,19 +374,18 @@ if [[ ${#RUNNER[@]} -eq 0 ]]; then
   done
 fi
 
-# 4. lockfile から package manager を選び、その exec 経由で解決させる。
+# 4. pnpm、yarn の順に exec を実際に起動して解決させる（lockfile では選ばない）。
 #    workspace package 側にだけ tsx がある場合の経路（Issue #879 の実測ケース）。
-if [[ ${#RUNNER[@]} -eq 0 ]]; then
-  for _cand in "pnpm exec tsx" "yarn exec tsx"; do
-    set -f
-    # shellcheck disable=SC2206  # 固定の候補文字列を語分割する
-    _argv=(${_cand})
-    set +f
-    if _probe "${_argv[@]}"; then
-      RUNNER=("${_argv[@]}")
-      break
-    fi
-  done
+#    pnpm 11 は exec の依存確認だけで install へ進み、tsx が無くても呼び出し元へ
+#    空 lockfile と node_modules を作る。自動候補ではその確認を command scope で止める。
+#    cwd・argv は保ち、既存の workspace binary を本来と同じ経路で解決する。
+#    明示 runner は利用者の指定どおり実行し、この自動候補の設定を持ち込まない。
+if [[ ${#RUNNER[@]} -eq 0 ]] && pnpm_config_verify_deps_before_run=false _probe pnpm exec tsx; then
+  RUNNER=(pnpm exec tsx)
+  RUNNER_PNPM_NO_INSTALL=1
+fi
+if [[ ${#RUNNER[@]} -eq 0 ]] && _probe yarn exec tsx; then
+  RUNNER=(yarn exec tsx)
 fi
 
 # 5. 従来の案内（ネットワークから取得）
@@ -410,4 +410,9 @@ fi
 
 echo "ace-run-ts: runner=${RUNNER[*]}" >&2
 # 検証スクリプトの終了コードをそのまま返す（成功へ変換しない）。
-"${RUNNER[@]}" "$TS_SCRIPT" "$@"
+# probe 後の本番 exec でも暗黙 install を止める。片方だけでは副作用が残る。
+if [[ "$RUNNER_PNPM_NO_INSTALL" -eq 1 ]]; then
+  pnpm_config_verify_deps_before_run=false "${RUNNER[@]}" "$TS_SCRIPT" "$@"
+else
+  "${RUNNER[@]}" "$TS_SCRIPT" "$@"
+fi

@@ -102,7 +102,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### 2a. ホスト自身のレーンのホスト委譲
 
-`--delegate-to-host[=<cli>]` でホスト自身のレーンだけを自セッションのサブエージェントで走らせる（Codex `=codex-cli` / grok `=grok-cli`。正本は [該当節](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#host-delegation)）。`--route full` 併用で主＝ホスト、副＝別モデル。`--fresh` / `--route fast` 併用不可。終了コード **3** = 委譲待ち → 各 `prompt-file` を**そのまま** 1 観点 1 サブエージェントへ渡し、最終メッセージを無加工で `output-file` へ書く → **同じコマンドに `--resume` を足して**再実行。
+`--delegate-to-host[=<cli>]` は自ホストのレーンのみ委譲（終了コード **3** = 待ち）。`prompt-file` をそのまま 1 観点 1 サブエージェントへ渡し、応答は `output-file` へ無加工で書く。通常は元コマンドに `--resume` を追加。`--require-prior-review` または `--continue-review` 時は全応答を揃え、元コマンドを **`--resume` なし**で再実行（非委譲も再実行）。復旧は [正本](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#host-delegation) へ。
 
 ### レビュー待ち時間の使い方
 

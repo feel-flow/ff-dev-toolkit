@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 空振り検出: 事前引用の代入へ構文合法な true && を前置して抽出の一致を0件にすると20/0から17/1になり、「事前引用ブロックを抽出できません」で赤になる（2026-10-22 実測。抽出が空の回はroundtripへ進めない）。
+# 空振り検出: 生成行の実体 scripts/lib/finish-precheck.sh を空にすると起動前の必須ファイル確認で rc1 になる（2026-10-22 実測。q() が入口に残るだけで生成行の検査を緑にしない）。
 #
 # close-issue-shell-quote: close-issue スキルの merge コマンド生成が
 # ロケール非依存の引用を使っていることの回帰検査。
@@ -39,8 +41,11 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 # 引用関数と merge コマンドの生成は /close-issue 本文から scripts/finish.sh（precheck）へ移した。
 # 抽出元は script で、本文は生成物を貼るだけ（tests/finish が生成物の round-trip を別途見る）。
 SKILL="$PLUGIN_ROOT/scripts/finish.sh"
+PRECHECK="$PLUGIN_ROOT/scripts/lib/finish-precheck.sh"
 
-[ -f "$SKILL" ] || { echo "✗ 対象ファイルが見つかりません: $SKILL" >&2; exit 1; }
+for source_file in "$SKILL" "$PRECHECK"; do
+  [ -s "$source_file" ] && [ -r "$source_file" ] || { echo "✗ 対象ファイルが無い・空・読めません: $source_file" >&2; exit 1; }
+done
 
 PASS=0
 FAIL=0
@@ -163,13 +168,23 @@ fi
 # ── 4. 生成行（手順 7 の printf）の pin ──
 # q() 単体が正しくても、生成側で --subject / --body の片方だけが q を通っていれば
 # 元の欠陥（生展開の引用漏れ）が残る。生成行そのものを抽出して両方を pin する。
+# 引用結果は開始マーカーより前に保存する。実際の保存ブロックも抽出して実走する。
+QUOTE_BLOCK="$(awk '
+  /^[[:space:]]*quoted_target_repo=/ { capture = 1 }
+  capture && /^[[:space:]]*echo "MERGE_COMMAND_BEGIN"$/ { complete = 1; exit }
+  capture { print; found = 1 }
+  END { exit (found && complete) ? 0 : 1 }
+' "$PRECHECK")" || {
+  bad "finish.sh precheck の事前引用ブロックを抽出できません"
+  QUOTE_BLOCK=""
+}
 GEN_BLOCK="$(awk '
-  /^[[:space:]]*printf .gh pr merge %s --squash --match-head-commit %s%s \\\\/ { capture = 1 }
+  /^[[:space:]]*printf .gh pr merge %s --repo %s --squash --match-head-commit %s%s \\\\/ { capture = 1 }
   capture { print; found = 1 }
   capture && !/\\$/ { capture = 0 }
   END { exit found ? 0 : 1 }
-' "$SKILL")" || {
-  bad "finish.sh に手順 7 の merge コマンド生成（printf 'gh pr merge ...）が見つかりません"
+' "$PRECHECK")" || {
+  bad "finish.sh precheck に手順 7 の merge コマンド生成（printf 'gh pr merge ...）が見つかりません"
   GEN_BLOCK=""
 }
 
@@ -185,8 +200,10 @@ if [ -n "$GEN_BLOCK" ]; then
   ok "手順 7 の merge コマンド生成行を抽出できた"
   pin_gen '--subject %s' '生成行の --subject が %s（引用済み文字列を受ける形）'
   pin_gen '--body %s' '生成行の --body が %s（引用済み文字列を受ける形）'
-  pin_gen '"$(q "${MERGE_SUBJECT}")"' '--subject の値が q() を通っている'
-  pin_gen '"$(q "${MERGE_BODY}")"' '--body の値が q() を通っている'
+  pin_gen '"$quoted_merge_subject"' '--subject の値が事前引用した変数を通っている'
+  pin_gen '"$quoted_merge_body"' '--body の値が事前引用した変数を通っている'
+  pin_gen '--repo %s' '生成行が repository を固定する'
+  pin_gen '"$quoted_target_repo"' '--repo の値が事前引用した変数を通っている'
 fi
 
 # ── 5. 生成行を stub gh で実行して subject/body の round-trip を見る ──
@@ -199,13 +216,14 @@ mkdir -p "$TMP/bin"
   printf '%s\n' '  case "$1" in'
   printf '%s\n' '    --subject) printf "%s" "$2" > "$FF_STUB_SUBJECT"; shift 2 ;;'
   printf '%s\n' '    --body) printf "%s" "$2" > "$FF_STUB_BODY"; shift 2 ;;'
+  printf '%s\n' '    --repo) printf "%s" "$2" > "$FF_STUB_BODY.repo"; shift 2 ;;'
   printf '%s\n' '    *) shift ;;'
   printf '%s\n' '  esac'
   printf '%s\n' 'done'
 } > "$TMP/bin/gh"
 chmod +x "$TMP/bin/gh"
 
-if [ -n "$GEN_BLOCK" ]; then
+if [ -n "$GEN_BLOCK" ] && [ -n "$QUOTE_BLOCK" ]; then
   SUBJ_SRC="$TMP/gen_subject_src"
   BODY_SRC="$TMP/gen_body_src"
   printf '%s' "fix: クローズ判定 It's \$HOME \`whoami\` \"q\"" > "$SUBJ_SRC"
@@ -216,13 +234,17 @@ if [ -n "$GEN_BLOCK" ]; then
     FF_STUB_SUBJECT="$TMP/gen_subject_got" \
     FF_STUB_BODY="$TMP/gen_body_got" \
     LC_ALL=C bash -c '
-      set -uo pipefail
+      set -euo pipefail
       PATH="$4:$PATH"
       '"$QUOTE_FN"'
       PR_NUMBER=1270
       REMOTE_HEAD=0123456789abcdef0123456789abcdef01234567
+      TARGET_REPO=owner/repo
+      TARGET_REPO_URL=https://github.com/owner/repo
+      have_subject=1
       MERGE_SUBJECT="$(cat "$1"; printf X)"; MERGE_SUBJECT="${MERGE_SUBJECT%X}"
       MERGE_BODY="$(cat "$2"; printf X)"; MERGE_BODY="${MERGE_BODY%X}"
+      '"$QUOTE_BLOCK"'
       CMD="$(
         '"$GEN_BLOCK"'
       )"
@@ -235,6 +257,11 @@ if [ -n "$GEN_BLOCK" ]; then
     bad "生成行の実行がエラー終了しました (rc=${GEN_RC})"
     printf '%s\n' "$GEN_OUT" >&2
   else
+    if [ "$(cat "$TMP/gen_body_got.repo")" = https://github.com/owner/repo ]; then
+      ok "生成コマンドを実行した gh が受け取る --repo が生成元と一致する"
+    else
+      bad "生成コマンドの --repo が生成元と一致しません"
+    fi
     if cmp -s "$SUBJ_SRC" "$TMP/gen_subject_got"; then
       ok "生成コマンドを実行した gh が受け取る --subject が元の MERGE_SUBJECT とバイト同一"
     else
@@ -259,7 +286,7 @@ OFFENDERS="$(awk '
   { line = $(0); sub(/^[[:space:]]*/, "", line) }
   line ~ /^#/ { next }
   index(line, "%q") { print FNR ": " line }
-' "$SKILL")"
+' "$SKILL" "$PRECHECK")"
 if [ -n "$OFFENDERS" ]; then
   bad "finish.sh の非コメント行にロケール依存の %q が残っています（引用がロケール依存へ戻っている）"
   printf '%s\n' "$OFFENDERS" >&2

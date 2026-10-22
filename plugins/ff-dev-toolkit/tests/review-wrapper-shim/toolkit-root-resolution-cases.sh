@@ -90,7 +90,7 @@ run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CODEX_CACHE_HOME" \
   bash "$PLACED" --base develop >"$WORK/cache.log" 2>&1 || CACHE_RC=$?
 mv "$WORK/cache-template.good" "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0/scripts/templates/codex-review.sh"
 if [ "$CACHE_RC" -eq 2 ] && [ ! -s "$WORK/argv-cache.log" ] \
-   && grep -q '配置済み shim の版が一致しません' "$WORK/cache.log" \
+   && grep -q '配置済み shim が内容不一致です' "$WORK/cache.log" \
    && ! grep -q 'source=sidecar' "$WORK/cache.log"; then
   ok "cache: 最大候補の版不整合は sidecar へ落とさず fail closed"
 else
@@ -309,7 +309,7 @@ printf '\n# mismatch\n' >> "$CACHE_QUIET_HOME/plugins/cache/market/ff-dev-toolki
 run_print_root CODEX_HOME="$CACHE_QUIET_HOME" CLAUDE_CONFIG_DIR="$WORK/no-claude-home" -- --print-toolkit-root
 mv "$WORK/print-template.good" "$CACHE_QUIET_HOME/plugins/cache/market/ff-dev-toolkit/0.38.0/scripts/templates/codex-review.sh"
 if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] \
-   && grep -q '配置済み shim の版が一致しません' "$WORK/print.err"; then
+   && grep -q '配置済み shim が内容不一致です' "$WORK/print.err"; then
   ok "--print-toolkit-root: 配置済みシムとの版不整合はレビュー時と同じく exit 2・stdout 空"
 else
   bad "--print-toolkit-root: 版不整合を素通しした (rc=$PRINT_RC)"
@@ -349,10 +349,146 @@ run_isolated_shim FF_DEV_TOOLKIT_ROOT="$TOOLKIT" ARGV_LOG="$WORK/argv.log" \
   bash "$PROJ/scripts/codex-review.sh" --base develop >"$WORK/mismatch.log" 2>&1 || MISMATCH_RC=$?
 mv "$WORK/template.good" "$TOOLKIT/scripts/templates/codex-review.sh"
 if [ "$MISMATCH_RC" -eq 2 ] && [ ! -s "$WORK/argv.log" ] \
-   && grep -q '配置済み shim の版が一致しません' "$WORK/mismatch.log"; then
+   && grep -q '配置済み shim が内容不一致です' "$WORK/mismatch.log"; then
   ok "版整合: 解決した toolkit と配置済み shim の不一致をレビュー前に拒否する"
 else
   bad "版整合: shim の不一致を拒否できない (rc=$MISMATCH_RC)"
+fi
+
+# 同じ manifest/config 版でも内容差を識別する。期待値は既知 LF fixture の raw blob
+# から作り、本体の行末正規化をテスト側へ複製しない。
+ID_KIT="$WORK/content-id-toolkit"
+make_cache_toolkit "$ID_KIT" "0.38.0"
+ID_KIT="$(cd "$ID_KIT" && pwd -P)"
+printf '\n# content identity target\n' >> "$ID_KIT/scripts/templates/codex-review.sh"
+ID_LF_TEMPLATE="$WORK/content-id-template.lf"
+cp "$ID_KIT/scripts/templates/codex-review.sh" "$ID_LF_TEMPLATE"
+ID_TEMPLATE_WANT="git-blob:$(git hash-object --no-filters "$ID_LF_TEMPLATE")"
+ID_SHIM_WANT="git-blob:$(git hash-object --no-filters "$SHIM")"
+content_ids_match() { # <log> <template ID> <shim ID>
+  [ -n "$2" ] && [ -n "$3" ] || return 1
+  grep -qxF "       template=$ID_KIT/scripts/templates/codex-review.sh content-id=$2" "$1" \
+    && grep -qxF "       shim=$PLACED content-id=$3" "$1"
+}
+run_print_root FF_DEV_TOOLKIT_ROOT="$ID_KIT" -- --print-toolkit-root
+if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] && [ ! -s "$WORK/argv-print.log" ] \
+   && [ "$ID_TEMPLATE_WANT" != "$ID_SHIM_WANT" ] \
+   && content_ids_match "$WORK/print.err" "$ID_TEMPLATE_WANT" "$ID_SHIM_WANT" \
+   && grep -q '配置済み shim が内容不一致です' "$WORK/print.err" \
+   && grep -q '同じ版番号でも' "$WORK/print.err" \
+   && grep -q 'toolkit=.* version=0.38.0' "$WORK/print.err" \
+   && grep -q 'setup-multi-agent.sh.*再実行' "$WORK/print.err" \
+   && grep -q '正規リリース版.*対象版の toolkit.*明示' "$WORK/print.err"; then
+  ok "内容ID: 同じ版の差を両roleの正しいID・原因・対処で識別し、stdout空/rc2で止める"
+else
+  bad "内容ID: 同じ版の差の診断が不正 (rc=$PRINT_RC)"
+fi
+
+awk '{ printf "%s\r\n", $0 }' "$ID_LF_TEMPLATE" > "$ID_KIT/scripts/templates/codex-review.sh"
+run_print_root FF_DEV_TOOLKIT_ROOT="$ID_KIT" -- --print-toolkit-root
+if [ "$PRINT_RC" -eq 2 ] && content_ids_match "$WORK/print.err" "$ID_TEMPLATE_WANT" "$ID_SHIM_WANT"; then
+  ok "内容ID: CRLF template のIDは既知LF内容のIDと一致する"
+else
+  bad "内容ID: 行末CRが識別子へ混入した (rc=$PRINT_RC)"
+fi
+cp "$ID_LF_TEMPLATE" "$ID_KIT/scripts/templates/codex-review.sh"
+
+# 読めない対象と、空の実ファイル（正規のblob）は別物。
+rm "$ID_KIT/scripts/templates/codex-review.sh"
+run_print_root FF_DEV_TOOLKIT_ROOT="$ID_KIT" -- --print-toolkit-root
+if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] \
+   && content_ids_match "$WORK/print.err" '(取得不可)' "$ID_SHIM_WANT" \
+   && grep -q '内容の一致を確認できません' "$WORK/print.err"; then
+  ok "内容ID: template不在は取得不可を名指しし、相手のIDで埋めずrc2"
+else
+  bad "内容ID: template不在の診断が不正 (rc=$PRINT_RC)"
+fi
+: > "$ID_KIT/scripts/templates/codex-review.sh"
+ID_EMPTY_WANT="git-blob:$(git hash-object --no-filters "$ID_KIT/scripts/templates/codex-review.sh")"
+run_print_root FF_DEV_TOOLKIT_ROOT="$ID_KIT" -- --print-toolkit-root
+if [ "$PRINT_RC" -eq 2 ] && content_ids_match "$WORK/print.err" "$ID_EMPTY_WANT" "$ID_SHIM_WANT" \
+   && grep -q '配置済み shim が内容不一致です' "$WORK/print.err"; then
+  ok "内容ID: 空実ファイルは正規のblob IDを出し、shimとの不一致でrc2"
+else
+  bad "内容ID: 空実ファイルを取得不可と混同した (rc=$PRINT_RC)"
+fi
+cp "$ID_LF_TEMPLATE" "$ID_KIT/scripts/templates/codex-review.sh"
+
+# 正常一致ではhashを呼ばない。故障は対象プリミティブだけへ注入し、他のgit/sedは実体へ転送。
+ID_REAL_GIT="$(command -v git)"
+ID_REAL_SED="$(command -v sed)"
+ID_FAULT_CASES=0
+for id_mode in partial empty warning read; do
+  ID_BIN="$WORK/content-id-$id_mode"
+  mkdir -p "$ID_BIN"
+  printf '%s\n' "$id_mode" > "$ID_BIN/mode"
+  printf '%s\n' "$ID_KIT/scripts/templates/codex-review.sh" > "$ID_BIN/target"
+  : > "$ID_BIN/hash-calls"
+  {
+    cat <<'ID_GIT'
+#!/usr/bin/env bash
+stub_dir="$(dirname "$0")"
+if [ "${1:-}" = hash-object ] && [ "${2:-}" = --stdin ]; then
+  echo hash >> "$stub_dir/hash-calls"
+  case "$(cat "$stub_dir/mode")" in
+    partial) cat >/dev/null; echo 1111111111111111111111111111111111111111; exit 9 ;;
+    empty) cat >/dev/null; exit 0 ;;
+    warning) echo 'id fixture: successful git warning' >&2 ;;
+    read) ;;
+    *) exit 97 ;;
+  esac
+fi
+ID_GIT
+    printf 'exec %q "$@"\n' "$ID_REAL_GIT"
+  } > "$ID_BIN/git"
+  {
+    cat <<'ID_SED'
+#!/usr/bin/env bash
+stub_dir="$(dirname "$0")"
+if [ "$(cat "$stub_dir/mode")" = read ] && [ "${2:-}" = "$(cat "$stub_dir/target")" ]; then
+  echo unreadable >> "$stub_dir/read-calls"
+  echo 'id fixture: cannot read template' >&2
+  exit 7
+fi
+ID_SED
+    printf 'exec %q "$@"\n' "$ID_REAL_SED"
+  } > "$ID_BIN/sed"
+  chmod +x "$ID_BIN/git" "$ID_BIN/sed"
+  run_print_root FF_DEV_TOOLKIT_ROOT="$ID_KIT" PATH="$ID_BIN:$PATH" -- --print-toolkit-root
+  ID_FAULT_CASES=$((ID_FAULT_CASES + 1))
+  id_template='(取得不可)'; id_shim='(取得不可)'
+  case "$id_mode" in
+    warning) id_template="$ID_TEMPLATE_WANT"; id_shim="$ID_SHIM_WANT" ;;
+    read) id_shim="$ID_SHIM_WANT" ;;
+  esac
+  if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] && [ ! -s "$WORK/argv-print.log" ] \
+     && [ "$(wc -l < "$ID_BIN/hash-calls" | tr -d ' ')" -eq 2 ] \
+     && content_ids_match "$WORK/print.err" "$id_template" "$id_shim"; then
+    case "$id_mode" in
+      warning)
+        if grep -q 'successful git warning' "$WORK/print.err"; then
+          ok "内容ID: git成功時のstderrをIDへ混ぜない（呼出し2件）"
+        else bad "内容ID: warning対照へ到達していない"; fi ;;
+      read)
+        if [ -s "$ID_BIN/read-calls" ] && grep -q '内容の一致を確認できません' "$WORK/print.err"; then
+          ok "内容ID: 読取り失敗後の空blob出力を採用せず、失敗側だけ取得不可（呼出し2件）"
+        else bad "内容ID: 読取り失敗対照へ到達していない"; fi ;;
+      *) ok "内容ID: hash $id_mode 出力は両側とも取得不可（呼出し2件）" ;;
+    esac
+  else
+    bad "内容ID: hash/読取り $id_mode の失敗をIDにした、または対照未到達 (rc=$PRINT_RC)"
+  fi
+  run_print_root FF_DEV_TOOLKIT_ROOT="$TOOLKIT" PATH="$ID_BIN:$PATH" -- --print-toolkit-root
+  if [ "$PRINT_RC" -eq 0 ] && [ "$(wc -l < "$ID_BIN/hash-calls" | tr -d ' ')" -eq 2 ]; then
+    ok "内容ID: 正常一致では追加hashなし ($id_mode)"
+  else
+    bad "内容ID: 正常一致へhash依存を追加した ($id_mode rc=$PRINT_RC)"
+  fi
+ done
+if [ "$ID_FAULT_CASES" -eq 4 ]; then
+  ok "内容ID: hash/読取り故障のcase集合は4件すべて実行済み"
+else
+  bad "内容ID: hash/読取り故障のcase集合が空または不足 ($ID_FAULT_CASES)"
 fi
 
 # skill 群が使う正規形（プラグインルート指定）で解決できること。

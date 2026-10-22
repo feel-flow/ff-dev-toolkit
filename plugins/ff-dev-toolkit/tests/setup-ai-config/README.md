@@ -3,6 +3,8 @@
 `setup-ai-config`（`plugins/ff-dev-toolkit/skills/setup-ai-config/SKILL.md`）が生成する3ファイルが、
 ツールを問わず**同じ意味の「標準への入口」5境界**を等価に含むことを検証するための fixture / スナップショットです（Issue #84 / #190 / #196）。
 
+`init-docs.test.mjs` は、`init-docs` の従来経路が作る薄い `AGENTS.md` の手順・テンプレート・既存ファイル保護・完了報告も検査します。手順の不在・抽出不成立・空テンプレート等を変異させて検出力を確認します。これはスキル定義の静的検査で、実際のホストによる生成・読み込みを証明するものではありません。
+
 ## 検証する5境界
 
 | # | 境界 | アンカー文字列 |
@@ -37,6 +39,7 @@ Cursor（`.cursor/rules/*.mdc` / Legacy `.cursorrules`）は issue #240 で生�
 tests/setup-ai-config/
 ├── README.md                 # このファイル
 ├── verify.sh                 # 5境界パリティの機械検証
+├── init-docs.test.mjs         # init-docs の共通入口と欠落検出
 └── fixtures/
     ├── input/
     │   └── docs/MASTER.md     # サンプル入力（索引/技術スタック/アーキ/ビルド/Git/確認プロトコル）

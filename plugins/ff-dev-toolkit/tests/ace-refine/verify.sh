@@ -220,7 +220,7 @@ elif ! _bf_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ace-refine-basefresh.XXXXXX" 2>&1)"
 else
   # 承認前の照合フェンスを節から取り出す。抽出できなければ空振りなので止める。
   _bf_fn="$_bf_tmp/guard.sh"
-  awk -v sec="$REFINE_PREGATE_SECTION" '
+  LC_ALL=C awk -v sec="$REFINE_PREGATE_SECTION" '
     $0 == sec { in_sec = 1; next }
     in_sec && /^#### |^### / { in_sec = 0 }
     in_sec && /^```bash$/ { in_fence = 1; next }

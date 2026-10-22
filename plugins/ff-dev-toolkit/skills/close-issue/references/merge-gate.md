@@ -86,7 +86,11 @@ script は対象 PR に checks が登録されているかを先に確認しま�
 
 #### merge コマンドの生成
 
-script が `MERGE_COMMAND_BEGIN` 〜 `MERGE_COMMAND_END` に出す。渡す先端は直前に照合した `REMOTE_HEAD`、件名・本文は 2b が検査した文字列を単引用で包んだもの（`printf '%q'` は非 UTF-8 ロケールで日本語を壊すので使わない）。`--delete-branch` は base / head ブランチが別の worktree に保持されていないときだけ付き、保持されている回は付けずに、照合した先端 OID を lease に載せたリモートブランチ削除を `gh pr merge … && SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 git push origin --force-with-lease=refs/heads/<head>:<OID> :refs/heads/<head>` の 1 コマンドで添える（`DELETE_BRANCH_MODE=separate-push`・`BASE_HELD_BY` / `HEAD_HELD_BY`・`HEAD_DELETE=lease`。fork の PR は `skipped-fork` で削除を生成しない）。別行にしないのは、merge が失敗した回（checks 未完了・先端不一致・競合）に削除だけが走ると未マージの PR の head が消えて PR が閉じるため。`gh pr merge --delete-branch` はマージ成功後にローカルで base へ切り替えようとするため、base が他 worktree に保持されていると PR はマージ済みなのにリモートブランチ削除まで到達せず失敗し、エラーは worktree の話しかしない。
+script が `MERGE_COMMAND_BEGIN` 〜 `MERGE_COMMAND_END` に出す。merge 対象は取得済みのホストを含むリポジトリ URL を引用した `--repo` へ固定し、先端は直前に照合した `REMOTE_HEAD`、件名・本文は 2b が検査した文字列を単引用で包む（`printf '%q'` は非 UTF-8 ロケールで日本語を壊すので使わない）。
+
+`--delete-branch` は base / head が別 worktree に保持されていない回だけ付く。保持されている回は付けず、merge 成功時だけ実行する head 削除本文を `&&` で繋ぐ（`DELETE_BRANCH_MODE=separate-push`・`BASE_HELD_BY` / `HEAD_HELD_BY`・`HEAD_DELETE=lease`。fork は `skipped-fork` で削除を生成しない）。削除は生成元 consumer の exact ref を照会し、不在は成功・別 OID は保全・一致だけ lease 付き削除、拒否後も再照会する。`HEAD_DELETE_RESULT` と非 0 の読み方は [Git Workflow](../../../docs-template/05-operations/deployment/git-workflow.md#ステップ8-マージmerge) に従う。
+
+生成コマンドは書き写さず、そのまま実行する。削除を別行にすると merge 失敗後にも未マージの head を削除できる。取得済み URL の `--repo` により、実行時の cwd・`GH_REPO`・`GH_HOST`・既定ホストから対象を選び直さない。gh v2.102.0 は明示した `--repo` の下でローカルの切替・削除を行わず、その後始末は `/merge-cleanup` へ委譲する。保持 worktree の separate-push 経路は互換性と明示的な OID lease のために維持する。
 
 #### 完了報告の定型文
 

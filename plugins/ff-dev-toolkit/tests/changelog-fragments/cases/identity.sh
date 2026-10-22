@@ -297,7 +297,7 @@ else
       [[ -n "$_ssot_step" ]] || continue
       # 置換は awk の完全一致で行う。step 名は `/` を含みうる（origin/HEAD）ので、
       # sed の s/// へ埋めると区切り文字が壊れる（実測: bad flag in substitute command）。
-      awk -v target="      - name: ${_ssot_step}" \
+      LC_ALL=C awk -v target="      - name: ${_ssot_step}" \
         '$0 == target { print $0 " (renamed)"; next } { print }' \
         "$PUBLIC_WF" > "$mutant_public"
       # 変異が 1 行も当たらなかった回に「実測した」と名乗らない。grep が変異と無関係な

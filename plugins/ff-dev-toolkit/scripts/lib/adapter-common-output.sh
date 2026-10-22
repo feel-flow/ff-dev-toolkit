@@ -211,8 +211,8 @@ fail_output_readback() { # <perspective_name> <output_file> <response_file>
 # 「このレビューだけ別アカウント」ができない。CLI 側では解決できない。
 #
 # 形: CLI を起動せず、プロンプトと書き戻し先をホストへ返す。ホストは自分のセッション内
-# サブエージェントでそれを実行し、結果を所定のパス（<output-dir>/<cli>/<perspective>.md）
-# へ書く。**同じコマンドをもう一度実行する**と、その書き戻しが「このプロンプトへの応答」
+# サブエージェントでそれを実行し、handoff の output-file（orchestrator 経由は世代別
+# response.md、単独adapterは従来の成果物パス）へ書く。**同じコマンドをもう一度実行する**と、その書き戻しが「このプロンプトへの応答」
 # として受理され、正規ヘッダー付きの成果物へ正規化される。プラン構築・プロンプト生成・
 # 統合レポート生成は従来どおりで、変わるのは実行主体だけ。
 #
@@ -400,7 +400,21 @@ delegate_task() { # <lane-id> <cli-display-name> <perspective> <prompt> <allowed
   local prompt_file="${dir}/${persp}.prompt.md"
   local request_file="${dir}/${persp}.request"
   local response_file="${dir}/${persp}.response.md"
-  local digest recorded superseded body body_rc
+  local digest recorded superseded body body_rc handoff_output="$OUTPUT_FILE" generation=''
+  case "$dir" in
+    */.delegated/generations/g-*)
+      generation="${dir##*/}"
+      handoff_output="$response_file"
+      ;;
+  esac
+  # Never read or write through a host response/request/prompt symlink, including direct adapters.
+  local slot
+  for slot in "$dir" "$prompt_file" "$request_file" "$response_file"; do
+    if [[ -L "$slot" || ( -e "$slot" && "$slot" != "$dir" && ! -f "$slot" ) ]]; then
+      echo "ERROR: unsafe delegation path (symlink or non-regular file): ${slot}" >&2
+      return 1
+    fi
+  done
   # 直前の handoff の状態は、応答処理より**前**に 1 回だけ読む。応答があってもなくても
   # 下の handoff 更新でこの値が要るため。
   local prev_digest prev_superseded consumed=0
@@ -519,6 +533,9 @@ delegate_task() { # <lane-id> <cli-display-name> <perspective> <prompt> <allowed
     return 1
   fi
   if ! {
+    if [[ -n "$generation" ]]; then
+      printf 'handoff-format=2\ngeneration=%s\n' "$generation"
+    fi
     printf 'cli=%s\n' "$lane"
     printf 'cli-name=%s\n' "$cli_name"
     printf 'perspective=%s\n' "$persp"
@@ -526,7 +543,7 @@ delegate_task() { # <lane-id> <cli-display-name> <perspective> <prompt> <allowed
     printf 'timeout=%s\n' "${TIMEOUT:-}"
     printf 'allowed-tools=%s\n' "$allowed"
     printf 'prompt-file=%s\n' "$prompt_file"
-    printf 'output-file=%s\n' "$OUTPUT_FILE"
+    printf 'output-file=%s\n' "$handoff_output"
     printf 'prompt-digest=%s\n' "$digest"
     printf 'superseded=%s\n' "$superseded"
   } > "$request_file"; then
@@ -535,7 +552,7 @@ delegate_task() { # <lane-id> <cli-display-name> <perspective> <prompt> <allowed
   fi
   echo "🤝 Delegated to the host (no CLI started): ${lane}/${persp}" >&2
   echo "   prompt: ${prompt_file}" >&2
-  echo "   write the result to: ${OUTPUT_FILE}" >&2
+  echo "   write the result to: ${handoff_output}" >&2
   if [ "$superseded" = "1" ]; then
     echo "   note: the input changed while the previous handoff was outstanding — a response to that" >&2
     echo "         older prompt will be refused once, so run THIS prompt file." >&2

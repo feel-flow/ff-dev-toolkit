@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 抽出先 scripts/lib/finish-precheck.sh を空にすると必須ファイル非空の確認で rc1 になる（2026-10-22 実測。statusCheckRollup の針が0件の入力を緑にしない）。
 #
 # no-checks-merge-basis-contract: マージ前のゲートの分岐（checks の有無）の回帰検査。
 # 既定は PR トリガーの CI がある形で、checks の成功がマージ根拠・ローカル全件はリリース前と
@@ -39,7 +40,8 @@ SKILL="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
 # あり、判定そのもの（statusCheckRollup の件数・--watch --fail-fast・checks 失敗での停止）は
 # scripts/finish.sh precheck が実行する。針は規定が置かれた先へ張る。
 GATE_REF="$PLUGIN_ROOT/skills/close-issue/references/merge-gate.md"
-FINISH="$PLUGIN_ROOT/scripts/finish.sh"
+# precheck 本体の実際の配置を検査する（入口に残る名前だけでは緑にしない）。
+FINISH="$PLUGIN_ROOT/scripts/lib/finish-precheck.sh"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
 
 # shellcheck source=../lib/section-scope.sh

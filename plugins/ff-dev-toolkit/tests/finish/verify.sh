@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# 空振り検出: D4のghログだけを別ファイルへ振り向ける単独変異は、未修正250/0から修正後249/1（D4のみ赤）になる。実watchは別ログに1件、共有ログは先行COLOR由来4件から0件へ変わり、COLOR15検査は両側で緑（2026-10-22 macOS実測。構文rc0。watch実行自体を消した実測ではない）。
+# 空振り検出: suite入口の3色変数の隔離を外すと、ambient全3変数=1とNO_COLOR=1の入力でCOLOR3の子環境集合3件が赤（12/3）。隔離後はambient有無ともsubset15/0で、下記8変異も同じ検出数になる（2026-10-22 macOS実測。Bash3.2のlocal/unset後の外側export残留を検出）。
+# 空振り検出: COLOR subset は15/0。finish.sh の3変数除去から FORCE_COLOR / CLICOLOR_FORCE / CLICOLOR を各1つ残すと13/2・11/4・13/2、除去全体を無効にすると9/6で赤。ケース集合を空にすると1/2、同名関数を空にすると0/1、helper の空・不在はrc1になる（2026-10-22 macOS実測。全変異のbash構文rc0、環境・JSON境界の期待失敗を確認）。
+# 空振り検出: ホスト付きrepo URL固定後の S11/U1/E4/E4c subset は82/0。subject/bodyあり・なしの各formatでhostだけを落とす単独変異は各81/1、--repo全体を外す既存変異は78/4・60/22で赤になる（2026-10-22 実測。全変異のbash構文rc0。同じowner/repo・PR番号・OIDの別host B成功marker、A未merge、A側zero OID削除受信とref不在を照合する）。
+# 空振り検出: hostの組だけを外すと76/2（旧cwd/envの4組が緑でもhost0/2と全体4/6は赤）、URL集合を空にすると74/1。不正URLを固定URLで補完する変異は75/7で赤になる（2026-10-22 実測。URL missing/empty/null/type/host/path/queryの7入力は、正常実装ではGH_HOSTで補完せずBEGIN前rc2になる）。
+# 空振り検出: ホスト固定の拡張前の S11/E4/E4c subset は69/0。subject/body ありの --repo format と対応引数を一緒に外すと67/2、なしの分岐で同じ論理faultを入れると49/20、E4c のケース集合を空にすると60/1で赤になる（2026-10-22 実測。両変異は bash 構文rc0で、cwd/env各2組の B成功marker・A未merge・A側のzero OID削除受信とref不在を照合する）。
+# 空振り検出: repository 固定の拡張前は、precheck の生成 MERGE_COMMAND を bare origin で実走する S11/E4 subset は 50/0。不在 ref を失敗へ戻すと49/1、lease を外すと47/3、OID 照合を外すと43/7、照会失敗を不在へ倒すと49/1、削除拒否を成功へ倒すと49/1、同名 helper の本文を exit 0 だけへ変えると28/22になる（2026-10-22 実測。lease 解除は照会後・push 広告前に再利用した別 OID の実削除で検出する）。
+# 空振り検出: repository 固定の拡張前は、precheck 読込みの sentinel 検査を外すと S11/E4 subset は48/2、E4 のケース集合を空にすると5/1、S11 の異常集合を空にすると46/1で赤。旧 finish.sh を元 consumer cwd で実走すると自動削除後の E4/already-missing はrc1となる（2026-10-22 実測。生成後の plugin 消失・引用付きパス/branch・別 checkout origin の保全も現行で実走する）。
 #
 # tests/finish: PR の尾の固定手順を機械化した scripts/finish.sh の振る舞い契約。
 #
@@ -39,6 +47,8 @@
 # 空振り検出: finish.sh の gh_pr_view_or_die から未知の JSON field の分岐を消すと (B2b) が赤になる（2026-10-20 実測。gh 不通の汎用文へ落ちてパスと版が出ない）。
 # 変異検出: shebang 行の CR で止まる exit 2 を exit 0 にすると (S1) が赤、成功時の exit 0 を exit 2 にすると LF の写しを止めて (S2) が赤になる（2026-10-19 実測）。
 # 空振り検出: finish.sh と knowledge-commit.sh の assert_bundled_shebang_lf で、shebang 行の CR の exit 2 を return 0 にすると (S7 / S8) が赤になる（2026-10-21 実測。S7 は rc 2 のまま exec まで進み、stderr に /usr/bin/env の ‘bash\r’（バックスラッシュと r）と「version claim を再生成できません」が出る。S8 は source して syntax error を出し rc 0 になる）。
+# 空振り検出: kc_restore_default の開始 branch ガードを外すと H14（別 worktree 保持）と H14b/chore の成功・push 失敗・upstream 不一致・PR 作成失敗の4件が赤、復帰処理を return 0 で無効化すると H8 と H14b/default の3失敗経路および H14c が赤になる。H14b の行列を空にすると7件の実行数照合が赤になる（2026-10-22 実測。各 fault の到達・PR 呼出数・remote ref も照合し、針が当たらない stub を緑にしない）。
+# 空振り検出: default 開始の branch -f を実 Git の develop.lock で失敗させる H14c は、kc_restore_default の失敗時 return 1 を return 0 へ倒すと赤になる（2026-10-22 実測。PR 作成後の rc 1・failed・残存 ref・復帰案内と local/remote の知見 SHA を照合する）。
 #
 # 実 gh・ネットワーク・課金は伴わない。一時ディレクトリを作れない環境は skip ではなく
 # 赤（この suite の検査は 1 件も成立していない）。
@@ -47,9 +57,14 @@
 
 set -euo pipefail
 
+# Bash 3.2 は local 変数の unset 後も外側の export 値を子へ渡しうる。
+# suite の入口で隔離し、色設定は COLOR ケースごとに明示して注入する。
+unset FORCE_COLOR CLICOLOR_FORCE CLICOLOR
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 TARGET="$PLUGIN_ROOT/scripts/finish.sh"
+PRECHECK_TARGET="$PLUGIN_ROOT/scripts/lib/finish-precheck.sh"
 SKILLS_DIR="$PLUGIN_ROOT/skills"
 
 # shellcheck source=../lib/git-fixture.sh
@@ -338,7 +353,7 @@ else
     }
     { line[NR] = $0 }
     END { printf "%d\n", launches + 0 }
-  ' "$TARGET")"
+  ' "$TARGET" "$PRECHECK_TARGET")"
   launch_n="${launch_gaps%%$'\n'*}"
   launch_rest="${launch_gaps#*$'\n'}"
   if [ "$launch_n" -eq 11 ] && [ "$launch_rest" = "$launch_n" ]; then
@@ -402,7 +417,7 @@ fi
 
 # 完了報告の「主要コミット」欄は precheck の PR_COMMITS を貼る欄（記憶から hash を書かせない）
 CLOSE_SKILL="$SKILLS_DIR/close-issue/SKILL.md"
-if has_text "$(cat "$TARGET")" "PR_COMMITS=<短縮 hash> <件名>" && has_text "$(cat "$TARGET")" "printf 'PR_COMMITS=%s"; then
+if has_text "$(cat "$TARGET")" "PR_COMMITS=<短縮 hash> <件名>" && has_text "$(cat "$PRECHECK_TARGET")" "printf 'PR_COMMITS=%s"; then
   ok "A5: finish.sh が PR_COMMITS の出力契約（ヘッダ）と出力行を持つ"
 else
   bad "A5: finish.sh に PR_COMMITS の出力契約または出力行が無い"
@@ -435,6 +450,7 @@ cat >"$BIN/gh" <<'STUB'
 # テスト用 stub gh。環境で応答を切り替える:
 #   STUB_GH_DOWN=1     … すべて「接続できない」で失敗（gh 不通）
 #   STUB_PR_MISSING=1  … pr view が PullRequest 不在で失敗
+#   STUB_PR_CREATE_FAIL=1 … pr create だけ失敗（未知の値は非 0）
 #   STUB_PR_UNKNOWN_FIELD=1 … pr view が未知の JSON field で失敗（古い gh）
 #   --version              … 常に stub の版を出す（STUB_GH_DOWN=1 ではこの前に失敗する）
 #   STUB_PR_JSON=<path>… pr view が返す JSON（--jq があればそれで引く）
@@ -476,7 +492,13 @@ case "$1 $2" in
     done
     if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "${STUB_PR_JSON:?}"; else cat "${STUB_PR_JSON:?}"; fi
     ;;
-  "repo view") echo "owner/repo" ;;
+  "repo view")
+    if [ "${4:-}" = nameWithOwner,url ]; then
+      if [ -n "${STUB_REPO_JSON:-}" ]; then cat "$STUB_REPO_JSON"; else echo '{"nameWithOwner":"owner/repo","url":"https://github.com/owner/repo"}'; fi
+    else
+      echo "owner/repo"
+    fi ;;
+
   "pr checks")
     if [ -n "${STUB_PR_JSON_AFTER:-}" ]; then cp "$STUB_PR_JSON_AFTER" "${STUB_PR_JSON:?}"; fi
     if [ "${STUB_CHECKS_DOWN:-0}" = "1" ]; then echo "error connecting to api.github.com" >&2; exit 1; fi
@@ -487,7 +509,12 @@ case "$1 $2" in
     if [ "${STUB_CHECKS_FAIL:-0}" = "1" ]; then echo "X  lint  fail  1m" >&2; exit 1; fi
     echo "✓  lint  pass  1m"
     ;;
-  "pr create") echo "https://github.com/owner/repo/pull/99" ;;
+  "pr create")
+    case "${STUB_PR_CREATE_FAIL:-0}" in
+      0) echo "https://github.com/owner/repo/pull/99" ;;
+      1) echo "stub: PR create failure" >&2; exit 1 ;;
+      *) echo "stub: unknown STUB_PR_CREATE_FAIL" >&2; exit 97 ;;
+    esac ;;
   "run list") echo '[]' ;;
   "api "*)
     path="$2"
@@ -560,6 +587,11 @@ run_finish() { # <cwd> <args...>
   OUT="$( cd "$cwd" && PATH="$BIN:$PATH" bash "$FINISH" "$@" 2>"$TMP/err" )" || RC=$?
   ERR="$(cat "$TMP/err")"
 }
+
+# shellcheck source=merge-delete-cases.sh
+. "$SCRIPT_DIR/merge-delete-cases.sh"
+_ff_finish_precheck_guards
+_ff_finish_repository_url_guards
 
 # ── B. precheck の前提崩れ（判定不能を名指しした非 0 と復帰手段） ─────────────
 echo
@@ -645,7 +677,7 @@ if has_line "$OUT" "CHECKS=none" && has_line "$OUT" "CHECKS_REPORT=この PR に
 else
   bad "C3: checks 無しの分岐が違う: ${OUT}"
 fi
-if has_line "$OUT" "DELETE_BRANCH_MODE=delete-branch" && has_text "$OUT" "gh pr merge 7 --squash --match-head-commit ${HEAD_OID} --delete-branch" \
+if has_line "$OUT" "DELETE_BRANCH_MODE=delete-branch" && has_text "$OUT" "gh pr merge 7 --repo 'https://github.com/owner/repo' --squash --match-head-commit ${HEAD_OID} --delete-branch" \
   && ! has_text "$OUT" "git push origin --delete"; then
   ok "C4: base / head を別 worktree が保持していなければ --delete-branch 付きの merge コマンド"
 else
@@ -934,6 +966,21 @@ if [ "$RC" -eq 0 ] && has_line "$OUT" "FRESH_STATUS=0" && has_text "$OUT" "FRESH
 else
   bad "D1: 一致の扱いが違う（rc=${RC}）: ${OUT} / ${ERR}"
 fi
+# ── COLOR. 色設定は finish の子プロセスだけで外す ─────────────────────────
+COLOR_CASE_TARGET="$SCRIPT_DIR/color-env-cases.sh"
+[ -s "$COLOR_CASE_TARGET" ] || { echo "✗ COLOR: 回帰ケースが無いか空です: ${COLOR_CASE_TARGET}" >&2; exit 1; }
+color_checks_before=$((PASS + FAIL))
+# shellcheck source=color-env-cases.sh
+. "$COLOR_CASE_TARGET"
+_ff_finish_color_cases
+color_checks_after=$((PASS + FAIL))
+if [ $((color_checks_after - color_checks_before)) -eq 14 ]; then
+  ok "COLOR5: 色設定の回帰14検査が実行された（関数名だけの空実装を緑にしない）"
+else
+  bad "COLOR5: 色設定の回帰が空か不足（期待14 / 実行$((color_checks_after - color_checks_before))）"
+fi
+# ── COLOR end ────────────────────────────────────────────────────────────────
+
 # D1b: 記録が一致していれば、PR 本文が 140KB を超えても rc 0・PRECHECK=ready（読み直しの比較で判定不能へ倒れない）
 cp "$TMP/pr.json" "$TMP/pr-saved.json"
 jq --rawfile big "$TMP/big.txt" '.body += "\n" + $big' "$TMP/pr-saved.json" >"$TMP/pr.json"
@@ -979,6 +1026,7 @@ else
   bad "D3: 部分実行 + checks 無しの扱いが違う（rc=${RC}）: ${OUT}"
 fi
 write_pr_json "Closes #${PRN}" '[{"name":"lint","conclusion":"SUCCESS"}]'
+: >"$STUB_LOG"
 run_finish "$WORK" precheck 7
 if [ "$RC" -eq 0 ] && has_line "$OUT" "CHECKS=passed" && has_line "$OUT" "RERUN_FULL_GATE=no" && has_line "$OUT" "PRECHECK=ready" \
   && awk 'index($0, "pr checks 7 --watch --fail-fast") == 1 { f = 1 } END { exit f ? 0 : 1 }' "$STUB_LOG"; then
@@ -1147,36 +1195,16 @@ write_pr_json "Closes #${PRN}" '[]'
 g -C "$WORK" worktree add -q "$TMP/wt-develop" develop >/dev/null 2>&1 || bad "E0: worktree fixture を作れません"
 run_finish "$WORK" precheck 7
 if has_line "$OUT" "DELETE_BRANCH_MODE=separate-push" && has_line "$OUT" "BASE_HELD_BY=" \
-  && has_text "$OUT" "gh pr merge 7 --squash --match-head-commit ${HEAD_OID}" && ! has_text "$OUT" "--delete-branch" \
+  && has_text "$OUT" "gh pr merge 7 --repo 'https://github.com/owner/repo' --squash --match-head-commit ${HEAD_OID}" && ! has_text "$OUT" "--delete-branch" \
   && has_line "$OUT" "HEAD_DELETE=lease" \
-  && has_text "$OUT" "&& SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 git push origin '--force-with-lease=refs/heads/feature/#7-x:${HEAD_OID}' ':refs/heads/feature/#7-x'" \
+  && has_text "$OUT" "&& bash -c" && has_text "$OUT" "ff-delete-merged-head" \
   && ! has_text "$OUT" "--delete "; then
   ok "E1: base を別 worktree が保持していれば --delete-branch 無し + 別行の lease 付き削除（照合した先端 OID と一致するときだけ消える）"
 else
   bad "E1: base 保持時の merge コマンドが違う（rc=${RC}）: ${OUT} / ${ERR}"
 fi
-# 生成した merge コマンドを評価: リモートブランチ削除は merge が成功したときだけ走る
-E_CMD="$(printf '%s\n' "$OUT" | awk '/^MERGE_COMMAND_BEGIN$/ { c = 1; next } /^MERGE_COMMAND_END$/ { c = 0 } c')"
-mkdir -p "$TMP/chainbin"
-printf '#!/usr/bin/env bash\nexit "${CHAIN_GH_RC:?}"\n' >"$TMP/chainbin/gh"
-# E4b: 削除 push が受け取った hook 抑止 env も残す（公開 ff-dev-toolkit#137）
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"${CHAIN_GIT_LOG:?}"\nprintf "%%s|%%s\\n" "${SKIP_SIMPLE_GIT_HOOKS-unset}" "${HUSKY-unset}" >>"${CHAIN_GIT_LOG:?}.env"\n' >"$TMP/chainbin/git"
-chmod +x "$TMP/chainbin/gh" "$TMP/chainbin/git"
-: >"$TMP/chain-fail.log"; : >"$TMP/chain-ok.log"; : >"$TMP/chain-ok.log.env"
-( CHAIN_GH_RC=1 CHAIN_GIT_LOG="$TMP/chain-fail.log" PATH="$TMP/chainbin:$PATH" bash -c "$E_CMD" ) >/dev/null 2>&1 || true
-# 呼び出し元の env を持ち込まない（外で HUSKY=0 が export されていると E4b が空振りする）
-( CHAIN_GH_RC=0 CHAIN_GIT_LOG="$TMP/chain-ok.log" PATH="$TMP/chainbin:$PATH" env -u SKIP_SIMPLE_GIT_HOOKS -u HUSKY bash -c "$E_CMD" ) >/dev/null 2>&1 || true
-if [ ! -s "$TMP/chain-fail.log" ] \
-  && has_line "$(cat "$TMP/chain-ok.log")" "push origin --force-with-lease=refs/heads/feature/#7-x:${HEAD_OID} :refs/heads/feature/#7-x"; then
-  ok "E4: 生成した merge コマンドを実走すると、gh pr merge が非 0 の回は git push（ブランチ削除）が走らず、0 の回だけ走る"
-else
-  bad "E4: ブランチ削除が merge の成功に条件付けられていない: cmd=${E_CMD} / fail-log=$(cat "$TMP/chain-fail.log") / ok-log=$(cat "$TMP/chain-ok.log")"
-fi
-if has_line "$(cat "$TMP/chain-ok.log.env")" "1|0"; then
-  ok "E4b: 生成した削除 push は SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0 で走る（consumer の simple-git-hooks / husky のフルゲートを起動しない）"
-else
-  bad "E4b: 削除 push に hook 抑止 env が届いていない: env-log=$(cat "$TMP/chain-ok.log.env")"
-fi
+# 生成物を改変せず bare origin で実走する（git の削除を stub で成功扱いにしない）。
+_ff_finish_merge_delete_cases
 # fork の PR: origin の同名ブランチは別物なので削除コマンドを生成しない
 PR_CROSS=true write_pr_json "Closes #${PRN}" '[]'
 run_finish "$WORK" precheck 7
@@ -1409,6 +1437,7 @@ rm -f "$TMP/origin.git/hooks/pre-receive"
 # PR 経由: default branch 上の commit をブランチへ移し、push → gh pr create → local default を origin へ戻す
 run_finish "$KW" knowledge-commit pr --branch chore/ace-from-pr-7 --title "knowledge: OBS-3 要約3"
 if [ "$RC" -eq 0 ] && has_line "$OUT" "KNOWLEDGE_PR=https://github.com/owner/repo/pull/99" \
+  && has_line "$OUT" "KNOWLEDGE_DEFAULT_RESTORE=ok" \
   && [ "$(git -C "$TMP/origin.git" rev-parse chore/ace-from-pr-7)" = "$(git -C "$KW" rev-parse HEAD)" ] \
   && [ "$(git -C "$KW" rev-parse develop)" = "$(git -C "$TMP/origin.git" rev-parse develop)" ] \
   && awk 'index($0, "pr create --base develop --title knowledge: OBS-3 要約3") == 1 { f = 1 } END { exit f ? 0 : 1 }' "$STUB_LOG"; then
@@ -1451,21 +1480,187 @@ if [ "$RC" -eq 0 ] && has_text "$OUT" "protection=unknown"; then
 else
   bad "H13: gh 不在の probe が違う（rc=${RC}）: ${OUT} / ${ERR}"
 fi
-# pr: ローカル default branch を origin へ戻せない回（別 worktree が保持）は握り潰さず非 0
-g -C "$KW" checkout -q -b chore/ace-restore >/dev/null 2>&1
+# pr: chore から始めた回は、別 worktree の未 push default ref・HEAD・branch・未追跡ファイルを触らない
+printf 'unrelated\n' >"$KW/unrelated.txt"
+g -C "$KW" add unrelated.txt >/dev/null 2>&1
+g -C "$KW" commit -qm 'chore: unrelated local default' >/dev/null 2>&1
+H14_DEFAULT="$(git -C "$KW" rev-parse develop)"
+g -C "$KW" checkout -q -b chore/ace-restore origin/develop >/dev/null 2>&1
 printf -- '- obs5\n' >>"$KW/docs/08-knowledge/OBSERVATIONS.md"
 run_finish "$KW" knowledge-commit add --source obs --id OBS-5 --summary "要約5" -- docs/08-knowledge/OBSERVATIONS.md
 run_finish "$KW" knowledge-commit commit
+H14_CALLER="$(git -C "$KW" rev-parse HEAD)"
 g -C "$KW" worktree add -q "$TMP/kw-dev" develop >/dev/null 2>&1 || bad "H14-0: develop を保持する worktree を作れません"
+printf 'preserve\n' >"$TMP/kw-dev/keep.txt"
 run_finish "$KW" knowledge-commit pr --branch chore/ace-restore --title "knowledge: OBS-5 要約5"
-if [ "$RC" -eq 1 ] && has_line "$OUT" "KNOWLEDGE_PR=https://github.com/owner/repo/pull/99" && has_line "$OUT" "KNOWLEDGE_DEFAULT_RESTORE=failed" \
-  && has_text "$ERR" "残存: refs/heads/develop" && has_text "$ERR" "復帰:"; then
-  ok "H14: PR 作成後にローカル default branch を戻せなければ rc 1 で残存 ref と復帰手順を出す（PR は作成済み）"
+if [ "$RC" -eq 0 ] && has_line "$OUT" "KNOWLEDGE_PR=https://github.com/owner/repo/pull/99" \
+  && has_line "$OUT" "KNOWLEDGE_DEFAULT_RESTORE=skipped" \
+  && [ "$H14_DEFAULT" != "$(git -C "$KW" rev-parse origin/develop)" ] \
+  && [ "$(git -C "$KW" rev-parse develop)" = "$H14_DEFAULT" ] \
+  && [ "$(git -C "$KW" rev-parse HEAD)" = "$H14_CALLER" ] \
+  && [ "$(git -C "$KW" symbolic-ref --short HEAD)" = "chore/ace-restore" ] \
+  && [ "$(git -C "$TMP/kw-dev" rev-parse HEAD)" = "$H14_DEFAULT" ] \
+  && [ "$(git -C "$TMP/kw-dev" symbolic-ref --short HEAD)" = "develop" ] \
+  && [ "$(cat "$TMP/kw-dev/keep.txt")" = "preserve" ] \
+  && ! has_text "$ERR" "残存: refs/heads/develop"; then
+  ok "H14: chore 起動なら別 worktree の未 push default ref・HEAD・branch・未追跡ファイルを守り、PR 作成を成功とする"
 else
-  bad "H14: default branch の復元失敗が握り潰されている（rc=${RC}）: ${OUT} / ${ERR}"
+  bad "H14: chore 起動で別 worktree の default を変更したか、PR 作成後に失敗した（rc=${RC}）: ${OUT} / ${ERR}"
 fi
 g -C "$KW" worktree remove --force "$TMP/kw-dev" >/dev/null 2>&1 || true
 g -C "$KW" checkout -q develop >/dev/null 2>&1; g -C "$KW" reset -q --hard origin/develop >/dev/null 2>&1
+
+# H14b: chore 起動の4経路と、default 起動の3失敗経路。ref が origin と異なる fixture で
+# 復帰責務の有無を測る。gh 以外は実 Git（upstream 応答1件だけ wrapper で差し替える）。
+KC_BIN="$TMP/kc-bin"
+mkdir -p "$KC_BIN"
+KC_REAL_GIT="$(command -v git)"
+export KC_REAL_GIT
+cat >"$KC_BIN/git" <<'KC_GIT'
+#!/usr/bin/env bash
+if [ "$*" = 'rev-parse --abbrev-ref --symbolic-full-name @{u}' ]; then
+  case "${STUB_KC_UPSTREAM:-normal}" in
+    normal) ;;
+    mismatch)
+      printf 'upstream-mismatch\n' >>"${STUB_KC_FAULT_LOG:?}"
+      echo origin/fixture-mismatch; exit 0 ;;
+    *) echo "stub: unknown STUB_KC_UPSTREAM" >&2; exit 97 ;;
+  esac
+fi
+exec "${KC_REAL_GIT:?}" "$@"
+KC_GIT
+chmod +x "$KC_BIN/git"
+run_pr_restore_case() { # <chore|default> <success|push|upstream|pr>
+  local start="$1" mode="$2" label="$1-$2" fixture origin work branch
+  local base before caller expected rc_expected upstream_mode=normal pr_fail=0 gh_count fault_count remote_head
+  case "$start:$mode" in
+    chore:success|chore:push|chore:upstream|chore:pr|default:push|default:upstream|default:pr) ;;
+    *) bad "H14b: 未知の行列入力 $start:$mode"; return 1 ;;
+  esac
+  fixture="$TMP/kc-$label"; origin="$fixture/origin.git"; work="$fixture/work"; branch="chore/kc-$label"
+  mkdir -p "$fixture" || return 1
+  g clone -q --bare "$TMP/origin.git" "$origin" >/dev/null 2>&1 || return 1
+  g clone -q "$origin" "$work" >/dev/null 2>&1 || return 1
+  ff_git_fixture_init "$work" "Knowledge Matrix" "knowledge-matrix@example.com" >/dev/null 2>&1 || return 1
+  g -C "$work" remote set-head origin develop >/dev/null 2>&1 || return 1
+  base="$(git -C "$work" rev-parse origin/develop)" || return 1
+  if [ "$start" = "chore" ]; then
+    printf 'unrelated\n' >"$work/local.txt"
+    g -C "$work" add local.txt >/dev/null 2>&1 || return 1
+    g -C "$work" commit -qm 'chore: unrelated local default' >/dev/null 2>&1 || return 1
+    g -C "$work" checkout -q -b "$branch" origin/develop >/dev/null 2>&1 || return 1
+  fi
+  printf -- '- matrix\n' >>"$work/docs/08-knowledge/OBSERVATIONS.md"
+  g -C "$work" add docs/08-knowledge/OBSERVATIONS.md >/dev/null 2>&1 || return 1
+  g -C "$work" commit -qm 'knowledge: matrix observation' >/dev/null 2>&1 || return 1
+  before="$(git -C "$work" rev-parse develop)" || return 1
+  caller="$(git -C "$work" rev-parse HEAD)" || return 1
+  if [ "$before" = "$base" ] || [ "$(git -C "$work" rev-list --count origin/develop..HEAD)" != 1 ]; then
+    bad "H14b/$label: origin と異なる default ref・送信1コミットの fixture が成立していません"
+    return 1
+  fi
+  expected="$before"; [ "$start" != "default" ] || expected="$base"
+  rc_expected=2
+  case "$mode" in
+    success) rc_expected=0 ;;
+    push)
+      printf '#!/usr/bin/env bash\necho KC_PR_PUSH_REJECT >&2\nexit 1\n' >"$origin/hooks/pre-receive"
+      chmod +x "$origin/hooks/pre-receive" ;;
+    upstream) upstream_mode=mismatch ;;
+    pr) pr_fail=1 ;;
+  esac
+  : >"$STUB_LOG"; : >"$fixture/fault.log"
+  RC=0
+  OUT="$(cd "$work" && PATH="$KC_BIN:$BIN:$PATH" STUB_KC_UPSTREAM="$upstream_mode" \
+    STUB_KC_FAULT_LOG="$fixture/fault.log" STUB_PR_CREATE_FAIL="$pr_fail" \
+    bash "$FINISH" knowledge-commit pr --branch "$branch" --title "knowledge: matrix" 2>"$TMP/err")" || RC=$?
+  ERR="$(cat "$TMP/err")"
+  gh_count="$(awk 'index($0, "pr create ") == 1 { n++ } END { print n+0 }' "$STUB_LOG")"
+  fault_count="$(awk '$0 == "upstream-mismatch" { n++ } END { print n+0 }' "$fixture/fault.log")"
+  remote_head="$(git -C "$origin" rev-parse --verify --quiet "refs/heads/$branch")" || remote_head=""
+  if [ "$RC" -ne "$rc_expected" ] \
+    || [ "$(git -C "$work" rev-parse develop)" != "$expected" ] \
+    || [ "$(git -C "$origin" rev-parse develop)" != "$base" ] \
+    || [ "$(git -C "$work" rev-parse HEAD)" != "$caller" ] \
+    || [ "$(git -C "$work" symbolic-ref --short HEAD)" != "$branch" ]; then
+    bad "H14b/$label: default 復帰責務か PR branch/HEAD を破った（rc=${RC}）: ${OUT} / ${ERR}"
+    return 0
+  fi
+  case "$mode" in
+    success)
+      if [ "$gh_count" -eq 1 ] && [ "$fault_count" -eq 0 ] && [ "$remote_head" = "$caller" ] \
+        && has_line "$OUT" "KNOWLEDGE_PR=https://github.com/owner/repo/pull/99" \
+        && has_line "$OUT" "KNOWLEDGE_DEFAULT_RESTORE=skipped"; then
+        ok "H14b/$label: PR 作成成功時も未 push default ref を保持する"
+      else bad "H14b/$label: 成功経路に到達していません: ${OUT} / ${ERR}"; fi ;;
+    push)
+      if [ "$gh_count" -eq 0 ] && [ "$fault_count" -eq 0 ] && [ -z "$remote_head" ] \
+        && has_text "$ERR" "KC_PR_PUSH_REJECT" && has_text "$ERR" "PR 経由ブランチの push に失敗"; then
+        ok "H14b/$label: push 失敗を維持し、開始 branch に応じて default ref を扱う"
+      else bad "H14b/$label: push 失敗経路に到達していません: ${OUT} / ${ERR}"; fi ;;
+    upstream)
+      if [ "$gh_count" -eq 0 ] && [ "$fault_count" -eq 1 ] && [ "$remote_head" = "$caller" ] \
+        && has_text "$ERR" "upstream が想定と異なります" && has_text "$ERR" "origin/fixture-mismatch"; then
+        ok "H14b/$label: upstream 不一致を維持し、開始 branch に応じて default ref を扱う"
+      else bad "H14b/$label: upstream 不一致経路に到達していません: ${OUT} / ${ERR}"; fi ;;
+    pr)
+      if [ "$gh_count" -eq 1 ] && [ "$fault_count" -eq 0 ] && [ "$remote_head" = "$caller" ] \
+        && has_text "$ERR" "stub: PR create failure" && has_text "$ERR" "PR 作成に失敗"; then
+        ok "H14b/$label: PR 作成失敗を維持し、開始 branch に応じて default ref を扱う"
+      else bad "H14b/$label: PR 作成失敗経路に到達していません: ${OUT} / ${ERR}"; fi ;;
+  esac
+}
+KC_MATRIX_COUNT=0
+for _kc_case in chore:success chore:push chore:upstream chore:pr default:push default:upstream default:pr; do
+  KC_MATRIX_COUNT=$((KC_MATRIX_COUNT + 1))
+  if ! run_pr_restore_case "${_kc_case%:*}" "${_kc_case#*:}"; then
+    bad "H14b/${_kc_case}: fixture または stub の構築が失敗しました（skip にしない）"
+  fi
+done
+if [ "$KC_MATRIX_COUNT" -eq 7 ]; then
+  ok "H14b: 復帰責務の実 Git 行列7件をすべて実行した"
+else
+  bad "H14b: 復帰責務の実 Git 行列が空か欠落しています（${KC_MATRIX_COUNT}件）"
+fi
+
+# H14c: default 開始の復帰操作そのものが失敗した回。実 Git の ref lock で branch -f だけを
+# 止め、PR 作成後の非 0 と残存知見・復帰案内を確認する（H14b の7件行列とは独立）。
+H14C_BASE="$(git -C "$KW" rev-parse origin/develop)"
+printf -- '- restore-failure\n' >>"$KW/docs/08-knowledge/OBSERVATIONS.md"
+run_finish "$KW" knowledge-commit add --source obs --id OBS-50 --summary "復帰失敗" -- docs/08-knowledge/OBSERVATIONS.md
+H14C_ADD_RC="$RC"
+run_finish "$KW" knowledge-commit commit
+H14C_COMMIT_RC="$RC"
+H14C_HEAD="$(git -C "$KW" rev-parse HEAD)"
+H14C_LOCK="$(git -C "$KW" rev-parse --absolute-git-dir)/refs/heads/develop.lock"
+if [ "$H14C_ADD_RC" -eq 0 ] && [ "$H14C_COMMIT_RC" -eq 0 ] \
+  && [ "$H14C_HEAD" != "$H14C_BASE" ] && [ "$(git -C "$KW" symbolic-ref --short HEAD)" = "develop" ] \
+  && printf 'fixture-lock\n' >"$H14C_LOCK"; then
+  : >"$STUB_LOG"
+  run_finish "$KW" knowledge-commit pr --branch chore/ace-restore-failed --title "knowledge: OBS-50 復帰失敗"
+  if [ "$RC" -eq 1 ] && has_line "$OUT" "KNOWLEDGE_PR=https://github.com/owner/repo/pull/99" \
+    && has_line "$OUT" "KNOWLEDGE_DEFAULT_RESTORE=failed" \
+    && has_text "$ERR" "refs/heads/develop.lock" \
+    && has_text "$ERR" "残存: refs/heads/develop = ${H14C_HEAD}" && has_text "$ERR" "復帰:" \
+    && [ "$(git -C "$KW" rev-parse develop)" = "$H14C_HEAD" ] \
+    && [ "$(git -C "$KW" rev-parse chore/ace-restore-failed)" = "$H14C_HEAD" ] \
+    && [ "$(git -C "$KW" rev-parse HEAD)" = "$H14C_HEAD" ] \
+    && [ "$(git -C "$KW" symbolic-ref --short HEAD)" = "chore/ace-restore-failed" ] \
+    && [ "$(git -C "$TMP/origin.git" rev-parse chore/ace-restore-failed)" = "$H14C_HEAD" ] \
+    && [ "$(git -C "$TMP/origin.git" rev-parse develop)" = "$H14C_BASE" ] \
+    && [ "$(cat "$H14C_LOCK")" = "fixture-lock" ] \
+    && [ "$(awk 'index($0, "pr create ") == 1 { n++ } END { print n+0 }' "$STUB_LOG")" -eq 1 ]; then
+    ok "H14c: default の復帰操作が失敗すれば、PR 作成済みでも rc 1・failed・残存 ref・復帰案内を出して知見を保持する"
+  else
+    bad "H14c: PR 作成後の default 復帰失敗を握り潰したか、知見を失った（rc=${RC}）: ${OUT} / ${ERR}"
+  fi
+else
+  bad "H14c: default 開始の知見1件と ref lock の fixture を構築できません（skip にしない）"
+fi
+rm -f "$H14C_LOCK"
+g -C "$KW" checkout -q develop >/dev/null 2>&1
+g -C "$KW" reset -q --hard origin/develop >/dev/null 2>&1
+
 # add --claim: claim の検証が赤なら保留にも index にも残さない（検証は登録より前）
 mkdir -p "$KW/.version-claims"
 cp "$ROOT/scripts/update-version-claim.sh" "$TMP/uvc.bak"; cp "$ROOT/scripts/check-version-claims.sh" "$TMP/cvc.bak"

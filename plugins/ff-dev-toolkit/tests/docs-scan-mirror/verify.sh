@@ -222,7 +222,7 @@ fail() { echo "✗ $*" >&2; exit 1; }
 # 引数: <fixture 名> <左のラベル> <右のラベル> <左ファイル> <右ファイル>
 line_diff_report() {
   {
-    awk -v name="$1" -v ll="$2" -v rl="$3" '
+    LC_ALL=C awk -v name="$1" -v ll="$2" -v rl="$3" '
       NR == FNR { a[FNR] = $0; next }
       $0 != a[FNR] {
         bad++

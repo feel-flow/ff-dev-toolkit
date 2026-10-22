@@ -413,11 +413,11 @@ resolve_playbook() {
     done <"${TMP}/ace-record-tokens"
   fi
   if [ "${n}" -gt 0 ] && def="$(ace_record_candidate "${ROOT}/docs/08-knowledge/PLAYBOOK.md")"; then
-    src="$(awk -F '\t' -v c="${def}" '$2 == c { print $1; exit }' "${TMP}/ace-record-hits")"
+    src="$(LC_ALL=C awk -F '\t' -v c="${def}" '$2 == c { print $1; exit }' "${TMP}/ace-record-hits")"
     if [ -n "${src}" ]; then
       if [ "${n}" -gt 1 ]; then
         printf '記録済み配置の候補 %s 件のうち既定パスを採りました（他の記載は採りません）:\n' "${n}" >&2
-        awk -F '\t' -v c="${def}" '$2 != c { printf "    %s（記載: %s）\n", $2, $1 }' "${TMP}/ace-record-hits" >&2
+        LC_ALL=C awk -F '\t' -v c="${def}" '$2 != c { printf "    %s（記載: %s）\n", $2, $1 }' "${TMP}/ace-record-hits" >&2
       fi
       printf 'recorded:%s\t%s\n' "${src}" "${def}"
       return 0

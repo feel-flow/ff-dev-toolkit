@@ -17,8 +17,8 @@ BASE_WORKTREE_OID=""
 BASE_WORKTREE_DETACHED=0
 
 if [ "$NO_SWITCH_MODE" = "1" ]; then
-  echo "ℹ️ 呼び出し元は '${CURRENT_BRANCH_BEFORE}' を保持しています（base=${PR_BASE} / PR head=${PR_HEAD} のいずれでもありません）。"
-  echo "   他セッションの作業ブランチを切り替えないため、base への復帰・pull を行わない掃除モードで続行します。"
+  echo "ℹ️ 呼び出し元は '${CURRENT_BRANCH_BEFORE:-（detached HEAD）}' を保持しています（base=${PR_BASE} / PR head=${PR_HEAD} のいずれでもありません）。"
+  echo "   呼び出し元と別 worktree の HEAD を変更しないため、base への復帰・pull を行わない掃除モードで続行します。"
 
   # base を保持する worktree があれば報告だけする（detach も削除もしない。`#758`:
   # 他セッションの worktree は保持者パス・clean/dirty・最終更新を報告し、処分は
@@ -169,8 +169,8 @@ else
     echo "   … open PR 一覧を取得しました"
     printf '%s' "$GH_MERGED_JSON" \
       | jq -r '.[] | select(.isCrossRepository | not) | "\(.headRefName)\t\(.headRefOid)"' \
-      | sort -u > "$MERGED_LIST"
-    printf '%s' "$GH_OPEN_JSON" | jq -r '.[].headRefName' | sort -u > "$OPEN_LIST"
+      | LC_ALL=C sort -u > "$MERGED_LIST"
+    printf '%s' "$GH_OPEN_JSON" | jq -r '.[].headRefName' | LC_ALL=C sort -u > "$OPEN_LIST"
     printf '%s' "$GH_MERGED_JSON" | jq -r --arg base "$PR_BASE" '
       .[] | select(.isCrossRepository == false and .baseRefName == $base)
       | .headRefOid | select(type == "string" and test("^[0-9a-fA-F]{40}$"))

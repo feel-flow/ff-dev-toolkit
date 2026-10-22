@@ -251,7 +251,7 @@ ready / merge の前にレビュー対象を機械照合する consumer は `mul
 
 evidence を書く `review-evidence.py` は、実行の開始時に固定 root から 1 回だけ読み、begin と finish の両方をその内容で実行する。読んだ内容はプロセスのメモリにだけ持ち、コピー・他の版の探索・sidecar は作らない。そのため、1 回の実行の中で、全 CLI の完走後に plugin 更新で開始時の版の cache が消えても evidence は出る。開始時に読めない回は CLI を 1 つも起動せず、skill の再呼び出しを案内して止まる。実行中に開始時の root が変わった回（`multi-agent.sh` の消失、`review-evidence.py` の消失・内容の変化）は、そのファイルを名指しする。続く verify を含め、次のコマンドの前に skill を呼び直して root を解決し直す。receipt の `producer_sha256` は開始時に読んだ producer の digest で、照合対象（subject）には含めない。
 
-finish が evidence を書けなかった回は、理由・残したファイル（開始記録・タスク結果・レポートとその digest）・再実行の範囲を表示する。残したファイルは診断用で、手で receipt に組み立てない（verify は署名の無いローカルの出自記録を照合するだけで、手で組み立てた receipt を見分けられない）。同じコマンドを再実行する。`--evidence` だけの実行は、`--fresh` を外して `--resume` を足せる。完了済みのタスクを再利用するのは、HEAD・base・差分・`--description`・プランとモデル・toolkit のファイルがすべて同じ場合に限る。版をまたぐと照合キーが変わるので全タスクを再実行する。先行・継続証跡を伴う実行は `--resume` と併用できないので、全タスクを再実行する。
+finish が evidence を書けなかった回は、理由・残したファイル（開始記録・タスク結果・レポートとその digest）・再実行の範囲を表示する。残したファイルは診断用で、手で receipt に組み立てない（verify は署名の無いローカルの出自記録を照合するだけで、手で組み立てた receipt を見分けられない）。同じコマンドを再実行する。`--evidence` だけの実行は、`--fresh` を外して `--resume` を足せる。完了済みのタスクの再利用は、HEAD・base・差分・`--description`・プランとモデル・toolkit の実行内容が同じ場合に限る。同梱 config の版行だけの差は照合キーから除く（詳細は [未完了観点の再実行](#review-resume)）。先行・継続証跡を伴う実行は `--resume` と併用できないので、全タスクを再実行する。ホスト委譲時は全 pending 応答を揃えてから、handoff に表示された元のコマンドを `--resume` なしで実行する（[委譲の手順](#host-delegation)）。
 
 ```bash
 python3 "$FF_DEV_TOOLKIT_ROOT/scripts/review-evidence.py" verify \
@@ -947,40 +947,58 @@ grok をホストにした場合は別の動機がある: `grok -p`（headless�
    task-type=review
    output-dir=/abs/path/.review-results
    --- task ---
+   FF-REVIEW-DELEGATED: /abs/path/.review-results/claude-code/.delegated/generations/<generation>/code-review.prompt.md
+   handoff-format=2
+   generation=<generation>
    cli=claude-code
    cli-name=Claude Code
    perspective=code-review
    task-type=review
    timeout=900
    allowed-tools=Read,Grep,Glob,Bash(git diff*)
-   prompt-file=/abs/path/.review-results/claude-code/.delegated/code-review.prompt.md
-   output-file=/abs/path/.review-results/claude-code/code-review.md
+   prompt-file=/abs/path/.review-results/claude-code/.delegated/generations/<generation>/code-review.prompt.md
+   output-file=/abs/path/.review-results/claude-code/.delegated/generations/<generation>/code-review.response.md
    prompt-digest=<sha1>
+   superseded=0
    <<<END-FF-DELEGATED-TASKS>>>
    ```
 
-2. **ホストが実行する**: `prompt-file` の中身をそのままホストのサブエージェントへ渡し（read-only。`allowed-tools` が CLI 起動経路で与えていた許可と同じ）、結果を `output-file` のパスへ書く。**worktree は触らない** — 1 回目と 2 回目のあいだにツリーが動くと、2 回目のリビジョンガードが結果を破棄する
+2. **ホストが実行する**: `prompt-file` の中身をそのままホストのサブエージェントへ渡し（read-only。`allowed-tools` が CLI 起動経路で与えていた許可と同じ）、結果を handoff の `output-file` のパスへ書く。このパスは世代別の応答受け皿で、最終結果 `<output-dir>/<cli>/<観点>.md` は受理後にオーケストレータが書く。**worktree は触らない** — 1 回目と 2 回目のあいだにツリーが動くと、2 回目のリビジョンガードが結果を破棄する
 
-3. **2 回目**: **1 回目のコマンドに `--resume` を足して**再実行する。書き戻した結果が受理され、統合レポートが生成される。終了コードは通常どおり
+3. **2 回目**: 先行・継続証跡の指定によって再実行方法を選ぶ。書き戻した結果は同じ本文・digest 検査を通して受理され、統合レポートが生成される。`--fresh` は併用不可（下記）
 
-   `--resume` は「他レーンの結果を使い回す」ためだけのものではない。付けないと今回のプラン対象がすべてクリアされ、**前の巡で受理済みの観点まで受け渡しファイルごと消えて再委譲される** — `claude-code` レーンは分散プランで既定 3 観点を持つので、1 観点ずつ答える通常の進み方が収束しなくなる。`--fresh` は併用不可（下記）
+   - **`--require-prior-review` / `--continue-review` がない場合**: **1 回目のコマンドに `--resume` を足す**。受理済み観点を保ち、残る応答を同じ巡へ取り込めるので、1 観点ずつ答える場合も付ける
+   - **どちらかを指定した場合**: **全 pending 応答を書き終えてから**、handoff に表示された元のコマンドを **`--resume` を付けず**再実行する。非委譲タスクは再実行され、先行・継続証跡は通常どおり検証される。モデル・config 選択の環境変数も初回と揃える（表示コマンドが任意の環境を復元するわけではない）。一部の応答だけで再実行すると、次の実行で受理済みの結果も消去・再委譲されるため、全応答を揃えて一括で取り込む。`--resume` との拒否は維持する — 先行レビューより前のキャッシュを順序の証明に使わせないためである
+
+stderr と統合レポートの pending 節は、同じ再実行方法・元の引用コマンド・環境維持を案内する。
+
+**一部の応答を先に採用してしまった場合**: 表示された pending だけを補うと、受理済み観点が次回は再委譲されて交互に未完了になる。消費済み応答を初回の受け皿へ戻すだけでは、対応する request も消費されているため復旧しない。旧出力先を変更・削除せず保存し、元のコマンドの末尾に **新しい空ディレクトリを指定する `--output-dir`** を追加して開始し直す。出力先は worktree 外または gitignore 済みの場所を選ぶ（`--evidence` の clean worktree 条件を保つ）。他の引数、先行・継続証跡、モデル・config 選択環境は維持する。新しく生成された **全 prompt** をホストの read-only サブエージェントへ渡し、その応答を **新 handoff の全 output-file** へ一括で書いてから、新コマンドを `--resume` なしで再実行する。旧世代の応答を新世代へ移して採用させない。同じ HEAD の再実行は同じ巡で、出力先を替えても巡を追加しない。旧出力先には既存の応答・レポート・未採用記録を残す。
+
+### 委譲再開の入力照合と世代
+
+入力の `manifest` と安全に引用した初回コマンドの `invocation`、HEAD・照合キー・世代の `metadata`、旧未採用記録の `unadopted` を `<output-dir>/.delegation-state/` へ保存する。`--route`・`--description` も保存対象である。
+
+- **同じ HEAD の未完了委譲を `--resume` する場合**: 入力が初回と違えば非 0 で停止し、初回のコマンドを表示する。この判定は応答・request・prompt・レポート・キャッシュの書き換えより前に行う。応答を stale へ動かしたり、新しい引数で handoff を出し直したりしない。表示された変更成分を初回と同じに戻し、`MULTI_AGENT_CONFIG` など config 選択に必要な環境も揃えてから、表示された初回引数で次に 1 回 `--resume` すれば、その応答を受理できる。保存コマンドに含む環境変数はモデル選択用だけであり、任意の環境は復元しない。コード・toolkit など入力の変更が意図したものなら、旧応答を保存したまま `--resume` を外して新しい巡を始める（旧世代は未採用として報告される）
+- **新しい HEAD で次の巡を始める場合**: 旧未完了の委譲を未採用として報告し、新しい世代の handoff を作る。旧世代の遅延応答は旧世代の受け皿へ残り、新世代の応答と混ざらない。新しい handoff の応答は最初の再実行で受理できる（通常は `--resume`、先行・継続証跡を伴う場合は上記の一括取り込み）。世代は新 HEAD の巡ごとに分けるが、ランダム値や mtime を resume の照合キーには入れない
+- **初回記録が不明な場合**: 旧形式の request だけが残り manifest が無い、記録が壊れている・重複している・symlink になっている場合は、新 HEAD でも既存ファイルを変更せず停止する。表示された旧応答の保存先を確認する。入力を推測して破棄・採用しない。これはオーケストレータの再開契約であり、アダプタ単独呼び出しの旧形式互換は維持する
+
+ここでの受理は下の本文・digest・書き込み確認も通ることが前提で、失敗したレビューを完了へ格上げするものではない。
 
 ### 併用できないもの・止まるところ
 
 - **`--fresh` とは併用できない**（起動時に拒否する）。`--fresh` は出力ディレクトリの中身をホストの結果も受け渡しファイルもまとめて `.prev-<時刻>/` へ退避するので、2 回目が毎回新しい handoff になって収束せず、しかも完了済みのレビューが一度も読まれないまま退避される。掃除したいときは先に委譲なしで `--fresh` を 1 回走らせる
 - **委譲を指定したまま結果を残した状態で、フラグを落として（または別レーンの委譲で）再実行すると中断する**。その結果パスはこの実行がクリアする対象そのものなので、素通しにするとホストの成果物が 1 行の通知も無く消え、そのうえ枯渇していて動かない CLI が起動される。再実行するか、案内される `rm` で委譲を明示的に放棄する
-- **入力が変わったまま古い handoff の応答が届くと、1 回だけ拒否する**。前の handoff が未応答のうちに入力が変わって新しい handoff を出していた場合、遅れて届いた応答がどちらのプロンプトに対するものか決められない（digest は「今のプロンプト」と「最後に出した handoff」しか比べていない）。この曖昧さを検出した回は受理せず退避し、handoff を出し直して対応を 1 対 1 へ戻す
 
 ### 受理の条件（ここは緩めない）
 
-- **同じプロンプトへの応答であること**: handoff 時にプロンプト本文の digest を `.delegated/<観点>.request` へ記録し、受理時に再計算して突き合わせる。diff・base・観点ファイル・`--description` のどれが動いても digest が変わるので、**前回の入力を見た結果が今回の結果として載ることはない**
+- **同じプロンプトへの応答であること**: handoff 時にプロンプト本文の digest を `.delegated/generations/<generation>/<観点>.request` へ記録し、受理時に再計算して突き合わせる。diff・base・観点ファイル・`--description` のどれが動いても digest が変わるので、**前回の入力を見た結果が今回の結果として載ることはない**
 - **レビュー本文として成立していること**: CLI 起動経路と**同じ**受理ゲート（共有関数 `review_body_present`。有効な型付き判定行 `- verdict: …` / `- verdict: none` が 1 行以上あること）を通す。散文の重大度行だけの応答は受理せず、正規形の理由（`REVIEW_BODY_REFUSAL_PHRASE`）で退避して handoff をやり直し、CLI 起動経路と同じ拒否の診断を stderr へ 1 行出す（`typed-verdict: claude-code/<観点>: prose-only review refused (no valid verdict line)`。CLI 起動経路は `<CLI 表示名>/<観点>` を名指しする）
 - **型付き判定行の契約はプロンプトに入っている**: `prompt-file` は CLI 起動経路と同じ `build_prompt` の生成物で、finding ごとの型付き判定行（`- verdict: severity=… failure_scenario=… confidence=…`、指摘ゼロなら `- verdict: none`）を要求する `## Typed Verdict Lines` 節を含む。サブエージェントの応答は要約・整形せず、その行を含んだまま `output-file` へ書く — ホストが本文を書き直して型付き判定行を落とすと、その観点の応答は受理されない
 - `<!-- Status: incomplete -->` / `discarded` を名乗る応答は受理しない（失敗した実行のサルベージをホスト経由で「完成した結果」へ格上げしない）。判定は**本文全体**に掛ける — リビジョンガードが破棄した成果物は `> DISCARDED — …` バナーを前置してからヘッダーを続けるので、先頭 1 段落だけを見る形では素通りする
 - ヘッダーを剥がした後もまだ結果ヘッダーが残っている応答（前置きの後にヘッダーがある / 複数の結果を連結した）は受理しない。入れ子のヘッダーを持つ成果物になり、外側が complete を名乗りながら内側が別の status を名乗りうる
 - 受理は**書けたことを書いたファイル自身で確認してから**確定する。確認が取れなければホストの応答を消さずに残し、パスを名指しして止まる
 
-受理しなかった応答は**捨てずに** `.delegated/<観点>.response.{stale,rejected}.<時刻>.md` へ退避し、パスを名指ししたうえで handoff をやり直す。受理した結果は `write_output` と同じヘッダー（`<!-- CLI: Claude Code -->` / `<!-- Status: complete -->`）で書き直されるので、レポートからは CLI 起動経路の結果と区別がつかない。
+digest 不一致や本文不成立で受理しなかった応答は**捨てずに**、その世代の `<観点>.response.{stale,rejected}.<時刻>.md` へ退避し、パスを名指ししたうえで handoff をやり直す。同じ HEAD の初回入力との不一致は、その前段で無変更停止するためこの退避を行わない。受理した結果は最終結果パスへ `write_output` と同じヘッダー（`<!-- CLI: Claude Code -->` / `<!-- Status: complete -->`）で書かれるので、レポートからは CLI 起動経路の結果と区別がつかない。
 
 ### 委譲待ちの見え方
 
@@ -990,7 +1008,7 @@ grok をホストにした場合は別の動機がある: `grok -p`（headless�
 
 ### 受け渡しファイルの置き場所
 
-`<output-dir>/<委譲レーン>/.delegated/` 配下（`<観点>.prompt.md` / `<観点>.request` / 受理しなかった応答の退避）。ドット始まりなので、前回結果の退避（`<cli>/*.md` だけを見る）にも「Not part of this run」の名指し（ドット始まりを外す）にも掛からない。`--fresh` を付けた実行では出力ディレクトリの他の中身と一緒に退避される。
+`<output-dir>/<委譲レーン>/.delegated/generations/<generation>/` 配下に `<観点>.prompt.md` / `<観点>.request` / `<観点>.response.md` と受理しなかった応答の退避を置く。ホストは handoff の `output-file` を使い、世代や最終結果のパスを組み立てない。初回入力の記録は `<output-dir>/.delegation-state/` に置く。どちらもドット始まりなので、前回結果の退避（`<cli>/*.md` だけを見る）にも「Not part of this run」の名指し（ドット始まりを外す）にも掛からない。`--fresh` を付けた実行では出力ディレクトリの他の中身と一緒に退避される。
 
 ---
 
@@ -1035,7 +1053,15 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 - 誤診を避けるため、プロンプト超過の語彙照合は 2 段になっています。`prompt is too long` のような**拒否文そのもの**は CLI の stderr であれば単独で採り、`context length` / `input too large` / `token limit` のような一般的な語は **API エラーの文脈語（`API Error` / `invalid_request_error` / 400・413 など）が同じ行に並ぶこと**を要求します。とくに `token limit` は `monthly token limit`（= 残高・プラン上限）と語を共有するため、`context` / `prompt` / `input` の同一行共起も求めて 💳 の材料を奪いません。成果物へ保全された**部分出力**側はさらに厳しく、`API Error: ...` のように**行頭がエラーの体裁である行**だけを見ます（レビュー本文がプロンプト超過を話題にしていても誤診しないため）。拾えなかった回は従来どおりの案内へ落ちます。
 - 資格情報の拒否（🔑）・残高の枯渇（💳）と切り分けられた失敗が出た時点で、**同じ実行内に残っている同一 CLI のタスクはスキップします**（フル setup を払ってから同じ失敗を引かないため）。スキップしたタスクは実行ログで `⏭ Skipped <cli>/<perspective>` として名指しされ、統合レポートにも `⏭ SKIPPED`（`INCOMPLETE` 併記）の節が出ます。**スキップは「失敗」ではなく「未実行」**なので、次回の `--resume` では通常どおり再実行対象になります。引数リスト超過（📏）・プロンプト超過（📐、超過量は観点ごとのプロンプト長で決まるため短い観点なら通る余地がある）・切り分け不能な失敗・**タイムアウト（時間を足せば通りうる）ではスキップしません**（推測でカバレッジを落とさないための fail-open）。前回の未解消 Critical がある観点がスキップされた場合、その分類は「解消が証明されていない」ものとして保持されます。
 
-同一の task・CLI・base・HEAD・perspective 集合・設定・レビュー diff で未完了観点だけを再実行する場合は `--resume` を使う。成功済み結果は `.review-results/.resume-cache/` から内容 hash を検証して再利用され、欠落・破損・入力不一致は再実行へ倒れる。timeout は identity に含まれないため、失敗後に延長して再開できる。統合レポートの各節には `reused` / `executed` が表示される。
+<a id="review-resume"></a>
+
+### 未完了観点の再実行（`--resume`）
+
+同一の task・CLI・base・HEAD・perspective 集合・設定・レビュー diff で未完了観点だけを再実行する場合は `--resume` を使う。成功済み結果は `.review-results/.resume-cache/` から内容 hash を検証して再利用され、欠落・破損・入力不一致は再実行へ倒れる。ホスト委譲の同一巡の入力違いは、上の [入力照合](#委譲再開の入力照合と世代) で書き換え前に停止する。timeout は identity に含まれないため、失敗後に延長して再開できる。統合レポートの各節には `reused` / `executed` が表示される。
+
+照合キーはオーケストレータとその構成ファイル、アダプタとその構成ファイル、観点、モデル、config、固定 diff などの入力を hash する。例外は、正規の同梱 `scripts/agent-config.yaml` にある厳密に 1 行の `toolkit_version` だけで、この行だけの版差なら完了済みの結果を再利用できる。それ以外のバイトは改行形式（CRLF）や末尾改行も含めて比較する。環境変数・プロジェクト設定・`--config` による指定、symlink、正規の metadata と確認できない config はファイル全体を比較する。実効キー・アダプタ・観点・各構成ファイル・HEAD・base などが変われば従来どおり照合キーを変える。
+
+入力部品のラベル付き hash は `.resume-cache/<identity>/inputs` と `.resume-cache/last-inputs` に残す。再利用できなかった回はキャッシュ不採用の理由を表示し、前回と違う入力部品のラベルも最大 8 件表示する。これは原因調査の材料であり、同じ引数・版・HEAD でも別 CLI の完了済み結果が再実行された過去観測の原因を解明したことにはならない。
 
 ```bash
 # 例: 同じ CLI に時間を足して再実行

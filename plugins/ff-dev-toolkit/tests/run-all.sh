@@ -598,6 +598,9 @@ else
     "$SCRIPT_DIR/link-sub-issues/verify.sh"
     # 導入先の入口規範とスキルの判定順の矛盾検査（read-only。--offline で gh に出ない）
     "$SCRIPT_DIR/workflow-doctor/verify.sh"
+    # gh の認証を文脈ごとに gh api user で測る診断と device flow の再ログイン（偽の gh / PowerShell /
+    # wsl.exe だけを PATH に置き、実ネットワークにも実の資格情報にも触れない）
+    "$SCRIPT_DIR/gh-auth-doctor/verify.sh"
     # ACE Playbook と観測台帳の統合読み出し器（scripts/knowledge-lookup.sh。Issue `#1778`）。
     # 状態切り分け（promoted / mitigated を未対策として返さない）と、store 不在・読めない・
     # 見出し書式の変更・配置の曖昧さに対する既定を隔離 fixture で実測する。gh は stub に
@@ -689,7 +692,7 @@ else
     "$SCRIPT_DIR/assess-impact/verify.sh"
     # 決定木 v0（scripts/decision-tree/tree.tsv + route.sh / hooks/decision-tree.sh /
     # effort-report.sh --unreached-leaves）の到達性と契約。実 tree の静的検査（葉の実在・
-    # 到達性・深さ ≤ 4・葉 ≤ 50・木に載っていないスキル / hook）を route.sh --check で通し、
+    # 到達性・深さ ≤ 4・葉 ≤ 55・木に載っていないスキル / hook）を route.sh --check で通し、
     # 合成 plugin root への変異注入で --check の検出力を毎回測る。根の規則（off / 未設定で
     # バイト同一・jev-decide を呼ばない）と FF_JEV_MODE=on の二段構え（偽 jev-decide の
     # exit 0 / 10 / 11 / 12 / 2）、hook の記録と fail-soft、読み手の (unmeasured) /
@@ -822,6 +825,8 @@ else
     # scripts/probe-env-capabilities.sh のロケール行。apt-get / npm / curl は stub、gh の
     # 不在は絞った PATH で作る。root scripts/ を持たない配布先 checkout では ○ skip。
     "$SCRIPT_DIR/cloud-env-setup/verify.sh"
+    # 日本語の完全一致・集合演算は呼び出し単位でバイト照合する（Issue `#2240`）。
+    "$SCRIPT_DIR/locale-comparison/verify.sh"
     # 公開リポジトリの Dependabot 健全性検知（Issue #472）。依存グラフ無効の再発と
     # 実在しない manifest パスに紐づく幽霊 alert を分けて捕捉する。検知スクリプト／
     # hook が無いチェックアウト（公開リポジトリ等）では ○ skip。gh はスタブへ
@@ -1400,10 +1405,7 @@ MISS_PROBE_BASELINE=(
   changelog-digest
   changelog-public-tags-selftest
   changelog-public-tags
-  claude-hooks-path
   cli-registry-completeness
-  close-issue-shell-quote
-  closing-keyword-guard
   cloud-env-setup
   docs-frontmatter-repo-selftest
   docs-frontmatter-repo
@@ -1431,7 +1433,6 @@ MISS_PROBE_BASELINE=(
   mcp-typecheck
   mcp-vitest
   multi-agent-critical-marker
-  multi-agent-host-delegation
   multi-agent-ignore-paths
   multi-agent-revision-guard
   multi-agent-serialization

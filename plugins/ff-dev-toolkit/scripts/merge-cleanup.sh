@@ -59,7 +59,8 @@
 #     「中断しても何も消えない」ガードだけ（Step 1 / Step 3）。worktree 削除前の
 #     clean 確認（Step 5）は対象外で、除外指定があっても dirty なら削除しない
 #   - base を保持する別 worktree は clean の場合だけ detached へ退避し、
-#     worktree と ignored ファイルを維持する。dirty なら変更せず中断する
+#     worktree と ignored ファイルを維持する。dirty なら変更せず中断する。
+#     detached HEAD の linked worktree からは switch なし掃除モードで、退避しない
 #   - 対象 PR のブランチを保持する linked worktree を cwd にして起動された場合は、
 #     破壊的処理の前に中断する。その cwd では掃除対象である worktree 自身を削除できず、
 #     base を別の worktree が保持していれば、その worktree を detached HEAD へ退避する
@@ -318,14 +319,13 @@ resolved_dir() {
 
 is_linked_worktree() {
   # cwd が linked worktree（`git worktree add` で作った側）なら 0、main worktree
-  # なら非 0。linked worktree では --git-dir が <common>/worktrees/<name> を指し、
-  # --git-common-dir と一致しない。判定できなければ「linked ではない」に倒す
-  # （案内のためのガードであり、削除可否を決める安全ガードではない）。
+  # なら 1、判定不能は 2。linked worktree では --git-dir が <common>/worktrees/<name> を指し、
+  # --git-common-dir と一致しない。判定不能を通常モードへ倒さない。
   local git_dir="" common_dir=""
-  git_dir="$(git rev-parse --git-dir 2>/dev/null)" || return 1
-  common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
-  git_dir="$(resolved_dir "$git_dir")" || return 1
-  common_dir="$(resolved_dir "$common_dir")" || return 1
+  git_dir="$(git rev-parse --git-dir 2>/dev/null)" || return 2
+  common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || return 2
+  git_dir="$(resolved_dir "$git_dir")" || return 2
+  common_dir="$(resolved_dir "$common_dir")" || return 2
   [ "$git_dir" != "$common_dir" ]
 }
 
@@ -550,7 +550,7 @@ transcript_cwd_verdict() {
   # 診断は stderr に出るので、辿れないディレクトリも読めないファイルも同じ経路で
   # 拾える。終了コードは使えない（grep は一致 0 件でも非 0 を返すため、
   # 「証拠が無い」と「証拠を読めなかった」が区別できない）。
-  values="$( { find "$dir" -type f -name '*.jsonl' -exec grep -oh '"cwd":"[^"]*"' {} + | sort -u ; } 2>"$scan_err" )" || true
+  values="$( { find "$dir" -type f -name '*.jsonl' -exec grep -oh '"cwd":"[^"]*"' {} + | LC_ALL=C sort -u ; } 2>"$scan_err" )" || true
   if [ -s "$scan_err" ]; then
     return 4
   fi
@@ -822,7 +822,7 @@ dry_virtual_prune_gone_branches() {
     printf '%s\n' "$ls_out" > "$WORK_TMP/dry_virtual_prune_error"
     return 1
   fi
-  printf '%s\n' "$ls_out" | awk -F'\t' 'NF > 1 { print $2 }' | sort -u > "$origin_refs"
+  printf '%s\n' "$ls_out" | awk -F'\t' 'NF > 1 { print $2 }' | LC_ALL=C sort -u > "$origin_refs"
   while IFS="$(printf '\t')" read -r dbranch dupstream dtrack; do
     [ -n "$dbranch" ] || continue
     # 既に [gone] のものは呼び出し元の一覧に載っている（二重計上しない）
@@ -1031,8 +1031,8 @@ if [ "$NO_SWITCH_MODE" = "1" ]; then
   # 掃除モードで意図的に見送った項目は、失敗（PARTIAL）ではなく名指しの未実施として
   # 報告する（#749: 中断せず完遂しつつ、やらなかったことを報告から欠落させない）
   echo ""
-  echo "**ℹ️ switch なし掃除モードでの未実施項目（呼び出し元が '${CURRENT_BRANCH_BEFORE}' を保持）**:"
-  echo "  - ${PR_BASE} への復帰と pull --ff-only（他セッションの作業ブランチを切り替えないため）"
+  echo "**ℹ️ switch なし掃除モードでの未実施項目（呼び出し元が '${CURRENT_BRANCH_BEFORE:-（detached HEAD）}' を保持）**:"
+  echo "  - ${PR_BASE} への復帰と pull --ff-only（呼び出し元と別 worktree の HEAD を変更しないため）"
   echo "  - ${PR_BASE} の最新化: ${BASE_FF_NOTE:-未実施}"
 fi
 

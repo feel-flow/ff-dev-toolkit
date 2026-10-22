@@ -146,15 +146,24 @@ fi
 #     `git fetch origin <base>:<base>` を試み、拒否されたらスキップして報告）
 #   - リモート削除・[gone] 掃除・worktree 削除・取り残し検証は通常どおり実施
 #   - 未実施の項目はサマリーで名指しする
-# detached HEAD（空文字列）は従来どおり通常モード（switch して base へ復帰する）。
+# detached HEAD の linked worktree は、base へ戻すべき作業ブランチが無いため
+# switch なし掃除モードにする。他の worktree の base を取り上げない。
 
-CURRENT_BRANCH_BEFORE="$(git branch --show-current)"
+CURRENT_BRANCH_BEFORE="$(git branch --show-current)" \
+  || die "呼び出し元のブランチを取得できません。cleanup を中断します。"
 NO_SWITCH_MODE=0
 BASE_FF_NOTE=""
 if [ -n "$CURRENT_BRANCH_BEFORE" ] \
   && [ "$CURRENT_BRANCH_BEFORE" != "$PR_BASE" ] \
   && [ "$CURRENT_BRANCH_BEFORE" != "$PR_HEAD" ]; then
   NO_SWITCH_MODE=1
+elif [ -z "$CURRENT_BRANCH_BEFORE" ]; then
+  if is_linked_worktree; then
+    NO_SWITCH_MODE=1
+  else
+    LINKED_WORKTREE_RC=$?
+    [ "$LINKED_WORKTREE_RC" -eq 1 ] || die "呼び出し元の worktree 構成を取得できません。cleanup を中断します。"
+  fi
 fi
 
 # ---- Step 2.6: 対象 PR の worktree を cwd にした起動の検出 --------------------
@@ -173,7 +182,7 @@ fi
 # 検出は「cwd が linked worktree」かつ「その worktree が対象 PR の head を保持」に
 # 限る。linked worktree からの実行そのものは正当な運用で、
 #   - base でも PR head でもないブランチ = 切り替えを伴わない掃除モード（下記）
-#   - detached / base 保持 = 従来どおり通常モード
+#   - detached = switch なし掃除モード / base 保持 = 通常モード
 # はいずれも完走できる。ここを「linked worktree なら一律中断」へ広げると、
 # それらの経路まで巻き添えで止まる。
 IN_PR_WORKTREE=0
@@ -214,7 +223,7 @@ if [ "$CALLER_DIRTY" = "1" ]; then
     # このモードでは呼び出し元のブランチも作業ツリーも一切触らないため、dirty を
     # 理由に全体を止めない（止めると cleanup の実体を毎回手作業で再現することになる。
     # `#749` の実測）。変更に触れないことと、base 復帰を行わないことだけ明示する。
-    echo "⚠️ 未コミットの変更がありますが、呼び出し元は base でも PR head でもない '${CURRENT_BRANCH_BEFORE}' を保持しています。"
+    echo "⚠️ 未コミットの変更がありますが、呼び出し元は base でも PR head でもない '${CURRENT_BRANCH_BEFORE:-（detached HEAD）}' を保持しています。"
     echo "   ブランチ切り替えを伴わない掃除モードで続行します（下の変更には一切触れません）:"
     printf '%s\n' "$DIRTY_STATUS" | sed 's/^/   /'
   else

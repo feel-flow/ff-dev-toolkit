@@ -554,8 +554,14 @@ awk 'NR==2 { printf "\r%s\n", $0; next } { print }' "$SHIM" > "$MIDCR_KIT/script
 MIDCR_ID_RC=0
 run_isolated_shim FF_DEV_TOOLKIT_ROOT="$MIDCR_KIT" ARGV_LOG="$WORK/argv-midcr.log" \
   bash "$CRLF_PLACED" --base develop >"$WORK/midcr-id.log" 2>&1 || MIDCR_ID_RC=$?
+MIDCR_TEMPLATE_ID="git-blob:$(git hash-object --no-filters "$MIDCR_KIT/scripts/templates/codex-review.sh")"
+MIDCR_SHIM_ID="git-blob:$(git hash-object --no-filters "$SHIM")"
+MIDCR_TEMPLATE_PATH="$(cd "$MIDCR_KIT" && pwd -P)/scripts/templates/codex-review.sh"
 if [ "$MIDCR_ID_RC" -eq 2 ] && [ ! -s "$WORK/argv-midcr.log" ] \
-   && grep -q '配置済み shim の版が一致しません' "$WORK/midcr-id.log"; then
+   && [ "$MIDCR_TEMPLATE_ID" != "$MIDCR_SHIM_ID" ] \
+   && grep -q '配置済み shim が内容不一致です' "$WORK/midcr-id.log" \
+   && grep -qxF "       template=$MIDCR_TEMPLATE_PATH content-id=$MIDCR_TEMPLATE_ID" "$WORK/midcr-id.log" \
+   && grep -qxF "       shim=$CRLF_PLACED content-id=$MIDCR_SHIM_ID" "$WORK/midcr-id.log"; then
   ok "シム: 本文中 CR だけ違う template を同一版と誤認せず拒否する"
 else
   bad "シム: 本文中 CR の差分が正規化で消えて委譲された (rc=$MIDCR_ID_RC)"

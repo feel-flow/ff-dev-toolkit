@@ -87,7 +87,7 @@ bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 extract_bash_fence() {
   local source="$1" heading="$2" output="$3"
 
-  if ! awk -v heading="$heading" '
+  if ! LC_ALL=C awk -v heading="$heading" '
     $0 == heading {
       found_heading = 1
       next

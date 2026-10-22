@@ -1,10 +1,10 @@
 ---
 title: "TESTING"
-version: "1.5.0"
+version: "1.6.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-10-17"
+updated: "2026-10-22"
 changeImpact: "medium"
 ---
 
@@ -778,7 +778,42 @@ echo "変異適用: OK"       # 報告には検査結果と並べてこの成否
 #   <何をどう壊したか> → 緑。<なぜ測れないのか>。
 ```
 
+## ゲート起動の終了コードを保持する
+
+ff-dev-toolkit の終了コードガードは `run-all.sh` のほか、導入先が宣言したゲートも検査する。
+宣言は **hook を起動するホストのプロセス環境**へ `FF_EXIT_CODE_GUARD_GATES` を export する。
+Bash ツールの command 本文に代入を書くだけでは、実行前の hook の環境へ届かない。
+設定後にホストを起動し、grok CLI では hook の展開も済ませる（発火するホストと設定方法は利用版の README を参照）。
+
+```bash
+export FF_EXIT_CODE_GUARD_GATES=$'npm run ci:local\npnpm validate:app\npnpm validate:all'
+```
+
+区切りは改行で、colon はコマンド名の一部として扱う。引用のない語の列を literal prefix として
+照合し、前後の空白・空行は無視、語間の space / tab は同一視する。宣言には環境代入・wrapper を含めず、起動側からそれらを
+剥がしてから照合し、後続の引数・リダイレクトは許容する。`ci:locality` のような名前の前方一致、
+正規表現・glob・シェル展開・eval は行わない。引用した引数や変数で組み立てた起動は字面解析の対象外。
+未設定・空・空白行だけなら、追加ゲートは無く従来どおり。宣言を使わない他のコマンドへ対象を広げない。
+
+宣言したゲートで `; echo "exit=$?"; tail log` のように終了すると、完了通知は末尾の診断の成否になるため
+PreToolUse が停止する。ログを表示する場合も、直後に rc を保存し、最後に伝播させる。
+
+```bash
+npm run ci:local > log 2>&1; rc=$?; tail log; exit $rc
+```
+
+同じ環境変数は静的な `exit_code_scan` / `exit_code_scan_bash_blocks` にも効く。
+保存時の `guard-shell-save`（Write / Edit）も同じ共有検出器を使うため、宣言したゲートの新しい危険形を検査する。
+本節の設定例と検査はローカルの hook 入力 fixture で確認するもので、リリースの受け取りや
+導入先の実セッションでの発火を証明しない。配布版の更新後は導入先でも上の危険な起動形が停止するか確認する。
+
 ## Changelog
+
+### [1.6.0] - 2026-10-22
+
+#### 追加
+
+- 導入先ゲートの改行区切り宣言、hook 環境への受け渡し、終了コードを保存・表示・伝播する形を追加した。
 
 ### [1.5.0] - 2026-10-17
 

@@ -2925,7 +2925,7 @@ typed_run() {
 
 # section_of <見出し行> — 統合レポートのその見出しから次の見出し（行頭 #）の直前まで
 section_of() {
-  awk -v h="$1" 'f && /^#/ { exit } f { print } $0 == h { f = 1 }' "$REPORT"
+  LC_ALL=C awk -v h="$1" 'f && /^#/ { exit } f { print } $0 == h { f = 1 }' "$REPORT"
 }
 
 # typed_expect <ラベル> <センチネル> <marker: present|absent> <表の行 | ->

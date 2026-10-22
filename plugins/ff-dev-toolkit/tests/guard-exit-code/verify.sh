@@ -49,6 +49,20 @@
 # run-all-required: no — jq 不在での skip を許容する（jq が無いと hook 自身が fail-open で
 # 何もしないため、検査対象の振る舞いが存在しない）
 # 変異検出: Issue `#2182` の実行rc伝播削除・集約再検査削除は rewrite.sh の実行/deny検査が赤。修正前hookを同ハーネスへ与えても赤（2026-10-17実測）。
+# 空振り検出: consumer ケース関数の中身だけを空にすると「consumer gate のケース集合が空」1件で赤（rc=1）。空白だけの宣言は仕様上の既定互換であり、ケース集合0とは区別する（2026-10-22実測）。
+# 変異検出（consumer gate、2026-10-22）: ASDD config依存も含めた未変異コピー179/0を対照に、
+#   宣言読込除去・同一行/改行の入口復旧・語境界除去・prefixのregex化・未宣言gate追加・
+#   hook前置filterのraw/code側除去を各単独で当て、順に8/7/1/1/1/1/5/5件のconsumer検査が赤。
+#   全8変異ともbash -n rc=0、suite rc=1。初回のASDD import先欠落が混じったコピーは不採用。
+# 変異検出（consumer resource、2026-10-22）: focused未変異5/0に対し、候補分割だけを旧heredocへ
+#   戻すとtempfile禁止・/dev/null data-write許可のBash3.2実hook検査1件が赤。通常tmpは両版deny。
+#   制御下の最終版は後段の既存heredocが判定不能denyへ倒す範囲であり、タグ判定完了は主張しない。
+#   実文書例を exit "$rc" へ戻す単独変異は共有検出器・実hookのallow検査2件が赤。各bash -n rc=0。
+# 空振り検出: consumer resource helper不在・読めない・同名0byte・ケース集合0、実文書不在・読めない・空・節改名・例0件は
+#   各1件赤（focused対照5/0、各rc=1、2026-10-22）。上記8変異はconsumer追加時点の旧版証拠。
+# 空振り検出: consumer candidate helper の不在・不可読・同名0byte・名前だけ残す集合0は、実source境界を抜いたfocusedで各1件赤・rc=1（2026-10-22）。正常は25/0。
+# 変異検出 (1421e65b時点): decoded full-prefixを旧先頭語へ戻すと8件赤、cmd門削除3件/ASDD後へ遅延2件、code_only旧門1件、rawをfull-prefixへ過剰限定4件（tab/escaped slash/Unicode ASCII escape）が赤。全変異は構文0・focused rc=1（2026-10-22）。
+# 変異検出: Unicode command名をJSON ASCII escapeした実hookもdenyする。候補対照27/0、raw Unicode候補を外す単独変異は該当1件だけ赤・rc=1、構文0（2026-10-22）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -285,6 +299,71 @@ run_hook 'git ls-files | wc -l'
 assert_pass "フィルタ終端でも \$? を読まなければ素通し"
 run_hook 'npm test > log 2>&1; echo "rc=$?"'
 assert_pass "ゲート名簿外のコマンドはパイプ無しなら素通し（対象をあらゆるコマンドへ広げない）"
+
+CONSUMER_BEFORE=$((PASS + FAIL))
+consumer_gate_cases() {
+echo "guard-exit-code: consumer gate 宣言"
+CONSUMER_GATES=$'\n npm run ci:local \npnpm validate:app\n'
+run_hook 'npm run ci:local > log 2>&1; echo "exit=$?"; tail log' "FF_EXIT_CODE_GUARD_GATES=$CONSUMER_GATES"
+assert_fire "consumer gate 宣言ありの echo/tail 終端を deny（AC1）"
+case "$(fix_block)" in
+  *'rc=$?'*'exit $rc'*) ok "consumer gate の deny は rc 保存と exit による伝播を案内する" ;;
+  *) bad "consumer gate の rc 伝播の案内が無い: [$REASON]" ;;
+esac
+run_hook 'npm run ci:local > log 2>&1; rc=$?; tail log; exit $rc' "FF_EXIT_CODE_GUARD_GATES=$CONSUMER_GATES"
+assert_pass "consumer gate 宣言ありの rc 伝播は素通し（AC2）"
+run_hook 'npm run ci:local > log 2>&1; echo "exit=$?"; tail log'
+assert_pass "consumer gate 宣言なしは既定互換（AC3）"
+run_hook 'npm run ci:local>log; tail log' "FF_EXIT_CODE_GUARD_GATES=$CONSUMER_GATES"
+assert_fire "consumer gate は dollar-question 無しでも両前置フィルタに届く"
+run_hook 'npm run ci:local -- --frontend > log; tail log' "FF_EXIT_CODE_GUARD_GATES=$CONSUMER_GATES"
+assert_fire "consumer gate の宣言 prefix に続く引数を許容する"
+run_hook 'npm run ci:local&>log; tail log' "FF_EXIT_CODE_GUARD_GATES=$CONSUMER_GATES"
+assert_fire "consumer gate に空白無しの ampersand redirect が続いても検出する"
+run_hook 'npm run ci.local > log; tail log' 'FF_EXIT_CODE_GUARD_GATES=npm run ci.local'
+assert_fire "consumer gate prefix の dot は literal として一致する"
+run_hook $'FULL_UNIT=1 timeout 600 pnpm\tvalidate:app > log; tail log' "FF_EXIT_CODE_GUARD_GATES=$CONSUMER_GATES"
+assert_fire "consumer gate の2件目・tab・環境代入・wrapper を deny"
+run_hook $'npm run ci:local > log\nrc=$?\ntail log' "FF_EXIT_CODE_GUARD_GATES=$CONSUMER_GATES"
+assert_fire "consumer gate の改行後の rc 脱落を deny"
+run_hook 'npm run ci:locality > log; tail log' "FF_EXIT_CODE_GUARD_GATES=$CONSUMER_GATES"
+assert_pass "consumer gate の名前 lookalike は素通し"
+run_hook 'npm run ciXlocal > log; tail log' 'FF_EXIT_CODE_GUARD_GATES=npm run ci.local'
+assert_pass "consumer gate prefix は正規表現にしない"
+run_hook 'git status; tail log' $'FF_EXIT_CODE_GUARD_GATES=\n \t\n'
+assert_pass "空行と空白だけの宣言は全コマンドへ広がらない"
+run_hook "printf '%s' 'npm run ci:local > log; tail log'" "FF_EXIT_CODE_GUARD_GATES=$CONSUMER_GATES"
+assert_pass "consumer gate の単一引用データは素通し"
+run_hook 'git commit -m "npm run ci:local > log; tail log"' "FF_EXIT_CODE_GUARD_GATES=$CONSUMER_GATES"
+assert_pass "consumer gate の二重引用の散文は素通し"
+run_hook $'cat <<\'EOF\'\nnpm run ci:local > log; tail log\nEOF' "FF_EXIT_CODE_GUARD_GATES=$CONSUMER_GATES"
+assert_pass "consumer gate の heredoc データは素通し"
+
+}
+consumer_gate_cases
+if [ "$((PASS + FAIL - CONSUMER_BEFORE))" -gt 0 ]; then
+  ok "consumer gate のケース集合は空でない"
+else
+  bad "consumer gate のケース集合が空"
+fi
+
+CONSUMER_RESOURCE_CASES=0
+CONSUMER_RESOURCE_FILE="$SCRIPT_DIR/consumer-resource-cases.sh"
+if [ ! -f "$CONSUMER_RESOURCE_FILE" ] || [ ! -r "$CONSUMER_RESOURCE_FILE" ] || [ ! -s "$CONSUMER_RESOURCE_FILE" ]; then
+  bad "consumer resource casesが無い/読めない/空"
+else
+  . "$CONSUMER_RESOURCE_FILE"
+  if [ "$CONSUMER_RESOURCE_CASES" -gt 0 ]; then ok "consumer resourceのケース集合は空でない"; else bad "consumer resourceのケース集合が空"; fi
+fi
+
+CONSUMER_CANDIDATE_CASES=0
+CONSUMER_CANDIDATE_FILE="$SCRIPT_DIR/consumer-candidate-cases.sh"
+if [ ! -f "$CONSUMER_CANDIDATE_FILE" ] || [ ! -r "$CONSUMER_CANDIDATE_FILE" ] || [ ! -s "$CONSUMER_CANDIDATE_FILE" ]; then
+  bad "consumer candidate casesが無い/読めない/空"
+else
+  . "$CONSUMER_CANDIDATE_FILE"
+  if [ "$CONSUMER_CANDIDATE_CASES" -gt 0 ]; then ok "consumer candidateのケース集合は空でない"; else bad "consumer candidateのケース集合が空"; fi
+fi
 
 echo "guard-exit-code: AC3 — 検出器が既に持つ除外形は止めない"
 run_hook 'printf %s x | bash "$0" >/dev/null 2>&1 || rc=$?'

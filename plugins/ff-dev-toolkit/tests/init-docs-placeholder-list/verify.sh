@@ -51,7 +51,7 @@ for row in $table_rows; do
   FILE_ROWS=$((FILE_ROWS + 1))
   # 第 2 列（プレースホルダー列）の backtick 内角括弧プレースホルダー。IFS が改行なので
   # `[YYYY-MM-DD / URL]` のような空白入りも 1 要素として扱う
-  phs="$(printf '%s\n' "$row" | cut -d'|' -f3 | grep -o '`\[[^`]*\]`' | tr -d '`' | sort -u || true)"
+  phs="$(printf '%s\n' "$row" | cut -d'|' -f3 | grep -o '`\[[^`]*\]`' | tr -d '`' | LC_ALL=C sort -u || true)"
   for ph in $phs; do
     [[ -n "$ph" ]] || continue
     TOTAL=$((TOTAL + 1))

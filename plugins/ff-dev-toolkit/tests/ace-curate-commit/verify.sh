@@ -23,6 +23,8 @@
 
 # 空振り検出: 18 は PR 問い合わせ失敗・空・不正値で branch #N のみを採り、解決元無しは version claim・ID・要約の数字を推測せず rc4 / stage・保留無しを確認する（2026-10-17 実測）。
 # 変異検出: PR 問い合わせを常に失敗へ変える・候補から chore/docs を外す・解決した Issue の保留保存を外すと、それぞれ 18 が赤（2026-10-17 実測）。
+# 空振り検出: 静的契約部分で現在ブランチの取得行を除去・既存知見ブランチの PR 分岐条件を反転・default 不変更の規定を反転・新規専用 PR の即 commit を保留へ反転すると各 rc=1（2026-10-22 実測）。針は各 1 行を要求し、0 件・重複を緑にしない。
+# 空振り検出: 呼出側の祖先・許可パス・件名と停止の実測を削る3変異と、helper の責務を誤保証へ変える変異は各 rc=1。通常追記は rc=0。保護判定で専用 Git fixture への移動を外すと、origin/HEAD の無い写しで14件が赤になる（2026-10-22 同梱 mutation-harness 実測）。
 
 set -euo pipefail
 
@@ -107,12 +109,50 @@ expect_fixed_count_routes \
 expect_fixed_count \
   'if [[ "$ace_defer" == 1 ]]; then' \
   1 \
-  "既定経路だけが /retrospective への合流（add で止める）を持つ（PR 経路は別ブランチなので合流しない）"
+  "本線だけが /retrospective への合流を持つ（既存知見ブランチも対象。新規専用 PR 経路は即 commit）"
 
 expect_fixed_count \
   'ace_defer="${ACE_DEFER_TO_RETRO:-0}"' \
   1 \
   "合流の既定は即 commit（明示シグナル ACE_DEFER_TO_RETRO=1 があるときだけ /retrospective へ合流させる）"
+
+expect_fixed_count \
+  'current_branch="$(git branch --show-current)" || exit 1' \
+  1 \
+  "既存知見ブランチの送信は現在のブランチ名を実測し、取得失敗は停止する"
+expect_fixed_count \
+  'if [[ "$current_branch" == chore/ace-from-* ]]; then ACE_BRANCH="$current_branch"; protected=1; fi' \
+  1 \
+  "既存知見ブランチは実測名で PR 分岐へ進む（default 用 push を試さない）"
+expect_fixed_count_routes \
+  '**既存知見ブランチの保留合流**' \
+  1 \
+  "既存知見ブランチの保留を retrospective に渡す規定がある"
+expect_fixed_count_routes \
+  '**既存知見ブランチ開始時は local default を復帰せず、他 worktree も変更しない**' \
+  1 \
+  "既存知見ブランチから helper pr を使っても default と他 worktree を変更しない"
+expect_fixed_count_routes \
+  '# この新規専用 PR 経路は /retrospective へ合流させず、ここで即 commit する' \
+  1 \
+  "新規専用 PR 経路の即 commit と既存知見ブランチの保留合流を区別する"
+
+expect_fixed_count_routes \
+  '呼び出す前に fetch 成功と `origin/<default-branch>` が HEAD の祖先であること' \
+  1 \
+  "helper PR の前に呼出側が fetch 成功と祖先を実測する"
+expect_fixed_count_routes \
+  '差分パスが今回の PLAYBOOK・カテゴリ本文・台帳・対応 claim だけ' \
+  1 \
+  "helper PR の前に呼出側が送信パスを限定する"
+expect_fixed_count_routes \
+  'commit 件名が知見記録であることを実測する。いずれかを満たさなければ送信せず停止する' \
+  1 \
+  "helper PR の前に件名を実測し、不一致は送信しない"
+expect_fixed_count_routes \
+  'helper は fetch 後に送信コミット数が 1 であることを再照合する。祖先・対象パス・件名は呼び出す側が確認する' \
+  1 \
+  "helper の実際の検査と呼出側の検査を区別する"
 
 expect_fixed_count_routes \
   '--type "${commit_type}" -- docs/08-knowledge/PLAYBOOK.md $(git ls-files -mo --exclude-standard docs/08-knowledge/playbook)' \
@@ -436,6 +476,20 @@ exit 1
 GH_STUB
 chmod +x "$PROBE_DIR/gh"
 
+# 抽出 block の git symbolic-ref が呼出元の origin/HEAD に依存しないよう、専用の
+# Git fixture を使う。mutation-harness の写しには origin が無いため、依存が残ると
+# 正常対照から保護判定14件が赤になり、文書の変異を測れない。
+PROBE_REPO="$PROBE_DIR/repo"
+if ! (
+  # shellcheck source=../lib/git-fixture.sh
+  . "$SCRIPT_DIR/../lib/git-fixture.sh" || exit 1
+  ff_git_fixture_init "$PROBE_REPO" "Protection Probe" "protection-probe@example.com" \
+    && git -C "$PROBE_REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
+); then
+  bad "保護判定用の Git fixture を作れません（skip にしない）"
+  exit 1
+fi
+
 run_probe() {
   local mock_classic="$1" mock_rulesets="$2"
   # 抽出した block を set -euo pipefail 下で実行する（Issue #1147 再レビュー対応）。
@@ -446,7 +500,7 @@ run_probe() {
   # probe の終了コードは PROBE_RC へ残す（非 0 を握り潰さず assert_probe で赤にする）
   local rc=0
   MOCK_CLASSIC="$mock_classic" MOCK_RULESETS="$mock_rulesets" PATH="$PROBE_DIR:$PATH" \
-    bash -c 'set -euo pipefail; . "$1"' -- "$PROBE_DIR/probe.sh" >"$PROBE_DIR/out" 2>&1 || rc=$?
+    bash -c 'set -euo pipefail; CDPATH= cd -- "$2" || exit 1; . "$1"' -- "$PROBE_DIR/probe.sh" "$PROBE_REPO" >"$PROBE_DIR/out" 2>&1 || rc=$?
   PROBE_RC="$rc"
 }
 

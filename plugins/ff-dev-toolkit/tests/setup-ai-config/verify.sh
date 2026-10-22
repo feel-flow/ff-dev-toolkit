@@ -32,9 +32,15 @@
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/setup-ai-config/verify.sh
 
+# 空振り検出: init-docs.test.mjs で手順の不在・空・改名・重複と、名前だけ残った空テンプレ・MASTER リンク欠落を赤にすることを実測（2026-10-22）。
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# init-docs の共通入口も同じ suite で検証する（AGENTS.md を作らない回帰を検出）。
+node --test --test-reporter=spec "$SCRIPT_DIR/init-docs.test.mjs"
+
 EXPECTED="$SCRIPT_DIR/fixtures/expected"
 INPUT="$SCRIPT_DIR/fixtures/input/docs/MASTER.md"
 CMD="$SCRIPT_DIR/../../skills/setup-ai-config/SKILL.md"

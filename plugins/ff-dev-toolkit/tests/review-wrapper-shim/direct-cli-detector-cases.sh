@@ -26,7 +26,7 @@
 # 実行文脈として検出する。lexer が未閉 quote / heredoc に遭遇した場合は clean とせず rc=2。
 detects_direct_cli() {
   local file="$1" rc=0
-  awk -f "$DIRECT_CLI_DETECTOR" "$file" || rc=$?
+  LC_ALL=C awk -f "$DIRECT_CLI_DETECTOR" "$file" || rc=$?
   case "$rc" in
     0|1) return "$rc" ;;
     *) echo "DETECTOR-ERROR: 走査できません: ${file} (rc=${rc})" >&2; return 2 ;;

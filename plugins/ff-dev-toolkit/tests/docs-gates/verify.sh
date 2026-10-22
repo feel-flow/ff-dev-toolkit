@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # 空振り検出: 正本参照の削除・変更・重複、節の改名で赤。配布側の粒度・TODO・書き戻しの削除と旧規定の再掲も固有の診断で赤（2026-09-28 docs-gates-runtime 実測）。
+# 空振り検出: 部分失敗節は Workflow / SKILL の復旧段落削除・節空化・改名・ファイル不在で非 0。旧 API 例再注入は各 1 件赤。
+# 空振り検出: 規定を「のが望ましい。」へ弱める単独変異は Workflow 3 件 / SKILL 2 件赤（2026-10-22 実測、無変異 229 件 pass）。
 #
 # docs-template 内のゲート例（pre-push フック / CI / 判定スクリプト）が
 # fail-silent へ退行していないことの drift 検査（Issue #154）。
@@ -200,7 +202,7 @@ fi
 #  handoff を本文の resolver だけが運ぶと、本文が落ちた経路で script 側ガードが素通しになる）。
 # 行頭だけを見ず、`if ! bash` / `cd && bash` / `run: bash` も拾う。永続pre-pushと
 # CIは同じ文書内の自己完結bootstrapをruntime suiteで検査するため、文書と節を限定して除外する。
-unguarded_direct_commands="$(find "$DOCS" -type f -name '*.md' -exec awk '
+unguarded_direct_commands="$(LC_ALL=C find "$DOCS" -type f -name '*.md' -exec awk '
   FNR == 1 { in_fence = 0; in_pre_push = 0 }
   /^###[[:space:]]/ { in_pre_push = ($0 == "### Husky pre-push フックとの統合") }
   /^```(bash|sh|zsh|yaml)[[:space:]]*$/ { in_fence = 1; next }
@@ -926,7 +928,7 @@ if [ -f "$REPO_TESTING" ]; then
   mutation_battery_heading='### 新規検査を書いた直後の変異注入バッテリー'
   mutation_battery_reference='汎用規定の正本は配布テンプレート [TESTING.md「変異注入の結果の読み方と書き戻し先」](../../plugins/ff-dev-toolkit/docs-template/04-quality/TESTING.md#変異注入の結果の読み方と書き戻し先)。本節では規定を複製せず、本リポジトリ固有の結線だけを記す。'
   if mutation_battery_section="$(section_scope_extract "$REPO_TESTING" "$mutation_battery_heading")"; then
-    mutation_battery_reference_count="$(printf '%s\n' "$mutation_battery_section" | awk -v ref="$mutation_battery_reference" '$0 == ref { n++ } END { print n+0 }')"
+    mutation_battery_reference_count="$(printf '%s\n' "$mutation_battery_section" | LC_ALL=C awk -v ref="$mutation_battery_reference" '$0 == ref { n++ } END { print n+0 }')"
     if [ "$mutation_battery_reference_count" -eq 1 ]; then
       ok "変異注入バッテリーは配布側の汎用規定を正本として参照する"
     else
@@ -1172,19 +1174,26 @@ must_contain "$f" 'git ls-remote --exit-code --heads origin' \
   "Git Workflow が部分失敗の判定にリモート実測（ls-remote --exit-code）を使うことを明示している"
 must_contain "$f" 'それ以外の終了コードは「判定不能」で、削除済みと読んではいけない' \
   "Git Workflow が ls-remote の判定不能（通信・認証失敗）を削除済みと読まないことを明示している"
-# 削除は破壊的なので、対象がその PR の head であることを OID で示してから消す。
-# 手順から OID 照合が落ちると、マージ後に再利用された同名ブランチを消す経路が開く。
-must_contain "$f" '削除の前に、残っている ref がその PR の head と同一であることを確認する' \
-  "Git Workflow がリモート削除前の OID 照合を要求している"
-must_contain "$f" 'gh pr view ${PR_NUMBER} --json headRefOid --jq .headRefOid' \
-  "Git Workflow が OID 照合の実測コマンドを示している"
-must_contain "$f" 'ブランチ名に含まれる `#`（Issue/PR 番号を使った命名規則）は `%23` へエンコードする' \
-  "Git Workflow がリモート個別削除時のブランチ名 # エンコードを明記している"
-# 説明文だけが残ってコマンド例が消えると、手順として実行できない状態で緑になる。
-must_contain "$f" 'gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/fix/%23NNNN-<slug>' \
-  "Git Workflow がリモート個別削除のコマンド例そのものを持つ"
-must_contain "$f" '`#` 以降が送信対象のパスから欠落した不正な ref 名になるため、`-X DELETE` は 422 で失敗する' \
-  "Git Workflow が # エンコードの理由（素の # は 422）を明記している"
+# 残存 ref の復旧は、OID 照合と lease を行う /merge-cleanup に委譲する。
+WORKFLOW_PARTIAL_HEADING='#### `--delete-branch` の部分失敗の読み方とリモート個別削除'
+must_contain_section "$f" "$WORKFLOW_PARTIAL_HEADING" '対象 PR の head OID と一致する ref だけを lease 付きで削除し、同名ブランチの再利用は保全する。' \
+  "Git Workflow が部分失敗の復旧で対象 PR の head OID 一致を要求している"
+must_contain_section "$f" "$WORKFLOW_PARTIAL_HEADING" '`/merge-cleanup <PR番号>` を使う。' \
+  "Git Workflow が部分失敗の復旧コマンドを明示している"
+must_contain_section "$f" "$WORKFLOW_PARTIAL_HEADING" '同名ブランチの再利用は保全する。' \
+  "Git Workflow が部分失敗の復旧で再利用された ref を保全する"
+must_contain_section "$f" "$WORKFLOW_PARTIAL_HEADING" 'lease 付きで削除し、同名ブランチの再利用は保全する。' \
+  "Git Workflow が部分失敗の復旧で lease 付き削除を要求している"
+must_contain_section "$f" "$WORKFLOW_PARTIAL_HEADING" '照合不能・削除未完了を成功扱いにせず、サマリーの理由から復旧する。' \
+  "Git Workflow が照合不能・削除未完了を成功扱いにしない"
+if partial_section="$(section_scope_extract "$DOCS/$f" "$WORKFLOW_PARTIAL_HEADING")"; then
+  case "$partial_section" in
+    *'gh api -X DELETE'*) bad "Git Workflow の部分失敗節に lease のない API 削除例を再掲しない" ;;
+    *) ok "Git Workflow の部分失敗節に lease のない API 削除例を再掲しない" ;;
+  esac
+else
+  bad "Git Workflow の部分失敗節に lease のない API 削除例を再掲しない — $partial_section"
+fi
 
 # Git Workflow の heredoc 規則と並行セッション実測の 2 契約は contracts/*.tsv へ移した
 # （宣言で書ける検査はデータ側へ寄せ、契約を足す PR が verify.sh を触らずに済むようにする）。
@@ -1420,28 +1429,36 @@ else
   else
     bad "merge-cleanup SKILL.md の ls-remote 判定不能の扱いが見つかりません"
   fi
-  # 削除は破壊的なので、対象がその PR の head であることを OID で示してから消す。
-  if grep -qF '削除の前に、残っている ref がその PR の head と同一であることを確認する' "$MERGE_CLEANUP_SKILL"; then
-    ok "merge-cleanup SKILL.md がリモート削除前の OID 照合を要求している"
+  # /merge-cleanup への復旧手順は、部分失敗節の本文に存在しなければならない。
+  MERGE_CLEANUP_PARTIAL_HEADING='## `--delete-branch` の部分失敗の読み方とリモート個別削除'
+  if partial_reason="$(section_scope_contains "$MERGE_CLEANUP_SKILL" "$MERGE_CLEANUP_PARTIAL_HEADING" '対象 PR の head OID を照合し、同名 ref の再利用は保全、一致する場合だけ lease 付きで削除する。')"; then
+    ok "merge-cleanup SKILL.md が部分失敗の復旧で対象 PR の head OID を照合する"
   else
-    bad "merge-cleanup SKILL.md のリモート削除前の OID 照合が見つかりません"
+    bad "merge-cleanup SKILL.md が部分失敗の復旧で対象 PR の head OID を照合する — $partial_reason"
   fi
-  if grep -qF 'ブランチ名に含まれる `#`（Issue/PR 番号を使った命名規則）は `%23` へエンコードする' "$MERGE_CLEANUP_SKILL"; then
-    ok "merge-cleanup SKILL.md がリモート個別削除時のブランチ名 # エンコードを明記している"
+  if partial_reason="$(section_scope_contains "$MERGE_CLEANUP_SKILL" "$MERGE_CLEANUP_PARTIAL_HEADING" '`/merge-cleanup <PR番号>` を使う。')"; then
+    ok "merge-cleanup SKILL.md が部分失敗の復旧コマンドを明示している"
   else
-    bad "merge-cleanup SKILL.md のリモート個別削除時のブランチ名 # エンコードが見つかりません"
+    bad "merge-cleanup SKILL.md が部分失敗の復旧コマンドを明示している — $partial_reason"
   fi
-  # 説明文だけが残ってコマンド例が消えると、手順として実行できない状態で緑になる。
-  if grep -qF 'gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/fix/%23NNNN-<slug>' "$MERGE_CLEANUP_SKILL"; then
-    ok "merge-cleanup SKILL.md がリモート個別削除のコマンド例そのものを持つ"
+  if partial_reason="$(section_scope_contains "$MERGE_CLEANUP_SKILL" "$MERGE_CLEANUP_PARTIAL_HEADING" '同名 ref の再利用は保全、一致する場合だけ lease 付きで削除する。')"; then
+    ok "merge-cleanup SKILL.md が再利用 ref の保全と lease 付き削除を要求している"
   else
-    bad "merge-cleanup SKILL.md のリモート個別削除のコマンド例が見つかりません"
+    bad "merge-cleanup SKILL.md が再利用 ref の保全と lease 付き削除を要求している — $partial_reason"
   fi
-  if grep -qF '`#` 以降が送信対象のパスから欠落した不正な ref 名になるため、`-X DELETE` は 422 で失敗する' "$MERGE_CLEANUP_SKILL"; then
-    ok "merge-cleanup SKILL.md が # エンコードの理由（素の # は 422）を明記している"
+  if partial_reason="$(section_scope_contains "$MERGE_CLEANUP_SKILL" "$MERGE_CLEANUP_PARTIAL_HEADING" '照合不能や削除未完了を成功とせず、サマリーの理由から復旧する。')"; then
+    ok "merge-cleanup SKILL.md が照合不能・削除未完了を成功扱いにしない"
   else
-    bad "merge-cleanup SKILL.md の # エンコードの理由（素の # は 422）が見つかりません"
+    bad "merge-cleanup SKILL.md が照合不能・削除未完了を成功扱いにしない — $partial_reason"
   fi
+fi
+if partial_section="$(section_scope_extract "$MERGE_CLEANUP_SKILL" '## `--delete-branch` の部分失敗の読み方とリモート個別削除')"; then
+  case "$partial_section" in
+    *'gh api -X DELETE'*) bad "merge-cleanup SKILL.md の部分失敗節に lease のない API 削除例を再掲しない" ;;
+    *) ok "merge-cleanup SKILL.md の部分失敗節に lease のない API 削除例を再掲しない" ;;
+  esac
+else
+  bad "merge-cleanup SKILL.md の部分失敗節に lease のない API 削除例を再掲しない — $partial_section"
 fi
 
 # --- SETUP_CLAUDE_CODE.md: CLAUDE.md テンプレート（heredoc）の実測記録先規範 ---

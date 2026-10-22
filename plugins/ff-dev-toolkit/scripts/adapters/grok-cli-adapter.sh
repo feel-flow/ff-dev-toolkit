@@ -753,7 +753,7 @@ elif [[ -n "$new_sandbox_events" ]]; then
   # awk 自身の失敗（方言差・不在）は bare exit にせず「判定不能」へ倒す — set -e で
   # ここが落ちると INCOMPLETE 成果物が残らない。
   sandbox_verdict="$(printf '%s\n' "$new_sandbox_events" \
-     | FF_SANDBOX_WSDIR="$sandbox_workspace" awk -v prof="\"profile\":\"${sandbox_profile}\"" \
+     | FF_SANDBOX_WSDIR="$sandbox_workspace" LC_ALL=C awk -v prof="\"profile\":\"${sandbox_profile}\"" \
            -v ws="\"workspace\":\"${sandbox_workspace}\"" -v custom="${sandbox_custom}" '
          BEGIN { wsdir = ENVIRON["FF_SANDBOX_WSDIR"]; sub(/\/+$/, "", wsdir) }
          function grant_covers_tree(p) {

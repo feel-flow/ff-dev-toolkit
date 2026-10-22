@@ -159,7 +159,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### 5. コミット
 
-**既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。**保護判定（必須・直 push を試す前に行う）**は `probe`: `protected` → PR 経由 / `unprotected` → 直 push / `unknown` → 既定を試す（拒否は rc 3 で PR 経由へ）。`classic=protected-no-pr` は rulesets に PR 必須が無ければ `unprotected`。commitlint（`header-max-length`・type 許容リスト）で `knowledge` が非許容なら prefix だけを置き換える。全文は [references/curate.md](references/curate.md)。追記を script で当てるなら [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
+**既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。**保護判定（必須・直 push を試す前に行う）**は `probe`。既存知見ブランチは PR 経由へ。判定・commitlint・保留合流は [references/curate.md](references/curate.md)。script での追記は [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-shebang-cr.sh" || exit $?
@@ -171,6 +171,8 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 ace_defer="${ACE_DEFER_TO_RETRO:-0}"   # 事前注入 hook が 1 を指示した回だけ add で止め /retrospective へ合流
 if [[ "$ace_defer" == 1 ]]; then echo "commit と push は /retrospective の書き込みへ合流させます"; exit 0; fi
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit commit --type "${commit_type}" || exit 1
+current_branch="$(git branch --show-current)" || exit 1
+if [[ "$current_branch" == chore/ace-from-* ]]; then ACE_BRANCH="$current_branch"; protected=1; fi
 if [[ "$protected" == 1 ]]; then push_rc=3; else FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit push; push_rc=$?; fi
 case "$push_rc" in
   0) : ;;
@@ -179,7 +181,7 @@ case "$push_rc" in
 esac
 ```
 
-`KNOWLEDGE_CI=` が未完了なら待ち、`failure` なら revert ではなく ACE コミットを前進で直して push し直す。**任意エスカレーション — chore PR**（**default branch が保護されている場合はこの経路が必須**）は references/curate.md の fence（`git checkout -b "$ACE_BRANCH"` → 同じ `add --claim` → `commit` → `knowledge-commit pr`。`/retrospective` へ合流させない）。`knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、直 push 禁止ルールとは別物。
+`KNOWLEDGE_CI=` が未完了なら待ち、`failure` なら revert ではなく ACE コミットを前進で直して push し直す。**任意エスカレーション — chore PR**（**default branch が保護されている場合はこの経路が必須**）の新規ブランチは references/curate.md の fence で即 commit する。既存知見ブランチの保留は同じブランチで `/retrospective` へ渡す。`knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、直 push 禁止ルールとは別物。
 
 ### 6. 結果レポートと次のステップ
 

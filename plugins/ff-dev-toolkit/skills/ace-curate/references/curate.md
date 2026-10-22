@@ -107,7 +107,7 @@ fetch が失敗した回は、停止メッセージの末尾へ git が出した
 
 追記前にremoteが先行したら、detachedでは `git pull --ff-only origin <default-branch>` とremote/branchを明示して取り込み、採番・版確定からやり直す。knowledgeのadd保留がある場合は同じHEADで先にcommitするか、既存の保留復帰手順を使い、保留を持ったままswitchしない。push後のnon-fast-forwardは後段の再試行規則に従う。
 
-**保護時のPR経路**: `probe` がprotectedなら知見のadd前に一意の `chore/ace-from-*`（台帳のみは `chore/retro-from-*`）を自分のdetached HEADから `git switch -c` で作り、同じadd・検証・commitを行う。unknownから直pushを試してrc 3になった場合は、commitを保ったまま一意の知見ブランチを作る。いずれもdefaultを別worktreeが保持する経路では、`finish.sh knowledge-commit pr` は使わず、`git push -u origin HEAD` → `gh pr create --base <default-branch> --head <作成した知見ブランチ> --title <件名> --body-file <固有の本文ファイル>` と明示する。現行pr helperは最後にローカルdefaultのref復帰を試みるため、別worktreeが保持するとPR作成後に失敗する。手動pushの前もfetch成功と `origin/<default-branch>` がHEADの祖先であることを確認し、`git rev-list --count origin/<default-branch>..HEAD` が1、差分パスが今回のPLAYBOOK・カテゴリ本文・台帳・対応claimだけ、commit件名が知見記録であることを実測する。いずれかを満たさなければ送信せず停止する。保護判定・commitの対象限定・内容検証・PRのレビューとマージは省略せず、他worktreeのdetachを復帰手段にしない。実際に使ったPR経路と到達状態を報告する。
+**保護時のPR経路**: `probe` が protected なら知見の add 前に一意の `chore/ace-from-*`（台帳のみは `chore/retro-from-*`）を自分の detached HEAD から `git switch -c` で作り、同じ add・検証・commit を行う。unknown から直 push を試して rc 3 になった場合は、commit を保ったまま一意の知見ブランチを作る。いずれも `finish.sh knowledge-commit pr` へ実際の知見ブランチ名を `--branch` で渡す。**既存知見ブランチ開始時は local default を復帰せず、他 worktree も変更しない**。呼び出す前に fetch 成功と `origin/<default-branch>` が HEAD の祖先であること、`git rev-list --count origin/<default-branch>..HEAD` が 1、差分パスが今回の PLAYBOOK・カテゴリ本文・台帳・対応 claim だけ、commit 件名が知見記録であることを実測する。いずれかを満たさなければ送信せず停止する。helper は fetch 後に送信コミット数が 1 であることを再照合する。祖先・対象パス・件名は呼び出す側が確認する。保護判定・commit の対象限定・内容検証・PR のレビューとマージは省略せず、他 worktree の detach を復帰手段にしない。実際の PR 経路と到達状態を報告する。
 
 ## 索引テーブルの列順（4-b）
 
@@ -154,16 +154,18 @@ fetch が失敗した回は、停止メッセージの末尾へ git が出した
 
 3 回で収束しなければ「共有版境界が高頻度更新中」と報告して直列化を求める。`--force` / `--force-with-lease` で先行セッションを上書きしない。
 
-**任意エスカレーション — chore PR**: 大人数チーム / 知見レビューを残したい場合のみ、というのが既定の位置づけだが、**default branch が保護されている場合はこの経路が必須**になる。手順1で固定した `ACE_BRANCH` で小さい PR を作成する（コミット type は上の許容リスト確認に従う）:
+**既存知見ブランチの保留合流**: 本線の前提で許可している既存の `chore/ace-from-*` から実行した回は、新しいブランチを作らない。`ACE_DEFER_TO_RETRO=1` なら add までで止め、保留を同じブランチの `/retrospective` へ渡す。retrospective は OBS add → 共通 commit → 実測現在名を渡した `knowledge-commit pr` で完了する（[送信規則](../../retrospective/references/ledger.md#保留の合流と送信経路)）。保留を持ったまま switch しない。defer が無い回も本線が現在のブランチ名を `ACE_BRANCH` に採り、push を試さず pr へ進む。
+
+**任意エスカレーション — chore PR**: 大人数チーム / 知見レビューを残したい場合のみ、というのが既定の位置づけだが、**default branch が保護されている場合はこの経路が必須**になる。以下は新規専用ブランチの独立 PR 経路で、既存ブランチの保留合流と区別する。手順1で固定した `ACE_BRANCH` で小さい PR を作成する（コミット type は上の許容リスト確認に従う）:
 
 ```bash
 git checkout -b "$ACE_BRANCH"
 commit_type="knowledge"
 # playbook/ 配下は変更・追加したファイルだけを渡す（サブディレクトリのカテゴリファイルへの Helpful +1 も拾う。glob の playbook/*.md は直下しか当たらない）
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --claim docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>" --type "${commit_type}" -- docs/08-knowledge/PLAYBOOK.md $(git ls-files -mo --exclude-standard docs/08-knowledge/playbook) || exit 1
-# PR 経由は別ブランチへの commit なので /retrospective へ合流させず、ここで commit する
+# この新規専用 PR 経路は /retrospective へ合流させず、ここで即 commit する
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit commit --type "${commit_type}" || exit 1
-# push -u → upstream の照合（origin/${ACE_BRANCH}）→ gh pr create --base <default-branch> → ローカル default branch を origin へ戻す
+# push -u → upstream の照合 → gh pr create。default 開始時だけ local default を origin へ戻す
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit pr --branch "$ACE_BRANCH" --title "${commit_type}: ${ACE_ID} ${ACE_SUMMARY}" --body "${ACE_ORIGIN} から知見抽出" || exit 1
 # レビュー後 squash merge → /merge-cleanup
 ```

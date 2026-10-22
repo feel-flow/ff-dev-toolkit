@@ -63,7 +63,7 @@ done
 # 見出しから次の `## ` 見出し直前までを取り出す。開始は完全一致、再入と終端未到達は
 # いずれも非 0（呼び出し側が fail-closed にできる）。
 extract_section() { # <完全一致の見出し> <ファイル> / stdout: 節本文
-  awk -v h="$1" '
+  LC_ALL=C awk -v h="$1" '
     $0 == h { if (opened) reopened = 1; opened = 1; inside = 1; next }
     inside && /^## / { inside = 0; closed = 1 }
     inside { print }

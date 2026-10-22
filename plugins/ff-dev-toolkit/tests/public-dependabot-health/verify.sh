@@ -148,9 +148,11 @@ run_checker() { # env は呼び出し側で指定 / stdout: checker 出力, 戻�
     bash "$CHECKER" 2>/dev/null
 }
 
+# hook は冒頭で stdin を EOF まで読み切る（ACE-1331-1）ので、ホストと同じく閉じた stdin を渡す。
+# 渡さないと suite の stdin を引き継ぎ、端末や開いたままの pipe では読み終わらない（Issue `#2261`）
 run_hook() { # stdout: hook の通知 JSON（無音なら空）
   DEPENDABOT_HEALTH_GH="$STUB" DEPENDABOT_HEALTH_PUBLIC_REPO="feel-flow/ff-dev-toolkit" \
-    bash "$HOOK" 2>/dev/null
+    bash "$HOOK" </dev/null 2>/dev/null
 }
 
 hook_ctx() { # stdin: hook 出力 / stdout: additionalContext 文字列
@@ -388,7 +390,7 @@ FAKE_HOOK="$FAKE_ROOT/.claude/hooks/session-start-dependabot-health.sh"
 write_fake_checker() { printf '%s\n' '#!/usr/bin/env bash' "$@" 'exit 0' > "$FAKE_CHECKER"; chmod +x "$FAKE_CHECKER"; }
 
 write_fake_checker 'echo "UNRELATED_KEY=1"'
-ctx="$(bash "$FAKE_HOOK" 2>/dev/null | hook_ctx)"
+ctx="$(bash "$FAKE_HOOK" </dev/null 2>/dev/null | hook_ctx)"
 if grep -q '数値として解析できなかった' <<<"$ctx"; then
   ok "プロトコル不整合: exit 0 でも必須キーが無ければ無音にしない（ACE-72-2）"
 else
@@ -397,7 +399,7 @@ fi
 
 # 非数値は算術比較で set -u 即死（＝無音）を招く。通知して止まること。
 write_fake_checker 'echo "GRAPH_MANIFESTS=abc"' 'echo "OPEN_ALERTS=0"' 'echo "GHOST_ALERTS=0"'
-ctx="$(bash "$FAKE_HOOK" 2>/dev/null | hook_ctx)"
+ctx="$(bash "$FAKE_HOOK" </dev/null 2>/dev/null | hook_ctx)"
 if grep -q '数値として解析できなかった' <<<"$ctx"; then
   ok "非数値: 算術比較の前に弾いて通知する（set -u による無音の即死を防ぐ）"
 else
@@ -405,7 +407,7 @@ else
 fi
 
 rm -f "$FAKE_CHECKER"
-ctx="$(bash "$FAKE_HOOK" 2>/dev/null | hook_ctx)"
+ctx="$(bash "$FAKE_HOOK" </dev/null 2>/dev/null | hook_ctx)"
 if grep -q '検査スクリプトが存在しないか実行権限がない' <<<"$ctx"; then
   ok "checker 不在: settings.json 登録済みなのに実体が無い状態を名指しする"
 else
@@ -418,7 +420,7 @@ NONGIT="$TMP/nongit"
 mkdir -p "$NONGIT"
 write_fake_checker 'echo "GRAPH_MANIFESTS=0"' 'echo "OPEN_ALERTS=0"' 'echo "GHOST_ALERTS=0"'
 ctx="$(cd "$NONGIT" && GIT_CEILING_DIRECTORIES="$TMP" env -u GIT_DIR -u GIT_WORK_TREE \
-  bash "$FAKE_HOOK" 2>/dev/null | hook_ctx)"
+  bash "$FAKE_HOOK" </dev/null 2>/dev/null | hook_ctx)"
 if grep -q '依存グラフが無効化' <<<"$ctx"; then
   ok "ルート解決: 非 git ディレクトリが cwd でも hook 自身の配置から checker を見つける"
 else

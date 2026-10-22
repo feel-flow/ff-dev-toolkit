@@ -58,7 +58,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 - **前提ツール**: 認証済み `gh` CLI と `jq`（不足していれば冒頭で中断して案内する）。PR 不在・gh 不通は委譲前に **rc 1** で名指しし、復帰手段を出す（黙って 0 で終わらない。委譲先の PARTIAL = rc 2 とは重ねない）
 - **`--dry-run`**（`finish.sh cleanup --dry-run <PR>`）: 1 つも削除せず、「実行した場合に削除されるリモートブランチ・ローカルブランチ・worktree・リモート取り残し」を一覧表示して終わる。保護ブランチ・dirty worktree・fail-closed な縮退の判定は通常実行とまったく同じで、dry-run だけ緩まない。見送った prune とリモート削除の連鎖は read-only の `git ls-remote` で予測して一覧へ含める。動作検証・導入先での初回実行など、確認したい 1 点のためにツールの全副作用を引き受けたくない場面で使う
-- **実行する cwd**: 対象PRのheadを保持するリンクworktreeでは破壊的処理の前に中断する。他セッションのcheckoutは変更せず、下のworktree手順からswitchなし掃除へ進む。detached HEADは通常モードでbase復帰を試みるため、掃除の退避先にはしない。
+- **実行する cwd**: 対象PRのheadを保持するリンクworktreeでは破壊的処理の前に中断する。他セッションのcheckoutは変更せず、下のworktree手順からswitchなし掃除へ進む。detached HEAD の linked worktree は switch なし掃除モード。main worktree の detached HEAD は通常モードで base へ戻るため、退避先にしない。
 - **`disable-model-invocation` は意図的に付けない**。実行部が 1 行なのでフラグはスクリプト直叩きで迂回でき破壊的操作を防げない一方、フルオートチェーンが本スキルの実行を求めているため可用性だけが落ちる（ACE-147-1。回帰防止は `tests/skill-frontmatter/verify.sh`）
 - マージ前の base 追随・リベース後の送信は [Git Workflow](../../docs-template/05-operations/deployment/git-workflow.md#base-の取り込みとリベース後の送信) に従う（本スキルが行うマージ済みブランチの削除とは別の手順）
 
@@ -85,7 +85,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ## 呼び出し元が base でも PR head でもないブランチにいる場合 — switch なし掃除モード
 
-並列セッション運用で主 checkout が他セッションの作業ブランチを保持したまま呼ばれた場合、スクリプトは**ブランチ切り替えを伴わない掃除モード**で続行する: base への復帰・`pull --ff-only` は行わず（最新化は `git fetch origin <base>:<base>` を試み、拒否されたらスキップして報告）、base を保持する worktree は detach も削除もせず報告だけ、リモート削除・`[gone]` 掃除・worktree 削除・トランスクリプト回収・取り残し検証は通常どおり実施する。呼び出し元が dirty でも中断しない（このモードは呼び出し元に一切触れない）。未実施項目はサマリーに名指しで載る（意図的な見送いなので PARTIAL には数えない）。detached HEAD からの実行は通常モード。
+並列セッション運用で主 checkout が他セッションの作業ブランチを保持したまま呼ばれた場合、スクリプトは**ブランチ切り替えを伴わない掃除モード**で続行する: base への復帰・`pull --ff-only` は行わず（最新化は `git fetch origin <base>:<base>` を試み、拒否されたらスキップして報告）、base を保持する worktree は detach も削除もせず報告だけ、リモート削除・`[gone]` 掃除・worktree 削除・トランスクリプト回収・取り残し検証は通常どおり実施する。呼び出し元が dirty でも中断しない（このモードは呼び出し元に一切触れない）。未実施項目はサマリーに名指しで載る（意図的な見送いなので PARTIAL には数えない）。detached HEAD の linked worktree も同モードで両 HEAD を保持する。main worktree の detached HEAD は通常モード。
 
 ### worktreeセッションの経路
 
@@ -94,28 +94,16 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ## マージ実行時の注意 — base ブランチが他 worktree に保持されている場合
 
-これは本スクリプトではなく前段の `gh pr merge` の話。`finish.sh precheck` が `git worktree list` で base / head の保持を実測し、保持されていれば `--delete-branch` 無し + `&&` で繋いだ lease 付きリモートブランチ削除（merge 成功時だけ走る）の merge コマンドを生成する（`gh pr merge --squash --delete-branch` はマージ成功後にローカルで base へ切り替えようとして失敗し、**PR はマージ済みなのにリモートブランチ削除まで到達しない**）。他セッションの worktree は削除せず、保持者のパスと状態を報告して処分はユーザー判断に委ねる。完了報告には「リモートブランチを削除したか」を `gh pr merge` の成否とは別項目で明示する（本スクリプトのサマリーも同じ項目を必ず出す）。その後の `/merge-cleanup` は上の switch なし掃除モードで完走できる。
+`finish.sh precheck` は base / head を別 worktree が保持する回に、既存の互換経路と明示的な OID lease を保つため `--delete-branch` を外す。merge 対象は取得済みのホストを含む URL の `--repo` へ固定する。gh v2.102.0 はこの経路でローカルの切替・削除を行わず、その後始末は本スキルへ委譲する。生成コマンドは merge 成功後だけ ref を照会し、不在は成功・別 OID は保全・一致は lease 削除となる。削除拒否後も再照会し、照会不能や期待 OID が残る削除失敗は非 0 で終わる。`HEAD_DELETE_RESULT` を merge の成否とは別項目で報告する（[詳細](../../docs-template/05-operations/deployment/git-workflow.md#ステップ8-マージmerge)）。他セッションの worktree は削除せず、保持者のパスと状態を報告して処分はユーザー判断に委ねる。その後は上の switch なし掃除モードで完走できる。
 
 ## `--delete-branch` の部分失敗の読み方とリモート個別削除
 
-削除対象の head ブランチ自体が別の worktree でチェックアウトされている場合、`gh pr merge --squash --delete-branch` は `failed to delete local branch ... used by worktree at ...` の 1 行だけを残して部分的に失敗する。マージそのものが失敗したように読めるが、**マージとリモートブランチ削除は別工程であり、そちらは成功していることがある**。判定は出力の文言ではなく実測で行う:
+過去の `--repo` を明示しない経路では、削除対象の head ブランチ自体が別 worktree に保持されている回に、`gh pr merge --squash --delete-branch` が `failed to delete local branch ... used by worktree at ...` を残して部分的に失敗した。現在の生成コマンドは `--repo` を明示し、gh v2.102.0 のローカル後処理を行わない。マージそのものが失敗したように読めるが、**マージとリモートブランチ削除は別工程であり、そちらは成功していることがある**。判定は出力の文言ではなく実測で行う:
 
 1. `gh pr view <PR番号> --json state --jq .state` が `MERGED` であること
 2. `git ls-remote --exit-code --heads origin '<head ブランチ>'` の**終了コード**を見ること。`2` = ref なし（リモートは削除済み）、`0` = ref あり（残存）。**それ以外の終了コードは「判定不能」で、削除済みと読んではいけない**（通信・認証の失敗でも出力は空になる）
 
-1 と 2 の終了コード `2` を満たせば、ローカルブランチ・worktree の後始末は本スクリプトの Step 5 に任せてよい。終了コード `0`（残存）のときだけ個別に削除する。**削除の前に、残っている ref がその PR の head と同一であることを確認する**（マージ後に同名ブランチが再利用されていることがある）:
-
-```bash
-REMOTE_OID="$(git ls-remote --heads origin '<head ブランチ>' | cut -f1)"
-PR_HEAD_OID="$(gh pr view <PR番号> --json headRefOid --jq .headRefOid)"
-[ "$REMOTE_OID" = "$PR_HEAD_OID" ] || { echo "ブランチが再利用されている。削除しない"; exit 1; }
-```
-
-一致したら削除する。**ブランチ名に含まれる `#`（Issue/PR 番号を使った命名規則）は `%23` へエンコードする**。素の `#` は URL のフラグメント区切りとして解釈され、`#` 以降が送信対象のパスから欠落した不正な ref 名になるため、`-X DELETE` は 422 で失敗する:
-
-```bash
-gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/fix/%23NNNN-<slug>
-```
+1 と 2 の終了コード `2` を満たせば、ローカルの後始末は本スクリプトに任せる。ref が残る場合も `/merge-cleanup <PR番号>` を使う。対象 PR の head OID を照合し、同名 ref の再利用は保全、一致する場合だけ lease 付きで削除する。照合不能や削除未完了を成功とせず、サマリーの理由から復旧する。
 
 ## 終了コードとサマリーの読み方（判断点）
 

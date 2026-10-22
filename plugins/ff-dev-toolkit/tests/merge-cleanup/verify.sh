@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
 # merge-cleanup.sh の破壊的経路の回帰テスト。
+# 空振り検出: detached linked caller の判定を除いた mutant は独立 fixture の dry-run 検査で赤になる。
 # 空振り検出: agent branch専用fixtureが削除処理の欠落・祖先判定欠落・worktree判定欠落・remote判定欠落を赤にする。
 # 空振り検出: 入口の「ファイルが無い」分岐を外した写しを与えると、「構成ファイルを読めない入口が削除前に止まっていない（mode=missing）」の 1 件だけが赤になる（2026-10-21 実測。成功は残り全部。判定は exit 1 のまま、針「がありません」が外れ、次の分岐の「が 0 バイトです」になる。削除へは進まない）。
 # worktree一覧の不在・空・警告とremote照合失敗はfixtureでskip理由と残存を実測する。
@@ -1411,18 +1412,19 @@ else
 fi
 # 取り残し照合の mock に載せないので Step 6 は触らない。リモートに残してよい。
 
-# 呼び出し元を detached worktree に移し、元 clone が develop を保持する競合を再現する。
+# main worktree を detached にし、linked worktree が develop を保持する通常モードを再現する。
 # ignored file は clean 判定に出ないが、退避のために worktree ごと消してはならない。
-BASE_OWNER="$(git rev-parse --show-toplevel)"
-CALLER="$TMP/wt-caller"
-printf '%s\n' '.cleanup-owner-preserved' >> "$BASE_OWNER/.git/info/exclude"
+CALLER="$(git rev-parse --show-toplevel)"
+BASE_OWNER="$TMP/wt-base-owner"
+printf '%s\n' '.cleanup-owner-preserved' >> "$CALLER/.git/info/exclude"
+git switch -q --detach develop
+git worktree add -q "$BASE_OWNER" develop
+BASE_OWNER="$(cd "$BASE_OWNER" && pwd -P)"
 echo preserve-me > "$BASE_OWNER/.cleanup-owner-preserved"
-git worktree add -q --detach "$CALLER" develop
-cd "$CALLER"
 
-# merge-cleanup はこちらの worktree から走る。hook 共有をここで実測する。
+# linked worktree の BASE_OWNER からも共有 hook が働くことを実測する。
 set +e
-env -u SKIP_SIMPLE_GIT_HOOKS git push -q origin --delete 'feature/#31-hook-probe' >/dev/null 2>&1
+env -u SKIP_SIMPLE_GIT_HOOKS git -C "$BASE_OWNER" push -q origin --delete 'feature/#31-hook-probe' >/dev/null 2>&1
 HOOK_WT_RC=$?
 set -e
 if [ "$HOOK_WT_RC" -ne 0 ] && remote_has 'feature/#31-hook-probe'; then
@@ -1898,7 +1900,7 @@ set -e
 # 禁じたいのは「バイト単位で同一の行が並ぶ」こと。行数と重複数の両方を見る。
 FAIL_LINES_22="$(grep -cE '^  - feature/#22-retry-fails: リモート削除失敗' "$TMP/run-22.log" || true)"
 DUP_LINES_22="$(grep -E '^  - feature/#22-retry-fails: リモート削除失敗' "$TMP/run-22.log" \
-  | sort | uniq -d | grep -c . || true)"
+  | LC_ALL=C sort | LC_ALL=C uniq -d | grep -c . || true)"
 if [ "$EXIT_22" -eq 2 ] \
   && remote_has 'feature/#22-retry-fails' \
   && [ "$FAIL_LINES_22" -eq 2 ] \
@@ -3270,7 +3272,7 @@ EXIT_IGNORE_FROMBRANCH=$?
 set -e
 if exit_is_complete "$EXIT_IGNORE_FROMBRANCH" \
   && grep -q "マージ後 Cleanup 結果" "$TMP/run-ignore-frombranch.log" \
-  && grep -q "切り替えないため" "$TMP/run-ignore-frombranch.log" \
+  && grep -q "HEAD を変更しないため" "$TMP/run-ignore-frombranch.log" \
   && [ "$(git -C "$CALLER" branch --show-current)" = "work-branch-41" ] \
   && grep -q "resident tool wrote this" "$CALLER/videos/tracked/spec.md" \
   && [ -f "$CALLER/videos/slug-new/spec.md" ]; then
@@ -3353,7 +3355,7 @@ set +e
 EXIT_OWN_WT=$?
 set -e
 if [ "$EXIT_OWN_WT" -eq 1 ] \
-  && grep -qF "cd $BASE_OWNER && bash $TARGET 60" "$TMP/run-own-wt.log" \
+  && grep -qF "cd $CALLER && bash $TARGET 60" "$TMP/run-own-wt.log" \
   && grep -qF "$OWN_WT" "$TMP/run-own-wt.log" \
   && ! grep -q "マージ後 Cleanup 結果" "$TMP/run-own-wt.log" \
   && remote_has "$OWN_BRANCH" \
@@ -3368,7 +3370,7 @@ fi
 
 # 45.2 main tree からの起動は従来どおり完走し、対象 worktree ごと掃除する
 set +e
-( cd "$BASE_OWNER" && PATH="$MOCK:$PATH" bash "$TARGET" 60 ) > "$TMP/run-own-main.log" 2>&1
+( cd "$CALLER" && PATH="$MOCK:$PATH" bash "$TARGET" 60 ) > "$TMP/run-own-main.log" 2>&1
 EXIT_OWN_MAIN=$?
 set -e
 if exit_is_complete "$EXIT_OWN_MAIN" \
@@ -3651,10 +3653,10 @@ guard_verdict_lines() {
   grep -E 'skip \(保護ブランチ\)|skip \(設定保護パターン|worktree に未コミット変更があります' "$1" || true
 }
 
-predicted_branches() { sed -nE 's/^  ✓ \(dry-run\) 削除対象のブランチ: //p' "$1" | sort -u; }
-predicted_worktrees() { sed -nE 's/^  ✓ \(dry-run\) 削除対象の worktree: //p' "$1" | sort -u; }
-deleted_branches()   { sed -nE 's/^  ✓ branch deleted( \([^)]*\))?: //p' "$1" | sort -u; }
-deleted_worktrees()  { sed -nE 's/^  ✓ worktree removed: //p' "$1" | sort -u; }
+predicted_branches() { sed -nE 's/^  ✓ \(dry-run\) 削除対象のブランチ: //p' "$1" | LC_ALL=C sort -u; }
+predicted_worktrees() { sed -nE 's/^  ✓ \(dry-run\) 削除対象の worktree: //p' "$1" | LC_ALL=C sort -u; }
+deleted_branches()   { sed -nE 's/^  ✓ branch deleted( \([^)]*\))?: //p' "$1" | LC_ALL=C sort -u; }
+deleted_worktrees()  { sed -nE 's/^  ✓ worktree removed: //p' "$1" | LC_ALL=C sort -u; }
 
 # 46.1 --help は使い方・破壊的処理の一覧・--dry-run の存在を出し、PR 番号として
 #      解釈されない（= gh を一度も呼ばない）
@@ -3912,8 +3914,8 @@ predicted_branches  "$TMP/run-dry-63.log"  > "$TMP/dry-branches.txt"
 predicted_worktrees "$TMP/run-dry-63.log"  > "$TMP/dry-worktrees.txt"
 deleted_branches    "$TMP/run-real-63.log" > "$TMP/real-branches.txt"
 deleted_worktrees   "$TMP/run-real-63.log" > "$TMP/real-worktrees.txt"
-MISSED_BRANCHES="$(comm -13 "$TMP/dry-branches.txt" "$TMP/real-branches.txt")"
-MISSED_WORKTREES="$(comm -13 "$TMP/dry-worktrees.txt" "$TMP/real-worktrees.txt")"
+MISSED_BRANCHES="$(LC_ALL=C comm -13 "$TMP/dry-branches.txt" "$TMP/real-branches.txt")"
+MISSED_WORKTREES="$(LC_ALL=C comm -13 "$TMP/dry-worktrees.txt" "$TMP/real-worktrees.txt")"
 if [ ! -s "$TMP/real-branches.txt" ] || [ ! -s "$TMP/real-worktrees.txt" ]; then
   bad "通常実行のログから削除済みブランチ / worktree を取り出せない — 包含比較が空振りになる"
 elif [ -z "$MISSED_BRANCHES" ] && [ -z "$MISSED_WORKTREES" ]; then
@@ -3925,8 +3927,8 @@ fi
 
 predicted_branches  "$TMP/run-dry-63-mut-chain.log" > "$TMP/mut-chain-branches.txt"
 predicted_worktrees "$TMP/run-dry-63-mut-chain.log" > "$TMP/mut-chain-worktrees.txt"
-if [ -n "$(comm -13 "$TMP/mut-chain-branches.txt" "$TMP/real-branches.txt")" ] \
-  && [ -n "$(comm -13 "$TMP/mut-chain-worktrees.txt" "$TMP/real-worktrees.txt")" ]; then
+if [ -n "$(LC_ALL=C comm -13 "$TMP/mut-chain-branches.txt" "$TMP/real-branches.txt")" ] \
+  && [ -n "$(LC_ALL=C comm -13 "$TMP/mut-chain-worktrees.txt" "$TMP/real-worktrees.txt")" ]; then
   ok "mutant（連鎖予告なし）では予告が通常実行の削除より少なくなる = 46.9 が mutant を赤にできる"
 else
   bad "mutant（連鎖予告なし）の取りこぼしが観測できない — 46.9 の検出力は主張できない"
@@ -4032,6 +4034,29 @@ for mutation in missing ancestor worktree remote; do
     ok "agent mutant ${mutation} をfixtureが赤にする"
   fi
 done
+
+if bash "$SCRIPT_DIR/detached-caller.sh" "$TARGET"; then
+  ok "detached linked caller は dry-run・実行・dirty でも両 worktree の HEAD を保つ"
+else
+  bad "detached linked caller の回帰"
+  exit 1
+fi
+stage_cleanup_mutant "$TMP/detached-mutant"
+awk '
+  /elif \[ -z "\$CURRENT_BRANCH_BEFORE" \]; then/ { print "elif false; then"; next }
+  { print }
+' "$TMP/detached-mutant/lib/merge-cleanup-pre.sh" > "$TMP/detached-mutant/lib/merge-cleanup-pre.new"
+mv "$TMP/detached-mutant/lib/merge-cleanup-pre.new" "$TMP/detached-mutant/lib/merge-cleanup-pre.sh"
+if cmp -s "$PLUGIN_ROOT/scripts/lib/merge-cleanup-pre.sh" "$TMP/detached-mutant/lib/merge-cleanup-pre.sh"; then
+  bad "detached caller mutant が原本と同一（空振り）"
+  exit 1
+fi
+if bash "$SCRIPT_DIR/detached-caller.sh" "$TMP/detached-mutant/merge-cleanup.sh" > "$TMP/detached-mutant.log" 2>&1; then
+  bad "detached caller の判定欠落を fixture が検出できない"
+  exit 1
+else
+  ok "detached caller の判定を除いた mutant を fixture が赤にする"
+fi
 
 echo "✓ merge-cleanup verify: 全 $PASS 件 pass"
 FF_REACHED_END=1

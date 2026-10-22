@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Runtime contract for the review in-flight / dirty guard hook.
+# 空振り検出: 世代別promptの隣接requestからoutput-fileを読む代入を空にすると、o6 subsetの無変異6/0から4/2へ赤転（laneの出力先欠落・B応答後の解放失敗。2026-10-22 実測）。未応答/遅いA応答のdeny対照は緑のまま。
 #
 # 配布物 hooks/guard-review-in-flight.sh を stdin JSON で直接駆動し、受け入れ条件を
 # 固定する。
@@ -2475,20 +2476,24 @@ o_silent "bash -n $PLUGIN_ROOT/tests/lib/review-write-scan.sh" "(o5) bash -n（�
 # --- (o6) Issue `#1792`: 委譲レーンは結果（output-file）が書かれたら解放する ---
 clear_lock
 clear_lanes
-O_DELEG="$REPO/.review-results/claude-code/.delegated"
+O_DELEG="$REPO/.review-results/claude-code/.delegated/generations/head-b"
 mkdir -p "$O_DELEG"
 printf '# prompt\n' > "$O_DELEG/o-review.prompt.md"
-O_RESULT="$REPO/.review-results/claude-code/o-review.md"
+O_RESULT="$O_DELEG/o-review.response.md"
 rm -f "$O_RESULT"
 printf 'cli=claude-code\nperspective=o-review\noutput-file=%s\n' "$O_RESULT" > "$O_DELEG/o-review.request"
 run_hook "$(generic_agent_json "FF-REVIEW-DELEGATED: $O_DELEG/o-review.prompt.md" tu-o6)"
 O_LANE="$(ls -1 "$LANE_DIR"/tu-o6.*.lane 2>/dev/null | head -n 1)"
 if [ -n "$O_LANE" ] && grep -qx "output_file=$O_RESULT" "$O_LANE"; then
-  ok "(o6) 委譲レーンに handoff の output-file を記録する"
+  ok "(o6) 世代別 prompt の隣接 request から応答 output-file を記録する"
 else
   bad "(o6) 委譲レーンに output-file が無い: [$(cat "$O_LANE" 2>/dev/null)]"
 fi
 o_deny "echo x > README.md" "(o6) 結果が書かれる前は委譲レーンで止める"
+O_OLD_RESULT="${O_DELEG%/head-b}/head-a/o-review.response.md"
+mkdir -p "${O_OLD_RESULT%/*}"
+printf 'late head A\n' > "$O_OLD_RESULT"
+o_deny "echo x > README.md" "(o6) 遅い旧世代 A の応答では新世代 B のレーンを解放しない"
 [ -n "$O_LANE" ] && touch -t 202001010000 "$O_LANE"
 printf 'review body\n' > "$O_RESULT"
 run_hook "$(bash_json_at "echo x > README.md" "$REPO")"
@@ -2506,7 +2511,7 @@ touch -t 202001010000 "$O_RESULT"
 run_hook "$(generic_agent_json "FF-REVIEW-DELEGATED: $O_DELEG/o-review.prompt.md" tu-o6b)"
 o_deny "echo x > README.md" "(o6) レーンより古い結果（前の回の残り）では委譲レーンを解放しない"
 if [ "$(lane_count)" -eq 1 ]; then ok "(o6) 古い結果ではレーンが残る"; else bad "(o6) 古い結果でレーンが消えた: [$(lane_count)]"; fi
-rm -rf "$O_DELEG" "$O_RESULT"
+rm -rf "$O_DELEG" "${O_OLD_RESULT%/*}"
 clear_lanes
 
 # --- (o7) bundle 追記 (a): 凍結の対象は「レビュー対象のツリー」---

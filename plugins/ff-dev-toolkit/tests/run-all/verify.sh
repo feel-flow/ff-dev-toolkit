@@ -108,6 +108,12 @@
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/run-all/verify.sh
 
+# 空振り検出: case35のconsumer集合だけを空にしたケースとcasesファイル全体を空にしたケースは、source後の集合検査だけが赤（77/1、0/1、各rc=1）。case35+同じ親検査の未変異85/0を対照に実測。空白だけの宣言は互換入力としてallowする（2026-10-22）。
+# 変異検出（consumer context、2026-10-22）: 実cases sourceから実tracked走査へ渡す7状態の
+#   focused対照8/0。復元削除・走査後へ復元移動・export属性復元削除・自己検証前の隔離削除は
+#   順に5/1/4/2件赤（各rc=1、bash -n rc=0）。走査後復元は最終状態が一致してもmulti実走査だけ赤。
+# 空振り検出: consumer context helper不在・読めない・同名0byte・mode集合0、実tracked入力から危険形を
+#   消す各写しは親の集合検査または実走査検査1件で赤（対照8/0、各rc=1、2026-10-22）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -1266,9 +1272,24 @@ fi
 # case 35: パイプ終端の終了コード誤読の再混入ガード。別の契約（終了コード検出器）を検査する
 # 塊なので cases ファイルへ置く（ADR-057 決定 2。Issue `#1805`）。
 # shellcheck source=cases/exit-code-guard.sh
+EXITCODE_CONSUMER_CASES=0
 . "$SCRIPT_DIR/cases/exit-code-guard.sh"
+if [ "${EXITCODE_CONSUMER_CASES:-0}" -gt 0 ]; then
+  ok "consumer gate のケース集合は空でない"
+else
+  bad "consumer gate のケース集合が空 / cases ファイルの中身が消失"
+fi
 
 echo ""
+EXITCODE_CONTEXT_CASES=0
+EXITCODE_CONTEXT_FILE="$SCRIPT_DIR/cases/consumer-gate-context.sh"
+if [ ! -f "$EXITCODE_CONTEXT_FILE" ] || [ ! -r "$EXITCODE_CONTEXT_FILE" ] || [ ! -s "$EXITCODE_CONTEXT_FILE" ]; then
+  bad "consumer context casesが無い/読めない/空"
+else
+  . "$EXITCODE_CONTEXT_FILE"
+  if [ "$EXITCODE_CONTEXT_CASES" -gt 0 ]; then ok "consumer contextのケース集合は空でない"; else bad "consumer contextのケース集合が空"; fi
+fi
+
 echo "== case 16: 高速モードの除外境界（除外・skip との別勘定・名指しの警告） =="
 
 # 前提の実測（case 16・19・22・26・27 が依存する）: 除外判定は「`-selftest` 終端 かつ 対になる

@@ -13,7 +13,7 @@
 #   共通: --tree <file>（既定 同ディレクトリの tree.tsv）/ --plugin-root <dir> / --jev-decide <path>
 #
 # 何のためにあるか:
-#   27 スキル + 16 hook の「いつ何が走るか」を散文ではなく木データ（tree.tsv）に置き、根だけを
+#   スキルと hook の「いつ何が走るか」を散文ではなく木データ（tree.tsv）に置き、根だけを
 #   機械判定する。根の出力（fast / full / none）はレビュー経路の bundle が読む契約で、
 #   下記の出力プロトコルを変えるときはそちらも追随する。LLM を経由せず bash + awk だけで
 #   ミリ秒で返り、UserPromptSubmit hook（hooks/decision-tree.sh）から呼ばれる。
@@ -61,7 +61,7 @@ TREE="$SCRIPT_DIR/tree.tsv"
 PLUGIN_ROOT="$PLUGIN_ROOT_DEFAULT"
 JEV_DECIDE=""
 MAX_DEPTH=4
-MAX_LEAVES=50
+MAX_LEAVES=55
 
 MODE="route"
 FILES_FROM=""

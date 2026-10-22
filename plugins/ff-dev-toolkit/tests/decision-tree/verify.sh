@@ -5,11 +5,11 @@
 #
 # 固定するもの:
 #   A. 静的検査（実 tree）: route.sh --check が緑（各ノードに問い + 閉じた答え + none、葉は実在する
-#      skills/<名>/SKILL.md / hooks/<名>.sh / doc、深さ ≤ 4、葉 ≤ 50、木に載っていないスキル・hook
+#      skills/<名>/SKILL.md / hooks/<名>.sh / doc、深さ ≤ 4、葉 ≤ 55、木に載っていないスキル・hook
 #      無し）。葉の内訳がスキル実体・hooks.json の登録と一致する。hooks.json の UserPromptSubmit /
 #      Stop へ配線され、既存の retrospective hook が外れていない
 #   B. 検出力（合成 plugin root への変異注入）: 実在しない葉 / 到達不能ノード / 木に載っていない
-#      スキル・hook / 未登録の hook（command 欄の無い登録を含む）/ 深さ 5 / none の欠落 / 葉 51 / doc の見出しの降格・不在 / criteria fixture
+#      スキル・hook / 未登録の hook（command 欄の無い登録を含む）/ 深さ 5 / none の欠落 / 葉 56 / doc の見出しの降格・不在 / criteria fixture
 #      の option 不一致 / 循環 / 書式違反、のそれぞれで --check が赤になる
 #   C. 空振り: 木データの不在・空・コメントだけ・区切りの書式変更・母集団（skills / hooks.json）が
 #      空、のいずれも緑へ倒さない
@@ -181,7 +181,7 @@ n_hook_leaves="$(printf '%s\n' "$LEAVES" | awk -F'\t' '$1 == "hook" { n++ } END 
 n_doc_leaves="$(printf '%s\n' "$LEAVES" | awk -F'\t' '$1 == "doc" { n++ } END { print n + 0 }')"
 n_skills_actual="$(find "$PLUGIN_ROOT/skills" -mindepth 2 -maxdepth 2 -name SKILL.md -type f | wc -l | tr -d ' ')"
 n_hooks_actual="$(grep -oE 'hooks/[A-Za-z0-9_.-]+\.sh' "$HOOKS_JSON" | LC_ALL=C sort -u | wc -l | tr -d ' ')"
-if [ "$n_leaves" -gt 0 ] && [ "$n_leaves" -le 50 ]; then ok "A2 葉 ${n_leaves} 件（上限 50）"; else bad "A2 葉の件数が範囲外: ${n_leaves}"; fi
+if [ "$n_leaves" -gt 0 ] && [ "$n_leaves" -le 55 ]; then ok "A2 葉 ${n_leaves} 件（上限 55）"; else bad "A2 葉の件数が範囲外: ${n_leaves}"; fi
 if [ "$n_skill_leaves" -eq "$n_skills_actual" ] && [ "$n_skill_leaves" -gt 0 ]; then ok "A3 skill の葉 ${n_skill_leaves} 件 = skills/*/SKILL.md の実体数"; else bad "A3 skill の葉 ${n_skill_leaves} 件 ≠ 実体 ${n_skills_actual} 件"; fi
 if [ "$n_hook_leaves" -eq "$n_hooks_actual" ] && [ "$n_hook_leaves" -gt 0 ]; then ok "A4 hook の葉 ${n_hook_leaves} 件 = hooks.json の登録実体数"; else bad "A4 hook の葉 ${n_hook_leaves} 件 ≠ 登録 ${n_hooks_actual} 件"; fi
 if [ "$n_doc_leaves" -eq 1 ]; then ok "A5 「熟慮へ」の doc の葉が 1 件"; else bad "A5 doc の葉が 1 件ではない: ${n_doc_leaves}"; fi
@@ -269,8 +269,8 @@ make_fixture_root "$FIX"
 T="$(mut b6)"; sed -i.bak 's/^answer\thk\tone\thook:h1$/answer\thk\tone\tnode:deep1/' "$T"; printf 'node\tdeep1\tselect\tQ\nanswer\tdeep1\tgo\tnode:deep2\nanswer\tdeep1\tnone\tnone\nnode\tdeep2\tselect\tQ\nanswer\tdeep2\tgo\thook:h1\nanswer\tdeep2\tnone\tnone\n' >> "$T"
 run_check "$T" "$FIX"; assert_check_red "B6 深さ 5 の葉（root/f/hk/deep1/deep2/h1）" "深さ 5"
 T="$(mut b7)"; sed -i.bak '/^answer\tfull\tnone\tnone$/d' "$T"; run_check "$T" "$FIX"; assert_check_red "B7 none の無いノード" "none がちょうど 1 本ではありません"
-T="$(mut b8)"; i=1; while [ "$i" -le 51 ]; do mkdir -p "$FIX/skills/s$i"; printf '%s\n' '---' "name: s$i" '---' > "$FIX/skills/s$i/SKILL.md"; printf 'answer\tfull\ts%s\tskill:s%s\n' "$i" "$i" >> "$T"; i=$((i + 1)); done
-run_check "$T" "$FIX"; assert_check_red "B8 葉が 51 件以上" "上限 50 を超えています"
+T="$(mut b8)"; i=1; while [ "$i" -le 56 ]; do mkdir -p "$FIX/skills/s$i"; printf '%s\n' '---' "name: s$i" '---' > "$FIX/skills/s$i/SKILL.md"; printf 'answer\tfull\ts%s\tskill:s%s\n' "$i" "$i" >> "$T"; i=$((i + 1)); done
+run_check "$T" "$FIX"; assert_check_red "B8 葉が 56 件以上" "上限 55 を超えています"
 make_fixture_root "$FIX"
 printf '%s\n' '# doc' 'no heading' > "$FIX/docs-template/x.md"; run_check "$BASE_TREE" "$FIX"; assert_check_red "B9 doc の葉の見出しが本文に無い" "本文にありません"
 make_fixture_root "$FIX"

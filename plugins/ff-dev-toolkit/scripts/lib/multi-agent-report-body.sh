@@ -34,6 +34,9 @@
 # one is the failure mode issue `#152` is about — so there is one copy to change.
 append_plan_sections() {
   local report_file="$1"
+  if [[ -n "$DELEGATION_UNADOPTED_NOTES" ]]; then
+    printf '\n### Previous host delegations not adopted\n\n%s\n' "$DELEGATION_UNADOPTED_NOTES" >> "$report_file"
+  fi
   local wrote_any=1
 
   # 今回の実行が書かなかった結果ファイルの名指し（Issue `#537` / `#654`）。退避できない
@@ -163,8 +166,29 @@ append_plan_sections() {
         echo "No CLI was started for it. The prompt this run built is at"
         echo "\`$(delegate_dir_for "$cli_name")/${perspective_name}.prompt.md\`."
         echo "The host runs it in its own session and writes the result to"
-        echo "\`${result_file}\`, then re-runs the same command **with \`--resume\`** to have it"
-        echo "adopted and this report regenerated."
+        if [[ -n "$REVIEW_EVIDENCE_PRIOR" || -n "$REVIEW_EVIDENCE_PARENT" ]]; then
+          echo "\`$(delegate_dir_for "$cli_name")/${perspective_name}.response.md\`."
+          echo "Wait until ALL pending delegated responses have been written, then re-run the"
+          echo "original command below **WITHOUT \`--resume\`** to adopt them and regenerate this report."
+          echo "Every non-delegated task runs again; prior/continued evidence forbids cached resume."
+          echo "Keep the original model/config-selection environment; this command does not restore it."
+          echo ""
+          echo "Re-run command:"
+          echo ""
+          local invocation_line
+          while IFS= read -r invocation_line || [[ -n "$invocation_line" ]]; do
+            printf '    %s\n' "$invocation_line"
+          done <<< "$INVOCATION_DISPLAY"
+          echo ""
+          echo "If only part of the batch was adopted, keep this output directory intact."
+          echo "Choose an external or gitignored directory so the evidence worktree stays clean."
+          echo "Restart with a new empty \`--output-dir\` appended to the original command; keep every"
+          echo "other argument and the original environment. Run ALL newly generated prompts,"
+          echo "write the entire new batch, then re-run that new command WITHOUT \`--resume\`."
+        else
+          echo "\`$(delegate_dir_for "$cli_name")/${perspective_name}.response.md\`, then re-runs the same command **with \`--resume\`** to have it"
+          echo "adopted and this report regenerated."
+        fi
         echo "Absence of a finding here means unchecked, not clean."
       elif [[ -f "$result_file" ]]; then
         # An adapter marks salvaged partial output with `Status: incomplete`

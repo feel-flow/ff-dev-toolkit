@@ -231,7 +231,7 @@ collect_cwds() {
 
   : > "$scan_err"
   : > "$WORK_TMP/cwds"
-  values="$( { find "$dir" -type f -name '*.jsonl' -exec grep -oh '"cwd":"[^"]*"' {} + | sort -u ; } 2>"$scan_err" )" || true
+  values="$( { find "$dir" -type f -name '*.jsonl' -exec grep -oh '"cwd":"[^"]*"' {} + | LC_ALL=C sort -u ; } 2>"$scan_err" )" || true
   if [ -s "$scan_err" ]; then
     return 4
   fi

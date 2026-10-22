@@ -91,6 +91,16 @@
 # pipefail の有無は静的には決まらず、読み手が `set -o pipefail` の到達を追う形へは寄せない。
 # tee はファイルへ落として `$?` を直接読む形（`cmd >"$LOG" 2>&1; rc=$?`）へ書き換える。
 #
+# 導入先の追加ゲート（任意、hook / 走査プロセスの環境へ export する）:
+#   FF_EXIT_CODE_GUARD_GATES  改行区切りの literal command prefix（例: npm run ci:local）。
+#     空行と前後の空白は無視し、語間の space / tab は同一視する。既存の環境代入・ラッパを
+#     剥がした起動の先頭に、完全な語の列として一致する場合だけ追加ゲートとする。
+#     後続引数・リダイレクトは許容するが ci:locality のような名前の前方一致はしない。
+#     シェル引用・展開・正規表現・glob・eval は行わない。宣言する prefix は引用のない語の列とし、
+#     実行側もその綴りを使う（引用した引数や変数で組み立てた起動は既知の字面解析の限界）。
+#     未設定 / 空 / 空白行だけなら従来の run-all.sh のみ。区切りは colon ではない
+#     （ci:local 自身に colon がある）。判定タグ・rc 伝播の規則は既定ゲートと共通。
+#
 # テストシーム（通常は未設定）:
 #   FF_EXIT_CODE_GIT   git コマンド（既定: git）
 #   FF_EXIT_CODE_AWK   awk コマンド（既定: awk）
@@ -218,9 +228,20 @@ function strip_prefix(s,   w, guard) {
 }
 # ゲート起動を含むか。対象は「赤なら止めるべき検証の入口」で、名前で拾う。ここを
 # 「あらゆるコマンド」へ広げると、診断で終わる普通のスクリプトが全部赤になる。
-function is_gate_launch(s,   w, rest) {
-  if (s !~ /run-all\.sh/) return 0
+function is_gate_launch(s,   w, rest, i, prefix, after) {
   s = strip_prefix(s)
+  # 宣言は ENVIRON から読む。awk -v へ渡すと backslash が再解釈され、literal でなくなる。
+  # prefix は文字列比較だけに使い、正規表現や shell として実行しない。
+  rest = s
+  gsub(/[ \t]+/, " ", rest)
+  for (i = 1; i <= consumer_gate_n; i++) {
+    prefix = consumer_gates[i]
+    if (index(rest, prefix) == 1) {
+      after = substr(rest, length(prefix) + 1, 1)
+      if (after == "" || after ~ /[ <>]/ || (after == "&" && substr(rest, length(prefix) + 2, 1) == ">")) return 1
+    }
+  }
+  if (s !~ /run-all\.sh/) return 0
   w = s
   sub(/[[:space:]].*$/, "", w)
   # 代入は起動ではない（`RUNNER=tests/run-all.sh; echo done` を赤にすると直しようがない）。
@@ -344,7 +365,7 @@ function is_status(s) {
 #   (b) ゲート以降に `;` か `||` か単独の `&` が 1 つでもある
 # ただし終端が成否を運ぶ形（代入・制御構文・非フィルタ終端）なら、後段で使える形なので見ない。
 function gate_swallowed(m,   segs, seps, n, i, gi) {
-  if (index(m, "run-all.sh") == 0) return 0
+  if (consumer_gate_n == 0 && index(m, "run-all.sh") == 0) return 0
   n = split_segments(m, segs, seps)
   if (n < 1) return 0
   gi = 0
@@ -453,7 +474,7 @@ function var_event(line, var,   m0, m1, i, n, c, k, st, seg0, seg1, w, a, re, co
   return ow ? 2 : 0
 }
 function track_gate(line, start, m, swallowed,   segs, seps, n, n0, i, gi, last, v, only_and, t, ev) {
-  if (g_state == 0 && g_pvar == "" && index(m, "run-all.sh") == 0) return
+  if (g_state == 0 && g_pvar == "" && consumer_gate_n == 0 && index(m, "run-all.sh") == 0) return
   n0 = split_segments(m, segs, seps)
   gi = 0
   for (i = 1; i <= n0; i++) if (seg_has_gate(segs[i])) { gi = i; break }
@@ -665,7 +686,17 @@ function feed(line, lineno,   t, m, i, n, was_open, keep, keepln) {
   if (m ~ /([|]|&&)[[:space:]]*$/) { buf = buf " "; return }
   complete(buf, buf_start); buf = ""
 }
-BEGIN { SQ = sprintf("%c", 39); DQ = sprintf("%c", 34); QF = "."; SEP = ";|&&|[|][|]"; QUOTE_JOIN_MAX = 20; hd_n = 0; hd_cnt = 0; hd_off = 0; q_n = 0 }
+BEGIN {
+  SQ = sprintf("%c", 39); DQ = sprintf("%c", 34); QF = "."; SEP = ";|&&|[|][|]"; QUOTE_JOIN_MAX = 20; hd_n = 0; hd_cnt = 0; hd_off = 0; q_n = 0
+  consumer_gate_n = 0
+  n = split(ENVIRON["FF_EXIT_CODE_GUARD_GATES"], declared_gates, "\n")
+  for (i = 1; i <= n; i++) {
+    prefix = declared_gates[i]
+    sub(/^[ \t\r]+/, "", prefix); sub(/[ \t\r]+$/, "", prefix)
+    gsub(/[ \t]+/, " ", prefix)
+    if (prefix != "") consumer_gates[++consumer_gate_n] = prefix
+  }
+}
 FNR == 1 { unit_close(); buf = ""; prev_pipe = 0; in_block = 0; g_state = 0; g_pvar = ""; hd_n = 0; hd_cnt = 0 }
 { sub(/\r$/, "") }
 mode != "md" { feed($0, FNR); next }

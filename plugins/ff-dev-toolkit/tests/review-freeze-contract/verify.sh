@@ -71,7 +71,7 @@ done
 # 見出しから次の `### ステップ` 直前までを取り出す。開始は完全一致、再入と終端未到達は
 # いずれも非 0（呼び出し側が fail-closed にできる）。
 extract_section() { # <完全一致の見出し> <ファイル> / stdout: 節本文
-  awk -v h="$1" '
+  LC_ALL=C awk -v h="$1" '
     $0 == h { if (opened) reopened = 1; opened = 1; inside = 1; next }
     inside && /^### ステップ/ { inside = 0; closed = 1 }
     inside { print }
@@ -81,7 +81,7 @@ extract_section() { # <完全一致の見出し> <ファイル> / stdout: 節本
 
 # 節を閉じた見出しそのものを返す（終端の同一性検査用）。
 section_terminator() { # <完全一致の見出し> <ファイル> / stdout: 終端見出し行
-  awk -v h="$1" '
+  LC_ALL=C awk -v h="$1" '
     $0 == h { seen = 1; next }
     seen && /^### ステップ/ { print; exit }
   ' "$2"
@@ -433,7 +433,7 @@ echo '-- 担当規定の正本性: 正本節の文を他文書が含まない（
 # 他文書での不在（doc_lacks）を対にして固定する — 正本の文言が変われば section_has 側が
 # 赤になり、針の更新を強制する（針だけが古いまま doc_lacks が空振りする状態を作らない）。
 extract_h2_section() { # <完全一致の ## 見出し> <ファイル> / stdout: 次の ## 見出し直前まで
-  awk -v h="$1" '
+  LC_ALL=C awk -v h="$1" '
     $0 == h { if (opened) reopened = 1; opened = 1; inside = 1; next }
     inside && /^## / { inside = 0; closed = 1 }
     inside { print }
