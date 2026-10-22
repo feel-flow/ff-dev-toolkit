@@ -134,6 +134,10 @@ BASE_BRANCH_IDENTITY="${BASE_BRANCH#origin/}"
 DRY_RUN=false
 RESUME=false
 FRESH=false
+ARCHIVE_ONLY=false
+ARCHIVE_PREVIOUS_BRANCH=""
+ARCHIVE_KEEP_LOCK=false
+ARCHIVE_DESTINATION=""
 # ホスト委譲。true のとき claude-code レーンは CLI を起動せず、実行を
 # ホストへ返す。既定は false = 従来どおり spawn。
 DELEGATE_TO_HOST=false
@@ -424,7 +428,30 @@ finalize_base_branch() {
   BASE_BRANCH="$(resolve_base_branch_ref "$BASE_BRANCH")"
 }
 
+print_archive_recovery() { # [critical]: do not advertise a bare operation for known Critical state.
+  local state="${1:-unknown}" cmd="bash $(shell_quote "${SCRIPT_DIR}/multi-review.sh") --route $(shell_quote "${WRAPPER_ROUTE/direct/none}")"
+  cmd="${cmd} --output-dir $(shell_quote "${OUTPUT_DIR:-$(get_default_output_dir review)}")"
+  if config_is_explicit; then cmd="${cmd} --config $(shell_quote "$CONFIG_FILE")"; fi
+  if [[ "$state" != critical ]]; then
+    echo "       Cold/clear output: drop --fresh and retry the original review invocation." >&2
+    echo "       Cold/clear output only — archive once without running reviewers:" >&2
+    echo "         ${cmd} --base $(shell_quote "$BASE_BRANCH") --archive-only" >&2
+  fi
+  echo "       Critical recovery template — replace both placeholders with confirmed values before execution:" >&2
+  echo "         ${cmd} --base '<confirmed-previous-base>' --archive-only='<confirmed-previous-branch>'" >&2
+  echo "       Confirm the previous branch name and its original base identity; do not infer them from the series token." >&2
+  echo "       Same-branch Critical, pending requests, corrupt/legacy state stop without moving results." >&2
+  echo "       Then re-run with --delegate-to-host=${DELEGATION_LANE} and no --fresh (fast: omit delegation); collect with the same argv plus --resume." >&2
+}
+
 parse_args() {
+  local archive_conflict="" option
+  for option in "$@"; do
+    case "$option" in
+      --description|--include-diff|--mode|--mode=*|--strategy|--cli|--cli=*|--perspective|--perspective=*|--exclude-cli|--exclude-cli=*|--exclude-perspective|--exclude-perspective=*|--parallel|--sequential|--timeout|--set-reviewers)
+        archive_conflict="$option" ;;
+    esac
+  done
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --invocation-display) INVOCATION_DISPLAY="$2"; shift 2 ;;
@@ -479,6 +506,11 @@ parse_args() {
       --staged)      STAGED_DIFF=true; shift ;;
       --resume)      RESUME=true; shift ;;
       --fresh)       FRESH=true; shift ;;
+      --archive-only) ARCHIVE_ONLY=true; shift ;;
+      --archive-only=*)
+        ARCHIVE_ONLY=true; ARCHIVE_PREVIOUS_BRANCH="${1#--archive-only=}"
+        [[ -n "$ARCHIVE_PREVIOUS_BRANCH" ]] || { echo 'ERROR: --archive-only= requires a previous branch.' >&2; exit 2; }
+        shift ;;
       --dry-run)     DRY_RUN=true; shift ;;
       --delegate-to-host) DELEGATE_TO_HOST=true; shift ;;
       --delegate-to-host=*)
@@ -500,6 +532,19 @@ parse_args() {
         ;;
     esac
   done
+
+  if [[ "$ARCHIVE_ONLY" == true ]]; then
+    if [[ "$TASK_TYPE" != review || "$FRESH" == true || "$RESUME" == true || "$DELEGATE_TO_HOST" == true \
+      || "$DRY_RUN" == true || "$STAGED_DIFF" == true || "$REVIEW_EVIDENCE" == true \
+      || "$LIST_PERSPECTIVES" == true || "$PRINT_REVIEWERS" == true || -n "$SET_REVIEWERS" || -n "$archive_conflict" ]]; then
+      echo 'ERROR: --archive-only is a standalone review operation; use only route, config, base and output-dir.' >&2
+      exit 2
+    fi
+    if [[ -n "$ARCHIVE_PREVIOUS_BRANCH" ]]; then
+      case "$ARCHIVE_PREVIOUS_BRANCH" in refs/heads/*) ;; refs/*|detached:*) echo 'ERROR: previous branch must be a local branch name.' >&2; exit 2 ;; *) ARCHIVE_PREVIOUS_BRANCH="refs/heads/${ARCHIVE_PREVIOUS_BRANCH}" ;; esac
+      git check-ref-format "$ARCHIVE_PREVIOUS_BRANCH" >/dev/null 2>&1 || { echo 'ERROR: invalid previous branch name.' >&2; exit 2; }
+    fi
+  fi
 
   # Validate task type
   case "$TASK_TYPE" in
@@ -548,9 +593,7 @@ parse_args() {
     echo "ERROR: --fresh cannot be combined with --delegate-to-host." >&2
     echo "       --fresh archives the output dir (including the host's written results and the" >&2
     echo "       handoff files) before they can be collected, so the delegation never converges." >&2
-    echo "       Clean once without delegating, then delegate:" >&2
-    echo "         1) run with --fresh and --exclude-cli ${DELEGATION_LANE} (or --dry-run) to clear" >&2
-    echo "         2) re-run with --delegate-to-host=${DELEGATION_LANE} and no --fresh" >&2
+    print_archive_recovery
     exit 2
   fi
 

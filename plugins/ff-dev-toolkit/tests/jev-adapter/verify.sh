@@ -70,6 +70,22 @@
 #      未知の FF_JEV_MODE / 非数値の閾値は exit 64、--summarize は記録が無い・読めない行があれば exit 2、
 #      --overturn は adopt した決定にだけ効く。同梱 fixture questions/same-action.json の質問文は生成器
 #      （build-ace-eval-sets.ts）の novelty 質問と同一
+#   M. 重複 finding の評価セット生成器（scripts/jev/build-dedupe-eval-sets.ts。dedupe.sh）。.review-results の
+#      run（<cli>/*.findings.tsv を直下に持つディレクトリ。.prev の入れ子を含み、<cli>/previous・.resume-cache・
+#      node_modules は辿らない）から、別レーン（cli:観点）・同じ file・行差 ≤ N の対を作る。本文は判定行の照合で
+#      .md から復元し（親の箇条書きなら判定行の後ろの子まで、無ければ直前の見出しから判定行の手前まで。降格前の
+#      重大度で照合し、割れて summary でも絞れなければ推測せず対ごと捨てて数える）、節見出し・判定行は除く。
+#      ID は内容ハッシュで、worktree のコピーは 1 件に畳む。両レーンが同じ回の報告に載る対だけが same-report。
+#      ヘッダ・列数・置き場の不一致 / run 0 件 / 対 0 件 / same-report の対のラベル欠落 / ID の形・票の多数決の
+#      不一致 / --out へ書けない は exit 2。TSV ヘッダは記録側の REVIEW_FINDINGS_TSV_HEADER と同一、
+#      questions/dedupe.json は生成器の質問と完全一致。--summarize は事前登録した採否規則（Jev=同じ の採用対が
+#      30 件以上かつ誤り 0 の最小の帯）を DEDUPE_ADOPT_THRESHOLD= で出し、帯へ入れられない行は exit 2
+#   N. 判定点 dedupe の本番経路（scripts/jev/review-dedupe.sh と multi-review の入口フェンス。dedupe.sh）。off と、
+#      dedupe が FF_JEV_POINTS に無いとき（未設定 = jev-decide.sh の既定の名簿。dedupe を含まない）は依存・引数の
+#      検査より前に exit 12 で、stdout・通信・記録・ファイルのどれも作らない。on は --run の対へ 1 対 1 回ずつ
+#      jev-decide.sh dedupe を当て、閾値（組み込み 0.8）以上で「同じ」の対だけを畳む指示として stdout へ出す。
+#      設定の失敗（401 等）は残りの対を呼ばず、対ごとの失敗（429）は止めない。対を作れない回は exit 11、
+#      jev-decide の 2 / 64 / 69 と出力先の不在は止める。入口フェンスは書かれたまま実行して検査する
 #
 # 空振り検出: 同梱 fixture を空ファイルに差し替えると (F1〜F4) の 4 件が赤になる（2026-09-20 実測。52 件中 4 件失敗。0 行を「件数どおり」へ倒さない）。
 # 空振り検出: 同梱 fixture から ja 側の 5 行を削ると (F1〜F4) の 4 件が赤になる（2026-09-20 実測。52 件中 4 件失敗。片側の消失を通さない）。
@@ -102,6 +118,16 @@
 #
 # 空振り検出: triage の同梱候補 fixture を空にすると L4 / L6 が赤、invariant.json を消すと対象不在で赤（2026-09-28、L 節を実測し各 exit 1）。重複原則 ID は L13 で exit 2 を要求する。
 # 空振り検出: lockfile で導入するローカル tsx 不在の複製配置は exit 1（npm ci の案内）を返す。
+# 空振り検出: 同梱 fixture questions/dedupe.json を `{}` に差し替えると (M10 / N3 / N3b / N5 / N6 / N8h / N12) が赤になる（2026-10-22 実測。M・N 節 62 件中 7 件失敗。質問の無い fixture を「生成器と一致」へ倒さない — M10 は生成器が実際に出した質問と完全一致で比べる）。
+# 空振り検出: 記録側（scripts/lib/multi-agent-report-body.sh）の節見出しを `## <cli> / <観点>` へ変えると (M8b) が赤になる（2026-10-22 実測。62 件中 1 件失敗。見出しの drift で全対が mixed になり、判定点 dedupe が黙って無効になる形を通さない）。
+# 空振り検出: 生成器の REPORT_SECTION が報告の節に一致しない（全対が mixed）と (M1 / M5 / M8b / M8c / M9 / M10 / M11 / M13 / M13b / M13c / N3 / N3b / N5 / N6 / N8f / N8h / N10 / N12 / N13d) が赤になる（2026-10-22 実測。62 件中 19 件失敗。0 対を「重複なし」の緑へ倒さない）。
+# 変異検出: 重大度セットの state から優先度ラベルを除く条件を外すと (M22) が赤になる（2026-10-22 実測。62 件中 1 件失敗。答えの漏れた state で重大度 Choice の一致率を水増ししない）。
+# 変異検出: --run を collectRuns（入れ子の .prev を辿る）へ変えると (N10) が赤になる（2026-10-22 実測。62 件中 1 件失敗。前回の回の対を今回の畳む指示へ混ぜない）。
+# 変異検出: 採否規則の帯を降順に見て最大の帯を採ると (M23) が赤になる（2026-10-22 実測。62 件中 1 件失敗。0.80 と 0.95 の両方が規則を満たす fixture で、最小の帯を採ることを固定する）。
+# 変異検出: 同じ対のコピーで same-report を優先する差し替えを外すと (M8c) が、previous をレーン候補から外さないと (M8d) が赤になる（2026-10-22 実測。各 62 件中 1 件失敗）。
+# 変異検出: review-dedupe.sh の名簿判定を外すと (N8b / N8c / N13c) が赤になる（2026-10-22 実測。62 件中 3 件失敗。dedupe を使わない on の利用者を jq 不在・出力先の指定漏れで止めない）。
+# 変異検出: 設定の失敗（401）で残りの対を止める条件を外すと (N5 / N8h) が、p ≥ 0.5 の判定を外して「別」も畳むと (N3) が赤になる（2026-10-22 実測。62 件中 2 件 / 1 件失敗）。
+# 変異検出: 判定行が同じ深さの書式で前の指摘の続き（より深い字下げ）を飛ばす処理を外すと (M6c) が、refs を判定行の 1 行前へずらすと (M6b) が赤になる（2026-10-22 実測。M・N 節 64 件中各 1 件失敗。前の指摘の本文を次へ混ぜない・畳む指示で指摘を判定行の位置で一意に名指す）。
 # 依存: bash 3.2 / jq / mktemp / Node.js / npm ci 済みの mcp/node_modules。一時領域を作れない環境は skip ではなく赤（suite 全体の
 # skip 経路を持たない）。実作業ツリーには触れない（HOME・PATH・TMPDIR を隔離する）。
 set -uo pipefail
@@ -1886,6 +1912,7 @@ fi
 rm -f "$FAKE/body.200"
 
 source "$SCRIPT_DIR/triage.sh" || { bad "triage section incomplete"; }
+source "$SCRIPT_DIR/dedupe.sh" || { bad "dedupe section incomplete"; }
 
 # ================================================================================
 echo

@@ -986,7 +986,7 @@ stderr と統合レポートの pending 節は、同じ再実行方法・元の�
 
 ### 併用できないもの・止まるところ
 
-- **`--fresh` とは併用できない**（起動時に拒否する）。`--fresh` は出力ディレクトリの中身をホストの結果も受け渡しファイルもまとめて `.prev-<時刻>/` へ退避するので、2 回目が毎回新しい handoff になって収束せず、しかも完了済みのレビューが一度も読まれないまま退避される。掃除したいときは先に委譲なしで `--fresh` を 1 回走らせる
+- **`--fresh` とは併用できない**（起動時に拒否する）。`--fresh` は出力ディレクトリの中身をホストの結果も受け渡しファイルもまとめて `.prev-<時刻>/` へ退避するので、2 回目が毎回新しい handoff になって収束せず、しかも完了済みのレビューが一度も読まれないまま退避される。掃除が必要なら [退避専用経路](#archive-only) を先に1回使い、その後はfresh/archive-onlyを外して通常起動する
 - **委譲を指定したまま結果を残した状態で、フラグを落として（または別レーンの委譲で）再実行すると中断する**。その結果パスはこの実行がクリアする対象そのものなので、素通しにするとホストの成果物が 1 行の通知も無く消え、そのうえ枯渇していて動かない CLI が起動される。再実行するか、案内される `rm` で委譲を明示的に放棄する
 
 ### 受理の条件（ここは緩めない）
@@ -1102,14 +1102,29 @@ bash scripts/codex-review.sh --base develop
 bash scripts/codex-review.sh --base develop --fresh
 ```
 
-**「手動退避は不要」が成立するのはフルレビューだけである。** 観点を絞る標準の起動形
-（`--mode cross-model` + `--perspective`）は定義上つねに絞り込み側なので、この自動開始に
-**構造的に入らない**。同じ作業ツリーで PR を連続して出す運用では、新しいブランチの初回が
-毎回 1 度この中断を踏むことになるため、**新ブランチの初回は最初から `--fresh` を付ける**
-（同じブランチの 2 回目以降は付けない — 前ラウンドの未解消 Critical 状態ごと退避してしまい、
-ラウンド間の持ち越しが効かなくなる）。前のブランチが**すでにマージ済みでも変わらない**:
-系列 ID は repo / branch / base / scope を畳んだダイジェストで、残骸の側にブランチ名が
-残らないため、ガードには到達可能性を判定する材料が無い。
+cold/clear の新ブランチではfreshは不要である。旧Criticalが残るfiltered/full委譲の経路は、以下の明示退避を先に1回使う。同じブランチでは未解消Criticalを退避せず、通常継続のcarryを守る。
+
+<a id="archive-only"></a>
+
+### レビューを起動しない退避（`--archive-only[=<previous-branch>]`）
+
+cold/clear の新ブランチは `--fresh` 無しで開始する。前ブランチの current-format Critical が残る場合は、旧ブランチ名を呼出側で確認し、先に退避だけを1回実行する。系列tokenは repo/branch/base/scope のダイジェストなので、旧名やマージ済みかを逆算しない。削除済みの旧ブランチ名も照合できる。
+
+```bash
+# 確認した旧ブランチ名と、旧runと同じbase identityを渡す（developとorigin/developは同値）。
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --route full --base develop --archive-only='feature/old' --output-dir .review-results
+# この行を保存し、ホスト応答を書いた後は同じargvへ --resume だけ足す。
+ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --route full --base develop --delegate-to-host=codex-cli --output-dir .review-results
+```
+
+`fast` の退避も1行目の route を変えるだけである。次の通常fastレビューには委譲を付けない。bare `--archive-only` は空出力または正しいclear reportに限る。Critical があれば、明示した旧ブランチが現在と異なり、旧runと同じ正規化base identity・branch scopeで既存tokenが一致することを要求する。同じブランチのCriticalはbaseを変えても退避できず、通常継続のcarryへ残る。
+
+この操作はCLI検出・sandbox probe・CLI更新・レビュー巡回・plan・report/evidence生成を行わない。review専用で、route/config/base/output-dir以外のレビュー構成、fresh/delegate/resume/dry-run/staged/evidence/list/print/setとの併用はrc2。成功または対象0件はrc0、保全/I/O/lockの停止はrc1であり、レビュー完了の判定には使わない。
+
+全lane・全generation・legacyのrequestはresponseがあっても未採用として停止する。元の初回invocationで回収を終えてから再試行する。symlink/読取不能、report不在の残骸、corrupt/legacy/token不一致、委譲state不整合もbytesを動かさず止める。出力先のroot/tracked境界の取得不能は通常レビューでも停止する。未知の旧ブランチやbaseを推測せず、必要な値を確認する。エラーのCritical用コマンドは、確認した旧branch/baseを代入するテンプレートとして表示する。cold/clear用のbareコマンドと区別し、temporaryなconfig/base環境変数は再実行用の明示引数へ保持する。detached HEADではcold/clearを退避できるが、未解消Criticalの退避には現在の名前付きbranchも必要である。
+
+退避先は従来どおり出力内側の `.prev-<UTC>/`。既存archiveとlockは動かさず、dotfileも含めた固定在庫を運び、統合reportを最後に移す。移動途中の失敗・捕捉できるsignalでは既存lockを保持し次の実行を止める。process終端だけでlockを消さず、partial archiveとlive reportの整合を確認・復元してから扱う。退避されたreceiptは診断bytesの保管で、旧絶対pathの検証が有効だとの認定ではない。通常freshの終了時lock解放は従来どおり。空の通常freshでもarchive蓄積通知を行う。出力ディレクトリを読めない・辿れない場合は空扱いせずrc1で停止する。
+
 
 中断経路の終了コードは非 0 である。`| tail` で受けるとパイプの exit 0 に化けるので、`pipefail` を付けるか終了コードを直接見る。
 

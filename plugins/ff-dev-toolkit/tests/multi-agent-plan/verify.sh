@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: archive-onlyの早期分岐を無効にした単一変異でfull/fastのCLI-free検査が2件赤、衝突optionのcase集合を空にすると下限照合が1件赤（2026-10-22）。対象0件の正常退避と、検査集合0件の失敗を分ける。
 # git-path-isolation: 固定 PATH は実 CLI / yq / 更新 CLI の混入と不在検査の偽緑を防ぐ。
 # git の親ディレクトリ全体は追加しない（同居する CLI も露出するため）。Xcode 障害時は
 # DEVELOPER_DIR=/Library/Developer/CommandLineTools bash plugins/ff-dev-toolkit/tests/multi-agent-plan/verify.sh
@@ -1623,6 +1624,56 @@ if [ "$ROUTE_FULL_CLI_RC" -eq 2 ] && [ "$ROUTE_FAST_DELEGATE_RC" -eq 2 ] && [ -z
 else
   bad "--route の拒否の注記・前回結果の保持が崩れた: full-cli=${ROUTE_FULL_CLI_RC} fast-delegate=${ROUTE_FAST_DELEGATE_RC} marker=[${route_marker}] 不足:${route_note_missing}"
 fi
+
+# archive-options:start
+# Standalone archive must exit before even the first CLI/probe/update/round/plan step.
+ARCHIVE_COPY="$TMP/archive-plugin"
+mkdir -p "$ARCHIVE_COPY"
+cp -R "$PLUGIN_ROOT/scripts" "$ARCHIVE_COPY/scripts"
+ARCHIVE_EARLY_LOG="$TMP/archive-early-call"
+for archive_part in "$ARCHIVE_COPY/scripts/multi-agent.sh" "$ARCHIVE_COPY/scripts/lib/"*.sh; do
+  awk -v log="$ARCHIVE_EARLY_LOG" '
+    { print }
+    /^(detect_available_clis|resolve_reviewer_pair|pin_review_evidence_producer|ensure_codex_cli_current|execute_tasks|build_execution_plan)\(\) \{/ { print "  echo forbidden >> \"" log "\"; return 99" }
+  ' "$archive_part" > "$TMP/archive-part.tmp"
+  cp "$TMP/archive-part.tmp" "$archive_part"
+done
+for archive_route in full fast; do
+  archive_out="$REPO/.archive-${archive_route}"
+  archive_rc=0
+  (
+    cd "$REPO"
+    run_isolated PATH='/usr/bin:/bin:/usr/sbin:/sbin' bash "$ARCHIVE_COPY/scripts/multi-review.sh" \
+      --route "$archive_route" --archive-only --base develop --output-dir "$archive_out"
+  ) > "$TMP/archive-$archive_route.log" 2>&1 || archive_rc=$?
+  if [[ "$archive_rc" == 0 && ! -f "$ARCHIVE_EARLY_LOG" && -d "$archive_out" && ! -f "$archive_out/integrated-report.md" \
+    && ! -d "$archive_out/.multi-agent-run.lock" ]] && ! find "$archive_out" -mindepth 1 -print | grep . >/dev/null; then
+    ok "archive-only $archive_route is CLI-free and produces no review/plan/cache/round artifacts on empty output"
+  else bad "archive-only $archive_route entered review or failed: rc=$archive_rc"; fi
+done
+archive_conflicts=0
+for archive_option in --fresh --resume --dry-run --staged --evidence --list-perspectives --print-reviewers --parallel --sequential; do
+  archive_rc=0
+  ( cd "$REPO"; run_isolated bash "$MULTI_AGENT" --task review --base develop --archive-only "$archive_option" --output-dir "$REPO/.archive-conflict" ) > "$TMP/archive-conflict.log" 2>&1 || archive_rc=$?
+  [[ "$archive_rc" == 2 && ! -e "$REPO/.archive-conflict" ]] && ok "archive-only rejects $archive_option before mutation" || bad "archive-only conflict passed: $archive_option rc=$archive_rc"
+  archive_conflicts=$((archive_conflicts + 1))
+done
+for archive_option in --mode --cli --perspective --exclude-cli --exclude-perspective --description --strategy --timeout --require-prior-review --continue-review --set-reviewers; do
+  archive_rc=0
+  ( cd "$REPO"; run_isolated bash "$MULTI_AGENT" --task review --base develop --archive-only "$archive_option" unused --output-dir "$REPO/.archive-conflict" ) > "$TMP/archive-conflict.log" 2>&1 || archive_rc=$?
+  [[ "$archive_rc" == 2 && ! -e "$REPO/.archive-conflict" ]] && ok "archive-only rejects lane/evidence operation $archive_option" || bad "archive-only conflict passed: $archive_option rc=$archive_rc"
+  archive_conflicts=$((archive_conflicts + 1))
+done
+archive_rc=0
+( cd "$REPO"; run_isolated bash "$MULTI_AGENT" --task review --base develop --archive-only --set-reviewers '' --output-dir "$REPO/.archive-conflict" ) > "$TMP/archive-empty-set.log" 2>&1 || archive_rc=$?
+[[ "$archive_rc" == 2 && ! -e "$REPO/.archive-conflict" ]] && ok 'archive-only rejects an empty set-reviewers operation too' || bad 'archive-only ignored the empty set-reviewers flag'
+[[ "$archive_conflicts" == 20 ]] && ok 'archive-only conflict collection is nonempty and complete' || bad 'archive-only conflict collection changed/empty'
+for archive_value in '' refs/remotes/origin/old 'bad branch' 'feature/../old' detached:abc; do
+  archive_rc=0
+  ( cd "$REPO"; run_isolated bash "$MULTI_AGENT" --task review --base develop "--archive-only=$archive_value" --output-dir "$REPO/.archive-conflict" ) > "$TMP/archive-value.log" 2>&1 || archive_rc=$?
+  [[ "$archive_rc" == 2 && ! -e "$REPO/.archive-conflict" ]] && ok "archive-only rejects invalid branch [$archive_value]" || bad "archive-only branch accepted: [$archive_value] rc=$archive_rc"
+done
+# archive-options:end
 
 echo ""
 if [[ "$FAIL" -gt 0 ]]; then

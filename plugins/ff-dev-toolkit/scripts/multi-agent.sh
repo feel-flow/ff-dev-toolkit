@@ -73,6 +73,8 @@
 #   --staged                Review only the staged index diff (review task only; mutually exclusive with --base)
 #   --resume                Reuse successful results from an identical prior input and
 #                           execute only failed, timed-out, missing, or corrupt tasks
+#   --archive-only[=<branch>] Archive checked previous output, without reviewers (review only).
+#                           Critical requires a different previous branch matching its series.
 #   --fresh                 Archive leftover files in the output dir to
 #                           <dir>/.prev-<timestamp>/ (the live lock stays) and start
 #                           clean. The archive lives INSIDE the output dir so a
@@ -669,6 +671,7 @@ MULTI_AGENT_PARTS=(
   "${SCRIPT_DIR}/lib/multi-agent-outputs.sh"
   "${SCRIPT_DIR}/lib/multi-agent-delegation-state.sh"
   "${SCRIPT_DIR}/lib/multi-agent-critical.sh"
+  "${SCRIPT_DIR}/lib/multi-agent-archive.sh"
   "${SCRIPT_DIR}/lib/multi-agent-execute.sh"
   "${SCRIPT_DIR}/lib/multi-agent-failure.sh"
   "${SCRIPT_DIR}/lib/multi-agent-codex-update.sh"
@@ -742,6 +745,12 @@ main() {
 
   load_config
   parse_args "$@"
+  if [[ "$ARCHIVE_ONLY" == true ]]; then
+    validate_mode
+    [[ -n "$OUTPUT_DIR" ]] || OUTPUT_DIR="$(get_default_output_dir review)"
+    run_archive_only
+    exit $?
+  fi
 
   # ツリー変化判定のパス除外の検証はタスクを 1 つも起動する前に済ませる — 不正な
   # FF_MULTI_AGENT_IGNORE_PATHS で CLI に支払った後に落ちる形にしない（Issue #747）。

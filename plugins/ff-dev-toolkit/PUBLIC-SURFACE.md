@@ -244,6 +244,8 @@ Bash 専用の12実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 テストハーネスと fixture の注入口です。全件ゲート `tests/run-all.sh` のスイッチのうち、公開文書に載っていないものもここに含みます。suite が組み立てる fixture の中でしか使われない名前（`FF_FIXTURE_*` など）も、suite のソースが配布物に含まれる以上は母集団に入るため、ここへ載せます。
 
 - `FF_AGENTS_HITS`
+- `FF_AGENT_PRESS_LOADER_NODE_MODULES`（公開リリースの隔離 fixture が任意検査の適用判断を検証するための参照）
+- `FF_AGENT_PRESS_NODE`（同 fixture の ff-agent-press 実行器を制御するための参照）
 - `FF_ALLOW_DISPATCH_BRANCH`
 - `FF_AMBIENT_GITHUB_ACTIONS`
 - `FF_ASDD_DRAIN_OUT`
@@ -313,6 +315,7 @@ Bash 専用の12実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_LW_PRESET`
 - `FF_MBCS_AWK`
 - `FF_MBCS_GIT`
+- `FF_MEDIA_NODE`（公開リリースの隔離 fixture が ff-media-toolkit 実行器を制御するための参照）
 - `FF_MEDIA_RENDER`（ff-media-toolkit の実レンダリング opt-in。`sync-sha-contract` がリリース gate の許容表の理由文として参照するだけで、配布物は読まない）
 - `FF_MULTI_AGENT`
 - `FF_M`
@@ -441,6 +444,7 @@ Bash 専用の12実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_JEV_MAX_RETRY_AFTER_SECONDS`
 - `FF_JEV_MAX_STATE_BYTES`
 - `FF_JEV_MIN_CONFIDENCE`（判定点別の上書きは同名 + `_` + 判定点名の大文字）
+- `FF_JEV_MIN_CONFIDENCE_DEDUPE`（判定点 dedupe の閾値の上書き。組み込み既定は 0.8）
 - `FF_JEV_NOUL_THRESHOLD`
 - `FF_JEV_PRICE_PER_MTOK_USD`
 - `FF_JEV_RETRY_BASE_SECONDS`

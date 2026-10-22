@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# 空振り検出: 明示退避のfocused対照（3hostの通常往復を除く）は最終51/0。同branch照合・全世代request・marker整合・partial lock・report-last・在庫再照合・series照合・復旧command・分類互換を個別に反転すると各4/7/1/18/7/5/2/1/2件赤（2026-10-22）。moduleとcasesの不在/不可読/空、casesの名前だけ/関数名変更は全てrc1で停止し、空集合を緑にしない。syntaxは保存SHA一致の変異sourceで個別rc0を確認。
+# 空振り検出: R1復帰回帰は無変異18/0、元HEAD 69c3eb7dの不変runtimeでは5/9へ赤転（env config/base・Critical案内・detached・空fresh通知）。追加関数の不在と空のassertion集合はそれぞれrc1で停止（2026-10-22 実測）。
+# 空振り検出: R2復帰回帰は22/0、修正前5a90c9a0では19/3へ赤転（非委譲full/fastのfresh案内）。full委譲のtemplate往復とfast拒否templateは保持し、非委譲2routeは案内されたfreshでrequest無しに完了する。追加関数不在・空集合は各rc1（2026-10-22 実測）。
 # git-path-isolation: 固定 PATH は実 CLI / yq / 更新 CLI の混入と不在検査の偽緑を防ぐ。
 # git の親ディレクトリ全体は追加しない（同居する CLI も露出するため）。Xcode 障害時は
 # DEVELOPER_DIR=/Library/Developer/CommandLineTools bash plugins/ff-dev-toolkit/tests/multi-agent-host-delegation/verify.sh
@@ -1255,6 +1258,21 @@ if [ "$RUN_RC" -eq 0 ] && grep -qF STATE_ONLY_ADOPTED "$STATE_ONLY_OUT/claude-co
    && [ "$(git hash-object "$STATE_ONLY_OUT/codex-cli/code-review.md")" = "$STATE_ONLY_SUB_HASH" ]; then
   ok "state-only再開後の応答は次1回で採用し、副CLIの結果を保つ"
 else bad "state-only再開後の応答が次1回で採用されない（rc=${RUN_RC}）"; fi
+
+# archive-only-cases:start
+ARCHIVE_CASES_FILE="$SCRIPT_DIR/archive-only-cases.sh"
+[[ -f "$ARCHIVE_CASES_FILE" && -r "$ARCHIVE_CASES_FILE" && -s "$ARCHIVE_CASES_FILE" ]] || { echo '✗ archive-only cases missing/unreadable/empty' >&2; exit 1; }
+# shellcheck source=archive-only-cases.sh
+. "$ARCHIVE_CASES_FILE"
+[[ "$(type -t run_archive_only_cases)" == function ]] || { echo '✗ archive-only case function missing' >&2; exit 1; }
+ARCHIVE_BEFORE=$((PASS + FAIL))
+run_archive_only_cases
+[[ $((PASS + FAIL - ARCHIVE_BEFORE)) -ge 34 ]] || { echo '✗ archive-only assertion collection empty/incomplete' >&2; exit 1; }
+[[ "$(type -t run_archive_recovery_cases)" == function ]] || { echo '✗ archive recovery case function missing' >&2; exit 1; }
+ARCHIVE_RECOVERY_BEFORE=$((PASS + FAIL))
+run_archive_recovery_cases
+[[ $((PASS + FAIL - ARCHIVE_RECOVERY_BEFORE)) -ge 22 ]] || { echo '✗ archive recovery assertion collection empty/incomplete' >&2; exit 1; }
+# archive-only-cases:end
 
 echo ""
 echo "  PASS=${PASS} FAIL=${FAIL}"

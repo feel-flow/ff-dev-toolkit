@@ -1432,7 +1432,6 @@ MISS_PROBE_BASELINE=(
   mcp-typecheck-selftest
   mcp-typecheck
   mcp-vitest
-  multi-agent-critical-marker
   multi-agent-ignore-paths
   multi-agent-revision-guard
   multi-agent-serialization

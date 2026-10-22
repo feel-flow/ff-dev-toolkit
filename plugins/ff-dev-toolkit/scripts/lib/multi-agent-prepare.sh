@@ -155,7 +155,10 @@ validate_implement_output_boundary() {
 output_dir_repo_relative() {
   [[ -n "${OUTPUT_DIR:-}" ]] || return 0
   local repo_physical parent base resolved
-  repo_physical="$(cd "$REPO_ROOT" 2>/dev/null && pwd -P)" || return 0
+  repo_physical="$(cd "$REPO_ROOT" 2>/dev/null && pwd -P)" || {
+    echo "ERROR: cannot resolve repository root for output boundary: ${REPO_ROOT}" >&2
+    return 1
+  }
   # OUTPUT_DIR はこの時点ではまだ存在しないことがある（作るのは execute_tasks）。
   # 親は存在するので、親を物理パスへ解決してから名前を足す。論理パス（$PWD 由来）と
   # 物理パス（git rev-parse --show-toplevel 由来）の綴り違いを揃える狙いも兼ねる
@@ -267,7 +270,10 @@ parse_ignore_paths() {
 validate_output_dir_boundary() {
   [[ "$IN_GIT_REPO" == "true" ]] || return 0
   local repo_physical rel tracked
-  repo_physical="$(cd "$REPO_ROOT" 2>/dev/null && pwd -P)" || return 0
+  repo_physical="$(cd "$REPO_ROOT" 2>/dev/null && pwd -P)" || {
+    echo "ERROR: cannot resolve repository root for output boundary: ${REPO_ROOT}" >&2
+    return 1
+  }
 
   if [[ "$OUTPUT_DIR" == "$repo_physical" ]]; then
     echo "ERROR: the output dir must not be the repository root: ${OUTPUT_DIR}" >&2
@@ -278,11 +284,15 @@ validate_output_dir_boundary() {
     return 1
   fi
 
-  rel="$(output_dir_repo_relative)"
+  rel="$(output_dir_repo_relative)" || return 1
   # リポジトリ外の出力先は対象外（review / explore では正当な指定）。
   [[ -n "$rel" ]] || return 0
 
-  tracked="$(cd "$repo_physical" && git ls-files -- ":(literal)${rel}" 2>/dev/null | head -1)" || return 0
+  tracked="$(cd "$repo_physical" && git ls-files -- ":(literal)${rel}" 2>/dev/null)" || {
+    echo "ERROR: cannot query tracked files for output boundary: ${OUTPUT_DIR}" >&2
+    return 1
+  }
+  tracked="${tracked%%$'\n'*}"
   if [[ -n "$tracked" ]]; then
     echo "ERROR: the output dir contains tracked files: ${OUTPUT_DIR}" >&2
     echo "       first match: ${tracked}" >&2

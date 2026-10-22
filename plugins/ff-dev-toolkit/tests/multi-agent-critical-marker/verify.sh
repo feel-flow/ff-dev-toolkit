@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 共有output boundaryのroot取得不能またはtracked問い合わせ不能を成功へ戻す独立変異で、通常review/archive-onlyの各2件が赤。5/0のfocused boundary集合を空にすると1件赤（2026-10-22）。故障fixtureは各operationで同じ非空sentinelを作り直し、前caseのpartial archiveを後caseへ混ぜない。
 # git-path-isolation: 固定 PATH は実 CLI / yq / 更新 CLI の混入と不在検査の偽緑を防ぐ。
 # git の親ディレクトリ全体は追加しない（同居する CLI も露出するため）。Xcode 障害時は
 # DEVELOPER_DIR=/Library/Developer/CommandLineTools bash plugins/ff-dev-toolkit/tests/multi-agent-critical-marker/verify.sh
@@ -2184,9 +2185,8 @@ else
   bad "理由を記録せずに失敗して返る分岐がある（失敗 return ${SERIES_FAIL_RETURNS} / 記録 ${SERIES_RECORDS}）"
 fi
 
-# Issue `#1666`: `/multi-review` の SKILL.md が「新ブランチ初回は --fresh」を
-# **実行手順の位置**に書いていること。案 A（filtered でも自動開始へ広げる）は系列 ID が
-# ダイジェストでブランチ名を持たないため実装できず、案 B（手順へ前提として書く）を採った。
+# 明示退避の導入後も、実行手順の位置に cold/clear・旧branch明示・pending保全・同branch carry を揃える。
+# 過去のfresh必須針は現契約へ置換する。filtered の自動開始条件自体は変更しない。
 # 針を文書全体ではなく**手順 1 の節の中**へ限定するのは、引数一覧（`--fresh` の説明行）
 # にも同じ語が在り、節から落としても文書全体の grep では緑のまま通るため。
 REVIEW_SKILL="$PLUGIN_ROOT/skills/multi-review/SKILL.md"
@@ -2194,10 +2194,10 @@ if [ ! -f "$REVIEW_SKILL" ]; then
   bad "multi-review の SKILL.md が見つからない: $REVIEW_SKILL"
 else
   STEP1_SECTION="$(awk '/^### 1\. プラン確認/{f=1} f{print} /^### 2\. レビュー実行/{if(f)exit}' "$REVIEW_SKILL")"
-  for _needle in '新しいブランチでの初回レビューは `--fresh` を付けます' \
-    '本スキルの標準起動では構造的に発火しません' \
-    '同じブランチの 2 回目以降に `--fresh` を付けてはいけません' \
-    'すでにマージ済みでも変わりません'; do
+  for _needle in 'cold/clear の新ブランチは `--fresh` 無し' \
+    '--archive-only=<確認した旧ブランチ名>' \
+    '同じブランチの2回目以降にfreshや退避を足さず' \
+    '未回収requestや壊れたstateは保全停止'; do
     if grep -qF -- "$_needle" <<<"$STEP1_SECTION"; then
       ok "SKILL.md 手順 1 が新ブランチ初回の前提を書いている: ${_needle}"
     else
@@ -2215,9 +2215,9 @@ if [ ! -f "$ORCH_REVIEW_DOC" ]; then
   bad "レビュー運用文書が見つからない: $ORCH_REVIEW_DOC"
 else
   FRESH_SECTION="$(awk '/^# フルレビューとして新しい系列を開始する/{f=1} f{print} /^### 結果の不整合/{if(f)exit}' "$ORCH_REVIEW_DOC")"
-  for _needle in '「手動退避は不要」が成立するのはフルレビューだけである' \
-    '新ブランチの初回は最初から `--fresh` を付ける' \
-    'すでにマージ済みでも変わらない'; do
+  for _needle in 'current-format Critical' \
+    'bare `--archive-only` は空出力または正しいclear reportに限る' \
+    '同じブランチのCriticalはbaseを変えても退避できず'; do
     if grep -qF -- "$_needle" <<<"$FRESH_SECTION"; then
       ok "レビュー運用文書が新ブランチ初回の前提を書いている: ${_needle}"
     else
@@ -3476,6 +3476,53 @@ if grep -qF "$MARKER" "$REPORT" \
 else
   bad "T14b 判定行の無い完了扱いの結果が安全側へ倒れない、または名指しが無い"
 fi
+
+# archive-boundary:start
+# Both callers must fail closed on inability to inspect the shared root/tracked boundary.
+BOUNDARY_COPY="$TMP/archive-boundary-plugin"
+mkdir -p "$BOUNDARY_COPY"
+cp -R "$PLUGIN_ROOT/scripts" "$BOUNDARY_COPY/scripts"
+BOUNDARY_OUT="$REPO/.archive-boundary-results"
+BOUNDARY_MISSING="$TMP/missing-root"
+awk -v missing="$BOUNDARY_MISSING" '{print} /^validate_output_dir_boundary\(\) \{/ { print "  REPO_ROOT=\"" missing "\"" }' \
+  "$PLUGIN_ROOT/scripts/lib/multi-agent-prepare.sh" > "$BOUNDARY_COPY/scripts/lib/multi-agent-prepare.sh"
+BOUNDARY_CASE_COUNT=0
+for boundary_fault in root tracked; do
+  if [[ "$boundary_fault" == root ]]; then BOUNDARY_ROOT="$BOUNDARY_COPY"; else BOUNDARY_ROOT="$PLUGIN_ROOT"; fi
+  if [[ "$boundary_fault" == tracked ]]; then
+    rm "$STUB/git"
+    cat > "$STUB/git" <<SHIM
+#!/usr/bin/env bash
+case "\$*" in 'ls-files -- '*) exit 9 ;; esac
+exec "$REAL_GIT" "\$@"
+SHIM
+    chmod +x "$STUB/git"
+  fi
+  for boundary_operation in archive review; do
+    BOUNDARY_CASE_COUNT=$((BOUNDARY_CASE_COUNT + 1))
+    rm -rf "$BOUNDARY_OUT"
+    mkdir -p "$BOUNDARY_OUT"
+    printf '<!-- MULTI_CLI_UNRESOLVED_CRITICAL series:1-1 block:- nonblock:- -->\n' > "$BOUNDARY_OUT/integrated-report.md"
+    printf 'boundary sentinel\n' > "$BOUNDARY_OUT/sentinel"
+    boundary_before="$(git hash-object "$BOUNDARY_OUT/integrated-report.md")"
+    boundary_calls="$(wc -l < "$TMP/stub-calls")"
+    boundary_rc=0
+    if [[ "$boundary_operation" == archive ]]; then BOUNDARY_ARGS=(--archive-only); else BOUNDARY_ARGS=(--fresh --cli codex-cli --perspective code-review); fi
+    run_isolated PATH="$STUB:$PATH" HOME="$TMP/home" FF_DEV_TOOLKIT_ROOT="$BOUNDARY_ROOT" \
+      bash "$BOUNDARY_ROOT/scripts/multi-agent.sh" --task review --base develop --output-dir "$BOUNDARY_OUT" \
+      "${BOUNDARY_ARGS[@]}" > "$TMP/boundary-$boundary_fault-$boundary_operation.log" 2>&1 || boundary_rc=$?
+    if [[ "$boundary_rc" -ne 0 && -f "$BOUNDARY_OUT/sentinel" ]] \
+      && [[ "$(git hash-object "$BOUNDARY_OUT/integrated-report.md")" == "$boundary_before" ]] \
+      && [[ "$(wc -l < "$TMP/stub-calls")" == "$boundary_calls" ]] \
+      && grep -qF 'output boundary' "$TMP/boundary-$boundary_fault-$boundary_operation.log" \
+      && ! find "$BOUNDARY_OUT" -name '.prev-*' -print | grep . >/dev/null; then
+      ok "shared boundary $boundary_fault stops $boundary_operation, preserving bytes with archive/task dispatch zero"
+    else bad "shared boundary $boundary_fault passed or changed $boundary_operation output rc=$boundary_rc"; fi
+  done
+  if [[ "$boundary_fault" == tracked ]]; then rm "$STUB/git"; ln -s "$REAL_GIT" "$STUB/git"; fi
+done
+[[ "$BOUNDARY_CASE_COUNT" == 4 ]] && ok 'shared boundary case collection is complete' || bad 'shared boundary case collection is empty/incomplete'
+# archive-boundary:end
 
 echo
 if [ "$FAIL" -gt 0 ]; then

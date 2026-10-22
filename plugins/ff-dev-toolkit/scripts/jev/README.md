@@ -13,6 +13,9 @@ Jev（TypeSafe AI の System One Model。Choice / Score / Noul の型付き判�
 | `fixtures/ace-abstraction-labels.json` | 抽象度の精読ラベル（機械候補 49 + 非候補 20。基準は ADR-047） |
 | `build-judgment-eval-sets.ts` | `/assess-impact` の影響度（Score 3 段）と `/close-issue` の AC 判定（Choice 3 値）の評価セットを、同梱 fixture と閉じた Issue の完了報告から決定的に生成する。`gh` に触るのは取得（cache 書き込み）だけ |
 | `build-lang-ab-sets.ts` | 生成済みの評価セットから「判定対象の言語だけが違う」対を作り、結果を突き合わせる後処理。抽出 → 英訳対象の列挙 → 翻訳 fixture の適用 → ja / en の比較 |
+| `build-dedupe-eval-sets.ts` | `/multi-review` の型付きレコード（`.review-results/<cli>/<perspective>.findings.tsv`）から、同じレビュー回の別レーンが同じファイルの近い行に挙げた finding 対と、重複判定（Noul）・重大度（Choice）の評価セットを決定的に生成する。`--summarize` は帯別表と事前登録した採否規則の結果を出す |
+| `questions/dedupe.json` | 重複 finding 判定の質問 fixture（Noul「2 つの finding は同じ欠陥か」。state は `{finding_a, finding_b}`）。`build-dedupe-eval-sets.ts` の質問と同一 |
+| `review-dedupe.sh` | 判定点 `dedupe` の本番経路。`/multi-review` の結果分析（SKILL.md §3-1）の委譲前に、1 回分のレビューの別レーン対へ `jev-decide.sh dedupe` を 1 対 1 回ずつ当て、Jev が閾値以上で「同じ欠陥」と答えた対だけを委譲プロンプトへ足す指示として出す。`off` と名簿に無いときは何も出さない（exit 12） |
 
 ## 有効化（既定は Off）
 
@@ -112,6 +115,26 @@ FF_DEV_TOOLKIT_ROOT="$ROOT" bash "$ROOT/scripts/ace-run-ts.sh" "$G" --summarize 
 - 判定不能（期待影響度の欠落・case 0 件・cache が空・判定セルが既知の形で読めない・全 Issue が読めずセット 0 行・`gh` の失敗）は exit 2 で止め、セットを小さくして成功にはしない
 - `--summarize` は assess-impact で過剰 / 過少、close-issue で厳しい側（達成→未達 / 対象外）と緩い側（未達 / 対象外→達成）を group 別に分け、不一致件を confidence 付きで列挙する
 
+## 重複 finding の評価セットを作って流す
+
+```bash
+D="$ROOT/scripts/jev/build-dedupe-eval-sets.ts"
+R() { FF_DEV_TOOLKIT_ROOT="$ROOT" bash "$ROOT/scripts/ace-run-ts.sh" "$D" "$@"; }
+R --scan <レビュー結果を探すルート> --out /tmp/dd                       # 1) dedupe-candidates.jsonl（ラベル付け用。本文を含む）
+# 2) 候補の same-report 対へラベル（ID → {same, votes}）を付ける
+R --candidates /tmp/dd/dedupe-candidates.jsonl --labels <labels.json> --out /tmp/dd   # 3) 固定した候補から dedupe.jsonl
+R --scan <同じルート> --out /tmp/dd-severity --severity-sample 60      # 4) severity.jsonl（--scan は候補を上書きするので別の out へ）
+FF_JEV_ENABLED=1 bash "$ROOT/scripts/jev/jev-eval.sh" --set /tmp/dd/dedupe.jsonl --out /tmp/dd-results.jsonl
+R --summarize /tmp/dd-results.jsonl --kind dedupe       # 帯別表と DEDUPE_ADOPT_THRESHOLD=
+```
+
+- レビュー結果は他のセッションが書き足し続けるので、ラベルを付けた時点の候補を固定点にして `--candidates` で評価セットを作る。`--scan --labels` で走査し直すと、その間に増えた `same-report` の対にラベルが無く exit 2 になる（ラベルの無い対を落として小さなセットで成功にしない）。`--candidates` は ID を state から計算し直し、一致しない行を exit 2 で止める
+- 対は同じレビュー回（`<cli>/*.findings.tsv` を直下に持つディレクトリ。`.prev-<ts>/` の入れ子も拾い、`<cli>/previous/` と `node_modules` は辿らない）の**別レーン**（`cli:観点` — `full` 経路の 5 レーンと同じ単位）で、file が一致し行差 ≤ `--max-line-delta`（既定 5）の 2 finding。層は CLI が違えば `cross-cli`、同じなら `same-cli`。両レーンが同じ回の `integrated-report.md` に節を持つ対だけが `same-report` で、ラベルと評価セットはこれだけに作る（プラン外の古い結果が残った回の対は `mixed` として数えるだけ）
+- state は TSV の `summary`（親の指摘行 1 行。`**優先度:** 5` だけのこともある）ではなく、判定行を TSV の値（降格前の重大度・failure_scenario・confidence・file・line）で照合して `.md` から復元した本文。親の箇条書きがある書式は判定行の後ろの理由まで含め、節見出し（Critical / Warning 等）と判定行は除く。照合が割れて summary でも絞れない finding は推測で選ばず、対ごと捨てて `unrecovered` に数える
+- ID は state の内容ハッシュ（`dd-<16 桁>`）。worktree のコピーで同じ対が何度出ても 1 件に畳む。ラベル（`--labels`）は ID → `{same, votes}` だけで本文を含まないので私有領域へ保存できるが、評価セット・候補は本文を含むので**利用側の私有領域か一時領域にだけ**書く（`fixtures/` へ置かない）
+- 判定不能（findings.tsv のヘッダ・列数・置き場の不一致 / 回が 0 件 / 対が 0 件 / `same-report` の対のラベル欠落 / ラベルの ID の形・`same` と票の多数決の不一致 / `--out` へ書けない）は exit 2
+- `--severity-sample N` は同じ復元経路で重大度 Choice（`critical` / `warning` / `suggestion` / `info` / `none`）の評価セットを N 件作る。state からは判定行・節見出しに加えて `**優先度:**` などの重大度ラベルも除く（答えを漏らさない）。`--summarize --kind severity` は帯別表・混同表と `SEVERITY_BAND_099=` を出す
+
 ## 判定対象の言語を A/B で測る
 
 「Jev へ渡す判定対象を英語にすると精度が変わるか」を、**配線も質問文も変えずに**測るための後処理です。質問文（`instructions.question`）と criteria は生成器の時点で英語なので、動かすのは**判定対象の日本語データ**だけになります。これは `state` の各フィールドに加えて、novelty の候補文（`questions.*.instructions.candidate`。state と対で「同一アクションか」を判定される日本語）を含みます。候補文を日本語のまま残すと「英語の本文と日本語の候補文を突き合わせる」第 3 の条件になり、日英の比較になりません。
@@ -159,12 +182,12 @@ bash "$FF_DEV_TOOLKIT_ROOT/scripts/jev/jev-decide.sh" --overturn <決定 id> --n
 | 2 / 64 / 69 | 入力不正（`JEV_DECISION=error`。置換されない `{{...}}` が残る等）/ 使い方・設定値の誤り / jq 不在 | 直す（従来経路へ黙って落とさない） |
 
 - **`on` だけでは課金経路は開かない**。`FF_JEV_ENABLED=1` とキーは上「有効化」のとおり必要で、無ければ exit 11（`disabled` / `key-missing`）で従来経路へ落ちる
-- **閾値は型ごとに置く**。共通既定 0.99 は Choice / Score の confidence 向け — 独立評価（[priorbench/jev](https://github.com/priorbench/jev)、5,721 呼び出し・事前登録）は「精度は confidence 0.50〜0.95 で平坦、0.99 で 100% に跳ぶ」と報告し、K8s ツールリスクの実測は「1.000 で誤答ゼロ」だった。**Noul の判定点（`novelty` / `retro`）は組み込み既定 0.6** — Noul の confidence（`|p − 0.5| × 2`）は本リポジトリの実測で最大 0.94 までしか出ず、0.99 だと採用率 0% になる。0.6 は下「切替の較正表」（recent-candidates 225 件で ≥ 0.6 帯が占有 64%・一致 99.3%）から引いた。Noul と Choice / Score の confidence は互換でないので、閾値を型を跨いで流用しない。解決順は 判定点別 env → 共通 env → 組み込み既定 → 共通既定（`--status` で実効値を見る）
+- **閾値は型ごとに置く**。共通既定 0.99 は Choice / Score の confidence 向け — 独立評価（[priorbench/jev](https://github.com/priorbench/jev)、5,721 呼び出し・事前登録）は「精度は confidence 0.50〜0.95 で平坦、0.99 で 100% に跳ぶ」と報告し、K8s ツールリスクの実測は「1.000 で誤答ゼロ」だった。**Noul の判定点（`novelty` / `retro` / `triage`）は組み込み既定 0.6、`dedupe` は 0.8** — Noul の confidence（`|p − 0.5| × 2`）は本リポジトリの実測で 0.95 前後までしか出ず（ACE の 2 セットで最大 0.94、dedupe で最大 0.96）、0.99 だと採用率 0% になる。0.6 は下「切替の較正表」（recent-candidates 225 件で ≥ 0.6 帯が占有 64%・一致 99.3%）から、0.8 は同表の dedupe（事前登録した採否規則が選んだ帯）から引いた。Noul と Choice / Score の confidence は互換でないので、閾値を型を跨いで流用しない。解決順は 判定点別 env → 共通 env → 組み込み既定 → 共通既定（`--status` で実効値を見る）
 - **`TYPESAFE_MODEL` 未指定なら `on` のとき `jev-1.13.0` に固定**する（閾値を較正した版。`jev-latest` は移動する）。応答の `model` は記録に残る
 - **記録は追記専用で、作業ツリーの外に置く**（既定 `${XDG_STATE_HOME:-~/.local/state}/ff-dev-toolkit/jev-decisions/<repo>-<hash>.jsonl`。`--status` の `JEV_LOG` が実効パス）。ツリー内に置くと untracked ファイルが `/ace-curate` Phase 3 の clean ゲートと `/merge-cleanup` の未コミット検査を赤にするため、gitignore に頼らず外へ出す。PLAYBOOK / 台帳の `knowledge:` コミットには混ざらない。`--summarize` は記録が無い・読めない行があるとき exit 2（空を「採用率 0%」の表にしない）
-- 判定点を増やすときは、(1) `jev-eval.sh` で offline 評価し帯別表を出す、(2) 質問を `questions/<name>.json` に fixture 化し `tests/jev-adapter` で固定する、(3) スキル本文へ「exit 0 のときだけ採る・落ちたら従来経路・二重走行なし」の 1 節を上位視点で足す（判定点ごとの手順を増やさない）。**評価が通らなかった判定点は増やさない** — 実レビュー finding の重大度 Choice は実測で confidence 0.33〜0.52 と 0.99 帯に届かず不採用候補（実測表は開発側 Issue のコメント）
+- 判定点を増やすときは、(1) `jev-eval.sh` で offline 評価し帯別表を出す、(2) 質問を `questions/<name>.json` に fixture 化し `tests/jev-adapter` で固定する、(3) スキル本文へ「exit 0 のときだけ採る・落ちたら従来経路・二重走行なし」の 1 節を上位視点で足す（判定点ごとの手順を増やさない）。**評価が通らなかった判定点は増やさない** — 実レビュー finding の重大度 Choice は不採用（n=5 で confidence 0.33〜0.52。改善版 criteria を 1 回だけ当てた n=60 でも全体一致 30%、0.99 帯は 4 件現れたが一致 1/4 で、レビュアーが Suggestion とした指摘を Warning と答える偏りが強い）
 
-### 切替の較正表（`novelty` / `retro` の閾値の根拠）
+### 切替の較正表（`novelty` / `retro` / `dedupe` の閾値の根拠）
 
 `build-ace-eval-sets.ts` の 2 セットを `jev-1.13.0` で流し、Noul の confidence（`|p − 0.5| × 2`）で帯別に切った実測（2026-09-22。Playbook は ace-refine 後の版で、初回評価時と件数が違う）。`recent-candidates` が実運用の curate 判断（直近 10 版の候補 × 近傍 5 件）に最も近い。`novelty-pairs` の pos 側は Changelog の Helpful +1 行を正例にしたラベルで、Reuse 記録が混じる雑音がある（ACE-1800-1）ため、pos の低い一致率は Jev の誤りとラベル雑音を区別できない。**0.95 以上の帯は 0 件**で、Noul に 0.99 の閾値を置くと何も採用されない。
 
@@ -204,14 +227,29 @@ bash "$FF_DEV_TOOLKIT_ROOT/scripts/jev/jev-decide.sh" --overturn <決定 id> --n
 
 読み: `≥ 0.6` は recent で一致 99.3%（145 件中 144。外した 1 件は helpful 側）・占有 64%、novelty-pairs では neg 111/112（99.1%）・pos 23/34。`retro`（観測台帳の同一性）は同じ質問・同じ型なので同じ既定を置くが、自身の実測は無い — 記録が溜まったら `--summarize` の overturned 率で較正し直す。
 
+#### dedupe（n=292、全体一致 94.2%、jev-1.13.0、2026-10-22）
+
+`build-dedupe-eval-sets.ts` の評価セット（ローカルの型付きレコード 272 回分から、同じ回の別レーン・同じ file・行差 ≤ 5・両レーンが同じ回の報告に載る 292 対。出どころ 91 回）。ラベルは `/multi-review` §3-1 工程 2 の規則で判定する独立の判定者 3 名の多数決（同じ 127 / 別 165、全員一致 284。親の畳み込みの裁定はディスクに残らないため再構成した）。**採否規則は評価の前に固定した** — Jev が「同じ」と答えた対が 30 件以上かつ誤り 0 になる最小の帯を閾値にする（「同じ」の誤りは指摘を隠すが、「別」の誤りは重複が残るだけで従来手順が拾える）。
+
+| 閾値 | 採用される対（占有） | 一致率 | Jev=同じ（誤り） | Jev=別（誤り） |
+| --- | --- | --- | --- | --- |
+| ≥ 0.6 | 236 (81%) | 98.3% | 121（4） | 115（0） |
+| ≥ 0.7 | 214 (73%) | 99.1% | 113（2） | 101（0） |
+| ≥ 0.8 | 181 (62%) | 100.0% | 102（0） | 79（0） |
+| ≥ 0.9 | 90 (31%) | 100.0% | 71（0） | 19（0） |
+| ≥ 0.95 | 7 (2%) | 100.0% | 7（0） | 0（0） |
+| ≥ 0.99 | 0 (0%) | - | 0 | 0 |
+
+読み: 規則が選んだのは `≥ 0.8`（畳んだ 102 対の誤り 0。誤り率の 95% 上限は約 2.9%）。CLI をまたぐ対（29）だけでも `≥ 0.8` の 13 対は誤り 0、判定者全員一致の対（284）に絞っても `≥ 0.8` の行（畳んだ 102 対の誤り 0）は変わらない。本番経路（`review-dedupe.sh`）は「同じ」の側だけを使い、「別」と答えた対は従来どおりサブエージェントが判定する。ラベルは同じモデルの判定者 3 名なので、モデル固有の見方が共通して入っている可能性は残る — 運用で覆した判定は `jev-decide.sh --overturn` で記録し、`--summarize` の overturned 率で較正し直す。
+
 ## 環境変数
 
 | 変数 | 既定 | 意味 |
 | --- | --- | --- |
 | `FF_JEV_ENABLED` | （未設定 = Off） | `1` で有効 |
 | `FF_JEV_MODE` | `off` | `on` で判定点の切替を有効化（`jev-decide.sh`）。`on` / `off` 以外は exit 64 |
-| `FF_JEV_POINTS` | `novelty retro triage` | `on` のとき Jev を使う判定点の名簿（空白 / カンマ区切り）。**設定済みの空値は 0 件**（全判定点が従来経路） |
-| `FF_JEV_MIN_CONFIDENCE` | 0.99（`novelty` / `retro` / `triage` は組み込み 0.6） | 採用の閾値（0〜1）。判定点別は `FF_JEV_MIN_CONFIDENCE_<POINT>`（判定点名を大文字化、`-` は `_`）。解決順は 判定点別 env → 共通 env → 組み込み既定 → 0.99 |
+| `FF_JEV_POINTS` | `novelty retro triage` | `on` のとき Jev を使う判定点の名簿（空白 / カンマ区切り）。**設定済みの空値は 0 件**（全判定点が従来経路）。`dedupe` は既定に含めず、名簿へ明示したときだけ効く |
+| `FF_JEV_MIN_CONFIDENCE` | 0.99（`novelty` / `retro` / `triage` は組み込み 0.6、`dedupe` は 0.8） | 採用の閾値（0〜1）。判定点別は `FF_JEV_MIN_CONFIDENCE_<POINT>`（判定点名を大文字化、`-` は `_`）。解決順は 判定点別 env → 共通 env → 組み込み既定 → 0.99 |
 | `FF_JEV_DECISION_LOG` | `${XDG_STATE_HOME:-~/.local/state}/ff-dev-toolkit/jev-decisions/<repo>-<hash>.jsonl` | 採用 / fallback の記録先（作業ツリーの外。`--status` の `JEV_LOG` が実効値）。書けなければ採用しない（exit 11） |
 | `TYPESAFE_API_KEY` / `TYPESAFE_API_KEY_FILE` | | キーの解決経路 1 / 2 |
 | `TYPESAFE_API_URL` | 公式エンドポイント | 差し替え用 |

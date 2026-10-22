@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: archive-onlyの2形を巡の対象外から外す独立変異で(n16 archive)4件赤（580/4）、そのcase集合を空にすると下限照合が1件赤（577/1）。無変異は全584/0、通常reviewの3巡目denyを対照として維持（2026-10-22実測）。
 # Runtime contract for the review in-flight / dirty guard hook.
 # 空振り検出: 世代別promptの隣接requestからoutput-fileを読む代入を空にすると、o6 subsetの無変異6/0から4/2へ赤転（laneの出力先欠落・B応答後の解放失敗。2026-10-22 実測）。未応答/遅いA応答のdeny対照は緑のまま。
 #
@@ -3024,6 +3025,22 @@ case "$N_MA_ERR" in
   *'レビュー巡回の上限'*) [ "$RC" -eq 4 ] && ok "(n16) multi-agent.sh --task review の直接起動も 3 巡目を exit 4 で止める" || bad "(n16) 直接起動 rc=$RC" ;;
   *) bad "(n16) multi-agent.sh の直接起動が 3 巡目を止めない: rc=$RC err=[$N_MA_ERR]" ;;
 esac
+# archive-rounds:start
+N_ARCHIVE_HEADS="$(n_heads)"
+N_ARCHIVE_COUNT=0
+for N_ARCHIVE_SCRIPT in multi-review.sh multi-agent.sh; do
+  for N_ARCHIVE_FLAG in --archive-only --archive-only=feature/old; do
+    run_hook "$(bash_json "bash /x/scripts/$N_ARCHIVE_SCRIPT --route full --base n-base $N_ARCHIVE_FLAG")" "$N_DEF"
+    assert_silent "(n16 archive) $N_ARCHIVE_SCRIPT $N_ARCHIVE_FLAG is not a review launch in the hook"
+    N_ARCHIVE_COUNT=$((N_ARCHIVE_COUNT + 1))
+  done
+  n_ma -- "$N_ARCHIVE_SCRIPT" --base n-base --archive-only --output-dir "$REPO/.archive-round-check"
+  if [[ "$RC" == 0 && "$(n_heads)" == "$N_ARCHIVE_HEADS" ]]; then ok "(n16 archive) $N_ARCHIVE_SCRIPT archives with no round consumption at the review limit"; else bad "(n16 archive) $N_ARCHIVE_SCRIPT consumed or was stopped by the round limit rc=$RC"; fi
+done
+[[ "$N_ARCHIVE_COUNT" == 4 ]] && ok '(n16 archive) hook exclusion collection is complete' || bad '(n16 archive) hook exclusion collection is empty/incomplete'
+run_hook "$(bash_json 'bash /x/scripts/multi-review.sh --base n-base')" "$N_DEF"
+assert_n_deny '(n16 archive) ordinary review still counts and is denied at the third round'
+# archive-rounds:end
 n_ma -- multi-review.sh --dry-run --route fast --base n-base
 case "$N_MA_ERR" in
   *'Dry run complete'*) [ "$RC" -eq 0 ] && ok "(n16) --dry-run は巡ではなく通す" || bad "(n16) dry-run rc=$RC" ;;

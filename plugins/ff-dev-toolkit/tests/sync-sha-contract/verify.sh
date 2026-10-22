@@ -146,6 +146,8 @@
 # 変異検出: in-flight の固定時計18ケースは実runtimeのblock/helperを抜き出した単体で19 pass / 0 fail、実runtime全体は115 pass / 0 fail（2026-10-22）。
 # 変異検出: 負年齢の下限を0/-299/-301へ各単独変更すると4/2/2件、有効期限の上限削除/>=化で各2件、PID生存照合を除くと2件、異hostを同host扱いすると4件が赤（単体、全7変異 exit 1。構文検査は通過）。
 # 空振り検出: 同じ実runtime block/helperの単体で、case helperと実libの不在・読取不能・同名空・関数名消失の8入力、およびcase集合0は各0 pass / 1 fail・exit 1（2026-10-22）。正常18件に届かない入力を緑へ倒さない。
+# 空振り検出: release の環境lib不在/空、Python不在/版不明/能力不足/空成功、型検査依存不在/npm不在/赤/空成功、loader不備/空成功はprepare・suite前に停止する（2026-10-22実測）。
+# 変異検出: 環境呼出/Python/media/loaderの各probe除去、loader skip無条件許可、loader context照合除去に加え、実probeのPython本体/manifest引数/loader import、npmのNode PATH、loader条件診断の破壊を既存ownerの同じfixtureへ適用し全て赤転（適用11/11、SURVIVED 0）。実Python/Nodeを含む正常対照35pass/0fail、mutation-harness rc=0（2026-10-22）。
 
 set -euo pipefail
 
@@ -438,8 +440,8 @@ elif [[ -n "$_allowed_block" ]]; then
 fi
 release_contains 'SKIP_HINTS=(' \
   "許容表に無い skip の理由行ごとに次の一手を名指しするヒント表がある"
-release_contains "'node_modules が無いため型検査を行いません|bash plugins/ff-media-toolkit/scripts/ff-media.sh setup" \
-  "ヒント表が ff-media の setup 前の typecheck skip に ff-media.sh setup を名指しする"
+release_contains "'node_modules が無いため型検査を行いません|npm ci --prefix plugins/ff-media-toolkit --no-audit --no-fund" \
+  "ヒント表が ff-media の typecheck skip に型検査用 npm ci だけを名指しする"
 release_contains "'MSYS では成立しない検査のため未実行|WSL のホームディレクトリ配下へ clone し、npm ci --prefix plugins/ff-dev-toolkit/mcp の後に同じ suite の verify.sh を bash で回す（/mnt/c 配下では回さない）'" \
   "ヒント表が MSYS で成立しない検査の skip に WSL での再実行を名指しする"
 # ヒント表の要素は `<理由>|<案内>` の形（`|` の無い要素は照合側が飛ばすので、黙って効かない要素を表に残さない）
@@ -936,8 +938,8 @@ release_contains 'ff_release_marker_try_reclaim "$MARKER_DIR"' \
   "残骸の in-flight 印は、判定に使った token で rename（CAS 相当）回収する 1 つの helper を通す"
 release_contains 'pub_ahead="$(git -C "$PUBLIC" rev-list --count origin/main..main)"' \
   "preflight が公開側の未 push の commit（前回の push 失敗の残り）を見る"
-release_contains 'if [[ "${rec%%:*}" == "$head" && ( "${rec#*:}" == full || "$gate_mode" == fast ) ]]; then' \
-  "gate 段は同じ HEAD の成功記録を既存条件で再利用する（footer child は別の内容証明を要求）"
+release_contains 'if [[ "${rec%%:*}" == "$head" && "$(state_get GATE_LOADER_CONTEXT)" == "$RELEASE_LOADER_CONTEXT" && ( "${rec#*:}" == full || "$gate_mode" == fast ) ]]; then' \
+  "gate 段は同じ HEAD と loader 適用条件が一致した成功記録を再利用する（footer child は別の内容証明を要求）"
 release_contains 'if footer_gate_reusable "$rec" "$head"; then' \
   "public-layout の再利用には footer の内容証明関数を通す"
 release_contains "has_line \"\$proof\" 'FULL_GATE_REUSE=CHANGELOG_FOOTER_ONLY' || return 1" \

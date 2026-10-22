@@ -1,0 +1,10 @@
+{
+  "same_defect": {
+    "type": "noul",
+    "instructions": "The state holds two code review findings, `finding_a` and `finding_b`, reported by different review lanes of the same pull request on the same file at nearby lines. Do they report the same defect? Answer yes only if both point at the same underlying problem, so that one fix would resolve both, even if the wording, the severity, or the suggested remedy differs. Answer no if they describe different problems, even when they touch the same lines.",
+    "criteria": {
+      "true": "Same defect: a reviewer merging the reports would fold the two into one finding and list both lanes.",
+      "false": "Different defects: folding the two into one finding would hide one of the problems."
+    }
+  }
+}

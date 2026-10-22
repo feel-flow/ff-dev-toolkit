@@ -984,9 +984,13 @@ output_lock_exit() {
   # 失敗して返った回の理由ファイルはプロセス終了後も残る（削除は
   # current_review_series_id の冒頭にしかない）。stale 読み取りの種を残さない。
   clear_reason_file "$(review_series_reason_file)"
-  release_output_lock || {
+  if [[ "${ARCHIVE_KEEP_LOCK:-false}" == true ]]; then
+    echo "ERROR: partial archive at ${ARCHIVE_DESTINATION}; live output: ${OUTPUT_DIR}" >&2
+    echo "       Keeping lock: ${OUTPUT_LOCK_DIR}. Verify/restore partial results before removing it; process termination alone is insufficient." >&2
     [[ "$rc" -ne 0 ]] || rc=1
-  }
+  else
+    release_output_lock || { [[ "$rc" -ne 0 ]] || rc=1; }
+  fi
   exit "$rc"
 }
 
@@ -1039,53 +1043,8 @@ acquire_output_lock() {
 archive_previous_outputs_if_fresh() {
   [[ "$FRESH" == "true" ]] || return 0
   [[ -n "${OUTPUT_DIR:-}" && -d "$OUTPUT_DIR" ]] || return 0
-
-  local item base ts archive archive_base moved=0
-  ts="$(date -u +%Y%m%dT%H%M%SZ)"
-  archive_base=".prev-${ts}"
-  archive="${OUTPUT_DIR}/${archive_base}"
-  if [[ -e "$archive" ]]; then
-    archive_base="${archive_base}-$$"
-    archive="${OUTPUT_DIR}/${archive_base}"
-  fi
-  if [[ -e "$archive" ]]; then
-    echo "ERROR: archive destination already exists: ${archive}" >&2
-    echo "       Previous results were left untouched: ${OUTPUT_DIR}" >&2
-    return 1
-  fi
-
-  for item in "$OUTPUT_DIR"/* "$OUTPUT_DIR"/.[!.]* "$OUTPUT_DIR"/..?*; do
-    [[ -e "$item" || -L "$item" ]] || continue
-    base="${item##*/}"
-    [[ "$base" == ".multi-agent-run.lock" ]] && continue
-    # 退避先を自分自身の中へ入れない。加えて過去の実行が残した `.prev-*` も動かさない
-    # （`.[!.]*` はこれらを拾う）。動かすと退避が入れ子に積み上がり、`--fresh` のたびに
-    # 同じバイト列を 1 段深くコピーし直すことになる。
-    [[ "$base" == "$archive_base" ]] && continue
-    case "$base" in .prev-*) continue ;; esac
-    if [[ "$moved" -eq 0 ]]; then
-      if ! mkdir "$archive"; then
-        echo "ERROR: cannot create archive dir: ${archive}" >&2
-        echo "       Previous results were left untouched: ${OUTPUT_DIR}" >&2
-        return 1
-      fi
-    fi
-    if ! mv "$item" "${archive}/${base}"; then
-      echo "ERROR: cannot archive previous result: ${item}" >&2
-      echo "       --fresh left a partial archive at ${archive}" >&2
-      return 1
-    fi
-    moved=$((moved + 1))
-  done
-
-  if [[ "$moved" -eq 0 ]]; then
-    echo "ℹ️  --fresh: no previous results to archive in ${OUTPUT_DIR}" >&2
-    report_archive_accumulation
-    return 0
-  fi
-  echo "🧹 --fresh: archived ${moved} previous result(s) to ${archive}" >&2
-  report_archive_accumulation
-  return 0
+  archive_collect_live || return 1
+  archive_live_outputs fresh
 }
 
 # 退避先は出力ディレクトリの内側なので gitignore に乗り、`git status` にも `ls` にも

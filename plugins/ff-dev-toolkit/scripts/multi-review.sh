@@ -215,6 +215,7 @@ for invocation_arg in "$@"; do
   REVIEW_INVOCATION="${REVIEW_INVOCATION} $(review_invocation_quote "$invocation_arg")"
 done
 ROUTE=""
+ARCHIVE_OPERATION=false
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -224,18 +225,51 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     --route=*) ROUTE="${1#--route=}"; shift ;;
+    --archive-only|--archive-only=*) ARCHIVE_OPERATION=true; ARGS+=("$1"); shift ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
 # 拒否は 1 タスクも起動しない。.review-results/ に前の実行の結果（Status: complete と当時の verdict）が
 # 残っていると、それを今回の結果として読み違える（OBS-350）。拒否のたびに同じ注記を添え、レーン指定を
 # 拒否した回だけ部分再検証の形も示す（委譲の併用を拒否した回はレーンを絞る場面ではない）
+route_archive_advice() {
+  local cmd="bash $(review_invocation_quote "$0") --route $(review_invocation_quote "$ROUTE")" a expect=''
+  local recovery_config="${MULTI_AGENT_CONFIG:-}" recovery_base="${MULTI_AGENT_BASE_BRANCH:-}" recovery_output=''
+  local config_given=false base_given=false output_given=false
+  [[ -z "$recovery_config" ]] || config_given=true
+  [[ -z "$recovery_base" ]] || base_given=true
+  # Materialize temporary env inputs because the displayed command is a new invocation.
+  # Last explicit CLI value wins, just as in multi-agent.sh's parser.
+  for a in ${ARGS[@]+"${ARGS[@]}"}; do
+    if [[ -n "$expect" ]]; then
+      case "$expect" in
+        --base) recovery_base="$a"; base_given=true ;;
+        --config) recovery_config="$a"; config_given=true ;;
+        --output-dir) recovery_output="$a"; output_given=true ;;
+      esac
+      expect=''; continue
+    fi
+    case "$a" in --base|--output-dir|--config) expect="$a" ;; esac
+  done
+  [[ "$config_given" != true ]] || cmd="${cmd} --config $(review_invocation_quote "$recovery_config")"
+  [[ "$output_given" != true ]] || cmd="${cmd} --output-dir $(review_invocation_quote "$recovery_output")"
+  local clear_cmd="$cmd"
+  [[ "$base_given" != true ]] || clear_cmd="${clear_cmd} --base $(review_invocation_quote "$recovery_base")"
+  echo "  Cold/clear output only — archive without reviewers:" >&2
+  echo "         ${clear_cmd} --archive-only" >&2
+  echo "  Critical recovery template — replace both placeholders with confirmed values before execution:" >&2
+  echo "         ${cmd} --base '<confirmed-previous-base>' --archive-only='<confirmed-previous-branch>'" >&2
+  echo "  Same-branch Critical must carry forward; pending/unknown state stops." >&2
+  echo "  Then use --route fast without --fresh or delegation." >&2
+}
+
 route_reject() { # <ERROR 行の本文> [lanes]
   echo "ERROR: $1" >&2
   echo "  nothing was run — any files under .review-results/ are from a previous run; do not read them as this run's." >&2
   if [ "${2:-}" = lanes ]; then
     echo "  For a partial re-check of specific lanes, use: --route none --cli <CLI> --perspective <name>" >&2
   fi
+  if [[ "$ROUTE" == fast && "$1" == *--delegate-to-host* ]]; then route_archive_advice; fi
   exit 2
 }
 route_rejects_lane_args() { # <route> <拒否する追加の引数...>
@@ -259,8 +293,10 @@ case "$ROUTE" in
   '' | none) : ;;
   fast)
     route_rejects_lane_args fast --delegate-to-host --delegate-to-host=claude-code --delegate-to-host=codex-cli --delegate-to-host=grok-cli
+    if [[ "$ARCHIVE_OPERATION" != true ]]; then
     ARGS+=(--mode cross-model --cli codex-cli --perspective comprehensive-review)
     echo "ℹ️  --route fast: Codex 1 lane only (--mode cross-model --cli codex-cli --perspective comprehensive-review)" >&2
+    fi
     ;;
   full)
     route_rejects_lane_args full
@@ -268,6 +304,7 @@ case "$ROUTE" in
     # そのレーンになり、主の 4 観点をホストのサブエージェントで走らせる（claude が無い環境でも
     # full を組める。headless の `grok -p` は typed verdict を欠きやすいので、grok を主にするのは
     # 委譲時だけ）。副は主と違うモデルにする（Issue `#2118`）
+    if [[ "$ARCHIVE_OPERATION" != true ]]; then
     full_main=claude-code
     for a in ${ARGS[@]+"${ARGS[@]}"}; do
       case "$a" in
@@ -283,6 +320,7 @@ case "$ROUTE" in
       --perspective test-analysis --perspective comment-analysis)
     export MULTI_AGENT_REVIEW_MAIN="$full_main" MULTI_AGENT_REVIEW_SUB="$full_sub" MULTI_AGENT_CROSS_REVIEW=auto
     echo "ℹ️  --route full: 5 lanes (${full_main}: code-review / error-handler-hunt / test-analysis / comment-analysis + ${full_sub}: comprehensive-review)" >&2
+    fi
     ;;
   *) echo "ERROR: --route must be fast|full|none (got: ${ROUTE})" >&2; exit 2 ;;
 esac

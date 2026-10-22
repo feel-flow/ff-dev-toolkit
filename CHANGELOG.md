@@ -20,6 +20,18 @@
 
 ## [Unreleased]
 
+## [0.163.0] - 2026-10-23
+
+### 追加
+
+- `scripts/jev/build-dedupe-eval-sets.ts` を追加。`/multi-review` の型付きレコード（各レーンの findings.tsv）から、同じレビュー回の別レーンが同じファイルの近い行（行差 5 以内）に挙げた finding の対を集め、Jev の Noul「同じ欠陥か」の offline 評価セットを作る。Jev へ渡す本文は TSV の要約行ではなく、判定行の照合でレビュー結果の Markdown から復元する。質問は `scripts/jev/questions/dedupe.json`
+- 判定点 `dedupe` を追加（`FF_JEV_MODE=on` かつ `FF_JEV_POINTS` に `dedupe` を明示したときだけ効く。組み込み閾値 0.8）。`scripts/jev/review-dedupe.sh` が `/multi-review` の結果分析の委譲前に対を判定し、Jev が閾値以上で同じ欠陥と答えた対だけを畳む指示として委譲プロンプトへ足す。off では何も出さず、委譲プロンプトは従来と同一
+
+### 修正
+
+- multi-review に旧ブランチを明示して照合する退避専用操作を追加し、full/fast の復帰案内と同一ブランチの Critical 保全を両立。未回収委譲と取得不能の出力境界は停止し、部分退避では既存 lock を保持する。
+- 公開同期の実行順序を検査する隔離 fixture を拡張し、Python の必要能力・型検査用依存・任意の loader 検査の適用条件が整わない場合に、リリース準備や長時間検査を始めないことを確認するようにした。
+
 ## [0.162.0] - 2026-10-22
 
 ### 追加

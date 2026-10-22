@@ -24,6 +24,7 @@ HOOK="${2:-}"
 ORCH_DIR="$(cd "$(dirname "$ORCH")" && pwd -P)"
 REPO_ROOT="$(cd "$ORCH_DIR/.." && pwd -P)"
 for need in "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/scripts/lib/release-gate-advance-functions.sh" \
+  "$REPO_ROOT/scripts/lib/release-environment-functions.sh" \
   "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh"; do
   [[ -f "$need" ]] || { echo "✗ オーケストレータの依存 lib がありません: $need" >&2; exit 1; }
 done
@@ -66,6 +67,9 @@ write_stub() { # $1=path（中身は stdin）
   cat >"$1"
   chmod +x "$1"
 }
+# Runtime prerequisites are controlled here, with one real Python / Node probe
+# control. Full parser/typecheck behavior remains owned by the existing suites.
+. "$SCRIPT_DIR/release-environment-runtime.sh"
 
 # gh: Release 一覧・作成・最新・公開時刻と、同期提案 hook の PR 照会だけを受ける。想定外は大声で落ちる。
 write_stub "$STUB_BIN/gh" <<'STUB'
@@ -135,6 +139,7 @@ echo "LAST_SYNC_SHA=\$base"
 STUB
   write_stub "$r/scripts/materialize-dev-toolkit-changelog.sh" <<'STUB'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >>"$RELEASE_RT_STATE/materialize.log"
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 2
 case "$1" in
   --check)
@@ -265,6 +270,7 @@ if [[ -f "$RELEASE_RT_STATE/runall.unknown-skip" ]]; then echo "  ○ skip: code
 # ff-media-toolkit ラッパーは子 runner の出力を 4 スペースで写すので、子の suite 単位 skip が親では部分 skip になる（Issue `#1904`）
 if [[ -f "$RELEASE_RT_STATE/runall.media-typecheck-skip" ]]; then echo "    ○ skip: /x/plugins/ff-media-toolkit/node_modules が無いため型検査を行いません（検査は1件も実行されていません。ff-media.sh setup で有効化）"; fi
 if [[ -f "$RELEASE_RT_STATE/runall.media-render-skip" ]]; then echo "    ○ skip: FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません（検査は1件も実行されていません）"; fi
+if [[ -f "$RELEASE_RT_STATE/runall.loader-skip" ]]; then echo "    ○ skip: FF_AGENT_PRESS_LOADER_NODE_MODULES（feelflow-website-2026 の feelflow-site/node_modules）が未設定のため差分テストを行いません（検査は1件も実行されていません）"; fi
 # OS 限定の検査が Linux / macOS で出す skip（guard-review-in-flight の (w1)〜(w5) と同じ文言。Issue `#2033`）
 if [[ -f "$RELEASE_RT_STATE/runall.os-limited-skip" ]]; then echo "  ○ skip: (w1)〜(w5) はドライブ付きのパスを扱う、Windows の Git Bash でだけ成立する検査のため未実行"; fi
 # bash 版限定の検査が macOS 標準の bash 3.2 で出す skip（retrospective-stop-hook / skill-drift-check と同じ文言。Issue `#2077`）
@@ -276,6 +282,7 @@ STUB
   # gate 段が run-all の緑の後に明示起動する公開配置の合成（ADR-068）。呼ばれたことだけ記録する
   write_stub "$r/plugins/ff-dev-toolkit/tests/public-layout/verify.sh" <<'STUB'
 #!/usr/bin/env bash
+echo public-layout >>"$RELEASE_RT_STATE/suites.log"
 echo "public-layout ${FF_RUN_PUBLIC_LAYOUT:-0}" >>"$RELEASE_RT_STATE/public-layout.log"
 [[ ! -f "$RELEASE_RT_STATE/public-layout.red" ]] || { echo "✗ public-layout: stub red" >&2; exit 1; }
 echo "✓ public-layout: stub"
@@ -283,6 +290,7 @@ exit 0
 STUB
   write_stub "$r/plugins/ff-dev-toolkit/tests/changelog-public-tags/verify.sh" <<'STUB'
 #!/usr/bin/env bash
+echo changelog-public-tags >>"$RELEASE_RT_STATE/suites.log"
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 1
 n=$(( $(cat "$RELEASE_RT_STATE/tags.calls" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$RELEASE_RT_STATE/tags.calls"
 if [[ "$n" == "$(cat "$RELEASE_RT_STATE/tags.skip-at" 2>/dev/null)" ]]; then echo "○ skip: stub（ネットワーク不達）"; exit 0; fi
@@ -294,12 +302,14 @@ exit 1
 STUB
   write_stub "$r/plugins/ff-dev-toolkit/tests/changelog-contract/verify.sh" <<'STUB'
 #!/usr/bin/env bash
+echo changelog-contract >>"$RELEASE_RT_STATE/suites.log"
 n=$(( $(cat "$RELEASE_RT_STATE/contract.calls" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$RELEASE_RT_STATE/contract.calls"
 if [[ "$n" == "$(cat "$RELEASE_RT_STATE/contract.fail-at" 2>/dev/null)" ]]; then echo "✗ changelog-contract verify: stub 失敗" >&2; exit 1; fi
 echo "✓ changelog-contract verify"
 STUB
   write_stub "$r/plugins/ff-dev-toolkit/tests/changelog-fragments/verify.sh" <<'STUB'
 #!/usr/bin/env bash
+echo changelog-fragments >>"$RELEASE_RT_STATE/suites.log"
 if [[ -f "$RELEASE_RT_STATE/fragments.fail-once" ]]; then rm -f "$RELEASE_RT_STATE/fragments.fail-once"; echo "✗ changelog-fragments verify: stub 失敗" >&2; exit 1; fi
 echo "✓ changelog-fragments verify"
 STUB
@@ -316,9 +326,11 @@ mkdir -p "$SSOT/scripts/lib" "$SSOT/plugins/ff-dev-toolkit/.claude-plugin" "$SSO
 cp "$ORCH" "$SSOT/scripts/release-dev-toolkit.sh"
 cp "$REPO_ROOT/scripts/check-full-gate-reuse.sh" "$SSOT/scripts/"
 chmod +x "$SSOT/scripts/release-dev-toolkit.sh"
-cp "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/scripts/lib/release-gate-advance-functions.sh" "$SSOT/scripts/lib/"
+cp "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/scripts/lib/release-gate-advance-functions.sh" \
+  "$REPO_ROOT/scripts/lib/release-environment-functions.sh" "$SSOT/scripts/lib/"
 cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh" "$SSOT/plugins/ff-dev-toolkit/scripts/lib/"
 build_ssot_stubs "$SSOT"
+build_release_environment_fixture
 printf '{\n  "name": "ff-dev-toolkit",\n  "version": "0.31.0",\n  "description": "fixture"\n}\n' \
   >"$SSOT/plugins/ff-dev-toolkit/.claude-plugin/plugin.json"
 printf '%s\n' '# config' 'toolkit_version: "0.31.0"' >"$SSOT/plugins/ff-dev-toolkit/scripts/agent-config.yaml"
@@ -401,6 +413,7 @@ fi
 echo "-- release: dry-run（準備が必要な回） --"
 printf '%s\n' '- デモ機能を追加した' >"$SSOT/changelog.d/101.added.demo.md"
 commit_push "feat: demo fragment"
+release_environment_failure_cases
 head_before="$(git -C "$SSOT" rev-parse HEAD)"
 pub_before="$(git -C "$PUB_ORIGIN" rev-parse main)"
 run_orch --dry-run
@@ -574,24 +587,24 @@ rm -f "$STATE/public-layout.red"
 : >"$STATE/runall.unknown-skip"
 run_orch
 if [[ "$RC" -eq 1 ]] && has "NG: [gate] 許容表に無い部分 skip がある" \
-  && ! has "bash plugins/ff-media-toolkit/scripts/ff-media.sh setup" \
+  && ! has "npm ci --prefix plugins/ff-media-toolkit" \
   && [[ "$(git -C "$PUB_ORIGIN" log -1 --format=%s main)" != *"$(git -C "$SSOT" rev-parse --short HEAD)"* ]]; then
   ok "許容表に無い部分 skip はゲートで止まり、同期しない（当たらないヒントは停止文へ足さない）"
 else
   bad "未知の部分 skip で止まらない (rc=$RC)"; dump
 fi
 rm -f "$STATE/runall.unknown-skip"
-# ff-media-toolkit の既定 skip 2 件（Issue `#1904`）: setup 前の typecheck は環境 skip なので止まり、停止文が setup を名指しする。
+# A dependency disappearing after preflight still fails closed at the gate.
 # opt-in の render-smoke は構造的 skip として許容表にあり、出ていても完了する
 : >"$STATE/runall.media-typecheck-skip"
 run_orch
 # ヒントは stop の「次の一手:」行（既定の案内の後ろ）に付く。別の echo や理由側（$1）に紛れた形を緑にしない
 _next_step="$(printf '%s\n' "$OUT" | grep -F '次の一手: 環境 skip（' || true)"
 if [[ "$RC" -eq 1 ]] && has "NG: [gate] 許容表に無い部分 skip がある" \
-  && [[ "$_next_step" == *' / bash plugins/ff-media-toolkit/scripts/ff-media.sh setup'* ]]; then
-  ok "ff-media の setup 前の typecheck skip はゲートで止まり、停止文の次の一手が ff-media.sh setup を名指しする"
+  && [[ "$_next_step" == *' / npm ci --prefix plugins/ff-media-toolkit --no-audit --no-fund'* ]]; then
+  ok "ff-media の typecheck skip はゲートで止まり、次の一手が型検査用 npm ci を名指しする"
 else
-  bad "typecheck の環境 skip で止まらない・次の一手が setup を名指ししない (rc=$RC)"; dump
+  bad "typecheck の環境 skip で止まらない・次の一手が npm ci を名指ししない (rc=$RC)"; dump
 fi
 # 既定環境（setup 前）は 2 行が同時に出る。許容行があっても環境 skip の停止は消えず、許容行は未知として再掲されない
 # （run-all 出力の写し 1 回だけ。typecheck 行は写し + 未知の再掲で 2 回）
@@ -599,7 +612,7 @@ fi
 run_orch
 render_n="$(printf '%s\n' "$OUT" | grep -cF 'FF_MEDIA_RENDER=1 が未設定のため実レンダリングを行いません' || true)"
 typecheck_n="$(printf '%s\n' "$OUT" | grep -cF 'node_modules が無いため型検査を行いません' || true)"
-if [[ "$RC" -eq 1 ]] && has "bash plugins/ff-media-toolkit/scripts/ff-media.sh setup" && [[ "$render_n" -eq 1 && "$typecheck_n" -eq 2 ]]; then
+if [[ "$RC" -eq 1 ]] && has "npm ci --prefix plugins/ff-media-toolkit" && [[ "$render_n" -eq 1 && "$typecheck_n" -eq 2 ]]; then
   ok "typecheck と render-smoke の skip が同時に出ても環境 skip で止まり、許容行は未知として再掲されない"
 else
   bad "2 行同時の回で止まらない・許容行が未知に混じる (rc=$RC render=${render_n} typecheck=${typecheck_n})"; dump
@@ -1312,6 +1325,8 @@ if [[ -n "$HOOK" && -f "$HOOK" ]]; then
   fi
   rm -f "$STATE/drift.stale"
 fi
+
+release_environment_loader_gate_cases
 
 REACHED_END=1
 echo "release-runtime: pass=${PASS} fail=${FAIL}"

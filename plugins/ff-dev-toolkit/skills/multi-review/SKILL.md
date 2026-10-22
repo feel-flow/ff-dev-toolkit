@@ -82,7 +82,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### 1. プラン確認（--dry-run）
 
-**新しいブランチでの初回レビューは `--fresh` を付けます**。前 PR の `.review-results/` が残ると、未解消 Critical の系列ガードが別系列と判定して **1 タスクも起動せずに中断**します（「指摘なし」と読まない）。中断文の「unfiltered なら新シリーズを自動開始」は**本スキルの標準起動では構造的に発火しません**（`--mode cross-model` と `--perspective` が条件を外す）。系列 ID はブランチ名を持たないので、前 series が**すでにマージ済みでも変わりません**。**同じブランチの 2 回目以降に `--fresh` を付けてはいけません**（未解消 Critical の持ち越しが消える）。
+cold/clear の新ブランチは `--fresh` 無しで開始する。旧ブランチのCriticalが残るときは [退避専用経路](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#archive-only) で `--archive-only=<確認した旧ブランチ名>` を1回実行してから通常起動する。旧名・base identityを推測しない。未回収requestや壊れたstateは保全停止する。**同じブランチの2回目以降にfreshや退避を足さず、未解消Criticalのcarryを守る**。退避はレビュー完了を意味しない。
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run --route <REVIEW_ROUTE の値> $ARGUMENTS
@@ -142,7 +142,7 @@ probe）は実行して構いません（禁止列挙のビルド・テスト実
 [CLI名] ファイル:行番号 — 説明 の 1 行）と、CLI ごとの件数の Summary 表。
 ```
 
-型付き判定行の規則は [references/typed-verdicts.md](references/typed-verdicts.md)。subagent の応答が空・途中終了・形式欠落なら、その応答を成功として扱わず、下の fallback（メイン読み込み）で分析をやり直します。subagent が無いホストでは、従来どおりメインで結果ファイルを読み込みます。
+型付き判定行の規則は [references/typed-verdicts.md](references/typed-verdicts.md)。subagent の応答が空・途中終了・形式欠落なら、その応答を成功として扱わず、下の fallback（メイン読み込み）で分析をやり直します。subagent が無いホストでは、従来どおりメインで結果ファイルを読み込みます。`FF_JEV_MODE=on` は委譲の前に[重複判定](references/jev-dedupe.md)を回す。
 
 #### 3-5. 自動修正の実行
 

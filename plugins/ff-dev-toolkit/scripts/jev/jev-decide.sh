@@ -31,11 +31,15 @@
 #   FF_JEV_MIN_CONFIDENCE          採用の閾値（0〜1 の小数）。共通既定は 0.99（Choice / Score の confidence 向け。
 #                                  独立評価 priorbench/jev で精度が 0.99 で跳ぶ崖を根拠にした）。
 #                                  ただし Noul の判定点 novelty / retro / triage は**組み込み既定 0.6** — Noul の
-#                                  confidence（|p−0.5|×2）は実測で最大 0.94 までしか出ず、0.99 だと採用率 0% に
+#                                  confidence（|p−0.5|×2）は実測で 0.95 前後まで（ACE の 2 セットで最大 0.94）しか出ず、0.99 だと採用率 0% に
 #                                  なる。0.6 は offline 評価（recent-candidates 225 件: ≥ 0.6 帯が占有 64% で
 #                                  一致 99.3%）から引いた。triage では同型に合わせた初期値であり、分類精度の
 #                                  較正済み値ではない（ADR-059。README の帯別表）。型を跨いで閾値を
 #                                  流用しない（公式 jaggedness: Noul と Choice の閾値は互換でない）
+#                                  Noul の判定点 dedupe（/multi-review の重複 finding）は**組み込み既定 0.8**。
+#                                  事前登録した採否規則（Jev が「同じ」と答えた対が 30 件以上かつ誤り 0 の最小の帯）を
+#                                  292 対の offline 評価に当てた値（≥ 0.8 帯が占有 62%・一致 100%、畳んだ 102 対の誤り 0）。
+#                                  既定の名簿には入れない（FF_JEV_POINTS へ明示したときだけ効く）
 #   FF_JEV_MIN_CONFIDENCE_<POINT>  判定点別の上書き（<POINT> は判定点名を大文字化し `-` を `_` に）。
 #                                  解決順は 判定点別 env → 共通 env → 判定点の組み込み既定 → 共通既定
 #   FF_JEV_DECISION_LOG            記録先（既定 ${XDG_STATE_HOME:-$HOME/.local/state}/ff-dev-toolkit/jev-decisions/
@@ -106,6 +110,7 @@ THRESHOLD_DEFAULT="0.99"
 builtin_threshold() { # $1=判定点 → stdout（無ければ空）
   case "$1" in
     novelty|retro|triage) printf '%s\n' "0.6" ;;
+    dedupe) printf '%s\n' "0.8" ;;
     *) printf '' ;;
   esac
 }

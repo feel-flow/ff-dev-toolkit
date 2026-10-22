@@ -126,7 +126,11 @@ current_review_series_id() {
   # 文脈が別系列になる（stale のまま 1 回目 → git pull 後の 2 回目が
   # "another branch/base/scope" と判定され、未解決 Critical を引き継げずに
   # 強制フルレビューへ落ちる偽陽性）。
-  printf 'repo=%s\nbranch=%s\nbase=%s\nscope=%s\n' "$repo" "$branch" "$BASE_BRANCH_IDENTITY" "$scope" \
+  review_series_id_for "$repo" "$branch" "$BASE_BRANCH_IDENTITY" "$scope"
+}
+
+review_series_id_for() { # <physical-root> <branch> <base-identity> <scope>
+  printf 'repo=%s\nbranch=%s\nbase=%s\nscope=%s\n' "$1" "$2" "$3" "$4" \
     | cksum | awk '{ print $1 "-" $2 }'
 }
 
@@ -411,7 +415,11 @@ capture_and_guard_unresolved_critical_state() {
       echo "       Run an unfiltered full review to start a new review series." >&2
       echo "       Full review = no --perspective / --exclude-perspective / --mode cross-model (--cli is allowed)." >&2
       echo "       Example: bash scripts/codex-review.sh --base ${BASE_BRANCH}" >&2
-      echo "       Or archive leftover results and retry: add --fresh" >&2
+      if [[ "$DELEGATE_TO_HOST" == true ]]; then
+        print_archive_recovery critical
+      else
+        echo "       Or archive leftover results and retry: add --fresh" >&2
+      fi
       echo "       Previous results were left untouched: ${report_file}" >&2
       return 1
     fi

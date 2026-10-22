@@ -45,7 +45,7 @@
 #     行継続（行末の `\`）は 1 行へつなぐ
 #   - script（multi-agent.sh の review 本体）: 自分の引数で同じ判定をする
 #   数えない: `--dry-run` / `--print-reviewers` / `--set-reviewers` / `--help` / `--list-perspectives` /
-#   `--print-toolkit-root` / `--staged`（commit 前の index レビューで PR の巡ではない）、
+#   `--archive-only[=<previous-branch>]` / `--print-toolkit-root` / `--staged`（commit 前の index レビューで PR の巡ではない）、
 #   `--task` が review 以外（`multi-agent.sh` の既定の task は review なので、`--task` 無しは数える）、
 #   `grep … multi-review.sh` のようにコマンド位置に無い言及
 #
@@ -129,7 +129,7 @@ rr_args_are_launch() { # <引数...>
     a="${a#[\"\']}"
     a="${a%%[\)\"\']*}"
     case "$a" in
-      --dry-run | --print-reviewers | --set-reviewers | --set-reviewers=* | --help | -h | --staged \
+      --archive-only | --archive-only=* | --dry-run | --print-reviewers | --set-reviewers | --set-reviewers=* | --help | -h | --staged \
         | --list-perspectives | --print-toolkit-root | --print-toolkit-root=*) return 1 ;;
       --task=*) task="${a#--task=}" ;;
     esac
