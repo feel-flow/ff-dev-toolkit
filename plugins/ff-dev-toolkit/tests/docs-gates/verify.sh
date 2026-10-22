@@ -2,6 +2,7 @@
 # 空振り検出: 正本参照の削除・変更・重複、節の改名で赤。配布側の粒度・TODO・書き戻しの削除と旧規定の再掲も固有の診断で赤（2026-09-28 docs-gates-runtime 実測）。
 # 空振り検出: 部分失敗節は Workflow / SKILL の復旧段落削除・節空化・改名・ファイル不在で非 0。旧 API 例再注入は各 1 件赤。
 # 空振り検出: 規定を「のが望ましい。」へ弱める単独変異は Workflow 3 件 / SKILL 2 件赤（2026-10-22 実測、無変異 229 件 pass）。
+# 空振り検出: 担当選択の契約は節・義務文・SKILLの参照削除で赤（削除・改名・exit0案内の欠落を変異検証）。
 #
 # docs-template 内のゲート例（pre-push フック / CI / 判定スクリプト）が
 # fail-silent へ退行していないことの drift 検査（Issue #154）。
@@ -1205,6 +1206,12 @@ MULTI_REVIEW_SKILL="$PLUGIN_ROOT/skills/multi-review/SKILL.md"
 if [ ! -f "$MULTI_REVIEW_SKILL" ]; then
   bad "multi-review SKILL.md が見つかりません: $MULTI_REVIEW_SKILL"
 else
+  if grep -qF '利用制限時は復旧待ち・予約より先に [失敗時の担当選択](../../docs-template/05-operations/deployment/self-review.md#失敗時の担当選択) に従う。' \
+      "$MULTI_REVIEW_SKILL" && grep -qF '**利用不可・失敗時（exit 0 の単一縮退も含む）**:' "$MULTI_REVIEW_SKILL"; then
+    ok "multi-review が復旧待ちより先に担当選択の正本へ案内する"
+  else
+    bad "multi-review が復旧待ちより先に担当選択の正本へ案内しない"
+  fi
   if grep -qF '### レビュー待ち時間の使い方' "$MULTI_REVIEW_SKILL"; then
     ok "multi-review SKILL.md に「レビュー待ち時間の使い方」の項が実在する"
   else

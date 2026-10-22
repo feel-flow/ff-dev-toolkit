@@ -112,7 +112,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 走行中の deny の例外として、**通る書き込み先は 3 つ: 作業ツリーの外（scratchpad / `mktemp -d` / `/tmp`）・`.review-results/`・gitignore 済みのパス**（`gh ... > tmp/<slug>/body.md` など）。復旧は deny 理由文の `rm` か、Bash の区間先頭の `FF_REVIEW_LOCK_OVERRIDE=1`。非対話で起動を自動化するときは `FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1`。
 
-**失敗・タイムアウト時**: 実行時 fallback は無い。部分出力は `Status: incomplete` で残り、**未完了の節は「指摘なし」ではなく「未確認」と読むこと。** `claude-code` だけが 💳 でホストが Claude なら先に **2a の委譲**を使う。他の 🔑 / 💳 / 🚫 は主担当のみで完了する。未完了観点だけの再実行:
+**利用不可・失敗時（exit 0 の単一縮退も含む）**: スクリプトの自動 fallback は無い。`Status: incomplete` は未確認。利用制限時は復旧待ち・予約より先に [失敗時の担当選択](../../docs-template/05-operations/deployment/self-review.md#失敗時の担当選択) に従う。自ホストのレーンは **2a** へ。未完了観点だけの再実行:
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --resume --timeout 1800

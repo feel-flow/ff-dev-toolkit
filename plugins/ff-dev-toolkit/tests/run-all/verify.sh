@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: bash-hook-batchの実登録12本は通常rc0。新guard登録だけの削除と子の引数集合0件は、いずれも登録集合assertでrc1になる（2026-10-22 macOS実測、構文rc0。期待リストの厳密一致は維持）。
 #
 # verify.sh — テストランナー run-all.sh 自身の回帰検証（Issue #146 / 縮小: Issue #1022）
 #

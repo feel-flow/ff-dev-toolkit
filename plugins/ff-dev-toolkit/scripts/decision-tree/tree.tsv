@@ -124,6 +124,7 @@ answer	bash-guard	pr-followup	hook:guard-pr-followup
 answer	bash-guard	background-cwd	hook:guard-background-cwd
 answer	bash-guard	long-gate-background	hook:guard-long-gate-background
 answer	bash-guard	effort-actual	hook:guard-effort-actual
+answer	bash-guard	merge-closing-keyword	hook:guard-merge-closing-keyword
 answer	bash-guard	issue-labels	hook:guard-issue-labels
 answer	bash-guard	sub-issue-id	hook:guard-sub-issue-id
 answer	bash-guard	exit-code	hook:guard-exit-code

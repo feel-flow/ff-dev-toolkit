@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 空振り検出: 事前引用の代入へ構文合法な true && を前置して抽出の一致を0件にすると20/0から17/1になり、「事前引用ブロックを抽出できません」で赤になる（2026-10-22 実測。抽出が空の回はroundtripへ進めない）。
+# 空振り検出: 共有helper配置の通常20/0に対し、emitter名を変え抽出0件にすると10/1、同名空本文は11/9、共有helper空は起動前rc1になる（2026-10-22 macOS実測、構文rc0。欠落argvの診断で途中死せずサマリーまで到達）。
+# 空振り検出（旧抽出配置での実測）: 事前引用の代入へ構文合法な true && を前置して抽出の一致を0件にすると当時20/0から17/1になり、「事前引用ブロックを抽出できません」で赤になる（2026-10-22 実測。抽出が空の回はroundtripへ進めない）。
 # 空振り検出: 生成行の実体 scripts/lib/finish-precheck.sh を空にすると起動前の必須ファイル確認で rc1 になる（2026-10-22 実測。q() が入口に残るだけで生成行の検査を緑にしない）。
 #
 # close-issue-shell-quote: close-issue スキルの merge コマンド生成が
@@ -10,11 +11,11 @@
 # UTF-8 の日本語を渡すと「一部バイトだけ $'\NNN'、残りは生バイト」の混在になり、
 # 出力全体が不正な UTF-8 になる。close-issue の手順 7 は同じ形で
 # `gh pr merge --subject / --body` を組み立てているので、日本語の PR 件名・本文で
-# 同じ壊れ方をする。finish.sh の bash ブロックは利用者がそのまま実行する手順なので、
-# 外部スクリプトの関数に依存せず、ブロック内で完結する単引用エスケープにする。
+# 同じ壊れ方をする。生成するコマンドは利用者がそのまま実行するため、
+# 共有helperで引用を完了し、生成物には関数への依存を残さない。
 #
 # 検査:
-#   1. finish.sh の bash ブロックから引用関数の定義行を**そのまま抽出**し、
+#   1. finish.sh と hook が使う共有helperから引用関数の定義行を**そのまま抽出**し、
 #      LC_ALL=C の下で日本語・単引用・シェルメタ文字・多行・末尾改行を含む
 #      文字列を通す。eval で戻した結果が元の文字列とバイト同一であること。
 #   2. 生成された引用文字列そのものが valid UTF-8 であること（%q 相当の
@@ -42,8 +43,9 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 # 抽出元は script で、本文は生成物を貼るだけ（tests/finish が生成物の round-trip を別途見る）。
 SKILL="$PLUGIN_ROOT/scripts/finish.sh"
 PRECHECK="$PLUGIN_ROOT/scripts/lib/finish-precheck.sh"
+MERGE_HELPER="$PLUGIN_ROOT/scripts/lib/merge-message.sh"
 
-for source_file in "$SKILL" "$PRECHECK"; do
+for source_file in "$SKILL" "$PRECHECK" "$MERGE_HELPER"; do
   [ -s "$source_file" ] && [ -r "$source_file" ] || { echo "✗ 対象ファイルが無い・空・読めません: $source_file" >&2; exit 1; }
 done
 
@@ -53,11 +55,11 @@ ok()  { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
 # ── 1. 引用関数の抽出 ──
-QUOTE_FN="$(awk '/^q\(\) \{/ { print; found = 1 } END { exit found ? 0 : 1 }' "$SKILL")" || {
+QUOTE_FN="$(awk '/^ff_merge_quote\(\) \{/ {sub(/^ff_merge_quote/,"q"); print; found = 1 } END { exit found ? 0 : 1 }' "$MERGE_HELPER")" || {
   echo "  ✗ finish.sh に引用関数 q() の定義行が見つかりません（手順 7 の merge コマンド生成）" >&2
   exit 1
 }
-ok "finish.sh の bash ブロック内で引用関数 q() が定義されている"
+ok "共有helperから引用関数を抽出できる"
 
 _ff_mktemp_rc=0
 _ff_mktemp_out="$(mktemp -d 2>&1)" || _ff_mktemp_rc=$?
@@ -169,24 +171,13 @@ fi
 # q() 単体が正しくても、生成側で --subject / --body の片方だけが q を通っていれば
 # 元の欠陥（生展開の引用漏れ）が残る。生成行そのものを抽出して両方を pin する。
 # 引用結果は開始マーカーより前に保存する。実際の保存ブロックも抽出して実走する。
-QUOTE_BLOCK="$(awk '
-  /^[[:space:]]*quoted_target_repo=/ { capture = 1 }
-  capture && /^[[:space:]]*echo "MERGE_COMMAND_BEGIN"$/ { complete = 1; exit }
-  capture { print; found = 1 }
-  END { exit (found && complete) ? 0 : 1 }
-' "$PRECHECK")" || {
-  bad "finish.sh precheck の事前引用ブロックを抽出できません"
-  QUOTE_BLOCK=""
-}
 GEN_BLOCK="$(awk '
-  /^[[:space:]]*printf .gh pr merge %s --repo %s --squash --match-head-commit %s%s \\\\/ { capture = 1 }
-  capture { print; found = 1 }
-  capture && !/\\$/ { capture = 0 }
-  END { exit found ? 0 : 1 }
-' "$PRECHECK")" || {
-  bad "finish.sh precheck に手順 7 の merge コマンド生成（printf 'gh pr merge ...）が見つかりません"
-  GEN_BLOCK=""
-}
+  /^ff_merge_emit\(\)/ {capture=1}
+  capture {print}
+  capture && /^}/ {done=1;exit}
+  END {exit done ? 0 : 1}
+' "$MERGE_HELPER")" || { bad "共有merge emitterを抽出できません"; GEN_BLOCK=""; }
+QUOTE_BLOCK="$GEN_BLOCK"
 
 pin_gen() {
   local needle="$1" label="$2"
@@ -244,20 +235,20 @@ if [ -n "$GEN_BLOCK" ] && [ -n "$QUOTE_BLOCK" ]; then
       have_subject=1
       MERGE_SUBJECT="$(cat "$1"; printf X)"; MERGE_SUBJECT="${MERGE_SUBJECT%X}"
       MERGE_BODY="$(cat "$2"; printf X)"; MERGE_BODY="${MERGE_BODY%X}"
-      '"$QUOTE_BLOCK"'
-      CMD="$(
-        '"$GEN_BLOCK"'
-      )"
+      . "$5"
+      CMDFULL="$(ff_merge_emit "$PR_NUMBER" "$TARGET_REPO_URL" "$REMOTE_HEAD" 1 "$MERGE_SUBJECT" "$MERGE_BODY")"
+      CMD="${CMDFULL#MERGE_COMMAND_BEGIN}"
+      CMD="${CMD%MERGE_COMMAND_END}"
       printf "%s" "$CMD" > "$3"
       eval "$CMD"
-    ' _ "$SUBJ_SRC" "$BODY_SRC" "$TMP/gen_cmd" "$TMP/bin" 2>&1
+    ' _ "$SUBJ_SRC" "$BODY_SRC" "$TMP/gen_cmd" "$TMP/bin" "$MERGE_HELPER" 2>&1
   )" || GEN_RC=$?
 
   if [ "$GEN_RC" -ne 0 ]; then
     bad "生成行の実行がエラー終了しました (rc=${GEN_RC})"
     printf '%s\n' "$GEN_OUT" >&2
   else
-    if [ "$(cat "$TMP/gen_body_got.repo")" = https://github.com/owner/repo ]; then
+    if [ -r "$TMP/gen_body_got.repo" ] && [ "$(cat "$TMP/gen_body_got.repo")" = https://github.com/owner/repo ]; then
       ok "生成コマンドを実行した gh が受け取る --repo が生成元と一致する"
     else
       bad "生成コマンドの --repo が生成元と一致しません"
@@ -267,14 +258,14 @@ if [ -n "$GEN_BLOCK" ] && [ -n "$QUOTE_BLOCK" ]; then
     else
       bad "生成コマンドの --subject が元の MERGE_SUBJECT と一致しません"
       od -c "$SUBJ_SRC" | head -5 >&2
-      od -c "$TMP/gen_subject_got" 2> /dev/null | head -5 >&2
+      if [ -r "$TMP/gen_subject_got" ]; then od -c "$TMP/gen_subject_got" | head -5 >&2; fi
     fi
     if cmp -s "$BODY_SRC" "$TMP/gen_body_got"; then
       ok "生成コマンドを実行した gh が受け取る --body が元の MERGE_BODY とバイト同一"
     else
       bad "生成コマンドの --body が元の MERGE_BODY と一致しません"
       od -c "$BODY_SRC" | head -5 >&2
-      od -c "$TMP/gen_body_got" 2> /dev/null | head -5 >&2
+      if [ -r "$TMP/gen_body_got" ]; then od -c "$TMP/gen_body_got" | head -5 >&2; fi
     fi
   fi
 fi
@@ -286,7 +277,7 @@ OFFENDERS="$(awk '
   { line = $(0); sub(/^[[:space:]]*/, "", line) }
   line ~ /^#/ { next }
   index(line, "%q") { print FNR ": " line }
-' "$SKILL" "$PRECHECK")"
+' "$SKILL" "$PRECHECK" "$MERGE_HELPER")"
 if [ -n "$OFFENDERS" ]; then
   bad "finish.sh の非コメント行にロケール依存の %q が残っています（引用がロケール依存へ戻っている）"
   printf '%s\n' "$OFFENDERS" >&2

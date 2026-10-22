@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# レビュー走行中ガードの Bash 書き込み走査（tests/lib/review-write-scan.sh）が使う**引用符を
-# 保つ字句解析**。走査ライブラリが source する（hook は直接読まない）。
+# レビュー走行中の書き込み走査と squash merge ガードが使う**引用符を保つ字句解析**。
+# 走査ライブラリまたは hook が source し、判定不能時の扱いは呼び出し側が決める。
 #
 # 何のためにあるか（Issue `#1760` / `#1868`）:
 #   - コメント（`# … > x`）は実行されないデータなのに、走査が区間分割後にリダイレクトとして読み、
@@ -33,8 +33,10 @@
 #     引用符の外の `(` / `)` も独立した語（`((` / `))` は算術式の開き・閉じとして 1 語）
 #     rc: 0 = 成功 / 12 = 引用符が閉じていない / その他 = awk の失敗
 #
-# 呼び出し側の契約: rc 0 以外は「判定不能」（deny 側）として扱う。空振り（字句解析の失敗）を
-# 「コメントだけだった」「語が無かった」の緑へ畳まない。
+#   ff_lex_segments <コード>
+#     stdout: 接続種別（N/S/A/O/P/B）を前置した区間を \001 区切りで出す。
+# 呼び出し側の契約: rc 0 以外は「判定不能」。各ガードの deny / 通知付き allow 契約へ委ね、
+# 「コメントだけだった」「語が無かった」という検査成功へ畳まない。
 #
 # 検査用の差し替え口: FF_LEX_AWK（awk の代替。不在・失敗の回帰を suite で実測するため）。
 # 互換性: bash 3.2（stock macOS）/ BWK awk（macOS）/ gawk。awk の正規表現 interval は使わない。
@@ -234,4 +236,39 @@ ff_lex_bodies() { # <本文>
 
 ff_lex_tokens() { # <区間>
   printf '%s' "$1" | LC_ALL=C "${FF_LEX_AWK:-awk}" "$_FF_LEX_TOKENS_PROG" 2>/dev/null
+}
+
+# Quote-preserving segment split, shared with the write scanner.
+ff_lex_segments() { # <code> → 区間を \001 区切りで出す（引用符・置換が行をまたぐ区間は改行を含む）
+  printf '%s\n' "$1" | LC_ALL=C "${FF_LEX_AWK:-awk}" '
+    function emit(x) { printf "%s%s%c", kind, x, 1; kind = "S" }
+    BEGIN { seg = ""; q = ""; depth = 0; kind = "N" }
+    {
+      s = $0; n = length(s); prev = " "
+      if (q != "" || depth > 0) seg = seg "\n"; else kind = "N"
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1); nx = substr(s, i + 1, 1)
+        if (q != "") {
+          seg = seg c
+          if (c == "\\" && q == "\"") { seg = seg nx; i++; continue }
+          if (c == q) q = ""
+          continue
+        }
+        if (c == "\\") { seg = seg c nx; i++; prev = "_"; continue }
+        if (c == "\047" || c == "\"") { q = c; seg = seg c; continue }
+        if (c == "`") { seg = seg c; i++; while (i <= n && substr(s, i, 1) != "`") { seg = seg substr(s, i, 1); i++ } seg = seg "`"; continue }
+        if (c == "$" && nx == "(") { depth++; seg = seg c nx; i++; continue }
+        if (depth > 0) { if (c == "(") depth++; else if (c == ")") depth--; seg = seg c; continue }
+        if (c == ";") { emit(seg); seg = ""; kind = "S"; if (nx == ";") i++; prev = ";"; continue }
+        if (c == "&" && nx == "&") { emit(seg); seg = ""; kind = "A"; i++; prev = "&"; continue }
+        if (c == "|" && nx == "|") { emit(seg); seg = ""; kind = "O"; i++; prev = "|"; continue }
+        if (c == "|" && prev != ">") { emit(seg); seg = ""; kind = "P"; if (nx == "&") i++; prev = "|"; continue }
+        if (c == "&" && prev != ">" && prev != "<" && nx != ">" && nx != "-" && nx !~ /[0-9]/) { emit(seg); seg = ""; kind = "B"; prev = "&"; continue }
+        seg = seg c
+        if (c != " " && c != "\t") prev = c
+      }
+      if (q == "" && depth == 0) { emit(seg); seg = "" }
+    }
+    END { if (seg != "") emit(seg) }
+  '
 }

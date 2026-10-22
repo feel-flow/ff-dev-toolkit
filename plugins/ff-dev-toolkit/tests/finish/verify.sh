@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 空振り検出: round1の絶対path/basename Usage subsetは2/0。旧helper path解決へ戻すと1/1、finish.sh同名空は0/2、helper不在は0/2で赤（2026-10-22 macOS実測、構文rc0。Usage到達の検査でありmerge実行の測定ではない）。
+# 変異検出: 空subjectの早期拒否だけを外すと、通常251/0から250/1（B5bのみ赤）になる。後段emitterも空subjectを拒否するが、その別理由のrc2を早期拒否の成立へ数えない（2026-10-22 macOS実測、構文rc0）。
 # 空振り検出: D4のghログだけを別ファイルへ振り向ける単独変異は、未修正250/0から修正後249/1（D4のみ赤）になる。実watchは別ログに1件、共有ログは先行COLOR由来4件から0件へ変わり、COLOR15検査は両側で緑（2026-10-22 macOS実測。構文rc0。watch実行自体を消した実測ではない）。
 # 空振り検出: suite入口の3色変数の隔離を外すと、ambient全3変数=1とNO_COLOR=1の入力でCOLOR3の子環境集合3件が赤（12/3）。隔離後はambient有無ともsubset15/0で、下記8変異も同じ検出数になる（2026-10-22 macOS実測。Bash3.2のlocal/unset後の外側export残留を検出）。
 # 空振り検出: COLOR subset は15/0。finish.sh の3変数除去から FORCE_COLOR / CLICOLOR_FORCE / CLICOLOR を各1つ残すと13/2・11/4・13/2、除去全体を無効にすると9/6で赤。ケース集合を空にすると1/2、同名関数を空にすると0/1、helper の空・不在はrc1になる（2026-10-22 macOS実測。全変異のbash構文rc0、環境・JSON境界の期待失敗を確認）。
@@ -179,6 +181,9 @@ else
   fi
 
   printf '#!/usr/bin/env bash\nprintf "ARGHANDLING\\n"\nexit 2\n' >"$SHEBANG_TMP/lf.sh"
+  rc=0
+  basename_out="$(CDPATH='' cd -- "$PLUGIN_ROOT/scripts" && env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT -u FF_DEV_TOOLKIT_SKILL_FILE bash finish.sh 2>&1)" || rc=$?
+  if [ "$rc" -eq 2 ] && has_text "$basename_out" "Usage: finish.sh precheck"; then ok "S2f: scripts cwdからbasename起動もUsageへ進む"; else bad "S2f: basename起動がhelper解決で退行（rc=${rc}）: ${basename_out}"; fi
   run_shebang_check "$SHEBANG_TMP/lf.sh"
   if [ "$RC" -eq 0 ] && denies_kernel_noise "$(shebang_blob)"; then
     ok "S2: LF の shebang ではこの検査は止まらない"
@@ -638,6 +643,14 @@ if [ "$RC" -eq 2 ] && has_text "$ERR" "--subject と --body は両方渡す"; th
   ok "B5: --subject だけ渡すと rc 2（片方だけだと供給源がリポジトリ設定へ戻る）"
 else
   bad "B5: --subject 片方だけの扱いが違う（rc=${RC}）"
+fi
+
+B5B_ISSUE_NO=42
+run_finish "$WORK" precheck 7 --subject "" --body "Refs #${B5B_ISSUE_NO}"
+if [ "$RC" -eq 2 ] && has_text "$ERR" "--subject が空" && ! has_text "$OUT" "MERGE_COMMAND_BEGIN"; then
+  ok "B5b: 空subjectはghの既定へ戻るため明示safeとして受理しない"
+else
+  bad "B5b: 空subjectの拒否が不成立（rc=${RC}）"
 fi
 
 # 対象 Issue が無い（Closes 群・Refs 群とも空）: checks 登録があっても待たず、以降を実行しない

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 共有生成器の実呼出しを抽出したfocused針は旧針0/1→新針1/0。第三引数REMOTE_HEADだけをLOCAL_HEADへ変える単独変異・呼出し不在（:へ置換）・同名空対象は各0/1で赤、対象コピーは全bash-n rc0（2026-10-22 macOS実測）。
 # 空振り検出: 抽出先 scripts/lib/finish-precheck.sh を空にすると 277/0 から267/10となり、鮮度分岐の切り出し0行・停止と報告・生成先端の針が赤になる（2026-10-22 実測）。
 #
 # merge-freshness: マージ直前の鮮度ゲート（「リモート先端 == ゲート実測対象」）の回帰検査。
@@ -1117,11 +1118,10 @@ contains "$CASE_BLOCK" "FRESH_REPORT=" "各分岐が報告用の文字列を残�
 contains "$CASE_BLOCK" 'FRESH_REPORT="⚠️ 判定不能 — ${FRESH_REASON}' \
   "判定不能の報告が ACTION だけでなく REASON も載せる"
 contains "$FINISH" '「全件実行で通した」と読ませないため' "高速モードの記録を全件実行と読ませない意図が書かれている"
-# 件名・本文はロケール非依存の単引用エスケープ関数 q を通す（printf %q は非 UTF-8
-# ロケールで日本語を壊すため置換した。回帰は tests/close-issue-shell-quote が見る）。
-# ここが見ているのは「生成が照合した先端 REMOTE_HEAD を使う」ことなので、引用方式が
-# 変わっても契約は変わらない。
-contains "$FINISH" '"${PR_NUMBER}" "$quoted_target_repo" "${REMOTE_HEAD}" "${DELETE_FLAG:-}" "$quoted_merge_subject"' "merge コマンドの生成が照合した先端を使う"
+# 共有生成器 ff_merge_emit の第三引数へ、鮮度照合した先端 REMOTE_HEAD を渡す。
+# 引用方式の回帰は tests/close-issue-shell-quote が見る。この針は実際の生成器呼出しと
+# 第三引数の契約を見る。
+contains "$FINISH" 'ff_merge_emit "$PR_NUMBER" "$TARGET_REPO_URL" "$REMOTE_HEAD"' "merge コマンドの生成が照合した先端を使う"
 
 contains "$WORKFLOW" "ff-dev-toolkit-merge-freshness-contract:start" "git-workflow に鮮度ゲートの契約ブロックがある"
 contains "$WORKFLOW" "check-merge-freshness.sh" "git-workflow が検査スクリプトを名指ししている"

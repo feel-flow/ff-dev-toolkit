@@ -400,7 +400,9 @@ gh_pr_view_or_die() { # <PR番号> <--json フィールド> → stdout に JSON
 # 出力全体が不正な UTF-8 になる（実測）。末尾の X は $(...) が落とす末尾改行の保全用。
 # sed が使えない環境（PATH 破損など）では `|| return 1` で失敗を伝播する。これが無いと
 # 空の '' を返して rc=0 で成功し、件名・本文を失った merge コマンドを黙って出す（実測）。
-q() { local s; s="$(printf '%sX' "$1" | sed "s/'/'\\\\''/g")" || return 1; printf "'%s'" "${s%X}"; }
+# shellcheck source=lib/merge-message.sh
+. "$self_dir/lib/merge-message.sh" || { echo "merge-message helper を読めません" >&2; exit 2; }
+q() { ff_merge_quote "$@"; }
 
 # PR の判定に使うフィールドだけを正規化した 1 行 JSON（初回と読み直しの比較用）。checks は待機で
 # 結果が変わるので「有無」だけを載せる。

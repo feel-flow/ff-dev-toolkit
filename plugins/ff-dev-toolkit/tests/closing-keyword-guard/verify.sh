@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# 空振り検出: R2 wrapper subsetは79/0、修正前hookは37/42。cwdの外部実行条件を単独反転すると47/32、lookup非実行判定を除くと69/10、option引数を消費しないと76/3、実行位置indexを失うと75/4で赤。wrapper対象集合空は46/1、hook同名空は1/1（2026-10-22 macOS実測、全変異構文rc0。2repo極性・非実行/外部wrapperの後続を明示repoで救済しない陰性を含む）。
+# 空振り検出: prefix保全追加後のcontext/供給源subsetは78/0。先頭prefixの未確定保全条件を単独反転すると66/12、実行語未確定の保全だけを除くと75/3、追加前hookは66/12で赤。遷移集合空は29/1、同名case関数空は0/1（2026-10-22 macOS実測、全変異構文rc0。確定prefix・無関係export・echoと明示repoの隣接陰性も含む）。
+# 空振り検出: round1のcontext/供給源subsetは54/0。遷移集合を空にすると17/1、case helper不在/空/同名空関数は各0/1。旧hookは18/36、cwd先行保全除去41/13、環境walk除去33/21、環境gate無効35/19、明示repo条件反転34/20、供給源filter除去52/2、表示失敗でdenyを落とすと53/1で赤（2026-10-22 macOS実測、全変異構文rc0）。
+# 空振り検出: merge hook追加層は57/0。case helperの不在/不可読/空と関数不在/空集合は各0/1、hook/shared helper/lexer各3形は各1/1で赤。keyword集合空は33/24、INSPECTED=0は35/22、共有関数不在/同名空は27/30・37/20（2026-10-22 macOS実測、全変異構文rc0・依存故障なし）。
+# 変異検出: 同追加層の独立変異18件は全rc1。判定無効・差集合無効・明示body無視・空subject・全体ACK・通知除去・復旧body交換・最初のみ・照会上限除去は赤18/1/6/1/1/21/1/2/1件。wrapper通知除去は2件、別pathgh/command/body-file/message/応答/Refs/復旧反復/gh時間の各境界を戻すと各1件赤（2026-10-22実測）。
+# 時間境界: stdin+stub ghの実hookで通常0.44s、1MiB metadata0.49s、64KiB command通知0.03s、累積timeout4.23s、1MiB+6KiB literal+2PR+0.8sの4照会で2個目deny4.34s。旧上限なしの64KiBは18.14sで不採用、最終版は各照会1秒/計4回と固定入力・復旧上限で通知へ戻す。実gh merge/native発火の測定ではない。
 # 空振り検出: 抽出先 scripts/lib/finish-precheck.sh を空にすると必須ファイル非空の確認で rc1 になる（2026-10-22 実測。入口に名前だけが残っても参照抽出を検査したことにしない）。
 #
 # closing keyword 抵触検査の回帰テスト。
@@ -35,6 +41,7 @@ SKILL="$PLUGIN_ROOT/skills/close-issue/SKILL.md"
 # 針は規定が実際に置かれたファイルへ張る。
 # precheck 本体の実際の配置を検査する（入口に残る名前だけでは緑にしない）。
 FINISH="$PLUGIN_ROOT/scripts/lib/finish-precheck.sh"
+COLLECTION="$PLUGIN_ROOT/scripts/lib/merge-message.sh"
 GATE_REF="$PLUGIN_ROOT/skills/close-issue/references/merge-gate.md"
 AC_REF="$PLUGIN_ROOT/skills/close-issue/references/ac-judgement.md"
 WORKFLOW="$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md"
@@ -134,7 +141,7 @@ echo "== closing keyword 抵触検査 =="
 
 # ファイルが 1 つ欠けただけで後続の contains が全部個別に落ちると、1 つの事実が
 # 数十行のノイズになる。存在検査は即座に打ち切る。
-for file in "$GUARD" "$SKILL" "$FINISH" "$GATE_REF" "$AC_REF" "$WORKFLOW"; do
+for file in "$GUARD" "$SKILL" "$FINISH" "$COLLECTION" "$GATE_REF" "$AC_REF" "$WORKFLOW"; do
   if [[ ! -s "$file" ]]; then
     echo "  ✗ 必須ファイルが存在し非空: $file" >&2
     echo "✗ closing-keyword-guard verify: 必須ファイル欠落のため中断" >&2
@@ -339,8 +346,8 @@ contains "$SKILL" "scripts/check-closing-keywords.sh" "検査ロジックを共�
 contains "$SKILL" "PR 本文だけ" "closingIssuesReferences の実際の走査範囲を正しく述べている"
 contains "$SKILL" "空を理由に打ち切ると" "closingIssuesReferences が空でも Refs 運用を検査対象にする"
 contains "$SKILL" '拾う綴りは `Ref` / `Refs` のみ' "Refs 参照として拾う綴りを固定している"
-contains "$FINISH" "RSTART, RLENGTH" "Refs 参照の抽出を機械化している（目視に委ねない）"
-contains "$FINISH" 'EXTRACT_RC}" -eq 0' "抽出の失敗を rc の意味論に依存せず判定する"
+contains "$COLLECTION" "RSTART, RLENGTH" "Refs 参照の抽出を機械化している（目視に委ねない）"
+contains "$COLLECTION" 'EXTRACT_RC}" -eq 0' "抽出の失敗を rc の意味論に依存せず判定する"
 
 # ---- 手順 1 の awk を実体として実行する機能検査（Issue #776 / #994 AC） ------
 # contains のテキスト照合では「awk が原文どおり存在する」ことしか言えず、引数展開
@@ -362,7 +369,7 @@ extract_skill_awk_after() {
     extracting == 1 { print }
     found == 0 && extracting == 0 && armed && index($0, "| awk") > 0 { extracting = 1 }
     END { exit found == 1 ? 0 : 1 }
-  ' "$FINISH"
+  ' "$COLLECTION"
 }
 
 SKILL_AWK_SRC="$(extract_skill_awk_after 'REFS_RAW=')" || SKILL_AWK_SRC=""
@@ -381,6 +388,7 @@ else
   bad "抽出した awk の出力が期待と不一致（expected: $(printf '%s' "$REFS_EXPECTED" | tr '\n' ' ') / actual: $(printf '%s' "$REFS_EXTRACTED" | tr '\n' ' ')）"
 fi
 
+SHARED_KEYWORDS_PATTERN="$(bash "$GUARD" --list-keywords | awk 'NF{s=s (n++ ? "|" : "") $0} END{print s}')"
 CLOSES_AWK_SRC="$(extract_skill_awk_after 'CLOSES_RAW=')" || CLOSES_AWK_SRC=""
 if [[ -n "$CLOSES_AWK_SRC" ]]; then
   ok "closing keyword の awk プログラムを finish.sh から抽出できる"
@@ -408,7 +416,7 @@ if [[ -n "$CLOSES_AWK_SRC" ]]; then
     'Closed: #11' \
     'fix owner/other#15')"
   CLOSES_EXTRACTED="$(printf '%s\n' "$CLOSES_SAMPLE" \
-    | LC_ALL=C awk "$CLOSES_AWK_SRC" | LC_ALL=C sort -u)" || CLOSES_EXTRACTED="(awk 実行に失敗)"
+    | LC_ALL=C awk -v keywords="$SHARED_KEYWORDS_PATTERN" "$CLOSES_AWK_SRC" | LC_ALL=C sort -u)" || CLOSES_EXTRACTED="(awk 実行に失敗)"
   CLOSES_EXPECTED="$(printf '%s\n' \
     '#1' '#100' '#11' '#2' '#21' '#22' '#23' \
     'owner/other#15' 'owner/other#24' 'owner/repo#3' 'owner/repo#42')"
@@ -419,7 +427,7 @@ if [[ -n "$CLOSES_AWK_SRC" ]]; then
   fi
 
   CLOSES_EMPTY="$(printf '%s\n' 'Refs #620' 'related #3' 'See #9' 'hotfix #8' 'auto_fix #88' 'v2fix #89' \
-    | LC_ALL=C awk "$CLOSES_AWK_SRC" | LC_ALL=C sort -u)" || CLOSES_EMPTY="(awk 実行に失敗)"
+    | LC_ALL=C awk -v keywords="$SHARED_KEYWORDS_PATTERN" "$CLOSES_AWK_SRC" | LC_ALL=C sort -u)" || CLOSES_EMPTY="(awk 実行に失敗)"
   if [[ -z "$CLOSES_EMPTY" ]]; then
     ok "closing keyword が無い本文では抽出 0 件（誤検出しない）"
   else
@@ -474,7 +482,7 @@ JOIN_AWK_SRC="$(awk -v q="'" -v needle='$1 == "C"' '
   }
   extracting == 1 { print }
   END { exit found == 1 ? 0 : 1 }
-' "$FINISH")" || JOIN_AWK_SRC=""
+' "$COLLECTION")" || JOIN_AWK_SRC=""
 if [[ -n "$JOIN_AWK_SRC" ]]; then
   ok "Refs 差集合の join awk を finish.sh から抽出できる"
 else
@@ -536,20 +544,20 @@ contains "$GATE_REF" "この PR のマージでは Issue が自動クローズ�
 contains "$GATE_REF" "確認済みの事実" "警告が確認済みの事実を書き分けている"
 contains "$GATE_REF" "推測（原因の断定ではない）" "警告が推測を事実と書き分けている"
 contains "$GATE_REF" "gh issue close <ISSUE_URL>" "警告に手動クローズ手順がある"
-contains "$FINISH" '"${API_CLOSES_TOKENS}" "${CLOSES_RAW}"' "空 API ガードが Closes 本文も救う（API 由来と本文由来を 1 つの和集合へ畳み、空 API で打ち切らない）"
-contains "$FINISH" "同じ Issue を二重に照合しない" "Refs 群を Closes 和集合の差として機械的に取る"
-contains "$FINISH" 'tolower($(0))' "closing keyword 抽出が大文字小文字を問わない"
-contains "$FINISH" '-v repo="${TARGET_REPO}"' "和集合 awk が TARGET_REPO を -v repo で渡す"
+contains "$COLLECTION" '"${API_CLOSES_TOKENS}" "${CLOSES_RAW}"' "空 API ガードが Closes 本文も救う（API 由来と本文由来を 1 つの和集合へ畳み、空 API で打ち切らない）"
+contains "$COLLECTION" "同じ Issue を二重に照合しない" "Refs 群を Closes 和集合の差として機械的に取る"
+contains "$COLLECTION" 'tolower($(0))' "closing keyword 抽出が大文字小文字を問わない"
+contains "$COLLECTION" '-v repo="${TARGET_REPO}"' "和集合 awk が TARGET_REPO を -v repo で渡す"
 contains "$SKILL" "空 API を「閉じない」と読まない" "空 API をコミット経路の非クローズと誤読させない"
-contains "$FINISH" "Closes 和集合の正規化に失敗" "和集合パイプの失敗を握り潰さない"
-contains "$FINISH" "Refs 差集合の正規化に失敗" "差集合パイプの失敗を握り潰さない"
+contains "$FINISH" 'ff_merge_issue_sets "$TARGET_REPO" "$PR_BODY"' "和集合を共有helperで計算し失敗を呼出元へ返す"
+contains "$COLLECTION" '[[ "${EXTRACT_RC}" -eq 0 ]] || return 2' "差集合パイプの失敗を共有helperが伝播する"
 contains "$SKILL" "参照から検出できる対象 Issue はありません" "keyword も Refs も無い PR は従来どおり正常終了する"
 section_contains "$GATE_REF" "$STEP2A_HEADING" "既定のマージ経路" "抵触時は既定のマージ経路が安全でないと宣言する"
 section_contains "$GATE_REF" "$STEP2A_HEADING" "2b の結果をマージの条件にする" "コミット由来の抵触は 2b へ委ねる"
 section_contains "$GATE_REF" "$STEP2A_HEADING" "2a の抵触で無条件に停止しない" "改題で消せない抵触で永久に赤にならない"
 section_contains "$GATE_REF" "$STEP2A_HEADING" "NON_TITLE_CONFLICTS" "origin 別の分岐を script が持つ"
 contains "$FINISH" "NON_TITLE_CONFLICTS" "origin 別の分岐を script が実行する"
-contains "$FINISH" "set -o pipefail" "参照抽出パイプの上流失敗を握り潰さない"
+contains "$COLLECTION" "set -o pipefail" "参照抽出パイプの上流失敗を握り潰さない"
 contains "$SKILL" "SUGGEST" "改題案を報告に含める"
 contains "$FINISH" "抵触なしとして扱わない" "検査不成立を fail-closed で扱う"
 contains "$FINISH" 'case "$gate_status" in' "終了コードを実行可能な分岐として書いている"
@@ -563,9 +571,9 @@ contains "$SKILL" '--body "Refs #${REFS_ISSUE}' "Refs 運用の merge 本文が 
 # 引用は %q ではなく単引用エスケープ関数 q（ロケール非依存）。%q は非 UTF-8 ロケールで
 # 日本語を壊すため置換した（回帰は tests/close-issue-shell-quote が見る）。ここが見るのは
 # 「literal ではなく変数展開で組み立てる」という契約なので、引用方式が変わっても変わらない。
-contains "$FINISH" '--subject %s' "merge コマンドを検査済み変数から組み立てる"
-contains "$FINISH" 'quoted_merge_subject="$(q "$MERGE_SUBJECT")" && quoted_merge_body="$(q "$MERGE_BODY")"' "2b で検査した変数を事前引用する"
-contains "$FINISH" '"$quoted_merge_subject" "$quoted_merge_body"' "生成に 2b の検査後に引用した変数をそのまま展開する"
+contains "$COLLECTION" '--subject %s' "merge コマンドを検査済み変数から組み立てる"
+contains "$FINISH" 'ff_merge_emit "$PR_NUMBER" "$TARGET_REPO_URL" "$REMOTE_HEAD" "$have_subject" "$MERGE_SUBJECT" "$MERGE_BODY"' "2bで検査した変数を共有emitterへそのまま渡す"
+contains "$COLLECTION" '"$quoted_merge_subject" "$quoted_merge_body"' "生成に 2b の検査後に引用した変数をそのまま展開する"
 # merge コマンドの生成は手順 7（鮮度照合の後）へ移した。`--match-head-commit` へ渡して
 # よい先端は照合を通った値だけで、2b の時点では確定しないため（Issue #880）。ここが
 # 見ているのは「報告へ貼るのは生成物であって書き写しではない」という契約で、
@@ -634,6 +642,17 @@ contains "$FINISH" "$HEADLINE_MARKER" "finish.sh の検査面がコミット件�
 contains "$WORKFLOW" "$HEADLINE_MARKER" "git-workflow.md の検査面がコミット件名を含む"
 
 echo
+MERGE_HOOK_CASES="$SCRIPT_DIR/merge-hook-cases.sh"
+if [ ! -r "$MERGE_HOOK_CASES" ] || [ ! -s "$MERGE_HOOK_CASES" ]; then
+  bad "merge hook case helperが無い/読めない/空"
+elif ! . "$MERGE_HOOK_CASES" || [ "$(type -t closing_merge_hook_cases)" != function ]; then
+  bad "merge hook case関数が無い"
+else
+  MERGE_CASES_BEFORE=$((PASS+FAIL))
+  closing_merge_hook_cases
+  if [ $((PASS+FAIL)) -le "$MERGE_CASES_BEFORE" ]; then bad "merge hook case集合が空"; else ok "merge hook追加層がassertionへ到達"; fi
+fi
+
 if [[ "$FAIL" -gt 0 ]]; then
   echo "✗ closing-keyword-guard verify: $FAIL 件失敗 / $PASS 件成功" >&2
   exit 1

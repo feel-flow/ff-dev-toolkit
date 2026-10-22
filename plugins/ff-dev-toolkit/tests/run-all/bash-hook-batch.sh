@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 集約入口の拒否・警告保存と実登録を検査する。
-# 空振り検出: 登録11本の欠落は赤。引数0件・存在しない/空の子は無検査を診断する。
+# 空振り検出: 登録12本の通常はrc0、新guardだけを登録から外す/集約子の引数集合を0件にする各単独変異は登録集合assertでrc1（2026-10-22 macOS実測、構文rc0）。存在しない/空の子は無検査を診断する。
 # 変異検出: 拒否時の未実行注記を JSON の permissionDecisionReason から外す / 終了コード2の stderr 末尾から外す / 出力0件 / 解釈できる出力0件の経路で finish を通さず exit する、の4変異がそれぞれ赤（2026-10-02 実測）。
 set -euo pipefail
 ROOT="$(cd "${BASH_SOURCE[0]%/*}/../.." && pwd)"
@@ -27,12 +27,13 @@ assert len(group['hooks']) == 1, 'ホスト入口が1本ではない'
 entry = group['hooks'][0]
 args = shlex.split(entry['command'].replace('${CLAUDE_PLUGIN_ROOT}', str(root)))
 expected = ['guard-checkout-restore', 'guard-pr-followup', 'guard-background-cwd',
-            'guard-long-gate-background', 'guard-effort-actual', 'guard-issue-labels',
+            'guard-long-gate-background', 'guard-effort-actual', 'guard-merge-closing-keyword',
+            'guard-issue-labels',
             'guard-sub-issue-id', 'guard-exit-code', 'guard-zsh-glob',
             'guard-literal-write', 'record-effort-wallclock']
 # Path 同士で比べる（Windows では hooks.json から組んだ文字列だけ '/' と '\' が混ざる）
 assert args[0] == 'bash' and Path(args[1]) == runner
-assert [Path(a) for a in args[2:]] == [root / 'hooks' / (name + '.sh') for name in expected]
+assert [Path(a) for a in args[2:]] == [root / 'hooks' / (name + '.sh') for name in expected], 'Bash集約子の登録集合が期待と違う'
 assert entry['timeout'] == 15
 assert sum(len(g['hooks']) for g in config['hooks']['PreToolUse']
            if 'Bash' in g['matcher'].split('|')) == 2

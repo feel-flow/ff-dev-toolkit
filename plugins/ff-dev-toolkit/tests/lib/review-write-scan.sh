@@ -546,39 +546,8 @@ is_interp_head() { # <basename>
 # ---- 区間分割（引用符・置換を保つ）---------------------------------------------------
 # 区切り子: `;`（`;;` 含む）/ `&&` / `||` / `|`（`>|` は除く）/ 単独の `&`（リダイレクト由来の
 # `2>&1` `>&2` `&>` は除く）/ 改行。引用符の内側と `$(…)` / バッククォートの内側では割らない。
-ws_split_segments() { # <code> → 区間を \001 区切りで出す（引用符・置換が行をまたぐ区間は改行を含む）
-  printf '%s\n' "$1" | LC_ALL=C "${FF_LEX_AWK:-awk}" '
-    function emit(x) { printf "%s%s%c", kind, x, 1; kind = "S" }
-    BEGIN { seg = ""; q = ""; depth = 0; kind = "N" }
-    {
-      s = $0; n = length(s); prev = " "
-      if (q != "" || depth > 0) seg = seg "\n"; else kind = "N"
-      for (i = 1; i <= n; i++) {
-        c = substr(s, i, 1); nx = substr(s, i + 1, 1)
-        if (q != "") {
-          seg = seg c
-          if (c == "\\" && q == "\"") { seg = seg nx; i++; continue }
-          if (c == q) q = ""
-          continue
-        }
-        if (c == "\\") { seg = seg c nx; i++; prev = "_"; continue }
-        if (c == "\047" || c == "\"") { q = c; seg = seg c; continue }
-        if (c == "`") { seg = seg c; i++; while (i <= n && substr(s, i, 1) != "`") { seg = seg substr(s, i, 1); i++ } seg = seg "`"; continue }
-        if (c == "$" && nx == "(") { depth++; seg = seg c nx; i++; continue }
-        if (depth > 0) { if (c == "(") depth++; else if (c == ")") depth--; seg = seg c; continue }
-        if (c == ";") { emit(seg); seg = ""; kind = "S"; if (nx == ";") i++; prev = ";"; continue }
-        if (c == "&" && nx == "&") { emit(seg); seg = ""; kind = "A"; i++; prev = "&"; continue }
-        if (c == "|" && nx == "|") { emit(seg); seg = ""; kind = "O"; i++; prev = "|"; continue }
-        if (c == "|" && prev != ">") { emit(seg); seg = ""; kind = "P"; if (nx == "&") i++; prev = "|"; continue }
-        if (c == "&" && prev != ">" && prev != "<" && nx != ">" && nx != "-" && nx !~ /[0-9]/) { emit(seg); seg = ""; kind = "B"; prev = "&"; continue }
-        seg = seg c
-        if (c != " " && c != "\t") prev = c
-      }
-      if (q == "" && depth == 0) { emit(seg); seg = "" }
-    }
-    END { if (seg != "") emit(seg) }
-  '
-}
+ws_split_segments() { ff_lex_segments "$@"; }
+
 # `$(…)` とバッククォートの本文を 1 行 1 件で取り出す（入れ子は外側だけ）
 ws_extract_substs() { # <区間>
   printf '%s\n' "$1" | LC_ALL=C "${FF_LEX_AWK:-awk}" '

@@ -181,7 +181,7 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 
 ### Bash ガード（PreToolUse）
 
-プラグインをインストールすると、Bash ツールの実行前に 10 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-zsh-glob.sh` / `hooks/guard-literal-write.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` と `guard-zsh-glob.sh` と `guard-literal-write.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
+プラグインをインストールすると、Bash ツールの実行前に 11 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-merge-closing-keyword.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-zsh-glob.sh` / `hooks/guard-literal-write.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` と `guard-zsh-glob.sh` と `guard-literal-write.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
 
 **未コミット変更ガード（`guard-checkout-restore.sh`）** — 未コミット変更のあるファイルへの `git checkout [--] <path>` / `git restore <path>` を検出し、変更消失の前に警告する。警告文は代替手段（`cp` バックアップ / `git stash push -- <file>` → `pop`）を案内する。ブランチ切り替え（`git checkout <branch>` / `git switch`）、clean・untracked なファイルへの復元、`git restore --staged`（worktree 非破壊）では発火しない。
 
@@ -206,6 +206,13 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 - 通し方: `/close-issue` で実績を書き戻してからマージする、またはコマンド先頭に環境代入 `FF_EFFORT_ACTUAL_ACK=1` を付けて再実行する
 - 無効化は環境変数 `FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD=1`
 - 既知の限界: heredoc・クォートの閉じていないセグメント・変数展開やコマンド置換で組み立てる `gh pr merge`、`gh` の認証切れ・オフラインなどでは判定できず素通しする（fail-open）
+
+**squash closing keyword ガード（`guard-merge-closing-keyword.sh`）** — 通常の `gh pr merge --squash` が `Refs` 対象の Issue を閉じる実効件名・本文を持つ場合、共有 checker で検出して停止する。非空の subject と明示 body（空文字も有効）を項目ごとに優先し、省略値は GitHub の SQUASH メッセージプレビューを読む。空 subject は gh が送信せず既定へ戻るため、安全な明示値としては扱わない。`finish.sh precheck` でも空 subject は拒否する。
+
+- 復旧は検査済みの非空 subject / body と同じ repo・PR・head を固定したコマンドで案内する。前段を含む呼び出し全体が未実行である点に注意する。
+- その merge だけを通すには直前へ `FF_MERGE_CLOSING_ACK=1`、全体の無効化は `FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD=1`。工数ガードの ACK とは独立する。
+- 依存は gh / jq / awk / Perl。Perl は gh の各照会を1秒へ制限するために使う。不在時は自動インストールせず、`systemMessage` と `additionalContext` で未検査を知らせて通す。照会は1呼び出し4回までで、以後の merge は未検査と通知する。 command / 実効message / body-file は8KiB、照会応答は64KiB、Refsは32件まで。復旧の置換は4巡までで、既知の抵触は停止を保ち、復旧できなければ手動precheckを案内する。各上限超過も理由付きで知らせる。
+- プレビューは取得時点の snapshot。queue（admin bypassなし）は message 指定を無視し、遅延 auto merge は将来の既定を保証できないため、いずれも理由付きで通す。`--disable-auto` / `--merge` / `--rebase` は対象外。取得不能、未解決の変数・置換・wrapper/cwd、stdinや先行生成の body-file も推測せず理由を知らせる。MCP merge は対象外。全ホストの実セッション発火を保証するものではない。
 
 **起票ラベル契約ガード（`guard-issue-labels.sh`）** — 素の `gh issue create` に種別・優先度のいずれかのラベルが付いていない場合に停止する。起票スキルの verify-then-skip 契約（実在確認のうえラベルを付与する手順）を直接の `gh issue create` で迂回するのを機械的に捕まえるのが目的。`follow-up` ラベルの欠落は起票が PR レビュー由来かどうかを機械的に判定できないため、`systemMessage` の案内のみに留める（停止しない）。
 
@@ -278,7 +285,7 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 ## 前提
 
 - [Claude Code](https://docs.claude.com/en/docs/claude-code)（プラグインの第一ターゲット。Codex CLI / Claude Cowork / grok CLI / GitHub Copilot CLI も Claude 形式 marketplace 互換で利用可。詳細は下記「他のツールで使う」）
-- Perl（共有版 claim と CHANGELOG の不可視 Unicode 検査・exact-path hard link に必要。macOS/多くの Linux に同梱）
+- Perl（共有版 claim と CHANGELOG の不可視 Unicode 検査・exact-path hard link に必要。squash closing keyword ガードの照会時間枠にも使い、不在時はその検査を通知付きで省略する。macOS/多くの Linux に同梱）
 - Node.js >= 22（MCP サーバー spec-docs の実行に必要。18/20 は EOL のためサポート外）
 - マルチAI CLI オーケストレーション（`/multi-*`）を使う場合のみ: Codex CLI / Grok CLI / Copilot CLI のいずれか（オプション。Copilot CLI は `/multi-review` では従量課金のためオプトイン）
 

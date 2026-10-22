@@ -23,6 +23,9 @@ cmd_precheck() {
   done
   is_pr_number "$PR_NUMBER" || die_env "PR 番号が数字ではありません: ${PR_NUMBER:-（空）}" "finish.sh precheck <PR番号> の形で渡す"
   [[ "$have_subject" -eq "$have_body" ]] || die_env "--subject と --body は両方渡す（片方だけだと squash メッセージの供給源がリポジトリ設定へ戻る）" "両方を渡して再実行する"
+  if [[ "$have_subject" -eq 1 && -z "$MERGE_SUBJECT" ]]; then
+    die_env "--subject が空です（gh は空件名を送信せず既定へ戻す）" "空でない件名と --body を明示して再実行する"
+  fi
   # 別 checkout の記録は checks の待機より前に読めることを確かめる。読めないまま進むと、待機の
   # 後で検査不成立になるだけでなく、ここで黙って既定の記録へ戻る実装に化けても気付けない
   if [[ "$have_gate_record" -eq 1 ]]; then
@@ -67,80 +70,15 @@ cmd_precheck() {
   # ── 1. 対象 Issue の検出（PR 本文からの抽出は機械で行う。目視で拾わない） ──
   local PR_BODY REFS_RAW CLOSES_RAW API_CLOSES_TOKENS CLOSES_UNION REFS_ONLY EXTRACT_RC
   PR_BODY="$(printf '%s' "$PR_JSON" | jq -r '.body // ""')"
-  # 拾う綴りは Ref / Refs のみ（大文字小文字は問わない。コロンが続く形も可）。`関連 #N` や
-  # 裸の `#N` は拾わない。awk の現在行を $(0) と書くのは、裸のドル記号 + 0 が skill 読み込み時の
-  # 引数展開で PR 番号へ置換された実測（本文から定数文字列に化けて抽出 0 件で素通り）の名残で、
-  # script 側でも同じ形を保つ（awk では $ は演算子なので $(0) は現在行と完全に同義）。
-  REFS_RAW="$(set -o pipefail
-    printf '%s\n' "${PR_BODY}" | awk '
-      {
-        line = $(0)
-        while (match(line, /(^|[^A-Za-z])[Rr][Ee][Ff][Ss]?[ \t:]*([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)?#[0-9]+/)) {
-          token = substr(line, RSTART, RLENGTH)
-          sub(/^([^A-Za-z])?[Rr][Ee][Ff][Ss]?[ \t:]*/, "", token)
-          print token
-          line = substr(line, RSTART + RLENGTH)
-        }
-      }' | sort -u)"
-  EXTRACT_RC=$?
-  [[ "${EXTRACT_RC}" -eq 0 ]] || die_env "Refs 参照の抽出に失敗（awk rc=${EXTRACT_RC}）" "awk と sort が PATH に在ることを確かめて再実行する"
-  # 本文からの closing keyword 抽出。拾う綴りは GitHub の closing keyword 9 語（大文字小文字は
-  # 問わない。コロンが続く形も可）。語中一致（hotfix の fix、enclose の close、auto_fix の fix）は
-  # (^|[^a-z0-9_]) で除外する。Refs / 関連 / 裸の #N は拾わない。
-  CLOSES_RAW="$(set -o pipefail
-    LC_ALL=C
-    printf '%s\n' "${PR_BODY}" | awk '
-      {
-        line = tolower($(0))
-        while (match(line, /(^|[^a-z0-9_])(closed|closes|close|fixed|fixes|fix|resolved|resolves|resolve)[ \t:]*([a-z0-9._-]+\/[a-z0-9._-]+)?#[0-9]+/)) {
-          token = substr(line, RSTART, RLENGTH)
-          sub(/^([^a-z0-9_])?(closed|closes|close|fixed|fixes|fix|resolved|resolves|resolve)[ \t:]*/, "", token)
-          print token
-          line = substr(line, RSTART + RLENGTH)
-        }
-      }' | sort -u)"
-  EXTRACT_RC=$?
-  [[ "${EXTRACT_RC}" -eq 0 ]] || die_env "closing keyword 参照の抽出に失敗（awk rc=${EXTRACT_RC}）" "awk と sort が PATH に在ることを確かめて再実行する"
-  # API 由来を owner/repo#N に正規化する。空配列でも jq は 0 件で成功する。
+  local KEYWORD_LIST
+  KEYWORD_LIST="$(FF_DEV_TOOLKIT_ROOT="$plugin_root" bash "$plugin_root/scripts/check-closing-keywords.sh" --list-keywords)" \
+    || die_env "closing keyword 一覧を取得できません" "ff-dev-toolkit を再導入してから再実行する"
   API_CLOSES_TOKENS="$(printf '%s' "$PR_JSON" | jq -r '
     (.closingIssuesReferences // [])[]
     | (.url | sub("https://github.com/"; "") | sub("/issues/"; "#"))
-  ')" || die_env "closingIssuesReferences を正規化できません" "gh pr view ${PR_NUMBER} --json closingIssuesReferences の出力を確かめる"
-  # 裸の #N を現在のリポジトリで修飾し、API 由来と本文由来を 1 件に畳む。
-  # 集合キーは小文字化して畳む（GitHub の owner/repo は大小を区別しない）。
-  CLOSES_UNION="$(set -o pipefail
-    LC_ALL=C
-    printf '%s\n' "${API_CLOSES_TOKENS}" "${CLOSES_RAW}" \
-    | awk -v repo="${TARGET_REPO}" '
-        NF {
-          token = tolower($(0))
-          repo_l = tolower(repo)
-          if (token ~ /^#[0-9]+$/) token = repo_l token
-          print token
-        }
-      ' | sort -u)"
-  EXTRACT_RC=$?
-  [[ "${EXTRACT_RC}" -eq 0 ]] || die_env "Closes 和集合の正規化に失敗（awk rc=${EXTRACT_RC}）" "awk と sort が PATH に在ることを確かめて再実行する"
-  # Refs のうち Closes 和集合に含まれないもの（同じ Issue を二重に照合しない）。
-  # closing 集合は -v に載せない（awk -v は改行を保持しない実装がある）。C 行を先に流す。
-  REFS_ONLY="$(set -o pipefail
-    LC_ALL=C
-    {
-      printf '%s\n' "${CLOSES_UNION}" | awk 'NF{print "C\t" $(0)}'
-      printf '%s\n' "${REFS_RAW}" | awk -v repo="${TARGET_REPO}" '
-        NF {
-          token = tolower($(0))
-          repo_l = tolower(repo)
-          if (token ~ /^#[0-9]+$/) token = repo_l token
-          print "R\t" token
-        }
-      '
-    } | awk -F'\t' '
-      $1 == "C" { seen[$2] = 1; next }
-      $1 == "R" && !($2 in seen) { print $2 }
-    ' | sort -u)"
-  EXTRACT_RC=$?
-  [[ "${EXTRACT_RC}" -eq 0 ]] || die_env "Refs 差集合の正規化に失敗（awk rc=${EXTRACT_RC}）" "awk と sort が PATH に在ることを確かめて再実行する"
+  ')" || die_env "closingIssuesReferences を正規化できません" "gh pr view の応答を確かめる"
+  ff_merge_issue_sets "$TARGET_REPO" "$PR_BODY" "$API_CLOSES_TOKENS" "$KEYWORD_LIST" \
+    || die_env "Refs / Closes 参照の抽出に失敗しました" "判定helperとawk/sortの動作を確かめる"
 
   local tok
   while IFS= read -r tok; do [[ -n "$tok" ]] && printf 'CLOSES=%s\n' "$tok"; done <<<"$CLOSES_UNION"
@@ -247,7 +185,7 @@ cmd_precheck() {
     # 2b. 実際に渡す squash メッセージの検査（これがマージの条件）。Refs 運用では両方明示が既定
     if [[ "$have_subject" -eq 1 ]]; then
       assert_bundled_shebang_lf "${GUARD}"
-          printf 'merge-subject\t%s\nmerge-body\t%s\n' "${MERGE_SUBJECT}" "${MERGE_BODY}" \
+          { ff_merge_surface merge-subject "$MERGE_SUBJECT"; ff_merge_surface merge-body "$MERGE_BODY"; } \
         | FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${GUARD}" --repo "${TARGET_REPO}" "${refs_args[@]}" ${closes_args[@]+"${closes_args[@]}"} >/dev/null
       gate_status=$?
           case "$gate_status" in
@@ -579,22 +517,8 @@ cmd_precheck() {
     # consumer root を位置引数へ固定し、実行 cwd や plugin の origin を削除対象にしない。
     delete_tail="$(printf ' \\\n  && bash -c %s ff-delete-merged-head %s %s %s' "$(q "$delete_body")" "$(q "$repo_root")" "$(q "$head_ref")" "$(q "$REMOTE_HEAD")")"
   fi
-  local quoted_target_repo="" quoted_merge_subject="" quoted_merge_body=""
-  quoted_target_repo="$(q "$TARGET_REPO_URL")" \
+  ff_merge_emit "$PR_NUMBER" "$TARGET_REPO_URL" "$REMOTE_HEAD" "$have_subject" "$MERGE_SUBJECT" "$MERGE_BODY" "${DELETE_FLAG:-}" "${delete_tail:-}" \
     || die_env "引用に失敗（sed が使えない）。merge コマンドを生成しない" "sed を PATH に戻して再実行する"
-  if [[ "$have_subject" -eq 1 ]]; then
-    # 引用は全てコマンド出力前に済ませ、失敗時に開始マーカーも出さない。
-    quoted_merge_subject="$(q "$MERGE_SUBJECT")" && quoted_merge_body="$(q "$MERGE_BODY")" \
-      || die_env "引用に失敗（sed が使えない）。merge コマンドを生成しない" "sed を PATH に戻して再実行する"
-  fi
-  echo "MERGE_COMMAND_BEGIN"
-  if [[ "$have_subject" -eq 1 ]]; then
-    printf 'gh pr merge %s --repo %s --squash --match-head-commit %s%s \\\n  --subject %s \\\n  --body %s%s\n' \
-      "${PR_NUMBER}" "$quoted_target_repo" "${REMOTE_HEAD}" "${DELETE_FLAG:-}" "$quoted_merge_subject" "$quoted_merge_body" "${delete_tail:-}"
-  else
-    printf 'gh pr merge %s --repo %s --squash --match-head-commit %s%s%s\n' "${PR_NUMBER}" "$quoted_target_repo" "${REMOTE_HEAD}" "${DELETE_FLAG:-}" "${delete_tail:-}"
-  fi
-  echo "MERGE_COMMAND_END"
 
   if [[ "$FRESH_STATUS" -eq 2 && "$rerun" != "no" ]]; then
     echo "PRECHECK=undetermined"

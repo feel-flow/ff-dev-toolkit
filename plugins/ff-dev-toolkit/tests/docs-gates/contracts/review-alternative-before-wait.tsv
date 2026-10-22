@@ -1,0 +1,14 @@
+# 利用制限時の担当選択。規定の削除・弱化・節改名を節スコープで赤にする。
+section	05-operations/deployment/self-review.md	### 失敗時の担当選択	復旧待ち・予約を決める前に、親節の項 2 の環境チェックで代替候補を確認する。**	利用制限時は待機より先に代替候補を確認する
+section	05-operations/deployment/self-review.md	### 失敗時の担当選択	**主担当の観点が未完了なら、先に主担当のレビューを完了する。**	代替で主担当の未完了を免除しない
+section	05-operations/deployment/self-review.md	### 失敗時の担当選択	**利用者がそのモデルのみ・代替不可と明示した回は、別モデルを完了条件の代わりにしない。**	特定モデル必須の依頼を尊重する
+section	05-operations/deployment/self-review.md	### 失敗時の担当選択	**既存の利用・課金許可がある未試行の別 CLI が在れば、ホストが 1 本だけ明示実行する。**	許可済み代替CLIを1本だけ明示実行する
+section	05-operations/deployment/self-review.md	### 失敗時の担当選択	Copilot は明示 opt-in が必要。	Copilotの課金許可を維持する
+section	05-operations/deployment/self-review.md	### 失敗時の担当選択	`cross_review=off` / `features.multiReview=false` は自動追加を止めるが、利用者の明示した単発追加レビューは対象とする。	単一固定と明示追加依頼を区別する
+section	05-operations/deployment/self-review.md	### 失敗時の担当選択	追加レビュー完了とは報告しない。	依頼された追加レビューの未完了を隠さない
+section	05-operations/deployment/self-review.md	### 失敗時の担当選択	**失敗した試行と代替結果は別ディレクトリに保持する。**	失敗と代替の証跡を区別する
+section	05-operations/deployment/self-review.md	### 失敗時の担当選択	Grok の完走を Claude 完走へ読み替えない。	実施したモデルの事実を維持する
+section	05-operations/deployment/self-review.md	### 失敗時の担当選択	モデル名の指定は担当選択の優先条件であり、それだけでは代替禁止と扱わない。	モデル名指定だけで代替禁止と誤認しない
+section	05-operations/deployment/self-review.md	### 失敗時の担当選択	別モデルを実行せず、本節の手順 3 を省いて指定モデルの追加レビューを未完了として記録する。	代替不可の依頼で別モデルの実行を省く
+section	05-operations/deployment/self-review.md	## レビュー担当の選択と利用制限時の継続	**exit 0 の単一縮退でも、ホストは下の「失敗時の担当選択」を適用してから完了を判断する。**	exit0の単一縮退からも担当選択へ進む
+section	05-operations/deployment/self-review.md	### 失敗時の担当選択	実行時の代替コマンドより本節の候補選択を優先し、主担当を指す案内は実行しない。	実行時案内より主担当を除く候補選択を優先する

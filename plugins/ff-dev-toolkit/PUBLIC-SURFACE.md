@@ -84,6 +84,7 @@
 - `PreToolUse :: Bash :: hooks/guard-background-cwd.sh`
 - `PreToolUse :: Bash :: hooks/guard-checkout-restore.sh`
 - `PreToolUse :: Bash :: hooks/guard-effort-actual.sh`
+- `PreToolUse :: Bash :: hooks/guard-merge-closing-keyword.sh`
 - `PreToolUse :: Bash :: hooks/guard-exit-code.sh`
 - `PreToolUse :: Bash :: hooks/guard-issue-labels.sh`
 - `PreToolUse :: Bash :: hooks/guard-literal-write.sh`
@@ -113,7 +114,7 @@
 
 `^mcp__` で始まる 4 本は、GitHub MCP の同じ操作（PR のマージ・Issue の起票・sub-issue の追加・PR の作成 / 更新）に Bash 経路と同じガードを当てる Claude Code 向けの登録で、ガードごとに 1 本ずつ別の matcher を持つ（PR の作成 / 更新の 2 ツールは 1 本を共有。Codex / grok では MCP 呼び出しの `tool_name` と発火が未実測のため保証しない）。
 
-Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
+Bash 専用の12実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
 
 子の処理枠は10秒、親の登録枠は集約の余裕を含め15秒とする。時間切れの子と不正な出力は診断して除外し、完了した他の判定を残す。集約自体の環境エラーは新たな拒否にせず、子の終了コード2だけをブロックとして伝播する。終了コード2と他の拒否が重なる場合は、他の拒否理由も stderr へ残す。
 
@@ -171,6 +172,7 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_DEV_TOOLKIT_SKIP_CHECKOUT_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_DECISION_TREE`
 - `FF_DEV_TOOLKIT_SKIP_EFFORT_ACTUAL_GUARD`
+- `FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_EFFORT_METRICS`
 - `FF_DEV_TOOLKIT_SKIP_EXIT_CODE_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_ISSUE_LABEL_GUARD`
@@ -187,6 +189,7 @@ Bash 専用の11実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD`
 - `FF_DISCARD_UNCOMMITTED`
 - `FF_EFFORT_ACTUAL_ACK`
+- `FF_MERGE_CLOSING_ACK`
 - `FF_EXIT_CODE_ACK`
 - `FF_LITERAL_WRITE_ACK`
 - `FF_LONG_GATE_BACKGROUND_ACK`
