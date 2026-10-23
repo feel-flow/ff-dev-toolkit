@@ -5,13 +5,15 @@
 #
 # 本体は何もしない。`multi-agent.sh --task review --cli codex-cli` へ委譲する。
 #
+# 「ff-dev-toolkit 開発元 Issue 番号」は開発元の検討記録を指し、導入先や公開配布先（feel-flow/ff-dev-toolkit）の Issue 番号ではない。
+#
 # ## なぜシムなのか
 #
 # 以前このファイルは各プロジェクトが自前で持つ 80〜390 行のラッパーで、
 # `review-common.sh` / `review-prompts.sh` と合わせて 3 本 1 組だった。同じ仕事を
 # オーケストレータと二重に持っていたため、消費プロジェクトごとにコピーが分岐し、
 # 依存欠落で起動できないコピーや、下記の stdin の罠を踏むコピーが生まれた
-# （Issue #406）。実装をオーケストレータ 1 本へ寄せ、この入口は名前と
+# （ff-dev-toolkit 開発元 Issue 番号 406）。実装をオーケストレータ 1 本へ寄せ、この入口は名前と
 # コマンドラインの互換だけを担う。
 #
 # ## 直接 `codex exec` を叩かない理由（重要）
@@ -43,7 +45,7 @@
 # 未対応のオプションは非 0 で拒否し、正規の経路を案内する。旧ラッパーの環境変数は、
 # 写せるものは写して 1 行通知し、写せないものだけ拒否する（下記）。
 #
-# 未知フラグの扱いは **allowlist 方式**（汎用パススルーにしない。Issue #970 の判断）。
+# 未知フラグの扱いは **allowlist 方式**（汎用パススルーにしない。ff-dev-toolkit 開発元 Issue 番号 970 の判断）。
 # 素通しにすると、シムが写像を持つ名前（--reviewers 等）と委譲先の生名が二重経路に
 # なって「どちらが解釈したか」が判別できなくなり、委譲先に無いフラグはオーケストレータ
 # 側の Unknown option（rc=1）で落ちる — 出るのは multi-agent.sh 自身の generic な
@@ -117,7 +119,10 @@
 #     MULTI_AGENT_MODEL_CODEX_CLI=<model>     モデルを明示する
 #     MULTI_AGENT_CODEX_PROFILE=<profile>     ~/.codex/<name>.config.toml を層に重ねる
 #     MULTI_AGENT_CODEX_REASONING_EFFORT=<effort>  effort だけを明示する
-#   （両者は同時指定できない。詳細は skills/multi-review/references/model-selection.md）
+#   MULTI_AGENT_MODEL_CODEX_CLI と MULTI_AGENT_CODEX_PROFILE は同時指定できない。
+#   MULTI_AGENT_CODEX_REASONING_EFFORT は profile と併用でき、両方が明示された場合は
+#   reasoning effort の指定が profile の値を上書きする。
+#   詳細は skills/multi-review/references/model-selection.md。
 #
 #   旧ラッパーの env は写す（黙殺しない。1 行通知する）:
 #     CODEX_MODEL             → MULTI_AGENT_MODEL_CODEX_CLI
@@ -139,7 +144,7 @@
 #
 #   終了コード: 0 = 解決 / 1 = どこにも無い（stdout 空）/ 2 = 解決を拒否（stdout 空）。
 #   2 は「FF_DEV_TOOLKIT_ROOT が不正」だけではない — 配置済みシムと解決先テンプレートの
-#   版不整合、plugin version と agent-config.yaml の不一致、sidecar が指す先の version が
+#   内容不一致・比較不能、plugin version と agent-config.yaml の不一致、sidecar が指す先の version が
 #   読めない場合も 2 で、env を設定していない cache 経路でも起きる（理由は stderr に出る）。
 #   どれも別候補へ落ちない（既存の fail closed と同じ）。
 #   stdout は契約、stderr（ℹ️ の診断行を含む）は契約ではない — 消費側は stdout だけを読む。
@@ -156,7 +161,7 @@ SCRIPT_NAME="$(basename "$0")"
 # 探索順は FF_DEV_TOOLKIT_ROOT（環境変数）→ Codex plugin cache / Claude plugin
 # cache / grok の導入実体 → 同じディレクトリのサイドカー。3 つの導入先を横断して
 # semantic version の最大を選び、同じ版が複数にある場合は Codex → Claude → grok の
-# 順で優先する（grok は Issue `#2119` で追加。grok は ~/.grok/installed-plugins/
+# 順で優先する（grok は ff-dev-toolkit 開発元 Issue 番号 2119 で追加。grok は ~/.grok/installed-plugins/
 # ff-dev-toolkit-<識別子>/ へ版名の無いディレクトリで導入するので、版は manifest で読む。
 # 置き場は grok 自身の規約どおり GROK_HOME（既定 ~/.grok）配下）。どれも解決
 # できなければ推測で走らずに落とす。
@@ -188,14 +193,14 @@ SCRIPT_NAME="$(basename "$0")"
 FF_ROOT_SIDECAR_NAME=".ff-dev-toolkit-root"
 # サイドカーの位置は 1 箇所で組む。$0 は実行中に変わらないので再計算する理由が無く、
 # 式を関数ごとに複製すると、配置規約を変えたとき片方だけ追従する形が生まれる
-# （Issue #769 項目 2）。
+# （ff-dev-toolkit 開発元 Issue 番号 769 項目 2）。
 FF_ROOT_SIDECAR_PATH="$(dirname "$0")/${FF_ROOT_SIDECAR_NAME}"
 
 # サイドカーの 1 行目を**生の値**で返す（既定値・表示用の置換は呼び出し側の責務）。
 # read は末尾に改行が無いファイルで「値を代入したうえで EOF により非 0」を返す。
 # その非 0 で `|| value=""` と空へ倒すと、手書きの使えるサイドカーを「使えない」と
-# 誤判定する（Issue #807 で 2 箇所直した当のバグ）。読み取りを 1 本に寄せるのは、
-# 同型の分岐が将来また片方だけ直る余地を消すため（Issue #769 項目 2）。
+# 誤判定する（ff-dev-toolkit 開発元 Issue 番号 807 で 2 箇所直した当のバグ）。読み取りを 1 本に寄せるのは、
+# 同型の分岐が将来また片方だけ直る余地を消すため（ff-dev-toolkit 開発元 Issue 番号 769 項目 2）。
 # 空ファイル・読めないファイルでは空を出力する（存在・権限の検査は呼び出し側で行う）。
 read_sidecar_first_line() {
   local value=""
@@ -205,7 +210,7 @@ read_sidecar_first_line() {
 
 # 期待するパスの形を 1 か所で持つ。診断が「指す先に multi-agent.sh がありません」で
 # 止まると、利用者は scripts/ を足すのか外すのかが判らず、設定ミスの解消に何往復も
-# かかる（Issue #603 の実測）。形を明示すれば 1 回で終わる。
+# かかる（ff-dev-toolkit 開発元 Issue 番号 603 の実測）。形を明示すれば 1 回で終わる。
 print_toolkit_path_shapes() {
   local indent="$1"
   echo "${indent}期待するパスの形（どちらの入口も両方の形を受け付けます）:" >&2
@@ -271,8 +276,9 @@ select_cache_toolkit() { # <cache-root> [<glob: 既定は */ff-dev-toolkit/*>]
   SELECTED_CACHE_VERSION="$best_version"
 }
 
-# 比較と同じ行末正規化を行い、ファイルの末尾 LF も含めて stream のまま識別する。
-# git は diff の既存前提。-w は使わず、失敗や空出力を内容 ID にしない。
+# 比較と同じ行末 CR 除去の規則で、末尾 LF も含めて stream のまま識別する。
+# ID 側の sed は LC_ALL=C、比較側は呼出元の locale を使う（同じ locale とは限らない）。
+# git は diff の既存前提。識別だけなので -w で object DB へ書かず、失敗や空出力は採用しない。
 normalized_content_id() {
   local path="$1" digest
   [ -f "$path" ] && [ -r "$path" ] || return 1
@@ -283,22 +289,49 @@ normalized_content_id() {
 
 verify_toolkit_identity() {
   local root="$1" version="$2" config_version template template_id shim_id
+  local comparison_rc=2 comparison_reason="" compare_dir=""
   template="$root/scripts/templates/codex-review.sh"
-  # 比較は行末を正規化して行う（Issue #658）。Windows の plugin cache はテンプレートを
+  # 比較は行末を正規化して行う（ff-dev-toolkit 開発元 Issue 番号 658）。Windows の plugin cache はテンプレートを
   # CRLF で持つことがあり、setup は配置時に LF へ正規化する。byte 比較のままだと、
-  # 内容が同一の正規構成（CRLF cache + LF 配置済みシム）を「版が一致しません」で
+  # 内容が同一の正規構成（CRLF cache + LF 配置済みシム）を内容不一致として
   # 拒否してレビューが 1 件も走らない。正規化は**行末の CR だけ**を落とす —
   # `tr -d '\r'` は本文中の CR も消すため、CR の有無だけ違う別内容を同一版と
   # 誤認する（setup 側 setup_strip_cr と同じ判定）。
-  if [ ! -r "$template" ] || ! cmp -s <(sed $'s/\r$//' "$0") <(sed $'s/\r$//' "$template"); then
+  # --print-toolkit-root を含むこの照合には、${TMPDIR:-/tmp} 配下へ書ける一時領域が必要。
+  # TMPDIR が未設定または空なら /tmp を使う。書込み不能なら比較不能の rc=2、stdout 空で止まる。
+  # process substitution では sed の失敗が cmp の不一致/一致へ化ける。入力生成の
+  # 成否と cmp の rc を別々に保持し、内容 ID の取得可否で判定原因を上書きしない。
+  if [ ! -e "$template" ]; then
+    comparison_reason="template が存在しません"
+  elif [ ! -f "$template" ] || [ ! -r "$template" ]; then
+    comparison_reason="template を読み取れません"
+  elif [ ! -f "$0" ] || [ ! -r "$0" ]; then
+    comparison_reason="配置済み shim を読み取れません"
+  elif compare_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-review-identity.XXXXXX")"; then
+    if sed $'s/\r$//' "$0" > "$compare_dir/shim" \
+       && sed $'s/\r$//' "$template" > "$compare_dir/template"; then
+      comparison_rc=0
+      cmp -s "$compare_dir/shim" "$compare_dir/template" || comparison_rc=$?
+      if [ "$comparison_rc" -gt 1 ]; then comparison_reason="正規化入力の比較に失敗しました"; fi
+    else
+      comparison_reason="正規化入力を読み取れません"
+    fi
+    rm -rf "$compare_dir"
+  else
+    comparison_reason="比較用の一時ディレクトリを作成できません"
+  fi
+  if [ "$comparison_rc" -ne 0 ]; then
     if ! template_id="$(normalized_content_id "$template")"; then template_id="(取得不可)"; fi
     if ! shim_id="$(normalized_content_id "$0")"; then shim_id="(取得不可)"; fi
-    if [ "$template_id" = "(取得不可)" ] || [ "$shim_id" = "(取得不可)" ]; then
-      echo "ERROR: template と配置済み shim の内容の一致を確認できません（内容 ID を取得できません）。" >&2
-    else
+    if [ "$comparison_rc" -eq 1 ]; then
       echo "ERROR: 解決した ff-dev-toolkit の template と配置済み shim が内容不一致です。" >&2
+      echo "       同じ版番号でも、未リリースの変更などで内容が異なる場合があります。" >&2
+    else
+      echo "ERROR: template と配置済み shim の内容の一致を確認できません（${comparison_reason}）。" >&2
     fi
-    echo "       同じ版番号でも、未リリースの変更などで内容が異なる場合があります。" >&2
+    if [ "$template_id" = "(取得不可)" ] || [ "$shim_id" = "(取得不可)" ]; then
+      echo "       一部または両方の内容 ID を取得できません（上記の拒否原因は変わりません）。" >&2
+    fi
     echo "       toolkit=${root} version=${version}" >&2
     echo "       template=${template} content-id=${template_id}" >&2
     echo "       shim=$0 content-id=${shim_id}" >&2
@@ -419,7 +452,7 @@ sidecar_recorded_value() {
 
 warn_env_masked_sidecar() {
   # FF_DEV_TOOLKIT_ROOT が使えないサイドカーを覆い隠す事故だけを告知する。
-  # 実測（Issue #603）: 同じシェルで FF_DEV_TOOLKIT_ROOT を export したまま成功したため
+  # 実測（ff-dev-toolkit 開発元 Issue 番号 603）: 同じシェルで FF_DEV_TOOLKIT_ROOT を export したまま成功したため
   # 「サイドカーは正しい」と誤って結論し、env の無い次のシェル（= 実際の運用）で失敗した。
   #
   # **cache 経路は対象にしない。** env はシェルスコープなので「ここでは在るが次では無い」が
@@ -436,7 +469,7 @@ warn_env_masked_sidecar() {
   #
   # 判定は canonical_toolkit_root（= 使えるオーケストレータを指しているか）までで、版や
   # 配置済みテンプレートの同一性（verify_toolkit_identity）は見ない。**据え置きの判断**
-  # （Issue #769 項目 4 で再確認。結論と根拠の正本は Issue #742 のレビューコメント）:
+  # （ff-dev-toolkit 開発元 Issue 番号 769 項目 4 で再確認。結論と根拠の正本は ff-dev-toolkit 開発元 Issue 番号 742 のレビューコメント）:
   # そこまで見ると、テンプレートを編集中の開発 clone を指すサイドカーで毎回鳴ることになり、
   # 上で避けたはずの «常時鳴る警告» を自分で作る。この境界の外（版不一致の覆い隠し）は
   # 告知の対象外である。
@@ -446,7 +479,7 @@ warn_env_masked_sidecar() {
   [ "$RESOLVED_TOOLKIT_SOURCE" = "explicit" ] || return 0
   [ -f "$FF_ROOT_SIDECAR_PATH" ] || return 0
   # 生の読み取りは read_sidecar_first_line に一本化（末尾改行なしの非 0 で値を捨てて
-  # いた Issue #807 の誤警告は、あちらのコメントを参照）。空ファイル・読み取り不能では
+  # いた ff-dev-toolkit 開発元 Issue 番号 807 の誤警告は、あちらのコメントを参照）。空ファイル・読み取り不能では
   # 空が返るため、従来どおり警告になる。
   sidecar_value="$(read_sidecar_first_line "$FF_ROOT_SIDECAR_PATH")"
   if [ -n "$sidecar_value" ] && canonical_toolkit_root "$sidecar_value" >/dev/null 2>&1; then
@@ -813,14 +846,14 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --all-perspectives)
-      # 前回レビューの Critical state を復旧するための明示フラグ（Issue #970）。
+      # 前回レビューの Critical state を復旧するための明示フラグ（ff-dev-toolkit 開発元 Issue 番号 970）。
       # multi-agent.sh に同名のフラグは無い — あちらでは「全観点」は観点フィルタの
       # **不在**（--perspective / --exclude-perspective / --mode cross-model を渡さない
       # unfiltered full review）で表現され、それがそのまま「新しい review series を
       # 開始する」正規の復旧手段になっている。そこでこのフラグは委譲 argv に何かを
       # 足すのではなく、「観点を絞る指定が一切無いこと」をシムが保証する形で写す。
       # verbatim に転送すると委譲先の Unknown option（rc=1）で落ちるだけで、案内どおりの
-      # コマンドが通らないという Issue #970 の形が残る。
+      # コマンドが通らないという ff-dev-toolkit 開発元 Issue 番号 970 の形が残る。
       ALL_PERSPECTIVES_GIVEN=1
       shift
       ;;
@@ -937,7 +970,7 @@ while [ $# -gt 0 ]; do
       # 復旧形に固定の `--cli codex-cli` は書かない。このシムが codex 不在の --dry-run で
       # 外そうとしている当の引数で、案内どおり付けると codex-cli の観点の fallback
       # 再割り当てが --cli フィルタに弾かれて「Execution plan is empty」へ戻る。codex
-      # だけに絞る従来形は、codex が入っている環境で利用者が足す（Issue 1600）。
+      # だけに絞る従来形は、codex が入っている環境で利用者が足す（ff-dev-toolkit 開発元 Issue 番号 1600）。
       echo "ERROR: ${SCRIPT_NAME} は '${1}' を受け付けません。" >&2
       echo "       対応オプションは --help で確認してください。" >&2
       echo "       それ以外は multi-agent.sh を直接呼んで指定してください:" >&2
@@ -992,7 +1025,8 @@ if [ -n "$PRINT_ROOT_FORMAT" ]; then
     exit 2
   fi
   # 解決は委譲時と同じ関数（診断も同じ。ERROR / ℹ️ はすべて stderr）。rc は
-  # 0 = 解決 / 1 = 無い / 2 = 明示指定が不正 をそのまま返す。stdout は解決したときだけ書く。
+  # 0 = 解決 / 1 = 無い / 2 = 解決拒否（内容不一致/比較不能/設定版不一致/明示指定不正等）
+  # をそのまま返す。stdout は解決したときだけ書く。
   _resolve_rc=0
   load_resolved_toolkit || _resolve_rc=$?
   [ "$_resolve_rc" -eq 0 ] || exit "$_resolve_rc"
@@ -1034,7 +1068,7 @@ fi
 # **7 本すべてがこれらを設定しており**、拒否はそのまま「移行できない」を意味した。
 # そこで黙殺と拒否の間に**写像 + 1 行通知**を置く。写せないものだけ拒否を残す。
 #
-# Issue #419 で effort 単体の正規入口を追加したため、旧 CODEX_REASONING_EFFORT も
+# ff-dev-toolkit 開発元 Issue 番号 419 で effort 単体の正規入口を追加したため、旧 CODEX_REASONING_EFFORT も
 # 1:1 で写せる。新旧が併存するときは新しい名前を優先し、どちらを使ったか通知する。
 if [ -n "${CODEX_MODEL:-}" ]; then
   # 「新しい設定」は MULTI_AGENT_MODEL_CODEX_CLI **だけではない**。codex-cli の
@@ -1358,7 +1392,7 @@ fi
 #
 # 警告が案内する復旧手段は**このシムが受け付けるもの**に限る。委譲先の
 # `--set-reviewers` はこのシムが受け付けないので、案内に書くと案内どおり渡した利用者を
-# 上の未対応オプション経路が rc=2 で拒む（消費側で実測・Issue 1600）。主 reviewer の
+# 上の未対応オプション経路が rc=2 で拒む（消費側で実測・ff-dev-toolkit 開発元 Issue 番号 1600）。主 reviewer の
 # 差し替えは env（MULTI_AGENT_REVIEW_MAIN）かプロジェクト設定で案内し、
 # `--set-reviewers` は multi-agent.sh を直接呼ぶときだけ使えると併記する。
 #

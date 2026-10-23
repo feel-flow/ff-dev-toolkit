@@ -44,6 +44,11 @@ fi
 
 必要なものは bash 3.2 以降、awk、find。`gh` は `promoted` / `mitigated` エントリの Issue state 確認にだけ使う（無ければ `未確認` として返す。`--offline` で明示的に使わない）。同梱の `scripts/knowledge-lookup.sh` の実在を確認して実行する。書き込みは一時ファイルだけで、対象リポジトリには何も書かない。
 
+<!--abd5d961cf347304-->
+MCP: 取得値: MCP で同じ repository の state=open Issue 全件の number / state / url を取得。形式: lookup.open-set の raw JSON / last=true を index に保存、正常 [] と取得不能を区別。渡し先: knowledge-lookup.sh --github-input /absolute/index.json へ渡す。個別照合は Issue state JSON を判断へ渡す。不足時: 任意不足 / 不完全 / 1000 件以上は未確認で local 検索を継続し、--offline は file も読まない。
+
+GitHub MCP などで取得済みの raw JSON を使う場合は `--github-input /absolute/index.json` を追加する（file 時は jq が必要）。`lookup.open-set` は repository/state=open/limit=1000、phase=`lookup` と完備性 `last=true` を照合し、repo ごとに 1 回読む。取得不能・不完全・1000 件以上は `未確認` としてローカル検索を継続する。正常な `[]` は取得済みの空集合であり、取得不能の代用品にしない。`--offline` は file も読まない。index と MCP raw の写像例・取得主体/全 page の確認境界は [knowledge fixture の対応表](../../tests/github-input-knowledge/README.md)を参照する。
+
 ### キーワード検索（実装・レビュー前）
 
 変更対象領域のキーワード（モジュール名・コマンド名・症状の語）を 1 つ以上渡す。既定は OR、`--all` で AND。
@@ -78,6 +83,9 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 - `promoted` / `mitigated` を「まだ誰も対策していない」と読まないこと。対策があるのに独自の回避策を実装へ持ち込むと、対策の二重化になる
 - Issue state が `未確認` の参照は `gh` が使えなかった・失敗した・open 一覧が上限に達したのいずれか。`open` と読み替えず、必要なら `gh issue view` で個別に確かめる
 - ヒットした ACE エントリを実装で参照したら、git-workflow の規定どおりコミット本文・`implementation-notes.md` に ACE ID を記録する（`Helpful` カウンターと再利用計測の入力になる）。台帳エントリの参照は Count を動かさない（Count は再発の計上であり、参照の計上ではない）
+
+<!--93216ebb8b2645cc-->
+MCP: 取得値: MCP で同じ repository の state=open Issue 全件の number / state / url を取得。形式: lookup.open-set の raw JSON / last=true を index に保存、正常 [] と取得不能を区別。渡し先: knowledge-lookup.sh --github-input /absolute/index.json へ渡す。個別照合は Issue state JSON を判断へ渡す。不足時: 任意不足 / 不完全 / 1000 件以上は未確認で local 検索を継続し、--offline は file も読まない。
 
 ## 終了コード
 

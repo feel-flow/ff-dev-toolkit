@@ -3,7 +3,7 @@ name: multi-review
 description: 主担当のセルフレビューを基準線に、環境チェックで別 CLI（Claude / Codex / Grok / Copilot）が在るときだけクロスレビューを 1 本加える。一時的な利用不可はその回だけ単一で完了し、cross_review=off で単一固定もできる
 ---
 
-# /multi-review — 複数AIによるクロスモデルレビュー実行
+# /multi-review — 複数AIクロスモデルレビュー
 
 ## ASDD 2.0 設定がある場合
 
@@ -36,11 +36,11 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 
 ## toolkit 変更 PR の制約（レビュー基盤は解決済み実体で動く）
 
-resource（`multi-agent.sh` / `multi-review.sh` / アダプタ・集約処理）は上で解決した root の実体で走り、**どの実体が解決されるかは、このスキルを読み込んだ場所で決まる**（ADR-036）。インストール済み実体から読み込むと、toolkit を変更する PR では**その PR によるレビュー基盤の変更はレビュー実行経路には載らない** — レビューは変更前（インストール済み版）の実装で走る。
+**どの実体が解決されるかは、このスキルを読み込んだ場所で決まる**。インストール済み実体から読む回は、**レビューは変更前（インストール済み版）の実装で走る**ため、**その PR によるレビュー基盤の変更はレビュー実行経路には載らない**。
 
 - 作業ツリーの実装へ切り替えるオプト（`--use-worktree-scripts` 相当）は**実装しない**（設計判断の正本は ADR-043）。代わりに**変更対象に対応する suite を PR の worktree で実走する**
 - 契約文・スキル・hook を変えた PR では、**その変更が全ホスト経路へ届いているか**を確認する（正本表はソースリポジトリの `docs/06-reference/HOST-PARITY.md`）
-- 結果が言及する基盤の挙動は解決済み実体のもので、**基盤の挙動を PR 起因と即断しない**
+- 結果は解決済み実体の挙動。**基盤の挙動を PR 起因と即断しない**
 
 ## 前提
 
@@ -50,6 +50,9 @@ resource（`multi-agent.sh` / `multi-review.sh` / アダプタ・集約処理）
 ## 引数
 
 `$ARGUMENTS` は `multi-review.sh` へ渡す。意味は `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --help` と [Perspective フィルタと単一 CLI 縮退](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#perspective-フィルタと単一-cli-縮退) が正本。`--staged` は `--base` / `MULTI_AGENT_BASE_BRANCH` と排他。AC は `--description '<AC 本文>'` で事前投入する（レビュー CLI は read-only で `gh` を呼べない）。
+
+<!--04f8b39c515cbe1c-->
+分類: 非操作: read-only の説明。MCP取得ACは親が --description へ渡し reviewer write 禁止
 
 ## 手順
 
@@ -61,7 +64,7 @@ resource（`multi-agent.sh` / `multi-review.sh` / アダプタ・集約処理）
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
 ```
 
-`cross_review=off`（または `features.multiReview=false`）のセルフレビューでは手順 1・2 を省く（利用者の明示起動は実行する）。別 CLI を加える回は `--mode cross-model --cli <CLI> --perspective comprehensive-review` と試行ごとの `--output-dir` を明示する。非 0 終了・INCOMPLETE・未解消指摘はこの規定で免除しない。pair / 単一固定の保存は依頼時だけ [クロスレビューの単一固定](../../docs-template/05-operations/deployment/self-review.md#クロスレビューの単一固定cross_review) に従う。
+`cross_review=off`（または `features.multiReview=false`）のセルフレビューでは手順 1・2 を省く（利用者の明示起動は実行する）。別 CLI を加える回は `--mode cross-model --cli <CLI> --perspective comprehensive-review` と試行ごとの `--output-dir` を明示する。非0・INCOMPLETE・未解消指摘は免除しない。pair / 単一固定の保存は依頼時だけ [クロスレビューの単一固定](../../docs-template/05-operations/deployment/self-review.md#クロスレビューの単一固定cross_review) に従う。
 
 ### 0b. 変更クラス別のレーン数（経路）
 
@@ -82,13 +85,13 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### 1. プラン確認（--dry-run）
 
-cold/clear の新ブランチは `--fresh` 無しで開始する。旧ブランチのCriticalが残るときは [退避専用経路](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#archive-only) で `--archive-only=<確認した旧ブランチ名>` を1回実行してから通常起動する。旧名・base identityを推測しない。未回収requestや壊れたstateは保全停止する。**同じブランチの2回目以降にfreshや退避を足さず、未解消Criticalのcarryを守る**。退避はレビュー完了を意味しない。
+cold/clear の新ブランチは `--fresh` 無しで開始する。旧ブランチのCriticalが残るときは [退避専用経路](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#archive-only) で `--archive-only=<確認した旧ブランチ名>` を1回実行してから通常起動する。旧名・base identityは実測し、未回収requestや壊れたstateは保全停止する。**同じブランチの2回目以降にfreshや退避を足さず、未解消Criticalのcarryを守る**。退避はレビュー完了を意味しない。
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run --route <REVIEW_ROUTE の値> $ARGUMENTS
 ```
 
-CLI・観点・モード・タイムアウト・警告を報告する。✅ は PATH 在だけを意味し、認証・残高切れは実行時まで見えない。例外は sandbox の適用可否で、dry-run の probe が「sandbox を適用できません」（目印の無い不活性を含む。INCOMPLETE になる）か「判定できませんでした」（INCOMPLETE になりうる）を出す。**無警告は成功の保証ではない**。外し方は警告本文にあり、grok の docker.sock symlink は先に [read-only のまま動かす手順](../../docs-template/05-operations/deployment/grok-cli-reviewer.md#dockersock-が-symlink-の-macos-で-read-only-が起動拒否される)を試す。
+CLI・観点・モード・timeout・警告を報告。✅ は PATH 在だけで認証・残高は未確認。例外は sandbox の適用可否で、dry-run の probe が「sandbox を適用できません」（目印の無い不活性を含む。INCOMPLETE になる）か「判定できませんでした」（INCOMPLETE になりうる）を出す。**無警告は成功の保証ではない**。外し方は警告本文にあり、grok の docker.sock symlink は先に [read-only のまま動かす手順](../../docs-template/05-operations/deployment/grok-cli-reviewer.md#dockersock-が-symlink-の-macos-で-read-only-が起動拒否される)を試す。
 
 ### 2. レビュー実行
 
@@ -110,9 +113,15 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 **許可側**: `gh` 経由の GitHub 側作業（Issue 本文の AC 更新・PR 本文の更新・follow-up の起票・完了報告の下書き）は作業ツリーを触らないので回してよい。**禁止側**: 編集は溜めず、**レビュー終端後に直したらすぐ commit し、次の回転を dirty な作業ツリーで起動しない**。dirty のまま起動すると CLI 側は DISCARDED になり、レビューエージェント（`git diff <base>...HEAD` を見る）は PR の内容としては未解消のままと判定する。
 
+<!--30dc8e97b78e1e23-->
+MCP: 取得値: MCP で同じ Issue / PR の最新 body / updated_at を取得。形式: body原文と title/labels の構造化引数。渡し先: 親が update_issue / update_pull_request / create_issue → fresh後読。不足時: MCP 必須不足は名指し停止。
+
 走行中の deny の例外として、**通る書き込み先は 3 つ: 作業ツリーの外（scratchpad / `mktemp -d` / `/tmp`）・`.review-results/`・gitignore 済みのパス**（`gh ... > tmp/<slug>/body.md` など）。復旧は deny 理由文の `rm` か、Bash の区間先頭の `FF_REVIEW_LOCK_OVERRIDE=1`。非対話で起動を自動化するときは `FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1`。
 
-**利用不可・失敗時（exit 0 の単一縮退も含む）**: スクリプトの自動 fallback は無い。`Status: incomplete` は未確認。利用制限時は復旧待ち・予約より先に [失敗時の担当選択](../../docs-template/05-operations/deployment/self-review.md#失敗時の担当選択) に従う。自ホストのレーンは **2a** へ。未完了観点だけの再実行:
+<!--042221985b310245-->
+分類: 非操作: 書込先の例示。MCPはscratch保存しsource凍結
+
+**利用不可・失敗時（exit 0 の単一縮退も含む）**: 自動fallback無し。`Status: incomplete` は未確認。利用制限時は復旧待ち・予約より先に [失敗時の担当選択](../../docs-template/05-operations/deployment/self-review.md#失敗時の担当選択) に従う。自ホストは **2a** へ。未完了観点の再実行:
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --resume --timeout 1800
@@ -120,7 +129,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### 3. 結果分析と修正提案
 
-結果は `.review-results/` に保存される。今回のプラン外の CLI ディレクトリと `previous/` は今回の結果ではない（正本は [結果の確認](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#結果の確認)）。
+結果は `.review-results/`。プラン外の CLI と `previous/` は今回の結果ではない（正本は [結果の確認](../../docs-template/05-operations/deployment/multi-cli-review-orchestration.md#結果の確認)）。
 
 #### 3-1. 結果ファイルの読み込み（サブエージェント委譲が既定）
 

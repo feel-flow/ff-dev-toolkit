@@ -96,6 +96,9 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 - [プロジェクトの技術スタックから、対象となる secret（接続文字列・署名鍵・API キー等）と、それを出力し得る具体的コマンドを検出して列挙する。例示のコマンドはそのまま転記せず、実際に使うスタックのものへ置き換えること（例示: `supabase --debug` / `vercel env pull /dev/stdout` / `gh auth token` / `stripe config --list`）]
 ```
 
+<!--ecdecf9b9b508495-->
+分類: 禁止例: secret を出し得るコマンドの検出例であり実行指示ではない。MCP で token 取得へ置換せず、禁止対象の記述として残す
+
 ### 4. CLAUDE.md の生成
 
 以下の構造で `CLAUDE.md` を生成します:

@@ -1,0 +1,3 @@
+whole-run\t2026-10-22T00:00:00Z unabridged fixture line
+whole-run\t2026-10-22T00:00:01Z suites: total=2 run=2 passed=2 failed=0 skipped=0 not-run=0
+whole-run\t2026-10-22T00:00:02Z checks-skipped: total=0 suites=0

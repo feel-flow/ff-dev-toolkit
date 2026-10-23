@@ -1,0 +1,11 @@
+{
+  "required_pull_request_reviews": null,
+  "required_status_checks": null,
+  "restrictions": null,
+  "required_signatures": {
+    "enabled": false
+  },
+  "lock_branch": {
+    "enabled": false
+  }
+}

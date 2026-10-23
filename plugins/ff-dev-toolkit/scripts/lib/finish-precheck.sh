@@ -16,6 +16,7 @@ cmd_precheck() {
       --subject) [[ $# -ge 2 ]] || usage; MERGE_SUBJECT="$2"; have_subject=1; shift 2 ;;
       --body) [[ $# -ge 2 ]] || usage; MERGE_BODY="$2"; have_body=1; shift 2 ;;
       --gate-record) [[ $# -ge 2 ]] || usage; GATE_RECORD="$2"; have_gate_record=1; shift 2 ;;
+      --github-input) [[ $# -ge 2 && -n "$2" ]] || usage; github_input="$2"; shift 2 ;;
       -h|--help) usage ;;
       -*) echo "✗ 不明な引数: $1" >&2; usage ;;
       *) [[ -z "$PR_NUMBER" ]] || usage; PR_NUMBER="$1"; shift ;;
@@ -32,15 +33,16 @@ cmd_precheck() {
     [[ -n "$GATE_RECORD" && -f "$GATE_RECORD" && -r "$GATE_RECORD" ]] \
       || die_env "--gate-record の記録を読めません（存在しない・ファイルでない・読み取り権限が無い）: ${GATE_RECORD:-（空）}" "別 checkout の記録のパス（WSL の clone なら \`git rev-parse --absolute-git-dir\` の下の ff-dev-toolkit/gate-record を //wsl.localhost/<distro>/… で）を確かめて再実行する。既定の記録へは戻さない"
   fi
-  need_cmd gh "gh をインストールして gh auth login を済ませる"
+  [[ -n "$github_input" ]] || need_cmd gh "gh をインストールして gh auth login を済ませる"
   need_cmd jq "jq をインストールする"
   need_repo
+  finish_file_init
   need_bundled check-closing-keywords.sh
   need_bundled check-merge-freshness.sh
   need_bundled effort-report.sh
 
   local PR_JSON PR_FIELDS="number,state,isDraft,headRefName,headRefOid,baseRefName,title,body,closingIssuesReferences,commits,statusCheckRollup,additions,deletions,files,isCrossRepository"
-  PR_JSON="$(gh_pr_view_or_die "$PR_NUMBER" "$PR_FIELDS")" || exit $?
+  PR_JSON="$(gh_pr_view_or_die "$PR_NUMBER" "$PR_FIELDS" initial)" || exit $?
   local pr_state head_ref base_ref head_oid pr_title is_draft is_cross
   pr_state="$(printf '%s' "$PR_JSON" | jq -r '.state // ""')"
   is_draft="$(printf '%s' "$PR_JSON" | jq -r '.isDraft // false')"
@@ -56,8 +58,16 @@ cmd_precheck() {
   [[ "$pr_state" == "OPEN" ]] || echo "⚠️  PR #${PR_NUMBER} は OPEN ではありません（state=${pr_state}）。以降の判定は参考値" >&2
 
   local TARGET_REPO TARGET_REPO_URL TARGET_REPO_INFO
-  TARGET_REPO_INFO="$(gh repo view --json nameWithOwner,url 2>/dev/null)" \
-    || die_env "リポジトリ情報（owner/repo・URL）を取得できません" "gh repo view が通る cwd（origin が GitHub のリポジトリ）で再実行する"
+  if [[ -n "$github_input" ]]; then
+    jq -n --arg repository "$github_repository" '{repository:$repository}' >"$github_tmp/scope.json" || exit 2
+    github_file_read "$github_input" finish.precheck.repo "$github_tmp/scope.json" initial "$github_tmp/position.json" >"$github_tmp/repo.json" || exit 2
+    finish_file_require "$github_tmp/repo.json" finish.precheck.repo '(.nameWithOwner | type == "string") and (.url | type == "string")' nameWithOwner/url || exit 2
+    [[ "$(jq -r '.url' "$github_tmp/repo.json")" == "$github_repository" ]] || { _github_input_error finish.precheck.repo 'repository URL mismatch'; exit 2; }
+    TARGET_REPO_INFO="$(cat "$github_tmp/repo.json")"
+  else
+    TARGET_REPO_INFO="$(gh repo view --json nameWithOwner,url 2>/dev/null)" \
+      || die_env "リポジトリ情報（owner/repo・URL）を取得できません" "gh repo view が通る cwd（origin が GitHub のリポジトリ）で再実行する"
+  fi
   TARGET_REPO="$(printf '%s' "$TARGET_REPO_INFO" | jq -er '.nameWithOwner | select(type == "string" and test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))')" \
     || die_env "リポジトリ名（owner/repo）を解決できません" "gh repo view --json nameWithOwner,url の応答を確かめて再実行する"
   TARGET_REPO_URL="$(printf '%s' "$TARGET_REPO_INFO" | jq -er --arg repo "$TARGET_REPO" '
@@ -235,15 +245,23 @@ cmd_precheck() {
     local check_attempt=0 max_check_attempts=3 check_json check_total check_failed check_pending
     while (( check_attempt < max_check_attempts )); do
       check_attempt=$((check_attempt + 1))
-      if checks_out="$(gh pr checks "${PR_NUMBER}" --watch --fail-fast 2>&1)"; then
+      if [[ -z "$github_input" ]] && checks_out="$(gh pr checks "${PR_NUMBER}" --watch --fail-fast 2>&1)"; then
         checks="passed"
         checks_report="全 checks の完了と成功を確認済み（${rollup_count} 件）"
         break
       fi
-      printf '%s\n' "${checks_out}" >&2
-      if ! check_json="$(gh pr view "${PR_NUMBER}" --json statusCheckRollup 2>&1)" \
-        || ! printf '%s' "$check_json" | jq -e '(.statusCheckRollup | type) == "array"' >/dev/null 2>&1; then
-        continue
+      if [[ -n "$github_input" ]]; then
+        jq -n --arg repository "$github_repository" --argjson pr "$PR_NUMBER" '{repository:$repository,pr:$pr}' >"$github_tmp/scope.json" || exit 2
+        jq -n --argjson attempt "$check_attempt" '{attempt:$attempt}' >"$github_tmp/check-position.json" || exit 2
+        github_file_read "$github_input" finish.precheck.checks-retry "$github_tmp/scope.json" checks-retry "$github_tmp/check-position.json" >"$github_tmp/checks.json" || exit 2
+        finish_file_require "$github_tmp/checks.json" finish.precheck.checks-retry '(.statusCheckRollup | type == "array") and all(.statusCheckRollup[]; ((.conclusion | type == "string") or (.state | type == "string")))' statusCheckRollup || exit 2
+        check_json="$(cat "$github_tmp/checks.json")"
+      else
+        printf '%s\n' "${checks_out}" >&2
+        if ! check_json="$(gh pr view "${PR_NUMBER}" --json statusCheckRollup 2>&1)" \
+          || ! printf '%s' "$check_json" | jq -e '(.statusCheckRollup | type) == "array"' >/dev/null 2>&1; then
+          continue
+        fi
       fi
       check_total="$(printf '%s' "$check_json" | jq -r '.statusCheckRollup | length')"
       check_failed="$(printf '%s' "$check_json" | jq -r '[.statusCheckRollup[] | select((.conclusion // .state // "" | ascii_upcase) as $s | ["FAILURE","ERROR","TIMED_OUT","ACTION_REQUIRED","STARTUP_FAILURE","CANCELLED","STALE"] | index($s)) | (.name // .context // "(名称不明)")] | join(", ")')"
@@ -286,7 +304,27 @@ cmd_precheck() {
     rt_page=$((rt_page + 1))
     [[ "$rt_page" -le 50 ]] || { rm -f "$rt_err"; echo "REVIEW_THREADS_SOURCE=unavailable"; die_env "レビュースレッドのページ送りが 50 ページを超えました（PR #${PR_NUMBER}）" "スレッドを resolve して減らすか PR を分割してから finish.sh precheck を再実行する（0 件として扱わない）"; }
     # JSON は stdout だけで受ける（stderr を混ぜると gh の警告で jq の型検査が落ち「解釈不能」に化ける）
-    if [[ -n "$rt_after" ]]; then
+    if [[ -n "$github_input" ]]; then
+      jq -n --arg repository "$github_repository" --argjson pr "$PR_NUMBER" '{repository:$repository,pr:$pr,first:100,comments_first:100}' >"$github_tmp/scope.json" || exit 2
+      if [[ -n "$rt_after" ]]; then jq -n --arg cursor "$rt_after" '{cursor:$cursor}' >"$github_tmp/thread-position.json"; else printf '{}\n' >"$github_tmp/thread-position.json"; fi
+      github_file_read "$github_input" finish.precheck.threads "$github_tmp/scope.json" after-checks "$github_tmp/thread-position.json" >"$github_tmp/threads.json" || exit 2
+      finish_file_require "$github_tmp/threads.json" finish.precheck.threads '
+        def actor: . == null or (type == "object" and has("login") and (.login | type == "string"));
+        .data.repository.pullRequest as $p | ($p | has("author")) and ($p.author | actor) and
+        ($p.reviewThreads.nodes | type == "array") and
+        ($p.reviewThreads.pageInfo.hasNextPage | type == "boolean") and
+        ($p.reviewThreads.pageInfo | has("endCursor")) and
+        ($p.reviewThreads.pageInfo.endCursor == null or ($p.reviewThreads.pageInfo.endCursor | type == "string")) and
+        (if $p.reviewThreads.pageInfo.hasNextPage then ($p.reviewThreads.pageInfo.endCursor | type == "string" and length > 0) else true end) and
+        all($p.reviewThreads.nodes[]; (.id | type == "string") and (.isResolved | type == "boolean") and (.isOutdated | type == "boolean") and
+          (.comments.totalCount | type == "number" and . >= 0) and (.comments.nodes | type == "array") and
+          all(.comments.nodes[]; has("author") and (.author | actor) and (.body | type == "string") and
+            has("path") and (.path == null or (.path | type == "string")) and
+            has("line") and (.line == null or (.line | type == "number")) and
+            has("originalLine") and (.originalLine == null or (.originalLine | type == "number"))))
+      ' author/reviewThreads.nodes/id/isResolved/isOutdated/comments.totalCount/comments.nodes.author/body/path/line/originalLine/pageInfo/endCursor/cursor || exit 2
+      rt_json="$(cat "$github_tmp/threads.json")"
+    elif [[ -n "$rt_after" ]]; then
       rt_json="$(gh api graphql -f query="$rt_query" -f owner="${TARGET_REPO%%/*}" -f name="${TARGET_REPO#*/}" -F number="$PR_NUMBER" -f after="$rt_after" 2>"$rt_err")"
     else
       rt_json="$(gh api graphql -f query="$rt_query" -f owner="${TARGET_REPO%%/*}" -f name="${TARGET_REPO#*/}" -F number="$PR_NUMBER" 2>"$rt_err")"
@@ -358,7 +396,7 @@ cmd_precheck() {
   # 渡す（照合した先端とマージする先端を同じにする）。remote-tracking ref は前回 fetch 時点の
   # スナップショットなので、fetch を忘れた回に「古い先端 == 古い実測対象」で一致してしまう。
   local PR_JSON_AGAIN snap_before snap_after snap_diff
-  PR_JSON_AGAIN="$(gh_pr_view_or_die "$PR_NUMBER" "$PR_FIELDS")" || exit $?
+  PR_JSON_AGAIN="$(gh_pr_view_or_die "$PR_NUMBER" "$PR_FIELDS" after-threads)" || exit $?
   # 2 つのスナップショットは標準入力で渡す（PR 本文を含むので、引数に載せると上の畳み込みと同じ上限で
   # jq が起動できない。Issue `#2029`。Windows で 10KB 超の本文から実測）
   snap_before="$(pr_snapshot <<<"$PR_JSON")" && snap_after="$(pr_snapshot <<<"$PR_JSON_AGAIN")" \

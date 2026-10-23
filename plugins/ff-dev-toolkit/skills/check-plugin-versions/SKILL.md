@@ -44,6 +44,9 @@ fi
 必要なものは bash 3.2 以降、jq、GitHub にアクセスできる gh。directory source は git origin を読む。
 固定した root の `scripts/check-plugin-versions.sh` と `scripts/lib/plugin-versions.jq` の実在を確認して実行する。
 
+<!--d3664a64f2addcad-->
+分類: CLI固有: この版検査 script は gh 呼出しを内包し file 入力を持たないため MCP raw を直接渡す代替は無い。gh 不足は依存不在の rc1 で停止し、MCP 取得を script 成功としない
+
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-plugin-versions.sh" --json
 ```

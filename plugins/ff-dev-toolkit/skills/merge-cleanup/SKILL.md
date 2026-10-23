@@ -14,6 +14,9 @@ allowed-tools: ["Bash"]
 
 Git Workflow のマージ後クリーンアップを 1 コマンドで実施する project-agnostic な実装。実体は同梱 `scripts/merge-cleanup.sh`（全ステップが 1 プロセスで走り、途中結果が最終サマリーまで正しく引き継がれる）で、`scripts/finish.sh cleanup` が PR の実在と gh の到達を確かめてから委譲する。本文が持つのは呼び出しと、終了コード・サマリーの読み方（判断点）だけ。挙動の全文は `merge-cleanup.sh` のヘッダにある。
 
+<!--920bddec85dfa5b0-->
+MCP: 取得値: MCP で同じ PR の state / head / base / fork / OID と merged/open 一覧を取得。形式: cleanup-state / cleanup-pr / cleanup-guards の raw JSON を同じ index に保存。渡し先: finish.sh cleanup <PR> --github-input /absolute/index.json へ渡す（jq と Git は必要）。不足時: 必須不足は rc2 で停止、削除 guard の任意不足は SKIP / PARTIAL で保全。gh 専用前提は file 経路には課さない。
+
 ## プラグインルートの固定（必須）
 
 <!-- ff-dev-toolkit-plugin-root-contract:start -->
@@ -62,26 +65,12 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 - **`disable-model-invocation` は意図的に付けない**。実行部が 1 行なのでフラグはスクリプト直叩きで迂回でき破壊的操作を防げない一方、フルオートチェーンが本スキルの実行を求めているため可用性だけが落ちる（ACE-147-1。回帰防止は `tests/skill-frontmatter/verify.sh`）
 - マージ前の base 追随・リベース後の送信は [Git Workflow](../../docs-template/05-operations/deployment/git-workflow.md#base-の取り込みとリベース後の送信) に従う（本スキルが行うマージ済みブランチの削除とは別の手順）
 
-## スクリプトがやること
+<!--79a18ae02cc1145d-->
+MCP: 取得値: MCP で同じ PR の state / head / base / fork / OID と merged/open 一覧を取得。形式: cleanup-state / cleanup-pr / cleanup-guards の raw JSON を同じ index に保存。渡し先: finish.sh cleanup <PR> --github-input /absolute/index.json へ渡す（jq と Git は必要）。不足時: 必須不足は rc2 で停止、削除 guard の任意不足は SKIP / PARTIAL で保全。gh 専用前提は file 経路には課さない。
 
-1. **未コミット変更ガード** — あれば中断してユーザーに分類判断を仰ぐ（`git restore` / `git clean` は実行しない）。常駐ツールが書き続けるパスは `FF_MERGE_CLEANUP_IGNORE_PATHS` で対象外にできる（下記）
-2. **対象 PR の情報取得** — state / head / base / headRefOid / fork 判定。**MERGED でなければ破壊的処理の前に中断**（番号の打ち間違い対策）
-3. **base ブランチ復帰 + 最新化** — `baseRefName` へ `git switch` し `fetch --prune` + `pull --ff-only`。別 worktree が base を保持していれば、clean のときだけ同じ HEAD の detached へ退避して worktree を残し、dirty なら触らず中断する
-4. **対象 PR のリモートブランチ削除** — same-repo かつ open PR で head 再利用されていない場合に `--force-with-lease=<ref>:<期待OID>` で削除（照合と削除の間の push はサーバー側で原子的に拒否 = TOCTOU 対策）。push の前に `--dry-run` と同じ判定（`git ls-remote --exit-code`）で ref の実在と OID 一致を確かめ、ref が無い・OID が違う・照合できないときは削除 push を行わない（消えた ref への削除 push も pre-push hook を起動し、空の stdin のため consumer の「削除だけならスキップ」判定が効かずフルゲートが走る）。削除 push は `SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0` 付き（simple-git-hooks / husky の consumer のフルゲートを起動しない）
-5. **`[gone]` ローカルブランチ + 関連 worktree の削除** — worktree は clean を確認してから。`-D` は (名前, ローカル OID) が MERGED PR の head と一致する場合のみ。マージ済みと機械確認できたエージェント worktree（`claude agent` ロック + 使い捨てパス `.review-results/` の untracked だけ）は unlock → 個別除去 → force なしの `git worktree remove` で片付ける
-6. **削除した worktree のトランスクリプト回収** — jsonl の `cwd` 照合を通ったものだけを検証済み `tar.gz` へアーカイブしてから元を消す（既存の孤児は `/sweep-orphan-transcripts`）
-7. **リモート取り残しのガード付き自動削除** — (名前, OID) が MERGED PR の head と一致 / fork 由来でない / 保護ブランチでない / open PR で未使用 の全ガードを通過したものだけ lease 付きで削除。ガード情報の取得に 1 つでも失敗したら削除しない（fail-closed）
-8. **最終検証 + 結果サマリー** — 削除 / スキップ / 失敗を分類して報告
+## スクリプトの処理と環境変数
 
-## 環境変数
-
-| 変数 | 既定 | 用途 |
-| --- | --- | --- |
-| `FF_MERGE_CLEANUP_IGNORE_PATHS` | （空） | 未コミット変更ガードの対象外にするパス。`:` 区切りの git pathspec glob（`videos/**:.cache/**`）。効くのは「中断しても何も消えない」ガード（Step 1 / Step 3）だけで、worktree 削除前の clean 確認（Step 5）には効かない。空パターン・前後の空白は中断（fail-closed）。恒常的に dirty なリポジトリでは `.claude/settings.json` の `env` に書く |
-| `FF_MERGE_CLEANUP_PROTECT_BRANCHES` | `release/*` | 追加の保護パターン（`:` 区切り glob。`none` で追加なし）。`develop` / `main` / `master` / `staging/*` はハードコードで設定でも外せない。文字クラス `[...]` は未対応で中断 |
-| `FF_MERGE_CLEANUP_MERGED_PR_LIMIT` | 1000 | Step 7 の照合上限。上限到達は「これより古い MERGED PR は照合対象外」とログに出る |
-| `FF_MERGE_CLEANUP_TRANSCRIPTS` | `archive` | `off` で回収を無効化。それ以外の値はエラーとして報告（黙って無効化しない） |
-| `FF_MERGE_CLEANUP_PROJECTS_DIR` / `FF_MERGE_CLEANUP_TRANSCRIPT_ARCHIVE_DIR` | `<config>/projects` / `<config>/transcript-archives` | 走査対象・アーカイブ先の上書き（`<config>` は `CLAUDE_CONFIG_DIR`、未設定なら `~/.claude`） |
+[処理一覧と環境変数](references/steps.md)を読む。MERGED・same-repo・head OID・open PR 再利用・保護枝・worktree の生存と clean を照合し、削除は exact ref の lease 付き。取得不能は削除保全、意図した SKIP と失敗を分ける。
 
 ## 呼び出し元が base でも PR head でもないブランチにいる場合 — switch なし掃除モード
 
@@ -96,12 +85,21 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 `finish.sh precheck` は base / head を別 worktree が保持する回に、既存の互換経路と明示的な OID lease を保つため `--delete-branch` を外す。merge 対象は取得済みのホストを含む URL の `--repo` へ固定する。gh v2.102.0 はこの経路でローカルの切替・削除を行わず、その後始末は本スキルへ委譲する。生成コマンドは merge 成功後だけ ref を照会し、不在は成功・別 OID は保全・一致は lease 削除となる。削除拒否後も再照会し、照会不能や期待 OID が残る削除失敗は非 0 で終わる。`HEAD_DELETE_RESULT` を merge の成否とは別項目で報告する（[詳細](../../docs-template/05-operations/deployment/git-workflow.md#ステップ8-マージmerge)）。他セッションの worktree は削除せず、保持者のパスと状態を報告して処分はユーザー判断に委ねる。その後は上の switch なし掃除モードで完走できる。
 
+<!--c9b300ab6233b80b-->
+MCP: 取得値: MCP で同じ PR の state / head / base / fork / OID と merged/open 一覧を取得。形式: cleanup-state / cleanup-pr / cleanup-guards の raw JSON を同じ index に保存。渡し先: finish.sh cleanup <PR> --github-input /absolute/index.json へ渡す（jq と Git は必要）。不足時: 必須不足は rc2 で停止、削除 guard の任意不足は SKIP / PARTIAL で保全。gh 専用前提は file 経路には課さない。
+
 ## `--delete-branch` の部分失敗の読み方とリモート個別削除
 
 過去の `--repo` を明示しない経路では、削除対象の head ブランチ自体が別 worktree に保持されている回に、`gh pr merge --squash --delete-branch` が `failed to delete local branch ... used by worktree at ...` を残して部分的に失敗した。現在の生成コマンドは `--repo` を明示し、gh v2.102.0 のローカル後処理を行わない。マージそのものが失敗したように読めるが、**マージとリモートブランチ削除は別工程であり、そちらは成功していることがある**。判定は出力の文言ではなく実測で行う:
 
+<!--43f5fd66df1119f1-->
+分類: 非操作: 過去の部分失敗の説明であり旧 merge コマンドの再実行指示ではない。MCP merge と削除の後読は次の実測手順へ進む
+
 1. `gh pr view <PR番号> --json state --jq .state` が `MERGED` であること
 2. `git ls-remote --exit-code --heads origin '<head ブランチ>'` の**終了コード**を見ること。`2` = ref なし（リモートは削除済み）、`0` = ref あり（残存）。**それ以外の終了コードは「判定不能」で、削除済みと読んではいけない**（通信・認証の失敗でも出力は空になる）
+
+<!--1a9171e284ecbb21-->
+MCP: 取得値: MCP で同じ PR の state / merged を fresh 取得。形式: PR JSON の MERGED / merged=true と Git の exact ref 実測。渡し先: この手順の merge と削除の別判定へ渡す。MCP merge の成功応答だけで削除完了にしない。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 1 と 2 の終了コード `2` を満たせば、ローカルの後始末は本スクリプトに任せる。ref が残る場合も `/merge-cleanup <PR番号>` を使う。対象 PR の head OID を照合し、同名 ref の再利用は保全、一致する場合だけ lease 付きで削除する。照合不能や削除未完了を成功とせず、サマリーの理由から復旧する。
 
@@ -112,6 +110,9 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 | 0 | 完全成功 |
 | 1 | 致命的エラーで中断（引数不正 / 環境変数の指定不正 / 呼び出し元または base 所有 worktree の未コミット変更 / switch・pull 失敗 / gh 失敗 / Step 3 の `fetch --prune` 失敗 など）。`finish.sh cleanup` が委譲前に止める前提崩れ（PR 不在 / gh 不通 / 委譲先の不在。未実行）もここ |
 | 2 | 完了したが一部失敗あり（PARTIAL）。サマリーの「失敗した項目」を確認して手動対応。**リモートブランチの削除失敗と、その直後の削除反映 `fetch --prune` の失敗はここ**（掃除全体を止めない） |
+
+<!--427082609d0f5cda-->
+MCP: 取得値: MCP で同じ PR の state / head / base / fork / OID と merged/open 一覧を取得。形式: cleanup-state / cleanup-pr / cleanup-guards の raw JSON を同じ index に保存。渡し先: finish.sh cleanup <PR> --github-input /absolute/index.json へ渡す（jq と Git は必要）。不足時: 必須不足は rc2 で停止、削除 guard の任意不足は SKIP / PARTIAL で保全。gh 専用前提は file 経路には課さない。
 
 - 0 以外なら、サマリーの失敗項目・中断理由をユーザーに報告し、勝手にリトライや強制削除をしない
 - サマリーの「対象 PR のリモートブランチ」（`削除した` / `既に存在しない` / `削除していない（保護 / 要確認）`）は完了報告へそのまま引用する。`headRefOid` を取得できなかった回は削除だけをスキップし（`skipped_oid_unavailable`。Step 7 が照合済み OID で肩代わりできれば `deleted_by_leftover_retry` へ更新）、無条件の `git push origin --delete` は案内しない — `ls-remote` の OID が PR の head だと人間が確認できた場合だけ `--force-with-lease=refs/heads/<head>:<確認済みOID> :refs/heads/<head>` で消し、merge-cleanup を再実行する

@@ -6,7 +6,7 @@
 #
 # 使い方:
 #   knowledge-commit.sh add --source ace|obs --id <ID>（繰り返し可） --summary <要約> [--category <c>] [--type <commit type>] -- <path>...
-#   knowledge-commit.sh commit [--type <commit type>] [--force]
+#   knowledge-commit.sh commit [--github-input INDEX_ABS] [--type <commit type>] [--force]
 #   knowledge-commit.sh status
 #   knowledge-commit.sh discard
 #   knowledge-commit.sh freshness
@@ -245,9 +245,9 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 2
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: knowledge-commit.sh add --source ace|obs --id <ID> --summary <summary> [--category <c>] [--type <commit type>] -- <path>...
+Usage: knowledge-commit.sh add [--github-input INDEX_ABS] --source ace|obs --id <ID> --summary <summary> [--category <c>] [--type <commit type>] -- <path>...
        knowledge-commit.sh status
-       knowledge-commit.sh commit [--type <commit type>] [--force]
+       knowledge-commit.sh commit [--github-input INDEX_ABS] [--type <commit type>] [--force]
        knowledge-commit.sh discard
        knowledge-commit.sh freshness
 USAGE
@@ -389,7 +389,26 @@ resolve_subject_issue() {
   branch="$(current_branch)"
   if [[ "$branch" =~ (^|/)ace-from-pr-([1-9][0-9]*)(-|$) ]]; then
     pr="${BASH_REMATCH[2]}"
-    if command -v gh >/dev/null 2>&1; then
+    if [[ -n "$github_input" ]]; then
+      local gi_tmp gi_repository lib="$self_dir/lib/github-input.sh"
+      if [[ -r "$lib" ]] && command -v jq >/dev/null 2>&1; then
+        . "$lib"
+        gi_tmp="$(mktemp -d)" || gi_tmp=""
+        if [[ -n "$gi_tmp" ]]; then
+          # The private helper reads Git's configured origin, preserving the host.
+          gi_repository="$( (cd "$repo_root" && _github_input_repository) 2>/dev/null)" || gi_repository=""
+          if [[ -n "$gi_repository" ]]; then
+            jq -n --arg repository "$gi_repository" --argjson pr "$pr" '{repository:$repository,pr:$pr}' >"$gi_tmp/scope"
+            printf '{}\n' >"$gi_tmp/position"
+            if github_file_read "$github_input" knowledge.subject-issue "$gi_tmp/scope" subject "$gi_tmp/position" >"$gi_tmp/raw" 2>/dev/null &&
+               { [[ -z "$GITHUB_INPUT_HTTP_STATUS" || "$GITHUB_INPUT_HTTP_STATUS" == 200 ]]; }; then
+              issue="$(jq -r '.closingIssuesReferences[0].number // empty' "$gi_tmp/raw" 2>/dev/null)" || issue=""
+            fi
+          fi
+          rm -rf "$gi_tmp"
+        fi
+      fi
+    elif command -v gh >/dev/null 2>&1; then
       issue="$(cd "$repo_root" && gh pr view "$pr" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty' 2>/dev/null)" || issue=""
     fi
     [[ ! "$issue" =~ ^[1-9][0-9]*$ ]] || { printf '%s\n' "$issue"; return 0; }
@@ -481,6 +500,8 @@ commit_msg_dry_run() {
   exit "$HOOK_REJECTED_RC"
 }
 
+github_input=""
+
 cmd="${1:-}"
 [[ -n "$cmd" ]] || usage
 shift
@@ -491,6 +512,7 @@ case "$cmd" in
     paths=() ids=()
     while [[ $# -gt 0 ]]; do
       case "$1" in
+        --github-input) [[ $# -ge 2 ]] || usage; [[ -n "$2" ]] || die_env "--github-input requires a non-empty index path"; github_input="$2"; shift 2 ;;
         --source) [[ $# -ge 2 ]] || usage; source="$2"; shift 2 ;;
         --id) [[ $# -ge 2 ]] || usage; ids+=("$2"); shift 2 ;;
         --summary) [[ $# -ge 2 ]] || usage; summary="$2"; shift 2 ;;
@@ -644,6 +666,7 @@ case "$cmd" in
     force=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
+        --github-input) [[ $# -ge 2 ]] || usage; [[ -n "$2" ]] || die_env "--github-input requires a non-empty index path"; github_input="$2"; shift 2 ;;
         --type) [[ $# -ge 2 ]] || usage; type="$2"; shift 2 ;;
         --force) force=1; shift ;;
         *) echo "✗ 不明な引数: $1" >&2; usage ;;

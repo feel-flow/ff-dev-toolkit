@@ -156,6 +156,8 @@ Bash 専用の12実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 
 配布物の側のパス（`plugins/ff-dev-toolkit/scripts/` などの同梱物の位置）は、導入先が直接呼ぶ入口だけが契約です。導入先は skill 経由か、上のシム経由で到達します。
 
+GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新しい `FF_*` 設定は増やしません。precheck/link/cleanupのscope・phaseと待機契約は [merge-gate](skills/close-issue/references/merge-gate.md#github-file-input)、knowledge取得のscope・phaseは [knowledge suite](tests/github-input-knowledge/README.md) を参照します。SSOT root の release・release-required・sync-drift・weekly-health 入口も同じ明示入力を持ち、その段別 phase / page / 採用 run log は [release 対応表](tests/github-input-release/README.md) に従います。root の4入口は公開同期対象外で、内部 `--github-phase` は file 入力時の閉集合だけです。内部helperの公開関数は `github_file_read` / `github_file_plan` の2本で、Git文脈の期待repositoryを得るprivate utilityは内部実装です。
+
 ## 公開面 4: 環境変数 `FF_*`
 
 ### 4-1. 契約

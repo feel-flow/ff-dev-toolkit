@@ -2,11 +2,17 @@
 
 `/out-of-scope-issue` の SKILL.md §1.3 で B と判定した、または §1.0 で構造的対策の Issue が要ると判断した発見について、SKILL.md「3.1 類似 Issue の検索（新規作成より先）」で統合できる既存 Issue が無かったとき（`bundle` の sub-issue として起票する場合を含む）に読む。ラベルの実在確認（§3.2・§3.3 ステップ 2）と起票コマンド（§3.3 ステップ 3）はこのファイルの中で隣接させてあり、互いに分断しない — 途中から読んで素の `gh issue create` を叩かない。
 
+<!--f8d4548f5124ca45-->
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ assignees を省略して渡し、返った number / url と fresh body / labels を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+
 ## 起票手順（SKILL.md「3. Issue 化フロー」の続き）
 
 ### 3.2 ラベルの決定（実在するものだけ付ける）
 
 無ラベルの follow-up Issue は backlog で「発生源が PR レビュー由来か独立要望か」「優先度は何か」を失う。一方、**存在しないラベル名を渡すと `gh issue create` 自体が失敗する**ため、ラベル名を直書きで固定することもできない（本スキルは複数プロジェクトで動く）。そこで **実在確認 → 存在するものだけ付与 → 省略したものは報告**（verify-then-skip）とする。
+
+<!--e4f1b1990b9841a5-->
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ assignees を省略して渡し、返った number / url と fresh body / labels を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 付与を試みるのは次の 3 系統。具体的なラベル名は消費プロジェクトの分類に合わせる（下は代表例であり、この名前でなければならないという意味ではない）。
 
@@ -37,6 +43,9 @@
 
 判定材料は §3.3 で単独実行する `gh label list` の終了コードと出力。理由は照会の結果で書き分ける。**「不在」と「照会失敗」を混同しない**:
 
+<!--dc1917a1832ede3a-->
+MCP: 取得値: MCP で同じ repo の label name 全件と該当 bundle / epic の number / title / body / state / url を取得。形式: 一覧 JSON を全 page・上限と照合し、label name は行単位完全一致。渡し先: この段の付与候補 / 統合先判断へ渡す。links は既存 link-sub-issues の PLAN に従う。不足時: 任意 label 照会不足は理由付き省略して起票継続、統合先検索不足は新規なしとせず停止。
+
 | 照会の結果 | 報告する理由 |
 |---|---|
 | 成功（一覧を信用できる） | 対象リポジトリに存在しないため省略した |
@@ -48,11 +57,20 @@
 
 **bundle への紐付け**: SKILL.md §3.1 の列挙でテーマの `bundle` を見つけていて、発見を sub-issue として起票する場合は、`gh issue create` の直後に `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo "$expected_repo" <bundle 番号> <発行番号>` で紐付ける（`gh api -f sub_issue_id=` をその場で組み立てない）。紐付けの失敗は起票の失敗ではないが、報告に「親: 未紐付け（理由）」を残す。
 
+<!--d0107c5a56ed77f8-->
+分類: 禁止例: ラベル作成や sub_issue_id 手組みを禁止する記述。MCP write へ置換して境界を解除せず、既存の照会 / link-sub-issues の手順へ進む
+
 **bundle の新設**: SKILL.md §3.1 の類似度表で「同じテーマだが完了条件・検証が独立する（bundle は無い）」に当たったら、`bundle` ラベルが実在するリポジトリではテーマの bundle を `/create-issue --bundle`（カテゴリ Epic があれば `--parent`）で新設し、発見はその sub-issue として起票して上と同じく紐付ける（親無しの単独 Issue にしない）。`bundle` ラベルが無いリポジトリでは新規 Issue を作り、既存 Issue を `Related: #{number}` として関連付ける。
 
 対象リポジトリが Epic 相当のラベルで大枠 Issue を管理している場合（`gh label list` に `epic` 等が実在する場合）は、`gh issue list --repo "$expected_repo" --label epic --state open` で open Epic を確認し（この照会を単独のブロックで実行する場合は、SKILL.md §3.1 と同様に `expected_repo` を宣言してから行う — 別シェルには他ブロックの宣言は残っていない）、**該当領域だと確信できる場合のみ** Issue 本文の `## 発見元` に Epic 番号を記載する。判断に迷う場合は紐付けずに進めてよい（誤った紐付けは Epic の完了判定を汚す）。
 
+<!--8e1e019f4492fb4e-->
+MCP: 取得値: MCP で同じ repo の label name 全件と該当 bundle / epic の number / title / body / state / url を取得。形式: 一覧 JSON を全 page・上限と照合し、label name は行単位完全一致。渡し先: この段の付与候補 / 統合先判断へ渡す。links は既存 link-sub-issues の PLAN に従う。不足時: 任意 label 照会不足は理由付き省略して起票継続、統合先検索不足は新規なしとせず停止。
+
 Epic 本文のチェックリストへ追記する場合は、[consolidation.md](consolidation.md) の本文更新と同じ競合ガードに従う。`gh issue edit --body` は**本文全体の置換**であり追記ではないため、取得 → 追記 → `--body-file` で書き戻し → 反映確認の順で行い、取得時と書き戻し直前で `updatedAt` が変わっていたら書き込まずに再判断する。
+
+<!--644dfc3bdb54715f-->
+MCP: 取得値: MCP で同じ Issue の全文 body / updated_at / comments を取得。形式: 競合比較用 JSON と本文 / コメント各専用ファイル原文。渡し先: 許可された body は update_issue、コメントは add_comment_to_issue へ渡し fresh 原文一致を後読する。既存本文の目的 / AC は保全する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 Markdown 本文へ script で文字列パッチを当てる場合は [Markdown 文字列パッチ規律](../../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
 
@@ -60,15 +78,26 @@ Markdown 本文へ script で文字列パッチを当てる場合は [Markdown �
 
 統合できる既存 Issue がなければ、その場で `gh issue create` を実行する（複数発見を SKILL.md §3.1b で束ねた場合は、束ねた 1 単位につき 1 回。テンプレートの `## 概要` と受け入れ条件は発見ごとの箇条書き・チェックボックスに分けて埋める）。再試行時や検索から時間が空いた場合は直前に SKILL.md §3.1 の検索を再実行し、同じ発見の Issue がすでに作られていないことを確認する。**「別 Issue にする」と言うだけで PR 本文に書いて終わらせない**。`gh issue create` の終了コードが 0 で Issue URL を取得できた場合だけ成功として扱い、発行された Issue 番号を PR 本文 / コミットメッセージ / レビューコメントに記載する。
 
+<!--8fd09bfa4e62b3db-->
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ assignees を省略して渡し、返った number / url と fresh body / labels を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+
 **起票は PR 作成より前に行う。** GitHub は Issue と PR で採番列を共有するため、PR 作成前に「次に発行されるはずの番号」を推測して PR 本文へ書くと、その番号を PR 自身が取り、PR 本文が自分自身を「別 Issue」として指すことになる。番号が確定するのは `gh issue create` / `gh pr create` を実行した後だけで、事前に推測する余地はない。やむを得ず起票を PR 作成の後に回す場合は、PR 本文へ番号を書かず `<!-- follow-up issue: TBD -->` などのプレースホルダを置き、起票直後に `gh pr edit --body-file` で埋める（番号を書かないまま放置する＝宣言だけ残る失敗とも両立する対処）。
+
+<!--d3dc3852e511ff94-->
+MCP: 取得値: MCP の Issue / PR 作成結果の実 number/url と最新 PR body/updated_at。形式: title/body/labels の作成引数と、TBD を実 Issue 番号で置換した PR 本文ファイル原文。渡し先: create_issue / create_pull_request の返値だけで番号を確定し、PR 本文の修復は update_pull_request.body → fresh 原文一致へ渡す。不足時: 必須の MCP 能力 / 作成結果不足は停止し、番号を予測しない。
 
 仕様判断を含む案件など、詳細な起票ゲート（種別確認 → 参照文書提案 → AC 粒度チェック → GWT+DoD）を通すべき規模なら、下の簡易テンプレートではなく `/create-issue` コマンドで起票する。それ以外の軽量案件は簡易テンプレートで足りる。
 
 **AC の書き方と判定の分離**: 受け入れ条件は従来どおり検証可能な粒度で書いてよく、確認ポイントの列挙を制限しない。ただし **AC の分量・詳細度を SKILL.md §1.3 の A/B 判定へ逆流させない** — 判定は発見そのものの性質で既に確定しており、「起票するなら AC を書くことになる（= 独立した受け入れ条件が必要）」という循環で B を正当化しない。逆に、B 判定を補強する目的で AC を膨らませることもしない。DoD 標準（変異試験・drift ゲート等）への展開は、起票時に書ける材料があれば書いてよいが、着手時に `/refine-issue` で行っても遅くない。
 
+**起票時の AC の現状確認**: AC に検証コマンド（テスト・ゲートの段・grep など）を書く場合は、起票時に 1 回実行し、何が・どれだけ失敗しているかを確かめてから対象範囲を書く。ゲート全体・スイート全体を対象にする場合は、その失敗の全体を見て範囲を決める。範囲を 1 件に絞るなら AC もその 1 件に書く。これは [/create-issue 手順 4](../../create-issue/SKILL.md) のチェック項目「AC が前提にする値・資料・配置を実測したか」と同じ趣旨で、起票が必要と判定した後に行う起票内容の裏付けであり、発見そのものの A/B 判定をやり直す理由にしない。
+
 **アサインについて本スキルは中立**とする。`--assignee` は付けも禁じもしない。スコープ外発見の起票は backlog 化であって着手ではないため、「作成時にアサインする」か「着手時にアサインする」かは消費プロジェクトの Git Workflow が決める。プロジェクト側のルールが無い場合は付けない（未アサイン = 未着手が既定の読み方になるため）。この既定を「便利だから」で `--assignee @me` へ戻さないこと。
 
 起票は、**状態をシェル変数でコマンド間に持ち越さない 3 ステップ**で実行する。各ステップは単独の Write / 単純コマンドで完結するため、複合コマンドを拒否する実行環境（worktree 隔離セッションのコマンドガード等）でもそのまま通る。ラベル誤報告の防止（旧 1 ブロック方式の主目的）も失われない — 付与するラベルは `gh issue create` 自体の argv に載り、実行ログがそのまま証跡になる。
+
+<!--5eb700af193d5fcc-->
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ assignees を省略して渡し、返った number / url と fresh body / labels を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 #### ステップ 1: 本文を一時ファイルへ書く
 
@@ -96,6 +125,9 @@ expected_repo="OWNER/REPO"
 gh label list --repo "$expected_repo" --limit 200 --json name --jq '.[].name'
 ```
 
+<!--06726dc1ea71f4b6-->
+MCP: 取得値: MCP で同じ repo の label name 全件と該当 bundle / epic の number / title / body / state / url を取得。形式: 一覧 JSON を全 page・上限と照合し、label name は行単位完全一致。渡し先: この段の付与候補 / 統合先判断へ渡す。links は既存 link-sub-issues の PLAN に従う。不足時: 任意 label 照会不足は理由付き省略して起票継続、統合先検索不足は新規なしとせず停止。
+
 `--limit 200` は必須。省略時の既定は 30 件で、ラベルが 30 個を超えるリポジトリでは実在するラベルが「見つからない」と誤判定される（頻用ラベルほど後ろに来やすい）。
 
 なお bash フェンスは呼び出しごとに別のシェルで走るため、`expected_repo` の宣言は**使うフェンスごとに繰り返す**（前のフェンスの宣言は残っていない。ステップ 3 の冒頭に同じ宣言があるのはそのためで、まとめて 1 箇所に括り出さない）。「状態をシェル変数でコマンド間に持ち越さない」とは、宣言と消費を同一フェンス内で完結させるという意味であって、宣言済みの変数を後続フェンスから参照してよいという意味ではない。
@@ -117,9 +149,15 @@ gh issue create \
   --body-file "{本文ファイルのパス}"
 ```
 
+<!--aec43bbfd7dc5a01-->
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ assignees を省略して渡し、返った number / url と fresh body / labels を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+
 `--label` はステップ 2 の照合を通った候補の数だけ繰り返す（0 件なら渡さない）。
 
 失敗した場合（終了コードが非 0、または出力に Issue URL が無い）は成功形式の報告（§3.6）を返さず、エラー内容と再試行方法を報告する。§3.6 の報告と省略ラベルの理由（§3.2 の表で書き分ける）は、記憶からではなく**実行した `gh label list` の出力と `gh issue create` の実行ログをそのまま読む** — 記憶で書くと、実際には付かなかったラベルを「付いた」と報告できてしまう。
+
+<!--795d65ffa39db2ee-->
+MCP: 取得値: MCP で同じ repo の既存候補と label name を取得。形式: title / 本文ファイル原文 / 実在 labels の構造化引数。渡し先: 既存 create_issue へ assignees を省略して渡し、返った number / url と fresh body / labels を後読する。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
 
 > **重複について**: このラベル照合〜起票の手順は `create-issue` の [references/filing.md](../../create-issue/references/filing.md) と意図的に同じ内容を持つ（違いは候補の系統 — 本スキルは `follow-up` を足した 3 系統、`create-issue` は type / priority の 2 系統 — と `--assignee` の既定だけ）。本スキルでは起票手順ごとこのファイルへ切り出したが、照合と報告の判定規則は起票コマンドと同じファイルの直前に置き、両者を分断しない（分断すると、起票コマンドだけを読んで実在確認ごと飛ばす経路ができる）。ドリフトは `tests/issue-label-contract/verify.sh` が両ファイルを突き合わせて検出する。**fixture に載せた契約行を片方だけ書き換える／削除すると red になる**（fixture 未収載の複製文までは検出しない）ので、変更は必ず両方へ入れること。
 
@@ -146,6 +184,9 @@ gh pr view --json number,title 2>/dev/null
 # PR の全コミットを対象にする（HEAD~1 だと最後の 1 コミットしか見えない）
 gh pr diff --name-only 2>/dev/null || git diff --name-only HEAD~1 2>/dev/null
 ```
+
+<!--eef268be5451d467-->
+MCP: 取得値: MCP で同じ PR の number / title と diff の変更 path を取得。形式: PR JSON と diff text / path 配列。渡し先: PR の発見元の根拠へ渡す。任意取得不能は既存 git diff fallback の結果と区別して報告する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 レビュー由来の場合は **発見した tool 名**（code-reviewer / silent-failure-hunter / code-simplifier / Copilot review / Codex 等）を `## 発見元` に書く。
 

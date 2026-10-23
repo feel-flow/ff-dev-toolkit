@@ -1,0 +1,68 @@
+[
+  {
+    "name": "closes-default",
+    "refs": false,
+    "separate": false,
+    "checks": false,
+    "pages": false,
+    "fork": false
+  },
+  {
+    "name": "refs-large-quoted-lf",
+    "refs": true,
+    "separate": false,
+    "checks": false,
+    "pages": false,
+    "fork": false
+  },
+  {
+    "name": "closes-separate",
+    "refs": false,
+    "separate": true,
+    "checks": false,
+    "pages": false,
+    "fork": false
+  },
+  {
+    "name": "refs-large-separate",
+    "refs": true,
+    "separate": true,
+    "checks": false,
+    "pages": false,
+    "fork": false
+  },
+  {
+    "name": "checks-thread-pages",
+    "refs": false,
+    "separate": false,
+    "checks": true,
+    "pages": true,
+    "fork": false
+  },
+  {
+    "name": "fork-separate",
+    "refs": false,
+    "separate": true,
+    "checks": false,
+    "pages": false,
+    "fork": true
+  },
+  {
+    "name": "replied-thread",
+    "refs": false,
+    "separate": false,
+    "checks": false,
+    "pages": false,
+    "fork": false,
+    "thread_kind": "replied"
+  },
+  {
+    "name": "nullable-replied-thread",
+    "refs": false,
+    "separate": false,
+    "checks": false,
+    "pages": false,
+    "fork": false,
+    "thread_kind": "nullable-replied"
+  }
+]

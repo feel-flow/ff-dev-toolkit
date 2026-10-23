@@ -7,3 +7,5 @@
 3. 取り込み済みかを観測メモの `（owner/repo#N より取り込み）` マーカーで判定する — 既に取り込んだ Issue は `Count` を増やさず、未完了のコメント・close だけをやり直す（コメント / close の失敗後に再実行しても二重カウントしない）。マーカーはリポジトリ修飾で書く（SSOT とミラーで番号が衝突するため。旧形式 `（Issue #N より取り込み）` は SSOT 自身の Issue を指し、同じく取り込み済みとして扱う）
 4. エントリ新規追記、または未取り込み Issue 1 件につき計上メモ 1 行と Count +1 を行う。同じ主張の Issue が複数あれば 1 エントリへ畳むが、Count は Issue 件数だけ増やす（SKILL.md「Count の単位」の同一セッション上限は取り込みに掛けない）
 5. **台帳のコミット + push が成功してから**、取り込み結果（記録先の OBS ID）を Issue コメントに残して close する（push 前に close すると、push 失敗時に受け渡し内容が台帳と Issue の両方から消える）
+
+MCP 経路でも SSOT / ミラーと label / prefix の4検索を対象・state=open・全 page 付きで行い、number/title/body/url を照合する。取得不能は未確認として残す。台帳 push 成功後だけ、取り込み済み marker と照合した Issue へ既存 comment / update_issue(state=closed) を渡して fresh 後読し、検索成功を write 成功と混同しない。

@@ -10,6 +10,9 @@ Windows の作業機では、gh が文脈ごとに別々に認証されうる �
 出ず、`gh auth status` の文言も当てにならない。見分ける手段は各文脈で `gh api user` を実際に呼ぶ
 ことだけで、本スキルはそれを 1 コマンドにまとめる。Mac / Linux では文脈は 1 つとして測る。
 
+<!--af3e8ebef048545b-->
+分類: CLI固有: gh / keyring をシェル・PowerShell・WSL ごとに実測する診断のため MCP 認証では代替できない。gh 不在は対象不在として停止し、MCP 成功を gh 復旧済みとしない
+
 ## プラグインルートの固定（必須）
 
 <!-- ff-dev-toolkit-plugin-root-contract:start -->
@@ -46,6 +49,9 @@ fi
 必要なものは bash 3.2 以降と gh。Windows（Git Bash）では `powershell.exe`（無ければ `pwsh.exe`）と
 `wsl.exe` も使う。固定した root の `scripts/gh-auth-doctor.sh` の実在を確認して実行する。
 
+<!--ebc6af8bbe8ab982-->
+分類: CLI固有: gh / keyring をシェル・PowerShell・WSL ごとに実測する診断のため MCP 認証では代替できない。gh 不在は対象不在として停止し、MCP 成功を gh 復旧済みとしない
+
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/gh-auth-doctor.sh"
 ```
@@ -61,15 +67,24 @@ GitHub Enterprise は `--hostname HOST`、既定以外の WSL ディストリは
 | `powershell` | このシェルから PowerShell を子プロセスとして起動し、その PATH の gh で `gh api user`。gh の参照先を変える環境変数（`GH_TOKEN` などのトークン・`GH_CONFIG_DIR`・`XDG_CONFIG_HOME`・`GH_HOST`）はこのシェルの値を外し、Windows に永続化された値（ユーザー → マシン）があればそれを戻して測る |
 | `wsl` | `wsl.exe --exec` で既定（または `--wsl-distro`）のディストリの gh で `gh api user`。ログインプロファイルは読まないので、`~/.local/bin` を PATH へ足して探す。表にはディストリ名が出る |
 
+<!--b3f5a7cec389f653-->
+分類: CLI固有: gh / keyring をシェル・PowerShell・WSL ごとに実測する診断のため MCP 認証では代替できない。gh 不在は対象不在として停止し、MCP 成功を gh 復旧済みとしない
+
 `powershell` の行は「このシェルの子の PowerShell」の結果で、利用者が開いている PowerShell ウィンドウと
 環境が同じとは限らない。`bash` が要復旧・`powershell` が ok なのに利用者が「PowerShell でも通らない」と
 言うときは、利用者自身の PowerShell で `gh api user --jq .login` を打ってもらって確かめる。
+
+<!--b1482e5b5c7abaed-->
+分類: CLI固有: gh / keyring をシェル・PowerShell・WSL ごとに実測する診断のため MCP 認証では代替できない。gh 不在は対象不在として停止し、MCP 成功を gh 復旧済みとしない
 
 | 結果 | 意味 |
 | --- | --- |
 | `ok` | 認証済み（gh が rc 0 でログイン名を返した。Enterprise Managed Users の `handle_shortcode` 形を含む）。詳細はログイン名 |
 | `要復旧` | gh が失敗し、HTTP 401（Bad credentials）か未ログイン（rc 4、または `gh auth login` を促す定型文）だった |
 | `判定不能` | gh / PowerShell / wsl.exe の不在、WSL の起動失敗、応答なし、401 でも未ログインでもない失敗、ログイン名として読めない出力（空・`null`・複数行）。ok とは読まない |
+
+<!--0e2e9bbe3ae80108-->
+分類: CLI固有: gh / keyring をシェル・PowerShell・WSL ごとに実測する診断のため MCP 認証では代替できない。gh 不在は対象不在として停止し、MCP 成功を gh 復旧済みとしない
 
 | rc（診断） | 意味 |
 | --- | --- |
@@ -88,11 +103,17 @@ GitHub Enterprise は `--hostname HOST`、既定以外の WSL ディストリは
 利用者が PowerShell でログインし直しても、このシェルの gh には届かないことがある。このシェルで
 device flow を起動し、利用者にはブラウザで承認だけしてもらう。
 
+<!--ca87d3d6b1814c3f-->
+分類: CLI固有: gh / keyring をシェル・PowerShell・WSL ごとに実測する診断のため MCP 認証では代替できない。gh 不在は対象不在として停止し、MCP 成功を gh 復旧済みとしない
+
 1. **利用者と対話しているセッション**（サブエージェントではない側）から、ホストの背景実行で起動する。
    `login` は承認が済むまで終わらないので、前景で起動するとコードを利用者へ伝えられない。Claude Code
    では Bash ツールの `run_in_background`、背景実行を持たないホストでは末尾に `> <ログ> 2>&1 &` を付けて
    起動し、そのログを読む（この形では終了コードを受け取れないので、最後に出る `LOGIN_RC=<rc>` 行で読む。
    ホストがツール呼び出しの終わりにプロセスを止める場合は、その時点で gh も止まり承認は保存されない）:
+
+<!--950bad2d6f0c841a-->
+分類: CLI固有: gh / keyring をシェル・PowerShell・WSL ごとに実測する診断のため MCP 認証では代替できない。gh 不在は対象不在として停止し、MCP 成功を gh 復旧済みとしない
 
    ```bash
    FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/gh-auth-doctor.sh" login
@@ -111,6 +132,9 @@ device flow を起動し、利用者にはブラウザで承認だけしても�
 | 1 | 起動不能・不正引数・このシェルに環境変数のトークンがある |
 | 129 / 130 / 143 | 承認待ちの途中でホストに止められた（HUP / INT / TERM）。gh は止めてあり、承認は保存されない |
 
+<!--211a9981334192c5-->
+分類: CLI固有: gh / keyring をシェル・PowerShell・WSL ごとに実測する診断のため MCP 認証では代替できない。gh 不在は対象不在として停止し、MCP 成功を gh 復旧済みとしない
+
 `--code-wait`（既定 60 秒）はコードが出るまでの上限で、超えたら gh を止めて rc 2 で終わる（read-back
 しない）。`--approve-wait`（既定 960 秒）は承認を待つ上限で、超えたら gh を止めて read-back する。秒数は
 1〜999999。gh は TERM で止まらなければ KILL で止め、それでも残れば警告を出す。gh の出力は既定では
@@ -119,14 +143,23 @@ device flow を起動し、利用者にはブラウザで承認だけしても�
 読まない・出さない（`gh auth token` も `--show-token` も使わない）。トークン様の文字列を見つけても
 転記しない。
 
+<!--5f4a6e25d1859a6b-->
+分類: CLI固有: gh / keyring をシェル・PowerShell・WSL ごとに実測する診断のため MCP 認証では代替できない。gh 不在は対象不在として停止し、MCP 成功を gh 復旧済みとしない
+
 このシェルに環境変数のトークン（github.com と `*.ghe.com` では `GH_TOKEN` / `GITHUB_TOKEN`、GitHub
 Enterprise Server では `GH_ENTERPRISE_TOKEN` / `GITHUB_ENTERPRISE_TOKEN`。ホスト名は小文字へ揃えて見分ける）が
 あると gh はそちらを優先するので、device flow で入れ直しても直らない。`login` は起動前に止まり（rc 1）、診断の復旧行も「環境変数を外すか有効な値にする」になる。
+
+<!--a44cd5f81666540c-->
+分類: CLI固有: gh / keyring をシェル・PowerShell・WSL ごとに実測する診断のため MCP 認証では代替できない。gh 不在は対象不在として停止し、MCP 成功を gh 復旧済みとしない
 
 ### PowerShell（`powershell`）
 
 利用者の PowerShell で `gh auth login -h <ホスト名> -w` を実行してもらう（ホスト名は診断の見出しのもの）。
 ログアウトは頼まない。
+
+<!--b89fcce4db413ba0-->
+分類: CLI固有: gh / keyring をシェル・PowerShell・WSL ごとに実測する診断のため MCP 認証では代替できない。gh 不在は対象不在として停止し、MCP 成功を gh 復旧済みとしない
 
 ### WSL（`wsl`）
 
@@ -135,10 +168,16 @@ Enterprise Server では `GH_ENTERPRISE_TOKEN` / `GITHUB_ENTERPRISE_TOKEN`。ホ
 空の回は `-d` を省いた形（既定のディストリ）が案内される。英数字・`.`・`_`・`-` 以外を含む名前は案内へ
 埋め込まず、その文脈を判定不能にする（`--wsl-distro` で名指しして測り直す）:
 
+<!--67d9369944b327e9-->
+分類: CLI固有: gh / keyring をシェル・PowerShell・WSL ごとに実測する診断のため MCP 認証では代替できない。gh 不在は対象不在として停止し、MCP 成功を gh 復旧済みとしない
+
 ```powershell
 wsl -d Ubuntu -- gh auth login -h github.com -w
 wsl -d Ubuntu -- gh auth setup-git
 ```
+
+<!--fba0406a0aa0f1ac-->
+分類: CLI固有: gh / keyring をシェル・PowerShell・WSL ごとに実測する診断のため MCP 認証では代替できない。gh 不在は対象不在として停止し、MCP 成功を gh 復旧済みとしない
 
 復旧のあとは診断をもう一度回し、直した文脈が `ok` になったことを確かめてから元の作業へ戻る。
 

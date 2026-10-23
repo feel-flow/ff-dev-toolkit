@@ -8,7 +8,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-review-in-flight.sh\"",
-            "timeout": 10
+            "timeout": 10,
+            "statusMessage": "レビュー中の変更と開始前の差分を確認"
           }
         ]
       },
@@ -18,7 +19,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/run-bash-hooks.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-checkout-restore.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-pr-followup.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-background-cwd.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-long-gate-background.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-effort-actual.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-merge-closing-keyword.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-issue-labels.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-sub-issue-id.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-exit-code.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-zsh-glob.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-literal-write.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/record-effort-wallclock.sh\"",
-            "timeout": 15
+            "timeout": 15,
+            "statusMessage": "Bashコマンドの安全確認と作業時間の記録"
           }
         ]
       },
@@ -28,7 +30,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-effort-actual.sh\"",
-            "timeout": 10
+            "timeout": 10,
+            "statusMessage": "マージ前にIssueの工数実績を確認"
           }
         ]
       },
@@ -38,7 +41,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-issue-labels.sh\"",
-            "timeout": 10
+            "timeout": 10,
+            "statusMessage": "Issueの必須ラベルを確認"
           }
         ]
       },
@@ -48,7 +52,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-pr-followup.sh\"",
-            "timeout": 10
+            "timeout": 10,
+            "statusMessage": "PRの追跡IssueとDraft指定を確認"
           }
         ]
       },
@@ -58,7 +63,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-sub-issue-id.sh\"",
-            "timeout": 10
+            "timeout": 10,
+            "statusMessage": "子Issue操作のID型を確認"
           }
         ]
       },
@@ -68,7 +74,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-shell-save.sh\"",
-            "timeout": 10
+            "timeout": 10,
+            "statusMessage": "保存前にシェルスクリプトの不具合を検査"
           }
         ]
       },
@@ -78,7 +85,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/record-instruction-bytes.sh\"",
-            "timeout": 5
+            "timeout": 5,
+            "statusMessage": "スキル・仕様書の読み込み量を記録"
           }
         ]
       }
@@ -90,7 +98,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-zsh-glob.sh\"",
-            "timeout": 10
+            "timeout": 10,
+            "statusMessage": "zshの未引用変数の注意点を通知"
           }
         ]
       }
@@ -101,7 +110,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-review-in-flight.sh\"",
-            "timeout": 10
+            "timeout": 10,
+            "statusMessage": "レビュー担当エージェントの開始を記録"
           }
         ]
       }
@@ -112,7 +122,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-review-in-flight.sh\"",
-            "timeout": 10
+            "timeout": 10,
+            "statusMessage": "レビュー担当エージェントの終了を反映"
           }
         ]
       }
@@ -123,7 +134,8 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-review-in-flight.sh\"",
-            "timeout": 10
+            "timeout": 10,
+            "statusMessage": "権限拒否時にレビューのロックを整理"
           }
         ]
       }
@@ -135,23 +147,27 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/check-update.sh\"",
-            "timeout": 10
+            "timeout": 10,
+            "statusMessage": "ff-dev-toolkitの更新を確認"
           },
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/check-skill-drift.sh\"",
-            "timeout": 5
+            "timeout": 5,
+            "statusMessage": "スキルの欠落・重複インストールを確認"
           },
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/check-review-roster-drift.sh\"",
-            "timeout": 5
+            "timeout": 5,
+            "statusMessage": "レビュー担当の登録と実体を照合"
           },
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-update-marketplace.sh\"",
             "async": true,
-            "timeout": 120
+            "timeout": 120,
+            "statusMessage": "マーケットプレイスとプラグインを自動更新"
           }
         ]
       }
@@ -162,12 +178,14 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/retrospective-context.sh\"",
-            "timeout": 5
+            "timeout": 5,
+            "statusMessage": "振り返りの実施手順を事前に案内"
           },
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/decision-tree.sh\"",
-            "timeout": 5
+            "timeout": 5,
+            "statusMessage": "変更内容から作業経路を判定・記録"
           }
         ]
       }
@@ -178,12 +196,14 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/retrospective-stop.sh\"",
-            "timeout": 5
+            "timeout": 5,
+            "statusMessage": "作業完了時の振り返り漏れを確認"
           },
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/decision-tree.sh\"",
-            "timeout": 5
+            "timeout": 5,
+            "statusMessage": "実行したスキルと作業経路を記録"
           }
         ]
       }

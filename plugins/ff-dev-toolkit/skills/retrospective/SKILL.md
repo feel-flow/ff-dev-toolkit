@@ -5,6 +5,8 @@ description: ワークフローチェーンの末尾（/merge-cleanup → /ace-c
 
 # /retrospective — セッション振り返り（観測の記録とプロセス・ツール改善の提案）
 
+GitHub MCP の raw-file 入力は[共通契約](../ace-curate/references/curate.md#github-file-input)に従う。
+
 ## ASDD 2.0 設定がある場合
 
 最初に[共通設定契約](../asdd-init/references/configuration.md)を読み、`scripts/asdd/config.mjs` の `loadConfig(root)` で対象プロジェクトの `.asdd/config.json` を検証する。以下の従来手順より、合意済みの文書構成・機能スイッチ・ワークフローを優先する。設定なしは従来互換、不正設定は自動処理を止めて診断する。
@@ -81,6 +83,9 @@ printenv RETROSPECTIVE_MODE
 
 `hooks/retrospective-context.sh` が UserPromptSubmit の `additionalContext` として実行契約を注入する。発火条件はワークフローチェーンの末尾に到達したターンであること（`/merge-cleanup` / `/ace-curate` / `gh pr merge` / 利用者の明示指定を**実行した**ターン。成否ではない。全文は [references/auto-trigger.md](references/auto-trigger.md)）。
 
+<!--c1b06d598dc691d7-->
+分類: 非操作: 発火条件の説明で merge 指示ではない。MCP 経路完了時も明示 /retrospective で進む
+
 1. このターンがチェーン末尾に到達した → 振り返りを実施し、最終応答へ結果を含める
 2. チェーン末尾ではない（質問・承認待ち・作業途中・background task の完了通知）→ **振り返りについて何も書かない**。Stop hook が判定できずに継続を要求してきたときだけ `振り返り: 今回は作業完了前のため対象外` と報告する
 3. Stop fallback の継続プロンプトを受けたら、その指示に従って最終応答を出し直す。自分で hook を再実行したり marker を作ったりしない
@@ -91,6 +96,7 @@ printenv RETROSPECTIVE_MODE
 
    ```bash
    FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/knowledge-lookup.sh" --root "$(git rev-parse --show-toplevel)" --promoted-open
+   # MCP raw は同じ --github-input /absolute/index.json を付ける（不足は未確認、offlineは読まない）
    ```
 
    **発行済み Issue の完了照合** — 当セッションの完了 Issue・旧台帳は [promotion.md](references/promotion.md) へ。closed も照合対象。
@@ -110,7 +116,7 @@ printenv RETROSPECTIVE_MODE
 
 ### 台帳は引く store でもある（読み出し経路）
 
-読み側の入口は着手前の `/knowledge-lookup` と観察チェックリスト第 0 項。台帳を作成したときは報告に「読み側の配線は `/ace-setup` Step 4」を添える。
+読み側の入口は着手前の `/knowledge-lookup` と観察チェックリスト第 0 項。作成時は報告に「読み側の配線は `/ace-setup` Step 4」を添える。
 
 ### 記録の前に base の先行を照合する
 
@@ -153,7 +159,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 - **提示する前に** [references/filing.md](references/filing.md) の「起票前の既存確認」を実施し、起票先 repo の既存 Issue 検索まで済ませてから提示する。方針に矛盾する Issue があれば方針側の変更提案と明示するか取り下げる
 - **機微情報を提案本文へ引用しない**
 
-該当する候補が無ければ、次の 1 行だけで終了する（提案をひねり出さない）:
+該当する候補が無ければ、次の 1 行だけで終了する:
 
 ```text
 振り返り: 改善候補なし
@@ -161,8 +167,4 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ## 出力形式（提案がある場合）
 
-書式（6 欄 + `起票:` 行。最大 3 件）は [references/filing.md](references/filing.md)「出力形式」。`RETROSPECTIVE_FILING=ask` のときは `起票:` 行の代わりに `承認いただければ起票します。` で終え、承認後に結果を報告する。提案が無く記録だけを行った場合は `振り返り:` で始める 1 行に記録結果を足す（言語タグなしフェンスの例示が正本）:
-
-```
-振り返り: 観測記録 OBS-012 (+1, Count 2) / OBS-031 (新規)。改善候補なし
-```
+書式（6 欄 + `起票:` 行。最大 3 件）は [references/filing.md](references/filing.md)「出力形式」。`RETROSPECTIVE_FILING=ask` のときは `起票:` 行の代わりに `承認いただければ起票します。` で終え、承認後に結果を報告する。記録だけなら [filing.md の記録報告](references/filing.md#記録だけの報告)に従う。

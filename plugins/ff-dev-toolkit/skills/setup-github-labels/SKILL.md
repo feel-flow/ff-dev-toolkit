@@ -51,8 +51,11 @@ fi
 
 ## 前提
 
-- GitHub CLI（`gh`）がインストール・認証済みであること
+- 認証済み GitHub CLI（`gh`）、または必要な読取・ラベル作成能力を持つ GitHub MCP が使えること
 - 対象リポジトリへのラベル作成権限があること
+
+<!--0bba040e67402369-->
+MCP: 取得値: MCP で固定 origin と一致する full_name / html_url、対象 repo の全 label name / color / description を取得。形式: LABEL_DEFS のうち承認済み不足分だけを name / color / description 引数として保持。渡し先: label list/create 能力のある MCP なら手動で不足分のみ作成し fresh 一覧で後読する。setup-github-labels.sh に file flag は無いので raw を渡さない。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 ## 手順
 
@@ -60,9 +63,15 @@ fi
 
 本スキルは**リポジトリ設定を変更する**（ラベルを作成する）。起票と違って Issue 単位で取り消せる操作ではないため、対象リポジトリ（`OWNER/REPO`）をユーザーの意図と突き合わせてから実行する。ユーザーが対象を明示していない場合はカレントリポジトリ（`gh repo view`）を候補として提示し、確認を取る。確認を挟まない自律フローから呼ばれた場合も、作業対象として文脈上確定しているリポジトリ以外へは適用しない。
 
+<!--88c6545efdc753c3-->
+MCP: 取得値: MCP で固定 origin と一致する full_name / html_url、対象 repo の全 label name / color / description を取得。形式: LABEL_DEFS のうち承認済み不足分だけを name / color / description 引数として保持。渡し先: label list/create 能力のある MCP なら手動で不足分のみ作成し fresh 一覧で後読する。setup-github-labels.sh に file flag は無いので raw を渡さない。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
+
 あわせて `epic` / `bundle` の要否を確認する。**この 2 件は作ると他スキルの挙動が変わる**: `out-of-scope-issue` が `epic` の実在を「Epic 相当で大枠 Issue を管理しているか」の判定に使い、実在すれば open Epic を照会して、該当領域だと確信できる場合に限り follow-up Issue 本文へ Epic 番号を記載する（Epic 側のチェックリストへ追記する場合は既存 Issue 本文の全置換を伴う）。残る 13 件は分類が増えるだけで、他スキルの分岐を開かない。
 
 `bundle` は `epic` と対のラベル（`epic` = カテゴリの入れ物 / `bundle` = 子を全件 1 PR で束ねる着手単位。`create-issue --bundle` と `out-of-scope-issue` の統合先探索が読む）で、要否も `epic` と一緒に確認する。`epic` / `bundle` が不要と確認できた場合、**手順 2 のスクリプトは使えない**。スクリプトは 15 件固定で除外オプションを持たず、余剰引数を fail-closed で拒否する（同梱の `LABEL_DEFS` を編集する回避も不可 — 定義と文書の 3 箇所照合が赤になる）。この場合は `github-setup.md` の「手動セットアップ」から `epic` / `bundle` の行（不要と確認できた側）を除いて `gh label create` を実行し、手順 3 ではその実行結果を報告する。
+
+<!--4c6bd85314b9ba60-->
+MCP: 取得値: MCP で固定 origin と一致する full_name / html_url、対象 repo の全 label name / color / description を取得。形式: LABEL_DEFS のうち承認済み不足分だけを name / color / description 引数として保持。渡し先: label list/create 能力のある MCP なら手動で不足分のみ作成し fresh 一覧で後読する。setup-github-labels.sh に file flag は無いので raw を渡さない。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 ### 2. セットアップスクリプトの実行
 
@@ -79,12 +88,18 @@ bash "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/setup-github-labels.sh" --rep
 - `gh label list` で実在を確認し、**不足しているラベルだけ**を作成する（既存ラベルの色・説明には触れない。再実行しても安全な冪等動作）
 - ラベル一覧を信用できない場合（照会失敗・空の一覧・取得上限到達）は、**1 件も作成せず**非 0 で終了する（fail-closed）。「存在しない」と誤断定したまま作成に進むと、実在するラベルへの作成失敗や重複整備が起きるため
 
+<!--2ac9af76ad1b1af2-->
+MCP: 取得値: MCP で固定 origin と一致する full_name / html_url、対象 repo の全 label name / color / description を取得。形式: LABEL_DEFS のうち承認済み不足分だけを name / color / description 引数として保持。渡し先: label list/create 能力のある MCP なら手動で不足分のみ作成し fresh 一覧で後読する。setup-github-labels.sh に file flag は無いので raw を渡さない。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
+
 ### 3. 完了報告
 
 スクリプトが標準出力へ書き出す `CREATED=` / `SKIPPED_EXISTING=` / `FAILED=` の行を**そのまま読んで**報告する（記憶からは書かない）。あわせて:
 
 - 非 0 終了で 1 件も作成されなかった場合は、「ラベルが存在しない」ではなく「**実在を確認できなかった**」として理由（照会失敗・空の一覧・上限到達のいずれか）を報告し、理由に対応する次のアクションを提案する: 照会失敗なら `gh auth status` の確認、空の一覧や対象の取り違えの疑いなら `--repo` の明示指定、上限到達（ラベルが 200 件以上あるリポジトリ）なら `github-setup.md` の「手動セットアップ」での個別作成またはラベル体系の整理
 - `FAILED=` が非空の場合は、権限不足（ラベル作成には write 権限が必要）の可能性を添える
+
+<!--04111f66eba90e33-->
+分類: CLI固有: gh 認証の原因切り分けで MCP 成功は gh 復旧の代替ではない。MCP 手動経路の失敗は当該 tool の照会 / 作成エラーを報告する
 
 ## 重要ルール
 
@@ -93,3 +108,6 @@ bash "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/setup-github-labels.sh" --rep
 - ラベル定義を変えるときは 5 系統を同時に変えること: スクリプトの `LABEL_DEFS`・`github-setup.md` の推奨ラベル表・同ページの手動セットアップ例・本 SKILL の軸別表・`tests/github-labels-setup/verify.sh` の名前の正本 `EXPECTED_LABEL_NAMES`（+ `gh` stub の `allexist` 一覧）。件数と `CREATED=` / `SKIPPED_EXISTING=` / `FAILED=` の期待列挙は正本から導出されるため手動更新は不要。一部だけ直すと `tests/github-labels-setup` が red になる
 - ラベル名に `priority:` のような名前空間を足す場合は、`verify.sh` の SSOT 抽出正規表現がその文字を通すかを先に確かめること。通らないとスクリプト側だけ抽出から落ち、「件数が合わない」という原因の読めない赤になる
 - 報告はスクリプトの出力を写すこと。付与系スキル（create-issue）との棲み分け: あちらは起票時に**既存ラベルを付けるだけ**（作らない）、こちらは**ラベルを作るだけ**（Issue には触れない）
+
+<!--1094e00f35be5fdf-->
+分類: 禁止例: 既存ラベルの上書き・削除を禁じる例であり MCP update / delete へ置換してよい指示ではない。定義変更時の照合も維持する

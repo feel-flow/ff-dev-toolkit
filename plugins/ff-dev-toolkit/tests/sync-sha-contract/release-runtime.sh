@@ -30,6 +30,8 @@ for need in "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/
 done
 bash "$SCRIPT_DIR/footer-reuse-runtime.sh" "$ORCH" || exit 1
 command -v jq >/dev/null 2>&1 || { echo "✗ jq がありません（オーケストレータの前提）" >&2; exit 1; }
+# 前提不足を作る fixture の制限 PATH に env 自身を要求しないよう、起動時の実体を固定する。
+ENV_BIN="$(command -v env)"
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/release-runtime.XXXXXX")"
 REACHED_END=0
@@ -378,7 +380,8 @@ export PATH="$STUB_BIN:$PATH"
 OUT="" RC=0
 run_orch() { # 引数はオーケストレータへ
   RC=0
-  OUT="$(bash "$SSOT/scripts/release-dev-toolkit.sh" --public "$PUB" "$@" 2>&1)" || RC=$?
+  # 外側の suite のモードを漏らさず、模擬リリース自身の健全性判定で gate のモードを選ばせる。
+  OUT="$("$ENV_BIN" -u FF_RUN_ALL_FULL bash "$SSOT/scripts/release-dev-toolkit.sh" --public "$PUB" "$@" 2>&1)" || RC=$?
 }
 has() { [[ "$OUT" == *"$1"* ]]; }
 stage_order() { printf '%s\n' "$OUT" | awk '/^RELEASE_STAGE=/ { sub(/^RELEASE_STAGE=/, ""); sub(/ .*/, ""); printf "%s%s", (n++ ? " " : ""), $0 }'; }
@@ -1141,7 +1144,8 @@ printf '%s\n' '- 前進の検査' >"$SSOT/changelog.d/120.added.advance.md"
 commit_push "feat: advance"
 printf 'neutral\n' >"$STATE/runall.advance"
 : >"$STATE/recheck.log"
-run_orch
+# 既定実行でも外側の全件モードを明示的に渡し、run_orch の分離を外した退行を検出する。
+FF_RUN_ALL_FULL=1 run_orch
 side_sha="$(cat "$STATE/side.sha" 2>/dev/null || true)"
 gate_ok_sha="$(awk -F= '$1 == "GATE_OK" { v = $2 } END { sub(/:.*/, "", v); print v }' "$SSOT/.git/ff-release-state")"
 if [[ "$RC" -eq 0 ]] && has "RELEASE_RESULT=released" && has "公開対象・リリース機構・changelog.d の外だけ進んだ" && has "GATE_STALE_RECHECK=green" \

@@ -218,7 +218,9 @@ jobs:
           #     plugins/ff-agent-press（いずれも公開対象外）の suite を回すラッパー。公開 checkout では
           #     プラグインも marketplace の掲載も無く、常に丸ごと skip する（skip 許容名簿の外なので
           #     除外しないと赤になる）
+          # Root release scripts are SSOT-only; their file-input suite is excluded.
           EXCLUDED_SSOT_SUITES="
+            github-input-release
             markdownlint markdownlint-selftest
             skill-count-consistency
             plugin-description-enumeration

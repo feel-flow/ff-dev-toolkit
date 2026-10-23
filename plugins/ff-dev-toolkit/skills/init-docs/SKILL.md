@@ -60,6 +60,9 @@ fi
 - **プロジェクト概要**: 1-2文の説明
 - **オーナー**: frontmatter の `owner` に入れる GitHub ハンドル（未回答の場合は `gh api user --jq .login` で実行者のハンドルを取得してよい）
 
+<!--f2b5ef6a44219485-->
+MCP: 取得値: MCP で認証主体の login を get_user_login 等で取得。形式: 空でない GitHub handle 文字列。渡し先: この手順の frontmatter owner に渡す。不足時: 任意の補完取得が失敗なら owner 未確認とし、利用者の明示値を使う / 確認する。login を捏造しない。
+
 ### 2. ディレクトリ構造の作成
 
 以下の構造を作成します:
@@ -134,6 +137,9 @@ docs/
 - frontmatter の `version` は `"1.0.0"` にリセットし、Changelog セクションはテンプレートの改訂履歴を削除して `[1.0.0] - <本日日付> 初版作成` の1行にする
 - frontmatter に `changeImpact` が存在する場合は、小文字の `low` / `medium` / `high` に正規化する（`/validate-docs` の Frontmatter スキーマチェックと整合させるため、`LOW` / `MEDIUM` / `HIGH` のままコピーしない）
 - テンプレートには**初期セット外のファイルへの参照**（`GETTING_STARTED*.md`、`05-operations/deployment/` 配下、`03-implementation/templates/` 配下 等）が含まれる。初期セット内の文書からの初期セット外参照は**すべて角括弧リンクではなく案内テキスト（inline code のパス + コピー元）として記述済み**なので、そのままコピーしてよい（追加の置換作業は不要）。必要になった時点で `${FF_DEV_TOOLKIT_ROOT}/docs-template/` の同一相対パスから追加コピーする。初期セット内文書に初期セット外への角括弧リンクが無いことは `tests/docs-template-portability/` が機械検証する
+
+<!--cc07e5622ac86158-->
+MCP: 取得値: MCP で認証主体の login を get_user_login 等で取得。形式: 空でない GitHub handle 文字列。渡し先: この手順の frontmatter owner に渡す。不足時: 任意の補完取得が失敗なら owner 未確認とし、利用者の明示値を使う / 確認する。login を捏造しない。
 
 ### 3-b. ACE 最小構成の配置
 

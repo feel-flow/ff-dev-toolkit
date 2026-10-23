@@ -968,7 +968,7 @@ mutation($body: String!) {
 - 達成項目のチェックボックスを `- [x]` に更新 + 完了報告コメントを投稿してからマージへ進む
 - 未達 AC は fix commit → 再照合の自動修正ループで解消。実装で解消できない場合（仕様変更の判断が必要など）は停止してユーザーに確認する
 - 完了報告に照合時の head SHA（`headRefOid`）が含まれるので、マージ時に `--match-head-commit` へ渡す
-- 固定手順（対象 Issue の検出・closing keyword 抵触検査・工数の実測・checks の有無分岐・返信の無いレビュースレッドの列挙・鮮度照合・merge コマンド生成）は同梱の `scripts/finish.sh precheck <PR番号>` が実行し、`MERGE_COMMAND_BEGIN` 〜 `MERGE_COMMAND_END` に出す merge コマンドを書き写さずそのまま実行する。前提崩れ（PR 不在・`gh` 不通・ゲート実測の記録不在）は非 0 で判定不能を名指しし、復帰手段を出す
+- 固定手順（対象 Issue の検出・closing keyword 抵触検査・工数の実測・checks の有無分岐・返信の無いレビュースレッドの列挙・鮮度照合・merge コマンド生成）は同梱の `scripts/finish.sh precheck <PR番号>` が実行し、`MERGE_COMMAND_BEGIN` 〜 `MERGE_COMMAND_END` に出す merge コマンドは gh 経路では書き写さずそのまま実行する（MCP は下の6引数への直接対応）。前提崩れ（PR 不在・`gh` 不通・ゲート実測の記録不在）は非 0 で判定不能を名指しし、復帰手段を出す
 - マージ直前に「リモート先端 == ゲート実測対象」を機械照合する（下の鮮度ゲート）。`--match-head-commit` とは守る窓が違う
 - プラグイン未導入の環境では同等の手順を `gh` コマンドで手動実施する
 
@@ -1057,7 +1057,7 @@ esac
 
 ゲート通過後にマージする。**Issue を閉じてよいか（`Closes` 運用）／open のまま維持するか（`Refs` 運用）でテンプレートを使い分ける**:
 
-**マージ前に `git worktree list` で base / head ブランチの保持を確認する**。`finish.sh precheck` は保持を `git worktree list --porcelain` で実測し、保持されていれば既存の worktree 互換経路として `--delete-branch` を付けない merge と、成功時だけ走る head 削除処理を `&&` で繋いだ 1 コマンドを生成する（`DELETE_BRANCH_MODE=separate-push`）。この経路では照合済み head OID の lease を明示する。生成コマンドは `--repo` を明示するため、gh v2.102.0 はローカルブランチの切替・削除を行わず、その後始末は `/merge-cleanup` が担当する。**`MERGE_COMMAND_BEGIN` 〜 `MERGE_COMMAND_END` の出力をそのまま実行する**。他セッションの worktree は削除せず、保持者のパスと状態を報告して処分はユーザー判断に委ねる。
+**マージ前に `git worktree list` で base / head ブランチの保持を確認する**。`finish.sh precheck` は保持を `git worktree list --porcelain` で実測し、保持されていれば既存の worktree 互換経路として `--delete-branch` を付けない merge と、成功時だけ走る head 削除処理を `&&` で繋いだ 1 コマンドを生成する（`DELETE_BRANCH_MODE=separate-push`）。この経路では照合済み head OID の lease を明示する。生成コマンドは `--repo` を明示するため、gh v2.102.0 はローカルブランチの切替・削除を行わず、その後始末は `/merge-cleanup` が担当する。**gh 経路は `MERGE_COMMAND_BEGIN` 〜 `MERGE_COMMAND_END` の出力をそのまま実行する**。MCP 経路は下の条件付き例外に従う。他セッションの worktree は削除せず、保持者のパスと状態を報告して処分はユーザー判断に委ねる。
 
 merge 対象は取得済みのホストを含むリポジトリ URL を引用した `--repo` へ固定する。実行時の cwd・`GH_REPO`・`GH_HOST`・gh の既定ホストへ選び直さない。同一リポジトリの PR では、削除処理が生成時に固定した consumer root の `origin` へ exact ref を照会する。リポジトリの `delete_branch_on_merge` 設定から削除の要否を推測せず、ref が既に無ければ push せず成功、PR head と同じ OID なら `--force-with-lease=refs/heads/<head>:<OID>` 付きで削除、別 OID なら警告して保全する。削除 push が拒否された回も再照会し、自動削除との競合による不在や別 OID への更新を区別する。照会不能・応答不正・期待 OID が残ったままの削除失敗は非 0 で終わるため、その終了コードだけで merge の失敗とは読まず、PR の state と残存 ref を確認する。fork PR は従来どおり `HEAD_DELETE=skipped-fork` で削除を生成しない。
 
@@ -1068,6 +1068,12 @@ merge 対象は取得済みのホストを含むリポジトリ URL を引用し
 | `preserved-different-oid` | 同名 ref が別 OID のため削除せず保全した |
 
 削除本文は生成済みコマンドに含まれるため、実行時の cwd やマージ後の plugin 更新・除去に依存しない。`SKIP_SIMPLE_GIT_HOOKS=1 HUSKY=0` は削除 push だけに付く。完了報告には「リモートブランチを削除したか」を merge の成否とは**別項目**で明示し、上の結果を載せる（`/merge-cleanup` のサマリーも同じ項目を出す）。
+
+#### gh 不在時の MCP merge
+
+Closes / Refs とも最初から subject / body 原文を両方保持し、`finish.sh precheck <PR> --subject "$MERGE_SUBJECT" --body "$MERGE_BODY" --github-input /absolute/index.json` に渡す（件名は空不可、本文の明示空文字は可）。gh 経路の生成 block 原文要求は維持する。MCP 経路だけは、同じ最終 precheck の `TARGET_REPO` / 入力 PR / `headRefOid` と元の subject / body を、既存 `merge_pull_request` の `repository_full_name` / `pr_number` / `expected_head_sha` / `commit_title` / `commit_message` に直接渡し、`merge_method="squash"` を明示する。origin の完全 URL の host・port と MCP 接続先の一致が確認できなければ停止する（owner/repo だけでは host を表せない）。生成 shell の parse/eval/unquote と tool default/null からの再構成は禁止。Closes の原文が未指定なら、最初の precheck より前に fresh PR title と番号から `<title> (#<PR>)` を件名、fresh PR body 全文を本文として一度だけ確定する。既に明示した原文は変更せず、Refs は2a/2bを通す意図した原文を両方指定する。body が null / 欠落なら空文字へ補わず、明示原文が無ければ停止する。以後は同じ原文を保持し、再取得した PR title/body や tool default/null から merge 引数を作り直さない。Refs の 2a/2b・snapshot・鮮度を迂回しない。checks → 全 thread pages → 別取得 after-threads PR の最終 head を freshness の `--remote-head` と expected SHA に揃える。必須 raw / 能力不足は operation / field / page を示して停止する。
+
+merge 後の fresh PR で `merged=true` と結果 SHA、Issue の Closes=CLOSED / Refs=OPEN を後読し、不一致は復旧・再後読する。MCP merge に削除引数は無い。**merge 成功と fresh merged read-back 後だけ**、同一 repository の head と確認して、merge 前に実体を固定した canonical `scripts/lib/finish-delete-merged-head.sh` を consumer root / head branch / expected OID の3引数で呼ぶ（helper 自身は fork / merge 状態を判定しない）。fork / 不明 / 別 OID は保全し、一致だけ lease 削除、不在は成功とする。一般 ref-delete API や生成 shell 尾部の切出しで置換しない。helper / Git 不足なら削除未実施とし、merge / delete / cleanup は別状態で報告する。値の取得形・write / read-back は plugin 正本の `/close-issue` と [MCP merge 契約](../../../skills/close-issue/references/merge-gate.md#mcp-merge)を読む。MCP-only live 完走を未実施のまま成功と報告しない。
 
 #### `--delete-branch` の部分失敗の読み方とリモート個別削除
 

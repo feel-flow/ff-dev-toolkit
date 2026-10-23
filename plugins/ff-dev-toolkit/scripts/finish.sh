@@ -308,6 +308,7 @@ Usage: finish.sh precheck <PR番号> [--subject <件名> --body <本文>] [--gat
        finish.sh knowledge-commit commit [--type <t>] [--force]
        finish.sh knowledge-commit status | discard | probe | push
        finish.sh knowledge-commit pr --branch <名> --title <件名> [--body <本文>]
+File input: precheck / cleanup / knowledge-commit accept --github-input <absolute index.json>
 USAGE
   exit 2
 }
@@ -371,6 +372,18 @@ is_pr_number() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; return 0; }
 # gh の失敗を「PR 不在」と「gh 不通（認証・通信・その他）」へ分けて名指しする
 gh_pr_view_or_die() { # <PR番号> <--json フィールド> → stdout に JSON
   local pr="$1" fields="$2" out err rc
+  if [[ -n "${github_input:-}" ]]; then
+    local op=finish.precheck.pr phase="${3:-initial}" raw="$github_tmp/pr-$pr-${3:-initial}.json"
+    [[ "$fields" != state ]] || op=finish.cleanup.state
+    jq -n --arg repository "$github_repository" --argjson pr "$pr" '{repository:$repository,pr:$pr}' >"$github_tmp/scope.json" || exit 2
+    github_file_read "$github_input" "$op" "$github_tmp/scope.json" "$phase" "$github_tmp/position.json" >"$raw" || exit 2
+    if [[ "$fields" == state ]]; then
+      finish_file_require "$raw" "$op" '.state | type == "string" and length > 0' state || exit 2
+    else
+      finish_file_pr "$raw" "$pr" || exit 2
+    fi
+    cat "$raw"; return $?
+  fi
   err="$(mktemp)" || die_env "一時ファイルを作れません" "TMPDIR を書ける場所へ向けて再実行する"
   out="$(gh pr view "$pr" --json "$fields" 2>"$err")"; rc=$?
   if [[ "$rc" -ne 0 ]]; then
@@ -404,6 +417,49 @@ gh_pr_view_or_die() { # <PR番号> <--json フィールド> → stdout に JSON
 . "$self_dir/lib/merge-message.sh" || { echo "merge-message helper を読めません" >&2; exit 2; }
 q() { ff_merge_quote "$@"; }
 
+# Explicit file acquisition is separate from the unchanged gh calls below.
+github_input=""; github_tmp=""; github_repository=""
+finish_file_init() {
+  [[ -n "$github_input" ]] || return 0
+  need_bundled lib/github-input.sh
+  assert_bundled_shebang_lf "$self_dir/lib/github-input.sh"
+  # shellcheck source=lib/github-input.sh
+  . "$self_dir/lib/github-input.sh" || exit 2
+  [[ "$github_input" == /* ]] || { _github_input_error index '--github-input must be absolute'; exit 2; }
+  if [[ "${1:-required}" == optional ]]; then
+    github_repository="$(_github_input_repository 2>/dev/null)" || github_repository=""
+  else
+    github_repository="$(_github_input_repository)" || exit 2
+  fi
+  github_tmp="$(mktemp -d)" || exit 2
+  trap 'rm -rf "$github_tmp"' EXIT
+  printf '{}\n' >"$github_tmp/position.json"
+}
+finish_file_require() { # raw / operation / predicate / field
+  if ! jq -e "$3" "$1" >/dev/null; then
+    _github_input_error "$2" "required field/page: $4"; return 2
+  fi
+}
+finish_file_pr() {
+  local raw="$1" pr="$2" field
+  for field in number state isDraft headRefName headRefOid baseRefName title body closingIssuesReferences commits statusCheckRollup additions deletions files isCrossRepository; do
+    finish_file_require "$raw" finish.precheck.pr "has(\"$field\")" "$field" || return 2
+  done
+  finish_file_require "$raw" finish.precheck.pr ".number == $pr" number || return 2
+  for field in state headRefName headRefOid baseRefName title body; do
+    finish_file_require "$raw" finish.precheck.pr ".$field | type == \"string\"" "$field" || return 2
+  done
+  for field in state headRefName baseRefName; do
+    finish_file_require "$raw" finish.precheck.pr ".$field | length > 0" "$field" || return 2
+  done
+  finish_file_require "$raw" finish.precheck.pr '.headRefOid | test("^[0-9a-fA-F]{40}$")' headRefOid || return 2
+  finish_file_require "$raw" finish.precheck.pr '(.isDraft | type == "boolean") and (.isCrossRepository | type == "boolean")' isDraft/isCrossRepository || return 2
+  finish_file_require "$raw" finish.precheck.pr '(.closingIssuesReferences | type == "array") and all(.closingIssuesReferences[]; .url | type == "string")' closingIssuesReferences || return 2
+  finish_file_require "$raw" finish.precheck.pr '(.commits | type == "array") and all(.commits[]; (.oid | type == "string") and (.messageHeadline | type == "string") and (.messageBody | type == "string"))' commits || return 2
+  finish_file_require "$raw" finish.precheck.pr '(.files | type == "array") and all(.files[]; .path | type == "string")' files || return 2
+  finish_file_require "$raw" finish.precheck.pr '(.statusCheckRollup | type == "array") and (.additions | type == "number") and (.deletions | type == "number")' statusCheckRollup/additions/deletions || return 2
+}
+
 # PR の判定に使うフィールドだけを正規化した 1 行 JSON（初回と読み直しの比較用）。checks は待機で
 # 結果が変わるので「有無」だけを載せる。
 pr_snapshot() { # stdin: gh pr view の JSON → stdout: 正規化した JSON
@@ -424,24 +480,28 @@ cmd_cleanup() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run) dry=(--dry-run); shift ;;
+      --github-input) [[ $# -ge 2 && -n "$2" ]] || usage; github_input="$2"; shift 2 ;;
       -h|--help) usage ;;
       -*) echo "✗ 不明な引数: $1" >&2; usage ;;
       *) [[ -z "$PR_NUMBER" ]] || usage; PR_NUMBER="$1"; shift ;;
     esac
   done
   is_pr_number "$PR_NUMBER" || die_env "PR 番号が数字ではありません: ${PR_NUMBER:-（空）}" "finish.sh cleanup <マージ済み PR 番号> の形で渡す"
-  need_cmd gh "gh をインストールして gh auth login を済ませる"
+  [[ -n "$github_input" ]] || need_cmd gh "gh をインストールして gh auth login を済ませる"
   need_cmd jq "jq をインストールする"
   need_repo
+  finish_file_init
   need_bundled merge-cleanup.sh
   local pr_json pr_state
-  pr_json="$(gh_pr_view_or_die "$PR_NUMBER" state)" || exit $?
+  pr_json="$(gh_pr_view_or_die "$PR_NUMBER" state cleanup-state)" || exit $?
   pr_state="$(printf '%s' "$pr_json" | jq -r '.state // ""')"
   echo "CLEANUP_PR=${PR_NUMBER}"
   echo "CLEANUP_PR_STATE=${pr_state}"
   # MERGED でない PR は委譲先が破壊的処理の前に中断する（番号の打ち間違い対策。判定は 1 箇所に置く）
   assert_bundled_shebang_lf "${plugin_root}/scripts/merge-cleanup.sh"
-  FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${plugin_root}/scripts/merge-cleanup.sh" ${dry[@]+"${dry[@]}"} "$PR_NUMBER"
+  local file_args=()
+  [[ -z "$github_input" ]] || file_args=(--github-input "$github_input")
+  FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${plugin_root}/scripts/merge-cleanup.sh" ${dry[@]+"${dry[@]}"} ${file_args[@]+"${file_args[@]}"} "$PR_NUMBER"
   local rc=$?
   echo "CLEANUP_RC=${rc}"
   return "$rc"
@@ -456,7 +516,45 @@ kc_default_branch() { # → default branch 名（origin/HEAD から）
   printf '%s' "${default_ref#origin/}"
 }
 
+kc_file_probe() {
+  local default_branch owner_repo="" protection="unknown" classic="unknown" rulesets="unknown" classic_out
+  default_branch="$(kc_default_branch)" || return 2
+  if [[ -n "$github_repository" ]] && jq -n --arg repository "$github_repository" '{repository:$repository}' >"$github_tmp/scope.json" \
+    && github_file_read "$github_input" knowledge.repo "$github_tmp/scope.json" probe "$github_tmp/position.json" >"$github_tmp/repo.json" 2>/dev/null \
+    && jq -e --arg expected "${github_repository#*://*/}" '.nameWithOwner == $expected' "$github_tmp/repo.json" >/dev/null; then
+    owner_repo="$(jq -r .nameWithOwner "$github_tmp/repo.json")"
+  fi
+  if [[ -n "$owner_repo" ]] && jq -n --arg repository "$github_repository" --arg branch "$default_branch" '{repository:$repository,branch:$branch}' >"$github_tmp/scope.json"; then
+    # The direct call preserves a recognized HTTP status; error text is not a status.
+    if github_file_read "$github_input" knowledge.classic-protection "$github_tmp/scope.json" probe "$github_tmp/position.json" >"$github_tmp/classic.json" 2>/dev/null; then
+      if [[ "$GITHUB_INPUT_HTTP_STATUS" == 404 ]]; then
+        classic="none"
+      elif [[ "$GITHUB_INPUT_HTTP_STATUS" == 200 ]] && jq -e '
+        type == "object" and has("required_pull_request_reviews") and has("required_status_checks") and has("restrictions") and
+        all(.required_pull_request_reviews, .required_status_checks, .restrictions; . == null or type == "object") and
+        (.required_signatures.enabled | type == "boolean") and (.lock_branch.enabled | type == "boolean")
+      ' "$github_tmp/classic.json" >/dev/null; then
+        classic_out="$(jq -r '([.required_pull_request_reviews, .required_status_checks, .restrictions] | any(. != null)) or (.required_signatures.enabled // false) or (.lock_branch.enabled // false)' "$github_tmp/classic.json")"
+        case "$classic_out" in true) classic="protected" ;; false) classic="protected-no-pr" ;; esac
+      fi
+    fi
+    if [[ "$classic" != protected ]] \
+      && github_file_read "$github_input" knowledge.rulesets "$github_tmp/scope.json" probe "$github_tmp/position.json" >"$github_tmp/rules.json" 2>/dev/null \
+      && [[ "$GITHUB_INPUT_LAST" == true && ( -z "$GITHUB_INPUT_HTTP_STATUS" || "$GITHUB_INPUT_HTTP_STATUS" == 200 ) ]] \
+      && jq -e 'type == "array" and all(.[]; .type | type == "string")' "$github_tmp/rules.json" >/dev/null; then
+      if jq -e 'any(.[]; .type == "pull_request")' "$github_tmp/rules.json" >/dev/null; then rulesets="protected"; else rulesets="none"; fi
+    fi
+    if [[ "$classic" == protected || "$rulesets" == protected ]]; then
+      protection="protected"
+    elif [[ ( "$classic" == none || "$classic" == protected-no-pr ) && "$rulesets" == none ]]; then
+      protection="unprotected"
+    fi
+  fi
+  echo "protection=${protection} (default_branch=${default_branch}, classic=${classic}, rulesets=${rulesets})"
+}
+
 kc_probe() {
+  if [[ -n "$github_input" ]]; then kc_file_probe; return $?; fi
   # gh は任意依存: 無ければ API を呼ばず protection=unknown（既定の直 push を試し、拒否されたら PR 経由）
   command -v gh >/dev/null 2>&1 || echo "ℹ️  gh が無いため保護判定は unknown（既定を試し、push が拒否されたら PR 経由へ）" >&2
   # ff-ace-protection-probe:start
@@ -586,7 +684,18 @@ kc_push() {
   echo "KNOWLEDGE_PUSHED_SHA=${pushed_sha}"
   # 直 push は PR 画面に出ないので、今 push した SHA の CI run を見に行く（headSha が一致する run を
   # 探す。in_progress / queued は完了を待って再確認し、failure なら revert ではなく前進で直す）
-  if command -v gh >/dev/null 2>&1; then
+  if [[ -n "$github_input" ]]; then
+    if [[ -n "$github_repository" ]] && jq -n --arg repository "$github_repository" --arg branch "$default_branch" --arg sha "$pushed_sha" '{repository:$repository,branch:$branch,limit:5,pushed_sha:$sha}' >"$github_tmp/scope.json" \
+      && github_file_read "$github_input" knowledge.ci "$github_tmp/scope.json" after-push "$github_tmp/position.json" >"$github_tmp/ci.json" 2>/dev/null \
+      && [[ "$GITHUB_INPUT_LAST" == true && ( -z "$GITHUB_INPUT_HTTP_STATUS" || "$GITHUB_INPUT_HTTP_STATUS" == 200 ) ]] \
+      && jq -e 'type == "array" and length <= 5 and all(.[]; has("conclusion") and (.conclusion == null or (.conclusion | type == "string")) and
+        (.status | type == "string") and (.workflowName | type == "string") and (.headSha | type == "string" and test("^[0-9a-fA-F]{40}$")))' "$github_tmp/ci.json" >/dev/null; then
+      jq -r --arg sha "$pushed_sha" '.[] | "KNOWLEDGE_CI=" + (.workflowName // "?") + "\t" + (.status // "?") + "\t" + (.conclusion // "-") + "\t" + (if .headSha == $sha then "this-push" else "other" end)' "$github_tmp/ci.json" \
+        || echo "KNOWLEDGE_CI=(unavailable)"
+    else
+      echo "KNOWLEDGE_CI=(unavailable)"
+    fi
+  elif command -v gh >/dev/null 2>&1; then
     gh run list --branch "${default_branch}" --limit 5 --json status,conclusion,workflowName,headSha 2>/dev/null \
       | jq -r --arg sha "$pushed_sha" '.[] | "KNOWLEDGE_CI=" + (.workflowName // "?") + "\t" + (.status // "?") + "\t" + (.conclusion // "-") + "\t" + (if .headSha == $sha then "this-push" else "other" end)' 2>/dev/null \
       || echo "KNOWLEDGE_CI=(unavailable)"
@@ -623,7 +732,7 @@ kc_pr() {
     esac
   done
   [[ -n "$branch" && -n "$title" ]] || usage
-  need_cmd gh "gh をインストールして gh auth login を済ませる"
+  [[ -n "$github_input" ]] || need_cmd gh "gh をインストールして gh auth login を済ませる"
   default_branch="$(kc_default_branch)" || exit 2
   current_branch="$(git symbolic-ref -q --short HEAD)" || current_branch=""
   if [[ "$current_branch" == "$default_branch" || "$current_branch" == "$branch" ]]; then
@@ -648,8 +757,30 @@ kc_pr() {
     kc_restore_default "${default_branch}" "${current_branch}"
     die_env "upstream が想定と異なります（期待: origin/${branch} / 実際: ${upstream:-（無し）}）" "git push -u origin ${branch} で upstream を揃えて再実行する"
   fi
-  local pr_url
-  if ! pr_url="$(gh pr create --base "${default_branch}" --title "${title}" --body "${body:-knowledge の追記}")"; then
+  local pr_url pushed_sha
+  if [[ -n "$github_input" ]]; then
+    pushed_sha="$(git rev-parse HEAD)" || return 2
+    jq -n --arg repository "$github_repository" '{repository:$repository}' >"$github_tmp/scope.json" || return 2
+    jq -n --arg head "$branch" --arg base "$default_branch" --arg title "$title" --arg body "${body:-knowledge の追記}" --arg sha "$pushed_sha" \
+      '{head:$head,base:$base,title:$title,body:$body,head_sha:$sha}' >"$github_tmp/arguments.json" || return 2
+    jq -n --arg repository "$github_repository" --slurpfile a "$github_tmp/arguments.json" \
+      '{operation:"knowledge.pr-create",phase:"after-write",expect:{repository:$repository,state:"OPEN",headRefName:$a[0].head,baseRefName:$a[0].base,title:$a[0].title,body:$a[0].body,headRefOid:$a[0].head_sha},returned:["number","url"]}' >"$github_tmp/readback.json" || return 2
+    if github_file_read "$github_input" knowledge.pr-create "$github_tmp/scope.json" after-write "$github_tmp/position.json" >"$github_tmp/pr-readback.json" 2>/dev/null \
+      && [[ -z "$GITHUB_INPUT_HTTP_STATUS" || "$GITHUB_INPUT_HTTP_STATUS" == 200 ]] \
+      && jq -e --arg repository "$github_repository" --slurpfile a "$github_tmp/arguments.json" '
+        (.number | type == "number" and . > 0 and floor == .) and
+        (.url == ($repository + "/pull/" + (.number | tostring))) and .state == "OPEN" and
+        .headRefName == $a[0].head and .baseRefName == $a[0].base and .headRefOid == $a[0].head_sha and
+        .title == $a[0].title and .body == $a[0].body
+      ' "$github_tmp/pr-readback.json" >/dev/null; then
+      pr_url="$(jq -r .url "$github_tmp/pr-readback.json")"
+    else
+      _github_input_error knowledge.pr-create 'external PR creation and matching fresh read-back required; no completion yet'
+      github_file_plan knowledge.pr-create "$github_tmp/scope.json" "$github_tmp/arguments.json" "$github_tmp/readback.json" || true
+      if ! kc_restore_default "${default_branch}" "${current_branch}"; then echo "KNOWLEDGE_DEFAULT_RESTORE=failed"; return 1; fi
+      return 2
+    fi
+  elif ! pr_url="$(gh pr create --base "${default_branch}" --title "${title}" --body "${body:-knowledge の追記}")"; then
     kc_restore_default "${default_branch}" "${current_branch}"
     die_env "PR 作成に失敗しました（commit は push 済みの ${branch} に残っています）" "gh pr create --base ${default_branch} --head ${branch} を手で実行する"
   fi
@@ -670,7 +801,8 @@ kc_pr() {
 kc_add() {
   # `--` より前（書き込み口のオプションと値）と後（明示 pathspec）を別配列に分ける。オプションの値
   # （--category docs 等）を path と取り違えて stage しないため
-  local claim_docs=() args=() pathspecs=() default_branch doc
+  local claim_docs=() args=() pathspecs=() file_args=() default_branch doc
+  [[ -z "$github_input" ]] || file_args=(--github-input "$github_input")
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --claim) [[ $# -ge 2 ]] || usage; claim_docs+=("$2"); shift 2 ;;
@@ -715,7 +847,7 @@ kc_add() {
     fi
   fi
   assert_bundled_shebang_lf "${plugin_root}/scripts/knowledge-commit.sh"
-  FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${plugin_root}/scripts/knowledge-commit.sh" add ${args[@]+"${args[@]}"} -- ${pathspecs[@]+"${pathspecs[@]}"} || return $?
+  FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${plugin_root}/scripts/knowledge-commit.sh" add ${file_args[@]+"${file_args[@]}"} ${args[@]+"${args[@]}"} -- ${pathspecs[@]+"${pathspecs[@]}"} || return $?
   return 0
 }
 
@@ -723,13 +855,33 @@ cmd_knowledge_commit() {
   local sub="${1:-}"
   [[ -n "$sub" ]] || usage
   shift
+  local args=() file_args=()
+  # Preserve valued options and the -- path boundary while removing only our flag.
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --) args+=("$@"); break ;;
+      --github-input) [[ $# -ge 2 && -n "$2" ]] || usage; github_input="$2"; shift 2 ;;
+      --source|--id|--summary|--category|--type|--claim|--branch|--title|--body)
+        [[ $# -ge 2 ]] || usage; args+=("$1" "$2"); shift 2 ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  set -- ${args[@]+"${args[@]}"}
   need_repo
   need_bundled knowledge-commit.sh
+  if [[ -n "$github_input" ]]; then
+    case "$sub" in
+      add|commit|probe|push) finish_file_init optional ;;
+      pr) finish_file_init ;;
+      *) echo "✗ --github-input はこの pure Git サブコマンドには使いません: $sub" >&2; usage ;;
+    esac
+    [[ "$sub" != commit ]] || file_args=(--github-input "$github_input")
+  fi
   case "$sub" in
     add) kc_add "$@" ;;
     commit|status|discard)
       assert_bundled_shebang_lf "${plugin_root}/scripts/knowledge-commit.sh"
-      FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${plugin_root}/scripts/knowledge-commit.sh" "$sub" "$@" ;;
+      FF_DEV_TOOLKIT_ROOT="${plugin_root}" bash "${plugin_root}/scripts/knowledge-commit.sh" "$sub" ${file_args[@]+"${file_args[@]}"} "$@" ;;
     probe) [[ $# -eq 0 ]] || usage; kc_probe ;;
     push) [[ $# -eq 0 ]] || usage; kc_push ;;
     pr) kc_pr "$@" ;;

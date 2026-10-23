@@ -73,6 +73,47 @@ else
   sed 's/^/    | /' "$WORK/install2.log" >&2
 fi
 
+# 配置先から見ても上流Issueの所属と設定の排他関係が一意になること。
+# コメント行だけを取り、`${#1}` 等のshell構文をIssue番号として扱わない。
+if [ ! -s "$PLACED" ] || ! awk '/^[[:space:]]*#/ { print }' "$PLACED" > "$WORK/shim-comments" \
+   || [ ! -s "$WORK/shim-comments" ]; then
+  bad "配置: 説明検査のコメントを読み取れない（対象不在/空/書式変更）"
+else
+  _issue_prefix='ff-dev-toolkit 開発元 Issue 番号 '
+  _issue_refs=0
+  for _issue in 406 970 2119 769 807 603 658 742 1600 419; do
+    if grep -qF "${_issue_prefix}${_issue}" "$WORK/shim-comments"; then
+      _issue_refs=$((_issue_refs + 1))
+    fi
+  done
+  _bare_issue_rc=0
+  if sed "s|${_issue_prefix}[0-9][0-9]*||g" "$WORK/shim-comments" > "$WORK/shim-comments.stripped"; then
+    grep -nE '(^|[^[:alnum:]_/-])#[0-9]+|Issue[[:space:]]+[0-9]+' "$WORK/shim-comments.stripped" \
+      > "$WORK/bare-issues" || _bare_issue_rc=$?
+  else
+    _bare_issue_rc=2
+  fi
+  if [ "$_issue_refs" -eq 10 ] && [ "$_bare_issue_rc" -eq 1 ]; then
+    ok "配置: 上流Issueは開発元の番号と明示し、導入先のIssueへ誤読させない"
+  else
+    bad "配置: 上流Issueの開発元表示が欠落、または説明の検査不能 (refs=$_issue_refs rc=$_bare_issue_rc)"
+  fi
+  if grep -qF 'MULTI_AGENT_MODEL_CODEX_CLI と MULTI_AGENT_CODEX_PROFILE は同時指定できない' "$WORK/shim-comments" \
+     && grep -qF 'MULTI_AGENT_CODEX_REASONING_EFFORT は profile と併用でき' "$WORK/shim-comments" \
+     && grep -qF 'reasoning effort の指定が profile の値を上書きする' "$WORK/shim-comments"; then
+    ok "配置: model/profileの排他とeffort/profileの併用・明示上書きを区別する"
+  else
+    bad "配置: model/profile/effortの説明が曖昧または欠落"
+  fi
+  if grep -qF '内容不一致・比較不能' "$WORK/shim-comments" \
+     && grep -qF '2 = 解決拒否（内容不一致/比較不能/設定版不一致/明示指定不正等）' "$WORK/shim-comments" \
+     && ! grep -qF '「版が一致しません」' "$WORK/shim-comments"; then
+    ok "配置: rc2と正規化の説明は現在の拒否原因を示す"
+  else
+    bad "配置: rc2または正規化の説明が古い/欠落"
+  fi
+fi
+
 # 比較は物理パスで行う。TMPDIR が末尾 / を持つと $WORK に // が混ざり、
 # setup 側は cd+pwd で正規化した値を書くため、文字列比較だけだと食い違う。
 _sidecar_want="$(cd "$FAKE/scripts" && pwd)"

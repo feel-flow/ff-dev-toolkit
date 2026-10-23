@@ -338,6 +338,7 @@ Usage: effort-report.sh [options]
 
   --input FILE     gh issue list --json number,body の出力（JSON 配列）を読む。
                    省略時は --repo から gh で取得する
+  --github-input FILE  operation/scope/phase 付き index（--input と併用不可）
   --repo OWNER/REPO  取得元リポジトリ（--input 省略時に必須）
   --state STATE    all | open | closed（既定 all）
   --limit N        取得上限（既定 200）
@@ -365,6 +366,7 @@ need_value() { # <フラグ名> <残り引数の個数>
 }
 
 INPUT=""
+GITHUB_INPUT=""
 REPO=""
 STATE="all"
 LIMIT="200"
@@ -385,6 +387,7 @@ while [ $# -gt 0 ]; do
   esac
   case "$1" in
     --input)  need_value "$1" $#; INPUT="$2"; shift 2 ;;
+    --github-input) need_value "$1" $#; [ -n "$2" ] || { echo "--github-input requires a non-empty index path" >&2; exit 2; }; GITHUB_INPUT="$2"; shift 2 ;;
     --repo)   need_value "$1" $#; REPO="$2"; shift 2 ;;
     --state)  need_value "$1" $#; STATE="$2"; shift 2 ;;
     --limit)  need_value "$1" $#; LIMIT="$2"; shift 2 ;;
@@ -707,9 +710,23 @@ fi
 RAW="$(mktemp)"
 FLAT="$(mktemp)"
 NUMBERS="$(mktemp)"
-trap 'rm -f "$RAW" "$FLAT" "$NUMBERS"' EXIT
+GITHUB_TMP=""
+trap 'rm -f "$RAW" "$FLAT" "$NUMBERS"; [ -z "$GITHUB_TMP" ] || rm -rf "$GITHUB_TMP"' EXIT
 
-if [ -n "$INPUT" ]; then
+if [ -n "$GITHUB_INPUT" ]; then
+  [ -z "$INPUT" ] || { echo 'effort.issues: --input and --github-input are mutually exclusive' >&2; exit 2; }
+  [ -n "$REPO" ] || { echo 'effort.issues: repository (--repo) required' >&2; exit 2; }
+  GITHUB_TMP="$(mktemp -d)" || exit 2
+  github_lib="$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/github-input.sh"
+  [ -f "$github_lib" ] && [ -r "$github_lib" ] || { echo 'effort.issues: bundled github-input helper unavailable' >&2; exit 2; }
+  . "$github_lib"
+  jq -n --arg repository "https://github.com/$REPO" --arg state "$STATE" --argjson limit "$LIMIT" '{repository:$repository,state:$state,limit:$limit}' >"$GITHUB_TMP/scope" || exit 2
+  printf '{}\n' >"$GITHUB_TMP/position"
+  github_file_read "$GITHUB_INPUT" effort.issues "$GITHUB_TMP/scope" collect "$GITHUB_TMP/position" >"$RAW" || { echo 'effort.issues: required repository/state/limit response body unavailable' >&2; exit 2; }
+  if { [ -n "$GITHUB_INPUT_HTTP_STATUS" ] && [ "$GITHUB_INPUT_HTTP_STATUS" != 200 ]; } || [ "$GITHUB_INPUT_LAST" != true ] || ! jq -e --argjson limit "$LIMIT" 'type == "array" and length <= $limit and all(.[]; (.number | type == "number" and . > 0 and floor == .) and (.body | type == "string") and (.pull_request == null))' "$RAW" >/dev/null; then
+    echo 'effort.issues: required complete number/body array (last=true), repository/state/limit scope' >&2; exit 2
+  fi
+elif [ -n "$INPUT" ]; then
   [ -f "$INPUT" ] || { echo "入力ファイルが見つかりません: ${INPUT}" >&2; exit 1; }
   cat "$INPUT" > "$RAW"
 else

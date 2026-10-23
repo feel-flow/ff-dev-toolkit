@@ -1,0 +1,10 @@
+[
+  {
+    "number": 7,
+    "body": "<!-- ff-effort:begin -->\n- effort_unit: h\n- effort_human_planned: 8.0h\n- effort_ai_planned: 2.0h\n- effort_ai_actual: 2.0h\n<!-- ff-effort:end -->"
+  },
+  {
+    "number": 8,
+    "body": ""
+  }
+]

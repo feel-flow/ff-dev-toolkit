@@ -46,6 +46,9 @@ fi
 - 4〜6・11 の検査は認証済み `gh` を使う。無い環境・使いたくない回は `--offline` で SKIP にする（SKIP は緑ではない）
 - **read-only**。ファイルを書かず、Issue も作らない。`--fix` は**意図的に持たない** — CLAUDE.md の節を定型文へ自動置換すると導入先の文脈（節の前後・他節からの参照）を壊しうるため、置換案を `FIXTEXT` 行で印字し、適用は人（またはこのスキルを呼んだホスト）が差分を見て行う
 
+<!--0a415404daec6e99-->
+MCP: 取得値: MCP で同じ repo の labels / bundle / open Issues と parent、自分の Draft PR を取得。形式: doctor fixture の operation / scope / raw と全 page を index に保存。渡し先: workflow-doctor.sh --github-input /absolute/index.json へ渡す（repo 省略は origin）。表の旧文言は実行しない。不足時: 任意取得の不足は SKIP で継続。@me の実主体を照合し、403 を parent=null にしない。--offline は file も読まない。
+
 ## 実行
 
 ```bash
@@ -53,6 +56,8 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 ```
 
 オプション: `--global-claude <path>`（既定 `$CLAUDE_CONFIG_DIR/CLAUDE.md`、無ければ `~/.claude/CLAUDE.md`）/ `--settings <path>`（Stop hook を読む settings.json。繰り返し可。既定は `<root>/.claude/settings.json`・`<root>/.claude/settings.local.json`・`$CLAUDE_CONFIG_DIR/settings.json` の 3 件）/ `--offline` / `--repo OWNER/REPO`。
+
+GitHub MCP などの取得結果を渡す場合は上の呼び出しへ `--github-input /absolute/index.json` を追加する（jq が必要）。file 時も labels / bundle / open Issue・parent / 自分の Draft の取得不能は既存の `SKIP` にする。`@me` の selector を保存した index だけでは取得主体の一致を証明できない。認識済みの実 API 404 だけを parent 無しへ機械写像し、403/400・未取得を空集合や parent=null に補わない。全 page・認証主体・写像の境界は [knowledge fixture の対応表](../../tests/github-input-knowledge/README.md)。`--offline` は file を含む任意 GitHub 検査を飛ばす。
 
 ## 検査項目（10 + 1）
 
@@ -70,6 +75,9 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 | 10 | 入口のパリティ | `<root>/CLAUDE.md` と `<root>/AGENTS.md` | 両方があるとき、契約の必須語（`YAGNI` / `bundle`）が片方にしか無い（Claude Code は CLAUDE.md だけ、Codex / grok は AGENTS.md だけを読む） | WARN |
 | 11 | Draft の実態 | `gh pr list --draft --author @me` | 自分が author の open な Draft PR が残っている（`knowledge:` の ACE PR は自律フローの人の確認待ちなので除外し INFO） | WARN |
 
+<!--0a9647ef1d3fb96b-->
+MCP: 取得値: MCP で同じ repo の labels / bundle / open Issues と parent、自分の Draft PR を取得。形式: doctor fixture の operation / scope / raw と全 page を index に保存。渡し先: workflow-doctor.sh --github-input /absolute/index.json へ渡す（repo 省略は origin）。表の旧文言は実行しない。不足時: 任意取得の不足は SKIP で継続。@me の実主体を照合し、403 を parent=null にしない。--offline は file も読まない。
+
 - 出力は 1 行 1 所見（`<LEVEL>\t<番号>\t<所見>`）。`FIXTEXT` 行は置換案。`SUGGEST` 行は提案（下の「提案」節）で、SUMMARY の直前にまとめて出る。末尾に `SUMMARY fail=<n> warn=<n> skip=<n>`
 - 終了コード: **0** = FAIL 0 件 / **1** = FAIL あり / **2** = 対象（`--root`）を解決できない（検査不成立。緑と読まない）
 - 検査 2 は最初の該当節を次の `##` 見出しまで読む。後続のスコープ外節の必須語で先行節の欠落を補わない。
@@ -83,10 +91,16 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 - **FAIL 9（実在しない npm script）**: そのリポジトリで動く入口へ書き換える。グローバル CLAUDE.md なら「script があるリポジトリでは npm run、無ければ `/multi-review`」のように、条件を**同じ行に**書いてリポジトリ差を書き分ける（条件を別の行に書いた参照は数える — 既知の限界）
 - **WARN 10（パリティ）**: 欠けている側の入口文書へ、同じ契約の節を足す（ホスト固有の差だけを片側に持たせる）
 
+<!--766521d594e5ec43-->
+MCP: 取得値: MCP で通常へ戻す同じ PR の number / isDraft を取得。形式: PR 番号を構造化 pr_number として保持。渡し先: mark_pull_request_ready_for_review に渡し fresh isDraft=false を後読する。Draft 禁止例は新規起動しない。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
+
 - **FAIL 1（旧文言）**: 該当行を、`docs-template/05-operations/deployment/git-workflow.md`「bundle（子を全件 1 PR で束ねる着手単位）」と同じ 4 段（YAGNI → 同 PR インライン → 既存 bundle へ追記 → bundle 単位で新規）へ書き換える。グローバル CLAUDE.md（`$HOME` 配下）はリポジトリ外なので PR ではなく直接編集する。書き換え後は導入先で逆戻り検査を常設する（導入先の例: `scripts/check-out-of-scope-rules.sh` を `ci:local` から呼ぶ）
 - **FAIL 3（hook）**: reminder 文を 4 段へ差し替え、最終発話に `YAGNI（理由: …）` があれば 1 サイクル目からブロックしない分岐を足す
 - **WARN 4 / 5**: `/setup-github-labels` でラベルを整備し、テーマごとに `create-issue --bundle` で bundle を立てる（棚卸しの手順: テーマごとに bundle を立て、既存の細 Issue を `scripts/link-sub-issues.sh` で子へ付け替え、根拠の無いものは YAGNI コメントで close する）
 - **WARN 6**: 親無しの細 Issue を、テーマの bundle の sub-issue へ `scripts/link-sub-issues.sh` で付け替える（`gh api -f sub_issue_id=` を組み立てない）
+
+<!--984512fd8c970ca9-->
+分類: 禁止例: 旧ラベルや sub_issue_id 手組みを実行しない規定。MCP でも親子 ID を推測せず既存 link-sub-issues.sh の PLAN / read-back 契約を使う
 
 ## 提案（診断の最後に必ず出す）
 
@@ -102,6 +116,9 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
    - **変更案**: そのリポジトリで動く具体的な書き換え（FIXTEXT を、そのリポジトリの節構成・既存の語に合わせて具体化したもの）
    - **適用先**: 書き換えるファイルのパスと、PR で直すか（リポジトリ内）・直接編集か（`$HOME` 配下のグローバル CLAUDE.md）
 
+<!--b44e23e9d487ddef-->
+MCP: 取得値: MCP で同じ Draft PR の number / isDraft、Issue の body を取得。形式: JSON の実値から SUGGEST の根拠を保持。渡し先: SUGGEST の提案のみ報告する。明示実行時の ready は既存 MCP ready tool、本文は競合確認後の update_issue へ原文を渡す。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
+
 SUGGEST は FAIL / WARN / SKIP に数えず、終了コードも変えない。提案は**適用しない**（read-only は維持。適用は差分を見たうえで人か呼び出し元が行う）。
 
 ## 呼び出し元
@@ -109,6 +126,9 @@ SUGGEST は FAIL / WARN / SKIP に数えず、終了コードも変えない。�
 - `/ace-setup` 手順 7 / `/setup-ai-config` 重要ルール末尾（導入直後に入口規範がスキルと揃っているか。いずれも `--offline`）
 - `/retrospective` 実行ポリシー（振り返りの冒頭で逆戻りを検知する。`--offline`）
 - 単独: 「Issue が増え続ける」「スキルが効いていない気がする」「Draft PR のまま残る」「レビューが想定と別の CLI で動く」と感じたとき（gh を使う 4〜6・11 まで回すのはこの経路）
+
+<!--7e9656516784627a-->
+MCP: 取得値: MCP で同じ repo の labels / bundle / open Issues と parent、自分の Draft PR を取得。形式: doctor fixture の operation / scope / raw と全 page を index に保存。渡し先: workflow-doctor.sh --github-input /absolute/index.json へ渡す（repo 省略は origin）。表の旧文言は実行しない。不足時: 任意取得の不足は SKIP で継続。@me の実主体を照合し、403 を parent=null にしない。--offline は file も読まない。
 
 ## 注意事項
 

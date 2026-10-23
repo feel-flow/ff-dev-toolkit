@@ -243,7 +243,8 @@ BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 [[ -n "$BRANCH" ]] || BRANCH="(unknown)"
 
 # 未追跡ファイルも汚れとして数える。新規 suite ディレクトリのように、追跡されて
-# いなくてもゲートの実行対象になるものがあるため（`git status --porcelain` の既定）。
+# いなくてもゲートの実行対象になるものがあるため。利用者の status.showUntrackedFiles
+# 設定に依存させず、ignored 以外の未追跡ファイルを明示的に表示する。
 #
 # **status の失敗を空出力と区別する**。`$(git status ... 2>/dev/null)` の空文字は
 # 「clean」と「status が失敗した」の両方を意味するので、区別せずに書くと
@@ -255,10 +256,10 @@ BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 # DIRTY=yes になり、「コミットするものが何も無い木に対して『コミットを確定させてから
 # 再実行しろ』」というもっともらしい誤診断でゲートが恒久的に止まる。
 STATUS_RC=0
-STATUS_OUT="$(git status --porcelain 2>/dev/null)" || STATUS_RC=$?
+STATUS_OUT="$(git status --porcelain --untracked-files=normal 2>/dev/null)" || STATUS_RC=$?
 if [[ "$STATUS_RC" -ne 0 ]]; then
   # 失敗した回だけ、理由を取りにもう一度呼ぶ（成功経路に余計な実行を足さない）
-  STATUS_ERR="$(git status --porcelain 2>&1 >/dev/null || true)"
+  STATUS_ERR="$(git status --porcelain --untracked-files=normal 2>&1 >/dev/null || true)"
   fail "作業ツリーの状態を確認できません（${STATUS_ERR}）。clean と断定せずに記録を中止します"
 fi
 if [[ -n "$STATUS_OUT" ]]; then

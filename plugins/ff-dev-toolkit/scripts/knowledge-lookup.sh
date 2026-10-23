@@ -233,7 +233,7 @@ usage() {
   cat >&2 <<'USAGE'
 使い方:
   knowledge-lookup.sh [--root DIR] [--playbook PATH] [--ledger PATH] [--all]
-                      [--include-archived] [--offline] [--format text|tsv] <キーワード>...
+                      [--include-archived] [--offline] [--github-input INDEX_ABS] [--format text|tsv] <キーワード>...
   knowledge-lookup.sh --promoted-open [--root DIR] [--ledger PATH] [--offline] [--format text|tsv]
   knowledge-lookup.sh --resolve-playbook [--root DIR] [--playbook PATH]
 USAGE
@@ -245,6 +245,7 @@ LEDGER=""
 MATCH_ALL=0
 INCLUDE_ARCHIVED=0
 OFFLINE=0
+GITHUB_INPUT=""
 FORMAT="text"
 MODE="search"
 KEYWORDS=()
@@ -257,6 +258,7 @@ while [ $# -gt 0 ]; do
     --all) MATCH_ALL=1; shift ;;
     --include-archived) INCLUDE_ARCHIVED=1; shift ;;
     --offline) OFFLINE=1; shift ;;
+    --github-input) [ $# -ge 2 ] || { usage; exit 1; }; [ -n "$2" ] || { echo "--github-input requires a non-empty index path" >&2; exit 2; }; GITHUB_INPUT="$2"; shift 2 ;;
     --format) [ $# -ge 2 ] || { usage; exit 1; }; FORMAT="$2"; shift 2 ;;
     --promoted-open) MODE="promoted-open"; shift ;;
     --resolve-playbook) MODE="resolve-playbook"; shift ;;
@@ -734,13 +736,30 @@ fetch_open_set() { # <owner/repo> → REPO_NAMES / REPO_STATES（ok|fail）/ REP
   local repo="$1" out="" count=0 n="" set=" " strip_zeros_result=""
   out="${TMP}/open-${repo//\//_}"
   REPO_NAMES+=("${repo}")
-  if [ "${OFFLINE}" -eq 1 ] || ! command -v gh >/dev/null 2>&1; then
+  if [ "${OFFLINE}" -eq 1 ] || { [ -z "$GITHUB_INPUT" ] && ! command -v gh >/dev/null 2>&1; }; then
     REPO_STATES+=(fail); REPO_OPEN+=(" ")
     return 0
   fi
   # stdin を閉じる: gh は対話入力を待ちうるため、呼び出し元の read ループの入力を渡さない
   # （ループ側も fd 3 で読むので二重の防御。片方だけでも欠けはしないが、両方外さない）。
-  if ! gh issue list --repo "${repo}" --state open --limit "${OPEN_LIMIT}" --json number --jq '.[].number' >"${out}" 2>"${out}.err" </dev/null; then
+  if [ -n "$GITHUB_INPUT" ]; then
+    local lib="$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/github-input.sh"
+    if [ ! -r "$lib" ] || ! command -v jq >/dev/null 2>&1; then
+      REPO_STATES+=(fail); REPO_OPEN+=(" "); return 0
+    fi
+    . "$lib"
+    jq -n --arg repository "https://github.com/$repo" --argjson limit "$OPEN_LIMIT" '{repository:$repository,state:"open",limit:$limit}' >"${out}.scope"
+    printf '{}\n' >"${out}.position"
+    if ! github_file_read "$GITHUB_INPUT" lookup.open-set "${out}.scope" lookup "${out}.position" >"${out}.raw" 2>"${out}.err" ||
+       { [ -n "$GITHUB_INPUT_HTTP_STATUS" ] && [ "$GITHUB_INPUT_HTTP_STATUS" != 200 ]; } ||
+       [ "$GITHUB_INPUT_LAST" != true ] ||
+       ! jq -e 'type == "array" and all(.[]; (.number | type == "number" and . > 0 and floor == .) and (.pull_request == null))' "${out}.raw" >/dev/null 2>&1; then
+      REPO_STATES+=(fail); REPO_OPEN+=(" ")
+      printf 'lookup.open-set --repo %s を取得できません（該当参照は 未確認 として扱います）\n' "$repo" >&2
+      return 0
+    fi
+    jq -r '.[].number' "${out}.raw" >"$out"
+  elif ! gh issue list --repo "${repo}" --state open --limit "${OPEN_LIMIT}" --json number --jq '.[].number' >"${out}" 2>"${out}.err" </dev/null; then
     REPO_STATES+=(fail); REPO_OPEN+=(" ")
     printf 'gh issue list --repo %s に失敗しました（該当参照は 未確認 として扱います）: %s\n' "${repo}" "$(head -n 1 "${out}.err" 2>/dev/null)" >&2
     return 0

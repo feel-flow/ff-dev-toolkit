@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "responses": [
+    {
+      "operation": "sample.read",
+      "scope": {
+        "repository": "https://github.com/example/repo",
+        "pr": 7
+      },
+      "phase": "initial"
+    }
+  ]
+}

@@ -596,6 +596,14 @@ else
     # POST は `-F sub_issue_id=` 固定、失敗時は HTTP 本文を出し 1 件目で止まる。
     # gh は stub に解決させ、ネットワークには出ない。
     "$SCRIPT_DIR/link-sub-issues/verify.sh"
+    # file acquisition helper only: raw bytes, exact scope/phase/position and pending PLAN.
+    "$SCRIPT_DIR/github-input/verify.sh"
+    # Explicit gh/file acquisition parity for precheck, sub-issues and cleanup.
+    "$SCRIPT_DIR/github-input-precheck/verify.sh"
+    # Optional knowledge acquisition and exact pending PR/read-back behavior.
+    "$SCRIPT_DIR/github-input-knowledge/verify.sh"
+    # SSOT root release acquisition; public layout is explicitly inapplicable.
+    "$SCRIPT_DIR/github-input-release/verify.sh"
     # 導入先の入口規範とスキルの判定順の矛盾検査（read-only。--offline で gh に出ない）
     "$SCRIPT_DIR/workflow-doctor/verify.sh"
     # gh の認証を文脈ごとに gh api user で測る診断と device flow の再ログイン（偽の gh / PowerShell /
@@ -1121,6 +1129,10 @@ REQUIRED_SUITES=(
   # マーカー外の編集を弾くかを誰も見なくなる（Issue #1136）。
   effort-contract
   finish
+  # Explicit raw-file consumers keep acquisition failures distinct from valid empty data.
+  github-input-precheck
+  github-input-knowledge
+  github-input-release
   # root契約のnegative controlは一時領域を使う。skipすると旧版誤選択を拒否する
   # 検出力が丸ごと消えるため、明示許可なしのskipを認めない（Issue #838）。
   plugin-root-contract
@@ -1318,18 +1330,18 @@ REQUIRED_SUITES=(
   # 「実リポジトリの docs/ をそのまま写す」設計で、baseline が実体と乖離しないことを
   # 優先している（同梱 fixture にすると baseline 自体が腐る）。したがって公開側では
   # sync-forbidden-patterns / release-required-selftest / weekly-health-contract /
-  # docs-version-changelog（とその selftest）、root script を持たない changelog-fragments と
-  # 合わせて 8 件の明示許可が要る:
+  # docs-version-changelog（とその selftest）、root script を持たない changelog-fragments / github-input-release と
+  # 合わせて 9 件の明示許可が要る:
   #   FF_RUN_ALL_FULL=1 FF_RUN_ALL_ALLOW_SKIP="sync-forbidden-patterns release-required-selftest changelog-fragments \
   #     weekly-health-contract docs-frontmatter-repo-selftest docs-fact-drift-selftest \
-  #     docs-version-changelog docs-version-changelog-selftest" bash tests/run-all.sh
+  #     docs-version-changelog docs-version-changelog-selftest github-input-release" bash tests/run-all.sh
   # 必須 skip で落ちたときは、この行と同じ内容をランナーが実際の skip 一覧から
   # 組み立てて表示する（下の REQUIRED_SKIPPED の案内）。
   #
   # **既定（高速モード）では docs-frontmatter-repo-selftest / docs-fact-drift-selftest は
   # 除外される**（対の本体 suite が実在するため）。除外は SKIPPED に現れないので明示許可も
-  # 要らないが、**検証もされない**。上の 8 件を明示許可で通す形が成立するのは全件実行のとき
-  # だけで、既定では組み立てられるのも残り 5 件になる（ADR-034）。
+  # 要らないが、**検証もされない**。上の 9 件を明示許可で通す形が成立するのは全件実行のとき
+  # だけで、既定では組み立てられるのも残り 6 件になる（ADR-034）。
   docs-frontmatter-repo-selftest
   docs-fact-drift-selftest
   # frontmatter version ↔ 自 Changelog 最大版の一致は、PLAYBOOK.md（ACE 側ゲートが
@@ -1356,13 +1368,13 @@ REQUIRED_SUITES=(
   # 毎 sync リリース運用ゲートの検出力 selftest（#552）。代替の検査が無く、
   # 消えると「リリース漏れ・CHANGELOG 記載漏れを sync 前に止める」検出力の喪失が
   # 黙って通る。公開 checkout は root スクリプト不在で ○ skip するため、そちらでは
-  # FF_RUN_ALL_ALLOW_SKIP=release-required-selftest が要る（上の 8 件の列挙参照）。
+  # FF_RUN_ALL_ALLOW_SKIP=release-required-selftest が要る（上の 9 件の列挙参照）。
   release-required-selftest
   # 週次 CI 健全性判定の挙動検査（#1086 / #1017）。定期実行点ゲートが高速モードを
   # 受理してよいかの入口そのもので、判定を緩める変異（既定ブランチ外の受理・cron 異常の
   # 握り潰し・判定不能の healthy への転落）を測る手段は他に無い。公開 checkout は root
   # スクリプト不在で ○ skip するため、そちらでは
-  # FF_RUN_ALL_ALLOW_SKIP=weekly-health-contract が要る（上の 8 件の列挙参照）。
+  # FF_RUN_ALL_ALLOW_SKIP=weekly-health-contract が要る（上の 9 件の列挙参照）。
   weekly-health-contract
   # /retrospective の台帳 base 先行ガードのフェンスを実際に走らせる唯一の層（Issue `#1570`）。
   # git / 一時領域が無いと suite 全体が ○ skip し、引数の向き・cwd 依存の pathspec・
@@ -1456,7 +1468,6 @@ MISS_PROBE_BASELINE=(
   shellcheck
   skill-count-consistency-selftest
   skill-frontmatter
-  skill-references-existence
   sweep-orphan-transcripts
   update-check
   validate-docs-placeholders-selftest

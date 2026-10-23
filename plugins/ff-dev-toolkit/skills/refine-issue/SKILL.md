@@ -41,8 +41,11 @@ fi
 ## 前提
 
 - プロジェクトに `docs/` 配下のコア 7 文書が存在すること（`/init-docs` で初期化可能）
-- GitHub リポジトリが設定され、`gh` CLI で対象 Issue にアクセスできること
+- GitHub リポジトリが設定され、`gh` CLI または必要な読取・更新能力を持つ GitHub MCP で対象 Issue にアクセスできること
 - 入力として既存 Issue 番号（または URL）が与えられること
+
+<!--699ef589d839ae63-->
+MCP: 取得値: MCP の同じ Issue number/body/state/url。形式: 全文 JSON（実 field の対応は手順2）。渡し先: repo / num を固定して手順2の取得へ渡す。不足時: MCP 必須不足は停止。
 
 ## 引数
 
@@ -62,7 +65,13 @@ fi
 
 引数を数字のみ（`repo` は `gh repo view --json nameWithOwner --jq .nameWithOwner`）・URL（`github.com/<owner>/<repo>/issues/<num>` をパース）・`owner/repo#N`（`#` で分割）の 3 形式のいずれかとして正規化し、`num` と `repo`（`owner/name`）を確定します。GitHub Enterprise Server (`*.ghe.com` 等) のサポートは MVP では対象外。
 
+<!--c5bb055c7c4a02bc-->
+MCP: 取得値: MCP で固定 origin の raw REST full_name / html_url を取得して nameWithOwner / url に写像（REST url は API URL なので使わない）。形式: owner/repo と Issue number を正規化。渡し先: この手順の repo / num に渡す。GHES が MVP 対象外という境界は MCP でも維持する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
+
 引数なし・無効な形式の場合はエラー表示して停止。以後の `gh` コマンド（`issue view` / `issue edit` / `issue comment` / `label create`）にはすべて `--repo <owner/repo>` を渡す（クロスリポジトリ対応）。
+
+<!--4b1ea12d5300248d-->
+MCP: 取得値: MCP の同じ Issue number/body/state/url。形式: 全文 JSON（実 field の対応は手順2）。渡し先: repo / num を固定して手順2の取得へ渡す。不足時: MCP 必須不足は停止。
 
 ### 2. Issue 取得
 
@@ -72,7 +81,13 @@ fi
 gh issue view <num> --repo <owner/repo> --json number,title,body,labels,comments,state,url,assignees,author
 ```
 
-`state` は `"OPEN"` / `"CLOSED"` の大文字で返ります。`state == "CLOSED"` の場合は、利用中のホストの質問機能または通常の対話で「closed Issue を refine しますか？」を確認し、ユーザーが Yes と答えた場合のみ続行。No または応答なしの場合は警告のみ出して終了。
+<!--e0b1939d5e0024f6-->
+MCP: 取得値: MCP で同じ Issue の number / title / body / labels / 全 comments / state / url / assignees / author を取得。形式: 全文 JSON（本文更新用には raw updated_at も保持）。渡し先: この手順の6観点と担当者判断へ渡す。以後の write は確定した repo / num と原文を構造化引数にする。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
+
+gh の `state` は `"OPEN"` / `"CLOSED"`。MCP の REST raw は `state` を大文字化（または大小を区別せず比較）し、`user.login` → `author.login`、`html_url` → `url`、`updated_at` → `updatedAt` と決定的に対応させる。REST の `url` は API URL なので使わない。必要値が欠ければ停止し、closed 確認を抜かない。`state == "CLOSED"` の場合は、利用中のホストの質問機能または通常の対話で「closed Issue を refine しますか？」を確認し、ユーザーが Yes と答えた場合のみ続行。No または応答なしの場合は警告のみ出して終了。
+
+<!--2a92b869aa8b5d9a-->
+MCP: 取得値: MCP の state / user.login / html_url / updated_at。形式: REST raw を上の gh フィールドへ決定的に対応。渡し先: CLOSED 判定と author の担当者選択へ渡す。不足時: 必須項目 / MCP 取得不足は停止。
 
 ### 3. 参照文書の自動提案
 
@@ -155,37 +170,7 @@ SubAgent への指示テンプレート:
 
 この手順には **6 観点違反と SubAgent 論点のいずれかが 1 件以上**あれば入ります（SubAgent 論点 0 件でも、6 観点違反が 1 件以上あれば入る）。
 
-6 観点違反 + SubAgent 発見の論点を統合し、以下の対応規則で 3 階層に分類します:
-
-| SubAgent 推奨アクション | 階層 |
-| --- | --- |
-| 自動補完できる | trivial |
-| 質問が必要 | architectural |
-| 仕様策定が必要 | critical |
-
-加えて、以下の階層判定基準で SubAgent の推奨を上書き / 補正:
-
-#### Trivial（自動決定可）
-
-- このリポジトリ内に確立された慣例・パターンがある
-- 業界標準の常識的な選択（例: テストファイルは `*.test.ts` 規約）
-- 決定が後から低コストで覆せる
-- ドキュメント参照リンクの追加など、判断不要な補完
-
-#### Architectural（非同期確認）
-
-- 複数の妥当な技術選択肢があり、判断が後の設計に影響する
-- 決定がコードの広範囲に波及する
-- 既存パターンが複数あり、どれを踏襲すべきか曖昧
-
-#### Critical（ブロック）
-
-- ビジネスルール・ドメイン知識が必要で、コードからは推測不能
-- セキュリティ・コンプライアンス要件が未定義
-- 外部仕様（API、データ形式）が未確定
-- 決定を間違えると後戻りコストが致命的
-
-判定が曖昧な論点は、**安全側（より重い階層）に倒す**。Trivial だと思って自動決定したが実は critical だった、という事故を防ぐため。
+6 観点違反 + SubAgent 発見の論点を統合し、[階層判定](references/actions.md)を読む。Trivial / Architectural / Critical に分け、曖昧なら重い階層へ倒す。
 
 ### 7. 階層別アクション実行（ゲート制御）
 
@@ -212,9 +197,15 @@ else:
     --color FBCA04 --force
   ```
 
+<!--25ac1a136790c59c-->
+MCP: 取得値: MCP で対象 repo の needs-spec label を照会。形式: name=needs-spec / color=FBCA04 / description 原文の構造化引数。渡し先: label create/update 能力のある MCP で同じ定義を反映して後読する。現 host に能力がなければ critical 操作を停止し未実施を報告する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
+
   `--force` は既存ラベル update / 不在時 create の両対応で、存在チェックが不要になります。
 - `gh issue edit <num> --repo <owner/repo> --add-label needs-spec` で付与
 - ブロッキング論点をコメントで明示:
+
+<!--9b4db4a267b7044a-->
+MCP: 取得値: MCP で同じ Issue の body / labels / updated_at を取得。形式: labels は既存保持の追加配列、body は本文ファイル原文。渡し先: needs-spec は add_issue_labels、本文は直前時刻一致後に update_issue の body へ渡し fresh 後読する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
   ```text
   🛑 /refine-issue: 仕様策定が必要 (`needs-spec` 付与)
@@ -229,47 +220,16 @@ else:
   `gh issue comment <num> --repo <owner/repo> --body-file <tempfile>` で投稿。
 - skill はここで停止（Issue body 更新・他の階層処理はスキップ）
 
-#### Trivial → Issue body 自動補完 + 注記コメント
+<!--e7e202298cf33d68-->
+MCP: 取得値: MCP で同じ Issue の number / url を照合。形式: body 用と分けた comment 専用ファイルの原文。渡し先: 既存 add_comment_to_issue の comment へ原文を渡し、id / body を fresh GET して成功だけ報告する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
-Issue body 全体を破壊しないよう、以下の手順で更新します:
+#### Trivial / Architectural
 
-1. 手順 2 で取得済みの `body` をベースとする
-2. 補完すべき箇所のテキストを置換または追記して新しい body 文字列を構築する
-   - **原則は追記**。既存の曖昧文をそのまま残すと矛盾する場合のみ置換する
-   - 既存の見出し（`## ユーザーストーリー` / `## ジョブストーリー` `## 受け入れ条件（AC）` 等）と順序は維持する
-3. 利用中のホストのファイル編集機能で `/tmp/refine-issue-<num>.md` に新 body を書き出す
-4. `gh issue edit <num> --repo <owner/repo> --body-file /tmp/refine-issue-<num>.md` で本文更新
-
-Markdown 本文へ script で文字列パッチを当てる場合は [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
-
-補完内容は `🤖 /refine-issue による自動補完` で始まる注記コメント（trivial 判定で補完した論点の箇条と、原文意図とズレていれば修正を求める 1 文）にまとめ、body 用とは別に `mktemp` で作ったコメント専用の一時ファイルへ書いて `gh issue comment <num> --repo <owner/repo> --body-file <その一時ファイル>` で投稿します（body 用の `/tmp/refine-issue-<num>.md` を渡すと本文全体をコメントしてしまう）。
-
-#### Architectural → 非同期質問コメント
-
-Issue body は更新せず、未解決論点をコメントで投稿:
-
-```text
-❓ /refine-issue が判断つかない論点（@<assignee>）
-
-以下、複数の妥当な選択肢があります。意図を教えてください:
-
-1. <論点>
-   - A) <選択肢（踏襲元の既存実装があれば併記）>
-   - B) <選択肢>
-
-決定が出たら Issue body に追記し、再度 `/refine-issue <num>` を走らせて他の論点について refine を続けてください（注: 現状、過去コメントの自動取り込みはサポートしていません）。
-```
-
-`gh issue comment <num> --repo <owner/repo> --body-file <tempfile>` で投稿。
-
-`@<assignee>` の解決規則:
-
-- Issue の `assignees` フィールドを優先（複数いる場合は全員 mention）
-- assignees が空なら Issue の `author` を mention
-- assignee / author の login が `[bot]` で終わる場合（例: `dependabot[bot]`、`copilot-pull-request-reviewer[bot]`）はスキップして次の人間ユーザーへフォールバック
-- 該当する人間ユーザーがいない場合は mention なしでコメント投稿し、stdout に警告を出す
+[具体的な更新・コメント手順](references/actions.md)を読む。Trivial は原文保持の body 補完と注記、Architectural は body を変えず質問コメント。MCP は fresh body / updated_at を取得し競合を確認して、本文ファイル原文を update_issue の body、別のコメント原文を add_comment_to_issue の comment に渡す。fresh 後読で確認し、必須能力 / 時刻不足なら停止する。
 
 ### 8. Issue body 更新
+
+script で本文を編集するときは[Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
 
 body の更新は手順 7 の Trivial で実行済みで、critical 検出時は手順 7 のゲートにより更新しません（仕様未策定のまま部分補完を残すと refine 済みと誤認されるため）。
 

@@ -16,6 +16,9 @@
    - **配布元と SSOT を区別する**: marketplace の remote だけでは開発元とは確定しない。候補 repo の README・AGENTS.md・配布/同期手順と plugin のメタデータで、開発元と配布ミラーの関係を確認する。開発元の明示があればその repo を採る。
    - `gh repo view "<候補 owner/repo>" --json nameWithOwner` で存在・到達性と正規の owner/repo を確認する。起票先の根拠（remote またはメタデータと開発元の記載）も `既存確認:` へ残す。
 
+   <!--c001a8fda07ecd19-->
+   MCP: 取得値: MCP で固定 repo の nameWithOwner / url / defaultBranchRef.name と明示 ref の object.sha / file 本文を取得。形式: repository JSON、immutable SHA と raw text。渡し先: 同じ SSOT の実装確認へ渡す。API user は login、sub-issue 操作は既存 link-sub-issues の index / PLAN を使う。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
+
    | 起票内容 | 起票先 |
    | --- | --- |
    | ツール群の実装・スキル文言・配布物への変更要求 | 到達可能な SSOT。配布ミラーへ新規起票しない |
@@ -35,6 +38,9 @@
    - **照合できない場合**: 認証・通信・取得失敗や対象 path 不明を「照合不能」と記録し、「修正済みでない」と扱わない。SSOT へ到達できず配布元へ起票する場合もこの区別を保つ。
    - **結果の記録**: `既存確認:` 行へ SSOT の repo・既定ブランチ・確認した SHA/path と、対応済み・一部対応済み・未対応・照合不能の判定を書く。取り下げた提案もこの行と理由だけを報告する。台帳の観測履歴自体はこの照合で取り下げない（記録は実測の事実、取り下げるのは提案）。
 
+   <!--fac0a5cf004441e9-->
+   MCP: 取得値: MCP で固定 repo の nameWithOwner / url / defaultBranchRef.name と明示 ref の object.sha / file 本文を取得。形式: repository JSON、immutable SHA と raw text。渡し先: 同じ SSOT の実装確認へ渡す。API user は login、sub-issue 操作は既存 link-sub-issues の index / PLAN を使う。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
+
 2. **知見ストアの grep**: 対象は導入先 repo（手順 1 参照）。まず知見ストアの**実配置を確定する** — 既定は索引 `docs/08-knowledge/PLAYBOOK.md` とエントリ `docs/08-knowledge/playbook/**` だが、配置はプロジェクト規約で異なる（実測: 導入先の 1 つは `docs/playbooks/playbook/**` に置いている）。既定パスが無ければ `PLAYBOOK` / `playbook` を repo 内で検索して実配置を突き止める。**既定パスの不在だけを根拠に「ACE 未導入」と結論しない** — この誤判定は手順 2 を丸ごと飛ばすため、重複の見落としに直結する。確定した索引とエントリを提案のキーワードで grep し、ヒットしたエントリごとに分岐する:
    - **エントリが恒久対策の Issue を指している**: その Issue を手順 3 で確認し、新規起票の代わりに **Issue への再発コメント追記**を提案として出す
    - **恒久対策の Issue を指していて新規起票を見送った**場合、その対象が閾値到達エントリなら、対応中の Issue への集約は `promoted`・対策反映を確認した見送りは `mitigated` とし、`Issue` に元番号と確認した所在を残す（正本は [promotion.md](promotion.md)）。ここも「承認と起票」手順 5 を通らない経路である
@@ -44,6 +50,9 @@
 3. **既存 Issue の確認**: まず起票先 repo の open な `bundle`（着手単位。子 Issue を全件 1 PR で束ねる Issue）を `gh issue list --repo "<owner>/<repo>" --state open --label bundle --limit 200` で列挙し、**改善対象が導入先の CLAUDE.md / docs の規律（散文の追記）なら、表題に「規律」を含む bundle へのコメント追記を既定にする**（単独の docs Issue を立てない。`bundle` ラベルが実在しない repo ではこの列挙を飛ばす）。次に既存 Issue を state を絞らずに検索する（`gh issue list --repo "<owner>/<repo>" --search "<キーワード>" --state all --limit 200`。`--limit` は省略しない — 既定では取得が 30 件で打ち切られ、その先にある重複を「無い」と誤判定する）。重複する Issue が既にあれば新規起票せず、ヒットした Issue の state で分岐する:
    - **open**: **既存 Issue へのコメント追記**（再発情報の集約先として）を提案する
    - **closed**: closed へのコメント単独では作業として追跡されないため、未対応のまま閉じられていたなら **reopen** を、修正後の再発なら **closed Issue を参照した regression Issue の新規起票**を提案する（どちらなのかを提案に明示する）
+
+   <!--d1f6dc7536dd2bb1-->
+   MCP: 取得値: MCP で同じ repo の state / label / 検索語に合う number / title / body / labels / state / url を取得。形式: 明示した上限 / 全 page の JSON、候補本文は全文。渡し先: この段の候補選択 / 見積もり根拠へ渡す。不足時: 重複探索は必須不足 / 上限到達で停止。見積もり用の任意履歴は取得不能と記録して継続。
 
    ヒットした open Issue は本文を**全文**読み（先頭だけで切らない）、重複でなくても提案がその Issue の定める方針・制約に矛盾しないことを確認する — 矛盾する提案はそのまま出さず、方針側の変更提案であることを明示するか取り下げる
 4. 何を grep / 検索してどう判断したかを、各提案の `既存確認:` 行（SKILL.md の出力形式）に 1 行で書く。この行を書けない提案は提示しない
@@ -68,6 +77,9 @@
    - ask モードの包括指示例外は特急レーン（データ破壊・広範な作業停止・セキュリティの重大起票）には及ばない — ask を選んだ利用者には重大さの判断そのものを見せる価値があるため、包括指示があっても提案を提示してから実施する
 3. 起票対象（既定モードで既存確認を完了した提案、または ask モードで承認された提案）のうち**新規起票**のもの: 起票先 repo へ Issue を作成する。ff-dev-toolkit 導入 repo では `/create-issue` を**既定**とする（種別・優先度ラベルの実在確認付き付与まで行われる）。素の `gh issue create` は `/create-issue` が使えない環境向けの fallback で（`docs/` のコア文書が無い、AC を書く材料が揃わない場合を含む）、**そのままではラベルが付かない**。ラベル付与手順の正本は `/create-issue`（`skills/create-issue/SKILL.md`「ラベルの決定」）であり、ここでは逐語複製せずその verify-then-skip をそのまま用いる: `gh label list --repo "<owner>/<repo>" --limit 200 --json name --jq '.[].name'` で実在するラベル名を取得し、**存在するものだけ** `--label` へ渡し、省略した系統は「不在」と「照会失敗」を書き分けて報告する。
 
+   <!--419f4fc64fe02697-->
+   MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 login を取得。形式: title / 本文ファイル原文 / 実在 labels / 必要 assignees の構造化引数。渡し先: 既存 create_issue（PR は create_pull_request）へ渡し、返った number / url と fresh body / labels を後読する。@me は実 login、out-of-scope はアサイン中立を保持。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+
 ```bash
 # 上で実在を確認できた系統だけを --label に残す（存在しないラベル名を渡すと
 # 起票自体が失敗する）。確認できなかった系統は、その --label を丸ごと削って実行する
@@ -77,9 +89,15 @@ gh issue create --repo "<owner>/<repo>" --assignee @me \
   --body "<実測の経緯 + 提案内容 + 期待効果>"
 ```
 
+   <!--ba21e771758913c2-->
+   MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 login を取得。形式: title / 本文ファイル原文 / 実在 labels / 必要 assignees の構造化引数。渡し先: 既存 create_issue（PR は create_pull_request）へ渡し、返った number / url と fresh body / labels を後読する。@me は実 login、out-of-scope はアサイン中立を保持。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+
 4. 起票対象のうち**既存への追記へ切り替えた**もの: 新規起票はしない。既存 Issue へのコメント追記は `gh issue comment "<Issue番号>" --repo "<owner>/<repo>" --body "<再発の実測・経緯 + 元提案の内容>"` で行う。既存 ACE エントリのカウンター更新は本スキルでは行わず、ACE 側の手順（`/ace-curate`、または導入 repo の Playbook 記述ガイドライン）へ回す
 5. 昇格起票した提案は、起票後に対応する台帳エントリの `Status` を `promoted`、`Issue` を発行番号へ更新する（定型書き込み）。対策が既に別の場所にあるため起票そのものを見送った閾値到達エントリは、代わりに `Status` を `mitigated`、`Issue` を対策の所在へ更新する（同じく定型書き込み。値域と復帰条件の正本は [promotion.md](promotion.md)）
 6. 発行された Issue 番号を報告して終了する。既存への追記へ切り替えた提案は、新規番号の代わりに追記先（コメントした Issue 番号・更新を依頼したエントリ ID）を報告する
+
+   <!--5086ae17ffd07166-->
+   MCP: 取得値: MCP で同じ Issue の全文 body / updated_at / comments を取得。形式: 競合比較用 JSON と本文 / コメント各専用ファイル原文。渡し先: 許可された body は update_issue、コメントは add_comment_to_issue へ渡し fresh 原文一致を後読する。既存本文の目的 / AC は保全する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 ## 出力形式
 
@@ -102,3 +120,12 @@ gh issue create --repo "<owner>/<repo>" --assignee @me \
 ```
 
 `起票:` 行は既定モード（`RETROSPECTIVE_FILING` 未設定）で、同じ応答内で実行した起票・追記の結果を書く（結果を書かずに提案だけで終えない）。`RETROSPECTIVE_FILING=ask` のときは `起票:` 行の代わりに `承認いただければ起票します。` で終え、承認後に結果を報告する（ask モードでも包括指示の例外で同じ応答内に起票した場合は、既定と同じく `起票:` 行で結果を書く）。`既存確認:` 欄は「起票前の既存確認」を実施してから記入する（実施していない提案は提示しない）。昇格提案では、根拠となる台帳エントリの OBS ID と Count を `実測:` 欄へ併記する。
+
+
+## 記録だけの報告
+
+提案が無く記録だけを行った場合は `振り返り:` で始める 1 行に記録結果を足す（言語タグなしフェンスの例示が正本）:
+
+```
+振り返り: 観測記録 OBS-012 (+1, Count 2) / OBS-031 (新規)。改善候補なし
+```

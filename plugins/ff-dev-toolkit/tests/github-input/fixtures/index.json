@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "responses": [
+    {
+      "operation": "sample.read",
+      "scope": {
+        "repository": "https://github.com/example/repo",
+        "pr": 7
+      },
+      "phase": "initial",
+      "body": "raw.json"
+    },
+    {
+      "operation": "sample.read",
+      "scope": {
+        "repository": "https://github.com/example/repo",
+        "pr": 7
+      },
+      "phase": "empty-array",
+      "body": "array.json"
+    },
+    {
+      "operation": "sample.read",
+      "scope": {
+        "repository": "https://github.com/example/repo",
+        "pr": 7
+      },
+      "phase": "false",
+      "body": "false.json"
+    },
+    {
+      "operation": "sample.read",
+      "scope": {
+        "repository": "https://github.com/example/repo",
+        "pr": 7
+      },
+      "phase": "null",
+      "body": "null.json"
+    },
+    {
+      "operation": "sample.read",
+      "scope": {
+        "repository": "https://github.com/example/repo",
+        "pr": 7
+      },
+      "phase": "text",
+      "body": "raw.log",
+      "format": "text"
+    },
+    {
+      "operation": "sample.read",
+      "scope": {
+        "repository": "https://github.com/example/repo",
+        "pr": 7
+      },
+      "phase": "page",
+      "body": "raw.json",
+      "page": 1,
+      "last": false,
+      "http_status": 200
+    },
+    {
+      "operation": "sample.read",
+      "scope": {
+        "repository": "https://github.com/example/repo",
+        "pr": 7
+      },
+      "phase": "cursor",
+      "body": "raw.json",
+      "cursor": null
+    },
+    {
+      "operation": "sample.read",
+      "scope": {
+        "repository": "https://github.com/example/repo",
+        "pr": 7
+      },
+      "phase": "cursor",
+      "body": "null.json",
+      "cursor": "C1"
+    },
+    {
+      "operation": "sample.read",
+      "scope": {
+        "repository": "https://github.com/example/repo",
+        "pr": 7
+      },
+      "phase": "retry",
+      "body": "raw.json",
+      "attempt": 1
+    }
+  ]
+}

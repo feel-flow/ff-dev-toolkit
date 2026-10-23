@@ -62,6 +62,9 @@ fi
 
 呼び出し元が確認を挟まない運用（フルオート等）の場合、または依頼が「Issue 作って」のように起票の実行そのものである場合は、**種別・優先度・参照文書を会話コンテキストから推定し、確認なしで手順 2 以降へ進む**（[ワークフロー運用原則](../../docs-template/05-operations/deployment/workflow-principles.md)「原則1: ノンストップフロー（フルオート）」）。ヒアリングを必須にすると、自律フローからスキルごとスキップされて `gh issue create` の直接実行へ流れる。
 
+<!--9b2e01fad7d25caa-->
+MCP: 取得値: MCP で同じ repo の既存候補と label name、認証主体 login を取得。形式: title / 本文ファイル原文 / 実在 labels / 必要 assignees の構造化引数。渡し先: 既存 create_issue へ渡し、返った number / url と fresh body / labels を後読する。@me は実 login、out-of-scope はアサイン中立を保持。不足時: 任意 label 不足は省略理由付き継続、必須本文 / 作成能力不足は停止。番号は作成前に推測しない。
+
 推定してよいのは種別・優先度・参照文書まで。**受け入れ条件（AC）とストーリー要素の中身は推測で埋めない**（手順 4 の「ストーリーが埋まっているか」を含め、非対話でも同じ基準で適用する）。材料が無ければ止めてユーザーに確認する。工数だけは推定する（手順 3）。
 
 推定した項目とその根拠は手順 7 の完了報告に 1 行で残す（例: 「種別=バグ修正（テスト失敗の報告から推定）／優先度=high（CI が恒常的に赤）」）。
@@ -116,7 +119,7 @@ ACE Playbook（`docs/08-knowledge/PLAYBOOK.md`）があれば索引を対象領�
 - [ ] **マージ前に達成できるか**: マージ後にしか達成できない項目（公開同期・公開側への報告と close・staging 確認・定期実行の次回待ち）を名指しし、Refs 運用へ切り替えるか DoD から外す。倒す前に CI が `workflow_dispatch` を持つかを見て、持つならブランチを ref にした実行でも AC に対応する処理が走る（ブランチ条件でスキップされない）かを確かめ、走るならマージ前に実測できる旨を書く。該当が無ければ問わずに通す
 - [ ] **AC が前提にする値・資料・配置を実測したか**: 前提にするデータ・ラベル・fixture・値の分布・兄弟 Issue の成果物は起票時に 1 回測る（兄弟の完了が前提なら明記する）。パスを名指しするなら公開同期対象・生成物・gitignore 対象に当たらないかも確かめる
 
-「DoD が指す既存成果物が実在するか」と「引用した文言・アンカー・パス・行番号が実在するか」の結果は手順 7 の完了報告に 1 行ずつ必ず残す（非対話起票の 3 Issue が 3 件とも実在しないパスを DoD に書いた。観測台帳 OBS-068）。`grep` / `ls` 自体が失敗して確認が成立しなかった場合は「対象なし」と書かず「確認不能（理由）」と書き、その引用を本文へ残すか「新設」へ書き換えるかを起票前に決める。
+「DoD が指す既存成果物が実在するか」と「引用した文言・アンカー・パス・行番号が実在するか」の結果は手順 7 に 1 行ずつ残す。確認コマンド失敗は「確認不能（理由）」とし、引用を残すか「新設」へ変えるか起票前に決める（OBS-068）。
 
 > **`/refine-issue` との同期**: 上の項目名は本スキルが正規ソースで、`/refine-issue` 手順 4 の対応表の左列が写している。増減・改名したら同表も直す（`tests/issue-label-contract/verify.sh` が集合を突き合わせる）。
 
@@ -137,6 +140,9 @@ ACE Playbook（`docs/08-knowledge/PLAYBOOK.md`）があれば索引を対象領�
 |------|------|
 | `--bundle` | 付与候補に `bundle` を足し、表題に `bundle:` 接頭辞を付ける。`bundle` は子を全件 1 PR で束ねる**着手単位**で、`epic`（カテゴリの入れ物）とは別物。`gh issue list --label bundle --state open` が着手候補になる（実在確認は filing.md ステップ 2 の照合に含める） |
 | `--parent <n>` | 起票直後に `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/link-sub-issues.sh" --repo "$expected_repo" <n> <発行番号>` で親の sub-issue にする（`gh api` を組み立てない）。失敗は起票の失敗ではないが、完了報告に「親: 未紐付け（理由）」を残す |
+
+<!--887d908d677d33d2-->
+MCP: 取得値: MCP で open bundle の number/title/body/state と子 Issue の integer database id を取得。形式: 全 page JSON と link.membership / link.child-id の raw を同じ index に保存。渡し先: 候補選択へ、親紐付けは link-sub-issues.sh --repo "$expected_repo" --github-input /absolute/index.json の PLAN → POST sub_issues(sub_issue_id=実取得integer ID) → fresh read-back へ渡す。MCP の POST 能力が無ければ未紐付けを報告する。不足時: 必須取得不足は停止、紐付け未完了は作成済み Issue と分けて未紐付けを報告。
 
 親無し・ラベル無しの単独 Issue を既定で作らない。テーマの `bundle` が open なら `out-of-scope-issue` §3.1 の統合へ回す（正本は [git-workflow.md](../../docs-template/05-operations/deployment/git-workflow.md)「bundle（子を全件 1 PR で束ねる着手単位）」）。
 
@@ -195,15 +201,6 @@ ACE Playbook（`docs/08-knowledge/PLAYBOOK.md`）があれば索引を対象領�
 
 ### 7. 完了報告
 
-作成した Issue の URL を示し、次のアクションを提案する。次の 4 項目が無い報告は不完全として扱う:
+[filing.md の完了報告](references/filing.md)に従い、実測した Issue URL・付与ラベル・**省略したラベル名 + 理由**・親紐付け結果・工数根拠・DoD の実在照合を報告する。失敗した操作を成功形式で報告しない。
 
-- **付与したラベル**（`--label` に実際に渡したもの）と **省略したラベル名 + 理由**（filing.md「報告の書き分け」。省略が無ければ省略側は不要）
-- 「DoD 実在確認: 済（対象 N 件）」「DoD 実在確認: 対象なし」、確認が成立しなければ「DoD 実在確認: 確認不能（理由）」
-- 「引用実在確認: 済（対象 N 件）」「引用実在確認: 対象なし」、確認が成立しなければ「引用実在確認: 確認不能（理由）」
-- `工数見積もり: 人間 N.Nh / AI N.Nh（参照: 知見 X 件 / パターン Y 件 / データ Z 件）`（0 件でも書く）
-
-該当するときだけ次も含める:
-
-- 省略理由が「不在」のラベルがある場合は、`/setup-github-labels`（推奨ラベルの不足分だけを冪等に作成する）で整備できる旨を 1 行添える。「照会失敗」のときは添えない（重複ラベルを生やす側へ倒れる）
-- **省略した ISSUE_TEMPLATE 節**（pre-flight でテンプレートが見つかった場合のみ）を「省略した節: …」の形で列挙する
-- 非対話モードで推定した種別・優先度とその根拠、`--parent` の紐付け結果
+省略理由が「不在」のラベルがある場合は、`/setup-github-labels` を案内する。「照会失敗」のときは添えない。**省略した ISSUE_TEMPLATE 節**を列挙する（pre-flight でテンプレート検出時のみ）。

@@ -1,0 +1,13 @@
+{
+  "cases": [
+    "effort-golden",
+    "effort-negative",
+    "lookup",
+    "doctor",
+    "subject",
+    "finish-probe",
+    "finish-push",
+    "finish-pr",
+    "mapping"
+  ]
+}

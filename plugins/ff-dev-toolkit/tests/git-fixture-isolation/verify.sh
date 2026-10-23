@@ -392,6 +392,7 @@ docs-gates-runtime/ci-example-cases.sh
 effort-contract/verify.sh
 finish/merge-delete-cases.sh
 finish/verify.sh
+github-input-precheck/verify.sh
 grok-hooks-sync/verify.sh
 guard-checkout-restore/verify.sh
 guard-review-in-flight/verify.sh

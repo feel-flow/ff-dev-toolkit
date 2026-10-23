@@ -613,6 +613,7 @@ print_usage() {
               ブランチ → その worktree）は read-only の ls-remote で予測して
               一覧へ含める。ref は 1 つも書き換えない。
   --help, -h  この使い方を表示して終了する（PR 番号としては解釈しない）。
+  --github-input FILE  絶対パスの取得索引を読む。必須state/head/base不足は名指しrc2。
 
 このスクリプトが削除するもの（--dry-run を付けない場合）:
   - 対象 PR のリモートブランチ（origin。--force-with-lease で OID 一致時のみ）
@@ -623,6 +624,7 @@ print_usage() {
   - リモート取り残しのマージ済みブランチ（(名前, OID) 照合を通ったものだけ）
 
 終了コード: 0 = 完全成功 / 1 = 中断（引数不正を含む） / 2 = PARTIAL（一部失敗）
+file取得の必須不足もrc2だが、診断にoperation/fieldを出し、削除の前に停止する。
 USAGE
 }
 
@@ -631,6 +633,7 @@ USAGE
 # 位置引数として素通りする）。
 DRY_RUN=0
 PR_NUM=""
+github_input=""
 ARG_ERROR=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -640,6 +643,11 @@ while [ "$#" -gt 0 ]; do
       ;;
     --dry-run)
       DRY_RUN=1
+      ;;
+    --github-input)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || { echo 'github-input: index argument missing' >&2; exit 2; }
+      github_input="$2"
+      shift
       ;;
     -*)
       ARG_ERROR="不明なオプションです: ${1}"
@@ -676,7 +684,20 @@ fi
 WORK_TMP="$(mktemp -d)" || die "mktemp -d に失敗しました"
 trap 'rm -rf "$WORK_TMP"' EXIT
 
-command -v gh >/dev/null 2>&1 || die "gh CLI が必要です（https://cli.github.com/）"
+if [ -n "$github_input" ]; then
+  mc_file_lib="$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/github-input.sh" || exit 2
+  [ -f "$mc_file_lib" ] && [ -r "$mc_file_lib" ] || { echo 'github-input: helper missing' >&2; exit 2; }
+  github_shebang=""
+  IFS= read -r github_shebang <"$mc_file_lib" || true
+  case "$github_shebang" in *$'\r') echo 'github-input: helper shebang must use LF' >&2; exit 2 ;; esac
+  # shellcheck source=lib/github-input.sh
+  . "$mc_file_lib" || exit 2
+  case "$github_input" in /*) ;; *) _github_input_error index '--github-input must be absolute'; exit 2 ;; esac
+  github_repository="$(_github_input_repository)" || exit 2
+  printf '{}\n' >"$WORK_TMP/github-position.json"
+else
+  command -v gh >/dev/null 2>&1 || die "gh CLI が必要です（https://cli.github.com/）"
+fi
 command -v jq >/dev/null 2>&1 || die "jq が必要です"
 
 # リモート削除の共通関数: --force-with-lease で「期待 OID のときだけ」削除する。

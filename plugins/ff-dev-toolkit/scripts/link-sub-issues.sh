@@ -11,6 +11,7 @@
 # 使い方:
 #   link-sub-issues.sh --repo OWNER/REPO <parent> <child> [child...]
 #   link-sub-issues.sh --repo OWNER/REPO --dry-run <parent> <child>...
+#   --github-input /absolute/index.json: file取得（originと--repo一致、PLAN/read-back待機rc2）。
 #
 #   <parent> / <child> は Issue 番号（`123` または `#123`）。database ID ではない。
 #   ヘルパが `GET repos/.../issues/<n>` の `.id` を引いてから POST する。
@@ -220,10 +221,15 @@ EOF
 
 REPO=""
 DRY_RUN=0
+github_input=""
 POSITIONAL=()
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --github-input)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || { echo 'github-input: index argument missing' >&2; exit 2; }
+      github_input="$2"; shift 2
+      ;;
     --repo)
       if [ "$#" -lt 2 ]; then
         echo "link-sub-issues: --repo には OWNER/REPO が必要です" >&2
@@ -332,7 +338,21 @@ while [ "$i" -lt "${#POSITIONAL[@]}" ]; do
   i=$((i + 1))
 done
 
-if ! command -v gh >/dev/null 2>&1; then
+if [ -n "$github_input" ]; then
+  link_file_lib="$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/github-input.sh" || exit 2
+  [ -f "$link_file_lib" ] && [ -r "$link_file_lib" ] || { echo 'github-input: helper missing' >&2; exit 2; }
+  github_shebang=""
+  IFS= read -r github_shebang <"$link_file_lib" || true
+  case "$github_shebang" in *$'\r') echo 'github-input: helper shebang must use LF' >&2; exit 2 ;; esac
+  # shellcheck source=lib/github-input.sh
+  . "$link_file_lib" || exit 2
+  case "$github_input" in /*) ;; *) _github_input_error index '--github-input must be absolute'; exit 2 ;; esac
+  github_repository="$(_github_input_repository)" || exit 2
+  [ "${github_repository#*://*/}" = "$REPO" ] || { _github_input_error link.membership 'origin/--repo mismatch'; exit 2; }
+  link_file_tmp="$(mktemp -d)" || exit 2
+  trap 'rm -rf "$link_file_tmp"' EXIT
+  printf '{}\n' >"$link_file_tmp/position.json"
+elif ! command -v gh >/dev/null 2>&1; then
   echo "link-sub-issues: gh が見つかりません" >&2
   exit 2
 fi
@@ -352,7 +372,33 @@ run_gh() {
 
 existing=""
 existing_out=""
-existing_out="$(run_gh gh api --paginate "repos/${REPO}/issues/${PARENT}/sub_issues" --jq '.[].number')" || exit 1
+link_file_membership() { # phase -> numbers after complete, explicit terminal empty page
+  local link_page=1 link_count
+  : >"$link_file_tmp/numbers"
+  jq -n --arg repository "$github_repository" --argjson parent "$PARENT" '{repository:$repository,parent:$parent}' >"$link_file_tmp/scope.json" || return 2
+  while :; do
+    jq -n --argjson page "$link_page" '{page:$page}' >"$link_file_tmp/page.json" || return 2
+    github_file_read "$github_input" link.membership "$link_file_tmp/scope.json" "$1" "$link_file_tmp/page.json" >"$link_file_tmp/members.json" || return 2
+    if ! jq -e 'type == "array" and all(.[]; .number | type == "number" and . > 0 and floor == .)' "$link_file_tmp/members.json" >/dev/null; then
+      _github_input_error link.membership 'required field: [].number'; return 2
+    fi
+    link_count="$(jq length "$link_file_tmp/members.json")" || return 2
+    case "$GITHUB_INPUT_LAST" in
+      true) [ "$link_count" -eq 0 ] || { _github_input_error link.membership 'last page must be terminal []'; return 2; }; break ;;
+      false) [ "$link_count" -gt 0 ] || { _github_input_error link.membership 'empty page without last=true'; return 2; } ;;
+      *) _github_input_error link.membership "required page metadata: last (page=$link_page)"; return 2 ;;
+    esac
+    jq -r '.[].number' "$link_file_tmp/members.json" >>"$link_file_tmp/numbers" || return 2
+    link_page=$((link_page + 1))
+  done
+  cat "$link_file_tmp/numbers"
+}
+if [ -n "$github_input" ]; then
+  link_file_membership before-link >"$link_file_tmp/existing" || exit 2
+  existing_out="$(cat "$link_file_tmp/existing")"
+else
+  existing_out="$(run_gh gh api --paginate "repos/${REPO}/issues/${PARENT}/sub_issues" --jq '.[].number')" || exit 1
+fi
 if [ -n "$existing_out" ]; then
   while IFS= read -r num || [ -n "$num" ]; do
     [ -n "$num" ] || continue
@@ -380,10 +426,19 @@ for child in "${CHILDREN[@]}"; do
   esac
 
   child_id=""
-  child_id="$(run_gh gh api "repos/${REPO}/issues/${child}" --jq .id)" || {
-    echo "link-sub-issues: #${child} の database ID を取得できませんでした" >&2
-    exit 1
-  }
+  if [ -n "$github_input" ]; then
+    jq -n --arg repository "$github_repository" --argjson child "$child" '{repository:$repository,child:$child}' >"$link_file_tmp/scope.json" || exit 2
+    github_file_read "$github_input" link.child-id "$link_file_tmp/scope.json" before-link-child "$link_file_tmp/position.json" >"$link_file_tmp/child.json" || exit 2
+    if ! jq -e '.id | type == "number" and . > 0 and floor == .' "$link_file_tmp/child.json" >/dev/null; then
+      _github_input_error link.child-id 'required field: id (integer database ID)'; exit 2
+    fi
+    child_id="$(jq -r '.id' "$link_file_tmp/child.json")"
+  else
+    child_id="$(run_gh gh api "repos/${REPO}/issues/${child}" --jq .id)" || {
+      echo "link-sub-issues: #${child} の database ID を取得できませんでした" >&2
+      exit 1
+    }
+  fi
   case "$child_id" in
     ''|*[!0-9]*)
       echo "link-sub-issues: #${child} の .id が整数ではありません: [${child_id}]" >&2
@@ -396,6 +451,19 @@ for child in "${CHILDREN[@]}"; do
     linked=$((linked + 1))
     existing="${existing} ${child} "
     continue
+  fi
+
+  if [ -n "$github_input" ]; then
+    if link_file_membership "after-link-$child" >"$link_file_tmp/after" && grep -qxF "$child" "$link_file_tmp/after"; then
+      echo "link-sub-issues: read-back verified #${child} -> #${PARENT}"
+      linked=$((linked + 1)); existing="${existing} ${child} "
+      continue
+    fi
+    jq -n --arg repository "$github_repository" --argjson parent "$PARENT" --argjson child "$child" '{repository:$repository,parent:$parent,child:$child}' >"$link_file_tmp/scope.json" || exit 2
+    jq -n --argjson sub_issue_id "$child_id" '{sub_issue_id:$sub_issue_id}' >"$link_file_tmp/arguments.json" || exit 2
+    jq -n --arg phase "after-link-$child" --argjson child "$child" '{operation:"link.membership",phase:$phase,expect:{contains_number:$child},pages:"page1 through terminal empty page"}' >"$link_file_tmp/readback.json" || exit 2
+    github_file_plan link.write "$link_file_tmp/scope.json" "$link_file_tmp/arguments.json" "$link_file_tmp/readback.json" || exit 2
+    exit 2
   fi
 
   # ここが OBS-052 の固定点。`-f` に変えると GitHub は

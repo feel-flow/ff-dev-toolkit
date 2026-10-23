@@ -217,7 +217,7 @@ ff_assert_script_plugin_root "${BASH_SOURCE[0]}" || exit 2
 set -u
 export LC_ALL=C
 
-ROOT=""; GLOBAL_CLAUDE=""; OFFLINE=0; REPO=""; SETTINGS=()
+ROOT=""; GLOBAL_CLAUDE=""; OFFLINE=0; REPO=""; SETTINGS=(); GITHUB_INPUT=""; GITHUB_TMP=""; GITHUB_REPOSITORY=""
 need_value() { # $1 option, $2 remaining argc — 値なしで最終引数のとき `shift 2` が空振りして同じ分岐を回り続ける（レビューで実測）ので、先に止める
   [ "$2" -ge 2 ] || { echo "workflow-doctor: $1 には値が要ります" >&2; exit 2; }
 }
@@ -227,6 +227,7 @@ while [ $# -gt 0 ]; do
     --global-claude) need_value "$1" $#; GLOBAL_CLAUDE="$2"; shift 2 ;;
     --settings) need_value "$1" $#; SETTINGS+=("$2"); shift 2 ;;
     --offline) OFFLINE=1; shift ;;
+    --github-input) need_value "$1" $#; [ -n "$2" ] || { echo "--github-input requires a non-empty index path" >&2; exit 2; }; GITHUB_INPUT="$2"; shift 2 ;;
     --repo) need_value "$1" $#; REPO="$2"; shift 2 ;;
     -h|--help) awk 'NR >= 2 && /^# ff-dev-toolkit-script-root-guard:st[a]rt$/ { exit } NR >= 2 { print }' "$0"; exit 0 ;;   # marker 文字列を分割して書く（marker 件数の検査に当てない）
     *) echo "workflow-doctor: 不明な引数: $1" >&2; exit 2 ;;
@@ -407,22 +408,85 @@ EOF
 done
 [ "$hook_checked" -gt 0 ] || emit INFO 3 "Stop hook でスクリプトを参照する設定は無い"
 
+# File acquisition is optional for doctor: unavailable data never means an empty set.
+# @me is a selector, not proof of the host's authentication identity.
+doctor_file() { # operation, selector JSON, jq projection
+  local op="$1" selectors="$2" projection="$3" page=1 raw lib
+  lib="$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/github-input.sh"
+  [ -r "$lib" ] && command -v jq >/dev/null 2>&1 || return 2
+  . "$lib"
+  raw="$GITHUB_TMP/raw"
+  jq -n --arg repository "${GITHUB_REPOSITORY:-https://github.com/$REPO}" --argjson selectors "$selectors" '$selectors + {repository:$repository}' >"$GITHUB_TMP/scope" || return 2
+  printf '[]\n' >"$GITHUB_TMP/all"
+  while :; do
+    if [ "$op" = doctor.open-issues ]; then
+      jq -n --argjson page "$page" '{page:$page}' >"$GITHUB_TMP/position"
+    else
+      printf '{}\n' >"$GITHUB_TMP/position"
+    fi
+    github_file_read "$GITHUB_INPUT" "$op" "$GITHUB_TMP/scope" inspect "$GITHUB_TMP/position" >"$raw" || return 2
+    # Error bodies are not canonical successful payloads, including a normalized 404.
+    case "$GITHUB_INPUT_HTTP_STATUS" in ''|200) ;; *) return 2 ;; esac
+    case "$op" in
+      doctor.labels) jq -e 'type == "array" and length <= 200 and all(.[]; .name | type == "string")' "$raw" >/dev/null || return 2 ;;
+      doctor.bundle-list) jq -e 'type == "array" and length <= 200 and all(.[]; (.number | type == "number" and . > 0 and floor == .) and .pull_request == null)' "$raw" >/dev/null || return 2 ;;
+      doctor.open-issues) jq -e 'type == "array" and all(.[]; (.number | type == "number" and . > 0 and floor == .) and (.labels | type == "array" and all(.[]; .name | type == "string")))' "$raw" >/dev/null || return 2 ;;
+      doctor.parents) jq -e --argjson selectors "$selectors" '
+        .data.repository as $r | ($r | type == "object") and
+        (($r | keys | sort) == ($selectors.numbers | map("i" + tostring) | sort)) and
+        all($selectors.numbers[]; . as $n | $r["i" + ($n | tostring)] as $i |
+          ($i.number == $n) and ($i | has("parent")) and
+          ($i.parent == null or ($i.parent.number | type == "number" and . > 0 and floor == .)))' "$raw" >/dev/null || return 2 ;;
+      doctor.drafts) jq -e 'type == "array" and length <= 200 and all(.[]; (.number | type == "number" and . > 0 and floor == .) and (.title | type == "string"))' "$raw" >/dev/null || return 2 ;;
+      *) return 2 ;;
+    esac
+    if [ "$op" != doctor.open-issues ]; then
+      [ "$GITHUB_INPUT_LAST" = true ] || return 2
+      jq -r "$projection" "$raw"; return $?
+    fi
+    jq -s '.[0] + .[1]' "$GITHUB_TMP/all" "$raw" >"$GITHUB_TMP/next" || return 2
+    mv "$GITHUB_TMP/next" "$GITHUB_TMP/all" || return 2
+    case "$GITHUB_INPUT_LAST" in
+      true) jq -r "$projection" "$GITHUB_TMP/all"; return $? ;;
+      false) [ "$page" -lt 10000 ] || return 2; page=$((page + 1)) ;;
+      *) return 2 ;;
+    esac
+  done
+}
+if [ -n "$GITHUB_INPUT" ] && [ "$OFFLINE" -eq 0 ]; then
+  GITHUB_TMP="$(mktemp -d)" || { echo 'workflow-doctor: file temporary directory unavailable' >&2; exit 2; }
+  trap 'rm -rf "$GITHUB_TMP"' EXIT
+fi
+
 # ---- 4〜6. gh を使う検査 ---------------------------------------------------------
 if [ "$OFFLINE" -eq 1 ]; then
   emit SKIP 4 "--offline のため未検査（bundle の open Issue）"
   emit SKIP 5 "--offline のため未検査（ラベルの実在）"
   emit SKIP 6 "--offline のため未検査（親無し Issue）"
-elif ! command -v gh >/dev/null 2>&1; then
+elif [ -z "$GITHUB_INPUT" ] && ! command -v gh >/dev/null 2>&1; then
   emit SKIP 4 "gh が無いため未検査"; emit SKIP 5 "gh が無いため未検査"; emit SKIP 6 "gh が無いため未検査"
 else
   if [ -z "$REPO" ]; then
-    REPO="$(git -C "$ROOT" remote get-url origin 2>/dev/null | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##')"
+    if [ -n "$GITHUB_INPUT" ]; then
+      github_lib="$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/github-input.sh"
+      if [ -r "$github_lib" ]; then
+        GITHUB_REPOSITORY="$( (cd "$ROOT" && . "$github_lib" && _github_input_repository) 2>/dev/null)" || GITHUB_REPOSITORY=""
+        repo_path="${GITHUB_REPOSITORY#*://}"
+        [ -z "$GITHUB_REPOSITORY" ] || REPO="${repo_path#*/}"
+      fi
+    else
+      REPO="$(git -C "$ROOT" remote get-url origin 2>/dev/null | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##')"
+    fi
   fi
   if [ -z "$REPO" ]; then
     raw_url="$(git -C "$ROOT" remote get-url origin 2>/dev/null || echo '(origin なし)')"
     emit SKIP 4 "対象リポジトリを解決できない（origin=${raw_url}。https://github.com/ と git@github.com: 以外は --repo OWNER/REPO を指定）"; emit SKIP 5 "同左"; emit SKIP 6 "同左"
   else
-    labels="$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name' 2>/dev/null)"; lrc=$?
+    if [ -n "$GITHUB_INPUT" ]; then
+      labels="$(doctor_file doctor.labels '{"limit":200}' '.[].name' 2>/dev/null)"; lrc=$?
+    else
+      labels="$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name' 2>/dev/null)"; lrc=$?
+    fi
     if [ "$lrc" -ne 0 ] || [ -z "$labels" ]; then
       emit SKIP 5 "ラベル一覧を信用できない（取得失敗または空）— 実在を断定しない"
       emit SKIP 4 "ラベル一覧を取れないため bundle の受け皿も未検査"
@@ -441,7 +505,11 @@ else
         emit WARN 5 "優先度ラベルが無い（priority:* / P<n>-* のどちらも無い。/setup-github-labels で整備できる）"
       fi
       if grep -qxF bundle <<<"$labels"; then
-        n="$(gh issue list --repo "$REPO" --state open --label bundle --limit 200 --json number --jq 'length' 2>/dev/null || echo "")"
+        if [ -n "$GITHUB_INPUT" ]; then
+          n="$(doctor_file doctor.bundle-list '{"state":"open","label":"bundle","limit":200}' 'length' 2>/dev/null)" || n=""
+        else
+          n="$(gh issue list --repo "$REPO" --state open --label bundle --limit 200 --json number --jq 'length' 2>/dev/null || echo "")"
+        fi
         if [ -z "$n" ]; then emit SKIP 4 "bundle の open Issue を取得できない"
         elif [ "$n" -eq 0 ]; then BUNDLE_OPEN=0; emit WARN 4 "open な bundle が 0 件（統合先が無く、発見が新規の単独 Issue へ落ちる）"
         else BUNDLE_OPEN="$n"; emit OK 4 "open な bundle ${n} 件"; fi
@@ -452,7 +520,11 @@ else
     # 親無し Issue（epic / bundle 以外で parent が無いもの）
     owner="${REPO%%/*}"; name="${REPO##*/}"
     # `gh issue list --limit` は打ち切りを教えないので、REST をページングして全件を読む（PR は除外）
-    nums="$(gh api --paginate "repos/${REPO}/issues?state=open&per_page=100" --jq '.[] | select(.pull_request == null) | select((.labels | map(.name) | index("epic")) == null and (.labels | map(.name) | index("bundle")) == null) | .number' 2>/dev/null)"; nrc=$?
+    if [ -n "$GITHUB_INPUT" ]; then
+      nums="$(doctor_file doctor.open-issues '{"state":"open","per_page":100}' '.[] | select(.pull_request == null) | select((.labels | map(.name) | index("epic")) == null and (.labels | map(.name) | index("bundle")) == null) | .number' 2>/dev/null)"; nrc=$?
+    else
+      nums="$(gh api --paginate "repos/${REPO}/issues?state=open&per_page=100" --jq '.[] | select(.pull_request == null) | select((.labels | map(.name) | index("epic")) == null and (.labels | map(.name) | index("bundle")) == null) | .number' 2>/dev/null)"; nrc=$?
+    fi
     if [ "$nrc" -ne 0 ]; then
       emit SKIP 6 "open Issue の一覧を取得できない（gh rc=${nrc}）— 親無しの有無を断定しない"
     elif [ -z "$nums" ]; then
@@ -462,7 +534,14 @@ else
       orphans=""; grc=0; batch=""; bc=0
       flush_batch() {
         local q='query{ repository(owner:"'"$owner"'",name:"'"$name"'"){'"$batch"' } }' out
-        out="$(gh api graphql -f query="$q" --jq '.data.repository | to_entries[] | select(.value.parent == null) | .value.number' 2>/dev/null)" || return 1
+        if [ -n "$GITHUB_INPUT" ]; then
+          local numbers selectors
+          numbers="$(printf '%s' "$batch" | grep -oE 'issue\(number:[0-9]+' | sed 's/issue(number://' | jq -s '.')" || return 1
+          selectors="$(jq -cn --argjson numbers "$numbers" '{numbers:$numbers}')" || return 1
+          out="$(doctor_file doctor.parents "$selectors" '.data.repository | to_entries[] | select(.value.parent == null) | .value.number' 2>/dev/null)" || return 1
+        else
+          out="$(gh api graphql -f query="$q" --jq '.data.repository | to_entries[] | select(.value.parent == null) | .value.number' 2>/dev/null)" || return 1
+        fi
         orphans="${orphans}${orphans:+
 }${out}"
       }
@@ -643,12 +722,16 @@ fi
 # `knowledge:` の ACE PR は自律フローの人の確認待ち（ace-capture の契約）なので数えない。
 if [ "$OFFLINE" -eq 1 ]; then
   emit SKIP 11 "--offline のため未検査（Draft PR の実態）"
-elif ! command -v gh >/dev/null 2>&1; then
+elif [ -z "$GITHUB_INPUT" ] && ! command -v gh >/dev/null 2>&1; then
   emit SKIP 11 "gh が無いため未検査"
 elif [ -z "$REPO" ]; then
   emit SKIP 11 "対象リポジトリを解決できない（--repo OWNER/REPO を指定）"
 else
-  drafts="$(gh pr list --repo "$REPO" --state open --draft --author '@me' --limit 200 --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>/dev/null)"; drc=$?
+  if [ -n "$GITHUB_INPUT" ]; then
+    drafts="$(doctor_file doctor.drafts '{"state":"open","draft":true,"author":"@me","limit":200}' '.[] | "\(.number)\t\(.title)"' 2>/dev/null)"; drc=$?
+  else
+    drafts="$(gh pr list --repo "$REPO" --state open --draft --author '@me' --limit 200 --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>/dev/null)"; drc=$?
+  fi
   if [ "$drc" -ne 0 ]; then
     emit SKIP 11 "Draft PR の一覧を取得できない（gh rc=${drc}）— 有無を断定しない"
   else

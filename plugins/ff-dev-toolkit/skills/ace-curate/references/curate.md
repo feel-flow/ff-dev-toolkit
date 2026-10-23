@@ -134,6 +134,9 @@ fetch が失敗した回は、停止メッセージの末尾へ git が出した
 
 **保護判定（必須・直 push を試す前に行う）**: `finish.sh knowledge-commit probe` が classic branch protection API（`gh api "repos/${owner_repo}/branches/${default_branch}/protection"`。404 は「classic ルールが無い」を意味するだけで、Rulesets のみで保護されたブランチでも 404 を返す。200 でも直 push を止める `required_pull_request_reviews` / `required_status_checks` / `restrictions` のどれか、または署名必須・読み取り専用（`required_signatures.enabled` / `lock_branch.enabled` が true）があるときだけ protected とし、どれも無ければ（force push の禁止だけ等）`classic=protected-no-pr` として rulesets の判定へ進み、rulesets に `pull_request` type が無い場合のみ `unprotected` になる。署名必須と読み取り専用を含めるのは、どちらも 3 項目が null のまま直 push を GH006 で拒否するため — 含めないと旧判定（200 なら protected）で PR 経由だった保護が直 push の拒否へ退行する）と rulesets API（`gh api "repos/${owner_repo}/rules/branches/${default_branch}"`。直 push を PR 必須にする `pull_request` type の有無だけを見る — `non_fast_forward` 等 direct push を禁止しない type だけなら unprotected）の両方を見て `protection=protected|unprotected|unknown` を出す。`protected` → PR 経由へ / `unprotected` → 既定（直 push） / `unknown`（`gh` 不在・401/403・ネットワーク失敗。保護判定後に設定が変わる TOCTOU の受け皿でもある） → 既定を試し、push が `Changes must be made through a pull request` または `push declined due to repository rule violations` で拒否されたら PR 経由へ切り替える（`finish.sh knowledge-commit push` が同じ文言を検知して rc 3 を返す。classic 保護の拒否全般（`Protected branch update failed`）・必須チェック（`Required status check`）・push の制限（`not authorized to push`）による拒否も、判定が外れた回の安全網として rc 3 に寄せる）。
 
+<!--4bf12dab29f70e8c-->
+MCP: 取得値: MCP の repo nameWithOwner と対象 branch の classic protection / rulesets の実応答・HTTP status。形式: 同じ index の phase=probe に knowledge.repo（repository scope）、knowledge.classic-protection / knowledge.rulesets（repository / branch scope）を保存し、404 と 403 を区別する（rulesets の完全取得は last=true）。渡し先: knowledge-commit probe --github-input /absolute/index.json。不足時: 任意照会の不足・不成立は protection=unknown を保ち、既定 push の保護拒否 rc3 で PR 経路へ進む。
+
 **既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。`<default-branch>` に直接 commit + push する。
 
 **コミットメッセージ規約**: コミット前に対象リポジトリの規約を確認する。確認対象は (1) commitlint の `header-max-length` — 件名を上限内に収め、カテゴリが複数でも件名には列挙せず、commit body に記録する。要約だけで上限を超える場合は要約を短くするかコミットを分割する — に加え、(2) **type の許容リスト**。参照先: `commitlint.config.*` / `.commitlintrc*` / `package.json` の `commitlint` キー / husky・simple-git-hooks の `commit-msg` hook。`knowledge` が許容 type に含まれない場合は、プロジェクト規約の type（例 `chore`）へ件名の prefix だけを置き換える（件名の要約・body の `Categories:` 記録はそのまま維持する。例: `chore: ACE-<PR番号>-<連番> <要約>`）。書き込み口は件名を組み立てた直後、stage・保留記録・commit より前にリポジトリの prepare-commit-msg → commit-msg hook（core.hooksPath を反映した `git rev-parse --git-path hooks/<名>`。husky も同じ経路）へ `git commit -m` と同じ順で件名をドライランで通す。元の件名が通れば件名・出力は従来どおり。拒否された既定 `knowledge` は `chore` → `docs` の候補も同じ hook で検証し、Issue が必要ならブランチの `ace-from-pr-N` → PR の closing Issue 先頭、次にブランチ自身の `#N` を解決して `<type>: #<issue> <ID> <要約>` を検証する（`--claim` は version claim 用で PR origin は持たず、ACE-ID・要約の数字も解決元にしない）。選んだ Issue/type は保留へ保存して合流先の commit が引き継ぐ。明示された非 `knowledge` type は置換しない。解決元が無い・どの候補も拒否される場合だけ hook の出力（要求形式）を示して rc 4（`KNOWLEDGE_COMMIT=hook-rejected`）で止まる。`add` の拒否は保留記録を作らない（`--claim` 経由では文書と claim の stage は残る）ので `discard` は要らない — 解決に失敗した場合だけ、表示された規約を確認して `add --type` で再実行するか、書いたパスへ固定した `git commit -m "<規約どおりの件名>" -- <書いたパス>` で手でコミットする（pathspec 無しの `git commit` にしない）。
@@ -143,6 +146,9 @@ fetch が失敗した回は、停止メッセージの末尾へ git が出した
 **送信範囲ガード**（`finish.sh knowledge-commit push` と `pr` の両方が、ブランチ作成・push より前に行う）: fetch 後の `origin/<default-branch>..HEAD` が knowledge コミット 1 つだけでなければ rc 2（`KNOWLEDGE_PUSH=scope-mismatch` / `KNOWLEDGE_PR=scope-mismatch`）で止め、無関係な未 push コミットを一緒に送らない。
 
 **直 push の実測ガード**（`finish.sh knowledge-commit push` が行う）: コミット先ブランチを `git symbolic-ref -q --short HEAD` で実測し、detached HEAD なら refspec を `HEAD:<default-branch>` にする（merge-cleanup の退避などで detached のまま `git push origin <branch>` を打つと、ローカル branch ref が送られ「Everything up-to-date」で成功に見えたまま届かない）。push 出力はファイルへ落として `-> <default-branch>` を照合する（パイプで tee へ流すと終了コードが失われ、rejected 出力を成功と誤読する）。push 後は `gh run list --branch <default-branch> --limit 5 --json status,conclusion,workflowName,headSha` で今 push した SHA の run を見る（直 push は PR 画面に出ないため）。`in_progress` / `queued` は完了を待って再確認し、`failure` なら revert ではなく ACE コミットを前進で直して push し直す。一覧が空の CI 無しリポジトリはそのまま進んでよい。
+
+<!--866666a04b981ccc-->
+MCP: 取得値: MCP でpush した SHA の run status / conclusion / workflowName / headSha を取得。形式: knowledge の post-push CI raw を同じ index に保存。渡し先: knowledge-commit push の --github-input へ渡し同じ SHA の完了を判断する。不足時: 任意 CI 不足は unavailable を報告して続行し、成功と読み替えない。
 
 **non-fast-forward で拒否された場合**（保護ルールによる拒否は rc 3 で PR 経由へ自動的に切り替わるため対象外）は、別セッションの更新を検出した正常な競合経路として次を**最大 3 回**繰り返す:
 
@@ -170,4 +176,32 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 # レビュー後 squash merge → /merge-cleanup
 ```
 
+<!--56b51c7ee0377bdd-->
+MCP: 取得値: MCP でPLAN と一致する作成後 PR の head / base / title / body / SHA を取得。形式: knowledge fixture の fresh raw JSON を同じ index に保存。渡し先: knowledge-commit pr --github-input /absolute/index.json へ渡す。PLAN の原文を既存 create_pull_request で実 write 後に再実行する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
+
 > `knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、通常のコード変更に対する「統合ブランチへの直 push 禁止」ルールとは別物として扱う。ただし default branch が保護されているリポジトリではこの経路に到達できない — その場合は保護判定に従い「PR 経由」（必須）を使う。
+
+
+## GitHub file input
+
+GitHub MCP などの取得済み raw を使う knowledge 操作では `finish.sh knowledge-commit <add|commit|probe|push|pr> --github-input /absolute/index.json` を明示し、各段へ同じ index を渡す。任意の closing Issue / protection / post-push CI が不足しても branch 由来の件名・unknown・CI unavailable を維持する。file の PR 作成は exact head/base/title/body と push 済み SHA の `PLAN` を出し、実 write 後の fresh raw PR が一致するまで rc2 待機で、完了印を出さない。Git push や復帰・clean ガードは通常どおり実行する。写像 fixture と live 取得、実 write/read-back は別に報告する。対応表は [knowledge fixture](../../../tests/github-input-knowledge/README.md)。
+
+GitHub MCP などの raw を使う場合は、`knowledge-lookup.sh` / `workflow-doctor.sh` と `finish.sh knowledge-commit <add|commit|probe|push|pr>` の該当呼び出しへ同じ `--github-input /absolute/index.json` を明示する。任意取得の不足は未確認/SKIP/unknown/CI unavailable のまま続行し、`--offline` は lookup/doctor の file も読まない。knowledge PR の file 経路は実 write 後の fresh raw が exact head/base/title/body・push 済み SHA と一致するまで `PLAN` + rc2 で待機する。工数の集計は `effort-report.sh --repo OWNER/REPO --github-input /absolute/index.json` を使い、既存 `--input <raw-array>` と併用しない。新 index の必須 number/body 不足・別 repo・不正 JSON は operation/field を示して rc2、既存 raw 入力の rc は保持する。[knowledge fixture の対応表](../../../tests/github-input-knowledge/README.md)に写像・取得主体・完備性の確認境界を示す。
+
+
+## エントリIDの採番
+
+**PRスコープ式** `ACE-<PR番号>-<連番>`（資料単独は `ACE-i<Issue番号>-<連番>`）。既存 `ACE_ID_PREFIX-*` の最大連番 +1（無ければ `1`）。PLAYBOOK.md に「エントリID規則」節が無ければ同梱テンプレートから節ごとコピーする。既存の ID なし・旧連番エントリは改名しない。
+
+
+
+## 結果レポート
+
+```
+## ACE サイクル完了レポート
+**対象PR**: #[PR番号] [タイトル] / **抽出知見数**: X 件 / **新規**: ACE-438-1 / **カウンター更新**: ACE-016 (Helpful +1) / **スキップ**: X 件
+**domain**: 評価済み（候補N件）または未実施（理由）/ source の取得済み・未確認 / 反映先未解決
+**登録・push・CI**: 別々に報告する
+```
+
+**次のステップ**: ACE 完了後、ワークフローチェーンの末尾として `/retrospective` を実行する（`/merge-cleanup` → `/ace-curate` → `/retrospective`）。プロセス/ツール/スキルのメタ知見は ACE Playbook ではなく `/retrospective` の提案経路で扱う。

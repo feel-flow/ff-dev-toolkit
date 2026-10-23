@@ -902,7 +902,7 @@ adapter-env-isolation-selftest
 section-scope.sh
 docs-fact-drift
 npm ci の前提
-8 件の明示許可
+9 件の明示許可
 weekly-run-all.yml
 exec_bit_scan
 ff-dev-toolkit-script-root-guard:start

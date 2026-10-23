@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 空振り検出: record-gate-head.sh のsource不在は検査対象不在を名指ししてrc1（2026-10-23 macOS実測）。
+# 空振り検出: 未追跡表示の明示を本判定だけ外す変異は4件赤、失敗診断だけ外す変異は1件赤。常時dirtyは48件赤、記録器を同名の空ファイルへ替えると119件赤。各bash-n rc0、無変異288件緑（2026-10-23 macOS実測）。
 # 空振り検出: 共有生成器の実呼出しを抽出したfocused針は旧針0/1→新針1/0。第三引数REMOTE_HEADだけをLOCAL_HEADへ変える単独変異・呼出し不在（:へ置換）・同名空対象は各0/1で赤、対象コピーは全bash-n rc0（2026-10-22 macOS実測）。
 # 空振り検出: 抽出先 scripts/lib/finish-precheck.sh を空にすると 277/0 から267/10となり、鮮度分岐の切り出し0行・停止と報告・生成先端の針が赤になる（2026-10-22 実測）。
 #
@@ -567,6 +569,31 @@ bash "$RECORD" --gate g >/dev/null 2>&1
 contains "$REC" "DIRTY=yes" "未追跡ファイルも汚れとして数える（新規 suite は追跡されていなくても走る）"
 rm -f untracked.txt
 
+# 利用者が未追跡表示を無効にしていても、実測対象の木の汚れは隠さない。
+# record → freshness の実経路で測り、設定自体は書き換えないことも確認する。
+git_q config status.showUntrackedFiles no
+run_record --gate g
+[[ "$RC" -eq 0 ]] && ok "未追跡非表示設定でも clean の記録は成功する" || bad "clean 記録で exit ${RC}"
+contains "$REC" "DIRTY=no" "未追跡非表示設定だけでは汚れにしない"
+run_check --remote-head "$HEAD_B"
+[[ "$RC" -eq 0 && -z "$OUT" && -z "$ERR" ]] && ok "未追跡非表示設定の clean 記録は鮮度一致" || bad "clean 記録の鮮度照合が不正 (rc=$RC)"
+printf 'ignored-only.txt\n' >> .git/info/exclude
+: > ignored-only.txt
+run_record --gate g
+contains "$REC" "DIRTY=no" "ignored ファイルだけなら DIRTY=no（未追跡の強制表示へ含めない）"
+run_check --remote-head "$HEAD_B"
+[[ "$RC" -eq 0 && -z "$OUT" && -z "$ERR" ]] && ok "ignored のみの記録は鮮度一致" || bad "ignored 記録の鮮度照合が不正 (rc=$RC)"
+: > untracked.txt
+run_record --gate g
+[[ "$RC" -eq 0 ]] && ok "未追跡非表示設定でも汚れた木を記録できる" || bad "untracked 記録で exit ${RC}"
+contains "$REC" "DIRTY=yes" "未追跡非表示設定でも未追跡ファイルは DIRTY=yes"
+run_check --remote-head "$HEAD_B"
+[[ "$RC" -eq 2 ]] && ok "未追跡非表示設定の汚れた記録は鮮度一致へ進めない" || bad "untracked 記録の鮮度照合で exit ${RC}（期待 2）"
+out_has "$OUT" "FRESHNESS=UNDETERMINED" "未追跡を含む実測は同じ HEAD でも判定不能"
+[[ "$(git_q config status.showUntrackedFiles)" = no ]] && ok "利用者の未追跡表示設定を書き換えない" || bad "未追跡表示設定が変わりました"
+rm -f untracked.txt ignored-only.txt
+git_q config --unset status.showUntrackedFiles
+
 git_q -C "$REPO_B" commit -q --allow-empty -m c2 >/dev/null 2>&1
 HEAD_B2="$(git_q rev-parse HEAD)"
 bash "$RECORD" --gate g >/dev/null 2>&1
@@ -668,7 +695,7 @@ mkdir -p "$STUB_BIN"
 {
   printf '#!/usr/bin/env bash\n'
   printf 'for _a in "$@"; do\n'
-  printf '  if [ "$_a" = "status" ]; then echo "stubbed git status failure" >&2; exit 128; fi\n'
+  printf '  if [ "$_a" = "status" ]; then printf "%%s\\n" "$*" >> %q; echo "stubbed git status failure" >&2; exit 128; fi\n' "$STUB_BIN/status-args"
   printf 'done\n'
   printf 'exec %s "$@"\n' "$REAL_GIT"
 } > "$STUB_BIN/git"
@@ -678,6 +705,12 @@ RC=0
 PATH="$STUB_BIN:$PATH" bash "$RECORD" --gate g --record "$STATUS_REC" >/dev/null 2>&1 || RC=$?
 [[ "$RC" -eq 2 ]] && ok "作業ツリーの状態を確認できない回は記録せずに止める" || bad "status 失敗時に exit ${RC}（期待 2）"
 [[ ! -f "$STATUS_REC" ]] && ok "status 失敗時に DIRTY=no の記録を残さない" || bad "status 失敗時に記録が書かれました: $(cat "$STATUS_REC")"
+if [[ "$(wc -l < "$STUB_BIN/status-args" | tr -d ' ')" -eq 2 ]] \
+   && [[ "$(grep -cxF 'status --porcelain --untracked-files=normal' "$STUB_BIN/status-args")" -eq 2 ]]; then
+  ok "status 本判定と失敗診断の両方で未追跡の表示を明示する"
+else
+  bad "status の2呼出しに未追跡表示の明示がありません"
+fi
 
 # `git status` が exit 0 のまま stderr へ警告を出す環境（submodule の rmdir 警告など）で
 # DIRTY=yes に化けないこと。化けると、コミットするものが無い木に対して「コミットを

@@ -10,6 +10,9 @@
 - **人間の実績は書かない**（`effort_human_actual` という項目は作らない）。人間は実際には作業しないため実績は原理的に取れず、人間側は永久に予定（反実仮想）である
 - **乖離率はブロックに書かない**。`effort_ai_planned` と `effort_ai_actual` から導出できる値であり、下の加算ケースで静かに stale になる。乖離率は完了報告コメントと集計器がその都度計算する
 
+<!--dcbabb91fc99bb9d-->
+MCP: 取得値: MCP で同じ PR の additions / deletions / 全 commits / reviews を取得。形式: 各実値を保つ JSON と実行済み gate / review の記録。渡し先: 工数実績の観測事実と effort_evidence へ渡す（この段で merge はしない）。不足時: MCP 必須 field 不足は未確認と記し、根拠を取れるまで実績の算定を停止する。
+
 按分・加算の規則:
 
 | 状況 | 扱い |
@@ -67,6 +70,9 @@ else
   echo "effort_deploy=unavailable"
 fi
 ```
+
+<!--e1edd3655636c0f1-->
+MCP: 取得値: MCP で同じ Issue の body 全文を取得。形式: 成功時だけ本文原文を BODY_ORIG（.orig.md）へ保存。渡し先: effort-report.sh --deploy-check "$BODY_ORIG" へ本文ファイルを渡す。不足時: 任意の本文取得失敗は effort_deploy=unavailable と報告して継続し、未取得を空ファイルやブロック不在にしない。
 
 - 出力は `effort_deploy=<状態>` の 1 行で、常に exit 0。`present`（「なし（…）」の明示を含む）と `noblock`（ブロック不在。5a のスキップと同じ）は何もしない
 - **`missing`（キーが無い）・`unfilled`（空・全角空白だけ・`(未記入)` / `（未記入）`・雛形の `[ … ]` のまま）・`malformed`（未閉鎖・end だけ・2 組目のブロック・余分な end・キーの重複）・`unavailable`（本文を取得できない・読めない）なら、完了報告の工数実績セクションへ「配備の行が未記入（`effort_deploy=<状態>`）」の 1 行で指摘する**

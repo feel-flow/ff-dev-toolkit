@@ -5,6 +5,8 @@ description: マージ済み PR または指定資料から根拠付きの業務
 
 # /ace-curate — ACE サイクル実行（Playbook 増分更新）
 
+GitHub MCP の raw-file 入力は[共通契約](references/curate.md#github-file-input)に従う。
+
 ## ASDD 2.0 設定がある場合
 
 最初に[共通設定契約](../asdd-init/references/configuration.md)を読み、`scripts/asdd/config.mjs` の `loadConfig(root)` で対象プロジェクトの `.asdd/config.json` を検証する。以下の従来手順より、合意済みの文書構成・機能スイッチ・ワークフローを優先する。設定なしは従来互換、不正設定は自動処理を止めて診断する。
@@ -58,9 +60,9 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ## 前提と引数
 
-- PR経路はマージ済みの PR、資料単独経路は `--source` と `--issue` の両方。`docs/08-knowledge/PLAYBOOK.md` が存在し、ブランチは `<default-branch>` / `chore/ace-from-*` または最新origin/defaultのdetached（[手順](references/curate.md#worktreeセッションからの知見記録)）。マージ・cleanup 後に実行
-- `$ARGUMENTS` — `[PR番号] [--source <資料パスまたはURL>]... [--issue <番号>]`。無指定なら最新マージ済みPR。資料単独はsourceとissueが必須。不正な入力は変更前に拒否し、資料は明示指定範囲だけを読み、取得失敗は未確認として報告する。ドメイン知識の正本は [ACE ドメイン知識契約](../../docs-template/05-operations/deployment/ace-domain.md)
-- sourceは1要素のままACE_ARGS配列へ設定し `$ARGUMENTS` をevalしない。入力検証は同梱 `ace-curate-input.ts`（ACE_MODE / PR_NUMBER / ISSUE_NUMBER を出す。exit 2なら変更しない）:
+- PRはマージ済み、資料単独は `--source` と `--issue` の両方。`docs/08-knowledge/PLAYBOOK.md` が存在し、ブランチは `<default-branch>` / `chore/ace-from-*` または最新origin/defaultのdetached（[手順](references/curate.md#worktreeセッションからの知見記録)）。cleanup後に実行
+- `$ARGUMENTS` — `[PR番号] [--source <資料パスまたはURL>]... [--issue <番号>]`。資料単独はsourceとissue必須。不正入力は変更前に拒否。資料は指定範囲のみ、取得失敗は未確認。domain正本: [ACE ドメイン知識契約](../../docs-template/05-operations/deployment/ace-domain.md)
+- sourceはACE_ARGSの1要素にし `$ARGUMENTS` をevalしない。検証: `ace-curate-input.ts`（ACE_MODE / PR_NUMBER / ISSUE_NUMBER を出す。exit 2なら変更しない）:
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/ace-curate-input.ts" "${ACE_ARGS[@]}"
@@ -72,9 +74,15 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 資料単独は `gh issue view <Issue番号>` で存在確認し PR 取得を省く。無指定なら `gh pr list --state merged --limit 20 --json number,title,url,mergedAt --jq 'sort_by(.mergedAt) | last'`、指定があれば `gh pr view "$PR_NUMBER" --json number,state,mergedAt` で state=MERGED を確認する。以降の値を一度だけ固定する: `ACE_ID_PREFIX="ACE-${PR_NUMBER}"` / `ACE_BRANCH="chore/ace-from-pr-${PR_NUMBER}"` / `ACE_ORIGIN="PR #${PR_NUMBER}"`（資料単独は `ACE-i${ISSUE_NUMBER}` / `chore/ace-from-issue-${ISSUE_NUMBER}` / `Issue #${ISSUE_NUMBER}`）。
 
+<!--1b0bbdaa3ef899b7-->
+MCP: 取得値: MCP の Issue number/url、merged PR number/title/url/mergedAt/state。形式: repo固定JSON、mergedAt順。渡し先: PR_NUMBER/ISSUE_NUMBER と ACE_ID_PREFIX/ACE_BRANCH/ACE_ORIGIN。不足時: MCP必須不足は停止。
+
 ### 2. Phase 1: Generate（知見抽出 — サブエージェント委譲が既定）
 
 read-only の抽出用 subagent があれば [references/extract-prompt.md](references/extract-prompt.md) のテンプレートで委譲し、**知見候補の要約だけを親へ返す**（探索型は使わず、無ければ fallback へ）。応答が空・途中終了、5 項目や必須 3 欄を欠く場合は、その応答を成功として扱わず、下の fallback（メイン収集）で抽出をやり直します。domain確認の欠落・未実施もfallback対象です。domainが評価済みで必須欄が揃っている場合だけ「候補: 0 件」の明示報告は成功です。subagent が無いホストでは、従来どおりメインで対象PRの以下の情報を収集し、同じ 7 観点で知見候補を抽出します: `gh pr diff $PR_NUMBER` / `gh pr view $PR_NUMBER --json body,comments,reviews` / 関連 Issue と資料。fallbackでもdomain確認を必ず記録する。
+
+<!--680ad0bced68c632-->
+MCP: 取得値: MCP の PR diff/body/全comments/reviews と関連Issue本文。形式: diff text/JSON を scratch保存。渡し先: read-only 抽出者へ原文（write禁止、domain確認必須）。不足時: MCP必須不足は停止。
 
 ### 3. Phase 2: Reflect（評価・分類）
 
@@ -86,7 +94,7 @@ read-only の抽出用 subagent があれば [references/extract-prompt.md](refe
 
 #### 4-a. エントリIDの採番
 
-**PRスコープ式** `ACE-<PR番号>-<連番>`（資料単独は `ACE-i<Issue番号>-<連番>`）。既存 `ACE_ID_PREFIX-*` の最大連番 +1（無ければ `1`）。PLAYBOOK.md に「エントリID規則」節が無ければ同梱テンプレートから節ごとコピーする。既存の ID なし・旧連番エントリは改名しない。
+**PRスコープ式** `ACE-<PR番号>-<連番>`（資料は `ACE-i<Issue番号>-<連番>`）。[採番規則](references/curate.md#エントリidの採番)を読む。
 
 #### 4-b-0. 追記前にブロック上限の超過を予測する（必須・停止点）
 
@@ -161,6 +169,8 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 **既定（推奨）— デフォルトブランチ直マージ**: 保護されていない default branch にのみ適用。**保護判定（必須・直 push を試す前に行う）**は `probe`。既存知見ブランチは PR 経由へ。判定・commitlint・保留合流は [references/curate.md](references/curate.md)。script での追記は [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従う。
 
+MCP raw の利用時は下の各 knowledge-commit 呼出しに同じ `--github-input /absolute/index.json` を付ける（取得形と PLAN / read-back は [curate.md](references/curate.md#github-file-input)）。
+
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-shebang-cr.sh" || exit $?
 commit_type="knowledge"   # commitlint で knowledge が非許容なら chore 等へ（要約・Categories: body は不変）
@@ -185,15 +195,8 @@ esac
 
 ### 6. 結果レポートと次のステップ
 
-```
-## ACE サイクル完了レポート
-**対象PR**: #[PR番号] [タイトル] / **抽出知見数**: X 件 / **新規**: ACE-438-1 / **カウンター更新**: ACE-016 (Helpful +1) / **スキップ**: X 件
-**domain**: 評価済み（候補N件）または未実施（理由）/ source の取得済み・未確認 / 反映先未解決
-**登録・push・CI**: 別々に報告する
-```
-
-**次のステップ**: ACE 完了後、ワークフローチェーンの末尾として `/retrospective` を実行する（`/merge-cleanup` → `/ace-curate` → `/retrospective`）。プロセス/ツール/スキルのメタ知見は ACE Playbook ではなく `/retrospective` の提案経路で扱う。
+[結果レポート](references/curate.md#結果レポート)に従い、domain は評価済み（候補N件）/ 未実施（理由）、source の取得 / 未確認、登録 / push / CI を分けて報告する。ACE 完了後、ワークフローチェーンの末尾として `/retrospective` を実行する（`/merge-cleanup` → `/ace-curate` → `/retrospective`）。メタ知見は ACE Playbook ではなく `/retrospective` の提案経路で扱う。
 
 ## 注意事項
 
-追記は**末尾のみ**、既存本文の書き換えは禁止（要約・アーカイブ・統合は `/ace-refine`）。Helpful/Harmful は**インクリメントのみ**。知見が無ければ「知見なし」と報告して終了（Reuse 記録の反映は候補 0 件でも実施）。
+追記は**末尾のみ**、既存本文の書き換えは禁止（整理は `/ace-refine`）。Helpful/Harmful は**インクリメントのみ**。候補0でもReuse反映し、「知見なし」と報告。

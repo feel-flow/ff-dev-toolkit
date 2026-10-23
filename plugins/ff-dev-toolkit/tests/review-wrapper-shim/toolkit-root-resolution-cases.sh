@@ -397,8 +397,10 @@ cp "$ID_LF_TEMPLATE" "$ID_KIT/scripts/templates/codex-review.sh"
 rm "$ID_KIT/scripts/templates/codex-review.sh"
 run_print_root FF_DEV_TOOLKIT_ROOT="$ID_KIT" -- --print-toolkit-root
 if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] \
+   && [ ! -s "$WORK/argv-print.log" ] \
    && content_ids_match "$WORK/print.err" '(取得不可)' "$ID_SHIM_WANT" \
-   && grep -q '内容の一致を確認できません' "$WORK/print.err"; then
+   && grep -q 'template が存在しません' "$WORK/print.err" \
+   && ! grep -q '内容不一致\|内容が異なる場合' "$WORK/print.err"; then
   ok "内容ID: template不在は取得不可を名指しし、相手のIDで埋めずrc2"
 else
   bad "内容ID: template不在の診断が不正 (rc=$PRINT_RC)"
@@ -413,6 +415,70 @@ else
   bad "内容ID: 空実ファイルを取得不可と混同した (rc=$PRINT_RC)"
 fi
 cp "$ID_LF_TEMPLATE" "$ID_KIT/scripts/templates/codex-review.sh"
+
+# 権限で読めない template は内容差と断定しない。root は chmod の対照を分けて報告する。
+chmod 000 "$ID_KIT/scripts/templates/codex-review.sh"
+if [ -r "$ID_KIT/scripts/templates/codex-review.sh" ]; then
+  echo "  ○ skip: chmod 000 でも読める環境のためtemplate権限の診断は未実測"
+else
+  run_print_root FF_DEV_TOOLKIT_ROOT="$ID_KIT" -- --print-toolkit-root
+  if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] && [ ! -s "$WORK/argv-print.log" ] \
+     && content_ids_match "$WORK/print.err" '(取得不可)' "$ID_SHIM_WANT" \
+     && grep -q 'template を読み取れません' "$WORK/print.err" \
+     && ! grep -q '内容不一致\|内容が異なる場合' "$WORK/print.err"; then
+    ok "内容ID: template権限不足は読取り不能を名指しし、内容差と断定せずrc2"
+  else
+    bad "内容ID: template権限不足の原因が不正 (rc=$PRINT_RC)"
+  fi
+fi
+chmod 644 "$ID_KIT/scripts/templates/codex-review.sh"
+
+# 比較器と一時領域の失敗は、内容差にも一致にも倒さない。
+ID_COMPARE_BIN="$WORK/content-compare-error"
+mkdir -p "$ID_COMPARE_BIN"
+printf '%s\n' '#!/usr/bin/env bash' 'echo compare-error >> "$COMPARE_CALLS"' 'exit 2' > "$ID_COMPARE_BIN/cmp"
+chmod +x "$ID_COMPARE_BIN/cmp"
+: > "$WORK/compare-calls"
+run_print_root FF_DEV_TOOLKIT_ROOT="$ID_KIT" PATH="$ID_COMPARE_BIN:$PATH" \
+  COMPARE_CALLS="$WORK/compare-calls" -- --print-toolkit-root
+if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] && [ ! -s "$WORK/argv-print.log" ] \
+   && [ -s "$WORK/compare-calls" ] \
+   && grep -q '内容の一致を確認できません.*正規化入力の比較に失敗しました' "$WORK/print.err" \
+   && ! grep -q '内容不一致\|内容が異なる場合' "$WORK/print.err"; then
+  ok "内容比較: cmpの実行失敗は比較不能としてstdout空/rc2（不一致と断定しない）"
+else
+  bad "内容比較: cmp失敗を誤分類した、またはfixture未到達 (rc=$PRINT_RC)"
+fi
+run_print_root FF_DEV_TOOLKIT_ROOT="$TOOLKIT" TMPDIR="$WORK/absent-temp-parent" -- --print-toolkit-root
+if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] && [ ! -s "$WORK/argv-print.log" ] \
+   && grep -q '内容の一致を確認できません.*比較用の一時ディレクトリを作成できません' "$WORK/print.err" \
+   && ! grep -q '内容不一致\|内容が異なる場合' "$WORK/print.err"; then
+  ok "内容比較: 一時領域を作れない回は同内容でも比較不能としてstdout空/rc2"
+else
+  bad "内容比較: 一時領域失敗を一致/不一致へ倒した (rc=$PRINT_RC)"
+fi
+
+# git が無くても cmp で確定した不一致は変えない。解決に必要なコマンドだけの PATH。
+ID_NO_GIT="$WORK/content-id-no-git"
+mkdir -p "$ID_NO_GIT"
+for id_name in bash basename dirname sed grep cmp mktemp rm cat; do
+  id_command="$(command -v "$id_name")"
+  ln -s "$id_command" "$ID_NO_GIT/$id_name"
+done
+if env PATH="$ID_NO_GIT" bash -c 'command -v git' >/dev/null 2>&1; then
+  bad "内容ID: git不在fixtureの隔離が失敗した"
+else
+  run_print_root FF_DEV_TOOLKIT_ROOT="$ID_KIT" PATH="$ID_NO_GIT" -- --print-toolkit-root
+  if [ "$PRINT_RC" -eq 2 ] && [ ! -s "$WORK/print.out" ] && [ ! -s "$WORK/argv-print.log" ] \
+     && content_ids_match "$WORK/print.err" '(取得不可)' '(取得不可)' \
+     && grep -q '配置済み shim が内容不一致です' "$WORK/print.err" \
+     && grep -q '内容 ID を取得できません' "$WORK/print.err" \
+     && ! grep -q '内容の一致を確認できません' "$WORK/print.err"; then
+    ok "内容ID: git不在でも比較で確定した内容不一致を保持し、ID取得不可は補足にする"
+  else
+    bad "内容ID: git不在が確定した不一致の原因を変えた (rc=$PRINT_RC)"
+  fi
+fi
 
 # 正常一致ではhashを呼ばない。故障は対象プリミティブだけへ注入し、他のgit/sedは実体へ転送。
 ID_REAL_GIT="$(command -v git)"
@@ -470,10 +536,15 @@ ID_SED
           ok "内容ID: git成功時のstderrをIDへ混ぜない（呼出し2件）"
         else bad "内容ID: warning対照へ到達していない"; fi ;;
       read)
-        if [ -s "$ID_BIN/read-calls" ] && grep -q '内容の一致を確認できません' "$WORK/print.err"; then
+        if [ -s "$ID_BIN/read-calls" ] && grep -q '内容の一致を確認できません.*正規化入力を読み取れません' "$WORK/print.err" \
+           && ! grep -q '内容不一致\|内容が異なる場合' "$WORK/print.err"; then
           ok "内容ID: 読取り失敗後の空blob出力を採用せず、失敗側だけ取得不可（呼出し2件）"
         else bad "内容ID: 読取り失敗対照へ到達していない"; fi ;;
-      *) ok "内容ID: hash $id_mode 出力は両側とも取得不可（呼出し2件）" ;;
+      *)
+        if grep -q '配置済み shim が内容不一致です' "$WORK/print.err" \
+           && grep -q '内容 ID を取得できません' "$WORK/print.err"; then
+          ok "内容ID: hash $id_mode 出力は両側とも取得不可でも内容不一致を保持（呼出し2件）"
+        else bad "内容ID: hash $id_mode が確定した不一致を変えた"; fi ;;
     esac
   else
     bad "内容ID: hash/読取り $id_mode の失敗をIDにした、または対照未到達 (rc=$PRINT_RC)"

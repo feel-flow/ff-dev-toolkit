@@ -81,6 +81,8 @@ fi
 
 ## 保留の合流と送信経路
 
+MCP raw を使う回は add / commit / probe / push / pr の各 `knowledge-commit` に同じ `--github-input /absolute/index.json` を明示する。subject Issue / protection / pushed-SHA CI は任意不足なら fallback / unknown / unavailable を維持する。PR は PLAN の head/base/title/body と push 済み SHA を既存 create_pull_request に渡し、fresh raw が一致するまで rc2、未作成を完了としない。
+
 モード判定直後に `knowledge-commit status` を読み、保留がある場合は、現在のブランチ名を取得し、取得成功時の空名は `(detached)` として `KNOWLEDGE_PENDING_BRANCH` と照合する。不一致や取得失敗は停止し、**保留を作った同じブランチを維持し、default / detached へ切り替えない**。既存の `chore/ace-from-*` / `chore/retro-from-*` は知見ブランチとして扱う。他の非 default ブランチで保留があれば、切り替えず保留の復帰手順で解決する。保留が無い非 default は、記録前に default へ戻るか [worktree セッションの準備](../../ace-curate/references/curate.md#worktreeセッションからの知見記録)を通す。他 worktree の default を切り替えない。
 
 - 観測を書く回は、同じブランチで照合フェンスを通し、OBS を `add` してから共通の `commit` で ACE と畳む。既存知見ブランチの保留を先に commit して別コミットに分けない。

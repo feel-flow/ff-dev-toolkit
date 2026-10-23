@@ -149,6 +149,9 @@
 # 空振り検出: release の環境lib不在/空、Python不在/版不明/能力不足/空成功、型検査依存不在/npm不在/赤/空成功、loader不備/空成功はprepare・suite前に停止する（2026-10-22実測）。
 # 変異検出: 環境呼出/Python/media/loaderの各probe除去、loader skip無条件許可、loader context照合除去に加え、実probeのPython本体/manifest引数/loader import、npmのNode PATH、loader条件診断の破壊を既存ownerの同じfixtureへ適用し全て赤転（適用11/11、SURVIVED 0）。実Python/Nodeを含む正常対照35pass/0fail、mutation-harness rc=0（2026-10-22）。
 
+# 変異検出: run_orch の FF_RUN_ALL_FULL 分離だけを外すと、外側は未設定でも neutral ケースの明示 FULL=1 が再検査へ漏れ、recheck 1 で赤（2026-10-23 実測、release-runtime 149 pass / 1 fail、exit 1）。健全性悪化時の全件実行は正常のまま。
+# 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT の明示不在と同名空ファイルはどちらも exit 1（2026-10-23 実測）。空ファイルの全件実行コマンドは 0 件一致となり赤で、検査対象の欠落を skip・緑へ倒さない。
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

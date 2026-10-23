@@ -98,8 +98,22 @@ fi
 # ---- Step 2: 対象 PR の情報取得（MERGED でなければここで中断） -----------------
 
 GH_OUT=""
-GH_OUT="$(gh pr view "$PR_NUM" --json headRefName,headRefOid,state,baseRefName,title,isCrossRepository 2>&1)" \
-  || die "gh pr view が失敗しました: ${GH_OUT}（ネットワーク / 認証 / gh CLI 設定を確認してください）"
+if [ -n "$github_input" ]; then
+  jq -n --arg repository "$github_repository" --argjson pr "$PR_NUM" '{repository:$repository,pr:$pr}' >"$WORK_TMP/github-scope.json" || exit 2
+  github_file_read "$github_input" cleanup.pr "$WORK_TMP/github-scope.json" cleanup-pr "$WORK_TMP/github-position.json" >"$WORK_TMP/github-pr.json" || exit 2
+  for github_field in state headRefName baseRefName; do
+    if ! jq -e ".$github_field | type == \"string\" and length > 0" "$WORK_TMP/github-pr.json" >/dev/null; then
+      _github_input_error cleanup.pr "required field: $github_field"; exit 2
+    fi
+  done
+  if ! jq -e '(.isCrossRepository | type == "boolean") and (.title | type == "string")' "$WORK_TMP/github-pr.json" >/dev/null; then
+    _github_input_error cleanup.pr 'required field: isCrossRepository/title'; exit 2
+  fi
+  GH_OUT="$(cat "$WORK_TMP/github-pr.json")"
+else
+  GH_OUT="$(gh pr view "$PR_NUM" --json headRefName,headRefOid,state,baseRefName,title,isCrossRepository 2>&1)" \
+    || die "gh pr view が失敗しました: ${GH_OUT}（ネットワーク / 認証 / gh CLI 設定を確認してください）"
+fi
 
 PR_STATE="$(printf '%s' "$GH_OUT" | jq -r '.state')"
 PR_HEAD="$(printf '%s' "$GH_OUT" | jq -r '.headRefName')"

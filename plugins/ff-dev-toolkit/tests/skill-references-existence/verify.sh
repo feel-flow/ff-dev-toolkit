@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 #
 # SKILL.md が参照する相対パス（references）の実在検査（Issue #889 候補1）。
+# GitHub 操作の隣接 MCP 案内は独立した Python pass で検査する（Issue `#2058`）。
+# 空振り検出: 独立 pass の自己検証40件（reference-only・consumer取り違え/発火条件消失・移動後リンク/配布境界逸脱の赤と正常なリンク/例示も含む）で、対象不在/不読/空/0一致、案内の別step移動、同名操作の引数変更、項目欠落、MCP/JSONだけの一般文、参照stub、契約節の実引数欠落、未知操作、未閉fenceを正しいfile/operation/reasonの赤として実測。CRLF/tilde/長fenceと禁止例の負荷担体は緑かつ実在を確認する。
 #
 # スキルは progressive disclosure のために本文から `references/xxx.md` や兄弟スキルの
 # `../<skill>/references/xxx.md` を相対パスで参照する。この参照はプラグイン配布後も
@@ -41,7 +43,7 @@
 # 既知の限界（誤検知/見逃しの倒れる方向を明記する。変更時はこの一覧を更新すること）:
 #   - バッククォートにもリンクにも入っていない素のパス記述は非検出（見逃し方向）
 #   - `references/` 起点でない同一スキル内参照（`assets/x.md` 等）は対象外（見逃し方向）
-#   - 走査集合は plugins/*/skills/*/SKILL.md の 1 グロブのみ。skill-bash-blocks が見る
+#   - 従来 path scanner の走査集合は plugins/*/skills/*/SKILL.md の 1 グロブのみ。skill-bash-blocks が見る
 #     docs-template/.github/skills/*/SKILL.md やリポジトリローカルの .claude/skills は
 #     対象外 — それらは plugin_root の導出（skill_dir/../..）が成立せず、単純なグロブ
 #     追加は境界検査の誤検知になる。拡張は plugin_root 導出の再設計と併せて行うこと
@@ -52,11 +54,12 @@
 #   - 最終要素自体がプラグイン外を指す symlink であるファイル参照は境界検査を通過
 #     しうる（ファイルは親ディレクトリのみ物理解決するため。skills 配下に symlink は
 #     現在 0 件で、リポジトリ内コンテンツによる自己参照のみを扱う本検査の脅威モデル外）
-#   - 走査対象は SKILL.md のみで、references/*.md 自身が書く相対参照（2 hop 目）は
-#     対象外（見逃し方向）。live の references/*.md には `references/…` 起点の表記が
-#     実在し（genai-consultant の 5 トークン）、ファイル相対では解決しない — 2 hop 目
-#     の走査拡張は参照起点の規約（ファイル相対かスキルルート相対か）の決定を伴う
-#     follow-up（Issue #889 判断記録の候補7）
+#   - 従来 path scanner の 2 hop 目は対象外（他 plugin の参照起点は未統一）。
+#     独立 GitHub pass は ff-dev-toolkit の選定済み references/**/*.md に限り、
+#     フェンス外の具体的な相対 Markdown リンクをファイル相対で解決する。
+#     物理解決した配布ルート内の実在を要求し、境界外は ESCAPES_PLUGIN_ROOT。
+#     fenced/inline-code/parameterized の例示は除外する。この限定範囲を
+#     他 plugin の全2 hop規約へ一般化しない（Issue `#889` 候補7は別範囲）。
 #
 # fail-closed:
 #   - 抽出器・解決器の検出力は fixtures/ の violation / clean / variants / tree fixture
@@ -64,9 +67,10 @@
 #   - SKILL.md が 0 件、または横断抽出トークンが 0 件なら「参照ゼロ」ではなく
 #     「走査が成立していない」として赤にする（実測: 全プラグインで 150+ トークン）
 #
-# 一時ディレクトリを使わない read-only の静的検査（依存: awk・grep・sed・dirname と
-# bash 組み込みのみ。ヒアストリング/ヒアドキュメントも使わない — bash はそれらを
-# 一時ファイルで実装するため、書き込み不可の環境で suite ごと落ちる）。
+# 既存 path scanner は一時ディレクトリを使わない静的読取り（依存: awk・grep・sed・
+# dirname と bash 組み込み）。独立 adjacency pass は Python 3 も必要とし、自己検証が
+# TMPDIR の専用領域へ文書コピーを作り変異させて自動削除する。source/Git/GitHub は
+# 変更しない。PYTHONDONTWRITEBYTECODE=1 で source 配下へ cache を作らない。
 #
 # run-all-required: yes — 静的検査で skip 経路を持たないが、references 参照の実在は他のどの suite も見ていない。将来 skip 経路が生えたとき黙って消えないよう必須名簿へ載せる
 
@@ -267,6 +271,18 @@ if [ "$FAIL" -gt 0 ]; then
 fi
 
 # ---- 全 SKILL.md 横断検査 ------------------------------------------------------
+echo "== GitHub 操作の隣接 MCP 案内（既存 path scanner と独立） =="
+command -v python3 >/dev/null 2>&1 || { echo "✗ Python 3 が必要です" >&2; exit 1; }
+for resource in github_routes.py github_routes_selftest.py fixtures/github-route.md; do
+  [ -s "$SCRIPT_DIR/$resource" ] || { echo "✗ adjacency resource がありません: $resource" >&2; exit 1; }
+done
+PYTHONDONTWRITEBYTECODE=1 python3 "$SCRIPT_DIR/github_routes_selftest.py" "$PLUGIN_ROOT" || exit 1
+if PYTHONDONTWRITEBYTECODE=1 python3 "$SCRIPT_DIR/github_routes.py" "$PLUGIN_ROOT"; then
+  ok "実操作と理由付き分類の隣接 MCP 案内が成立している"
+else
+  bad "GitHub 操作の隣接 MCP 案内が欠落・不整合"
+fi
+
 shopt -s nullglob
 SKILL_FILES=("$PLUGINS_DIR"/*/skills/*/SKILL.md)
 shopt -u nullglob

@@ -133,6 +133,9 @@ expected_repo="OWNER/REPO"
 gh issue list --repo "$expected_repo" --state open --label bundle --limit 200 --json number,title,labels,url   # --limit は必須（既定 30 件で打ち切られる）
 ```
 
+<!--ba4cb66c64f2121b-->
+MCP: 取得値: MCP で同じ repo の state / label / 検索語に合う number / title / body / labels / state / url を取得。形式: 明示した上限 / 全 page の JSON、候補本文は全文。渡し先: この段の候補選択 / 見積もり根拠へ渡す。不足時: 重複探索は必須不足 / 上限到達で停止。見積もり用の任意履歴は取得不能と記録して継続。
+
 次に主要語で検索する:
 
 ```bash
@@ -147,11 +150,20 @@ gh issue list \
   --json number,title,url
 ```
 
+<!--fddc38a0aba0f52d-->
+MCP: 取得値: MCP で同じ repo の state / label / 検索語に合う number / title / body / labels / state / url を取得。形式: 明示した上限 / 全 page の JSON、候補本文は全文。渡し先: この段の候補選択 / 見積もり根拠へ渡す。不足時: 重複探索は必須不足 / 上限到達で停止。見積もり用の任意履歴は取得不能と記録して継続。
+
 `expected_repo` は現在の PR / Issue URL から確定し、ユーザーが対象にした OWNER/REPO と一致させる（GH_REPO や cwd の暗黙値に任せない）。検索語・Issue 本文・レビュー出力は信頼しない入力として扱い、シェルコマンド文字列へ連結せず、上記のように引用した argv 値として渡す。以後のすべての `gh issue` 操作にも `--repo "$expected_repo"` を付ける。
+
+<!--552aef919b496cd6-->
+MCP: 取得値: MCP で固定 repo の対象 Issue / PR の全文 body / state / url を取得。形式: 対象を照合した JSON と本文原文。渡し先: この段の判断へ渡し、実 write は該当する既存 tool に同じ対象と原文を渡して fresh 後読する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 この検索は **fail-closed** で扱う。終了コードが非 0、JSON を解釈できない、認証・通信・rate limit エラーのいずれかなら、候補なしとみなさず **Issue の作成・コメント・本文更新を停止**して原因と再試行方法を報告する。終了コード 0 かつ結果が空配列の場合だけ「候補なし」と判定する。
 
 候補があれば `gh issue view {number} --repo "$expected_repo" --json number,title,body,state,url,updatedAt` で目的・受け入れ条件・進行状況を読む。本文は全文で読み、切った出力を類似度の判定根拠にしない（AC・DoD は本文の末尾にある）。候補の詳細取得が 1 件でも失敗した場合も統合・新規作成を確定せず停止する。取得に成功した候補を次の順で判断する:
+
+<!--cf225fea3c77cb20-->
+MCP: 取得値: MCP で同じ Issue の全文 number / title / body / state / url / updated_at を取得。形式: JSON と原本 body ファイル。渡し先: この段の統合先判断 / 転記後の survivor 実測へ渡す。取得失敗は新規なしと扱わない。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 | 類似度 | 対応 |
 | ------ | ---- |

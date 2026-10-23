@@ -26,6 +26,8 @@
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/effort-report.sh" --repo "<owner/repo>"
 ```
 
+MCP は対象 repo の state / limit に合う全 Issue の number / body を `effort.issues` の collect raw 配列として index に保存し、上の `effort-report.sh --repo OWNER/REPO --github-input /absolute/index.json` へ渡す。effort の file は repo 明示必須で、既存 `--input` と併用しない。必須不足は rc2、取得失敗を空配列へ補わない。doctor / weekly の repo 省略時 origin とは区別する。
+
 出力の読み方と、そこから起きる行動:
 
 | 出力 | 行動 |

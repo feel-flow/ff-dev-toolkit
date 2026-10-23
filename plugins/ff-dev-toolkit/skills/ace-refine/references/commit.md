@@ -53,6 +53,9 @@ git push -u origin chore/ace-refine-<YYYYMMDD>
 gh pr create --base <default-branch> --title "knowledge: ace-refine <YYYY-MM-DD> <要約>" --body "..."
 ```
 
+<!--3b47ce85f7b006fc-->
+MCP: 取得値: MCP で対象 repo と作成先 default branch、push 済み head SHA を確認。形式: 同じ head / base / title / body 原文の構造化引数。渡し先: 既存 create_pull_request へ渡し、fresh PR の number / url / state / head SHA と本文一致を確認する。不足時: MCP 必須能力・値不足は操作名と項目を示して停止し、作成済みと報告しない。
+
 ## 3. 例外 — デフォルトブランチ直 push
 
 直 push でも、commit の前に上の claim block と同じ claim 生成を実行し、変更した文書（PLAYBOOK / PATTERNS）の claim を stage して `check-version-claims.sh` を通す。claim が無い・stale のままなら commit せず停止する。

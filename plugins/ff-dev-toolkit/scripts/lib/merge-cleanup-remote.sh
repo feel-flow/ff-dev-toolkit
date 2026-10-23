@@ -151,8 +151,31 @@ OPEN_LIST="$WORK_TMP/open.list"       # "name"
 # 前後で進捗を出す。上限は FF_MERGE_CLEANUP_MERGED_PR_LIMIT（Step 0.7、既定 1000）。
 GH_MERGED_JSON=""
 GH_OPEN_JSON=""
+mc_file_guard_list() { # operation/state/limit -> canonical array; unavailable means preserve assets
+  jq -n --arg repository "$github_repository" --arg state "$2" --argjson limit "$3" '{repository:$repository,state:$state,limit:$limit}' >"$WORK_TMP/github-scope.json" || return 2
+  github_file_read "$github_input" "$1" "$WORK_TMP/github-scope.json" cleanup-guards "$WORK_TMP/github-position.json" >"$WORK_TMP/github-list.json" || return 2
+  if [ "$GITHUB_INPUT_LAST" = false ]; then
+    _github_input_error "$1" 'guard list incomplete: last=false'; return 2
+  fi
+  if [ -n "$GITHUB_INPUT_HTTP_STATUS" ] && [ "$GITHUB_INPUT_HTTP_STATUS" != 200 ]; then
+    _github_input_error "$1" 'guard list unavailable: non-200 HTTP status'; return 2
+  fi
+  if ! jq -e 'type == "array" and all(.[]; .headRefName | type == "string" and length > 0)' "$WORK_TMP/github-list.json" >/dev/null; then
+    _github_input_error "$1" 'required guard field: [].headRefName'; return 2
+  fi
+  if [ "$2" = merged ] && ! jq -e 'all(.[]; (.isCrossRepository | type == "boolean") and (.baseRefName | type == "string") and has("headRefOid"))' "$WORK_TMP/github-list.json" >/dev/null; then
+    _github_input_error "$1" 'required guard field: [].isCrossRepository/baseRefName/headRefOid'; return 2
+  fi
+  cat "$WORK_TMP/github-list.json"
+}
 echo "⏳ ガード情報を取得しています: マージ済み PR 一覧（照合上限: ${MERGED_PR_LIMIT} 件）..."
-if ! GH_MERGED_JSON="$(gh pr list --state merged --limit "$MERGED_PR_LIMIT" --json headRefName,headRefOid,isCrossRepository,baseRefName 2>&1)"; then
+mc_merged_rc=0
+if [ -n "$github_input" ]; then
+  GH_MERGED_JSON="$(mc_file_guard_list cleanup.merged-list merged "$MERGED_PR_LIMIT" 2>&1)" || mc_merged_rc=$?
+else
+  GH_MERGED_JSON="$(gh pr list --state merged --limit "$MERGED_PR_LIMIT" --json headRefName,headRefOid,isCrossRepository,baseRefName 2>&1)" || mc_merged_rc=$?
+fi
+if [ "$mc_merged_rc" -ne 0 ]; then
   echo "⚠️ マージ済み PR 一覧の取得に失敗しました（fail-closed で縮退）: $GH_MERGED_JSON"
   GUARDS_OK=0
 else
@@ -162,7 +185,13 @@ else
     echo "ℹ️ マージ済み PR の照合は上限 ${MERGED_PR_LIMIT} 件で打ち切っています（これより古い MERGED PR は照合対象外。上限は FF_MERGE_CLEANUP_MERGED_PR_LIMIT で変更できます）"
   fi
   echo "⏳ ガード情報を取得しています: open PR 一覧..."
-  if ! GH_OPEN_JSON="$(gh pr list --state open --limit 1000 --json headRefName 2>&1)"; then
+  mc_open_rc=0
+  if [ -n "$github_input" ]; then
+    GH_OPEN_JSON="$(mc_file_guard_list cleanup.open-list open 1000 2>&1)" || mc_open_rc=$?
+  else
+    GH_OPEN_JSON="$(gh pr list --state open --limit 1000 --json headRefName 2>&1)" || mc_open_rc=$?
+  fi
+  if [ "$mc_open_rc" -ne 0 ]; then
     echo "⚠️ open PR 一覧の取得に失敗しました（fail-closed で縮退）: $GH_OPEN_JSON"
     GUARDS_OK=0
   else
