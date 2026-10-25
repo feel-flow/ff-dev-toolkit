@@ -34,12 +34,12 @@
 # 原理的な限界で、名簿へ足すのは人側の受け持ち。その代わり、名簿に載っている名前が
 # 実体から消える方向（改名・削除）は検査が赤にする。
 #
-# 一時領域も git もネットワークも要らない静的検査で、skip 経路を持たない。
+# 静的な参照検査と、Python3/一時領域で文書内の照合例を実行する検査。ネットワークと実CLIは使わず、skip 経路を持たない。
 #
 # 使い方: bash plugins/ff-dev-toolkit/tests/markdown-patch-discipline-refs/verify.sh
 #
-# run-all-required: yes — 正本も名簿のスキルもプラグイン配布物の一部で、配布先 checkout でも実在する。静的検査で skip 経路を持たないため明示宣言で必須名簿へ載せる
-# 空振り検出: 名簿を空にする / 名簿の名前を実体に無いものへ変える / 正本文書を消す のいずれかを与えると (2) (3) (1) がそれぞれ赤になる。
+# run-all-required: yes — 正本・名簿のスキル・保存バイト検査はプラグイン配布物の一部で、配布先 checkout でも実在する。skip 経路を持たないため明示宣言で必須名簿へ載せる
+# 空振り検出: 名簿空/実体不在/正本不在は (2)/(3)/(1) が赤。追加節の欠落/空、規定・参照欠落、照合無効化、値ファイル経路の欠落・改行正規化など17変異を各rc=1で検出し、無害対照1件はrc=0を実測。値ファイル不在・空/0件/複数アンカーは文書内の例を実行して対象不変で停止することを確認。
 
 set -euo pipefail
 
@@ -63,6 +63,7 @@ REQUIRED_SECTIONS=(
   '## 1. heredoc ではなく coding ヘッダー付きの script file にする'
   '## 2. 値はシェル変数ではなく `sys.argv` で渡す'
   '## 3. パッチと後続コマンドを同じ実行にまとめない'
+  '## リテラル書き込みの既定経路'
 )
 
 # Markdown 本文へ文字列パッチを当てうるスキル。
@@ -73,6 +74,8 @@ REQUIRED_SKILLS=(
   refine-issue
   retrospective
   out-of-scope-issue
+  multi-implement
+  spec-driven
 )
 
 # 規律本文がスキル側へ書き戻された兆候。正本の python 例が持つ coding ヘッダーそのもので、
@@ -162,6 +165,42 @@ for skill_md in "$PLUGIN_ROOT"/skills/*/SKILL.md; do
   esac
 done
 [[ "$dup_found" -eq 0 ]] && ok "どのスキルも規律本文の署名（${DUP_SIGNATURE}）を持たない"
+
+echo "== (7) 生成scriptと実行前照合の契約 =="
+# shellcheck source=../lib/section-scope.sh
+. "$PLUGIN_ROOT/tests/lib/section-scope.sh"
+for needle in '生成 script 自身の作成・再編集も同じ経路' '期待値を生成物自身から作らない' '実行前に保存バイトを独立の期待値と照合'; do
+  if section_scope_contains "$SSOT" '## リテラル書き込みの既定経路' "$needle" >/dev/null; then
+    ok "リテラル節の本体に規定あり: $needle"
+  else
+    bad "リテラル節の本体に規定がありません: $needle"
+  fi
+done
+if ff_docs_mask_spans "$PLUGIN_ROOT/docs-template/05-operations/deployment/git-workflow.md" | grep -F '(./markdown-patch-discipline.md#リテラル書き込みの既定経路)' >/dev/null; then
+  ok "git-workflowの実装入口が正本節を参照"
+else
+  bad "git-workflowの実装入口から正本節へ到達できません"
+fi
+if section_scope_contains "$SSOT" '## 2. 値はシェル変数ではなく `sys.argv` で渡す' 'escape を含むアンカー・置換値はコマンド引数へ直接埋め込まない' >/dev/null; then
+  ok "escapeを含む値はファイルで渡す規定がある"
+else
+  bad "escapeを含む値を引数へ直接渡さない規定がありません"
+fi
+if section_scope_contains "$SSOT" '## 5. 適用後は目視ではなく述語で突き合わせる' '最終ファイルの対象リテラルが独立の期待バイト・出現数と一致' >/dev/null; then
+  ok "最終ファイルも独立の期待値で照合する"
+else
+  bad "scriptだけでなく最終ファイルも照合する規定がありません"
+fi
+BYTE_CASES="$SCRIPT_DIR/literal-cases.py"
+if [[ ! -r "$BYTE_CASES" || ! -s "$BYTE_CASES" ]]; then
+  bad "保存バイトの実行検査が無いか空、または読めません"
+elif ! command -v python3 >/dev/null 2>&1; then
+  bad "保存バイトの実行検査に必要なpython3がありません"
+elif python3 -I -X utf8 "$BYTE_CASES" "$SSOT"; then
+  ok "文書内の照合例が正常値/誤変換/対象不在を区別する"
+else
+  bad "文書内の照合例または保存バイトの検査が失敗"
+fi
 
 echo
 if [[ "$FAIL" -eq 0 ]]; then

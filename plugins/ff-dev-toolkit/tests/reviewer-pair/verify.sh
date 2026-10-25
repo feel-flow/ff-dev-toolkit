@@ -676,7 +676,8 @@ run "$TMP/restore.log" -- --set-reviewers main=claude-code,sub=codex-cli
 
 echo ""
 echo "-- --cli との相互作用 --"
-run "$TMP/clifilter.log" -- --cli grok-cli --dry-run
+# headless Grok で成立する観点を選び、ここでは CLI フィルタの効き方を測る。
+run "$TMP/clifilter.log" -- --cli grok-cli --perspective error-handler-hunt --dry-run
 if [ "$RUN_RC" -eq 0 ] \
   && grep -q 'using the distributed plan' "$TMP/clifilter.log" \
   && grep -q 'Mode: distributed' "$TMP/clifilter.log"; then

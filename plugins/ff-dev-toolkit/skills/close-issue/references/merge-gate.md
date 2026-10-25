@@ -59,7 +59,7 @@ MCP: 取得値: MCP のthread node ID / 判定 body、または実取得した�
 
 返信で「この PR で直す」を選んだ回は fix commit を積むので、手順 4 と同じく手順 1 から回し直す（鮮度記録も動く）。
 
-**時点検査の限界（設計上の受容）**: script が読むのは precheck 実行時点のスレッドで、その後に届いた bot のレビューは次の precheck まで見えない。レビューの「完了」を告げる汎用の信号は無く（bot は PR 作成・push の数分〜十数分後に非同期で付ける）、待つ機構は置かない。`/close-issue` は checks の待機の後 = マージ直前に 1 回だけ読む位置に固定し、precheck から merge までの間を空けない（fix commit を積んだら手順 1 へ戻るので、そのたびに読み直す）。
+**時点検査の限界（設計上の受容）**: script が読むのは precheck 実行時点のスレッドで、その後に届いた bot のレビューは次の precheck まで見えない。レビューの「完了」を告げる汎用の信号は無く（bot は PR 作成・push の数分〜十数分後に非同期で付ける）、precheck自体には待つ機構を置かない。fix前の[自動レビューbotの完了確認](../../../docs-template/05-operations/deployment/git-workflow.md#自動レビューbotの完了確認)は別の早期集約手順で、この検査を代替しない。`/close-issue` は checks の待機の後 = マージ直前に 1 回だけ読む位置に固定し、precheck から merge までの間を空けない（fix commit を積んだら手順 1 へ戻るので、そのたびに読み直す）。
 
 #### CI checks の有無による分岐（待つか、ローカルゲートを根拠にするか）
 

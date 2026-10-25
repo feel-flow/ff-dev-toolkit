@@ -20,7 +20,7 @@
 #                            分散モードのフィルタなので、外すと review 既定の pair モードへ
 #                            戻る。主 reviewer が設定済みならその CLI が観点すべてを担当し、
 #                            未設定なら委譲先が分散プランへ縮退する。どちらも残りの CLI が
-#                            観点を引き受けたプランが rc=0 で出る
+#                            観点を引き受けられる有効なプランが rc=0 で出る
 #   ・codex 不在 + 設定済みの主 reviewer が不在 → pair の主が居ないので rc=1
 #                            （`main reviewer '<名前>' is not installed.`）。主 reviewer に
 #                            既定値は無いので、この構成は reviewers 設定を fixture に**置いて**
@@ -28,7 +28,7 @@
 #                            向けるため、ホストの ~/.config が漏れて成立することは無い）
 #   ・codex 不在 + 主 reviewer 未設定（grok だけ） → `No reviewers configured — falling
 #                            back to the distributed plan.` で分散へ縮退し、grok が観点を
-#                            引き受けたプランが rc=0 で出る（Issue 1599 で CI が実測した形）
+#                            引き受ける。headless security は代替不在でrc=1、明示除外ならrc=0
 #   ・AI CLI が 1 本も無い → --cli を外しても委譲先の CLI 検出が
 #                            `ERROR: No AI CLIs are installed` で止まる（rc=1・プランなし。
 #                            新規セットアップ直後・CI の最小イメージで踏む）
@@ -44,6 +44,8 @@ chmod +x "$REAL_ORCH_TOOLKIT/scripts/multi-agent.sh"
 # 出ないので、構成ファイルも一緒に置く。
 mkdir -p "$REAL_ORCH_TOOLKIT/scripts/lib"
 cp "$PLUGIN_ROOT"/scripts/lib/multi-agent-*.sh "$REAL_ORCH_TOOLKIT/scripts/lib/"
+# 明示的な観点除外の検証は実際の perspective ファイル集合を参照する。
+cp -R "$PLUGIN_ROOT/scripts/perspectives" "$REAL_ORCH_TOOLKIT/scripts/"
 # 主 reviewer の 3 つ目の出所（プロジェクト設定 <cwd の git root>/.claude/agent-config.yaml
 # の review.main）を切り離す。run_shim の既定 cwd はこのリポジトリの root なので、ここに
 # review.main 付きの agent-config.yaml が置かれた日に「未設定」fixture が pair へ倒れて
@@ -161,32 +163,37 @@ else
   sed 's/^/    | /' "$WORK/out.log" >&2
 fi
 
-# codex 不在 + 主 reviewer **未設定** + grok だけの経路。主 reviewer に既定値は無いので、
-# 委譲先は「No reviewers configured — falling back to the distributed plan.」で分散へ縮退し、
-# grok が観点を引き受けたプランを rc=0 で出す。設定の無い CI が踏む形そのもので、シムの
-# 警告文はこの帰結（rc=0・pair ではないプラン）も案内していなければならない。
-# 上のケースと PATH は同じで、違いは reviewers 設定の有無だけ — 2 件の帰結が割れることが
-# 「主 reviewer に既定値は無い」の実測になる。
-# 委譲先の通知（`ℹ️  No reviewers configured` / `ERROR: main reviewer`）の針は**行頭
-# アンカー付き**で持つ。シムの警告文が「No reviewers configured — …」「main reviewer
-# '<名前>' is not installed.」を引用しているため、無アンカーの `No reviewers configured` /
-# `is not installed` は警告文自身に一致し、設定済み / 未設定の両ケースの否定針が赤になる
-# （実測）。ERROR: 側は今の引用形なら `ERROR: main reviewer` でも誤一致しないが、案内文が
-# 変わっても崩れないよう行頭で揃える。
+# 主未設定・Grokだけの既定プランは headless security の代替不在で停止する。
+# 観点を明示除外した回は分散プランを出し、主不在・空プランと区別する。
 RUN_SHIM_CWD="$REAL_ORCH_REPO" RUN_SHIM_TOOLKIT="$REAL_ORCH_TOOLKIT" \
   run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent "PATH=$MAIN_ABSENT_ONLY:/usr/bin:/bin" \
   --base develop --dry-run
+unset RUN_SHIM_TOOLKIT
+if [ "$RUN_RC" -eq 1 ] \
+  && grep -q '^ℹ️  No reviewers configured — falling back to the distributed plan' "$WORK/err.log" \
+  && grep -q '^ERROR: security-analysis is unsupported on headless grok-cli' "$WORK/err.log" \
+  && grep -q -- '--exclude-reviewers security-analysis' "$WORK/err.log" \
+  && ! grep -q '^ERROR: main reviewer' "$WORK/err.log" \
+  && ! grep -q '^🏁 Dry run complete' "$WORK/out.log"; then
+  ok "主未設定・Grokだけの既定dry-runは headless security を名指ししてrc=1"
+else
+  bad "Grokだけの既定dry-runが制約を無視した、または理由を誤診した (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/out.log" >&2
+fi
+RUN_SHIM_CWD="$REAL_ORCH_REPO" RUN_SHIM_TOOLKIT="$REAL_ORCH_TOOLKIT" \
+  run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent "PATH=$MAIN_ABSENT_ONLY:/usr/bin:/bin" \
+  --base develop --dry-run --exclude-reviewers security-analysis
 unset RUN_SHIM_TOOLKIT
 if [ "$RUN_RC" -eq 0 ] \
   && grep -q '主 reviewer が未設定なら、委譲先は「No reviewers configured — falling back to the distributed plan.」で分散プランへ縮退し' "$WORK/err.log" \
   && grep -q '^ℹ️  No reviewers configured — falling back to the distributed plan' "$WORK/err.log" \
   && grep -q '^   Mode: distributed' "$WORK/err.log" \
-  && ! grep -q "^ERROR: main reviewer" "$WORK/err.log" \
+  && ! grep -q '^ERROR: main reviewer' "$WORK/err.log" \
   && grep -q '^🏁 Dry run complete' "$WORK/out.log" \
   && grep -qE '^   grok-cli \[' "$WORK/out.log"; then
-  ok "codex 不在 + 主 reviewer 未設定（grok だけ）+ --dry-run（実オーケストレータ）: 分散へ縮退して rc=0 でプランが出て、シムの警告文がその帰結を案内している"
+  ok "主未設定・Grokだけでも security明示除外なら分散プランをrc=0で確認できる"
 else
-  bad "codex 不在 + 主 reviewer 未設定（grok だけ）+ --dry-run（実オーケストレータ）: rc / 警告文 / 委譲先の縮退通知のいずれかが実態と食い違う (rc=$RUN_RC)"
+  bad "security明示除外後の分散プランが成立しない (rc=$RUN_RC)"
   sed 's/^/    | /' "$WORK/out.log" >&2
 fi
 

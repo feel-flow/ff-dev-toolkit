@@ -8,4 +8,6 @@ git-workflow-concurrent-session.tsv
 git-workflow-heredoc.tsv
 git-workflow-sub-issues.tsv
 review-wait-prep.tsv
+bot-review-wait.tsv
 review-alternative-before-wait.tsv
+long-gate-progress.tsv

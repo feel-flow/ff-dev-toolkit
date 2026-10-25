@@ -1,10 +1,10 @@
 ---
 title: "MASTER"
-version: "1.11.0"
+version: "1.12.0"
 status: "draft"
 owner: "@your-github-handle"
 created: "YYYY-MM-DD"
-updated: "2026-10-16"
+updated: "2026-10-23"
 changeImpact: "medium"
 ---
 
@@ -641,7 +641,7 @@ AI: DEPLOYMENT.md（索引）→ deployment/self-review.md を読み込み
 
 > **注**: `docs/specs/` 配下の仕様ファイルには Spec Kit 運用ガイドの Front Matter スキーマ（6ステータス: draft/review/approved/implementing/done/deprecated）を適用すること。上記 Frontmatter ルールはコア7文書および拡張文書に適用される。
 >
-> **例外**: `08-knowledge/OBSERVATIONS.md`（`/retrospective` の観測台帳）は Frontmatter を付与しない。ACE の `08-knowledge/PLAYBOOK.md`（カテゴリ別に分割したレイアウトでは索引）は Frontmatter を持つ。分割したカテゴリファイル（`08-knowledge/playbook/**`。`archive/` を含む）は機械管理の蓄積ファイルであり、Frontmatter を付与しない（文書レベルのメタデータは索引側または運用スキル側が持つ）。
+> **例外**: PLAYBOOKと同階層の `PENDING_CANDIDATES.md`（`/ace-curate` の採用前候補バッファ）はFrontmatterを付与せず、同梱helperのschemaで検証する。`08-knowledge/OBSERVATIONS.md`（`/retrospective` の観測台帳）は Frontmatter を付与しない。ACE の `08-knowledge/PLAYBOOK.md`（カテゴリ別に分割したレイアウトでは索引）は Frontmatter を持つ。分割したカテゴリファイル（`08-knowledge/playbook/**`。`archive/` を含む）は機械管理の蓄積ファイルであり、Frontmatter を付与しない（文書レベルのメタデータは索引側または運用スキル側が持つ）。
 
 必須フィールド:
 
@@ -732,6 +732,10 @@ Changelog エントリには以下のカテゴリを使用する（[Keep a Chang
 - [ ] 定数の配置が層責務に沿っている（Domain/Application/Infrastructure）
 
 ## Changelog
+
+### [1.12.0] - 2026-10-23
+
+- 容量停止候補の `PENDING_CANDIDATES.md` を機械管理の非仕様文書として分類（Issue `#2040`）。
 
 - 2026-09-08 追記: プラグイン変数がない直接利用でも取得できる公開配布元を明記（ai-spec-driven-development#525）。
 

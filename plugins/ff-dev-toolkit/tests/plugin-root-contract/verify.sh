@@ -514,6 +514,7 @@ provenance_quiet_reason() {
 # 2 で返すと「実行された」と誤読される）。suite が任意の数字へ正規化するだけだと、既存の rc
 # 契約と衝突する誤番号を検出できないので、期待値をここで名指しし、静的検査と実走の両方で使う。
 SCRIPT_EXPECT_RC=(
+  "ace-pending.sh|3"
   "ace-run-ts.sh|2"
   "check-closing-keywords.sh|2"
   "check-issue-body-diff.sh|2"

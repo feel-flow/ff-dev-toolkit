@@ -72,6 +72,8 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### 3. 実装実行
 
+escape を値として含む本文・生成 script の作成/再編集前は、[リテラル書き込みの既定経路](../../docs-template/05-operations/deployment/markdown-patch-discipline.md#リテラル書き込みの既定経路)を読み、委譲する回はその参照をタスク説明にも含める。
+
 ユーザーが承認したら、実装を実行します:
 
 ```bash
@@ -103,7 +105,7 @@ staging が (CLI, 観点) 単位なのは、同じ CLI に複数の観点が乗�
 （ファイル自体には触れません）。統合レポートは各セクションに実パスと実測ファイル数を
 書くので、ツリー全体を眺めるのではなくレポートのセクションを読んでください。
 
-実行中は進捗状況を監視し、完了を待ちます。background で起動して完了を待つ場合は、foreground の `sleep` や自作の待機ループで空回りせず、Monitor（無ければ `until` ループの background bash）を armed してから停止し、完了通知で再開します。
+親の待ち方は [長時間ゲートの進捗表示](../../docs-template/05-operations/deployment/git-workflow.md#長時間ゲートの進捗表示) に従います。表示を切り替えても、委譲先の timeout・foreground 契約は維持します。
 
 ### 4. 結果分析と適用承認
 

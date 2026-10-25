@@ -570,7 +570,7 @@ contains "$CURATE_FILE" \
 contains "$CURATE_RULES" \
   "既存エントリの要約・アーカイブ・統合は \`/ace-refine\` のみが行う" \
   "refine 専権の明示（curate は grow 専用）"
-contains "$CURATE_FILE" \
+contains "$CURATE_RULES" \
   "| Helpful | 0 | Harmful | 0 |" \
   "コンパクト正準フォーマットのカウンター行（スクリプト互換の行頭パイプ）"
 contains "$CURATE_RULES" \

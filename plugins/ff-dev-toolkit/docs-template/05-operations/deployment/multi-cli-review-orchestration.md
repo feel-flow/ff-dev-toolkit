@@ -36,7 +36,7 @@ handoff の producer は skill を実行する AI host である。Claude Code �
 
 キャッシュ全体を探索したり、version 名を並べ替えて別版へ切り替えたりしない。次の resolver + guard を、以下に続く直接実行例より前に同じ shell へ読み込む。Claude Code / Codex / grok CLI の host は、上記の値をこの fence の実行環境へ渡すこと。初回 setup は読み込み済み skill を持つ Claude Code / Codex / grok CLI の host セッションからだけ実行する。単独ターミナルで setup 前の状態から plugin を探索する手順は提供しない。setup 後の単独ターミナルは Codex-only 互換シムを使い、固定版の pair / distributed review は skill を再呼び出して実行する。machine-local sidecar の手動 source は対話ターミナル向けに提供せず、後述の永続 hook の handoff にだけ使う。root が未設定、または更新で resource が消えた場合は別版へフォールバックせず status 2 を返す。
 
-このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowが `FF_DEV_TOOLKIT_ROOT` 経由で起動する同梱scriptである。後者は `check-closing-keywords.sh`（Issueクローズキーワードの手動検査）に加え、`check-merge-freshness.sh`（マージ前の鮮度検査）・`update-version-claim.sh` / `check-version-claims.sh`（version claimの生成と検証）・`mutation-harness.sh`（PR作成前の変異表の実行）を含む。呼び出す側の案内だけが増えて対象の列挙が追従しない状態を作らないため、Git Workflowから同梱scriptを新たに呼ぶときはこの列挙も同時に更新する。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は Codex cache → Claude cache → grok の導入実体（`${GROK_HOME:-~/.grok}/installed-plugins/ff-dev-toolkit-*`。Issue `#2119`）の semantic version 最大を sidecar より先に選ぶ（同じ版なら Codex → Claude → grok の順。Issue `#623` の互換動作）。そのため plugin 更新直後は、端末の互換シムが新 cache、pre-push が更新前の sidecar を使う状態がある。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
+このresolver + guard fenceの対象は、ここから直接呼ぶreview系3 resourceと、Git Workflowが `FF_DEV_TOOLKIT_ROOT` 経由で起動する同梱scriptである。後者は `check-closing-keywords.sh`（Issueクローズキーワードの手動検査）に加え、`check-merge-freshness.sh`（マージ前の鮮度検査）・`update-version-claim.sh` / `check-version-claims.sh`（version claimの生成と検証）・`mutation-harness.sh`（PR作成前の変異表の実行）を含む。呼び出す側の案内だけが増えて対象の列挙が追従しない状態を作らないため、Git Workflowから同梱scriptを新たに呼ぶときはこの列挙も同時に更新する。消費プロジェクトへ配置済みの後方互換 `scripts/codex-review.sh` はこの契約の例外で、`FF_DEV_TOOLKIT_ROOT` 未指定時は Codex cache → Claude cache → grok の導入実体（`${GROK_HOME:-~/.grok}/installed-plugins/ff-dev-toolkit-*`。Issue `#2119`）を横断し、配置済みシムと内容一致する候補の semantic version 最大を sidecar より先に選ぶ。一致候補が無ければ全体の最大版を選び、内容照合で拒否する（同じ版なら Codex → Claude → grok の順。Issue `#623` の互換動作）。一致する旧版を使い、新しい版がある場合は stderr に新版と setup の案内を各 1 回出す。固定版の pair / distributed review にはシムを使わず、更新後は setup をすぐ再実行して hook の sidecar も同じ版へ更新する。Codex-only の旧入口として使う場合はシム側の診断と再セットアップ案内に従う。
 
 消費側の hook / ゲートが toolkit の**別のスクリプト**（`record-gate-head.sh` など）を呼ぶときは、sidecar を自前で読まず、シムの `--print-toolkit-root` で同じ解決器を使う（下の「消費側の hook / ゲートから toolkit のスクリプトを解決する」）。
 
@@ -743,7 +743,7 @@ echo "✅ レビュー完了。出力先: $FF_REVIEW_OUTPUT"
 
 上の pre-push 例は review 系 3 resource だけを固定版で呼ぶ、無人の厳格なゲートである。これとは別に、消費プロジェクトの hook / 検証スイートが toolkit の**別のスクリプト**（鮮度ゲートの記録を書く `record-gate-head.sh` など）を呼ぶ場面がある。そこで上の例の sidecar 読み込みブロックをコピーしてはならない。sidecar（`scripts/.ff-dev-toolkit-root`）は版ディレクトリの絶対 path を焼き込むため、plugin 更新で旧版のディレクトリが消えると、hook は消えた版を指したまま起動を続ける。呼び出し先が無いので記録だけが黙って止まり、ゲートは緑のまま `/close-issue` の鮮度照合が判定不能になる（実際に 2 回観測された事象）。setup の再実行で直るが、**plugin 更新のたびに再実行が要る構造**そのものは残る。
 
-配置済みの `scripts/codex-review.sh`（シム）は `--print-toolkit-root` で解決結果だけを返す。解決順と fail closed はレビュー時と**完全に同じ**（`FF_DEV_TOOLKIT_ROOT` → Codex / Claude plugin cache・grok の導入実体の semantic version 最大 → sidecar。別実装ではなく同じ関数を通る）で、stdout には解決したプラグインルートが 1 行だけ出る。`ℹ️ ff-dev-toolkit version=… source=… root=…` は stderr の診断行であり、消費側がパースする契約ではない。
+配置済みの `scripts/codex-review.sh`（シム）は `--print-toolkit-root` で解決結果だけを返す。解決順と fail closed はレビュー時と**完全に同じ**（`FF_DEV_TOOLKIT_ROOT` → Codex / Claude plugin cache・grok の導入実体の内容一致候補の semantic version 最大（無ければ全体の最大版を照合して拒否）→ sidecar。別実装ではなく同じ関数を通る）で、stdout には解決したプラグインルートが 1 行だけ出る。`ℹ️ ff-dev-toolkit version=… source=… root=…` は stderr の診断行であり、消費側がパースする契約ではない。
 
 ```sh
 # 消費プロジェクトの hook / 検証スイートから toolkit のスクリプトを解決する例
@@ -1043,6 +1043,10 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 ### CLI がタイムアウト・異常終了したとき
 
 そのタスクは**失敗として報告され、別 CLI での自動再実行は行われません**（実行時 fallback は意図的に持たせていない）。
+
+`distributed` review の `security-analysis` は、headless Grok で承認待ちや本文なしになる既知の経路を避けるため、所有・fallback・コスト調整後のプランで利用可能な別 CLI へ割り当て、理由とコスト帯を表示します。明示した CLI と除外を越えた振替は行わず、代替が無ければ dry-run でも非 0 で停止して代替条件を示します。Grok 自身への native 委譲は対象外です。pair / cross-model で明示したモデルの組はこの自動振替では変えません。
+
+失敗サマリーの単発・代替 CLI・新しいホスト委譲のコマンドは、元の出力先内の隠しディレクトリ `.recovery-*` を、独立した復旧コマンドごとに分けて明示します。元の ignore 境界を維持し、複数の復旧を続けて実行しても先の結果を退避しません。元の結果・キャッシュ・レポート・委譲世代を保持し、元と補完の両方を確認します。委譲の 2 段は表示された同じ新規出力先で、初回の引数に `--resume` だけを足して回収します。これらは別の実行であり、元の巡を完了済みに変えたり、別実行の結果を混ぜて 1 件の prior-evidence として受理したりしません。単一の prior-evidence が必要なら、元を保持したまま新規出力先で必須観点一式を実行します。同じ入力の未完了レーンだけを再開する場合は、下の `--resume` 手順を使います。
 
 - 理由: 同じ差分を別のモデルに見せることがこの仕組みの目的なので、黙って差し替えるとレポート上は観点が埋まって見えるのに実際に見たモデルが変わる。代替先はコスト帯が上がる場合がある（`codex-cli` → `claude-code` は standard → premium）。タイムアウト後の再試行は同じ制限時間をもう一度消費するだけになりやすい。
 - 打ち切り前に得られた部分出力は捨てず、`Status: incomplete` 付きの結果ファイルとして保存し、統合レポートにも `INCOMPLETE` バナーを出します。**未完了の節は「指摘なし」ではなく「未確認」と読むこと。**

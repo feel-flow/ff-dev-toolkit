@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { apply } from '../../scripts/asdd/generate.mjs';
 import { recordWork, workStatus } from '../../scripts/asdd/work.mjs';
 
@@ -21,11 +22,23 @@ function fixture(t, history = false) {
     calls.push({ cmd, args, input });
     if (cmd !== 'gh') throw new Error('Unexpected command');
     if (args[0] === 'api' && args[1] === 'user') return JSON.stringify({ id: 42 });
-    if (args[0] === 'api') return JSON.stringify([args[1].includes('/comments?') ? comments : issues]);
+    if (args[0] === 'api') {
+      if (args.includes('search/issues')) {
+        const taskId = args.find(a => a.startsWith('q=')).match(/asdd-task:([^\"]+)/)[1];
+        const matches = issues.filter(i => !i.pull_request && i.body?.includes(`asdd-task:${taskId}`));
+        const page = Number(args.find(a => a.startsWith('page=')).slice('page='.length));
+        return JSON.stringify({ total_count: matches.length, incomplete_results: false, items: matches.slice((page - 1) * 100, page * 100) });
+      }
+      const number = args[1].match(/\/issues\/(\d+)$/);
+      if (number) return JSON.stringify(issues.find(i => i.number === Number(number[1])));
+      const entries = args[1].includes('/comments?') ? comments : issues;
+      const page = Number(new URL(`https://api.github.com/${args[1]}`).searchParams.get('page'));
+      return JSON.stringify(entries.slice((page - 1) * 100, page * 100));
+    }
     if (args[0] === 'repo') return JSON.stringify({ isPrivate: true, defaultBranchRef: { name: 'main' } });
     if (args[1] === 'create') {
       issues.push({ number: 1, html_url: 'https://github.com/example/project/issues/1', body: input, state: 'open', title: 'お知らせ', user: { id: 42 } });
-      return issues[0].html_url;
+      return issues.at(-1).html_url;
     }
     if (args[1] === 'comment') { comments.push({ body: input, user: { id: 42 } }); return 'comment-url'; }
     throw new Error('Unexpected gh arguments');
@@ -158,8 +171,7 @@ test('foreign task and event markers cannot redirect or suppress agreed Issue re
   const forged = { number: 99, html_url: 'https://github.com/example/project/issues/99',
     body: `<!-- asdd-task:${f.record.taskId} -->`, user: { id: 999 }, author_association: 'NONE' };
   f.issues.push(forged);
-  // Our fake create result uses the first entry URL; retain API shape while
-  // returning the newly created real Issue URL.
+  // Retain the real created URL even while a forged record precedes it.
   const command = (cmd, args, input) => {
     const output = f.command(cmd, args, input);
     return args[1] === 'create' ? f.issues.at(-1).html_url : output;
@@ -294,4 +306,194 @@ test('machine-readable git reads pin --no-show-signature', () => {
   const reads = src.match(/command\('git', \[[^\]]*--format=[^\]]*\]/g) ?? [];
   assert.ok(reads.length >= 5, `machine-readable git reads not found (pattern drifted): ${reads.length}`);
   assert.deepEqual(reads.filter(r => !r.includes('--no-show-signature')), []);
+});
+
+const isSearch = args => args.includes('search/issues');
+const emptySearch = JSON.stringify({ total_count: 0, incomplete_results: false, items: [] });
+function largeHistory(f, includeTask = true) {
+  f.issues.push(...Array.from({ length: 2_200 }, (_, n) => ({ number: n + 10,
+    html_url: `https://github.com/example/project/issues/${n + 10}`, body: 'Unrelated history', user: { id: 42 },
+    ...(n % 2 ? { pull_request: {} } : {}) })));
+  if (includeTask) f.issues.push({ number: 2_501, html_url: 'https://github.com/example/project/issues/2501',
+    state: 'closed', title: 'Existing task', body: `<!-- asdd-task:${f.record.taskId} -->`, user: { id: 43 }, author_association: 'MEMBER' });
+}
+test('large history reuses a closed trusted task with one search and one current Issue read', t => {
+  const f = fixture(t); largeHistory(f);
+  const result = workStatus(f.root, f.record.taskId, { command: f.command });
+  assert.equal(result.issue.url, 'https://github.com/example/project/issues/2501');
+  assert.equal(result.issue.state, 'closed');
+  assert.equal(f.calls.filter(c => isSearch(c.args)).length, 1);
+  assert.equal(f.calls.filter(c => c.args[1] === 'repos/example/project/issues/2501').length, 1);
+  assert.equal(f.calls.some(c => c.args[1]?.includes('/issues?')), false);
+  assert.equal(fs.existsSync(path.join(f.root, '.asdd/local')), false);
+});
+test('search indexing delay falls back to bounded pages and finds historical records before creating', t => {
+  const f = fixture(t); largeHistory(f);
+  const command = (cmd, args, input) => isSearch(args) ? emptySearch : f.command(cmd, args, input);
+  const result = recordWork(f.root, f.record, { command, apply: true });
+  assert.equal(result.status, 'synced'); assert.equal(result.issue, 'https://github.com/example/project/issues/2501');
+  const reads = f.calls.filter(c => c.args[1]?.includes('/issues?'));
+  assert.equal(reads.length, 23);
+  assert.deepEqual(reads.map(c => Number(new URL(`https://api.github.com/${c.args[1]}`).searchParams.get('page'))), Array.from({ length: 23 }, (_, n) => n + 1));
+  assert.equal(reads.some(c => c.args.includes('--paginate')), false);
+  assert.equal(f.issues.length, 2_201);
+});
+test('absence is confirmed by the terminal list page, not by zero search results', t => {
+  const f = fixture(t); largeHistory(f, false);
+  assert.equal(recordWork(f.root, f.record, { command: f.command, apply: true }).status, 'synced');
+  assert.equal(f.calls.filter(c => c.args[1]?.includes('/issues?')).length, 23);
+  const createAt = f.calls.findIndex(c => c.args[1] === 'create');
+  assert.ok(createAt > f.calls.findLastIndex(c => c.args[1]?.includes('/issues?')));
+  assert.equal(f.issues.length, 2_201);
+});
+test('the current Issue body and author override a stale search candidate', t => {
+  for (const currentTrusted of [null, false, true]) {
+    const f = fixture(t); largeHistory(f);
+    const stale = currentTrusted === null ? { number: 99 } : { ...f.issues.at(-1), user: { id: 999 }, author_association: currentTrusted ? 'NONE' : 'MEMBER' };
+    if (currentTrusted !== null) Object.assign(f.issues.at(-1), { user: { id: 999 }, author_association: currentTrusted ? 'MEMBER' : 'NONE' });
+    const command = (cmd, args, input) => isSearch(args)
+      ? JSON.stringify({ total_count: 1, incomplete_results: false, items: [stale] }) : f.command(cmd, args, input);
+    assert.equal(workStatus(f.root, f.record.taskId, { command }).issue?.url ?? null, currentTrusted === false ? null : 'https://github.com/example/project/issues/2501');
+    assert.equal(f.calls.some(c => c.args[1] === `repos/example/project/issues/${stale.number}`), true);
+  }
+});
+test('GitHub repository capitalization preserves existing and created destinations', t => {
+  for (const existing of [false, true]) {
+    const f = fixture(t); if (existing) { largeHistory(f); f.issues.at(-1).html_url = 'https://github.com/Example/Project/issues/2501'; }
+    const command = (cmd, args, input) => { const out = f.command(cmd, args, input); if (args[1] === 'create') { f.issues.at(-1).html_url = out.replace('example/project', 'Example/Project'); return f.issues.at(-1).html_url; } return out; };
+    assert.equal(recordWork(f.root, f.record, { command, apply: true }).status, 'synced');
+    assert.equal(recordWork(f.root, f.record, { command, apply: true }).issue, f.issues.at(-1).html_url);
+    assert.equal(workStatus(f.root, f.record.taskId, { command }).issue.url, f.issues.at(-1).html_url);
+  }
+});
+test('multiple trusted exact task records remain an unsynced error', t => {
+  const f = fixture(t); largeHistory(f);
+  f.issues.push({ ...f.issues.at(-1), number: 2_502, html_url: 'https://github.com/example/project/issues/2502' });
+  for (const indexed of [2, 1]) {
+    const command = (cmd, args, input) => isSearch(args)
+      ? JSON.stringify({ total_count: indexed, incomplete_results: false, items: f.issues.slice(-indexed) }) : f.command(cmd, args, input);
+    const result = recordWork(f.root, f.record, { command, apply: true });
+    assert.equal(result.status, 'unsynced'); assert.match(result.error, /Duplicate task/);
+    assert.equal(result.failure.phase, 'issue-lookup'); assert.equal(f.comments.length, 0);
+    assert.equal(f.calls.some(c => c.args[1] === 'comment' || c.args[1] === 'create'), false);
+  }
+});
+test('incomplete, missing, changed and over-limit search responses never become absence', t => {
+  const bad = [null, {}, { total_count: 0, items: [] }, { total_count: 0, incomplete_results: true, items: [] },
+    { total_count: 1, incomplete_results: false, items: [] }, { total_count: 1_001, incomplete_results: false, items: [] },
+    { total_count: 1, incomplete_results: false, items: [{ number: '1' }] }];
+  for (const response of bad) {
+    const f = fixture(t); let reached = false;
+    const command = (cmd, args, input) => {
+      if (isSearch(args)) { reached = true; return JSON.stringify(response); }
+      return f.command(cmd, args, input);
+    };
+    const result = recordWork(f.root, f.record, { command, apply: true });
+    assert.equal(reached, true); assert.equal(result.status, 'unsynced'); assert.match(result.error, /lookup is unconfirmed/);
+    assert.equal(f.issues.length, 0); assert.equal(f.calls.some(c => c.args[1]?.includes('/issues?')), false);
+  }
+});
+test('search pagination must be complete and stable before any candidate is adopted', t => {
+  for (const changed of [true, false]) {
+    const f = fixture(t); let pages = 0;
+    const command = (cmd, args, input) => {
+      if (!isSearch(args)) return f.command(cmd, args, input);
+      pages++;
+      return JSON.stringify({ total_count: pages === 2 && changed ? 102 : 101, incomplete_results: false,
+        items: pages === 1 ? Array.from({ length: 100 }, (_, n) => ({ number: n + 1 })) : [] });
+    };
+    assert.equal(recordWork(f.root, f.record, { command, apply: true }).status, 'unsynced');
+    assert.equal(pages, 2); assert.equal(f.issues.length, 0);
+  }
+});
+test('malformed list pages and malformed current Issue data stop before writes', t => {
+  for (const mode of ['list', 'detail', 'json', 'actor-json', 'wrong-repo']) {
+    const f = fixture(t); if (mode !== 'list' && mode !== 'json' && mode !== 'actor-json') largeHistory(f);
+    const command = (cmd, args, input) => {
+      if (mode === 'actor-json' && args[1] === 'user') return 'private-invalid-json';
+      if (mode === 'json' && isSearch(args)) return 'private-invalid-json';
+      if (mode === 'list' && args[1]?.includes('/issues?')) return JSON.stringify({ items: [] });
+      if (args[1] === 'repos/example/project/issues/2501') return JSON.stringify(mode === 'detail'
+        ? { number: 2501 } : { ...f.issues.at(-1), html_url: 'https://github.com/other/project/issues/2501' });
+      return f.command(cmd, args, input);
+    };
+    const result = recordWork(f.root, f.record, { command, apply: true });
+    assert.equal(result.status, 'unsynced'); assert.equal(result.failure.phase, mode === 'actor-json' ? 'recording-account' : 'issue-lookup');
+    assert.doesNotMatch(JSON.stringify(result), /private-invalid-json/);
+    assert.equal(f.calls.some(c => c.args[1] === 'create' || c.args[1] === 'comment'), false);
+  }
+});
+test('timeout, authentication, communication and output limits are safe distinct failures', t => {
+  for (const [kind, extra] of [['timeout', { code: 'ETIMEDOUT' }], ['authentication', { status: 1, stderr: 'HTTP 401 private-token' }],
+    ['communication', { status: 1, stderr: 'Failed to connect private-token' }], ['output-limit', { code: 'ENOBUFS' }],
+    ['rate-limit', { status: 1, stderr: 'HTTP 403 API rate limit exceeded private-token' }],
+    ['rate-limit', { status: 1, stderr: 'HTTP 429 private-token' }], ['external', { status: 1, stderr: 'HTTP 403 Forbidden private-token' }]]) {
+    const f = fixture(t);
+    const command = (cmd, args, input) => {
+      if (isSearch(args)) throw Object.assign(new Error('private-token'), extra);
+      return f.command(cmd, args, input);
+    };
+    const result = recordWork(f.root, f.record, { command, apply: true });
+    assert.equal(result.status, 'unsynced'); assert.deepEqual(result.failure, { kind, phase: 'issue-lookup', outcome: 'unconfirmed' });
+    assert.doesNotMatch(JSON.stringify(result), /private-token/); assert.equal(f.issues.length, 0);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, '.asdd/local/work.json'))).tasks[f.record.taskId].status, 'unsynced');
+  }
+});
+test('lost creation response plus search delay and lost receipt do not duplicate an Issue', t => {
+  const f = fixture(t); let loseResponse = true;
+  const command = (cmd, args, input) => {
+    if (isSearch(args)) return emptySearch;
+    const out = f.command(cmd, args, input);
+    if (args[1] === 'create' && loseResponse) { loseResponse = false; throw Object.assign(new Error('private'), { code: 'ETIMEDOUT' }); }
+    return out;
+  };
+  assert.equal(recordWork(f.root, f.record, { command, apply: true }).failure.phase, 'issue-create');
+  fs.unlinkSync(path.join(f.root, '.asdd/local/work.json'));
+  assert.equal(recordWork(f.root, f.record, { command, apply: true }).status, 'synced');
+  assert.equal(f.issues.length, 1); assert.equal(f.comments.length, 0);
+});
+test('lost update response is reconciled by its event before commenting again', t => {
+  const f = fixture(t); recordWork(f.root, f.record, { command: f.command, apply: true });
+  f.record.summary = 'Changed'; let loseResponse = true;
+  const command = (cmd, args, input) => {
+    const out = f.command(cmd, args, input);
+    if (args[1] === 'comment' && loseResponse) { loseResponse = false; throw Object.assign(new Error('private'), { code: 'ETIMEDOUT' }); }
+    return out;
+  };
+  assert.equal(recordWork(f.root, f.record, { command, apply: true }).failure.phase, 'issue-comment');
+  assert.equal(recordWork(f.root, f.record, { command, apply: true }).status, 'synced');
+  assert.equal(f.comments.length, 1); assert.equal(f.issues.length, 1);
+});
+test('valid-shaped search overflow stops on its first page', t => {
+  const f = fixture(t); let pages = 0;
+  const command = (cmd, args, input) => {
+    if (!isSearch(args)) return f.command(cmd, args, input);
+    pages++;
+    return JSON.stringify({ total_count: 1_001, incomplete_results: false,
+      items: Array.from({ length: pages <= 10 ? 100 : 1 }, (_, n) => ({ number: (pages - 1) * 100 + n + 1 })) });
+  };
+  assert.equal(recordWork(f.root, f.record, { command, apply: true }).status, 'unsynced');
+  assert.equal(pages, 1); assert.equal(f.issues.length, 0);
+});
+test('comment pagination preserves all records beyond one page', t => {
+  const f = fixture(t); largeHistory(f);
+  f.comments.push(...Array.from({ length: 201 }, (_, n) => ({ body: `record-${n}`, user: { id: 42 } })));
+  const result = workStatus(f.root, f.record.taskId, { command: f.command });
+  assert.equal(result.comments.length, 201); assert.equal(result.comments.at(-1).body, 'record-200');
+  assert.equal(f.calls.filter(c => c.args[1]?.includes('/comments?')).length, 3);
+});
+test('the real child-process adapter redacts authentication errors for record and status CLI', t => {
+  const f = fixture(t), bin = path.join(f.root, 'bin'); fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\nif [ "$1 $2" = "api user" ]; then printf \'{"id":42}\\n\'; else printf \'HTTP 401 private-token\\n\' >&2; exit 1; fi\n', { mode: 0o755 });
+  const file = path.join(f.root, 'record.json'); fs.writeFileSync(file, JSON.stringify(f.record));
+  const plugin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+    FF_DEV_TOOLKIT_ROOT: plugin, CLAUDE_PLUGIN_ROOT: plugin, GROK_PLUGIN_ROOT: plugin };
+  const script = fileURLToPath(new URL('../../scripts/asdd/work.mjs', import.meta.url));
+  for (const args of [['--record', file, '--apply'], ['--status', f.record.taskId]]) {
+    const result = spawnSync(process.execPath, [script, '--root', f.root, ...args], { env, encoding: 'utf8', timeout: 10_000 });
+    assert.equal(result.status, 1, result.stderr); assert.doesNotMatch(result.stdout + result.stderr, /private-token/);
+    if (args[0] === '--record') assert.equal(JSON.parse(result.stdout).failure.kind, 'authentication');
+    else assert.match(result.stderr, /authentication/);
+  }
 });

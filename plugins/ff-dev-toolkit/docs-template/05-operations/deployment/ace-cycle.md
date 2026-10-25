@@ -9,6 +9,12 @@ domainは通常curateの標準収集対象です。PRからの自動収集でも
 
 [ACE ドメイン知識契約](./ace-domain.md)が読取許可範囲内にあればGenerate前に読む。未配置・範囲外の場合は、プラグインのcurateは同梱契約、自律収集はace-captureの「domain保存契約」を適用し、補足文書の不在だけでは停止しない。読取範囲は広げない。PR経路と `--source` / `--issue` の資料単独経路は同じ7観点を使う。資料の取得失敗は未確認と報告する。業務知識はdomainで根拠・確認状態・反映先を保持し、設計書変更案はace-refineの別PRへ分離する。
 
+## ブロック上限で止まった候補
+
+上限で追記できない候補は、解決済みPLAYBOOKと同階層の `PENDING_CANDIDATES.md` へ保存し、同じknowledge commitに含める。`playbook/` と観測台帳へは混ぜず、採用済みの知見・Helpful・live件数として数えない。通常の追記は停止と報告し、保存成功は「保留 N 件（置き場）」として別に示す。検査不成立を容量不足と読み替えない。一つのカテゴリで実行全体が止まった回は、停止カテゴリの件数と追加予定総数を根拠に、他カテゴリも含む全未処理候補を保存する。全カテゴリが容量内なら候補storeへ書かない。
+
+承認された `/ace-refine` の後、次の `/ace-curate` は新規PR候補が0件でも保留を新規性ゲートへ掛け直す。追記・既存ACEのHelpful +1・棄却が確定した候補だけを外し、ACE変更と同じcommitへ含める。再び容量不足なら保持する。`/knowledge-lookup` は保留を専用のpending状態で本文検索し、不在なら従来出力を保つ。実行コマンドと書式の正本はプラグインの `skills/ace-curate/references/pending.md`。
+
 ## 概要
 
 ACE (Agentic Context Engineering) サイクルは、マージ後・cleanup 後に AIツールと協力して知見を抽出・評価・記録する運用手順です。

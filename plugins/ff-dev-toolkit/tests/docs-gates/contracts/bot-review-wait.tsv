@@ -1,0 +1,15 @@
+# botの早期集約は手順書の契約。precheckに汎用待機器を仮定しない。
+section	05-operations/deployment/git-workflow.md	#### 自動レビューbotの完了確認	**PRで自動レビューbotが有効な場合は、fix commitと最終の重いゲートの前に完了を確認する。**	bot完了確認はfixと最終ゲートの前
+section	05-operations/deployment/git-workflow.md	#### 自動レビューbotの完了確認	無効・禁止と確認できたrepoは待機しない。	bot無効repoの空待ちを防ぐ
+section	05-operations/deployment/git-workflow.md	#### 自動レビューbotの完了確認	**完了は、検証済みのbot固有の完了シグナルと対象head SHAの一致を確認した場合だけとする。**	bot完了確認は対象HEADに束縛
+section	05-operations/deployment/git-workflow.md	#### 自動レビューbotの完了確認	bot以外が引用した同じ文面、未知の形式、必要項目不足、古いHEADは完了の根拠にしない。	bot以外と未対応形式と旧HEADを完了へ倒さない
+section	05-operations/deployment/git-workflow.md	#### 自動レビューbotの完了確認	対象レビュー種別を先に固定し、複数種別が必須なら全ての完了と対象SHAを確認する。	botの別レビュー種別へ完了を流用しない
+section	05-operations/deployment/git-workflow.md	#### 自動レビューbotの完了確認	スレッド1件・スレッド0件・👍単独を完了や指摘なしへ読み替えない。	botの断片的な反応を完了へ倒さない
+section	05-operations/deployment/git-workflow.md	#### 自動レビューbotの完了確認	**総待機上限は確認開始から10分とし、再取得やfix pushで延長しない。**	bot待機は総上限を延長しない
+section	05-operations/deployment/git-workflow.md	#### 自動レビューbotの完了確認	通信・認証・必要項目の取得不能も未確認として打ち切る。	bot取得不能を未確認として区切る
+section	05-operations/deployment/git-workflow.md	#### 自動レビューbotの完了確認	**完了確認または打ち切り後に、到着済み指摘を同じfix commitへ集約し、必要な部分再検証の後に最終ゲートを回す。**	bot結果をfixへ集約して最終ゲート
+section	05-operations/deployment/git-workflow.md	#### 自動レビューbotの完了確認	**未確認のまま進む場合は、対象PR・head SHA・bot名・確認時刻・経過時間・理由をPRへ記録する。**	bot未確認の記録を要求
+section	05-operations/deployment/git-workflow.md	#### 自動レビューbotの完了確認	**早期の完了確認はマージ直前のprecheckを代替しない。**	bot早期確認は最終precheckを代替しない
+section	05-operations/deployment/git-workflow.md	#### 自動レビューbotの完了確認	取得不能は従来どおり停止する。	bot待機打切りでも最終precheck失敗は免除しない
+section	05-operations/deployment/git-workflow.md	#### 凍結解除後、レビュー結果へ着手する前に base を取り直す	[自動レビューbotの完了確認](#自動レビューbotの完了確認)または上限で打ち切り → 最新 base を fetch	base取り直しの順序へbot集約を届ける
+section	05-operations/deployment/git-workflow.md	### ステップ7: レビュー対応（Review）	fix commitと最終ゲートの前に、ステップ6の[自動レビューbotの完了確認](#自動レビューbotの完了確認)を行う。	Step7にもbot集約の正本を届ける

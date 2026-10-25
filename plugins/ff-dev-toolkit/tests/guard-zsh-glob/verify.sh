@@ -37,6 +37,7 @@
 # 空振り検出: expansion の不在・関数欠落・awk失敗は判定不能、空出力変異は陽性対照で赤。
 # 空振り検出: PostToolUse は実行済みなので判定器不在・走査失敗（FF_ZSH_GLOB_AWK=false）・JSON でない入力のどれでも止めず（fail-soft）、判定器不在と走査失敗は `$` を含む呼び出しに限り「未検査 / 判定不能」を additionalContext で返して検出 0 件と区別する（P4）。scalar 判定を消した scanner の変異は PostToolUse の陽性対照を黙らせる（P5）。
 # run-all-required: no — jq 不在での skip を許容する（兄弟の hook suite と同じ判断。suite 全体の skip 経路は jq 不在だけで、zsh 不在は Z / X 系の検査単位 skip）
+# 空振り検出: 入力書き換え（Issue `#2255`）は rewrite.sh が持つ。書き換えヘルパ関数の不在・走査失敗は deny へ戻ることを要求し、案を出さない hook は陽性の書き換え検査で赤になる（2026-10-25 実測）。
 # 変異検出: Issue `#2181` の scalar-list を従来scalarへ戻すと、一覧引数の陽性対照がdenyを失い赤（2026-10-17実測）。
 set -euo pipefail
 
@@ -62,7 +63,7 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # 利用者の環境（ホストのシェル・抜け道・opt-out）を引き継いで偽緑 / 偽赤にしない。
-unset CLAUDE_CODE_SHELL FF_ZSH_GLOB_ACK FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD FF_ZSH_GLOB_AWK
+unset CLAUDE_CODE_SHELL FF_ZSH_GLOB_ACK FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD FF_ZSH_GLOB_AWK CLAUDECODE CLAUDE_PROJECT_DIR GROK_PLUGIN_ROOT
 # 既存 glob の契約を単独検査し、追加検出は X 節で有効化する。
 export FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD=1
 
@@ -678,6 +679,11 @@ assert_pass 'L4 bash ホストは一覧停止の対象外'
 echo
 if [ "$FAIL" -gt 0 ]; then
   echo "✗ guard-zsh-glob: ${FAIL} 件失敗（成功 ${PASS} 件）" >&2
+  REACHED_END=1
+  exit 1
+fi
+if ! bash "$(dirname "$0")/rewrite.sh"; then
+  echo "✗ guard-zsh-glob: 入力書き換えの検査（rewrite.sh）が失敗しました" >&2
   REACHED_END=1
   exit 1
 fi

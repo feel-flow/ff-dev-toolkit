@@ -94,12 +94,14 @@
 #                          --exclude-cli / exclude_clis で除外している回は文言が
 #                          `was excluded by …` に変わる）
 #                     ・codex が不在で、pair 主 reviewer が**未設定**（非従量の AI CLI が
-#                       1 本でもある）
+#                       1 本でもあり、指定観点のプランが成立する）
 #                       → rc=0。委譲先が `No reviewers configured — falling back to the
 #                          distributed plan.` で分散プランへ縮退し、残りの CLI が観点を
 #                          引き受けたプランが出る（pair のプランではない）。従量課金の
 #                          copilot だけの環境は分散プランで既定除外されるため、
 #                          `ERROR: Execution plan is empty` で rc=1（プランなし）
+#                          headless Grok だけで security-analysis を含む場合も代替不在の
+#                          rc=1。--exclude-reviewers security-analysis で残りを確認できる
 #                     ・AI CLI が 1 本も PATH に無い
 #                       → rc=1。委譲先の CLI 検出が `ERROR: No AI CLIs are installed`
 #                          で止まり `🏁 Dry run complete.` には到達しない
@@ -146,7 +148,8 @@
 #   2 は「FF_DEV_TOOLKIT_ROOT が不正」だけではない — 配置済みシムと解決先テンプレートの
 #   内容不一致・比較不能、plugin version と agent-config.yaml の不一致、sidecar が指す先の version が
 #   読めない場合も 2 で、env を設定していない cache 経路でも起きる（理由は stderr に出る）。
-#   どれも別候補へ落ちない（既存の fail closed と同じ）。
+#   選択後の照合拒否では別候補へ落ちない（既存の fail closed と同じ）。
+#   照合には ${TMPDIR:-/tmp} 配下へ書ける一時領域が必要で、作成不能も rc=2 になる。
 #   stdout は契約、stderr（ℹ️ の診断行を含む）は契約ではない — 消費側は stdout だけを読む。
 #   レビュー系オプションとの併用は拒否する（黙って片方を捨てない）。SKIP_CODEX_REVIEW は
 #   レビューの逃がし弁であって解決の逃がし弁ではないので、このモードには効かない。
@@ -160,7 +163,8 @@ SCRIPT_NAME="$(basename "$0")"
 #
 # 探索順は FF_DEV_TOOLKIT_ROOT（環境変数）→ Codex plugin cache / Claude plugin
 # cache / grok の導入実体 → 同じディレクトリのサイドカー。3 つの導入先を横断して
-# semantic version の最大を選び、同じ版が複数にある場合は Codex → Claude → grok の
+# 配置済みシムと内容が一致する候補の semantic version 最大を選ぶ。一致候補が無ければ
+# 全候補の最大版を選び、照合で拒否する。同じ版・同じ一致状態なら Codex → Claude → grok の
 # 順で優先する（grok は ff-dev-toolkit 開発元 Issue 番号 2119 で追加。grok は ~/.grok/installed-plugins/
 # ff-dev-toolkit-<識別子>/ へ版名の無いディレクトリで導入するので、版は manifest で読む。
 # 置き場は grok 自身の規約どおり GROK_HOME（既定 ~/.grok）配下）。どれも解決
@@ -179,7 +183,7 @@ SCRIPT_NAME="$(basename "$0")"
 # cache の配置規約は
 # ~/.{codex,claude}/plugins/cache/<marketplace>/ff-dev-toolkit/<version>/scripts/
 # の形で、複数版が同居する（実測で 0.9.0 / 0.14.0 / 0.19.0）。候補は glob で
-# 列挙するが、文字列順ではなく manifest の semantic version 最大を選ぶ。
+# 列挙するが、文字列順ではなく内容一致を先に、次に manifest の semantic version を比べる。
 # pre-release を含む版は安定版の探索対象にせず、診断を出してスキップする。
 #
 # ## 期待するパスの形（env とサイドカーで違わない）
@@ -250,10 +254,8 @@ canonical_toolkit_root() {
   fi
 }
 
-select_cache_toolkit() { # <cache-root> [<glob: 既定は */ff-dev-toolkit/*>]
-  local cache_root="$1" pattern="${2:-*/ff-dev-toolkit/*}" root version best_root="" best_version=""
-  SELECTED_CACHE_ROOT=""
-  SELECTED_CACHE_VERSION=""
+select_cache_toolkit() { # <cache-root> <source> [<glob: 既定は */ff-dev-toolkit/*>]
+  local cache_root="$1" source="$2" pattern="${3:-*/ff-dev-toolkit/*}" root version
   [ -d "$cache_root" ] || return 1
   # shellcheck disable=SC2231 # pattern は固定の glob（呼び出し側の定数）で、展開させるのが目的
   for root in "$cache_root"/$pattern; do
@@ -266,14 +268,17 @@ select_cache_toolkit() { # <cache-root> [<glob: 既定は */ff-dev-toolkit/*>]
       echo "WARNING: ff-dev-toolkit cache 候補の multi-agent.sh が不正なためスキップします: version=$version root=$root" >&2
       continue
     fi
-    if [ -z "$best_version" ] || semver_is_newer "$version" "$best_version"; then
-      best_root="$root"
-      best_version="$version"
+    if [ -z "$CACHE_BEST_VERSION" ] || semver_is_newer "$version" "$CACHE_BEST_VERSION"; then
+      CACHE_BEST_ROOT="$root"; CACHE_BEST_VERSION="$version"; CACHE_BEST_SOURCE="$source"
+    fi
+    # 内容 ID は診断用で、採用判定には使わない。最終照合と同じ比較を通し、比較不能を
+    # 一致として扱わない。設定版の検査は選択後に行い、不正なら別候補へ逃がさない。
+    if compare_toolkit_template "$root" 2>/dev/null \
+       && { [ -z "$CACHE_MATCH_VERSION" ] || semver_is_newer "$version" "$CACHE_MATCH_VERSION"; }; then
+      CACHE_MATCH_ROOT="$root"; CACHE_MATCH_VERSION="$version"; CACHE_MATCH_SOURCE="$source"
     fi
   done
-  [ -n "$best_root" ] || return 1
-  SELECTED_CACHE_ROOT="$best_root"
-  SELECTED_CACHE_VERSION="$best_version"
+  return 0
 }
 
 # 比較と同じ行末 CR 除去の規則で、末尾 LF も含めて stream のまま識別する。
@@ -287,10 +292,9 @@ normalized_content_id() {
   printf 'git-blob:%s\n' "$digest"
 }
 
-verify_toolkit_identity() {
-  local root="$1" version="$2" config_version template template_id shim_id
+compare_toolkit_template() {
+  local template="$1/scripts/templates/codex-review.sh"
   local comparison_rc=2 comparison_reason="" compare_dir=""
-  template="$root/scripts/templates/codex-review.sh"
   # 比較は行末を正規化して行う（ff-dev-toolkit 開発元 Issue 番号 658）。Windows の plugin cache はテンプレートを
   # CRLF で持つことがあり、setup は配置時に LF へ正規化する。byte 比較のままだと、
   # 内容が同一の正規構成（CRLF cache + LF 配置済みシム）を内容不一致として
@@ -320,6 +324,16 @@ verify_toolkit_identity() {
   else
     comparison_reason="比較用の一時ディレクトリを作成できません"
   fi
+  TOOLKIT_COMPARISON_REASON="$comparison_reason"
+  return "$comparison_rc"
+}
+
+verify_toolkit_identity() {
+  local root="$1" version="$2" config_version template template_id shim_id
+  local comparison_rc=0 comparison_reason=""
+  template="$root/scripts/templates/codex-review.sh"
+  compare_toolkit_template "$root" || comparison_rc=$?
+  comparison_reason="$TOOLKIT_COMPARISON_REASON"
   if [ "$comparison_rc" -ne 0 ]; then
     if ! template_id="$(normalized_content_id "$template")"; then template_id="(取得不可)"; fi
     if ! shim_id="$(normalized_content_id "$0")"; then shim_id="(取得不可)"; fi
@@ -361,8 +375,8 @@ usable_orchestrator() {
 
 resolve_toolkit() {
   local root version sidecar sidecar_value="" codex_cache claude_cache
-  local codex_root="" codex_version="" claude_root="" claude_version="" grok_root="" grok_version=""
-  local best_root="" best_version="" best_source=""
+  CACHE_BEST_ROOT=""; CACHE_BEST_VERSION=""; CACHE_BEST_SOURCE=""
+  CACHE_MATCH_ROOT=""; CACHE_MATCH_VERSION=""; CACHE_MATCH_SOURCE=""
   RESOLVED_ORCHESTRATOR=""
   RESOLVED_TOOLKIT_ROOT=""
   RESOLVED_TOOLKIT_VERSION=""
@@ -388,31 +402,25 @@ resolve_toolkit() {
 
   codex_cache="${CODEX_HOME:-${HOME}/.codex}/plugins/cache"
   claude_cache="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/plugins/cache"
-  if select_cache_toolkit "$codex_cache"; then
-    codex_root="$SELECTED_CACHE_ROOT"
-    codex_version="$SELECTED_CACHE_VERSION"
-  fi
-  if select_cache_toolkit "$claude_cache"; then
-    claude_root="$SELECTED_CACHE_ROOT"
-    claude_version="$SELECTED_CACHE_VERSION"
-  fi
+  select_cache_toolkit "$codex_cache" codex-cache || true
+  select_cache_toolkit "$claude_cache" claude-cache || true
   # GROK_HOME も HOME も無い環境（set -u）では grok の置き場を推測しない — Codex / Claude の解決を巻き添えにしない
   local grok_home="${GROK_HOME:-}"
   [ -n "$grok_home" ] || { [ -z "${HOME:-}" ] || grok_home="${HOME}/.grok"; }
-  if [ -n "$grok_home" ] && select_cache_toolkit "${grok_home}/installed-plugins" "ff-dev-toolkit-*"; then
-    grok_root="$SELECTED_CACHE_ROOT"
-    grok_version="$SELECTED_CACHE_VERSION"
+  if [ -n "$grok_home" ]; then
+    select_cache_toolkit "${grok_home}/installed-plugins" installed-by-grok "ff-dev-toolkit-*" || true
   fi
-  # 優先順（同じ版なら先が勝つ）: Codex → Claude → grok。より新しい版だけが後ろから上書きする
-  if [ -n "$codex_root" ]; then best_root="$codex_root"; best_version="$codex_version"; best_source="codex-cache"; fi
-  if [ -n "$claude_root" ] && { [ -z "$best_root" ] || semver_is_newer "$claude_version" "$best_version"; }; then
-    best_root="$claude_root"; best_version="$claude_version"; best_source="claude-cache"
-  fi
-  if [ -n "$grok_root" ] && { [ -z "$best_root" ] || semver_is_newer "$grok_version" "$best_version"; }; then
-    best_root="$grok_root"; best_version="$grok_version"; best_source="installed-by-grok"
-  fi
-  if [ -n "$best_root" ]; then
-    set_resolved_toolkit "$best_root" "$best_version" "$best_source"
+  # 同じ一致状態・同じ版なら、先に走査した Codex → Claude → grok を保持する。
+  if [ -n "$CACHE_BEST_ROOT" ]; then
+    if [ -n "$CACHE_MATCH_ROOT" ]; then
+      set_resolved_toolkit "$CACHE_MATCH_ROOT" "$CACHE_MATCH_VERSION" "$CACHE_MATCH_SOURCE" || return $?
+      if semver_is_newer "$CACHE_BEST_VERSION" "$CACHE_MATCH_VERSION"; then
+        echo "WARNING: より新しい ff-dev-toolkit があります: version=${CACHE_BEST_VERSION} root=${CACHE_BEST_ROOT}。配置済み shim と内容一致する version=${CACHE_MATCH_VERSION} を使用します。" >&2
+        echo "         シムを同期するには bash \"${CACHE_BEST_ROOT}/scripts/setup-multi-agent.sh\" を再実行してください。" >&2
+      fi
+      return 0
+    fi
+    set_resolved_toolkit "$CACHE_BEST_ROOT" "$CACHE_BEST_VERSION" "$CACHE_BEST_SOURCE"
     return $?
   fi
 
@@ -518,7 +526,7 @@ load_resolved_toolkit() {
   fi
   if [ "$resolve_rc" -ne 0 ]; then
     echo "ERROR: multi-agent.sh が見つかりません。" >&2
-    echo "       探索順: FF_DEV_TOOLKIT_ROOT → Codex/Claude cache・grok の導入実体（${GROK_HOME:-~/.grok}/installed-plugins）の最大版（同版は Codex → Claude → grok）→ ${FF_ROOT_SIDECAR_PATH}" >&2
+    echo "       探索順: FF_DEV_TOOLKIT_ROOT → Codex/Claude cache・grok の導入実体（${GROK_HOME:-~/.grok}/installed-plugins）の内容一致候補の最大版（無ければ全体の最大版を照合。同版は Codex → Claude → grok）→ ${FF_ROOT_SIDECAR_PATH}" >&2
     if [ -f "$FF_ROOT_SIDECAR_PATH" ]; then
       echo "       サイドカーは在りますが、指す先に multi-agent.sh がありません" >&2
       echo "       記録値: $(sidecar_recorded_value "$FF_ROOT_SIDECAR_PATH")" >&2
@@ -622,7 +630,8 @@ ${SCRIPT_NAME} — Codex cross-model レビュー（multi-agent.sh への薄い�
                         ための契約。解決順・fail closed はレビュー時と同じ）。
                         =kv は root= / version= / source= の 3 行。レビュー系オプションと排他。
                         終了コード: 0=解決 / 1=見つからない（stdout 空）/ 2=解決を拒否
-                        （FF_DEV_TOOLKIT_ROOT が不正・配置済みシムとの版不整合など。stdout 空）
+                        （内容不一致・比較不能・設定版不一致・明示指定不正等。stdout 空）
+                        照合には \${TMPDIR:-/tmp} 配下の書き込み可能な一時領域が必要
   --review-context-file <path>
                         前回レビューと通過済みゲートの証拠を review prompt へ渡す。
                         acceptance-criteria 観点向けに Issue / PR 本文の AC 記載を
@@ -1379,16 +1388,15 @@ fi
 # 食い違うので、下の警告文はその 2 点を必ず併記すること（片方だけだと「プランが出たの
 # だから実行できる」と読める）。
 #
-# 外してもプランが出ない構成が 2 つあり、rc=1 の理由が違う。どちらも本分岐では直せない
-# ので、警告文で読み分けられるようにする:
+# 外してもプランが出ない場合は、本分岐だけでは直せない理由を警告文で読み分ける:
 #   ・設定済みの pair 主 reviewer が未導入  → `ERROR: main reviewer '<名前>' is not
 #     installed.`（例: 主を claude-code に設定したまま grok だけが入っている環境）
 #   ・AI CLI が 1 本も無い                  → `ERROR: No AI CLIs are installed`
 # 主 reviewer に既定値は無い。未設定なら委譲先は `No reviewers configured — falling back
 # to the distributed plan.` で分散プランへ縮退し、残りの非従量 CLI が観点を引き受けた
-# プランを rc=0 で出す（copilot だけなら分散プランの既定除外で Execution plan is empty の
-# rc=1）。案内に「既定 claude-code」と書くと、reviewers 設定の無い環境で grok だけが
-# 入っているときの帰結（rc=0）を rc=1 と偽る。
+# 有効なプランを rc=0 で出す。copilot だけなら既定除外、headless Grok だけで
+# security-analysis を含む場合は代替不在で rc=1。後者は観点を明示除外すれば
+# 残りのプランを確認できる。主 reviewer 未設定と、設定済みの主不在は区別する。
 #
 # 警告が案内する復旧手段は**このシムが受け付けるもの**に限る。委譲先の
 # `--set-reviewers` はこのシムが受け付けないので、案内に書くと案内どおり渡した利用者を
@@ -1440,8 +1448,9 @@ if ! command -v -- "$_codex_bin" >/dev/null 2>&1; then
     echo "         --cli は委譲先では分散モードのフィルタなので、外すと review の既定である pair モードへ戻ります。表示されるのは multi-agent.sh --task review と同じプラン（pair の主 reviewer が review 観点すべてを担当する形）です。" >&2
     echo "         このシムを --dry-run なしで実行すると、従来どおり codex 不在で rc=4 停止します（プランが出たことは実行できることを意味しません）。" >&2
     echo "         実行するには codex の導入（または CODEX_REVIEW_CODEX_BIN の修正）が要ります。表示されたプランをそのまま走らせるなら multi-agent.sh を直接呼んでください。" >&2
-    echo "         プランが出ない構成が 2 つあり、rc=1 の理由が違います。pair の主 reviewer（MULTI_AGENT_REVIEW_MAIN / プロジェクト設定で指定したもの）が未導入なら「main reviewer '<名前>' is not installed.」で止まります（例: 主を claude-code に設定したまま grok だけが入っている環境。MULTI_AGENT_REVIEW_MAIN=<cli> を付けて再実行すると主を変えられます。委譲先の --set-reviewers はこのシムでは受け付けません — multi-agent.sh を直接呼ぶときだけ使えます）。" >&2
+    echo "         プランが出ない場合は、rc=1 の理由を読み分けてください。pair の主 reviewer（MULTI_AGENT_REVIEW_MAIN / プロジェクト設定で指定したもの）が未導入なら「main reviewer '<名前>' is not installed.」で止まります（例: 主を claude-code に設定したまま grok だけが入っている環境。MULTI_AGENT_REVIEW_MAIN=<cli> を付けて再実行すると主を変えられます。委譲先の --set-reviewers はこのシムでは受け付けません — multi-agent.sh を直接呼ぶときだけ使えます）。" >&2
     echo "         主 reviewer が未設定なら、委譲先は「No reviewers configured — falling back to the distributed plan.」で分散プランへ縮退し、残りの非従量 AI CLI が観点を引き受けたプランが rc=0 で出ます（pair のプランではありません。copilot だけの環境は既定除外で「Execution plan is empty」の rc=1 です）。" >&2
+    echo "         headless の grok-cli しかなく security-analysis を含む場合は代替不在の rc=1 です。--exclude-reviewers security-analysis で残りを確認するか、対応する CLI を導入してください。" >&2
     echo "         AI CLI が 1 本も PATH に無い環境では、--cli を外しても委譲先の CLI 検出が「No AI CLIs are installed」で止まります（rc=1・プランなし）。" >&2
   elif [ "$DRY_RUN_GIVEN" -eq 1 ]; then
     # --dry-run だが --exclude-cli codex-cli が渡っている回。固定の --cli は残すので、

@@ -80,19 +80,20 @@ else
   bad "cache: Claude cache フォールバックが不正 (rc=$CACHE_RC)"
 fi
 
-cp "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0/scripts/templates/codex-review.sh" "$WORK/cache-template.good"
-printf '\n# mismatch\n' >> "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0/scripts/templates/codex-review.sh"
+# 一致する旧候補を同居させず「一致候補なし」の拒否を測る。
+CACHE_REJECT_HOME="$WORK/cache-reject-home"
+make_cache_toolkit "$CACHE_REJECT_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0" "9.0.0"
+printf '\n# mismatch\n' >> "$CACHE_REJECT_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0/scripts/templates/codex-review.sh"
 printf '%s\n' "$FAKE/scripts" > "$SIDECAR"
 : > "$WORK/argv-cache.log"
 CACHE_RC=0
-run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CODEX_CACHE_HOME" \
+run_isolated_shim -u FF_DEV_TOOLKIT_ROOT CODEX_HOME="$CACHE_REJECT_HOME" \
   CLAUDE_CONFIG_DIR="$WORK/empty-claude-home" ARGV_LOG="$WORK/argv-cache.log" \
   bash "$PLACED" --base develop >"$WORK/cache.log" 2>&1 || CACHE_RC=$?
-mv "$WORK/cache-template.good" "$CODEX_CACHE_HOME/plugins/cache/market/ff-dev-toolkit/9.0.0/scripts/templates/codex-review.sh"
 if [ "$CACHE_RC" -eq 2 ] && [ ! -s "$WORK/argv-cache.log" ] \
    && grep -q '配置済み shim が内容不一致です' "$WORK/cache.log" \
    && ! grep -q 'source=sidecar' "$WORK/cache.log"; then
-  ok "cache: 最大候補の版不整合は sidecar へ落とさず fail closed"
+  ok "cache: 内容一致候補が無ければ最大候補の不一致で止まり、sidecar へ落とさない"
 else
   bad "cache: 版不整合が sidecar へフォールバックした (rc=$CACHE_RC)"
 fi

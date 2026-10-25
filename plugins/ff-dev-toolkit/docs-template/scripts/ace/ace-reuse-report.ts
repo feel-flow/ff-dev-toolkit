@@ -88,6 +88,8 @@ const CURATION_COMMIT_PREFIX = "knowledge:";
  * だけをキュレーションコミットとみなす。
  */
 const CURATION_COMMIT_SUBJECT_PATTERN = /^\w+(?:\([^)]*\))?:\s*ACE-i?\d/u;
+/** 採用前候補の保全もcuration。元ACEへの言及を実装での再利用へ数えない。 */
+const PENDING_CURATION_COMMIT_SUBJECT_PATTERN = /^\w+(?:\([^)]*\))?:\s*(?:#\d+\s+)?ACE-pending-(?:PR|ISSUE)-[1-9]\d*-[1-9]\d*\b/u;
 const CURATION_COMMIT_BODY_MARKER_PATTERN = /^Categories:\s/mu;
 
 /** ace-refine-report.ts の昇格候補フィルタからも参照するため export する */
@@ -297,7 +299,8 @@ export function computeReuseStats(
   for (const commit of commits) {
     const isCurationCommit =
       commit.subject.startsWith(CURATION_COMMIT_PREFIX) ||
-      (CURATION_COMMIT_SUBJECT_PATTERN.test(commit.subject) && CURATION_COMMIT_BODY_MARKER_PATTERN.test(commit.body));
+      ((CURATION_COMMIT_SUBJECT_PATTERN.test(commit.subject) || PENDING_CURATION_COMMIT_SUBJECT_PATTERN.test(commit.subject)) &&
+        CURATION_COMMIT_BODY_MARKER_PATTERN.test(commit.body));
     if (isCurationCommit) {
       continue;
     }

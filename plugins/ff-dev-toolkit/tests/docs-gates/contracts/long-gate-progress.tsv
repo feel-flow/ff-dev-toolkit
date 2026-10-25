@@ -1,0 +1,8 @@
+# 長時間ゲートの表示契約。欠落・空・節外移動を赤にする。
+section	05-operations/deployment/git-workflow.md	#### 長時間ゲートの進捗表示	利用者へ生出力を表示する起動手段・同じ実行を再観測する手段・対象処理の終了状態と終了コードを取得する手段	表示・再観測・元処理の終了を能力条件にする
+section	05-operations/deployment/git-workflow.md	#### 長時間ゲートの進捗表示	対象コマンドはパイプ無しで起動し、生出力を表示する。	出力をパイプせず表示する
+section	05-operations/deployment/git-workflow.md	#### 長時間ゲートの進捗表示	終了コード不明は未確認と記録する。	不明な終了コードを成功にしない
+section	05-operations/deployment/git-workflow.md	#### 長時間ゲートの進捗表示	ゲートを二重起動しない。	既存実行の可視化で再起動しない
+section	05-operations/deployment/git-workflow.md	#### 長時間ゲートの進捗表示	中断後も子を含む終了確認まで入力凍結を維持する。	中断後の凍結を維持する
+section	05-operations/deployment/git-workflow.md	#### 長時間ゲートの進捗表示	この表示分岐は委譲先の明示 timeout・foreground 契約を上書きしない。	委譲先の foreground 契約を維持する
+section	05-operations/deployment/git-workflow.md	#### 長時間ゲートの進捗表示	`--terminal-capability available`	能力入力を doctor へ引き継ぐ

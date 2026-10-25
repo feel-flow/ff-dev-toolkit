@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 空振り検出: 断片内容の条件行Eを消すと208件中2件、条件付き実行例の注記を消すと1件が赤。正常対照と無害なhelperコメントの追加は緑（2026-10-23、変異ハーネス実測）。
+# 空振り検出: 読み直しWARNの規定だけ/最終報告だけを別内容へ変える各変異もrc1で検出（2026-10-24実測、正常210件pass）。
 #
 # Skill frontmatter と単一正本のポリシー検査（Issue #141 / #145 / #996 / ACE-147-1）。
 #
@@ -167,6 +169,17 @@ check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '❌ 不一致のため
 PRE_COMMIT_PREFLIGHT_HEADING='### 8. staged ファイル種別ごとの静的 suite プリフライト'
 PRE_COMMIT_TABLE_HEADING='#### 種別 → 単体で回す静的 suite（固定表）'
 PRE_COMMIT_STEPS_HEADING='#### プリフライトの実行手順'
+PRE_COMMIT_BYTES_HEADING='#### staged SKILL 本線の容量'
+check_pre_commit_shell_step "$PRE_COMMIT_BYTES_HEADING" 'skill_byte_scan "$r"' \
+  'staged SKILLの軽量容量検査を呼ぶ'
+check_pre_commit_shell_step "$PRE_COMMIT_BYTES_HEADING" 'index の blob' \
+  '容量はcommitされるindexを測る'
+check_pre_commit_shell_step "$PRE_COMMIT_BYTES_HEADING" 'commit へ進まない' \
+  '容量超過と未検査ではcommitへ進まない'
+check_pre_commit_shell_step "$PRE_COMMIT_TABLE_HEADING" '| E. 断片内容（Bへの条件付き追加） | `changelog.d/*.md` が staged（ACMR）。README.md と下位ディレクトリは除く | `changelog-fragments` |' \
+  '断片suiteは対象断片をstageした回だけ追加'
+check_pre_commit_shell_step "$PRE_COMMIT_STEPS_HEADING" '# E が当たった回だけ（断片が無い回は B に追加しない）' \
+  '断片無しの回にBの判定を変えない実行例'
 
 # 手順 8 の散文が持つべき規定。プリフライトは全件ゲートの絞り込みではないこと（全件ゲートの
 # 既定を変更連動選択にする設計を退けた過去の判断との整合）、監視 glob を持たない固定表で
@@ -244,6 +257,10 @@ check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '### version 随伴（c
   '出力テンプレートの version 随伴節'
 check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '❌ 断片未検査・claim 判定不能' \
   '出力テンプレート: 断片未検査・claim 判定不能の状態'
+check_pre_commit_shell_step "$PRE_COMMIT_VERSION_HEADING" 'WARNだけではcommitを止めない' \
+  '断片の読み直しWARNはcommitを止めずindex本文を報告する'
+check_pre_commit_shell_step "$PRE_COMMIT_OUTPUT_HEADING" '⚠️ 読み直しWARN' \
+  '出力テンプレートが読み直しWARNを省略しない'
 if [ -f "$PLUGIN_ROOT/scripts/check-version-claims.sh" ]; then
   ok "pre-commit-check — 手順 8 が呼ぶ claim validator が実在する: scripts/check-version-claims.sh"
 else
@@ -260,8 +277,8 @@ fi
 # 持たない行があるときは「照合対象ゼロで緑」にならないよう fail-closed で赤にする。
 # 外部コマンドは awk だけを使う（本 suite は一時領域も jq 以外の外部コマンドも要らない
 # 純粋なファイル検査である。here-doc / here-string は一時ファイルを要求するので使わない）。
-# 種別 A〜D の 4 系統（bundle `#1913` で D を追加）。
-PRE_COMMIT_TABLE_MIN_ROWS=4
+# 種別 A〜E（断片内容の追加は対象断片をstageした回だけ）。
+PRE_COMMIT_TABLE_MIN_ROWS=5
 
 # want=rows: データ行数 / want=empty: suite 名を 1 つも持たない行番号 / want=names:
 # 重複除去した suite 名（空白区切り）。いずれも 1 行だけを返す。

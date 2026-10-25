@@ -47,10 +47,13 @@
 #          がそのタグを持てば clone で、無ければそのタグだけを一時 bare repo へ depth 1 で取って照合する。
 #          公開リポジトリへ届かない回だけ clone の最新タグで照合する。どちらも引けない・helper を
 #          読めない回は判定不能（rc=2）へ倒す。断片に path 形の参照が無ければ取得しない
+#       7. 同branchの断片がHEADにあり、その確定集合を1件もstageしていない後続公開変更には
+#          stderrへ読み直しWARNと全断片のindex本文を出す。正常stdout/rc0を変えず、取得失敗はrc2
 #
 # 出力と終了コード:
 #   rc=0  stdout `changelog-fragment: ok <N>`        公開対象の変更に対し断片 N 件（1 以上）。帰属照合も通過
 #                                                    （照合した相手、または照合不要の旨は stderr の `帰属検査:` 行）
+#                                                    後続の公開変更で断片をstageしなければstderrにWARN/全index本文
 #   rc=0  stdout `changelog-fragment: none`          staged に数える公開対象の変更が無い（「違反なし」ではなく「対象なし」）
 #   rc=0  stdout `changelog-fragment: consumed <N>`  断片を集約するリリース準備の回（N は削除した断片数）
 #   rc=1  stdout `公開対象を変更したのに changelog.d/ 断片がありません: <先頭パス>（公開対象 <M> 件）`
@@ -171,6 +174,66 @@ _changelog_fragment_attribution() {
   done <"$tmp/frags"
   [ "$suspects" -eq 0 ] || return 1
   echo "帰属検査: 断片 ${n} 件を ${src} の v${tag} と照合（違反なし）" >&2
+  return 0
+}
+
+# _changelog_fragment_recheck <root> <tmp> <base>
+# 確定した集合は frags-z（NUL区切り）。stdoutは既存契約のため変更しない。
+_changelog_fragment_recheck() {
+  local root="$1" tmp="$2" base="$3" path item n=0
+  local -a staged=() fragments=()
+  [ -n "$base" ] || return 0
+  if [ ! -f "$tmp/frags-z" ] || [ ! -r "$tmp/frags-z" ] || [ ! -s "$tmp/frags-z" ]; then
+    echo "断片未検査: 読み直す断片集合が無いか空、または読めません" >&2
+    return 2
+  fi
+  path=""
+  while IFS= read -r -d '' path; do
+    [ -n "$path" ] || { echo "断片未検査: 読み直す断片名が空です" >&2; return 2; }
+    fragments+=("$path")
+  done <"$tmp/frags-z"
+  if [ -n "$path" ] || [ "${#fragments[@]}" -eq 0 ]; then
+    echo "断片未検査: 読み直す断片集合がNULで終端していません" >&2
+    return 2
+  fi
+  if ! git -C "$root" diff --cached --name-only -z --no-relative --no-renames \
+    --diff-filter=ACDMRT -- 'changelog.d/*.md' >"$tmp/recheck-staged" 2>"$tmp/err"; then
+    echo "断片未検査: 読み直し判定のstaged一覧を取得できません" >&2
+    return 2
+  fi
+  path=""
+  while IFS= read -r -d '' path; do
+    [ -n "$path" ] || { echo "断片未検査: 読み直し判定の一覧に空のパスがあります" >&2; return 2; }
+    staged+=("$path")
+  done <"$tmp/recheck-staged"
+  if [ -n "$path" ]; then
+    echo "断片未検査: 読み直し判定の一覧がNULで終端していません" >&2
+    return 2
+  fi
+  for path in ${fragments[@]+"${fragments[@]}"}; do
+    for item in ${staged[@]+"${staged[@]}"}; do
+      [ "$path" != "$item" ] || return 0
+    done
+  done
+  # baseに無くindexにある確定断片が非stagedならHEADにも同じ本文がある。HEAD一覧は再取得しない。
+  # 帰属照合が同じ順で保存したindex本文を再利用し、全件読めてからWARNを出す。
+  printf '%s\n' 'WARN changelog-fragment: 今回の公開変更と次の断片が食い違っていないか読み直してください（commit継続可）' >"$tmp/recheck-warning"
+  for path in ${fragments[@]+"${fragments[@]}"}; do
+    n=$((n + 1))
+    if [ ! -f "$tmp/body.$n" ] || [ ! -r "$tmp/body.$n" ]; then
+      echo "断片未検査: 読み直す断片の保存済みindex本文を読めません: ${path}" >&2
+      return 2
+    fi
+    printf '\n断片: %s (index)\n' "$path" >>"$tmp/recheck-warning"
+    if ! cat "$tmp/body.$n" >>"$tmp/recheck-warning"; then
+      echo "断片未検査: 読み直す断片本文を表示できません: ${path}" >&2
+      return 2
+    fi
+  done
+  if ! cat "$tmp/recheck-warning" >&2; then
+    echo "断片未検査: 読み直しWARNを表示できません" >&2
+    return 2
+  fi
   return 0
 }
 
@@ -303,10 +366,14 @@ EOF
     fi
     frag=$((frag + 1))
     printf '%s\n' "$path" >>"$tmp/frags"
+    printf '%s\0' "$path" >>"$tmp/frags-z"
   done <"$tmp/add"
   if [ "$frag" -gt 0 ]; then
     rc=0
     _changelog_fragment_attribution "$root" "$tmp" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      _changelog_fragment_recheck "$root" "$tmp" "$base" || rc=$?
+    fi
     rm -rf "$tmp"
     [ "$rc" -eq 0 ] || return "$rc"
     echo "changelog-fragment: ok ${frag}"

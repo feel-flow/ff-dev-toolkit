@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# 起動時の負荷・並走観測（Issue `#2042`）: 論理コア数×10を超えるload、または同じホストの
+# 独立run-all（別repo/worktreeを含む）をstderrへ警告する。親子系列は並走に数えない。
+# 高負荷・並走・測定不能の回だけstartup-load summaryを足す。通常出力・jobs・合否・rcは維持。
+# FF_RUN_ALL_LOAD_SAMPLEは検査専用の注入口。通常は未設定にする。
 #
 # ff-dev-toolkit prompt fixture regression test runner.
 #
@@ -318,6 +322,195 @@ ff_emit_summary_head() {
 }
 # <<< ff-summary-head-block
 
+# >>> ff-startup-load-block
+ff_startup_sysctl() {
+  if command -v sysctl >/dev/null 2>&1; then
+    LC_ALL=C sysctl "$@"
+  elif [[ -x /usr/sbin/sysctl ]]; then
+    LC_ALL=C /usr/sbin/sysctl "$@"
+  else
+    return 127
+  fi
+}
+ff_startup_measure_load() {
+  local sample=""
+  if [[ -n "${FF_RUN_ALL_LOAD_SAMPLE:-}" ]]; then
+    sample="$FF_RUN_ALL_LOAD_SAMPLE"
+  elif [[ -r /proc/loadavg ]]; then
+    sample="$(awk '{print $1; exit}' /proc/loadavg 2>/dev/null)" || sample=""
+  else
+    # macOS: "{ 3.74 4.48 14.04 }"
+    sample="$(ff_startup_sysctl -n vm.loadavg 2>/dev/null | awk '{gsub(/[{}]/, ""); print $1; exit}')" || sample=""
+  fi
+  [[ "$sample" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+  printf '%s\n' "$sample"
+}
+ff_startup_measure_cores() {
+  local cores=""
+  if command -v getconf >/dev/null 2>&1; then
+    cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || cores=""
+  fi
+  if [[ ! "$cores" =~ ^[1-9][0-9]*$ ]] && command -v nproc >/dev/null 2>&1; then
+    cores="$(nproc 2>/dev/null)" || cores=""
+  fi
+  if [[ ! "$cores" =~ ^[1-9][0-9]*$ ]]; then
+    cores="$(ff_startup_sysctl -n hw.ncpu 2>/dev/null)" || cores=""
+  fi
+  [[ "$cores" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$cores"
+}
+# Startup observation is diagnostic only; selection, scheduling and exit stay unchanged.
+FF_STARTUP_LOAD_PER_CORE=10
+
+# Independent runners are found across repositories/worktrees. The existing Git-dir
+# marker serves nested effort accounting and is deliberately not a host registry.
+ff_startup_other_gates() {
+  local snapshot candidates pid script recorded observed cwd_info process_cwd
+  snapshot="$(LC_ALL=C ps -ww -eo pid=,ppid=,args= 2>/dev/null)" || return 1
+  candidates="$(printf '%s\n' "$snapshot" | awk -v self="$$" '
+    function base(s) { sub(/^.*\//, "", s); return s }
+    function runner(s, a,n,i,p,b) {
+      n=split(s,a,/[[:space:]]+/); b=base(a[1])
+      if (b=="run-all.sh") return a[1]
+      if (b!="bash" && b!="sh") return ""
+      for(i=2;i<=n;i++) {
+        if(a[i]=="-c" || a[i] ~ /^-[^-]*c/) return ""
+        if(a[i]=="-o" || a[i]=="+o" || a[i]=="-O" || a[i]=="+O" || a[i]=="--rcfile" || a[i]=="--init-file") { i++; continue }
+        if(a[i]=="--") { i++; break }
+        if(a[i] ~ /^[-+]/) continue
+        break
+      }
+      p=a[i]
+      if(base(p)=="run-all.sh") return p
+      if(p ~ /[.]sh$/) return ""
+      # ps flattens argv: a script path containing spaces spans several words.
+      # The caller only accepts this ambiguous form if that full path exists.
+      for(i++;i<=n;i++) {
+        p=p " " a[i]
+        if(a[i] ~ /(^|\/)run-all[.]sh$/) return p
+        if(a[i] ~ /[.]sh$/) return ""
+      }
+      return ""
+    }
+    function ancestor(a,b, i) {
+      for(i=0;i<=count && b in parent;i++) {
+        if(a==b) return 1
+        if(b==0 || parent[b]==b) break
+        b=parent[b]
+      }
+      return 0
+    }
+    function samegate(a,b, g) {
+      for(g in gates) if(ancestor(g,a) && ancestor(g,b)) return 1
+      return 0
+    }
+    NF {
+      if($1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || NF<3) { bad=1; next }
+      pid=$1; parent[pid]=$2; count++
+      command=$0; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "", command)
+      commands[pid]=command
+    }
+    END {
+      if(bad || !(self in parent)) exit 1
+      for(pid in commands) {
+        paths[pid]=runner(commands[pid])
+        if(paths[pid]!="") gates[pid]=1
+      }
+      for(pid in gates) {
+        path=paths[pid]
+        if(!ancestor(pid,self) && !ancestor(self,pid) && !samegate(pid,self))
+          printf "%s\t%s\t%s\n",pid,path,commands[pid]
+      }
+    }
+  ')" || return 1
+  [[ -n "$candidates" ]] || return 0
+  printf '%s\n' "$candidates" | {
+    local unavailable=0
+    while IFS=$'\t' read -r pid script recorded; do
+      case "$script" in
+        *' '*)
+          case "$script" in
+            /*) [[ -f "$script" ]] || continue ;;
+            *)
+              # A relative argv belongs to the observed process, not our cwd.
+              if [[ -d "/proc/$pid/cwd" ]]; then
+                [[ -f "/proc/$pid/cwd/$script" ]] || continue
+              else
+                cwd_info="$(LC_ALL=C lsof -a -p "$pid" -d cwd -Fn 2>/dev/null)" || { unavailable=1; continue; }
+                process_cwd="$(printf '%s\n' "$cwd_info" | awk '/^n\// { sub(/^n/, ""); print; count++ } END { if(count!=1) exit 1 }')" || { unavailable=1; continue; }
+                [[ -f "$process_cwd/$script" ]] || continue
+              fi
+              ;;
+          esac
+          ;;
+      esac
+      if observed="$(LC_ALL=C ps -ww -o args= -p "$pid" 2>/dev/null)"; then
+        observed="${observed#"${observed%%[![:space:]]*}"}"
+        # Re-read the PID so an exited/reused process cannot be a stale gate.
+        [[ -n "$observed" && "$observed" == "$recorded" ]] || continue
+        printf '%s:%s\n' "$pid" "$script"
+      elif kill -0 "$pid" 2>/dev/null; then
+        unavailable=1
+      fi
+    done
+    [[ "$unavailable" == 0 ]]
+  }
+}
+
+ff_capture_startup_load() {
+  local others others_rc=0 comparison_rc core_digits_limit=8
+  FF_STARTUP_LOAD=unknown
+  FF_STARTUP_CORES=unknown
+  FF_STARTUP_THRESHOLD=unknown
+  FF_STARTUP_OTHER_GATES=unknown
+  FF_STARTUP_PRESSURE=0
+  FF_STARTUP_REPORT=0
+  FF_STARTUP_LOAD="$(ff_startup_measure_load)" || FF_STARTUP_LOAD=unknown
+  FF_STARTUP_CORES="$(ff_startup_measure_cores)" || FF_STARTUP_CORES=unknown
+  # A machine cannot have a useful core count of hundreds of millions; avoid
+  # arithmetic overflow on malformed command output without inventing a fallback.
+  if [[ "$FF_STARTUP_CORES" != unknown && ${#FF_STARTUP_CORES} -le "$core_digits_limit" ]]; then
+    FF_STARTUP_THRESHOLD=$((FF_STARTUP_CORES * FF_STARTUP_LOAD_PER_CORE))
+  else
+    FF_STARTUP_CORES=unknown
+  fi
+  if [[ "$FF_STARTUP_LOAD" != unknown && "$FF_STARTUP_THRESHOLD" != unknown ]]; then
+    if awk -v l="$FF_STARTUP_LOAD" -v t="$FF_STARTUP_THRESHOLD" 'BEGIN { exit !(l > t) }' 2>/dev/null; then
+      FF_STARTUP_PRESSURE=1
+    else
+      comparison_rc=$?
+      [[ "$comparison_rc" == 1 ]] || FF_STARTUP_LOAD=unknown
+    fi
+  fi
+  others="$(ff_startup_other_gates)" || others_rc=$?
+  if [[ -n "$others" ]]; then
+    FF_STARTUP_OTHER_GATES="${others//$'\n'/,}"
+    [[ "$others_rc" == 0 ]] || FF_STARTUP_OTHER_GATES="${FF_STARTUP_OTHER_GATES},unknown"
+    FF_STARTUP_PRESSURE=1
+  elif [[ "$others_rc" == 0 ]]; then
+    FF_STARTUP_OTHER_GATES=none
+  fi
+  if [[ "$FF_STARTUP_PRESSURE" == 1 || "$FF_STARTUP_LOAD" == unknown ||
+        "$FF_STARTUP_CORES" == unknown || "$FF_STARTUP_OTHER_GATES" == unknown ]]; then
+    FF_STARTUP_REPORT=1
+  fi
+  if [[ "$FF_STARTUP_PRESSURE" == 1 ]]; then
+    echo "⚠️  起動時の負荷: load average ${FF_STARTUP_LOAD}; 閾値 ${FF_STARTUP_THRESHOLD}（${FF_STARTUP_CORES} コア × ${FF_STARTUP_LOAD_PER_CORE}）; 他ゲート ${FF_STARTUP_OTHER_GATES} — ゲートを続行します" >&2
+  fi
+  return 0
+}
+
+ff_emit_startup_load() {
+  [[ "$FF_STARTUP_REPORT" == 1 ]] || return 0
+  echo "startup-load: load=${FF_STARTUP_LOAD} cores=${FF_STARTUP_CORES} threshold=${FF_STARTUP_THRESHOLD} other-gates=${FF_STARTUP_OTHER_GATES} (unknown=未測定)"
+  if [[ "$FF_STARTUP_PRESSURE" == 1 && ${#FAILED[@]} -gt 0 ]]; then
+    echo "⚠️  負荷の高い状態または別ゲートの並走中に開始しました。赤の suite は単体で再実行して切り分けてください。"
+  fi
+  return 0
+}
+ff_capture_startup_load
+# <<< ff-startup-load-block
+
 if [[ $# -gt 0 ]]; then
   SCRIPTS=("$@")
   USING_DEFAULT_SCRIPTS=0
@@ -327,6 +520,8 @@ else
 
     # 重い suite を先に投入し、最後の 1 本だけを待つ時間を減らす。検査対象は変えない。
     "$SCRIPT_DIR/run-all/verify.sh"
+    # 起動時の負荷・独立並走・unknownを成功/失敗の実runnerで検証する。
+    "$SCRIPT_DIR/run-all-startup-load/verify.sh"
     # 統合レポートの CRITICAL_BLOCK 判定の構造検査（Issue `#272`）と観点別段階化の
     # 契約検査（Issue `#645`）。一時 git リポジトリ + stub CLI で orchestrator を
     # ケースごとに実走する（1 ケース数秒）。実 CLI・ネットワーク・課金は伴わない。
@@ -387,6 +582,8 @@ else
     # を隔離 git fixture で叩く（Issue `#1741` / OBS-206）。同じ commit 前ガード lib の回帰として
     # mbcs-guard-failclosed の直後に置く。一時領域・git が無ければ skip せず赤（1 秒前後）。
     "$SCRIPT_DIR/precommit-exec-bit/verify.sh"
+    # staged suite の対を名指し・実行する commit 前検査（隔離 Git fixture）。
+    "$SCRIPT_DIR/precommit-selftest-pairs/verify.sh"
     # 共通 lib tests/lib/section-scope.sh のフェンス状態機械（字下げ・チルダ・4 連・未閉じ）と
     # 見出し本数のガードを fixture 文書で直接叩く。consumer 文書はチルダ・未閉じを踏まないので、
     # その分岐はここでしか実行されない。一時領域が作れなければ skip せず赤で止める（1 秒未満）。
@@ -434,6 +631,8 @@ else
     # 同じ設定ファイルを扱う cli-registry-completeness の直後に置く。
     "$SCRIPT_DIR/agent-config-doc-sync/verify.sh"
     "$SCRIPT_DIR/ace-curate-commit/verify.sh"
+    # 容量停止候補の保存・再評価・lookup（Issue `#2040`）。skip不可。
+    "$SCRIPT_DIR/ace-pending/verify.sh"
     # 行数バジェット例外の運用 SSOT（PLAYBOOK）と live、README の参照、見本
     # ACE-000-3 の 4 条件を静的に照合する（Issue #351）。外部コマンド・一時領域不要。
     "$SCRIPT_DIR/ace-line-budget-docs/verify.sh"
@@ -777,11 +976,11 @@ else
     "$SCRIPT_DIR/adapter-model-args/verify.sh"
     # アダプタが渡す sandbox 値が、その CLI が実際に受け付ける値かの契約検査
     # （Issue #403）。同じ argv 実測のクラスなので adapter-model-args の直後。
-    # 層 1 は stub CLI のみ。層 2 だけは**実 CLI の `--help`** を読むが、これは
-    # clap/yargs のヘルプ生成でローカル完結し、ネットワーク・課金・認証・エージェント
-    # 実行のいずれも伴わない（CLI が PATH に無ければその照合だけ ○ skip）。
-    # よってネットワーク検査より前のこの位置でよい（〜3 秒）。
+    # 層 1 は stub CLI。層 2 は help / sandbox / exec の各 probe を含む。
+    # 呼出の内容と成立条件は suite README を参照。CLI 不在は照合ごとに skip。
     "$SCRIPT_DIR/adapter-sandbox-contract/verify.sh"
+    # 対の selftest は実 suite の入口を隔離 Git fixture と偽 CLI で検証する。
+    "$SCRIPT_DIR/adapter-sandbox-contract-selftest/verify.sh"
     # 同梱レビューラッパー（シム）の契約（Issue #406）: AI CLI を直接起動しない
     # こと（stdin の罠を構造的に持たないこと）と、オプション・env を黙って捨てない
     # こと、setup による配置が冪等であることを固定する。stub オーケストレータのみで
@@ -1122,6 +1321,9 @@ fi
 # のときだけで、既定実行では「除外した selftest のうち何件が必須名簿掲載か」をサマリーが
 # 名指しする（意図した除外であることは変わらないが、重みが読めるようにする）。
 REQUIRED_SUITES=(
+  # commit 前の対の実行・失敗判定を消さない。SKIP 文字列は負例 fixture 内のみ。
+  precommit-selftest-pairs
+  run-all-startup-load
   # Consumer ready の証跡束縛を検証する唯一の suite。
   review-evidence
   # 緩めた本文差分述語（チェックボックス + ff-effort ブロックだけを許可）の behavioral
@@ -1199,6 +1401,7 @@ REQUIRED_SUITES=(
   docs-gates-runtime
   adapter-model-args
   adapter-sandbox-contract
+  adapter-sandbox-contract-selftest
   # build_prompt の実行境界（再帰防止・staging 出力境界・出力モードの排他）と、
   # レビュー指摘の差分スコープ契約。どちらも他の suite が見ていない実行時契約を
   # 単独で守っており、一時領域が無いと丸ごと消える（Issue #564）。公開 checkout でも
@@ -1384,6 +1587,7 @@ REQUIRED_SUITES=(
   # 未対策として返さない状態切り分けと、store 不在・読めない・見出し書式変更の既定を見る唯一の
   # 層で、一時領域不足で skip すると「対策済みの観測を未対策として実装判断へ混ぜる」退行が黙って戻る。
   knowledge-lookup
+  ace-pending
 )
 
 # ── 「空振り検出」宣言を免除する既存 suite の名簿（縮める方向にしか動かさない）────
@@ -1397,7 +1601,6 @@ REQUIRED_SUITES=(
 # suite はここから外す（載ったままだと赤: 名簿が「未実測」を主張し続ける形を残さない）。
 # 実在しない名前も赤（改名・削除に追従できていない行は何も免除していない）。
 MISS_PROBE_BASELINE=(
-  ace-curate-fallback-exec
   ace-line-budget-docs
   ace-scripts-mirror-selftest
   ace-scripts-mirror
@@ -1409,7 +1612,6 @@ MISS_PROBE_BASELINE=(
   adapter-model-args
   adapter-prompt-utf8
   agent-config-doc-sync
-  asdd-runtime
   auto-update-hook
   background-child-reclaim-contract
   changelog-contract-selftest
@@ -1446,7 +1648,6 @@ MISS_PROBE_BASELINE=(
   mcp-vitest
   multi-agent-ignore-paths
   multi-agent-revision-guard
-  multi-agent-serialization
   multi-agent-skip-poisoned-cli
   multi-agent-stale-outputs
   multi-agent-timeout
@@ -1467,7 +1668,6 @@ MISS_PROBE_BASELINE=(
   severity-parser-intersection
   shellcheck
   skill-count-consistency-selftest
-  skill-frontmatter
   sweep-orphan-transcripts
   update-check
   validate-docs-placeholders-selftest
@@ -2906,6 +3106,7 @@ fi
 # 実行数が食い違ったまま success を名乗らないことが、本 Issue の masking 対策の本体。
 ff_emit_summary_head
 ff_emit_elapsed
+ff_emit_startup_load
 # 変更ベースの選択（ADR-062）: 選んだ件数と根拠（suite 名 ← 変更パス ← token）を出す。
 # `suites: selected=` は部分実行であることを機械が読む行で、交差 0 件の回も 0 を明示する
 # （空集合を「全部通った」と読ませない）。全件へ倒した回は理由を出す。

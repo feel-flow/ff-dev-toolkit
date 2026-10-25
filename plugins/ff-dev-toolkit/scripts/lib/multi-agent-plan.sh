@@ -232,6 +232,40 @@ build_distributed_plan() {
     done <<< "$EXECUTION_PLAN"
     EXECUTION_PLAN="$new_plan"
   fi
+
+  finalize_distributed_review_plan
+}
+
+# headless Grok/security-analysis の承認待ち・本文なしを避ける。
+# 所有・fallback・コスト調整の後に適用し、他の構築経路から戻されないようにする。
+# Grok 自身への native 委譲は headless CLI を起動しないので保持する。
+finalize_distributed_review_plan() {
+  [[ "$TASK_TYPE" == "review" ]] || return 0
+  task_is_delegated grok-cli && return 0
+  local entry cli eligible="" target new_plan=""
+  for cli in $AVAILABLE_CLIS; do
+    [[ "$cli" == "grok-cli" ]] && continue
+    if [[ -n "$CLI_FILTER" ]] && ! list_contains "$CLI_FILTER" "$cli"; then continue; fi
+    eligible="${eligible:+$eligible }$cli"
+  done
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    if [[ "$entry" == "grok-cli:security-analysis" ]]; then
+      target="$(AVAILABLE_CLIS="$eligible" resolve_available_fallback grok-cli)"
+      if [[ -z "$target" ]]; then
+        echo "ERROR: security-analysis is unsupported on headless grok-cli; no permitted alternative CLI is available." >&2
+        echo "       Install/allow codex-cli or claude-code and select it with --cli;" >&2
+        echo "       a Grok host can instead use --cli grok-cli --delegate-to-host=grok-cli." >&2
+        echo "       To run only the other perspectives, use --exclude-perspective security-analysis." >&2
+        return 1
+      fi
+      echo "  ↪ security-analysis: grok-cli → ${target} [$(get_cli_cost_tier "$target")] (headless Grok cannot reliably return this review; plan-time alternative)" >&2
+      entry="${target}:security-analysis"
+    fi
+    new_plan="${new_plan:+$new_plan
+}${entry}"
+  done <<< "$EXECUTION_PLAN"
+  EXECUTION_PLAN="$new_plan"
 }
 
 # ── Build Execution Plan (pair mode: main + sub) ──

@@ -377,6 +377,7 @@ EOF
   # consumer 名簿を件数 + ファイル名で pin する（1 件でも raw init + config へ戻れば赤。
   # 移行を増やしたらこの名簿も更新する）
   expected_users="ace-curate-commit/verify.sh
+ace-pending/verify.sh
 adapter-argv-limit/verify.sh
 adapter-base-ref-freshness/verify.sh
 adapter-model-args/verify.sh
@@ -415,6 +416,7 @@ multi-agent-stale-outputs/verify.sh
 multi-agent-timeout/verify.sh
 mutation-harness/verify.sh
 precommit-exec-bit/verify.sh
+precommit-selftest-pairs/verify.sh
 release-required-selftest/verify.sh
 review-capture-fail-loud/verify.sh
 review-diff-scope/verify.sh
@@ -422,6 +424,7 @@ review-wrapper-shim/base-ref-diff-guard-cases.sh
 review-wrapper-shim/codex-absent-real-orchestrator-cases.sh
 review-wrapper-shim/recovery-mode-cases.sh
 reviewer-pair/verify.sh
+run-all-startup-load/verify.sh
 shared-version-convergence/cases/base-guard-fetch-stderr.sh
 shared-version-convergence/cases/claim-helper-failures.sh
 shared-version-convergence/cases/merge-races.sh

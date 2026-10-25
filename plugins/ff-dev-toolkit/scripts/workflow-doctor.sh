@@ -13,7 +13,7 @@
 # 「Codex レビューを常に必須」と書き、そのリポジトリに無い `npm run code-review:codex` を指示していた（Issue `#2089`）。
 # 入口文書の旧文言は「契約表」（scan_contract の 1 行 = 1 契約）で検査し、契約を足すときは行を足す。
 #
-# 検査（11 項目。7 は INFO のみ。番号は SKILL.md の表と同じ）:
+# 検査（12 項目。7 は INFO のみ。番号は SKILL.md の表と同じ）:
 #   1. 判定順の矛盾   — 入口文書（CLAUDE.md / AGENTS.md / .cursor/ / copilot-instructions / グローバル CLAUDE.md）
 #                       に「発見 = 起票」の旧文言が無いこと（契約表の 1 行目）
 #   2. 節の必須語     — CLAUDE.md の「## スコープ外」で始まる節に YAGNI と bundle が在ること（節が無ければ WARN）
@@ -28,6 +28,7 @@
 #                       指示するレビュー用 `npm run <script>` がこのリポジトリの package.json に実在すること
 #  10. 入口のパリティ — CLAUDE.md と AGENTS.md の両方があるとき、契約の必須語（YAGNI / bundle）の有無が揃うこと
 #  11. Draft の実態   — 自分が author の open な Draft PR が残っていないこと（`knowledge:` の ACE PR は除く）
+#  12. 長時間ゲートの表示 — Terminal 能力 available 時だけ、入口の background 固定規定を WARN（行単位）
 #
 # 4〜6 と 11 は gh を使う。`--offline` で飛ばす（結果は SKIP として数え、緑にはしない）。
 #
@@ -45,6 +46,7 @@
 #     --settings       Stop hook を読む settings.json（繰り返し可。既定: <root>/.claude/settings.json、<root>/.claude/settings.local.json、$CLAUDE_CONFIG_DIR/settings.json）
 #     --offline        gh を使う検査（4〜6・11）を SKIP にする
 #     --repo           gh の対象（既定: origin から解決）
+#     --terminal-capability available|unavailable|unknown（既定 unknown。呼出側が起動・再観測・対象 rc 取得を確認して渡す）
 #
 # 出力: 1 行 1 所見 `<LEVEL>\t<番号>\t<所見>`（LEVEL は FAIL / WARN / INFO / OK / SKIP）。FIXTEXT 行は置換案。
 #       SUGGEST 行は提案（SUMMARY の直前にまとめて出す）。末尾に `SUMMARY fail=<n> warn=<n> skip=<n>`。
@@ -218,6 +220,7 @@ set -u
 export LC_ALL=C
 
 ROOT=""; GLOBAL_CLAUDE=""; OFFLINE=0; REPO=""; SETTINGS=(); GITHUB_INPUT=""; GITHUB_TMP=""; GITHUB_REPOSITORY=""
+TERMINAL_CAPABILITY=unknown
 need_value() { # $1 option, $2 remaining argc — 値なしで最終引数のとき `shift 2` が空振りして同じ分岐を回り続ける（レビューで実測）ので、先に止める
   [ "$2" -ge 2 ] || { echo "workflow-doctor: $1 には値が要ります" >&2; exit 2; }
 }
@@ -229,6 +232,12 @@ while [ $# -gt 0 ]; do
     --offline) OFFLINE=1; shift ;;
     --github-input) need_value "$1" $#; [ -n "$2" ] || { echo "--github-input requires a non-empty index path" >&2; exit 2; }; GITHUB_INPUT="$2"; shift 2 ;;
     --repo) need_value "$1" $#; REPO="$2"; shift 2 ;;
+    --terminal-capability)
+      need_value "$1" $#
+      case "$2" in available|unavailable|unknown) TERMINAL_CAPABILITY="$2" ;;
+        *) echo "workflow-doctor: --terminal-capability は available|unavailable|unknown のいずれかです" >&2; exit 2 ;;
+      esac
+      shift 2 ;;
     -h|--help) awk 'NR >= 2 && /^# ff-dev-toolkit-script-root-guard:st[a]rt$/ { exit } NR >= 2 { print }' "$0"; exit 0 ;;   # marker 文字列を分割して書く（marker 件数の検査に当てない）
     *) echo "workflow-doctor: 不明な引数: $1" >&2; exit 2 ;;
   esac
@@ -281,8 +290,8 @@ fi
 # だけで一致する（fixture のディレクトリ名 review-cond が require の review に当たって誤検出した — 実測）。
 # strip は「行の一部だけが旧文言に見える注記」を本文から取り除いてから pattern を当て直す。exempt は行全体を
 # 落とすので、注記を exempt にすると同じ行の本物の旧文言まで隠れる（レビューで実測）。strip は注記の部分だけを消す。
-scan_contract() { # no pattern exempt label fixtext [require] [strip]
-  local no="$1" pattern="$2" exempt="$3" label="$4" fixtext="$5" require="${6:-}" strip="${7:-}" hits="" out rc f l text stripped
+scan_contract() { # no pattern exempt label fixtext [require] [strip] [severity]
+  local no="$1" pattern="$2" exempt="$3" label="$4" fixtext="$5" require="${6:-}" strip="${7:-}" severity="${8:-FAIL}" hits="" out rc f l text stripped
   if [ ${#targets[@]} -eq 0 ]; then
     # 同じ 1 つの事実を契約の数だけ WARN にしない（件数が水増しされる）。WARN は検査 1 の 1 件だけ
     if [ "$no" = 1 ]; then
@@ -305,11 +314,30 @@ scan_contract() { # no pattern exempt label fixtext [require] [strip]
       # sed が失敗した行は注記を消さずに元の本文で判定する（空文字列にして黙って落とさない）
       if [ -n "$strip" ] && stripped="$(printf '%s\n' "$text" | sed -E "s/${strip}//g")"; then
         text="$stripped"
-        grep -qiE "$pattern" <<<"$text" || continue
+        grep -qiE "$pattern" <<<"$text"; rc=$?
+        if [ "$rc" -ge 2 ]; then
+          emit FAIL "$no" "grep が失敗した（再照合 rc=${rc}）: ${f}"
+          return
+        fi
+        [ "$rc" -eq 0 ] || continue
       fi
       # require は「同じ行にこの語も在ること」（1 つの ERE で語順の組み合わせを書かずに連言を表す）
-      if [ -n "$require" ] && ! grep -qiE "$require" <<<"$text"; then continue; fi
-      if [ -n "$exempt" ] && grep -qiE "$exempt" <<<"$text"; then continue; fi
+      if [ -n "$require" ]; then
+        grep -qiE "$require" <<<"$text"; rc=$?
+        if [ "$rc" -ge 2 ]; then
+          emit FAIL "$no" "grep が失敗した（必須語 rc=${rc}）: ${f}"
+          return
+        fi
+        [ "$rc" -eq 0 ] || continue
+      fi
+      if [ -n "$exempt" ]; then
+        grep -qiE "$exempt" <<<"$text"; rc=$?
+        if [ "$rc" -ge 2 ]; then
+          emit FAIL "$no" "grep が失敗した（除外語 rc=${rc}）: ${f}"
+          return
+        fi
+        [ "$rc" -eq 0 ] && continue
+      fi
       hits="${hits}${f}:${l}
 "
     done <<EOF
@@ -318,7 +346,7 @@ EOF
   done
   if [ -n "$hits" ]; then
     while IFS= read -r line; do
-      [ -n "$line" ] && emit FAIL "$no" "${label}: ${line}"
+      [ -n "$line" ] && emit "$severity" "$no" "${label}: ${line}"
     done <<EOF
 $hits
 EOF
@@ -749,6 +777,39 @@ EOF
       emit OK 11 "自分が author の open な Draft PR は 0 件（${REPO}）"
     fi
     [ "$ace" -gt 0 ] && emit INFO 11 "knowledge: の ACE PR の Draft ${ace} 件は除外（自律フローの人の確認待ち）"
+  fi
+fi
+
+# ---- 12. 長時間ゲートの表示（ホストの能力は明示入力だけで受け取る） -------------
+if [ "$TERMINAL_CAPABILITY" != available ]; then
+  emit INFO 12 "Terminal 能力 ${TERMINAL_CAPABILITY} のため未検査（能力なし／未確認を適合 OK にしない）"
+else
+  terminal_inputs_ok=1
+  if [ ${#targets[@]} -eq 0 ]; then
+    emit FAIL 12 "入口文書が無いため検査不成立"
+    terminal_inputs_ok=0
+  fi
+  for f in ${targets[@]+"${targets[@]}"}; do
+    if [ ! -r "$f" ] || [ ! -s "$f" ]; then
+      emit FAIL 12 "入口文書が空または読めない: ${f}"
+      terminal_inputs_ok=0
+    else
+      grep -q '[^[:space:]]' "$f"; terminal_content_rc=$?
+      if [ "$terminal_content_rc" -ne 0 ]; then
+        emit FAIL 12 "入口文書が空または読めない（grep rc=${terminal_content_rc}）: ${f}"
+        terminal_inputs_ok=0
+      fi
+    fi
+  done
+  if [ "$terminal_inputs_ok" -eq 1 ]; then
+    # 同じ行の明示的な能力なし fallback だけを除く。「Terminal を使わず常に」は除外しない。
+    terminal_fallback='(Terminal|terminal|ターミナル|能力).*((無い|ない|未確認|使えない)((場合|とき)(は|だけ|、|:|$)|なら|(ホスト|環境)(（.*）|[(].*[)])?(では|なら))|なければ|無ければ)|if.*(Terminal|terminal).*(unavailable|unknown)'
+    # 否定された background 語だけを消す。行全体を除くと同じ行の旧規定まで隠れる。
+    terminal_strip='`?(run_in_background|background|バックグラウンド)`?[[:space:]]*(実行[[:space:]]*)?(オプション)?[[:space:]]*(を|は)?(使わない|使用しない|禁止)|do not (use )?`?(run_in_background|background)`?|自動[[:space:]]*background[[:space:]]*化|長時間ゲートを[[:space:]]*background[[:space:]]*へ回すコマンドは、状態を変える短い検証・修正コマンドと連結しない|`?(run_in_background|background|バックグラウンド)`?[[:space:]]*で[[:space:]]*実行しない'
+    scan_contract 12 'run_in_background|background|バックグラウンド' "$terminal_fallback" \
+      "長時間ゲートの background 固定候補" \
+      "当該セッションの能力を確認し、長時間ゲートの進捗表示へ合わせる（正本: docs-template/05-operations/deployment/git-workflow.md）。能力ありなら Terminal、なし／未確認なら従来経路。対象処理の rc を確認し、表示だけを成功証拠にしない" \
+      '長時間|ゲート|run-all|suite|push|long.running|long gate' "$terminal_strip" WARN
   fi
 fi
 

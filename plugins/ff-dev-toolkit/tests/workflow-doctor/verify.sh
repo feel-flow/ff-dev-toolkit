@@ -2,12 +2,14 @@
 # workflow-doctor（導入先の入口規範とスキルの判定順の矛盾検査）の回帰テスト。
 #
 # 2 層で固定する（assess-impact の形に倣う）:
-#   (A) 生成器規則のドリフト — SKILL.md の検査表に 11 項目が在り、--fix を持たない契約が書かれていること
+#   (A) 生成器規則のドリフト — SKILL.md の検査表に 12 項目が在り、--fix を持たない契約が書かれていること
 #   (B) fixture — 「issue化必須」を含む CLAUDE.md で FAIL 1 が該当行を名指しし rc=1、直した fixture で rc=0。
 #       節の欠落は WARN、必須語の欠落は FAIL、Stop hook の旧 reminder は FAIL、grep 失敗は FAIL。
 #       --offline で gh を使わない（ネットワークに出ない）。
 #
 # 空振り検出: 強制起票の言い換えや別名のスコープ外節を入力し、検出しない旧実装では fixture 2d / 3b が赤。別のスコープ外節だけに必須語がある負対照も固定する。
+# 空振り検出: 検査12の source不在・既定available・WARNのFAIL化・空入口の許容・Terminal語だけでの除外を各1変異で赤と実測（2026-10-24）。正例12/負例14と不在・空・検索失敗のfixtureを要求する。入口不在はSUMMARYまで完走し、Bash 3.2の空配列abortを成功にしない。
+# 空振り検出: grep の再照合・必須語・除外語へ rc2 を注入すると旧 helper は3件赤、修正後は初期検索と合わせ4経路すべて FAIL12（2026-10-24 実測）。
 # 空振り検出（Issue `#2089`）: 契約表の行が当たらない入力でも緑に倒さない — Draft / 特定 CLI の常時必須の旧文言は FAIL 8 / 9 を名指しで要求し（検査が無い旧実装では fixture 7 / 8 が赤）、否定・条件付きの文は OK を要求する。提案の根拠が 0 件の入力では「提案なし」の 1 行を要求し（空の提案節は 10c が赤）、gh が失敗した Draft 一覧は SKIP 11 を要求する（0 件の OK に畳む実装は 11 が赤）。
 # 空振り検出（Issue `#2111`）: 検査 9 の除外は 1 つずつ効きを固定する — 8b は 1 行が新しい除外 1 つだけに当たり、除外を 1 つ外した変異（exempt の在れば / 有れば、strip の `@` 必須）はそれぞれ対応する行だけが FAIL 9 になって 8b が赤（実測）。逆に除外を広げた変異（素の「のみ」/ `@` 単体を exempt へ / `@` 注記を strip ではなく exempt へ）は 8c が赤（実測）。
 # 空振り検出（Issue `#2101`）: strip のリダイレクト注記（`</dev/null` が必須）を外した変異は 8d の 1 本目が FAIL 9 になって赤、先頭文字の制限を外して英字始まりの code span まで消す変異（「`codex` 必須」を消す）は 8c と 8d の 2 本目が赤、助詞の `(が|は|を)?` を素の `が?` へ戻す変異は 8d の 1 本目の助詞の無い行と「は必須」の行が LC_ALL=C で strip されず赤、span の空白禁止を外す変異（`[^`[:space:]]*` を `[^`]*` へ）は 8d の 2 本目 3 行目（「`< /dev/null codex exec review` 必須」）が赤、半角スペースだけの禁止へ狭める変異（`[^` ]*`）は 8d のタブ区切りの行が赤（実測）。
@@ -48,7 +50,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ---- (A) SKILL.md の生成器規則 ---------------------------------------------------
-for needle in "| 1 | 判定順の矛盾" "| 2 | 節の必須語" "| 3 | hook の文言" "| 4 | 起票の受け皿" "| 5 | ラベルの実在" "| 6 | 親無し Issue" "| 7 | 環境変数" "| 8 | Draft PR" "| 9 | レビュー担当" "| 10 | 入口のパリティ" "| 11 | Draft の実態"; do
+for needle in "| 1 | 判定順の矛盾" "| 2 | 節の必須語" "| 3 | hook の文言" "| 4 | 起票の受け皿" "| 5 | ラベルの実在" "| 6 | 親無し Issue" "| 7 | 環境変数" "| 8 | Draft PR" "| 9 | レビュー担当" "| 10 | 入口のパリティ" "| 11 | Draft の実態" "| 12 | 長時間ゲートの表示"; do
   if grep -qF "$needle" "$SKILL"; then ok "SKILL.md の検査表に「${needle#| }」がある"; else bad "SKILL.md の検査表に「${needle#| }」が無い"; fi
 done
 # shellcheck disable=SC2016  # バッククォートを含む固定文字列（展開しないのが正）
@@ -448,6 +450,101 @@ if [ "$rc" -eq 2 ] && grep -q '解決できません' <<<"$out"; then ok "対象
 #     （coreutils の timeout は macOS に無い。alarm 到達時は SIGALRM で rc=142）
 out="$(perl -e 'alarm 5; exec @ARGV' "${DOCTOR[@]}" --root 2>&1)"; rc=$?
 if [ "$rc" -eq 2 ] && grep -q '値が要ります' <<<"$out"; then ok "値なしの --root → rc=2（ハングしない）"; else bad "値なしの --root が rc=${rc}（142 なら無限ループ）"; fi
+
+# 12. 能力は入力だけで決定。実在する CLI やホスト名では available を推測しない。
+d="$(make_root terminal-old "$GOOD_CLAUDE
+長時間ゲートは必ず run_in_background で起動する")"
+for capability in unknown unavailable; do
+  out="$(run_doctor "$d" --terminal-capability "$capability")"; rc=$?
+  if [ "$rc" -eq 0 ] && grep -qE "^INFO$(printf '\t')12$(printf '\t').*${capability}.*未検査" <<<"$out" && ! grep -qE $'^(OK|WARN)\t12\t' <<<"$out"; then
+    ok "Terminal ${capability} は理由付き未検査 / rc0"
+  else bad "Terminal ${capability} を適合と誤認: rc=${rc}"; fi
+done
+out="$(run_doctor "$d")"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q $'^INFO\t12\t.*unknown.*未検査' <<<"$out"; then ok "能力無指定は unknown"; else bad "無指定の能力を推測している"; fi
+
+i=0
+while IFS= read -r rule; do
+  i=$((i + 1)); d="$(make_root "terminal-positive-$i" "$GOOD_CLAUDE
+$rule")"
+  out="$(run_doctor "$d" --terminal-capability available)"; rc=$?
+  if [ "$rc" -eq 0 ] && grep -qE $'^WARN\t12\t.*CLAUDE\\.md:[0-9]+:' <<<"$out" && grep -q $'^FIXTEXT\t12\t' <<<"$out" && ! grep -q $'^FAIL\t12\t' <<<"$out"; then
+    ok "旧 background 候補は WARN / FIXTEXT / rc0 ($i)"
+  else bad "旧 background 候補の検出不成立 ($i): $rule / rc=${rc}"; fi
+done <<'RULES'
+長時間ゲートは必ず run_in_background で起動する
+全件 suite は background で待つ
+ゲート付き push はバックグラウンドで起動する
+long-running gates always use background
+長時間ゲートは Terminal を使わず常に background で待つ
+長時間ゲートは Terminal が無い場合も常に background で待つ
+長時間ゲートは background を使わない。ただし run-all は常に run_in_background
+自動 background 化を避けるため、長時間ゲートは常に run_in_background を使う
+長時間ゲートを background へ回すコマンドは、状態を変える短い検証・修正コマンドと連結しない。ただし全件suiteは必ずrun_in_backgroundで起動する
+Terminal パネルが無いホストでも長時間ゲートは必ず run_in_background で起動する
+Terminal が使えない環境でも長時間ゲートは必ず background で待つ
+git push は background で実行しない。ただし全件suiteは常にrun_in_backgroundで起動する
+RULES
+
+i=0
+while IFS= read -r rule; do
+  i=$((i + 1)); d="$(make_root "terminal-negative-$i" "$GOOD_CLAUDE
+$rule")"
+  out="$(run_doctor "$d" --terminal-capability available)"; rc=$?
+  if [ "$rc" -eq 0 ] && grep -q $'^OK\t12\t' <<<"$out" && ! grep -q $'^WARN\t12\t' <<<"$out"; then
+    ok "条件付き・否定の負対照は WARN にしない ($i)"
+  else bad "負対照を誤検出 ($i): $rule / rc=${rc}"; fi
+done <<'RULES'
+Terminal パネルが無い場合は長時間ゲートを background で待つ
+Terminal 能力が未確認なら長時間ゲートは run_in_background を使う
+if Terminal is unavailable, long-running gates use background
+長時間ゲートでは run_in_background を使わない
+委譲先の長時間コマンドは background 実行オプションを使わない
+do not use background for long-running gates
+長時間ゲートの進捗表示を参照する
+委譲先の長時間コマンドは background 実行オプションを使わない。timeout を明示しないとホストが自動 background 化し、委譲先は完了を追わず停止する
+長時間ゲートを background へ回すコマンドは、状態を変える短い検証・修正コマンドと連結しない。
+能力が無い、または未確認なら従来のログ付き実行と完了通知で待つ。background 完了を待つときは、foreground の sleep や自作の待機ループで待たず、Monitorをarmedして長時間ゲートの完了通知で再開する。
+長時間ゲートは Terminal パネルがあれば run_in_terminal、なければ run_in_background
+長時間ゲートは、Terminal パネルが無いホスト（Codex CLI など）では従来どおり background + ログで待つ
+Terminal が使えない環境では長時間ゲートを background で待つ
+git push は background で実行しない
+RULES
+
+d="$(make_root terminal-empty '')"
+out="$(run_doctor "$d" --terminal-capability available)"; rc=$?
+if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t12\t.*空または読めない' <<<"$out"; then ok "空の入口は FAIL 12"; else bad "空の入口を緑と誤認"; fi
+rm "$d/CLAUDE.md"
+out="$(run_doctor "$d" --terminal-capability available)"; rc=$?
+if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t12\t.*検査不成立' <<<"$out"; then ok "入口不在は FAIL 12"; else bad "入口不在を緑と誤認"; fi
+if grep -q '^SUMMARY fail=[1-9][0-9]* ' <<<"$out" && ! grep -q 'unbound variable' <<<"$out"; then ok "入口不在でも診断は SUMMARY まで完走する"; else bad "入口不在で診断が途中終了"; fi
+
+d="$(make_root terminal-grep "$GOOD_CLAUDE
+長時間ゲートは必ず run_in_background で起動する")"
+REAL_GREP="$(command -v grep)"
+mkdir -p "$TEST_TMP/terminal-bin"
+cat > "$TEST_TMP/terminal-bin/grep" <<EOF
+#!/usr/bin/env bash
+case "\${DOCTOR_TEST_GREP_MODE:-}:\${1:-}:\${2:-}" in
+  'pattern:-niE:run_in_background|background|バックグラウンド'|\
+  'rematch:-qiE:run_in_background|background|バックグラウンド'|\
+  'require:-qiE:長時間|ゲート|run-all|suite|push|long.running|long gate'|\
+  exempt:-qiE:'(Terminal|terminal|ターミナル|能力)'*) exit 2 ;;
+esac
+exec "$REAL_GREP" "\$@"
+EOF
+chmod +x "$TEST_TMP/terminal-bin/grep"
+for mode in pattern rematch require exempt; do
+  out="$(DOCTOR_TEST_GREP_MODE="$mode" PATH="$TEST_TMP/terminal-bin:$PATH" run_doctor "$d" --terminal-capability available)"; rc=$?
+  if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t12\t.*grep が失敗' <<<"$out"; then ok "検索失敗 $mode は FAIL 12（0件にしない）"; else bad "検索失敗 $mode を緑と誤認"; fi
+done
+
+for value in invalid ''; do
+  out="$(run_doctor "$d" --terminal-capability "$value")"; rc=$?
+  if [ "$rc" -eq 2 ]; then ok "不正 capability は rc2"; else bad "不正 capability が rc${rc}"; fi
+done
+out="$(run_doctor "$d" --terminal-capability)"; rc=$?
+if [ "$rc" -eq 2 ] && grep -q '値が要ります' <<<"$out"; then ok "値なし capability は rc2"; else bad "値なし capability が rc${rc}"; fi
 
 echo ""
 echo "workflow-doctor: ${PASS} 件成功 / ${FAIL} 件失敗"

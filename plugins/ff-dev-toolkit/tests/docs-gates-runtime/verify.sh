@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 空振り検出: docs-gates の正本参照検査ブロックを削除すると、無変異の対照は緑のまま drop-reference が赤（2026-09-28 実測）。
 # 空振り検出（Issue `#2119`、2026-10-13 実測）: シムの grok 導入実体の探索を無効化すると grok の 3 ケース（新しい版の選択・grok だけで解決・既定 $HOME/.grok）が赤、Claude の採用条件を「grok が在れば常に Claude」へ変えると同版 Codex 優先のケースが赤。無変異は緑。
+# 空振り検出（2026-10-23 実測）: 内容一致優先・一致内最大版・全体最大版の照合・明示root・Claude探索・最終照合の各退行とケース本体の空置換の7変異が赤。無変異と良性コメント追記は緑（mutation-harness、限定cache選択ケース）。
 #
 # docs-template のうち placeholder を含まず実行可能なゲート例を Markdown から抽出し、
 # fixture に対する exit code を実測する意味的回帰検査（Issue #157）。
@@ -690,6 +691,13 @@ run_consumer_command_smoke
 # shellcheck source=shim-cache-selection-cases.sh
 . "$SCRIPT_DIR/shim-cache-selection-cases.sh"
 run_shim_cache_selection
+SHIM_CACHE_CONTENT_CASES_REACHED=0
+run_shim_cache_content_selection
+if [ "$SHIM_CACHE_CONTENT_CASES_REACHED" -eq 1 ]; then
+  ok "内容一致cacheの正常・拒否ケースを末尾まで実行した"
+else
+  bad "内容一致cacheのケース本体が空振りした"
+fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then

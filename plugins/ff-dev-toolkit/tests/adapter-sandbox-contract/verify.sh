@@ -36,16 +36,16 @@
 # 落とす（逆に不可能な CLI の enum が埋まっていても落とす — 実 CLI で裏を取れない
 # 手書きリストで層 1 を通すのは、この suite が避けている偽の確信そのもの）。
 #
-# 実 CLI を起動するのは `--help`、`codex sandbox`（書き込み境界の再測。モデルを
-# 呼ばずローカル完結）、`codex exec --strict-config`（設定キー名の認識確認。
-# 使い捨て CODEX_HOME で走らせるので認証が無く、モデルに到達する前に終わる）だけ。
-# ネットワークも課金もエージェント実行も伴わない。
+# 実 CLI は --help、codex sandbox、設定キーと argv 確認の codex exec を呼ぶ。
+# 使い捨て CODEX_HOME は設定ファイルを分離するが、継承 API 認証環境変数までは
+# 除去しない。それだけで全呼出のモデル未到達・無課金を保証するとは扱わない。
 #
 # 宣言 enum の provenance（転記元）は下のテーブルにコメントで残す。ここは
 # 「こうあってほしい値」ではなく **CLI 自身の出力の転記** であり、書き換えてよいのは
 # 実 CLI の出力が変わったときだけ。層 2 がその転記を機械照合する。
 # 掃除は削除競合を最大 3 回再試行し、残存時は警告とパスを出して検査 rc を保つ。
 # 空振り検出: 子プロセスが残らない通常回は 1 回で削除し、対象が既に無い回は削除を呼ばず成功扱い、検査途中の終了は末尾到達ガードが赤になる。
+# 空振り検出: 対の selftest は guard の削除/後置・物理化/CDPATH中和の除去・prefix/同一/ルート境界・TMPDIR/default の除去・空 Git root の成功化の12変異を赤にし、入力不在/空/読取不可とケース集合0件も赤にする（2026-10-24 macOS実測）。
 
 set -euo pipefail
 
@@ -69,6 +69,35 @@ if ! git -C "$PLUGIN_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
   echo "○ skip: git リポジトリ外のため実行できません（本 suite の検査は1件も実行されていません）"
   exit 0
 fi
+
+# 一時領域の書き込み例外を sandbox の境界と誤測定しない。実 CLI より前に拒否する。
+ff_sandbox_physical_dir() (
+  CDPATH= cd -P -- "$1" 2>/dev/null && pwd -P
+)
+ff_sandbox_path_within() {
+  [ "$2" != / ] || return 0
+  case "$1" in "$2"|"$2"/*) return 0 ;; esac
+  return 1
+}
+ff_sandbox_root_preflight() {
+  local repo="" physical_repo="" temp="" physical_temp=""
+  repo="$(git -C "$PLUGIN_ROOT" rev-parse --show-toplevel 2>/dev/null)" || repo=""
+  if [ -z "$repo" ] || ! physical_repo="$(ff_sandbox_physical_dir "$repo")" || [ -z "$physical_repo" ]; then
+    printf '✗ %s: 検査不成立: Git ルートを物理パスへ解決できません: %s\n' "$SUITE_NAME" "${repo:-<空>}" >&2
+    return 2
+  fi
+  for temp in /tmp "${TMPDIR:-/tmp}"; do
+    if ! physical_temp="$(ff_sandbox_physical_dir "$temp")" || [ -z "$physical_temp" ]; then
+      printf '✗ %s: 検査不成立: 一時領域を物理パスへ解決できません: repo=%s physical_repo=%s temp=%s\n' "$SUITE_NAME" "$repo" "$physical_repo" "$temp" >&2
+      return 2
+    fi
+    if ff_sandbox_path_within "$physical_repo" "$physical_temp"; then
+      printf '✗ %s: 検査不成立: Git ルートが一時領域と同一または配下です: repo=%s physical_repo=%s temp=%s physical_temp=%s\n' "$SUITE_NAME" "$repo" "$physical_repo" "$temp" "$physical_temp" >&2
+      return 2
+    fi
+  done
+}
+ff_sandbox_root_preflight || exit "$?"
 
 # mktemp の stderr を捨てない。捨てると read-only 以外の失敗（TMPDIR が不正なパス・
 # quota 超過など）まで「書き込み可能な環境で」に誤帰属し、恒常的に壊れた TMPDIR が

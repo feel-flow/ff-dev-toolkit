@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 空振り検出: headless-security の代替案内でGrok/securityの除外を外す・advice入力集合を空にする・元resumeを処理前rc=2にする・除外を他観点まで広げる4変異が各1件赤。対照137検査は緑（2026-10-23 macOS、実測）。
+# 空振り検出: headless-security の必須ソース不在・読めない・空・名前だけ、planner/recovery入力集合の空、最終割当の無効化、元出力先の再利用が各1件赤。子の空出力・検査0件だけの出力・成功マーカー改名も親suiteが各1件赤。対照118検査/親155検査は緑、既存候補への衝突は未使用先へ移って緑（2026-10-23 macOS、実測）。固定検査総数ガードは使わない。
 # 空振り検出: archive-onlyの早期分岐を無効にした単一変異でfull/fastのCLI-free検査が2件赤、衝突optionのcase集合を空にすると下限照合が1件赤（2026-10-22）。対象0件の正常退避と、検査集合0件の失敗を分ける。
 # git-path-isolation: 固定 PATH は実 CLI / yq / 更新 CLI の混入と不在検査の偽緑を防ぐ。
 # git の親ディレクトリ全体は追加しない（同居する CLI も露出するため）。Xcode 障害時は
@@ -389,14 +391,19 @@ for solo_cmd in claude codex grok; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 99' > "$CHAIN_STUB/$solo_cmd"
   chmod +x "$CHAIN_STUB/$solo_cmd"
   SOLO_LOG="$TMP/solo-$solo_cmd.log"
+  solo_delegation=""
+  # The fallback graph still preserves all eight perspectives. Grok-only needs
+  # its usable native path; the headless rejection is checked separately below.
+  if [[ "$solo_cmd" == grok ]]; then solo_delegation=--delegate-to-host=grok-cli; fi
   (
     cd "$REPO"
     run_isolated PATH="$CHAIN_STUB:/usr/bin:/bin" bash "$MULTI_AGENT" \
-      --task review --mode distributed --strategy balanced --base develop --dry-run
+      --task review --mode distributed --strategy balanced --base develop --dry-run ${solo_delegation:+"$solo_delegation"}
   ) >"$SOLO_LOG" 2>&1 || true
 
   solo_count="$(grep -c '^     - ' "$SOLO_LOG" || true)"
-  if [ "$solo_count" -eq "$REVIEW_PERSPECTIVE_TOTAL" ]; then
+  if [ "$solo_count" -eq "$REVIEW_PERSPECTIVE_TOTAL" ] \
+    && { [[ "$solo_cmd" != grok ]] || grep -F 'delegated to the host' "$SOLO_LOG" >/dev/null; }; then
     ok "${solo_cmd} のみ導入でも review ${REVIEW_PERSPECTIVE_TOTAL} 観点すべてが計画される"
   else
     bad "${solo_cmd} のみ導入で観点が欠落（${solo_count} / ${REVIEW_PERSPECTIVE_TOTAL}）"
@@ -1466,7 +1473,9 @@ else
   fi
   # --cli はその 1 回だけ設定の除外を上回る。ヘッダーは「実際に効いた除外」だけを出す
   EXCL_OVERRIDE_LOG="$TMP/exclude-cli-override.log"
-  if run_plan "$EXCL_OVERRIDE_LOG" --config "$EXCL_CFG" --cli grok-cli \
+  # Exercise exclusion override with a supported headless perspective; the
+  # security-only explicit Grok rejection has its own headless-security case below.
+  if run_plan "$EXCL_OVERRIDE_LOG" --config "$EXCL_CFG" --cli grok-cli --perspective error-handler-hunt \
     && grep -Fq 'but --cli named it — running it this time' "$EXCL_OVERRIDE_LOG" \
     && grep -Fq 'Excluded CLIs: claude-code (config exclude_clis' "$EXCL_OVERRIDE_LOG" \
     && grep -qE '^   grok-cli \[' "$EXCL_OVERRIDE_LOG"; then
@@ -1674,6 +1683,16 @@ for archive_value in '' refs/remotes/origin/old 'bad branch' 'feature/../old' de
   [[ "$archive_rc" == 2 && ! -e "$REPO/.archive-conflict" ]] && ok "archive-only rejects invalid branch [$archive_value]" || bad "archive-only branch accepted: [$archive_value] rc=$archive_rc"
 done
 # archive-options:end
+
+echo ""
+echo "== headless security plan and recovery preservation (headless-security) =="
+if python3 "$SCRIPT_DIR/headless-security.py" "$PLUGIN_ROOT" >"$TMP/headless-security.log" 2>&1 \
+  && awk '$0 == "headless-security contract verified" { n++ } END { exit !(n == 1) }' "$TMP/headless-security.log"; then
+  ok 'headless security and displayed recovery commands satisfy the contract'
+else
+  bad 'headless security or recovery preservation failed'
+  tail -40 "$TMP/headless-security.log" >&2
+fi
 
 echo ""
 if [[ "$FAIL" -gt 0 ]]; then

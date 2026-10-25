@@ -1,0 +1,10 @@
+== ACE Playbook（custom docs/PLAYBOOK.md） ==
+-- 有効（active）: 1 件 --
+ACE-1-1  existing needle
+      Category=testing Helpful=0  (custom docs/PLAYBOOK.md#ace-1-1)
+
+== 観測台帳（absent） ==
+（台帳なし — /retrospective が初回実行時にテンプレートから作成する）
+
+RECORD ace=ACE-1-1 obs=台帳なし
+SUMMARY ace=1 obs=0 keywords=1 match=any include_archived=0 offline=1 ace_state=ok obs_state=absent

@@ -86,6 +86,8 @@ MCP: 取得値: MCP の PR diff/body/全comments/reviews と関連Issue本文。
 
 ### 3. Phase 2: Reflect（評価・分類）
 
+[保留候補の再評価](references/pending.md)を読む。解決済みPLAYBOOKと同階層の `PENDING_CANDIDATES.md` を確認し、新規PRの候補が0件でも保留を同じ新規性ゲートへ掛け直す。保留は採用済みACEとして扱わない。
+
 **domainの判定を先行する**: コード/テストだけならunverified、正式資料か確認者の承認があればconfirmed、矛盾はconflictingと両側の根拠を記録し、既存仕様や既存ACEを自動deprecatedにしない。Distilled-Toは収集時には付けない。評価ゲート: 再現性・影響度が「中」以上か（低→スキップ）/ **新規性があるか？**（「**読者が取る実行可能なアクションが既存エントリと同一か**」。同一なら `Helpful` +1 のみ。domainは主体・条件・例外・確認状態が違えば同一としない）/ **抽象度の下限を満たすか？**（固有名なしで書けるなら 1 段上げてから新規性を判定。上げすぎたら棄却）/ **一回性のインシデント叙述は Playbook に書かない**（TROUBLESHOOTING / runbook へ）。
 
 `FF_JEV_MODE=on` の候補は [triage](references/curate.md#triage) で先に選別する。`off` は従来経路・出力とバイト同一。照合: PLAYBOOK.md の索引で似たタイトルが**他カテゴリにもないか**を確認し、近縁カテゴリの `playbook/<category>.md` を読む。**重複** → `Helpful` +1 / **矛盾（非domain）** → 既存を `deprecated` にして新エントリ / **新規** → Phase 3。**Reuse 記録の反映**: PR body の「参照して役立った」既存 ACE ID があれば `Helpful` を +1（候補 0 件でも行う）。
@@ -110,6 +112,9 @@ else
     "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-category-size.ts" docs/08-knowledge/PLAYBOOK.md 2>&1)"
   SIZE_RC=$?
 fi
+ACE_CAPACITY_REPORT="$(mktemp "${TMPDIR:-/tmp}/ace-capacity.XXXXXX")" || exit 1
+printf '%s\n' "${SIZE_OUT}" >"${ACE_CAPACITY_REPORT}" || exit 1
+printf 'ACE_CAPACITY_REPORT=%s\nACE_CAPACITY_RC=%s\n' "${ACE_CAPACITY_REPORT}" "${SIZE_RC}"
 case "${SIZE_RC}" in
   0) ;;
   1) printf '%s\n' "${SIZE_OUT}" >&2; echo "ブロック上限を超過済み。追記せず停止" >&2; exit 1 ;;
@@ -119,24 +124,13 @@ esac
 
 **rc を `|| true` で捨てない**。読むのは `<カテゴリ>: <件数>` と `ブロック上限: <N> 件/カテゴリ` の 2 行だけ（警告行を上限の取得元にしない — 読めなかった回が「超過なし」に化ける。`ブロック上限:` 行が無ければ停止）。追記先ごとに `現在の件数 + 今回の追記数` を求め、**ブロック上限を超えるなら追記せず、その時点で停止する**。停止時は超過するカテゴリと件数・**先に必要な refine の範囲**・承認後に `/ace-refine` → `/ace-curate` の順で実行することを提示する。**「フォローアップとして記録した」で完了にしない**。
 
+通常の追記を止めたまま[保留候補の保存](references/pending.md)で全未処理候補を同じcommitへ含める。停止カテゴリ・予定総数・report実パス・rcをtool本文へ渡す。検査不成立では保存せず、全カテゴリ容量内は書かない。
+
 #### 4-b. playbook/category.md への追記 + PLAYBOOK.md 索引の更新
 
 **共有値の確定前ガード**: `version` / `ace_entry_count` / Changelog は着手時のローカル値から決めず、references/curate.md のフェンス（clean tree → fetch → 祖先検査。失敗は停止）を通す。エントリ本体は `playbook/<category>.md` 末尾へ**コンパクト正準フォーマット**で追記する（メタ 4 行は各行の行頭 — パーサ互換条件）:
 
-```markdown
-<a id="ace-XXX"></a>
-
-### ACE-XXX: [検索可能な主張 1 文のタイトル]
-
-| Category | [カテゴリ] | Origin | PR #[PR番号] |
-| Date | [今日の日付] |
-| Helpful | 0 | Harmful | 0 |
-| Status | active |
-
-[本文 2〜4 文。1 文目 = 知見の本質。非自明な適用条件が 1 文。推奨アクションで締める。手順の列挙・叙述は書かない]
-
----
-```
+[エントリの正準フォーマット](references/curate.md#エントリの正準フォーマット)に従う。
 
 domainでは同梱契約の4行形式でEvidence / Verification / Distill-Toを必ず追記する。追記後、PLAYBOOK.md の索引にも 1 行加える — **列順はその PLAYBOOK の索引ヘッダ行から決める**（references/curate.md）。索引行はタイトルのみ。
 
@@ -146,24 +140,13 @@ domainでは同梱契約の4行形式でEvidence / Verification / Distill-Toを�
 
 #### 4-f. 同期検証（必須）
 
-SSOT はプロジェクトの ACE 運用文書（例 `docs/05-operations/deployment/ace-cycle.md`）で、以下は無い場合の fallback。同期検証・形式ゲートそれぞれ、**プロジェクトの状態に合う 1 本だけを実行する**:
-
-```bash
-# 同期検証 — 1 本だけ: (1) npm script 登録済み / (2) scripts/ace/<同名> が実在 / (3) 無ければ同梱
-npm run ace:check-playbook-frontmatter
-npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check
-
-# 形式ゲート（旧テーブル形式でないこと）— 1 本だけ: (1) scripts/ace/<同名> が実在 / (2) 無ければ同梱
-npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md
-```
-
-同梱を叩く経路で `npx --yes tsx` を直接書かない（`ace-run-ts.sh` は runner が無ければ **exit 3 で停止**）。exit 0 になるまで直す（形式ゲートが赤なら正準フォーマットへ。allowlist に新規 ID を足さない）。
+プロジェクトのACE運用文書を優先し、無ければ[同期検証のfallback](references/curate.md#同期検証のfallback)を実行する。Frontmatter同期と `check-entry-format` を各1本、exit 0になるまで直す。同梱runnerは `ace-run-ts.sh`（不在はexit 3）、allowlistへ新規IDを足して通さない。
 
 #### 4-g. 完了報告の契約（機械的検証が非 0 なら「停止」）
 
 4-b-0 / 4-f の機械的検証が**非 0 を返したまま「完了」と報告しない**（4-e（行数バジェット）はこの列挙に入れない — 警告だけで終了コードを動かさない）。非 0 が残るなら報告は**停止**であり、どの検証が非 0 か・解消に必要な操作を名指しする（放置すると `live-ace-gates` が赤）。
+
+容量停止と保存成功を分け、保存成功時は「保留 N 件（置き場の実パス）」を出す。追記が止まったまま通常curateの完了とは呼ばない。
 
 ### 5. コミット
 
@@ -177,7 +160,12 @@ commit_type="knowledge"   # commitlint で knowledge が非許容なら chore �
 probe_out="$(FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit probe)" || { echo "保護判定が成立しない（rc=$?）。停止" >&2; exit 1; }
 case "$probe_out" in *"protection=protected"*) protected=1 ;; *) protected=0 ;; esac
 # --claim: claim を再生成して同じ commit へ入れる
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --claim docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>" --type "${commit_type}" -- docs/08-knowledge/PLAYBOOK.md $(git ls-files -mo --exclude-standard docs/08-knowledge/playbook) || exit 1
+ACE_KNOWLEDGE_PATHS=(docs/08-knowledge/PLAYBOOK.md)
+while IFS= read -r path; do ACE_KNOWLEDGE_PATHS+=("$path"); done < <(git ls-files -mo --exclude-standard docs/08-knowledge/playbook)
+if [ -f docs/08-knowledge/PENDING_CANDIDATES.md ]; then ACE_KNOWLEDGE_PATHS+=(docs/08-knowledge/PENDING_CANDIDATES.md); fi
+ACE_CLAIM_ARGS=()
+if ! git diff --quiet HEAD -- docs/08-knowledge/PLAYBOOK.md; then ACE_CLAIM_ARGS=(--claim docs/08-knowledge/PLAYBOOK.md); fi
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add ${ACE_CLAIM_ARGS[@]+"${ACE_CLAIM_ARGS[@]}"} --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>" --type "${commit_type}" -- "${ACE_KNOWLEDGE_PATHS[@]}" || exit 1
 ace_defer="${ACE_DEFER_TO_RETRO:-0}"   # 事前注入 hook が 1 を指示した回だけ add で止め /retrospective へ合流
 if [[ "$ace_defer" == 1 ]]; then echo "commit と push は /retrospective の書き込みへ合流させます"; exit 0; fi
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit commit --type "${commit_type}" || exit 1

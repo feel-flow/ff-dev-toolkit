@@ -57,6 +57,18 @@ host_delegable_perspectives() {
   [[ -z "$out" ]] || printf '%s\n' "$out"
 }
 
+# 元の ignore 境界内でコマンドごとに分離する。案内だけでは作成せず、
+# 同一の委譲コマンドと resume は呼び出し元が返値を一度だけ固定して使う。
+recovery_command() {
+  local command="$1" base="$2" label="$3" candidate suffix=0
+  candidate="${base}-${label}"
+  while [[ -e "$candidate" || -L "$candidate" ]]; do
+    suffix=$((suffix + 1))
+    candidate="${base}-${label}-${suffix}"
+  done
+  printf '%s --output-dir %s' "$command" "$(shell_quote "$candidate")"
+}
+
 print_failure_advice() {
   # スキップは FAILED_TASKS に載せない（実行していないものを「終了コード付きの失敗」
   # として記録すると、rc を読む全分岐が 4 つ目の意味を持つことになる）。案内は必要
@@ -87,9 +99,11 @@ print_failure_advice() {
   if config_is_explicit; then
     self="${self} --config $(shell_quote "$CONFIG_FILE")"
   fi
-  if [[ "$OUTPUT_DIR_EXPLICIT" == "true" ]]; then
-    self="${self} --output-dir $(shell_quote "$OUTPUT_DIR")"
-  fi
+  # 以下は観点を絞るか CLI を変える別プラン。明示/既定いずれの出力先も再利用すると、
+  # 完了済みの他観点が退避され、report/cache や未回収の委譲世代を上書きしてしまう。
+  # .review-results/ の ignore 境界を保ち、別コマンド同士でも成果物を退避し合わない。
+  local recovery_base host_self retry_self substitute_self
+  recovery_base="${OUTPUT_DIR%/}/.recovery-$(date '+%Y%m%d-%H%M%S')-$$"
   if [[ -n "$DESCRIPTION" ]]; then
     self="${self} --description $(shell_quote "$DESCRIPTION")"
   fi
@@ -114,6 +128,7 @@ print_failure_advice() {
   local delegable_persps
   delegable_persps="$(host_delegable_perspectives)"
   if [[ -n "$delegable_persps" ]]; then
+    host_self="$(recovery_command "$self" "$recovery_base" "host-${DELEGATION_LANE}")"
     local dp dp_args=""
     for dp in $delegable_persps; do dp_args="${dp_args} --perspective ${dp}"; done
     echo "" >&2
@@ -122,8 +137,8 @@ print_failure_advice() {
     echo "      --delegate-to-host (never with --fresh), run each handoff prompt in a read-only" >&2
     echo "      subagent, write its answer to the output-file the handoff names, then re-run" >&2
     echo "      the same command with --resume added:" >&2
-    echo "       ${self} --cli ${DELEGATION_LANE}${dp_args} --delegate-to-host" >&2
-    echo "       ${self} --cli ${DELEGATION_LANE}${dp_args} --delegate-to-host --resume" >&2
+    echo "       ${host_self} --cli ${DELEGATION_LANE}${dp_args} --delegate-to-host" >&2
+    echo "       ${host_self} --cli ${DELEGATION_LANE}${dp_args} --delegate-to-host --resume" >&2
   fi
 
   # grok CLI がホスト（GROK_AGENT が立つ）で grok-cli レーンが落ちた回は、同じ CLI の再実行より
@@ -132,6 +147,7 @@ print_failure_advice() {
   local grok_persps
   grok_persps="$(grok_host_delegable_perspectives)"
   if [[ -n "$grok_persps" ]]; then
+    host_self="$(recovery_command "$self" "$recovery_base" 'host-grok-cli')"
     local gp gp_args=""
     for gp in $grok_persps; do gp_args="${gp_args} --perspective ${gp}"; done
     echo "" >&2
@@ -139,21 +155,25 @@ print_failure_advice() {
     echo "      re-run with --delegate-to-host=grok-cli (never with --fresh), run each handoff" >&2
     echo "      prompt in a read-only subagent (spawn_subagent), write its answer to the" >&2
     echo "      output-file the handoff names, then re-run the same command with --resume added:" >&2
-    echo "       ${self} --cli grok-cli${gp_args} --delegate-to-host=grok-cli" >&2
-    echo "       ${self} --cli grok-cli${gp_args} --delegate-to-host=grok-cli --resume" >&2
+    echo "       ${host_self} --cli grok-cli${gp_args} --delegate-to-host=grok-cli" >&2
+    echo "       ${host_self} --cli grok-cli${gp_args} --delegate-to-host=grok-cli --resume" >&2
   fi
 
   echo "" >&2
   echo "   No runtime fallback was attempted (by design: swapping the model changes" >&2
   echo "   what got reviewed, and the substitute may bill a costlier tier)." >&2
   echo "   Re-run the failed task(s) yourself:" >&2
+  echo "   These changed-plan commands use a new output directory; keep the original" >&2
+  echo "   results and review both reports. They do not complete the original round" >&2
+  echo "   or combine separate runs into one accepted prior-evidence receipt." >&2
 
-  local entry task rc cli persp fb fb_tier cause login_cmd skip_cause
+  local entry task rc cli persp fb fb_tier cause login_cmd skip_cause fallback_candidates candidate
   for entry in $FAILED_TASKS $SKIPPED_TASKS; do
     task="${entry%:*}"
     rc="${entry##*:}"
     cli="${task%%/*}"
     persp="${task#*/}"
+    retry_self="$(recovery_command "$self" "$recovery_base" "${cli}-${persp}-retry")"
     echo "" >&2
     # 認証切れ / 残高切れの切り分け（Issue `#659`）。retry コマンドの**前**に出す —
     # 「どちらでもない」失敗と同じ 1 行に丸めると、再ログインで直るのか、この CLI
@@ -175,7 +195,7 @@ print_failure_advice() {
       echo "        $(cause_phrase "$skip_cause"), which is a property of the CLI and not of" >&2
       echo "        the task: every remaining task on ${cli} would have failed identically." >&2
       echo "        Fix that first (see the ${cli} entry above), then re-run:" >&2
-      echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp}" >&2
+      echo "       $(model_env_prefix "$cli")${retry_self} --cli ${cli} --perspective ${persp}" >&2
     else
     cause="$(classify_cli_failure_cause "${OUTPUT_DIR}/${cli}/${persp}.md")"
     if [[ "$rc" -eq 124 && -n "$cause" ]]; then
@@ -255,22 +275,22 @@ print_failure_advice() {
     # identical failure.
     if [[ "$rc" -eq 124 ]]; then
       echo "     ${task} — more time on the same CLI:" >&2
-      echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp} --timeout $((TIMEOUT * 2))" >&2
+      echo "       $(model_env_prefix "$cli")${retry_self} --cli ${cli} --perspective ${persp} --timeout $((TIMEOUT * 2))" >&2
     elif [[ -n "$cause" && -f "${OUTPUT_DIR}/${cli}/${persp}.md" ]]; then
       # 分類できた失敗は上の行が原因と対処を名指し済み。汎用の「時間では直らない
       # 失敗」を重ねると、名指しした原因より汎用文が先に読まれる。
       echo "     ${task} — after fixing the cause above, re-run:" >&2
-      echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp}" >&2
+      echo "       $(model_env_prefix "$cli")${retry_self} --cli ${cli} --perspective ${persp}" >&2
     elif [[ -f "${OUTPUT_DIR}/${cli}/${persp}.md" ]]; then
       echo "     ${task} — failed for a reason more time will not fix; read the CLI" >&2
       echo "       stderr in ${OUTPUT_DIR}/${cli}/${persp}.md, then re-run:" >&2
-      echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp}" >&2
+      echo "       $(model_env_prefix "$cli")${retry_self} --cli ${cli} --perspective ${persp}" >&2
     else
       # ワーカーが記録前に死んだ形。成果物は書かれていないので、存在しない
       # ファイルを読めとは案内しない（死因は上の ⚠️ worker 行にある）。
       echo "     ${task} — no result file was written (orchestrator-side failure;" >&2
       echo "       see the ⚠️ worker line above). Re-run:" >&2
-      echo "       $(model_env_prefix "$cli")${self} --cli ${cli} --perspective ${persp}" >&2
+      echo "       $(model_env_prefix "$cli")${retry_self} --cli ${cli} --perspective ${persp}" >&2
     fi
     fi
     # 代替 CLI の案内はスキップにも出す（Issue `#1143`）。資格情報・残高が死んで
@@ -278,13 +298,24 @@ print_failure_advice() {
     # 落とされた観点こそその案内を必要とする。
     # プラン構築と同じ解決を使う。ここだけ get_cli_fallback を直接呼ぶと、
     # 「設定上の代替は未導入だが、その先には導入済みがある」場合に代替案が出ない。
-    fb="$(resolve_available_fallback "$cli")"
+    # 案内は headless 単発を起動するため、プランが拒否する Grok/security を
+    # 代替先として表示しない。他観点と同じ fallback 順・課金境界は維持する。
+    fallback_candidates="$AVAILABLE_CLIS"
+    if [[ "$TASK_TYPE" == "review" && "$persp" == "security-analysis" ]]; then
+      fallback_candidates=""
+      for candidate in $AVAILABLE_CLIS; do
+        [[ "$candidate" == "grok-cli" ]] && continue
+        fallback_candidates="${fallback_candidates:+$fallback_candidates }$candidate"
+      done
+    fi
+    fb="$(AVAILABLE_CLIS="$fallback_candidates" resolve_available_fallback "$cli")"
     if [[ -n "$fb" ]]; then
+      substitute_self="$(recovery_command "$self" "$recovery_base" "${cli}-${persp}-substitute-${fb}")"
       fb_tier="$(get_cli_cost_tier "$fb")"
       echo "     ${task} — or the configured substitute ${fb} [${fb_tier}]:" >&2
       # 代替 CLI の行には代替 CLI に効く env だけを前置する（失敗した CLI の
       # モデル指定を持ち越すと、実際には使われない設定を使うかのように読める）
-      echo "       $(model_env_prefix "$fb")${self} --cli ${fb} --perspective ${persp}" >&2
+      echo "       $(model_env_prefix "$fb")${substitute_self} --cli ${fb} --perspective ${persp}" >&2
     fi
   done
 }

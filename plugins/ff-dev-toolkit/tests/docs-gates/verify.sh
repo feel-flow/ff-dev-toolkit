@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
+# 空振り検出: bot完了確認の見出し改名は12件、対象SHA照合の削除・上限延長・レビュー種別の混同・skill参照削除・fix参照を冒頭だけへ移動・最終precheck免除・merge参照削除・契約TSV空化は各1件が赤。公式harnessで9赤・無害1緑を実測した（2026-10-24）。
 # 空振り検出: 正本参照の削除・変更・重複、節の改名で赤。配布側の粒度・TODO・書き戻しの削除と旧規定の再掲も固有の診断で赤（2026-09-28 docs-gates-runtime 実測）。
 # 空振り検出: 部分失敗節は Workflow / SKILL の復旧段落削除・節空化・改名・ファイル不在で非 0。旧 API 例再注入は各 1 件赤。
 # 空振り検出: 規定を「のが望ましい。」へ弱める単独変異は Workflow 3 件 / SKILL 2 件赤（2026-10-22 実測、無変異 229 件 pass）。
 # 空振り検出: 担当選択の契約は節・義務文・SKILLの参照削除で赤（削除・改名・exit0案内の欠落を変異検証）。
+# 空振り検出: 進捗表示の節改名・空化・不明rcの成功化・契約TSV不在/空・skillリンク変更を各1変異で赤と実測（2026-10-24）。契約行の1件欠落も件数照合で赤。
 #
 # docs-template 内のゲート例（pre-push フック / CI / 判定スクリプト）が
 # fail-silent へ退行していないことの drift 検査（Issue #154）。
@@ -624,7 +626,7 @@ must_contain "$f" '`multi-agent.sh` の `ALL_CLIS` と `get_cli_*` 関数を更�
   "新CLI追加ガイドが実行時レジストリの正本を案内する"
 must_not_contain "$f" 'project `.claude/agent-config.yaml` または plugin 同梱 `agent-config.yaml` に新CLIエントリを追加' \
   "新CLI追加ガイドが非実行設定を登録先として案内しない"
-must_contain "$f" '`FF_DEV_TOOLKIT_ROOT` 未指定時は、cache全体のSemVer最大版をsidecarより優先' \
+must_contain "$f" '`FF_DEV_TOOLKIT_ROOT` 未指定時は、内容一致cacheのSemVer最大版をsidecarより優先（一致候補なしは全体の最大版を照合し拒否）' \
   "shimガイドが固定rootを含む実際の選択優先順位を説明する"
 
 f="05-operations/deployment/multi-cli-review-orchestration.md"
@@ -1206,6 +1208,12 @@ MULTI_REVIEW_SKILL="$PLUGIN_ROOT/skills/multi-review/SKILL.md"
 if [ ! -f "$MULTI_REVIEW_SKILL" ]; then
   bad "multi-review SKILL.md が見つかりません: $MULTI_REVIEW_SKILL"
 else
+  bot_wait_reference='[自動レビューbotの完了確認](../../docs-template/05-operations/deployment/git-workflow.md#自動レビューbotの完了確認)'
+  if bot_wait_error="$(section_scope_contains "$MULTI_REVIEW_SKILL" '#### 3-5. 自動修正の実行' "fixへ着手する前に、${bot_wait_reference}を行う。")"; then
+    ok "multi-reviewのfix着手箇所がbot完了確認の正本へ参照する"
+  else
+    bad "multi-reviewのfix着手箇所のbot完了確認参照が欠落: ${bot_wait_error}"
+  fi
   if grep -qF '利用制限時は復旧待ち・予約より先に [失敗時の担当選択](../../docs-template/05-operations/deployment/self-review.md#失敗時の担当選択) に従う。' \
       "$MULTI_REVIEW_SKILL" && grep -qF '**利用不可・失敗時（exit 0 の単一縮退も含む）**:' "$MULTI_REVIEW_SKILL"; then
     ok "multi-review が復旧待ちより先に担当選択の正本へ案内する"
@@ -1238,7 +1246,7 @@ else
   # 待ち時間の準備作業（起動前に列挙し、起動と同じメッセージで着手する）。正本は Git Workflow
   # ステップ6（contracts/review-wait-prep.tsv が節スコープで固定）で、本線はバイト上限があるため
   # 手順 2 の 1 文だけを持つ。その 1 文が消えると、レビューを起動する本線から段取りが落ちる。
-  if grep -qF '待ち時間の作業は起動前に列挙して起動と同じメッセージで着手し、尽きたら `sleep` で空回りせず Monitor で完了通知を待つ。' \
+  if grep -qF '作業を起動前に列挙し、起動と同じメッセージで着手。尽きたら[長時間ゲートの進捗表示]' \
       "$MULTI_REVIEW_SKILL"; then
     ok "multi-review SKILL.md 手順 2 が待ち時間の作業の起動前列挙と同メッセージ着手を明記している"
   else
@@ -1723,6 +1731,31 @@ else
 fi
 
 echo ""
+# skill は docs-template の複製に含まれないので、実在する配布元を絶対パスで見る。
+progress_contract="$SCRIPT_DIR/contracts/long-gate-progress.tsv"
+# この7条件の集合を空・一部欠落のまま実行しない。内容の解釈は下の共通readerに委ねる。
+if [ -r "$progress_contract" ] && progress_contract_count="$(awk '!/^[[:space:]]*($|#)/ { n++ } END { print n+0 }' "$progress_contract")" && [ "$progress_contract_count" = 7 ]; then
+  ok "長時間ゲートの進捗表示の契約7条件が揃う"
+else
+  bad "長時間ゲートの進捗表示の契約が欠落・読取不能・条件数不一致"
+fi
+for progress_skill in multi-review multi-implement; do
+  progress_file="$PLUGIN_ROOT/skills/$progress_skill/SKILL.md"
+  if [ -s "$progress_file" ] && grep -qF '(../../docs-template/05-operations/deployment/git-workflow.md#長時間ゲートの進捗表示)' "$progress_file"; then
+    ok "$progress_skill が長時間ゲートの進捗表示を参照する"
+  else
+    bad "$progress_skill の進捗表示参照が欠落・空・変更されている"
+  fi
+done
+
+# close-issueはdocs-templateの外にある。早期確認と最終precheckの境界の参照を固定する。
+bot_merge_doc="$PLUGIN_ROOT/skills/close-issue/references/merge-gate.md"
+if [[ -s "$bot_merge_doc" ]] && grep -qF 'fix前の[自動レビューbotの完了確認](../../../docs-template/05-operations/deployment/git-workflow.md#自動レビューbotの完了確認)は別の早期集約手順で、この検査を代替しない。' "$bot_merge_doc"; then
+  ok "close-issueがbot早期確認と最終precheckを区別する"
+else
+  bad "close-issueのbot早期確認の参照または最終precheckとの区別が欠落"
+fi
+
 # --- 契約データの実行（contracts/*.tsv）-----------------------------------------
 # 契約ごとに 1 ファイルへ分けることで、別々の規定を固定する PR が同じ領域を触らずに済む
 # （書式と使い分けは contracts/README.md）。宣言で書ける検査だけがここへ来る。

@@ -67,6 +67,9 @@
 # scalar だけを `hookSpecificOutput.additionalContext` で実行後に返す（止めない）。
 # 追加検出の契約は tests/lib/zsh-expansion-guard.sh。deny の JSON を組み立てる jq が失敗したら黙って許可に
 # 落とさず、exit 2 + stderr のブロック経路へ落とす。
+# 入力書き換えに対応した Claude hook 環境では、nomatch と equals（`=` だけの語）の書き換え案が
+# 一意に決まる呼び出しに限り、deny の代わりに updatedInput（引用した語）と additionalContext を
+# 1 つの JSON で返す（Issue `#2255`。条件は try_rewrite の注記、契約は guard-exit-code.sh の Issue `#2182` と同じ。公開 https://github.com/feel-flow/ff-dev-toolkit/issues/142）。
 #   - この呼び出しだけ通す: Bash ツールへ渡すコマンドの**先頭の語**を環境代入 `FF_ZSH_GLOB_ACK=1`
 #     にする（前に別の環境代入・文があると無効。引用値の中や途中の文に現れるだけでも無効）。
 #     効く単位は Bash ツールの 1 呼び出しで、先頭に置けば改行で続く文にも効く（guard-exit-code.sh
@@ -122,7 +125,9 @@ case "${host_shell##*/}" in
 esac
 
 # 同じホスト入口で equals/scalar も検出する。警告は既存 glob の deny と JSON を分断しない。
+# equals の deny は入力書き換え（下の try_rewrite）を試すまで保留する（Issue `#2255`）。
 expansion_warning=""
+expansion_deny=""
 expansion_helper="${BASH_SOURCE[0]%/*}/../tests/lib/zsh-expansion-guard.sh"
 
 # ---- PostToolUse（Bash）: 未引用 scalar の警告をエージェントの文脈へ届ける ----------------
@@ -158,11 +163,11 @@ elif [ -r "$expansion_helper" ]; then
   [ "$expansion_rc" -eq 0 ] || exit "$expansion_rc"
   if [ -n "$expansion_out" ]; then
     if printf '%s' "$expansion_out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
-      printf '%s\n' "$expansion_out"
-      exit 0
+      expansion_deny="$expansion_out"
+    else
+      expansion_warning="$(printf '%s' "$expansion_out" | jq -r '.systemMessage // empty' 2>/dev/null)"
+      expansion_warning="${expansion_warning//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
     fi
-    expansion_warning="$(printf '%s' "$expansion_out" | jq -r '.systemMessage // empty' 2>/dev/null)"
-    expansion_warning="${expansion_warning//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
   fi
 else
   # helper 不在を検出0と混同しない。scalar-only は停止しない。
@@ -177,6 +182,11 @@ else
   case "$missing_cmd" in *'$'*) expansion_warning='zsh 展開ガード: helper が不在で未検査です。ff-dev-toolkit を更新・復旧してください。' ;; esac
 fi
 emit_expansion_warning() {
+  # 保留した equals の deny が未出力のまま抜ける経路があっても、無音の許可にしない。
+  if [ -n "$expansion_deny" ]; then
+    printf '%s\n' "$expansion_deny"
+    return
+  fi
   if [ -n "$expansion_warning" ]; then
     jq -n --arg m "$expansion_warning" '{systemMessage: $m}' || printf '%s\n' "$expansion_warning" >&2
   fi
@@ -184,14 +194,18 @@ emit_expansion_warning() {
 trap emit_expansion_warning EXIT
 
 # ---- 安価な前置フィルタ（候補でなければ何も読まずに抜ける） -------------------------
+# equals の deny を保留している回は抜けない（`echo ====` は glob 文字を持たないので、ここで
+# 抜けると書き換えを試さないまま deny も返さずに終わる）。glob の走査だけを飛ばす。
+glob_candidate=1
 case "$input" in
   *=*) : ;;
-  *) exit 0 ;;
+  *) glob_candidate=0 ;;
 esac
 case "$input" in
   *'*'* | *'?'* | *'['*) : ;;
-  *) exit 0 ;;
+  *) glob_candidate=0 ;;
 esac
+[ "$glob_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -213,6 +227,7 @@ deny() { # <reason>
     exit 2
   fi
   expansion_warning=""
+  expansion_deny=""
   printf '%s\n' "$out"
   exit 0
 }
@@ -227,6 +242,107 @@ deny_unavailable() { # <理由>
   4) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1 を設定する"
 }
 
+tab='	'
+
+# ---- 入力書き換え（Issue `#2255`。終了コードガードの Issue `#2182` と同じ契約） ----------------
+# 書き換え案が一意に決まる形だけ、deny の代わりに updatedInput を返す。どれか 1 つでも
+# 満たさなければ return 1 で従来の deny へ戻す（部分的には書き換えない）:
+#   - 入力書き換えを確認した Claude hook 環境（guard-exit-code.sh と同じ判定）
+#   - ASDD 設定を検証できている / heredoc が無い（本文を落とした文字列と元が一致する）
+#   - 元のコマンドに CR が無い（判定用に CR を落とした文字列を実行入力へ戻さない）
+#   - 一覧値の未引用 scalar（scalar-list の deny）が無い
+#   - 検出した語すべてに書き換え案がある（引用・展開を含む語や `=cmd` は案 `-`）
+#   - 語ごとに、出現回数が検出回数と一致する（引用の中・別の語の一部に同じ綴りがあると
+#     置換が判定対象外まで書き換えるので、その回は書き換えない）。長い語から置換し、回数は
+#     置換途中の文字列で数える（`--include=*.js` は `--include=*.json` の一部だが、長い方を
+#     先に引用すると `=` の直後に `"` が入り、短い方の綴りは残らない）
+#   - 書き換え後を同じ判定で再走査して 0 件になる
+# 位置（オフセット）での差し替えはしない。awk と bash で文字数の数え方が揃わない環境が
+# あるため（bash 3.2 の MBCS）、語の綴りそのものの置換と出現回数の照合で一意性を担保する。
+# allow は返さず、採用・実行は集約入口の全ガード再検査と通常の権限判定に従う。
+try_rewrite() {
+  [ "${CLAUDECODE:-}" = 1 ] && [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -z "${GROK_PLUGIN_ROOT:-}" ] || return 1
+  printf '%s' "$input" | jq -e '.hook_event_name == "PreToolUse" and (has("model") | not)' >/dev/null 2>&1 || return 1
+  # cmd は判定用に CR を除去してある。元のコマンドに CR があると、その値を実行入力へ戻すと
+  # 引用の中の CR まで消えてデータが変わるので書き換えない。
+  printf '%s' "$input" | jq -e '.tool_input.command | contains("\r") | not' >/dev/null 2>&1 || return 1
+  [ "$asdd_unverifiable" -eq 0 ] || return 1
+  local helper fn stripped eq_on exp_hits fixes glob_fix eq_fix line word fix total n rest rewritten listed ordered out
+  for helper in heredoc-strip.sh zsh-glob-nomatch.sh; do
+    [ -r "$HELPER_DIR/$helper" ] || return 1
+    . "$HELPER_DIR/$helper" 2>/dev/null || return 1
+  done
+  for fn in ff_heredoc_strip ff_zsh_glob_scan ff_zsh_expansion_scan ff_zsh_equals_fix_scan; do
+    [ "$(type -t "$fn" 2>/dev/null)" = function ] || return 1
+  done
+  stripped="$(ff_heredoc_strip "$cmd")" || return 1
+  [ "$stripped" = "$cmd" ] || return 1
+  glob_fix="$(ff_zsh_glob_scan "$cmd")" || return 1
+  eq_fix=""
+  eq_on=0
+  # equals の検出を止めている回（無効化・ACK）は equals の語に触れない。
+  if [ "${FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD:-0}" != 1 ] && [ "$ack_probe" = "${ack_probe#FF_ZSH_EXPANSION_ACK=1}" ]; then
+    eq_on=1
+    exp_hits="$(ff_zsh_expansion_scan "$cmd")" || return 1
+    case "$exp_hits" in *scalar-list*) return 1 ;; esac
+    eq_fix="$(ff_zsh_equals_fix_scan "$cmd")" || return 1
+  fi
+  fixes="$glob_fix"
+  [ -z "$eq_fix" ] || fixes="${fixes:+$fixes
+}$eq_fix"
+  [ -n "$fixes" ] || return 1
+  rewritten="$cmd"
+  listed=""
+  ordered=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    word="${line%%"${tab}"*}"
+    fix="${line#*"${tab}"}"
+    [ -n "$word" ] && [ "$fix" != "-" ] && [ "$fix" != "$line" ] || return 1
+    ordered="${ordered}${#word}${tab}${line}
+"
+  done <<EOF
+$fixes
+EOF
+  ordered="$(printf '%s' "$ordered" | sort -t "$tab" -k1,1nr)" || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    line="${line#*"${tab}"}"
+    word="${line%%"${tab}"*}"
+    fix="${line#*"${tab}"}"
+    case "$listed" in *"
+${word} → "*) continue ;; esac
+    total=0
+    while IFS= read -r n; do
+      [ "${n%%"${tab}"*}" != "$word" ] || total=$((total + 1))
+    done <<EOF
+$fixes
+EOF
+    rest="${rewritten//"$word"/}"
+    [ $(( (${#rewritten} - ${#rest}) / ${#word} )) -eq "$total" ] || return 1
+    rewritten=${rewritten//"$word"/$fix}
+    listed="${listed}
+${word} → ${fix}"
+  done <<EOF
+$ordered
+EOF
+  [ "$rewritten" != "$cmd" ] || return 1
+  [ -z "$(ff_zsh_glob_scan "$rewritten")" ] || return 1
+  if [ "$eq_on" -eq 1 ]; then
+    [ -z "$(ff_zsh_equals_fix_scan "$rewritten")" ] || return 1
+    case "$(ff_zsh_expansion_scan "$rewritten")" in *equals* | *scalar-list*) return 1 ;; esac
+  fi
+  out="$(printf '%s' "$input" | jq -c --arg command "$rewritten" --arg words "${listed#?}" --arg warning "$expansion_warning" '
+    {hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {command: $command}),
+      additionalContext: ("zsh ガード（zsh-nomatch-glob / equals 展開）: zsh で実行されない未引用の語を引用して書き換える候補を作成しました（" + ($words | split("\n") | join("、")) + "）。次の呼び出しからは最初から引用して書いてください。採用・実行は再検査と通常の権限判定に従います。")}}
+    + (if $warning != "" then {systemMessage: $warning} else {} end)' 2>/dev/null)" || return 1
+  [ -n "$out" ] || return 1
+  expansion_warning=""
+  expansion_deny=""
+  printf '%s\n' "$out"
+  exit 0
+}
+
 jq_rc=0
 cmd="$(printf '%s' "$input" | jq -r 'if (type == "object") and (.tool_name == "Bash") then ((.tool_input // {}) | if type == "object" then (.command // "") else "" end) else "" end | if type == "string" then . else "" end' 2>/dev/null)" || jq_rc=$?
 cmd="${cmd//$'\r'/}"  # Windows の jq.exe は改行を \r\n で出す（Issue `#2017`）
@@ -239,12 +355,13 @@ fi
 
 case "$cmd" in
   *-*=*) : ;;
-  *) exit 0 ;;
+  *) glob_candidate=0 ;;
 esac
 case "$cmd" in
   *=*'*'* | *=*'?'* | *=*'['*) : ;;
-  *) exit 0 ;;
+  *) glob_candidate=0 ;;
 esac
+[ "$glob_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || exit 0
 
 # ---- 抜け道: コマンドの先頭（先頭の空白・タブ・改行だけを剥がす）の FF_ZSH_GLOB_ACK=1 --------
 # 先頭の語そのものに限る（guard-exit-code.sh の ACK と同じリテラル判定）。先頭に連なる環境代入を
@@ -264,10 +381,17 @@ esac
 
 # ASDD ゲートが検証不能を返した回は、候補コマンドに限りここで止める（ACK の判定より後 —
 # deny 文が案内する「先頭へ FF_ZSH_GLOB_ACK=1」が効く位置）。
+# equals だけの候補（`echo ====`。glob の前置フィルタに当たらない）は、ヘルパが返した equals の
+# deny（ASDD 検証不能の理由付き）を保留から出す。glob の判定不能 deny には置き換えない。
+if [ "$asdd_unverifiable" -eq 1 ] && [ "$glob_candidate" -eq 0 ]; then
+  exit 0
+fi
 if [ "$asdd_unverifiable" -eq 1 ]; then
   deny_unavailable "ASDD 設定を検証できません（asdd_hook_enabled rc=${asdd_rc}。.asdd/config.json があるのに node が無い・設定を読めない等）"
 fi
 
+hits=""
+if [ "$glob_candidate" -eq 1 ]; then
 # ---- heredoc 本文を落とす -----------------------------------------------------
 HEREDOC_HELPER="$HELPER_DIR/heredoc-strip.sh"
 [ -f "$HEREDOC_HELPER" ] && [ -r "$HEREDOC_HELPER" ] || deny_unavailable "heredoc 除去ヘルパのファイルが無いか読めません（${HELPER_DIR_SHOWN}/heredoc-strip.sh）"
@@ -294,10 +418,17 @@ case "$scan_rc" in
   4) deny_unavailable "引用・展開（'…' / \"…\" / \${…} / \$(…) / バッククォート）が閉じないまま入力が終わったため、走査を完了できません" ;;
   *) deny_unavailable "判定ヘルパの走査（awk）が失敗しました（rc=${scan_rc}）" ;;
 esac
-[ -n "$hits" ] || exit 0
+fi
+[ -n "$hits" ] || [ -n "$expansion_deny" ] || exit 0
+
+try_rewrite || true
+# 書き換えられなかった equals は、保留していた従来の deny をそのまま返す。
+if [ -n "$expansion_deny" ]; then
+  expansion_warning=""
+  exit 0  # EXIT trap が保留した deny を出す
+fi
 
 # ---- deny 文（検出した実値と書き換え案。最大 5 語） ---------------------------------
-tab='	'
 listed=""
 hit_n=0
 while IFS= read -r hit_line; do

@@ -137,6 +137,7 @@ Bash 専用の12実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 | パス（導入先から見た相対パス） | 置く主体 | 役割 |
 | --- | --- | --- |
 | `scripts/codex-review.sh` | `scripts/setup-multi-agent.sh` が配置する | クロスモデルレビューの入口シム（単一ファイル配布） |
+| `<解決済みPLAYBOOKの親>/PENDING_CANDIDATES.md` | `/ace-curate` が容量停止時に生成する | 採用前候補の永続store。通常ACEの件数へ混ぜず、lookupがpendingとして検索する。不在時は未作成のまま |
 | `scripts/.ff-dev-toolkit-root` | `scripts/setup-multi-agent.sh` が配置する | シムがオーケストレータを解決するためのサイドカー（Git 管理しない） |
 | `.claude/agent-config.yaml` | **利用者が任意で置く**（`scripts/setup-multi-agent.sh` はファイルを置かない。既定のままなら不要で、変えたいキーがあるときだけそのキーを書いた最小のファイルを置くよう案内する） | レビュー担当・CLI 構成のプロジェクト上書き。在れば同梱の既定より優先して読まれる |
 | `docs/MASTER.md` | `init-docs` / `asdd-init` が生成する | 仕様文書の入口。`validate-docs` が名前で参照する |
@@ -357,11 +358,19 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_RUN_ALL_FAST`
 - `FF_RELEASE_IN_FLIGHT_MAX_AGE`
 - `FF_RUN_ALL_JOBS`
+- `FF_RUN_ALL_LOAD_SAMPLE`（起動時負荷の検査用注入口）
 - `FF_RUN_ALL_MCP_DIR`
 - `FF_RUN_ALL_MCP_NODE_MODULES`
 - `FF_RUN_ALL_NESTED`
 - `FF_RUN_ALL_PROBE_LOG`
 - `FF_RUN_ALL_PROBE_RENDEZVOUS`
+- `FF_STARTUP_CORES`（以下はrunnerの起動時観測を保持する内部変数）
+- `FF_STARTUP_LOAD`
+- `FF_STARTUP_LOAD_PER_CORE`
+- `FF_STARTUP_OTHER_GATES`
+- `FF_STARTUP_PRESSURE`
+- `FF_STARTUP_REPORT`
+- `FF_STARTUP_THRESHOLD`
 - `FF_SCRIPT_ROOT_GUARD_QUIET`
 - `FF_SELFMUT_TARGET`
 - `FF_SELF_FINGERPRINT_START`
@@ -398,6 +407,13 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_SYNC_SHA_SCRIPT`
 - `FF_SYNC_SHA_SKILL`
 - `FF_TEST_CODEX_COUNT`（委譲レビュー検査の CLI stub 起動数ファイル）
+- `FF_DEV_TOOLKIT`（環境変数の隔離で使う字句的接頭辞）
+- `FF_TEST`（fixture用環境変数の字句的接頭辞）
+- `FF_TEST_CORES`
+- `FF_TEST_GATE_ROOT`
+- `FF_TEST_PROCESS_MODE`
+- `FF_TEST_READY`
+- `FF_TEST_RELEASE`
 - `FF_TEST_MODEL_SET`
 - `FF_TEST_MODEL_UNSET`
 - `FF_TEST_MODE`

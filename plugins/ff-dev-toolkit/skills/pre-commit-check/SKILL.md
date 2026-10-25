@@ -143,7 +143,7 @@ git diff --name-only -- <1) で得た staged パス>
 
 ### 8. staged ファイル種別ごとの静的 suite プリフライト
 
-手順 7 と同じ「commit 前に安く落とす」枠で、staged ファイルの**種別**から**固定表**で決まる静的 suite を単体で回す。ここで名指しする suite はいずれも単体なら 1 分未満で終わり、全件ゲート 1 周（約 10 分）が赤になってから初めて違反に気付く手戻りを先に潰せる。
+手順 7 と同じ「commit 前に安く落とす」枠で、staged ファイルの**種別**から**固定表**で決まる静的 suite を単体で回す。固定表で名指しする suite はいずれも単体なら 1 分未満で終わり、全件ゲート 1 周（約 10 分）が赤になってから初めて違反に気付く手戻りを先に潰せる。
 
 **全件ゲートを置き換えない。** 全件ゲート（`plugins/ff-dev-toolkit/tests/run-all.sh`）は従来どおり全 suite を全件で回す。本手順はその**前に追加で**回す安い先行検査であり、全件ゲートで回す suite を絞り込む仕組みではない。プリフライトが緑でも全件ゲートは省略しない。
 
@@ -161,13 +161,14 @@ git diff --name-only -- <1) で得た staged パス>
 | B. 公開同期対象 | `plugins/ff-dev-toolkit/**`（種別 A も含む公開同期対象の全体）または `changelog.d/*.md` | `sync-forbidden-patterns` / `skill-count-consistency` |
 | C. shell | `*.sh`（リポジトリ内の位置は問わない） | `run-all` / `shellcheck` |
 | D. docs 仕様文書 | リポジトリ直下の `docs/**/*.md`（`plugins/ff-dev-toolkit/docs-template/` は含まない）または `.version-claims/**` | `docs-version-changelog` / `docs-frontmatter-repo` |
+| E. 断片内容（Bへの条件付き追加） | `changelog.d/*.md` が staged（ACMR）。README.md と下位ディレクトリは除く | `changelog-fragments` |
 
 - 種別 B の `skill-count-consistency` は、公開面の正本 `PUBLIC-SURFACE.md` が列挙する skills / hooks / `FF_*` 環境変数と実体の一致を見る。新しい `FF_*` 名を足して公開面へ分類し忘れた状態を commit 前に拾う
 - 種別 D は frontmatter の `version` を bump したときの随伴漏れ（Changelog 節の `### [x.y.z]` 欠落 = `docs-version-changelog`、bump 幅と `changeImpact` の不一致 = `docs-frontmatter-repo`）を拾う（OBS-259 / OBS-142）。version claim の再生成漏れは suite ではなく下の「version claim と changelog 断片」で見る
 
 #### プリフライトの実行手順
 
-まず `git diff --cached --name-only --diff-filter=ACMR` で staged パスの一覧を取る（手順 7 と同じ入力）。一覧を上表の 4 種別へ振り分ける。1 ファイルが複数種別に該当してよい（`plugins/ff-dev-toolkit/skills/<名>/SKILL.md` は A と B、`plugins/ff-dev-toolkit/tests/<名>/verify.sh` は B と C に該当する）。該当した種別の suite を、重複を除いて 1 回ずつ単体で実行する:
+まず `git diff --cached --name-only --diff-filter=ACMR` で staged パスの一覧を取る（手順 7 と同じ入力）。一覧を上表の 5 種別へ振り分ける。1 ファイルが複数種別に該当してよい（`plugins/ff-dev-toolkit/skills/<名>/SKILL.md` は A と B、`plugins/ff-dev-toolkit/tests/<名>/verify.sh` は B と C に該当する）。該当した種別の suite を、重複を除いて 1 回ずつ単体で実行する:
 
 ```bash
 bash plugins/ff-dev-toolkit/tests/docs-gates/verify.sh
@@ -178,6 +179,8 @@ bash plugins/ff-dev-toolkit/tests/run-all/verify.sh
 bash plugins/ff-dev-toolkit/tests/shellcheck/verify.sh
 bash plugins/ff-dev-toolkit/tests/docs-version-changelog/verify.sh
 bash plugins/ff-dev-toolkit/tests/docs-frontmatter-repo/verify.sh
+# E が当たった回だけ（断片が無い回は B に追加しない）
+bash plugins/ff-dev-toolkit/tests/changelog-fragments/verify.sh
 ```
 
 判定順序は手順 7 と同じで、**実行できなかった**を先に切り分ける。suite ファイルが存在しない・依存コマンドが無い・suite 自身が「skip」と報告した場合は、終了コードが 0 でも**違反なしへ倒さない**。「実行できなかった」と「違反なし」を別の状態として報告し、緑扱いにせず commit へ進まない側の判定にする（fail-closed）。実行できた suite だけを終了コードで緑赤に分ける。
@@ -191,6 +194,22 @@ Windows の Git Bash（MSYS / Cygwin。判定は `scripts/lib/wsl-notice.sh` の
 - 該当する種別が 1 つも無ければ「対象なし」として 1 行で報告し、他の手順の結果は変えない
 - 種別 D だけが当たらない回（staged に docs 仕様文書が無い）は、D の suite を回さず、下の「version claim」も「対象なし」と 1 行で報告する。A〜C の判定は変えない
 - 種別 D の振り分けに限り、staged の**削除**も数える（`git diff --cached --name-only --no-renames --diff-filter=ACDMR -- docs .version-claims`）。version 文書や claim だけを削除した回も claim validator の対象になる
+
+#### staged SKILL 本線の容量
+
+名簿の `skills/<名>/SKILL.md` の staged 追加・変更・種別変更・削除（ACDMRT）に、以下の軽量検査も実行する。削除も対象に含め、名簿に残る必須本線の不在を対象なしにしない。上限と名簿は `finish`、`multi-review` の上限は `review-rejection-discipline` の **index上のリテラル定義**から読む（値を複製しない）。定義の未stage編集は今回の判定へ混ぜず、空staged・非名簿変更を止めない。suite 全体は実行しない。測定対象は **index の blob** で、作業ツリーだけの修正は採用しない。手順6の一致確認も維持する。
+
+```bash
+bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-toolkit/tests/lib/skill-byte-guard.sh"; if [ ! -d "$r/plugins/ff-dev-toolkit/tests" ]; then echo "skill-byte: none"; exit 0; fi; [ -s "$f" ] && [ -r "$f" ] || { echo "SKILL容量未検査: $f を読めません" >&2; exit 2; }; . "$f" || exit 2; skill_byte_scan "$r"'
+```
+
+| 終了コード | 報告 |
+|---|---|
+| 0 | `skill-byte: ok N` はN件が上限以内。`skill-byte: none` は対象なしで、既存Aの判定を変えない |
+| 1 | `<path>: <実測> B > <上限> B` を名指しし、commit へ進まない |
+| 2 | 定義/名簿の不在・空・書式変更・重複、index取得/測定失敗・未解決衝突・空blobは「SKILL容量未検査」。違反なしとは書かずcommit へ進まない |
+
+種別 E は断片の**内容**（raw HTML・箇条書き等）を単体suiteで検査する。ファイル名・行を含む診断を報告し、赤ならcommit へ進まない。対象断片をstageしていない回はEを回さずBの判定を変えない。suiteは全作業ツリーの断片とbase鮮度も見るため、内容違反と鮮度/実行不能を区別する。下の有無・帰属検査は引き続き実行し、Eの成功で置き換えない。
 
 #### version claim と changelog 断片
 
@@ -221,11 +240,14 @@ bash -c 'r="$(git rev-parse --show-toplevel)" || { echo "断片未検査: git �
 | 終了コード | 出力 | 報告 |
 |---|---|---|
 | 0 | `changelog-fragment: ok <N>` | 違反なし（断片 N 件。照合した相手、または照合不要の旨は stderr の `帰属検査:` 行） |
+| 0 | `changelog-fragment: ok <N>` と stderr の `WARN changelog-fragment:` | 読み直しWARN。表示した断片のパス・index本文を今回の変更と照合し、最終報告にも残す。WARNだけではcommitを止めない |
 | 0 | `changelog-fragment: none` | 対象なし（staged に公開対象の変更が無い。「違反なし」とは書かない） |
 | 0 | `changelog-fragment: consumed <N>` | 対象外（断片の削除・公開 CHANGELOG・`scripts/release-dev-toolkit.sh` の準備対象だけを stage した、断片を集約するリリース準備の回。準備対象外の公開変更が混ざれば消費と扱わない） |
 | 1 | `公開対象を変更したのに changelog.d/ 断片がありません: <先頭パス>（公開対象 <M> 件）` | 違反あり。`changelog.d/README.md` の書式で断片を足して `git add` する。commit へ進まない |
 | 1 | `ATTRIBUTION_PATH=<token> -> <公開 path> …` と `✗ <断片>: 前版 v<tag> と同一内容の path を backtick で参照している（…）` | 帰属違反。名指しの path はこの PR が（staged でも先行 commit でも）変えていない。本当に変えたファイルを指すつもりならそのファイルの path へ直し、そうでなければ backtick を外して役割名で書き、`git add` し直す。commit へ進まない |
 | 2 | stderr の `断片未検査: <理由>` | 断片未検査。公開対象一覧を取得できない・比較 base を解決できず staged にも断片が無い・git が失敗した・帰属照合の helper を読めない・公開側最新タグを clone からも公開リポジトリからも引けない。緑とも違反なしとも報告せず、commit へ進まない |
+
+同branchで追加した断片がHEADにある後続commitで、公開対象をstageし、確定断片集合とstaged変更との共通断片が0件なら、libが全断片のパス・index本文と読み直し案内をstderrへ出す。共通断片を1件以上stageした回、初回commit、非公開変更、断片の消費ではWARNしない。README・他PRの既存断片・作業ツリーだけの修正はWARNを抑止しない。既存stdoutとrc=0/1/2を維持し、新しい一覧・本文の取得失敗も「断片未検査」rc=2とする。
 
 #### 実行ビット検査（新規 suite / hook）
 
@@ -246,6 +268,27 @@ bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-to
 | 0 | `exec-bit: none` | 対象なし（「違反なし」とは書かない） |
 | 1 | `<path>: <mode>（実行ビットなし）` | 違反あり。名指しされたファイルを `chmod +x` して `git add` し直す（`core.fileMode=false` の Windows では `chmod` が index に届かないので `git update-index --chmod=+x <path>`）。commit へ進まない |
 | 2 | stderr の `実行ビット未検査: <理由>` | 実行ビット未検査。判定材料を取得できない・書式を読めない。緑とも違反なしとも報告せず、commit へ進まない |
+
+#### 変更 suite の対の selftest
+
+staged（ACMRT）の `plugins/ff-dev-toolkit/tests/<名>/verify.sh` に対し、同じ階層の `<名>-selftest/verify.sh` が実在すれば単体で実行する。対の判定は `run-all.sh` の高速モードと同じ接尾辞と consumer の実在確認から導出し、名簿を持たない。`tests/lib` や fixture からの依存推測は行わない。selftest 自身の変更も、その先の対が実在すれば同じ規約で扱う。
+
+手順 6 の一致確認を先に済ませる。helper はコマンドを shell 引用付きで名指しし、各 selftest を foreground で回して結果を残す。対自身も index と一致していることを確かめ、未 stage の修正や未追跡の対を成功にしない。固定表の安い suite と異なり、1 分を超える selftest も完了を待つ。tool の timeout を明示し、途中で待機が切れた場合は「未検査」として完了を追う。
+
+```bash
+bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-toolkit/tests/lib/precommit-selftest-pairs.sh"; if [ ! -d "$r/plugins/ff-dev-toolkit/tests" ]; then echo "selftest-pairs: none"; exit 0; fi; [ -s "$f" ] || { echo "selftest 未検査: $f がありません/空です" >&2; exit 2; }; . "$f" || exit 2; declare -F selftest_pairs_scan >/dev/null || exit 2; selftest_pairs_scan "$r"'
+```
+
+tests を持たない消費側プロジェクトでは「対象なし」。tests はあるのに helper が無い・空・関数不在なら未検査（rc=2）とする。
+
+この commit 前検査ではインデント付きの部分 SKIP も未検査として止め、出力に残る未実施項目を確認する。`run-all.sh` が部分 SKIP を別集計し suite を pass 扱いする既存契約は変更しない。selftest を回せた範囲と、まだ検証できていない範囲を混ぜて「違反なし」にしないための、このプリフライトの判定である。
+
+| 終了コード | 出力 | 報告 |
+|---|---|---|
+| 0 | 各 `selftest result: PASS <path>` と `selftest-pairs: ok N` | 名指ししたコマンド・selftest 名・成功結果を記録してから違反なし |
+| 0 | `selftest-pairs: none` | 対象なし。何も止めない |
+| 1 | `selftest result: FAIL rc=N <path>` | 赤の結果を記録し、修正するまで commit へ進まない |
+| 2 / 実行中断 | `selftest 未検査: <理由>` または結果欠落 | 一覧取得失敗・書式不正・内容不一致・SKIP・未実行は緑とも違反なしとも報告せず、commit へ進まない |
 
 ### 9. 結果の出力
 
@@ -307,11 +350,18 @@ bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-to
 ### version 随伴（claim / changelog 断片）
 - ✅ 違反なし（`check-version-claims.sh` rc=0 / `changelog-fragment: ok N`）
   または
+- ⚠️ 読み直しWARN（`WARN changelog-fragment:` の断片パス・index本文を今回の変更と照合、commit継続可）
+  または
 - ❌ 違反あり（claim validator の `✗` 行、または断片欠落の先頭パスを名指し。再生成・断片追加して `git add` し直すまで commit へ進まない）
   または
 - ○ 対象なし（種別 D が当たらない回の claim / `changelog-fragment: none` / `consumed N`）
   または
 - ❌ 断片未検査・claim 判定不能（`断片未検査: <理由>` / claim validator rc=2。既定ブランチが先行しているなら rebase 後に再実行。「違反なし」とは書かない、commit へ進まない）
+
+### SKILL容量と断片内容
+- ✅ 容量は `skill-byte: ok N`、断片は種別Eのsuite成功
+- ○ 対象なし（容量は `skill-byte: none`、断片をstageしていない回はEを未実行）
+- ❌ 容量超過はpath・実測B・上限B、断片違反はファイル名・行を列挙。判定不能/鮮度も違反なしとせず、commit へ進まない
 
 ### 実行ビット（新規 suite / hook）
 - ✅ 違反なし（`exec-bit: ok N`）
@@ -321,6 +371,12 @@ bash -c 'r="$(git rev-parse --show-toplevel)" || exit 2; f="$r/plugins/ff-dev-to
 - ○ 対象なし（staged に `tests/*/verify.sh` も `hooks/*.sh` も無い／ソースリポジトリではない）
   または
 - ❌ 実行ビット未検査（`git diff --cached --raw` を取得できない・読めない。「違反なし」とは書かない、commit へ進まない）
+
+### 変更 suite の対の selftest
+- ✅ 違反なし（名指しした selftest 名・単体コマンド・各 PASS と `selftest-pairs: ok N`）
+- ○ 対象なし（`selftest-pairs: none`）
+- ❌ 赤（selftest 名・単体コマンド・FAIL と rc、commit へ進まない）
+- ❌ 未検査（未実行 / SKIP / 結果欠落 / 取得失敗 / 内容不一致。「違反なし」とは書かず、完了を確認するまで commit へ進まない）
 
 ### サマリー
 - チェック項目: X/Y ✅

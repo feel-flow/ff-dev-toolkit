@@ -13,6 +13,9 @@
 # bash 3.2 互換。
 
 set -euo pipefail
+# 模擬リリースの外側のsuite選択をfixtureの前提にしない。各ケースが必要な親環境を明示する。
+# FULLは既存run_orchが呼び出しごとに分離し、その漏れを測る変異対照を維持する。
+unset FF_RUN_ALL_CHANGED FF_RUN_ALL_FAST FF_RUN_ALL_NESTED
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 # shellcheck source=../lib/git-fixture.sh
@@ -25,6 +28,7 @@ ORCH_DIR="$(cd "$(dirname "$ORCH")" && pwd -P)"
 REPO_ROOT="$(cd "$ORCH_DIR/.." && pwd -P)"
 for need in "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/scripts/lib/release-gate-advance-functions.sh" \
   "$REPO_ROOT/scripts/lib/release-environment-functions.sh" \
+  "$SCRIPT_DIR/release-gate-mode-runtime.sh" \
   "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh"; do
   [[ -f "$need" ]] || { echo "✗ オーケストレータの依存 lib がありません: $need" >&2; exit 1; }
 done
@@ -72,6 +76,8 @@ write_stub() { # $1=path（中身は stdin）
 # Runtime prerequisites are controlled here, with one real Python / Node probe
 # control. Full parser/typecheck behavior remains owned by the existing suites.
 . "$SCRIPT_DIR/release-environment-runtime.sh"
+# shellcheck source=release-gate-mode-runtime.sh
+. "$SCRIPT_DIR/release-gate-mode-runtime.sh"
 
 # gh: Release 一覧・作成・最新・公開時刻と、同期提案 hook の PR 照会だけを受ける。想定外は大声で落ちる。
 write_stub "$STUB_BIN/gh" <<'STUB'
@@ -200,6 +206,26 @@ echo "stub digest $1..$2"
 STUB
   write_stub "$r/plugins/ff-dev-toolkit/tests/run-all.sh" <<'STUB'
 #!/usr/bin/env bash
+printf 'full=%s fast=%s changed=%s nested=%s argc=%s\n' "${FF_RUN_ALL_FULL-<unset>}" "${FF_RUN_ALL_FAST-<unset>}" "${FF_RUN_ALL_CHANGED-<unset>}" "${FF_RUN_ALL_NESTED-<unset>}" "$#" >>"$RELEASE_RT_STATE/runall-env.log"
+# 実runnerと同じく、入れ子の既定一覧は止め、明示suiteの再検査は許す。
+if [[ "${FF_RUN_ALL_NESTED:-0}" != 0 && $# -eq 0 ]]; then echo 'nested default list rejected'; exit 1; fi
+# モード漏れの再現。明示suiteとfull/fastの明示が無い回だけ変更ベースの部分実行になる。
+if [[ $# -eq 0 && -n "${FF_RUN_ALL_CHANGED:-}" && "${FF_RUN_ALL_CHANGED}" != 0 \
+  && "${FF_RUN_ALL_FULL:-0}" != 1 && "${FF_RUN_ALL_FAST:-}" != 0 && "${FF_RUN_ALL_FAST:-}" != 1 ]]; then
+  echo 'suites: total=1 run=1 passed=1 failed=0 skipped=0 not-run=0'
+  echo 'checks-skipped: total=0 suites=0'; echo 'suites: selected=1 registered=3'; exit 0
+fi
+# 起動環境にかかわらず部分会計を返す対照で、出力側の拒否も独立に検証する。
+if [[ -f "$RELEASE_RT_STATE/runall.partial" ]]; then
+  if [[ "$(cat "$RELEASE_RT_STATE/runall.partial")" == stale ]]; then
+    echo 'suites: total=3 run=3 passed=1 failed=2 skipped=0 not-run=0'
+    echo 'checks-skipped: total=0 suites=0'; echo 'suites: selected=3 registered=4'
+    echo '✗ failed: changelog-fragments shared-version-convergence'
+    echo '✗ stale (base が先行しているための赤を含む): changelog-fragments shared-version-convergence'; exit 1
+  fi
+  echo 'suites: total=1 run=1 passed=1 failed=0 skipped=0 not-run=0'
+  echo 'checks-skipped: total=0 suites=0'; echo 'suites: selected=1 registered=3'; exit 0
+fi
 # 明示引数 = gate 段が鮮度の赤だった suite だけを再検査する呼び出し（Issue `#2202`）。名指しの件数で緑に完走する
 # （recheck.red = 鮮度以外の赤 / recheck.skip = 名指しの suite が suite 単位で skip して exit 0）
 if [[ $# -gt 0 ]]; then
@@ -1331,6 +1357,9 @@ if [[ -n "$HOOK" && -f "$HOOK" ]]; then
 fi
 
 release_environment_loader_gate_cases
+RELEASE_GATE_MODE_REACHED=0
+release_gate_mode_cases
+[[ "$RELEASE_GATE_MODE_REACHED" -eq 1 ]] || bad 'gate-mode cases did not reach their end'
 
 REACHED_END=1
 echo "release-runtime: pass=${PASS} fail=${FAIL}"

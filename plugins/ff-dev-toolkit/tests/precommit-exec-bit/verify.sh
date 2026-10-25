@@ -81,6 +81,9 @@
 # 変異検出: リポジトリルートの解決をやめ REPO をそのまま使うと (F12b) が赤になる。--no-relative は root へ -C する実装では冗長な防御で、外しても赤にならない（針はルート解決側の F12b が持つ）。
 #
 # 一時領域と git が無い環境では skip せず赤で止める（本 suite の検出力は fixture にしか無い）。
+# SKILL容量検査は skill-byte-cases.sh でindexの境界・上限定義の変更・判定不能を測る。
+# 空振り検出: index超過の許可は5件、WT読取への逆行は2件、定義異常の無視は3件、multi-review除外は2件、衝突無視は1件が赤。case本体を空にすると末尾sentinelが赤（2026-10-23、正常対照/良性コメント緑を含め変異ハーネスで実測）。
+# 空振り検出: 読み直しWARNの抑止は7件、WT本文の誤使用と対象外断片での抑止は各1件、case空は末尾sentinel1件が赤。staged/集合/保存本文の診断を一般エラーへ変える変異は各1/1/2件が赤（2026-10-24実測）。確定集合の不在/空/不正と一覧・保存本文の読取失敗はW9/W10/W11が固有診断とrc2/WARNなしを要求する。
 
 set -euo pipefail
 
@@ -678,6 +681,7 @@ fi
 stage_file "$R" "$FRAG_PATH"
 run_frag "$R"
 if [ "$RC" -eq 0 ] && [ "$OUT" = "changelog-fragment: ok 1" ]; then
+  if has_text "$ERR" 'WARN changelog-fragment:'; then bad "F9b. base不明を後続WARNにした"; fi
   ok "F9b. 比較 base が無くても staged の断片は数える"
 else
   bad "F9b. base 不明時の staged 断片の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
@@ -693,6 +697,7 @@ stage_file "$R" 'oss/ff-dev-toolkit/CHANGELOG.md'
 stage_file "$R" 'plugins/ff-dev-toolkit/.claude-plugin/plugin.json'
 run_frag "$R"
 if [ "$RC" -eq 0 ] && [ "$OUT" = "changelog-fragment: consumed 1" ]; then
+  if has_text "$ERR" 'WARN changelog-fragment:'; then bad "F10a. 断片消費を後続WARNにした"; fi
   ok "F10a. 断片の削除 + 公開 CHANGELOG の更新（リリース準備）は consumed として対象外"
 else
   bad "F10a. 断片消費の扱いが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
@@ -1125,6 +1130,11 @@ else
   bad "A15. 複数断片の名指しが違います（rc=${RC} / out=${OUT} / err=${ERR}）"
 fi
 FRAG_RAN=1
+FRAGMENT_RECHECK_CASES_REACHED=0
+# shellcheck source=fragment-recheck-cases.sh
+. "$SCRIPT_DIR/fragment-recheck-cases.sh"
+run_fragment_recheck_cases
+if [ "$FRAGMENT_RECHECK_CASES_REACHED" -ne 1 ]; then bad "断片読み直しcaseが末尾へ到達していません"; fi
 fi
 
 # scripts/ が在るのに F 系を最後まで走らせなかった回は赤（skip 条件の取り違えを緑にしない）
@@ -1133,6 +1143,12 @@ if [ -d "$REPO_SCRIPTS" ] && [ "$FRAG_RAN" -ne 1 ]; then
 fi
 
 echo
+SKILL_BYTE_CASES_REACHED=0
+# shellcheck source=skill-byte-cases.sh
+. "$SCRIPT_DIR/skill-byte-cases.sh"
+run_skill_byte_cases
+if [ "$SKILL_BYTE_CASES_REACHED" -ne 1 ]; then bad "SKILL容量caseが末尾へ到達していません"; fi
+
 echo "precommit-exec-bit: passed=${PASS} failed=${FAIL}"
 FF_REACHED_END=1
 [ "$FAIL" -eq 0 ]

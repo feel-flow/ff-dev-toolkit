@@ -1,6 +1,6 @@
 ---
 name: multi-review
-description: 主担当のセルフレビューを基準線に、環境チェックで別 CLI（Claude / Codex / Grok / Copilot）が在るときだけクロスレビューを 1 本加える。一時的な利用不可はその回だけ単一で完了し、cross_review=off で単一固定もできる
+description: セルフレビューに、環境確認済みの別CLIを1本加える。一時的な利用不可は当回だけ単一で完了。cross_review=offで単一固定。
 ---
 
 # /multi-review — 複数AIクロスモデルレビュー
@@ -58,7 +58,7 @@ version sortによる版の選び直しや、sidecarを使った別実体への�
 
 ### 0. 前提（PR 作成後に実行する）と担当の確定
 
-本スキルは **PR 作成後**に実行する（[Git Workflow ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要)）。担当は [レビュー担当の選択と利用制限時の継続](../../docs-template/05-operations/deployment/self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従い、本書は複製しない。主担当は実装中のホストで、保存済み pair 設定から推測しない。環境チェック:
+本スキルは **PR 作成後**に実行する（[Git Workflow ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要)）。担当は [レビュー担当の選択と利用制限時の継続](../../docs-template/05-operations/deployment/self-review.md#レビュー担当の選択と利用制限時の継続)（正本）に従い、本書は複製しない。主担当は実装ホスト（保存pairから推測しない）。環境チェック:
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-agent.sh" --task review --print-reviewers
@@ -99,7 +99,7 @@ CLI・観点・モード・timeout・警告を報告。✅ は PATH 在だけで
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --route <REVIEW_ROUTE の値> $ARGUMENTS
 ```
 
-タイムアウトは既定 **900秒/CLI**（`--timeout` で上書き）。待ち時間の作業は起動前に列挙して起動と同じメッセージで着手し、尽きたら `sleep` で空回りせず Monitor で完了通知を待つ。
+**900秒/CLI**（`--timeout`）。作業を起動前に列挙し、起動と同じメッセージで着手。尽きたら[長時間ゲートの進捗表示](../../docs-template/05-operations/deployment/git-workflow.md#長時間ゲートの進捗表示)に従う。
 
 **レビュー起動から全 CLI が終端（応答・失敗・タイムアウトのいずれか）に達するまで、オーケストレータ側で作業ツリーを変更しないこと**。変化を検知すると結果は DISCARDED になるが、変更して戻した場合や gitignore 済みパスは見えず、凍結の代わりになる機構ではない。サブエージェント（Review Toolkit 等）経路も同じで、そちらは結果を DISCARDED にする機構が無いので hook `guard-review-in-flight.sh` がレーンを開き、終端まで編集と git 書き込みを deny する（`fast` は Claude のレーンを開かない）。worktree 隔離の起動既定について、その規定（隔離時の凍結の扱いを含む）は [Git Workflow ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要) を正本とする（本書は再掲しない）。隔離は、外部 CLI を同一ツリーで実行する本スキルの経路には適用されず、こちらの凍結はそのまま守る。解放イベントを取りこぼしても、開始済みレーンは `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`（既定 14400 秒）、未開始のレーンは `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`（既定 1800 秒）を過ぎると自動回収され、systemMessage で通知される。
 
@@ -133,7 +133,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 #### 3-1. 結果ファイルの読み込み（サブエージェント委譲が既定）
 
-read-only の分析用 subagent があれば委譲し、要約だけを親へ返させる（全文を親へ展開しない）:
+read-only subagentへ委譲し、親には要約だけ返す:
 
 ```text
 マルチ CLI レビューの結果ファイルを分析してください。read-only で実行します:
@@ -155,7 +155,9 @@ probe）は実行して構いません（禁止列挙のビルド・テスト実
 
 #### 3-5. 自動修正の実行
 
-PR Review Response Policy に従い、Critical/Warning/妥当な Suggestion を自動修正します（[重要度別対応ルール](../../docs-template/05-operations/deployment/review-response-policy.md#重要度別対応ルール)。親は結果を再分類しない）。fix の委譲は [fix 指示の親の裁定](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#fix-指示の親の裁定) に従う。
+fixへ着手する前に、[自動レビューbotの完了確認](../../docs-template/05-operations/deployment/git-workflow.md#自動レビューbotの完了確認)を行う。
+
+PR Review Response Policy に従い、Critical/Warning/妥当な Suggestion を自動修正します（[規則](../../docs-template/05-operations/deployment/review-response-policy.md#重要度別対応ルール)。親は再分類しない）。fix は [fix 指示の親の裁定](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#fix-指示の親の裁定)。委譲時だけ[テンプレ](references/fix-handoff.md)を読む。
 
 #### 3-6. fix 後の再検証（部分再検証）
 

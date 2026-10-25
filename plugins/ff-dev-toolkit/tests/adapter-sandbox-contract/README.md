@@ -56,6 +56,10 @@ codex は**引数解析の段階で落ちる**ので CLI 本体は 1 バイト�
 
 ### probe の置き場所は検査の一部（$TMPDIR に置くと無意味になる）
 
+リポジトリ自体も `/tmp` と `${TMPDIR:-/tmp}` の外へ置く。Git ルートと両一時領域を物理パスへ解決し、ルートが同一または配下なら、`WORK` 生成・実 CLI・probe の前に「検査不成立」と入力/物理パスを示して非 0 で停止する。symlink で外側に見せても通らず、`temp` と `temp-shadow` のような隣接名は拒否しない。TMPDIR の未設定・空は `/tmp`、相対値は呼出時の物理 CWD 基準とする。空でない TMPDIR が解決不能なら停止する。Git 外の従来 skip は維持する。
+
+`adapter-sandbox-contract-selftest` は隔離 Git fixture 上で本体を起動し、この成立条件を検証する。偽 CLI と作成失敗する mktemp を使い、拒否時は両者の呼出が 0 件、許可時は従来の mktemp 入口へ到達することを確認する。実 CLI は起動しない。通常配置での本体の live probe 結果は別に測る。
+
 書き込み境界の probe は **`$TMPDIR` と `/tmp` の外**に置かなければならない。`workspace-write` は作業ルートをどこへ絞っても `/tmp` と `$TMPDIR` は書けるまま残すからで、そこに probe を置くと**絞りが効いていなくても書き込みが成功する**。
 
 これは仮説ではなく、この suite が実際に踏んでいた穴である。絞り込みを入れる前の「workspace-write=許可」arm は `mktemp -d`（= `$TMPDIR`）配下で測っていたので、**作業ルートの境界ではなく tmpdir の例外**によって通っていた。実測（probe を `$TMPDIR` 配下へ戻すと）:
@@ -73,7 +77,7 @@ codex は**引数解析の段階で落ちる**ので CLI 本体は 1 バイト�
 
 絞り込みの probe は親ディレクトリを 1 段挟む（`<probe root>/narrow/inner` を作業ルートにする）。絞りが効かなかったときに書き込みが落ちる先がリポジトリ root ではなく probe 配下になるので、**失敗しても作業ツリーを汚さない**。
 
-実 CLI を起動するのは `--help`、`codex sandbox`（モデルを呼ばずローカル完結）、`codex exec --strict-config`（使い捨て `CODEX_HOME` なので認証が無く、モデルに到達する前に終わる）だけ。ネットワーク・課金・エージェント実行のいずれも伴わない。
+実 CLI の呼出には `--help`、`codex sandbox`、`codex exec --strict-config` と argv 確認の `codex exec` がある。使い捨て `CODEX_HOME` は利用者の設定ファイルを分離するが、継承した API 認証環境変数を除去する仕組みではないため、それだけで全呼出のモデル未到達・無課金を保証するとは扱わない。
 
 ## 宣言テーブル（provenance）
 

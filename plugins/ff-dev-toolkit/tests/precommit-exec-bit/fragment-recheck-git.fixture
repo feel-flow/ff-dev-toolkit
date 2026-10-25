@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+diff=0 cached=0 filter='' fragments=0
+for arg in "$@"; do
+  case "$arg" in diff) diff=1 ;; --cached) cached=1 ;; --diff-filter=*) filter="${arg#*=}" ;; 'changelog.d/*.md') fragments=1 ;; esac
+done
+if [ "$diff" -eq 1 ] && [ "$cached" -eq 1 ] && [ "$filter" = ACDMRT ] && [ "$fragments" -eq 1 ]; then
+  case "$RECHECK_PHASE" in staged) exit 99 ;; partial) printf '%s' truncated; exit 0 ;; empty) printf '\0'; exit 0 ;; esac
+fi
+exec "$RECHECK_REAL_GIT" "$@"

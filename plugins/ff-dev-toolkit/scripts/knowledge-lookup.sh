@@ -952,6 +952,35 @@ if [ "${MODE}" = "promoted-open" ]; then
   exit 0
 fi
 
+# ── 採用前の保留候補（resolve/promoted-open経路には混ぜない） ───────────────
+PENDING_FILE=""; PENDING_PRESENT=0; pending_n=0
+if [ "${ACE_STATE}" = "ok" ] || [ "${ACE_STATE}" = "empty" ]; then
+  PENDING_FILE="${ACE_INDEX%/*}/PENDING_CANDIDATES.md"
+  if [ -e "$PENDING_FILE" ] || [ -L "$PENDING_FILE" ]; then
+    pending_lib="${BASH_SOURCE[0]%/*}/lib/ace-pending-functions.sh"
+    if [ ! -f "$pending_lib" ] || [ ! -r "$pending_lib" ] || [ -L "$pending_lib" ]; then
+      printf 'ACE pending: 候補parserを読めません: %s\n' "$pending_lib" >&2
+      exit 2
+    fi
+    # shellcheck source=lib/ace-pending-functions.sh
+    . "$pending_lib"
+    ff_ace_pending_validate "$PENDING_FILE" || exit 2
+    PENDING_PRESENT=1
+    extract_entries PENDING "$PENDING_FILE" >"${TMP}/pending-entries"
+    filter_entries <"${TMP}/pending-entries" >"${TMP}/pending-hit"
+    entries_meta "${TMP}/pending-hit" Category Origin >"${TMP}/pending-meta"
+    : >"${TMP}/pending-ids"
+    while IFS=$'\037' read -r id title src anchor cat origin end <&3; do
+      case "$src" in "${ROOT}"/*) rel="${src#"${ROOT}"/}" ;; *) rel="$src" ;; esac
+      # rowsの内部形式はstatusが末尾。print_groupが公開TSVの第3列へ移す。
+      printf 'pending\t%s\tCategory=%s Origin=%s\t%s\t%s#%s\tpending\n' \
+        "$id" "$cat" "$origin" "$title" "$rel" "$anchor" >>"${TMP}/rows"
+      printf '%s\n' "$id" >>"${TMP}/pending-ids"
+    done 3<"${TMP}/pending-meta"
+    pending_n="$(awk 'END { print NR }' "${TMP}/pending-ids")"
+  fi
+fi
+
 # ── キーワード検索の出力 ──────────────────────────────────────────────────────
 # live が空（empty）でも archive は引く — 全エントリを archive へ移した Playbook で
 # `--include-archived` が 0 件になるのを避ける（codex-cli のレビュー指摘）。
@@ -996,13 +1025,23 @@ if [ "${FORMAT}" = "text" ]; then
   print_group obs mitigated "$(obs_status_label mitigated)"
   print_group obs archived "$(obs_status_label archived)"
   print_group obs unknown "$(obs_status_label unknown)"
+  if [ "$PENDING_PRESENT" -eq 1 ]; then
+    printf '\n== ACE 保留候補（%s） ==\n' "${PENDING_FILE#"${ROOT}"/}"
+    if [ "$pending_n" -eq 0 ]; then printf '（0 件: %s）\n' "${kw_desc}"; fi
+    print_group pending pending '保留（pending。採用前の候補、有効なACEではない）'
+  fi
   printf '\n'
 else
   print_group ace active x; print_group ace deprecated x; print_group ace archived x; print_group ace unknown x
   print_group obs active x; print_group obs promoted x; print_group obs mitigated x; print_group obs archived x; print_group obs unknown x
+  if [ "$PENDING_PRESENT" -eq 1 ]; then print_group pending pending x; fi
 fi
 
-printf 'RECORD ace=%s obs=%s\n' "$(record_word "${ACE_STATE}" "${TMP}/ace-ids" "Playbook なし")" "$(record_word "${OBS_STATE}" "${TMP}/obs-ids" "台帳なし")"
-printf 'SUMMARY ace=%s obs=%s keywords=%s match=%s include_archived=%s offline=%s ace_state=%s obs_state=%s\n' \
+printf 'RECORD ace=%s obs=%s' "$(record_word "${ACE_STATE}" "${TMP}/ace-ids" "Playbook なし")" "$(record_word "${OBS_STATE}" "${TMP}/obs-ids" "台帳なし")"
+if [ "$PENDING_PRESENT" -eq 1 ]; then printf ' pending=%s' "$(record_word ok "${TMP}/pending-ids" '')"; fi
+printf '\n'
+printf 'SUMMARY ace=%s obs=%s keywords=%s match=%s include_archived=%s offline=%s ace_state=%s obs_state=%s' \
   "${ace_n}" "${obs_n}" "${#KEYWORDS[@]}" "$( [ "${MATCH_ALL}" -eq 1 ] && printf all || printf any )" "${INCLUDE_ARCHIVED}" "${OFFLINE}" "${ACE_STATE}" "${OBS_STATE}"
+if [ "$PENDING_PRESENT" -eq 1 ]; then printf ' pending=%s pending_state=ok' "$pending_n"; fi
+printf '\n'
 exit 0

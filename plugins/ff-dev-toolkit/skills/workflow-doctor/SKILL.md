@@ -59,7 +59,11 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 GitHub MCP などの取得結果を渡す場合は上の呼び出しへ `--github-input /absolute/index.json` を追加する（jq が必要）。file 時も labels / bundle / open Issue・parent / 自分の Draft の取得不能は既存の `SKIP` にする。`@me` の selector を保存した index だけでは取得主体の一致を証明できない。認識済みの実 API 404 だけを parent 無しへ機械写像し、403/400・未取得を空集合や parent=null に補わない。全 page・認証主体・写像の境界は [knowledge fixture の対応表](../../tests/github-input-knowledge/README.md)。`--offline` は file を含む任意 GitHub 検査を飛ばす。
 
-## 検査項目（10 + 1）
+Terminal 能力は [長時間ゲートの進捗表示](../../docs-template/05-operations/deployment/git-workflow.md#長時間ゲートの進捗表示) で確認し、`--terminal-capability available|unavailable|unknown` で渡す（既定 `unknown`）。ホスト名・PATH・画面の存在だけから推測しない。unknown / unavailable は検査 12 が理由付き INFO（未検査）を返し、適合 OK にしない。不正値・値なしは rc2。
+
+能力3条件を確認済みの当該セッションでは、上の実行行の末尾に `--terminal-capability available` を追加して起動する。能力を確認できない自動呼び出しでは既定の `unknown` を保ち、その診断を実施済みとはしない。
+
+## 検査項目（12）
 
 | 番号 | 検査 | 見る場所 | ずれの例（導入先で実測） | 重大度 |
 | --- | --- | --- | --- | --- |
@@ -74,8 +78,9 @@ GitHub MCP などの取得結果を渡す場合は上の呼び出しへ `--githu
 | 9 | レビュー担当 | 検査 1 と同じ入口文書 + `<root>/package.json` | 特定 CLI のレビューを常に必須にする行（CLI 名・必須の語・レビューの語が同じ行。「使えるときだけ」等の条件付きは除く）は FAIL。入口文書が条件なしで指示するレビュー用 `npm run <script>` がルートの package.json に無ければ FAIL（同じ行に「script があるリポジトリでは」等の条件がある参照は INFO で数えない。package.json を解析できなければ FAIL で実在を判定しない。実測: `package.json` の無いリポジトリでグローバル CLAUDE.md が `npm run code-review:codex` を必須にしていた） | FAIL |
 | 10 | 入口のパリティ | `<root>/CLAUDE.md` と `<root>/AGENTS.md` | 両方があるとき、契約の必須語（`YAGNI` / `bundle`）が片方にしか無い（Claude Code は CLAUDE.md だけ、Codex / grok は AGENTS.md だけを読む） | WARN |
 | 11 | Draft の実態 | `gh pr list --draft --author @me` | 自分が author の open な Draft PR が残っている（`knowledge:` の ACE PR は自律フローの人の確認待ちなので除外し INFO） | WARN |
+| 12 | 長時間ゲートの表示 | 検査 1 と同じ入口文書（available 時だけ） | 長時間・ゲート・suite・push と background の固定規定が同じ行にある。条件付き fallback と background 禁止は除外。行位置と FIXTEXT を示す。文書の欠落・空・読取不能・検索失敗は FAIL | WARN / FAIL |
 
-<!--0a9647ef1d3fb96b-->
+<!--e3c2b31f0e94b32f-->
 MCP: 取得値: MCP で同じ repo の labels / bundle / open Issues と parent、自分の Draft PR を取得。形式: doctor fixture の operation / scope / raw と全 page を index に保存。渡し先: workflow-doctor.sh --github-input /absolute/index.json へ渡す（repo 省略は origin）。表の旧文言は実行しない。不足時: 任意取得の不足は SKIP で継続。@me の実主体を照合し、403 を parent=null にしない。--offline は file も読まない。
 
 - 出力は 1 行 1 所見（`<LEVEL>\t<番号>\t<所見>`）。`FIXTEXT` 行は置換案。`SUGGEST` 行は提案（下の「提案」節）で、SUMMARY の直前にまとめて出る。末尾に `SUMMARY fail=<n> warn=<n> skip=<n>`
@@ -84,6 +89,8 @@ MCP: 取得値: MCP で同じ repo の labels / bundle / open Issues と parent�
 - 検査 1 は英字の大文字・小文字を区別しない。「即座に」の直後が Issue / GitHub Issue の実測形を検出し、「即座に修正」等の別述語と後段の Issue 作成を結び付けない。検査語は固定文字列と `.*` だけで書く（多バイトの文字クラスは BSD grep の C ロケールで一致 0 件 = fail-open になる。導入先の実測）。`grep` の rc≥2 は FAIL として報告し「0 件」に畳まない
 
 ## 結果の読み方と直し方
+
+- **WARN 12（background 固定）**: 同じ行に Terminal 能力による分岐と fallback を示すか、上の「長時間ゲートの進捗表示」を参照する。検査は行単位の候補検出で、文書全体の意味解析ではない。別行にある条件は結び付けない。WARN 単独は rc0。自動修正はしない。
 
 - **FAIL 8（Draft の旧文言）**: 該当行を「通常 PR として作る（Draft にしない）」へ書き換える（正本: `docs-template/05-operations/deployment/git-workflow.md`「ステップ5: Pull Request作成」— ADR-053 / ADR-054）。実行時の再発は同梱の PreToolUse ガード（`hooks/guard-pr-followup.sh`）が `gh pr create --draft` / `gh pr ready --undo` を抜け道付き deny で止める。人の確認待ちという理由がある Draft（ACE の自律フロー等）だけは、コマンド先頭の `FF_PR_DRAFT_ACK=1` で通す
 - **WARN 11（Draft の残存）**: `gh pr ready <番号>` で通常 PR へ戻し、作り方の出所（検査 8 の入口文書・手元のスクリプトやエイリアス）を確かめる

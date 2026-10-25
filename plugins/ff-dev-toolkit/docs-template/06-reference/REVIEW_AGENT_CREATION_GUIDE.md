@@ -543,7 +543,7 @@ fallback:
 
 | 呼び出し元      | 方法             | 例                                                             |
 | --------------- | ---------------- | -------------------------------------------------------------- |
-| **ターミナル**  | Codex-only 互換シム | `bash scripts/codex-review.sh`。`FF_DEV_TOOLKIT_ROOT` 未指定時は、cache全体のSemVer最大版をsidecarより優先。固定版のpair / distributedはskillから再呼び出す |
+| **ターミナル**  | Codex-only 互換シム | `bash scripts/codex-review.sh`。`FF_DEV_TOOLKIT_ROOT` 未指定時は、内容一致cacheのSemVer最大版をsidecarより優先（一致候補なしは全体の最大版を照合し拒否）。固定版のpair / distributedはskillから再呼び出す |
 | **Claude Code** | Bash tool        | resolver + guard 後に `FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh"`          |
 | **Copilot CLI** | プロンプト経由   | `copilot -p 'bash scripts/codex-review.sh を実行して'`。固定root未指定時の選択順はターミナル欄と同じ |
 | **CI/CD**       | GitHub Actions   | pin済みtoolkit configとrunner temp上の専用出力先を明示する正本CI例を利用              |

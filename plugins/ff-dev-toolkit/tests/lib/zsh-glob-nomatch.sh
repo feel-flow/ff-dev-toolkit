@@ -110,7 +110,7 @@ function fin(d,   w, f) {
   w = wb[d]; f = wf[d]
   wb[d] = ""; wf[d] = ""; started[d] = 0
   if (cs[d] == 1) {
-    if (mode == "expansion" && substr(w, 1, 1) == "=") check_expansion(w, f)
+    if (exm && substr(w, 1, 1) == "=") check_expansion(w, f)
     cs[d] = 2; return
   }
   if (cs[d] == 2) { if (w == "in") cs[d] = 3; return }
@@ -121,20 +121,24 @@ function fin(d,   w, f) {
     if (w == "[[") { dbl[d] = 1; return }
     if (w == "esac" && cs[d] == 4) { case_close(d); return }
     if (w == "noglob") { ng[d] = 1; return }
-    if (is_assign(w)) { if (mode == "expansion") remember_list(w, f, d); return }
+    if (is_assign(w)) { if (exm) remember_list(w, f, d); return }
     if (is_reserved(w)) { clear_lists(); clear_pending(); return }
     # 前置代入はこの引数展開の値を確定しない。
     for (list_name in pending) { clear_lists(); clear_pending(); break }
     cmdpos[d] = 0
   }
-  if (mode == "expansion") { check_expansion(w, f); return }
+  if (exm) { check_expansion(w, f); return }
   if (ng[d]) return
   check(w, f)
 }
 # 警告は実値の推論ではなく、未引用 scalar の使用箇所。代入では分割しないのが正しい。
 function check_expansion(w, f,   k, name) {
-  if (substr(w, 1, 1) == "=" && substr(f, 1, 1) == "0" && length(w) > 1)
+  if (substr(w, 1, 1) == "=" && substr(f, 1, 1) == "0" && length(w) > 1) {
+    # equals-fix: 語と書き換え案。= だけの語に限る（=cmd は意図的なパス展開でありうる）。
+    if (mode == "equals-fix") { printf "%s\t%s\n", w, ((w ~ /^=+$/ && f ~ /^0+$/) ? "\"" w "\"" : "-"); return }
     print "equals"
+  }
+  if (mode == "equals-fix") return
   if (is_assign(w)) return
   if (wc[D] == 0 && par[0] == 0 && w ~ /^\$[A-Za-z_][A-Za-z0-9_]*$|^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/ && f ~ /^v+$/) {
     name = w; sub(/^\$\{?/, "", name); sub(/}$/, "", name)
@@ -159,7 +163,7 @@ function check(w, f,   e, k, ch, rest, sug) {
     }
   }
 }
-BEGIN { SQ = sprintf("%c", 39) }
+BEGIN { SQ = sprintf("%c", 39); exm = (mode == "expansion" || mode == "equals-fix") }
 { src = src (NR > 1 ? "\n" : "") $0 }
 END {
   n = length(src)
@@ -196,11 +200,11 @@ END {
     if (s == "D") {
       if (c == "\\") { addc(substr(src, i + 1, 1), "1"); i += 2; continue }
       if (c == "\"") { pop(); i++; continue }
-      if (c == "`") { addc("$", mode == "expansion" ? "c" : "1"); push("K"); i++; continue }
+      if (c == "`") { addc("$", exm ? "c" : "1"); push("K"); i++; continue }
       if (c == "$") {
         c2 = substr(src, i + 1, 1)
         if (substr(src, i, 3) == "$((") { addc("$", "1"); push("A"); ad[D] = 2; i += 3; continue }
-        if (c2 == "(") { addc("$", mode == "expansion" ? "c" : "1"); push("U"); sub_[D] = 1; i += 2; continue }
+        if (c2 == "(") { addc("$", exm ? "c" : "1"); push("U"); sub_[D] = 1; i += 2; continue }
         if (c2 == "{") { addc("$", "1"); push("P"); pd[D] = 1; i += 2; continue }
       }
       addc(c, "1"); i++; continue
@@ -217,16 +221,16 @@ END {
       c2 = substr(src, i + 1, 1)
       if (c2 == SQ) { addc("", "1"); push("E"); i += 2; continue }
       if (substr(src, i, 3) == "$((") { addc("$", "1"); push("A"); ad[D] = 2; i += 3; continue }
-      if (c2 == "(") { addc("$", mode == "expansion" ? "c" : "1"); push("U"); sub_[D] = 1; i += 2; continue }
+      if (c2 == "(") { addc("$", exm ? "c" : "1"); push("U"); sub_[D] = 1; i += 2; continue }
       if (c2 == "{") {
         # 単純な ${NAME} だけを警告。${=NAME} / 配列 / 修飾子は利用者の明示意図として除外。
         tail = substr(src, i)
-        if (mode == "expansion" && match(tail, /^\$\{[A-Za-z_][A-Za-z0-9_]*\}/)) {
+        if (exm && match(tail, /^\$\{[A-Za-z_][A-Za-z0-9_]*\}/)) {
           addc(substr(tail, 1, RLENGTH), "v"); i += RLENGTH; continue
         }
         addc("$", "1"); push("P"); pd[D] = 1; i += 2; continue
       }
-      if (mode == "expansion" && c2 ~ /^[A-Za-z_]$/) {
+      if (exm && c2 ~ /^[A-Za-z_]$/) {
         tail = substr(src, i)
         match(tail, /^\$[A-Za-z_][A-Za-z0-9_]*/)
         addc(substr(tail, 1, RLENGTH), "v"); i += RLENGTH; continue
@@ -234,7 +238,7 @@ END {
       if (c2 != "" && index("*?@#$!-0123456789", c2) > 0) { addc("$" c2, "11"); i += 2; continue }
       addc("$", "1"); i++; continue
     }
-    if (c == "`") { addc("$", mode == "expansion" ? "c" : "1"); push("K"); i++; continue }
+    if (c == "`") { addc("$", exm ? "c" : "1"); push("K"); i++; continue }
     if (c == "#" && !started[wc[D]]) {
       while (i <= n && substr(src, i, 1) != "\n") i++
       continue
@@ -262,7 +266,7 @@ END {
     }
     if (c == "<" || c == ">") {
       fin(wc[D])
-      if (substr(src, i + 1, 1) == "(") { addc("$", mode == "expansion" ? "c" : "1"); push("U"); sub_[D] = 1; i += 2; continue }
+      if (substr(src, i + 1, 1) == "(") { addc("$", exm ? "c" : "1"); push("U"); sub_[D] = 1; i += 2; continue }
       while (i <= n && index("<>&|!", substr(src, i, 1)) > 0) i++
       continue
     }
@@ -298,4 +302,11 @@ ff_zsh_glob_scan() { # <cmd>
 # 値やコマンド本文は出力しない。noglob は equals 展開を無効にしない。
 ff_zsh_expansion_scan() {
   printf '%s\n' "$1" | "${FF_ZSH_GLOB_AWK:-awk}" -v mode=expansion "$_FF_ZSH_GLOB_AWK_PROG"
+}
+
+# stdout: equals を検出した語 1 つにつき 1 行 `<語>\t<書き換え案>`。案は `=` だけから成る未引用の
+# 語（`====` / `==`）に限って `"<語>"`、それ以外（`=cmd` など意図的なパス展開でありうる語）は `-`。
+# 入力書き換え（Issue `#2255`）専用で、ff_zsh_expansion_scan の出力契約は変えない。rc は glob と共通。
+ff_zsh_equals_fix_scan() {
+  printf '%s\n' "$1" | "${FF_ZSH_GLOB_AWK:-awk}" -v mode=equals-fix "$_FF_ZSH_GLOB_AWK_PROG"
 }

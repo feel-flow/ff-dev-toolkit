@@ -92,7 +92,7 @@ expect_contains_in() { # <file> <needle> <label>
 echo "== ace-curate knowledge commit 契約検査 =="
 
 expect_fixed_count_routes \
-  'finish.sh" knowledge-commit add --claim docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>"' \
+  'finish.sh" knowledge-commit add ${ACE_CLAIM_ARGS[@]+"${ACE_CLAIM_ARGS[@]}"} --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>"' \
   2 \
   "既定・PR 両経路が共通の書き込み口へ ACE_ID・要約・カテゴリを渡す（件名は書き込み口が短い形式で作る）"
 
@@ -142,7 +142,7 @@ expect_fixed_count_routes \
   1 \
   "helper PR の前に呼出側が fetch 成功と祖先を実測する"
 expect_fixed_count_routes \
-  '差分パスが今回の PLAYBOOK・カテゴリ本文・台帳・対応 claim だけ' \
+  '差分パスが今回の PLAYBOOK・カテゴリ本文・保留候補・台帳・対応 claim だけ' \
   1 \
   "helper PR の前に呼出側が送信パスを限定する"
 expect_fixed_count_routes \
@@ -155,7 +155,7 @@ expect_fixed_count_routes \
   "helper の実際の検査と呼出側の検査を区別する"
 
 expect_fixed_count_routes \
-  '--type "${commit_type}" -- docs/08-knowledge/PLAYBOOK.md $(git ls-files -mo --exclude-standard docs/08-knowledge/playbook)' \
+  '--type "${commit_type}" -- "${ACE_KNOWLEDGE_PATHS[@]}"' \
   2 \
   "commit type を add で保留へ記録する（合流先の commit が既定の knowledge で上書きしない）"
 
@@ -353,11 +353,11 @@ else
   ok "実行例に未解決のプレースホルダ path/to/ が無い"
 fi
 
-expect_contains \
+expect_contains_in "$RULES_FILE" \
   '"${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check' \
   "同期検証の未導入 fallback が同梱スクリプトの解決可能なパス"
 
-expect_contains \
+expect_contains_in "$RULES_FILE" \
   '"${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md' \
   "形式ゲートの未導入 fallback が同梱スクリプトの解決可能なパス"
 
@@ -367,17 +367,17 @@ expect_contains \
 
 # 導入済み側。npm script の登録と scripts/ace/ の配置は別条件なので、npm script 未登録
 # でも scripts/ace/ を持つプロジェクトが直接叩ける選択肢を消さない。
-expect_contains \
+expect_contains_in "$RULES_FILE" \
   'npm run ace:check-playbook-frontmatter' \
   "同期検証に npm script 登録済み向けの選択肢がある"
 
-expect_contains \
+expect_contains_in "$RULES_FILE" \
   'npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check' \
   "同期検証に scripts/ace/ 導入済み向けの直接呼び出しがある"
 
 # 4 本とも live command のため、フェンス一括実行を明示的に禁じておかないと未導入
 # プロジェクトでは前半が必ず失敗し、直後の exit 0 判定と噛み合わなくなる。
-expect_contains \
+expect_contains_in "$RULES_FILE" \
   'プロジェクトの状態に合う 1 本だけを実行する' \
   "同期検証・形式ゲートの実行が排他であることの明示"
 

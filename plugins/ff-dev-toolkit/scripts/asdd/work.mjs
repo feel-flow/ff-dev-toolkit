@@ -130,11 +130,63 @@ import { loadConfig, relativePath, projectPath } from './config.mjs';
 
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const stringify = value => `${JSON.stringify(value, null, 2)}\n`;
-const run = (root, command, args, input) => execFileSync(command, args, {
-  cwd: root, encoding: 'utf8', input, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024,
-  timeout: 60_000, env: { ...process.env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' },
-}).trim();
-const pages = value => JSON.parse(value).flat();
+const COMMAND_TIMEOUT_MS = 60_000;
+const COMMAND_BUFFER_BYTES = 16 * 1024 * 1024;
+const GITHUB_PAGE_SIZE = 100;
+const SEARCH_RESULT_LIMIT = 1_000;
+function externalKind(error) {
+  const diagnostic = String(error.stderr ?? error.message ?? '');
+  if (error.code === 'ETIMEDOUT') return 'timeout';
+  if (error.code === 'ENOBUFS') return 'output-limit';
+  if (/rate limit|abuse detection|HTTP 429/i.test(diagnostic)) return 'rate-limit';
+  if (/HTTP 401|Bad credentials|authentication|not logged in/i.test(diagnostic)) return 'authentication';
+  if (/Could not resolve|Failed to connect|connection|network|TLS|socket|EOF/i.test(diagnostic)) return 'communication';
+  if (error.code === 'ENOENT') return 'unavailable';
+  return 'external';
+}
+function run(root, command, args, input) {
+  try {
+    return execFileSync(command, args, {
+      cwd: root, encoding: 'utf8', input, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: COMMAND_BUFFER_BYTES,
+      timeout: COMMAND_TIMEOUT_MS, env: { ...process.env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' },
+    }).trim();
+  } catch (error) {
+    const kind = externalKind(error);
+    throw Object.assign(new Error(`External operation failed (${kind}; ${command} ${args[0]})`), { external: true, kind });
+  }
+}
+function decodeResponse(raw) {
+  try { return JSON.parse(raw); }
+  catch { throw new Error('GitHub returned invalid JSON; lookup is unconfirmed'); }
+}
+const apiJSON = (command, args) => decodeResponse(command('gh', ['api', ...args]));
+function* listedEntries(endpoint, command) {
+  for (let page = 1; ; page++) {
+    const separator = endpoint.includes('?') ? '&' : '?';
+    const entries = apiJSON(command, [`${endpoint}${separator}per_page=${GITHUB_PAGE_SIZE}&page=${page}`]);
+    if (!Array.isArray(entries) || entries.length > GITHUB_PAGE_SIZE) throw new Error('GitHub page is invalid; lookup is unconfirmed');
+    yield* entries;
+    if (entries.length < GITHUB_PAGE_SIZE) return;
+  }
+}
+function searchedIssues(repository, taskId, command) {
+  const query = `repo:${repository} is:issue in:body "asdd-task:${taskId}"`;
+  const items = [], seen = new Set();
+  let total;
+  for (let page = 1; ; page++) {
+    const result = apiJSON(command, ['--method', 'GET', 'search/issues', '-f', `q=${query}`, '-f', `per_page=${GITHUB_PAGE_SIZE}`, '-f', `page=${page}`]);
+    if (!Number.isSafeInteger(result?.total_count) || result.total_count < 0 || result.total_count > SEARCH_RESULT_LIMIT
+      || result.incomplete_results !== false || !Array.isArray(result.items)
+      || (total !== undefined && result.total_count !== total)) throw new Error('GitHub search is incomplete; lookup is unconfirmed');
+    total = result.total_count;
+    if (result.items.length !== Math.min(GITHUB_PAGE_SIZE, total - items.length)) throw new Error('GitHub search page is missing; lookup is unconfirmed');
+    for (const item of result.items) {
+      if (!Number.isSafeInteger(item?.number) || item.number <= 0 || seen.has(item.number)) throw new Error('GitHub search item is invalid; lookup is unconfirmed');
+      seen.add(item.number); items.push(item);
+    }
+    if (items.length === total) return items;
+  }
+}
 const marker = task => `<!-- asdd-task:${task} -->`;
 const eventMarker = event => `<!-- asdd-event:${event} -->`;
 const listText = items => items.length ? items.map(item => `- ${item}`).join('\n') : 'なし';
@@ -173,18 +225,37 @@ function settings(root) {
 const trustedRecord = (entry, actor) => entry.user?.id === actor.id
   || ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(entry.author_association);
 function recordingActor(command) {
-  const actor = JSON.parse(command('gh', ['api', 'user']));
-  if (!Number.isSafeInteger(actor.id) || actor.id <= 0) throw new Error('Cannot verify the GitHub recording account');
+  const actor = apiJSON(command, ['user']);
+  if (!Number.isSafeInteger(actor?.id) || actor.id <= 0) throw new Error('Cannot verify the GitHub recording account');
   return actor;
 }
-function issueFor(repository, taskId, command, actor) {
-  const issues = pages(command('gh', ['api', `repos/${repository}/issues?state=all&per_page=100`, '--paginate', '--slurp']));
-  const matches = issues.filter(issue => !issue.pull_request && trustedRecord(issue, actor) && issue.body?.includes(marker(taskId)));
-  if (matches.length > 1) throw new Error('Duplicate task records: reconcile the existing issues before continuing');
+function issueFor(repository, taskId, command, actor, verifyUnique = false) {
+  const matches = [];
+  const accepts = issue => {
+    if (!Number.isSafeInteger(issue?.number) || issue.number <= 0 || !Object.hasOwn(issue, 'body')
+      || (issue.body !== null && typeof issue.body !== 'string')) throw new Error('GitHub Issue is invalid; lookup is unconfirmed');
+    if (issue.pull_request) return false;
+    if (typeof issue.html_url !== 'string' || issue.html_url.toLowerCase() !== `https://github.com/${repository}/issues/${issue.number}`.toLowerCase()) throw new Error('GitHub Issue destination differs; lookup is unconfirmed');
+    return trustedRecord(issue, actor) && issue.body?.includes(marker(taskId));
+  };
+  const add = issue => {
+    if (accepts(issue)) matches.push(issue);
+    if (matches.length > 1) throw new Error('Duplicate task records: reconcile the existing issues before continuing');
+  };
+  for (const candidate of searchedIssues(repository, taskId, command)) {
+    // 検索は候補選別だけ。古い本文や投稿者で保存先を確定しない。
+    const issue = apiJSON(command, [`repos/${repository}/issues/${candidate.number}`]);
+    if (issue?.number !== candidate.number) throw new Error('GitHub Issue identity differs; lookup is unconfirmed');
+    add(issue);
+  }
+  if (matches.length && !verifyUnique) return matches[0];
+  // 保存前は検索に未反映の重複も調べる。検索0件の不在確認も一覧を完走してから。
+  matches.length = 0;
+  for (const issue of listedEntries(`repos/${repository}/issues?state=all`, command)) add(issue);
   return matches[0] ?? null;
 }
 function commentsFor(repository, number, command) {
-  return pages(command('gh', ['api', `repos/${repository}/issues/${number}/comments?per_page=100`, '--paginate', '--slurp']));
+  return [...listedEntries(`repos/${repository}/issues/${number}/comments`, command)];
 }
 function historyCommit(event, command) {
   const candidates = command('git', ['log', '--no-show-signature', '--format=%H', '--fixed-strings', `--grep=ASDD event ${event}`, 'HEAD']).split('\n').filter(Boolean);
@@ -229,7 +300,7 @@ function preflight(root, record, github, command) {
     const origin = command('git', ['remote', 'get-url', 'origin']);
     const repository = origin.replace(/^git@github\.com:/, '').replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '');
     if (repository !== github.repository) throw new Error('Git origin does not match the agreed GitHub repository');
-    const repo = JSON.parse(command('gh', ['repo', 'view', github.repository, '--json', 'isPrivate,defaultBranchRef']));
+    const repo = decodeResponse(command('gh', ['repo', 'view', github.repository, '--json', 'isPrivate,defaultBranchRef']));
     const branch = command('git', ['symbolic-ref', '--short', 'HEAD']);
     if (github.branchPolicy === 'direct' && !repo.isPrivate) throw new Error('Direct history saving requires the agreed private repository');
     if (github.branchPolicy === 'pull-request' && branch === repo.defaultBranchRef.name) throw new Error('Use a work branch and the existing PR workflow');
@@ -255,7 +326,7 @@ export function recordWork(root, record, { apply = false, command = (cmd, args, 
   const lock = projectPath(root, '.asdd/work.lock');
   fs.mkdirSync(path.dirname(lock), { recursive: true });
   const fd = fs.openSync(lock, 'wx');
-  let state, progress;
+  let state, progress, phase = 'recording-account';
   try {
     state = readState(root);
     const prior = state.tasks[record.taskId];
@@ -264,13 +335,16 @@ export function recordWork(root, record, { apply = false, command = (cmd, args, 
     state.tasks[record.taskId] = progress;
     saveState(root, state);
     const actor = recordingActor(command);
-    let issue = issueFor(github.repository, record.taskId, command, actor);
+    phase = 'issue-lookup';
+    let issue = issueFor(github.repository, record.taskId, command, actor, true);
     if (!issue) {
+      phase = 'issue-create';
       const url = command('gh', ['issue', 'create', '--repo', github.repository, '--title', record.title, '--body-file', '-'], body);
-      const match = url.match(new RegExp(`^https://github\\.com/${github.repository.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/issues/(\\d+)$`));
+      const match = url.match(new RegExp(`^https://github\\.com/${github.repository.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/issues/(\\d+)$`, 'i'));
       if (!match) throw new Error('Issue creation result is uncertain; inspect existing records before retry');
       issue = { number: Number(match[1]), html_url: url, body };
     } else {
+      phase = 'issue-comment';
       const comments = commentsFor(github.repository, issue.number, command);
       if (!issue.body?.includes(eventMarker(event)) && !comments.some(comment => trustedRecord(comment, actor) && comment.body?.includes(eventMarker(event)))) {
         command('gh', ['issue', 'comment', String(issue.number), '--repo', github.repository, '--body-file', '-'], body);
@@ -278,6 +352,7 @@ export function recordWork(root, record, { apply = false, command = (cmd, args, 
     }
     progress.issue = issue.html_url; progress.status = 'issue-recorded'; saveState(root, state);
     if (github.saveHistory && record.files.length) {
+      phase = 'history-save';
       // Include only explicitly selected paths; never stage the whole working tree.
       progress.staging = Object.fromEntries(record.files.map(file => [file, command('git', ['hash-object', '--', file])]));
       saveState(root, state); // Recognize our own index entries after a failed commit hook.
@@ -302,10 +377,12 @@ export function recordWork(root, record, { apply = false, command = (cmd, args, 
       saveState(root, state);
       if (progress.commit) {
         const branch = command('git', ['symbolic-ref', '--short', 'HEAD']);
-        const repo = JSON.parse(command('gh', ['repo', 'view', github.repository, '--json', 'isPrivate,defaultBranchRef']));
+        const repo = decodeResponse(command('gh', ['repo', 'view', github.repository, '--json', 'isPrivate,defaultBranchRef']));
         pendingHistory(record, event, command, repo.defaultBranchRef?.name ?? branch);
+        phase = 'history-push';
         command('git', ['push', 'origin', `HEAD:refs/heads/${branch}`]);
         progress.pushed = true;
+        phase = 'history-comment';
         const commitMarker = `<!-- asdd-commit:${event}:${progress.commit} -->`;
         const comments = commentsFor(github.repository, issue.number, command);
         if (!comments.some(comment => trustedRecord(comment, actor) && comment.body?.includes(commitMarker))) {
@@ -318,8 +395,9 @@ export function recordWork(root, record, { apply = false, command = (cmd, args, 
   } catch (error) {
     if (progress) { progress.status = 'unsynced'; saveState(root, state); }
     // Child-process stderr can contain credentials. Report stage and exit status, not raw command output.
-    const reason = error.status !== undefined ? `External operation failed (exit ${error.status})` : error.message;
-    return { ...progress, status: 'unsynced', error: reason };
+    const kind = error.kind ?? (error.status !== undefined || error.code ? externalKind(error) : 'validation');
+    const reason = kind === 'validation' ? error.message : `External operation failed (${kind}; ${phase})`;
+    return { ...progress, status: 'unsynced', error: reason, failure: { kind, phase, outcome: 'unconfirmed' } };
   } finally { fs.closeSync(fd); fs.unlinkSync(lock); }
 }
 export function workStatus(root, taskId, { command = (cmd, args, input) => run(root, cmd, args, input) } = {}) {

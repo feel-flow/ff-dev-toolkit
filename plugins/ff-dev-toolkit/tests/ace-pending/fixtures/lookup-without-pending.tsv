@@ -1,0 +1,3 @@
+ace	ACE-1-1	active	Category=testing Helpful=0	existing needle	custom docs/PLAYBOOK.md#ace-1-1
+RECORD ace=ACE-1-1 obs=台帳なし
+SUMMARY ace=1 obs=0 keywords=2 match=all include_archived=0 offline=1 ace_state=ok obs_state=absent

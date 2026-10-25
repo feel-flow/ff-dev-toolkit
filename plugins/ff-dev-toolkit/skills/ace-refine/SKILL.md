@@ -194,7 +194,7 @@ R3-a / b / c は live のブロックを `playbook/archive/<category>.md` へ運
 
 > `knowledge:` 接頭辞が無いと（squash では PR タイトルが件名）、`ace-reuse-report` が参照集計から除けず、大量の ACE ID で git 参照カウントが汚染されて以後の stale 判定が壊れる。
 
-完了後、対象・Changelog の 4 ラベルごとの件数と ID・否認でスキップした件数を報告する。
+完了後、対象・Changelog の 4 ラベルごとの件数と ID・否認でスキップした件数を報告する。PLAYBOOKと同階層に `PENDING_CANDIDATES.md` があれば、次の `/ace-curate` で[保留候補の再評価](../ace-curate/references/pending.md)を行う。refine自身は保留を採用・削除せず、dry-run → 承認 → 適用の境界も変えない。
 
 ## ハードルール
 

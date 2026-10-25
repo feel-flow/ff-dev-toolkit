@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Issue #623 由来の Codex-only 互換シムについて、Issue #1011 の文書に残す
-# cache semantic-version 選択と sidecar より先という例外契約を動的に固定する。
+# 内容一致候補の semantic-version 選択と sidecar より先という例外契約を動的に固定する。
 
 make_shim_cache_candidate() {
   local root="$1" version="$2" marker="$3"
@@ -12,6 +12,105 @@ make_shim_cache_candidate() {
     "printf '%s\\n' '$marker' >\"\${SHIM_SELECTION_RESULT:?}\"" \
     >"$root/scripts/multi-agent.sh"
   chmod +x "$root/scripts/multi-agent.sh"
+}
+
+run_shim_cache_content_selection() {
+  local root="$TMP_ROOT/shim-cache-content" consumer="$TMP_ROOT/shim-content-consumer"
+  local codex_home="$root/codex" claude_home="$root/claude" grok_home="$root/grok"
+  local old="$codex_home/plugins/cache/a/ff-dev-toolkit/1.0.0"
+  local newer="$claude_home/plugins/cache/a/ff-dev-toolkit/2.0.0"
+  local equal="$codex_home/plugins/cache/z/ff-dev-toolkit/1.0.0"
+  local grok="$grok_home/installed-plugins/ff-dev-toolkit-test" result="$root/marker"
+  local rc=0
+  mkdir -p "$consumer/scripts" "$root/bin"
+  cp "$PLUGIN_ROOT/scripts/templates/codex-review.sh" "$consumer/scripts/codex-review.sh"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 99' > "$root/bin/codex"
+  chmod +x "$root/bin/codex"
+
+  run_content_case() { # label [explicit-root] [mode]
+    rc=0
+    (cd "$consumer" && env -u FF_DEV_TOOLKIT_ROOT HOME="$root/home" CODEX_HOME="$codex_home" \
+      CLAUDE_CONFIG_DIR="$claude_home" GROK_HOME="$grok_home" \
+      CODEX_REVIEW_CODEX_BIN="$root/bin/codex" SHIM_SELECTION_RESULT="$result" \
+      FF_DEV_TOOLKIT_ROOT="${2:-}" \
+      bash "$consumer/scripts/codex-review.sh" "${3:---print-toolkit-root}") \
+      > "$root/$1.out" 2> "$root/$1.err" || rc=$?
+  }
+  make_shim_cache_candidate "$old" 1.0.0 old
+  make_shim_cache_candidate "$newer" 2.0.0 newer
+  printf '\n# different template\n' >> "$newer/scripts/templates/codex-review.sh"
+  make_shim_cache_candidate "$root/sidecar" 9.9.9 sidecar
+  printf '%s\n' "$root/sidecar/scripts" > "$consumer/scripts/.ff-dev-toolkit-root"
+
+  run_content_case older
+  if [ "$rc" -eq 0 ] && [ "$(cat "$root/older.out")" = "$old" ] \
+     && [ "$(grep -c 'より新しい ff-dev-toolkit' "$root/older.err" || true)" -eq 1 ] \
+     && [ "$(grep -cF "bash \"$newer/scripts/setup-multi-agent.sh\"" "$root/older.err" || true)" -eq 1 ] \
+     && grep -qF "version=2.0.0 root=$newer" "$root/older.err"; then
+    ok "一致する旧cacheを選び、新版とsetupの案内を各1回だけstderrへ出す"
+  else bad "一致する旧cacheの解決または新版案内が退行 (rc=$rc)"; fi
+  run_content_case review "" --dry-run
+  if [ "$rc" -eq 0 ] && [ "$(cat "$result")" = old ]; then
+    ok "レビュー入口も同じ内容一致cacheを使う"
+  else bad "レビュー入口が内容一致cacheを使わない (rc=$rc)"; fi
+
+  # 同版でもglob順で不一致候補を残さない。CRLFのみの差は一致として扱う。
+  make_shim_cache_candidate "$equal" 1.0.0 equal
+  printf '\n# different old\n' >> "$old/scripts/templates/codex-review.sh"
+  sed 's/$/\r/' "$consumer/scripts/codex-review.sh" > "$equal/scripts/templates/codex-review.sh"
+  run_content_case marketplace
+  if [ "$rc" -eq 0 ] && [ "$(cat "$root/marketplace.out")" = "$equal" ]; then
+    ok "同一cacheの同版別marketplaceから内容一致候補を選ぶ（CRLFを正規化）"
+  else bad "同版別marketplaceの一致候補が選ばれない (rc=$rc)"; fi
+  make_shim_cache_candidate "$newer" 1.0.0 newer
+  printf '\n# different equal\n' >> "$equal/scripts/templates/codex-review.sh"
+  run_content_case cross
+  if [ "$rc" -eq 0 ] && [ "$(cat "$root/cross.out")" = "$newer" ]; then
+    ok "同版のCodex不一致よりClaude内容一致を優先する"
+  else bad "同版cache横断で内容一致よりホスト順を優先した (rc=$rc)"; fi
+  make_shim_cache_candidate "$grok" 3.0.0 grok
+  run_content_case newest-match "" --print-toolkit-root=kv
+  if [ "$rc" -eq 0 ] && [ "$(cat "$root/newest-match.out")" = "$(printf 'root=%s\nversion=3.0.0\nsource=installed-by-grok' "$grok")" ] \
+     && ! grep -q 'より新しい ff-dev-toolkit' "$root/newest-match.err"; then
+    ok "一致候補が複数なら最大版を採用しkvのsourceも一致する"
+  else bad "一致候補内の最大版またはkvが退行 (rc=$rc)"; fi
+
+  local explicit_old explicit_newer
+  explicit_old="$(cd "$old" && pwd -P)"
+  explicit_newer="$(cd "$newer" && pwd -P)"
+  run_content_case explicit-reject "$old"
+  if [ "$rc" -eq 2 ] && [ ! -s "$root/explicit-reject.out" ] \
+     && grep -qF "toolkit=$explicit_old version=1.0.0" "$root/explicit-reject.err"; then
+    ok "明示rootの内容不一致をcacheの一致候補で隠さず拒否する"
+  else bad "明示rootの不一致を黙って回避した (rc=$rc)"; fi
+  run_content_case explicit-match "$newer"
+  if [ "$rc" -eq 0 ] && [ "$(cat "$root/explicit-match.out")" = "$explicit_newer" ] \
+     && ! grep -q 'より新しい ff-dev-toolkit' "$root/explicit-match.err"; then
+    ok "明示した一致rootを新版cacheより優先し自動探索の案内を出さない"
+  else bad "明示rootの一致候補が上書きされた (rc=$rc)"; fi
+
+  printf 'toolkit_version: "0.0.0"\n' > "$grok/scripts/agent-config.yaml"
+  run_content_case config-reject
+  if [ "$rc" -eq 2 ] && [ ! -s "$root/config-reject.out" ] \
+     && grep -q 'plugin version と agent-config.yaml が一致しません' "$root/config-reject.err"; then
+    ok "選択後の設定版不一致を低い一致候補へのfallbackで隠さない"
+  else bad "設定版不一致を黙って回避した (rc=$rc)"; fi
+  printf 'toolkit_version: "3.0.0"\n' > "$grok/scripts/agent-config.yaml"
+  printf '\n# different grok\n' >> "$grok/scripts/templates/codex-review.sh"
+  printf '\n# different claude\n' >> "$newer/scripts/templates/codex-review.sh"
+  make_shim_cache_candidate "$claude_home/plugins/cache/a/ff-dev-toolkit/9.9.0" 9.9.0 none-9
+  make_shim_cache_candidate "$claude_home/plugins/cache/a/ff-dev-toolkit/10.0.0" 10.0.0 none-10
+  local rejected="$claude_home/plugins/cache/a/ff-dev-toolkit/10.0.0"
+  printf '\n# different semver9\n' >> "$claude_home/plugins/cache/a/ff-dev-toolkit/9.9.0/scripts/templates/codex-review.sh"
+  printf '\n# different semver10\n' >> "$rejected/scripts/templates/codex-review.sh"
+  run_content_case no-match
+  if [ "$rc" -eq 2 ] && [ ! -s "$root/no-match.out" ] \
+     && grep -qF "toolkit=$rejected version=10.0.0" "$root/no-match.err" \
+     && grep -q '内容不一致' "$root/no-match.err"; then
+    ok "一致候補が無ければ全体の最大版を名指ししてrc2、sidecarへ逃がさない"
+  else bad "一致候補不在で最大版の拒否契約が退行 (rc=$rc)"; fi
+  # shellcheck disable=SC2034 # verify.sh と限定検証の呼び出し元が完走を照合する
+  SHIM_CACHE_CONTENT_CASES_REACHED=1
 }
 
 run_shim_cache_selection() {

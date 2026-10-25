@@ -107,7 +107,7 @@ fetch が失敗した回は、停止メッセージの末尾へ git が出した
 
 追記前にremoteが先行したら、detachedでは `git pull --ff-only origin <default-branch>` とremote/branchを明示して取り込み、採番・版確定からやり直す。knowledgeのadd保留がある場合は同じHEADで先にcommitするか、既存の保留復帰手順を使い、保留を持ったままswitchしない。push後のnon-fast-forwardは後段の再試行規則に従う。
 
-**保護時のPR経路**: `probe` が protected なら知見の add 前に一意の `chore/ace-from-*`（台帳のみは `chore/retro-from-*`）を自分の detached HEAD から `git switch -c` で作り、同じ add・検証・commit を行う。unknown から直 push を試して rc 3 になった場合は、commit を保ったまま一意の知見ブランチを作る。いずれも `finish.sh knowledge-commit pr` へ実際の知見ブランチ名を `--branch` で渡す。**既存知見ブランチ開始時は local default を復帰せず、他 worktree も変更しない**。呼び出す前に fetch 成功と `origin/<default-branch>` が HEAD の祖先であること、`git rev-list --count origin/<default-branch>..HEAD` が 1、差分パスが今回の PLAYBOOK・カテゴリ本文・台帳・対応 claim だけ、commit 件名が知見記録であることを実測する。いずれかを満たさなければ送信せず停止する。helper は fetch 後に送信コミット数が 1 であることを再照合する。祖先・対象パス・件名は呼び出す側が確認する。保護判定・commit の対象限定・内容検証・PR のレビューとマージは省略せず、他 worktree の detach を復帰手段にしない。実際の PR 経路と到達状態を報告する。
+**保護時のPR経路**: `probe` が protected なら知見の add 前に一意の `chore/ace-from-*`（台帳のみは `chore/retro-from-*`）を自分の detached HEAD から `git switch -c` で作り、同じ add・検証・commit を行う。unknown から直 push を試して rc 3 になった場合は、commit を保ったまま一意の知見ブランチを作る。いずれも `finish.sh knowledge-commit pr` へ実際の知見ブランチ名を `--branch` で渡す。**既存知見ブランチ開始時は local default を復帰せず、他 worktree も変更しない**。呼び出す前に fetch 成功と `origin/<default-branch>` が HEAD の祖先であること、`git rev-list --count origin/<default-branch>..HEAD` が 1、差分パスが今回の PLAYBOOK・カテゴリ本文・保留候補・台帳・対応 claim だけ、commit 件名が知見記録であることを実測する。いずれかを満たさなければ送信せず停止する。helper は fetch 後に送信コミット数が 1 であることを再照合する。祖先・対象パス・件名は呼び出す側が確認する。保護判定・commit の対象限定・内容検証・PR のレビューとマージは省略せず、他 worktree の detach を復帰手段にしない。実際の PR 経路と到達状態を報告する。
 
 ## 索引テーブルの列順（4-b）
 
@@ -168,7 +168,13 @@ MCP: 取得値: MCP でpush した SHA の run status / conclusion / workflowNam
 git checkout -b "$ACE_BRANCH"
 commit_type="knowledge"
 # playbook/ 配下は変更・追加したファイルだけを渡す（サブディレクトリのカテゴリファイルへの Helpful +1 も拾う。glob の playbook/*.md は直下しか当たらない）
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add --claim docs/08-knowledge/PLAYBOOK.md --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>" --type "${commit_type}" -- docs/08-knowledge/PLAYBOOK.md $(git ls-files -mo --exclude-standard docs/08-knowledge/playbook) || exit 1
+# 既定配置の例。独自配置なら解決済みACE_PLAYBOOK_RELの親へ置換する。
+ACE_KNOWLEDGE_PATHS=(docs/08-knowledge/PLAYBOOK.md)
+while IFS= read -r path; do ACE_KNOWLEDGE_PATHS+=("$path"); done < <(git ls-files -mo --exclude-standard docs/08-knowledge/playbook)
+if [ -f docs/08-knowledge/PENDING_CANDIDATES.md ]; then ACE_KNOWLEDGE_PATHS+=(docs/08-knowledge/PENDING_CANDIDATES.md); fi
+ACE_CLAIM_ARGS=()
+if ! git diff --quiet HEAD -- docs/08-knowledge/PLAYBOOK.md; then ACE_CLAIM_ARGS=(--claim docs/08-knowledge/PLAYBOOK.md); fi
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit add ${ACE_CLAIM_ARGS[@]+"${ACE_CLAIM_ARGS[@]}"} --source ace --id "${ACE_ID}" --summary "${ACE_SUMMARY}" --category "<category[, category...]>" --type "${commit_type}" -- "${ACE_KNOWLEDGE_PATHS[@]}" || exit 1
 # この新規専用 PR 経路は /retrospective へ合流させず、ここで即 commit する
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit commit --type "${commit_type}" || exit 1
 # push -u → upstream の照合 → gh pr create。default 開始時だけ local default を origin へ戻す
@@ -176,7 +182,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 # レビュー後 squash merge → /merge-cleanup
 ```
 
-<!--56b51c7ee0377bdd-->
+<!--ebf421b2f822853b-->
 MCP: 取得値: MCP でPLAN と一致する作成後 PR の head / base / title / body / SHA を取得。形式: knowledge fixture の fresh raw JSON を同じ index に保存。渡し先: knowledge-commit pr --github-input /absolute/index.json へ渡す。PLAN の原文を既存 create_pull_request で実 write 後に再実行する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 > `knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、通常のコード変更に対する「統合ブランチへの直 push 禁止」ルールとは別物として扱う。ただし default branch が保護されているリポジトリではこの経路に到達できない — その場合は保護判定に従い「PR 経由」（必須）を使う。
@@ -205,3 +211,37 @@ GitHub MCP などの raw を使う場合は、`knowledge-lookup.sh` / `workflow-
 ```
 
 **次のステップ**: ACE 完了後、ワークフローチェーンの末尾として `/retrospective` を実行する（`/merge-cleanup` → `/ace-curate` → `/retrospective`）。プロセス/ツール/スキルのメタ知見は ACE Playbook ではなく `/retrospective` の提案経路で扱う。
+
+## エントリの正準フォーマット
+
+```markdown
+<a id="ace-XXX"></a>
+
+### ACE-XXX: [検索可能な主張 1 文のタイトル]
+
+| Category | [カテゴリ] | Origin | PR #[PR番号] |
+| Date | [今日の日付] |
+| Helpful | 0 | Harmful | 0 |
+| Status | active |
+
+[本文 2〜4 文。1 文目 = 知見の本質。非自明な適用条件が 1 文。推奨アクションで締める。手順の列挙・叙述は書かない]
+
+---
+```
+
+## 同期検証のfallback
+
+SSOT はプロジェクトの ACE 運用文書（例 `docs/05-operations/deployment/ace-cycle.md`）で、以下は無い場合の fallback。同期検証・形式ゲートそれぞれ、**プロジェクトの状態に合う 1 本だけを実行する**:
+
+```bash
+# 同期検証 — 1 本だけ: (1) npm script 登録済み / (2) scripts/ace/<同名> が実在 / (3) 無ければ同梱
+npm run ace:check-playbook-frontmatter
+npx --yes tsx scripts/ace/sync-playbook-frontmatter.ts docs/08-knowledge/PLAYBOOK.md --check
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/sync-playbook-frontmatter.ts" docs/08-knowledge/PLAYBOOK.md --check
+
+# 形式ゲート（旧テーブル形式でないこと）— 1 本だけ: (1) scripts/ace/<同名> が実在 / (2) 無ければ同梱
+npx --yes tsx scripts/ace/check-entry-format.ts docs/08-knowledge/PLAYBOOK.md
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/ace-run-ts.sh" "${FF_DEV_TOOLKIT_ROOT}/docs-template/scripts/ace/check-entry-format.ts" docs/08-knowledge/PLAYBOOK.md
+```
+
+同梱を叩く経路で `npx --yes tsx` を直接書かない（`ace-run-ts.sh` は runner が無ければ **exit 3 で停止**）。exit 0 になるまで直す（形式ゲートが赤なら正準フォーマットへ。allowlist に新規 ID を足さない）。

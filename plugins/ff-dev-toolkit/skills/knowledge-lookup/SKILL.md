@@ -98,6 +98,11 @@ MCP: 取得値: MCP で同じ repository の state=open Issue 全件の number /
 
 store の実配置は既定パス（`docs/08-knowledge/PLAYBOOK.md` / `OBSERVATIONS.md`）の不在だけで「未導入」と結論しない。ACE Playbook は `--playbook` → `ACE_PLAYBOOK_PATH` → 記録済み配置（`AGENTS.md` / `CLAUDE.md` / `docs/MASTER.md` に書かれた `PLAYBOOK.md` のパス）→ 既定パス → root 配下の探索の順で解決する。この順は `/ace-curate` / `/ace-refine` の「配置先の解決」と同じで、両スキルは `--resolve-playbook` で本スクリプトの同じ関数を呼ぶ。観測台帳は既定パス → 探索。探索は候補が 1 件ならそれを採り、複数候補は曖昧として採らず `--playbook` / `--ledger` の明示を求める（推測で 1 つを選ばない）。`docs-template/` 配下は探索からだけ外す — 記録・環境変数で名指しされた `docs-template/08-knowledge/PLAYBOOK.md`（テンプレ配布リポジトリの実体）は採る。
 
+
+## ACE 保留候補
+
+解決したPLAYBOOKと同階層の `PENDING_CANDIDATES.md` があれば本文も同じキーワード・AND条件で検索する。保留は採用前なので、textでは専用節、TSVではstore/statusとも `pending`（既存と同じ6列）として返す。CategoryとOriginを含め、通常ACEのactive・Helpful・件数と混ぜない。存在時だけRECORDへ `pending=...`、SUMMARYへ件数/stateを加える。不在時のtext/TSVは従来と同一。既知schemaの候補0件は正常だが、存在する空ファイル・不正schema・読取不能はrc=2。`--promoted-open` は従来の観測台帳照合のみ。保存・再評価は[ace-curateの保留候補手順](../ace-curate/references/pending.md)。
+
 ## 導入先での配線
 
 `/retrospective` が台帳を作成する導入先では、本スキルが読み側の入口になる。配線手順の正本は `/ace-setup` Step 4（`CLAUDE.md` / `AGENTS.md` へ「着手前に `/knowledge-lookup` で ACE Playbook と観測台帳の両方を引く」と、台帳の配置パスを書く）。repo-local の ACE lookup スキルを既に持つ導入先は、そのスキルの探索対象へ台帳を加えるか、本スキルへ寄せる — 引く動作を 2 つ並べない。

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: 移設先curate.mdの不在・空・本線の導線削除を複製木で実測し、各rc1。案内パスは本線と移設先、実体と実行を照合。
 #
 # /ace-curate 手順 4-f の未導入 fallback が「実際に動く」ことの挙動検査（Issue #614）。
 #
@@ -29,6 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TESTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PLUGIN_ROOT="$(cd "${TESTS_DIR}/.." && pwd)"
 SKILL_MD="${PLUGIN_ROOT}/skills/ace-curate/SKILL.md"
+FALLBACK_GUIDE="${PLUGIN_ROOT}/skills/ace-curate/references/curate.md"
 FIXTURES="${SCRIPT_DIR}/fixtures"
 
 # 同梱スクリプトの相対パス（SSOT）。ここを起点に「実在検査」「SKILL.md の記述照合」
@@ -45,6 +47,11 @@ PLAYBOOK_ARG="docs/08-knowledge/PLAYBOOK.md"
 
 if [ ! -s "${SKILL_MD}" ]; then
   echo "✗ ace-curate/SKILL.md が存在しないか空です: ${SKILL_MD}" >&2
+  exit 1
+fi
+
+if [ ! -r "${FALLBACK_GUIDE}" ] || [ ! -s "${FALLBACK_GUIDE}" ] || ! grep -Fq '[同期検証のfallback](references/curate.md#同期検証のfallback)' "${SKILL_MD}"; then
+  echo '✗ ace-curate fallback の参照先が不在・空か、本線からの導線がありません' >&2
   exit 1
 fi
 
@@ -117,8 +124,8 @@ assert_bundled() {
   else
     bad "${label}: 読み取れないか空です（${abs}）"
   fi
-  if grep -Fq -- "\"\${FF_DEV_TOOLKIT_ROOT}/${rel}\"" "${SKILL_MD}"; then
-    ok "${label}: SKILL.md が同じ相対パスを案内している"
+  if grep -Fq -- "\"\${FF_DEV_TOOLKIT_ROOT}/${rel}\"" "${SKILL_MD}" "${FALLBACK_GUIDE}"; then
+    ok "${label}: 本線または本線から辿るfallbackが同じ相対パスを案内している"
   else
     bad "${label}: SKILL.md の案内パスが実体と一致しません（${rel}）"
   fi

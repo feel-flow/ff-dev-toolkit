@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: ace-curate PRの条件付きclaim生成とaddへの配列引数を実行行で照合。空本文・条件削除・引数削除は同じ判定式がrc1（2026-10-23実測）。
 # 共有版境界の optimistic retry 契約と 2 clone 実測（ADR-038 / Issue #764）。
 # 空振り検出: spec-driven の針は本線と移設先 references/version-convergence.md の 2 ファイルを見る。
 #   移設先が無いと contains が grep rc=2 で赤。本線 Step 6 の読む条件（「`version` を変更した文書、
@@ -124,7 +125,7 @@ contains "$ACE_CURATE" '.version-claims/docs/08-knowledge/PLAYBOOK.md.claim' "ac
 contains "$ACE_REFINE" '.version-claims/' "ace-refine は変更文書 claim を要求"
 contains "$FINISH" '.version-claims/${doc}.claim" ]] || die_env' "ace-curate PR は claim 不在を拒否（finish.sh knowledge-commit add --claim）"
 ace_curate_pr_block="$(sed -n '/\*\*任意エスカレーション — chore PR\*\*/,/gh pr create/p' "$ACE_CURATE")"
-if [[ "$ace_curate_pr_block" == *'add --claim docs/08-knowledge/PLAYBOOK.md'* ]] && grep -qF -- 'update-version-claim.sh" --base "origin/${default_branch}"' "$FINISH"; then ok "ace-curate PR は最新 base から claim を生成（add --claim → update-version-claim.sh --base origin/default）"; else bad "ace-curate PR が既存 claim を再利用"; fi
+if [[ "$ace_curate_pr_block" == *'if ! git diff --quiet HEAD -- docs/08-knowledge/PLAYBOOK.md; then ACE_CLAIM_ARGS=(--claim docs/08-knowledge/PLAYBOOK.md); fi'* && "$ace_curate_pr_block" == *'knowledge-commit add ${ACE_CLAIM_ARGS[@]+"${ACE_CLAIM_ARGS[@]}"}'* ]] && grep -qF -- 'update-version-claim.sh" --base "origin/${default_branch}"' "$FINISH"; then ok "ace-curate PR は最新 base から claim を生成（add --claim → update-version-claim.sh --base origin/default）"; else bad "ace-curate PR が既存 claim を再利用"; fi
 contains "$ACE_REFINE_COMMIT" '[[ -f .version-claims/docs/08-knowledge/PLAYBOOK.md.claim ]] ||' "ace-refine PR は PLAYBOOK claim 不在を拒否"
 contains "$ACE_REFINE_COMMIT" '[[ -f .version-claims/docs/03-implementation/PATTERNS.md.claim ]] ||' "ace-refine は PATTERNS 変更時の claim 不在を拒否"
 contains "$ACE_CURATE" 'scripts/update-version-claim.sh' "ace-curate は共通 claim helper を実行"

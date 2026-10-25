@@ -223,6 +223,16 @@ describe("computeReuseStats", () => {
     expect(localStats.get("ACE-i425-1")).toMatchObject({ gitRefCount: 0, lastGitRefDate: null });
   });
 
+  it.each([
+    ["chore: ACE-pending-PR-900-1 保留", "Categories: testing", 0],
+    [`docs(ace): #${42} ACE-pending-ISSUE-900-1 棄却`, "Categories: process", 0],
+    ["chore: ACE-pending-PR-900-1 を運用で参照", "通常の実装", 1],
+    ["chore: ACE-pending-PR-x-1 という文字列を修正", "Categories: testing", 1],
+  ])("保留記録の識別とCategoriesが両方揃った場合だけ除外: %s", (subject, marker, expected) => {
+    const log = `${RS}2026-10-23${FS}${subject}${FS}ACE-005 と重複\n${marker}`;
+    expect(statsFor(PLAYBOOK_FIXTURE, log).get("ACE-005")).toMatchObject({ gitRefCount: expected });
+  });
+
   it("Issue-scoped references without the curation marker still count as reuse", () => {
     const log = `${RS}2026-08-02${FS}chore: ACE-i425-1 の知見を運用へ適用${FS}通常の作業`;
     expect(statsFor(PLAYBOOK_FIXTURE, log).get("ACE-i425-1")).toMatchObject({ gitRefCount: 1, lastGitRefDate: "2026-08-02" });
