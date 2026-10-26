@@ -44,10 +44,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { scanChangelog, selectChangelog } from "./changelog-layout";
 import {
   analyzePlaybookMarkdown,
-  blankCodeRegions,
-  blankHtmlBlockComments,
   declaresZeroEntries,
   discoverPlaybookSubfiles,
   entryHeadingNotFoundMessage,
@@ -111,14 +110,11 @@ const ISO_DATE_DAY_INDEX = 2;
 const JAVASCRIPT_MONTH_OFFSET = 1;
 
 /** `## Changelog` 見出し（ATX）。前後の空白を許容。 */
-const CHANGELOG_HEADING_PATTERN = /^##[ \t]+Changelog[ \t]*$/mu;
 /** Changelog 内の版見出し `### [x.y.z] - YYYY-MM-DD`（日付は任意）。 */
-const CHANGELOG_VERSION_HEADING_PATTERN = /^###[ \t]+\[([0-9]+\.[0-9]+\.[0-9]+)\]/mu;
 /**
  * Changelog セクション終端: 次のレベル2見出し（`## ` で始まり `###` ではない行）。
  * セクション外の版見出しを誤認しないために使う。
  */
-const NEXT_H2_HEADING_PATTERN = /\n##[ \t]+(?!#)/u;
 
 export type FrontmatterField =
   | typeof COUNT_FIELD
@@ -145,7 +141,7 @@ type AllowMissingChangelogOption = Readonly<{
   readonly allowMissingChangelog?: boolean;
   /**
    * 本体に `## Changelog` が無いときに代わりに探索する分割 Changelog
-   * （`playbook/CHANGELOG.md`）の内容。CLI では main() が playbook/ 走査結果から
+   * （`CHANGELOG.md` / `playbook/CHANGELOG.md`）の内容。CLI では main() が固定候補から
    * 自動で渡す（Issue #949: エントリ集計は分割を合算するのに Changelog だけ
    * 本体固定だった非対称の解消）。
    */
@@ -245,35 +241,6 @@ export function splitFrontmatter(
   if (i >= lines.length) return null; // 閉じ境界なし
   const rest = lines.slice(i).join("\n"); // 閉じ '---' 行を含む本文側
   return { frontmatter: fmLines.join("\n"), rest };
-}
-
-/**
- * Changelog 走査用の前処理（Issue #701 発見 1）。コードフェンスと HTML コメントを
- * 空白化してから `## Changelog` / 版見出しを探す — 生の全文走査だと、フェンス /
- * コメント内の書き方例示を本物の節・版と誤認して例示側の版と比較する（fail-open）。
- *
- * 順序が本質（blankCodeRegions と同じ probe 方式の理由）: フェンス範囲の検出は
- * blankCodeRegions がコメント空白化済みコピーで行い、空白化は原文へ当てる。これにより
- * フェンス内のリテラル `<!--` は先に消え、後段のコメント空白化が本文の実 `-->` と
- * 誤って対になって間の実 Changelog を落とすことがない。コメント空白化を先に走らせる
- * 素朴な実装はこの形で正しい Playbook を absent と誤判定する。
- *
- * 未閉の `<!--` が残った場合はそこから EOF まで空白化する（判定不能領域を採用しない側 =
- * absent / empty のドリフト報告へ倒す fail-closed）。残存限界: フェンス内の開きだけの
- * `<!--` が本文の実 `-->` と対になる敵対形は、probe 上でフェンス閉じが飲み込まれて
- * unclosed 扱いになり、実節も absent へ落ちる — 落ちる先は常にドリフト報告（fail-closed）で
- * あり、例示版の採用（fail-open）には決してならない。この性質をテストで固定している。未閉フェンスは blankCodeRegions が
- * fail-open で残すが、CLI 経路では先行するエントリ集計が未閉フェンスを fail-loud で
- * 拒否するためここへは到達しない。
- */
-function maskChangelogScanNoise(text: string): string {
-  const fencesBlanked = blankCodeRegions(text).text;
-  const masked = blankHtmlBlockComments(fencesBlanked);
-  const unclosedComment = masked.indexOf("<!--");
-  if (unclosedComment === -1) {
-    return masked;
-  }
-  return masked.slice(0, unclosedComment) + masked.slice(unclosedComment).replace(/[^\n]/gu, " ");
 }
 
 /**
@@ -392,24 +359,11 @@ export function extractLatestChangelogVersion(
   | { readonly kind: "absent" }
   | { readonly kind: "empty" }
   | { readonly kind: "found"; readonly version: string; readonly count: number } {
-  const heading = CHANGELOG_HEADING_PATTERN.exec(content);
-  if (!heading || heading.index === undefined) {
-    return { kind: "absent" };
-  }
-  const afterHeading = content.slice(heading.index + heading[0].length);
-  // 次の `## ...`（### は含めない）までに限定し、後続セクションの版見出しを拾わない
-  const nextH2 = NEXT_H2_HEADING_PATTERN.exec(afterHeading);
-  const sectionBody =
-    nextH2 && nextH2.index !== undefined ? afterHeading.slice(0, nextH2.index) : afterHeading;
-  const versionMatch = CHANGELOG_VERSION_HEADING_PATTERN.exec(sectionBody);
-  if (!versionMatch) {
-    return { kind: "empty" };
-  }
-  // グローバルフラグ付きの使い捨て正規表現で総数を数える（lastIndex 汚染を避ける）
-  const allHeadings = sectionBody.match(
-    new RegExp(CHANGELOG_VERSION_HEADING_PATTERN.source, "gmu"),
-  );
-  return { kind: "found", version: versionMatch[1], count: allHeadings?.length ?? 1 };
+  let scan;
+  try { scan = scanChangelog(content); }
+  catch { return { kind: "absent" }; }
+  if (scan.kind !== "found") return { kind: scan.kind };
+  return { kind: "found", version: scan.headings[0].version, count: scan.headings.length };
 }
 
 /**
@@ -455,7 +409,7 @@ export function formatChangelogAbsent(frontmatterVersion: string | null): string
     "（`/ace-curate` の 4-d 参照）。\n" +
     "  受理する見出しは行頭の `## Changelog` のみです（レベル 2・大文字小文字は完全一致。" +
     "`### Changelog` や `## changelog` は認識しません）。\n" +
-    "  Changelog を `playbook/CHANGELOG.md` へ切り出している場合はそちらも探索します" +
+    "  Changelog を `CHANGELOG.md` / `playbook/CHANGELOG.md` へ切り出している場合はそちらも探索します" +
     "（この診断は本体・分割のどちらにも無いときだけ出ます）。"
   );
 }
@@ -617,15 +571,16 @@ export function computeSync(
   // 走査は frontmatter を除いた本文（split.rest）に対して、フェンス / HTML コメントを
   // 空白化してから行う（Issue #701 発見 1: frontmatter 内の YAML コメントやフェンス内の
   // 例示を本物の節と誤認しない）。
-  const mainChangelogExtract = extractLatestChangelogVersion(maskChangelogScanNoise(split.rest));
+  const mainChangelogExtract = extractLatestChangelogVersion(split.rest.slice(FRONT_BOUNDARY.length));
   const splitChangelogContent = options.splitChangelogContent;
   let changelogExtract = mainChangelogExtract;
   let changelogSource: "main" | "split" | null =
     mainChangelogExtract.kind === "absent" ? null : "main";
   if (mainChangelogExtract.kind !== "found" && splitChangelogContent !== undefined) {
     // 分割ファイル自身の frontmatter も走査から除く（YAML コメントの例示を節と誤認しない）
-    const splitBody = splitFrontmatter(splitChangelogContent)?.rest ?? splitChangelogContent;
-    const splitExtract = extractLatestChangelogVersion(maskChangelogScanNoise(splitBody));
+    const splitPart = splitFrontmatter(splitChangelogContent);
+    const splitBody = splitPart ? splitPart.rest.slice(FRONT_BOUNDARY.length) : splitChangelogContent;
+    const splitExtract = extractLatestChangelogVersion(splitBody);
     if (splitExtract.kind !== "absent") {
       changelogExtract = splitExtract;
       changelogSource = "split";
@@ -891,16 +846,15 @@ export function main(argv: readonly string[] = process.argv): number {
     return EXIT_USAGE_ERROR;
   }
 
-  // 分割レイアウト（Issue #949）: playbook/CHANGELOG.md があれば Changelog 探索の
-  // fallback として渡す（エントリ集計側は従来どおり全 subfile を合算する）。
-  // `playbook/` 直下の CHANGELOG.md だけを採る。探索はサブディレクトリも辿るので、basename だけで
-  // 探すと `playbook/<dir>/CHANGELOG.md` を版の出どころと取り違える。
-  const splitChangelogDir = path.join(path.dirname(playbookPath), "playbook");
-  const splitChangelogIndex = subfiles.findIndex(
-    (p) => path.basename(p) === "CHANGELOG.md" && path.dirname(p) === splitChangelogDir,
-  );
-  const splitChangelogContent =
-    splitChangelogIndex >= 0 ? subfileContents[splitChangelogIndex] : undefined;
+  // 履歴だけを固定2候補から選ぶ。エントリ集計の再帰探索とは独立し、任意リンクを辿らない。
+  let selectedChangelog;
+  try { selectedChangelog = selectChangelog(playbookPath); }
+  catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return EXIT_USAGE_ERROR;
+  }
+  const splitChangelogContent = selectedChangelog.path === path.resolve(playbookPath)
+    ? undefined : selectedChangelog.text;
 
   const updatedDate = process.env.ACE_UPDATED_DATE;
   const syncOptions: SyncOptions = write
@@ -918,9 +872,10 @@ export function main(argv: readonly string[] = process.argv): number {
   }
 
   console.log(`Playbook: ${playbookPath}`);
+  console.log(`Changelog: ${selectedChangelog.path}`);
   console.log(`実エントリ数: ${String(result.actualCount)} / frontmatter 記録値: ${String(result.recordedCount ?? "なし")}`);
   // 「なし」の理由（セクション不在 / 版見出し不在）を出し分ける。両者は対処が違う。
-  const splitSuffix = result.changelogSource === "split" ? "（playbook/CHANGELOG.md）" : "";
+  const splitSuffix = result.changelogSource === "split" ? `（${path.relative(path.dirname(playbookPath), selectedChangelog.path)}）` : "";
   const changelogSummary =
     result.changelogVersion !== null
       ? `${result.changelogVersion}${splitSuffix}`

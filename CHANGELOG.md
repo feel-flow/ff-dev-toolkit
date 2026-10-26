@@ -20,6 +20,36 @@
 
 ## [Unreleased]
 
+## [0.166.0] - 2026-10-26
+
+### 変更
+
+- リリース手順の検査（sync-sha-contract / github-input-release / locale-comparison）を、リリーススクリプトの段ごとの処理が lib へ分かれた構成へ追従させました。文字列の針はスクリプト本体と分割先の lib を合わせて照合し、lib が無い・空の差し替え先は失敗として扱います。挙動の変更はありません。
+
+### 修正
+
+- knowledge-commit・Jev・frontmatter同期が分割Changelogの固定2配置と確認済み旧書式を読み、採用先を名指しして検証する。変更済みの分割先は明示対象を要求し、Helpfulの不正行・候補の曖昧さ・読取不能では書き込み前に停止する。
+- 従来受理された「ACE-A・ACE-B」のような束ねたHelpful履歴も1行1IDで検査する。停止した場合は同じ理由を各IDの行へ分け、既存エントリのHelpfulカウンター値を増減せず、履歴の形式だけを修正する。
+- `/close-issue` の本文書き換え（手順 5a・5b・6）と `/refine-issue` の本文・コメント投稿の一時ファイルを、`/tmp` の直書きから `${TMPDIR:-/tmp}` 配下の Issue ごとの作業ディレクトリへ移し、Windows の Git Bash では `cygpath -m` で `C:/…` 形式にそろえるようにした。作業ディレクトリは各手順のフェンスが Issue 番号から求め直し、求めた実値を出力する。python / node のコードやホストのファイル編集機能が `/tmp` を別の場所（ドライブ直下）と読み、本文の書き換えで `FileNotFoundError` / `ENOENT` になってやり直していた問題を直す。macOS / Linux では従来どおり動く。
+- 同梱の `multi-agent-plan` の検査が GNU awk（gawk）の環境で途中終了していたのを直した。awk へ渡す変数名が gawk の組み込み関数名（`log`）と衝突していた。
+- `/ace-curate` の追記前の件数予測が、件数の出力を標準出力にも出すようにした。一時ファイルをパスで開き直さずに件数を読める。
+- Markdown 文字列パッチ規律に「一時ファイルの置き場所」の節を追加し、ナレッジ記録の手順例の `/tmp` 直書きを本文ファイルのプレースホルダへ置き換えた。`/asdd-init` と `/asdd-work` が node へ渡す一時ファイルのパスも、Windows の Git Bash ではドライブ文字から始まる形で渡すよう明記した。
+- `/ace-curate` の手順 5 で、playbook の変更ファイルを集めるループ変数を `kpath` に変えた。zsh では `path` が PATH と連動し、代入のあと続くコマンドが見つからず終了コード 127 で止まっていた。
+- スキル本文の bash / sh / shell / zsh ブロックで、zsh の特殊パラメータ名を代入、read、for、local / declare / typeset / export / readonly の対象に使うと、skill-bash-blocks の検査が失敗するようにした。
+- その検査は、read と宣言の対象をセミコロン、パイプ、アンパサンドで区切る。区切りの後ろにある別コマンドの引数は、特殊パラメータの代入先と見なさない。引用符の中の同じ文字は区切りにしない。
+- ASCII の変数名やコマンドを判定する awk の走査をバイト単位に固定し、macOS の UTF-8 環境で日本語の引用値やパスを処理するときの異常終了を修正。
+
+### ドキュメント
+
+- 隔離 worktree への委譲定型文に、許可された呼出形式・対象と固有作業領域・元処理の終了判定・Windows の能力確認を追加し、両入口から参照。形式変更後も通常の権限判定と既存の検証条件を維持する契約を明記。 転記する定型引用の安全条件と契約行欠落も検査。 起動時生成の対象は実測・照合し、見出しとリンクの改名も検出。
+
+### セキュリティ
+
+- 認証設定ファイルを cat・grep・sed・awk 等で表示する Bash 呼び出しを実行前に止めるガードを追加。除外フィルタやキー名抽出では免除せず、非秘密キーの個別照会を案内する。設定本文を読まず、拒否文にも元コマンドを再掲しない。
+- 同梱 MCP の直接依存 zod を 3.25.76 から 4.6.7（`^4.6.6`、メジャー更新）へ更新し、メモリ枯渇の GHSA-mrhx-c7xc-m3w5 に対応した。zod 3.x 系に修正版は無く、自前 schema（`z.string().min/optional`・`z.number().int().min().max().default()`）は zod 4 でそのまま動作し、ソース変更は不要だった（ADR-077）。実行時の受理・拒否は従来と同一で、tool の inputSchema から `additionalProperties: false` が消え、入力検証エラーの文言が zod 4 のものに変わる。
+- MCP SDK の runtime 依存連鎖で、fast-uri を 3.1.8 から 3.1.9 へ更新し GHSA-333x-w4r6-6crp / GHSA-wjr9-j795-jxcr / GHSA-xhq7-xmqj-769h / GHSA-w74x-v6f9-j3xg に、body-parser を 2.3.0 から 2.4.0 へ更新し GHSA-27r3-jxmh-p828 に対応した（依存元の既存範囲内。付随して qs 6.16.1、body-parser 配下の content-type 2.1.0 へ更新）。ソースの lockfile audit は 0 件となり、以前の残余 GHSA-vfj7-8cjw-p6xm も今回の lockfile では報告されなかった。
+- fast-uri と zod は配布用 stdio MCP に含まれるため `dist/index.js` を clean install 後に再ビルドしてコミットした（762,969 bytes から 1,379,598 bytes へ増加。SHA-256 は dcc917274516b14975920ffbe2e47ac5f9e4d114f9365699fe591dfe9f4ea6d4）。公開配布への反映は次回の承認済み同期で行い、ソースのマージと公開先の alert 確認は別に扱う。
+
 ## [0.165.0] - 2026-10-25
 
 ### 追加

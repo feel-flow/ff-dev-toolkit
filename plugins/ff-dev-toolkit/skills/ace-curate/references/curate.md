@@ -120,6 +120,20 @@ fetch が失敗した回は、停止メッセージの末尾へ git が出した
 
 ヘッダが `| エントリID | タイトル | Category | 参照先 |` なら `| ACE-XXX | [タイトル] | [カテゴリ] | [playbook/<category>.md#ace-xxx](./playbook/<category>.md#ace-xxx) |`、`| ID | Category | Title | Link |` なら `| ACE-XXX | [カテゴリ] | [タイトル] | [playbook/<category>.md#ace-xxx](./playbook/<category>.md#ace-xxx) |`。どの役割にも対応付かない列は既存行の同じ列の形に合わせる。`check-category-size` は索引行のカテゴリ列を本文と突き合わせて食い違い・列数不一致を警告する。
 
+<a id="changelog-layout"></a>
+
+## Changelog 配置と明示対象
+
+従来受理された `ACE-A・ACE-B` の束ねHelpful行で停止したら、同じ理由を各IDの行へ分ける。既存エントリのHelpful値は増減せず、履歴の形式だけを修正する。既存エントリ本文の書換え禁止はこの履歴形式修正を妨げない。
+
+Changelog は有効な本体を優先し、節不在・空スタブなら同階層 `CHANGELOG.md` / `playbook/CHANGELOG.md` の固定候補を確認する。候補複数・不正行・読取不能は停止し、任意リンクを辿らない。採用したファイルのリポジトリ相対の実パスを `ACE_CHANGELOG_REL` に保持し、その形式を維持して追記する。確認済み旧形式は `## v版番号 (日付)`・`- 追加: ACE-ID（分類）`・`- 更新: ACE-ID Helpful +1（理由）` を使い、Helpful は1行1IDにする。今回変更した採用先は手順5で明示対象へ含める。探索は指定外ファイルを暗黙にstageする許可ではない。
+
+<a id="history-update-rules"></a>
+
+## Frontmatter・Changelog・行数
+
+`version` は新規エントリ追加で **minor +1**（カウンター更新のみは不変）、`updated` を今日へ、`changeImpact` は `medium`。`ace_entry_count` は merged tree の live エントリ実数から再計算する。Changelog は手順4-bの採用先・書式の先頭へ当該版のブロック（空を禁止）。正規書式の `#### カウンター更新`・旧書式の `- 更新:` は 1 行 1 ID。各エントリのブロック行数は **15 行以内**（`<!-- ace-line-budget-exception: 理由 -->` 付きでも **30 行以内**）を自分で数える。
+
 ## 旧形式との互換
 
 - ヘッダ行・区切り行を持たないメタ 4 行は GitHub 上ではテーブルとして描画されない（AI ファースト文書として意図した仕様。詳細は PLAYBOOK.md §エントリテンプレート）
@@ -170,7 +184,13 @@ commit_type="knowledge"
 # playbook/ 配下は変更・追加したファイルだけを渡す（サブディレクトリのカテゴリファイルへの Helpful +1 も拾う。glob の playbook/*.md は直下しか当たらない）
 # 既定配置の例。独自配置なら解決済みACE_PLAYBOOK_RELの親へ置換する。
 ACE_KNOWLEDGE_PATHS=(docs/08-knowledge/PLAYBOOK.md)
-while IFS= read -r path; do ACE_KNOWLEDGE_PATHS+=("$path"); done < <(git ls-files -mo --exclude-standard docs/08-knowledge/playbook)
+. "${FF_DEV_TOOLKIT_ROOT}/scripts/lib/playbook-changelog-functions.sh" || exit 2
+ACE_CHANGELOG_FILE="$(ff_playbook_changelog_select docs/08-knowledge/PLAYBOOK.md)" || { printf '%s\n' "$ACE_CHANGELOG_FILE" >&2; exit 2; }
+ACE_CHANGELOG_REL="$(git -C "${ACE_CHANGELOG_FILE%/*}" rev-parse --show-prefix)${ACE_CHANGELOG_FILE##*/}" || exit 2
+if [[ "$ACE_CHANGELOG_REL" != docs/08-knowledge/PLAYBOOK.md ]] && { ! git diff --quiet HEAD -- "$ACE_CHANGELOG_REL" || ! git ls-files --error-unmatch -- "$ACE_CHANGELOG_REL" >/dev/null 2>&1; }; then
+  ACE_KNOWLEDGE_PATHS+=("$ACE_CHANGELOG_REL")
+fi
+while IFS= read -r kpath; do ACE_KNOWLEDGE_PATHS+=("$kpath"); done < <(git ls-files -mo --exclude-standard docs/08-knowledge/playbook)
 if [ -f docs/08-knowledge/PENDING_CANDIDATES.md ]; then ACE_KNOWLEDGE_PATHS+=(docs/08-knowledge/PENDING_CANDIDATES.md); fi
 ACE_CLAIM_ARGS=()
 if ! git diff --quiet HEAD -- docs/08-knowledge/PLAYBOOK.md; then ACE_CLAIM_ARGS=(--claim docs/08-knowledge/PLAYBOOK.md); fi
@@ -182,7 +202,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 # レビュー後 squash merge → /merge-cleanup
 ```
 
-<!--ebf421b2f822853b-->
+<!--da64d281c09543c5-->
 MCP: 取得値: MCP でPLAN と一致する作成後 PR の head / base / title / body / SHA を取得。形式: knowledge fixture の fresh raw JSON を同じ index に保存。渡し先: knowledge-commit pr --github-input /absolute/index.json へ渡す。PLAN の原文を既存 create_pull_request で実 write 後に再実行する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 > `knowledge:` 付き PLAYBOOK 単独コミットの `<default-branch>` 直 push は意図的フローであり、通常のコード変更に対する「統合ブランチへの直 push 禁止」ルールとは別物として扱う。ただし default branch が保護されているリポジトリではこの経路に到達できない — その場合は保護判定に従い「PR 経由」（必須）を使う。

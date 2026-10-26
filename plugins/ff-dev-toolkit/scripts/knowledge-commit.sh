@@ -567,25 +567,74 @@ case "$cmd" in
     # Jev の契約の形（1 行 1 ID。lib/playbook-changelog-functions.sh）かを見る。契約外の行はここで止めないと、
     # 全件ゲート（tests/jev-adapter H22）まで届かず、リリースの 1 周（約 10 分 + 再実行）を払う（Issue `#2107`）。
     # 判定不能（## Changelog が無い・行が 1 件も読めない）も素通しにしない — parseChangelog が exit 2 にする入力
+    # Expand explicitly requested directories with a checked NUL-delimited Git listing.
+    history_paths=()
     for p in "${rel_paths[@]}"; do
-      [[ "${p##*/}" == PLAYBOOK.md ]] || continue
-      playbook_out="$(ff_playbook_changelog_helpful_check "$repo_root/$p")" && continue
-      playbook_rc=$?
+      if [[ -d "$repo_root/$p" ]]; then
+        history_list="$(mktemp "${TMPDIR:-/tmp}/ff-knowledge-paths.XXXXXX")" || die_env "履歴の対象一覧を作れません"
+        if ! git -C "$repo_root" ls-files -c -o --exclude-standard -z -- "$p" >"$history_list"; then
+          rm -f -- "$history_list"
+          die_env "履歴の対象一覧を取得できません: $p"
+        fi
+        history_bad=0
+        while IFS= read -r -d '' history_item; do
+          if [[ ! -e "$repo_root/$history_item" ]]; then
+            rm -f -- "$history_list"
+            die_env "展開した対象パスが存在しません: $history_item"
+          fi
+          if has_bad_chars "$history_item"; then history_bad=1; break; fi
+          history_paths+=("$history_item")
+        done <"$history_list"
+        rm -f -- "$history_list" || die_env "履歴の対象一覧を回収できません"
+        [[ "$history_bad" -eq 0 ]] || die_env "履歴の対象パスに制御文字があります"
+      else
+        history_paths+=("$p")
+      fi
+    done
+    [[ -n "${history_paths[0]+set}" ]] || die_env "明示対象からファイルを取得できません"
+    history_books=()
+    for p in ${history_paths[@]+"${history_paths[@]}"}; do
+      history_book=""
+      case "${p##*/}" in
+        PLAYBOOK.md) history_book="$repo_root/$p" ;;
+        CHANGELOG.md)
+          if ! history_book="$(ff_playbook_changelog_book "$repo_root/$p")"; then die_env "$history_book"; fi ;;
+      esac
+      [[ -n "$history_book" ]] || continue
+      history_seen=0
+      for history_prior in ${history_books[@]+"${history_books[@]}"}; do
+        [[ "$history_prior" != "$history_book" ]] || history_seen=1
+      done
+      [[ "$history_seen" -eq 0 ]] || continue
+      history_books+=("$history_book")
+      if ! history_selected="$(ff_playbook_changelog_select "$history_book")"; then die_env "$history_selected"; fi
+      history_prefix="$(git -C "${history_selected%/*}" rev-parse --show-prefix)" || die_env "履歴のリポジトリ位置を確認できません"
+      history_rel="${history_prefix}${history_selected##*/}"
+      history_changed=0; history_rc=0
+      git -C "$repo_root" diff --quiet HEAD -- "$history_rel" || history_rc=$?
+      case "$history_rc" in 0) ;; 1) history_changed=1 ;; *) die_env "履歴の差分を確認できません: $history_rel" ;; esac
+      history_rc=0; git -C "$repo_root" ls-files --error-unmatch -- "$history_rel" >/dev/null 2>&1 || history_rc=$?
+      case "$history_rc" in 0) ;; 1) history_changed=1 ;; *) die_env "履歴の追跡状態を確認できません: $history_rel" ;; esac
+      if [[ "$history_changed" -eq 1 ]]; then
+        history_explicit=0
+        for history_arg in "${history_paths[@]}"; do
+          if [[ "$history_arg" == "$history_rel" ]]; then history_explicit=1; fi
+        done
+        [[ "$history_explicit" -eq 1 ]] || die_env "変更済み Changelog を明示対象へ追加してください: ${history_rel}（探索だけではstageしません）"
+      fi
+      playbook_rc=0
+      playbook_out="$(ff_playbook_changelog_helpful_check "$history_book")" || playbook_rc=$?
+      if [[ "$playbook_rc" -eq 0 ]]; then continue; fi
       if [[ "$playbook_rc" -eq 1 ]]; then
-        {
-          echo "✗ ${p} の Changelog「#### カウンター更新」配下に、Helpful +1 を含むのに契約の形で読めない行があります（stage も保留記録も作っていません）:"
-          # パスを sed のスクリプトへ埋め込まない（`|` や `\` を含むパスで式が壊れる）。1 行ずつ前置して出す
-          while IFS= read -r playbook_line; do
-            [[ -n "$playbook_line" ]] || continue
-            printf '    %s:%s\n' "$p" "$playbook_line"
-          done <<<"$playbook_out"
-          echo "  契約の形は 1 行 1 ID: \`- ACE-X: Helpful +1（理由）\` / \`- ACE-X: Helpful +1 ×N（理由）\` / \`- ACE-X: Helpful +1 — 理由\`。"
-          echo "  複数 ID を 1 行へ束ねず（\`- Helpful +1: ACE-A / ACE-B（…）\` は不可）、ID ごとに行を分けてから add し直してください（正本: scripts/jev/build-ace-eval-sets.ts の parseChangelog）"
-        } >&2
+        echo "✗ Changelog に Helpful +1 を含むのに契約の形で読めない行があります（stage も保留記録も作っていません）:" >&2
+        echo "$playbook_out" >&2
+        echo "  1 行 1 ID・増分・理由の契約を確認してから add し直してください。" >&2
         exit 1
       fi
-      die_env "${p} の Changelog を判定できません: ${playbook_out}（stage も保留記録も作っていません）"
+      die_env "Changelog を判定できません: ${playbook_out}（stage も保留記録も作っていません）"
     done
+    # Use the checked expansion for staging and blob records as well as validation.
+    rel_paths=("${history_paths[@]}")
     # stage と保留記録より前に、この add の後で commit が作る件名を commit-msg hook へ通す（通らない件名の
     # 保留を作らない）。既存の保留（同じ source と ID は 1 件）と、add で記録済みの commit type を合わせる
     prospective="$( { [[ ! -s "$pending" ]] || awk -F '\t' '$1=="E"' "$pending"; printf 'E\t%s\t%s\t%s\t%s\n' "$source" "$id" "$summary" "$category"; } \

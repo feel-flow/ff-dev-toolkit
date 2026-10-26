@@ -4,6 +4,7 @@
 # 空振り検出: 抽出先 scripts/lib/finish-precheck.sh を空にすると323/0から322/1となり、--issue-metrics の呼び出しの針が赤になる（2026-10-22 実測。既存 partial skip2件は別枠）。
 #
 # 空振り検出: 並列規定を空・旧文言へ戻すと壁時計と総人時の検査が赤。換算基準の句だけを消す変異も赤（2026-10-17 実測）。
+# 空振り検出: 配備の行の照合手順の作業ディレクトリを /tmp 直書きへ戻すと実行前の検査と effort.md の否定検査が赤（328/2）、乱数名（mktemp -d）へ変えると保存先の検査が赤（334/1）、mkdir の失敗を exit 2 へ戻すと 334/1、cygpath の分岐を外すと 333/2、cygpath の失敗を見ない形にすると 334/1。close-issue の 5b の送信を /tmp 直書きへ戻す・5b の cygpath 分岐を外す・5b の導出を外すと各 334/1、手順 6 の導出を外して 5b の W をあてにすると 332/3（導出と cygpath の件数・単独実行）、手順 6 を単引用符の /tmp 直書きへ戻すと 333/2。正常は 335/0・既存 skip 2 件（2026-10-25 WSL 実測）。
 # effort-contract: 工数 KPI 計測基盤（Issue #1136）の契約検査。
 #
 # 守っている事故:
@@ -54,7 +55,7 @@
 # 変異検出: effort-report.sh の中央値の位置の判定を `vmed >= upper` へ倒すと 検査 4h の median-edge（上限ちょうど 2.00 は in_band）、`vmed <= lower` へ倒すと median-lower-edge（下限ちょうど 0.50 は in_band）、母集団 0 件の (unmeasured) 分岐を外すと空入力がそれぞれ 1 件赤になる（mutation/mut-median-edge.py / mut-median-lower-edge.py / mut-median-empty.py）。
 # 空振り検出: references/estimation.md から既定値の表の「再置換で済む」行を消すと 検査 9b の 3 件、ガード新設の行を消すと 2 件、分岐の問い・同額の行・補正元優先の段落・並列・再掲文書・静的検出器の行を消すとそれぞれ 1 件、retrospective の較正トリガ行を消すと 3 件、close-issue の較正手順 2 を消すと 1 件が赤になる（2026-09-27 実測。規定を足した行が消えても緑のままになる形を塞ぐ）。
 # 空振り検出: references/estimation.md から補正元の同種判定の「設計判断の有無」・補正元優先の限定・OBS-267 の出所・照合面の係数・OBS-147 の出所・照合面と再置換の境界の前半・後半・文書同期の行・その最小値 1.0h の句・決定 Issue の見直しの 10 針のいずれか 1 つを消すと 検査 9b の該当 1 件が赤になる（2026-09-30 実測。足した規定が消えても緑のままになる形を塞ぐ）。
-# 変異検出: effort-report.sh --deploy-check のキー名照合を外すと（配備の行を読まない）検査 5b の「なし」・記入済みの 2 件、プレースホルダ（全体が [ … ]）の判定を外すと雛形のまま = unfilled の 1 件、読めない本文を present へ倒すと unavailable の 1 件、空値の判定を外すと空値の 1 件、未閉鎖判定（inblock）を外すと end の無いブロックの 1 件、判定順を「不在 → 破損」へ戻すと end だけの本文の 1 件、trim から全角空白を外す・全角括弧の（未記入）の判定を外すと全角の（未記入）の 1 件、close-issue の照合手順から取得した本文の確定（mv）を外すと統合ケース（5a の位置での単独実行）の 1 件、gh 失敗時の unavailable 報告を外すと gh 失敗ケースの 1 件、排他を --issue-metrics / --unreached-leaves だけへ戻すと --input 併用の 1 件、2 組目のブロックの検出を外すと 1 件、ブロック外の end の検出を外すと余分な end・end だけの本文の 2 件が赤になる（mutation/mut-deploy-key.py / mut-deploy-unfilled.py / mut-deploy-unavailable.py / mut-deploy-empty.py / mut-deploy-unclosed.py / mut-deploy-endonly.py / mut-deploy-fullwidth.py / mut-deploy-fullwidth-paren.py / mut-deploy-step-order.py / mut-deploy-gh-fail.py / mut-deploy-opt-exclusive.py / mut-deploy-twoblocks.py / mut-deploy-extraend.py）。
+# 変異検出: effort-report.sh --deploy-check のキー名照合を外すと（配備の行を読まない）検査 5b の「なし」・記入済みの 2 件、プレースホルダ（全体が [ … ]）の判定を外すと雛形のまま = unfilled の 1 件、読めない本文を present へ倒すと unavailable の 1 件、空値の判定を外すと空値の 1 件、未閉鎖判定（inblock）を外すと end の無いブロックの 1 件、判定順を「不在 → 破損」へ戻すと end だけの本文の 1 件、trim から全角空白を外す・全角括弧の（未記入）の判定を外すと全角の（未記入）の 1 件、close-issue の照合手順から取得した本文の確定（mv）を外すと統合ケース（5a の位置での単独実行）・保存先・cygpath -m の変換先の 3 件（2026-10-25 再実測）、gh 失敗時の unavailable 報告を外すと gh 失敗ケースの 1 件、排他を --issue-metrics / --unreached-leaves だけへ戻すと --input 併用の 1 件、2 組目のブロックの検出を外すと 1 件、ブロック外の end の検出を外すと余分な end・end だけの本文の 2 件が赤になる（mutation/mut-deploy-key.py / mut-deploy-unfilled.py / mut-deploy-unavailable.py / mut-deploy-empty.py / mut-deploy-unclosed.py / mut-deploy-endonly.py / mut-deploy-fullwidth.py / mut-deploy-fullwidth-paren.py / mut-deploy-step-order.py / mut-deploy-gh-fail.py / mut-deploy-opt-exclusive.py / mut-deploy-twoblocks.py / mut-deploy-extraend.py）。
 # 空振り検出: create-issue の雛形から配備の行を消す・ブロックを切り出せない形にすると 検査 5b が「切り出せません」で赤になる。既存 fixture へ配備の行を 1 件も注入できない（マーカーの綴りが変わった）ときも「注入が成立していない」で赤にし、集計が変わらないことを空の比較で緑にしない。
 # 空振り検出: --issue-metrics に存在しない記録ディレクトリを与えると (unmeasured) を出して exit 0 することを 検査 13a が固定し、0 を出す変異（mutation/mut-metrics-zero.py）で 13a が赤になる。
 #
@@ -527,17 +528,45 @@ if awk -v b="$BEGIN_MARK" '$0 == b { n++ } END { exit !(n == 1) }' "$DTMP/tmpl.m
   awk '/^## 配備の行/ { sec = 1; next } sec && /^## / { sec = 0 } sec && /^```bash$/ { f = 1; next } sec && f && /^```$/ { f = 0; exit } sec && f { print }' "$CLOSE" > "$DTMP/step.sh"
   mkdir -p "$DTMP/bin" "$DTMP/tmp"
   printf '#!/bin/sh\ncat "%s"\n' "$DTMP/filled.md" > "$DTMP/bin/gh"; chmod +x "$DTMP/bin/gh"
-  if awk '/--deploy-check/ { d++ } /gh issue view/ { s++ } END { exit !(d == 1 && s == 1) }' "$DTMP/step.sh"; then
-    _step="$(awk -v t="$DTMP/tmp/" '{ gsub("/tmp/", t); print }' "$DTMP/step.sh")"
-    _d="$(PATH="$DTMP/bin:$PATH" ISSUE_URL=x ISSUE_NUMBER=5 FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash -c "$_step" 2>/dev/null)"
+  if grep -F '/tmp/' "$DTMP/step.sh" >/dev/null; then
+    # /tmp の直書きは Windows（Git Bash）で python / node / ホストのファイル編集機能と置き場所が
+    # 食い違う。走らせると TMPDIR の外へ書くので、実行せずに赤にする
+    bad "5b: close-issue の照合手順が /tmp を直書きしている（作業ディレクトリ W を \${TMPDIR:-/tmp} から求める形に戻すこと）"
+  elif awk '/--deploy-check/ { d++ } /gh issue view/ { s++ } END { exit !(d == 1 && s == 1) }' "$DTMP/step.sh"; then
+    _step="$(cat "$DTMP/step.sh")"
+    _d="$(PATH="$DTMP/bin:$PATH" TMPDIR="$DTMP/tmp" ISSUE_URL=x ISSUE_NUMBER=5 FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash -c "$_step" 2>/dev/null)"
     [ "$_d" = "effort_deploy=present" ] && ok "5b: close-issue の照合手順を 5a の位置で単独実行して present（.orig.md を先に保存している）" \
       || bad "5b: close-issue の照合手順の単独実行が期待と違う: [${_d}]（期待 effort_deploy=present）"
+    # 置き場所: 本文は TMPDIR 配下の Issue 番号から決まる作業ディレクトリへ保存される。5b は同じパスへ
+    # 取り直すので、ここが別の場所（TMPDIR を見ない固定パス・呼び出しごとに変わる乱数名）だと食い違う
+    [ -s "$DTMP/tmp/close-issue-5/issue-body-5.orig.md" ] && ok "5b: 照合手順は本文を \${TMPDIR}/close-issue-<Issue 番号>/ へ保存する（5b と同じ作業ディレクトリ）" \
+      || bad "5b: 照合手順の保存先が \$TMPDIR/close-issue-5/issue-body-5.orig.md ではない（5b の作業ディレクトリと食い違う）"
     # gh の取得失敗（stub が非 0）: 空ファイルを noblock と読まず unavailable を報告する。前回の
     # 成功で残った .orig.md（記入済み）があっても、それを読んで present にしない
     printf '#!/bin/sh\nexit 1\n' > "$DTMP/bin/gh"
-    _d="$(PATH="$DTMP/bin:$PATH" ISSUE_URL=x ISSUE_NUMBER=5 FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash -c "$_step" 2>/dev/null)"
+    _d="$(PATH="$DTMP/bin:$PATH" TMPDIR="$DTMP/tmp" ISSUE_URL=x ISSUE_NUMBER=5 FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash -c "$_step" 2>/dev/null)"
     [ "$_d" = "effort_deploy=unavailable" ] && ok "5b: 照合手順で gh が失敗したら unavailable（空の本文を noblock と読まない）" \
       || bad "5b: gh 失敗時の照合手順の出力が期待と違う: [${_d}]（期待 effort_deploy=unavailable）"
+    # 作業ディレクトリを作れない（TMPDIR が通常ファイルの下）: 任意の照合なので止めず unavailable・exit 0
+    printf '#!/bin/sh\ncat "%s"\n' "$DTMP/filled.md" > "$DTMP/bin/gh"
+    : > "$DTMP/notdir"
+    _d="$(PATH="$DTMP/bin:$PATH" TMPDIR="$DTMP/notdir" ISSUE_URL=x ISSUE_NUMBER=5 FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash -c "$_step" 2>/dev/null)"; _rc=$?
+    [ "$_d" = "effort_deploy=unavailable" ] && [ "$_rc" = "0" ] && ok "5b: 作業ディレクトリを作れない回は unavailable・exit 0（止めない）" \
+      || bad "5b: 作業ディレクトリを作れない回の出力が期待と違う: [${_d}] rc=${_rc}（期待 effort_deploy=unavailable / 0）"
+    # cygpath の分岐（WSL / Linux には cygpath が無く、素のままでは通らない）: stub に -m の変換結果を
+    # 返させ、本文がその変換後のディレクトリへ保存されることを確かめる。-m 以外で呼ばれたら stub は非 0
+    mkdir -p "$DTMP/cyg" "$DTMP/conv"
+    printf '#!/bin/sh\n[ "$1" = "-m" ] || exit 9\nprintf "%%s\\n" "%s"\n' "$DTMP/conv" > "$DTMP/cyg/cygpath"; chmod +x "$DTMP/cyg/cygpath"
+    _d="$(PATH="$DTMP/cyg:$DTMP/bin:$PATH" TMPDIR="$DTMP/tmp" ISSUE_URL=x ISSUE_NUMBER=5 FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash -c "$_step" 2>/dev/null)"
+    [ "$_d" = "effort_deploy=present" ] && [ -s "$DTMP/conv/issue-body-5.orig.md" ] && ok "5b: cygpath がある環境では -m で変換した作業ディレクトリへ保存する" \
+      || bad "5b: cygpath -m の変換結果を使っていない: [${_d}]（期待 effort_deploy=present と \$DTMP/conv/issue-body-5.orig.md）"
+    # cygpath が失敗したら、その出力を W に使わず unavailable・exit 0。stub は実在する変換先らしい値を
+    # 出してから非 0 で終わる（何も出さない stub だと、空の W の書き込み先＝ルート直下が Linux では
+    # 書けずに同じ unavailable へ落ち、終了コードを見ない形を区別できない）
+    printf '#!/bin/sh\nprintf "%%s\\n" "%s"\nexit 1\n' "$DTMP/conv" > "$DTMP/cyg/cygpath"
+    _d="$(PATH="$DTMP/cyg:$DTMP/bin:$PATH" TMPDIR="$DTMP/tmp" ISSUE_URL=x ISSUE_NUMBER=5 FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash -c "$_step" 2>/dev/null)"; _rc=$?
+    [ "$_d" = "effort_deploy=unavailable" ] && [ "$_rc" = "0" ] && ok "5b: cygpath が失敗したら空の作業ディレクトリで進まず unavailable・exit 0" \
+      || bad "5b: cygpath 失敗時の出力が期待と違う: [${_d}] rc=${_rc}（期待 effort_deploy=unavailable / 0）"
   else
     bad "5b: close-issue の reference から照合手順（本文の取得 1 行 + --deploy-check 1 行）を抽出できません"
   fi
@@ -623,6 +652,39 @@ rm -f "$EMPTY"
 contains "$CLOSE_MAIN" "check-issue-body-diff.sh" "close-issue が判定器を呼んでいる（目視判定に戻していない）"
 contains "$CLOSE_MAIN" 'FF_DEV_TOOLKIT_ROOT:?' "close-issue の判定器呼び出しが未解決ルートで fail-closed"
 contains "$CLOSE_MAIN" "上記以外" "close-issue が列挙外の終了コード（起動失敗等）を検査不成立として扱う"
+# 一時ファイルの置き場所: 5a（reference）・5b・6 はどれも作業ディレクトリ W を TMPDIR と Issue 番号から
+# 求め、Windows の Git Bash では cygpath -m で C:/… 形式にそろえる。5b と 6 は別の Bash 呼び出しで走る
+# （間にホストのファイル編集機能で報告を書く）ので、導出は 5b と 6 の両方に要る。/tmp の直書きへ
+# 戻すと、python / node のコードやホストのファイル編集機能がドライブ直下の別の場所を読む
+_n="$(grep -cF 'W="${TMPDIR:-/tmp}/close-issue-${ISSUE_NUMBER:?' "$CLOSE_MAIN")"
+[ "${_n:-0}" -ge 2 ] && ok "close-issue の 5b と 6 がそれぞれ作業ディレクトリを TMPDIR と Issue 番号から求める（${_n} 箇所）" \
+  || bad "close-issue の作業ディレクトリの導出が 5b・6 の 2 箇所にない（${_n:-0} 箇所。6 が 5b のシェル変数をあてにすると新しい呼び出しで止まる）"
+_n="$(grep -cF 'W="$(cygpath -m "$W")" || exit 2' "$CLOSE_MAIN")"
+[ "${_n:-0}" -ge 2 ] && ok "close-issue の 5b と 6 が Windows（Git Bash）で C:/… 形式へそろえ、変換の失敗で止まる（${_n} 箇所）" \
+  || bad "close-issue の cygpath -m の分岐（失敗で止める形）が 5b・6 の 2 箇所にない（${_n:-0} 箇所）"
+absent "$CLOSE_MAIN" '/tmp/' "close-issue の SKILL.md に /tmp 直書きのパスが無い" \
+  "close-issue の SKILL.md が /tmp を直書きしている（Windows のネイティブのツールと置き場所が食い違う）"
+absent "$CLOSE" '/tmp/' "close-issue の references/effort.md に /tmp 直書きのパスが無い" \
+  "close-issue の references/effort.md が /tmp を直書きしている"
+# 手順 6 のフェンスを単独の Bash 呼び出しとして走らせる（W を事前に与えない）。5b のシェル変数に
+# 頼らず W を求め直し、作業ディレクトリの報告ファイルを --body-file へ渡すこと
+S6TMP="$(mktemp -d)" || { echo "✗ 一時ディレクトリを作成できません" >&2; exit 1; }
+awk '/^### 6\./ { sec = 1; next } sec && /^### / { sec = 0 } sec && /^```bash$/ { f = 1; next } sec && f && /^```$/ { exit } sec && f { print }' "$CLOSE_MAIN" > "$S6TMP/step6.sh"
+mkdir -p "$S6TMP/bin" "$S6TMP/tmp"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s"\n' "$S6TMP/gh-args" > "$S6TMP/bin/gh"; chmod +x "$S6TMP/bin/gh"
+_exp="$S6TMP/tmp/close-issue-5"
+if command -v cygpath >/dev/null 2>&1; then _exp="$(cygpath -m "$_exp")"; fi
+if grep -F 'gh issue comment' "$S6TMP/step6.sh" >/dev/null; then
+  env -u W PATH="$S6TMP/bin:$PATH" TMPDIR="$S6TMP/tmp" ISSUE_URL=x ISSUE_NUMBER=5 bash -c "$(cat "$S6TMP/step6.sh")" >/dev/null 2>&1; _rc=$?
+  if [ "$_rc" = "0" ] && grep -qxF -- "$_exp/close-issue-report-5.md" "$S6TMP/gh-args" 2>/dev/null; then
+    ok "close-issue 手順 6 のフェンスは単独の呼び出しで W を求め直し、作業ディレクトリの報告ファイルを渡す"
+  else
+    bad "close-issue 手順 6 のフェンスを単独で走らせると報告ファイルを渡せない（rc=${_rc}。期待 --body-file ${_exp}/close-issue-report-5.md）"
+  fi
+else
+  bad "close-issue 手順 6 のフェンス（gh issue comment）を抽出できません"
+fi
+rm -rf "$S6TMP"
 
 echo "検査 8: カテゴリ語彙が配布テンプレと自リポで一致する"
 _norm_cat() { awk '/^\| `estimation`/ { gsub(/[ \t]+/, " "); print; exit }' "$1"; }

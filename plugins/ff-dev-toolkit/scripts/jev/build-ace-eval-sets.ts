@@ -37,6 +37,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { parseHistory } from "../../docs-template/scripts/ace/changelog-layout";
 import {
   blankHtmlBlockComments,
   discoverPlaybookSubfiles,
@@ -141,46 +142,8 @@ export function parseEntries(playbookPath: string): ParseReport {
 export type ChangelogReport = { versions: ChangelogVersion[]; unreadableHelpful: string[] };
 
 export function parseChangelog(playbookPath: string): ChangelogReport {
-  const raw = fs.readFileSync(playbookPath, "utf8");
-  const start = raw.indexOf("\n## Changelog");
-  if (start < 0) die("PLAYBOOK.md に ## Changelog がありません");
-  const text = raw.slice(start);
-  const versions: ChangelogVersion[] = [];
-  const unreadableHelpful: string[] = [];
-  let current: ChangelogVersion | null = null;
-  let section: "added" | "helpful" | null = null;
-  for (const line of text.split("\n")) {
-    const v = line.match(/^### \[([0-9.]+)\] - (\d{4}-\d{2}-\d{2})/u);
-    if (v) {
-      current = { version: v[1], date: v[2], added: [], helpful: [] };
-      versions.push(current);
-      section = null;
-      continue;
-    }
-    if (/^#### 追加/u.test(line)) { section = "added"; continue; }
-    if (/^#### カウンター更新/u.test(line)) { section = "helpful"; continue; }
-    if (/^#### /u.test(line)) { section = null; continue; }
-    if (!current || !section) continue;
-    if (section === "helpful") {
-      // 契約の形: `- ACE-X: Helpful +1（理由）` / `- ACE-X: Helpful +1 ×N（理由）` / `- ACE-X: Helpful +1 — 理由`
-      const h = line.match(/^- (ACE-[^:\s]+): Helpful \+1(?: ×\d+)?(?:（(.+)）|\s+—\s+(.+))\s*$/u);
-      if (h) {
-        current.helpful.push({ id: h[1], reason: (h[2] ?? h[3]).trim() });
-      } else if (/Helpful \+1/u.test(line)) {
-        unreadableHelpful.push(line.trim());
-      }
-      continue;
-    }
-    const a = line.match(/^- (ACE-[^:\s]+): (.+?)\s*$/u);
-    if (a) {
-      // PR 番号は行のどこにあってもよい（`（… / PR #N）` の後ろに本文が続く行がある）。最後の出現を採る
-      const prs = [...a[2].matchAll(/PR #(\d+)/gu)];
-      const pr = prs.length > 0 ? Number(prs[prs.length - 1][1]) : null;
-      const summary = a[2].replace(/（[^（）]*PR #\d+[^（）]*）\s*$/u, "").trim();
-      current.added.push({ id: a[1], summary, pr });
-    }
-  }
-  return { versions, unreadableHelpful };
+  try { return parseHistory(playbookPath); }
+  catch (error) { die(error instanceof Error ? error.message : String(error)); }
 }
 
 // ---- 語彙の重なり（近傍探索。乱数を使わない） -------------------------------------------
@@ -479,7 +442,7 @@ export function main(argv: string[]): number {
   const entries = parsed.entries;
   if (entries.length === 0) die("エントリが 0 件です（見出しの形が変わった可能性）");
   const changelog = parseChangelog(playbook);
-  if (changelog.unreadableHelpful.length > 0) die(`Helpful +1 を含むのに契約の形で読めない Changelog 行が ${changelog.unreadableHelpful.length} 件あります（例: ${changelog.unreadableHelpful[0]}）`);
+  if (changelog.unreadableHelpful.length > 0) die(`Helpful +1 を含むのに契約の形で読めない、または旧書式の更新を読めない Changelog 行が ${changelog.unreadableHelpful.length} 件あります（例: ${changelog.unreadableHelpful[0]}）`);
   const versions = changelog.versions;
   if (versions.length === 0) die("Changelog の版ブロックが 0 件です");
   const addedTotal = versions.reduce((n, v) => n + v.added.length, 0);

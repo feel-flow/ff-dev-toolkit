@@ -3,6 +3,8 @@
 # SKILL.md の bash コードブロックに対する「パイプ入力の grep -q*」横断検査（Issue #234）。
 #
 # 空振り検出: 走査対象から `skills/*/references/*.md` のグロブを外した写しを与えると、references のコントロール（retrospective/references/filing.md が対象に入っていること）の 1 件が赤になる（2026-09-23 実測。13 件中 1 件失敗。切り出し先の bash ブロックが検査から黙って外れる形を緑にしない）。
+# 空振り検出: 名前リストを空にした写しは違反 fixture の期待行照合が actual 空で赤、名前判定をリスト参照から外して定数に焼き付けると空リストの自己検証が赤、argv だけ外すと readonly argv と read -d の行が期待から外れて赤（2026-10-26 実測）。非検出 fixture のデコイ欠落も赤。
+# 空振り検出: zsh scanner の LC_ALL=C を外した写しは、UTF-8 呼び出し環境で日本語の引用値を含む非検出 fixture の走査が失敗し赤になる。日本語デコイの削除も赤にする。
 #
 # SKILL.md の bash ブロックはエージェントがそのまま実行する。`set -euo pipefail` の
 # もとでパイプの下流に早期終了する grep -q* を置くと、一致した時点で grep が終了して
@@ -53,6 +55,27 @@
 #     （grep -q* / MBCS 検査のみ。$0 検査はフェンス抽出をせず全行を見る）
 #   - 閉じられないままファイル末尾に達したフェンスは UNCLOSED_FENCE として構造違反に
 #     する（後続の bash ブロックが静かに未検査になるのを防ぐ）
+#
+# zsh 特殊パラメータ（代入・read・for・宣言の対象）:
+#   zsh 5.9 で測った閉じた集合を、bash / sh / shell / zsh ブロックの中だけ見る。
+#   path / cdpath / fpath / mailpath / manpath / module_path は配列で大文字側と連動する。
+#   watch / psvar / fignore は代入が WATCH / PSVAR / FIGNORE を変える。status は読取専用
+#   （$?）。argv は位置パラメータ（$@）。histchars と pipestatus はこの集合に入れない。
+#   検出するのは、トークン先頭から英数字とアンダースコアで読んだ名前が集合と完全一致
+#   したときだけ。区切りは空白、; | & ( ) < >、バッククォート、引用符。name= / name+=、
+#   for の直後の名前、read の変数オペランド（-a の名前、-d など引数を取るオプションの
+#   後ろ）、local / declare / typeset / export / readonly の対象。pathname は右に文字が
+#   続くので不一致。full-path / ledger_status / --status はトークン先頭が名前でない。
+#   $name の参照は非検出。行頭コメントは非検出。文字列リテラルと行末コメントは検出する
+#   （grep -q* 検査と同じく誤検出側）。${name:=...} は非検出。read と宣言のオペランド
+#   走査は、引用符の外の ; | & で終わる。引用符の中の同じ文字は区切りにしない
+#   （read -p "hello; world" path の path は検出する）。区切りの後ろの別コマンドの
+#   引数は対象にしない。区切りの後ろの代入と、後続コマンドの read / for / 宣言は、
+#   そのトークン自身で検出する。
+#   histchars はスカラーで大文字変数と連動しない。pipestatus へ配列を代入しても
+#   非対話の zsh -f では値が残らなかった（2026-10-26 実測）。どちらも対象外。
+#   名前リストは引数で渡し、空なら特殊名を何も検出しない。閉じ忘れフェンスの構造違反は
+#   scan_skill_bash_blocks が報告する。この検査は同じ UNCLOSED_FENCE を重ねて出さない。
 #
 # 検出力は fixtures/ の変異 fixture で毎回実測する（違反 fixture が期待行で赤くならなければ
 # 検査自体を fail-closed で落とす）。fixture の行番号を変えたら EXPECTED_VIOLATION_LINES も
@@ -148,6 +171,168 @@ scan_skill_dollar0() {
   ' "$1"
 }
 
+# zsh の特殊パラメータ名。カンマ区切り。空文字は「何も検出しない」で、検出力の空振りに使う。
+ZSH_SPECIAL_NAMES="path,cdpath,fpath,mailpath,manpath,module_path,watch,psvar,fignore,status,argv"
+
+# $1 = ファイル。$2 を渡したときだけ名前リストをそれで置き換える（空文字を含む）。
+scan_skill_zsh_specials() {
+  local file="$1"
+  local names="$ZSH_SPECIAL_NAMES"
+  if [ "$#" -ge 2 ]; then names="$2"; fi
+  # Only ASCII shell identifiers and delimiters are classified. Keep UTF-8 data
+  # opaque: BSD awk can otherwise fail while slicing quoted multibyte values.
+  LC_ALL=C awk -v spec_names="$names" '
+    function is_spec(w) {
+      if (spec_names == "" || w == "") return 0
+      return index("," spec_names ",", "," w ",") > 0
+    }
+    function assign_is_spec(w,    i, n, nm) {
+      n = length(w)
+      i = 1
+      nm = ""
+      while (i <= n && substr(w, i, 1) ~ /[A-Za-z0-9_]/) {
+        nm = nm substr(w, i, 1)
+        i++
+      }
+      if (!is_spec(nm)) return 0
+      while (i <= n && substr(w, i, 1) ~ /[[:space:]]/) i++
+      if (substr(w, i, 2) == "+=") return 1
+      if (substr(w, i, 1) == "=" && substr(w, i + 1, 1) != "=") return 1
+      return 0
+    }
+    function push_text(s, in_quote,    i, n, c, q, inner, startw) {
+      n = length(s)
+      i = 1
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (!in_quote && (c == ";" || c == "|" || c == "&")) {
+          nt++
+          tokens[nt] = c
+          i++
+          continue
+        }
+        if (c ~ /[[:space:]()<>`]/ || c == ";" || c == "|" || c == "&") { i++; continue }
+        if (c == "\"" || c == "'\''") {
+          q = c
+          i++
+          startw = i
+          while (i <= n && substr(s, i, 1) != q) i++
+          inner = substr(s, startw, i - startw)
+          if (i <= n) i++
+          if (inner == "") { nt++; tokens[nt] = "" }
+          else push_text(inner, 1)
+          continue
+        }
+        startw = i
+        while (i <= n) {
+          c = substr(s, i, 1)
+          if (c ~ /[[:space:];|&()<>`]/ || c == "\"" || c == "'\''") break
+          i++
+        }
+        nt++
+        tokens[nt] = substr(s, startw, i - startw)
+      }
+    }
+    function read_hits(i,    w, flags, fi, c, takes, rest) {
+      i++
+      while (i <= nt) {
+        w = tokens[i]
+        if (w == "--") { i++; break }
+        if (w == "" || substr(w, 1, 1) != "-" || w == "-") break
+        flags = substr(w, 2)
+        takes = ""
+        rest = ""
+        fi = 1
+        while (fi <= length(flags)) {
+          c = substr(flags, fi, 1)
+          if (index("adinNptu", c) > 0) {
+            takes = c
+            rest = substr(flags, fi + 1)
+            break
+          }
+          fi++
+        }
+        if (takes == "") { i++; continue }
+        if (rest != "") {
+          if (takes == "a" && is_spec(rest)) return 1
+          i++
+          continue
+        }
+        if (i + 1 > nt) return 0
+        if (takes == "a" && (is_spec(tokens[i + 1]) || assign_is_spec(tokens[i + 1]))) return 1
+        i += 2
+      }
+      while (i <= nt) {
+        if (tokens[i] == ";" || tokens[i] == "|" || tokens[i] == "&") return 0
+        if (is_spec(tokens[i]) || assign_is_spec(tokens[i])) return 1
+        i++
+      }
+      return 0
+    }
+    function is_decl(w) {
+      return w == "local" || w == "declare" || w == "typeset" || w == "export" || w == "readonly"
+    }
+    function decl_hits(i) {
+      i++
+      while (i <= nt && tokens[i] ~ /^-[A-Za-z]+$/) i++
+      while (i <= nt) {
+        if (tokens[i] == ";" || tokens[i] == "|" || tokens[i] == "&") return 0
+        if (is_spec(tokens[i]) || assign_is_spec(tokens[i])) return 1
+        i++
+      }
+      return 0
+    }
+    function check_zsh_line(line, start,    i) {
+      if (line ~ /^[[:space:]]*#/) return
+      nt = 0
+      push_text(line)
+      for (i = 1; i <= nt; i++) {
+        if (assign_is_spec(tokens[i]) || (tokens[i] == "for" && i < nt && is_spec(tokens[i + 1])) || (tokens[i] == "read" && read_hits(i)) || (is_decl(tokens[i]) && decl_hits(i))) {
+          print start ":" line
+          return
+        }
+      }
+    }
+    { sub(/\r$/, "") }
+    in_block == 0 {
+      if ($0 ~ /^[[:space:]]*(```|~~~)/) {
+        fence = $0
+        sub(/^[[:space:]]*/, "", fence)
+        fence_char = substr(fence, 1, 1)
+        fence_len = 0
+        while (substr(fence, fence_len + 1, 1) == fence_char) fence_len++
+        info = substr(fence, fence_len + 1)
+        sub(/^[[:space:]]*/, "", info)
+        sub(/[[:space:]].*$/, "", info)
+        in_block = 1
+        open_line = FNR
+        is_bash = (info ~ /^(bash|sh|shell|zsh)$/) ? 1 : 0
+        logical = ""
+      }
+      next
+    }
+    {
+      stripped = $0
+      sub(/^[[:space:]]*/, "", stripped)
+      sub(/[[:space:]]*$/, "", stripped)
+      if (stripped ~ /^(`+|~+)$/ && substr(stripped, 1, 1) == fence_char && length(stripped) >= fence_len) {
+        if (logical != "") { check_zsh_line(logical, start_line); logical = "" }
+        in_block = 0
+        next
+      }
+      if (is_bash == 0) next
+      if (logical == "") { logical = $0; start_line = FNR } else { logical = logical " " $0 }
+      if ($0 ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, " ", logical); next }
+      if ($0 ~ /[|]&?[[:space:]]*$/) next
+      check_zsh_line(logical, start_line)
+      logical = ""
+    }
+    END {
+      if (in_block == 1 && logical != "") check_zsh_line(logical, start_line)
+    }
+  ' "$file"
+}
+
 echo "== SKILL.md bash ブロックのパイプ入力 grep -q* 検査 =="
 
 # ---- 自己検証（変異試験の恒久化） --------------------------------------------
@@ -230,6 +415,73 @@ else
   bad "\$0 非検出 fixture のデコイが欠落しています（dollar0-clean.md を確認）"
 fi
 
+# ---- 自己検証: zsh 特殊パラメータ --------------------------------------------
+[ -f "$FIXTURES_DIR/zsh-special-violation.md" ] || { echo "✗ fixture がありません: $FIXTURES_DIR/zsh-special-violation.md" >&2; exit 1; }
+[ -f "$FIXTURES_DIR/zsh-special-clean.md" ] || { echo "✗ fixture がありません: $FIXTURES_DIR/zsh-special-clean.md" >&2; exit 1; }
+
+# 行番号: bash の代入 2 / for / read / コマンド置換代入 / read -r / local /
+# declare -a / typeset 代入 / export 代入 / readonly / 文字列 / 行末コメント /
+# read -d の後ろ / read -ra / read -a の密着 / read -- / 区切り後の代入 /
+# 区切り後の read / sh の read / zsh の += / shell の代入 / 継続行の read /
+# 引用内の区切りの後ろの read / 引用内の区切りの後ろの export
+EXPECTED_ZSH_SPECIAL_LINES="4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 26 30 34 38 43 44"
+actual_zsh_lines="$(scan_skill_zsh_specials "$FIXTURES_DIR/zsh-special-violation.md" | awk -F: '{ print $1 }' | paste -sd' ' -)" \
+  || { echo "✗ zsh 特殊パラメータ自己検証の scan が失敗しました（zsh-special-violation.md）" >&2; exit 1; }
+if [ "$actual_zsh_lines" = "$EXPECTED_ZSH_SPECIAL_LINES" ]; then
+  ok "zsh 特殊パラメータ違反 fixture の全違反を期待行で検出（${EXPECTED_ZSH_SPECIAL_LINES}）"
+else
+  bad "zsh 特殊パラメータ違反 fixture の検出結果が期待と不一致（expected: '${EXPECTED_ZSH_SPECIAL_LINES}' / actual: '${actual_zsh_lines}'）"
+fi
+
+empty_zsh_hits="$(scan_skill_zsh_specials "$FIXTURES_DIR/zsh-special-violation.md" "")" \
+  || { echo "✗ zsh 特殊パラメータ自己検証の scan が失敗しました（空の名前リスト）" >&2; exit 1; }
+if [ -z "$empty_zsh_hits" ]; then
+  ok "空の名前リストは違反 fixture を検出せず、期待行とも一致しない"
+else
+  bad "空の名前リストでも違反 fixture を検出した（名前リストを見ていない）:"
+  printf '%s\n' "$empty_zsh_hits" | sed 's/^/    | /' >&2
+fi
+
+zsh_clean_hits="$(scan_skill_zsh_specials "$FIXTURES_DIR/zsh-special-clean.md")" \
+  || { echo "✗ zsh 特殊パラメータ自己検証の scan が失敗しました（zsh-special-clean.md）" >&2; exit 1; }
+if [ -z "$zsh_clean_hits" ]; then
+  ok "zsh 特殊パラメータ非検出 fixture（参照・別名・行頭コメント・非 bash・ネストフェンス）を誤検出しない"
+else
+  bad "zsh 特殊パラメータ非検出 fixture を誤検出した:"
+  printf '%s\n' "$zsh_clean_hits" | sed 's/^/    | /' >&2
+fi
+
+zsh_decoy_ok=1
+for zsh_decoy in \
+  'pathname=' \
+  'echo "$path"' \
+  'full-path=' \
+  'ledger_status=' \
+  '# 行頭コメントは対象外: read -r path' \
+  'for item in path status' \
+  'mypath=' \
+  'printf '\''%s\n'\'' --status' \
+  '[[ "$status" == ok ]]' \
+  'local other=1' \
+  'path=inside-example' \
+  'export LC_ALL=C; git status' \
+  'read -r line; echo status' \
+  'local x=1; git add path' \
+  'while IFS= read -r n; do echo status; done' \
+  ': "${path:=x}"' \
+  'echo "git; status"' \
+  'read -p "hello; world" line' \
+  'EPUB_FILE="<引数で受け取ったパス>"'
+do
+  if ! grep -F "$zsh_decoy" "$FIXTURES_DIR/zsh-special-clean.md" >/dev/null; then
+    bad "zsh 特殊パラメータ非検出 fixture のデコイが欠落しています: ${zsh_decoy}"
+    zsh_decoy_ok=0
+  fi
+done
+if [ "$zsh_decoy_ok" -eq 1 ]; then
+  ok "zsh 特殊パラメータ非検出 fixture のデコイ（別名・参照・行頭コメント・コマンド区切り）が実在する"
+fi
+
 if [ "$FAIL" -gt 0 ]; then
   echo ""
   echo "✗ skill-bash-blocks verify: 検出器の自己検証に失敗（横断検査は実行しない）" >&2
@@ -283,6 +535,7 @@ fi
 violation_files=0
 mbcs_violation_files=0
 dollar0_violation_files=0
+zsh_violation_files=0
 for file in "${SKILL_FILES[@]}"; do
   hits="$(scan_skill_bash_blocks "$file")" \
     || { echo "✗ scanner 自体が失敗しました: $file" >&2; exit 1; }
@@ -299,6 +552,14 @@ for file in "${SKILL_FILES[@]}"; do
     bad "${file#"$REPO_ROOT"/} の bash ブロックに \$VAR 直付けマルチバイトがある:"
     printf '%s\n' "$mbcs_hits" | sed 's/^/    | /' >&2
     echo "    \${VAR} 形式に置換してください（bash 3.2 + set -u で unbound variable になる）" >&2
+  fi
+  zsh_hits="$(scan_skill_zsh_specials "$file")" \
+    || { echo "✗ zsh special scanner 自体が失敗しました: $file" >&2; exit 1; }
+  if [ -n "$zsh_hits" ]; then
+    zsh_violation_files=$((zsh_violation_files + 1))
+    bad "${file#"$REPO_ROOT"/} の bash ブロックで zsh の特殊パラメータを代入・read・for・宣言の対象にしている:"
+    printf '%s\n' "$zsh_hits" | sed 's/^/    | /' >&2
+    echo "    変数名を zsh の特殊パラメータ以外へ変えてください" >&2
   fi
 done
 
@@ -333,6 +594,9 @@ if [ "$mbcs_violation_files" -eq 0 ]; then
 fi
 if [ "$dollar0_violation_files" -eq 0 ]; then
   ok "全 ${#DOLLAR0_FILES[@]} 件の SKILL.md / commands の全文に裸の \$0 が無い"
+fi
+if [ "$zsh_violation_files" -eq 0 ]; then
+  ok "全 ${#SKILL_FILES[@]} 件の SKILL.md の bash ブロックに zsh 特殊パラメータの代入・read・for・宣言が無い"
 fi
 
 echo ""

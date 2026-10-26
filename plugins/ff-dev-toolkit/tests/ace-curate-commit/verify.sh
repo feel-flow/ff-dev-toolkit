@@ -25,6 +25,9 @@
 # 変異検出: PR 問い合わせを常に失敗へ変える・候補から chore/docs を外す・解決した Issue の保留保存を外すと、それぞれ 18 が赤（2026-10-17 実測）。
 # 空振り検出: 静的契約部分で現在ブランチの取得行を除去・既存知見ブランチの PR 分岐条件を反転・default 不変更の規定を反転・新規専用 PR の即 commit を保留へ反転すると各 rc=1（2026-10-22 実測）。針は各 1 行を要求し、0 件・重複を緑にしない。
 # 空振り検出: 呼出側の祖先・許可パス・件名と停止の実測を削る3変異と、helper の責務を誤保証へ変える変異は各 rc=1。通常追記は rc=0。保護判定で専用 Git fixture への移動を外すと、origin/HEAD の無い写しで14件が赤になる（2026-10-22 同梱 mutation-harness 実測）。
+# 空振り検出: 分割先の明示stageガード除去・固定候補片側消失・旧書式追加の0件化・layout fixture helper空化は隔離layout実測で各rc=1、通常追記と対照はrc=0（2026-10-25 mutation-harness、4 detected / 1 green-ok）。
+# 空振り検出: サブdirの探索・追跡・変更判定をcwd基準へ戻す3変異は各rc=1。空ディレクトリはrc=2でindex/pending保持を実測し、0ファイルを成功にしない（2026-10-25、無変異対照は成功）。
+# 空振り検出: 展開先の不在ガード除去・明示対象を元argv集合へ戻す2変異は各rc=1、正常対照rc=0（2026-10-26 mutation-harness実測。削除済み追跡ファイルはstage前rc=2、末尾/.も実ファイル集合で照合）。
 
 set -euo pipefail
 
@@ -1085,6 +1088,12 @@ HOOK
       echo "  ✗ 17: OBSERVATIONS.md を検査した（rc=${rc} out=${out}）" >&2; exit 1
     fi
     kc discard >/dev/null; git reset -q; git checkout -q -- docs/08-knowledge
+
+    # shellcheck source=changelog-layout-cases.sh
+    [ -s "$SCRIPT_DIR/changelog-layout-cases.sh" ] || exit 1
+    . "$SCRIPT_DIR/changelog-layout-cases.sh"
+    declare -F run_knowledge_layout_cases >/dev/null || exit 1
+    run_knowledge_layout_cases || exit 1
 
     # 7. 合成 identity（テスト fixture の既定 identity）では commit しない。保留は残す
     F="$KC_TMP/fixture-id"

@@ -163,9 +163,10 @@ class LocaleComparison(unittest.TestCase):
                     self.each(body, [records, root / "承認"], variables={"WORK_TMP": root}, expected=str(live) + "\n")
 
     def test_release_bump_distinguishes_japanese_categories(self):
-        relative = REPO / "scripts/release-dev-toolkit.sh"
-        if not relative.is_file():
+        if not (REPO / "scripts/release-dev-toolkit.sh").is_file():
             self.skipTest("root release orchestrator is outside the public plugin layout")
+        # The orchestrator keeps the prepare stage in this lib; a missing lib fails instead of skipping.
+        relative = REPO / "scripts/lib/release-prepare-functions.sh"
         text = relative.read_text(encoding='utf-8')
         match = re.search(r"^bump_level\(\) \{[^\n]*\n.*?^\}", text, re.M | re.S)
         self.assertIsNotNone(match, "function extraction expected bump_level")
@@ -286,9 +287,10 @@ class LocaleComparison(unittest.TestCase):
             self.each(lines[0] + '\nprintf "%s\\n" "$src"', variables={"TMP": root, "def": "/repo/記録.md"}, expected="right\n")
 
     def test_release_tag_difference_keeps_distinct_japanese_names(self):
-        source = REPO / "scripts/release-dev-toolkit.sh"
-        if not source.is_file():
+        if not (REPO / "scripts/release-dev-toolkit.sh").is_file():
             self.skipTest("root release orchestrator is outside the public plugin layout")
+        # The orchestrator keeps the release stage in this lib; a missing lib fails instead of skipping.
+        source = REPO / "scripts/lib/release-publish-functions.sh"
         lines = [line for line in source.read_text(encoding='utf-8').splitlines() if 'missing="$(' in line and 'comm -23' in line]
         self.assertEqual(len(lines), 1, "tag difference command must be unique")
         self.each(lines[0] + '\nprintf "%s" "$missing"',

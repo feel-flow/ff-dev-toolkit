@@ -115,7 +115,8 @@
 # 空振り検出: 呼び出し 4 ファイルから ff_skip_msys_case を消すと呼び出し針が赤（0 件を緑へ倒さない。2026-10-19 実測、4 ファイルとも赤。不在ファイルも赤）。
 # 空振り検出: ヘルパの字下げした skip 行を消すと形の針が赤（2026-10-19 実測。理由文が残っていても字下げ行が無いと赤）。
 # 空振り検出: FF_SYNC_SHA_SKILL へ存在しないパスを与えると (対象解決) が赤になる。明示指定の不在を skip へ倒さないため、実測は exit 1（○ skip ではない）。
-# 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT へ存在しないパスを与えると (対象解決) が赤になる（実測 exit 1）。リリーススクリプトを空ファイルへ差し替えると (7) の全針と release-runtime が赤になる。
+# 空振り検出: FF_SYNC_SHA_RELEASE_SCRIPT へ存在しないパスを与えると (対象解決) が赤になる（実測 exit 1）。lib を残して本体だけを空ファイルへ差し替えると、本体に当たる (7) の針 56 件と release-runtime が赤（2026-10-25 実測 exit 1）。lib に当たる針（release 段の 3 件）は本体を空にしても緑のままなので、release-publish-functions.sh を空にした実測で別に押さえる（同日、その 3 件・require_gate_ok の箇所数・release-runtime が赤、exit 1）。
+# 空振り検出: 差し替えた本体の隣に lib/ が無いと (対象解決) が赤（2026-10-25 実測 exit 1）。分割先 lib（release-prepare-functions.sh）へ `clean -fd` を足すと、本体 + lib を見る禁止パターンの針が赤（同日実測 exit 1）— 移した処理が文字列の針の対象外へ落ちない。
 # 空振り検出: 検査対象を空ファイルへ差し替えると (1〜3 / 5 / 6 の全針) が赤になる。0 件一致を「不足なし」へ倒さないことの実測。
 #
 # 変異検出（(8) 承認文への dry-run 実測値の転記。OBS-018 / Issue `#1917`。2026-09-27 実測、変異 10 件と空振り 1 件すべて赤転 / SURVIVED 0 件）:
@@ -197,6 +198,25 @@ if [[ ! -f "$RELEASE_SCRIPT" ]]; then
   echo "✗ 検査対象のリリーススクリプトがありません: $RELEASE_SCRIPT" >&2
   exit 1
 fi
+# 段の処理を分けた先の lib。文字列の針（release_contains / _exactly / _not_contains）は本体と
+# これらを合わせた全体を見る — 移した処理が針の対象外になって禁止パターンが素通りしないように。行番号で
+# 比べる順序の針（release_line_of / release_exact_line_of）は本体だけを見るので、そのアンカーは本体に残す。
+# 下の名簿（針が当たる lib）の不在・空は skip ではなく失敗（差し替えた本体の隣にも lib/ を置く）。名簿に無い
+# release-*-functions.sh も glob で加え、後から増えた lib が禁止パターンの針の対象外へ落ちないようにする。
+RELEASE_SOURCES=("$RELEASE_SCRIPT")
+for _release_lib in release-in-flight-functions.sh release-gate-advance-functions.sh release-environment-functions.sh \
+  release-partial-write-functions.sh release-prepare-functions.sh release-publish-functions.sh; do
+  _release_lib="$(dirname "$RELEASE_SCRIPT")/lib/$_release_lib"
+  if [[ ! -s "$_release_lib" ]]; then
+    echo "✗ リリーススクリプトの lib が無い・空: $_release_lib" >&2
+    exit 1
+  fi
+  RELEASE_SOURCES+=("$_release_lib")
+done
+for _release_lib in "$(dirname "$RELEASE_SCRIPT")"/lib/release-*-functions.sh; do
+  [[ -f "$_release_lib" ]] || continue
+  case " ${RELEASE_SOURCES[*]} " in *" $_release_lib "*) ;; *) RELEASE_SOURCES+=("$_release_lib") ;; esac
+done
 POST_MERGE_HOOK="$REPO_ROOT/.claude/hooks/post-merge-dev-toolkit-sync.sh"
 SESSION_START_HOOK="$REPO_ROOT/.claude/hooks/session-start-sync-drift.sh"
 
@@ -269,10 +289,10 @@ script_line_of() {
   awk -v pat="$1" 'index($0, pat) { print NR; exit }' "$SYNC_SCRIPT_UNDER_TEST"
 }
 
-# リリーススクリプト側の針。対象だけが違う同型の helper。
+# リリーススクリプト側の針。対象だけが違う同型の helper（文字列の針は本体 + lib の全体を見る）。
 release_contains() {
   local needle="$1" label="$2" rc=0
-  grep -qF -- "$needle" "$RELEASE_SCRIPT" || rc=$?
+  grep -qF -- "$needle" "${RELEASE_SOURCES[@]}" || rc=$?
   case "$rc" in
     0) ok "$label" ;;
     1) bad "${label}（不足: ${needle}）" ;;
@@ -281,7 +301,7 @@ release_contains() {
 }
 release_contains_exactly() {
   local needle="$1" want="$2" label="$3" got
-  got="$(grep -cF -- "$needle" "$RELEASE_SCRIPT" || true)"
+  got="$(cat "${RELEASE_SOURCES[@]}" | grep -cF -- "$needle" || true)"
   if [[ "$got" == "$want" ]]; then
     ok "$label"
   else
@@ -290,7 +310,7 @@ release_contains_exactly() {
 }
 release_not_contains() {
   local needle="$1" label="$2" rc=0
-  grep -qF -- "$needle" "$RELEASE_SCRIPT" || rc=$?
+  grep -qF -- "$needle" "${RELEASE_SOURCES[@]}" || rc=$?
   case "$rc" in
     0) bad "${label}（禁止パターンが存在: ${needle}）" ;;
     1) ok "$label" ;;

@@ -30,7 +30,7 @@ expected = ['guard-checkout-restore', 'guard-pr-followup', 'guard-background-cwd
             'guard-long-gate-background', 'guard-effort-actual', 'guard-merge-closing-keyword',
             'guard-issue-labels',
             'guard-sub-issue-id', 'guard-exit-code', 'guard-zsh-glob',
-            'guard-literal-write', 'record-effort-wallclock']
+            'guard-literal-write', 'guard-credential-output', 'record-effort-wallclock']
 # Path 同士で比べる（Windows では hooks.json から組んだ文字列だけ '/' と '\' が混ざる）
 assert args[0] == 'bash' and Path(args[1]) == runner
 assert [Path(a) for a in args[2:]] == [root / 'hooks' / (name + '.sh') for name in expected], 'Bash集約子の登録集合が期待と違う'

@@ -181,7 +181,22 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 
 ### Bash ガード（PreToolUse）
 
-プラグインをインストールすると、Bash ツールの実行前に 11 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-merge-closing-keyword.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-zsh-glob.sh` / `hooks/guard-literal-write.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` と `guard-zsh-glob.sh` と `guard-literal-write.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
+プラグインをインストールすると、Bash ツールの実行前に 12 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-merge-closing-keyword.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-zsh-glob.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-credential-output.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` と `guard-zsh-glob.sh` と `guard-literal-write.sh` と `guard-credential-output.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
+
+**認証設定の表示ガード（`guard-credential-output.sh`）** は `.npmrc` / `.netrc` /
+`.pypirc` / `.aws/credentials` / `.docker/config.json` / `.config/gh/hosts.yml` /
+`.pnpmrc` / `.git-credentials` / pnpm の `rc` を cat・less・head・tail・grep・sed・awk・cut 等の入力に指定した
+Bash 呼び出しを実行前に止める。`grep -v` の除外やキー名抽出による免除は設けない。
+`npm config get registry` のような非秘密キーの個別照会へ書き換える。
+設定本文は読まず、拒否文に元コマンドやパスを再掲しない。
+静的判定のため、動的パス・別名・symlink・任意プログラムによる読取りは対象外。
+誤検知時だけ先頭の `FF_CREDENTIAL_OUTPUT_ACK=1` で免除でき、
+環境変数 `FF_DEV_TOOLKIT_SKIP_CREDENTIAL_OUTPUT_GUARD=1` で無効化できる。
+候補コマンドで scanner 不在・失敗・未完了なら判定不能として停止する。
+不正 JSON・jq 不在・ASDD hooks 無効・ホストでの未登録は保護できない。
+Claude Code の Bash 登録と grok の global hook 同期経路へ同じ実体を配布する。
+Codex の Bash 相当ツールでの実発火は未実測。
+
 
 **未コミット変更ガード（`guard-checkout-restore.sh`）** — 未コミット変更のあるファイルへの `git checkout [--] <path>` / `git restore <path>` を検出し、変更消失の前に警告する。警告文は代替手段（`cp` バックアップ / `git stash push -- <file>` → `pop`）を案内する。ブランチ切り替え（`git checkout <branch>` / `git switch`）、clean・untracked なファイルへの復元、`git restore --staged`（worktree 非破壊）では発火しない。
 

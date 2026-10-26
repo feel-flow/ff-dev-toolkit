@@ -1641,9 +1641,10 @@ mkdir -p "$ARCHIVE_COPY"
 cp -R "$PLUGIN_ROOT/scripts" "$ARCHIVE_COPY/scripts"
 ARCHIVE_EARLY_LOG="$TMP/archive-early-call"
 for archive_part in "$ARCHIVE_COPY/scripts/multi-agent.sh" "$ARCHIVE_COPY/scripts/lib/"*.sh; do
-  awk -v log="$ARCHIVE_EARLY_LOG" '
+  # 変数名を log にしない（gawk では組み込み関数名で、-v の代入が fatal になりスイートが中断する）
+  awk -v early_log="$ARCHIVE_EARLY_LOG" '
     { print }
-    /^(detect_available_clis|resolve_reviewer_pair|pin_review_evidence_producer|ensure_codex_cli_current|execute_tasks|build_execution_plan)\(\) \{/ { print "  echo forbidden >> \"" log "\"; return 99" }
+    /^(detect_available_clis|resolve_reviewer_pair|pin_review_evidence_producer|ensure_codex_cli_current|execute_tasks|build_execution_plan)\(\) \{/ { print "  echo forbidden >> \"" early_log "\"; return 99" }
   ' "$archive_part" > "$TMP/archive-part.tmp"
   cp "$TMP/archive-part.tmp" "$archive_part"
 done

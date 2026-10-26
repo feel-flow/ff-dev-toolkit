@@ -89,7 +89,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" node "${FF_DEV_TOOLKIT_ROOT}/script
 
 ## 4. 差分を提示して反映する
 
-合意した内容を[設定契約](references/configuration.md)に従ったJSONにまとめ、秘密を含まない一時ファイルの絶対パスを `ASDD_CONFIRMED_CONFIG` に設定する。シェルのevalやコマンド文字列へのJSON埋込は使わない。
+合意した内容を[設定契約](references/configuration.md)に従ったJSONにまとめ、秘密を含まない一時ファイルの絶対パスを `ASDD_CONFIRMED_CONFIG` に設定する。シェルのevalやコマンド文字列へのJSON埋込は使わない。Windows の Git Bash では、ホストのファイル編集機能で書いたときのドライブ文字から始まる形（`C:/…`）のまま設定する（`/tmp/…` は node から別の場所に見える。[一時ファイルの置き場所](../../docs-template/05-operations/deployment/markdown-patch-discipline.md#一時ファイルの置き場所)）。後述の `ASDD_REVIEWED_ADOPTION` も同じ。
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/cli.mjs" --root "$ASDD_PROJECT_ROOT" --config "$ASDD_CONFIRMED_CONFIG"

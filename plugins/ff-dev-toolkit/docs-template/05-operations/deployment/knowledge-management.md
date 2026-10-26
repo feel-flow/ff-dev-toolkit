@@ -120,7 +120,7 @@ GitHub Discussionsに登録すべきナレッジを抽出してください。
 """
 
 # AIが生成したMarkdownを確認
-# → /tmp/knowledge-${ISSUE_NUM}.md に保存
+# → 一時ファイルへ保存（置き場所は markdown-patch-discipline.md の「一時ファイルの置き場所」。/tmp を直書きしない）
 ```
 
 ### テンプレート参照
@@ -149,7 +149,7 @@ gh discussion create \
   --repo OWNER/REPO \
   --category "ベストプラクティス" \
   --title "[JWT認証] トークンリフレッシュ時のエラーハンドリング" \
-  --body-file /tmp/knowledge-${ISSUE_NUM}.md
+  --body-file "{本文ファイルのパス}"
 
 # 成功時: Discussion URLが返される
 # https://github.com/myorg/myrepo/discussions/45

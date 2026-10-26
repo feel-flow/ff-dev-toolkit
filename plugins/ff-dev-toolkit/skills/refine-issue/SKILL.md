@@ -217,10 +217,10 @@ MCP: 取得値: MCP で同じ Issue の body / labels / updated_at を取得。�
   - セキュリティ要件: <具体>
   ```
 
-  `gh issue comment <num> --repo <owner/repo> --body-file <tempfile>` で投稿。
+  `gh issue comment <num> --repo <owner/repo> --body-file <W>/needs-spec.md` で投稿（`<W>` は references/actions.md の作業ディレクトリ）。
 - skill はここで停止（Issue body 更新・他の階層処理はスキップ）
 
-<!--e7e202298cf33d68-->
+<!--fc09b890c79f8f6c-->
 MCP: 取得値: MCP で同じ Issue の number / url を照合。形式: body 用と分けた comment 専用ファイルの原文。渡し先: 既存 add_comment_to_issue の comment へ原文を渡し、id / body を fresh GET して成功だけ報告する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 #### Trivial / Architectural

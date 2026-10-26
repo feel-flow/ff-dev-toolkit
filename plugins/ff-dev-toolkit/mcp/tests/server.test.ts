@@ -89,6 +89,29 @@ describe('spec-docs server over stdio (fixture project)', () => {
     expect(over.isError).toBe(true);
   });
 
+  it('search keeps its declared inputSchema across zod majors', async () => {
+    // zod 3 → 4 (Issue `#2335`) changes who renders the JSON Schema. Pin the
+    // contract clients see: required query, integer limit bounded 1..20 with
+    // default 5. additionalProperties is intentionally not asserted (zod 4
+    // stops emitting it; unknown keys were stripped at runtime either way).
+    const { tools } = await client.listTools();
+    const schema: any = tools.find((t) => t.name === 'search')?.inputSchema;
+    expect(schema.type).toBe('object');
+    expect(schema.required).toEqual(['query']);
+    expect(schema.properties.query).toMatchObject({ type: 'string', minLength: 1 });
+    expect(schema.properties.limit).toMatchObject({ type: 'integer', minimum: 1, maximum: 20, default: 5 });
+  });
+
+  it('search rejects out-of-contract arguments and accepts unknown keys as before', async () => {
+    // Only isError is asserted; zod 4 rewords the messages.
+    for (const args of [{ query: '' }, {}, { query: 'x', limit: 0 }, { query: 'x', limit: 2.5 }]) {
+      const res = await client.callTool({ name: 'search', arguments: args as any });
+      expect(res.isError, JSON.stringify(args)).toBe(true);
+    }
+    const extra = await client.callTool({ name: 'search', arguments: { query: 'limitprobefixture', bogus: 1 } as any });
+    expect(extra.isError).toBeFalsy();
+  });
+
   it('extract_section refuses to read project files outside docs/', async () => {
     const res = await client.callTool({
       name: 'extract_section',

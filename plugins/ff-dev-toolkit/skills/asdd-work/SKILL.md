@@ -81,7 +81,7 @@ CLIはログイン中のアカウント、またはGitHubが所有者・組織�
 }
 ```
 
-例の値は実際の合意に置き換える。`files` は履歴保存を合意した範囲の相対ファイルパスを明示し、Issue記録だけなら空配列にする。JSONの一時ファイルの絶対パスを `ASDD_WORK_RECORD` に固定する。
+例の値は実際の合意に置き換える。`files` は履歴保存を合意した範囲の相対ファイルパスを明示し、Issue記録だけなら空配列にする。JSONの一時ファイルの絶対パスを `ASDD_WORK_RECORD` に固定する。Windows の Git Bash では、ホストのファイル編集機能で書いたときのドライブ文字から始まる形（`C:/…`）のまま使う（`/tmp/…` は node から別の場所に見える。[一時ファイルの置き場所](../../docs-template/05-operations/deployment/markdown-patch-discipline.md#一時ファイルの置き場所)）。
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" node "${FF_DEV_TOOLKIT_ROOT}/scripts/asdd/work.mjs" --root "$ASDD_PROJECT_ROOT" --record "$ASDD_WORK_RECORD"

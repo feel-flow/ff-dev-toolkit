@@ -1,0 +1,20 @@
+# 隔離先の定型・実測・許可・終了判定を固定する。
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	親は本節の型を選び、事前に取得できる値を実値で委譲プロンプトへ載せる。	親の定型文転記を義務にする
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	権限・承認・安全ゲートの拒否、または拒否理由不明なら停止して報告する。	拒否の包装し直しを防ぐ
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	変更後も通常の再検査と権限判定に従う。	書換後も通常権限を維持する
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	単純な呼び出しも拒否されたら停止する。	単純化の再拒否を停止にする
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	対象コマンドの直後に rc を保存し、元処理の終了コードを返す。	元処理のrcを直後に保存する
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	最後の成功で先行失敗を隠さない。	先行失敗を隠さない
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	既存の成功キー・SKIP・未検査の照合も維持する。	既存の成功判定を維持する
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	実行前の拒否は未実行と記録する。	拒否を未実行と記録する
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	内容と全書込先が許可された対象内であることを確認する。	スクリプト内容と書込先を確認する
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	Windows の起動経路は、実在するツール能力と許可を確認して選ぶ。	Windowsの能力と許可を条件にする
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	Windows 実機で再検証していない経路は未検証と明記する。	Windows未検証を隠さない
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	<worktree の絶対パス>	定型文にworktree実値の欄がある
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	<Issue・エージェント固有 scratchpad の絶対パス>	定型文に固有scratchpad実値の欄がある
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	<実値と単位>	定型文にtimeout実値の欄がある
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	root handoff・依存プリフライト・明示 timeout・foreground の既存契約も維持する。	既存の前提とforeground契約を維持する
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	> 事前確定型: 対象 worktree は `<worktree の絶対パス>` です。起動直後に物理 cwd と Git ルートを実測して宣言値と照合し、不一致や照合不能なら停止してください。推測したパスで置き換えないでください。	事前確定型の照合と停止を固定する
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	> 起動時確定型: ホストが対象 worktree を起動時に作るため対象パスは事前未確定です。親 checkout は `<親 checkout の絶対パス>`、Git 共通ディレクトリは `<Git 共通ディレクトリの絶対パス>` です。起動直後に、許可された読み取り手段で物理 cwd・Git ルート・Git 共通ディレクトリを実測してください。Bash が在れば `pwd -P` / `git rev-parse --show-toplevel` / `git rev-parse --git-common-dir` を各単独で呼び、相対パスは物理 cwd から解決してください。cwd が Git ルート内であり、同じ Git 共通ディレクトリを持つ親 checkout 以外の worktree と照合できたときだけ、実測したルートを対象として開始報告へ記録してください。親 checkout と同一・照合不能なら停止し、推測パスで代替しないでください。	起動時確定型の実測・同一repo・親checkout排除を固定する
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	> 共通: 作業スクリプトとログの置き場は `<Issue・エージェント固有 scratchpad の絶対パス>` です。対象 worktree の照合を終えてから、呼出形式の制約が確認でき、内容と全対象パスを確認できる場合だけ、ホストが許可する単純なスクリプト起動を使ってください。通常の再検査と権限判定は維持し、権限・承認・安全ゲートの拒否や理由不明の拒否は、包装し直さず停止・報告してください。	共通定型の許可と拒否停止を固定する
+section	05-operations/deployment/multi-cli-agent-orchestration.md	## 隔離 worktree の委譲先でのコマンド実行	> 元処理の rc を直後に保存して返し、必須処理の先行失敗を隠さず、成功キー・SKIP・未検査も照合してください。拒否は未実行です。解決済み plugin root の handoff と依存プリフライトを維持してください。長時間処理の timeout は `<実値と単位>`、foreground で待ち、background 実行オプションを使わないでください。Windows の PowerShell / native exe 経路は実在と許可を確認できる場合だけ選び、未検証の経路は未検証と報告してください。	共通定型のrc・未実行・timeout・Windows条件を固定する

@@ -93,6 +93,9 @@
 # 空振り検出: 合成 Playbook の Changelog 見出しを別綴りにすると (H14) が「行が 1 件も読めない」を要求して赤になる（2026-09-20 実測。0 件を「セット 0 件で成功」へ倒さない）。
 # 空振り検出: 合成 Playbook の Helpful 行を契約外の括弧にすると (H15) が赤になる（2026-09-20 実測。読めない行を黙って落として母集団を縮めない）。
 # 空振り検出: 書き込み口の shell 判定（scripts/lib/playbook-changelog-functions.sh）で見出し drift の 0 行・`## Changelog` 無しを ok へ倒すと (H23 drift / H23 nochangelog) が生成器の判定不能（exit 2）と食い違って赤になる（2026-10-11 実測。契約形の行 0 件を緑へ倒さない）。
+# 空振り検出: H23分割配置・旧書式のhelperを空化するとsuiteがrc=1、無変異対照は成功（2026-10-25 mutation-harness実測。現行ケース数はhelper内の計数で照合し、fixtureの消失を緑にしない）。
+# 空振り検出: コメントの空白化を削除へ戻す変異は分断見出しの直接helper検査でrc=1、対照rc=0（2026-10-25 mutation-harness実測。コメント前後の文字列を再連結して受理しない）。
+# 空振り検出: 旧追加prefixの黙殺・行見出しの空白緩和・日付なし版でscopeを消すTS3変異と、awkの追加リスト空集合を許す変異は各rc=1、無変異対照rc=0（2026-10-26 mutation-harness実測）。
 # 空振り検出: 判断点生成器の判定セル分類で読めない形を achieved へ倒すと (I11) が赤になる（2026-09-21 実測。150 件中 1 件失敗。読めない判定を達成にしない）。
 # 空振り検出: 判断点生成器の「セット 0 行なら exit 2」を外すと (I10 / I29) が赤になる（2026-09-21 実測。150 件中 2 件失敗。全 Issue が読めないのを成功にしない）。
 # 空振り検出: 同梱の assess-impact fixtures ディレクトリを空にすると (I26) が「case 0 件 = exit 2」側へ倒れて赤になる（2026-09-21 実測。150 件中 1 件失敗。fixture の消失を 0 件の緑にしない）。
@@ -856,7 +859,10 @@ EOF
         if [ "$RC" -eq 0 ]; then gen_verdict=ok
         elif [ "$RC" -eq 2 ] && grep -q 'Helpful +1 を含むのに契約の形で読めない' <<<"$ERR"; then gen_verdict=unreadable-helpful
         elif [ "$RC" -eq 2 ] && grep -q 'Changelog がありません' <<<"$ERR"; then gen_verdict=no-changelog
-        elif [ "$RC" -eq 2 ] && grep -q '1 件も読めません' <<<"$ERR"; then gen_verdict=no-rows
+        elif [ "$RC" -eq 2 ] && grep -Eq '1 件も読めません|版ブロックが 0 件' <<<"$ERR"; then gen_verdict=no-rows
+        elif [ "$RC" -eq 2 ] && grep -q '候補が複数' <<<"$ERR"; then gen_verdict=ambiguous-changelog
+        elif [ "$RC" -eq 2 ] && grep -q '追加行を読めません' <<<"$ERR"; then gen_verdict=unreadable-format
+        elif [ "$RC" -eq 2 ] && grep -Eq '版を読めません|通常ファイル|領域外|EACCES' <<<"$ERR"; then gen_verdict=unreadable-file
         else gen_verdict="other(rc=$RC)"; fi
         shell_verdict="$(
           # shellcheck source=../../scripts/lib/playbook-changelog-functions.sh
@@ -877,6 +883,13 @@ EOF
       h23_case bundled "$WORK/bundled/PLAYBOOK.md" unreadable-helpful
       h23_case drift "$WORK/drift/PLAYBOOK.md" no-rows
       h23_case nochangelog "$WORK/nochangelog/PLAYBOOK.md" no-changelog
+      # shellcheck source=changelog-layout-cases.sh
+      if [ -s "$SCRIPT_DIR/changelog-layout-cases.sh" ] && [ -r "$SCRIPT_DIR/changelog-layout-cases.sh" ]; then
+        . "$SCRIPT_DIR/changelog-layout-cases.sh"
+        if declare -F run_h23_layout_cases >/dev/null; then run_h23_layout_cases; else bad 'H23 layout helper function missing'; fi
+      else
+        bad 'H23 layout helper missing or empty'
+      fi
       if [ -f "$PLAYBOOK_REAL" ]; then
         h23_case real "$PLAYBOOK_REAL" ok
       else

@@ -39,6 +39,7 @@
 # 使い方: bash plugins/ff-dev-toolkit/tests/markdown-patch-discipline-refs/verify.sh
 #
 # run-all-required: yes — 正本・名簿のスキル・保存バイト検査はプラグイン配布物の一部で、配布先 checkout でも実在する。skip 経路を持たないため明示宣言で必須名簿へ載せる
+# 空振り検出: 一時ファイルの置き場所の節を改名すると (1)・(8) の 4 件、正本の 2 行から cygpath の失敗の停止と W= の出力を外すと 2 件、asdd-work の参照からアンカーを外すと 1 件、refine-issue の手順を /tmp 直書きへ戻すと 1 件が赤（各 rc=1。正常は 48 件 pass。2026-10-25 WSL 実測）。
 # 空振り検出: 名簿空/実体不在/正本不在は (2)/(3)/(1) が赤。追加節の欠落/空、規定・参照欠落、照合無効化、値ファイル経路の欠落・改行正規化など17変異を各rc=1で検出し、無害対照1件はrc=0を実測。値ファイル不在・空/0件/複数アンカーは文書内の例を実行して対象不変で停止することを確認。
 
 set -euo pipefail
@@ -64,6 +65,19 @@ REQUIRED_SECTIONS=(
   '## 2. 値はシェル変数ではなく `sys.argv` で渡す'
   '## 3. パッチと後続コマンドを同じ実行にまとめない'
   '## リテラル書き込みの既定経路'
+  '## 一時ファイルの置き場所'
+)
+
+# 「一時ファイルの置き場所」節をアンカー付きで指す参照元（プラグインルート起点）。節の改名・削除で
+# 各手順から置き場所の求め方へたどれなくなる形を赤にする（MD051 は無効で、skill-references-existence は
+# #fragment を落としてから照合するので、ほかの suite では見えない）
+TEMP_DIR_ANCHOR='markdown-patch-discipline.md#一時ファイルの置き場所'
+TEMP_DIR_REFERRERS=(
+  docs-template/05-operations/deployment/git-workflow.md
+  skills/asdd-init/SKILL.md
+  skills/asdd-work/SKILL.md
+  skills/close-issue/references/effort.md
+  skills/refine-issue/references/actions.md
 )
 
 # Markdown 本文へ文字列パッチを当てうるスキル。
@@ -191,6 +205,45 @@ if section_scope_contains "$SSOT" '## 5. 適用後は目視ではなく述語で
 else
   bad "scriptだけでなく最終ファイルも照合する規定がありません"
 fi
+echo "== (8) 一時ファイルの置き場所 =="
+# 正本の節が求め方の 2 行（TMPDIR 起点・cygpath -m の失敗で止める・変換後の値を出力）を持つ
+for needle in 'W="${TMPDIR:-/tmp}/' 'W="$(cygpath -m "$W")" || exit 2' 'echo "W=$W"'; do
+  if section_scope_contains "$SSOT" '## 一時ファイルの置き場所' "$needle" >/dev/null; then
+    ok "置き場所の節に求め方がある: ${needle}"
+  else
+    bad "置き場所の節に求め方がありません: ${needle}"
+  fi
+done
+# 節を指す参照元が、フェンスの外にアンカー付きの参照を持つ
+if [[ ${#TEMP_DIR_REFERRERS[@]} -lt 1 ]]; then
+  bad "置き場所の節の参照元の名簿が空です"
+fi
+for rel in ${TEMP_DIR_REFERRERS[@]+"${TEMP_DIR_REFERRERS[@]}"}; do
+  if [[ ! -s "$PLUGIN_ROOT/$rel" ]]; then
+    bad "置き場所の節の参照元がありません（改名・削除？）: ${rel}"
+  elif ff_docs_mask_spans "$PLUGIN_ROOT/$rel" | grep -F -- "$TEMP_DIR_ANCHOR" >/dev/null; then
+    ok "置き場所の節へのアンカー付き参照あり: ${rel}"
+  else
+    bad "置き場所の節へのアンカー付き参照がフェンスの外にありません: ${rel}（'${TEMP_DIR_ANCHOR}'）"
+  fi
+done
+# 名簿のスキル（本文パッチで一時ファイルを使う）の手順例に /tmp の直書きが無い。Windows の Git Bash では
+# python / node のコードやホストのファイル編集機能がドライブ直下の別の場所を読む
+tmp_found=0
+for skill in ${REQUIRED_SKILLS[@]+"${REQUIRED_SKILLS[@]}"}; do
+  for md in "$PLUGIN_ROOT/skills/$skill/SKILL.md" "$PLUGIN_ROOT"/skills/"$skill"/references/*.md; do
+    [[ -e "$md" ]] || continue
+    rc=0
+    grep -nF -- '/tmp/' "$md" >&2 || rc=$?
+    case "$rc" in
+      0) bad "手順例に /tmp の直書きがあります（作業ディレクトリは置き場所の節の 2 行で求める）: ${md#"$PLUGIN_ROOT/"}"; tmp_found=1 ;;
+      1) : ;;
+      *) bad "スキルを読めませんでした（grep rc=${rc}）: ${md#"$PLUGIN_ROOT/"}"; tmp_found=1 ;;
+    esac
+  done
+done
+[[ "$tmp_found" -eq 0 ]] && ok "名簿のスキルの手順例に /tmp の直書きが無い"
+
 BYTE_CASES="$SCRIPT_DIR/literal-cases.py"
 if [[ ! -r "$BYTE_CASES" || ! -s "$BYTE_CASES" ]]; then
   bad "保存バイトの実行検査が無いか空、または読めません"

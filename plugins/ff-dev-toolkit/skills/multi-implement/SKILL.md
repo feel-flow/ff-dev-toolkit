@@ -158,6 +158,7 @@ git diff  # 適用内容の確認
 
 ## 重要ルール
 
+- 隔離 worktree へ委譲するときは、[隔離 worktree の委譲先でのコマンド実行](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#隔離-worktree-の委譲先でのコマンド実行) の定型文を事前確定型・起動時確定型から選び、事前に取得可能な値を実値へ置き換えて委譲プロンプトへ載せる。呼出形式の変更後も通常の権限判定と元処理の終了判定を維持する。
 - ステップ2の dry-run 確認なしにステップ3を実行しないこと
 - 長時間・大規模タスクをブランチ上で作業するエージェント（ホストの subagent / worktree 委譲など）へ委譲する場合は、[Multi-CLI Agent Orchestration の「長時間タスクの委譲契約（こまめコミット）」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#長時間タスクの委譲契約こまめコミット) に従う（契約 3 項目の規定はここへ複製しない）
 - ホストの subagent を worktree 隔離で起動して委譲し、その委譲先がゲート・テストを回す場合は、[Multi-CLI Agent Orchestration の「worktree 委譲の依存プリフライト」](../../docs-template/05-operations/deployment/multi-cli-agent-orchestration.md#worktree-委譲の依存プリフライト) に従い、起動プロンプトへ依存インストールのコマンドを実値で常置する。リンクではなくコマンドの実値を書く（起動プロンプトは貼られた先で読まれるので相対リンクは解決しない）（規定はここへ複製しない）

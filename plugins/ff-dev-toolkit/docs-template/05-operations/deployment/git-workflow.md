@@ -93,7 +93,7 @@ release/*     ← リリース準備ブランチ（developから分岐）
 
 raw `gh issue create` を直接使う前に、`.github/ISSUE_TEMPLATE/<種別>.md` があれば `cat` して節見出しを本文の骨子へ写す（`/create-issue` はこの確認を起票手順 `references/filing.md` の pre-flight として自動化している）。
 
-**1. 本文を一時ファイルへ書く。** Write ツール（無ければエディタ）で作業ツリー**外**の一時ファイル（セッションの scratchpad 等）へ本文を書く。ファイル名は Issue ごとに一意にする（`mktemp` か Issue の slug を含める — 共有一時領域の汎用名は並列セッションが相互上書きし、別 Issue の本文で起票する）。heredoc でシェル変数へ組み立てない。空のファイルを渡さない（空の本文は「作成済みだが中身の無い」Issue を黙って生む）。
+**1. 本文を一時ファイルへ書く。** Write ツール（無ければエディタ）で作業ツリー**外**の一時ファイル（セッションの scratchpad 等）へ本文を書く。ファイル名は Issue ごとに一意にする（`mktemp` か Issue の slug を含める — 共有一時領域の汎用名は並列セッションが相互上書きし、別 Issue の本文で起票する）。Bash の `mktemp` で作ったパスを Write ツールへ渡すときは、[一時ファイルの置き場所](./markdown-patch-discipline.md#一時ファイルの置き場所)のとおり `cygpath -m`（Windows の Git Bash だけに在る）で変換した値を Write ツールと `gh` の両方へ渡す — `/tmp/…` のまま渡すと Write ツールは別の場所へ書き、`gh` は `mktemp` が作った空のファイルを送る。heredoc でシェル変数へ組み立てない。空のファイルを渡さない（空の本文は「作成済みだが中身の無い」Issue を黙って生む）。
 
 ```markdown
 ## 概要
@@ -1334,12 +1334,12 @@ GitHub Discussionsに登録すべきナレッジを抽出してください。
 # 1. 類似のDiscussionが存在するか検索
 gh search discussions --repo OWNER/REPO "[キーワード]"
 
-# 2. 新規Discussionを作成
+# 2. 新規Discussionを作成（本文ファイルの置き場所は markdown-patch-discipline.md の「一時ファイルの置き場所」。/tmp を直書きしない）
 gh discussion create \
   --repo OWNER/REPO \
   --category "ベストプラクティス" \
   --title "[JWT認証] トークンリフレッシュ時のエラーハンドリング" \
-  --body-file /tmp/knowledge-${ISSUE_NUM}.md
+  --body-file "{本文ファイルのパス}"
 
 # 3. Discussion URLを記録（Issueにコメント）
 gh issue comment ${ISSUE_NUM} --body "ナレッジをDiscussionsに登録しました: [URL]"

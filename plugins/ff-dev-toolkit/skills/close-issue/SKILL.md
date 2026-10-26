@@ -11,8 +11,6 @@ description: PR のマージ前に Issue の AC を照合し、チェックボ�
 
 合意した確認方法だけを適用する。未合意の推奨をゲートにせず、無効にした ACE・振り返り・複数AIレビューをチェーンへ足さない。
 
-PR 作成後、merge 前に AC を照合する。Closes は閉じてよい Issue、Refs は post-merge 検証待ちを open 維持する運用。
-
 ## プラグインルートの固定（必須）
 
 <!-- ff-dev-toolkit-plugin-root-contract:start -->
@@ -97,7 +95,7 @@ MCP: 取得値: MCPでPR title/headRefOid。形式: 新 title 原文の構造化
 
 ### 2c. 未返信のレビュースレッド
 
-script は checks の待機の後に GraphQL `reviewThreads` を全件読み、未 resolve・返信なし・起点が PR 作者でないスレッドを `REVIEW_THREADS_UNANSWERED=<件数>` と `REVIEW_THREAD=` 行で列挙し、1 件でもあれば `PRECHECK=blocked`（rc 1）。**内容は見ない** — 各スレッドへ判定（この PR で直す / follow-up Issue #N / 退ける理由）を返信してから手順 1 へ戻る。取得失敗は rc 2。MCP は GraphQL `addPullRequestReviewThreadReply` に thread node ID と判定本文を渡すか、実取得した起点の数値 review-comment ID で REST reply する（node ID を `comment_id` に変換・推測しない）。返信能力 / ID 不足は当該操作を停止する。詳細は references/merge-gate.md 2c。
+script は checks の待機の後に GraphQL `reviewThreads` を全件読み、未 resolve・返信なし・起点が PR 作者でないスレッドを `REVIEW_THREADS_UNANSWERED=<件数>` と `REVIEW_THREAD=` 行で列挙し、1 件でもあれば `PRECHECK=blocked`（rc 1）。**内容は見ない** — 各スレッドへ判定（この PR で直す / follow-up Issue #N / 退ける理由）を返信してから手順 1 へ戻る。取得失敗は rc 2。MCP の返信（thread node ID か実取得した数値 ID。node ID を `comment_id` に推測変換しない）と能力 / ID 不足時の停止は references/merge-gate.md 2c。
 
 ### 3. AC 照合（判断）
 
@@ -128,12 +126,12 @@ MCP: 取得値: MCPでIssue title/body と PR diff/rollup/reviewDecision。形�
 [Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従い、達成 AC を `- [ ]` → `- [x]` にする（`☑` は不可）:
 
 ```bash
-gh issue view "$ISSUE_URL" --json body,updatedAt   # body 全文と時刻を .orig.md / 編集 .md へ保存
+W="${TMPDIR:-/tmp}/close-issue-${ISSUE_NUMBER:?}"; mkdir -p "$W" || exit 2   # 6 と同じ 2 行。呼び出しごとに求め直す
+if command -v cygpath >/dev/null 2>&1; then W="$(cygpath -m "$W")" || exit 2; fi; echo "W=$W"
+gh issue view "$ISSUE_URL" --json body,updatedAt   # body 全文と時刻を W の .orig.md / 編集 .md へ（書き換えも W）
 # 達成行だけ個別に "- [ ]" → "- [x]"（一括禁止）
-# 許可差分は checkbox と ff-effort 内のみ（マーカー不変）
 JUDGE="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}/scripts/check-issue-body-diff.sh"
-ISSUE_NUMBER="${ISSUE_NUMBER:?Issue 番号を先に設定すること}"
-FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "$JUDGE" "/tmp/issue-body-${ISSUE_NUMBER}.orig.md" "/tmp/issue-body-${ISSUE_NUMBER}.md"
+FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "$JUDGE" "$W/issue-body-${ISSUE_NUMBER}.orig.md" "$W/issue-body-${ISSUE_NUMBER}.md"
 case $? in
   0) : ;;
   1) echo "✗ 許可範囲外。送信しない" >&2; exit 1 ;;
@@ -141,10 +139,10 @@ case $? in
   *) echo "✗ 上記以外 = 判定器未起動。送信しない" >&2; exit 2 ;;
 esac
 # 直前の fresh updatedAt が同じ場合だけ送信。変化なら再取得から
-gh issue edit "$ISSUE_URL" --body-file "/tmp/issue-body-${ISSUE_NUMBER}.md"
+gh issue edit "$ISSUE_URL" --body-file "$W/issue-body-${ISSUE_NUMBER}.md"
 ```
 
-<!--8ea10bdde4869853-->
+<!--6d9a047ed470b6a9-->
 MCP: 取得値: MCPでIssue body/updatedAt（REST updated_at）。形式: 原本 .orig.md / 編集 .md。渡し先: 許可差分・直前時刻照合後 update_issue.body → fresh一致。不足時: MCP 必須不足は停止。
 
 更新するのは**チェックボックスと `ff-effort` ブロックの中身のみ**（例外は手順 3 の「AC が実装より古い」と手順 4 のスコープ変更）。対象外・post-merge 検証待ちはチェックしない。
@@ -154,10 +152,12 @@ MCP: 取得値: MCPでIssue body/updatedAt（REST updated_at）。形式: 原本
 **日本語**で `--body-file` 投稿。冒頭の識別マーカー `<!-- close-issue-report:PR-<PR番号> -->` を持つ既存コメントがあれば更新する:
 
 ```bash
-gh issue comment "$ISSUE_URL" --body-file "/tmp/close-issue-report-${ISSUE_NUMBER}.md"
+W="${TMPDIR:-/tmp}/close-issue-${ISSUE_NUMBER:?}"; mkdir -p "$W" || exit 2
+if command -v cygpath >/dev/null 2>&1; then W="$(cygpath -m "$W")" || exit 2; fi; echo "W=$W"
+gh issue comment "$ISSUE_URL" --body-file "$W/close-issue-report-${ISSUE_NUMBER}.md"
 ```
 
-<!--ebb400fb480ee8d9-->
+<!--a76eea9d568018cd-->
 MCP: 取得値: MCPで全 comments id/body と report marker。形式: 全 page JSON / 報告ファイル原文。渡し先: 一意IDは update_issue_comment、無ければ add_comment_to_issue → fresh一致。不足時: MCP 必須不足は停止。
 
 報告の[テンプレート](references/report.md)を読み、各 AC に `測った対象: [AC が指す対象]` と根拠を書く。主要コミット: <手順 1 の PR_COMMITS をそのまま貼る>。
@@ -195,7 +195,6 @@ gh は生成 block、MCP は手順7の元値と6引数を記録。merge/delete/c
 
 <!--5a7971ceb51cfd4f-->
 MCP: 取得値: MCPでfresh PR merged/SHA と Issue state。形式: repo/number 固定 JSON。渡し先: Closes=CLOSED / Refs=OPEN を照合して報告。不足時: MCP 必須不足は停止。
-
 
 - Refs 運用は 1 行目に `/ post-merge 検証待ち 1）— **マージ後も open 維持**`、抵触検査に `✅ 2a 抵触なし（INSPECTED 7 行）/ 2b 抵触なし（INSPECTED 2 行）` を書く。`- CI checks: <手順 7 の CHECKS_REPORT をそのまま貼る>` と鮮度の欄は判定不能でも省略しない
 - `AUTO_CLOSE_UNRELIABLE=1` なら手動クローズの警告（references/merge-gate.md の定型文）を**必ず**添える。head SHA と merge コマンドは同じ precheck 実行の値にする

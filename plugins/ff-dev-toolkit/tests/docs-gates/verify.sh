@@ -4,6 +4,11 @@
 # 空振り検出: 部分失敗節は Workflow / SKILL の復旧段落削除・節空化・改名・ファイル不在で非 0。旧 API 例再注入は各 1 件赤。
 # 空振り検出: 規定を「のが望ましい。」へ弱める単独変異は Workflow 3 件 / SKILL 2 件赤（2026-10-22 実測、無変異 229 件 pass）。
 # 空振り検出: 担当選択の契約は節・義務文・SKILLの参照削除で赤（削除・改名・exit0案内の欠落を変異検証）。
+# 空振り検出: 隔離先コマンド契約の改名・空化・正本不在/読取不能・権限/失敗/Windows条件の弱体化・両入口とskillの参照/義務変更・TSV不在/空/読取不能の15変異を赤と実測（2026-10-24）。
+# 空振り検出: 隔離先コマンド契約の1行欠落は旧検査では緑（289件）だった。15条件の件数照合を追加し、公式harnessで1行削除を赤・無害追記を緑と実測（2026-10-24）。
+# 空振り検出: 定型引用の停止文・未実行文の削除は旧検査では各緑。引用2行を加えた17条件では、その2削除・引用外移動・契約行欠落を公式harnessで各赤、無害追記を緑と実測（2026-10-25）。
+# 空振り検出: 見出し末尾追加は旧検査で緑。19条件と見出し・リンク完全一致では、末尾追加・起動時の実測/停止削除・両型の引用外移動・拒否/未実行削除・契約行欠落・3入口のリンク末尾変更を公式harnessで11赤、無害1緑と実測（2026-10-25）。
+# 空振り検出: en_US.UTF-8でも上の12変異は11赤/無害1緑。LC_ALL=Cだけを除去する変異も赤、正常対照は296件pass。docsコピー/偽rootを含むruntime295件も同ロケールで緑（2026-10-25）。
 # 空振り検出: 進捗表示の節改名・空化・不明rcの成功化・契約TSV不在/空・skillリンク変更を各1変異で赤と実測（2026-10-24）。契約行の1件欠落も件数照合で赤。
 #
 # docs-template 内のゲート例（pre-push フック / CI / 判定スクリプト）が
@@ -1731,6 +1736,32 @@ else
 fi
 
 echo ""
+# 隔離 worktree の呼出形式契約。本文は下のTSVで節スコープに固定する。
+command_form_contract="$SCRIPT_DIR/contracts/isolated-command-form.tsv"
+if [ -r "$command_form_contract" ] && command_form_count="$(awk '!/^[[:space:]]*($|#)/ { n++ } END { print n+0 }' "$command_form_contract")" && [ "$command_form_count" = 19 ]; then
+  ok "隔離先コマンド契約の19条件が揃う"
+else
+  bad "隔離先コマンド契約が欠落・読取不能・条件数不一致"
+fi
+command_form_doc="$DOCS/$DELEG_DOC"
+# macOS awk の en_US.UTF-8 照合では別の日本語見出しも等しくなる。完全一致はバイト比較する。
+if command_form_lines="$(section_scope_fence_free_lines "$command_form_doc")" && command_form_heading_count="$(LC_ALL=C awk -F '\t' -v expected='## 隔離 worktree の委譲先でのコマンド実行' '$2 == expected { n++ } END { print n+0 }' <<<"$command_form_lines")" && [ "$command_form_heading_count" = 1 ]; then
+  ok "隔離先コマンド契約の見出しが完全一致で一意"
+else
+  bad "隔離先コマンド契約の見出しが欠落・改名・重複・読取不能"
+fi
+command_form_anchor='multi-cli-agent-orchestration.md#隔離-worktree-の委譲先でのコマンド実行'
+deleg_must_contain_section_file "$PLUGIN_ROOT/skills/multi-implement/SKILL.md" '## 重要ルール'   "](../../docs-template/05-operations/deployment/$command_form_anchor)"   'multi-implement が隔離先コマンド契約の正確な節を参照する'
+deleg_must_contain_section_file "$PLUGIN_ROOT/skills/multi-implement/SKILL.md" '## 重要ルール'   '実値へ置き換えて委譲プロンプトへ載せる。呼出形式の変更後も'   'multi-implement が隔離先コマンド定型文の転記を義務にする'
+if [ ! -f "$REPO_AGENTS" ] && [ ! -f "$REPO_TESTING" ]; then
+  ok '隔離先コマンド契約のroot両入口検査は適用外（リポジトリ正本docsを持たない配布先）'
+else
+  for command_form_entry in AGENTS.md CLAUDE.md; do
+    deleg_must_contain_section_file "$REPO_ROOT_DIR/$command_form_entry" "$DELEG_AGENTS_HEADING"       "](plugins/ff-dev-toolkit/docs-template/05-operations/deployment/$command_form_anchor)"       "$command_form_entry が隔離先コマンド契約の正確な節を参照する"
+    deleg_must_contain_section_file "$REPO_ROOT_DIR/$command_form_entry" "$DELEG_AGENTS_HEADING"       '実値へ置き換えて委譲プロンプトへ載せる**。呼出形式を変えても'       "$command_form_entry が隔離先コマンド定型文の転記を義務にする"
+  done
+fi
+
 # skill は docs-template の複製に含まれないので、実在する配布元を絶対パスで見る。
 progress_contract="$SCRIPT_DIR/contracts/long-gate-progress.tsv"
 # この7条件の集合を空・一部欠落のまま実行しない。内容の解釈は下の共通readerに委ねる。

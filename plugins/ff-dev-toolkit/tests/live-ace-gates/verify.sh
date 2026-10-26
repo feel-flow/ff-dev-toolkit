@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: syncの新依存changelog-layoutの変換行を除く変異はrc=1、通常対照rc=0（2026-10-26 mutation-harness実測。依存の出力不在を成功にしない）。
 #
 # repository root の live ACE Playbook に、形式・frontmatter・archive リンク/アンカー・
 # refine 結果不変条件・カテゴリ件数のゲートを適用する。
@@ -95,6 +96,7 @@ transpile_shared() {
   cp "$dest" "$dest.js"
 }
 transpile_shared "$ACE_SCRIPTS/check-category-size.ts"
+transpile_shared "$ACE_SCRIPTS/changelog-layout.ts"
 transpile_shared "$ACE_SCRIPTS/ace-domain.ts"
 transpile_shared "$ACE_SCRIPTS/ace-reuse-report.ts"
 transpile_shared "$ACE_SCRIPTS/ace-refine-report.ts"

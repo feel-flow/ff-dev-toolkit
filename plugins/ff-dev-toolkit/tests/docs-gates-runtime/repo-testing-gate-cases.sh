@@ -11,7 +11,7 @@
 # 固定で、環境変数の口が無い。そこで偽 root の下に plugin root を組み直し、正本 docs/ だけを
 # 複製して変異させる。配布規定は plugin 内の写しを変異させ、実リポジトリには触れない。
 
-# 偽リポジトリ root を組む。docs-gates が repo root から読むのは docs/ と AGENTS.md、
+# 偽リポジトリ root を組む。docs-gates が repo root から読むのは docs/ と両入口、
 # それに plugins/ff-dev-toolkit だけ（AGENTS.md の参照先も plugins/ 配下を指す）。
 #
 # 実測した 2 つの落とし穴（どちらも「偽 root を組んだのに実物が読まれて全ケースが緑」になる）:
@@ -38,6 +38,7 @@ _repo_testing_build_fake_root() {
   if [ -f "$real_repo_root/docs/04-quality/TESTING.md" ]; then
     cp -R "$real_repo_root/docs" "$case_root/docs"
     cp "$real_repo_root/AGENTS.md" "$case_root/AGENTS.md"
+    cp "$real_repo_root/CLAUDE.md" "$case_root/CLAUDE.md"
   fi
 }
 
@@ -57,6 +58,8 @@ run_repo_testing_gate_mutation() {
     control) : ;;
     benign-append)
       _repo_testing_rewrite "$testing" '{ print } /^汎用規定の正本は配布テンプレート/ { print "- 実測ログは PR 本文から参照できる場所へ置く。" }' ;;
+    missing-claude)
+      mv "$case_root/CLAUDE.md" "$case_root/CLAUDE-renamed.md" ;;
     drop-one-command)
       _repo_testing_drop_line "$testing" '退避 → 変異 → suite 実行 → 復元を 1 コマンドにまとめる' ;;
     drop-reference)
@@ -162,6 +165,9 @@ run_repo_testing_gate_cases() {
   run_repo_testing_gate_mutation benign-append \
     "positive control: 固有の実測経路の良性追記は docs-gates を通過" \
     ""
+  run_repo_testing_gate_mutation missing-claude \
+    "隔離先コマンド契約の CLAUDE.md 不在を拒否する" \
+    "CLAUDE.md が隔離先コマンド契約の正確な節を参照する"
   run_repo_testing_gate_mutation drop-one-command \
     "固有の 1 コマンド実行規定の欠落を拒否する" \
     "変異注入バッテリーの 1 コマンド実行規定が欠落している"

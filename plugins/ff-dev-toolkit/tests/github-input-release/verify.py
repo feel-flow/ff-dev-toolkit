@@ -16,7 +16,9 @@ SUITE = Path(__file__).resolve().parent
 ROOT = SUITE.parents[3]
 P = Path('plugins/ff-dev-toolkit')
 SCRIPTS = ['release-dev-toolkit.sh', 'check-release-required.sh', 'check-dev-toolkit-sync-drift.sh', 'check-weekly-run-all-health.sh']
-NEEDLES = {SCRIPTS[0]: ['release_delegate "$CURRENT_STAGE" "$HEALTH_SCRIPT"', 'release_list after', 'github_file_plan release.create'],
+# release 段の処理は scripts/lib/release-publish-functions.sh へ分けてある。鍵は scripts/ からの相対パス
+NEEDLES = {SCRIPTS[0]: ['release_delegate "$CURRENT_STAGE" "$HEALTH_SCRIPT"'],
+           'lib/release-publish-functions.sh': ['release_list after', 'github_file_plan release.create'],
            SCRIPTS[1]: ['github_file_read "$GITHUB_INPUT" release.open-preparation'],
            SCRIPTS[2]: ['github_file_read "$GITHUB_INPUT" release.sync-base'],
            SCRIPTS[3]: ['health_file_read release.health.log', 'health_file_read release.health.workflow']}
@@ -394,7 +396,9 @@ printf '%s\\n' 'fixture-media@1.0.0'
     check(not (T/'gh-leaks').exists(),'file mode gh leaks=0 (rejecting stub, minimal env-i PATH)')
     # Exercise the actual prepare_finalize body and actual capture/delegate/checker.
     # Only the outer writing snapshot is inert; DRY_RUN=1 prevents commits/pushes.
-    release_source=(root/'scripts'/release).read_text()
+    # The orchestrator keeps per-stage functions in scripts/lib/release-*-functions.sh;
+    # read the body and those libs as one source so each function is still found exactly once.
+    release_source=''.join(p.read_text() for p in [root/'scripts'/release,*sorted((root/'scripts/lib').glob('release-*-functions.sh'))])
     def function_source(name):
         marker=name+'() {'
         assert release_source.count(marker)==1, 'prepare function source absent/duplicate: '+name
@@ -442,7 +446,8 @@ printf '%s\\n' 'fixture-media@1.0.0'
     for kind in ['zero-cases','fixture-removal','source-needle-removal']:
         mutant=T/('miss-'+kind);ms=mutant/'suite';mr=mutant/'root';shutil.copytree(SUITE/'fixtures',ms/'fixtures')
         (mr/'scripts').mkdir(parents=True)
-        for name in SCRIPTS:shutil.copy2(ROOT/'scripts'/name,mr/'scripts'/name)
+        (mr/'scripts/lib').mkdir()
+        for name in [*SCRIPTS,*NEEDLES]:shutil.copy2(ROOT/'scripts'/name,mr/'scripts'/name)
         if kind=='zero-cases':(ms/'fixtures/cases.json').write_text('[]')
         if kind=='fixture-removal':(ms/'fixtures/log.txt').unlink()
         if kind=='source-needle-removal':

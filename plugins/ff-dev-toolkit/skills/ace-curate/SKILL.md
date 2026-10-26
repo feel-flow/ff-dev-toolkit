@@ -100,7 +100,7 @@ MCP: 取得値: MCP の PR diff/body/全comments/reviews と関連Issue本文。
 
 #### 4-b-0. 追記前にブロック上限の超過を予測する（必須・停止点）
 
-`/ace-curate` は追加のみ。整理に必要な `/ace-refine` の承認必須は正しく、変えないため、**超える前に止める**。
+`/ace-curate` は追加のみ。整理に必要な `/ace-refine` の承認必須は正しく、変えないため超える前に止める。
 
 ```bash
 # 閾値も件数の数え方も二重に持たない（正本は check-category-size）
@@ -113,7 +113,7 @@ else
   SIZE_RC=$?
 fi
 ACE_CAPACITY_REPORT="$(mktemp "${TMPDIR:-/tmp}/ace-capacity.XXXXXX")" || exit 1
-printf '%s\n' "${SIZE_OUT}" >"${ACE_CAPACITY_REPORT}" || exit 1
+printf '%s\n' "${SIZE_OUT}" | tee "${ACE_CAPACITY_REPORT}" || exit 1
 printf 'ACE_CAPACITY_REPORT=%s\nACE_CAPACITY_RC=%s\n' "${ACE_CAPACITY_REPORT}" "${SIZE_RC}"
 case "${SIZE_RC}" in
   0) ;;
@@ -128,15 +128,17 @@ esac
 
 #### 4-b. playbook/category.md への追記 + PLAYBOOK.md 索引の更新
 
-**共有値の確定前ガード**: `version` / `ace_entry_count` / Changelog は着手時のローカル値から決めず、references/curate.md のフェンス（clean tree → fetch → 祖先検査。失敗は停止）を通す。エントリ本体は `playbook/<category>.md` 末尾へ**コンパクト正準フォーマット**で追記する（メタ 4 行は各行の行頭 — パーサ互換条件）:
+[Changelog規則](references/curate.md#changelog-layout)に従う。
 
-[エントリの正準フォーマット](references/curate.md#エントリの正準フォーマット)に従う。
+**共有値の確定前ガード**: [curate.md](references/curate.md) の clean tree → fetch → 祖先検査を通す（失敗は停止）。
+
+[エントリの正準フォーマット](references/curate.md#エントリの正準フォーマット)に従う。メタ4行は各行の行頭に置く。
 
 domainでは同梱契約の4行形式でEvidence / Verification / Distill-Toを必ず追記する。追記後、PLAYBOOK.md の索引にも 1 行加える — **列順はその PLAYBOOK の索引ヘッダ行から決める**（references/curate.md）。索引行はタイトルのみ。
 
 #### 4-c / 4-d / 4-e. Frontmatter・Changelog・行数バジェット
 
-`version` は新規エントリ追加で **minor +1**（カウンター更新のみは不変）、`updated` を今日へ、`changeImpact` は `medium`。`ace_entry_count` は merged tree の live エントリ実数から再計算する。Changelog は `## Changelog` 先頭へ当該版のブロック（空を禁止）。`#### カウンター更新` は 1 行 1 ID。各エントリのブロック行数は **15 行以内**（`<!-- ace-line-budget-exception: 理由 -->` 付きでも **30 行以内**）を自分で数える。
+[更新規則](references/curate.md#history-update-rules)に従う。`ace_entry_count` は merged tree の live エントリ実数から再計算。Helpful は 1 行 1 ID。行数例外は `ace-line-budget-exception` で明示する。
 
 #### 4-f. 同期検証（必須）
 
@@ -156,12 +158,17 @@ MCP raw の利用時は下の各 knowledge-commit 呼出しに同じ `--github-i
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/check-shebang-cr.sh" || exit $?
-commit_type="knowledge"   # commitlint で knowledge が非許容なら chore 等へ（要約・Categories: body は不変）
+commit_type="knowledge"
 probe_out="$(FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/finish.sh" knowledge-commit probe)" || { echo "保護判定が成立しない（rc=$?）。停止" >&2; exit 1; }
 case "$probe_out" in *"protection=protected"*) protected=1 ;; *) protected=0 ;; esac
-# --claim: claim を再生成して同じ commit へ入れる
 ACE_KNOWLEDGE_PATHS=(docs/08-knowledge/PLAYBOOK.md)
-while IFS= read -r path; do ACE_KNOWLEDGE_PATHS+=("$path"); done < <(git ls-files -mo --exclude-standard docs/08-knowledge/playbook)
+. "${FF_DEV_TOOLKIT_ROOT}/scripts/lib/playbook-changelog-functions.sh" || exit 2
+ACE_CHANGELOG_FILE="$(ff_playbook_changelog_select docs/08-knowledge/PLAYBOOK.md)" || { printf '%s\n' "$ACE_CHANGELOG_FILE" >&2; exit 2; }
+ACE_CHANGELOG_REL="$(git -C "${ACE_CHANGELOG_FILE%/*}" rev-parse --show-prefix)${ACE_CHANGELOG_FILE##*/}" || exit 2
+if [[ "$ACE_CHANGELOG_REL" != docs/08-knowledge/PLAYBOOK.md ]] && { ! git diff --quiet HEAD -- "$ACE_CHANGELOG_REL" || ! git ls-files --error-unmatch -- "$ACE_CHANGELOG_REL" >/dev/null 2>&1; }; then
+  ACE_KNOWLEDGE_PATHS+=("$ACE_CHANGELOG_REL")
+fi
+while IFS= read -r kpath; do ACE_KNOWLEDGE_PATHS+=("$kpath"); done < <(git ls-files -mo --exclude-standard docs/08-knowledge/playbook)
 if [ -f docs/08-knowledge/PENDING_CANDIDATES.md ]; then ACE_KNOWLEDGE_PATHS+=(docs/08-knowledge/PENDING_CANDIDATES.md); fi
 ACE_CLAIM_ARGS=()
 if ! git diff --quiet HEAD -- docs/08-knowledge/PLAYBOOK.md; then ACE_CLAIM_ARGS=(--claim docs/08-knowledge/PLAYBOOK.md); fi

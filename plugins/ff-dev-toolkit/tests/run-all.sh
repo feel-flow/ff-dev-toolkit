@@ -786,6 +786,8 @@ else
     # プログラムのシェル変数の綴り / export しない代入を Perl の ENV ハッシュ / process.env で読む形）を deny し、
     # エスケープ済み・export 済み・引用付き heredoc・Write ツールは素通しすることを固定する。
     "$SCRIPT_DIR/guard-literal-write/verify.sh"
+    # Static credential-file display prevention.
+    "$SCRIPT_DIR/guard-credential-output/verify.sh"
     # 上の 5 本の Bash ガード（effort-actual / issue-labels / long-gate-background /
     # review-in-flight / exit-code）が共有する heredoc 除去ヘルパ（tests/lib/heredoc-strip.sh）
     # の契約: 正常終端は本文だけを落とし、未終端は rc 3 で生コマンドを返し、awk 失敗は
@@ -1635,8 +1637,6 @@ MISS_PROBE_BASELINE=(
   init-docs-placeholder-list
   issue-label-supply
   link-sub-issues
-  live-ace-gates-selftest
-  live-ace-gates
   long-task-commit-contract
   markdownlint-selftest
   markdownlint

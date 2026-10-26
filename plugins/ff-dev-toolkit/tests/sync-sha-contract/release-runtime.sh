@@ -28,6 +28,8 @@ ORCH_DIR="$(cd "$(dirname "$ORCH")" && pwd -P)"
 REPO_ROOT="$(cd "$ORCH_DIR/.." && pwd -P)"
 for need in "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/scripts/lib/release-gate-advance-functions.sh" \
   "$REPO_ROOT/scripts/lib/release-environment-functions.sh" \
+  "$REPO_ROOT/scripts/lib/release-partial-write-functions.sh" "$REPO_ROOT/scripts/lib/release-prepare-functions.sh" \
+  "$REPO_ROOT/scripts/lib/release-publish-functions.sh" \
   "$SCRIPT_DIR/release-gate-mode-runtime.sh" \
   "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh"; do
   [[ -f "$need" ]] || { echo "✗ オーケストレータの依存 lib がありません: $need" >&2; exit 1; }
@@ -355,7 +357,8 @@ cp "$ORCH" "$SSOT/scripts/release-dev-toolkit.sh"
 cp "$REPO_ROOT/scripts/check-full-gate-reuse.sh" "$SSOT/scripts/"
 chmod +x "$SSOT/scripts/release-dev-toolkit.sh"
 cp "$REPO_ROOT/scripts/lib/release-in-flight-functions.sh" "$REPO_ROOT/scripts/lib/release-gate-advance-functions.sh" \
-  "$REPO_ROOT/scripts/lib/release-environment-functions.sh" "$SSOT/scripts/lib/"
+  "$REPO_ROOT/scripts/lib/release-environment-functions.sh" "$REPO_ROOT/scripts/lib/release-partial-write-functions.sh" \
+  "$REPO_ROOT/scripts/lib/release-prepare-functions.sh" "$REPO_ROOT/scripts/lib/release-publish-functions.sh" "$SSOT/scripts/lib/"
 cp "$REPO_ROOT/plugins/ff-dev-toolkit/scripts/lib/commit-identity-functions.sh" "$SSOT/plugins/ff-dev-toolkit/scripts/lib/"
 build_ssot_stubs "$SSOT"
 build_release_environment_fixture
