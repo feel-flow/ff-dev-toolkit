@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # 空振り検出: bash-hook-batchの実登録12本は通常rc0。新guard登録だけの削除と子の引数集合0件は、いずれも登録集合assertでrc1になる（2026-10-22 macOS実測、構文rc0。期待リストの厳密一致は維持）。
+# 空振り検出: case26の実処理を抽出した対照で、負荷診断と有効宣言1件は成功、有効宣言0件と取得rc7は赤。未filterの反復・0件許容・終了コード消失の変異は全て検出。case47-Jは厳密な起動時負荷prefixだけを除き、他の警告・モード・summaryを維持し、filter除去変異を検出（2026-10-26 macOS実測）。
+# 空振り検出: case30の実normalizerは起動時負荷警告とstartup-load診断のPID差を除き、他の警告とsuite出力・集計を保持する。各filterを1つずつ除く2変異はいずれも比較不一致となる（2026-10-26 macOS実測）。
 #
 # verify.sh — テストランナー run-all.sh 自身の回帰検証（Issue #146 / 縮小: Issue #1022）
 #
@@ -1437,19 +1439,21 @@ cp "$TESTS_DIR/run-all.sh" "$_fast_fx/run-all.sh"
 # `<名前>:<skip>:<yes>:<no>:<bad>:<probe>` を返す）。ここへ判定述語を書き写すと「述語を変えるときは
 # 2 箇所同時」の結合が生まれ、片方だけ直すと複製木の導出集合がずれて case 26 が原因の
 # 読めない赤になる（実測。導出述語は run-all.sh 側の単一定義に保つ）。
-_fast_decl_rc=0
-if ! _fast_decl="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL \
+if _fast_decl_raw="$(env -u FF_RUN_ALL_NESTED -u FF_RUN_ALL_FAST -u FF_RUN_ALL_FULL \
   FF_RUN_ALL_DUMP_DECLARATIONS=1 FF_GATE_RECORD_FILE="$RUN_GATE_RECORD" \
-  bash "$TESTS_DIR/run-all.sh" 2>&1)"; then _fast_decl_rc=$?; fi
-_fast_decl_n="$(printf '%s\n' "$_fast_decl" \
+  bash "$TESTS_DIR/run-all.sh" 2>&1)"; then _fast_decl_rc=0; else _fast_decl_rc=$?; fi
+# case14bと同じく、負荷warningをstub名へ変換せず機械行だけを材料にする。
+_fast_decl_valid="$(printf '%s\n' "$_fast_decl_raw" \
+  | awk '/^[A-Za-z0-9._-]+:[01]:[01]:[01]:[01]:[01]$/')"
+_fast_decl_n="$(printf '%s\n' "$_fast_decl_valid" \
   | awk '/^[A-Za-z0-9._-]+:[01]:[01]:[01]:[01]:[01]$/ { n++ } END { print n + 0 }')"
 if [ "$_fast_decl_rc" -eq 0 ] && [ "$_fast_decl_n" -ge 1 ]; then
   ok "宣言ダンプが ${_fast_decl_n} 件の導出材料を返す（複製木は実装側の述語を使う）"
 else
   bad "宣言ダンプ (FF_RUN_ALL_DUMP_DECLARATIONS=1) が材料を返さない (rc=${_fast_decl_rc})"
-  printf '%s\n' "$_fast_decl" | sed 's/^/    | /' >&2
+  printf '%s\n' "$_fast_decl_raw" | sed 's/^/    | /' >&2
 fi
-for _fast_entry in $_fast_decl; do
+for _fast_entry in $_fast_decl_valid; do
   _fast_n="${_fast_entry%%:*}"
   _fast_flags="${_fast_entry#*:}"
   _fast_skip="${_fast_flags%%:*}"
@@ -1759,8 +1763,8 @@ echo "== case 30: 並列実行が逐次と同じ結果・同じ並びを出し�
 # 並列化で変わってよいのは所要時間だけで、実行対象・集計・出力の並びは変わらない（Issue #595）。
 # 混在 fixture（fail / pass / skip / not-executable / missing）を同じ一覧で 2 回走らせ、逐次と並列の
 # 出力を丸ごと突き合わせる。個別のアサートを並べる代わりに全文比較にするのは、**後から suite の
-# 種別が増えても書き忘れが差分として出る**ため。比較の前に落とすのは並列実行の告知行と空行だけ。
-_norm_run_out() { printf '%s\n' "$1" | grep -v '^🧵 ' | grep -v '^elapsed-sec:' | grep -v '^slowest:' | grep -v '^[[:space:]]*$' || true; }
+# 種別が増えても書き忘れが差分として出る**ため。比較では並列告知・計測行・起動時負荷診断・空行を除く。
+_norm_run_out() { printf '%s\n' "$1" | grep -v '^🧵 ' | grep -v '^elapsed-sec:' | grep -v '^slowest:' | grep -v '^⚠️  起動時の負荷:' | grep -v '^startup-load:' | grep -v '^[[:space:]]*$' || true; }
 
 RUN_JOBS=1 run_runner "${MIXED_FIXTURES[@]}"
 _par_seq_rc="$RUN_RC"
@@ -1783,7 +1787,7 @@ else
 fi
 
 if [ "$_par_seq_out" = "$_par_par_out" ]; then
-  ok "出力（告知行・空行を除く全文）が逐次実行と一致する — 集計も suite の並びも変わらない"
+  ok "出力（告知・計測・負荷診断・空行を除く全文）が逐次実行と一致する — 集計も suite の並びも変わらない"
 else
   bad "並列実行の出力が逐次実行と一致しない"
   printf '%s\n' "-- 逐次:" >&2

@@ -7,6 +7,7 @@
 # 空振り検出: 書き換えヘルパ関数（ff_zsh_equals_fix_scan）の不在では書き換えずに deny へ戻ることを R9 が要求し
 #   （走査 awk の失敗は try_rewrite より手前の判定不能 deny で止まり、書き換えへ届かないことを同じ R9 が固定する）、案を出さない（常に deny する）hook では陽性の R1〜R3 が赤になる。
 # 変異検出: try_rewrite の出現回数照合を外すと R5（単一引用の中の同じ綴り。再走査では見えない）が、ホスト判定を外すと R7 が赤になる（2026-10-25 実測）。
+# 変異検出: Issue `#2138` のクエリ形の判定を無効化すると R1q が、直後の `&` の除外を外すと R5 のクエリ形が赤になる（2026-10-26 実測）。
 # 変異検出: CR の除外を外すと R3c が、保留した equals の deny を EXIT trap で出す経路を外すと R5 の equals 系が赤になる（2026-10-25 レビュー対応後に実測）。
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd -P)"
@@ -32,6 +33,15 @@ check is_rewrite "$out"
 check test "$(rewritten "$out")" = 'grep -rn foo --include="*.md" .'
 check test "$(jq -r '.hookSpecificOutput.updatedInput.timeout' <<< "$out")" = 123
 check test "$(jq -r '.hookSpecificOutput.updatedInput.description' <<< "$out")" = fixture
+# R1q クエリ文字列の形（Issue `#2138`）: 語全体を引用する。単独の brace（gh の {owner}）は残す。
+out="$(run 'gh api repos/o/r/contents/a.md?ref=main --jq .content')"
+check is_rewrite "$out"
+check test "$(rewritten "$out")" = 'gh api "repos/o/r/contents/a.md?ref=main" --jq .content'
+out="$(run 'gh api repos/{owner}/{repo}/git/trees/v1?recursive=1')"
+check test "$(rewritten "$out")" = 'gh api "repos/{owner}/{repo}/git/trees/v1?recursive=1"'
+# 直後が `&&`（単独の `&` ではない）なら語の区切りなので書き換える。
+out="$(run 'echo a?x=1&& echo b')"
+check test "$(rewritten "$out")" = 'echo "a?x=1"&& echo b'
 # R2 equals: = だけの語を引用する。
 out="$(run 'echo ====')"
 check is_rewrite "$out"
@@ -55,12 +65,18 @@ if command -v zsh >/dev/null 2>&1; then
   out="$(run "grep -rl foo --include=*.md $tmp/tree; echo ====")"
   zout="$(zsh -fc "$(rewritten "$out")" 2>&1)"
   check test "$zout" = "$(printf '%s\n%s' "$tmp/tree/a.md" '====')"
+  # クエリ文字列の形の書き換え（単独の brace を残す）も zsh で実際に走る（Issue `#2138`）。
+  out="$(run 'printf "%s\n" repos/{owner}/r?ref=main; echo ====')"
+  zout="$(zsh -fc "$(rewritten "$out")" 2>&1)"
+  check test "$zout" = "$(printf '%s\n%s' 'repos/{owner}/r?ref=main' '====')"
 else
   echo "SKIP R4: zsh が無いため書き換え後の実行を確認できません" >&2
 fi
-# R5 陰性: 案の無い語・同じ綴りが引用の中にもある・意図的でありうる =cmd・equals の綴りが重なる・heredoc・一覧 scalar。
+# R5 陰性: 案の無い語・同じ綴りが引用の中にもある・意図的でありうる =cmd・equals の綴りが重なる・heredoc・一覧 scalar・
+#   直後に & が続く / 列挙の brace を含むクエリ形。
 for cmd in 'grep --include=$X* .' 'echo "--include=*.md" --include=*.md' "echo '--include=*.md' --include=*.md" '=ls -la' '[ a == b ]; echo ====' \
-  "$(printf 'cat <<EOF\nx\nEOF\ngrep --include=*.md .')" 'A="x y"; echo $A ====' 'grep --include=*.md . "--include=*.md"'; do
+  "$(printf 'cat <<EOF\nx\nEOF\ngrep --include=*.md .')" 'A="x y"; echo $A ====' 'grep --include=*.md . "--include=*.md"' \
+  'curl https://example.invalid/a?x=1&y=2' 'echo a?x=1{b,c}' 'echo a?x=1 "a?x=1"'; do
   out="$(run "$cmd")"
   check is_deny "$out"
 done

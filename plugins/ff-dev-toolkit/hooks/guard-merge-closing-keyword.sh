@@ -3,7 +3,12 @@
 # Unknown shell values/cwd/input, queue and delayed auto merge pass with a reason.
 # gh's server preview is a snapshot, not an atomic guarantee of the future message.
 # Perl is optional: without it bounded gh calls cannot run, so inspection is reported skipped.
-# Each gh call has 1 second; at most 4 calls leave time for bounded parsing in the 10-second child.
+# Each gh call has 1 second (the shared 5-second window never cuts the four 1-second calls); at most 4 calls leave time for bounded
+# parsing in the 10-second child. On MSYS / Cygwin (Windows Git Bash) gh alone takes about 0.9 s and the
+# whole hook about 8.5 s, so a call gets 3 seconds, all calls share 8 seconds, and run-bash-hooks.sh
+# gives the child 25 seconds (Issue `#2377`). Worst case there: gh waits at most 8 s in total (elapsed time
+# is rounded up, so integer SECONDS never grants extra), plus about 6.5 s of parsing measured with full
+# inspection, about 14.5 s < 25 s. The shared window counts wall-clock time from the first gh call.
 # Local optional-inspection bounds: command/message 8 KiB, response 64 KiB, 32 Refs, 4 sanitize passes.
 # No eval, repo settings changes, issue writes, or MCP handling.
 input=""
@@ -43,14 +48,30 @@ case "$cmd" in *gh*merge*) ;; *) exit 0 ;; esac
 [ "${#cmd}" -le 8192 ] || { mc_note 'commandが8KiB上限を超えるため未検査です。finish.sh precheckで確認してください。'; mc_finish; }
 case "$cmd" in *$'\001'*) mc_note '内部区切りを含むshell値のため検査を省略しました。'; mc_finish ;; esac
 plugin_root="${BASH_SOURCE[0]%/*}/.."
-for helper in "$plugin_root/tests/lib/review-shell-lex.sh" "$plugin_root/scripts/lib/merge-message.sh"; do
+for helper in "$plugin_root/tests/lib/review-shell-lex.sh" "$plugin_root/scripts/lib/merge-message.sh" "$plugin_root/scripts/lib/abs-path.sh"; do
   if [ ! -r "$helper" ] || [ ! -s "$helper" ] || ! . "$helper"; then
     mc_note '判定helperを読めないため検査を省略しました。'; mc_finish
   fi
 done
-for fn in ff_lex_code ff_lex_tokens ff_lex_segments ff_merge_issue_sets ff_merge_quote ff_merge_emit ff_merge_surface; do
+for fn in ff_lex_code ff_lex_tokens ff_lex_segments ff_merge_issue_sets ff_merge_quote ff_merge_emit ff_merge_surface ff_path_is_absolute; do
   [ "$(type -t "$fn")" = function ] || { mc_note '判定helperの関数が無いため検査を省略しました。'; mc_finish; }
 done
+# Variable-returning wrapper (MC_LITERAL). A word made only of [A-Za-z0-9_./:=@%+,-] has no quoting,
+# escape, expansion or glob, so its literal is the word itself: no awk and no command-substitution
+# subshell. Each of those costs about 0.1 s on Windows Git Bash, and plain words are most of a merge
+# command (Issue `#2377`). Every other word goes through mc_literal unchanged.
+mc_literal_var() {
+  case "$1" in
+    '' | *[!A-Za-z0-9_./:=@%+,-]*)
+      MC_LITERAL="$(mc_literal "$1"; rc=$?; printf X; exit "$rc")" || return
+      MC_LITERAL="${MC_LITERAL%X}" ;;
+    *) MC_LITERAL="$1" ;;
+  esac
+}
+# Drop trailing newlines from MC_LITERAL in place, as a bare $(...) would.
+mc_chomp_var() {
+  while [ "${MC_LITERAL%$'\n'}" != "$MC_LITERAL" ]; do MC_LITERAL="${MC_LITERAL%$'\n'}"; done
+}
 # Literal-only decoder: quote concatenation (including '\''), backslash escapes,
 # and expansion-free double quotes. Shell expansion and unquoted globs are unknown.
 mc_literal() {
@@ -77,13 +98,22 @@ mc_literal() {
     }'
 }
 MC_GH_CALLS=0
+case "${OSTYPE:-}" in
+  msys* | cygwin*) MC_GH_ALARM=3; MC_GH_BUDGET=8 ;;
+  *) MC_GH_ALARM=1; MC_GH_BUDGET=5 ;;
+esac
+MC_GH_STARTED=""
 mc_gh() { # response stays in a variable; a failed/partial response is never inspected.
   MC_RESPONSE=""
   if [ "$MC_GH_CALLS" -ge 4 ]; then mc_note '照会上限（4回）以後のmergeは未検査です。'; return 2; fi
+  [ -n "$MC_GH_STARTED" ] || MC_GH_STARTED=$SECONDS
+  local left=$((MC_GH_BUDGET - (SECONDS - MC_GH_STARTED) - 1)) alarm="$MC_GH_ALARM"
+  if [ "$left" -lt 1 ]; then mc_note "gh照会の時間枠（最初の照会から${MC_GH_BUDGET}秒）を使い切ったため、以後のmergeは未検査です。"; return 2; fi
+  [ "$left" -ge "$alarm" ] || alarm="$left"
   MC_GH_CALLS=$((MC_GH_CALLS + 1))
-  MC_RESPONSE="$(CDPATH='' cd -- "$cwd" 2>/dev/null && perl -e 'alarm 1; exec @ARGV; exit 127' gh "$@" 2>/dev/null)"
+  MC_RESPONSE="$(CDPATH='' cd -- "$cwd" 2>/dev/null && perl -e 'alarm shift @ARGV; exec @ARGV; exit 127' "$alarm" gh "$@" 2>/dev/null)"
   local rc=$?
-  if [ "$rc" -ne 0 ]; then mc_note "gh照会が失敗/1秒上限となったため検査を省略しました（rc=${rc}）。"; return 2; fi
+  if [ "$rc" -ne 0 ]; then mc_note "gh照会が失敗/${alarm}秒上限となったため検査を省略しました（rc=${rc}）。"; return 2; fi
   [ -n "$MC_RESPONSE" ] || { mc_note 'gh応答が空のため検査を省略しました。'; return 2; }
   [ "${#MC_RESPONSE}" -le 65536 ] || { mc_note 'gh応答が64KiB上限を超えるため未検査です。finish.sh precheckで確認してください。'; return 2; }
 }
@@ -141,7 +171,8 @@ mc_inspect() {
   local context_prefix=1 context_env=0 context_builtin="" context_key
   local context_wrapper="" context_option_arg=0 context_external=0 context_options=0
   local first="${tokens%%$'\001'*}"
-  first="$(mc_literal "${first%%=*}")" || { MC_ENV_UNKNOWN=2; mc_note '候補の実行語を確定できないため検査を省略しました。'; return; }
+  mc_literal_var "${first%%=*}" || { MC_ENV_UNKNOWN=2; mc_note '候補の実行語を確定できないため検査を省略しました。'; return; }
+  mc_chomp_var; first="$MC_LITERAL"
   case "${tokens%%$'\001'*}" in *=*) first="$first=" ;; esac
   case "$first" in gh|*/gh|*=*|env|command|exec|!|if|then|else|do|cd|pushd|popd|export|unset) ;; sudo|nohup|time|nice|timeout|bash|sh|\(*) mc_note 'wrapper/入れ子shellの実行環境が未解決のため検査を省略しました。'; return ;; *) return ;; esac
   local toks=()
@@ -154,18 +185,19 @@ mc_inspect() {
       continue
     fi
     if [ -n "$context_builtin" ]; then
-      context_key="$(mc_literal "${raw%%=*}")" || { MC_ENV_UNKNOWN=2; return; }
+      mc_literal_var "${raw%%=*}" || { MC_ENV_UNKNOWN=2; return; }
+      mc_chomp_var; context_key="$MC_LITERAL"
       case "$context_key" in
         GH_REPO) [ "$MC_ENV_UNKNOWN" -ge 1 ] || MC_ENV_UNKNOWN=1 ;;
         GH_*|GITHUB_*|PATH|HOME) MC_ENV_UNKNOWN=2 ;;
       esac
       continue
     fi
-    token="$(mc_literal "$raw"; rc=$?; printf X; exit "$rc")" || {
+    mc_literal_var "$raw" || {
       if [ "$context_prefix" -eq 1 ]; then MC_ENV_UNKNOWN=2; fi
       mc_note '候補に未解決のshell値があるため検査を省略しました。'; return
     }
-    token="${token%X}"
+    token="$MC_LITERAL"
     if [ "$context_prefix" -eq 1 ]; then
       case "$context_wrapper" in
         command)
@@ -258,7 +290,7 @@ mc_inspect() {
   if [ "$MC_ENV_UNKNOWN" -eq 2 ] || { [ "$MC_ENV_UNKNOWN" -eq 1 ] && [ -z "$repo_arg" ]; }; then mc_note '先行prefix/gh実行環境が未解決のため検査を省略しました。'; return; fi
   if [ -n "$body_file" ]; then
     if [ "$have_body" -eq 1 ] || [ "$body_file" = - ] || [ "$prior" -ne 0 ] || [ "$MC_CWD_UNKNOWN" -ne 0 ]; then mc_note 'body-file/stdin/先行commandの内容を確定できないため検査を省略しました。'; return; fi
-    case "$body_file" in /*) ;; *) body_file="$cwd/$body_file" ;; esac
+    ff_path_is_absolute "$body_file" || body_file="$cwd/$body_file"  # Windows の C:/… も絶対（Issue `#2367`）
     [ -f "$body_file" ] && [ -r "$body_file" ] || { mc_note 'body-fileを読めないため検査を省略しました。'; return; }
     local file_size
     file_size="$(LC_ALL=C wc -c <"$body_file")" || { mc_note 'body-fileの大きさを確認できないため未検査です。'; return; }

@@ -15,9 +15,19 @@
 # 既定の `NOMATCH` でコマンド全体が実行されない。bash は 0 件の glob を語のまま残すので
 # 同じ文字列が通る — bash 前提で書いた呼び出しが zsh のホストでだけ落ちる。
 #
+# もう 1 つ、URL のクエリ文字列の形 — **未引用の** `?` の直後に未引用の `key=`
+# （`[A-Za-z_][A-Za-z0-9_-]*=`）が続く語（`gh api repos/o/r/contents/a.md?ref=main`）も検出する
+# （Issue `#2138`。導入先 ai-spec-driven-development OBS-030）。`?` は 1 文字の glob なので、
+# `a.md` の後ろに 1 文字と `ref=main` が続く名前のファイルが実在しない限り必ず 0 件になる。
+# 一般の `?` glob（`ls a?.md`）は `?` の直後が `key=` にならないので対象に入らない。
+#
 # 述語に入れない形（呼び出し文字列だけでは真陽性と断定できない。Issue `#1774` の判断）:
 #   - 一般のパス glob（`ls *.md` / `ls workers/vitest*.mts`）— cwd の中身次第でマッチする
 #   - `-` で始まらない語の `=`（`FOO=*.md` の代入。zsh は既定で代入値を glob しない）
+#   - typeset 系（`export` / `typeset` / `local` / `declare` / `readonly` / `integer` / `float`）の
+#     `NAME=value` 引数（zsh は代入として読み値を glob しない。`builtin` / `command` の前置や、
+#     引用・エスケープしたコマンド名（`"export"` / `\export`）、左辺（`=` まで）を引用・エスケープした語
+#     （`export "U"=x` / `export \U=x` / `export U""=x`）では glob するので検出を残す）
 #
 # ## glob として評価されない文脈（検出しない）
 #
@@ -37,7 +47,8 @@
 #     stdout: 検出した語 1 つにつき 1 行 `<語>\t<書き換え案>`（書き換え案は語が引用・
 #             展開・brace（`{a,b}`。= の右側ごと引用すると brace 展開まで止まり、grep の
 #             fnmatch は brace を解釈しないので 0 件一致で黙って終わる）を含まず一意に
-#             組み立てられるときだけ。組み立てないときは `-`）
+#             組み立てられるときだけ。組み立てないときは `-`。クエリ文字列の形は語全体を
+#             引用した案で、除外は check_query の注記）
 #     rc: 0 = 走査を完了した（検出 0 件を含む）
 #         4 = 引用・展開（'…' / "…" / ${…} / $(…) / バッククォート）が閉じないまま入力が終わった。
 #             以降を走査できていないので「0 件」ではない（stdout はそこまでの検出）
@@ -51,6 +62,9 @@
 
 _FF_ZSH_GLOB_AWK_PROG='
 function addc(s, flag,   k) {
+  # 空の引用（`ex""port` / `U""=`）は flag の文字を残さないので、引用を含む語かどうかと
+  # 最初の引用より前の文字数を別に持つ
+  if (flag == "1" && !wq[wc[D]]) { wq[wc[D]] = 1; fq[wc[D]] = length(wb[wc[D]]) }
   wb[wc[D]] = wb[wc[D]] s
   for (k = 1; k <= length(s); k++) wf[wc[D]] = wf[wc[D]] flag
   started[wc[D]] = 1
@@ -105,10 +119,10 @@ function case_close(d) {
   if (csn[d] > 0) { cs[d] = csstk[d, csn[d]]; csn[d]-- } else cs[d] = 0
   cmdpos[d] = 0
 }
-function fin(d,   w, f) {
+function fin(d,   w, f, q, qp) {
   if (!started[d]) return
-  w = wb[d]; f = wf[d]
-  wb[d] = ""; wf[d] = ""; started[d] = 0
+  w = wb[d]; f = wf[d]; q = wq[d]; qp = fq[d]
+  wb[d] = ""; wf[d] = ""; wq[d] = 0; started[d] = 0
   if (cs[d] == 1) {
     if (exm && substr(w, 1, 1) == "=") check_expansion(w, f)
     cs[d] = 2; return
@@ -122,13 +136,21 @@ function fin(d,   w, f) {
     if (w == "esac" && cs[d] == 4) { case_close(d); return }
     if (w == "noglob") { ng[d] = 1; return }
     if (is_assign(w)) { if (exm) remember_list(w, f, d); return }
-    if (is_reserved(w)) { clear_lists(); clear_pending(); return }
+    if (is_reserved(w)) { bpre[d] = (w == "builtin" || w == "command"); clear_lists(); clear_pending(); return }
     # 前置代入はこの引数展開の値を確定しない。
     for (list_name in pending) { clear_lists(); clear_pending(); break }
     cmdpos[d] = 0
+    # zsh は typeset 系の引数の `NAME=value` を代入として読み、値を glob しない（`export X=a?b=c`）。
+    # `builtin` / `command` の前置と、引用・エスケープしたコマンド名（`"export"` / `\export`）では
+    # 通常の引数になり glob するので外す（実測 2026-10-26）
+    tsf[d] = !bpre[d] && !q && (w == "export" || w == "typeset" || w == "local" || w == "declare" || w == "readonly" || w == "integer" || w == "float")
+    bpre[d] = 0
   }
   if (exm) { check_expansion(w, f); return }
   if (ng[d]) return
+  cur_q = q
+  # 左辺（`=` まで）を引用・エスケープした語（`export "U"=x` / `export \U=x`）は代入ではなく glob される
+  if (tsf[d] && is_assign(w) && (!q || qp >= index(w, "="))) return
   check(w, f)
 }
 # 警告は実値の推論ではなく、未引用 scalar の使用箇所。代入では分割しないのが正しい。
@@ -149,9 +171,9 @@ function check_expansion(w, f,   k, name) {
   }
 }
 function check(w, f,   e, k, ch, rest, sug) {
-  if (substr(w, 1, 1) != "-") return
+  if (substr(w, 1, 1) != "-") { check_query(w, f); return }
   e = index(w, "=")
-  if (e < 3) return
+  if (e < 3) { check_query(w, f); return }
   for (k = e + 1; k <= length(w); k++) {
     ch = substr(w, k, 1)
     if (substr(f, k, 1) == "0" && (ch == "*" || ch == "?" || ch == "[")) {
@@ -161,6 +183,22 @@ function check(w, f,   e, k, ch, rest, sug) {
       printf "%s\t%s\n", w, sug
       return
     }
+  }
+  check_query(w, f)
+}
+# URL のクエリ文字列の形: 未引用の `?` の直後に未引用の `key=` が続く語（Issue `#2138`）。
+# 書き換え案は語全体の引用で、= 形と同じ除外（空の引用 `U""=` を含む引用のある語）に加え、範囲・列挙の brace（`{a,b}` / `{1..3}`）・
+# 語頭の `~` / `=`（引用すると展開が止まる）・直後に続く `&`（`a?x=1&y=2` は引用しても
+# `&` で切れたまま）を含む語には出さない。`{owner}` のような単独の brace は展開されないので残す。
+function check_query(w, f,   k, m) {
+  for (k = 1; k < length(w); k++) {
+    if (substr(w, k, 1) != "?" || substr(f, k, 1) != "0") continue
+    if (!match(substr(w, k + 1), /^[A-Za-z_][A-Za-z0-9_-]*=/)) continue
+    if (substr(f, k + 1, RLENGTH) !~ /^0+$/) continue
+    m = "-"
+    if (!cur_q && w !~ /["$`\\]/ && w !~ /^[~=]/ && w !~ /\{[^}]*(,|\.\.)/ && !glued_amp) m = "\"" w "\""
+    printf "%s\t%s\n", w, m
+    return
   }
 }
 BEGIN { SQ = sprintf("%c", 39); exm = (mode == "expansion" || mode == "equals-fix") }
@@ -259,7 +297,9 @@ END {
       continue
     }
     if (c == "&" || c == "|") {
+      glued_amp = (c == "&" && substr(src, i + 1, 1) != "&" && started[wc[D]])
       sep(c)
+      glued_amp = 0
       c2 = substr(src, i + 1, 1)
       if (c2 == "&" || c2 == "|") i += 2; else i++
       continue

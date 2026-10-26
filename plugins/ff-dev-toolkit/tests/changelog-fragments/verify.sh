@@ -462,6 +462,8 @@ mv "$FRAGMENTS/.ff-changelog.lock"/*.md "$FRAGMENTS/"
 rmdir "$FRAGMENTS/.ff-changelog.lock"
 FAKE_GH_MODE=not_found run_contract "$FIX" --write
 if [[ "$RC" -eq 1 && "$OUT" == *"解決できません"* ]]; then ok "存在しない Issue は contract 違反"; else bad "Issue 404 の分類が不正"; fi
+FAKE_GH_MODE=not_found_graphql run_contract "$FIX" --write
+if [[ "$RC" -eq 1 && "$OUT" == *"解決できません"* ]]; then ok "移管・削除済み Issue（GraphQL の文言）も contract 違反"; else bad "GraphQL の Issue 不在を認証障害と誤診"; fi
 FAKE_GH_MODE=unavailable run_contract "$FIX" --write
 if [[ "$RC" -eq 2 && "$OUT" == *"repository へアクセスできません"* ]]; then ok "認証障害は検証不能として停止"; else bad "認証障害を Issue 不在と誤診"; fi
 FAKE_GREP_FAIL=1 run_contract "$FIX" --write

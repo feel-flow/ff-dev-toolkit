@@ -21,7 +21,7 @@ ff_ace_pending_validate() {
       marker = 1; next
     }
     /[\r\034\035\036\037]/ { bad("構造を曖昧にする制御文字があります") }
-    /\t/ && $0 !~ /^> / { bad("metaのtabは使えません") }
+    /\t/ && $0 !~ /^>( |$)/ { bad("metaのtabは使えません") }
     /^### / {
       if (stage) bad("前の候補が閉じられていません")
       rest = $0; sub(/^### /, "", rest)
@@ -49,7 +49,9 @@ ff_ace_pending_validate() {
     stage == 4 {
       if ($0 == "---") { finish(); next }
       if ($0 == "") next
-      if ($0 !~ /^> /) bad("本文は引用行で保存してください")
+      # 空の引用行は `>` だけ（Markdown の空の引用行。旧版が書いた `> ` も読む）。行末の空白は
+      # markdownlint の MD009 が拒否し、整形で消されやすいので、書く側は `>` に揃える（Issue `#2372`）
+      if ($0 !~ /^>( |$)/) bad("本文は引用行で保存してください")
       if (substr($0, 3) ~ /[^[:space:]]/) body = 1
       next
     }

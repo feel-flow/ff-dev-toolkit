@@ -28,6 +28,7 @@
 # 空振り検出: 分割先の明示stageガード除去・固定候補片側消失・旧書式追加の0件化・layout fixture helper空化は隔離layout実測で各rc=1、通常追記と対照はrc=0（2026-10-25 mutation-harness、4 detected / 1 green-ok）。
 # 空振り検出: サブdirの探索・追跡・変更判定をcwd基準へ戻す3変異は各rc=1。空ディレクトリはrc=2でindex/pending保持を実測し、0ファイルを成功にしない（2026-10-25、無変異対照は成功）。
 # 空振り検出: 展開先の不在ガード除去・明示対象を元argv集合へ戻す2変異は各rc=1、正常対照rc=0（2026-10-26 mutation-harness実測。削除済み追跡ファイルはstage前rc=2、末尾/.も実ファイル集合で照合）。
+# 変異検出: knowledge-commit.sh の hook の場所の判定を `/` 始まりだけへ戻すと 14b が赤（MSYS でも C:/hk をルートへ連結し、hook を検出せず保留を作る）。実機の MSYS / Cygwin では C:/hk が本物のドライブを指すので 14b は理由付きの skip（2026-10-26 WSL 実測。Issue `#2367`）。
 
 set -euo pipefail
 
@@ -835,6 +836,35 @@ else
     else
       echo "  ✗ 拒否の後に手コミットへ移れない（rc=${rc}）" >&2; exit 1
     fi
+
+    # 14b. Windows の Git Bash では linked worktree の git が hook の場所をドライブ文字の形（C:/…）で返す。MSYS / Cygwin では
+    #      それを絶対パスとしてそのまま使い、他の OS ではリポジトリのルートへ連結する（Issue `#2367`）。Linux の git は
+    #      core.hooksPath=C:/hk を `C:/hk/<名>` のまま返すので、ルートと別の cwd（sub/）にだけ拒否する hook を置き、
+    #      MSYS の判定（cwd から見つかる → ドライランへ進んで exit 4）と他の OS の判定（ルートへ連結 → 無い → 保留を作る）を
+    #      分ける。ドライランはルートを cwd にして hook を起動するので、cwd 相対の C:/hk は起動時に見つからず hook 自体は
+    #      走らない（Linux で作れる形の限界）。見るのは検出したか（hook-rejected）だけ
+    case "${OSTYPE:-}" in
+      msys* | cygwin*) echo "  ○ skip: 実機の MSYS / Cygwin では C:/hk が本物のドライブを指すため、OSTYPE を差し替える 14b は回さない" ;;
+      *)
+        W="$KC_TMP/hook-drive"
+        new_repo "$W" "Knowledge Test" "knowledge-test@example.com"
+        cd "$W" || exit 1
+        git config core.hooksPath C:/hk
+        mkdir -p "sub/C:/hk"
+        printf '%s\n' '#!/bin/sh' 'echo "drive-form hook rejected"; exit 1' >"sub/C:/hk/commit-msg"
+        chmod +x "sub/C:/hk/commit-msg"
+        printf '%s\n' '- obs' >>docs/08-knowledge/OBSERVATIONS.md
+        cd sub || exit 1
+        rc=0; out="$(OSTYPE=msys kc add --source obs --id OBS-14b --summary "要約D" -- ../docs/08-knowledge/OBSERVATIONS.md 2>&1)" || rc=$?
+        rc2=0; out2="$(OSTYPE=linux-gnu kc add --source obs --id OBS-14c --summary "要約E" -- ../docs/08-knowledge/OBSERVATIONS.md 2>&1)" || rc2=$?
+        if [ "$rc" -eq 4 ] && [[ "$out" == *"KNOWLEDGE_COMMIT=hook-rejected"* ]] && [ "$rc2" -eq 0 ] && [[ "$out2" == *"KNOWLEDGE_PENDING=1"* ]]; then
+          echo "  ✓ hook の場所が C:/… のとき、MSYS では絶対パスとしてそのまま使い（exit 4）、他の OS ではルートへ連結する（保留を作る）"
+        else
+          echo "  ✗ C:/… の hook の場所の扱いが OS で分かれない（msys rc=${rc} / linux rc=${rc2}: ${out}）" >&2; exit 1
+        fi
+        kc discard >/dev/null; cd "$W" || exit 1; git reset -q; git checkout -q -- docs/08-knowledge/OBSERVATIONS.md
+        ;;
+    esac
 
     # 15. 通る commit-msg hook（\$GIT_DIR/hooks）: add のドライランが commit と同じ件名で hook を呼び、従来どおり
     #     commit する。保留がある 2 件目の add は畳んだ件名（ID 列）でドライランする。commit で type を差し替えた

@@ -421,11 +421,13 @@ q() { ff_merge_quote "$@"; }
 github_input=""; github_tmp=""; github_repository=""
 finish_file_init() {
   [[ -n "$github_input" ]] || return 0
+  need_bundled lib/abs-path.sh
+  assert_bundled_shebang_lf "$self_dir/lib/abs-path.sh"
   need_bundled lib/github-input.sh
   assert_bundled_shebang_lf "$self_dir/lib/github-input.sh"
   # shellcheck source=lib/github-input.sh
   . "$self_dir/lib/github-input.sh" || exit 2
-  [[ "$github_input" == /* ]] || { _github_input_error index '--github-input must be absolute'; exit 2; }
+  github_input_is_absolute "$github_input" || { _github_input_error index '--github-input must be absolute'; exit 2; }
   if [[ "${1:-required}" == optional ]]; then
     github_repository="$(_github_input_repository 2>/dev/null)" || github_repository=""
   else
@@ -832,10 +834,14 @@ kc_add() {
     # index の該当 entry を元に戻す（登録前に戻すので pending は増えない）
     local -a claim_paths=() ; local p index_before
     for doc in "${claim_docs[@]}"; do claim_paths+=("$doc" ".version-claims/${doc}.claim"); done
-    # 明示 pathspec は cwd 相対なので絶対化してから repo root 基準の git へ渡す
+    # 明示 pathspec は cwd 相対なので絶対化してから repo root 基準の git へ渡す。絶対パスの判定は共有の
+    # 1 関数（Windows の Git Bash ではドライブ文字の形も絶対。Issue `#2367`）
+    need_bundled lib/abs-path.sh
+    # shellcheck source=lib/abs-path.sh
+    . "$self_dir/lib/abs-path.sh" || die_env "絶対パスの判定 lib を読めません: $self_dir/lib/abs-path.sh"
     for p in ${pathspecs[@]+"${pathspecs[@]}"}; do
       [[ -e "$p" ]] || continue
-      case "$p" in /*) claim_paths+=("$p") ;; *) claim_paths+=("$PWD/$p") ;; esac
+      if ff_path_is_absolute "$p"; then claim_paths+=("$p"); else claim_paths+=("$PWD/$p"); fi
     done
     index_before="$(git -C "$repo_root" ls-files --stage -- "${claim_paths[@]}" 2>/dev/null)" || index_before=""
     git -C "$repo_root" add -- "${claim_paths[@]}" || die_env "claim と文書を stage できません" "パスを確かめて再実行する"

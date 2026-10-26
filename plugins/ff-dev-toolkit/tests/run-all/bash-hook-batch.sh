@@ -2,6 +2,7 @@
 # 集約入口の拒否・警告保存と実登録を検査する。
 # 空振り検出: 登録12本の通常はrc0、新guardだけを登録から外す/集約子の引数集合を0件にする各単独変異は登録集合assertでrc1（2026-10-22 macOS実測、構文rc0）。存在しない/空の子は無検査を診断する。
 # 変異検出: 拒否時の未実行注記を JSON の permissionDecisionReason から外す / 終了コード2の stderr 末尾から外す / 出力0件 / 解釈できる出力0件の経路で finish を通さず exit する、の4変異がそれぞれ赤（2026-10-02 実測）。
+# 変異検出: Windows の Git Bash（MSYS / Cygwin）の子の枠 25 秒を外して 10 秒へ戻すと、12 秒かかる子の msys ケースが赤（Issue `#2377`。2026-10-26 WSL 実測）。
 set -euo pipefail
 ROOT="$(cd "${BASH_SOURCE[0]%/*}/../.." && pwd)"
 # -X utf8: Windows の Python の既定は cp932 で、子の日本語の stderr の復号でも落ちる（Issue `#2022`）
@@ -30,11 +31,12 @@ expected = ['guard-checkout-restore', 'guard-pr-followup', 'guard-background-cwd
             'guard-long-gate-background', 'guard-effort-actual', 'guard-merge-closing-keyword',
             'guard-issue-labels',
             'guard-sub-issue-id', 'guard-exit-code', 'guard-zsh-glob',
-            'guard-literal-write', 'guard-credential-output', 'record-effort-wallclock']
+            'guard-literal-write', 'guard-credential-output', 'guard-wsl-shell',
+            'record-effort-wallclock']
 # Path 同士で比べる（Windows では hooks.json から組んだ文字列だけ '/' と '\' が混ざる）
 assert args[0] == 'bash' and Path(args[1]) == runner
 assert [Path(a) for a in args[2:]] == [root / 'hooks' / (name + '.sh') for name in expected], 'Bash集約子の登録集合が期待と違う'
-assert entry['timeout'] == 15
+assert entry['timeout'] == 30
 assert sum(len(g['hooks']) for g in config['hooks']['PreToolUse']
            if 'Bash' in g['matcher'].split('|')) == 2
 
@@ -48,10 +50,11 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     env['TMPDIR'] = str(temp)
     env['CLAUDE_PLUGIN_ROOT'] = root.as_posix()
 
-    def run(hooks, payload='{}'):
+    def run(hooks, payload='{}', ostype=None, limit=15):
+        child_env = env if ostype is None else {**env, 'OSTYPE': ostype}
         return subprocess.run([BASH, runner.as_posix(), *(Path(h).as_posix() for h in hooks)],
-                              input=payload, text=True, capture_output=True, env=env, cwd=temp,
-                              timeout=15)
+                              input=payload, text=True, capture_output=True, env=child_env, cwd=temp,
+                              timeout=limit)
 
     def stub(name, body):
         path = temp / (name + '.sh')
@@ -141,12 +144,19 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     assert run([mode]).stderr == direct.stderr
     slow = stub('slow', 'while :; do :; done')
     start = time.monotonic()
-    result = run([slow, warning, deny])
+    result = run([slow, warning, deny], ostype='linux-gnu')
     assert 9 <= time.monotonic() - start < 14
     assert result.returncode == 0 and '時間内' in result.stderr
     value = json.loads(result.stdout)
     assert value['hookSpecificOutput']['permissionDecision'] == 'deny'
     assert value['systemMessage'] == '注意1'
+    # Windows の Git Bash（MSYS / Cygwin）では子の枠が 25 秒（Issue `#2377`）。12 秒かかる子も打ち切らない
+    late = stub('late', 'sleep 12\nprintf "%s" \'{"systemMessage":"遅い子"}\'')
+    start = time.monotonic()
+    result = run([late, warning], ostype='msys', limit=40)
+    assert 11 <= time.monotonic() - start < 25
+    assert result.returncode == 0 and '時間内' not in result.stderr
+    assert json.loads(result.stdout)['systemMessage'] == '遅い子\n注意1'
     assert not list(temp.glob('ff-bash-hooks.*')), '一時入力が残っている'
 
     payload = {'hook_event_name': 'PreToolUse', 'tool_name': 'Bash',

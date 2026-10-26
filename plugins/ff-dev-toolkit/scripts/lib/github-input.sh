@@ -6,10 +6,27 @@
 #   POSITION contains only cursor/page/attempt, distinguishing absent from null.
 # github_file_plan OP SCOPE_JSON_FILE ARGUMENTS_JSON_FILE READBACK_SPEC_JSON_FILE
 #   stdout: PLAN:<JSON> LF, rc 2 (pending external action/read-back, never success).
+# github_input_is_absolute PATH
+#   rc 0 when PATH is absolute for this host, rc 1 otherwise. The one rule every
+#   --github-input entry point and the index/body resolution share.
 # No network, command execution from input, consumer predicates or freshness claims.
 # The host supplies trusted paths. JSON syntax is checked, not consumer required fields.
 
 _github_input_error() { printf 'github-input: %s: %s\n' "$1" "$2" >&2; }
+
+# The rule lives in abs-path.sh (ff_path_is_absolute): a leading / is absolute, and on MSYS
+# (Git Bash) / Cygwin hosts so are the drive-letter forms C:/x and C:\x (ACE-2027-1). If the
+# sibling cannot be loaded, every path reads as not absolute and the cause is named on stderr
+# (the entry points then stop instead of guessing).
+# shellcheck source=abs-path.sh
+if . "${BASH_SOURCE[0]%/*}/abs-path.sh" 2>/dev/null && declare -F ff_path_is_absolute >/dev/null; then
+  github_input_is_absolute() { ff_path_is_absolute "$1"; }
+else
+  github_input_is_absolute() {
+    _github_input_error index "absolute-path rule unavailable (cannot load ${BASH_SOURCE[0]%/*}/abs-path.sh)"
+    return 1
+  }
+fi
 
 # Private consumer utility: expected identity comes from Git, never payload/GH_HOST.
 # Read the configured URL, before Git's transport-only insteadOf rewrite.
@@ -52,10 +69,9 @@ github_file_read() {
   fi
   local gi_index="$1" gi_op="$2" gi_scope="$3" gi_phase="$4" gi_position="$5"
   local gi_selected gi_body gi_format gi_snapshot gi_last gi_http gi_base
-  case "$gi_index" in
-    /*) ;;
-    *) _github_input_error "$gi_op" 'INDEX_ABS must be absolute'; return 64 ;;
-  esac
+  if ! github_input_is_absolute "$gi_index"; then
+    _github_input_error "$gi_op" 'INDEX_ABS must be absolute'; return 64
+  fi
   if [ -z "$gi_op" ] || [ -z "$gi_phase" ]; then
     _github_input_error read 'operation and phase must be nonempty'; return 64
   fi
@@ -102,10 +118,13 @@ github_file_read() {
   # ACE-2025-1: jq.exe frames scalar output with CRLF; raw body bytes stay untouched.
   gi_body="${gi_body%$'\r'}"; gi_format="${gi_format%$'\r'}"
   gi_last="${gi_last%$'\r'}"; gi_http="${gi_http%$'\r'}"
-  case "$gi_body" in
-    /*) ;;
-    *) gi_base="${gi_index%/*}"; gi_body="${gi_base:-/}/$gi_body" ;;
-  esac
+  if ! github_input_is_absolute "$gi_body"; then
+    # On MSYS / Cygwin an index may be C:\dir\index.json, so the directory ends at the last
+    # / or \. Elsewhere \ is an ordinary file-name character and only / separates.
+    gi_base="${gi_index%/*}"
+    case "${OSTYPE:-}" in msys* | cygwin*) gi_base="${gi_index%[/\\]*}" ;; esac
+    gi_body="${gi_base:-/}/$gi_body"
+  fi
   _github_input_file "$gi_op body" "$gi_body" || return 2
   gi_snapshot="$(mktemp "${TMPDIR:-/tmp}/github-input.XXXXXX")" || {
     _github_input_error "$gi_op" 'cannot create body snapshot'; return 2;

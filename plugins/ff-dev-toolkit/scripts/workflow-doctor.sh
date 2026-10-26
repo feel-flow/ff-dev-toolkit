@@ -221,6 +221,11 @@ export LC_ALL=C
 
 ROOT=""; GLOBAL_CLAUDE=""; OFFLINE=0; REPO=""; SETTINGS=(); GITHUB_INPUT=""; GITHUB_TMP=""; GITHUB_REPOSITORY=""
 TERMINAL_CAPABILITY=unknown
+# 絶対パスの判定は共有の 1 関数（Windows の Git Bash ではドライブ文字の形も絶対。Issue `#2367`）。
+# lib が無い回は関数が無いまま進み、`/` 始まりも含めて全パスを --root へ連結する。連結先は通常存在しないので、
+# その hook は未検査の SKIP に倒れる（判定を誤って OK にはしない）。
+# shellcheck source=lib/abs-path.sh
+. "$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib/abs-path.sh" 2>/dev/null || true
 need_value() { # $1 option, $2 remaining argc — 値なしで最終引数のとき `shift 2` が空振りして同じ分岐を回り続ける（レビューで実測）ので、先に止める
   [ "$2" -ge 2 ] || { echo "workflow-doctor: $1 には値が要ります" >&2; exit 2; }
 }
@@ -418,7 +423,7 @@ for s in "${SETTINGS[@]}"; do
       [ -n "$path" ] || continue
       path="${path/\$\{HOME\}/$HOME}"; path="${path/\$HOME/$HOME}"; path="${path/#\~/$HOME}"
       path="${path/\$\{CLAUDE_PROJECT_DIR\}/$ROOT}"; path="${path/\$CLAUDE_PROJECT_DIR/$ROOT}"
-      case "$path" in /*) ;; *) path="$ROOT/$path" ;; esac   # 相対パスは --root 基準（起動時 cwd に依存させない）
+      { declare -F ff_path_is_absolute >/dev/null && ff_path_is_absolute "$path"; } || path="$ROOT/$path"   # 相対パスは --root 基準（起動時 cwd に依存させない）
       hook_checked=$((hook_checked + 1))
       [ -f "$path" ] || { emit SKIP 3 "Stop hook が指すスクリプトを読めない（未検査）: ${path}"; continue; }
       judge_reminder "$(cat "$path")"; jr=$?

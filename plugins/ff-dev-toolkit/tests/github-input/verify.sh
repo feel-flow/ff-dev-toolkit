@@ -3,6 +3,7 @@
 # These overrides let miss/mutation probes run without editing the live source.
 # 空振り検出: helper不在/不可読/空/名前のみ、fixture不在/不可読/書式変更/case集合[]・親子途中終了の10針でrc1を実測。
 # 変異検出: 一意性/scope/phase/position/JSON構文/false-null/raw/last/PLAN待機/CRLF等の単独11変異は全てrc1。
+# 空振り検出: ドライブ文字の形（Issue `#2334`。2026-10-26 に WSL で実測、変異なしは 56 pass）。MSYS の分岐を外す → 6 件赤、OS を問わずドライブ文字を受け付ける → 4 件赤、body の解決を `/` 始まりだけに戻す → 1 件赤、index のディレクトリを OS を問わず `\` でも切る → 1 件赤、MSYS でも `\` で切らない → 1 件赤。表の行数が 11 でない回も赤（表の読み落としを緑へ倒さない）。Windows の Git Bash では受理側（`pwd -W` の実パス）も緑。`\` 入りファイル名のケースは実ホストが POSIX のときだけ走る（MSYS では `\` が区切りになり fixture を作れない。2 巡目のレビューで指摘）。Windows では既存ケースの body も `jq.exe` への引数変換で `C:/…` になるので、修正前は「読めない body」「途中で失敗する読み取り」が連結の誤りで偶然緑・大きな body の 2 件が赤だったのが、修正後は大きな body が緑になり、chmod / 関数差し替えが効かない前 2 件が赤になる（stderr/globals の CRLF 10 件は新旧とも赤）。
 set -euo pipefail
 
 SELF_DIR="$(CDPATH='' cd -P -- "$(dirname -- "$0")" && pwd -P)" || exit 1
@@ -14,7 +15,7 @@ bad() { printf '  ✗ %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
 if [ "${1:-}" != --worker ]; then
   TARGET="${1:-$ROOT/scripts/lib/github-input.sh}"
   FIX="${2:-$SELF_DIR/fixtures}"
-  for dep in bash env jq cat mktemp rm cmp awk dirname chmod; do
+  for dep in bash env jq cat mktemp rm cmp awk dirname chmod mkdir; do
     command -v "$dep" >/dev/null 2>&1 || { echo "missing dependency: $dep" >&2; exit 1; }
   done
   TMP="$(mktemp -d "${TMPDIR:-/tmp}/github-input-suite.XXXXXX")" || exit 1
@@ -32,7 +33,7 @@ if [ "${1:-}" != --worker ]; then
   trap 'exit 130' HUP INT TERM
   mkdir "$TMP/bin" || exit 1
   # ACE-2269-7 / ACE-1866-2: no host PATH tail, and forwarding scripts, not copied binaries.
-  for dep in jq cat mktemp rm cmp awk dirname chmod; do
+  for dep in jq cat mktemp rm cmp awk dirname chmod mkdir; do
     real="$(command -v "$dep")" || exit 1
     printf '#!/bin/bash\nexec %q "$@"\n' "$real" >"$TMP/bin/$dep"
     chmod +x "$TMP/bin/$dep" || exit 1
@@ -121,6 +122,91 @@ if [ "$rc" -eq 64 ] && [ ! -s "$TMP/out" ] && [ -s "$TMP/err" ]; then ok 'read A
 if github_file_read relative.json sample.read "$FIX/scope.json" initial "$FIX/position.json" \
   >"$TMP/out" 2>"$TMP/err"; then rc=0; else rc=$?; fi
 if [ "$rc" -eq 64 ] && [ ! -s "$TMP/out" ]; then ok 'absolute index prerequisite'; else bad 'absolute index prerequisite'; fi
+
+# Drive-letter paths are absolute only on Git Bash (MSYS / Cygwin) hosts. OSTYPE is the switch,
+# so the table runs both host kinds on any OS; restore the real value afterwards.
+if ! declare -F github_input_is_absolute >/dev/null; then bad 'github_input_is_absolute missing'; fi
+real_ostype="${OSTYPE:-}"
+ABS_CASES=0
+while IFS='|' read -r ostype path want; do
+  ABS_CASES=$((ABS_CASES + 1))
+  OSTYPE="$ostype"
+  if github_input_is_absolute "$path"; then got=0; else got=1; fi
+  OSTYPE="$real_ostype"
+  if [ "$got" = "$want" ]; then ok "absolute rule $ostype $path -> $want"; else bad "absolute rule $ostype $path -> $got (want $want)"; fi
+done <<'CASES'
+linux-gnu|/abs/x|0
+linux-gnu|C:/x|1
+darwin23|D:\x|1
+linux-gnu|rel/x|1
+msys|C:/x|0
+msys|c:\x|0
+cygwin|D:/x|0
+msys|/c/x|0
+msys|C:x|1
+msys|rel/x|1
+msys||1
+CASES
+[ "$ABS_CASES" -eq 11 ] || bad "absolute rule table read $ABS_CASES rows"
+# A drive-letter body is used as is on MSYS and joined to the index directory elsewhere.
+drive_body='C:/ff-github-input-drive/absent.json'
+jq --arg body "$drive_body" '.responses[0].body=$body' "$TMP/index.json" >"$TMP/drive-index.json" || exit 1
+for ostype in msys linux-gnu; do
+  OSTYPE="$ostype"
+  if github_file_read "$TMP/drive-index.json" sample.read "$FIX/scope.json" initial "$FIX/position.json" \
+    >"$TMP/out" 2>"$TMP/err"; then rc=0; else rc=$?; fi
+  OSTYPE="$real_ostype"
+  if [ "$ostype" = msys ]; then want_path="$drive_body"; else want_path="$TMP/$drive_body"; fi
+  if [ "$rc" -eq 2 ] && [ ! -s "$TMP/out" ] \
+    && [ "$(cat "$TMP/err")" = "github-input: sample.read body: unreadable, empty or missing file: $want_path" ]; then
+    ok "drive-letter body resolves as $want_path on $ostype"
+  else bad "drive-letter body on $ostype rc=$rc err=$(cat "$TMP/err")"; fi
+done
+OSTYPE=linux-gnu
+if github_file_read 'C:/ff-github-input-drive/index.json' sample.read "$FIX/scope.json" initial "$FIX/position.json" \
+  >"$TMP/out" 2>"$TMP/err"; then rc=0; else rc=$?; fi
+OSTYPE="$real_ostype"
+if [ "$rc" -eq 64 ] && [ ! -s "$TMP/out" ]; then ok 'drive-letter index stays relative off MSYS'; else bad "drive-letter index off MSYS rc=$rc"; fi
+# Acceptance: on MSYS a drive-letter index is read like a / index, in both separator forms, and
+# its relative body resolves next to it. On a real MSYS host the paths are $TMP's own C:/ name;
+# elsewhere the drive name is simulated under the cwd ($TMP): C:/gi-drive is a directory named
+# "C:", and the backslash form is a directory and an index whose names contain \ literally.
+# Cygwin's pwd has no -W and the worker has no cygpath, so a real Cygwin host skips these cases.
+drive_forms='fwd bs'
+case "$real_ostype" in
+  msys*) drive_fwd="$(cd "$TMP" && pwd -W)/gi-drive"; fs_prefix='' ;;
+  cygwin*) drive_fwd=''; fs_prefix=''; drive_forms=''
+    printf '  ○ skip: MSYS drive-letter acceptance needs pwd -W (real host is Cygwin)\n' ;;
+  *) drive_fwd='C:/gi-drive'; fs_prefix="$TMP/" ;;
+esac
+drive_bs="${drive_fwd//\//\\}"
+printf '{"drive":true}\n' >"$TMP/drive-body.json"
+for form in $drive_forms; do
+  if [ "$form" = fwd ]; then dir="$drive_fwd"; index="$drive_fwd/index.json"; else dir="$drive_bs"; index="$drive_bs\\index.json"; fi
+  mkdir -p "$fs_prefix$dir" || exit 1
+  cat "$TMP/drive-body.json" >"$fs_prefix$dir/body.json" || exit 1
+  jq '.responses[0].body="body.json"' "$TMP/index.json" >"$fs_prefix$index" || exit 1
+  if ( cd "$TMP" || exit 1; OSTYPE=msys; github_file_read "$index" sample.read "$FIX/scope.json" initial "$FIX/position.json" ) \
+    >"$TMP/out" 2>"$TMP/err"; then rc=0; else rc=$?; fi
+  if [ "$rc" -eq 0 ] && [ ! -s "$TMP/err" ] && cmp -s "$TMP/drive-body.json" "$TMP/out"; then
+    ok "MSYS reads a drive-letter index ($form) and its relative body"
+  else bad "MSYS drive-letter index ($form) rc=$rc err=$(cat "$TMP/err")"; fi
+done
+# Off MSYS, \ is an ordinary file-name character: the body sits next to an index named a\b.json.
+# Only a POSIX file system can hold that name, so a real MSYS / Cygwin host skips this case.
+case "$real_ostype" in
+  msys* | cygwin*) printf '  ○ skip: a file name containing \\ needs a POSIX file system (real host is %s)\n' "$real_ostype" ;;
+  *)
+    mkdir -p "$TMP/bs-posix" || exit 1
+    cat "$TMP/drive-body.json" >"$TMP/bs-posix/body.json" || exit 1
+    jq '.responses[0].body="body.json"' "$TMP/index.json" >"$TMP/bs-posix/a\\b.json" || exit 1
+    OSTYPE=linux-gnu
+    if github_file_read "$TMP/bs-posix/a\\b.json" sample.read "$FIX/scope.json" initial "$FIX/position.json" \
+      >"$TMP/out" 2>"$TMP/err"; then rc=0; else rc=$?; fi
+    OSTYPE="$real_ostype"
+    if [ "$rc" -eq 0 ] && cmp -s "$TMP/drive-body.json" "$TMP/out"; then ok 'off MSYS a \ in the index name does not split the directory'; else bad "off MSYS backslash index name rc=$rc err=$(cat "$TMP/err")"; fi
+    ;;
+esac
 
 # Large string is supplied through files, including Unicode, quotes and trailing LF.
 awk 'BEGIN { for (i=0;i<160000;i++) printf "x" }' >"$TMP/large.txt" || exit 1

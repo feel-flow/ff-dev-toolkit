@@ -50,7 +50,7 @@
 #   （`.review-results/`）だけを見る。`multi-agent.sh --output-dir <other>` で既定から
 #   動かした実行のロックは検出できない（黙って素通しになる = fail-open）。hook 入力には
 #   走行中の orchestrator の引数が無く、探索を repo 全体へ広げると PreToolUse の
-#   10 秒 timeout に見合わないため、既定パスに限る線引きを採る。
+#   timeout（hooks.json の登録値）に見合わないため、既定パスに限る線引きを採る。
 #
 # 判定の限界（既知）:
 #   - PID 再利用: ロックに書かれた PID が別プロセスへ再利用されると、生存判定だけでは
@@ -171,6 +171,13 @@
 #     ガードとしての取りこぼしは許容し、誤ブロックだけを避ける。**例外は走行中の Bash 書き込み
 #     走査**で、書き込み先を判定できない形は deny 側へ倒す（下記「Bash 経由の書き込み走査」。
 #     ロックが生きているときだけ払うコストで、ロック無しの経路には及ばない）
+#   - ホスト側の打ち切りは fail-open にしない: PreToolUse の登録は `onFailure: "block"` を持つ
+#     （Claude Code v2.1.295 以降）。この hook が登録の timeout を超える・起動できない・0 / 2 以外で
+#     終わると、ホストは呼び出しを止める。Windows の Git Bash ではロック生存下の判定が 6〜25 秒かかり、
+#     旧 timeout の 10 秒を超えた回はホストが判定を捨てて呼び出しを通していた（Issue `#2271`）。
+#     したがって **どの経路も明示的な `exit 0` で終える**（判定の fail-open は exit 0 + 無出力で表す）。
+#     漏れた 0 以外の終了は EXIT trap（ff_on_exit）が判定不能の systemMessage + exit 0 へ寄せる
+#     二重の防御で、trap を張り直すとこの正規化が外れる（trap の定義の注記を参照）
 #   - 互換性: bash 3.2（stock macOS）互換。連想配列・readarray・=~ は使わない
 #
 # 環境変数:
@@ -207,6 +214,32 @@
 
 # fail-open のため set -e / set -u は使わない。
 
+# 異常終了を onFailure: block へ漏らさない（設計原則「ホスト側の打ち切りは fail-open にしない」の対）。
+# 0 以外で抜けた回はガード自身の不具合として、判定不能を systemMessage で知らせてから exit 0 で通す。
+# 止めるのはホスト側の打ち切り（timeout）と起動失敗だけにする — ガードの不具合 1 つで全 OS の全呼び出しを
+# 止めないための手当て（Issue `#2271`）。黙って通さないのは、凍結の素通りに気づく手段を残すため。
+# 巡回カウンタの後始末（review_round_finish）もこの 1 本の EXIT trap から呼ぶ。trap を張り直すと、
+# 後から張った方がこの正規化を上書きするため。emit_* は出力の後に exit 0 するので、0 以外でここへ
+# 来るのはまだ何も出力していない回だけで、出す JSON は 1 本に収まる。
+ROUND_FINISH_ARMED=0
+ff_on_exit() {
+  local rc=$? note=""
+  if [ "$rc" -eq 0 ]; then
+    [ "$ROUND_FINISH_ARMED" -eq 1 ] && review_round_finish
+    return 0
+  fi
+  if [ "$ROUND_FINISH_ARMED" -eq 1 ] && [ "${ROUND_NOTE_DONE:-0}" -ne 1 ]; then
+    review_round_commit
+    [ -n "${ROUND_NOTE:-}" ] && note="${ROUND_NOTE}
+"
+  fi
+  note="${note}⚠️ ff-dev-toolkit guard（レビュー走行中）: ガードが判定の途中で異常終了しました（rc=${rc}）。判定できなかったので、この呼び出しは止めずに通します。レビューの走行中なら、完了の通知が出るまで編集・commit を控えてください。"
+  jq -n --arg m "$note" '{systemMessage: $m}' 2>/dev/null \
+    || printf '{"systemMessage":"ff-dev-toolkit guard: abnormal exit (rc=%s); the call was passed without a decision"}\n' "$rc"
+  exit 0
+}
+trap ff_on_exit EXIT
+
 # stdin は bash 組み込みの read で読み切る（外部コマンドに依存しない）。`cat` だと PATH が
 # 空・壊れた環境で command not found → stdin 未読のまま exit 0 となり、書き手（ホスト）が
 # EPIPE / SIGPIPE を受ける（既存 2 ガードと同じ修正）。opt-out も
@@ -214,7 +247,7 @@
 #
 # bash 5 以降は -N でまとめて読む。-d '' はパイプから 1 バイトずつ読むので、プロセスの重い
 # Windows（Git Bash の bash 5）では 300KB の Write で読み取りだけに 1 秒以上かかり、レビュー走行中の
-# 判定と合わせて登録 timeout（10 秒）を超えると、大きな Write が凍結を素通りしていた（Issue `#2020`）。
+# 判定と合わせて当時の登録 timeout（10 秒）を超えると、大きな Write が凍結を素通りしていた（Issue `#2020`）。
 # -N は指定した文字数か EOF まで読むので、1 MiB ずつ EOF まで繰り返す（最後の端数は EOF で非 0 が
 # 返っても変数に入る）。-N は 4.1 からで、4.x には -N の不具合（4.3 で修正）と多バイト文字の途中切れ
 # （5.0 で修正）があるので、5 未満（macOS の 3.2 を含む）は従来どおり -d '' で読む。
@@ -326,7 +359,7 @@ review_round_gate() { # <agent|bash>
     [ "$launch" -eq 0 ] || ROUND_NOTE="ℹ️ ff-dev-toolkit guard（レビュー巡回カウンタ）: 巡回カウンタ（${lib}）を読めないため巡を数えられません。判定不能として通します。"
   fi
   if [ -n "$ROUND_NOTE" ] || [ "$ROUND_PENDING" -eq 1 ]; then
-    trap review_round_finish EXIT
+    ROUND_FINISH_ARMED=1
   fi
   return 0
 }

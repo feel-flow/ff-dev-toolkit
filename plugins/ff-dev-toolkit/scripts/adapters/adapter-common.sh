@@ -54,5 +54,12 @@ for _ac_part in "${ADAPTER_COMMON_PARTS[@]}"; do
     ac_refuse_part "が末尾まで読めていません（読み込み完了の印がありません）" "${_ac_part}"
   fi
 done
+# 絶対パスの判定 lib（部品ではない共有 lib。部品は source を持たない規約なので入口で読む。Issue `#2367`）。
+# 無い・読めない回は関数が無いまま進み、--staging-dir の検査が絶対パスと認めない側（拒否）へ倒れる
+# （読めないファイルを source して set -e の adapter ごと落とさないよう、-r も確かめる）。
+if [[ -f "${_ac_dir}/abs-path.sh" && -r "${_ac_dir}/abs-path.sh" && ! -L "${_ac_dir}/abs-path.sh" ]]; then
+  # shellcheck source=../lib/abs-path.sh
+  source "${_ac_dir}/abs-path.sh"
+fi
 unset _ac_dir _ac_part _ac_part_last _ac_part_loaded
 unset -f ac_refuse_part

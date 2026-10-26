@@ -4,7 +4,8 @@
 # 空振り検出: round1のcontext/供給源subsetは54/0。遷移集合を空にすると17/1、case helper不在/空/同名空関数は各0/1。旧hookは18/36、cwd先行保全除去41/13、環境walk除去33/21、環境gate無効35/19、明示repo条件反転34/20、供給源filter除去52/2、表示失敗でdenyを落とすと53/1で赤（2026-10-22 macOS実測、全変異構文rc0）。
 # 空振り検出: merge hook追加層は57/0。case helperの不在/不可読/空と関数不在/空集合は各0/1、hook/shared helper/lexer各3形は各1/1で赤。keyword集合空は33/24、INSPECTED=0は35/22、共有関数不在/同名空は27/30・37/20（2026-10-22 macOS実測、全変異構文rc0・依存故障なし）。
 # 変異検出: 同追加層の独立変異18件は全rc1。判定無効・差集合無効・明示body無視・空subject・全体ACK・通知除去・復旧body交換・最初のみ・照会上限除去は赤18/1/6/1/1/21/1/2/1件。wrapper通知除去は2件、別pathgh/command/body-file/message/応答/Refs/復旧反復/gh時間の各境界を戻すと各1件赤（2026-10-22実測）。
-# 時間境界: stdin+stub ghの実hookで通常0.44s、1MiB metadata0.49s、64KiB command通知0.03s、累積timeout4.23s、1MiB+6KiB literal+2PR+0.8sの4照会で2個目deny4.34s。旧上限なしの64KiBは18.14sで不採用、最終版は各照会1秒/計4回と固定入力・復旧上限で通知へ戻す。実gh merge/native発火の測定ではない。
+# 時間境界: stdin+stub ghの実hookで通常0.44s、1MiB metadata0.49s、64KiB command通知0.03s、累積timeout4.23s、1MiB+6KiB literal+2PR+0.8sの4照会で2個目deny4.34s。旧上限なしの64KiBは18.14sで不採用、最終版は各照会1秒/計4回と固定入力・復旧上限で通知へ戻す（Issue `#2377` 以降、MSYS / Cygwin だけ各照会3秒・最初の照会から8秒、他の OS は各照会1秒で、最初の照会から5秒の枠は4回の照会を切らない）。実gh merge/native発火の測定ではない。
+# 変異検出: gh 照会の上限（Issue `#2377`。2026-10-27 WSL 実測、基準 377 件緑）。MSYS / Cygwin の上限を他の OS と同じ各 1 秒へ戻すと MSYS と Cygwin の 2 秒の照会の 2 件が赤、時間枠の判定を外すと時間枠の通知の名指しと戻り時間の 2 件が赤。引用も展開も含まない語の速い経路（mc_literal_var）の結果を変えると 91 件が赤。
 # 空振り検出: 抽出先 scripts/lib/finish-precheck.sh を空にすると必須ファイル非空の確認で rc1 になる（2026-10-22 実測。入口に名前だけが残っても参照抽出を検査したことにしない）。
 #
 # closing keyword 抵触検査の回帰テスト。
@@ -27,6 +28,7 @@
 # 完全修飾参照の検出力はリポジトリ名が何であっても等価に固定できる。
 #
 # 変異検出: close-issue SKILL.md 手順 3 から「根拠は AC の指す対象を測っているか」の行を消すと、手順 3 の節を見る 4 針（上位視点・対象一致の 1 行・測れない = 未達・原因未確定の報告）が赤（2026-09-27 実測）。
+# 変異検出: guard-merge-closing-keyword.sh の --body-file の判定を `/` 始まりだけへ戻すと、merge hook の「MSYSではC:/のbody-fileを絶対パスとして読む」が赤（368/1。2026-10-26 WSL 実測。Issue `#2367`）。
 
 set -euo pipefail
 

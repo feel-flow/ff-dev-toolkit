@@ -404,13 +404,13 @@ build_prompt() {
   # 相対パスが特に危険: 「これは絶対パスだ」と言われたエージェントは自分の CWD
   # 基準で解決するので、書き込み先が作業ツリーになる。
   if [[ "$task_type" == "implement" && -n "$staging_dir" ]]; then
-    case "$staging_dir" in
-      /*) ;;
-      *)
-        echo "ERROR: --staging-dir must be an absolute path (the prompt says so): ${staging_dir}" >&2
-        return 1
-        ;;
-    esac
+    # 絶対パスの判定は共有の 1 関数（Windows の Git Bash ではドライブ文字の形も絶対。Issue `#2367`）。
+    # 部品は source を持たない規約なので、判定 lib は入口（adapters/adapter-common.sh）が読む。
+    # 読めなかった回は関数が無いまま、絶対パスと認めない側（拒否）へ倒す。
+    if ! declare -F ff_path_is_absolute >/dev/null || ! ff_path_is_absolute "$staging_dir"; then
+      echo "ERROR: --staging-dir must be an absolute path (the prompt says so): ${staging_dir}" >&2
+      return 1
+    fi
     if [[ ! -d "$staging_dir" ]]; then
       echo "ERROR: --staging-dir does not exist: ${staging_dir}" >&2
       return 1

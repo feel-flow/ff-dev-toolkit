@@ -281,6 +281,13 @@ else
   # `${before/"$old"/"$new"}` は使わない。bash 3.2 は置換側の二重引用符を文字として残し
   # （実測: 置換結果が `"new"` になる）、5.2 は引用符を外すと patsub_replacement で `&` を
   # 一致文字列へ展開する。先頭一致の前後を切り出して繋ぐ形はどちらの版でも字義どおりになる。
+  #
+  # 先頭一致の前後を、パターンを伴う `%%` / `#` の展開（一致の後ろ / 前を `*` で受ける形）で切り出さない。
+  # bash はこれを位置ごとに部分文字列を作って照合するので長さの二乗で遅くなり、Windows の Git Bash では 21 万字の
+  # `.sh` で組み立てだけに約 12 秒（hook 全体で 19〜21 秒）かかって hooks.json の timeout を超え、deny が
+  # ホストに捨てられていた（Issue `#2357`）。
+  # 代わりに、`*"$old"*` の照合（1 回なら速い）が成り立つ最短の先頭部分を二分探索で求める。
+  # その末尾が先頭一致の終わりで、文字数の数え方は `${#…}` / `${…:off:len}` / `case` で揃っている。
   after=""
   rest="$before"
   [ -n "$old" ] || { after="$new"; rest=""; }
@@ -289,8 +296,17 @@ else
       *"$old"*) : ;;
       *) break ;;
     esac
-    after="${after}${rest%%"$old"*}${new}"
-    rest="${rest#*"$old"}"
+    lo=${#old}
+    hi=${#rest}
+    while [ "$lo" -lt "$hi" ]; do
+      mid=$(((lo + hi) / 2))
+      case "${rest:0:mid}" in
+        *"$old"*) hi=$mid ;;
+        *) lo=$((mid + 1)) ;;
+      esac
+    done
+    after="${after}${rest:0:lo-${#old}}${new}"
+    rest="${rest:lo}"
     [ "$replace_all" = "1" ] || break
   done
   after="${after}${rest}"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #
-# zsh で必ず NOMATCH になる未引用 glob（`--flag=<glob>` 形）を実行前に止めるガード
+# zsh で必ず NOMATCH になる未引用 glob（`--flag=<glob>` 形・URL のクエリ文字列の形）を実行前に止めるガード
 # （PreToolUse / Bash、Issue `#1774` / 公開 https://github.com/feel-flow/ff-dev-toolkit/issues/118。導入先の観測台帳
 # hearing-realtime OBS-135 — Count 21 / jbta-hp OBS-028）。
 #
@@ -28,8 +28,10 @@
 # `tests/lib/zsh-glob-nomatch.sh` が正本（OBS-225: 判定本体を最初から共有ライブラリへ
 # 置く）。この hook が持つのは入力の取り出し・ホスト判定・抜け道・deny 文だけである。
 # 述語は `-` で始まる語の `=` より右に未引用の `*` / `?` / `[` がある形だけに絞っており、
-# cwd の状態に依存しないので呼び出し文字列だけで真陽性と断定できる。一般のパス glob
-# （`ls *.md`）は cwd 次第でマッチするので対象に入れない。
+# cwd の状態に依存しないので呼び出し文字列だけで真陽性と断定できる。加えて URL のクエリ文字列の形
+# （未引用の `?` の直後に `key=` が続く語。`gh api repos/o/r/contents/a.md?ref=main`。Issue `#2138`）も、
+# その名前のファイルが実在しない限り必ず 0 件になるので対象に入れる。一般のパス glob
+# （`ls *.md` / `ls a?.md`）は cwd 次第でマッチするので対象に入れない。
 #
 # ## 発火条件（zsh ホストだけ）
 #
@@ -44,7 +46,8 @@
 # fail-open（無音 exit 0）にする面 — 判定の対象外であることが入力から確定している:
 #   - Bash 以外のツール / 空のコマンド / JSON でない入力（jq の rc=5）
 #   - zsh ホストでない / `jq` 不在（コマンド本文を取り出せず、候補かどうかも決められない）
-#   - 生の入力に `=` と glob 文字（`*` `?` `[`）が 1 つも無い（候補でない）
+#   - 生の入力に `=` と glob 文字（`*` `?` `[`）が 1 つも無い、またはコマンドに `-…=` の右の glob 文字も
+#     `?` の直後の `key=` も無い（候補でない）
 #
 # fail-closed（理由付き deny）にする面 — **候補コマンドに限る**。判定を完了できないのに
 # 通すと、守ろうとしている失敗（コマンド全体が走らない）をそのまま通す:
@@ -234,10 +237,10 @@ deny() { # <reason>
 
 deny_unavailable() { # <理由>
   deny "⚠️ ff-dev-toolkit guard（zsh-nomatch-glob: 未引用 glob の NOMATCH）: **判定不能**のため停止しました（${1}）。
-このコマンドは \`-…=\` の右側に glob 文字を含む候補ですが、判定ヘルパ（${HELPER_DIR_SHOWN}/zsh-glob-nomatch.sh / heredoc-strip.sh）で走査を完了できませんでした。判定できないまま通すと、zsh の NOMATCH でコマンド全体が走らない形を素通しします。
+このコマンドは \`-…=\` の右側に glob 文字を含む、または URL のクエリ文字列の形（\`…?key=value\`）を含む可能性がある候補ですが、判定ヘルパ（${HELPER_DIR_SHOWN}/zsh-glob-nomatch.sh / heredoc-strip.sh）で走査を完了できませんでした。判定できないまま通すと、zsh の NOMATCH でコマンド全体が走らない形を素通しします。
 対処:
   1) ff-dev-toolkit を更新・再インストールしてヘルパを復旧する
-  2) = の右側を引用した形（例: --include=\"*.md\"）で書き直して再実行する
+  2) = の右側を引用した形（例: --include=\"*.md\"）、クエリ文字列の形は語全体を引用した形（例: \"repos/o/r/contents/a.md?ref=main\"）で書き直して再実行する
   3) このコマンドに限って通す: コマンドの**先頭**へ環境代入 FF_ZSH_GLOB_ACK=1 を付けて再実行する
   4) ガードごと止める: 環境変数 FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1 を設定する"
 }
@@ -353,14 +356,16 @@ if [ "$jq_rc" -ne 0 ]; then
 fi
 [ -n "$cmd" ] || exit 0
 
-case "$cmd" in
-  *-*=*) : ;;
-  *) glob_candidate=0 ;;
-esac
-case "$cmd" in
-  *=*'*'* | *=*'?'* | *=*'['*) : ;;
-  *) glob_candidate=0 ;;
-esac
+# 候補は `-…=` の右に glob 文字がある形か、`?` の直後に `key=` が続く形（クエリ文字列。Issue `#2138`）。
+# 後者を `?` の後ろのどこかの `=` まで広げると `rc=$?; [ "$rc" = 0 ]` も候補になり、ヘルパが
+# 壊れた回に判定不能の deny で止まるので、判定ヘルパの述語と同じ並びに絞る。
+query_re='[?][A-Za-z_][A-Za-z0-9_-]*='
+if ! [[ $cmd =~ $query_re ]]; then
+  case "$cmd" in
+    *-*=*'*'* | *-*=*'?'* | *-*=*'['*) : ;;
+    *) glob_candidate=0 ;;
+  esac
+fi
 [ "$glob_candidate" -eq 1 ] || [ -n "$expansion_deny" ] || exit 0
 
 # ---- 抜け道: コマンドの先頭（先頭の空白・タブ・改行だけを剥がす）の FF_ZSH_GLOB_ACK=1 --------
@@ -439,7 +444,7 @@ while IFS= read -r hit_line; do
   hit_fix="${hit_line#*"${tab}"}"
   if [ "$hit_fix" = "-" ] || [ "$hit_fix" = "$hit_line" ]; then
     listed="${listed}
-  ${hit_word}  →  = の右側を引用する（引用や展開を含む語なので書き換え案は出していません）"
+  ${hit_word}  →  = の右側（クエリ文字列の形は語全体）を引用する（引用・展開・brace を含む語、クエリ文字列の形では語頭の ~ / = や直後の & を含む語のいずれかなので、書き換え案は出していません）"
   else
     listed="${listed}
   ${hit_word}  →  ${hit_fix}"
@@ -450,10 +455,10 @@ EOF
 [ "$hit_n" -le 5 ] || listed="${listed}
   （ほか $((hit_n - 5)) 語）"
 
-deny "⚠️ ff-dev-toolkit guard（zsh-nomatch-glob: 未引用 glob の NOMATCH）: このホストの Bash ツールは zsh で動きます（${host_shell}）。\`-\` で始まる語の \`=\` より右に未引用の glob 文字（\`*\` \`?\` \`[\`）があると、zsh は語全体を「その名前で始まるファイル」を探す glob として評価し、**cwd に \`.md\` などがあっても 0 件**になり（\`--include=\` で始まる名前のファイルが実在しない限り必ず）、\`no matches found\` でその位置から呼び出しが中断されます（その語を含むコマンドと、\`;\` / \`&&\` で続くそれ以降のコマンドは走りません。手前のコマンドは既に走っているので、結果が一部だけ欠けた形になります。\`2>/dev/null\` を付けてもエラーは消えません）。bash では同じ文字列が通るので、bash 前提で書いたコマンドがここでだけ落ちます。
+deny "⚠️ ff-dev-toolkit guard（zsh-nomatch-glob: 未引用 glob の NOMATCH）: このホストの Bash ツールは zsh で動きます（${host_shell}）。\`-\` で始まる語の \`=\` より右に未引用の glob 文字（\`*\` \`?\` \`[\`）があると、zsh は語全体を「その名前で始まるファイル」を探す glob として評価し、**cwd に \`.md\` などがあっても 0 件**になり（\`--include=\` で始まる名前のファイルが実在しない限り必ず）、\`no matches found\` でその位置から呼び出しが中断されます（その語を含むコマンドと、\`;\` / \`&&\` で続くそれ以降のコマンドは走りません。手前のコマンドは既に走っているので、結果が一部だけ欠けた形になります。\`2>/dev/null\` を付けてもエラーは消えません）。URL のクエリ文字列の形（\`gh api repos/o/r/contents/a.md?ref=main\` のように未引用の \`?\` の直後に \`key=\` が続く語）も同じで、\`?\` が 1 文字の glob になり、その名前のファイルが実在しない限り必ず 0 件になります。bash では同じ文字列が通るので、bash 前提で書いたコマンドがここでだけ落ちます。
 検出した語（実値 → 書き換え案）:${listed}
 次のいずれかで再実行してください:
-  1) = の右側を引用する（上の書き換え案。例: --include=\"*.md\"）
+  1) = の右側を引用する（上の書き換え案。例: --include=\"*.md\"。クエリ文字列の形は語全体を引用する: \"repos/o/r/contents/a.md?ref=main\"）
   2) bash 前提の複数行の手順は、bash <<'EOF' … EOF で bash に渡す
   3) 誤検知の場合（nonomatch を設定済み・その名前のファイルが実在する等）は、コマンドの**先頭**へ環境代入を付けて再実行する: FF_ZSH_GLOB_ACK=1 <コマンド>
 このガードを止める場合は環境変数 FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1 を設定します。判定の正本は ${HELPER_DIR_SHOWN}/zsh-glob-nomatch.sh です。"

@@ -150,7 +150,7 @@ MCP: 取得値: MCP のfresh PR merged/SHA と Issue state。形式: repo/number
 <!--6c23002b0eb01246-->
 MCP: 取得値: MCP のPR/repo/checks/threads の実フィールド。形式: flat PR / GraphQL thread raw と phase/attempt/cursor の index JSON。渡し先: finish.sh precheck --github-input /absolute/index.json。欠損は推測で補わない。不足時: MCP 必須不足は operation / field / page を示して停止。
 
-index は `{ "version": 1, "responses": [...] }`、各 response は `operation` / `scope` / `phase` / `body`（raw file の絶対パス、または index からの相対パス）を持つ。position の `page` / `cursor` / `attempt` と、`last` / `http_status` は必要な取得だけに付ける。省略と null は別の position である。既定 format は JSON、`format:"text"` は text を扱う consumer だけに使う。一致する response はちょうど 1 件必要で、重複・不在・読めない file・壊れた JSON は rc 2。
+index は `{ "version": 1, "responses": [...] }`、各 response は `operation` / `scope` / `phase` / `body`（raw file の絶対パス、または index からの相対パス）を持つ。`--github-input` の index と body の絶対パスは `/` 始まりで、Windows の Git Bash ではホストのファイル編集機能や git が返すドライブ文字の形（`C:/…` / `C:\…`）も絶対パスとして受け付ける（他の OS では `C:/…` は相対パスとして扱い、index は `must be absolute` で止まり、body は index のディレクトリからの相対パスとして解決する）。position の `page` / `cursor` / `attempt` と、`last` / `http_status` は必要な取得だけに付ける。省略と null は別の position である。既定 format は JSON、`format:"text"` は text を扱う consumer だけに使う。一致する response はちょうど 1 件必要で、重複・不在・読めない file・壊れた JSON は rc 2。
 
 対象 repository は、Git に設定された origin URL（transport の `insteadOf` 展開前）から決める。scp / ssh 形式は HTTPS URL へ揃え、ホスト・ポート・owner/repo を保持する。応答本文から対象を選ばず、別ホスト・別 PR の応答は受け入れない。body の raw bytes と `[]` / `false` / `null` を保持し、取得できなかった値を空配列や偽へ補わない。consumer の必須フィールドが無い回は、operation とフィールド・page / cursor を示して rc 2 で止まる。
 

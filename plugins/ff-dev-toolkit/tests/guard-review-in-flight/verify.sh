@@ -171,6 +171,7 @@
 #   置き場のレーンを対象ツリーと照合せずに数える → 2。対象ツリーの集合を cwd のツリーに戻す → 13。
 # 空振り検出: 走査の針が当たらない入力（本文が空・コメントだけ / 本文全体の字句解析の失敗）を「書き込み無し」として通す変異（tests/lib/review-write-scan.sh の ws_judge_file_program の ws_fail の前に return 1 を置く）を入れると (o3) の「コメントだけの本文」「空の本文」「引用符が閉じない本文」が赤になる（2026-09-27 実測。字句解析の取りこぼしと区別できない入力を緑へ倒さない）。
 # 空振り検出: ホスト環境へ解除変数（FF_REVIEW_LOCK_OVERRIDE=1 / FF_DEV_TOOLKIT_SKIP_REVIEW_IN_FLIGHT_GUARD=1）を置いたまま先頭の isolate_hook_env を外すと 238 件が赤、分離ライブラリの unset を外しても 238 件が赤（2026-09-28 実測、bundle `#1808`）。同じホスト環境でガード本体の最終 emit_deny の前に exit 0 を置く変異は 228 件赤 — 分離が本物の deny 退行を隠さない。
+# 空振り検出: (p) 節と (n20)（Issue `#2271`。2026-10-26 に WSL で実測、変異なしは 599 件緑）。hooks.json の PreToolUse から onFailure: block を消す → 1 件赤。PreToolUse の timeout を 10 へ戻す → 1 件赤。SubagentStop へ onFailure を足す → 1 件赤。hook の `trap ff_on_exit EXIT` を外す → (p) の exit 2 / exit 3 と (n) 節の巡回の記録が赤になり suite が (n) 節で止まる（計 24 件）。巡回の後始末の配線（ROUND_FINISH_ARMED=1）を外す → (n) 節で 20 件赤のうえ停止。差し込みの錨（ASDD ゲートの注記行）を書き換える → 2 件赤（錨が見つからない回を緑へ倒さない）。異常終了の告知（判定不能の systemMessage）を消す → 3 件赤（黙って通す形を緑へ倒さない）。異常終了の回の巡の記録（trap 内の review_round_commit）を外す → (n20) の 1 件赤。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -1099,6 +1100,61 @@ for ev in SubagentStart SubagentStop PermissionDenied; do
   fi
 done
 
+echo "guard-review-in-flight: (p) ホスト側の打ち切りで素通りさせない（onFailure）と異常終了の正規化（Issue \`#2271\`）"
+# Windows の Git Bash ではロック生存下の判定が 6〜25 秒かかり、timeout を超えた回はホストが判定を捨てて
+# 呼び出しを通していた。PreToolUse の登録は onFailure: block で打ち切りを止める側へ倒し、timeout は
+# Git Bash の実測の最大（24.58 秒）を上回る値にする。onFailure は PreToolUse 以外へ付けない
+# （SubagentStop では効かず、レーンの開け閉めの入口を止める理由も無い）。
+P_PRE="$(jq -c '[.hooks.PreToolUse[]?.hooks[]? | select(.command | contains("guard-review-in-flight.sh"))]' "$HOOKS_JSON" 2>/dev/null || true)"
+if [ "$(printf '%s' "$P_PRE" | jq -r 'length' 2>/dev/null)" = "1" ] \
+  && [ "$(printf '%s' "$P_PRE" | jq -r '.[0].onFailure // ""' 2>/dev/null)" = "block" ]; then
+  ok "(p) PreToolUse の登録が onFailure: block を持つ（timeout 超過・起動失敗で呼び出しを通さない）"
+else
+  bad "(p) PreToolUse の登録に onFailure: block が無い（または登録が 1 本でない）: [$P_PRE]"
+fi
+for ev in PreToolUse SubagentStart SubagentStop PermissionDenied; do
+  P_TO="$(jq -r --arg ev "$ev" '[.hooks[$ev][]?.hooks[]? | select(.command | contains("guard-review-in-flight.sh")) | .timeout] | if length == 1 then (.[0] // "") else "" end' "$HOOKS_JSON" 2>/dev/null || true)"
+  case "$P_TO" in
+    '' | *[!0-9]*) bad "(p) $ev の登録の timeout を数値で読めない: [$P_TO]" ;;
+    *) if [ "$P_TO" -ge 30 ]; then ok "(p) $ev の登録の timeout が 30 秒以上（${P_TO}）"; else bad "(p) $ev の登録の timeout が 30 秒未満（${P_TO}）"; fi ;;
+  esac
+done
+for ev in SubagentStart SubagentStop PermissionDenied; do
+  if jq -e --arg ev "$ev" '[.hooks[$ev][]?.hooks[]? | select(.command | contains("guard-review-in-flight.sh")) | select(has("onFailure"))] | length == 0' "$HOOKS_JSON" >/dev/null 2>&1; then
+    ok "(p) $ev の登録は onFailure を持たない"
+  else
+    bad "(p) $ev の登録が onFailure を持つ（PreToolUse 以外へ広げない）"
+  fi
+done
+# 異常終了の正規化: onFailure: block の下で 0 以外の終了は「呼び出しを止める」になるので、ガード自身の
+# 不具合で全呼び出しを止めないよう、EXIT trap が 0 以外を exit 0 へ寄せる。黙って通さず、判定不能を
+# systemMessage で知らせる（permissionDecision は出さない）。stdin を読み切った直後へ `exit <rc>` を
+# 差し込んだ写しで測る（差し込みの錨が見つからない回は赤 = 針が当たらない入力を緑へ倒さない）。
+P_DIR="$TEST_TMP/p-crash"
+mkdir -p "$P_DIR"
+for p_rc in 2 3; do
+  awk -v rc="$p_rc" '/^# ASDD ゲートはこの drain より後に置く。/ && !done { print "exit " rc " # injected-crash"; done = 1 } { print }' \
+    "$TARGET" > "$P_DIR/guard.sh"
+  if [ "$(grep -c 'injected-crash' "$P_DIR/guard.sh" 2>/dev/null || true)" != "1" ]; then
+    bad "(p) 異常終了を差し込む錨（ASDD ゲートの注記行）が hook に見つからない"
+    continue
+  fi
+  P_RC=0
+  P_OUT="$(printf '%s' "$(edit_json)" | bash "$P_DIR/guard.sh" 2>/dev/null)" || P_RC=$?
+  P_MSG="$(printf '%s' "$P_OUT" | jq -r '.systemMessage // empty' 2>/dev/null || true)"
+  P_DEC="$(printf '%s' "$P_OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)"
+  if [ "$P_RC" -eq 0 ] && [ -z "$P_DEC" ]; then
+    ok "(p) 判定の途中で exit $p_rc しても hook は exit 0 で通す（onFailure: block で全呼び出しを止めない）"
+  else
+    bad "(p) 判定の途中の exit $p_rc が hook の終了状態か判定へ漏れる: exit=$P_RC out=[$P_OUT]"
+  fi
+  case "$P_MSG" in
+    *"異常終了しました（rc=${p_rc}）"*'止めずに通します'*) ok "(p) exit $p_rc の回は判定不能を systemMessage で知らせる（黙って通さない）" ;;
+    *) bad "(p) exit $p_rc の回に判定不能の告知が無い: out=[$P_OUT]" ;;
+  esac
+done
+rm -rf "$P_DIR"
+
 echo "guard-review-in-flight: orchestrator 側の契約（ロックの書き出しと必ずの削除）"
 if grep -q 'write_run_in_flight' "${MA_SOURCES[@]}" && grep -q 'remove_run_in_flight' "${MA_SOURCES[@]}"; then
   ok "multi-agent.sh がロックの書き出しと削除を持つ"
@@ -1146,8 +1202,8 @@ else
 fi
 
 # ── (h16) レーン取得は `git status` より前 ─────────────────────────────────────
-# この hook の登録 timeout は 10 秒で、`git status` は大きい・遅いリポジトリでそれを
-# 使い切りうる。取得より先に status を読むと、timeout した回はレーンを 1 本も作らないまま
+# この hook の登録 timeout（hooks.json の登録値）は有限で、`git status` は大きい・遅いリポジトリで
+# それを使い切りうる。取得より先に status を読むと、timeout した回はレーンを 1 本も作らないまま
 # レビューが起動する（ガードが最初から居ない）。
 #
 # **時間ではなく因果で測る。** 「10 秒かかる status」を再現しようとすると、機械の速さに
@@ -3143,6 +3199,37 @@ case "$REASON" in
   *) ok "(n19) 除外 0 件の deny 文は件数行を出さない" ;;
 esac
 git -C "$REPO" switch -q feature/n-rounds
+n_reset
+
+# (n20) 巡回の後始末を張った後の異常終了（Issue `#2271`）: EXIT trap は巡を記録し、巡回の警告と判定不能の
+# 告知を 1 本の systemMessage にまとめて exit 0 で通す。hook と tests/lib を写した木の中で、
+# `ROUND_FINISH_ARMED=1` の直後へ `exit 3` を差し込む（錨が見つからない回は赤）。
+N20_DIR="$TEST_TMP/n20-crash"
+mkdir -p "$N20_DIR/hooks" "$N20_DIR/tests"
+cp "$PLUGIN_ROOT/hooks/"*.sh "$N20_DIR/hooks/"
+cp -R "$PLUGIN_ROOT/tests/lib" "$N20_DIR/tests/lib"
+awk '{ print } /^    ROUND_FINISH_ARMED=1$/ && !done { print "    exit 3 # injected-crash"; done = 1 }' \
+  "$TARGET" > "$N20_DIR/hooks/guard-review-in-flight.sh"
+if [ "$(grep -c 'injected-crash' "$N20_DIR/hooks/guard-review-in-flight.sh" 2>/dev/null || true)" != "1" ]; then
+  bad "(n20) 異常終了を差し込む錨（ROUND_FINISH_ARMED=1）が hook に見つからない"
+else
+  N20_RC=0
+  # shellcheck disable=SC2086 # N_DEF は空白区切りの env 引数
+  N20_OUT="$(printf '%s' "$(n_agent pr-review-toolkit:code-reviewer)" | env $N_DEF bash "$N20_DIR/hooks/guard-review-in-flight.sh" 2>/dev/null)" || N20_RC=$?
+  N20_MSG="$(printf '%s' "$N20_OUT" | jq -r '.systemMessage // empty' 2>/dev/null || true)"
+  N20_JSONS="$(printf '%s' "$N20_OUT" | jq -s 'length' 2>/dev/null || echo x)"
+  if [ "$N20_RC" -eq 0 ] && [ "$N20_JSONS" = "1" ]; then
+    ok "(n20) 巡回の後始末を張った後の異常終了も exit 0・JSON 1 本で終わる"
+  else
+    bad "(n20) 異常終了の出力が JSON 1 本にならない: exit=$N20_RC jsons=[$N20_JSONS] out=[$N20_OUT]"
+  fi
+  case "$N20_MSG" in
+    *'巡回の記録がありません'*'異常終了しました（rc=3）'*) ok "(n20) 巡回の警告と判定不能の告知を同じ systemMessage にまとめる" ;;
+    *) bad "(n20) 巡回の警告か判定不能の告知が欠けている: out=[$N20_OUT]" ;;
+  esac
+  if [ "$(n_heads)" = "1" ]; then ok "(n20) 異常終了した回も巡を記録する（無音の出口と同じ）"; else bad "(n20) 異常終了した回の巡が記録されない: heads=[$(n_heads)]"; fi
+fi
+rm -rf "$N20_DIR"
 n_reset
 
 echo

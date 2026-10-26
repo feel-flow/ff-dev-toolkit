@@ -61,8 +61,12 @@ for hook in "$@"; do
   pids[$index]=$!
   index=$((index + 1))
 done
-# 子の旧来の10秒枠を保ち、親の15秒枠へ結果集約の余裕を残す。
+# 子の旧来の10秒枠を保ち、親の登録枠（30秒）へ結果集約の余裕を残す。Windows の Git Bash（MSYS /
+# Cygwin）はプロセス起動が 1 回 0.1 秒前後と重く、gh へ照会する merge のガードが 10 秒に収まらないので
+# 25 秒にする（Issue `#2377`）。他の OS は 10 秒のまま。
 # タイムアウトした子だけを捨て、完了済みの deny / 警告を失わない。
+child_limit=10
+case "${OSTYPE:-}" in msys* | cygwin*) child_limit=25 ;; esac
 hook_count=$index
 expired=()
 expire_children() {
@@ -78,7 +82,7 @@ expire_children() {
 trap expire_children USR1
 (
   trap - EXIT
-  sleep 10 &
+  sleep "$child_limit" &
   sleeper=$!
   trap 'kill "$sleeper" 2>/dev/null; wait "$sleeper" 2>/dev/null; exit 0' HUP INT TERM
   wait "$sleeper"

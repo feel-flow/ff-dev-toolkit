@@ -92,6 +92,7 @@
 - `PreToolUse :: Bash :: hooks/guard-long-gate-background.sh`
 - `PreToolUse :: Bash :: hooks/guard-pr-followup.sh`
 - `PreToolUse :: Bash :: hooks/guard-sub-issue-id.sh`
+- `PreToolUse :: Bash :: hooks/guard-wsl-shell.sh`
 - `PreToolUse :: Bash :: hooks/guard-zsh-glob.sh`
 - `PreToolUse :: Bash :: hooks/record-effort-wallclock.sh`
 - `PreToolUse :: Bash :: hooks/run-bash-hooks.sh`
@@ -115,9 +116,9 @@
 
 `^mcp__` で始まる 4 本は、GitHub MCP の同じ操作（PR のマージ・Issue の起票・sub-issue の追加・PR の作成 / 更新）に Bash 経路と同じガードを当てる Claude Code 向けの登録で、ガードごとに 1 本ずつ別の matcher を持つ（PR の作成 / 更新の 2 ツールは 1 本を共有。Codex / grok では MCP 呼び出しの `tool_name` と発火が未実測のため保証しない）。
 
-Bash 専用の13実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
+Bash 専用の14実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
 
-子の処理枠は10秒、親の登録枠は集約の余裕を含め15秒とする。時間切れの子と不正な出力は診断して除外し、完了した他の判定を残す。集約自体の環境エラーは新たな拒否にせず、子の終了コード2だけをブロックとして伝播する。終了コード2と他の拒否が重なる場合は、他の拒否理由も stderr へ残す。
+子の処理枠は10秒（Windows の Git Bash＝MSYS / Cygwin ではプロセス起動が重いため25秒）、親の登録枠は集約の余裕を含め30秒とする。時間切れの子と不正な出力は診断して除外し、完了した他の判定を残す。集約自体の環境エラーは新たな拒否にせず、子の終了コード2だけをブロックとして伝播する。終了コード2と他の拒否が重なる場合は、他の拒否理由も stderr へ残す。
 
 拒否したとき（`deny` を返した子がある、または子が終了コード2で止めた）は、理由文の末尾に「この呼び出しは 1 つも実行されておらず、前段で作るつもりだったファイル・書き込みも存在しない。生成とガードに当たる反映を別の呼び出しに分けて再実行する」旨の1行を1回だけ足す。JSON の拒否では `permissionDecisionReason` の最終行、終了コード2では stderr の最終行に置く。確認・許可・警告だけのときは足さない。
 
@@ -190,6 +191,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_DEV_TOOLKIT_SKIP_SUB_ISSUE_ID_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_UPDATE_CHECK`
 - `FF_DEV_TOOLKIT_SKIP_WSL_NOTICE`
+- `FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_ZSH_EXPANSION_GUARD`
 - `FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD`
 - `FF_DISCARD_UNCOMMITTED`
@@ -202,6 +204,7 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `FF_PR_DRAFT_ACK`（`hooks/guard-pr-followup.sh` の Draft PR 検出だけを通すコマンド先頭の環境代入。GitHub MCP 経路では hook の環境変数として読み、セッション全体の GitHub MCP 呼び出しに効く）
 - `FF_SHELL_SAVE_ACK`（`hooks/guard-shell-save.sh` の抜け道。Write / Edit にはコマンド先頭の環境代入が無いので、hook のプロセス環境で渡す）
 - `FF_SUB_ISSUE_ID_ACK`
+- `FF_WSL_SHELL_ACK`
 - `FF_ZSH_EXPANSION_ACK`
 - `FF_ZSH_GLOB_ACK`
 - `FF_REVIEW_LOCK_OVERRIDE`

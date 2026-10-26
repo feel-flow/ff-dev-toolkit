@@ -181,7 +181,7 @@ Issue の工数ブロック（`ff-effort`。単位は人時 `h`）の自己申�
 
 ### Bash ガード（PreToolUse）
 
-プラグインをインストールすると、Bash ツールの実行前に 12 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-merge-closing-keyword.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-zsh-glob.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-credential-output.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` と `guard-zsh-glob.sh` と `guard-literal-write.sh` と `guard-credential-output.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
+プラグインをインストールすると、Bash ツールの実行前に 13 つのガードが自動で有効になる（追加の有効化手順は不要。実体は `hooks/guard-checkout-restore.sh` / `hooks/guard-pr-followup.sh` / `hooks/guard-background-cwd.sh` / `hooks/guard-long-gate-background.sh` / `hooks/guard-effort-actual.sh` / `hooks/guard-merge-closing-keyword.sh` / `hooks/guard-issue-labels.sh` / `hooks/guard-sub-issue-id.sh` / `hooks/guard-exit-code.sh` / `hooks/guard-zsh-glob.sh` / `hooks/guard-literal-write.sh` / `hooks/guard-credential-output.sh` / `hooks/guard-wsl-shell.sh`、登録は `hooks/hooks.json` の `PreToolUse`・`Bash` matcher）。「実行を許しつつエージェントに警告文を見せる」チャネルが PreToolUse に無いため、実行を止めたいものは**抜け道付きの deny（= その場で対処して再実行できる警告）**として、ブロックするほどではないものは `systemMessage` の**警告のみ（コマンドは止めない）**として実装している。いずれも自身の不具合・解析できないコマンド形では黙って許可に倒れる（fail-open）。**例外は `guard-exit-code.sh` と `guard-zsh-glob.sh` と `guard-literal-write.sh` と `guard-credential-output.sh` と `guard-wsl-shell.sh` で、判定を完了できないときは候補コマンドに限り停止する**（fail-closed。下記）。
 
 **認証設定の表示ガード（`guard-credential-output.sh`）** は `.npmrc` / `.netrc` /
 `.pypirc` / `.aws/credentials` / `.docker/config.json` / `.config/gh/hosts.yml` /
@@ -196,6 +196,18 @@ Bash 呼び出しを実行前に止める。`grep -v` の除外やキー名抽�
 不正 JSON・jq 不在・ASDD hooks 無効・ホストでの未登録は保護できない。
 Claude Code の Bash 登録と grok の global hook 同期経路へ同じ実体を配布する。
 Codex の Bash 相当ツールでの実発火は未実測。
+
+**WSL シェル本文ガード（`guard-wsl-shell.sh`）** は Windows の Git Bash でだけ動き、
+`wsl` / `wsl.exe` から `bash` / `sh` を `-c`（`-lc` など）で起動して本文に `$` が残る Bash 呼び出しを実行前に止める。
+`wsl.exe` は `--exec` を付けない限り引数を WSL 側の既定シェルで解釈し直すので、
+単一引用符の中の `$変数` や `$?` も bash へ届く前に展開され、空文字や誤った値のまま動く。
+`wsl.exe --exec sh -c '<スクリプト>' sh <引数>` か、スクリプトファイルを `wsl.exe -- bash /mnt/c/…/script.sh` で起動する形へ書き換える。
+`--exec` / `-e` / `--shell-type none`・`-c` の無い起動・`$` を含まない本文・Git Bash 側で展開される `$` は止めない。
+ただし Git Bash 側の展開結果（`bash -c "$(cat s.sh)"` など）に `$` が含まれていれば WSL でもう一度展開され、これは静的に検出できない。
+誤検知時だけ先頭の `FF_WSL_SHELL_ACK=1` で免除でき、
+環境変数 `FF_DEV_TOOLKIT_SKIP_WSL_SHELL_GUARD=1` で無効化できる。
+候補コマンドで判定 lib の不在・失敗・引用符の未終端なら判定不能として停止する。
+`$(…)` の中の wsl・別名経由の起動・Codex の Bash 相当ツールでの実発火は対象外（未実測）。
 
 
 **未コミット変更ガード（`guard-checkout-restore.sh`）** — 未コミット変更のあるファイルへの `git checkout [--] <path>` / `git restore <path>` を検出し、変更消失の前に警告する。警告文は代替手段（`cp` バックアップ / `git stash push -- <file>` → `pop`）を案内する。ブランチ切り替え（`git checkout <branch>` / `git switch`）、clean・untracked なファイルへの復元、`git restore --staged`（worktree 非破壊）では発火しない。
@@ -226,7 +238,7 @@ Codex の Bash 相当ツールでの実発火は未実測。
 
 - 復旧は検査済みの非空 subject / body と同じ repo・PR・head を固定したコマンドで案内する。前段を含む呼び出し全体が未実行である点に注意する。
 - その merge だけを通すには直前へ `FF_MERGE_CLOSING_ACK=1`、全体の無効化は `FF_DEV_TOOLKIT_SKIP_MERGE_CLOSING_GUARD=1`。工数ガードの ACK とは独立する。
-- 依存は gh / jq / awk / Perl。Perl は gh の各照会を1秒へ制限するために使う。不在時は自動インストールせず、`systemMessage` と `additionalContext` で未検査を知らせて通す。照会は1呼び出し4回までで、以後の merge は未検査と通知する。 command / 実効message / body-file は8KiB、照会応答は64KiB、Refsは32件まで。復旧の置換は4巡までで、既知の抵触は停止を保ち、復旧できなければ手動precheckを案内する。各上限超過も理由付きで知らせる。
+- 依存は gh / jq / awk / Perl。Perl は gh の照会に上限を掛けるために使う（各照会 1 秒。gh の起動だけで約 1 秒かかる Windows の Git Bash では各照会 3 秒・最初の照会から 8 秒まで）。不在時は自動インストールせず、`systemMessage` と `additionalContext` で未検査を知らせて通す。照会は1呼び出し4回まで・全体の時間枠の中までで、以後の merge は未検査と通知する。 command / 実効message / body-file は8KiB、照会応答は64KiB、Refsは32件まで。復旧の置換は4巡までで、既知の抵触は停止を保ち、復旧できなければ手動precheckを案内する。各上限超過も理由付きで知らせる。
 - プレビューは取得時点の snapshot。queue（admin bypassなし）は message 指定を無視し、遅延 auto merge は将来の既定を保証できないため、いずれも理由付きで通す。`--disable-auto` / `--merge` / `--rebase` は対象外。取得不能、未解決の変数・置換・wrapper/cwd、stdinや先行生成の body-file も推測せず理由を知らせる。MCP merge は対象外。全ホストの実セッション発火を保証するものではない。
 
 **起票ラベル契約ガード（`guard-issue-labels.sh`）** — 素の `gh issue create` に種別・優先度のいずれかのラベルが付いていない場合に停止する。起票スキルの verify-then-skip 契約（実在確認のうえラベルを付与する手順）を直接の `gh issue create` で迂回するのを機械的に捕まえるのが目的。`follow-up` ラベルの欠落は起票が PR レビュー由来かどうかを機械的に判定できないため、`systemMessage` の案内のみに留める（停止しない）。

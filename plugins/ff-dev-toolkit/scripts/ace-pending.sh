@@ -183,11 +183,21 @@ while [ "$#" -gt 0 ]; do
   esac
   shift 2
 done
-case "$playbook" in /*) ;; *) die 1 '--playbookは絶対pathで指定してください' ;; esac
-[ -f "$playbook" ] && [ -r "$playbook" ] || die 2 'PLAYBOOKを読めません'
-base="$(CDPATH='' cd -P -- "${playbook%/*}" && pwd -P)" || die 2 '配置先を解決できません'
-pending="$base/PENDING_CANDIDATES.md"
 script_dir="$(CDPATH='' cd -P -- "${BASH_SOURCE[0]%/*}" && pwd -P)" || die 2 'script配置を解決できません'
+# 絶対パスの判定は共有の 1 関数（Windows の Git Bash ではドライブ文字の形も絶対。Issue `#2367`）
+abs_lib="$script_dir/lib/abs-path.sh"
+[ -f "$abs_lib" ] && [ -r "$abs_lib" ] && [ ! -L "$abs_lib" ] || die 2 '絶対パスの判定libがありません'
+# shellcheck source=lib/abs-path.sh
+. "$abs_lib"
+ff_path_is_absolute "$playbook" || die 1 '--playbookは絶対pathで指定してください'
+[ -f "$playbook" ] && [ -r "$playbook" ] || die 2 'PLAYBOOKを読めません'
+# MSYS では C:\dir\PLAYBOOK.md も来るので、ディレクトリは最後の / か \ までとする（POSIX は / だけ）
+playbook_dir="${playbook%/*}"
+case "${OSTYPE:-}" in msys* | cygwin*) playbook_dir="${playbook%[/\\]*}" ;; esac
+# ルート直下（/PLAYBOOK.md・C:/PLAYBOOK.md）は切り出しが空や「C:」になるので、ルートそのものへ戻す
+case "$playbook_dir" in '') playbook_dir=/ ;; [A-Za-z]:) playbook_dir="$playbook_dir/" ;; esac
+base="$(CDPATH='' cd -P -- "$playbook_dir" && pwd -P)" || die 2 '配置先を解決できません'
+pending="$base/PENDING_CANDIDATES.md"
 library="$script_dir/lib/ace-pending-functions.sh"
 [ -f "$library" ] && [ -r "$library" ] && [ ! -L "$library" ] || die 2 '候補parserがありません'
 # shellcheck source=lib/ace-pending-functions.sh
@@ -253,11 +263,15 @@ ff_ace_pending_entry "$scratch/current" "$id" >"$scratch/existing"
 if [ "$command" = defer ]; then
   {
     printf '### %s: %s\n| Category | %s |\n| Origin | %s |\n| Status | pending |\n\n' "$id" "$title" "$category" "$origin"
-    awk '{ print "> " $0 }' "$body_file"
+    # 空行（空白・tab だけの行を含む）は行末に空白を残さない `>` にする（`> ` は markdownlint の MD009 に当たり、
+    # 整形で消される。Issue `#2372`）
+    awk '{ if ($0 ~ /^[ \t]*$/) print ">"; else print "> " $0 }' "$body_file"
     printf '\n---\n'
   } >"$scratch/entry"
   if [ -s "$scratch/existing" ]; then
-    cmp -s "$scratch/existing" "$scratch/entry" || die 1 '同じ候補IDに異なる内容があります（上書きしません）'
+    # 旧版が `> ` + 空白・tab で書いた空白だけの引用行は、書き込み側と同じ文字集合で `>` へ寄せて比べる（再送の冪等を保つ）
+    awk '{ if ($0 ~ /^>[ \t]*$/) print ">"; else print }' "$scratch/existing" >"$scratch/existing.norm" || die 2 '既存候補を比較できません'
+    cmp -s "$scratch/existing.norm" "$scratch/entry" || die 1 '同じ候補IDに異なる内容があります（上書きしません）'
     printf 'PENDING_DEFERRED=0\nPENDING_REASON=already-present\n'; status; exit 0
   fi
   cat "$scratch/current" "$scratch/entry" >"$scratch/next"

@@ -28,6 +28,7 @@
 # 変異検出: 例示行の confidence を 0.85 へ変える（文法外）と例示行のパーサ照合が赤（2026-09-25 実測）。
 # 変異検出: プロンプトの例示行を囲む `~~~text` フェンスを外すと、プロンプト全文の抽出検査が fixture / code-review の 2 件とも赤（例示の架空 finding scripts/example.sh:42 が抽出される。2026-09-25 実測）。
 # 空振り検出: プロンプトから例示行を消すと「例示が無い（針が当たらない）」で赤（0 件一致を緑にしない。2026-09-25 実測）。
+# 変異検出: adapter-common-git.sh の --staging-dir の判定を `/` 始まりだけへ戻すと「MSYS では C:/… の staging を絶対パスとして受け付ける」が赤（2026-10-26 WSL 実測。Issue `#2367`）。
 
 set -euo pipefail
 
@@ -448,6 +449,24 @@ expect_rejects() { # <label> <staging_dir> <期待する理由の断片>
 }
 expect_rejects "implement: 相対パスの staging を拒否する" "relative/staging" "absolute path"
 expect_rejects "implement: 実在しない staging を拒否する" "$TMP/does-not-exist" "does not exist"
+# ドライブ文字の形（C:/…）は MSYS / Cygwin だけ絶対パス（Issue `#2367`）。OSTYPE を差し替え、cwd にだけ置いた
+# 「C:」ディレクトリで、MSYS の受理（そのまま使う）と他の OS の拒否（相対として拒否）を分ける
+case "${OSTYPE:-}" in
+  msys* | cygwin*) echo "  ○ skip: 実機の MSYS / Cygwin では C:/… が本物のドライブを指すため、OSTYPE を差し替える staging 検査は回さない" ;;
+  *)
+    mkdir -p "$TMP/drive/C:/stage"
+    set +e
+    DRIVE_OUT="$(cd "$TMP/drive" && OSTYPE=msys gen_prompt implement "C:/stage" 2>&1)"
+    DRIVE_RC=$?
+    set -e
+    if [ "$DRIVE_RC" -eq 0 ] && [[ "$DRIVE_OUT" == *"C:/stage"* ]]; then
+      ok "implement: MSYS では C:/… の staging を絶対パスとして受け付ける"
+    else
+      bad "implement: MSYS で C:/… の staging を受け付けない (rc=$DRIVE_RC: $(printf '%s' "$DRIVE_OUT" | head -3))"
+    fi
+    OSTYPE=linux-gnu expect_rejects "implement: 他の OS では C:/… の staging を相対パスとして拒否する" "C:/stage" "absolute path"
+    ;;
+esac
 
 NOWRITE_STAGING="$TMP/nowrite-staging"
 mkdir -p "$NOWRITE_STAGING"

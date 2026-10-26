@@ -6,6 +6,9 @@
 # run-all-required: yes — 必須raw不足の停止とgh/file6面一致を検証し、取得失敗を成功へ倒さない
 # 空振り検出: 2026-10-23 R1で明示incomplete/non200 guardの逆変異は4件だけ赤、attemptを常時1へ戻す逆変異もCheckRun/StatusContextの成功・失敗4件だけ赤。正常69件・ready8件はrc0。
 # 空振り検出: 2026-10-23 R2はCheckRunを空conclusion/IN_PROGRESS→SUCCESSまたはFAILURE/COMPLETEDで測定。正常69件rc0、attempt常時1の逆変異は4件だけ赤。
+# 空振り検出: 2026-10-26（Issue `#2367`）WSL で正常 82 件。ace-pending.sh を独自の `/` 判定へ戻す → 1 件赤（各箇所の照合表 7 行。行数が 7 でない回・表の箇所のファイルが無い回も赤）。
+# 空振り検出: 2026-10-26（Issue `#2334`）WSL で正常 74 件。共有判定が OS を問わずドライブ文字を受け付ける → 1 件赤、finish.sh を独自の `/` 判定へ戻す → 1 件赤、link-sub-issues.sh の判定を外す → 3 件赤。
+
 set -euo pipefail
 SELF="$(CDPATH='' cd -P -- "$(dirname -- "$0")" && pwd -P)" || exit 1
 if [ "${1:-}" != --worker ]; then
@@ -39,7 +42,7 @@ PLUGIN="$2"; CASES="$3"; TMP="$4"; EVIDENCE="${5:-}"
 PASS=0; FAIL=0; READY=0
 ok() { printf '  ✓ %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  ✗ %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
-for file in scripts/finish.sh scripts/lib/finish-precheck.sh scripts/lib/github-input.sh scripts/lib/merge-message.sh scripts/link-sub-issues.sh scripts/merge-cleanup.sh tests/lib/git-fixture.sh; do
+for file in scripts/finish.sh scripts/lib/finish-precheck.sh scripts/lib/abs-path.sh scripts/lib/github-input.sh scripts/lib/merge-message.sh scripts/link-sub-issues.sh scripts/merge-cleanup.sh tests/lib/git-fixture.sh; do
   [ -s "$PLUGIN/$file" ] && [ -r "$PLUGIN/$file" ] || { bad "source missing/unreadable/empty: $file"; exit 1; }
 done
 if ! jq -e 'type == "array" and length > 0 and (map(.name) | unique | length) == length and
@@ -386,6 +389,53 @@ printf '[{"number":99}]\n' >"$TMP/after.json"
 run file file "$PLUGIN/scripts/link-sub-issues.sh" --repo owner/repo --github-input "$TMP/link-index.json" 7 8
 if [ "$RC" -eq 2 ] && ! grep -F 'read-back verified' "$TMP/file.out" >/dev/null && ! grep -F 'done parent=' "$TMP/file.out" >/dev/null; then ok 'link mismatched readback remains pending'; else bad "link mismatched readback rc=$RC"; fi
 save_case link-readback-mismatch
+
+# finish.sh / link-sub-issues.sh / merge-cleanup.sh check --github-input themselves before reading
+# (the other entry points rely on github_file_read's INDEX_ABS check). They share
+# github_input_is_absolute: a relative path, and a drive-letter path on a non-MSYS host, stop with
+# rc 2. run() also fails the case if any gh call leaks.
+case "${OSTYPE:-}" in msys* | cygwin*) drive_inputs='relative-index.json' ;; *) drive_inputs='relative-index.json C:/ff-github-input-drive/index.json' ;; esac
+for bad_input in $drive_inputs; do
+  run file entry "$PLUGIN/scripts/finish.sh" precheck 7 --github-input "$bad_input"
+  finish_rc="$RC"; finish_err="$(cat "$TMP/entry.err")"
+  run file entry "$PLUGIN/scripts/link-sub-issues.sh" --repo owner/repo --github-input "$bad_input" 7 8
+  link_rc="$RC"; link_err="$(cat "$TMP/entry.err")"
+  run file entry "$PLUGIN/scripts/merge-cleanup.sh" --dry-run 7 --github-input "$bad_input"
+  cleanup_rc="$RC"; cleanup_err="$(cat "$TMP/entry.err")"
+  case "$finish_rc:$link_rc:$cleanup_rc|$finish_err|$link_err|$cleanup_err" in
+    2:2:2\|*'--github-input must be absolute'*\|*'--github-input must be absolute'*\|*'--github-input must be absolute'*)
+      ok "entry points reject non-absolute --github-input: $bad_input" ;;
+    *) bad "entry points on $bad_input rc=$finish_rc/$link_rc/$cleanup_rc"; printf '%s\n' "$finish_err" "$link_err" "$cleanup_err" >&2 ;;
+  esac
+done
+for file in scripts/finish.sh scripts/link-sub-issues.sh scripts/merge-cleanup.sh; do
+  if grep -qF 'github_input_is_absolute "$github_input"' "$PLUGIN/$file" && ! grep -qE 'github_input" == /\*|github_input" in /\*' "$PLUGIN/$file"; then
+    ok "$file uses the shared absolute-path rule"
+  else bad "$file keeps its own absolute-path rule"; fi
+done
+# Issue `#2367`: the rule lives in scripts/lib/abs-path.sh (ff_path_is_absolute). github_input_is_absolute
+# delegates to it, and the other path-taking entry points call it instead of a leading-/ check of their own.
+# Each row: file | call that must be present | the old leading-/ check that must be gone.
+ABS_SITES=0
+while IFS='|' read -r file call old; do
+  ABS_SITES=$((ABS_SITES + 1))
+  if [ ! -s "$PLUGIN/$file" ]; then bad "absolute-path site missing: $file"; continue; fi
+  if grep -qF "$call" "$PLUGIN/$file" && ! grep -qF "$old" "$PLUGIN/$file"; then
+    ok "$file uses ff_path_is_absolute"
+  else bad "$file keeps its own leading-/ absolute-path check (or lost the shared call)"; fi
+done <<'SITES'
+scripts/lib/github-input.sh|github_input_is_absolute() { ff_path_is_absolute "$1"; }|case "$1" in /*) return 0 ;; esac
+scripts/ace-pending.sh|ff_path_is_absolute "$playbook"|case "$playbook" in /*)
+scripts/knowledge-commit.sh|ff_path_is_absolute "$p"|case "$p" in /*)
+scripts/workflow-doctor.sh|ff_path_is_absolute "$path"|case "$path" in /*)
+hooks/guard-merge-closing-keyword.sh|ff_path_is_absolute "$body_file"|case "$body_file" in /*)
+scripts/lib/adapter-common-git.sh|ff_path_is_absolute "$staging_dir"|case "$staging_dir" in
+scripts/finish.sh|if ff_path_is_absolute "$p"; then claim_paths+=("$p")|case "$p" in /*) claim_paths
+SITES
+[ "$ABS_SITES" -eq 7 ] || bad "absolute-path site table read $ABS_SITES rows"
+if [ -s "$PLUGIN/scripts/lib/abs-path.sh" ] && grep -qF 'ff_path_is_absolute() {' "$PLUGIN/scripts/lib/abs-path.sh"; then
+  ok 'scripts/lib/abs-path.sh defines ff_path_is_absolute'
+else bad 'scripts/lib/abs-path.sh or ff_path_is_absolute missing'; fi
 
 # Extractor miss controls start from a proven complete ready output.
 extract "$TMP/extractor-baseline" "$TMP/extracted" || { bad 'extractor baseline incomplete'; exit 1; }

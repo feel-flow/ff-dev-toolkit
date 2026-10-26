@@ -16,6 +16,7 @@
 #
 # 変異検出（2026-10-02）: 追加語族の除去で 2d / 4c が赤。見出しを旧名限定へ戻すと 3b が赤、次のスコープ外節を連結すると 3c が赤。
 #
+# 変異検出: workflow-doctor.sh の Stop hook のパス判定を `/` 始まりだけへ戻すと 5c2 の MSYS ケースが赤（C:/… を --root へ連結して SKIP 3。130/1）。実機の MSYS / Cygwin では 5c2 を件数合わせの ok にする（2026-10-26 WSL 実測。Issue `#2367`）。
 # 変異検出（2026-09-16 実測。赤転しなかった変異は無し）:
 #   OLD_PATTERN から `|口にした時点で.*起票` を落とす → fixture 2b（第 3 選択肢だけの旧文言）が赤
 #   hook 検査の `! grep -q 'YAGNI'` を外す → fixture 4b（即起票の語を残しつつ YAGNI を持つ reminder）が誤って FAIL になり赤
@@ -254,6 +255,21 @@ if command -v jq >/dev/null 2>&1; then
   hook_settings 'python3 "$CLAUDE_PROJECT_DIR/hooks/guard.py"' "$d/.claude/settings.local.json" || bad "fixture の settings.local.json が有効 JSON にならない"
   out="$(CLAUDE_CONFIG_DIR="$TEST_TMP/cfg" "${DOCTOR[@]}" --root "$d" --global-claude "$NOGLOBAL" --offline 2>&1)"; rc=$?
   if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t3\t.*'"$d/hooks/guard.py" <<<"$out"; then ok "settings.local.json の旧 reminder（\$CLAUDE_PROJECT_DIR を root へ展開）→ FAIL 3"; else bad "settings.local.json を既定で見ていない / 展開が違う（rc=${rc} / $(printf '%s' "$out" | grep -E $'\t3\t' | head -1 | cut -c1-120)）"; fi
+  # 5c2. Stop hook のスクリプトがドライブ文字の形（C:/…）。MSYS / Cygwin では絶対パスとしてそのまま読み、他の OS では
+  #      --root へ連結する（Issue `#2367`）。OSTYPE を差し替え、起動時 cwd にだけ「C:」ディレクトリを置いて結果を分ける
+  case "${OSTYPE:-}" in
+    msys* | cygwin*) ok "（実機の MSYS / Cygwin では C:/… が本物のドライブを指すため 5c2 は未検証 — 件数合わせ）"; ok "（同上 — 件数合わせ）" ;;
+    *)
+      d="$(make_root drivehook "$GOOD_CLAUDE")"
+      mkdir -p "$TEST_TMP/drive/C:/hooks"
+      printf '%s\n' '#!/usr/bin/env python3' 'reason = "STEP3 それ以外 → gh issue create で即起票"' > "$TEST_TMP/drive/C:/hooks/guard.py"
+      hook_settings 'python3 "C:/hooks/guard.py"' "$d/.claude/settings.json" || bad "fixture の settings.json が有効 JSON にならない"
+      out="$(cd "$TEST_TMP/drive" && OSTYPE=msys run_doctor "$d")"; rc=$?
+      if [ "$rc" -eq 1 ] && grep -q $'^FAIL\t3\t.*: C:/hooks/guard.py$' <<<"$out"; then ok "MSYS: Stop hook の C:/… をそのまま読む → FAIL 3"; else bad "MSYS で C:/… の Stop hook を絶対パスとして読まない（rc=${rc} / $(printf '%s' "$out" | grep -E $'\t3\t' | head -1 | cut -c1-120)）"; fi
+      out="$(cd "$TEST_TMP/drive" && OSTYPE=linux-gnu run_doctor "$d")"; rc=$?
+      if grep -q $'^SKIP\t3\t.*読めない.*'"$d/C:/hooks/guard.py" <<<"$out"; then ok "他の OS: Stop hook の C:/… を --root へ連結する（読めず SKIP 3）"; else bad "他の OS で C:/… の Stop hook を --root へ連結しない（rc=${rc} / $(printf '%s' "$out" | grep -E $'\t3\t' | head -1 | cut -c1-120)）"; fi
+      ;;
+  esac
   # 5d. inline の command 文字列に旧文言 → FAIL 3 / YAGNI を持つ inline は OK（スクリプト側と同じ連言）
   d="$(make_root inlinecmd "$GOOD_CLAUDE")"
   hook_settings 'echo 別 Issue 化を口にした時点で必ず起票する' "$d/.claude/settings.json" || bad "fixture が有効 JSON にならない"

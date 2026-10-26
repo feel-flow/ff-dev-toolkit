@@ -302,11 +302,11 @@ expect_lacks '入口の変更として交差' "47-K: 入口も変わった回は
 # 47-J: FF_RUN_ALL_CHANGED の `0` と空値は未設定と同じ（quiet に既定の高速モード。FF_RUN_ALL_FULL=0 と
 # 同じ規約）。解釈できない値は base として解決を試み、解決できなければ 47-F のとおり全件へ倒れる。
 _chg_run
-_chg_unset_out="$(printf '%s\n' "$RUN_OUT" | grep -E '^(suites: |⚡|🔎|🎯|↪|⚠️)' || true)"
+_chg_unset_out="$(printf '%s\n' "$RUN_OUT" | grep -E '^(suites: |⚡|🔎|🎯|↪|⚠️)' | sed '/^⚠️  起動時の負荷:/d' || true)"
 for _chg_v in 0 ""; do
   _chg_run FF_RUN_ALL_CHANGED="$_chg_v"
   expect_rc 0 "47-J: FF_RUN_ALL_CHANGED='${_chg_v}' の実行が rc=0"
-  if [ "$(printf '%s\n' "$RUN_OUT" | grep -E '^(suites: |⚡|🔎|🎯|↪|⚠️)' || true)" = "$_chg_unset_out" ] && [ -n "$_chg_unset_out" ]; then
+  if [ "$(printf '%s\n' "$RUN_OUT" | grep -E '^(suites: |⚡|🔎|🎯|↪|⚠️)' | sed '/^⚠️  起動時の負荷:/d' || true)" = "$_chg_unset_out" ] && [ -n "$_chg_unset_out" ]; then
     ok "47-J: FF_RUN_ALL_CHANGED='${_chg_v}' は未設定と同じ出力（モード行・警告・サマリー）"
   else
     bad "47-J: FF_RUN_ALL_CHANGED='${_chg_v}' が未設定と違う出力になる"

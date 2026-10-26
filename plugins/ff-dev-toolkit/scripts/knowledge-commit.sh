@@ -290,6 +290,11 @@ playbook_lib="$self_dir/lib/playbook-changelog-functions.sh"
 assert_bundled_shebang_lf "$playbook_lib"
 # shellcheck source=lib/playbook-changelog-functions.sh
 . "$playbook_lib"
+abs_lib="$self_dir/lib/abs-path.sh"
+[[ -f "$abs_lib" && ! -L "$abs_lib" ]] || die_env "絶対パスの判定 lib が無いか symlink です: $abs_lib"
+assert_bundled_shebang_lf "$abs_lib"
+# shellcheck source=lib/abs-path.sh
+. "$abs_lib"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || die_env "git リポジトリの中で実行してください（cwd: ${PWD}）"
 # git が返した綴りのまま控える。渡されたパスがリポジトリ内かは、同じく git の出力どうしで比べる（add）
@@ -378,7 +383,8 @@ dry_run_subject=""
 repo_hook() {
   local p
   p="$(git -C "$repo_root" rev-parse --git-path "hooks/$1" 2>/dev/null)" || return 0
-  case "$p" in /*) ;; *) p="$repo_root/$p" ;; esac
+  # linked worktree では git が Windows 形の絶対パス（C:/…）を返す（Issue `#2367`）
+  ff_path_is_absolute "$p" || p="$repo_root/$p"
   if [[ -f "$p" && -x "$p" ]]; then printf '%s\n' "$p"; fi
   return 0
 }

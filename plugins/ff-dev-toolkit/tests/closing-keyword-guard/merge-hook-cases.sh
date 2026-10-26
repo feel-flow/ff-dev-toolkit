@@ -18,6 +18,7 @@ case "${MC_TEST_MODE:-}" in
   capture) printf '%s\000' "$@" >"$MC_TEST_CAPTURE"; exit 0 ;;
   fail) exit 1 ;;
   slow) exec perl -e 'sleep 8' ;;
+  delay2) perl -e 'sleep 2' ;;
   partial) printf '%s' '{"data":'; exit 1 ;;
 esac
 if [ "${MC_TEST_MODE:-}" = context ]; then
@@ -123,6 +124,20 @@ STUB
   mc_test_run 'gh pr merge 7 --merge'; mc_test_assert silent 'merge戦略はsquash対象外'
   printf 'Refs %s\n' "$ref" >"$tmp/work/body.txt"
   mc_test_run 'gh pr merge 7 --squash --subject safe --body-file body.txt'; mc_test_assert silent '既存regular body-fileをsnapshot読取'
+  # Drive-letter body-file (Issue `#2367`): MSYS/Cygwin reads C:/… as absolute, other OSes join it to the
+  # hook cwd. The C: directory exists only under the process cwd, so the two rules give deny vs note.
+  case "${OSTYPE:-}" in
+    msys* | cygwin*) ok 'merge hook: (real MSYS/Cygwin host: C:/… is a real drive, drive body-file cases not run)'; ok 'merge hook: (same — count only)' ;;
+    *)
+      mkdir -p "$tmp/drive/C:"
+      printf 'fix: %s literal\n' "$ref" >"$tmp/drive/C:/body.txt"
+      mc_prev_pwd="$PWD"
+      cd "$tmp/drive" || return 1
+      OSTYPE=msys mc_test_run 'gh pr merge 7 --squash --subject safe --body-file C:/body.txt'; mc_test_assert deny 'MSYSではC:/のbody-fileを絶対パスとして読む'
+      OSTYPE=linux-gnu mc_test_run 'gh pr merge 7 --squash --subject safe --body-file C:/body.txt'; mc_test_assert note '他のOSではC:/のbody-fileをcwdへ連結する'
+      cd "$mc_prev_pwd" || return 1
+      ;;
+  esac
   mc_test_run 'touch body.txt; gh pr merge 7 --squash --subject safe --body-file body.txt'; mc_test_assert note '先行生成のbody-fileは不明'
   mc_test_run 'gh pr merge 7 --squash --body-file -'; mc_test_assert note 'stdin bodyは未確定'
   mc_test_run 'cd /tmp && gh pr merge 7 --squash'; mc_test_assert note '先行cwd変更を推測しない'
@@ -240,8 +255,26 @@ STUB
   ln -s "$tmp/bin/gh" "$tmp/no-perl/gh"
   PATH="$tmp/no-perl"; mc_test_run 'gh pr merge 7 --squash'; PATH="$save_path"; mc_test_assert note 'Perl不在を理由付きallow'
   local started=$SECONDS
-  mode=slow; mc_test_run 'gh pr merge 7 --squash'; mc_test_assert note 'gh時間上限で10秒前に通知'; mode=""
+  mode=slow; OSTYPE=linux-gnu mc_test_run 'gh pr merge 7 --squash'; mc_test_assert note 'gh時間上限で10秒前に通知'; mode=""
   if [ $((SECONDS-started)) -lt 4 ]; then ok 'merge hook: slow照会も4秒未満で戻る'; else bad 'merge hook: slow照会上限が成立しない'; fi
+  # Windows Git Bash: gh alone takes about 0.9 s, so MSYS / Cygwin get 3 s per call and 8 s from the first
+  # call (Issue `#2377`). A 2-second gh is inspected there but cut off elsewhere; an 8-second gh is cut at
+  # 3 s, well inside the 25-second MSYS child.
+  jq --arg ref "$ref" '.data.node.body="Closes \($ref)"' "$tmp/base.json" >"$response"
+  mode=delay2; OSTYPE=msys mc_test_run 'gh pr merge 7 --squash'; mc_test_assert silent 'MSYSでは2秒かかるgh照会も検査する'
+  mode=delay2; OSTYPE=cygwin mc_test_run 'gh pr merge 7 --squash'; mc_test_assert silent 'Cygwinでも2秒かかるgh照会を検査する'
+  mode=delay2; OSTYPE=linux-gnu mc_test_run 'gh pr merge 7 --squash'; mc_test_assert note '他のOSでは2秒かかるgh照会を1秒で打ち切る'; mode=""
+  cp "$tmp/base.json" "$response"
+  started=$SECONDS
+  mode=slow; OSTYPE=msys mc_test_run 'gh pr merge 7 --squash'; mc_test_assert note 'MSYSでもgh時間上限で通知'; mode=""
+  if [ $((SECONDS-started)) -lt 8 ]; then ok 'merge hook: MSYSのslow照会も8秒未満で戻る'; else bad 'merge hook: MSYSのslow照会上限が成立しない'; fi
+  # All calls share the window from the first call: four slow merges would take 12 s at 3 s each.
+  # The note text is checked because the first cut-off call already yields a (different) note.
+  started=$SECONDS
+  mode=slow; OSTYPE=msys mc_test_run 'gh pr merge 7 --squash; gh pr merge 7 --squash; gh pr merge 7 --squash; gh pr merge 7 --squash'
+  mc_test_assert note 'MSYSでは時間枠を使い切ったら以後を未検査と通知'; mode=""
+  case "$out" in *時間枠*) ok 'merge hook: MSYSの通知が時間枠の使い切りを名指しする' ;; *) bad "merge hook: MSYSの時間枠の通知が無い (out=[$out])" ;; esac
+  if [ $((SECONDS-started)) -lt 12 ]; then ok 'merge hook: MSYSで遅い照会が続いても照会の時間枠（8秒）と解析の余裕の内に戻る'; else bad 'merge hook: MSYSの全体の時間枠が成立しない'; fi
   if [ "$count" -gt 0 ] && [ $((PASS+FAIL)) -gt "$before" ]; then ok 'merge hook: case集合は空でない'; else bad 'merge hook: case集合が空'; fi
   rm -rf "$tmp"
 }

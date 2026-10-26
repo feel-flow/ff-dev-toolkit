@@ -2,7 +2,8 @@
 # Runtime contract for the zsh unquoted-glob NOMATCH guard hook (Issue `#1774`).
 #
 # 配布物 hooks/guard-zsh-glob.sh を stdin JSON で直接駆動し、受け入れ条件の各分岐を固定する:
-#   F. zsh ホストで `--flag=<未引用 glob>` を含む呼び出しは実行前に deny し、書き換え案を出す
+#   F. zsh ホストで `--flag=<未引用 glob>`・URL のクエリ文字列の形（`a.md?ref=main`。Issue `#2138`）を含む呼び出しは
+#      実行前に deny し、書き換え案を出す（Q: クエリ形の案は語全体の引用で、意味が変わる語には出さない）
 #   N. 引用済み・エスケープ済み・一般のパス glob・glob として評価されない文脈は素通し
 #   H. bash ホスト（SHELL / CLAUDE_CODE_SHELL で判定）では発火しない
 #   A. 抜け道（先頭の FF_ZSH_GLOB_ACK=1 / skip env）で通る。先頭以外の ACK は無効
@@ -32,13 +33,16 @@
 # 変異検出: 判定ヘルパの `;` での noglob 解除・`]]` での [[ 解除・`esac` での case 解除をそれぞれ外すと、後続を持つ F 系（noglob / [[ / case の後ろの grep）が赤になる（テスト網羅レビュー対応後に実測）。
 # 変異検出: hook の未終端 heredoc（rc 3）を素通しへ変えると C9、deny JSON 失敗時の exit 2 を exit 0 へ変えると C10 が赤になる。
 # 変異検出: 判定ヘルパの case の入れ子の復元（case_close で積んだ状態へ戻す）を cs=0 に戻すと N6（入れ子の case の外側パターン）が赤になる（クロスモデルレビュー対応後に実測）。
-# 空振り検出: 判定ヘルパが存在しない配置（対象の不在）・走査の awk が失敗する（FF_ZSH_GLOB_AWK=false）・関数が無い（名前だけ残って中身が変わる）のいずれを与えても、候補コマンドは無音の素通しではなく判定不能の deny になり C1〜C3 が赤→緑を分ける（どの入力にも 0 件を返すヘルパでは F 系 21 形がすべて素通しになり赤になる。M4。引用が閉じないまま終わる入力（未終端）は走査未完了の rc 4 として C6 が判定不能の deny を要求する。実測 2026-09-27）。
+# 空振り検出: 判定ヘルパが存在しない配置（対象の不在）・走査の awk が失敗する（FF_ZSH_GLOB_AWK=false）・関数が無い（名前だけ残って中身が変わる）のいずれを与えても、候補コマンドは無音の素通しではなく判定不能の deny になり C1〜C3 が赤→緑を分ける（どの入力にも 0 件を返すヘルパでは F 系 32 形がすべて素通しになり赤になる。M4。引用が閉じないまま終わる入力（未終端）は走査未完了の rc 4 として C6 が判定不能の deny を要求する。実測 2026-09-27）。
 #
 # 空振り検出: expansion の不在・関数欠落・awk失敗は判定不能、空出力変異は陽性対照で赤。
 # 空振り検出: PostToolUse は実行済みなので判定器不在・走査失敗（FF_ZSH_GLOB_AWK=false）・JSON でない入力のどれでも止めず（fail-soft）、判定器不在と走査失敗は `$` を含む呼び出しに限り「未検査 / 判定不能」を additionalContext で返して検出 0 件と区別する（P4）。scalar 判定を消した scanner の変異は PostToolUse の陽性対照を黙らせる（P5）。
 # run-all-required: no — jq 不在での skip を許容する（兄弟の hook suite と同じ判断。suite 全体の skip 経路は jq 不在だけで、zsh 不在は Z / X 系の検査単位 skip）
 # 空振り検出: 入力書き換え（Issue `#2255`）は rewrite.sh が持つ。書き換えヘルパ関数の不在・走査失敗は deny へ戻ることを要求し、案を出さない hook は陽性の書き換え検査で赤になる（2026-10-25 実測）。
 # 変異検出: Issue `#2181` の scalar-list を従来scalarへ戻すと、一覧引数の陽性対照がdenyを失い赤（2026-10-17実測）。
+# 変異検出: Issue `#2138` のクエリ文字列の判定（check_query）を無効化すると、F 系・Q 系のクエリ形の検査が計 13 件赤になる（Z 系は実 zsh の性質なので緑のまま）。hook の前置フィルタからクエリ形（`?` の後ろの `=`）を外しても同じ 13 件が赤になり、直後の `&` の除外を外すと Q2 が赤になる（2026-10-26 実測）。
+# 変異検出: typeset 系（export / typeset / local …）の `NAME=value` 引数の除外を外すと N22・N23 が、`builtin` / `command` 前置での除外の解除を外すと F26・F27 が、引用したコマンド名での解除を外すと F28・F29 が、左辺（`=` まで）を引用・エスケープした代入引数での解除を外すと F30〜F32 が、空の引用を含む語の書き換え案の除外を外すと Q2 が赤になる。hook の前置フィルタを `?` の後ろのどこかの `=` へ広げると C1q' が赤になる（2026-10-26 実測）。
+# 空振り検出: クエリ形の素通し（引用済み・`ls a?.md`・エスケープ・代入値・`$?`・case パターン）は ZP 系が実際の zsh で NOMATCH にならないことを測り、`a?.md` が一致するファイル（ab.md）を置いた cwd で一般の ? glob を止めないことを固定する（2026-10-26 実測）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -158,6 +162,17 @@ FIRE_CASES=(
   'case x in x) case y in y) :;; esac;; esac; grep --include=*.md x .'
   'echo `grep --include=*.md x .`'
   'cat <(grep --include=*.md x .)'
+  'gh api repos/o/r/contents/a.md?ref=main --jq .content'
+  'gh api repos/o/r/git/trees/v0.154.1?recursive=1; echo after'
+  'gh api repos/{owner}/{repo}/pulls?state=open&per_page=1'
+  'echo x && printf %s https://example.invalid/a?per_page=100'
+  'builtin export U=a.md?ref=main'
+  'command export U=a.md?ref=main'
+  '"export" U=a.md?ref=main'
+  '\export U=a.md?ref=main'
+  'export "U"=a.md?ref=main'
+  'export \U=a.md?ref=main'
+  'export U""=a.md?ref=main'
 )
 # 素通しさせる形のうち、zsh で実際に実行が成立する形（Z 系で NOMATCH にならないことも実測する）
 PASS_CASES=(
@@ -177,6 +192,16 @@ PASS_CASES=(
   'cat <<EOF
 grep --include=*.md x .
 EOF'
+  'gh api "repos/o/r/contents/a.md?ref=main" --jq .content'
+  'ls a?.md'
+  'ls a?.md *.md'
+  'echo a\?ref=main'
+  'X=a.md?ref=main; echo "$X"'
+  'echo "${x:-a?b=c}" $?=1'
+  'case a?b=c in ?ref=*) :;; *) echo n;; esac'
+  'export U=a.md?ref=main; typeset -g V=a?b=c; echo "$U$V"'
+  'if true; then local W=a?b=c 2>/dev/null; fi'
+  'export U="a"?ref=main'
 )
 
 echo "guard-zsh-glob: F 発火（zsh ホスト）"
@@ -227,6 +252,20 @@ case "$REASON" in
   *) bad "brace を含む語の案内が無い: [$REASON]" ;;
 esac
 
+# クエリ文字列の形（Issue `#2138`）: 語全体を引用する案を出す。引用しても意味が変わる・直らない語には出さない。
+run_hook 'gh api repos/o/r/contents/a.md?ref=main --jq .content'
+case "$REASON" in
+  *'"repos/o/r/contents/a.md?ref=main"'*) ok "Q1: クエリ文字列の形は語全体を引用した書き換え案を出す" ;;
+  *) bad "Q1: クエリ文字列の形の書き換え案が無い: [$REASON]" ;;
+esac
+for c in 'curl -s https://example.invalid/a?x=1&y=2' 'echo a?x=1{b,c}' 'echo ~/a?x=1' 'echo a?x=$v' 'export U""=a?x=1'; do
+  run_hook "$c"
+  case "$DECISION:$REASON" in
+    deny:*'書き換え案は出していません'*) ok "Q2: 引用すると意味が変わる・直らないクエリ形には書き換え案を出さない [$c]" ;;
+    *) bad "Q2: 書き換え案を出さない形の案内が無い: exit=$RC out=[$OUT] [$c]" ;;
+  esac
+done
+
 echo "guard-zsh-glob: N 非発火（zsh ホスト）"
 pass_i=0
 for c in "${PASS_CASES[@]}"; do
@@ -266,6 +305,10 @@ run_hook "A='x FF_ZSH_GLOB_ACK=1 y' grep -rn x --include=*.md ."
 assert_fire "引用値の中に現れる ACK は無効"
 run_hook 'grep -rn "x" docs --include=*.md' FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1
 assert_pass "FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1 で無効化できる"
+run_hook 'FF_ZSH_GLOB_ACK=1 gh api repos/o/r/contents/a.md?ref=main --jq .content'
+assert_pass "クエリ文字列の形（Issue \`#2138\`）も先頭の FF_ZSH_GLOB_ACK=1 で通る"
+run_hook 'gh api repos/o/r/contents/a.md?ref=main --jq .content' FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1
+assert_pass "クエリ文字列の形も FF_DEV_TOOLKIT_SKIP_ZSH_GLOB_GUARD=1 で通る"
 
 echo "guard-zsh-glob: C 判定不能（候補コマンドに限り fail-closed）"
 make_tree() { # <dir>
@@ -282,6 +325,13 @@ run_on "$NOLIB/hooks/guard-zsh-glob.sh" 'git status --short'
 assert_pass "C1': 判定ヘルパが無くても候補でないコマンドは素通し（復旧作業を止めない）"
 run_hook 'grep -rn x docs --include=*.md' FF_ZSH_GLOB_AWK=false
 assert_unavailable "C2: 走査の awk が失敗したら判定不能の deny にする"
+# クエリ文字列の形（Issue `#2138`）も同じ fail-closed の面に入り、`?` の直後が `key=` でない形は候補にしない
+run_on "$NOLIB/hooks/guard-zsh-glob.sh" 'gh api repos/o/r/contents/a.md?ref=main'
+assert_unavailable "C1q: 判定ヘルパが無い配置ではクエリ文字列の形も判定不能の deny にする"
+run_hook 'gh api repos/o/r/contents/a.md?ref=main' FF_ZSH_GLOB_AWK=false
+assert_unavailable "C2q: 走査の awk が失敗したらクエリ文字列の形も判定不能の deny にする"
+run_on "$NOLIB/hooks/guard-zsh-glob.sh" 'rc=$?; [ "$rc" = 0 ] && ls a?.md'
+assert_pass "C1q': ? の直後が key= でない（rc=\$? や一般の ? glob）コマンドはヘルパが無くても素通し"
 NOFN="$TEST_TMP/nofn"
 make_tree "$NOFN"
 printf '# 関数定義を失ったヘルパ\n' > "$NOFN/tests/lib/zsh-glob-nomatch.sh"
@@ -411,6 +461,7 @@ if ZSH_BIN="$(command -v zsh 2>/dev/null)" && [ -n "$ZSH_BIN" ]; then
   printf 'x\n' > "$ZDIR/a.ts"
   printf 'x\n' > "$ZDIR/a.md"
   printf 'x\n' > "$ZDIR/a.sh"
+  printf 'x\n' > "$ZDIR/ab.md"  # `ls a?.md`（一般の ? glob）が一致する cwd で素通しを測る
   z_i=0
   for c in "${FIRE_CASES[@]}"; do
     z_i=$((z_i + 1))

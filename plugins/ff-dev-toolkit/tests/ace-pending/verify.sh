@@ -2,6 +2,8 @@
 # ACE候補の保存・再評価・lookup統合（Issue `#2040`）。
 # run-all-required: yes 候補の保全・解決・検索が未検証のまま完了させない
 # 空振り検出: CLI不在/空、候補台帳の空ファイル/不正schema、件数report不在/0件一致/重複/書式変更を赤とする。認識済schemaの候補0件・容量内の無書込は正常として実測する。
+# 空振り検出: --playbook のドライブ文字の形（Issue `#2367`。2026-10-26 に WSL で実測、変異なしは 116 件緑）。MSYS でも置き場を \ で切らない → 1 件赤、ace-pending.sh を `/` 始まりだけの判定へ戻す → MSYS の 3 件赤。ドライブ直下（C:/PLAYBOOK.md）の置き場を C:/ へ補う処理は、Linux の再現では「C:」が普通のディレクトリ名で `cd` が通るため外しても赤にならない（Windows の Git Bash で `cd C:` が失敗し `cd C:/` が通ることを実測して補正を入れた）。
+# 変異検出: 空の引用行（Issue `#2372`。2026-10-26 に WSL で実測、変異なしは 128 件緑）。書き込みを `> ` へ戻す → 行末空白と冪等の 8 件赤、検証を `^> ` だけへ戻す → 保存の 2 件赤、再送の比較から旧版の正規化を外す → 4 件赤、正規化を空白だけ（`^> *$`）に狭める → tab の 2 件赤。
 set -euo pipefail
 HERE="$(CDPATH='' cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PLUGIN="$(CDPATH='' cd -P -- "$HERE/../.." && pwd -P)"
@@ -104,6 +106,30 @@ expect_rc '同ID同内容の再送は冪等' 0 defer
 same "$PENDING" "$TMP/saved" '再送で重複しない'
 expect_rc '同ID異内容は拒否' 1 defer --title changed
 same "$PENDING" "$TMP/saved" '拒否後に元候補を保全'
+# 空の引用行（Issue `#2372`）: 本文の空行は行末に空白の無い `>` で保存する。`> ` は markdownlint の MD009 に
+# 当たり、整形で空白だけ消されると検証が全体を不正と読んでいた。旧版の `> ` も読み、同じ内容の再送は冪等のまま
+if grep -qx '>' "$PENDING" && ! grep -q ' $' "$PENDING"; then ok '空行は行末空白の無い > で保存'; else bad '空行が > で保存されない / 行末空白が残る'; fi
+sed 's/^>$/> /' "$TMP/saved" >"$PENDING"
+expect_rc '旧版の > （行末空白付き）のストアも読む' 0 bash "$CLI" status --playbook "$BOOK"
+expect_rc '旧版の > のストアも lookup が読む' 0 lookup needle
+contains "$TMP/out" 'PENDING-PR-900-1' '旧版のストアの候補を lookup が返す'
+expect_rc '旧版の > で保存済みの同ID同内容の再送は冪等' 0 defer
+contains "$TMP/out" 'PENDING_REASON=already-present' '旧版の空の引用行は同じ内容として比べる'
+awk '!done && /^> needle body$/ { print "needle body"; done = 1; next } { print }' "$TMP/saved" >"$PENDING"
+expect_rc '引用でない本文行は従来どおり拒否' 2 bash "$CLI" status --playbook "$BOOK"
+contains "$TMP/err" '本文は引用行で保存してください' '引用でない本文行の拒否理由'
+# 空白だけ・tab だけの本文行も `>` に寄せ、旧版の `>   ` / `> <tab>` からの再送も冪等
+cp "$TMP/saved" "$PENDING"
+WSBODY="$TMP/ws-body.md"
+printf 'ws body\n  \n\t\nend\n' >"$WSBODY"
+expect_rc '空白・tab だけの本文行を含む候補を保存' 0 defer --id PENDING-PR-900-7 --body-file "$WSBODY"
+ws_quotes="$(awk '/^### PENDING-PR-900-7:/ { e = 1 } e && $0 == ">" { n++ } e && $0 == "---" { e = 0 } END { print n + 0 }' "$PENDING")"
+if [ "$ws_quotes" -eq 2 ] && ! grep -q '[[:blank:]]$' "$PENDING"; then ok '空白・tab だけの行は行末空白の無い > で保存'; else bad "空白・tab だけの行の保存が違う（> の行 ${ws_quotes} 件）"; fi
+awk '/^### PENDING-PR-900-7:/ { e = 1 } e && $0 == ">" { n++; print (n == 1 ? ">   " : "> \t"); next } e && $0 == "---" { e = 0 } { print }' "$PENDING" >"$TMP/ws-legacy"
+cp "$TMP/ws-legacy" "$PENDING"
+expect_rc '旧版の空白・tab の引用行からの同内容の再送は冪等' 0 defer --id PENDING-PR-900-7 --body-file "$WSBODY"
+contains "$TMP/out" 'PENDING_REASON=already-present' '旧版の空白・tab の引用行は同じ内容として比べる'
+cp "$TMP/saved" "$PENDING"
 printf 'testing: 1\ncoding: 0\nブロック上限: 1 件/カテゴリ\n' >"$REPORT"
 expect_rc '混在: 停止根拠なしの容量内カテゴリは保存しない' 0 defer --id PENDING-PR-900-2 --category coding
 same "$PENDING" "$TMP/saved" '停止根拠なしでは元候補だけ'
@@ -287,6 +313,27 @@ expect_rc '実reportで上限到達候補を保存' 0 defer
 contains "$TMP/out" 'PENDING_COUNT=1' '実上限で1候補'
 bash "$PLUGIN/scripts/ace-run-ts.sh" "$GATE" "$BOOK" >"$TMP/count-after" 2>"$TMP/count-err"
 same "$REPORT" "$TMP/count-after" '保留ファイルはlive件数へ入らない'
+
+echo '== --playbook の絶対パス判定（Windows の Git Bash のドライブ文字の形。Issue `#2367`） =='
+# Linux の bash は環境の OSTYPE を受け継ぐので、OSTYPE=msys の子プロセスで MSYS の分岐を通す。ドライブ文字の
+# パスは cwd（$TMP/drive）の下に「C:」という名前のディレクトリと、名前に \ を含むディレクトリ・ファイルで
+# 再現する。実ホストが MSYS / Cygwin だと同じ名前が実の C:\ を指すので、この節は飛ばす。
+case "${OSTYPE:-}" in
+  msys* | cygwin*) printf '  ○ skip: ドライブ文字の再現は POSIX のファイルシステムが要る（実ホストが %s）\n' "$OSTYPE" ;;
+  *)
+    DRV="$TMP/drive"
+    mkdir -p -- "$DRV/C:/d" "$DRV/C:\\d"
+    cp -- "$BOOK" "$DRV/C:/d/PLAYBOOK.md"
+    cp -- "$BOOK" "$DRV/C:/PLAYBOOK.md"
+    cp -- "$BOOK" "$DRV/C:\\d\\PLAYBOOK.md"
+    msys_status() { (cd -- "$DRV" && OSTYPE="$1" bash "$CLI" status --playbook "$2"); }
+    expect_rc 'MSYS ではドライブ文字の --playbook（C:/…）を受け付ける' 0 msys_status msys 'C:/d/PLAYBOOK.md'
+    expect_rc 'MSYS ではドライブ直下の --playbook（C:/PLAYBOOK.md）の置き場を C:/ にする' 0 msys_status msys 'C:/PLAYBOOK.md'
+    expect_rc 'MSYS では \ 区切りの --playbook（C:\…）も受け付け、置き場を最後の \ で切る' 0 msys_status msys 'C:\d\PLAYBOOK.md'
+    expect_rc 'MSYS 以外では C:/… を相対パスとして拒否する' 1 msys_status linux-gnu 'C:/d/PLAYBOOK.md'
+    contains "$TMP/err" '--playbookは絶対pathで指定してください' 'MSYS 以外の拒否は絶対パスの案内を出す'
+    ;;
+esac
 
 echo '== スキルの保存/再評価/同一commit導線 =='
 contains "$PLUGIN/skills/ace-curate/SKILL.md" '新規PRの候補が0件でも保留を同じ新規性ゲートへ掛け直す' '候補0でもPhase 2が再評価する'

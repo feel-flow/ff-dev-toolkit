@@ -16,5 +16,7 @@ case "${FAKE_GH_MODE:-ok}" in
     printf '%s\n' "${3:-764}"
     ;;
   not_found) echo "HTTP 404: not found" >&2; exit 1 ;;
+  # 移管・削除済みの Issue に gh が返す GraphQL の文言（小文字の issue）
+  not_found_graphql) echo "GraphQL: Could not resolve to an issue or pull request with the number of ${3:-764}. (repository.issue)" >&2; exit 1 ;;
   unavailable) echo "HTTP 401: authentication required" >&2; exit 1 ;;
 esac

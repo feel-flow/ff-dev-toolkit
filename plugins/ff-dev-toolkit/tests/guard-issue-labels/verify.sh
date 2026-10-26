@@ -719,10 +719,10 @@ fi
 guard_timeout="$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
   | select(.command | contains("guard-issue-labels.sh")) | .timeout // empty' "$HOOKS_JSON" 2>/dev/null || true)"
 # 同じ集約エントリとの比較は自己参照になるため、親の契約値を照合する。
-if [ "$guard_timeout" = 15 ]; then
-  ok "集約親の timeout 契約（15 秒）で登録されている"
+if [ "$guard_timeout" = 30 ]; then
+  ok "集約親の timeout 契約（30 秒）で登録されている"
 else
-  bad "集約親の timeout が15秒ではありません（${guard_timeout:-なし}）"
+  bad "集約親の timeout が30秒ではありません（${guard_timeout:-なし}）"
 fi
 case "$(jq -r '.description' "$HOOKS_JSON")" in
   *issue_write*) ok "hooks.json の description が GitHub MCP の issue_write に言及する" ;;

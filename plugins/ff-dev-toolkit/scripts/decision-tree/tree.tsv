@@ -132,6 +132,7 @@ answer	bash-guard	zsh-glob	hook:guard-zsh-glob
 ## zsh-glob の葉は equals の deny と scalar の警告も担う。
 answer	bash-guard	literal-write	hook:guard-literal-write
 answer	bash-guard	credential-output	hook:guard-credential-output
+answer	bash-guard	wsl-shell	hook:guard-wsl-shell
 answer	bash-guard	review-lock	hook:guard-review-in-flight
 answer	bash-guard	effort-wallclock	hook:record-effort-wallclock
 answer	bash-guard	batch	hook:run-bash-hooks

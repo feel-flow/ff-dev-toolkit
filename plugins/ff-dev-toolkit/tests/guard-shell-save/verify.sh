@@ -31,6 +31,7 @@
 #
 # run-all-required: no — jq 不在での skip を許容する（兄弟の hook suite と同じ判断）
 # 空振り検出: 一時領域へ写す ASDD ゲートから scripts/asdd/（設定の検証本体）の複製を外すと、写したゲートの判定が rc=2（判定不能）になり D3a の 2 件と D4b の 1 件が赤（2026-09-28 実測、bundle `#1808`。D3 の drain 検査だけでは判定不能の分岐と無効の分岐を区別できない）。
+# 空振り検出: 保存後の組み立て（Issue `#2357`。2026-10-26 に WSL で実測、変異なしは 74 件緑）。旧実装（`%%` / `#` の切り出し）へ戻す → R5 の 1 件赤、切り出しを 1 文字ずらす → F14・M4 の 2 件赤、二分探索の向きを取り違える → F7・F10 ほか 6 件赤、探索の上限を 1 文字手前に取り違える → F19 の 1 件赤、timeout を 10 秒へ戻す → R4 の 1 件赤。
 # 空振り検出: consumer保存回帰の集合を0件へ替えると、実ケースのfocused集合境界が1件赤・rc=1。正常は4/0、共有検出器への宣言受渡しを外す単独変異は宣言あり危険形だけ1件赤・rc=1（構文はいずれも0、2026-10-22）。
 set -euo pipefail
 
@@ -201,6 +202,39 @@ case "$REASON" in
       *) ok "F10: replace_all=false は先頭 1 箇所だけを字義どおり（& を展開せず）置換する" ;;
     esac ;;
   *) bad "F10: 字義どおりの単一置換になっていない: [${REASON}]" ;;
+esac
+# F17 / F18: 保存後の組み立ては先頭一致の位置を二分探索で求める（Issue `#2357`）。位置の数え方が
+# バイトと文字で食い違うと、マルチバイトの行より後ろの置換がずれて行番号か綴りが変わる。
+MBPRE="$WORK/scripts/mbpre.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'set -o pipefail' '# 日本語のコメント行（全角）' 'PLACEHOLDER' 'echo tail' > "$MBPRE"
+run_json "$HOOK" "$(edit_json "$MBPRE" 'PLACEHOLDER' "$MB_BAD")"
+case "$DECISION:$REASON" in
+  deny:*"4:$MB_BAD"*) ok "F17: マルチバイトの行より後ろの置換も行番号と綴りがそのまま報告される" ;;
+  *) bad "F17: マルチバイトの行より後ろの置換がずれた: decision=[${DECISION}] reason=[${REASON}]" ;;
+esac
+# 大きな .sh（約 13 万字・25 万バイト。Windows の Git Bash で旧実装が timeout を超えた大きさの桁）の
+# 末尾付近への置換の正しさを見る。所要時間は測らない（Linux では旧実装も速い。性能の退行は R5 が見る）。
+BIG="$WORK/scripts/big.sh"
+{
+  printf '%s\n' '#!/usr/bin/env bash' 'set -o pipefail'
+  i=0
+  while [ "$i" -lt 4000 ]; do printf '# 長いファイルの行 %s（全角を含む）PLACEHOLDE\n' "$i"; i=$((i + 1)); done
+  printf '%s\n' 'PLACEHOLDER' 'echo tail'
+} > "$BIG"
+BIG_LINE=$((4000 + 3))
+run_json "$HOOK" "$(edit_json "$BIG" 'PLACEHOLDER' "$MB_BAD")"
+case "$DECISION:$REASON" in
+  deny:*"${BIG_LINE}:$MB_BAD"*) ok "F18: 大きな .sh でも、先頭一致（似た綴りの行の後ろ）を正しい行で置換して deny" ;;
+  *) bad "F18: 大きな .sh の置換が誤った: decision=[${DECISION}] reason=[${REASON:0:300}]" ;;
+esac
+# F19: old_string がファイルの最後のバイトで終わる（末尾に改行が無い）とき。二分探索が上限（全体の長さ）で
+# 収束する側の境界で、1 文字ずれると末尾の綴りが欠けるか残る。
+TAILF="$WORK/scripts/tail.sh"
+printf '%s\n%s\n%s' '#!/usr/bin/env bash' 'set -o pipefail' 'PLACEHOLDER' > "$TAILF"
+run_json "$HOOK" "$(edit_json "$TAILF" 'PLACEHOLDER' "$MB_BAD")"
+case "$DECISION:$REASON" in
+  deny:*"3:$MB_BAD"*) ok "F19: 末尾に改行の無い最後の行への置換も、行番号と綴りがそのまま報告される" ;;
+  *) bad "F19: 末尾の置換がずれた: decision=[${DECISION}] reason=[${REASON}]" ;;
 esac
 GLOB="$WORK/scripts/glob.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'x=[*]' 'x=a' > "$GLOB"
@@ -452,6 +486,22 @@ case "$DESC" in
   *guard-shell-save.sh*FF_SHELL_SAVE_ACK*) ok "R3: hooks.json の description が保存時ガードと抜け道に言及する" ;;
   *) bad "R3: hooks.json の description に guard-shell-save.sh / FF_SHELL_SAVE_ACK の記述が無い" ;;
 esac
+# R4: Windows の Git Bash で 21 万字の .sh への Edit が約 7 秒かかる（高速化後）。timeout は負荷時の
+# 伸びを見込んで 30 秒以上にする（10 秒では deny が捨てられて違反が保存されていた。Issue `#2357`）。
+# onFailure: block は付けない — 走査はファイルの長さに比例するので、30 秒を超える巨大な .sh では Edit 自体が
+# 締め出される。その代わり 30 秒を超えた回は従来どおりホストが判定を捨てて通す（残余。HOST-PARITY §3）。
+SS_TIMEOUT="$(jq -r '[.hooks.PreToolUse[] | select(.matcher == "Write|Edit") | .hooks[]
+    | select(.command | contains("hooks/guard-shell-save.sh")) | .timeout] | if length == 1 then (.[0] // "") else "" end' "$HOOKS_JSON" 2>/dev/null || true)"
+case "$SS_TIMEOUT" in
+  '' | *[!0-9]*) bad "R4: guard-shell-save の timeout を数値で読めない: [${SS_TIMEOUT}]" ;;
+  *) if [ "$SS_TIMEOUT" -ge 30 ]; then ok "R4: guard-shell-save の timeout が 30 秒以上（${SS_TIMEOUT}）"; else bad "R4: guard-shell-save の timeout が 30 秒未満（${SS_TIMEOUT}）"; fi ;;
+esac
+# R5: 先頭一致の切り出しに長さの二乗で遅くなる形（${…%%"$old"*} / ${…#*"$old"}）を戻さない。
+if grep -qE '%%"\$old"\*|#\*"\$old"' "$HOOK"; then
+  bad "R5: 保存後の組み立てに二乗で遅くなる切り出し（\${…%%\"\$old\"*} / \${…#*\"\$old\"}）が残っている"
+else
+  ok "R5: 保存後の組み立ては二乗で遅くなる切り出しを使わない"
+fi
 
 echo "guard-shell-save: 変異検出（コピーへ当て、本番検査と同形の針が赤になること）（M）"
 MUT_SRC="$TEST_TMP/mut-src.sh"

@@ -692,7 +692,7 @@ if [ -n "$github_input" ]; then
   case "$github_shebang" in *$'\r') echo 'github-input: helper shebang must use LF' >&2; exit 2 ;; esac
   # shellcheck source=lib/github-input.sh
   . "$mc_file_lib" || exit 2
-  case "$github_input" in /*) ;; *) _github_input_error index '--github-input must be absolute'; exit 2 ;; esac
+  github_input_is_absolute "$github_input" || { _github_input_error index '--github-input must be absolute'; exit 2; }
   github_repository="$(_github_input_repository)" || exit 2
   printf '{}\n' >"$WORK_TMP/github-position.json"
 else
