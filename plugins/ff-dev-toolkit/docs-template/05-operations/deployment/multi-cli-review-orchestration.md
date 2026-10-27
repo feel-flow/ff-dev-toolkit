@@ -1044,7 +1044,7 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 
 そのタスクは**失敗として報告され、別 CLI での自動再実行は行われません**（実行時 fallback は意図的に持たせていない）。
 
-`distributed` review の `security-analysis` は、headless Grok で承認待ちや本文なしになる既知の経路を避けるため、所有・fallback・コスト調整後のプランで利用可能な別 CLI へ割り当て、理由とコスト帯を表示します。明示した CLI と除外を越えた振替は行わず、代替が無ければ dry-run でも非 0 で停止して代替条件を示します。Grok 自身への native 委譲は対象外です。pair / cross-model で明示したモデルの組はこの自動振替では変えません。
+`distributed` review で、headless Grok が型付き判定行を返せない既知の経路（コマンド実行を要する観点。名簿は `headless_grok_unreliable_review_perspectives` の 1 か所。着手時は `error-handler-hunt` と `security-analysis`）は、所有・fallback・コスト調整後のプランで利用可能な別 CLI へ割り当て、理由とコスト帯を表示します。明示した CLI と除外を越えた振替は行わず、代替が無ければ dry-run でも非 0 で停止して代替条件を示します。Grok 自身への native 委譲は対象外です。pair / cross-model で明示したモデルの組はこの自動振替では変えません。実行時 fallback は従来どおり無しで、失敗サマリーが回し直しコマンドを出します。
 
 失敗サマリーの単発・代替 CLI・新しいホスト委譲のコマンドは、元の出力先内の隠しディレクトリ `.recovery-*` を、独立した復旧コマンドごとに分けて明示します。元の ignore 境界を維持し、複数の復旧を続けて実行しても先の結果を退避しません。元の結果・キャッシュ・レポート・委譲世代を保持し、元と補完の両方を確認します。委譲の 2 段は表示された同じ新規出力先で、初回の引数に `--resume` だけを足して回収します。これらは別の実行であり、元の巡を完了済みに変えたり、別実行の結果を混ぜて 1 件の prior-evidence として受理したりしません。単一の prior-evidence が必要なら、元を保持したまま新規出力先で必須観点一式を実行します。同じ入力の未完了レーンだけを再開する場合は、下の `--resume` 手順を使います。
 

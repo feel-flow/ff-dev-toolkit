@@ -298,10 +298,11 @@ print_failure_advice() {
     # 落とされた観点こそその案内を必要とする。
     # プラン構築と同じ解決を使う。ここだけ get_cli_fallback を直接呼ぶと、
     # 「設定上の代替は未導入だが、その先には導入済みがある」場合に代替案が出ない。
-    # 案内は headless 単発を起動するため、プランが拒否する Grok/security を
-    # 代替先として表示しない。他観点と同じ fallback 順・課金境界は維持する。
+    # 案内は headless 単発を起動するため、プランが拒否する headless Grok の
+    # 不成立観点を代替先として表示しない。名簿は
+    # headless_grok_unreliable_review_perspectives。他観点と同じ fallback 順・課金境界は維持する。
     fallback_candidates="$AVAILABLE_CLIS"
-    if [[ "$TASK_TYPE" == "review" && "$persp" == "security-analysis" ]]; then
+    if is_headless_grok_unreliable_review_perspective "$persp"; then
       fallback_candidates=""
       for candidate in $AVAILABLE_CLIS; do
         [[ "$candidate" == "grok-cli" ]] && continue

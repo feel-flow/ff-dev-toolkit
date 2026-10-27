@@ -21,6 +21,8 @@ else
   exit 0
 fi
 pids=()
+expired_notes=()
+json_timeout=""
 timer=""
 # 拒否された呼び出しは前段の生成も走っていない。各ガードの理由文は違反形だけを示すため、
 # 前段のファイルが在る前提で次の呼び出しを組む往復を集約側の1行で防ぐ。
@@ -29,6 +31,14 @@ finish() {
   # exit 2 ではホストは stderr を理由文として示すため、その末尾へ1回だけ足す。
   [ "$blocking" -ne 2 ] || printf '%s\n' "$not_run_note" >&2
   exit "$blocking"
+}
+emit_timeout_only() {
+  # 他に届ける JSON が無いときも、打ち切った hook を黙って捨てない。
+  # 終了コード 2 では json_timeout を空にしてあり、stderr の診断行だけを使う。
+  [ -n "$json_timeout" ] || return 0
+  if ! jq -n --arg note "$json_timeout" '{systemMessage:$note,hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$note}}'; then
+    printf '%s\n' "$json_timeout" >&2
+  fi
 }
 is_running() {
   # Bash のジョブ表で生存を確認し、回収済み PID の再利用先を kill しない。
@@ -98,7 +108,9 @@ for ((index=0; index<hook_count; index++)); do
   if [ "${expired[$index]:-0}" -eq 1 ]; then
     wait "$pid" 2>/dev/null || true
     unset 'pids[index]'
-    echo "ff-dev-toolkit: hook $((index + 1)) は時間内に完了しませんでした" >&2
+    timeout_line="ff-dev-toolkit: hook $((index + 1)) は時間内に完了しませんでした"
+    echo "$timeout_line" >&2
+    expired_notes+=("$timeout_line")
     continue
   fi
   # シグナルで中断された完了済みの子は、その終了コードを取り直す。
@@ -114,12 +126,31 @@ done
 kill "$timer" 2>/dev/null || true
 wait "$timer" 2>/dev/null || true
 timer=""
-[ "${#outputs[@]}" -gt 0 ] || finish
+if [ "${#expired_notes[@]}" -gt 0 ]; then
+  timeout_note="$(IFS=$'\n'; printf '%s' "${expired_notes[*]}")"
+else
+  timeout_note=""
+fi
+# 終了コード 2 ではホストが stdout を採用せず stderr を理由文にする。
+# 診断行は待ちの途中で stderr へ出してあるので、未実行注記と同じく JSON へは重ねない。
+json_timeout="$timeout_note"
+[ "$blocking" -ne 2 ] || json_timeout=""
+[ "${#outputs[@]}" -gt 0 ] || { emit_timeout_only; finish; }
 # 複数 JSON をそのまま連結するとホストが読めない。deny > ask > allow とし、
 # 全理由・警告を残す。壊れた1本の出力で他の判定まで失わないよう個別に検証する。
 reject_rewrite() {
-  if ! jq -n --arg reason "$1 $not_run_note" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'; then
+  # 終了コード2以外では json_timeout も載せる（emit_timeout_only / 集約 jq と同じ契約）。
+  if ! jq -n --arg reason "$1 $not_run_note" --arg timeout "$json_timeout" '
+    {hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason
+    }}
+    + (if $timeout == "" then {} else {systemMessage: $timeout} end)
+    | .hookSpecificOutput += (if $timeout == "" then {} else {additionalContext: $timeout} end)
+  '; then
     printf '%s\n' "$1 $not_run_note" >&2
+    [ -z "$json_timeout" ] || printf '%s\n' "$json_timeout" >&2
     exit 2
   fi
   exit 0
@@ -149,16 +180,17 @@ else
   echo 'ff-dev-toolkit: 解釈できない hook 出力を除外しました' >&2
 fi
 done
-[ "${#valid[@]}" -gt 0 ] || finish
+[ "${#valid[@]}" -gt 0 ] || { emit_timeout_only; finish; }
 # exit 2 の経路は finish が stderr 末尾へ足すため、JSON 側では重ねない。
 deny_note="$not_run_note"
 [ "$blocking" -ne 2 ] || deny_note=""
-merged="$(jq -s --arg note "$deny_note" '
+merged="$(jq -s --arg note "$deny_note" --arg timeout "$json_timeout" '
   [.[].hookSpecificOutput // empty | select(has("permissionDecision"))] as $decisions
-  | ([.[].systemMessage // empty] | join("\n")) as $messages
+  | ([.[].systemMessage // empty] + (if $timeout == "" then [] else [$timeout] end) | join("\n")) as $messages
+  | ([.[].hookSpecificOutput.additionalContext // empty] + (if $timeout == "" then [] else [$timeout] end)) as $contexts
   | (if $messages == "" then {} else {systemMessage: $messages} end)
-  + (if ([.[].hookSpecificOutput.additionalContext // empty] | length) == 0 then {} else
-      {hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: ([.[].hookSpecificOutput.additionalContext // empty] | join("\n"))}} end)
+  + (if ($contexts | length) == 0 then {} else
+      {hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: ($contexts | join("\n"))}} end)
   * (if ($decisions | length) == 0 then {} else
       {hookSpecificOutput: {
         hookEventName: "PreToolUse",

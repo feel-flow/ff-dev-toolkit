@@ -22,6 +22,34 @@
 #       <理由> は DT_REASON の写像（docs-only → docs のみ / small-diff → 小さい差分 /
 #       contract-change:<path> → 契約 path <path> / implementation → 実装変更 / no-files → 変更 0 件 /
 #       jev-* → Jev の判定・失敗 / error:* → 判定不能）。行数が取れない回は「行数不明」
+#   続けて、セキュリティに関わる変更の専用ゲート（規定の正本は docs-template の self-review.md
+#   「レビュー担当の選択と利用制限時の継続」の専用セキュリティゲート項）を出す:
+#   REVIEW_SECURITY_SENSITIVE=yes|no|unknown   … 根の DT_SECURITY（設定を読めない回は unknown）
+#   REVIEW_SECURITY_EVIDENCE=<path>            … yes の根拠（1 行 1 path）
+#   REVIEW_PRIMARY_HOST=claude-code|grok-cli|unknown … CLAUDECODE=1 / GROK_AGENT から判定（両方・
+#       どちらも無い回は unknown。Codex を判定する手段は無いので unknown になる）
+#   REVIEW_SECURITY_BASE_CHECK=match|mismatch|no-origin-head|unchecked
+#       /security-review は origin/HEAD を基点に固定するので、差分モードの base と照合する
+#       （--files / --files-from は base を持たないので unchecked）
+#   REVIEW_SECURITY_GATE=security-review|unverified|unsupported|off|none
+#       security-review … 主担当 claude-code が通常のレビューに加えて /security-review を実行する
+#       unverified      … 主担当 claude-code だが基点（指すコミット）が食い違う / origin/HEAD が無い、または
+#                         決定木のルータが無く何も判定できない。走らせず未確認と記録する
+#       unsupported     … 主担当が claude-code 以外。専用ゲートは未対応として記録する（省略しない）
+#       off             … security_review=off（判定は出すが専用ゲートを起動しない）
+#       none            … 該当なし（unknown は no へ倒さず、yes と同じくゲートの対象にする）
+#   REVIEW_SECURITY_REPORT_LINE=専用セキュリティゲート: …   … PR の Self-Review 欄へ転記する判定の 1 行
+#
+# 設定（フィールド単位に env > プロジェクト設定 > 既定。プロジェクト設定は MULTI_AGENT_CONFIG、
+# 無ければ <repo>/.claude/agent-config.yaml の review 配下。ユーザー設定の層は持たない — path の
+# パターンはリポジトリごとの事実なので、利用者単位で共有する意味が無い）:
+#   MULTI_AGENT_SECURITY_GLOB       / review.security_glob       … security-glob の既定を置き換える
+#   MULTI_AGENT_SECURITY_GLOB_EXTRA / review.security_glob_extra … security-glob へ追加する
+#   MULTI_AGENT_SECURITY_REVIEW     / review.security_review     … auto（既定）| off
+#   パターンは空白区切りの 1 文字列（YAML リストは不可）。env を空で設定した回は未設定として下位層へ
+#   落ちる。設定を読めない回（MULTI_AGENT_CONFIG で明示したファイルが無い・読めない・yq が無い・
+#   文字列でない / 空の値・未知の値・review 配下以外に 1 つでも置かれた security_* キー）は該当なしへ
+#   倒さず REVIEW_SECURITY_SENSITIVE=unknown と理由を出す。
 #
 # 終了コード: route.sh と同じ（0 = 判定した〈none を含む〉/ 2 = 判定不能 / 64 = 使い方の誤り）と、
 #   3 = plugin root ガードの停止（2 は判定不能に使っているので別の番号にする）。
@@ -212,11 +240,112 @@ if [ ! -f "$ROUTER" ]; then
   echo "REVIEW_ROUTE=none"
   echo "REVIEW_LANES=host"
   echo "REVIEW_REPORT_LINE=経路: none（根拠: 判定不能（決定木のルータがありません） / 行数不明）"
+  # 分類も根が持つので出せない。該当なしへ倒さず unknown にする（主担当の判定はしない）
+  echo "REVIEW_SECURITY_SENSITIVE=unknown"
+  echo "REVIEW_PRIMARY_HOST=unknown"
+  echo "REVIEW_SECURITY_BASE_CHECK=unchecked"
+  echo "REVIEW_SECURITY_GATE=unverified"
+  echo "REVIEW_SECURITY_REPORT_LINE=専用セキュリティゲート: 未確認（判定不能: 決定木のルータがありません）"
   exit 2
 fi
 
+# ---- 専用セキュリティゲートの設定（env > プロジェクト設定 > 既定）------------------------
+SEC_CONFIG_ERROR=""
+SEC_GLOB_VALUE=""; SEC_GLOB_FROM=""
+SEC_EXTRA_VALUE=""; SEC_EXTRA_FROM=""
+SEC_POLICY=""; SEC_POLICY_FROM=""
+[ -z "${MULTI_AGENT_SECURITY_GLOB:-}" ] || { SEC_GLOB_VALUE="$MULTI_AGENT_SECURITY_GLOB"; SEC_GLOB_FROM="env"; }
+[ -z "${MULTI_AGENT_SECURITY_GLOB_EXTRA:-}" ] || { SEC_EXTRA_VALUE="$MULTI_AGENT_SECURITY_GLOB_EXTRA"; SEC_EXTRA_FROM="env"; }
+[ -z "${MULTI_AGENT_SECURITY_REVIEW:-}" ] || { SEC_POLICY="$MULTI_AGENT_SECURITY_REVIEW"; SEC_POLICY_FROM="env"; }
+
+SEC_CONFIG="${MULTI_AGENT_CONFIG:-}"
+SEC_CONFIG_EXPLICIT=0
+[ -z "$SEC_CONFIG" ] || SEC_CONFIG_EXPLICIT=1
+if [ -z "$SEC_CONFIG" ]; then
+  sec_top="$(git rev-parse --show-toplevel 2>/dev/null)" || sec_top=""
+  [ -z "$sec_top" ] || SEC_CONFIG="${sec_top}/.claude/agent-config.yaml"
+fi
+# 読む設定キーの名簿。キーの所在は yq で文書全体と review 配下の両方を数える — 行頭一致の grep だと
+# フロー形式（review: {security_glob_extra: …}）や引用付きキーを見落とし、書いたパターンが黙って効かない
+SEC_KEYS="security_glob security_glob_extra security_review"
+SEC_KEY_RE='^security_(glob|glob_extra|review)$'
+sec_read_key() { # <キー> → stdout: 値（null は空）。rc 1 = 文字列でない
+  local tag
+  tag="$(yq -r ".review.$1 | tag" "$SEC_CONFIG" 2>/dev/null)" || return 2
+  case "$tag" in
+    '!!null') return 0 ;;
+    '!!str') ;;
+    *) return 1 ;;
+  esac
+  # yq の `//` は false を「無い」扱いにするので使わない（ACE-1608-1）。tag で文字列だけを通している
+  yq -r ".review.$1" "$SEC_CONFIG" 2>/dev/null || return 2
+}
+if [ -n "$SEC_CONFIG" ] && [ ! -e "$SEC_CONFIG" ]; then
+  # 既定の置き場が無いのは「設定なし」。明示した設定ファイルが無いのは指定の誤りで、既定へ戻さない
+  [ "$SEC_CONFIG_EXPLICIT" -eq 0 ] || SEC_CONFIG_ERROR="MULTI_AGENT_CONFIG の設定ファイルがありません: ${SEC_CONFIG}"
+elif [ -n "$SEC_CONFIG" ]; then
+  if [ ! -f "$SEC_CONFIG" ] || [ ! -r "$SEC_CONFIG" ]; then
+    SEC_CONFIG_ERROR="プロジェクト設定を読めません: ${SEC_CONFIG}"
+  elif ! command -v yq >/dev/null 2>&1; then
+    # yq が無いと形式を問わずキーを読めない。コメント行以外に名前が現れれば読めないものとして扱う
+    # （awk の失敗〈rc 2 以上〉も「キーが無い」と読まない）
+    sec_awk_rc=0
+    awk '!/^[[:space:]]*#/ && /security_(glob|glob_extra|review)/ { f = 1 } END { exit f ? 0 : 1 }' "$SEC_CONFIG" 2>/dev/null || sec_awk_rc=$?
+    case "$sec_awk_rc" in
+      0) SEC_CONFIG_ERROR="yq が無いため ${SEC_CONFIG} の security_* キーを読めません" ;;
+      1) : ;;
+      *) SEC_CONFIG_ERROR="プロジェクト設定の security_* キーを検査できません（awk rc=${sec_awk_rc}）: ${SEC_CONFIG}" ;;
+    esac
+  else
+    sec_all="$(yq -r "[.. | select(tag == \"!!map\") | keys | .[] | select(test(\"${SEC_KEY_RE}\"))] | length" "$SEC_CONFIG" 2>/dev/null)" || sec_all=""
+    sec_in_review="$(yq -r "[.review | select(tag == \"!!map\") | keys | .[] | select(test(\"${SEC_KEY_RE}\"))] | length" "$SEC_CONFIG" 2>/dev/null)" || sec_in_review=""
+    case "${sec_all}:${sec_in_review}" in
+      *[!0-9:]* | :* | *:) SEC_CONFIG_ERROR="${SEC_CONFIG} を yq で読めません" ;;
+    esac
+    # review 配下以外（tasks.review 等）に 1 つでもあれば置き場の違い。review 配下の別キーと併記されて
+    # いても、そのキーは黙って無視されるので通さない
+    if [ -z "$SEC_CONFIG_ERROR" ] && [ "$sec_all" != "$sec_in_review" ]; then
+      SEC_CONFIG_ERROR="security_* キーが review 配下以外にあります（review.security_glob 等に置く）: ${SEC_CONFIG}"
+    fi
+    if [ -z "$SEC_CONFIG_ERROR" ] && [ "$sec_in_review" -gt 0 ]; then
+      for sec_key in $SEC_KEYS; do
+        sec_rc=0
+        sec_val="$(sec_read_key "$sec_key")" || sec_rc=$?
+        case "$sec_rc" in
+          0) ;;
+          1) SEC_CONFIG_ERROR="review.${sec_key} が文字列ではありません（空白区切りの 1 文字列で書く）: ${SEC_CONFIG}"; break ;;
+          *) SEC_CONFIG_ERROR="${SEC_CONFIG} を yq で読めません"; break ;;
+        esac
+        # キーはあるが値が空（""）: 書いた意図が読めないので既定へ戻さない
+        if [ -z "$sec_val" ]; then
+          [ "$(yq -r ".review | has(\"${sec_key}\")" "$SEC_CONFIG" 2>/dev/null)" != "true" ] \
+            || { SEC_CONFIG_ERROR="review.${sec_key} が空です: ${SEC_CONFIG}"; break; }
+          continue
+        fi
+        case "$sec_key" in
+          security_glob) [ -n "$SEC_GLOB_FROM" ] || { SEC_GLOB_VALUE="$sec_val"; SEC_GLOB_FROM="project config"; } ;;
+          security_glob_extra) [ -n "$SEC_EXTRA_FROM" ] || { SEC_EXTRA_VALUE="$sec_val"; SEC_EXTRA_FROM="project config"; } ;;
+          security_review) [ -n "$SEC_POLICY_FROM" ] || { SEC_POLICY="$sec_val"; SEC_POLICY_FROM="project config"; } ;;
+        esac
+      done
+    fi
+  fi
+fi
+case "${SEC_POLICY:-auto}" in
+  auto | off) : ;;
+  *) [ -n "$SEC_CONFIG_ERROR" ] || SEC_CONFIG_ERROR="security_review は auto か off です（${SEC_POLICY_FROM}: ${SEC_POLICY}）"
+     SEC_POLICY="" ;;
+esac
+# 設定を読めなかった回は無効化（off）も読めていないものとして扱い、ゲートを止めない
+# （env の MULTI_AGENT_SECURITY_REVIEW=off も含めて捨てる — どの層の設定が壊れているかを報告行で直させる）
+[ -z "$SEC_CONFIG_ERROR" ] || { SEC_POLICY=""; SEC_POLICY_FROM=""; }
+
+ROUTE_ARGS=("$@")
+[ -z "$SEC_GLOB_FROM" ] || ROUTE_ARGS+=(--security-glob "$SEC_GLOB_VALUE")
+[ -z "$SEC_EXTRA_FROM" ] || ROUTE_ARGS+=(--security-glob-extra "$SEC_EXTRA_VALUE")
+
 RC=0
-OUT="$(bash "$ROUTER" "$@")" || RC=$?
+OUT="$(bash "$ROUTER" "${ROUTE_ARGS[@]}")" || RC=$?
 [ "$RC" -eq 64 ] && exit 64
 printf '%s\n' "$OUT"
 
@@ -262,4 +391,100 @@ case "$route" in
 esac
 echo "REVIEW_REQUIRED_PERSPECTIVES=${required}"
 echo "REVIEW_REPORT_LINE=経路: ${route}（根拠: ${why} / ${lines_text}）"
+
+# ---- 専用セキュリティゲート ----------------------------------------------------------------
+sec="$(kv DT_SECURITY)"
+sec_reason="$(kv DT_SECURITY_REASON)"
+sec_evidence="$(printf '%s\n' "$OUT" | awk '/^DT_SECURITY_EVIDENCE=/ { sub(/^DT_SECURITY_EVIDENCE=/, ""); print }')"
+case "$sec" in
+  yes | no) : ;;
+  unknown) [ -n "$sec_reason" ] || sec_reason="error:理由なし" ;;
+  *) sec="unknown"; sec_reason="error:根が分類を出していません" ;;
+esac
+if [ -n "$SEC_CONFIG_ERROR" ]; then
+  sec="unknown"; sec_reason="error:${SEC_CONFIG_ERROR}"
+fi
+case "$sec_reason" in
+  no-files) sec_why="変更 0 件" ;;
+  error:*) sec_why="${sec_reason#error:}" ;;
+  *) sec_why="$sec_reason" ;;
+esac
+
+# 主担当ホスト。両方立つ回（片方のホストからもう片方を起動した）は入れ子の向きが分からないので unknown
+host="unknown"
+if [ "${CLAUDECODE:-}" = "1" ] && [ -z "${GROK_AGENT:-}" ]; then
+  host="claude-code"
+elif [ -n "${GROK_AGENT:-}" ] && [ "${CLAUDECODE:-}" != "1" ]; then
+  host="grok-cli"
+fi
+
+# /security-review は比較の基点を origin/HEAD に固定し、基点を引数で受けない（Claude Code の
+# commands / errors リファレンス）。差分モードで base が origin/HEAD と食い違うと、マージ済みの別 PR の
+# 変更まで対象に入る（または対象が欠ける）ので、走らせずに未確認として記録させる。
+# --files / --files-from は base を持たないので照合しない（unchecked。ホストが確かめる）
+base_check="unchecked"
+sec_base=""
+sec_files_mode=0
+prev=""
+for a in "$@"; do
+  case "$a" in --files | --files-from) sec_files_mode=1 ;; esac
+  [ "$prev" != "--base" ] || sec_base="$a"
+  prev="$a"
+done
+origin_head=""
+if [ "$sec_files_mode" -eq 0 ]; then
+  origin_head="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || origin_head=""
+  [ -n "$sec_base" ] || sec_base="${WORKFLOW_TIER_BASE:-}"
+  [ -n "$sec_base" ] || sec_base="$origin_head"
+  # 名前ではなく指すコミットで比べる — `--base develop` のローカルが origin/develop より古い回は、
+  # 名前が揃っていても /security-review の比較範囲と食い違う
+  sec_base_commit="$(git rev-parse --verify --quiet "${sec_base}^{commit}" 2>/dev/null)" || sec_base_commit=""
+  origin_head_commit="$(git rev-parse --verify --quiet "${origin_head}^{commit}" 2>/dev/null)" || origin_head_commit=""
+  if [ -z "$origin_head" ] || [ -z "$origin_head_commit" ]; then
+    base_check="no-origin-head"
+  elif [ -n "$sec_base_commit" ] && [ "$sec_base_commit" = "$origin_head_commit" ]; then
+    base_check="match"
+  else
+    base_check="mismatch"
+  fi
+fi
+
+if [ "$sec" = "no" ]; then
+  gate="none"
+elif [ "${SEC_POLICY:-auto}" = "off" ]; then
+  gate="off"
+elif [ "$host" != "claude-code" ]; then
+  gate="unsupported"
+elif [ "$base_check" = "no-origin-head" ] || [ "$base_check" = "mismatch" ]; then
+  gate="unverified"
+else
+  gate="security-review"
+fi
+
+n_evidence="$(printf '%s\n' "$sec_evidence" | awk 'NF { n++ } END { print n + 0 }')"
+first_evidence="$(printf '%s\n' "$sec_evidence" | awk 'NF { print; exit }')"
+if [ "$sec" = "yes" ]; then
+  if [ "$n_evidence" -gt 1 ]; then basis="根拠: ${first_evidence} ほか $((n_evidence - 1)) 件"; else basis="根拠: ${first_evidence}"; fi
+else
+  basis="判定不能: ${sec_why}"
+fi
+case "$gate" in
+  none) report="対象外（該当変更なし）" ;;
+  off) report="無効（security_review=off / ${SEC_POLICY_FROM}。${basis}）" ;;
+  security-review) report="/security-review を実行する（${basis}）" ;;
+  unverified)
+    if [ "$base_check" = "no-origin-head" ]; then
+      report="未確認（/security-review の基点 origin/HEAD がありません。${basis}）"
+    else
+      report="未確認（/security-review の基点 ${origin_head} が base ${sec_base} と食い違います。${basis}）"
+    fi ;;
+  *) report="未対応（主担当 ${host}。${basis}）" ;;
+esac
+
+echo "REVIEW_SECURITY_SENSITIVE=${sec}"
+[ -z "$sec_evidence" ] || [ "$sec" != "yes" ] || printf '%s\n' "$sec_evidence" | awk 'NF { print "REVIEW_SECURITY_EVIDENCE=" $0 }'
+echo "REVIEW_PRIMARY_HOST=${host}"
+echo "REVIEW_SECURITY_BASE_CHECK=${base_check}"
+echo "REVIEW_SECURITY_GATE=${gate}"
+echo "REVIEW_SECURITY_REPORT_LINE=専用セキュリティゲート: ${report}"
 exit "$RC"

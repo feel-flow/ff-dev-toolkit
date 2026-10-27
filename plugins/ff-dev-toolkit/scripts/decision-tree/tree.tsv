@@ -14,7 +14,7 @@
 #     行き先 = node:<id> | skill:<名> | hook:<名> | doc:<plugin 相対パス>#<見出し文字列> | none
 #     `none` は「ホスト判定へ落とす」で、各ノードにちょうど 1 本要る（行き先も none）
 #   rule    <node-id>   <キー>   <値>
-#     choice ノードの機械判定規則。root の 3 キーは route.sh のヘッダが意味を持つ
+#     choice ノードの機械判定規則。root の 4 キーは route.sh のヘッダが意味を持つ
 #
 # 制約（--check が固定する）: 深さ（root から葉までの辺数）≤ 4、葉 ≤ 55、
 # 実在しない葉 / 到達不能なノード / 木に載っていないスキル・hook / 同じ (node, key) の rule の重複 /
@@ -26,10 +26,14 @@
 # 規則の評価順（route.sh）: contract-path に当たる path が 1 つでもあれば full →
 # 残りが docs-glob だけなら fast → 変更行数（追加 + 削除）が fast-max-lines 以下なら fast →
 # それ以外は full。判定材料（変更ファイル）が 0 件なら none（ホスト判定へ）。
+# security-glob は経路とは独立の分類（セキュリティに関わる変更か）で、docs-glob に当たる path を除いた
+# 残りが 1 つでも当たれば該当とする。大文字小文字を区別しない。既定は汎用の値で、プロジェクトの上書き・
+# 追加は review-route.sh が設定から解決して route.sh の --security-glob / --security-glob-extra へ渡す。
 node	root	choice	依頼の経路 — 変更ファイル一覧（または Issue 本文）から fast / full のどちらで回すか
 rule	root	docs-glob	*.md docs/* changelog.d/* .version-claims/*
 rule	root	contract-path	*/hooks/hooks.json *PUBLIC-SURFACE.md .claude-plugin/* */.claude-plugin/* */skills/*/* */docs-template/* CLAUDE.md AGENTS.md */scripts/decision-tree/* */scripts/jev/questions/* docs/06-reference/HOST-PARITY.md docs/06-reference/DECISIONS.md
 rule	root	fast-max-lines	10
+rule	root	security-glob	*auth* *login* *logout* *signin* *signup* *oauth* *oidc* *saml* *session* *token* *jwt* *csrf* *cors* *password* *passwd* *credential* *secret* *security* *permission* *rbac* *middleware* *payment* *billing* *checkout* *stripe* *webhook* *upload* *crypt* *sanitiz* *fetch* *proxy* .env* */.env* *.sql *migration* *migrate*
 answer	root	fast	node:fast
 answer	root	full	node:full
 answer	root	none	none

@@ -125,7 +125,8 @@ git add app.txt
 git commit -qm "change"
 
 # --- stub CLI 群 ---
-# grok（minimize_cost の振替先 = 逐次化対象。自身 2 観点 + claude 振替 3 観点）は
+# grok（minimize_cost の振替先 = 逐次化対象。claude 振替 3 観点。自身の
+# command-requiring 観点は計画時代替で grok から外れる）は
 # 起動回数を数え、1 回目だけ $TMP/grok-mode の形で失敗する。
 #   auth  … Issue #659 の実測 1 件目と同じ形の stderr（401 Unauthorized）
 #   crash … 分類語彙を含まない一般的なクラッシュ（fail-open の陰性対照）
@@ -328,7 +329,11 @@ echo "== (5) スキップした観点でも前回の未解消 Critical を保持
 # cksum）を含み、手書きの値がずれると guard が「別 series」として前回分類を捨てるか、
 # パース不能で実行ごと中断する。どちらも検査を空振りさせる（実測でそうなった）ので、
 # 実装自身に 1 回目を書かせる。
-run_case critical --timeout 60
+# grok の minimize_cost 既定割当は非ブロック観点だけなので、CRITICAL_BLOCK を
+# 残すにはブロック観点（code-review）を明示ペアで grok に載せる。名簿の
+# command-requiring 観点は使わない（計画時代替で grok から外れる）。
+BLOCK_GROK_ARGS=(--cli grok-cli --perspective code-review,type-design-analysis,comment-analysis)
+run_case critical --timeout 60 "${BLOCK_GROK_ARGS[@]}"
 if [ -f "$OUT/integrated-report.md" ] \
   && /usr/bin/grep -qF -- '<!-- CRITICAL_BLOCK -->' "$OUT/integrated-report.md"; then
   ok "前提: 1 回目の実行が未解消 Critical のレポートを残した"
@@ -351,7 +356,7 @@ set +e
 ( cd "$REPO" && run_isolated PATH="$STUB:/usr/bin:/bin" GROK_HOME="$TMP/grok-home" \
     FF_TIMEOUT_KILL_GRACE=1 \
     bash "$MULTI_AGENT" --task review --mode distributed --strategy minimize_cost \
-      --base develop --timeout 60 --output-dir "$OUT" ) >"$TMP/run.log" 2>&1
+      --base develop --timeout 60 --output-dir "$OUT" "${BLOCK_GROK_ARGS[@]}" ) >"$TMP/run.log" 2>&1
 set -e
 if /usr/bin/grep -q '⏭ Skipped grok-cli/' "$TMP/run.log"; then
   ok "前提: 2 回目でスキップが発生している"

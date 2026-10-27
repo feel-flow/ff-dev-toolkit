@@ -28,7 +28,8 @@
 #                            向けるため、ホストの ~/.config が漏れて成立することは無い）
 #   ・codex 不在 + 主 reviewer 未設定（grok だけ） → `No reviewers configured — falling
 #                            back to the distributed plan.` で分散へ縮退し、grok が観点を
-#                            引き受ける。headless security は代替不在でrc=1、明示除外ならrc=0
+#                            引き受ける。headless の command-requiring 観点は代替不在でrc=1、
+#                            名簿を明示除外すれば rc=0
 #   ・AI CLI が 1 本も無い → --cli を外しても委譲先の CLI 検出が
 #                            `ERROR: No AI CLIs are installed` で止まる（rc=1・プランなし。
 #                            新規セットアップ直後・CI の最小イメージで踏む）
@@ -163,26 +164,38 @@ else
   sed 's/^/    | /' "$WORK/out.log" >&2
 fi
 
-# 主未設定・Grokだけの既定プランは headless security の代替不在で停止する。
-# 観点を明示除外した回は分散プランを出し、主不在・空プランと区別する。
+# 主未設定・Grokだけの既定プランは headless の command-requiring 観点の代替不在で停止する。
+# 名簿を明示除外した回は分散プランを出し、主不在・空プランと区別する。
 RUN_SHIM_CWD="$REAL_ORCH_REPO" RUN_SHIM_TOOLKIT="$REAL_ORCH_TOOLKIT" \
   run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent "PATH=$MAIN_ABSENT_ONLY:/usr/bin:/bin" \
   --base develop --dry-run
 unset RUN_SHIM_TOOLKIT
 if [ "$RUN_RC" -eq 1 ] \
   && grep -q '^ℹ️  No reviewers configured — falling back to the distributed plan' "$WORK/err.log" \
-  && grep -q '^ERROR: security-analysis is unsupported on headless grok-cli' "$WORK/err.log" \
-  && grep -q -- '--exclude-reviewers security-analysis' "$WORK/err.log" \
+  && grep -qE '^ERROR: (error-handler-hunt|security-analysis) is unsupported on headless grok-cli' "$WORK/err.log" \
+  && grep -q -- 'headless-unreliable review perspective' "$WORK/err.log" \
   && ! grep -q '^ERROR: main reviewer' "$WORK/err.log" \
   && ! grep -q '^🏁 Dry run complete' "$WORK/out.log"; then
-  ok "主未設定・Grokだけの既定dry-runは headless security を名指ししてrc=1"
+  ok "主未設定・Grokだけの既定dry-runは headless 不成立観点を名指ししてrc=1"
 else
   bad "Grokだけの既定dry-runが制約を無視した、または理由を誤診した (rc=$RUN_RC)"
   sed 's/^/    | /' "$WORK/out.log" >&2
+  sed 's/^/    | /' "$WORK/err.log" >&2
 fi
 RUN_SHIM_CWD="$REAL_ORCH_REPO" RUN_SHIM_TOOLKIT="$REAL_ORCH_TOOLKIT" \
   run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent "PATH=$MAIN_ABSENT_ONLY:/usr/bin:/bin" \
   --base develop --dry-run --exclude-reviewers security-analysis
+unset RUN_SHIM_TOOLKIT
+if [ "$RUN_RC" -eq 1 ] \
+  && grep -q '^ERROR: error-handler-hunt is unsupported on headless grok-cli' "$WORK/err.log"; then
+  ok "security だけ除外しても error-handler-hunt の代替不在で rc=1 のまま"
+else
+  bad "security だけの除外で error-handler-hunt の代替不在を見逃した (rc=$RUN_RC)"
+  sed 's/^/    | /' "$WORK/err.log" >&2
+fi
+RUN_SHIM_CWD="$REAL_ORCH_REPO" RUN_SHIM_TOOLKIT="$REAL_ORCH_TOOLKIT" \
+  run_shim CODEX_REVIEW_CODEX_BIN=/nonexistent/ff-codex-absent "PATH=$MAIN_ABSENT_ONLY:/usr/bin:/bin" \
+  --base develop --dry-run --exclude-reviewers error-handler-hunt,security-analysis
 unset RUN_SHIM_TOOLKIT
 if [ "$RUN_RC" -eq 0 ] \
   && grep -q '主 reviewer が未設定なら、委譲先は「No reviewers configured — falling back to the distributed plan.」で分散プランへ縮退し' "$WORK/err.log" \
@@ -191,10 +204,11 @@ if [ "$RUN_RC" -eq 0 ] \
   && ! grep -q '^ERROR: main reviewer' "$WORK/err.log" \
   && grep -q '^🏁 Dry run complete' "$WORK/out.log" \
   && grep -qE '^   grok-cli \[' "$WORK/out.log"; then
-  ok "主未設定・Grokだけでも security明示除外なら分散プランをrc=0で確認できる"
+  ok "主未設定・Grokだけでも名簿を明示除外すれば分散プランをrc=0で確認できる"
 else
-  bad "security明示除外後の分散プランが成立しない (rc=$RUN_RC)"
+  bad "名簿明示除外後の分散プランが成立しない (rc=$RUN_RC)"
   sed 's/^/    | /' "$WORK/out.log" >&2
+  sed 's/^/    | /' "$WORK/err.log" >&2
 fi
 
 # --exclude-cli codex-cli との併用。ここでは固定の --cli を**落とさない** — 落とすと同じ

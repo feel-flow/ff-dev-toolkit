@@ -7,6 +7,8 @@
 #   route.sh --files <path> [<path> ...]               … 渡した path 一覧で判定
 #   route.sh --files-from <file|->  [--lines <n>]      … 1 行 1 path（`-` は stdin）。--lines は変更行数
 #   route.sh --issue-body <file>                       … Issue 本文（FF_JEV_MODE=on の state に載せる）
+#   route.sh --security-glob <globs>                   … security-glob の既定を置き換える（空白区切り 1 文字列）
+#   route.sh --security-glob-extra <globs>             … security-glob に追加する（同上）
 #   route.sh --check                                   … 木データの静的検査（到達性 suite が呼ぶ）
 #   route.sh --leaves                                  … 葉の一覧（kind <tab> name <tab> target）
 #   route.sh --walk <答え> [<答え> ...]                … root から答えを順に辿って行き先を出す
@@ -29,6 +31,12 @@
 #   off では Jev を呼ばず記録も書かない — 既存の発火（SKILL.md の description・hook の matcher）
 #   に対して何も足さないのが契約で、ルータ自身は経路を出力するだけで発火を変えない。
 #
+# セキュリティに関わる変更の分類（経路とは独立。FF_JEV_MODE に依らず規則だけで決める）:
+#   docs-glob に当たる path を除いた残りのうち、security-glob（大文字小文字を区別しない）に当たる
+#   path が 1 つでもあれば yes、無ければ no。分類できない回（変更 0 件・security-glob が無い / 空・
+#   判定材料の収集前に判定不能で止まった）は no へ倒さず unknown にする。主担当ホストでの分岐と
+#   プロジェクト設定の解決は scripts/review-route.sh が持つ（ここは分類だけ）。
+#
 # FF_JEV_MODE=on（ADR-059 の二段構え。判定点名 `route`）:
 #   choice 型のノード（v0 では root だけ）は先に jev-decide.sh へ criteria（scripts/jev/questions/
 #   <ノード id>.json。答えの集合と同じ option を持つことを --check が固定する）と state（変更ファイル
@@ -48,6 +56,9 @@
 #   DT_FILES=<n>                     … 判定に使った path 件数
 #   DT_LINES=<n|->                   … 変更行数（取れなければ `-`）
 #   DT_TARGET=node:fast|node:full|none … 根の答えの行き先（木の次ノード）
+#   DT_SECURITY=yes|no|unknown       … セキュリティに関わる変更か（上の分類）
+#   DT_SECURITY_REASON=<理由>        … match / no-match / no-files / error:<内容>
+#   DT_SECURITY_EVIDENCE=<path>      … yes の根拠の path（1 行 1 path。yes 以外では出さない）
 #   終了コード: 0 = 判定した（none を含む） / 2 = 判定不能（木データ・Jev 入力の不正、git の失敗）
 #   / 64 = 使い方の誤り。--check は 0 = 違反なし / 1 = 違反あり / 2 = 検査不能。
 #
@@ -71,6 +82,13 @@ BASE=""
 LINES="-"
 ISSUE_BODY=""
 WALK_ARGS=()
+SEC_GLOB=""
+SEC_GLOB_SET=0
+SEC_GLOB_EXTRA=""
+# 分類の結果。判定材料の収集前に判定不能で止まった回もこの既定のまま出す（no へ倒さない）
+SEC_STATE="unknown"
+SEC_REASON="error:判定材料の収集前に止まりました"
+SEC_EVIDENCE=""
 
 usage() {
   sed -n '2,/^set -uo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
@@ -89,6 +107,9 @@ emit_route() { # $1=route $2=reason $3=source $4=files $5=lines
   echo "DT_FILES=$4"
   echo "DT_LINES=$5"
   echo "DT_TARGET=${target}"
+  echo "DT_SECURITY=${SEC_STATE}"
+  echo "DT_SECURITY_REASON=${SEC_REASON}"
+  [ -z "$SEC_EVIDENCE" ] || printf '%s\n' "$SEC_EVIDENCE" | awk 'NF { print "DT_SECURITY_EVIDENCE=" $0 }'
 }
 # 判定不能は none を出したうえで exit 2（DT_ROUTE= 行を出さない形にしない — 読む側が
 # 「行が無い = 判定していない」と「none」を区別できる）。
@@ -109,6 +130,8 @@ while [ $# -gt 0 ]; do
     --files-from) [ $# -ge 2 ] || die_usage "--files-from に値がありません"; FILES_FROM="$2"; shift 2 ;;
     --lines) [ $# -ge 2 ] || die_usage "--lines に値がありません"; LINES="$2"; shift 2 ;;
     --issue-body) [ $# -ge 2 ] || die_usage "--issue-body に値がありません"; ISSUE_BODY="$2"; shift 2 ;;
+    --security-glob) [ $# -ge 2 ] || die_usage "--security-glob に値がありません"; SEC_GLOB="$2"; SEC_GLOB_SET=1; shift 2 ;;
+    --security-glob-extra) [ $# -ge 2 ] || die_usage "--security-glob-extra に値がありません"; SEC_GLOB_EXTRA="$2"; shift 2 ;;
     --tree) [ $# -ge 2 ] || die_usage "--tree に値がありません"; TREE="$2"; shift 2 ;;
     --plugin-root) [ $# -ge 2 ] || die_usage "--plugin-root に値がありません"; PLUGIN_ROOT="$2"; shift 2 ;;
     --jev-decide) [ $# -ge 2 ] || die_usage "--jev-decide に値がありません"; JEV_DECIDE="$2"; shift 2 ;;
@@ -185,7 +208,7 @@ check_tree() {
       # 同じ (node, key) の重複は赤 — 最後の行を採る検査と最初の行を採る判定が食い違うと、
       # 前に置いた行で判定を緩めたまま検査を通せる。キーは choice ノードの規則名簿に閉じる
       if (($2 SUBSEP $3) in rule) { print "違反: rule " $2 " / " $3 " が重複しています"; bad++ }
-      if ($3 != "docs-glob" && $3 != "contract-path" && $3 != "fast-max-lines") { print "違反: rule " $2 " の未知のキー: " $3; bad++ }
+      if ($3 != "docs-glob" && $3 != "contract-path" && $3 != "fast-max-lines" && $3 != "security-glob") { print "違反: rule " $2 " の未知のキー: " $3; bad++ }
       rule[$2 SUBSEP $3] = $4; rnode[$2]++; next
     }
     function walk(id, depth, path,   i, n, arr, ans, tgt, child) {
@@ -228,6 +251,10 @@ check_tree() {
           if (!((id SUBSEP "contract-path") in rule)) { print "違反: choice node " id " に rule contract-path がありません"; bad++ }
           if (!((id SUBSEP "fast-max-lines") in rule)) { print "違反: choice node " id " に rule fast-max-lines がありません"; bad++ }
           else if (rule[id SUBSEP "fast-max-lines"] !~ /^[1-9][0-9]*$/) { print "違反: choice node " id " の fast-max-lines が正の整数ではありません: " rule[id SUBSEP "fast-max-lines"]; bad++ }
+          # 空の security-glob は何にも当たらない針（実行時は unknown に倒すが、全 PR がゲート対象になる
+          # 木データの欠陥なので、ここで止める）
+          if (!((id SUBSEP "security-glob") in rule)) { print "違反: choice node " id " に rule security-glob がありません"; bad++ }
+          else if (rule[id SUBSEP "security-glob"] !~ /[^[:space:]]/) { print "違反: choice node " id " の security-glob が空です"; bad++ }
         }
       }
       for (id in rnode) if (!(id in kind)) { print "違反: rule が実在しないノードを指しています: " id; bad++ }
@@ -414,7 +441,7 @@ collect_files() { # stdout: 1 行 1 path（--files-from / --files のとき）
 }
 
 route_rules() { # $1=files（改行区切り） $2=lines → stdout: route<TAB>reason
-  local files="$1" lines="$2" docs_glob contract max_lines f pat docs_only=1 contract_hit=""
+  local files="$1" lines="$2" docs_glob contract max_lines f pat docs_only=1 contract_hit="" seen=0
   docs_glob="$(tree_rows | awk -F'\t' '$1 == "rule" && $2 == "root" && $3 == "docs-glob" { print $4; exit }')"
   contract="$(tree_rows | awk -F'\t' '$1 == "rule" && $2 == "root" && $3 == "contract-path" { print $4; exit }')"
   max_lines="$(tree_rows | awk -F'\t' '$1 == "rule" && $2 == "root" && $3 == "fast-max-lines" { print $4; exit }')"
@@ -423,6 +450,7 @@ route_rules() { # $1=files（改行区切り） $2=lines → stdout: route<TAB>r
   set -f
   while IFS= read -r f; do
     [ -n "$f" ] || continue
+    seen=$((seen + 1))
     for pat in $contract; do
       case "$f" in $pat) contract_hit="$f"; break ;; esac
     done
@@ -437,12 +465,60 @@ $files
 EOF
   set +f
   if [ -n "$contract_hit" ]; then printf 'full\tcontract-change:%s\n' "$contract_hit"; return 0; fi
+  # ループが入力を受け取れなかった回（heredoc の一時ファイルを作れない sandbox 等）は docs_only=1 の
+  # まま fast へ倒れる。読んだ件数が渡した件数と合わなければ判定不能にする
+  [ "$seen" -eq "$(file_count "$files")" ] || return 3
   if [ "$docs_only" -eq 1 ]; then printf 'fast\tdocs-only\n'; return 0; fi
   case "$lines" in
     ''|-|*[!0-9]*) ;;
     *) if [ "$lines" -le "$max_lines" ]; then printf 'fast\tsmall-diff\n'; return 0; fi ;;
   esac
   printf 'full\timplementation\n'
+}
+
+security_rules() { # $1=files（改行区切り）→ SEC_STATE / SEC_REASON / SEC_EVIDENCE を埋める（コマンド置換で呼ばない）
+  local files="$1" docs_glob sec_glob f pat is_doc hit seen=0
+  SEC_STATE="unknown"; SEC_EVIDENCE=""
+  docs_glob="$(tree_rows | awk -F'\t' '$1 == "rule" && $2 == "root" && $3 == "docs-glob" { print $4; exit }')"
+  sec_glob="$(tree_rows | awk -F'\t' '$1 == "rule" && $2 == "root" && $3 == "security-glob" { print $4; exit }')"
+  [ "$SEC_GLOB_SET" -eq 0 ] || sec_glob="$SEC_GLOB"
+  sec_glob="${sec_glob}${SEC_GLOB_EXTRA:+ ${SEC_GLOB_EXTRA}}"
+  case "$sec_glob" in
+    *[![:space:]]*) ;;
+    *) SEC_REASON="error:security-glob が空です（木データの rule・--security-glob を確認）"; return 0 ;;
+  esac
+  [ -n "$docs_glob" ] || { SEC_REASON="error:root の rule docs-glob が木データにありません"; return 0; }
+  set -f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    seen=$((seen + 1))
+    # docs は経路の docs-only と同じ集合で除く（大文字小文字は経路と同じく区別する）
+    is_doc=0
+    for pat in $docs_glob; do
+      case "$f" in $pat) is_doc=1; break ;; esac
+    done
+    [ "$is_doc" -eq 0 ] || continue
+    hit=0
+    shopt -s nocasematch
+    for pat in $sec_glob; do
+      case "$f" in $pat) hit=1; break ;; esac
+    done
+    shopt -u nocasematch
+    [ "$hit" -eq 0 ] || SEC_EVIDENCE="${SEC_EVIDENCE}${f}
+"
+  done <<EOF
+$files
+EOF
+  set +f
+  # ループが入力を受け取れなかった回は 1 件も照合せずに no へ倒れる。件数で受け取りを確かめる
+  if [ "$seen" -ne "$(file_count "$files")" ]; then
+    SEC_EVIDENCE=""; SEC_REASON="error:変更ファイル一覧を読み切れませんでした（${seen} / $(file_count "$files") 件）"; return 0
+  fi
+  if [ -n "$SEC_EVIDENCE" ]; then SEC_STATE="yes"; SEC_REASON="match"; else SEC_STATE="no"; SEC_REASON="no-match"; fi
+}
+
+file_count() { # $1=files（改行区切り）→ stdout: 空行を除いた件数
+  printf '%s\n' "$1" | awk 'NF { n++ } END { print n + 0 }'
 }
 
 route_jev() { # $1=files $2=lines $3=nfiles → stdout: route<TAB>reason<TAB>source。rc 0 = 決めた / 12 = 規則へ / 2 = 入力不正
@@ -542,9 +618,12 @@ EOF
   case "$lines" in ''|-) lines="-" ;; *[!0-9]*) undecidable "--lines が整数ではありません: ${lines}" "$nfiles" ;; esac
 
   if [ "$nfiles" -eq 0 ]; then
+    # 変更 0 件は分類の材料が無い（空集合を「該当なし」へ倒さない）
+    SEC_REASON="no-files"
     emit_route none no-files none 0 "$lines"
     exit 0
   fi
+  security_rules "$files"
 
   case "${FF_JEV_MODE:-off}" in
     on)
@@ -559,7 +638,13 @@ EOF
     *) undecidable "FF_JEV_MODE は on か off です（未知の値）" "$nfiles" "$lines" ;;
   esac
 
-  verdict="$(route_rules "$files" "$lines")" || undecidable "root の rule（docs-glob / contract-path / fast-max-lines）が木データにありません" "$nfiles" "$lines"
+  rc=0
+  verdict="$(route_rules "$files" "$lines")" || rc=$?
+  case "$rc" in
+    0) ;;
+    3) undecidable "変更ファイル一覧を読み切れませんでした" "$nfiles" "$lines" ;;
+    *) undecidable "root の rule（docs-glob / contract-path / fast-max-lines）が木データにありません" "$nfiles" "$lines" ;;
+  esac
   route="${verdict%%	*}"; reason="${verdict#*	}"
   emit_route "$route" "$reason" rules "$nfiles" "$lines"
   exit 0

@@ -2,7 +2,7 @@
 # See: docs-template/05-operations/deployment/multi-cli-review-orchestration.md
 
 version: "2.0"
-toolkit_version: "0.167.0"
+toolkit_version: "0.168.0"
 
 # ── Global Defaults ──
 # mode はタスク単位でも指定できる（tasks.<task>.mode）。ここはその既定。
@@ -81,6 +81,12 @@ tasks:
 #  # env MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD が設定されていればそちらが優先。不正値は
 #  # CLI を起動する前に名指しで止まる
 #  confidence_threshold: 80
+#  # 専用セキュリティゲート（読むのは scripts/review-route.sh。multi-agent.sh は読まない）。
+#  # パターンは空白区切りの 1 文字列（YAML リストは不可）。_extra は決定木の既定（tree.tsv の
+#  # security-glob）へ追加、security_glob は既定を置き換える。security_review は auto | off。
+#  # env MULTI_AGENT_SECURITY_GLOB_EXTRA / _GLOB / _REVIEW が優先。読めない値は該当なしへ倒さない
+#  security_glob_extra: "app/billing/* lib/acl/*"
+#  security_review: auto
 
 # ── Agent Definitions（CLI レジストリ）── ※ 本ファイルには置かない
 # CLI 名・実行コマンド・コスト帯・観点割当（review / explore / implement）の正本は

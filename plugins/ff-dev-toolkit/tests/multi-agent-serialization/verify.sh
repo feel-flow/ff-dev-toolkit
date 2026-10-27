@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 空振り検出: headless securityの最終割当を無効にした写しは割当・Grok4/Codex4の入力照合など7件が赤。対照21件pass、standard tierまで逐次化する既存変異も検出（2026-10-23 macOS、実測）。
+# 空振り検出: headless の計画時代替を無効にした写しは割当・Grok3/Codex5の入力照合など7件が赤。対照21件pass、standard tierまで逐次化する既存変異も検出（2026-10-27 Linux、実測）。
 # git-path-isolation: 固定 PATH は実 CLI / yq / 更新 CLI の混入と不在検査の偽緑を防ぐ。
 # git の親ディレクトリ全体は追加しない（同居する CLI も露出するため）。Xcode 障害時は
 # DEVELOPER_DIR=/Library/Developer/CommandLineTools bash plugins/ff-dev-toolkit/tests/multi-agent-serialization/verify.sh
@@ -31,8 +31,8 @@ PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 
 MULTI_AGENT="$PLUGIN_ROOT/scripts/multi-agent.sh"
 CODEX_BARRIER_TIMEOUT_SECONDS=10
-# codex の所有3観点と、headless Grok から振り替えた security-analysis を全て待つ。
-CODEX_BARRIER_PARTIES=4
+# codex の所有3観点と、headless Grok から振り替えた command-requiring 2観点を全て待つ。
+CODEX_BARRIER_PARTIES=5
 
 [ -f "$MULTI_AGENT" ] || {
   echo "✗ 対象ファイルが見つかりません: $MULTI_AGENT" >&2
@@ -245,23 +245,25 @@ case "$PLAN_OUT" in
     printf '%s\n' "$PLAN_OUT" | /usr/bin/grep -E 'copilot' | head -3 | sed 's/^/    | /' >&2 ;;
 esac
 
-# 前提の確認: minimize_cost で grok-cli に「自身の1観点 + claudeからの振替3観点」
-# の計4観点が乗り、security-analysis は codex に移る。>=2 の緩い判定だと
-# 一部の観点だけで通ってしまい、
+# 前提の確認: minimize_cost で grok-cli に claude からの振替3観点が乗り、
+# command-requiring の headless 不成立観点（error-handler-hunt / security-analysis）は
+# 両方とも codex に移る。>=2 の緩い判定だと一部の観点だけで通ってしまい、
 # 振替の一部欠落（minimize_cost の部分退行）を検出できない（Codex レビュー指摘）。
 GROK_TASKS="$(printf '%s\n' "$PLAN_OUT" | awk '/^   grok-cli \[/{f=1;next} /^   [a-z]/{f=0} f && /^     - /{n++} END{print n+0}')"
-if [[ "$GROK_TASKS" -eq 4 ]]; then
-  ok "前提: minimize_cost で grok-cli に4観点（自身1 + claude振替3）が集中する"
+if [[ "$GROK_TASKS" -eq 3 ]]; then
+  ok "前提: minimize_cost で grok-cli に3観点（claude振替3）が集中する"
 else
-  bad "前提が崩れた: grok-cli の観点数が ${GROK_TASKS}（期待4。プラン形の変更を確認して本 suite を追随させること）"
+  bad "前提が崩れた: grok-cli の観点数が ${GROK_TASKS}（期待3。プラン形の変更を確認して本 suite を追随させること）"
 fi
 GROK_SECTION="$(printf '%s\n' "$PLAN_OUT" | awk '/^   grok-cli \[/{f=1;next} /^   [a-z]/{f=0} f')"
 CODEX_SECTION="$(printf '%s\n' "$PLAN_OUT" | awk '/^   codex-cli \[/{f=1;next} /^   [a-z]/{f=0} f')"
 if /usr/bin/grep -q 'security-analysis' <<<"$CODEX_SECTION" \
-  && ! /usr/bin/grep -q 'security-analysis' <<<"$GROK_SECTION"; then
-  ok "headless security は codex に割り当たり、Grok の逐次化対象には入らない"
+  && /usr/bin/grep -q 'error-handler-hunt' <<<"$CODEX_SECTION" \
+  && ! /usr/bin/grep -q 'security-analysis' <<<"$GROK_SECTION" \
+  && ! /usr/bin/grep -q 'error-handler-hunt' <<<"$GROK_SECTION"; then
+  ok "headless の command-requiring 観点は codex に割り当たり、Grok の逐次化対象には入らない"
 else
-  bad "headless security の割当が実際の実行プランに反映されていない"
+  bad "headless の command-requiring 観点の割当が実際の実行プランに反映されていない"
 fi
 if /usr/bin/grep -q 'type-design-analysis' <<<"$GROK_SECTION" \
   && /usr/bin/grep -q 'code-simplification' <<<"$GROK_SECTION" \
@@ -305,10 +307,10 @@ else
 fi
 
 GROK_STARTS="$(/usr/bin/grep -c '^start ' "$GROK_LOG")" || GROK_STARTS=0
-if [[ "$GROK_STARTS" -eq 4 ]]; then
-  ok "前提: grok stub が4回起動した（プランの4観点と一致する実行形）"
+if [[ "$GROK_STARTS" -eq 3 ]]; then
+  ok "前提: grok stub が3回起動した（プランの3観点と一致する実行形）"
 else
-  bad "前提が崩れた: grok stub の起動が ${GROK_STARTS} 回（期待4。逐次化の検査が空振りする）"
+  bad "前提が崩れた: grok stub の起動が ${GROK_STARTS} 回（期待3。逐次化の検査が空振りする）"
 fi
 
 # 非交差の検査: ログが start/end の厳密な交互列であること。旧実装（一斉 background）

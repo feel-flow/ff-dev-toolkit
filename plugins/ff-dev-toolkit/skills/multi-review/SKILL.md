@@ -68,7 +68,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 ### 0b. 変更クラス別のレーン数（経路）
 
-判定は決定木の根が持つ。PR の差分で次を実行し `REVIEW_ROUTE` / `REVIEW_LANES` / `REVIEW_REPORT_LINE` を読む:
+判定は決定木の根が持つ。PR の差分で次を実行し `REVIEW_ROUTE` / `REVIEW_LANES` / `REVIEW_REPORT_LINE` と専用セキュリティゲート（`REVIEW_SECURITY_GATE`）を読む:
 
 ```bash
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/review-route.sh" --git --base <base>
@@ -91,7 +91,7 @@ cold/clear の新ブランチは `--fresh` 無しで開始する。旧ブラン�
 FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/scripts/multi-review.sh" --dry-run --route <REVIEW_ROUTE の値> $ARGUMENTS
 ```
 
-CLI・観点・モード・timeout・警告を報告。✅ は PATH 在だけで認証・残高は未確認。例外は sandbox の適用可否で、dry-run の probe が「sandbox を適用できません」（目印の無い不活性を含む。INCOMPLETE になる）か「判定できませんでした」（INCOMPLETE になりうる）を出す。**無警告は成功の保証ではない**。外し方は警告本文にあり、grok の docker.sock symlink は先に [read-only のまま動かす手順](../../docs-template/05-operations/deployment/grok-cli-reviewer.md#dockersock-が-symlink-の-macos-で-read-only-が起動拒否される)を試す。
+CLI・観点・モード・timeout・警告を報告。✅ は PATH 在だけで認証・残高は未確認。例外は sandbox の適用可否で、dry-run の probe が「sandbox を適用できません」（目印の無い不活性を含む。INCOMPLETE になる）か「判定できませんでした」（INCOMPLETE になりうる）を出す。**無警告は成功の保証ではない**。grok の docker.sock symlink は先に [read-only のまま動かす手順](../../docs-template/05-operations/deployment/grok-cli-reviewer.md#dockersock-が-symlink-の-macos-で-read-only-が起動拒否される)を試す。
 
 ### 2. レビュー実行
 
@@ -101,7 +101,7 @@ FF_DEV_TOOLKIT_ROOT="${FF_DEV_TOOLKIT_ROOT}" bash "${FF_DEV_TOOLKIT_ROOT}/script
 
 **900秒/CLI**（`--timeout`）。作業を起動前に列挙し、起動と同じメッセージで着手。尽きたら[長時間ゲートの進捗表示](../../docs-template/05-operations/deployment/git-workflow.md#長時間ゲートの進捗表示)に従う。
 
-**レビュー起動から全 CLI が終端（応答・失敗・タイムアウトのいずれか）に達するまで、オーケストレータ側で作業ツリーを変更しないこと**。変化を検知すると結果は DISCARDED になるが、変更して戻した場合や gitignore 済みパスは見えず、凍結の代わりになる機構ではない。サブエージェント（Review Toolkit 等）経路も同じで、そちらは結果を DISCARDED にする機構が無いので hook `guard-review-in-flight.sh` がレーンを開き、終端まで編集と git 書き込みを deny する（`fast` は Claude のレーンを開かない）。worktree 隔離の起動既定について、その規定（隔離時の凍結の扱いを含む）は [Git Workflow ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要) を正本とする（本書は再掲しない）。隔離は、外部 CLI を同一ツリーで実行する本スキルの経路には適用されず、こちらの凍結はそのまま守る。解放イベントを取りこぼしても、開始済みレーンは `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`（既定 14400 秒）、未開始のレーンは `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`（既定 1800 秒）を過ぎると自動回収され、systemMessage で通知される。
+**レビュー起動から全 CLI が終端（応答・失敗・タイムアウトのいずれか）に達するまで、オーケストレータ側で作業ツリーを変更しないこと**。変化を検知すると結果は DISCARDED になるが、戻した変更・gitignore 済みパスは見えず、凍結の代わりになる機構ではない。サブエージェント（Review Toolkit 等）経路も同じで、そちらは結果を DISCARDED にする機構が無いので hook `guard-review-in-flight.sh` がレーンを開き、終端まで編集と git 書き込みを deny する（`fast` は Claude のレーンを開かない）。worktree 隔離の起動既定: その規定（隔離時の凍結の扱いを含む）は [Git Workflow ステップ6](../../docs-template/05-operations/deployment/git-workflow.md#ステップ6-セルフレビューpr作成後重要) を正本とする（本書は再掲しない）。隔離は、外部 CLI を同一ツリーで実行する本スキルの経路には適用されず、こちらの凍結はそのまま守る。解放イベントを取りこぼしても、開始済みレーンは `FF_REVIEW_SUBAGENT_LOCK_MAX_AGE_SECONDS`（既定 14400 秒）、未開始のレーンは `FF_REVIEW_SUBAGENT_LOCK_PENDING_SECONDS`（既定 1800 秒）を過ぎると自動回収され、systemMessage で通知される。
 
 ### 2a. ホスト自身のレーンのホスト委譲
 

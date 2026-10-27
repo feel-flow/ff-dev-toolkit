@@ -10,7 +10,7 @@
 #      Stop へ配線され、既存の retrospective hook が外れていない
 #   B. 検出力（合成 plugin root への変異注入）: 実在しない葉 / 到達不能ノード / 木に載っていない
 #      スキル・hook / 未登録の hook（command 欄の無い登録を含む）/ 深さ 5 / none の欠落 / 葉 56 / doc の見出しの降格・不在 / criteria fixture
-#      の option 不一致 / 循環 / 書式違反、のそれぞれで --check が赤になる
+#      の option 不一致 / 循環 / 書式違反 / security-glob の欠落・空、のそれぞれで --check が赤になる
 #   C. 空振り: 木データの不在・空・コメントだけ・区切りの書式変更・母集団（skills / hooks.json）が
 #      空、のいずれも緑へ倒さない
 #   D. ルータの規則（FF_JEV_MODE=off / 未設定）: docs のみ → fast、10 行以下 → fast、契約 path →
@@ -230,6 +230,7 @@ write_tree() { # <file>
   printf 'rule\troot\tdocs-glob\t*.md\n'
   printf 'rule\troot\tcontract-path\t*/hooks/hooks.json\n'
   printf 'rule\troot\tfast-max-lines\t10\n'
+  printf 'rule\troot\tsecurity-glob\t*auth*\n'
   printf 'answer\troot\tfast\tnode:fast\n'
   printf 'answer\troot\tfull\tnode:full\n'
   printf 'answer\troot\tnone\tnone\n'
@@ -283,6 +284,8 @@ T="$(mut b13)"; sed -i.bak '/^rule\troot\tfast-max-lines\t10$/d' "$T"; run_check
 T="$(mut b14)"; printf 'answer\tfast\tbad\tnone\n' >> "$T"; run_check "$T" "$FIX"; assert_check_red "B14 none 以外の答えが none へ落ちている" "none へ落ちています"
 T="$(mut b15)"; printf 'rule\troot\tfast-max-lines\t100000\n' >> "$T"; run_check "$T" "$FIX"; assert_check_red "B15 同じ (node, key) の rule の重複（前置きで判定を緩める形）" "重複しています"
 T="$(mut b16)"; printf 'rule\troot\tbogus\t1\n' >> "$T"; run_check "$T" "$FIX"; assert_check_red "B16 未知の rule キー" "未知のキー"
+T="$(mut b16a)"; sed -i.bak '/^rule\troot\tsecurity-glob\t/d' "$T"; run_check "$T" "$FIX"; assert_check_red "B16a choice node の rule（security-glob）欠落" "rule security-glob がありません"
+T="$(mut b16b)"; sed -i.bak 's/^rule\troot\tsecurity-glob\t.*$/rule	root	security-glob	 /' "$T"; run_check "$T" "$FIX"; assert_check_red "B16b 空白だけの security-glob（常に該当なしを返す針）" "security-glob が空です"
 T="$(mut b17)"; sed -i.bak 's/^answer\troot\tfast\tnode:fast$/answer\troot\tfast\tnode:full/' "$T"; run_check "$T" "$FIX"; assert_check_red "B17 root の fast が node:fast 以外を指す" "node:fast を指さなければ"
 T="$(mut b18)"; sed -i.bak 's/^answer\troot\tfull\tnode:full$/answer\troot\tfull\tnode:fast/' "$T"; run_check "$T" "$FIX"; assert_check_red "B18 root の full が node:full 以外を指す" "node:full を指さなければ"
 T="$(mut b19)"; printf 'answer\troot\tslow\tskill:alpha\n' >> "$T"; run_check "$T" "$FIX"; assert_check_red "B19 root の答えが fast / full / none 以外を含む" "3 つに限ります"

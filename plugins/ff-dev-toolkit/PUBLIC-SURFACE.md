@@ -118,7 +118,7 @@
 
 Bash 専用の14実体は `hooks/run-bash-hooks.sh` が同一イベント内で並行実行する。`hooks.json` の command 引数へ各実体を明記し、上記のイベント・matcher・判定契約を維持する。ホストへの起動登録は1本になり、警告を全件結合し、拒否を確認・許可より優先する。
 
-子の処理枠は10秒（Windows の Git Bash＝MSYS / Cygwin ではプロセス起動が重いため25秒）、親の登録枠は集約の余裕を含め30秒とする。時間切れの子と不正な出力は診断して除外し、完了した他の判定を残す。集約自体の環境エラーは新たな拒否にせず、子の終了コード2だけをブロックとして伝播する。終了コード2と他の拒否が重なる場合は、他の拒否理由も stderr へ残す。
+子の処理枠は10秒（Windows の Git Bash＝MSYS / Cygwin ではプロセス起動が重いため25秒）、親の登録枠は集約の余裕を含め30秒とする。時間切れの子と不正な出力は診断して除外し、完了した他の判定を残す。時間切れの診断行は stderr に出し、終了コード2以外の回は同じ文面を集約 JSON の `systemMessage` と `hookSpecificOutput.additionalContext` へ1回ずつ足す（拒否時の未実行注記と同じく、ホストが届ける JSON に載せて黙って捨てない。終了コード2の回は stderr の診断行だけで届け、JSON へは重ねない）。時間切れだけでは新たな拒否にしない。集約自体の環境エラーは新たな拒否にせず、子の終了コード2だけをブロックとして伝播する。終了コード2と他の拒否が重なる場合は、他の拒否理由も stderr へ残す。
 
 拒否したとき（`deny` を返した子がある、または子が終了コード2で止めた）は、理由文の末尾に「この呼び出しは 1 つも実行されておらず、前段で作るつもりだったファイル・書き込みも存在しない。生成とガードに当たる反映を別の呼び出しに分けて再実行する」旨の1行を1回だけ足す。JSON の拒否では `permissionDecisionReason` の最終行、終了コード2では stderr の最終行に置く。確認・許可・警告だけのときは足さない。
 
@@ -533,6 +533,9 @@ GitHub取得のraw file受渡しは明示argv `--github-input` で選び、新�
 - `MULTI_AGENT_MODEL_COPILOT_CLI`
 - `MULTI_AGENT_MODEL_GROK_CLI`
 - `MULTI_AGENT_REVIEW_CONFIDENCE_THRESHOLD`
+- `MULTI_AGENT_SECURITY_GLOB`
+- `MULTI_AGENT_SECURITY_GLOB_EXTRA`
+- `MULTI_AGENT_SECURITY_REVIEW`
 - `RETROSPECTIVE_FILING`
 - `RETROSPECTIVE_MODE`
 - `SKIP_CODEX_REVIEW`

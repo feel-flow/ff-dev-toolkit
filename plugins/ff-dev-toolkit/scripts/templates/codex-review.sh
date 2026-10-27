@@ -100,8 +100,9 @@
 #                          引き受けたプランが出る（pair のプランではない）。従量課金の
 #                          copilot だけの環境は分散プランで既定除外されるため、
 #                          `ERROR: Execution plan is empty` で rc=1（プランなし）
-#                          headless Grok だけで security-analysis を含む場合も代替不在の
-#                          rc=1。--exclude-reviewers security-analysis で残りを確認できる
+#                          headless Grok だけで command-requiring 観点（error-handler-hunt /
+#                          security-analysis）を含む場合も代替不在の rc=1。
+#                          --exclude-reviewers error-handler-hunt,security-analysis で残りを確認できる
 #                     ・AI CLI が 1 本も PATH に無い
 #                       → rc=1。委譲先の CLI 検出が `ERROR: No AI CLIs are installed`
 #                          で止まり `🏁 Dry run complete.` には到達しない
@@ -1395,8 +1396,9 @@ fi
 # 主 reviewer に既定値は無い。未設定なら委譲先は `No reviewers configured — falling back
 # to the distributed plan.` で分散プランへ縮退し、残りの非従量 CLI が観点を引き受けた
 # 有効なプランを rc=0 で出す。copilot だけなら既定除外、headless Grok だけで
-# security-analysis を含む場合は代替不在で rc=1。後者は観点を明示除外すれば
-# 残りのプランを確認できる。主 reviewer 未設定と、設定済みの主不在は区別する。
+# command-requiring 観点（error-handler-hunt / security-analysis）を含む場合は
+# 代替不在で rc=1。後者はそれらの観点を明示除外すれば残りのプランを確認できる。
+# 主 reviewer 未設定と、設定済みの主不在は区別する。
 #
 # 警告が案内する復旧手段は**このシムが受け付けるもの**に限る。委譲先の
 # `--set-reviewers` はこのシムが受け付けないので、案内に書くと案内どおり渡した利用者を
@@ -1450,7 +1452,7 @@ if ! command -v -- "$_codex_bin" >/dev/null 2>&1; then
     echo "         実行するには codex の導入（または CODEX_REVIEW_CODEX_BIN の修正）が要ります。表示されたプランをそのまま走らせるなら multi-agent.sh を直接呼んでください。" >&2
     echo "         プランが出ない場合は、rc=1 の理由を読み分けてください。pair の主 reviewer（MULTI_AGENT_REVIEW_MAIN / プロジェクト設定で指定したもの）が未導入なら「main reviewer '<名前>' is not installed.」で止まります（例: 主を claude-code に設定したまま grok だけが入っている環境。MULTI_AGENT_REVIEW_MAIN=<cli> を付けて再実行すると主を変えられます。委譲先の --set-reviewers はこのシムでは受け付けません — multi-agent.sh を直接呼ぶときだけ使えます）。" >&2
     echo "         主 reviewer が未設定なら、委譲先は「No reviewers configured — falling back to the distributed plan.」で分散プランへ縮退し、残りの非従量 AI CLI が観点を引き受けたプランが rc=0 で出ます（pair のプランではありません。copilot だけの環境は既定除外で「Execution plan is empty」の rc=1 です）。" >&2
-    echo "         headless の grok-cli しかなく security-analysis を含む場合は代替不在の rc=1 です。--exclude-reviewers security-analysis で残りを確認するか、対応する CLI を導入してください。" >&2
+    echo "         headless の grok-cli しかなく command-requiring 観点（error-handler-hunt / security-analysis）を含む場合は代替不在の rc=1 です。--exclude-reviewers error-handler-hunt,security-analysis で残りを確認するか、対応する CLI を導入してください。" >&2
     echo "         AI CLI が 1 本も PATH に無い環境では、--cli を外しても委譲先の CLI 検出が「No AI CLIs are installed」で止まります（rc=1・プランなし）。" >&2
   elif [ "$DRY_RUN_GIVEN" -eq 1 ]; then
     # --dry-run だが --exclude-cli codex-cli が渡っている回。固定の --cli は残すので、

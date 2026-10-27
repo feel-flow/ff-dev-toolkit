@@ -11,7 +11,7 @@
 #   (0) 前提: marketplace.json に ff-agent-press が掲載されている木でだけ動く（公開 checkout は skip）。
 #       掲載されているのに runner が無ければ赤。node は「見つからない」だけ skip、誤指定・古い版は赤
 #   (1) runner が exit 0
-#   (2) 集約行 `ff-agent-press suites: total=N passed=N failed=0` があり、N が 8 以上（現行の必須本数。runner の
+#   (2) 集約行 `ff-agent-press suites: total=N passed=N failed=0` があり、N が 9 以上（現行の必須本数。runner の
 #       SUITES が空になった・1 本でも外れた・集約行の書式が変わった形を緑にしない。suite を足しても赤にはならない）
 #
 # 空振り検出: runner の SUITES 配列を空にした写しを与えると (1)(2) とも赤になる（2026-10-20 実測: runner が
@@ -21,6 +21,7 @@
 #   1 本（export-mock）だけ外した写しを与えると (2) が「total=3」で赤になる（同日実測）。
 #   統合後の必須8本はtotal=8/passed=8/failed=0で緑、production-packだけを外した複製木は
 #   total=7/passed=7/failed=0でも(2)が赤となることを実測した（2026-10-26）。
+#   必須9本へ更新後はtotal=9で緑、素材準備の1本欠落に相当するtotal=8で赤（2026-10-27実測）。
 # run-all-required: no — node 20 以上が無い環境と、ff-agent-press を含まない木（公開 checkout）では丸ごと skip を許容する（node は CI セットアップに含まれるので CI では走る）
 set -uo pipefail
 
@@ -71,10 +72,10 @@ if [ "${rc}" -eq 0 ]; then ok "(1) runner exit 0"; else bad "(1) runner exit ${r
 summary="$(printf '%s\n' "${out}" | /usr/bin/grep -E '^ff-agent-press suites: total=[0-9]+ passed=[0-9]+ failed=[0-9]+$' | tail -1)"
 total="$(printf '%s' "${summary}" | sed -n 's/.*total=\([0-9]*\).*/\1/p')"
 failed="$(printf '%s' "${summary}" | sed -n 's/.*failed=\([0-9]*\).*/\1/p')"
-if [ -n "${summary}" ] && [ "${total:-0}" -ge 8 ] && [ "${failed:-1}" -eq 0 ]; then
+if [ -n "${summary}" ] && [ "${total:-0}" -ge 9 ] && [ "${failed:-1}" -eq 0 ]; then
   ok "(2) 集約行: ${summary}"
 else
-  bad "(2) 集約行が無い・total が 8 未満・failed が 0 でない: '${summary}'"
+  bad "(2) 集約行が無い・total が 9 未満・failed が 0 でない: '${summary}'"
 fi
 
 echo "ff-agent-press: passed=${pass} failed=${fail}"

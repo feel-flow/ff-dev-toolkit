@@ -108,7 +108,19 @@ printf '%s\\n' '## Fixture Review' '' 'Fixture result.' '' '### Summary' '- Crit
                 result.append((cli, line[len("     - "):]))
         return result
 
-    # Expected tuples are independent of registry ownership. Empty/no-security plans fail.
+    plan_src = (root / "scripts/lib/multi-agent-plan.sh").read_text()
+    marker = "headless-unreliable-review-perspectives"
+    start = plan_src.find("# " + marker + ": start")
+    end = plan_src.find("# " + marker + ": end")
+    check(start != -1 and end > start, "plan-time roster is marked in one place")
+    roster_block = plan_src[start:end]
+    roster_echo = [line for line in roster_block.splitlines() if "echo \"" in line]
+    check(len(roster_echo) == 1, "plan-time roster has exactly one echo list")
+    source_roster = tuple(roster_echo[0].split("echo \"", 1)[1].rstrip("\"").split())
+    expected_roster = ("error-handler-hunt", "security-analysis")
+    check(source_roster == expected_roster,
+          "plan-time roster is the command-requiring hunting perspectives")
+    # Expected tuples are independent of registry ownership. Empty/no-roster plans fail.
     cases = [
         ("default", ["codex", "claude", "grok"], [], "codex-cli", 0),
         ("minimize", ["codex", "claude", "grok"], ["--strategy", "minimize_cost"], "codex-cli", 0),
@@ -124,43 +136,70 @@ printf '%s\\n' '## Fixture Review' '' 'Fixture result.' '' '### Summary' '- Crit
                       "filtered-fallback", "excluded-codex", "excluded-alternatives", "native-grok"}
     check({case[0] for case in cases} == required_cases and len(cases) == len(required_cases),
           "planner input cases contain every required scenario exactly once")
+    roster_filter = ",".join(expected_roster + ("type-design-analysis", "test-analysis"))
     for name, names, args, owner, expected_rc in cases:
         install(names)
-        rc, log = run(["--dry-run", "--perspective", "security-analysis,type-design-analysis,test-analysis", *args])
+        rc, log = run(["--dry-run", "--perspective", roster_filter, *args])
         check(rc == expected_rc, name + " rc=" + str(rc) + "\n" + log if rc != expected_rc else name + " status")
         if owner:
-            security = [(c, p) for c, p in tasks(log) if p == "security-analysis"]
-            check(security == [(owner, "security-analysis")], name + " security is assigned exactly once")
+            for persp in expected_roster:
+                assigned = [(c, p) for c, p in tasks(log) if p == persp]
+                check(assigned == [(owner, persp)], name + " " + persp + " is assigned exactly once")
             if owner != "grok-cli":
                 check("headless" in log and "grok-cli" in log, name + " discloses the reason")
         else:
-            check("headless" in log and "security-analysis" in log and "--cli" in log,
+            check("headless" in log and "unsupported on headless grok-cli" in log and "--cli" in log
+                  and any(p in log for p in expected_roster),
                   name + " diagnoses an unsupported plan with an alternative")
+    install(["codex", "claude", "grok"])
+    for persp in expected_roster:
+        rc, log = run(["--dry-run", "--perspective", persp])
+        assigned = [(c, p) for c, p in tasks(log) if p == persp]
+        check(rc == 0 and assigned == [("codex-cli", persp)] and "plan-time alternative" in log,
+              persp + " dry-run shows the plan-time alternative")
     install(["grok"])
-    rc, log = run(["--dry-run", "--perspective", "error-handler-hunt"])
-    check(rc == 0 and ("grok-cli", "error-handler-hunt") in tasks(log), "other Grok perspectives remain available")
+    rc, log = run(["--dry-run", "--perspective", "comment-analysis"])
+    check(rc == 0 and ("grok-cli", "comment-analysis") in tasks(log),
+          "non-roster Grok perspectives remain available")
+    rc, log = run(["--dry-run", "--perspective", "code-review"])
+    check(rc == 0 and ("grok-cli", "code-review") in tasks(log),
+          "non-roster fallback onto grok-cli is not reassigned")
+    exclude_args = []
+    for persp in expected_roster:
+        exclude_args += ["--exclude-perspective", persp]
+    rc, log = run(["--dry-run", *exclude_args])
+    check(rc == 0 and tasks(log) and all(p not in expected_roster for _, p in tasks(log)),
+          "explicit exclusion of the whole roster remains valid")
     rc, log = run(["--dry-run", "--exclude-perspective", "security-analysis"])
-    check(rc == 0 and tasks(log) and all(p != "security-analysis" for _, p in tasks(log)), "explicit perspective exclusion remains valid")
+    check(rc != 0 and "error-handler-hunt" in log and "unsupported on headless grok-cli" in log,
+          "excluding only security-analysis still diagnoses error-handler-hunt")
     config = repo / "exclude.yaml"
     config.write_text('version: "2.0"\nexclude_clis: "codex-cli"\n')
     install(["codex", "claude", "grok"])
-    rc, log = run(["--dry-run", "--config", str(config), "--perspective", "security-analysis"])
-    check(rc == 0 and [(c, p) for c, p in tasks(log) if p == "security-analysis"] == [("claude-code", "security-analysis")], "config exclusion also constrains plan-time alternatives")
+    for persp in expected_roster:
+        rc, log = run(["--dry-run", "--config", str(config), "--perspective", persp])
+        check(rc == 0 and [(c, p) for c, p in tasks(log) if p == persp] == [("claude-code", persp)],
+              "config exclusion also constrains plan-time alternatives for " + persp)
     install(["codex", "grok"])
-    for mode in ["pair", "cross-model"]:
-        rc, log = run(["--dry-run", "--mode", mode, "--perspective", "security-analysis"],
-                      {"MULTI_AGENT_REVIEW_MAIN": "grok-cli", "MULTI_AGENT_REVIEW_SUB": "codex-cli"})
-        check(rc == 0 and ("grok-cli", "security-analysis") in tasks(log), mode + " explicit model selection is not silently replaced")
+    for persp in expected_roster:
+        for mode in ["pair", "cross-model"]:
+            rc, log = run(["--dry-run", "--mode", mode, "--perspective", persp],
+                          {"MULTI_AGENT_REVIEW_MAIN": "grok-cli", "MULTI_AGENT_REVIEW_SUB": "codex-cli"})
+            check(rc == 0 and ("grok-cli", persp) in tasks(log),
+                  mode + " explicit model selection is not silently replaced for " + persp)
 
-    # Advice must not offer the headless Grok/security combination rejected by the plan.
-    # Keep Grok substitutes for unrelated perspectives and supported security substitutes.
-    advice_cases = {
-        "codex-security": (["codex", "grok"], "codex", "codex-cli", "security-analysis", None),
-        "claude-security": (["claude", "grok"], "claude", "claude-code", "security-analysis", None),
-        "other-perspective": (["codex", "grok"], "codex", "codex-cli", "code-review", "grok-cli"),
-        "supported-security": (["codex", "claude", "grok"], "codex", "codex-cli", "security-analysis", "claude-code"),
-    }
-    check(set(advice_cases) == {"codex-security", "claude-security", "other-perspective", "supported-security"},
+    # Advice must not offer the headless Grok/roster combination rejected by the plan.
+    # Keep Grok substitutes for unrelated perspectives and supported roster substitutes.
+    advice_cases = {}
+    for persp in expected_roster:
+        advice_cases["codex-" + persp] = (["codex", "grok"], "codex", "codex-cli", persp, None)
+        advice_cases["claude-" + persp] = (["claude", "grok"], "claude", "claude-code", persp, None)
+        advice_cases["supported-" + persp] = (["codex", "claude", "grok"], "codex", "codex-cli", persp, "claude-code")
+    advice_cases["other-perspective"] = (["codex", "grok"], "codex", "codex-cli", "code-review", "grok-cli")
+    required_advice = {"other-perspective"}
+    for persp in expected_roster:
+        required_advice.update({"codex-" + persp, "claude-" + persp, "supported-" + persp})
+    check(set(advice_cases) == required_advice,
           "advice input cases include supported, unsupported and unrelated combinations")
     for index, (names, binary, cli, perspective, substitute) in enumerate(advice_cases.values()):
         install(names)

@@ -152,6 +152,14 @@ AIがレビュー結果を返したら、指摘事項があればその場で修
 5. **一時的な利用不可を永続設定へ保存せず、ホストが代替の要否を判断する**。別 CLI の認証・残高・利用枠・モデル非対応をスクリプトが分類すると、同一 CLI の残りタスクはスキップされる。pair モード（`--route full` 等）で主担当が全観点を完走した回は、スクリプトは 0 終了し、統合レポートへ「主担当のみで完了（codex-cli: モデル非対応）」等を残す。**exit 0 の単一縮退でも、ホストは下の「失敗時の担当選択」を適用してから完了を判断する。** これはスクリプトの終了コード変更ではなく、ホストの追加確認である。主担当そのものが利用不可・途中失敗の回と、単一 CLI の起動（主担当はホスト自身）は非 0 のまま記録する。codex-cli は起動前に `~/.codex/models_cache.json` の `client_version` と比べ、古ければ npm / Homebrew で自動更新してから回す（`--dry-run` は表示のみ、無効化は `FF_DEV_TOOLKIT_SKIP_CODEX_AUTO_UPDATE=1`）。代替の確認後に、制限解除待ち・繰り返しの再試行・事後クロスレビューを一律の義務にしない。**`exclude_clis` や pair 設定へ書き込まない** — 一時的な利用不可を保存すると枠が復活しても戻らない。次回は 2 の環境チェックからやり直す。原因不明の失敗・タイムアウト・`INCOMPLETE` は未確認であり、指摘なしではない。
 6. **記録は事実だけを書く**。PR / 最終報告には実施した担当と本数を書く（「主担当のみ」「主担当 + codex-cli」「主担当のみ（codex-cli: 利用枠切れ）」等）。候補別の利用不可理由の列挙は要求しない。主担当のレビューが未完了なら、本節のどの経路でも先へ進めない。
 7. **品質条件は維持する**。必要なテスト・CI・既存のマージ条件、未解消の Critical / Warning は免除しない。レビュー対象の欠落、diff の変更による結果破棄、ツールキット自体の不整合を利用制限扱いにして通さない。
+8. **セキュリティに関わる変更には専用セキュリティゲートを加える**。判定は決定木の根（`tree.tsv` の `security-glob`。認証・認可、セッション・トークン、決済・Webhook、秘密情報、外部 URL の取得、SQL / migration、ファイルアップロード等の汎用パターン）が持ち、PR の差分で `review-route.sh --git --base <base>` を実行して `REVIEW_SECURITY_GATE=` と `REVIEW_SECURITY_REPORT_LINE=` の行を読む（[multi-review 手順 0b](../../../skills/multi-review/SKILL.md#0b-変更クラス別のレーン数経路) と同じ 1 回の実行。出力行と設定キーの契約は `scripts/review-route.sh` のヘッダ）。ゲートは 1〜4 のレビューを**置き換えない** — 主担当の追加の専用ゲートであり、クロスモデルの独立性は 3 が担う。`REVIEW_SECURITY_GATE` の値で分岐する:
+   - `security-review` … 主担当が Claude Code（`CLAUDECODE=1`）で該当。通常のレビューに**加えて** Claude Code 組み込みの `/security-review` を実行する（ホストのスキル実行で呼べる）。`/security-review` は比較の基点を `origin/HEAD` に固定し、基点を引数で受けない（Claude Code の commands / errors リファレンス）。`review-route.sh` は base と `origin/HEAD` を照合したうえでこの値を出す
+   - `unverified` … 主担当は Claude Code だが、base が `origin/HEAD` と食い違う（名前ではなく指すコミットで照合する。ローカルの base が古い回も食い違い）、または `origin/HEAD` が無い。走らせるとマージ済みの別 PR の変更まで対象に入る（または対象が欠ける）ので実行せず、報告行の「未確認」をそのまま記録する。`git remote set-head` で `origin/HEAD` を書き換えない（利用者のリポジトリ設定の変更になる）
+   - `unsupported` … 主担当が Claude Code 以外（`GROK_AGENT` が立つ grok CLI、判定する手段の無い Codex 等）。主担当別の専用ゲートは未実装なので「未対応（主担当 <cli>）」と記録する。黙って省略しない
+   - `off` … `security_review=off` で専用ゲートを無効化している（判定と根拠は報告行に残る）。`none` … 該当なし
+   - `REVIEW_SECURITY_SENSITIVE=unknown`（パターンや設定を読めない・変更 0 件・根の判定不能）は該当なしへ倒さず、該当と同じくゲートの対象にする。理由は報告行に出る
+
+   プロジェクトごとのパターンは `.claude/agent-config.yaml` の `review.security_glob_extra`（追加）/ `review.security_glob`（置き換え）、無効化は `review.security_review: "off"` に書く（いずれも空白区切りの 1 文字列。環境変数 `MULTI_AGENT_SECURITY_GLOB_EXTRA` / `MULTI_AGENT_SECURITY_GLOB` / `MULTI_AGENT_SECURITY_REVIEW` が優先する。ユーザー設定の層は持たない）。`/security-review` は候補ごとにサブエージェントを起動して誤検知を絞るので、利用者の既存の利用・課金許可の範囲で実行し、許可の外なら `off` を合意して保存する。**記録は事実だけを書く**: PR の Self-Review 欄に「専用セキュリティゲート: /security-review 実施（指摘 N 件）」「専用セキュリティゲート: 対象外（該当変更なし）」「専用セキュリティゲート: 未対応（主担当 grok-cli）」の形で残す。`/security-review` が途中で失敗した・完走を確認できない回は「未確認」と書き、「指摘なし」に数えない。指摘の対応は [PRレビュー対応ポリシー](./review-response-policy.md) に従う。
 
 CLI の失敗・タイムアウトと `INCOMPLETE` は「未確認」であり「指摘なし」ではない。スクリプトの非0終了を成功へ書き換えず、**ホストが根拠を確認して別 CLI を明示実行するか、主担当のみでの完了を記録する**。上の 5 による主担当のみの完了を決める前に、下の「失敗時の担当選択」を適用する。実行ごとの出力を別ディレクトリに保持し、失敗した試行と採用した結果を区別する。無人の厳格なレビューフックの終了コード判定は変更しない。
 
@@ -291,6 +299,7 @@ ff_require_toolkit_root && ff_require_consumer_root && FF_DEV_TOOLKIT_ROOT="${FF
 - ✅ 入力サニタイゼーション: 実装済み
 - ✅ 認証・認可: JWT検証を実装
 - ⚠️ 注意: トークンリフレッシュのレート制限を実装予定（別Issue）
+- ✅ 専用セキュリティゲート: /security-review 実施（指摘 1 件 → 修正済み）
 
 #### 5. ドキュメント更新
 

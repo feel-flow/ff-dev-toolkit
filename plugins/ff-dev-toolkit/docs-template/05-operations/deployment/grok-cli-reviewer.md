@@ -84,6 +84,8 @@ $(git diff --cached)" --sandbox read-only --output-format plain
 
 Grok CLI が**未インストール**の場合、担当パースペクティブはプラン構築時に `codex-cli` へ再分配されます（旧代替の `gemini-cli` は issue #783 で削除されたため付け替え）。再分配先も未インストールなら、そこで止めずに**さらに次の代替を辿ります**。対応表の経路が尽きた場合は、**対応表に無い CLI でも、導入済みのものから選び直します**（そのときのプラン出力は `last-resort — configured chain exhausted` と表示され、コスト帯も併記されます）。一段で打ち切ると、単一 CLI 構成の利用者で観点が黙って落ちるためです。ただし従量課金の CLI は最後の砦としても選びません — 利用者が求めていない課金が発生するためです。
 
+`distributed` review では、headless Grok が型付き判定行を返せない既知の経路（コマンド実行を要する観点。名簿は `headless_grok_unreliable_review_perspectives`）を、プラン構築時に利用可能な別 CLI へ振り替えます。Grok ホストへの native 委譲と pair / cross-model の明示モデル選択は対象外です。
+
 一方、インストール済みの Grok CLI が**実行時にエラー・タイムアウト**で失敗した場合は、別 CLI への自動再実行は行いません（実行時 fallback は意図的に持たせていない）。そのタスクは失敗として報告され、失敗サマリーが次の一手を出力します。
 
 ---

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: headless-security の計画時代替名簿を空にする・error-handler-hunt を外す各変異は名簿照合が1件赤。grok-cli:* 全部へ広げる変異は非名簿観点の残存検査が1件赤。対照163検査は緑（2026-10-27 Linux、実測）。
 # 空振り検出: headless-security の代替案内でGrok/securityの除外を外す・advice入力集合を空にする・元resumeを処理前rc=2にする・除外を他観点まで広げる4変異が各1件赤。対照137検査は緑（2026-10-23 macOS、実測）。
 # 空振り検出: headless-security の必須ソース不在・読めない・空・名前だけ、planner/recovery入力集合の空、最終割当の無効化、元出力先の再利用が各1件赤。子の空出力・検査0件だけの出力・成功マーカー改名も親suiteが各1件赤。対照118検査/親155検査は緑、既存候補への衝突は未使用先へ移って緑（2026-10-23 macOS、実測）。固定検査総数ガードは使わない。
 # 空振り検出: archive-onlyの早期分岐を無効にした単一変異でfull/fastのCLI-free検査が2件赤、衝突optionのcase集合を空にすると下限照合が1件赤（2026-10-22）。対象0件の正常退避と、検査集合0件の失敗を分ける。
@@ -1473,9 +1474,9 @@ else
   fi
   # --cli はその 1 回だけ設定の除外を上回る。ヘッダーは「実際に効いた除外」だけを出す
   EXCL_OVERRIDE_LOG="$TMP/exclude-cli-override.log"
-  # Exercise exclusion override with a supported headless perspective; the
-  # security-only explicit Grok rejection has its own headless-security case below.
-  if run_plan "$EXCL_OVERRIDE_LOG" --config "$EXCL_CFG" --cli grok-cli --perspective error-handler-hunt \
+  # Exercise exclusion override with a non-roster headless perspective; the
+  # command-requiring Grok rejection has its own headless-security case below.
+  if run_plan "$EXCL_OVERRIDE_LOG" --config "$EXCL_CFG" --cli grok-cli --perspective comment-analysis \
     && grep -Fq 'but --cli named it — running it this time' "$EXCL_OVERRIDE_LOG" \
     && grep -Fq 'Excluded CLIs: claude-code (config exclude_clis' "$EXCL_OVERRIDE_LOG" \
     && grep -qE '^   grok-cli \[' "$EXCL_OVERRIDE_LOG"; then

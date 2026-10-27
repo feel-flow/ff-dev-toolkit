@@ -2,6 +2,9 @@
 # 集約入口の拒否・警告保存と実登録を検査する。
 # 空振り検出: 登録12本の通常はrc0、新guardだけを登録から外す/集約子の引数集合を0件にする各単独変異は登録集合assertでrc1（2026-10-22 macOS実測、構文rc0）。存在しない/空の子は無検査を診断する。
 # 変異検出: 拒否時の未実行注記を JSON の permissionDecisionReason から外す / 終了コード2の stderr 末尾から外す / 出力0件 / 解釈できる出力0件の経路で finish を通さず exit する、の4変異がそれぞれ赤（2026-10-02 実測）。
+# 変異検出: 時間切れの知らせを集約 JSON の systemMessage と additionalContext から外すと、打ち切りのケースが赤になる。stderr の診断行だけでは通さない（2026-10-27 Linux 実測）。
+# 変異検出: 終了コード2と打ち切りが重なる回で json_timeout を空にする分岐、および解釈できる出力0件経路の emit_timeout_only を外すとそれぞれ赤（2026-10-27 Linux 実測）。
+# 変異検出: reject_rewrite の jq から json_timeout（systemMessage / additionalContext）を外すと、打ち切り×解釈不能 updatedInput のケースが赤（2026-10-27 Linux 実測）。
 # 変異検出: Windows の Git Bash（MSYS / Cygwin）の子の枠 25 秒を外して 10 秒へ戻すと、12 秒かかる子の msys ケースが赤（Issue `#2377`。2026-10-26 WSL 実測）。
 set -euo pipefail
 ROOT="$(cd "${BASH_SOURCE[0]%/*}/../.." && pwd)"
@@ -143,13 +146,78 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     direct = subprocess.run([BASH, mode.as_posix()], capture_output=True, text=True)
     assert run([mode]).stderr == direct.stderr
     slow = stub('slow', 'while :; do :; done')
+    notice = 'ff-dev-toolkit: hook 1 は時間内に完了しませんでした'
     start = time.monotonic()
     result = run([slow, warning, deny], ostype='linux-gnu')
     assert 9 <= time.monotonic() - start < 14
     assert result.returncode == 0 and '時間内' in result.stderr
+    assert result.stderr.count(notice) == 1
     value = json.loads(result.stdout)
     assert value['hookSpecificOutput']['permissionDecision'] == 'deny'
-    assert value['systemMessage'] == '注意1'
+    assert value['systemMessage'] == '注意1\n' + notice
+    assert value['hookSpecificOutput']['additionalContext'] == notice
+    assert value['hookSpecificOutput']['permissionDecisionReason'] == '拒否1\n' + note
+    assert notice not in value['hookSpecificOutput']['permissionDecisionReason']
+    # 出力が無い打ち切りでも、同じ文面を JSON へ載せる。拒否にはしない。
+    start = time.monotonic()
+    result = run([slow], ostype='linux-gnu')
+    assert 9 <= time.monotonic() - start < 14
+    assert result.returncode == 0 and result.stderr.count(notice) == 1
+    assert json.loads(result.stdout) == {
+        'systemMessage': notice,
+        'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'additionalContext': notice},
+    }
+    assert note not in result.stdout and note not in result.stderr
+    # 終了コード 2 と打ち切りが重なる回: JSON へは重ねず、stderr の診断行と未実行注記だけ。
+    start = time.monotonic()
+    result = run([slow, blocked, warning], ostype='linux-gnu')
+    assert 9 <= time.monotonic() - start < 14
+    assert result.returncode == 2
+    assert result.stderr.count(notice) == 1
+    assert notice not in result.stdout
+    assert result.stderr.splitlines()[-1] == note
+    assert result.stderr.count(note) == 1
+    # 解釈できる出力が 0 件の経路（2 か所目の emit_timeout_only）でも JSON へ載せる。
+    start = time.monotonic()
+    result = run([slow, stub('invalid', 'echo invalid')], ostype='linux-gnu')
+    assert 9 <= time.monotonic() - start < 14
+    assert result.returncode == 0
+    assert '除外' in result.stderr and result.stderr.count(notice) == 1
+    assert json.loads(result.stdout) == {
+        'systemMessage': notice,
+        'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'additionalContext': notice},
+    }
+    # 書き換え拒否（解釈不能 updatedInput）でも時間切れの知らせを JSON へ載せる（reject_rewrite）。
+    bad_rw = output('bad-rw', {'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse', 'updatedInput': {'command': ''}}})
+    start = time.monotonic()
+    result = run([slow, bad_rw], ostype='linux-gnu')
+    assert 9 <= time.monotonic() - start < 14
+    assert result.returncode == 0
+    assert result.stderr.count(notice) == 1
+    value = json.loads(result.stdout)
+    assert value['hookSpecificOutput']['permissionDecision'] == 'deny'
+    assert '解釈できない' in value['hookSpecificOutput']['permissionDecisionReason']
+    assert value['hookSpecificOutput']['permissionDecisionReason'].endswith(note)
+    assert value['systemMessage'] == notice
+    assert value['hookSpecificOutput']['additionalContext'] == notice
+    # 競合する書き換え×打ち切りも同じ契約（reject_rewrite の別呼び出し）。
+    rw_a = output('rw-a', {'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse', 'updatedInput': {'command': 'echo a'}}})
+    rw_b = output('rw-b', {'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse', 'updatedInput': {'command': 'echo b'}}})
+    start = time.monotonic()
+    result = run([slow, rw_a, rw_b], ostype='linux-gnu',
+                 payload=json.dumps({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash',
+                                     'tool_input': {'command': 'echo x'}}))
+    assert 9 <= time.monotonic() - start < 14
+    assert result.returncode == 0
+    assert result.stderr.count(notice) == 1
+    value = json.loads(result.stdout)
+    assert value['hookSpecificOutput']['permissionDecision'] == 'deny'
+    assert '競合する入力書き換え' in value['hookSpecificOutput']['permissionDecisionReason']
+    assert value['systemMessage'] == notice
+    assert value['hookSpecificOutput']['additionalContext'] == notice
     # Windows の Git Bash（MSYS / Cygwin）では子の枠が 25 秒（Issue `#2377`）。12 秒かかる子も打ち切らない
     late = stub('late', 'sleep 12\nprintf "%s" \'{"systemMessage":"遅い子"}\'')
     start = time.monotonic()
@@ -173,5 +241,5 @@ with tempfile.TemporaryDirectory(prefix='ff-batch-test-') as temp:
     result = run(args[2:], json.dumps(payload))
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'] == 'deny'
-print('✅ bash-hook-batch: 登録・大入力・拒否優先・全警告・未実行注記・子失敗・実ガード検証 passed')
+print('✅ bash-hook-batch: 登録・大入力・拒否優先・全警告・未実行注記・時間切れの JSON・子失敗・実ガード検証 passed')
 PY

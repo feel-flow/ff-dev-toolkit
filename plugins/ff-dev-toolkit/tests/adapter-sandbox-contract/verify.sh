@@ -979,6 +979,9 @@ help_unusable() {
 # その場合は空を返し、呼び出し側が fail する（照合できないまま緑にしない）。
 codex_live_enum() {
   awk '
+    # 実 CLI は TTY 判定に依らず --help へ SGR を付けることがある（codex-cli 0.164
+    # で実測。色付きの `-s, --sandbox` は素の行頭照合を外す）。
+    { gsub(/\033\[[0-9;]*m/, "") }
     /^[[:space:]]*-s, --sandbox </ { inblock = 1; next }
     inblock && /\[possible values:/ {
       sub(/^.*\[possible values:[[:space:]]*/, "")

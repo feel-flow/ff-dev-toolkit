@@ -20,6 +20,24 @@
 
 ## [Unreleased]
 
+## [0.168.0] - 2026-10-27
+
+### 追加
+
+- Claude Code の新規読み取りタスクを明示起動し、Issue ごとのセッション・CLI 実行区間・利用量・推定コスト・成果リンクをローカルへ記録する最小 PoC を追加。本文を保存せず、欠測と区間の重複を区別して集計し、既存の工数値を維持する。
+- セキュリティに関わる変更（認証・認可、セッション・トークン、決済・Webhook、秘密情報、外部 URL の取得、SQL / migration、ファイルアップロード等）を決定木の根が分類し、`review-route.sh` が `REVIEW_SECURITY_SENSITIVE` と根拠の path を出すようにした。パターンは `.claude/agent-config.yaml` の `review.security_glob_extra`（追加）/ `review.security_glob`（置き換え）で変えられ、読めない設定は該当なしへ倒さず判定不能として扱う。
+- 主担当ホストで専用セキュリティゲートを分岐する。主担当が Claude Code で該当すれば、通常のセルフレビューに加えて組み込みの `/security-review` を実行し、基点（`origin/HEAD`）が PR の base と食い違う回は実行せず未確認と記録する。Codex / grok が主担当の回は「未対応（主担当 grok-cli）」のように主担当名付きで記録し、黙って省略しない。`review.security_review: "off"` で無効化できる。
+
+### 変更
+
+- 社内制作プラグインを含む環境で、ローカル素材準備の検査が欠落した場合も集約ゲートを失敗にする。公開プラグインだけの環境は従来どおり対象外とする。
+
+### 修正
+
+- adapter-sandbox-contract の live enum 抽出は、実 CLI の --help に含まれる SGR 色を除いてから possible values を読む。
+- Headless grok-cli の distributed review で、型付き判定行を返せない既知の経路を security-analysis だけから、コマンド実行を要する観点の名簿 1 か所（error-handler-hunt を含む）へ広げた。Grok ホストへの native 委譲と pair / cross-model の明示モデル選択は変えない。明示 CLI や除外で代替が無いときは dry-run でも非 0 で診断する。
+- Bash ガードの集約入口は、子が処理枠を超えて打ち切られたとき、stderr の診断に加えて同じ文面を集約結果の systemMessage と additionalContext へ載せる。他の子の拒否は残り、時間切れだけでは拒否にしない。終了コード 2 の回は stderr の診断行だけを使い、JSON へは重ねない。
+
 ## [0.167.0] - 2026-10-27
 
 ### 追加

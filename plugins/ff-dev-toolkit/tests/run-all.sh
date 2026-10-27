@@ -817,6 +817,8 @@ else
     # 見出し書式の変更・配置の曖昧さに対する既定を隔離 fixture で実測する。gh は stub に
     # 解決させ、ネットワークには出ない。
     "$SCRIPT_DIR/knowledge-lookup/verify.sh"
+    # Opt-in Claude result allowlist, interval union and missing-data behavior.
+    "$SCRIPT_DIR/claude-measurement/verify.sh"
     # squash 件名の closing keyword が Refs 運用の Issue を閉じる経路のガード。
     # 検査ロジック（scripts/check-closing-keywords.sh）の振る舞いと、SKILL.md /
     # git-workflow.md 側の規約が drift していないことを併せて見る。外部コマンド
@@ -909,6 +911,11 @@ else
     # exit 0 / 10 / 11 / 12 / 2）、hook の記録と fail-soft、読み手の (unmeasured) /
     # (unavailable) を固定する。jq / git / 一時領域が無ければ ○ skip。
     "$SCRIPT_DIR/decision-tree/verify.sh"
+    # セキュリティに関わる変更の判定（根の security-glob）と主担当ホスト別の専用セキュリティゲート
+    # （review-route.sh の REVIEW_SECURITY_* 行、Issue `#2391`）。git fixture で --git --base の
+    # 判定・/security-review の基点照合を実測し、設定の 3 層と、読めない・空・置き場違いの
+    # 設定が unknown（該当なしへ倒さない）になることを固定する。
+    "$SCRIPT_DIR/security-review-gate/verify.sh"
     # 変異ハーネス（scripts/mutation-harness.sh）の契約。fixture リポジトリへ実際に回し、
     # 空の変異表・対照の赤で止まること、判定 5 種と終了コード、--work-dir の一意な子だけを
     # 消す cleanup、symlink 越しの変異を NOT-APPLIED にする写しの境界、対照の副作用の隔離、
