@@ -304,25 +304,37 @@
 1. **即座の対応**:
 
    ```bash
-   # Dockerサービスの状態確認
+   # 接続先と実行方式を確認する
+   docker context show
+   docker context inspect
+   docker version
+   ```
+
+   Docker Desktop はアプリの起動状態を確認する。rootless Docker は利用ユーザーのサービスと、その context のソケットを確認する。以下の systemd 手順は Linux の rootful Docker に限る。
+
+2. **Linux rootful Docker のサービス状態**:
+
+   ```bash
    sudo systemctl status docker
 
    # Dockerサービスを起動
    sudo systemctl start docker
 
-   # ユーザーをdockerグループに追加
-   sudo usermod -aG docker $USER
    ```
 
-2. **権限の確認**:
+3. **権限の確認**:
 
    ```bash
    # Dockerソケットの権限確認
    ls -la /var/run/docker.sock
 
-   # 権限を修正
-   sudo chmod 666 /var/run/docker.sock
    ```
+
+   接続先が上記の Linux rootful ソケットなら、管理者がサービス設定と所有者・グループを確認する。典型的な制限は `root:docker` / `0660`。全ユーザーへ書き込みを許可して復旧しない。socket activation を使う環境では `docker.socket` の設定も確認し、実際の接続先で制限を読み戻す。
+
+   `docker` グループの利用は root 相当の権限を渡す。管理者が対象ユーザーへの付与を承認した場合に限り追加し、再ログイン後に接続を確認する。Desktop・rootless のソケットへこの所有者や権限をそのまま適用しない。
+
+   参考: [Docker Linux post-installation](https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user)、[Rootless mode](https://docs.docker.com/engine/security/rootless/)。
 
 **予防策**:
 

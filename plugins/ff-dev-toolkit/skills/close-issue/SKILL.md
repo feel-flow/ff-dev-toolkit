@@ -123,11 +123,11 @@ MCP: 取得値: MCPでIssue title/body と PR diff/rollup/reviewDecision。形�
 
 #### 5b. 本文の書き換えと送信
 
-[Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従い、達成 AC を `- [ ]` → `- [x]` にする（`☑` は不可）:
+[Markdown 文字列パッチ規律](../../docs-template/05-operations/deployment/markdown-patch-discipline.md)に従い、達成 AC を `- [ ]` → `- [x]` にする（`☑` 不可）。初回だけ私有領域を確保し W の実値を記録する。5a の確保済み領域も使える。後続呼び出しは実値を W に明示する:
 
 ```bash
-W="${TMPDIR:-/tmp}/close-issue-${ISSUE_NUMBER:?}"; mkdir -p "$W" || exit 2   # 6 と同じ 2 行。呼び出しごとに求め直す
-if command -v cygpath >/dev/null 2>&1; then W="$(cygpath -m "$W")" || exit 2; fi; echo "W=$W"
+: "${W:?記録済みWの実値を明示}"
+[ -d "$W" ] && [ ! -L "$W" ] || exit 2
 gh issue view "$ISSUE_URL" --json body,updatedAt   # body 全文と時刻を W の .orig.md / 編集 .md へ（書き換えも W）
 # 達成行だけ個別に "- [ ]" → "- [x]"（一括禁止）
 JUDGE="${FF_DEV_TOOLKIT_ROOT:?プラグインルートを先に解決すること}/scripts/check-issue-body-diff.sh"
@@ -142,22 +142,22 @@ esac
 gh issue edit "$ISSUE_URL" --body-file "$W/issue-body-${ISSUE_NUMBER}.md"
 ```
 
-<!--6d9a047ed470b6a9-->
+<!--4012219f76dd63c0-->
 MCP: 取得値: MCPでIssue body/updatedAt（REST updated_at）。形式: 原本 .orig.md / 編集 .md。渡し先: 許可差分・直前時刻照合後 update_issue.body → fresh一致。不足時: MCP 必須不足は停止。
 
 更新するのは**チェックボックスと `ff-effort` ブロックの中身のみ**（例外は手順 3 の「AC が実装より古い」と手順 4 のスコープ変更）。対象外・post-merge 検証待ちはチェックしない。
 
 ### 6. 完了報告コメントの投稿
 
-**日本語**で `--body-file` 投稿。冒頭の識別マーカー `<!-- close-issue-report:PR-<PR番号> -->` を持つ既存コメントがあれば更新する:
+**日本語**で `--body-file` 投稿。`<!-- close-issue-report:PR-<PR番号> -->` の既存コメントは更新する。5b の W の実値を明示し、報告を保存してから送信する。固定名から再構築せず、mktemp も再実行しない:
 
 ```bash
-W="${TMPDIR:-/tmp}/close-issue-${ISSUE_NUMBER:?}"; mkdir -p "$W" || exit 2
-if command -v cygpath >/dev/null 2>&1; then W="$(cygpath -m "$W")" || exit 2; fi; echo "W=$W"
+: "${W:?記録済みWの実値を明示}"
+[ -d "$W" ] && [ ! -L "$W" ] || exit 2
 gh issue comment "$ISSUE_URL" --body-file "$W/close-issue-report-${ISSUE_NUMBER}.md"
 ```
 
-<!--a76eea9d568018cd-->
+<!--1c37202f4ab93c34-->
 MCP: 取得値: MCPで全 comments id/body と report marker。形式: 全 page JSON / 報告ファイル原文。渡し先: 一意IDは update_issue_comment、無ければ add_comment_to_issue → fresh一致。不足時: MCP 必須不足は停止。
 
 報告の[テンプレート](references/report.md)を読み、各 AC に `測った対象: [AC が指す対象]` と根拠を書く。主要コミット: <手順 1 の PR_COMMITS をそのまま貼る>。

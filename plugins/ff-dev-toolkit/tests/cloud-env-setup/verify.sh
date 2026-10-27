@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: origin行・失敗rc行の不在は赤。旧probeは合成secretのJSON/Markdown 8件が赤、修正版は68件pass（macOS実測）。
 #
 # cloud-env-setup: クラウド環境セットアップ（CI / クラウド開発環境の不足ツールとロケールを揃える）の挙動契約。
 #
@@ -471,6 +472,40 @@ fi
 
 md="$( (cd "$FX" && env -i PATH="$BIN" HOME="$TMP" STUB_CTYPE=POSIX STUB_LOCALES='C\nPOSIX\nC.utf8\n' FF_PROBE_LOCALE_CMD="$LOCALE_STUB" bash "$PROBE" 2>/dev/null) | grep -F '| env | ロケール |' || true)"
 if [[ "$md" == *"⚠️ warn"* ]]; then ok "probe: Markdown 表にも同じロケール行が出る"; else bad "probe: Markdown 表にロケール行が無い"; fi
+
+# 実 probe の origin/失敗行が無ければ赤。URLとstderrを無加工で表示する旧実装で
+#   合成secretがJSON/Markdownへ現れることを検出する。
+echo "-- probe: remote URL と通信エラーをレポートへ漏らさない --"
+PROBE_TEST_REAL_GIT="$(command -v git)"
+rm -f "$BIN/git"
+cp "$SCRIPT_DIR/git-report-stub.sh" "$BIN/git"
+chmod +x "$BIN/git"
+for remote in \
+  'https://user:SYNTHETIC_SECRET@invalid.example/repo.git?token=SYNTHETIC_QUERY#SYNTHETIC_FRAGMENT' \
+  'ssh://user:SYNTHETIC_SECRET@invalid.example/repo.git' \
+  'git@invalid.example:owner/repo.git' \
+  '/offline/local/remote.git'; do
+  for format in json markdown; do
+    PROBE_RC=0
+    (cd "$FX" && env -i PATH="$BIN" HOME="$TMP" TMPDIR="$TMP" \
+      PROBE_TEST_REMOTE="$remote" PROBE_TEST_REAL_GIT="$PROBE_TEST_REAL_GIT" \
+      bash "$PROBE" "--$format") >"$TMP/private-report" 2>"$TMP/private-report.err" || PROBE_RC=$?
+    origin_needle='"name": "origin"'
+    [ "$format" = json ] || origin_needle='| auth | origin |'
+    if [ "$PROBE_RC" -eq 0 ] && [ -s "$TMP/private-report" ] \
+      && grep -qF "$origin_needle" "$TMP/private-report" \
+      && grep -qF 'git ls-remote origin' "$TMP/private-report" \
+      && grep -qF 'rc=128' "$TMP/private-report" \
+      && ! grep -qF 'SYNTHETIC_' "$TMP/private-report" \
+      && ! grep -qF 'SYNTHETIC_' "$TMP/private-report.err"; then
+      ok "probe: $format はremote種別を問わずsecretを省略し失敗statusを保つ"
+    else
+      bad "probe: $format のsecret境界/必須行/rc（rc=${PROBE_RC}）"
+    fi
+  done
+done
+rm -f "$BIN/git"
+ln -s "$PROBE_TEST_REAL_GIT" "$BIN/git"
 
 echo
 if [ "$FAIL" -gt 0 ]; then

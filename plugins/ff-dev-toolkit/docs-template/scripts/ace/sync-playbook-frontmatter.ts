@@ -764,19 +764,33 @@ function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
  * 成功時は null、失敗時は診断メッセージを返す。
  */
 function writeFileAtomically(targetPath: string, content: string): string | null {
-  const tempPath = `${targetPath}.sync-tmp-${String(process.pid)}`;
+  let temporaryDirectory: string | undefined;
   try {
-    fs.writeFileSync(tempPath, content, "utf8");
+    const mode = fs.statSync(targetPath).mode & 0o777;
+    temporaryDirectory = fs.mkdtempSync(
+      path.join(path.dirname(targetPath), "." + path.basename(targetPath) + ".sync-"),
+    );
+    const tempPath = path.join(temporaryDirectory, "replacement");
+    const descriptor = fs.openSync(tempPath, "wx", 0o600);
+    try {
+      fs.writeFileSync(descriptor, content, "utf8");
+      if (process.platform !== "win32") fs.fchmodSync(descriptor, mode);
+    } finally {
+      fs.closeSync(descriptor);
+    }
     fs.renameSync(tempPath, targetPath);
     return null;
   } catch (error: unknown) {
-    // 失敗経路の残骸を残さない。削除自体の失敗は本来の失敗理由を覆い隠すので握る。
-    try {
-      fs.rmSync(tempPath, { force: true });
-    } catch {
-      /* 一時ファイルの後始末失敗は原本の状態に影響しないため報告しない */
-    }
     return error instanceof Error ? error.message : String(error);
+  } finally {
+    // この呼出しが排他的に確保した領域だけを片付ける。既存の一時名へは触らない。
+    if (temporaryDirectory !== undefined) {
+      try {
+        fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+      } catch {
+        /* cleanup failure must not replace the original write diagnostic */
+      }
+    }
   }
 }
 

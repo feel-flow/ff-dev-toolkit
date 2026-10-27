@@ -73,6 +73,31 @@ else
   sed 's/^/    | /' "$WORK/install2.log" >&2
 fi
 
+# 配置入口の links は比較・バックアップ・中間生成より先に拒否する。
+# 実 main を通すので、関数だけが安全で呼出経路が旧版という退行も検出する。
+for _boundary_case in scripts shim sidecar; do
+  _boundary_target="$WORK/boundary-$_boundary_case"
+  _boundary_outside="$WORK/outside-$_boundary_case"
+  mkdir -p "$_boundary_target" "$_boundary_outside"
+  printf '%s\n' sentinel >"$_boundary_outside/sentinel"
+  case "$_boundary_case" in
+    scripts) ln -s "$_boundary_outside" "$_boundary_target/scripts" ;;
+    shim|sidecar)
+      mkdir "$_boundary_target/scripts"
+      _boundary_leaf=codex-review.sh
+      [ "$_boundary_case" != sidecar ] || _boundary_leaf=.ff-dev-toolkit-root
+      ln -s "$_boundary_outside/sentinel" "$_boundary_target/scripts/$_boundary_leaf" ;;
+  esac
+  if run_install_via_main "$_boundary_target"; then
+    bad "setup: $_boundary_case のリンクを拒否しなかった"
+  elif [ "$(cat "$_boundary_outside/sentinel")" != sentinel ] \
+       || [ "$(find "$_boundary_outside" -type f | wc -l | tr -d ' ')" != 1 ]; then
+    bad "setup: $_boundary_case のリンク先へ書き込んだ"
+  else
+    ok "setup: $_boundary_case のリンクを拒否し checkout 外を変更しない"
+  fi
+done
+
 # 配置先から見ても上流Issueの所属と設定の排他関係が一意になること。
 # コメント行だけを取り、`${#1}` 等のshell構文をIssue番号として扱わない。
 if [ ! -s "$PLACED" ] || ! awk '/^[[:space:]]*#/ { print }' "$PLACED" > "$WORK/shim-comments" \
@@ -660,4 +685,19 @@ else
   else
     ok "配置: shim は上流 ACE を裸の ID で引かず、公開リポジトリの固定 SHA permalink で指す"
   fi
+fi
+
+# dangling backup は既存物として保持する。中間ファイルは成功後にも残さない。
+_backup_target="$WORK/boundary-backup"
+mkdir -p "$_backup_target/scripts"
+printf '%s\n' custom >"$_backup_target/scripts/codex-review.sh"
+ln -s "$WORK/backup-outside-missing" "$_backup_target/scripts/codex-review.sh.bak"
+if run_install_via_main "$_backup_target" \
+   && [ -L "$_backup_target/scripts/codex-review.sh.bak" ] \
+   && [ ! -e "$WORK/backup-outside-missing" ] \
+   && [ "$(cat "$_backup_target/scripts/codex-review.sh.bak.1")" = custom ] \
+   && [ -z "$(find "$_backup_target/scripts" -name '.ff-review-install.*' -print)" ]; then
+  ok "setup: dangling backupを保持し退避・配置を完了、私有中間を回収する"
+else
+  bad "setup: backupリンクまたは私有中間の取り扱いが不正"
 fi

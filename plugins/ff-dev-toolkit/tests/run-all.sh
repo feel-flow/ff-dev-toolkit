@@ -912,9 +912,9 @@ else
     # (unavailable) を固定する。jq / git / 一時領域が無ければ ○ skip。
     "$SCRIPT_DIR/decision-tree/verify.sh"
     # セキュリティに関わる変更の判定（根の security-glob）と主担当ホスト別の専用セキュリティゲート
-    # （review-route.sh の REVIEW_SECURITY_* 行、Issue `#2391`）。git fixture で --git --base の
-    # 判定・/security-review の基点照合を実測し、設定の 3 層と、読めない・空・置き場違いの
-    # 設定が unknown（該当なしへ倒さない）になることを固定する。
+    # （review-route.sh の REVIEW_SECURITY_* 行、Issue `#2391` / `#2392`）。git fixture で --git --base の
+    # 判定・/security-review の基点照合・主担当 codex-cli の Codex Security 導入確認を実測し、
+    # 設定の 3 層と、読めない・空・置き場違いの設定が unknown（該当なしへ倒さない）になることを固定する。
     "$SCRIPT_DIR/security-review-gate/verify.sh"
     # 変異ハーネス（scripts/mutation-harness.sh）の契約。fixture リポジトリへ実際に回し、
     # 空の変異表・対照の赤で止まること、判定 5 種と終了コード、--work-dir の一意な子だけを
@@ -1043,6 +1043,7 @@ else
     # scripts/probe-env-capabilities.sh のロケール行。apt-get / npm / curl は stub、gh の
     # 不在は絞った PATH で作る。root scripts/ を持たない配布先 checkout では ○ skip。
     "$SCRIPT_DIR/cloud-env-setup/verify.sh"
+    "$SCRIPT_DIR/security-runbooks/verify.sh"
     # 日本語の完全一致・集合演算は呼び出し単位でバイト照合する（Issue `#2240`）。
     "$SCRIPT_DIR/locale-comparison/verify.sh"
     # 公開リポジトリの Dependabot 健全性検知（Issue #472）。依存グラフ無効の再発と
@@ -1631,7 +1632,6 @@ MISS_PROBE_BASELINE=(
   changelog-public-tags-selftest
   changelog-public-tags
   cli-registry-completeness
-  cloud-env-setup
   docs-frontmatter-repo-selftest
   docs-frontmatter-repo
   docs-scan-mirror
@@ -1641,7 +1641,6 @@ MISS_PROBE_BASELINE=(
   github-labels-setup
   guard-background-cwd
   guard-checkout-restore
-  guard-long-gate-background
   host-route-parity
   init-docs-placeholder-list
   issue-label-supply

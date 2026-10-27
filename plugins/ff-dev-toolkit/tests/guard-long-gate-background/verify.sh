@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: helper不在・リンク追記へ戻す旧hookはsentinel検査が赤。通常追記とdeny/ACKを含む96件pass（macOS実測）。
 # Runtime contract for the delegated long-gate background guard hook (OBS-036).
 #
 # 配布物 hooks/guard-long-gate-background.sh を stdin JSON で直接駆動し、受け入れ条件の
@@ -727,6 +728,48 @@ else
   run_hook "$crlf_pass_payload"
   assert_silent "(11b) CRLF の jq でも、子 + timeout=600000（要求値ちょうど）は素通し"
   PATH="$SAVED_PATH"
+fi
+
+# private-session-log.py の不在・リンクを辿る旧hookは下のsentinel検査で赤。
+echo "guard-long-gate-background: 私有ログの境界"
+LOG_SENTINEL="$TEST_TMP/log-sentinel"
+printf '%s\n' sentinel > "$LOG_SENTINEL"
+ln -s "$LOG_SENTINEL" "$LOG_DIR/hostile-session.log"
+run_hook "$(payload "$GATE" general-purpose true "" hostile-session)"
+assert_deny "unsafe log leafでもdenyを維持する"
+if [ "$(cat "$LOG_SENTINEL")" = sentinel ]; then
+  ok "シンボリックリンク先へ追記しない"
+else
+  bad "ログが外部sentinelへ追記した"
+fi
+rm -f "$LOG_DIR/hostile-session.log"
+NO_LOG_BIN="$TEST_TMP/no-secure-log"
+mkdir "$NO_LOG_BIN"
+printf '%s\n' '#!/bin/sh' 'exit 1' >"$NO_LOG_BIN/python3"
+chmod +x "$NO_LOG_BIN/python3"
+SAVED_PATH="$PATH"
+PATH="$NO_LOG_BIN:$PATH"
+run_hook "$(payload "$GATE" general-purpose true "")"
+assert_deny "安全な記録が使えなくてもdenyを維持する"
+if [[ "$REASON" == *"delegation-guard log unavailable"* ]]; then
+  ok "denyにも記録不能を明示する"
+else
+  bad "denyが記録不能を通知しない"
+fi
+run_hook_capture_stderr "$(payload "FF_LONG_GATE_BACKGROUND_ACK=1 $GATE" general-purpose true "")"
+if [ -z "$OUT" ] && [[ "$ERR" == *"log unavailable"* ]]; then
+  ok "安全な記録が使えなくてもACKを維持し未記録を通知する"
+else
+  bad "ACKの記録不能時の契約が崩れた"
+fi
+PATH="$SAVED_PATH"
+if private_log_output="$(PYTHONDONTWRITEBYTECODE=1 python3 "$SCRIPT_DIR/private-log.test.py" 2>&1)"; then
+  case "$private_log_output" in
+    *"Ran 6 tests"*"OK"*) ok "descriptor/所有権/通常追記の6検査を実行した" ;;
+    *) bad "私有ログ検査が空振りした: $private_log_output" ;;
+  esac
+else
+  bad "私有ログ検査が失敗した: $private_log_output"
 fi
 
 echo

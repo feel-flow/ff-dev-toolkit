@@ -207,7 +207,7 @@ else
 fi
 echo "== (8) 一時ファイルの置き場所 =="
 # 正本の節が求め方の 2 行（TMPDIR 起点・cygpath -m の失敗で止める・変換後の値を出力）を持つ
-for needle in 'W="${TMPDIR:-/tmp}/' 'W="$(cygpath -m "$W")" || exit 2' 'echo "W=$W"'; do
+for needle in 'W="$(mktemp -d "${TMPDIR:-/tmp}/' 'W="$(cygpath -m "$W")" || exit 2' 'echo "W=$W"' 'mktemp を再実行したりしない'; do
   if section_scope_contains "$SSOT" '## 一時ファイルの置き場所' "$needle" >/dev/null; then
     ok "置き場所の節に求め方がある: ${needle}"
   else

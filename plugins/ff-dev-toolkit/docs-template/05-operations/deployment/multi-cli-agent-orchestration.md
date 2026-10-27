@@ -483,7 +483,10 @@ kill -9 <PID> 2>/dev/null   # 残っていれば KILL
      hook 入力の `agent_type` の有無による（実測: 親の `PreToolUse` には `agent_id` /
      `agent_type` がキーごと無く、サブエージェントには在る。`session_id` / `transcript_path`
      は親子で同一なので判別材料にならない）。
-   - **発火は記録される**。deny と抜け道通過は `${TMPDIR}/ff-dev-toolkit-delegation-guard/`
+   - **発火の記録は任意機能**。安全な記録には Python 3 と POSIX の descriptor-relative /
+     no-follow 操作が必要で、標準の Windows CPython では利用できない。記録不能でも
+     deny / ACK の判定は維持し、deny 本文 / ACK の stderr に記録不能を通知する。
+     未記録の回を発生回数 0 と数えない。利用可能な環境では deny と抜け道通過を `${TMPDIR}/ff-dev-toolkit-delegation-guard/`
      配下の session_id 別ログへ 1 行ずつ残るので、親は「どの子がゲートを background で
      起こそうとしたか」を一覧でき、対策後の発生回数も数えられる。
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -16,6 +16,16 @@ import {
   replaceTopLevelField,
   splitFrontmatter,
 } from "./sync-playbook-frontmatter";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    writeFileSync: vi.fn(actual.writeFileSync),
+    fchmodSync: vi.fn(actual.fchmodSync),
+    renameSync: vi.fn(actual.renameSync),
+  };
+});
 
 const createdDirs: string[] = [];
 function tempDir(): string {
@@ -996,6 +1006,48 @@ describe("main (CLI contract)", () => {
 
     expect(status).toBe(2);
     expect(output).toContain("同時に指定できません");
+  });
+
+  it.each(["symlink", "file", "directory"])("--write は既存の予測可能な一時名 %s を変更しない", (kind) => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    const outside = path.join(tempDir(), "sentinel.md");
+    const priorTemp = playbook + ".sync-tmp-" + String(process.pid);
+    fs.writeFileSync(playbook, EMPTY_PLAYBOOK);
+    fs.chmodSync(playbook, 0o640);
+    fs.writeFileSync(outside, "outside sentinel");
+    if (kind === "symlink") fs.symlinkSync(outside, priorTemp);
+    else if (kind === "directory") fs.mkdirSync(priorTemp);
+    else fs.writeFileSync(priorTemp, "foreign temporary file");
+    const { status } = withCapturedConsole(() => main(["node", "sync", playbook, "--write"]));
+    expect(status).toBe(0);
+    expect(fs.readFileSync(outside, "utf8")).toBe("outside sentinel");
+    expect(fs.lstatSync(priorTemp).isSymbolicLink()).toBe(kind === "symlink");
+    if (kind === "file") expect(fs.readFileSync(priorTemp, "utf8")).toBe("foreign temporary file");
+    expect(fs.lstatSync(playbook).isFile()).toBe(true);
+    if (process.platform !== "win32") expect(fs.statSync(playbook).mode & 0o777).toBe(0o640);
+    expect(fs.readdirSync(dir).sort()).toEqual(["PLAYBOOK.md", path.basename(priorTemp)].sort());
+  });
+
+  it.each((["writeFileSync", "fchmodSync", "renameSync"] as const).filter((operation) => operation !== "fchmodSync" || process.platform !== "win32"))("--write は %s 失敗で原本とmodeを保持し私有中間を回収する", (operation) => {
+    const dir = tempDir();
+    const playbook = path.join(dir, "PLAYBOOK.md");
+    fs.writeFileSync(playbook, EMPTY_PLAYBOOK);
+    fs.chmodSync(playbook, 0o640);
+    const original = fs.readFileSync(playbook);
+    const failure = vi.mocked(fs[operation]).mockImplementationOnce(() => {
+      throw new Error("synthetic atomic-write failure");
+    });
+    let status: number;
+    try {
+      ({ status } = withCapturedConsole(() => main(["node", "sync", playbook, "--write"])));
+    } finally {
+      failure.mockReset();
+    }
+    expect(status!).not.toBe(0);
+    expect(fs.readFileSync(playbook)).toEqual(original);
+    if (process.platform !== "win32") expect(fs.statSync(playbook).mode & 0o777).toBe(0o640);
+    expect(fs.readdirSync(dir)).toEqual(["PLAYBOOK.md"]);
   });
 
   it("--write は実ファイルの count と ACE_UPDATED_DATE を更新する", () => {

@@ -57,12 +57,13 @@ MCP: 取得値: MCP で同じ PR の additions / deletions / 全 commits / revie
 
 ## 配備の行（`effort_deploy`）の照合
 
-`effort_deploy` は `/create-issue` が必須項目として書かせる配備の行である（誰がどこで反映し、成否を誰がどう確認するか。反映を伴わない変更は `なし（コードのみ・反映を伴わない）`）。この照合は**手順 5a の中で**行う。5a は 5b より前に走るので、5b の取得を待たずにここで本文を `.orig.md` へ保存してから当てる（5b は同じ作業ディレクトリ `W` の同じパスへ本文を取り直して上書きするので、手順の順序とも判定器の入力とも食い違わない）。`W` は 5b・6 と同じ導出で求める。Bash の呼び出しをまたぐとシェル変数は残らないので、名前を Issue 番号から決めて各フェンスで求め直す。ただしこの照合は任意なので、作業ディレクトリを作れない・変換できない回は 5b・6 のように止めず、`effort_deploy=unavailable` を出して続ける。`/tmp` を直書きしない理由は [Markdown 文字列パッチ規律の「一時ファイルの置き場所」](../../../docs-template/05-operations/deployment/markdown-patch-discipline.md#一時ファイルの置き場所):
+`effort_deploy` は `/create-issue` が必須項目として書かせる配備の行である（誰がどこで反映し、成否を誰がどう確認するか。反映を伴わない変更は `なし（コードのみ・反映を伴わない）`）。この照合は手順 5a の中で行い、排他的に確保した私有領域へ本文を取得する。変換後の W の実値を記録し、5b・6 の新しい Bash 呼び出しでもその同じ実値を明示して再設定する。固定名から再構築せず、後続段で mktemp を再実行しない。5b は同じパスへ本文を取り直してから編集する。照合が不要だった場合は 5b の初回に私有領域を確保する。任意の照合なので確保・変換失敗は `effort_deploy=unavailable` として続ける。置き場所と寿命の正本は [Markdown 文字列パッチ規律の「一時ファイルの置き場所」](../../../docs-template/05-operations/deployment/markdown-patch-discipline.md#一時ファイルの置き場所)。
 
 ```bash
-W="${TMPDIR:-/tmp}/close-issue-${ISSUE_NUMBER:?Issue 番号を先に設定すること}"
-if ! mkdir -p "$W"; then echo "effort_deploy=unavailable"; exit 0; fi
+if ! W="$(mktemp -d "${TMPDIR:-/tmp}/close-issue-${ISSUE_NUMBER:?Issue 番号を先に設定すること}.XXXXXX")"; then echo "effort_deploy=unavailable"; exit 0; fi
+[ -d "$W" ] && [ ! -L "$W" ] || { echo "effort_deploy=unavailable"; exit 0; }
 if command -v cygpath >/dev/null 2>&1; then W="$(cygpath -m "$W")" || { echo "effort_deploy=unavailable"; exit 0; }; fi
+echo "W=$W" >&2  # この実値を記録し、後続呼び出しの W に明示する
 BODY_ORIG="$W/issue-body-${ISSUE_NUMBER}.orig.md"
 # 取得に成功したときだけ確定する（失敗時にリダイレクトが残す空ファイルを「ブロック不在」と読ませない）
 if gh issue view "$ISSUE_URL" --json body --jq .body > "${BODY_ORIG}.part"; then
@@ -74,7 +75,7 @@ else
 fi
 ```
 
-<!--f4fdf7a74d7b9fe2-->
+<!--c84c1512097b8092-->
 MCP: 取得値: MCP で同じ Issue の body 全文を取得。形式: 成功時だけ本文原文を BODY_ORIG（.orig.md）へ保存。渡し先: effort-report.sh --deploy-check "$BODY_ORIG" へ本文ファイルを渡す。不足時: 任意の本文取得失敗は effort_deploy=unavailable と報告して継続し、未取得を空ファイルやブロック不在にしない。
 
 - 出力は `effort_deploy=<状態>` の 1 行で、常に exit 0。`present`（「なし（…）」の明示を含む）と `noblock`（ブロック不在。5a のスキップと同じ）は何もしない

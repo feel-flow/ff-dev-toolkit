@@ -537,12 +537,16 @@ if awk -v b="$BEGIN_MARK" '$0 == b { n++ } END { exit !(n == 1) }' "$DTMP/tmpl.m
     _d="$(PATH="$DTMP/bin:$PATH" TMPDIR="$DTMP/tmp" ISSUE_URL=x ISSUE_NUMBER=5 FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash -c "$_step" 2>/dev/null)"
     [ "$_d" = "effort_deploy=present" ] && ok "5b: close-issue の照合手順を 5a の位置で単独実行して present（.orig.md を先に保存している）" \
       || bad "5b: close-issue の照合手順の単独実行が期待と違う: [${_d}]（期待 effort_deploy=present）"
-    # 置き場所: 本文は TMPDIR 配下の Issue 番号から決まる作業ディレクトリへ保存される。5b は同じパスへ
-    # 取り直すので、ここが別の場所（TMPDIR を見ない固定パス・呼び出しごとに変わる乱数名）だと食い違う
-    [ -s "$DTMP/tmp/close-issue-5/issue-body-5.orig.md" ] && ok "5b: 照合手順は本文を \${TMPDIR}/close-issue-<Issue 番号>/ へ保存する（5b と同じ作業ディレクトリ）" \
-      || bad "5b: 照合手順の保存先が \$TMPDIR/close-issue-5/issue-body-5.orig.md ではない（5b の作業ディレクトリと食い違う）"
-    # gh の取得失敗（stub が非 0）: 空ファイルを noblock と読まず unavailable を報告する。前回の
-    # 成功で残った .orig.md（記入済み）があっても、それを読んで present にしない
+    # 初回に確保した私有領域の実パスを記録し、5b は同じ実値へ取り直す。
+    # 固定名を再構築したり、後続呼び出しで再確保して別の領域へ移ったりしない。
+    _saved="$(find "$DTMP/tmp" -name issue-body-5.orig.md -type f)"
+    if [ -n "$_saved" ] && [ -s "$_saved" ] && [ "$(dirname "$_saved")" != "$DTMP/tmp/close-issue-5" ]; then
+      ok "5b: 本文は排他的に確保した私有ディレクトリへ保存される"
+    else
+      bad "5b: 私有ディレクトリの本文を確認できない"
+    fi
+    # gh の取得失敗（stub が非 0）: 今回の私有領域に残る空ファイルを noblock と読まず
+    # unavailable を報告する。この検査は過去の別領域の再利用を測るものではない。
     printf '#!/bin/sh\nexit 1\n' > "$DTMP/bin/gh"
     _d="$(PATH="$DTMP/bin:$PATH" TMPDIR="$DTMP/tmp" ISSUE_URL=x ISSUE_NUMBER=5 FF_DEV_TOOLKIT_ROOT="$PLUGIN_ROOT" bash -c "$_step" 2>/dev/null)"
     [ "$_d" = "effort_deploy=unavailable" ] && ok "5b: 照合手順で gh が失敗したら unavailable（空の本文を noblock と読まない）" \
@@ -652,37 +656,38 @@ rm -f "$EMPTY"
 contains "$CLOSE_MAIN" "check-issue-body-diff.sh" "close-issue が判定器を呼んでいる（目視判定に戻していない）"
 contains "$CLOSE_MAIN" 'FF_DEV_TOOLKIT_ROOT:?' "close-issue の判定器呼び出しが未解決ルートで fail-closed"
 contains "$CLOSE_MAIN" "上記以外" "close-issue が列挙外の終了コード（起動失敗等）を検査不成立として扱う"
-# 一時ファイルの置き場所: 5a（reference）・5b・6 はどれも作業ディレクトリ W を TMPDIR と Issue 番号から
-# 求め、Windows の Git Bash では cygpath -m で C:/… 形式にそろえる。5b と 6 は別の Bash 呼び出しで走る
-# （間にホストのファイル編集機能で報告を書く）ので、導出は 5b と 6 の両方に要る。/tmp の直書きへ
-# 戻すと、python / node のコードやホストのファイル編集機能がドライブ直下の別の場所を読む
-_n="$(grep -cF 'W="${TMPDIR:-/tmp}/close-issue-${ISSUE_NUMBER:?' "$CLOSE_MAIN")"
-[ "${_n:-0}" -ge 2 ] && ok "close-issue の 5b と 6 がそれぞれ作業ディレクトリを TMPDIR と Issue 番号から求める（${_n} 箇所）" \
-  || bad "close-issue の作業ディレクトリの導出が 5b・6 の 2 箇所にない（${_n:-0} 箇所。6 が 5b のシェル変数をあてにすると新しい呼び出しで止まる）"
-_n="$(grep -cF 'W="$(cygpath -m "$W")" || exit 2' "$CLOSE_MAIN")"
-[ "${_n:-0}" -ge 2 ] && ok "close-issue の 5b と 6 が Windows（Git Bash）で C:/… 形式へそろえ、変換の失敗で止まる（${_n} 箇所）" \
-  || bad "close-issue の cygpath -m の分岐（失敗で止める形）が 5b・6 の 2 箇所にない（${_n:-0} 箇所）"
+# 5b・6 は先に記録した私有領域の実値を明示して受け取り、再確保しない。
+_n="$(grep -cF ': "${W:?' "$CLOSE_MAIN")"
+[ "${_n:-0}" -eq 2 ] && ok "close-issue の 5b・6 は記録済み W の明示を要求する" \
+  || bad "close-issue の W 引き継ぎ契約が欠けている"
+contains "$CLOSE_MAIN" 'mktemp も再実行しない' "close-issue は同じ私有領域の寿命を維持する"
 absent "$CLOSE_MAIN" '/tmp/' "close-issue の SKILL.md に /tmp 直書きのパスが無い" \
-  "close-issue の SKILL.md が /tmp を直書きしている（Windows のネイティブのツールと置き場所が食い違う）"
+  "close-issue の SKILL.md が /tmp を直書きしている"
 absent "$CLOSE" '/tmp/' "close-issue の references/effort.md に /tmp 直書きのパスが無い" \
   "close-issue の references/effort.md が /tmp を直書きしている"
-# 手順 6 のフェンスを単独の Bash 呼び出しとして走らせる（W を事前に与えない）。5b のシェル変数に
-# 頼らず W を求め直し、作業ディレクトリの報告ファイルを --body-file へ渡すこと
-S6TMP="$(mktemp -d)" || { echo "✗ 一時ディレクトリを作成できません" >&2; exit 1; }
-awk '/^### 6\./ { sec = 1; next } sec && /^### / { sec = 0 } sec && /^```bash$/ { f = 1; next } sec && f && /^```$/ { exit } sec && f { print }' "$CLOSE_MAIN" > "$S6TMP/step6.sh"
+S6TMP="$(mktemp -d)" || exit 1
+awk '/^### 6[.]/ { sec = 1; next } sec && /^### / { sec = 0 } sec && /^```bash$/ { f = 1; next } sec && f && /^```$/ { exit } sec && f { print }' "$CLOSE_MAIN" > "$S6TMP/step6.sh"
 mkdir -p "$S6TMP/bin" "$S6TMP/tmp"
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s"\n' "$S6TMP/gh-args" > "$S6TMP/bin/gh"; chmod +x "$S6TMP/bin/gh"
-_exp="$S6TMP/tmp/close-issue-5"
-if command -v cygpath >/dev/null 2>&1; then _exp="$(cygpath -m "$_exp")"; fi
+_exp="$(mktemp -d "$S6TMP/tmp/close-issue-5.XXXXXX")" || exit 1
+if command -v cygpath >/dev/null 2>&1; then _exp="$(cygpath -m "$_exp")" || exit 1; fi
+printf '%s\n' report >"$_exp/close-issue-report-5.md"
 if grep -F 'gh issue comment' "$S6TMP/step6.sh" >/dev/null; then
-  env -u W PATH="$S6TMP/bin:$PATH" TMPDIR="$S6TMP/tmp" ISSUE_URL=x ISSUE_NUMBER=5 bash -c "$(cat "$S6TMP/step6.sh")" >/dev/null 2>&1; _rc=$?
-  if [ "$_rc" = "0" ] && grep -qxF -- "$_exp/close-issue-report-5.md" "$S6TMP/gh-args" 2>/dev/null; then
-    ok "close-issue 手順 6 のフェンスは単独の呼び出しで W を求め直し、作業ディレクトリの報告ファイルを渡す"
+  env W="$_exp" PATH="$S6TMP/bin:$PATH" TMPDIR="$S6TMP/tmp" ISSUE_URL=x ISSUE_NUMBER=5 bash "$S6TMP/step6.sh" >/dev/null 2>&1; _rc=$?
+  if [ "$_rc" = 0 ] && grep -qxF -- "$_exp/close-issue-report-5.md" "$S6TMP/gh-args" 2>/dev/null; then
+    ok "close-issue 手順 6 は別の呼び出しでも記録済みの私有領域の報告を渡す"
   else
-    bad "close-issue 手順 6 のフェンスを単独で走らせると報告ファイルを渡せない（rc=${_rc}。期待 --body-file ${_exp}/close-issue-report-5.md）"
+    bad "close-issue 手順 6 が記録済みの報告を渡せない"
+  fi
+  rm -f "$S6TMP/gh-args"
+  env -u W PATH="$S6TMP/bin:$PATH" ISSUE_URL=x ISSUE_NUMBER=5 bash "$S6TMP/step6.sh" >/dev/null 2>&1; _rc=$?
+  if [ "$_rc" -ne 0 ] && [ ! -e "$S6TMP/gh-args" ]; then
+    ok "close-issue 手順 6 は W 不在で送信しない"
+  else
+    bad "close-issue 手順 6 が W を失ったまま送信した"
   fi
 else
-  bad "close-issue 手順 6 のフェンス（gh issue comment）を抽出できません"
+  bad "close-issue 手順 6 の送信フェンスを抽出できません"
 fi
 rm -rf "$S6TMP"
 

@@ -132,6 +132,8 @@
 #   ${TMPDIR:-/tmp}/ff-dev-toolkit-delegation-guard/<session_id>.log
 # 書き込み失敗は握り潰す（ログはガードの副産物であって、ログのために deny を
 # 落とすことはしない）。
+# 記録にはpython3のdescriptor-relative/no-follow操作を使う。利用できない環境では
+# 記録だけを断念し、deny/ACKの判定は保つ（記録不能のACKは下の既存警告を返す）。
 #
 # ## 既知の限界
 #
@@ -615,23 +617,19 @@ EOF
 # 記録は deny のときだけでなく ack で素通ししたときも残す（「対策後 0 件」を数える
 # 母集団から、抜け道で通った回が静かに落ちないようにする）。
 record() { # <verdict> <detail>
-  local dir file ts
-  dir="${TMPDIR:-/tmp}"
-  # TMPDIR は末尾スラッシュ付きで来る環境がある（macOS の既定）。二重スラッシュの
-  # パスを deny 本文へ載せると、利用者が手で開くときに紛れるので落とす。
-  while [ "${dir%/}" != "$dir" ]; do dir="${dir%/}"; done
-  [ -n "$dir" ] || dir="/tmp"
-  dir="$dir/ff-dev-toolkit-delegation-guard"
-  mkdir -p "$dir" 2>/dev/null || return 0
+  local file ts helper
+  helper="${BASH_SOURCE[0]%/*}/private-session-log.py"
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ -f "$helper" ] && [ -r "$helper" ] || return 0
   case "$session_id" in
-    ""|*/*|*..*) file="$dir/unknown-session.log" ;;
-    *) file="$dir/${session_id}.log" ;;
+    ""|*/*|*..*) file="unknown-session.log" ;;
+    *) file="${session_id}.log" ;;
   esac
   ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" || ts="?"
-  # 追記に**成功したときだけ** LOG_PATH を立てる。失敗しても deny 本文が
-  # 「発火の記録: <path>」と言い切ると、存在しないファイルを案内することになる。
-  printf '%s\t%s\tagent_type=%s\tagent_id=%s\t%s\n' \
-    "$ts" "$1" "$agent_type" "$agent_id" "$2" >> "$file" 2>/dev/null && LOG_PATH="$file"
+  # 検証済みのdirectory/file descriptorへ書けたときだけ、記録先を案内する。
+  LOG_PATH="$(python3 "$helper" "${TMPDIR:-/tmp}" "$file" \
+    "$ts" "$1" "agent_type=$agent_type" "agent_id=$agent_id" "$2" 2>/dev/null)" || LOG_PATH=""
+  return 0
 }
 LOG_PATH=""
 
@@ -729,6 +727,9 @@ fi
 if [ -n "$LOG_PATH" ]; then
   reason="${reason}
 発火の記録: ${LOG_PATH}"
+else
+  reason="${reason}
+delegation-guard log unavailable: 安全な記録に必要な Python 3 / POSIX 操作を使えないか、記録先を検証できません。deny は維持します。未記録を発生回数 0 と数えないでください。"
 fi
 
 jq -n --arg reason "$reason" \

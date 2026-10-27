@@ -26,16 +26,21 @@
 #   「レビュー担当の選択と利用制限時の継続」の専用セキュリティゲート項）を出す:
 #   REVIEW_SECURITY_SENSITIVE=yes|no|unknown   … 根の DT_SECURITY（設定を読めない回は unknown）
 #   REVIEW_SECURITY_EVIDENCE=<path>            … yes の根拠（1 行 1 path）
-#   REVIEW_PRIMARY_HOST=claude-code|grok-cli|unknown … CLAUDECODE=1 / GROK_AGENT から判定（両方・
-#       どちらも無い回は unknown。Codex を判定する手段は無いので unknown になる）
+#   REVIEW_PRIMARY_HOST=claude-code|codex-cli|grok-cli|unknown … CLAUDECODE=1 / CODEX_THREAD_ID
+#       （Codex CLI が自身の起動するシェルへ渡す）/ GROK_AGENT から判定（2 つ以上立つ回・どれも無い回は unknown）
 #   REVIEW_SECURITY_BASE_CHECK=match|mismatch|no-origin-head|unchecked
 #       /security-review は origin/HEAD を基点に固定するので、差分モードの base と照合する
-#       （--files / --files-from は base を持たないので unchecked）
-#   REVIEW_SECURITY_GATE=security-review|unverified|unsupported|off|none
+#       （--files / --files-from は base を持たないので unchecked）。Codex Security の diff scan は
+#       base を明示で受けるので、codex-cli のゲートはこの照合で止めない
+#   REVIEW_SECURITY_GATE=security-review|codex-security|unverified|unsupported|off|none
 #       security-review … 主担当 claude-code が通常のレビューに加えて /security-review を実行する
-#       unverified      … 主担当 claude-code だが基点（指すコミット）が食い違う / origin/HEAD が無い、または
+#       codex-security  … 主担当 codex-cli が通常のレビューに加えて Codex Security プラグインの
+#                         security-diff-scan を実行する（導入を ${CODEX_HOME:-~/.codex}/plugins/cache で確かめる）
+#       unverified      … 主担当 claude-code だが基点（指すコミット）が食い違う / origin/HEAD が無い、
+#                         主担当 codex-cli だが security-diff-scan が導入されていない・差分モードで
+#                         diff scan の基点を解決できない（--base / WORKFLOW_TIER_BASE / origin/HEAD が無い）、または
 #                         決定木のルータが無く何も判定できない。走らせず未確認と記録する
-#       unsupported     … 主担当が claude-code 以外。専用ゲートは未対応として記録する（省略しない）
+#       unsupported     … 主担当が claude-code / codex-cli 以外。専用ゲートは未対応として記録する（省略しない）
 #       off             … security_review=off（判定は出すが専用ゲートを起動しない）
 #       none            … 該当なし（unknown は no へ倒さず、yes と同じくゲートの対象にする）
 #   REVIEW_SECURITY_REPORT_LINE=専用セキュリティゲート: …   … PR の Self-Review 欄へ転記する判定の 1 行
@@ -410,12 +415,20 @@ case "$sec_reason" in
   *) sec_why="$sec_reason" ;;
 esac
 
-# 主担当ホスト。両方立つ回（片方のホストからもう片方を起動した）は入れ子の向きが分からないので unknown
+# 主担当ホスト。2 つ以上立つ回（あるホストから別のホストを起動した）は入れ子の向きが分からないので unknown
 host="unknown"
-if [ "${CLAUDECODE:-}" = "1" ] && [ -z "${GROK_AGENT:-}" ]; then
-  host="claude-code"
-elif [ -n "${GROK_AGENT:-}" ] && [ "${CLAUDECODE:-}" != "1" ]; then
-  host="grok-cli"
+host_marks=0
+[ "${CLAUDECODE:-}" != "1" ] || host_marks=$((host_marks + 1))
+[ -z "${CODEX_THREAD_ID:-}" ] || host_marks=$((host_marks + 1))
+[ -z "${GROK_AGENT:-}" ] || host_marks=$((host_marks + 1))
+if [ "$host_marks" -eq 1 ]; then
+  if [ "${CLAUDECODE:-}" = "1" ]; then
+    host="claude-code"
+  elif [ -n "${CODEX_THREAD_ID:-}" ]; then
+    host="codex-cli"
+  else
+    host="grok-cli"
+  fi
 fi
 
 # /security-review は比較の基点を origin/HEAD に固定し、基点を引数で受けない（Claude Code の
@@ -424,6 +437,7 @@ fi
 # --files / --files-from は base を持たないので照合しない（unchecked。ホストが確かめる）
 base_check="unchecked"
 sec_base=""
+sec_base_commit=""
 sec_files_mode=0
 prev=""
 for a in "$@"; do
@@ -449,10 +463,37 @@ if [ "$sec_files_mode" -eq 0 ]; then
   fi
 fi
 
+# Codex CLI 本体には /security-review に当たるコマンドが無いので、主担当 codex-cli の専用ゲートは
+# OpenAI の Codex Security プラグインの security-diff-scan スキルにする（base を明示で受ける）。
+# 導入の確認はファイルの存在だけにする — `codex plugin list` は remote marketplace へ通信する
+codex_security_skill=""
+codex_unverified=""
+if [ "$host" = "codex-cli" ]; then
+  codex_home="${CODEX_HOME:-}"
+  [ -n "$codex_home" ] || { [ -z "${HOME:-}" ] || codex_home="${HOME}/.codex"; }
+  if [ -n "$codex_home" ]; then
+    for f in "$codex_home"/plugins/cache/*/codex-security/*/skills/security-diff-scan/SKILL.md; do
+      [ -f "$f" ] && { codex_security_skill="$f"; break; }
+    done
+    [ -n "$codex_security_skill" ] \
+      || codex_unverified="Codex Security プラグインの security-diff-scan が ${codex_home}/plugins/cache にありません"
+  else
+    codex_unverified="CODEX_HOME も HOME も無いため Codex Security プラグインの導入を確かめられません"
+  fi
+  # 差分モードで基点を解決できない回（--base なし・WORKFLOW_TIER_BASE なし・origin/HEAD なし、または
+  # 解決できない --base）は、diff scan へ渡す範囲を報告行に書けない。根は origin/develop 等へ戻って
+  # 分類するので、範囲を決めないまま実行を指示すると根拠の path を含まない走査を「実施」と記録しうる
+  if [ -z "$codex_unverified" ] && [ "$sec_files_mode" -eq 0 ] && [ -z "$sec_base_commit" ]; then
+    codex_unverified="diff scan の基点${sec_base:+ ${sec_base} }を解決できません（--base で PR の base を渡す）"
+  fi
+fi
+
 if [ "$sec" = "no" ]; then
   gate="none"
 elif [ "${SEC_POLICY:-auto}" = "off" ]; then
   gate="off"
+elif [ "$host" = "codex-cli" ]; then
+  if [ -z "$codex_unverified" ]; then gate="codex-security"; else gate="unverified"; fi
 elif [ "$host" != "claude-code" ]; then
   gate="unsupported"
 elif [ "$base_check" = "no-origin-head" ] || [ "$base_check" = "mismatch" ]; then
@@ -472,8 +513,14 @@ case "$gate" in
   none) report="対象外（該当変更なし）" ;;
   off) report="無効（security_review=off / ${SEC_POLICY_FROM}。${basis}）" ;;
   security-review) report="/security-review を実行する（${basis}）" ;;
+  codex-security)
+    # 差分モードは基点を解決できた回だけここへ来る（できない回は上で unverified）
+    if [ "$sec_files_mode" -eq 0 ]; then diff_target="${sec_base}...HEAD"; else diff_target="--files の変更"; fi
+    report="Codex Security の security-diff-scan を実行する（対象: ${diff_target}。${basis}）" ;;
   unverified)
-    if [ "$base_check" = "no-origin-head" ]; then
+    if [ "$host" = "codex-cli" ]; then
+      report="未確認（${codex_unverified}。${basis}）"
+    elif [ "$base_check" = "no-origin-head" ]; then
       report="未確認（/security-review の基点 origin/HEAD がありません。${basis}）"
     else
       report="未確認（/security-review の基点 ${origin_head} が base ${sec_base} と食い違います。${basis}）"

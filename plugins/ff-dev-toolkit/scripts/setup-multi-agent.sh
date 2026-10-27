@@ -713,12 +713,15 @@ toolkit_path_is_volatile() {
     return 1
 }
 
-install_review_wrappers() {
+install_review_wrappers() (
     # 配置先は git のトップレベルを優先する。$PWD をそのまま使うと、リポジトリの
     # サブディレクトリから setup を実行したときに <subdir>/scripts/ へ落とし、
     # 「成功しました」と報告しながら規約どおりの `bash scripts/codex-review.sh` からは
     # 見えない場所に置くことになる（check_config が既に同じ解決を使っている）。
     local target_root="${INSTALL_WRAPPERS_TARGET:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+    # 選択された checkout の物理ルートを先に確定する。scripts のリンクは配置先と
+    # して受け付けない。比較・退避・一時ファイルもこの境界の確認後だけに行う。
+    target_root="$(CDPATH= cd -P -- "$target_root" && pwd -P)" || return 1
     local src="${SCRIPT_DIR}/templates/codex-review.sh"
     local dest_dir="${target_root}/scripts"
     local dest="${dest_dir}/codex-review.sh"
@@ -741,10 +744,31 @@ install_review_wrappers() {
         print_info "0 バイト・読み取り不能・オーケストレータ以外のファイルはサイドカーへ記録しません。既存のサイドカーは変更していません。"
         return 1
     fi
-    if ! mkdir -p "$dest_dir"; then
+    if [ -L "$dest_dir" ] || { [ -e "$dest_dir" ] && [ ! -d "$dest_dir" ]; }; then
+        print_error "配置先 scripts は checkout 内の実ディレクトリである必要があります: $dest_dir"
+        return 1
+    fi
+    if [ ! -d "$dest_dir" ] && ! mkdir "$dest_dir"; then
         print_error "配置先ディレクトリを作成できません: ${dest_dir}"
         return 1
     fi
+    if [ "$(CDPATH= cd -P -- "$dest_dir" && pwd -P)" != "$dest_dir" ]; then
+        print_error "配置先の物理パスが checkout 内の scripts と一致しません"
+        return 1
+    fi
+    local leaf
+    for leaf in "$dest" "$sidecar"; do
+        if [ -L "$leaf" ] || { [ -e "$leaf" ] && [ ! -f "$leaf" ]; }; then
+            print_error "配置先にリンクまたは通常ファイル以外があります: $leaf"
+            return 1
+        fi
+    done
+    local stage
+    stage="$(mktemp -d "$dest_dir/.ff-review-install.XXXXXX")" || return 1
+    [ -d "$stage" ] && [ ! -L "$stage" ] || return 1
+    trap 'rm -rf "${stage:?}"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     # 揮発パスは記録自体は行う（この場で動くことは確か）が、後日の静かな破壊を
     # 予告する（Issue #658）。警告なしだと、Temp 清掃後に「配置直後は動いたのに」
     # という形で原因から最も遠い時点で壊れる。
@@ -780,12 +804,10 @@ install_review_wrappers() {
         fi
         # 正規化は一時ファイルへ書き、**書けたことを確認してから**比較する
         # （procsub のままだと正規化の失敗を検出できない）。
-        local norm_src="${dest}.normsrc.$$" norm_dest="${dest}.normdest.$$"
-        trap 'rm -f "$norm_src" "$norm_dest"' EXIT INT TERM
+        local norm_src="$stage/normsrc" norm_dest="$stage/normdest"
         if ! setup_strip_cr <"$src" >"$norm_src" \
            || ! setup_strip_cr <"$dest" >"$norm_dest"; then
             rm -f "$norm_src" "$norm_dest"
-            trap - EXIT INT TERM
             print_error "行末正規化に失敗したため、テンプレートと比較できません: ${dest}"
             print_info "既存の ${dest} とサイドカーは変更していません。"
             return 1
@@ -806,7 +828,6 @@ install_review_wrappers() {
             fi
         fi
         rm -f "$norm_src" "$norm_dest"
-        trap - EXIT INT TERM
     fi
     # 書き込みが要るのは「内容が変わった」か「行末だけ直す」のどちらか。後者は
     # 内容同一なので .bak は作らない（退避すべき利用者の編集が存在しない）。
@@ -818,7 +839,7 @@ install_review_wrappers() {
         # 退避先は使い回さない。固定の .bak だと 2 回目の上書きで利用者の元ファイルが
         # 機械生成物に置き換わり、最初の退避が失われる。既存があれば連番を足す。
         local backup="${dest}.bak" n=1
-        while [ -e "$backup" ]; do
+        while [ -e "$backup" ] || [ -L "$backup" ]; do
             backup="${dest}.bak.${n}"
             n=$((n + 1))
         done
@@ -835,13 +856,12 @@ install_review_wrappers() {
     # 壊れたことも、退避先に前の版があることも伝わらない。
     # rename(2) は同一ファイルシステム内で原子的なので、中間状態が観測されない
     # （dest は「前の内容」か「新しい内容」のどちらかで、途中の姿を取らない）。
-    local tmp="${dest}.tmp.$$"
-    local sidecar_tmp="${sidecar}.tmp.$$"
+    local tmp="$stage/shim"
+    local sidecar_tmp="$stage/sidecar"
     # 中断（Ctrl-C / SIGTERM）で一時ファイルが残ると、**実行ビットの立った 25KB の
     # 見慣れないファイル**が消費プロジェクトの git 管理下 scripts/ に置き去りになる。
     # 実測: cp の途中で SIGTERM を送ると codex-review.sh.tmp.<pid> が残り、
     # 再実行のたび PID 違いで増えていった。各失敗経路の rm だけでは信号を捕まえられない。
-    trap 'rm -f "$tmp" "$sidecar_tmp"' EXIT INT TERM
     # 配置は LF へ正規化して書く（Issue #658、行末の CR のみ）。CRLF のまま置くと、
     # git 管理下の scripts/ が CRLF バイトで汚れ、次回以降の LF テンプレートとの
     # 比較も崩れる。
@@ -878,8 +898,7 @@ install_review_wrappers() {
         print_info "cache から解決できない環境では setup を再実行してください。"
         return 1
     fi
-    # 両一時ファイルの rename が終わったので、signal/EXIT 用の trap を解除する。
-    trap - EXIT INT TERM
+    # 両一時ファイルの rename 後、関数の subshell 終了時に私有領域を回収する。
     if [ "$shim_changed" = true ]; then
         print_success "codex-review.sh を配置しました: ${dest}"
     elif [ "$shim_normalize_only" = true ]; then
@@ -888,7 +907,7 @@ install_review_wrappers() {
     print_info "toolkit パスを記録しました: ${sidecar}"
     print_info "${sidecar} はマシン固有です。git 管理下なら .gitignore へ追加してください。"
     return 0
-}
+)
 
 main() {
     for arg in "$@"; do

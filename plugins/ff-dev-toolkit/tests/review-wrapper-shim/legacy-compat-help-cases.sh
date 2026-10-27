@@ -269,7 +269,7 @@ _setup_src="$PLUGIN_ROOT/scripts/setup-multi-agent.sh"
 #     「以前は mv "$tmp" "$dest" だったが…」というコメントを残すだけで緑になった）。
 _install_body="$(awk '/^install_review_wrappers\(\)/ { inf = 1 }
                       inf { print }
-                      inf && /^}$/ { exit }' "$_setup_src")"
+                      inf && /^[})]$/ { exit }' "$_setup_src")"
 # 抽出が**途中で切れた**ことを「本体を読んだ」と誤認しない。awk は行頭 } で打ち切るので、
 # 関数内に heredoc 等で行頭 } があると数行で終わる（実測: 4 行で打ち切られ、変異が素通りした）。
 # 空でないことに加えて、関数の末尾まで到達した証拠（最後の成功メッセージ）を要求する。

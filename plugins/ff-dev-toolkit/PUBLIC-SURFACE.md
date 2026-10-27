@@ -129,6 +129,7 @@ Bash 専用の14実体は `hooks/run-bash-hooks.sh` が同一イベント内で�
 - `hooks/asdd-feature.mjs`
 - `hooks/asdd-hook-gate.sh`
 - `hooks/retrospective-chain-tail.mjs`
+- `hooks/private-session-log.py`
 
 ## 公開面 3: 導入先に配置されるパス
 

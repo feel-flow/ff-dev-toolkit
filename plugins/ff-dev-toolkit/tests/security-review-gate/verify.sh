@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 空振り検出: security-glob の不在・空、設定の不在（明示）・読めない・yq 不在・キー検査の失敗・review 配下以外への配置・文字列でない / 空の値・未知の値、変更 0 件、根の判定不能を与えると M1 と M3〜M16 が unknown 以外（no への縮退）で、M2 は --check の緑で赤になる（M10 は root 実行者だけ skip）。
+# 空振り検出: security-glob の不在・空、設定の不在（明示）・読めない・yq 不在・キー検査の失敗・review 配下以外への配置・文字列でない / 空の値・未知の値、変更 0 件、根の判定不能を与えると M1 と M3〜M16 が unknown 以外（no への縮退）で、M2 は --check の緑で赤になる（M10 は root 実行者だけ skip）。主担当 codex-cli で security-diff-scan の不在（別スキルだけ・CODEX_HOME の不在・~/.codex も無い）や diff scan の基点の不在（--base も origin/HEAD も無い・解決できない --base）を与えると C4 / C5 / C6a / C14 / C15 が codex-security への縮退で赤になる。
 #
-# セキュリティに関わる変更の判定と、主担当ホストでの専用ゲートの分岐（Issue `#2391`）。
+# セキュリティに関わる変更の判定と、主担当ホストでの専用ゲートの分岐（Issue `#2391` / `#2392`）。
 #
 # 固定するもの:
 #   S. 分類（scripts/decision-tree/route.sh の security-glob と scripts/review-route.sh の写像）:
@@ -12,6 +12,9 @@
 #      → off、該当なし → none
 #   B. /security-review の基点: 差分モードの base が origin/HEAD と一致すれば実行、食い違う・
 #      origin/HEAD が無い回は unverified（走らせず未確認）、--files は照合しない（unchecked）
+#   C. 主担当 codex-cli（CODEX_THREAD_ID。Issue `#2392`）: Codex Security プラグインの
+#      security-diff-scan が CODEX_HOME（無ければ ~/.codex）に導入済みなら codex-security で、base の
+#      食い違いでは止めない。未導入は unverified と「未確認」の 1 行、他ホストの印と併存すれば unknown
 #   M. 針が当たらない入力: 分類・設定を読めない回はすべて unknown（no へ倒さない）で、unknown は
 #      ゲートの対象から外れない（none にならない）
 #
@@ -52,7 +55,7 @@ run_gate() { # [VAR=値 ...] -- <review-route.sh の引数...>
   RC=0
   OUT="$(cd "$CWD" && env -u FF_JEV_MODE -u FF_JEV_POINTS -u FF_JEV_ENABLED \
     -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLUGIN_ROOT \
-    -u CLAUDECODE -u GROK_AGENT -u MULTI_AGENT_CONFIG \
+    -u CLAUDECODE -u GROK_AGENT -u CODEX_THREAD_ID -u CODEX_HOME -u MULTI_AGENT_CONFIG \
     -u MULTI_AGENT_SECURITY_GLOB -u MULTI_AGENT_SECURITY_GLOB_EXTRA -u MULTI_AGENT_SECURITY_REVIEW \
     -u WORKFLOW_TIER_BASE ${envs[@]+"${envs[@]}"} \
     bash "$REVIEW_ROUTE_SH" "$@" 2>"$TEST_TMP/stderr")" || RC=$?
@@ -160,7 +163,7 @@ run_gate -- --files src/auth/login.ts
 line="$(kv REVIEW_SECURITY_REPORT_LINE)"
 if [ "$(kv REVIEW_PRIMARY_HOST)" = "unknown" ] && [ "$(kv REVIEW_SECURITY_GATE)" = "unsupported" ]; then
   case "$line" in
-    *"未対応（主担当 unknown"*) case "$line" in *指摘なし*) bad "G4 「指摘なし」を含む: [$line]" ;; *) ok "G4 ホストを判定できない（Codex 等）回は unknown / unsupported と「未対応（主担当 unknown」（黙って省略しない）" ;; esac ;;
+    *"未対応（主担当 unknown"*) case "$line" in *指摘なし*) bad "G4 「指摘なし」を含む: [$line]" ;; *) ok "G4 ホストを判定できない回は unknown / unsupported と「未対応（主担当 unknown」（黙って省略しない）" ;; esac ;;
     *) bad "G4 判定できないホストの報告行: [$line]" ;;
   esac
 else
@@ -221,6 +224,90 @@ OUT="$(cd "$CWD" && env -u FF_DEV_TOOLKIT_ROOT -u CLAUDE_PLUGIN_ROOT -u GROK_PLU
   && [ "$(kv REVIEW_SECURITY_REPORT_LINE)" = "専用セキュリティゲート: 未確認（判定不能: 決定木のルータがありません）" ] \
   && ok "B7 ルータが無い配置は unknown / unverified と「未確認」の 1 行で exit 2" \
   || bad "B7 ルータ不在: rc=$RC gate=[$(kv REVIEW_SECURITY_GATE)] line=[$(kv REVIEW_SECURITY_REPORT_LINE)]"
+
+echo "security-review-gate C: 主担当 codex-cli の専用ゲート（Codex Security の security-diff-scan）"
+# 導入済みの Codex Security プラグインを模す CODEX_HOME と、導入していない CODEX_HOME
+CODEX_ON="$TEST_TMP/codex-on"
+mkdir -p "$CODEX_ON/plugins/cache/openai-curated-remote/codex-security/0.1.32/skills/security-diff-scan"
+printf -- '---\nname: security-diff-scan\n---\n' > "$CODEX_ON/plugins/cache/openai-curated-remote/codex-security/0.1.32/skills/security-diff-scan/SKILL.md"
+CODEX_OFF="$TEST_TMP/codex-off"
+# プラグインの置き場はあるが security-diff-scan が無い（別スキルだけ）— ディレクトリの有無で導入と読まない
+mkdir -p "$CODEX_OFF/plugins/cache/openai-curated-remote/codex-security/0.1.32/skills/security-scan"
+printf -- '---\nname: security-scan\n---\n' > "$CODEX_OFF/plugins/cache/openai-curated-remote/codex-security/0.1.32/skills/security-scan/SKILL.md"
+git -C "$REPO" checkout -q auth-change
+run_gate CODEX_THREAD_ID=t-1 "CODEX_HOME=$CODEX_ON" -- --git --base origin/base
+if [ "$RC" -eq 0 ] && [ "$(kv REVIEW_PRIMARY_HOST)" = "codex-cli" ] && [ "$(kv REVIEW_SECURITY_GATE)" = "codex-security" ]; then
+  ok "C1 CODEX_THREAD_ID が立つ回は主担当 codex-cli で、該当なら codex-security（exit 0）"
+else
+  bad "C1 codex: rc=$RC host=[$(kv REVIEW_PRIMARY_HOST)] gate=[$(kv REVIEW_SECURITY_GATE)]"
+fi
+[ "$(kv REVIEW_SECURITY_REPORT_LINE)" = "専用セキュリティゲート: Codex Security の security-diff-scan を実行する（対象: origin/base...HEAD。根拠: src/auth/login.ts）" ] \
+  && ok "C2 報告行は diff scan の対象範囲（base...HEAD）と根拠の path を出す" || bad "C2 報告行: [$(kv REVIEW_SECURITY_REPORT_LINE)]"
+run_gate CODEX_THREAD_ID=t-1 "CODEX_HOME=$CODEX_ON" -- --git --base origin/other
+assert_gate "C3 base が origin/HEAD と食い違っても codex-security（diff scan は base を明示で受ける）" yes codex-security
+run_gate CODEX_THREAD_ID=t-1 "CODEX_HOME=$CODEX_OFF" -- --git --base origin/base
+line="$(kv REVIEW_SECURITY_REPORT_LINE)"
+if [ "$(kv REVIEW_SECURITY_GATE)" = "unverified" ]; then
+  case "$line" in
+    *"未確認（Codex Security プラグインの security-diff-scan が ${CODEX_OFF}/plugins/cache にありません"*)
+      case "$line" in *指摘なし*) bad "C4 未導入の行が「指摘なし」を含む: [$line]" ;; *) ok "C4 security-diff-scan が無い CODEX_HOME（別スキルだけ）→ unverified と「未確認」の 1 行" ;; esac ;;
+    *) bad "C4 未導入の報告行: [$line]" ;;
+  esac
+else
+  bad "C4 未導入: gate=[$(kv REVIEW_SECURITY_GATE)] line=[$line]"
+fi
+run_gate CODEX_THREAD_ID=t-1 "CODEX_HOME=$TEST_TMP/no-such-codex-home" -- --files src/auth/login.ts
+assert_gate "C5 存在しない CODEX_HOME → unverified（導入済みと読まない）" yes unverified
+run_gate CODEX_THREAD_ID=t-1 "HOME=$CODEX_ON/.." -- --files src/auth/login.ts
+assert_gate "C6a 対照: CODEX_HOME も ~/.codex も無い → unverified" yes unverified
+mkdir -p "$TEST_TMP/home-on"
+ln -s "$CODEX_ON" "$TEST_TMP/home-on/.codex"
+run_gate CODEX_THREAD_ID=t-1 "HOME=$TEST_TMP/home-on" -- --files src/auth/login.ts
+assert_gate "C6 CODEX_HOME が無ければ ~/.codex を見る" yes codex-security
+[ "$(kv REVIEW_SECURITY_REPORT_LINE)" = "専用セキュリティゲート: Codex Security の security-diff-scan を実行する（対象: --files の変更。根拠: src/auth/login.ts）" ] \
+  && ok "C7 --files は base を持たないので対象を「--files の変更」と書く" || bad "C7 --files の報告行: [$(kv REVIEW_SECURITY_REPORT_LINE)]"
+git -C "$REPO" checkout -q docs-change
+run_gate CODEX_THREAD_ID=t-1 "CODEX_HOME=$CODEX_ON" -- --git --base origin/base
+assert_gate "C8 主担当 codex-cli で該当なし → none（対象外）" no none
+run_gate CODEX_THREAD_ID=t-1 "CODEX_HOME=$CODEX_ON" MULTI_AGENT_SECURITY_REVIEW=off -- --files src/auth/login.ts
+assert_gate "C9 主担当 codex-cli でも security_review=off → off" yes off
+: > "$TEST_TMP/empty-c.txt"
+run_gate CODEX_THREAD_ID=t-1 "CODEX_HOME=$CODEX_ON" -- --files-from "$TEST_TMP/empty-c.txt"
+assert_gate "C10 判定不能（変更 0 件）でも none へ倒さず codex-security" unknown codex-security
+run_gate CODEX_THREAD_ID=t-1 CLAUDECODE=1 "CODEX_HOME=$CODEX_ON" -- --files src/auth/login.ts
+if [ "$(kv REVIEW_PRIMARY_HOST)" = "unknown" ] && [ "$(kv REVIEW_SECURITY_GATE)" = "unsupported" ]; then
+  ok "C11 CODEX_THREAD_ID と CLAUDECODE=1 が両方立つ回は入れ子の向きが分からないので unknown / unsupported"
+else
+  bad "C11 入れ子: host=[$(kv REVIEW_PRIMARY_HOST)] gate=[$(kv REVIEW_SECURITY_GATE)]"
+fi
+run_gate CODEX_THREAD_ID=t-1 GROK_AGENT=1 "CODEX_HOME=$CODEX_ON" -- --files src/auth/login.ts
+[ "$(kv REVIEW_PRIMARY_HOST)" = "unknown" ] && ok "C12 CODEX_THREAD_ID と GROK_AGENT が両方立つ回も unknown" || bad "C12 入れ子: [$(kv REVIEW_PRIMARY_HOST)]"
+run_gate CODEX_THREAD_ID= "CODEX_HOME=$CODEX_ON" -- --files src/auth/login.ts
+[ "$(kv REVIEW_PRIMARY_HOST)" = "unknown" ] && ok "C13 空の CODEX_THREAD_ID は Codex の印にしない" || bad "C13 空: [$(kv REVIEW_PRIMARY_HOST)]"
+# 差分モードで diff scan の基点を決められない回は、範囲の無い実行指示を出さない（根は origin/develop 等へ戻って分類する）
+git -C "$REPO" checkout -q auth-change
+git -C "$REPO" symbolic-ref --delete refs/remotes/origin/HEAD
+run_gate CODEX_THREAD_ID=t-1 "CODEX_HOME=$CODEX_ON" -- --git
+line="$(kv REVIEW_SECURITY_REPORT_LINE)"
+case "$(kv REVIEW_SECURITY_GATE)|$line" in
+  "unverified|"*"未確認（diff scan の基点を解決できません"*) ok "C14 --base も WORKFLOW_TIER_BASE も origin/HEAD も無い --git → unverified（範囲を書けない実行指示を出さない）" ;;
+  *) bad "C14 基点なし: gate=[$(kv REVIEW_SECURITY_GATE)] line=[$line]" ;;
+esac
+git -C "$REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/base
+run_gate CODEX_THREAD_ID=t-1 "CODEX_HOME=$CODEX_ON" -- --git --base no-such-ref
+line="$(kv REVIEW_SECURITY_REPORT_LINE)"
+case "$(kv REVIEW_SECURITY_GATE)|$line" in
+  "unverified|"*"未確認（diff scan の基点 no-such-ref を解決できません"*) ok "C15 解決できない --base → unverified と基点の名指し" ;;
+  *) bad "C15 解決できない base: gate=[$(kv REVIEW_SECURITY_GATE)] line=[$line]" ;;
+esac
+run_gate CODEX_THREAD_ID=t-1 CODEX_HOME= "HOME=$TEST_TMP/home-on" -- --files src/auth/login.ts
+assert_gate "C16 空の CODEX_HOME は未設定と同じく ~/.codex を見る" yes codex-security
+run_gate CODEX_THREAD_ID=t-1 CODEX_HOME= HOME= -- --files src/auth/login.ts
+line="$(kv REVIEW_SECURITY_REPORT_LINE)"
+case "$(kv REVIEW_SECURITY_GATE)|$line" in
+  "unverified|"*"CODEX_HOME も HOME も無いため"*) ok "C17 CODEX_HOME も HOME も空 → unverified と探せない理由の名指し" ;;
+  *) bad "C17 探し場所なし: gate=[$(kv REVIEW_SECURITY_GATE)] line=[$line]" ;;
+esac
 
 echo "security-review-gate M: 針が当たらない入力は unknown（no へ倒さない）"
 NOSEC_TREE="$TEST_TMP/tree-nosec.tsv"

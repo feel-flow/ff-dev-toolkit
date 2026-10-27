@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 空振り検出: scripts/shim/sidecarリンクの実main配置は拒否され、外部sentinelは不変。旧setupでは拒否検査が赤。関数終端はbrace/subshell双方を照合する。
 # 空振り検出: headless の計画時代替名簿から error-handler-hunt を外すと、security だけ除外した Grok 限定 dry-run が rc=0 へ倒れ1件赤。対照は302件pass（2026-10-27 Linux、実測）。名簿の明示除外後の成功も実オーケストレータと実perspective集合で測る。
 # 空振り検出: 公開可能な開発元表示を消す/裸の参照へ戻す/番号case集合を空にする/コメント抽出0行の各変異は各1件赤（bash-n rc0）。source template不在はrc1。開発元表示の無変異は公開同期検査rc0（2026-10-23 macOS実測）。
 # 空振り検出: 原因をID可否で決める変異5件赤、比較不能へ内容差文を足す変異5件赤、読取り失敗を不一致にする変異1件赤、拒否をrc0にする変異16件赤。model説明/上流Issue所属/rc2説明の単独退行は各1件赤。source template空はrc1、故障case集合空/コメント抽出0行は各1件赤。各bash-n rc0（2026-10-23 macOS実測）。

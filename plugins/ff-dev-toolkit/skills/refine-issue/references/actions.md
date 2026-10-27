@@ -36,10 +36,11 @@
 
 #### Trivial → Issue body 自動補完 + 注記コメント
 
-一時ファイルは次の 2 行で求める作業ディレクトリ `<W>` に置き、ホストのファイル編集機能と Bash から起動するコマンドの両方へ、出力された `W=` の実値を渡します（Windows の Git Bash では `C:/…` 形式。`/tmp` を直書きしない理由は [Markdown 文字列パッチ規律の「一時ファイルの置き場所」](../../../docs-template/05-operations/deployment/markdown-patch-discipline.md#一時ファイルの置き場所)）。Bash の呼び出しが変わったら同じ 2 行で求め直します:
+一時ファイルは初回に次の手順で排他的に確保する作業ディレクトリ `<W>` に置き、ホストのファイル編集機能と Bash から起動するコマンドの両方へ、出力された `W=` の実値を渡します（Windows の Git Bash では `C:/…` 形式。`/tmp` を直書きしない理由は [Markdown 文字列パッチ規律の「一時ファイルの置き場所」](../../../docs-template/05-operations/deployment/markdown-patch-discipline.md#一時ファイルの置き場所)）。一度だけ確保して変換後の実値を記録し、次の Bash 呼び出しでは同じ実値を明示して W に再設定します。固定名の再構築・mktemp の再実行は行いません:
 
 ```bash
-W="${TMPDIR:-/tmp}/refine-issue-<num>"; mkdir -p "$W" || exit 2
+W="$(mktemp -d "${TMPDIR:-/tmp}/refine-issue-<num>.XXXXXX")" || exit 2
+[ -d "$W" ] && [ ! -L "$W" ] || exit 2
 if command -v cygpath >/dev/null 2>&1; then W="$(cygpath -m "$W")" || exit 2; fi; echo "W=$W"
 ```
 
@@ -78,9 +79,9 @@ Issue body は更新せず、未解決論点をコメントで投稿:
 決定が出たら Issue body に追記し、再度 `/refine-issue <num>` を走らせて他の論点について refine を続けてください（注: 現状、過去コメントの自動取り込みはサポートしていません）。
 ```
 
-`gh issue comment <num> --repo <owner/repo> --body-file <W>/question.md` で投稿（`<W>` は「Trivial」と同じ 2 行で求める）。
+`gh issue comment <num> --repo <owner/repo> --body-file <W>/question.md` で投稿（`<W>` は「Trivial」で確保して記録した私有領域の実値。Architectural 単独なら先に同じ確保手順を一度だけ実行し、本文を書いてから投稿する）。
 
-<!--56e23f3052e0e94a-->
+<!--fe3ac8c9619863a3-->
 MCP: 取得値: MCP で同じ Issue の number / url を照合。形式: body 用と分けた comment 専用ファイルの原文。渡し先: 既存 add_comment_to_issue の comment へ原文を渡し、id / body を fresh GET して成功だけ報告する。不足時: 必須の MCP 能力 / 値が欠ければ操作名と項目を示して停止。
 
 `@<assignee>` の解決規則:

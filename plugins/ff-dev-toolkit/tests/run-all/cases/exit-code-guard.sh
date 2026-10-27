@@ -463,9 +463,10 @@ fi
 if ! command -v git >/dev/null 2>&1; then
   echo "  ○ skip: git が無いため横断検査の hits 経路をスキップ（この検査は 1 件も実行していません）"
 else
-  _gx_fx="${TMPDIR:-/tmp}/ff-run-all-gate-exit.$$"
-  rm -rf "$_gx_fx"
-  mkdir -p "$_gx_fx"
+  if ! _gx_fx="$(mktemp -d "${TMPDIR:-/tmp}/ff-run-all-gate-exit.XXXXXX")" \
+     || [ ! -d "$_gx_fx" ] || [ -L "$_gx_fx" ]; then
+    bad "横断検査の私有fixtureを作れません（検査不成立）"
+  else
   printf '%s\n' '#!/usr/bin/env bash' 'bash tests/run-all.sh > log 2>&1; echo "EXIT=$?"' > "$_gx_fx/violate.sh"
   _gx_git() { git -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=T -c init.defaultBranch=main "$@"; }
   _gx_setup=0
@@ -499,7 +500,8 @@ else
       esac
     done
   fi
-  rm -rf "$_gx_fx"
+    rm -rf "$_gx_fx"
+  fi
 fi
 
 # 自己検証の成否に関わらず実走査の前に戻す。文字列を再評価せず、末尾改行も保持する。

@@ -124,6 +124,10 @@ find docs -name '*.md' -type f \
 ### 手順
 
 ```bash
+DOC_HEALTH_TMP=$(mktemp -d "${TMPDIR:-/tmp}/doc-health.XXXXXX") || exit 1
+[ -d "$DOC_HEALTH_TMP" ] && [ ! -L "$DOC_HEALTH_TMP" ] || exit 1
+trap 'rm -rf "${DOC_HEALTH_TMP:?}"' EXIT
+
 # 全 .md ファイル（作成から 1 週間経過したものに絞る）
 ONE_WEEK_AGO=$(date -v-7d +%Y-%m-%d 2>/dev/null || date -d '7 days ago' +%Y-%m-%d)
 find docs -name '*.md' -type f \
@@ -131,18 +135,18 @@ find docs -name '*.md' -type f \
   | while read f; do
       added=$(git log --diff-filter=A --follow --format=%ad --date=short -- "$f" | tail -1)
       [ -n "$added" ] && [ "$added" \< "$ONE_WEEK_AGO" ] && echo "$f"
-    done | sort > /tmp/all-md.txt
+    done | sort > "$DOC_HEALTH_TMP/all-md.txt"
 
 # どこかからリンクされている .md
 grep -rho '\[.*\]([^)]*\.md[^)]*)' docs \
-  | grep -oE '[^()]+\.md' | sort -u > /tmp/linked-md.txt
+  | grep -oE '[^()]+\.md' | sort -u > "$DOC_HEALTH_TMP/linked-md.txt"
 
 # 差分 = 孤立候補
 # 注: comm は両入力がソート済みであることを要求する。
 # `sed 's|.*/||'` で basename 抽出（xargs より高速）し、`sort -u` で並びと重複を整える。
 comm -23 \
-  <(sed 's|.*/||' /tmp/all-md.txt | sort -u) \
-  <(sed 's|.*/||' /tmp/linked-md.txt | sort -u)
+  <(sed 's|.*/||' "$DOC_HEALTH_TMP/all-md.txt" | sort -u) \
+  <(sed 's|.*/||' "$DOC_HEALTH_TMP/linked-md.txt" | sort -u)
 ```
 
 > 上記は簡易判定（basename ベース）。同名異パスがある場合は誤検出するため、結果は目視確認する。`git log --diff-filter=A` で初回追加日を取り、1 週間以内の新規文書はノイズになりやすいため除外する。
